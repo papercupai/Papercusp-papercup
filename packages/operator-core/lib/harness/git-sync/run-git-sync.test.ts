@@ -13,7 +13,8 @@ afterEach(() => {
   gitSyncWarnSpy?.mockRestore();
   gitSyncWarnSpy = undefined;
 });
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import {
   mkdtempSync,
   mkdirSync,
@@ -30,6 +31,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
   runGitSync,
+  defaultRunToolCatalogGenerator,
+  defaultRunGeneratedDeclarationsGenerator,
+  defaultRunToolRoutingCheck,
   classifyProtectedPathExclusions,
   addFailureIgnoredPaths,
   addFailureStrayPaths,
@@ -43,15 +47,23 @@ import {
   clearStaleIndexLock,
   clearStaleConfigLock,
   scavengeStaleTempPacks,
+  STALE_INDEX_LOCK_MS,
   STALE_TEMP_PACK_MS,
   GIT_SYNC_BOT_EMAIL,
   GIT_SYNC_BOT_NAME,
   affectsToolRouting,
   affectsGeneratedDeclarations,
+  migrationDependencyFenceSkips,
   checkToolRoutingBeforeCommit,
   generatedDeclarationPair,
+  expandGeneratedDeclarationPairHolds,
+  guardStagedIndexBeforeCommit,
   DECLARATION_STATUS_MAX_RETRIES,
   regenerateGeneratedDeclarationsBeforeCommit,
+  isDeclarationsGraphCandidate,
+  defaultListDeclarationsGraphMembers,
+  declarationCompileErrors,
+  declarationCompileOffenders,
   regenerateToolCatalogBeforeCommit,
   expandAtomicLiveLockExclusions,
   expandCargoPackageLiveLockExclusions,
@@ -60,12 +72,23 @@ import {
   isNpmManifestPath,
   runGitBounded,
   censusStrandedSubmodules,
+  DEPENDENCY_GENERATION_ROOT_RECORD,
   type RunGit,
+  type GitSyncStepRunner,
 } from './run-git-sync';
-import type { FileAttribution } from './git-sync-attribution';
+import { isVerbatimCheckIgnorePath } from './check-ignore-argv';
+import { dependencyGenerationRootRecord } from '../../release/dependency-generation-prebuild';
+import type { AttributionRosterEntry, FileAttribution } from './git-sync-attribution';
 import type { ContentDetector } from '../../content-lint/registry';
+import { emitGitSyncCommittedEvent } from './git-sync-events';
+import { gitSyncScopePayloadFilter } from '../../agent-tools/events/git-sync-await-scope';
+import { payloadMatchesFilter } from '../../events/await/pattern';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
 import { requireHiveEffectAuthority } from '../../sync/pot-git/hive-effect-authority';
+import { withFsMutex, withFsMutexRead } from '../../../../../scripts/lib/fs-mutex.mjs';
+// @ts-expect-error -- buildless plain-JS module family, no declaration file.
+import { installLockNameForRoot } from '../../../../../scripts/lib/install-lock-name.mjs';
+import { acquireInstallBoundaryLease, type InstallBoundaryLease } from '../../install-boundary-lease';
 
 /** A test content detector that quarantines any matched file whose text contains BROKEN. */
 const brokenDetector: ContentDetector = {
@@ -91,9 +114,20 @@ function configUser(repo: string): void {
   git(repo, 'config', 'commit.gpgsign', 'false');
 }
 
-/** Avoid the production spawner sidecar in this focused real-git regression. */
-const directRunGit: RunGit = async (args, cwd) => {
-  const result = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+/**
+ * Avoid the production spawner sidecar in this focused real-git regression.
+ * Forwards `options.env` as an overlay, exactly like the production runners:
+ * attributed commits bind a private GIT_INDEX_FILE through it (WI-10006705) and
+ * refuse to run on a runner that drops it.
+ */
+const directRunGit: RunGit = async (args, cwd, options) => {
+  const result = spawnSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
+    env: options?.env ? { ...process.env, ...options.env } : process.env,
+  });
   return {
     code: result.status ?? -1,
     stdout: String(result.stdout ?? ''),
@@ -117,6 +151,219 @@ afterAll(() => {
 });
 
 const REPO_ROOT = resolve(__dirname, '../../../../..');
+
+describe('migrationDependencyFenceSkips (EI-24940157290396415)', () => {
+  const refused = {
+    scope: 'libs/sub',
+    path: 'libs/db/sql/999-unreserved-migration.sql',
+    reason: 'migration-reservation' as const,
+    detail: 'reservation missing',
+  };
+
+  it('holds same-work-item root sources while allowing unrelated attributed work to advance', () => {
+    const roster: AttributionRosterEntry[] = [
+      {
+        agent: 'su-migration',
+        files: ['libs/sub/libs/db/sql/999-unreserved-migration.sql', 'schema-consumer.ts'],
+        workItems: ['WI-migration'],
+      },
+      { agent: 'su-unrelated', files: ['root-unrelated.ts'], workItems: ['WI-other'] },
+    ];
+
+    expect(migrationDependencyFenceSkips([refused], ['schema-consumer.ts', 'root-unrelated.ts'], roster)).toEqual([
+      {
+        scope: 'superproject',
+        path: 'schema-consumer.ts',
+        reason: 'migration-dependency-fence',
+        detail:
+          'deferred because this path shares work-item attribution with a reservation-blocked migration at ' +
+          'libs/sub/libs/db/sql/999-unreserved-migration.sql',
+        // WI-10006493: structured provenance, so dev:pipeline_position can name the blocker.
+        blockingMigrations: ['libs/sub/libs/db/sql/999-unreserved-migration.sql'],
+        blockingAgents: ['su-migration'],
+        blockingWorkItems: ['WI-migration'],
+      },
+    ]);
+  });
+
+  it('holds every dirty root source when the refused migration itself is unattributed', () => {
+    const roster: AttributionRosterEntry[] = [
+      { agent: 'su-other', files: ['schema-consumer.ts', 'root-unrelated.ts'], workItems: ['WI-other'] },
+    ];
+
+    expect(migrationDependencyFenceSkips([refused], ['schema-consumer.ts', 'root-unrelated.ts'], roster)).toEqual([
+      {
+        scope: 'superproject',
+        path: 'schema-consumer.ts',
+        reason: 'migration-dependency-fence',
+        detail:
+          'deferred because a reservation-blocked migration could not be attributed; holding this path until its dependency is known',
+        blockingMigrations: ['libs/sub/libs/db/sql/999-unreserved-migration.sql'],
+        blockingAgents: [],
+        blockingWorkItems: [],
+        unattributedMigrations: ['libs/sub/libs/db/sql/999-unreserved-migration.sql'],
+      },
+      {
+        scope: 'superproject',
+        path: 'root-unrelated.ts',
+        reason: 'migration-dependency-fence',
+        detail:
+          'deferred because a reservation-blocked migration could not be attributed; holding this path until its dependency is known',
+        blockingMigrations: ['libs/sub/libs/db/sql/999-unreserved-migration.sql'],
+        blockingAgents: [],
+        blockingWorkItems: [],
+        unattributedMigrations: ['libs/sub/libs/db/sql/999-unreserved-migration.sql'],
+      },
+    ]);
+  });
+
+  // EI-25203408414398603: the edit ledger records a nested repo's edit relative to THAT repo with
+  // repo=NULL ('libs/db/sql/NNNN-x.sql', never '<scope>/libs/db/sql/…'). Matching only the
+  // scope-qualified form left every real child migration unattributed, which deferred EVERY dirty
+  // superproject path — one stray migration froze the whole superproject for 30+ minutes.
+  it('attributes a child migration recorded nested-repo-relative, the shape the edit ledger writes', () => {
+    const roster: AttributionRosterEntry[] = [
+      { agent: 'su-migration', files: ['libs/db/sql/999-unreserved-migration.sql'], workItems: [] },
+      { agent: 'su-migration', files: ['schema-consumer.ts'], workItems: [] },
+      { agent: 'su-unrelated', files: ['root-unrelated.ts'], workItems: ['WI-other'] },
+    ];
+
+    expect(migrationDependencyFenceSkips([refused], ['schema-consumer.ts', 'root-unrelated.ts'], roster)).toEqual([
+      {
+        scope: 'superproject',
+        path: 'schema-consumer.ts',
+        reason: 'migration-dependency-fence',
+        detail:
+          'deferred because this path shares work-item attribution with a reservation-blocked migration at ' +
+          'libs/sub/libs/db/sql/999-unreserved-migration.sql',
+        blockingMigrations: ['libs/sub/libs/db/sql/999-unreserved-migration.sql'],
+        blockingAgents: ['su-migration'],
+        blockingWorkItems: [],
+      },
+    ]);
+  });
+
+  it('normalizes absolute roster paths against superRoot, like every other attribution caller', () => {
+    const roster: AttributionRosterEntry[] = [
+      {
+        agent: 'su-migration',
+        files: ['/repo/libs/sub/libs/db/sql/999-unreserved-migration.sql', '/repo/schema-consumer.ts'],
+        workItems: ['WI-migration'],
+      },
+      { agent: 'su-unrelated', files: ['/repo/root-unrelated.ts'], workItems: ['WI-other'] },
+    ];
+
+    expect(
+      migrationDependencyFenceSkips([refused], ['schema-consumer.ts', 'root-unrelated.ts'], roster, '/repo').map(
+        (s) => s.path,
+      ),
+    ).toEqual(['schema-consumer.ts']);
+    // Without superRoot the absolute entries cannot match, so the fence fails closed on everything.
+    expect(
+      migrationDependencyFenceSkips([refused], ['schema-consumer.ts', 'root-unrelated.ts'], roster).map((s) => s.path),
+    ).toEqual(['schema-consumer.ts', 'root-unrelated.ts']);
+  });
+});
+
+describe('EI-24827889655898454 git-sync TSX install boundary', () => {
+  it('holds all three TSX generator launches behind install:safe and releases readers afterward', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'git-sync-install-boundary-repo-'));
+    const lockRoot = mkdtempSync(join(tmpdir(), 'git-sync-install-boundary-locks-'));
+    const savedLockRoot = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = lockRoot;
+
+    let releaseWriter = () => {};
+    let signalWriterHeld = () => {};
+    const writerHeld = new Promise<void>((resolve) => { signalWriterHeld = resolve; });
+    const writerRelease = new Promise<void>((resolve) => { releaseWriter = resolve; });
+    const lockName = installLockNameForRoot(repoRoot);
+    const writer = withFsMutex(lockName, async () => {
+      signalWriterHeld();
+      await writerRelease;
+    }, { retryMs: 1 });
+
+    try {
+      await writerHeld;
+      let signalReadersWaiting = () => {};
+      const readersWaiting = new Promise<void>((resolve) => { signalReadersWaiting = resolve; });
+      let waitingCount = 0;
+      const acquire = (root: string) => acquireInstallBoundaryLease(root, {
+        env: {},
+        timeoutMs: 10_000,
+        readLease: (name, fn, options) => withFsMutexRead(name, fn, {
+          ...options,
+          retryMs: 1,
+          onWaiting: () => {
+            waitingCount += 1;
+            if (waitingCount === 3) signalReadersWaiting();
+          },
+        }),
+      });
+      let signalSpawnStarted = () => {};
+      const spawnStarted = new Promise<void>((resolve) => { signalSpawnStarted = resolve; });
+      const spawnChild = vi.fn(() => {
+        signalSpawnStarted();
+        const child = Object.assign(new EventEmitter(), {
+          stdout: null,
+          stderr: null,
+          kill: vi.fn(),
+        });
+        queueMicrotask(() => child.emit('close', 0));
+        return child as unknown as ChildProcess;
+      }) as unknown as typeof spawn;
+      const dependencies = { acquire, spawnChild };
+      const running = [
+        defaultRunToolCatalogGenerator(repoRoot, dependencies),
+        defaultRunGeneratedDeclarationsGenerator(repoRoot, dependencies),
+        defaultRunToolRoutingCheck(repoRoot, dependencies),
+      ];
+      const observed = await Promise.race([
+        readersWaiting.then(() => 'waiting-on-writer'),
+        spawnStarted.then(() => 'spawn-started'),
+        Promise.all(running).then(() => 'finished'),
+      ]);
+
+      expect(observed).toBe('waiting-on-writer');
+      expect(spawnChild).not.toHaveBeenCalled();
+      releaseWriter();
+      await writer;
+      const results = await Promise.all(running);
+      expect(results.map((result) => result.code)).toEqual([0, 0, 0]);
+      expect(spawnChild).toHaveBeenCalledTimes(3);
+
+      let installRan = false;
+      await withFsMutex(lockName, async () => { installRan = true; }, { retryMs: 1 });
+      expect(installRan).toBe(true);
+    } finally {
+      releaseWriter();
+      await writer;
+      if (savedLockRoot === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+      else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = savedLockRoot;
+      rmSync(lockRoot, { recursive: true, force: true });
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses launch when the install boundary times out', async () => {
+    const lease: InstallBoundaryLease = {
+      outcome: 'timed-out',
+      waitedMs: 10_000,
+      lockName: 'npm-install-test',
+      detail: 'install writer remains active',
+      release: vi.fn(),
+    };
+    const spawnChild = vi.fn() as unknown as typeof spawn;
+
+    const result = await defaultRunToolCatalogGenerator('/unused', {
+      acquire: async () => lease,
+      spawnChild,
+    });
+    expect(result.code).toBe(-1);
+    expect(result.stderr).toContain('install:safe boundary was timed-out');
+    expect(spawnChild).not.toHaveBeenCalled();
+    expect(lease.release).not.toHaveBeenCalled();
+  });
+});
 
 describe('expandAtomicLiveLockExclusions — staggered edit-lock protection', () => {
   it('expands a lock without goal attribution to every dirty path in its nearest Cargo package', async () => {
@@ -181,6 +428,7 @@ describe('expandAtomicLiveLockExclusions — staggered edit-lock protection', ()
         goalRef: 'WI-1834529',
         paths: ['source.test.ts', 'source.ts'],
       }],
+      generatedDeclarationPairs: [],
     });
   });
 
@@ -196,7 +444,31 @@ describe('expandAtomicLiveLockExclusions — staggered edit-lock protection', ()
         [{ path: 'source.ts', owner: 'su-peer', intent: 'editing source' }],
         attribution,
       ),
-    ).toEqual({ paths: ['source.ts'], groups: [] });
+    ).toEqual({ paths: ['source.ts'], groups: [], generatedDeclarationPairs: [] });
+  });
+
+  it('expands a live lock over both enrolled generated declaration paths only', () => {
+    const source = 'scripts/proc-guard.mjs';
+    const artifact = 'scripts/proc-guard.d.mts';
+    const paths = [source, artifact];
+
+    expect(expandGeneratedDeclarationPairHolds([source], paths)).toEqual({
+      paths: [artifact, source],
+      pairs: [{ source, artifact, heldPath: source }],
+    });
+    expect(expandGeneratedDeclarationPairHolds([source], [source])).toEqual({ paths: [], pairs: [] });
+    expect(
+      expandAtomicLiveLockExclusions(
+        paths,
+        [{ path: source, owner: 'su-peer', intent: 'editing declaration source' }],
+        undefined,
+        paths,
+      ),
+    ).toEqual({
+      paths: [artifact, source],
+      groups: [],
+      generatedDeclarationPairs: [{ source, artifact, heldPath: source }],
+    });
   });
 
   it('requires both the lock owner and work-item to match before expanding a cohort', () => {
@@ -221,6 +493,7 @@ describe('expandAtomicLiveLockExclusions — staggered edit-lock protection', ()
         goalRef: 'WI-atomic',
         paths: ['source.test.ts', 'source.ts'],
       }],
+      generatedDeclarationPairs: [],
     });
   });
 });
@@ -240,6 +513,25 @@ describe('summarizeFetchFailure — a failed fetch keeps its reason (WI-10004103
     expect(summarizeFetchFailure("From x\n  fatal:   unable to access 'https://github.com/o/r/':  Could not resolve host\n\n")).toBe(
       "fatal: unable to access 'https://github.com/o/r/': Could not resolve host",
     );
+  });
+
+  it('keeps a concrete SSH cause instead of Git’s generic repository-exists footer', () => {
+    const stderr = [
+      'git@github.com: Permission denied (publickey).',
+      'fatal: Could not read from remote repository.',
+      'Please make sure you have the correct access rights',
+      'and the repository exists.',
+    ].join('\n');
+    expect(summarizeFetchFailure(stderr)).toBe('git@github.com: Permission denied (publickey).');
+  });
+
+  it('falls back to Git’s generic fatal line when the footer has no concrete cause', () => {
+    const stderr = [
+      'fatal: Could not read from remote repository.',
+      'Please make sure you have the correct access rights',
+      'and the repository exists.',
+    ].join('\n');
+    expect(summarizeFetchFailure(stderr)).toBe('fatal: Could not read from remote repository.');
   });
 
   it('is empty for empty stderr and caps a runaway line', () => {
@@ -479,7 +771,69 @@ describe('EI-21444216858331991 generated declarations pre-commit regeneration', 
     expect(result).toEqual({ status: 'regenerated', atomicPaths: [source, artifact] });
   });
 
-  it('fails closed when the writer cannot produce a coherent projection', async () => {
+  it('WI-6554700010010659: a failed emit defers the declaration surface plus the dirty files tsc names', async () => {
+    const source = 'apps/operator/scripts/psu-launcher.mjs';
+    const artifact = 'apps/operator/scripts/psu-launcher.d.mts';
+    const culprit = 'packages/operator-core/lib/verifier-source.ts';
+    const runGit: RunGit = async (args) => {
+      if (args[0] === 'status') return { code: 0, stdout: ` M ${source}\0 M ${culprit}\0 M docs/other.md\0`, stderr: '' };
+      if (args[0] === 'ls-files') {
+        return {
+          code: 0,
+          stdout: `scripts/gen-declarations.ts\ntsconfig.declarations.json\n${source}\n${artifact}\n`,
+          stderr: '',
+        };
+      }
+      throw new Error(`unexpected git call: ${args.join(' ')}`);
+    };
+
+    const result = await regenerateGeneratedDeclarationsBeforeCommit(
+      { runGit, repoPath: '/fake', log: () => {} },
+      async () => ({
+        code: 1,
+        stdout: '',
+        stderr:
+          `tsc failed:\n/fake/${culprit}(7,37): error TS5097: An import path can only end with a '.ts' extension.\n` +
+          "scripts/not-dirty.ts(1,1): error TS2304: Cannot find name 'y'.\n",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      status: 'deferred',
+      atomicPaths: [artifact, source, culprit, 'scripts/gen-declarations.ts', 'tsconfig.declarations.json'].sort(),
+      compilerErrors: [
+        {
+          path: culprit,
+          diagnostic: `${culprit}(7,37): error TS5097: An import path can only end with a '.ts' extension.`,
+        },
+      ],
+    });
+  });
+
+  it('WI-6554700010010659: declarationCompileErrors parses tsc diagnostics into repo-relative files', () => {
+    const output = [
+      'tsc failed:',
+      'a/b.ts(1,2): error TS1000: first',
+      '  /repo/a/b.ts(3,4): error TS1001: second',
+      '/repo/./c.ts(5,6): error TS1002: absolute inside root',
+      '/elsewhere/d.ts(1,1): error TS1003: outside root',
+      '../up.ts(1,1): error TS1004: escapes root',
+      'a/b.ts(9,9): warning-like text that is not an error line',
+      'Error: Command failed',
+    ].join('\n');
+
+    expect(declarationCompileErrors(output, '/repo')).toEqual([
+      { path: 'a/b.ts', diagnostic: 'a/b.ts(1,2): error TS1000: first\na/b.ts(3,4): error TS1001: second' },
+      { path: 'c.ts', diagnostic: 'c.ts(5,6): error TS1002: absolute inside root' },
+    ]);
+    expect(declarationCompileOffenders(declarationCompileErrors(output, '/repo/'))[0]).toMatchObject({
+      file: 'a/b.ts',
+      detectorKey: 'declarations-tsc',
+      fixerRole: 'content-fixer',
+    });
+  });
+
+  it('defers the whole declaration surface when the writer fails without naming a file', async () => {
     const source = 'apps/operator/scripts/psu-launcher.mjs';
     const artifact = 'apps/operator/scripts/psu-launcher.d.mts';
     const runGit: RunGit = async (args) => {
@@ -501,11 +855,157 @@ describe('EI-21444216858331991 generated declarations pre-commit regeneration', 
     );
 
     expect(result).toEqual({
-      status: 'blocked',
-      atomicPaths: [source, artifact],
+      status: 'deferred',
+      atomicPaths: [artifact, source, 'scripts/gen-declarations.ts', 'tsconfig.declarations.json'].sort(),
       detail: 'declaration emit failed',
+      compilerErrors: [],
     });
-    expect(logs.join('\n')).toMatch(/deferring the superproject commit/);
+    expect(logs.join('\n')).toMatch(/declaration regeneration failed \(declaration emit failed\) — deferring 4/);
+  });
+});
+
+describe('WI-6554700010011061 declarations program-graph sources trigger the commit-time emit', () => {
+  const inGraph = 'packages/operator-core/lib/verifier-source.ts';
+  const outOfGraph = 'packages/operator-core/lib/unrelated.ts';
+  const source = 'apps/operator/scripts/psu-launcher.mjs';
+  const artifact = 'apps/operator/scripts/psu-launcher.d.mts';
+  const inventory = `scripts/gen-declarations.ts\ntsconfig.declarations.json\n${source}\n${artifact}\n`;
+
+  /** A git double whose status is `dirty` before the emit and `after` once it ran; it records every call. */
+  function declarationGit(dirty: string[], after: string[] = dirty) {
+    const calls: string[] = [];
+    let statusReads = 0;
+    const runGit: RunGit = async (args) => {
+      calls.push(args[0]);
+      if (args[0] === 'status') {
+        statusReads += 1;
+        const paths = statusReads === 1 ? dirty : after;
+        return { code: 0, stdout: paths.map((path) => ` M ${path}\0`).join(''), stderr: '' };
+      }
+      if (args[0] === 'ls-files') return { code: 0, stdout: inventory, stderr: '' };
+      throw new Error(`unexpected git call: ${args.join(' ')}`);
+    };
+    return { runGit, calls };
+  }
+
+  it('classifies only source files outside node_modules as graph candidates', () => {
+    expect(isDeclarationsGraphCandidate(inGraph)).toBe(true);
+    expect(isDeclarationsGraphCandidate('scripts/lib/x.mjs')).toBe(true);
+    expect(isDeclarationsGraphCandidate('libs/generic/deployment-driver/src/a.mts')).toBe(true);
+    expect(isDeclarationsGraphCandidate('docs/README.md')).toBe(false);
+    expect(isDeclarationsGraphCandidate('node_modules/pkg/index.ts')).toBe(false);
+    expect(isDeclarationsGraphCandidate('../sibling/a.ts')).toBe(false);
+  });
+
+  it('runs the emit for a dirty in-graph TS file when no enrolled input is dirty', async () => {
+    const { runGit } = declarationGit([inGraph, 'docs/other.md']);
+    const runGenerator = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const listGraphMembers = vi.fn(async (_repo: string, candidates: readonly string[]) =>
+      candidates.filter((path) => path === inGraph),
+    );
+    const logs: string[] = [];
+
+    const result = await regenerateGeneratedDeclarationsBeforeCommit(
+      { runGit, repoPath: '/fake', log: (message) => logs.push(message) },
+      runGenerator,
+      listGraphMembers,
+    );
+
+    expect(listGraphMembers).toHaveBeenCalledExactlyOnceWith('/fake', [inGraph]);
+    expect(runGenerator).toHaveBeenCalledOnce();
+    // The source is not forced into the catch-all: no projection changed here.
+    expect(result).toEqual({ status: 'regenerated', atomicPaths: [] });
+    expect(logs.join('\n')).toMatch(/0 dirty pair\(s\), 1 dirty program-graph source\(s\)/);
+  });
+
+  it('a regenerated projection is still committed atomically with its enrolled source', async () => {
+    const { runGit } = declarationGit([inGraph], [inGraph, artifact]);
+    const result = await regenerateGeneratedDeclarationsBeforeCommit(
+      { runGit, repoPath: '/fake', log: () => {} },
+      async () => ({ code: 0, stdout: '', stderr: '' }),
+      async () => [inGraph],
+    );
+    expect(result).toEqual({ status: 'regenerated', atomicPaths: [source, artifact] });
+  });
+
+  it('a dirty TS file outside the graph runs nothing and skips the inventory read', async () => {
+    const { runGit, calls } = declarationGit([outOfGraph]);
+    const runGenerator = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+
+    const result = await regenerateGeneratedDeclarationsBeforeCommit(
+      { runGit, repoPath: '/fake', log: () => {} },
+      runGenerator,
+      async () => [],
+    );
+
+    expect(result).toEqual({ status: 'not-needed', atomicPaths: [] });
+    expect(runGenerator).not.toHaveBeenCalled();
+    expect(calls).toEqual(['status']);
+  });
+
+  it('a repository without the graph helper behaves exactly as before', async () => {
+    const { runGit, calls } = declarationGit([inGraph]);
+    const runGenerator = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+
+    const result = await regenerateGeneratedDeclarationsBeforeCommit(
+      { runGit, repoPath: '/fake', log: () => {} },
+      runGenerator,
+      async () => null,
+    );
+
+    expect(result).toEqual({ status: 'not-needed', atomicPaths: [] });
+    expect(runGenerator).not.toHaveBeenCalled();
+    expect(calls).toEqual(['status']);
+    // The real default resolves null when the helper is absent, without spawning.
+    await expect(defaultListDeclarationsGraphMembers('/nonexistent-wi11061-repo', [inGraph])).resolves.toBeNull();
+  });
+
+  it('a failed graph lookup is fail-soft and says so', async () => {
+    const { runGit } = declarationGit([inGraph]);
+    const runGenerator = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const logs: string[] = [];
+
+    const result = await regenerateGeneratedDeclarationsBeforeCommit(
+      { runGit, repoPath: '/fake', log: (message) => logs.push(message) },
+      runGenerator,
+      async () => {
+        throw new Error('tsc --listFilesOnly exited 1');
+      },
+    );
+
+    expect(result).toEqual({ status: 'not-needed', atomicPaths: [] });
+    expect(runGenerator).not.toHaveBeenCalled();
+    expect(logs.join('\n')).toMatch(/declarations program-graph lookup failed \(Error: tsc --listFilesOnly exited 1\)/);
+  });
+
+  it('a failing emit holds back the in-graph file tsc names while the rest commits', async () => {
+    const { runGit } = declarationGit([inGraph, 'docs/other.md']);
+    const result = await regenerateGeneratedDeclarationsBeforeCommit(
+      { runGit, repoPath: '/fake', log: () => {} },
+      async () => ({
+        code: 1,
+        stdout: '',
+        stderr: `/fake/${inGraph}(7,37): error TS5097: An import path can only end with a '.ts' extension.\n`,
+      }),
+      async () => [inGraph],
+    );
+    expect(result).toMatchObject({
+      status: 'deferred',
+      atomicPaths: [artifact, source, inGraph, 'scripts/gen-declarations.ts', 'tsconfig.declarations.json'].sort(),
+      compilerErrors: [{ path: inGraph }],
+    });
+  });
+
+  it('an enrolled pair still triggers the emit when the graph lookup is unavailable', async () => {
+    const { runGit } = declarationGit([source, inGraph], [source, artifact, inGraph]);
+    const runGenerator = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const result = await regenerateGeneratedDeclarationsBeforeCommit(
+      { runGit, repoPath: '/fake', log: () => {} },
+      runGenerator,
+      async () => null,
+    );
+    expect(runGenerator).toHaveBeenCalledOnce();
+    expect(result).toEqual({ status: 'regenerated', atomicPaths: [source, artifact] });
   });
 });
 
@@ -640,6 +1140,101 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(originLog()).toMatch(/auto-commit test/);
     // working tree is clean after sync
     expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
+  it('EI-25358130293460599: reclaims a stale index.lock during the full catch-all publish path', async () => {
+    writeFileSync(join(repo, 'stale-lock-recovery.txt'), 'recovered\n');
+    const lockPath = join(repo, '.git', 'index.lock');
+    writeFileSync(lockPath, 'orphaned test lock');
+    const staleAt = new Date(Date.now() - STALE_INDEX_LOCK_MS - 1_000);
+    utimesSync(lockPath, staleAt, staleAt);
+
+    const logs: string[] = [];
+    let catchAllRefreshAttempts = 0;
+    const runGit: RunGit = async (args, cwd, options) => {
+      if (args[0] === 'reset' && args.some((arg) => arg.startsWith('--pathspec-from-file='))) {
+        catchAllRefreshAttempts++;
+      }
+      return directRunGit(args, cwd, options);
+    };
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      runGit,
+      config: cfg,
+      log: (message) => logs.push(message),
+    });
+
+    expect(out.status).toBe('synced');
+    expect(catchAllRefreshAttempts).toBe(2); // blocked once, then retried after stale-lock cleanup
+    expect(existsSync(lockPath)).toBe(false);
+    expect(logs.join('\n')).toContain('cleared STALE index.lock');
+    expect(originLog()).toMatch(/auto-commit test/);
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
+  // WI-10008133: a freshly created EMPTY remote used to fail every tick with
+  // "couldn't find remote ref" + "cannot reconcile", so its first publish never landed.
+  it('publishes HEAD as the first commit of an EMPTY remote (WI-10008133)', async () => {
+    const emptyDir = join(root, 'empty.git');
+    git(root, 'init', '--bare', '-b', 'main', emptyDir);
+    git(repo, 'remote', 'set-url', 'origin', emptyDir);
+    writeFileSync(join(repo, 'first.txt'), 'first publish\n');
+    const out = await runGitSync('test', { repoPath: repo, config: cfg });
+    expect(out.status).toBe('synced');
+    if (out.status === 'synced') expect(out.pushed).toContain('superproject');
+    expect(git(emptyDir, 'rev-parse', 'refs/heads/main')).toBe(git(repo, 'rev-parse', 'HEAD'));
+    // the next tick reconciles normally against the now-populated remote
+    const again = await runGitSync('test', { repoPath: repo, config: cfg });
+    expect(again.status).not.toBe('error');
+  });
+
+  it('still fails loudly when the remote has OTHER heads but not the branch (WI-10008133)', async () => {
+    const populatedDir = join(root, 'populated.git');
+    git(root, 'init', '--bare', '-b', 'main', populatedDir);
+    git(repo, 'push', populatedDir, 'HEAD:refs/heads/other');
+    git(repo, 'remote', 'set-url', 'origin', populatedDir);
+    writeFileSync(join(repo, 'local.txt'), 'x\n');
+    const out = await runGitSync('test', { repoPath: repo, config: cfg });
+    expect(out.status).toBe('error');
+    if (out.status === 'error') expect(out.errors.map(e => e.message).join('\n')).toMatch(/cannot reconcile/);
+    expect(git(populatedDir, 'for-each-ref', '--format=%(refname)', 'refs/heads/')).toBe('refs/heads/other');
+  });
+
+  it('includes harness identity in equivalent superproject guard logs across hives', async () => {
+    const secondRepo = join(root, 'repo-second-hive');
+    git(root, 'clone', originDir, secondRepo);
+    configUser(secondRepo);
+
+    for (const checkout of [repo, secondRepo]) {
+      writeFileSync(join(checkout, 'package.json'), '{"name":"hive-app"}\n');
+      writeFileSync(join(checkout, 'package-lock.json'), '{"name":"hive-app","lockfileVersion":3}\n');
+      writeFileSync(join(checkout, 'unrelated.txt'), 'ordinary work\n');
+    }
+
+    const papercuspLogs: string[] = [];
+    const phoneAppLogs: string[] = [];
+    const papercusp = await runGitSync('papercusp', {
+      repoPath: repo,
+      config: cfg,
+      excludePaths: ['package.json'],
+      log: (message) => papercuspLogs.push(message),
+    });
+    const phoneApp = await runGitSync('phone-app', {
+      repoPath: secondRepo,
+      config: cfg,
+      excludePaths: ['package.json'],
+      log: (message) => phoneAppLogs.push(message),
+    });
+
+    expect(papercusp.status).toBe('synced');
+    expect(phoneApp.status).toBe('synced');
+    expect(papercuspLogs.join('\n')).toContain('[git-sync] papercusp/superproject: keeping npm manifests atomic');
+    expect(phoneAppLogs.join('\n')).toContain('[git-sync] phone-app/superproject: keeping npm manifests atomic');
+    expect(git(repo, 'status', '--porcelain', '--', 'package.json', 'package-lock.json')).toMatch(/package\.json/);
+    expect(git(secondRepo, 'status', '--porcelain', '--', 'package.json', 'package-lock.json')).toMatch(/package\.json/);
+    expect(git(originDir, 'show', 'main:unrelated.txt')).toBe('ordinary work');
+    expect(() => git(originDir, 'show', 'main:package.json')).toThrow();
+    expect(() => git(originDir, 'show', 'main:package-lock.json')).toThrow();
   });
 
   it('reports a sidecar admission refusal during merge without treating it as a Git conflict or aborting an unstarted merge', async () => {
@@ -890,14 +1485,15 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(existsSync(lockPath)).toBe(true);
   });
 
-  it('WI-10001350: refuses an unreserved migration before staging or committing it', async () => {
+  it('WI-10001350: quarantines an unreserved migration while committing unrelated files', async () => {
     const migration = 'libs/db/sql/999-unreserved-migration.sql';
     mkdirSync(join(repo, 'libs/db/sql'), { recursive: true });
     writeFileSync(join(repo, migration), '-- intentionally unreserved\n');
     writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
-    const checker = vi.fn(async (_dirtyPaths: readonly string[]) => {
-      throw new Error('[migration-reservation-guard] 999-unreserved-migration.sql has no reservation row');
-    });
+    const checker = vi.fn(async (_dirtyPaths: readonly string[]) => [{
+      path: migration,
+      reason: '[migration-reservation-guard] 999-unreserved-migration.sql has no reservation row',
+    }]);
     const logs: string[] = [];
 
     const out = await runGitSync('test', {
@@ -909,13 +1505,49 @@ describe('runGitSync (real git, no submodule)', () => {
 
     expect(checker).toHaveBeenCalledOnce();
     expect(checker.mock.calls[0]?.[0]).toEqual([migration]);
-    if (out.status !== 'error') throw new Error(`expected error outcome, got ${out.status}`);
-    expect(out.errors?.[0]?.message).toContain('migration reservation preflight failed');
+    expect(out.status, JSON.stringify({ out, logs })).toBe('synced');
+    expect(out.skippedPaths).toContainEqual({
+      scope: 'superproject',
+      path: migration,
+      reason: 'migration-reservation',
+      detail: '[migration-reservation-guard] 999-unreserved-migration.sql has no reservation row',
+    });
     expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain(migration);
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
     expect(git(repo, 'diff', '--cached', '--name-only')).toBe('');
-    expect(git(repo, 'status', '--porcelain', '--', migration, 'normal.txt')).toMatch(/normal\.txt/);
-    expect(git(repo, 'status', '--porcelain', '--', migration, 'normal.txt')).toMatch(/999-unreserved-migration\.sql/);
-    expect(logs.join('\n')).toContain('migration reservation preflight refused');
+    expect(git(repo, 'status', '--porcelain', '--', 'normal.txt')).toBe('');
+    expect(git(repo, 'status', '--porcelain', '--', migration)).toMatch(/999-unreserved-migration\.sql/);
+    expect(logs.join('\n')).toContain('deferring migration');
+  });
+
+  it('WI-10001350: reservation-check failure defers candidate migrations fail-closed and commits unrelated files', async () => {
+    const migration = 'libs/db/sql/999-unreadable-reservation.sql';
+    mkdirSync(join(repo, 'libs/db/sql'), { recursive: true });
+    writeFileSync(join(repo, migration), '-- reservation status is unavailable\n');
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    const logs: string[] = [];
+    const checker = vi.fn(async (_dirtyPaths: readonly string[]) => {
+      throw new Error('reservation ledger unavailable');
+    });
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      migrationReservationChecker: checker,
+      log: (message) => logs.push(message),
+    });
+
+    expect(out.status, JSON.stringify({ out, logs })).toBe('synced');
+    expect(out.skippedPaths).toContainEqual({
+      scope: 'superproject',
+      path: migration,
+      reason: 'migration-reservation',
+      detail: 'reservation check failed; deferring fail-closed: reservation ledger unavailable',
+    });
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain(migration);
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
+    expect(git(repo, 'status', '--porcelain', '--', migration)).toMatch(/999-unreadable-reservation\.sql/);
+    expect(git(repo, 'status', '--porcelain', '--', 'normal.txt')).toBe('');
   });
 
   it('WI-10001350: rechecks staged migrations and selectively unstages a reservation race', async () => {
@@ -927,8 +1559,9 @@ describe('runGitSync (real git, no submodule)', () => {
     const checker = vi.fn(async (_dirtyPaths: readonly string[]) => {
       checks += 1;
       if (checks === 2) {
-        throw new Error('[migration-reservation-guard] 999-raced-migration.sql reservation disappeared');
+        return [{ path: migration, reason: '[migration-reservation-guard] 999-raced-migration.sql reservation disappeared' }];
       }
+      return [];
     });
     const logs: string[] = [];
 
@@ -942,13 +1575,19 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(checker).toHaveBeenCalledTimes(2);
     expect(checker.mock.calls[0]?.[0]).toEqual([migration]);
     expect(checker.mock.calls[1]?.[0]).toEqual([migration]);
-    if (out.status !== 'error') throw new Error(`expected error outcome, got ${out.status}`);
-    expect(out.errors?.[0]?.message).toContain('migration reservation check after staging failed');
+    expect(out.status).toBe('synced');
+    expect(out.skippedPaths).toContainEqual({
+      scope: 'superproject',
+      path: migration,
+      reason: 'migration-reservation',
+      detail: '[migration-reservation-guard] 999-raced-migration.sql reservation disappeared',
+    });
     expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain(migration);
-    expect(git(repo, 'diff', '--cached', '--name-only')).toBe('normal.txt');
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
+    expect(git(repo, 'diff', '--cached', '--name-only')).toBe('');
     expect(git(repo, 'status', '--porcelain', '--', migration)).toMatch(/999-raced-migration\.sql/);
-    expect(git(repo, 'status', '--porcelain', '--', 'normal.txt')).toMatch(/normal\.txt/);
-    expect(logs.join('\n')).toContain('post-stage migration reservation check refused');
+    expect(git(repo, 'status', '--porcelain', '--', 'normal.txt')).toBe('');
+    expect(logs.join('\n')).toContain('deferring migration');
   });
 
   it('EI-22435583452728403: refreshes live locks at the commit seam before staging', async () => {
@@ -979,6 +1618,152 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
     expect(readFileSync(join(repo, 'file.txt'), 'utf8')).toBe('deliberately-protected mutation\n');
     expect(git(repo, 'status', '--porcelain', '--', 'file.txt')).toMatch(/file\.txt/);
+  });
+
+  it('WI-6554700010009254: a late source lock unstages its generated declaration pair together', async () => {
+    const pairRepo = mkdtempSync(join(tmpdir(), 'git-sync-declaration-pair-lock-'));
+    const source = 'scripts/proc-guard.mjs';
+    const artifact = 'scripts/proc-guard.d.mts';
+    try {
+      execFileSync('git', ['init', '-q', pairRepo], { encoding: 'utf8' });
+      configUser(pairRepo);
+      mkdirSync(join(pairRepo, 'scripts'), { recursive: true });
+      writeFileSync(join(pairRepo, source), 'export const value = 1;\n');
+      writeFileSync(join(pairRepo, artifact), 'export declare const value: 1;\n');
+      git(pairRepo, 'add', source, artifact);
+      git(pairRepo, 'commit', '--no-verify', '-m', 'seed generated declaration pair');
+
+      writeFileSync(join(pairRepo, source), 'export const value = 2;\n');
+      writeFileSync(join(pairRepo, artifact), 'export declare const value: 2;\n');
+      git(pairRepo, 'add', source, artifact);
+      const result = await guardStagedIndexBeforeCommit({
+        runGit: directRunGit,
+        repoPath: pairRepo,
+        scope: 'superproject',
+        refreshLiveLockHoldings: async () => [{
+          path: source,
+          owner: 'su-peer',
+          intent: 'editing declaration source',
+        }],
+        generatedDeclarationPaths: [source, artifact],
+        readText: async () => null,
+        log: () => {},
+      });
+
+      if (!result.ok) throw new Error(result.error);
+      expect(result.unstaged.sort()).toEqual([artifact, source].sort());
+      expect(git(pairRepo, 'diff', '--cached', '--name-only')).toBe('');
+      expect(git(pairRepo, 'diff', '--name-only').split('\n').sort()).toEqual([artifact, source].sort());
+    } finally {
+      rmSync(pairRepo, { recursive: true, force: true });
+    }
+  });
+
+  it('WI-10006725: a guard-held path a peer re-stages before the catch-all commit is not committed', async () => {
+    writeFileSync(join(repo, 'file.txt'), 'held by a late lock\n');
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    let census = 0;
+    // The pre-stage census is clear, so `add -A` stages file.txt; the post-stage census
+    // reports a late lock, so the guard holds file.txt back from this commit.
+    const refreshLiveLockHoldings = vi.fn(async () => {
+      census += 1;
+      return census === 1 ? [] : [{ path: 'file.txt', owner: 'su-peer', intent: 'late lock' }];
+    });
+    // A peer `git add`s the held path into the SHARED index after the guard, right before
+    // the catch-all records its commit (`write-tree` privately, or `git commit` on the
+    // shared index — the pre-WI-10006725 path, which recorded the peer's entry).
+    let peerStaged = false;
+    const runGit: RunGit = async (args, cwd, options) => {
+      if (!peerStaged && census >= 2 && (args.includes('write-tree') || args.includes('commit'))) {
+        peerStaged = true;
+        git(repo, 'add', 'file.txt');
+      }
+      return directRunGit(args, cwd, options);
+    };
+
+    const out = await runGitSync('test', { repoPath: repo, config: cfg, refreshLiveLockHoldings, runGit });
+
+    expect(peerStaged).toBe(true);
+    expect(out.status).toBe('synced');
+    expect(out.skippedPaths).toContainEqual({ scope: 'superproject', path: 'file.txt', owner: 'su-peer', intent: 'late lock' });
+    expect(git(originDir, 'show', 'main:file.txt')).toBe('line1');
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
+    // The peer's staged entry is left as the peer wrote it; the committed path's shared
+    // entry was refreshed to the commit, so it reads clean.
+    expect(git(repo, 'diff', '--cached', '--name-only')).toBe('file.txt');
+    expect(git(repo, 'status', '--porcelain', '--', 'normal.txt')).toBe('');
+  });
+
+  it('WI-10006725: a catch-all whose base moved before publish is not published and errors', async () => {
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    let moved = false;
+    const runGit: RunGit = async (args, cwd, options) => {
+      if (!moved && args[0] === 'update-ref' && args.includes('git-sync: catch-all commit')) {
+        moved = true;
+        // A second writer advances HEAD between the catch-all's commit-tree and its CAS.
+        const peer = git(repo, 'commit-tree', 'HEAD^{tree}', '-p', 'HEAD', '-m', 'peer moved HEAD');
+        git(repo, 'update-ref', 'HEAD', peer);
+      }
+      return directRunGit(args, cwd, options);
+    };
+
+    const out = await runGitSync('test', { repoPath: repo, config: cfg, runGit });
+
+    expect(moved).toBe(true);
+    expect(out.status).toBe('error');
+    expect(JSON.stringify(out)).toContain('update-ref CAS refused');
+    expect(git(repo, 'log', '-1', '--format=%s')).toBe('peer moved HEAD');
+    expect(git(repo, 'status', '--porcelain', '--', 'normal.txt')).toMatch(/normal\.txt/);
+  });
+
+  it('WI-10006725: an edit whose stat the shared index caches racily is still committed', async () => {
+    // Git re-hashes an entry whose mtime is not older than the index file's own mtime (a
+    // "racy" entry). A private index copied with a fresh mtime would trust that cached stat,
+    // so a same-size edit would never stage. checkStat=minimal + trustctime=false reduce the
+    // stat check to mtime seconds and size, which makes the race deterministic here.
+    git(repo, 'config', 'core.checkStat', 'minimal');
+    git(repo, 'config', 'core.trustctime', 'false');
+    const file = join(repo, 'racy.txt');
+    const second = Math.floor(Date.now() / 1000) - 60;
+    writeFileSync(file, 'version 1\n');
+    utimesSync(file, second, second);
+    git(repo, 'add', 'racy.txt');
+    git(repo, 'commit', '--no-verify', '-m', 'racy seed');
+    git(repo, 'push', 'origin', 'main');
+    // Same size and mtime, different bytes; the shared index is stamped in the same second.
+    writeFileSync(file, 'version 2\n');
+    utimesSync(file, second, second);
+    utimesSync(join(repo, '.git', 'index'), second, second);
+    // Calibration: the shared index itself sees the edit (read without rewriting the index).
+    expect(git(repo, '--no-optional-locks', 'status', '--porcelain', '--', 'racy.txt')).toMatch(/racy\.txt/);
+
+    const out = await runGitSync('test', { repoPath: repo, config: cfg });
+
+    expect(out.status).toBe('synced');
+    expect(git(originDir, 'show', 'main:racy.txt')).toBe('version 2');
+  });
+
+  it('WI-10006725: the catch-all still commits a force-added ignored file and an untracked ignored one stays out', async () => {
+    writeFileSync(join(repo, '.gitignore'), '*.log\n');
+    git(repo, 'add', '.gitignore');
+    git(repo, 'commit', '--no-verify', '-m', 'ignore logs');
+    git(repo, 'push', 'origin', 'main');
+    // An agent deliberately tracks one ignored file; `add -A` alone would never stage it.
+    writeFileSync(join(repo, 'forced.log'), 'deliberately tracked\n');
+    git(repo, 'add', '-f', 'forced.log');
+    writeFileSync(join(repo, 'other.log'), 'still ignored\n');
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    const logs: string[] = [];
+
+    const out = await runGitSync('test', { repoPath: repo, config: cfg, log: (m) => logs.push(m) });
+
+    expect(out.status).toBe('synced');
+    const originFiles = git(originDir, 'ls-tree', '-r', '--name-only', 'main');
+    expect(originFiles).toContain('forced.log');
+    expect(originFiles).not.toContain('other.log');
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+    expect(logs.join('\n')).toContain('carried 0 staged deletion(s) and 1 staged addition(s)');
   });
 
   it('EI-24356165312897992: commits released locks while retaining current locks and explicit exclusions', async () => {
@@ -1121,6 +1906,21 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(originDir, 'show', 'main:file.txt')).toBe('finished edit');
   });
 
+  it('reports a silent staged-deletion command failure without committing or pushing', async () => {
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    const runGit: RunGit = async (args, cwd) => args.includes('--diff-filter=D')
+      ? { code: -1, stdout: '', stderr: '' }
+      : directRunGit(args, cwd);
+    const out = await runGitSync('test', { repoPath: repo, config: cfg, runGit });
+    expect(out.status).toBe('error');
+    if (out.status !== 'error') throw new Error(`expected error outcome, got ${out.status}`);
+    expect(out.errors.map((error) => error.message).join('\n')).toContain(
+      'post-stage guard could not read staged deletions: git exited with code -1 without output',
+    );
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain('normal.txt');
+    expect(git(repo, 'diff', '--cached', '--name-only')).toContain('normal.txt');
+  });
+
   it('EI-24712906810240170: fails closed when the post-stage live-lock refresh rejects', async () => {
     writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
     let calls = 0;
@@ -1168,20 +1968,64 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(logs.join('\n')).toContain('pre-filtering ignored untracked protected path');
   });
 
-  it('EI-24369292425690265: checks protected paths with bounded concurrency', async () => {
+  it('WI-6554700010010584: batches verbatim protected paths into ONE real check-ignore call', async () => {
+    // Real git, not a fake: a fake answered `-z` happily while Git 2.43 rejects it
+    // without --stdin, which is how wholesale-deletion-guard's batch went dead.
+    writeFileSync(join(repo, '.gitignore'), 'ignored-*\nbuild/\n');
+    mkdirSync(join(repo, 'build'), { recursive: true });
+    mkdirSync(join(repo, 'real-dir'), { recursive: true });
+    symlinkSync('real-dir', join(repo, 'linked-dir'));
+    for (const file of ['ignored-plain', 'ignored-with space', 'ignored-"q"', 'ignored-ü', 'ignored-tracked', 'kept.txt', 'build/out.bin']) {
+      writeFileSync(join(repo, file), 'x\n');
+    }
+    git(repo, 'add', '-f', 'ignored-tracked');
+    const calls: string[][] = [];
+    const runGit: RunGit = async (args, cwd) => {
+      calls.push([...args]);
+      const result = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+      return { code: result.status ?? -1, stdout: String(result.stdout ?? ''), stderr: String(result.stderr ?? '') };
+    };
+    const verbatim = ['ignored-plain', 'ignored-with space', 'ignored-tracked', 'kept.txt', 'build/out.bin', 'ignored-missing'];
+    const quoted = ['ignored-"q"', 'ignored-ü'];
+    expect(verbatim.every(isVerbatimCheckIgnorePath)).toBe(true);
+    expect(quoted.some(isVerbatimCheckIgnorePath)).toBe(false);
+    const ignored = new Set(['ignored-plain', 'ignored-with space', 'build/out.bin', 'ignored-missing', ...quoted]);
+
+    const batched = await classifyProtectedPathExclusions(runGit, repo, [...verbatim, ...quoted]);
+
+    expect(batched.ignoredUntracked).toEqual(ignored); // a tracked match is never reported
+    expect(batched.beyondSymlink).toEqual(new Set());
+    expect(calls).toEqual([
+      ['check-ignore', '--', ...verbatim],
+      ...quoted.map((path) => ['check-ignore', '--', path]),
+    ]);
+
+    // One symlink descendant fails the WHOLE batch (exit 128): re-probe per path.
+    calls.length = 0;
+    const fallback = await classifyProtectedPathExclusions(runGit, repo, [...verbatim, 'linked-dir/x', ...quoted]);
+
+    expect(fallback.ignoredUntracked).toEqual(ignored);
+    expect(fallback.beyondSymlink).toEqual(new Set(['linked-dir/x']));
+    expect(calls[0]).toEqual(['check-ignore', '--', ...verbatim, 'linked-dir/x']);
+    expect(calls).toHaveLength(1 + verbatim.length + 1 + quoted.length);
+  });
+
+  it('EI-24369292425690265: checks per-path protected paths with bounded concurrency', async () => {
     let active = 0;
     let peak = 0;
     const seen: string[] = [];
-    const paths = Array.from({ length: 24 }, (_, i) => `protected-${i}`);
+    // A `"` makes Git C-quote the echoed name, so each of these takes the one-path probe.
+    const paths = Array.from({ length: 24 }, (_, i) => `protected-"${i}"`);
     const runGit: RunGit = async (args) => {
+      expect(args).toHaveLength(3);
       const path = args[2];
       seen.push(path);
       active++;
       peak = Math.max(peak, active);
       await new Promise((resolve) => setTimeout(resolve, 5));
       active--;
-      if (path === 'protected-3') return { code: 0, stdout: `${path}\n`, stderr: '' };
-      if (path === 'protected-9') {
+      if (path === 'protected-"3"') return { code: 0, stdout: `"protected-\\"3\\""\n`, stderr: '' };
+      if (path === 'protected-"9"') {
         return { code: 128, stdout: '', stderr: `fatal: pathspec '${path}' is beyond a symbolic link` };
       }
       return { code: 1, stdout: '', stderr: '' };
@@ -1192,8 +2036,8 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(new Set(seen)).toEqual(new Set(paths));
     expect(peak).toBeGreaterThan(1);
     expect(peak).toBeLessThanOrEqual(8);
-    expect(result.ignoredUntracked).toEqual(new Set(['protected-3']));
-    expect(result.beyondSymlink).toEqual(new Set(['protected-9']));
+    expect(result.ignoredUntracked).toEqual(new Set(['protected-"3"']));
+    expect(result.beyondSymlink).toEqual(new Set(['protected-"9"']));
   });
 
   it('EI-21635845150755039: a protected symlink descendant does not strand stageable work', async () => {
@@ -1296,6 +2140,75 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(logs.join('\n')).toContain(
       'legacy tracked dependency-generation runtime path(s) from the index',
     );
+  });
+
+  describe('WI-10006277: the host-local dependency-generation root record never reaches a user repo', () => {
+    const record = DEPENDENCY_GENERATION_ROOT_RECORD;
+    // A host-local absolute store path, as dependency-generation.sh records it.
+    const storeLine = `${join(tmpdir(), 'pc-dependency-generations')}\n`;
+    const excludeFile = () => git(repo, 'rev-parse', '--path-format=absolute', '--git-path', 'info/exclude');
+
+    it('names the same path dependency-generation-prebuild writes', () => {
+      const root = join(tmpdir(), 'integration-root');
+      expect(join(root, record)).toBe(dependencyGenerationRootRecord(root));
+    });
+
+    it('untracks an already-committed record privately and keeps the file on disk', async () => {
+      const recordPath = join(repo, record);
+      mkdirSync(join(recordPath, '..'), { recursive: true });
+      writeFileSync(recordPath, storeLine);
+      git(repo, 'add', record);
+      git(repo, 'commit', '--no-verify', '-m', 'git-sync committed the record (pre-fix)');
+      git(repo, 'push', 'origin', 'main');
+      writeFileSync(join(repo, 'normal.txt'), 'agent work\n');
+      const logs: string[] = [];
+
+      const out = await runGitSync('test', { repoPath: repo, config: cfg, log: (m) => logs.push(m) });
+
+      expect(out.status).toBe('synced');
+      const originFiles = git(originDir, 'ls-tree', '-r', '--name-only', 'main');
+      expect(originFiles).not.toContain(record);
+      expect(originFiles).toContain('normal.txt');
+      // The repair is private: no tracked .gitignore appears in the user's repository.
+      expect(originFiles).not.toContain('.gitignore');
+      expect(readFileSync(recordPath, 'utf8')).toBe(storeLine);
+      expect(git(repo, 'check-ignore', '-v', '--no-index', record)).toContain('info/exclude');
+      expect(git(repo, 'status', '--porcelain')).toBe('');
+      expect(logs.join('\n')).toContain(`removed legacy tracked ${record} from the index`);
+    });
+
+    it('never commits a freshly written record, and writes the exclude rule once', async () => {
+      mkdirSync(join(repo, '.papercusp'), { recursive: true });
+      writeFileSync(join(repo, record), storeLine);
+      writeFileSync(join(repo, 'normal.txt'), 'agent work\n');
+
+      expect((await runGitSync('test', { repoPath: repo, config: cfg })).status).toBe('synced');
+      writeFileSync(join(repo, 'normal.txt'), 'more agent work\n');
+      expect((await runGitSync('test', { repoPath: repo, config: cfg })).status).toBe('synced');
+
+      expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain(record);
+      expect(git(originDir, 'show', 'main:normal.txt')).toBe('more agent work');
+      const rules = readFileSync(excludeFile(), 'utf8').split('\n').filter((l) => l === `/${record}`);
+      expect(rules).toHaveLength(1);
+    });
+
+    it("leaves info/exclude alone when the repo's own .gitignore already ignores the record", async () => {
+      // Papercusp's own tree: its root .gitignore names the record (WI-10005159).
+      writeFileSync(join(repo, '.gitignore'), readFileSync(join(REPO_ROOT, '.gitignore')));
+      mkdirSync(join(repo, '.papercusp'), { recursive: true });
+      writeFileSync(join(repo, record), storeLine);
+
+      expect((await runGitSync('test', { repoPath: repo, config: cfg })).status).toBe('synced');
+
+      expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain(record);
+      let exclude = '';
+      try {
+        exclude = readFileSync(excludeFile(), 'utf8');
+      } catch {
+        exclude = '';
+      }
+      expect(exclude).not.toContain(`/${record}`);
+    });
   });
 
   it('WI-40770: a live-held dirty path stays excluded while the unlocked remainder syncs', async () => {
@@ -1521,7 +2434,10 @@ describe('runGitSync (real git, no submodule)', () => {
       expect.objectContaining({
         file: importerPath,
         detectorKey: 'quarantined-importer',
-        error: expect.stringContaining('live-lock exclusion'),
+        // WI-6554700010008496: names the holder, not just the generic exclusion phase.
+        error: expect.stringContaining('held by su-peer — PreToolUse:Write'),
+        excludedRoot: dependencyPath,
+        excludedRootReason: 'held by su-peer — PreToolUse:Write',
       }),
     ]);
     expect(git(repo, 'status', '--porcelain', '--', dependencyPath, importerPath)).toMatch(
@@ -1568,7 +2484,9 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(first.contentErrors).toContainEqual(expect.objectContaining({
       file: importerPath,
       detectorKey: 'quarantined-importer',
-      error: expect.stringContaining('live-lock exclusion'),
+      error: expect.stringContaining('held by '),
+      excludedRoot: exporterPath,
+      excludedRootReason: expect.stringMatching(/^held by /),
     }));
     expect(git(originDir, 'show', `main:${exporterPath}`)).not.toContain('newValue');
     expect(git(originDir, 'show', `main:${importerPath}`)).not.toContain('newValue');
@@ -1579,6 +2497,121 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(originDir, 'show', `main:${exporterPath}`)).toContain('newValue');
     expect(git(originDir, 'show', `main:${importerPath}`)).toContain('newValue');
     expect(git(repo, 'status', '--porcelain', '--', exporterPath, importerPath)).toBe('');
+  });
+
+  it('WI-6554700010008411: a staged export removal stays with a quarantined importer whose HEAD still imports it', async () => {
+    const excludedPath = 'start.ts';
+    const importerPath = 'audit.ts';
+    const providerPath = 'slug-scope.ts';
+    const controlPath = 'control.ts';
+    writeFileSync(join(repo, providerPath), 'export function requireUnambiguousSlugScope() { return true; }\n');
+    writeFileSync(join(repo, importerPath),
+      "import { requireUnambiguousSlugScope } from './slug-scope';\nexport const scope = requireUnambiguousSlugScope();\n");
+    writeFileSync(join(repo, excludedPath), 'export const start = 1;\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'seed importer and provider API');
+    git(repo, 'push', 'origin', 'main');
+
+    writeFileSync(join(repo, excludedPath), 'export const start = 2; // BROKEN\n');
+    // The working tree drops the old API import, but this file is held because it now
+    // consumes an excluded dependency; its HEAD version still imports the old export.
+    writeFileSync(join(repo, importerPath), "import { start } from './start';\nexport const scope = start;\n");
+    writeFileSync(join(repo, providerPath), 'export const unrelated = 1;\n');
+    writeFileSync(join(repo, controlPath), 'export const control = true;\n');
+    const detector: ContentDetector = {
+      key: 'fake-broken-dependency',
+      glob: '**/start.ts',
+      matches: file => file === excludedPath,
+      detect: (_file, text) => text.includes('BROKEN') ? 'contains BROKEN' : null,
+      fixerRole: 'content-fixer',
+    };
+    const logs: string[] = [];
+
+    const first = await runGitSync('test', {
+      repoPath: repo,
+      runGit: directRunGit,
+      config: cfg,
+      contentDetectors: [detector],
+      log: message => logs.push(message),
+    });
+
+    expect(first.status).toBe('synced');
+    expect(first.contentErrors.some(row => row.file === importerPath && row.detectorKey === 'quarantined-importer')).toBe(true);
+    expect(logs.join('\n')).toContain('staged providers with held HEAD consumers [slug-scope.ts]');
+    expect(git(originDir, 'show', `main:${providerPath}`)).toContain('requireUnambiguousSlugScope');
+    expect(git(originDir, 'show', `main:${importerPath}`)).toContain('requireUnambiguousSlugScope');
+    expect(git(originDir, 'show', `main:${excludedPath}`)).toBe('export const start = 1;');
+    expect(git(originDir, 'show', `main:${controlPath}`)).toBe('export const control = true;');
+    expect(git(repo, 'status', '--porcelain', '--', excludedPath, importerPath, providerPath)).toMatch(/(?:start|audit|slug-scope)\.ts/);
+
+    // Once the quarantined dependency is fixed, all three mutually dependent edits can
+    // land together and the safety hold clears without manual cleanup.
+    writeFileSync(join(repo, excludedPath), 'export const start = 2;\n');
+    const recovered = await runGitSync('test', {
+      repoPath: repo,
+      runGit: directRunGit,
+      config: cfg,
+      contentDetectors: [detector],
+    });
+    expect(recovered.status).toBe('synced');
+    expect(recovered.contentErrors).toEqual([]);
+    expect(git(originDir, 'show', `main:${providerPath}`)).toBe('export const unrelated = 1;');
+    expect(git(originDir, 'show', `main:${importerPath}`)).toContain("from './start'");
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
+  it('EI-25203309445902479: a new importer created after the dirty census is held with its excluded dependencies', async () => {
+    const quarantinedPath = 'quarantined-export.ts';
+    const lockedPath = 'locked-export.ts';
+    const importerPath = 'staged-deletion-hold.test.ts';
+    const controlPath = 'control.txt';
+    const detector: ContentDetector = {
+      key: 'fake-broken-module',
+      glob: '**/quarantined-export.ts',
+      matches: (file) => file.endsWith('quarantined-export.ts'),
+      detect: (_file, text) => (text.includes('BROKEN') ? 'contains BROKEN' : null),
+      fixerRole: 'content-fixer',
+    };
+    writeFileSync(join(repo, quarantinedPath), 'export const quarantinedSymbol = 1;\nBROKEN\n');
+    writeFileSync(join(repo, lockedPath), 'export const lockedSymbol = 2;\n');
+    writeFileSync(join(repo, controlPath), 'unrelated work\n');
+
+    // The first live-lock refresh runs after the initial dirty census. Model a new
+    // untracked test file arriving in that window, importing both a content-quarantined
+    // module and a live-locked module. `git add -A` will see the test even though the
+    // earlier importer pass did not.
+    let refreshes = 0;
+    const refreshLiveLockHoldings = vi.fn(async () => {
+      refreshes += 1;
+      if (refreshes === 1) {
+        writeFileSync(
+          join(repo, importerPath),
+          `import { quarantinedSymbol } from './quarantined-export';\n` +
+            `import { lockedSymbol } from './locked-export';\n` +
+            `export const value = quarantinedSymbol + lockedSymbol;\n`,
+        );
+      }
+      return [{ path: lockedPath, owner: 'su-peer', intent: 'editing a new exporter' }];
+    });
+    const logs: string[] = [];
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      contentDetectors: [detector],
+      refreshLiveLockHoldings,
+      log: (message) => logs.push(message),
+    });
+
+    expect(refreshLiveLockHoldings).toHaveBeenCalledTimes(2);
+    expect(out.status).toBe('synced');
+    const committed = git(originDir, 'ls-tree', '-r', '--name-only', 'main');
+    expect(committed).toContain(controlPath);
+    expect(committed).not.toContain(importerPath);
+    expect(committed).not.toContain(quarantinedPath);
+    expect(committed).not.toContain(lockedPath);
+    expect(logs.join('\n')).toContain(importerPath);
+    expect(git(repo, 'status', '--porcelain', '--', importerPath)).toMatch(/staged-deletion-hold\.test\.ts/);
   });
 
   it('WI-40770: a repo with only live-held dirty paths still reports skipped-locked', async () => {
@@ -1657,7 +2690,7 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
-  it('EI-21444216858331991: a failed declaration emit leaves the source uncommitted', async () => {
+  it('EI-21444216858331991 + WI-6554700010010659: a failed declaration emit holds the pair and the compiler-named file, not the tree', async () => {
     const generator = join(repo, 'scripts', 'gen-declarations.ts');
     const config = join(repo, 'tsconfig.declarations.json');
     const sourceRel = 'apps/operator/scripts/psu-launcher.mjs';
@@ -1674,7 +2707,21 @@ describe('runGitSync (real git, no submodule)', () => {
     git(repo, 'commit', '--no-verify', '-m', 'seed declaration fixture');
     git(repo, 'push', 'origin', 'main');
 
+    // WI-6554700010010659: a TS file the declarations program reaches, and an
+    // unrelated file, both tracked before the failing pass.
+    const culpritRel = 'packages/operator-core/lib/verifier-source.ts';
+    const unrelatedRel = 'docs/unrelated.md';
+    mkdirSync(join(repo, 'packages', 'operator-core', 'lib'), { recursive: true });
+    mkdirSync(join(repo, 'docs'), { recursive: true });
+    writeFileSync(join(repo, culpritRel), "export const verifier = 'v1';\n");
+    writeFileSync(join(repo, unrelatedRel), 'unrelated v1\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'seed culprit and unrelated fixture');
+    git(repo, 'push', 'origin', 'main');
+
     writeFileSync(source, 'export const version = 2;\n');
+    writeFileSync(join(repo, culpritRel), "import { x } from './process-identity.ts';\nexport const verifier = x;\n");
+    writeFileSync(join(repo, unrelatedRel), 'unrelated v2\n');
     const logs: string[] = [];
     const out = await runGitSync('test', {
       repoPath: repo,
@@ -1684,15 +2731,28 @@ describe('runGitSync (real git, no submodule)', () => {
         regenerateGeneratedDeclarationsBeforeCommit(context, async () => ({
           code: 1,
           stdout: '',
-          stderr: 'fixture emit failed',
+          stderr:
+            'tsc failed:\n' +
+            `${culpritRel}(1,19): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.\n` +
+            // CONTROL: a clean file the compiler names is neither held nor reported.
+            "scripts/clean-elsewhere.ts(3,1): error TS2304: Cannot find name 'y'.\n",
         })),
     });
 
-    expect(out.status).toBe('error');
+    // The rest of the tree commits; the pair and the compiler-named dirty file do not.
+    expect(out.status).toBe('synced');
+    expect(git(originDir, 'show', `main:${unrelatedRel}`)).toContain('unrelated v2');
     expect(git(originDir, 'show', `main:${sourceRel}`)).toContain('version = 1');
     expect(git(originDir, 'show', `main:${artifactRel}`)).toContain('version = 1');
+    expect(git(originDir, 'show', `main:${culpritRel}`)).toContain("'v1'");
     expect(git(repo, 'status', '--porcelain', '--', sourceRel)).toMatch(/psu-launcher\.mjs/);
-    expect(logs.join('\n')).toMatch(/deferring the superproject commit/);
+    expect(git(repo, 'status', '--porcelain', '--', culpritRel)).toMatch(/verifier-source\.ts/);
+    const declarationOffenders = out.contentErrors.filter((row) => row.detectorKey === 'declarations-tsc');
+    expect(declarationOffenders.map((row) => row.file)).toEqual([culpritRel]);
+    expect(declarationOffenders[0]).toMatchObject({ fixerRole: 'content-fixer' });
+    expect(declarationOffenders[0].error).toContain('TS5097');
+    expect(logs.join('\n')).toMatch(/declaration regeneration failed/);
+    expect(logs.join('\n')).toContain(`including 1 dirty file(s) its diagnostics name (${culpritRel})`);
   });
 
   it('WI-39922: a generator failure remains fail-soft and the tool source still commits', async () => {
@@ -2145,6 +3205,9 @@ describe('runGitSync (real git, no submodule)', () => {
       runGit,
       submodulePaths: [],
       config: { ...cfg, pushSubmodules: true, pushSubmoduleOrigins: false },
+      // WI-6554700010011004: pin the holder probe. The real one (fuser, then a /proc
+      // scan) answers UNKNOWN on a slow process table, and UNKNOWN rightly keeps the lock.
+      isGitLockOpen: async () => false,
     });
 
     expect(out.status).toBe('synced');
@@ -2152,6 +3215,53 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(existsSync(lockPath)).toBe(false);
     expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain('real-work.txt');
   }, 30_000);
+
+  it.each([
+    ['unknown', null],
+    ['still open', true],
+  ] as const)(
+    'WI-6554700010011004: a config.lock whose holder is %s is preserved while the retried sync still lands',
+    async (_label, holder) => {
+      writeFileSync(join(repo, 'real-work.txt'), 'agents work here\n');
+      const lockPath = join(repo, '.git', 'config.lock');
+      writeFileSync(lockPath, '');
+      const tenMinAgo = (Date.now() - 10 * 60_000) / 1000;
+      utimesSync(lockPath, tenMinAgo, tenMinAgo);
+
+      let urlSyncAttempts = 0;
+      const probed: string[] = [];
+      const runGit: RunGit = async (args, cwd) => {
+        if (args.join(' ') === 'submodule sync --recursive' && urlSyncAttempts++ === 0) {
+          return {
+            code: 1,
+            stdout: '',
+            stderr: `error: could not lock config file ${join(repo, '.git', 'config')}: File exists`,
+          };
+        }
+        const r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+        return { code: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+      };
+
+      const out = await runGitSync('test', {
+        repoPath: repo,
+        runGit,
+        submodulePaths: [],
+        config: { ...cfg, pushSubmodules: true, pushSubmoduleOrigins: false },
+        isGitLockOpen: async (path) => {
+          probed.push(path);
+          return holder;
+        },
+      });
+
+      // The exact signature first seen under load: the retried sync lands, the guard keeps the lock.
+      expect(out.status).toBe('synced');
+      expect(urlSyncAttempts).toBe(2);
+      expect(probed.length).toBeGreaterThan(0);
+      expect(probed.every((path) => path.endsWith('config.lock'))).toBe(true);
+      expect(existsSync(lockPath)).toBe(true);
+    },
+    30_000,
+  );
 
   it('isIndexLockFailure matches the git fatal (and only it)', () => {
     expect(
@@ -2172,17 +3282,20 @@ describe('runGitSync (real git, no submodule)', () => {
   it('clearStaleIndexLock unit edges: already-gone lock ⇒ retry ok; unlink failure ⇒ no retry', async () => {
     const fakeRunGit: RunGit = async () => ({ code: 0, stdout: '/fake/.git\n', stderr: '' });
     const logs: string[] = [];
+    // One STABLE snapshot: clearStaleIndexLock inspects before and after the holder
+    // check and refuses when the two differ (WI-10006519).
+    const orphan = { mtimeMs: Date.now() - 10 * 60_000, size: 0, dev: 1, ino: 2 };
     // lock vanished between the failure and the heal (holder finished) — retry is safe
     expect(
       await clearStaleIndexLock(fakeRunGit, '/fake', (m) => logs.push(m), {
-        statMtimeMs: async () => null,
+        inspectLock: async () => null,
         hasLiveHolder: async () => false,
       }),
     ).toBe(true);
     // stale but unlink throws (permissions) — do NOT claim healed
     expect(
       await clearStaleIndexLock(fakeRunGit, '/fake', (m) => logs.push(m), {
-        statMtimeMs: async () => Date.now() - 10 * 60_000,
+        inspectLock: async () => orphan,
         hasLiveHolder: async () => false,
         unlinkFile: async () => {
           throw new Error('EACCES');
@@ -2195,11 +3308,12 @@ describe('runGitSync (real git, no submodule)', () => {
     const fakeRunGit: RunGit = async () => ({ code: 0, stdout: '/fake/.git\n', stderr: '' });
     const logs: string[] = [];
     const unlinked: string[] = [];
+    const orphan = { mtimeMs: Date.now() - 10 * 60_000, size: 0, dev: 1, ino: 2 };
     // mtime says stale (staleMs:0 makes ANY age stale), but a live writer holds the fd —
     // this is the exact shape that truncated the canonical index to 0 bytes.
     expect(
       await clearStaleIndexLock(fakeRunGit, '/fake', (m) => logs.push(m), {
-        statMtimeMs: async () => Date.now() - 10 * 60_000,
+        inspectLock: async () => orphan,
         staleMs: 0,
         hasLiveHolder: async () => true,
         unlinkFile: async (p) => {
@@ -2212,7 +3326,7 @@ describe('runGitSync (real git, no submodule)', () => {
     // same lock, same age, but no live holder ⇒ the stale-orphan path unlinks as before
     expect(
       await clearStaleIndexLock(fakeRunGit, '/fake', (m) => logs.push(m), {
-        statMtimeMs: async () => Date.now() - 10 * 60_000,
+        inspectLock: async () => orphan,
         staleMs: 0,
         hasLiveHolder: async () => false,
         unlinkFile: async (p) => {
@@ -2221,6 +3335,61 @@ describe('runGitSync (real git, no submodule)', () => {
       }),
     ).toBe(true);
     expect(unlinked).toEqual(['/fake/.git/index.lock']);
+  });
+
+  it('clearStaleIndexLock CHECK-THEN-ACT guard (WI-10006519): a lock REPLACED during the holder check is never unlinked', async () => {
+    const fakeRunGit: RunGit = async () => ({ code: 0, stdout: '/fake/.git\n', stderr: '' });
+    const logs: string[] = [];
+    const unlinked: string[] = [];
+    // The aged 0-byte orphan is judged, then — while the (slow) holder scan runs —
+    // it is removed and a different writer creates a fresh lock at the same path.
+    // On 2026-10-06 the bg-host scan took ~10 min, so this window was real.
+    const orphan = { mtimeMs: Date.now() - 10 * 60_000, size: 0, dev: 1, ino: 2 };
+    const liveWriter = { mtimeMs: Date.now(), size: 3_900_000, dev: 1, ino: 3 };
+    const inspections = [orphan, liveWriter];
+    expect(
+      await clearStaleIndexLock(fakeRunGit, '/fake', (m) => logs.push(m), {
+        inspectLock: async () => inspections.shift() ?? null,
+        hasLiveHolder: async () => false,
+        unlinkFile: async (p) => {
+          unlinked.push(p);
+        },
+      }),
+    ).toBe(false);
+    expect(unlinked).toEqual([]);
+    expect(logs.some((m) => m.includes('CHANGED during the holder check'))).toBe(true);
+
+    // The orphan simply disappears during the check (its owner cleaned up) — retry, no unlink.
+    const vanishing = [orphan, null];
+    expect(
+      await clearStaleIndexLock(fakeRunGit, '/fake', (m) => logs.push(m), {
+        inspectLock: async () => vanishing.shift() ?? null,
+        hasLiveHolder: async () => false,
+        unlinkFile: async (p) => {
+          unlinked.push(p);
+        },
+      }),
+    ).toBe(true);
+    expect(unlinked).toEqual([]);
+  });
+
+  it('clearStaleIndexLock logs how long the holder check took, and flags a slow one (WI-10006519)', async () => {
+    const fakeRunGit: RunGit = async () => ({ code: 0, stdout: '/fake/.git\n', stderr: '' });
+    const logs: string[] = [];
+    const orphan = { mtimeMs: 0, size: 0, dev: 1, ino: 2 };
+    // now(): 10 min after the orphan's mtime for the age read, then the holder
+    // check is timed at start and end, 12.3 s apart.
+    const clock = [600_000, 600_000, 612_300];
+    expect(
+      await clearStaleIndexLock(fakeRunGit, '/fake', (m) => logs.push(m), {
+        inspectLock: async () => orphan,
+        now: () => clock.shift() ?? 612_300,
+        hasLiveHolder: async () => false,
+        unlinkFile: async () => {},
+      }),
+    ).toBe(true);
+    const cleared = logs.find((m) => m.includes('cleared STALE index.lock'));
+    expect(cleared).toContain('holder check 12.3s — SLOW (WI-10006519)');
   });
 
   it('clearStaleConfigLock removes only an old empty holderless lock', async () => {
@@ -2314,7 +3483,7 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(isTransientStatFailure('')).toBe(false);
   });
 
-  it('P-004 flag-ON (loadRoster supplied): peels a per-agent commit (intent + Co-Authored-By) before the catch-all', async () => {
+  it('P-004 flag-ON: commits the unattributed residual before per-agent groups', async () => {
     writeFileSync(join(repo, 'mine.txt'), 'a\n'); // attributed to cup-7
     writeFileSync(join(repo, 'other.txt'), 'b\n'); // unattributed → catch-all
     const out = await runGitSync('test', {
@@ -2332,6 +3501,12 @@ describe('runGitSync (real git, no submodule)', () => {
     // the per-agent commit carries a Co-Authored-By trailer crediting the agent (DERIVED attribution).
     const bodies = git(originDir, 'log', '--format=%B', 'main');
     expect(bodies).toContain('Co-Authored-By: Cup Seven <cup-7@agents.papercusp>');
+    const orderedSubjects = git(originDir, 'log', '--format=%s', '--reverse', 'main').split('\n');
+    const residualIndex = orderedSubjects.findIndex((subject) => subject.includes('other.txt'));
+    const attributedIndex = orderedSubjects.findIndex((subject) => subject.includes('mine.txt'));
+    expect(residualIndex).toBeGreaterThanOrEqual(0);
+    expect(attributedIndex).toBeGreaterThanOrEqual(0);
+    expect(residualIndex).toBeLessThan(attributedIndex);
     // both files landed; the tree is clean.
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
@@ -2348,25 +3523,31 @@ describe('runGitSync (real git, no submodule)', () => {
     writeFileSync(join(repo, 'other.txt'), 'b\n'); // unattributed → catch-all
 
     // A real-git runner (non-throwing: returns {code} instead of throwing on non-zero).
-    const realGit: RunGit = async (args, cwd) => {
-      const r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+    // It forwards `options.env`: attributed commits run on a private GIT_INDEX_FILE.
+    const realGit: RunGit = async (args, cwd, options) => {
+      const r = spawnSync('git', args, {
+        cwd,
+        encoding: 'utf8',
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+        env: options?.env ? { ...process.env, ...options.env } : process.env,
+      });
       return { code: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
     };
     // Fail ONLY the first attributed commit — the one carrying a `Papercusp-Agent:` trailer
     // (the catch-all auto-commit never does, so it runs for real). Do NOT execute it, exactly
-    // like an index.lock race that never wrote the commit.
+    // like a write that never produced the commit.
     let attributedCommitFailed = false;
-    const runGit: RunGit = async (args, cwd) => {
-      // WI-5111: commit calls now carry a leading `-c user.name=... -c
-      // user.email=...` bot-identity override before the `commit` subcommand
-      // (run-git-sync.ts GIT_SYNC_IDENTITY_ARGS) — match on inclusion, not
-      // args[0], so this injected fault still targets the right call.
-      const isAttributedCommit = args.includes('commit') && args.some((a) => a.startsWith('Papercusp-Agent:'));
+    const runGit: RunGit = async (args, cwd, options) => {
+      // WI-5111: the bot-identity `-c` override precedes the subcommand, so match on
+      // inclusion, not args[0]. WI-10006705: attributed commits are `commit-tree` on a
+      // private index (published by an update-ref CAS), no longer `commit`.
+      const isAttributedCommit = args.includes('commit-tree') && args.some((a) => a.startsWith('Papercusp-Agent:'));
       if (isAttributedCommit && !attributedCommitFailed) {
         attributedCommitFailed = true;
         return { code: 1, stdout: '', stderr: "fatal: Unable to create '.git/index.lock': File exists." };
       }
-      return realGit(args, cwd);
+      return realGit(args, cwd, options);
     };
 
     const out = await runGitSync('test', {
@@ -2391,6 +3572,53 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(subjects).not.toMatch(/wire the parser/);
     expect(subjects).toMatch(/auto-commit test/);
     // working tree clean after the catch-all swept the failed group's files + the remainder.
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
+  it('STRANDING GUARD: a FAILED attributed add must fall through to the catch-all — the group and remainder still commit', async () => {
+    writeFileSync(join(repo, 'mine.txt'), 'a\n'); // attributed → cup-7
+    writeFileSync(join(repo, 'other.txt'), 'b\n'); // unattributed → catch-all
+
+    const realGit: RunGit = async (args, cwd, options) => {
+      const r = spawnSync('git', args, {
+        cwd,
+        encoding: 'utf8',
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+        env: options?.env ? { ...process.env, ...options.env } : process.env,
+      });
+      return { code: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+    };
+    // WI-10006705: the attributed add runs on a PRIVATE index (GIT_INDEX_FILE in
+    // options.env). WI-10006725: so does the catch-all, but its argv is `add -A`, not
+    // `add --`, so only the attributed add matches below and the catch-all runs for real.
+    let attributedAddFailed = false;
+    const runGit: RunGit = async (args, cwd, options) => {
+      const onPrivateIndex = Boolean(options?.env?.GIT_INDEX_FILE);
+      if (onPrivateIndex && args[0] === 'add' && args[1] === '--' && args.includes('mine.txt') && !attributedAddFailed) {
+        attributedAddFailed = true;
+        return { code: 1, stdout: '', stderr: "fatal: Unable to create '.git/index.lock': File exists." };
+      }
+      return realGit(args, cwd, options);
+    };
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      loadRoster: async () => [
+        { agent: 'cup-7', agentLabel: 'Cup Seven', intent: 'wire the parser', files: ['mine.txt'] },
+      ],
+      runGit,
+    });
+
+    expect(attributedAddFailed).toBe(true);
+    expect(out.status).toBe('synced');
+    const originFiles = git(originDir, 'ls-tree', '-r', '--name-only', 'main');
+    expect(originFiles).toContain('mine.txt');
+    expect(originFiles).toContain('other.txt');
+    const subjects = originLog();
+    expect(subjects).not.toMatch(/wire the parser/);
+    expect(subjects).toMatch(/auto-commit test/);
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
@@ -2454,6 +3682,33 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
+  it('content guard: quarantines a zero-byte TypeScript module while unrelated source commits, then recovers it', async () => {
+    writeFileSync(join(repo, 'empty-source.ts'), '');
+    writeFileSync(join(repo, 'unrelated.ts'), 'export const ready = true;\n');
+
+    const held = await runGitSync('test', { repoPath: repo, config: cfg });
+
+    expect(held.status).toBe('synced');
+    expect(held.contentErrors).toContainEqual(expect.objectContaining({
+      scope: 'superproject',
+      file: 'empty-source.ts',
+      detectorKey: 'empty-ts-source',
+      fixerRole: 'content-fixer',
+      error: expect.stringContaining('zero bytes'),
+    }));
+    expect(git(originDir, 'show', 'main:unrelated.ts')).toContain('ready = true');
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain('empty-source.ts');
+    expect(git(repo, 'status', '--porcelain', '--', 'empty-source.ts')).toContain('empty-source.ts');
+
+    writeFileSync(join(repo, 'empty-source.ts'), 'export const restored = true;\n');
+    const recovered = await runGitSync('test', { repoPath: repo, config: cfg });
+
+    expect(recovered.status).toBe('synced');
+    expect(recovered.contentErrors).toEqual([]);
+    expect(git(originDir, 'show', 'main:empty-source.ts')).toContain('restored = true');
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
   it('content guard is a no-op when no detector matches the dirty files (clean tree commits as today)', async () => {
     writeFileSync(join(repo, 'plain.txt'), 'no detector targets .txt\n');
     const out = await runGitSync('test', { repoPath: repo, config: cfg, contentDetectors: [brokenDetector] });
@@ -2484,6 +3739,11 @@ describe('runGitSync (real git, no submodule)', () => {
     const importerOffender = out.contentErrors.find((c) => c.file === 'watchdog.test.ts');
     expect(importerOffender?.detectorKey).toBe('quarantined-importer');
     expect(importerOffender?.error).toContain('watchdog.md');
+    // WI-6554700010008496: the finding names its root and WHY the root was excluded.
+    expect(importerOffender).toMatchObject({
+      excludedRoot: 'watchdog.md',
+      excludedRootReason: 'content guard: fake-broken',
+    });
 
     const originFiles = git(originDir, 'ls-tree', '-r', '--name-only', 'main');
     expect(originFiles).toContain('good.txt');
@@ -2514,6 +3774,65 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(originDir, 'show', 'main:watchdog.md')).toBe('initial and committed');
     expect(git(repo, 'status', '--porcelain')).toContain('watchdog.md');
     expect(git(repo, 'status', '--porcelain')).not.toContain('watchdog.test.ts');
+  });
+
+  it('WI-6554700010008496: an importer two hops behind a live-lock root names that root and its holder', async () => {
+    writeFileSync(join(repo, 'held-root.ts'), 'export const existing = 1;\n');
+    git(repo, 'add', 'held-root.ts');
+    git(repo, 'commit', '--no-verify', '-m', 'seed held root');
+    git(repo, 'push', 'origin', 'HEAD:main');
+    writeFileSync(join(repo, 'held-root.ts'), 'export const existing = 1;\nexport const added = 2;\n');
+    writeFileSync(join(repo, 'held-middle.ts'), "import { added } from './held-root';\nexport const middle = added;\n");
+    writeFileSync(join(repo, 'held-leaf.ts'), "import { middle } from './held-middle';\nexport const leaf = middle;\n");
+    const holding = { path: 'held-root.ts', owner: 'su-turn', intent: 'turn-scoped hold: edited this turn', goalRef: 'WI-1' };
+
+    const out = await runGitSync('test', {
+      repoPath: repo, config: cfg, excludePaths: [holding.path], liveLockHoldings: [holding],
+    });
+
+    const leaf = out.contentErrors.find((c) => c.file === 'held-leaf.ts');
+    expect(leaf).toMatchObject({ detectorKey: 'quarantined-importer', excludedRoot: 'held-root.ts' });
+    expect(leaf?.excludedRootReason).toBe('held by su-turn for WI-1 — turn-scoped hold: edited this turn');
+    expect(leaf?.error).toContain(`→ 'held-middle.ts'`);
+    expect(git(repo, 'status', '--porcelain')).toContain('held-leaf.ts');
+  });
+
+  it('EI-25437238223518184: commits a named package consumer only with its changed provider', async () => {
+    const providerDir = join(repo, 'packages/provider/src');
+    mkdirSync(providerDir, { recursive: true });
+    writeFileSync(join(repo, 'packages/provider/package.json'), JSON.stringify({
+      name: '@fixture/provider', exports: { './telemetry': './src/telemetry.ts' },
+    }));
+    writeFileSync(join(providerDir, 'telemetry.ts'), 'export const existing = 1;\n');
+    git(repo, 'add', 'packages/provider');
+    git(repo, 'commit', '--no-verify', '-m', 'seed package provider');
+    git(repo, 'push', 'origin', 'HEAD:main');
+
+    const provider = 'packages/provider/src/telemetry.ts';
+    const consumer = 'consumer.ts';
+    const detector: ContentDetector = {
+      ...brokenDetector, glob: '**/*.ts', matches: file => file === provider,
+    };
+    writeFileSync(join(repo, provider), 'export const newlyAdded = 2; // BROKEN\n');
+    writeFileSync(join(repo, consumer), "import { newlyAdded } from '@fixture/provider/telemetry';\nexport const value = newlyAdded;\n");
+    writeFileSync(join(repo, 'good.txt'), 'unrelated clean change\n');
+
+    const held = await runGitSync('test', { repoPath: repo, config: cfg, contentDetectors: [detector] });
+    expect(held.status).toBe('synced');
+    expect(held.contentErrors.some(row => row.file === consumer && row.detectorKey === 'quarantined-importer')).toBe(true);
+    const heldFiles = git(originDir, 'ls-tree', '-r', '--name-only', 'main').split('\n');
+    expect(heldFiles).toContain('good.txt');
+    expect(heldFiles).not.toContain(consumer);
+    expect(git(originDir, 'show', 'main:' + provider)).toBe('export const existing = 1;');
+    expect(git(repo, 'status', '--porcelain')).toContain(consumer);
+
+    writeFileSync(join(repo, provider), 'export const newlyAdded = 2;\n');
+    const recovered = await runGitSync('test', { repoPath: repo, config: cfg, contentDetectors: [detector] });
+    expect(recovered.status).toBe('synced');
+    expect(recovered.contentErrors).toEqual([]);
+    expect(git(originDir, 'show', 'main:' + provider)).toBe('export const newlyAdded = 2;');
+    expect(git(originDir, 'show', 'main:' + consumer)).toContain("from '@fixture/provider/telemetry'");
+    expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
   it('EI-19932544083689229: once the subject is fixed, the previously-held-back importer commits too (self-heal, no residual quarantine)', async () => {
@@ -2893,6 +4212,268 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
     });
   });
 
+  it('commits a changed superproject gitlink before attributed root sources', async () => {
+    const subRepo = join(repo, 'libs/sub');
+    writeFileSync(join(subRepo, 'sub.txt'), 'sub-v2\n');
+    writeFileSync(join(repo, 'root-attributed.ts'), 'export const sourceVersion = 2;\n');
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      loadRoster: async () => [
+        {
+          agent: 'cup-7',
+          agentLabel: 'Cup Seven',
+          intent: 'update the root integration',
+          files: ['root-attributed.ts'],
+        },
+      ],
+    });
+
+    expect(out.status).toBe('synced');
+    const subHead = git(subRepo, 'rev-parse', 'HEAD');
+    const attributed = git(
+      superOrigin,
+      'log',
+      '-1',
+      '--fixed-strings',
+      '--grep=Co-Authored-By: Cup Seven <cup-7@agents.papercusp>',
+      '--format=%H',
+      'main',
+    );
+    expect(attributed).not.toBe('');
+    // The attributed commit's parent already carries the newly committed submodule pin.
+    expect(git(superOrigin, 'rev-parse', attributed + '^:libs/sub')).toBe(subHead);
+    expect(git(superOrigin, 'rev-parse', attributed + ':libs/sub')).toBe(subHead);
+    expect(git(superOrigin, 'rev-parse', 'main:libs/sub')).toBe(subHead);
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
+  it('commits attributed root sources while a protected submodule worktree has an unchanged gitlink', async () => {
+    const subRepo = join(repo, 'libs/sub');
+    const originalPointer = git(repo, 'rev-parse', 'HEAD:libs/sub');
+    writeFileSync(join(subRepo, 'sub.txt'), 'pending protected submodule edit\n');
+    writeFileSync(join(repo, 'root-attributed.ts'), 'export const sourceVersion = 2;\n');
+    const logs: string[] = [];
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      runGit: directRunGit,
+      excludePaths: ['libs/sub/sub.txt'],
+      log: message => logs.push(message),
+      loadRoster: async () => [{
+        agent: 'cup-7', agentLabel: 'Cup Seven', intent: 'update independent root source',
+        files: ['root-attributed.ts'],
+      }],
+    });
+
+    expect(out.status).toBe('synced');
+    expect(git(superOrigin, 'show', 'main:root-attributed.ts')).toBe('export const sourceVersion = 2;');
+    expect(git(repo, 'rev-parse', 'HEAD:libs/sub')).toBe(originalPointer);
+    expect(git(subRepo, 'rev-parse', 'HEAD')).toBe(originalPointer);
+    expect(readFileSync(join(subRepo, 'sub.txt'), 'utf8')).toBe('pending protected submodule edit\n');
+    expect(git(subRepo, 'status', '--porcelain')).toContain('sub.txt');
+    expect(git(repo, 'status', '--porcelain', 'root-attributed.ts')).toBe('');
+    expect(logs.join('\n')).not.toContain('deferring attributed source path(s)');
+  });
+
+  it('falls back to one catch-all when the priority gitlink commit CAS is refused', async () => {
+    const subRepo = join(repo, 'libs/sub');
+    const initialSuperHead = git(superOrigin, 'rev-parse', 'main');
+    writeFileSync(join(subRepo, 'sub.txt'), 'sub-v2\n');
+    writeFileSync(join(repo, 'root-attributed.ts'), 'export const sourceVersion = 2;\n');
+    let priorityCasRefused = false;
+    const logs: string[] = [];
+    const runGit: RunGit = async (args, cwd, options) => {
+      if (
+        !priorityCasRefused &&
+        cwd === repo &&
+        args.includes('update-ref') &&
+        args.includes('git-sync: priority submodule gitlinks')
+      ) {
+        priorityCasRefused = true;
+        return { code: 1, stdout: '', stderr: 'fatal: update-ref CAS refused by test' };
+      }
+      return directRunGit(args, cwd, options);
+    };
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      runGit,
+      log: (message) => logs.push(message),
+      loadRoster: async () => [
+        {
+          agent: 'cup-7',
+          agentLabel: 'Cup Seven',
+          intent: 'update the root integration',
+          files: ['root-attributed.ts'],
+        },
+      ],
+    });
+
+    expect(priorityCasRefused).toBe(true);
+    expect(out.status).toBe('synced');
+    expect(logs.join('\n')).toContain('priority gitlink commit CAS refused');
+    expect(git(superOrigin, 'rev-parse', 'main^')).toBe(initialSuperHead);
+    const subHead = git(subRepo, 'rev-parse', 'HEAD');
+    expect(git(superOrigin, 'rev-parse', 'main:libs/sub')).toBe(subHead);
+    expect(git(superOrigin, 'show', 'main:root-attributed.ts')).toBe('export const sourceVersion = 2;');
+    expect(
+      git(
+        superOrigin,
+        'log',
+        '--fixed-strings',
+        '--grep=Co-Authored-By: Cup Seven <cup-7@agents.papercusp>',
+        '--format=%H',
+        'main',
+      ),
+    ).toBe('');
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
+  it('EI-25243356801974396: merges a submodule pin when the incoming pin is an ancestor of the local pin', async () => {
+    const subRepo = join(repo, 'libs/sub');
+    git(subRepo, 'switch', 'main');
+
+    // The remote superproject will point at this commit; the local pointer will
+    // advance one commit further, so merge-ort should retain the local gitlink.
+    writeFileSync(join(subRepo, 'incoming.txt'), 'incoming submodule commit\n');
+    git(subRepo, 'add', '-A');
+    git(subRepo, 'commit', '--no-verify', '-m', 'incoming submodule commit');
+    const incomingSub = git(subRepo, 'rev-parse', 'HEAD');
+    git(subRepo, 'push', 'origin', 'HEAD:main');
+
+    writeFileSync(join(subRepo, 'local.txt'), 'local descendant\n');
+    git(subRepo, 'add', '-A');
+    git(subRepo, 'commit', '--no-verify', '-m', 'local submodule descendant');
+    const localSub = git(subRepo, 'rev-parse', 'HEAD');
+    git(subRepo, 'commit-graph', 'write', '--reachable');
+
+    writeFileSync(join(repo, 'local-superproject.txt'), 'local superproject commit\n');
+    git(repo, 'add', 'libs/sub', 'local-superproject.txt');
+    git(repo, 'commit', '--no-verify', '-m', 'local superproject descendant pin');
+
+    // Publish a sibling superproject commit whose gitlink points at incomingSub.
+    const other = join(root, 'other');
+    git(root, 'clone', superOrigin, other);
+    configUser(other);
+    git(other, ...allowFile, 'submodule', 'update', '--init', '--recursive');
+    const otherSub = join(other, 'libs/sub');
+    git(otherSub, 'fetch', 'origin', 'main');
+    git(otherSub, 'checkout', '--detach', incomingSub);
+    writeFileSync(join(other, 'remote-superproject.txt'), 'remote superproject commit\n');
+    git(other, 'add', 'libs/sub', 'remote-superproject.txt');
+    git(other, 'commit', '--no-verify', '-m', 'remote superproject descendant pin');
+    git(other, 'push', 'origin', 'main');
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: { push: false, pushSubmodules: false },
+    });
+
+    expect(out.status, JSON.stringify(out)).toBe('synced');
+    expect(git(repo, 'show', 'HEAD:remote-superproject.txt')).toBe('remote superproject commit');
+    expect(git(repo, 'rev-parse', 'HEAD:libs/sub')).toBe(localSub);
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
+  const makeMigrationFenceInputs = () => {
+    const migration = 'libs/db/sql/999-unreserved-migration.sql';
+    const subRepo = join(repo, 'libs/sub');
+    mkdirSync(join(subRepo, 'libs/db/sql'), { recursive: true });
+    writeFileSync(join(subRepo, migration), '-- intentionally unreserved\n');
+    writeFileSync(join(subRepo, 'sub-unrelated.txt'), 'submodule work\n');
+    writeFileSync(join(repo, 'schema-consumer.ts'), 'export const schemaVersion = 2;\n');
+    writeFileSync(join(repo, 'root-unrelated.txt'), 'unrelated root work\n');
+    const checker = vi.fn(async (paths: readonly string[]) =>
+      paths.includes(migration)
+        ? [{ path: migration, reason: '[migration-reservation-guard] reservation missing' }]
+        : [],
+    );
+    return { migration, subRepo, checker };
+  };
+
+  it('EI-24940157290396415: a refused migration fences same-work-item root sources while unrelated files advance', async () => {
+    const { migration, subRepo, checker } = makeMigrationFenceInputs();
+    const loadMigrationFenceRoster = vi.fn(async (): Promise<AttributionRosterEntry[]> => [
+      {
+        agent: 'su-migration',
+        files: ['libs/sub/' + migration, 'schema-consumer.ts'],
+        workItems: ['WI-migration'],
+      },
+      { agent: 'su-unrelated', files: ['root-unrelated.txt'], workItems: ['WI-other'] },
+    ]);
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      migrationReservationChecker: checker,
+      loadMigrationFenceRoster,
+    });
+
+    expect(out.status).toBe('synced');
+    if (out.status === 'synced') expect(out.pushed).toContain('libs/sub');
+    expect(loadMigrationFenceRoster).toHaveBeenCalledOnce();
+    expect(out.skippedPaths ?? []).toContainEqual(
+      expect.objectContaining({
+        scope: 'libs/sub',
+        path: migration,
+        reason: 'migration-reservation',
+      }),
+    );
+    expect(out.skippedPaths ?? []).toContainEqual(
+      expect.objectContaining({
+        scope: 'superproject',
+        path: 'schema-consumer.ts',
+        reason: 'migration-dependency-fence',
+      }),
+    );
+    expect(git(subOrigin, 'show', 'main:sub-unrelated.txt')).toBe('submodule work');
+    expect(() => git(subOrigin, 'show', 'main:' + migration)).toThrow();
+    expect(git(superOrigin, 'show', 'main:root-unrelated.txt')).toBe('unrelated root work');
+    expect(() => git(superOrigin, 'show', 'main:schema-consumer.ts')).toThrow();
+    expect(git(subRepo, 'status', '--porcelain', '--', migration)).toMatch(/999-unreserved-migration\.sql/);
+    expect(git(repo, 'status', '--porcelain', '--', 'schema-consumer.ts')).toMatch(/schema-consumer\.ts/);
+    expect(git(repo, 'status', '--porcelain', '--', 'root-unrelated.txt')).toBe('');
+  });
+
+  it('EI-24940157290396415: an unattributed refused migration holds all root sources fail-closed', async () => {
+    const { migration, subRepo, checker } = makeMigrationFenceInputs();
+    const loadMigrationFenceRoster = vi.fn(async (): Promise<AttributionRosterEntry[]> => [
+      { agent: 'su-other', files: ['schema-consumer.ts', 'root-unrelated.txt'], workItems: ['WI-other'] },
+    ]);
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      migrationReservationChecker: checker,
+      loadMigrationFenceRoster,
+    });
+
+    expect(out.status).toBe('synced');
+    if (out.status === 'synced') expect(out.pushed).toContain('libs/sub');
+    expect(loadMigrationFenceRoster).toHaveBeenCalledOnce();
+    expect(out.skippedPaths ?? []).toContainEqual(
+      expect.objectContaining({
+        scope: 'superproject',
+        path: 'schema-consumer.ts',
+        reason: 'migration-dependency-fence',
+        detail: expect.stringContaining('could not be attributed'),
+      }),
+    );
+    expect(out.skippedPaths ?? []).toContainEqual(
+      expect.objectContaining({
+        scope: 'superproject',
+        path: 'root-unrelated.txt',
+        reason: 'migration-dependency-fence',
+      }),
+    );
+    expect(git(subOrigin, 'show', 'main:sub-unrelated.txt')).toBe('submodule work');
+    expect(() => git(subOrigin, 'show', 'main:' + migration)).toThrow();
+    expect(git(repo, 'status', '--porcelain', '--', 'schema-consumer.ts')).toMatch(/schema-consumer\.ts/);
+    expect(git(repo, 'status', '--porcelain', '--', 'root-unrelated.txt')).toMatch(/root-unrelated\.txt/);
+    expect(git(superOrigin, 'rev-parse', 'main:libs/sub')).toBe(git(subRepo, 'rev-parse', 'HEAD'));
+    expect(() => git(superOrigin, 'show', 'main:schema-consumer.ts')).toThrow();
+    expect(() => git(superOrigin, 'show', 'main:root-unrelated.txt')).toThrow();
+  });
+
   it('EI-24433253827583139: refuses to publish an importer when submodule fetch failed before the export was observed', async () => {
     const subWriter = join(root, 'sub-writer');
     git(root, 'clone', subOrigin, subWriter);
@@ -3246,6 +4827,95 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
     });
   });
 
+  it('EI-255862: checkpoints the root commit proof before a later HEAD replaces it', async () => {
+    const phases = new Map<string, unknown>();
+    const step: GitSyncStepRunner = async <T>(name: string, operation: () => Promise<T>): Promise<T> => {
+      if (phases.has(name)) return structuredClone(phases.get(name)) as T;
+      const result = await operation();
+      phases.set(name, structuredClone(result));
+      return result;
+    };
+    const options = { repoPath: repo, config: { push: false, pushSubmodules: false }, step };
+    writeFileSync(join(repo, 'root-proof.txt'), 'first local tick\n');
+    const first = await runGitSync('test', options);
+    const firstCommit = git(repo, 'rev-parse', 'HEAD');
+    expect(first.localCommitSha).toBe(firstCommit);
+
+    writeFileSync(join(repo, 'later-tick.txt'), 'independent later tick\n');
+    git(repo, 'add', 'later-tick.txt');
+    git(repo, 'commit', '--no-verify', '-m', 'independent later tick');
+    expect(git(repo, 'rev-parse', 'HEAD')).not.toBe(firstCommit);
+
+    const resumed = await runGitSync('test', options);
+    expect(resumed.localCommitSha).toBe(firstCommit);
+    expect(phases.get('git-sync:pointer-bump')).toMatchObject({ localCommitSha: firstCommit });
+
+    // Legacy checkpoint outputs cannot prove which root commit was created.
+    const legacyPhase = { ...phases.get('git-sync:pointer-bump') as Record<string, unknown> };
+    delete legacyPhase.localCommitSha;
+    phases.set('git-sync:pointer-bump', legacyPhase);
+    const legacyResume = await runGitSync('test', options);
+    expect(legacyResume.localCommitSha).toBeUndefined();
+  });
+
+  it('EI-255886: replaying an old commit phase cannot satisfy a newer no-SHA wait', async () => {
+    const phases = new Map<string, unknown>();
+    const step: GitSyncStepRunner = async <T>(name: string, operation: () => Promise<T>): Promise<T> => {
+      if (phases.has(name)) return structuredClone(phases.get(name)) as T;
+      const result = await operation();
+      phases.set(name, structuredClone(result));
+      return result;
+    };
+    const options = { repoPath: repo, config: { push: false, pushSubmodules: false }, step };
+    const scope = { installSlug: 'test', workspaceId: 'workspace-test' };
+    const emit = vi.fn(async (_opts: { key: string; payload?: unknown }) => ({
+      ok: true as const, key: '', woken: 0, notified: [] as string[], msgId: null, waiters: 0,
+    }));
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    try {
+      writeFileSync(join(repo, 'producer-time.txt'), 'first local tick\n');
+      const first = await runGitSync('test', options);
+      const firstCommit = git(repo, 'rev-parse', 'HEAD');
+      expect(first.localCommitSha).toBe(firstCommit);
+
+      // A later tick advances HEAD after this wait registered. Replay must carry
+      // the original producer boundary, not the new HEAD or the emission time.
+      const laterWait = gitSyncScopePayloadFilter(scope, 'committed', 2_000);
+      now.mockReturnValue(4_000);
+      writeFileSync(join(repo, 'later-producer.txt'), 'independent later tick\n');
+      git(repo, 'add', 'later-producer.txt');
+      git(repo, 'commit', '--no-verify', '-m', 'independent later producer');
+      const resumed = await runGitSync('test', options);
+      expect(resumed.localCommitSha).toBe(firstCommit);
+      expect(git(repo, 'rev-parse', 'HEAD')).not.toBe(firstCommit);
+      emitGitSyncCommittedEvent(resumed.localCommitSha!, { scope, emit }, resumed.localCommitAtMs);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const payload = emit.mock.calls.find(([opts]) => opts.key === 'git-sync:committed')?.[0].payload;
+      expect(payloadMatchesFilter(laterWait, payload)).toBe(false);
+      expect(payloadMatchesFilter(gitSyncScopePayloadFilter(scope, 'committed', 500), payload)).toBe(true);
+      expect(emit.mock.calls.map(([opts]) => opts.key)).toContain(`git-sync:committed:${firstCommit}`);
+      expect(payload).toMatchObject({ sha: firstCommit, committedAtMs: 1_000 });
+      expect(phases.get('git-sync:pointer-bump')).toMatchObject({ localCommitAtMs: 1_000 });
+
+      // Old checkpoints can prove a SHA without a timestamp. Do not manufacture
+      // freshness for them, while preserving the precise per-SHA signal.
+      const legacyPhase = { ...phases.get('git-sync:pointer-bump') as Record<string, unknown> };
+      delete legacyPhase.localCommitAtMs;
+      phases.set('git-sync:pointer-bump', legacyPhase);
+      emit.mockClear();
+      const legacy = await runGitSync('test', options);
+      emitGitSyncCommittedEvent(legacy.localCommitSha!, { scope, emit }, legacy.localCommitAtMs);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const legacyPayload = emit.mock.calls.find(([opts]) => opts.key === 'git-sync:committed')?.[0].payload;
+      expect(payloadMatchesFilter(laterWait, legacyPayload)).toBe(false);
+      expect(legacyPayload).not.toHaveProperty('committedAtMs');
+      expect(emit.mock.calls.map(([opts]) => opts.key)).toContain(`git-sync:committed:${firstCommit}`);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it('GAP-4: a submodule unreachable while ahead → errors + defers the superproject PUSH (no broken gitlink) but still COMMITS it locally', () => {
     // dirty the submodule (→ ahead after its local commit) and the superproject
     writeFileSync(join(repo, 'libs/sub', 'sub-new.txt'), 'sub-v2\n');
@@ -3275,6 +4945,9 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
       // that existed on no other disk.
       expect(git(repo, 'log', '--format=%B', 'HEAD')).toMatch(/auto-commit test/);
       expect(git(repo, 'status', '--porcelain', 'super-new.txt')).toBe('');
+      expect(out.headSha).toBe(git(repo, 'rev-parse', 'HEAD'));
+      // The local root commit is independent of the aggregate submodule error.
+      expect(out.localCommitSha).toBe(git(repo, 'rev-parse', 'HEAD'));
     });
   });
 });
@@ -3368,6 +5041,7 @@ describe('runGitSync (real git, two submodules) — GAP-1 continue-past-conflict
       // every agent's work for 12h behind one unreconcilable submodule.
       expect(git(repo, 'log', '--format=%B', 'HEAD')).toMatch(/auto-commit test/);
       expect(git(repo, 'status', '--porcelain', 'super-new.txt')).toBe('');
+      expect(out.headSha).toBe(git(repo, 'rev-parse', 'HEAD'));
     });
   });
 
@@ -3737,6 +5411,37 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
     expect(commitAttempts).toBe(1 + 3); // initial attempt + bounded live-contention retries
   });
 
+  it('EI-258149: a publication failure remains an error when another dirty path is live-held', async () => {
+    let commitAttempts = 0;
+    const run = fakeGit((args) => {
+      const j = args.join(' ');
+      if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
+      if (j.startsWith('status --porcelain -z')) return { code: 0, stdout: ' M file.txt\0 M held.txt\0' };
+      if (j.startsWith('status --porcelain')) return { code: 0, stdout: ' M file.txt\n M held.txt\n' };
+      if (j.startsWith('rev-parse --absolute-git-dir')) return { code: 1, stderr: 'not a git directory' };
+      if (j.startsWith('commit')) {
+        commitAttempts++;
+        return { code: 1, stderr: "fatal: Unable to create '.git/index.lock': File exists" };
+      }
+      return { code: 0, stdout: '' };
+    });
+
+    const out = await runGitSync('test', {
+      repoPath: '/fake',
+      runGit: run,
+      submodulePaths: [],
+      liveLockHoldings: [{ path: 'held.txt', owner: 'peer', intent: 'active edit' }],
+      config: { push: false, pushSubmodules: false },
+    });
+
+    expect(commitAttempts).toBe(4);
+    expect(out.skippedPaths).toEqual(expect.arrayContaining([expect.objectContaining({ path: 'held.txt', owner: 'peer' })]));
+    expect(out.status).toBe('error');
+    if (out.status === 'error') {
+      expect(out.errors).toEqual(expect.arrayContaining([expect.objectContaining({ scope: 'superproject', message: expect.stringContaining('commit failed') })]));
+    }
+  });
+
   it('EI-21210284687094143: catch-all commit retries a transient live index.lock instead of red-sticking git-sync', async () => {
     let commitAttempts = 0;
     const logs: string[] = [];
@@ -3772,6 +5477,21 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
     expect(out.status).toBe('synced');
     expect(commitAttempts).toBe(2);
     expect(logs.join('\n')).toContain("'git commit' hit live index.lock contention");
+  });
+
+  it('EI-25545265520729999: a failed HEAD read cannot supply partial-outcome head evidence', async () => {
+    const run = fakeGit((args) => {
+      const j = args.join(' ');
+      if (j === 'submodule sync --recursive') return { code: 1, stderr: 'canonical URL sync unavailable' };
+      if (j.startsWith('status --porcelain')) return { code: 0, stdout: '' };
+      if (j === 'rev-parse HEAD') return { code: 1, stdout: 'd'.repeat(40), stderr: 'HEAD read failed' };
+      return { code: 0, stdout: '' };
+    });
+
+    const out = await runGitSync('test', { repoPath: '/fake', runGit: run, submodulePaths: ['libs/sub'] });
+
+    expect(out.status).toBe('error');
+    expect(out).not.toHaveProperty('headSha');
   });
 
   it('EI-20329530284626235: a failed canonical submodule URL sync is loud and blocks pushes', async () => {
@@ -4139,9 +5859,10 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
         checkIgnoreCalls.push(args);
         // Default `git check-ignore` suppresses tracked files. The fake models
         // that contract: only the ignored-untracked path is returned, so the
-        // tracked protected path must remain in the exclusion pathspec.
-        const queried = args.at(-1);
-        return queried === ignoredPath ? { code: 0, stdout: `${ignoredPath}\n` } : { code: 1, stdout: '' };
+        // tracked protected path must remain in the exclusion pathspec. Both
+        // paths are verbatim, so they arrive in ONE batched call (WI-6554700010010584).
+        const queried = args.slice(2);
+        return queried.includes(ignoredPath) ? { code: 0, stdout: `${ignoredPath}\n` } : { code: 1, stdout: '' };
       }
       if (j.startsWith('add')) {
         addCalls.push(args);
@@ -4164,10 +5885,7 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
     });
 
     expect(out.status).toBe('synced');
-    expect(checkIgnoreCalls).toEqual([
-      ['check-ignore', '--', ignoredPath],
-      ['check-ignore', '--', stageableProtectedPath],
-    ]);
+    expect(checkIgnoreCalls).toEqual([['check-ignore', '--', ignoredPath, stageableProtectedPath]]);
     expect(addCalls).toHaveLength(1); // no red first attempt + recovery retry
     expect(addCalls[0]).not.toContain(`:(exclude,literal)${ignoredPath}`);
     expect(addCalls[0]).toContain(`:(exclude,literal)${stageableProtectedPath}`);
@@ -4520,8 +6238,6 @@ const UNWRAPPED_INDEX_WRITER_ALLOWLIST: Record<string, string> = {
     'Best-effort cleanup on an already-failing transplant path: the result is ignored and the tick reports error regardless.',
   "runGit(['merge', '--abort']":
     'Cleanup after a merge that already ran through recoverIndexLockContention this tick, which reclaimed any orphaned lock.',
-  "runGit(['add', '--', ...g.files]":
-    'commitAttributedGroups has no logger and ignores this result by design. The wrapped catch-all `git add -A` re-stages anything a lock-blocked group add missed (STRANDING GUARD, WI-1316).',
 };
 
 async function findUnwrappedIndexWriters(source: string): Promise<Array<{ line: number; text: string }>> {

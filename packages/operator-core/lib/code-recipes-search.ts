@@ -42,6 +42,7 @@ import {
   type ProseProfileSelection,
 } from './search/prose-vector-dims';
 import { proseMinScoreFloors } from './search/prose-min-score';
+import { lexicalLeg } from './search/lexical/rank';
 
 /**
  * EI-9312: bound the ACTUAL per-query embed call, not just the embedder's
@@ -74,14 +75,22 @@ export const codeRecipesSource: SearchSource = {
     // Postgres-owned parsing/stemming/stop-word handling and only relax the
     // boolean operator after parsing (the same safe pattern used by the other
     // lexical search sources).
+    // BM25 (pg_textsearch) when its index is live, else this ts_rank_cd ranking
+    // (plan bm25-lexical-search-evoke-adoption-2026-10-10 P-005). BM25 scores any
+    // query term, so it keeps the disjunctive recall the OR query provides.
     const orQuery = sql`replace(plainto_tsquery('english', ${query})::text, ' & ', ' | ')::tsquery`;
+    const leg = await lexicalLeg(sql as postgres.Sql, {
+      table: 'code_recipes',
+      query,
+      legacy: { score: sql`ts_rank_cd(title_tsv, ${orQuery})`, match: sql`title_tsv @@ ${orQuery}` },
+    });
     const rows = (await sql`
       SELECT id, title, description, run_count, tools_used,
-             ts_rank_cd(title_tsv, ${orQuery}) AS rank
+             ${leg.score} AS rank
         FROM harness_shared.code_recipes
        WHERE status = 'active'
-         AND title_tsv @@ ${orQuery}
-    ORDER BY rank DESC LIMIT ${limit}
+         AND ${leg.match}
+    ORDER BY ${leg.order}, id LIMIT ${limit}
     `) as unknown as Array<{
       id: string;
       title: string;

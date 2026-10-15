@@ -1,6 +1,7 @@
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { FOREIGN_HIVE_SUBMODULES } from '../../../../scripts/lib/foreign-hive-submodules.mjs';
 
 /**
  * Recurrence guard for the 2026-06-25 "Setting up Papercusp workspace failed"
@@ -98,12 +99,36 @@ describe('.gitmodules submodule URL invariants (release blocker)', () => {
     );
   });
 
+  // A registered foreign-hive submodule (scripts/lib/foreign-hive-submodules.mjs) is ANOTHER hive's
+  // repository and keeps that hive's remote (WI-6554700010009815). Only an EXACT path + url match is
+  // excused, so the registry can never widen into a blanket HTTPS exemption.
+  const isRegisteredForeignHive = (e: SubmoduleEntry): boolean =>
+    FOREIGN_HIVE_SUBMODULES.some((hive) => hive.path === e.path && hive.url === e.url);
+
   it('every submodule URL is an SSH GitHub URL under the Papercusp org', () => {
-    const bad = entries.filter((e) => !/^git@github\.com:Papercusp\/[\w.-]+\.git$/i.test(e.url));
+    const bad = entries.filter(
+      (e) => !/^git@github\.com:Papercusp\/[\w.-]+\.git$/i.test(e.url) && !isRegisteredForeignHive(e),
+    );
     expect(
       bad,
-      `non-conforming submodule URL(s): ${bad.map((b) => `${b.path} → ${b.url}`).join(', ')}`,
+      `non-conforming submodule URL(s): ${bad.map((b) => `${b.path} → ${b.url}`).join(', ')}` +
+        ' (another hive\'s submodule belongs in scripts/lib/foreign-hive-submodules.mjs)',
     ).toEqual([]);
+  });
+
+  it('declares every registered foreign hive in .gitmodules with exactly its registered url', () => {
+    // The other half of the two-way pin: a registry entry whose submodule moved, changed url or was
+    // removed is stale, and would otherwise keep excusing a path nobody declares.
+    const byPath = new Map(entries.map((e) => [e.path, e.url]));
+    const stale = FOREIGN_HIVE_SUBMODULES.filter((hive) => byPath.get(hive.path) !== hive.url);
+    expect(
+      stale.map((hive) => `${hive.path} → ${hive.url} (.gitmodules: ${byPath.get(hive.path) ?? 'absent'})`),
+    ).toEqual([]);
+    // Falsifiable: the same path under any other url is NOT excused.
+    for (const hive of FOREIGN_HIVE_SUBMODULES) {
+      expect(isRegisteredForeignHive({ name: hive.path, path: hive.path, url: hive.url })).toBe(true);
+      expect(isRegisteredForeignHive({ name: hive.path, path: hive.path, url: `${hive.url}.other` })).toBe(false);
+    }
   });
 });
 

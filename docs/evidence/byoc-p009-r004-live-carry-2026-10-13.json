@@ -1,0 +1,165 @@
+{
+  "schemaVersion": 1,
+  "workItemId": "WI-10000407",
+  "plan": "byoc-delivery-acceleration-2026-09-06",
+  "planItem": "P-009",
+  "spec": "AUTO-BAR-R-004-P-009@8",
+  "evidencePlane": "live-ledger-read",
+  "acceptanceStatus": "incomplete",
+  "method": {
+    "query": "SELECT id, subscriber_id, source, status, channel, length(summary) AS characters, octet_length(summary) AS utf8_bytes, payload->>'routineId' AS routine_id, payload->>'wakeCount' AS fire_number, created_at, delivered_at, turn_proof, turn_started_at, pickup_deadline_at FROM harness_shared.event_wake_deliveries WHERE workspace_id = 'default' AND subscriber_id = 'su-respawn-80c8e4065aac34e2ea45c7655f6b43fe' AND source LIKE 'loop:%' ORDER BY created_at DESC LIMIT 8",
+    "tool": "code:run -> tools.dev.pgQuery",
+    "byteMeasure": "PostgreSQL octet_length(summary), UTF-8 bytes",
+    "characterMeasure": "PostgreSQL length(summary), Unicode characters",
+    "producer": "packages/operator-core/lib/harness/routines/loop-fire.ts: renderLoopWakeText -> wake summary",
+    "pickupWriter": "packages/operator-core/lib/events/await/store.ts: observeAwaitingTurnProofs",
+    "pickupDefinition": "packages/operator-core/lib/events/await/turn-proof.ts: only host-attested or observed confirms turn start; delivered alone and null proof do not",
+    "scope": "Last eight requested loop deliveries for this verified owner; query returned five rows without truncation. This is a bounded owner sample, not a workspace census or a causal before/after experiment."
+  },
+  "ownerId": "su-respawn-80c8e4065aac34e2ea45c7655f6b43fe",
+  "rows": [
+    {
+      "id": "755177",
+      "subscriber_id": "su-respawn-80c8e4065aac34e2ea45c7655f6b43fe",
+      "source": "loop:rt_papercusp_loop_su_respawn_80c8e4065aac34e2ea45c7655f6b43fe",
+      "status": "delivered",
+      "channel": "psu-socket-inject",
+      "characters": 5775,
+      "utf8_bytes": 5844,
+      "routine_id": "rt_papercusp_loop_su_respawn_80c8e4065aac34e2ea45c7655f6b43fe",
+      "fire_number": "5",
+      "created_at": "2026-10-13 15:21:58.245751+00",
+      "delivered_at": "2026-10-13 15:24:18.775452+00",
+      "turn_proof": "observed",
+      "turn_started_at": "2026-10-13 15:24:38.787+00",
+      "pickup_deadline_at": "2026-10-13 15:34:18.775452+00"
+    },
+    {
+      "id": "752406",
+      "subscriber_id": "su-respawn-80c8e4065aac34e2ea45c7655f6b43fe",
+      "source": "loop:rt_papercusp_loop_su_respawn_80c8e4065aac34e2ea45c7655f6b43fe",
+      "status": "delivered",
+      "channel": "suppressed-redundant",
+      "characters": 4988,
+      "utf8_bytes": 5057,
+      "routine_id": "rt_papercusp_loop_su_respawn_80c8e4065aac34e2ea45c7655f6b43fe",
+      "fire_number": "4",
+      "created_at": "2026-10-13 14:20:34.753328+00",
+      "delivered_at": "2026-10-13 14:21:52.397855+00",
+      "turn_proof": null,
+      "turn_started_at": null,
+      "pickup_deadline_at": null
+    },
+    {
+      "id": "747206",
+      "subscriber_id": "su-respawn-80c8e4065aac34e2ea45c7655f6b43fe",
+      "source": "loop:rt_papercusp_loop_su_respawn_80c8e4065aac34e2ea45c7655f6b43fe",
+      "status": "delivered",
+      "channel": "inbox",
+      "characters": 5438,
+      "utf8_bytes": 5523,
+      "routine_id": "rt_papercusp_loop_su_respawn_80c8e4065aac34e2ea45c7655f6b43fe",
+      "fire_number": "3",
+      "created_at": "2026-10-13 13:14:06.401559+00",
+      "delivered_at": "2026-10-13 13:23:41.288035+00",
+      "turn_proof": "observed",
+      "turn_started_at": "2026-10-13 13:23:47.679+00",
+      "pickup_deadline_at": "2026-10-13 13:33:41.288035+00"
+    },
+    {
+      "id": "743191",
+      "subscriber_id": "su-respawn-80c8e4065aac34e2ea45c7655f6b43fe",
+      "source": "loop:rt_papercusp_loop_su_respawn_80c8e4065aac34e2ea45c7655f6b43fe",
+      "status": "delivered",
+      "channel": "suppressed-redundant",
+      "characters": 5077,
+      "utf8_bytes": 5160,
+      "routine_id": "rt_papercusp_loop_su_respawn_80c8e4065aac34e2ea45c7655f6b43fe",
+      "fire_number": "2",
+      "created_at": "2026-10-13 12:48:04.973787+00",
+      "delivered_at": "2026-10-13 12:52:18.279922+00",
+      "turn_proof": null,
+      "turn_started_at": null,
+      "pickup_deadline_at": null
+    },
+    {
+      "id": "742530",
+      "subscriber_id": "su-respawn-80c8e4065aac34e2ea45c7655f6b43fe",
+      "source": "loop:rt_papercusp_loop_su_respawn_80c8e4065aac34e2ea45c7655f6b43fe",
+      "status": "delivered",
+      "channel": "suppressed-redundant",
+      "characters": 4438,
+      "utf8_bytes": 4518,
+      "routine_id": "rt_papercusp_loop_su_respawn_80c8e4065aac34e2ea45c7655f6b43fe",
+      "fire_number": "1",
+      "created_at": "2026-10-13 12:28:03.981139+00",
+      "delivered_at": "2026-10-13 12:29:48.303207+00",
+      "turn_proof": null,
+      "turn_started_at": null,
+      "pickup_deadline_at": null
+    }
+  ],
+  "confirmedPickup": [
+    {
+      "deliveryId": "755177",
+      "utf8Bytes": 5844,
+      "characters": 5775,
+      "turnProof": "observed",
+      "deliveryToObservedTurnMs": 20012,
+      "interpretation": "Elapsed time from channel delivery to the stored first observed turn signal; not renderer latency or a prompt-consumption attestation."
+    },
+    {
+      "deliveryId": "747206",
+      "utf8Bytes": 5523,
+      "characters": 5438,
+      "turnProof": "observed",
+      "deliveryToObservedTurnMs": 6391,
+      "interpretation": "Elapsed time from channel delivery to the stored first observed turn signal; not renderer latency or a prompt-consumption attestation."
+    }
+  ],
+  "conclusions": {
+    "byteAndCharacterCountsDiffer": true,
+    "livePickupObserved": true,
+    "matchedReductionMeasured": false,
+    "reductionPct": null,
+    "requiredReductionPct": 50,
+    "reason": "The five rows carry different current checkpoints and no matched baseline/candidate content or source/runtime treatment pin. No reduction percentage or acceptance pass is inferred.",
+    "historicalPair": "Delivery IDs 353224 and 353512 remain historical evidence only; their null turn proof and character-based comparison cannot establish current matched byte/pickup acceptance.",
+    "correctnessTests": "Saved measured passing R004 detector runs 21211072/21211073/21211075 and bindings 41832/41833/41834 are preserved separately. This read does not refresh their global testRun currentness."
+  },
+  "cleanTestRoute": {
+    "registryRead": "harness:list, workspace papercusp-workspace, detail full, limit 200; spilled complete result read locally",
+    "registryRowsRead": 101,
+    "canonicalHarness": {
+      "slug": "papercusp",
+      "root": "/home/builduser/papercupai-workspace/papercusp"
+    },
+    "priorCandidateRoot": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-e8df8750791b.P0DkfL/checkout",
+    "priorCandidateRegistered": false,
+    "sourceContract": "testing:run resolves alternate evidence roots through the caller workspace harness registry; no registration bypass or alternate checkout edit was used.",
+    "servingSchemaLimitation": "The retrieved release-operator testing:run schema does not expose maintained rootHarnessSlug. This artifact does not establish an eligible clean route."
+  },
+  "remaining": [
+    "A discriminating current matched baseline/candidate comparison proving at least 50 percent UTF-8 injected-byte reduction with preserved carry content and confirmed pickup.",
+    "Eligible registered clean evidence execution/currentness for the saved correctness detectors.",
+    "Canonical R006 deployed producer decision through the existing Avi/fleet leader conversation, retaining literal 24h soak, customer acceptance, eight-kind census, billing closure and final green shipment.",
+    "Original TDZ root cause accountability remains open in EI-25841466577299173."
+  ],
+  "operations": {
+    "newTestRuns": 0,
+    "paidCohortRuns": 0,
+    "serviceRestarts": 0,
+    "releaseGateOperations": 0
+  },
+  "publicExport": {
+    "schemaVersion": 1,
+    "serializer": "scripts/lib/identity-leak-patterns.mjs:serializeIdentitySafeJson",
+    "originalSha256": "87919cdfc61030be6e22c661e9e418b2d0cfc0ff96e91c45ae138a0a0868d6d9",
+    "originalPreservation": "Byte-identical immutable private evidence retained; private path recorded in work-item checkpoint.",
+    "redactedStringPaths": [
+      "cleanTestRoute.canonicalHarness.root",
+      "cleanTestRoute.priorCandidateRoot"
+    ],
+    "scope": "Sanitized diagnostic edition. Machine-specific path values are redacted; ledger rows, counters, hashes, conclusions and incomplete acceptance status are preserved. This edition does not replace frozen comparison fixtures or establish a new acceptance result."
+  }
+}

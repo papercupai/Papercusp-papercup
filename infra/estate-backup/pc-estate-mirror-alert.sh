@@ -51,6 +51,11 @@ if [ "${1:-}" = "--resolved" ]; then MODE=resolved; shift; fi
 # alert that must never be ignored. This mode states the fault and DROPS that
 # consequence claim, because in this mode the consequence is measurably false.
 if [ "${1:-}" = "--degraded" ]; then MODE=degraded; shift; fi
+# --partial-source: the mirror is healthy, but a SOURCE backup it mirrored recorded
+# producer failures in its MANIFEST (WI-10006330). One-shot by construction (the
+# mirror fires it once per newly published snapshot), so it writes NO latch marker:
+# neither "the mirror is failing" nor "the probe is degraded" is true.
+if [ "${1:-}" = "--partial-source" ]; then MODE=partial-source; shift; fi
 REASON="${1:-pc-estate-mirror failed}"
 # Derive the repo root from this script's own location (infra/estate-backup/)
 # rather than hardcoding a home path — this file ships, and a literal home
@@ -93,6 +98,10 @@ elif [ "$MODE" = degraded ]; then
   # Channel 4 is suppressed for an ALREADY-KNOWN degradation: a six-hourly probe
   # re-broadcasting a standing fault is exactly how the alert loses its audience.
   [ "$ALREADY_KNOWN" = 1 ] && MODE=degraded-quiet
+elif [ "$MODE" = partial-source ]; then
+  echo "SOURCE BACKUP PARTIAL: $REASON" >&2
+  command -v notify-send >/dev/null 2>&1 && \
+    notify-send -u normal "Estate source backup PARTIAL" "$REASON" 2>/dev/null || true
 else
 
 {
@@ -161,6 +170,22 @@ elif mode == "degraded":
                  "freshness limit. The WI-645563 single-provider exposure is NOT open and no "
                  "backup-recovery action is needed. Marker: %s. Confirm independently: "
                  "ls -1dt %s/snapshots/*/*/ | head" % (marker, marker.rsplit('/', 1)[0])),
+      }],
+    }
+elif mode == "partial-source":
+    msg = {
+      "to": ["*"],
+      "expects": "action",
+      "summary": ("SOURCE ESTATE BACKUP PARTIAL (off-GCP mirror is healthy): %s" % reason[:150]),
+      "body": [{
+        "text": ("The off-GCP mirror copied and verified this snapshot, but pc-estate-backup.sh on "
+                 "the source VM recorded artifact failure(s) in its MANIFEST, so the failed "
+                 "artifacts exist in NEITHER the GCS bucket NOR the mirror for that day. Find the "
+                 "cause in the producer journal on the VM: gcloud compute ssh <host> --zone "
+                 "us-central1-a --tunnel-through-iap --command 'sudo journalctl -u "
+                 "pc-estate-backup.service --since <day> | grep FAIL'. Not a mirror outage; the "
+                 "WI-645563 single-provider exposure is NOT open."),
+        "couldNotDetermine": [{"what": "whether the next scheduled backup recovers the missing artifacts"}],
       }],
     }
 else:

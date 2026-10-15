@@ -25,6 +25,9 @@ import {
 import { useSyncQuery } from "@papercusp/sync";
 import type { ReportBlock } from "@papercusp/chat-protocol";
 import type { AuthorIdentity } from "../../_components/AuthorBadge";
+import type { PlanStatusSummary } from "@papercusp/plan-parser";
+import type { DerivedShipGate } from "@papercusp/operator-core/lib/agent-tools/plans/derived-ship-gate";
+import type { NoteStaleness } from "@papercusp/operator-core/lib/agent-tools/plans/now-note-staleness";
 import { readListMeta } from "@papercusp/operator-core/lib/sync-resolver/list-meta";
 import { markInteractionPhase, PERF_INTERACTIONS } from "@/app/_components/perf/perf-marks";
 
@@ -92,6 +95,10 @@ const PLAN_BUCKET_IDS: readonly PlanBucket[] = PLAN_BUCKETS.map((b) => b.id);
  *   1. superseded            → rejected   (terminal off-ramp)
  *   2. shipped               → shipped    (terminal success)
  *   3. awaiting-acceptance   → awaiting   (drained; implementation done, not graded)
+ *   3b. derivedLifecycle verdict implementation-complete | awaiting-acceptance
+ *                            → awaiting   (every item terminal, whatever the stored
+ *                                          status still claims — derived-status-not-
+ *                                          hand-written-2026-10-12 P-007)
  *   4. startStatus 'started' → running    (operationally running)
  *   5. ready | active        → ready      (approved, not started; `active` is legacy-approved)
  *   6. otherwise             → draft      (draft, blocked, anything else)
@@ -103,11 +110,13 @@ const PLAN_BUCKET_IDS: readonly PlanBucket[] = PLAN_BUCKETS.map((b) => b.id);
  * plan under "Running", which is the exact false reading P-004 exists to end.
  */
 export function bucketOf(
-  plan: Pick<PlanListRow, "status" | "startStatus">,
+  plan: Pick<PlanListRow, "status" | "startStatus" | "derivedLifecycle">,
 ): PlanBucket {
   if (plan.status === "superseded") return "rejected";
   if (plan.status === "shipped") return "shipped";
   if (plan.status === "awaiting-acceptance") return "awaiting";
+  const verdict = plan.derivedLifecycle?.verdict;
+  if (verdict === "implementation-complete" || verdict === "awaiting-acceptance") return "awaiting";
   if (plan.startStatus === "started") return "running";
   if (plan.status === "ready" || plan.status === "active") return "ready";
   return "draft";
@@ -131,6 +140,13 @@ export const IMPORTANCE_LEVELS: readonly Importance[] = [
   "low",
 ];
 export type PlanStartStatus = "started" | "paused" | "done" | null;
+/** Mirrors @papercusp/plan-parser's PlanLifecycleVerdict (decoupled wire type). */
+export type PlanLifecycleVerdict =
+  | "no-items"
+  | "active"
+  | "stalled"
+  | "implementation-complete"
+  | "awaiting-acceptance";
 export type PlanTriggerSource = "schedule" | "external" | "manual";
 
 /** Compact, stable label shared by the sidebar and Create-dock plan rows. */
@@ -192,6 +208,22 @@ export interface PlanListRow {
   harness: string;
   /** Operational start state — absent means never started. */
   startStatus?: Exclude<PlanStartStatus, null>;
+  /**
+   * The DERIVED lifecycle (derived-status-not-hand-written-2026-10-12 P-007):
+   * read liveness from `verdict`, never from `status`. `stalled` = live items
+   * but no plan write, linked work-item transition or live claim in 30 days.
+   * Absent from a server predating P-007.
+   */
+  derivedLifecycle?: {
+    verdict: PlanLifecycleVerdict;
+    disposition: string;
+    contradiction?: { claim: string; evidence: string };
+    idleDays?: number;
+    lastActivityAt?: string;
+    liveClaims?: number;
+    /** Signals the verdict could not see; empty = fully measured. */
+    unmeasured?: string[];
+  };
   /** Cross-plan dispatch rank — lower = dispatched first. Absent = no explicit
    *  priority (uses started_at order). */
   priority?: number;
@@ -614,7 +646,16 @@ export interface PlanGetResult {
   /** Derived started/paused/done state, mirrored from PlanListRow. */
   startStatus?: Exclude<PlanStartStatus, null>;
   frontmatter?: Record<string, unknown>;
-  now?: { state: string | null; next: string | null } | null;
+  now?: {
+    state: string | null;
+    next: string | null;
+    /** derived-status-not-hand-written-2026-10-12 P-003: status changes the plan-event
+     *  log recorded after the note was written. Absent on reads that skip the step. */
+    staleness?: NoteStaleness | null;
+  } | null;
+  /** derived-status-not-hand-written-2026-10-12 P-001/P-002: the plan's status derived
+   *  from its item graph at read time; `shipGate` is attached once every item is terminal. */
+  derivedStatus?: (PlanStatusSummary & { shipGate?: DerivedShipGate }) | null;
   items?: PlanItem[];
   decisions?: PlanDecision[];
   missingRefs?: string[];
@@ -637,16 +678,6 @@ export interface PlanGetResult {
   /** P-006: Map of plan-item-id → { featureId, status }. Present when the
    *  plan has features promoted from it; absent for legacy / no-features plans. */
   linkedFeatures?: Record<string, { featureId: string; status: string }>;
-  /** P-083: per-plan-item test coverage (plan↔test rollup via the VAL). */
-  planItemTests?: Record<
-    string,
-    {
-      valsTotal: number;
-      valsRequiringTest: number;
-      valsCovered: number;
-      valsPassing: number;
-    }
-  >;
   /** The first document response deferred live status/test decorations. */
   enrichmentsDeferred?: boolean;
   /** The document is readable, but its later decoration request failed. */
@@ -1618,7 +1649,6 @@ export function usePlan(
             items:
               current.items === initial.items ? decorated.items : current.items,
             linkedFeatures: decorated.linkedFeatures,
-            planItemTests: decorated.planItemTests,
             enrichmentsDeferred: false,
           };
         });
@@ -3085,7 +3115,7 @@ export interface TriggerRunVisibility {
   stormPolicy: Record<string, unknown>;
   redactedPayload: Record<string, unknown>;
   outcomeLinks: Array<{
-    kind: "gmail-draft" | "slack-thread";
+    kind: "gmail-draft";
     label: string;
     href: string | null;
   }>;

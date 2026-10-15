@@ -14,9 +14,9 @@ use crate::models::{
     RosterEntry, SessionTranscriptResolution, SessionTranscriptTurn, TestingDomain, ToolPaletteHit,
     ToolPaletteRecipe, TuiPaneContribution, ViewState, WorkFrontier, WorkItem,
 };
-use crossterm::event::{self, Event as CtEvent, KeyEvent, MouseEvent};
+use crossterm::event::{self, Event as CtEvent, KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use pui_companion_proto::Topology;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Result of loading the Memory tab.  A backend that is disabled is a valid
@@ -470,6 +470,16 @@ pub enum Event {
         owner_turn_ids: Vec<String>,
         approvals: Vec<crate::models::PendingApproval>,
     },
+    /// The conversation LIST alone refreshed (P-027 G-12): updates the /resume
+    /// inventory without touching the open conversation, unlike
+    /// `AgentChatLoaded`.
+    AgentChatListLoaded {
+        harness: String,
+        summaries: Vec<crate::agent_chats::AgentChatSummary>,
+    },
+    /// Listing this pot's conversations failed (P-027 G-12). The /resume
+    /// picker says so in plain words instead of loading forever.
+    AgentChatListFailed { harness: String, message: String },
     /// A parked historical HITL request was decided through the resolve POST.
     AgentChatApprovalResolved { call_id: String, approved: bool },
     /// A PUI SU-session create/attach completed through launch-su.  The
@@ -509,6 +519,10 @@ pub enum Event {
         command_id: String,
         command: serde_json::Value,
     },
+    /// WI-10006644: the operator accepted the connection but has not answered
+    /// one readiness read in time. The send keeps retrying; the working line
+    /// says Papercusp is busy instead of leaving a silent spinner.
+    SuSendOperatorBusy { command_id: String },
     SuTurnAcknowledged {
         command_id: String,
         session: crate::su_session::SuSessionIdentity,
@@ -618,6 +632,54 @@ pub fn mouse_event_wanted(m: &MouseEvent) -> bool {
     )
 }
 
+/// Opt-in diagnostic trace for input-latency investigations. It records
+/// only lowercase `m`, Enter key events and terminal resizes; ordinary typed content
+/// is never written. The test harness writes PTY-send records to the same path.
+pub fn trace_input_detail(stage: &str, detail: &str) {
+    static PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let Some(path) = PATH
+        .get_or_init(|| {
+            std::env::var("PUI_INPUT_TRACE_LOG")
+                .ok()
+                .filter(|p| !p.is_empty())
+        })
+        .as_deref()
+    else {
+        return;
+    };
+    let at_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis());
+    let line = format!("at_ms={at_ms} stage={stage} {detail}\n");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        use std::io::Write;
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
+/// Trace only the investigated picker/send keys and resize events, which are the
+/// inputs needed to distinguish the PTY write from crossterm parsing.
+pub fn trace_input_event(stage: &str, event: &Event) {
+    let detail = match event {
+        Event::Key(key)
+            if matches!(key.code, KeyCode::Char('m') | KeyCode::Enter)
+                && key.modifiers == KeyModifiers::NONE =>
+        {
+            format!(
+                "event=key code={:?} modifiers={:?} kind={:?}",
+                key.code, key.modifiers, key.kind
+            )
+        }
+        Event::Resize(cols, rows) => format!("event=resize cols={cols} rows={rows}"),
+        _ => return,
+    };
+    trace_input_detail(stage, &detail);
+}
+
 /// Spawn the blocking input reader. Emits `Key` on input and `Tick` otherwise,
 /// so the loop stays responsive without a busy-wait. Returns when the channel
 /// receiver is dropped.
@@ -651,6 +713,7 @@ pub fn spawn_input_listener(tx: UnboundedSender<Event>) {
                     _ => None,
                 };
                 if let Some(ev) = ev {
+                    trace_input_event("crossterm-read", &ev);
                     if tx.send(ev).is_err() {
                         break;
                     }

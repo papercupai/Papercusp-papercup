@@ -39,7 +39,8 @@ vi.mock('../../../identity-management', () => ({ mutateIdentityStack: H.mutate,
 vi.mock('../../../spawn-config', () => ({ resolveProjectDir: vi.fn(async () => '/workspace/pot') }));
 vi.mock('../../../papercusp-root', () => ({ papercuspPathForWorkspace: () => '/workspace' }));
 vi.mock('../../../sync-sse', () => ({ notifySyncInvalidate: H.invalidate }));
-vi.mock('./bootstrap-su', () => ({ composeModePromptSection: H.modeSection }));
+vi.mock('./bootstrap-su-shared', () => ({ composeModePromptSection: H.modeSection }));
+vi.mock('./bootstrap-su', () => { throw new Error('identity management must not load the bootstrap launch graph'); });
 
 async function post(body: unknown, headers: HeadersInit = { 'content-type': 'application/json' }) {
   const mod = await import('./identity-management');

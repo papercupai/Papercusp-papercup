@@ -89,6 +89,7 @@ describe('union + surface tagging + broadcast flag', () => {
       kinds: ['message', 'escalation'] as CoordKind[],
       since_ts: '2026-06-23T00:00:00.000Z',
       plan_slug: 'plan-a',
+      before_ts: '2026-06-23T13:00:00.000Z',
     });
     // Every bounded call carries a numeric, non-unbounded limit — this is the
     // regression guard: a caller that reverts to coordLog.readLines/readEvents
@@ -104,12 +105,28 @@ describe('union + surface tagging + broadcast flag', () => {
       kinds: ['message', 'escalation'],
       sinceTs: '2026-06-23T00:00:00.000Z',
       planSlug: 'plan-a',
+      beforeTs: '2026-06-23T13:00:00.000Z',
     });
     // Event reads push down kinds only (readEventsBoundedCursor has no sinceTs/planSlug param).
     const eventCall = mockLog.readEventsBoundedCursor.mock.calls.find((c) => c[0] === 'escalations')!;
-    expect(eventCall[1]).toMatchObject({ kinds: ['message', 'escalation'] });
+    expect(eventCall[1]).toMatchObject({ kinds: ['message', 'escalation'], beforeTs: '2026-06-23T13:00:00.000Z' });
     expect(eventCall[1]).not.toHaveProperty('sinceTs');
     expect(eventCall[1]).not.toHaveProperty('planSlug');
+  });
+
+  it('pushes the exact sender filter into every bounded feed surface read', async () => {
+    setSurfaces({
+      messages: [env({ msg_id: 'm', from: 'zoe' })],
+      'plan-events': [env({ msg_id: 'p', kind: 'plan_event', from: 'zoe' })],
+      escalations: [env({ msg_id: 'e', kind: 'escalation', from: 'zoe' })],
+      handoffs: [env({ msg_id: 'h', kind: 'handoff', from: 'zoe' })],
+    });
+
+    await readCoordFeed({ from: 'zoe' });
+
+    for (const call of [...mockLog.readLinesBoundedCursor.mock.calls, ...mockLog.readEventsBoundedCursor.mock.calls]) {
+      expect(call[1]).toMatchObject({ from: 'zoe' });
+    }
   });
 
   it('derives broadcast from a ["*"] recipient', async () => {
@@ -370,6 +387,37 @@ describe('WI-3880: before_ts deepening past the first RAW_SURFACE_FETCH_CAP wind
     expect(messagesCalls[1]![1]).toMatchObject({ beforeId: 2 }); // round 2: walks past round 1's oldest id
     const planEventsCalls = mockLog.readLinesBoundedCursor.mock.calls.filter((c) => c[0] === 'plan-events');
     expect(planEventsCalls).toHaveLength(1);
+  });
+
+  it('pushes before_ts down before the bounded cursor-round cap can be consumed by newer rows', async () => {
+    const beforeTs = '2026-06-24T00:00:00.000Z';
+    const rawRows = Array.from({ length: 10_001 }, (_, i) => ({
+      id: 10_002 - i,
+      envelope: env({ msg_id: `newer-${i}`, from: 'another-agent', ts: '2026-06-25T00:00:00.000Z' }),
+    }));
+    rawRows.push({
+      id: 1,
+      envelope: env({ msg_id: 'known-delivery-marker', from: 'system:delivery-ladder', ts: '2026-06-23T12:10:34.505Z' }),
+    });
+    rawRows.sort((a, b) => b.id - a.id);
+    mockLog.readLinesBoundedCursor.mockImplementation(async (surface: CoordSurface, opts: { beforeId?: number; beforeTs?: string }) => {
+      if (surface !== 'messages') return { rows: [], exhausted: true };
+      const beforeMs = opts.beforeTs ? Date.parse(opts.beforeTs) : null;
+      const candidates = rawRows.filter(
+        (row) =>
+          (opts.beforeId === undefined || row.id < opts.beforeId) &&
+          (beforeMs === null || Date.parse(row.envelope.ts) < beforeMs),
+      );
+      return { rows: candidates.slice(0, 1000), exhausted: candidates.length <= 1000 };
+    });
+    mockLog.readEventsBoundedCursor.mockImplementation(async () => ({ rows: [], exhausted: true }));
+
+    const { rows } = await readCoordFeed({ from: 'system:delivery-ladder', before_ts: beforeTs, limit: 1 });
+
+    expect(rows.map((row) => row.msg_id)).toEqual(['known-delivery-marker']);
+    expect(mockLog.readLinesBoundedCursor.mock.calls.find((call) => call[0] === 'messages')?.[1]).toMatchObject({
+      beforeTs,
+    });
   });
 
   it('gives up after MAX_CURSOR_ROUNDS rather than looping forever on a surface that never satisfies the limit', async () => {

@@ -57,6 +57,27 @@ function otherWorker(): Sql {
   });
 }
 
+/** Hold delivery of a real PG query so cancellation/deadline changes
+ * happen after it completes, rather than relying on a scheduling race. All
+ * queries and results still come from the suite's actual database. */
+function afterApprovalQuery(queryText: string, afterQuery: () => Promise<void> | void): Sql {
+  let intercepted = false;
+  return new Proxy(sql, {
+    apply(target, thisArg, args) {
+      const query = Reflect.apply(target, thisArg, args);
+      const text = args[0] as TemplateStringsArray;
+      if (!intercepted && text[0]?.includes(queryText)) {
+        intercepted = true;
+        return query.then(async (rows: unknown) => {
+          await afterQuery();
+          return rows;
+        });
+      }
+      return query;
+    },
+  });
+}
+
 const REQ = {
   chatId: 'chat-1',
   callId: 'call-1',
@@ -153,6 +174,47 @@ describe('agent-loop approval store — real Postgres (migration 934)', () => {
     expect(resolved).toBe(false);
   });
 
+  it.each([true, false])('a mismatched waiter cannot consume a resolved approval (approved=%s)', async (approved) => {
+    await createLoopApproval(REQ);
+    await resolveLoopApproval({
+      ...REQ, approved, reason: 'workspace A decision', resolvedBy: 'test:workspace-A',
+    });
+    const before = await sql`SELECT * FROM harness_shared.agent_loop_approvals`;
+
+    const foreignDecision = await awaitLoopApprovalDecision({
+      ...REQ, workspaceId: 'OTHER-ws', timeoutMs: 0,
+    });
+    expect(foreignDecision.approved).toBe(false);
+    expect(foreignDecision.reason).toBe('approval request expired');
+    const after = await sql`SELECT * FROM harness_shared.agent_loop_approvals`;
+    expect([...after]).toEqual([...before]);
+
+    // The rightful waiter still receives the untouched decision and consumes it.
+    const rightfulDecision = await awaitLoopApprovalDecision(REQ);
+    expect(rightfulDecision).toEqual({ approved, reason: 'workspace A decision' });
+    expect(await sql`SELECT * FROM harness_shared.agent_loop_approvals`).toHaveLength(0);
+  });
+
+  it.each(['timeout', 'abort'] as const)('a mismatched waiter cannot deny or delete a pending approval on %s', async (exit) => {
+    await createLoopApproval(REQ);
+    const before = await sql`SELECT * FROM harness_shared.agent_loop_approvals`;
+    const ctrl = new AbortController();
+    if (exit === 'abort') ctrl.abort();
+
+    const foreignDecision = await awaitLoopApprovalDecision({
+      ...REQ, workspaceId: 'OTHER-ws', timeoutMs: 0, signal: ctrl.signal,
+    });
+    expect(foreignDecision.approved).toBe(false);
+    expect(foreignDecision.reason).toBe(exit === 'abort'
+      ? 'approval aborted (run cancelled)' : 'approval request expired');
+    const after = await sql`SELECT * FROM harness_shared.agent_loop_approvals`;
+    expect([...after]).toEqual([...before]);
+
+    // A foreign wait must leave a request that its own workspace can resolve.
+    expect(await resolveLoopApproval({ ...REQ, approved: true })).toBe(true);
+    expect((await awaitLoopApprovalDecision(REQ)).approved).toBe(true);
+  });
+
   it('timeout self-denies: the row leaves pending and the waiter gets a deny', async () => {
     await createLoopApproval(REQ);
     const decision = await awaitLoopApprovalDecision({
@@ -166,6 +228,53 @@ describe('agent-loop approval store — real Postgres (migration 934)', () => {
     expect(decision.reason).toContain('timed out');
     const pending = await listPendingLoopApprovals({ chatId: 'chat-1', workspaceId: 'ws-1' });
     expect(pending).toHaveLength(0);
+  });
+
+  it.each([
+    ['timeout', 'read'], ['abort', 'read'], ['timeout', 'consume'], ['abort', 'consume'],
+  ] as const)('an approved decision cannot cross the waiter %s during its PG %s', async (exit, stage) => {
+    await createLoopApproval(REQ);
+    expect(await resolveLoopApproval({ ...REQ, approved: true })).toBe(true);
+    const ctrl = new AbortController();
+    let now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let queryCompleted = false;
+    try {
+      const delayedSql = afterApprovalQuery(stage === 'read'
+        ? 'SELECT status, reason' : 'DELETE FROM harness_shared.agent_loop_approvals', () => {
+        queryCompleted = true;
+        if (exit === 'abort') ctrl.abort();
+        // Advance only after the selected PG result exists, so slow queries
+        // cannot expire the consume case prematurely at its earlier read.
+        else now += 100;
+      });
+
+      const decision = await awaitLoopApprovalDecision({
+        ...REQ, timeoutMs: exit === 'timeout' ? 50 : 10_000, signal: ctrl.signal,
+      }, { sql: delayedSql });
+
+      expect(queryCompleted).toBe(true);
+      expect(decision).toEqual({
+        approved: false,
+        reason: exit === 'timeout' ? 'approval timed out' : 'approval aborted (run cancelled)',
+      });
+      expect(await sql`SELECT * FROM harness_shared.agent_loop_approvals`).toHaveLength(0);
+      expect(await resolveLoopApproval({ ...REQ, approved: true })).toBe(false);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('an approved decision remains usable when its PG read completes within the waiter bounds', async () => {
+    await createLoopApproval(REQ);
+    expect(await resolveLoopApproval({ ...REQ, approved: true })).toBe(true);
+    let readCompleted = false;
+    const decision = await awaitLoopApprovalDecision({ ...REQ, timeoutMs: 10_000 }, {
+      sql: afterApprovalQuery('SELECT status, reason', () => { readCompleted = true; }),
+    });
+    expect(readCompleted).toBe(true);
+    expect(decision.approved).toBe(true);
+    expect(await sql`SELECT * FROM harness_shared.agent_loop_approvals`).toHaveLength(0);
   });
 
   it('abort self-denies promptly', async () => {

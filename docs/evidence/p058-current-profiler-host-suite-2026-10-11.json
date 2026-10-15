@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "name": "P058 current CPU sampler focused host suite",
+  "command": [
+    "node",
+    "scripts/npm-install-safe.mjs",
+    "--exec-under-lock",
+    "--",
+    "node",
+    "node_modules/vitest/vitest.mjs",
+    "run",
+    "--root",
+    "packages/operator-core",
+    "lib/cpu-sample.test.ts",
+    "--reporter=verbose"
+  ],
+  "cwd": ".",
+  "environment": {
+    "PAPERCUSP_TEST_RUN_HARNESS": "papercusp"
+  },
+  "startedAt": "2026-10-10T23:55:57Z",
+  "finishedAt": "2026-10-11T00:09:11.983Z",
+  "timestampProvenance": "startedAt is the Vitest local start converted from America/New_York; finishedAt is a later authoritative issue-create receipt after test and hash readback, not the exact test end. Vitest reports duration11900ms.",
+  "exitCode": 0,
+  "summary": "All15 conventional CPU sampler tests pass against current committed source, including shared-output permissions, exact target identity, startup resume and CDP request-timeout checks. Exact input hashes matched before and after.",
+  "workItemId": "EI-25604028797058995",
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "candidateAccepted": false,
+  "evidencePlane": "current-host-focused-suite",
+  "nativeExecReceipt": "aeb472",
+  "runtime": "Node25.9.0/x64",
+  "counts": {
+    "passed": 15,
+    "failed": 0,
+    "skipped": 0
+  },
+  "sourceHashes": {
+    "scripts/cpu-sample.mjs": "c75cb780006a80b85a760550c6cd10539c90fe035d00190e0aef415da32c3df3",
+    "scripts/cdp-inspector.mjs": "bb15dc2ac1ec9cb60d26d62d0790610f2cd097a9171b37c39465c8f5a7d22112",
+    "packages/operator-core/lib/cpu-sample.test.ts": "bd2c94a82727d274653b2a63cb9f0f6345698881b08cdb8a96ed9180ddc1271b"
+  },
+  "assertions": [
+    {
+      "id": "current-focused-suite",
+      "passed": true,
+      "evidence": "Vitest4.1.8:15 passed,0 failed,0 skipped; native executor exit0."
+    },
+    {
+      "id": "current-byte-bindings",
+      "passed": true,
+      "evidence": "All three hashes matched pre/post run and later readback; no tracked diff."
+    }
+  ],
+  "limitations": [
+    "Host suite only; no current ARM collector or whole-server acceptance.",
+    "Historical ARM profiles retain their historical input hashes.",
+    "No Docker root-cause fix, installed-native, trusted signing/publication, transfer or final shipment acceptance."
+  ]
+}

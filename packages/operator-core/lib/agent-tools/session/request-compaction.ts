@@ -27,7 +27,8 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { injectIntoHost, selfCompactionAvailability } from '../../events/await/psu-pty-discovery';
+import { resolveWakeMode } from '../coordination/wake-mode';
+import { injectIntoHost, selfCompactionAvailabilityAsync } from '../../events/await/psu-pty-discovery';
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 import { buildOwnerRespawnLaunchSpec } from '../../carry-respawn';
@@ -45,14 +46,9 @@ import { releaseOwnerHookFileLocks } from '../locks/release-hook-locks';
 import { readPriorRespawnOutcome, priorRespawnNote } from '../../carry-respawn-outcome';
 import { bumpSessionEpoch } from '../../memory/session-epoch-ledger';
 import { getOrgPg } from '@papercusp/db-org';
-import {
-  getLoopStatus,
-  materializeLoop,
-  readActiveLoopFacts,
-  type LoopStatus,
-  type PriorLoopFacts,
-} from '../../harness/routines/loop';
-import { getLoopCarryNoteWithMeta, setLoopCarryNoteWithPrior, shortCarryHash } from '../../carry-note';
+import { clearPendingCarryRespawn, savePendingCarryRespawn } from '../../session-brief';
+import { getLoopStatus } from '../../harness/routines/loop';
+import { getLoopCarryNoteWithMeta } from '../../carry-note';
 import { renderFocusIntegrityWarning, unverifiedFocusRefs } from '../../carry-brief';
 import {
   isJudgeCarryRole,
@@ -64,11 +60,13 @@ import { addressContinuationToOwner } from '../../carry-respawn-addressing';
 import {
   readLiveNativeBgTasks,
   renderNativeBgTaskWarning,
+  type NativeBgTaskReport,
 } from '../../native-bg-task-ledger';
 import {
   evaluateFrozenLineageCarryText,
   frozenLineageCarryViolationPayload,
 } from '../../release/frozen-lineage-execution-policy';
+import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target';
 
 // Preserve the established import surface while sharing the pure guard with
 // loop-turn-outcome and the compaction watchdog.
@@ -170,163 +168,6 @@ async function safeFocusAfterIntegrityCheck(
   );
 }
 
-/**
- * A no-PTY loop cannot be cut through a host socket. An ACTIVE WARM loop can,
- * however, make the same boundary through its next COLD wake — provided the
- * carry anchor exists before the loop is retuned. Keep this recovery here,
- * beside the host-gated path, so callers do not have to spend a second model
- * turn discovering the loop:arm + loop:checkpoint recipe.
- *
- * The note write deliberately precedes the retune. If either write fails, the
- * session remains warm and therefore retains its live context; a verified note
- * left on a still-warm loop is harmless and makes the next retry idempotent.
- */
-async function retuneWarmLoopForColdSettle(
-  ownerId: string,
-  workspaceId: string | null | undefined,
-  loop: LoopStatus,
-  focus: string,
-): Promise<
-  | {
-      ok: true;
-      carryNote: { seeded: boolean; verified: true; contentHash: string };
-      loop: { harness: string; intervalSec: number | null; goal: string | null; mode: string; customWakePrompt: boolean };
-    }
-  | { ok: false; phase: 'read-loop' | 'write-carry' | 'verify-carry' | 'retune-loop'; message: string }
-> {
-  let facts: PriorLoopFacts | null;
-  try {
-    facts = await readActiveLoopFacts(ownerId);
-  } catch (error) {
-    return {
-      ok: false,
-      phase: 'read-loop',
-      message: `Could not read the active loop configuration before the no-PTY recovery: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
-  if (!facts?.active || !loop.active || loop.carry === 'cold') {
-    return {
-      ok: false,
-      phase: 'read-loop',
-      message: 'The active warm loop changed while compaction recovery was being prepared; re-read loop:status and retry.',
-    };
-  }
-
-  const harness = facts.harnessSlug ?? loop.harnessSlug;
-  const intervalSec = facts.intervalSec ?? loop.intervalSec;
-  if (!harness || intervalSec == null || !Number.isFinite(intervalSec) || intervalSec <= 0) {
-    return {
-      ok: false,
-      phase: 'read-loop',
-      message: 'The active loop has no stable harness or cadence to preserve; it was left warm and unmodified.',
-    };
-  }
-
-  const seededNote = [
-    '## Did',
-    'Prepared this active warm loop for a no-PTY deterministic compaction boundary.',
-    '',
-    '## Left',
-    focus,
-    '',
-    '## Key insight',
-    'A no-PTY session cannot receive an in-place carry-respawn; the active loop configuration is preserved while its next wake changes to cold carry.',
-    '',
-    '## Next action',
-    'Resume the loop mission from this verified carry-note on the next cold wake.',
-  ].join('\n');
-
-  let stored: string | null = null;
-  try {
-    const write = await setLoopCarryNoteWithPrior(
-      { harness, ownerId, workspaceId: workspaceId ?? undefined },
-      seededNote,
-      {
-        // Preserve an existing, richer checkpoint. This makes the automatic
-        // seed additive and avoids replacing a note the agent already wrote.
-        transform: (priorNote, incomingNote) => priorNote?.trim() || incomingNote,
-      },
-    );
-    if (write.blockedReason && !write.stored) {
-      return {
-        ok: false,
-        phase: 'write-carry',
-        message: `Could not seed the cold-loop carry-note (${write.blockedReason}); the loop was left warm and unmodified.`,
-      };
-    }
-    stored = write.stored?.trim() || null;
-  } catch (error) {
-    return {
-      ok: false,
-      phase: 'write-carry',
-      message: `Could not seed the cold-loop carry-note: ${error instanceof Error ? error.message : String(error)}. The loop was left warm and unmodified.`,
-    };
-  }
-
-  if (!stored) {
-    return {
-      ok: false,
-      phase: 'write-carry',
-      message: 'The carry-note write returned no durable note; the loop was left warm and unmodified.',
-    };
-  }
-  const verified = await getLoopCarryNoteWithMeta({
-    harness,
-    ownerId,
-    workspaceId: workspaceId ?? undefined,
-  }).catch(() => ({ note: null, updatedAtMs: null }));
-  if (verified.note !== stored) {
-    return {
-      ok: false,
-      phase: 'verify-carry',
-      message:
-        `The cold-loop carry-note could not be verified through the wake-reader path (stored ${stored.length} chars, read back ${verified.note === null ? 'null' : `${verified.note.length} chars`}); ` +
-        'the loop was left warm and unmodified.',
-    };
-  }
-
-  try {
-    await materializeLoop({
-      workspaceId: workspaceId ?? undefined,
-      harnessSlug: harness,
-      ownerId,
-      intervalSec,
-      // Keep the exact kickoff, including an explicit custom wake prompt. The
-      // successor may not see a loop-fire kickoff during this boundary.
-      kickoff: facts.kickoff,
-      customWakePrompt: facts.customWakePrompt === true,
-      goal: facts.goal ?? loop.goal,
-      costCapCents: loop.costCapCents,
-      maxFires: loop.maxFires,
-      maxDurationSec: loop.maxDurationSec,
-      carry: 'cold',
-      continuation: facts.continuation,
-      mode: facts.mode,
-      ...(facts.monitor ? { monitor: facts.monitor } : {}),
-      active: true,
-    });
-  } catch (error) {
-    return {
-      ok: false,
-      phase: 'retune-loop',
-      message:
-        `The carry-note is verified, but retuning the active loop to cold failed: ${error instanceof Error ? error.message : String(error)}. ` +
-        'The loop remains warm; retry session:request-compaction at the next clean boundary.',
-    };
-  }
-
-  return {
-    ok: true,
-    carryNote: { seeded: stored === seededNote, verified: true, contentHash: shortCarryHash(stored) },
-    loop: {
-      harness,
-      intervalSec,
-      goal: facts.goal ?? loop.goal,
-      mode: facts.mode,
-      customWakePrompt: facts.customWakePrompt === true,
-    },
-  };
-}
 
 /**
  * The successor's first prompt when no owner message is open (WI-1804 lineage):
@@ -387,6 +228,7 @@ function frozenCompactionCarryRefusal(text: string) {
   const verdict = evaluateFrozenLineageCarryText({
     surface: 'compaction-continuation',
     text,
+    target: resolveHomeGateVerdictTarget(),
   });
   const payload = frozenLineageCarryViolationPayload(verdict);
   if (!payload) return null;
@@ -472,6 +314,37 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
+    let wakeMode: 'auto' | 'manual';
+    try {
+      wakeMode = await resolveWakeMode(identity.ownerId);
+    } catch {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: false,
+            requested: false,
+            error: 'wake_mode_unavailable',
+            note: 'The current wake mode could not be read, so no carry-respawn was queued.',
+          }),
+        }],
+        isError: true,
+      };
+    }
+    if (wakeMode === 'manual') {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: false,
+            requested: false,
+            error: 'wake_mode_manual',
+            note: 'Carry-respawn is paused by the current manual wake mode. The session remains intact.',
+          }),
+        }],
+        isError: true,
+      };
+    }
     // Check caller-authored hints before ANY fallback can seed them into a cold
     // loop carry-note. A later check covers generated/default carry text too.
     const explicitCarryRefusal = frozenCompactionCarryRefusal(
@@ -483,7 +356,7 @@ export default defineTool({
     // self-compaction — so a recommendation and this refusal cannot drift apart.
     // Loop state can prepare durable carry, but it cannot prove a fresh turn
     // will be delivered without a host. Keep the no-host response explicit.
-    const availability = selfCompactionAvailability(identity.ownerId);
+    const availability = await selfCompactionAvailabilityAsync(identity.ownerId);
     if (!availability.available && availability.reason === 'no_live_pty_host') {
       // A saved carry-note and an armed cold loop are registration evidence,
       // not proof that this process can receive a fresh turn. The no-host cold
@@ -518,47 +391,23 @@ export default defineTool({
         }
       }
       if (loop?.active && loop.carry !== 'cold') {
-        const recovery = await retuneWarmLoopForColdSettle(
-          identity.ownerId,
-          identity.workspaceId,
-          loop,
-          (args.focus ?? '').trim() || DEFAULT_FOCUS,
-        );
-        if (!recovery.ok) {
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: JSON.stringify({
-                  ok: false,
-                  requested: false,
-                  error: 'cold_loop_recovery_failed',
-                  phase: recovery.phase,
-                  note: recovery.message,
-                }),
-              },
-            ],
-            isError: true,
-          };
-        }
+        // EI-25793355480687493: requesting one compaction boundary does not
+        // authorize a persistent carry-policy change. In particular, a refused
+        // no-host request must preserve the owner's existing WARM route.
         return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify({
-                ok: false,
-                requested: false,
-                respawn: false,
-                error: 'no_live_pty_host',
-                carry: 'cold',
-                retuned: true,
-                carryNote: recovery.carryNote,
-                loop: recovery.loop,
-                note:
-                  'The active warm loop was retuned to cold and its carry-note was verified, but no live psu-pty host is available to trigger or verify a fresh successor. This is preparation only, not a respawn. Keep this process active after flushing state, or relaunch through a managed psu host before relying on a fresh-context boundary.',
-              }),
-            },
-          ],
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              requested: false,
+              respawn: false,
+              error: 'no_live_pty_host',
+              carry: 'warm',
+              retuned: false,
+              note:
+                'No live psu-pty host is available, so no carry-respawn was queued. The active loop keeps its warm carry policy and existing carry-note. Flush state and use the authorized managed-host recovery route before expecting a fresh-context successor.',
+            }),
+          }],
           isError: true,
         };
       }
@@ -769,7 +618,7 @@ export default defineTool({
     const openOwnerQuestion = openOwnerMessageQuestion || openOwnerAskCount > 0;
     const firstPrompt =
       spec.firstPrompt ??
-      (() => {
+      (await (async () => {
         // EI-22131227584499489: `focus`/`continueNote` are free text the
         // CALLING owner wrote itself — nothing else verifies it actually names
         // that owner's own state before it becomes a confident "resume: <text>"
@@ -797,11 +646,12 @@ export default defineTool({
           identity.ownerId,
         );
         try {
-          return tagTurnForInjection({ sid: identity.ownerId, origin: 'self-compaction', text: note }).taggedText;
+          return (await tagTurnForInjection({ sid: identity.ownerId, origin: 'self-compaction', text: note }))
+            .taggedText;
         } catch {
           return note; // provenance must never break a boundary
         }
-      })();
+      })());
     // Only the first prompt is live caller-authored successor input at this
     // boundary. The deterministic system addendum may contain immutable
     // transcript/history prose that names a stale candidate while documenting
@@ -809,6 +659,43 @@ export default defineTool({
     // an executable instruction and can strand compaction permanently.
     const hostCarryRefusal = frozenCompactionCarryRefusal(firstPrompt);
     if (hostCarryRefusal) return hostCarryRefusal;
+    // Persist the exact carry before the host can accept the socket request.
+    // A host may recover this same owner through a fresh bootstrap instead of
+    // its in-place respawn path, so socket-only delivery is not sufficient.
+    let pendingCarryRespawn: Awaited<ReturnType<typeof savePendingCarryRespawn>>;
+    try {
+      pendingCarryRespawn = await savePendingCarryRespawn(identity, {
+        firstPrompt,
+        systemPromptAddendum: spec.systemPromptAddendum,
+      });
+    } catch (error) {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: false,
+            requested: false,
+            error: 'carry_persist_failed',
+            note: `The carry-respawn was not sent because its durable continuation could not be saved: ${(error as Error)?.message ?? error}`,
+          }),
+        }],
+        isError: true,
+      };
+    }
+    if (!pendingCarryRespawn) {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: false,
+            requested: false,
+            error: 'carry_persist_failed',
+            note: 'The carry-respawn was not sent because its durable continuation could not be saved.',
+          }),
+        }],
+        isError: true,
+      };
+    }
     // EI-19480099650947832: read what happened to this session's PREVIOUS
     // carry-respawn BEFORE injecting this one, so the verdict describes prior
     // history rather than the request we are about to make. `respawn: true` only
@@ -831,6 +718,15 @@ export default defineTool({
       // CARRY_RESPAWN_SOCKET_TIMEOUT_MS's doc comment above.
       CARRY_RESPAWN_SOCKET_TIMEOUT_MS,
     );
+    if (!ok) {
+      // Clear only this attempt. A newer concurrent compaction request owns a
+      // different nonce and must survive this host refusal.
+      try {
+        await clearPendingCarryRespawn(identity.ownerId, pendingCarryRespawn.nonce);
+      } catch {
+        /* short expiry is the backstop if this best-effort cleanup misses */
+      }
+    }
     // EI-18676518990229124 (session-death-claim-release-2026-07-11 P-002 false
     // positive): the cut we just queued will end THIS process under the SAME
     // ownerId and relaunch it in seconds — the killed child's ordinary
@@ -936,14 +832,16 @@ export default defineTool({
     // idle-gated and fires after this turn ends, so the agent reading this still
     // has time to wait for the job or re-launch it under capability:bash. The
     // liveness claim is an OS-level fd scan, not an inference from the record's
-    // age. Fail-soft — bookkeeping must never block a cut.
-    let nativeBgTasks: ReturnType<typeof readLiveNativeBgTasks> = {
+    // age. Fail-soft — bookkeeping must never block a cut. The scan is async and
+    // deadline-bounded (WI-10005283): it walks all of /proc, so a synchronous
+    // read here stalled this handler's event loop for seconds.
+    let nativeBgTasks: NativeBgTaskReport = {
       live: [],
       unattributed: [],
       degraded: false,
     };
     try {
-      nativeBgTasks = readLiveNativeBgTasks({ sid: identity.ownerId });
+      nativeBgTasks = await readLiveNativeBgTasks({ sid: identity.ownerId });
     } catch {
       /* never block the cut on bg bookkeeping */
     }

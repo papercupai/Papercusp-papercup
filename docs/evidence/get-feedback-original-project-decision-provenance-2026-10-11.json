@@ -1,0 +1,124 @@
+{
+  "schemaVersion": 1,
+  "status": "bounded-provenance-recovery; overall-R6-unknown",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10007521",
+  "observedAt": "2026-10-11T10:40:40Z",
+  "provenanceReadBackAt": "2026-10-11T10:55:20Z",
+  "originalArtifact": {
+    "path": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-live.json",
+    "sha256": "e99b3e1675e935005d3ba693bc3cc00987311384a35bb5435ad4bb16456b27c3",
+    "requesterId": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+    "windowStart": "2026-10-03T05:21:32.561Z",
+    "windowEnd": "2026-10-05T20:27:24.000Z",
+    "eligible": 4,
+    "shortfall": 4,
+    "snapshotDecisionCounts": { "recorded": 2, "unknown": 2 },
+    "preservation": "Original bytes, cutoff, population, classifications and unknowns are unchanged. This recovery records separate observations of evidence already created before that cutoff."
+  },
+  "recoveredObservation": {
+    "conversationId": "conv-mus1v26j-0000-68ff1c643c2b4f10be212508682b280f",
+    "answerPostRef": "thread-post:1156967",
+    "projectDecisionRef": "get-feedback-reliability-usefulness-adoption-2026-10-03#D-003",
+    "observedDisposition": "confirmed-method-adoption",
+    "evidence": "The immutable revision-9-to-10 diff adds D-003, explicitly adopting the vetting answer's proposed methods while keeping implementation and live/shipment acceptance open. Revision 10 records the same author as the original requester. Revisions 11 and 12 record that requester's subsequent methods and runtime-declaration amendments.",
+    "revisionReceipts": [
+      {
+        "id": 70136,
+        "seq": 10,
+        "authorKind": "agent",
+        "authorId": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+        "createdAtMs": 1791011943788,
+        "contentHash": "b95f607dc86536500e4bdb06631f40039ba5fafbd638b5b31b133e577080e745",
+        "addedDecision": "D-003"
+      },
+      {
+        "id": 70142,
+        "seq": 11,
+        "authorKind": "agent",
+        "authorId": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+        "createdAtMs": 1791012817447,
+        "contentHash": "44156438321fb61560f6a02a0cee830b9fd74f6cc0396a44ab4eb67cba72f48f",
+        "rationale": "acceptance BAR amendment get-feedback-methods-vet1156967-v1"
+      },
+      {
+        "id": 70157,
+        "seq": 12,
+        "authorKind": "agent",
+        "authorId": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+        "createdAtMs": 1791014255147,
+        "contentHash": "58426b5000f4d16f2daf71947d3a9c9a01d69264415ab0174ce650b6622728a5",
+        "rationale": "acceptance BAR amendment get-feedback-runtime-declarations-v1"
+      }
+    ],
+    "authorityWriter": "packages/operator-core/lib/agent-tools/plans/revisions.ts:255 persists immutable snapshot, timestamp and resolved caller identity; planRevisionCapture resolves the author from dispatch context.",
+    "scope": "Requester-authored project method decision only. This is not a current-build trial, a source/native receipt, an implementation pass or shipment acceptance."
+  },
+  "recoveredOrdinaryRequesterDecision": {
+    "conversationId": "conv-musb29y1-0000-cf39e1f18138446ebc68b0a6af8436d8",
+    "observedDisposition": "confirmed-reviewed-method; historical-author-attestation-follow-through",
+    "requesterDecision": {
+      "ref": "thread-post:1157515",
+      "authorId": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+      "createdAt": "2026-10-05T15:16:52.445Z",
+      "bodySha256": "a9bcb1099aa6cad63781fec0d8bdfa861e53a23232350dfbb131380e531437f5",
+      "text": "I read independent review1157488: revision3 is attestable as-is, and its proof gaps remain explicit.",
+      "chosenAction": "Continue the same consultation and complete normal outside-lineage meta-rubric attestation for unchanged revision 3; keep native/substantive matrix and shipment unverified."
+    },
+    "independentAdvice": [
+      {
+        "ref": "thread-post:1157488",
+        "authorId": "su-c960cc81-0b1a-41dd-b4d5-bea3d6fbb4f5",
+        "createdAt": "2026-10-05T15:01:37.562Z",
+        "bodySha256": "f6e1599cdb6d382b3d1cab04ec53a34c0dcda0ffd9f5ccfbf53a4be127ea26a1"
+      },
+      {
+        "ref": "thread-post:1157540",
+        "authorId": "su-c960cc81-0b1a-41dd-b4d5-bea3d6fbb4f5",
+        "createdAt": "2026-10-05T15:39:15.929Z",
+        "bodySha256": "b5db8d734af8e3ae9124356b54c740eed41c1f1f55f132dc5c55b0d2b3b08dac",
+        "methodClarification": "The requester author emits the normal meta-scorecard citing this consultation; the independent reviewer does not own that emission seat."
+      }
+    ],
+    "followThrough": {
+      "ref": "EI-25171788938691287",
+      "createdBy": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+      "createdAt": "2026-10-05T20:14:48.571Z",
+      "subject": { "kind": "rubric", "ref": "acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03" },
+      "vettingConsult": "conv-musb29y1-0000-cf39e1f18138446ebc68b0a6af8436d8",
+      "subjectRubricRevision": 3,
+      "subjectCriteriaHash": "2bca61164488dfd7760eebe7c327f52f8e1885650ea9e5e6e8af5192d868248a",
+      "supersedes": "EI-25154818591118422",
+      "evidenceFingerprint": "bf943e8b7f308f7de12d969488ac00f475e08e26bb9b2530073c7b5de9e013eb",
+      "meaning": "The requester retained the independently reviewed method and emitted a corrected author attestation citing both original answers. The card explicitly withdrew unsupported prior totals and preserved unverified R6/R7 scope."
+    },
+    "historicalAudit": {
+      "ref": "EI-25172375455718591",
+      "subject": { "kind": "scorecard", "ref": "EI-25171788938691287" },
+      "createdAt": "2026-10-05T20:24:07.953Z",
+      "createdBy": "system:judge/su-b50e85cc-d0fa-4709-bd94-f8b835b88233",
+      "stateRecordedOnAuthorCard": "passed",
+      "auditedAt": "2026-10-05T20:24:08.033Z",
+      "evidenceFingerprint": "c0ff302117a05e780fc3f79e60340cd035dfcea8c494f3f2e748f3d2b4804d88",
+      "scope": "Historical method-card integrity only; not present-revision vetting, feature acceptance or shipment."
+    },
+    "authorityWriter": "packages/operator-core/lib/agent-tools/scorecards/emit.ts:3897 resolves dispatch caller identity, :3903 forwards identity.ownerId as createdBy, and :3494 persists that author through captureImprovement. The vetting stamp binds the exact consultation and subject rubric identity at :2550.",
+    "scope": "Dated ordinary requester project decision plus actual author follow-through, all before the original cutoff. This is a separate provenance recovery. The original artifact's two unknown structured-reconciliation classifications remain unchanged; no missing consult:reconcile receipt or new plan Decision is invented."
+  },
+  "remaining": {
+    "unrecoveredOriginalDecision": null,
+    "originalStructuredReconciliationUnknowns": 2,
+    "shortfall": 4,
+    "currentRuntimeAndMatrix": "unestablished by this artifact",
+    "independentAcceptance": false,
+    "separateSupplementaryCohort": "The separate 48ca eight-of-eleven observation retains its own identity and cutoff."
+  },
+  "reproduce": [
+    { "tool": "plans:revisions", "args": { "slug": "get-feedback-reliability-usefulness-adoption-2026-10-03", "harness": "papercusp" }, "selectRevisionIds": [70136, 70142, 70157] },
+    { "tool": "plans:revision-diff", "args": { "revisionId": 70136, "harness": "papercusp" } },
+    { "tool": "plans:get", "args": { "slug": "get-feedback-reliability-usefulness-adoption-2026-10-03", "harness": "papercusp", "decisions": ["D-003", "D-004", "D-005"], "mode": "full", "includeHistory": false } },
+    { "tool": "conversations:get", "args": { "id": "conv-musb29y1-0000-cf39e1f18138446ebc68b0a6af8436d8" }, "selectPostIds": [1157488, 1157515, 1157540] },
+    { "tool": "work_items:get", "args": { "ids": ["EI-25171788938691287", "EI-25172375455718591"], "harness": "papercusp", "threadLimit": 0 } },
+    { "tool": "scorecards:list", "args": { "rubricRef": "meta-acceptance-rubric", "subjectRef": "acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03", "since": "2026-10-05T15:01:37Z", "limit": 100, "includeSuperseded": true, "includeRetracted": true }, "selectIssueId": "EI-25171788938691287" }
+  ]
+}

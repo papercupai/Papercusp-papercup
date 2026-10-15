@@ -51,6 +51,15 @@ function runHook(payload: unknown, env: Record<string, string | undefined> = {})
 }
 
 const write = (file_path: string, tool = 'Write') => ({ tool_name: tool, tool_input: { file_path } });
+const applyPatch = (file_path: string, wrapped = false) => {
+  const patch = [
+    '*** Begin Patch',
+    `*** Add File: ${file_path}`,
+    '+-- migration test',
+    '*** End Patch',
+  ].join('\n');
+  return { tool_name: 'apply_patch', tool_input: wrapped ? { patch } : patch };
+};
 
 /**
  * Can this environment reach the reservations table at all?
@@ -73,6 +82,24 @@ describe.skipIf(!PG_READY)('pretooluse-unreserved-migration-guard — falsifiabi
     expect(reason).toContain('node scripts/next-migration.mjs --name hand-numbered');
     // and say why this is not merely the author's problem
     expect(reason).toContain('RELEASE-CUT PREFLIGHT');
+  });
+
+  it('DENIES a repo-relative Codex apply_patch target', () => {
+    const { denied, reason } = runHook(
+      applyPatch(`libs/papercusp/libs/db/sql/${IMPOSSIBLE}-codex-patch.sql`),
+      { PAPERCUSP_WORKSPACE_ROOT: REPO },
+    );
+    expect(denied).toBe(true);
+    expect(reason).toContain('has no row in harness_shared.migration_reservations');
+  });
+
+  it('DENIES a wrapped Codex apply_patch target', () => {
+    const { denied, reason } = runHook(
+      applyPatch(`libs/papercusp/libs/db/sql/${IMPOSSIBLE}-wrapped-codex-patch.sql`, true),
+      { PAPERCUSP_WORKSPACE_ROOT: REPO },
+    );
+    expect(denied).toBe(true);
+    expect(reason).toContain('has no row in harness_shared.migration_reservations');
   });
 
   it('DENIES an already-applied migration even when its number was allocated', () => {
@@ -110,6 +137,10 @@ describe.skipIf(!PG_READY)('pretooluse-unreserved-migration-guard — falsifiabi
 describe('scope — what the guard must not touch', () => {
   it('ignores a non-migration file', () => {
     expect(runHook(write(join(REPO, 'scripts/lint-migrations.mjs'), 'Edit')).denied).toBe(false);
+  });
+
+  it('ignores a non-migration Codex apply_patch target', () => {
+    expect(runHook(applyPatch('packages/operator-core/lib/example.ts'), { PAPERCUSP_WORKSPACE_ROOT: REPO }).denied).toBe(false);
   });
 
   it('ignores sql/archive/** (historical, one directory deeper)', () => {

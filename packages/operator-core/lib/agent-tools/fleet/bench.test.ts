@@ -105,6 +105,7 @@ const ledFleet = (fleetSlug: string): AgentFleetRecord => ({
   description: null,
   owner: null,
   leaderOwnerId: 'su-leader',
+  leaderMissingSinceMs: null,
   colorScheme: null,
   controlState: 'active',
   fleetType: 'single',
@@ -483,6 +484,7 @@ describe('fleet:bench — list mode', () => {
         note: '[fleet:bench] remain benched until the duplicate claim clears',
         expiresTs: null,
         createdAt: '2026-07-10T12:00:00.000Z',
+        timeoutBehavior: 'wake',
       },
     ]);
 
@@ -513,7 +515,7 @@ describe('fleet:bench — list mode', () => {
       { agentId: 'su-other', fleetSlug: 'other-fleet' } as never,
     ]);
     vi.mocked(listParkedAwaitsForSubscribers).mockResolvedValueOnce([
-      { subscriberId: 'su-worker', eventKey: 'p2p-git:phase3-open', note: '[fleet:bench] flip TEST hive bridged', expiresTs: null, createdAt: '2026-07-10T12:00:00.000Z' },
+      { subscriberId: 'su-worker', eventKey: 'p2p-git:phase3-open', note: '[fleet:bench] flip TEST hive bridged', expiresTs: null, createdAt: '2026-07-10T12:00:00.000Z', timeoutBehavior: 'wake' },
     ]);
     const out = await call({ list: true });
     expect(listParkedAwaitsForSubscribers).toHaveBeenCalledWith(['su-worker']);
@@ -528,7 +530,7 @@ describe('fleet:bench — list mode', () => {
   it('a plain (non-bench) parked await never leaks into the bench roster', async () => {
     vi.mocked(groupByAgent).mockReturnValueOnce([{ agentId: 'su-worker', fleetSlug: 'p2p-git' } as never]);
     vi.mocked(listParkedAwaitsForSubscribers).mockResolvedValueOnce([
-      { subscriberId: 'su-worker', eventKey: 'lock:grant:t1', note: null, expiresTs: null, createdAt: '2026-07-10T12:00:00.000Z' },
+      { subscriberId: 'su-worker', eventKey: 'lock:grant:t1', note: null, expiresTs: null, createdAt: '2026-07-10T12:00:00.000Z', timeoutBehavior: 'wake' },
     ]);
     const out = await call({ list: true });
     expect(out).toMatchObject({ ok: true, benched_count: 0, benched: [] });

@@ -55,11 +55,12 @@ import {
   unionConditionalHint,
   unionRequiredKeyHint,
 } from '../../cupboard/tools-discovery';
-import { findTools, type Embedder } from '../../cupboard/tool-find';
+import { findTools, type Embedder, type ToolFindHit } from '../../cupboard/tool-find';
 import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { withInlinedSchemaRefs } from '../schema-ref-inline';
+import { readServingGeneration } from '../../serving-generation';
 
 /**
  * The result-door is a per-tool-result budget, not a per-field budget. A
@@ -71,6 +72,8 @@ import { withInlinedSchemaRefs } from '../schema-ref-inline';
 export const DISCOVERY_RESULT_MAX_BYTES = 5_000;
 /** Keep plugin readiness below the MCP transport deadline while preserving the base catalog. */
 export const PLUGIN_HOST_READINESS_TIMEOUT_MS = 5_000;
+/** The optional harness-registry read must not let catalog discovery hang on a DB pool wait. */
+export const DISCOVERY_HIVE_SCOPE_TIMEOUT_MS = 5_000;
 const DISCOVERY_DESCRIPTION_MAX_CHARS = 320;
 const DISCOVERY_SCHEMA_MAX_CHARS = 2_200;
 const COMPACT_NESTED_DESCRIPTION_MAX_CHARS = 180;
@@ -273,7 +276,7 @@ function nestedObjectProperties(
 
   for (const candidate of candidates) {
     if (!candidate.items || typeof candidate.items !== 'object' || Array.isArray(candidate.items)) continue;
-    const item = objectProperties(candidate.items as JsonSchemaNode);
+    const item = mergedNestedObjectProperties(candidate.items as JsonSchemaNode);
     if (item) return item;
   }
   return null;
@@ -292,6 +295,12 @@ function nestedObjectProperties(
  */
 const NESTED_FIELDS_SEGMENT_MAX_CHARS = 320;
 
+// The bounded spec-evidence tuple carries the exact evidence-kind enum and
+// the current test fingerprint. Its enum vocabulary can grow independently;
+// give this one known shape a still-bounded allowance after eliding the three
+// optional fixture/rubric/environment dimensions.
+const SPEC_EVIDENCE_CURRENT_SEGMENT_MAX_CHARS = 400;
+
 /**
  * When a nested object is too wide for its parent's bounded segment, keep one
  * of its own nested-object fields attached to the parent. Prefer the first
@@ -309,6 +318,26 @@ function nestedObjectFieldHint(node: JsonSchemaNode, depth: number, includeNeste
   const nested = nestedObjectProperties(node);
   if (!nested) return '';
   const entries = Object.entries(nested.properties);
+  // A discriminated executable union needs every arm's input names. Expanding
+  // its first optional object (for example instrument.expect) hides all other
+  // arms in the bounded fallback. Keep the discriminator and shallow vocabulary.
+  const discriminator = entries.find(([name]) => name === 'kind');
+  const branches = schemaNodes(node).filter((branch) => branch.properties && typeof branch.properties === 'object');
+  if (discriminator && branches.length > 1) {
+    const kind = discriminator[1] as JsonSchemaNode;
+    const fields = [
+      `kind${nested.required.has('kind') ? '' : '?'}:${schemaShape(kind, depth, false, false)}`,
+      ...entries.filter(([name]) => name !== 'kind').map(([name]) => `${name}${nested.required.has(name) ? '' : '?'}`),
+    ];
+    let body = '';
+    let omitted = 0;
+    for (const field of fields) {
+      const next = body ? `${body},${field}` : field;
+      if (next.length <= NESTED_OBJECT_HINT_MAX_CHARS) body = next;
+      else omitted++;
+    }
+    return body ? `{${body}${omitted ? `,…+${omitted}` : ''}}` : '';
+  }
   const fields = entries.filter(([, raw]) => {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
     return nestedObjectProperties(raw as JsonSchemaNode) != null;
@@ -416,6 +445,9 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
     properties.some(([name]) => name === 'checkpointChecks') &&
     properties.some(([name]) => name === 'checkpointAgeMs') &&
     properties.some(([name]) => name === 'workItem');
+  const isSpecAdequacyCompletion = [
+    'classRef', 'evidenceRefs', 'specRevision', 'specFingerprint', 'replaySnapshot', 'current',
+  ].every((field) => properties.some(([name]) => name === field));
   // `work_items:complete.specAdequacy.current` is a bounded array of evidence
   // tuples. The first seven identity fields are the structural join key; the
   // four optional dimension fingerprints are still available from the full
@@ -436,6 +468,9 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
     ['testFingerprint', 'fixtureFingerprint', 'rubricFingerprint', 'environmentFingerprint'].some((name) =>
       Object.prototype.hasOwnProperty.call(tupleProperties, name),
     );
+  const segmentMaxChars = isSpecEvidenceCurrentItem
+    ? SPEC_EVIDENCE_CURRENT_SEGMENT_MAX_CHARS
+    : NESTED_FIELDS_SEGMENT_MAX_CHARS;
   // Keep conditional lifecycle contracts ahead of descriptive/legacy fields in
   // a bounded nested object. `work_items:complete` places
   // `rootCauseVerification` after the wide `verification` record and several
@@ -444,6 +479,20 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
   // fields are contract-bearing, so reserve their names/shapes before optional
   // evidence metadata while retaining source order for everything else.
   const contractPriority = (name: string): number => {
+    // `improvements:capture.observation.subject` is a typed discriminator + ref
+    // used to bind a captured observation to its subject. It was late in this
+    // wide object and disappeared behind the compact segment's tail marker,
+    // leaving callers to discover its required object shape from invalid_args.
+    const isObservationCapture =
+      properties.some(([field]) => field === 'linkTo') &&
+      properties.some(([field]) => field === 'sourceHive') &&
+      properties.some(([field]) => field === 'subject') &&
+      properties.some(([field]) => field === 'confidence');
+    if (isObservationCapture && name === 'subject') return 110;
+    // `work_items:complete.specAdequacy.current` selects the exact evidence
+    // fingerprints being attested. Keep it ahead of optional clause metadata
+    // so the bounded object retains the callable evidence shape.
+    if (isSpecAdequacyCompletion && name === 'current') return 105;
     if (name === 'rootCauseVerification') return 100;
     // plans:set-specs has a wide clause shape; its required discriminator was
     // elided behind optional fields in both `spec` and `items` discovery.
@@ -507,10 +556,10 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
     oversized: boolean;
   } => {
     let entries = propertiesToRender.map(([name, raw]) => renderEntry(name, raw, includeDescriptions));
-    if (includeDescriptions && entries.join(',').length > NESTED_FIELDS_SEGMENT_MAX_CHARS) {
+    if (includeDescriptions && entries.join(',').length > segmentMaxChars) {
       entries = propertiesToRender.map(([name, raw]) => renderEntry(name, raw, false));
     }
-    const oversized = entries.some((entry) => entry.length > NESTED_FIELDS_SEGMENT_MAX_CHARS);
+    const oversized = entries.some((entry) => entry.length > segmentMaxChars);
     let body = '';
     let dropped = 0;
     const omitted = new Set<string>();
@@ -526,7 +575,7 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
         continue;
       }
       const candidate = body ? `${body},${entry}` : entry;
-      if (body && candidate.length > NESTED_FIELDS_SEGMENT_MAX_CHARS) {
+      if (body && candidate.length > segmentMaxChars) {
         // Keep the child name/type discoverable even when its recursive shape is
         // larger than the remaining segment budget. Dropping the whole entry
         // made large contracts (notably completion.verification) disappear,
@@ -571,7 +620,7 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
         ];
         const selectedFallback = fallbackCandidates.find((candidate) => {
           const candidateWithBody = `${body},${candidate}`;
-          return candidate.length < entry.length && candidateWithBody.length <= NESTED_FIELDS_SEGMENT_MAX_CHARS;
+          return candidate.length < entry.length && candidateWithBody.length <= segmentMaxChars;
         });
         if (selectedFallback) {
           body = `${body},${selectedFallback}`;
@@ -695,7 +744,7 @@ function compactContractSynopsis(description: string): string | null {
     : `${candidate.slice(0, COMPACT_TOP_LEVEL_DESCRIPTION_MAX_CHARS - 1)}…`;
 }
 
-function compactTopLevelDescription(node: JsonSchemaNode): { text: string; priority: number } | null {
+function compactTopLevelDescription(node: JsonSchemaNode, fieldName: string): { text: string; priority: number } | null {
   if (typeof node.description !== 'string') return null;
   const description = node.description.replace(/\s+/g, ' ').trim();
   if (!description) return null;
@@ -707,7 +756,15 @@ function compactTopLevelDescription(node: JsonSchemaNode): { text: string; prior
       : `${projected.slice(0, COMPACT_TOP_LEVEL_DESCRIPTION_MAX_CHARS - 1)}…`;
   return {
     text: ` ${bounded}`,
-    priority: COMPACT_CONTRACT_DESCRIPTION_PATTERN.test(description) ? 100 : 10,
+    // Keep plans:audit's phase restriction visible even when its newly
+    // expanded itemProvenance union pushes the compact projection over budget.
+    // The activation-wide constraint is useful, but this field-level rule is
+    // the clearest guard against sending auditedSha on an activation call.
+    priority: fieldName === 'auditedSha' && /completion phase only/i.test(description)
+      ? 200
+      : COMPACT_CONTRACT_DESCRIPTION_PATTERN.test(description)
+        ? 100
+        : 10,
   };
 }
 
@@ -818,22 +875,31 @@ function topLevelSchemaProjection(root: JsonSchemaNode): TopLevelSchemaProjectio
     if (entry.presentIn === branches.length && entry.requiredInAll) required.add(name);
   }
   const entries = [...merged].map(([name, entry]) => [name, entry.raw] as [string, unknown]);
-  // `work_items:complete` has a wide nested `completion` record followed by
-  // shallow controls (`validateOnly` and `assumptions`) in both union branches,
-  // plus the structured `specAdequacy.current` evidence selector in the
-  // shorthand branch. Keep all of these contract-bearing fields ahead of the
-  // wide record in the bounded projection so adding validator-owned annotations
-  // cannot evict callable top-level fields or the current-evidence tuple shape.
-  // Limit this ordering rule to the recognizable completion envelope; generic
-  // root unions retain their source order.
+  // Prefer the canonical completion envelope to its many legacy shorthand
+  // aliases. Validator-owned constraints consume part of the root budget, so
+  // merely moving controls just before completion still lets preceding legacy
+  // fields evict completion.verification.coverage at the final text cutoff.
+  // Keep identity, shallow controls, the current-evidence selector and the
+  // canonical record together before expendable aliases. Generic root unions
+  // retain their source order.
   const completionIndex = entries.findIndex(([name]) => name === 'completion');
   const completionControls = new Set(['specAdequacy', 'validateOnly', 'assumptions']);
   if (completionIndex >= 0 && entries.some(([name]) => completionControls.has(name))) {
-    const controls = entries.filter(([name]) => completionControls.has(name));
-    const withoutControls = entries.filter(([name]) => !completionControls.has(name));
-    const adjustedCompletionIndex = withoutControls.findIndex(([name]) => name === 'completion');
-    withoutControls.splice(adjustedCompletionIndex, 0, ...controls);
-    return { entries: withoutControls, required, unionHint, conditionalHint };
+    const canonicalFields = new Set([
+      'id', 'workItem', 'harness', 'state', 'recordOnly', 'validateOnly',
+      'assumptions', 'specAdequacy', 'completion',
+    ]);
+    const canonicalOrder = [
+      'id', 'workItem', 'harness', 'state', 'recordOnly', 'validateOnly',
+      'assumptions', 'specAdequacy', 'completion',
+    ];
+    const canonicalByName = new Map(entries);
+    const canonical = canonicalOrder.flatMap((name) => {
+      const entry = canonicalByName.get(name);
+      return entry ? [[name, entry] as [string, unknown]] : [];
+    });
+    const aliases = entries.filter(([name]) => !canonicalFields.has(name));
+    return { entries: [...canonical, ...aliases], required, unionHint, conditionalHint };
   }
   return { entries, required, unionHint, conditionalHint };
 }
@@ -865,8 +931,13 @@ export { withInlinedSchemaRefs };
  * full descriptions remain in the search corpus; this projection is what a
  * caller needs to form a valid next call without overflowing the result door.
  */
-export function compactSchemaForResult(inputSchema: unknown): string | null {
+export function compactSchemaForResult(
+  inputSchema: unknown,
+  options: { maxChars?: number; includeNestedDescriptions?: boolean } = {},
+): string | null {
   if (!inputSchema || typeof inputSchema !== 'object') return null;
+  const maxChars = options.maxChars ?? DISCOVERY_SCHEMA_MAX_CHARS;
+  const includeNestedDescriptions = options.includeNestedDescriptions ?? true;
   const root = inputSchema as JsonSchemaNode;
   const projection = topLevelSchemaProjection(root);
   if (!projection) return null;
@@ -876,11 +947,11 @@ export function compactSchemaForResult(inputSchema: unknown): string | null {
     // contract is one such schema). Keep their projection structural so a
     // late top-level contract field such as `assumptions` cannot be clipped
     // behind a nested prose description before the result budget is reached.
-    const shape = schemaShape(node, 0, !projection.unionHint);
+    const shape = schemaShape(node, 0, includeNestedDescriptions && !projection.unionHint);
     return {
       index,
       base: `${name}${projection.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}`,
-      description: compactTopLevelDescription(node),
+      description: compactTopLevelDescription(node, name),
     };
   });
   if (parts.length === 0) return null;
@@ -894,7 +965,7 @@ export function compactSchemaForResult(inputSchema: unknown): string | null {
       .join('; ')}`;
 
   let text = render(withDescriptions);
-  if (text.length > DISCOVERY_SCHEMA_MAX_CHARS && withDescriptions.size > 0) {
+  if (text.length > maxChars && withDescriptions.size > 0) {
     // Remove low-value prose first, preserving explicit contract restrictions
     // such as "Completion phase only" for as long as the size budget allows.
     const removable = [...parts]
@@ -903,10 +974,10 @@ export function compactSchemaForResult(inputSchema: unknown): string | null {
     for (const part of removable) {
       withDescriptions.delete(part.index);
       text = render(withDescriptions);
-      if (text.length <= DISCOVERY_SCHEMA_MAX_CHARS) break;
+      if (text.length <= maxChars) break;
     }
   }
-  return text.length <= DISCOVERY_SCHEMA_MAX_CHARS ? text : `${text.slice(0, DISCOVERY_SCHEMA_MAX_CHARS - 1)}…`;
+  return text.length <= maxChars ? text : `${text.slice(0, maxChars - 1)}…`;
 }
 
 /** Project a registered RESULT schema, including array/scalar-rooted shapes. */
@@ -928,6 +999,34 @@ function boundedText(value: string | null, maxChars: number): string | null {
   return `${value.slice(0, maxChars - 1)}…`;
 }
 
+/** Keep only complete top-level compact-schema clauses when the result door is tight. */
+function compactSchemaPrefixes(value: string): string[] {
+  const prefixes: string[] = [];
+  let parentheses = 0;
+  let braces = 0;
+  let brackets = 0;
+
+  for (let index = 0; index < value.length - 1; index += 1) {
+    const character = value[index]!;
+    if (character === '(') parentheses += 1;
+    else if (character === ')') parentheses = Math.max(0, parentheses - 1);
+    else if (character === '{') braces += 1;
+    else if (character === '}') braces = Math.max(0, braces - 1);
+    else if (character === '[') brackets += 1;
+    else if (character === ']') brackets = Math.max(0, brackets - 1);
+
+    if (
+      character === ';' &&
+      value[index + 1] === ' ' &&
+      parentheses === 0 && braces === 0 && brackets === 0 &&
+      /^[A-Za-z_$][\w$-]*\??:/.test(value.slice(index + 2))
+    ) {
+      prefixes.push(`${value.slice(0, index)}; …`);
+    }
+  }
+  return prefixes;
+}
+
 export interface DiscoveryResultHit {
   tool: string;
   description: string | null;
@@ -937,25 +1036,112 @@ export interface DiscoveryResultHit {
   via: string;
 }
 
+/** Exact colon-form tool names in a query are requests, not relevance hints. */
+export function exactToolNamesInQuery(query: string): string[] {
+  const names = new Set<string>();
+  const pattern = /(?:^|[^a-z0-9_.-])([a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*)(?=$|[^a-z0-9_-])/gi;
+  for (const match of query.matchAll(pattern)) names.add(match[1].toLowerCase());
+  return [...names];
+}
+
+/** Keep explicitly named catalog entries ahead of generic token-overlap hits. */
+export function prioritizeExactToolHits(
+  rankedHits: ToolFindHit[],
+  corpus: readonly ToolDiscoveryEntry[],
+  exactNames: readonly string[],
+  limit: number,
+): ToolFindHit[] {
+  const rankedByName = new Map(rankedHits.map((hit) => [hit.tool.toLowerCase(), hit]));
+  const entryByName = new Map(corpus.map((entry) => [entry.tool.toLowerCase(), entry]));
+  const exactHits = exactNames.flatMap((name): ToolFindHit[] => {
+    const ranked = rankedByName.get(name);
+    if (ranked) return [ranked];
+    const entry = entryByName.get(name);
+    if (!entry) return [];
+    return [{
+      tool: entry.tool,
+      description: entry.description ?? null,
+      argSchema: entry.argSchema ?? null,
+      category: entry.category,
+      via: 'lexical',
+      cosine: null,
+    }];
+  });
+  const exactNamesSet = new Set(exactHits.map((hit) => hit.tool.toLowerCase()));
+  const remaining = Math.max(0, limit - exactHits.length);
+  return [
+    ...exactHits.slice(0, limit),
+    ...rankedHits.filter((hit) => !exactNamesSet.has(hit.tool.toLowerCase())).slice(0, remaining),
+  ].slice(0, limit);
+}
+
 /** Keep the result valid and useful when the caller asks for many hits. */
 export function boundDiscoveryHits(
   base: Omit<Record<string, unknown>, 'hits' | 'count' | 'truncated'>,
   hits: DiscoveryResultHit[],
-): { hits: DiscoveryResultHit[]; truncated: boolean } {
+  exactNames: readonly string[] = [],
+): { hits: DiscoveryResultHit[]; truncated: boolean; omittedTools: string[] } {
   const kept: DiscoveryResultHit[] = [];
-  for (const hit of hits) {
-    const candidate = [...kept, hit];
+  let fieldsTruncated = hits.some((hit) => hit.argSchema?.endsWith('…') ?? false);
+  const omittedFor = (candidate: DiscoveryResultHit[]): string[] =>
+    exactNames.filter((name) => !candidate.some((hit) => hit.tool.toLowerCase() === name.toLowerCase()));
+  const fits = (candidate: DiscoveryResultHit[], candidateFieldsTruncated = fieldsTruncated): boolean => {
+    const omittedTools = omittedFor(candidate);
     const projected = {
       ...base,
       count: candidate.length,
       totalMatches: hits.length,
-      truncated: candidate.length < hits.length,
+      truncated: candidateFieldsTruncated || candidate.length < hits.length || omittedTools.length > 0,
       hits: candidate,
+      ...(omittedTools.length > 0 ? { omittedTools } : {}),
     };
-    if (Buffer.byteLength(JSON.stringify(projected), 'utf8') > DISCOVERY_RESULT_MAX_BYTES && kept.length > 0) break;
-    kept.push(hit);
+    return Buffer.byteLength(JSON.stringify(projected), 'utf8') <= DISCOVERY_RESULT_MAX_BYTES;
+  };
+
+  for (const hit of hits) {
+    const candidate = [...kept, hit];
+    if (fits(candidate)) {
+      kept.push(hit);
+      continue;
+    }
+
+    // Preserve hit identity and as much complete argument-schema structure as
+    // fits; shed optional fields first, then stop at a top-level schema clause
+    // rather than return a broken fragment. Try this for later hits too, so an
+    // optional description/return projection on an earlier hit cannot hide an
+    // exact requested schema that still fits in compact form.
+    const compactedHit: DiscoveryResultHit = {
+      ...hit,
+      description: boundedText(hit.description, 80),
+      returns: null,
+      returnsSource: null,
+    };
+    let fittedHit = fits([...kept, compactedHit], true) ? compactedHit : null;
+    if (!fittedHit) {
+      const withoutDescription = { ...compactedHit, description: null };
+      if (fits([...kept, withoutDescription], true)) fittedHit = withoutDescription;
+
+      if (!fittedHit && typeof hit.argSchema === 'string') {
+        for (const schemaPrefix of compactSchemaPrefixes(hit.argSchema)) {
+          const candidateHit = { ...withoutDescription, argSchema: schemaPrefix };
+          if (!fits([...kept, candidateHit], true)) break;
+          fittedHit = candidateHit;
+        }
+      }
+    }
+    if (!fittedHit) {
+      if (kept.length > 0) break;
+      break;
+    }
+    kept.push(fittedHit);
+    fieldsTruncated = true;
   }
-  return { hits: kept, truncated: kept.length < hits.length };
+  const omittedTools = omittedFor(kept);
+  return {
+    hits: kept,
+    truncated: fieldsTruncated || kept.length < hits.length || omittedTools.length > 0,
+    omittedTools,
+  };
 }
 
 /**
@@ -1054,6 +1240,7 @@ export async function filterCorpusForConfirmedHiveScope(
   corpus: ToolDiscoveryEntry[],
   scope: DiscoveryScopeContext,
   resolveHiveHome: HiveHomeResolver,
+  timeoutMs = DISCOVERY_HIVE_SCOPE_TIMEOUT_MS,
 ): Promise<ToolDiscoveryEntry[]> {
   const workspaceId = typeof scope.workspaceId === 'string' ? scope.workspaceId.trim() : '';
   const harnessSlug = typeof scope.harnessSlug === 'string' ? scope.harnessSlug.trim() : '';
@@ -1068,12 +1255,16 @@ export async function filterCorpusForConfirmedHiveScope(
     return corpus;
   }
 
-  let hiveHome: string | null;
-  try {
-    hiveHome = await resolveHiveHome(workspaceId, harnessSlug);
-  } catch {
-    return corpus;
-  }
+  const resolution = await withBoundedTimeout(
+    () => resolveHiveHome(workspaceId, harnessSlug),
+    {
+      fallback: null,
+      timeoutMs,
+      label: 'tools:find hive scope resolution',
+    },
+  );
+  const hiveHome = resolution.value;
+  if (resolution.degraded) return corpus;
   if (!hiveHome) return corpus;
 
   return corpus.filter((entry) => !entry.tool.startsWith('cross_harness:'));
@@ -1201,9 +1392,10 @@ export default defineTool({
     // P-011 prompt-weight: the result-shape prose below moved into the free `returns`
     // field, which already described this exact payload (EI-22083648545226771).
     'Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic). ACTIVATION IS ' +
-    'CONDITIONAL: on a seeded (small-surface) session the matches are added to your live tool list ' +
-    '(activated:true) and are directly callable; on a full-catalog session there is nothing to expand ' +
-    '(activated:false) — call them via tools:invoke. High-confidence runtime symptoms (slow/queued, ' +
+    'CONDITIONAL: on a seeded (small-surface) session the matches are added to the server tool surface ' +
+    '(activated:true); the client may need a tool-list refresh before direct-call wrappers appear, so ' +
+    'follow `howToCall` and use tools:invoke when a wrapper is absent. On a full-catalog session there ' +
+    'is nothing to expand (activated:false) — call tools:invoke. High-confidence runtime symptoms (slow/queued, ' +
     'connection-refused, no-window, change-live?, value-stale?) route their decisive diagnostic to hit #1.',
   guidance: {
     when:
@@ -1216,9 +1408,9 @@ export default defineTool({
       'means the server surface grew and requested a client refresh; it does not guarantee this client has ' +
       'materialized a direct-call wrapper yet. After a refresh/next turn, direct calls may work.',
     returns:
-      '{ query, count, semantic: "on"|"warming"|"lexical-only", registry: { source, revision }, activated (were the hits added to YOUR live tool surface), hits: [{ tool, description, argSchema, returns (registered output schema projection, otherwise authored fallback, otherwise null), returnsSource:"registered-output-schema"|"authored-tool-guidance"|null, via }], howToCall }. ' +
+      '{ query, count, semantic: "on"|"warming"|"lexical-only", registry: { source, revision }, servingGeneration (the exact operator generation that produced these schemas; pass it unchanged to tools:invoke), activated (were the hits added to YOUR live tool surface), hits: [{ tool, description, argSchema, returns (registered output schema projection, otherwise authored fallback, otherwise null), returnsSource:"registered-output-schema"|"authored-tool-guidance"|null, via }], omittedTools? (explicit names missing from hits because of ranking/result limits), howToCall }. ' +
       'Each hit carries that tool\'s ARG schema AND its resolved RESPONSE shape (registered output schemas outrank authored prose), so you can write a code:run batch over a tool without calling it once just to learn its field names. ' +
-      'ALWAYS read `activated` + `howToCall` rather than assuming a direct call resolves.',
+      'Exact colon-form tool names in a query are prioritized. If `omittedTools` is present, query each listed name individually. ALWAYS read `activated` + `howToCall` rather than assuming a direct call resolves.',
     seeAlso: [
       'agent_tools:list (full permission-annotated dump)',
       'meta:define-tool (define a new tool if none exists)',
@@ -1291,7 +1483,9 @@ export default defineTool({
       semantic: z.unknown().optional(),
       registry: z.unknown().optional(),
       activated: z.unknown().optional(),
+      servingGeneration: z.string().nullable().optional(),
       hits: z.unknown().optional(),
+      omittedTools: z.unknown().optional(),
       howToCall: z.unknown().optional(),
     })
     .passthrough(),
@@ -1318,6 +1512,8 @@ export default defineTool({
       source: PROJECTED_TOOL_REGISTRY_SOURCE,
       revision,
     };
+    const generation = await readServingGeneration({ toolRegistryRevision: revision });
+    const servingGeneration = generation.state === 'known' ? generation.revision : null;
     const concreteHarnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
     const corpus = await filterCorpusForConfirmedHiveScope(
       fullCorpus,
@@ -1337,7 +1533,8 @@ export default defineTool({
     // `warming` and use the lexical leg until the matching revision is ready.
     const activeEmbeddings = indexedRevision === revision ? embIndex : null;
 
-    const hits = await findTools(corpus, args.query, {
+    const exactNames = exactToolNamesInQuery(args.query);
+    const rankedHits = await findTools(corpus, args.query, {
       limit: args.limit ?? 8,
       embedder,
       embeddings: activeEmbeddings,
@@ -1346,13 +1543,17 @@ export default defineTool({
       // by degrading this query to lexical-only at the interactive budget.
       embedTimeoutMs: interactiveEmbedAcquireBudgetMs(),
     });
+    const hits = prioritizeExactToolHits(rankedHits, corpus, exactNames, args.limit ?? 8);
 
     // `tools:find` returns a hand-serialized ToolResult, so the generic
     // payload-tier shaper cannot expand its compact discovery projection for
     // an explicit `payloadTier:'full'` request. Preserve the ordinary bounded
     // shape by default; an explicit full request gets the complete JSON schema
     // so deep fields omitted by the searchable one-level corpus text remain available.
-    const fullArgSchemaRequested = ctx.payloadTierOverride === 'full';
+    // Projection materialization promotes generic sources to full internally. It
+    // must not turn a compact discovery schema into an unrequested raw schema.
+    const fullArgSchemaRequested =
+      ctx.payloadTierOverride === 'full' && ctx.sourceMaterialization?.promotedToFull !== true;
 
     // Honest mode marker (never silently pretend semantic ran):
     //   on          — index ready, the semantic leg contributed;
@@ -1360,53 +1561,50 @@ export default defineTool({
     //   lexical-only — no embedder configured/available → graceful degrade.
     const semantic: 'on' | 'warming' | 'lexical-only' =
       activeEmbeddings != null && activeEmbeddings.size > 0 ? 'on' : embedder ? 'warming' : 'lexical-only';
-    const projectedHits = hits.map((h) => ({
+    const projectHit = (h: typeof hits[number], includeFullArgSchema: boolean): DiscoveryResultHit => ({
       tool: h.tool,
       description: boundedText(h.description, DISCOVERY_DESCRIPTION_MAX_CHARS),
-      argSchema: fullArgSchemaRequested
+      argSchema: includeFullArgSchema
         ? JSON.stringify(schemaByTool.get(h.tool)) ?? h.argSchema
-        : compactSchemaForResult(schemaByTool.get(h.tool)) ?? boundedText(h.argSchema, DISCOVERY_SCHEMA_MAX_CHARS),
+        : compactSchemaForResult(schemaByTool.get(h.tool), { includeNestedDescriptions: false }) ??
+          boundedText(h.argSchema, DISCOVERY_SCHEMA_MAX_CHARS),
       returns: returnsByTool.get(h.tool) ?? null,
       returnsSource: returnSourcesByTool.get(h.tool) ?? null,
       via: h.via,
-    }));
+    });
+    let projectedHits = hits.map((h) => projectHit(h, fullArgSchemaRequested));
 
     const hasToolsInvokeHit = projectedHits.some((hit) => hit.tool === 'tools:invoke');
+    const exactNameRecoveryNote = exactNames.length > 0
+      ? ' Exact names are prioritized; if `omittedTools` is present, query each listed name individually.'
+      : '';
+    const generationBindingInstruction = servingGeneration
+      ? ' This result includes `servingGeneration`; pass it unchanged as `servingGeneration` to tools:invoke. Dispatch refuses a different or unknown server generation before the target runs.'
+      : ' The server generation is unknown; do not send this schema through a different operator. Refresh tools/list or use a direct call on the same connection.';
     const activatedHowToCall =
-      'activated:true means the SERVER surface grew and requested a client tool-list refresh; ' +
-      'it does NOT guarantee your client has materialized a direct-call wrapper in this same turn. ' +
       (hasToolsInvokeHit
-        ? 'The tools:invoke hit is the dispatcher itself; do NOT pass name:"tools:invoke" through it. ' +
-          'Call tools:invoke directly with the name + args of a different target tool. '
-        : 'Call tools:invoke {name:"<exact tool name from hits>", args:{...}} now — it works immediately ' +
-          'on every client via server-side dispatch. ') +
-      'After the client refreshes (often next turn), the direct wrapper may also be available.';
+        ? 'Server requested a tool-list refresh. Use tools:invoke directly for a different target; do not route tools:invoke through itself.'
+        : 'Server requested a tool-list refresh. Use tools:invoke {name:"<exact tool name from hits>", args:{...}} now; direct wrappers may appear next turn.') + generationBindingInstruction + exactNameRecoveryNote;
     const inactiveHowToCall = hasToolsInvokeHit
-      ? 'activated:false — direct calls to other hits may fail with unknown/not-found. The ' +
-        'tools:invoke hit is the dispatcher itself; do NOT pass name:"tools:invoke" through it. ' +
-        'Call tools:invoke directly with the name + args of a different target tool. ' +
-        'Do NOT try ToolSearch on the colon name — it only resolves the client-mangled id.'
-      : 'activated:false — these tools are NOT on your live tool surface, so a direct call will ' +
-        'fail with unknown/not-found. Call them with ' +
-        'tools:invoke {name:"<exact tool name from hits>", args:{...}} — server-side dispatch under ' +
-        "the tool's real (colon-form) name; works on every client, needs no load step. " +
-        'Do NOT try ToolSearch on the colon name — it only resolves the client-mangled id.';
+      ? 'Use tools:invoke directly for a different target; do not route tools:invoke through itself.' + generationBindingInstruction + exactNameRecoveryNote
+      : 'activated:false: direct wrappers may be unavailable. Use tools:invoke {name:"<exact tool name from hits>", args:{...}}.' + generationBindingInstruction + exactNameRecoveryNote;
 
-    // Bound the candidate names before activating them. Otherwise a large schema
-    // can cause the response to omit a matched tool while still adding that
-    // invisible tool to the session surface (the activation contract is about
-    // the hits the caller can actually see and invoke).
-    const activationCandidate = boundDiscoveryHits(
-      {
-        query: args.query,
-        semantic,
-        registry,
-        activated: true,
-        howToCall: activatedHowToCall,
-        totalMatches: hits.length,
-      },
-      projectedHits,
-    );
+    // Bound the candidate names before activating them in the ordinary tier.
+    // An explicit full-tier request carries every hit in the raw result; the
+    // result door can spill that payload, so the inline discovery budget must
+    // not silently replace a requested full schema with compact text.
+    const activationBase = {
+      query: args.query,
+      semantic,
+      registry,
+      servingGeneration,
+      activated: true,
+      howToCall: activatedHowToCall,
+      totalMatches: hits.length,
+    };
+    const activationHits = fullArgSchemaRequested
+      ? projectedHits
+      : boundDiscoveryHits(activationBase, projectedHits, exactNames).hits;
 
     // Dynamic expansion (dynamic-tool-surface-2026-07-01): activate the matched
     // tools for THIS session so a seeded (small-surface) client can call them.
@@ -1417,16 +1615,28 @@ export default defineTool({
     // failure break discovery: the hits are still returned.
     let activated = false;
     try {
-      activated = ctx.activateTools?.(activationCandidate.hits.map((h) => h.tool)) ?? false;
+      activated = ctx.activateTools?.(activationHits.map((h) => h.tool)) ?? false;
     } catch {
       /* activation is best-effort; discovery still succeeds */
     }
 
     const howToCall = activated ? activatedHowToCall : inactiveHowToCall;
-    const bounded = boundDiscoveryHits(
-      { query: args.query, semantic, registry, activated, howToCall, totalMatches: hits.length },
-      projectedHits,
-    );
+    const bounded = fullArgSchemaRequested
+      ? {
+          hits: projectedHits,
+          truncated: exactNames.some((name) => !projectedHits.some((hit) => hit.tool.toLowerCase() === name)),
+          omittedTools: exactNames.filter((name) => !projectedHits.some((hit) => hit.tool.toLowerCase() === name)),
+        }
+      : boundDiscoveryHits(
+          { query: args.query, semantic, registry, servingGeneration, activated, howToCall, totalMatches: hits.length },
+          projectedHits,
+          exactNames,
+        );
+    const noHitFits = !fullArgSchemaRequested && hits.length > 0 && bounded.hits.length === 0;
+    const budgetNote = noHitFits
+      ? ' No matching schema fit the response budget; retry with a narrower query.'
+      : '';
+    const finalHowToCall = howToCall + budgetNote;
     return {
       content: [
         {
@@ -1435,20 +1645,22 @@ export default defineTool({
             query: args.query,
             count: bounded.hits.length,
             totalMatches: hits.length,
-            truncated: bounded.truncated,
+            truncated: bounded.truncated || noHitFits,
             semantic,
             registry,
+            servingGeneration,
             // true ⇒ the server-side session allowlist grew and emitted the
             // standard list_changed request. It cannot prove the client has
             // consumed that notification and materialized wrappers yet.
             activated,
             hits: bounded.hits,
+            ...(bounded.omittedTools.length > 0 ? { omittedTools: bounded.omittedTools } : {}),
             // EI-10885: when activation did NOT happen, the old text still LED with
             // "Call the tool directly" — the one path that cannot work on this
             // surface — and relegated the path that always works to a fallback after
             // a failure. An agent that follows the instruction in order pays a
             // guaranteed wasted call. Lead with the working path instead.
-            howToCall,
+            howToCall: finalHowToCall,
           }),
         },
       ],

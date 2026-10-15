@@ -51,6 +51,7 @@ import {
   readJobOutput,
   runForeground,
   startBackground,
+  BashTaskConfinementRequiredError,
 } from './bash-jobs';
 import { augmentedSpawnPath } from '../../plugin-spawn-impl';
 import { taskManagerEnabledSync } from '../../task-manager/enabled';
@@ -124,6 +125,18 @@ describe('runForeground', () => {
     expect(r.exitCode).toBe(0);
     expect(r.output).toContain('hello-world');
     expect(chunks.join('')).toContain('hello-world');
+  });
+
+  it('runs a script larger than the per-argument limit through stdin while preserving command EOF (EI-25538971645697745)', async () => {
+    const largeComment = `# ${'x'.repeat(140 * 1024)}`;
+    const command = `${largeComment}\nif IFS= read -r unexpected; then printf 'unexpected stdin: %s' "$unexpected"; else printf large-command-ok; fi`;
+    expect(Buffer.byteLength(command)).toBeGreaterThan(128 * 1024);
+
+    const r = await runForeground({ command, cwd: STATE, stateDir: STATE }, never, 10_000);
+
+    expect(r.status).toBe('completed');
+    expect(r.exitCode).toBe(0);
+    expect(r.output).toBe('large-command-ok');
   });
 
   it('preserves a UTF-8 code point split across stdout chunks in every output sink (WI-910499)', async () => {
@@ -570,6 +583,103 @@ describe('credential-SHAPE output redaction + owner-only spill (WI-10003538)', (
 });
 
 describe('background jobs', () => {
+  it.each([undefined, 'server-dispatch-enrollment'])('dispatch correlation preserves enrollment identity %s', async (dispatchCallId) => {
+    const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment').mockReturnValue({
+      taskId: 'dispatch-enrollment-task', enrolled: true, confined: false,
+      unconfinedReason: 'no-scope-support', unitKind: 'scope', scopeUnit: null,
+      registrationReady: null, wrap: (binary: string, argv: string[]) => ({ binary, argv }),
+      releaseEnvironmentTransport: () => {},
+    });
+    const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
+    const finish = vi.spyOn(enrollSync, 'finishSyncEnrolment').mockImplementation(() => {});
+    try {
+      const job = startBackground({ command: 'printf correlation', cwd: STATE, stateDir: STATE,
+        ...(dispatchCallId ? { dispatchCallId } : {}),
+      }, 5_000);
+      await waitForStatus(job.id);
+      expect(job.status).toBe('completed');
+      expect(job.exitCode).toBe(0);
+      expect(complete).toHaveBeenCalledOnce();
+      const detail = complete.mock.calls[0]![1].detail;
+      expect(detail).toMatchObject({ bashJobId: job.id });
+      if (dispatchCallId) expect(detail).toHaveProperty('dispatchCallId', dispatchCallId);
+      else expect(detail).not.toHaveProperty('dispatchCallId');
+    } finally { begin.mockRestore(); complete.mockRestore(); finish.mockRestore(); }
+  });
+
+  it.each(['flag-off', 'probe-pending', 'no-scope-support', 'caller-veto', 'scope-unit-missing'] as const)(
+    'required task confinement refuses %s before command or wrapper execution', (reason) => {
+      const marker = join(STATE, `required-confinement-${reason}`);
+      const wrap = vi.fn((binary: string, argv: string[]) => ({ binary, argv }));
+      const release = vi.fn();
+      const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment').mockReturnValue({
+        taskId: 'required-confinement-refused',
+        enrolled: reason !== 'flag-off',
+        confined: reason === 'scope-unit-missing',
+        unconfinedReason: reason === 'scope-unit-missing' ? null : reason,
+        unitKind: 'service', scopeUnit: null, registrationReady: null,
+        wrap, releaseEnvironmentTransport: release,
+      });
+      try {
+        expect(() => startBackground({
+          command: `touch ${marker}`, cwd: STATE, stateDir: STATE, requireTaskConfinement: true,
+        }, 5_000)).toThrow(BashTaskConfinementRequiredError);
+        expect(wrap).not.toHaveBeenCalled();
+        expect(existsSync(marker)).toBe(false);
+        expect(release).toHaveBeenCalledOnce();
+      } finally { begin.mockRestore(); }
+    },
+  );
+
+  it('required task confinement preserves a successful bounded launch', async () => {
+    const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment').mockReturnValue({
+      taskId: 'required-confinement-success', enrolled: true, confined: true,
+      unconfinedReason: null, unitKind: 'service', scopeUnit: 'required-confinement-success.service',
+      registrationReady: null,
+      wrap: (binary: string, argv: string[]) => ({ binary, argv }),
+      releaseEnvironmentTransport: () => {},
+    });
+    const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
+    const finish = vi.spyOn(enrollSync, 'finishSyncEnrolment').mockImplementation(() => {});
+    try {
+      const job = startBackground({
+        command: 'printf confined-result', cwd: STATE, stateDir: STATE, requireTaskConfinement: true,
+      }, 5_000);
+      await waitForStatus(job.id);
+      expect(begin).toHaveBeenCalledWith({ class: 'bash-job', runtimeMaxSec: 5 });
+      expect(job.status).toBe('completed');
+      expect(job.exitCode).toBe(0);
+      expect(readJobOutput(job)).toBe('confined-result');
+      expect(job.timeoutMs).toBe(5_000);
+    } finally { begin.mockRestore(); complete.mockRestore(); finish.mockRestore(); }
+  });
+
+  it('records observed spawn and pipe phases in the durable log without changing command output', async () => {
+    const job = startBackground({ command: 'printf phase-proof', cwd: STATE, stateDir: STATE }, 30_000);
+    await waitForStatus(job.id);
+    expect(job.status).toBe('completed');
+    expect(readJobOutput(job)).toBe('phase-proof');
+    const timing = job.phaseTiming!;
+    expect(timing.spawnReturnedAt).toBeGreaterThanOrEqual(timing.spawnRequestedAt);
+    expect(timing.clientSpawnedAt).not.toBeNull();
+    expect(timing.firstPipeByteAt).not.toBeNull();
+    expect(timing.firstPipeByteAt!).toBeGreaterThanOrEqual(timing.clientSpawnedAt!);
+    expect(job.endedAt!).toBeGreaterThanOrEqual(timing.firstPipeByteAt!);
+    const log = readFileSync(job.logPath, 'utf8');
+    expect(log).toContain(`spawn_requested_at=${timing.spawnRequestedAt}`);
+    expect(log).toContain(`ended_at=${job.endedAt}`);
+    expect(log).toContain('JOB END: status=completed');
+  });
+
+  it('leaves an unobserved first pipe byte null for a silent command', async () => {
+    const job = startBackground({ command: 'exit 0', cwd: STATE, stateDir: STATE }, 30_000);
+    await waitForStatus(job.id);
+    expect(job.status).toBe('completed');
+    expect(readJobOutput(job)).toBe('');
+    expect(job.phaseTiming!.firstPipeByteAt).toBeNull();
+    expect(readFileSync(job.logPath, 'utf8')).toContain('first_pipe_byte_at=null');
+  });
+
   it('executes the background payload in its requested cwd, not the operator home', async () => {
     const job = startBackground({ command: 'pwd', cwd: STATE, stateDir: STATE }, 10_000);
     await waitForStatus(job.id);
@@ -706,18 +816,46 @@ describe('background jobs', () => {
         },
         10_000,
       );
+      // WI-6554700010008342: wait for the CLOSE handler (endedAt), not just for a non-running
+      // status. Green-checkpoint runs at 13d1d785 and e526f5d4 read '' and
+      // 'payload-controls=absent/' here after 76ms. The close handler sets the status and flushes
+      // the redactor suffix synchronously, so a non-running status with output still missing means
+      // the status was flipped by another path before close. Waiting for close keeps this test on
+      // its own subject (stripped controls and the operator-owned spill); the status goes into the
+      // message so an early flip stays diagnosable instead of reading as missing output.
       await waitForStatus(job.id);
+      await vi.waitFor(() => expect(job.endedAt, `status=${job.status}`).toBeTruthy(), {
+        timeout: 30_000,
+        interval: 25,
+      });
 
       expect(job.runnerOwnsLog).toBe(false);
       expect(wrappedEnv).not.toHaveProperty(SYSTEMD_RUNNER_OUTPUT_PATH_ENV);
       expect(wrappedEnv).not.toHaveProperty(SYSTEMD_RUNNER_REDACTIONS_ENV);
-      expect(readJobOutput(job)).toContain('payload-controls=absent/absent');
-      expect(readFileSync(job.logPath, 'utf8')).toContain('payload-controls=absent/absent');
+      expect(readJobOutput(job), `status=${job.status} exit=${job.exitCode}`).toContain(
+        'payload-controls=absent/absent',
+      );
+      const spill = readFileSync(job.logPath, 'utf8');
+      const payload = 'payload-controls=absent/absent';
+      expect(spill).toContain(payload);
+      expect(spill.indexOf('JOB TIMING:')).toBeGreaterThanOrEqual(spill.indexOf(payload) + payload.length);
     } finally {
       begin.mockRestore();
       complete.mockRestore();
       finish.mockRestore();
     }
+  });
+
+  it('enrolls an API-launched child beneath its explicit durable parent', async () => {
+    const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
+    const finish = vi.spyOn(enrollSync, 'finishSyncEnrolment').mockImplementation(() => {});
+    try {
+      const job = startBackground({ command: 'true', cwd: STATE, stateDir: STATE,
+        parentTaskId: 'parent123' }, 10_000);
+      await waitForStatus(job.id);
+      expect(complete).toHaveBeenCalledWith(expect.anything(),
+        expect.objectContaining({ parentTaskId: 'parent123' }), expect.anything());
+    } finally { complete.mockRestore(); finish.mockRestore(); }
   });
 
   it('stamps background children with durable task provenance and rejects caller overrides', async () => {
@@ -952,6 +1090,19 @@ describe('terminal log marker (EI-18764990059061608)', () => {
     expect(logContent).toContain('exit=0');
   });
 
+  it('runs a large background script through the transient service stdin path (EI-25538971645697745)', async () => {
+    const command = `# ${'x'.repeat(140 * 1024)}\nprintf large-background-command-ok`;
+    expect(Buffer.byteLength(command)).toBeGreaterThan(128 * 1024);
+
+    const job = startBackground({ command, cwd: STATE, stateDir: STATE }, 10_000);
+    await waitForStatus(job.id);
+    const finished = getJob(job.id)!;
+
+    expect(finished.status).toBe('completed');
+    expect(finished.exitCode).toBe(0);
+    expect(readJobOutput(finished)).toBe('large-background-command-ok');
+  });
+
   it('a RUNNING background job has NOT written the marker yet', async () => {
     const job = startBackground({ command: 'sleep 5', cwd: STATE, stateDir: STATE }, 10_000);
     expect(job.status).toBe('running');
@@ -1045,7 +1196,26 @@ describe('preflight attribution snapshot (EI-21257218038249358)', () => {
     await waitForStatus(job.id);
     const final = getJob(job.id)!;
     const output = readJobOutput(final);
-    const logContent = readFileSync(final.logPath, 'utf8');
+    // job.status flips terminal synchronously in the close handler, but the
+    // snapshot and the operator's normalized JOB END reach the file through an
+    // async WriteStream. Under gate load a read taken right after the status flip
+    // saw the runner's raw JOB END (offset 47) and the snapshot (offset 282) but
+    // not the operator's later marker (gate run 762a13a6, 382606c4). Wait, with a
+    // deadline, for the flush; a real ordering bug (JOB END written before the
+    // snapshot) never satisfies the wait and still fails the assertions below.
+    const readLog = (): string => (existsSync(final.logPath) ? readFileSync(final.logPath, 'utf8') : '');
+    const flushDeadline = Date.now() + 10_000;
+    let logContent = readLog();
+    while (
+      Date.now() < flushDeadline &&
+      !(
+        logContent.indexOf(PREFLIGHT_ATTRIBUTION_SNAPSHOT_PREFIX) >= 0 &&
+        logContent.lastIndexOf(JOB_LOG_END_MARKER_PREFIX) > logContent.indexOf(PREFLIGHT_ATTRIBUTION_SNAPSHOT_PREFIX)
+      )
+    ) {
+      await new Promise((r) => setTimeout(r, 25));
+      logContent = readLog();
+    }
     const snapshotAt = logContent.indexOf(PREFLIGHT_ATTRIBUTION_SNAPSHOT_PREFIX);
     // The transient-service runner may already have written a raw marker. The
     // operator's later normalized marker is authoritative and must follow its
@@ -1291,21 +1461,72 @@ describe('PAPERCUSP_OPERATOR_URL inheritance', () => {
   it('rewrites an inherited direct operator URL through the resilient proxy when configured', async () => {
     const prevOperator = process.env.PAPERCUSP_OPERATOR_URL;
     const prevProxy = process.env.PAPERCUSP_MCP_PROXY_BASE;
+    const prevProxyTargetPort = process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT;
+    const prevHonoPort = process.env.PAPERCUSP_HONO_PORT;
+    const prevOperatorDevPort = process.env.OPERATOR_DEV_PORT;
     process.env.PAPERCUSP_OPERATOR_URL = 'http://localhost:3070/api/mcp';
     process.env.PAPERCUSP_MCP_PROXY_BASE = 'http://127.0.0.1:9071';
+    process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT = '3070';
+    process.env.PAPERCUSP_HONO_PORT = '3070';
+    delete process.env.OPERATOR_DEV_PORT;
     try {
       const r = await runForeground(
-        { command: 'printf "%s" "$PAPERCUSP_OPERATOR_URL"', cwd: STATE, stateDir: STATE },
+        {
+          command: 'printf "%s|%s" "$PAPERCUSP_OPERATOR_URL" "$PAPERCUSP_MCP_PROXY_BASE"',
+          cwd: STATE,
+          stateDir: STATE,
+        },
         never,
         10_000,
       );
       expect(r.status).toBe('completed');
-      expect(r.output).toContain('http://127.0.0.1:9071/api/mcp');
+      expect(r.output).toContain('http://127.0.0.1:9071/api/mcp|http://127.0.0.1:9071');
     } finally {
       if (prevOperator === undefined) delete process.env.PAPERCUSP_OPERATOR_URL;
       else process.env.PAPERCUSP_OPERATOR_URL = prevOperator;
       if (prevProxy === undefined) delete process.env.PAPERCUSP_MCP_PROXY_BASE;
       else process.env.PAPERCUSP_MCP_PROXY_BASE = prevProxy;
+      if (prevProxyTargetPort === undefined) delete process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT;
+      else process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT = prevProxyTargetPort;
+      if (prevHonoPort === undefined) delete process.env.PAPERCUSP_HONO_PORT;
+      else process.env.PAPERCUSP_HONO_PORT = prevHonoPort;
+      if (prevOperatorDevPort === undefined) delete process.env.OPERATOR_DEV_PORT;
+      else process.env.OPERATOR_DEV_PORT = prevOperatorDevPort;
+    }
+  });
+
+  it('routes a shell from staging back to staging despite the inherited green .env pin', async () => {
+    const prior = {
+      PAPERCUSP_OPERATOR_URL: process.env.PAPERCUSP_OPERATOR_URL,
+      PAPERCUSP_HONO_PORT: process.env.PAPERCUSP_HONO_PORT,
+      PAPERCUSP_MCP_PROXY_BASE: process.env.PAPERCUSP_MCP_PROXY_BASE,
+      PAPERCUSP_MCP_STAGING_PROXY_PORT: process.env.PAPERCUSP_MCP_STAGING_PROXY_PORT,
+      PAPERCUSP_MCP_PROXY_TARGET_PORT: process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT,
+      OPERATOR_DEV_PORT: process.env.OPERATOR_DEV_PORT,
+    };
+    process.env.PAPERCUSP_OPERATOR_URL = 'http://localhost:3070/api/mcp';
+    process.env.PAPERCUSP_HONO_PORT = '3170';
+    process.env.PAPERCUSP_MCP_PROXY_BASE = 'http://127.0.0.1:9071';
+    process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT = '3070';
+    process.env.PAPERCUSP_MCP_STAGING_PROXY_PORT = '9171';
+    delete process.env.OPERATOR_DEV_PORT;
+    try {
+      const r = await runForeground(
+        {
+          command: 'printf "%s" "$PAPERCUSP_OPERATOR_URL"',
+          cwd: STATE,
+          stateDir: STATE,
+        },
+        never,
+        10_000,
+      );
+      expect(r.status).toBe('completed');
+      expect(r.output).toBe('http://127.0.0.1:9171/api/mcp');
+    } finally {
+      for (const [key, value] of Object.entries(prior)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
     }
   });
 
@@ -1717,6 +1938,31 @@ describe('detectSelfOutputRedirect (EI-21301075566136325)', () => {
   it('a redirect inside quotes is prose, not a redirect', () => {
     expect(detectSelfOutputRedirect("echo 'a > b'")).toBeNull();
     expect(detectSelfOutputRedirect('echo "x > y"')).toBeNull();
+  });
+
+  it('ignores truncation redirects owned by no-output builtins or by no command', () => {
+    expect(detectSelfOutputRedirect(': > "$L"')).toBeNull();
+    expect(detectSelfOutputRedirect('true > f')).toBeNull();
+    expect(detectSelfOutputRedirect('false > f')).toBeNull();
+    expect(detectSelfOutputRedirect('> f')).toBeNull();
+  });
+
+  it('still detects output redirects owned by commands after no-output redirects', () => {
+    expect(detectSelfOutputRedirect(': > "$L"; cmd > f')).toEqual({
+      target: 'f',
+      op: '>',
+      literalPath: false,
+    });
+    expect(detectSelfOutputRedirect('cmd >> f')).toEqual({
+      target: 'f',
+      op: '>>',
+      literalPath: false,
+    });
+    expect(detectSelfOutputRedirect('cmd 2>&1 > f')).toEqual({
+      target: 'f',
+      op: '>',
+      literalPath: false,
+    });
   });
 
   it('does not mistake JavaScript arrows inside a quoted heredoc for stdout redirection', () => {

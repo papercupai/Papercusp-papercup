@@ -62,6 +62,38 @@ async function chainEntries(ws: string, streamId: string, head: ChainLink | null
 }
 
 describe('ledger anchoring on Postgres (P-041, R-29)', () => {
+  it('records a completed quiet hour with the same root and size and an unchanged prefix', async () => {
+    const ws = `ws-anchor-quiet-${Date.now()}`;
+    const store = pgLedgerAnchorStore(db.adminSql);
+    const feed = pgAnchorLinkFeed(db.adminSql);
+    const chain = publicChain();
+    await chainEntries(ws, 'money-journal', null, [{ cents: 100 }]);
+    const tick = (nowSeconds: number) =>
+      runAnchorTick({ workspaceId: ws, logId: ledgerAnchorLogId(ws), nowSeconds, store, feed, backend: chain.backend });
+    const first = await tick(T0 + 60);
+    const quiet = await tick(T0 + HOUR_SECONDS + 60);
+    expect(first).toMatchObject({ status: 'anchored', newLeaves: 1 });
+    expect(quiet).toMatchObject({ status: 'anchored', newLeaves: 0 });
+    if (first.status !== 'anchored' || quiet.status !== 'anchored') throw new Error('expected both completed hours to be anchored');
+    expect(quiet.anchor).toMatchObject({
+      anchorSeq: 1,
+      logRoot: first.anchor.logRoot,
+      treeSize: first.anchor.treeSize,
+      consistencyFrom: first.anchor.treeSize,
+      windowStart: T0,
+      windowEnd: T0 + HOUR_SECONDS,
+    });
+    expect(quiet.anchor.ref).not.toBe(first.anchor.ref);
+    expect(await chain.reader.read(quiet.anchor.ref)).toMatchObject({ logRoot: first.anchor.logRoot, treeSize: 1 });
+    expect(verifyConsistency({
+      oldSize: first.anchor.treeSize, newSize: quiet.anchor.treeSize,
+      oldRoot: first.anchor.logRoot, newRoot: quiet.anchor.logRoot, proof: quiet.anchor.consistencyProof,
+    })).toBe(true);
+    expect((await tick(T0 + HOUR_SECONDS + 900)).status).toBe('already-anchored');
+    expect(await store.anchors(ws)).toHaveLength(2);
+    expect(await store.leaves(ws)).toHaveLength(1);
+  });
+
   it('anchors every chain link hourly, proves inclusion, and stays append-only and consistent', async () => {
     const ws = `ws-anchor-${Date.now()}`;
     const store = pgLedgerAnchorStore(db.adminSql);

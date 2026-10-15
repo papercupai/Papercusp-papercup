@@ -162,7 +162,10 @@ export default function GoalStatusControl({
         onChanged?.(next);
       } catch (e) {
         // Nothing to roll back — no local status was ever moved (see the docblock).
-        toast.error(`Could not ${verb} this goal`, { description: String(e) });
+        // `verb` is a past participle ("paused", "marked achieved", "killed"), so the
+        // failure sentence must take the participle too: "Could not ${verb}" read
+        // "Could not paused this goal" (WI-10008179).
+        toast.error(`Goal not ${verb}`, { description: String(e) });
       } finally {
         setPending(null);
       }

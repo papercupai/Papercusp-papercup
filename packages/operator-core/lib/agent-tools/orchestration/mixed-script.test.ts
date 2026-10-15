@@ -110,6 +110,40 @@ describe('P-012 server-side mixed capability scripts', () => {
     });
   });
 
+  it('returns the projected body when an advisory leads the nested result', async () => {
+    const tool = fixtureTool('release:repair-queue', 'write', () =>
+      json({ ok: true, reason: 'queue is clear', missing: [] }),
+    );
+    const wrapDispatch: WrapDispatch = async (innerTool, name, args, ctx, next) =>
+      bindCurrentCallerDispatch(innerTool, name, args, ctx, next);
+
+    const result = await runToolOrchestration(
+      `const receipt = await tools.release.repairQueue({ projection: { pick: ['ok', 'reason', 'missing', 'absent'] } }); ` +
+        `return { ok: receipt.ok, reason: receipt.reason, missing: receipt.missing, projection: receipt._meta?.resultProjection };`,
+      {
+        ctx: testContext(),
+        deps: {},
+        tools: [tool],
+        allowed: new Set(['release:repair-queue']),
+        wrapDispatch,
+      },
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      summary: {
+        ok: true,
+        reason: 'queue is clear',
+        missing: [],
+        projection: {
+          applied: true,
+          bodyContentIndex: 1,
+          notes: [expect.stringContaining('pick path(s) matched nothing: absent')],
+        },
+      },
+    });
+  });
+
   it('rejects malformed nested projection before the target handler runs', async () => {
     let called = false;
     const tool = fixtureTool('work_items:get', 'read', () => {
@@ -399,13 +433,13 @@ describe('P-012 server-side mixed capability scripts', () => {
       // A parent abort terminates the worker itself (run-script.ts `signal`), so
       // the RUN reports the caller cancellation, not a per-call timeout.
       error: expect.stringContaining('script_aborted'),
-      // The handler observes the aborted signal immediately; dispatch-stack
-      // deliberately normalizes that cancellation into its public timeout
-      // error instead of leaking a handler-specific rejection string.
+      // The handler observes caller cancellation immediately; dispatch-stack
+      // reports this as `aborted` (distinct from its own timeout) instead of
+      // leaking a handler-specific rejection string.
       uncertainMutations: [
         expect.objectContaining({
           tool: 'capability:bash',
-          error: expect.stringContaining('tool capability:bash failed [timeout]'),
+          error: expect.stringContaining('tool capability:bash failed [aborted]'),
         }),
       ],
     });

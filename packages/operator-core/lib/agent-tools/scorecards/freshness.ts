@@ -43,7 +43,7 @@ export default defineTool({
   },
   capability: 'coord:read',
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  agentRoles: [...COORD_ROLES, 'judge'],
   args: z
     .object({
       rubricRef: z

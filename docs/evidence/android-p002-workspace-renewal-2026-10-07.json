@@ -1,0 +1,118 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-002 current Rust workspace renewal (raw execution, reporter caveat)",
+  "framework": "cargo",
+  "workItemId": "WI-10004768",
+  "planSlug": "android-public-release-2026-10-01",
+  "command": [
+    "node",
+    "--import",
+    "tsx",
+    "scripts/report-cargo-tests.mjs",
+    "--manifest-path",
+    "/home/builduser/papercupai-workspace/papercup-rust-mobile/Cargo.toml"
+  ],
+  "environment": {
+    "CARGO_TARGET_DIR": "/dev/shm/android-p002-cargo-a64f4",
+    "PAPERCUP_REQUIRE_SECRET_STREAM_INTEROP": "1",
+    "PAPERCUSP_TEST_RUN_HARNESS": "papercusp",
+    "PAPERCUSP_TEST_RUN_WORKSPACE": "papercusp-workspace"
+  },
+  "commandCwd": "papercusp",
+  "repository": "papercup-rust-mobile",
+  "sourceCommit": "82e0630fbd4f7df9ecd55ad05b4762e3cc6f630e",
+  "sourceDirty": false,
+  "exitCode": 0,
+  "startedAt": "2026-10-07T07:04:31.976Z",
+  "finishedAt": "2026-10-07T07:06:01.202Z",
+  "summary": "Fresh Cargo workspace invocation exited0: 136 distinct tests passed and live_p0_contract_smoke was ignored. Suite counts: bindings6,core38,ABI7,BYOC3,client71,live-smoke4,raw Noise2,KAT5. Reentrant child prints an additional1-pass result and is not counted twice. Reporter produced139 receipts (138 pass rows including aggregate,1skip) with duplicate child identity and virtual-workspace ::case paths; this artifact does not assert those are valid canonical case proofs. Existing clean core-only baseline/mutation bindings remain authoritative. Kotlin/JNI/device/candidate/Play are separate evidence planes.",
+  "logs": [
+    {
+      "path": "/tmp/android-p002-workspace-renewal-0705Z.log",
+      "sha256": "1e39783e87983801beb46513007f54eeca0e2db2e0a96409ec9a3d7385e7275c"
+    },
+    {
+      "path": "/tmp/android-p002-workspace-renewal-0705Z.receipts.ndjson",
+      "sha256": "37cafe2a514c60cf390c3c5e06b210f5b4f0e2cc35726f80820325d5cf40864e"
+    }
+  ],
+  "sourceFiles": [
+    {
+      "path": "crates/papercup-core/src/client.rs",
+      "sha256": "e5b9797c67fba02e127d965b5aff0c6dcd10e05a0e15e29b2905ba87f8815a49",
+      "matchesRunCommit": true
+    },
+    {
+      "path": "crates/papercup-core/src/types.rs",
+      "sha256": "90f83ec5ad9775f47e5d0b45ff4ade126455325d974725d157e80e0ebed9bf0a",
+      "matchesRunCommit": true
+    },
+    {
+      "path": "crates/papercup-core/tests/client_test.rs",
+      "sha256": "38f2d3ae0f73e108355f9c10dd7d30681e794ef65a48f1d42753c781d857058b",
+      "matchesRunCommit": true
+    },
+    {
+      "path": "crates/papercup-core/tests/android_uniffi_abi_guard.rs",
+      "sha256": "f074dfe26940e2fe5e9c3d8ec8a8ab3f864803af82911148c9883090151c264e",
+      "matchesRunCommit": true
+    },
+    {
+      "path": "crates/papercup-bindings/src/papercup.udl",
+      "sha256": "49e62ade6cba7fb9a6e7ffe7605eb5a49ec08e79fc4d5aaa19959036ed1674ea",
+      "matchesRunCommit": true
+    },
+    {
+      "path": "Cargo.lock",
+      "sha256": "c72f591c4268cf1a8c480f0ebf4032d017b399151c307cffa9f7522a8e6a56f3",
+      "matchesRunCommit": true
+    },
+    {
+      "path": "android/app/src/main/kotlin/com/papercuspai/operator/mobile/PlansScreen.kt",
+      "sha256": "26b206496863829ba59e44f13119fda9ba3d2d48986c23cdd110c36b1acd7481",
+      "matchesRunCommit": true
+    },
+    {
+      "path": "android/app/src/test/kotlin/com/papercuspai/operator/mobile/PlanItemsContractTest.kt",
+      "sha256": "a60cb2bf96373668097d2682e573cac3e56f2262db798c16d1d2144c89903643",
+      "matchesRunCommit": true
+    },
+    {
+      "path": "crates/papercup-bindings/src/lib.rs",
+      "sha256": "a55f0a7c9cff24eb7054f657e15faea1af16b3625b6230c5fe5cf7329829e6ea",
+      "matchesRunCommit": true
+    }
+  ],
+  "sourceBasis": "Reporter snapshots measured clean mobile82e0630 before/after execution. Listed source bytes were independently read after execution and compared with that commit; this is not a separately captured pre-run hash set.",
+  "assertions": [
+    {
+      "id": "rust-workspace-native-exit",
+      "passed": true,
+      "evidence": "Actual command exit0 and raw Cargo result summaries show136 distinct passed cases,0failed,1ignored. Reentrant polling child is excluded from the distinct total."
+    },
+    {
+      "id": "mandatory-secret-stream-interop",
+      "passed": true,
+      "evidence": "Required env enabled; BYOC3,raw Noise2 and KAT5 test results all passed."
+    }
+  ],
+  "reporterDefect": "EI-25303429161160065",
+  "reporterReceipts": {
+    "firstId": 20888405,
+    "lastId": 20888543,
+    "count": 139,
+    "duplicateIds": [
+      20888410,
+      20888411
+    ]
+  },
+  "notClaimed": [
+    "valid canonical execution_details for these139 workspace receipts",
+    "ignored live smoke executed",
+    "fresh Kotlin proof in this invocation",
+    "JNI paired-journey renewal",
+    "P-002 acceptance",
+    "release shipment"
+  ]
+}

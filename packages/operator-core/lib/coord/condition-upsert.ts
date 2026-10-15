@@ -38,6 +38,7 @@
  * single-host system filers (routines, gates, seeders).
  */
 import { createHash } from 'node:crypto';
+import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import { getOrgPg } from '@papercusp/db-org';
 import type { TransactionSql } from 'postgres';
 import { createWorkItem, setWorkItemState, type CreateWorkItemInput } from '../work-items';
@@ -52,6 +53,14 @@ export const CONDITION_UPSERT_ACTOR = 'system:condition-upsert' as const;
 
 /** Payload key stamping occurrence state on the owning row. */
 export const CONDITION_UPSERT_MARKER = '_conditionUpsert';
+
+/** Serialize immutable-identity replays across lookup, mint and lifecycle-key claim.
+ * The work-item writer owns its own transactions. Reuse the single-host filing
+ * mutex without occupying a pool connection while the writer uses that pool. */
+export async function withConditionReplayLock<T>(workspaceId: string, key: string, run: () => Promise<T>): Promise<T> {
+  const identity = createHash('sha256').update(JSON.stringify([workspaceId, key])).digest('hex');
+  return withFsMutex(`condition-replay-${identity}`, run, { timeoutMs: 45_000 });
+}
 
 /**
  * Namespaced identity for one acceptance-grading target.
@@ -117,7 +126,7 @@ export function acceptanceReviewTargetConditionKey(target: AcceptanceReviewTarge
 export async function reserveAcceptanceReviewTarget(
   target: AcceptanceReviewTarget,
   input: Partial<Pick<CreateWorkItemInput, 'title' | 'summary'>> = {},
-): Promise<AcceptanceReviewReservationRef & { created: boolean }> {
+): Promise<AcceptanceReviewReservationRef & { created: boolean; superseded: AcceptanceReviewReservationSettlement }> {
   const normalized = normalizeAcceptanceReviewTarget(target);
   const conditionKey = acceptanceReviewTargetConditionKey(normalized);
   const result = await upsertConditionWorkItem(conditionKey, {
@@ -130,7 +139,78 @@ export async function reserveAcceptanceReviewTarget(
     workspaceId: normalized.workspaceId,
     payload: { acceptanceReviewTarget: normalized },
   });
-  return { conditionKey: result.conditionKey, id: result.id, created: result.created };
+  // WI-10006637: reserving revision N is the moment every older revision's
+  // reservation stops describing reviewable work. Settling them here keeps the
+  // invariant "at most one open reservation per (plan, rubric), and it is for the
+  // current revision" without a sweep. Best-effort: a failed settle must never
+  // cost the reservation the caller asked for, so it is reported, not thrown.
+  const superseded = await settleSupersededAcceptanceReviewReservations(normalized, conditionKey).catch(
+    (err: unknown): AcceptanceReviewReservationSettlement => ({
+      settled: [],
+      failed: [{ id: '(query)', error: err instanceof Error ? err.message : String(err) }],
+    }),
+  );
+  return { conditionKey: result.conditionKey, id: result.id, created: result.created, superseded };
+}
+
+/**
+ * Drop every still-open, UNHELD review-target reservation for the same
+ * (workspace, harness, plan, rubric) whose revision is strictly older than
+ * `current.revision`.
+ *
+ * Why (WI-10006637): a reservation is keyed per revision, but nothing closed an
+ * older one when a non-claimant graded it or the rubric moved on. It then sat
+ * open until the plan shipped, looking like pullable work, and before
+ * WI-10006620 it also suppressed grader recruitment for the current revision.
+ *
+ * Scope rules, each deliberate:
+ * - Only numeric revisions strictly below the current one. A legacy `null` pin
+ *   carries no ordering, so it is left alone. When the current revision is
+ *   itself null there is nothing to compare, so the call is a no-op.
+ * - Only unheld rows (`taken_by IS NULL`). A holder may be mid-grade, and
+ *   `scorecards:emit` grades the current revision whatever their item says, so
+ *   yanking a held row would destroy a live claim and save nothing.
+ * - Terminal state is `dropped`, as in settleAcceptanceReviewReservationsForPlan:
+ *   the reservation was not the vehicle of a review, so `done` would be false.
+ */
+export async function settleSupersededAcceptanceReviewReservations(
+  current: AcceptanceReviewTarget,
+  currentConditionKey?: string,
+): Promise<AcceptanceReviewReservationSettlement> {
+  const normalized = normalizeAcceptanceReviewTarget(current);
+  if (normalized.revision === null) return { settled: [], failed: [] };
+  const keepKey = currentConditionKey ?? acceptanceReviewTargetConditionKey(normalized);
+  const sql = getOrgPg().sql;
+  const rows = await sql<{ feature_id: string; harness_slug: string | null; revision: number }[]>`
+    SELECT feature_id, harness_slug, (payload -> 'acceptanceReviewTarget' ->> 'revision')::int AS revision
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${normalized.workspaceId}
+       AND condition_key LIKE ${`${ACCEPTANCE_REVIEW_TARGET_NAMESPACE}:%`}
+       AND condition_key <> ${keepKey}
+       AND payload -> 'acceptanceReviewTarget' ->> 'planSlug' = ${normalized.planSlug}
+       AND payload -> 'acceptanceReviewTarget' ->> 'rubricId' = ${normalized.rubricId}
+       AND (payload -> 'acceptanceReviewTarget' ->> 'harnessSlug') IS NOT DISTINCT FROM ${normalized.harnessSlug}::text
+       AND jsonb_typeof(payload -> 'acceptanceReviewTarget' -> 'revision') = 'number'
+       AND (payload -> 'acceptanceReviewTarget' ->> 'revision')::int < ${normalized.revision}
+       AND taken_by IS NULL
+       AND NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))`;
+  const settled: string[] = [];
+  const failed: Array<{ id: string; error: string }> = [];
+  for (const row of rows) {
+    try {
+      await setWorkItemState(row.feature_id, 'dropped', {
+        harness: row.harness_slug ?? undefined,
+        by: CONDITION_UPSERT_ACTOR,
+        completionRef:
+          `review target ${normalized.planSlug} (${normalized.rubricId}) revision ${row.revision} superseded by ` +
+          `revision ${normalized.revision}; unheld reservation settled when the current revision was reserved (WI-10006637)`,
+      });
+      settled.push(row.feature_id);
+    } catch (err) {
+      failed.push({ id: row.feature_id, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return { settled, failed };
 }
 
 /** What settling a terminal plan's review-target reservations did. */
@@ -244,10 +324,24 @@ async function refreshIncumbent(
  */
 export async function adoptConditionIncumbent(
   conditionKey: string,
-  input: Pick<CreateWorkItemInput, 'title' | 'summary' | 'workspaceId'>,
+  input: Pick<CreateWorkItemInput, 'title' | 'summary' | 'workspaceId'> & { includeTerminal?: boolean },
 ): Promise<string | null> {
   const key = conditionKey.trim();
   if (!key) throw new Error('adoptConditionIncumbent: empty conditionKey');
+  // Revision-scoped findings are immutable identities, unlike recurring alarms.
+  // Lifecycle writers clear condition_key on closure; the original filing marker
+  // survives it. Reuse that history without reopening or rewriting a disposition.
+  if (input.includeTerminal) {
+    if (!input.workspaceId) throw new Error('includeTerminal requires a concrete workspaceId');
+    const rows = await getOrgPg().sql<{ feature_id: string }[]>`
+      SELECT feature_id FROM harness_shared.work_items
+       WHERE workspace_id = ${input.workspaceId}
+         AND (condition_key = ${key}
+           OR payload -> ${CONDITION_UPSERT_MARKER}::text ->> 'conditionKey' = ${key})
+         AND status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])
+       ORDER BY created_ts, feature_id LIMIT 1`;
+    if (rows[0]) return rows[0].feature_id;
+  }
   // Self-heal a missed key release so a settled row can never wedge the key.
   await releaseStaleConditionKeys(key, input.workspaceId);
   // Adopt-and-refresh the incumbent. Workspace-scoped on purpose — see header.

@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Voice R-7 hosted credential, spend and tenant boundaries on app.papercusp.com (portal e2e, 2026-10-06 run 2)",
+  "framework": "playwright",
+  "command": [
+    "bash",
+    "-c",
+    "P=~/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal; S=./.papercusp/scratch; LOG=$S/r7-boundaries-run2.log; cd \"$P\" || exit 1; date -u +STARTED=%Y-%m-%dT%H:%M:%SZ > \"$LOG\"; git rev-parse HEAD | sed 's/^/PORTAL_HEAD=/' >> \"$LOG\"; git status --porcelain -- e2e/portal-voice-hosted-boundaries.spec.ts playwright.config.ts apps/host/src/api.ts | sed 's/^/PORTAL_DIRTY=/' >> \"$LOG\"; PORTAL_VOICE_BOUNDARIES_E2E=1 PORTAL_VOICE_BOUNDARIES_EVIDENCE_OUT=$S/r7-boundaries-run2-receipt.json npx playwright test e2e/portal-voice-hosted-boundaries.spec.ts --reporter=list >> \"$LOG\" 2>&1; echo \"RUN_EXIT=$?\" >> \"$LOG\"; date -u +FINISHED=%Y-%m-%dT%H:%M:%SZ >> \"$LOG\"; tail -12 \"$LOG\""
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T21:46:30.000Z",
+  "finishedAt": "2026-10-06T21:47:22.000Z",
+  "summary": "portal/e2e/portal-voice-hosted-boundaries.spec.ts ran against the live hosted portal (https://app.papercusp.com) through the canonical portal playwright.config.ts with two freshly admitted TEST tenants: 3 passed, 0 failed, exit 0. Unauthenticated: /api/voice/elevenlabs/token 401; /api/voice/engines 401; /api/papercup-chat/conversations/boundary-probe/voice-session 401, no token minted. Engines advertised exactly {\"elevenlabs\":false,\"livekit\":true}. Retired /api/device/voice/turn GET+POST 404. Browser-delivered bodies scanned for secret patterns (46 responses, 2267523 bytes, twice): 0 findings. Tenant A start burst: 6 x 404 no-agent-id (hosted ElevenLabs fails closed, unconfigured per D-007), then 429 portal_voice_start_rate_limited Retry-After 60. Tenant B after A's burst: 404 no-agent-id (not throttled). 2 TEST users cleaned up.",
+  "repository": "portal",
+  "sourceCommit": "0504fc459d775e3f1e49cd2f99f89920fbf94c93",
+  "sourceDirty": true,
+  "sourceDirtyAtRun": [
+    " M playwright.config.ts",
+    "?? e2e/portal-voice-hosted-boundaries.spec.ts"
+  ],
+  "sourceFiles": [
+    {
+      "path": "e2e/portal-voice-hosted-boundaries.spec.ts",
+      "sha256": "7103af0ed3eb7ae8c11fb4fd6a74f7b3f264f9f75514e29333febb75704b0075"
+    },
+    {
+      "path": "playwright.config.ts",
+      "sha256": "31f254145670906ea6d0eb2b0af0b2e24df0cbd786321dfe02f74fa32711f676"
+    },
+    {
+      "path": "apps/host/src/api.ts",
+      "sha256": "c4d69032cbf7c901c5482615de1286941254db05db6e8d04a8f8d22c2ae64851"
+    }
+  ],
+  "logs": [
+    {
+      "path": ".papercusp/scratch/r7-boundaries-run2.log",
+      "sha256": "644c8d752ec34c41474fa643b8217d7a7d4e66b13da6e9f598ea628a866b331f"
+    },
+    {
+      "path": ".papercusp/scratch/r7-boundaries-run2-receipt.json",
+      "sha256": "48050606cb4e3197a0354484024b152525df2b365d15bf6ad3675429428a5b0e"
+    }
+  ],
+  "testCounts": {
+    "playwright": {
+      "tests": 3,
+      "passed": 3,
+      "failed": 0
+    }
+  },
+  "plan": "voice-final-public-release-2026-10-01",
+  "specId": "AUTO-BAR-R-7-P-004",
+  "workItemId": "WI-10004760",
+  "evidencePlane": "live",
+  "testLayer": "integration",
+  "assertions": [
+    {
+      "id": "spec-L151-credential-an-unauthenticated-caller-reaches-no-voice-surfac",
+      "passed": true,
+      "evidence": "PASSED in 611ms: [hosted voice boundaries (R-7)] credential: an unauthenticated caller reaches no voice surface"
+    },
+    {
+      "id": "spec-L177-engines-only-hosted-engines-are-advertised-the-retired-deskt",
+      "passed": true,
+      "evidence": "PASSED in 25.0s: [hosted voice boundaries (R-7)] engines: only hosted engines are advertised; the retired desktop-local route stays dead; no secret reaches the browser"
+    },
+    {
+      "id": "spec-L198-spend-tenant-the-mint-never-returns-a-key-one-tenant-s-burst",
+      "passed": true,
+      "evidence": "PASSED in 14.4s: [hosted voice boundaries (R-7)] spend + tenant: the mint never returns a key, one tenant's burst is refused, and a second tenant is untouched"
+    },
+    {
+      "id": "unauthenticated-refused-no-token",
+      "passed": true,
+      "evidence": "/api/voice/elevenlabs/token=401 minted=false; /api/voice/engines=401 minted=false; /api/papercup-chat/conversations/boundary-probe/voice-session=401 minted=false"
+    },
+    {
+      "id": "engines-hosted-only",
+      "passed": true,
+      "evidence": "GET /api/voice/engines 200 {\"ok\":true,\"engines\":{\"elevenlabs\":false,\"livekit\":true}}"
+    },
+    {
+      "id": "retired-device-turn-dead",
+      "passed": true,
+      "evidence": "GET 404 {\"ok\":false,\"error\":\"not_found\"}; POST 404 {\"ok\":false,\"error\":\"not_found\"}"
+    },
+    {
+      "id": "browser-bodies-carry-no-secret-pattern",
+      "passed": true,
+      "evidence": "tenant A 46 responses/2267523 bytes, tenant B 46/2267523; patterns elevenlabs-sk_, openai-or-anthropic-sk-; findings 0"
+    },
+    {
+      "id": "start-budget-refuses-burst",
+      "passed": true,
+      "evidence": "404:no-agent-id 404:no-agent-id 404:no-agent-id 404:no-agent-id 404:no-agent-id 404:no-agent-id 429:portal_voice_start_rate_limited Retry-After=60"
+    },
+    {
+      "id": "mint-responses-carry-no-credential-field",
+      "passed": true,
+      "evidence": "response field sets: error|hint|status / error|ok|retryAfterMs; tenant B error|hint|status"
+    },
+    {
+      "id": "second-tenant-not-throttled",
+      "passed": true,
+      "evidence": "tenant B after tenant A's 429: 404 no-agent-id"
+    }
+  ],
+  "disclosures": [
+    "Secret scan is pattern-only (elevenlabs-sk_, openai-or-anthropic-sk-): no env file holding the hosted ElevenLabs key was reachable from the run, so an exact-value comparison did not run (secretEnvChecked=[]).",
+    "Hosted ElevenLabs has no agent id configured (hosted EL is out of release scope per D-007), so every start fails closed with 404 no-agent-id before any token exists. Live cross-tenant token distinctness is therefore unmeasured (tokensCompared=false); it is covered at the unit layer by portal/tests/a-shared-mint-is-not-a-shared-token.test.ts.",
+    "The hosted spoken round trip and browser microphone denial are not exercised here; per D-009 they run in the guided real-microphone session (D-005).",
+    "The run used the portal working tree at 0504fc459d775e3f1e49cd2f99f89920fbf94c93 with the new spec untracked and playwright.config.ts modified (sourceDirtyAtRun); sourceFiles records the exact bytes that ran."
+  ]
+}

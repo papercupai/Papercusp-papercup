@@ -12,10 +12,9 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
-import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import {
   DISPATCH_RECORDS_MAX,
   SOURCE_LAUNCH_FAILURE_THRESHOLD,
@@ -32,22 +31,14 @@ const sqlPath = (name: string) =>
 const migration = (name: string) => (existsSync(sqlPath(name)) ? sqlPath(name) : `${sqlPath(name)}.DRAFT`);
 
 let sql: Sql;
+let fixtureDb: MigratedTestDb;
 
 /** A row that existed BEFORE migration 1225 — the column default must backfill it. */
 const PRE_EXISTING = 'conv-before-1225';
 
 beforeAll(async () => {
-  const adminUri = await getTestPg();
-  const dbName = `consultrec_${randomBytes(5).toString('hex')}`;
-  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
-  try {
-    await admin.unsafe(`CREATE DATABASE "${dbName}"`);
-  } finally {
-    await admin.end({ timeout: 5 });
-  }
-  const u = new URL(adminUri);
-  u.pathname = `/${dbName}`;
-  sql = postgres(u.toString(), { max: 1, onnotice: () => {} });
+  fixtureDb = await createFreshTestDb({ prefix: 'consultrec' });
+  sql = postgres(fixtureDb.url, { max: 1, onnotice: () => {} });
   await sql.unsafe('CREATE SCHEMA harness_shared');
   // Landing pad for 834's coord_conversations kind-CHECK widening (see
   // consult-verbs-core.integration.test.ts); only `kind` matters here.
@@ -71,7 +62,8 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-  await sql?.end({ timeout: 5 });
+  try { await sql?.end({ timeout: 5 }); }
+  finally { await fixtureDb?.drop(); }
 });
 
 async function seed(conversationId: string): Promise<void> {

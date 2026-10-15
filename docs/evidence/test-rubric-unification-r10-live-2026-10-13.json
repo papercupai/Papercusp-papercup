@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "plan": "test-rubric-unification-2026-10-12",
+  "clause": "AUTO-BAR-R-10-P-010@3",
+  "evidencePlane": "live",
+  "measuredAt": "2026-10-13T13:48:04Z",
+  "measuredBy": "su-332a6647-4b0c-422e-a6f3-c9ad440dc078",
+  "claim": "In the newest ledger-filled papercusp-app-performance scorecard, every criterion the baseline measured by SQL or an instrument is rated from its latest post-baseline ledger check result, and the census reports its population N.",
+  "run": {
+    "testRunId": 21208526,
+    "testFile": "packages/operator-core/lib/rubric-perf-ledger-adoption.live.test.ts",
+    "env": "PAPERCUSP_PERF_LEDGER_CENSUS_LIVE=1",
+    "commitSha": "dde3a5c56cae8517c6aeb83e11be0b7b29913b3b",
+    "worktreeDirty": false,
+    "tree": "materialized as-committed root (npm run lint:as-committed -- test:file --any --keep)",
+    "passed": 13,
+    "skipped": 0
+  },
+  "census": {
+    "N": 23,
+    "baseline": "EI-25797437572523561",
+    "baselineAt": "2026-10-12T17:59:13.638Z",
+    "subjectCard": "EI-25870470062336252",
+    "checkRowsConsidered": 217,
+    "oracle": "packages/operator-core/lib/rubric-perf-ledger-adoption.ts (plan D-009, D-013)"
+  },
+  "controlsRun": {
+    "testRunId": 21208018,
+    "note": "same file without the live flag: 12 always-run oracle controls passed, live census skipped by design"
+  },
+  "knownFragility": "Any later card that cites a value-less row displaces the subject until a complete card supersedes it (EI-25870817444846691).",
+  "recheck": [
+    "PAPERCUSP_PERF_LEDGER_CENSUS_LIVE=1 PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/rubric-perf-ledger-adoption.live.test.ts",
+    "SELECT status, execution_details->>'passed', execution_details->>'skipped' FROM harness_shared.test_runs WHERE id = 21208526"
+  ]
+}

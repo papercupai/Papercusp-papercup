@@ -62,6 +62,14 @@ export const ACCOUNT_DEFAULT_MARKER_SYNC_ACTION = "accounts.syncDefaultMarker";
  * system:green-checkpoint routine due immediately after re-validating the live queue tuple. */
 export const GATE_REJUDGE_ADMITTED_REPAIR_ACTION = "gate.rejudgeAdmittedRepair";
 
+/** derived-status-not-hand-written-2026-10-12#P-011: the action name
+ *  work-item-ref-blocker-auto-clear-rule.ts fires when a work item reaches a
+ *  terminal state, to clear every live-dependency blocker that named it and
+ *  wake the blocked items' holders. A built-in rather than a tool because the
+ *  clear must act as the system on OTHER agents' items; the reaction inherits
+ *  the completer's identity, which a holder-checked tool would refuse. */
+export const WORK_ITEM_REF_BLOCKER_AUTO_CLEAR_ACTION = "work-item.clearBlockersNamingFinished";
+
 /** The closed set of recognised built-in (non-tool) reaction action names. */
 export const BUILTIN_ACTIONS: ReadonlySet<string> = new Set<string>([
   CACHE_BUMP_TAGS_ACTION,
@@ -70,6 +78,7 @@ export const BUILTIN_ACTIONS: ReadonlySet<string> = new Set<string>([
   PLAN_DRAIN_TRANSITION_ACTION,
   ACCOUNT_DEFAULT_MARKER_SYNC_ACTION,
   GATE_REJUDGE_ADMITTED_REPAIR_ACTION,
+  WORK_ITEM_REF_BLOCKER_AUTO_CLEAR_ACTION,
 ]);
 
 /** Whether `fire` names a built-in in-process action (vs a projected tool). */
@@ -313,6 +322,24 @@ export async function fireBuiltinReactionAction(
           return { ok: true };
         });
       } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    }
+    case WORK_ITEM_REF_BLOCKER_AUTO_CLEAR_ACTION: {
+      const ids = Array.isArray(args.ids)
+        ? args.ids.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+        : [];
+      if (ids.length === 0) return { ok: true };
+      try {
+        // Imported lazily for the same reason as the drain transition: the
+        // clear pulls in the work-item write stack and the coordination
+        // messaging stack, and this module loads on every reaction dispatch.
+        const { runWorkItemRefBlockerAutoClear } = await import("../work-item-ref-blocker-auto-clear");
+        await runWorkItemRefBlockerAutoClear(workspaceId, ids);
+        return { ok: true };
+      } catch (err) {
+        // The trigger (somebody's completion) already succeeded; report the
+        // failure to the engine log without failing it.
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
       }
     }

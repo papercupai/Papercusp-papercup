@@ -16,7 +16,10 @@
 //   for each templates/<ref>/ whose checks/*.ts imports @papercusp/template-kit
 //   (the same trigger condition template-bundle-integrity enforces):
 //     - ensure templates/<ref>/template-kit/ exists
-//     - copy libs/generic/template-kit/{package.json,tsconfig.json}
+//     - write package.json as vendoredManifestOf(canonical): the canonical
+//       manifest minus its dev-harness-only devDependencies (a private
+//       workspace package a materialized app cannot resolve)
+//     - copy libs/generic/template-kit/tsconfig.json
 //     - copy libs/generic/template-kit/src/** minus the dev harness
 //       (*.test.ts, vitest.config.ts, README.md — the isVendorDevOnly set)
 //     - delete vendored files whose canonical counterpart is gone
@@ -26,12 +29,14 @@
 //   node scripts/sync-template-kit-vendored.mjs --check   # report drift, exit 1 if any
 //
 // The byte-equality GUARD stays template-bundle-integrity.test.ts (operator-core);
-// this script is the matching WRITER, so the guard verifies exactly what this
-// derives. Keep the dev-only exclusion in lockstep with isVendorDevOnly there.
+// this script is the matching WRITER. Both import isVendorDevOnly and
+// vendoredManifestOf from scripts/lib/vendored-manifest.mjs, so the guard
+// verifies exactly what this derives (no lockstep copies to keep in sync).
 
 import { promises as fs } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isVendorDevOnly, vendoredManifestOf } from './lib/vendored-manifest.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const CANONICAL = join(ROOT, 'libs', 'generic', 'template-kit');
@@ -41,11 +46,7 @@ const CHECK_MODE = process.argv.includes('--check');
 
 const exists = (p) => fs.stat(p).then(() => true, () => false);
 
-/** Mirror of template-bundle-integrity's isVendorDevOnly — vendored copies omit the dev harness. */
-const isVendorDevOnly = (rel) => {
-  const base = rel.split(/[\\/]/).pop() ?? rel;
-  return base.endsWith('.test.ts') || base === 'vitest.config.ts' || base === 'README.md';
-};
+// isVendorDevOnly (the dev harness a vendored copy omits) is imported above.
 
 /** dir-relative file list (posix slashes), skipping node_modules + dot-dirs. */
 async function filesUnder(dir, base = dir) {
@@ -130,7 +131,11 @@ async function main() {
     for (const rel of canonicalFiles) {
       const srcPath = join(CANONICAL, rel);
       const dstPath = join(vendored, rel);
-      const want = await fs.readFile(srcPath);
+      // package.json is DERIVED (dev-harness-only devDependencies dropped), never byte-copied.
+      const want =
+        rel === 'package.json'
+          ? Buffer.from(vendoredManifestOf(await fs.readFile(srcPath, 'utf8')), 'utf8')
+          : await fs.readFile(srcPath);
       const have = (await exists(dstPath)) ? await fs.readFile(dstPath) : null;
       if (have === null || !want.equals(have)) {
         drift.push(`templates/${ref}/template-kit/${rel} ${have === null ? 'missing' : 'differs'}`);

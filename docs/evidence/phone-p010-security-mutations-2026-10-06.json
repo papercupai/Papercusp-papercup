@@ -1,0 +1,381 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Phone P-010 security-foundation mutation guards at current phone-app source (re-authored P-009 D-022/export and P-003 tenant/private-capability mutants)",
+  "framework": "shell",
+  "command": [
+    "bash .papercusp/scratch/p010/wi10004988-p010-probes.sh  # papercusp root, PAPERCUSP_TEST_RUN_HARNESS=papercusp; each probe = scripts/mutation-probe.sh --file <subject> --relocation overlay --mutate <probes[].mutate> --test \"cd $PHONE_APP_ROOT/<dir> && npx vitest run <tests>\""
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T07:36:41Z",
+  "finishedAt": "2026-10-06T07:39:41Z",
+  "summary": "11/11 copy-out overlay mutants CAUGHT at phone-app 9d8f007f28d58ee92e508bcc6ce8e134843128af. Each probe ran the unmutated suite, the relocated unmutated copy, then the mutant, with phone-app's own Vitest; the shared tree was never mutated. The exact perl mutation for every probe is embedded below (probes[].mutate). Software falsifiability only; no live Telnyx/PSTN/provider, legal or shipment claim (D-020).",
+  "assertions": [
+    {
+      "id": "notice-rule-caught",
+      "passed": true,
+      "evidence": "packages/data/src/call-content-policy.ts: [mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evi"
+    },
+    {
+      "id": "audio-ref-caught",
+      "passed": true,
+      "evidence": "packages/data/src/call-content-policy.ts: [mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evi"
+    },
+    {
+      "id": "retention-caught",
+      "passed": true,
+      "evidence": "packages/data/src/call-content-policy.ts: [mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evi"
+    },
+    {
+      "id": "alert-content-caught",
+      "passed": true,
+      "evidence": "packages/data/src/call-content-policy.ts: [mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evi"
+    },
+    {
+      "id": "deletion-caught",
+      "passed": true,
+      "evidence": "packages/data/src/postgres-store.ts: [mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evi"
+    },
+    {
+      "id": "tenant-caught",
+      "passed": true,
+      "evidence": "packages/data/src/postgres-store.ts: [mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evi"
+    },
+    {
+      "id": "persist-caught",
+      "passed": true,
+      "evidence": "packages/data/src/postgres-store.ts: [mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evi"
+    },
+    {
+      "id": "export-caught",
+      "passed": true,
+      "evidence": "packages/data/src/postgres-store.ts: [mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evi"
+    },
+    {
+      "id": "capability-caught",
+      "passed": true,
+      "evidence": "worker/src/phone-voice-contract-adapter.ts: [mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evi"
+    },
+    {
+      "id": "tenant-store-data-caught",
+      "passed": true,
+      "evidence": "packages/data/src/memory-store.ts: [mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evi"
+    },
+    {
+      "id": "tenant-store-sidecar-caught",
+      "passed": true,
+      "evidence": "packages/data/src/memory-store.ts: [mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evi"
+    }
+  ],
+  "subjectRepository": "phone-app harness repository (~/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/phone-app)",
+  "subjectCommit": "9d8f007f28d58ee92e508bcc6ce8e134843128af",
+  "plan": "phone-public-telephone-service-2026-10-01",
+  "planItem": "P-010",
+  "workItem": "WI-10004988",
+  "decision": "D-021, D-022",
+  "recordedAt": "2026-10-06T07:40:53.221Z",
+  "recordedBy": "su-2b9fe461-077c-4fd4-8cd7-c43499f17892",
+  "method": "papercusp scripts/mutation-probe.sh copy-out --relocation overlay (private mount namespace; tracked files never mutated).",
+  "scope": "P-010 tree-plane clauses R-6, R-7, R-41..R-47, R-75..R-84 and PHONE-P-010-OUTCOME.",
+  "probes": [
+    {
+      "name": "notice-rule",
+      "clauses": [
+        "R-42"
+      ],
+      "subject": "packages/data/src/call-content-policy.ts",
+      "subjectSha256": "e0eb56fc5a9ea207964eb75f5762338ce19b7dec5c20ac73732f9c4bb1dd87fe",
+      "mutate": "s/if \\(!call\\.captureNoticeAt\\) return \"phone_capture_notice_required\";/if (false) return \"phone_capture_notice_required\";/",
+      "tests": [
+        "packages/data/src/call-content-policy.test.ts"
+      ],
+      "testSha256": "159a65f82a682823d273a9d1ccd8c556775124aeb4ec86ef800a8e671c818622",
+      "exitCode": 0,
+      "verdict": "caught",
+      "verdictLine": "[mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evidence=vitest-failed-tests relocation=overlay",
+      "failedTests": [
+        "refuses every kind of capture before the notice has played 19ms",
+        "src/call-content-policy.test.ts > D-022 capture consent (R-42) > refuses every kind of capture before the notice has played"
+      ],
+      "startedAt": "2026-10-06T07:36:41Z",
+      "finishedAt": "2026-10-06T07:36:48Z",
+      "logSha256": "2d638593e8a03346f70a64c0a1aa430758942f8f057fe846c0bafc62d9c71f3e"
+    },
+    {
+      "name": "audio-ref",
+      "clauses": [
+        "R-47"
+      ],
+      "subject": "packages/data/src/call-content-policy.ts",
+      "subjectSha256": "e0eb56fc5a9ea207964eb75f5762338ce19b7dec5c20ac73732f9c4bb1dd87fe",
+      "mutate": "s/return ref === PHONE_CALL_CONTENT_POLICY\\.approvalRef/return ref.length > 0/",
+      "tests": [
+        "packages/data/src/call-content-policy.test.ts"
+      ],
+      "testSha256": "159a65f82a682823d273a9d1ccd8c556775124aeb4ec86ef800a8e671c818622",
+      "exitCode": 0,
+      "verdict": "caught",
+      "verdictLine": "[mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evidence=vitest-failed-tests relocation=overlay",
+      "failedTests": [
+        "is disabled unless the approving decision is named verbatim 10ms",
+        "src/call-content-policy.test.ts > D-022 consent-sensitive audio storage (R-47) > is disabled unless the approving decision is named verbatim"
+      ],
+      "startedAt": "2026-10-06T07:36:48Z",
+      "finishedAt": "2026-10-06T07:36:57Z",
+      "logSha256": "98aaff98d24e37b276f04e6966de5284935136ff9aa35fd407f99a389927c1c6"
+    },
+    {
+      "name": "retention",
+      "clauses": [
+        "R-43"
+      ],
+      "subject": "packages/data/src/call-content-policy.ts",
+      "subjectSha256": "e0eb56fc5a9ea207964eb75f5762338ce19b7dec5c20ac73732f9c4bb1dd87fe",
+      "mutate": "s/now\\.getTime\\(\\) - PHONE_CALL_CONTENT_POLICY\\.retentionDays \\* DAY_MS/now.getTime()/",
+      "tests": [
+        "packages/data/src/call-content-policy.test.ts"
+      ],
+      "testSha256": "159a65f82a682823d273a9d1ccd8c556775124aeb4ec86ef800a8e671c818622",
+      "exitCode": 0,
+      "verdict": "caught",
+      "verdictLine": "[mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evidence=vitest-failed-tests relocation=overlay",
+      "failedTests": [
+        "puts the purge cutoff exactly 30 days before now 12ms",
+        "src/call-content-policy.test.ts > D-022 retention (R-43) > puts the purge cutoff exactly 30 days before now"
+      ],
+      "startedAt": "2026-10-06T07:36:57Z",
+      "finishedAt": "2026-10-06T07:37:07Z",
+      "logSha256": "cd011a9636351f2d55bbf66b681c87994534bca955efc62095d31f4181aafb94"
+    },
+    {
+      "name": "alert-content",
+      "clauses": [
+        "R-46"
+      ],
+      "subject": "packages/data/src/call-content-policy.ts",
+      "subjectSha256": "e0eb56fc5a9ea207964eb75f5762338ce19b7dec5c20ac73732f9c4bb1dd87fe",
+      "mutate": "s/callerLabel: mail\\.callerLabel,/callerLabel: mail.transcript,/",
+      "tests": [
+        "packages/data/src/call-content-policy.test.ts"
+      ],
+      "testSha256": "159a65f82a682823d273a9d1ccd8c556775124aeb4ec86ef800a8e671c818622",
+      "exitCode": 0,
+      "verdict": "caught",
+      "verdictLine": "[mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evidence=vitest-failed-tests relocation=overlay",
+      "failedTests": [
+        "alerts on voicemail and missed inbound calls without any message content 19ms",
+        "src/call-content-policy.test.ts > D-022 owner-only, content-free alerts (R-46) > alerts on voicemail and missed inbound calls without any message content"
+      ],
+      "startedAt": "2026-10-06T07:37:07Z",
+      "finishedAt": "2026-10-06T07:37:17Z",
+      "logSha256": "e069cf3f80415c88a93834c4c88e73fd05d38a50cd9e1183369cee738db424ad"
+    },
+    {
+      "name": "deletion",
+      "clauses": [
+        "R-45"
+      ],
+      "subject": "packages/data/src/postgres-store.ts",
+      "subjectSha256": "ade1bf4266917d2f40f46a5ab354d1570a5714ee65d3d3efc5e0a99bf2c972a2",
+      "mutate": "s/^\\s*await tx`DELETE FROM phone_voicemails WHERE owner_id = \\$\\{ownerId\\} AND call_id = \\$\\{callId\\}`;\\s*$/\\n/",
+      "tests": [
+        "packages/data/src/call-deletion.integration.test.ts"
+      ],
+      "testSha256": "fa952ebbe216af4b24a361a9bb38c3d01fd921de413c217bc820fca2b91a12ea",
+      "exitCode": 0,
+      "verdict": "caught",
+      "verdictLine": "[mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evidence=vitest-failed-tests relocation=overlay",
+      "failedTests": [
+        "atomically erases message/search content and retains one idempotent replay tombstone 155ms",
+        "erases a parent-bound call, and a mirrored call once its caller deleted the mirror (WI-10006406) 277ms",
+        "validates a replay batch before writing any other call and ignores forged tombstones 88ms",
+        "serializes concurrent replay and deletion without resurrecting content 154ms",
+        "rolls back deletes if the tombstone/search update fails 186ms",
+        "keeps the tombstone and tenant scope after database process restart 1090ms"
+      ],
+      "startedAt": "2026-10-06T07:37:17Z",
+      "finishedAt": "2026-10-06T07:37:48Z",
+      "logSha256": "28c8caa3042eb6b6acfb4fdbc2d94449a67f86d98fe873a4047a7a502a09bae1"
+    },
+    {
+      "name": "tenant",
+      "clauses": [
+        "R-84"
+      ],
+      "subject": "packages/data/src/postgres-store.ts",
+      "subjectSha256": "ade1bf4266917d2f40f46a5ab354d1570a5714ee65d3d3efc5e0a99bf2c972a2",
+      "mutate": "$. == 618 and s/WHERE owner_id = \\$\\{ownerId\\}/WHERE true/",
+      "tests": [
+        "packages/data/src/voicemail-persistence.integration.test.ts"
+      ],
+      "testSha256": "e6ba9b9b1d8c4ed73de46170c2f5f9b69c24eb4b5fb32542fd377bb3e509d437",
+      "exitCode": 0,
+      "verdict": "caught",
+      "verdictLine": "[mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evidence=vitest-failed-tests relocation=overlay",
+      "failedTests": [
+        "keeps a read message read during concurrent worker replays 152ms",
+        "isolates caller mutations and a same-call-id message in a different tenant 58ms",
+        "preserves message and tenant read-state across fresh database connections 127ms",
+        "src/voicemail-persistence.integration.test.ts > voicemail persistence (postgres) > keeps a read message read during concurrent worker replays",
+        "src/voicemail-persistence.integration.test.ts > voicemail persistence (postgres) > isolates caller mutations and a same-call-id message in a different tenant",
+        "src/voicemail-persistence.integration.test.ts > voicemail persistence (postgres) > preserves message and tenant read-state across fresh database connections"
+      ],
+      "startedAt": "2026-10-06T07:37:48Z",
+      "finishedAt": "2026-10-06T07:38:12Z",
+      "logSha256": "64e22d93028a51ec565af49ff0c9ee07c7d22a78709d480f0c2021281d5b158c"
+    },
+    {
+      "name": "persist",
+      "clauses": [
+        "R-7"
+      ],
+      "subject": "packages/data/src/postgres-store.ts",
+      "subjectSha256": "ade1bf4266917d2f40f46a5ab354d1570a5714ee65d3d3efc5e0a99bf2c972a2",
+      "mutate": "$. == 600 and s/\\$\\{voicemail\\.transcript\\},/\\$\\{\"\"\\},/",
+      "tests": [
+        "packages/data/src/voicemail-persistence.integration.test.ts"
+      ],
+      "testSha256": "e6ba9b9b1d8c4ed73de46170c2f5f9b69c24eb4b5fb32542fd377bb3e509d437",
+      "exitCode": 0,
+      "verdict": "caught",
+      "verdictLine": "[mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evidence=vitest-failed-tests relocation=overlay",
+      "failedTests": [
+        "keeps a read message read during concurrent worker replays 209ms",
+        "isolates caller mutations and a same-call-id message in a different tenant 52ms",
+        "src/voicemail-persistence.integration.test.ts > voicemail persistence (postgres) > keeps a read message read during concurrent worker replays",
+        "src/voicemail-persistence.integration.test.ts > voicemail persistence (postgres) > isolates caller mutations and a same-call-id message in a different tenant"
+      ],
+      "startedAt": "2026-10-06T07:38:12Z",
+      "finishedAt": "2026-10-06T07:38:38Z",
+      "logSha256": "6bed679bd87fcf58efeed804fb3faaaf580e78cd53debe1de22c915696b77d44"
+    },
+    {
+      "name": "export",
+      "clauses": [
+        "R-44"
+      ],
+      "subject": "packages/data/src/postgres-store.ts",
+      "subjectSha256": "ade1bf4266917d2f40f46a5ab354d1570a5714ee65d3d3efc5e0a99bf2c972a2",
+      "mutate": "s/callContentExport\\(toCall\\(row\\), row\\.segments, row\\.voicemail\\)/({ ...toCall(row), segments: row.segments, voicemail: row.voicemail })/",
+      "tests": [
+        "packages/data/src/call-export.integration.test.ts"
+      ],
+      "testSha256": "c84a77ec6a5e77134c6cabd09c88cd9c19d73f0794efa9eeb82c6fd76e03375f",
+      "exitCode": 0,
+      "verdict": "caught",
+      "verdictLine": "[mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evidence=vitest-failed-tests relocation=overlay",
+      "failedTests": [
+        "exports ordered content and read state without private media or conversation authority 148ms",
+        "scopes every content lookup when two tenants use the same call id 75ms",
+        "returns detached snapshots and does not export orphan content as a call 48ms",
+        "src/call-export.integration.test.ts > call export (postgres) > exports ordered content and read state without private media or conversation authority",
+        "src/call-export.integration.test.ts > call export (postgres) > scopes every content lookup when two tenants use the same call id",
+        "src/call-export.integration.test.ts > call export (postgres) > returns detached snapshots and does not export orphan content as a call"
+      ],
+      "startedAt": "2026-10-06T07:38:38Z",
+      "finishedAt": "2026-10-06T07:38:59Z",
+      "logSha256": "878f57bc00ce8176d97088765c6c5fc767326dee37e46ebbce27b062635ad3f0"
+    },
+    {
+      "name": "capability",
+      "clauses": [
+        "R-41",
+        "R-81",
+        "R-82",
+        "R-83",
+        "OUTCOME"
+      ],
+      "subject": "worker/src/phone-voice-contract-adapter.ts",
+      "subjectSha256": "5280c672e98ad6afa25ec8ee3a605d762bfc646b5f79f15feb3cd3580e7ec592",
+      "mutate": "s/return principal\\.kind === \"owner\" \\? \"owner\" : \"restricted-call\";/return \"owner\";/",
+      "tests": [
+        "worker/src/phone-voice-contract-adapter.test.ts"
+      ],
+      "testSha256": "122b59b833265eb1150dc04915b61458554280c6bd54d5cd64fc92c183ae06f4",
+      "exitCode": 0,
+      "verdict": "caught",
+      "verdictLine": "[mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evidence=vitest-failed-tests relocation=overlay",
+      "failedTests": [
+        "keeps an unknown inbound caller on a separate restricted thread 9ms",
+        "proves the restricted-tool counterexample for a known caller 3ms",
+        "src/phone-voice-contract-adapter.test.ts > Phone VoiceTurnRequest authority adapter > keeps an unknown inbound caller on a separate restricted thread",
+        "src/phone-voice-contract-adapter.test.ts > Phone VoiceTurnRequest authority adapter > proves the restricted-tool counterexample for a known caller"
+      ],
+      "startedAt": "2026-10-06T07:38:59Z",
+      "finishedAt": "2026-10-06T07:39:08Z",
+      "logSha256": "b6e6207a34bc57e5b4ea13efa5dc07b19b12654305fb400e0c1b105ed5998247"
+    },
+    {
+      "name": "tenant-store-data",
+      "clauses": [
+        "R-6",
+        "R-75",
+        "R-77",
+        "R-78"
+      ],
+      "subject": "packages/data/src/memory-store.ts",
+      "subjectSha256": "02d27436fd8447543b82de332aa804c257272675b935e90abd82b9f47db91067",
+      "mutate": "s/store = createStore\\(ownerId\\);/store = createStore(\"tenant-a\");/",
+      "tests": [
+        "packages/data/src/store-contract.test.ts"
+      ],
+      "testSha256": "0ce5a000f0448c9bcd995529660b8d07d537f29355358a7f72461a31a5095f01",
+      "exitCode": 0,
+      "verdict": "caught",
+      "verdictLine": "[mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evidence=vitest-failed-tests relocation=overlay",
+      "failedTests": [
+        "keeps unsubmitted intents enumerable after restart and excludes bound calls and other tenants 11ms",
+        "binds inbound room and assistant exactly once without admitting owner authority 3ms",
+        "routes only active durable numbers and preserves tenant/account boundaries 1ms",
+        "rejects malformed numbers and dialing from a foreign or inactive binding 2ms",
+        "deduplicates concurrent callbacks and rejects mutated receipts or provider identity 2ms",
+        "rejects attaching one provider call to another tenant and rolls back the failed receipt 2ms"
+      ],
+      "startedAt": "2026-10-06T07:39:24Z",
+      "finishedAt": "2026-10-06T07:39:31Z",
+      "logSha256": "a1081fe3b2618ff18d2ffaa2e8756241bbd823d740cb558af5df42dd6627e417"
+    },
+    {
+      "name": "tenant-store-sidecar",
+      "clauses": [
+        "R-76",
+        "R-79",
+        "R-80"
+      ],
+      "subject": "packages/data/src/memory-store.ts",
+      "subjectSha256": "02d27436fd8447543b82de332aa804c257272675b935e90abd82b9f47db91067",
+      "mutate": "s/store = createStore\\(ownerId\\);/store = createStore(\"tenant-a\");/",
+      "tests": [
+        "apps/sidecar/src/telephony-isolation.test.ts"
+      ],
+      "testSha256": "c28f192194af5dc72c0213817f2eb0e480aef8847c7db1823a73e8d782a49802",
+      "exitCode": 0,
+      "verdict": "caught",
+      "verdictLine": "[mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evidence=vitest-failed-tests relocation=overlay",
+      "failedTests": [
+        "keeps calls, transcripts, search and voicemail under the stored tenant despite a forged ingest owner 47ms",
+        "refuses a foreign tenant's call controls and media grant without touching its room 4ms",
+        "ignores browser-supplied tenant, principal, parent and room authority when minting a grant 7ms",
+        "does not treat a room named after another tenant as an identity credential 2ms",
+        "rejects callbacks for the wrong durable provider account and preserves both tenants 3ms",
+        "src/telephony-isolation.test.ts > durable telephony tenant and authority boundaries > keeps calls, transcripts, search and voicemail under the stored tenant despite a forged ingest owner"
+      ],
+      "startedAt": "2026-10-06T07:39:31Z",
+      "finishedAt": "2026-10-06T07:39:41Z",
+      "logSha256": "6ac40fd9214d82dd6310d8b86db97a96938ba26d3da01514a170cbcb4af32b56"
+    }
+  ],
+  "harnessErrors": [
+    {
+      "name": "capability-int",
+      "subject": "worker/src/phone-voice-contract-adapter.ts",
+      "tests": [
+        "worker/src/agent-authority.integration.test.ts"
+      ],
+      "mutate": "s/return principal\\.kind === \"owner\" \\? \"owner\" : \"restricted-call\";/return \"owner\";/",
+      "exitCode": 2,
+      "verdictLine": "MUTATION_PROBE_RESULT verdict=harness-error expected=caught target=copy-out baseline_exit=0 guard_exit=0 module_loaded=no relocation=overlay",
+      "note": "excluded: mutation-probe reported harness-error (module_loaded=no) -- the guard test does not import the mutated subject, so this pairing proves nothing"
+    }
+  ]
+}

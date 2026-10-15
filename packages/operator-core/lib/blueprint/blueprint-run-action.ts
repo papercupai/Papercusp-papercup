@@ -43,6 +43,7 @@ import { registerSystemAction, type SystemActionCtx, type SystemActionResult } f
 import { checkFireGate, recordFire } from '../autoloop';
 import { getEffectiveBlueprint } from './project-to-pg';
 import { resolveLaunchBlueprint, buildLaunchSpawnRequest } from './launch-blueprint';
+import { observeFallback } from '../degradation/fallback-observations';
 import { operatorApiBase } from '../operator-api-base';
 import { readHarnessRegistryFor } from '../device-harnesses';
 import { isReservedHarnesslessRoutineHost } from '../harness/routines/routine-host';
@@ -514,6 +515,10 @@ export async function handleBlueprintRun(ctx: SystemActionCtx): Promise<void | S
   const resolve = _resolver ?? resolveBlueprint;
   const resolved = await resolve(installSlug, workspaceId);
   const bp = resolved ?? codingFallback();
+  observeFallback('scheduled-blueprint-resolution', {
+    eligible: 1, applied: resolved ? 1 : 0,
+    reason: resolved ? 'applied' : 'blueprint-unconfigured', scope: installSlug,
+  }, { workspaceId });
   // WI-5645 (no-retirement-launch-guard): LOUD WARNING, not a block, when this fire
   // is about to run against a retired blueprint (itself or via `extends` — e.g. the
   // EI-18177667809538623 external-bench ⟶ coding-factory shape). Deliberately NOT

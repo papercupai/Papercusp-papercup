@@ -8,13 +8,16 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import type { OrgSql } from './reproducibility/db';
 
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 
-import { gradeBenchRun } from './grade-runner';
+import { gradeBenchRun, type GradeArgs } from './grade-runner';
 import { upsertBenchRun, upsertBenchRunTask, getBenchRunDetail } from './run-store';
+import { currentProtocolFixture } from './reproducibility/_protocol-test-fixture';
+import { canonicalJson } from './reproducibility/canonical-json';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
@@ -56,6 +59,63 @@ beforeEach(async () => {
 });
 
 describe('gradeBenchRun (P-010)', () => {
+  function currentConfig() {
+    const protocol = currentProtocolFixture('current-grade-fixture');
+    const images = { t1: `docker.io/jefzda/sweap-images@sha256:${'a'.repeat(64)}` };
+    protocol.grader = { family: 'swe-bench-pro', version: 'b'.repeat(40), datasetSha256: 'c'.repeat(64), images,
+      imageDigest: createHash('sha256').update(canonicalJson(images)).digest('hex') };
+    return { protocol, current: { workspaceId: WS, protocolRunId: protocol.runId, preregHash: 'd'.repeat(64), seed: 1 } };
+  }
+
+  it('passes verified committed current grader pins to the scorer before recording a verdict', async () => {
+    const config = currentConfig();
+    await upsertBenchRun({ id: 'current-grade', arm: 'baseline', suite: 'swe-bench-pro', taskSetId: 'custom',
+      model: 'configured-alias', status: 'done', config, taskCount: 1 }, scope);
+    await upsertBenchRunTask('current-grade', { instanceId: 't1', taskStatus: 'collected', diffBytes: 100 }, scope);
+    const verify = vi.fn(async () => ({ preregHash: config.current.preregHash, gitCommitSha: 'e'.repeat(40), receiptRef: 'prereg:test' }));
+    const grade = vi.fn(async (_args: GradeArgs) => {
+      expect(verify).toHaveBeenCalledOnce(); return { t1: true };
+    });
+    const result = await gradeBenchRun('current-grade', { scope, grade, verifyCurrentPreregistration: verify });
+    if ('error' in result) throw new Error(result.error);
+    await result.done;
+    expect(grade.mock.calls[0][0]).toMatchObject({ frozenGrader: config.protocol.grader });
+    expect((await getBenchRunDetail('current-grade', scope))?.resolvedCount).toBe(1);
+  });
+
+  it.each(['manifest', 'missing-images', 'scope', 'seed', 'uncommitted'])(
+    'refuses current %s drift without calling the scorer or writing grades', async changed => {
+      const config = currentConfig();
+      if (changed === 'manifest') config.protocol.grader.imageDigest = 'f'.repeat(64);
+      if (changed === 'missing-images') delete config.protocol.grader.images;
+      if (changed === 'scope') config.current.workspaceId = 'foreign-workspace';
+      if (changed === 'seed') config.current.seed = 2;
+      await upsertBenchRun({ id: 'current-refused', arm: 'baseline', suite: 'swe-bench-pro', taskSetId: 'custom',
+        model: 'configured-alias', status: 'done', config, taskCount: 1 }, scope);
+      await upsertBenchRunTask('current-refused', { instanceId: 't1', taskStatus: 'collected', diffBytes: 100 }, scope);
+      const grade = vi.fn(async () => ({ t1: true }));
+      const verify = vi.fn(async () => { throw new Error('Pre-registration is not committed'); });
+      const result = await gradeBenchRun('current-refused', { scope, grade, verifyCurrentPreregistration: verify });
+      expect(result).toMatchObject({ error: expect.stringContaining('current_grader_protocol') });
+      expect(grade).not.toHaveBeenCalled();
+      expect((await getBenchRunDetail('current-refused', scope))?.perTask.find(task => task.instanceId === 't1')?.resolved).toBeNull();
+    },
+  );
+
+  it('refuses out-of-roster current verdicts instead of applying them', async () => {
+    const config = currentConfig();
+    await upsertBenchRun({ id: 'current-roster', arm: 'baseline', suite: 'swe-bench-pro', taskSetId: 'custom',
+      model: 'configured-alias', status: 'done', config, taskCount: 1 }, scope);
+    await upsertBenchRunTask('current-roster', { instanceId: 't1', taskStatus: 'collected', diffBytes: 100 }, scope);
+    const result = await gradeBenchRun('current-roster', { scope, grade: async () => ({ foreign: true }),
+      verifyCurrentPreregistration: async () => ({ preregHash: config.current.preregHash, gitCommitSha: 'e'.repeat(40), receiptRef: 'prereg:test' }) });
+    if ('error' in result) throw new Error(result.error);
+    await result.done;
+    const detail = await getBenchRunDetail('current-roster', scope);
+    expect(detail?.status).toBe('error'); expect(detail?.perTask.find(task => task.instanceId === 't1')?.resolved).toBeNull();
+    expect(detail?.runError).toContain('frozen task roster');
+  });
+
   it('runs the (injected) grader, persists the verdict map + rolls up resolved counts, status → done', async () => {
     await upsertBenchRun({ id: 'g1', arm: 'hive-realqueen', taskSetId: '11-task-pilot', model: 'opus', status: 'done' }, scope);
     for (const id of ['instance_a', 'instance_b', 'instance_c']) {

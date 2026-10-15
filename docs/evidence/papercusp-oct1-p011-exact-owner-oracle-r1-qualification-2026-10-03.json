@@ -1,0 +1,211 @@
+{
+  "schemaVersion": "p011-exact-owner-independent-qualification-v1",
+  "workItem": "WI-10005907",
+  "parent": "WI-10004890",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "planItem": "P-011",
+  "spec": {
+    "id": "PERF-OCT1-P011-MEMORY",
+    "revision": 2,
+    "fingerprint": "6059e251ea51a61458afd5075a8190a60e1f1139d28c55784b4ff12d2c624010"
+  },
+  "scope": {
+    "evidencePlane": "tree",
+    "testLayer": "integration",
+    "classification": "Independent saved raw-data audit; historical private snapshot only",
+    "newRuntimeMeasurement": false,
+    "fullP011Acceptance": false,
+    "loadedBuildIdentity": "unknown",
+    "nativePhysicalOwnership": "unknown",
+    "productionSavings": "unmeasured",
+    "fullTransitiveProvenance": "unknown"
+  },
+  "receipts": [
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-exact-owner-oracle-r1-2026-10-03.json",
+      "bytes": 4400,
+      "sha256": "4619229f67ef51755aac60e059f42c0dd4b201e751a189927b826c5905595388"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-exact-owner-retainers-r1-2026-10-02.json",
+      "bytes": 847097,
+      "sha256": "283cd13234d20676fc29a85bf883c21b607f099da449c404ca3c1ece7f4bd235"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-exact-owner-retainers-r1-qualification-2026-10-02.json",
+      "bytes": 58408,
+      "sha256": "646301d458a041905541a490cb62994f8e145bfb935b5de57f7d1227d17a953e"
+    }
+  ],
+  "run": {
+    "testRunId": 20658285,
+    "status": "pass",
+    "framework": "vitest",
+    "source": "local",
+    "harnessSlug": "papercusp",
+    "workspaceId": "papercusp-workspace",
+    "root": "$HOME/papercupai-workspace/papercusp",
+    "rootNormalization": "Portable home-directory reference; exact original absolute root remains unchanged in test_runs:20658285.",
+    "commitSha": "035b7869624dc1a978ba7b4ab9011b08c403b7b7",
+    "worktreeDirty": true,
+    "routerProvenance": "stamped named test path only",
+    "startedAt": "2026-10-03T07:30:45.446Z",
+    "finishedAt": "2026-10-03T07:30:45.493Z",
+    "passed": 59,
+    "skipped": 1,
+    "skipReason": "Fresh main/sibling baseline requires PAPERCUSP_P011_BASELINE_ORACLE_INPUTS; explicitly not exercised in this saved run.",
+    "newReplay": false
+  },
+  "finalSourceValidation": {
+    "reason": "Necessary validation after the three type annotations; bind-from-test-run source refuses a measured file modified after the original run. This run is not recovery replay and starts no runtime/snapshot producer.",
+    "testRunId": 20659110,
+    "status": "pass",
+    "harnessSlug": "papercusp",
+    "source": "local",
+    "commitSha": "93b6b63aa3c6aa66b3efb197b5901adef24c82c3",
+    "startedAt": "2026-10-03T07:50:22.649Z",
+    "finishedAt": "2026-10-03T07:50:22.702Z",
+    "passed": 59,
+    "skipped": 1,
+    "testFileRouterDirty": false,
+    "ledgerWorktreeDirty": true,
+    "provenanceScope": "Named test file clean; ledger reports broader worktree dirty. Full import graph unknown.",
+    "sourceSha256": "041965feff77a39f5bf8664cefc14ae2d2532c42ea9b919e80e70f7d2bff059a",
+    "log": {
+      "path": "/tmp/su-7db4f-p011-exact-owner-oracle-r2.log",
+      "bytes": 4700,
+      "sha256": "80bfb64d6c54a8460a182126ad3a28a07b768772421db07811eb146827ff4e8c",
+      "terminal": "Native exec exit 0; TEST_FILE_RESULT status=passed"
+    },
+    "report": {
+      "path": "/tmp/su-7db4f-p011-exact-owner-oracle-r2.json",
+      "bytes": 4400,
+      "sha256": "4619229f67ef51755aac60e059f42c0dd4b201e751a189927b826c5905595388",
+      "byteIdenticalToSavedCanonicalReport": true
+    }
+  },
+  "logs": {
+    "test": {
+      "path": "/tmp/su-7db4f-p011-exact-owner-oracle-r1.log",
+      "bytes": 4341,
+      "sha256": "1d72683cf891ee53470fdca0e9b0da4e09344c52a34d8aa2ec95c212c450cfb9",
+      "terminal": "TEST_FILE_RESULT status=passed; native exec exit 0"
+    },
+    "initialTypecheck": {
+      "path": "/tmp/su-7db4f-p011-exact-owner-oracle-r1-types.log",
+      "result": "3 TS7006 callback errors; corrected without behavioral change"
+    },
+    "fixedTypecheck": {
+      "path": "/tmp/su-7db4f-p011-exact-owner-oracle-r1-types-fixed.json",
+      "result": "requested file checked in full project program, zero errors, exit 0"
+    }
+  },
+  "typeOnlyCorrection": {
+    "path": "packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts",
+    "testedSourceSha256": "1069284964653b05848aec0f4a71dc869c41f74876c83edeb5c8fa42f686cb69",
+    "currentSourceSha256": "041965feff77a39f5bf8664cefc14ae2d2532c42ea9b919e80e70f7d2bff059a",
+    "change": "Three callback parameter type annotations only.",
+    "equivalence": {
+      "transformer": "esbuild 0.27.3",
+      "options": {
+        "loader": "ts",
+        "format": "esm",
+        "target": "node22",
+        "sourcefile": "packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts"
+      },
+      "priorEmittedSha256": "1cbc47cdf65d410875f08d51c310450d38056feca401bd7723e007199d57d1ad",
+      "currentEmittedSha256": "1cbc47cdf65d410875f08d51c310450d38056feca401bd7723e007199d57d1ad",
+      "byteIdentical": true,
+      "priorSourceReconstructedAndHashMatched": true
+    },
+      "scope": "Original saved run used the tested source. Current source has identical emitted JavaScript under the named transform and a separate final-source validation run; whole import graph remains unknown."
+  },
+  "independentOracle": {
+    "reuse": "Extended maintained service-memory-baseline-evidence.integration.test.ts; no producer/analyzer import or new runtime.",
+    "exactOwners": 9,
+    "corruptionCases": 33,
+    "positiveChecks": [
+      "Numeric CDP singleton IDs join native requested nodes from the same snapshot input.",
+      "Reversing native requested-node array leaves exact joins unchanged.",
+      "Overlapping parent/class/native headlines cannot affect per-node ownership result.",
+      "Bounded incomplete incoming-parent coverage remains explicit."
+    ],
+    "measuredIdentity": "2506527:2370975:7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+    "snapshotSha256": "4bbcf7a75820d57a930a322152c935a144d34d1e8e7d2a9007e37c6c89494fa7",
+    "definition": "Per-node dominator-owned V8 self_size. Incoming parents are not dominators; overlapping retained totals are not summed."
+  },
+  "preservation": {
+    "proofCensus": {
+      "path": "docs/evidence/papercusp-oct1-p011-proof-census-2026-10-02.json",
+      "bytes": 43488,
+      "sha256": "ce7f942025573298f90a487a65775c63ec48861b20bde6eb2bcb82a0d6efb950"
+    },
+    "sourceDispositions": 8,
+    "sourceDispositionsUnchanged": true,
+    "forwardQualificationSha256": "43c6d01d721890e54830969361a2a1ca0dce61ee37d745e1c42c91d8c956244f",
+    "inboxQualificationSha256": "2366ca36b2038ff2752adc43c4d7ee3e8d075c479c76a030b5f1831984a2b4c7",
+    "oldBindings": "Preserved without retraction or relabel; new oracle source bytes can stale older bindings.",
+    "P018": "WI-10005898 remains done.",
+    "originalOwnerProvenance": "Pending authenticated native owner affirmation remains unresolved; this receipt asserts no historical owner authentication or new plan approval."
+  },
+  "limitations": [
+    "Saved snapshot forced GC and a synchronous pause in a private request-only host.",
+    "Small per-node singleton dominator totals do not establish small total reachable payloads or services.",
+    "Exact graph nodes do not recover a historical PostgreSQL initiating query or native allocation owner.",
+    "No new producer, host, inspector, profiler, GC, restart, native agent, or live-gate operation was invoked.",
+    "No physical counterfactual, production savings, complete executed source graph, or final shipment is established."
+  ],
+  "remaining": [
+    "Whole P011 live evidence contract and selected optimization/resource/useful-context acceptance.",
+    "Historical PostgreSQL/compiler/native source dispositions not settled by this audit.",
+    "P010, R8/R9, independent acceptance and final shipment.",
+    "Authenticated native owner affirmation for original activation provenance."
+  ],
+  "bindingReceipts": {
+    "child": 23370,
+    "parent": 23371,
+    "testRunId": 20659110,
+    "currentness": "server-measured current for spec, source, test and run; applicable fixture/rubric/environment dimensions not asserted",
+    "evidencePlane": "tree",
+    "testLayer": "integration",
+    "oldBindingsRetracted": false
+  },
+  "diagnosticAdequacy": {
+    "governing": false,
+    "evaluatorBuild": "d740fc3802",
+    "workItemIds": ["WI-10005907"],
+    "verdict": "fail",
+    "wouldBlock": ["correct-layer", "disclosed-gap"],
+    "passedCriteria": ["traceability", "falsifiability", "oracle-independence", "execution-integrity", "freshness", "plan-class-risk-floor"],
+    "qualification": "After ledger-backed mutation evidence, falsifiability and the proof floor pass. The full clause still fails its required live plane and explicit acceptance gaps. This scoped diagnostic is not plan shipment acceptance."
+  },
+  "mutationReceipt": {
+    "mechanism": "Maintained scripts/mutation-probe.sh copy-out overlay",
+    "subject": "auditExactOwners numeric requested-node selection",
+    "change": "nodes.find((x: any) => x.id === owner.id) -> nodes[0]",
+    "guard": "joins numeric object IDs rather than constructor labels or array position",
+    "baselineTestRunId": 20660892,
+    "unmutatedCopyTestRunId": 20660893,
+    "mutantTestRunId": 20660896,
+    "controlResults": "Both controls pass one targeted test with 59 filtered skips.",
+    "mutantResult": "One executed assertion fails: P011 exact owner: exact graph node join; 59 filtered skips.",
+    "verdict": "caught",
+    "nativeExitCode": 0,
+    "mutantParse": "unchecked; failure evidence is the executed Vitest assertion",
+    "treeIntegrity": "Verified byte-identical SHA041965feff77a39f5bf8664cefc14ae2d2532c42ea9b919e80e70f7d2bff059a",
+    "log": {
+      "path": "/tmp/su-7db4f-p011-exact-owner-oracle-mutation-r1.log",
+      "bytes": 9721,
+      "sha256": "23d3263b8ac60cd44633763d255d6a6bd54f36dd3e3f1e90a60fff80c2236923"
+    },
+    "childBinding": 23387,
+    "parentBinding": 23388,
+    "bindingCurrentness": "server-measured current",
+    "scope": "Tree-plane exact-ID selection guard only; no new producer, physical resource measurement, live acceptance or shipment."
+  },
+  "closure": {
+    "decision": "D-021",
+    "state": "Keep P011 child and parent open until their whole resolved clause sets pass.",
+    "noScopedContributionClose": true
+  }
+}

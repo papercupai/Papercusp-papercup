@@ -122,5 +122,7 @@ export interface RosterBulkActions {
   focus?(selected: readonly RosterAgent[]): Promise<string | null>;
   /** Confirm-armed in the UI: the first click arms, the second calls this. */
   kill?(selected: readonly RosterAgent[]): Promise<string | null>;
+  killLabel?: string;
+  killDescription?: string;
   copyIds?(ownerIds: readonly string[]): Promise<string | null>;
 }

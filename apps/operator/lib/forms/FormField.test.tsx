@@ -14,6 +14,11 @@ import { FormField } from './FormField';
 afterEach(cleanup);
 
 describe('FormField', () => {
+  it('associates the visible label with the supplied input id', () => {
+    render(<FormField label="Display name" htmlFor="profile-name"><input id="profile-name" /></FormField>);
+    expect(screen.getByLabelText('Display name').id).toBe('profile-name');
+  });
+
   it('renders the label and its children', () => {
     render(
       <FormField label="Email">

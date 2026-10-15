@@ -26,6 +26,7 @@ import { GoogleAuth, type JWTInput } from 'google-auth-library';
 import type { GcpResolvedAuth } from '../cloud-workspaces/gcp-preflight';
 import { ensurePapercuspHostingGrant, hostedGcpWorkspaceProject, HostedGcpNotReadyError } from './hosted-gcp-hosting';
 import type { HostedDelegationOrganization, HostedProviderDelegationRecord } from './hosted-provider-delegation';
+import { assertPinnedGcpSecretReference, resolveSecretRef } from '../inference-gateway/egress-providers/secret-ref';
 
 const METADATA_ROOT = 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default';
 const IAM_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
@@ -33,6 +34,8 @@ const IAM_ROOT = 'https://iam.googleapis.com/v1';
 
 /** Path to the delegation source's service-account key file. Unset = the GCE metadata identity. */
 export const HOSTED_GCP_DELEGATION_SOURCE_ENV = 'PAPERCUSP_HOSTED_GCP_DELEGATION_SOURCE_CREDENTIALS';
+/** Secret Manager reference to a delegation key; unset = the attached VM identity. */
+export const HOSTED_GCP_DELEGATION_SOURCE_REF_ENV = 'PAPERCUSP_HOSTED_GCP_DELEGATION_SOURCE_CREDENTIALS_REF';
 
 /** The GCP project that holds one Papercusp service account per organization (D-397). */
 export const HOSTED_GCP_ORGANIZATION_IDENTITY_PROJECT_ENV = 'PAPERCUSP_HOSTED_GCP_ORGANIZATION_IDENTITY_PROJECT';
@@ -123,7 +126,7 @@ export function gcpDelegationOrganization(
     fetch?: typeof fetch;
     source?: HostedGcpDelegationSource;
   } = {},
-): HostedDelegationOrganization {
+): Omit<HostedDelegationOrganization, 'awsTrustedPrincipal' | 'awsPapercuspHosting'> {
   const env = options.env ?? process.env;
   const fetchImpl = options.fetch ?? fetch;
   const ensureAccount = () => {
@@ -231,14 +234,28 @@ export function metadataDelegationSource(fetchImpl: typeof fetch = fetch): Hoste
  * customer grant would otherwise trust a person's account.
  */
 export function keyFileDelegationSource(keyFile: string): HostedGcpDelegationSource {
+  return keyDelegationSource(() => readFile(keyFile, 'utf8'));
+}
+
+/** Read key material only into memory through the shared resolver; never stage a local key file. */
+export function secretRefDelegationSource(
+  reference: string,
+  resolveSecret: (reference: string) => Promise<string> = resolveSecretRef,
+): HostedGcpDelegationSource {
+  return keyDelegationSource(() => resolveSecret(reference));
+}
+
+function keyDelegationSource(readCredentials: () => Promise<string>): HostedGcpDelegationSource {
   let loaded: Promise<{ email: string; auth: GoogleAuth }> | null = null;
   const load = () => {
-    loaded ??= readFile(keyFile, 'utf8')
+    loaded ??= readCredentials()
       .catch(() => {
         throw new Error('gcp_workspace_host_delegation_source_unreadable');
       })
       .then((text) => {
-        const key = JSON.parse(text) as JWTInput;
+        let key: JWTInput;
+        try { key = JSON.parse(text) as JWTInput; }
+        catch { throw new Error('gcp_workspace_host_delegation_source_invalid_json'); }
         if (key.type !== 'service_account' || typeof key.client_email !== 'string' || !key.client_email) {
           throw new Error('gcp_workspace_host_delegation_source_not_service_account');
         }
@@ -262,17 +279,31 @@ export function keyFileDelegationSource(keyFile: string): HostedGcpDelegationSou
   };
 }
 
-let configuredSource: { keyFile: string; source: HostedGcpDelegationSource } | null = null;
+let configuredSource: { reference: string; source: HostedGcpDelegationSource } | null = null;
 
 /** The configured delegation source: the key file in {@link HOSTED_GCP_DELEGATION_SOURCE_ENV}, else metadata. */
 export function hostedGcpDelegationSource(
   env: Readonly<Record<string, string | undefined>> = process.env,
   fetchImpl: typeof fetch = fetch,
+  resolveSecret: (reference: string) => Promise<string> = resolveSecretRef,
 ): HostedGcpDelegationSource {
   const keyFile = env[HOSTED_GCP_DELEGATION_SOURCE_ENV]?.trim();
+  const reference = env[HOSTED_GCP_DELEGATION_SOURCE_REF_ENV]?.trim();
+  if (keyFile && reference) throw new Error('gcp_workspace_host_delegation_source_ambiguous');
+  if (env.PAPERCUSP_DEPLOYMENT_ENVIRONMENT === 'production') {
+    if (keyFile) throw new Error('gcp_workspace_host_production_key_file_forbidden');
+    if (reference) assertPinnedGcpSecretReference(reference);
+  }
+  if (reference) {
+    // Pin-version changes construct a fresh auth client, so rotation cannot reuse the old key.
+    if (configuredSource?.reference !== reference) {
+      configuredSource = { reference, source: secretRefDelegationSource(reference, resolveSecret) };
+    }
+    return configuredSource.source;
+  }
   if (!keyFile) return metadataDelegationSource(fetchImpl);
   // One client per key file, so its token cache survives across resolutions.
-  if (configuredSource?.keyFile !== keyFile) configuredSource = { keyFile, source: keyFileDelegationSource(keyFile) };
+  if (configuredSource?.reference !== `file:${keyFile}`) configuredSource = { reference: `file:${keyFile}`, source: keyFileDelegationSource(keyFile) };
   return configuredSource.source;
 }
 

@@ -13,7 +13,7 @@
  * setters are no-op spies; tests seed slug/scope before each render.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 
 // ── nuqs: per-key store the tests seed; setters are inert spies. ──
 const nuqsState: Record<string, unknown> = { slug: null, scope: 'expanded' };
@@ -39,7 +39,9 @@ vi.mock('@/app/adv/harnesses/AdvGitWorkspace', () => ({ default: () => <div data
 vi.mock('@/app/harness/PrsTab', () => ({ default: ({ harnessSlug }: { harnessSlug: string }) => <div data-testid="prs">{harnessSlug}</div> }));
 vi.mock('@/app/harness/HarnessSettingsPanel', () => ({ default: ({ slug }: { slug: string }) => <div data-testid="settings-legacy">{slug}</div> }));
 vi.mock('@/app/harness/BlueprintSettingsPanel', () => ({ default: ({ slug }: { slug: string }) => <div data-testid="settings-blueprint">{slug}</div> }));
-vi.mock('@/app/harness/insights/InsightsTab', () => ({ InsightsTab: () => <div data-testid="insights" /> }));
+vi.mock('@/app/harness/insights/InsightsTab', () => ({
+  InsightsTab: ({ slug }: { slug: string }) => <div data-testid="insights">{slug}</div>,
+}));
 vi.mock('@/app/adv/harnesses/AdvDocsTab', () => ({ default: ({ slug }: { slug: string }) => <div data-testid="docs">{slug}</div> }));
 vi.mock('@/app/adv/harnesses/HarnessTestsView', () => ({ default: ({ slug }: { slug: string }) => <div data-testid="testing">{slug}</div> }));
 vi.mock('@/app/harness/brainstorm/BrainstormFull', () => ({ BrainstormFull: ({ slug }: { slug: string }) => <div data-testid="brainstorm">{slug}</div> }));
@@ -51,7 +53,10 @@ beforeEach(() => {
   nuqsState.scope = 'expanded';
   flagRef.blueprintAware = false;
 });
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe('ADV_HARNESS_PANEL_LABELS', () => {
   it('labels every routable harness panel', () => {
@@ -121,5 +126,115 @@ describe('<AdvHarnessPanelPage> routing', () => {
     nuqsState.slug = 'pot-t';
     render(<AdvHarnessPanelPage panel="testing" />);
     expect(screen.getByTestId('testing').textContent).toBe('pot-t');
+  });
+});
+
+describe('Insights read recovery', () => {
+  const success = () => new Response(JSON.stringify({ insights: {} }), { status: 200 });
+
+  it('retries a cold read failure without leaving the selected pot', async () => {
+    nuqsState.slug = 'insights-cold-retry';
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(success());
+    vi.stubGlobal('fetch', fetchMock);
+    render(<AdvHarnessPanelPage panel="insights" />);
+
+    await screen.findByText(/Could not load insights: HTTP 503/);
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+    expect((await screen.findByTestId('insights')).textContent).toBe('insights-cold-retry');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/harness/insights-cold-retry/insights', { cache: 'no-store' });
+  });
+
+  it('keeps cached cards visible while reporting and retrying a failed refresh', async () => {
+    nuqsState.slug = 'insights-warm-retry';
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(success())
+      .mockResolvedValueOnce(new Response(null, { status: 500 }))
+      .mockResolvedValueOnce(success());
+    vi.stubGlobal('fetch', fetchMock);
+    const first = render(<AdvHarnessPanelPage panel="insights" />);
+    await screen.findByTestId('insights');
+    first.unmount();
+    render(<AdvHarnessPanelPage panel="insights" />);
+
+    expect(screen.getByTestId('insights').textContent).toBe('insights-warm-retry');
+    expect((await screen.findByRole('alert')).textContent).toContain('Could not refresh insights');
+    expect(screen.getByTestId('insights')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+    await act(async () => {});
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByTestId('insights')).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('loads a cold pot and immediately reuses its cached cards on a successful revisit', async () => {
+    nuqsState.slug = 'insights-success-control';
+    let finishRefresh!: (response: Response) => void;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(success())
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { finishRefresh = resolve; }));
+    vi.stubGlobal('fetch', fetchMock);
+    const first = render(<AdvHarnessPanelPage panel="insights" />);
+    expect(screen.getByText('Loading insights…')).toBeTruthy();
+    await screen.findByTestId('insights');
+    first.unmount();
+    render(<AdvHarnessPanelPage panel="insights" />);
+
+    expect(screen.getByTestId('insights')).toBeTruthy();
+    expect(screen.queryByText('Loading insights…')).toBeNull();
+    await act(async () => finishRefresh(success()));
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['cold', 'cached'])('reports a missing payload on a %s read and recovers through retry', async (visit) => {
+    nuqsState.slug = `insights-missing-${visit}`;
+    const fetchMock = vi.fn();
+    if (visit === 'cached') fetchMock.mockResolvedValueOnce(success());
+    fetchMock
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+      .mockResolvedValueOnce(success());
+    vi.stubGlobal('fetch', fetchMock);
+    if (visit === 'cached') {
+      const first = render(<AdvHarnessPanelPage panel="insights" />);
+      await screen.findByTestId('insights');
+      first.unmount();
+    }
+    render(<AdvHarnessPanelPage panel="insights" />);
+
+    expect((await screen.findByRole('alert')).textContent).toContain('insights payload missing');
+    expect(Boolean(screen.queryByTestId('insights'))).toBe(visit === 'cached');
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await act(async () => {});
+    expect(screen.getByTestId('insights')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('ignores a late response for a previous pot and leaves its cache untouched', async () => {
+    nuqsState.slug = 'insights-previous-pot';
+    let finishPrevious!: (response: Response) => void;
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { finishPrevious = resolve; }))
+      .mockResolvedValueOnce(success())
+      .mockResolvedValueOnce(new Response(null, { status: 403 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const view = render(<AdvHarnessPanelPage panel="insights" />);
+    nuqsState.slug = 'insights-current-pot';
+    view.rerender(<AdvHarnessPanelPage panel="insights" />);
+    expect((await screen.findByTestId('insights')).textContent).toBe('insights-current-pot');
+
+    await act(async () => finishPrevious(success()));
+    expect(screen.getByTestId('insights').textContent).toBe('insights-current-pot');
+    expect(screen.queryByRole('alert')).toBeNull();
+    nuqsState.slug = 'insights-previous-pot';
+    view.rerender(<AdvHarnessPanelPage panel="insights" />);
+    expect(screen.queryByTestId('insights')).toBeNull();
+    expect((await screen.findByRole('alert')).textContent).toContain('HTTP 403');
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/harness/insights-previous-pot/insights', { cache: 'no-store' });
   });
 });

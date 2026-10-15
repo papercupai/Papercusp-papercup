@@ -28,9 +28,12 @@
  */
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { readEmbedLatency, UNATTRIBUTED_CALLER, type EmbedCallerLatency, type EmbedLatencyWindow } from '@papercusp/search';
+import { hostname } from 'node:os';
 
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+import { broadcastSevereEvent } from '../severe-event-broadcast';
 
 export const EMBED_LATENCY_SWEEP_INTERVAL_MS = 15 * 60_000;
 export const EMBED_LATENCY_WINDOW_MS = 60 * 60_000;
@@ -132,6 +135,7 @@ export interface EmbedLatencySweepDeps {
   readWindow: () => EmbedLatencyWindow;
   escalate: (v: Extract<EmbedLatencyVerdict, { kind: 'breach' }>) => Promise<void>;
   flagEnabled: () => Promise<boolean>;
+  rail: AlarmAttentionDeps;
 }
 
 async function defaultFlagEnabled(): Promise<boolean> {
@@ -217,6 +221,7 @@ function sweepDeps(overrides: Partial<EmbedLatencySweepDeps>): EmbedLatencySweep
     readWindow: () => readEmbedLatency({ windowMs: EMBED_LATENCY_WINDOW_MS }),
     escalate: defaultEscalate,
     flagEnabled: defaultFlagEnabled,
+    rail: {},
     ...overrides,
   };
 }
@@ -227,7 +232,29 @@ export async function runEmbedLatencySweepOnce(
 ): Promise<{ verdict: 'breach' | 'healthy' | 'nothing-to-grade' | 'skipped'; escalated: number }> {
   const deps = sweepDeps(overrides);
   if (!(await deps.flagEnabled())) return { verdict: 'skipped', escalated: 0 };
-  const verdict = judgeEmbedLatency(deps.readWindow());
+  const window = deps.readWindow();
+  const verdict = judgeEmbedLatency(window);
+  // Samples are local to this operator host. A different caller/host, an empty
+  // window, or an ungraded caller cannot establish recovery of this episode.
+  for (const caller of window.callers) {
+    const judged = judgeEmbedCaller(caller);
+    const conditionKey = `alarm:embed-latency:${encodeURIComponent(hostname())}:${encodeURIComponent(caller.caller)}`;
+    if (judged.kind === 'ungraded') continue;
+    if (judged.kind === 'healthy') {
+      if (caller.p50Ms !== null && caller.p99Ms !== null) {
+        await resolveAlarm(conditionKey, 'embed-latency-watchdog', deps.rail);
+      }
+      continue;
+    }
+    const event = { conditionKey, summary: `Embed latency ${judged.kind}: ${caller.caller}`,
+      body: describeBreach({ ...judged, caller: caller.caller }) };
+    try {
+      if (deps.rail.broadcast) await deps.rail.broadcast(event);
+      else await broadcastSevereEvent(event);
+    } catch (err) {
+      console.warn(`[embed-latency-watchdog] condition broadcast failed (non-fatal): ${String(err)}`);
+    }
+  }
   if (verdict.kind !== 'breach') return { verdict: verdict.kind, escalated: 0 };
   await deps.escalate(verdict);
   return { verdict: 'breach', escalated: 1 };

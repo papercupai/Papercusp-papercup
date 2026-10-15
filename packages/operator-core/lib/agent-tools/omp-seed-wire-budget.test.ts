@@ -70,6 +70,9 @@
  * that describes it, since more than half of it ships COMPACT.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
+// Reuse the guidance-budget suite's real catalog registration during collection.
+// Cold graph transformation belongs here, outside the timed test setup hook.
+import './index';
 import { listAllProjectedTools, compactWireBytes, type ProjectedTool } from '@papercusp/tooldef';
 import { CORE_MCP_TOOL_NAMES } from '@papercusp/orchestrator';
 import { advertisedWireBytes, MIN_PLAUSIBLE_CATALOG_SIZE } from './tool-guidance-budget';
@@ -145,10 +148,7 @@ describe('core MCP spine wire budget (EI-23345472964244980 / D-001)', () => {
   let byName: Map<string, ProjectedTool>;
   let catalogSize = 0;
 
-  beforeAll(async () => {
-    // Side-effect import: registers the catalog listAllProjectedTools() reads. A bare
-    // tsx import of this barrel HANGS — registration needs the vitest bootstrap.
-    await import('./index');
+  beforeAll(() => {
     const all = listAllProjectedTools();
     catalogSize = all.length;
     byName = new Map();

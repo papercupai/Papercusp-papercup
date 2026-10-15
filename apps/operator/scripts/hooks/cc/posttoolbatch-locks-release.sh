@@ -13,6 +13,8 @@ set -euo pipefail
 
 OPERATOR_URL="${PAPERCUSP_OPERATOR_URL:-http://localhost:3070}"
 OPERATOR_URL="${OPERATOR_URL%%/api/mcp*}"
+FALLBACK_OPERATOR_URL="${PAPERCUSP_LOCKS_FALLBACK_OPERATOR_URL:-http://localhost:3070}"
+FALLBACK_OPERATOR_URL="${FALLBACK_OPERATOR_URL%%/api/mcp*}"
 TOKEN_PATH="${HOME}/.papercusp/superuser-token"
 AGENT_ID_PATH="${HOME}/.papercusp/su-agent-id"
 CACHE_DIR="${PAPERCUSP_LOCKS_CACHE_DIR:-${HOME}/.papercusp/locks-cache}"
@@ -26,16 +28,17 @@ INPUT=$(cat)
 
 # Release is best-effort and the acquire TTL is the safety net.  A Python
 # failure must never turn PostToolBatch into a non-zero hook that stops Claude.
-python3 - "$OPERATOR_URL" "$TOKEN_PATH" "$AGENT_ID" "$CACHE_DIR" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF' || exit 0
+python3 - "$OPERATOR_URL" "$TOKEN_PATH" "$AGENT_ID" "$CACHE_DIR" "$(dirname "$0")" "$FALLBACK_OPERATOR_URL" 3<<<"$INPUT" <<'PYEOF' || exit 0
 import json, os, re, subprocess, sys, time, urllib.request, urllib.parse
 
 urllib.request.install_opener(
     urllib.request.build_opener(urllib.request.ProxyHandler({}))
 )
 
-operator_url, token_path, agent_id, cache_dir, hook_dir = sys.argv[1:6]
+operator_url, token_path, agent_id, cache_dir, hook_dir, fallback_operator_url = sys.argv[1:7]
 sys.path.insert(0, hook_dir)
-from mcp_response import read_hook_payload, read_token_file  # noqa: E402
+from mcp_response import parse_mcp_response, read_hook_payload, read_token_file  # noqa: E402
+from mcp_response import read_lock_operation, settle_lock_operation, call_lock_operation, parent_tool_terminal
 raw = read_hook_payload()
 token = read_token_file(token_path)
 
@@ -61,6 +64,9 @@ except Exception:
     sys.exit(0)
 
 
+RESULT_COLLECTION_KEYS = ('tool_calls', 'toolCalls', 'calls', 'tools', 'tool_results', 'toolResults', 'results', 'responses')
+
+
 def tool_ids(value):
     ids = []
 
@@ -76,7 +82,7 @@ def tool_ids(value):
                     add(value.get('tool_use_id') or value.get('toolUseId') or value.get('id'))
                 else:
                     add(value)
-    for key in ('tool_calls', 'toolCalls', 'calls', 'tools'):
+    for key in RESULT_COLLECTION_KEYS:
         values = payload.get(key)
         if isinstance(values, list):
             for value in values:
@@ -283,7 +289,7 @@ def native_edit_result_succeeded(response):
 def result_records():
     """Index PostToolBatch records by tool_use_id across Claude wire aliases."""
     records = {}
-    for key in ('tool_calls', 'toolCalls', 'calls', 'tools', 'tool_results', 'toolResults', 'results', 'responses'):
+    for key in RESULT_COLLECTION_KEYS:
         values = payload.get(key)
         if not isinstance(values, list):
             continue
@@ -296,13 +302,11 @@ def result_records():
     return records
 
 
-def native_edit_batch_proof(state):
-    """Require one successful recognized result for every expected edit."""
+def batch_edit_tools(state):
+    """The native edit tool of every expected batch member, or None unless each
+    member has a recognized, successful result."""
     expected = state.get('tool_use_ids')
-    paths = state.get('release_paths')
     if not isinstance(expected, list) or not expected or not all(isinstance(x, str) and x for x in expected):
-        return None
-    if not isinstance(paths, list) or not paths or not all(isinstance(x, str) and x for x in paths):
         return None
     records = result_records()
     tools = []
@@ -319,12 +323,69 @@ def native_edit_batch_proof(state):
         if tool not in NATIVE_EDIT_TOOLS or not native_edit_result_succeeded(response):
             return None
         tools.append(tool)
+    return tools
+
+
+def native_edit_batch_proof(state, key='release_paths'):
+    """Require one successful recognized result for every expected edit."""
+    paths = state.get(key)
+    if not isinstance(paths, list) or not paths or not all(isinstance(x, str) and x for x in paths):
+        return None
+    tools = batch_edit_tools(state)
+    if tools is None:
+        return None
     return {
         'success': True,
         'source': 'claude',
         'tools': tools,
         'paths': list(paths),
     }
+
+
+def release_confirmed(inner, expected_paths):
+    if not isinstance(inner, dict) or inner.get('ok') is False:
+        return False
+    row = inner
+    results = inner.get('results')
+    if isinstance(results, list) and results:
+        rows = [result for result in results if isinstance(result, dict)]
+        if not rows or any(result.get('ok') is False for result in rows):
+            return False
+        row = rows[0]
+    released = row.get('released')
+    held_before = row.get('held_before', row.get('heldBefore'))
+    if isinstance(released, list):
+        if expected_paths and all(path in released for path in expected_paths):
+            return True
+        return (not expected_paths and bool(released)) or (held_before == 0 and not released)
+    # Compatibility with authorities predating released/held_before.
+    return inner.get('ok') is True
+
+
+def mark_release_error(phase, detail, paths=None):
+    value = {
+        'ts': now_iso(), 'handler': 'posttoolbatch', 'phase': phase,
+        'detail': str(detail)[:200], 'operator_url': operator_url, 'owner': owner,
+    }
+    write_marker('last-error.json', value)
+    write_marker(owner_marker_name('error'), value)
+    valid_paths = [path for path in (paths or []) if isinstance(path, str) and path]
+    path_text = ', '.join(valid_paths[:6]) if valid_paths else 'the completed edit batch'
+    if len(valid_paths) > 6:
+        path_text += ', …'
+    event = payload.get('hook_event_name')
+    if event not in ('PostToolUse', 'PostToolBatch'):
+        event = 'PostToolBatch'
+    context = (
+        'LOCK MODE UPDATE: automatic file-lock release was not confirmed for '
+        + path_text
+        + '. Its lock may remain active. Treat lock handling as manual until a fresh coord:orient reports '
+        + 'automatic/verified: inspect locks:queue and explicitly acquire/release before any next file edit.'
+    )
+    json.dump({'hookSpecificOutput': {
+        'hookEventName': event,
+        'additionalContext': context,
+    }}, sys.stdout)
 
 
 def release_batch(state, proof=None):
@@ -344,18 +405,6 @@ def release_batch(state, proof=None):
         'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
         'params': {'name': 'locks:release', 'arguments': release_args},
     }).encode()
-    req = urllib.request.Request(
-        operator_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&client='
-        + urllib.parse.quote(owner, safe=''),
-        data=body,
-        headers={
-            'Authorization': 'Bearer ' + token,
-            'Content-Type': 'application/json',
-            'Accept': 'application/json, text/event-stream',
-        },
-        method='POST',
-    )
-
     def refused(exc):
         if isinstance(exc, ConnectionRefusedError):
             return True
@@ -364,26 +413,123 @@ def release_batch(state, proof=None):
         text = str(exc)
         return 'Connection refused' in text or 'Errno 111' in text
 
+    origins = [operator_url]
+    if fallback_operator_url and fallback_operator_url != operator_url:
+        origins.append(fallback_operator_url)
     backoffs = (0.4, 0.8, 1.2)
-    last_exc = None
+    last_detail = None
+    last_phase = 'connect'
     for attempt in range(len(backoffs) + 1):
-        try:
-            urllib.request.urlopen(req, timeout=10).read()
-            return True
-        except Exception as exc:
-            last_exc = exc
-            if refused(exc) and attempt < len(backoffs):
-                time.sleep(backoffs[attempt])
-                continue
-            break
-    value = {
-        'ts': now_iso(), 'handler': 'posttoolbatch', 'phase': 'connect',
-        'detail': str(last_exc)[:200], 'operator_url': operator_url,
-        'owner': owner,
-    }
-    write_marker('last-error.json', value)
-    write_marker(owner_marker_name('error'), value)
+        all_conn_refused = True
+        for base_url in origins:
+            req = urllib.request.Request(
+                base_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&client='
+                + urllib.parse.quote(owner, safe=''),
+                data=body,
+                headers={
+                    'Authorization': 'Bearer ' + token,
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json, text/event-stream',
+                },
+                method='POST',
+            )
+            try:
+                raw_response = urllib.request.urlopen(req, timeout=10).read().decode('utf-8', errors='replace')
+                inner, rpc_error, phase = parse_mcp_response(raw_response)
+                if rpc_error is not None:
+                    mark_release_error('release', 'rpc: ' + str(rpc_error), release_paths)
+                    return False
+                if phase in ('no-result', 'no-text'):
+                    # An empty HTTP 200 is not proof that the batch lock was
+                    # released. Try the stable authority; repeated release is
+                    # safe because the verb confirms an already-absent path.
+                    last_detail = 'response: ' + str(phase)
+                    last_phase = 'release'
+                    all_conn_refused = False
+                    continue
+                if phase != 'ok' or not isinstance(inner, dict):
+                    mark_release_error('release', 'response: ' + str(phase), release_paths)
+                    return False
+                if not release_confirmed(inner, release_paths if isinstance(release_paths, list) else []):
+                    mark_release_error('release', inner or 'release not confirmed', release_paths)
+                    return False
+                return True
+            except Exception as exc:
+                last_detail = str(exc)
+                if not refused(exc):
+                    all_conn_refused = False
+        if all_conn_refused and attempt < len(backoffs):
+            time.sleep(backoffs[attempt])
+            continue
+        break
+    mark_release_error(last_phase, last_detail or 'release not confirmed', release_paths)
     return False
+
+
+def attest_batch(state):
+    """WI-10006900: attribute batch edits to paths the owner already held.
+
+    PreToolUse records the already-held subset as attest_paths (no release
+    token, EI-63). Once every batch member succeeded, send
+    locks:release { retain:true, native_edit_proof } so the edits reach
+    edit_attribution_ledger and the deliberate hold stays. As in the per-edit
+    PostToolUse path, the paths travel ONLY inside native_edit_proof: an
+    operator predating `retain` strips that key and, with no selector, refuses
+    rather than releasing. Best-effort; the outcome lands in last-attest.json.
+    """
+    proof = native_edit_batch_proof(state, 'attest_paths')
+    if proof is None:
+        return False
+    paths = proof['paths']
+    attest_args = {'retain': True, 'native_edit_proof': proof}
+    domain = state.get('coordination_domain')
+    if isinstance(domain, str) and domain:
+        attest_args['coordination_domain'] = domain
+    body = json.dumps({
+        'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+        'params': {'name': 'locks:release', 'arguments': attest_args},
+    }).encode()
+    origins = [operator_url]
+    if fallback_operator_url and fallback_operator_url != operator_url:
+        origins.append(fallback_operator_url)
+    attributed = False
+    detail = None
+    for base_url in origins:
+        req = urllib.request.Request(
+            base_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&client='
+            + urllib.parse.quote(owner, safe=''),
+            data=body,
+            headers={
+                'Authorization': 'Bearer ' + token,
+                'Content-Type': 'application/json',
+                'Accept': 'application/json, text/event-stream',
+            },
+            method='POST',
+        )
+        try:
+            raw_response = urllib.request.urlopen(req, timeout=10).read().decode('utf-8', errors='replace')
+        except Exception as exc:
+            detail = str(exc)
+            continue
+        inner, rpc_error, phase = parse_mcp_response(raw_response)
+        if rpc_error is not None or phase != 'ok' or not isinstance(inner, dict):
+            detail = 'rpc: ' + str(rpc_error) if rpc_error is not None else 'response: ' + str(phase)
+            continue
+        attributed = (
+            inner.get('ok') is True and isinstance(inner.get('attributed'), list)
+            and all(path in inner['attributed'] for path in paths)
+        )
+        if not attributed:
+            detail = inner
+        break
+    value = {
+        'ts': now_iso(), 'owner': owner, 'handler': 'posttoolbatch',
+        'tools': proof['tools'], 'paths': paths[:50], 'attributed': attributed,
+        **({} if attributed else {'detail': str(detail)[:200]}),
+    }
+    write_marker('last-attest.json', value)
+    write_marker(owner_marker_name('attest'), value)
+    return attributed
 
 
 # A PostToolBatch can contain ordinary read/tool calls alongside the edit
@@ -408,6 +554,33 @@ for batch_id in groups:
     if not processing_path:
         continue
     try:
+        operation_path = state.get('operation_path')
+        if operation_path:
+            # Partial/yielded batches have live siblings. Keep both the fence
+            # and the election state, so a later complete batch can finish.
+            records = result_records()
+            expected = state.get('tool_use_ids') or []
+            complete = bool(expected) and all(
+                tool_id in records and parent_tool_terminal(records[tool_id]) for tool_id in expected)
+            if not complete:
+                os.replace(processing_path, state_path)
+                continue
+            # Never follow a cache-supplied absolute path outside this cache.
+            expected_path = os.path.join(cache_dir, 'batch-' + batch_id + '.operation.json')
+            record = read_lock_operation(expected_path, owner, session_id)
+            if operation_path != expected_path or not record:
+                os.replace(processing_path, state_path)
+                continue
+            def operation_call(name, arguments):
+                return call_lock_operation(operator_url, token, owner, session_id, name, arguments)
+            proof = native_edit_batch_proof(state, 'paths')
+            if proof:
+                regenerate_declarations(state)
+            if settle_lock_operation(expected_path, record, operation_call, proof):
+                cleanup_batch(batch_id, state_path, processing_path)
+            else:
+                os.replace(processing_path, state_path)
+            continue
         # Only a complete terminal granted state can release.  All other
         # statuses, including allowed/denied/running and partial payloads,
         # intentionally skip the network write and only clean local artifacts.
@@ -418,10 +591,15 @@ for batch_id in groups:
                 if release_batch(state, proof):
                     write_marker('last-success.json', {'ts': now_iso(), 'owner': owner})
                     write_marker(owner_marker_name('success'), {'ts': now_iso(), 'owner': owner})
+            try:
+                attest_batch(state)
+            except Exception:
+                pass
         # Cleanup occurs for every state we successfully claimed.  A failed
         # release is still safe: the server-side acquire TTL remains the guard.
     finally:
-        cleanup_batch(batch_id, state_path, processing_path)
+        if not state.get('operation_path'):
+            cleanup_batch(batch_id, state_path, processing_path)
 
 sys.exit(0)
 PYEOF

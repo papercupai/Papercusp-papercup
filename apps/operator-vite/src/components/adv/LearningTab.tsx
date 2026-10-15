@@ -2804,7 +2804,12 @@ function ImproveGrid({
     {
       key: "item",
       header: "Item",
-      width: 1.1,
+      // A FLOOR under the fraction (WI-10006513): a bare `1.1fr` shrank this
+      // column to 132px on a 1536px-wide window, and the cell's `overflow:
+      // hidden` cropped the last digits off every 19-character work-item id —
+      // the distinguishing end of the id, with no ellipsis to say so. 160px
+      // fits the id plus the cell's 10px padding each side.
+      width: "minmax(160px, 1.1fr)",
       toCopyText: (r) =>
         r.item?.id ??
         (r.idea ? (ctx.railMetaMap[r.idea.rail]?.label ?? r.idea.rail) : ""),
@@ -2866,7 +2871,9 @@ function ImproveGrid({
     {
       key: "lens",
       header: "Lens",
-      width: 1.1,
+      // Floor (WI-10006513): the idea/source chip is up to 80px wide + 20px
+      // padding; the bare 1.1fr track was 60px at 1024px and cut it.
+      width: "minmax(104px, 1.1fr)",
       toCopyText: (r) => r.idea?.lens ?? "",
       render: ({ row: r }) =>
         r.idea ? (
@@ -2885,7 +2892,9 @@ function ImproveGrid({
     {
       key: "severity",
       header: "Severity",
-      width: 0.9,
+      // Floor (WI-10006513): 0.9fr fell to 49px at 1024px, under a 46px chip
+      // plus 20px padding.
+      width: "minmax(72px, 0.9fr)",
       toCopyText: (r) => r.item?.severity ?? "",
       render: ({ row: r }) => {
         if (!r.item) return null;
@@ -2903,7 +2912,11 @@ function ImproveGrid({
     {
       key: "stage",
       header: "Stage",
-      width: 1.1,
+      // A floor under the fr share (WI-10006513, measured on the deployed
+      // portal at 1024x650): the bare 1.1fr track was 60px while the widest
+      // single-line stage chip is 81px + 20px cell padding, so the cell cut
+      // "approved" mid-word. The grid's own scroller takes any overflow.
+      width: "minmax(104px, 1.1fr)",
       toCopyText: (r) => PIPELINE_STATES[pipelineState(r)].label,
       render: ({ row: r }) => {
         const stage = pipelineState(r);
@@ -2920,7 +2933,9 @@ function ImproveGrid({
     {
       key: "age",
       header: "Age",
-      width: 0.7,
+      // A floor under the fr share: at 1024px the bare 0.7fr track fell below
+      // "just now" (44px) and the cell clipped it (WI-10006513).
+      width: "minmax(64px, 0.7fr)",
       toCopyText: (r) =>
         r.item
           ? ageLabel(r.item.ageDays)
@@ -2940,7 +2955,9 @@ function ImproveGrid({
     {
       key: "score",
       header: "Score",
-      width: 0.6,
+      // px floor (WI-10006513): a bare 0.6fr track shrank below the
+      // 18px score + 20px cell padding at 1024px and cut the number.
+      width: "minmax(56px, 0.6fr)",
       align: "right",
       toCopyText: (r) => (r.item ? String(r.item.score) : ""),
       render: ({ row: r }) =>
@@ -2956,7 +2973,11 @@ function ImproveGrid({
     {
       key: "grade",
       header: "Grade",
-      width: 1.6,
+      // Floor = the capped chip (12em) + gap + the 22px note button, so the
+      // note button is never pushed out of the cell when narrow windows take
+      // width from the fr tracks; the ellipsizing title column gives way
+      // instead (WI-10006513).
+      width: "minmax(176px, 1.6fr)",
       toCopyText: (r) => {
         const eff = r.idea ? ctx.effectiveGrade(r.idea) : null;
         return eff
@@ -2985,7 +3006,7 @@ function ImproveGrid({
                     : `Graded by ${graderLabel(eff.gradedBy, ctx.brainWord)}`
                 }
               >
-                ★{eff.grade} · {graderLabel(eff.gradedBy, ctx.brainWord)}
+                ★{eff.grade} · {graderChipLabel(eff.gradedBy, ctx.brainWord)}
               </span>
             ) : null}
             <Popover
@@ -3437,7 +3458,7 @@ function LoopRowView({
                     : `Graded by ${graderLabel(eff.gradedBy, ctx.brainWord)}`
                 }
               >
-                ★{eff.grade} · {graderLabel(eff.gradedBy, ctx.brainWord)}
+                ★{eff.grade} · {graderChipLabel(eff.gradedBy, ctx.brainWord)}
               </span>
             ) : null}
             <Popover
@@ -5387,6 +5408,17 @@ const graderLabel = (gradedBy: string, brainWord: string): string =>
       ? brainWord
       : gradedBy;
 
+/** The grade CHIP's short form of `graderLabel`. A peer agent grade carries
+    the grader's full session id (`su-2f324ce6-c2d6-…`, ~40 chars), which made
+    the nowrap chip ~250px and pushed the row's note button out of its cell at
+    1366px (WI-10006513). The chip shows the presence-style short id
+    (`su-2f324`); the full id stays in the chip's title. */
+export const graderChipLabel = (gradedBy: string, brainWord: string): string => {
+  const label = graderLabel(gradedBy, brainWord);
+  const agent = /^([a-z]+)-([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f-]+$/i.exec(label);
+  return agent ? `${agent[1]}-${agent[2].slice(0, 5)}` : label;
+};
+
 /** The tool-proxy response envelope varies (the parsed result | {result} | MCP
     content text) — unwrap whichever the dispatcher returns. */
 function unwrapToolResult(d: unknown): Record<string, unknown> {
@@ -6505,7 +6537,10 @@ function buildRetainColumns(opts: {
     {
       key: "kind",
       header: "Kind",
-      width: 1,
+      // px floors on the retain table's chip/label tracks (WI-10006513):
+      // bare fr tracks shrink below the chip + 20px cell padding on narrow
+      // windows and the overflow:hidden cells cut the chip mid-word.
+      width: "minmax(84px, 1fr)",
       toCopyText: (r) => (r.rowType === "item" ? r.row.kind : "wi"),
       // NO `filter` here, deliberately (WI-39675, D-003). Kind is ALREADY an
       // axis — the `rtab` segmented control, applied SERVER-side. A second
@@ -6604,7 +6639,7 @@ function buildRetainColumns(opts: {
     {
       key: "status",
       header: "Status",
-      width: 1.1,
+      width: "minmax(104px, 1.1fr)",
       toCopyText: (r) =>
         r.rowType === "item" ? (r.row.status ?? "") : r.child.status,
       filter: {
@@ -6628,7 +6663,7 @@ function buildRetainColumns(opts: {
     {
       key: "lens",
       header: "Lens",
-      width: 1.2,
+      width: "minmax(104px, 1.2fr)",
       toCopyText: (r) => (r.rowType === "item" ? (r.row.meta.lens ?? "") : ""),
       filter: {
         type: "enum",
@@ -6708,7 +6743,7 @@ function buildRetainColumns(opts: {
     {
       key: "when",
       header: "When",
-      width: 0.8,
+      width: "minmax(64px, 0.8fr)",
       toCopyText: (r) => (r.rowType === "item" ? r.row.ts : r.child.ts),
       render: ({ row: r }) => {
         const ms = Date.parse(r.rowType === "item" ? r.row.ts : r.child.ts);
@@ -6723,11 +6758,19 @@ function buildRetainColumns(opts: {
 /** WI-39534: one ledger row's expanded detail, ONE aside for every kind —
  *  prose body, recipe code, rubric criteria, provenance fields; memory rows
  *  keep the standalone pool's edit/remove (WI-39535). */
+async function checkMemoryMutationResponse(response: Response) {
+  if (response.ok) return;
+  const body = await response.json().catch(() => null);
+  const message = typeof body?.error === "string" ? body.error : body?.error?.message ?? body?.message;
+  throw new Error(`HTTP ${response.status}${typeof message === "string" ? ` — ${message}` : ""}`);
+}
+
 function RetainDetailAside({
   sel,
   detail,
   loading,
   error,
+  mutationError,
   onClose,
   onEdit,
   onRemove,
@@ -6736,6 +6779,7 @@ function RetainDetailAside({
   detail: RetainDetail | null;
   loading: boolean;
   error: string | null;
+  mutationError: string | null;
   onClose: () => void;
   onEdit: () => void;
   onRemove: () => void;
@@ -6759,6 +6803,7 @@ function RetainDetailAside({
           <XCircle size={14} aria-hidden />
         </button>
       </header>
+      {mutationError ? <p role="alert">{mutationError}</p> : null}
       {detail ? (
         <>
           <strong className="pc-learning__retaindetailtitle">
@@ -6858,6 +6903,11 @@ function RetainedLedgerCard({
   // WI-39534: the selected row (`<kind>:<id>`) — nuqs so agents and shared
   // links see the same selection (CLAUDE.md: user-meaningful state → URL).
   const [rsel, setRsel] = useQueryState("rsel", parseAsString);
+  const [memoryMutationError, setMemoryMutationError] = useState<{
+    selection: string;
+    hive: string;
+    message: string;
+  } | null>(null);
   const [search, setSearch] = useQueryState(
     "rq",
     parseAsString.withDefault(""),
@@ -7039,19 +7089,23 @@ function RetainedLedgerCard({
       validate: (value) => (value.trim() ? null : "Learning text is required."),
     });
     if (next == null || !next.trim() || next === detail.body) return;
+    setMemoryMutationError(null);
     try {
-      await fetch("/api/user/memory", {
+      const response = await fetch("/api/user/memory", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: sel.id, text: next.trim() }),
       });
-    } finally {
+      await checkMemoryMutationResponse(response);
       detailQ.invalidate();
       feed.invalidate();
       summaryQ.invalidate();
       countsQ.invalidate();
+    } catch (error) {
+      setMemoryMutationError({ selection: `memory:${sel.id}`, hive: hive ?? "",
+        message: `Could not save this learning: ${error instanceof Error ? error.message : String(error)}` });
     }
-  }, [sel, detail, askPrompt, detailQ, feed, summaryQ, countsQ]);
+  }, [sel, detail, hive, askPrompt, detailQ, feed, summaryQ, countsQ]);
   const removeMemory = useCallback(async () => {
     if (!sel || !detail || detail.kind !== "memory") return;
     const ok = await askConfirm({
@@ -7061,18 +7115,22 @@ function RetainedLedgerCard({
       destructive: true,
     });
     if (!ok) return;
+    setMemoryMutationError(null);
     try {
-      await fetch(`/api/user/memory?id=${encodeURIComponent(sel.id)}`, {
+      const response = await fetch(`/api/user/memory?id=${encodeURIComponent(sel.id)}`, {
         method: "DELETE",
       });
-    } finally {
-      void setRsel(null);
+      await checkMemoryMutationResponse(response);
+      void setRsel(current => current === `memory:${sel.id}` ? null : current);
       detailQ.invalidate();
       feed.invalidate();
       summaryQ.invalidate();
       countsQ.invalidate();
+    } catch (error) {
+      setMemoryMutationError({ selection: `memory:${sel.id}`, hive: hive ?? "",
+        message: `Could not remove this learning: ${error instanceof Error ? error.message : String(error)}` });
     }
-  }, [sel, detail, askConfirm, setRsel, detailQ, feed, summaryQ, countsQ]);
+  }, [sel, detail, hive, askConfirm, setRsel, detailQ, feed, summaryQ, countsQ]);
 
   const onTogglePlan = useCallback(
     (slug: string) => void setRplanOpen((cur) => (cur === slug ? null : slug)),
@@ -7385,6 +7443,8 @@ function RetainedLedgerCard({
               detail={detail}
               loading={detailQ.loading}
               error={detailQ.error ? String(detailQ.error) : null}
+              mutationError={memoryMutationError?.selection === rsel && memoryMutationError.hive === (hive ?? "")
+                ? memoryMutationError.message : null}
               onClose={() => void setRsel(null)}
               onEdit={editMemory}
               onRemove={removeMemory}
@@ -8027,7 +8087,10 @@ export function LearningStyles() {
       .pc-learning__star.is-on { color: #fbbf24; }
       .pc-learning__star:hover { color: #fcd34d; }
       .pc-learning__star:disabled { opacity: 0.5; cursor: default; }
-      .pc-learning__gradechip { display: inline-flex; align-items: center; gap: 3px; padding: 1px 7px; font-size: 10px; font-weight: 700; border-radius: 999px; border: 1px solid rgba(251, 191, 36, 0.5); color: #fbbf24; white-space: nowrap; font-variant-numeric: tabular-nums; }
+      /* Block-level (not inline-flex) so text-overflow can ellipsize: a long
+         grader label must never push the note button out of the cell
+         (WI-10006513). The full label is in the chip's title. */
+      .pc-learning__gradechip { display: inline-block; vertical-align: middle; max-width: 12em; overflow: hidden; text-overflow: ellipsis; padding: 1px 7px; font-size: 10px; font-weight: 700; border-radius: 999px; border: 1px solid rgba(251, 191, 36, 0.5); color: #fbbf24; white-space: nowrap; font-variant-numeric: tabular-nums; }
       .pc-learning__notebtn { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; min-height: 22px; background: none; border: 1px solid var(--border, rgba(125, 211, 252, 0.18)); border-radius: 6px; color: var(--fg-mute, #7f9bb4); cursor: pointer; }
       .pc-learning__notebtn:hover { color: var(--fg-dim, #b9d4e8); border-color: var(--border-strong, rgba(125, 211, 252, 0.32)); }
       .pc-learning__gradepanel { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 7px; margin-top: 7px; padding-top: 9px; border-top: 1px dashed var(--border, rgba(125, 211, 252, 0.2)); cursor: default; }

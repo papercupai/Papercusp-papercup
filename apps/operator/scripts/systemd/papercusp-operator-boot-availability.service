@@ -1,0 +1,22 @@
+[Unit]
+Description=Measure Papercusp :3070 boot availability from the user-manager start (WI-10006021)
+Documentation=file://%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/README.md
+
+[Service]
+Type=oneshot
+Environment=PAPERCUSP_OPERATOR_BOOT_AVAILABILITY_UID=1000
+Environment=PAPERCUSP_OPERATOR_BOOT_AVAILABILITY_GRACE_SEC=600
+Environment=PAPERCUSP_OPERATOR_BOOT_AVAILABILITY_PORT=3070
+Environment=PAPERCUSP_OPERATOR_BOOT_AVAILABILITY_STATE_DIR=%t/papercusp-operator-boot-availability
+RuntimeDirectory=papercusp-operator-boot-availability
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/bin/bash %h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-operator-boot-availability.sh
+TimeoutStartSec=10
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%t/papercusp-operator-boot-availability
+RestrictAddressFamilies=AF_UNIX AF_INET

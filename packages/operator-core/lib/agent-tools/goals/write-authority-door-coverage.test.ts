@@ -109,6 +109,15 @@ describe('goal authority causal controls (WI-1074216)', () => {
         : { refused: true, materialized: 0, armed: 0 },
     );
   });
+
+  it.each(authorityScenarios)('detects permanent wrong authority: %s', async (scenario) => {
+    const expected = scenario === 'elected-write'
+      ? { refused: false, materialized: 1, armed: 1 }
+      : { refused: true, materialized: 0, armed: 0 };
+    expect(await observeScheduleDoor(scenario)).toEqual(expected);
+    vi.clearAllMocks();
+    expect(await observeScheduleDoor(scenario, true)).not.toEqual(expected);
+  });
 });
 
 beforeEach(() => {

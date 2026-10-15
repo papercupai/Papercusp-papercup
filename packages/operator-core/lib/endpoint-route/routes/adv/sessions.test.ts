@@ -25,7 +25,13 @@ describe('adv/sessions resumable — hasArchive must read the stamp with the wri
   const src = readFileSync(join(__dirname, 'sessions.ts'), 'utf8');
 
   it('reads the stamp WITHOUT a workspace argument (defaults to WS_DEFAULT, as the writer writes)', () => {
-    expect(src).toContain('await store.readStamp(s.agent, s.sessionId)');
+    expect(src).toContain('await store.readStamp(archiveAgent, archiveSessionId)');
+  });
+
+  it('uses OMP thread identity when session_id is null', () => {
+    expect(src).toContain("const archiveSessionId = s.agent === 'omp' ? s.ompThreadId : s.sessionId");
+    expect(src).toContain("if (!archiveSessionId || (archiveAgent !== 'claude' && archiveAgent !== 'codex' && archiveAgent !== 'omp')) return");
+    expect(src).toContain("hasArchive: Boolean(archiveKey && archivedKeys.has(archiveKey))");
   });
 
   it('never passes a workspace slug to readStamp — that matches nothing and silently voids hasArchive', () => {

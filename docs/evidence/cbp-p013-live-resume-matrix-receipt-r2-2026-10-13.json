@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-013 live resume matrix re-run (D-021): all six claude/codex/omp cross-backend psu --resume pairs deliver a session port on staging, and PUI-shape resumes reopen the original backend",
+  "framework": "operational",
+  "command": [
+    "psu --resume <source adv id> --agent <target backend>  (canonical launcher apps/operator/scripts/psu-launcher.mjs via PAPERCUSP_PSU_LAUNCHER, PAPERCUSP_OPERATOR_URL=staging :3170; driver .papercusp/scratch/cbp-p013/run.sh resume; three pairs at a time, each from a distinct source identity)",
+    "psu --resume <adv id>  (PUI ended-session pane argv, no --agent, once per backend; driver run.sh same)"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-13T05:29:30.000Z",
+  "finishedAt": "2026-10-13T05:45:59.816Z",
+  "summary": "Re-run required by consult-backed-parking-2026-10-12#D-021 after the WI-6554700010009740 fix changed apps/operator/scripts/psu-pty-host.mjs (87b4114a -> 93cb45ea). On staging :3170 (build b01fcd34c9, which carries both pinned blobs), one fresh tracked source session per backend (claude adv 42167, codex adv 42168, omp adv 42169) replied with its MATRIX-SRC token and was stopped. Each source was then resumed onto both other backends with psu --resume --agent. All six ordered pairs reached harness_shared.session_ports status=delivered with a launcher persistenceProof, and each target's native transcript independently contains the literal 'port-id: <port id>' seed line (grep of the file named by the proof). psu --resume with no --agent (the PUI ended-session route) reopened each source in its ORIGINAL backend on the source's own native conversation id.",
+  "assertions": [
+    { "id": "pair-claude-to-codex-delivered", "passed": true, "evidence": "session_ports 001172fa-fcfa-4825-9789-19879ac479f9: source adv 42167 (claude) -> target adv 42173 (codex), status delivered at 2026-10-13T05:33:21.069Z, persistenceVerifiedAt 05:33:20.937Z. Seed line found 2x in target codex rollout ~/.papercusp/su-codex-homes/session-42173/sessions/2026/10/13/rollout-2026-10-13T01-33-14-01a133c0-2c4c-7800-9e87-a166985619be.jsonl." },
+    { "id": "pair-claude-to-omp-delivered", "passed": true, "evidence": "session_ports 4c40ba74-3c6c-42ec-8ca7-ec5e7d71e2c8: source adv 42167 (claude) -> target adv 42185 (omp), status delivered at 2026-10-13T05:42:46.571Z, persistenceVerifiedAt 05:42:46.279Z. Seed line found 1x in target omp session ~/.papercusp/su-omp-homes/session-42185/agent/sessions/<repo-project-dir>/2026-10-13T05-42-19-501Z_01a133c8-7c6d-75bd-9ce3-c78b7127e5fc.jsonl." },
+    { "id": "pair-codex-to-claude-delivered", "passed": true, "evidence": "session_ports 1d26f679-37fe-4003-89bf-e558da820c0d: source adv 42168 (codex) -> target adv 42187 (claude), status delivered at 2026-10-13T05:42:23.816Z, persistenceVerifiedAt 05:42:23.789Z. Seed line found 2x in target claude transcript ~/.papercusp/session-claude/su-455b420e-24ec-4b61-a489-2906abeacdbb/projects/<repo-project-dir>/fd395fe0-9847-4492-8db5-dc8d18e0e831.jsonl." },
+    { "id": "pair-codex-to-omp-delivered", "passed": true, "evidence": "session_ports c705e5ee-0294-4822-9395-cffdd9b5b542: source adv 42168 (codex) -> target adv 42174 (omp), status delivered at 2026-10-13T05:34:00.921Z, persistenceVerifiedAt 05:34:00.586Z. Seed line found 1x in target omp session ~/.papercusp/su-omp-homes/session-42174/agent/sessions/<repo-project-dir>/2026-10-13T05-33-39-088Z_01a133c0-8b90-7269-8d81-783b272d51fe.jsonl." },
+    { "id": "pair-omp-to-claude-delivered", "passed": true, "evidence": "session_ports 6c081732-093e-46a6-9834-b29a1abccaac: source adv 42169 (omp) -> target adv 42172 (claude), status delivered at 2026-10-13T05:33:20.941Z, persistenceVerifiedAt 05:33:20.811Z. Seed line found 3x in target claude transcript ~/.papercusp/session-claude/su-2f99a85d-f1f4-4cbe-a767-3026c317e5c5/projects/<repo-project-dir>/36e75448-8631-4acf-a268-bfabc8d86b73.jsonl." },
+    { "id": "pair-omp-to-codex-delivered", "passed": true, "evidence": "session_ports d6671d1a-7c9d-4442-8b06-3f56de5e2592: source adv 42169 (omp) -> target adv 42186 (codex), status delivered at 2026-10-13T05:42:23.292Z, persistenceVerifiedAt 05:42:23.265Z. Seed line found 2x in target codex rollout ~/.papercusp/su-codex-homes/session-42186/sessions/2026/10/13/rollout-2026-10-13T01-42-16-01a133c8-7282-76c2-93f3-4f149bf82f2e.jsonl." },
+    { "id": "pui-claude-original-backend", "passed": true, "evidence": "psu --resume 42167 (no --agent) printed 'resuming claude ... (claude --resume 773816b2-c80e-4736-80fa-5b18a7e6e132 ...)', the source's own native conversation (adv 42167 session_id 773816b2-c80e-4736-80fa-5b18a7e6e132); adv row 42167 reopened and ended 05:45:48Z on stop." },
+    { "id": "pui-codex-original-backend", "passed": true, "evidence": "psu --resume 42168 (no --agent) printed 'resuming codex ... (codex ... resume 01a133bc-d3c7-74b1-bba2-d0cd5022f247)', the source's own native conversation (adv 42168 session_id 01a133bc-d3c7-74b1-bba2-d0cd5022f247); adv row 42168 reopened and ended 05:45:52Z on stop." },
+    { "id": "pui-omp-original-backend", "passed": true, "evidence": "psu --resume 42169 (no --agent) printed 'resuming omp ... (omp -r 01a133bc-e525-75a1-885d-ea1cd5d4a1e5 ...)'; that native session file exists in the source's own omp home ~/.papercusp/su-omp-homes/session-42169/agent/sessions/; adv row 42169 reopened and ended 05:45:59Z on stop." }
+  ],
+  "provenance": {
+    "evidencePlane": "staging-operator",
+    "operator": "staging :3170 via staging proxy :9171, /api/health build b01fcd34c9",
+    "launcher": "apps/operator/scripts/psu-launcher.mjs (blob 8c2805c87cd5f50386834c73c379987eaa80c2d1)",
+    "ptyHost": "apps/operator/scripts/psu-pty-host.mjs (blob 93cb45eaf91888ae03889ab25017026820fbc3a0, committed in b01fcd34c9)",
+    "plan": "consult-backed-parking-2026-10-12",
+    "items": ["P-013", "P-010"],
+    "workItem": "WI-6554700010009500",
+    "specs": ["consult-backed-parking-2026-10-12#AUTO-BAR-R-10-P-013@4", "consult-backed-parking-2026-10-12#AUTO-BAR-R-10-P-010@4", "consult-backed-parking-2026-10-12#SPEC-P-013@1", "consult-backed-parking-2026-10-12#SPEC-P-010@1"],
+    "supersedes": "docs/evidence/cbp-p013-live-resume-matrix-receipt-2026-10-13.json (pinned psu-pty-host.mjs 87b4114a)",
+    "decision": "consult-backed-parking-2026-10-12#D-021",
+    "recordedBy": "su-a2d144e1-4576-4511-8c32-3bf4de08bd29"
+  },
+  "disclosures": [
+    "Staging only. Production :3070 serves main d740fc3802, which does not carry these launcher fixes, and the ~/.local/bin/psu shim resolves the release launcher unless PAPERCUSP_PSU_LAUNCHER is set. An owner's bare `psu --resume` gets this behaviour once green main carries it.",
+    "Pairs ran three at a time (phase A: claude->codex, codex->omp, omp->claude; phase B: claude->omp, codex->claude, omp->codex), each concurrent pair from a distinct source identity, not strictly one pair at a time. Phase B started only after the phase-A targets were stopped.",
+    "The claude->codex target launcher (adv 42173) was SIGKILLed (exit 137) at 05:35:42Z, about 2 minutes AFTER its port was delivered and persistence-verified; the sender is unrecorded. Filed as WI-6554700010009850. The reconciler closed row 42173 at 05:42:12Z.",
+    "The codex source (adv 42168) ended by signal at 05:29:48Z, 13s after launch, after replying MATRIX-SRC cbp13r2-codex-5c07; it was resumable as a source in both phases.",
+    "The seed check is independent of the launcher's own persistenceProof: it greps the target's native transcript file for the literal 'port-id: <port id>' line. Codex transcript ingest into session_turn_parts was reported wedged during this run, so the database ingest table was NOT used as the oracle.",
+    "Native transcript paths are abbreviated: <repo-project-dir> stands for the per-cwd project directory name the backend derives from the canonical tree path.",
+    "Written via capability:bash under an explicit locks:acquire hold (lock 89e2313f) because the PreToolUse lock hook denies Write while :3070 lacks the native operation protocol (EI-25836734668397073)."
+  ]
+}

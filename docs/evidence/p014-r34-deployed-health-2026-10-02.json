@@ -1,0 +1,712 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "EAA P-014 R-34: the deployed operator's /api/health sha contains the plan's final change (every code/test blob the completion audit recorded)",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "external-app-access-to-workspaces-2026-09-29",
+  "workItem": "WI-10004611",
+  "specs": [
+    "AUTO-BAR-R-34-P-014"
+  ],
+  "observer": "su-e445ff19-9904-4cb9-9694-88cb40f1ec82",
+  "outcome": "passed",
+  "command": [
+    "node .papercusp/scratch/eaa/r34-deploy-check.mjs --out <this file>"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-02T12:06:46.652Z",
+  "finishedAt": "2026-10-02T12:06:48.951Z",
+  "summary": "Live R-34 check after the 2026-10-02 12:00Z deploy: the operator at :3070 reports health sha d740fc3802 (resolved d740fc3802877d1c8c3b1068768681ee32ef0025), and all 82 code/test blobs recorded by completion audit seq 5 are byte-identical at that commit; 0 missing.",
+  "oracle": "Blob equality per path: git rev-parse <deployed sha>:<path> (through submodule gitlinks) vs the blobSha the completion audit stored for that citation. Independent of the code under test: the audit row and git objects, not the operator, decide.",
+  "deployed": {
+    "endpoint": "http://127.0.0.1:3070/api/health",
+    "healthSha": "d740fc3802",
+    "resolvedSha": "d740fc3802877d1c8c3b1068768681ee32ef0025",
+    "healthTs": "2026-10-02T12:06:46.662Z"
+  },
+  "completionAudit": {
+    "auditSeq": 5,
+    "auditedSha": "d4946901998c13c2105a240b2b41e48f032f41bf",
+    "citationPaths": 82
+  },
+  "stagingHeadAtCheck": "94d75a58ffa18977b89c9637258a957028db0611",
+  "assertions": [
+    {
+      "id": "R-34-final-change-deployed",
+      "passed": true,
+      "evidence": "82 of 82 audited code/test blobs are byte-identical at deployed d740fc3802"
+    }
+  ],
+  "paths": [
+    {
+      "path": "apps/operator-docs/src/content/docs/harness/external-app-quickstart.mdx",
+      "kind": "code",
+      "auditedBlob": "e9926cc336c0fc6b52047e42638d591ed918137b",
+      "deployedBlob": "e9926cc336c0fc6b52047e42638d591ed918137b",
+      "stagingBlob": "e9926cc336c0fc6b52047e42638d591ed918137b",
+      "contained": true
+    },
+    {
+      "path": "apps/operator/app/settings/remote-access/page.tsx",
+      "kind": "code",
+      "auditedBlob": "97837bdd939ea94b97124c6b943e9f3729aaae56",
+      "deployedBlob": "97837bdd939ea94b97124c6b943e9f3729aaae56",
+      "stagingBlob": "97837bdd939ea94b97124c6b943e9f3729aaae56",
+      "contained": true
+    },
+    {
+      "path": "docs/evidence/p010-remote-access-live-2026-10-01.json",
+      "kind": "test",
+      "auditedBlob": "b182295fa817e9034b1ecc0b2af04b7986fa198f",
+      "deployedBlob": "b182295fa817e9034b1ecc0b2af04b7986fa198f",
+      "stagingBlob": "b182295fa817e9034b1ecc0b2af04b7986fa198f",
+      "contained": true
+    },
+    {
+      "path": "docs/evidence/p013-docs-search-live-2026-10-01.json",
+      "kind": "test",
+      "auditedBlob": "6db7c103d92c635339236e996bf8cb9beba77b16",
+      "deployedBlob": "6db7c103d92c635339236e996bf8cb9beba77b16",
+      "stagingBlob": "6db7c103d92c635339236e996bf8cb9beba77b16",
+      "contained": true
+    },
+    {
+      "path": "docs/evidence/p014-hosted-portal-blueprint-live-2026-10-01.json",
+      "kind": "test",
+      "auditedBlob": "0e2c171849132228aea8351582ef9b0afe7c846b",
+      "deployedBlob": "0e2c171849132228aea8351582ef9b0afe7c846b",
+      "stagingBlob": "0e2c171849132228aea8351582ef9b0afe7c846b",
+      "contained": true
+    },
+    {
+      "path": "docs/evidence/p014-hosted-portal-general-tool-live-2026-10-01.json",
+      "kind": "test",
+      "auditedBlob": "7f0b79691fbd384980c567b6dec933959b4f528e",
+      "deployedBlob": "7f0b79691fbd384980c567b6dec933959b4f528e",
+      "stagingBlob": "7f0b79691fbd384980c567b6dec933959b4f528e",
+      "contained": true
+    },
+    {
+      "path": "docs/evidence/p014-own-tunnel-blueprint-live-2026-09-30.json",
+      "kind": "test",
+      "auditedBlob": "8f96846aa1e6c956984991b44ce4e43ecc5ce0d5",
+      "deployedBlob": "8f96846aa1e6c956984991b44ce4e43ecc5ce0d5",
+      "stagingBlob": "8f96846aa1e6c956984991b44ce4e43ecc5ce0d5",
+      "contained": true
+    },
+    {
+      "path": "libs/papercusp/libs/db/sql/1244-connected-apps.sql",
+      "kind": "code",
+      "auditedBlob": "16fbc48f2123542205c72c0b6346a47ddcf60ae5",
+      "deployedBlob": "16fbc48f2123542205c72c0b6346a47ddcf60ae5",
+      "stagingBlob": "16fbc48f2123542205c72c0b6346a47ddcf60ae5",
+      "via": [
+        {
+          "sub": "libs/papercusp",
+          "gitlink": "e406e2fa943dda49468d92bc64896ab5cc8fbb6c"
+        }
+      ],
+      "contained": true
+    },
+    {
+      "path": "libs/papercusp/libs/db/sql/1272-drop-mobile-devices-shim-view.sql",
+      "kind": "code",
+      "auditedBlob": "aa9dfbf93bca5b4abe9db579d6471e239ad7ddf8",
+      "deployedBlob": "aa9dfbf93bca5b4abe9db579d6471e239ad7ddf8",
+      "stagingBlob": "aa9dfbf93bca5b4abe9db579d6471e239ad7ddf8",
+      "via": [
+        {
+          "sub": "libs/papercusp",
+          "gitlink": "e406e2fa943dda49468d92bc64896ab5cc8fbb6c"
+        }
+      ],
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/access/_shared.ts",
+      "kind": "code",
+      "auditedBlob": "4b0d6748bb4bbff57240897baab12cc982035365",
+      "deployedBlob": "4b0d6748bb4bbff57240897baab12cc982035365",
+      "stagingBlob": "4b0d6748bb4bbff57240897baab12cc982035365",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/access/access.test.ts",
+      "kind": "test",
+      "auditedBlob": "f58d26ac7c1159f53b73258524ca7f7cd8876f25",
+      "deployedBlob": "f58d26ac7c1159f53b73258524ca7f7cd8876f25",
+      "stagingBlob": "f58d26ac7c1159f53b73258524ca7f7cd8876f25",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/access/handlers.ts",
+      "kind": "code",
+      "auditedBlob": "a9c4d0a2c37e37ad60d43d20220bfde010b535cc",
+      "deployedBlob": "a9c4d0a2c37e37ad60d43d20220bfde010b535cc",
+      "stagingBlob": "a9c4d0a2c37e37ad60d43d20220bfde010b535cc",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/auth/forwarded-request-trust.test.ts",
+      "kind": "test",
+      "auditedBlob": "9d474174772cbb93e5ad7169ac573958d6f83e35",
+      "deployedBlob": "9d474174772cbb93e5ad7169ac573958d6f83e35",
+      "stagingBlob": "9d474174772cbb93e5ad7169ac573958d6f83e35",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/auth/forwarded-request-trust.ts",
+      "kind": "code",
+      "auditedBlob": "52dfa343b07c081666c5190131d0e6788073da32",
+      "deployedBlob": "52dfa343b07c081666c5190131d0e6788073da32",
+      "stagingBlob": "52dfa343b07c081666c5190131d0e6788073da32",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/auth/principal/from-loopback.ts",
+      "kind": "code",
+      "auditedBlob": "538d3f5a8b945e657991dfbe08d5ce8aff6c9da3",
+      "deployedBlob": "538d3f5a8b945e657991dfbe08d5ce8aff6c9da3",
+      "stagingBlob": "538d3f5a8b945e657991dfbe08d5ce8aff6c9da3",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/activity.ts",
+      "kind": "code",
+      "auditedBlob": "b65b9d46cf412dccf1208ea52ee754a8a1ff8e83",
+      "deployedBlob": "b65b9d46cf412dccf1208ea52ee754a8a1ff8e83",
+      "stagingBlob": "b65b9d46cf412dccf1208ea52ee754a8a1ff8e83",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/alert-sweep.integration.test.ts",
+      "kind": "test",
+      "auditedBlob": "7bdb739bbed3404ac688bc89400992062ac3fb54",
+      "deployedBlob": "7bdb739bbed3404ac688bc89400992062ac3fb54",
+      "stagingBlob": "e060fc56fa38e70b18ef2ec44762300cd849aadf",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/alert-sweep.test.ts",
+      "kind": "test",
+      "auditedBlob": "12d4686d40af35c449717b59fe5dca109485cc3e",
+      "deployedBlob": "12d4686d40af35c449717b59fe5dca109485cc3e",
+      "stagingBlob": "12d4686d40af35c449717b59fe5dca109485cc3e",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/alert-sweep.ts",
+      "kind": "code",
+      "auditedBlob": "a6776804c61ec70195b51a91d41cd8f6d1a986b4",
+      "deployedBlob": "a6776804c61ec70195b51a91d41cd8f6d1a986b4",
+      "stagingBlob": "d41dcea72cf7b193fc97480c0dce40173402c0a1",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/alerts.test.ts",
+      "kind": "test",
+      "auditedBlob": "ff30b4c42e53a34973bf0baa04659977f6d54cb1",
+      "deployedBlob": "ff30b4c42e53a34973bf0baa04659977f6d54cb1",
+      "stagingBlob": "ff30b4c42e53a34973bf0baa04659977f6d54cb1",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/alerts.ts",
+      "kind": "code",
+      "auditedBlob": "c4e3cae75b72d1b23a1633d607abce29ed7ef5e9",
+      "deployedBlob": "c4e3cae75b72d1b23a1633d607abce29ed7ef5e9",
+      "stagingBlob": "c4e3cae75b72d1b23a1633d607abce29ed7ef5e9",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/client-credentials.integration.test.ts",
+      "kind": "test",
+      "auditedBlob": "efd44384e06c94ed3c7f12c33ac9836716c18fae",
+      "deployedBlob": "efd44384e06c94ed3c7f12c33ac9836716c18fae",
+      "stagingBlob": "efd44384e06c94ed3c7f12c33ac9836716c18fae",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/client-credentials.test.ts",
+      "kind": "test",
+      "auditedBlob": "5fa372e1dbf6bdf8cf09ec1a8312caf82d7471dc",
+      "deployedBlob": "5fa372e1dbf6bdf8cf09ec1a8312caf82d7471dc",
+      "stagingBlob": "5fa372e1dbf6bdf8cf09ec1a8312caf82d7471dc",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/client-credentials.ts",
+      "kind": "code",
+      "auditedBlob": "1e3980d1916249b2f1d5320733784fbd22730aa4",
+      "deployedBlob": "1e3980d1916249b2f1d5320733784fbd22730aa4",
+      "stagingBlob": "1e3980d1916249b2f1d5320733784fbd22730aa4",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/consent-csp.test.ts",
+      "kind": "test",
+      "auditedBlob": "fecbfb92ac16f9473a85231a062ece261a74faeb",
+      "deployedBlob": "fecbfb92ac16f9473a85231a062ece261a74faeb",
+      "stagingBlob": "fecbfb92ac16f9473a85231a062ece261a74faeb",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/consent-csp.ts",
+      "kind": "code",
+      "auditedBlob": "f7226fb6a806bf0e2b6430c4fa88eecab464e328",
+      "deployedBlob": "f7226fb6a806bf0e2b6430c4fa88eecab464e328",
+      "stagingBlob": "f7226fb6a806bf0e2b6430c4fa88eecab464e328",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/device-grants.integration.test.ts",
+      "kind": "test",
+      "auditedBlob": "ccb0666d302f86234fa42dc902e98682ee440007",
+      "deployedBlob": "ccb0666d302f86234fa42dc902e98682ee440007",
+      "stagingBlob": "ccb0666d302f86234fa42dc902e98682ee440007",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/device-grants.ts",
+      "kind": "code",
+      "auditedBlob": "3b0c984aad860e1daae8bd815737d50d050ff198",
+      "deployedBlob": "3b0c984aad860e1daae8bd815737d50d050ff198",
+      "stagingBlob": "3b0c984aad860e1daae8bd815737d50d050ff198",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/enforce.ts",
+      "kind": "code",
+      "auditedBlob": "204c156cdd329410259d42dd098702e19a91fe78",
+      "deployedBlob": "204c156cdd329410259d42dd098702e19a91fe78",
+      "stagingBlob": "204c156cdd329410259d42dd098702e19a91fe78",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/key.ts",
+      "kind": "code",
+      "auditedBlob": "3754ddae4674dcca00775ee6774c879ae0485762",
+      "deployedBlob": "3754ddae4674dcca00775ee6774c879ae0485762",
+      "stagingBlob": "3754ddae4674dcca00775ee6774c879ae0485762",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/kill-switch.integration.test.ts",
+      "kind": "test",
+      "auditedBlob": "4396c2c31f0843c6414b31629739e0882f966b13",
+      "deployedBlob": "4396c2c31f0843c6414b31629739e0882f966b13",
+      "stagingBlob": "4396c2c31f0843c6414b31629739e0882f966b13",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/kill-switch.test.ts",
+      "kind": "test",
+      "auditedBlob": "e1766b58860dc84462116358dbeabb1efc6b1324",
+      "deployedBlob": "e1766b58860dc84462116358dbeabb1efc6b1324",
+      "stagingBlob": "e1766b58860dc84462116358dbeabb1efc6b1324",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/mcp-auth.test.ts",
+      "kind": "test",
+      "auditedBlob": "5a2f480a254c6a4c2cc002d9381412dc3abec637",
+      "deployedBlob": "5a2f480a254c6a4c2cc002d9381412dc3abec637",
+      "stagingBlob": "5a2f480a254c6a4c2cc002d9381412dc3abec637",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/mcp-oauth-discovery.ts",
+      "kind": "code",
+      "auditedBlob": "30a9974d4286d83ad5df214a4cdfdcd8484acd27",
+      "deployedBlob": "30a9974d4286d83ad5df214a4cdfdcd8484acd27",
+      "stagingBlob": "30a9974d4286d83ad5df214a4cdfdcd8484acd27",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/mcp-oauth.integration.test.ts",
+      "kind": "test",
+      "auditedBlob": "62d45564ff6a369db149beec3503d06dfb956eb2",
+      "deployedBlob": "62d45564ff6a369db149beec3503d06dfb956eb2",
+      "stagingBlob": "62d45564ff6a369db149beec3503d06dfb956eb2",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/mcp-oauth.test.ts",
+      "kind": "test",
+      "auditedBlob": "a76863971720f32c5cbdd9c67b33a802cb534385",
+      "deployedBlob": "a76863971720f32c5cbdd9c67b33a802cb534385",
+      "stagingBlob": "a76863971720f32c5cbdd9c67b33a802cb534385",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/mcp-oauth.ts",
+      "kind": "code",
+      "auditedBlob": "56d349fecb87fd7339a26d97209bcb8809ac55a3",
+      "deployedBlob": "56d349fecb87fd7339a26d97209bcb8809ac55a3",
+      "stagingBlob": "56d349fecb87fd7339a26d97209bcb8809ac55a3",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/network.ts",
+      "kind": "code",
+      "auditedBlob": "c928547f8328c03a8070a7efa94b860788677666",
+      "deployedBlob": "c928547f8328c03a8070a7efa94b860788677666",
+      "stagingBlob": "c928547f8328c03a8070a7efa94b860788677666",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/portal-mcp-oauth.test.ts",
+      "kind": "test",
+      "auditedBlob": "4b0cd86f785fa90a3cae808995fcfe76e69ac6a5",
+      "deployedBlob": "4b0cd86f785fa90a3cae808995fcfe76e69ac6a5",
+      "stagingBlob": "9f9ef26ff0c18b05d9d85190797fd876e07a3030",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/portal-mcp-oauth.ts",
+      "kind": "code",
+      "auditedBlob": "c0e050f7197a8ad3ed33f7bd78cfc761850a4440",
+      "deployedBlob": "c0e050f7197a8ad3ed33f7bd78cfc761850a4440",
+      "stagingBlob": "0111186bd7c826add7582255603290f717107395",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/principal.test.ts",
+      "kind": "test",
+      "auditedBlob": "a4903b470f81246101e61a579d0cd18fc1976ce1",
+      "deployedBlob": "a4903b470f81246101e61a579d0cd18fc1976ce1",
+      "stagingBlob": "a4903b470f81246101e61a579d0cd18fc1976ce1",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/principal.ts",
+      "kind": "code",
+      "auditedBlob": "463d71b9f0ebb79b4d24d3968f3bf03ef6eedada",
+      "deployedBlob": "463d71b9f0ebb79b4d24d3968f3bf03ef6eedada",
+      "stagingBlob": "463d71b9f0ebb79b4d24d3968f3bf03ef6eedada",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/remote-access.ts",
+      "kind": "code",
+      "auditedBlob": "d9e9fbffa8362e678434937980fe62b9c45b74d8",
+      "deployedBlob": "d9e9fbffa8362e678434937980fe62b9c45b74d8",
+      "stagingBlob": "d9e9fbffa8362e678434937980fe62b9c45b74d8",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/scope-enforcement.test.ts",
+      "kind": "test",
+      "auditedBlob": "ced8a32c3783bacb21b93414f41e5d497575b80a",
+      "deployedBlob": "ced8a32c3783bacb21b93414f41e5d497575b80a",
+      "stagingBlob": "ced8a32c3783bacb21b93414f41e5d497575b80a",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/scope-policy.catalog.test.ts",
+      "kind": "test",
+      "auditedBlob": "f2dd4001cde70c148e18c26e9a9f5615ec033ee9",
+      "deployedBlob": "f2dd4001cde70c148e18c26e9a9f5615ec033ee9",
+      "stagingBlob": "f2dd4001cde70c148e18c26e9a9f5615ec033ee9",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/scope-policy.test.ts",
+      "kind": "test",
+      "auditedBlob": "ffc5251d46059c2c3a7726ea1683503e5443ec98",
+      "deployedBlob": "ffc5251d46059c2c3a7726ea1683503e5443ec98",
+      "stagingBlob": "ffc5251d46059c2c3a7726ea1683503e5443ec98",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/scope-policy.ts",
+      "kind": "code",
+      "auditedBlob": "1f461a3a1e7fc0ae1074686ba05d6732492e3991",
+      "deployedBlob": "1f461a3a1e7fc0ae1074686ba05d6732492e3991",
+      "stagingBlob": "cadbb1e4f894f5f058d8a7e26aeb45fade65eec1",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/service-keys.test.ts",
+      "kind": "test",
+      "auditedBlob": "2c1db0bd992c24e5b4fee5c708f446e4b2763d1c",
+      "deployedBlob": "2c1db0bd992c24e5b4fee5c708f446e4b2763d1c",
+      "stagingBlob": "2c1db0bd992c24e5b4fee5c708f446e4b2763d1c",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/service-keys.ts",
+      "kind": "code",
+      "auditedBlob": "95e47390c5ea2aa0cf3240e74607ff7b8e97b434",
+      "deployedBlob": "95e47390c5ea2aa0cf3240e74607ff7b8e97b434",
+      "stagingBlob": "95e47390c5ea2aa0cf3240e74607ff7b8e97b434",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/spend-alerts-activity.integration.test.ts",
+      "kind": "test",
+      "auditedBlob": "398b37bc2aaa143ceb751081918f0b64694e86c4",
+      "deployedBlob": "398b37bc2aaa143ceb751081918f0b64694e86c4",
+      "stagingBlob": "398b37bc2aaa143ceb751081918f0b64694e86c4",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/spend-cap.test.ts",
+      "kind": "test",
+      "auditedBlob": "198f3ec009dc85b097244ed87920dba6ca3f5fde",
+      "deployedBlob": "198f3ec009dc85b097244ed87920dba6ca3f5fde",
+      "stagingBlob": "198f3ec009dc85b097244ed87920dba6ca3f5fde",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/spend.ts",
+      "kind": "code",
+      "auditedBlob": "aff6774378aeb2310d02b4ad440a8e66f35a786e",
+      "deployedBlob": "aff6774378aeb2310d02b4ad440a8e66f35a786e",
+      "stagingBlob": "aff6774378aeb2310d02b4ad440a8e66f35a786e",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/store.integration.test.ts",
+      "kind": "test",
+      "auditedBlob": "f6e61849259898a34ffff598bae5534884917255",
+      "deployedBlob": "f6e61849259898a34ffff598bae5534884917255",
+      "stagingBlob": "f6e61849259898a34ffff598bae5534884917255",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/store.ts",
+      "kind": "code",
+      "auditedBlob": "cff412454db6d18c4564eea92ce7192501520461",
+      "deployedBlob": "cff412454db6d18c4564eea92ce7192501520461",
+      "stagingBlob": "cff412454db6d18c4564eea92ce7192501520461",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/device-store.integration.test.ts",
+      "kind": "test",
+      "auditedBlob": "86a951624e77259be5a75bd6e33c62a449c615a8",
+      "deployedBlob": "86a951624e77259be5a75bd6e33c62a449c615a8",
+      "stagingBlob": "86a951624e77259be5a75bd6e33c62a449c615a8",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/__tests__/agent-tools-device-auth.test.ts",
+      "kind": "test",
+      "auditedBlob": "67276d6b48fb0a1fdf50c4bc01529de078116f55",
+      "deployedBlob": "67276d6b48fb0a1fdf50c4bc01529de078116f55",
+      "stagingBlob": "67276d6b48fb0a1fdf50c4bc01529de078116f55",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/define-route.ts",
+      "kind": "code",
+      "auditedBlob": "be0f571dc60d47392cad6f64e80953e299698fcd",
+      "deployedBlob": "be0f571dc60d47392cad6f64e80953e299698fcd",
+      "stagingBlob": "be0f571dc60d47392cad6f64e80953e299698fcd",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/hosted-workspace-session.ts",
+      "kind": "code",
+      "auditedBlob": "4f392744534edd21934e6fa7c7a642933ce4b56c",
+      "deployedBlob": "4f392744534edd21934e6fa7c7a642933ce4b56c",
+      "stagingBlob": "90bdd87146cc9b15eba23ac99470ffd161e16ee4",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/loopback-guard.ts",
+      "kind": "code",
+      "auditedBlob": "b0ee20effb7c91cdd95e74f783f60cc910421799",
+      "deployedBlob": "b0ee20effb7c91cdd95e74f783f60cc910421799",
+      "stagingBlob": "b0ee20effb7c91cdd95e74f783f60cc910421799",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/agent-tools/catchall.ts",
+      "kind": "code",
+      "auditedBlob": "c6e160333261fb3b9d390c4fd11cec4c01da49cb",
+      "deployedBlob": "c6e160333261fb3b9d390c4fd11cec4c01da49cb",
+      "stagingBlob": "c6e160333261fb3b9d390c4fd11cec4c01da49cb",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/connected-apps/index.test.ts",
+      "kind": "test",
+      "auditedBlob": "9e7e18b0f51b8e4452685cf7fa11fd945f5146af",
+      "deployedBlob": "9e7e18b0f51b8e4452685cf7fa11fd945f5146af",
+      "stagingBlob": "9e7e18b0f51b8e4452685cf7fa11fd945f5146af",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/connected-apps/index.ts",
+      "kind": "code",
+      "auditedBlob": "189d3095483c23114cc6442d02252cc875727302",
+      "deployedBlob": "189d3095483c23114cc6442d02252cc875727302",
+      "stagingBlob": "189d3095483c23114cc6442d02252cc875727302",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/connected-apps/oauth.ts",
+      "kind": "code",
+      "auditedBlob": "ad49d0ce08f2bc9ba4af26603957ef631fef5d54",
+      "deployedBlob": "ad49d0ce08f2bc9ba4af26603957ef631fef5d54",
+      "stagingBlob": "ad49d0ce08f2bc9ba4af26603957ef631fef5d54",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/hosted-cli/index.ts",
+      "kind": "code",
+      "auditedBlob": "6eace3902a99241b6aee713b65f6798b6f7b5a6e",
+      "deployedBlob": "6eace3902a99241b6aee713b65f6798b6f7b5a6e",
+      "stagingBlob": "6eace3902a99241b6aee713b65f6798b6f7b5a6e",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts",
+      "kind": "code",
+      "auditedBlob": "c9c86e2d427b2c47575ee341446a938921d9e719",
+      "deployedBlob": "c9c86e2d427b2c47575ee341446a938921d9e719",
+      "stagingBlob": "771e8369304168b4896b80abbfe60a5bdd28446d",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/transport/mcp-auth-challenge.ts",
+      "kind": "code",
+      "auditedBlob": "d3d54206f56bc854fa1e4314ab46fc532a7bb61d",
+      "deployedBlob": "d3d54206f56bc854fa1e4314ab46fc532a7bb61d",
+      "stagingBlob": "d3d54206f56bc854fa1e4314ab46fc532a7bb61d",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/webhooks/index.ts",
+      "kind": "code",
+      "auditedBlob": "c04e27bbbd1f5d20644a81f14f3e4b14d2b008b1",
+      "deployedBlob": "c04e27bbbd1f5d20644a81f14f3e4b14d2b008b1",
+      "stagingBlob": "c04e27bbbd1f5d20644a81f14f3e4b14d2b008b1",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/session-or-local.ts",
+      "kind": "code",
+      "auditedBlob": "33c82d1ae4fd1eccad0ae5ff7a3d1271383db90d",
+      "deployedBlob": "33c82d1ae4fd1eccad0ae5ff7a3d1271383db90d",
+      "stagingBlob": "33c82d1ae4fd1eccad0ae5ff7a3d1271383db90d",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/external-triggers/webhook-path.ts",
+      "kind": "code",
+      "auditedBlob": "21504e04934c831dff9325053775dd8a4df74928",
+      "deployedBlob": "21504e04934c831dff9325053775dd8a4df74928",
+      "stagingBlob": "5c0b9091da224ac052b4d79484ccac94407216d5",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/external-triggers/webhook.integration.test.ts",
+      "kind": "test",
+      "auditedBlob": "739f3397789fa29c003db990ca01701fb49790bf",
+      "deployedBlob": "739f3397789fa29c003db990ca01701fb49790bf",
+      "stagingBlob": "850e6be653fd3146b56a5f5dcd19095c1e3ad874",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/external-triggers/webhook.test.ts",
+      "kind": "test",
+      "auditedBlob": "b89d1ce163d9eb9db218784a215e81ea1f2e4097",
+      "deployedBlob": "b89d1ce163d9eb9db218784a215e81ea1f2e4097",
+      "stagingBlob": "b89d1ce163d9eb9db218784a215e81ea1f2e4097",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/external-triggers/webhook.ts",
+      "kind": "code",
+      "auditedBlob": "a43a092d3e4b831878f33f6b3ba8f78ebc0b083d",
+      "deployedBlob": "a43a092d3e4b831878f33f6b3ba8f78ebc0b083d",
+      "stagingBlob": "7aced5843f289a9a7a9e16959912645f0e339ce7",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/harness/routines/connected-app-alert-sweep-action.ts",
+      "kind": "code",
+      "auditedBlob": "807f2ea1e6c18811a9e24caf3d3e8155d5d4cc34",
+      "deployedBlob": "807f2ea1e6c18811a9e24caf3d3e8155d5d4cc34",
+      "stagingBlob": "807f2ea1e6c18811a9e24caf3d3e8155d5d4cc34",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/own-tunnel/config.ts",
+      "kind": "code",
+      "auditedBlob": "7c8bd17f717a7595bc35c668ef19822f3af0f8eb",
+      "deployedBlob": "7c8bd17f717a7595bc35c668ef19822f3af0f8eb",
+      "stagingBlob": "7c8bd17f717a7595bc35c668ef19822f3af0f8eb",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/own-tunnel/own-tunnel.test.ts",
+      "kind": "test",
+      "auditedBlob": "8b766bc6e4e2f9f6542a87e2ef63f5494fa4b512",
+      "deployedBlob": "8b766bc6e4e2f9f6542a87e2ef63f5494fa4b512",
+      "stagingBlob": "8b766bc6e4e2f9f6542a87e2ef63f5494fa4b512",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/own-tunnel/provision.ts",
+      "kind": "code",
+      "auditedBlob": "d7001c92261c570592624b3ec856792532a1e32b",
+      "deployedBlob": "d7001c92261c570592624b3ec856792532a1e32b",
+      "stagingBlob": "d7001c92261c570592624b3ec856792532a1e32b",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/remote-access/portal-relay-store.integration.test.ts",
+      "kind": "test",
+      "auditedBlob": "2cbc217a51c0c92fcc1e2e67368a7702e37d41b4",
+      "deployedBlob": "2cbc217a51c0c92fcc1e2e67368a7702e37d41b4",
+      "stagingBlob": "2cbc217a51c0c92fcc1e2e67368a7702e37d41b4",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/remote-access/portal-relay-store.ts",
+      "kind": "code",
+      "auditedBlob": "37861733efcefb974b533ea8fec7c05de64da6e0",
+      "deployedBlob": "37861733efcefb974b533ea8fec7c05de64da6e0",
+      "stagingBlob": "37861733efcefb974b533ea8fec7c05de64da6e0",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/remote-access/relay-opt-in.test.ts",
+      "kind": "test",
+      "auditedBlob": "465a01227ef1741fc03ebc38b0a02c01b91b24ec",
+      "deployedBlob": "465a01227ef1741fc03ebc38b0a02c01b91b24ec",
+      "stagingBlob": "465a01227ef1741fc03ebc38b0a02c01b91b24ec",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/remote-access/relay-opt-in.ts",
+      "kind": "code",
+      "auditedBlob": "6148f2a5c944589c75577b25aac3d60c82e30d7e",
+      "deployedBlob": "6148f2a5c944589c75577b25aac3d60c82e30d7e",
+      "stagingBlob": "6148f2a5c944589c75577b25aac3d60c82e30d7e",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/workspace-host/hosted-app-relay.test.ts",
+      "kind": "test",
+      "auditedBlob": "cf3c06cf590aa6cc60a52b797b462b8f80c0f7ba",
+      "deployedBlob": "cf3c06cf590aa6cc60a52b797b462b8f80c0f7ba",
+      "stagingBlob": "cf3c06cf590aa6cc60a52b797b462b8f80c0f7ba",
+      "contained": true
+    },
+    {
+      "path": "packages/operator-core/lib/workspace-host/hosted-app-relay.ts",
+      "kind": "code",
+      "auditedBlob": "491295c27e174aca6d1259f0de4381675f9d182b",
+      "deployedBlob": "491295c27e174aca6d1259f0de4381675f9d182b",
+      "stagingBlob": "491295c27e174aca6d1259f0de4381675f9d182b",
+      "contained": true
+    }
+  ]
+}

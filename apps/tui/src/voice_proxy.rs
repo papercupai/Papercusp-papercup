@@ -827,6 +827,409 @@ mod tests {
             "expected ~440Hz in the loopback capture, got {f}"
         );
     }
+
+    // ── D-006 synthetic SPEECH round trip (voice-final-public-release-2026-10-01).
+    // The tone loopback above proves the device path. This proves the PUI speech
+    // pipeline end to end, through the same pui-audio helper the TUI uses, with
+    // synthetic speech in place of a human at the microphone:
+    //   Kokoro WAV → Player (null-sink) → capture (its monitor) → operator STT
+    //   operator TTS reply → Player (null-sink) → capture → operator STT
+    // Driven by scripts/audio-loopback-smoke.sh, which renders the Kokoro WAV and
+    // routes only this process at an isolated null-sink. operator-stt and
+    // operator-tts are stateless proxies (no conversation turn is written), so a
+    // shared operator is a safe target. PAPERCUSP_REQUIRE_LIVE_VOICE=1 turns every
+    // environmental SKIP into a failure: release acceptance must not pass by skipping.
+
+    fn require_live_voice() -> bool {
+        matches!(
+            std::env::var("PAPERCUSP_REQUIRE_LIVE_VOICE")
+                .ok()
+                .map(|v| v.trim().to_ascii_lowercase())
+                .as_deref(),
+            Some("1" | "true" | "yes" | "on")
+        )
+    }
+
+    fn speech_smoke_skip(name: &str, why: &str) {
+        assert!(
+            !require_live_voice(),
+            "{name}: PAPERCUSP_REQUIRE_LIVE_VOICE=1 but {why}"
+        );
+        eprintln!("SKIP {name}: {why}");
+    }
+
+    fn normalize_words(text: &str) -> Vec<String> {
+        text.to_ascii_lowercase()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { ' ' })
+            .collect::<String>()
+            .split_whitespace()
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn count_heard(heard: &[String], wanted: &[String]) -> usize {
+        wanted.iter().filter(|w| heard.contains(w)).count()
+    }
+
+    /// Kokoro streams WAV with placeholder 0xFFFFFFFF RIFF and data sizes, which
+    /// the player's decoder rejects ("decode audio: end of stream"). The operator
+    /// TTS route already rewrites them before audio reaches the TUI; the raw Kokoro
+    /// fixture needs the same repair before it is played as the "microphone".
+    fn with_real_wav_sizes(mut wav: Vec<u8>) -> Vec<u8> {
+        if wav.len() < 12 || &wav[..4] != b"RIFF" || &wav[8..12] != b"WAVE" {
+            return wav;
+        }
+        let total = wav.len();
+        wav[4..8].copy_from_slice(&((total - 8) as u32).to_le_bytes());
+        let mut i = 12;
+        while i + 8 <= total {
+            let size = u32::from_le_bytes([wav[i + 4], wav[i + 5], wav[i + 6], wav[i + 7]]) as usize;
+            if &wav[i..i + 4] == b"data" {
+                wav[i + 4..i + 8].copy_from_slice(&((total - i - 8) as u32).to_le_bytes());
+                break;
+            }
+            i = i.saturating_add(8 + size + (size & 1));
+        }
+        wav
+    }
+
+    #[test]
+    fn streamed_wav_placeholder_sizes_are_rewritten() {
+        let mut wav = encode_wav_pcm16(&[0.1, -0.1, 0.2, -0.2], WHISPER_RATE);
+        let data_at = wav.windows(4).position(|w| w == b"data").unwrap();
+        wav[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+        wav[data_at + 4..data_at + 8].copy_from_slice(&u32::MAX.to_le_bytes());
+        let fixed = with_real_wav_sizes(wav.clone());
+        assert_eq!(&fixed[4..8], &((wav.len() - 8) as u32).to_le_bytes());
+        assert_eq!(
+            &fixed[data_at + 4..data_at + 8],
+            &((wav.len() - data_at - 8) as u32).to_le_bytes()
+        );
+        let (_, samples) = decode_wav(&fixed);
+        assert_eq!(samples.len(), 4);
+        assert_eq!(with_real_wav_sizes(b"ID3 not a wav".to_vec()), b"ID3 not a wav".to_vec());
+    }
+
+    #[test]
+    fn speech_word_matching_normalizes_case_and_punctuation() {
+        let heard = normalize_words("The quick, brown fox — JUMPS over the lazy dog.");
+        let wanted = normalize_words("the quick brown fox jumps over the lazy dog");
+        assert_eq!(count_heard(&heard, &wanted), wanted.len());
+        assert_eq!(count_heard(&normalize_words("lazy cat"), &wanted), 1);
+    }
+
+    /// Play `audio` through the PUI Player while the PUI capture records, and
+    /// return the captured 16 kHz WAV. Waits (bounded) for playback to start and
+    /// end, plus a short tail so the last word is not clipped.
+    fn play_and_capture(name: &str, audio: Vec<u8>) -> Option<Vec<u8>> {
+        let player = match Player::spawn_ready() {
+            Ok(player) => player,
+            Err(err) => {
+                speech_smoke_skip(name, &format!("no usable audio output device ({err:#})"));
+                return None;
+            }
+        };
+        let session = match start_capture() {
+            Ok(session) => session,
+            Err(err) => {
+                speech_smoke_skip(name, &format!("no usable audio capture device ({err:#})"));
+                return None;
+            }
+        };
+        player.play(audio);
+        let started = std::time::Instant::now();
+        while !player.is_playing() && started.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        while player.is_playing() && started.elapsed() < Duration::from_secs(40) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        if let Some(err) = player.last_error() {
+            session.cancel();
+            speech_smoke_skip(name, &format!("playback failed ({err})"));
+            return None;
+        }
+        Some(session.finish().expect("finish capture").wav)
+    }
+
+    #[test]
+    #[ignore]
+    fn smoke_speech_roundtrip_via_operator() {
+        const NAME: &str = "smoke_speech_roundtrip_via_operator";
+        if !audio_smoke_opted_in(NAME) {
+            assert!(
+                !require_live_voice(),
+                "{NAME}: PAPERCUSP_REQUIRE_LIVE_VOICE=1 but PUI_LIVE_AUDIO is not set"
+            );
+            return;
+        }
+        let Some(wav_path) = std::env::var("PUI_SMOKE_SPEECH_WAV")
+            .ok()
+            .filter(|p| !p.trim().is_empty())
+        else {
+            speech_smoke_skip(NAME, "PUI_SMOKE_SPEECH_WAV (a Kokoro speech WAV) is not set");
+            return;
+        };
+        let expect = std::env::var("PUI_SMOKE_SPEECH_EXPECT")
+            .unwrap_or_else(|_| "the quick brown fox jumps over the lazy dog".to_string());
+        let speech = with_real_wav_sizes(
+            std::fs::read(&wav_path).unwrap_or_else(|e| panic!("read {wav_path}: {e}")),
+        );
+        let selection = std::env::var("PUI_OPERATOR").unwrap_or_else(|_| "staging".to_string());
+        let client = crate::client::OperatorClient::from_selection(&selection)
+            .unwrap_or_else(|e| panic!("operator selection {selection:?}: {e:#}"));
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+
+        // Leg 1 — synthetic speech at the microphone → PUI capture → operator STT.
+        let Some(heard) = play_and_capture(NAME, speech) else {
+            return;
+        };
+        let text = rt
+            .block_on(client.stt_transcribe(&heard))
+            .unwrap_or_else(|e| panic!("operator-stt (mic leg) via {selection}: {e:#}"));
+        let wanted = normalize_words(&expect);
+        let hits = count_heard(&normalize_words(&text), &wanted);
+        eprintln!("[{NAME}] mic leg heard {text:?} ({hits}/{} words)", wanted.len());
+        assert!(
+            hits * 10 >= wanted.len() * 8,
+            "mic leg: STT heard {text:?}; expected about {expect:?}"
+        );
+
+        // Leg 2 — a reply's operator TTS audio → PUI Player → loopback → STT, once
+        // per engine in PUI_SMOKE_TTS_ENGINES (comma list; empty or unset = the
+        // operator's voice-pref engine). Each engine has its own audio format.
+        let reply = "The synthetic reply arrived safely.";
+        let engines: Vec<Option<String>> = match std::env::var("PUI_SMOKE_TTS_ENGINES") {
+            Ok(list) if !list.trim().is_empty() => list
+                .split(',')
+                .map(|e| e.trim())
+                .filter(|e| !e.is_empty())
+                .map(|e| Some(e.to_string()))
+                .collect(),
+            _ => vec![None],
+        };
+        for engine in engines {
+            let label = engine.as_deref().unwrap_or("voice-pref engine");
+            let audio = rt
+                .block_on(client.tts_speak_with_engine(reply, engine.as_deref()))
+                .unwrap_or_else(|e| panic!("operator-tts ({label}) via {selection}: {e:#}"));
+            assert!(
+                audio.len() > 1_000,
+                "operator-tts ({label}) returned only {} bytes",
+                audio.len()
+            );
+            let Some(heard_reply) = play_and_capture(NAME, audio) else {
+                return;
+            };
+            let reply_text = rt
+                .block_on(client.stt_transcribe(&heard_reply))
+                .unwrap_or_else(|e| panic!("operator-stt (reply leg, {label}) via {selection}: {e:#}"));
+            let reply_words = normalize_words(reply);
+            let reply_hits = count_heard(&normalize_words(&reply_text), &reply_words);
+            eprintln!(
+                "[{NAME}] reply leg ({label}) heard {reply_text:?} ({reply_hits}/{} words)",
+                reply_words.len()
+            );
+            assert!(
+                reply_hits + 1 >= reply_words.len(),
+                "reply leg ({label}): STT heard {reply_text:?}; expected about {reply:?}"
+            );
+        }
+    }
+
+    /// Operator client + runtime for the speech smokes (PUI_OPERATOR, default
+    /// `staging`). The STT/TTS proxy routes they call write no conversation turn.
+    fn speech_operator() -> (crate::client::OperatorClient, tokio::runtime::Runtime, String) {
+        let selection = std::env::var("PUI_OPERATOR").unwrap_or_else(|_| "staging".to_string());
+        let client = crate::client::OperatorClient::from_selection(&selection)
+            .unwrap_or_else(|e| panic!("operator selection {selection:?}: {e:#}"));
+        (client, tokio::runtime::Runtime::new().expect("tokio runtime"), selection)
+    }
+
+    fn live_audio_or_return(name: &str) -> bool {
+        if audio_smoke_opted_in(name) {
+            return true;
+        }
+        assert!(
+            !require_live_voice(),
+            "{name}: PAPERCUSP_REQUIRE_LIVE_VOICE=1 but PUI_LIVE_AUDIO is not set"
+        );
+        false
+    }
+
+    /// D-006 interrupt/stop: a reply stopped partway goes quiet at once, stays
+    /// quiet, and its closing sentence never reaches the speaker. The capture
+    /// hears the opening, which proves the loopback was measuring.
+    #[test]
+    #[ignore]
+    fn smoke_stop_mid_reply_silences_playback() {
+        const NAME: &str = "smoke_stop_mid_reply_silences_playback";
+        if !live_audio_or_return(NAME) {
+            return;
+        }
+        let (client, rt, selection) = speech_operator();
+        let reply = "Here is the first part of a long spoken reply. It keeps talking for several \
+                     more seconds so that it can be stopped partway through. The closing words \
+                     are purple elephants dance tonight.";
+        let audio = rt
+            .block_on(client.tts_speak_with_engine(reply, Some("kokoro")))
+            .unwrap_or_else(|e| panic!("operator-tts (kokoro) via {selection}: {e:#}"));
+        let player = match Player::spawn_ready() {
+            Ok(player) => player,
+            Err(err) => {
+                speech_smoke_skip(NAME, &format!("no usable audio output device ({err:#})"));
+                return;
+            }
+        };
+        let session = match start_capture() {
+            Ok(session) => session,
+            Err(err) => {
+                speech_smoke_skip(NAME, &format!("no usable audio capture device ({err:#})"));
+                return;
+            }
+        };
+        player.play(audio);
+        let started = std::time::Instant::now();
+        while !player.is_playing() && started.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(player.is_playing(), "{NAME}: playback never started");
+        std::thread::sleep(Duration::from_millis(1_800));
+        let stop_at = std::time::Instant::now();
+        player.stop();
+        while player.is_playing() && stop_at.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let stopped_after = stop_at.elapsed();
+        assert!(!player.is_playing(), "{NAME}: still playing 2 s after stop");
+        assert!(
+            stopped_after < Duration::from_millis(500),
+            "{NAME}: playback took {stopped_after:?} to stop"
+        );
+        // The whole reply runs about 10 s: keep listening past where it would end.
+        std::thread::sleep(Duration::from_secs(9));
+        assert!(!player.is_playing(), "{NAME}: playback resumed after stop");
+        assert!(
+            player.last_error().is_none(),
+            "{NAME}: player error after stop: {:?}",
+            player.last_error()
+        );
+        let heard_wav = session.finish().expect("finish capture").wav;
+        let heard = rt
+            .block_on(client.stt_transcribe(&heard_wav))
+            .unwrap_or_else(|e| panic!("operator-stt via {selection}: {e:#}"));
+        let words = normalize_words(&heard);
+        eprintln!("[{NAME}] stopped after {stopped_after:?}; heard {heard:?}");
+        let opening = normalize_words("here is the first part");
+        assert!(
+            count_heard(&words, &opening) >= 3,
+            "{NAME}: the opening was not heard before stop ({heard:?}), so the loopback is not measuring"
+        );
+        let closing = normalize_words("purple elephants dance tonight");
+        assert_eq!(
+            count_heard(&words, &closing),
+            0,
+            "{NAME}: the closing sentence was heard after stop ({heard:?})"
+        );
+    }
+
+    /// D-006 denial: when the capture device cannot be opened (here the audio
+    /// server is unreachable), starting a capture fails at once with an error
+    /// that names the audio problem, and capture works again once it is back.
+    #[test]
+    #[ignore]
+    fn smoke_unreachable_mic_is_named_and_recovers() {
+        const NAME: &str = "smoke_unreachable_mic_is_named_and_recovers";
+        if !live_audio_or_return(NAME) {
+            return;
+        }
+        // Process-wide override, inherited by the pui-audio helper. Safe only
+        // under --test-threads=1, which the smoke script uses.
+        let keys = ["PULSE_SERVER", "PIPEWIRE_REMOTE"];
+        let previous: Vec<_> = keys.iter().map(|k| std::env::var_os(k)).collect();
+        for key in keys {
+            std::env::set_var(key, "unix:/nonexistent/pui-denial-smoke/native");
+        }
+        let started = std::time::Instant::now();
+        let denied = start_capture();
+        let took = started.elapsed();
+        for (key, value) in keys.iter().zip(previous) {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+        let err = match denied {
+            Ok(session) => {
+                session.cancel();
+                panic!("{NAME}: capture opened while the audio server was unreachable");
+            }
+            Err(err) => format!("{err:#}"),
+        };
+        eprintln!("[{NAME}] refused in {took:?}: {err}");
+        assert!(took < Duration::from_secs(10), "{NAME}: refusal took {took:?}");
+        let lowered = err.to_lowercase();
+        assert!(
+            ["capture", "input", "mic", "device", "audio"]
+                .iter()
+                .any(|word| lowered.contains(word)),
+            "{NAME}: the error does not name the audio problem: {err}"
+        );
+        match start_capture() {
+            Ok(session) => {
+                std::thread::sleep(Duration::from_millis(300));
+                let result = session.finish().expect("finish capture after recovery");
+                assert!(result.wav.len() > 44, "{NAME}: recovered capture recorded nothing");
+            }
+            Err(err) => panic!("{NAME}: capture still fails after the audio server is back: {err:#}"),
+        }
+    }
+
+    /// D-006 retry: a transcription of broken audio is reported (or comes back
+    /// empty), and the next real capture transcribes normally.
+    #[test]
+    #[ignore]
+    fn smoke_stt_failure_then_retry_transcribes() {
+        const NAME: &str = "smoke_stt_failure_then_retry_transcribes";
+        if !live_audio_or_return(NAME) {
+            return;
+        }
+        let Some(wav_path) = std::env::var("PUI_SMOKE_SPEECH_WAV")
+            .ok()
+            .filter(|p| !p.trim().is_empty())
+        else {
+            speech_smoke_skip(NAME, "PUI_SMOKE_SPEECH_WAV (a Kokoro speech WAV) is not set");
+            return;
+        };
+        let expect = std::env::var("PUI_SMOKE_SPEECH_EXPECT")
+            .unwrap_or_else(|_| "the quick brown fox jumps over the lazy dog".to_string());
+        let speech = with_real_wav_sizes(
+            std::fs::read(&wav_path).unwrap_or_else(|e| panic!("read {wav_path}: {e}")),
+        );
+        let (client, rt, selection) = speech_operator();
+        match rt.block_on(client.stt_transcribe(b"this is not audio")) {
+            Err(err) => eprintln!("[{NAME}] broken audio reported: {err:#}"),
+            Ok(text) => assert!(
+                text.trim().is_empty(),
+                "{NAME}: broken audio was transcribed as {text:?}"
+            ),
+        }
+        let Some(heard) = play_and_capture(NAME, speech) else {
+            return;
+        };
+        let text = rt
+            .block_on(client.stt_transcribe(&heard))
+            .unwrap_or_else(|e| panic!("{NAME}: retry transcription via {selection}: {e:#}"));
+        let wanted = normalize_words(&expect);
+        let hits = count_heard(&normalize_words(&text), &wanted);
+        eprintln!("[{NAME}] retry heard {text:?} ({hits}/{} words)", wanted.len());
+        assert!(
+            hits * 10 >= wanted.len() * 8,
+            "{NAME}: retry heard {text:?}; expected about {expect:?}"
+        );
+    }
 }
 
 #[cfg(test)]

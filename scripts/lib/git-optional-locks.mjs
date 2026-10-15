@@ -1,0 +1,28 @@
+/**
+ * Default GIT_OPTIONAL_LOCKS=0 for process roots whose descendants can be SIGKILLed.
+ *
+ * Why (WI-10006785): `git status` takes an OPTIONAL `.git/index.lock` so it can write
+ * back a refreshed index. When the process tree running it is torn down with SIGKILL
+ * (a test-runner watchdog, a host timeout kill), git never gets to remove that lock,
+ * and the empty, holderless `index.lock` then blocks every commit in the shared tree
+ * until something clears it. Measured 2026-10-06: 6 orphaned papercusp index.locks in
+ * 11:20-16:56Z; 4 confirmed `git status`; 3 of them SIGKILLed 0.1-15 s after taking
+ * the lock (2 by scripts/test-files.mjs tree teardown, 1 by the release hono-host
+ * timeout kill).
+ *
+ * With GIT_OPTIONAL_LOCKS=0, read-only commands such as `git status` skip the optional
+ * lock entirely; commands that must write the index (`add`, `commit`, ...) still take
+ * the real lock. Children inherit `process.env`, so calling this once at a process
+ * root covers every git invocation underneath it.
+ *
+ * An explicit caller value (including GIT_OPTIONAL_LOCKS=1) is respected.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {NodeJS.ProcessEnv} the same env object
+ */
+export function applyGitOptionalLocksDefault(env = process.env) {
+  if (env.GIT_OPTIONAL_LOCKS === undefined || env.GIT_OPTIONAL_LOCKS === '') {
+    env.GIT_OPTIONAL_LOCKS = '0';
+  }
+  return env;
+}

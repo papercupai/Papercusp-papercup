@@ -256,6 +256,12 @@ describe('affected-tests.mjs uses the synchronous writer for its own output (EI-
     expect(source).toMatch(/from '\.\/lib\/sync-write\.mjs'/);
   });
 
+  it('journals settled child output outside the swept scratch namespace', () => {
+    expect(source).toContain('const RUN_LOG_PATH = affectedTestRunLogPath(RUN_TOKEN);');
+    expect(source).toContain('sweepStaleTestScratch(RUN_LOG_ROOT);');
+    expect(source).not.toMatch(/const RUN_LOG_PATH = join\(RUN_LOG_ROOT/);
+  });
+
   it('labels each workspace with outSync, not async console.log', () => {
     // The per-task header — the line the misattribution scrambled.
     expect(source).toMatch(/outSync\(\s*`\\n>>> \$\{t\.ws\.name\} ::/);

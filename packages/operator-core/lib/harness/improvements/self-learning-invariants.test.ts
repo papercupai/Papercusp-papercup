@@ -65,6 +65,7 @@ function issue(p: Partial<EngineerIssue> & { id: string; title: string }): Engin
     payload: null,
     foundDuring: null,
     linkedFeatureId: null,
+    parent: null,
     createdBy: null,
     signalOrigin: 'organic',
     assigneeRank: null,
@@ -74,6 +75,9 @@ function issue(p: Partial<EngineerIssue> & { id: string; title: string }): Engin
     origin: 'local',
     terminalOwner: null,
     terminalCompletionRef: null,
+    completionAuthority: null,
+    featureOrder: null,
+    goalId: null,
     createdAt: '2026-06-01T00:00:00Z',
     updatedAt: '2026-06-01T00:00:00Z',
     closedAt: null,
@@ -262,7 +266,7 @@ describe('P-060.2 — the matcher dedups across rephrasings (stable signature)',
     // never as a created:false gate. The twin is still surfaced so the caller can link/coalesce.
     expect(res.created).toBe(true);
     expect(res.reason).not.toBe('likely-duplicate');
-    expect(res.possibleDuplicates[0].id).toBe('EI-7');
+    expect(res.possibleDuplicates?.[0]?.id).toBe('EI-7');
   });
 
   it('near-rephrasings (an extra filler word) still match above the capture threshold', () => {
@@ -299,7 +303,7 @@ describe('P-060.3 — recurrence-decay reopens a regressed item (the full arc)',
       d,
     );
     expect(res.created).toBe(true); // re-filed, not declined
-    expect(res.possibleDuplicates[0].id).toBe('EI-1'); // …with the original surfaced
+    expect(res.possibleDuplicates?.[0]?.id).toBe('EI-1'); // …with the original surfaced
   });
 
   it('step 2 — the recurrence shows on the STABLE signature: count > 1 across the rephrasings', () => {

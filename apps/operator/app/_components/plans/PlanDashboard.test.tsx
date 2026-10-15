@@ -8,7 +8,7 @@
 // Open session → ?pdsess, work-row deep link → ?wpop). Data hooks are mocked;
 // nuqs is a seeded store (same seams as PlansPane.test.tsx).
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { PlanGetResult, PlanItem } from '@/app/admin/plans/plans-api';
 
 const {
@@ -168,6 +168,7 @@ function plan(over: {
   harness?: string;
   items?: PlanItem[];
   now?: PlanGetResult['now'];
+  derivedStatus?: PlanGetResult['derivedStatus'];
   decisions?: PlanGetResult['decisions'];
   linkedFeatures?: PlanGetResult['linkedFeatures'];
 }): PlanGetResult {
@@ -186,6 +187,7 @@ function plan(over: {
     frontmatter: { updated: over.updated ?? new Date(Date.now() - 2 * 60_000).toISOString() },
     items: over.items ?? [],
     now: over.now,
+    derivedStatus: over.derivedStatus,
     decisions: over.decisions,
     linkedFeatures: over.linkedFeatures,
   };
@@ -788,5 +790,142 @@ describe('PlanDashboard helpers', () => {
 
   it('avatarColor is deterministic', () => {
     expect(avatarColor(OWNER_A)).toBe(avatarColor(OWNER_A));
+  });
+});
+
+// derived-status-not-hand-written-2026-10-12 P-005: the dashboard renders the
+// status DERIVED from the item graph and the Now note with its age, marking a
+// note the plan has moved past.
+type DerivedStatusFixture = NonNullable<PlanGetResult['derivedStatus']>;
+type StalenessFixture = NonNullable<NonNullable<PlanGetResult['now']>['staleness']>;
+
+function noteStaleness(transitionsSinceNote: number | null): StalenessFixture {
+  return {
+    transitionsSinceNote,
+    noteWrittenAt: transitionsSinceNote === null ? null : new Date(Date.now() - 3 * 3_600_000).toISOString(),
+    basis: transitionsSinceNote === null ? 'note-not-in-event-log' : 'events-after-note',
+    itemStatusChanges: transitionsSinceNote ?? 0,
+    planStatusChanges: 0,
+    truncatedByLimit: false,
+    text:
+      transitionsSinceNote === null
+        ? 'note age unknown: the note was not written through plans:set-now'
+        : `${transitionsSinceNote} status changes since this note was written`,
+  };
+}
+
+function derivedStatusFixture(shipGate?: DerivedStatusFixture['shipGate']): DerivedStatusFixture {
+  const si = (id: string, effectiveStatus: 'todo' | 'wip' | 'blocked', heldBy: string[] = []) => ({
+    id,
+    effectiveStatus,
+    importance: 'normal' as const,
+    phase: null,
+    heldBy,
+  });
+  return {
+    counts: { todo: 1, wip: 1, blocked: 1, 'needs-human': 0, done: 3, dropped: 0, total: 6, terminal: 3, nonTerminal: 3 } as DerivedStatusFixture['counts'],
+    actionable: [si('P-007', 'todo', [OWNER_B])],
+    inFlight: [si('P-005', 'wip', [OWNER_A])],
+    blocked: [{ ...si('P-008', 'blocked'), blockedOn: ['P-005'], external: false }],
+    awaitingHuman: [],
+    truncated: { actionable: false, inFlight: false, blocked: false, awaitingHuman: false },
+    next: { itemId: 'P-007', reason: 'actionable', text: 'next: P-007' } as DerivedStatusFixture['next'],
+    latestDecision: null,
+    lifecycle: null,
+    holdersMeasured: true,
+    text: '3 of 6 done; 1 in flight, 1 actionable, 1 blocked',
+    ...(shipGate ? { shipGate } : {}),
+  };
+}
+
+function seedNote(staleness: StalenessFixture | undefined, derivedStatus?: DerivedStatusFixture) {
+  seed();
+  planData.value = plan({
+    slug: 'p1',
+    title: 'Security posture closure',
+    startStatus: 'started',
+    items: itemsOf({ done: 3, todo: 3 }),
+    now: { state: 'P-005 is underway.', next: 'finish P-005', staleness },
+    derivedStatus,
+  });
+}
+
+describe('PlanDashboard derived status and note age (P-005)', () => {
+  it('PlanDashboard renders derivedStatus (actionable items, holders, blockers, ship-gate step)', () => {
+    seedNote(
+      noteStaleness(0),
+      derivedStatusFixture({
+        source: 'plan-acceptance-gate',
+        satisfied: false,
+        code: 'acceptance_ungraded',
+        skipped: null,
+        message: 'no independent grade',
+        nextRepair: { kind: 'grade', verb: 'scorecards:emit', nextVerb: null, instruction: 'grade it' },
+        guardsNotChecked: [],
+        confirmWith: { name: 'plans:set-plan-status', args: {} },
+        reusedShipReadiness: false,
+        unavailableReason: null,
+        text: 'ship refused: acceptance_ungraded',
+      }),
+    );
+    renderDash();
+    const card = screen.getByTestId('plan-dash-status');
+    expect(within(card).getByTestId('plan-dash-status-text').textContent).toBe(
+      '3 of 6 done; 1 in flight, 1 actionable, 1 blocked',
+    );
+    const rows = within(card).getAllByTestId('plan-dash-status-row');
+    expect(rows.map((r) => [r.getAttribute('data-kind'), r.getAttribute('data-item')])).toEqual([
+      ['in-flight', 'P-005'],
+      ['actionable', 'P-007'],
+      ['blocked', 'P-008'],
+    ]);
+    expect(rows[0]!.textContent).toContain(`held by ${shortOwnerId(OWNER_A)}`);
+    expect(rows[1]!.textContent).toContain(`held by ${shortOwnerId(OWNER_B)}`);
+    expect(rows[2]!.textContent).toContain('blocked on P-005');
+    const gate = within(card).getByTestId('plan-dash-status-gate');
+    expect(gate.textContent).toContain('ship refused: acceptance_ungraded');
+    expect(gate.textContent).toContain('scorecards:emit');
+    expect(gate.className).toContain('plan-dash__status-gate--refused');
+  });
+
+  it('PlanDashboard marks the note stale when transitionsSinceNote is above zero', () => {
+    seedNote(noteStaleness(2), derivedStatusFixture());
+    renderDash();
+    const now = screen.getByTestId('plan-dash-now');
+    expect(now.getAttribute('data-note-age')).toBe('moved-past');
+    expect(now.className).toContain('plan-dash__now--stale');
+    expect(within(now).getByTestId('plan-dash-now-stale').textContent).toBe('moved past');
+    expect(within(now).getByTestId('plan-dash-now-age').textContent).toContain(
+      '2 status changes since this note was written',
+    );
+  });
+
+  it('renders the note with its age and no stale marker when nothing changed after it', () => {
+    seedNote(noteStaleness(0), derivedStatusFixture());
+    renderDash();
+    const now = screen.getByTestId('plan-dash-now');
+    expect(now.getAttribute('data-note-age')).toBe('current');
+    expect(now.className).not.toContain('plan-dash__now--stale');
+    expect(within(now).queryByTestId('plan-dash-now-stale')).toBeNull();
+    const age = within(now).getByTestId('plan-dash-now-age').textContent ?? '';
+    expect(age).toContain('written 3h ago');
+    expect(age).toContain('0 status changes since this note was written');
+  });
+
+  it('shows an unknown note age as unknown, never as current', () => {
+    seedNote(noteStaleness(null), derivedStatusFixture());
+    renderDash();
+    const now = screen.getByTestId('plan-dash-now');
+    expect(now.getAttribute('data-note-age')).toBe('unknown');
+    expect(within(now).queryByTestId('plan-dash-now-stale')).toBeNull();
+    expect(within(now).getByTestId('plan-dash-now-age').textContent).toContain('note age unknown');
+  });
+
+  it('renders no status card or age line when the read carried neither', () => {
+    seedNote(undefined);
+    renderDash();
+    expect(screen.queryByTestId('plan-dash-status')).toBeNull();
+    expect(screen.getByTestId('plan-dash-now').getAttribute('data-note-age')).toBe('none');
+    expect(screen.queryByTestId('plan-dash-now-age')).toBeNull();
   });
 });

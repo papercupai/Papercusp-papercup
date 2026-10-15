@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-006 live: the slack package installs through the Cupboard install route and its card then appears on Settings -> Integrations, carrying the declared app registration and masked credentials",
+  "framework": "shell",
+  "command": [
+    "scripts/verify-tauri-headless.sh",
+    "--",
+    "bash",
+    "-c",
+    "VERIFY_TAURI_ISOLATED_DB=1; rewrite https://github.com/Papercusp/ to the local libs/ checkout inside the isolated operator only; open /settings/integrations and count Slack provider cards; POST /api/cupboard/install-plugin {githubUrl:'https://github.com/Papercusp/papercusp', listingRef:'plugins/slack'} then re-POST with acceptCapabilities + expectedReview; reopen the page; read the Slack card's app-registration block (Create Slack app href, Copy definition) and credentials form (masked inputs, configured flags)"
+  ],
+  "startedAt": "2026-10-11T10:57:21.000Z",
+  "finishedAt": "2026-10-11T11:07:56.000Z",
+  "exitCode": 0,
+  "summary": "verify-tauri-headless run 20261011T105721Z-1437229 verdict=pass (passed=3 failed=0 blocked=0 skipped=0), isolated DB, superproject 853ced529e, libs/papercusp 7c0fa73eec. Before the install the page had no Slack card. The install went through the same Cupboard route a listing uses: the first POST returned 409 with a review naming provider slack, the accepted second POST returned 200. With no app update the Slack card then rendered, its Create Slack app link carried Slack's new-app manifest (name Papercusp, socket mode on) beside a Copy definition button, and its credentials form showed exactly two masked inputs, app_token and bot_token, both unconfigured. The bug-triage pack install and the Slack message drill are NOT claimed here (P-008, D-010).",
+  "assertions": [
+    { "id": "no-slack-card-before-install", "passed": true, "evidence": "CARD_BEFORE_INSTALL count=0 on /settings/integrations before any install (D-015: the bundled project root no longer loads distribution:cupboard packages)." },
+    { "id": "install-through-cupboard-route", "passed": true, "evidence": "INSTALL_SLACK first=409 second=200 providerId=slack; review.provider {id:slack, runtime:daemon, datatypes:[chat-message], capabilities:[chat.channels, chat.reply, ingress.normalize], egressHosts:[slack.com]}; result ok:true name slack version 0.1.0 installedTo the isolated global plugin root." },
+    { "id": "slack-card-after-install-without-app-update", "passed": true, "evidence": "OK Slack card after install: the provider card selector with text 'Slack' rendered after reopening the page, same running app build." },
+    { "id": "create-app-opens-vendor-page-with-definition", "passed": true, "evidence": "APP_REGISTRATION create=true name=\"Papercusp\" socket=true: the Create Slack app href is https://api.slack.com/apps?new_app=1&manifest_json=... and its manifest parses with display_information.name Papercusp and settings.socket_mode_enabled true." },
+    { "id": "copy-definition-control", "passed": true, "evidence": "APP_REGISTRATION buttons=[\"Copy definition\"]." },
+    { "id": "declared-credentials-masked", "passed": true, "evidence": "Credentials form has exactly 2 input[type=password]; CREDENTIALS app_token:false,bot_token:false (both declared fields, neither configured)." }
+  ],
+  "plan": "cupboard-distributable-integrations-2026-10-10",
+  "items": ["P-006", "P-002", "P-001"],
+  "specs": ["SPEC-R-1-P-006", "SPEC-R-2-P-002"],
+  "evidencePlane": "live",
+  "harnessRun": {
+    "harness": "verify-tauri-headless",
+    "runId": "20261011T105721Z-1437229",
+    "verdict": "pass",
+    "evidenceDir": "~/.local/state/verification-harness/verify-tauri-headless/20261011T105721Z-1437229",
+    "superprojectRef": "853ced529e3e645a886d71059942fd83db57e0a2",
+    "packageRef": "libs/papercusp@7c0fa73eec95deabaa9db7b61b99d34cd7e03407",
+    "testedInputs": [
+      "apps/operator/app/settings/integrations/page.tsx",
+      "apps/operator/app/settings/integrations/ProviderAppRegistration.tsx",
+      "packages/operator-core/lib/integrations/provider-options.ts",
+      "libs/generic/plugin-loader/src/loader.ts",
+      "packages/plugin-loader/src/index.ts",
+      "packages/plugin-sdk/papercusp-plugin.schema.json",
+      "libs/papercusp/plugins/slack/papercusp.json"
+    ]
+  },
+  "limitations": [
+    "The Cupboard listing is resolved from the local libs/ checkout through a git url rewrite scoped to the isolated operator; publishing the package to a public repo is P-011 (D-014).",
+    "Create Slack app is checked by its href, not clicked, because a click hands the URL to the system browser; the click-to-opener path is unit-tested.",
+    "SPEC-R-2-P-001's second half (a value that does not match the declared format is refused on the page) is not exercised here."
+  ]
+}

@@ -1,13 +1,17 @@
 /** Hermetic composition smoke for the gateway service (P-013) — injected account + resolver. */
-import { test, afterEach } from 'vitest';
+import { test, afterEach, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startGatewayService, resolvePriorityTiers, type RunningGatewayService } from './launch';
+import type { GatewayCarryTrialAttempt, GatewayDeps } from './gateway';
+import { processMonotonicClock } from '../process-monotonic-clock';
 import { INITIAL_PROVIDER_ADMISSION_WINDOW } from './provider-admission-lifecycle';
 import type { GatewayPayloadSpool } from './payload-spool';
+import * as burnAlert from './burn-alert';
 
 /** The per-account multiplier P-010 deleted along with `accountScaledCodexConcurrency`.
  *  Spelled here only so the falsifier below can name the number that must not return. */
@@ -18,6 +22,7 @@ let svc: RunningGatewayService | undefined;
 let tempDir: string | undefined;
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await svc?.stop();
   svc = undefined;
   await new Promise<void>((r) => (upstream ? upstream.close(() => r()) : r()));
@@ -27,17 +32,180 @@ afterEach(async () => {
   delete process.env.OPENAI_BASE_URL_UPSTREAM;
 });
 
-async function startUpstream(): Promise<{ base: string; lastAuth: () => string | undefined }> {
+async function startUpstream(): Promise<{ base: string; lastAuth: () => string | undefined; lastWorkspace: () => string | undefined; requests: () => number }> {
   let lastAuth: string | undefined;
+  let lastWorkspace: string | undefined;
+  let requests = 0;
   upstream = http.createServer((req, res) => {
+    requests++;
     lastAuth = req.headers['authorization'] as string | undefined;
+    lastWorkspace = req.headers['anthropic-workspace-id'] as string | undefined;
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end('{"ok":true}');
   });
   await new Promise<void>((r) => upstream!.listen(0, '127.0.0.1', () => r()));
   const port = (upstream!.address() as { port: number }).port;
-  return { base: `http://127.0.0.1:${port}`, lastAuth: () => lastAuth };
+  return { base: `http://127.0.0.1:${port}`, lastAuth: () => lastAuth, lastWorkspace: () => lastWorkspace, requests: () => requests };
 }
+
+const bindingDigest = (s: string) => createHash('sha256').update(s).digest('hex');
+const scopedGatewayToken = 'PRIVATE_NATIVE_GATEWAY_TOKEN';
+const sendScopedMessage = (port: number, token = scopedGatewayToken) => fetch(`http://127.0.0.1:${port}/v1/messages`, {
+  method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+  body: JSON.stringify({ model: 'claude-opus-4', max_tokens: 4, messages: [{ role: 'user', content: 'PRIVATE_NATIVE_TASK' }] }),
+});
+const scopedBinding = (authorizeAttempt: (attempt: GatewayCarryTrialAttempt) => Promise<{
+  attemptId: string; reservationRef: string; clockId: string; validUntilMonotonicMs: number;
+  validateAuthorization?: () => void;
+} | null>) => ({ manifestSha256: bindingDigest('native fixture'), armId: 'native-judge',
+  requestTokenSha256: bindingDigest(scopedGatewayToken), protocols: ['anthropic-messages'] as Array<'anthropic-messages' | 'openai-responses'>,
+  authorizeAttempt });
+const nativeFixtureReceipt = (attempt: GatewayCarryTrialAttempt) => ({ attemptId: attempt.attemptId,
+  reservationRef: `native-fixture:${attempt.attemptId}`, clockId: attempt.clockId,
+  validUntilMonotonicMs: processMonotonicClock.now() + 5_000 });
+
+test.each(['goal-denied', 'policy-unavailable', 'policy-throws', 'model-denied', 'attestation-fails', 'accepted'] as const)(
+  'startGatewayService scopes authorization IO without bypassing its guards (%s)', async state => {
+    tempDir = mkdtempSync(join(tmpdir(), 'gateway-service-authority-'));
+    const tokenPath = join(tempDir, 'provider.token');
+    writeFileSync(tokenPath, 'PRIVATE_SCOPED_PROVIDER_TOKEN', { mode: 0o600 });
+    const policy = vi.fn<NonNullable<GatewayDeps['readAcceptedOperationModelPolicy']>>(async () => {
+      if (state === 'policy-throws') throw new Error('private authority unavailable');
+      if (state === 'policy-unavailable') return { status: 'unavailable', reason: 'private authority unavailable' };
+      return { status: 'bound', policy: {
+        mode: 'exact', models: ['gpt-5.6-sol'], effort: 'high', onUnavailable: 'fail',
+      }, attestation: {
+        operationReceiptId: 12, advSessionId: 34, nativeSessionId: 'private-native-worker',
+        workspaceId: 'private-service-workspace', ownerId: 'private-service-owner', harnessSlug: 'private-harness',
+        workItemId: 'WI-private-service', operationId: 'run', specificationRevision: 'a'.repeat(64),
+      } };
+    });
+    const record = vi.fn<NonNullable<GatewayDeps['recordAcceptedOperationModelAttestation']>>(async () => {
+      if (state === 'attestation-fails') throw new Error('private attestation unavailable');
+    });
+    const provider = vi.fn<typeof fetch>(async (_target, init) => {
+      assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer PRIVATE_SCOPED_PROVIDER_TOKEN');
+      return Response.json({ id: 'private-service-response', model: 'gpt-5.6-sol', status: 'completed',
+        output: [], usage: { input_tokens: 12, output_tokens: 3 } });
+    });
+    const goal = vi.fn<NonNullable<GatewayDeps['checkGoalInferenceAdmission']>>(async () => state === 'goal-denied'
+      ? { allowed: false, goalId: 'private-goal', status: 403, code: 'goal_budget_exhausted', message: 'Private goal denied.' }
+      : { allowed: true, goalId: null, reason: 'no-goal' });
+    svc = await startGatewayService({ port: 0, workspace: 'private-service-workspace', log: () => {},
+      checkGoalInferenceAdmission: goal, readAcceptedOperationModelPolicy: policy,
+      recordAcceptedOperationModelAttestation: record, fetchImpl: provider,
+      resolveAccounts: async () => [{ accountId: 'private-service-account', credentialRef: `token:${tokenPath}`, source: 'env' }],
+      observePool: () => () => {}, refreshIntervalMs: 0, poolReloadIntervalMs: 0, localBackendReloadIntervalMs: 0,
+    });
+    const response = await fetch(`http://127.0.0.1:${svc.port}/v1/responses`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'private-service-owner' },
+      body: JSON.stringify({ model: state === 'model-denied' ? 'gpt-5.6-luna' : 'gpt-5.6-sol',
+        input: 'private task', reasoning: { effort: 'high' } }),
+    });
+    const body = await response.text();
+    assert.equal(response.status, state === 'accepted' ? 200 : state === 'attestation-fails' ? 502
+      : state === 'goal-denied' || state === 'model-denied' ? 403 : 503, body);
+    assert.equal(goal.mock.calls.length, 1);
+    assert.deepEqual(goal.mock.calls[0], ['private-service-owner']);
+    assert.equal(policy.mock.calls.length, state === 'goal-denied' ? 0 : 1);
+    if (state !== 'goal-denied') assert.deepEqual(policy.mock.calls[0], ['private-service-owner', 'codex']);
+    const forwarded = state === 'accepted' || state === 'attestation-fails';
+    assert.equal(provider.mock.calls.length, forwarded ? 1 : 0);
+    assert.equal(record.mock.calls.length, forwarded ? 1 : 0);
+    if (forwarded) {
+      assert.equal(record.mock.calls[0]![0].workspaceId, 'private-service-workspace');
+      assert.equal(record.mock.calls[0]![1].actualModel, 'gpt-5.6-sol');
+    }
+  },
+);
+
+test.each(['authorized', 'revoked'] as const)('startGatewayService carries trial authority to the final provider send (%s)', async state => {
+  const up = await startUpstream();
+  let checks = 0;
+  const authorize = vi.fn(async (attempt: GatewayCarryTrialAttempt) => ({ ...nativeFixtureReceipt(attempt),
+    validateAuthorization: () => {
+      checks++;
+      assert.equal(up.requests(), 0, 'controller runs before any upstream write');
+      assert.equal(attempt.accountId, 'native-account');
+      assert.equal(attempt.credentialSha256, bindingDigest('Bearer PRIVATE_SELECTED_TOKEN'));
+      assert.equal(attempt.bodySha256, bindingDigest(attempt.body));
+      assert.equal(attempt.manifestSha256, bindingDigest('native fixture'));
+      assert.equal(attempt.armId, 'native-judge');
+      if (state === 'revoked') throw new Error('PRIVATE_REVOKED_AUTHORITY');
+    },
+  }));
+  svc = await startGatewayService({ port: 0, upstreamBase: up.base, log: () => {},
+    carryTrial: scopedBinding(authorize),
+    resolveAccount: async () => ({ accountId: 'native-account', credentialRef: 'token:/dev/null', source: 'env' }),
+    makeResolver: () => ({ kind: 'token', authMode: 'oauth', current: async () => 'PRIVATE_SELECTED_TOKEN', invalidate: () => {} }),
+    observePool: () => () => {}, poolReloadIntervalMs: 0, localBackendReloadIntervalMs: 0,
+  });
+  const unauthenticated = await sendScopedMessage(svc.port, 'wrong-token');
+  assert.equal(unauthenticated.status, 403); await unauthenticated.text();
+  assert.equal(up.requests(), 0); assert.equal(authorize.mock.calls.length, 0);
+  const response = await sendScopedMessage(svc.port);
+  assert.equal(response.status, state === 'authorized' ? 200 : 403);
+  assert.doesNotMatch(await response.text(), /PRIVATE_/);
+  assert.equal(checks, 1); assert.equal(authorize.mock.calls.length, 1);
+  assert.equal(up.requests(), state === 'authorized' ? 1 : 0);
+  // The same scoped credential permits exact owner evidence, while every
+  // unscoped report and other admin route stays outside its authority.
+  for (const [path, token, status] of [
+    ['/admin/owner-report?owner=private-native-owner', scopedGatewayToken, 200],
+    ['/admin/owner-report?owner=private-native-owner', 'wrong-token', 403],
+    ['/admin/owner-report', scopedGatewayToken, 403],
+    ['/admin/owner-report?owner=', scopedGatewayToken, 403],
+    ['/admin/owner-report?owner=a&owner=b', scopedGatewayToken, 403],
+    ['/admin/config', scopedGatewayToken, 403],
+    ['/admin/reload', scopedGatewayToken, 403],
+  ] as const) {
+    const report: Response = await fetch(`http://127.0.0.1:${svc.port}${path}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const body = await report.text(); assert.equal(report.status, status, body);
+    if (status === 200) assert.equal(JSON.parse(body).owner, 'private-native-owner');
+  }
+  assert.equal(up.requests(), state === 'authorized' ? 1 : 0);
+});
+
+test('startGatewayService snapshots trial binding before asynchronous account resolution', async () => {
+  const up = await startUpstream();
+  let entered!: () => void, resume!: () => void;
+  const resolving = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { resume = resolve; });
+  const authorize = vi.fn(async (attempt: GatewayCarryTrialAttempt) => nativeFixtureReceipt(attempt));
+  const binding = scopedBinding(authorize);
+  const options = { port: 0, upstreamBase: up.base, log: () => {}, carryTrial: binding,
+    resolveAccount: async () => { entered(); await gate; return { accountId: 'native-account', credentialRef: 'token:/dev/null', source: 'env' as const }; },
+    makeResolver: () => ({ kind: 'token' as const, authMode: 'oauth' as const, current: async () => 'PRIVATE_SELECTED_TOKEN', invalidate: () => {} }),
+    observePool: () => () => {}, poolReloadIntervalMs: 0, localBackendReloadIntervalMs: 0,
+  };
+  const pending = startGatewayService(options);
+  await resolving;
+  binding.armId = 'substituted'; binding.manifestSha256 = bindingDigest('substituted');
+  binding.requestTokenSha256 = bindingDigest('wrong-token'); binding.protocols.push('openai-responses');
+  binding.authorizeAttempt = async () => null;
+  resume();
+  svc = await pending;
+  const response = await sendScopedMessage(svc.port);
+  assert.equal(response.status, 200); await response.text();
+  assert.equal(authorize.mock.calls.length, 1);
+  assert.equal(authorize.mock.calls[0][0].armId, 'native-judge');
+  assert.equal(authorize.mock.calls[0][0].manifestSha256, bindingDigest('native fixture'));
+  const otherProtocol = await fetch(`http://127.0.0.1:${svc.port}/v1/responses`, {
+    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${scopedGatewayToken}` },
+    body: JSON.stringify({ model: 'gpt-6-sol', input: 'PRIVATE_TASK' }),
+  });
+  assert.equal(otherProtocol.status, 403); await otherProtocol.text();
+  assert.equal(up.requests(), 1);
+});
+
+test.each([null, false, []])('startGatewayService refuses an invalid trial binding (%j) before resolving accounts', async binding => {
+  const resolveAccount = vi.fn();
+  await assert.rejects(startGatewayService({ carryTrial: binding as never, resolveAccount, log: () => {} }),
+    /invalid carry trial binding/);
+  assert.equal(resolveAccount.mock.calls.length, 0);
+});
 
 test('startGatewayService composes account → resolver → proxy; /healthz + a proxied request work', async () => {
   const up = await startUpstream();
@@ -336,6 +504,27 @@ test('reloadPool HOT-SWAPS the account pool from the DB source-of-truth, no rest
   assert.equal(up.lastAuth(), 'Bearer d-tok', 'a hot-reload-ADDED account serves live — pool swapped without a restart');
 });
 
+test('API workspace bindings reach upstream and a binding-only change hot-reloads', async () => {
+  const up = await startUpstream();
+  let workspace = 'wrkspc_first';
+  svc = await startGatewayService({
+    port: 0, upstreamBase: up.base, log: () => {},
+    resolveAccounts: async (_ws, provider) => provider === 'codex' ? [] : [{ accountId: 'api', credentialRef: 'apikey:env:TEST_API_KEY', anthropicWorkspaceId: workspace, source: 'pool' as const }],
+    makeResolver: () => ({ kind: 'apikey', authMode: 'api-key', current: async () => ['sk', 'ant', 'usr', 'fixture'].join('-'), invalidate: () => {} }),
+    observePool: () => () => {}, poolReloadIntervalMs: 0,
+  });
+  const send = () => fetch(`http://127.0.0.1:${svc!.port}/v1/messages`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-account': 'api' },
+    body: JSON.stringify({ model: 'claude-opus-4', max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }),
+  });
+  assert.equal((await send()).status, 200);
+  assert.equal(up.lastWorkspace(), 'wrkspc_first');
+  workspace = 'wrkspc_second';
+  assert.equal((await svc.reloadPool()).changed, true);
+  assert.equal((await send()).status, 200);
+  assert.equal(up.lastWorkspace(), 'wrkspc_second');
+});
+
 test('/admin/config + /admin/reload expose the live config + on-demand hot-reload (B-HOT-2)', async () => {
   const up = await startUpstream();
   let dbPool = [
@@ -560,6 +749,57 @@ test('reloadPool follows the back-compat single resolveAccount path (re-resolves
   assert.equal(changed.changed, true, 'a changed single account hot-reloads');
   assert.equal(svc.configVersion(), 2);
   assert.deepEqual(changed.accounts, ['solo']);
+});
+
+test('credit projection records depletion immediately even when the included meter is unchanged', async () => {
+  const recorded = vi.spyOn(burnAlert, 'recordAccountWindowWithBurnAlert')
+    .mockResolvedValue({ pool: { accounts: [] }, transition: null });
+  tempDir = mkdtempSync(join(tmpdir(), 'codex-gw-credit-projection-'));
+  const codexTokenPath = join(tempDir, 'codex.token');
+  writeFileSync(codexTokenPath, 'test-codex-token\n', { mode: 0o600 });
+  let available = true;
+  upstream = http.createServer((_req, res) => {
+    res.writeHead(200, {
+      'content-type': 'application/json',
+      'x-codex-primary-used-percent': '100',
+      'x-codex-primary-window-minutes': '10080',
+      'x-codex-credits-has-credits': available ? 'True' : 'False',
+      'x-codex-credits-balance': available ? '50000' : '0',
+    });
+    res.end('{"ok":true}');
+  });
+  await new Promise<void>((resolve) => upstream!.listen(0, '127.0.0.1', resolve));
+  const base = 'http://127.0.0.1:' + (upstream.address() as { port: number }).port;
+  process.env.OPENAI_BASE_URL_UPSTREAM = base;
+  svc = await startGatewayService({
+    port: 0, upstreamBase: base, log: () => {},
+    resolveAccounts: async (_ws, provider) => [{
+    accountId: provider === 'codex' ? 'test-codex' : 'test-claude',
+      credentialRef: provider === 'codex' ? `token:${codexTokenPath}` : 'token:/test-credential', source: 'pool',
+    }],
+    makeResolver: () => ({ kind: 'token', authMode: 'oauth', current: async () => 'test-token', invalidate: () => {} }),
+    observePool: () => () => {},
+    resolveLocalBackends: async () => [],
+    poolReloadIntervalMs: 0, localBackendReloadIntervalMs: 0,
+  });
+  const send = async () => {
+    const response = await fetch('http://127.0.0.1:' + svc!.port + '/v1/responses', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-6.1-sol', input: 'credit projection' }),
+    });
+    const responseBody = await response.text();
+    assert.equal(response.status, 200, responseBody);
+  };
+  await send();
+  await vi.waitFor(() => assert.equal(recorded.mock.calls.length, 1));
+  assert.equal(recorded.mock.calls[0]![1].usageCreditsAvailable, true);
+  assert.deepEqual(recorded.mock.calls[0]![1].creditBalance, { amount: 50000, unit: 'credits', source: 'codex', unlimited: false });
+  assert.equal(recorded.mock.calls[0]![1].utilization7d, 1);
+  available = false;
+  await send();
+  await vi.waitFor(() => assert.equal(recorded.mock.calls.length, 2));
+  assert.equal(recorded.mock.calls[1]![1].usageCreditsAvailable, false);
+  assert.equal(recorded.mock.calls[1]![1].creditBalance?.amount, 0);
 });
 
 test('/admin/config exposes the live codexAccounts alongside the claude pool', async () => {

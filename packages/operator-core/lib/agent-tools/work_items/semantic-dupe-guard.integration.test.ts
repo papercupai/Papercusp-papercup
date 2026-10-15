@@ -92,6 +92,7 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
       title             TEXT,
       summary           TEXT,
       status            TEXT,
+      lane              TEXT,
       embedding         public.vector(${PROSE_VECTOR_DIMS}),
       embedding_mode    TEXT,
       embedding_profile TEXT,
@@ -116,10 +117,17 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
   `);
 }
 
-async function seedItem(harness: string, id: string, title: string, summary: string, theta: number): Promise<void> {
+async function seedItem(
+  harness: string,
+  id: string,
+  title: string,
+  summary: string,
+  theta: number,
+  lane: string | null = null,
+): Promise<void> {
   await sql`INSERT INTO harness_shared.work_items
-              (workspace_id, harness_slug, feature_id, title, summary, status, embedding, embedding_mode, embedding_profile)
-            VALUES (${workspace}, ${harness}, ${id}, ${title}, ${summary}, 'open',
+              (workspace_id, harness_slug, feature_id, title, summary, status, lane, embedding, embedding_mode, embedding_profile)
+            VALUES (${workspace}, ${harness}, ${id}, ${title}, ${summary}, 'open', ${lane},
                     ${vecLit(theta)}::vector, 'gemma', ${SELECTION.profileId})`;
 }
 
@@ -188,6 +196,24 @@ describe('SPEC-P-011-DUPE-GUARD-GIST — the duplicate guard ranks by the parent
     expect(hit).toBeDefined();
     expect(hit!.similarity).toBeCloseTo(Math.cos(1.2), 5);
     expect(hit!.similarity).toBeLessThan(0.5);
+  });
+
+  it('excludes observation-lane rows before limiting the candidate pool', async () => {
+    const harness = 'observation-filter';
+    for (let i = 0; i < 6; i++) {
+      await seedItem(
+        harness,
+        'EI-OBS-' + i,
+        'Turn-end reflection ' + i,
+        'agent observation',
+        0,
+        'observation',
+      );
+    }
+    await seedItem(harness, 'WI-REAL', 'Real work item', 'candidate after observation rows', 0.2);
+
+    const candidates = await queryCandidatesReal(dirVec(0), 'gemma', harness, NEW_ITEM.title, SELECTION);
+    expect(candidates.map((candidate) => candidate.id)).toEqual(['WI-REAL']);
   });
 
   it('detector control: a guard that ranked by chunks WOULD flag the tail-overlap item', async () => {

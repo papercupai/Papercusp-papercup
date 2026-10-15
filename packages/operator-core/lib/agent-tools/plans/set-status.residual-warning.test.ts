@@ -32,6 +32,8 @@ vi.mock('../_harness-scope', async (orig) => ({
   harnessScopedCtx: (_h: unknown, ctx: unknown) => ctx,
 }));
 vi.mock('./_ctx-opts', () => ({ resolveCtxHarnessSlug: () => null }));
+// WI-10008137: the draft-plan item-start gate has its own suite (draft-item-start-gate.test.ts).
+vi.mock('./draft-item-start-gate', () => ({ checkDraftItemStartGateLive: vi.fn(async () => null) }));
 vi.mock('./revisions', () => ({
   planRevisionCapture: () => ({ afterWrite: undefined, recorded: { current: null } }),
 }));

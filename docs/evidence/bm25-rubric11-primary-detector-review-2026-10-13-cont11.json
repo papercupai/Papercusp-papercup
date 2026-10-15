@@ -1,0 +1,3293 @@
+{
+  "schemaVersion": 1,
+  "kind": "bm25-rubric-primary-detector-review-packet",
+  "graded": false,
+  "implementationAcceptance": false,
+  "preparedAt": "2026-10-13T01:24:39.610Z",
+  "workItem": "WI-6554700010009513",
+  "failedCard": "EI-25822964093257656",
+  "failedAudit": "EI-25823436596180723",
+  "subject": {
+    "rubricRef": "acceptance-bm25-lexical-search-evoke-adoption-2026-10-10",
+    "revision": 11,
+    "criteriaHash": "4ea7c78655a52161af15f0de67358026e361de080449b932f917ae6e30c25c09",
+    "barSetHash": "2ae70341e7ebc90b38b065d4a25063d9e02e58a66a284bab871e82899adee776",
+    "planSlug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+    "planVersion": 84,
+    "planContentHash": "da4eb20dd17433750ba64be4e0db3fda00b2bf43a11bb7d50bd4ce820fbeaf41"
+  },
+  "primarySources": {
+    "rubric": {
+      "tool": "rubrics:get",
+      "args": {
+        "rubricRef": "acceptance-bm25-lexical-search-evoke-adoption-2026-10-10",
+        "revision": 11,
+        "detail": "full"
+      },
+      "selector": "results[0].rubric"
+    },
+    "plan": {
+      "tool": "plans:get",
+      "args": {
+        "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+        "harness": "papercusp",
+        "mode": "full"
+      },
+      "selectors": [
+        "results[0].prose",
+        "results[0].decisions"
+      ]
+    }
+  },
+  "filePins": {
+    "schemaVersion": 1,
+    "files": [
+      {
+        "path": "packages/operator-core/lib/search/lexical/bm25-latency.integration.test.ts",
+        "dimension": "source",
+        "sha256": "b7ba813cf94b6dbce0c339944016c9f7604c09fae16d9008f7f9e8e67dbcfad3",
+        "repo": ".",
+        "headBlob": "679a668ca6fd43dd8f53cd70987ffe2803af20be",
+        "clean": true
+      },
+      {
+        "path": "packages/operator-core/lib/search/lexical/bm25-health.integration.test.ts",
+        "dimension": "source",
+        "sha256": "e7c966e97b2ec3a8b490f7e1a1a90ec48e0dd3f0cb992505b2c1edc4082e24f7",
+        "repo": ".",
+        "headBlob": "41c8124d9852b02560ae0305a4f9eaa89d914679",
+        "clean": true
+      },
+      {
+        "path": "packages/operator-core/lib/search/lexical/bm25-write-load.integration.test.ts",
+        "dimension": "source",
+        "sha256": "30733df97b3f839fa1b9a027f12107a67f00cbd18014814cfa702989564eaa4c",
+        "repo": ".",
+        "headBlob": "29f9a02763761ac5f78824b5613639fe86d4439e",
+        "clean": true
+      },
+      {
+        "path": "packages/operator-core/lib/search/lexical/bm25-maintenance.integration.test.ts",
+        "dimension": "source",
+        "sha256": "9e4168978203246a9adebc73186aa3bd68e7374018f25d1f11a451ecaba31362",
+        "repo": ".",
+        "headBlob": "17d823c8a0871cd5227311f6ebead2cd3cf1a51c",
+        "clean": true
+      },
+      {
+        "path": "packages/operator-core/lib/search/lexical/lexical-source-guard.test.ts",
+        "dimension": "source",
+        "sha256": "0e97ce9cd9a86297afa787f499445fefebc105c391605406523832ec5840293e",
+        "repo": ".",
+        "headBlob": "1ba6cad79c8e7befb61160f3bed58ff5e7ae48aa",
+        "clean": true
+      },
+      {
+        "path": "packages/operator-core/lib/search/lexical/lexical-seam.test.ts",
+        "dimension": "source",
+        "sha256": "4e42ec7e8d2716f5377fae43bf123373e25157cfa1d01be39ef27857e320c244",
+        "repo": ".",
+        "headBlob": "e58d0e16a8e1d3084dcbc1926a41f787a38811b4",
+        "clean": true
+      },
+      {
+        "path": "packages/operator-core/lib/search/lexical/bm25-retirement.integration.test.ts",
+        "dimension": "source",
+        "sha256": "ad05e4bf744691d80fea94c1ed616f9626e309a4d1d66d7aeffd25c3c41cfb2d",
+        "repo": ".",
+        "headBlob": "af6daae05050fd93c853677f6b76c43f6565e82a",
+        "clean": true
+      },
+      {
+        "path": "packages/operator-core/lib/search/lexical/bm25-hybrid-fusion.integration.test.ts",
+        "dimension": "source",
+        "sha256": "05084faa5cbcb0e7f2c24af8b0016ac461139e2ae547c79a24682104733f8410",
+        "repo": ".",
+        "headBlob": "e180b1ce818602849662f4d005b9e74b8d342574",
+        "clean": true
+      },
+      {
+        "path": "packages/operator-core/lib/search/bench/bm25-hybrid-recall.test.ts",
+        "dimension": "source",
+        "sha256": "8a365bcbc2dd0c9d343c045b31387e6bb6f1710f0b58eb41120857368b690623",
+        "repo": ".",
+        "headBlob": "b26f1b713d6bebb0182da337c5a2ad33728b419e",
+        "clean": true
+      },
+      {
+        "path": "packages/operator-core/lib/search/lexical/corpora.test.ts",
+        "dimension": "source",
+        "sha256": "ca0e0b7f2d9685b9ec29c68c8cb0bbfd6085ad7209dc8762c943eeb7ae9a2621",
+        "repo": ".",
+        "headBlob": "00ac042b547cdbcb5ed73fd32e5b0c62238b0203",
+        "clean": true
+      },
+      {
+        "path": "packages/operator-core/lib/doc-claims/bm25-config-doc.test.ts",
+        "dimension": "source",
+        "sha256": "648f85e6c68e7c2de4d0169e69847c5414bc287195f5954711bada3e120fb3a7",
+        "repo": ".",
+        "headBlob": "f07f497bff59b7b775e2821d650896c68bf0b5ff",
+        "clean": true
+      },
+      {
+        "path": "packages/operator-core/lib/doc-claims/bm25-config-doc-search.test.ts",
+        "dimension": "source",
+        "sha256": "360ad28c0ee4d8cbdacb918d4073ac571c81f6352d3d1c8b0de0b841c3d7ba13",
+        "repo": ".",
+        "headBlob": "14ba8073b01d5bb956588870f635e02fe1b23c9f",
+        "clean": true
+      },
+      {
+        "path": "packages/operator-core/lib/search/lexical/rank.test.ts",
+        "dimension": "source",
+        "sha256": "241520611c82ac4fa14e401f6b5da5f529eddbb5934a975e1323b650e35f2788",
+        "repo": ".",
+        "headBlob": "908d2fa8d55db19e2ddb8129025923acb39d0467",
+        "clean": true
+      },
+      {
+        "path": "libs/generic/rrf/src/index.test.ts",
+        "dimension": "source",
+        "sha256": "4690a45d11633745d90924f7665abc8b7946a310470cfbaf92233e8c179b2a4e",
+        "repo": "libs/generic/rrf",
+        "headBlob": "5565d7704c988e0a14b4a1c7eaa1b3abe7ce5bfd",
+        "clean": true
+      },
+      {
+        "path": "packages/operator-core/lib/search/lexical/bm25-ranking.integration.test.ts",
+        "dimension": "source",
+        "sha256": "717abc457971f9da8229f1a2e498b73ce47434f71245c1839209349fdcd6ed68",
+        "repo": ".",
+        "headBlob": "cdd1726a70cbc47a5d96c9b73f51bfda23e604ec",
+        "clean": true
+      },
+      {
+        "path": "packages/operator-core/lib/data-sources/granted-sources-injection.test.ts",
+        "dimension": "source",
+        "sha256": "7bc6b8bf13d164b14c1ef72a73ce51bc791f6f0e62c9b07983d038e7a301c0d2",
+        "repo": ".",
+        "headBlob": "2d400c8a4f9939d0e7ae159cbe0c1b6ecfbb33e1",
+        "clean": true
+      },
+      {
+        "path": "libs/generic/search/src/hybrid.test.ts",
+        "dimension": "source",
+        "sha256": "5e7ef6ab0c633ac1ef9fd424e04b9fe3bafb203d5ff96016cfd8777dcb444c54",
+        "repo": "libs/generic/search",
+        "headBlob": "f657724a5aa64520e0d007e6e765638290863ba0",
+        "clean": true
+      },
+      {
+        "path": "libs/generic/search/src/hybrid-cascade.test.ts",
+        "dimension": "source",
+        "sha256": "d9b3f690c02d0284bbf441506b72c68f5505a5921f4e38371b32318fdb6d6bde",
+        "repo": "libs/generic/search",
+        "headBlob": "08957c976a26ecc4df51afcfa25c7675e9b0730a",
+        "clean": true
+      }
+    ],
+    "repos": [
+      {
+        "repo": ".",
+        "head": "97bbd2b1448ce67fa5220286138012c474204789",
+        "gitlink": null
+      },
+      {
+        "repo": "libs/generic/rrf",
+        "head": "1a5b48715e2ce0ac18b406409b1ce22fc1416ae2",
+        "gitlink": "1a5b48715e2ce0ac18b406409b1ce22fc1416ae2"
+      },
+      {
+        "repo": "libs/generic/search",
+        "head": "c2a22fd57d68fafb5a9eafb1cada1ef87fcd5752",
+        "gitlink": "c2a22fd57d68fafb5a9eafb1cada1ef87fcd5752"
+      }
+    ],
+    "rootCommit": "97bbd2b1448ce67fa5220286138012c474204789",
+    "observedAt": "2026-10-13T01:24:39.608Z",
+    "errors": []
+  },
+  "entries": [
+    {
+      "key": "r-1",
+      "barKey": "R-1",
+      "title": "Work-item ranking at least 1.5x today",
+      "model": "On the work-item known-item benchmark over the live work_items corpus, the minimum of the four ranking ratios {recall@10, MRR@10} x {full-title, 4-keyword} of the production lexical leg over the tsv_and baseline, measured in the same run on the identical query sample, is at least 1.5.",
+      "method": "packages/operator-core/lib/search/bench/bm25-bakeoff-cli.ts --corpus work-items: the live harness_shared.work_items corpus is copied from the dev-box operator database into a pg_textsearch container with the production index configuration (row count, server and extension versions recorded in the evidence), with a seeded query sample of at least 1,000 full-title and 1,000 4-keyword known-item queries; the seed, the sample size and the tsv_and baseline are recorded in the same run. Evidence: docs/evidence/bm25-bakeoff-work-items-*.json via testing:record-run (operational, live plane). Decisions D-001 (engine choice rule), D-002 (work-item bake-off result).\n\nThe outcome detector is the operational bakeoff artifact docs/evidence/bm25-bakeoff-work-items-2026-10-11.json (corpus.key work-items): summaries[].recallAt10 and summaries[].mrrAt10 for method pgts versus same-run tsv_and, both title and short variants; queries and paired[].n establish the 1,000-query floor and paired identity. The minimum of all four ratios must meet 1.5. The ranking suite remains a recurrence floor only and cannot satisfy this outcome.\n\nStructured instrument grading reads a supplied artifact snapshot; the runtime does not execute this JSON file automatically. The independent grader must read the original artifact, derive the fields specified above, cite its SHA256 and original run identity, and supply honest self-reported snapshot provenance under this exact instrumentKey. Missing, stale or incompatible artifact evidence remains unknown.",
+      "driftMarkers": "BROKEN if any of the four ratios {recall@10, MRR@10} x {full-title, 4-keyword} is below 1.5, if either query form has fewer than 1,000 queries, or if tsv_and was not computed in the same run on the identical sample.",
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "docs/evidence/bm25-bakeoff-work-items-2026-10-11.json:summaries,paired,queries,corpus"
+      },
+      "sourceSelector": "results[0].rubric.criteria[key=r-1]",
+      "matchedDetectorCount": 0,
+      "selectedDetectors": [],
+      "detectorReadComplete": false,
+      "reviewState": "ungraded; excerpts are navigation aids; independently read named complete callback and verify assertion semantics"
+    },
+    {
+      "key": "r-2",
+      "barKey": "R-2",
+      "title": "p95 latency budget",
+      "model": "On the work-item known-item benchmark, with the production index configuration over a copy of the live work-item corpus, the p95 lexical query latency is at most 50 ms.",
+      "method": "The same bm25-bakeoff run as R-1 times every query of the production lexical leg, one engine at a time, after a warm-up pass; p95 over at least 1,000 timed queries, with the host load average, server version and row count recorded. Evidence: docs/evidence/bm25-bakeoff-work-items-*.json (operational, live plane). The bound latency suite is the fixture floor. Decision D-001 (latency clause of the engine choice rule). Scope of the timed path: the bake-off times the engine query alone (the pgts arm's BM25 SQL in the container). The D-016 exact list (plainto_tsquery AND + ts_rank_cd, fused by mergeExactAndBm25 in agent-tools/search/sources.ts) is a separate query and is NOT inside this timed path; its end-to-end cost on the search:semantic path is bounded by R-18 (D-019, D-020), measured by bm25-hybrid-recall-cli.ts.",
+      "driftMarkers": "p95 above 50 ms.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/search/lexical/bm25-latency.integration.test.ts"
+        ]
+      },
+      "sourceSelector": "results[0].rubric.criteria[key=r-2]",
+      "matchedDetectorCount": 1,
+      "selectedDetectors": [
+        {
+          "path": "packages/operator-core/lib/search/lexical/bm25-latency.integration.test.ts",
+          "title": "meets the p95 and p50 budgets on the seeded corpus, warm",
+          "line": 42,
+          "bodySha256": "f814e0a14e34b3b1d8b8ac686a8ed4f02bdeb6ef6954715545c39b48cf8b755b",
+          "assertionCount": 2,
+          "assertions": [
+            {
+              "line": 45,
+              "excerpt": "expect(latency!.p95Ms).toBeLessThanOrEqual(BM25_P95_BUDGET_MS)",
+              "excerptComplete": true,
+              "sha256": "5ad1972ad9c90ecfdcd0e07ca916b75ecb1bb6b26ec476b19987591b6eab0279"
+            },
+            {
+              "line": 46,
+              "excerpt": "expect(latency!.p50Ms).toBeLessThanOrEqual(P50_BUDGET_MS)",
+              "excerptComplete": true,
+              "sha256": "b818906af7986de37de3f957d777c938aaf96e348f588680e7b503cfdde85924"
+            }
+          ]
+        }
+      ],
+      "detectorReadComplete": false,
+      "reviewState": "ungraded; excerpts are navigation aids; independently read named complete callback and verify assertion semantics"
+    },
+    {
+      "key": "r-3",
+      "barKey": "R-3",
+      "title": "p50 latency budget",
+      "model": "On the work-item known-item benchmark, with the production index configuration over a copy of the live work-item corpus, the p50 lexical query latency is at most 10 ms.",
+      "method": "Same timed sample and run as R-2: p50 over at least 1,000 warm queries. Evidence: docs/evidence/bm25-bakeoff-work-items-*.json (operational, live plane). Decision D-001.",
+      "driftMarkers": "p50 above 10 ms.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/search/lexical/bm25-latency.integration.test.ts"
+        ]
+      },
+      "sourceSelector": "results[0].rubric.criteria[key=r-3]",
+      "matchedDetectorCount": 1,
+      "selectedDetectors": [
+        {
+          "path": "packages/operator-core/lib/search/lexical/bm25-latency.integration.test.ts",
+          "title": "meets the p95 and p50 budgets on the seeded corpus, warm",
+          "line": 42,
+          "bodySha256": "f814e0a14e34b3b1d8b8ac686a8ed4f02bdeb6ef6954715545c39b48cf8b755b",
+          "assertionCount": 2,
+          "assertions": [
+            {
+              "line": 45,
+              "excerpt": "expect(latency!.p95Ms).toBeLessThanOrEqual(BM25_P95_BUDGET_MS)",
+              "excerptComplete": true,
+              "sha256": "5ad1972ad9c90ecfdcd0e07ca916b75ecb1bb6b26ec476b19987591b6eab0279"
+            },
+            {
+              "line": 46,
+              "excerpt": "expect(latency!.p50Ms).toBeLessThanOrEqual(P50_BUDGET_MS)",
+              "excerptComplete": true,
+              "sha256": "b818906af7986de37de3f957d777c938aaf96e348f588680e7b503cfdde85924"
+            }
+          ]
+        }
+      ],
+      "detectorReadComplete": false,
+      "reviewState": "ungraded; excerpts are navigation aids; independently read named complete callback and verify assertion semantics"
+    },
+    {
+      "key": "r-4",
+      "barKey": "R-4",
+      "title": "Health check catches a missing preload",
+      "model": "The BM25 health check reports unhealthy when pg_textsearch is missing from shared_preload_libraries.",
+      "method": "Integration test on a containerized pg_textsearch server with and without the preload. Decisions D-003 (availability gate and health check), D-008 (the dev box served the legacy fallback silently).",
+      "driftMarkers": "BROKEN if (1) the health check reports healthy on a server without the preload, or (2) it reports healthy while lexical search is serving the ts_rank_cd fallback.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/search/lexical/bm25-health.integration.test.ts"
+        ]
+      },
+      "sourceSelector": "results[0].rubric.criteria[key=r-4]",
+      "matchedDetectorCount": 3,
+      "selectedDetectors": [
+        {
+          "path": "packages/operator-core/lib/search/lexical/bm25-health.integration.test.ts",
+          "title": "is ok while every present corpus has its index",
+          "line": 63,
+          "bodySha256": "d539ee5e3786e85633a40de6b8cfef014b9645b4e08ef281f46ae471cadfb690",
+          "assertionCount": 3,
+          "assertions": [
+            {
+              "line": 66,
+              "excerpt": "expect(health).toMatchObject({ status: 'ok', libraryLoaded: true, extensionInstalled: true, missingIndexes: [], reason: null })",
+              "excerptComplete": true,
+              "sha256": "858346e44e04306fd48845bb63ded4995226076a2d55bdd0b9f8e20ef12db4b9"
+            },
+            {
+              "line": 67,
+              "excerpt": "expect(health.presentIndexes.sort()).toEqual(['code_recipes_bm25', 'harness_plans_bm25', 'work_items_bm25'])",
+              "excerptComplete": true,
+              "sha256": "684de55a00f0e8c5ed9c2bfcd32d865104903ba76c98588784a6f2b1ee0fb42e"
+            },
+            {
+              "line": 68,
+              "excerpt": "expect(await lexicalEngine(sql, 'work_items')).toBe('bm25')",
+              "excerptComplete": true,
+              "sha256": "2a83f2181031f3f332686ac926133311ee60cec72b58656b6b8ac1229ed64e1c"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/lexical/bm25-health.integration.test.ts",
+          "title": "falls back to the legacy ranking and reports degraded when an index is missing",
+          "line": 71,
+          "bodySha256": "2d3faae484e4b77f8d26177909aecf3d23df28daae7c54354a2085751f5481ff",
+          "assertionCount": 6,
+          "assertions": [
+            {
+              "line": 75,
+              "excerpt": "expect(await lexicalEngine(sql, 'code_recipes')).toBe('legacy')",
+              "excerptComplete": true,
+              "sha256": "164c7c569ed62adf02037d96816a4159e50851251b1234cc9c80c134a642a88c"
+            },
+            {
+              "line": 78,
+              "excerpt": "expect(leg.engine).toBe('legacy')",
+              "excerptComplete": true,
+              "sha256": "5e025e14da1a039963cb85adf67cfb9b76f6874d2cdb60936bf2937ca94549b1"
+            },
+            {
+              "line": 79,
+              "excerpt": "expect(leg.score).toBe(legacy.score)",
+              "excerptComplete": true,
+              "sha256": "aff6a82beebacd6db1f9f76f9fa951f02215f6e3c8ecb635fb5a9017f6120ce1"
+            },
+            {
+              "line": 81,
+              "excerpt": "expect(health.status).toBe('degraded')",
+              "excerptComplete": true,
+              "sha256": "c20b734de8c0b3ebd59744c1065d8b78f16ecc7f9e9ffcb7282cdd043808dc7d"
+            },
+            {
+              "line": 82,
+              "excerpt": "expect(health.missingIndexes).toEqual(['code_recipes_bm25'])",
+              "excerptComplete": true,
+              "sha256": "4e90280b33b6adb274a48d39079084052dc8d4ff46920e543e833d0db22d5e44"
+            },
+            {
+              "line": 83,
+              "excerpt": "expect(health.reason).toContain('code_recipes_bm25')",
+              "excerptComplete": true,
+              "sha256": "eb95c6a317b49eb7dc36ca6b13b8fa8275a866ac970f1548fb83b3bcc950ac25"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/lexical/bm25-health.integration.test.ts",
+          "title": "the health check reports degraded and names the missing preload",
+          "line": 121,
+          "bodySha256": "97e545c2e1a494d4776741bb68c645961a6f72f0824567662c7988c80ac47b79",
+          "assertionCount": 6,
+          "assertions": [
+            {
+              "line": 124,
+              "excerpt": "expect(health.flagOn).toBe(true)",
+              "excerptComplete": true,
+              "sha256": "14a84936a0469578543e739a7fcecb76c5645ad5a9f367c265b6ecfd319223f8"
+            },
+            {
+              "line": 125,
+              "excerpt": "expect(health.status).toBe('degraded')",
+              "excerptComplete": true,
+              "sha256": "c20b734de8c0b3ebd59744c1065d8b78f16ecc7f9e9ffcb7282cdd043808dc7d"
+            },
+            {
+              "line": 126,
+              "excerpt": "expect(health.libraryLoaded).toBe(false)",
+              "excerptComplete": true,
+              "sha256": "da320e55bc100d8fc697daf7af3002bb0145cd11eec1996c0546211c66bf1f8a"
+            },
+            {
+              "line": 127,
+              "excerpt": "expect(health.reason).toBe('pg_textsearch is not in shared_preload_libraries')",
+              "excerptComplete": true,
+              "sha256": "e1d5575a45b0926b22681209a41344803f2fe5e13b3aeeda15519b7997b665d7"
+            },
+            {
+              "line": 128,
+              "excerpt": "expect(health.presentIndexes).toEqual([])",
+              "excerptComplete": true,
+              "sha256": "b4ea72117caf4135508418ce80ac9be2b4c355cc35e2a2754121230922743277"
+            },
+            {
+              "line": 129,
+              "excerpt": "expect(health.missingIndexes.sort()).toEqual(['code_recipes_bm25', 'harness_plans_bm25', 'work_items_bm25'])",
+              "excerptComplete": true,
+              "sha256": "001c270e2572991a44fcda071a6e0fd6d4b819632a56bf75eef3bcfc2cf792ad"
+            }
+          ]
+        }
+      ],
+      "detectorReadComplete": false,
+      "reviewState": "ungraded; excerpts are navigation aids; independently read named complete callback and verify assertion semantics"
+    },
+    {
+      "key": "r-5",
+      "barKey": "R-5",
+      "title": "Desktop ships BM25",
+      "model": "A fresh desktop install with an isolated database returns BM25-ranked search results offline.",
+      "method": "Build the sidecar, boot scripts/verify-tauri-headless.sh with VERIFY_TAURI_ISOLATED_DB=1, read the BM25 health check and run a ranked search. Evidence: the headless transcript docs/evidence/bm25-r5-headless-2026-10-11.json via testing:record-run (operational, live plane); the bound sidecar test checks the bundle step. Decisions D-003, D-014.\n\nThe live outcome detector is docs/evidence/bm25-r5-headless-2026-10-11.json: version, checks.embeddedPg18_4, checks.preloaded, checks.extensionInstalled, checks.bm25IndexesAllValid, checks.healthProbeOk, checks.searchServedByBm25Index and pass, bound to its original isolated desktop HARNESS_RESULT runtime. Bundle/ABI/preload unit tests are prerequisites; they do not prove a fresh install ranked offline. Reject a version below PostgreSQL 18.4 or any false/unknown live check.\n\nStructured instrument grading reads a supplied artifact snapshot; the runtime does not execute this JSON file automatically. The independent grader must read the original artifact, derive the fields specified above, cite its SHA256 and original run identity, and supply honest self-reported snapshot provenance under this exact instrumentKey. Missing, stale or incompatible artifact evidence remains unknown.",
+      "driftMarkers": "BROKEN if (1) a fresh install lacks the extension, fails migration, or ranks with ts_rank_cd; (2) the bundled embedded Postgres is below 18.4; (3) the postmaster fails to start with pg_textsearch preloaded (palloc_mul).",
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "docs/evidence/bm25-r5-headless-2026-10-11.json:checks,version,pass"
+      },
+      "sourceSelector": "results[0].rubric.criteria[key=r-5]",
+      "matchedDetectorCount": 0,
+      "selectedDetectors": [],
+      "detectorReadComplete": false,
+      "reviewState": "ungraded; excerpts are navigation aids; independently read named complete callback and verify assertion semantics"
+    },
+    {
+      "key": "r-6",
+      "barKey": "R-6",
+      "title": "New writes are searchable quickly",
+      "model": "Under sustained concurrent writes, a committed work item is returned by a search on its distinctive terms within 5 seconds.",
+      "method": "Write-load integration test (bm25-write-load, case R-6): 4 concurrent writers, 250-row insert batches plus 100-row updates, at least 30 batches each, maintenance every second, at least 20 probes of which at least 10 are title updates; each probe searched through the lexical seam until found. Decision D-010 (maintenance runs during the load).",
+      "driftMarkers": "A committed item is missing from results beyond 5 seconds.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/search/lexical/bm25-write-load.integration.test.ts"
+        ]
+      },
+      "sourceSelector": "results[0].rubric.criteria[key=r-6]",
+      "matchedDetectorCount": 2,
+      "selectedDetectors": [
+        {
+          "path": "packages/operator-core/lib/search/lexical/bm25-write-load.integration.test.ts",
+          "title": "R-6: finds every committed item, inserted or updated, within 5 s of its commit",
+          "line": 302,
+          "bodySha256": "543f22c28fc7480cfc158627713999ec77acf29c43b562037a00839468f40d6e",
+          "assertionCount": 3,
+          "assertions": [
+            {
+              "line": 304,
+              "excerpt": "expect(probes.length).toBeGreaterThanOrEqual(MIN_PROBES)",
+              "excerptComplete": true,
+              "sha256": "43177bc21c4bd9ed8d90190aff79e31506fd31fa051228a58db568c690c32c2e"
+            },
+            {
+              "line": 305,
+              "excerpt": "expect(probes.filter(p => p.kind === 'update').length).toBeGreaterThanOrEqual(10)",
+              "excerptComplete": true,
+              "sha256": "86183f92e918689e730e12b37554bf7d90a43f13eb0435c5f482d8fcb8967cbb"
+            },
+            {
+              "line": 306,
+              "excerpt": "expect(probes.filter(p => !Number.isFinite(p.ms) || p.ms > VISIBILITY_BOUND_MS)).toEqual([])",
+              "excerptComplete": true,
+              "sha256": "e224bf793e5b63e10d92b184c88382cd27c91050e494f90b8f81b2ba1038ce1f"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/lexical/bm25-write-load.integration.test.ts",
+          "title": "SPEC-P-008: reports the measured commit-to-searchable delay for every probe row",
+          "line": 324,
+          "bodySha256": "13d3cc73b239405c7effdd2a45637b4408ca6a2f7dd99515996ba800dd9f94a8",
+          "assertionCount": 7,
+          "assertions": [
+            {
+              "line": 328,
+              "excerpt": "expect(reported).toHaveLength(run.probes.length)",
+              "excerptComplete": true,
+              "sha256": "2dffcad4ed100edecee8ec482e2a5a45bafcc40e05ecc5e09cb519d47a8a187a"
+            },
+            {
+              "line": 329,
+              "excerpt": "expect(new Set(reported.map((p: ProbeObservation) => p.n)).size).toBe(run.probes.length)",
+              "excerptComplete": true,
+              "sha256": "c5244cdc8322ea7de02b8f88bdf3b0ae5909fcf0007ab1e1cf3aef6143b58fc7"
+            },
+            {
+              "line": 332,
+              "excerpt": "expect(row).toMatchObject({\n        n: measured.n, id: measured.id, term: measured.term, kind: measured.kind,\n        committedAt: measured.committedAt, firstVisibleAt: measured.firstVisibleAt,\n        delayMs: measured.ms, attempts: measur",
+              "excerptComplete": false,
+              "sha256": "4f454a4f00bb56d8972f314e49cbb6e26e2526387958c73acec5d4a1870c27bd"
+            },
+            {
+              "line": 337,
+              "excerpt": "expect(Number.isFinite(row.delayMs)).toBe(true)",
+              "excerptComplete": true,
+              "sha256": "fa53947963a929c67bd1bfea53c979622964d5e4a81a5a60b29734ac2653d43f"
+            },
+            {
+              "line": 338,
+              "excerpt": "expect(row.delayMs).toBeGreaterThanOrEqual(0)",
+              "excerptComplete": true,
+              "sha256": "b173bbb370b9309a4e6255096e3ea5fbebc76e512d6c101ead03870137dff184"
+            },
+            {
+              "line": 339,
+              "excerpt": "expect(Number.isFinite(Date.parse(row.committedAt))).toBe(true)",
+              "excerptComplete": true,
+              "sha256": "18b4e6b92cf05c3bc9960082c9d19e5150288f3251c2b878fc9081d7efc7ec12"
+            }
+          ]
+        }
+      ],
+      "detectorReadComplete": false,
+      "reviewState": "ungraded; excerpts are navigation aids; independently read named complete callback and verify assertion semantics"
+    },
+    {
+      "key": "r-7",
+      "barKey": "R-7",
+      "title": "Index stays compact under writes",
+      "model": "After the write-load run, every BM25 index is at most 1.5 times the size of its fresh rebuild.",
+      "method": "Write-load integration test (bm25-write-load, case R-7): maintenance (compaction plus the D-010 reclaim) runs every second during the load and to quiescence after it; then each BM25 index is compared with its own REINDEX. The case also asserts the load passed the reclaim floor and that maintenance reclaimed work_items_bm25. Decision D-010.\n\nD-051 corrects the maintenance estimated-live-byte denominator by including mandatory metadata; this outcome detector continues to compare actual pg_relation_size before and after its own REINDEX. D-052 lowers the production reclaim eligibility floor to BM25_RECLAIM_MIN_BYTES (8192, one PG page) while preserving the 1.4 rebuild trigger, 1.5 acceptance bound and at-most-one rebuild per maintenance run. The load test reads that production constant and must still witness an actual reclaim. No small-index exemption is introduced; the historical D-013 soak failure remains failed.",
+      "driftMarkers": "Any index exceeds 1.5x its REINDEX size.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/search/lexical/bm25-write-load.integration.test.ts"
+        ]
+      },
+      "sourceSelector": "results[0].rubric.criteria[key=r-7]",
+      "matchedDetectorCount": 1,
+      "selectedDetectors": [
+        {
+          "path": "packages/operator-core/lib/search/lexical/bm25-write-load.integration.test.ts",
+          "title": "R-7: with maintenance running during the load, every index ends within 1.5x of a fresh rebuild",
+          "line": 309,
+          "bodySha256": "5be190e6848f98a2c2263ae485223deab30de9833e93f13e888f2bdbb6dd604c",
+          "assertionCount": 6,
+          "assertions": [
+            {
+              "line": 311,
+              "excerpt": "expect(maintenanceErrors).toEqual([])",
+              "excerptComplete": true,
+              "sha256": "49673fc645c15016360f67be062cb65bb91eab6e3431a78811f2f8cd7ff2e0ef"
+            },
+            {
+              "line": 314,
+              "excerpt": "expect(maxWorkItemsBytes).toBeGreaterThanOrEqual(BM25_RECLAIM_MIN_BYTES)",
+              "excerptComplete": true,
+              "sha256": "2b4bf825371bd60ec4b6460670c2b6ac26d44c52193a6184d18031471ca9faea"
+            },
+            {
+              "line": 315,
+              "excerpt": "expect(reclaims.some(r => r.index === 'harness_shared.work_items_bm25')).toBe(true)",
+              "excerptComplete": true,
+              "sha256": "e3ff9c3cec36c49da3486fc28217188174bd40336f68e126b974a5379c5c1f79"
+            },
+            {
+              "line": 318,
+              "excerpt": "expect(maxWorkItemsBytes).toBeGreaterThanOrEqual(reclaimed.beforeBytes)",
+              "excerptComplete": true,
+              "sha256": "ae36b09acedec2c54ca0b233af89803535a1f192a92d977c022618c5871d046d"
+            },
+            {
+              "line": 320,
+              "excerpt": "expect(sizes.map(s => s.index)).toContain('harness_shared.work_items_bm25')",
+              "excerptComplete": true,
+              "sha256": "6c1b8e458e166af8977caa01ec3db334b2328758ca1eb6683025559fdb566985"
+            },
+            {
+              "line": 321,
+              "excerpt": "expect(sizes.filter(s => s.ratio > SIZE_BOUND)).toEqual([])",
+              "excerptComplete": true,
+              "sha256": "b38fc93ea06c0c501a44bc6d1115d5d659c4025e5ad1275cf95dda00430a1da6"
+            }
+          ]
+        }
+      ],
+      "detectorReadComplete": false,
+      "reviewState": "ungraded; excerpts are navigation aids; independently read named complete callback and verify assertion semantics"
+    },
+    {
+      "key": "r-8",
+      "barKey": "R-8",
+      "title": "Maintenance runs as a DBOS workflow",
+      "model": "The DBOS scheduled maintenance workflow body compacts a BM25 index that bm25_needs_compaction reports as eligible, and rebuilds an index whose file exceeds the D-010 bloat ratio over its live data with REINDEX CONCURRENTLY, at most one per run.",
+      "method": "Integration test on the workflow body (runBm25Maintenance): make an index eligible and assert it is compacted within the step budget; churn two indexes past the bloat ratio and assert one run rebuilds exactly one and the next run the other. Decisions D-010, D-013 (concurrent DDL).",
+      "driftMarkers": "BROKEN if (1) an eligible index stays uncompacted after the workflow runs; (2) an index over the reclaim floor and bloat ratio is not rebuilt; (3) one run rebuilds more than one index.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/search/lexical/bm25-maintenance.integration.test.ts"
+        ]
+      },
+      "sourceSelector": "results[0].rubric.criteria[key=r-8]",
+      "matchedDetectorCount": 5,
+      "selectedDetectors": [
+        {
+          "path": "packages/operator-core/lib/search/lexical/bm25-maintenance.integration.test.ts",
+          "title": "counts required metapage and page-map storage in a fresh small index live-byte estimate",
+          "line": 32,
+          "bodySha256": "d2f52f964bc3f082c53305682f1cfeb0e2b4f896f3045e1e53eaa4725cbb9c19",
+          "assertionCount": 3,
+          "assertions": [
+            {
+              "line": 41,
+              "excerpt": "expect(totals).toMatchObject({ segments: 1, alive: 257, docs: 257 })",
+              "excerptComplete": true,
+              "sha256": "1db73f861807255a28a7bc5843f0cd582a8250af61917ee0cce95e99358d38c2"
+            },
+            {
+              "line": 44,
+              "excerpt": "expect(Number(bytes)).toBe((totals.pages + 2) * 8192)",
+              "excerptComplete": true,
+              "sha256": "84976e7d15ca9722eb6adf84d72617f11de888ef765f2313546e03b9cb16b9bb"
+            },
+            {
+              "line": 47,
+              "excerpt": "expect(estimateBm25LiveBytes(totals)).toBe(Number(bytes))",
+              "excerptComplete": true,
+              "sha256": "c9821566dbd74846fb09a60e7a724ddb4fc6b329c1467cb2b9556c9fd1e12de2"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/lexical/bm25-maintenance.integration.test.ts",
+          "title": "reclaims actual small-index bloat under default settings while leaving a fresh small index alone",
+          "line": 50,
+          "bodySha256": "5b45d2c9a6cbdc81ba6f9346e9b212e0e1efe69de45e158095d6a0c17cb41fa1",
+          "assertionCount": 7,
+          "assertions": [
+            {
+              "line": 62,
+              "excerpt": "expect(result.errors).toEqual([])",
+              "excerptComplete": true,
+              "sha256": "f6915eb24e1f530d8c7db1e33e46d5e3724d0b756a063a25aa28e4f1d6d61e04"
+            },
+            {
+              "line": 63,
+              "excerpt": "expect(result.reclaimed?.index).toBe(qualified)",
+              "excerptComplete": true,
+              "sha256": "b299f4962222d8559239d65f909a6250b3f7c42a3dd2f773649fcfde9c447487"
+            },
+            {
+              "line": 64,
+              "excerpt": "expect(result.reclaimed!.beforeBytes).toBeLessThan(8 * 1024 * 1024)",
+              "excerptComplete": true,
+              "sha256": "51ff0249f19d0d9dee164d8a2b9b386aac5287288d59d90f1f978a4d48f650f4"
+            },
+            {
+              "line": 65,
+              "excerpt": "expect(result.reclaimed!.afterBytes).toBeLessThan(result.reclaimed!.beforeBytes)",
+              "excerptComplete": true,
+              "sha256": "a5f8b0a1b2d4b7eb4676726ef9bfb5d6aade8588c75f015bcdd397aaba71943b"
+            },
+            {
+              "line": 66,
+              "excerpt": "expect(result.pendingReclaims).not.toContain('harness_shared.fresh_small_probe_bm25')",
+              "excerptComplete": true,
+              "sha256": "a6ae1f71be695e4a27dd364094546b613685426c29ce15a581fd498706c7a362"
+            },
+            {
+              "line": 69,
+              "excerpt": "expect(Number(bytes) / estimateBm25LiveBytes(parseBm25SegmentTotals(summary)!)).toBeLessThan(1.5)",
+              "excerptComplete": true,
+              "sha256": "4b56da800785c317b1e63d2b0225b57004a79075320b81232b1ef5722c4436c2"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/lexical/bm25-maintenance.integration.test.ts",
+          "title": "reclaims a bloated index even when its compaction budget leaves debt unsettled",
+          "line": 76,
+          "bodySha256": "b66f81b5fb9a7e06690d563bfc0bcfc3f017f109434d31234cefa4a733173e3b",
+          "assertionCount": 10,
+          "assertions": [
+            {
+              "line": 94,
+              "excerpt": "expect(needs, 'fixture must have actual unsettled compaction debt').toBe(true)",
+              "excerptComplete": true,
+              "sha256": "72e7420391b1e3c8a496ffe429d9a2c8f754a5f551bebc0bb0e3d5ef20c9da95"
+            },
+            {
+              "line": 95,
+              "excerpt": "expect(ratio, 'fixture must have measured bloat independently of compaction debt').toBeGreaterThan(BM25_MAX_BLOAT_RATIO)",
+              "excerptComplete": true,
+              "sha256": "cc9331c5893f7a3135ffcea24e820e3a45912e71a65f43a6b61a3d83a55bb579"
+            },
+            {
+              "line": 97,
+              "excerpt": "expect(result.errors).toEqual([])",
+              "excerptComplete": true,
+              "sha256": "f6915eb24e1f530d8c7db1e33e46d5e3724d0b756a063a25aa28e4f1d6d61e04"
+            },
+            {
+              "line": 98,
+              "excerpt": "expect(result.compacted.find(c => c.index === qualified)).toEqual({ index: qualified, steps: 0, stillNeeds: true })",
+              "excerptComplete": true,
+              "sha256": "57524c2d39c3a6d248ed11f36c723371ab0b7768baa9143f496dfe79d23e5d42"
+            },
+            {
+              "line": 99,
+              "excerpt": "expect(result.reclaimed?.index, 'unsettled compaction must not hide a bloated index from reclaim').toBe(qualified)",
+              "excerptComplete": true,
+              "sha256": "b0547d91967c1bd22f28a0a292eba19a2a689968fe12d54568f2250e0e56c18f"
+            },
+            {
+              "line": 100,
+              "excerpt": "expect(result.reclaimed!.afterBytes).toBeLessThan(result.reclaimed!.beforeBytes)",
+              "excerptComplete": true,
+              "sha256": "a5f8b0a1b2d4b7eb4676726ef9bfb5d6aade8588c75f015bcdd397aaba71943b"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/lexical/bm25-maintenance.integration.test.ts",
+          "title": "compacts an index that needs it, stops at the step budget, and finishes on the next run",
+          "line": 307,
+          "bodySha256": "ba40582e2fabd16b492650a86ff84ca5f3066585c33c4b39441216a2e192990d",
+          "assertionCount": 11,
+          "assertions": [
+            {
+              "line": 323,
+              "excerpt": "expect((await levels())[0]).toBe(3)",
+              "excerptComplete": true,
+              "sha256": "57cb47c696ea16664b9ad56ec16058dc3f86248a66a99f8a39c95dfda91cd0e6"
+            },
+            {
+              "line": 324,
+              "excerpt": "expect(await needs()).toBe(true)",
+              "excerptComplete": true,
+              "sha256": "4679a64ce426bc0a59ee04b16b9b3f1785f144bfb868c37f0d4ad10f93f6a97c"
+            },
+            {
+              "line": 329,
+              "excerpt": "expect(first.errors).toEqual([])",
+              "excerptComplete": true,
+              "sha256": "5bfae15f07c8602b463cb10c09d3d79f4129a15cc35774a71ced7138d657cca6"
+            },
+            {
+              "line": 330,
+              "excerpt": "expect(first.compacted.find(c => c.index === idx)).toEqual({ index: idx, steps: 0, stillNeeds: true })",
+              "excerptComplete": true,
+              "sha256": "5b47b6000d976668a4d2254e592fd8dbc9047dea26e5a3cf7aa8ed54c250736a"
+            },
+            {
+              "line": 331,
+              "excerpt": "expect((await levels())[0]).toBe(3)",
+              "excerptComplete": true,
+              "sha256": "57cb47c696ea16664b9ad56ec16058dc3f86248a66a99f8a39c95dfda91cd0e6"
+            },
+            {
+              "line": 334,
+              "excerpt": "expect(second.errors).toEqual([])",
+              "excerptComplete": true,
+              "sha256": "63d8b356f80e758da0ca35c4253d5e16881f73d6bc7112c0961ed857eeabf038"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/lexical/bm25-maintenance.integration.test.ts",
+          "title": "reclaims a bloated index with REINDEX CONCURRENTLY, at most one per run, and the other on the next run",
+          "line": 356,
+          "bodySha256": "de292c37c73fe2a0e847f144b43e8e44b8d5254894ce499172eef3dab23d800a",
+          "assertionCount": 16,
+          "assertions": [
+            {
+              "line": 376,
+              "excerpt": "expect(first.errors).toEqual([])",
+              "excerptComplete": true,
+              "sha256": "5bfae15f07c8602b463cb10c09d3d79f4129a15cc35774a71ced7138d657cca6"
+            },
+            {
+              "line": 377,
+              "excerpt": "expect(first.built).toBeNull()",
+              "excerptComplete": true,
+              "sha256": "b1a5bead7254e971af3e22126c48f516bc994f7bb248e965bdecca01d4da6157"
+            },
+            {
+              "line": 378,
+              "excerpt": "expect(first.reclaimed, 'maintenance must reclaim one bloated index on the first run').not.toBeNull()",
+              "excerptComplete": true,
+              "sha256": "541a019bebdc21f70694cf1bacb86fdbc9ea7712d4676093f995baaac02672c5"
+            },
+            {
+              "line": 380,
+              "excerpt": "expect(tables.map(idx)).toContain(target.index)",
+              "excerptComplete": true,
+              "sha256": "2049b47ea2a5543b57cbca1deb053f8a5a9fb250112bb320b76af8fc209b7d2a"
+            },
+            {
+              "line": 381,
+              "excerpt": "expect(target.ratio).toBeGreaterThan(BM25_MAX_BLOAT_RATIO)",
+              "excerptComplete": true,
+              "sha256": "564b708d8745356306f6fd09fe361f6de727e884736a5360ea0eb5d8116195db"
+            },
+            {
+              "line": 382,
+              "excerpt": "expect(target.afterBytes).toBeLessThan(target.beforeBytes)",
+              "excerptComplete": true,
+              "sha256": "1bbe6b396bc3ef921210e5e79b012184e3d91eedd98515fe1da18aee90f77c8e"
+            }
+          ]
+        }
+      ],
+      "detectorReadComplete": false,
+      "reviewState": "ungraded; excerpts are navigation aids; independently read named complete callback and verify assertion semantics"
+    },
+    {
+      "key": "r-9",
+      "barKey": "R-9",
+      "title": "One lexical seam",
+      "model": "The lexical source guard test fails when ts_rank_cd is used outside the lexical seam.",
+      "method": "Source guard test with a planted violation control. The allowlist is exactly the two D-009 sites, packages/operator-core/lib/conventions/registry.ts (relevantPlanDecisions) and packages/operator-core/lib/blueprint/package-doc-resources.ts (pack-doc parts); an allowlist entry that no longer calls ts_rank fails. Decision D-009.",
+      "driftMarkers": "ts_rank_cd appears outside the seam or allowlist and the guard passes.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/search/lexical/lexical-source-guard.test.ts"
+        ]
+      },
+      "sourceSelector": "results[0].rubric.criteria[key=r-9]",
+      "matchedDetectorCount": 4,
+      "selectedDetectors": [
+        {
+          "path": "packages/operator-core/lib/search/lexical/lexical-source-guard.test.ts",
+          "title": "flags a planted ts_rank_cd call site that skips the seam",
+          "line": 86,
+          "bodySha256": "6af7134a97862af0962520e2550447a71d07199b4b65c0f421a9fd99eef774f5",
+          "assertionCount": 1,
+          "assertions": [
+            {
+              "line": 87,
+              "excerpt": "expect(findLexicalSeamViolations([{ path: 'packages/operator-core/lib/planted.ts', text: rankSql }]))\n        .toEqual(['packages/operator-core/lib/planted.ts'])",
+              "excerptComplete": true,
+              "sha256": "3315543dfbb9f1dd8b657d78f5858318cf947d8397672f468ee7d6284536e8b2"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/lexical/lexical-source-guard.test.ts",
+          "title": "the population is real: it contains known seam call sites and the seam (positive control)",
+          "line": 132,
+          "bodySha256": "d5c92d37a6a892eca60192254b00e2ddf6b6acaaaf7c25c31980e3f38c499d1d",
+          "assertionCount": 1,
+          "assertions": [
+            {
+              "line": 134,
+              "excerpt": "expect(paths.has(known), `${known} should call ts_rank and be found by git grep`).toBe(true)",
+              "excerptComplete": true,
+              "sha256": "4ffb6813d1a44c0fbca584e34171558be40c0805477a04b5b42adbcfcf83c985"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/lexical/lexical-source-guard.test.ts",
+          "title": "has no production file that ranks with ts_rank outside the seam",
+          "line": 138,
+          "bodySha256": "fefa559f20b4ba99eb393f886375efc06aa8e3317b33b8ae445d528cc97c4ef8",
+          "assertionCount": 1,
+          "assertions": [
+            {
+              "line": 139,
+              "excerpt": "expect(findLexicalSeamViolations(files)).toEqual([])",
+              "excerptComplete": true,
+              "sha256": "3d433742c362bc117a0259ad771b99e48bf9f87fd1876482b1dae82960880001"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/lexical/lexical-source-guard.test.ts",
+          "title": "every allowlist entry still calls ts_rank (shrink-only: remove an entry once its site moves)",
+          "line": 142,
+          "bodySha256": "e5d6aa2973e575d8e0d954ea48efe5b5ca74fff09c7a346e54e85d3a58177b00",
+          "assertionCount": 3,
+          "assertions": [
+            {
+              "line": 144,
+              "excerpt": "expect(reason.length).toBeGreaterThan(20)",
+              "excerptComplete": true,
+              "sha256": "126df1ff6a28b389c574d28519da667c2e0ed6969bffd2e99e48ba63183a6b26"
+            },
+            {
+              "line": 146,
+              "excerpt": "expect(f, `${p} no longer calls ts_rank; drop it from LEXICAL_SEAM_ALLOWLIST`).toBeDefined()",
+              "excerptComplete": true,
+              "sha256": "fd3e597a1ec551010362ebc868e104ffaa5561ab7e8b7bf8603ca28148767c24"
+            },
+            {
+              "line": 147,
+              "excerpt": "expect(TS_RANK_CALL.test(stripCommentsOnly(f!.text, f!.path))).toBe(true)",
+              "excerptComplete": true,
+              "sha256": "c62c4a302aacca41de84573ade18b7997df3caf60f499171ffcc057787e113b5"
+            }
+          ]
+        }
+      ],
+      "detectorReadComplete": false,
+      "reviewState": "ungraded; excerpts are navigation aids; independently read named complete callback and verify assertion semantics"
+    },
+    {
+      "key": "r-10",
+      "barKey": "R-10",
+      "title": "Kill-switch restores legacy ranking",
+      "model": "With the BM25 flag off, lexical search returns the legacy ts_rank_cd ordering, both before and after legacy-column retirement.",
+      "method": "Flag-flip test on the seam, and the retirement integration suite, which runs the legacy query fragments against the same-named virtual generated columns after retirement. Decisions D-011, D-012.",
+      "driftMarkers": "BROKEN if (1) flag off still ranks with BM25 or errors; (2) after retirement a legacy fragment fails with column-does-not-exist or returns a different ordering.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/search/lexical/lexical-seam.test.ts",
+          "packages/operator-core/lib/search/lexical/bm25-retirement.integration.test.ts"
+        ]
+      },
+      "sourceSelector": "results[0].rubric.criteria[key=r-10]",
+      "matchedDetectorCount": 3,
+      "selectedDetectors": [
+        {
+          "path": "packages/operator-core/lib/search/lexical/lexical-seam.test.ts",
+          "title": "with the flag off, returns the legacy ts_rank_cd fragments verbatim and orders by them",
+          "line": 82,
+          "bodySha256": "e2c42a87a36b095aae6873bc4f7aa25409c9bdc189acfe2252fb762fe1f1762c",
+          "assertionCount": 6,
+          "assertions": [
+            {
+              "line": 87,
+              "excerpt": "expect(leg.engine).toBe('legacy')",
+              "excerptComplete": true,
+              "sha256": "5e025e14da1a039963cb85adf67cfb9b76f6874d2cdb60936bf2937ca94549b1"
+            },
+            {
+              "line": 88,
+              "excerpt": "expect(leg.score).toBe(legacy.score)",
+              "excerptComplete": true,
+              "sha256": "aff6a82beebacd6db1f9f76f9fa951f02215f6e3c8ecb635fb5a9017f6120ce1"
+            },
+            {
+              "line": 89,
+              "excerpt": "expect(leg.match).toBe(legacy.match)",
+              "excerptComplete": true,
+              "sha256": "940a021dbe1b443b5ee910557090144b996aa1fae98216f8edb02b6f90eb9c0c"
+            },
+            {
+              "line": 90,
+              "excerpt": "expect(text(leg.order)).toBe(`${text(legacy.score)} DESC`)",
+              "excerptComplete": true,
+              "sha256": "52c331ab33971b1b494a8fbd07a8f378846c2f7e8f8de0056682e71824a30870"
+            },
+            {
+              "line": 91,
+              "excerpt": "expect(text(leg.order)).toContain('ts_rank_cd')",
+              "excerptComplete": true,
+              "sha256": "d272c4f1d48b98dd482ee6626de0fa624154ae921957c3d3ca5abf7262ddbecb"
+            },
+            {
+              "line": 93,
+              "excerpt": "expect(catalogReads()).toBe(0)",
+              "excerptComplete": true,
+              "sha256": "89f81b35529664a4f9f4a2282af3fc299d95c7664416f39b40dc93e690fd971a"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/lexical/lexical-seam.test.ts",
+          "title": "flipping the flag back off restores the legacy ordering on the same handle",
+          "line": 107,
+          "bodySha256": "7118da0a2810aba5f051c11e4184d0f71302ffc32419e549a80fecd549c10cbd",
+          "assertionCount": 3,
+          "assertions": [
+            {
+              "line": 109,
+              "excerpt": "expect(await lexicalEngine(sql, 'work_items')).toBe('bm25')",
+              "excerptComplete": true,
+              "sha256": "2a83f2181031f3f332686ac926133311ee60cec72b58656b6b8ac1229ed64e1c"
+            },
+            {
+              "line": 111,
+              "excerpt": "expect(await lexicalEngine(sql, 'work_items')).toBe('legacy')",
+              "excerptComplete": true,
+              "sha256": "c2967c759b17eda6be4c8ce116bff090f0aa0d7e94602a577828d9de140ec1c9"
+            },
+            {
+              "line": 113,
+              "excerpt": "expect(await lexicalEngine(sql, 'work_items')).toBe('bm25')",
+              "excerptComplete": true,
+              "sha256": "2a83f2181031f3f332686ac926133311ee60cec72b58656b6b8ac1229ed64e1c"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/lexical/bm25-retirement.integration.test.ts",
+          "title": "migration 1452 retires every gated corpus, keeps the exact-list corpora, skips a busy table, and keeps values, legacy queries and views",
+          "line": 153,
+          "bodySha256": "8917d1f992e662181c24ba7aa2d8bfbe49e1a9d8b85ee16634ccdf1e81f64c7f",
+          "assertionCount": 24,
+          "assertions": [
+            {
+              "line": 155,
+              "excerpt": "expect(before.bare.length).toBeGreaterThan(0)",
+              "excerptComplete": true,
+              "sha256": "b4cda8017e3dcf547b382cba5d4e75997f1167b75f57512259844414a6f7be82"
+            },
+            {
+              "line": 156,
+              "excerpt": "expect(before.qualified.length).toBeGreaterThan(0)",
+              "excerptComplete": true,
+              "sha256": "628f02fd11f0dd0703bcc03956c6c4af01f2f85a714e8c31ca187b23ccbca05d"
+            },
+            {
+              "line": 169,
+              "excerpt": "expect(await generated(table!, column!), `${table}.${column}`).toBe('v')",
+              "excerptComplete": true,
+              "sha256": "1cd010d100bc7dd637b4fb54351e5a96b07029350e36df8f365026373f831c9c"
+            },
+            {
+              "line": 171,
+              "excerpt": "expect(await generated('goals', '_search')).toBe('s')",
+              "excerptComplete": true,
+              "sha256": "a0c3ed6f56e8679331777b1e91c61bc051dfc2dd926b4097f57fec50b7abbb48"
+            },
+            {
+              "line": 172,
+              "excerpt": "expect(await generated('carry_notes', 'note_tsv')).toBe('s')",
+              "excerptComplete": true,
+              "sha256": "b9c1614185f54657e27c2a2bd341a879ab50f84daeeead063381d27294493d54"
+            },
+            {
+              "line": 175,
+              "excerpt": "expect(await generated('harness_plans', '_search')).toBe('s')",
+              "excerptComplete": true,
+              "sha256": "a2b0a9dd58a31c1b449382da9dc3d48e7dced2e172d95128f6c166a1b67a6c4b"
+            }
+          ]
+        }
+      ],
+      "detectorReadComplete": false,
+      "reviewState": "ungraded; excerpts are navigation aids; independently read named complete callback and verify assertion semantics"
+    },
+    {
+      "key": "r-11",
+      "barKey": "R-11",
+      "title": "Session-turn ranking no worse",
+      "model": "On the session-turn known-item benchmark, the production lexical leg recall@10 is at least the tsv_and baseline recall@10, as a paired comparison on the identical query sample in the same run.",
+      "method": "bm25-bakeoff-cli --corpus session-turns on a copy of the live session-turn corpus loaded into a pg_textsearch container with the production index configuration; tsv_and computed in the same run on the same queries. Evidence: docs/evidence/bm25-bakeoff-session-turns-2026-10-10.json via testing:record-run (operational, live plane). Decisions D-001, D-005.\n\nThe outcome detector is the operational artifact docs/evidence/bm25-bakeoff-session-turns-2026-10-10.json, corpus.key session-turns, comparing summaries[].recallAt10 for pgts versus tsv_and with paired[] and identical target/query identity. The work-item/plan-only ranking suite is not evidence about this corpus.\n\nStructured instrument grading reads a supplied artifact snapshot; the runtime does not execute this JSON file automatically. The independent grader must read the original artifact, derive the fields specified above, cite its SHA256 and original run identity, and supply honest self-reported snapshot provenance under this exact instrumentKey. Missing, stale or incompatible artifact evidence remains unknown. Report paired sample size, confidence/significance and power/MDE alongside the point estimates; no new sample-size or significance threshold is added to the outcome.",
+      "driftMarkers": "BM25 recall@10 below tsv_and on session turns.",
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "docs/evidence/bm25-bakeoff-session-turns-2026-10-10.json:summaries,paired,corpus"
+      },
+      "sourceSelector": "results[0].rubric.criteria[key=r-11]",
+      "matchedDetectorCount": 0,
+      "selectedDetectors": [],
+      "detectorReadComplete": false,
+      "reviewState": "ungraded; excerpts are navigation aids; independently read named complete callback and verify assertion semantics"
+    },
+    {
+      "key": "r-12",
+      "barKey": "R-12",
+      "title": "Memory-corpus ranking no worse",
+      "model": "On the memory-corpus known-item benchmark, the production lexical leg recall@10 is at least the tsv_and baseline recall@10, as a paired comparison on the identical query sample in the same run.",
+      "method": "bm25-bakeoff-cli --corpus documents on a CSV export of the live organization-documents corpus loaded into a pg_textsearch container with the production index configuration; tsv_and computed in the same run on the same queries. Evidence: docs/evidence/bm25-bakeoff-documents-2026-10-11.json via testing:record-run (operational, live plane). Decisions D-001, D-005.\n\nThe outcome detector is the operational artifact docs/evidence/bm25-bakeoff-documents-2026-10-11.json, corpus.key documents, comparing summaries[].recallAt10 for pgts versus tsv_and with paired[] and identical target/query identity. The work-item/plan-only ranking suite is not evidence about this corpus.\n\nStructured instrument grading reads a supplied artifact snapshot; the runtime does not execute this JSON file automatically. The independent grader must read the original artifact, derive the fields specified above, cite its SHA256 and original run identity, and supply honest self-reported snapshot provenance under this exact instrumentKey. Missing, stale or incompatible artifact evidence remains unknown. The requiredScope label memory-corpus maps to the organization-documents corpus per D-005; it is not a claim about an additional unmeasured corpus.",
+      "driftMarkers": "BM25 recall@10 below tsv_and on the memory corpus.",
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "docs/evidence/bm25-bakeoff-documents-2026-10-11.json:summaries,paired,corpus"
+      },
+      "sourceSelector": "results[0].rubric.criteria[key=r-12]",
+      "matchedDetectorCount": 0,
+      "selectedDetectors": [],
+      "detectorReadComplete": false,
+      "reviewState": "ungraded; excerpts are navigation aids; independently read named complete callback and verify assertion semantics"
+    },
+    {
+      "key": "r-13",
+      "barKey": "R-13",
+      "title": "Hybrid fusion no worse",
+      "model": "On a seeded known-item recall sample of the work_item and session_turn sources of search:semantic, drawn from the live dev-box operator database (at least 60 queries per source, keyword and verbatim-fragment styles), hybrid fused recall@10 with the BM25 lexical leg (BM25 list plus the D-016 gated exact list) is at least the hybrid fused recall@10 with the pre-swap legacy leg (BM25 flag off), per source, on the identical sample in the same run.",
+      "method": "packages/operator-core/lib/search/bench/bm25-hybrid-recall-cli.ts --pairs 60 against the dev-box operator database through an explicit DSN (HARNESS_ADMIN_DATABASE_URL, as the operator unit sets it). The CLI records the server port, server version and pg_textsearch version, refuses to measure when the BM25 arm is unavailable, samples one identical pair set for both arms, runs both arms per pair in one process alternating which goes first, and writes identity-redacted queries. The memory store is out of scope: its lexical leg is lexicalSearchCanonical, not BM25, so the flag cannot change it  (D-017). The bound fusion suite checks the RRF arithmetic and the exact-list merge. Evidence: the tracked manifest docs/evidence/bm25-r18-qualification-2026-10-12.json, to be created and recorded as a plan Decision BEFORE the first judged run, declaring the three prospectively selected seed ids, frozen committed root and submodule revisions, executed SHA-256 set, registered embedding profile and three exact artifact paths; artifacts are bound via testing:record-run. No older artifact qualifies by itself. Decisions D-004, D-006, D-016, D-017. Coverage: this bar covers the work_item and session_turn sources only. The other BM25-ranked search:semantic sources (plans, documents, coord posts, decisions, escalations, brainstorm; D-017 \"Not covered\") are unmeasured here and owned by WI-6554700010008535; a grade on this bar is not a claim about them. D-032 replaces the exact/BM25 merge with BM25-first interleaving, deduplicated by corpus identity: exact rank r appears by position 2r, BM25 rank r by position 2r-1. D-033 materializes one cap+1 exact candidate scan, checks the unchanged cap 5,000, ranks by the same ts_rank_cd, and hydrates top rows by their complete database key. The real fusion integration suite also verifies the cap boundary, skips over-cap ranking, and checks cross-workspace hydration with an exact-only target; a copy-out partial-key mutant must fail that guard. R-13 is required on each of the three consecutive prospective instrumented runs judged by R-18; any failure restarts the sequence. Evidence uses the tracked manifest docs/evidence/bm25-r18-qualification-2026-10-12.json, to be created and recorded as a plan Decision BEFORE the first judged run, declaring the three prospectively selected seed ids, frozen committed root and submodule revisions, executed SHA-256 set, registered embedding profile and three exact artifact paths; artifacts are bound via testing:record-run. D-017 coverage exclusions remain unchanged.\n\nD-035/D-036/D-039 qualification supplement: retained D033 passes are historical and never substitute for prospective clean-source proof. The named tracked manifest and exact artifact paths identify the new series; all d033, qualified and hybrid-provenance series remain historical. Record the immutable committed root and submodule revisions, clean tracked source state before and after each run, and SHA-256 for the executed CLI, pure benchmark, hybrid engine, RRF engine, lexical ranker and source registry; changing any executed source byte resets the sequence. Use the original registered query embedder with the cached query vector; record its exact embedding profile and per-arm semantic candidate contribution, and refuse unknown embedding provenance. D-039 preserves the best original 1-based ordinal from the correlated BM25/exact alternatives through final RRF as one lexical vote; interleaved admission position is not a second relevance penalty. The maintained full runHybridSearch regression in packages/operator-core/lib/search/bench/bm25-hybrid-recall.test.ts must reproduce the D038 exact-rank-three/no-semantic-target case: its pre-fix behavior misses and repaired behavior retrieves the target. The existing cap, full-key hydration, partial-key mutation guard, same-sample comparison and source coverage exclusions remain required. No changed recall floor, candidate cap, corpus, sample selection or reset rule.\n\nExact maintained cases: bm25-hybrid-recall.test.ts 'keeps the D038 exact rank-three target through final hybrid fusion, with a real semantic list' and 'keeps the registered embedding space in both arms while computing each query once'; these exercise the old missing-ordinal and unknown-profile controls versus repaired retrieval. Source qualification is machine checked by the maintained bm25-hybrid-recall.test.ts cases rejecting dirty executed files, changed source bytes/frozen manifest hash mismatches, a submodule HEAD differing from its parent gitlink, failed Git probes, missing repository witnesses, dropped mandatory sources, reused seeds and unsafe paths. Those are D-041/D-049 detectors; a passing guard is a prerequisite and never a qualifying benchmark seed.",
+      "driftMarkers": "BROKEN if (1) fused recall@10 with the BM25 leg is below the flag-off recall on either the work_item or the session_turn source; (2) the two arms did not run on the identical sample in one run; (3) the run did not reach a server with pg_textsearch loaded (server port or extension version not recorded); (4) either source has fewer than 60 sampled queries.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/search/lexical/bm25-hybrid-fusion.integration.test.ts",
+          "packages/operator-core/lib/search/bench/bm25-hybrid-recall.test.ts"
+        ]
+      },
+      "sourceSelector": "results[0].rubric.criteria[key=r-13]",
+      "matchedDetectorCount": 7,
+      "selectedDetectors": [
+        {
+          "path": "packages/operator-core/lib/search/lexical/bm25-hybrid-fusion.integration.test.ts",
+          "title": "BM25 alone ranks the fragment target out of its top 10 (the mechanism R-13 measured)",
+          "line": 69,
+          "bodySha256": "a127567175585ac97824c9ff5d33e8a4040d33e0cfa0d6fc4b807914da7e706d",
+          "assertionCount": 2,
+          "assertions": [
+            {
+              "line": 71,
+              "excerpt": "expect(ids).toHaveLength(10)",
+              "excerptComplete": true,
+              "sha256": "e4011e819d0320e2d3d67d61c938749b50ebc2f4c2e72bfaf81b95a1f084f7b9"
+            },
+            {
+              "line": 72,
+              "excerpt": "expect(ids).not.toContain(TARGET)",
+              "excerptComplete": true,
+              "sha256": "bf62662cad02d0efcba3594e887840fe1743d1e3b9ca35b8a332d685481c1c3f"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/lexical/bm25-hybrid-fusion.integration.test.ts",
+          "title": "the AND list admits only the target, and the merged list keeps it in the top two (D-032 interleave)",
+          "line": 75,
+          "bodySha256": "db04a62f9704917a418303e8b5c3d4489de5ab551a5710acf6dd35809c24277b",
+          "assertionCount": 3,
+          "assertions": [
+            {
+              "line": 77,
+              "excerpt": "expect(exact.map(r => r.id)).toEqual([TARGET])",
+              "excerptComplete": true,
+              "sha256": "0f5700652917596ca55cbb9f67d9211b407b69b9954e2ed39f2bdf04ad7b715f"
+            },
+            {
+              "line": 79,
+              "excerpt": "expect(merged.slice(0, 2).map(r => r.id)).toContain(TARGET)",
+              "excerptComplete": true,
+              "sha256": "1ca24c4769828b62c53004cfac459b3c862a302d6576661e5d8fa3677c4defc4"
+            },
+            {
+              "line": 80,
+              "excerpt": "expect(merged).toHaveLength(10)",
+              "excerptComplete": true,
+              "sha256": "9f9ec2c362943fb31ff62a32f38047eb566380acfbb2cad1fe021dfbf6ee792c"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/lexical/bm25-hybrid-fusion.integration.test.ts",
+          "title": "preserves the full AND list ranks and scoped identities at the cap boundary",
+          "line": 121,
+          "bodySha256": "029250372ac54e8aa7fc4c246bb15ee31883e390d0dd217c8b420f94668a06bf",
+          "assertionCount": 3,
+          "assertions": [
+            {
+              "line": 128,
+              "excerpt": "expect(expected).toHaveLength(41)",
+              "excerptComplete": true,
+              "sha256": "d035a43915618872686ae3aab95ce0d8e4cc344372b1ecc082203df5348b084c"
+            },
+            {
+              "line": 130,
+              "excerpt": "expect(got.map(r => ({ id: r.id, rank: r.rank })).sort((a, b) => a.id - b.id))\n      .toEqual(expected.map(r => ({ id: r.id, rank: r.rank })).sort((a, b) => a.id - b.id))",
+              "excerptComplete": true,
+              "sha256": "2fb78ce00666374890da85003f541b9877a52242c2953fcd1a2c92dbe10ebffb"
+            },
+            {
+              "line": 133,
+              "excerpt": "expect(limited.map(r => r.rank)).toEqual(expected.slice(0, 5).map(r => r.rank))",
+              "excerptComplete": true,
+              "sha256": "7d5ce37bae4b51fe9734929ac5c99d32799595829970d61da9b701a0fa238b38"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/bench/bm25-hybrid-recall.test.ts",
+          "title": "qualifies only identical clean bytes and committed pins before and after",
+          "line": 64,
+          "bodySha256": "e20a43a1964fdae0f068d713b56b0c6a76099ffce893673735c169848c3dc27b",
+          "assertionCount": 1,
+          "assertions": [
+            {
+              "line": 65,
+              "excerpt": "expect(qualifyExecutedSource(snapshot(), snapshot(), manifest())).toEqual({ verdict: 'pass', reasons: [] })",
+              "excerptComplete": true,
+              "sha256": "0581dc4906a7ad976d91cbfe8374e9f9a84093353db8ef7e9428d62ea3b688dc"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/bench/bm25-hybrid-recall.test.ts",
+          "title": "rejects a dirty executed file even when a later HEAD and manifest hash match",
+          "line": 67,
+          "bodySha256": "b3e4e77eeb4c5cb12ba85a49b699cf1a7780fd5cf8522ec10b82d9895a62bc1b",
+          "assertionCount": 1,
+          "assertions": [
+            {
+              "line": 69,
+              "excerpt": "expect(qualifyExecutedSource(before, snapshot(), manifest()).verdict).toBe('invalid')",
+              "excerptComplete": true,
+              "sha256": "ff3f1a4367c900b9bb975f73c8fe46aed5fc91aac64b57f06139f0111085738c"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/bench/bm25-hybrid-recall.test.ts",
+          "title": "keeps the D038 exact rank-three target through final hybrid fusion, with a real semantic list",
+          "line": 129,
+          "bodySha256": "08975db7773cf973265676de2b7770fe56824a9aa03d75ca5840355529a5d19e",
+          "assertionCount": 5,
+          "assertions": [
+            {
+              "line": 155,
+              "excerpt": "expect(rankOf(legacy.results, 'work_item', 'target')).toBe(5)",
+              "excerptComplete": true,
+              "sha256": "0e427b600a3ec428515d88c6d7c5f2011b3f0c9534fb4d214ce1c6b6cbed04de"
+            },
+            {
+              "line": 156,
+              "excerpt": "expect(rankOf(broken.results, 'work_item', 'target')).toBeNull()",
+              "excerptComplete": true,
+              "sha256": "6ed0b262f4e3a8f3b3f94b3baeda9480e195414021717b5a59fb66a9d317b5e4"
+            },
+            {
+              "line": 157,
+              "excerpt": "expect(rankOf(repaired.results, 'work_item', 'target')).toBe(8)",
+              "excerptComplete": true,
+              "sha256": "efb04696774e34a433db6a337c68c464ce0e9e191a7a784dfcd9440d7de91603"
+            },
+            {
+              "line": 158,
+              "excerpt": "expect(repaired.legs.semantic.candidates).toBe(30)",
+              "excerptComplete": true,
+              "sha256": "714b3770d426b8f6e98b463ca51aa424122f009e9c196970bb57c2a046553140"
+            },
+            {
+              "line": 159,
+              "excerpt": "expect(repaired.results.find(r => r.source_id === 'target')?.rankers).toEqual(['lexical'])",
+              "excerptComplete": true,
+              "sha256": "6b4762c49a6ed22fa241410582653f7346f0965a26acffae5b64fc3d797d2288"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/bench/bm25-hybrid-recall.test.ts",
+          "title": "fails when BM25 recall is below legacy recall",
+          "line": 872,
+          "bodySha256": "333ecc8a4795874d3c4860fd9b26b87043bd4301070d28a4fdd576f5c2c347c4",
+          "assertionCount": 2,
+          "assertions": [
+            {
+              "line": 874,
+              "excerpt": "expect(s.verdict).toBe('fail')",
+              "excerptComplete": true,
+              "sha256": "32a0cd6cc6137e894ccf8ef0e517c005e0890c471b3a4eae26a5f0263c2b77f1"
+            },
+            {
+              "line": 875,
+              "excerpt": "expect(s.reasons.join(' ')).toMatch(/below legacy/)",
+              "excerptComplete": true,
+              "sha256": "e944ad3609a2d633450398c93a2368a21c6af92e772b86cb764121c0a3b63e4d"
+            }
+          ]
+        }
+      ],
+      "detectorReadComplete": false,
+      "reviewState": "ungraded; excerpts are navigation aids; independently read named complete callback and verify assertion semantics"
+    },
+    {
+      "key": "r-14",
+      "barKey": "R-14",
+      "title": "Legacy tsvector columns retired",
+      "model": "After the recorded D-013 soak, no migrated corpus table whose search sources read no stored legacy column retains a stored legacy tsvector column or its legacy GIN index; each such column is replaced by a same-named virtual generated column and the legacy query fragments still execute. The two columns that D-016's exact list reads, work_items._search and session_turns.text_tsv, keep their stored column and GIN index.",
+      "method": "Schema census on the dev-box production database after migration 1452 runs: each retired legacy column has attgenerated = v and no legacy GIN index remains on it; work_items._search and session_turns.text_tsv are not virtual and keep their GIN index (bm25_retire_legacy_columns() reports them kept:exact-list). The retirement integration suite covers both halves, and corpora.test.ts pins the kept set to the exact-list sources. The D-013 soak record that passed all six criteria is cited by its evidence id. Decisions D-011, D-012, D-013, D-016. The kept:exact-list carve-out lapses automatically when an exact list is removed: corpora.test.ts then fails until keepLegacyColumn is dropped, which returns the column to retirement. Reclaiming the two kept columns when pg_textsearch can express AND or phrase matching is owned by WI-6554700010008546.",
+      "driftMarkers": "BROKEN if (1) a stored legacy tsvector column or its GIN index survives on a corpus table whose sources run no exact list, after retirement; (2) a legacy fragment fails with column-does-not-exist; (3) retirement ran without a D-013 soak record that passed; (4) work_items._search or session_turns.text_tsv was made virtual or lost its GIN index while an exact list reads it.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/search/lexical/bm25-retirement.integration.test.ts",
+          "packages/operator-core/lib/search/lexical/corpora.test.ts"
+        ]
+      },
+      "sourceSelector": "results[0].rubric.criteria[key=r-14]",
+      "matchedDetectorCount": 5,
+      "selectedDetectors": [
+        {
+          "path": "packages/operator-core/lib/search/lexical/bm25-retirement.integration.test.ts",
+          "title": "migration 1452 retires every gated corpus, keeps the exact-list corpora, skips a busy table, and keeps values, legacy queries and views",
+          "line": 153,
+          "bodySha256": "8917d1f992e662181c24ba7aa2d8bfbe49e1a9d8b85ee16634ccdf1e81f64c7f",
+          "assertionCount": 24,
+          "assertions": [
+            {
+              "line": 155,
+              "excerpt": "expect(before.bare.length).toBeGreaterThan(0)",
+              "excerptComplete": true,
+              "sha256": "b4cda8017e3dcf547b382cba5d4e75997f1167b75f57512259844414a6f7be82"
+            },
+            {
+              "line": 156,
+              "excerpt": "expect(before.qualified.length).toBeGreaterThan(0)",
+              "excerptComplete": true,
+              "sha256": "628f02fd11f0dd0703bcc03956c6c4af01f2f85a714e8c31ca187b23ccbca05d"
+            },
+            {
+              "line": 169,
+              "excerpt": "expect(await generated(table!, column!), `${table}.${column}`).toBe('v')",
+              "excerptComplete": true,
+              "sha256": "1cd010d100bc7dd637b4fb54351e5a96b07029350e36df8f365026373f831c9c"
+            },
+            {
+              "line": 171,
+              "excerpt": "expect(await generated('goals', '_search')).toBe('s')",
+              "excerptComplete": true,
+              "sha256": "a0c3ed6f56e8679331777b1e91c61bc051dfc2dd926b4097f57fec50b7abbb48"
+            },
+            {
+              "line": 172,
+              "excerpt": "expect(await generated('carry_notes', 'note_tsv')).toBe('s')",
+              "excerptComplete": true,
+              "sha256": "b9c1614185f54657e27c2a2bd341a879ab50f84daeeead063381d27294493d54"
+            },
+            {
+              "line": 175,
+              "excerpt": "expect(await generated('harness_plans', '_search')).toBe('s')",
+              "excerptComplete": true,
+              "sha256": "a2b0a9dd58a31c1b449382da9dc3d48e7dced2e172d95128f6c166a1b67a6c4b"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/lexical/bm25-retirement.integration.test.ts",
+          "title": "a later run is idempotent, keeps the exact-list corpora, retires the table that was busy, and reports the freed index bytes",
+          "line": 222,
+          "bodySha256": "7075c94929f001534bc5aaa5ca58ae685e918cb19ee4fa6c6d1846edf8d50efb",
+          "assertionCount": 10,
+          "assertions": [
+            {
+              "line": 224,
+              "excerpt": "expect(outcomeOf(rows, 'harness_plans')).toBe('kept:exact-list')",
+              "excerptComplete": true,
+              "sha256": "f2b161f0712da5a7c033b49431cfbd9b911730b93483e021f504a045cb72165a"
+            },
+            {
+              "line": 225,
+              "excerpt": "expect(outcomeOf(rows, 'work_items')).toBe('kept:exact-list')",
+              "excerptComplete": true,
+              "sha256": "07d44de68ed191b41654dcbb00e76a76ee0e4a7320d6833ab9b1756e353f3719"
+            },
+            {
+              "line": 226,
+              "excerpt": "expect(outcomeOf(rows, 'session_turns')).toBe('kept:exact-list')",
+              "excerptComplete": true,
+              "sha256": "bfa0887a9891ab966040e9526129ad5e14be4a7542ab9f340a0f3bada00979b9"
+            },
+            {
+              "line": 227,
+              "excerpt": "expect(outcomeOf(rows, 'carry_notes')).toBe('skipped:bm25-index-not-valid')",
+              "excerptComplete": true,
+              "sha256": "e13324163281e64759b2c9559d8cd45f41e82fa7c7eebc151b8a05cbf0a1483c"
+            },
+            {
+              "line": 228,
+              "excerpt": "expect(outcomeOf(rows, 'documents')).toBe('skipped:table-missing')",
+              "excerptComplete": true,
+              "sha256": "dcc72d8d9c8f75d5fa5f524981f50ed822d2b5f47b3ace85e0364775fb233821"
+            },
+            {
+              "line": 230,
+              "excerpt": "expect(goals.outcome).toBe('retired')",
+              "excerptComplete": true,
+              "sha256": "296f4958fa53a2067a765722e9094d186ae67a57ecfabbf6f2d3e7d29055edbb"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/lexical/bm25-retirement.integration.test.ts",
+          "title": "a dry run changes nothing; the maintenance workflow retires a corpus once its BM25 index is valid",
+          "line": 237,
+          "bodySha256": "34b5c5e07faaf42b4ad18a0691e00e480ebbf95676d97898005ae8ec7bfd0d05",
+          "assertionCount": 7,
+          "assertions": [
+            {
+              "line": 239,
+              "excerpt": "expect(outcomeOf(await retire(true), 'carry_notes')).toBe('would-retire')",
+              "excerptComplete": true,
+              "sha256": "0ccdd37b221e6fe2367829b597c69d9a506cce1a7d64e10b0eb9d919f3383301"
+            },
+            {
+              "line": 240,
+              "excerpt": "expect(await generated('carry_notes', 'note_tsv')).toBe('s')",
+              "excerptComplete": true,
+              "sha256": "b9c1614185f54657e27c2a2bd341a879ab50f84daeeead063381d27294493d54"
+            },
+            {
+              "line": 243,
+              "excerpt": "expect(report.errors).toEqual([])",
+              "excerptComplete": true,
+              "sha256": "bfe72e0a7f66a37556d8086961da68dad3693120c1b0a5cec8cac9482d7e783b"
+            },
+            {
+              "line": 244,
+              "excerpt": "expect(report.retired).toEqual([\n      expect.objectContaining({ table: 'carry_notes', column: 'note_tsv', outcome: 'retired' }),\n    ])",
+              "excerptComplete": true,
+              "sha256": "7a187b1117a46300587c2de0317886eea11d331558325c77a3426a393a7866d4"
+            },
+            {
+              "line": 247,
+              "excerpt": "expect(await generated('carry_notes', 'note_tsv')).toBe('v')",
+              "excerptComplete": true,
+              "sha256": "fd23ca6302d882c2710e1e4550f7b796fa11ac1459c0ca5ec34d412954f2d536"
+            },
+            {
+              "line": 248,
+              "excerpt": "expect(await generated('work_items', '_search')).toBe('s')",
+              "excerptComplete": true,
+              "sha256": "c1740ea3caaf473670640100728ef60cd91bac5df318e5f7a324762e50e7dd57"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/lexical/corpora.test.ts",
+          "title": "keeps exactly the registry's keepLegacyColumn corpora",
+          "line": 70,
+          "bodySha256": "6b0a4759639f10fbf918c5436c143b6a7f9abcafe98f8344bcaf91f44b7d95c0",
+          "assertionCount": 2,
+          "assertions": [
+            {
+              "line": 72,
+              "excerpt": "expect(rows).toHaveLength(corpora.length)",
+              "excerptComplete": true,
+              "sha256": "b4c9bd76fcd02452be896b9cafb70d3827e2d2b89928afb49c04e12025263ce0"
+            },
+            {
+              "line": 74,
+              "excerpt": "expect(kept.sort()).toEqual(corpora.filter(c => c.keepLegacyColumn).map(c => `${c.table}:${c.keepLegacyColumn}`).sort())",
+              "excerptComplete": true,
+              "sha256": "93dbd8aa214f70ae777147a75afd46f4dc371d0715a811670cbd0e008d1cc7ca"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/lexical/corpora.test.ts",
+          "title": "the exact-list relations are exactly the kept corpora",
+          "line": 87,
+          "bodySha256": "533c449ae433b4c56b3f663d27bd7cb902a598ba3b15744f86b5f249c6c3df02",
+          "assertionCount": 2,
+          "assertions": [
+            {
+              "line": 95,
+              "excerpt": "expect(reads.length, 'no exact-list call found in sources.ts').toBeGreaterThan(0)",
+              "excerptComplete": true,
+              "sha256": "846e217d7d64690b5f96098984ef99c7dd3db7cbdcb626b80ad14b59541c5896"
+            },
+            {
+              "line": 97,
+              "excerpt": "expect([...new Set(reads)].sort())\n      .toEqual(corpora.filter(c => c.keepLegacyColumn).map(c => `${c.table}.${c.legacyTsvColumn}`).sort())",
+              "excerptComplete": true,
+              "sha256": "123eadae6d048ec674e8f9036c523b288b19d07bd74d97c7c3999923c3f614d5"
+            }
+          ]
+        }
+      ],
+      "detectorReadComplete": false,
+      "reviewState": "ungraded; excerpts are navigation aids; independently read named complete callback and verify assertion semantics"
+    },
+    {
+      "key": "r-15",
+      "barKey": "R-15",
+      "title": "Configuration is documented",
+      "model": "A docs search for pg_textsearch configuration returns the agent-insights page that states the preload requirement.",
+      "method": "Doc-claim test over the tree: the agent-insights page on pg_textsearch configuration exists, states that the preload is mandatory, and is found by a docs search for pg_textsearch preload. Decision D-003.\n\nThe named detector bm25-config-doc-search.test.ts exercises the maintained production docs-engine searchDocs/starlightContentAdapter over the complete engineering-docs corpus for configuration and preload queries; the missing-page control cannot satisfy R-15. The content-only test is a separate content floor. Original current normal/mutation and full-corpus freshness evidence is required; merely reading the page file cannot prove discoverability.",
+      "driftMarkers": "The docs search does not surface the page.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/doc-claims/bm25-config-doc.test.ts",
+          "packages/operator-core/lib/doc-claims/bm25-config-doc-search.test.ts"
+        ]
+      },
+      "sourceSelector": "results[0].rubric.criteria[key=r-15]",
+      "matchedDetectorCount": 8,
+      "selectedDetectors": [
+        {
+          "path": "packages/operator-core/lib/doc-claims/bm25-config-doc.test.ts",
+          "title": "states the preload requirement and the signal that proves the library is loaded",
+          "line": 45,
+          "bodySha256": "dd036a36c4fc1204dd25ab94f8d31c66dd874334466d1426c3f4333d19a8c206",
+          "assertionCount": 8,
+          "assertions": [
+            {
+              "line": 47,
+              "excerpt": "expect(preload).toContain('`shared_preload_libraries`')",
+              "excerptComplete": true,
+              "sha256": "e588216841582e4b9369713c7c089399cc63e27b4197fe5fab96373f71bd9e75"
+            },
+            {
+              "line": 48,
+              "excerpt": "expect(preload).toContain('`CREATE EXTENSION pg_textsearch` is **not** enough')",
+              "excerptComplete": true,
+              "sha256": "a3c0e44c19386767b40d60e5631a2acef92ed04f4024b98eeedafc3a319de9dc"
+            },
+            {
+              "line": 49,
+              "excerpt": "expect(preload).toContain('restart')",
+              "excerptComplete": true,
+              "sha256": "aa561b4efad43e8faa7fca2085bacc129a3d39235cec0102d4030c7653bd24c9"
+            },
+            {
+              "line": 52,
+              "excerpt": "expect(preload).toContain(signal)",
+              "excerptComplete": true,
+              "sha256": "87eab32b38ed9569c7bd7be517ebae646c3226a8e7ac331316dcc252fdd50d7e"
+            },
+            {
+              "line": 53,
+              "excerpt": "expect(MIGRATION_1447).toContain(signal)",
+              "excerptComplete": true,
+              "sha256": "fd776f935048c8d1813042ff1b4018d5023d741ae07d37931b6b2382f33077d1"
+            },
+            {
+              "line": 54,
+              "excerpt": "expect(RANK).toContain(signal)",
+              "excerptComplete": true,
+              "sha256": "4c663f00db3c4fd0606f2118ab7dda93b0df019b348c30b83b33e9121b0cc4b3"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/doc-claims/bm25-config-doc.test.ts",
+          "title": "names the preload list embedded PG and pg-autotune actually use",
+          "line": 60,
+          "bodySha256": "d9c992cb2c3d529f373e8137ba50bfba9f5d412bc757c8d0a5ab2a4c27e5cb07",
+          "assertionCount": 5,
+          "assertions": [
+            {
+              "line": 62,
+              "excerpt": "expect(list, 'OPTIONAL_PRELOAD_LIBRARIES not found in embedded-postgres-server').not.toBeNull()",
+              "excerptComplete": true,
+              "sha256": "48d5e058a9904f7a7313349f91e770e7355a9ed76ea34a9d177fd095836ca9ef"
+            },
+            {
+              "line": 64,
+              "excerpt": "expect(libraries).toContain('pg_textsearch')",
+              "excerptComplete": true,
+              "sha256": "b4367e76e35036b4b8dba92c5c6c46a57254ce77b00897b777717c25f45e3afe"
+            },
+            {
+              "line": 65,
+              "excerpt": "expect(DOC).toContain(`\\`OPTIONAL_PRELOAD_LIBRARIES\\` (\\`${JSON.stringify(libraries).replace(/\"/g, \"'\")}\\`)`)",
+              "excerptComplete": true,
+              "sha256": "7744b7288c7bdb8de7c31d1ea41db30fd4f9b448c06fd5d06a747796bf797c67"
+            },
+            {
+              "line": 66,
+              "excerpt": "expect(DOC).toContain(`\\`${EMBEDDED_PG_PATH}\\``)",
+              "excerptComplete": true,
+              "sha256": "b5a2e134bfc6abdad18aceaafde041235125b2207ee0e77b0e572ca2741b5d0e"
+            },
+            {
+              "line": 67,
+              "excerpt": "expect(read('scripts/pg-autotune.ts')).toContain('presentPreloadLibraries(')",
+              "excerptComplete": true,
+              "sha256": "3d239b0861d56afedae4a4001b2bea7296ec70fec386c0d7a2cd2f4cf29d22ff"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/doc-claims/bm25-config-doc.test.ts",
+          "title": "names the kill-switch flag by its real key",
+          "line": 70,
+          "bodySha256": "0d3e4de754d33b9906c0b56a6410e1931e8d823c98fb45a3c8ddc14cafdd3fb7",
+          "assertionCount": 1,
+          "assertions": [
+            {
+              "line": 71,
+              "excerpt": "expect(DOC).toContain(`\\`${FLAGS.BM25_LEXICAL_RANKING}\\``)",
+              "excerptComplete": true,
+              "sha256": "8a6f049ce29bdb85567910a40ae75862a3b929ec1d9739aaa188547e674d2f6b"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/doc-claims/bm25-config-doc.test.ts",
+          "title": "documents explicit index naming through to_bm25query with the registry index names",
+          "line": 74,
+          "bodySha256": "1a344c31e66b0c12ced7c6257652c24ca407a77227c381a3ab8d5a27284346f5",
+          "assertionCount": 4,
+          "assertions": [
+            {
+              "line": 76,
+              "excerpt": "expect(naming).toContain(\"to_bm25query($query, 'harness_shared.work_items_bm25')\")",
+              "excerptComplete": true,
+              "sha256": "7059605f94541819b2dd6f85fd028133edeb4d863dabb4b3cc351878de604c8f"
+            },
+            {
+              "line": 77,
+              "excerpt": "expect(RANK).toContain('to_bm25query(')",
+              "excerptComplete": true,
+              "sha256": "72e2e2f42ecdabab22bd3a4855bb3a32d771b650750361b310a01afeebf590c7"
+            },
+            {
+              "line": 78,
+              "excerpt": "expect(BM25_CORPORA.map(c => c.indexName)).toContain('work_items_bm25')",
+              "excerptComplete": true,
+              "sha256": "08de134516b45c2b2ebe7e4a8d6d581cacaff61824ab3d0f1cac6546acc18f1f"
+            },
+            {
+              "line": 79,
+              "excerpt": "expect(naming).toContain('`lexicalLeg()`')",
+              "excerptComplete": true,
+              "sha256": "1bd122d2f224be4ec095792da05637574b7e3a2d6c81b7420038c5b54f6508e2"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/doc-claims/bm25-config-doc.test.ts",
+          "title": "names the seam as the only lexical entry point, with exactly the leg functions production code uses (SPEC-P-010)",
+          "line": 85,
+          "bodySha256": "2cf6548529066b4dcae845796f50fae7b9d7a03c31363be7b48a25721340d26e",
+          "assertionCount": 5,
+          "assertions": [
+            {
+              "line": 102,
+              "excerpt": "expect(entryPoints).toContain('lexicalLeg')",
+              "excerptComplete": true,
+              "sha256": "0ae8e9d5ab3d1ae3efbc521245921c64da7fdce01516d4271eeeeaae2c6e17ef"
+            },
+            {
+              "line": 107,
+              "excerpt": "expect(claim, 'exactly one sentence states the only entry point').toHaveLength(1)",
+              "excerptComplete": true,
+              "sha256": "42b6aa6cb0731e31e867056a8e803114c279da7b56dd6e3be0e6fb9708893ca0"
+            },
+            {
+              "line": 108,
+              "excerpt": "expect(claim[0]).toContain('`packages/operator-core/lib/search/lexical/rank.ts`')",
+              "excerptComplete": true,
+              "sha256": "577fde1c37c893e76ac897dc6a12f121f4ace48f5b52000fe067298b680e1dd4"
+            },
+            {
+              "line": 109,
+              "excerpt": "expect([...new Set(fnsIn(claim[0]!))].sort(), 'the entry-point sentence names exactly the leg functions in use').toEqual(entryPoints)",
+              "excerptComplete": true,
+              "sha256": "3522a4276acd741f901a2fa77866645dce0091e2d0a1d72afa8b063e885f8dcf"
+            },
+            {
+              "line": 118,
+              "excerpt": "expect(entryPoints, `${name} names \\`${fn}()\\` as a way into lexical ranking: \"${s.slice(0, 160)}\"`).toContain(fn)",
+              "excerptComplete": true,
+              "sha256": "f8d7f3f2b5e03ae64ff1aa3c6a0239820b281e3289e352b4c55fc5c1af5acbf8"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/doc-claims/bm25-config-doc.test.ts",
+          "title": "pins manual compaction, the maintenance schedule and the reclaim thresholds to the code",
+          "line": 124,
+          "bodySha256": "9b2f754c9d648dfa0e5fde4589fee0bac0703700ad0082587783568a96239535",
+          "assertionCount": 6,
+          "assertions": [
+            {
+              "line": 126,
+              "excerpt": "expect(compaction).toContain(\"compaction = 'manual'\")",
+              "excerptComplete": true,
+              "sha256": "7890c4b286979d1e878e847065f96893dad03a4422488373af80e6a79a5c69ad"
+            },
+            {
+              "line": 127,
+              "excerpt": "expect(MIGRATION_1447).toContain(\"c.text_config, 'manual')\")",
+              "excerptComplete": true,
+              "sha256": "036de9e9bb4c18a3aa02fa855da6580df6e1324d86e069b7c5f7d1608c1abfb0"
+            },
+            {
+              "line": 130,
+              "excerpt": "expect(cron, 'bm25Maintenance crontab not found').not.toBeNull()",
+              "excerptComplete": true,
+              "sha256": "dbef990c35b32d361f2f4f50a5053d07b97d1ae6cf203aee80ef0742dede5c14"
+            },
+            {
+              "line": 131,
+              "excerpt": "expect(compaction).toContain(`crontab \\`${cron![1]}\\``)",
+              "excerptComplete": true,
+              "sha256": "44f5b2eaf241606c5125f9e96dad97c334e85f2839ea34d4aba42dfec4b16b10"
+            },
+            {
+              "line": 133,
+              "excerpt": "expect(compaction).toContain(`${BM25_MAX_BLOAT_RATIO}x its estimated live bytes`)",
+              "excerptComplete": true,
+              "sha256": "02b8867ca29443640dfaaf68c1813b47600e09e1e23f7b40d636e2d7490b5da1"
+            },
+            {
+              "line": 134,
+              "excerpt": "expect(compaction).toContain(`at least ${BM25_RECLAIM_MIN_BYTES} bytes (${BM25_RECLAIM_MIN_BYTES / 1024} KiB)`)",
+              "excerptComplete": true,
+              "sha256": "9680cdd9eec3e4cfcbe381fa9f8dbc76a0f4d82be3570e2a81b9b54a50285584"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/doc-claims/bm25-config-doc.test.ts",
+          "title": "documents the D-016 exact list with the real cap, the merge function and the kept corpora",
+          "line": 144,
+          "bodySha256": "172a371662e02ccc63f5526a5a276387c3f5c09d2c2843e060714a13c6256cca",
+          "assertionCount": 7,
+          "assertions": [
+            {
+              "line": 147,
+              "excerpt": "expect(cap, 'EXACT_LIST_MAX_AND_ROWS not found in rank.ts').not.toBeNull()",
+              "excerptComplete": true,
+              "sha256": "3cb6a6f6de54b8a0e0ba540ba609a51ef7c6452ab7854a61aa5156057eb626ac"
+            },
+            {
+              "line": 148,
+              "excerpt": "expect(exact).toContain(`\\`EXACT_LIST_MAX_AND_ROWS\\` (\\`${cap![1]}\\`)`)",
+              "excerptComplete": true,
+              "sha256": "d3faf64776dac8b92745301a56e5e0cb4e8ce90f4fd574bac3df9f6c3e574a8c"
+            },
+            {
+              "line": 149,
+              "excerpt": "expect(RANK).toContain('export function mergeExactAndBm25')",
+              "excerptComplete": true,
+              "sha256": "8d97eaf5a17c555fc7ad8da918f3888897116f4427032bf75827b825abce1e31"
+            },
+            {
+              "line": 150,
+              "excerpt": "expect(exact).toContain('`mergeExactAndBm25()`')",
+              "excerptComplete": true,
+              "sha256": "39cf32e7d07556d798e3a83fe318eaf01d5cffc930671993c9a72c2dd1a162b4"
+            },
+            {
+              "line": 155,
+              "excerpt": "expect(BM25_CORPORA.filter(keeps).length).toBeGreaterThan(0)",
+              "excerptComplete": true,
+              "sha256": "e5c0dff964141462f57caf906926e5aded600b20906e366907a025a83acad8be"
+            },
+            {
+              "line": 158,
+              "excerpt": "expect(named, `${c.table}: page and registry disagree on keepLegacyColumn`).toBe(keeps(c))",
+              "excerptComplete": true,
+              "sha256": "87cd065fca7084a15874b25f24ff1d531f2ed1077aca65b9e4957babf38e833e"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/doc-claims/bm25-config-doc.test.ts",
+          "title": "names the merge method the code actually uses (D-032: interleave, not RRF)",
+          "line": 165,
+          "bodySha256": "2a7e9ca407fe104f492ba050698f0d1249493f86005fd7c48f3edf07c6567302",
+          "assertionCount": 4,
+          "assertions": [
+            {
+              "line": 168,
+              "excerpt": "expect(start, 'mergeExactAndBm25 not found in rank.ts').toBeGreaterThanOrEqual(0)",
+              "excerptComplete": true,
+              "sha256": "f07df5b331764a86f8480243f2dace9bca5a32e2d2e8a7f95b1d98ec1e615975"
+            },
+            {
+              "line": 170,
+              "excerpt": "expect(end, 'mergeExactAndBm25 body end not found').toBeGreaterThan(start)",
+              "excerptComplete": true,
+              "sha256": "8eb0ce545ab48e8959c2a6079db59d533fe93d066a5d7f00c9e58bbfdaf2fa43"
+            },
+            {
+              "line": 175,
+              "excerpt": "expect(exact.includes('by reciprocal-rank fusion over row identity')).toBe(usesRrf)",
+              "excerptComplete": true,
+              "sha256": "6a668c16aa3dcd35c01a09563a1d2861d15b9977196992a726e509c2b3e8f10a"
+            },
+            {
+              "line": 176,
+              "excerpt": "expect(exact.includes('by interleaving over row identity')).toBe(!usesRrf)",
+              "excerptComplete": true,
+              "sha256": "c92c9cddebdafe546ecced1c4c660d2a6793fdb6265541095458467736969d8b"
+            }
+          ]
+        }
+      ],
+      "detectorReadComplete": false,
+      "reviewState": "ungraded; excerpts are navigation aids; independently read named complete callback and verify assertion semantics"
+    },
+    {
+      "key": "r-16",
+      "barKey": "R-16",
+      "title": "Fusion depends on rank, never on a raw BM25 score",
+      "model": "Every fusion of a lexical leg with a cosine leg over one corpus, and every merge of best-first lists from different corpora, depends only on in-list position (reciprocal rank, k = 60), so rescaling any leg's scores changes no fused order.",
+      "method": "Unit tests of fuseByPosition and an integration test of rrfTerm on a real pg_textsearch server, each rescaling one leg and asserting the order is unchanged. Decisions D-004, D-006.\n\nD-039 ordinal supplement: the optional RankedItem.fusionRank carries the best original 1-based rank of a document in the correlated exact/BM25 alternatives; the alternatives supply one lexical vote. Final RRF uses that original ordinal plus any existing rankOffset, instead of penalizing its interleaved admission position again. Items with an omitted optional ordinal retain index+1 behavior; an explicitly provided invalid ordinal is rejected. Verify ordinal validation and offset arithmetic in libs/generic/rrf/src/index.test.ts and the full runHybridSearch D038 regression in packages/operator-core/lib/search/bench/bm25-hybrid-recall.test.ts ('keeps the D038 exact rank-three target through final hybrid fusion, with a real semantic list'), retaining the D032 high-overlap rank-one guard and the existing raw-score rescaling/cross-corpus tests. This extends the existing rank-only seam; no raw native score or duplicate alternative vote may enter fusion.",
+      "driftMarkers": "BROKEN if (1) a site sums a raw BM25 score with a cosine; (2) a cross-corpus union sorts by raw score; (3) rescaling one leg changes the fused order. (4) a row present in both the exact and BM25 alternatives contributes more than one lexical vote, or its fusionRank is not its best original 1-based ordinal.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/search/lexical/rank.test.ts",
+          "packages/operator-core/lib/search/lexical/bm25-hybrid-fusion.integration.test.ts",
+          "libs/generic/rrf/src/index.test.ts",
+          "packages/operator-core/lib/search/bench/bm25-hybrid-recall.test.ts"
+        ]
+      },
+      "sourceSelector": "results[0].rubric.criteria[key=r-16]",
+      "matchedDetectorCount": 12,
+      "selectedDetectors": [
+        {
+          "path": "packages/operator-core/lib/search/lexical/rank.test.ts",
+          "title": "keeps the exact rank-1 row in the top two when many rows overlap both lists (R-13 run 12, D-032)",
+          "line": 106,
+          "bodySha256": "94325d1e8889f80bacc54cd0c20359cc5cfe594d181e73fed0b95e41320e6297",
+          "assertionCount": 2,
+          "assertions": [
+            {
+              "line": 118,
+              "excerpt": "expect(merged.map(r => r.id).indexOf('target')).toBe(1)",
+              "excerptComplete": true,
+              "sha256": "3d5d08b08fcced713747b270fb212885de38a456df4973fcc101fc46d04a3773"
+            },
+            {
+              "line": 119,
+              "excerpt": "expect(new Set(merged.map(r => r.id)).size).toBe(merged.length)",
+              "excerptComplete": true,
+              "sha256": "e27261892862e8384860080e3d8610e367101ddd51a70da7d094223dce7ce7d3"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/lexical/rank.test.ts",
+          "title": "carries the best original ordinal on the RRF scale, never either raw scale (D-039)",
+          "line": 130,
+          "bodySha256": "5ad69abc956a04d9afa60c6f3a4f4810bd9b5a1f9c8004460aa8a52162547b64",
+          "assertionCount": 4,
+          "assertions": [
+            {
+              "line": 132,
+              "excerpt": "expect(merged.map(r => r.id)).toEqual(['b', 'e'])",
+              "excerptComplete": true,
+              "sha256": "6d28684c09b8896691c70aad78810b4766635c31d4cbb79e178dd8c538ee5e2a"
+            },
+            {
+              "line": 133,
+              "excerpt": "expect(merged[0].rank).toBeCloseTo(1 / (RRF_K_DEFAULT + 1), 12)",
+              "excerptComplete": true,
+              "sha256": "87946bc0f3e6fde1588fe88b6a6b2c63fe4542d719e187ac754da2b32cc6237b"
+            },
+            {
+              "line": 134,
+              "excerpt": "expect(merged[1].rank).toBeCloseTo(1 / (RRF_K_DEFAULT + 1), 12)",
+              "excerptComplete": true,
+              "sha256": "16d7ff35d31f5ae9a859352b65bb43759f687663dee015571d149d871ed9d637"
+            },
+            {
+              "line": 135,
+              "excerpt": "expect(merged.map(r => r.fusionRank)).toEqual([1, 1])",
+              "excerptComplete": true,
+              "sha256": "869fc54e4d91e86057246a5ce59b3afcb20c1c5a0f8a7ac1dd00a59f04e47505"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/lexical/rank.test.ts",
+          "title": "is invariant to rescaling any list",
+          "line": 174,
+          "bodySha256": "253ac2479d69063cdb4bc9fe112e8eab2b24b385a44b0920222314a53d07d8a2",
+          "assertionCount": 1,
+          "assertions": [
+            {
+              "line": 179,
+              "excerpt": "expect(order(scaled)).toEqual(order(b))",
+              "excerptComplete": true,
+              "sha256": "8a239168c82cab217d16e9c6e56d423046bde2bbc8061fa1fe079880924f2734"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/lexical/bm25-hybrid-fusion.integration.test.ts",
+          "title": "depends on positions only, so rescaling a leg changes nothing",
+          "line": 109,
+          "bodySha256": "4f8576392dbcf215024637afd27ada9b4a944c0776698800c1e97a6bd0bad52d",
+          "assertionCount": 1,
+          "assertions": [
+            {
+              "line": 110,
+              "excerpt": "expect(await fused(1_000_000)).toEqual(await fused(1))",
+              "excerptComplete": true,
+              "sha256": "ecb5cf908ba5e9fe7afc975b5c732b64f4caeb47061be680501030746aa7fcc2"
+            }
+          ]
+        },
+        {
+          "path": "libs/generic/rrf/src/index.test.ts",
+          "title": "uses the original ordinal instead of charging an interleave position again",
+          "line": 7,
+          "bodySha256": "f189e71a0a65f203c7b33a5cb0f19037c30e09882907a14f655fbd00a7f98e27",
+          "assertionCount": 4,
+          "assertions": [
+            {
+              "line": 14,
+              "excerpt": "expect(result.map(r => r.row.key)).toEqual(['bm25-head', 'exact-head', 'exact-third'])",
+              "excerptComplete": true,
+              "sha256": "3d5752159a717601cd0ee9f130a25027055de26593dde3a0df08b045b41c5759"
+            },
+            {
+              "line": 15,
+              "excerpt": "expect(result[0].score).toBeCloseTo(1 / (RRF_K_DEFAULT + 11), 12)",
+              "excerptComplete": true,
+              "sha256": "152b68712846f745a9b0dab09f3208354b2da7961ba327fcd6f06cf38a835bac"
+            },
+            {
+              "line": 16,
+              "excerpt": "expect(result[1].score).toBeCloseTo(result[0].score, 12)",
+              "excerptComplete": true,
+              "sha256": "22168c4a7494c7de019b0579c30dd7fde34abeb930ecead0f327240dd69e0d39"
+            },
+            {
+              "line": 17,
+              "excerpt": "expect(result[2].score).toBeCloseTo(1 / (RRF_K_DEFAULT + 13), 12)",
+              "excerptComplete": true,
+              "sha256": "e097d85f198b21e5213a75d33fce2b8a5b0b088aee25016b041d9dd5eaba91bd"
+            }
+          ]
+        },
+        {
+          "path": "libs/generic/rrf/src/index.test.ts",
+          "title": "rejects invalid original ordinal %s",
+          "line": 20,
+          "bodySha256": "99d9613ba3ac5137b77c5a65af0b7f68bf037b4b2e1a883cfb856fc18c1f6c30",
+          "assertionCount": 1,
+          "assertions": [
+            {
+              "line": 21,
+              "excerpt": "expect(() => rrfCombine([{ name: 'lexical', list: [{ ...item('x'), fusionRank }] }]))\n      .toThrow(/fusionRank/)",
+              "excerptComplete": true,
+              "sha256": "f94063259f0e27b45417b838a29eddfd1648793d5858167b2f53bdb7797eb5a2"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/bench/bm25-hybrid-recall.test.ts",
+          "title": "keeps the D038 exact rank-three target through final hybrid fusion, with a real semantic list",
+          "line": 129,
+          "bodySha256": "08975db7773cf973265676de2b7770fe56824a9aa03d75ca5840355529a5d19e",
+          "assertionCount": 5,
+          "assertions": [
+            {
+              "line": 155,
+              "excerpt": "expect(rankOf(legacy.results, 'work_item', 'target')).toBe(5)",
+              "excerptComplete": true,
+              "sha256": "0e427b600a3ec428515d88c6d7c5f2011b3f0c9534fb4d214ce1c6b6cbed04de"
+            },
+            {
+              "line": 156,
+              "excerpt": "expect(rankOf(broken.results, 'work_item', 'target')).toBeNull()",
+              "excerptComplete": true,
+              "sha256": "6ed0b262f4e3a8f3b3f94b3baeda9480e195414021717b5a59fb66a9d317b5e4"
+            },
+            {
+              "line": 157,
+              "excerpt": "expect(rankOf(repaired.results, 'work_item', 'target')).toBe(8)",
+              "excerptComplete": true,
+              "sha256": "efb04696774e34a433db6a337c68c464ce0e9e191a7a784dfcd9440d7de91603"
+            },
+            {
+              "line": 158,
+              "excerpt": "expect(repaired.legs.semantic.candidates).toBe(30)",
+              "excerptComplete": true,
+              "sha256": "714b3770d426b8f6e98b463ca51aa424122f009e9c196970bb57c2a046553140"
+            },
+            {
+              "line": 159,
+              "excerpt": "expect(repaired.results.find(r => r.source_id === 'target')?.rankers).toEqual(['lexical'])",
+              "excerptComplete": true,
+              "sha256": "6b4762c49a6ed22fa241410582653f7346f0965a26acffae5b64fc3d797d2288"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/bench/bm25-hybrid-recall.test.ts",
+          "title": "dumpOverlapOf: true on any overlap, false only when every call was checked clean, null when some call is unchecked",
+          "line": 448,
+          "bodySha256": "663492e79fa50d8261c657dc038cf45946f0126b855ac91d2fc8fa7751032212",
+          "assertionCount": 5,
+          "assertions": [
+            {
+              "line": 449,
+              "excerpt": "expect(dumpOverlapOf(turnsTimed(30, 4000, 100))).toBeUndefined()",
+              "excerptComplete": true,
+              "sha256": "5c69a33b114380ba5a197c07f8c708f6f48242d8306a7442ab41647462ae0559"
+            },
+            {
+              "line": 450,
+              "excerpt": "expect(dumpOverlapOf(dumped(turnsTimed(30, 4000, 100), false))).toBe(false)",
+              "excerptComplete": true,
+              "sha256": "65f08b42661cda4f7215e89f1263e21636def505601ba8c7688985d1ead56d12"
+            },
+            {
+              "line": 451,
+              "excerpt": "expect(dumpOverlapOf(dumped(turnsTimed(30, 4000, 100), true, 17))).toBe(true)",
+              "excerptComplete": true,
+              "sha256": "de7c8807b5468b8caa5a2f891ecf379c82e377f04af94dac4ec07bfe7bcd8d25"
+            },
+            {
+              "line": 452,
+              "excerpt": "expect(dumpOverlapOf(dumped(turnsTimed(30, 4000, 100), null, 3))).toBeNull()",
+              "excerptComplete": true,
+              "sha256": "ebdbf3b3f5ed87c20c29b6717b3a38f42c8c4f22bb833c7a193f9f5586761877"
+            },
+            {
+              "line": 455,
+              "excerpt": "expect(dumpOverlapOf(oneUnstamped)).toBeNull()",
+              "excerptComplete": true,
+              "sha256": "77171c658d6acf5c5796dcb39cb79b916b04489a873e0504d2d1be6157cd7aa0"
+            }
+          ]
+        }
+      ],
+      "detectorReadComplete": false,
+      "reviewState": "ungraded; excerpts are navigation aids; independently read named complete callback and verify assertion semantics"
+    },
+    {
+      "key": "r-17",
+      "barKey": "R-17",
+      "title": "Websearch operators and relevance floors survive BM25",
+      "model": "A caller that declares websearch query syntax keeps negation, quoted-phrase and OR filtering while BM25 orders the matches, and no fixed relevance floor is compared against a BM25 score.",
+      "method": "Integration cases on a real pg_textsearch server (websearch operator syntax under BM25) and the granted-sources unit test that applies the relevance floor to tsRank, not the BM25 score. Decision D-007.",
+      "driftMarkers": "BROKEN if (1) a negated term still returns its rows; (2) a quoted phrase matches its reversed form; (3) a plain query loses any-term matching; (4) a floor filters on the BM25 score.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/search/lexical/bm25-ranking.integration.test.ts",
+          "packages/operator-core/lib/data-sources/granted-sources-injection.test.ts"
+        ]
+      },
+      "sourceSelector": "results[0].rubric.criteria[key=r-17]",
+      "matchedDetectorCount": 3,
+      "selectedDetectors": [
+        {
+          "path": "packages/operator-core/lib/search/lexical/bm25-ranking.integration.test.ts",
+          "title": "with it, a negated term excludes its rows and BM25 still orders the rest",
+          "line": 173,
+          "bodySha256": "8b9de83d03827e2633def186ff58d70cadbab057208e4f82688308f1e348a245",
+          "assertionCount": 2,
+          "assertions": [
+            {
+              "line": 175,
+              "excerpt": "expect(ids).toHaveLength(10)",
+              "excerptComplete": true,
+              "sha256": "e4011e819d0320e2d3d67d61c938749b50ebc2f4c2e72bfaf81b95a1f084f7b9"
+            },
+            {
+              "line": 176,
+              "excerpt": "expect(ids).not.toContain(1)",
+              "excerptComplete": true,
+              "sha256": "f1d8047c34156a254a6663832e5c3c8b84d354bff95f4092fbc200c15fb83a07"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/lexical/bm25-ranking.integration.test.ts",
+          "title": "honours a quoted phrase: the reversed phrase matches nothing",
+          "line": 179,
+          "bodySha256": "e41413447207e59183c297ea752becca668b77f8bd054790551edccb0da4df8b",
+          "assertionCount": 3,
+          "assertions": [
+            {
+              "line": 180,
+              "excerpt": "expect(await websearchIds('\"summary routine\"')).toHaveLength(10)",
+              "excerptComplete": true,
+              "sha256": "3af2767002b8031f00d857d4e3f7275823d2bcb82d7bed0f78c45689c6cdbac2"
+            },
+            {
+              "line": 181,
+              "excerpt": "expect(await websearchIds('\"summary routine\"', 'websearch')).toEqual([])",
+              "excerptComplete": true,
+              "sha256": "3af99106833636b68008b7c7997dcfa067f4640395b6e3464854cddb56f97e37"
+            },
+            {
+              "line": 182,
+              "excerpt": "expect(await websearchIds('\"routine summary\" pangolin', 'websearch')).toEqual([4])",
+              "excerptComplete": true,
+              "sha256": "10dc14910434e0b285f30914b8aa5648cd89df3f84d67b82a8e988c6ecfef137"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/lexical/bm25-ranking.integration.test.ts",
+          "title": "keeps BM25 any-term matching for a plain query",
+          "line": 185,
+          "bodySha256": "f25689278e6dac3f8bfd053656c132469878392694fd009dba589b7330ec3736",
+          "assertionCount": 1,
+          "assertions": [
+            {
+              "line": 186,
+              "excerpt": "expect((await websearchIds('quokka marmoset', 'websearch')).sort((a, b) => a - b)).toEqual([1, 2])",
+              "excerptComplete": true,
+              "sha256": "e7d4dbbb90a196281910cbf107eb3e5cdcbb16566743b37a92fb0cfcaf11e2f6"
+            }
+          ]
+        }
+      ],
+      "detectorReadComplete": false,
+      "reviewState": "ungraded; excerpts are navigation aids; independently read named complete callback and verify assertion semantics"
+    },
+    {
+      "key": "r-18",
+      "barKey": "R-18",
+      "title": "Search path latency bounded",
+      "model": "Across three consecutive prospectively named, instrumented runs with at least 60 paired queries for each work_item and session_turn source from the live dev-box operator database, each source meets the complete three-clause R-18 hybrid-latency envelope defined in METHOD under the R-13 recall prerequisite and reset-on-failure rule.",
+      "method": "Run packages/operator-core/lib/search/bench/bm25-hybrid-recall-cli.ts --pairs 60 with explicit HARNESS_ADMIN_DATABASE_URL pointing to the recorded native server. Declare three distinct seeds before any judged run. Per source sample disjoint P/W/S target-and-query sets of 60 each. Precompute every timed query embedding once before timing  (D-021); record embeddingsPrecomputed=true. The cold pass times legacy and BM25 on identical P pairs in one process, alternating arm order; judges same-run relative bound (D-019) and cold ceiling (D-029). Warm-repeat pass over P calls BM25 once untimed immediately before its timed BM25 call; judges200/400ms ceilings (D-020/D-028). Later W warm-up and S novel steady pass remain diagnostic only, never substitute for the judged repeat. Judge with judgeLatency and warmRepeatProblems in bm25-hybrid-recall.ts. Require all clauses and R-13 on three consecutive instrumented runs (D-031); preserve every failed/invalid result, reset after failure or code change, never seed-chase. Per-call sampler freezes at search completion before cleanup, records setup/cleanup and scheduler boundary skew, excludes boundary-crossing waits, marks partial backend CPU coverage; shared pg_stat_statements attribution cannot be assigned to an own call. Host waits/scheduler/pgss and dump overlap are diagnostic, never waive the bars or by themselves establish a resource cause. Existing unit suite pins p95, both ceiling sets, invalid arms/repeats, disjoint samples, and measurement boundaries. Evidence: the tracked manifest docs/evidence/bm25-r18-qualification-2026-10-12.json, to be created and recorded as a plan Decision BEFORE the first judged run, declaring the three prospectively selected seed ids, frozen committed root and submodule revisions, executed SHA-256 set, registered embedding profile and three exact artifact paths; artifacts are bound via testing:record-run. Each artifact records fields verdict, latencyVerdict, sampleFingerprint, seed, sources[].latency, warmPairs, warmRepeatPass and attribution via testing:record-run(operational, live plane). The source/test proofs must be reproducible; a dirty local run is not a formal binding. R-2 remains the 50 ms lexical engine-query budget; R-18 bounds the full hybrid path including exact list and final highlights. Decisions D-016,D-019,D-020,D-021,D-028,D-029,D-030,D-031,D-032,D-033. The absolute ceilings were moved from cold to warm-repeat after observed cold failures; this measurement-method change requires outside-lineage review, and retained cold absolute bounds prevent a slow legacy baseline from greenwashing a slow BM25 cold path. Explicit envelope definition, unchanged from the approved preview: cold paired BM25 p95 must be no greater than same-run legacy p95 and no greater than 1,000 ms for work_item or 1,200 ms for session_turn, and warm-repeat BM25 p95 must be no greater than 200 ms for work_item or 400 ms for session_turn. Every clause and R-13 must pass on every run in the three-run prospective sequence; failure, invalidity or a code change resets it.\n\nD-035/D-036/D-040 qualification supplement: use the tracked docs/evidence/bm25-r18-qualification-2026-10-12.json and its exact artifact paths, declared before the first judged run; retained d033 artifacts remain historical, and the qualifying count is currently zero after D038. Before another judged sequence, verify current committed source and test bytes through the maintained suites, verify usable test/benchmark artifact capacity without deleting unowned artifacts or splitting the shared dependency mutex, confirm the explicit database and exact registered embedding profile, and audit retained failures for both recall loss and serial retrieval stages. D-040 starts independent semantic source retrieval as soon as its query vector settles, concurrently with lexical retrieval; fusion still records inputs in deterministic lexical-then-semantic order. The maintained pending-lexical/started-semantic guard in libs/generic/search/src/hybrid.test.ts must pass along with hybrid-cascade, cancellation/degradation, rank, RRF, pure benchmark and real-PG fusion suites; its finally releases the delayed lexical gate. Run an unjudged saved-query/tail diagnostic before qualification, preserving original targets, profile and relevant source hashes. Record clean source state and executed SHA-256 before/after every judged run, including root/submodule commits; a post-run HEAD alone does not identify executed dirty bytes. Registered provenance, cold/relative/warm ceilings, R-13 prerequisite, instrumentation boundaries, all failures and the prospective three-run/reset rule remain unchanged. Stage overlap addresses serial elapsed-time addition; it does not establish a fix for underlying per-block read latency or waive any ceiling.\n\nCase identity and remaining preconditions: hybrid.test.ts 'starts semantic retrieval while the independent lexical query is still pending'; benchmark test 'keeps the registered embedding space in both arms while computing each query once'. The automatic qualification detectors in bm25-hybrid-recall.test.ts reject dirty executed files, changed hashes, submodule/gitlink mismatch, failed Git probes, missing witnesses, reduced mandatory sources, repeated seeds and identity leaks (D-041/D-049). Each guard must have current source-qualified proof before qualification; guard proof does not count toward the prospective three-seed outcome. Earlier d033, qualified and hybrid-provenance series are historical. Stage durations are attribution only and do not sum to call latency after overlap; use recorded stage start/end intervals for any measured overlap claim, otherwise make no such attribution.\n\nInverse trace: D-046/D-047/D-048 select and correct per-surface chunk-HNSW indexes as latency remediation; their graded acceptance consequence in this BAR is the unchanged cold/relative/warm latency envelope, not the existence of an index. Native and desktop migration acceptance remains separately owed on WI-10005483. Historical run/attribution decisions D-027/D-030/D-037/D-038/D-043/D-044/D-045 supply diagnosis and failed evidence, not independent outcome bars. D-024/D-025 are retracted by D-026. Amendment/process decisions D-015/D-018/D-022/D-034/D-042 do not add outcome semantics.\n\nInverse trace through current D-052 (plan version 80, 52 decisions): D-050 repairs R-1/R-5/R-11/R-12 operational detector bindings and R-15 docs-search coverage; these criteria grade their unchanged outcomes. D-051 corrects maintenance size estimation; R-7 still uses actual own-REINDEX bytes. D-052 extends production reclaim eligibility to small indexes; D-013 every-index soak acceptance remains required by R-14 before retirement. These decisions add no new waived scope or threshold; current proof must reflect changed source bytes, and no historical failure becomes a pass.",
+      "driftMarkers": "BROKEN if any of the three consecutive prospective runs fails R-13 or is invalid, or on either source (1) cold paired BM25 p95 exceeds same-run legacy p95; (2) cold paired p95 exceeds 1,000 ms work_item or 1,200 ms session_turn; (3) warm-repeat p95 exceeds 200 ms work_item or 400 ms session_turn; (4) a timed query was not pre-embedded or the two arms were not measured on identical pairs in one process; (5) a warm-repeat lacks a BM25 observation, its untimed immediately preceding call, or its validity/latency verdict; (6) a failed result is discarded, a replacement seed selected after seeing a result, or code changes during the qualifying sequence. Record every result and reset the count after a failure or code change.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/search/bench/bm25-hybrid-recall.test.ts",
+          "libs/generic/search/src/hybrid.test.ts",
+          "libs/generic/search/src/hybrid-cascade.test.ts"
+        ]
+      },
+      "sourceSelector": "results[0].rubric.criteria[key=r-18]",
+      "matchedDetectorCount": 17,
+      "selectedDetectors": [
+        {
+          "path": "packages/operator-core/lib/search/bench/bm25-hybrid-recall.test.ts",
+          "title": "qualifies only identical clean bytes and committed pins before and after",
+          "line": 64,
+          "bodySha256": "e20a43a1964fdae0f068d713b56b0c6a76099ffce893673735c169848c3dc27b",
+          "assertionCount": 1,
+          "assertions": [
+            {
+              "line": 65,
+              "excerpt": "expect(qualifyExecutedSource(snapshot(), snapshot(), manifest())).toEqual({ verdict: 'pass', reasons: [] })",
+              "excerptComplete": true,
+              "sha256": "0581dc4906a7ad976d91cbfe8374e9f9a84093353db8ef7e9428d62ea3b688dc"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/bench/bm25-hybrid-recall.test.ts",
+          "title": "rejects a dirty executed file even when a later HEAD and manifest hash match",
+          "line": 67,
+          "bodySha256": "b3e4e77eeb4c5cb12ba85a49b699cf1a7780fd5cf8522ec10b82d9895a62bc1b",
+          "assertionCount": 1,
+          "assertions": [
+            {
+              "line": 69,
+              "excerpt": "expect(qualifyExecutedSource(before, snapshot(), manifest()).verdict).toBe('invalid')",
+              "excerptComplete": true,
+              "sha256": "ff3f1a4367c900b9bb975f73c8fe46aed5fc91aac64b57f06139f0111085738c"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/bench/bm25-hybrid-recall.test.ts",
+          "title": "rejects changed source bytes and frozen manifest hash mismatches",
+          "line": 75,
+          "bodySha256": "4de990ba32d038f4cea76f029c60542e493ef1dd4c6f0810258f0f1e10d55a1b",
+          "assertionCount": 2,
+          "assertions": [
+            {
+              "line": 78,
+              "excerpt": "expect(result.verdict).toBe('invalid')",
+              "excerptComplete": true,
+              "sha256": "6c2ddf29689103a92b1ce9821793a897f2ee4e01614d77d13cf7f0924624953d"
+            },
+            {
+              "line": 79,
+              "excerpt": "expect(result.reasons).toContain(`executed source changed during execution: ${BM25_EXECUTED_SOURCE_PATHS[0]}`)",
+              "excerptComplete": true,
+              "sha256": "ed3f90b2d5b3e21352be9c0187c48ce6b902fd969d4760c4c1e9edb91274dce0"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/bench/bm25-hybrid-recall.test.ts",
+          "title": "refuses a manifest that drops the mandatory source set, reuses seeds, or has unsafe paths",
+          "line": 96,
+          "bodySha256": "0de2b72de21e41a8f54ca400b67492f03977b24005a199306d7e27fddbe1a9b8",
+          "assertionCount": 3,
+          "assertions": [
+            {
+              "line": 98,
+              "excerpt": "expect(sourceQualificationManifestSchema.safeParse(expected).success).toBe(false)",
+              "excerptComplete": true,
+              "sha256": "c9accf7b92f40558d020395000c857534cc1c0ae12cc14de822d2422763cd2f2"
+            },
+            {
+              "line": 100,
+              "excerpt": "expect(sourceQualificationManifestSchema.safeParse(repeated).success).toBe(false)",
+              "excerptComplete": true,
+              "sha256": "f2017ae1995ec3ae3d04fb9162e6f8df248897cd9fb3191b76c1c516b15daf73"
+            },
+            {
+              "line": 102,
+              "excerpt": "expect(sourceQualificationManifestSchema.safeParse(unsafe).success).toBe(false)",
+              "excerptComplete": true,
+              "sha256": "432208ff4151a9659ccf49244e0d41c572e94f0e8bb348438bc2d818e46f6609"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/bench/bm25-hybrid-recall.test.ts",
+          "title": "refuses judged admission for a different or unknown space, small samples, missing sources, or an implicit database",
+          "line": 115,
+          "bodySha256": "9826c0c9d4f29b46e6e1bdd163c0827851109d39be02a70e2ecb747df2582605",
+          "assertionCount": 2,
+          "assertions": [
+            {
+              "line": 118,
+              "excerpt": "expect(qualificationConfigurationProblems(expected, options)).toEqual([])",
+              "excerptComplete": true,
+              "sha256": "0a363ef50d113277f9aa5749cfef253bf467f566723c8692a0e8c676865922f0"
+            },
+            {
+              "line": 121,
+              "excerpt": "expect(qualificationConfigurationProblems(expected, { ...options, ...patch }).length).toBeGreaterThan(0)",
+              "excerptComplete": true,
+              "sha256": "77761899dab9f532bc6f4c5a66ca73d43ba54c17251e9290733a6216fd92a3e8"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/bench/bm25-hybrid-recall.test.ts",
+          "title": "fails when the BM25 arm is slower, even when recall passes",
+          "line": 346,
+          "bodySha256": "03b3e1abad40f4a9e1502d3fef36508b14b46acc77864080a35d1c00f5f1d113",
+          "assertionCount": 2,
+          "assertions": [
+            {
+              "line": 348,
+              "excerpt": "expect(s.verdict).toBe('pass')",
+              "excerptComplete": true,
+              "sha256": "212b4319552062afa9e78b6510b439969845a0506c555e60bb95e8baeaba698f"
+            },
+            {
+              "line": 349,
+              "excerpt": "expect(s.latency).toEqual({ verdict: 'fail', reason: 'BM25-arm p95 151 ms exceeds legacy p95 150 ms' })",
+              "excerptComplete": true,
+              "sha256": "644cf60c95ea1888c3e7e81376c33cef4948635e8ead47625c859130c69ec309"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/bench/bm25-hybrid-recall.test.ts",
+          "title": "judges the ceiling on the warm-repeat p95, not the cold paired p95",
+          "line": 495,
+          "bodySha256": "c373b9b977a77c8bcf37a38d786c906048f5fe3b0dfdccd7126740b3cbf08d8d",
+          "assertionCount": 3,
+          "assertions": [
+            {
+              "line": 498,
+              "excerpt": "expect(s.warmRepeat?.latencyP95Ms).toBe(250)",
+              "excerptComplete": true,
+              "sha256": "ba5f8d01200254afda60a25226a9ec70a65e7cbb9d22d09bad157f8ab02bedee"
+            },
+            {
+              "line": 499,
+              "excerpt": "expect(s.arms.bm25.latencyP95Ms).toBe(600)",
+              "excerptComplete": true,
+              "sha256": "dff84b79b8d9941dc84145e10d18726d4d6b620d0979e36948754642f2a757ce"
+            },
+            {
+              "line": 500,
+              "excerpt": "expect(s.latency).toEqual({\n      verdict: 'pass',\n      reason: 'BM25-arm p95 600 ms <= legacy p95 8000 ms; warm-repeat BM25 p95 250 ms <= the 400 ms ceiling; cold paired BM25 p95 600 ms <= the 1200 ms cold ceiling (D-029)',\n    })",
+              "excerptComplete": true,
+              "sha256": "a6c21e0bc58fe800a438cc44b9cba26d7f1ec97aa23552e0c9ea6b53515fe725"
+            }
+          ]
+        },
+        {
+          "path": "packages/operator-core/lib/search/bench/bm25-hybrid-recall.test.ts",
+          "title": "fails when the warm-repeat p95 exceeds the source ceiling, even with a fast cold pass",
+          "line": 506,
+          "bodySha256": "34b48a46fa81f2e210a50704af206816671e4d1179c951973dc93ecbb734f942",
+          "assertionCount": 3,
+          "assertions": [
+            {
+              "line": 508,
+              "excerpt": "expect(s.latency).toEqual({\n      verdict: 'fail',\n      reason: 'BM25-arm p95 100 ms <= legacy p95 4000 ms, but the warm-repeat BM25 p95 401 ms exceeds the 400 ms ceiling; cold paired BM25 p95 100 ms <= the 1200 ms cold ceiling (D-029)',\n ",
+              "excerptComplete": false,
+              "sha256": "021f5d8db086dea92d8e1698f097382e9f71adc8418de3167880ddca3e8834f4"
+            },
+            {
+              "line": 512,
+              "excerpt": "expect(summarizeSource('work_item', timed(30, 4000, 100), 20, null, warm(30, 201, 'work_item')).latency.verdict).toBe('fail')",
+              "excerptComplete": true,
+              "sha256": "a2e39c8de97aca7e0b926a831f85596b503305bc90856de9aea47da5e126fb75"
+            },
+            {
+              "line": 513,
+              "excerpt": "expect(summarizeSource('work_item', timed(30, 4000, 100), 20, null, warm(30, 200, 'work_item')).latency.verdict).toBe('pass')",
+              "excerptComplete": true,
+              "sha256": "2f299541009ffba18e779bbcf11bb75a2a54c8cfd8834f4daaf415d41b258a7d"
+            }
+          ]
+        }
+      ],
+      "detectorReadComplete": false,
+      "reviewState": "ungraded; excerpts are navigation aids; independently read named complete callback and verify assertion semantics"
+    }
+  ],
+  "decisionCensus": [
+    {
+      "id": "D-001",
+      "title": "Engine choice is gated on the P-001 bake-off; Evoke is the default candidate, pg_textsearch the challenger",
+      "bodySha256": "399c39d7fad6b06fd58ad7ab797fdd9d84c940ad82c2cde2bae0bdf46ce4f811",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-001"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-1",
+        "r-2",
+        "r-3",
+        "r-11",
+        "r-12"
+      ]
+    },
+    {
+      "id": "D-002",
+      "title": "pg_textsearch is the BM25 engine — P-001 bake-off result under the D-001 rule (work-item corpus)",
+      "bodySha256": "38032d375b84ef5d7c5143ab0c236687e681adf5d15b4bec6b78178c22bd909a",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-002"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-1"
+      ]
+    },
+    {
+      "id": "D-003",
+      "title": "BM25 architecture: availability-gated indexes, one corpus registry, legacy fallback that the health check reports",
+      "bodySha256": "fbfe351ca4f41df112c91acf4c0b73384ed5c3138fecd77107a89392e65cc1a9",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-003"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-4",
+        "r-5",
+        "r-15"
+      ]
+    },
+    {
+      "id": "D-004",
+      "title": "Weighted lexical+cosine fusion sites move to rank fusion (RRF), for both engines",
+      "bodySha256": "1d2ff22a6b8cb1b2b7d2212fd1076b9c9d9c58fce81abc1a048b8c3f41c007ee",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-004"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-13",
+        "r-16"
+      ]
+    },
+    {
+      "id": "D-005",
+      "title": "Memory/documents corpus bench confirms pg_textsearch over today's lexical leg (recall up, p50 latency up, p95 down)",
+      "bodySha256": "721fc1edfa110a06aed99daab3e7018483d0b0ceba06345ee4a98c0d39e7dd63",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-005"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-11",
+        "r-12"
+      ]
+    },
+    {
+      "id": "D-006",
+      "title": "Result lists from different corpora merge by position (fuseByPosition), never by raw lexical score",
+      "bodySha256": "cb7faba3fa7ea81f81f2ef030d345df253483276dfa934e87e3e9def9be3683e",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-006"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-13",
+        "r-16"
+      ]
+    },
+    {
+      "id": "D-007",
+      "title": "Under BM25, websearch query syntax keeps filtering; fixed relevance floors stay on ts_rank_cd; per-question lexical scores are relative to the best hit",
+      "bodySha256": "21ac90728d3e5dcff4a572e97b5d6a42f145cdd349e5ffc625c289d7868ace4a",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-007"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-17"
+      ]
+    },
+    {
+      "id": "D-008",
+      "title": "Correction to D-003 §1: the dev box is NOT preloaded today; P-004 owns adding pg_textsearch to pg-autotune",
+      "bodySha256": "012a2eaf761f5b41d6ae6a7864cad0bdd8b25925054aeb0010884e67e1a43276",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-008"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-4"
+      ]
+    },
+    {
+      "id": "D-009",
+      "title": "Two Approach-list sites stay on ts_rank: plan-decision elements (conventions) and pack-doc parts",
+      "bodySha256": "af6ad482c1e6eb989982ac50e883679298255737b780f95fc3d98298127e0407",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-009"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-9"
+      ]
+    },
+    {
+      "id": "D-010",
+      "title": "Maintenance gains a RECLAIM step: one bloat-triggered REINDEX CONCURRENTLY per run, because compaction never shrinks a pg_textsearch index file",
+      "bodySha256": "3c79f682cad6db073b2684c1cf30a3d06511f291453fef067ba61c07bc6346ef",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-010"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-6",
+        "r-7",
+        "r-8"
+      ]
+    },
+    {
+      "id": "D-011",
+      "title": "Legacy-column retirement keeps the kill-switch working: each dropped tsvector column is replaced by a same-named SQL function over the row type",
+      "bodySha256": "214b8a033da8b117e387320ce8712e2d3b1efa830dd6a3f3b314360901180910",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-011"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-10",
+        "r-14"
+      ]
+    },
+    {
+      "id": "D-012",
+      "title": "Supersedes D-011's mechanism: retirement swaps each stored legacy tsvector column for a same-named VIRTUAL generated column (PG 18), not a same-named function",
+      "bodySha256": "fa35c1c4432698a648068e888c40c03fdce6faf0b08f5e947622a60c866283e3",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-012"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-10",
+        "r-14"
+      ]
+    },
+    {
+      "id": "D-013",
+      "title": "The recorded soak before legacy-column retirement: one dev-box window of at least 24 h, six measured criteria; migration 1452 is armed only when it passes",
+      "bodySha256": "c7c30a36b8b5dd5b30dd3415ff12017585c726a25f09163794a50af9ee9a2967",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-013"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-7",
+        "r-8",
+        "r-14",
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-014",
+      "title": "Embedded Postgres must be >= 18.4: the pgdg pg_textsearch build needs palloc_mul, which embedded 18.3 lacks; installers refuse a preload library newer than the tree",
+      "bodySha256": "b1e01421657f6d9fe3cbdf190708758fd13af9a4f7d37d5ec103a3bb8946c097",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-014"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-5"
+      ]
+    },
+    {
+      "id": "D-015",
+      "title": "Acceptance BAR amendment",
+      "bodySha256": "844bc98b5dde3175ad6d96cd4867ef0eea6aef7a90829dbf9e264fbfd7ee4bcf",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-015"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-016",
+      "title": "BM25 sources also run a gated exact list (legacy AND + ts_rank_cd) fused with the BM25 list; this is what makes R-13 pass, and it keeps the stored tsvector + GIN that list reads",
+      "bodySha256": "a9d4a635f001ebf007842abbf9fea483e20dd917e1cb5217e65d63f40c42d60c",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-016"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-2",
+        "r-13",
+        "r-14",
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-017",
+      "title": "R-13 is measured on search:semantic's work_item and session_turn sources, not the memory store: the memory store's lexical leg is not BM25, so a memory-store A/B cannot detect anything this plan changes",
+      "bodySha256": "73ba95af9f6f85073a0aef09eb0aab92dbe9691a84ec8f5dc635d44fa606b80b",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-017"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-13"
+      ]
+    },
+    {
+      "id": "D-018",
+      "title": "Acceptance BAR amendment",
+      "bodySha256": "5511cb0c7123485d5ee142e23fbd9541b607ef8dd33faeece90d7c3801c2b3d3",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-018"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-019",
+      "title": "The D-016 exact-list path gets its own latency bar (R-18): end-to-end search:semantic p95 with BM25 live may not exceed the legacy arm's p95 in the same run; R-2's 50 ms stays the engine-query budget",
+      "bodySha256": "0e64f024235c8c7ef707ff153c1f272318d9243c2c981490952e34aa5cd4acd6",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-019"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-2",
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-020",
+      "title": "R-18 also carries absolute per-source p95 ceilings (work_item 200 ms, session_turn 400 ms) on top of D-019's relative-to-legacy bound",
+      "bodySha256": "01c47ec0014a5651ee9c94379319d5b936a18d9ff97abe4d4d151b973474bbb1",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-020"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-2",
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-021",
+      "title": "R-18's instrument embeds every query before timing: the CLI's per-query embedding cache charged the in-process embedding to whichever arm ran first",
+      "bodySha256": "6e6f1be459004f775b8f750c739d6a8acd4a60053c3f6731e344ece210b37abd",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-021"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-022",
+      "title": "Acceptance BAR amendment",
+      "bodySha256": "5bf3b5b85f99dd33a3206fa4e1efa0f87b91e4746d9cee3b16e381f4071aec2c",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-022"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-023",
+      "title": "The BM25 top-k lists read the score from the index scan (bm25_get_current_score), guarded against stale state; the select-list <@> was the R-18 work_item tail",
+      "bodySha256": "8b1878ba042695b973fb1091cda84e41d5378954cb3904ced86096a7347fbd6c",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-023"
+        }
+      },
+      "explicitlyCitedBy": []
+    },
+    {
+      "id": "D-024",
+      "title": "R-18's absolute ceilings are judged on a warm-index, novel-query BM25-only pass; the session_turn cold-path tail is host I/O, not the BM25 path",
+      "bodySha256": "676249e3382d147ede95f01bba7ec04d29cb74527f3f417cf99b427eee14c1e3",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-024"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-025",
+      "title": "D-024's warm-up and steady passes run AFTER the paired pass, on two further disjoint samples (W warm-up, S steady); the paired sample P stays cold and unchanged",
+      "bodySha256": "3ad99d9fb1465b5ec06fbe9916ea20901ae9ea66b9f1ab703e593d17469ae3e4",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-025"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-026",
+      "title": "RETRACTION of D-024's premise: the warm-up + novel-query steady pass did not isolate the BM25 path's cost (session_turn steady p95 1,820.6 ms > cold paired 675.7 ms); ~half the lexical-leg time is outside SQL execution, so per-call attribution comes before any further R-18 run or bar change",
+      "bodySha256": "163ace530caeea93e6c5d41133b48e103d1aa39431238ccf4d5136e9b60399bf",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-026"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-027",
+      "title": "Run 7 attribution: the session_turn R-18 tail is database-side block reads under host I/O contention, not the bench client; every R-18 run so far overlapped a full-database pg_dump. Next run is measured with no dump active (CLI-checked); bars unchanged",
+      "bodySha256": "fa05d291b5ceded727c2344739bcb32f48a1590f5b2149c37c62ce892935b8ee",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-027"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-028",
+      "title": "Run 8 falsified D-027 (no dump, still over the ceilings): R-18's 200/400 ms ceilings move to a warm-repeat pass over the paired sample; the cold paired pass keeps the relative bound",
+      "bodySha256": "e5427447f6f98e819f7de5142fc06c9ab5c42baa7823f6325fd94e0f4bac1183",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-028"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-029",
+      "title": "R-18 keeps an absolute cold-latency bound: cold paired BM25 p95 <= 1,000 ms (work_item) and <= 1,200 ms (session_turn), beside D-028's warm-repeat ceilings and the D-019 relative bound",
+      "bodySha256": "fcbc251dc8466c358a73aa849983a0b25d0b669ca1d43f49a17dd852ae1d0f9a",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-029"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-030",
+      "title": "Run 10 fails R-18's cold ceiling on work_item, but the tail is not WI-6554700010008596: D-029 #4's attribution is amended; per-call wait-event and scheduler attribution comes before the next judged run",
+      "bodySha256": "d941dd8a1face82be5a6a27524b6e2c5752e496b5d61e16a5c127b3b727eae4a",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-030"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-031",
+      "title": "R-18 is judged on three consecutive instrumented runs, each passing all three clauses; run 11 (first with D-030 instruments) passes and shows a block-read tail; a failing run resets the count",
+      "bodySha256": "5b526b89029207eea544c3537711e0b52698c991bf3acbab83cd369e3fe43f62",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-031"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-032",
+      "title": "Run 12 fails R-13 because the D-016 exact-list merge buries the exact list's rank-1 row; the merge becomes a BM25-first interleave. The born-backend CPU count from D-031 is retracted. R-18's three-run count restarts on the new code",
+      "bodySha256": "406ee1cc613ca10bb8419c936ae3676da7878c6f0dd15798a35288027e56c4c6",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-032"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-13",
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-033",
+      "title": "R-18 exact companion list reuses one bounded candidate scan; all ranking, cap and latency bars stay unchanged",
+      "bodySha256": "f69f9ac4b4be3933f95189c9384bdb309e9166ebe04d33d7576f58e94800894d",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-033"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-13",
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-034",
+      "title": "Acceptance BAR amendment",
+      "bodySha256": "3afb416c90d020629fc2bf1630e6905b44246a9bddf8b9b2f395373f0f68b278",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-034"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-035",
+      "title": "Retained D033 passes remain historical; qualify the unchanged production source through a new prospective clean-source sequence",
+      "bodySha256": "e0a20f5926c92a39d0684e22a07f65a2e0c65cf65637d6b40134b282bee78aff",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-035"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-13",
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-036",
+      "title": "The query-vector cache dropped embedding provenance; repair the benchmark before judging another hybrid sequence",
+      "bodySha256": "f927405490616a8775f5a5f758926c714de0b2dd9feb9cbb4a30f4b2429df009",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-036"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-13",
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-037",
+      "title": "Qualify the repaired hybrid instrument on three prospective seeds at committed source e4bf686399",
+      "bodySha256": "b75b2d85886770e0e59a7b2e061c8262fd60737adb2d6f50015aa49fe694d4e5",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-037"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-038",
+      "title": "D037 third seed fails fixed-provenance recall and the cold envelope; count resets to zero",
+      "bodySha256": "062c5f4643675d86d9e96d0484d7b0ccd4a5d35072f0e4f6e6022b46d5c5cd30",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-038"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-039",
+      "title": "Preserve each lexical alternative's ordinal through final hybrid fusion; D038 rank-three loss is nested position demotion",
+      "bodySha256": "3a03e524d7ff2047f84b6e4de8f12447b52e5385ae225ddc139c3bd9c59367fc",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-039"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-13",
+        "r-16"
+      ]
+    },
+    {
+      "id": "D-040",
+      "title": "D038 session cold tail includes serial lexical and semantic source stages; run independent retrieval stages concurrently",
+      "bodySha256": "6ac0800f74f8a1fbd3df4d79651237177c200b634040e5de8a5bbd0ab73492c7",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-040"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-041",
+      "title": "Make source qualification automatic in the existing benchmark; reject dirt, drift and mismatched pins",
+      "bodySha256": "d6b407fa8f3882bd1388e1dab1e4316c74fd3e14c29af2b2f5b07ed55175060f",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-041"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-13",
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-042",
+      "title": "Acceptance BAR amendment",
+      "bodySha256": "ccc69145f44a4c0f0f426904481a01c63fd2444b03147b7247f41fc6d374c44e",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-042"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-043",
+      "title": "Prospectively qualify rubric9 at frozen336de397 with an immutable three-seed manifest",
+      "bodySha256": "7500c4a9c8be1e486e77c3438886dd06b3fc85eec42d119fc75e186952ff1d83",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-043"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-044",
+      "title": "D043 second declared seed fails cold work-item latency; count stays zero and diagnosis precedes any further judged run",
+      "bodySha256": "700476d28c214bb1052431628b6a60160814cf8ed989d4faa5f344d7524e632c",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-044"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-045",
+      "title": "D044 cold tail is semantic retrieval with own DataFileRead waits; keep the failure and diagnose shared vector path",
+      "bodySha256": "d7a839b8e397213b7aaf9c9084323c205ad5888c71ef4d7ca6f4edc59ac19fd0",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-045"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-046",
+      "title": "D045 exact original vectors expose whole-table chunk HNSW reads; extend the existing literal-surface path",
+      "bodySha256": "0f783a8d872c1d911535e252604c2dd4b8dfea4ffb9d2b5b462d7a04f0ed56f2",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-046"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-047",
+      "title": "Continue the released per-surface index lane through migration1469; preserve current qualification count0",
+      "bodySha256": "b2b18e2b75e3cbf3fb57526bb9ce4316cda692054ec680f45a4853a3f04c30da",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-047"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-048",
+      "title": "Correct D047 surface selection: retire unused report index, retain three ANN-reader indexes",
+      "bodySha256": "3f188e5f0a619ab5aa7d8e174fb74049f436c0a5a92292a1e8725a770d37150b",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-048"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-049",
+      "title": "Preserve original D043 manifest identity and reject leaks in prospective manifests",
+      "bodySha256": "8718a126296b7cb3be037385fc0f69de15e90e3aba609e9484786c60298707a1",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-049"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-13",
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-050",
+      "title": "Acceptance BAR amendment",
+      "bodySha256": "ba33833a03210529f1bd88d999e0ac82cfcd71119f2cd6b53675f57c0ac8530b",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-050"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-051",
+      "title": "Correct mandatory BM25 storage overhead in the live-byte denominator; retain D013 failure",
+      "bodySha256": "078a0aa9ef0269a831de70305df663dc8afaeaff2347a10165f59f281cf8e458",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-051"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-7",
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-052",
+      "title": "Apply D013 every-index reclaim eligibility after metadata correction; keep one rebuild per run",
+      "bodySha256": "fba1a38f908444d287b9e1c287ae7cc226e7e9e695832ae9329040e03172e71c",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-052"
+        }
+      },
+      "explicitlyCitedBy": [
+        "r-7",
+        "r-18"
+      ]
+    },
+    {
+      "id": "D-053",
+      "title": "Keep bloated indexes eligible for reclaim when the compaction step budget is exhausted",
+      "bodySha256": "013324f6ea9e2e3cd59fe378dbe3dd160e8a405993948b3ca4364763b7663326",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-053"
+        }
+      },
+      "explicitlyCitedBy": []
+    },
+    {
+      "id": "D-054",
+      "title": "Preserve the failed D013 window and restart it after verified D051–D053 maintenance adoption",
+      "bodySha256": "197841d16bdb2c7f385cdef8c3a3239b0d8a513405129a35ee46da2c518b2129",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-054"
+        }
+      },
+      "explicitlyCitedBy": []
+    },
+    {
+      "id": "D-055",
+      "title": "Prospectively declare a new fixed b136f2da qualification series without reusing failed seeds",
+      "bodySha256": "0c08dde628c9e9dacc525d46aa46d58b01401b1f45f962c7c8acc0b7f968312f",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-055"
+        }
+      },
+      "explicitlyCitedBy": []
+    },
+    {
+      "id": "D-056",
+      "title": "D055 first source-qualified seed fails latency; qualification remains zero",
+      "bodySha256": "547c37766b5bfe406cbb730d3d915635d28b306d0de3f6b4c80ff7b572c197f5",
+      "sourceRead": {
+        "tool": "plans:get",
+        "args": {
+          "slug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+          "harness": "papercusp",
+          "decisionId": "D-056"
+        }
+      },
+      "explicitlyCitedBy": []
+    }
+  ],
+  "openDecisionMappings": [
+    {
+      "id": "D-023",
+      "proposedCoverage": [
+        "r-16",
+        "r-18"
+      ],
+      "basis": "Stale scan score validation/rank-only fusion. Citation absent; independent review owed."
+    },
+    {
+      "id": "D-053",
+      "proposedCoverage": [
+        "r-7",
+        "r-8",
+        "r-14"
+      ],
+      "basis": "Unsettled compaction cannot hide reclaim. r-8 bound case at line76 explicitly exercises exhausted budget/reclaim. Citation absent; independent adequacy judgment owed."
+    },
+    {
+      "id": "D-054",
+      "proposedCoverage": [
+        "r-14"
+      ],
+      "basis": "Failed historical window retained; new unchanged24h endpoint no earlier2026-10-14T00:21:15.125Z. No soak pass."
+    },
+    {
+      "id": "D-055",
+      "proposedCoverage": [
+        "r-13",
+        "r-18"
+      ],
+      "basis": "Separately declared fixed series/source/seed/artifact identities. METHOD still names original2026-10-12 manifest; explicitly disposition current2026-10-13 declaration, no threshold change."
+    },
+    {
+      "id": "D-056",
+      "proposedCoverage": [
+        "r-13",
+        "r-18"
+      ],
+      "basis": "First new seed latencyFAIL/source-qualified/recallPASS, reset count0; no replacement seed/no accepted implementation."
+    }
+  ],
+  "reviewQuestions": [
+    "Read full named assertion callbacks and verify each can fail its own drift; source hashes and exact title/line permit replay. Excerpt/case caps do not mean omitted assertions are absent.",
+    "r-2/r-3 fixture checks are floors; live corpus outcome requires original operational bakeoff. Assess detector sufficiency rather than equating floor and outcome.",
+    "For four instrument criteria independently derive original artifact snapshots, SHA/run identity and exact instrumentKey; runtime does not auto-execute JSON paths.",
+    "Invert all56 Decisions and disposition every gradeable consequence; five uncited cases above are author proposals only.",
+    "Keep failed audit/seed history, count0,1452unarmed and fresh24hwindow; no grade or implementation acceptance is implied."
+  ]
+}

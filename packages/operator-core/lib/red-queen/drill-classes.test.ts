@@ -9,7 +9,7 @@
  *     'undetected' — catch it here, not in the sandbox);
  *   - every plant/heal/cleanup statement is pinned to the SANDBOX workspace
  *     (the zero-leak partition);
- *   - drill stamping sets origin + sandbox scope on every signal.
+ *   - drill stamping sets origin + the valid operator storage scope on every signal.
  */
 import { describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
@@ -22,7 +22,7 @@ import {
 } from '../harness/improvements/watchdog';
 import { DRILL_CLASSES, drillClassById, engineDeathSnapshot, stampDrillSignals } from './drill-classes';
 import { detectRoutineEngineDeath } from './engine-death';
-import { SANDBOX_HARNESS_SLUG, SANDBOX_SCOPE, SANDBOX_WORKSPACE_ID } from './types';
+import { SANDBOX_HARNESS_SLUG, SANDBOX_WORKSPACE_ID } from './types';
 
 /** Recording fake: a postgres tagged-template that logs text+params and returns []. */
 function recordingSql() {
@@ -150,7 +150,7 @@ describe('stampDrillSignals', () => {
       { source: 'smoke-fail', key: 'k', title: 't', body: 'b', severity: 'major' },
     ]);
     expect(stamped[0].origin).toBe('drill');
-    expect(stamped[0].scope).toBe(SANDBOX_SCOPE);
+    expect(stamped[0].scope).toBe('operator');
   });
 });
 

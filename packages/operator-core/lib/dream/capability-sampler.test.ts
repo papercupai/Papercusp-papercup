@@ -4,9 +4,10 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getPilotCapabilityManifest } from './capability-catalog';
 import { capabilityHash, capabilityUnitHash, type CapabilityPacket, type CapabilityUnit } from './capability-contracts';
-import { verifyCapabilityPacket } from './capability-packets';
+import { CAPABILITY_EXTRACTION_RECIPE, CAPABILITY_SUMMARY_PROMPT, verifyCapabilityPacket } from './capability-packets';
 import {
   buildCapabilitySamplingSnapshot,
+  buildCapabilityGraphSamplingHints,
   capabilityContentVersion,
   capabilityPairKey,
   sampleCapabilityCombination,
@@ -15,6 +16,7 @@ import {
   type CapabilityStructuralRelation,
   type CapabilityThirdRole,
 } from './capability-sampler';
+import { dreamCapabilityRun, validateDreamSampling } from './dream-run-provenance';
 
 const scope = { workspaceId: 'ws', potSlug: 'pot', repositoryId: 'repo' };
 const now = Date.parse('2026-09-07T10:00:00Z');
@@ -53,8 +55,8 @@ function packet(
     manifestRevision: 'fixture-v1',
     sources,
     extraction: {
-      recipeVersion: 'scanned-anchors-and-radius-v2',
-      promptVersion: 'manifest-facets-v1',
+      recipeVersion: CAPABILITY_EXTRACTION_RECIPE,
+      promptVersion: CAPABILITY_SUMMARY_PROMPT,
       capturedAt: '2026-09-07T10:00:00Z',
       sourceCommit: null,
       dirty: true,
@@ -123,6 +125,129 @@ function thirdRole(s: CapabilitySamplingSnapshot, ai = 0, bi = 1, ci = 2): Capab
   };
 }
 const roots: string[] = [];
+
+function graphPacket(name: string, domain: string, output?: string, input?: string): CapabilityPacket {
+  const p = packet(name, domain);
+  const evidenceIds = [p.sources.find(s => s.kind === 'implementation')!.id];
+  p.unit.contracts = { inputs: [], outputs: [], events: [], state: [], guarantees: [], prerequisites: [], failureModes: [], resourceConstraints: [] };
+  p.unit.contracts.outputs = output ? [{ text: output, status: 'observed', evidenceIds }] : [];
+  p.unit.contracts.inputs = input ? [{ text: input, status: 'observed', evidenceIds }] : [];
+  p.unitHash = capabilityUnitHash(p.unit);
+  const source = p.sources.find(s => s.kind === 'implementation')!;
+  p.graph = { status: 'measured', repositoryId: scope.repositoryId,
+    sourceFingerprint: capabilityHash(JSON.stringify(p.sources.map(s => [s.id, s.path, s.sourceHash]))),
+    candidates: [{ evidenceId: source.id, symbol: name, path: source.path, line1: 1,
+      sourceHash: source.sourceHash, capabilityStatus: 'candidate-only' }],
+    relationships: [], unmapped: [], claimValidation: 'manifest-evidence-only' };
+  return p;
+}
+
+describe('graph-enriched sampler inputs', () => {
+  it.each(['producer-consumer', 'transferable-invariant', 'purpose-mechanism', 'complementary-lifecycle'] as const)(
+    'binds both source versions for %s and preserves admission caveats', async (kind) => {
+      const a = graphPacket('a', 'memory'), b = graphPacket('b', 'code');
+      const claim = (p: CapabilityPacket, text: string) => ({ text, status: 'observed' as const, evidenceIds: [p.sources[0]!.id] });
+      if (kind === 'producer-consumer') {
+        a.unit.contracts.outputs = [claim(a, 'Scoped artifact')]; b.unit.contracts.inputs = [claim(b, 'Scoped artifact')];
+      } else if (kind === 'transferable-invariant') {
+        a.unit.contracts.guarantees = [claim(a, 'Scoped artifact')]; b.unit.contracts.guarantees = [claim(b, 'Scoped artifact')];
+      } else if (kind === 'purpose-mechanism') {
+        a.unit.purpose = [claim(a, 'Scoped artifact')]; b.unit.mechanism = [claim(b, 'Scoped artifact')];
+      } else {
+        a.unit.contracts.events = [claim(a, 'Scoped artifact')]; b.unit.contracts.state = [claim(b, 'Scoped artifact')];
+      }
+      b.unit.contracts.prerequisites = [claim(b, 'Scoped authorization is required')];
+      b.unit.contracts.resourceConstraints = [claim(b, 'Maximum one admitted resource')];
+      a.unitHash = capabilityUnitHash(a.unit); b.unitHash = capabilityUnitHash(b.unit);
+      const s = await snapshot([a, b]);
+      const hints = buildCapabilityGraphSamplingHints(s);
+      const hint = hints.relations.find(r => r.aId === a.unit.id && r.bId === b.unit.id && r.kind === kind)!;
+      expect(hint).toMatchObject({ aVersion: s.eligible[0]!.contentVersion, bVersion: s.eligible[1]!.contentVersion });
+      expect(hint.preconditions).toEqual(expect.arrayContaining([
+        expect.stringContaining('Scoped authorization is required'), expect.stringContaining('Maximum one admitted resource'),
+      ]));
+      expect(hint.rationale).toContain('runtime compatibility remain unverified');
+      const oldB = structuredClone(b);
+      oldB.sources[0]!.sourceHash = capabilityHash('earlier independently captured source');
+      const stale = { ...hint, bVersion: capabilityContentVersion(oldB) };
+      expect(stale.bVersion).toMatch(/^[a-f0-9]{64}$/);
+      expect(stale.bVersion).not.toBe(hint.bVersion);
+      expect(selection(s, { relations: [stale], thirdRoles: [], policy: { strategyWeights: [1, 0, 0] } }).selection.relation).toBeNull();
+    },
+  );
+
+  it('proposes source-version-bound producer/consumer and removable third-role candidates by default', async () => {
+    const s = await snapshot([graphPacket('a', 'memory', 'Scoped artifact'),
+      graphPacket('b', 'code', undefined, 'Scoped artifact'), graphPacket('c', 'planning', undefined, 'Scoped artifact')]);
+    const hints = buildCapabilityGraphSamplingHints(s);
+    expect(hints.relations).toContainEqual(expect.objectContaining({ aId: 'capability:a', bId: 'capability:b', kind: 'producer-consumer',
+      aVersion: s.eligible[0]!.contentVersion, bVersion: s.eligible[1]!.contentVersion }));
+    expect(hints.thirdRoles).toContainEqual(expect.objectContaining({ aId: 'capability:a', bId: 'capability:b', cId: 'capability:c', role: 'consumer' }));
+    const sampled = selection(s, { arity: 3, policy: { strategyWeights: [1, 0, 0] } });
+    expect(sampled.log.strategy).toBe('structural-cross-domain');
+    expect(sampled.selection.relation?.kind).toBe('producer-consumer');
+    expect(sampled.selection.c?.declaration.removalEffect).toContain('removes this proposed consumer contract');
+    expect(sampled.selection.relation?.preconditions[0]).toContain('workspace/auth scope');
+  });
+
+  it('rejects stale graph identity, inferred contracts and overlapping capability aliases', async () => {
+    const a = graphPacket('a', 'memory', 'Scoped artifact'), b = graphPacket('b', 'code', undefined, 'Scoped artifact');
+    a.graph!.sourceFingerprint = '0'.repeat(64);
+    expect(buildCapabilityGraphSamplingHints(await snapshot([a, b])).relations).toEqual([]);
+    a.graph!.sourceFingerprint = capabilityHash(JSON.stringify(a.sources.map(s => [s.id, s.path, s.sourceHash])));
+    a.unit.contracts.outputs[0]!.status = 'inferred'; a.unitHash = capabilityUnitHash(a.unit);
+    expect(buildCapabilityGraphSamplingHints(await snapshot([a, b])).relations).toEqual([]);
+    a.unit.contracts.outputs[0]!.status = 'observed'; a.unit.overlapsUnitIds = [b.unit.id]; a.unitHash = capabilityUnitHash(a.unit);
+    expect(buildCapabilityGraphSamplingHints(await snapshot([a, b])).relations).toEqual([]);
+  });
+
+  it('keeps disconnected exploratory pairs and explicit random controls eligible', async () => {
+    const s = await snapshot([graphPacket('a', 'memory', 'Scoped artifact'), graphPacket('b', 'code', undefined, 'Scoped artifact'),
+      graphPacket('disconnected', 'planning')]);
+    const selected = new Set<string>();
+    for (let i = 0; i < 60; i++) {
+      const sampled = selection(s, { seed: `control:${i}`, mode: 'random-control' });
+      expect(sampled.selection.relation).toBeNull();
+      selected.add(sampled.selection.a.packet.unit.id); selected.add(sampled.selection.b.packet.unit.id);
+    }
+    expect(selected.has('capability:disconnected')).toBe(true);
+    expect(selection(s, { relations: [], thirdRoles: [], policy: { strategyWeights: [0, 1, 0] } }).selection.relation).toBeNull();
+  });
+});
+
+describe('persisted dream sampling compatibility', () => {
+  it('reads known v1 provenance while keeping new writes v2-only', async () => {
+    const current = selection(await snapshot([packet('a', 'memory'), packet('b', 'code')]));
+    const readRun = (sampling: typeof current) =>
+      dreamCapabilityRun({
+        outcome: {
+          capabilityRun: {
+            schemaVersion: 'dream-capability-run-v1',
+            manifestHash: 'a'.repeat(64),
+            manifestRevision: 'fixture-v1',
+            dreamerModel: 'dreamer',
+            reviewerModel: 'reviewer',
+            dreamPromptVersion: 'dream-v2',
+            reviewPromptVersion: 'review-v1',
+            sampling,
+            calls: [],
+            artifactId: null,
+          },
+        },
+      });
+    expect(readRun(current)?.sampling).toEqual(current);
+    expect(() => validateDreamSampling(current)).not.toThrow();
+
+    const historical = structuredClone(current);
+    (historical.log as { version: string }).version = 'domain-structural-v1';
+    expect(readRun(historical)?.sampling?.log.version).toBe('domain-structural-v1');
+    expect(() => validateDreamSampling(historical)).toThrow(/Invalid persisted sampling provenance/);
+
+    const unknown = structuredClone(historical);
+    (unknown.log as { version: string }).version = 'domain-structural-v0';
+    expect(() => readRun(unknown)).toThrow(/Invalid persisted sampling provenance/);
+  });
+});
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -209,7 +334,7 @@ describe('capability sampling eligibility', () => {
       verifyCapabilityPacket(p, input, { readArtifact: (p) => readFile(join(root, p), 'utf8') });
     const input = { rootPath: root, scope, manifest: manifest(packets), packets };
     const fresh = await buildCapabilitySamplingSnapshot(input, verify);
-    expect(fresh.eligible).toHaveLength(2);
+    expect(fresh.eligible, JSON.stringify(fresh.exclusions)).toHaveLength(2);
     await rm(join(root, packets[1]!.sources.find((s) => s.kind === 'test')!.path));
     const stale = await buildCapabilitySamplingSnapshot(input, verify);
     expect(stale.eligible).toHaveLength(1);

@@ -72,6 +72,37 @@ export function makeConcurrencySampler(startedAtMs: number, now: () => number): 
   };
 }
 
+/** Project a complete lifecycle census into the existing timeline shape.
+ * Intervals are half-open: a replacement starting as its predecessor ends
+ * does not create a fictitious overlap. Weight concurrency by elapsed time,
+ * including idle gaps; irregular event spacing must not bias the average.
+ * The caller labels what its lifecycle timestamps actually measure. */
+export function concurrencyTimelineFromIntervals(
+  intervals: readonly { startedAtMs: number; endedAtMs: number }[],
+): { startedAtMs: number; endedAtMs: number; wallClockMs: number; participantWallClockMs: number;
+  concurrencyTimeline: ConcurrencyTimeline } | null {
+  if (!intervals.length || intervals.some(i => !Number.isSafeInteger(i.startedAtMs) || i.startedAtMs < 0 ||
+      !Number.isSafeInteger(i.endedAtMs) || i.endedAtMs < i.startedAtMs)) return null;
+  const startedAtMs = intervals.reduce((min, i) => Math.min(min, i.startedAtMs), intervals[0].startedAtMs);
+  const endedAtMs = intervals.reduce((max, i) => Math.max(max, i.endedAtMs), intervals[0].endedAtMs);
+  const wallClockMs = endedAtMs - startedAtMs;
+  const participantWallClockMs = intervals.reduce((sum, i) => sum + (i.endedAtMs - i.startedAtMs), 0);
+  if (!Number.isSafeInteger(participantWallClockMs)) return null;
+  const deltas = new Map<number, number>([[startedAtMs, 0], [endedAtMs, 0]]);
+  for (const i of intervals) {
+    deltas.set(i.startedAtMs, (deltas.get(i.startedAtMs) ?? 0) + 1);
+    deltas.set(i.endedAtMs, (deltas.get(i.endedAtMs) ?? 0) - 1);
+  }
+  let live = 0, peakConcurrent = 0;
+  const samples = [...deltas].sort(([a], [b]) => a - b).map(([time, delta]) => {
+    live += delta; peakConcurrent = Math.max(peakConcurrent, live);
+    return { tMs: time - startedAtMs, live };
+  });
+  return { startedAtMs, endedAtMs, wallClockMs, participantWallClockMs,
+    concurrencyTimeline: { samples, peakConcurrent,
+      avgConcurrent: wallClockMs === 0 ? 0 : participantWallClockMs / wallClockMs } };
+}
+
 /** Default cadence for the concurrency sampler (ms) — shared so every driver samples on the same beat. */
 export const DEFAULT_SAMPLE_INTERVAL_MS = 1_000;
 /** Default wall-clock ceiling for a whole backlog drain (ms) before a driver gives up and returns partial. */

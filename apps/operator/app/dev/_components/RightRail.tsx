@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useOperatorWorkspaceLocation } from '@papercusp/operator-ui';
 
 interface Props {
   workspaceIds: string[] | null;
@@ -75,15 +76,22 @@ async function postTool<T>(name: string, body: unknown): Promise<T | null> {
 }
 
 export default function RightRail({ workspaceIds }: Props) {
+  const location = useOperatorWorkspaceLocation();
   const [pluginHost, setPluginHost] = useState<PluginHost | null>(null);
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const [pg, setPg] = useState<PgHealth | null>(null);
   const [build, setBuild] = useState<BuildInfo | null>(null);
 
   useEffect(() => {
+    // These diagnostics read the local operator's process and database. The
+    // hosted workspace relay does not expose their routes; don't poll a shared
+    // host or render failed reads as an indefinitely loading status rail.
+    if (location !== 'local') return;
     let cancelled = false;
     function refresh() {
-      fetch('/api/plugins/host/refresh', { method: 'POST' })
+      // GET observes status; POST captures reload state and resets the host.
+      // Opening or polling this panel must never reload plugins.
+      fetch('/api/plugins/host/refresh', { method: 'GET' })
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => {
           if (cancelled || !d) return;
@@ -114,7 +122,14 @@ export default function RightRail({ workspaceIds }: Props) {
       cancelled = true;
       clearInterval(t);
     };
-  }, [workspaceIds]);
+  }, [workspaceIds, location]);
+
+  if (location !== 'local') return (
+    <div className="pc-dev-rail-content" role="status">
+      <h3 className="pc-dev-rail-h">Local diagnostics unavailable</h3>
+      <p>Plugin host, database, build and activity diagnostics are available in the local desktop profile.</p>
+    </div>
+  );
 
   return (
     <div className="pc-dev-rail-content">

@@ -17,8 +17,10 @@ import {
   noInputDiagnostic,
   parseFoundSummary,
   parseTscDiagnostics,
+  splitVanishedIncludeFiles,
   summariseByFile,
   syntaxBrokenFiles,
+  vanishedIncludeFile,
 } from './tsc-diagnostics';
 
 /** Verbatim from the live operator-core run. */
@@ -99,6 +101,65 @@ describe('no-op detection — the correctness argument for the tool', () => {
 
   it('does not flag a merely EMPTY result — that is a clean project, not a no-op', () => {
     expect(noInputDiagnostic(parseTscDiagnostics(''))).toBeNull();
+  });
+});
+
+describe('include-glob files that vanish mid-run (EI-24801454238382823)', () => {
+  // VERBATIM TypeScript 6.0.3 output, produced by listing a file in the include glob and
+  // deleting it before the program read it (parseJsonSourceFileConfigFileContent with a
+  // readDirectory that still returns the deleted path, then createProgram — the same
+  // pipeline `tsc -p` runs). The other two are the same code with the other two causes.
+  const INCLUDE_RACE = [
+    "error TS6053: File '/r/packages/operator-core/lib/workspace-host/__mutprobe_x/a.test.ts' not found.",
+    '  The file is in the program because:',
+    "    Matched by include pattern 'lib/**/*.ts' in '/r/packages/operator-core/tsconfig.json'",
+  ].join('\n');
+  const FILES_LIST_MISSING = [
+    "error TS6053: File '/r/nope.ts' not found.",
+    '  The file is in the program because:',
+    "    Part of 'files' list in tsconfig.json",
+  ].join('\n');
+  const OPERAND_MISSING = [
+    "error TS6053: File '/r/nope.ts' not found.",
+    '  The file is in the program because:',
+    '    Root file specified for compilation',
+  ].join('\n');
+
+  it('names the vanished path and does NOT call the run a no-op — the rest of the program was checked', () => {
+    const d = parseTscDiagnostics(INCLUDE_RACE);
+    expect(d).toHaveLength(1);
+    expect(vanishedIncludeFile(d[0])).toBe('/r/packages/operator-core/lib/workspace-host/__mutprobe_x/a.test.ts');
+    expect(noInputDiagnostic(d)).toBeNull();
+  });
+
+  it.each([
+    ['a missing files-list entry', FILES_LIST_MISSING],
+    ['a missing CLI operand', OPERAND_MISSING],
+    ['a TS6053 with no explanation at all', "error TS6053: File '/x/nope.ts' not found."],
+  ])('keeps %s as a genuine no-input refusal', (_label, output) => {
+    const d = parseTscDiagnostics(output);
+    expect(vanishedIncludeFile(d[0])).toBeNull();
+    expect(noInputDiagnostic(d)?.code).toBe('TS6053');
+  });
+
+  it('still refuses when a genuine no-input diagnostic rides beside a vanished glob file', () => {
+    const d = parseTscDiagnostics(`${INCLUDE_RACE}\n${OPERAND_MISSING}`);
+    expect(noInputDiagnostic(d)?.message).toContain("File '/r/nope.ts' not found.");
+  });
+
+  it('splits vanished files out, de-duplicated, and keeps every real error in order', () => {
+    const output = [INCLUDE_RACE, INCLUDE_RACE, REAL_OUTPUT].join('\n');
+    const { vanished, rest } = splitVanishedIncludeFiles(parseTscDiagnostics(output));
+    expect(vanished).toEqual(['/r/packages/operator-core/lib/workspace-host/__mutprobe_x/a.test.ts']);
+    expect(rest).toEqual(parseTscDiagnostics(REAL_OUTPUT));
+    expect(rest.length).toBeGreaterThan(0);
+  });
+
+  it('ignores a LOCATED TS6053 — only the global "file not found" form is a listing race', () => {
+    const d = parseTscDiagnostics(
+      "a.ts(1,1): error TS6053: File '/r/b.ts' not found. The file is in the program because: Matched by include pattern 'x' in 'y'",
+    );
+    expect(vanishedIncludeFile(d[0])).toBeNull();
   });
 });
 

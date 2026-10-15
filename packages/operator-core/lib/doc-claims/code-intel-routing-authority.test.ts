@@ -36,6 +36,12 @@ const GUIDANCE_FILES = [
   'apps/operator/prompts/papercusp-su-power.tools.md',
 ] as const;
 
+const CALLER_ROUTING_DOCS = [
+  'CLAUDE.md',
+  'AGENTS.md',
+  'packages/operator-core/lib/doc-projection/claude-md-corpus.generated.md',
+] as const;
+
 const PROMPTS_DIR = 'apps/operator/prompts';
 
 /**
@@ -196,6 +202,51 @@ describe('D-001 code-intelligence routing authority', () => {
     });
   });
 
+  describe('a sanctioned tool routed for the wrong question (gitnexus-deterministic-integration R-2)', () => {
+    // The live sentence this rule was written for, verbatim. It passed the ban rule
+    // because `gitnexus.context` is sanctioned AND because the paragraph's later
+    // "NOT `gitnexus.query`" excused it — so the rule is sentence-scoped.
+    const PRE_R2_DEBUGGER_LINE =
+      '- Then code: when the gitnexus-bridge plugin is installed, `gitnexus.context` (definition + callers/callees) and `gitnexus.impact` (downstream radius) are the fastest way to find call sites + impact. NOT `gitnexus.query` — historical builds returned empty or unranked noise and current probes SIGSEGV the shared MCP process, so the bridge fails it closed before dispatch (D-065).';
+
+    it('catches the exact debugger.tools.md sentence that pitched gitnexus.context for definitions', () => {
+      const verdict = judgeCodeIntelRouting(PRE_R2_DEBUGGER_LINE);
+      expect(verdict.ok).toBe(false);
+      expect(verdict.violations).toHaveLength(1);
+      expect(verdict.violations[0]!).toMatchObject({ tool: 'gitnexus.context', position: 'prose-recommendation', instead: 'lsp:query' });
+    });
+
+    it('catches gitnexus.context as the authority of a definition row', () => {
+      const verdict = judgeCodeIntelRouting('| definition, references | `gitnexus.context` | `grep` |\n');
+      expect(verdict.ok).toBe(false);
+      expect(verdict.violations[0]!).toMatchObject({ tool: 'gitnexus.context', position: 'authority-cell' });
+    });
+
+    it('does NOT flag gitnexus.context for topology, in a row or in the su playbook sentence', () => {
+      const source = [
+        '| call chains, impact radius, topology | `gitnexus.context` / `gitnexus.impact` | `gitnexus.query` |',
+        '',
+        'Use `gitnexus.context` for a known symbol, `graph:query` for topology, or `rg` for keywords.',
+      ].join('\n');
+      const verdict = judgeCodeIntelRouting(source);
+      expect(verdict.ok, formatRoutingViolations('fixture', verdict.violations)).toBe(true);
+      expect(verdict.positionsChecked).toBeGreaterThan(1);
+    });
+
+    it('does NOT flag a sentence that negates the pairing', () => {
+      const verdict = judgeCodeIntelRouting('`gitnexus.context` is not the route for a definition lookup; use `lsp:query`.');
+      expect(verdict.ok, formatRoutingViolations('fixture', verdict.violations)).toBe(true);
+    });
+
+    it('does NOT flag the corrected debugger line: definitions and gitnexus.context sit in different sentences', () => {
+      const verdict = judgeCodeIntelRouting(
+        '- Then code: find where a symbol is defined with `lsp:query` (compiler semantics). When the gitnexus-bridge plugin is installed, `gitnexus.context` (callers/callees of a known symbol) and `gitnexus.impact` (downstream radius) are the fastest way to find call sites + impact.',
+      );
+      expect(verdict.ok, formatRoutingViolations('fixture', verdict.violations)).toBe(true);
+      expect(verdict.positionsChecked).toBeGreaterThan(0);
+    });
+  });
+
   describe('the live guidance surfaces', () => {
     for (const rel of GUIDANCE_FILES) {
       it(`${rel} routes no question class to a raw backend`, () => {
@@ -214,6 +265,25 @@ describe('D-001 code-intelligence routing authority', () => {
           verdict.ok,
           verdict.ok ? '' : `\n${formatRoutingViolations(rel, verdict.violations)}\n`,
         ).toBe(true);
+      });
+    }
+
+    for (const rel of CALLER_ROUTING_DOCS) {
+      it(`${rel} keeps the measured callers caveat in the authority cell`, () => {
+        const source = readFileSync(join(ROOT, rel), 'utf8');
+        const rows = source
+          .split('\n')
+          .filter((line) => line.startsWith('| who CALLS this symbol |'));
+        expect(rows, `${rel} should have exactly one callers row`).toHaveLength(1);
+
+        const cells = rows[0]!.split('|').slice(1, -1).map((cell) => cell.trim());
+        expect(cells).toHaveLength(3);
+        expect(cells[0]).toBe('who CALLS this symbol');
+        expect(cells[1]).toMatch(/graph:query.*op:'callers'/);
+        expect(cells[1]).toMatch(/empty is not proof of no callers/i);
+        expect(cells[1]).toMatch(/measured needs-widening/i);
+        expect(cells[1]).toMatch(/held at observe/i);
+        expect(cells[1]).toContain('WI-10006543');
       });
     }
 

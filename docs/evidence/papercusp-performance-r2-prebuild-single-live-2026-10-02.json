@@ -1,0 +1,172 @@
+{
+  "schemaVersion": 1,
+  "kind": "r2-prebuild-scoped-live-observation",
+  "workItem": "WI-10004474",
+  "runtime": {
+    "name": "staging-operator",
+    "port": 3170,
+    "qualifiedBuild": "a4fe1b5e4a",
+    "qualificationMethod": "dev:pipeline_position path blob containment",
+    "containingPaths": [
+      "packages/operator-core/lib/agent-tools/dev/pg_health.ts",
+      "libs/papercusp/libs/db/src/acquire-registry.ts",
+      "patches/postgres+3.4.9.patch"
+    ]
+  },
+  "request": {
+    "tool": "search:fulltext",
+    "invocationId": "31236138",
+    "at": "2026-10-02 10:28:50.218+00",
+    "durationMs": 319,
+    "status": "ok",
+    "owner": "su-25bc0450-2829-42b9-a2dd-1431c99e4ba8",
+    "host": "port-3170",
+    "pid": "linux:d02155ae-ac35-4b23-898e-7325f799da48:22586030",
+    "build": "a4fe1b5e4a",
+    "args": {
+      "limit": 5,
+      "query": "session native preservation",
+      "harness_slug": "papercusp"
+    },
+    "read": {
+      "unit": "ms",
+      "stages": [
+        {
+          "name": "filters",
+          "status": "ok",
+          "elapsedMs": 0.06136899988632649
+        },
+        {
+          "name": "retrieval",
+          "status": "ok",
+          "elapsedMs": 164.15137400000822
+        },
+        {
+          "name": "rerank",
+          "status": "ok",
+          "elapsedMs": 150.47646300005727
+        }
+      ],
+      "timing": "wall-time-sequential-stages",
+      "elapsedMs": 314.9778830000432,
+      "schemaVersion": "fulltext-read-v1",
+      "queryDiagnostics": {
+        "rowId": null,
+        "stage": "scope-query",
+        "timing": "query-build-to-terminal-not-acquisition",
+        "buildSha": "a4fe1b5e4a",
+        "coverage": "queries-created-during-retrieval",
+        "attemptId": "0f960d50-8ea3-45b3-abe6-88da9294eab2",
+        "processInstanceId": "c2be3ff3-1c08-42f3-b8fe-34f6b9a1dc6a"
+      }
+    },
+    "metadataKeys": "format,kernel,uiClientId,requestOrigin,dispatchStages,searchFulltextRead"
+  },
+  "observer": {
+    "probe": "r2-prebuild-qualified-single-request",
+    "startedAt": 1790936929898,
+    "endedAt": 1790936930227,
+    "requestMs": 321,
+    "query": "session native preservation",
+    "responseKeys": "query,scope,total_hits,results,work_item_scope_hint",
+    "pid": 2152610,
+    "sameProcess": true,
+    "preBuildTiming": "first-query-handle-to-build-excludes-lazy-time",
+    "records": [
+      {
+        "pool": "org-admin",
+        "source": {
+          "processInstanceId": "c2be3ff3-1c08-42f3-b8fe-34f6b9a1dc6a",
+          "buildSha": null,
+          "poolInstanceId": "394b1394-af87-4011-a37b-e73cbb07052b"
+        },
+        "connectionId": 13,
+        "queryId": 3861,
+        "backendPid": 79013635,
+        "queryFamily": "select:harness_shared.harness_decisions",
+        "elapsedMs": 5,
+        "preBuildMs": 0,
+        "status": "ok",
+        "recordedAt": 1790936930066,
+        "correlation": {
+          "processInstanceId": "c2be3ff3-1c08-42f3-b8fe-34f6b9a1dc6a",
+          "buildSha": "a4fe1b5e4a",
+          "rowId": null,
+          "attemptId": "0f960d50-8ea3-45b3-abe6-88da9294eab2",
+          "hopId": 1,
+          "stage": "scope-query",
+          "boundary": "await"
+        }
+      },
+      {
+        "pool": "org-admin",
+        "source": {
+          "processInstanceId": "c2be3ff3-1c08-42f3-b8fe-34f6b9a1dc6a",
+          "buildSha": null,
+          "poolInstanceId": "394b1394-af87-4011-a37b-e73cbb07052b"
+        },
+        "connectionId": 12,
+        "queryId": 3611,
+        "backendPid": 204835058,
+        "queryFamily": "select:harness_shared.harness_decisions",
+        "elapsedMs": 0,
+        "preBuildMs": 0,
+        "status": "ok",
+        "recordedAt": 1790936930067,
+        "correlation": {
+          "processInstanceId": "c2be3ff3-1c08-42f3-b8fe-34f6b9a1dc6a",
+          "buildSha": "a4fe1b5e4a",
+          "rowId": null,
+          "attemptId": "0f960d50-8ea3-45b3-abe6-88da9294eab2",
+          "hopId": 1,
+          "stage": "scope-query",
+          "boundary": "await"
+        }
+      }
+    ],
+    "pools": [
+      {
+        "pool": "org-app",
+        "totalRecorded": 10988,
+        "dropped": 10956,
+        "retained": 32,
+        "omittedRetained": 0
+      },
+      {
+        "pool": "org-admin",
+        "totalRecorded": 61097,
+        "dropped": 61065,
+        "retained": 32,
+        "omittedRetained": 0
+      },
+      {
+        "pool": "org-admin-lossless-bigint",
+        "totalRecorded": 58,
+        "dropped": 26,
+        "retained": 32,
+        "omittedRetained": 0
+      }
+    ]
+  },
+  "validation": {
+    "exactOneRequest": true,
+    "sameProcessBeforeAfter": true,
+    "ledgerAttemptMatchesAllObservedRecords": true,
+    "ledgerProcessInstanceMatchesAllObservedRecords": true,
+    "ledgerBuildMatchesAllObservedCorrelations": true,
+    "observedPreBuildFieldsMeasured": true,
+    "observedRecordsSucceeded": true
+  },
+  "limitations": [
+    "One live request; the two retained linked records are the observed subset, not a claim that every SQL query was retained.",
+    "preBuildMs starts at first Query.handle and ends at first build, excludes caller-controlled lazy time, and is not pure acquisition or CPU.",
+    "Recorded integer 0 does not establish an exactly zero interval or absence of queueing.",
+    "elapsedMs measures build-to-terminal ReadyForQuery; concurrent per-query durations must not be summed into request wall time.",
+    "Diagnostic source.buildSha is null; the recorded correlation and ledger separately contain a4fe1b5e4a. No replacement value was invented.",
+    "The earlier full R2 acceptance failure 20462736/73db remains; this sample does not prove full acceptance, historical latency cause, public readiness, or release shipment."
+  ],
+  "preflight": {
+    "searchOccurred": false,
+    "reason": "Initial code:run used handler data wrapper instead of the typed processDiagnostics root and stopped after one localOnly health read; corrected after exact pinned root-shape inspection."
+  }
+}

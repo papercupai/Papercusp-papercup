@@ -60,7 +60,7 @@ function cleanSources(): ReconciliationSources {
     bank: { status: 'not-configured' },
     chain: { status: 'ok', value: [{ ref: externalRefKey(TX), netCents: -300 }] },
     credits: { status: 'ok', value: { outstandingMicros: 10_000 * 10_000 } },
-    dao: { status: 'ok', value: { transferredCents: 300 } },
+    dao: { status: 'ok', value: { transferredCents: 300, chainAccruedCents: 0 } },
     safe: { status: 'ok', value: { balanceMicros: 3_000_000, receiptsMicros: 3_000_000, approvedSpendsMicros: 0 } },
   };
 }
@@ -106,7 +106,7 @@ const BREAKS: readonly { invariant: ReconciliationInvariant; sources: () => Reco
   {
     invariant: 'dao-payable-equals-accrued-minus-transferred',
     // The chain shows 100c more leaving for the DAO than the journal recorded.
-    sources: () => ({ ...cleanSources(), dao: { status: 'ok', value: { transferredCents: 400 } } }),
+    sources: () => ({ ...cleanSources(), dao: { status: 'ok', value: { transferredCents: 400, chainAccruedCents: 0 } } }),
   },
   {
     invariant: 'safe-balance-equals-receipts-minus-approved-spends',
@@ -283,5 +283,35 @@ describe('reconciliation (R-31)', () => {
       month: '2025-12',
     });
     expect(MANDATED_INVARIANTS).toHaveLength(3);
+  });
+});
+
+describe('dao-payable accrual on the chain rail (D-032, WI-10004709)', () => {
+  const CLAIM: ExternalRef = { kind: 'chain-tx', chainId: 84532, txHash: `0x${'cd'.repeat(32)}` };
+  // A final settlement claim of 20.00 whose batch allocated 2.00 to the DAO.
+  const claimEntry = (daoCents: number) =>
+    entry('chain-tx:84532:claim-1', CLAIM, { kind: 'customer-payment', grossCents: 2_000, feeCents: 0, taxCents: 0, daoCents, refundReserveCents: 0 });
+  const daoVerdict = (entries: readonly JournalEntry[], chainAccruedCents: number) =>
+    evaluateReconciliation({
+      entries,
+      sources: { ...cleanSources(), dao: { status: 'ok', value: { transferredCents: 300, chainAccruedCents } } },
+      period: reconciliationPeriod('provisional', NOW),
+    }).find((v) => v.invariant === 'dao-payable-equals-accrued-minus-transferred')!;
+
+  it('holds when the journal carries exactly the DAO share the commerce ledger accrued', () => {
+    const v = daoVerdict([...ENTRIES, claimEntry(200)], 200);
+    expect(v.status).toBe('ok');
+    // The off-chain accrual is the Stripe payment's 500c; the chain rail's 200c comes from the Worker.
+    expect(v.detail).toContain('off-chain journal 500c + final settlements 200c');
+  });
+
+  it('breaks when the journal disagrees with the independent accrual, whichever side is short', () => {
+    // A mis-split claim entry: the journal credited the DAO 150c of a 200c allocation.
+    expect(daoVerdict([...ENTRIES, claimEntry(150)], 200).status).toBe('broken');
+    // A final batch the journal never recorded: the DAO is owed 200c the books do not show.
+    expect(daoVerdict(ENTRIES, 200).status).toBe('broken');
+    // The pre-D-032 self-check: with the chain accrual taken from the journal itself, the missing
+    // entry would have passed. Taking it from the Worker is what makes this a break.
+    expect(daoVerdict(ENTRIES, 0).status).toBe('ok');
   });
 });

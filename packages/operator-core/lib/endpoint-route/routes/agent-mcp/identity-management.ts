@@ -2,7 +2,7 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import { isLoopbackRequest } from '../../../superuser-token';
 import { activeWorkspaceId } from '../../../workspace-registry';
-import { composeModePromptSection } from './bootstrap-su';
+import { composeModePromptSection } from './bootstrap-su-shared';
 
 interface Body {
   ownerId?: unknown;

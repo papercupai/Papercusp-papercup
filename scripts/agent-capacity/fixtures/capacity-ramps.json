@@ -1,0 +1,140 @@
+{
+  "description": "Exact verdict-line extracts and one driver summary from the original GCP runs cited by D-019/D-020/D-023/D-024/D-027/D-040. Source hashes cover the original full files. These are historical measurements, not fresh cloud evidence. No run is repeated by this fixture.",
+  "measurements": [
+    {
+      "capacityId": "mixed-e2s4",
+      "source": "~/.cache/agent-capacity/p005-ovl/e2-standard-4/ramp-mixed-normal.log",
+      "sourceSha256": "cd8f1b31706ae9923eaa21d69dbfd6a32d1c0782eb422f568c71690f57832fdb",
+      "label": "mixed-normal",
+      "verdictLines": [
+        "RAMP_STEP_END p005-mixed-normal-n4 n=4 rc=0 OK runs=31 wallSlowdown=0.73 diverged=4 toolDiverged=4 achieved=4/4 setupMsP50=72 2026-10-01T08:23:07Z",
+        "RAMP_STEP_END p005-mixed-normal-n8 n=8 rc=0 OK runs=56 wallSlowdown=0.76 diverged=8 toolDiverged=8 achieved=7.9/8 setupMsP50=82 2026-10-01T08:37:35Z",
+        "RAMP_STEP_END p005-mixed-normal-n16 n=16 rc=0 SATURATED reason=failed=2 runs=91 wallSlowdown=0.93 diverged=17 toolDiverged=17 achieved=15.9/16 setupMsP50=119 2026-10-01T09:04:37Z"
+      ]
+    },
+    {
+      "capacityId": "mixed-e2s8",
+      "source": "~/.cache/agent-capacity/p005-ovl/e2-standard-8/ramp-mixed-normal.log",
+      "sourceSha256": "301e4f57f3f0679eb8740e29f8315eb597ef344b19d2504d0f888645caf05ae9",
+      "label": "mixed-normal",
+      "verdictLines": [
+        "RAMP_STEP_END p005-mixed-normal-n8 n=8 rc=0 OK runs=56 wallSlowdown=0.72 diverged=10 toolDiverged=10 achieved=7.9/8 setupMsP50=76 2026-10-01T08:24:53Z",
+        "RAMP_STEP_END p005-mixed-normal-n16 n=16 rc=0 OK runs=105 wallSlowdown=0.70 diverged=22 toolDiverged=22 achieved=15.9/16 setupMsP50=85 2026-10-01T08:41:32Z",
+        "RAMP_STEP_END p005-mixed-normal-n32 n=32 rc=0 OK runs=171 wallSlowdown=0.79 diverged=34 toolDiverged=34 achieved=31.6/32 setupMsP50=113 2026-10-01T09:03:09Z",
+        "RAMP_STEP_END p005-mixed-normal-n64 n=64 rc=0 SATURATED reason=failed=17 runs=219 wallSlowdown=1.02 diverged=71 toolDiverged=71 achieved=50.3/64 setupMsP50=173 2026-10-01T09:30:03Z"
+      ]
+    },
+    {
+      "capacityId": "mixed-e2s16",
+      "source": "~/.cache/agent-capacity/p005-ovl/e2-standard-16/ramp-mixed-normal.log",
+      "sourceSha256": "5c206186b8a9e86c1d064d738313262b8fd36d675ca629e827ef5b8846de03cc",
+      "label": "mixed-normal",
+      "verdictLines": [
+        "RAMP_STEP_END p005-mixed-normal-n16 n=16 rc=0 OK runs=105 wallSlowdown=0.69 diverged=23 toolDiverged=23 achieved=15.9/16 setupMsP50=82 2026-10-01T08:27:41Z",
+        "RAMP_STEP_END p005-mixed-normal-n32 n=32 rc=0 OK runs=180 wallSlowdown=0.70 diverged=36 toolDiverged=36 achieved=31.7/32 setupMsP50=111 2026-10-01T08:43:20Z",
+        "RAMP_STEP_END p005-mixed-normal-n64 n=64 rc=0 OK runs=308 wallSlowdown=0.82 diverged=67 toolDiverged=67 achieved=60.1/64 setupMsP50=148 2026-10-01T09:06:02Z",
+        "RAMP_STEP_END p005-mixed-normal-n128 n=128 rc=0 SATURATED reason=failed=17 runs=365 wallSlowdown=1.05 diverged=130 toolDiverged=130 achieved=89.7/128 setupMsP50=271 2026-10-01T09:32:29Z"
+      ]
+    },
+    {
+      "capacityId": "mixed-e2c16",
+      "source": "~/.cache/agent-capacity/lever/e2-custom-16-32768/ramp-mixed-normal.log",
+      "sourceSha256": "d874d613e29c8098559cb99dfd9ed9467f2dc58a8bb4a3a261bfdaf6da175a47",
+      "label": "mixed-normal",
+      "verdictLines": [
+        "RAMP_STEP_END p005-mixed-normal-n48 n=48 rc=0 OK runs=283 wallSlowdown=0.71 diverged=57 toolDiverged=57 achieved=47.5/48 setupMsP50=79 2026-10-01T10:16:17Z",
+        "RAMP_STEP_END p005-mixed-normal-n64 n=64 rc=0 OK runs=334 wallSlowdown=0.78 diverged=66 toolDiverged=66 achieved=63.1/64 setupMsP50=96 2026-10-01T10:36:49Z",
+        "RAMP_STEP_END p005-mixed-normal-n80 n=80 rc=0 OK runs=339 wallSlowdown=0.85 diverged=77 toolDiverged=77 achieved=67.4/80 setupMsP50=126 2026-10-01T10:58:31Z",
+        "RAMP_STEP_END p005-mixed-normal-n96 n=96 rc=0 OK runs=341 wallSlowdown=0.88 diverged=81 toolDiverged=81 achieved=73.2/96 setupMsP50=155 2026-10-01T11:19:11Z"
+      ]
+    },
+    {
+      "capacityId": "mixed-c4a16",
+      "source": "~/.cache/agent-capacity/p008/c4a-standard-16/ramp-mixed-normal.log",
+      "sourceSha256": "d6b23df2647bb46da4ae17e0e6c7126f53691e78ecdc060192c98954d23179a2",
+      "label": "mixed-normal",
+      "verdictLines": [
+        "RAMP_STEP_END p005-mixed-normal-n48 n=48 rc=0 OK runs=322 wallSlowdown=0.65 diverged=75 toolDiverged=75 achieved=47.7/48 setupMsP50=33 2026-10-02T00:21:43Z",
+        "RAMP_STEP_END p005-mixed-normal-n64 n=64 rc=0 OK runs=412 wallSlowdown=0.65 diverged=91 toolDiverged=91 achieved=63.5/64 setupMsP50=40 2026-10-02T00:35:29Z",
+        "RAMP_STEP_END p005-mixed-normal-n80 n=80 rc=0 OK runs=503 wallSlowdown=0.66 diverged=114 toolDiverged=114 achieved=78.6/80 setupMsP50=46 2026-10-02T00:49:53Z",
+        "RAMP_STEP_END p005-mixed-normal-n96 n=96 rc=0 OK runs=510 wallSlowdown=0.68 diverged=112 toolDiverged=112 achieved=87.6/96 setupMsP50=53 2026-10-02T01:04:36Z",
+        "RAMP_STEP_END p005-mixed-normal-n112 n=112 rc=0 SATURATED reason=failed=1 runs=512 wallSlowdown=0.69 diverged=114 toolDiverged=114 achieved=85.3/112 setupMsP50=58 2026-10-02T01:19:48Z"
+      ]
+    },
+    {
+      "capacityId": "mixed-c4ahc16",
+      "source": "~/.cache/agent-capacity/p008/c4a-highcpu-16/ramp-mixed-normal.log",
+      "sourceSha256": "154ec49d7676b22db720987a2dbad3bf9aabdab8c6a453e20ab2c6fb69f360a8",
+      "label": "mixed-normal",
+      "verdictLines": [
+        "RAMP_STEP_END p005-mixed-normal-n64 n=64 rc=0 OK runs=410 wallSlowdown=0.66 diverged=91 toolDiverged=91 achieved=63.5/64 setupMsP50=36 2026-10-02T01:47:58Z",
+        "RAMP_STEP_END p005-mixed-normal-n80 n=80 rc=0 OK runs=505 wallSlowdown=0.66 diverged=114 toolDiverged=114 achieved=78.8/80 setupMsP50=42 2026-10-02T02:01:56Z",
+        "RAMP_STEP_END p005-mixed-normal-n96 n=96 rc=0 OK runs=494 wallSlowdown=0.68 diverged=105 toolDiverged=105 achieved=83.3/96 setupMsP50=61 2026-10-02T02:17:10Z",
+        "RAMP_STEP_END p005-mixed-normal-n112 n=112 rc=0 UNDERDRIVEN achieved=82.3/112 runs=475 wallSlowdown=0.70 diverged=83 toolDiverged=83 achieved=82.3/112 setupMsP50=63 2026-10-02T02:32:46Z"
+      ]
+    },
+    {
+      "capacityId": "heavy-e2s16",
+      "source": "~/.cache/agent-capacity/p529/table-a/e2-standard-16/ramp-p529-a.log",
+      "sourceSha256": "4f1decb80f4163007507a7f3ae32d5263671fc1858ad9a3f68e29cc09bacf7b1",
+      "label": "p529-a",
+      "verdictLines": [
+        "RAMP_STEP_END p005-p529-a-n12 n=12 rc=0 OK runs=46 wallSlowdown=0.96 diverged=16 toolDiverged=16 achieved=12/12 setupMsP50=71 2026-10-01T22:28:09Z",
+        "RAMP_STEP_END p005-p529-a-n18 n=18 rc=0 OK runs=66 wallSlowdown=1.02 diverged=16 toolDiverged=16 achieved=17.9/18 setupMsP50=80 2026-10-01T22:40:52Z",
+        "RAMP_STEP_END p005-p529-a-n24 n=24 rc=0 OK runs=88 wallSlowdown=1.09 diverged=23 toolDiverged=23 achieved=23.9/24 setupMsP50=83 2026-10-01T22:54:08Z",
+        "RAMP_STEP_END p005-p529-a-n32 n=32 rc=0 SATURATED reason=failed=10,oom_kill=1 runs=101 wallSlowdown=1.31 diverged=36 toolDiverged=36 achieved=31.7/32 setupMsP50=86 2026-10-01T23:12:22Z"
+      ]
+    },
+    {
+      "capacityId": "heavy-e2s16-adm",
+      "source": "~/.cache/agent-capacity/p529/table-k16m4/e2-standard-16/ramp-p529-k16m4.log",
+      "sourceSha256": "cf71df66406ef8b47c8d2aeaef979875d1ce0e95fc375e809612b0c0ea1686d7",
+      "label": "p529-k16m4",
+      "verdictLines": [
+        "RAMP_STEP_END p005-p529-k16m4-n24 n=24 rc=0 OK runs=84 wallSlowdown=1.24 diverged=31 toolDiverged=31 achieved=23.9/24 setupMsP50=95 2026-10-02T00:18:24Z",
+        "RAMP_STEP_END p005-p529-k16m4-n32 n=32 rc=0 OK runs=108 wallSlowdown=1.47 diverged=43 toolDiverged=43 achieved=31.8/32 setupMsP50=94 2026-10-02T00:33:29Z",
+        "RAMP_STEP_END p005-p529-k16m4-n40 n=40 rc=0 SATURATED reason=failed=7,oom_kill=1,wallSlowdown=1.87 runs=118 wallSlowdown=1.87 diverged=59 toolDiverged=59 achieved=39.8/40 setupMsP50=93 2026-10-02T00:49:26Z"
+      ]
+    },
+    {
+      "capacityId": "heavy-e2s16-adm-tsc",
+      "source": ".papercusp/scratch/wi5384/vm-evidence/ev/svc/p005-p529-k16m4-n48.summary.json",
+      "sourceSha256": "1c55fd511c776dc3c28ddf05d6d8f7dd0a804c6c1e0c8953b1e6df281d626ffb",
+      "summary": {
+        "runs": 187,
+        "clean": 0,
+        "failed": 0,
+        "diverged": 187,
+        "toolDiverged": 182,
+        "wallSlowdown": null,
+        "memPeakMiB": {
+          "p50": null,
+          "p95": null,
+          "max": null
+        },
+        "cpuSecPerSession": {
+          "p50": 0,
+          "p95": 0,
+          "total": 0
+        },
+        "served": {
+          "exact": 2720,
+          "shape": 0,
+          "path": 0,
+          "exhausted": 50
+        },
+        "setupMs": {
+          "p50": 0,
+          "max": 2
+        },
+        "achievedConcurrency": {
+          "target": 48,
+          "mean": 47.9,
+          "max": 48,
+          "fraction": 1,
+          "windowSec": 553
+        }
+      }
+    }
+  ]
+}

@@ -3,8 +3,7 @@
  *
  * Builds the argv that wraps a script invocation in OS-appropriate
  * sandboxing primitives:
- *   - Linux: bwrap (bubblewrap) — read-only root, scratch /tmp, network
- *            policy via --share-net + outbound DNS allowlist.
+ *   - Linux: bwrap filesystem boundary inside SRT's isolated network.
  *   - macOS: sandbox-exec with a generated profile.
  *   - Windows: V2 — V1 refuses to run on Windows for now.
  *
@@ -15,9 +14,12 @@
  * Spec: /docs/snapshots/build-scripts#sandboxing.
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { srtBinOnPath } from '@papercusp/orchestrator';
+import { buildProcessSrtSettings, wrapProcessWithSrt } from '@papercusp/orchestrator/fleet-srt-spawn';
 
 export interface SandboxOptions {
   /** Plugin's working directory (read-only mount). */
@@ -30,7 +32,7 @@ export interface SandboxOptions {
    * Optional: scripts that don't touch project files can omit it.
    */
   projectDir?: string;
-  /** Allowed outbound hosts (HTTPS only; substrate enforces 443/80). */
+  /** Exact outbound hosts (80/443), or explicit host:port endpoints. */
   allowedHosts: string[];
   /** Env vars to pass through. */
   env: Record<string, string>;
@@ -53,6 +55,59 @@ export interface SandboxBuildResult {
    * runner is expected to surface this loudly in the audit log.
    */
   smokeBypass?: { reason: string };
+  /** Required boundary unavailable; callers must refuse before spawning. */
+  unavailableReason?: string;
+  /** Captured policy, consumed at the final command composition seam. */
+  policy?: Pick<SandboxOptions, 'pluginDir' | 'scratchDir' | 'projectDir' | 'allowedHosts'>;
+}
+
+/** Compose the final command through maintained SRT; keep the existing OS
+ * filesystem prefix inside its network boundary. Policy files are outside
+ * the writable assigned paths and explicitly deny-write, then cleaned up. */
+export function prepareSandboxCommand(
+  sandbox: SandboxBuildResult,
+  command: [string, ...string[]],
+  srtBin: string | null = srtBinOnPath(),
+): { argv: string[]; cleanup: () => void; settingsPath?: string } {
+  if (sandbox.unavailableReason) throw new Error(sandbox.unavailableReason);
+  if (!sandbox.active) return { argv: command, cleanup: () => {} };
+  if (!srtBin || !sandbox.policy) throw new Error('Required provision network sandbox (srt) is unavailable');
+  const { pluginDir, scratchDir, projectDir, allowedHosts } = sandbox.policy;
+  const allowedDomains = allowedHosts.flatMap(host => {
+    // SRT *.suffix permits any depth; provisioning * promises ONE label.
+    // Refuse the unrepresentable form instead of silently widening policy.
+    if (host.startsWith('*.')) throw new Error(
+      `Provision network sandbox cannot enforce single-label wildcard ${host}; declare exact hosts or an explicit **. pattern`,
+    );
+    const domain = host.startsWith('**.') ? host.slice(1) : host;
+    return /:\d+$/.test(domain) ? [domain] : [`${domain}:80`, `${domain}:443`];
+  });
+  // /dev/shm is replaced by SRT even when the test harness selects it as TMPDIR.
+  const policyDir = mkdtempSync(join(process.platform === 'linux' ? '/tmp' : tmpdir(), 'papercusp-provision-srt-'));
+  const cleanup = () => rmSync(policyDir, { recursive: true, force: true });
+  try {
+    const settings = buildProcessSrtSettings({ cwd: scratchDir, allowedDomains, denyWrite: [policyDir] }) as {
+      network: Record<string, unknown>;
+      filesystem: { allowWrite: string[]; allowRead?: string[]; [key: string]: unknown };
+    };
+    settings.network.strictAllowlist = true;
+    settings.filesystem.allowWrite = [scratchDir, ...(projectDir ? [projectDir] : [])];
+    // Scratch commonly lives below credential-denied .papercusp. Re-permit
+    // only assigned paths, never their parent directory.
+    settings.filesystem.allowRead = [pluginDir, scratchDir, ...(projectDir ? [projectDir] : [])];
+    const settingsPath = join(policyDir, 'settings.json');
+    writeFileSync(settingsPath, JSON.stringify(settings), { mode: 0o400 });
+    // spawn receives only sandbox.env; preserve SRT's injected proxy vars in
+    // the inner bwrap. The socat bridge stays outside its private /tmp mount.
+    const prefix = sandbox.driver === 'bwrap'
+      ? sandbox.argv.filter(arg => arg !== '--clearenv') : sandbox.argv;
+    const [bin, ...args] = [...prefix, ...command];
+    const wrapped = wrapProcessWithSrt(bin, args, { srtBin, settingsPath });
+    return { argv: [wrapped.command, ...wrapped.argv], cleanup, settingsPath };
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
 }
 
 /** Substrate-bundled bwrap binary path resolution. */
@@ -107,8 +162,8 @@ function buildBwrapArgv(opts: SandboxOptions, bwrap: string): string[] {
     argv.push('--ro-bind', m.src, m.dst);
   }
 
-  // Network: V1 = "share net" + assume the caller gates outbound via the
-  // process-level allowlist (see network-policy.ts). Layer-7 proxy is V2.
+  // The final prefix is launched inside prepareSandboxCommand's SRT network
+  // namespace. Share its isolated local proxy, never the host's network.
   argv.push('--share-net');
 
   // Drop env vars; pass only what we explicitly set.
@@ -186,6 +241,8 @@ export function _resetSmokeCacheForTests(): void {
 
 export function buildSandbox(opts: SandboxOptions): SandboxBuildResult {
   const env = { ...opts.env };
+  const policy = { pluginDir: opts.pluginDir, scratchDir: opts.scratchDir,
+    projectDir: opts.projectDir, allowedHosts: [...opts.allowedHosts] };
   // Escape hatch 1: test/CI environments where bwrap isn't available.
   // Skips the smoke probe entirely.
   if (process.env.PAPERCUSP_DISABLE_SANDBOX === '1') {
@@ -194,12 +251,11 @@ export function buildSandbox(opts: SandboxOptions): SandboxBuildResult {
   if (process.platform === 'linux') {
     const bwrap = resolveBundledBwrap();
     if (!bwrap) {
-      // No bwrap binary at all. Pre-existing soft-fallback path.
-      return { argv: [], env, active: false, driver: 'none' };
+      return { argv: [], env, active: false, driver: 'none', unavailableReason: 'Required provision filesystem sandbox (bwrap) is unavailable' };
     }
     const smoke = bwrapSmokeSync(bwrap);
     if (smoke.passed) {
-      return { argv: buildBwrapArgv(opts, bwrap), env, active: true, driver: 'bwrap' };
+      return { argv: buildBwrapArgv(opts, bwrap), env, active: true, driver: 'bwrap', policy };
     }
     // Smoke failed. The spec's "sandbox_available: false" path triggers
     // signed-only mode in production. For dev, the operator can opt into
@@ -217,12 +273,12 @@ export function buildSandbox(opts: SandboxOptions): SandboxBuildResult {
     // Default: keep the original fail-loud behavior. We hand back the
     // bwrap argv anyway; exec time will reproduce the smoke error in
     // stderr and the runner will surface it as setup-failed.
-    return { argv: buildBwrapArgv(opts, bwrap), env, active: true, driver: 'bwrap' };
+    return { argv: buildBwrapArgv(opts, bwrap), env, active: true, driver: 'bwrap', policy };
   }
   if (process.platform === 'darwin') {
-    return { argv: buildMacOsArgv(opts), env, active: true, driver: 'sandbox-exec' };
+    return { argv: buildMacOsArgv(opts), env, active: true, driver: 'sandbox-exec', policy };
   }
-  return { argv: [], env, active: false, driver: 'none' };
+  return { argv: [], env, active: false, driver: 'none', unavailableReason: `Provision sandbox is unsupported on ${process.platform}` };
 }
 
 /**
@@ -239,8 +295,11 @@ export async function smokeTestSandbox(): Promise<{ ok: boolean; driver: string;
     env: {},
   });
   if (!built.active) return { ok: false, driver: built.driver, error: 'no sandbox driver available' };
+  let prepared: ReturnType<typeof prepareSandboxCommand>;
+  try { prepared = prepareSandboxCommand(built, ['/bin/true']); }
+  catch (error) { return { ok: false, driver: built.driver, error: String(error) }; }
   return new Promise((resolve) => {
-    const argv = [...built.argv, '/bin/true'];
+    const argv = prepared.argv;
     const [bin, ...rest] = argv;
     const child = spawn(bin, rest, { stdio: 'ignore' });
     let resolved = false;
@@ -248,18 +307,21 @@ export async function smokeTestSandbox(): Promise<{ ok: boolean; driver: string;
       if (resolved) return;
       resolved = true;
       child.kill('SIGKILL');
+      prepared.cleanup();
       resolve({ ok: false, driver: built.driver, error: 'timeout' });
     }, 5000);
     child.on('error', (err) => {
       if (resolved) return;
       resolved = true;
       clearTimeout(timer);
+      prepared.cleanup();
       resolve({ ok: false, driver: built.driver, error: err.message });
     });
     child.on('exit', (code) => {
       if (resolved) return;
       resolved = true;
       clearTimeout(timer);
+      prepared.cleanup();
       resolve({ ok: code === 0, driver: built.driver, error: code === 0 ? undefined : `exit ${code}` });
     });
   });

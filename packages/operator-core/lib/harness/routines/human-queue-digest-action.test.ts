@@ -3,6 +3,7 @@ import { beforeEach, describe, it, expect, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   sendMessage: vi.fn(),
   getMessageById: vi.fn(),
+  getConversationStatesByIds: vi.fn(),
   readImprovementItems: vi.fn(),
   buildDigest: vi.fn(),
   readOwnerFullAutonomyGrant: vi.fn(),
@@ -16,6 +17,9 @@ vi.mock('../../agent-tools/coordination/messages', () => ({
   sendMessage: h.sendMessage,
   getMessageById: h.getMessageById,
 }));
+vi.mock('../../agent-tools/coordination/conversations', () => ({
+  getConversationStatesByIds: h.getConversationStatesByIds,
+}));
 vi.mock('../improvements/read-items', () => ({ readImprovementItems: h.readImprovementItems }));
 vi.mock('../improvements/digest', () => ({ buildDigest: h.buildDigest }));
 vi.mock('../improvements/full-autonomy-grant', () => ({
@@ -23,6 +27,7 @@ vi.mock('../improvements/full-autonomy-grant', () => ({
 }));
 vi.mock('../../queue-ranker/human-queue', () => ({ applyHumanQueueRanking: h.applyHumanQueueRanking }));
 vi.mock('../../attention/needs-human-work-items-source', () => ({
+  NEEDS_HUMAN_LIMIT: 300,
   readNeedsHumanWorkItems: h.readNeedsHumanWorkItems,
 }));
 vi.mock('../../attention-notify', () => ({
@@ -34,6 +39,7 @@ import { getSystemAction } from './system-actions';
 import {
   composeHumanQueueDigest,
   composeStaleNeedsHumanReminder,
+  filterResolvedConversationAsks,
   staleNeedsHumanDeliveryKey,
 } from './human-queue-digest-action';
 import type { ImpactRankedItem } from '../improvements/blocking-impact';
@@ -77,6 +83,21 @@ function needsHumanRow(over: Partial<NeedsHumanWorkItemRow> = {}): NeedsHumanWor
   };
 }
 
+function conversationOwnerAsk(id: string, question: string): Record<string, unknown> {
+  return {
+    kind: 'human',
+    capability: 'product-decision',
+    capabilitySource: 'explicit',
+    ref: 'conversation:answered:' + id,
+    summary: question,
+    status: 'active',
+    createdAt: '2026-07-01T00:00:00.000Z',
+    createdBy: 'su-asker',
+    updatedAt: '2026-07-01T00:00:00.000Z',
+    nextVerb: 'continue-investigation',
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   h.readImprovementItems.mockResolvedValue([]);
@@ -85,6 +106,7 @@ beforeEach(() => {
   h.applyHumanQueueRanking.mockResolvedValue({ humanQueue: [] });
   h.readNeedsHumanWorkItems.mockResolvedValue([]);
   h.getMessageById.mockResolvedValue(null);
+  h.getConversationStatesByIds.mockResolvedValue([]);
   h.sendMessage.mockResolvedValue({ msg_id: 'm' });
   h.notifyAttentionOnce.mockResolvedValue({ recordId: 1, deduped: false });
   h.notifyAttention.mockResolvedValue(undefined);
@@ -158,6 +180,46 @@ describe('composeHumanQueueDigest', () => {
 });
 
 describe('stale needs-human reminders (EI-13766)', () => {
+  it('removes only the resolved conversation ask and keeps a separate active ask and gate', () => {
+    const resolvedAsk = conversationOwnerAsk('conv-resolved', 'Already answered scope question');
+    const unfinishedAsk = {
+      ...conversationOwnerAsk('unrelated', 'Provide the production credential'),
+      capability: 'credential',
+      ref: 'credential:production',
+      nextVerb: 'setup:save_key',
+    };
+    const row = needsHumanRow({ payload: { externalBlockers: [resolvedAsk, unfinishedAsk] } });
+
+    const filtered = filterResolvedConversationAsks([row], new Set(['conv-resolved']));
+
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]?.status).toBe('needs-human');
+    expect((filtered[0]?.payload as { externalBlockers: Array<Record<string, unknown>> }).externalBlockers.map((b) => b.status))
+      .toEqual(['cleared', 'active']);
+    expect(composeStaleNeedsHumanReminder(filtered[0]!).body).toContain(
+      'Question: Provide the production credential',
+    );
+    expect(composeStaleNeedsHumanReminder(filtered[0]!).body).not.toContain('Already answered scope question');
+    expect((row.payload as { externalBlockers: Array<Record<string, unknown>> }).externalBlockers.map((b) => b.status))
+      .toEqual(['active', 'active']);
+  });
+
+  it('suppresses an answered conversation ask while retaining an unanswered one', () => {
+    const answered = needsHumanRow({
+      feature_id: 'EI-answered',
+      payload: { externalBlockers: [conversationOwnerAsk('conv-resolved', 'Answered question')] },
+    });
+    const unanswered = needsHumanRow({
+      feature_id: 'EI-unanswered',
+      payload: { externalBlockers: [conversationOwnerAsk('conv-open', 'Open question')] },
+    });
+
+    const filtered = filterResolvedConversationAsks([answered, unanswered], new Set(['conv-resolved']));
+
+    expect(filtered.map((row) => row.feature_id)).toEqual(['EI-unanswered']);
+    expect(filtered[0]).toBe(unanswered);
+  });
+
   it('keys one delivery to the work-item state episode and renders the structured asker', () => {
     const row = needsHumanRow();
     expect(staleNeedsHumanDeliveryKey(row)).toBe(
@@ -168,6 +230,25 @@ describe('stale needs-human reminders (EI-13766)', () => {
     expect(reminder.body).toContain('Question: Provide the production credential.');
     expect(reminder.body).toContain('Asked by: su-asker');
     expect(reminder.body).toContain('Unblocked by: setup:save_key');
+  });
+
+  it('discloses what happens if the reminder is ignored (owner-attention ledger)', () => {
+    const base = needsHumanRow();
+    const blockers = (base.payload as { externalBlockers: Array<Record<string, unknown>> }).externalBlockers;
+    const declared = composeStaleNeedsHumanReminder(
+      needsHumanRow({
+        payload: {
+          externalBlockers: [
+            { ...blockers[0], defaultIfUnanswered: 'stays parked; re-surfaced weekly', decideBy: '2026-10-15T00:00:00Z' },
+          ],
+        },
+      }),
+      Date.parse('2026-07-10T00:00:00.000Z'),
+    );
+    expect(declared.body).toContain('Default if unanswered: stays parked; re-surfaced weekly (decide by 2026-10-15T00:00:00Z)');
+
+    const legacy = composeStaleNeedsHumanReminder(base, Date.parse('2026-07-10T00:00:00.000Z'));
+    expect(legacy.body).toContain('No default declared — the item stays parked until you answer.');
   });
 
   it('falls back to taken_by when a legacy row lacks a structured ask', () => {
@@ -200,6 +281,34 @@ describe('stale needs-human reminders (EI-13766)', () => {
         data: expect.objectContaining({ askedBy: 'su-asker' }),
       }),
     );
+  });
+
+  it('batch-checks conversation lifecycle in the reminder workspace before delivery', async () => {
+    const answered = needsHumanRow({
+      feature_id: 'EI-answered',
+      payload: { externalBlockers: [conversationOwnerAsk('conv-resolved', 'Already answered scope question')] },
+    });
+    const unanswered = needsHumanRow({
+      feature_id: 'EI-unanswered',
+      payload: { externalBlockers: [conversationOwnerAsk('conv-open', 'Still needs an answer')] },
+    });
+    h.readNeedsHumanWorkItems.mockResolvedValue([answered, unanswered]);
+    h.getConversationStatesByIds.mockResolvedValue([
+      { id: 'conv-resolved', state: 'resolved' },
+      { id: 'conv-open', state: 'open' },
+    ]);
+
+    await getSystemAction('improvement-human-digest')!(ctx);
+
+    expect(h.getConversationStatesByIds).toHaveBeenCalledWith(
+      ['conv-resolved', 'conv-open'],
+      'ws-test',
+    );
+    expect(h.sendMessage).toHaveBeenCalledTimes(1);
+    expect(h.sendMessage.mock.calls[0]?.[1].body).toContain('Question: Still needs an answer');
+    expect(h.sendMessage.mock.calls[0]?.[1].body).not.toContain('Already answered scope question');
+    expect(h.notifyAttentionOnce).toHaveBeenCalledTimes(1);
+    expect(answered.status).toBe('needs-human');
   });
 
   it('reuses the same episode keys on replay and skips an already-present inbox message', async () => {

@@ -1,0 +1,73 @@
+# iPhone sanitized reviewer capture runbook
+URL: /internal/docs/agent-insights/iphone-sanitized-reviewer-capture-runbook
+
+Qualify exact operator source, prove sanitized public pairing controls, and capture private paired screenshots through the maintained native Mac runner.
+
+## Purpose and current evidence
+
+Use the maintained disposable Tauri operator for sanitized paired screenshots. It has its own PostgreSQL database and temporary Cloudflare HTTPS tunnel. The fixture seeds synthetic content through tools pinned to that operator; it copies no private workspace data.
+
+WI-10007029 tracks acceptance. The 2026-10-09 local fixture run passed 54 tests with zero failures and zero skips. Its authoritative testing:runs row is 20958718, harness papercusp, workspace papercusp-workspace, local source, dirty worktree at e6e97651c6adf18e4c1d5d63629d5369089a9e42. The four implementation/test hashes were unchanged when rechecked after continuation. This is implementation evidence; public controls, seeded live readback and paired native capture remain unexecuted. Keep this procedure draft until their retained receipts exist.
+
+iphone-public-release-2026-08-11#D-024 and #D-025 allow independent reviewer preparation and initial manual-download work. Store submission does not block this work. These decisions preserve native, pairing, physical-device and final-release acceptance requirements. Native capture uses the maintained named-Mac tools/ios-ci.py runner. The historical Actions billing refusal and ad3ffaa source refusal are dated evidence, not current start blockers.
+
+## Qualify the exact operator source
+
+Before a live controls attempt, use the leader-scoped operator candidate and the complete D-019 acceptance-input population. Preserve the original Git selector and take its union with EVERY retained inputs declaration, including paths absent from the fresh selection. Include fixture/assertion code, verifier/tooling, package and lock files, API guards, seed/readback dependencies and nested Git links. Do not replace this population with a narrower list or silently nominate current HEAD.
+
+Compare committed and live bytes, Git blob identities and modes for the full union before and after qualification; retain full SHA256 values, candidate SHA, Git links, selection provenance and declaration hashes. A dirty or missing acceptance input, changed candidate/input set or unresolved source hold refuses the attempt. Dated peer holds are historical observations.
+
+Use the maintained committed-source route with explicit external inputs file:
+
+```sh
+export VERIFY_TAURI_SOURCE_REF='<leader-scoped-full-operator-commit>'
+export VERIFY_TAURI_SOURCE_INPUTS_FILE='<absolute-private-complete-inputs-json>'
+bash scripts/reviewer-operator.sh --controls-only
+```
+
+The maintained prepareVerifierSource route verifies the immutable manifest and external verifier-source-receipt.json before executing exported helpers. Retain and inspect that receipt, snapshot manifest and verifier phase receipts. The complete source-lock census runs before and after copying. Do not bypass file locks, edit an isolated worktree, add an overlay or turn a refusal into a retry loop. A current HEAD or unit-test pass alone does not qualify source acceptance.
+
+## Controls and seed readback
+
+From the canonical Papercusp staging tree, run controls-only after source qualification. Dependencies are node, python3, cloudflared and socat. Evidence goes to a private directory under XDG\_STATE\_HOME, defaulting to \~/.local/state. The runner starts one tunnel and calls scripts/verify-tauri-headless.sh once with its isolated ready seed. It requires a verified disposable workspace and private home before any seed write.
+
+The assertion requires local health=200, a schema-valid local mint=200 for the actual isolated workspace, and local admin=200. The QR must advertise the expected HTTPS origin and workspace with an unexpired token. It then requires tunnel health=200, unauthenticated device access=401, and tunnel mint/admin=403. A 400, 404 or 5xx cannot satisfy a security control.
+
+A separate one-use token pairs the readback device through the tunnel and checks seeded Plans, Inbox and shared conversation records. This preserves the QR token reserved for native capture. Logs contain labels and statuses; pair/device tokens and response bodies stay private.
+
+Read the printed evidence directory's verifier.log and retained verifier phase receipts. Preserve failed prepare, boot or assert attempts and audit their defect class before another expensive run. Fixture tests do not establish live public-control acceptance.
+
+## Exact-candidate native capture
+
+Coordinate with the single native producer on WI-10007213/WI-10007210 before starting. That producer nominates one clean full mobile SHA and the named Mac checkout. Do not replay an old qualification or duplicate the native producer's run. The Mac needs Xcode 26 or newer, an iOS SDK at least 26, the required iPhone simulator/runtime and the maintained runner prerequisites. A preflight is prerequisite evidence only.
+
+```sh
+export REVIEWER_NATIVE_HOST='<explicit-SSH-host-or-config-alias>'
+export REVIEWER_MOBILE_ROOT='<absolute-mobile-checkout-path-on-that-Mac>'
+export REVIEWER_MOBILE_SHA='<producer-scoped-full-40-character-mobile-sha>'
+export VERIFY_TAURI_SOURCE_REF='<qualified-full-operator-commit>'
+export VERIFY_TAURI_SOURCE_INPUTS_FILE='<absolute-private-complete-inputs-json>'
+bash scripts/reviewer-operator.sh --capture-native
+```
+
+SSH and SCP are required. BatchMode=yes refuses interactive login prompts. The wrapper performs native preflight before starting the fixture; capture rechecks preflight before sending the payload. The adapter invokes the maintained tools/ios-ci.py through Python, reusing its native state and shared lock rather than duplicating build/test/signing orchestration.
+
+The private input is bare QR JSON with workspaceId, server and pairToken. It travels only through SSH stdin. The bridge writes a mode0600 temporary file in the Mac's native evidence state outside the source tree and calls `tools/ios-ci.py --mode check --force --paired-ui --pair-payload-file` with that path. It removes its own temporary input in finally, including runner failure. The local pair-payload.json is removed when the wrapper exits. Native stdout/stderr stay in a private reviewer log under the runner state; they are not echoed into terminal errors. The disposable operator and tunnel remain alive throughout native capture.
+
+The adapter requires a fresh passed result for this exact clean candidate, executor native-mac, mode check, pairedUI=true, Xcode/SDK admission and source fingerprint. It downloads that attempt directory through SCP into a new private native directory. It verifies retained result.json, all declared artifact sizes and SHA256 hashes, safe regular-file paths, source-fingerprint agreement, successful paired-ui/paired-ui-guard/paired-ui-screenshots phases, xcresult content and PNG screenshots. paired-ui-summary.json must report passedTests=1, failedTests=0 and skippedTests=0.
+
+Only accepted evidence writes native-capture-receipt.json beside the private artifact. Existing local attempt output is never overwritten. A failed runner leaves retained native evidence/logs and returns failure without an accepted receipt. Keep screenshots and xcresult private.
+
+## Review-window and manual delivery requirements
+
+The screenshot fixture ends with its command and is unsuitable for a sustained review window. App Review separately requires sanitized internet access usable throughout review and exercised from a clean install. Do not paste a short-lived one-use token into advance review notes.
+
+The Apple-only packet is papercup-rust-mobile/store/APP-STORE-REVIEW\.md. Cloud/BYOC copy stays pending live relay proof under D-014/D-016. Paired simulator screenshots establish neither physical-iPhone installation nor a signed distributable IPA. Signed export, provisioning and D-023 candidate-manifest.json remain the native producer's lane. D-025's proposed Ad Hoc/release-testing route requires registered devices; it does not install on arbitrary unregistered phones. This fixture establishes no TestFlight, durable reviewer-access, cloud-compatibility or public-shipment claim.
+
+## Recurrence checks
+
+```sh
+PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- apps/operator/lib/reviewer-operator-fixture.test.ts
+```
+
+The registered Vitest suite covers isolated-context refusal, local-before-remote schema/status controls, malformed/expired QR refusal, secret-safe logging, seeded paired-feed readback, exact clean native candidate/toolchain admission, paired summary acceptance, artifact path/hash/phase checks, existing-output refusal and the actual Python bridge's private-input cleanup on failure. Preserve testing:runs row scope and source/test hashes before reusing a prior run. Actual public controls and native artifacts require separate retained acceptance receipts.

@@ -1,0 +1,185 @@
+{
+  "schemaVersion": 1,
+  "kind": "failed-live-source-native-fork-control",
+  "planSlug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItem": "WI-10005889",
+  "detectorFollowUp": "EI-25600623966462999",
+  "runtime": {
+    "endpoint": "http://127.0.0.1:3170",
+    "buildSha": "e848e13cf0",
+    "testClass": "operator-api",
+    "launchSourceContained": true
+  },
+  "classification": "failed before registration; not R2 acceptance or R6 matrix credit",
+  "rootCause": "Caller selected native Codex fork, which the tracked launcher intentionally does not support with a pre-pinned managed identity. Supported non-Claude consult dispatch uses isolated session-port conversion.",
+  "launchLog": {
+    "taskId": "0mv2g4vrs1frdnfuzg2",
+    "path": "/home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/fork-01a12604-aeed-7981-908b-8fefece45ddd-2235929-1791639896367.log",
+    "observedBytes": 540,
+    "terminalLines": [
+      "psu: psu: tracked fork is unavailable for codex source; refusing untracked fork su-c4af463c-ba76-42e2-bddf-eb0591703be6 because a pre-pinned managed identity requires a launch record.",
+      "[papercusp] initial terminal command exited with status 1; headless launch exiting."
+    ]
+  },
+  "targetRegistration": {
+    "ownerId": "su-c4af463c-ba76-42e2-bddf-eb0591703be6",
+    "rows": 0,
+    "positiveControlAdvSession": 37370,
+    "positiveControl": "passed"
+  },
+  "receipts": {
+    "/dev/shm/get-feedback-live-self-before-20261010-1345.json": {
+      "sha256": "03f6a5405baafd66dbd4c72ea4b67df15b4ac549bff941cc88f46c23bcb89a30",
+      "bytes": 1292,
+      "body": {
+        "capturedAt": "2026-10-10T13:44:49.451560+00:00",
+        "sourceOwner": "su-e16e0da4-f858-4e10-9665-55116edbc36b",
+        "sourceAdvSessionId": 37370,
+        "sourceNativeSessionId": "01a12604-aeed-7981-908b-8fefece45ddd",
+        "canonicalPath": "/home/builduser/.papercusp/su-codex-homes/session-37370/sessions/2026/10/10/rollout-2026-10-10T09-33-23-01a12604-aeed-7981-908b-8fefece45ddd.jsonl",
+        "snapshotKind": "live-jsonl",
+        "highWaterBytes": 1558835,
+        "completeBytes": 1558835,
+        "completeSha256": "b85180b4521a602f2c9f58df3082b7e8d2a0d79e50dd34b7d9cd267f8a7b7d17",
+        "dev": 66307,
+        "ino": 40254815,
+        "nlink": 1,
+        "sourceWasLive": {
+          "observedAt": "2026-10-10T13:43:36.992Z",
+          "oracle": "coord:presence",
+          "sessionState": "live"
+        },
+        "claimedItems": [
+          "P-004",
+          "P-009",
+          "P-010",
+          "P-011"
+        ],
+        "claimedPlanItemRefs": [
+          "get-feedback-reliability-usefulness-adoption-2026-10-03#P-002",
+          "get-feedback-reliability-usefulness-adoption-2026-10-03#P-004",
+          "get-feedback-reliability-usefulness-adoption-2026-10-03#P-009",
+          "get-feedback-reliability-usefulness-adoption-2026-10-03#P-010",
+          "get-feedback-reliability-usefulness-adoption-2026-10-03#P-011"
+        ],
+        "scope": "R2 bounded source-isolation native fork control; no normal consult/R6 matrix credit"
+      }
+    },
+    "/dev/shm/get-feedback-live-self-launch-20261010-1345.json": {
+      "sha256": "e678ecc6fa224aeb3cf6391d4ca7d7e10dd05164ebd524e674032275ccd382ba",
+      "bytes": 2168,
+      "body": {
+        "deduped": false,
+        "launch": {
+          "deduped": false,
+          "goalAdmission": null,
+          "finalGoalAdmissions": [
+            {
+              "memberIndex": 0,
+              "ownerId": "su-c4af463c-ba76-42e2-bddf-eb0591703be6",
+              "receiptId": "RG-e26450f5-1af2-4404-a835-2464ff723ff6",
+              "admission": null,
+              "outcome": "opened"
+            }
+          ],
+          "opened": 1,
+          "failed": 0,
+          "failures": [],
+          "partial": true,
+          "command": "psu --launched-by=su-e16e0da4-f858-4e10-9665-55116edbc36b --no-picker --account=auto --resume=01a12604-aeed-7981-908b-8fefece45ddd --fork --owner-id=su-c4af463c-ba76-42e2-bddf-eb0591703be6 --agent=codex --headless --model=gpt-5.6-sol --model-source=explicit",
+          "fleet": null,
+          "independent": false,
+          "goalVerifier": null,
+          "verifierCoupling": null,
+          "headcountProfile": null,
+          "mode": "fork",
+          "resumedOwnerId": "su-e16e0da4-f858-4e10-9665-55116edbc36b",
+          "ownerIds": [
+            "su-c4af463c-ba76-42e2-bddf-eb0591703be6"
+          ],
+          "launchEvidence": {
+            "version": 1,
+            "processOpened": 1,
+            "sessionRegistered": null,
+            "firstTurn": null,
+            "taskDisposition": {
+              "claimed": 0,
+              "noClaim": 0,
+              "unknown": 1
+            }
+          },
+          "kickoffProof": {
+            "required": true,
+            "persisted": false,
+            "failures": [
+              {
+                "memberIndex": 0,
+                "label": "fork · 01a12604-aeed-7981-908b-8fefece45ddd",
+                "reason": "kickoff-proof-timeout",
+                "nativeRef": null,
+                "taskId": "0mv2g4vrs1frdnfuzg2",
+                "logPath": "/home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/fork-01a12604-aeed-7981-908b-8fefece45ddd-2235929-1791639896367.log"
+              }
+            ]
+          },
+          "tasks": [
+            {
+              "taskId": "0mv2g4vrs1frdnfuzg2",
+              "logPath": "/home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/fork-01a12604-aeed-7981-908b-8fefece45ddd-2235929-1791639896367.log",
+              "normalizedLogPath": "/home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/fork-01a12604-aeed-7981-908b-8fefece45ddd-2235929-1791639896367.normalized.log",
+              "pid": 3085648,
+              "terminalPid": null,
+              "label": "fork · 01a12604-aeed-7981-908b-8fefece45ddd",
+              "ownerId": "su-c4af463c-ba76-42e2-bddf-eb0591703be6",
+              "headless": true,
+              "kickoffProof": {
+                "persisted": false,
+                "nativeRef": null,
+                "reason": "kickoff-proof-timeout"
+              },
+              "nativeSession": null
+            }
+          ],
+          "agentStarted": null,
+          "freshVerdict": {
+            "agentStarted": null,
+            "sessions": []
+          }
+        },
+        "completionReceipt": {
+          "status": "recorded",
+          "effectRef": "agent-launch:get-feedback-live-self-fork-20261010-1345-e16e0"
+        }
+      }
+    },
+    "/dev/shm/get-feedback-live-self-after-20261010-1348.json": {
+      "sha256": "b8635a669f9686870186d6ddba8c6f4579c18d0fcabeecef8cd94d25abfad32e",
+      "bytes": 352,
+      "body": {
+        "capturedAt": "2026-10-10T13:48:19.684496+00:00",
+        "prefixBytes": 1558835,
+        "prefixSha256": "b85180b4521a602f2c9f58df3082b7e8d2a0d79e50dd34b7d9cd267f8a7b7d17",
+        "matchesPreLaunch": true,
+        "dev": 66307,
+        "ino": 40254815,
+        "nlink": 1,
+        "sizeNow": 1715868,
+        "scope": "Endpoint prefix observation only; actor attribution/open target unknown"
+      }
+    }
+  },
+  "limits": [
+    "Source prefix equality is one bounded endpoint observation; it does not establish actor attribution or universal immutability.",
+    "No target native session, delivered kickoff or substantive answer was established.",
+    "The generic launch receipt reports opened1 and kickoff-proof-timeout despite the observed deterministic early refusal; detector follow-up is filed and owned.",
+    "This does not replace any original or supplemental consultation cohort or historical matrix.",
+    "No release or independent acceptance evidence was added."
+  ],
+  "representation": {
+    "kind": "identity-safe-projection",
+    "rawSha256": "0f69d985fffcb4ab9b36c22a86518703568ee75d1592d2b4bb9dc1b6b2aae2a6",
+    "rawLocalRef": "/dev/shm/get-feedback-live-source-failed-control-original-20261010-1432.json",
+    "redactor": "scripts/lib/identity-leak-patterns.mjs:serializeIdentitySafeJson",
+    "note": "Embedded receipt hashes and byte counts describe the preserved original receipt, before path redaction. Public home paths are redacted placeholders, not executable locations."
+  }
+}

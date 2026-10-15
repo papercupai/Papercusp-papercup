@@ -32,6 +32,11 @@ import {
   tryHeartbeat,
   tryAcquireResource,
   tryReleaseResource,
+  tryHeartbeatResource,
+  tryAcquireGranular,
+  releaseGranular,
+  tryInsertWaiter,
+  tryCancelWait,
   readQueue,
   readResourceQueue,
   type ResourceMode,
@@ -45,6 +50,9 @@ import { decideAuthority, type AuthorityRecord } from '@papercusp/locks-core';
 
 async function dbLive(): Promise<boolean> {
   try {
+    // A disposable product PG starts without the separate locks database.
+    // Bootstrap it before probing; probing first skips every real-PG case.
+    await ensureBootstrap();
     await getTxPool()`SELECT 1`;
     return true;
   } catch {
@@ -100,6 +108,95 @@ const acquireResource = (
 
 describe('cross-agent isolation (adversarial; live papercusp_su)', async () => {
   const live = await dbLive();
+
+  it.skipIf(!live)('D-006: answerer preserves source lock families and waiter; observer detects file release/reacquire', async () => {
+    await ensureBootstrap();
+    const ws = uniqueWs();
+    const source = 'su-consult-source';
+    const answerer = 'su-consult-answerer';
+    const sourcePath = 'iso/source.ts';
+    const blockerPath = 'iso/blocked.ts';
+    const sql = getTxPool();
+    const observer = `consult_lock_${randomBytes(6).toString('hex')}`;
+    const tables = ['agent_file_locks', 'agent_resource_locks', 'agent_granular_locks', 'agent_lock_waiters'] as const;
+    const snapshot = async () => Promise.all(tables.map(async table => {
+      const rows = await sql.unsafe(`SELECT to_jsonb(t) AS row FROM ${table} t
+        WHERE coordination_domain = $1 AND owner = $2 ORDER BY to_jsonb(t)::text`, [ws, source]);
+      return { table, rows: rows.map(row => row.row) };
+    }));
+
+    try {
+      const file = await acquireFile(ws, source, [sourcePath], 'consult source hold', 600);
+      const blocker = await acquireFile(ws, 'su-consult-blocker', [blockerPath], 'waiter blocker', 600);
+      const own = await acquireFile(ws, answerer, ['iso/answerer.ts'], 'answerer positive control', 600);
+      const resource = await acquireResource(ws, source, 'dev-server', 'shared', 600);
+      const granular = await inWorkspaceTxn(ws, source, tx => tryAcquireGranular(tx, {
+        coordinationDomain: ws, path: 'iso/source-tree/leaf.ts', mode: 'X', owner: source,
+        ownerLabel: source, intent: 'consult source subtree', ttlSec: 600,
+      }));
+      const waiter = await inWorkspaceTxn(ws, source, tx => tryInsertWaiter(tx, {
+        coordinationDomain: ws, owner: source, ownerLabel: source, paths: [blockerPath],
+        intent: 'consult source waiting', ttlSec: 600, maxWaitSec: 600,
+      }));
+      expect(file.ok && blocker.ok && own.ok && resource.ok && granular.ok).toBe(true);
+      expect('ticket_id' in waiter).toBe(true);
+      if (!file.ok || !blocker.ok || !own.ok || !resource.ok || !granular.ok || !('ticket_id' in waiter)) {
+        throw new Error('D-006 lock fixture did not establish every source population');
+      }
+      const before = await snapshot();
+      expect(before.every(population => population.rows.length > 0)).toBe(true);
+
+      // Test-only transactional observer: endpoint equality alone cannot exclude
+      // a release/reacquire. Its scope is this unique domain and source owner.
+      await sql.unsafe(`CREATE TABLE ${observer} (sequence bigserial, operation text, actor text)`);
+      await sql.unsafe(`CREATE FUNCTION ${observer}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+        IF COALESCE(NEW.coordination_domain, OLD.coordination_domain) = '${ws}'
+          AND COALESCE(NEW.owner, OLD.owner) = '${source}' THEN
+          INSERT INTO ${observer} (operation, actor) VALUES (TG_OP, current_setting('application_name'));
+        END IF;
+        RETURN NULL;
+      END $$`);
+      await sql.unsafe(`CREATE TRIGGER ${observer} AFTER INSERT OR UPDATE OR DELETE
+        ON agent_file_locks FOR EACH ROW EXECUTE FUNCTION ${observer}()`);
+
+      expect((await inWorkspaceTxn(ws, answerer, tx => tryRelease(tx, {
+        coordinationDomain: ws, owner: answerer, lockId: file.lock_id,
+      }))).released).toEqual([]);
+      expect((await inWorkspaceTxn(ws, answerer, tx => tryHeartbeat(tx, ws, answerer, file.lock_id, 1200))).extended).toBe(false);
+      expect((await inWorkspaceTxn(ws, answerer, tx => tryReleaseResource(tx, {
+        coordinationDomain: ws, owner: answerer, lockId: resource.lock_id,
+      }))).released).toBe(0);
+      expect((await inWorkspaceTxn(ws, answerer, tx => tryHeartbeatResource(tx, ws, answerer, resource.lock_id, 1200))).extended).toBe(false);
+      expect((await inWorkspaceTxn(ws, answerer, tx => releaseGranular(tx, ws, answerer, granular.lock_id))).released).toBe(0);
+      expect((await inWorkspaceTxn(ws, answerer, tx => tryCancelWait(tx, waiter.ticket_id, answerer))).cancelled).toBe(false);
+      expect((await inWorkspaceTxn(ws, answerer, tx => tryRelease(tx, {
+        coordinationDomain: ws, owner: answerer, lockId: own.lock_id,
+      }))).released).toEqual(['iso/answerer.ts']);
+      expect(await snapshot()).toEqual(before);
+      expect(await sql.unsafe(`SELECT * FROM ${observer}`)).toEqual([]);
+
+      // The SAME observer must detect actual writes despite equal holder
+      // endpoints. application_name is the wrapper's tag, not native identity.
+      expect((await inWorkspaceTxn(ws, source, tx => tryRelease(tx, {
+        coordinationDomain: ws, owner: source, lockId: file.lock_id,
+      }))).released).toEqual([sourcePath]);
+      const reacquired = await acquireFile(ws, source, [sourcePath], 'consult source hold', 600);
+      expect(reacquired.ok).toBe(true);
+      if (!reacquired.ok) throw new Error('source positive-control reacquire failed');
+      expect(reacquired.lock_id).not.toBe(file.lock_id);
+      const transitions = await sql.unsafe(`SELECT operation, actor FROM ${observer} ORDER BY sequence`);
+      expect(transitions.map(row => row.operation)).toEqual(['DELETE', 'INSERT']);
+      expect(transitions.every(row => String(row.actor).includes(source))).toBe(true);
+      const [holder] = await sql`SELECT owner FROM agent_file_locks
+        WHERE coordination_domain = ${ws} AND path = ${sourcePath}`;
+      expect(holder!.owner).toBe(source);
+    } finally {
+      await sql.unsafe(`DROP TRIGGER IF EXISTS ${observer} ON agent_file_locks`);
+      await sql.unsafe(`DROP FUNCTION IF EXISTS ${observer}()`);
+      await sql.unsafe(`DROP TABLE IF EXISTS ${observer}`);
+      for (const table of tables) await sql.unsafe(`DELETE FROM ${table} WHERE coordination_domain = $1`, [ws]);
+    }
+  });
 
   // ── Cell 1 ───────────────────────────────────────────────────────────────
   // A cannot RELEASE B's lock, even replaying B's lock_id. Release is keyed on

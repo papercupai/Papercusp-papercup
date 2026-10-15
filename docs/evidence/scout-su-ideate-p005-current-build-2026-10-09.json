@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Scout/su-ideate P-005 R-9/R-10/R-11 current-build acceptance",
+  "framework": "operational",
+  "command": [
+    "dev:pipeline_position path=packages/operator-core/lib/scheduler/claim-spec.ts marker=item_class testClass=operator-api",
+    "ptool scheduler:preview_spec_delta --url http://127.0.0.1:3170 --workspace papercusp-workspace --harness papercusp (item-class-work-probe; read-only)",
+    "ptool scheduler:preview_spec_delta --url http://127.0.0.1:3170 --workspace papercusp-workspace --harness papercusp (item-class-ideation-probe; read-only)",
+    "dev:pg_query operator-DB disposition partition and undispositioned-row check, with a known-positive item witness"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-09T03:19:09.273Z",
+  "finishedAt": "2026-10-09T03:21:49.046Z",
+  "summary": "Read-only staging operator probes produced complementary item_class predicate partitions with zero NULL rows. The operator backlog census has 1,358 valid dispositions and no undispositioned item. This proves the declared current-build instruments and preserves their limits; independent rubric certification and final shipment remain separate.",
+  "assertions": [
+    {
+      "id": "R-9-no-undispositioned-ideation-item",
+      "passed": true,
+      "evidence": "The exact rubric query returned zero undispositioned rows. A row-returning positive control found EI-19452154742623074/papercusp and dev:pg_query reported absence.status=verified. Exhaustive disposition partition: keep=750, merge=77, drop=531; total=1358; no missing/invalid bucket. Writer field is payload.ideaDisposition.disposition."
+    },
+    {
+      "id": "R-10-current-build-exclusion-partition",
+      "passed": true,
+      "evidence": "Staging build c3f4605746 contains claim-spec.ts item_class (blob check before and after probes). Work predicate true=9357, false=373, NULL=0; total=9730/9730. False equals the target predicate's true cell. Work preview listed zero newly admitted or excluded rows; its claimable count is not used as the exclusion oracle."
+    },
+    {
+      "id": "R-11-current-build-target-partition",
+      "passed": true,
+      "evidence": "Ideation predicate true=373, false=9357, NULL=0; total=9730/9730. True equals the work predicate's false cell and is positive. Target preview listed no newly admitted rows. No actual production claim of an ideation item is asserted."
+    },
+    {
+      "id": "R-10-R-11-live-positive-control",
+      "passed": true,
+      "evidence": "The operator-DB exact FIELD_MAP.item_class CASE census over nonterminal non-observation rows found ideation=389 and work=12398. This broader population is distinct from the preview's neutral-floor, papercusp issue-family pool; it demonstrates both classes exist without equating those counts."
+    }
+  ],
+  "workItemId": "WI-10007500",
+  "planSlug": "scout-su-ideate-pipeline-gaps-2026-10-08",
+  "rubricRef": "acceptance-scout-su-ideate-pipeline-gaps-2026-10-08",
+  "rubricRevision": 5,
+  "evidencePlane": "live",
+  "runtime": {
+    "testClass": "operator-api",
+    "endpoint": "http://127.0.0.1:3170",
+    "buildSha": "c3f4605746",
+    "sourceContainsChange": true,
+    "containmentMethod": "blob",
+    "isolation": "Separate port, process and checkout; database and workspace are not isolated."
+  },
+  "probes": {
+    "work": {
+      "toolInvocationId": 34364650,
+      "specId": "item-class-work-probe",
+      "predicatePartition": { "true": 9357, "false": 373, "null": 0, "total": 9730 },
+      "currentClaimable": 330,
+      "proposedClaimable": 330,
+      "newlyExcluded": 0,
+      "newlyAdmitted": 0,
+      "listedNewlyExcluded": 0,
+      "listedNewlyAdmitted": 0
+    },
+    "ideation": {
+      "toolInvocationId": 34364652,
+      "specId": "item-class-ideation-probe",
+      "predicatePartition": { "true": 373, "false": 9357, "null": 0, "total": 9730 },
+      "currentClaimable": 330,
+      "proposedClaimable": 0,
+      "newlyExcluded": 330,
+      "newlyAdmitted": 0,
+      "listedNewlyExcluded": 200,
+      "listedNewlyAdmitted": 0,
+      "newlyExcludedListTruncated": true
+    }
+  },
+  "mechanismEvidence": {
+    "testRunId": 20950002,
+    "testPath": "packages/operator-core/lib/scheduler/claim-spec-ideation-filter.test.ts",
+    "status": "pass",
+    "passed": 20,
+    "skipped": 0,
+    "bindings": [32214, 32215, 32216],
+    "boundCurrentness": "current"
+  },
+  "limitations": [
+    "Preview evaluates the issue-family claim path; it does not establish feature-family claimability.",
+    "Only changed row lists are returned. The target lane has no claimable rows under the common floors, although its positive predicate population is 373. No real production ideation claim or nonempty admitted-row sample was observed.",
+    "Separate preview calls are distinct snapshots; these two observed predicate partitions happened to agree exactly.",
+    "The unit run was made in a dirty shared checkout. The maintained binding measured the unchanged test and three source files and read back current; it does not attest the complete process import/configuration graph.",
+    "Rubric revision 5 is unvetted. This artifact preserves author evidence, not an independent acceptance verdict or final-release proof."
+  ]
+}

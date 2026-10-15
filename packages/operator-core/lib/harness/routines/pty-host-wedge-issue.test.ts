@@ -9,7 +9,13 @@
 import { describe, expect, it } from 'vitest';
 import type { EngineerIssue } from '../../issues-engineer';
 import type { WedgeIssueDeps } from './pty-host-wedge-issue';
-import { recordWedgeEpisode, wedgeDigest, wedgeIssueMarker } from './pty-host-wedge-issue';
+import {
+  ptyHostMechanismIssueMarker,
+  recordPtyHostMechanismEpisode,
+  recordWedgeEpisode,
+  wedgeDigest,
+  wedgeIssueMarker,
+} from './pty-host-wedge-issue';
 
 function issue(over: Partial<EngineerIssue> = {}): EngineerIssue {
   return {
@@ -53,6 +59,55 @@ const input = {
   detail: ['- su-a: stuck', '- su-b: stuck'],
   nowIso: '2026-09-22T08:00:00.000Z',
 };
+
+const mechanismInput = {
+  mechanism: 'interactive-stale-host-direct-3170',
+  title: 'Interactive psu-pty hosts are serving stale code while pinned to :3170',
+  summary: 'A bridged interactive PTY host refused stale host-code adoption.',
+  ownerIds: ['su-a'],
+  totalOwners: 2,
+  details: ['su-a at 2026-10-02T05:00:00.000Z: loaded aaaaaaaa, on-disk bbbbbbbb'],
+  digest: 'sha256-evidence',
+  createdBy: 'system:psu-pty-host-events-ingest',
+  foundDuring: 'psu-pty-host-events-ingest',
+  nowIso: '2026-10-02T05:00:00.000Z',
+};
+
+describe('recordPtyHostMechanismEpisode', () => {
+  it('creates one pending mechanism-keyed issue with bounded redacted details', async () => {
+    const { deps: d, calls } = deps();
+    const r = await recordPtyHostMechanismEpisode(mechanismInput, d);
+    const created = calls.created[0] as { body: string; admission?: string; title: string };
+
+    expect(r.action).toBe('created');
+    expect(created.title).toBe(mechanismInput.title);
+    expect(created.body).toContain(ptyHostMechanismIssueMarker(mechanismInput.mechanism));
+    expect(created.body).toContain('2 distinct psu-pty host(s)');
+    expect(created.body).toContain('su-a at 2026-10-02');
+    expect(created.admission).toBe('pending');
+    expect(calls.merged[0]?.patch).toMatchObject({
+      ptyHostMechanism: { digest: mechanismInput.digest },
+    });
+  });
+
+  it('stays silent when the latest mechanism digest is unchanged', async () => {
+    const marker = ptyHostMechanismIssueMarker(mechanismInput.mechanism);
+    const { deps: d, calls } = deps({
+      listIssues: async () => [
+        issue({
+          body: marker,
+          payload: { ptyHostMechanism: { digest: mechanismInput.digest } },
+        }),
+      ],
+    });
+    const r = await recordPtyHostMechanismEpisode(mechanismInput, d);
+
+    expect(r.action).toBe('unchanged');
+    expect(r.reason).toBe('same-evidence-digest');
+    expect(calls.commented).toHaveLength(0);
+    expect(calls.created).toHaveLength(0);
+  });
+});
 
 describe('recordWedgeEpisode', () => {
   it('creates the item when no live one carries the marker', async () => {

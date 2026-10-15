@@ -116,6 +116,7 @@ export const scoutCycleOp: CoordOp<z.infer<typeof args>, z.infer<typeof result>>
         { scoutWorkspaceCeilingGate },
         { readWorkItemAdmissionProducerPressure },
         { scoutPotGate, scoutConfigDelta },
+        { readGenerationPreflightTicks },
       ] = await Promise.all([
         import('../../scout/register-scout-action.js'),
         import('../../learning-governor/registrants.js'),
@@ -133,6 +134,7 @@ export const scoutCycleOp: CoordOp<z.infer<typeof args>, z.infer<typeof result>>
         import('../../learning-governor/scout-ceiling.js'),
         import('../../work-items-admission-promoter.js'),
         import('../../learning/pot-gate/gates.js'),
+        import('../../scout/generation-preflight-guard.js'),
       ]);
       deps = {
         runCycle: productionScoutRunner,
@@ -160,6 +162,9 @@ export const scoutCycleOp: CoordOp<z.infer<typeof args>, z.infer<typeof result>>
         resolveConfigDelta: scoutConfigDelta,
         // P-010: preserve routine/blueprint parity for queue-health throttling.
         admissionPressureGate: readWorkItemAdmissionProducerPressure,
+        // WI-10007380 / P-003: the generation preflight's tick reader — the SAME
+        // helper scout-cycle-action.ts wires (lint:deps-wiring-parity).
+        generationPreflightTicks: readGenerationPreflightTicks,
       };
     }
 

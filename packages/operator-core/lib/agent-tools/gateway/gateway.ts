@@ -10,8 +10,10 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
+import { getLatestActiveAdvSessionByOwner } from '../../adv-sessions';
 import { setOwnerPin, clearOwnerPin } from '../../deployment/account-owner-pins';
 import { trackDetached } from '../../detached-imports';
+import { wakeAccountRouteFromArgv } from '../../inference-gateway/spawn-env';
 
 /** Localhost base of the running gateway. Read PER-CALL (not at module load) so tests can point it at a
  *  mock server via PAPERCUSP_GATEWAY_PORT, and so an env override is honored without a re-import. */
@@ -59,6 +61,10 @@ const LEGACY_CAPACITY_FIELDS: Readonly<Record<string, string>> = {
     'which of applied/aimd-effective/configured-cap/clamp won, in the pre-P-013 shape — admissionState.lanes[].binding is the canonical form of the same answer.',
   codexHealthyAccounts:
     'WRITER MEANING: the number of codex accounts that CAN SERVE RIGHT NOW — pool membership plus auth/credential health. It is NOT quota, headroom, or a capacity budget: an account that is usage-walled but authenticated still counts here, and a 0 means the pool or its credentials are broken, NOT that quota is exhausted. For the quota question read accounts:status → poolVerdict.',
+  codexUnserviceableCause:
+    'the codex pool health explanation when no account is currently serviceable. It is diagnostic state, not a quota or admission capacity measurement; read admissionState for the lane binding and accounts:status → poolVerdict for quota.',
+  codexReachability:
+    'the codex provider reachability probe. It describes transport/provider health, not available capacity or quota; read admissionState for the lane binding and accounts:status → poolVerdict for quota.',
 };
 
 /** Top-level `/admin/config` fields that are CANONICAL and stay where they are.
@@ -200,6 +206,13 @@ export const accountsPinTool = defineTool({
     const routedAccount = autoRoute ? AUTO_ACCOUNT_ROUTE : requestedAccount;
     if (autoRoute && hard) return fail({ error: "hard:true is incompatible with account:'auto'" });
     try {
+      const activeSession = await getLatestActiveAdvSessionByOwner(agent, ws);
+      const activeRoute = activeSession ? wakeAccountRouteFromArgv(activeSession.launchArgv, agent) : null;
+      if (activeRoute?.mode === 'default') {
+        return fail({
+          error: `agent '${agent}' has an active launch route that bypasses the inference gateway; respawn it with gateway routing before changing accounts`,
+        });
+      }
       const cfg = (await fetch(`${gwBase()}/admin/config`, { signal: AbortSignal.timeout(5000) })
         .then((r) => r.json())
         .catch(() => ({}))) as { accounts?: string[]; codexAccounts?: string[] };
@@ -307,11 +320,11 @@ export const gatewayReloadTool = defineTool({
 export const gatewayOwnerReportTool = defineTool({
   name: 'gateway:owner_report',
   description:
-    "Per-owner inference-gateway outcome + routing-quality report (GET :8788/admin/owner-report). With `agent` (an owner/spawn id): that agent's ledger {requests, ok, upstream429, upstreamErrors, sheds, stalls, pinYields, lastAccount, lastStatus, recent events} + its last-routed account + live pin + owner-filtered recent routing decisions explaining why each account was picked. Without `agent`: the top ~25 owners ranked by bad outcomes plus the bounded all-owner routing-quality snapshot. `routingQuality` measures true upstream HTTP 429s per logical initial pick, automatic pick-vs-best-available divergence, and explicit/affinity pin-yield frequency; intentional pins are labeled and excluded from automatic-divergence counts. Counters are since the last gateway restart.",
+    "Per-owner inference-gateway outcome + routing-quality report (GET :8788/admin/owner-report). With `agent` (an owner/spawn id): that agent's ledger {requests, ok, upstream429, upstreamErrors, sheds, stalls, pinYields, lastAccount, lastStatus, recent events} + its last-routed account + live pin + owner-filtered recent routing decisions explaining why each account was picked. Optional `from` (inclusive) and `to` (exclusive) epoch-millisecond bounds plus `limit` filter the durable per-request `requestOutcomes` rows (retained for 14 days across gateway restarts). Without `agent`: the top ~25 owners ranked by bad outcomes plus the bounded all-owner routing-quality snapshot. `routingQuality` measures true upstream HTTP 429s per logical initial pick, automatic pick-vs-best-available divergence, and explicit/affinity pin-yield frequency; intentional pins are labeled and excluded from automatic-divergence counts. In-memory counters are since the last gateway restart.",
   guidance: {
-    when: "An agent reports API errors / slow turns and you need the gateway's view of THAT agent: what it got (429? shed? stall? pin yield?), on which account, when. Also fleet-wide triage (no args) after an error storm. Also: confirming an accounts:pin actually took effect / reading a session's current routing before deciding whether to re-pin it.",
+    when: "An agent reports API errors / slow turns and you need the gateway's view of THAT agent: what it got (429? shed? stall? pin yield?), on which account, when. Pass `from`/`to` to inspect a historical time window from durable per-request outcomes after a gateway restart. Also fleet-wide triage (no args) after an error storm. Also: confirming an accounts:pin actually took effect / reading a session's current routing before deciding whether to re-pin it.",
     notWhen: 'Pool-level health — gateway:status (config/AIMD) or the /stats endpoint. Per-account usage — accounts:list.',
-    chaining: 'gateway:owner_report { agent } → (if pin yields/429s on a capped pin) accounts:pin to move it, or accounts:list to find headroom.',
+    chaining: 'gateway:owner_report { agent, from, to, limit } → (if pin yields/429s on a capped pin) accounts:pin to move it, or accounts:list to find headroom.',
     seeAlso: ['gateway:status (live pool + admission)', 'accounts:pin (re-route the agent)', 'accounts:list (account headroom)'],
   },
   capability: 'harness:read',
@@ -319,7 +332,18 @@ export const gatewayOwnerReportTool = defineTool({
   agentRoles: [...COORD_ROLES],
   args: z.object({
     agent: z.string().min(1).optional().describe("The target agent's owner/spawn id (x-papercusp-owner). Omit for the top-erroring-owners overview."),
-  }),
+    from: z.number().int().nonnegative().optional().describe('Inclusive request timestamp lower bound in epoch milliseconds; requires agent.'),
+    to: z.number().int().nonnegative().optional().describe('Exclusive request timestamp upper bound in epoch milliseconds; requires agent and must be greater than from.'),
+    limit: z.number().int().min(1).max(1_000).optional().describe('Maximum durable request outcome rows to return (default 200, maximum 1000); requires agent.'),
+  })
+    .refine(
+      args => args.agent !== undefined || (args.from === undefined && args.to === undefined && args.limit === undefined),
+      { message: 'agent is required when filtering durable request outcomes', path: ['agent'] },
+    )
+    .refine(
+      args => args.from === undefined || args.to === undefined || args.from < args.to,
+      { message: 'from must be less than to', path: ['to'] },
+    ),
   async handler(args, ctx) {
     let owner = args.agent;
     if (owner === 'self') {
@@ -335,8 +359,13 @@ export const gatewayOwnerReportTool = defineTool({
       }
     }
     try {
-      const q = owner ? `?owner=${encodeURIComponent(owner)}` : '';
-      const r = await fetch(`${gwBase()}/admin/owner-report${q}`, { signal: AbortSignal.timeout(5000) });
+      const params = new URLSearchParams();
+      if (owner) params.set('owner', owner);
+      if (args.from !== undefined) params.set('from', String(args.from));
+      if (args.to !== undefined) params.set('to', String(args.to));
+      if (args.limit !== undefined) params.set('limit', String(args.limit));
+      const query = params.toString();
+      const r = await fetch(`${gwBase()}/admin/owner-report${query ? `?${query}` : ''}`, { signal: AbortSignal.timeout(5000) });
       const b = (await r.json().catch(() => ({}))) as Record<string, unknown>;
       return r.ok ? ok(b) : fail({ error: `gateway /admin/owner-report → ${r.status}`, ...b });
     } catch (e) {

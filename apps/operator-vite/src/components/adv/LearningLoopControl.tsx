@@ -463,6 +463,11 @@ export default function LearningLoopControl() {
       {verdict ? (
         <span
           className={`pc-lloop__verdict${verdict.nothingLearning ? " is-idle" : ""}`}
+          // The strip below drops figures WHOLE on narrow windows (never cut
+          // mid-value), so the full verdict must stay reachable (WI-10006513).
+          title={[verdict.lead, verdict.pots, verdict.lanes, verdict.spend]
+            .filter(Boolean)
+            .join(" · ")}
         >
           <span className="pc-lloop__lead">
             <span className="pc-lloop__dot" aria-hidden />
@@ -625,11 +630,26 @@ export default function LearningLoopControl() {
         /* An idle verdict is the one that must READ, so it takes the warn dot
            even when the group itself is running and only the scopes are off. */
         .pc-lloop__verdict.is-idle .pc-lloop__dot { background: var(--warn); }
+        /* WHOLE figures or none (WI-10006513). The container-query steps
+           below drop figures at fixed widths, but they cannot know how wide
+           the live values are: at 1366x650 the spend figure still rendered and
+           overflow:hidden sliced its end off, so "·$598.30+" read as
+           "·$598.3" — a WRONG number, worse than no number. Now the strip
+           WRAPS and is exactly one line tall: a figure that does not fit moves
+           whole onto the hidden second line instead of being cut mid-value. */
+        /* INLINE line-breaking, not flex-wrap: a line always keeps its first
+           item even when it is too wide, and with one figure left (1024px)
+           Chrome's flex-wrap still sliced it ("·3 of 29 o") — even behind a
+           zero-width first flex item, measured. Here the figures are
+           inline-blocks after a zero-width space, which is a break
+           opportunity, so every figure can drop whole to the hidden line. */
         .pc-lloop__figs {
-          display: inline-flex; align-items: center; min-width: 0;
+          display: block; white-space: normal;
+          min-width: 0; height: 18px; line-height: 18px;
           overflow: hidden; font-variant-numeric: tabular-nums;
         }
-        .pc-lloop__fig { flex: none; }
+        .pc-lloop__figs::before { content: "\\200B"; }
+        .pc-lloop__fig { display: inline-block; white-space: nowrap; }
         .pc-lloop__fig em { font-style: normal; color: var(--fg-mute); margin: 0 9px; }
         .pc-lloop__chip {
           display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px;

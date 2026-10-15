@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import type { AdmissionOutcome, AdmitPathsInput } from "@papercusp/operator-core/lib/release/repair-head-admission";
 import {
   GEN_CHECK_SELF_HEAL_ACTOR,
@@ -6,8 +10,10 @@ import {
   describeGenCheckHeal,
   genCheckEntriesOf,
   healGenCheckLegs,
+  makeRealGenCheckHealIo,
   pairedGenWriter,
   parsePorcelainZ,
+  publishGenHealGitlinks,
   signatureWithoutHealed,
   type GenCheckHealIo,
 } from "./green-checkpoint-gen-check-self-heal";
@@ -261,5 +267,123 @@ describe("signatureWithoutHealed / parsePorcelainZ", () => {
   it("parses NUL-separated porcelain including untracked and rename records", () => {
     const out = ["M  a/b.ts", "?? c.json", "R  new.md", "old.md", " M d.ts", ""].join("\0");
     expect(parsePorcelainZ(out)).toEqual(["a/b.ts", "c.json", "new.md", "d.ts"]);
+  });
+});
+
+describe("makeRealGenCheckHealIo.buildSourceCommit (real git)", () => {
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
+  });
+  const git = (cwd: string, args: string[]) =>
+    execFileSync("git", args, {
+      cwd,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "t",
+        GIT_AUTHOR_EMAIL: "t@t.invalid",
+        GIT_COMMITTER_NAME: "t",
+        GIT_COMMITTER_EMAIL: "t@t.invalid",
+      },
+    }).trim();
+
+  /** An integration superproject pinning libs/sub, and a verification tree materialized at its head. */
+  function fixture() {
+    const base = mkdtempSync(join(tmpdir(), "gen-heal-gitlink-"));
+    roots.push(base);
+    const integ = join(base, "integ");
+    const integSub = join(integ, "libs", "sub");
+    mkdirSync(integSub, { recursive: true });
+    git(integSub, ["init", "-q"]);
+    writeFileSync(join(integSub, "gen.txt"), "stale\n");
+    writeFileSync(join(integSub, "keep.txt"), "keep\n");
+    git(integSub, ["add", "."]);
+    git(integSub, ["commit", "-qm", "pin"]);
+    const pin = git(integSub, ["rev-parse", "HEAD"]);
+    git(integ, ["init", "-q"]);
+    writeFileSync(join(integ, "top.txt"), "top\n");
+    git(integ, ["add", "top.txt"]);
+    git(integ, ["update-index", "--add", "--cacheinfo", `160000,${pin},libs/sub`]);
+    git(integ, ["commit", "-qm", "head"]);
+    const head = git(integ, ["rev-parse", "HEAD"]);
+    const ckpt = join(base, "ckpt");
+    git(base, ["clone", "-q", integ, ckpt]);
+    rmSync(join(ckpt, "libs", "sub"), { recursive: true, force: true });
+    git(base, ["clone", "-q", integSub, join(ckpt, "libs", "sub")]);
+    git(join(ckpt, "libs", "sub"), ["checkout", "-q", "--detach", pin]);
+    const io = makeRealGenCheckHealIo({
+      checkpointRoot: ckpt,
+      integrationRoot: integ,
+      runScript: async () => ({ code: 0, tail: "" }),
+      log: () => {},
+    });
+    return { base, integ, integSub, ckpt, pin, head, io };
+  }
+  const gitlinkAt = (f: ReturnType<typeof fixture>, commit: string) =>
+    git(f.integ, ["ls-tree", commit, "--", "libs/sub"]).split(/\s+/)[2]!;
+
+  it("commits a writer delta inside a submodule on its pin and stages that commit as the gitlink", async () => {
+    const f = fixture();
+    writeFileSync(join(f.ckpt, "libs", "sub", "gen.txt"), "fresh\n");
+    writeFileSync(join(f.ckpt, "top.txt"), "top2\n");
+    const paths = await f.io.dirtyPaths();
+    expect(paths.sort()).toEqual(["libs/sub", "top.txt"]);
+
+    const src = await f.io.buildSourceCommit(f.head, paths);
+    expect(git(f.integ, ["rev-parse", `${src}^`])).toBe(f.head);
+    expect(git(f.integ, ["diff", "--name-only", f.head, src]).split("\n")).toEqual(["libs/sub", "top.txt"]);
+    const [mode, , subCommit] = git(f.integ, ["ls-tree", src, "--", "libs/sub"]).split(/\s+/);
+    expect(mode).toBe("160000");
+    expect(git(f.integSub, ["rev-parse", `${subCommit}^`])).toBe(f.pin);
+    expect(git(f.integSub, ["diff", "--name-only", f.pin, subCommit!])).toBe("gen.txt");
+    expect(git(f.integSub, ["show", `${subCommit}:gen.txt`])).toBe("fresh");
+    // The checkout clones submodules from the integration repo; the ref keeps the commit from gc.
+    expect(git(f.integSub, ["rev-parse", `refs/papercusp/gen-heal/${subCommit}`])).toBe(subCommit);
+  });
+
+  it("refuses a submodule whose HEAD moved off its pin instead of admitting that history", async () => {
+    const f = fixture();
+    const sub = join(f.ckpt, "libs", "sub");
+    writeFileSync(join(sub, "gen.txt"), "fresh\n");
+    git(sub, ["commit", "-qam", "moved"]);
+    await expect(f.io.buildSourceCommit(f.head, ["libs/sub"])).rejects.toThrow(/not its pin/);
+  });
+
+  it("builds the same submodule commit every time, so its gate-pin can be published ahead", async () => {
+    const f = fixture();
+    writeFileSync(join(f.ckpt, "libs", "sub", "gen.txt"), "fresh\n");
+    const first = gitlinkAt(f, await f.io.buildSourceCommit(f.head, ["libs/sub"]));
+    const second = gitlinkAt(f, await f.io.buildSourceCommit(f.head, ["libs/sub"]));
+    expect(second).toBe(first);
+    expect(git(f.integSub, ["show", "-s", "--format=%aI %cI", first])).toBe(
+      "2000-01-01T00:00:00+00:00 2000-01-01T00:00:00+00:00",
+    );
+  });
+
+  it("publishes a gate-pin tag on the submodule's origin for a heal-built gitlink only", async () => {
+    const f = fixture();
+    const origin = join(f.base, "sub-origin.git");
+    git(f.base, ["init", "-q", "--bare", origin]);
+    git(f.integSub, ["remote", "add", "origin", origin]);
+    expect(await publishGenHealGitlinks({ integrationRoot: f.integ, candidateSha: f.head })).toEqual([]);
+
+    writeFileSync(join(f.ckpt, "libs", "sub", "gen.txt"), "fresh\n");
+    const src = await f.io.buildSourceCommit(f.head, ["libs/sub"]);
+    const healed = gitlinkAt(f, src);
+    expect(await publishGenHealGitlinks({ integrationRoot: f.integ, candidateSha: src })).toEqual([
+      { path: "libs/sub", sha: healed },
+    ]);
+    expect(git(origin, ["rev-parse", `refs/tags/gate-pin/${healed}^{commit}`])).toBe(healed);
+  });
+
+  it("throws when the gate-pin cannot be published, so promotion holds", async () => {
+    const f = fixture();
+    git(f.integSub, ["remote", "add", "origin", join(f.base, "missing-origin.git")]);
+    writeFileSync(join(f.ckpt, "libs", "sub", "gen.txt"), "fresh\n");
+    const src = await f.io.buildSourceCommit(f.head, ["libs/sub"]);
+    await expect(publishGenHealGitlinks({ integrationRoot: f.integ, candidateSha: src })).rejects.toThrow(
+      /gate-pin publication for libs\/sub/,
+    );
   });
 });

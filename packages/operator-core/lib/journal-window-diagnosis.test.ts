@@ -17,7 +17,12 @@
  * asserts NULL, and those are the tests that matter most.
  */
 import { describe, it, expect } from 'vitest';
-import { readJournal, type JournalExec, type WindowResolver } from './journal-read';
+import {
+  readJournal as readJournalImpl,
+  type JournalExec,
+  type UnitCanonicalizer,
+  type WindowResolver,
+} from './journal-read';
 
 const NEWEST_MS = Date.parse('2026-08-16T21:35:07.000Z');
 const PROBE_MARKER = '--output-fields=__REALTIME_TIMESTAMP,MESSAGE';
@@ -47,6 +52,15 @@ function execEmptyWithNewest(atMs: number | null): JournalExec {
 
 const noUnknownUnits = async () => [];
 const resolvesTo = (ms: number | null): WindowResolver => async () => ms;
+const keepRequestedUnitNames: UnitCanonicalizer = async (units) => units;
+
+// These cases isolate window diagnosis from systemd's external name resolver.
+const readJournal = (
+  opts: Parameters<typeof readJournalImpl>[0],
+  exec?: Parameters<typeof readJournalImpl>[1],
+  probeUnits?: Parameters<typeof readJournalImpl>[2],
+  resolveWindow?: Parameters<typeof readJournalImpl>[3],
+) => readJournalImpl(opts, exec, probeUnits, resolveWindow, keepRequestedUnitNames);
 
 describe('readJournal — an empty window explains itself (WI-7133)', () => {
   it('DIAGNOSES a window that resolves AFTER the newest record', async () => {

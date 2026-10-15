@@ -90,12 +90,30 @@ describe('work_items completion-attribution backfill (migration 729)', () => {
     await applyMigrationsForTest(
       sql,
       [
-        '721-work-items-lane-generated-column.sql',
         '725-payload-object-shape-guard-and-plan-item-stamp-index.sql',
         '726-preserve-terminal-attribution-on-federated-write.sql',
         '741-work-items-condition-key-singleton.sql',
+        '777-work-items-embedding-recipe-discriminator.sql',
+        '1110-work-items-admission-flags-generated-columns.sql',
+        '1135-work-items-epoch-ms-timestamp-guard.sql',
+        '1194-work-items-directive-ref.sql',
+        '1294-work-item-readiness-payload-projections.sql',
+        '1308-work-items-severity-projection.sql',
       ],
-      { label: 'work-items-attribution-backfill' },
+      {
+        label: 'work-items-attribution-backfill',
+        // Like the terminal-attribution sibling, this fixture already carries
+        // 721's lane column and wider current family views. Replaying its older
+        // CREATE OR REPLACE VIEW select lists would drop columns before any
+        // attribution assertion runs. Keep all other migrations audited.
+        knownInapplicable: [
+          {
+            file: '721-work-items-lane-generated-column.sql',
+            reason:
+              'The consolidated fixture already models the lane generated column and wider current family views. Replaying 721 replaces them with narrower historical select lists: PostgreSQL refuses to drop columns from a view.',
+          },
+        ],
+      },
     );
     await seedAll();
     // PC_SKIP_729=1 runs this file WITHOUT the repair, which is how the guard was

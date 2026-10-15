@@ -5,8 +5,7 @@
  * The composite `require-principal.test.ts` stands `isRevoked` in as
  * always-`false` so the device principal resolves; it never exercises the
  * revocation logic itself. This file pins the resolver body:
- *   - the FAIL-OPEN revocation check: a revocation-store *error* must NOT
- *     block a valid token (`isRevoked(...).catch(() => false)`);
+ *   - a revocation-store error must not resolve a verified device principal;
  *   - a genuinely revoked device → null;
  *   - a valid mobile token → a device principal with the fixed device
  *     capability set and label-from-email;
@@ -98,15 +97,13 @@ describe('principalFromDeviceJwt — revocation', () => {
     expect(isRevoked).toHaveBeenCalledWith('device_revoked');
   });
 
-  it('FAILS OPEN: a revocation-store error does NOT block a valid token', async () => {
+  it('does not resolve a device principal when the revocation store is unavailable', async () => {
     vi.mocked(verifyDeviceToken).mockReturnValue(claims({ sub: 'device_ok' }));
-    // Simulate a transient PG hiccup — isRevoked rejects.
+    // A transient PG hiccup leaves revocation status unknown.
     vi.mocked(isRevoked).mockRejectedValue(new Error('PG connection refused'));
-    const p = await principalFromDeviceJwt(h({ authorization: 'Bearer t' }));
-    // `.catch(() => false)` means a store error reads as "not revoked".
-    expect(p).not.toBeNull();
-    expect(p!.kind).toBe('device');
-    expect(p!.slug).toBe('device_ok');
+    await expect(principalFromDeviceJwt(h({ authorization: 'Bearer t' })))
+      .rejects.toThrow('PG connection refused');
+    expect(isRevoked).toHaveBeenCalledWith('device_ok');
   });
 
   it('checks revocation against the JWT sub claim', async () => {

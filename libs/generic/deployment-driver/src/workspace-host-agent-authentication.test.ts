@@ -1,7 +1,10 @@
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
+import { dirname, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
+import ts from "typescript";
+import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
@@ -26,6 +29,8 @@ import {
 } from "./workspace-host-agent-authentication";
 
 const NOW = () => new Date("2026-08-25T22:30:00.000Z");
+const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const PROBE_SOURCE = resolve(PACKAGE_ROOT, "workspace-host-agent-authentication.ts");
 
 class ScriptedRunner implements WorkspaceHostAgentProbeRunner {
   readonly invocations: WorkspaceHostAgentProbeInvocation[] = [];
@@ -78,6 +83,58 @@ const AUTHENTICATED = {
 } satisfies Record<WorkspaceHostCanaryAgent, WorkspaceHostAgentProbeOutcome>;
 
 describe("workspace-host agent verification probes", () => {
+  it("typechecks the spawn boundary with a host-required NodeJS.ProcessEnv augmentation", () => {
+    const configPath = join(PACKAGE_ROOT, "tsconfig.json");
+    const config = ts.readConfigFile(configPath, ts.sys.readFile);
+    expect(config.error).toBeUndefined();
+    const options = ts.parseJsonConfigFileContent(
+      config.config,
+      ts.sys,
+      PACKAGE_ROOT,
+      { noEmit: true, skipLibCheck: true, types: ["node"] },
+      configPath,
+    ).options;
+    const virtualEntry = resolve(PACKAGE_ROOT, "__consumer_probe__.ts");
+    const virtualGlobals = resolve(PACKAGE_ROOT, "__consumer_globals__.d.ts");
+    const virtualFiles = new Map([
+      [
+        virtualEntry,
+        "import { NodeWorkspaceHostAgentProbeRunner } from " +
+          JSON.stringify(PROBE_SOURCE) +
+          ";\nvoid NodeWorkspaceHostAgentProbeRunner;\n",
+      ],
+      [
+        virtualGlobals,
+        "declare namespace NodeJS { interface ProcessEnv { readonly NODE_ENV: \"development\" | \"production\" | \"test\"; } }\n",
+      ],
+    ]);
+    const host = ts.createCompilerHost(options, true);
+    const fileExists = host.fileExists.bind(host);
+    const readFile = host.readFile.bind(host);
+    const getSourceFile = host.getSourceFile.bind(host);
+    host.fileExists = (fileName) => virtualFiles.has(resolve(fileName)) || fileExists(fileName);
+    host.readFile = (fileName) => virtualFiles.get(resolve(fileName)) ?? readFile(fileName);
+    host.getSourceFile = (fileName, languageVersion, onError, shouldCreateNewSourceFile) => {
+      const source = virtualFiles.get(resolve(fileName));
+      return source === undefined
+        ? getSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile)
+        : ts.createSourceFile(fileName, source, languageVersion, true);
+    };
+    const program = ts.createProgram({
+      rootNames: [virtualEntry, virtualGlobals],
+      options,
+      host,
+    });
+    const sourceDiagnostics = ts.getPreEmitDiagnostics(program).filter(
+      (diagnostic) => diagnostic.file?.fileName === PROBE_SOURCE,
+    );
+
+    expect(sourceDiagnostics.map((diagnostic) => ({
+      code: diagnostic.code,
+      message: ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
+    }))).toEqual([]);
+  });
+
   it("probes only explicitly requested agents without claiming all-agent readiness", async () => {
     const runner = new ScriptedRunner(AUTHENTICATED);
     const report = await probeWorkspaceHostAgents({ runner, now: NOW, requestedAgents: ["claude", "omp"] });
@@ -822,6 +879,8 @@ describe("provider-cause classification (WI-2144034)", () => {
     for (const text of [
       QUOTA_STDERR,
       "You've hit your weekly limit · resets Sep 24, 7am (America/New_York)",
+      // Measured 2026-10-07 (WI-10007043): claude 2.1.289's 5-hour window, on stdout with exit 1.
+      "You've hit your session limit · resets 11pm (America/New_York)",
       "usage limit reached for this account",
       "Quota exceeded for model",
       "error code: insufficient_quota",
@@ -848,6 +907,7 @@ describe("provider-cause classification (WI-2144034)", () => {
       "403 Forbidden: invalid api key",
       "error: connection refused",
       "The weekly limit setting is unavailable",
+      "Session limit settings are unavailable",
       "Logged in using ChatGPT",
       "",
     ]) {
@@ -1071,5 +1131,37 @@ describe("provider-cause classification (WI-2144034)", () => {
     });
     expect(outcome.exitCode).toBe(1);
     expect(outcome.failureHint).toBeUndefined();
+  });
+
+  it("publishes only a capped stderr byte count for an unclassified OMP failure", async () => {
+    const privateKeyText = [
+      ["-----BEGIN RSA", "PRIVATE KEY-----"].join(" "),
+      "synthetic-test-key-material",
+      ["-----END RSA", "PRIVATE KEY-----"].join(" "),
+    ].join("\n");
+    const childScript =
+      "process.stderr.write(" +
+      JSON.stringify(privateKeyText) +
+      " + 'x'.repeat(70 * 1024), () => process.exit(1));";
+    const evidence = await probeWorkspaceHostAgentVerification({
+      spec: {
+        ...DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.omp[0],
+        command: process.execPath,
+        args: ["-e", childScript],
+      },
+      runner: new NodeWorkspaceHostAgentProbeRunner(),
+      now: NOW,
+    });
+    const serialized = JSON.stringify(evidence);
+
+    expect(evidence).toMatchObject({
+      ready: false,
+      exitStatus: 1,
+      failure: "non-zero-exit",
+      stderrByteCount: 64 * 1024,
+      stderrByteCountTruncated: true,
+    });
+    expect(serialized).not.toContain("PRIVATE KEY");
+    expect(serialized).not.toContain("not-a-real-key");
   });
 });

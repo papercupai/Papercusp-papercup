@@ -57,12 +57,12 @@ LOG="$LOG_DIR/healthcheck.log"
 # assertion measures the tree the backup actually writes. Hardcoding it here meant
 # a relocated dump left the freshness check pointed at a directory nothing updates.
 # The fallback is unchanged, so a host that never overrides the var is unaffected.
-# Fallback moved to the live dump volume 2026-09-05 (WI-2146225) — see the long
-# note in papercusp-db-backup.sh. A health CHECK defaulting to the abandoned
-# directory is the worst case of the class: it reports confidently about a
-# directory nothing writes, which is how this outage stayed green for 13 hours.
-DUMP="${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/backup/db-dumps}"
+# Current fallback follows the cold-a destination in papercusp-db-backup.sh.
+# A health check must read the producer's tree, not the retained legacy copy.
+DUMP="${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/cold-a/Backup/db-dumps}"
 STATUS="$DUMP/STATUS.json"
+SUDO_BIN="${KOPIA_HEALTHCHECK_SUDO:-/usr/bin/sudo}"
+KOPIA_BIN="${KOPIA_HEALTHCHECK_BIN:-/usr/bin/kopia}"
 # Injectable so a caller can capture the alert instead of firing it. This is now a
 # convenience for tests, NOT the safety mechanism — see ALARM SAFETY below.
 ALERT="${BACKUP_ALERT_CMD:-$HOME/.config/kopia/backup-alert.sh}"
@@ -189,6 +189,8 @@ vm_verification_epoch() {
 }
 
 fail() {
+  # Carry the section-0 leftover finding on EVERY page, not only its own (WI-6554700010011924).
+  [ -z "${LEFTOVER_NOTE:-}" ] || set -- "$* $LEFTOVER_NOTE"
   echo "[$(date -Iseconds)] FAIL: $*" >> "$LOG"
   if [ -n "$ALARM_SUPPRESSED" ]; then
     # The exit code stays 1 — the failure path is fully exercised and the verdict is real.
@@ -264,7 +266,10 @@ if [ "${1:-}" = "--self-test" ]; then
     # default to the real $HOME/.papercusp/backup-health (polluting live host state)
     # AND the new dedup window would make check N's page suppress check N+1's.
     rm -rf "$tmp/state"; mkdir -p "$tmp/state"
-    env BACKUP_ALERT_CMD="$stub" HEALTHCHECK_STATE_DIR="$tmp/state" "$@" bash "$self" >/dev/null 2>&1
+    # KOPIA_UNIT_CGROUP_ROOT: never read the host's real unit cgroups from a self-test
+    # (a live leftover there would flip an unrelated case; WI-6554700010011924).
+    env BACKUP_ALERT_CMD="$stub" HEALTHCHECK_STATE_DIR="$tmp/state" \
+        KOPIA_UNIT_CGROUP_ROOT="$tmp/no-unit-cgroups" "$@" bash "$self" >/dev/null 2>&1
     local got_exit=$?
     local got_paged=no; [ -s "$tmp/paged" ] && got_paged=yes
     if [ "$got_exit" = "$want_exit" ] && [ "$got_paged" = "$want_paged" ]; then
@@ -325,13 +330,13 @@ jdoe@host:/home/jdoe/macos-vm
       END { print (complete ? "complete" : (seen ? "registered-only" : "absent")) }')" = complete ]
   }
   cov_listing="jdoe@host:/mnt/data/Backup
-  2026-09-05 12:00:00 EDT abc123 1 GB drwxr-xr-x files:1 dirs:1 :/mnt/backup/db-dumps
-jdoe@host:/mnt/backup/db-dumps-other"
+  2026-09-05 12:00:00 EDT abc123 1 GB drwxr-xr-x files:1 dirs:1 :/mnt/cold-a/Backup/db-dumps
+jdoe@host:/mnt/cold-a/Backup/db-dumps-other"
   cov_ok=1
   # present-as-parent-only must read as NOT covered
   src_covered "$cov_listing" /mnt/data/Backup/db-dumps && cov_ok=0
   # a path appearing only in an INDENTED detail row must read as NOT covered
-  src_covered "$cov_listing" /mnt/backup/db-dumps && cov_ok=0
+  src_covered "$cov_listing" /mnt/cold-a/Backup/db-dumps && cov_ok=0
   # a longer sibling header must not satisfy the shorter path either
   src_covered "$cov_listing" /mnt/backup/db-dump && cov_ok=0
   # positive control: the parent itself IS a real header and must read as covered
@@ -352,20 +357,20 @@ jdoe@host:/mnt/backup/db-dumps-other"
   # snapshots of 2 KB. This is the case that must never regress.
   inc_ok=1
   # header alone, zero rows — what --all shows for an incomplete-only source
-  src_covered "jdoe@host:/mnt/backup/db-dumps" /mnt/backup/db-dumps && inc_ok=0
+  src_covered "jdoe@host:/mnt/cold-a/Backup/db-dumps" /mnt/cold-a/Backup/db-dumps && inc_ok=0
   # an explicitly incomplete row must not count either
-  src_covered "jdoe@host:/mnt/backup/db-dumps
+  src_covered "jdoe@host:/mnt/cold-a/Backup/db-dumps
   2026-09-05 13:15:24 EDT kbeef1 incomplete:canceled 2 KB drwxrwxr-x files:3 dirs:4 (incomplete)" \
-    /mnt/backup/db-dumps && inc_ok=0
+    /mnt/cold-a/Backup/db-dumps && inc_ok=0
   # an <ERROR> row is not a snapshot either
-  src_covered "jdoe@host:/mnt/backup/db-dumps
+  src_covered "jdoe@host:/mnt/cold-a/Backup/db-dumps
   2026-09-05 13:15:24 EDT <ERROR> error reading directory: entry not found" \
-    /mnt/backup/db-dumps && inc_ok=0
+    /mnt/cold-a/Backup/db-dumps && inc_ok=0
   # positive control: one real completed row IS coverage — without this the three
   # assertions above would all pass against a matcher that never returns true.
-  src_covered "jdoe@host:/mnt/backup/db-dumps
+  src_covered "jdoe@host:/mnt/cold-a/Backup/db-dumps
   2026-09-05 13:15:24 EDT abc123 130 GB drwxrwxr-x files:743 dirs:12 (latest-1)" \
-    /mnt/backup/db-dumps || inc_ok=0
+    /mnt/cold-a/Backup/db-dumps || inc_ok=0
   if [ "$inc_ok" = 1 ]; then
     printf '  ok    %s\n' "coverage requires a COMPLETE snapshot, not just a source header"; pass=$((pass+1))
   else
@@ -418,6 +423,33 @@ jdoe@host:/mnt/backup/db-dumps-other"
   [ "$failed" -eq 0 ] || exit 1
   exit 0
 fi
+
+# ── 0. DETECT (page later) A KOPIA PROCESS THAT OUTLIVED ITS STOPPED UNIT ─────
+# Rationale in section 3. Detected FIRST because every check below may fail() and
+# exit; fail() then carries LEFTOVER_NOTE on its page (WI-6554700010011924).
+UNIT_CGROUP_ROOT="${KOPIA_UNIT_CGROUP_ROOT:-/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service}"
+SYSTEMCTL_BIN="${KOPIA_HEALTHCHECK_SYSTEMCTL:-/usr/bin/systemctl}"
+unit_stopped() { # true when the unit's SubState means "no process should be running"
+  case "$("$SYSTEMCTL_BIN" --user show -p SubState --value "$1" 2>/dev/null)" in
+    dead|failed|auto-restart|auto-restart-queued) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+unit_procs() { tr '\n' ' ' < "$1/cgroup.procs" 2>/dev/null | sed 's/ *$//'; }
+leftover=""
+if [ -d "$UNIT_CGROUP_ROOT" ]; then
+  for unit in kopia-home-snapshot.service kopia-snapshots.service; do
+    cg=$(find "$UNIT_CGROUP_ROOT" -maxdepth 3 -type d -name "$unit" 2>/dev/null | head -1)
+    [ -n "$cg" ] || continue
+    [ -n "$(unit_procs "$cg")" ] || continue   # empty cgroup: no systemctl round trip
+    unit_stopped "$unit" || continue
+    procs=$(unit_procs "$cg")
+    [ -n "$procs" ] && unit_stopped "$unit" || continue
+    leftover="${leftover:+$leftover; }$unit is stopped but its cgroup still holds pid(s) $procs"
+  done
+fi
+LEFTOVER_NOTE=""
+[ -z "$leftover" ] || LEFTOVER_NOTE="ALSO: Kopia process(es) outlived their stopped unit: $leftover (WI-6554700010011924)."
 
 # ── 1. THE DUMP ITSELF — the check whose absence hid a 30-day outage ─────────
 newest=0
@@ -485,7 +517,7 @@ fi
 # since the day it was written. A check that always fails is a check everyone
 # learns to ignore — which is why nobody believed it when the backup ACTUALLY died
 # (EI-10733). Verified against `kopia snapshot list --help` on this host.
-LATEST=$(sudo -n /usr/bin/kopia snapshot list --all -n 1 2>/dev/null \
+LATEST=$(kopia_as_root "$SUDO_BIN" "$KOPIA_BIN" snapshot list --all -n 1 2>/dev/null \
   | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}' \
   | sort -r | head -1)
 [ -z "$LATEST" ] && fail "no kopia snapshots found at all"
@@ -538,7 +570,7 @@ snap_age=$(( now - $(date -d "$LATEST" +%s) ))
 # rows carry `incomplete`. Registered-but-never-completed is reported
 # SEPARATELY from never-registered because they have different repairs — the
 # first is a sweep that cannot finish, the second is a discovery hole.
-COV_LISTING=$(sudo -n /usr/bin/kopia snapshot list --all 2>/dev/null || true)
+COV_LISTING=$(kopia_as_root "$SUDO_BIN" "$KOPIA_BIN" snapshot list --all 2>/dev/null || true)
 cov_state=$(printf '%s\n' "$COV_LISTING" | awk -v want=":$DUMP" '
     /^[^[:space:]]/ {
       inblock = (length($0) >= length(want) &&
@@ -592,7 +624,7 @@ dump_snap_age=$(( now - $(date -d "$dump_last" +%s) ))
 # that property this check would be permanently green off the hot sweep — i.e. exactly
 # the blindness it exists to remove.
 HOME_SNAP_SRC="${HOME_SNAP_SRC:-$HOME}"
-home_listing=$(sudo -n /usr/bin/kopia snapshot list "$HOME_SNAP_SRC" -n 1 2>/dev/null)
+home_listing=$(kopia_as_root "$SUDO_BIN" "$KOPIA_BIN" snapshot list "$HOME_SNAP_SRC" -n 1 2>/dev/null)
 home_exact_listing=$(printf '%s\n' "$home_listing" | exact_source_block "$HOME_SNAP_SRC")
 # Require the EXACT source header before trusting any timestamp in that listing.
 # `kopia snapshot list <path>` resolves to the nearest ANCESTOR source and then browses
@@ -637,7 +669,7 @@ for requested in "${PROTECTED_VM_REQUESTS[@]}"; do
     continue
   fi
   protected_src=$(readlink -f "$requested")
-  protected_listing=$(sudo -n /usr/bin/kopia snapshot list "$protected_src" -n 1 2>/dev/null)
+  protected_listing=$(kopia_as_root "$SUDO_BIN" "$KOPIA_BIN" snapshot list "$protected_src" -n 1 2>/dev/null)
   protected_exact_listing=$(printf '%s\n' "$protected_listing" | exact_source_block "$protected_src")
   if [ -n "$protected_exact_listing" ] \
      && ! printf '%s\n' "$protected_exact_listing" | grep -q '<ERROR>'; then
@@ -685,6 +717,28 @@ if [ -f "$STATUS" ] && grep -q '"periodSec"' "$STATUS" 2>/dev/null; then
   if [ -n "${run_s:-}" ] && [ "$run_s" -gt "$MAX_DUMP_RUN_S" ] 2>/dev/null; then
     fail "Postgres dump run is near-continuous: the last run took $(dur "$run_s") (limit $(dur "$MAX_DUMP_RUN_S")) of its hourly timer period. Once a run outlasts the hour, the next start is a no-op and the backup never rests. Read the per-tier times in db-backup.log; lever: PC_BACKUP_TRANSCRIPT_MIN_AGE_SEC in papercusp-db-backup.sh (WI-10004603)."
   fi
+fi
+
+# ── 3. A KOPIA PROCESS THAT OUTLIVED ITS STOPPED UNIT (WI-6554700010011924) ──
+# The user manager cannot kill the root-owned sudo/Kopia children of these units
+# ("Failed to kill control group ... Operation not permitted"). When a stop, or its
+# ExecStopPost cleanup, times out under load, the walk keeps running in the unit's
+# cgroup after the unit has stopped: OUTSIDE kopia-global.lock, until the next start's
+# ExecStartPre reaps it (up to RestartSec=30min later). Measured 2026-10-13 (three
+# concurrent walks, WI-6554700010011790) and again 2026-10-14 04:53Z, where systemd
+# logged only "Unit process ... remains running after unit stopped".
+# Signal: SubState says nothing should run, yet the unit's cgroup still has processes.
+# SubState is read BEFORE and AFTER the cgroup read, so a unit that starts mid-check
+# is never mistaken for a leftover. cgroupfs files always report size 0, so the
+# content is read, never tested with -s. Paged LAST, like the duty check, but
+# detected in section 0 so an earlier failure's page still carries it.
+# DETECTED in section 0 (before any check can fail() and exit), PAGED here when nothing
+# else failed. When an earlier check does fail, fail() appends LEFTOVER_NOTE to that
+# page instead, so a stale dump (exactly when a leaked walk is likeliest) can no longer
+# silence this finding, and the staleness message still leads.
+if [ -n "$leftover" ]; then
+  LEFTOVER_NOTE=""   # this page IS the finding; do not append it a second time
+  fail "Kopia process(es) outlived their stopped unit: $leftover. They run outside kopia-global.lock until the unit's next start reaps them (ExecStartPre --cleanup). Inspect with: sudo ps -o pid,etimes,args -p <pid>. See WI-6554700010011924."
 fi
 
 echo "[$(date -Iseconds)] OK: dump $(( age / 60 ))m old, snapshot $(( snap_age / 60 ))m old" >> "$LOG"

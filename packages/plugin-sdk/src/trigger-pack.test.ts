@@ -68,6 +68,45 @@ describe('validateTriggerPackDeclaration', () => {
     );
   });
 
+  it('accepts x-options on a string or string-array input (P-004)', () => {
+    const manifest = validManifest();
+    manifest.triggerPack.inputs = {
+      type: 'object',
+      properties: {
+        channels: { type: 'array', items: { type: 'string' }, 'x-options': { capability: 'chat.channels' } },
+        project: { type: 'string', 'x-options': { capability: 'ticket.containers', args: { kind: 'project' } } },
+        note: { type: 'string' },
+      },
+    };
+    expect(validateTriggerPackDeclaration(manifest)).toEqual([]);
+  });
+
+  it('rejects a malformed x-options source or an input that cannot hold a choice (P-004)', () => {
+    const manifest = validManifest();
+    manifest.triggerPack.inputs = {
+      type: 'object',
+      properties: {
+        threeSegments: { type: 'string', 'x-options': { capability: 'chat.channels.list' } },
+        unknownKey: { type: 'string', 'x-options': { capability: 'chat.channels', provider: 'slack' } },
+        badArgs: { type: 'string', 'x-options': { capability: 'chat.channels', args: ['general'] } },
+        notAnObject: { type: 'string', 'x-options': 'chat.channels' },
+        numeric: { type: 'number', 'x-options': { capability: 'ticket.containers' } },
+        numericItems: { type: 'array', items: { type: 'number' }, 'x-options': { capability: 'ticket.containers' } },
+      },
+    };
+    const issues = validateTriggerPackDeclaration(manifest);
+    const at = (name: string) => `triggerPack.inputs.properties.${name}.x-options`;
+    expect(issues).toEqual(expect.arrayContaining([
+      `${at('threeSegments')}.capability must be <domain>.<verb>`,
+      `${at('unknownKey')}.provider is not a known option-source key`,
+      `${at('badArgs')}.args must be an object`,
+      `${at('notAnObject')} must be an object`,
+      `${at('numeric')} needs the input to be type "string" or an array of strings`,
+      `${at('numericItems')} needs the input to be type "string" or an array of strings`,
+    ]));
+    expect(issues).toHaveLength(6);
+  });
+
   it('rejects code-tool kind:pack and a source/event family mismatch', () => {
     const manifest = validManifest();
     expect(validateTriggerPackDeclaration({

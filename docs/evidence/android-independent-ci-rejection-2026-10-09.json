@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Independent Android CI retained native chat workspace rejection",
+  "framework": "operational",
+  "command": [
+    "systemctl",
+    "--user",
+    "start",
+    "papercusp-android-ci.service"
+  ],
+  "startedAt": "2026-10-09T13:43:59.817231+00:00",
+  "finishedAt": "2026-10-09T14:09:31.165921+00:00",
+  "exitCode": 1,
+  "summary": "Actual independent host and31 unpaired connected cases passed. The populated paired-native journey failed because the device conversation read returned0 turns instead of2 seeded turns in its paired workspace. Retained JUnit and a focused conventional regression reproduced the mismatch. The verified device workspace now scopes conversation read/write/history; the runner now checks authenticated seeded-chat readback before instrumentation. This artifact preserves the failed run and does not claim native acceptance or a completed migration.",
+  "sourceCommit": "02d85548615ed7ca9cbe5c67e67c167ff9ce61c8",
+  "sourceDirty": false,
+  "sourceFingerprint": "2e61c48d4248e2c18226a7b2ee7e77f1f5d5274cc5ed5f61ddd69ea51d6083d4",
+  "operatorCommit": "cf57965610278cd8d8183d6a4b12160d127da3c3",
+  "execution": {
+    "attemptId": "20261009T134359Z-a7878e70",
+    "status": "failed",
+    "retainedReceipt": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T134359Z-a7878e70/result.json",
+    "receiptSha256": "4ee0770148ed8864dc7573042954988aae1d0ae4f8328c104ef7aecca3fffb22"
+  },
+  "assertions": [
+    {
+      "id": "host",
+      "passed": true,
+      "evidence": "host phase exit0; log SHA25602a46ae22317f457f1de2ac60e5c2261f569caa4b8cfd56545e37374c2531ab4"
+    },
+    {
+      "id": "unpaired-connected",
+      "passed": true,
+      "evidence": "connected exit0; retained JUnit31 executed,0 failure/error/skip and no suite problems; logSHA256d89c666293dadb453276d5f59983910952790fbdaed24fdaeef05284bee62a68"
+    },
+    {
+      "id": "paired-native-six-features",
+      "passed": false,
+      "evidence": "JUnit sixFeatureJourneysMatchOwnedOperatorState AssertionError at verifyOwnedFeatures:483: Owned conversation expected2 fixture turns but JNI returned0. Paired logSHA2566807bb52e1d3e571c45b250d7d6fd1d389d7ae545cccd835cf3252cd4de438ea."
+    },
+    {
+      "id": "failure-closed-admission",
+      "passed": true,
+      "evidence": "CI admission and cached success proof absent after failed run."
+    },
+    {
+      "id": "owned-cleanup",
+      "passed": true,
+      "evidence": "Executor emulatorCleanupVerified true; paired cleanupVerified true; isolated hostCleanupVerified true; native credentialsCleared true."
+    }
+  ],
+  "rootCause": {
+    "workItem": "EI-25511519706362927",
+    "layer": "device operator conversation route",
+    "distinguishingTest": "Conventional device-revival-routes regression with populated verified device workspace and empty ambient desktop workspace reproduces0 instead of2 before explicit scope fix. After fix32 route tests pass.",
+    "fixScope": "Reuse existing getOrCreateActiveConversation(workspaceId), getConversationById(id,workspaceId) and verified device principal for read/write/history/brain dispatch; add owned authenticated fixture readback and positive/empty/foreign/stale cleanup controls."
+  },
+  "acceptanceBoundary": {
+    "fullNativePass": false,
+    "migrationComplete": false,
+    "signedCandidate": false,
+    "physicalPhone": false,
+    "googlePlay": false
+  },
+  "migrationRefs": [
+    "WI-10007209",
+    "android-public-release-2026-10-01#D-023"
+  ]
+}

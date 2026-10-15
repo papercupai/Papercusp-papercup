@@ -241,9 +241,12 @@ describe('work_items:release — (B) the fully-blind release is no longer silent
     expect(n).toBeTypeOf('string');
     expect(n).toMatch(/UNSTARTED/);
     expect(n).toMatch(/hasCheckpoint:false/);
-    // It must name the remedy, and the remedy must still work after the fact.
+    // It must name the remedy and make the post-release peer-reclaim race explicit.
     expect(n).toContain("work_items:release { id:'WI-6001'");
-    expect(n).toMatch(/while the item is unassigned/);
+    expect(n).toMatch(/original work_items:release call/);
+    expect(n).toMatch(/re-read work_items:get before following up/);
+    expect(n).toMatch(/not_holder result means another agent currently holds it/);
+    expect(n).toMatch(/coordinate with them instead of forcing/);
   });
 
   it('is SILENT once a reason is supplied — the two paths are mutually exclusive', async () => {

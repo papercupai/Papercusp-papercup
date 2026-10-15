@@ -31,6 +31,7 @@ import {
   DESKTOP_OWNER_NAMING_FILE,
   DROPPED,
   FIXTURE_ENV,
+  INTERNAL_DOC_CONTENTS,
   PUBLIC_DESKTOP_DROPPED,
   PUBLIC_DESKTOP_SHIPPED,
   childEnv,
@@ -106,11 +107,18 @@ describe('public target — licensed export', () => {
     expect(manifest).toMatchObject({ target: 'public', source: { commit: fx.commit } });
     expect(readFileSync(join(out, 'LICENSE'), 'utf8')).toBe(readFileSync(PUBLIC_LICENSE_PATH, 'utf8'));
     expect(readFileSync(join(out, 'THIRD-PARTY-NOTICES.md'), 'utf8')).toBe(NOTICES_STUB);
+    for (const [path, body] of Object.entries(INTERNAL_DOC_CONTENTS)) {
+      expect(readFileSync(join(out, path), 'utf8'), path).toBe(body);
+    }
+    expect(readFileSync(join(out, 'libs/papercusp/plugins/markdown-preview/papercusp.json'), 'utf8'))
+      .toBe(readFileSync(join(fx.repo, 'libs/papercusp/plugins/markdown-preview/papercusp.json'), 'utf8'));
     const notice = readFileSync(join(out, 'NOTICE'), 'utf8');
     expect(notice).toContain('Elastic License 2.0');
     expect(notice).not.toMatch(/EVALUATION ONLY/);
     const readme = readFileSync(join(out, 'README.md'), 'utf8');
     expect(readme).toContain('Elastic License 2.0');
+    expect(readme).toContain('Papercusp is source-available');
+    expect(readme).not.toMatch(/\b(?:OSI[ -]approved|open[ -]source)\b/i);
     expect(readme).not.toMatch(/replaced wholesale/);
     expect(readme).toContain('## Contributing, security and telemetry');
     // P-008: a stranger's clean-machine build path, each step measured on a clean copy.

@@ -1,0 +1,186 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Android P-006 isolated native exact-eight and paired JNI journey, clean c0210/e3513",
+  "framework": "operational",
+  "command": [
+    "android/gradlew",
+    "-p",
+    "android",
+    ":app:connectedDebugAndroidTest",
+    "--rerun",
+    "--console=plain",
+    "-Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true",
+    "-Pandroid.testInstrumentationRunnerArguments.class=com.papercuspai.operator.mobile.PapercupAppSmokeTest#launcherActivityStarts,com.papercuspai.operator.mobile.PapercupAppSmokeTest#privateInboxScopeAcceptsOnlyDocumentedGlobalControls,com.papercuspai.operator.mobile.OperatorChatScreenTest",
+    "-Pandroid.testInstrumentationRunnerArguments.nativePairingFixture=true",
+    "-Pandroid.testInstrumentationRunnerArguments.nativeAuthFixture=true"
+  ],
+  "commandCwd": "/home/builduser/papercupai-workspace/papercup-rust-mobile",
+  "startedAt": "2026-10-07T09:00:18.749412+00:00",
+  "finishedAt": "2026-10-07T09:07:35.021620+00:00",
+  "exitCode": 0,
+  "summary": "Exactly eight maintained Android instrumentation cases passed on clean committed mobile c0210 with isolated operator e3513. Paired JNI authenticated request, scoped Inbox rendering and recovery, expired JWT rejection and fresh pairing, revocation prompt controls and fresh pairing, navigation, activity recreation and credentials clearing passed. APK/source/counterpart and owned runtime cleanup verified. Local debug evidence only; hosted Actions billing requirement remains open.",
+  "scope": "Owned local debug native pairing/JNI/navigation with external browser intent fixture; no signed-candidate, mesh, phone or Play acceptance",
+  "sourceCommit": "c0210fbe3301909573add1b4ed8ad572ff21aa77",
+  "sourceDirtyAtExecution": false,
+  "sourceFingerprints": {
+    "tools/run-android-checks.sh": "fb259e5e30af4ea1de9f725f57ef54810478f096c72c479f71f01e3c3c6d36a4",
+    "tools/build-scripts/build-android.sh": "98b8745a6fb859e912fecc96f3d15cd336a715c7aa28d0ab3b013eeda34141b7",
+    "android/app/build.gradle.kts": "2b64d88b15509b6ffce6545632363403d08771d0d83e83e8becce8abaf82875c",
+    "android/app/src/main/kotlin/com/papercuspai/operator/mobile/SettingsScreen.kt": "c30d6121d91412ff0d224c2dde3a5905eeb3771a96d6b8c983824c0f6d17a5b3",
+    "android/app/src/main/kotlin/com/papercuspai/operator/mobile/LibraryNoticesScreen.kt": "3a36b7054d5387813a5546b27f96c9c57701a47cb65b8c173bebe110201105b1",
+    "android/app/src/main/res/values/strings.xml": "ffe19e33b1457c7f169575b5ab9c91fa2b73098355680ce8dd422fb18b543488",
+    "android/build.gradle.kts": "66464247166c6a043f92c6feed6314e4802bc700174015c620ec1c05f453eb96",
+    "tools/tests/android-library-notices-test.sh": "48373ef7df8d8def9459e01b34911565fadeb33c49a23ba05378038db777f06e",
+    "android/app/src/main/kotlin/com/papercuspai/operator/mobile/DiagnosticsScreen.kt": "80d061ef6f14b1fe54b093b8464253df80f9c868a1ef8b1fb91036f9554905fd",
+    "android/app/src/main/kotlin/com/papercuspai/operator/mobile/MainActivity.kt": "1040ccad1588a992a491563c13f22b8d69a0f1999bf4f5b8a1264637f2e98575",
+    "android/app/src/main/AndroidManifest.xml": "f2156e5cd114b6c1f21e9fee92505d1b8671f9d5395eba1d5b8167e6e58caaa0",
+    "android/app/src/main/kotlin/com/papercuspai/operator/mobile/PapercupApplication.kt": "64d99440c8c918d82ca528d4454bd650c21c3eb0232c7153d0d5b78cf44e95ab",
+    "android/app/src/main/kotlin/com/papercuspai/operator/mobile/InboxScreen.kt": "1d6e8b64f543ddb9bd20f14e36415ee07c3c87f758adb363f7c2ccf48252e698",
+    "android/app/src/main/kotlin/com/papercuspai/operator/mobile/CompanionFeed.kt": "45715903c679d2e1ac2bc5c548ea27bfb401942107177d439550f2b4738baa41",
+    "android/app/src/main/kotlin/com/papercuspai/operator/mobile/Credentials.kt": "6ac079028424cdb141b6104298f68d3a38ed5e6807631406a8191459d0d088c1",
+    "android/app/src/main/kotlin/com/papercuspai/operator/mobile/HumanError.kt": "3ad6407a781490d8b46f4ad9bb6f6a0dd76d2d992dd4f74366c7b177a13e6783",
+    "android/app/src/main/kotlin/com/papercuspai/operator/mobile/PairScreen.kt": "68d35ada3b9ad11b89bf87598d8d5c5b4fd84c3af801d8e30f8f64ae601c98ae",
+    "android/app/src/main/kotlin/com/papercuspai/operator/mobile/OperatorChatScreen.kt": "a0fda70c5069a35c9649b411bc3f9c61dae545e169d6550de1b9c0f319a3fb3d",
+    "android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/PapercupAppSmokeTest.kt": "6f58a5e1fe3d1f06ba722445af0d2e258ab6f63d4ec569f665353616684b7958",
+    "android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/OperatorChatScreenTest.kt": "ea8027b17abf01111a4f9b183fb961a2bd237daa370782b100472acaa4cd3160",
+    "android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/LibraryNoticesScreenTest.kt": "702e28385d0955bd9a9ac8e3f09d06c733aad2f6882c491fb354166c46415c80",
+    "android/app/src/test/kotlin/com/papercuspai/operator/mobile/LibraryNoticesTest.kt": "4d76dd47105cb9a86e398eb43b2615935528de42fdad0040bcdcf767cdb61e85",
+    "android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/UniffiCallbackTest.kt": "96d13216044dc5efe645c7e57f6e509bda62a041edc2dc29b40d14b0c2cd7426"
+  },
+  "committedBlobsVerified": true,
+  "runId": "0910c50d62fc4481bdab0038648a74bb",
+  "runtimeReceipt": {
+    "schemaVersion": 1,
+    "runtime": "http://127.0.0.1:36259",
+    "workspaceId": "test-runtime-1566a87f-0e5",
+    "operatorSourceCommit": "e3513f6ce9d4e8edd4d55789e5b339600c19e75f",
+    "bundleSha256": "f4f8a8e4385485985eecfcb402a05ad77c671ec8508620c7518bf5290a2af5e2",
+    "profile": "with-test-pg --isolated-runtime=operator-api",
+    "backgroundDisabled": true,
+    "dbosDisabled": true,
+    "executionStarted": true,
+    "exitCode": 0,
+    "hostCleanupVerified": true,
+    "scope": "Private operator/debug native integration; not signed-candidate, physical-phone or Play acceptance",
+    "hostPid": 2736499,
+    "health": {
+      "ok": true,
+      "service": "papercusp-operator",
+      "sha": "e3513f6ce9",
+      "version": "0.0.0",
+      "ts": "2026-10-07T09:00:18.641Z"
+    },
+    "nativeProcessCleanupVerified": true
+  },
+  "nativeJourney": {
+    "runId": "0910c50d62fc4481bdab0038648a74bb",
+    "journeyCompleted": true,
+    "enrollmentBrowserStubbed": true,
+    "currentStage": "completed",
+    "deviceId": "0267d046-45d5-4e74-81b4-c0ad08220621",
+    "workspaceId": "android-live-scope-0910c50d62fc4481bdab0038648a74bb",
+    "enrollmentIntentObserved": true,
+    "authenticatedRequestPassed": true,
+    "returnedToPairedShell": true,
+    "activityRecreated": true,
+    "inboxScopedReadPassed": true,
+    "inboxRenderingPassed": true,
+    "inboxUnauthorizedPassed": true,
+    "inboxRecoveryPassed": true,
+    "expiredJwtControlPassed": true,
+    "expiredJwtRejected": true,
+    "expiredJwtRenderingPassed": true,
+    "expiredJwtFreshPairPassed": true,
+    "revocationMissingPromptBlocked": true,
+    "revocationDeniedPromptBlocked": true,
+    "revocationApprovedPromptInvoked": true,
+    "revocationBiometricPromptStubbed": true,
+    "revokedDeviceRejected": true,
+    "revokedDeviceRenderingPassed": true,
+    "revokedDeviceFreshPairPassed": true,
+    "meshEnrollmentClaimCorrect": true,
+    "valueRowLabelsPassed": true,
+    "navigationPassed": true,
+    "credentialsCleared": true
+  },
+  "testedArtifacts": [
+    {
+      "path": "/home/builduser/papercupai-workspace/papercup-rust-mobile/android/app/build/ci-evidence/p006-native-20261007T085600Z/app-debug.apk",
+      "sha256": "20ad153431dd3c65d47e19c3818df9d51af2440e0eaa3c451dad1d3f51991fe7"
+    },
+    {
+      "path": "/home/builduser/papercupai-workspace/papercup-rust-mobile/android/app/build/ci-evidence/p006-native-20261007T085600Z/app-debug-androidTest.apk",
+      "sha256": "20ba6cbc3ef7e5ee5bdc37d31754dc996237ef1ff92ba6b5f638cca69278482b"
+    }
+  ],
+  "junitIdentities": [
+    "com.papercuspai.operator.mobile.PapercupAppSmokeTest#launcherActivityStarts",
+    "com.papercuspai.operator.mobile.PapercupAppSmokeTest#privateInboxScopeAcceptsOnlyDocumentedGlobalControls",
+    "com.papercuspai.operator.mobile.OperatorChatScreenTest#repairToAnotherServerDoesNotExposePreviousDraft",
+    "com.papercuspai.operator.mobile.OperatorChatScreenTest#rejectedDraftSurvivesSameScopeRepairAndActivityRecreation",
+    "com.papercuspai.operator.mobile.OperatorChatScreenTest#rejectedDraftSurvivesSettingsRoundTrip",
+    "com.papercuspai.operator.mobile.OperatorChatScreenTest#forbiddenSendKeepsDraftWithoutInventingAPersistedTurn",
+    "com.papercuspai.operator.mobile.OperatorChatScreenTest#unauthorizedSendKeepsDraftWithoutInventingAPersistedTurn",
+    "com.papercuspai.operator.mobile.OperatorChatScreenTest#repairToAnotherWorkspaceDoesNotExposePreviousDraft"
+  ],
+  "testCounts": {
+    "executed": 8,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "launchReceipt": {
+    "exit.txt": "0",
+    "native-exit.txt": "0",
+    "verify-exit.txt": "0",
+    "verify.log": "Isolated paired native proof: source/counterpart/APK/JUnit/journey/cleanup verified",
+    "started-at.txt": "2026-10-07T08:56:22Z",
+    "finished-at.txt": "2026-10-07T09:07:40Z",
+    "source-sha.txt": "c0210fbe3301909573add1b4ed8ad572ff21aa77",
+    "source-sha-end.txt": "c0210fbe3301909573add1b4ed8ad572ff21aa77"
+  },
+  "rawEvidence": "/home/builduser/papercupai-workspace/papercup-rust-mobile/android/app/build/ci-evidence/p006-native-20261007T085600Z",
+  "rawHashes": {
+    "p006-native-20261007T085600Z/result.json": "7a2b61415b293f4987742fc6c0e2ca8b11eb9eae42f105b3be07064a7adc547a",
+    "p006-native-20261007T085600Z/native-test.log": "491546ad415a3effbe02a56d90a5ce9d39cb366dfb7abf270a9894e9ad73bbfb",
+    "p006-native-20261007T085600Z-runtime/result.json": "d46b89321b61eb00febcd44200f4e89d084a0030dea5be7fadd768d85bbf4f4f",
+    "p006-native-launch-20261007T085600Z/native.log": "98b45988a03fae16388796b0b2ff52c117aee360d6033de8b12f64e0a10c1363",
+    "p006-native-20261007T085600Z/native-results/TEST-papercusp-p006-3790b-20261007(AVD) - 16-_app-.xml": "d3486f9941e1ed5489759fa872d4f49303794573db7dca6b52890cfc9353c01c"
+  },
+  "assertions": [
+    {
+      "id": "exact-eight-maintained-native",
+      "passed": true,
+      "evidence": "Retained JUnit has the exact eight identities enumerated in junitIdentities; zero failures/errors/skips. Maintained verify-isolated-native exit0."
+    },
+    {
+      "id": "paired-JNI-journey",
+      "passed": true,
+      "evidence": "Retained nativeJourney booleans are all true, including authenticatedRequestPassed, expiry/revocation/fresh repair, draft retention/scope, navigation and credentialsCleared."
+    },
+    {
+      "id": "exact-source-counterpart-and-APKs",
+      "passed": true,
+      "evidence": "Clean source at start/end c0210; all native source fingerprints match c0210 committed blobs. Paired runtime health SHA e3513f6ce9 matches exact expected operator commit, and verified APK hashes match retained APKs."
+    },
+    {
+      "id": "owned-runtime-cleanup",
+      "passed": true,
+      "evidence": "native cleanupVerified=true and errors=[]; runtime exitCode0, hostCleanupVerified=true, nativeProcessCleanupVerified=true."
+    },
+    {
+      "id": "retained-supervisor-terminal",
+      "passed": true,
+      "evidence": "Existing independent systemd unit completed; launch exit/native-exit/verify-exit all0 and source fingerprint start/end identical across managed compaction."
+    }
+  ],
+  "notClaimed": [
+    "signed release candidate",
+    "physical phone",
+    "Play/public installation",
+    "hosted CI",
+    "mesh/BYOC cloud acceptance",
+    "real browser enrollment or real biometric prompt"
+  ]
+}

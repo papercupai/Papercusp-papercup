@@ -20,7 +20,7 @@ import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import {
   createDecisionClient,
   createJevProvider,
@@ -81,6 +81,7 @@ beforeAll(async () => {
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
   } finally {
     await admin.end({ timeout: 5 });
   }
@@ -88,9 +89,13 @@ beforeAll(async () => {
   u.pathname = `/${dbName}`;
   rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
   await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
-  // Positive control: the family match must find the creating migration AND the surface one.
+  // Positive control: the family match must find the creating migration AND every column addition.
   expect(MIGRATIONS.map((p) => p.slice(SQL_DIR.length))).toEqual(
-    expect.arrayContaining(['1246-decision-model-calls.sql', '1285-decision-model-calls-surface.sql']),
+    expect.arrayContaining([
+      '1246-decision-model-calls.sql',
+      '1285-decision-model-calls-surface.sql',
+      '1319-decision-model-calls-loop-busy.sql',
+    ]),
   );
   for (const file of MIGRATIONS) await rootSql.unsafe(readFileSync(file, 'utf8'));
   h.sql = rootSql;
@@ -140,6 +145,8 @@ describe('decision_model_calls writer (real Postgres, real migration)', () => {
       consumer: 'memory-injection',
       surface: 'turn-start',
       subjectIds: ['mem-1', 'mem-2'],
+      hostLoad: { busyMs: 143.6, utilization: 0.79 },
+      transportLatencyMs: 96.4,
     };
     await expect(
       recordDecisionModelCall(record, { pricing: { inputUsdPerMillionTokens: 2, outputUsdPerMillionTokens: 8 } }),
@@ -163,7 +170,10 @@ describe('decision_model_calls writer (real Postgres, real migration)', () => {
       output_tokens: 18,
       subject_ids: ['mem-1', 'mem-2'],
       state_sha256: stateSha256(request.state),
+      loop_busy_ms: 144,
+      transport_latency_ms: 96,
     });
+    expect(row!.loop_utilization).toBeCloseTo(0.79, 5);
     expect(row!.answers).toMatchObject({ relevant: { choice: 'relevant', confidence: 0.8 }, urgent: { pYes: 0.2 } });
     expect(Number(row!.cost_usd)).toBeCloseTo((250 * 2 + 18 * 8) / 1e6, 8);
     expect((row!.started_at as Date).toISOString()).toBe('2026-09-30T02:00:00.000Z');
@@ -210,6 +220,13 @@ describe('decision_model_calls writer (real Postgres, real migration)', () => {
     // The port label travels decide() options -> call record -> column; calls that name none store NULL.
     expect(all.map((r) => r.surface)).toEqual(['tool:before_tool_call', null, null]);
     expect(all[2]!.inconclusive_detail).toBeNull();
+    // The default meter measures every call, answered or not, and the values satisfy the range CHECK.
+    for (const r of all) {
+      expect(r.loop_busy_ms).toEqual(expect.any(Number));
+      expect(r.loop_busy_ms).toBeGreaterThanOrEqual(0);
+      expect(r.loop_utilization).toBeGreaterThanOrEqual(0);
+      expect(r.loop_utilization).toBeLessThanOrEqual(1);
+    }
 
     const dump = JSON.stringify(await rootSql`SELECT row_to_json(c) AS j FROM harness_shared.decision_model_calls c`);
     expect(dump).not.toContain('4417');
@@ -217,6 +234,27 @@ describe('decision_model_calls writer (real Postgres, real migration)', () => {
     // Positive control: the same dump DOES contain values that are meant to be stored.
     expect(dump).toContain('memory-injection');
     expect(dump).toContain(stateSha256(request.state));
+  });
+
+  it('an unmeasured call stores NULL load, and the range CHECK refuses an impossible utilization', async () => {
+    const record: DecisionCallRecord = {
+      provider: 'typesafe',
+      requestedModel: 'jev-1.13.0',
+      request,
+      outcome: { kind: 'inconclusive', reason: 'timeout', latencyMs: 400, attempts: 1 },
+      startedAt: new Date('2026-09-30T02:00:00.000Z'),
+      consumer: 'memory-injection',
+      surface: 'turn-start',
+      subjectIds: [],
+      hostLoad: null,
+      transportLatencyMs: null,
+    };
+    await expect(recordDecisionModelCall(record)).resolves.toBe(true);
+    const [row] = await rows(1);
+    expect(row).toMatchObject({ loop_busy_ms: null, loop_utilization: null, transport_latency_ms: null });
+    await expect(
+      rootSql`UPDATE harness_shared.decision_model_calls SET loop_utilization = 1.5 WHERE id = ${row!.id as number}`,
+    ).rejects.toThrow(/decision_model_calls_loop_busy_range/);
   });
 
   it('a missing table is swallowed and counted, and the decision still returns', async () => {

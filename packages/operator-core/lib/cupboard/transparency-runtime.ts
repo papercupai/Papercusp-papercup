@@ -23,6 +23,8 @@ import type { JournalEntry } from './money-journal';
 import { readMoneyJournalEntries } from './money-journal-store';
 import { readReconciliationRuntimeConfig, reconciliationWorkspaces, type ReconciliationRuntimeConfig } from './reconciliation-runtime';
 import { readReconciliationStatus } from './reconciliation-store';
+import { listStatementAttestations, statementAttestationProof } from './statement-attestation-store';
+import type { StatementAttestationPush } from './statement-attestation-push';
 import { treasuryFigure, type TreasuryFigure } from './transparency-report';
 import {
   TREASURY_NOT_MEASURED,
@@ -75,11 +77,41 @@ export interface TransparencyPassDeps {
   readonly readReconciliation?: (workspaceId: string) => Promise<TransparencyReconciliationView>;
   readonly anchors?: (workspaceId: string) => Promise<readonly StoredAnchor[]>;
   readonly treasury?: (workspaceId: string) => Promise<TreasuryFigure>;
+  readonly attestations?: (workspaceId: string) => Promise<readonly StatementAttestationPush[]>;
   readonly signingKey?: () => SigningKeyRead;
   readonly drift?: DriftSink;
   readonly now?: () => number;
   readonly fetchImpl?: typeof fetch;
   readonly env?: NodeJS.ProcessEnv;
+}
+
+/** The Cupboard Worker client (signed PUTs, public GETs), or why there is none. Shared by the pass and cupboard:statement-attestation. */
+export async function openTransparencyWorker(
+  deps: Pick<TransparencyPassDeps, 'config' | 'resolveSecret' | 'fetchImpl' | 'now' | 'env'> = {},
+): Promise<{ readonly worker: TransparencyWorker; readonly unavailable: null } | { readonly worker: null; readonly unavailable: string }> {
+  const config = deps.config ?? readReconciliationRuntimeConfig(deps.env ?? process.env);
+  if (!config.gateSecretRef) return { worker: null, unavailable: 'PAPERCUSP_RECONCILIATION_GATE_SECRET_REF is not configured' };
+  try {
+    const resolve =
+      deps.resolveSecret ?? (async (ref: string) => (await import('../inference-gateway/egress-providers/secret-ref')).resolveSecretRef(ref));
+    const secret = await resolve(config.gateSecretRef);
+    return {
+      worker: cupboardTransparencyWorker({ baseUrl: config.cupboardUrl, secret, fetchImpl: deps.fetchImpl, now: deps.now ?? Date.now }),
+      unavailable: null,
+    };
+  } catch (error) {
+    return { worker: null, unavailable: `the reconciliation gate secret could not be resolved: ${errorText(error)}` };
+  }
+}
+
+/** The workspace's attestation records (P-047, D-031) as Worker pushes, each with its anchored proof or null. */
+export async function statementAttestationPushes(workspaceId: string, sql: Sql): Promise<StatementAttestationPush[]> {
+  const pushes: StatementAttestationPush[] = [];
+  for (const row of await listStatementAttestations(workspaceId, undefined, { sql })) {
+    const proof = await statementAttestationProof(workspaceId, row.record.month, row.record.documentSha256, { sql });
+    pushes.push({ workspaceId, attestation: row.record, proof: proof.ok ? proof.proof : null });
+  }
+  return pushes;
 }
 
 export async function runTransparencyPass(deps: TransparencyPassDeps = {}): Promise<TransparencyPassResult> {
@@ -93,16 +125,10 @@ export async function runTransparencyPass(deps: TransparencyPassDeps = {}): Prom
   if (deps.worker !== undefined) {
     worker = deps.worker;
     if (!worker) workerUnavailable = 'no Worker configured';
-  } else if (!config.gateSecretRef) {
-    workerUnavailable = 'PAPERCUSP_RECONCILIATION_GATE_SECRET_REF is not configured';
   } else {
-    try {
-      const resolve =
-        deps.resolveSecret ?? (async (ref: string) => (await import('../inference-gateway/egress-providers/secret-ref')).resolveSecretRef(ref));
-      worker = cupboardTransparencyWorker({ baseUrl: config.cupboardUrl, secret: await resolve(config.gateSecretRef), fetchImpl: deps.fetchImpl, now });
-    } catch (error) {
-      workerUnavailable = `the reconciliation gate secret could not be resolved: ${errorText(error)}`;
-    }
+    const opened = await openTransparencyWorker({ config, resolveSecret: deps.resolveSecret, fetchImpl: deps.fetchImpl, now });
+    worker = opened.worker;
+    workerUnavailable = opened.unavailable;
   }
 
   return publishTransparency({
@@ -113,6 +139,7 @@ export async function runTransparencyPass(deps: TransparencyPassDeps = {}): Prom
     readReconciliation: deps.readReconciliation ?? ((ws) => readReconciliationStatus(ws, { limit: 1, sql: sql() })),
     anchors: deps.anchors ?? ((ws) => pgLedgerAnchorStore(sql()).anchors(ws)),
     treasury: deps.treasury ?? (async () => treasuryFigure(null, TREASURY_NOT_MEASURED)),
+    attestations: deps.attestations ?? ((ws) => statementAttestationPushes(ws, sql())),
     signingKey: deps.signingKey ?? (() => readAnchorPrivateKey(env.PAPERCUSP_LEDGER_ANCHOR_KEY_FILE?.trim() || DEFAULT_ANCHOR_KEY_FILE)),
     drift: deps.drift ?? workItemDriftSink(),
     now,

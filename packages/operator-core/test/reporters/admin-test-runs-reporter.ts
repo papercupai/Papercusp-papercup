@@ -246,8 +246,8 @@ function tryGetPg(): Promise<PgHandle> {
       const mod = (await import('postgres')) as { default?: unknown };
       const pg = (mod.default ?? mod) as (url: string, opts: Record<string, unknown>) => PgSql;
       const url =
-        process.env.HARNESS_ADMIN_DATABASE_URL ??
         process.env.PAPERCUSP_TEST_RUNS_DB_URL ??
+        process.env.HARNESS_ADMIN_DATABASE_URL ??
         'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
       // Tiny long-lived pool (≤2 conns) reused for the run. 1s connect timeout
       // per D-007 fail-soft. No idle/lifetime churn — closed explicitly at end.
@@ -293,7 +293,7 @@ async function insertRow(row: TestRunRow): Promise<void> {
   const pg = await tryGetPg();
   if (!pg) return;
 
-  const source = resolveTestRunSource();
+  const source = resolveTestRunSource(process.env, row.filePath);
   const runGroupId = process.env.PAPERCUSP_TEST_RUN_GROUP ?? null;
   // P-007: when the dogfood run is harness-scoped (env stamped by the operator),
   // carry harness_slug/workspace_id so its rows stay consistent with the new

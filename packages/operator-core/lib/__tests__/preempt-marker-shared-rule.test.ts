@@ -25,8 +25,11 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-// @ts-expect-error — plain-Node .mjs CLI helper, no declaration file (same convention as test-file-router.test.ts).
-import { createPreemptMarkerExclusive } from '../../../../scripts/lib/preempt-markers.mjs';
+import {
+  consumePreemptMarkerEnv,
+  createPreemptMarkerExclusive,
+  // @ts-expect-error — plain-Node .mjs CLI helper, no declaration file (same convention as test-file-router.test.ts).
+} from '../../../../scripts/lib/preempt-markers.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../../../..');
 
@@ -100,6 +103,31 @@ describe('createPreemptMarkerExclusive — never steals a live barrier', () => {
     writeFileSync(marker, '');
     expect(() => createPreemptMarkerExclusive(marker)).toThrow(/EEXIST/);
     expect(existsSync(marker)).toBe(true);
+  });
+});
+
+describe('consumePreemptMarkerEnv — the marker addresses stop at the runner they were sent to (EI-25671809770924720)', () => {
+  it('returns both paths and leaves no copy in the env a child would inherit', () => {
+    const env: NodeJS.ProcessEnv = {
+      PC_HEAVY_PREEMPT_READY_FILE: ' /tmp/pc-heavy-ready/ready.AbC123 ',
+      PC_HEAVY_PSI_FINALIZATION_FILE: '/tmp/pc-heavy-ready/finalization.XyZ789',
+      PC_HEAVY_ADMISSION_ID: 'pc-heavy-1-2',
+    };
+    expect(consumePreemptMarkerEnv(env)).toEqual({
+      readyFile: '/tmp/pc-heavy-ready/ready.AbC123',
+      finalizationFile: '/tmp/pc-heavy-ready/finalization.XyZ789',
+    });
+    expect(env).not.toHaveProperty('PC_HEAVY_PREEMPT_READY_FILE');
+    expect(env).not.toHaveProperty('PC_HEAVY_PSI_FINALIZATION_FILE');
+    // Only the two barrier addresses are consumed; the rest of pc-heavy's env is untouched.
+    expect(env.PC_HEAVY_ADMISSION_ID).toBe('pc-heavy-1-2');
+  });
+
+  it('reports absent or blank addresses as null, never as a path', () => {
+    expect(consumePreemptMarkerEnv({ PC_HEAVY_PREEMPT_READY_FILE: '   ' })).toEqual({
+      readyFile: null,
+      finalizationFile: null,
+    });
   });
 });
 

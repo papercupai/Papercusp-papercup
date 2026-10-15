@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, afterAll, beforeEach } from 'vitest';
+vi.mock('../../degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
 import { readFileSync } from 'node:fs'; // EI-20847917368795366: source-pinned WIRING guard
 import { signalLaneOf, sourceFilesWorkItem } from './signal-lane';
 import { AUTO_CLOSE_ELIGIBLE_SOURCES } from './auto-close-sources'; // WI-40769
 import { INFRA_SIGNAL_SOURCES } from './policy'; // WI-918476
 import {
   planWatchdogCaptures,
+  collectToolErrorSignals,
   collectServiceDownSignals,
   runWatchdogTick,
   isImprovementLoopTool,
@@ -72,6 +74,7 @@ import type { CaptureImprovementResult } from './capture-core';
 import type { ProbeResult } from '../../service-health';
 import { _resetServiceHealthState } from '../../service-health';
 import { _resetHarnessAdminUrlCacheForTests } from '../../embedded-pg-discovery';
+import { stampDrillSignals } from '../../red-queen/drill-classes';
 
 function sig(p: Partial<WatchdogSignal> & { key: string }): WatchdogSignal {
   return {
@@ -263,6 +266,48 @@ describe('tool-error sweep excludes the loop’s own tools (watchdog-robustness 
     expect(signals[0].severity).toBe('minor');
   });
 
+  it('the SQL collector keeps qualifying caller groups beyond the former top-30 cap', async () => {
+    const targetKey = 'capability:read:caller:superuser-native-session-verifier-unavailable';
+    const rows = Array.from({ length: 30 }, (_, index) => ({
+      tool_name: 'other:tool-' + index,
+      class: 'caller' as const,
+      fingerprint: 'other-caller-' + index,
+      n: 20,
+      total: 40,
+      sample: 'invalid_args: representative',
+    }));
+    rows.push({
+      tool_name: 'capability:read',
+      class: 'caller',
+      fingerprint: 'superuser-native-session-verifier-unavailable',
+      n: 13,
+      total: 9_654,
+      sample: 'superuser_native_session_verifier_unavailable',
+    });
+
+    const queryTexts: string[] = [];
+    const mockSql = Object.assign(
+      (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const query = strings.reduce(
+          (text, part, index) => text + part + (index < values.length ? String(values[index]) : ''),
+          '',
+        );
+        queryTexts.push(query);
+        return Promise.resolve(query.includes('WITH fail AS') ? rows : []);
+      },
+      { unsafe: (value: string) => value },
+    );
+
+    const signals = await collectToolErrorSignals(mockSql as never, {
+      toolLatencyBudgets: new Map([['work_items:complete', { effect: 'write' }]]) as never,
+    }, 'papercusp-workspace');
+    const mainQuery = queryTexts.find((query) => query.includes('WITH fail AS')) ?? '';
+
+    expect(signals.map((signal) => signal.key)).toContain(targetKey);
+    expect(mainQuery).toContain('HAVING');
+    expect(mainQuery).not.toContain('LIMIT 30');
+  });
+
   it('RATE-LIMIT (external provider 429 / TPM) is volume-gated, kind=change, NOT a code bug (P-002)', () => {
     const signals = toolErrorSignalsFromRows([
       // The 2026-06-17 embed-429: memory:search saturated ~32/78 calls — its OWN key,
@@ -313,6 +358,25 @@ describe('tool-error sweep excludes the loop’s own tools (watchdog-robustness 
     });
     expect(signals[0]!.body).toContain('3 distinct tools');
     expect(signals[0]!.body).toContain('3 distinct sessions');
+  });
+
+  it('describes the aggregate span when qualifying timeout windows are merged', () => {
+    const rows = [0, 12].flatMap((hour) =>
+      ['coord:inbox', 'sessions:search', 'work_items:get'].map((tool, index) => ({
+        tool_name: tool,
+        coord_owner_id: `owner-${hour}-${index}`,
+        invoked_at: new Date(Date.UTC(2026, 9, 1, hour, 0, 0)).toISOString(),
+        status: 'timeout',
+      })),
+    );
+
+    const signals = sharedToolStallSignalsFromRows(rows);
+
+    expect(signals).toHaveLength(1);
+    expect(signals[0]!.body).toContain('6 transient timeout-class failures');
+    expect(signals[0]!.body).toContain('across qualifying 5-minute sliding windows');
+    expect(signals[0]!.body).toContain('aggregated observed span 43200s');
+    expect(signals[0]!.body).not.toContain('within a 5-minute window');
   });
 
   it('does not coalesce a same-tool timeout or a single-session burst', () => {
@@ -1002,7 +1066,7 @@ describe('hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010)'
     expect(stalledClaimSignalsFromRows([])).toEqual([]);
   });
 
-  it('EI-14763: a live, actively-working holder (holder_active) is NOT counted stalled', () => {
+  it('EI-14763 regression: owner-wide activity is not item-scoped progress', () => {
     // WI-5215<-su-2ab13fe2 (heartbeating, mid-task) + WI-5137<-su-4d3eb54c (running
     // bash this minute) both had recent tool/coord activity → not a stall. Only a
     // heartbeating-but-idle holder (holder_active !== true) remains a genuine signal.
@@ -1010,16 +1074,18 @@ describe('hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010)'
     const alsoActive = { work_item_id: 'WI-5137', agent_id: 'su-4d3eb54c', harness_slug: 'papercusp', detail: 'diagnostic', stalled_minutes: 55, holder_active: true };
     const genuine = { work_item_id: 'WI-9', agent_id: 'bee-idle', harness_slug: 'alpha', detail: 'wedged', stalled_minutes: 42, holder_active: false };
 
-    // All holders active → no signal at all (the 73h standing false-positive is gone).
-    expect(stalledClaimSignalsFromRows([active, alsoActive], { minMinutes: 30 })).toEqual([]);
+    // Even the legacy owner-activity annotation cannot hide stale item progress.
+    const activeSignals = stalledClaimSignalsFromRows([active, alsoActive], { minMinutes: 30 });
+    expect(activeSignals).toHaveLength(1);
+    expect(activeSignals[0].body).toContain('2 work-item claim(s)');
 
-    // Mixed → only the genuinely-idle holder counts, and is the sole sample.
+    // Mixed → owner-wide activity does not remove either stale item from the signal.
     const signals = stalledClaimSignalsFromRows([active, alsoActive, genuine], { minMinutes: 30 });
     expect(signals).toHaveLength(1);
-    expect(signals[0].body).toContain('1 work-item claim(s)');
+    expect(signals[0].body).toContain('3 work-item claim(s)');
+    expect(signals[0].body).toContain('WI-5215<-su-2ab13fe2');
+    expect(signals[0].body).toContain('WI-5137<-su-4d3eb54c');
     expect(signals[0].body).toContain('WI-9<-bee-idle');
-    expect(signals[0].body).not.toContain('su-2ab13fe2');
-    expect(signals[0].body).not.toContain('su-4d3eb54c');
   });
 
   it('EI-18633753937712900 (WI-3669 recurrence): a deliberately PARKED claim (blocked / _claimHold) is NOT counted stalled', () => {
@@ -1816,6 +1882,42 @@ describe('runWatchdogTick — captures through the shared core', () => {
     const signals = [sig({ key: 'hive-x', scope: 'harness:sheets' })];
     await runTick('ws', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune, collect: async () => signals, capture, recordTick: noopRecord });
     expect(calls[0]).toMatchObject({ scope: 'harness:sheets' });
+  });
+
+  it('captures a Red-Queen drill with the valid operator scope and drill origin intact', async () => {
+    const { calls, capture } = captureRecorder();
+    const signal = stampDrillSignals([sig({ key: 'drill-scope-regression' })])[0];
+    await runTick('ws', {}, {
+      readKeyDups: noKeyDups,
+      pruneTicks: noPrune,
+      collect: async () => [signal],
+      capture,
+      recordTick: noopRecord,
+    });
+    expect(calls[0]).toMatchObject({ scope: 'operator', origin: 'drill' });
+  });
+
+  it('captures drill-origin metric signals while suppressing organic metrics', async () => {
+    const { calls, capture } = captureRecorder();
+    const drill = sig({ source: 'routine-engine-death', key: 'sandbox-engine', origin: 'drill' });
+    const organic = sig({ source: 'routine-engine-death', key: 'live-engine', origin: 'organic' });
+
+    expect(signalLaneOf('routine-engine-death')).toBe('metric');
+    expect(sourceFilesWorkItem('routine-engine-death')).toBe(false);
+
+    const res = await runTick('sandbox', {}, {
+      readKeyDups: noKeyDups,
+      pruneTicks: noPrune,
+      collect: async () => [drill, organic],
+      capture,
+      recordTick: noopRecord,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ origin: 'drill', watchdogKey: watchdogKeyOf(drill) });
+    expect(res.captured).toEqual(['EI-101']);
+    expect(res.metricSuppressed).toBe(1);
+    expect(res.metricSuppressedKeys).toEqual([watchdogKeyOf(organic)]);
   });
 
   it('passes a per-signal findingClass through to the capture (frontier P-044 taxonomy slug)', async () => {
@@ -3119,6 +3221,23 @@ describe('red-test SAME-SHA verdict flip (WI-10929)', () => {
     expect(s.body).not.toContain('before bisecting');
     // The pass is still reported — suppressing it would lose the evidence.
     expect(s.body).toContain('Last PASS in window: 2026-08-04T01:10:41.000Z (ed37db59c8)');
+  });
+
+  it('reports the pass/fail intersection SHA instead of attributing the flip to the newest pass', () => {
+    const s = redTestSignalsFromRows(
+      rows({
+        fail_shas: ['dfa9f1289f'],
+        pass_shas: ['dfa9f1289f', 'b87b04aab0'],
+        last_pass_sha: 'b87b04aab0',
+        last_pass_at: '2026-10-03T09:00:00Z',
+      }),
+      6,
+    )[0];
+
+    expect(s.body).toContain('Last PASS in window: 2026-10-03T09:00:00.000Z (b87b04aab0)');
+    expect(s.body).toContain('SAME-SHA VERDICT FLIP: dfa9f1289f both PASSED and FAILED');
+    expect(s.body).not.toContain('SAME-SHA VERDICT FLIP: b87b04aab0');
+    expect(s.redTest?.sameShaFlipSha).toBe('dfa9f1289f');
   });
 
   it('CONTROL — a pass on a DIFFERENT sha keeps the ancestry line and is NOT flagged as a flip', () => {

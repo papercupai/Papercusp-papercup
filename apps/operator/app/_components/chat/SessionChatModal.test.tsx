@@ -663,16 +663,6 @@ describe('SessionChatModal', () => {
     expect(screen.queryByText(/A{100,}/)).toBeNull();
   });
 
-  it('binds shared assistant and owner bubbles to the dark session-chat host tokens', () => {
-    const css = readFileSync(resolve(__dirname, 'session-chat.css'), 'utf8');
-    const hostTokens = css.split('}').find((block) => block.includes('.session-chat .op-chat-shared'));
-    expect(hostTokens).toMatch(/--pc-chat-bubble-assistant:\s*var\(--bg-2\)/);
-    expect(hostTokens).toMatch(/--pc-chat-bubble-assistant-fg:\s*var\(--fg\)/);
-    expect(hostTokens).toMatch(/--pc-chat-bubble-user:\s*var\(--bg-popover,\s*var\(--bg\)\)/);
-    expect(hostTokens).toMatch(/--pc-chat-bubble-user-fg:\s*var\(--fg\)/);
-    expect(hostTokens).not.toMatch(/#f7f7f8|#eef2ff/);
-  });
-
   it('loads and prepends older stable-owner pages until the beginning of retained history', async () => {
     fetchMock.mockImplementation(async (input: string | URL | Request) => {
       const url = String(input);

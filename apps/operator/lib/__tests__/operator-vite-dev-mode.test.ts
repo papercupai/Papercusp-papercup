@@ -1,7 +1,31 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { isDesktopHmrEnabled, NO_VITE_CLIENT_BODY, shouldInterceptStaticAnchor, shouldInterceptStaticAnchorClick, shouldServeNoopViteClient, shouldSuppressJsReload } from '../../../operator-vite/dev-mode';
+import { isDesktopHmrEnabled, isDevWatchDisabled, NO_VITE_CLIENT_BODY, shouldInterceptStaticAnchor, shouldInterceptStaticAnchorClick, shouldServeNoopViteClient, shouldSuppressJsReload } from '../../../operator-vite/dev-mode';
+
+describe('operator-vite file watcher opt-out (WI-10006950)', () => {
+  it('keeps watching by default and for any value other than an explicit "0"', () => {
+    expect(isDevWatchDisabled({})).toBe(false);
+    expect(isDevWatchDisabled({ PAPERCUSP_DEV_WATCH: '1' })).toBe(false);
+    expect(isDevWatchDisabled({ PAPERCUSP_DEV_WATCH: '' })).toBe(false);
+    expect(isDevWatchDisabled({ PAPERCUSP_DEV_WATCH: 'false' })).toBe(false);
+  });
+
+  it('disables watching only through the explicit "0" opt-out', () => {
+    expect(isDevWatchDisabled({ PAPERCUSP_DEV_WATCH: '0' })).toBe(true);
+  });
+
+  it('is independent of HMR, so the e2e server can keep the real client and stop reloads', () => {
+    const e2eEnv = { PAPERCUSP_ENABLE_HMR: '1', PAPERCUSP_DEV_WATCH: '0' };
+    expect(isDesktopHmrEnabled(e2eEnv)).toBe(true);
+    expect(isDevWatchDisabled(e2eEnv)).toBe(true);
+  });
+
+  it('vite.config.ts maps the opt-out to server.watch: null', () => {
+    const source = readFileSync(resolve(__dirname, '../../../operator-vite/vite.config.ts'), 'utf8');
+    expect(source).toMatch(/watch:\s*isDevWatchDisabled\(process\.env\)\s*\?\s*null\s*:/);
+  });
+});
 
 describe('operator-vite desktop no-HMR mode', () => {
   it('disables HMR by default', () => {

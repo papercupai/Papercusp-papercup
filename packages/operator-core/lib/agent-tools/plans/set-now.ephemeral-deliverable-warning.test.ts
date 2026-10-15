@@ -17,19 +17,21 @@ vi.mock('./with-plan-lock', () => ({
 
 import { withPlanLock } from './with-plan-lock';
 import tool from './set-now';
+import { renderNowNoteRaw, type PlanNowNote } from './now-note-store';
 
 const lockM = vi.mocked(withPlanLock);
 type ToolEnvelope = { data: any };
 
 const BASE = `---\ntitle: t\nslug: plan-a\nstatus: active\n---\n\n# Plan\n\n## Now\n\n**State:** old\n\n**Next:** old\n\n## Work\n\n- P-001\n`;
 
+/** The Now the write stored, rendered as State/Next markdown (P-004: a structured note, not content). */
 let writtenBody: string | null | undefined;
 
 function lockReturnsBody(body = BASE) {
   lockM.mockImplementation(async (_ctx: unknown, _options: unknown, mutate: unknown) => {
-    const result = await (mutate as (current: string | null) => Promise<{ newBody: string | null; value: unknown }>)
+    const result = await (mutate as (current: string | null) => Promise<{ newBody: string | null; nowNote?: PlanNowNote; value: unknown }>)
       (body);
-    writtenBody = result.newBody;
+    writtenBody = result.nowNote ? renderNowNoteRaw(result.nowNote) : null;
     return { kind: 'ok', value: result.value, filePath: 'plan.md' } as never;
   });
 }

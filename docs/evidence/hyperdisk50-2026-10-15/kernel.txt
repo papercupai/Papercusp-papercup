@@ -1,0 +1,3 @@
+vm.swappiness = 60
+vm.page-cluster = 3
+always [madvise] never

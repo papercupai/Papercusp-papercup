@@ -1,5 +1,60 @@
 import { describe, it, expect } from 'vitest';
-import { wilsonInterval, bootstrapMeanCI, meanStderr, pairedBootstrapCI, mcnemarExact } from './intervals';
+import { wilsonInterval, bootstrapMeanCI, meanStderr, pairedBootstrapCI, pairedRepositoryPowerPlan, mcnemarExact } from './intervals';
+
+describe('pairedRepositoryPowerPlan', () => {
+  const controls = { minimumEffect: 0.2, alpha: 0.05, power: 0.8 };
+
+  it('recovers the analytic equal-repository bound and its rejection threshold', () => {
+    const expected = 2 * (Math.sqrt(Math.log(40)) + Math.sqrt(Math.log(5))) ** 2 / 0.2 ** 2;
+    const below = pairedRepositoryPowerPlan(Array(Math.floor(expected)).fill(1), controls);
+    const above = pairedRepositoryPowerPlan(Array(Math.ceil(expected)).fill(1), controls);
+    expect(above.requiredEffectiveRepositories).toBeCloseTo(expected, 10);
+    expect(above.minimumEqualSizeRepositories).toBe(Math.ceil(expected));
+    expect(below.meetsTarget).toBe(false);
+    expect(below.powerLowerBound).toBeLessThan(0.8);
+    expect(above.meetsTarget).toBe(true);
+    expect(above.powerLowerBound).toBeGreaterThanOrEqual(0.8);
+    // Under the null this exact threshold controls the two-sided tail at alpha.
+    expect(2 * Math.exp(-(above.nullCriticalValue ** 2) * above.independentRepositories / 2)).toBeCloseTo(0.05, 12);
+  });
+
+  it('does not treat more correlated tasks as more independent repositories', () => {
+    const oneTaskEach = pairedRepositoryPowerPlan([1, 1], controls);
+    const repeated = pairedRepositoryPowerPlan([500, 500], controls);
+    expect(repeated.pairedTasks).toBe(1000);
+    expect(repeated.independentRepositories).toBe(2);
+    expect(repeated.effectiveRepositories).toBe(2);
+    expect(repeated.powerLowerBound).toBe(oneTaskEach.powerLowerBound);
+    expect(repeated.detectableEffectBound).toBe(oneTaskEach.detectableEffectBound);
+    expect(repeated.meetsTarget).toBe(false);
+  });
+
+  it('penalizes repository imbalance and permits an honestly insufficient single repository', () => {
+    const balanced = pairedRepositoryPowerPlan([50, 50], controls);
+    const imbalanced = pairedRepositoryPowerPlan([99, 1], controls);
+    expect(imbalanced.effectiveRepositories).toBeLessThan(balanced.effectiveRepositories);
+    expect(imbalanced.detectableEffectBound).toBeGreaterThan(balanced.detectableEffectBound);
+    expect(pairedRepositoryPowerPlan([100], controls)).toMatchObject({ independentRepositories: 1, meetsTarget: false, powerLowerBound: 0 });
+  });
+
+  it('requires more information for smaller effects, stricter alpha or higher power', () => {
+    const base = pairedRepositoryPowerPlan([1, 1], controls);
+    for (const changed of [{ ...controls, minimumEffect: 0.1 }, { ...controls, alpha: 0.01 }, { ...controls, power: 0.9 }]) {
+      expect(pairedRepositoryPowerPlan([1, 1], changed).requiredEffectiveRepositories).toBeGreaterThan(base.requiredEffectiveRepositories);
+    }
+    expect(pairedRepositoryPowerPlan([1, 99], controls)).toEqual(pairedRepositoryPowerPlan([99, 1], controls));
+  });
+
+  it.each([
+    { sizes: [], controls }, { sizes: [0], controls }, { sizes: [1.5], controls }, { sizes: [Number.NaN], controls },
+    { sizes: [Number.MAX_SAFE_INTEGER, 1], controls }, { sizes: [1], controls: { ...controls, minimumEffect: 0 } },
+    { sizes: [1], controls: { ...controls, minimumEffect: 1.1 } }, { sizes: [1], controls: { ...controls, alpha: 0 } },
+    { sizes: [1], controls: { ...controls, power: 1 } }, { sizes: [1], controls: { ...controls, power: Number.NaN } },
+    { sizes: [1], controls: { ...controls, minimumEffect: Number.MIN_VALUE } },
+  ])('refuses malformed or unrepresentable planning input %#', ({ sizes, controls: opts }) => {
+    expect(() => pairedRepositoryPowerPlan(sizes, opts)).toThrow(/pairedRepositoryPowerPlan/);
+  });
+});
 
 describe('wilsonInterval', () => {
   it('is centered on p̂ and symmetric for p=0.5', () => {
@@ -169,6 +224,32 @@ describe('pairedBootstrapCI', () => {
   it('reports rho=0 when an arm is constant (the pairing provably bought nothing)', () => {
     const r = pairedBootstrapCI([0.5, 0.5, 0.5, 0.5], [0.1, 0.9, 0.2, 0.8]);
     expect(r.rho).toBe(0);
+  });
+
+  it('keeps correlated repository blocks together rather than treating their tasks as independent', () => {
+    const a = Array(1000).fill(0.5);
+    const b = a.map((_, i) => i < 500 ? 0.7 : 0.3);
+    const clusterIds = a.map((_, i) => i < 500 ? 'repo-a' : 'repo-b');
+    const task = pairedBootstrapCI(a, b, { seed: 17 });
+    const repository = pairedBootstrapCI(a, b, { seed: 17, clusterIds });
+    expect(task.halfWidth).toBeLessThan(0.02);
+    expect(repository.halfWidth).toBeGreaterThan(0.19);
+    expect(repository).toMatchObject({ n: 1000, independentUnits: 2, resamplingUnit: 'cluster', significant: false });
+    expect(repository.delta.point).toBeCloseTo(0);
+    expect(pairedBootstrapCI(a, b, { seed: 17, clusterIds })).toEqual(repository);
+  });
+
+  it('retains task weighting when repository sizes differ', () => {
+    const r = pairedBootstrapCI(Array(10).fill(0), [...Array(9).fill(1), 0], {
+      clusterIds: [...Array(9).fill('large'), 'small'],
+    });
+    expect(r.delta).toEqual({ point: 0.9, lower: 0, upper: 1, ci: 0.95 });
+    expect(r.independentUnits).toBe(2);
+  });
+
+  it.each([{ clusterIds: ['repo'] }, { clusterIds: ['repo', ''] }, { clusterIds: ['repo', 'repo'] }])
+    ('rejects malformed or single-cluster inference %j', ({ clusterIds }) => {
+    expect(() => pairedBootstrapCI([0, 0], [1, 1], { clusterIds })).toThrow(/index-aligned|independent clusters/);
   });
 });
 

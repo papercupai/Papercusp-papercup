@@ -1,0 +1,795 @@
+{
+  "schemaVersion": "p011-expiry-unforced-resources-v1",
+  "plane": "isolated-current-source-cache",
+  "incomplete": false,
+  "cohorts": [
+    {
+      "mode": "baseline",
+      "controlKind": "current-with-pruning-removed",
+      "sourceHashes": {
+        "cache": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+        "l1": "89ac9e14aeed616e2ba82060f9e153d62975d9c9806a4587f831d8700ad84977",
+        "generationStore": "9a5994bcf99eddfa65562343415c3c90a5fdb42c8729b4d275277e3891c00c47"
+      },
+      "effectiveCacheHash": "89a3547bb983cdf667e2c9f09f1c0abba61eae6880a0d9c789483e96960ff63b",
+      "moduleSha256": "284b4b5846974dca954b677f610a9aa860fbe6fbfb855d0dea56bacbcecc5263",
+      "runtimeScriptSha256": "ccd791da8a2e7468a0f15f8fe60c56c7794cef57195dd6a01016720c742e3f22",
+      "processIdentity": {
+        "pid": 2297151,
+        "startTicks": "1767786",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "node": "v25.9.0"
+      },
+      "samples": [
+        {
+          "label": "empty",
+          "at": 1791228704635,
+          "monotonicMs": 255.22928,
+          "pid": 2297151,
+          "startTicks": "1767786",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 179027968,
+            "heapTotal": 7475200,
+            "heapUsed": 5657560,
+            "external": 131169967,
+            "arrayBuffers": 129035271
+          },
+          "pssBytes": 139954176,
+          "allocatedBytes": 12598672,
+          "descendants": []
+        },
+        {
+          "label": "populated",
+          "at": 1791228704931,
+          "monotonicMs": 548.057095,
+          "pid": 2297151,
+          "startTicks": "1767786",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 308379648,
+            "heapTotal": 265162752,
+            "heapUsed": 177835448,
+            "external": 2124409,
+            "arrayBuffers": 29087
+          },
+          "pssBytes": 276584448,
+          "allocatedBytes": 231270552,
+          "descendants": []
+        },
+        {
+          "label": "idle-before-end",
+          "at": 1791228705140,
+          "monotonicMs": 757.572851,
+          "pid": 2297151,
+          "startTicks": "1767786",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 308379648,
+            "heapTotal": 265949184,
+            "heapUsed": 169257808,
+            "external": 2124409,
+            "arrayBuffers": 29087
+          },
+          "pssBytes": 276903936,
+          "allocatedBytes": 233026536,
+          "descendants": []
+        },
+        {
+          "label": "ordinary-end",
+          "at": 1791228705148,
+          "monotonicMs": 765.545514,
+          "pid": 2297151,
+          "startTicks": "1767786",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 308379648,
+            "heapTotal": 265949184,
+            "heapUsed": 169296872,
+            "external": 2124425,
+            "arrayBuffers": 29103
+          },
+          "pssBytes": 276920320,
+          "allocatedBytes": 234546792,
+          "descendants": []
+        },
+        {
+          "label": "idle-after-end",
+          "at": 1791228705358,
+          "monotonicMs": 975.770233,
+          "pid": 2297151,
+          "startTicks": "1767786",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 308379648,
+            "heapTotal": 265949184,
+            "heapUsed": 169301032,
+            "external": 2124425,
+            "arrayBuffers": 29103
+          },
+          "pssBytes": 276921344,
+          "allocatedBytes": 235313432,
+          "descendants": []
+        }
+      ],
+      "idleMs": 200,
+      "entriesBefore": 1042,
+      "entriesAfter": 1042,
+      "usefulBefore": {
+        "entries": 604,
+        "sha256": "3d812b7adca84a6841db36a128e5f65795f5d2b102c49ea74a7e2241786ab028"
+      },
+      "usefulAfter": {
+        "entries": 604,
+        "sha256": "3d812b7adca84a6841db36a128e5f65795f5d2b102c49ea74a7e2241786ab028"
+      },
+      "reads": {
+        "count": 32,
+        "wallMs": 0.08502399999997579,
+        "cpuMs": 0.073
+      },
+      "diagnostic": {
+        "sample": {
+          "label": "diagnostic-after-collection",
+          "at": 1791228705591,
+          "monotonicMs": 1208.426819,
+          "pid": 2297151,
+          "startTicks": "1767786",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 308379648,
+            "heapTotal": 264900608,
+            "heapUsed": 168962584,
+            "external": 2124425,
+            "arrayBuffers": 29103
+          },
+          "pssBytes": 277155840,
+          "allocatedBytes": 237854888,
+          "descendants": []
+        },
+        "expiredReachable": 438,
+        "entries": 1042
+      },
+      "cleanup": {
+        "entries": 0,
+        "expiredReachable": 0,
+        "descendants": [],
+        "finalStats": {
+          "hits": 1240,
+          "misses": 1042,
+          "staleServed": 0,
+          "builds": 1042,
+          "singleFlightJoins": 0
+        },
+        "sample": {
+          "label": "cleared-after-collection",
+          "at": 1791228705608,
+          "monotonicMs": 1225.31924,
+          "pid": 2297151,
+          "startTicks": "1767786",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 308379648,
+            "heapTotal": 94244864,
+            "heapUsed": 4873648,
+            "external": 2124425,
+            "arrayBuffers": 29103
+          },
+          "pssBytes": 277307392,
+          "allocatedBytes": 243983584,
+          "descendants": []
+        }
+      },
+      "profilerOperations": [],
+      "unforcedWindowGcCalls": 0,
+      "diagnosticGcCalls": 6,
+      "terminalExitCode": 0,
+      "signal": null,
+      "reaped": true
+    },
+    {
+      "mode": "pruned",
+      "controlKind": "current",
+      "sourceHashes": {
+        "cache": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+        "l1": "89ac9e14aeed616e2ba82060f9e153d62975d9c9806a4587f831d8700ad84977",
+        "generationStore": "9a5994bcf99eddfa65562343415c3c90a5fdb42c8729b4d275277e3891c00c47"
+      },
+      "effectiveCacheHash": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+      "moduleSha256": "16b755998bd425c8401a896d46d1a9ff38a68fe5eb4197ec9d600aa6c06584ab",
+      "runtimeScriptSha256": "06a71f589a7fc63a7e0b8dacbd4d5fb024a1ac2c2ba6821522610ad012eb771a",
+      "processIdentity": {
+        "pid": 2297482,
+        "startTicks": "1767914",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "node": "v25.9.0"
+      },
+      "samples": [
+        {
+          "label": "empty",
+          "at": 1791228705895,
+          "monotonicMs": 234.731458,
+          "pid": 2297482,
+          "startTicks": "1767914",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 182153216,
+            "heapTotal": 7475200,
+            "heapUsed": 5659856,
+            "external": 131170373,
+            "arrayBuffers": 129035271
+          },
+          "pssBytes": 139986944,
+          "allocatedBytes": 12598216,
+          "descendants": []
+        },
+        {
+          "label": "populated",
+          "at": 1791228706213,
+          "monotonicMs": 549.655724,
+          "pid": 2297482,
+          "startTicks": "1767914",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 329027584,
+            "heapTotal": 284299264,
+            "heapUsed": 169595760,
+            "external": 2124409,
+            "arrayBuffers": 29087
+          },
+          "pssBytes": 295276544,
+          "allocatedBytes": 255638080,
+          "descendants": []
+        },
+        {
+          "label": "idle-before-end",
+          "at": 1791228706423,
+          "monotonicMs": 760.229958,
+          "pid": 2297482,
+          "startTicks": "1767914",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 329027584,
+            "heapTotal": 282988544,
+            "heapUsed": 169328256,
+            "external": 2124409,
+            "arrayBuffers": 29087
+          },
+          "pssBytes": 295305216,
+          "allocatedBytes": 257355392,
+          "descendants": []
+        },
+        {
+          "label": "ordinary-end",
+          "at": 1791228706433,
+          "monotonicMs": 769.792321,
+          "pid": 2297482,
+          "startTicks": "1767914",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 329027584,
+            "heapTotal": 282988544,
+            "heapUsed": 169878024,
+            "external": 2124425,
+            "arrayBuffers": 29103
+          },
+          "pssBytes": 295325696,
+          "allocatedBytes": 259541256,
+          "descendants": []
+        },
+        {
+          "label": "idle-after-end",
+          "at": 1791228706643,
+          "monotonicMs": 980.122372,
+          "pid": 2297482,
+          "startTicks": "1767914",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 329027584,
+            "heapTotal": 282988544,
+            "heapUsed": 169882184,
+            "external": 2124425,
+            "arrayBuffers": 29103
+          },
+          "pssBytes": 295325696,
+          "allocatedBytes": 260002472,
+          "descendants": []
+        }
+      ],
+      "idleMs": 200,
+      "entriesBefore": 1042,
+      "entriesAfter": 604,
+      "usefulBefore": {
+        "entries": 604,
+        "sha256": "3d812b7adca84a6841db36a128e5f65795f5d2b102c49ea74a7e2241786ab028"
+      },
+      "usefulAfter": {
+        "entries": 604,
+        "sha256": "3d812b7adca84a6841db36a128e5f65795f5d2b102c49ea74a7e2241786ab028"
+      },
+      "reads": {
+        "count": 32,
+        "wallMs": 0.5550360000000865,
+        "cpuMs": 0.539
+      },
+      "diagnostic": {
+        "sample": {
+          "label": "diagnostic-after-collection",
+          "at": 1791228706662,
+          "monotonicMs": 998.631636,
+          "pid": 2297482,
+          "startTicks": "1767914",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 329027584,
+            "heapTotal": 118362112,
+            "heapUsed": 5259440,
+            "external": 2124425,
+            "arrayBuffers": 29103
+          },
+          "pssBytes": 295280640,
+          "allocatedBytes": 262583104,
+          "descendants": []
+        },
+        "expiredReachable": 0,
+        "entries": 604
+      },
+      "cleanup": {
+        "entries": 0,
+        "expiredReachable": 0,
+        "descendants": [],
+        "finalStats": {
+          "hits": 1240,
+          "misses": 1042,
+          "staleServed": 0,
+          "builds": 1042,
+          "singleFlightJoins": 0
+        },
+        "sample": {
+          "label": "cleared-after-collection",
+          "at": 1791228706680,
+          "monotonicMs": 1017.214553,
+          "pid": 2297482,
+          "startTicks": "1767914",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 329027584,
+            "heapTotal": 117575680,
+            "heapUsed": 4902832,
+            "external": 2124425,
+            "arrayBuffers": 29103
+          },
+          "pssBytes": 295288832,
+          "allocatedBytes": 276597856,
+          "descendants": []
+        }
+      },
+      "profilerOperations": [],
+      "unforcedWindowGcCalls": 0,
+      "diagnosticGcCalls": 6,
+      "terminalExitCode": 0,
+      "signal": null,
+      "reaped": true
+    },
+    {
+      "mode": "pruned",
+      "controlKind": "current",
+      "sourceHashes": {
+        "cache": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+        "l1": "89ac9e14aeed616e2ba82060f9e153d62975d9c9806a4587f831d8700ad84977",
+        "generationStore": "9a5994bcf99eddfa65562343415c3c90a5fdb42c8729b4d275277e3891c00c47"
+      },
+      "effectiveCacheHash": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+      "moduleSha256": "16b755998bd425c8401a896d46d1a9ff38a68fe5eb4197ec9d600aa6c06584ab",
+      "runtimeScriptSha256": "06a71f589a7fc63a7e0b8dacbd4d5fb024a1ac2c2ba6821522610ad012eb771a",
+      "processIdentity": {
+        "pid": 2297938,
+        "startTicks": "1768022",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "node": "v25.9.0"
+      },
+      "samples": [
+        {
+          "label": "empty",
+          "at": 1791228706971,
+          "monotonicMs": 234.967342,
+          "pid": 2297938,
+          "startTicks": "1768022",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 177905664,
+            "heapTotal": 7475200,
+            "heapUsed": 5659856,
+            "external": 131170373,
+            "arrayBuffers": 129035271
+          },
+          "pssBytes": 139985920,
+          "allocatedBytes": 12598216,
+          "descendants": []
+        },
+        {
+          "label": "populated",
+          "at": 1791228707303,
+          "monotonicMs": 564.557307,
+          "pid": 2297938,
+          "startTicks": "1768022",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 323661824,
+            "heapTotal": 284299264,
+            "heapUsed": 176575256,
+            "external": 2124409,
+            "arrayBuffers": 29087
+          },
+          "pssBytes": 295391232,
+          "allocatedBytes": 256587952,
+          "descendants": []
+        },
+        {
+          "label": "idle-before-end",
+          "at": 1791228707514,
+          "monotonicMs": 774.61691,
+          "pid": 2297938,
+          "startTicks": "1768022",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 323661824,
+            "heapTotal": 284299264,
+            "heapUsed": 176589712,
+            "external": 2124409,
+            "arrayBuffers": 29087
+          },
+          "pssBytes": 295407616,
+          "allocatedBytes": 257423256,
+          "descendants": []
+        },
+        {
+          "label": "ordinary-end",
+          "at": 1791228707522,
+          "monotonicMs": 782.889404,
+          "pid": 2297938,
+          "startTicks": "1768022",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 324710400,
+            "heapTotal": 284299264,
+            "heapUsed": 177139488,
+            "external": 2124425,
+            "arrayBuffers": 29103
+          },
+          "pssBytes": 295424000,
+          "allocatedBytes": 260291760,
+          "descendants": []
+        },
+        {
+          "label": "idle-after-end",
+          "at": 1791228707732,
+          "monotonicMs": 992.810709,
+          "pid": 2297938,
+          "startTicks": "1768022",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 324710400,
+            "heapTotal": 284299264,
+            "heapUsed": 177143648,
+            "external": 2124425,
+            "arrayBuffers": 29103
+          },
+          "pssBytes": 295427072,
+          "allocatedBytes": 261029680,
+          "descendants": []
+        }
+      ],
+      "idleMs": 200,
+      "entriesBefore": 1042,
+      "entriesAfter": 604,
+      "usefulBefore": {
+        "entries": 604,
+        "sha256": "3d812b7adca84a6841db36a128e5f65795f5d2b102c49ea74a7e2241786ab028"
+      },
+      "usefulAfter": {
+        "entries": 604,
+        "sha256": "3d812b7adca84a6841db36a128e5f65795f5d2b102c49ea74a7e2241786ab028"
+      },
+      "reads": {
+        "count": 32,
+        "wallMs": 0.5909659999999803,
+        "cpuMs": 0.718
+      },
+      "diagnostic": {
+        "sample": {
+          "label": "diagnostic-after-collection",
+          "at": 1791228707751,
+          "monotonicMs": 1012.160402,
+          "pid": 2297938,
+          "startTicks": "1768022",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 324710400,
+            "heapTotal": 140120064,
+            "heapUsed": 5291520,
+            "external": 2124425,
+            "arrayBuffers": 29103
+          },
+          "pssBytes": 295586816,
+          "allocatedBytes": 263190072,
+          "descendants": []
+        },
+        "expiredReachable": 0,
+        "entries": 604
+      },
+      "cleanup": {
+        "entries": 0,
+        "expiredReachable": 0,
+        "descendants": [],
+        "finalStats": {
+          "hits": 1240,
+          "misses": 1042,
+          "staleServed": 0,
+          "builds": 1042,
+          "singleFlightJoins": 0
+        },
+        "sample": {
+          "label": "cleared-after-collection",
+          "at": 1791228707773,
+          "monotonicMs": 1034.159901,
+          "pid": 2297938,
+          "startTicks": "1768022",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 324710400,
+            "heapTotal": 140120064,
+            "heapUsed": 4902816,
+            "external": 2124425,
+            "arrayBuffers": 29103
+          },
+          "pssBytes": 295673856,
+          "allocatedBytes": 277013512,
+          "descendants": []
+        }
+      },
+      "profilerOperations": [],
+      "unforcedWindowGcCalls": 0,
+      "diagnosticGcCalls": 6,
+      "terminalExitCode": 0,
+      "signal": null,
+      "reaped": true
+    },
+    {
+      "mode": "baseline",
+      "controlKind": "current-with-pruning-removed",
+      "sourceHashes": {
+        "cache": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+        "l1": "89ac9e14aeed616e2ba82060f9e153d62975d9c9806a4587f831d8700ad84977",
+        "generationStore": "9a5994bcf99eddfa65562343415c3c90a5fdb42c8729b4d275277e3891c00c47"
+      },
+      "effectiveCacheHash": "89a3547bb983cdf667e2c9f09f1c0abba61eae6880a0d9c789483e96960ff63b",
+      "moduleSha256": "284b4b5846974dca954b677f610a9aa860fbe6fbfb855d0dea56bacbcecc5263",
+      "runtimeScriptSha256": "ccd791da8a2e7468a0f15f8fe60c56c7794cef57195dd6a01016720c742e3f22",
+      "processIdentity": {
+        "pid": 2298411,
+        "startTicks": "1768131",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "node": "v25.9.0"
+      },
+      "samples": [
+        {
+          "label": "empty",
+          "at": 1791228708058,
+          "monotonicMs": 229.283222,
+          "pid": 2298411,
+          "startTicks": "1768131",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 183193600,
+            "heapTotal": 7475200,
+            "heapUsed": 5657560,
+            "external": 131169967,
+            "arrayBuffers": 129035271
+          },
+          "pssBytes": 139953152,
+          "allocatedBytes": 12598672,
+          "descendants": []
+        },
+        {
+          "label": "populated",
+          "at": 1791228708359,
+          "monotonicMs": 527.024694,
+          "pid": 2298411,
+          "startTicks": "1768131",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 321564672,
+            "heapTotal": 274337792,
+            "heapUsed": 176890936,
+            "external": 2124409,
+            "arrayBuffers": 29087
+          },
+          "pssBytes": 286300160,
+          "allocatedBytes": 232047216,
+          "descendants": []
+        },
+        {
+          "label": "idle-before-end",
+          "at": 1791228708568,
+          "monotonicMs": 736.110608,
+          "pid": 2298411,
+          "startTicks": "1768131",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 321564672,
+            "heapTotal": 274337792,
+            "heapUsed": 176905336,
+            "external": 2124409,
+            "arrayBuffers": 29087
+          },
+          "pssBytes": 286311424,
+          "allocatedBytes": 232514408,
+          "descendants": []
+        },
+        {
+          "label": "ordinary-end",
+          "at": 1791228708576,
+          "monotonicMs": 744.735564,
+          "pid": 2298411,
+          "startTicks": "1768131",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 321564672,
+            "heapTotal": 274337792,
+            "heapUsed": 176944400,
+            "external": 2124425,
+            "arrayBuffers": 29103
+          },
+          "pssBytes": 286323712,
+          "allocatedBytes": 233427192,
+          "descendants": []
+        },
+        {
+          "label": "idle-after-end",
+          "at": 1791228708787,
+          "monotonicMs": 954.943432,
+          "pid": 2298411,
+          "startTicks": "1768131",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 321564672,
+            "heapTotal": 274337792,
+            "heapUsed": 176948560,
+            "external": 2124425,
+            "arrayBuffers": 29103
+          },
+          "pssBytes": 286322688,
+          "allocatedBytes": 233619592,
+          "descendants": []
+        }
+      ],
+      "idleMs": 200,
+      "entriesBefore": 1042,
+      "entriesAfter": 1042,
+      "usefulBefore": {
+        "entries": 604,
+        "sha256": "3d812b7adca84a6841db36a128e5f65795f5d2b102c49ea74a7e2241786ab028"
+      },
+      "usefulAfter": {
+        "entries": 604,
+        "sha256": "3d812b7adca84a6841db36a128e5f65795f5d2b102c49ea74a7e2241786ab028"
+      },
+      "reads": {
+        "count": 32,
+        "wallMs": 0.0921690000000126,
+        "cpuMs": 0.082
+      },
+      "diagnostic": {
+        "sample": {
+          "label": "diagnostic-after-collection",
+          "at": 1791228709050,
+          "monotonicMs": 1218.0884,
+          "pid": 2298411,
+          "startTicks": "1768131",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 321564672,
+            "heapTotal": 273813504,
+            "heapUsed": 168962728,
+            "external": 2124425,
+            "arrayBuffers": 29103
+          },
+          "pssBytes": 286617600,
+          "allocatedBytes": 235545584,
+          "descendants": []
+        },
+        "expiredReachable": 438,
+        "entries": 1042
+      },
+      "cleanup": {
+        "entries": 0,
+        "expiredReachable": 0,
+        "descendants": [],
+        "finalStats": {
+          "hits": 1240,
+          "misses": 1042,
+          "staleServed": 0,
+          "builds": 1042,
+          "singleFlightJoins": 0
+        },
+        "sample": {
+          "label": "cleared-after-collection",
+          "at": 1791228709068,
+          "monotonicMs": 1236.686927,
+          "pid": 2298411,
+          "startTicks": "1768131",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "node": "v25.9.0",
+          "memory": {
+            "rss": 321564672,
+            "heapTotal": 103682048,
+            "heapUsed": 4873816,
+            "external": 2124425,
+            "arrayBuffers": 29103
+          },
+          "pssBytes": 286715904,
+          "allocatedBytes": 241314480,
+          "descendants": []
+        }
+      },
+      "profilerOperations": [],
+      "unforcedWindowGcCalls": 0,
+      "diagnosticGcCalls": 6,
+      "terminalExitCode": 0,
+      "signal": null,
+      "reaped": true
+    }
+  ],
+  "testSource": {
+    "sha256": "b51702f224f0385a6dcdab77ab3251d8d701e7078561351933f37397b38ecb41",
+    "afterSha256": "b51702f224f0385a6dcdab77ab3251d8d701e7078561351933f37397b38ecb41"
+  },
+  "workload": {
+    "expiredEntries": 438,
+    "rowsPerExpiredEntry": 948,
+    "bodyCodeUnits": 256,
+    "usefulEntries": 604,
+    "usefulBodyCodeUnits": 256,
+    "reads": 32,
+    "idleMs": 200
+  },
+  "limitations": [
+    "Private cache runtime; no live operator or production savings claim.",
+    "Unforced PSS and cumulative V8 allocation are separate from subsequent diagnostic GC/root reclamation.",
+    "Named cache/l1/generation-store input hashes are not the complete operator executed graph.",
+    "V8, external and OS counters do not establish native physical allocation ownership."
+  ],
+  "sourceHashesAfter": {
+    "cache": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+    "l1": "89ac9e14aeed616e2ba82060f9e153d62975d9c9806a4587f831d8700ad84977",
+    "generationStore": "9a5994bcf99eddfa65562343415c3c90a5fdb42c8729b4d275277e3891c00c47"
+  }
+}

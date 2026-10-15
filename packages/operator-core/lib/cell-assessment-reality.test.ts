@@ -80,6 +80,7 @@ import type { ProviderPoolVerdict } from './deployment/account-pool-store';
 import { roleLaunchVerdict } from './agent-tools/config/role-launch';
 import type { RoleLaunch } from './fleet/role-launch';
 import { assessWorkScope } from './work-scope-policy';
+import { assessVerificationHealth } from './verification-health';
 import {
   assessDirectiveStatus,
   deriveDirectiveStatus,
@@ -91,6 +92,9 @@ import coverageTool from './agent-tools/testing/coverage';
 import governorStateTool from './agent-tools/state/governor-state';
 import { composeGateOwnerBrief, type GateOwnerBriefInput } from './gate-owner-brief';
 import { portfolioAssessmentFor } from './goals/portfolio-throughput';
+import { LspAdmissionController } from './code-intelligence/lsp-admission';
+import { buildLspAdmissionStatePayload } from './agent-tools/state/lsp-admission';
+import type { LspDaemonAnswer } from './code-intelligence/lsp-daemon-protocol';
 
 /**
  * The no-real-PG rail's DOCUMENTED opt-out, taken for the same reason the falsifier
@@ -178,6 +182,109 @@ const DIRECTIVE_CELLS = BUILTIN_CELLS.filter(
 const GATE_OWNERSHIP_CELLS = BUILTIN_CELLS.filter(
   (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'dev:gate_ownership',
 );
+const LSP_ADMISSION_CELLS = BUILTIN_CELLS.filter(
+  (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'lsp:admission_snapshot',
+);
+const VERIFICATION_HEALTH_CELLS = BUILTIN_CELLS.filter(
+  (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'plans:verification-health',
+);
+
+// Exercise the actual daemon controller and state lens. A hand-authored code list
+// cannot detect a constant/inverted snapshot or an unavailable read becoming idle.
+type LspStatePayload = Awaited<ReturnType<typeof buildLspAdmissionStatePayload>>;
+const lspPayloads: Record<string, LspStatePayload> = {};
+const lspRuntimePayloads: Record<string, LspStatePayload> = {};
+const lspPayloadsByCell: Record<string, Record<string, LspStatePayload>> = {
+  'lsp.admission': lspPayloads,
+  'lsp.warmServers': lspRuntimePayloads,
+  'lsp.readiness': lspRuntimePayloads,
+};
+type LspRuntime = NonNullable<LspDaemonAnswer['daemonRuntime']>;
+function lspRuntime(overrides: Partial<LspRuntime> = {}): LspRuntime {
+  return {
+    enabled: true, overall: 'healthy', pid: 42, node: 'v24', entry: 'daemon', sampledAtMs: Date.now(),
+    provisioned: { typescript: true, rust: false, python: false, go: false },
+    servers: [{
+      language: 'typescript', rootPath: '/repo', taskId: 'server', health: 'healthy',
+      coldStartMs: 10, openDocs: 1, pid: 43, everSettled: true, quiescent: true,
+      pendingProgress: 0, progressGeneration: 1, certifiedReadiness: ['definition'], unprovenReadiness: [],
+    }],
+    ...overrides,
+  };
+}
+beforeAll(async () => {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let settlementRecovered = false;
+  const controller = new LspAdmissionController({
+    enqueue: async () => ({
+      start: async () => {},
+      finish: async () => {},
+      cancel: async () => {
+        if (!settlementRecovered) throw new Error('receipt store unavailable');
+      },
+    }),
+  });
+  const readRuntime = async () => lspRuntime();
+  const read = () => buildLspAdmissionStatePayload('test-lsp-reality', async () => controller.snapshot(), readRuntime);
+  const context = {
+    workspaceId: 'test-lsp-reality', language: 'typescript', projectRoot: '/repo',
+    op: 'references', deadlineAtMs: Date.now() + 10_000,
+  };
+  lspPayloads.idle = await read();
+  const first = controller.run({ ...context, requestId: 'active' }, () => held);
+  const abort = new AbortController();
+  let queued: Promise<unknown> | undefined;
+  try {
+    lspPayloads.active = await read();
+    queued = controller.run({ ...context, requestId: 'queued', signal: abort.signal }, async () => {});
+    const rejected = expect(queued).rejects.toMatchObject({ code: 'cancelled' });
+    lspPayloads.pressure = await read();
+    abort.abort();
+    await rejected;
+    await vi.waitFor(() => expect(controller.snapshot().settlementFailures).toHaveLength(1));
+    lspPayloads['settlement-failed'] = await read();
+    lspPayloads.unknown = await buildLspAdmissionStatePayload('test-lsp-reality', async () => {
+      throw new Error('daemon socket unavailable');
+    }, readRuntime);
+    lspPayloads.stale = await buildLspAdmissionStatePayload('test-lsp-reality', async () => ({
+      ...controller.snapshot(), sampledAtMs: Date.now() - 30_001,
+    }), readRuntime);
+    CONTROLS['lsp.admission'] = ['idle', 'active', 'pressure', 'settlement-failed', 'unknown', 'stale'].map(
+      (label) => ({ label, expect: lspPayloads[label]!.assessment }),
+    );
+  } finally {
+    settlementRecovered = true;
+    abort.abort();
+    release();
+    await first;
+    await queued?.catch(() => undefined);
+    await vi.waitFor(() => expect(controller.snapshot().settlementFailures).toEqual([]), { timeout: 2_000 });
+  }
+  const runtimeReaders: Record<string, () => Promise<LspRuntime>> = {
+    healthy: readRuntime,
+    degraded: async () => lspRuntime({ overall: 'degraded' }),
+    unhealthy: async () => lspRuntime({ overall: 'unhealthy' }),
+    disabled: async () => lspRuntime({ enabled: false }),
+    unknown: async () => { throw new Error('health socket unavailable'); },
+    stale: async () => lspRuntime({ sampledAtMs: Date.now() - 30_001 }),
+    empty: async () => lspRuntime({ servers: [] }),
+    unproven: async () => lspRuntime({ servers: [{ ...lspRuntime().servers[0]!, unprovenReadiness: ['references'] }] }),
+    pending: async () => lspRuntime({ servers: [{ ...lspRuntime().servers[0]!, pendingProgress: 1 }] }),
+    indexing: async () => lspRuntime({ servers: [{ ...lspRuntime().servers[0]!, quiescent: false }] }),
+  };
+  for (const [label, runtimeReader] of Object.entries(runtimeReaders)) {
+    lspRuntimePayloads[label] = await buildLspAdmissionStatePayload(
+      'test-lsp-reality', async () => controller.snapshot(), runtimeReader,
+    );
+  }
+  CONTROLS['lsp.warmServers'] = ['healthy', 'degraded', 'unhealthy', 'disabled', 'unknown', 'stale'].map(
+    label => ({ label, expect: lspRuntimePayloads[label]!.runtimeAssessment }),
+  );
+  CONTROLS['lsp.readiness'] = ['healthy', 'unproven', 'pending', 'indexing', 'empty', 'disabled', 'unknown', 'stale'].map(
+    label => ({ label, expect: lspRuntimePayloads[label]!.readinessAssessment }),
+  );
+}, 10_000);
 
 /**
  * Drives the REAL pipeline end to end — deriveDirectiveStatus() then the exported
@@ -355,6 +462,8 @@ const ROLE_LAUNCH_ROW = (over: Partial<RoleLaunch> = {}): RoleLaunch => ({
   backendSource: 'model-shape',
   why: 'assessment reality control',
   conflict: null,
+  account: null,
+  backups: [],
   ...over,
 });
 const ROLE_LAUNCH = (rows: readonly Partial<RoleLaunch>[]) => roleLaunchVerdict(rows.map((r) => ROLE_LAUNCH_ROW(r)));
@@ -433,10 +542,36 @@ const RETRIAGE = (over: Partial<RetriageRunReading> | null) =>
 const CONTROLS: Record<string, readonly Control[]> = {
   'gate.greenCheckpoint.convergence': [
     { label: 'no readable convergence record', expect: CONV(null) },
-    { label: 'a cycle is open but no fixer has ever run', expect: CONV({ attempts: 0 }) },
+    {
+      label: 'no automated fixer has run and only the baseline round is recorded',
+      expect: CONV({
+        attempts: 0,
+        admissionRounds: 1,
+        failingFirst: 5,
+        failingNow: 5,
+        shrinkTotal: 0,
+        shrinkPerRound: [{ round: 1, failingCount: 5, delta: null }],
+        converging: null,
+      }),
+    },
+    {
+      label: 'manual repair rounds establish a shrinking trend before automated dispatch',
+      expect: CONV({ attempts: 0, converging: true }),
+    },
+    {
+      label: 'manual repair rounds establish a non-shrinking trend before automated dispatch',
+      expect: CONV({ attempts: 0, converging: false }),
+    },
     {
       label: 'one round only — no trend is knowable yet',
-      expect: CONV({ converging: null, admissionRounds: 1 }),
+      expect: CONV({
+        admissionRounds: 1,
+        failingFirst: 5,
+        failingNow: 5,
+        shrinkTotal: 0,
+        shrinkPerRound: [{ round: 1, failingCount: 5, delta: null }],
+        converging: null,
+      }),
     },
     { label: 'the failing set is shrinking round over round', expect: CONV({ converging: true }) },
     { label: 'rounds recorded but the set is not shrinking', expect: CONV({ converging: false }) },
@@ -669,7 +804,7 @@ const CONTROLS: Record<string, readonly Control[]> = {
     // pure rule, so this row is computed rather than quoted.
     {
       label: 'no test file broken but a non-test leg is red with no landed fix',
-      expect: assessCandidateFailures({ fileCount: 0, stillBrokenCount: 0, alreadyFixedCount: 0, passedAtRepairHeadCount: 0, outstandingLegs: 1, fixedLegs: 0 }),
+      expect: assessCandidateFailures({ fileCount: 0, stillBrokenCount: 0, alreadyFixedCount: 0, passedAtRepairHeadCount: 0, outstandingLegs: 1, fixedLegs: 0, staleUnadmittedLegs: 0 }),
     },
   ],
   'gate.greenCheckpoint.ownerBrief': [
@@ -1038,6 +1173,23 @@ const CONTROLS: Record<string, readonly Control[]> = {
       expect: DIRSTAT({ dispositionStatus: 'declined', dispositionedAtMs: 1 }),
     },
   ],
+  // verification-system-improvements-2026-10-10 P-002. The real assessor over the two
+  // readings it decides on; the breach-outranks-unmeasured row pins the precedence.
+  'verification.health': [
+    { label: 'a thresholded reading is breached', expect: assessVerificationHealth({ breaches: 1, unmeasuredCodes: [] }) },
+    {
+      label: 'a breach outranks an unmeasured reading',
+      expect: assessVerificationHealth({ breaches: 1, unmeasuredCodes: ['triageGaps'] }),
+    },
+    {
+      label: 'nothing breached, but a thresholded reading is unmeasured',
+      expect: assessVerificationHealth({ breaches: 0, unmeasuredCodes: ['staleAcceptanceUndispositioned'] }),
+    },
+    {
+      label: 'every thresholded reading measured and within threshold',
+      expect: assessVerificationHealth({ breaches: 0, unmeasuredCodes: [] }),
+    },
+  ],
 };
 
 /**
@@ -1046,12 +1198,14 @@ const CONTROLS: Record<string, readonly Control[]> = {
  * to CONTROLS; the partition test below proves the alignment rather than assuming it.
  */
 const EXPECTED: Record<string, readonly (string | null)[]> = {
-  // P-004 truth table. `no-attempts` precedes the trend codes deliberately: a trend computed
-  // over zero fixer runs describes nothing that happened (measured 2026-09-03, candidate
-  // 79c50b5b7b78 sat at attempts 0 for 2h+ while consecutiveReds climbed to 103).
+  // P-004 truth table. Zero automated attempts is a dispatch fact, not proof that no manual
+  // measurement happened. `no-attempts` applies only while the recorded rounds have no trend;
+  // once a manual lineage establishes one, the convergence result takes precedence.
   'gate.greenCheckpoint.convergence': [
     'no-cycle-recorded',
     'no-attempts',
+    'converging',
+    'not-converging',
     'not-yet-knowable',
     'converging',
     'not-converging',
@@ -1199,6 +1353,9 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
   'governor.queue': ['empty', 'draining', 'growing', 'unknown'],
   'governor.resources': ['unconstrained', 'constrained', 'unknown'],
   'governor.recovery': ['stable', 'recovering', 'stalled', 'unknown'],
+  'lsp.admission': ['idle', 'active', 'pressure', 'settlement-failed', 'unknown', 'unknown'],
+  'lsp.warmServers': ['healthy', 'degraded', 'unhealthy', 'unknown', 'unknown', 'unknown'],
+  'lsp.readiness': ['reported', 'unproven', 'unproven', 'unproven', 'unknown', 'unknown', 'unknown', 'unknown'],
   'capacity.verdict': ['usage-wall', 'admission-concurrency', 'pacing-policy', 'none'],
   'agent.roleLaunch': ['consistent', 'conflicted', 'undetermined'],
   'workspace.workScope': ['absent', 'off', 'off', 'enforce'],
@@ -1209,6 +1366,7 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
     'settled',
     'settled',
   ],
+  'verification.health': ['breached', 'breached', 'unmeasured', 'healthy'],
 };
 
 describe('P-004: the built-in partition — every cell is assessed, with no residue', () => {
@@ -1224,7 +1382,7 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
   // they must stay hardcoded so adding a cell forces an author through this file — but the
   // TITLE must not carry a second copy of them.
   it('registers every built-in cell and routes every one to a resolver family', () => {
-    expect(BUILTIN_CELLS).toHaveLength(27);
+    expect(BUILTIN_CELLS).toHaveLength(31);
     expect(
       PIPELINE_CELLS.length +
         GOAL_CELLS.length +
@@ -1236,7 +1394,9 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
         ROLE_LAUNCH_CELLS.length +
         WORK_SCOPE_CELLS.length +
         DIRECTIVE_CELLS.length +
-        GATE_OWNERSHIP_CELLS.length,
+        GATE_OWNERSHIP_CELLS.length +
+        LSP_ADMISSION_CELLS.length +
+        VERIFICATION_HEALTH_CELLS.length,
     ).toBe(BUILTIN_CELLS.length);
     expect(PIPELINE_CELLS).toHaveLength(11);
     expect(GOAL_CELLS).toHaveLength(1);
@@ -1249,6 +1409,8 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
     expect(WORK_SCOPE_CELLS).toHaveLength(1);
     expect(DIRECTIVE_CELLS).toHaveLength(1);
     expect(GATE_OWNERSHIP_CELLS).toHaveLength(1);
+    expect(LSP_ADMISSION_CELLS).toHaveLength(3);
+    expect(VERIFICATION_HEALTH_CELLS).toHaveLength(1);
   });
 
   /**
@@ -1361,6 +1523,21 @@ describe('P-004: every declared assessment path exists in a LIVE resolver payloa
     20_000,
   );
 
+  it.each(LSP_ADMISSION_CELLS.map((c) => [c.cell, c] as const))(
+    '%s — assessment and evidence paths survive measured, failed and stale daemon reads',
+    (_id, spec) => {
+      for (const payload of Object.values(lspPayloadsByCell[spec.cell]!)) {
+        expect(missingAssessmentPaths(spec, payload)).toEqual([]);
+        expect(pathExists(payload, spec.unknownHoist!).exists).toBe(true);
+        expect(Object.keys(spec.assessment!.codes)).toContain(pathExists(payload, spec.assessment!.path).value);
+      }
+      expect(lspPayloads.pressure).toMatchObject({ measurement: 'measured', admission: { queued: 1, inFlight: 1 } });
+      expect(lspPayloads.unknown).toMatchObject({ measurement: 'unknown', admission: null });
+      expect(lspPayloads.stale).toMatchObject({ measurement: 'unknown', admission: null });
+      expect(lspPayloads.unknown!.unknown).not.toEqual([]);
+    },
+  );
+
   /**
    * ⚠ THE LIVE CODE MUST BE A DECLARED ONE. This is drift in the direction the READ
    * refuses rather than the one it reports: `assessmentFrom` will not pass an
@@ -1461,6 +1638,14 @@ describe('P-004: every declared code is PRODUCIBLE, and nothing outside the decl
 });
 
 describe('P-004: assessments MOVE with their inputs, in the declared direction', () => {
+  it('lsp.admission distinguishes no work, running work, pressure and failed settlement', () => {
+    expect(lspPayloads.idle!.assessment).toBe('idle');
+    expect(lspPayloads.active!.assessment).toBe('active');
+    expect(lspPayloads.pressure!.assessment).toBe('pressure');
+    expect(lspPayloads['settlement-failed']!.assessment).toBe('settlement-failed');
+    expect(lspPayloads.unknown!.assessment).toBe('unknown');
+    expect(lspPayloads.stale!.assessment).toBe('unknown');
+  });
   /**
    * THE CONSTANCY DETECTOR. An assessment that answers the same code for every input
    * distinguishes nothing, and it is the failure a path-existence check cannot see:
@@ -1488,7 +1673,7 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
    * shipped: the cell answered its own name backwards, and because the normal steady
    * state is `behind`, the WRONG answer was the standing one.
    */
-  const PAIRS: ReadonlyArray<readonly [string, string, string, string, string]> = [
+  const PAIRS: ReadonlyArray<readonly [string, string, string | (() => string), string | (() => string), string]> = [
     // [cell, decisive field, code when the field is "positive", code when negated, note]
     [
       'git.pipelinePosition',
@@ -1707,6 +1892,27 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
       assessTestingCoverageFloor({ verdict: 'measured', surfaces: 10, below: 2, belowUnwaived: 0, evidenced: 10 }),
       'a waived gap must not read as an unwaived one',
     ],
+    [
+      'lsp.admission',
+      'admission.queued',
+      () => lspPayloads.pressure!.assessment,
+      () => lspPayloads.active!.assessment,
+      'a queued query must read as pressure while the same running query alone reads active',
+    ],
+    [
+      'lsp.warmServers',
+      'runtime.overall',
+      () => lspRuntimePayloads.healthy!.runtimeAssessment,
+      () => lspRuntimePayloads.unhealthy!.runtimeAssessment,
+      'healthy and unhealthy warm-server populations must not collapse',
+    ],
+    [
+      'lsp.readiness',
+      'readiness[0].unproven',
+      () => lspRuntimePayloads.healthy!.readinessAssessment,
+      () => lspRuntimePayloads.unproven!.readinessAssessment,
+      'reported intent proofs must remain distinct from unproven intent readiness',
+    ],
     ['governor.health', 'health.state', 'healthy', 'degraded', 'healthy and degraded must not collapse'],
     ['governor.admission', 'admission.state', 'open', 'paused', 'open and paused admission must not collapse'],
     ['governor.queue', 'queue.trend', 'growing', 'draining', 'queue growth direction must not invert'],
@@ -1740,6 +1946,13 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
       DIRSTAT({ dispositionStatus: null }),
       'work that happened and was never dispositioned must not read as never started',
     ],
+    [
+      'verification.health',
+      'health.breaches',
+      assessVerificationHealth({ breaches: 1, unmeasuredCodes: [] }),
+      assessVerificationHealth({ breaches: 0, unmeasuredCodes: [] }),
+      'a breached threshold must not read as healthy',
+    ],
   ];
 
   /** Every cell gets an inversion probe — the same ten-of-ten partition, no residue. */
@@ -1754,7 +1967,9 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
   });
 
   it.each(PAIRS.map((p) => [p[0], p] as const))('%s — the decisive field actually decides', (_id, pair) => {
-    const [cell, field, positive, negated, note] = pair;
+    const [cell, field, positiveReading, negatedReading, note] = pair;
+    const positive = typeof positiveReading === 'function' ? positiveReading() : positiveReading;
+    const negated = typeof negatedReading === 'function' ? negatedReading() : negatedReading;
     const spec = BUILTIN_CELLS.find((c) => c.cell === cell)!;
 
     expect(
@@ -2047,6 +2262,8 @@ describe('P-012: every hoisted count/list travels with its measured-ness flag', 
     ...COVERAGE_CELLS.map((c) => [c.cell, c, liveCoveragePayload] as const),
     ...HOST_MEMORY_CELLS.map((c) => [c.cell, c, liveHostMemoryPayload] as const),
     ...GOVERNOR_CELLS.map((c) => [c.cell, c, liveGovernorPayload] as const),
+    ...LSP_ADMISSION_CELLS.map((c) => [c.cell, c, async () =>
+      c.cell === 'lsp.admission' ? lspPayloads.pressure : lspRuntimePayloads.healthy] as const),
   ];
   const PAYLOADLESS = [
     ...GOAL_CELLS,
@@ -2059,6 +2276,9 @@ describe('P-012: every hoisted count/list travels with its measured-ness flag', 
     // shape with an injected ownership result. Keep this sweep off the live
     // single-fixer gate control plane; its pairing is checked structurally.
     ...GATE_OWNERSHIP_CELLS,
+    // plans:verification-health measures live plan + work-item SQL; its declared probe
+    // paths are run against a real read in verification-health-cell-probes.test.ts.
+    ...VERIFICATION_HEALTH_CELLS,
   ];
 
   /**
@@ -2078,6 +2298,8 @@ describe('P-012: every hoisted count/list travels with its measured-ness flag', 
       // P-007: assessDirectiveStatus is pure over a derived status and needs no live store;
       // the sweep cannot obtain a payload for it because orders:get is per-directive-id.
       'owner.directive.status',
+      // Live resolver needs Postgres; probe paths are covered by verification-health-cell-probes.test.ts.
+      'verification.health',
       // WI-2145092: its payload builder is pure (buildWorkScopeStatusPayload) and needs no
       // live store, and its hoisted list (`allowHarnesses`) is a plain projection of the row.
       'workspace.workScope',

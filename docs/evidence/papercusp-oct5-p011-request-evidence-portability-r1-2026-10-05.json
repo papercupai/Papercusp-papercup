@@ -1,0 +1,105 @@
+{
+  "schemaVersion": "p011-request-evidence-portability-v1",
+  "workItem": "WI-10005966",
+  "parent": "WI-10004890",
+  "quarantineItem": "WI-10006042",
+  "kind": "portable-derivatives-of-archived-execution-evidence",
+  "originalArchive": "PG-canonical artifacts:load; exact bytes saved and compared before edits.",
+  "rootCause": "Older qualification assembly embedded raw test-ledger checkout roots instead of using the maintained identity-safe JSON exporter. The distribution detector correctly quarantined the files.",
+  "durableSurface": "Existing scripts/lib/identity-leak-patterns.mjs serializeIdentitySafeJson and its CLI; unchanged canonical detector/serializer tests cover this class.",
+  "qualification": "Only detected string values changed in the two evidence files. Numeric/boolean/null/array/key values, hashes, timestamps, outcomes and acceptance limits are identical. Preflight qualification reference repaired with an explicit original archive link; full preflight original also archived.",
+  "files": [
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-request-retainers-r2-qualification-2026-10-03.json",
+      "original": {
+        "path": "docs/evidence/papercusp-oct1-p011-request-retainers-r2-qualification-2026-10-03.json",
+        "bytes": 14623,
+        "sha256": "08549b5ca89fd68e06487dd62c75dc9cef2f0a4a5d2c9900beeb28071e57b942",
+        "artifact": {
+          "slug": "papercusp",
+          "rel_path": "evidence/originals/08549b5ca89fd68e06487dd62c75dc9cef2f0a4a5d2c9900beeb28071e57b942.json"
+        }
+      },
+      "derivative": {
+        "path": "docs/evidence/papercusp-oct1-p011-request-retainers-r2-qualification-2026-10-03.json",
+        "bytes": 14605,
+        "sha256": "a1973988a5abef61b05ed6213b6a14ad3033df2a9dae162505ca0bf1595548c8"
+      },
+      "rewrites": [
+        {
+          "pointer": "/producerLedger/0/root",
+          "originalValueSha256": "64d7a60720aceb863d1d802149f1519d51517f4867365d951028cccf326c3f99",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp"
+        },
+        {
+          "pointer": "/independentTests/runs/0/root",
+          "originalValueSha256": "64d7a60720aceb863d1d802149f1519d51517f4867365d951028cccf326c3f99",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp"
+        },
+        {
+          "pointer": "/responseRegression/beforeRuns/0/root",
+          "originalValueSha256": "64d7a60720aceb863d1d802149f1519d51517f4867365d951028cccf326c3f99",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp"
+        },
+        {
+          "pointer": "/responseRegression/beforeRuns/1/root",
+          "originalValueSha256": "64d7a60720aceb863d1d802149f1519d51517f4867365d951028cccf326c3f99",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp"
+        },
+        {
+          "pointer": "/responseRegression/afterRuns/0/root",
+          "originalValueSha256": "64d7a60720aceb863d1d802149f1519d51517f4867365d951028cccf326c3f99",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp"
+        }
+      ]
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-snapshot-query-selection-r1-2026-10-03.json",
+      "original": {
+        "path": "docs/evidence/papercusp-oct1-p011-snapshot-query-selection-r1-2026-10-03.json",
+        "bytes": 4149,
+        "sha256": "35176174c2a1d99cccfd64f0d7837cd00a345e942fdce1c63676d0b8b17f6ae0",
+        "artifact": {
+          "slug": "papercusp",
+          "rel_path": "evidence/originals/35176174c2a1d99cccfd64f0d7837cd00a345e942fdce1c63676d0b8b17f6ae0.json"
+        }
+      },
+      "derivative": {
+        "path": "docs/evidence/papercusp-oct1-p011-snapshot-query-selection-r1-2026-10-03.json",
+        "bytes": 4143,
+        "sha256": "197847d75c4b6ec5ce0e869549923e21f7cdeb19706bc10f975d0f238b7dcd92"
+      },
+      "rewrites": [
+        {
+          "pointer": "/tests/0/root",
+          "originalValueSha256": "64d7a60720aceb863d1d802149f1519d51517f4867365d951028cccf326c3f99",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp"
+        },
+        {
+          "pointer": "/tests/1/root",
+          "originalValueSha256": "64d7a60720aceb863d1d802149f1519d51517f4867365d951028cccf326c3f99",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp"
+        }
+      ]
+    }
+  ],
+  "preflightReference": {
+    "path": "docs/evidence/papercusp-oct5-p011-weak-phase-preflight-r1-2026-10-05.json",
+    "original": {
+      "path": "docs/evidence/papercusp-oct5-p011-weak-phase-preflight-r1-2026-10-05.json",
+      "bytes": 6289,
+      "sha256": "2d47a67afab7af89d236e74c1187b5fc9984f262ae8306ffddc3708ff3b3e843",
+      "artifact": {
+        "slug": "papercusp",
+        "rel_path": "evidence/originals/2d47a67afab7af89d236e74c1187b5fc9984f262ae8306ffddc3708ff3b3e843.json"
+      }
+    },
+    "derivative": {
+      "path": "docs/evidence/papercusp-oct5-p011-weak-phase-preflight-r1-2026-10-05.json",
+      "bytes": 6690,
+      "sha256": "0da1da619ed5f294100e6f9c98dafbcaff28575e3ca1036bb1c5190ca6324a66"
+    }
+  },
+  "noRuntimeMeasurementReplay": true,
+  "scope": "Portable evidence publication only; producer failures and full P011/native/live/shipment limits preserved."
+}

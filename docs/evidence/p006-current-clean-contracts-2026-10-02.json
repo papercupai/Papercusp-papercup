@@ -1,0 +1,3558 @@
+{
+  "workItem": "WI-1074216",
+  "plan": "work-on-everything-stewardship-remediation-2026-08-30",
+  "recordedAt": "2026-10-02T08:21:56.155942+00:00",
+  "scope": "Clean committed positive unit/real-PG tests and five maintained calibrated failure controls; governing BLOCKER@3 and TERMINAL@3 PASS. Broader P006 acceptance/rubric regrade/shipment remain open.",
+  "pin": "920030a3b939abd0c2b828fdb1ade3e291fb1071",
+  "cloneRoot": "/tmp/papercusp-lint-as-committed-920030a3b9-SBbhnS",
+  "cloneGitStatusEmpty": true,
+  "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run lint:as-committed -- test:file --ref=920030a3b939abd0c2b828fdb1ade3e291fb1071 --any --keep -- packages/operator-core/lib/goal-plan-placement-claim-proof.test.ts packages/operator-core/lib/goal-plan-placement-claim.integration.test.ts packages/operator-core/lib/goals/plan-closure-observations.integration.test.ts",
+  "result": {
+    "files": 3,
+    "pass": 41,
+    "fail": 0,
+    "skip": 0,
+    "exit": 0
+  },
+  "terminalLedger": {
+    "packages/operator-core/lib/goal-plan-placement-claim-proof.test.ts": 20499866,
+    "packages/operator-core/lib/goal-plan-placement-claim.integration.test.ts": 20500782,
+    "packages/operator-core/lib/goals/plan-closure-observations.integration.test.ts": 20500781
+  },
+  "ledgerReadback": "All three exact rows pass, worktreeDirty=false, isScratchConfig=false, source=local, harness=papercusp, root=retained clone, commit=pin. Read via testing:runs in this continuation.",
+  "sourceBindings": [
+    {
+      "path": "packages/operator-core/lib/goal-launch-settings.ts",
+      "sha256": "0138c8c71bfa8ea4445fc13ffde0c29b20b9b653653548f45067a63c2a9cdadc",
+      "committedCloneMatchesPin": true,
+      "canonicalCurrentMatchesPin": true
+    },
+    {
+      "path": "packages/operator-core/lib/goal-plan-placement-claim-proof.test.ts",
+      "sha256": "ea048ad71b63631b86a7fce8a73a2cf3f0f7b151fdb371075e7f6867cf9eb652",
+      "committedCloneMatchesPin": true,
+      "canonicalCurrentMatchesPin": true
+    },
+    {
+      "path": "packages/operator-core/lib/goal-plan-placement-claim.integration.test.ts",
+      "sha256": "89f9b52932c10f37b5da6555712204922ad9ad647c7b0b54a554cd7576b6c424",
+      "committedCloneMatchesPin": true,
+      "canonicalCurrentMatchesPin": true
+    },
+    {
+      "path": "packages/operator-core/lib/goals/plan-closure-observations.ts",
+      "sha256": "23d49753b6b3525a2c975f0ab3e0313b66e82a09fdcf9509ac58101a778ec0cb",
+      "committedCloneMatchesPin": true,
+      "canonicalCurrentMatchesPin": true
+    },
+    {
+      "path": "packages/operator-core/lib/goals/plan-closure-observations.integration.test.ts",
+      "sha256": "9d7961a61b2f7bbeb7169f4fcf68206305d5d3a61aed5cf4b0d35d519f1700ac",
+      "committedCloneMatchesPin": true,
+      "canonicalCurrentMatchesPin": true
+    },
+    {
+      "path": "packages/operator-core/lib/goals/plan-closure.ts",
+      "sha256": "6931558021380d44b75909a1834ca5775e16433d4f585895415795d50a372781",
+      "committedCloneMatchesPin": true,
+      "canonicalCurrentMatchesPin": true
+    }
+  ],
+  "log": "/tmp/p006-current-clean-contracts-920030a3.log",
+  "logSha256": "cde5d4b08b32dab5240754b501a339339d2e6870f4095b39711c85c8d5979b16",
+  "controlsVerifiedAt": "2026-10-02T08:36:55Z",
+  "controlCommand": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_MUTATION_PROBE=1 PAPERCUSP_PLACEMENT_LIFECYCLE_CONTROL=<scenario> npm run test:file -- packages/operator-core/lib/goal-plan-placement-claim-proof.test.ts -t 'placement calibration:|repaired placement contract: <scenario>'",
+  "controlOracle": "Existing permanent literal assertions, with independent unresolved-plan calibration. Only the maintained fault adapter changes inputs; production source and test bytes remain unchanged.",
+  "controlEvidence": [
+    {
+      "scenario": "draft-refusal",
+      "testRunId": 20501213,
+      "log": "/tmp/p006-lifecycle-draft-refusal-20261002-current.log",
+      "logSha256": "b99b8f2de2091d0e6ce3aa33145f35f00e51b08ddcfcd3182c326e1825b315c6",
+      "source": "mutation-probe",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "intendedAssertionFailed": true,
+      "calibrationPassed": true,
+      "failed": 1,
+      "passed": 1,
+      "filteredSkipped": 13,
+      "exit": 1
+    },
+    {
+      "scenario": "dependency-blocker",
+      "testRunId": 20501220,
+      "log": "/tmp/p006-lifecycle-dependency-blocker-20261002-current.log",
+      "logSha256": "fe5bcbfa3f7ceac8f9480da4065c55a597d9790f42d0f0756cab5819c4e90999",
+      "source": "mutation-probe",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "intendedAssertionFailed": true,
+      "calibrationPassed": true,
+      "failed": 1,
+      "passed": 1,
+      "filteredSkipped": 13,
+      "exit": 1
+    },
+    {
+      "scenario": "eligible-control",
+      "testRunId": 20501221,
+      "log": "/tmp/p006-lifecycle-eligible-control-20261002-current.log",
+      "logSha256": "fe2bed3a8e0ed4dd45d5452e2d9490691a4e74b53ac4caa12b5f51381da32c58",
+      "source": "mutation-probe",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "intendedAssertionFailed": true,
+      "calibrationPassed": true,
+      "failed": 1,
+      "passed": 1,
+      "filteredSkipped": 13,
+      "exit": 1
+    },
+    {
+      "scenario": "shipped-without-closure",
+      "testRunId": 20501223,
+      "log": "/tmp/p006-lifecycle-shipped-without-closure-20261002-current.log",
+      "logSha256": "79f65f79320ff56d38404b1f1176e0a1cac747d23fab09d53e36a816b0034440",
+      "source": "mutation-probe",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "intendedAssertionFailed": true,
+      "calibrationPassed": true,
+      "failed": 1,
+      "passed": 1,
+      "filteredSkipped": 13,
+      "exit": 1
+    },
+    {
+      "scenario": "satisfied-closure",
+      "testRunId": 20501226,
+      "log": "/tmp/p006-lifecycle-satisfied-closure-20261002-current.log",
+      "logSha256": "99f61e1f8ec228de6809156b3906c9d62a478b6aa4c93a156716f8de33bf08ad",
+      "source": "mutation-probe",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "intendedAssertionFailed": true,
+      "calibrationPassed": true,
+      "failed": 1,
+      "passed": 1,
+      "filteredSkipped": 13,
+      "exit": 1
+    }
+  ],
+  "bindingProgress": {
+    "integration": [
+      {
+        "bindingId": 21402,
+        "testRunId": 20500782,
+        "specId": "WOE-P001-BLOCKER"
+      },
+      {
+        "bindingId": 21403,
+        "testRunId": 20500781,
+        "specId": "WOE-P001-TERMINAL"
+      }
+    ],
+    "operatorRoute": "Attribution-preserving ptool to staging :3170; release f52b2457ba lacks current clone mapper. Staging 247b9ed162 contains it.",
+    "negativeAndRecurrence": "08:43Z ptool attempt timed out during connection; authoritative read confirmed no new rows. Attributed mcp-call --port3170 then bound all10 successfully, receipt /tmp/p006-lifecycle-bindings-mcp3170-20261002.json. Five counterexamples21406/08/10/12/14 pair one-to-one with unit recurrences21407/09/11/13/15. Scenario targeting follows each clause's requiredScenarios, not the own-specId fallback.",
+    "terminalUniqueScenarioBinding": 21419,
+    "selectedReplacement": "BLOCKER@3 PASS and TERMINAL@3 PASS on twelve exact replacement references; governing=false diagnostic before any withdrawal.",
+    "withdrawnStaleBindings": [19176, 19177, 19178, 19179, 19180, 19303, 19304, 19305, 19306, 19307, 19308, 19396],
+    "withdrawalVerification": "Exact WI-1074216 ownership, spec revisions and stale source/test currentness read before binding-only withdrawal; 12/12 receipts ok. Historical test runs and immutable D003 baseline preserved.",
+    "governingReplacement": "Without workItemIds/evidenceRefs, governing=true: BLOCKER@3 PASS and TERMINAL@3 PASS, both wouldBlock=[]. No broader acceptance or shipment claim.",
+    "acceptance": "This two-clause proof unit verified; P006 remains partial."
+  },
+  "criteria": "Read current BLOCKER@3 integration/unit dependency-blocker,draft-refusal,eligible-control and TERMINAL@3 integration/unit satisfied-closure,shipped-without-closure. Governing read before new tests failed solelyfreshness; no accepted criteria lowered.",
+  "previous29Pass": {
+    "unitIds": [
+      20488692,
+      20488693
+    ],
+    "dirty": true,
+    "logHashVerified": true,
+    "sourceDrift": "goal-launch-settings changed; no current acceptance reuse"
+  },
+  "claimCurrentProof": {
+    "verifiedAt": "2026-10-02T09:08:41Z",
+    "nativeSession": "01a0fbd1-f11e-7870-a2fe-e6433007e6b4",
+    "specId": "WOE-P001-CLAIM",
+    "revision": 3,
+    "specFingerprint": "2b61e5e90764abbdc15f639e5f70cd09b19fe334ca75f4ea513835287afcb0df",
+    "scope": "Four calibrated maintained fault controls and unchanged clean positive unit/real-PG proof. CLAIM@3 selected replacement and governing acceptance PASS; P006 broader acceptance remains open.",
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_MUTATION_PROBE=1 PAPERCUSP_PLACEMENT_CLAIM_CONTROL=<scenario> npm run test:file -- packages/operator-core/lib/goal-plan-placement-claim-proof.test.ts -t <calibration plus exact named assertion>",
+    "sourceReadback": "All six canonical and retained-clone source/test fingerprints equal the original pin; clone git status empty before controls. Exact positive ledger20499866/20500782 still pass, clean/no scratch. Four new exact mutation-probe rows likewise clean/no scratch; assertions and calibration read from logs.",
+    "controls": [
+      {
+        "scenario": "expired-lease",
+        "testRunId": 20502794,
+        "counterexampleBindingId": 21439,
+        "recurrenceBindingId": 21432,
+        "recurrenceTestRunId": 20499866,
+        "log": "/tmp/p006-claim-expired-lease-20261002-current.log",
+        "logSha256": "85fb33919df9b19b5d6a5d5af81850c63aec25a7e7aab43ee09cdae735ddca88",
+        "intendedAssertionFailed": true,
+        "calibrationPassed": true,
+        "failed": 1,
+        "passed": 1,
+        "filteredSkipped": 13,
+        "exit": 1,
+        "source": "mutation-probe",
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      },
+      {
+        "scenario": "leader-only",
+        "testRunId": 20502792,
+        "counterexampleBindingId": 21440,
+        "recurrenceBindingId": 21434,
+        "recurrenceTestRunId": 20499866,
+        "log": "/tmp/p006-claim-leader-only-20261002-current.log",
+        "logSha256": "37d7222a2dbecf86f8a1b43aea2c40fb9831a7bcc31b58bf5353d12a8eebb3d0",
+        "intendedAssertionFailed": true,
+        "calibrationPassed": true,
+        "failed": 1,
+        "passed": 1,
+        "filteredSkipped": 13,
+        "exit": 1,
+        "source": "mutation-probe",
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      },
+      {
+        "scenario": "member-claim-and-lease",
+        "testRunId": 20502793,
+        "counterexampleBindingId": 21441,
+        "recurrenceBindingId": 21436,
+        "recurrenceTestRunId": 20499866,
+        "log": "/tmp/p006-claim-member-claim-and-lease-20261002-current.log",
+        "logSha256": "625f743a7a0d7b45fa5819474e90f5acde3e4fd2016701875acfd6e62d83ecd3",
+        "intendedAssertionFailed": true,
+        "calibrationPassed": true,
+        "failed": 1,
+        "passed": 1,
+        "filteredSkipped": 13,
+        "exit": 1,
+        "source": "mutation-probe",
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      },
+      {
+        "scenario": "wrong-member-or-filter",
+        "testRunId": 20502795,
+        "counterexampleBindingId": 21442,
+        "recurrenceBindingId": 21438,
+        "recurrenceTestRunId": 20499866,
+        "log": "/tmp/p006-claim-wrong-member-or-filter-20261002-current.log",
+        "logSha256": "2b52819de5a3567d875b68c65d1e2787d8ada8969fc848d75083878db7739824",
+        "intendedAssertionFailed": true,
+        "calibrationPassed": true,
+        "failed": 1,
+        "passed": 1,
+        "filteredSkipped": 13,
+        "exit": 1,
+        "source": "mutation-probe",
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      }
+    ],
+    "integrationBindingId": 21430,
+    "uniqueIntegrationBindingId": 21443,
+    "integrationTestRunId": 20500782,
+    "selectedReplacement": {
+      "governing": false,
+      "verdict": "pass",
+      "wouldBlock": [],
+      "bindingIds": [
+        21443,
+        21439,
+        21432,
+        21440,
+        21434,
+        21441,
+        21436,
+        21442,
+        21438
+      ]
+    },
+    "withdrawals": {
+      "staleBindingIds": [
+        19029,
+        19030,
+        19031,
+        19032,
+        19033,
+        19034,
+        19035,
+        19036,
+        19037
+      ],
+      "callerMistypedBindingIds": [
+        21431,
+        21433,
+        21435,
+        21437
+      ],
+      "reason": "First negative binding call omitted explicit evidenceKind and derived ordinary tests. Corrected by binding exact counterexample rows, then selected replacement PASS before binding-only withdrawal. Nine old bindings independently read as source-stale;19029 also test-stale. Immutable test-run/audit records and D003 baseline preserved.",
+      "ok": 13
+    },
+    "governingClaim": {
+      "governing": true,
+      "evaluatorBuild": {
+        "sha": "f52b2457ba",
+        "version": "0.0.0"
+      },
+      "verdict": "pass",
+      "wouldBlock": [],
+      "filters": "specIds only; no workItemIds/evidenceRefs"
+    },
+    "receipts": [
+      {
+        "path": "/tmp/p006-claim-bindings-mcp3170-20261002.json",
+        "sha256": "541d8db3f457f3a738aaa623591685ce18babdbbc52079a4f28bcc39319f1c47",
+        "ok": 9
+      },
+      {
+        "path": "/tmp/p006-claim-counterexamples-mcp3170-20261002.json",
+        "sha256": "4c5a5e84db0ac13914c00e0e68435207f909806c77d35ba4a17446e2d2308670",
+        "ok": 4
+      },
+      {
+        "path": "/tmp/p006-claim-integration-unique-20261002.json",
+        "sha256": "09b9b498a848894a91d265c5b3525fc779c4389cbd2bd22b5066c17b2c0a3367",
+        "ok": 1
+      },
+      {
+        "path": "/tmp/p006-claim-withdrawals-20261002.json",
+        "sha256": "3d0e507c8c688021cc3b37db7dfa9b322ce4d1a4c35410855dee74c9d8db9d55",
+        "ok": 13
+      }
+    ],
+    "wholeCensus": {
+      "governing": true,
+      "evaluatorBuild": {
+        "sha": "247b9ed162",
+        "version": "0.0.0"
+      },
+      "rows": [
+        {
+          "specId": "WOE-P001-BLOCKER",
+          "specRevision": 3,
+          "verdict": "pass",
+          "wouldBlock": []
+        },
+        {
+          "specId": "WOE-P001-CLAIM",
+          "specRevision": 3,
+          "verdict": "pass",
+          "wouldBlock": []
+        },
+        {
+          "specId": "WOE-P001-EXCLUSIONS",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P001-IDEMPOTENCE",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P001-ORDER",
+          "specRevision": 4,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P001-TERMINAL",
+          "specRevision": 3,
+          "verdict": "pass",
+          "wouldBlock": []
+        },
+        {
+          "specId": "WOE-P002-AUTHORITY",
+          "specRevision": 3,
+          "verdict": "unknown",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P002-ELECTION",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P002-HANDOFF",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P002-RESPAWN",
+          "specRevision": 4,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P002-STALE-RESPAWN",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P002-UNKNOWN",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P003-BREACH",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P003-MEASURED-ADMISSION",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P003-NUMERATOR",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P003-UNMEASURED",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P003-UNMEASURED-ADMISSION",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P003-WINDOW",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P004-CUSTODY",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P004-REAL-CALL",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P004-SCHEDULER-DIAGNOSIS",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P004-SLOW-BOOT",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P004-WAKE",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P005-HAND-DISPATCH",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "traceability",
+            "falsifiability",
+            "correct-layer",
+            "oracle-independence",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P005-MATERIALIZATION",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "traceability",
+            "falsifiability",
+            "correct-layer",
+            "oracle-independence",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P005-SOVEREIGNTY",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "traceability",
+            "falsifiability",
+            "correct-layer",
+            "oracle-independence",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P006-REAL-CARD",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "traceability",
+            "falsifiability",
+            "correct-layer",
+            "oracle-independence",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P006-SHIPMENT",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "traceability",
+            "falsifiability",
+            "correct-layer",
+            "oracle-independence",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        }
+      ],
+      "count": 28,
+      "verdicts": {
+        "pass": 3,
+        "fail": 24,
+        "unknown": 1
+      }
+    },
+    "finalBindingReadback": {"count":10,"truncatedByLimit":false,"ids":[21443,21442,21441,21440,21439,21438,21436,21434,21432,21430],"currentness":"All ten live rows current; thirteen withdrawn identities absent from the complete current-revision read."},
+    "censusLimits": "Staging evaluator247b9ed162 observed28 clauses:3pass/24fail/1unknown. AUTHORITY changed from datedPASS to freshnessunknown; no earlier PASS reused as current. Complete emitted rows embedded here; no scratch TTL dependency.",
+    "limits": "No independent rubric review/ratification, real-goal scorecard reuse, whole P006 acceptance, historical root cause or final shipment claim. D003/D013/D016 re-read; no product source, clause, BAR or baseline edited. Named file provenance does not measure the whole import graph."
+  },
+  "exclusionsCurrentProof": {
+    "verifiedAt": "2026-10-02T09:33:12.191532+00:00",
+    "nativeSession": "01a0fbe6-d6b5-7e70-8cd9-dccaa841813f",
+    "specId": "WOE-P001-EXCLUSIONS",
+    "revision": 3,
+    "specFingerprint": "e08462ec1e978324a4a3b23f1b71aee434f666adce160fed069389c701aefcba",
+    "scope": "Fresh clean pinned five-test unit positive and three maintained calibrated fault controls; unchanged clean real-PG20500782 reused. Selected replacement PASS precedes seven binding-only withdrawals and governing EXCLUSIONS@3 PASS. Broader P006 acceptance remains open.",
+    "sourceReadback": "All six prior canonical/clone/pin source/test fingerprints plus exclusion-proof c4d162bc976fe0af63b53c0101ac7c0ded8123b906dd189d0d22b319ef924a61 matched. Clone HEAD920030a3b939abd0c2b828fdb1ade3e291fb1071, git status empty and Vitest available. Saved real-PG20500782 read pass, clean, no scratch, correct root/harness.",
+    "positive": {
+      "testRunId": 20506006,
+      "pass": 5,
+      "fail": 0,
+      "skip": 0,
+      "exit": 0,
+      "source": "local",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "log": "/tmp/p006-exclusions-positive-20261002-fire170.log",
+      "logSha256": "f3d8a6de85b9e9e97c01465f2f0f007310f15efb113b696368b3f213b25a65fc"
+    },
+    "controlCommand": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_MUTATION_PROBE=1 PAPERCUSP_PLACEMENT_EXCLUSION_CONTROL=<scenario> npm run test:file -- packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts -t 'exclusion calibration:|repaired exclusion contract: <scenario>'",
+    "controls": [
+      {
+        "scenario": "drain-and-test-excluded",
+        "testRunId": 20506009,
+        "counterexampleBindingId": 21457,
+        "recurrenceBindingId": 21458,
+        "logSha256": "aa30649277cba6ff890ba2bda46cdc3f8098985d58690e6e7506c2ef58ea1153",
+        "recurrenceTestRunId": 20506006,
+        "log": "/tmp/p006-exclusions-drain-and-test-excluded-20261002-fire170.log",
+        "intendedAssertionFailed": true,
+        "calibrationPassed": true,
+        "failed": 1,
+        "passed": 1,
+        "filteredSkipped": 3,
+        "exit": 1,
+        "source": "mutation-probe",
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      },
+      {
+        "scenario": "holder-not-independent",
+        "testRunId": 20506010,
+        "counterexampleBindingId": 21459,
+        "recurrenceBindingId": 21460,
+        "logSha256": "e1b79adea9bbe26b65c1f9e5e196036eda9ab9572daa31f10c07085f6410b5e5",
+        "recurrenceTestRunId": 20506006,
+        "log": "/tmp/p006-exclusions-holder-not-independent-20261002-fire170.log",
+        "intendedAssertionFailed": true,
+        "calibrationPassed": true,
+        "failed": 1,
+        "passed": 1,
+        "filteredSkipped": 3,
+        "exit": 1,
+        "source": "mutation-probe",
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      },
+      {
+        "scenario": "independent-member-positive",
+        "testRunId": 20506011,
+        "counterexampleBindingId": 21461,
+        "recurrenceBindingId": 21462,
+        "logSha256": "ee6acf4c4b987c64b4187c245e7d2ce519e03f2dc1367b7b19c9434efece49ab",
+        "recurrenceTestRunId": 20506006,
+        "log": "/tmp/p006-exclusions-independent-member-positive-20261002-fire170.log",
+        "intendedAssertionFailed": true,
+        "calibrationPassed": true,
+        "failed": 1,
+        "passed": 1,
+        "filteredSkipped": 3,
+        "exit": 1,
+        "source": "mutation-probe",
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      }
+    ],
+    "integrationBindingId": 21456,
+    "integrationTestRunId": 20500782,
+    "selectedReplacement": {
+      "governing": false,
+      "evaluatorBuild": {
+        "sha": "f52b2457ba",
+        "version": "0.0.0"
+      },
+      "verdict": "pass",
+      "wouldBlock": [],
+      "bindingIds": [
+        21456,
+        21457,
+        21458,
+        21459,
+        21460,
+        21461,
+        21462
+      ],
+      "evidenceRefs": [
+        "packages/operator-core/lib/goal-plan-placement-claim.integration.test.ts",
+        "packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts#fire170:drain-and-test-excluded",
+        "packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts#fire170:holder-not-independent",
+        "packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts#fire170:independent-member-positive",
+        "test-run 20506009 mutation-probe fail packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts @920030a3b939",
+        "test-run 20506010 mutation-probe fail packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts @920030a3b939",
+        "test-run 20506011 mutation-probe fail packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts @920030a3b939"
+      ]
+    },
+    "withdrawals": {
+      "staleBindingIds": [
+        19008,
+        19007,
+        19006,
+        19000,
+        18999,
+        18998,
+        18996
+      ],
+      "ok": 7,
+      "reason": "Exact WI/spec@3/evidence identities read as source-stale;19000 also test-stale. Selected current replacement adequacy PASS before binding-only withdrawal. No historical test-run/audit or D003 baseline changes.",
+      "historicalCheckedFieldsUnchanged": true,
+      "historicalTestRunIds": [
+        20403692,
+        20403929,
+        20403715,
+        20403717,
+        20403691
+      ],
+      "historicalCheckedFields": [
+        "id",
+        "status",
+        "source",
+        "worktreeDirty",
+        "commitSha",
+        "startedAt",
+        "finishedAt"
+      ]
+    },
+    "governing": {
+      "ok": true,
+      "governing": true,
+      "evaluatorBuild": {
+        "sha": "f52b2457ba",
+        "version": "0.0.0"
+      },
+      "rows": [
+        {
+          "specId": "WOE-P001-EXCLUSIONS",
+          "specRevision": 3,
+          "verdict": "pass",
+          "wouldBlock": [],
+          "ratings": {
+            "traceability": {
+              "rating": "pass"
+            },
+            "fixture-calibration": {
+              "rating": "not-applicable"
+            },
+            "falsifiability": {
+              "rating": "pass"
+            },
+            "correct-layer": {
+              "rating": "pass"
+            },
+            "oracle-independence": {
+              "rating": "pass"
+            },
+            "execution-integrity": {
+              "rating": "pass"
+            },
+            "freshness": {
+              "rating": "pass"
+            },
+            "plan-class-risk-floor": {
+              "rating": "pass"
+            },
+            "disclosed-gap": {
+              "rating": "not-applicable"
+            }
+          }
+        }
+      ],
+      "count": 1
+    },
+    "finalReadback": {
+      "bounded": {
+        "limit": 100,
+        "truncatedByLimit": false
+      },
+      "evidence": [
+        {
+          "id": 21462,
+          "specRevision": 3,
+          "evidenceRef": "packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts#fire170:independent-member-positive",
+          "currentness": {
+            "overall": "current",
+            "staleReasons": []
+          }
+        },
+        {
+          "id": 21461,
+          "specRevision": 3,
+          "evidenceRef": "test-run 20506011 mutation-probe fail packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts @920030a3b939",
+          "currentness": {
+            "overall": "current",
+            "staleReasons": []
+          }
+        },
+        {
+          "id": 21460,
+          "specRevision": 3,
+          "evidenceRef": "packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts#fire170:holder-not-independent",
+          "currentness": {
+            "overall": "current",
+            "staleReasons": []
+          }
+        },
+        {
+          "id": 21459,
+          "specRevision": 3,
+          "evidenceRef": "test-run 20506010 mutation-probe fail packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts @920030a3b939",
+          "currentness": {
+            "overall": "current",
+            "staleReasons": []
+          }
+        },
+        {
+          "id": 21458,
+          "specRevision": 3,
+          "evidenceRef": "packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts#fire170:drain-and-test-excluded",
+          "currentness": {
+            "overall": "current",
+            "staleReasons": []
+          }
+        },
+        {
+          "id": 21457,
+          "specRevision": 3,
+          "evidenceRef": "test-run 20506009 mutation-probe fail packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts @920030a3b939",
+          "currentness": {
+            "overall": "current",
+            "staleReasons": []
+          }
+        },
+        {
+          "id": 21456,
+          "specRevision": 3,
+          "evidenceRef": "packages/operator-core/lib/goal-plan-placement-claim.integration.test.ts",
+          "currentness": {
+            "overall": "current",
+            "staleReasons": []
+          }
+        }
+      ]
+    },
+    "wholeCensus": {
+      "ok": true,
+      "governing": true,
+      "evaluatorBuild": {
+        "sha": "247b9ed162",
+        "version": "0.0.0"
+      },
+      "count": 28,
+      "rows": [
+        {
+          "specId": "WOE-P001-BLOCKER",
+          "specRevision": 3,
+          "verdict": "pass",
+          "wouldBlock": []
+        },
+        {
+          "specId": "WOE-P001-CLAIM",
+          "specRevision": 3,
+          "verdict": "pass",
+          "wouldBlock": []
+        },
+        {
+          "specId": "WOE-P001-EXCLUSIONS",
+          "specRevision": 3,
+          "verdict": "pass",
+          "wouldBlock": []
+        },
+        {
+          "specId": "WOE-P001-IDEMPOTENCE",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              19022,
+              19023,
+              19024,
+              19025,
+              19026,
+              19027,
+              19028
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P001-ORDER",
+          "specRevision": 4,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              19050,
+              19051,
+              19052,
+              19053,
+              19054
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P001-TERMINAL",
+          "specRevision": 3,
+          "verdict": "pass",
+          "wouldBlock": []
+        },
+        {
+          "specId": "WOE-P002-AUTHORITY",
+          "specRevision": 3,
+          "verdict": "unknown",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17942,
+              17943,
+              17944,
+              17948,
+              17959,
+              17960,
+              17961
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P002-ELECTION",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17547
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P002-HANDOFF",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17548
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P002-RESPAWN",
+          "specRevision": 4,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17549,
+              17578,
+              17957,
+              17958
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P002-STALE-RESPAWN",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17550
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P002-UNKNOWN",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17522,
+              17540
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P003-BREACH",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17382
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P003-MEASURED-ADMISSION",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17377
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P003-NUMERATOR",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17379
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P003-UNMEASURED",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17380
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P003-UNMEASURED-ADMISSION",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17378
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P003-WINDOW",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17381
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P004-CUSTODY",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17386
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P004-REAL-CALL",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17389
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P004-SCHEDULER-DIAGNOSIS",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17388
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P004-SLOW-BOOT",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17390
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P004-WAKE",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17387
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P005-HAND-DISPATCH",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "traceability",
+            "falsifiability",
+            "correct-layer",
+            "oracle-independence",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P005-MATERIALIZATION",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "traceability",
+            "falsifiability",
+            "correct-layer",
+            "oracle-independence",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P005-SOVEREIGNTY",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "traceability",
+            "falsifiability",
+            "correct-layer",
+            "oracle-independence",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P006-REAL-CARD",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "traceability",
+            "falsifiability",
+            "correct-layer",
+            "oracle-independence",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P006-SHIPMENT",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "traceability",
+            "falsifiability",
+            "correct-layer",
+            "oracle-independence",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        }
+      ]
+    },
+    "countsDerivedFromCensusRows": {
+      "pass": 4,
+      "fail": 23,
+      "unknown": 1
+    },
+    "receipts": [
+      {
+        "path": "/tmp/p006-exclusions-bindings-20261002-fire170.json",
+        "sha256": "96df4059d7ef0047c4f4b0841ef878b5e0405baeacedab5b4f0fe7fd90498235",
+        "ok": 7
+      },
+      {
+        "path": "/tmp/p006-exclusions-whole-census-20261002-fire170.json",
+        "sha256": "a58cd1cde8ff77bf662ab7ac297e2010948bdcd61c9947facbe5f1f520f31891",
+        "spillUri": "papercusp://scratch/papercusp-workspace/plans:evaluate-spec-test-adequacy/fece367a-6d3a-4aef-85c2-aa8aa74ac81f/result-door-1790933503790-801fd6a7.spill",
+        "payloadSha256": "4bf5ed2d5f58695c1048e1a33b25bf89ecad1f459512f5f187fdfe838953f85d"
+      }
+    ],
+    "limits": "28-clause current staging census has four PASS,23FAIL,oneUNKNOWN(AUTHORITY freshness). Prior censuses remain dated and distinct. No independent rubric ratification, D013 real-goal card, closure-audit or shipment claim.",
+    "callerFriction": "First seven-row binding call omitted required measurement.schemaVersion=1; whole call refused with no write. Corrected before successful receipt. Source/test/assertions/accepted clauses/BAR unchanged."
+  },
+  "governingCensus": {
+  "observedAt": "2026-10-02T08:49:35Z",
+  "query": "plans:evaluate-spec-test-adequacy slug work-on-everything-stewardship-remediation-2026-08-30 classRef plan-class-feature-ship, without workItemIds/evidenceRefs",
+  "scope": "Dated whole accepted-clause read; not a shipment verdict.",
+  "governing": true,
+  "rows": [
+    {
+      "specId": "WOE-P001-BLOCKER",
+      "verdict": "pass",
+      "wouldBlock": []
+    },
+    {
+      "specId": "WOE-P001-CLAIM",
+      "verdict": "fail",
+      "wouldBlock": [
+        "freshness"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          19029,
+          19030,
+          19031,
+          19032,
+          19033,
+          19034,
+          19035,
+          19036,
+          19037
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P001-EXCLUSIONS",
+      "verdict": "fail",
+      "wouldBlock": [
+        "freshness"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          18996,
+          18998,
+          18999,
+          19000,
+          19006,
+          19007,
+          19008
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P001-IDEMPOTENCE",
+      "verdict": "fail",
+      "wouldBlock": [
+        "freshness"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          19022,
+          19023,
+          19024,
+          19025,
+          19026,
+          19027,
+          19028
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P001-ORDER",
+      "verdict": "fail",
+      "wouldBlock": [
+        "freshness"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          19050,
+          19051,
+          19052,
+          19053,
+          19054
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P001-TERMINAL",
+      "verdict": "pass",
+      "wouldBlock": []
+    },
+    {
+      "specId": "WOE-P002-AUTHORITY",
+      "verdict": "pass",
+      "wouldBlock": []
+    },
+    {
+      "specId": "WOE-P002-ELECTION",
+      "verdict": "fail",
+      "wouldBlock": [
+        "freshness"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17547
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P002-HANDOFF",
+      "verdict": "fail",
+      "wouldBlock": [
+        "freshness"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17548
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P002-RESPAWN",
+      "verdict": "fail",
+      "wouldBlock": [
+        "freshness"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17549,
+          17578,
+          17957,
+          17958
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P002-STALE-RESPAWN",
+      "verdict": "fail",
+      "wouldBlock": [
+        "freshness"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17550
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P002-UNKNOWN",
+      "verdict": "fail",
+      "wouldBlock": [
+        "freshness"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17522,
+          17540
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P003-BREACH",
+      "verdict": "fail",
+      "wouldBlock": [
+        "falsifiability",
+        "correct-layer",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17382
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P003-MEASURED-ADMISSION",
+      "verdict": "fail",
+      "wouldBlock": [
+        "falsifiability",
+        "correct-layer",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17377
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P003-NUMERATOR",
+      "verdict": "fail",
+      "wouldBlock": [
+        "falsifiability",
+        "correct-layer",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17379
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P003-UNMEASURED",
+      "verdict": "fail",
+      "wouldBlock": [
+        "falsifiability",
+        "correct-layer",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17380
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P003-UNMEASURED-ADMISSION",
+      "verdict": "fail",
+      "wouldBlock": [
+        "falsifiability",
+        "correct-layer",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17378
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P003-WINDOW",
+      "verdict": "fail",
+      "wouldBlock": [
+        "falsifiability",
+        "correct-layer",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17381
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P004-CUSTODY",
+      "verdict": "fail",
+      "wouldBlock": [
+        "falsifiability",
+        "correct-layer",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17386
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P004-REAL-CALL",
+      "verdict": "fail",
+      "wouldBlock": [
+        "falsifiability",
+        "correct-layer",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17389
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P004-SCHEDULER-DIAGNOSIS",
+      "verdict": "fail",
+      "wouldBlock": [
+        "falsifiability",
+        "correct-layer",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17388
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P004-SLOW-BOOT",
+      "verdict": "fail",
+      "wouldBlock": [
+        "falsifiability",
+        "correct-layer",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17390
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P004-WAKE",
+      "verdict": "fail",
+      "wouldBlock": [
+        "falsifiability",
+        "correct-layer",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17387
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P005-HAND-DISPATCH",
+      "verdict": "fail",
+      "wouldBlock": [
+        "traceability",
+        "falsifiability",
+        "correct-layer",
+        "oracle-independence",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ]
+    },
+    {
+      "specId": "WOE-P005-MATERIALIZATION",
+      "verdict": "fail",
+      "wouldBlock": [
+        "traceability",
+        "falsifiability",
+        "correct-layer",
+        "oracle-independence",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ]
+    },
+    {
+      "specId": "WOE-P005-SOVEREIGNTY",
+      "verdict": "fail",
+      "wouldBlock": [
+        "traceability",
+        "falsifiability",
+        "correct-layer",
+        "oracle-independence",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ]
+    },
+    {
+      "specId": "WOE-P006-REAL-CARD",
+      "verdict": "fail",
+      "wouldBlock": [
+        "traceability",
+        "falsifiability",
+        "correct-layer",
+        "oracle-independence",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ]
+    },
+    {
+      "specId": "WOE-P006-SHIPMENT",
+      "verdict": "fail",
+      "wouldBlock": [
+        "traceability",
+        "falsifiability",
+        "correct-layer",
+        "oracle-independence",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ]
+    }
+  ]
+},
+  "idempotenceCurrentProof": {
+    "verifiedAt": "2026-10-02T10:01:08.592Z",
+    "nativeSession": "01a0fc00-83c9-73e0-a058-bdd4297dea45",
+    "specId": "WOE-P001-IDEMPOTENCE",
+    "revision": 3,
+    "specFingerprint": "3e76f8a89f19b048e01a321193b1b8d62ae7f9a4226583aeedd43aeaafda56a0",
+    "scope": "Selected current clean proof followed by governing acceptance PASS. Broader P006 acceptance, independent rubric review and final shipment remain open.",
+    "sourceReadback": "Eleven canonical/retained-clone/pin file fingerprints match. Retained clone git status is empty. Compiler and launcher fault adapters leave production source and literal expected oracles unchanged.",
+    "sourceBindings": [
+      {
+        "path": "packages/operator-core/lib/agent-tools/fleet_registry/launch-on-plan.ts",
+        "sha256": "07acffc0201f3c26985c93cc5f70693dc0913a0f8c9be128a758e42e48488dda"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts",
+        "sha256": "8167b535549785f447dd5dd89408ab54c56db15c8924d79e8d641a2953f4c2ca"
+      }
+    ],
+    "positive": {
+      "testRunId": 20506803,
+      "pass": 3,
+      "filteredSkipped": 190,
+      "exit": 0,
+      "source": "local",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "log": "/tmp/p006-idempotence-positive-20261002-current.log",
+      "logSha256": "9ddf540f87761caa99839f61bd8325dbdf910b453a0c47a374fead5c55a59b59",
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts -t 'a lost claim opens 0 members|opens no member and releases its slot when a concurrent transaction wins the initial CAS|resumes exact unopened pre-pinned identities'"
+    },
+    "reusedUnchangedProof": {
+      "existingFleetUnitRun": 20506006,
+      "existingFleetIntegrationRun": 20500782,
+      "reason": "Exact current canonical/clone/pin source and test fingerprints match saved clean runs. No repeat of unchanged positive unit or real-PG execution."
+    },
+    "controls": [
+      {
+        "scenario": "existing-one-fleet",
+        "testRunId": 20506802,
+        "counterexampleBindingId": 21626,
+        "recurrenceBindingId": 21627,
+        "recurrenceTestRunId": 20506006,
+        "failed": 1,
+        "passed": 1,
+        "filteredSkipped": 3,
+        "exit": 1,
+        "logSha256": "1dd500bf191c47cde4461ca45eba97180dceaab0b20ebd909a2d956736959009",
+        "log": "/tmp/p006-idempotence-existing-one-fleet-20261002-current.log",
+        "intendedAssertionFailed": true,
+        "calibrationPassed": true,
+        "source": "mutation-probe",
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      },
+      {
+        "scenario": "initial-cas-loss",
+        "testRunId": 20506806,
+        "counterexampleBindingId": 21628,
+        "recurrenceBindingId": 21629,
+        "recurrenceTestRunId": 20506803,
+        "failed": 1,
+        "passed": 1,
+        "filteredSkipped": 191,
+        "exit": 1,
+        "logSha256": "1eb4d1e2019c6d2c687b579384fb5c9b8b92b7c734afb26ce73bd19893f239c7",
+        "log": "/tmp/p006-idempotence-initial-cas-loss-20261002-current.log",
+        "intendedAssertionFailed": true,
+        "calibrationPassed": true,
+        "source": "mutation-probe",
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      },
+      {
+        "scenario": "partial-exact-retry",
+        "testRunId": 20507307,
+        "counterexampleBindingId": 21630,
+        "recurrenceBindingId": 21631,
+        "recurrenceTestRunId": 20506803,
+        "failed": 1,
+        "passed": 1,
+        "filteredSkipped": 191,
+        "exit": 1,
+        "logSha256": "18ba669f2cd6e5693911aea6b05d03604e45118bf2057b68aab63e4f47bdd09b",
+        "log": "/tmp/p006-idempotence-partial-exact-retry-20261002-current.log",
+        "intendedAssertionFailed": true,
+        "calibrationPassed": true,
+        "source": "mutation-probe",
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      }
+    ],
+    "controlCommand": "Existing-fleet: PAPERCUSP_PLACEMENT_EXCLUSION_CONTROL=existing-one-fleet plus exclusion calibration/exact contract selector. Launcher: PAPERCUSP_FLEET_IDEMPOTENCE_CONTROL=<scenario> plus lost-claim calibration/exact named assertion selector. Both use PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_MUTATION_PROBE=1 npm run test:file in retained clean pin; source/test bytes unchanged.",
+    "integrationBindingId": 21625,
+    "liveCurrentBindingIds": [
+      21625,
+      21626,
+      21627,
+      21628,
+      21629,
+      21630,
+      21631
+    ],
+    "selectedReplacement": {
+      "governing": false,
+      "verdict": "pass",
+      "wouldBlock": [],
+      "receipt": "/tmp/p006-idempotence-selected-20261002-fire174.json"
+    },
+    "withdrawals": {
+      "bindingIds": [
+        19022,
+        19023,
+        19024,
+        19025,
+        19026,
+        19027,
+        19028
+      ],
+      "scope": "Binding-only, after exact work-item/spec/revision/currentness read and selected replacement PASS.",
+      "receipt": "/tmp/p006-idempotence-withdrawals-20261002-fire174.json",
+      "historicalTestRunIds": [
+        20405747,
+        20403692,
+        20405715,
+        20405724,
+        20405745,
+        20405738
+      ],
+      "historicalFieldsUnchanged": true,
+      "fieldsCompared": [
+        "id",
+        "filePath",
+        "status",
+        "source",
+        "worktreeDirty",
+        "isScratchConfig",
+        "commitSha",
+        "startedAt",
+        "finishedAt"
+      ]
+    },
+    "governingReplacement": {
+      "governing": true,
+      "verdict": "pass",
+      "wouldBlock": [],
+      "evaluatorBuild": "a86a3b3fb2",
+      "receipt": "/tmp/p006-idempotence-governing-20261002-fire174.json",
+      "selection": "No workItemIds or evidenceRefs."
+    },
+    "wholeCensus": {
+      "governing": true,
+      "population": 28,
+      "counts": {
+        "pass": 5,
+        "fail": 22,
+        "unknown": 1
+      },
+      "receipt": "/tmp/p006-idempotence-whole-census-20261002-fire174.json",
+      "spillUri": "papercusp://scratch/papercusp-workspace/plans:evaluate-spec-test-adequacy/5b9a6102-65c7-41a6-a809-2330dd65f6d2/result-door-1790935099624-fe952167.spill",
+      "payloadSha256": "b54fc87cb5680d9307c0b5ea0eaa6332d5eaafd926c27fe9f760dc9f87dd0039",
+      "payloadHashVerified": true,
+      "order": {
+        "revision": 4,
+        "verdict": "fail",
+        "wouldBlock": [
+          "freshness"
+        ],
+        "draggingBindingIds": [
+          19050,
+          19051,
+          19052,
+          19053,
+          19054
+        ]
+      },
+      "note": "Latest dated census. Earlier censuses in this artifact remain historical."
+    },
+    "bindingsReceipt": "/tmp/p006-idempotence-bindings-20261002-fire174.json",
+    "limits": "Accepted clauses, BARs, source, tests, D-003 baseline and D-016 historical evidence unchanged. No native/P2P/sharedrestart/LIVE_GATE_OPS work or final shipment claim."
+  },
+  "orderCurrentProof": {
+    "verifiedAt": "2026-10-02T10:22:34.831184Z",
+    "nativeSession": "01a0fc12-d439-71f0-8cab-b6f63d108ebf",
+    "specId": "WOE-P001-ORDER",
+    "revision": 4,
+    "specFingerprint": "121c87fda3d187db94b802a016e0e1434b3cca79977ab9cfbbd5472e06ac5403",
+    "scope": "Current clean unit and real-PG ordering proof; governing acceptance PASS. Broader P006 acceptance and final shipment remain open.",
+    "sourceReadback": "Six exact reader/writer/test canonical, retained-clone and pin fingerprints match; retained clone clean. Production source and expected assertion literals unchanged.",
+    "sourceBindings": [
+      {
+        "path": "packages/operator-core/lib/goal-launch-settings.ts",
+        "sha256": "0138c8c71bfa8ea4445fc13ffde0c29b20b9b653653548f45067a63c2a9cdadc",
+        "canonicalClonePinMatch": true
+      },
+      {
+        "path": "packages/operator-core/lib/typed-properties-db.ts",
+        "sha256": "950b9a44112a713cc1191e9d155ac0c0347e44ef11dbe4d3247b89a7d99dddac",
+        "canonicalClonePinMatch": true
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/plans/derive-index.ts",
+        "sha256": "4583047dbd3b56d25e6f3a8e859a1e65d25cb2477ae130b11dc2bc2c30cc1203",
+        "canonicalClonePinMatch": true
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/plans/plan-index-rows.ts",
+        "sha256": "75c5f9427e14a70a34c74f7254f67b4d5afb7c9149ff2301c4095d32ac801c70",
+        "canonicalClonePinMatch": true
+      },
+      {
+        "path": "packages/operator-core/lib/goal-plan-placement-order-proof.test.ts",
+        "sha256": "2fe828648e22f5988ee32f23babb4913d579d4fa579fb9454105d95a5e137127",
+        "canonicalClonePinMatch": true
+      },
+      {
+        "path": "packages/operator-core/lib/goal-plan-placement-order.integration.test.ts",
+        "sha256": "d9b320d82ff4dc5914e3dad830620dd3d3f4090b0491091578a05a5197649c8a",
+        "canonicalClonePinMatch": true
+      }
+    ],
+    "positive": {
+      "testRunId": 20509703,
+      "pass": 3,
+      "skipped": 0,
+      "exit": 0,
+      "source": "local",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "log": "/tmp/p006-order-positive-20261002-fire175.log",
+      "logSha256": "686f69fb3506162a4049ed243afa5d0c31b48d7ad96ceee04a3ef82267ab5abc",
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/goal-plan-placement-order-proof.test.ts"
+    },
+    "controls": [
+      {
+        "scenario": "blocked-head-next-eligible",
+        "testRunId": 20509705,
+        "counterexampleBindingId": 21636,
+        "recurrenceBindingId": 21633,
+        "recurrenceTestRunId": 20509703,
+        "failed": 1,
+        "passed": 1,
+        "filteredSkipped": 1,
+        "exit": 1,
+        "log": "/tmp/p006-order-blocked-head-next-eligible-20261002-fire175.log",
+        "logSha256": "a053d3983313e1caf80d43cea06312d7ea32207e5dfa2e01671423e22fe884e2",
+        "intendedAssertionFailed": true,
+        "calibrationPassed": true,
+        "source": "mutation-probe",
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      },
+      {
+        "scenario": "eligible-ordered-head",
+        "testRunId": 20509704,
+        "counterexampleBindingId": 21637,
+        "recurrenceBindingId": 21634,
+        "recurrenceTestRunId": 20509703,
+        "failed": 1,
+        "passed": 1,
+        "filteredSkipped": 1,
+        "exit": 1,
+        "log": "/tmp/p006-order-eligible-ordered-head-20261002-fire175.log",
+        "logSha256": "82b69b8e8adde513a4d04e70548bce134dc33d1dd8a8f89a0defd95b7a70acaa",
+        "intendedAssertionFailed": true,
+        "calibrationPassed": true,
+        "source": "mutation-probe",
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      }
+    ],
+    "integration": {
+      "testRunId": 20509710,
+      "pass": 3,
+      "skipped": 0,
+      "exit": 0,
+      "source": "local",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "bindingId": 21635,
+      "log": "/tmp/p006-order-pg-positive-20261002-fire175.log",
+      "logSha256": "7b5a1e658973c4ffd19d15a0739d75c05cd8b5f16211c44ca2d8eee077ee6261",
+      "command": "Maintained startDedicatedNativePg plus PAPERCUSP_TEST_PG_ADMIN_URL override; PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/goal-plan-placement-order.integration.test.ts",
+      "cleanup": {
+        "dataDir": "/tmp/papercusp-native-pg-suFcPW",
+        "port": 38841,
+        "startedAt": "2026-10-02T10:12:44.182Z",
+        "childExit": {
+          "code": 0,
+          "signal": null
+        },
+        "dataDirRemoved": true,
+        "portListening": false,
+        "finishedAt": "2026-10-02T10:13:49.074Z"
+      },
+      "limits": "Persisted goal worklist and plan-index writers cover both required scenarios plus calibration. No causal pair IDs on this corroboration."
+    },
+    "liveCurrentBindingIds": [
+      21633,
+      21634,
+      21635,
+      21636,
+      21637
+    ],
+    "bindingReadbackReceipt": "/tmp/p006-order-final-bindings-20261002-fire175.json",
+    "selectedReplacement": {
+      "governing": false,
+      "verdict": "pass",
+      "wouldBlock": [],
+      "ratings": {
+        "traceability": "pass",
+        "fixture-calibration": "not-applicable",
+        "falsifiability": "pass",
+        "correct-layer": "pass",
+        "oracle-independence": "pass",
+        "execution-integrity": "pass",
+        "freshness": "pass",
+        "plan-class-risk-floor": "pass",
+        "disclosed-gap": "not-applicable"
+      },
+      "receipt": "/tmp/p006-order-selected-full-20261002-fire175.json"
+    },
+    "withdrawals": {
+      "bindingIds": [
+        19050,
+        19051,
+        19052,
+        19053,
+        19054
+      ],
+      "scope": "Binding-only, after exact work-item/spec/revision/currentness read and selected replacement PASS.",
+      "receipt": "/tmp/p006-order-withdrawals-20261002-fire175.json",
+      "historicalTestRunIds": [
+        20405714,
+        20405746,
+        20405776,
+        20405749
+      ],
+      "historicalFieldsUnchanged": true,
+      "fieldsCompared": [
+        "id",
+        "filePath",
+        "status",
+        "source",
+        "worktreeDirty",
+        "isScratchConfig",
+        "commitSha",
+        "startedAt",
+        "finishedAt"
+      ]
+    },
+    "governingReplacement": {
+      "governing": true,
+      "verdict": "pass",
+      "wouldBlock": [],
+      "receipt": "/tmp/p006-order-governing-20261002-fire175.json",
+      "selection": "No workItemIds or evidenceRefs."
+    },
+    "wholeCensus": {
+      "governing": true,
+      "population": 28,
+      "counts": {
+        "pass": 6,
+        "unknown": 1,
+        "fail": 21
+      },
+      "receipt": "/tmp/p006-order-whole-census-20261002-fire175.json",
+      "spillUri": "papercusp://scratch/papercusp-workspace/plans:evaluate-spec-test-adequacy/39fd1cc8-e0db-47d9-9450-4e14647298e0/result-door-1790936395556-59147690.spill",
+      "payloadSha256": "5ac07d47ba03135eda1e046814490ce640f41caf7cfa99320f06e321804e615d",
+      "payloadHashVerified": true,
+      "nextP002": [
+        {
+          "specId": "WOE-P002-AUTHORITY",
+          "revision": 3,
+          "verdict": "unknown",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P002-ELECTION",
+          "revision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P002-HANDOFF",
+          "revision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P002-RESPAWN",
+          "revision": 4,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P002-STALE-RESPAWN",
+          "revision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P002-UNKNOWN",
+          "revision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        }
+      ]
+    },
+    "toolRouting": "Release API automatic fromTestRun rejected clean-clone lineage for three rows with test_run_file_outside_root; two explicit recurrences succeeded. Current staging binder, via attributed mcp-call --port3170, bound only the three refused rows successfully. No duplicate successful rows or incidental DRAIN filing.",
+    "limits": "Accepted clauses, BARs, D-003 immutable baseline, D-013 real-goal route and D-016 history unchanged. No native/P2P/sharedrestart/LIVE_GATE_OPS work or final shipment claim.",
+    "controlCommand": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_MUTATION_PROBE=1 PAPERCUSP_PLACEMENT_ORDER_CONTROL=<scenario> npm run test:file -- packages/operator-core/lib/goal-plan-placement-order-proof.test.ts -t 'order calibration:|repaired portfolio order contract: <scenario>'"
+  },
+  "p002CurrentProof": {
+    "observedAt": "2026-10-02T10:53:49.653650+00:00",
+    "nativeSession": "01a0fc26-307a-7712-bf87-dbb00875e596",
+    "scope": "Current clean P002 integration/PID renewal is verified. P002 governing completion remains OPEN because saved unit provenance is not clean under the current staging evaluator.",
+    "sourceReadback": "All seventeen canonical/retained clone fingerprints match. Production and test bytes unchanged; private bwrap mutation overlay removed.",
+    "fingerprints": {
+      "packages/operator-core/lib/agent-tools/coordination/liveness-oracle-recorded-pid-death.test.ts": "71b5703fae364a72152d0cd9838729b4aff8f127250c1ff309e3290605676194",
+      "packages/operator-core/lib/agent-tools/coordination/liveness-oracle.ts": "0020bfe8bca9cb3f22d9938e774adf061922a2f07f4e4c4ca9e05ad70c4150df",
+      "packages/operator-core/lib/agent-tools/goals/arm-schedule.ts": "6c6b954f16ba5ecc5a382b3d662e3b8ba9565130f54c4e49deb7309a810ead61",
+      "packages/operator-core/lib/agent-tools/goals/set-schedule.ts": "358150d057a949a39d3a9099ea71567bcfee54eb00d3d47d1da73cec40542a5e",
+      "packages/operator-core/lib/agent-tools/goals/write-authority-door-coverage.integration.test.ts": "995953d03664b95343635f61e096c1b721112e7ef758cf75235bc8f681213ed9",
+      "packages/operator-core/lib/agent-tools/goals/write-authority-door-coverage.test.ts": "3ff18abe232e70e6320b3c37d7405ca064c00789ac7e4a2b51ec0f60978b8037",
+      "packages/operator-core/lib/goals/activity.ts": "fab642369c022e167379d0177a8a0086a21109b14f7a086ccb3441bef3b13909",
+      "packages/operator-core/lib/goals/goal-holder-killed-pid.integration.test.ts": "09f38537a6c67ebb096cd3f56f134ca8b7b438f81fa3435256e36fcac9438d59",
+      "packages/operator-core/lib/goals/holder.test.ts": "a8cae7f138fc0596c7b3aeb8d14913f5fb7acbb875a5d62f7d425ad22e736855",
+      "packages/operator-core/lib/goals/holder.ts": "3e427ebc893cf0ec0d06f831e9af15e4b8e9180f27c6b7cbdfe6aa025ac268c2",
+      "packages/operator-core/lib/goals/start-goal-by-id.ts": "edbcbe6622edb19e40c2196b3d13ecb14982859b7d773ee4797f5f1f1575925a",
+      "packages/operator-core/lib/goals/write-authority.ts": "9e7d5a7f4e15bb32acf8770eb636a127aafa151a3f9f133aa7dfa0e7404855ec",
+      "packages/operator-core/lib/harness/routines/materialize-goal-schedule.ts": "3815c8282ce98b5aa26c516b7f18cf57decee155baa9bb1e54efeb30f1f54f68",
+      "packages/operator-core/lib/modes/store.ts": "9fd3fabf7e40e2b0ab3aa9d1e287a799ca57e1ac86c0e3ebedf81e980962c6e4",
+      "packages/operator-core/lib/system-health/goal-holder-respawn.integration.test.ts": "f03dfd35d3846de22fbb0526edbe1cf6c5f1b6b885b873027f52d5ea7f7d9717",
+      "packages/operator-core/lib/system-health/goal-liveness-watchdog.test.ts": "dafeef2d124e4f0fae3a107726134bcc88a1c5a0ba032dece9be76010e3d0f97",
+      "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts": "a8264e382a36ec5e1950b45b4e4a24afef99f4da04212b277cba3611835de44f"
+    },
+    "positiveIntegration": {
+      "testRunIds": {
+        "packages/operator-core/lib/system-health/goal-holder-respawn.integration.test.ts": 20511413,
+        "packages/operator-core/lib/goals/goal-holder-killed-pid.integration.test.ts": 20511412
+      },
+      "passed": 7,
+      "filteredSkipped": 22,
+      "exitCode": 0,
+      "summary": {
+        "startedAt": "2026-10-02T10:36:01.210Z",
+        "clone": "/tmp/papercusp-lint-as-committed-920030a3b9-SBbhnS",
+        "selector": "concurrent GOAL entries atomically elect one successor and persist a bounded handoff|respawns the lost elected lease even when an older historical GOAL row is still live|refuses and neutralizes a stale respawn attach after a concurrent legitimate takeover|an UNRESOLVABLE holder|kill its session|resolves as lost, relaunches|genuinely RUNNING",
+        "dataDir": "/tmp/papercusp-native-pg-4cNtpy",
+        "port": 39937,
+        "pid": 3332625,
+        "exitCode": 0,
+        "dataDirRemoved": true,
+        "portCheck": "ECONNREFUSED",
+        "finishedAt": "2026-10-02T10:37:38.360Z"
+      },
+      "log": "/tmp/p006-fire176-p002-pg.log",
+      "logSha256": "714d0cb9ef8f99824a9d44b67f1fe9b478acf07d9e680ecd9c1001ecfb46e03a"
+    },
+    "pidUnit": {
+      "positiveRun": 20511411,
+      "positivePassed": 2,
+      "filteredSkipped": 7,
+      "positiveExit": 0,
+      "counterexampleRun": 20511426,
+      "intendedFailed": 1,
+      "calibrationPassed": 1,
+      "counterexampleExit": 1,
+      "scenario": "real-pid-loss"
+    },
+    "unknownIntegrationControl": {
+      "baselineRun": 20512924,
+      "relocatedBaselineRun": 20513152,
+      "baselineEachPassed": 2,
+      "counterexampleRun": 20514426,
+      "intendedFailed": 1,
+      "calibrationPassed": 1,
+      "filteredSkippedEach": 21,
+      "mutationWrapperExit": 0,
+      "scenario": "no-spawn-on-unknown",
+      "summary": {
+        "startedAt": "2026-10-02T10:39:58.112Z",
+        "clone": "/tmp/papercusp-lint-as-committed-920030a3b9-SBbhnS",
+        "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+        "mutate": "s/if \\(fold\\.liveness === 'unknown'\\) continue;/if (false) continue;/",
+        "test": "test -f {} && PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/system-health/goal-holder-respawn.integration.test.ts -t \"an UNRESOLVABLE holder|kill its session\"",
+        "relocation": "overlay",
+        "dataDir": "/tmp/papercusp-native-pg-2GhFib",
+        "port": 45307,
+        "pid": 3527047,
+        "exitCode": 0,
+        "dataDirRemoved": true,
+        "portCheck": "ECONNREFUSED",
+        "finishedAt": "2026-10-02T10:44:02.933Z"
+      },
+      "log": "/tmp/p006-fire176-unknown-overlay.log",
+      "logSha256": "8fbfde7c5707628fc433c5d4b47f6bfe11e61a9c9f9da47f24c8e58dc3649d8c"
+    },
+    "currentBindingIds": [
+      21646,
+      21647,
+      21648,
+      21649,
+      21650,
+      21651,
+      21652,
+      21653,
+      21654,
+      21655
+    ],
+    "staleHistoricalBindingIdsRetained": [
+      17958,
+      17957,
+      17578,
+      17550,
+      17549,
+      17548,
+      17547,
+      17540,
+      17522
+    ],
+    "authorityGoverningRead": "Release evaluator freshly read AUTHORITY@3 PASS; not a whole-plan or staging governing verdict.",
+    "replacementSelection": {
+      "route": "Attributed staging :3170 evaluator",
+      "evaluatorBuild": {
+        "sha": "20e1477d62",
+        "version": "0.0.0"
+      },
+      "bindingIdsSupportedByCurrentStagingSchema": true,
+      "governing": false,
+      "rows": [
+        {
+          "specId": "WOE-P002-ELECTION",
+          "verdict": "unknown",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17528,
+              17529,
+              17558,
+              17559
+            ]
+          },
+          "freshnessReason": "test-run-worktree-not-clean in saved unit evidence",
+          "ratings": {
+            "traceability": "pass",
+            "fixture-calibration": "not-applicable",
+            "falsifiability": "pass",
+            "correct-layer": "pass",
+            "oracle-independence": "pass",
+            "execution-integrity": "pass",
+            "freshness": "unknown",
+            "plan-class-risk-floor": "pass",
+            "disclosed-gap": "not-applicable"
+          }
+        },
+        {
+          "specId": "WOE-P002-HANDOFF",
+          "verdict": "unknown",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17525,
+              17526,
+              17527,
+              17560,
+              17561,
+              17562
+            ]
+          },
+          "freshnessReason": "test-run-worktree-not-clean in saved unit evidence",
+          "ratings": {
+            "traceability": "pass",
+            "fixture-calibration": "not-applicable",
+            "falsifiability": "pass",
+            "correct-layer": "pass",
+            "oracle-independence": "pass",
+            "execution-integrity": "pass",
+            "freshness": "unknown",
+            "plan-class-risk-floor": "pass",
+            "disclosed-gap": "not-applicable"
+          }
+        },
+        {
+          "specId": "WOE-P002-RESPAWN",
+          "verdict": "unknown",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17950,
+              17952,
+              17962,
+              17963
+            ]
+          },
+          "freshnessReason": "test-run-worktree-not-clean in saved unit evidence",
+          "ratings": {
+            "traceability": "pass",
+            "fixture-calibration": "not-applicable",
+            "falsifiability": "pass",
+            "correct-layer": "pass",
+            "oracle-independence": "pass",
+            "execution-integrity": "pass",
+            "freshness": "unknown",
+            "plan-class-risk-floor": "pass",
+            "disclosed-gap": "not-applicable"
+          }
+        },
+        {
+          "specId": "WOE-P002-STALE-RESPAWN",
+          "verdict": "unknown",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17954,
+              17956,
+              17964,
+              17965
+            ]
+          },
+          "freshnessReason": "test-run-worktree-not-clean in saved unit evidence",
+          "ratings": {
+            "traceability": "pass",
+            "fixture-calibration": "not-applicable",
+            "falsifiability": "pass",
+            "correct-layer": "pass",
+            "oracle-independence": "pass",
+            "execution-integrity": "pass",
+            "freshness": "unknown",
+            "plan-class-risk-floor": "pass",
+            "disclosed-gap": "not-applicable"
+          }
+        },
+        {
+          "specId": "WOE-P002-UNKNOWN",
+          "verdict": "unknown",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17523,
+              17524,
+              17563,
+              17564
+            ]
+          },
+          "freshnessReason": "test-run-worktree-not-clean in saved unit evidence",
+          "ratings": {
+            "traceability": "pass",
+            "fixture-calibration": "not-applicable",
+            "falsifiability": "pass",
+            "correct-layer": "pass",
+            "oracle-independence": "pass",
+            "execution-integrity": "pass",
+            "freshness": "unknown",
+            "plan-class-risk-floor": "pass",
+            "disclosed-gap": "not-applicable"
+          }
+        }
+      ]
+    },
+    "toolRouting": "canonicalTestPath is reserved for mutation-probe copy-out; seven positive/one counterexample first generic batch reached seven writes and one targeted refusal after removing the unsupported path. Scenario-based counterexample targeted values real-pid-loss/no-spawn-on-unknown then succeeded. Current staging exposes bindingIds, unlike earlier release schema; temporary duplicate reference aliases are unnecessary and withdrawn separately. Read spilled envelopes, not CLI exit0, for partial mutation outcomes.",
+    "limits": "No stale historical binding withdrawal, accepted-spec/BAR/source/test edit, independent rubric ratification, real-goal card, final shipment, native UI, P2P, shared restart, or LIVE_GATE_OPS claim.",
+    "redundantAliasesWithdrawn": [
+      21660,
+      21661,
+      21662,
+      21663,
+      21664
+    ]
+  },
+  "p002CleanUnitRenewalFire179": {
+    "nativeSession": "01a0fc4e-e8ae-7d00-9231-3cf7115a7ce4",
+    "scope": "Five P002 replacement-only clauses pass the strict staging evaluator; after binding-only withdrawal, five governing clauses pass the release evaluator. A strict staging governing rerun remains open because staging entered start-pre before the final read.",
+    "pin": "920030a3b939abd0c2b828fdb1ade3e291fb1071",
+    "cloneRoot": "/tmp/papercusp-lint-as-committed-920030a3b9-SBbhnS",
+    "fingerprintVerification": "All seventeen p002CurrentProof fingerprints match canonical and clean retained clone; no source/test edits.",
+    "holderPositiveRun": 20517982,
+    "holderPositiveResult": "15 PASS; 27 filtered skips; exit 0",
+    "respawnPositiveRun": 20517985,
+    "respawnPositiveResult": "5 PASS; 107 filtered skips; exit 0",
+    "counterexampleRuns": {
+      "one-elected-holder": 20517991,
+      "elected-lost-historical-live": 20517997,
+      "named-bounded-handoff": 20518001,
+      "expired-handoff": 20518004,
+      "third-holder": 20518005,
+      "unresolved-elected-holder": 20518006,
+      "confirmed-loss-control": 20518011,
+      "elected-loss-recovery": 20517990,
+      "live-holder-no-double-spawn": 20517996,
+      "concurrent-takeover-refusal": 20517998,
+      "successful-recovery-control": 20518003
+    },
+    "counterexampleResult": "Each of eleven controls: one intended assertion FAIL and one independent calibration PASS, exit 1. Holder controls have 40 filtered skips; respawn controls have 110. Exact scoped ledger rows are clean, non-scratch, mutation-probe at the retained pin.",
+    "selectorCorrection": "The unquoted holder selector ran calibration only and is excluded from evidence. Corrected selectors include Vitest's literal quotes around scenario names. Predecessor fire178 logs are dated separately; this record uses the current continuation's exact terminal ledger rows.",
+    "proofManifest": "/tmp/p006-fire179-renew-unit-proof.json",
+    "holderMatrix": "/tmp/p006-fire179-holder-matrix.json",
+    "respawnMatrix": "/tmp/p006-fire179-respawn-matrix.json",
+    "newUnitBindingIds": [21666, 21667, 21668, 21669, 21670, 21671, 21672, 21673, 21674, 21675, 21676, 21677, 21678, 21679, 21680, 21681, 21682, 21683, 21684, 21685, 21686, 21687],
+    "selectedProof": {
+      "evaluatorBuild": "d849cabb62",
+      "route": "Attributed staging :3170",
+      "governing": false,
+      "verdicts": {"pass": 5, "fail": 0, "unknown": 0},
+      "receipt": "/tmp/p006-fire179-selected-eval-decoded.json",
+      "selection": "/tmp/p006-fire179-selected-eval-payload.json"
+    },
+    "retiredBindingIds": [17965, 17964, 17963, 17962, 17958, 17957, 17956, 17954, 17952, 17950, 17578, 17564, 17563, 17562, 17561, 17560, 17559, 17558, 17550, 17549, 17548, 17547, 17540, 17529, 17528, 17527, 17526, 17525, 17524, 17523, 17522],
+    "retirementVerification": "31 exact identities re-read before withdrawal; receipt confirms 31 retracted and zero failures. Subsequent read returns exactly the 32 selected replacement bindings. Historical test rows 20350914/20350912/20342003/20336577/20336601 retain identical recorded fields. D003 baseline, D013 real-goal card requirement and D016 historical evidence are preserved.",
+    "retirementReceipt": "/tmp/p006-fire179-retire-p002-decoded.json",
+    "governingProof": {
+      "evaluatorBuild": "f52b2457ba",
+      "route": "Release tool transport; separate from strict staging proof",
+      "governing": true,
+      "verdicts": {"pass": 5, "fail": 0, "unknown": 0},
+      "receipt": "/tmp/p006-fire179-governing-eval-decoded.json"
+    },
+    "limits": "No strict staging governing or whole-plan verdict, source/product repair, rubric ratification, D013 real-card acceptance, shipment, native UI, P2P, shared restart or LIVE_GATE_OPS claim. Staging health read observed activating/start-pre with no listener and no proven root cause. P006/P007/P008 remain open."
+  },
+  "p002GoverningCurrentProofFire180": {
+    "nativeSession": "01a0fc67-3b04-76d2-95a9-07b7918c89c3",
+    "observedAt": "2026-10-02T11:42:35Z",
+    "fingerprintVerification": "All seventeen canonical and retained clean-clone fingerprints still match; retained clone git status is empty.",
+    "route": "Attributed staging :3170; no bindingIds, workItemIds or evidenceRefs selection",
+    "evaluatorBuild": {"sha": "d849cabb62", "version": "0.0.0"},
+    "governing": true,
+    "specIds": ["WOE-P002-ELECTION", "WOE-P002-HANDOFF", "WOE-P002-UNKNOWN", "WOE-P002-RESPAWN", "WOE-P002-STALE-RESPAWN"],
+    "verdicts": {"pass": 5, "fail": 0, "unknown": 0},
+    "wouldBlock": [],
+    "receipt": "/tmp/p006-fire180-p002-governing-decoded.json",
+    "rawEnvelope": "/tmp/p006-fire180-p002-governing-raw.json",
+    "spillSha256": "aae9a3b95830daa1004bac6e338d3e299004f8a5fc68fae54e6f9a8a730326de",
+    "wholePlanCensus": {
+      "governing": true,
+      "acceptedClauses": 28,
+      "verdicts": {"pass": 11, "fail": 16, "unknown": 1},
+      "unknownSpecId": "WOE-P002-AUTHORITY",
+      "unknownCriteria": ["freshness"],
+      "unknownBindingIds": [17942, 17943, 17944, 17948, 17959, 17960, 17961],
+      "receipt": "/tmp/p006-fire180-whole-governing-decoded.json"
+    },
+    "limits": "This completes the five renewed P002 governing checks, not all P002 or P006 acceptance. Authority proof renewal, P003-P006 proof, independent rubric ratification, D013 real-goal card, closure audit and shipment remain open. No source/test, accepted-clause, BAR, baseline or historical-ledger change."
+  },
+  "p002AuthorityRenewalFire180": {
+    "nativeSession": "01a0fc67-3b04-76d2-95a9-07b7918c89c3",
+    "pin": "920030a3b939abd0c2b828fdb1ade3e291fb1071",
+    "unitPositiveRun": 20525737,
+    "unitPositiveResult": "4 PASS, 5 filtered skips, exit 0",
+    "integrationPositiveRun": 20525831,
+    "integrationPositiveResult": "3 PASS, 0 skips, exit 0",
+    "counterexampleRuns": {"elected-write": 20525832, "superseded-set-schedule": 20525873, "superseded-arm-schedule": 20525916},
+    "counterexampleResult": "Each control: one intended assertion FAIL and one independent calibration PASS, 7 filtered skips, exit 1. Exact ledger rows are clean, non-scratch mutation-probe at the retained pin.",
+    "privatePgCleanup": {"dataDir": "/tmp/papercusp-native-pg-6en8XQ", "port": 43563, "dataDirRemoved": true, "portCheck": "ECONNREFUSED"},
+    "unitManifest": "/tmp/p006-fire180-authority-unit-matrix.json",
+    "integrationManifest": "/tmp/p006-fire180-authority-pg-summary.json",
+    "currentBindingIds": [21717, 21718, 21719, 21720, 21721, 21722, 21723],
+    "selectedProof": {
+      "route": "Attributed staging :3170",
+      "governing": false,
+      "verdicts": {"pass": 1, "fail": 0, "unknown": 0},
+      "receipt": "/tmp/p006-fire180-authority-selected-corrected.json"
+    },
+    "pairingCorrection": "Aggregate unit binding21716 stored three causalPairIds. The canonical one-to-one contract requires one recurrence binding per pair. Exact server-derived testRun metadata was reused to bind distinct scenario references21721-23; no test or ledger rewrite.",
+    "bindingsAwaitingConditionalWithdrawal": [21716, 17942, 17943, 17944, 17948, 17959, 17960, 17961],
+    "limits": "Selected replacement proof passes, but no authority governing verdict is claimed. All eight superseded binding references remain active pending exact identity readback and conditional withdrawal. Historical runs and D003/D013/D016 are preserved. P006, P007 and P008 remain open."
+  },
+  "p002AuthorityGoverningFire183": {
+    "nativeSession": "01a0fc7a-5124-77d0-8504-465c9c37d7e5",
+    "continuity": "The delayed Fire183 wake carried Fire179; authoritative loop checkpoint and canonical evidence instead contained later Fire180 proof. Live claims and all24 work-item check claims were refreshed before acting.",
+    "fingerprintVerification": "All seventeen canonical source/test hashes match p002CurrentProof and the retained clean920030a3 checkout. Its working tree remains clean. No unchanged test rerun.",
+    "selectedProof": {
+      "route": "Attributed staging :3170",
+      "evaluatorBuild": {"sha": "61ea9e254d", "version": "0.0.0"},
+      "governing": false,
+      "bindingIds": [21717, 21718, 21719, 21720, 21721, 21722, 21723],
+      "verdicts": {"pass": 1, "fail": 0, "unknown": 0},
+      "receipt": "/tmp/p006-fire183-authority-selected-decoded.json"
+    },
+    "withdrawal": {
+      "bindingIds": [21716, 17942, 17943, 17944, 17948, 17959, 17960, 17961],
+      "counts": {"ok": 8, "failed": 0},
+      "identityGuard": "Exact WI-1074216/AUTHORITY@3 identities re-read. Seven historical references retain their prior evidenceRef/testRunId identities and test-run-worktree-not-clean status; aggregate21716 is replaced by one-to-one scenarios21721-23. Fresh selected replacement adequacy passed before withdrawal.",
+      "receipt": "/tmp/p006-fire183-authority-retract-decoded.json",
+      "readback": "Default evidence read returns exactly21717-21723, all server-measured CURRENT. No obsolete binding remains active."
+    },
+    "historicalLedger": {
+      "testRunIds": [20350341, 20350367, 20350355, 20350357, 20350358],
+      "verified": "Exact id/status/commitSha/worktreeDirty/isScratchConfig/source/root/filePath/startedAt/finishedAt fields and returned ledger counts are unchanged before versus after withdrawal. Historical rows and D003 baseline/D013 real-goal requirement/D016 audit are retained.",
+      "receipt": "/tmp/p006-fire183-authority-historical-decoded.json"
+    },
+    "governingProof": {
+      "route": "Attributed staging :3170; no bindingIds, workItemIds or evidenceRefs selection",
+      "evaluatorBuild": {"sha": "61ea9e254d", "version": "0.0.0"},
+      "governing": true,
+      "specId": "WOE-P002-AUTHORITY",
+      "specRevision": 3,
+      "verdicts": {"pass": 1, "fail": 0, "unknown": 0},
+      "wouldBlock": [],
+      "receipt": "/tmp/p006-fire183-authority-governing-decoded.json"
+    },
+    "wholePlanCensus": {
+      "route": "Attributed staging :3170; no clause, binding, work-item or evidence-ref selection",
+      "evaluatorBuild": {"sha": "61ea9e254d", "version": "0.0.0"},
+      "governing": true,
+      "acceptedClauses": 28,
+      "verdicts": {"pass": 12, "fail": 16, "unknown": 0},
+      "passedCohorts": ["P001:6", "P002:6"],
+      "failedCohorts": ["P003:6", "P004:5", "P005:3", "P006:2"],
+      "receipt": "/tmp/p006-fire183-whole-governing-decoded.json"
+    },
+    "limits": "P006 remains partial. P003-P006 proof, independent rubric review/ratification, D013 real-goal card acceptance, closure audit and final shipment remain open. P007 root/product/R7 and P008 historical cause/adoption/R8 are separate open acceptance. No product source/test, accepted-clause, BAR, immutable baseline, native, P2P, shared restart or LIVE_GATE_OPS change. Fire180 records above remain dated history."
+  },
+  "p003MeasuredAdmissionFire185": {
+    "recordedAt": "2026-10-02T12:42:03.525804+00:00",
+    "scope": "P003 MEASURED-ADMISSION source guards and clean test proof advanced; replacement-only evaluation FAIL execution-integrity. No P003 binding withdrawal or governing PASS. P006/rubric/real-goal/audit/shipment and separate P007/P008 remain open.",
+    "sourceChanges": [
+      "packages/operator-core/lib/goals/spend-rollup.integration.test.ts"
+    ],
+    "reused": "Extended the existing real-PG rollup fixture and composed its writer/reader with resolveGoalLaunchForGoal; no production comparator change or new test framework.",
+    "fingerprints": {
+      "packages/operator-core/lib/goal-launch-settings.ts": "0138c8c71bfa8ea4445fc13ffde0c29b20b9b653653548f45067a63c2a9cdadc",
+      "packages/operator-core/lib/goal-launch-settings.test.ts": "d5a4bee992dc7432f4571f4299fa77e36f783d6d20402102e02d65afa0621b75",
+      "packages/operator-core/lib/goals/spend-rollup.ts": "a042501109d1c1111d6fcc6824c8e667357255f93ea8f56650e923d5b91131f1",
+      "packages/operator-core/lib/goals/spend-rollup.integration.test.ts": "5eb8e87ea661d6d54f62b5acb3e654c1a5e46a77e02c993390cfc449993eb0f8"
+    },
+    "unit": {
+      "testRunId": 20527058,
+      "pass": 2,
+      "filteredSkip": 165,
+      "exit": 0,
+      "pin": "920030a3b939abd0c2b828fdb1ade3e291fb1071",
+      "cloneRoot": "/tmp/papercusp-lint-as-committed-920030a3b9-SBbhnS",
+      "worktreeDirty": false,
+      "isScratchConfig": false
+    },
+    "unitMutations": [
+      {
+        "testRunId": 20527520,
+        "operator": ">",
+        "intendedFailure": "at-ceiling-refused",
+        "fail": 1,
+        "calibrationPass": 1,
+        "filteredSkip": 165
+      },
+      {
+        "testRunId": 20527568,
+        "operator": "<=",
+        "intendedFailure": "under-ceiling-admitted",
+        "fail": 1,
+        "calibrationPass": 1,
+        "filteredSkip": 165
+      }
+    ],
+    "integration": {
+      "cases": "snapshot and launch-time measurement each refuse 2000/2000 cents and admit 1999/2000 cents",
+      "focusedDirtyRun": 20527580,
+      "focusedPass": 4,
+      "focusedFilteredSkip": 38,
+      "fullDirtyRun": 20527602,
+      "cleanRun": 20527628,
+      "fullPass": 42,
+      "fullSkip": 0,
+      "exit": 0,
+      "pin": "c11fb0c0b0b5da79e3ad45616db0f4aab6966679",
+      "cloneRoot": "/tmp/papercusp-lint-as-committed-c11fb0c0b0-F8pwKa",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "cleanPgCleanup": {
+        "dataDir": "/tmp/papercusp-native-pg-IMjNJt",
+        "port": 35613,
+        "ref": "c11fb0c0b0b5da79e3ad45616db0f4aab6966679",
+        "testExit": 0,
+        "dataDirRemoved": true,
+        "portClosed": true
+      }
+    },
+    "integrationMutations": {
+      "boundaryRun": 20527660,
+      "underRun": 20527669,
+      "each": "2 intended FAIL and 2 opposite-scenario calibration PASS; 38 filtered skips; maintained private overlay caught both faults",
+      "cleanup": {
+        "dataDir": "/tmp/papercusp-native-pg-njhiTp",
+        "port": 37121,
+        "cloneRoot": "/tmp/papercusp-lint-as-committed-c11fb0c0b0-F8pwKa",
+        "controls": [
+          {
+            "name": "boundary",
+            "operator": ">",
+            "mutation": "s/(budget\\.spentCents|live\\.rollup\\.spentCents) >= budget\\.budgetCents/$1 > budget.budgetCents/",
+            "exit": 0,
+            "log": "/tmp/p006-fire185-measured-admission-integration-boundary-control.log"
+          },
+          {
+            "name": "under",
+            "operator": "<=",
+            "mutation": "s/(budget\\.spentCents|live\\.rollup\\.spentCents) >= budget\\.budgetCents/$1 <= budget.budgetCents/",
+            "exit": 0,
+            "log": "/tmp/p006-fire185-measured-admission-integration-under-control.log"
+          }
+        ],
+        "dataDirRemoved": true,
+        "portClosed": true
+      }
+    },
+    "bindings": {
+      "initialPositiveIds": [
+        21728,
+        21729
+      ],
+      "mutationIds": [
+        21749,
+        21750,
+        21751,
+        21752
+      ],
+      "underPositiveIds": [
+        21753,
+        21754
+      ],
+      "selectedIds": [
+        21728,
+        21729,
+        21749,
+        21750,
+        21751,
+        21752,
+        21753,
+        21754
+      ],
+      "selectedActualEvidenceRefs": [
+        "packages/operator-core/lib/goal-launch-settings.test.ts",
+        "packages/operator-core/lib/goals/spend-rollup.integration.test.ts",
+        "test-run 20527520 mutation-probe mutant fail packages/operator-core/lib/goal-launch-settings.test.ts @920030a3b939",
+        "test-run 20527568 mutation-probe mutant fail packages/operator-core/lib/goal-launch-settings.test.ts @920030a3b939",
+        "test-run 20527660 mutation-probe mutant fail packages/operator-core/lib/goals/spend-rollup.integration.test.ts @c11fb0c0b0b5",
+        "test-run 20527669 mutation-probe mutant fail packages/operator-core/lib/goals/spend-rollup.integration.test.ts @c11fb0c0b0b5"
+      ],
+      "verdict": "FAIL execution-integrity",
+      "evaluatorBuild": {
+        "sha": "c11fb0c0b0",
+        "version": "0.0.0"
+      },
+      "exactCausalPairFailure": {
+        "at-ceiling-refused": {
+          "negative": 2,
+          "recurrence": 0
+        },
+        "under-ceiling-admitted": {
+          "negative": 2,
+          "recurrence": 2
+        }
+      },
+      "expected": "Exactly one negative and one recurrence binding per required scenario. Ordinary same-file positive references collapse to the latest scenario; unique scenario-specific repaired refs are needed. Do not rerun tests to repair this metadata.",
+      "old17377": "Preserved; no identity read/withdrawal/governing evaluation this turn."
+    },
+    "toolRouteNotes": [
+      "Default release host refused clone fromTestRun with test_run_file_outside_root; current staging3170 accepted both clean positives.",
+      "Mutation target must be the required scenario id here; lowercase clause-id targets were refused before binding. Corrected four bindings succeeded.",
+      "Request-only host refused git-sync; sanctioned background CLI found a held scheduled sync. Scheduled commit subsequently matched the changed test bytes. These DRAIN frictions remain on the current item."
+    ],
+    "logs": {
+      "/tmp/p006-fire185-measured-admission-unit.log": "aca1ec233e56154b66c384083248f53167d9d477ba9ba4f0772c0d5892418dba",
+      "/tmp/p006-fire185-measured-admission-boundary-control.log": "be6dec084ea0b6ad33c2ac3b60dc5434b0d2967a3c1f838a6690f95027079202",
+      "/tmp/p006-fire185-measured-admission-under-control.log": "65ea63710e3716701061e737b592b3a33aa6f55a8ddca457b8cb6952d1bd0871",
+      "/tmp/p006-fire185-measured-admission-pg.log": "418e4295ab6b2509663880665cd562be454b3eff6db380e48bd666d286c0001f",
+      "/tmp/p006-fire185-measured-admission-pg-full.log": "b343525a76324b392e2d6aac31939f9ad9c7357d65a37e7f5073da2b93bbba53",
+      "/tmp/p006-fire185-measured-admission-clean-pg.log": "e8da119f48bbb344737b89c66082583946b070181f8048e48211f5df908a0d85",
+      "/tmp/p006-fire185-measured-admission-integration-boundary-control.log": "0a4eda18a4e2544ca90cba84c80f3cddc12c57ab371ada3121e7dfd6c87a9c15",
+      "/tmp/p006-fire185-measured-admission-integration-under-control.log": "a0747cd3180f29d778bf862f380d17354ed94c06d36a20947cf7f8f8291892fb"
+    },
+    "receipts": [
+      "/tmp/p006-fire185-admission-initial-bind-decoded.json",
+      "/tmp/p006-fire185-admission-mutation-bind.json",
+      "/tmp/p006-fire185-admission-under-positive-bind.json",
+      "/tmp/p006-fire185-admission-selected-full-decoded.json"
+    ],
+    "next": "Read exact current evidence/server-derived testRun metadata. Give repaired scenarios unique refs; select one successful negative and one repaired recurrence per scenario while retaining unit+integration layers. Reuse current clean receipts and compare hashes. Only selected PASS permits exact17377 identity read and conditional withdrawal, then governing(no bindingIds/workItemIds/evidenceRefs). Reconcile D014 through the leader; preserve D003/D013/D016 and all carried checks."
+  },
+  "p003MeasuredAdmissionRepairFire186": {
+    "recordedAt": "2026-10-02T12:56:29Z",
+    "scope": "WOE-P003-MEASURED-ADMISSION@3 governing PASS on the current staging evaluator. This is one clause of P006 verification; P006, rubric ratification, real-goal acceptance, audit and shipment remain open.",
+    "repair": "Reused exact server-derived testRun metadata from binding21728/run20527058 and its server-measured file basis. Added scenario-specific repaired reference21756; no source or test change and no test rerun. Selected exactly one negative and one repaired recurrence per scenario, retaining unit and integration layers.",
+    "newBinding": {
+      "id": 21756,
+      "evidenceRef": "packages/operator-core/lib/goal-launch-settings.test.ts#at-ceiling-refused:repaired:test-run-20527058",
+      "testRunId": 20527058,
+      "testRunStatus": "pass",
+      "testRunCommit": "920030a3b939abd0c2b828fdb1ade3e291fb1071",
+      "worktreeDirty": false,
+      "metadataSourceBinding": 21728
+    },
+    "causalPairs": {
+      "at-ceiling-refused": { "negativeBinding": 21749, "negativeRun": 20527520, "repairedBinding": 21756, "repairedRun": 20527058 },
+      "under-ceiling-admitted": { "negativeBinding": 21750, "negativeRun": 20527568, "repairedBinding": 21754, "repairedRun": 20527628 }
+    },
+    "selected": {
+      "bindingIds": [21756, 21749, 21750, 21754],
+      "verdict": "PASS",
+      "allApplicableRatings": "pass",
+      "requiredProofFloor": "l3",
+      "evaluatorBuild": { "sha": "c11fb0c0b0", "version": "0.0.0" },
+      "limits": "Selected-cohort result is diagnostic; the separate unfiltered governing evaluation below establishes clause acceptance."
+    },
+    "withdrawal": {
+      "prerequisites": "Fresh exact identities all belong to WI1074216/MEASURED-ADMISSION@3; selected replacement PASS and all four replacements server-measured CURRENT before withdrawal. D003 immutable baseline and D013/D014/D016 restrictions were read and preserved.",
+      "bindingIds": [17377, 21728, 21729, 21751, 21752, 21753],
+      "receipt": { "ok": 6, "failed": 0 },
+      "old17377": { "testRunId": 20323895, "status": "pass", "worktreeDirty": true, "sourceAndTest": "stale", "commitSha": "80386f03710821e65a0b124efb1200ee9889d5d6" },
+      "reason": "17377 is obsolete dirty historical proof. The other five rows duplicated scenarios or file references. Current replacement independently satisfies the unchanged contract before binding-only withdrawal; immutable test runs and evidence history remain retained.",
+      "sourceGuard": "spec-evidence-store.ts retractSpecEvidence updates only retracted_at/retracted_by/retraction_reason on the exact evidence row; no test-run write or historical evidence rewrite.",
+      "postReadback": "Exactly21756/21754/21750/21749 active, each server-measured CURRENT; bounded.truncatedByLimit=false."
+    },
+    "governing": {
+      "bindingIdsFilter": "omitted",
+      "workItemIdsFilter": "omitted",
+      "evidenceRefsFilter": "omitted",
+      "governing": true,
+      "specId": "WOE-P003-MEASURED-ADMISSION",
+      "specRevision": 3,
+      "specFingerprint": "88d121c3c71be424972e8424aeaaf8fb37ab74eca80bd0a1e9a6cac727fd9617",
+      "verdict": "PASS",
+      "wouldBlock": [],
+      "evaluatorBuild": { "sha": "c11fb0c0b0", "version": "0.0.0" }
+    },
+    "historicalLedgerReadback": {
+      "exactRows": [20323895, 20527058, 20527520, 20527568, 20527628, 20527660, 20527669],
+      "count": 7,
+      "truncatedByLimit": false,
+      "observation": "Historical20323895 remains PASS/dirty=true at80386f037108. Clean positives20527058/20527628 remain PASS/dirty=false/scratch=false. Four calibrated mutation rows remain FAIL/dirty=false/scratch=false. Their caught-control interpretation remains the dated Fire185 proof, not a new execution."
+    },
+    "acceptedClauseCensus": {
+      "population": 28,
+      "pass": 13,
+      "fail": 15,
+      "unknown": 0,
+      "governing": true,
+      "proof": "/tmp/p006-fire186-whole-governing-decoded.json",
+      "passSpecIds": ["WOE-P001-BLOCKER", "WOE-P001-CLAIM", "WOE-P001-EXCLUSIONS", "WOE-P001-IDEMPOTENCE", "WOE-P001-ORDER", "WOE-P001-TERMINAL", "WOE-P002-AUTHORITY", "WOE-P002-ELECTION", "WOE-P002-HANDOFF", "WOE-P002-RESPAWN", "WOE-P002-STALE-RESPAWN", "WOE-P002-UNKNOWN", "WOE-P003-MEASURED-ADMISSION"],
+      "failSpecIds": ["WOE-P003-BREACH", "WOE-P003-NUMERATOR", "WOE-P003-UNMEASURED", "WOE-P003-UNMEASURED-ADMISSION", "WOE-P003-WINDOW", "WOE-P004-CUSTODY", "WOE-P004-REAL-CALL", "WOE-P004-SCHEDULER-DIAGNOSIS", "WOE-P004-SLOW-BOOT", "WOE-P004-WAKE", "WOE-P005-HAND-DISPATCH", "WOE-P005-MATERIALIZATION", "WOE-P005-SOVEREIGNTY", "WOE-P006-REAL-CARD", "WOE-P006-SHIPMENT"],
+      "limits": "This is the explicit accepted 28-clause population from Fire183, freshly evaluated without evidence cohort filters. It is not a rubric ratification, successful real-goal card, final plan acceptance or shipment."
+    },
+    "testReruns": 0,
+    "protected": "Fire185 failing selected receipt remains historical. D003 baseline, D013 completed FAIL real-goal card, D014 bootstrap boundary, D016 completed18368 disposition,24 work-item checks and12 loop checks remain separate and preserved. No native/P2P/restart/LIVE_GATE_OPS action.",
+    "receipts": ["/tmp/p006-fire186-at-repaired-bind-decoded.json", "/tmp/p006-fire186-admission-selected-decoded.json", "/tmp/p006-fire186-admission-current-replacement-decoded.json", "/tmp/p006-fire186-admission-retire-decoded.json", "/tmp/p006-fire186-admission-live-readback-decoded.json", "/tmp/p006-fire186-admission-governing-decoded.json", "/tmp/p006-fire186-whole-governing-decoded.json"],
+    "numeratorPreparation": {
+      "currentSpecRead": "plans:get-specs returned active NUMERATOR revision3, hash2f7cd66811ac2c062a655e8905b8a0ef15ab2b5ec89d389e45b67058f056c71d, required unit+integration layers and one-to-one causal pairing.",
+      "requiredScenarios": ["attributed-authoritative", "diagnostic-excluded", "potless-attributed"],
+      "existingIntegrationProof": "Clean full42 run20527628 contains maintained assertions at spend-rollup.integration.test.ts306,336,587: attributed105 versus diagnostic205; pot-less attributed140; diagnostic125 with authoritative null/no-lineage-samples. Source/test hashes match Fire185. Reuse this unchanged receipt after exact binding/metadata checks.",
+      "maintainedUnitSurface": "spend-rollup-scope-labels.test.ts exists and pins source authority, no-lineage handling, population labels and non-additivity. There is no spend-rollup.test.ts. Do not treat a failed lookup of that nonexistent path as missing project tests or create a parallel harness.",
+      "nextProofWork": "Read the existing unit ledger and calibrated numerator mutation receipts. If named semantic unit scenarios are not already adequate, extend the maintained unit surface with isolated computeGoalSpendRollup cases; keep real-PG query semantics in the existing integration suite. Need one successful negative/repaired pair per three scenarios before withdrawal or governing acceptance.",
+      "leaderBoundaryRequest": "coord-send-84eab6aa087a4952a3bf8e94af554d599e15e5d9024bcfa014b96753e9f64850 resolves to current leader su-25bc0450-2829-42b9-a2dd-1431c99e4ba8; woken1 is queued delivery, pickup/decision unverified. Previous D014 question went to the preceding leader. Independent NUMERATOR work continues."
+    },
+    "next": "Prepare NUMERATOR@3 from exact current scenarios, source hashes and existing clean spend-rollup receipts; reuse unchanged proof when its layer/scenario/lineage fits before considering another test. Preserve15 remaining FAILs and unresolved D014 contract boundary."
+  },
+  "p003WindowPreparationFire191": {
+    "recordedAt": "2026-10-02T13:44:05.942Z",
+    "specId": "WOE-P003-WINDOW",
+    "specRevision": 3,
+    "specFingerprint": "6c5fd6a232a99abf42be5eeb8b3060d2260e1caea61269985bc76f0b9a30b281",
+    "requiredScenarios": ["declared-window", "display-admission-breach-parity", "lifetime-fallback", "pre-creation-excluded"],
+    "scope": "Current working-tree semantic verification; no new governing adequacy, causal-pair binding, accepted-clause census or shipment claim.",
+    "reuse": "Extended the existing scope-label unit suite's ledger fixture to observe actual numeric query parameters. Extended the maintained real-Postgres window suite to compose launch admission, snapshot and breach enforcement against the same ledger. Production source and accepted clauses remain unchanged.",
+    "unit": {
+      "testRunId": 20533495,
+      "commitSha": "3f9f41aa228b7a0e6110e3f1218a2c094381ae3e",
+      "worktreeDirty": true,
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/goals/spend-rollup-scope-labels.test.ts",
+      "result": "23 PASS, 0 skipped, exit 0; working-tree development evidence only",
+      "addedCases": ["One declared 3600-second window sends the clock-derived lower bound to all three actual SQL queries", "Omitted window sends zero to all lifetime-clamped queries", "Explicit null window sends zero to all lifetime-clamped queries"],
+      "log": "/tmp/p006-fire191-window-unit.log",
+      "logSha256": "55ed5ecf481af01f51df1b420f4c63a0016a6d9ff420d090fa263ead4dfa5592"
+    },
+    "integration": {
+      "testRunId": 20533510,
+      "commitSha": "3f9f41aa228b7a0e6110e3f1218a2c094381ae3e",
+      "worktreeDirty": true,
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/goals/spend-rollup.integration.test.ts",
+      "result": "44 PASS, 0 skipped, exit 0; private native Postgres, working-tree development evidence only",
+      "addedCases": ["50 in-window cents admit before and after the 50-cent display snapshot, and remain active despite 500 older cents", "200 in-window cents refuse launch, display 200 cents, and pause with the same 3600-second denominator despite 500 older cents"],
+      "dataDir": "/tmp/papercusp-native-pg-beLOKg",
+      "port": 42143,
+      "dataDirRemoved": true,
+      "portClosed": true,
+      "log": "/tmp/p006-fire191-window-pg.log",
+      "logSha256": "f22e30881a201af171f618f89d70ebe5711cb99ec3ebba8af7b8107a197737ee",
+      "summary": "/tmp/p006-fire191-window-pg-summary.json",
+      "summarySha256": "38ae1103f31ce06e39fb3d1f565722731be50cffd0cd6e2b4c1c4b31dd04114a"
+    },
+    "fingerprints": {
+      "packages/operator-core/lib/goals/spend-rollup.ts": "a042501109d1c1111d6fcc6824c8e667357255f93ea8f56650e923d5b91131f1",
+      "packages/operator-core/lib/goals/spend-rollup-scope-labels.test.ts": "e71015fe95056437d3508934b82c13c8c35276af5dc3bd21360e8b383ff526fe",
+      "packages/operator-core/lib/goals/spend-rollup.integration.test.ts": "b01dd12cb540349894c2a61b61d262b303f08faa0953c8aab8f892a5b032f8ad",
+      "packages/operator-core/lib/goal-launch-settings.ts": "0138c8c71bfa8ea4445fc13ffde0c29b20b9b653653548f45067a63c2a9cdadc",
+      "libs/papercusp/libs/db/src/goal-pots.ts": "d71454955050551f8940750cffcdd39f8403c5bbf0b09f8abbc3abe1ab1a6023"
+    },
+    "next": "Verify clean committed test provenance; prove the four one-to-one scenario pairs using maintained controls. Both test-file changes require renewal of earlier P003 test bindings before any new current governing PASS claim. Preserve old binding17381 until selected replacement PASS and exact identity read; retain historical ledgers, D003 baseline, D013 real-goal FAIL and D016 history. No unchanged source-test rerun solely to reconstruct old receipts."
+  },
+  "p003WindowSelectedFire192": {
+    "recordedAt": "2026-10-02T14:15:00Z",
+    "scope": "Eight selected WINDOW@3 bindings PASS and server-measured CURRENT on staging a27db452a1. Governing WINDOW, prior P003 renewal, whole-plan census and final acceptance remain open.",
+    "specId": "WOE-P003-WINDOW",
+    "specRevision": 3,
+    "specFingerprint": "6c5fd6a232a99abf42be5eeb8b3060d2260e1caea61269985bc76f0b9a30b281",
+    "reuse": "Fire191 maintained unit and real-PG extensions were already present. Fire192 verified their committed f95526ac2645dec341571e13fdb0d4b00888e214 bytes using lint:as-committed and the existing dedicated native-PG helper. No production source change, parallel harness, shared restart or gate action.",
+    "cleanUnit": {
+      "testRunId": 20534705,
+      "result": "23 PASS, 0 skipped, exit 0, worktreeDirty=false, isScratchConfig=false",
+      "log": "/tmp/p006-fire192-window-clean-unit.log",
+      "cloneRoot": "/tmp/papercusp-lint-as-committed-f95526ac26-vOPePc"
+    },
+    "cleanIntegration": {
+      "testRunId": 20534918,
+      "result": "44 PASS, 0 skipped, exit 0, worktreeDirty=false, isScratchConfig=false",
+      "log": "/tmp/p006-fire192-window-clean-pg.log",
+      "summary": "/tmp/p006-fire192-window-clean-pg-summary.json",
+      "dataDir": "/tmp/papercusp-native-pg-wVqaLq",
+      "port": 43403,
+      "dataDirRemoved": true,
+      "portClosed": true
+    },
+    "causalPairs": {
+      "declared-window": { "negativeRun": 20536593, "negativeBinding": 21852, "repairedRun": 20534705, "repairedBinding": 21851, "observation": "Replacing the clock-derived lower bound with zero makes the observed three SQL parameter lists differ from 6400000. Independent CALIBRATION passes." },
+      "lifetime-fallback": { "negativeRun": 20535955, "negativeBinding": 21853, "repairedRun": 20534705, "repairedBinding": 21857, "observation": "Defaulting a null window to 3600 makes the null-window assertion fail. Independent CALIBRATION passes." },
+      "display-admission-breach-parity": { "negativeRun": 20536599, "negativeBinding": 21854, "repairedRun": 20534918, "repairedBinding": 21856, "observation": "Forcing lifetime measurement at launch refuses the 50-cent in-window goal because of 500 older cents. Independent partition calibration passes; clean full run also covers the 200-cent ceiling and pause." },
+      "pre-creation-excluded": { "negativeRun": 20537877, "negativeBinding": 21855, "repairedRun": 20534918, "repairedBinding": 21858, "observation": "Removing only the lineage creation-time clamp bills 10105 instead of 105 cents. Independent partition calibration passes." }
+    },
+    "controls": {
+      "unit": "Each baseline and unmutated copy: 2 PASS, 21 filtered skips. Each mutant: 1 intended FAIL, 1 calibration PASS, 21 filtered skips. Overlay caught; source byte-identical.",
+      "integration": "Each baseline and unmutated copy: 2 PASS, 42 filtered skips. Each mutant: 1 intended FAIL, 1 calibration PASS, 42 filtered skips. Overlay caught; source byte-identical; private cluster cleanup verified.",
+      "logs": ["/tmp/p006-fire192-window-declared-r2-control.log", "/tmp/p006-fire192-window-lifetime-r2-control.log", "/tmp/p006-fire192-window-parity-control.log", "/tmp/p006-fire192-window-precreation-r2-control.log"],
+      "summaries": ["/tmp/p006-fire192-window-parity-summary.json", "/tmp/p006-fire192-window-precreation-r2-summary.json"]
+    },
+    "retainedHarnessLimits": {
+      "firstDeclared": "Caught with 1 selected assertion but no calibration due lowercase filter; retained and not bound. Corrected calibrated run is the accepted negative.",
+      "firstLifetime": "Case-sensitive and overescaped filter selected zero tests; baseline exit 2, no mutant verdict. Retained, not bound.",
+      "firstPreCreation": "Multiline Perl -pe mutation changed nothing and was refused before testing; private HQ7uti/33819 removed and closed. Corrected BEGIN undef $/ expression was preflighted read-only: exactly one lineage clause changed before allocating another cluster.",
+      "bindingEndpoint": "Default tools endpoint refused all six clean-clone ledger mappings with test_run_file_outside_root. Same exact run IDs succeeded through the sanctioned staging :3170 mcp-call route. No tests were rerun to repair binding metadata; no code-cause claim inferred from the endpoint difference."
+    },
+    "selected": { "bindingIds": [21851,21852,21853,21854,21855,21856,21857,21858], "verdict": "PASS", "governing": false, "requiredProofFloor": "l3", "wouldBlock": [], "evaluatorBuild": { "sha": "a27db452a1", "version": "0.0.0" }, "receipt": "/tmp/p006-fire192-window-selected.json" },
+    "currentness": "Eight replacements server-measured CURRENT, exactly one negative and one recurrence per scenario and one causalPairId per binding. Exact old binding17381 remains source/test-stale and has not been withdrawn.",
+    "receipts": ["/tmp/p006-fire192-window-staging-unit-bind.json", "/tmp/p006-fire192-window-staging-five-bind.json", "/tmp/p006-fire192-window-derived-positives.json", "/tmp/p006-fire192-window-lifetime-fallback-positive-bind.json", "/tmp/p006-fire192-window-pre-creation-excluded-positive-bind.json", "/tmp/p006-fire192-window-current-eight.json"],
+    "next": "Re-read current eight replacement identities and old17381; selected PASS is saved. Withdraw only17381, preserving historical20323411 and D003/D013FAIL/D014/D016. Then run unfiltered governing WINDOW. Renew earlier NUMERATOR and MEASURED-ADMISSION bindings because both test files changed before a new whole-plan current census."
+  },
+  "p003NumeratorFire188": {
+    "recordedAt": "2026-10-02T13:29:00Z",
+    "scope": "NUMERATOR@3 now governs PASS on the current staging evaluator. P006, independent rubric ratification, real-goal acceptance, closure audit and shipment remain open.",
+    "recovery": "Fresh native01a0fcb8-9328-72f3-aab7-23a0dbd1b003 had no predecessor transcript. Live Fire186 carry superseded the supplied Fire185 wake note: MEASURED-ADMISSION repair was already complete and was not repeated. All three items remain self-held; 24 work-item and12 loop checks were read and preserved.",
+    "reuse": "Extended maintained spend-rollup-scope-labels.test.ts with three isolated numerator behavior cases and an independent three-ledger calibration. Existing real-PG rollup suite remains the SQL selection oracle. No production source change or parallel test harness. Clean full42 integration run20527628 was reused after exact source/test/library hash comparison.",
+    "spec": { "id": "WOE-P003-NUMERATOR", "revision": 3, "fingerprint": "2f7cd66811ac2c062a655e8905b8a0ef15ab2b5ec89d389e45b67058f056c71d", "requiredLayers": ["unit", "integration"] },
+    "unit": {
+      "workingTreeRun": 20533311,
+      "workingTreeResult": "20PASS0skip, dirty=true; development evidence only",
+      "committedRun": 20533339,
+      "commit": "e8369026d6713540360b46ddec6642a3f2c0157a",
+      "root": "/tmp/papercusp-lint-as-committed-e8369026d6-1HUMQu",
+      "result": "20PASS0skip, exit0, worktreeDirty=false, isScratchConfig=false",
+      "log": "/tmp/p006-fire188-numerator-clean-unit.log"
+    },
+    "causalPairs": {
+      "attributed-authoritative": { "negativeRun": 20533369, "negativeBinding": 21846, "repairedRun": 20533339, "repairedBinding": 21849, "distinguishingObservation": "Switching authority to the diagnostic partition produces205 instead of105; independent ledger calibration still passes." },
+      "diagnostic-excluded": { "negativeRun": 20533370, "negativeBinding": 21847, "repairedRun": 20533339, "repairedBinding": 21850, "distinguishingObservation": "Removing the no-lineage guard produces measured0 instead ofnull while the diagnostic partition remains125; calibration still passes." },
+      "potless-attributed": { "negativeRun": 20533368, "negativeBinding": 21848, "repairedRun": 20527628, "repairedBinding": 21845, "distinguishingObservation": "Treating an empty pot as unmeasured producesnull/no-lineage-samples instead of140/null for priced attribution; the real-PG partition calibration still passes." }
+    },
+    "mutationVerification": {
+      "unitControls": "Each baseline and unmutated-copy2PASS; each mutant1intendedFAIL1calibrationPASS18filtered skips. Both maintained overlay probes report caught and source byte-identical.",
+      "integrationControl": "Baseline and unmutated-copy2PASS; mutant1intendedFAIL1calibrationPASS40filtered skips. Maintained overlay probe reports caught; privatePGaKFAUn/44557 removed and portclosed; clone source byte-identical.",
+      "invalidFirstAttempt": "The first SQL mutation refused before any test execution because an unescaped replacement dollar expression failed Perl use strict. Exit2 is not a test verdict. PrivatePGLTZv0G/40019 was removed and portclosed. Original refused log and summary remain retained.",
+      "logs": ["/tmp/p006-fire188-numerator-attributed-control.log", "/tmp/p006-fire188-numerator-diagnostic-control.log", "/tmp/p006-fire188-numerator-potless-control-r2.log", "/tmp/p006-fire188-numerator-pg-control-r2-summary.json"]
+    },
+    "pairingRepair": "First selected cohort21844-48 failed execution-integrity only: one-to-one requires exactly one causalPairId per binding, as well as exactly one negative and recurrence per scenario globally. Reused exact server-derived21844/run20533339 metadata for unique scenario-specific21849/21850; no test rerun. Failed selected receipt retained.",
+    "selected": { "bindingIds": [21849, 21850, 21845, 21846, 21847, 21848], "verdict": "PASS", "governing": false, "requiredProofFloor": "l3", "wouldBlock": [], "evaluatorBuild": { "sha": "1b7afa4b28", "version": "0.0.0" } },
+    "withdrawal": {
+      "prerequisites": "Fresh exact identities and all six CURRENT replacements were read after selectedPASS. D003 baseline, D013 completedFAIL card, D014 boundary and D016 historical18368 disposition preserved.",
+      "bindingIds": [17379, 21844],
+      "receipt": { "ok": 2, "failed": 0 },
+      "reason": "17379 is obsolete source/test-stale dirty historical proof.21844 groups two causalPairIds and is replaced by separate scenario bindings. Binding-only retraction preserves immutable runs and audit history.",
+      "postReadback": "Exactly21845-21850 active, each server-measuredCURRENT; bounded.truncatedByLimit=false.",
+      "historicalLedgerReadback": "Exact six-row testing:runs read retains20323411PASS/dirtytrue at66a6e7dd; positive20533339/20527628PASS/dirtyfalse/scratchfalse and the three calibrated mutant rowsFAIL/dirtyfalse/scratchfalse unchanged."
+    },
+    "governing": { "verdict": "PASS", "governing": true, "wouldBlock": [], "cohortFilters": "bindingIds/workItemIds/evidenceRefs omitted", "evaluatorBuild": { "sha": "1b7afa4b28", "version": "0.0.0" } },
+    "acceptedClauseCensus": {
+      "population": 28, "pass": 14, "fail": 14, "unknown": 0, "governing": true,
+      "proof": "/tmp/p006-fire188-whole-governing-decoded.json",
+      "remainingFailSpecIds": ["WOE-P003-BREACH", "WOE-P003-UNMEASURED", "WOE-P003-UNMEASURED-ADMISSION", "WOE-P003-WINDOW", "WOE-P004-CUSTODY", "WOE-P004-REAL-CALL", "WOE-P004-SCHEDULER-DIAGNOSIS", "WOE-P004-SLOW-BOOT", "WOE-P004-WAKE", "WOE-P005-HAND-DISPATCH", "WOE-P005-MATERIALIZATION", "WOE-P005-SOVEREIGNTY", "WOE-P006-REAL-CARD", "WOE-P006-SHIPMENT"],
+      "limits": "Explicit accepted28-clause census without evidence cohort filters; not successful real-goal acceptance, independent rubric ratification, final plan closure or shipment."
+    },
+    "fingerprints": {
+      "packages/operator-core/lib/goals/spend-rollup.ts": "a042501109d1c1111d6fcc6824c8e667357255f93ea8f56650e923d5b91131f1",
+      "packages/operator-core/lib/goals/spend-rollup.integration.test.ts": "5eb8e87ea661d6d54f62b5acb3e654c1a5e46a77e02c993390cfc449993eb0f8",
+      "packages/operator-core/lib/goals/spend-rollup-scope-labels.test.ts": "81d50575a2b74794f1e4ed7ff9c33f548309696cf46c55728979ba040d27ab54",
+      "libs/papercusp/libs/db/src/goal-pots.ts": "d71454955050551f8940750cffcdd39f8403c5bbf0b09f8abbc3abe1ab1a6023"
+    },
+    "receipts": ["/tmp/p006-fire188-numerator-selected-r2-decoded.json", "/tmp/p006-fire188-numerator-current-replacement-decoded.json", "/tmp/p006-fire188-numerator-retire-decoded.json", "/tmp/p006-fire188-numerator-live-readback-decoded.json", "/tmp/p006-fire188-numerator-governing-decoded.json"],
+    "windowPreparation": {
+      "specRevision": 3, "fingerprint": "6c5fd6a232a99abf42be5eeb8b3060d2260e1caea61269985bc76f0b9a30b281",
+      "requiredScenarios": ["declared-window", "display-admission-breach-parity", "lifetime-fallback", "pre-creation-excluded"],
+      "oldBinding": 17381,
+      "oldBindingCurrentness": "source-stale/test-stale; retained pending verified replacement",
+      "existingProof": "Maintained integration lifetime326, window369/sweep538, SURVIVES764/STILL-PAUSES776/no-window-CONTROL790 are in unchanged clean full42 run20527628. Arithmetic writer417-435 routes one sinceMs to all legs. Read exact consumer parity and existing units before any additional execution; do not infer untested scenarios."
+    },
+    "protected": "No P007/P008 source/runtime/native action, unchanged native/P002 rerun, shared restart, P2P or LIVE_GATE_OPS. Existing member route and all24WI+12loop checks preserved. D014 leader reconciliation remains pending without an owner wall."
+  },
+  "p003PreparationFire183": {
+    "scope": "Read-only preparation; all six accepted P003 clauses remain FAIL. No P003 evidence binding, withdrawal, test execution or source change.",
+    "acceptedRevisions": "BREACH, MEASURED-ADMISSION, NUMERATOR, UNMEASURED, UNMEASURED-ADMISSION and WINDOW are revision3 with required unit+integration evidence and one-to-one causal scenarios.",
+    "existingBindingIds": [17377, 17378, 17379, 17380, 17381, 17382],
+    "existingCurrentness": "All six server reads report source-stale/test-stale and test-run-worktree-not-clean. Preserve them until exact current replacement proof is independently sufficient.",
+    "fingerprints": {
+      "packages/operator-core/lib/goal-launch-settings.ts": "0138c8c71bfa8ea4445fc13ffde0c29b20b9b653653548f45067a63c2a9cdadc",
+      "packages/operator-core/lib/goal-launch-settings.test.ts": "d5a4bee992dc7432f4571f4299fa77e36f783d6d20402102e02d65afa0621b75",
+      "packages/operator-core/lib/goals/spend-rollup.ts": "a042501109d1c1111d6fcc6824c8e667357255f93ea8f56650e923d5b91131f1",
+      "packages/operator-core/lib/goals/spend-rollup.integration.test.ts": "d93edb45244f33b2f1e3d262cb9cc8024c33f4dea055e41f4371da9b4ac8227c"
+    },
+    "retainedSubject": "All four canonical hashes equal the retained clean920030a3 checkout. Current source uses the authoritative goal-lineage figure and inclusive budget comparator. Existing boundary and under-budget tests plus maintained copy-out overlay mutation probe are available; no new parallel test harness is needed.",
+    "nextFocusedUnit": {
+      "specId": "WOE-P003-MEASURED-ADMISSION",
+      "requiredScenarios": ["at-ceiling-refused", "under-ceiling-admitted"],
+      "positiveSelector": "refuses at spent == budget|admits under budget",
+      "testPath": "packages/operator-core/lib/goal-launch-settings.test.ts",
+      "counterexamplePreparation": "Existing permanent exclusive-comparator control describes the off-by-one. A private overlay changing only budget.spentCents >= budget.budgetCents to > should fail the literal at-ceiling refusal while the under-budget calibration still passes. Read the maintained mutation-probe contract and exact current source before execution; do not edit the canonical tree or retained clone.",
+      "limits": "A fresh unit receipt alone cannot fulfill required integration evidence or every one-to-one scenario pair. Do not withdraw17377 or report governing PASS until the full unchanged contract is independently met."
+    },
+    "unmeasuredAdmissionBoundary": "Accepted UNMEASURED-ADMISSION@3 describes unconditional empty/no-snapshot refusal, whereas D014 explicitly permits the all-legs-empty zero-usage bootstrap. This is a recorded contract boundary requiring reconciliation; neither successful existing bootstrap tests nor an evaluator FAIL authorizes silently altering acceptance.",
+    "realGoalGraderReuse": {
+      "workItem": "WI-10004264",
+      "state": "done",
+      "terminalScorecard": "EI-24713330305263301",
+      "scorecardReadback": "FAIL; critical failure plan-fleet-materialization; critical unknown goal-mode-foundation; coverage15/15. This is dated real-holder evidence, not post-remediation acceptance.",
+      "currentRubric": "work-on-everything-stewardship-health revision42 active was read; independent review/ratification remains unverified.",
+      "limits": "Reuse the existing card and its exact evidence for D013. No new fixture goal or parallel monitor was created, and no successful P006 acceptance is inferred from the completed grading task."
+    },
+    "recoveryReceipts": ["/tmp/p006-fire183-p003-specs-decoded.json", "/tmp/p006-fire183-p003-evidence-decoded.json", "/tmp/p006-fire183-grader-full-decoded.json", "/tmp/p006-fire183-real-goal-card.json"]
+  },
+  "p003WindowGoverningFire195": {
+    "recordedAt": "2026-10-02T14:25:00Z",
+    "scope": "WINDOW@3 governing PASS on staging a27db452a1. P006 acceptance, independent rubric ratification, successful real-goal card, closure audit and shipment remain open.",
+    "recovery": "Live Fire192 checkpoint superseded supplied Fire191 carry. Eight calibrated bindings and clean 23/44 runs already existed; no test or mutation replay to reconstruct proof.",
+    "replacementBindings": [21851, 21852, 21853, 21854, 21855, 21856, 21857, 21858],
+    "replacementReadback": "Fresh staging server-measured CURRENT for all eight, exact WINDOW revision3/fingerprint6c5fd6a232a99abf42be5eeb8b3060d2260e1caea61269985bc76f0b9a30b281, four one-to-one scenario pairs; bounded.truncatedByLimit=false.",
+    "withdrawal": {
+      "bindingId": 17381,
+      "status": "retracted",
+      "reason": "Exact obsolete binding remained source/test-stale and test-run-worktree-not-clean. Selected replacement PASS already recorded and fresh CURRENT identities verified before withdrawal.",
+      "preserved": "Historical run20323411, D003 baseline, D013 completed FAIL card, D014 boundary and D016 history remain intact. Binding-only retraction."
+    },
+    "governing": {
+      "verdict": "PASS",
+      "governing": true,
+      "requiredProofFloor": "l3",
+      "wouldBlock": [],
+      "evaluatorBuild": {"sha": "a27db452a1", "version": "0.0.0"},
+      "cohortFilters": "workItemIds/evidenceRefs/bindingIds omitted"
+    },
+    "priorClauseFreshness": "NUMERATOR bindings21845-21850 and MEASURED-ADMISSION21754 are test-stale after the WINDOW test additions. MEASURED21756/21749/21750 remain CURRENT. Prior governing snapshots are dated; no new whole-plan census claimed.",
+    "receipts": ["/tmp/p006-fire195-window-measured.json", "/tmp/p006-fire195-window-withdraw.json", "/tmp/p006-fire195-window-governing.json", "/tmp/p006-fire195-prior-p003-current.json"],
+    "toolLimits": "Large current reads were door-projected; complete spill recovered using manifest bodyOffsetInPayload before relying on identities. No incidental DRAIN issue filed."
+  },
+  "p003MeasuredAdmissionRenewalFire195": {
+    "recordedAt": "2026-10-02T14:28:38Z",
+    "scope": "MEASURED-ADMISSION@3 governing PASS after renewal of its sole test-stale integration binding. No source/test changes or test replay.",
+    "reuse": "Clean full44 integration20534918 already verifies snapshot and launch-time at/under-ceiling behavior. Three existing unit bindings21756/21749/21750 remain freshly server-measured CURRENT; their tests did not change.",
+    "replacement": {"bindingId": 21864, "testRunId": 20534918, "scenario": "under-ceiling-admitted"},
+    "currentness": "Exact21864/21756/21749/21750 CURRENT, clause revision3/fingerprint88d121c3c71be424972e8424aeaaf8fb37ab74eca80bd0a1e9a6cac727fd9617; one negative and one recurrence per required scenario.",
+    "selected": {"verdict": "PASS", "governing": false, "wouldBlock": []},
+    "withdrawal": {"bindingId": 21754, "status": "retracted", "reason": "Test-stale historical integration binding only, after replacement CURRENT and selected PASS. Historical20527628 retained."},
+    "governing": {"verdict": "PASS", "governing": true, "requiredProofFloor": "l3", "wouldBlock": [], "evaluatorBuild": {"sha": "a27db452a1", "version": "0.0.0"}, "cohortFilters": "workItemIds/evidenceRefs/bindingIds omitted"},
+    "receipts": ["/tmp/p006-fire195-measured-positive-bind.json", "/tmp/p006-fire195-measured-current.json", "/tmp/p006-fire195-measured-selected.json", "/tmp/p006-fire195-measured-withdraw.json", "/tmp/p006-fire195-measured-governing.json"],
+    "limits": "NUMERATOR21845-21850 remain test-stale and need three fresh calibrated negatives. No new whole-plan census, independent ratification, successful real-goal acceptance, closure audit or shipment claimed. D003/D013FAIL/D014/D016 preserved."
+  },
+  "p003NumeratorRenewalFire197": {
+    "recordedAt": "2026-10-02T15:17:56.268880+00:00",
+    "scope": "NUMERATOR@3 governing PASS; broader P006 acceptance, independent rubric ratification, successful real-goal card, closure audit and shipment remain open.",
+    "recovery": "Fresh successor 01a0fd21-f4d1-7b52-ad7a-5f17ebd79102 retained owner identity and verified live claim/loop. Recorded retained checkout and /tmp logs were absent; maintained lint:as-committed recreated the same f95526ac2645 pin with a calibration-only execution. No production source or test changes.",
+    "commit": "f95526ac2645dec341571e13fdb0d4b00888e214",
+    "cloneRoot": "/tmp/papercusp-lint-as-committed-f95526ac26-ZK5cgj",
+    "reusedPositiveRuns": {
+      "unit": 20534705,
+      "integration": 20534918
+    },
+    "causalPairs": {
+      "attributed-authoritative": {
+        "negativeRun": 20541270,
+        "negativeBinding": 22001,
+        "repairedRun": 20534705,
+        "repairedBinding": 21999,
+        "observation": "Diagnostic authority produced205 instead of105; independent calibration passed."
+      },
+      "diagnostic-excluded": {
+        "negativeRun": 20541279,
+        "negativeBinding": 22002,
+        "repairedRun": 20534705,
+        "repairedBinding": 22003,
+        "observation": "Removing the absent-lineage guard produced0 instead ofnull; calibration passed."
+      },
+      "potless-attributed": {
+        "negativeRun": 20541297,
+        "negativeBinding": 22004,
+        "repairedRun": 20534918,
+        "repairedBinding": 22000,
+        "observation": "Empty-pot refusal producednull/no-lineage-samples instead of140/null; real-PG partition calibration passed."
+      }
+    },
+    "controlResult": "Each overlay: baseline2PASS and unmutated-copy2PASS; mutant1intendedFAIL1calibrationPASS; caught, exit0. Unit21/integration42 tests filtered. Exact mutant ledger rows clean and non-scratch.",
+    "privatePg": {
+      "startedAt": "2026-10-02T15:09:49.047Z",
+      "dataDir": "/tmp/papercusp-native-pg-zVnxoD",
+      "port": 40409,
+      "signal": null,
+      "exit": 0,
+      "dataDirRemoved": true,
+      "portClosed": true,
+      "finishedAt": "2026-10-02T15:12:39.211Z"
+    },
+    "selected": {
+      "bindingIds": [
+        21999,
+        22000,
+        22001,
+        22002,
+        22003,
+        22004
+      ],
+      "verdict": "pass",
+      "governing": false,
+      "requiredProofFloor": "l3",
+      "evaluatorBuild": {
+        "sha": "b3eba6e78e",
+        "version": "0.0.0"
+      }
+    },
+    "withdrawal": {
+      "bindingIds": [
+        21845,
+        21846,
+        21847,
+        21848,
+        21849,
+        21850
+      ],
+      "result": {
+        "ok": 6,
+        "failed": 0
+      },
+      "preserved": "Immutable historical test runs and audit history, D003 baseline, D013 completedFAIL card, D014 boundary and D016 history. Binding-only retraction after selectedPASS and server-measuredCURRENT."
+    },
+    "governing": {
+      "verdict": "pass",
+      "governing": true,
+      "requiredProofFloor": "l3",
+      "wouldBlock": [],
+      "evaluatorBuild": {
+        "sha": "b3eba6e78e",
+        "version": "0.0.0"
+      },
+      "cohortFilters": "bindingIds/workItemIds/evidenceRefs omitted"
+    },
+    "acceptedClauseCensus": {
+      "population": [
+        "WOE-P001-BLOCKER",
+        "WOE-P001-CLAIM",
+        "WOE-P001-EXCLUSIONS",
+        "WOE-P001-IDEMPOTENCE",
+        "WOE-P001-ORDER",
+        "WOE-P001-TERMINAL",
+        "WOE-P002-AUTHORITY",
+        "WOE-P002-ELECTION",
+        "WOE-P002-HANDOFF",
+        "WOE-P002-RESPAWN",
+        "WOE-P002-STALE-RESPAWN",
+        "WOE-P002-UNKNOWN",
+        "WOE-P003-BREACH",
+        "WOE-P003-MEASURED-ADMISSION",
+        "WOE-P003-NUMERATOR",
+        "WOE-P003-UNMEASURED",
+        "WOE-P003-UNMEASURED-ADMISSION",
+        "WOE-P003-WINDOW",
+        "WOE-P004-CUSTODY",
+        "WOE-P004-REAL-CALL",
+        "WOE-P004-SCHEDULER-DIAGNOSIS",
+        "WOE-P004-SLOW-BOOT",
+        "WOE-P004-WAKE",
+        "WOE-P005-HAND-DISPATCH",
+        "WOE-P005-MATERIALIZATION",
+        "WOE-P005-SOVEREIGNTY",
+        "WOE-P006-REAL-CARD",
+        "WOE-P006-SHIPMENT"
+      ],
+      "checkedPass": [
+        "WOE-P001-BLOCKER",
+        "WOE-P001-CLAIM",
+        "WOE-P001-EXCLUSIONS",
+        "WOE-P001-IDEMPOTENCE",
+        "WOE-P001-ORDER",
+        "WOE-P001-TERMINAL",
+        "WOE-P002-AUTHORITY",
+        "WOE-P002-ELECTION",
+        "WOE-P002-HANDOFF",
+        "WOE-P002-RESPAWN",
+        "WOE-P002-STALE-RESPAWN",
+        "WOE-P002-UNKNOWN",
+        "WOE-P003-MEASURED-ADMISSION",
+        "WOE-P003-NUMERATOR",
+        "WOE-P003-WINDOW"
+      ],
+      "checkedFail": [
+        "WOE-P003-BREACH",
+        "WOE-P003-UNMEASURED",
+        "WOE-P003-UNMEASURED-ADMISSION",
+        "WOE-P004-CUSTODY",
+        "WOE-P004-REAL-CALL",
+        "WOE-P004-SCHEDULER-DIAGNOSIS",
+        "WOE-P004-SLOW-BOOT",
+        "WOE-P004-WAKE",
+        "WOE-P005-HAND-DISPATCH",
+        "WOE-P005-MATERIALIZATION",
+        "WOE-P005-SOVEREIGNTY",
+        "WOE-P006-REAL-CARD",
+        "WOE-P006-SHIPMENT"
+      ],
+      "verdicts": {
+        "pass": 15,
+        "fail": 13,
+        "unknown": 0
+      },
+      "governing": true,
+      "excludedDraftCount": 25,
+      "evaluatorBuild": {
+        "sha": "b3eba6e78e",
+        "version": "0.0.0"
+      },
+      "fullReceipt": "$HOME/.papercusp/scratch/papercusp-workspace/plans:evaluate-spec-test-adequacy/c8ef4e77-e653-467a-a65f-e86fbe3f1a34/result-door-1790954096790.md",
+      "fullReceiptBodyOffset": 2047
+    },
+    "fingerprints": {
+      "packages/operator-core/lib/goals/spend-rollup.ts": "a042501109d1c1111d6fcc6824c8e667357255f93ea8f56650e923d5b91131f1",
+      "packages/operator-core/lib/goals/spend-rollup-scope-labels.test.ts": "e71015fe95056437d3508934b82c13c8c35276af5dc3bd21360e8b383ff526fe",
+      "packages/operator-core/lib/goals/spend-rollup.integration.test.ts": "b01dd12cb540349894c2a61b61d262b303f08faa0953c8aab8f892a5b032f8ad",
+      "libs/papercusp/libs/db/src/goal-pots.ts": "d71454955050551f8940750cffcdd39f8403c5bbf0b09f8abbc3abe1ab1a6023"
+    },
+    "logs": {
+      ".papercusp/scratch/p006-recovery197/attributed-authoritative.log": "c2c93f7f67ced609022496a587bfea8f28117f361777c905dec5bc2a0c404eea",
+      ".papercusp/scratch/p006-recovery197/diagnostic-excluded.log": "f6f45925c021d3d07befc3049592d4ee7ccb9379746d6424866e0bef26b29144",
+      ".papercusp/scratch/p006-recovery197/potless-attributed.log": "b9e386891d210bac5788bbea983a09ad9c8854b7ad2391de630dfbcb4dd4f804"
+    },
+    "receipts": [
+      ".papercusp/scratch/p006-recovery197/clone-prepare.log",
+      ".papercusp/scratch/p006-recovery197/first-bind.json",
+      ".papercusp/scratch/p006-recovery197/second-positive-bind-r2.json",
+      ".papercusp/scratch/p006-recovery197/third-negative-bind.json",
+      ".papercusp/scratch/p006-recovery197/selected.json",
+      ".papercusp/scratch/p006-recovery197/current12.json",
+      ".papercusp/scratch/p006-recovery197/withdraw.json",
+      ".papercusp/scratch/p006-recovery197/governing.json",
+      ".papercusp/scratch/p006-recovery197/whole-census-r2.json",
+      ".papercusp/scratch/p006-recovery197/potless-pg-summary.json"
+    ],
+    "callerCorrections": "Generic derived positive first refused before mutation: measurement.schemaVersion1 omitted; exact receipt metadata restored it. Initial whole census limit100 refused evidence_selection_hit_limit; limit1000 returned accepted28. Large second receipt was projected; complete body recovered from its manifest offset before the census claim. No incidental DRAIN issue filed.",
+    "nextPreparation": "Read BREACH/UNMEASURED canonical scenarios/layers. Both legacy17382/17380 are dirty/source-test-stale with missing unit and causal pairs; current clean44 integration may be reusable after fingerprint verification. BREACH requiresl4 and UNMEASUREDl3. Do not withdraw before selectedCURRENT replacements. D014 versus UNMEASURED-ADMISSION remains leader-dependent; no owner wall."
+  },
+  "p003UnmeasuredFire199": {
+    "recordedAt": "2026-10-02T15:45:25.920131+00:00",
+    "scope": "UNMEASURED@3 governing PASS/l3; WINDOW and NUMERATOR renewed after the maintained unit-file extension. P006 acceptance and shipment remain open.",
+    "commit": "751656a9bb8bac2ae6580cfe6effcbed776f94ff",
+    "cloneRoot": "/tmp/papercusp-lint-as-committed-751656a9bb-hAprca",
+    "sourceChange": "No production source change. Extended the maintained spend-rollup-scope-labels unit fixture with calibrated absence, observed zero and partial-pricing behavioral oracles.",
+    "positiveRuns": {
+      "local": {
+        "id": 20541348,
+        "passed": 27,
+        "skipped": 0,
+        "worktreeDirty": true
+      },
+      "cleanUnit": {
+        "id": 20541357,
+        "passed": 27,
+        "skipped": 0,
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      },
+      "reusedIntegration": {
+        "id": 20534918,
+        "passed": 44,
+        "skipped": 0,
+        "reason": "Exact unchanged spend-rollup, integration and goal-pots bytes match the dated clean run. Private cleanup remains its original receipt, not a fresh execution."
+      }
+    },
+    "calibratedMutants": {
+      "no-samples-null": 20541376,
+      "priced-zero-measured": 20541378,
+      "unpriced-null": 20541377,
+      "attributed-authoritative": 20541388,
+      "diagnostic-excluded": 20541387,
+      "declared-window": 20541386,
+      "lifetime-fallback": 20541390
+    },
+    "controlSummary": "Six mutants each1intendedFAIL+1calibrationPASS with25filtered. Lifetime mutant2intendedFAIL (undefined/null)+1calibrationPASS with24filtered. Each baseline and unmutated overlay passed selected assertions; overlay caught exit0 and original bytes unchanged.",
+    "bindings": {
+      "unmeasured": [
+        22005,
+        22006,
+        22007,
+        22040,
+        22041,
+        22042,
+        22047
+      ],
+      "numerator": [
+        22008,
+        22009,
+        22043,
+        22044,
+        22000,
+        22004
+      ],
+      "window": [
+        22010,
+        22011,
+        22045,
+        22046,
+        21854,
+        21855,
+        21856,
+        21858
+      ]
+    },
+    "currentness": {
+      "checked": [
+        22005,
+        22006,
+        22007,
+        22008,
+        22009,
+        22010,
+        22011,
+        22040,
+        22041,
+        22042,
+        22043,
+        22044,
+        22045,
+        22046,
+        22047,
+        22000,
+        22004,
+        21854,
+        21855,
+        21856,
+        21858
+      ],
+      "overall": "current",
+      "provenance": "server-measured",
+      "bounded": {
+        "limit": 100,
+        "truncatedByLimit": false
+      }
+    },
+    "selected": {
+      "governing": false,
+      "verdicts": {
+        "pass": 3,
+        "fail": 0,
+        "unknown": 0
+      },
+      "sourceReceipt": ".papercusp/scratch/p006-unmeasured199/selected.json"
+    },
+    "withdrawal": {
+      "bindingIds": [
+        17380,
+        21851,
+        21852,
+        21853,
+        21857,
+        21999,
+        22001,
+        22002,
+        22003
+      ],
+      "result": {
+        "ok": 9,
+        "failed": 0
+      },
+      "preserved": "Immutable historical tests/audits, D003 baseline, D013 completedFAIL, D014 bootstrap-versus-refusal boundary and D016."
+    },
+    "governing": {
+      "ok": true,
+      "count": 3,
+      "governing": true,
+      "evaluatorBuild": {
+        "sha": "0e0589da83",
+        "version": "0.0.0"
+      },
+      "excludedDraftCount": 0,
+      "verdicts": {
+        "pass": 3,
+        "fail": 0,
+        "unknown": 0
+      },
+      "wouldBlock": [],
+      "rows": [
+        {
+          "specId": "WOE-P003-NUMERATOR",
+          "specRevision": 3,
+          "specFingerprint": "2f7cd66811ac2c062a655e8905b8a0ef15ab2b5ec89d389e45b67058f056c71d",
+          "verdict": "pass",
+          "requiredProofFloor": "l3",
+          "wouldBlock": []
+        },
+        {
+          "specId": "WOE-P003-UNMEASURED",
+          "specRevision": 3,
+          "specFingerprint": "e896cd0d35db1e2e8f90f6f92fdf528c5ac696263940df654b1b46429ed63293",
+          "verdict": "pass",
+          "requiredProofFloor": "l3",
+          "wouldBlock": []
+        },
+        {
+          "specId": "WOE-P003-WINDOW",
+          "specRevision": 3,
+          "specFingerprint": "6c5fd6a232a99abf42be5eeb8b3060d2260e1caea61269985bc76f0b9a30b281",
+          "verdict": "pass",
+          "requiredProofFloor": "l3",
+          "wouldBlock": []
+        }
+      ]
+    },
+    "acceptedClauseCensus": {
+      "population": [
+        "WOE-P001-BLOCKER",
+        "WOE-P001-CLAIM",
+        "WOE-P001-EXCLUSIONS",
+        "WOE-P001-IDEMPOTENCE",
+        "WOE-P001-ORDER",
+        "WOE-P001-TERMINAL",
+        "WOE-P002-AUTHORITY",
+        "WOE-P002-ELECTION",
+        "WOE-P002-HANDOFF",
+        "WOE-P002-RESPAWN",
+        "WOE-P002-STALE-RESPAWN",
+        "WOE-P002-UNKNOWN",
+        "WOE-P003-BREACH",
+        "WOE-P003-MEASURED-ADMISSION",
+        "WOE-P003-NUMERATOR",
+        "WOE-P003-UNMEASURED",
+        "WOE-P003-UNMEASURED-ADMISSION",
+        "WOE-P003-WINDOW",
+        "WOE-P004-CUSTODY",
+        "WOE-P004-REAL-CALL",
+        "WOE-P004-SCHEDULER-DIAGNOSIS",
+        "WOE-P004-SLOW-BOOT",
+        "WOE-P004-WAKE",
+        "WOE-P005-HAND-DISPATCH",
+        "WOE-P005-MATERIALIZATION",
+        "WOE-P005-SOVEREIGNTY",
+        "WOE-P006-REAL-CARD",
+        "WOE-P006-SHIPMENT"
+      ],
+      "checkedPass": [
+        "WOE-P001-BLOCKER",
+        "WOE-P001-CLAIM",
+        "WOE-P001-EXCLUSIONS",
+        "WOE-P001-IDEMPOTENCE",
+        "WOE-P001-ORDER",
+        "WOE-P001-TERMINAL",
+        "WOE-P002-AUTHORITY",
+        "WOE-P002-ELECTION",
+        "WOE-P002-HANDOFF",
+        "WOE-P002-RESPAWN",
+        "WOE-P002-STALE-RESPAWN",
+        "WOE-P002-UNKNOWN",
+        "WOE-P003-MEASURED-ADMISSION",
+        "WOE-P003-NUMERATOR",
+        "WOE-P003-UNMEASURED",
+        "WOE-P003-WINDOW"
+      ],
+      "checkedFail": [
+        "WOE-P003-BREACH",
+        "WOE-P003-UNMEASURED-ADMISSION",
+        "WOE-P004-CUSTODY",
+        "WOE-P004-REAL-CALL",
+        "WOE-P004-SCHEDULER-DIAGNOSIS",
+        "WOE-P004-SLOW-BOOT",
+        "WOE-P004-WAKE",
+        "WOE-P005-HAND-DISPATCH",
+        "WOE-P005-MATERIALIZATION",
+        "WOE-P005-SOVEREIGNTY",
+        "WOE-P006-REAL-CARD",
+        "WOE-P006-SHIPMENT"
+      ],
+      "notChecked": [],
+      "notApplicable": [],
+      "residue": [
+        "BREACH@3/l4",
+        "UNMEASURED-ADMISSION/D014 boundary",
+        "P004/P005 proof",
+        "independent rubric review and ratification",
+        "D013 successful real-goal scorecard",
+        "closure audit",
+        "shipment"
+      ],
+      "verdicts": {
+        "pass": 16,
+        "fail": 12,
+        "unknown": 0
+      },
+      "governing": true,
+      "excludedDraftCount": 25,
+      "evaluatorBuild": {
+        "sha": "0e0589da83",
+        "version": "0.0.0"
+      }
+    },
+    "fingerprints": {
+      "packages/operator-core/lib/goals/spend-rollup.ts": "a042501109d1c1111d6fcc6824c8e667357255f93ea8f56650e923d5b91131f1",
+      "packages/operator-core/lib/goals/spend-rollup-scope-labels.test.ts": "56932e69ee31e81824cfa9980ddc926595c30538ced000289f76e1b80e362330",
+      "packages/operator-core/lib/goals/spend-rollup.integration.test.ts": "b01dd12cb540349894c2a61b61d262b303f08faa0953c8aab8f892a5b032f8ad",
+      "libs/papercusp/libs/db/src/goal-pots.ts": "d71454955050551f8940750cffcdd39f8403c5bbf0b09f8abbc3abe1ab1a6023"
+    },
+    "logs": {
+      ".papercusp/scratch/p006-unmeasured199/attributed-authoritative.log": "f36f666b6d2e863319025512aed21cad74a4a17cc848d63be142f9c0217b1ef5",
+      ".papercusp/scratch/p006-unmeasured199/clean-unit.log": "db0306b35f24e318f47dd1e63600c5d912b8de08b34cc3aa5c1625e0ee48ac4f",
+      ".papercusp/scratch/p006-unmeasured199/declared-window.log": "bae5bbd2dab1182b9ca7bb3a79a5b71d38762c5810d0ca21b816b800129d1760",
+      ".papercusp/scratch/p006-unmeasured199/diagnostic-excluded.log": "c91513b7a3c547b696344da5c7ccc3dbae751af33a49c2db424cf8c07925dc34",
+      ".papercusp/scratch/p006-unmeasured199/lifetime-fallback.log": "e1d6e473ee091664346a68f9913a0296669f42f9909d018d2fc4df01a6223670",
+      ".papercusp/scratch/p006-unmeasured199/no-samples-null-historical-flag-refused.log": "bfe6c76df81766fb4f26df756940b081475f67f3574144d6861e41b5f7e222b8",
+      ".papercusp/scratch/p006-unmeasured199/no-samples-null.log": "a8f33ac8f3eaa5695173204d7b8fdb8baa638191338ab3f27e56cc93c8a82a1b",
+      ".papercusp/scratch/p006-unmeasured199/priced-zero-measured-historical-flag-refused.log": "bfe6c76df81766fb4f26df756940b081475f67f3574144d6861e41b5f7e222b8",
+      ".papercusp/scratch/p006-unmeasured199/priced-zero-measured.log": "8d1d0ac9c5b0006a938e83a5bcdd81bba0486a9b552715e8f02ee0e509a42c47",
+      ".papercusp/scratch/p006-unmeasured199/unpriced-null-historical-flag-refused.log": "bfe6c76df81766fb4f26df756940b081475f67f3574144d6861e41b5f7e222b8",
+      ".papercusp/scratch/p006-unmeasured199/unpriced-null.log": "322258c6ab829cb8007f0558f6431e28ae7de429328c6aabf1f0a1e93b8afd95"
+    },
+    "receipts": [
+      ".papercusp/scratch/p006-unmeasured199/bind.json",
+      ".papercusp/scratch/p006-unmeasured199/current-full.json",
+      ".papercusp/scratch/p006-unmeasured199/current.json",
+      ".papercusp/scratch/p006-unmeasured199/governing.json",
+      ".papercusp/scratch/p006-unmeasured199/positive-bind.json",
+      ".papercusp/scratch/p006-unmeasured199/selected.json",
+      ".papercusp/scratch/p006-unmeasured199/whole-census-full.json",
+      ".papercusp/scratch/p006-unmeasured199/whole-census.json",
+      ".papercusp/scratch/p006-unmeasured199/withdraw.json"
+    ],
+    "callerCorrections": "Initial positive-control flag selected historical mode and refused before mutation; removed. Generic positive bindings used after canonicalTestPath refused eight local-run mappings; seven mutation writes had already succeeded and were not retried. CTE ledger read refused tenant classification; direct bounded exact-file read succeeded. Both explicit-full spill and result-door manifest encodings decoded at their recorded boundary. No incidental DRAIN issue filed.",
+    "next": "Continue BREACH@3 required unit+integration/l4 and three calibrated scenarios. Legacy17382 remains binding-only retained pending verified replacements. D014 remains leader-dependent. Preserve P007/P008 independent12WIchecks each plus12loopchecks, all source/runtime limits. No sharedrestart, unchanged native/P001/P002 rerun, P2P or LIVE_GATE_OPS."
+  },
+  "p003BreachFire202": {
+    "recordedAt": "2026-10-02T16:51:00Z",
+    "spec": "WOE-P003-BREACH@3, fingerprint 4109510795b2328f307a95477d5eeff218e6797445dbf2221740be21d4860a0a",
+    "sourcePin": "420c28a3f8d43b340625b826bba2180c0520d61a",
+    "sourceAndTestHashes": {
+      "packages/operator-core/lib/goals/spend-rollup.ts": "a9743dd8697f69cebf68a092ad7519cf4b38236df54442ee697938d09a8c53a8",
+      "packages/operator-core/lib/goals/spend-rollup-scope-labels.test.ts": "10f66f7026d3a1202bc1029b468b47c0411c6f4e9f01c0022059f8e16a794c44",
+      "packages/operator-core/lib/goals/spend-rollup.integration.test.ts": "b01dd12cb540349894c2a61b61d262b303f08faa0953c8aab8f892a5b032f8ad"
+    },
+    "cleanPositiveRuns": { "unit": 20542226, "integration": 20542229, "result": "30/30 unit and 44/44 real-PG integration pass, no skips; both ledger rows clean at the same commit" },
+    "cleanMutationRuns": {
+      "below-window-survives": { "baseline": 20542258, "unmutatedCopy": 20542259, "caught": 20542260 },
+      "breach-paused-needs-human": { "baseline": 20542270, "unmutatedCopy": 20542271, "caught": 20542273 },
+      "paused-preserved": { "baseline": 20542276, "unmutatedCopy": 20542280, "caught": 20542282 }
+    },
+    "mutationMethod": "Maintained scripts/mutation-probe.sh copy-out overlay in clean /tmp/pcv/papercusp-lint-as-committed-420c28a3f8-arN9BP. Each selected one intended assertion plus two CALIBRATION tests; baseline and unmutated copy passed, mutant failed only the intended assertion, tree integrity verified. paused-preserved unit is a static SQL guard pin paired with the real-PG lifecycle test, not an independent behavioral lifecycle proof.",
+    "bindings": [22107, 22108, 22109, 22110, 22111, 22112, 22113],
+    "oldBinding": { "id": 17382, "status": "retracted", "scope": "binding only; historical test run 20323411 retained" },
+    "acceptance": "Selected BREACH@3 PASS/l4; unfiltered governing evaluator reports BREACH@3 PASS. Full accepted 28-clause governing census remains FAIL (13 pass, 15 fail) because other clauses, including four P-003 clauses made stale by the BREACH source/test change, still need renewal or proof.",
+    "limits": "No LIVE_GATE_OPS, P2P, shared restart or P-007/P-008 source work. Independent rubric ratification, successful real-goal card, closure audit and shipment remain open."
+  },
+  "p003RenewalFire203": {
+    "recordedAt": "2026-10-02T17:45:00Z",
+    "sourcePin": "420c28a3f8d43b340625b826bba2180c0520d61a",
+    "measuredAdmission": {
+      "cleanUnit": { "run": 20542901, "result": "167/167 passed" },
+      "realPgPositiveRun": 20542229,
+      "calibratedMutants": { "at-ceiling-refused": 20542910, "under-ceiling-admitted": 20542963 },
+      "currentBindings": [22129, 22130, 22131, 22132],
+      "historicalBindingsRetracted": [21864, 21756, 21750, 21749],
+      "selectedAdequacy": "PASS/l3, current one-to-one pairs; historical runs retained"
+    },
+    "numerator": {
+      "cleanUnitRun": 20542226,
+      "realPgPositiveRun": 20542229,
+      "calibratedMutants": { "attributed-authoritative": 20544489, "diagnostic-excluded": 20544492, "potless-attributed": 20545198 },
+      "currentBindings": [22133, 22134, 22135, 22136, 22137, 22138, 22139],
+      "historicalBindingsRetracted": [22000, 22004, 22008, 22009, 22043, 22044],
+      "selectedAdequacy": "PASS/l3, current one-to-one pairs; historical runs retained"
+    },
+    "unmeasured": {
+      "cleanUnitRun": 20542226,
+      "realPgPositiveRun": 20542229,
+      "calibratedMutants": { "no-samples-null": 20547620, "priced-zero-measured": 20548459, "unpriced-null": 20548464 },
+      "currentBindings": [22151, 22152, 22153, 22154, 22155, 22156, 22157],
+      "historicalBindingsRetracted": [22005, 22006, 22007, 22040, 22041, 22042, 22047],
+      "selectedAdequacy": "PASS/l3, current one-to-one pairs; historical runs retained"
+    },
+    "window": {
+      "cleanUnitRun": 20542226,
+      "realPgPositiveRun": 20542229,
+      "calibratedMutants": { "declared-window": 20548502, "lifetime-fallback": 20548517, "display-admission-breach-parity": 20548588, "pre-creation-excluded": 20548599 },
+      "currentBindings": [22187, 22188, 22189, 22190, 22191, 22192, 22193, 22194],
+      "historicalBindingsRetracted": [21854, 21855, 21856, 21858, 22010, 22011, 22045, 22046],
+      "selectedAdequacy": "PASS/l3, current one-to-one pairs; historical runs retained"
+    },
+    "method": "All new mutation rows came from maintained copy-out overlay on a clean committed clone, with baseline and relocated-copy passes and intended mutant assertion failures. Private native PG was used for the two WINDOW integration mutants, stopped after each run. One initial synchronous PG wrapper ended by SIGPIPE before any test row was recorded; its database was stopped and the asynchronous wrapper plus preflight passed before the successful run. No shared tree mutation or LIVE_GATE_OPS.",
+    "governingCensus": { "acceptedClauses": 28, "pass": 12, "fail": 16, "unknown": 0, "governing": true, "newResidue": "Five P-002 clauses became freshness-fail during this interval; UNMEASURED-ADMISSION and P-004/P-005/P-006 remain fail." },
+    "limits": "The four renewed P-003 clauses pass selected adequacy, but WI-1074216/P-006 and full plan acceptance remain open. Independent rubric ratification, successful real-goal card, closure audit and shipment remain."
+  },
+  "next": "Freshly inspect the five P-002 freshness failures and source/test change ownership before any renewal; do not duplicate another member's lane or replay unchanged proof. Continue the independent P-006 tasks: UNMEASURED-ADMISSION/D014, P-004/P-005/P-006 proof, independent rubric ratification, successful real-goal card, closure audit and shipment. Preserve D003/D013FAIL/D014/D016, P-007/P-008 independent lanes, and avoid LIVE_GATE_OPS/P2P."
+}

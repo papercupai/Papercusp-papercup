@@ -143,3 +143,27 @@ describe('su persona sources carry the fleet-first fan-out rule', () => {
     );
   });
 });
+
+describe('code:run write-preview prompts distinguish nested effect metadata from tool arguments (EI-24910197661377657)', () => {
+  const CODE_RUN_GUIDANCE_SOURCES: Array<[label: string, path: string]> = [
+    ['active pot instance override', join(PROMPTS, 'pot-instances/papercup-pot.su.md')],
+    ['legacy engineer playbook', join(PROMPTS, 'papercusp-su-engineer.tools.md')],
+    ['legacy power playbook', join(PROMPTS, 'papercusp-su-power.tools.md')],
+  ];
+
+  for (const [label, path] of CODE_RUN_GUIDANCE_SOURCES) {
+    it(`${label} shows the code:run inputs and dry-run example`, () => {
+      const md = readFileSync(path, 'utf8').replace(/\s+/g, ' ');
+      expect(md).toContain(
+        "`effect: 'write'` labels effect metadata for tools called inside the script; it is not an argument to `code:run`.",
+      );
+      expect(md).toContain(
+        '`code:run` accepts `{ script, title?, description?, dryRun?, timeoutSec? }`.',
+      );
+      expect(md).toContain(
+        "`code:run { script: '<JavaScript body>', dryRun: true }` previews nested writes in `plannedMutations`",
+      );
+      expect(md).toContain('without `dryRun` to commit');
+    });
+  }
+});

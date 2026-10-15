@@ -4,7 +4,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
-import { cleanup, configure, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, configure, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { OperatorChatSidebar } from '../OperatorChatSidebar';
 import { OPERATOR_CHAT_COLLAPSED_WIDTH } from '../operator-chat-layout';
 
@@ -181,9 +181,16 @@ vi.mock('@/lib/useLexicon', () => ({
 
 const voiceModeState = { muted: false };
 const setVoiceOutputMutedSpy = vi.fn();
+const readingState = { readingId: null as string | null, status: 'idle', position: 0, total: 0, warnings: [] as string[] };
+const startReadingSpy = vi.fn();
+const controlReadingSpy = vi.fn();
 vi.mock('../voice/voice-mode', () => ({
   isVoiceOutputMuted: () => voiceModeState.muted,
   setVoiceOutputMuted: (v: boolean) => setVoiceOutputMutedSpy(v),
+  getReadingState: () => ({ ...readingState }),
+  subscribeReadingState: () => () => {},
+  startReading: (...args: unknown[]) => startReadingSpy(...args),
+  controlReading: (...args: unknown[]) => controlReadingSpy(...args),
 }));
 
 vi.mock('../OperatorActiveToggle', () => ({
@@ -258,6 +265,8 @@ beforeEach(() => {
   attentionRefsCalls.length = 0;
   nuqsWrites.current = {};
   setVoiceOutputMutedSpy.mockReset();
+  Object.assign(readingState, { readingId: null, status: 'idle', position: 0, total: 0, warnings: [] });
+  startReadingSpy.mockReset(); controlReadingSpy.mockReset();
   routerPushSpy.mockReset();
   localStorageState.clear();
   Object.defineProperty(window, 'localStorage', {
@@ -279,6 +288,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   localStorageState.clear();
   document.body.className = '';
   document.body.style.cssText = '';
@@ -467,6 +477,60 @@ describe('body-shift commutation contract with the LeftSidebar rail (WI-4725)', 
       expect(screen.getByTestId('operator-chat')).toBeTruthy();
     });
     expect(screen.queryByRole('region', { name: 'Pot health' })).toBeNull();
+  });
+
+  it('reads a selection with explicit cloud consent', async () => {
+    const selection = vi.spyOn(window, 'getSelection').mockReturnValue({ toString: () => 'Selected exact source' } as Selection);
+    render(<OperatorChatSidebar />);
+    fireEvent.click(screen.getByRole('button', { name: 'Read selected text aloud' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Read selection' }));
+    expect(startReadingSpy).toHaveBeenCalledWith('Selected exact source', expect.objectContaining({ allowCloud: false }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Allow selected text to use cloud speech' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Read selection' }));
+    expect(startReadingSpy).toHaveBeenLastCalledWith('Selected exact source', expect.objectContaining({ allowCloud: true }));
+    selection.mockRestore();
+  });
+
+  it('exposes saved progress with resume/stop controls for a paused reading', async () => {
+    Object.assign(readingState, { readingId: 'reading-1', status: 'paused', position: 25, total: 100 });
+    render(<OperatorChatSidebar />);
+    fireEvent.click(screen.getByRole('button', { name: 'Read selected text aloud' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Resume' }));
+    expect(controlReadingSpy).toHaveBeenCalledWith('reading-1', 'resume');
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    expect(controlReadingSpy).toHaveBeenCalledWith('reading-1', 'stop');
+    expect(screen.getByRole('progressbar', { name: 'Reading progress' }).getAttribute('value')).toBe('25');
+  });
+  it('summarizes without speaking and only reads an explicitly requested summary', async () => {
+    vi.spyOn(window, 'getSelection').mockReturnValue({ toString: () => 'Original source with exact tail' } as Selection);
+    const send = vi.fn(async (_url: unknown, _init?: RequestInit) => Response.json({ ok: true, summary: 'Explicit concise summary', coverage: { complete: false, warnings: ['source-partial'] } }));
+    vi.stubGlobal('fetch', send);
+    render(<OperatorChatSidebar />);
+    fireEvent.click(screen.getByRole('button', { name: 'Read selected text aloud' }));
+    fireEvent.click(await screen.findByRole('combobox', { name: 'Summary length' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Short' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Summary focus' }), { target: { value: 'numbers' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Allow this text to use a cloud summary model' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Summarize$/ }));
+    await screen.findByRole('region', { name: 'Summary' });
+    expect(startReadingSpy).not.toHaveBeenCalled();
+    expect(JSON.parse(send.mock.calls[0]![1]!.body as string)).toMatchObject({ operation: 'summarize', content: { text: 'Original source with exact tail', partial: true }, summary: { allowCloud: true, length: 'short', focus: 'numbers' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Summarize and read' }));
+    await waitFor(() => expect(startReadingSpy).toHaveBeenCalledWith('Explicit concise summary', expect.objectContaining({ allowCloud: false })));
+  });
+  it('cancels a summary request and ignores late output before it can speak', async () => {
+    let finish!: (response: Response) => void;
+    const send = vi.fn((_url: unknown, _init?: RequestInit) => new Promise<Response>(resolve => { finish = resolve; }));
+    vi.stubGlobal('fetch', send);
+    render(<OperatorChatSidebar />);
+    fireEvent.click(screen.getByRole('button', { name: 'Read selected text aloud' }));
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Text to read or summarize' }), { target: { value: 'Selected source' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Summarize and read' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel summary' }));
+    expect(send.mock.calls[0]![1]!.signal!.aborted).toBe(true);
+    await act(async () => { finish(Response.json({ ok: true, summary: 'Late obsolete summary', coverage: { complete: true, warnings: [] } })); });
+    expect(startReadingSpy).not.toHaveBeenCalled();
+    expect(screen.queryByRole('region', { name: 'Summary' })).toBeNull();
   });
 
   it('the TTS speak-responses mute lives on the chat bar: hydrates, flips + persists, re-syncs on broadcast (WI-4740)', async () => {

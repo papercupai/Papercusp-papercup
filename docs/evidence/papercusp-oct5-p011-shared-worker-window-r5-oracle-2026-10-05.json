@@ -1,0 +1,2427 @@
+{
+  "schemaVersion": "p011-baseline-independent-v1",
+  "proofs": [
+    {
+      "path": "docs/evidence/papercusp-oct5-p011-shared-worker-window-r5-2026-10-05.json",
+      "sha256": "0d7c3e3b1cc3efe55f8de36f4c913a09fe93db6645d6440e6e49d599761d4915",
+      "bytes": 808488,
+      "result": {
+        "target": "main",
+        "mainIdentity": "613219:3059513:7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "counterIdentity": "613219:3059513:7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "buildSha": "4a36c9692a",
+        "samples": [
+          {
+            "label": "idle-0-start",
+            "pssBytes": 983209984,
+            "allocatedBytes": 19639750400,
+            "observedPssBytes": 983209984,
+            "checkedProcesses": 1,
+            "notChecked": []
+          },
+          {
+            "label": "idle-0-end",
+            "pssBytes": 983251968,
+            "allocatedBytes": 19643039544,
+            "observedPssBytes": 983251968,
+            "checkedProcesses": 1,
+            "notChecked": []
+          },
+          {
+            "label": "ordinary-0-end",
+            "pssBytes": 985796608,
+            "allocatedBytes": 19662407832,
+            "observedPssBytes": 985796608,
+            "checkedProcesses": 1,
+            "notChecked": []
+          },
+          {
+            "label": "idle-1-start",
+            "pssBytes": 985796608,
+            "allocatedBytes": 19664862816,
+            "observedPssBytes": 985796608,
+            "checkedProcesses": 1,
+            "notChecked": []
+          },
+          {
+            "label": "idle-1-end",
+            "pssBytes": 985879552,
+            "allocatedBytes": 19667415656,
+            "observedPssBytes": 985879552,
+            "checkedProcesses": 1,
+            "notChecked": []
+          },
+          {
+            "label": "ordinary-1-end",
+            "pssBytes": 985909248,
+            "allocatedBytes": 19708121480,
+            "observedPssBytes": 985909248,
+            "checkedProcesses": 1,
+            "notChecked": []
+          },
+          {
+            "label": "idle-2-start",
+            "pssBytes": 985909248,
+            "allocatedBytes": 19709802376,
+            "observedPssBytes": 985909248,
+            "checkedProcesses": 1,
+            "notChecked": []
+          },
+          {
+            "label": "idle-2-end",
+            "pssBytes": 987619328,
+            "allocatedBytes": 19757887248,
+            "observedPssBytes": 987619328,
+            "checkedProcesses": 1,
+            "notChecked": []
+          },
+          {
+            "label": "ordinary-2-end",
+            "pssBytes": 987752448,
+            "allocatedBytes": 19779055056,
+            "observedPssBytes": 987752448,
+            "checkedProcesses": 1,
+            "notChecked": []
+          }
+        ],
+        "windows": [
+          {
+            "window": 0,
+            "idlePssDeltaBytes": 41984,
+            "ordinaryPssDeltaBytes": 2544640,
+            "idleAllocatedBytes": 3289144,
+            "ordinaryAllocatedBytes": 19368288
+          },
+          {
+            "window": 1,
+            "idlePssDeltaBytes": 82944,
+            "ordinaryPssDeltaBytes": 29696,
+            "idleAllocatedBytes": 2552840,
+            "ordinaryAllocatedBytes": 40705824
+          },
+          {
+            "window": 2,
+            "idlePssDeltaBytes": 1710080,
+            "ordinaryPssDeltaBytes": 133120,
+            "idleAllocatedBytes": 48084872,
+            "ordinaryAllocatedBytes": 21167808
+          }
+        ],
+        "requestWorkerWindows": [
+          {
+            "window": 0,
+            "resources": [
+              {
+                "pid": 613219,
+                "startTicks": "3059513",
+                "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                "buildSha": "4a36c9692a",
+                "role": {
+                  "clusterRole": "primary",
+                  "requestOnly": true,
+                  "configuredSidecar": null,
+                  "requestAssignment": "unknown",
+                  "allocationOwner": "unknown"
+                },
+                "pssBytesBefore": 983251968,
+                "pssBytesAfter": 985796608,
+                "pssChangeBytes": 2544640,
+                "allocatedBytes": 13527144,
+                "countersBefore": {
+                  "pid": 613219,
+                  "at": 1791242501946,
+                  "uptime": 880.281047314,
+                  "memory": {
+                    "rss": 1004171264,
+                    "heapTotal": 762974208,
+                    "heapUsed": 555374560,
+                    "external": 84938420,
+                    "arrayBuffers": 1198246
+                  },
+                  "heap": {
+                    "total_heap_size": 762974208,
+                    "total_heap_size_executable": 18198528,
+                    "total_physical_size": 762974208,
+                    "total_available_size": 137081168920,
+                    "used_heap_size": 555374800,
+                    "heap_size_limit": 137640280064,
+                    "malloced_memory": 4227152,
+                    "peak_malloced_memory": 120050864,
+                    "does_zap_garbage": 0,
+                    "number_of_native_contexts": 2,
+                    "number_of_detached_contexts": 0,
+                    "total_global_handles_size": 1380424,
+                    "used_global_handles_size": 1059552,
+                    "external_memory": 84938420,
+                    "total_allocated_bytes": 19645541312
+                  },
+                  "heapSpaces": [
+                    {
+                      "space_name": "read_only_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "new_space",
+                      "space_size": 134217728,
+                      "space_used_size": 7255792,
+                      "space_available_size": 59848976,
+                      "physical_space_size": 134217728
+                    },
+                    {
+                      "space_name": "old_space",
+                      "space_size": 536346624,
+                      "space_used_size": 462658120,
+                      "space_available_size": 72645808,
+                      "physical_space_size": 536346624
+                    },
+                    {
+                      "space_name": "code_space",
+                      "space_size": 17825792,
+                      "space_used_size": 15786176,
+                      "space_available_size": 2037440,
+                      "physical_space_size": 17825792
+                    },
+                    {
+                      "space_name": "shared_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "trusted_space",
+                      "space_size": 18612224,
+                      "space_used_size": 16218768,
+                      "space_available_size": 2354848,
+                      "physical_space_size": 18612224
+                    },
+                    {
+                      "space_name": "shared_trusted_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "new_large_object_space",
+                      "space_size": 135168,
+                      "space_used_size": 133896,
+                      "space_available_size": 66974968,
+                      "physical_space_size": 135168
+                    },
+                    {
+                      "space_name": "large_object_space",
+                      "space_size": 51003392,
+                      "space_used_size": 50784544,
+                      "space_available_size": 0,
+                      "physical_space_size": 51003392
+                    },
+                    {
+                      "space_name": "code_large_object_space",
+                      "space_size": 372736,
+                      "space_used_size": 365888,
+                      "space_available_size": 0,
+                      "physical_space_size": 372736
+                    },
+                    {
+                      "space_name": "shared_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "shared_trusted_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "trusted_large_object_space",
+                      "space_size": 4460544,
+                      "space_used_size": 2172640,
+                      "space_available_size": 0,
+                      "physical_space_size": 4460544
+                    }
+                  ],
+                  "heapCode": {
+                    "code_and_metadata_size": 20645350,
+                    "bytecode_and_metadata_size": 7759048,
+                    "external_script_source_size": 80854568,
+                    "cpu_profiler_metadata_size": 0
+                  },
+                  "hostFacts": {
+                    "cluster": {
+                      "isPrimary": true,
+                      "isWorker": false,
+                      "workerId": null,
+                      "primaryWorkerCount": 0
+                    },
+                    "backgroundWorkersOverride": "disabled",
+                    "stagingPort": true,
+                    "sidecarFlags": {
+                      "substrate": false,
+                      "spawner": false,
+                      "gateway": false,
+                      "embed": false,
+                      "resourceHealth": false
+                    }
+                  }
+                },
+                "countersAfter": {
+                  "pid": 613219,
+                  "at": 1791242502930,
+                  "uptime": 881.264585249,
+                  "memory": {
+                    "rss": 1008365568,
+                    "heapTotal": 762974208,
+                    "heapUsed": 561215368,
+                    "external": 86376180,
+                    "arrayBuffers": 2636006
+                  },
+                  "heap": {
+                    "total_heap_size": 762974208,
+                    "total_heap_size_executable": 18198528,
+                    "total_physical_size": 762974208,
+                    "total_available_size": 137075327928,
+                    "used_heap_size": 561215608,
+                    "heap_size_limit": 137640280064,
+                    "malloced_memory": 4227152,
+                    "peak_malloced_memory": 120050864,
+                    "does_zap_garbage": 0,
+                    "number_of_native_contexts": 2,
+                    "number_of_detached_contexts": 0,
+                    "total_global_handles_size": 1380424,
+                    "used_global_handles_size": 1066016,
+                    "external_memory": 86376180,
+                    "total_allocated_bytes": 19659068456
+                  },
+                  "heapSpaces": [
+                    {
+                      "space_name": "read_only_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "new_space",
+                      "space_size": 134217728,
+                      "space_used_size": 12615096,
+                      "space_available_size": 54489672,
+                      "physical_space_size": 134217728
+                    },
+                    {
+                      "space_name": "old_space",
+                      "space_size": 536346624,
+                      "space_used_size": 462899880,
+                      "space_available_size": 72403880,
+                      "physical_space_size": 536346624
+                    },
+                    {
+                      "space_name": "code_space",
+                      "space_size": 17825792,
+                      "space_used_size": 15914048,
+                      "space_available_size": 1909568,
+                      "physical_space_size": 17825792
+                    },
+                    {
+                      "space_name": "shared_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "trusted_space",
+                      "space_size": 18612224,
+                      "space_used_size": 16330448,
+                      "space_available_size": 2243152,
+                      "physical_space_size": 18612224
+                    },
+                    {
+                      "space_name": "shared_trusted_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "new_large_object_space",
+                      "space_size": 135168,
+                      "space_used_size": 133896,
+                      "space_available_size": 66974968,
+                      "physical_space_size": 135168
+                    },
+                    {
+                      "space_name": "large_object_space",
+                      "space_size": 51003392,
+                      "space_used_size": 50784544,
+                      "space_available_size": 0,
+                      "physical_space_size": 51003392
+                    },
+                    {
+                      "space_name": "code_large_object_space",
+                      "space_size": 372736,
+                      "space_used_size": 365888,
+                      "space_available_size": 0,
+                      "physical_space_size": 372736
+                    },
+                    {
+                      "space_name": "shared_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "shared_trusted_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "trusted_large_object_space",
+                      "space_size": 4460544,
+                      "space_used_size": 2172640,
+                      "space_available_size": 0,
+                      "physical_space_size": 4460544
+                    }
+                  ],
+                  "heapCode": {
+                    "code_and_metadata_size": 20796741,
+                    "bytecode_and_metadata_size": 7807744,
+                    "external_script_source_size": 80854568,
+                    "cpu_profiler_metadata_size": 0
+                  },
+                  "hostFacts": {
+                    "cluster": {
+                      "isPrimary": true,
+                      "isWorker": false,
+                      "workerId": null,
+                      "primaryWorkerCount": 0
+                    },
+                    "backgroundWorkersOverride": "disabled",
+                    "stagingPort": true,
+                    "sidecarFlags": {
+                      "substrate": false,
+                      "spawner": false,
+                      "gateway": false,
+                      "embed": false,
+                      "resourceHealth": false
+                    }
+                  }
+                }
+              }
+            ],
+            "assignment": {
+              "status": "observed",
+              "requested": 8,
+              "assignments": [
+                {
+                  "requestId": "ee60a894-7a7d-4f61-b681-4ed13e925791",
+                  "pid": 613219,
+                  "startTicks": "3059513",
+                  "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                  "queryTuples": [
+                    "[\"ee60a894-7a7d-4f61-b681-4ed13e925791\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",8,1180]",
+                    "[\"ee60a894-7a7d-4f61-b681-4ed13e925791\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",6,1146]"
+                  ]
+                },
+                {
+                  "requestId": "0c70c680-8083-4ffc-959f-d504f81c9d67",
+                  "pid": 613219,
+                  "startTicks": "3059513",
+                  "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                  "queryTuples": [
+                    "[\"0c70c680-8083-4ffc-959f-d504f81c9d67\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",11,1152]",
+                    "[\"0c70c680-8083-4ffc-959f-d504f81c9d67\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",16,1158]"
+                  ]
+                },
+                {
+                  "requestId": "3ffffb8a-d0bd-45a5-89ad-ec7f435c9712",
+                  "pid": 613219,
+                  "startTicks": "3059513",
+                  "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                  "queryTuples": [
+                    "[\"3ffffb8a-d0bd-45a5-89ad-ec7f435c9712\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",7,1143]",
+                    "[\"3ffffb8a-d0bd-45a5-89ad-ec7f435c9712\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",14,1123]"
+                  ]
+                },
+                {
+                  "requestId": "0fb1fea0-9182-4e9b-8be4-c5c3fb3e1a7d",
+                  "pid": 613219,
+                  "startTicks": "3059513",
+                  "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                  "queryTuples": [
+                    "[\"0fb1fea0-9182-4e9b-8be4-c5c3fb3e1a7d\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",13,1132]",
+                    "[\"0fb1fea0-9182-4e9b-8be4-c5c3fb3e1a7d\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",5,1144]"
+                  ]
+                },
+                {
+                  "requestId": "12f5037b-6969-4100-8134-da0c1e5ad5fb",
+                  "pid": 613219,
+                  "startTicks": "3059513",
+                  "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                  "queryTuples": [
+                    "[\"12f5037b-6969-4100-8134-da0c1e5ad5fb\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",9,1186]",
+                    "[\"12f5037b-6969-4100-8134-da0c1e5ad5fb\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",11,1153]"
+                  ]
+                },
+                {
+                  "requestId": "a79a4a5a-254c-4f1c-97b8-71d36c9fc121",
+                  "pid": 613219,
+                  "startTicks": "3059513",
+                  "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                  "queryTuples": [
+                    "[\"a79a4a5a-254c-4f1c-97b8-71d36c9fc121\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",8,1181]",
+                    "[\"a79a4a5a-254c-4f1c-97b8-71d36c9fc121\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",6,1147]"
+                  ]
+                },
+                {
+                  "requestId": "756fcce7-6235-4e6f-8f03-7987db04ccfa",
+                  "pid": 613219,
+                  "startTicks": "3059513",
+                  "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                  "queryTuples": [
+                    "[\"756fcce7-6235-4e6f-8f03-7987db04ccfa\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",13,1133]",
+                    "[\"756fcce7-6235-4e6f-8f03-7987db04ccfa\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",7,1144]"
+                  ]
+                },
+                {
+                  "requestId": "de9273d2-42c4-47a6-bd16-08bdfc3efe9f",
+                  "pid": 613219,
+                  "startTicks": "3059513",
+                  "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                  "queryTuples": [
+                    "[\"de9273d2-42c4-47a6-bd16-08bdfc3efe9f\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",16,1159]",
+                    "[\"de9273d2-42c4-47a6-bd16-08bdfc3efe9f\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",3,1124]"
+                  ]
+                }
+              ],
+              "unresolvedRequestIds": []
+            },
+            "coverage": [
+              {
+                "phase": "before",
+                "unsampledPids": [],
+                "notCheckedBefore": [],
+                "notCheckedAfter": []
+              },
+              {
+                "phase": "during-0",
+                "unsampledPids": [],
+                "notCheckedBefore": [],
+                "notCheckedAfter": []
+              },
+              {
+                "phase": "during-1",
+                "unsampledPids": [],
+                "notCheckedBefore": [],
+                "notCheckedAfter": []
+              },
+              {
+                "phase": "during-2",
+                "unsampledPids": [],
+                "notCheckedBefore": [],
+                "notCheckedAfter": []
+              },
+              {
+                "phase": "during-3",
+                "unsampledPids": [],
+                "notCheckedBefore": [],
+                "notCheckedAfter": []
+              },
+              {
+                "phase": "after",
+                "unsampledPids": [],
+                "notCheckedBefore": [],
+                "notCheckedAfter": []
+              }
+            ],
+            "selectedAncestry": {
+              "status": "observed",
+              "brackets": [
+                {
+                  "phase": "before",
+                  "bracket": "before",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "before",
+                  "bracket": "after",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "during-0",
+                  "bracket": "before",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "during-0",
+                  "bracket": "after",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "during-1",
+                  "bracket": "before",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "during-1",
+                  "bracket": "after",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "during-2",
+                  "bracket": "before",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "during-2",
+                  "bracket": "after",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "during-3",
+                  "bracket": "before",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "during-3",
+                  "bracket": "after",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "after",
+                  "bracket": "before",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "after",
+                  "bracket": "after",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "definition": "Exact selected ancestor lifetime pins across serial bounded census brackets; no atomic or complete service census"
+            },
+            "servingWorkerPopulation": "unknown",
+            "queryPopulation": "bounded observed rings; unseen queries remain unknown",
+            "queryObservation": "response checkpoints and terminal ring",
+            "diagnosticRings": {
+              "status": "observed",
+              "samples": [
+                {
+                  "phase": "before",
+                  "pid": 613219,
+                  "pool": "org-admin",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 18442,
+                  "dropped": 18410
+                },
+                {
+                  "phase": "before",
+                  "pid": 613219,
+                  "pool": "org-app",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 763,
+                  "dropped": 731
+                },
+                {
+                  "phase": "during-0",
+                  "pid": 613219,
+                  "pool": "org-admin",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 18446,
+                  "dropped": 18414
+                },
+                {
+                  "phase": "during-0",
+                  "pid": 613219,
+                  "pool": "org-app",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 763,
+                  "dropped": 731
+                },
+                {
+                  "phase": "during-1",
+                  "pid": 613219,
+                  "pool": "org-admin",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 18451,
+                  "dropped": 18419
+                },
+                {
+                  "phase": "during-1",
+                  "pid": 613219,
+                  "pool": "org-app",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 763,
+                  "dropped": 731
+                },
+                {
+                  "phase": "during-2",
+                  "pid": 613219,
+                  "pool": "org-admin",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 18461,
+                  "dropped": 18429
+                },
+                {
+                  "phase": "during-2",
+                  "pid": 613219,
+                  "pool": "org-app",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 763,
+                  "dropped": 731
+                },
+                {
+                  "phase": "during-3",
+                  "pid": 613219,
+                  "pool": "org-admin",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 18465,
+                  "dropped": 18433
+                },
+                {
+                  "phase": "during-3",
+                  "pid": 613219,
+                  "pool": "org-app",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 763,
+                  "dropped": 731
+                },
+                {
+                  "phase": "after",
+                  "pid": 613219,
+                  "pool": "org-admin",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 18466,
+                  "dropped": 18434
+                },
+                {
+                  "phase": "after",
+                  "pid": 613219,
+                  "pool": "org-app",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 763,
+                  "dropped": 731
+                }
+              ],
+              "definition": "Per-pool all-query FIFO counters; they do not identify an unseen request or prove its eviction"
+            },
+            "unsampledAncestorLifetimes": "unknown",
+            "allocationOwner": "unknown",
+            "physicalSavings": "unmeasured"
+          },
+          {
+            "window": 1,
+            "resources": [
+              {
+                "pid": 613219,
+                "startTicks": "3059513",
+                "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                "buildSha": "4a36c9692a",
+                "role": {
+                  "clusterRole": "primary",
+                  "requestOnly": true,
+                  "configuredSidecar": null,
+                  "requestAssignment": "unknown",
+                  "allocationOwner": "unknown"
+                },
+                "pssBytesBefore": 985953280,
+                "pssBytesAfter": 985908224,
+                "pssChangeBytes": -45056,
+                "allocatedBytes": 37271552,
+                "countersBefore": {
+                  "pid": 613219,
+                  "at": 1791242505705,
+                  "uptime": 884.039705357,
+                  "memory": {
+                    "rss": 1008365568,
+                    "heapTotal": 762974208,
+                    "heapUsed": 562608480,
+                    "external": 86480576,
+                    "arrayBuffers": 2740402
+                  },
+                  "heap": {
+                    "total_heap_size": 762974208,
+                    "total_heap_size_executable": 18198528,
+                    "total_physical_size": 762974208,
+                    "total_available_size": 137073934800,
+                    "used_heap_size": 562608720,
+                    "heap_size_limit": 137640280064,
+                    "malloced_memory": 4227152,
+                    "peak_malloced_memory": 120050864,
+                    "does_zap_garbage": 0,
+                    "number_of_native_contexts": 2,
+                    "number_of_detached_contexts": 0,
+                    "total_global_handles_size": 1380424,
+                    "used_global_handles_size": 1066144,
+                    "external_memory": 86480576,
+                    "total_allocated_bytes": 19670149160
+                  },
+                  "heapSpaces": [
+                    {
+                      "space_name": "read_only_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "new_space",
+                      "space_size": 134217728,
+                      "space_used_size": 13987920,
+                      "space_available_size": 53116848,
+                      "physical_space_size": 134217728
+                    },
+                    {
+                      "space_name": "old_space",
+                      "space_size": 536346624,
+                      "space_used_size": 462920376,
+                      "space_available_size": 72383368,
+                      "physical_space_size": 536346624
+                    },
+                    {
+                      "space_name": "code_space",
+                      "space_size": 17825792,
+                      "space_used_size": 15914048,
+                      "space_available_size": 1909568,
+                      "physical_space_size": 17825792
+                    },
+                    {
+                      "space_name": "shared_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "trusted_space",
+                      "space_size": 18612224,
+                      "space_used_size": 16330448,
+                      "space_available_size": 2243152,
+                      "physical_space_size": 18612224
+                    },
+                    {
+                      "space_name": "shared_trusted_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "new_large_object_space",
+                      "space_size": 135168,
+                      "space_used_size": 133896,
+                      "space_available_size": 66974968,
+                      "physical_space_size": 135168
+                    },
+                    {
+                      "space_name": "large_object_space",
+                      "space_size": 51003392,
+                      "space_used_size": 50784544,
+                      "space_available_size": 0,
+                      "physical_space_size": 51003392
+                    },
+                    {
+                      "space_name": "code_large_object_space",
+                      "space_size": 372736,
+                      "space_used_size": 365888,
+                      "space_available_size": 0,
+                      "physical_space_size": 372736
+                    },
+                    {
+                      "space_name": "shared_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "shared_trusted_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "trusted_large_object_space",
+                      "space_size": 4460544,
+                      "space_used_size": 2172640,
+                      "space_available_size": 0,
+                      "physical_space_size": 4460544
+                    }
+                  ],
+                  "heapCode": {
+                    "code_and_metadata_size": 20796741,
+                    "bytecode_and_metadata_size": 7807744,
+                    "external_script_source_size": 80854568,
+                    "cpu_profiler_metadata_size": 0
+                  },
+                  "hostFacts": {
+                    "cluster": {
+                      "isPrimary": true,
+                      "isWorker": false,
+                      "workerId": null,
+                      "primaryWorkerCount": 0
+                    },
+                    "backgroundWorkersOverride": "disabled",
+                    "stagingPort": true,
+                    "sidecarFlags": {
+                      "substrate": false,
+                      "spawner": false,
+                      "gateway": false,
+                      "embed": false,
+                      "resourceHealth": false
+                    }
+                  }
+                },
+                "countersAfter": {
+                  "pid": 613219,
+                  "at": 1791242506721,
+                  "uptime": 885.055682919,
+                  "memory": {
+                    "rss": 1008365568,
+                    "heapTotal": 762974208,
+                    "heapUsed": 595253168,
+                    "external": 88057433,
+                    "arrayBuffers": 4317259
+                  },
+                  "heap": {
+                    "total_heap_size": 762974208,
+                    "total_heap_size_executable": 18198528,
+                    "total_physical_size": 762974208,
+                    "total_available_size": 137041289856,
+                    "used_heap_size": 595253408,
+                    "heap_size_limit": 137640280064,
+                    "malloced_memory": 4227152,
+                    "peak_malloced_memory": 120050864,
+                    "does_zap_garbage": 0,
+                    "number_of_native_contexts": 2,
+                    "number_of_detached_contexts": 0,
+                    "total_global_handles_size": 1380424,
+                    "used_global_handles_size": 1073184,
+                    "external_memory": 88057433,
+                    "total_allocated_bytes": 19707420712
+                  },
+                  "heapSpaces": [
+                    {
+                      "space_name": "read_only_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "new_space",
+                      "space_size": 134217728,
+                      "space_used_size": 46115880,
+                      "space_available_size": 20988888,
+                      "physical_space_size": 134217728
+                    },
+                    {
+                      "space_name": "old_space",
+                      "space_size": 536346624,
+                      "space_used_size": 463219536,
+                      "space_available_size": 72083952,
+                      "physical_space_size": 536346624
+                    },
+                    {
+                      "space_name": "code_space",
+                      "space_size": 17825792,
+                      "space_used_size": 16055616,
+                      "space_available_size": 1768000,
+                      "physical_space_size": 17825792
+                    },
+                    {
+                      "space_name": "shared_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "trusted_space",
+                      "space_size": 18612224,
+                      "space_used_size": 16406448,
+                      "space_available_size": 2167152,
+                      "physical_space_size": 18612224
+                    },
+                    {
+                      "space_name": "shared_trusted_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "new_large_object_space",
+                      "space_size": 135168,
+                      "space_used_size": 133896,
+                      "space_available_size": 66974968,
+                      "physical_space_size": 135168
+                    },
+                    {
+                      "space_name": "large_object_space",
+                      "space_size": 51003392,
+                      "space_used_size": 50784544,
+                      "space_available_size": 0,
+                      "physical_space_size": 51003392
+                    },
+                    {
+                      "space_name": "code_large_object_space",
+                      "space_size": 372736,
+                      "space_used_size": 365888,
+                      "space_available_size": 0,
+                      "physical_space_size": 372736
+                    },
+                    {
+                      "space_name": "shared_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "shared_trusted_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "trusted_large_object_space",
+                      "space_size": 4460544,
+                      "space_used_size": 2172640,
+                      "space_available_size": 0,
+                      "physical_space_size": 4460544
+                    }
+                  ],
+                  "heapCode": {
+                    "code_and_metadata_size": 20969664,
+                    "bytecode_and_metadata_size": 7815936,
+                    "external_script_source_size": 80854568,
+                    "cpu_profiler_metadata_size": 0
+                  },
+                  "hostFacts": {
+                    "cluster": {
+                      "isPrimary": true,
+                      "isWorker": false,
+                      "workerId": null,
+                      "primaryWorkerCount": 0
+                    },
+                    "backgroundWorkersOverride": "disabled",
+                    "stagingPort": true,
+                    "sidecarFlags": {
+                      "substrate": false,
+                      "spawner": false,
+                      "gateway": false,
+                      "embed": false,
+                      "resourceHealth": false
+                    }
+                  }
+                }
+              }
+            ],
+            "assignment": {
+              "status": "observed",
+              "requested": 8,
+              "assignments": [
+                {
+                  "requestId": "b58683a4-ea95-45c4-a6ec-2d1d1afc7fdf",
+                  "pid": 613219,
+                  "startTicks": "3059513",
+                  "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                  "queryTuples": [
+                    "[\"b58683a4-ea95-45c4-a6ec-2d1d1afc7fdf\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",10,1176]",
+                    "[\"b58683a4-ea95-45c4-a6ec-2d1d1afc7fdf\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",2,1146]"
+                  ]
+                },
+                {
+                  "requestId": "01e45bd7-c2f0-4207-b3fc-be664e1ecbf6",
+                  "pid": 613219,
+                  "startTicks": "3059513",
+                  "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                  "queryTuples": [
+                    "[\"01e45bd7-c2f0-4207-b3fc-be664e1ecbf6\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",4,1145]",
+                    "[\"01e45bd7-c2f0-4207-b3fc-be664e1ecbf6\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",15,1160]"
+                  ]
+                },
+                {
+                  "requestId": "c77f59ed-6337-441a-9c6b-75d37d4fc191",
+                  "pid": 613219,
+                  "startTicks": "3059513",
+                  "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                  "queryTuples": [
+                    "[\"c77f59ed-6337-441a-9c6b-75d37d4fc191\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",12,1185]",
+                    "[\"c77f59ed-6337-441a-9c6b-75d37d4fc191\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",6,1149]"
+                  ]
+                },
+                {
+                  "requestId": "a0201506-057f-4b89-a696-d2ae90edd3e1",
+                  "pid": 613219,
+                  "startTicks": "3059513",
+                  "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                  "queryTuples": [
+                    "[\"a0201506-057f-4b89-a696-d2ae90edd3e1\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",9,1188]",
+                    "[\"a0201506-057f-4b89-a696-d2ae90edd3e1\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",11,1155]"
+                  ]
+                },
+                {
+                  "requestId": "9ac21ac5-297b-4917-a355-fcff4285e519",
+                  "pid": 613219,
+                  "startTicks": "3059513",
+                  "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                  "queryTuples": [
+                    "[\"9ac21ac5-297b-4917-a355-fcff4285e519\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",2,1147]",
+                    "[\"9ac21ac5-297b-4917-a355-fcff4285e519\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",17,1172]"
+                  ]
+                },
+                {
+                  "requestId": "0a35a1ff-8d6d-4c3d-acc0-b6a839588450",
+                  "pid": 613219,
+                  "startTicks": "3059513",
+                  "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                  "queryTuples": [
+                    "[\"0a35a1ff-8d6d-4c3d-acc0-b6a839588450\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",15,1161]",
+                    "[\"0a35a1ff-8d6d-4c3d-acc0-b6a839588450\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",9,1189]"
+                  ]
+                },
+                {
+                  "requestId": "d5c33d3f-fc41-4297-8446-1d31c482fa70",
+                  "pid": 613219,
+                  "startTicks": "3059513",
+                  "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                  "queryTuples": [
+                    "[\"d5c33d3f-fc41-4297-8446-1d31c482fa70\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",8,1184]",
+                    "[\"d5c33d3f-fc41-4297-8446-1d31c482fa70\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",16,1162]"
+                  ]
+                },
+                {
+                  "requestId": "124d88fc-8fed-49da-8d63-38dab0dbcf87",
+                  "pid": 613219,
+                  "startTicks": "3059513",
+                  "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                  "queryTuples": [
+                    "[\"124d88fc-8fed-49da-8d63-38dab0dbcf87\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",6,1150]",
+                    "[\"124d88fc-8fed-49da-8d63-38dab0dbcf87\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",13,1136]"
+                  ]
+                }
+              ],
+              "unresolvedRequestIds": []
+            },
+            "coverage": [
+              {
+                "phase": "before",
+                "unsampledPids": [],
+                "notCheckedBefore": [],
+                "notCheckedAfter": []
+              },
+              {
+                "phase": "during-0",
+                "unsampledPids": [],
+                "notCheckedBefore": [],
+                "notCheckedAfter": []
+              },
+              {
+                "phase": "during-1",
+                "unsampledPids": [],
+                "notCheckedBefore": [],
+                "notCheckedAfter": []
+              },
+              {
+                "phase": "during-2",
+                "unsampledPids": [],
+                "notCheckedBefore": [],
+                "notCheckedAfter": []
+              },
+              {
+                "phase": "during-3",
+                "unsampledPids": [],
+                "notCheckedBefore": [],
+                "notCheckedAfter": []
+              },
+              {
+                "phase": "after",
+                "unsampledPids": [],
+                "notCheckedBefore": [],
+                "notCheckedAfter": []
+              }
+            ],
+            "selectedAncestry": {
+              "status": "observed",
+              "brackets": [
+                {
+                  "phase": "before",
+                  "bracket": "before",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "before",
+                  "bracket": "after",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "during-0",
+                  "bracket": "before",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "during-0",
+                  "bracket": "after",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "during-1",
+                  "bracket": "before",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "during-1",
+                  "bracket": "after",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "during-2",
+                  "bracket": "before",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "during-2",
+                  "bracket": "after",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "during-3",
+                  "bracket": "before",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "during-3",
+                  "bracket": "after",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "after",
+                  "bracket": "before",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "after",
+                  "bracket": "after",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "definition": "Exact selected ancestor lifetime pins across serial bounded census brackets; no atomic or complete service census"
+            },
+            "servingWorkerPopulation": "unknown",
+            "queryPopulation": "bounded observed rings; unseen queries remain unknown",
+            "queryObservation": "response checkpoints and terminal ring",
+            "diagnosticRings": {
+              "status": "observed",
+              "samples": [
+                {
+                  "phase": "before",
+                  "pid": 613219,
+                  "pool": "org-admin",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 18485,
+                  "dropped": 18453
+                },
+                {
+                  "phase": "before",
+                  "pid": 613219,
+                  "pool": "org-app",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 763,
+                  "dropped": 731
+                },
+                {
+                  "phase": "during-0",
+                  "pid": 613219,
+                  "pool": "org-admin",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 18490,
+                  "dropped": 18458
+                },
+                {
+                  "phase": "during-0",
+                  "pid": 613219,
+                  "pool": "org-app",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 763,
+                  "dropped": 731
+                },
+                {
+                  "phase": "during-1",
+                  "pid": 613219,
+                  "pool": "org-admin",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 18496,
+                  "dropped": 18464
+                },
+                {
+                  "phase": "during-1",
+                  "pid": 613219,
+                  "pool": "org-app",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 763,
+                  "dropped": 731
+                },
+                {
+                  "phase": "during-2",
+                  "pid": 613219,
+                  "pool": "org-admin",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 18514,
+                  "dropped": 18482
+                },
+                {
+                  "phase": "during-2",
+                  "pid": 613219,
+                  "pool": "org-app",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 777,
+                  "dropped": 745
+                },
+                {
+                  "phase": "during-3",
+                  "pid": 613219,
+                  "pool": "org-admin",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 18521,
+                  "dropped": 18489
+                },
+                {
+                  "phase": "during-3",
+                  "pid": 613219,
+                  "pool": "org-app",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 777,
+                  "dropped": 745
+                },
+                {
+                  "phase": "after",
+                  "pid": 613219,
+                  "pool": "org-admin",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 18523,
+                  "dropped": 18491
+                },
+                {
+                  "phase": "after",
+                  "pid": 613219,
+                  "pool": "org-app",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 777,
+                  "dropped": 745
+                }
+              ],
+              "definition": "Per-pool all-query FIFO counters; they do not identify an unseen request or prove its eviction"
+            },
+            "unsampledAncestorLifetimes": "unknown",
+            "allocationOwner": "unknown",
+            "physicalSavings": "unmeasured"
+          },
+          {
+            "window": 2,
+            "resources": [
+              {
+                "pid": 613219,
+                "startTicks": "3059513",
+                "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                "buildSha": "4a36c9692a",
+                "role": {
+                  "clusterRole": "primary",
+                  "requestOnly": true,
+                  "configuredSidecar": null,
+                  "requestAssignment": "unknown",
+                  "allocationOwner": "unknown"
+                },
+                "pssBytesBefore": 987619328,
+                "pssBytesAfter": 987752448,
+                "pssChangeBytes": 133120,
+                "allocatedBytes": 15670272,
+                "countersBefore": {
+                  "pid": 613219,
+                  "at": 1791242509528,
+                  "uptime": 887.862984067,
+                  "memory": {
+                    "rss": 1010552832,
+                    "heapTotal": 764538880,
+                    "heapUsed": 590087864,
+                    "external": 85768052,
+                    "arrayBuffers": 2027878
+                  },
+                  "heap": {
+                    "total_heap_size": 764538880,
+                    "total_heap_size_executable": 18460672,
+                    "total_physical_size": 764538880,
+                    "total_available_size": 137045420912,
+                    "used_heap_size": 590088104,
+                    "heap_size_limit": 137640280064,
+                    "malloced_memory": 4227152,
+                    "peak_malloced_memory": 120050864,
+                    "does_zap_garbage": 0,
+                    "number_of_native_contexts": 2,
+                    "number_of_detached_contexts": 0,
+                    "total_global_handles_size": 1380424,
+                    "used_global_handles_size": 1082848,
+                    "external_memory": 85768052,
+                    "total_allocated_bytes": 19760141544
+                  },
+                  "heapSpaces": [
+                    {
+                      "space_name": "read_only_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "new_space",
+                      "space_size": 134217728,
+                      "space_used_size": 38044176,
+                      "space_available_size": 29060592,
+                      "physical_space_size": 134217728
+                    },
+                    {
+                      "space_name": "old_space",
+                      "space_size": 536346624,
+                      "space_used_size": 464196248,
+                      "space_available_size": 71106360,
+                      "physical_space_size": 536346624
+                    },
+                    {
+                      "space_name": "code_space",
+                      "space_size": 18087936,
+                      "space_used_size": 16382976,
+                      "space_available_size": 1702752,
+                      "physical_space_size": 18087936
+                    },
+                    {
+                      "space_name": "shared_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "trusted_space",
+                      "space_size": 18612224,
+                      "space_used_size": 16721568,
+                      "space_available_size": 1852024,
+                      "physical_space_size": 18612224
+                    },
+                    {
+                      "space_name": "shared_trusted_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "new_large_object_space",
+                      "space_size": 1167360,
+                      "space_used_size": 1151904,
+                      "space_available_size": 65956960,
+                      "physical_space_size": 1167360
+                    },
+                    {
+                      "space_name": "large_object_space",
+                      "space_size": 51273728,
+                      "space_used_size": 51053744,
+                      "space_available_size": 0,
+                      "physical_space_size": 51273728
+                    },
+                    {
+                      "space_name": "code_large_object_space",
+                      "space_size": 372736,
+                      "space_used_size": 365888,
+                      "space_available_size": 0,
+                      "physical_space_size": 372736
+                    },
+                    {
+                      "space_name": "shared_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "shared_trusted_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "trusted_large_object_space",
+                      "space_size": 4460544,
+                      "space_used_size": 2172640,
+                      "space_available_size": 0,
+                      "physical_space_size": 4460544
+                    }
+                  ],
+                  "heapCode": {
+                    "code_and_metadata_size": 21425507,
+                    "bytecode_and_metadata_size": 7863480,
+                    "external_script_source_size": 80854568,
+                    "cpu_profiler_metadata_size": 0
+                  },
+                  "hostFacts": {
+                    "cluster": {
+                      "isPrimary": true,
+                      "isWorker": false,
+                      "workerId": null,
+                      "primaryWorkerCount": 0
+                    },
+                    "backgroundWorkersOverride": "disabled",
+                    "stagingPort": true,
+                    "sidecarFlags": {
+                      "substrate": false,
+                      "spawner": false,
+                      "gateway": false,
+                      "embed": false,
+                      "resourceHealth": false
+                    }
+                  }
+                },
+                "countersAfter": {
+                  "pid": 613219,
+                  "at": 1791242510618,
+                  "uptime": 888.953243764,
+                  "memory": {
+                    "rss": 1010552832,
+                    "heapTotal": 764538880,
+                    "heapUsed": 598451616,
+                    "external": 87385756,
+                    "arrayBuffers": 3645582
+                  },
+                  "heap": {
+                    "total_heap_size": 764538880,
+                    "total_heap_size_executable": 18460672,
+                    "total_physical_size": 764538880,
+                    "total_available_size": 137037056808,
+                    "used_heap_size": 598451856,
+                    "heap_size_limit": 137640280064,
+                    "malloced_memory": 4227152,
+                    "peak_malloced_memory": 120050864,
+                    "does_zap_garbage": 0,
+                    "number_of_native_contexts": 2,
+                    "number_of_detached_contexts": 0,
+                    "total_global_handles_size": 1380424,
+                    "used_global_handles_size": 1085408,
+                    "external_memory": 87385756,
+                    "total_allocated_bytes": 19775811816
+                  },
+                  "heapSpaces": [
+                    {
+                      "space_name": "read_only_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "new_space",
+                      "space_size": 134217728,
+                      "space_used_size": 45906424,
+                      "space_available_size": 21198344,
+                      "physical_space_size": 134217728
+                    },
+                    {
+                      "space_name": "old_space",
+                      "space_size": 536346624,
+                      "space_used_size": 464561696,
+                      "space_available_size": 70740560,
+                      "physical_space_size": 536346624
+                    },
+                    {
+                      "space_name": "code_space",
+                      "space_size": 18087936,
+                      "space_used_size": 16463616,
+                      "space_available_size": 1622112,
+                      "physical_space_size": 18087936
+                    },
+                    {
+                      "space_name": "shared_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "trusted_space",
+                      "space_size": 18612224,
+                      "space_used_size": 16776984,
+                      "space_available_size": 1796608,
+                      "physical_space_size": 18612224
+                    },
+                    {
+                      "space_name": "shared_trusted_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "new_large_object_space",
+                      "space_size": 1167360,
+                      "space_used_size": 1151904,
+                      "space_available_size": 65956960,
+                      "physical_space_size": 1167360
+                    },
+                    {
+                      "space_name": "large_object_space",
+                      "space_size": 51273728,
+                      "space_used_size": 51053744,
+                      "space_available_size": 0,
+                      "physical_space_size": 51273728
+                    },
+                    {
+                      "space_name": "code_large_object_space",
+                      "space_size": 372736,
+                      "space_used_size": 365888,
+                      "space_available_size": 0,
+                      "physical_space_size": 372736
+                    },
+                    {
+                      "space_name": "shared_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "shared_trusted_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "trusted_large_object_space",
+                      "space_size": 4460544,
+                      "space_used_size": 2172640,
+                      "space_available_size": 0,
+                      "physical_space_size": 4460544
+                    }
+                  ],
+                  "heapCode": {
+                    "code_and_metadata_size": 21524462,
+                    "bytecode_and_metadata_size": 7878928,
+                    "external_script_source_size": 80854568,
+                    "cpu_profiler_metadata_size": 0
+                  },
+                  "hostFacts": {
+                    "cluster": {
+                      "isPrimary": true,
+                      "isWorker": false,
+                      "workerId": null,
+                      "primaryWorkerCount": 0
+                    },
+                    "backgroundWorkersOverride": "disabled",
+                    "stagingPort": true,
+                    "sidecarFlags": {
+                      "substrate": false,
+                      "spawner": false,
+                      "gateway": false,
+                      "embed": false,
+                      "resourceHealth": false
+                    }
+                  }
+                }
+              }
+            ],
+            "assignment": {
+              "status": "observed",
+              "requested": 8,
+              "assignments": [
+                {
+                  "requestId": "0a087d12-5d36-4b06-a44c-bf906bd0db67",
+                  "pid": 613219,
+                  "startTicks": "3059513",
+                  "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                  "queryTuples": [
+                    "[\"0a087d12-5d36-4b06-a44c-bf906bd0db67\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",11,1161]",
+                    "[\"0a087d12-5d36-4b06-a44c-bf906bd0db67\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",4,1152]"
+                  ]
+                },
+                {
+                  "requestId": "c0660b0a-f24e-4f00-ab5b-e2507d18408b",
+                  "pid": 613219,
+                  "startTicks": "3059513",
+                  "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                  "queryTuples": [
+                    "[\"c0660b0a-f24e-4f00-ab5b-e2507d18408b\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",15,1171]",
+                    "[\"c0660b0a-f24e-4f00-ab5b-e2507d18408b\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",2,1156]"
+                  ]
+                },
+                {
+                  "requestId": "9fbec4eb-6e26-4cc4-b578-13b6c3a9eced",
+                  "pid": 613219,
+                  "startTicks": "3059513",
+                  "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                  "queryTuples": [
+                    "[\"9fbec4eb-6e26-4cc4-b578-13b6c3a9eced\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",10,1191]",
+                    "[\"9fbec4eb-6e26-4cc4-b578-13b6c3a9eced\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",9,1195]"
+                  ]
+                },
+                {
+                  "requestId": "166e7236-f9c1-4841-ab71-1424e1b39303",
+                  "pid": 613219,
+                  "startTicks": "3059513",
+                  "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                  "queryTuples": [
+                    "[\"166e7236-f9c1-4841-ab71-1424e1b39303\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",16,1168]",
+                    "[\"166e7236-f9c1-4841-ab71-1424e1b39303\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",13,1150]"
+                  ]
+                },
+                {
+                  "requestId": "5552cc3b-2c98-4df6-85f4-fdb8ea2742d1",
+                  "pid": 613219,
+                  "startTicks": "3059513",
+                  "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                  "queryTuples": [
+                    "[\"5552cc3b-2c98-4df6-85f4-fdb8ea2742d1\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",17,1179]",
+                    "[\"5552cc3b-2c98-4df6-85f4-fdb8ea2742d1\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",15,1172]"
+                  ]
+                },
+                {
+                  "requestId": "3b20448a-1901-4e91-81f5-a3e861c0cae5",
+                  "pid": 613219,
+                  "startTicks": "3059513",
+                  "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                  "queryTuples": [
+                    "[\"3b20448a-1901-4e91-81f5-a3e861c0cae5\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",11,1162]",
+                    "[\"3b20448a-1901-4e91-81f5-a3e861c0cae5\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",4,1153]"
+                  ]
+                },
+                {
+                  "requestId": "1078f779-af33-41e8-80e5-57e8e73b1282",
+                  "pid": 613219,
+                  "startTicks": "3059513",
+                  "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                  "queryTuples": [
+                    "[\"1078f779-af33-41e8-80e5-57e8e73b1282\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",8,1199]",
+                    "[\"1078f779-af33-41e8-80e5-57e8e73b1282\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",3,1134]"
+                  ]
+                },
+                {
+                  "requestId": "1418e4be-fb91-4d32-ba11-e46276b276ff",
+                  "pid": 613219,
+                  "startTicks": "3059513",
+                  "processInstanceId": "c546d9cb-eb1c-4178-bf93-ac8489132f52",
+                  "queryTuples": [
+                    "[\"1418e4be-fb91-4d32-ba11-e46276b276ff\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",6,1157]",
+                    "[\"1418e4be-fb91-4d32-ba11-e46276b276ff\",\"org-admin\",\"c546d9cb-eb1c-4178-bf93-ac8489132f52\",\"4a36c9692a\",\"ca6a5826-0dec-4a0b-8aca-c6b9229a5e6b\",14,1140]"
+                  ]
+                }
+              ],
+              "unresolvedRequestIds": []
+            },
+            "coverage": [
+              {
+                "phase": "before",
+                "unsampledPids": [],
+                "notCheckedBefore": [],
+                "notCheckedAfter": []
+              },
+              {
+                "phase": "during-0",
+                "unsampledPids": [],
+                "notCheckedBefore": [],
+                "notCheckedAfter": []
+              },
+              {
+                "phase": "during-1",
+                "unsampledPids": [],
+                "notCheckedBefore": [],
+                "notCheckedAfter": []
+              },
+              {
+                "phase": "during-2",
+                "unsampledPids": [],
+                "notCheckedBefore": [],
+                "notCheckedAfter": []
+              },
+              {
+                "phase": "during-3",
+                "unsampledPids": [],
+                "notCheckedBefore": [],
+                "notCheckedAfter": []
+              },
+              {
+                "phase": "after",
+                "unsampledPids": [],
+                "notCheckedBefore": [],
+                "notCheckedAfter": []
+              }
+            ],
+            "selectedAncestry": {
+              "status": "observed",
+              "brackets": [
+                {
+                  "phase": "before",
+                  "bracket": "before",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "before",
+                  "bracket": "after",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "during-0",
+                  "bracket": "before",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "during-0",
+                  "bracket": "after",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "during-1",
+                  "bracket": "before",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "during-1",
+                  "bracket": "after",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "during-2",
+                  "bracket": "before",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "during-2",
+                  "bracket": "after",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "during-3",
+                  "bracket": "before",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "during-3",
+                  "bracket": "after",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "after",
+                  "bracket": "before",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "after",
+                  "bracket": "after",
+                  "pid": 613219,
+                  "chain": [
+                    {
+                      "pid": 613219,
+                      "startTicks": "3059513",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-4a36c9692a9e.zvWcSg/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "definition": "Exact selected ancestor lifetime pins across serial bounded census brackets; no atomic or complete service census"
+            },
+            "servingWorkerPopulation": "unknown",
+            "queryPopulation": "bounded observed rings; unseen queries remain unknown",
+            "queryObservation": "response checkpoints and terminal ring",
+            "diagnosticRings": {
+              "status": "observed",
+              "samples": [
+                {
+                  "phase": "before",
+                  "pid": 613219,
+                  "pool": "org-admin",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 18640,
+                  "dropped": 18608
+                },
+                {
+                  "phase": "before",
+                  "pid": 613219,
+                  "pool": "org-app",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 815,
+                  "dropped": 783
+                },
+                {
+                  "phase": "during-0",
+                  "pid": 613219,
+                  "pool": "org-admin",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 18645,
+                  "dropped": 18613
+                },
+                {
+                  "phase": "during-0",
+                  "pid": 613219,
+                  "pool": "org-app",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 815,
+                  "dropped": 783
+                },
+                {
+                  "phase": "during-1",
+                  "pid": 613219,
+                  "pool": "org-admin",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 18650,
+                  "dropped": 18618
+                },
+                {
+                  "phase": "during-1",
+                  "pid": 613219,
+                  "pool": "org-app",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 815,
+                  "dropped": 783
+                },
+                {
+                  "phase": "during-2",
+                  "pid": 613219,
+                  "pool": "org-admin",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 18666,
+                  "dropped": 18634
+                },
+                {
+                  "phase": "during-2",
+                  "pid": 613219,
+                  "pool": "org-app",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 829,
+                  "dropped": 797
+                },
+                {
+                  "phase": "during-3",
+                  "pid": 613219,
+                  "pool": "org-admin",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 18685,
+                  "dropped": 18653
+                },
+                {
+                  "phase": "during-3",
+                  "pid": 613219,
+                  "pool": "org-app",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 829,
+                  "dropped": 797
+                },
+                {
+                  "phase": "after",
+                  "pid": 613219,
+                  "pool": "org-admin",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 18685,
+                  "dropped": 18653
+                },
+                {
+                  "phase": "after",
+                  "pid": 613219,
+                  "pool": "org-app",
+                  "capacity": 32,
+                  "retained": 32,
+                  "totalRecorded": 829,
+                  "dropped": 797
+                }
+              ],
+              "definition": "Per-pool all-query FIFO counters; they do not identify an unseen request or prove its eviction"
+            },
+            "unsampledAncestorLifetimes": "unknown",
+            "allocationOwner": "unknown",
+            "physicalSavings": "unmeasured"
+          }
+        ],
+        "allocationOwner": "unknown",
+        "requestAssignment": "bounded selected-worker observations",
+        "physicalSavings": "unmeasured",
+        "definition": "Serial bounded raw PSS and cumulative V8 allocation observations; ambient workload uncontrolled."
+      }
+    }
+  ],
+  "independentOf": "No emitter import or headline totals; raw OS/V8 rows, HTTP records and identity fences.",
+  "physicalSavings": "unmeasured",
+  "allocationOwner": "unknown",
+  "requestAssignment": "bounded selected-worker observations"
+}

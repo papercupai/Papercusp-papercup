@@ -153,7 +153,7 @@ export async function projectLedger(db: D1Database): Promise<void> {
     stmts.push(
       db
         .prepare(
-          "INSERT INTO commerce_offers (offer_id, product_id, pricing_model, amount_minor, currency, unit_price_micros, meter_unit, price_version, split_manifest_hash, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (offer_id) DO UPDATE SET product_id = excluded.product_id, pricing_model = excluded.pricing_model, amount_minor = excluded.amount_minor, currency = excluded.currency, unit_price_micros = excluded.unit_price_micros, meter_unit = excluded.meter_unit, price_version = excluded.price_version, split_manifest_hash = excluded.split_manifest_hash, active = excluded.active",
+          "INSERT INTO commerce_offers (offer_id, product_id, pricing_model, amount_minor, currency, unit_price_micros, meter_unit, price_version, split_manifest_hash, active, seller_pubkey_base64, seller_key_proof) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (offer_id) DO UPDATE SET product_id = excluded.product_id, pricing_model = excluded.pricing_model, amount_minor = excluded.amount_minor, currency = excluded.currency, unit_price_micros = excluded.unit_price_micros, meter_unit = excluded.meter_unit, price_version = excluded.price_version, split_manifest_hash = excluded.split_manifest_hash, active = excluded.active, seller_pubkey_base64 = excluded.seller_pubkey_base64, seller_key_proof = excluded.seller_key_proof",
         )
         .bind(
           o.offerId,
@@ -166,6 +166,8 @@ export async function projectLedger(db: D1Database): Promise<void> {
           o.perUse?.priceVersion ?? null,
           o.perUse?.splitManifestHash ?? null,
           o.active ? 1 : 0,
+          o.receiptAuthority?.pubkeyBase64 ?? null,
+          o.receiptAuthority?.proof ?? null,
         ),
     );
   }
@@ -238,6 +240,7 @@ export interface CommerceOfferView {
   } | null;
   readonly active: boolean;
   readonly productActive: boolean;
+  readonly receiptAuthority?: { readonly pubkeyBase64: string; readonly proof: string };
 }
 
 function offerView(row: Record<string, unknown>): CommerceOfferView {
@@ -269,11 +272,13 @@ function offerView(row: Record<string, unknown>): CommerceOfferView {
       : null,
     active: Number(row.active) === 1,
     productActive: Number(row.product_active) === 1,
+    ...(typeof row.seller_pubkey_base64 === 'string' && typeof row.seller_key_proof === 'string'
+      ? { receiptAuthority: { pubkeyBase64: row.seller_pubkey_base64, proof: row.seller_key_proof } } : {}),
   };
 }
 
 const OFFER_VIEW_SQL =
-  "SELECT o.offer_id, o.product_id, o.pricing_model, o.amount_minor, o.currency, o.unit_price_micros, o.meter_unit, o.price_version, o.split_manifest_hash, o.active, p.sku_ref, p.creator_id, p.title, p.active AS product_active FROM commerce_offers o JOIN commerce_products p ON p.product_id = o.product_id";
+  "SELECT o.offer_id, o.product_id, o.pricing_model, o.amount_minor, o.currency, o.unit_price_micros, o.meter_unit, o.price_version, o.split_manifest_hash, o.active, o.seller_pubkey_base64, o.seller_key_proof, p.sku_ref, p.creator_id, p.title, p.active AS product_active FROM commerce_offers o JOIN commerce_products p ON p.product_id = o.product_id";
 
 /** The hosted commerce catalog reads the D1 projection, not an in-memory fold. */
 export async function listCommerceOffers(

@@ -11,9 +11,12 @@ export function parsePsuConnectionArgs(argv: any): {
         selection: null;
         list: boolean;
         addName: null;
+        addAwsName: null;
         removeName: null;
         projectId: null;
         zone: null;
+        region: null;
+        awsProfile: null;
         instanceName: null;
         sshUser: null;
         login: boolean;
@@ -47,6 +50,34 @@ export function normalizeGcpIapProfile(input: any): {
     constraints: string[];
     reconnect: string;
     audited: boolean;
+};
+/**
+ * Your own EC2 instance, reached by OpenSSH over an AWS Systems Manager
+ * Session Manager tunnel — the AWS twin of the GCP IAP profile
+ * (aws-byoc-gcp-parity-2026-10-01 P-009). Like IAP it needs no public IP and
+ * no inbound port: the SSH stream rides an SSM session to port 22.
+ */
+export function normalizeAwsSsmProfile(input: any): {
+    endpoint: string;
+    target: string;
+    remoteOperatorPort: number;
+    supportedClientPlatforms: string[];
+    features: {
+        command: boolean;
+        pty: boolean;
+        tcpForward: boolean;
+        fileTransfer: boolean;
+    };
+    prerequisites: string[];
+    constraints: string[];
+    reconnect: string;
+    audited: boolean;
+    awsProfile?: string | undefined;
+    name: string;
+    kind: string;
+    region: string;
+    instanceId: string;
+    sshUser: string;
 };
 /**
  * A Papercusp cloud portal origin. https only, except a loopback test server;

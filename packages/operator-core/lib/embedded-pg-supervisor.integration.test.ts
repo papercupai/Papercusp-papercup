@@ -8,13 +8,19 @@
  * unit tier (embedded-pg-supervisor.test.ts) covers disk-full classification and the
  * never-give-up backoff; this tier proves the wiring inside startEmbeddedPostgresServer.
  */
-import { afterAll, describe, expect, it } from 'vitest';
-import { createServer } from 'node:net';
+import { afterAll, describe, expect, it, vi } from 'vitest';
+import { createServer, Socket } from 'node:net';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import postgres from 'postgres';
 import { startEmbeddedPostgresServer } from '@papercusp/embedded-postgres-server';
+
+// A workspace-local install can give the server its own embedded-postgres copy.
+// Inject failures into that exact constructor, not the root test dependency.
+const serverRequire = createRequire(import.meta.resolve('@papercusp/embedded-postgres-server'));
+const { default: EmbeddedPostgres } = await import(serverRequire.resolve('embedded-postgres'));
 
 const cleanups: Array<() => Promise<unknown>> = [];
 
@@ -76,6 +82,23 @@ async function selectOne(port: number, password: string): Promise<boolean> {
   }
 }
 
+async function portAccepting(port: number): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    const socket = new Socket();
+    socket.setTimeout(1000);
+    socket.once('connect', () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once('timeout', () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.once('error', () => resolve(false));
+    socket.connect(port, '127.0.0.1');
+  });
+}
+
 async function boot(prefix: string, extra: Record<string, unknown> = {}) {
   const dataDir = await mkdtemp(join(tmpdir(), prefix));
   cleanups.push(() => rm(dataDir, { recursive: true, force: true }));
@@ -92,6 +115,48 @@ async function boot(prefix: string, extra: Record<string, unknown> = {}) {
 }
 
 describe('embedded-PG postmaster supervision (WI-10003688)', () => {
+  it('gracefully stops the postmaster when boot fails before returning a handle', async () => {
+    const workDir = await mkdtemp(join(tmpdir(), 'papercusp-pg-startup-failure-'));
+    cleanups.push(() => rm(workDir, { recursive: true, force: true }));
+    const dataDir = join(workDir, 'pgdata');
+    const port = await freePort();
+    const migrationDir = join(workDir, 'migrations');
+    await mkdir(migrationDir);
+    await writeFile(join(migrationDir, '001-failure.sql'), 'SELECT 1 / 0;\n', 'utf8');
+    const logs: string[] = [];
+
+    await expect(
+      startEmbeddedPostgresServer({
+        dataDir,
+        port,
+        dbSqlDir: migrationDir,
+        onLog: (message: string) => logs.push(message),
+      }),
+    ).rejects.toThrow(/Migration 001-failure\.sql FAILED: division by zero/);
+
+    expect(logs.some((message) => message.includes('apply 001-failure.sql'))).toBe(true);
+    await waitFor('failed startup postmaster to stop accepting connections', async () => !(await portAccepting(port)), 10_000);
+    await expect(readFile(join(dataDir, 'postmaster.pid'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  }, 120_000);
+
+  it('propagates a low-level stop rejection and remains available for explicit cleanup', async () => {
+    const { dataDir, port, handle } = await boot('papercusp-pg-stop-rejection-');
+    const pid = await postmasterPid(dataDir);
+    const cause = new Error('fixture_low_level_postgres_stop_failure');
+    const stop = vi.spyOn(EmbeddedPostgres.prototype, 'stop').mockRejectedValueOnce(cause);
+    try {
+      await expect(handle.stop()).rejects.toBe(cause);
+      expect(stop).toHaveBeenCalledOnce();
+      expect(handle.health()).toMatchObject({ state: 'stopped' });
+      expect(isAlive(pid)).toBe(true);
+      expect(await selectOne(port, handle.password)).toBe(true);
+    } finally {
+      stop.mockRestore();
+    }
+    await handle.stop();
+    await waitFor('the explicitly cleaned postmaster to stop', () => !isAlive(pid), 10_000);
+  }, 120_000);
+
   it('restarts a SIGKILLed postmaster and serves queries again without an operator restart', async () => {
     const exits: Array<{ signal: string | null }> = [];
     let restarted = 0;

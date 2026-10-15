@@ -17,7 +17,7 @@
  * affected-tests.mjs's side-effecting top-level CLI flow.
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,6 +29,7 @@ import {
   listMatchingTestFilesOnDisk,
   reuseSkipCoversRun,
   emptySuiteGuardArgs,
+  scriptRunsZeroFilesAsPass,
   // The .mjs helper has no declaration file; the diagnostic lands on the
   // `from` line of this multi-line import, so the directive must be the
   // LAST comment line immediately above it.
@@ -57,6 +58,53 @@ describe('scriptUsesPassWithNoTests', () => {
   it('is false for undefined/empty script text', () => {
     expect(scriptUsesPassWithNoTests(undefined)).toBe(false);
     expect(scriptUsesPassWithNoTests('')).toBe(false);
+  });
+});
+
+// gate-test-reuse-yield-2026-10-01 P-006 (D-005): reuse eligibility, distinct from the guard.
+describe('scriptRunsZeroFilesAsPass', () => {
+  const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+  const operatorCoreScripts = JSON.parse(
+    readFileSync(join(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
+  ).scripts as Record<string, string>;
+
+  it('admits a script that declares --passWithNoTests', () => {
+    expect(scriptRunsZeroFilesAsPass('vitest run --passWithNoTests')).toBe(true);
+  });
+
+  it("admits operator-core's REAL test:lane-pure, which never names the flag", () => {
+    const pure = operatorCoreScripts['test:lane-pure'];
+    expect(pure).toMatch(/run-vitest-pure-lane\.mjs/);
+    expect(scriptUsesPassWithNoTests(pure)).toBe(false);
+    expect(scriptRunsZeroFilesAsPass(pure)).toBe(true);
+  });
+
+  it('still refuses a plain vitest script and empty text', () => {
+    expect(scriptRunsZeroFilesAsPass('vitest run')).toBe(false);
+    expect(scriptRunsZeroFilesAsPass('node scripts/run-vitest-pure-lane.mjs.bak')).toBe(false);
+    expect(scriptRunsZeroFilesAsPass(undefined)).toBe(false);
+  });
+
+  it('leaves the EI-11132 guard keyed on the literal flag: the pure lane gets no --no-passWithNoTests', () => {
+    const dir = makeTmpDir();
+    writeFileSync(join(dir, 'a.test.ts'), '');
+    expect(
+      emptySuiteGuardArgs({ scriptText: operatorCoreScripts['test:lane-pure'], wsAbsDir: dir, script: 'test:lane-pure' }),
+    ).toEqual([]);
+  });
+});
+
+describe('proof-backed empty runs for plain Vitest commands', () => {
+  it('allows a fully reused plain command, keeping partial and unproven runs strict', () => {
+    const dir = makeTmpDir();
+    writeFileSync(join(dir, 'a.test.ts'), '');
+    writeFileSync(join(dir, 'b.test.ts'), '');
+    const input = { scriptText: 'vitest run', wsAbsDir: dir, script: 'test' };
+    expect(emptySuiteGuardArgs({ ...input, reuseSkipped: ['a.test.ts', 'b.test.ts'] })).toEqual(['--passWithNoTests']);
+    expect(emptySuiteGuardArgs({ ...input, reuseSkipped: ['a.test.ts'] })).toEqual([]);
+    expect(emptySuiteGuardArgs(input)).toEqual([]);
+    expect(emptySuiteGuardArgs({ ...input, scriptText: 'node --test', reuseSkipped: ['a.test.ts', 'b.test.ts'] })).toEqual([]);
+    expect(emptySuiteGuardArgs({ ...input, scriptText: 'astro check && vitest run', reuseSkipped: ['a.test.ts', 'b.test.ts'] })).toEqual([]);
   });
 });
 
@@ -259,12 +307,23 @@ describe('the --no-passWithNoTests override against the REAL installed vitest bi
   const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
   const VITEST_BIN = resolve(REPO_ROOT, 'node_modules/.bin/vitest');
 
-  function runVitest(fixtureDir: string, extraArgs: string[]) {
-    return spawnSync(VITEST_BIN, ['run', '--root', fixtureDir, '--passWithNoTests', ...extraArgs], {
+  function runVitest(fixtureDir: string, extraArgs: string[], lenient = true) {
+    return spawnSync(VITEST_BIN, ['run', '--root', fixtureDir, ...(lenient ? ['--passWithNoTests'] : []), ...extraArgs], {
       encoding: 'utf8',
       timeout: 30_000,
     });
   }
+
+  it.skipIf(!existsSync(VITEST_BIN))('passes a proof-covered empty run but rejects an accidental empty run with the real CLI', () => {
+    const dir = makeTmpDir();
+    writeFileSync(join(dir, 'vitest.config.mjs'), "export default { test: { include: ['missing/**/*.test.ts'] } };\n");
+    writeFileSync(join(dir, 'a.test.ts'), '');
+    const input = { scriptText: 'vitest run', wsAbsDir: dir, script: 'test' };
+    const reused = runVitest(dir, emptySuiteGuardArgs({ ...input, reuseSkipped: ['a.test.ts'] }), false);
+    expect(reused.status, reused.stdout + reused.stderr).toBe(0);
+    const unproven = runVitest(dir, emptySuiteGuardArgs(input), false);
+    expect(unproven.status, unproven.stdout + unproven.stderr).toBe(1);
+  });
 
   it.skipIf(!existsSync(VITEST_BIN))(
     'a zero-match workspace exits 0 under --passWithNoTests alone, and 1 once --no-passWithNoTests is appended after it',

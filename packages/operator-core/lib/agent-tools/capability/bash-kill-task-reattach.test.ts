@@ -129,6 +129,7 @@ describe('capability:bash_kill — durable task attachment', () => {
     expect(bashKill.args.safeParse({ task_id: 'task-1' }).success).toBe(true);
     expect(bashKill.args.safeParse({ bash_id: 'bash-1', task_id: 'task-1' }).success).toBe(true);
     expect(bashKill.args.safeParse({}).success).toBe(false);
+    expect(bashKill.args.safeParse({ bash_id: '', task_id: 'task-1' }).success).toBe(false);
   });
 
   it('stops the job through task_id when both handles are supplied and agree', async () => {

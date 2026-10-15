@@ -96,7 +96,9 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --legacy-peer-deps
+        run: |
+          npm install --global "$(node -p "require('./package.json').packageManager")"
+          npm ci --legacy-peer-deps
 
       # ⚠ EVERY step below carries `if: ${{ !cancelled() }}` ON PURPOSE — do not strip it
       # when adding a step, and DO add it to any step you add (WI-7006).
@@ -1004,7 +1006,9 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --legacy-peer-deps
+        run: |
+          npm install --global "$(node -p "require('./package.json').packageManager")"
+          npm ci --legacy-peer-deps
 
       - name: Cache Playwright browsers
         uses: actions/cache@v4
@@ -1071,7 +1075,9 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --legacy-peer-deps
+        run: |
+          npm install --global "$(node -p "require('./package.json').packageManager")"
+          npm ci --legacy-peer-deps
 
       - name: Cache Playwright browsers
         uses: actions/cache@v4

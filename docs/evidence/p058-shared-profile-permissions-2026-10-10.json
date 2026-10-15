@@ -1,0 +1,107 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "cwd": ".",
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "candidateAccepted": false,
+  "evidencePlane": "host-guest-output-contract",
+  "sourceCommit": "dd07170622dbe1000a0e97a38c940af1a9da7403",
+  "imageId": "sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921",
+  "platform": "linux/arm64",
+  "name": "P-058 explicit shared profile creation permissions",
+  "workItemId": "EI-25612968663667405",
+  "relatedWorkItemIds": [
+    "EI-25604028797058995"
+  ],
+  "command": [
+    "$HOME/.local/node25/bin/node",
+    "--input-type=module"
+  ],
+  "hostCommand": "$HOME/.local/node25/bin/node --input-type=module (stdin exact sharedContractScript)",
+  "sharedContractScript": "import {execFileSync} from 'node:child_process';import {mkdtempSync,chmodSync,readFileSync,statSync,rmSync} from 'node:fs';import {createHash} from 'node:crypto';\nconst root='/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706',original=root+'/profile3-paused-flr3OS/profile.cpuprofile',raw=execFileSync('sudo',['-n','cat',original],{maxBuffer:1024*1024}),sha=b=>createHash('sha256').update(b).digest('hex');\nconst out=mkdtempSync(root+'/profile-share-guard-');chmodSync(out,0o777);const file=out+'/profile.cpuprofile';\nconst child=\"const {persistCpuProfile}=await import('file://'+process.cwd()+'/scripts/cpu-sample.mjs');process.umask(0o077);process.setgid(1001);process.setuid(1001);let raw=Buffer.alloc(0);for await(const c of process.stdin)raw=Buffer.concat([raw,c]);const saved=persistCpuProfile(process.argv[1],raw,{mode:0o644});console.log(JSON.stringify({uid:process.getuid(),saved}));\";\ntry{const result=JSON.parse(execFileSync('sudo',['-n',process.execPath,'--input-type=module','-e',child,file],{input:raw,encoding:'utf8',maxBuffer:1024*1024}));const s=statSync(file);if(s.uid!==1001||(s.mode&0o777)!==0o644||!readFileSync(file).equals(raw))throw Error('Cross-UID contract failed');const {persistCpuProfile}=await import('./scripts/cpu-sample.mjs');const before=statSync(file);const saved=persistCpuProfile(file,raw,{mode:0o644}),after=statSync(file);for(const k of ['ino','uid','mode','mtimeMs','ctimeMs'])if(before[k]!==after[k])throw Error('Guest output modified '+k);const retained=execFileSync('sudo',['-n','cat',original],{maxBuffer:1024*1024});if(!retained.equals(raw))throw Error('Original profile changed');console.log(JSON.stringify({status:'passed',guestUid:result.uid,hostUid:process.getuid(),mode:s.mode&0o777,umask:0o077,bytes:raw.length,sha256:sha(raw),created:result.saved.created,hostVerifiedWithoutRewrite:saved.created===false,metadataUnchanged:true,originalProfileUnchanged:true,sourceSha256:sha(readFileSync('scripts/cpu-sample.mjs')),testSha256:sha(readFileSync('packages/operator-core/lib/cpu-sample.test.ts'))}));}finally{rmSync(out,{recursive:true,force:true});}",
+  "startedAt": "2026-10-10T17:11:14.211Z",
+  "finishedAt": "2026-10-10T17:11:16.136Z",
+  "exitCode": 0,
+  "summary": "Maintained profile persistence keeps private0600 default and permits explicit0644 creation across UID1001/UID1000, even underumask077. Actual crossuid test verified exact recovered profile bytes and preserved existing metadata. This is output-contract proof, not a new ARM capture.",
+  "producerTaskId": "0mv2ni6es1shgqt81ts",
+  "observation": {
+    "status": "passed",
+    "guestUid": 1001,
+    "hostUid": 1000,
+    "mode": 420,
+    "umask": 63,
+    "bytes": 291016,
+    "sha256": "e5071cd5ba56d18dde6305bceee47be97fb2419c9653539e394e98a49ca34663",
+    "created": true,
+    "hostVerifiedWithoutRewrite": true,
+    "metadataUnchanged": true,
+    "originalProfileUnchanged": true,
+    "sourceSha256": "6d65749c494da6c41f037c8c35df41a7e6e5989d348531a7f78440de1c41c1ef",
+    "testSha256": "cd2db1489d8fc1156b7f60e5c301741e763d7747f6f8e34d91a645f14eff2800"
+  },
+  "rawLog": {
+    "path": ".papercusp/scratch/bash-e27b4a83-f0b.log",
+    "sha256": "03bfb07908e1ed7675d8f89c0229e1aa4940139ebd3551a1369d9bd6a7eabdb9"
+  },
+  "sourceHashes": {
+    "scripts/cpu-sample.mjs": "6d65749c494da6c41f037c8c35df41a7e6e5989d348531a7f78440de1c41c1ef",
+    "packages/operator-core/lib/cpu-sample.test.ts": "cd2db1489d8fc1156b7f60e5c301741e763d7747f6f8e34d91a645f14eff2800"
+  },
+  "regression": {
+    "taskId": "0mv2ngo5i9n139l1gqa",
+    "log": ".papercusp/scratch/bash-18707aec-47f.log",
+    "sha256": "7f36c51184db3fbd79859619010c93daefa882fd0ff0421fe7357125535fd0e3",
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp node scripts/npm-install-safe.mjs --exec-under-lock -- node \"$PWD/node_modules/vitest/vitest.mjs\" run --root \"$PWD/packages/operator-core\" lib/cpu-sample.test.ts --reporter=verbose",
+    "result": "13passed/0failed/0skipped"
+  },
+  "futureProducerContract": {
+    "change": "Guest persistCpuProfile(out+'/profile.cpuprofile',raw,{mode:0o644}); bind collector source6d65749c; remaining canonical inputs/deadline unchanged.",
+    "executed": false
+  },
+  "assertions": [
+    {
+      "id": "uid1001-creation",
+      "passed": true,
+      "evidence": "Actual processuid1001"
+    },
+    {
+      "id": "explicit-mode-survives-umask",
+      "passed": true,
+      "evidence": "mode0644 underumask077"
+    },
+    {
+      "id": "host1000-exact-readback",
+      "passed": true,
+      "evidence": "e5071cd5ba56d18dde6305bceee47be97fb2419c9653539e394e98a49ca34663"
+    },
+    {
+      "id": "metadata-and-original-preserved",
+      "passed": true,
+      "evidence": "Read-only original and no rewrite of guest-derived output"
+    },
+    {
+      "id": "conventional-regression",
+      "passed": true,
+      "evidence": "Vitest13pass/0fail/0skip"
+    }
+  ],
+  "rootCauseVerification": {
+    "hypothesis": "Secure default0600 new guest profile was unreadable to the distinct host UID; shared recipe needed explicit creationmode.",
+    "alternativeHypothesis": "Host failures came from corrupt capturebytes or DockerAPI transport.",
+    "distinguishingTest": "Create same retainedbytes from actualUID1001 with explicit644 andumask077; read and verify from hostUID1000 without usingDocker; compare metadata and originalSHA.",
+    "predictedObservations": {
+      "hypothesis": "Explicit644 succeeds acrossUIDs while preserving private default and existingfiles.",
+      "alternativeHypothesis": "Exact hostreadback stillfails or bytesfailqualification despite0644."
+    },
+    "actualObservation": "Actualcrossuidtestpasses; retained e507 bytes match; original291016bytes/UID1001mode600 unchanged."
+  },
+  "limitations": [
+    "No fresh fullServer ARM producer with updatedsharingmode.",
+    "Original startup and Dockerdaemon delay causes remainopen."
+  ],
+  "evidenceSerialization": {
+    "serializer": "scripts/lib/identity-leak-patterns.mjs --serialize-json"
+  }
+}

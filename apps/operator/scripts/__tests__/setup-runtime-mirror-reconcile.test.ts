@@ -17,10 +17,11 @@
  * cheap "already current" path again, so the fix cannot degrade into "always
  * re-copy".
  */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const SCRIPTS = resolve(__dirname, '..');
@@ -194,5 +195,51 @@ describe('mirror-tree.sh', () => {
     put(root, 'src/a.js');
     expect(sh(root, 'mirror_matches src missing').status).not.toBe(0);
     expect(sh(root, 'mkdir dest && cp src/a.js dest/ && mirror_matches src dest').status).toBe(0);
+  });
+
+  it('keeps an in-progress atomic replacement outside Vite public input trees', async () => {
+    const root = fixtureRoot('setup-monaco-runtime.sh');
+    put(root, 'src/ort-wasm.wasm', 'new wasm bytes');
+    mkdirSync(join(root, 'public/vad-runtime'), { recursive: true });
+    const bin = join(root, 'bin');
+    mkdirSync(bin, { recursive: true });
+    const started = join(root, 'copy-started');
+    const release = join(root, 'copy-release');
+    writeFileSync(
+      join(bin, 'cp'),
+      '#!/bin/sh\ntouch "$MIRROR_COPY_STARTED"\nwhile [ ! -e "$MIRROR_COPY_RELEASE" ]; do sleep 0.01; done\nexec /bin/cp "$@"\n',
+      { mode: 0o755 },
+    );
+
+    const child = spawn('bash', [
+      '-c',
+      'set -euo pipefail; . scripts/lib/mirror-tree.sh; mirror_copy_unlinked src/ort-wasm.wasm public/vad-runtime/ort-wasm.wasm',
+    ], {
+      cwd: root,
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+        MIRROR_COPY_STARTED: started,
+        MIRROR_COPY_RELEASE: release,
+      },
+      stdio: 'ignore',
+    });
+
+    try {
+      for (let attempt = 0; attempt < 200 && !existsSync(started); attempt += 1) {
+        if (child.exitCode !== null) throw new Error(`mirror copy exited early with ${child.exitCode}`);
+        await delay(5);
+      }
+      expect(existsSync(started), 'copy wrapper did not reach its pause point').toBe(true);
+      expect(fileSet(join(root, 'public'))).toEqual([]);
+    } finally {
+      writeFileSync(release, 'continue');
+    }
+
+    const exitCode = await new Promise<number | null>((resolve) => child.once('close', resolve));
+    expect(exitCode).toBe(0);
+    expect(readFileSync(join(root, 'public/vad-runtime/ort-wasm.wasm'), 'utf8')).toBe('new wasm bytes');
+    expect(fileSet(join(root, 'public'))).toEqual(['vad-runtime/ort-wasm.wasm']);
+    expect(readdirSync(root).filter((name) => name.startsWith('.mirror-tree.tmp.'))).toEqual([]);
   });
 });

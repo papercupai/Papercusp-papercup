@@ -7,8 +7,12 @@ import {
   carriedStaleGradingCardIds,
   classifyAcceptanceGraderStartupStall,
   classifyAcceptanceGraderNoFirstTurnStall,
+  isAcceptanceGraderNoFirstTurnLivenessCandidate,
+  classifyAcceptanceGraderParkedWithoutEmit,
   classifyAcceptanceGraderTerminalFailure,
   detectAcceptanceGraderTerminalFailure,
+  readOpenGradingAnswererTerminalFailure,
+  hasAcceptanceGraderNativeApiError,
   launchAcceptanceGrader,
   isAcceptanceGradingRequestForPlan,
   isInFlightAcceptanceGradingRequest,
@@ -17,12 +21,185 @@ import {
   resolveAcceptanceGraderDiscoveryExtraExclusions,
   resolveAcceptanceGrader,
   resolveShipperId,
+  appendIndependentVerificationBriefToRequest,
+  ACCEPTANCE_GRADER_RECRUITER_ACTOR,
   selectableGraderLiveness,
   spentGradingCascadeAnswer,
+  gradingCascadeWalkedToExhaustion,
   ACCEPTANCE_GRADING_SWEEP_ACTOR,
   CONSULT_EXPIRY_REVIEW_AUTHOR,
   GRADING_CASCADE_ANSWER_GRACE_MS,
 } from './acceptance-grader';
+import { ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE } from './consult/grading-cascade';
+
+describe('native terminal API-error provenance', () => {
+  const sessionId = 'native-fixture-session';
+  const record = (overrides: Record<string, unknown> = {}) => JSON.stringify({
+    type: 'assistant', sessionId, isSidechain: false, isApiErrorMessage: true, apiErrorStatus: 429,
+    message: { role: 'assistant', stop_reason: 'stop_sequence', content: [{ type: 'text', text: 'API error' }] },
+    ...overrides,
+  });
+
+  it('recognizes the exact native failed assistant turn even after a partial JSONL tail', () => {
+    expect(hasAcceptanceGraderNativeApiError('partial record\n' + record() + '\n', sessionId)).toBe(true);
+  });
+
+  it.each([
+    { type: 'user' },
+    { isApiErrorMessage: false },
+    { apiErrorStatus: 200 },
+    { isSidechain: true },
+    { sessionId: 'another-native-session' },
+    { message: { role: 'assistant', stop_reason: null } },
+  ])('refuses quoted, incomplete, foreign or non-error records: %j', (override) => {
+    expect(hasAcceptanceGraderNativeApiError(record(override), sessionId)).toBe(false);
+  });
+
+  it('does not retire a session whose user started another turn after the API error', () => {
+    expect(hasAcceptanceGraderNativeApiError(record() + '\n' + record({ type: 'user' }), sessionId)).toBe(false);
+  });
+
+  it('fails closed if a subsequent native turn is only partially written', () => {
+    expect(hasAcceptanceGraderNativeApiError(record() + '\n{"type":"user"', sessionId)).toBe(false);
+  });
+
+  it.each([
+    [400, "API Error: 400 role 'system' is not supported on this model"],
+    [429, 'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s'],
+  ])('enables the existing bounded classifier only for native completed API %s', async (status, error) => {
+    const log = `●${error}\n✻ Worked for 1m 9s · done 9:30 PM\n❯`;
+    const native = record({ apiErrorStatus: status });
+    const readLogTail = vi.fn((path: string) => path === 'native.jsonl' ? native : log);
+    const options = { readLogTail, nativeTranscriptPath: 'native.jsonl', nativeSessionId: sessionId,
+      maxRechecks: 0, detectStartupStall: false };
+    await expect(detectAcceptanceGraderTerminalFailure('judge.log', options))
+      .resolves.toMatchObject({ code: 'inference_gateway_error' });
+    await expect(detectAcceptanceGraderTerminalFailure('judge.log', {
+      ...options, readLogTail: (path: string) => path === 'native.jsonl' ? record({ type: 'user' }) : log,
+    })).resolves.toBeNull();
+  });
+
+  it('classifies a final native HTTP 5xx when the PTY only has generic mid-response text', async () => {
+    const log = '●API Error: Server error mid-response. The response above may be incomplete.\n❯';
+    const native = record({ apiErrorStatus: 500 });
+    await expect(detectAcceptanceGraderTerminalFailure('judge.log', {
+      readLogTail: (path) => path === 'native.jsonl' ? native : log,
+      nativeTranscriptPath: 'native.jsonl', nativeSessionId: sessionId,
+      maxRechecks: 0, detectStartupStall: false,
+    })).resolves.toMatchObject({
+      code: 'inference_gateway_error', evidence: expect.stringContaining('500'),
+    });
+  });
+
+  it('does not classify generic mid-response text from native 4xx metadata alone', async () => {
+    const log = '●API Error: Server error mid-response. The response above may be incomplete.\n❯';
+    const native = record({ apiErrorStatus: 429 });
+    await expect(detectAcceptanceGraderTerminalFailure('judge.log', {
+      readLogTail: (path) => path === 'native.jsonl' ? native : log,
+      nativeTranscriptPath: 'native.jsonl', nativeSessionId: sessionId,
+      maxRechecks: 0, detectStartupStall: false,
+    })).resolves.toBeNull();
+  });
+
+  it('keeps recovery unconfirmed when the native transcript cannot be read', async () => {
+    const log = "●API Error: 400 role 'system' is not supported on this model\n✻ Worked for 1m 9s · done\n❯";
+    await expect(detectAcceptanceGraderTerminalFailure('judge.log', {
+      readLogTail: (path) => { if (path === 'native.jsonl') throw new Error('unreadable'); return log; },
+      nativeTranscriptPath: 'native.jsonl', nativeSessionId: sessionId, maxRechecks: 0, detectStartupStall: false,
+    })).resolves.toBeNull();
+  });
+
+  it.each([
+    [400, "API Error: 400 role 'system' is not supported on this model"],
+    [429, 'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s'],
+  ])('uses native completed API %s proof when the PTY omits its footer', async (status, error) => {
+    const log = `●${error}\n❯`;
+    const options = { nativeTranscriptPath: 'native.jsonl', nativeSessionId: sessionId,
+      maxRechecks: 0, detectStartupStall: false };
+    await expect(detectAcceptanceGraderTerminalFailure('judge.log', {
+      ...options, readLogTail: (path) => path === 'native.jsonl' ? record({ apiErrorStatus: status }) : log,
+    })).resolves.toMatchObject({ code: 'inference_gateway_error' });
+    await expect(detectAcceptanceGraderTerminalFailure('judge.log', {
+      ...options, readLogTail: (path) => path === 'native.jsonl' ? record({ type: 'user' }) : log,
+    })).resolves.toBeNull();
+  });
+});
+
+describe('readOpenGradingAnswererTerminalFailure (EI-25855370514874242)', () => {
+  const input = { workspaceId: 'grader-ws', conversationId: 'grader-conv', answeringOwnerId: 'su-answerer' };
+  const target = { ok: true, ownerId: input.answeringOwnerId, agent: 'claude', sessionId: 'native-answerer' };
+  const native = JSON.stringify({ type: 'assistant', sessionId: target.sessionId,
+    isApiErrorMessage: true, apiErrorStatus: 429, message: { role: 'assistant', stop_reason: 'end_turn' } });
+  const log = '●API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s\n❯';
+  function dependencies() {
+    const task = { taskId: 'exact-task', sessionId: target.sessionId, logPath: 'answerer.log', endedAt: null };
+    return {
+      resolveTarget: vi.fn(async () => target as Awaited<ReturnType<typeof import('./agent-launch-core').resolveResumeTarget>>),
+      findTranscript: vi.fn(async () => 'answerer.jsonl'),
+      listTasks: vi.fn(async () => [task] as Awaited<ReturnType<typeof import('./task-manager/store').listTasks>>),
+      killTask: vi.fn(async () => ({ ok: true }) as Awaited<ReturnType<typeof import('./task-manager/control').killTask>>),
+      readLogTail: vi.fn((path: string) => path === 'answerer.jsonl' ? native : log),
+    };
+  }
+
+  it('binds the native failure to the current answerer task and retires only that task', async () => {
+    const deps = dependencies();
+    const failure = await readOpenGradingAnswererTerminalFailure(input, deps);
+    expect(failure).toMatchObject({ code: 'inference_gateway_error' });
+    expect(deps.findTranscript).toHaveBeenCalledWith(target.sessionId, { owner: input.answeringOwnerId });
+    expect(deps.listTasks).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: input.workspaceId, coordOwnerId: input.answeringOwnerId, classes: ['agent-session'], limit: 1,
+    }));
+    expect(await failure?.retire?.()).toBe(true);
+    expect(deps.killTask).toHaveBeenCalledWith('exact-task', { includeSubtree: true, escalateAfterMs: 5_000 });
+  });
+
+  it('keeps a task from another native incarnation untouched', async () => {
+    const deps = dependencies();
+    deps.listTasks.mockResolvedValue([{ taskId: 'new-task', sessionId: 'new-native', logPath: 'new.log' }] as Awaited<ReturnType<typeof import('./task-manager/store').listTasks>>);
+    expect(await readOpenGradingAnswererTerminalFailure(input, deps)).toBeNull();
+    expect(deps.killTask).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['already_gone', true],
+    ['command_failed', false],
+  ] as const)('treats exact native answerer retirement %s as settled=%s', async (error, settled) => {
+    const deps = dependencies();
+    deps.killTask.mockResolvedValue({ ok: false, taskId: 'exact-task', action: 'kill', error });
+    const failure = await readOpenGradingAnswererTerminalFailure(input, deps);
+    expect(failure).toMatchObject({ code: 'inference_gateway_error' });
+    expect(await failure?.retire?.()).toBe(settled);
+    expect(deps.killTask).toHaveBeenCalledWith('exact-task', { includeSubtree: true, escalateAfterMs: 5_000 });
+  });
+
+  it('awaits asynchronous native readers before inspecting and revalidating the turn', async () => {
+    const deps = dependencies();
+    const failure = await readOpenGradingAnswererTerminalFailure(input, {
+      ...deps, readLogTail: async (path) => path === 'answerer.jsonl' ? native : log,
+    });
+    expect(failure).toMatchObject({ code: 'inference_gateway_error' });
+    expect(await failure?.retire?.()).toBe(true);
+    expect(deps.killTask).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['task', 'native-turn', 'native-binding'])('refuses retirement after a concurrent %s change', async (change) => {
+    const deps = dependencies();
+    const failure = await readOpenGradingAnswererTerminalFailure(input, deps);
+    expect(failure).not.toBeNull();
+    if (change === 'task') {
+      deps.listTasks.mockResolvedValue([{ taskId: 'new-task', sessionId: target.sessionId, logPath: 'new.log' }] as Awaited<ReturnType<typeof import('./task-manager/store').listTasks>>);
+    } else if (change === 'native-turn') {
+      deps.readLogTail.mockImplementation((path) => path === 'answerer.jsonl' ? native + '\n' + JSON.stringify({ type: 'user', sessionId: target.sessionId }) : log);
+    } else {
+      const resolved = await deps.resolveTarget();
+      if (!resolved.ok) throw new Error('Expected the current answerer fixture to resolve');
+      deps.resolveTarget.mockResolvedValue({ ...resolved, sessionId: 'new-native' });
+    }
+    expect(await failure?.retire?.()).toBe(false);
+    expect(deps.killTask).not.toHaveBeenCalled();
+  });
+});
 
 describe('answeringOwnerAtCursor (WI-10003786)', () => {
   const routing = {
@@ -104,6 +281,36 @@ describe('spentGradingCascadeAnswer (WI-10003451)', () => {
   });
 });
 
+describe('gradingCascadeWalkedToExhaustion (WI-10006700)', () => {
+  const failed = (ownerId: string) => ({ at: '2026-10-06T14:10:47.959Z', kind: 'dispatch_failed', ownerId });
+  const underFilled = { at: '2026-10-06T14:10:47.959Z', min: 1, answers: 0, reason: 'refill-spent' };
+
+  it('recognises the measured conv-muwrapka shape: underFilled + a failed final dispatch', () => {
+    const routing = { selection: { min: 1, underFilled } };
+    const digest = [failed('su-g1'), failed('su-g2'), failed('su-refill')];
+    expect(gradingCascadeWalkedToExhaustion(routing, digest)).toBe(true);
+    expect(gradingCascadeWalkedToExhaustion(JSON.stringify(routing), JSON.stringify(digest))).toBe(true);
+  });
+
+  it('keeps a mid-walk cascade (no underFilled yet) live', () => {
+    expect(gradingCascadeWalkedToExhaustion({ selection: { min: 1 } }, [failed('su-g1')])).toBe(false);
+  });
+
+  it('keeps a cascade whose final event is not a failed dispatch live', () => {
+    const routing = { selection: { underFilled } };
+    expect(
+      gradingCascadeWalkedToExhaustion(routing, [failed('su-g1'), { at: underFilled.at, kind: 'answer', ownerId: 'su-g2' }]),
+    ).toBe(false);
+    expect(gradingCascadeWalkedToExhaustion(routing, [])).toBe(false);
+  });
+
+  it('is false on malformed input rather than finishing a row it cannot read', () => {
+    expect(gradingCascadeWalkedToExhaustion('{not json', [failed('su-g1')])).toBe(false);
+    expect(gradingCascadeWalkedToExhaustion({ selection: { underFilled } }, '{not json')).toBe(false);
+    expect(gradingCascadeWalkedToExhaustion(null, null)).toBe(false);
+  });
+});
+
 describe('advanceUndispatchableGradingCascade (EI-23939542953304626)', () => {
   const graders = ['su-a', 'su-b', 'su-c'].map((ownerId) => ({ ownerId }));
 
@@ -153,6 +360,124 @@ describe('advanceUndispatchableGradingCascade (EI-23939542953304626)', () => {
         expect.objectContaining({ ownerId: 'su-b', kind: 'dispatch_failed' }),
       ],
     });
+  });
+
+  // WI-10006700 — MEASURED 2026-10-06 on consult conv-muwrapka (plan
+  // open-source-release-2026-09-29): grader 1's dispatch failed, the advance
+  // dispatched grader 2 (failed), cascade-core's skipUndispatched walked into
+  // the min-answers refill (su-5f9596a9, cursor 2, also failed) and recorded
+  // `underFilled: refill-spent` — then returned exhausted with
+  // exhaustedAfterDispatch at cursor 2. The loop read `!advanced` as a race, so
+  // the row sat `awaiting_responder` for the full 4h TTL and the fresh-judge
+  // fallback never fired.
+  const walkedSlot = {
+    cascadeCursor: 2,
+    state: 'awaiting_responder',
+    expiresAt: '2026-10-06T18:10:00.000Z',
+  };
+
+  it('WI-10006700: terminates at the slot an exhausting advance walked to, not as a race', async () => {
+    const advance = vi.fn().mockResolvedValueOnce({
+      advanced: false,
+      raced: false,
+      nextOwnerId: null,
+      queued: 0,
+      exhausted: true,
+      terminalSlot: walkedSlot,
+    });
+    const markExhausted = vi.fn(async () => true);
+
+    const result = await advanceUndispatchableGradingCascade({
+      graders: graders.slice(0, 2),
+      initialQueued: 0,
+      nowIso: () => '2026-10-06T14:10:00.000Z',
+      advance,
+      markExhausted,
+    });
+
+    expect(result).toEqual({ status: 'exhausted', woke: 0 });
+    expect(advance).toHaveBeenCalledTimes(1);
+    // digest:null — the walk already recorded the full digest (incl. the refill
+    // pick's failure); the terminal write must not overwrite it with this
+    // loop's shorter local copy.
+    expect(markExhausted).toHaveBeenCalledWith({
+      cursor: 2,
+      digest: null,
+      at: '2026-10-06T14:10:00.000Z',
+      expectedState: 'awaiting_responder',
+      expectedExpiresAt: '2026-10-06T18:10:00.000Z',
+    });
+  });
+
+  it('WI-10006700: an advance that exhausted at its own cursor terminates there', async () => {
+    const advance = vi.fn().mockResolvedValueOnce({
+      advanced: false,
+      raced: false,
+      nextOwnerId: null,
+      queued: 0,
+      exhausted: true,
+      terminalSlot: null,
+    });
+    const markExhausted = vi.fn(async () => true);
+
+    const result = await advanceUndispatchableGradingCascade({
+      graders,
+      initialQueued: 0,
+      nowIso: () => '2026-10-06T14:10:00.000Z',
+      advance,
+      markExhausted,
+    });
+
+    expect(result).toEqual({ status: 'exhausted', woke: 0 });
+    expect(markExhausted).toHaveBeenCalledWith({
+      cursor: 0,
+      digest: null,
+      at: '2026-10-06T14:10:00.000Z',
+    });
+  });
+
+  it('WI-10006700: a lost terminal CAS after an exhausting walk stays conservative (raced)', async () => {
+    const advance = vi.fn().mockResolvedValueOnce({
+      advanced: false,
+      raced: false,
+      nextOwnerId: null,
+      queued: 0,
+      exhausted: true,
+      terminalSlot: walkedSlot,
+    });
+    const markExhausted = vi.fn(async () => false);
+
+    const result = await advanceUndispatchableGradingCascade({
+      graders: graders.slice(0, 2),
+      initialQueued: 0,
+      advance,
+      markExhausted,
+    });
+
+    // Never report exhausted without a CAS-confirmed terminal write: a concurrent
+    // reply/expiry owns the row, and a fresh judge must not launch over it.
+    expect(result).toEqual({ status: 'raced', woke: 0 });
+  });
+
+  it('WI-10006700: a genuine race from the advance never reaches the terminal write', async () => {
+    const advance = vi.fn().mockResolvedValueOnce({
+      advanced: false,
+      raced: true,
+      nextOwnerId: null,
+      queued: 0,
+      exhausted: false,
+    });
+    const markExhausted = vi.fn(async () => true);
+
+    const result = await advanceUndispatchableGradingCascade({
+      graders,
+      initialQueued: 0,
+      advance,
+      markExhausted,
+    });
+
+    expect(result).toEqual({ status: 'raced', woke: 0 });
+    expect(markExhausted).not.toHaveBeenCalled();
   });
 });
 
@@ -646,6 +971,30 @@ function deps(launch: ReturnType<typeof vi.fn>) {
 }
 
 describe('launchAcceptanceGrader', () => {
+  it('pins routine-scoped fresh and retry launches to the requested gateway model', async () => {
+    const launch = vi.fn().mockResolvedValueOnce({
+      data: { launch: { tasks: [{ taskId: 'pinned-quota', logPath: '/tmp/pinned-quota.log' }] } },
+    }).mockResolvedValue({
+      data: { launch: { tasks: [{ taskId: 'pinned-retry', logPath: '/tmp/pinned-retry.log' }] } },
+    });
+    const profile = { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' };
+    const discover = vi.fn();
+    const openCascade = vi.fn();
+    const result = await resolveAcceptanceGrader('ship-the-thing', { ...baseCtx, gradingLaunch: profile } as never, {
+      ...deps(launch),
+      discover,
+      openCascade,
+      readLogTail: (path) => path.includes('pinned-quota') ? "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model." : '',
+    });
+    expect(result).toMatchObject({ state: 'launched', reviewReservation: { id: 'WI-review-target' } });
+    expect(discover).not.toHaveBeenCalled();
+    expect(openCascade).not.toHaveBeenCalled();
+    expect(launch).toHaveBeenCalledTimes(2);
+    for (const [args] of launch.mock.calls) {
+      expect(args).toMatchObject({ ...profile, independent: true, members: [{ role: 'judge', ...profile }] });
+    }
+  });
+
   it('launches exactly one fresh headless judge with stable identity and a parseable frozen snapshot', async () => {
     const launch = vi.fn(async (_args: Record<string, unknown>) => ({
       content: [{ type: 'text', text: 'launched' }],
@@ -684,6 +1033,7 @@ describe('launchAcceptanceGrader', () => {
     expect(brief).toContain('git rev-parse <superproject-ref>:<nested-path>');
     expect(brief).toContain('not evidence of a fabricated citation');
     expect(brief).toContain('follow its recovery recipe with read-only Papercusp tools BEFORE returning NOT GRADED');
+    expect(brief).toContain(ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE);
     expect(brief).toContain('frozenIdentity.planVersion/planContentHash');
     expect(brief.length).toBeLessThan(8_000);
   });
@@ -706,8 +1056,8 @@ describe('launchAcceptanceGrader', () => {
     expect(launch).not.toHaveBeenCalled();
   });
 
-  it('allows a fresh judge launch for an unrelated caller', async () => {
-    const launch = vi.fn(async () => ({
+  it('launches an unrelated judge on the recruiting host with its restricted role intact', async () => {
+    const launch = vi.fn(async (_args: unknown) => ({
       content: [{ type: 'text', text: 'launched' }],
       data: { deduped: false, launch: { tasks: [{ taskId: 'task-independent' }] } },
     }));
@@ -721,6 +1071,9 @@ describe('launchAcceptanceGrader', () => {
     expect(result.state).toBe('launched');
     expect(lineageRelated).toHaveBeenCalledWith('su-implementer', 'su-independent', { workspaceId: 'ws-test' });
     expect(launch).toHaveBeenCalledTimes(1);
+    expect(launch.mock.calls[0]?.[0]).toMatchObject({
+      mcpTarget: 'spawn-host', account: 'auto', independent: true, members: [{ role: 'judge' }],
+    });
   });
 
   it('uses createdBy when a legacy rubric has no proposedBy author', async () => {
@@ -940,7 +1293,7 @@ describe('launchAcceptanceGrader', () => {
     expect(result).toMatchObject({ state: 'deduped', launch: { tasks: [{ taskId: 'task-1' }] } });
   });
 
-  it('retires an over-age deduped judge and launches a deterministic fresh retry', async () => {
+  it.each([null, 'already_gone'] as const)('retires an over-age deduped judge (%s) and launches a deterministic fresh retry', async (error) => {
     const launch = vi.fn(async (args: Record<string, unknown>) =>
       String(args.idempotencyKey).includes(':retry:')
         ? {
@@ -952,7 +1305,7 @@ describe('launchAcceptanceGrader', () => {
             data: { deduped: true, launch: { tasks: [{ taskId: 'task-stale' }] } },
           },
     );
-    const kill = vi.fn(async () => ({ ok: true }));
+    const kill = vi.fn(async () => error ? { ok: false, error } : { ok: true });
     const result = await launchAcceptanceGrader('ship-the-thing', ctx, {
       ...deps(launch),
       listTasks: vi.fn(async () => [
@@ -979,7 +1332,7 @@ describe('launchAcceptanceGrader', () => {
     });
   });
 
-  it('retires a quota-blocked Claude judge and performs one deterministic Codex fallback', async () => {
+  it.each([null, 'already_gone'] as const)('retires a quota-blocked Claude judge (%s) and performs one deterministic Codex fallback', async (error) => {
     const quotaLog = "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.";
     const launch = vi.fn(async (args: Record<string, unknown>) =>
       args.agent === 'codex'
@@ -999,7 +1352,7 @@ describe('launchAcceptanceGrader', () => {
             },
           },
     );
-    const kill = vi.fn(async () => ({ ok: true }));
+    const kill = vi.fn(async () => error ? { ok: false, error } : { ok: true });
     const result = await launchAcceptanceGrader('ship-the-thing', ctx, {
       ...deps(launch),
       killTask: kill as never,
@@ -1009,7 +1362,11 @@ describe('launchAcceptanceGrader', () => {
     expect(kill).toHaveBeenCalledTimes(1);
     expect(kill).toHaveBeenCalledWith('task-quota', { includeSubtree: true, escalateAfterMs: 5_000 });
     expect(launch).toHaveBeenCalledTimes(2);
+    expect(launch.mock.calls[0][0]).toMatchObject({
+      mcpTarget: 'spawn-host', agent: 'claude', independent: true, members: [{ role: 'judge' }],
+    });
     expect(launch.mock.calls[1][0]).toMatchObject({
+      mcpTarget: 'spawn-host',
       account: 'auto',
       agent: 'codex',
       members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high' }],
@@ -1025,6 +1382,53 @@ describe('launchAcceptanceGrader', () => {
         fallback: { agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' },
       },
     });
+  });
+
+  it('recovers a general grader from its native API-error turn while rejecting quoted error evidence', async () => {
+    const error = '●API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s\n' +
+      '✻ Worked for 1m 9s · done 9:30 PM\n❯';
+    const nativeRecord = (apiError: boolean) => JSON.stringify({
+      type: 'assistant', sessionId: 'native-primary', isApiErrorMessage: apiError, apiErrorStatus: 429,
+      message: { role: 'assistant', stop_reason: 'stop_sequence' },
+    });
+    const makeLaunch = () => vi.fn(async (args: Record<string, unknown>) => ({
+      data: { deduped: false, launch: { tasks: [args.agent === 'codex'
+        ? { taskId: 'task-fallback' }
+        : { taskId: 'task-native-error', logPath: '/tmp/native-error.log',
+            kickoffProof: { persisted: true, nativeRef: '/tmp/native-primary.jsonl' },
+            nativeSession: { backend: 'claude', sessionId: 'native-primary' } }] } },
+    }));
+    const launch = makeLaunch(), kill = vi.fn(async () => ({ ok: true }));
+    const result = await launchAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch), killTask: kill as never, terminalLogMaxRechecks: 0,
+      readLogTail: (path) => path.endsWith('.jsonl') ? nativeRecord(true) : error,
+    });
+    expect(result.terminalRecovery?.codes).toEqual(['inference_gateway_error']);
+    expect(kill).toHaveBeenCalledWith('task-native-error', { includeSubtree: true, escalateAfterMs: 5_000 });
+    expect(launch).toHaveBeenCalledTimes(2);
+    expect(launch.mock.calls[1][0]).toMatchObject({ agent: 'codex', account: 'auto' });
+
+    const quoted = makeLaunch(), quotedKill = vi.fn(async () => ({ ok: true }));
+    await launchAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(quoted), killTask: quotedKill as never, terminalLogMaxRechecks: 0,
+      readLogTail: (path) => path.endsWith('.jsonl') ? nativeRecord(false) : error,
+    });
+    expect(quoted).toHaveBeenCalledTimes(1);
+    expect(quotedKill).not.toHaveBeenCalled();
+  });
+
+  it('refuses a terminal fallback when exact task retirement fails', async () => {
+    const launch = vi.fn(async () => ({
+      data: { deduped: false, launch: { tasks: [{ taskId: 'task-refused', logPath: '/tmp/refused.log' }] } },
+    }));
+    const kill = vi.fn(async () => ({ ok: false, error: 'command_failed' }));
+    const result = await launchAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch), killTask: kill as never, terminalLogMaxRechecks: 0,
+      readLogTail: () => "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.",
+    });
+    expect(result).toMatchObject({ state: 'failed', error: expect.stringContaining('could not be retired: command_failed') });
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(kill).toHaveBeenCalledWith('task-refused', { includeSubtree: true, escalateAfterMs: 5_000 });
   });
 
   it('rechecks the headless log after launch returns before deciding quota fallback', async () => {
@@ -1201,6 +1605,28 @@ describe('launchAcceptanceGrader', () => {
 });
 
 describe('classifyAcceptanceGraderTerminalFailure', () => {
+  it('does not treat a transient Codex capacity screen as a terminal audit failure', async () => {
+    const raw = '\u001b[31m⚠ Selected model is at capacity. Please try a different model.\u001b[0m\r\n';
+    expect(classifyAcceptanceGraderTerminalFailure(raw)).toBeNull();
+    await expect(detectAcceptanceGraderTerminalFailure('codex.log', {
+      readLogTail: () => raw,
+      allowInferenceGatewayError: true,
+      allowGatewayErrorWithoutFooter: true,
+      maxRechecks: 0,
+      detectStartupStall: false,
+    })).resolves.toBeNull();
+  });
+
+  it('does not retire a judge discussing or working after an old capacity screen', () => {
+    const options = { allowInferenceGatewayError: true, allowGatewayErrorWithoutFooter: true };
+    expect(classifyAcceptanceGraderTerminalFailure(
+      'The report says Selected model is at capacity. Please try a different model.', options,
+    )).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(
+      '⚠ Selected model is at capacity. Please try a different model.\n• Called scorecards:get', options,
+    )).toBeNull();
+  });
+
   it('matches the exact terminal model-limit response through terminal control bytes', () => {
     const raw =
       "\u001b[31mYou've reached your Fable 5 limit.\u001b[0m\r\n" +
@@ -1231,6 +1657,33 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
       code: 'model_quota_exhausted',
       evidence: "You've hit your weekly limit · resets Sep 10, 7am (America/New_York)",
     });
+  });
+
+  it.each([
+    '✻Sautéed for 1m 48s · done 5:15 AM',
+    '✻ Worked for 1m 57s · one 5:15 AM',
+    '✻ Cogitated for 1m 19s ·dne 5:15 AM',
+  ])('matches a completed credit balance refusal only for a controlled caller: %s', (footer) => {
+    const screen = '\u001b[31m  ⎿ \u00a0Credit balance too low · Add funds: \u001b[0m\r\n';
+    const raw = screen + `\r\n${footer}\r\n────────────────\r\n❯\u00a0`;
+
+    expect(classifyAcceptanceGraderTerminalFailure(raw)).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(raw, { allowInferenceGatewayError: true })).toMatchObject({
+      code: 'inference_gateway_error',
+      evidence: expect.stringContaining('Credit balance too low · Add funds:'),
+    });
+    // An error still inside a turn, or one superseded by resumed work, is not
+    // proof that the current mission stopped.
+    expect(classifyAcceptanceGraderTerminalFailure(screen, { allowInferenceGatewayError: true })).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(raw + '\n● I resumed and emitted the audit.', {
+      allowInferenceGatewayError: true,
+    })).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(raw + '\n• Called scorecards:get', {
+      allowInferenceGatewayError: true,
+    })).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure('The report quotes Credit balance too low · Add funds:', {
+      allowInferenceGatewayError: true,
+    })).toBeNull();
   });
 
   it('matches a completed inference-gateway 5xx turn only for a controlled caller', () => {
@@ -1608,9 +2061,180 @@ describe('classifyAcceptanceGraderNoFirstTurnStall', () => {
       }),
     ).toBeNull();
   });
+
+  it('uses definite ended liveness to corroborate title redraws without a first turn', () => {
+    const recentMtime = nowMs - 30_000;
+    const input = { startedAt, logMtimeMs: recentMtime, nowMs, staleAfterMs };
+    const tail = '\u001b]0;grader startup title update\u0007Claude TUI tool picker still visible';
+
+    expect(isAcceptanceGraderNoFirstTurnLivenessCandidate(tail, input)).toBe(true);
+    expect(classifyAcceptanceGraderNoFirstTurnStall(tail, input, { sessionState: 'ended' })).toMatchObject({
+      code: 'startup_first_turn_stalled',
+      evidence: expect.stringContaining('owner session ended'),
+    });
+  });
+
+  it.each([null, 'live', 'parked', 'recorded', 'suspect'] as const)(
+    'keeps a recent-title-redraw candidate when owner liveness is %s',
+    (sessionState) => {
+      const input = { startedAt, logMtimeMs: nowMs - 30_000, nowMs, staleAfterMs };
+      expect(
+        classifyAcceptanceGraderNoFirstTurnStall('Claude TUI tool picker still visible', input,
+          sessionState === null ? null : { sessionState }),
+      ).toBeNull();
+    },
+  );
+
+  it('does not request liveness for fresh tasks, active turns, empty logs, or invalid clocks', () => {
+    expect(
+      isAcceptanceGraderNoFirstTurnLivenessCandidate('Claude TUI tool picker still visible', {
+        startedAt: new Date(nowMs - staleAfterMs + 1).toISOString(),
+        logMtimeMs: nowMs - 30_000,
+        nowMs,
+        staleAfterMs,
+      }),
+    ).toBe(false);
+    expect(
+      isAcceptanceGraderNoFirstTurnLivenessCandidate('Working (18m)\npapercusp.tools:invoke({})', {
+        startedAt,
+        logMtimeMs: nowMs - 30_000,
+        nowMs,
+        staleAfterMs,
+      }),
+    ).toBe(false);
+    expect(
+      isAcceptanceGraderNoFirstTurnLivenessCandidate('', {
+        startedAt,
+        logMtimeMs: nowMs - 30_000,
+        nowMs,
+        staleAfterMs,
+      }),
+    ).toBe(false);
+    expect(
+      isAcceptanceGraderNoFirstTurnLivenessCandidate('Claude TUI tool picker still visible', {
+        startedAt: 'invalid',
+        logMtimeMs: nowMs - 30_000,
+        nowMs,
+        staleAfterMs,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('classifyAcceptanceGraderParkedWithoutEmit (WI-10005295)', () => {
+  const nowMs = Date.parse('2026-10-02T04:00:00.000Z');
+  const staleAfterMs = 15 * 60_000;
+  const stale = {
+    startedAt: new Date(nowMs - 40 * 60_000).toISOString(),
+    logMtimeMs: nowMs - staleAfterMs - 1,
+    nowMs,
+    staleAfterMs,
+  };
+  // Shape of task 0muqeanqadsbkcjglk2's log tail (Codex auditor, 2026-10-02 03:40Z):
+  // the turn ended without an emit and the session sat at its prompt.
+  const codexParked =
+    '\u001b[1m• Audit not emitted.\u001b[0m Current target state:\r\n' +
+    '  • gradingAudit.state: pending  › Ask Codex to do anything   Working · GPT-5.6-Sol high · Context 86% left\r\n' +
+    '  The required lease no longer matches because its reservation is absent.\r\n' +
+    '  Worked for 20m 18s • 11:40 PMReady ·GPT-5.6-Sol high ·Context 86% left ·sta';
+  const claudeParked =
+    '● papercusp.tools:invoke(scorecards:get)\n● I stopped: the target card did not match the brief.\n\n' +
+    '✻ Crunched for 4m 12s · done\n\n❯ ';
+  // WI-10007246: task 0muygjfo21yekog81lv ended on this screen without a Worked footer.
+  const codexTransportError =
+    '\u001b[31m■ unexpected status 502 Bad Gateway: inference-gateway: codex OAuth upstream\r\n' +
+    'failed: fetch failed (UND_ERR_CONNECT_TIMEOUT: Connect Timeout Error (attempted\r\n' +
+    'address: chatgpt.com:443, timeout: 10000ms)), url:\r\n' +
+    'http://127.0.0.1:8788/v1/responses\u001b[0m  › Ask Codex to do anything   Ready · GPT-5.6-Sol high';
+
+  it('recognizes a quiet Codex transport-error ending without a Worked footer', () => {
+    expect(classifyAcceptanceGraderParkedWithoutEmit(codexTransportError, stale)).toMatchObject({
+      code: 'parked_without_emit',
+      evidence: expect.stringContaining('■unexpectedstatus502BadGateway'),
+    });
+  });
+
+  it('keeps quoted transport errors, reconnecting turns, resumed turns and recently active tasks', () => {
+    const errorWithoutPrompt = codexTransportError.slice(0, codexTransportError.indexOf('  ›'));
+    for (const log of [
+      `• Evidence quotes: ${errorWithoutPrompt}`,
+      `${errorWithoutPrompt}\n• Reconnecting... 3/5 (esc to interrupt)\nWorking · GPT-5.6-Sol high`,
+      `${codexTransportError}\nWorking · GPT-5.6-Sol high`,
+      `${errorWithoutPrompt}\nWorking · GPT-5.6-Sol high\nReady · GPT-5.6-Sol high`,
+    ]) {
+      expect(classifyAcceptanceGraderParkedWithoutEmit(log, stale)).toBeNull();
+    }
+    expect(classifyAcceptanceGraderParkedWithoutEmit(codexTransportError, {
+      ...stale, logMtimeMs: nowMs - 60_000,
+    })).toBeNull();
+  });
+
+  it('classifies a Codex or Claude judge parked at its prompt past the TTL', () => {
+    expect(classifyAcceptanceGraderParkedWithoutEmit(codexParked, stale)).toMatchObject({
+      code: 'parked_without_emit',
+      evidence: expect.stringContaining('Workedfor20m18s'),
+    });
+    expect(classifyAcceptanceGraderParkedWithoutEmit(claudeParked, stale)).toMatchObject({
+      code: 'parked_without_emit',
+    });
+  });
+
+  it('survives PTY redraws that strip the footer spacing', () => {
+    expect(
+      classifyAcceptanceGraderParkedWithoutEmit('● done reading\n✻Crunched fo 12s ·done2:29 PM\n❯', stale),
+    ).toMatchObject({ code: 'parked_without_emit' });
+  });
+
+  it('keeps a judge whose log is still moving or whose task is young', () => {
+    expect(
+      classifyAcceptanceGraderParkedWithoutEmit(codexParked, { ...stale, logMtimeMs: nowMs - 60_000 }),
+    ).toBeNull();
+    expect(
+      classifyAcceptanceGraderParkedWithoutEmit(codexParked, {
+        ...stale,
+        startedAt: new Date(nowMs - 5 * 60_000).toISOString(),
+        logMtimeMs: nowMs - 4 * 60_000,
+      }),
+    ).toBeNull();
+    expect(classifyAcceptanceGraderParkedWithoutEmit(codexParked, { ...stale, logMtimeMs: null })).toBeNull();
+  });
+
+  it('keeps a judge that never completed a turn or resumed after its last one', () => {
+    // Mid-turn, no completed-turn marker yet.
+    expect(
+      classifyAcceptanceGraderParkedWithoutEmit('Working (18m)\npapercusp.tools:invoke({})', stale),
+    ).toBeNull();
+    // A later turn started after the footer (woken by a coord message).
+    expect(
+      classifyAcceptanceGraderParkedWithoutEmit(`${claudeParked}\n● Resuming the audit\n✢ Thinking… (esc to interrupt)`, stale),
+    ).toBeNull();
+    expect(
+      classifyAcceptanceGraderParkedWithoutEmit(`${codexParked}\n  Working · GPT-5.6-Sol high · Context 80% left`, stale),
+    ).toBeNull();
+  });
 });
 
 describe('detectAcceptanceGraderTerminalFailure', () => {
+  it.each(['failed', 'resumed', 'successful', 'foreign-session', 'partial'])(
+    'uses exact native Codex completion evidence, preserving %s ordering', async (state) => {
+      const native = [
+        JSON.stringify({ type: 'session_meta', payload: { id: state === 'foreign-session' ? 'other' : 'native-codex' } }),
+        JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete',
+          error: { codex_error_info: 'server_overloaded', message: 'Selected model is at capacity. Please try a different model.' } } }),
+        ...(state === 'resumed' ? [JSON.stringify({ type: 'event_msg', payload: { type: 'task_started' } })] : []),
+        ...(state === 'successful' ? [JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete' } })] : []),
+        ...(state === 'partial' ? ['{"type":'] : []),
+      ].join('\n');
+      const result = await detectAcceptanceGraderTerminalFailure('judge.log', {
+        readLogTail: (path) => path.endsWith('.jsonl') ? native : '• Called scorecards:get\nWorking · GPT-5.6-Sol high',
+        nativeTranscriptPath: 'judge.jsonl', nativeSessionId: 'native-codex', nativeBackend: 'codex',
+        maxRechecks: 0, detectStartupStall: false,
+      });
+      if (state === 'failed') expect(result).toMatchObject({ code: 'inference_gateway_error' });
+      else expect(result).toBeNull();
+    },
+  );
+
   it('classifies a completed one-shot audit refusal only when explicitly enabled', async () => {
     const finalAnswer =
       "● I didn't emit an audit, so scorecard EI-24208147289140038 is still unsettled. " +
@@ -1978,6 +2602,140 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
     expect(launch).not.toHaveBeenCalled();
   });
 
+  describe('carrying the independent-verification section onto a deduped request (WI-6554700010008552)', () => {
+    const BRIEF = 'INDEPENDENT VERIFICATION — do this BEFORE scorecards:emit. 1 live/deployed outcome bar(s)';
+    const openRequest = () =>
+      vi.fn(async () => [
+        {
+          id: 'WI-grading-open',
+          kind: 'task',
+          state: 'open',
+          title: 'Independent acceptance grade: plan ship-the-thing',
+          summary: 'Use scorecards:emit as the non-lineage grader.',
+          createdBy: 'su-delegator',
+          assignee: null,
+          createdAt: new Date(NOW - 5 * 60_000).toISOString(),
+          lastProgressAt: null,
+        },
+      ]);
+    const briefCtx = { ...baseCtx, acceptanceIndependentVerificationBrief: `  ${BRIEF}\n` } as never;
+
+    it('appends the carried section to the request it deduped onto, and still launches nothing', async () => {
+      const launch = freshLaunch();
+      const appendVerificationBrief = vi.fn(async () => 'appended' as const);
+      const result = await resolveAcceptanceGrader('ship-the-thing', briefCtx, {
+        ...deps(launch),
+        listWork: openRequest() as never,
+        discover: vi.fn() as never,
+        appendVerificationBrief,
+      });
+      expect(result).toMatchObject({
+        state: 'deduped',
+        existingWorkItemId: 'WI-grading-open',
+        verificationBriefOnRequest: 'appended',
+      });
+      // Trimmed exactly as a fresh launch's brief is, and scoped to the plan's row.
+      expect(appendVerificationBrief).toHaveBeenCalledTimes(1);
+      expect(appendVerificationBrief).toHaveBeenCalledWith('WI-grading-open', BRIEF, {
+        harness: 'papercusp',
+        workspaceId: 'ws-test',
+      });
+      expect(launch).not.toHaveBeenCalled();
+    });
+
+    it('touches nothing when the gate carried no section (a grading-code refusal)', async () => {
+      const appendVerificationBrief = vi.fn(async () => 'appended' as const);
+      const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+        ...deps(freshLaunch()),
+        listWork: openRequest() as never,
+        discover: vi.fn() as never,
+        appendVerificationBrief,
+      });
+      expect(result.state).toBe('deduped');
+      expect(appendVerificationBrief).not.toHaveBeenCalled();
+      expect('verificationBriefOnRequest' in result).toBe(false);
+    });
+
+    it('a failed append is reported, not thrown: the dedupe still stands', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const launch = freshLaunch();
+      const result = await resolveAcceptanceGrader('ship-the-thing', briefCtx, {
+        ...deps(launch),
+        listWork: openRequest() as never,
+        discover: vi.fn() as never,
+        appendVerificationBrief: vi.fn(async () => {
+          throw new Error('thread store down');
+        }),
+      });
+      expect(result).toMatchObject({
+        state: 'deduped',
+        existingWorkItemId: 'WI-grading-open',
+        verificationBriefOnRequest: 'failed',
+      });
+      expect(launch).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('WI-grading-open'));
+      warn.mockRestore();
+    });
+
+    describe('appendIndependentVerificationBriefToRequest', () => {
+      const post = (body: string) => ({ id: 1, thread_id: 't', author_id: 'x', body, created_ts: '2026-10-11T00:00:00Z' });
+      const window = (bodies: string[]) => ({ posts: bodies.map(post), total: bodies.length, topics: [], createdAt: '' });
+
+      it('posts the section as the recruiter when the thread lacks it', async () => {
+        const readThread = vi.fn(async () => window(['an unrelated comment']));
+        const comment = vi.fn(async () => post(BRIEF));
+        await expect(
+          appendIndependentVerificationBriefToRequest(
+            'WI-grading-open',
+            BRIEF,
+            { harness: 'papercusp', workspaceId: 'ws-test' },
+            { readThread: readThread as never, comment: comment as never },
+          ),
+        ).resolves.toBe('appended');
+        expect(readThread).toHaveBeenCalledWith('WI-grading-open', 50, 'papercusp');
+        expect(comment).toHaveBeenCalledWith('WI-grading-open', BRIEF, ACCEPTANCE_GRADER_RECRUITER_ACTOR, {
+          workspaceId: 'ws-test',
+          harness: 'papercusp',
+        });
+      });
+
+      it('does not post twice: an identical section already on the thread is left alone', async () => {
+        const comment = vi.fn();
+        await expect(
+          appendIndependentVerificationBriefToRequest(
+            'WI-grading-open',
+            BRIEF,
+            { harness: 'papercusp' },
+            { readThread: vi.fn(async () => window([`prefix\n${BRIEF}`])) as never, comment: comment as never },
+          ),
+        ).resolves.toBe('already-present');
+        expect(comment).not.toHaveBeenCalled();
+      });
+
+      it('a section whose gaps changed is posted again', async () => {
+        const comment = vi.fn(async () => post(`${BRIEF}\n- bar 2`));
+        await expect(
+          appendIndependentVerificationBriefToRequest(
+            'WI-grading-open',
+            `${BRIEF}\n- bar 2`,
+            {},
+            { readThread: vi.fn(async () => window([BRIEF])) as never, comment: comment as never },
+          ),
+        ).resolves.toBe('appended');
+        expect(comment).toHaveBeenCalledTimes(1);
+      });
+
+      it('throws when the request does not exist', async () => {
+        await expect(
+          appendIndependentVerificationBriefToRequest('WI-gone', BRIEF, {}, {
+            readThread: vi.fn(async () => null) as never,
+            comment: vi.fn() as never,
+          }),
+        ).rejects.toThrow('WI-gone');
+      });
+    });
+  });
+
   it('a blocked acceptance-grading task suppresses duplicate dispatch while unrelated plan work does not', async () => {
     const launch = freshLaunch();
     const openCascade = vi.fn(async () => ({ conversationId: 'conv-1', woke: 1 }));
@@ -2082,6 +2840,109 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
 
       expect(result.state).not.toBe('deduped');
       expect(discover).toHaveBeenCalled();
+    });
+  });
+
+  describe('an unheld request for a SUPERSEDED rubric revision does not suppress recruitment (WI-10006620)', () => {
+    const assigned = () =>
+      vi.fn(async () => ({
+        verdict: 'assigned' as const,
+        graders: [{ ownerId: 'su-independent', score: 0.71, liveness: 'live', via: 'floor' as const }],
+        routing: { selection: { min: 1, max: 2, selected: [] } },
+        excluded: [],
+      }));
+
+    // The shape that stranded a real plan: a review-target reservation that the
+    // consult-expiry path converted into a pullable review. Its summary quotes
+    // scorecards:emit, so it matches the identity markers, and only its payload
+    // records which rubric revision it targets. The rubric fixture is revision 3.
+    const pullableReview = (targetRevision: number | null, assignee: string | null = null) => ({
+      id: 'WI-pullable-review',
+      kind: 'task',
+      state: 'open',
+      title: 'Acceptance review-target reservation — ship-the-thing (acceptance-ship-the-thing)',
+      summary:
+        'PULLABLE REVIEW. To review: claim this item and grade the rubric with scorecards:emit, ' +
+        'with concrete evidence per criterion.',
+      createdBy: null,
+      assignee,
+      createdAt: new Date(NOW - 60_000).toISOString(),
+      lastProgressAt: null,
+      payload: {
+        acceptanceReviewTarget: {
+          planSlug: 'ship-the-thing',
+          rubricId: 'acceptance-ship-the-thing',
+          revision: targetRevision,
+          harnessSlug: 'papercusp',
+          workspaceId: 'papercusp-workspace',
+        },
+      },
+    });
+
+    it('the fixture matches the identity markers and is fresh, so these cases exercise the revision rule', () => {
+      expect(isAcceptanceGradingRequestForPlan(pullableReview(2) as never, 'ship-the-thing')).toBe(true);
+      expect(isInFlightAcceptanceGradingRequest(pullableReview(3) as never, 'ship-the-thing', NOW, undefined, 3)).toBe(
+        true,
+      );
+    });
+
+    it('treats an unheld request filed for an older revision as not in flight', () => {
+      expect(isInFlightAcceptanceGradingRequest(pullableReview(2) as never, 'ship-the-thing', NOW, undefined, 3)).toBe(
+        false,
+      );
+    });
+
+    it('keeps the previous behaviour when either revision is unknown', () => {
+      expect(isInFlightAcceptanceGradingRequest(pullableReview(2) as never, 'ship-the-thing', NOW)).toBe(true);
+      expect(isInFlightAcceptanceGradingRequest(pullableReview(2) as never, 'ship-the-thing', NOW, undefined, null)).toBe(
+        true,
+      );
+      expect(
+        isInFlightAcceptanceGradingRequest(pullableReview(null) as never, 'ship-the-thing', NOW, undefined, 3),
+      ).toBe(true);
+      expect(
+        isInFlightAcceptanceGradingRequest(
+          { ...pullableReview(2), payload: null } as never,
+          'ship-the-thing',
+          NOW,
+          undefined,
+          3,
+        ),
+      ).toBe(true);
+    });
+
+    it('still lets an eligible HOLDER of an older-revision request suppress (they can emit against the current one)', () => {
+      expect(
+        isInFlightAcceptanceGradingRequest(pullableReview(2, 'su-independent') as never, 'ship-the-thing', NOW, new Set(), 3),
+      ).toBe(true);
+    });
+
+    it('recruits past an unheld request for an older revision', async () => {
+      const discover = assigned();
+
+      const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+        ...deps(freshLaunch()),
+        listWork: vi.fn(async () => [pullableReview(2)]) as never,
+        discover: discover as never,
+        openCascade: vi.fn(async () => ({ conversationId: 'conv-1', woke: 1 })) as never,
+      });
+
+      expect(result.state).not.toBe('deduped');
+      expect(discover).toHaveBeenCalled();
+    });
+
+    it('still dedupes onto an unheld request for the CURRENT revision (positive control)', async () => {
+      const discover = assigned();
+
+      const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+        ...deps(freshLaunch()),
+        listWork: vi.fn(async () => [pullableReview(3)]) as never,
+        discover: discover as never,
+        openCascade: vi.fn(async () => ({ conversationId: 'conv-1', woke: 1 })) as never,
+      });
+
+      expect(result).toMatchObject({ state: 'deduped', existingWorkItemId: 'WI-pullable-review' });
+      expect(discover).not.toHaveBeenCalled();
     });
   });
 

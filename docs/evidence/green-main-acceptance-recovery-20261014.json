@@ -1,0 +1,714 @@
+{
+  "schemaVersion": 1,
+  "kind": "acceptance-recovery-record",
+  "status": "in-progress-unshipped",
+  "workItemId": "WI-6554700010010682",
+  "ownerId": "su-c05233eb-d1be-4e44-b16e-51d9d3532894",
+  "planSlug": "green-main-cycle-time-2026-10-08",
+  "auditedPlanRevision": 129,
+  "activationAuditSeq": 5,
+  "auditedPlanContentHash": "9a02bb89fbbcba60ed66779138f8a2afd4cab9627b95ffc389099c3fb4ad41a1",
+  "rubricRef": "acceptance-green-main-cycle-time-2026-10-08",
+  "rubricRevision": 5,
+  "proposal": {
+    "sourcePath": "docs/evidence/green-main-acceptance-proposal-20261014.md",
+    "reportId": "rpt_6482ba59-8010-4c2c-9fe7-e0ccda55500b",
+    "path": "/reports?sel=rpt_6482ba59-8010-4c2c-9fe7-e0ccda55500b",
+    "requestKey": "c0523-green-main-native-proposal-20261014-edition1",
+    "bodySha256": "db1f665e4296905ef771ccb867de2576002c3ce816b27db470927a25113a21b5",
+    "readbackVerified": true,
+    "visibility": "owner",
+    "approved": false
+  },
+  "sourceRecovery": {
+    "ranges": [
+      {
+        "toTurn": 13,
+        "fromTurn": 0,
+        "sessionId": "dd61dbe4-8ca7-466d-9021-f63c979af6bb",
+        "sourceKind": "claude"
+      },
+      {
+        "toTurn": 21,
+        "fromTurn": 0,
+        "sessionId": "1f37a880-9128-4514-96cf-9be37ec93c20",
+        "sourceKind": "claude"
+      },
+      {
+        "toTurn": 15,
+        "fromTurn": 3,
+        "sessionId": "5da170be-6ed8-48b8-90a6-848ecddefe6a",
+        "sourceKind": "claude"
+      }
+    ],
+    "files": [
+      "/tmp/c0523-source-recovery-0.json",
+      "/tmp/c0523-source-recovery-0-tail.json",
+      "/tmp/c0523-source-recovery-1.json",
+      "/tmp/c0523-source-recovery-2.json"
+    ],
+    "fullRead": true,
+    "priorAuditLog": ".papercusp/scratch/bash-708cab54-c0b.log",
+    "priorAuditNotRerun": true
+  },
+  "addedClauses": [
+    {
+      "specId": "GMCT-P-028-attributed-lint-red",
+      "expectedRevision": 0,
+      "planItemId": "P-028",
+      "behavior": "A seeded repo-wide guard violation in a sync batch produces an attributed red naming the original author or work-item within 15 minutes and before a gate run",
+      "behaviorClass": "observability",
+      "requiredEvidence": [
+        "tree"
+      ],
+      "requiredTestLayers": [
+        "integration"
+      ],
+      "mutationRequired": false,
+      "lifecycleStatus": "active",
+      "falsifier": {
+        "observation": "No attributed red appears by 15 minutes, the attribution names neither original author nor work-item, or the first detection requires a gate run"
+      },
+      "acceptanceRef": "green-main-cycle-time-2026-10-08#P-011"
+    },
+    {
+      "specId": "GMCT-P-028-lint-wake",
+      "expectedRevision": 0,
+      "planItemId": "P-028",
+      "behavior": "The attributed sync-batch guard red queues the named responsible session's wake within 15 minutes and before a gate run",
+      "behaviorClass": "observability",
+      "requiredEvidence": [
+        "tree"
+      ],
+      "requiredTestLayers": [
+        "integration"
+      ],
+      "mutationRequired": false,
+      "lifecycleStatus": "active",
+      "falsifier": {
+        "observation": "No responsible-session wake is queued within 15 minutes, the wrong session is targeted, or the wake depends on a gate run"
+      },
+      "acceptanceRef": "green-main-cycle-time-2026-10-08#P-011"
+    },
+    {
+      "specId": "GMCT-P-029-nonverdict-panel",
+      "expectedRevision": 0,
+      "planItemId": "P-029",
+      "behavior": "The gate panel displays the complete per-reason counts for an exact scoped mixed non-verdict population",
+      "behaviorClass": "observability",
+      "requiredEvidence": [
+        "live"
+      ],
+      "requiredTestLayers": [],
+      "mutationRequired": false,
+      "lifecycleStatus": "active",
+      "falsifier": {
+        "observation": "A contributing non-verdict is omitted or double counted, a verdict enters the population, or the live panel differs from the scoped ledger projection"
+      },
+      "acceptanceRef": "green-main-cycle-time-2026-10-08#D-044"
+    },
+    {
+      "specId": "GMCT-P-029-owned-followup",
+      "expectedRevision": 0,
+      "planItemId": "P-029",
+      "behavior": "A non-verdict reason exceeding its registered daily threshold produces one accountable owned follow-up for that reason and episode",
+      "behaviorClass": "lifecycle",
+      "requiredEvidence": [
+        "tree"
+      ],
+      "requiredTestLayers": [
+        "integration"
+      ],
+      "mutationRequired": false,
+      "lifecycleStatus": "active",
+      "falsifier": {
+        "observation": "No follow-up is produced, it has no verified owner, retries duplicate it, or below-threshold observations spuriously file it"
+      },
+      "acceptanceRef": "green-main-cycle-time-2026-10-08#D-044"
+    },
+    {
+      "specId": "GMCT-P-030-fixer-gateway-fallback",
+      "expectedRevision": 0,
+      "planItemId": "P-030",
+      "behavior": "A release fixer's usage-walled primary credential falls back through the approved auto gateway rather than withholding repair",
+      "behaviorClass": "failure",
+      "requiredEvidence": [
+        "tree"
+      ],
+      "requiredTestLayers": [
+        "integration"
+      ],
+      "mutationRequired": false,
+      "lifecycleStatus": "active",
+      "falsifier": {
+        "observation": "The release fixer is withheld after a usage wall, uses an unapproved provider, or lacks explicit serving account identity"
+      },
+      "acceptanceRef": "green-main-cycle-time-2026-10-08#D-045"
+    },
+    {
+      "specId": "GMCT-P-030-shipped-first-requests",
+      "expectedRevision": 0,
+      "planItemId": "P-030",
+      "behavior": "Both primary and capacity-fallback release-fixer routes complete a real first request against the exact shipped artifact with measured spawn request account and runtime identities",
+      "behaviorClass": "observability",
+      "requiredEvidence": [
+        "deployed"
+      ],
+      "requiredTestLayers": [],
+      "mutationRequired": false,
+      "lifecycleStatus": "active",
+      "falsifier": {
+        "observation": "Either route lacks a real completed first request, uses a different shipped artifact, or lacks an explicit identity or measured serving-runtime fingerprint"
+      },
+      "acceptanceRef": "green-main-cycle-time-2026-10-08#D-045"
+    },
+    {
+      "specId": "GMCT-P-031-restart-barrier",
+      "expectedRevision": 0,
+      "planItemId": "P-031",
+      "behavior": "A bg-host restart waits for the in-flight git-sync commit hop to settle before stopping its runtime",
+      "behaviorClass": "concurrency",
+      "requiredEvidence": [
+        "tree"
+      ],
+      "requiredTestLayers": [
+        "integration"
+      ],
+      "mutationRequired": false,
+      "lifecycleStatus": "active",
+      "falsifier": {
+        "observation": "A restart kills the active commit hop before settlement, bypasses the barrier, or treats a barrier timeout as completed restart"
+      },
+      "acceptanceRef": "green-main-cycle-time-2026-10-08#D-045"
+    },
+    {
+      "specId": "GMCT-P-031-historical-cause",
+      "expectedRevision": 0,
+      "planItemId": "P-031",
+      "behavior": "The historical restart incident is resolved only with the exact resource UUID expiry or release outcome caller build and distinguishing causal evidence",
+      "behaviorClass": "observability",
+      "requiredEvidence": [
+        "tree"
+      ],
+      "requiredTestLayers": [
+        "integration"
+      ],
+      "mutationRequired": false,
+      "lifecycleStatus": "active",
+      "falsifier": {
+        "observation": "Closure lacks the exact resource lifecycle or caller build, infers post-return orphaning from a refused preview, or relies solely on existing cleanup code"
+      },
+      "acceptanceRef": "green-main-cycle-time-2026-10-08#D-045"
+    },
+    {
+      "specId": "GMCT-P-032-leg-fix-proof",
+      "expectedRevision": 0,
+      "planItemId": "P-032",
+      "behavior": "Each accepted frozen-candidate leg repair has a staging reproduction a durable source fix and a passing maintained recurrence guard naming its repaired leg",
+      "behaviorClass": "failure",
+      "requiredEvidence": [
+        "tree"
+      ],
+      "requiredTestLayers": [
+        "unit"
+      ],
+      "mutationRequired": false,
+      "lifecycleStatus": "active",
+      "falsifier": {
+        "observation": "A repaired leg lacks reproduction or class guard, only typechecks, or its guard remains red at the repaired source"
+      },
+      "acceptanceRef": "green-main-cycle-time-2026-10-08#D-047"
+    },
+    {
+      "specId": "GMCT-P-032-gate-owner-handoff",
+      "expectedRevision": 0,
+      "planItemId": "P-032",
+      "behavior": "The source-fixing lane hands exact committed source paths and repair evidence to the exclusive live gate owner for admission and verdict",
+      "behaviorClass": "authorization",
+      "requiredEvidence": [
+        "tree"
+      ],
+      "requiredTestLayers": [
+        "unit"
+      ],
+      "mutationRequired": false,
+      "lifecycleStatus": "active",
+      "falsifier": {
+        "observation": "The source lane operates an in-flight checkpoint or repair queue, or the handoff lacks exact source identity and repaired paths"
+      },
+      "acceptanceRef": "green-main-cycle-time-2026-10-08#D-047"
+    },
+    {
+      "specId": "GMCT-P-033-nonverdict-cause",
+      "expectedRevision": 0,
+      "planItemId": "P-033",
+      "behavior": "Each recurring error or joined-attempt cause has a live accountable owner measured cause and either a durable verified fix or an owned follow-up",
+      "behaviorClass": "observability",
+      "requiredEvidence": [
+        "tree"
+      ],
+      "requiredTestLayers": [
+        "integration"
+      ],
+      "mutationRequired": false,
+      "lifecycleStatus": "active",
+      "falsifier": {
+        "observation": "A cause lacks a live accountable owner or measured explanation, or a mitigation closes it without a durable class fix or owned follow-up"
+      },
+      "acceptanceRef": "green-main-cycle-time-2026-10-08#D-048"
+    },
+    {
+      "specId": "GMCT-P-033-positive-live-join",
+      "expectedRevision": 0,
+      "planItemId": "P-033",
+      "behavior": "Recurring abort alarms exclude a joined-attempt row only when live liveness and nonblank attempt and runner identities positively identify its existing execution",
+      "behaviorClass": "boundary",
+      "requiredEvidence": [
+        "tree"
+      ],
+      "requiredTestLayers": [
+        "integration"
+      ],
+      "mutationRequired": false,
+      "lifecycleStatus": "active",
+      "falsifier": {
+        "observation": "A dead unknown legacy or identity-missing join is excluded, a real error is excluded, or the exact joined fire disappears from append-only history"
+      },
+      "acceptanceRef": "green-main-cycle-time-2026-10-08#D-048"
+    },
+    {
+      "specId": "GMCT-P-034-gitlink-publication",
+      "expectedRevision": 0,
+      "planItemId": "P-034",
+      "behavior": "Every required gitlink of the accepted repaired candidate is published on its own origin before candidate promotion",
+      "behaviorClass": "lifecycle",
+      "requiredEvidence": [
+        "tree"
+      ],
+      "requiredTestLayers": [
+        "integration"
+      ],
+      "mutationRequired": false,
+      "lifecycleStatus": "active",
+      "falsifier": {
+        "observation": "A required gitlink cannot be fetched from its origin, the publication concerns a different candidate, or promotion proceeds with an unpublished required source"
+      },
+      "acceptanceRef": "green-main-cycle-time-2026-10-08#D-049"
+    },
+    {
+      "specId": "GMCT-P-034-actual-promotion",
+      "expectedRevision": 0,
+      "planItemId": "P-034",
+      "behavior": "Final publication acceptance requires an actual successful promotion-push of a candidate carrying the accepted repaired source to main",
+      "behaviorClass": "lifecycle",
+      "requiredEvidence": [
+        "deployed"
+      ],
+      "requiredTestLayers": [],
+      "mutationRequired": false,
+      "lifecycleStatus": "active",
+      "falsifier": {
+        "observation": "The item closes on staging publication alone, a leader supplies a nonexistent receipt, or the promoted candidate lacks the accepted repaired source"
+      },
+      "acceptanceRef": "green-main-cycle-time-2026-10-08#D-049"
+    }
+  ],
+  "activationAuditArgs": {
+    "slug": "green-main-cycle-time-2026-10-08",
+    "harness": "papercusp",
+    "phase": "activation",
+    "classRef": "plan-class-feature-ship",
+    "dryRun": false,
+    "sourceRanges": [
+      {
+        "toTurn": 13,
+        "fromTurn": 0,
+        "sessionId": "dd61dbe4-8ca7-466d-9021-f63c979af6bb",
+        "sourceKind": "claude"
+      },
+      {
+        "toTurn": 21,
+        "fromTurn": 0,
+        "sessionId": "1f37a880-9128-4514-96cf-9be37ec93c20",
+        "sourceKind": "claude"
+      },
+      {
+        "toTurn": 15,
+        "fromTurn": 3,
+        "sessionId": "5da170be-6ed8-48b8-90a6-848ecddefe6a",
+        "sourceKind": "claude"
+      }
+    ],
+    "mappings": [
+      {
+        "id": "M-001",
+        "sourceRefs": [
+          "session_turn:claude:dd61dbe4-8ca7-466d-9021-f63c979af6bb:0"
+        ],
+        "disposition": "covered",
+        "planTargets": [
+          "section:Goal",
+          "R-1",
+          "R-2",
+          "R-3",
+          "R-4",
+          "R-5",
+          "R-6",
+          "R-7",
+          "R-8",
+          "R-9",
+          "R-10",
+          "R-11",
+          "P-001",
+          "P-002",
+          "P-003",
+          "P-004",
+          "P-005",
+          "P-006",
+          "P-007",
+          "P-008",
+          "P-010",
+          "P-011",
+          "P-012",
+          "P-013",
+          "P-014",
+          "P-015",
+          "P-016",
+          "P-017",
+          "P-018",
+          "P-019",
+          "P-020",
+          "R-12",
+          "R-13",
+          "R-14",
+          "R-15",
+          "R-16"
+        ],
+        "requirement": "Audit all work over the red period, find everything slowing green main, and plan system improvements so main goes green much quicker."
+      },
+      {
+        "id": "M-002",
+        "sourceRefs": [
+          "session_turn:claude:dd61dbe4-8ca7-466d-9021-f63c979af6bb:13"
+        ],
+        "disposition": "covered",
+        "planTargets": [
+          "D-001"
+        ],
+        "requirement": "Owner approved implementation by the planning session itself under AUTO mode."
+      },
+      {
+        "id": "M-003",
+        "sourceRefs": [
+          "session_turn:claude:1f37a880-9128-4514-96cf-9be37ec93c20:0"
+        ],
+        "disposition": "covered",
+        "planTargets": [
+          "D-021",
+          "section:Constraints"
+        ],
+        "requirement": "Take over getting main green now (8 days red)."
+      },
+      {
+        "id": "M-004",
+        "sourceRefs": [
+          "session_turn:claude:1f37a880-9128-4514-96cf-9be37ec93c20:3"
+        ],
+        "disposition": "covered",
+        "planTargets": [
+          "D-021",
+          "section:Goal"
+        ],
+        "requirement": "Before greening, audit recent attempts: why so slow, and how to improve the system."
+      },
+      {
+        "id": "M-005",
+        "sourceRefs": [
+          "session_turn:claude:1f37a880-9128-4514-96cf-9be37ec93c20:21"
+        ],
+        "disposition": "covered",
+        "planTargets": [
+          "D-021",
+          "P-022",
+          "R-6",
+          "R-7"
+        ],
+        "requirement": "Fix 1: reserved gate disk quota and retention so fleet activity cannot starve the gate (built in durable-disk-and-checkpoint-recovery-2026-10-09; this plan checks disk headroom first)."
+      },
+      {
+        "id": "M-006",
+        "sourceRefs": [
+          "session_turn:claude:1f37a880-9128-4514-96cf-9be37ec93c20:21"
+        ],
+        "disposition": "repaired",
+        "planTargets": [
+          "D-021",
+          "P-013",
+          "R-4"
+        ],
+        "requirement": "Fix 2: one long-lived gate owner instead of a relay, failing legs as claimable items, refuse gate-item completion while main is red."
+      },
+      {
+        "id": "M-007",
+        "sourceRefs": [
+          "session_turn:claude:1f37a880-9128-4514-96cf-9be37ec93c20:21"
+        ],
+        "disposition": "repaired",
+        "planTargets": [
+          "D-021",
+          "P-016",
+          "R-10",
+          "P-023",
+          "R-3",
+          "R-13",
+          "R-14"
+        ],
+        "requirement": "Fix 3: owner alert after 12h red or 6h with no verdict."
+      },
+      {
+        "id": "M-008",
+        "sourceRefs": [
+          "session_turn:claude:1f37a880-9128-4514-96cf-9be37ec93c20:21"
+        ],
+        "disposition": "covered",
+        "planTargets": [
+          "D-021",
+          "section:Constraints"
+        ],
+        "requirement": "Getting main green comes first; system fixes follow."
+      },
+      {
+        "id": "M-009",
+        "sourceRefs": [
+          "session_turn:claude:5da170be-6ed8-48b8-90a6-848ecddefe6a:3"
+        ],
+        "disposition": "covered",
+        "planTargets": [
+          "D-022",
+          "P-021",
+          "P-022",
+          "P-023",
+          "P-002",
+          "P-013",
+          "P-011",
+          "P-012",
+          "P-016",
+          "R-3",
+          "R-5",
+          "R-6",
+          "R-7",
+          "D-023"
+        ],
+        "requirement": "Audit green-main logs; find improvements beyond WI-6554700010008924 and earlier fixes."
+      },
+      {
+        "id": "M-010",
+        "sourceRefs": [
+          "session_turn:claude:5da170be-6ed8-48b8-90a6-848ecddefe6a:14"
+        ],
+        "disposition": "covered",
+        "planTargets": [
+          "D-022",
+          "P-021",
+          "P-022",
+          "R-5",
+          "R-6",
+          "R-7",
+          "D-023"
+        ],
+        "requirement": "Add both new audit items to the existing plan and activate it; this session carries it (route A)."
+      },
+      {
+        "id": "M-011",
+        "sourceRefs": [
+          "session_turn:claude:5da170be-6ed8-48b8-90a6-848ecddefe6a:15"
+        ],
+        "disposition": "covered",
+        "planTargets": [
+          "D-022",
+          "section:Now",
+          "P-023",
+          "R-3"
+        ],
+        "requirement": "Write it all into a plan, enter AUTO, and carry the plan to shipped status personally."
+      }
+    ],
+    "itemProvenance": [
+      {
+        "itemId": "P-028",
+        "kind": "derived",
+        "from": [
+          "P-011"
+        ],
+        "note": "Source-backed extension captured in Product shaping and governing D043..D049; new exact clauses preserve original obligations and evidence boundaries."
+      },
+      {
+        "itemId": "P-029",
+        "kind": "derived",
+        "from": [
+          "P-016",
+          "P-018"
+        ],
+        "note": "Source-backed extension captured in Product shaping and governing D043..D049; new exact clauses preserve original obligations and evidence boundaries."
+      },
+      {
+        "itemId": "P-030",
+        "kind": "derived",
+        "from": [
+          "P-001"
+        ],
+        "note": "Source-backed extension captured in Product shaping and governing D043..D049; new exact clauses preserve original obligations and evidence boundaries."
+      },
+      {
+        "itemId": "P-031",
+        "kind": "derived",
+        "from": [
+          "P-011"
+        ],
+        "note": "Source-backed extension captured in Product shaping and governing D043..D049; new exact clauses preserve original obligations and evidence boundaries."
+      },
+      {
+        "itemId": "P-032",
+        "kind": "derived",
+        "from": [
+          "P-013"
+        ],
+        "note": "Source-backed extension captured in Product shaping and governing D043..D049; new exact clauses preserve original obligations and evidence boundaries."
+      },
+      {
+        "itemId": "P-033",
+        "kind": "derived",
+        "from": [
+          "P-016",
+          "P-018",
+          "P-029"
+        ],
+        "note": "Source-backed extension captured in Product shaping and governing D043..D049; new exact clauses preserve original obligations and evidence boundaries."
+      },
+      {
+        "itemId": "P-034",
+        "kind": "derived",
+        "from": [
+          "P-003",
+          "P-013",
+          "P-032"
+        ],
+        "note": "Source-backed extension captured in Product shaping and governing D043..D049; new exact clauses preserve original obligations and evidence boundaries."
+      }
+    ],
+    "repairedOmissions": [
+      "P-013 now carries D-021 fix 2 (single long-lived owner; refuse gate-item completion while red).",
+      "P-016 now carries D-021 fix 3 (owner page at 12h red / 6h no verdict).",
+      "Added ## Requirements R-1..R-11 and a Design Bar-to-work map so acceptance bars can be seeded.",
+      "Rewrote Requirements as 16 atomic one-item bars (R-1..R-16) after spec-quality atomicity and contract-coverage failures; superseded the off-map first-seed projections.",
+      "Requirements R-1..R-16 repaired after the outside-lineage objection (thread-post:1176320 on WI-6554700010009136): every clause the 16-bar split dropped is restored into its bar falsifier (R-1 named next action; R-2 files-or-escalates and P-019 recurrence guards; R-3 crash loop vs no-runs and escalation; R-5 known-good re-cut point and retire reason; R-6 restarts; R-7 disk headroom, dependency-copy lock and retention cleanup; R-8 affected tests and work-item attribution; R-12 measured headroom with longest-first; R-13 alert on breach; R-15 attributed per-sync red items), the prior request text is restored split per bar, and P-019 is back in R-2 requiredScope.",
+      "D-023 records how P-021 (bounded queue life) supersedes the 09-03 age rule, with anti-treadmill limits.",
+      "Product shaping added before Goal;14 immutable atomic behavioral clauses authored for missing P028..034."
+    ],
+    "rejectedOrSuperseded": [],
+    "summary": "Complete original conversations re-read including full approved dd61 turn12; M001..011 retained. Re-audit records source/provenance validation only; R11 projection remains compound and requires canonical outside-lineage amendment. Goal, R12 full-file-set<=0.5, actual P018 seven-day passes, P028 cadence, D045 exact shipped first requests/P031 cause preserved. No activation or shipment claim."
+  },
+  "specQualityAfterClauseWrite": {
+    "classRef": "plan-class-feature-ship",
+    "specSetHash": "bd917a4446cb4e3570364d1c893e162632cd66a5968dcb220bca614cbad1a906",
+    "uncoveredPlanItemIds": [],
+    "verdict": "fail",
+    "wouldBlock": [
+      "atomic-observable-behavior"
+    ],
+    "note": "Measured before audit5 BAR reprojection; re-evaluate only after next relevant spec change."
+  },
+  "remaining": [
+    "Canonical R11 atomicity via reviewed rubrics:amend; do not edit AUTO-BAR projection",
+    "R12 real full-gate same-file-set <=0.5 producer, immutable pair inputs and runtime prerequisite",
+    "P028 actual pickup and cadence evidence",
+    "Native Goal evidence complete original population and exact runtime/window proof; strict idle deadline and first-observed breach/onset distinction",
+    "Actual seven consecutive days of invariant passes",
+    "One complete outside-lineage BAR review, then apply/vet/bind/grade",
+    "D045 exact shipped primary/capacity-fallback first requests and P031 historical cause",
+    "Full final promotion and shipment"
+  ],
+  "constraints": [
+    "Preserve original local test receipts; no repeat without relevant drift",
+    "No current LIVE_GATE_OPS, new agents, execution-route changes, manual git or worktrees",
+    "Do not apply stale unapproved v6 proposal; requiredTestLayers accepts unit/integration/e2e/llm/browser, not operational",
+    "EI259325 original managed-carry historical cause remains unknown/open"
+  ],
+  "nativeAcceptanceContract": {
+  "sourcePath": "docs/evidence/green-main-native-acceptance-contract-20261014.json",
+  "status": "draft-unapproved-unbound",
+  "componentCount": 6,
+  "structuralValidation": {
+    "atomicityReason": null,
+    "probeShapes": "valid",
+    "sqlReadOnly": "valid",
+    "sourceSymbolsAndAssertions": "present",
+    "parametersBound": false,
+    "liveSchemaRevisionValidated": false,
+    "operationalAcceptance": false
+  },
+  "r11Semantics": "Both cap-specific branches remain in the complete falsifier; detector acceptance is not semantic approval.",
+  "prerequisite": {
+    "item": "EI-25546824057830003",
+    "owner": "su-c04397d1-7c42-418d-a14c-026ceca4d008",
+    "replyTo": "coord-send-52afd7d5a980811614c770dfcd5bfaaf18b4f2462bfc5a1608b4c64f0c9949e0",
+    "receiptAvailable": false,
+    "p006HoldPreserved": true
+  }
+},
+  "nativeReceiptSerializationFix": {
+  "itemId": "EI-25948814148775899",
+  "status": "done-committed",
+  "completionAuthority": "committed",
+  "settlementEvidencePath": "docs/evidence/green-main-native-receipt-settlement-20261014.json",
+  "rootCause": "operationalExecution dropped the maintained producer command, so the original producer/install/window arguments were absent from structured ledger receipts.",
+  "reuses": "existing TestRunExecutionDetails optional operational field and canonical test_runs writer; no new ledger/tool/runtime",
+  "sourcePaths": [
+    "libs/test-config/src/execution-details.ts",
+    "libs/test-config/src/execution-details.test.ts",
+    "packages/operator-core/lib/agent-tools/testing/record-run.ts",
+    "packages/operator-core/lib/agent-tools/testing/record-run.test.ts",
+    "packages/operator-core/lib/testing-run-store.ts",
+    "packages/operator-core/lib/testing-run-store.integration.test.ts"
+  ],
+  "verification": {
+    "redLog": "~/.papercusp/scratch/c0523-operational-command-red.log",
+    "red": "exact one selected maintained guard failed on missing metadata; 57 explicitly unselected",
+    "greenLog": "~/.papercusp/scratch/c0523-operational-command-green.log",
+    "green": "106 passes (35 parser +58 recorder +13 real-PG), exact3/3 files, skipped0,childSubstituted0,native exit0; local at878af7db08, tested3/3pathsdirty",
+    "typecheckLog": "~/.papercusp/scratch/c0523-operational-command-tsc.log",
+    "typecheck": "exit0; selected operator-core files clean; two test-config files routed to successful test-config workspace compile; no full-tree zero-error claim"
+  },
+  "handlesDrained": [
+    8615,
+    74777,
+    62191
+  ]
+},
+  "frictionRefs": [
+    "EI-25947290087365090",
+    "EI-25947695736411916",
+    "EI-25698211877223668",
+    "EI-24924946766435063"
+  ],
+  "nativeReceiptProgressReport": {
+    "sourcePath": "docs/evidence/green-main-native-receipt-progress-20261014-edition2.md",
+    "reportId": "rpt_1a9d15e8-a5ea-4e6d-acd8-eb85c2ed3135",
+    "path": "/reports?sel=rpt_1a9d15e8-a5ea-4e6d-acd8-eb85c2ed3135",
+    "requestKey": "c0523-native-receipt-progress-20261014-edition2",
+    "bodySha256": "1eee8cfc5949508e1b84e6383959e9218fc4d629ed0663ef32af1e593254283d",
+    "supersedes": "rpt_d8f407ef-e56c-4920-a418-be76ddf2f8af",
+    "readbackVerified": true,
+    "visibility": "owner"
+  },
+  "nativeReceiptContinuation": {
+    "sourceManifest": "docs/evidence/green-main-native-receipt-settlement-20261014.json",
+    "issueTerminal": true,
+    "completionAuthority": "committed",
+    "sqlTemplatePlanChecks": "5/5 valid syntax and columns; sentinels only; no acceptance grading",
+    "nativeOperationalRows": "0 in the exact local three-producer-file scope, with positive control 21243943 passed; no CI/gate population claim",
+    "executionRoute": "operator-api current-build :3170 is ready but the measured runtime does not contain the serializer edit yet",
+    "r12Preparation": "Existing scheduler preparation retains145 local passes at unchanged hashes. Native throughput wrapper now has4 passing maintained artifact-to-native-executor integration tests and scoped2file typecheck; EI-25953680209463431 detaches caller scope/pins before its first await. Source and guard matched committed18777cf5623f8783ee87d0316eb050ef98582c17. Native contract has6 unbound/unapproved forms; throughput passed readonly EXPLAIN with non-evidence sentinels. No real pair, runtime acceptance or cohort launch; D020/P006 hold preserved. Details: docs/evidence/green-main-r12-paired-preparation-20261014.json.",
+    "next": "Prepare the R12 native paired-input producer/check under the existing system-development lane while preserving D020. Bind actual original native producer rows and writer-resolved probe revision only when measured. Submit one complete outside-lineage amendment review after every form is ready, then vet/bind/grade and finish the whole plan. No partial review or BAR apply."
+  }
+}

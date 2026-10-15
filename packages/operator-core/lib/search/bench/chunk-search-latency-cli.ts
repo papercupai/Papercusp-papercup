@@ -35,8 +35,9 @@
  * bound is re-measured once with load average within 20% of the baseline run before
  * it is reported as a regression, and both readings are kept.
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import os from 'node:os';
+import { readSuperuserToken, superuserTokenPath } from '../../superuser-token';
 import { performance } from 'node:perf_hooks';
 import { getOrgPg } from '@papercusp/db-org';
 import { peersKnowLookup } from '../../consult/peers-know';
@@ -45,6 +46,7 @@ import { resolveProseProfileSelection } from '../prose-vector-dims';
 import {
   CHUNK_SEARCH_LATENCY_QUERIES as QUERIES,
   D024_QUERY_SET_HASH,
+  d024LoadMatch,
   querySetHash,
   r33Verdicts,
   summariseSite,
@@ -65,7 +67,9 @@ const HARNESS = process.env.PAPERCUSP_HARNESS ?? 'papercusp';
 function readToken(): string {
   const fromEnv = process.env.PAPERCUSP_SUPERUSER_TOKEN?.trim();
   if (fromEnv) return fromEnv;
-  return readFileSync(`${os.homedir()}/.papercusp/superuser-token`, 'utf8').trim();
+  const token = readSuperuserToken();
+  if (!token) throw new Error(`chunk-search-latency: no superuser token at ${superuserTokenPath()}`);
+  return token;
 }
 
 let rpcId = 1;
@@ -209,17 +213,21 @@ async function main(): Promise<void> {
       return [p, { build: builds[p], summary, r33: r33Verdicts(summary) }];
     }),
   );
+  const loadEnd = os.loadavg();
+  const loadMatch = d024LoadMatch(load0, loadEnd);
   const result = {
     bench: 'chunk-search-latency',
     plan: 'generic-rag-chunking-2026-09-29',
     bar: 'R-33',
     baselineDecision: 'D-024',
+    loadRuleDecision: 'D-038',
     ports,
     rounds,
     startedAt,
     finishedAt: new Date().toISOString(),
     loadavgStart: load0,
-    loadavgEnd: os.loadavg(),
+    loadavgEnd: loadEnd,
+    loadMatch,
     cores: os.cpus().length,
     querySetHash: hash,
     queries: QUERIES,
@@ -232,6 +240,8 @@ async function main(): Promise<void> {
     'R33_SUMMARY ' +
       JSON.stringify({
         querySetHash: hash.slice(0, 12),
+        loadMatched: loadMatch.matched,
+        outOfBand: loadMatch.outOfBand,
         perPort: Object.fromEntries(Object.entries(perPort).map(([p, v]) => [p, { sha: v.build?.sha, r33: v.r33 }])),
         out,
       }),

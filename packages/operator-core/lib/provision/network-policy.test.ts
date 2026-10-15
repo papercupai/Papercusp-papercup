@@ -70,5 +70,15 @@ describe('isHostAllowed', () => {
   it('rejects deeper-than-one-level subdomains for `*.x.y` patterns', () => {
     // `*.googleapis.com` should match `iam.googleapis.com` but not deeper.
     expect(isHostAllowed('iam.googleapis.com', ['*.googleapis.com'])).toBe(true);
+    expect(isHostAllowed('nested.iam.googleapis.com', ['*.googleapis.com'])).toBe(false);
+    expect(isHostAllowed('deep.nested.iam.googleapis.com', ['*.googleapis.com'])).toBe(false);
+    expect(isHostAllowed('.googleapis.com', ['*.googleapis.com'])).toBe(false);
+  });
+
+  it('does not treat a multi-label wildcard as a single-label wildcard', () => {
+    expect(isHostAllowed('nested.iam.googleapis.com', ['**.googleapis.com'])).toBe(true);
+    expect(isHostAllowed('googleapis.com', ['**.googleapis.com'])).toBe(false);
+    expect(isHostAllowed('nested..googleapis.com', ['**.googleapis.com'])).toBe(false);
+    expect(isHostAllowed('iam.googleapis.com.evil.example', ['**.googleapis.com'])).toBe(false);
   });
 });

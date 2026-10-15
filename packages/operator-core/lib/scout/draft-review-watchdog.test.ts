@@ -8,7 +8,15 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { vi } from 'vitest';
 import type { Sql } from 'postgres';
 
-vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
+const { fixtureSql, disclosureTransaction } = vi.hoisted(() => {
+  const sql = vi.fn(async (..._args: unknown[]) => []);
+  const begin = vi.fn(async (run: (tx: typeof sql) => Promise<unknown>) => run(sql));
+  return { fixtureSql: Object.assign(sql, { begin }), disclosureTransaction: begin };
+});
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: fixtureSql }),
+}));
 vi.mock('../pot/started', () => ({
   listBlenderMaintenanceScopes: vi.fn(),
   listBlenderMaintenanceWorkspaceIds: vi.fn(() => []),
@@ -265,6 +273,10 @@ describe('fireReviewWake (WI-2187 — stable Mug seam)', () => {
 
   it('passes the stale concrete owner to the shared stable Mug seam', async () => {
     await fireReviewWake('ws-1', 'queen-owner-stale-123', [draft('scout-x-2026-06-26', 24)], 43_200);
+    expect(disclosureTransaction).toHaveBeenCalled();
+    expect(fixtureSql.mock.calls.some(([strings]) =>
+      Array.isArray(strings) && strings.join(' ').includes('harness_shared.personal_disclosures'),
+    )).toBe(true);
     expect(wakeMug).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: 'ws-1', mugOwner: 'queen-owner-stale-123', source: 'scout-draft-review',
     }));

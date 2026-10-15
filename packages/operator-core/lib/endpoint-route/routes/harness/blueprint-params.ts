@@ -23,6 +23,7 @@ import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { resolvePhasedProject, harnessDir } from '../../../harness-core';
 import { phasePhaseLabel } from '../../../harness-phases';
+import { activeWorkspaceId } from '../../../workspace-registry';
 import { loadBlueprintFromFile } from '@papercusp/orchestrator/blueprint';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -51,7 +52,7 @@ const getBlueprintParams = defineTool({
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const url = new URL(req.url);
-    const project = await resolvePhasedProject(slug, phasePhaseLabel(url.searchParams.get('phase') ?? undefined));
+    const project = await resolvePhasedProject(slug, phasePhaseLabel(url.searchParams.get('phase') ?? undefined), activeWorkspaceId());
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
     const f = join(harnessDir(project), 'blueprint.yaml');
     if (!existsSync(f)) {

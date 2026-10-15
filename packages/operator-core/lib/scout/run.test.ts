@@ -250,11 +250,9 @@ describe('runScoutCycleTick — gates + governor mirror', () => {
     expect(recordGovernor.mock.calls[0][0]).toMatchObject({ fired: { costUsd: 2.25, cycleId: 'cyc-9' } });
   });
 
-  it('reduces ideator admission under deep queue pressure and records the exact pressure on the tick', async () => {
-    sched.runScoutTick.mockImplementationOnce(async (deps, opts) => {
-      await deps.recordTick?.({ status: 'ran', detail: { cycleId: 'c-pressure' } });
-      return { fired: true, costUsd: 0.2, cycleId: 'c-pressure', budget: opts.budget } as never;
-    });
+  // WI-10007380 / P-003 (R-4, R-6): a DEEP throttle no longer curbs the cycle — it
+  // skips paid generation outright and records why on the tick.
+  it('skips paid generation under deep queue pressure and records the reason and pressure on the tick', async () => {
     const pressure = {
       source: 'p005-queue-health' as const,
       level: 'deep' as const,
@@ -263,6 +261,75 @@ describe('runScoutCycleTick — gates + governor mirror', () => {
       p95Ms: null,
       maxIdeators: 1,
       reasons: ['pending 41 exceeds two promoter batches (40)'],
+    };
+    const admissionPressureGate = vi.fn(async () => pressure);
+    const recordGovernor = vi.fn();
+    const res = await runScoutCycleTick(
+      { ...baseInput, payloadTemplate: { budget: { maxCostUsd: 2, maxIdeators: 6 } } },
+      mkDeps({ admissionPressureGate, recordGovernor }),
+    );
+    expect(res).toEqual({ fired: false, reason: 'generation-preflight' });
+    expect(sched.runScoutTick).not.toHaveBeenCalled();
+    expect(recordGovernor.mock.calls[0][0]).toMatchObject({ fired: null });
+    expect(recordTick).toHaveBeenCalledWith({
+      status: 'gated',
+      gate: 'generation-preflight',
+      detail: {
+        reason: 'admission-throttle-deep',
+        pending: 41,
+        p95Ms: null,
+        throttleReasons: pressure.reasons,
+        admissionThrottle: pressure,
+      },
+    });
+  });
+
+  // WI-10007380 / P-003 (R-5, R-6): dedup saturation that outlasted the novelty
+  // widening skips paid generation; a probe cycle runs after enough skips.
+  it('skips paid generation while dedup saturation outlasts the widening budget, then probes', async () => {
+    const saturated = Array.from({ length: 5 }, () => ({
+      status: 'ran' as const,
+      ideasGenerated: 10,
+      ideasDeduped: 9,
+      ideasRouted: 0,
+    }));
+    const skipped = await runScoutCycleTick(
+      baseInput,
+      mkDeps({ generationPreflightTicks: async () => saturated }),
+    );
+    expect(skipped).toEqual({ fired: false, reason: 'generation-preflight' });
+    expect(sched.runScoutTick).not.toHaveBeenCalled();
+    expect(recordTick).toHaveBeenCalledWith({
+      status: 'gated',
+      gate: 'generation-preflight',
+      detail: { reason: 'dedup-saturated', consecutiveSaturated: 5, lastRatio: 0.9, skipStreak: 5, probeIn: 5 },
+    });
+
+    const priorSkips = Array.from({ length: 5 }, () => ({
+      status: 'gated' as const,
+      gate: 'generation-preflight',
+      detail: { reason: 'dedup-saturated' },
+    }));
+    await runScoutCycleTick(
+      baseInput,
+      mkDeps({ generationPreflightTicks: async () => [...priorSkips, ...saturated] }),
+    );
+    expect(sched.runScoutTick).toHaveBeenCalledTimes(1);
+  });
+
+  it('curbs ideator admission under elevated queue pressure and records the exact pressure on the tick', async () => {
+    sched.runScoutTick.mockImplementationOnce(async (deps, opts) => {
+      await deps.recordTick?.({ status: 'ran', detail: { cycleId: 'c-pressure' } });
+      return { fired: true, costUsd: 0.2, cycleId: 'c-pressure', budget: opts.budget } as never;
+    });
+    const pressure = {
+      source: 'p005-queue-health' as const,
+      level: 'elevated' as const,
+      pending: 21,
+      latencySampleSize: 0,
+      p95Ms: null,
+      maxIdeators: 1,
+      reasons: ['pending 21 exceeds one promoter batch (20)'],
     };
     const admissionPressureGate = vi.fn(async () => pressure);
     await runScoutCycleTick(

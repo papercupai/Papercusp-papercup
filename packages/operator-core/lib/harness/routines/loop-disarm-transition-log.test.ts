@@ -260,9 +260,19 @@ describe('WI-37571: loop disarms are recorded in routine_loop_transitions', () =
   });
 
   describe('reviveDisarmedLoop — the transition that makes the revival RATE observable', () => {
+    const selectedPause = {
+      pausedAtMs: Date.parse('2026-08-09T17:07:00.000Z'),
+      pauseReason: 'stalled-loops-guard (WI-6639): turns-stalled: fixture',
+    };
+
     it('emits a revived transition carrying the ratchet count', async () => {
       const sql = fakeSql();
-      await reviveDisarmedLoop(sql as any, 'routine-abc', 'owner is making progressing tool calls');
+      await reviveDisarmedLoop(
+        sql as any,
+        'routine-abc',
+        selectedPause,
+        'owner is making progressing tool calls',
+      );
       await flush();
 
       const rows = sql.transitions();
@@ -280,7 +290,7 @@ describe('WI-37571: loop disarms are recorded in routine_loop_transitions', () =
 
     it('CONTROL: emits nothing when the loop was already active (the guarded no-op)', async () => {
       const sql = fakeSql({ updateRows: [] });
-      await reviveDisarmedLoop(sql as any, 'routine-abc', 'already running');
+      await reviveDisarmedLoop(sql as any, 'routine-abc', selectedPause, 'already running');
       await flush();
 
       expect(sql.transitions()).toHaveLength(0);

@@ -1,0 +1,4827 @@
+{
+  "schemaVersion": 1,
+  "kind": "review-grading-traceability-supplement",
+  "workItem": "WI-10002233",
+  "author": "su-01248af5-137e-4f7c-82d7-1715d6ecf725",
+  "measuredAt": "2026-10-09T08:57:15.080595+00:00",
+  "sourceAudit": {
+    "path": "docs/evidence/review-grading-80-record-judgments-2026-10-09.json",
+    "bytes": 260877,
+    "sha256": "e5d78edf8a32104efb2521f726dde51555ed4866dd3ada7e6784e505a52d9451",
+    "recordCount": 80,
+    "criterionCount": 662,
+    "scope": "Same frozen 80 IDs and observation hashes; no census rerun, resample, row mutation or outcome-impact inference."
+  },
+  "historicalRubricVerification": {
+    "method": "Read exact requested immutable revision through canonical rubrics:get; compare returned criteria hash and every sampled criterion key. No substitute current revision and no hand-written historical snapshot.",
+    "readCount": 25,
+    "counts": {
+      "revision-not-recorded": 10,
+      "definition-unavailable": 36,
+      "verified-definition-hash-and-keys": 34
+    },
+    "readResults": [
+      {
+        "requested": {
+          "rubricRef": "acceptance-codex-auto-route-all-walled-fail-fast-2026-09-05",
+          "revision": 5
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "acceptance-codex-auto-route-all-walled-fail-fast-2026-09-05",
+              "error": "rubric revision 5 not found; current revision is 6"
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "acceptance-middle-pane-inbox-plans-design-2026-08-27",
+          "revision": 2
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "acceptance-middle-pane-inbox-plans-design-2026-08-27",
+              "error": "rubric revision 2 not found; current revision is 4"
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "grading-integrity",
+          "revision": 6
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "grading-integrity",
+              "error": "rubric revision 6 not found; current revision is 10"
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "grading-integrity",
+          "revision": 7
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "grading-integrity",
+              "error": "rubric revision 7 not found; current revision is 10"
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "grading-integrity",
+          "revision": 10
+        },
+        "result": {
+          "results": [
+            {
+              "ok": true,
+              "rubricRef": "grading-integrity",
+              "rubric": {
+                "revision": 10,
+                "criteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+                "criteria": [
+                  {
+                    "key": "base-rate-check"
+                  },
+                  {
+                    "key": "instrument-split"
+                  },
+                  {
+                    "key": "terminal-re-rate"
+                  },
+                  {
+                    "key": "platform-telemetry-excluded"
+                  },
+                  {
+                    "key": "re-runnable-evidence"
+                  },
+                  {
+                    "key": "degenerate-distribution"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "grading-integrity",
+          "revision": 4
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "grading-integrity",
+              "error": "rubric revision 4 not found; current revision is 10"
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "accept-identities-v1-m1-2026-09-04",
+          "revision": 10
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "accept-identities-v1-m1-2026-09-04",
+              "error": "rubric revision 10 not found; current revision is 11"
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "acceptance-pot-review-integration-mode-2026-10-05",
+          "revision": 6
+        },
+        "result": {
+          "results": [
+            {
+              "ok": true,
+              "rubricRef": "acceptance-pot-review-integration-mode-2026-10-05",
+              "rubric": {
+                "revision": 6,
+                "criteriaHash": "a8c2cf0b849f7f4ff92faf591e1d0db5f8d8f06d38a59485be05ca2f7744cf27",
+                "criteria": [
+                  {
+                    "key": "r-1"
+                  },
+                  {
+                    "key": "r-2"
+                  },
+                  {
+                    "key": "r-3"
+                  },
+                  {
+                    "key": "r-4"
+                  },
+                  {
+                    "key": "r-5"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "acceptance-generic-acceptance-routing-and-live-plan-agent-brief-2026-09-20",
+          "revision": 4
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "acceptance-generic-acceptance-routing-and-live-plan-agent-brief-2026-09-20",
+              "error": "rubric revision 4 exists, but its immutable snapshot could not be projected. If this is a first-party exact-current-body legacy chain, preview rubrics:repair with dryRun:true. This server is running build d740fc3802, started 40min ago. For the current source tree, retry this call against the Papercusp staging operator at :3170 (with ptool, pass --url=http://127.0.0.1:3170 explicitly)."
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "acceptance-bar-reporting-layer-repairs-2026-09-07",
+          "revision": 9
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "acceptance-bar-reporting-layer-repairs-2026-09-07",
+              "error": "rubric revision 9 not found; current revision is 10"
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "spec-test-adequacy",
+          "revision": 7
+        },
+        "result": {
+          "results": [
+            {
+              "ok": true,
+              "rubricRef": "spec-test-adequacy",
+              "rubric": {
+                "revision": 7,
+                "criteriaHash": "234b776ac3e5d7ba59644436e7d6a5c8a7afb69a3e62bbbdb2dacffa8a9382bb",
+                "criteria": [
+                  {
+                    "key": "traceability"
+                  },
+                  {
+                    "key": "fixture-calibration"
+                  },
+                  {
+                    "key": "falsifiability"
+                  },
+                  {
+                    "key": "correct-layer"
+                  },
+                  {
+                    "key": "oracle-independence"
+                  },
+                  {
+                    "key": "execution-integrity"
+                  },
+                  {
+                    "key": "freshness"
+                  },
+                  {
+                    "key": "plan-class-risk-floor"
+                  },
+                  {
+                    "key": "disclosed-gap"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "spec-test-adequacy",
+          "revision": 2
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "spec-test-adequacy",
+              "error": "rubric revision 2 not found; current revision is 8"
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "work-on-everything-stewardship-health",
+          "revision": 12
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "work-on-everything-stewardship-health",
+              "error": "rubric revision 12 not found; current revision is 45"
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "spec-test-adequacy",
+          "revision": 6
+        },
+        "result": {
+          "results": [
+            {
+              "ok": true,
+              "rubricRef": "spec-test-adequacy",
+              "rubric": {
+                "revision": 6,
+                "criteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+                "criteria": [
+                  {
+                    "key": "traceability"
+                  },
+                  {
+                    "key": "fixture-calibration"
+                  },
+                  {
+                    "key": "falsifiability"
+                  },
+                  {
+                    "key": "correct-layer"
+                  },
+                  {
+                    "key": "oracle-independence"
+                  },
+                  {
+                    "key": "execution-integrity"
+                  },
+                  {
+                    "key": "freshness"
+                  },
+                  {
+                    "key": "plan-class-risk-floor"
+                  },
+                  {
+                    "key": "disclosed-gap"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "spec-quality",
+          "revision": 2
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "spec-quality",
+              "error": "rubric revision 2 not found; current revision is 5"
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "spec-quality",
+          "revision": 4
+        },
+        "result": {
+          "results": [
+            {
+              "ok": true,
+              "rubricRef": "spec-quality",
+              "rubric": {
+                "revision": 4,
+                "criteriaHash": "48aa7893d0f967fa65e3e6943872627af4ff1d7b61b517141468437e92798a97",
+                "criteria": [
+                  {
+                    "key": "stable-revision-identity"
+                  },
+                  {
+                    "key": "item-contract-coverage"
+                  },
+                  {
+                    "key": "atomic-observable-behavior"
+                  },
+                  {
+                    "key": "falsifiability"
+                  },
+                  {
+                    "key": "implementation-independence"
+                  },
+                  {
+                    "key": "explicit-non-behavioral-exemptions"
+                  },
+                  {
+                    "key": "plan-class-specialization"
+                  },
+                  {
+                    "key": "spec-set-freshness"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "spec-test-adequacy",
+          "revision": 8
+        },
+        "result": {
+          "results": [
+            {
+              "ok": true,
+              "rubricRef": "spec-test-adequacy",
+              "rubric": {
+                "revision": 8,
+                "criteriaHash": "2a04bba7eaa9b0b41b5fad753c99acc7df965b9d99bdfce73aa7e5f1dad06955",
+                "criteria": [
+                  {
+                    "key": "traceability"
+                  },
+                  {
+                    "key": "fixture-calibration"
+                  },
+                  {
+                    "key": "falsifiability"
+                  },
+                  {
+                    "key": "correct-layer"
+                  },
+                  {
+                    "key": "oracle-independence"
+                  },
+                  {
+                    "key": "execution-integrity"
+                  },
+                  {
+                    "key": "freshness"
+                  },
+                  {
+                    "key": "plan-class-risk-floor"
+                  },
+                  {
+                    "key": "disclosed-gap"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "spec-test-adequacy",
+          "revision": 3
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "spec-test-adequacy",
+              "error": "rubric revision 3 not found; current revision is 8"
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "spec-quality",
+          "revision": 5
+        },
+        "result": {
+          "results": [
+            {
+              "ok": true,
+              "rubricRef": "spec-quality",
+              "rubric": {
+                "revision": 5,
+                "criteriaHash": "efc99b9273848a8132ad856be9b86d98674d845d80f974f012e015ef91c0240b",
+                "criteria": [
+                  {
+                    "key": "stable-revision-identity"
+                  },
+                  {
+                    "key": "item-contract-coverage"
+                  },
+                  {
+                    "key": "atomic-observable-behavior"
+                  },
+                  {
+                    "key": "falsifiability"
+                  },
+                  {
+                    "key": "implementation-independence"
+                  },
+                  {
+                    "key": "explicit-non-behavioral-exemptions"
+                  },
+                  {
+                    "key": "plan-class-specialization"
+                  },
+                  {
+                    "key": "spec-set-freshness"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "work-on-everything-stewardship-health",
+          "revision": 8
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "work-on-everything-stewardship-health",
+              "error": "rubric revision 8 not found; current revision is 45"
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "goal-mode-e2e",
+          "revision": 60
+        },
+        "result": {
+          "results": [
+            {
+              "ok": true,
+              "rubricRef": "goal-mode-e2e",
+              "rubric": {
+                "revision": 60,
+                "criteriaHash": "3c32370ddf973fb40d56c5f69c93ea6d6a6e68465fb330beb61d57fce780a5c3",
+                "criteria": [
+                  {
+                    "key": "kickoff-portfolio-read"
+                  },
+                  {
+                    "key": "kickoff-criterion-and-ceiling"
+                  },
+                  {
+                    "key": "relationship-settled-before-creating"
+                  },
+                  {
+                    "key": "child-execution-proven"
+                  },
+                  {
+                    "key": "one-main-owner-per-pot"
+                  },
+                  {
+                    "key": "per-pot-kill-criterion-and-tripwires"
+                  },
+                  {
+                    "key": "spend-reported-and-goals-closed"
+                  },
+                  {
+                    "key": "owner-walls-queued-not-stalled"
+                  },
+                  {
+                    "key": "shipped-not-green"
+                  },
+                  {
+                    "key": "templates-mandate"
+                  },
+                  {
+                    "key": "dedup-before-creating"
+                  },
+                  {
+                    "key": "rubric-reuse-not-proliferation"
+                  },
+                  {
+                    "key": "durability-across-cold-wake"
+                  },
+                  {
+                    "key": "standing-owner-report"
+                  },
+                  {
+                    "key": "ladder-integrity-end-to-end"
+                  },
+                  {
+                    "key": "never-implements"
+                  },
+                  {
+                    "key": "delegates-plan-leadership"
+                  },
+                  {
+                    "key": "standing-drain-fleet-per-goal"
+                  },
+                  {
+                    "key": "grade-vs-test-split"
+                  },
+                  {
+                    "key": "right-container-for-the-work"
+                  },
+                  {
+                    "key": "parallelism-width-and-ceilings"
+                  },
+                  {
+                    "key": "settings-are-data"
+                  },
+                  {
+                    "key": "blender-kept-honest"
+                  },
+                  {
+                    "key": "mode-and-subject-integrity"
+                  },
+                  {
+                    "key": "reallocates-on-evidence"
+                  },
+                  {
+                    "key": "de-facto-activity-mix"
+                  },
+                  {
+                    "key": "portfolio-activity-floor"
+                  },
+                  {
+                    "key": "task-brief-effectiveness"
+                  },
+                  {
+                    "key": "long-horizon-context-effectiveness"
+                  },
+                  {
+                    "key": "scoped-continuation-not-new-kickoff"
+                  },
+                  {
+                    "key": "receipts-bound-the-report"
+                  },
+                  {
+                    "key": "already-achieved-checked-before-kickoff"
+                  },
+                  {
+                    "key": "standing-goal-posture"
+                  },
+                  {
+                    "key": "prerequisites-are-edges-not-phases"
+                  },
+                  {
+                    "key": "audit-before-feeding-stalled-lane"
+                  },
+                  {
+                    "key": "scope-aware-planning-adopt-before-clone"
+                  },
+                  {
+                    "key": "work-placed-into-started-plans"
+                  },
+                  {
+                    "key": "started-plans-staffed-and-claimed"
+                  },
+                  {
+                    "key": "goal-local-gap-review-recorded"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "meta-acceptance-rubric",
+          "revision": 5
+        },
+        "result": {
+          "results": [
+            {
+              "ok": true,
+              "rubricRef": "meta-acceptance-rubric",
+              "rubric": {
+                "revision": 5,
+                "criteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+                "criteria": [
+                  {
+                    "key": "outcomes-not-diff-restatements"
+                  },
+                  {
+                    "key": "traces-to-goal-or-decision"
+                  },
+                  {
+                    "key": "falsifiable-with-evidence"
+                  },
+                  {
+                    "key": "failure-mode-coverage"
+                  },
+                  {
+                    "key": "non-overlapping"
+                  },
+                  {
+                    "key": "prefer-structured-check"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "work-on-everything-stewardship-health",
+          "revision": 34
+        },
+        "result": {
+          "results": [
+            {
+              "ok": true,
+              "rubricRef": "work-on-everything-stewardship-health",
+              "rubric": {
+                "revision": 34,
+                "criteriaHash": "d82da8743d4e642dd0bb989a281a65a1084e09e53eba160b18890c25eab5ecbc",
+                "criteria": [
+                  {
+                    "key": "goal-mode-foundation"
+                  },
+                  {
+                    "key": "standing-holder-lifecycle"
+                  },
+                  {
+                    "key": "worklist-authority-and-priority"
+                  },
+                  {
+                    "key": "frontier-scope-sovereignty"
+                  },
+                  {
+                    "key": "delegated-execution-and-drain-health"
+                  },
+                  {
+                    "key": "placement-taxonomy-integrity"
+                  },
+                  {
+                    "key": "claim-flow-and-completion-integrity"
+                  },
+                  {
+                    "key": "blender-feedback-and-disposition"
+                  },
+                  {
+                    "key": "steering-through-claim-rails"
+                  },
+                  {
+                    "key": "rolling-budget-circuit-and-capacity"
+                  },
+                  {
+                    "key": "owner-steering-and-reporting"
+                  },
+                  {
+                    "key": "end-to-end-stewardship-closure"
+                  },
+                  {
+                    "key": "deployed-generation-and-instrument-parity"
+                  },
+                  {
+                    "key": "retired-tier-nonresurrection"
+                  },
+                  {
+                    "key": "plan-fleet-materialization"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "work-on-everything-stewardship-health",
+          "revision": 37
+        },
+        "result": {
+          "results": [
+            {
+              "ok": true,
+              "rubricRef": "work-on-everything-stewardship-health",
+              "rubric": {
+                "revision": 37,
+                "criteriaHash": "efc0a3f8b9fbd94940d4a0ef846562b6bbef74fc78415a70b55cd6fd7af9c0d6",
+                "criteria": [
+                  {
+                    "key": "goal-mode-foundation"
+                  },
+                  {
+                    "key": "standing-holder-lifecycle"
+                  },
+                  {
+                    "key": "worklist-authority-and-priority"
+                  },
+                  {
+                    "key": "frontier-scope-sovereignty"
+                  },
+                  {
+                    "key": "delegated-execution-and-drain-health"
+                  },
+                  {
+                    "key": "placement-taxonomy-integrity"
+                  },
+                  {
+                    "key": "claim-flow-and-completion-integrity"
+                  },
+                  {
+                    "key": "blender-feedback-and-disposition"
+                  },
+                  {
+                    "key": "steering-through-claim-rails"
+                  },
+                  {
+                    "key": "rolling-budget-circuit-and-capacity"
+                  },
+                  {
+                    "key": "owner-steering-and-reporting"
+                  },
+                  {
+                    "key": "end-to-end-stewardship-closure"
+                  },
+                  {
+                    "key": "deployed-generation-and-instrument-parity"
+                  },
+                  {
+                    "key": "retired-tier-nonresurrection"
+                  },
+                  {
+                    "key": "plan-fleet-materialization"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "goal-mode-e2e",
+          "revision": 36
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "goal-mode-e2e",
+              "error": "rubric revision 36 not found; current revision is 83"
+            }
+          ]
+        }
+      }
+    ],
+    "records": [
+      {
+        "id": "EI-21362236748063427",
+        "rubricRef": "acceptance-psu-resume-claim-cutover-2026-08-24",
+        "recordedRevision": null,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "58989fe26122dba7393709c6e70e442d",
+        "status": "revision-not-recorded",
+        "reason": "No historical revision inferred from current rubric."
+      },
+      {
+        "id": "EI-22525572437066362",
+        "rubricRef": "acceptance-codex-auto-route-all-walled-fail-fast-2026-09-05",
+        "recordedRevision": 5,
+        "recordedCriteriaHash": "78c7cfbb75d643af7e06de8422a8d3cc5f3c79e7f95e285af0626268402d4453",
+        "preservedObservationMd5": "88fa23ecbf3565f94f9fc818a0dd6cab",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "acceptance-codex-auto-route-all-walled-fail-fast-2026-09-05",
+            "revision": 5,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 11,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 5 not found; current revision is 6"
+      },
+      {
+        "id": "EI-21642648015799271",
+        "rubricRef": "acceptance-middle-pane-inbox-plans-design-2026-08-27",
+        "recordedRevision": 2,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "683d3b28e33df93e884636368129eed5",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "acceptance-middle-pane-inbox-plans-design-2026-08-27",
+            "revision": 2,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 5,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 2 not found; current revision is 4"
+      },
+      {
+        "id": "EI-21395442815569065",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": null,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "3b2a1e325c5282574195eb0521f52ce9",
+        "status": "revision-not-recorded",
+        "reason": "No historical revision inferred from current rubric."
+      },
+      {
+        "id": "EI-22755497882009065",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "7a5a9a35c8334fee463ce67dc0c86f104fd5e037506d7a8fca3c517bb28f1e8e",
+        "preservedObservationMd5": "abbda24609b6f2916f07d7b947290d43",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 6 not found; current revision is 10"
+      },
+      {
+        "id": "EI-24741433190775872",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "d9991593578cc378b3ccb3d9efcc1b67",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-24833909289785068",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 10,
+        "recordedCriteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+        "preservedObservationMd5": "b95079d4d4b59f1398a4d0094ca297a2",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 10,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-25224771878072098",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 10,
+        "recordedCriteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+        "preservedObservationMd5": "933979e2e1976c0b3bf448b0b9e38180",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 10,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24857769619835159",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 10,
+        "recordedCriteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+        "preservedObservationMd5": "4e1c3335bf92a27080d8036f2608d881",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 10,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24793125057998461",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "a831b93f8e7e4c9cae66b8972b3ee4cd",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-22690497330173450",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 4,
+        "recordedCriteriaHash": "4d8853cb8ca40ff2abd732d278eb1d46812f090d62cf22da201afdffbb58d24f",
+        "preservedObservationMd5": "01b3c53445752cdfac61b0f277669138",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 4,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 4 not found; current revision is 10"
+      },
+      {
+        "id": "EI-22641160463292201",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 4,
+        "recordedCriteriaHash": "4d8853cb8ca40ff2abd732d278eb1d46812f090d62cf22da201afdffbb58d24f",
+        "preservedObservationMd5": "f95b4203e0677e57d0d6926ce83bc473",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 4,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 4 not found; current revision is 10"
+      },
+      {
+        "id": "EI-24137390735287427",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "ac13c2f79b7e337a6347749cce6ec581",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-24662321434445924",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "4ee4ffcba26e3d1e74a2a70ceafa1dc1",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-21674503981246973",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 4,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "f3e780bc56d0edd01cb4a6c737d7390a",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 4,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 4 not found; current revision is 10"
+      },
+      {
+        "id": "EI-24653198754142964",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "898cd07a8db60cc9ccb82458963a360d",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-24653208423488015",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "d609ce1a8d17b442081abacb28eff4ee",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-23083773227270308",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "7a5a9a35c8334fee463ce67dc0c86f104fd5e037506d7a8fca3c517bb28f1e8e",
+        "preservedObservationMd5": "773dc7864746edb72074595f8397064c",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 6 not found; current revision is 10"
+      },
+      {
+        "id": "EI-22684753997087439",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 4,
+        "recordedCriteriaHash": "4d8853cb8ca40ff2abd732d278eb1d46812f090d62cf22da201afdffbb58d24f",
+        "preservedObservationMd5": "2023883721b192f95601aa509a72dcba",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 4,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 4 not found; current revision is 10"
+      },
+      {
+        "id": "EI-25227395397167692",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 10,
+        "recordedCriteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+        "preservedObservationMd5": "93f61fd684f0cc3f964589714eb9f3ad",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 10,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24756255837460326",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "3235fcb27e04abcc44d668b1e1f520be",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-22482592512462763",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 4,
+        "recordedCriteriaHash": "4d8853cb8ca40ff2abd732d278eb1d46812f090d62cf22da201afdffbb58d24f",
+        "preservedObservationMd5": "d4a8b8f53123d0bd45098ec04ffda9c1",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 4,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 4 not found; current revision is 10"
+      },
+      {
+        "id": "EI-24675349409896035",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "e00ace9f4a50a5f311cecc5c417f389f",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-24361508815823156",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "025d77c1036e6773e763b3c273eedb92",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-24788985115262354",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "1f67abc8415ba9d49da8350351745a9a",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-24826053804264436",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "80aec2f9d3b0521fd835dfb6f3348bbe",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-22728133762503149",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "7a5a9a35c8334fee463ce67dc0c86f104fd5e037506d7a8fca3c517bb28f1e8e",
+        "preservedObservationMd5": "92e073c3d9b376d2892e512352bf0bcb",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 6 not found; current revision is 10"
+      },
+      {
+        "id": "EI-21466613031514520",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": null,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "4004c2818174eb074e71e3ee42ce0f8f",
+        "status": "revision-not-recorded",
+        "reason": "No historical revision inferred from current rubric."
+      },
+      {
+        "id": "EI-22666371668863736",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 4,
+        "recordedCriteriaHash": "4d8853cb8ca40ff2abd732d278eb1d46812f090d62cf22da201afdffbb58d24f",
+        "preservedObservationMd5": "891e1bbf1ef3e97fafac45ae268ffb6d",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 4,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 4 not found; current revision is 10"
+      },
+      {
+        "id": "EI-24663429030124768",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "4e68227e73e75e268320d0bb1999270e",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-24418118475349767",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "5d40e55d0c1648dd2dafd0e2fb3ec51b",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-25211690941109638",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 10,
+        "recordedCriteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+        "preservedObservationMd5": "97c93aa486be11ed3f0bce4142527f58",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 10,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24834357917042015",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 10,
+        "recordedCriteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+        "preservedObservationMd5": "a5d95fdce601fb273ba68c4ce3fc9034",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 10,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-20286998436959251",
+        "rubricRef": "acceptance-owner-visibility-provenance-2026-08-11",
+        "recordedRevision": null,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "a3f04fcc29ce058604d95a7e1073f6d8",
+        "status": "revision-not-recorded",
+        "reason": "No historical revision inferred from current rubric."
+      },
+      {
+        "id": "EI-24105474043042410",
+        "rubricRef": "accept-identities-v1-m1-2026-09-04",
+        "recordedRevision": 10,
+        "recordedCriteriaHash": "7b526e0ceb8ac93bd626361dc3c4a2c617b790f935ad94ed96a7467b9f10f867",
+        "preservedObservationMd5": "3a7945fdb49605709f66f7a5ada915bf",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "accept-identities-v1-m1-2026-09-04",
+            "revision": 10,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 8,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 10 not found; current revision is 11"
+      },
+      {
+        "id": "EI-25234245879926494",
+        "rubricRef": "acceptance-pot-review-integration-mode-2026-10-05",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "a8c2cf0b849f7f4ff92faf591e1d0db5f8d8f06d38a59485be05ca2f7744cf27",
+        "preservedObservationMd5": "c34dbd87d575a909b301d3856e122a56",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "acceptance-pot-review-integration-mode-2026-10-05",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "a8c2cf0b849f7f4ff92faf591e1d0db5f8d8f06d38a59485be05ca2f7744cf27",
+        "ratedCriterionCount": 5,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24012718741419990",
+        "rubricRef": "acceptance-generic-acceptance-routing-and-live-plan-agent-brief-2026-09-20",
+        "recordedRevision": 4,
+        "recordedCriteriaHash": "a384fd5ec550f4b64035f988717c17496dae1bdb2fa64da6332e26448f22da18",
+        "preservedObservationMd5": "5fa67ca75f2bc31ce8d09aa7e09d6c79",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "acceptance-generic-acceptance-routing-and-live-plan-agent-brief-2026-09-20",
+            "revision": 4,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 8,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 4 exists, but its immutable snapshot could not be projected. If this is a first-party exact-current-body legacy chain, preview rubrics:repair with dryRun:true. This server is running build d740fc3802, started 40min ago. For the current source tree, retry this call against the Papercusp staging operator at :3170 (with ptool, pass --url=http://127.0.0.1:3170 explicitly)."
+      },
+      {
+        "id": "EI-21490542425672338",
+        "rubricRef": "acceptance-agentic-plan-template-direct-dispatch-2026-08-25",
+        "recordedRevision": null,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "81e876c31fc3eda66ea62f0295641905",
+        "status": "revision-not-recorded",
+        "reason": "No historical revision inferred from current rubric."
+      },
+      {
+        "id": "EI-22645193169518514",
+        "rubricRef": "acceptance-bar-reporting-layer-repairs-2026-09-07",
+        "recordedRevision": 9,
+        "recordedCriteriaHash": "caae76655ed213b83492f45822d09949e1b9c49132a8c226ee4811606c38d8b0",
+        "preservedObservationMd5": "51a285db0c216bb93baa675eea8b2a5b",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "acceptance-bar-reporting-layer-repairs-2026-09-07",
+            "revision": 9,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 5,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 9 not found; current revision is 10"
+      },
+      {
+        "id": "EI-25273009076859453",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "234b776ac3e5d7ba59644436e7d6a5c8a7afb69a3e62bbbdb2dacffa8a9382bb",
+        "preservedObservationMd5": "bf6263cc2a5a3f44b13b26c4532dbc6f",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "234b776ac3e5d7ba59644436e7d6a5c8a7afb69a3e62bbbdb2dacffa8a9382bb",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-22481216785685819",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 2,
+        "recordedCriteriaHash": "87b80c2c4fb22bd1a1988a7bdb7cf6d91efbba25317e28fb86488dce3c070896",
+        "preservedObservationMd5": "af2922e43be795d5edc1abf88162563e",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 2,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 8,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 2 not found; current revision is 8"
+      },
+      {
+        "id": "EI-21855076972082927",
+        "rubricRef": "work-on-everything-stewardship-health",
+        "recordedRevision": 12,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "011a07c094405f4c4b1872c5aa631ab8",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "work-on-everything-stewardship-health",
+            "revision": 12,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 14,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 12 not found; current revision is 45"
+      },
+      {
+        "id": "EI-25243349962512285",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "preservedObservationMd5": "650cbeb0b9db56636b751fcba64fdbee",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24889354363349578",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "preservedObservationMd5": "b0138aedf027f8e9fbfeedefdf18db81",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-25260689388484813",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "preservedObservationMd5": "3be5300066a655305efcebddeb4d2e93",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-23197288124817662",
+        "rubricRef": "spec-quality",
+        "recordedRevision": 2,
+        "recordedCriteriaHash": "48aa7893d0f967fa65e3e6943872627af4ff1d7b61b517141468437e92798a97",
+        "preservedObservationMd5": "fa1ba04febf889ed1cb7c7595a000fdc",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-quality",
+            "revision": 2,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 8,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 2 not found; current revision is 5"
+      },
+      {
+        "id": "EI-24935367584651802",
+        "rubricRef": "spec-quality",
+        "recordedRevision": 4,
+        "recordedCriteriaHash": "48aa7893d0f967fa65e3e6943872627af4ff1d7b61b517141468437e92798a97",
+        "preservedObservationMd5": "f8a8aa27b308b5310fd0d17e4039e93e",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-quality",
+            "revision": 4,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "48aa7893d0f967fa65e3e6943872627af4ff1d7b61b517141468437e92798a97",
+        "ratedCriterionCount": 8,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-25422879426467680",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 8,
+        "recordedCriteriaHash": "2a04bba7eaa9b0b41b5fad753c99acc7df965b9d99bdfce73aa7e5f1dad06955",
+        "preservedObservationMd5": "8642c3b95828a37e110e482ca199dba4",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 8,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "2a04bba7eaa9b0b41b5fad753c99acc7df965b9d99bdfce73aa7e5f1dad06955",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24556916218866086",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "preservedObservationMd5": "6c4249c505e9e321f4c7e937a4d501b5",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24042557046831821",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 3,
+        "recordedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "preservedObservationMd5": "fcb4d3eac7d96beaceba4903795230c1",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 3,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 3 not found; current revision is 8"
+      },
+      {
+        "id": "EI-24641893003245658",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "preservedObservationMd5": "d20fbf9b7d03441084d19ba971c8ff27",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24786851753384882",
+        "rubricRef": "work-on-everything-stewardship-health",
+        "recordedRevision": 34,
+        "recordedCriteriaHash": "d82da8743d4e642dd0bb989a281a65a1084e09e53eba160b18890c25eab5ecbc",
+        "preservedObservationMd5": "230fce377768f31a968194ee3c699f9b",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "work-on-everything-stewardship-health",
+            "revision": 34,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "d82da8743d4e642dd0bb989a281a65a1084e09e53eba160b18890c25eab5ecbc",
+        "ratedCriterionCount": 15,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-12240",
+        "rubricRef": "pot-coordination-health",
+        "recordedRevision": null,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "67bc73ab6d507c0e4cbf5c4b2252822c",
+        "status": "revision-not-recorded",
+        "reason": "No historical revision inferred from current rubric."
+      },
+      {
+        "id": "EI-13586",
+        "rubricRef": "pot-coordination-health",
+        "recordedRevision": null,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "41a59bd04ec24b54378eb6c3a58162a1",
+        "status": "revision-not-recorded",
+        "reason": "No historical revision inferred from current rubric."
+      },
+      {
+        "id": "EI-24838919318051505",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "preservedObservationMd5": "f92be8a274786e9ac175f2bf5057594c",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-25357572568566760",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 8,
+        "recordedCriteriaHash": "2a04bba7eaa9b0b41b5fad753c99acc7df965b9d99bdfce73aa7e5f1dad06955",
+        "preservedObservationMd5": "3f9b3b9593fec9c1c94545df8a747169",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 8,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "2a04bba7eaa9b0b41b5fad753c99acc7df965b9d99bdfce73aa7e5f1dad06955",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-25448754251777562",
+        "rubricRef": "spec-quality",
+        "recordedRevision": 5,
+        "recordedCriteriaHash": "efc99b9273848a8132ad856be9b86d98674d845d80f974f012e015ef91c0240b",
+        "preservedObservationMd5": "2aeb8d3e0539b5107ad35e799e49d622",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-quality",
+            "revision": 5,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "efc99b9273848a8132ad856be9b86d98674d845d80f974f012e015ef91c0240b",
+        "ratedCriterionCount": 8,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24853302448541364",
+        "rubricRef": "work-on-everything-stewardship-health",
+        "recordedRevision": 37,
+        "recordedCriteriaHash": "efc0a3f8b9fbd94940d4a0ef846562b6bbef74fc78415a70b55cd6fd7af9c0d6",
+        "preservedObservationMd5": "f5bfe3cd4160124a549e6048ecfeacdb",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "work-on-everything-stewardship-health",
+            "revision": 37,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "efc0a3f8b9fbd94940d4a0ef846562b6bbef74fc78415a70b55cd6fd7af9c0d6",
+        "ratedCriterionCount": 15,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24748743490566923",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "preservedObservationMd5": "8bfa66abba32e5135e940cd6df81c85b",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-25264725733226235",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "preservedObservationMd5": "b84b387f14c1b4e75f150f2c7d716166",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24675917544849745",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "preservedObservationMd5": "b746c73374af528d3849f192622f98b1",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-22089613547454936",
+        "rubricRef": "goal-mode-e2e",
+        "recordedRevision": 36,
+        "recordedCriteriaHash": "7bddd58bcfc36ab5a2f066c8f2ba2552080d2047b0ac43cda905c08d23c07d9d",
+        "preservedObservationMd5": "9f9f3378cb5089b298a2038810063217",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "goal-mode-e2e",
+            "revision": 36,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 27,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 36 not found; current revision is 83"
+      },
+      {
+        "id": "EI-22672524187380100",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 2,
+        "recordedCriteriaHash": "87b80c2c4fb22bd1a1988a7bdb7cf6d91efbba25317e28fb86488dce3c070896",
+        "preservedObservationMd5": "9523e598607b753002932e679fb009f5",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 2,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 8,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 2 not found; current revision is 8"
+      },
+      {
+        "id": "EI-24824487489698897",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "preservedObservationMd5": "9c8efeae759244d4a0a4e9bea08e7c7c",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-11150",
+        "rubricRef": "pot-coordination-health",
+        "recordedRevision": null,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "752a841c4ffcf9a3142f8ee84dd10ba5",
+        "status": "revision-not-recorded",
+        "reason": "No historical revision inferred from current rubric."
+      },
+      {
+        "id": "EI-21593576119818059",
+        "rubricRef": "work-on-everything-stewardship-health",
+        "recordedRevision": 8,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "02cb62af076497b6efbfd3a1bb44efc3",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "work-on-everything-stewardship-health",
+            "revision": 8,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 14,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 8 not found; current revision is 45"
+      },
+      {
+        "id": "EI-2607",
+        "rubricRef": "hive-coordination-health",
+        "recordedRevision": null,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "568dc1c0934baac88196326272e00bf7",
+        "status": "revision-not-recorded",
+        "reason": "No historical revision inferred from current rubric."
+      },
+      {
+        "id": "EI-25272771901391617",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "234b776ac3e5d7ba59644436e7d6a5c8a7afb69a3e62bbbdb2dacffa8a9382bb",
+        "preservedObservationMd5": "7578ad766bb01539f606ba1a42a02d0c",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "234b776ac3e5d7ba59644436e7d6a5c8a7afb69a3e62bbbdb2dacffa8a9382bb",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24805293543141850",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "preservedObservationMd5": "5195de635a1c2da2d7dd929b17a451c1",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-23211811916557156",
+        "rubricRef": "spec-quality",
+        "recordedRevision": 2,
+        "recordedCriteriaHash": "48aa7893d0f967fa65e3e6943872627af4ff1d7b61b517141468437e92798a97",
+        "preservedObservationMd5": "e9416b939dfbec9af796cc2ec2ecb064",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-quality",
+            "revision": 2,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 8,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 2 not found; current revision is 5"
+      },
+      {
+        "id": "EI-25340028191432556",
+        "rubricRef": "goal-mode-e2e",
+        "recordedRevision": 60,
+        "recordedCriteriaHash": "3c32370ddf973fb40d56c5f69c93ea6d6a6e68465fb330beb61d57fce780a5c3",
+        "preservedObservationMd5": "741ca3dc1cd7b1058a6cf983383c7dd1",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "goal-mode-e2e",
+            "revision": 60,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "3c32370ddf973fb40d56c5f69c93ea6d6a6e68465fb330beb61d57fce780a5c3",
+        "ratedCriterionCount": 39,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-23180824621312107",
+        "rubricRef": "spec-quality",
+        "recordedRevision": 2,
+        "recordedCriteriaHash": "48aa7893d0f967fa65e3e6943872627af4ff1d7b61b517141468437e92798a97",
+        "preservedObservationMd5": "a7a394cfa6d29fb80389033a3ef3fc46",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-quality",
+            "revision": 2,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 8,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 2 not found; current revision is 5"
+      },
+      {
+        "id": "EI-25342080314868640",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 8,
+        "recordedCriteriaHash": "2a04bba7eaa9b0b41b5fad753c99acc7df965b9d99bdfce73aa7e5f1dad06955",
+        "preservedObservationMd5": "3f1b4d8c8028c2a016473ef8dece4fd1",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 8,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "2a04bba7eaa9b0b41b5fad753c99acc7df965b9d99bdfce73aa7e5f1dad06955",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-23978948092203030",
+        "rubricRef": "meta-acceptance-rubric",
+        "recordedRevision": 5,
+        "recordedCriteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+        "preservedObservationMd5": "0624b8030c73ea229457e2e65d3958cd",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "meta-acceptance-rubric",
+            "revision": 5,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24212166997040512",
+        "rubricRef": "meta-acceptance-rubric",
+        "recordedRevision": 5,
+        "recordedCriteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+        "preservedObservationMd5": "bc612d460e1c753494cbe76f3cfafe39",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "meta-acceptance-rubric",
+            "revision": 5,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24094461345653287",
+        "rubricRef": "meta-acceptance-rubric",
+        "recordedRevision": 5,
+        "recordedCriteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+        "preservedObservationMd5": "2dfda378876fff5cd9ec295160178687",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "meta-acceptance-rubric",
+            "revision": 5,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-22464988899334962",
+        "rubricRef": "meta-acceptance-rubric",
+        "recordedRevision": 5,
+        "recordedCriteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+        "preservedObservationMd5": "1a90d5e1972c4bed31ecf3687578a116",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "meta-acceptance-rubric",
+            "revision": 5,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-22028923268983499",
+        "rubricRef": "meta-acceptance-rubric",
+        "recordedRevision": 5,
+        "recordedCriteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+        "preservedObservationMd5": "018e36881f7d365f6b37e0cb9e89856d",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "meta-acceptance-rubric",
+            "revision": 5,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-25249715089464988",
+        "rubricRef": "meta-acceptance-rubric",
+        "recordedRevision": 5,
+        "recordedCriteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+        "preservedObservationMd5": "6ccd3ab5407441b1b6f5b7130bebad6a",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "meta-acceptance-rubric",
+            "revision": 5,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-12154",
+        "rubricRef": "blender-live-drill",
+        "recordedRevision": null,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "3bc64f90f9554e53002fa44b8dbb7e86",
+        "status": "revision-not-recorded",
+        "reason": "No historical revision inferred from current rubric."
+      }
+    ]
+  },
+  "originalReportArchive": {
+    "archive": {
+      "sha256": "193241d0fdfd6db8454aa7011f1c0bed21a4b40f43cae32a2eca381777bf02ff",
+      "bytes": 5865519,
+      "relpath": "sessions/2026/09/20/rollout-2026-09-20T23-55-53-01a0c21b-22cf-76b0-b66a-cb8b162d1da6.jsonl"
+    },
+    "publication": {
+      "line": 1141,
+      "at": "2026-09-21T06:50:13.506Z",
+      "reportId": "rpt_fa10ea78-fa47-42b8-9b14-12464897c4fb",
+      "ok": true,
+      "visibility": "owner",
+      "origin": {
+        "harness_slug": null,
+        "author_owner_id": "su-0e3c7f17-8bc8-473d-899f-8271d393a565",
+        "author_session_ref": "cb63e011-fe5c-4995-988e-51a2d7d042d3"
+      },
+      "bodyBytes": 3983,
+      "inputBytes": 3983,
+      "inputSHA": "da4bcfb49958eb27407c1e2cc937164946bc45d2a673151a604a2c2901c5e243"
+    },
+    "readback": {
+      "line": 1149,
+      "at": "2026-09-21T06:50:18.580Z",
+      "ok": true,
+      "rowOk": true,
+      "visibility": "owner",
+      "reportId": "rpt_fa10ea78-fa47-42b8-9b14-12464897c4fb",
+      "bodyBytes": 3983,
+      "bodySHA": "da4bcfb49958eb27407c1e2cc937164946bc45d2a673151a604a2c2901c5e243"
+    },
+    "publicationEqualsReadback": true,
+    "bodyClaims": {
+      "tablePresent": false,
+      "traceRowCount": 0,
+      "measurementPlanPresent": false,
+      "headings": [
+        "# Expanded review/grading effectiveness audit",
+        "## Scope and method",
+        "## Findings",
+        "## Recommendation",
+        "## Limits"
+      ]
+    },
+    "interpretation": "Historical publication/readback established; current report presence not established; absence OR R7-hidden remains."
+  },
+  "originalReportInterpretation": {
+    "historicalPublication": "ESTABLISHED",
+    "historicalReadback": "ESTABLISHED; exact publication/readback body equality, 3983 bytes.",
+    "currentPresence": "NOT-ESTABLISHED; prior not_found means absent OR R7-hidden.",
+    "access": "Original report owner-only, author su-0e3c7, harness null. No report SQL query, visibility widening, alias, or rubric amendment.",
+    "content": "Archived original is a short narrative audit with Scope, Findings, Recommendation and Limits; no row table or per-sample trace rows. Literal table/trace-section references in R001..R003 are not corroborated by the recovered original body."
+  },
+  "outcomeTraceability": {
+    "schemaVersion": 1,
+    "measuredAt": "2026-10-09T09:11:18.899Z",
+    "method": "Explicit work-item refs derive only from preserved criterion remediation fields. Current canonical completions and stored Git blob identities are read separately. Source inspection and completion claims are documentary corroboration; neither proves review-caused implementation impact. No historical scorecard, disposition or origin is backfilled.",
+    "sourceAudit": {
+      "path": "docs/evidence/review-grading-80-record-judgments-2026-10-09.json",
+      "sha256": "e5d78edf8a32104efb2521f726dde51555ed4866dd3ada7e6784e505a52d9451"
+    },
+    "counts": {
+      "sampledRecords": 80,
+      "criteria": 662,
+      "recordedRemediationCriteria": 13,
+      "recordedDisregardCriteria": 9,
+      "criteriaWithoutRecordedDisposition": 640,
+      "recordsWithExplicitWorkRefs": 3,
+      "distinctExplicitWorkRefs": 11,
+      "resolvedExplicitWorkRefs": 11,
+      "doneCommittedRefs": 9,
+      "openRefs": 1,
+      "needsHumanRefs": 1,
+      "verifiedStoredCodeBlobs": 25,
+      "exactQueryPassReceipts": 1,
+      "verifiedImplementationImpactRecords": 0
+    },
+    "recordColumns": [
+      "id",
+      "criterionCount",
+      "recordedRemediationCriteria",
+      "recordedDisregardCriteria",
+      "notRecordedCriteria",
+      "explicitWorkRefs",
+      "currentReferencedStates",
+      "implementationImpact"
+    ],
+    "records": [
+      [
+        "EI-21362236748063427",
+        4,
+        0,
+        0,
+        4,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-22525572437066362",
+        11,
+        0,
+        0,
+        11,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-21642648015799271",
+        5,
+        0,
+        0,
+        5,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-21395442815569065",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-22755497882009065",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24741433190775872",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24833909289785068",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-25224771878072098",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24857769619835159",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24793125057998461",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-22690497330173450",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-22641160463292201",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24137390735287427",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24662321434445924",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-21674503981246973",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24653198754142964",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24653208423488015",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-23083773227270308",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-22684753997087439",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-25227395397167692",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24756255837460326",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-22482592512462763",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24675349409896035",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24361508815823156",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24788985115262354",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24826053804264436",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-22728133762503149",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-21466613031514520",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-22666371668863736",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24663429030124768",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24418118475349767",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-25211690941109638",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24834357917042015",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-20286998436959251",
+        0,
+        0,
+        0,
+        0,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24105474043042410",
+        8,
+        0,
+        0,
+        8,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-25234245879926494",
+        5,
+        0,
+        0,
+        5,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24012718741419990",
+        8,
+        0,
+        0,
+        8,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-21490542425672338",
+        8,
+        0,
+        0,
+        8,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-22645193169518514",
+        5,
+        0,
+        0,
+        5,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-25273009076859453",
+        9,
+        0,
+        0,
+        9,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-22481216785685819",
+        8,
+        0,
+        0,
+        8,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-21855076972082927",
+        14,
+        0,
+        0,
+        14,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-25243349962512285",
+        9,
+        0,
+        0,
+        9,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24889354363349578",
+        9,
+        0,
+        0,
+        9,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-25260689388484813",
+        9,
+        0,
+        0,
+        9,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-23197288124817662",
+        8,
+        0,
+        0,
+        8,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24935367584651802",
+        8,
+        0,
+        0,
+        8,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-25422879426467680",
+        9,
+        0,
+        0,
+        9,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24556916218866086",
+        9,
+        0,
+        0,
+        9,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24042557046831821",
+        9,
+        0,
+        0,
+        9,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24641893003245658",
+        9,
+        0,
+        0,
+        9,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24786851753384882",
+        15,
+        2,
+        0,
+        13,
+        [
+          "WI-10004840",
+          "WI-10004855"
+        ],
+        [
+          [
+            "WI-10004840",
+            "done"
+          ],
+          [
+            "WI-10004855",
+            "done"
+          ]
+        ],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-12240",
+        14,
+        0,
+        0,
+        14,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-13586",
+        15,
+        0,
+        0,
+        15,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24838919318051505",
+        9,
+        0,
+        0,
+        9,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-25357572568566760",
+        9,
+        0,
+        0,
+        9,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-25448754251777562",
+        8,
+        0,
+        0,
+        8,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24853302448541364",
+        15,
+        2,
+        0,
+        13,
+        [
+          "WI-10005205",
+          "WI-10005300",
+          "WI-10005339"
+        ],
+        [
+          [
+            "WI-10005205",
+            "open"
+          ],
+          [
+            "WI-10005300",
+            "done"
+          ],
+          [
+            "WI-10005339",
+            "done"
+          ]
+        ],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24748743490566923",
+        9,
+        0,
+        0,
+        9,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-25264725733226235",
+        9,
+        0,
+        0,
+        9,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24675917544849745",
+        9,
+        0,
+        0,
+        9,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-22089613547454936",
+        27,
+        9,
+        9,
+        9,
+        [
+          "EI-22068944239934723",
+          "WI-2091959",
+          "WI-2140573",
+          "WI-2140699",
+          "WI-2140700",
+          "WI-2140701"
+        ],
+        [
+          [
+            "EI-22068944239934723",
+            "done"
+          ],
+          [
+            "WI-2091959",
+            "done"
+          ],
+          [
+            "WI-2140573",
+            "needs-human"
+          ],
+          [
+            "WI-2140699",
+            "done"
+          ],
+          [
+            "WI-2140700",
+            "done"
+          ],
+          [
+            "WI-2140701",
+            "done"
+          ]
+        ],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-22672524187380100",
+        8,
+        0,
+        0,
+        8,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24824487489698897",
+        9,
+        0,
+        0,
+        9,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-11150",
+        15,
+        0,
+        0,
+        15,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-21593576119818059",
+        14,
+        0,
+        0,
+        14,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-2607",
+        14,
+        0,
+        0,
+        14,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-25272771901391617",
+        9,
+        0,
+        0,
+        9,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24805293543141850",
+        9,
+        0,
+        0,
+        9,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-23211811916557156",
+        8,
+        0,
+        0,
+        8,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-25340028191432556",
+        39,
+        0,
+        0,
+        39,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-23180824621312107",
+        8,
+        0,
+        0,
+        8,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-25342080314868640",
+        9,
+        0,
+        0,
+        9,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-23978948092203030",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24212166997040512",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-24094461345653287",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-22464988899334962",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-22028923268983499",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-25249715089464988",
+        6,
+        0,
+        0,
+        6,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ],
+      [
+        "EI-12154",
+        1,
+        0,
+        0,
+        1,
+        [],
+        [],
+        "NOT-VERIFIED"
+      ]
+    ],
+    "remediationReadbacks": [
+      {
+        "id": "WI-10004840",
+        "reader": {
+          "tool": "work_items:get",
+          "args": {
+            "id": "WI-10004840",
+            "harness": "papercusp",
+            "threadLimit": 0
+          }
+        },
+        "measuredAt": "2026-10-09T09:11:18.899Z",
+        "state": "done",
+        "assignee": null,
+        "completionAuthority": "committed",
+        "completionPresent": true,
+        "reportedCompletion": {
+          "summary": "Goal frontier flow criterion confirmed by grader su-4f968faa. The grader's verdict reports, for its measurement at 00:16Z: 48 open goal items, 41 unclaimed; two items without an update in 72h (WI-10002137 runtime blocker, WI-10002037 gate D-002 plus claim hold), each with a recorded blocker; and the 16 older unclaimed items with no state change in 72h each carry my ROUTED-not-parked disposition comment from about 13:28Z (grader checked 16 of 16). It also ruled the criterion a staleness bound, not a claimable-count trend, so a flat claimable count is acceptable. Disclosure: my own note that this item stays open until the routed rows have claimers was self-imposed and is superseded by that ruling. The watch the grader names (a routed row reaching 72h from 13:28Z, i.e. 2026-10-04T13:28Z, without a claim) belongs to the WOE claim-flow criterion; I carry the date in my loop checkpoint.",
+          "testsRun": "none: acceptance on this item is a grader verdict, not a test suite",
+          "testResult": "grader verdict CONFIRMED (acceptance met)",
+          "verifiedHow": "Re-read the grader's verdict post on this item's thread and its summary message coord-send-d4eced54 before closing; my own read at 00:13Z showed claimable 9, matched 39, activeClaims 5 for the drain spec (the grader's 48/41 figures are its own count over a different population and I did not recompute them)."
+        },
+        "treeStampCommit": "c40acc2f3c9c0954a2a136d37f10c3c61c922825",
+        "codeEvidence": [],
+        "independentImplementationImpact": "NOT-VERIFIED",
+        "sourceInspection": "No code change claimed; this is a report, grader ruling or plan disposition. Tree/code impact is not applicable to that reported remedy."
+      },
+      {
+        "id": "WI-10004855",
+        "reader": {
+          "tool": "work_items:get",
+          "args": {
+            "id": "WI-10004855",
+            "harness": "papercusp",
+            "threadLimit": 0
+          }
+        },
+        "measuredAt": "2026-10-09T09:11:18.899Z",
+        "state": "done",
+        "assignee": null,
+        "completionAuthority": "committed",
+        "completionPresent": true,
+        "reportedCompletion": {
+          "summary": "Grader's 17:06Z finding fixed. Owner report muptdg1v (17:34:30Z, four-section) states measured goal spend $2,211.57 (goals:get detail:full metadata.spentCents 221157, source goal-lineage-rollup, 634 sessions, 0 unpriced; pot diagnostic $2,665.10 not additive) and says plainly that rem-dream has no driver. Retracted the earlier claim that WI-10000445 is the driver.",
+          "testsRun": "none (steering/report-accuracy item, no code)",
+          "testResult": "n/a",
+          "verifiedHow": "Read goals:get detail:full (spend), goals:pots (pot spend), work_items:get WI-10000445 (open, assignee null, last progress 2026-09-14), plans:get rem-dream D-023 (solo self route, 3 of 24 items live), coord:send receipt stamped goalOwnerReport lastReportAt 17:34:30Z; retraction posted as WI-10004855 comment 1153838."
+        },
+        "treeStampCommit": "7575534bcf0076b625f59db41fc8a344e3baaf3e",
+        "codeEvidence": [],
+        "independentImplementationImpact": "NOT-VERIFIED",
+        "sourceInspection": "No code change claimed; this is a report, grader ruling or plan disposition. Tree/code impact is not applicable to that reported remedy."
+      },
+      {
+        "id": "WI-10005205",
+        "reader": {
+          "tool": "work_items:get",
+          "args": {
+            "id": "WI-10005205",
+            "harness": "papercusp",
+            "threadLimit": 0
+          }
+        },
+        "measuredAt": "2026-10-09T09:11:18.899Z",
+        "state": "open",
+        "assignee": null,
+        "completionAuthority": null,
+        "completionPresent": false,
+        "reportedCompletion": {},
+        "treeStampCommit": null,
+        "codeEvidence": [],
+        "independentImplementationImpact": "NOT-VERIFIED",
+        "sourceInspection": "No terminal completion or linked code change is recorded; edge remains PARTIAL."
+      },
+      {
+        "id": "WI-10005300",
+        "reader": {
+          "tool": "work_items:get",
+          "args": {
+            "id": "WI-10005300",
+            "harness": "papercusp",
+            "threadLimit": 0
+          }
+        },
+        "measuredAt": "2026-10-09T09:11:18.899Z",
+        "state": "done",
+        "assignee": null,
+        "completionAuthority": "committed",
+        "completionPresent": true,
+        "reportedCompletion": {
+          "summary": "GOAL owner-report guidance now places the final report after pass actions and a fresh goals:get; the report draft carries the canonical spend measured-at timestamp alongside its portfolio read time.",
+          "testsRun": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/goal-launch-settings.test.ts",
+          "testResult": "Passed: 1 test file, 167/167 tests, zero failures. Harness-scoped run; local uncommitted state.",
+          "verifiedHow": "The focused Vitest suite exercised the composed goal portfolio draft and rendered GOAL prompt. It asserted measured cost/source/measured-at/read-at, no false unmeasured label, and the order kickoff reads → portfolio actions → post-action goals:get/report.",
+          "filesChanged": [
+            "packages/operator-core/lib/goal-launch-settings.ts",
+            "packages/operator-core/lib/goal-launch-settings.test.ts"
+          ]
+        },
+        "treeStampCommit": "920030a3b939abd0c2b828fdb1ade3e291fb1071",
+        "codeEvidence": [
+          {
+            "commit": "920030a3b939abd0c2b828fdb1ade3e291fb1071",
+            "path": "packages/operator-core/lib/goal-launch-settings.test.ts",
+            "claimedBlob": "0a5d064e0dc1d363cfbbe537a63c85bcb7dd62a4",
+            "actualBlob": "0a5d064e0dc1d363cfbbe537a63c85bcb7dd62a4",
+            "contentSha256": "d5a4bee992dc7432f4571f4299fa77e36f783d6d20402102e02d65afa0621b75",
+            "identityStatus": "verified-stored-tree-blob",
+            "mechanismLines": [
+              {
+                "line": 980,
+                "text": "spentCentsAt: null,"
+              },
+              {
+                "line": 1455,
+                "text": "spentCentsAt: '2026-08-28T02:00:00Z',"
+              },
+              {
+                "line": 1677,
+                "text": "'After all selected actions have returned, fetch goals:get again for exact goal id \"goal-1\". Send the report from that post-action response’s reporting.draft and use its assembledAt as the portfolio read time.',"
+              },
+              {
+                "line": 2632,
+                "text": "spentCentsAt: null,"
+              },
+              {
+                "line": 2880,
+                "text": "spentCentsAt: null,"
+              }
+            ],
+            "testDefinitionLines": [
+              {
+                "line": 337,
+                "titleLine": "it('allows an unowned harness and proves terminal owner rows are excluded by goal status', async () => {"
+              },
+              {
+                "line": 358,
+                "titleLine": "it('allows the active goal that owns the target harness', async () => {"
+              },
+              {
+                "line": 374,
+                "titleLine": "it('refuses placement when a different active goal owns the target harness', async () => {"
+              },
+              {
+                "line": 478,
+                "titleLine": "it('a STANDING goal is not released by a recorded disposition alone', async () => {"
+              },
+              {
+                "line": 485,
+                "titleLine": "it('measures the worklist over non-archived, non-terminal plans using the plan grammar', async () => {"
+              },
+              {
+                "line": 531,
+                "titleLine": "it('reads the arm from the goal row and fails soft toward full on a read error', async () => {"
+              },
+              {
+                "line": 560,
+                "titleLine": "it('rejects a non-positive ceiling — 0 agents is a paused goal, not a launch policy', () => {"
+              },
+              {
+                "line": 636,
+                "titleLine": "it('covers a goal that has pinned NOTHING — the case the defaults exist for', () => {"
+              }
+            ],
+            "executionStatus": "No execution inferred from source presence or blob equality."
+          },
+          {
+            "commit": "920030a3b939abd0c2b828fdb1ade3e291fb1071",
+            "path": "packages/operator-core/lib/goal-launch-settings.ts",
+            "claimedBlob": "9640a50d6c710e33b53b78cb6018da3b4adf9ff6",
+            "actualBlob": "9640a50d6c710e33b53b78cb6018da3b4adf9ff6",
+            "contentSha256": "0138c8c71bfa8ea4445fc13ffde0c29b20b9b653653548f45067a63c2a9cdadc",
+            "identityStatus": "verified-stored-tree-blob",
+            "mechanismLines": [
+              {
+                "line": 725,
+                "text": "spentCentsAt: string | null;"
+              },
+              {
+                "line": 1519,
+                "text": "} / ${brief.budget.budgetCents ?? 'undeclared'}c${brief.budget.spentCentsAt ? ` at ${brief.budget.spentCentsAt}` : ''}`,"
+              },
+              {
+                "line": 1554,
+                "text": "`After all selected actions have returned, fetch goals:get again for exact goal id \"${brief.goal.id}\". Send the report from that post-action response’s reporting.draft and use its assembledAt as the portfolio read time.`,"
+              },
+              {
+                "line": 2135,
+                "text": "measuredAt: launch.budget?.spentCentsAt ?? null,"
+              },
+              {
+                "line": 2228,
+                "text": "spentCentsAt: launch.budget?.spentCentsAt ?? null,"
+              },
+              {
+                "line": 2297,
+                "text": "spentCentsAt: launch.budget?.spentCentsAt ?? null,"
+              },
+              {
+                "line": 2509,
+                "text": "metadata->>'spentCentsAt' AS spent_cents_at,"
+              },
+              {
+                "line": 2551,
+                "text": "spentCentsAt: typeof row.spent_cents_at === 'string' ? row.spent_cents_at : null,"
+              }
+            ],
+            "testDefinitionLines": [],
+            "executionStatus": "No execution inferred from source presence or blob equality."
+          }
+        ],
+        "independentImplementationImpact": "NOT-VERIFIED",
+        "sourceInspection": "GOAL report instructions include measured spend time and place reporting after portfolio actions; canonical test ledger 20527058 corroborates a clean pass, with legacy case counts unavailable."
+      },
+      {
+        "id": "WI-10005339",
+        "reader": {
+          "tool": "work_items:get",
+          "args": {
+            "id": "WI-10005339",
+            "harness": "papercusp",
+            "threadLimit": 0
+          }
+        },
+        "measuredAt": "2026-10-09T09:11:18.899Z",
+        "state": "done",
+        "assignee": null,
+        "completionAuthority": "committed",
+        "completionPresent": true,
+        "reportedCompletion": {
+          "summary": "Resolved both GoalPortfolioBrief reconciliation actions by disposition, no code change. (1) Worklist #6 gitnexus P-009: recorded plan Decision gitnexus-selective-hardening-and-comparison-2026-09-13#D-005 — the drain hold is the disposition (P-009 is the ship ceremony, lease held by drain member su-4a7d4f1d on WI-10001409 with plan_item_stamp activity=progressing); no plan-scoped fleet is materialized, with an explicit revisit trigger (holder intent goes stale / WI-10001409 stops progressing). (2) Worklist #5 cache-efficiency: P-006, the only dependency-free todo, is externally gated by an ACTIVE typed gate on WI-10002840 (AUTO-BAR-R-10-P-006@3: R-10 needs >=10 same-key natural startups, largest cohort 5, plus bound L3 proof and a non-implementer graded scorecard). Flipped P-006 todo->blocked via plans:set-status with the gate as the note, so the plan no longer presents a resumable item and the resume-partial-launch action has no work for the 0-member fleet to take.",
+          "testsRun": "none — plan/work-item disposition only; no source files changed",
+          "testResult": "n/a",
+          "verifiedHow": "plans:items P-006 re-read after the write: effectiveStatus=blocked (was todo, blockedBy P-004 only). plans:add-decision returned decisionId D-005 on the gitnexus plan. Read-only evidence: plans:items P-009 (holder su-4a7d4f1d, link WI-10001409 progressing, declaredAt 2026-10-02T04:45Z), work_items:get WI-10002840 (state blocked, externalBlockers[0] active gate with nextVerb plans:evaluate-spec-test-adequacy), plans:items P-005..P-008 statuses."
+        },
+        "treeStampCommit": "d3956052617d118a209a42348cf21a7d0891b52e",
+        "codeEvidence": [],
+        "independentImplementationImpact": "NOT-VERIFIED",
+        "sourceInspection": "No code change claimed; this is a report, grader ruling or plan disposition. Tree/code impact is not applicable to that reported remedy."
+      },
+      {
+        "id": "WI-2091959",
+        "reader": {
+          "tool": "work_items:get",
+          "args": {
+            "id": "WI-2091959",
+            "harness": "papercusp",
+            "threadLimit": 0
+          }
+        },
+        "measuredAt": "2026-10-09T09:11:18.899Z",
+        "state": "done",
+        "assignee": null,
+        "completionAuthority": "committed",
+        "completionPresent": true,
+        "reportedCompletion": {
+          "summary": "Durable remediation landed per the 14:35Z RE-SCOPE (rails first, then floor). ROOT CAUSE (2 halves, both fixed): (1) the goal-owner-report-watchdog measured only coord:escalate + attention_notifications while the everything-goal holder's 4 real owner reports all rode coord:send to:['human'] — a compliant-by-send holder read as silent; (2) the 4h cadence floor sat ABOVE both graded FAIL silences (2h14m, 1h07m — corrected per the WI-2094390 erratum) by design, so the watchdog could never catch the breach the cards graded. FIX: (b) third measured rail — coord_event_log surface='messages', body from=owner, to @> [\"human\"] (predicate verified against live rows incl. my own 15:13Z report); (a) floor SPLIT by goals.standing: GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS=1h (measured basis: healthy steward cadence ≤14min gaps; smaller graded failure 1h07m; both inequalities + standing<outcome pinned in the guard suite), outcome floor 4h unchanged (no new outcome evidence vs WI-39348). D-016 honored: review date re-litigated 2026-09-17→2026-10-01 with updated WHY citing cards EI-22039635271337633 + EI-22058120037739249. RECURRENCE GUARD: 7 new guard tests incl. the exact graded false-negative (2h14m standing silence now alerts; same row standing:false stays quiet — falsifiability control on the split). Element coverage (COST/WALLED/KILLED) is content not recency — stays in the nudge skeleton (already carries all four) + the goal-mode-e2e rubric, per re-scope (c). ACTIVATION: edit is in the staging tree awaiting the scheduled git-sync sweep → rides the next gate candidate with the WI-2140338 launch-su change (gate currently red, held-live by su-f0ed892e — their lane).",
+          "testsRun": "testing:run goal-owner-report-watchdog.test.ts — 29/29 passed (22 existing + 7 new standing-floor/rail guards)",
+          "testResult": "pass",
+          "verifiedHow": "lint:tsc --files over both edited files: LINT_TSC_RESULT status=clean (the one new red in the run output is a peer's uncommitted model-context-budget.test.ts, outside my set); rail predicate verified against live coord_event_log rows with positive control; goals.standing column + partial index confirmed via describe",
+          "filesChanged": [
+            "packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts",
+            "packages/operator-core/lib/system-health/goal-owner-report-watchdog.test.ts"
+          ]
+        },
+        "treeStampCommit": "4c4ec49455a8718d39346812cba2063ebdc0f65e",
+        "codeEvidence": [
+          {
+            "commit": "4c4ec49455a8718d39346812cba2063ebdc0f65e",
+            "path": "packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts",
+            "claimedBlob": "028dc96fa2b2097afebbdb1534b03880cf455c4c",
+            "actualBlob": "028dc96fa2b2097afebbdb1534b03880cf455c4c",
+            "contentSha256": "c19b736595ea5d96a6e87f71e61182e6e4a8d10c271f08aebc0fca17474078b3",
+            "identityStatus": "verified-stored-tree-blob",
+            "mechanismLines": [
+              {
+                "line": 14,
+                "text": "* THE INSTRUMENT reads the rails the contract names PLUS the to-human channel"
+              },
+              {
+                "line": 26,
+                "text": "*    includes 'human' — a `coord:send { to: ['human'] }` IS an owner report in"
+              },
+              {
+                "line": 29,
+                "text": "*    everything-goal holder's four real owner reports ALL rode to-human sends"
+              },
+              {
+                "line": 116,
+                "text": "export const GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS = 3600_000;"
+              },
+              {
+                "line": 136,
+                "text": "* measurements. Same evidence drove the to-human rail widening (see the"
+              },
+              {
+                "line": 201,
+                "text": "standingMaxSilenceMs: number = GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS,"
+              },
+              {
+                "line": 285,
+                "text": "(extract(epoch FROM GREATEST(er.last_escalation_ts, an.last_attention_ts, hm.last_human_msg_ts)) * 1000)::bigint AS last_report_ts_ms"
+              },
+              {
+                "line": 303,
+                "text": "-- WI-2091959: a coord:send addressed to 'human' is an owner report in"
+              }
+            ],
+            "testDefinitionLines": [],
+            "executionStatus": "No execution inferred from source presence or blob equality."
+          },
+          {
+            "commit": "4c4ec49455a8718d39346812cba2063ebdc0f65e",
+            "path": "packages/operator-core/lib/system-health/goal-owner-report-watchdog.test.ts",
+            "claimedBlob": "637af29f7bc58e0e6d45acaf099b2a617a66923e",
+            "actualBlob": "637af29f7bc58e0e6d45acaf099b2a617a66923e",
+            "contentSha256": "d14896f9bac7f59b435d1cc94b15bfe2d1a5e1ff01ef946836092ccb6d04fe15",
+            "identityStatus": "verified-stored-tree-blob",
+            "mechanismLines": [
+              {
+                "line": 11,
+                "text": "GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS,"
+              },
+              {
+                "line": 25,
+                "text": "const STANDING_FLOOR = GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS;"
+              },
+              {
+                "line": 220,
+                "text": "// GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS, and bump"
+              }
+            ],
+            "testDefinitionLines": [
+              {
+                "line": 79,
+                "titleLine": "it('a long-silent owner with no report ever is overdue, measured from the baseline', () => {"
+              },
+              {
+                "line": 91,
+                "titleLine": "it('a fresh report clears the condition', () => {"
+              },
+              {
+                "line": 96,
+                "titleLine": "it('grace: a freshly-taken goal with no report is NOT overdue until the floor elapses from baseline', () => {"
+              },
+              {
+                "line": 101,
+                "titleLine": "it('a report that PREDATES the baseline is ignored — the reference is the baseline', () => {"
+              },
+              {
+                "line": 179,
+                "titleLine": "it('control 1 (ignores reports) is CAUGHT by the fresh-report fixture', () => {"
+              },
+              {
+                "line": 184,
+                "titleLine": "it('control 2 (min reference) is CAUGHT by the stale-report-fresh-goal fixture', () => {"
+              },
+              {
+                "line": 226,
+                "titleLine": "it('isPastReportFloorReview is itself falsifiable: past ⇒ true, future ⇒ false, garbage ⇒ true', () => {"
+              },
+              {
+                "line": 235,
+                "titleLine": "it('a standing goal is judged against the standing floor: overdue where an outcome goal is not', () => {"
+              }
+            ],
+            "executionStatus": "No execution inferred from source presence or blob equality."
+          }
+        ],
+        "independentImplementationImpact": "NOT-VERIFIED",
+        "sourceInspection": "The owner-report watchdog includes coord:send to human as a report rail and separates standing from outcome silence floors."
+      },
+      {
+        "id": "WI-2140573",
+        "reader": {
+          "tool": "work_items:get",
+          "args": {
+            "id": "WI-2140573",
+            "harness": "papercusp",
+            "threadLimit": 0
+          }
+        },
+        "measuredAt": "2026-10-09T09:11:18.899Z",
+        "state": "needs-human",
+        "assignee": null,
+        "completionAuthority": null,
+        "completionPresent": false,
+        "reportedCompletion": {},
+        "treeStampCommit": null,
+        "codeEvidence": [],
+        "independentImplementationImpact": "NOT-VERIFIED",
+        "sourceInspection": "No terminal completion or linked code change is recorded; edge remains PARTIAL."
+      },
+      {
+        "id": "WI-2140699",
+        "reader": {
+          "tool": "work_items:get",
+          "args": {
+            "id": "WI-2140699",
+            "harness": "papercusp",
+            "threadLimit": 0
+          }
+        },
+        "measuredAt": "2026-10-09T09:11:18.899Z",
+        "state": "done",
+        "assignee": null,
+        "completionAuthority": "committed",
+        "completionPresent": true,
+        "reportedCompletion": {
+          "summary": "goal-drain-fleet-watchdog now RE-ESTABLISHES a dead/missing standing drain fleet instead of only reporting it. Relaunch leg (packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts): eligibility gate (declared fleet dead/not-found + goals.standing=true + not needsHuman) -> durable ledger goals.metadata.drainRespawn {deadSinceMs, attempts[], limit 3, windowMs 3600000, needsHuman, lastRelaunchAtMs} written via UPDATE...RETURNING (survives bg-host restarts) -> one-sweep dead grace (GOAL_DRAIN_FLEET_DEAD_GRACE_MS = sweep interval) -> reserveGoalDrainFleetRelaunchSlot rate-limits 3 per rolling hour in SQL -> relaunch via the same launchAgent {headless, fleet} door the holder respawner uses, goalRole 'drain-fleet-member'; mint (mintDrainFleetForGoal) ONLY on drain-fleet-not-found so an existing hand-tuned claim spec (the live revision-13 multi-plan carve-out) is never reset; budget exhaustion flips needsHuman and escalates once (deduped); ledger self-clears on 'alive'. Outcome (non-standing) goals keep the report-only posture. Flag GOAL_DRAIN_FLEET_RELAUNCH added DEFAULT ON (libs/flags/src/types.ts). Goal contract section 3 gained the 'a launch refusal is scoped to that one call, never a standing no-launch posture' paragraph (part b). Committed by git-sync 20:38:26Z (aab58934ff); bg-host restarted 20:39:40Z on a bundle built 20:39:34Z (after the last source edit 20:11:43Z; bundle grep reserveGoalDrainFleetRelaunchSlot=3). OBSERVED IN PRODUCTION: the interim manual member su-cc46eff0 (launched 20:13Z) ended ~20:19Z ('scheduler self-pull blocked: no live fleet leader'), leaving the fleet at 0 live members again; the watchdog's ledger then recorded attempts:[1788296990939] (=21:09:50.939Z, needsHuman:false) and harness_shared.fleet_membership_events shows su-db986446 JOIN goal-drain-work-on-everything-070565 at 21:09:51.698Z (0.76s later) and LEAD at 21:15:08Z; fleet:status at 23:01Z: su-db986446 live (28s), doing WI-234284 via the drain lane. Zero human action was needed for the re-establishment.",
+          "testsRun": "testing:run packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.test.ts (runId f34ad3c5-9410-4c65-b174-1e9fb9a7b0ff @23:03Z, on the committed tree); earlier 20:12Z: same file 53/53 + libs/flags production-defaults 51/51; npm run lint:tsc --files=<the 3 files> LINT_TSC_RESULT clean 20:12:50Z",
+          "testResult": "53 passed / 0 failed (23:03Z); flags 51/51; typecheck clean",
+          "verifiedHow": "integration",
+          "filesChanged": [
+            "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+            "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.test.ts",
+            "libs/flags/src/types.ts"
+          ]
+        },
+        "treeStampCommit": "87e6b9ed3de9947aecf227b7841e485e51134e9e",
+        "codeEvidence": [
+          {
+            "commit": "87e6b9ed3de9947aecf227b7841e485e51134e9e",
+            "path": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+            "claimedBlob": "b8edbef5c794fa17d267dab1ad2def61f0bf2d03",
+            "actualBlob": "b8edbef5c794fa17d267dab1ad2def61f0bf2d03",
+            "contentSha256": "afc31db28e2f17926a05ac8ed98a7d7f62f79e3b1e34426698eaf2f4009e7a79",
+            "identityStatus": "verified-stored-tree-blob",
+            "mechanismLines": [
+              {
+                "line": 52,
+                "text": "*    { deadSinceMs, attempts[], limit, windowMs, needsHuman } mirroring"
+              },
+              {
+                "line": 55,
+                "text": "*    GOAL_DRAIN_FLEET_RELAUNCH_RATE_LIMIT per rolling window, and a spent budget"
+              },
+              {
+                "line": 56,
+                "text": "*    flips needsHuman (escalated once, deduped) until a human clears it or the"
+              },
+              {
+                "line": 96,
+                "text": "* dead/missing (durably, `metadata.drainRespawn.deadSinceMs`) before the"
+              },
+              {
+                "line": 110,
+                "text": "export const GOAL_DRAIN_FLEET_RELAUNCH_RATE_LIMIT = 3;"
+              },
+              {
+                "line": 111,
+                "text": "export const GOAL_DRAIN_FLEET_RELAUNCH_RATE_WINDOW_MS = 60 * 60_000;"
+              },
+              {
+                "line": 141,
+                "text": "deadSinceMs: number | null;"
+              },
+              {
+                "line": 143,
+                "text": "needsHuman: boolean;"
+              }
+            ],
+            "testDefinitionLines": [],
+            "executionStatus": "No execution inferred from source presence or blob equality."
+          },
+          {
+            "commit": "87e6b9ed3de9947aecf227b7841e485e51134e9e",
+            "path": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.test.ts",
+            "claimedBlob": "a898e878fd98ed09c7b1e95231858062e07da0d0",
+            "actualBlob": "a898e878fd98ed09c7b1e95231858062e07da0d0",
+            "contentSha256": "06c8529887ee6ea0fc03be53fdbf03831ee66170ddcefd88cc8648e321705b86",
+            "identityStatus": "verified-stored-tree-blob",
+            "mechanismLines": [
+              {
+                "line": 10,
+                "text": "GOAL_DRAIN_FLEET_RELAUNCH_RATE_LIMIT,"
+              },
+              {
+                "line": 569,
+                "text": "it('a spent budget (needsHuman) holds until a human clears it', () => {"
+              },
+              {
+                "line": 571,
+                "text": "goalDrainRelaunchEligibility(dead, { standing: true, drainRespawn: { deadSinceMs: 1, needsHuman: true } }),"
+              },
+              {
+                "line": 591,
+                "text": "expect(decideGoalDrainFleetRelaunch(NOW + 5_000, NOW)).toMatchObject({ kind: 'wait', deadSinceMs: NOW });"
+              },
+              {
+                "line": 592,
+                "text": "expect(decideGoalDrainFleetRelaunch(Number.NaN, NOW)).toMatchObject({ kind: 'wait', deadSinceMs: NOW });"
+              },
+              {
+                "line": 598,
+                "text": "expect(parseGoalDrainRespawnLedger({ deadSinceMs: 5, needsHuman: true })).toEqual({ deadSinceMs: 5, needsHuman: true });"
+              },
+              {
+                "line": 599,
+                "text": "expect(parseGoalDrainRespawnLedger({ deadSinceMs: '7' })).toEqual({ deadSinceMs: 7, needsHuman: false });"
+              },
+              {
+                "line": 600,
+                "text": "expect(parseGoalDrainRespawnLedger({ attempts: [1, 2] })).toEqual({ deadSinceMs: null, needsHuman: false });"
+              }
+            ],
+            "testDefinitionLines": [
+              {
+                "line": 69,
+                "titleLine": "it('alerts no-drain-fleet-declared on a live-held goal past the kickoff grace', () => {"
+              },
+              {
+                "line": 97,
+                "titleLine": "it('stays silent on an UNHELD goal — the liveness sibling owns that alarm', () => {"
+              },
+              {
+                "line": 138,
+                "titleLine": "it('declared + fleet alive + goal-scoped lane is healthy', () => {"
+              },
+              {
+                "line": 189,
+                "titleLine": "it('an ALIVE fleet with a pot-wide lane alerts drain-fleet-not-goal-scoped', () => {"
+              },
+              {
+                "line": 213,
+                "titleLine": "it('a DEAD fleet wins over a bad scope — one classifier verdict per goal', () => {"
+              },
+              {
+                "line": 229,
+                "titleLine": "it('accepts the positive = leaf and the in form containing the goal', () => {"
+              },
+              {
+                "line": 234,
+                "titleLine": "it('rejects a leaf for a DIFFERENT goal', () => {"
+              },
+              {
+                "line": 251,
+                "titleLine": "it('the WI-37711 trap: a negated or != goal leaf NEVER counts as scoping', () => {"
+              }
+            ],
+            "executionStatus": "No execution inferred from source presence or blob equality."
+          },
+          {
+            "commit": "87e6b9ed3de9947aecf227b7841e485e51134e9e",
+            "path": "libs/flags/src/types.ts",
+            "claimedBlob": "88761e250b03cb62de265ea5be4ae49eb0784981",
+            "actualBlob": "88761e250b03cb62de265ea5be4ae49eb0784981",
+            "contentSha256": "c9e227e9f97c1c0e390e962fae88a6c2911a8f0a5ae89c9e14e561acabd32021",
+            "identityStatus": "verified-stored-tree-blob",
+            "mechanismLines": [
+              {
+                "line": 1760,
+                "text": "// metadata.drainRespawn.deadSinceMs), re-mint the goal-scoped lane and launch ONE"
+              },
+              {
+                "line": 1762,
+                "text": "// needsHuman and escalates once. Measured failure: the everything-goal's drain fleet"
+              },
+              {
+                "line": 1768,
+                "text": "GOAL_DRAIN_FLEET_RELAUNCH: \"papercusp-goal-drain-fleet-relaunch\","
+              }
+            ],
+            "testDefinitionLines": [],
+            "executionStatus": "No execution inferred from source presence or blob equality."
+          }
+        ],
+        "independentImplementationImpact": "NOT-VERIFIED",
+        "sourceInspection": "The drain watchdog implements bounded standing-goal fleet recovery through its existing launch seam; the source has reservation, grace, rate-limit and needs-human branches."
+      },
+      {
+        "id": "WI-2140700",
+        "reader": {
+          "tool": "work_items:get",
+          "args": {
+            "id": "WI-2140700",
+            "harness": "papercusp",
+            "threadLimit": 0
+          }
+        },
+        "measuredAt": "2026-10-09T09:11:18.899Z",
+        "state": "done",
+        "assignee": null,
+        "completionAuthority": "committed",
+        "completionPresent": true,
+        "reportedCompletion": {
+          "summary": "The 1h owner-report obligation now lives where a cold-carry goal holder actually reads every wake, not only in the watchdog rail. (1) GOAL contract (packages/operator-core/lib/modes/registry.ts, re-injected by coord:orient every wake): the REPORT clause states the concrete floor (standing 60 min / outcome 4 h), names coord:send to ['human'] as a measured rail, and mandates 'EVERY WAKE, FIRST, before any other work: read modes.ownerReport; if overdue or due-now (last 5 min before the floor) send the four-element report MOVED / COST / OWNER-WALLED / KILLED, then continue' — with the card-4 measurement (1 report, 5h15m silence) as the reason. (2) Orient field: coord:orient now folds modes.ownerReport for a GOAL caller — {lastReportAt, ageMin, floorMin, dueInMin, standing, obligation: overdue|due-now|not-due, instruction} — computed by the NEW readGoalOwnerReportObligation(sql, {workspaceId, ownerId, goalId}) in goal-owner-report-watchdog.ts, which runs the watchdog's own three-rail population query with an owner filter (one query, no second copy) and projects it through the pure describeGoalOwnerReportObligation (same floor + baseline arithmetic as findOverdueReports, so holder verdict and sweep can never disagree). Fail-open (null on read error; absent for non-GOAL callers); started early so it overlaps orient's sequential folds. (3) The rail-wakes-the-holder half already existed (WI-2091959 deps.nudge, once per silence) — verified by reading the module, no change needed. Guards: registry.test.ts asserts the clause text (floor, field name, ordering, four elements, rail); watchdog test covers the verdict (overdue / due-now at the 55-min mark / not-due / outcome floor / baseline handling / sql-mocked reader + null); orient.test.ts source-shape guard asserts the leg starts before composeOrient and is folded into modes.ownerReport.",
+          "testsRun": "testing:run e01dd5f2 (registry.test.ts + goal-owner-report-watchdog.test.ts) @23:14Z; testing:run c596b48b (orient.test.ts) @23:15Z; npm run lint:tsc -- --files=<the 6 files> LINT_TSC_RUN_STAMP at=2026-09-01T23:14:53Z head=87e6b9ed3d (log /tmp/wi2140700-tsc.log)",
+          "testResult": "registry 81/81, watchdog 35/35 (6 new), orient 200/200; LINT_TSC_RESULT status=clean, 'Your changed files are tsc-clean'",
+          "verifiedHow": "unit",
+          "filesChanged": [
+            "packages/operator-core/lib/modes/registry.ts",
+            "packages/operator-core/lib/modes/registry.test.ts",
+            "packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts",
+            "packages/operator-core/lib/system-health/goal-owner-report-watchdog.test.ts",
+            "packages/operator-core/lib/agent-tools/coordination/tools/orient.ts",
+            "packages/operator-core/lib/agent-tools/coordination/tools/orient.test.ts"
+          ]
+        },
+        "treeStampCommit": "5be66dc6905c91d1184a577a20860534809780c3",
+        "codeEvidence": [
+          {
+            "commit": "5be66dc6905c91d1184a577a20860534809780c3",
+            "path": "packages/operator-core/lib/modes/registry.ts",
+            "claimedBlob": "083ab8dbca65fa2038210cee99fc93424ef6be7c",
+            "actualBlob": "083ab8dbca65fa2038210cee99fc93424ef6be7c",
+            "contentSha256": "1d9a0c1cbcb8d4975420d220681d4c0bdbd11a07ad7f6d7f069a7946538b47d9",
+            "identityStatus": "verified-stored-tree-blob",
+            "mechanismLines": [
+              {
+                "line": 512,
+                "text": "So EVERY WAKE, FIRST, before any other work: read \\`modes.ownerReport\\` in your"
+              }
+            ],
+            "testDefinitionLines": [],
+            "executionStatus": "No execution inferred from source presence or blob equality."
+          },
+          {
+            "commit": "5be66dc6905c91d1184a577a20860534809780c3",
+            "path": "packages/operator-core/lib/modes/registry.test.ts",
+            "claimedBlob": "8b470aa764d6a922122b874156821ec5cd667cab",
+            "actualBlob": "8b470aa764d6a922122b874156821ec5cd667cab",
+            "contentSha256": "418fd56c580907aa7f7c0b3791a0f05e0b12c73ece9d589fc55746b759c6db12",
+            "identityStatus": "verified-stored-tree-blob",
+            "mechanismLines": [
+              {
+                "line": 201,
+                "text": "expect(goal!.contract).toContain('modes.ownerReport');"
+              }
+            ],
+            "testDefinitionLines": [
+              {
+                "line": 168,
+                "titleLine": "it('carries the standing-goal addendum with posture, scope, placement and routing', () => {"
+              },
+              {
+                "line": 253,
+                "titleLine": "it('adds provenance when the caller knows it — the half that makes it actionable', () => {"
+              },
+              {
+                "line": 258,
+                "titleLine": "it('omits the provenance line entirely when it is unknown', () => {"
+              },
+              {
+                "line": 430,
+                "titleLine": "it('treats launch numbers as settings on the goal record, never as prose (D-006/D-009)', () => {"
+              },
+              {
+                "line": 442,
+                "titleLine": "it('has plan fleets led by a launched agent, not by the goal agent (owner directive 4)', () => {"
+              },
+              {
+                "line": 463,
+                "titleLine": "it('keeps one standing drain fleet per goal (owner directive 5)', () => {"
+              },
+              {
+                "line": 501,
+                "titleLine": "it('makes the agent the Blender’s reviewer, with goals:propose as the escape hatch (owner directive 9)', () => {"
+              },
+              {
+                "line": 537,
+                "titleLine": "it('carries the durability clause that keeps a weeks-long goal off the transcript (P-007)', () => {"
+              }
+            ],
+            "executionStatus": "No execution inferred from source presence or blob equality."
+          },
+          {
+            "commit": "5be66dc6905c91d1184a577a20860534809780c3",
+            "path": "packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts",
+            "claimedBlob": "2b112a6e527f8cc8fd7e6f189e9a8317a8a0a841",
+            "actualBlob": "2b112a6e527f8cc8fd7e6f189e9a8317a8a0a841",
+            "contentSha256": "e34347ae2a7dd56bbef14970ac2265a41827a648238bfbc706bf4b231efda127",
+            "identityStatus": "verified-stored-tree-blob",
+            "mechanismLines": [
+              {
+                "line": 231,
+                "text": "/** The per-wake verdict a goal holder reads from `modes.ownerReport` (orient). */"
+              },
+              {
+                "line": 297,
+                "text": "export async function readGoalOwnerReportObligation("
+              }
+            ],
+            "testDefinitionLines": [],
+            "executionStatus": "No execution inferred from source presence or blob equality."
+          },
+          {
+            "commit": "5be66dc6905c91d1184a577a20860534809780c3",
+            "path": "packages/operator-core/lib/system-health/goal-owner-report-watchdog.test.ts",
+            "claimedBlob": "79c0bc215616b221e007e61513df09121ca6bec6",
+            "actualBlob": "79c0bc215616b221e007e61513df09121ca6bec6",
+            "contentSha256": "03dd4a688901c83c4e0333700d9e4ac95bf743fff12cf191e950493fdd118081",
+            "identityStatus": "verified-stored-tree-blob",
+            "mechanismLines": [
+              {
+                "line": 19,
+                "text": "readGoalOwnerReportObligation,"
+              },
+              {
+                "line": 140,
+                "text": "it('readGoalOwnerReportObligation projects the single row the filtered population query returns, null when absent', async () => {"
+              },
+              {
+                "line": 161,
+                "text": "const v = await readGoalOwnerReportObligation(sqlFn, { workspaceId: 'ws', ownerId: 'su-holder', goalId: 'goal-1' }, NOW);"
+              },
+              {
+                "line": 169,
+                "text": "readGoalOwnerReportObligation(none, { workspaceId: 'ws', ownerId: 'su-holder', goalId: 'goal-1' }, NOW),"
+              }
+            ],
+            "testDefinitionLines": [
+              {
+                "line": 84,
+                "titleLine": "it('a standing goal silent past the 60-min floor reads overdue, with the same reference the sweep uses', () => {"
+              },
+              {
+                "line": 109,
+                "titleLine": "it('a fresh report reads not-due and names the remaining minutes', () => {"
+              },
+              {
+                "line": 117,
+                "titleLine": "it('an outcome goal is judged against the 4-hour floor', () => {"
+              },
+              {
+                "line": 126,
+                "titleLine": "it('no report since the baseline: lastReportAt is null and age is measured from the baseline', () => {"
+              },
+              {
+                "line": 140,
+                "titleLine": "it('readGoalOwnerReportObligation projects the single row the filtered population query returns, null when absent', async () => {"
+              },
+              {
+                "line": 175,
+                "titleLine": "it('a long-silent owner with no report ever is overdue, measured from the baseline', () => {"
+              },
+              {
+                "line": 187,
+                "titleLine": "it('a fresh report clears the condition', () => {"
+              },
+              {
+                "line": 192,
+                "titleLine": "it('grace: a freshly-taken goal with no report is NOT overdue until the floor elapses from baseline', () => {"
+              }
+            ],
+            "executionStatus": "No execution inferred from source presence or blob equality."
+          },
+          {
+            "commit": "5be66dc6905c91d1184a577a20860534809780c3",
+            "path": "packages/operator-core/lib/agent-tools/coordination/tools/orient.ts",
+            "claimedBlob": "ba10912ba5ca75c499fd0def021e1c5956399697",
+            "actualBlob": "ba10912ba5ca75c499fd0def021e1c5956399697",
+            "contentSha256": "9146657e64bb9a11b0a17c1fcec10074a4a021777ede6628833167d19e2fe02e",
+            "identityStatus": "verified-stored-tree-blob",
+            "mechanismLines": [
+              {
+                "line": 3224,
+                "text": "// into `modes.ownerReport`, which the GOAL contract tells the holder to read"
+              },
+              {
+                "line": 3231,
+                "text": "const [{ readGoalOwnerReportObligation }, { getOrgPg }] = await Promise.all(["
+              },
+              {
+                "line": 3235,
+                "text": "return await readGoalOwnerReportObligation(getOrgPg().sql, {"
+              },
+              {
+                "line": 3504,
+                "text": "if (goalOwnerReportPromise) modes.ownerReport = await goalOwnerReportPromise;"
+              }
+            ],
+            "testDefinitionLines": [],
+            "executionStatus": "No execution inferred from source presence or blob equality."
+          },
+          {
+            "commit": "5be66dc6905c91d1184a577a20860534809780c3",
+            "path": "packages/operator-core/lib/agent-tools/coordination/tools/orient.test.ts",
+            "claimedBlob": "62d330a0017f6465938ac1a15aaae62f3a82e37d",
+            "actualBlob": "62d330a0017f6465938ac1a15aaae62f3a82e37d",
+            "contentSha256": "621b530888dddf9666578ab514935eb7cd8c57e7f2d16b260eaf50dc76a4ed4d",
+            "identityStatus": "verified-stored-tree-blob",
+            "mechanismLines": [
+              {
+                "line": 512,
+                "text": "// `modes.ownerReport`, the field the GOAL contract tells a holder to read"
+              },
+              {
+                "line": 517,
+                "text": "expect(source.slice(ownerReportStart, composeStart)).toContain('readGoalOwnerReportObligation');"
+              },
+              {
+                "line": 518,
+                "text": "expect(source).toContain('modes.ownerReport = await goalOwnerReportPromise');"
+              }
+            ],
+            "testDefinitionLines": [
+              {
+                "line": 173,
+                "titleLine": "it('keeps the GOAL portfolio in the non-evictable core ahead of optional folds', () => {"
+              },
+              {
+                "line": 426,
+                "titleLine": "it('reports both the early core and final composition snapshots', async () => {"
+              },
+              {
+                "line": 501,
+                "titleLine": "it('starts the handler-owned GOAL portfolio read before composeOrient', () => {"
+              },
+              {
+                "line": 787,
+                "titleLine": "it('folds the handler-injected GOAL portfolio on full and monitor orientations', async () => {"
+              },
+              {
+                "line": 798,
+                "titleLine": "it('distinguishes a degraded GOAL portfolio read from a non-GOAL caller', async () => {"
+              },
+              {
+                "line": 884,
+                "titleLine": "it('preserves the oracle Hive-home scope and observes rows in the resolved lane', async () => {"
+              },
+              {
+                "line": 980,
+                "titleLine": "it('WI-5343: drops a row work_items:observe reports available:false for (claim-hold / assignee / plan-item block)', async () => {"
+              },
+              {
+                "line": 1315,
+                "titleLine": "it('folds peersKnow by default and does not invoke the archive lookup when explicitly disabled', async () => {"
+              }
+            ],
+            "executionStatus": "No execution inferred from source presence or blob equality."
+          }
+        ],
+        "independentImplementationImpact": "NOT-VERIFIED",
+        "sourceInspection": "The GOAL contract states the owner-report obligation; orient starts and folds the canonical obligation reader."
+      },
+      {
+        "id": "WI-2140701",
+        "reader": {
+          "tool": "work_items:get",
+          "args": {
+            "id": "WI-2140701",
+            "harness": "papercusp",
+            "threadLimit": 0
+          }
+        },
+        "measuredAt": "2026-10-09T09:11:18.899Z",
+        "state": "done",
+        "assignee": null,
+        "completionAuthority": "committed",
+        "completionPresent": true,
+        "reportedCompletion": {
+          "summary": "All three goal-holder instrument blind spots from card 4 are fixed in the tree. (c) goal placement via work_items:update with a goal key now counts as a portfolio PLACE act: PORTFOLIO_CONDITIONAL_ACTS + args-aware isPortfolioAct/portfolioActFacet in goals/portfolio-acts.ts, and the goal.portfolioThroughput scan predicate is derived from the same constants (live probe: 16 of the holder's 77 acts in 7d were previously invisible). (b) improvements:capture stamps work_items.goal_id from the active goal subject via the new shared goals/provenance-stamp.ts (lifted from _create-core; single CASE-keyed UPDATE). (a) codex sessions now produce agent_usage_samples: the interactive-usage ingester sweeps every per-session CODEX_HOME root (~/.papercusp/su-codex-homes/<home>/sessions — 1,051 rollouts since 09-01 that no root ever scanned) and keys each sample by the bare rollout uuid (= adv_sessions.session_id) instead of the 'rollout-<ts>-<uuid>' basename, so goal_id_for_usage_session and every spend join (loop cost-cap, goal spend rollup) can match; cache_write_input_tokens is captured too. Root cause of (a) was TWO independent defects (root never swept; key never matchable) — fixing either alone leaves the lane blind.",
+          "testsRun": "(c) testing:run portfolio-acts.test.ts 26/26 (run 4cc06bc8) + cell-registrations 94/94 (ce0a3bee); (b) capture-core.test.ts 159+3 (b463a88f 162/162), e4786653 143/143, real-PG stamp integration 6/6 (23:36Z 09-01); (a) testing:run 21f56a67 ingest-adapters.test.ts 13/13 (5 new) + ingest-claude-transcripts.test.ts 8/8; npm run test:file ingest-claude-transcripts.session-attribution.integration.test.ts 6/6 (1 new codex case; TEST_FILE_RESULT status=passed head=34dafa80a2 startedAt 05:18:32Z); npm run lint:tsc --files over the 4 (a) files: LINT_TSC_RESULT status=clean at 05:18:32Z head=34dafa80a2 (after the last edit); (c)/(b) lint:tsc clean 23:27Z / 04:32Z 09-02.",
+          "testResult": "passed",
+          "verifiedHow": "integration",
+          "filesChanged": [
+            "packages/operator-core/lib/goals/portfolio-acts.ts",
+            "packages/operator-core/lib/goals/portfolio-acts.test.ts",
+            "packages/operator-core/lib/goals/portfolio-throughput.ts",
+            "packages/operator-core/lib/goals/provenance-stamp.ts",
+            "packages/operator-core/lib/harness/improvements/capture-core.ts",
+            "packages/operator-core/lib/harness/improvements/capture-core.test.ts",
+            "packages/operator-core/lib/interactive-usage/ingest-adapters.ts",
+            "packages/operator-core/lib/interactive-usage/ingest-adapters.test.ts",
+            "packages/operator-core/lib/interactive-usage/ingest-claude-transcripts.ts",
+            "packages/operator-core/lib/interactive-usage/ingest-claude-transcripts.session-attribution.integration.test.ts"
+          ]
+        },
+        "treeStampCommit": "20874bbbffe4690fe8b3846202ec6c843782a5f1",
+        "codeEvidence": [
+          {
+            "commit": "20874bbbffe4690fe8b3846202ec6c843782a5f1",
+            "path": "packages/operator-core/lib/goals/portfolio-acts.ts",
+            "claimedBlob": "39398c1160881232a4c35d7691eda80da658d363",
+            "actualBlob": "39398c1160881232a4c35d7691eda80da658d363",
+            "contentSha256": "7ea5d07c9c63df1b1bc0e75aab259cefea63afc929a09c70bd1d982d38e26789",
+            "identityStatus": "verified-stored-tree-blob",
+            "mechanismLines": [
+              {
+                "line": 209,
+                "text": "export const PORTFOLIO_CONDITIONAL_ACTS: readonly PortfolioConditionalAct[] = Object.freeze(["
+              },
+              {
+                "line": 247,
+                "text": "for (const act of PORTFOLIO_CONDITIONAL_ACTS) {"
+              }
+            ],
+            "testDefinitionLines": [],
+            "executionStatus": "No execution inferred from source presence or blob equality."
+          },
+          {
+            "commit": "20874bbbffe4690fe8b3846202ec6c843782a5f1",
+            "path": "packages/operator-core/lib/goals/portfolio-acts.test.ts",
+            "claimedBlob": "c1280b4f758a5da96e9027d921938f15fcfab221",
+            "actualBlob": "c1280b4f758a5da96e9027d921938f15fcfab221",
+            "contentSha256": "7fcb4d9f4ba6cfadc31de79e99956da5a24831f69f385747471784fe9046c733",
+            "identityStatus": "verified-stored-tree-blob",
+            "mechanismLines": [
+              {
+                "line": 32,
+                "text": "PORTFOLIO_CONDITIONAL_ACTS,"
+              },
+              {
+                "line": 293,
+                "text": "describe('PORTFOLIO_CONDITIONAL_ACTS — the name says nothing, the arguments decide', () => {"
+              },
+              {
+                "line": 302,
+                "text": "expect(PORTFOLIO_CONDITIONAL_ACTS).toContainEqual({"
+              },
+              {
+                "line": 311,
+                "text": "const phantom = PORTFOLIO_CONDITIONAL_ACTS.map((a) => a.tool).filter((t) => !DECLARED.has(t));"
+              },
+              {
+                "line": 322,
+                "text": "for (const act of PORTFOLIO_CONDITIONAL_ACTS) {"
+              },
+              {
+                "line": 344,
+                "text": "const leaked = PORTFOLIO_CONDITIONAL_ACTS.map((a) => a.tool).filter((t) =>"
+              },
+              {
+                "line": 348,
+                "text": "for (const act of PORTFOLIO_CONDITIONAL_ACTS) {"
+              },
+              {
+                "line": 463,
+                "text": "for (const act of PORTFOLIO_CONDITIONAL_ACTS) {"
+              }
+            ],
+            "testDefinitionLines": [
+              {
+                "line": 195,
+                "titleLine": "it('NEGATIVE CONTROL: goals:amend and goals:kill are not tools', () => {"
+              },
+              {
+                "line": 284,
+                "titleLine": "it('contains every GOAL_KICKOFF_GUARDED_TOOLS door', () => {"
+              },
+              {
+                "line": 301,
+                "titleLine": "it('names goal placement via work_items:update { goal } as a PLACE act', () => {"
+              },
+              {
+                "line": 479,
+                "titleLine": "it('readGoalPortfolioThroughput scans the ledger through it and reads the last act args for the facet', async () => {"
+              }
+            ],
+            "executionStatus": "No execution inferred from source presence or blob equality."
+          },
+          {
+            "commit": "20874bbbffe4690fe8b3846202ec6c843782a5f1",
+            "path": "packages/operator-core/lib/goals/portfolio-throughput.ts",
+            "claimedBlob": "de89b7c3e7b4cda8264b7c8b7c7fc1359b7d90bb",
+            "actualBlob": "de89b7c3e7b4cda8264b7c8b7c7fc1359b7d90bb",
+            "contentSha256": "9ce00f66382df9bc7496829e059a3aa5c768e8cfe4d66af8d3a112786bd134ca",
+            "identityStatus": "verified-stored-tree-blob",
+            "mechanismLines": [
+              {
+                "line": 53,
+                "text": "PORTFOLIO_CONDITIONAL_ACTS,"
+              },
+              {
+                "line": 180,
+                "text": "const byArgs = PORTFOLIO_CONDITIONAL_ACTS.map((act) =>"
+              }
+            ],
+            "testDefinitionLines": [],
+            "executionStatus": "No execution inferred from source presence or blob equality."
+          },
+          {
+            "commit": "20874bbbffe4690fe8b3846202ec6c843782a5f1",
+            "path": "packages/operator-core/lib/goals/provenance-stamp.ts",
+            "claimedBlob": "6d220a40ad1b6923481da40aae94341e5d26f74c",
+            "actualBlob": "6d220a40ad1b6923481da40aae94341e5d26f74c",
+            "contentSha256": "0d6ec9eecaa4c9f5f4f290d9d7227daf139bfa86baa097863267e0d6a573c166",
+            "identityStatus": "verified-stored-tree-blob",
+            "mechanismLines": [
+              {
+                "line": 70,
+                "text": "export async function stampGoalProvenance("
+              }
+            ],
+            "testDefinitionLines": [],
+            "executionStatus": "No execution inferred from source presence or blob equality."
+          },
+          {
+            "commit": "20874bbbffe4690fe8b3846202ec6c843782a5f1",
+            "path": "packages/operator-core/lib/harness/improvements/capture-core.ts",
+            "claimedBlob": "243b5d642bf649e266bcd6fd058a2f155549e8fe",
+            "actualBlob": "243b5d642bf649e266bcd6fd058a2f155549e8fe",
+            "contentSha256": "0563842ba477c2adce15f00ae269231236e313aa823734d07471ce688b023871",
+            "identityStatus": "verified-stored-tree-blob",
+            "mechanismLines": [
+              {
+                "line": 204,
+                "text": "* Read by exactly one leg: the goal-provenance stamp. `stampGoalProvenance`"
+              },
+              {
+                "line": 498,
+                "text": "/** Set when the goal stamp THREW (recorded, never raised — see CaptureDeps.stampGoalProvenance). */"
+              },
+              {
+                "line": 521,
+                "text": "stampGoalProvenance?: ("
+              },
+              {
+                "line": 644,
+                "text": "stampGoalProvenance: async (item, workspaceId, ownerId) => {"
+              },
+              {
+                "line": 645,
+                "text": "const { stampGoalProvenance } = await import('../../goals/provenance-stamp');"
+              },
+              {
+                "line": 646,
+                "text": "return stampGoalProvenance(item, workspaceId, ownerId);"
+              },
+              {
+                "line": 2502,
+                "text": "if (input.workspaceId && input.createdBy && deps.stampGoalProvenance) {"
+              },
+              {
+                "line": 2504,
+                "text": "const stamped = await deps.stampGoalProvenance("
+              }
+            ],
+            "testDefinitionLines": [],
+            "executionStatus": "No execution inferred from source presence or blob equality."
+          },
+          {
+            "commit": "20874bbbffe4690fe8b3846202ec6c843782a5f1",
+            "path": "packages/operator-core/lib/harness/improvements/capture-core.test.ts",
+            "claimedBlob": "c9cdf97cc1c0248772f59b317bac133c4f204256",
+            "actualBlob": "c9cdf97cc1c0248772f59b317bac133c4f204256",
+            "contentSha256": "3c401f08043e4df0ad9f2a18576a4505acad3cbf0032f6a600c6e52bff40229f",
+            "identityStatus": "verified-stored-tree-blob",
+            "mechanismLines": [
+              {
+                "line": 2934,
+                "text": "d.stampGoalProvenance = async (item, workspaceId, ownerId) => {"
+              }
+            ],
+            "testDefinitionLines": [
+              {
+                "line": 369,
+                "titleLine": "it('keeps the first report in the observation lane and preserves its correlation dimensions', async () => {"
+              },
+              {
+                "line": 390,
+                "titleLine": "it('promotes the same row in place when a second independent agent reports it', async () => {"
+              },
+              {
+                "line": 880,
+                "titleLine": "it('respects per-Hive scope (harness:<slug>) alongside sourceRole (P-010)', async () => {"
+              },
+              {
+                "line": 1380,
+                "titleLine": "it('reports the row, the bumped count, and that the body PERSISTED', async () => {"
+              },
+              {
+                "line": 1403,
+                "titleLine": "it('reports bodyDiscarded when the title/body refresh FAILED — the silent write-loss', async () => {"
+              },
+              {
+                "line": 1652,
+                "titleLine": "it('reports semantic UNAVAILABLE + degraded when the embedding leg returns no verdict', async () => {"
+              },
+              {
+                "line": 1662,
+                "titleLine": "it('reports semantic OK + not degraded when the embedding leg DOES answer — so [] is a real all-clear', async () => {"
+              },
+              {
+                "line": 1759,
+                "titleLine": "it('marks a failed lexical search unavailable instead of reporting a false all-clear', async () => {"
+              }
+            ],
+            "executionStatus": "No execution inferred from source presence or blob equality."
+          },
+          {
+            "commit": "20874bbbffe4690fe8b3846202ec6c843782a5f1",
+            "path": "packages/operator-core/lib/interactive-usage/ingest-adapters.ts",
+            "claimedBlob": "ebf71206f2cedd1bf08e37ba2e41bd4c6874c383",
+            "actualBlob": "ebf71206f2cedd1bf08e37ba2e41bd4c6874c383",
+            "contentSha256": "fa5e37ca0680df057f03cbd56f742535c83ed6331913a1522a9836030044a08e",
+            "identityStatus": "verified-stored-tree-blob",
+            "mechanismLines": [
+              {
+                "line": 188,
+                "text": "export function codexSessionIdForFile(filePath: string): string {"
+              },
+              {
+                "line": 212,
+                "text": "export async function codexSessionRoots(isolationBase: string = defaultCodexHomesBase()): Promise<string[]> {"
+              },
+              {
+                "line": 246,
+                "text": "sessionIdForFile: codexSessionIdForFile,"
+              }
+            ],
+            "testDefinitionLines": [
+              {
+                "line": 159,
+                "titleLine": "return /gpt|codex|^o\\d/i.test(model) ? 'openai' : 'anthropic';"
+              }
+            ],
+            "executionStatus": "No execution inferred from source presence or blob equality."
+          },
+          {
+            "commit": "20874bbbffe4690fe8b3846202ec6c843782a5f1",
+            "path": "packages/operator-core/lib/interactive-usage/ingest-adapters.test.ts",
+            "claimedBlob": "e1a11aa3d1165bee2d26a985f0127c5fcb771d20",
+            "actualBlob": "e1a11aa3d1165bee2d26a985f0127c5fcb771d20",
+            "contentSha256": "e0dbc37f5dd430da4165e05ed8e9f7b82f1a6eb0350c9955cf964623a70a2333",
+            "identityStatus": "verified-stored-tree-blob",
+            "mechanismLines": [
+              {
+                "line": 6,
+                "text": "codexSessionIdForFile,"
+              },
+              {
+                "line": 7,
+                "text": "codexSessionRoots,"
+              },
+              {
+                "line": 110,
+                "text": "it('codexSessionIdForFile: rollout-<ts>-<uuid>.jsonl → the bare uuid (= adv_sessions.session_id)', () => {"
+              },
+              {
+                "line": 112,
+                "text": "codexSessionIdForFile("
+              },
+              {
+                "line": 118,
+                "text": "it('codexSessionIdForFile: a non-rollout name falls back to the basename (the pre-fix behaviour)', () => {"
+              },
+              {
+                "line": 119,
+                "text": "expect(codexSessionIdForFile('/tmp/whatever/abc-123.jsonl')).toBe('abc-123');"
+              },
+              {
+                "line": 124,
+                "text": "expect(byName.get('codex')?.sessionIdForFile).toBe(codexSessionIdForFile);"
+              },
+              {
+                "line": 143,
+                "text": "it('codexSessionRoots: one root per <base>/<home>/sessions; homes without one and stray files are skipped; missing base → []', async () => {"
+              }
+            ],
+            "testDefinitionLines": [
+              {
+                "line": 96,
+                "titleLine": "it('routes gpt/codex models to openai, claude models to anthropic', () => {"
+              },
+              {
+                "line": 102,
+                "titleLine": "it('default adapter set covers claude + codex + omp roots', () => {"
+              },
+              {
+                "line": 110,
+                "titleLine": "it('codexSessionIdForFile: rollout-<ts>-<uuid>.jsonl → the bare uuid (= adv_sessions.session_id)', () => {"
+              },
+              {
+                "line": 118,
+                "titleLine": "it('codexSessionIdForFile: a non-rollout name falls back to the basename (the pre-fix behaviour)', () => {"
+              },
+              {
+                "line": 122,
+                "titleLine": "it('only the default codex adapter carries the rollout extractor; claude/omp keep the basename default', () => {"
+              },
+              {
+                "line": 129,
+                "titleLine": "it('parseCodexChunk captures cache_write_input_tokens as cacheCreationTokens', () => {"
+              },
+              {
+                "line": 143,
+                "titleLine": "it('codexSessionRoots: one root per <base>/<home>/sessions; homes without one and stray files are skipped; missing base → []', async () => {"
+              }
+            ],
+            "executionStatus": "No execution inferred from source presence or blob equality."
+          },
+          {
+            "commit": "20874bbbffe4690fe8b3846202ec6c843782a5f1",
+            "path": "packages/operator-core/lib/interactive-usage/ingest-claude-transcripts.ts",
+            "claimedBlob": "008c3fef810f7ca06f2cf403e7799aaa0b34bb79",
+            "actualBlob": "008c3fef810f7ca06f2cf403e7799aaa0b34bb79",
+            "contentSha256": "eb1cf704c2bc5e2bb4637fd7520802382ae16376935a5e2797a7c423e1bb794e",
+            "identityStatus": "verified-stored-tree-blob",
+            "mechanismLines": [
+              {
+                "line": 168,
+                "text": "*  `codexSessionRoots()`). Swept under the same `includeIsolationRoots`"
+              },
+              {
+                "line": 239,
+                "text": "const { codexSessionRoots, parseCodexChunk, codexSessionIdForFile } = await import('./ingest-adapters');"
+              },
+              {
+                "line": 249,
+                "text": "const codexIsoRoots = await codexSessionRoots(opts.codexIsolationBase);"
+              },
+              {
+                "line": 257,
+                "text": "sessionIdForFile: codexSessionIdForFile,"
+              }
+            ],
+            "testDefinitionLines": [
+              {
+                "line": 61,
+                "titleLine": "if (/gpt|codex|^o\\d/.test(m)) return 'gpt';"
+              }
+            ],
+            "executionStatus": "No execution inferred from source presence or blob equality."
+          },
+          {
+            "commit": "20874bbbffe4690fe8b3846202ec6c843782a5f1",
+            "path": "packages/operator-core/lib/interactive-usage/ingest-claude-transcripts.session-attribution.integration.test.ts",
+            "claimedBlob": "1c735ce9edbb8bd7adefc9925572730c853d7523",
+            "actualBlob": "1c735ce9edbb8bd7adefc9925572730c853d7523",
+            "contentSha256": "049b0b8adf4e704ae7691eb66b0216fddf46406d93ebea529e04b6aec8531d89",
+            "identityStatus": "verified-stored-tree-blob",
+            "mechanismLines": [],
+            "testDefinitionLines": [
+              {
+                "line": 83,
+                "titleLine": "it('stamps goal_id from the session GOAL-mode subject at write time', async () => {"
+              },
+              {
+                "line": 161,
+                "titleLine": "it('ingests a codex rollout under <codexIsolationBase>/session-N/sessions/ keyed by the rollout uuid (WI-2140701 (a))', async () => {"
+              }
+            ],
+            "executionStatus": "No execution inferred from source presence or blob equality."
+          }
+        ],
+        "independentImplementationImpact": "NOT-VERIFIED",
+        "sourceInspection": "Existing capture provenance, conditional portfolio activity, and Codex isolation-root/UUID ingestion seams carry the reported instrumentation repairs."
+      },
+      {
+        "id": "EI-22068944239934723",
+        "reader": {
+          "tool": "work_items:get",
+          "args": {
+            "id": "EI-22068944239934723",
+            "harness": "papercusp",
+            "threadLimit": 0
+          }
+        },
+        "measuredAt": "2026-10-09T09:11:18.899Z",
+        "state": "done",
+        "assignee": null,
+        "completionAuthority": "committed",
+        "completionPresent": true,
+        "reportedCompletion": {
+          "summary": "FIXED — but NOT the way the title asks, and the difference is the point.\n\nThe title says fleet:launch-on-plan 'rejects valid cross-hive goal work', which reads as a request to let the call through. I did not do that and it should not be done. The refusal comes from the scoped-superuser transport clamp in _mcp-handler.ts, which its own source calls 'a real security boundary against cross-workspace TENANT data' (P-006/P-007/P-008). Widening it would let any papercusp-scoped session launch fleets into any sibling hive. The guard is correct; the reporter was at the wrong door.\n\nWhat WAS defective is that the refusal was a DEAD END. The same code block already emits tailored cross-hive routes for two tools — work_items:claim ('discovery:pots → pot:request_work') and work_items:get (a per-id-family retry explanation) — but for launch-shaped tools it emitted a bare 'harness_forbidden: harness \"sidestage\" is outside this session's hive \"papercusp\".' and nothing else. The reporter held a goal worklist that legitimately named another hive's plan, got that bare 'no', and stopped, recording it as blocked work. A boundary that is right to refuse is still wrong to refuse without naming where the work CAN go.\n\nFIX — packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts:\n- Added CROSS_HIVE_LAUNCH_TOOLS (fleet:launch-on-plan, fleet:create, capability:launch-agent) + an exported crossHiveLaunchHint(toolName, scopeHive), following the file's existing ReadonlySet+predicate convention (cf. SUPERUSER_GLOBAL_FLAG_ADMIN / isSuperuserGlobalFlagAdmin).\n- Wired it into BOTH harness_forbidden refusal sites. The handler builds that text in two separate places (the spawn-context clamp and the dispatch clamp) with duplicated hint logic; a fix applied to only one is half-live and looks complete.\n- The hint names two verified routes — run the fleet from a session scoped to that hive, or discovery:pots → pot:request_work (verified to exist; its own description is 'ask the peer to do something in its domain', becoming a work_item in the peer's backlog).\n- It also pre-empts the obvious wrong next move: `hive` on fleet:launch-on-plan selects which shared hive's federated SEAT-OFFERS to place onto for placement:'remote'. That is a cross-MACHINE knob, not a cross-hive harness escape, so retrying with it cannot lift the refusal. I checked this rather than assumed it (launch-on-plan.ts resolveRemotePlacementHive / the `hive` arg doc).\n\nI also ruled OUT fleet:request_remote_spawn as the route: it is cross-MACHINE (asks a machine that delegated seats to spawn from them), a different axis entirely, so naming it would have sent the next reader down a second dead end.",
+          "testsRun": "testing:run on packages/operator-core/lib/endpoint-route/routes/transport/cross-hive-launch-hint.test.ts (new); npm run lint:tsc -- --files=<both changed files>; scripts/mutation-probe.sh (copy-out tier)",
+          "testResult": "Tests 5 passed / 0 failed. Typecheck LINT_TSC_RESULT label=operator-core scope=files exit=0 status=clean (not 'partial', and both files are operator-core so no cross-project drop was possible). Mutation probe MUTATION_PROBE_RESULT verdict=caught expected=caught baseline_exit=0 guard_exit=1, tree integrity VERIFIED byte-identical afterwards.",
+          "verifiedHow": "unit",
+          "filesChanged": [
+            "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts",
+            "packages/operator-core/lib/endpoint-route/routes/transport/cross-hive-launch-hint.test.ts"
+          ]
+        },
+        "treeStampCommit": "d165d7537d201ac8eded1a520b137cbdafd260a0",
+        "codeEvidence": [
+          {
+            "commit": "d165d7537d201ac8eded1a520b137cbdafd260a0",
+            "path": "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts",
+            "claimedBlob": "d0e7239993ee44dec7330e610db90a9444b5ac10",
+            "actualBlob": "d0e7239993ee44dec7330e610db90a9444b5ac10",
+            "contentSha256": "0b147f39f41ea9b69e22f8970cf75202c554e4755cf0b269d85e47730e617abd",
+            "identityStatus": "verified-stored-tree-blob",
+            "mechanismLines": [
+              {
+                "line": 616,
+                "text": "const CROSS_HIVE_LAUNCH_TOOLS: ReadonlySet<string> = new Set(["
+              },
+              {
+                "line": 623,
+                "text": "export function crossHiveLaunchHint(toolName: string, scopeHive: string): string {"
+              },
+              {
+                "line": 624,
+                "text": "if (!CROSS_HIVE_LAUNCH_TOOLS.has(toolName)) return '';"
+              },
+              {
+                "line": 906,
+                "text": "text: `harness_forbidden: harness \"${requestedHarness}\" is outside this session's hive \"${scopeHive}\".${crossHiveClaimHint}${crossHiveWorkItemReadHint}${crossHiveLaunchHint(toolName, scopeHive)}`,"
+              },
+              {
+                "line": 2826,
+                "text": "text: `harness_forbidden: harness \"${argHarness}\" is outside this session's hive \"${scopeHive}\".${crossHiveClaimHint}${crossHiveWorkItemReadHint}${crossHiveLaunchHint(toolName, scopeHive)}`,"
+              }
+            ],
+            "testDefinitionLines": [],
+            "executionStatus": "No execution inferred from source presence or blob equality."
+          },
+          {
+            "commit": "d165d7537d201ac8eded1a520b137cbdafd260a0",
+            "path": "packages/operator-core/lib/endpoint-route/routes/transport/cross-hive-launch-hint.test.ts",
+            "claimedBlob": "d074ba76cd665d2d5a6663960958b9111e40f65a",
+            "actualBlob": "d074ba76cd665d2d5a6663960958b9111e40f65a",
+            "contentSha256": "d527d5624a9aa13a03656aa8adda4b33bf80acc4b21a26e19e897acaa12abd79",
+            "identityStatus": "verified-stored-tree-blob",
+            "mechanismLines": [
+              {
+                "line": 6,
+                "text": "import { crossHiveLaunchHint } from './_mcp-handler';"
+              },
+              {
+                "line": 17,
+                "text": "describe('crossHiveLaunchHint', () => {"
+              },
+              {
+                "line": 19,
+                "text": "const hint = crossHiveLaunchHint('fleet:launch-on-plan', 'papercusp');"
+              },
+              {
+                "line": 32,
+                "text": "const hint = crossHiveLaunchHint('fleet:launch-on-plan', 'papercusp');"
+              },
+              {
+                "line": 40,
+                "text": "expect(crossHiveLaunchHint(tool, 'papercusp'), `expected a route hint for ${tool}`).toContain("
+              },
+              {
+                "line": 51,
+                "text": "expect(crossHiveLaunchHint(tool, 'papercusp'), `expected NO launch hint for ${tool}`).toBe('');"
+              },
+              {
+                "line": 56,
+                "text": "describe('crossHiveLaunchHint wiring', () => {"
+              },
+              {
+                "line": 79,
+                "text": "expect(line, `a harness_forbidden refusal does not call crossHiveLaunchHint: ${line.trim()}`).toContain("
+              }
+            ],
+            "testDefinitionLines": [
+              {
+                "line": 18,
+                "titleLine": "it('routes a refused cross-hive fleet:launch-on-plan to the sanctioned cross-Pot path', () => {"
+              },
+              {
+                "line": 28,
+                "titleLine": "it('pre-empts the wrong next move: `hive` is a cross-MACHINE knob, not a hive escape', () => {"
+              },
+              {
+                "line": 38,
+                "titleLine": "it('covers the whole launch-shaped family, not just the one tool that was reported', () => {"
+              }
+            ],
+            "executionStatus": "No execution inferred from source presence or blob equality."
+          }
+        ],
+        "independentImplementationImpact": "NOT-VERIFIED",
+        "sourceInspection": "Both harness-forbidden sites include the cross-hive launch hint; the scope boundary remains enforced."
+      }
+    ],
+    "historicalTestLedger": {
+      "measuredAt": "2026-10-09T09:12:02.335Z",
+      "reader": "testing:runs",
+      "writerSource": "packages/operator-core/lib/agent-tools/testing/runs.ts; executionDetails case counts are validated stored measurements, null is unavailable. Empty exact selectors are no_runs_recorded, not a pass or evidence the original test never ran.",
+      "queries": [
+        {
+          "item": "WI-10005300",
+          "args": {
+            "filePath": "goal-launch-settings.test.ts",
+            "commitSha": "920030a3b939",
+            "latestPerFile": false,
+            "limit": 10
+          },
+          "count": 1,
+          "total": 1,
+          "truncatedByLimit": false,
+          "notRecorded": false,
+          "effectiveSourceFilter": "source <> 'mutation-probe' (default row-list exclusion)",
+          "omittedBySourceFilter": 2,
+          "runs": [
+            {
+              "id": 20527058,
+              "workspaceId": "papercusp-workspace",
+              "harnessSlug": "papercusp",
+              "root": "/tmp/papercusp-lint-as-committed-920030a3b9-SBbhnS",
+              "filePath": "packages/operator-core/lib/goal-launch-settings.test.ts",
+              "status": "pass",
+              "framework": "vitest",
+              "startedAt": "2026-10-02T12:16:49.457Z",
+              "finishedAt": "2026-10-02T12:16:49.542Z",
+              "durationMs": 85,
+              "commitSha": "920030a3b939abd0c2b828fdb1ade3e291fb1071",
+              "runGroupId": null,
+              "source": "local",
+              "branch": null,
+              "outputTail": null,
+              "loopLagP95Ms": 21.8,
+              "rssMb": 340.6,
+              "saturationSuspect": false,
+              "worktreeDirty": false,
+              "isScratchConfig": false
+            }
+          ]
+        },
+        {
+          "item": "WI-2091959",
+          "args": {
+            "filePath": "goal-owner-report-watchdog.test.ts",
+            "commitSha": "4c4ec49455a8",
+            "latestPerFile": false,
+            "limit": 10
+          },
+          "count": 0,
+          "total": 0,
+          "truncatedByLimit": false,
+          "notRecorded": true,
+          "effectiveSourceFilter": "source <> 'mutation-probe' (default row-list exclusion)",
+          "omittedBySourceFilter": 0,
+          "runs": []
+        },
+        {
+          "item": "WI-2140699",
+          "args": {
+            "runGroup": "f34ad3c5-9410-4c65-b174-1e9fb9a7b0ff",
+            "latestPerFile": false,
+            "limit": 10
+          },
+          "count": 0,
+          "total": 0,
+          "truncatedByLimit": false,
+          "notRecorded": true,
+          "effectiveSourceFilter": "source <> 'mutation-probe' (default row-list exclusion)",
+          "omittedBySourceFilter": 0,
+          "runs": []
+        },
+        {
+          "item": "WI-2140700",
+          "args": {
+            "filePath": "registry.test.ts",
+            "commitSha": "87e6b9ed3d",
+            "latestPerFile": false,
+            "limit": 10
+          },
+          "count": 0,
+          "total": 0,
+          "truncatedByLimit": false,
+          "notRecorded": true,
+          "effectiveSourceFilter": "source <> 'mutation-probe' (default row-list exclusion)",
+          "omittedBySourceFilter": 0,
+          "runs": []
+        },
+        {
+          "item": "WI-2140701",
+          "args": {
+            "filePath": "ingest-claude-transcripts.session-attribution.integration.test.ts",
+            "commitSha": "34dafa80a2",
+            "latestPerFile": false,
+            "limit": 10
+          },
+          "count": 0,
+          "total": 0,
+          "truncatedByLimit": false,
+          "notRecorded": true,
+          "effectiveSourceFilter": "source <> 'mutation-probe' (default row-list exclusion)",
+          "omittedBySourceFilter": 0,
+          "runs": []
+        },
+        {
+          "item": "EI-22068944239934723",
+          "args": {
+            "filePath": "cross-hive-launch-hint.test.ts",
+            "commitSha": "d165d7537d20",
+            "latestPerFile": false,
+            "limit": 10
+          },
+          "count": 0,
+          "total": 0,
+          "notRecorded": true,
+          "runs": []
+        }
+      ],
+      "limitation": "One clean pass receipt is corroborated; its executionDetails is null, so the completion claim of 167 cases is not independently measured here. Other exact selectors returned no recorded receipt. No test was rerun and no live gate status was read."
+    },
+    "nonCodeDispositionEvidence": [
+      {
+        "item": "WI-10004840",
+        "reader": {
+          "tool": "work_items:get",
+          "args": {
+            "id": "WI-10004840",
+            "harness": "papercusp",
+            "threadLimit": 10
+          }
+        },
+        "threadTotal": 6,
+        "post": {
+          "id": 1154484,
+          "thread_id": "issue-thread-WI-10004840",
+          "author_id": "su-4f968faa-adbb-4de7-97e7-b3314e842678",
+          "body": "GRADER VERDICT (su-4f968faa, 2026-10-02 ~00:25Z): CONFIRMED, close.\n\nDone-when (\"no open goal item more than 72h without a claim, a disposition or a recorded park reason\") holds now. Of 48 open goal items, 41 are unclaimed. Only 2 have had no update in 72h, and both carry recorded blockers: WI-10002137 (runtime) and WI-10002037 (gate D-002 plus claim hold). The 16 older items with no claim, release or state change in 72h all carry your disposition comment at about 13:28Z (\"ROUTED, not parked\"); checked 16 of 16.\n\nYour question: the criterion is a staleness bound, not a claimable-count trend, so a flat claimable count of 9-10 is fine. Watch, not a reopen: those 16 routed rows have no claim since 13:28Z. The WOE claim-flow criterion will flag any that reaches 72h from that disposition (10-04 13:28Z) without a claim.",
+          "created_ts": "2026-10-02T00:16:58.534Z"
+        },
+        "scope": "Canonical grader verdict is documentary proof of the recorded close ruling; no independent recensus of the quoted population."
+      },
+      {
+        "item": "WI-10005339",
+        "reader": {
+          "tool": "plans:get",
+          "args": {
+            "slug": "gitnexus-selective-hardening-and-comparison-2026-09-13",
+            "decisionId": "D-005",
+            "mode": "sections"
+          }
+        },
+        "decision": {
+          "id": "D-005",
+          "title": "P-009 ship ceremony is dispositioned to the live drain-member lease; no plan-scoped fleet is materialized",
+          "body": "Date: 2026-10-02\nContext: GoalPortfolioBrief reconciliation for goal work-on-everything-fresh-grading-and-improvement-60d3a8 worklist #6 emitted reconcile-plan-lane-holder because P-009 is todo with no unresolved blockers, its lease is held outside the GOAL holders, and no plan-scoped fleet exists (WI-10005339, observed 2026-10-02T05:29Z-06:08Z).\n\nRuling (su-0e9d49e4, 2026-10-02, under WI-10005339): the drain hold IS the disposition. P-009 is the plan's ship ceremony (code-truth audit, acceptance rubric, final shipment verification). Its lease is held by drain member su-4a7d4f1d on WI-10001409, which is progressing (plan_item_stamp link activity=progressing; holder declaredAt 2026-10-02T04:45Z, goal 'P-009 ship ceremony: re-prove stale BARs, bind mutation-probe ledger rows, await main deploy for R-10'). A second plan-scoped fleet on the same single remaining item would only contend for the same lease and the same file locks, and the work left is deploy-gated verification, not parallelizable build.\n\nRevisit trigger: if the holder's declared intent goes stale or WI-10001409 stops progressing, the reconcile-plan-lane-holder action becomes valid again; materialize with fleet:launch-on-plan then, and take the lease via the normal claim path.\n\nEvidence: plans:items P-009 holder + links (read 2026-10-02T08:5xZ), WI-10001409 lastProgressAt 06:23:20Z in the item's own report.",
+          "date": "2026-10-02",
+          "itemRefs": [
+            "P-009"
+          ],
+          "affects": [],
+          "lineNumber": 140
+        },
+        "scope": "Canonical stored decision; no present holder-liveness or gate assertion."
+      }
+    ],
+    "remainingEdges": [
+      "640 criterion dispositions remain NOT-RECORDED. This includes positive and unknown ratings; it is not a count of unlinked poor ratings.",
+      "Historical definitions remain unavailable for 36 records and unrecorded for 10, per the separate immutable-rubric verification.",
+      "WI-10005205 is open and WI-2140573 needs human input; no terminal outcome is invented.",
+      "No independent causal implementation-impact result is established for any of the 80 records.",
+      "The original frozen report methods cite table/trace sections absent from its recovered historical body; citation-contract follow-up EI-25483625127084063 remains open."
+    ]
+  },
+  "acceptanceScope": {
+    "R003": "PARTIAL. Rubric definition verification resolves one edge for 34 records; disposition/remediation/outcome gaps remain. Every implementation-impact verdict remains NOT-VERIFIED.",
+    "R005": "The frozen revision-3 method grades measurement SPECIFICATION. Existing artifact names windows, watermark, six metrics, rollout stages, recurrence guards and owner. No post-change result claimed; T0 remains NOT-STARTED.",
+    "independentAcceptance": "UNFINISHED; no fresh grader, agent, live-gate action or ship mutation performed."
+  }
+}

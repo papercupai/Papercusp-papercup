@@ -1,0 +1,257 @@
+{
+  "arms": [
+    {
+      "arm": "none",
+      "device": null,
+      "storm": {
+        "agents": 50,
+        "failed": 0,
+        "totalSec": {
+          "p50": 20.6,
+          "p90": 25.366,
+          "max": 26.193
+        },
+        "echoSec": {
+          "p50": 0.326,
+          "max": 0.449
+        },
+        "submitToReplySec": {
+          "p50": 20.196,
+          "max": 25.764
+        },
+        "regainedMiBPerAgent": 0.5,
+        "majfltPerAgent": 0,
+        "allDoneSec": 26.349,
+        "probeExecMs": {
+          "p50": 1.07,
+          "p99": 2.35,
+          "max": 6.86,
+          "samples": 260
+        }
+      },
+      "swapAfterStormMiB": 0.0,
+      "residentAfterStormMiB": 4530.7
+    },
+    {
+      "arm": "zram",
+      "device": "/dev/zram0",
+      "reclaim": {
+        "agents": 50,
+        "beforeMiBPerAgent": 101.6,
+        "swappedMiBPerAgent": 90.6,
+        "residentAfterMiBPerAgent": 5.0,
+        "seconds": 24.0,
+        "swapOutMiBps": 189.1
+      },
+      "idleRegainedMiB": 242.3,
+      "zram": {
+        "origMiB": 4182.1,
+        "comprMiB": 897.7,
+        "usedMiB": 922.7,
+        "ratio": 4.53
+      },
+      "storm": {
+        "agents": 50,
+        "failed": 0,
+        "totalSec": {
+          "p50": 15.052,
+          "p90": 19.269,
+          "max": 20.84
+        },
+        "echoSec": {
+          "p50": 0.327,
+          "max": 0.525
+        },
+        "submitToReplySec": {
+          "p50": 14.682,
+          "max": 20.342
+        },
+        "regainedMiBPerAgent": 25.7,
+        "majfltPerAgent": 6167,
+        "allDoneSec": 20.999,
+        "probeExecMs": {
+          "p50": 1.08,
+          "p99": 2.17,
+          "max": 2.59,
+          "samples": 207
+        }
+      },
+      "swapAfterStormMiB": 2915.7,
+      "residentAfterStormMiB": 1620.5
+    },
+    {
+      "arm": "zram-lz4",
+      "device": "/dev/zram0",
+      "reclaim": {
+        "agents": 50,
+        "beforeMiBPerAgent": 99.2,
+        "swappedMiBPerAgent": 90.7,
+        "residentAfterMiBPerAgent": 5.0,
+        "seconds": 9.5,
+        "swapOutMiBps": 477.5
+      },
+      "idleRegainedMiB": 490.8,
+      "zram": {
+        "origMiB": 4231.0,
+        "comprMiB": 1323.7,
+        "usedMiB": 1355.1,
+        "ratio": 3.12
+      },
+      "storm": {
+        "agents": 50,
+        "failed": 0,
+        "totalSec": {
+          "p50": 34.719,
+          "p90": 42.158,
+          "max": 42.562
+        },
+        "echoSec": {
+          "p50": 0.294,
+          "max": 0.485
+        },
+        "submitToReplySec": {
+          "p50": 34.44,
+          "max": 42.073
+        },
+        "regainedMiBPerAgent": 21.4,
+        "majfltPerAgent": 5177,
+        "allDoneSec": 42.749,
+        "probeExecMs": {
+          "p50": 1.07,
+          "p99": 2.04,
+          "max": 2.85,
+          "samples": 422
+        }
+      },
+      "swapAfterStormMiB": 2942.7,
+      "residentAfterStormMiB": 1588.6
+    },
+    {
+      "arm": "titanium",
+      "device": "/dev/disk/by-id/google-local-nvme-ssd-0",
+      "reclaim": {
+        "agents": 50,
+        "beforeMiBPerAgent": 97.7,
+        "swappedMiBPerAgent": 90.6,
+        "residentAfterMiBPerAgent": 4.8,
+        "seconds": 3.0,
+        "swapOutMiBps": 1515.0
+      },
+      "idleRegainedMiB": 289.7,
+      "zram": null,
+      "storm": {
+        "agents": 50,
+        "failed": 0,
+        "totalSec": {
+          "p50": 13.606,
+          "p90": 20.427,
+          "max": 23.929
+        },
+        "echoSec": {
+          "p50": 0.302,
+          "max": 0.462
+        },
+        "submitToReplySec": {
+          "p50": 13.319,
+          "max": 23.564
+        },
+        "regainedMiBPerAgent": 25.0,
+        "majfltPerAgent": 2405,
+        "allDoneSec": 24.067,
+        "probeExecMs": {
+          "p50": 1.07,
+          "p99": 6.17,
+          "max": 13.09,
+          "samples": 237
+        }
+      },
+      "swapAfterStormMiB": 4436.4,
+      "residentAfterStormMiB": 1559.4
+    },
+    {
+      "arm": "titanium-pc0",
+      "device": "/dev/disk/by-id/google-local-nvme-ssd-0",
+      "reclaim": {
+        "agents": 50,
+        "beforeMiBPerAgent": 97.7,
+        "swappedMiBPerAgent": 90.6,
+        "residentAfterMiBPerAgent": 4.9,
+        "seconds": 3.0,
+        "swapOutMiBps": 1504.0
+      },
+      "idleRegainedMiB": 475.2,
+      "zram": null,
+      "storm": {
+        "agents": 50,
+        "failed": 0,
+        "totalSec": {
+          "p50": 27.901,
+          "p90": 33.764,
+          "max": 34.665
+        },
+        "echoSec": {
+          "p50": 0.294,
+          "max": 0.551
+        },
+        "submitToReplySec": {
+          "p50": 27.453,
+          "max": 34.11
+        },
+        "regainedMiBPerAgent": 20.3,
+        "majfltPerAgent": 4869,
+        "allDoneSec": 34.874,
+        "probeExecMs": {
+          "p50": 1.14,
+          "p99": 2.22,
+          "max": 11.76,
+          "samples": 344
+        }
+      },
+      "swapAfterStormMiB": 4430.0,
+      "residentAfterStormMiB": 1597.7
+    },
+    {
+      "arm": "titanium-batch5",
+      "device": "/dev/disk/by-id/google-local-nvme-ssd-0",
+      "reclaim": {
+        "agents": 50,
+        "beforeMiBPerAgent": 98.1,
+        "swappedMiBPerAgent": 91.0,
+        "residentAfterMiBPerAgent": 4.8,
+        "seconds": 2.7,
+        "swapOutMiBps": 1674.7
+      },
+      "idleRegainedMiB": 197.1,
+      "zram": null,
+      "storm": {
+        "agents": 50,
+        "failed": 0,
+        "totalSec": {
+          "p50": 13.176,
+          "p90": 28.165,
+          "max": 29.671
+        },
+        "echoSec": {
+          "p50": 0.068,
+          "max": 0.081
+        },
+        "submitToReplySec": {
+          "p50": 13.106,
+          "max": 29.601
+        },
+        "regainedMiBPerAgent": 21.0,
+        "majfltPerAgent": 2545,
+        "allDoneSec": 189.816,
+        "probeExecMs": {
+          "p50": 0.88,
+          "p99": 1.7,
+          "max": 2.17,
+          "samples": 1898
+        }
+      },
+      "swapAfterStormMiB": 4376.3,
+      "residentAfterStormMiB": 1681.7
+    }
+  ],
+  "fio": []
+}

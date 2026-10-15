@@ -67,19 +67,27 @@ export function makeSqliteDb(): { db: D1Database; raw: DatabaseSync } {
     .sort();
   for (const file of files) raw.exec(readFileSync(join(migrationsDir, file), 'utf8'));
 
+  // D1 batches are atomic and serialize on the database. Awaiting each local
+  // statement otherwise lets another batch BEGIN on this same connection.
+  let pendingBatch: Promise<unknown> = Promise.resolve();
   const db: Partial<D1Database> = {
     prepare: (sql: string) => makeStatement(raw, sql),
-    batch: async <T>(statements: D1PreparedStatement[]) => {
-      const out: D1Result<T>[] = [];
-      raw.exec('BEGIN IMMEDIATE');
-      try {
-        for (const s of statements) out.push((await s.run()) as D1Result<T>);
-        raw.exec('COMMIT');
-        return out;
-      } catch (error) {
-        raw.exec('ROLLBACK');
-        throw error;
-      }
+    batch: <T>(statements: D1PreparedStatement[]) => {
+      const result = pendingBatch.then(async () => {
+        const out: D1Result<T>[] = [];
+        raw.exec('BEGIN IMMEDIATE');
+        try {
+          for (const s of statements) out.push((await s.run()) as D1Result<T>);
+          raw.exec('COMMIT');
+          return out;
+        } catch (error) {
+          raw.exec('ROLLBACK');
+          throw error;
+        }
+      });
+      // A failed transaction releases the queue after rollback too.
+      pendingBatch = result.then(() => undefined, () => undefined);
+      return result;
     },
     exec: async (sql: string) => {
       raw.exec(sql);

@@ -14,7 +14,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { listRubrics } from '../../rubrics';
+import { listRubricsPage } from '../../rubrics';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 
 export default defineTool({
@@ -26,7 +26,8 @@ export default defineTool({
     when: 'Before filing an observation — check whether an ACTIVE rubric fits the characteristic you are assessing, so you can file a structured (rated) observation instead of free-text. Overwatch/Blender: discover the rubric set to grade against. Need the acceptance rubric for a specific plan? Pass `subjectPlan: "<plan slug>"` (implies kind:\'acceptance\').',
     notWhen:
       'You already have the rubric_id and want the full criteria — rubrics:get. Free-text keyword lookup — rubrics:search. Scoping to a harness/project — not supported: rubrics are workspace-global, never pass a `harness` key (rejected as an unrecognized key).',
-    chaining: 'rubrics:list { status: "active" } → rubrics:get { rubricRef } → file a structured observation.',
+    chaining:
+      'rubrics:list { status: "active" } → while hasMore, repeat the same filters with offset: nextOffset → rubrics:get { rubricRef } → file a structured observation.',
     seeAlso: [
       'rubrics:get (full criteria for an id)',
       'rubrics:search (free-text keyword lookup)',
@@ -56,6 +57,13 @@ export default defineTool({
           "filter to the acceptance rubric(s) for this plan slug. Implies kind:'acceptance' when kind is omitted — subjectPlan applies ONLY to acceptance-kind rubrics, never the standard library, so it is refused together with an explicit kind:'standard'.",
         ),
       limit: z.number().int().positive().max(500).optional(),
+      offset: z
+        .number()
+        .int()
+        .nonnegative()
+        .max(Number.MAX_SAFE_INTEGER)
+        .optional()
+        .describe('Zero-based page offset; pass nextOffset from the previous page with the same filters.'),
     })
     .superRefine((val, ctx) => {
       if (val.subjectPlan && val.kind === 'standard') {
@@ -71,13 +79,15 @@ export default defineTool({
     const identity = resolveAgentIdentity(ctx);
     return runWithWorkspaceIfConcrete(identity.workspaceId ?? undefined, async () => {
       const kind = args.kind ?? (args.subjectPlan ? 'acceptance' : undefined);
-      const rubrics = await listRubrics({
+      const page = await listRubricsPage({
         status: args.status,
         characteristic: args.characteristic,
         limit: args.limit,
+        offset: args.offset,
         subjectPlan: args.subjectPlan,
         ...(kind ? { kind } : {}),
       });
+      const rubrics = page.rubrics;
       return {
         content: [
           {
@@ -85,6 +95,8 @@ export default defineTool({
             text: JSON.stringify({
               ok: true,
               count: rubrics.length,
+              hasMore: page.hasMore,
+              nextOffset: page.nextOffset,
               rubrics: rubrics.map((r) => ({
                 rubricId: r.rubricId,
                 kind: r.kind,

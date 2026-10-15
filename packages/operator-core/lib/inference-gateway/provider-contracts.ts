@@ -16,6 +16,8 @@ export interface ActiveAccount {
    *  `Authorization: Bearer` + the oauth beta; `api-key` = an Anthropic Console key sent as
    *  `x-api-key`. Absent ⇒ `oauth` (every pre-existing account). */
   authMode?: 'oauth' | 'api-key';
+  /** Per-account Anthropic workspace; never inherited from a caller or another account. */
+  anthropicWorkspaceId?: string;
   /** Metered spend policy (anthropic-credits-gateway-2026-09-30 P-008, D-003). `overflow` (absent ⇒
    *  this): while billed per token — an api-key account, or a subscription in usage-credits overage —
    *  the account serves only when no included-allowance account can. `never`: unselectable while
@@ -61,6 +63,8 @@ export interface AccountRecoveryHorizonOptions {
 export interface AccountParkState {
   parkedAt: number;
   until: number;
+  /** Why this account is out of rotation; absent on legacy/unknown parks. */
+  cause?: 'cooldown' | 'quota' | 'auth';
 }
 
 /**
@@ -76,6 +80,7 @@ export interface AccountPool {
     exhaustedId: string,
     resetAt: number,
     keyOf?: (account: ActiveAccount) => number,
+    park?: Pick<AccountParkState, 'cause'>,
   ): ActiveAccount | null;
   /** Resolve an account-affinity pin without silently substituting another account. */
   select?(accountId: string): ActiveAccount | null;

@@ -29,7 +29,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkNonRepoTmpDir } from './agent-tools/locks/non-repo-tmpdir';
-import { SYSTEMD_RUNNER_OUTPUT_PATH_ENV } from './systemd-scope-env-runner.mjs';
+import { SYSTEMD_RUNNER_OUTPUT_PATH_ENV, SYSTEMD_RUNNER_REDACTIONS_ENV } from './systemd-scope-env-runner.mjs';
 
 /**
  * The subject under test, overridable by path.
@@ -63,6 +63,62 @@ async function waitFor(predicate: () => boolean, ms: number): Promise<boolean> {
 }
 
 describe('systemd-scope-env-runner SIGTERM grace (WI-1064487)', () => {
+  it('persists unit and payload phases without adding diagnostic bytes to stdout', async () => {
+    const dir = mkNonRepoTmpDir('wi8539-runner-phases-');
+    const logPath = join(dir, 'job.log');
+    const envPath = writeEnvFile(dir, {
+      [SYSTEMD_RUNNER_OUTPUT_PATH_ENV]: logPath,
+      // A non-matching value still buffers a suffix; terminal phase metadata
+      // must not appear between the emitted prefix and that final suffix.
+      [SYSTEMD_RUNNER_REDACTIONS_ENV]: Buffer.from(JSON.stringify({ values: ['unused'], patterns: [] })).toString('base64'),
+      PATH: process.env.PATH ?? '',
+    });
+    const runner = spawn(process.execPath, [RUNNER, '--env-fd-path', envPath, '--', 'bash', '-c', 'printf phase-proof'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    runner.stdout.on('data', (chunk) => { output += chunk.toString(); });
+    const code = await new Promise<number | null>((resolve, reject) => {
+      runner.once('error', reject);
+      runner.once('close', resolve);
+    });
+    expect(code).toBe(0);
+    expect(output).toBe('phase-proof');
+    const log = readFileSync(logPath, 'utf8');
+    const phases = [...log.matchAll(/JOB PHASE: phase=([a-z-]+) at=(\d+)/g)];
+    expect(phases.map((match) => match[1])).toEqual([
+      'unit-runner-started', 'payload-spawn-requested', 'payload-spawned', 'payload-first-byte', 'payload-closed',
+    ]);
+    const times = phases.map((match) => Number(match[2]));
+    expect(times).toEqual([...times].sort((a, b) => a - b));
+    expect(log).toContain('phase-proof');
+    expect(log.indexOf('phase=payload-closed')).toBeGreaterThan(log.indexOf('phase-proof') + 'phase-proof'.length);
+    expect(log).toContain('JOB END: status=completed exit=0');
+  });
+
+  it.each([
+    { command: 'bash', args: ['-c', 'exit 0'], code: 0, spawned: true },
+    { command: '/papercusp-nonexistent-payload', args: [], code: 1, spawned: false },
+  ])('records only observed phases for a silent payload ($command)', async ({ command, args, code, spawned }) => {
+    const dir = mkNonRepoTmpDir('wi8539-silent-phases-');
+    const logPath = join(dir, 'job.log');
+    const envPath = writeEnvFile(dir, { [SYSTEMD_RUNNER_OUTPUT_PATH_ENV]: logPath, PATH: process.env.PATH ?? '' });
+    const runner = spawn(process.execPath, [RUNNER, '--env-fd-path', envPath, '--', command, ...args], {
+      stdio: 'ignore',
+    });
+    const result = await new Promise<number | null>((resolve, reject) => {
+      runner.once('error', reject);
+      runner.once('close', resolve);
+    });
+    expect(result).toBe(code);
+    const log = readFileSync(logPath, 'utf8');
+    const phases = [...log.matchAll(/JOB PHASE: phase=([a-z-]+) at=(\d+)/g)].map((match) => match[1]);
+    expect(phases).toEqual(spawned
+      ? ['unit-runner-started', 'payload-spawn-requested', 'payload-spawned', 'payload-closed']
+      : ['unit-runner-started', 'payload-spawn-requested', 'payload-spawn-failed']);
+    expect(log).toContain(`JOB END: status=${code === 0 ? 'completed' : 'failed'} exit=${code}`);
+  });
+
   it('forwards SIGTERM to the payload and stays alive until it closes, reporting 143 not 1', async () => {
     // mkNonRepoTmpDir, not mkdtempSync(os.tmpdir()): when the suite runner sets TMPDIR to an
     // existing in-repo path, a bare os.tmpdir() lands INSIDE the repo and trips the lock and

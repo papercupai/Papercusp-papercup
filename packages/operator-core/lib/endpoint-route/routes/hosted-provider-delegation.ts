@@ -35,11 +35,11 @@ async function readBody(request: Request): Promise<Body | null> {
   }
 }
 
-function binding(ctx: RouteContext): { principal: HostedPrincipal; workspaceId: string } | Response {
-  if (!ctx.principal || !isHostedPrincipal(ctx.principal)) return error('hosted_principal_required', 401);
+function binding(ctx: RouteContext): { principal: HostedPrincipal; workspaceId: string } | { response: Response } {
+  if (!ctx.principal || !isHostedPrincipal(ctx.principal)) return { response: error('hosted_principal_required', 401) };
   const workspaceId = String(ctx.params.workspaceId ?? '').trim();
   if (!workspaceId || ctx.principal.selectedWorkspaceId !== workspaceId) {
-    return error('workspace_binding_mismatch', 403);
+    return { response: error('workspace_binding_mismatch', 403) };
   }
   return { principal: ctx.principal, workspaceId };
 }
@@ -63,7 +63,7 @@ export function createHostedProviderDelegationRoutes(factory: HostedProviderDele
   const onboard = defineTool({
     method: 'POST', path: HOSTED_PROVIDER_DELEGATION_ROUTES[0].path, auth: HOSTED_MANAGE_AUTH,
     async handler(request, ctx) {
-      const scoped = binding(ctx); if (scoped instanceof Response) return scoped;
+      const scoped = binding(ctx); if ('response' in scoped) return scoped.response;
       const body = await readBody(request); if (!body) return error('invalid_json', 400);
       const id = connectionId(body); if (!id) return error('invalid_connection_id', 400);
       try {
@@ -84,7 +84,7 @@ export function createHostedProviderDelegationRoutes(factory: HostedProviderDele
   const verify = defineTool({
     method: 'POST', path: HOSTED_PROVIDER_DELEGATION_ROUTES[1].path, auth: HOSTED_MANAGE_AUTH,
     async handler(request, ctx) {
-      const scoped = binding(ctx); if (scoped instanceof Response) return scoped;
+      const scoped = binding(ctx); if ('response' in scoped) return scoped.response;
       const body = await readBody(request); if (!body) return error('invalid_json', 400);
       const id = connectionId(body); if (!id) return error('invalid_connection_id', 400);
       try { return Response.json({ ok: true, record: await factory(scoped.principal).verify(scoped.workspaceId, id) }); }
@@ -94,7 +94,7 @@ export function createHostedProviderDelegationRoutes(factory: HostedProviderDele
   const rotate = defineTool({
     method: 'POST', path: HOSTED_PROVIDER_DELEGATION_ROUTES[2].path, auth: HOSTED_MANAGE_AUTH,
     async handler(request, ctx) {
-      const scoped = binding(ctx); if (scoped instanceof Response) return scoped;
+      const scoped = binding(ctx); if ('response' in scoped) return scoped.response;
       const body = await readBody(request); if (!body) return error('invalid_json', 400);
       const id = connectionId(body); if (!id) return error('invalid_connection_id', 400);
       try {
@@ -110,7 +110,7 @@ export function createHostedProviderDelegationRoutes(factory: HostedProviderDele
   const revoke = defineTool({
     method: 'POST', path: HOSTED_PROVIDER_DELEGATION_ROUTES[3].path, auth: HOSTED_MANAGE_AUTH,
     async handler(request, ctx) {
-      const scoped = binding(ctx); if (scoped instanceof Response) return scoped;
+      const scoped = binding(ctx); if ('response' in scoped) return scoped.response;
       const body = await readBody(request); if (!body) return error('invalid_json', 400);
       const id = connectionId(body); if (!id) return error('invalid_connection_id', 400);
       try { return Response.json({ ok: true, record: await factory(scoped.principal).revoke(scoped.workspaceId, id) }); }

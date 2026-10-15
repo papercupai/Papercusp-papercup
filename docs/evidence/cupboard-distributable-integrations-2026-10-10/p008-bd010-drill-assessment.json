@@ -1,0 +1,89 @@
+{
+ "schemaVersion": 1,
+ "kind": "operational-test-evidence",
+ "name": "R-4 live drill with no hand classification: the BD010 Slack bug report (a real papercusp defect, EI-25837118762007088) travelled the installed Cupboard slack + bug-triage 0.2.0 packages end to end on bg-host pid 1061656 (build dcdf6b4e30), and the pack's named executor agent bug-triage classified it and filed the Asana task on its own",
+ "framework": "operational",
+ "command": [
+  "Real Slack post into channel C0C8836LU5C at 2026-10-13T04:36:13.516Z (ts 1791866173.424259, client_msg_id 5bef90a0-5f3f-4eba-bd10-202610130440) through the drill reporter account (auth.test team T0C4WJSCV9V, user U0C8BMMPPBQ, bot B0C8FJVE5C1; token injected by capability:bash integration_env from SLACK_BUG_DRILL_REPORTER_TOKEN, not the system bot), script .papercusp/scratch/su-0dd6b-bd010-post.sh, receipt .papercusp/scratch/su-0dd6b-bd010-receipt.json. Per owner directive #1748 the report names a real papercusp defect (a bug-triage executor connected to :3070 cannot call ticket:file, measured during BD009, tracked as EI-25837118762007088).",
+  "Classification: NOT by the implementer. Trigger run f2c0ffb2 (binding 209f8c45, action.execution agentName bug-triage) created plan run 1344 and dispatched WI-6554700010009760 at 04:36:36Z to the named agent bug-triage, held by executor session su-7cca71f6 (MCP bound to :3170). With no prompt from anyone, that session took a turn at 04:36:57Z, called triggers:read-payload at 04:37:08.608Z and ticket:file at 04:37:17.739Z (both port-3170, build dcdf6b4e30, per harness_shared.tool_invocations), and closed the item at 04:37:28.636Z. su-0dd6b9aa made no ticket:file call for this run.",
+  "Measurement: readTriggerPackDrillRows + assessTriggerPackDrill from packages/operator-core/lib/integrations/trigger-pack-drill-evidence.ts (tested by trigger-pack-drill-evidence.test.ts), run by su-0dd6b9aa through .papercusp/scratch/p008-bd010-drill-measure.mts against the operator database (HARNESS_ADMIN_DATABASE_URL of papercup-dev-api, workspace papercusp-workspace) at 2026-10-13T04:39:40.191Z."
+ ],
+ "startedAt": "2026-10-13T04:39:40.191Z",
+ "finishedAt": "2026-10-13T04:39:40.256Z",
+ "exitCode": 0,
+ "summary": "Instrument verdict pass on 5 of 5 checks. Slack message ts 1791866173.424259 in C0C8836LU5C arrived on source f0566e25 (kind slack) connected through the installed slack package's provider setup, fired exactly one run (f2c0ffb2, succeeded, plan run 1344) on the installed bug-triage binding 209f8c45, and the pack's named executor agent bug-triage created Asana task 1219431930560739 in the installation's project 1219381686283984 about 64 seconds after the post, with no hand classification. The removed in-app binding 7c3c95c0 stayed disarmed with zero runs in the 04:30-05:00Z window (read at 2026-10-13T04:39:40.191Z). The ingress process was papercusp-bg-host pid 1061656, started 2026-10-13T04:17:36Z at build dcdf6b4e30, the process running at measurement time.",
+ "assertions": [
+  {
+   "id": "package-socket-path",
+   "passed": true,
+   "evidence": "source f0566e25-ec24-4c51-8388-74ebf49fb6fc: kind slack (expected slack), credential_ref provider-setup:slack, status connected, last_error null"
+  },
+  {
+   "id": "chat-message-recorded",
+   "passed": true,
+   "evidence": "1 run(s) on the installed binding carry dedupe prefix connector:f0566e25-ec24-4c51-8388-74ebf49fb6fc:chat-message:C0C8836LU5C:1791866173.424259:"
+  },
+  {
+   "id": "one-run-from-installed-binding",
+   "passed": true,
+   "evidence": "binding 209f8c45-2d5a-48ed-8b82-78ec6f0148a0 (plan bug-triage, installation 2e0593bb-17cc-4f27-bb68-5ef62cc9ea3c, armed true, channels [C0C8836LU5C]): 1 run(s) in window; f2c0ffb2-4cd0-40ea-a7e0-066a9cedd9d2 succeeded, minted 1, replayed false, planRunId 1344"
+  },
+  {
+   "id": "one-ticket-in-chosen-project",
+   "passed": true,
+   "evidence": "ticket created 1219431930560739 in container 1219381686283984; installation destination 1219381686283984"
+  },
+  {
+   "id": "in-app-path-silent",
+   "passed": true,
+   "evidence": "in-app binding 7c3c95c0-fc75-4832-b66c-c493fefea789 (plan slack-classify-bug-2026-10-08) armed false; 0 run(s) in window"
+  }
+ ],
+ "plan": "cupboard-distributable-integrations-2026-10-10",
+ "items": [
+  "P-007"
+ ],
+ "specs": [
+  "SPEC-R-4-P-007"
+ ],
+ "evidencePlane": "live",
+ "instrument": {
+  "path": "packages/operator-core/lib/integrations/trigger-pack-drill-evidence.ts",
+  "testPath": "packages/operator-core/lib/integrations/trigger-pack-drill-evidence.test.ts"
+ },
+ "drill": {
+  "workspaceId": "papercusp-workspace",
+  "sourceKind": "slack",
+  "channelId": "C0C8836LU5C",
+  "messageId": "1791866173.424259",
+  "sourceId": "f0566e25-ec24-4c51-8388-74ebf49fb6fc",
+  "installedBindingId": "209f8c45-2d5a-48ed-8b82-78ec6f0148a0",
+  "inAppBindingId": "7c3c95c0-fc75-4832-b66c-c493fefea789",
+  "windowStart": "2026-10-13T04:30:00Z",
+  "windowEnd": "2026-10-13T05:00:00Z"
+ },
+ "ticket": {
+  "containerId": "1219381686283984",
+  "externalRef": "1219431930560739",
+  "url": "https://app.asana.com/1/1219197493738449/project/1219381686283984/task/1219431930560739"
+ },
+ "executor": {
+  "agentName": "bug-triage",
+  "session": "su-7cca71f6-4ff1-4671-88a9-b6a50c792055",
+  "workItem": "WI-6554700010009760",
+  "readPayloadAt": "2026-10-13T04:37:08.608Z",
+  "ticketFileAt": "2026-10-13T04:37:17.739Z",
+  "servingHost": "port-3170",
+  "servingBuild": "dcdf6b4e30"
+ },
+ "supersedes": "docs/evidence/cupboard-distributable-integrations-2026-10-10/p008-bd008-drill-assessment.json for AUTO-BAR-R-4-P-007: BD008 was classified by a hand-called ticket:file from the implementer (the independent scorecard EI-25833631069715606 rated R-4 degraded for that), and its bg-host process (pid 3792048) has since restarted onto build dcdf6b4e30. BD010 is the same drill shape with the pack executing itself. BD008 stays as the historical record.",
+ "limitations": [
+  "The Slack message was posted by an inline one-shot script, not a committed sender; the instrument measures what the platform recorded after delivery, not the posting.",
+  "The executor session su-7cca71f6 was launched by the implementer (su-0dd6b9aa) at 04:29Z through capability:launch-agent with a brief to adopt the agent name bug-triage and work its assigned items. The classification of run 1344 itself came from that session reacting to the dispatch with no further prompt, but the executor process is not yet started by the platform; standing up the executor is a manual step today.",
+  "The executor must be connected to a build that serves ticket:file. An executor connected to :3070 (green main d740fc3802) gets unknown_tool and blocks the item (measured on BD009, run 1343); tracked as EI-25837118762007088.",
+  "Each bug-triage plan run also mints an acceptance-carry work-item that lands on the executor (WI-6554700010009765 for this run); tracked as WI-6554700010009790. It does not affect ingress, classification or filing.",
+  "The window end (05:00Z) was later than the measurement time; the in-app-path-silent check covers only rows present when the instrument ran.",
+  "The Asana task identity comes from the trigger run's recorded ticket filing; the instrument does not query Asana's API.",
+  "This drill posted in the chosen channel, so it does not exercise the non-chosen-channel case; that case is guarded by the ticket.ts channel check and its integration test."
+ ]
+}

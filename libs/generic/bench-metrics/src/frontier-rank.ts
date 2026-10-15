@@ -186,18 +186,20 @@ export interface ArmTaskTrials {
 export function frontierRankReport(
   tasks: readonly ArmTaskTrials[],
   k: number,
-  opts: { tierFilter?: string } = {},
-): { k: number; arms: FrontierArmSummary[]; perTaskBestAtK: PerTaskArmScores[] } {
+  opts: { tierFilter?: string; ranking?: 'avg-rank' | 'mean' } = {},
+): { k: number; arms: FrontierArmSummary[]; perTaskBestAtK: PerTaskArmScores[]; perTaskMeanAtK: PerTaskArmScores[] } {
   assertK(k);
   const used = opts.tierFilter ? tasks.filter((t) => t.tier === opts.tierFilter) : tasks;
 
   // Per-task best@k (the leaderboard scalar) + per-arm accumulation of mean@k/best@k.
   const perTaskBestAtK: PerTaskArmScores[] = [];
+  const perTaskMeanAtK: PerTaskArmScores[] = [];
   const meanAcc: Record<string, { sum: number; n: number }> = {};
   const bestAcc: Record<string, { sum: number; n: number }> = {};
 
   for (const t of used) {
     const best: Record<string, number> = {};
+    const means: Record<string, number> = {};
     for (const [arm, trials] of Object.entries(t.trials)) {
       const b = bestAtK(trials, k);
       const m = meanAtK(trials, k);
@@ -205,9 +207,13 @@ export function frontierRankReport(
         best[arm] = b;
         bestAcc[arm] = { sum: (bestAcc[arm]?.sum ?? 0) + b, n: (bestAcc[arm]?.n ?? 0) + 1 };
       }
-      if (m !== null) meanAcc[arm] = { sum: (meanAcc[arm]?.sum ?? 0) + m, n: (meanAcc[arm]?.n ?? 0) + 1 };
+      if (m !== null) {
+        means[arm] = m;
+        meanAcc[arm] = { sum: (meanAcc[arm]?.sum ?? 0) + m, n: (meanAcc[arm]?.n ?? 0) + 1 };
+      }
     }
     if (Object.keys(best).length > 0) perTaskBestAtK.push({ taskId: t.taskId, tier: t.tier, scores: best });
+    if (Object.keys(means).length > 0) perTaskMeanAtK.push({ taskId: t.taskId, tier: t.tier, scores: means });
   }
 
   const { avgRank: ranks } = avgRank(perTaskBestAtK);
@@ -223,9 +229,11 @@ export function frontierRankReport(
     dominance: dom[arm] ?? Number.NaN,
     tasksUsed: bestAcc[arm].n,
   }));
-  // Sort by AVG RANK ascending (the leaderboard order).
-  arms.sort((a, b) => a.avgRank - b.avgRank);
-  return { k, arms, perTaskBestAtK };
+  // v1 retains its historical ranking; v2 callers choose the mean-score headline.
+  arms.sort((a, b) => opts.ranking === 'mean'
+    ? b.meanAtK - a.meanAtK || a.arm.localeCompare(b.arm)
+    : a.avgRank - b.avgRank);
+  return { k, arms, perTaskBestAtK, perTaskMeanAtK };
 }
 
 function assertK(k: number): void {

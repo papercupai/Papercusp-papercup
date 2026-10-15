@@ -18,8 +18,11 @@
  * @typedef {object} NegativeAssertion
  * @property {number} line - 1-indexed line of the assertion in the test file.
  * @property {string} kind - Rendered matcher form, e.g. `not.toMatch(/…/)`.
- * @property {string} lit - The static string the assertion pins.
+ * @property {string} lit - The static string the assertion pins. For an alternation it is the
+ *   regex source as written, which keeps the baseline key and the report greppable.
  * @property {string} span - The matched assertion text, used to exclude self-references.
+ * @property {string[]} [alts] - Set only for a regex alternation (`/a|b/`): the plain string of
+ *   each branch. The assertion is vacuous only when EVERY branch is unproducible.
  */
 /**
  * One judged assertion that did not survive the gate.
@@ -117,6 +120,21 @@ export function judgeDocFile({ file, text, includes }: {
  * @returns {string | null}
  */
 export function regexSourceToLiteral(src: string): string | null;
+/**
+ * The plain string of every branch of a TOP-LEVEL alternation (`/old banner|older banner/`),
+ * or null unless there are at least two branches and every one is a plain literal
+ * (regexSourceToLiteral). A `|` inside a class or group makes that branch non-literal, so
+ * splitting on every unescaped `|` is enough. An empty branch matches everything, which
+ * makes a negative assertion always FAIL rather than always pass, so it is not judged.
+ *
+ * Judging alternation as one literal was a live false positive on the first sweep (the
+ * header's discriminator list): `a|b` never appears verbatim anywhere. Judging each branch
+ * separately, and flagging only when every branch is unproducible, has no such problem.
+ *
+ * @param {string} src - The regex source (no delimiters, no flags).
+ * @returns {string[] | null}
+ */
+export function regexSourceToAlternatives(src: string): string[] | null;
 /**
  * Negative assertions with a static literal argument, in source order.
  *
@@ -322,13 +340,19 @@ export type NegativeAssertion = {
      */
     kind: string;
     /**
-     * - The static string the assertion pins.
+     * - The static string the assertion pins. For an alternation it is the
+     * regex source as written, which keeps the baseline key and the report greppable.
      */
     lit: string;
     /**
      * - The matched assertion text, used to exclude self-references.
      */
     span: string;
+    /**
+     * - Set only for a regex alternation (`/a|b/`): the plain string of
+     * each branch. The assertion is vacuous only when EVERY branch is unproducible.
+     */
+    alts?: string[] | undefined;
 };
 /**
  * One judged assertion that did not survive the gate.

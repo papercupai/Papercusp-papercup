@@ -25,6 +25,13 @@ describe('EVAL_VIEWS', () => {
 });
 
 describe('toFrontierPoints', () => {
+  it('excludes an inconclusive grader measurement instead of plotting a zero', () => {
+    expect(toFrontierPoints({ suite: 'swe-bench-pro', byArm: [
+      { arm: 'papercusp', passAt1: null, costUsd: 2 },
+      { arm: 'baseline-b-native', passAt1: 0, costUsd: 2 },
+    ] })).toEqual([expect.objectContaining({ arm: 'baseline-b-native', score: 0 })]);
+  });
+
   it('returns [] for an undefined report (clean empty state)', () => {
     expect(toFrontierPoints(undefined)).toEqual([]);
   });

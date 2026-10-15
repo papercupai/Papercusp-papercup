@@ -21,11 +21,13 @@
  *     lib/sync/hyperbee/__tests__/pg-merge-cursor.test.ts
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   mergeAdmittedLogsIncremental,
   createMergeCursor,
   createPgMergeCursorSeedCache,
+  pinUnknownDurableState,
+  PgMergeCursorSeedHeldError,
   seedCursorFromPg,
   persistCursor,
   MERGE_PERSIST_EVERY_OPS,
@@ -183,6 +185,144 @@ describe('PgMergeCursorSeedCache (EI-20317490590418053 late admission)', () => {
     await seedCache.seed(afterReset, store, 'papercusp', ['remote']);
     expect(afterReset.positions.has('remote')).toBe(false);
     expect(store.loadBindings).toEqual([null]);
+  });
+});
+
+describe('PgMergeCursorSeedCache load failure (WI-6554700010008523)', () => {
+  /** A fakeStore whose first `failures` loads reject the way the bg-host PG pool
+   *  did at 10:11:01Z on 2026-10-11 (one connection-timeout burst during boot). */
+  function flakyStore(initial: Map<string, number>, failures: number) {
+    const base = fakeStore(initial);
+    let remaining = failures;
+    return Object.assign(base, {
+      async load(applyBinding: string | null) {
+        if (remaining > 0) {
+          remaining--;
+          throw new Error('Connection terminated due to connection timeout');
+        }
+        return loadFrom(base, applyBinding);
+      },
+    });
+  }
+  function loadFrom(store: ReturnType<typeof fakeStore>, applyBinding: string | null): Map<string, number> {
+    const out = new Map<string, number>();
+    for (const [k, v] of store.data) {
+      if ((store.bindings.get(k) ?? null) === (applyBinding ?? null)) out.set(k, v);
+    }
+    return out;
+  }
+  const applyAll = { getTimeoutMs: 0, applyImpl: async (_op: OpEnvelope) => true };
+
+  it('holds an unpositioned log out of the fold and its saves, then seeds it from PG once the load recovers', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      // The durable cursor says `own` already applied 40 of its 50 ops.
+      const store = flakyStore(new Map([['own', 40]]), 1);
+      const own = distinctLog('own', 50);
+      const other = distinctLog('other', 5);
+      const seedCache = createPgMergeCursorSeedCache({ label: 'ws/papercusp' });
+      const cursor = createMergeCursor();
+      // `other` is already positioned (e.g. folded earlier this boot), so it is not held.
+      cursor.positions.set('other', 0);
+
+      const failed = await seedCache.seed(cursor, store, null, ['own', 'other']).catch((e: unknown) => e);
+      expect(failed).toBeInstanceOf(PgMergeCursorSeedHeldError);
+      expect((failed as PgMergeCursorSeedHeldError).held).toBe(1);
+      // boot's F4 catch re-asserts the pin; it must not pin a held log at 0.
+      pinUnknownDurableState(cursor, ['own', 'other']);
+      expect(cursor.positions.has('own')).toBe(false);
+      expect(cursor.pgSeedPending?.has('own')).toBe(true);
+      expect(cursor.snapshotSkipUnsafe?.has('own')).toBe(true);
+
+      // The held pass: `other` folds and persists, `own` neither folds nor is saved.
+      const held = await mergeAdmittedLogsIncremental([own, other], cursor, {
+        ...applyAll,
+        onCursorAdvance: (positions) => store.save(positions, null),
+      });
+      expect(held.applied).toBe(5);
+      expect(held.caughtUp).toBe(false);
+      expect(cursor.positions.has('own')).toBe(false);
+      expect(store.saves.length).toBeGreaterThan(0);
+      for (const save of store.saves) expect(save.has('own')).toBe(false);
+      expect(store.data.get('own')).toBe(40); // the durable progress survived the held pass
+
+      // Next pass: the load succeeds, so `own` resumes at 40 instead of folding from 0.
+      await seedCache.seed(cursor, store, null, ['own', 'other']);
+      expect(cursor.positions.get('own')).toBe(40);
+      expect(cursor.pgSeedPending?.has('own') ?? false).toBe(false);
+      expect(cursor.snapshotSkipUnsafe?.has('own') ?? false).toBe(false);
+      const resumed = await mergeAdmittedLogsIncremental([own, other], cursor, applyAll);
+      expect(resumed.applied).toBe(10); // only the tail, not all 50
+      expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/holding 1 log\(s\)[\s\S]*recovered/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('gives up after the hold bound (pins at 0, fail-open) and still retries the load for later logs', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      let clock = 1_000;
+      const store = flakyStore(new Map([['own', 40], ['late', 7]]), 2);
+      const seedCache = createPgMergeCursorSeedCache({ holdMaxMs: 500, now: () => clock });
+      const cursor = createMergeCursor();
+
+      await expect(seedCache.seed(cursor, store, null, ['own'])).rejects.toBeInstanceOf(PgMergeCursorSeedHeldError);
+      expect(cursor.positions.has('own')).toBe(false);
+
+      clock += 600; // past the bound: the second failure releases the hold
+      const gaveUp = await seedCache.seed(cursor, store, null, ['own']).catch((e: unknown) => e);
+      expect(gaveUp).toBeInstanceOf(Error);
+      expect(gaveUp).not.toBeInstanceOf(PgMergeCursorSeedHeldError);
+      expect(cursor.positions.get('own')).toBe(0);
+      expect(cursor.snapshotSkipUnsafe?.has('own')).toBe(true);
+      expect(cursor.pgSeedPending?.size ?? 0).toBe(0);
+
+      // No latch: the next pass loads again. The released log keeps folding from 0,
+      // and a log admitted later is seeded from PG.
+      await seedCache.seed(cursor, store, null, ['own', 'late']);
+      expect(cursor.positions.get('own')).toBe(0);
+      expect(cursor.positions.get('late')).toBe(7);
+      expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/GAVE UP holding/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a reload failure on a rebind holds the rebound cursor too, and never reuses the old binding', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const base = fakeStore(new Map([['remote', 81_378]]));
+      let failRebind = true;
+      const store = Object.assign(base, {
+        async load(applyBinding: string | null) {
+          if (applyBinding === 'papercusp' && failRebind) {
+            failRebind = false;
+            throw new Error('Connection terminated due to connection timeout');
+          }
+          return loadFrom(base, applyBinding);
+        },
+      });
+      const seedCache = createPgMergeCursorSeedCache();
+      await seedCache.seed(createMergeCursor(), store, null, ['remote']);
+
+      // A rebind replaces the cursor and the reload fails: the null-binding progress
+      // must not be applied to the papercusp binding.
+      const rebound = createMergeCursor();
+      await expect(seedCache.seed(rebound, store, 'papercusp', ['remote'])).rejects.toBeInstanceOf(
+        PgMergeCursorSeedHeldError,
+      );
+      expect(rebound.positions.has('remote')).toBe(false);
+      expect(rebound.pgSeedPending?.has('remote')).toBe(true);
+      await seedCache.seed(rebound, store, 'papercusp', ['remote']);
+      // Nothing is stamped 'papercusp', so the log stays unpositioned (a fresh fold),
+      // released from the hold and from snapshotSkipUnsafe so a snapshot may seed it.
+      expect(rebound.positions.has('remote')).toBe(false);
+      expect(rebound.pgSeedPending?.size ?? 0).toBe(0);
+      expect(rebound.snapshotSkipUnsafe?.has('remote') ?? false).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

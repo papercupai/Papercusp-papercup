@@ -22,9 +22,13 @@ import {
   isIdOnlySelector,
   fixedCohortIds,
   positiveIdCohortIds,
+  appendIdsToClaimSpec,
+  positiveKindCohortKinds,
   formatSpecRef,
   CLAIM_SPEC_FENCE_MACROS,
+  CLAIM_SPEC_LANES,
   type ClaimSpec,
+  type FilterNode,
 } from './claim-spec';
 
 /** A maximal, valid spec exercising the full vocabulary (mirrors the plan's worked example). */
@@ -350,6 +354,76 @@ describe('validateClaimSpec — invalid: rank vocabulary', () => {
       rank: { mode: 'lexicographic', terms: [] },
     });
     expect(r.ok).toBe(false);
+  });
+});
+
+describe('validateClaimSpec — lane (P-007 Phase B / D-027)', () => {
+  const base = {
+    specVersion: '1.0',
+    specId: 'verifier-lane',
+    revision: 0,
+    view: {},
+    rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+  };
+
+  it('names exactly the implementation and verification pools', () => {
+    expect([...CLAIM_SPEC_LANES]).toEqual(['implementation', 'verification']);
+  });
+
+  it.each(CLAIM_SPEC_LANES)('accepts lane %s and keeps it on the parsed spec', (lane) => {
+    const r = validateClaimSpec({ ...base, lane });
+    expect(r.errors).toEqual([]);
+    expect(r.ok).toBe(true);
+    expect(r.spec?.lane).toBe(lane);
+  });
+
+  it('leaves lane absent when the spec omits it (the ordinary implementation pull)', () => {
+    const r = validateClaimSpec(base);
+    expect(r.ok).toBe(true);
+    expect(r.spec?.lane).toBeUndefined();
+    expect(DEFAULT_CLAIM_SPEC.lane).toBeUndefined();
+  });
+
+  it('rejects an unknown lane with a lane-named error', () => {
+    const r = validateClaimSpec({ ...base, lane: 'review' });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => e.startsWith('lane'))).toBe(true);
+  });
+});
+
+describe('validateClaimSpec — revisionAdoption (bug-queue-legitimacy D-011 B)', () => {
+  const base = {
+    specVersion: '1.0',
+    specId: 'drain-lane',
+    revision: 0,
+    view: {},
+    rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+  };
+
+  it.each([
+    ['no lane', {}],
+    ["lane 'implementation'", { lane: 'implementation' }],
+  ])("accepts revisionAdoption:'first' with %s and keeps it on the parsed spec", (_label, extra) => {
+    const r = validateClaimSpec({ ...base, ...extra, revisionAdoption: 'first' });
+    expect(r.errors).toEqual([]);
+    expect(r.spec?.revisionAdoption).toBe('first');
+  });
+
+  it('is absent (off) by default, including on the default spec', () => {
+    expect(validateClaimSpec(base).spec?.revisionAdoption).toBeUndefined();
+    expect(DEFAULT_CLAIM_SPEC.revisionAdoption).toBeUndefined();
+  });
+
+  it('rejects an unknown mode with a field-named error', () => {
+    const r = validateClaimSpec({ ...base, revisionAdoption: 'fallback' });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => e.startsWith('revisionAdoption'))).toBe(true);
+  });
+
+  it('refuses it on a verifier-lane spec, where it would be silently inert', () => {
+    const r = validateClaimSpec({ ...base, lane: 'verification', revisionAdoption: 'first' });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => e.startsWith('revisionAdoption') && e.includes('implementation-lane'))).toBe(true);
   });
 });
 
@@ -928,6 +1002,74 @@ describe('fixedCohortIds — exact fixed-wave extraction', () => {
     expect(fixedCohortIds(spec({ field: 'plan', op: '=', value: 'p' }))).toBeNull();
     expect(fixedCohortIds(spec({ field: 'id', op: '!=', value: 'WI-1' }))).toBeNull();
     expect(fixedCohortIds(spec({ not: { field: 'id', op: '=', value: 'WI-1' } }))).toBeNull();
+  });
+});
+
+describe('positiveKindCohortKinds — sound kind bounds', () => {
+  it('intersects positive kind bounds while retaining unrelated narrowing predicates', () => {
+    expect(positiveKindCohortKinds({ all: [
+      { field: 'kind', op: 'in', value: ['bug', 'task', 'bug'] },
+      { field: 'kind', op: '=', value: 'bug' },
+      { not: { field: 'title', op: 'word', value: 'p2p' } },
+    ] })).toEqual(['bug']);
+    expect(positiveKindCohortKinds({ all: [
+      { field: 'kind', op: '=', value: 'bug' },
+      { field: 'kind', op: '=', value: 'task' },
+    ] })).toEqual([]);
+  });
+
+  it('keeps generic kinds and refuses to infer a finite bound from alternatives or complements', () => {
+    expect(positiveKindCohortKinds({ field: 'kind', op: 'in', value: ['custom-work', 'feature'] }))
+      .toEqual(['custom-work', 'feature']);
+    for (const filter of [undefined,
+      { any: [{ field: 'kind', op: '=', value: 'bug' }, { field: 'title', op: '=', value: 'extra' }] },
+      { not: { field: 'kind', op: '=', value: 'feature' } },
+      { field: 'kind', op: 'glob', value: '*bug*' },
+    ]) expect(positiveKindCohortKinds(filter)).toBeNull();
+  });
+});
+
+describe('appendIdsToClaimSpec — exact cohort extension', () => {
+  it('preserves incumbent ids, fences, rank, states and limits without mutating the input', () => {
+    const spec: ClaimSpec = {
+      ...DEFAULT_CLAIM_SPEC, revision: 7, states: ['open'], limits: { maxConcurrentClaims: 2 },
+      view: { filter: { all: [
+        { field: 'id', op: 'in', value: ['WI-old', 'WI-retained'] },
+        { field: 'goal', op: '=', value: 'goal-owned' },
+        { not: { field: 'title', op: 'word', value: 'p2p' } },
+      ] } },
+    };
+    const snapshot = structuredClone(spec);
+    const candidate = appendIdsToClaimSpec(spec, ['WI-new', 'WI-old'])!;
+    expect(positiveIdCohortIds(candidate.view.filter)).toEqual(['WI-old', 'WI-retained', 'WI-new']);
+    expect((candidate.view.filter as { all: FilterNode[] }).all).toEqual([
+      { field: 'id', op: 'in', value: ['WI-old', 'WI-retained', 'WI-new'] },
+      ...(spec.view.filter as { all: FilterNode[] }).all.slice(1),
+    ]);
+    expect({ ...candidate, view: spec.view }).toEqual(spec);
+    expect(spec).toEqual(snapshot);
+  });
+
+  it('refuses dynamic, mixed disjunction and negative-only ID lanes', () => {
+    const filters: FilterNode[] = [
+      { field: 'kind', op: '=', value: 'bug' },
+      { any: [{ field: 'id', op: '=', value: 'WI-old' }, { field: 'goal', op: '=', value: 'goal-owned' }] },
+      { not: { field: 'id', op: 'in', value: ['WI-old'] } },
+    ];
+    for (const filter of filters) expect(appendIdsToClaimSpec({ ...DEFAULT_CLAIM_SPEC, view: { filter } }, ['WI-new'])).toBeNull();
+  });
+
+  it('extends pure ID disjunctions and retains intersection semantics in fenced cohorts', () => {
+    const disjunction = appendIdsToClaimSpec({ ...DEFAULT_CLAIM_SPEC, view: { filter: { any: [
+      { field: 'id', op: '=', value: 'WI-a' }, { field: 'id', op: '=', value: 'WI-b' },
+    ] } } }, ['WI-c'])!;
+    expect(positiveIdCohortIds(disjunction.view.filter)).toEqual(['WI-a', 'WI-b', 'WI-c']);
+    const intersection = appendIdsToClaimSpec({ ...DEFAULT_CLAIM_SPEC, view: { filter: { all: [
+      { field: 'id', op: 'in', value: ['WI-common', 'WI-a'] },
+      { field: 'id', op: 'in', value: ['WI-common', 'WI-b'] },
+      { field: 'goal', op: '=', value: 'goal-owned' },
+    ] } } }, ['WI-c'])!;
+    expect(positiveIdCohortIds(intersection.view.filter)).toEqual(['WI-common', 'WI-c']);
   });
 });
 

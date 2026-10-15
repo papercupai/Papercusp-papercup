@@ -32,11 +32,11 @@ function runId(): string {
 
 const productionFileUmbrella: DeltaSweepUmbrellaFiler = async (input) => {
   const result = await captureImprovement({
-    title: input.proposal.title,
+    title: `Possible shared cause: ${input.proposal.title}`,
     kind: 'bug',
     severity: 'major',
     body:
-      `${input.proposal.body}\n\nShared-root-cause evidence: ${input.proposal.reason}\n\n` +
+      `${input.proposal.body}\n\nModel-proposed shared-root-cause hypothesis (not independently verified): ${input.proposal.reason}\n\n` +
       `Contributing admitted work-items: ${input.proposal.memberIds.join(', ')}.`,
     scope: `harness:${input.harnessSlug}`,
     foundDuring: `${WORK_ITEM_ADMISSION_DELTA_SWEEP} ${input.runId}`,
@@ -54,8 +54,8 @@ const productionFileUmbrella: DeltaSweepUmbrellaFiler = async (input) => {
   });
   const canonical =
     result.issue?.id ??
-    result.possibleDuplicates.find((candidate) => candidate.state === 'open')?.id ??
-    result.possibleDuplicates[0]?.id;
+    result.possibleDuplicates?.find((candidate) => candidate.state === 'open')?.id ??
+    result.possibleDuplicates?.[0]?.id;
   if (!canonical) {
     throw new Error(
       `delta-sweep capture produced no linkable umbrella for '${input.proposal.title}' (${result.reason ?? 'unknown'})`,
@@ -69,7 +69,7 @@ export const productionLinkUmbrella: DeltaSweepUmbrellaLinker = async (input) =>
   if (!umbrella) throw new Error(`delta-sweep umbrella '${input.umbrellaId}' could not be resolved after capture`);
   let written = 0;
   for (const sourceId of input.sourceIds) {
-    const result = await linkWorkItem(sourceId, umbrella, 'caused-by', {
+    const result = await linkWorkItem(sourceId, umbrella, 'relates', {
       harness: input.harnessSlug,
       by: DELTA_SWEEP_ACTOR,
     });

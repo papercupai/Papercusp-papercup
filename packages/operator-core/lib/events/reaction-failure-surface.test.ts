@@ -146,8 +146,18 @@ describe('surfaceReactionFailure', () => {
 
   it('attributes the row to the rule’s contributor', async () => {
     const d = deps();
-    await surfaceReactionFailure(failure({ error: 'x: y', source: 'plugin:acme' }), d);
+    // Contributed = capability-scoped, as every plugin/standalone install registers it.
+    await surfaceReactionFailure(failure({ error: 'x: y', source: 'plugin:acme', capability: 'plugin:acme' }), d);
     expect(d.record.mock.calls[0][0].contributor).toBe('plugin:acme');
+  });
+
+  // WI-10005204: a first-party rule's `source` is a provenance label, not a
+  // contributor. Recording it as one put first-party failures in a contributor's
+  // bucket and named a built-in "contributed by events-file" to the owner.
+  it('records a first-party rule that carries a provenance source with a null contributor', async () => {
+    const d = deps();
+    await surfaceReactionFailure(failure({ error: 'x: y', source: 'lifecycle-rules' }), d);
+    expect(d.record.mock.calls[0][0].contributor).toBeNull();
   });
 
   it('records a first-party rule with a null contributor, not a fabricated one', async () => {

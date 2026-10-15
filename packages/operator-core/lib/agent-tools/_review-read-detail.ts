@@ -17,13 +17,13 @@
 import { z } from 'zod';
 
 export const REVIEW_READ_DETAILS = ['summary', 'full'] as const;
-export type ReviewReadDetail = (typeof REVIEW_READ_DETAILS)[number];
+export type ReviewReadDetail = (typeof REVIEW_READ_DETAILS)[number] | boolean;
 
 export const reviewReadDetailArg = z
-  .enum(REVIEW_READ_DETAILS)
+  .union([z.enum(REVIEW_READ_DETAILS), z.boolean()])
   .optional()
   .describe(
-    "Response size. Default 'summary' returns a compact verdict table plus a fullBody ref; 'full' returns the complete body (evidence text, drafts, criteria prose).",
+    "Response size. Default 'summary' (or false) returns a compact verdict table plus a fullBody ref; 'full' (or true) returns the complete body (evidence text, drafts, criteria prose).",
   );
 
 /** The ref every summary carries: the exact re-call that returns the full body. */
@@ -39,5 +39,5 @@ export function fullBodyRef(tool: string, args: Record<string, unknown>, omitted
 }
 
 export function isFullDetail(detail: ReviewReadDetail | undefined): boolean {
-  return detail === 'full';
+  return detail === 'full' || detail === true;
 }

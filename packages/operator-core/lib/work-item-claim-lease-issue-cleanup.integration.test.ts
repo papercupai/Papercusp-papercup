@@ -20,6 +20,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
 import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import { emitFlagChange } from '@papercusp/flags/server';
@@ -56,14 +57,6 @@ const WORK_ITEM_CLAIMS_DDL = `
     expires_ts timestamptz NOT NULL,
     last_activity_ts timestamptz DEFAULT clock_timestamp() NOT NULL,
     CONSTRAINT work_item_claims_pkey PRIMARY KEY (workspace_id, harness_slug, work_item_id))`;
-const ENGINEER_ISSUES_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.engineer_issues (
-    workspace_id text NOT NULL DEFAULT 'default',
-    issue_id text NOT NULL, kind text, scope text, title text, body text, severity text,
-    source text, state text, assignee text, assigned_by text, assigned_at timestamptz,
-    payload jsonb, found_during text, linked_feature_id text, created_by text,
-    signal_origin text, created_at timestamptz, updated_at timestamptz, origin text DEFAULT 'local',
-    PRIMARY KEY (workspace_id, issue_id))`;
 // liveHolderFragment (mig-225 alias-aware liveness) reads these — a holder with no fresh row
 // in either is DEAD, so the reaper frees the claim.
 const PRESENCE_DDL = `
@@ -91,7 +84,6 @@ const ROUTINES_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.routines (
     id text PRIMARY KEY, target_owner_id text,
     reschedule_interval_sec integer, active boolean NOT NULL DEFAULT true)`;
-
 const CLAIM_NEXT_INTENT = 'work-stealing claim (claim_next)';
 
 let db: FreshPgDb;
@@ -102,8 +94,11 @@ beforeAll(async () => {
   sql = db.sql;
   h.sql = db.sql;
   await sql.unsafe('CREATE SCHEMA IF NOT EXISTS harness_shared');
+  // EI-25188751918038775: the private sign-of-life projection missed fed_ts when
+  // the reaper moved to the content clock. Reuse the shared complete base table
+  // and compatibility view so future shared-query fields are maintained once.
+  await sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL).simple();
   await sql.unsafe(WORK_ITEM_CLAIMS_DDL);
-  await sql.unsafe(ENGINEER_ISSUES_DDL);
   await sql.unsafe(PRESENCE_DDL);
   await sql.unsafe(SPAWNED_DDL);
   await sql.unsafe(AGENT_ACTIVITY_DDL);
@@ -116,7 +111,8 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await sql`TRUNCATE harness_shared.work_item_claims, harness_shared.engineer_issues, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.agent_activity, harness_shared.routines`;
+  // engineer_issues is a compatibility view of work_items in the shared schema.
+  await sql`TRUNCATE harness_shared.work_item_claims, harness_shared.work_items, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.agent_activity, harness_shared.routines`;
   await setLeaseFlag(true);
 });
 afterEach(async () => {
@@ -183,6 +179,35 @@ describe('EI-6480 — issue-family stale-lease cleanup (WORKITEM_CLAIM_LEASE on)
     expect(await assigneeOf('EI-1')).toBeNull(); // assignee cleared → back in the OPEN pool
     expect(await leaseExists('EI-1', 'dead-holder')).toBe(false); // …and the lease is GONE
     expect(r.orphanLeasesCleared).toBeGreaterThanOrEqual(1);
+  });
+
+  it.each([
+    { label: 'recent content write preserves the claim', fedAgoMin: 0, updatedAgoMin: 30, released: false },
+    { label: 'bookkeeping-only write does not preserve the claim', fedAgoMin: 30, updatedAgoMin: 0, released: true },
+    { label: 'legacy NULL content clock uses the recent update fallback', fedAgoMin: null, updatedAgoMin: 0, released: false },
+  ])('unknown holder: $label', async ({ fedAgoMin, updatedAgoMin, released }) => {
+    await seedIssue('EI-CLOCK', 'bug', 'never-seen-holder', 30);
+    await seedLease('EI-CLOCK', 'never-seen-holder');
+    // Keep the held issue itself idle, so only the sibling's clock can prevent
+    // fallback reaping. Issue rows now live in the same canonical base table.
+    await sql`
+      UPDATE harness_shared.work_items
+         SET fed_ts = (extract(epoch FROM now() - interval '30 minutes') * 1000)::bigint,
+             updated_ts = (extract(epoch FROM now() - interval '30 minutes') * 1000)::bigint
+       WHERE feature_id = 'EI-CLOCK'`;
+    await sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, title, status, taken_by, fed_ts, updated_ts)
+      VALUES ('default', 'papercusp', 'F-CLOCK-SIBLING', 'feature', 'Sibling content clock', 'wip',
+              'never-seen-holder',
+              ${fedAgoMin === null ? null : sql`(extract(epoch FROM now() - make_interval(mins => ${fedAgoMin})) * 1000)::bigint`},
+              (extract(epoch FROM now() - make_interval(mins => ${updatedAgoMin})) * 1000)::bigint)`;
+
+    const result = await reclaimStaleIssueClaims(sql, { unknownHolderFallbackMs: 10 * 60_000 });
+
+    expect(result.released.some((row) => row.issue_id === 'EI-CLOCK')).toBe(released);
+    expect(await assigneeOf('EI-CLOCK')).toBe(released ? null : 'never-seen-holder');
+    expect(await leaseExists('EI-CLOCK', 'never-seen-holder')).toBe(!released);
   });
 
   it('the orphan-GC heals a lingering lease on an already-unclaimed, non-terminal issue', async () => {

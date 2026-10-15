@@ -13,8 +13,6 @@
  * Part of code-recipes-2026-06-21 Phase 2 (P-004, integration tier).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
 import { runHybridSearch } from '@papercusp/search';
 import type { OrgTestDb } from '../test/_org-test-db';
@@ -26,12 +24,6 @@ import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { resolveProseProfileSelection } from './search/prose-vector-dims';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
-const profileMigrationArmed = fileURLToPath(
-  new URL('../../../libs/papercusp/libs/db/sql/1154-prose-embedding-profile-identity.sql', import.meta.url),
-);
-const profileMigration = existsSync(profileMigrationArmed)
-  ? profileMigrationArmed
-  : `${profileMigrationArmed}.DRAFT`;
 
 /**
  * A deterministic 768-dim unit-ish embedding seeded by a scalar so two recipes
@@ -51,8 +43,9 @@ describe('code_recipes hybrid search (real PG)', () => {
   let db: OrgTestDb;
 
   beforeAll(async () => {
+    // The migrated org fixture includes the profile schema at its current shape.
+    // Replaying 1154 after 1327 would ALTER the personal_documents compatibility view.
     db = await createOrgTestDb();
-    await db.adminSql.unsafe(readFileSync(profileMigration, 'utf8')).simple();
   }, 120_000);
 
   afterAll(async () => {

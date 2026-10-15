@@ -95,51 +95,102 @@ function isDocumentedExample(ruleId: string, match: string): boolean {
   return false;
 }
 
+/** Lines longer than this are skipped: minified/one-line blobs carry no line-secrets. */
+const MAX_SCANNED_LINE_LENGTH = 4096;
+
 /** Scan one file's text for secrets. Pure. */
 export function scanTextForSecrets(path: string, content: string): SecretFinding[] {
   const findings: SecretFinding[] = [];
   const lines = content.split('\n');
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (line.length > 4096) continue; // skip minified/one-line blobs — no line-secrets there
-    for (const rule of RULES) {
-      rule.re.lastIndex = 0;
-      let m: RegExpExecArray | null;
-      while ((m = rule.re.exec(line)) !== null) {
-        // The generic assignment rule captures the value in group 1 — gate it on
-        // entropy so a placeholder ("your-secret-here") doesn't trip the build.
-        if (rule.id === 'secret-assignment') {
-          const value = m[1] ?? '';
-          const valueIndex = m.index + m[0].lastIndexOf(value);
-          const precedingCharacter = line[valueIndex - 1] ?? '';
-          const followingCharacter = line[valueIndex + value.length] ?? '';
-          const isQuotedValue = precedingCharacter === "'" || precedingCharacter === '"';
-          if (
-            CODE_FILE_EXTENSION_RE.test(path) &&
-            !isQuotedValue &&
-            IDENTIFIER_RE.test(value) &&
-            !IDENTIFIER_PART_RE.test(precedingCharacter) &&
-            !IDENTIFIER_PART_RE.test(followingCharacter)
-          ) continue;
-          if (shannonEntropy(value) < SECRET_ASSIGNMENT_MIN_ENTROPY) continue;
-          if (PLACEHOLDER_RE.test(value)) continue; // an obvious example/placeholder, not a secret
-          findings.push({ path, line: i + 1, rule: rule.id, excerpt: mask(value) });
-        } else {
-          // Documented example credentials are not secrets. AWS reserves the
-          // literal `EXAMPLE` suffix for its non-functional docs keys
-          // (AKIAIOSFODNN7EXAMPLE / ASIAIOSFODNN7EXAMPLE, etc.), used verbatim in
-          // runbooks — and a real issued key ending in "EXAMPLE" is not a thing.
-          // The shape rules are otherwise placeholder-blind, so without this a doc
-          // that merely CITES the example key wedges the whole publish plane
-          // (canonical stall root-caused in the P-402 soak, 2026-07-19).
-          if (isDocumentedExample(rule.id, m[0])) continue;
-          findings.push({ path, line: i + 1, rule: rule.id, excerpt: mask(m[0]) });
-        }
-        if (m.index === rule.re.lastIndex) rule.re.lastIndex++; // guard zero-width
-      }
-    }
+    if (line.length > MAX_SCANNED_LINE_LENGTH) continue;
+    scanLineForSecrets(path, line, i + 1, findings);
   }
   return findings;
+}
+
+/** How many lines {@link scanTextForSecretsSliced} scans between `maybeYield` checks.
+ *  256 lines of at most 4096 chars bound one unchecked stretch to ~1 MB of text
+ *  (~10 ms measured), and a time-sliced `maybeYield` makes the check itself cheap. */
+export const SLICED_SCAN_LINES_PER_CHECK = 256;
+
+/**
+ * {@link scanTextForSecrets} that hands the main thread back while it works
+ * (WI-6554700010008327). Same findings in the same order, but it calls `maybeYield`
+ * every `linesPerCheck` lines, so a caller passing a time-sliced yield (e.g.
+ * `createTimeSlice().maybeYield`) never holds the event loop for a whole multi-MB file.
+ *
+ * Why: git-sync's commit content guard scans every dirty file on the host's main
+ * thread. Generated JSON in the tree runs to ~10 MB (bundle meta.json, evidence
+ * matrices); one scan took ~107 ms in isolation, and on the saturated bg-host a sweep's
+ * scans showed up as 51.6% of a 3.72 s event-loop stall. The yield is INJECTED, not
+ * imported, so this module's import closure stays exactly what the publish-path pin in
+ * secrets-guard.test.ts reads. Lines are walked with indexOf rather than split('\n'),
+ * so a large file does not allocate every line up front.
+ */
+export async function scanTextForSecretsSliced(
+  path: string,
+  content: string,
+  maybeYield: () => Promise<void>,
+  linesPerCheck: number = SLICED_SCAN_LINES_PER_CHECK,
+): Promise<SecretFinding[]> {
+  const findings: SecretFinding[] = [];
+  const every = Math.max(1, Math.floor(linesPerCheck));
+  let start = 0;
+  let lineNo = 0;
+  for (;;) {
+    const nl = content.indexOf('\n', start);
+    const end = nl === -1 ? content.length : nl;
+    lineNo += 1;
+    if (end - start <= MAX_SCANNED_LINE_LENGTH) {
+      scanLineForSecrets(path, content.slice(start, end), lineNo, findings);
+    }
+    if (nl === -1) break;
+    start = nl + 1;
+    if (lineNo % every === 0) await maybeYield();
+  }
+  return findings;
+}
+
+/** The per-line rule pass shared by both scanners; appends to `findings`. */
+function scanLineForSecrets(path: string, line: string, lineNo: number, findings: SecretFinding[]): void {
+  for (const rule of RULES) {
+    rule.re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = rule.re.exec(line)) !== null) {
+      // The generic assignment rule captures the value in group 1 — gate it on
+      // entropy so a placeholder ("your-secret-here") doesn't trip the build.
+      if (rule.id === 'secret-assignment') {
+        const value = m[1] ?? '';
+        const valueIndex = m.index + m[0].lastIndexOf(value);
+        const precedingCharacter = line[valueIndex - 1] ?? '';
+        const followingCharacter = line[valueIndex + value.length] ?? '';
+        const isQuotedValue = precedingCharacter === "'" || precedingCharacter === '"';
+        if (
+          CODE_FILE_EXTENSION_RE.test(path) &&
+          !isQuotedValue &&
+          IDENTIFIER_RE.test(value) &&
+          !IDENTIFIER_PART_RE.test(precedingCharacter) &&
+          !IDENTIFIER_PART_RE.test(followingCharacter)
+        ) continue;
+        if (shannonEntropy(value) < SECRET_ASSIGNMENT_MIN_ENTROPY) continue;
+        if (PLACEHOLDER_RE.test(value)) continue; // an obvious example/placeholder, not a secret
+        findings.push({ path, line: lineNo, rule: rule.id, excerpt: mask(value) });
+      } else {
+        // Documented example credentials are not secrets. AWS reserves the
+        // literal `EXAMPLE` suffix for its non-functional docs keys
+        // (AKIAIOSFODNN7EXAMPLE / ASIAIOSFODNN7EXAMPLE, etc.), used verbatim in
+        // runbooks — and a real issued key ending in "EXAMPLE" is not a thing.
+        // The shape rules are otherwise placeholder-blind, so without this a doc
+        // that merely CITES the example key wedges the whole publish plane
+        // (canonical stall root-caused in the P-402 soak, 2026-07-19).
+        if (isDocumentedExample(rule.id, m[0])) continue;
+        findings.push({ path, line: lineNo, rule: rule.id, excerpt: mask(m[0]) });
+      }
+      if (m.index === rule.re.lastIndex) rule.re.lastIndex++; // guard zero-width
+    }
+  }
 }
 
 /** Files that legitimately contain credential SHAPES as fixtures — the secrets

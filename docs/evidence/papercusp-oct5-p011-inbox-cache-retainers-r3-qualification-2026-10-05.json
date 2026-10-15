@@ -1,0 +1,444 @@
+{
+  "schemaVersion": "p011-inbox-cache-retainers-r3-qualification-v1",
+  "measuredAt": "2026-10-05T18:58:29.712Z",
+  "ownerId": "su-7db4feb8-04cb-46ce-80c2-844aa23006d2",
+  "workItem": "WI-10006064",
+  "parent": "WI-10004890",
+  "deadlineWorkItem": "EI-25163485246886918",
+  "oracleWorkItem": "EI-25166202972774527",
+  "publicationWorkItem": "EI-25166858379499604",
+  "plan": {
+    "slug": "papercusp-log-performance-remediation-2026-09-23",
+    "item": "P-011",
+    "spec": "PERF-OCT1-P011-MEMORY@2",
+    "decision": "D-021"
+  },
+  "raw": {
+    "path": "docs/evidence/papercusp-oct5-p011-inbox-cache-retainers-r3-2026-10-05.json",
+    "bytes": 898901,
+    "sha256": "652d7726b63a2aa802ab1cf902c51ddbc5dd3d78abef15fedd11494314609c57"
+  },
+  "oracle": {
+    "path": "docs/evidence/papercusp-oct5-p011-inbox-cache-retainers-r3-oracle-2026-10-05.json",
+    "bytes": 33593,
+    "sha256": "64246347b34700868194425144da08255f82cc93edf9b5f5fbbf64561b2fad42"
+  },
+  "preflight": {
+    "path": "docs/evidence/papercusp-oct5-p011-inbox-cache-retainers-r3-preflight-2026-10-05.json",
+    "bytes": 4174,
+    "sha256": "7cc95a1ed2ae750f6bb1b0d1a13ddada1f02aa8997304897262c42f39d7e22ae"
+  },
+  "producer": {
+    "testRunId": 20728128,
+    "result": "PASS",
+    "nativeExitCode": 0,
+    "executedTests": 1,
+    "filteredSkipped": 142,
+    "durationMs": 673876,
+    "runnerTimeoutMs": 1200000,
+    "privateRuntimeTimeoutMs": 900000,
+    "routerProvenance": "UNKNOWN: HEAD moved; exact 15 named before/after source hashes match, full graph unknown"
+  },
+  "independentOracle": {
+    "original": {
+      "testRunId": 20728129,
+      "result": "FAIL",
+      "nativeExitCode": 1,
+      "sourceSha256": "3561f7439050cefa5eaf0efa5444e212d472484ad933b55910534dc6fb3fa3f3",
+      "cause": "Validator required legacy remote-operation strings; actual atomic lifecycle receipt rejected. afterAll also attempted an output never written."
+    },
+    "corrected": {
+      "testRunId": 20728609,
+      "result": "PASS",
+      "nativeExitCode": 0,
+      "executedTests": 1,
+      "filteredSkipped": 178,
+      "source": {
+        "path": "packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts",
+        "bytes": 82098,
+        "sha256": "65627b1cdd7fae791f19603e8bad5d287a09f620d946664a034a02923f285cbc"
+      }
+    },
+    "rawUnchanged": true,
+    "guards": {
+      "testRunId": 20728597,
+      "result": "PASS",
+      "passed": 176,
+      "skipped": 3,
+      "addedAtomicLifecycleCases": 11,
+      "legacyAndCorruptionCoveragePreserved": true
+    },
+    "types": {
+      "command": "npm run typecheck -- --files=packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts",
+      "serviceUsed": true,
+      "namedFiles": 1,
+      "actualErrors": 0,
+      "nativeExitCode": 0
+    }
+  },
+  "rootCauseScope": {
+    "reproducedClass": "Separate target jobs permit isolate-wide inspector ID map reset between file capture and ID lookup; atomic capture saves file+IDs before local teardown.",
+    "originalThirdHostEmitter": "UNCONFIRMED",
+    "noHistoricalR1OrR2Replay": true
+  },
+  "sourceFences": {
+    "before": {
+      "packages/operator-core/lib/agent-tools/coordination/tools/inbox.ts": "8272570263716ed414d1b03186067b018d31acb383dcfe7fe1aec113336cf0ae",
+      "packages/operator-core/lib/agent-tools/coordination/messages.ts": "0ef78e175aeb73044067982de38e8e5f1a9c61c65a8f2aed501660436ec61265",
+      "packages/operator-core/lib/cache/cached-read.ts": "73b09e7f3c4b5a53511fd8c51d9cf81a4cc7eff6b2d21e774eeec049dbfc39c9",
+      "packages/operator-core/lib/cache/instance.ts": "19a7a63ec772ae7c35c914eacf07128678b1ca276df9a7e871fd1e9f566f7992",
+      "libs/generic/cache/src/cache.ts": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+      "libs/generic/cache/src/l1.ts": "89ac9e14aeed616e2ba82060f9e153d62975d9c9806a4587f831d8700ad84977",
+      "scripts/cdp-inspector.mjs": "bb15dc2ac1ec9cb60d26d62d0790610f2cd097a9171b37c39465c8f5a7d22112",
+      "apps/operator/bin/bundle-host.sh": "1cde03f470f8cc216e90ec26676f5f88546485c444b7226059b33a13880265c8",
+      "scripts/test-files.mjs": "745d6ec3613bbcc7a525ecba32c05b660ed0f4b078f9ed7b6e18948747515657",
+      "packages/operator-core/lib/service-memory-attribution.integration.test.ts": "4d8db96fc5d2ec92d8dfbcfe0b790e6329b72ab0fff258e1852de0819d098903",
+      "scripts/analyze-heap-snapshots.mjs": "a444859c0bcee15f84981f3c4f1c9ab063c2284d1b0fbc7c1bb382e55bbfec29",
+      "scripts/heap-retainers-native/src/main.rs": "6973dd79ab804b10abebcba524b97251654a67e2f8020f4a67131fc16f6f07a9",
+      "scripts/heap-retainers-native/Cargo.lock": "5e9b7d3b91540a97a9bccb4ee3c5cf6e246454d61f0e1203684ee607bf9c2ded",
+      "nativeAdapterExecutable": "dfa7a07393597b99fc2c92e3587930ea0e6f7c406bb8c534c786d4fe76a69f02",
+      "nativeDecoderExecutable": "2697f0cf15785272b24e08e0bcec0a43c8fd5f2ba4fec8a4ffda1d89d8f7ff24"
+    },
+    "after": {
+      "packages/operator-core/lib/agent-tools/coordination/tools/inbox.ts": "8272570263716ed414d1b03186067b018d31acb383dcfe7fe1aec113336cf0ae",
+      "packages/operator-core/lib/agent-tools/coordination/messages.ts": "0ef78e175aeb73044067982de38e8e5f1a9c61c65a8f2aed501660436ec61265",
+      "packages/operator-core/lib/cache/cached-read.ts": "73b09e7f3c4b5a53511fd8c51d9cf81a4cc7eff6b2d21e774eeec049dbfc39c9",
+      "packages/operator-core/lib/cache/instance.ts": "19a7a63ec772ae7c35c914eacf07128678b1ca276df9a7e871fd1e9f566f7992",
+      "libs/generic/cache/src/cache.ts": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+      "libs/generic/cache/src/l1.ts": "89ac9e14aeed616e2ba82060f9e153d62975d9c9806a4587f831d8700ad84977",
+      "scripts/cdp-inspector.mjs": "bb15dc2ac1ec9cb60d26d62d0790610f2cd097a9171b37c39465c8f5a7d22112",
+      "apps/operator/bin/bundle-host.sh": "1cde03f470f8cc216e90ec26676f5f88546485c444b7226059b33a13880265c8",
+      "scripts/test-files.mjs": "745d6ec3613bbcc7a525ecba32c05b660ed0f4b078f9ed7b6e18948747515657",
+      "packages/operator-core/lib/service-memory-attribution.integration.test.ts": "4d8db96fc5d2ec92d8dfbcfe0b790e6329b72ab0fff258e1852de0819d098903",
+      "scripts/analyze-heap-snapshots.mjs": "a444859c0bcee15f84981f3c4f1c9ab063c2284d1b0fbc7c1bb382e55bbfec29",
+      "scripts/heap-retainers-native/src/main.rs": "6973dd79ab804b10abebcba524b97251654a67e2f8020f4a67131fc16f6f07a9",
+      "scripts/heap-retainers-native/Cargo.lock": "5e9b7d3b91540a97a9bccb4ee3c5cf6e246454d61f0e1203684ee607bf9c2ded",
+      "nativeAdapterExecutable": "dfa7a07393597b99fc2c92e3587930ea0e6f7c406bb8c534c786d4fe76a69f02",
+      "nativeDecoderExecutable": "2697f0cf15785272b24e08e0bcec0a43c8fd5f2ba4fec8a4ffda1d89d8f7ff24"
+    },
+    "matched": true,
+    "namedPopulation": [
+      "packages/operator-core/lib/agent-tools/coordination/tools/inbox.ts",
+      "packages/operator-core/lib/agent-tools/coordination/messages.ts",
+      "packages/operator-core/lib/cache/cached-read.ts",
+      "packages/operator-core/lib/cache/instance.ts",
+      "libs/generic/cache/src/cache.ts",
+      "libs/generic/cache/src/l1.ts",
+      "scripts/cdp-inspector.mjs",
+      "apps/operator/bin/bundle-host.sh",
+      "scripts/test-files.mjs",
+      "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+      "scripts/analyze-heap-snapshots.mjs",
+      "scripts/heap-retainers-native/src/main.rs",
+      "scripts/heap-retainers-native/Cargo.lock",
+      "nativeAdapterExecutable",
+      "nativeDecoderExecutable"
+    ],
+    "fullExecutedGraph": "unknown",
+    "oracleSourceChangedAfterProducer": true,
+    "originalOracleSourceSha256": "3561f7439050cefa5eaf0efa5444e212d472484ad933b55910534dc6fb3fa3f3",
+    "currentOracleSource": {
+      "path": "packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts",
+      "bytes": 82098,
+      "sha256": "65627b1cdd7fae791f19603e8bad5d287a09f620d946664a034a02923f285cbc"
+    }
+  },
+  "arms": [
+    {
+      "arm": 0,
+      "mode": "baseline",
+      "pid": 2978743,
+      "startTicks": "1418048",
+      "resourceSamples": 11,
+      "httpWindows": 3,
+      "requestedGraphNodes": 17,
+      "exactPayloadNodes": 8,
+      "entryValueRelations": 8,
+      "identityGaps": [],
+      "relationStatuses": [
+        "observed-direct-property",
+        "observed-direct-property",
+        "observed-direct-property",
+        "observed-direct-property",
+        "observed-direct-property",
+        "observed-direct-property",
+        "observed-direct-property",
+        "observed-direct-property"
+      ],
+      "snapshotWriteMs": 13003,
+      "nativeSummaryMs": 93927,
+      "snapshotRemoved": true,
+      "hostReaped": true,
+      "forcedCleanup": false,
+      "osAbsent": true
+    },
+    {
+      "arm": 1,
+      "mode": "shared",
+      "pid": 3147511,
+      "startTicks": "1432397",
+      "resourceSamples": 11,
+      "httpWindows": 3,
+      "requestedGraphNodes": 3,
+      "exactPayloadNodes": 1,
+      "entryValueRelations": 1,
+      "identityGaps": [],
+      "relationStatuses": [
+        "observed-direct-property"
+      ],
+      "snapshotWriteMs": 22041,
+      "nativeSummaryMs": 111558,
+      "snapshotRemoved": true,
+      "hostReaped": true,
+      "forcedCleanup": false,
+      "osAbsent": true
+    },
+    {
+      "arm": 2,
+      "mode": "shared",
+      "pid": 3319914,
+      "startTicks": "1449020",
+      "resourceSamples": 11,
+      "httpWindows": 3,
+      "requestedGraphNodes": 3,
+      "exactPayloadNodes": 1,
+      "entryValueRelations": 1,
+      "identityGaps": [],
+      "relationStatuses": [
+        "observed-direct-property"
+      ],
+      "snapshotWriteMs": 13234,
+      "nativeSummaryMs": 97994,
+      "snapshotRemoved": true,
+      "hostReaped": true,
+      "forcedCleanup": false,
+      "osAbsent": true
+    },
+    {
+      "arm": 3,
+      "mode": "baseline",
+      "pid": 3511848,
+      "startTicks": "1463417",
+      "resourceSamples": 11,
+      "httpWindows": 3,
+      "requestedGraphNodes": 17,
+      "exactPayloadNodes": 8,
+      "entryValueRelations": 8,
+      "identityGaps": [],
+      "relationStatuses": [
+        "observed-direct-property",
+        "observed-direct-property",
+        "observed-direct-property",
+        "observed-direct-property",
+        "observed-direct-property",
+        "observed-direct-property",
+        "observed-direct-property",
+        "observed-direct-property"
+      ],
+      "snapshotWriteMs": 13332,
+      "nativeSummaryMs": 89818,
+      "snapshotRemoved": true,
+      "hostReaped": true,
+      "forcedCleanup": false,
+      "osAbsent": true
+    }
+  ],
+  "observedResourceAcceptance": {
+    "pairs": [
+      {
+        "baselineArm": 0,
+        "candidateArm": 1,
+        "pssGrowthDifferenceBytes": 125967360,
+        "cumulativeV8AllocationGrowthDifferenceBytes": 290316656,
+        "rawCopies": [
+          8,
+          1
+        ],
+        "preservedBodyCodeUnits": 8388608,
+        "responsesPerHost": 24,
+        "actualConcurrency": "Eight client requests in flight; server execution parallelism unmeasured",
+        "productionSavings": "unmeasured"
+      },
+      {
+        "baselineArm": 3,
+        "candidateArm": 2,
+        "pssGrowthDifferenceBytes": 45240320,
+        "cumulativeV8AllocationGrowthDifferenceBytes": 274815160,
+        "rawCopies": [
+          8,
+          1
+        ],
+        "preservedBodyCodeUnits": 8388608,
+        "responsesPerHost": 24,
+        "actualConcurrency": "Eight client requests in flight; server execution parallelism unmeasured",
+        "productionSavings": "unmeasured"
+      }
+    ],
+    "overlap": [
+      [
+        {
+          "window": 0,
+          "requestsInFlight": 8,
+          "overlapMs": 431.4728589999995
+        },
+        {
+          "window": 1,
+          "requestsInFlight": 8,
+          "overlapMs": 406.1220140000005
+        },
+        {
+          "window": 2,
+          "requestsInFlight": 8,
+          "overlapMs": 284.69895200000065
+        }
+      ],
+      [
+        {
+          "window": 0,
+          "requestsInFlight": 8,
+          "overlapMs": 369.9157070000074
+        },
+        {
+          "window": 1,
+          "requestsInFlight": 8,
+          "overlapMs": 286.97453599999426
+        },
+        {
+          "window": 2,
+          "requestsInFlight": 8,
+          "overlapMs": 256.2433149999997
+        }
+      ],
+      [
+        {
+          "window": 0,
+          "requestsInFlight": 8,
+          "overlapMs": 497.82249499997124
+        },
+        {
+          "window": 1,
+          "requestsInFlight": 8,
+          "overlapMs": 271.55103700002655
+        },
+        {
+          "window": 2,
+          "requestsInFlight": 8,
+          "overlapMs": 236.24513900000602
+        }
+      ],
+      [
+        {
+          "window": 0,
+          "requestsInFlight": 8,
+          "overlapMs": 570.2166100000031
+        },
+        {
+          "window": 1,
+          "requestsInFlight": 8,
+          "overlapMs": 366.92670400004135
+        },
+        {
+          "window": 2,
+          "requestsInFlight": 8,
+          "overlapMs": 196.2371690000291
+        }
+      ]
+    ],
+    "allocationDefinition": "Cumulative V8 allocation, not unique retained or native bytes",
+    "productionSavings": "unmeasured",
+    "historicalRecovery": "unmeasured"
+  },
+  "runtimeCleanup": {
+    "privateFixture": "/tmp/pcv/papercusp-inbox-pair-BoD3Ac",
+    "fixtureAbsent": true,
+    "runnerRootPid": 2820517,
+    "runnerRootAbsent": true
+  },
+  "publicationRepair": {
+    "surface": "existing serializeIdentitySafeJson",
+    "originalPreflightSha256": "205d0074bba9b82eaf8be4e1f50b7e81a3913e6e0cc406b53fdf92ce117a27e9",
+    "changedFields": "Two binary path strings only; hashes/counters preserved.",
+    "canonicalContentLint": {
+      "ran": 4,
+      "flaggedBefore": [
+        "identity-leak"
+      ],
+      "flaggedAfter": [],
+      "exitBefore": 1,
+      "exitAfter": 0
+    }
+  },
+  "logs": [
+    {
+      "path": ".papercusp/logs/su-7db4f-p011-inbox-cache-retainers-r3-live.log",
+      "bytes": 73867,
+      "sha256": "b40c33d7248d7bcadc118584a58a0c543510663c5f599acd6635f77fcd861c03"
+    },
+    {
+      "path": ".papercusp/logs/su-7db4f-p011-inbox-cache-retainers-r3-oracle-live.log",
+      "bytes": 71724,
+      "sha256": "b4da153bdc9384f58ba4435b0eb5290c505fcf4ff23090f8f107890d65420adb"
+    },
+    {
+      "path": ".papercusp/logs/su-7db4f-p011-inbox-cache-retainers-r3-oracle-r2-live.log",
+      "bytes": 63580,
+      "sha256": "96edb7b901aea67667e8ab0419f0a01e1492a84e39a92230a3cb80b3955bdf0b"
+    },
+    {
+      "path": ".papercusp/logs/su-7db4f-p011-atomic-oracle-guards-r1.log",
+      "bytes": 7755,
+      "sha256": "c5553ee8d9358d5ce2b6c08190129e54de34cb2da39ac781ba17183f7e04f3ce"
+    },
+    {
+      "path": ".papercusp/logs/su-7db4f-p011-atomic-oracle-types-r1.log",
+      "bytes": 1074,
+      "sha256": "b7cbda353ccc3188ccee92264c60fb1aac30b97588aade83a48ba7a8a39dc34b"
+    },
+    {
+      "path": ".papercusp/logs/cohort-07fd704106378de2ef0a521429154ac754d799d9db02bc30299fb76af1ca7684.log",
+      "bytes": 638370,
+      "sha256": "07fd704106378de2ef0a521429154ac754d799d9db02bc30299fb76af1ca7684"
+    }
+  ],
+  "preservedFailures": {
+    "r1": {
+      "path": "docs/evidence/papercusp-oct5-p011-inbox-cache-retainers-r1-2026-10-05.json",
+      "bytes": 513058,
+      "sha256": "0b1f180bb4239f3dab4826c12f3675211cb3c1a2f7b0ff246841b38d97484ab6"
+    },
+    "r2": {
+      "path": "docs/evidence/papercusp-oct5-p011-inbox-cache-retainers-r2-interrupted-2026-10-05.json",
+      "bytes": 311754,
+      "sha256": "296cf71fce6087309a33ddced4019aa2f203be3684aac7e94aba21b732a3b894"
+    },
+    "originalQualification": {
+      "path": "docs/evidence/papercusp-oct5-p011-atomic-cache-id-lifetime-qualification-r1-2026-10-05.json",
+      "bytes": 12394,
+      "sha256": "bd830c4e4cd501bb56d865978013d23b7fe8c0fc6f862ea93316a1cb8124e7d8"
+    }
+  },
+  "scope": {
+    "plane": "isolated-current-build-operator-api",
+    "matchedPrivateCacheComparison": true,
+    "independentExactGraphAudit": true,
+    "nativePhysicalOwnership": "unmeasured",
+    "productionPhysicalSavings": "unmeasured",
+    "selectedV8RetainedSizes": "Per-node dominator sizes; overlapping subtrees must not be summed.",
+    "fullExecutedSourceGraph": "unknown",
+    "sharedServingRuntimeAcceptance": false,
+    "workerClones": "unmeasured",
+    "fullP011Acceptance": false,
+    "shipmentVerified": false
+  },
+  "stillOpen": [
+    "Whole PERF-OCT1-P011-MEMORY@2 / D-021 acceptance",
+    "Original R1 third-host causal emitter",
+    "Native physical ownership and production physical savings",
+    "Worker clones and all eight requested sources",
+    "Full executed source graph",
+    "Shared serving/deployed runtime and native owner-origin proof",
+    "P010 R8/R9 and independent full acceptance",
+    "Final promotion and shipment"
+  ],
+  "residueOwner": "WI-10004890 (self)"
+}

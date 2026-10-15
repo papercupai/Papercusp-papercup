@@ -1,0 +1,2084 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10005429",
+  "parent": "WI-10004890",
+  "kind": "portable-derivatives-of-archived-execution-evidence",
+  "originalArchive": "PG-canonical artifacts:load using original artifact key; exact bytes verified before derivative edits.",
+  "qualification": "Only detected identity string values and explicit reference metadata changed. Resource samples, timestamps, observed executable/response hashes, outcomes and acceptance limits preserved. No execution replay.",
+  "guard": {
+    "testRunId": 20509966,
+    "passed": 19,
+    "failed": 0,
+    "skipped": 0
+  },
+  "files": [
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-content-lint-caller-r18-2026-10-02.json",
+      "original": {
+        "sha256": "ee793ed6478cbe163b5f48b51bf3e9e09735cb6ee670900643815e29e70bdcc3",
+        "bytes": 30457,
+        "artifact": {
+          "slug": "papercusp",
+          "rel_path": "evidence/originals/ee793ed6478cbe163b5f48b51bf3e9e09735cb6ee670900643815e29e70bdcc3.json"
+        }
+      },
+      "derivative": {
+        "sha256": "9adc3f16fc96adf7a6891494a862a0c72d58ec3695cb4e0cde0cf462eb57b8f2",
+        "bytes": 30388
+      },
+      "rewrites": [
+        {
+          "pointer": "/reports/0/samples/0/parent/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/reports/0/samples/0/children/0/executable",
+          "originalValueSha256": "06202cc156a807ebf531d6aa93033fb95360cc34724aeebfc0109dd9b5b1c0c3",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild"
+        },
+        {
+          "pointer": "/reports/0/samples/1/parent/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/reports/0/samples/1/children/0/executable",
+          "originalValueSha256": "06202cc156a807ebf531d6aa93033fb95360cc34724aeebfc0109dd9b5b1c0c3",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild"
+        },
+        {
+          "pointer": "/reports/0/samples/2/parent/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/reports/0/samples/2/children/0/executable",
+          "originalValueSha256": "06202cc156a807ebf531d6aa93033fb95360cc34724aeebfc0109dd9b5b1c0c3",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild"
+        },
+        {
+          "pointer": "/reports/0/samples/3/parent/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/reports/0/samples/3/children/0/executable",
+          "originalValueSha256": "06202cc156a807ebf531d6aa93033fb95360cc34724aeebfc0109dd9b5b1c0c3",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild"
+        },
+        {
+          "pointer": "/reports/0/samples/4/parent/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/reports/0/samples/4/children/0/executable",
+          "originalValueSha256": "06202cc156a807ebf531d6aa93033fb95360cc34724aeebfc0109dd9b5b1c0c3",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild"
+        },
+        {
+          "pointer": "/reports/1/samples/0/parent/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/reports/1/samples/0/children/0/executable",
+          "originalValueSha256": "06202cc156a807ebf531d6aa93033fb95360cc34724aeebfc0109dd9b5b1c0c3",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild"
+        },
+        {
+          "pointer": "/reports/1/samples/1/parent/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/reports/1/samples/1/children/0/executable",
+          "originalValueSha256": "06202cc156a807ebf531d6aa93033fb95360cc34724aeebfc0109dd9b5b1c0c3",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild"
+        },
+        {
+          "pointer": "/reports/1/samples/2/parent/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/reports/1/samples/2/children/0/executable",
+          "originalValueSha256": "06202cc156a807ebf531d6aa93033fb95360cc34724aeebfc0109dd9b5b1c0c3",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild"
+        },
+        {
+          "pointer": "/reports/1/samples/3/parent/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/reports/1/samples/3/children/0/executable",
+          "originalValueSha256": "06202cc156a807ebf531d6aa93033fb95360cc34724aeebfc0109dd9b5b1c0c3",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild"
+        },
+        {
+          "pointer": "/reports/1/samples/4/parent/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/reports/1/samples/4/children/0/executable",
+          "originalValueSha256": "06202cc156a807ebf531d6aa93033fb95360cc34724aeebfc0109dd9b5b1c0c3",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild"
+        },
+        {
+          "pointer": "/reports/1/trace/calls/transform/stacks/0",
+          "originalValueSha256": "7a40c9cc1b7e837ea82e60ec3e054304b28987914b21a06ae051444fe49d8401",
+          "portableValue": "Error\n    at eval (eval at transform (/home/builduser/papercupai-workspace/papercusp/node_modules/esbuild/lib/main.js:1:1), <anonymous>:6:32)\n    at eval (eval at transform (/home/builduser/papercupai-workspace/papercusp/node_modules/esbuild/lib/main.js:1:1), <anonymous>:9:70)\n    at transform (/home/builduser/papercupai-workspace/papercusp/node_modules/esbuild/lib/main.js:1878:62)\n    at findEsbuildTransformError (/tmp/pcv/papercusp-content-lint-cohort-dQdqG1/request-host.cjs:64:11)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async Server.<anonymous> (/tmp/pcv/papercusp-content-lint-cohort-dQdqG1/request-host.cjs:90:69)"
+        }
+      ]
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-content-lint-caller-r19-2026-10-02.json",
+      "original": {
+        "sha256": "1dd1c8d069495999dc7c78a5338f7a933efd31a4767a9607831f17f645734367",
+        "bytes": 32644,
+        "artifact": {
+          "slug": "papercusp",
+          "rel_path": "evidence/originals/1dd1c8d069495999dc7c78a5338f7a933efd31a4767a9607831f17f645734367.json"
+        }
+      },
+      "derivative": {
+        "sha256": "bc2986497c24efc57ad2be9d6375291fd4c4a6cff2dafd6ee87dea11b671c63c",
+        "bytes": 32572
+      },
+      "rewrites": [
+        {
+          "pointer": "/compiler/path",
+          "originalValueSha256": "06202cc156a807ebf531d6aa93033fb95360cc34724aeebfc0109dd9b5b1c0c3",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild"
+        },
+        {
+          "pointer": "/reports/0/samples/0/parent/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/reports/0/samples/0/children/0/executable",
+          "originalValueSha256": "06202cc156a807ebf531d6aa93033fb95360cc34724aeebfc0109dd9b5b1c0c3",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild"
+        },
+        {
+          "pointer": "/reports/0/samples/1/parent/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/reports/0/samples/1/children/0/executable",
+          "originalValueSha256": "06202cc156a807ebf531d6aa93033fb95360cc34724aeebfc0109dd9b5b1c0c3",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild"
+        },
+        {
+          "pointer": "/reports/0/samples/2/parent/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/reports/0/samples/2/children/0/executable",
+          "originalValueSha256": "06202cc156a807ebf531d6aa93033fb95360cc34724aeebfc0109dd9b5b1c0c3",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild"
+        },
+        {
+          "pointer": "/reports/0/samples/3/parent/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/reports/0/samples/3/children/0/executable",
+          "originalValueSha256": "06202cc156a807ebf531d6aa93033fb95360cc34724aeebfc0109dd9b5b1c0c3",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild"
+        },
+        {
+          "pointer": "/reports/0/samples/4/parent/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/reports/0/samples/4/children/0/executable",
+          "originalValueSha256": "06202cc156a807ebf531d6aa93033fb95360cc34724aeebfc0109dd9b5b1c0c3",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild"
+        },
+        {
+          "pointer": "/reports/1/samples/0/parent/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/reports/1/samples/0/children/0/executable",
+          "originalValueSha256": "06202cc156a807ebf531d6aa93033fb95360cc34724aeebfc0109dd9b5b1c0c3",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild"
+        },
+        {
+          "pointer": "/reports/1/samples/1/parent/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/reports/1/samples/1/children/0/executable",
+          "originalValueSha256": "06202cc156a807ebf531d6aa93033fb95360cc34724aeebfc0109dd9b5b1c0c3",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild"
+        },
+        {
+          "pointer": "/reports/1/samples/2/parent/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/reports/1/samples/2/children/0/executable",
+          "originalValueSha256": "06202cc156a807ebf531d6aa93033fb95360cc34724aeebfc0109dd9b5b1c0c3",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild"
+        },
+        {
+          "pointer": "/reports/1/samples/3/parent/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/reports/1/samples/3/children/0/executable",
+          "originalValueSha256": "06202cc156a807ebf531d6aa93033fb95360cc34724aeebfc0109dd9b5b1c0c3",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild"
+        },
+        {
+          "pointer": "/reports/1/samples/4/parent/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/reports/1/samples/4/children/0/executable",
+          "originalValueSha256": "06202cc156a807ebf531d6aa93033fb95360cc34724aeebfc0109dd9b5b1c0c3",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild"
+        },
+        {
+          "pointer": "/reports/1/trace/calls/transform/stacks/0",
+          "originalValueSha256": "cb4a64f25c0dc2a293061f886f5363de605dc4512854ef4f605b490ded1706f9",
+          "portableValue": "Error\n    at eval (eval at transform (/home/builduser/papercupai-workspace/papercusp/node_modules/esbuild/lib/main.js:1:1), <anonymous>:6:32)\n    at eval (eval at transform (/home/builduser/papercupai-workspace/papercusp/node_modules/esbuild/lib/main.js:1:1), <anonymous>:9:70)\n    at transform (/home/builduser/papercupai-workspace/papercusp/node_modules/esbuild/lib/main.js:1878:62)\n    at findEsbuildTransformError (/tmp/pcv/papercusp-content-lint-cohort-Pcy1QT/request-host.cjs:64:11)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async Server.<anonymous> (/tmp/pcv/papercusp-content-lint-cohort-Pcy1QT/request-host.cjs:90:69)"
+        }
+      ]
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-content-lint-caller-r19-qualification-2026-10-02.json",
+      "original": {
+        "sha256": "6d281a159ae298021f599ee6ca3bc34c331c1ae8fed4096aad65597c5a1bb7c0",
+        "bytes": 5360,
+        "artifact": {
+          "slug": "papercusp",
+          "rel_path": "evidence/originals/6d281a159ae298021f599ee6ca3bc34c331c1ae8fed4096aad65597c5a1bb7c0.json"
+        }
+      },
+      "derivative": {
+        "sha256": "1e616d599edf837451826761fb44f42ecbbda46e0801c1ce6c7ac39cbbebe65a",
+        "bytes": 5663
+      },
+      "rewrites": [
+        {
+          "pointer": "/resources/compiler/path",
+          "originalValueSha256": "06202cc156a807ebf531d6aa93033fb95360cc34724aeebfc0109dd9b5b1c0c3",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild"
+        },
+        {
+          "pointer": "/rawReceipt/sha256",
+          "kind": "canonical-derivative-reference",
+          "originalValueSha256": "1dd1c8d069495999dc7c78a5338f7a933efd31a4767a9607831f17f645734367",
+          "portableValue": "bc2986497c24efc57ad2be9d6375291fd4c4a6cff2dafd6ee87dea11b671c63c"
+        }
+      ]
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-live-baseline-r2-2026-10-02.json",
+      "original": {
+        "sha256": "6deac926453b673f0d91abbf33f855ab8b0c8d94f722e9b50fe660e175d4cf54",
+        "bytes": 231465,
+        "artifact": {
+          "slug": "papercusp",
+          "rel_path": "evidence/originals/6deac926453b673f0d91abbf33f855ab8b0c8d94f722e9b50fe660e175d4cf54.json"
+        }
+      },
+      "derivative": {
+        "sha256": "ff780bdf6a585d5d9ec29aa59867597fa91daa4396ad831c2871763b0bbc726f",
+        "bytes": 230733
+      },
+      "rewrites": [
+        {
+          "pointer": "/samples/0/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/0/descendants/0/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/0/descendants/1/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/0/descendants/5/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/0/descendants/6/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/0/descendants/10/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/0/descendants/11/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/0/descendants/15/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/0/descendants/16/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/0/descendants/20/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/0/descendants/21/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/0/descendants/25/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/0/descendants/26/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/0/descendants/30/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/0/descendants/31/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/0/descendants/35/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/0/descendants/36/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/0/descendants/40/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/0/descendants/41/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/0/descendants/45/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/0/descendants/46/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/0/descendants/50/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/0/descendants/51/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/0/descendants/55/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/0/descendants/56/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/0/descendants/60/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/0/descendants/61/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/1/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/1/descendants/0/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/1/descendants/1/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/1/descendants/5/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/1/descendants/6/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/1/descendants/10/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/1/descendants/11/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/1/descendants/15/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/1/descendants/16/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/1/descendants/20/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/1/descendants/21/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/1/descendants/25/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/1/descendants/26/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/1/descendants/30/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/1/descendants/31/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/1/descendants/35/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/1/descendants/36/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/1/descendants/40/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/1/descendants/41/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/1/descendants/45/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/1/descendants/46/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/1/descendants/50/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/1/descendants/51/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/1/descendants/55/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/1/descendants/56/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/1/descendants/60/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/1/descendants/61/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/2/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/2/descendants/0/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/2/descendants/1/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/2/descendants/5/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/2/descendants/6/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/2/descendants/10/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/2/descendants/11/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/2/descendants/15/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/2/descendants/16/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/2/descendants/20/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/2/descendants/21/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/2/descendants/25/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/2/descendants/26/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/2/descendants/30/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/2/descendants/31/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/2/descendants/35/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/2/descendants/36/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/2/descendants/40/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/2/descendants/41/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/2/descendants/45/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/2/descendants/46/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/2/descendants/50/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/2/descendants/51/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/2/descendants/55/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/2/descendants/56/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/2/descendants/60/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/2/descendants/61/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/3/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/3/descendants/0/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/3/descendants/1/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/3/descendants/5/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/3/descendants/6/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/3/descendants/10/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/3/descendants/11/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/3/descendants/15/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/3/descendants/16/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/3/descendants/20/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/3/descendants/21/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/3/descendants/25/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/3/descendants/26/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/3/descendants/30/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/3/descendants/31/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/3/descendants/35/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/3/descendants/36/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/3/descendants/40/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/3/descendants/41/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/3/descendants/45/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/3/descendants/46/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/3/descendants/50/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/3/descendants/51/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/3/descendants/55/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/3/descendants/56/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/3/descendants/60/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/3/descendants/61/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/4/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/4/descendants/0/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/4/descendants/1/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/4/descendants/5/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/4/descendants/6/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/4/descendants/10/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/4/descendants/11/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/4/descendants/15/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/4/descendants/16/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/4/descendants/20/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/4/descendants/21/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/4/descendants/25/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/4/descendants/26/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/4/descendants/30/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/4/descendants/31/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/4/descendants/35/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/4/descendants/36/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/4/descendants/40/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/4/descendants/41/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/4/descendants/45/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/4/descendants/46/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/4/descendants/50/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/4/descendants/51/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/4/descendants/55/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/4/descendants/56/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/4/descendants/60/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/4/descendants/61/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/5/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/5/descendants/0/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/5/descendants/1/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/5/descendants/5/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/5/descendants/6/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/5/descendants/10/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/5/descendants/11/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/5/descendants/15/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/5/descendants/16/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/5/descendants/20/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/5/descendants/21/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/5/descendants/25/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/5/descendants/26/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/5/descendants/30/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/5/descendants/31/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/5/descendants/35/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/5/descendants/36/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/5/descendants/40/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/5/descendants/41/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/5/descendants/45/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/5/descendants/46/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/5/descendants/50/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/5/descendants/51/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/5/descendants/55/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/5/descendants/56/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/5/descendants/60/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/5/descendants/61/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/6/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/6/descendants/0/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/6/descendants/1/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/6/descendants/5/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/6/descendants/6/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/6/descendants/10/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/6/descendants/11/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/6/descendants/15/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/6/descendants/16/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/6/descendants/20/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/6/descendants/21/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/6/descendants/25/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/6/descendants/26/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/6/descendants/30/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/6/descendants/31/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/6/descendants/35/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/6/descendants/36/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/6/descendants/40/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/6/descendants/41/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/6/descendants/45/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/6/descendants/46/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/6/descendants/50/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/6/descendants/51/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/6/descendants/55/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/6/descendants/56/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/6/descendants/60/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/6/descendants/61/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/7/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/7/descendants/0/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/7/descendants/1/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/7/descendants/5/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/7/descendants/6/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/7/descendants/10/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/7/descendants/11/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/7/descendants/15/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/7/descendants/16/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/7/descendants/20/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/7/descendants/21/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/7/descendants/25/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/7/descendants/26/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/7/descendants/30/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/7/descendants/31/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/7/descendants/35/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/7/descendants/36/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/7/descendants/40/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/7/descendants/41/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/7/descendants/45/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/7/descendants/46/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/7/descendants/50/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/7/descendants/51/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/7/descendants/55/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/7/descendants/56/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/7/descendants/60/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/7/descendants/61/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/8/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/8/descendants/0/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/8/descendants/1/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/8/descendants/5/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/8/descendants/6/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/8/descendants/10/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/8/descendants/11/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/8/descendants/15/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/8/descendants/16/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/8/descendants/20/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/8/descendants/21/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/8/descendants/25/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/8/descendants/26/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/8/descendants/30/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/8/descendants/31/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/8/descendants/35/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/8/descendants/36/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/8/descendants/40/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/8/descendants/41/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/8/descendants/45/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/8/descendants/46/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/8/descendants/50/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/8/descendants/51/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/8/descendants/55/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/8/descendants/56/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/samples/8/descendants/60/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/8/descendants/61/executable",
+          "originalValueSha256": "9de5f831314eb1da1e57c27f45fdb804e14c3befcfa1cb1f428b41edf809f549",
+          "portableValue": "/home/builduser/.local/share/claude/versions/2.1.284"
+        },
+        {
+          "pointer": "/bundle/path",
+          "originalValueSha256": "db97eda157f273aad3e995a29b6fc90b9145fc5eea3dc183030b7d93f7fbee7f",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-247b9ed162bd.G41jit/checkout/apps/operator/dist-host/hono-host.mjs"
+        }
+      ]
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-ordinary-baseline-r1-qualification-2026-10-02.json",
+      "original": {
+        "sha256": "829acb55a51b1a294fa8ded7d505f208d78d74f2963d295d7efea5848bc1cc67",
+        "bytes": 3482,
+        "artifact": {
+          "slug": "papercusp",
+          "rel_path": "evidence/originals/829acb55a51b1a294fa8ded7d505f208d78d74f2963d295d7efea5848bc1cc67.json"
+        }
+      },
+      "derivative": {
+        "sha256": "7874d6459e314d634e0e28ec54ea65774a1c636841029cb0c7ed5ab6e094c97b",
+        "bytes": 3470
+      },
+      "rewrites": [
+        {
+          "pointer": "/before/sourceRoot",
+          "originalValueSha256": "43f3c29737ff8a82e6c17d7f4ff2e8b7b7af2cd847213f5da57e30e701bc1d86",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-5689cb42afea.OUGjKK/checkout"
+        },
+        {
+          "pointer": "/before/sourceDirectory",
+          "originalValueSha256": "732f197e169d97cbd390937fd7bf9aae02d25f84083fc10a487c32b139de3e9b",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-5689cb42afea.OUGjKK/checkout/apps/operator/dist-host"
+        },
+        {
+          "pointer": "/after/sourceRoot",
+          "originalValueSha256": "43f3c29737ff8a82e6c17d7f4ff2e8b7b7af2cd847213f5da57e30e701bc1d86",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-5689cb42afea.OUGjKK/checkout"
+        },
+        {
+          "pointer": "/after/sourceDirectory",
+          "originalValueSha256": "732f197e169d97cbd390937fd7bf9aae02d25f84083fc10a487c32b139de3e9b",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-5689cb42afea.OUGjKK/checkout/apps/operator/dist-host"
+        }
+      ]
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-ordinary-baseline-r2-2026-10-02.json",
+      "original": {
+        "sha256": "02d77a4f46a12ae9c0863d78e375ba60f619992f087e6bc8e58288a08a5eb694",
+        "bytes": 491153,
+        "artifact": {
+          "slug": "papercusp",
+          "rel_path": "evidence/originals/02d77a4f46a12ae9c0863d78e375ba60f619992f087e6bc8e58288a08a5eb694.json"
+        }
+      },
+      "derivative": {
+        "sha256": "41caf25628f5f2f2a0b478990b50aaaa2d6f251ea3a8e1394590ae9d54a32d7d",
+        "bytes": 491111
+      },
+      "rewrites": [
+        {
+          "pointer": "/sourceDirectory",
+          "originalValueSha256": "732f197e169d97cbd390937fd7bf9aae02d25f84083fc10a487c32b139de3e9b",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-5689cb42afea.OUGjKK/checkout/apps/operator/dist-host"
+        },
+        {
+          "pointer": "/samples/0/processes/0/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/1/processes/0/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/2/processes/0/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/3/processes/0/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/4/processes/0/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/5/processes/0/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/6/processes/0/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/7/processes/0/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/8/processes/0/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/9/processes/0/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/10/processes/0/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/11/processes/0/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/samples/12/processes/0/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        }
+      ]
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-ordinary-baseline-r2-qualification-2026-10-02.json",
+      "original": {
+        "sha256": "48de8af35e9016c0c909c1fa10d478f0da60fdcbf8317a2aba030a837b6ca1dd",
+        "bytes": 3769,
+        "artifact": {
+          "slug": "papercusp",
+          "rel_path": "evidence/originals/48de8af35e9016c0c909c1fa10d478f0da60fdcbf8317a2aba030a837b6ca1dd.json"
+        }
+      },
+      "derivative": {
+        "sha256": "72c068c0fe6217f3c56e9fef48dd444964644c8d20e849f5d401c4f58d747cbd",
+        "bytes": 4014
+      },
+      "rewrites": [
+        {
+          "pointer": "/before/sourceRoot",
+          "originalValueSha256": "43f3c29737ff8a82e6c17d7f4ff2e8b7b7af2cd847213f5da57e30e701bc1d86",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-5689cb42afea.OUGjKK/checkout"
+        },
+        {
+          "pointer": "/before/sourceDirectory",
+          "originalValueSha256": "732f197e169d97cbd390937fd7bf9aae02d25f84083fc10a487c32b139de3e9b",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-5689cb42afea.OUGjKK/checkout/apps/operator/dist-host"
+        },
+        {
+          "pointer": "/after/sourceRoot",
+          "originalValueSha256": "7783e846c4ffda86f27d080a215c1212d86f8f853691abc60177f44f435c638d",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-7d4939d4060a.DXfJeB/checkout"
+        },
+        {
+          "pointer": "/after/sourceDirectory",
+          "originalValueSha256": "7b1fdbfb5d845dff659bbe5f75d065198bf27fc4403e42018e9620a791518fd7",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-7d4939d4060a.DXfJeB/checkout/apps/operator/dist-host"
+        },
+        {
+          "pointer": "/raw/path",
+          "originalValueSha256": "0a4d0ade3533e9fbfec09696db9bcdea61dc4fe3441bf02e5492a195afb4aa07",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/docs/evidence/papercusp-oct1-p011-ordinary-baseline-r2-2026-10-02.json"
+        },
+        {
+          "pointer": "/raw/sha256",
+          "kind": "canonical-derivative-reference",
+          "originalValueSha256": "02d77a4f46a12ae9c0863d78e375ba60f619992f087e6bc8e58288a08a5eb694",
+          "portableValue": "41caf25628f5f2f2a0b478990b50aaaa2d6f251ea3a8e1394590ae9d54a32d7d"
+        }
+      ]
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-serving-compiler-r20-2026-10-02.json",
+      "original": {
+        "sha256": "2a2ec08a9587b0e4968cdb5f7fa9cd4a302937af5b4d9c34964afc25f625cd95",
+        "bytes": 347,
+        "artifact": {
+          "slug": "papercusp",
+          "rel_path": "evidence/originals/2a2ec08a9587b0e4968cdb5f7fa9cd4a302937af5b4d9c34964afc25f625cd95.json"
+        }
+      },
+      "derivative": {
+        "sha256": "daec9a7adf7c5988b118d076200e53a205260beca9d84bd41a8534f434e34db5",
+        "bytes": 344
+      },
+      "rewrites": [
+        {
+          "pointer": "/runner/error",
+          "originalValueSha256": "f6dbe79020c91d585e4629d7155f051af687a832fd1716076ff5804c42238925",
+          "portableValue": "spawnSync /home/builduser/.local/node25/bin/node ENOBUFS"
+        }
+      ]
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-serving-compiler-r21-2026-10-02.json",
+      "original": {
+        "sha256": "dd8eaced421ea1181e3777dc570649761a14d72c4f90277b03ab81ceb6047bac",
+        "bytes": 4665,
+        "artifact": {
+          "slug": "papercusp",
+          "rel_path": "evidence/originals/dd8eaced421ea1181e3777dc570649761a14d72c4f90277b03ab81ceb6047bac.json"
+        }
+      },
+      "derivative": {
+        "sha256": "5fd69ba5940473efa132d297c9a7b6b6c9d56d3c11ae6d46c71e6839a94e5eb6",
+        "bytes": 4662
+      },
+      "rewrites": [
+        {
+          "pointer": "/sourceDirectory",
+          "originalValueSha256": "0c5a340296bf45b823ffac360ced950613f0a8308c836a3c3a5462e17b43446f",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-41f842ced14e.iaO4JU/checkout/apps/operator/dist-host"
+        }
+      ]
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-serving-compiler-r22-2026-10-02.json",
+      "original": {
+        "sha256": "dc21e44fe6d1b1e50a28c608e74ae2594f3d0a15c116bb754a7d35963ddde11e",
+        "bytes": 9102,
+        "artifact": {
+          "slug": "papercusp",
+          "rel_path": "evidence/originals/dc21e44fe6d1b1e50a28c608e74ae2594f3d0a15c116bb754a7d35963ddde11e.json"
+        }
+      },
+      "derivative": {
+        "sha256": "d5c093b0ab30490e3fbbf2badbed8cbf4def800afa1be22f49d62d2b08ab1322",
+        "bytes": 9087
+      },
+      "rewrites": [
+        {
+          "pointer": "/sourceDirectory",
+          "originalValueSha256": "0c5a340296bf45b823ffac360ced950613f0a8308c836a3c3a5462e17b43446f",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-41f842ced14e.iaO4JU/checkout/apps/operator/dist-host"
+        },
+        {
+          "pointer": "/cohorts/0/samples/0/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/0/requests/0/value/root",
+          "originalValueSha256": "64d7a60720aceb863d1d802149f1519d51517f4867365d951028cccf326c3f99",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp"
+        },
+        {
+          "pointer": "/cohorts/0/error",
+          "originalValueSha256": "40ed5218f12f419eec488fd0336eba797bc0bb4c3ca2f455c271ab58ac411ad0",
+          "portableValue": "Error: Expected real mutation refusal: {\"ok\":false,\"runId\":\"bd3c1bfe-704a-42ca-b958-13b5482b2602\",\"root\":\"/home/builduser/papercupai-workspace/papercusp\",\"error\":\"route_error\",\"routerOutput\":\"TEST_FILE_ROUTE_ERROR requested test file does not exist: caller.test.ts; For the supported routed test surface, use testing:run { files: [...] }.\\n\",\"testRunIds\":[],\"rootSource\":\"requested\",\"phaseTimingsMs\":{\"preflightMs\":10.94,\"provenanceMs\":13.63,\"preparationMs\":0.09,\"admissionWaitMs\":35.94,\"routerExecutionMs\":232.64,\"ledgerIdReadbackMs\":2.24,\"finalizationMs\":0.1,\"totalHandlerMs\":559.05}}"
+        },
+        {
+          "pointer": "/error",
+          "originalValueSha256": "40ed5218f12f419eec488fd0336eba797bc0bb4c3ca2f455c271ab58ac411ad0",
+          "portableValue": "Error: Expected real mutation refusal: {\"ok\":false,\"runId\":\"bd3c1bfe-704a-42ca-b958-13b5482b2602\",\"root\":\"/home/builduser/papercupai-workspace/papercusp\",\"error\":\"route_error\",\"routerOutput\":\"TEST_FILE_ROUTE_ERROR requested test file does not exist: caller.test.ts; For the supported routed test surface, use testing:run { files: [...] }.\\n\",\"testRunIds\":[],\"rootSource\":\"requested\",\"phaseTimingsMs\":{\"preflightMs\":10.94,\"provenanceMs\":13.63,\"preparationMs\":0.09,\"admissionWaitMs\":35.94,\"routerExecutionMs\":232.64,\"ledgerIdReadbackMs\":2.24,\"finalizationMs\":0.1,\"totalHandlerMs\":559.05}}"
+        }
+      ]
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-serving-compiler-r23-2026-10-02.json",
+      "original": {
+        "sha256": "29658cc86c42fb6c34bbfc29ea3fa9a0ef70bd69cb70af8bc00e1542899092d9",
+        "bytes": 31280,
+        "artifact": {
+          "slug": "papercusp",
+          "rel_path": "evidence/originals/29658cc86c42fb6c34bbfc29ea3fa9a0ef70bd69cb70af8bc00e1542899092d9.json"
+        }
+      },
+      "derivative": {
+        "sha256": "583324b268350a077c81eae1afb6be39c647c3004177ef6060dac70aeb62de6a",
+        "bytes": 31238
+      },
+      "rewrites": [
+        {
+          "pointer": "/sourceDirectory",
+          "originalValueSha256": "0c5a340296bf45b823ffac360ced950613f0a8308c836a3c3a5462e17b43446f",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-41f842ced14e.iaO4JU/checkout/apps/operator/dist-host"
+        },
+        {
+          "pointer": "/cohorts/0/samples/0/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/0/samples/1/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/0/samples/2/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/0/samples/3/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/0/samples/4/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/1/samples/0/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/1/samples/1/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/1/samples/2/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/1/samples/3/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/1/samples/4/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/1/descendants/1/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/1/descendants/3/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/1/descendants/5/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        }
+      ]
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-serving-compiler-r24-2026-10-02.json",
+      "original": {
+        "sha256": "0edfffc806e7b9c098fd32d93e97a628472c12bcac6f921daf720a4bdaf0175f",
+        "bytes": 32255,
+        "artifact": {
+          "slug": "papercusp",
+          "rel_path": "evidence/originals/0edfffc806e7b9c098fd32d93e97a628472c12bcac6f921daf720a4bdaf0175f.json"
+        }
+      },
+      "derivative": {
+        "sha256": "d3929023e6b7586ff35b382989a266594cd0da41a6d201ab03bfb3a056ee3ead",
+        "bytes": 32204
+      },
+      "rewrites": [
+        {
+          "pointer": "/sourceDirectory",
+          "originalValueSha256": "1502490eb29d9ab461c5247b08f8a557627d65af8d2316d28b89c42faf39190d",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-3e4e69880f2d.0m9uj7/checkout/apps/operator/dist-host"
+        },
+        {
+          "pointer": "/cohorts/0/samples/0/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/0/samples/1/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/0/samples/2/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/0/samples/3/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/0/samples/4/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/1/samples/0/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/1/samples/1/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/1/samples/2/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/1/samples/3/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/1/samples/4/os/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/1/descendants/1/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/1/descendants/2/executable",
+          "originalValueSha256": "06202cc156a807ebf531d6aa93033fb95360cc34724aeebfc0109dd9b5b1c0c3",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild"
+        },
+        {
+          "pointer": "/cohorts/1/descendants/4/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/1/descendants/5/executable",
+          "originalValueSha256": "06202cc156a807ebf531d6aa93033fb95360cc34724aeebfc0109dd9b5b1c0c3",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild"
+        },
+        {
+          "pointer": "/cohorts/1/descendants/7/executable",
+          "originalValueSha256": "3981431ed8e02755805d37569926fb79ff18497d46e071299dd1c6121fc9e3db",
+          "portableValue": "/home/builduser/.local/node25/bin/node"
+        },
+        {
+          "pointer": "/cohorts/1/descendants/8/executable",
+          "originalValueSha256": "06202cc156a807ebf531d6aa93033fb95360cc34724aeebfc0109dd9b5b1c0c3",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild"
+        }
+      ]
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-serving-compiler-r24-qualification-2026-10-02.json",
+      "original": {
+        "sha256": "2d63ec632bbf8e6a6aa6a4f5d916e20065562e84cf505a808e7d48f04550bb03",
+        "bytes": 4930,
+        "artifact": {
+          "slug": "papercusp",
+          "rel_path": "evidence/originals/2d63ec632bbf8e6a6aa6a4f5d916e20065562e84cf505a808e7d48f04550bb03.json"
+        }
+      },
+      "derivative": {
+        "sha256": "f654745716b4baa2fa105ed7f9645ed217eb246c5edd7a124f5ee53035e26b59",
+        "bytes": 5233
+      },
+      "rewrites": [
+        {
+          "pointer": "/servingArtifact/sourceDirectory",
+          "originalValueSha256": "1502490eb29d9ab461c5247b08f8a557627d65af8d2316d28b89c42faf39190d",
+          "portableValue": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-3e4e69880f2d.0m9uj7/checkout/apps/operator/dist-host"
+        },
+        {
+          "pointer": "/rawEvidence/sha256",
+          "kind": "canonical-derivative-reference",
+          "originalValueSha256": "0edfffc806e7b9c098fd32d93e97a628472c12bcac6f921daf720a4bdaf0175f",
+          "portableValue": "d3929023e6b7586ff35b382989a266594cd0da41a6d201ab03bfb3a056ee3ead"
+        }
+      ]
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-live-baseline-r2-qualification-2026-10-02.json",
+      "original": {
+        "sha256": "dc913f20ad12b501bd81f603576c3862e30bd0aa9463ca2cf8c068954751fa49",
+        "bytes": 5910,
+        "artifact": {
+          "slug": "papercusp",
+          "rel_path": "evidence/originals/dc913f20ad12b501bd81f603576c3862e30bd0aa9463ca2cf8c068954751fa49.json"
+        }
+      },
+      "derivative": {
+        "sha256": "e6fe20502803336d2f4960df276aade022f425708fd5c1ae2c7e8dd635f689f4",
+        "bytes": 6713
+      },
+      "rewrites": [
+        {
+          "pointer": "/raw/sha256",
+          "kind": "canonical-derivative-reference",
+          "originalValueSha256": "6deac926453b673f0d91abbf33f855ab8b0c8d94f722e9b50fe660e175d4cf54",
+          "portableValue": "ff780bdf6a585d5d9ec29aa59867597fa91daa4396ad831c2871763b0bbc726f"
+        }
+      ]
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-proof-census-2026-10-02.json",
+      "original": {
+        "sha256": "4b5b9e05929808a9ac8e492ffaa34258c89d079abca6450589500caeac02385e",
+        "bytes": 12972,
+        "artifact": {
+          "slug": "papercusp",
+          "rel_path": "evidence/originals/4b5b9e05929808a9ac8e492ffaa34258c89d079abca6450589500caeac02385e.json"
+        }
+      },
+      "derivative": {
+        "sha256": "38ef31e687dc5f084afaaf849592234116fc9e9c7aa69778341100cb8b1a9e26",
+        "bytes": 14138
+      },
+      "rewrites": [
+        {
+          "pointer": "/liveCurrentBuildBaseline/raw/sha256",
+          "kind": "canonical-derivative-reference",
+          "originalValueSha256": "6deac926453b673f0d91abbf33f855ab8b0c8d94f722e9b50fe660e175d4cf54",
+          "portableValue": "ff780bdf6a585d5d9ec29aa59867597fa91daa4396ad831c2871763b0bbc726f"
+        },
+        {
+          "pointer": "/ordinaryBaseline/raw/sha256",
+          "kind": "canonical-derivative-reference",
+          "originalValueSha256": "02d77a4f46a12ae9c0863d78e375ba60f619992f087e6bc8e58288a08a5eb694",
+          "portableValue": "41caf25628f5f2f2a0b478990b50aaaa2d6f251ea3a8e1394590ae9d54a32d7d"
+        },
+        {
+          "pointer": "/ordinaryBaseline/qualification/sha256",
+          "kind": "canonical-derivative-reference",
+          "originalValueSha256": "48de8af35e9016c0c909c1fa10d478f0da60fdcbf8317a2aba030a837b6ca1dd",
+          "portableValue": "72c068c0fe6217f3c56e9fef48dd444964644c8d20e849f5d401c4f58d747cbd"
+        }
+      ]
+    }
+  ],
+  "closure": {
+    "population": [
+      "docs/evidence/papercusp-oct1-p011-content-lint-caller-r18-2026-10-02.json",
+      "docs/evidence/papercusp-oct1-p011-content-lint-caller-r19-2026-10-02.json",
+      "docs/evidence/papercusp-oct1-p011-content-lint-caller-r19-qualification-2026-10-02.json",
+      "docs/evidence/papercusp-oct1-p011-live-baseline-r2-2026-10-02.json",
+      "docs/evidence/papercusp-oct1-p011-ordinary-baseline-r1-qualification-2026-10-02.json",
+      "docs/evidence/papercusp-oct1-p011-ordinary-baseline-r2-2026-10-02.json",
+      "docs/evidence/papercusp-oct1-p011-ordinary-baseline-r2-qualification-2026-10-02.json",
+      "docs/evidence/papercusp-oct1-p011-serving-compiler-r20-2026-10-02.json",
+      "docs/evidence/papercusp-oct1-p011-serving-compiler-r21-2026-10-02.json",
+      "docs/evidence/papercusp-oct1-p011-serving-compiler-r22-2026-10-02.json",
+      "docs/evidence/papercusp-oct1-p011-serving-compiler-r23-2026-10-02.json",
+      "docs/evidence/papercusp-oct1-p011-serving-compiler-r24-2026-10-02.json",
+      "docs/evidence/papercusp-oct1-p011-serving-compiler-r24-qualification-2026-10-02.json",
+      "docs/evidence/papercusp-oct1-p011-live-baseline-r2-qualification-2026-10-02.json",
+      "docs/evidence/papercusp-oct1-p011-proof-census-2026-10-02.json"
+    ],
+    "residue": [],
+    "limits": "Bounded to these15 P011 artifacts and exact SHA256 links. Historical internal ledger/checkpoint receipts retain original hashes and resolve via archives."
+  }
+}

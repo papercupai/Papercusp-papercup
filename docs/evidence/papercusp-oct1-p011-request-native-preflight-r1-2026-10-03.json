@@ -1,0 +1,77 @@
+{
+  "schemaVersion": "p011-native-request-preflight-v1",
+  "measuredAt": "2026-10-03T12:46:34.991Z",
+  "scope": "Native prerequisites only, before fresh request-linked retainer cohort",
+  "adapter": {
+    "path": ".heap-retainers-cargo-target/release/papercusp-heap-retainers",
+    "bytes": 920176,
+    "sha256": "dfa7a07393597b99fc2c92e3587930ea0e6f7c406bb8c534c786d4fe76a69f02",
+    "version": "papercusp-heap-retainers 0.1.0",
+    "upstreamRevision": "05edd8131a77790ab0e7bce2eedf5770d6bb83ae"
+  },
+  "decoder": {
+    "path": "/tmp/su-7db4f-v8-heap-native/bin/v8-heap",
+    "bytes": 1618440,
+    "sha256": "2697f0cf15785272b24e08e0bcec0a43c8fd5f2ba4fec8a4ffda1d89d8f7ff24",
+    "version": "v8-heap-cli 0.1.0"
+  },
+  "sources": [
+    {
+      "path": "scripts/heap-retainers-native/src/main.rs",
+      "bytes": 14751,
+      "sha256": "6973dd79ab804b10abebcba524b97251654a67e2f8020f4a67131fc16f6f07a9"
+    },
+    {
+      "path": "scripts/heap-retainers-native/Cargo.toml",
+      "bytes": 362,
+      "sha256": "fdd3793c7509f72a6c8f1ba7c126732b97c55acec5809da450c4633d813872eb"
+    },
+    {
+      "path": "scripts/heap-retainers-native/Cargo.lock",
+      "bytes": 6212,
+      "sha256": "5e9b7d3b91540a97a9bccb4ee3c5cf6e246454d61f0e1203684ee607bf9c2ded"
+    },
+    {
+      "path": "scripts/analyze-heap-snapshots.mjs",
+      "bytes": 25556,
+      "sha256": "a444859c0bcee15f84981f3c4f1c9ab063c2284d1b0fbc7c1bb382e55bbfec29"
+    },
+    {
+      "path": "packages/operator-core/lib/analyze-heap-snapshots.test.ts",
+      "bytes": 21843,
+      "sha256": "bc91869ad2498905f31851450bace9b2970c1ead2aeb00af98194408913e6e2b"
+    },
+    {
+      "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+      "bytes": 198933,
+      "sha256": "28ca444914da67f2e085500ba6aaa1e79192920b02e28be0b7918ce4831cd53a"
+    }
+  ],
+  "preflights": [
+    {
+      "testRunId": 20699975,
+      "passed": 2,
+      "filteredSkipped": 7,
+      "log": {
+        "path": "/tmp/su-7db4f-p011-native-preflight-r1.log",
+        "bytes": 7222,
+        "sha256": "b427687a88704adc7446474a05889f44fdcdb0c21f18b50afd2a477eb6addd2c"
+      }
+    },
+    {
+      "testRunId": 20700003,
+      "passed": 1,
+      "filteredSkipped": 136,
+      "log": {
+        "path": "/tmp/su-7db4f-p011-native-boundary-r1.log",
+        "bytes": 55513,
+        "sha256": "b707cf3378764b55578648c73bb20592b60e885eaccc41a981459657ac3dc99e"
+      }
+    }
+  ],
+  "limitations": [
+    "Existing pinned native decoder recovered; failed locked upstream build did not alter cache.",
+    "Small private control snapshot only; no operator retained-owner acceptance.",
+    "Serving :3170 build identity unmeasured on last route read; next producer uses maintained isolated fixture."
+  ]
+}

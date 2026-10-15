@@ -23,6 +23,12 @@
  * document is installed in AGENTS.md), so the bridge lets Codex compact the
  * inherited history natively instead of re-forking it forever.
  *
+ * Two further native cases, each where no managed boundary can exist for THIS
+ * process: a codex nested inside another agent (WI-10004953, nestedCliDecision),
+ * and a one-turn wake resume that the operator answers with `no_live_pty_host`
+ * (WI-6554700010008779, hostlessWakeResumeDecision). That resume exits when its
+ * turn settles, so a refusal fails the turn and re-arms the same wake.
+ *
  * PAPERCUSP_MCP_URL is the exact per-session URL already written to the managed
  * CODEX_HOME. Keeping that exact URL preserves workspace, harness, role, tool
  * allowlist, signature, and owner route. Superuser homes additionally set
@@ -33,6 +39,7 @@
 import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { nestedCliCached } from './pc_nested_cli.mjs';
 
 const MAX_INPUT_BYTES = 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 590_000;
@@ -208,6 +215,72 @@ export function inheritedContextDecision(forkedFromId) {
   };
 }
 
+/**
+ * WI-10004953: a codex NESTED inside another agent (run from an su's Bash tool, or under a
+ * capability:bash job) inherits that su's CODEX_HOME, PAPERCUSP_SID and PAPERCUSP_MCP_URL.
+ * Bridging its auto-compaction would ask session:request-compaction on the SU's route and
+ * queue a carry-respawn of the live su. A nested CLI has no managed carry of its own, so
+ * it compacts natively.
+ */
+export function nestedCliDecision() {
+  return {
+    continue: true,
+    systemMessage:
+      'This codex is nested inside another agent and inherited its session identity, so it has no managed carry of its own; it compacts natively.',
+  };
+}
+
+/**
+ * WI-6554700010008779: is this codex a ONE-TURN WAKE RESUME? The wake executor's
+ * channel 2 (`codex exec resume <id> <wake>`) sets PAPERCUSP_WAKE_DELIVERY_ID on
+ * exactly that child, and the child exits when its single turn settles
+ * (session-reset-continuation.ts WAKE_RESUME_TURN_CHANNELS). Codex hooks inherit it;
+ * the activity hook already forwards it as wake_delivery_id (WI-10005679). A
+ * malformed value is not a wake marker.
+ * @param {Record<string, string | undefined>} env
+ */
+export function isWakeResumeChild(env) {
+  return /^[1-9][0-9]{0,18}$/.test(String(env?.PAPERCUSP_WAKE_DELIVERY_ID ?? '').trim());
+}
+
+/**
+ * WI-6554700010008779: the structural no-host refusal reaching a one-turn wake
+ * resume. That child has no psu-pty host once the member's own host is gone, so
+ * session:request-compaction can only answer `no_live_pty_host`: no managed
+ * boundary can ever be queued for it. Refusing native compaction there does NOT
+ * leave the process intact. The turn fails, the delivery re-arms, and the next
+ * wake resumes the same thread into the same refusal. The thread need not be
+ * over its limit: Codex can fire PreCompact(auto) on a resume's first turn below
+ * it (WI-10002531, WI-10005673). Measured 2026-10-12: six headless members of one
+ * fleet looped like this, about 45 refused wakes an hour. For one of them the
+ * last sampled turn was 2026-10-03 (input 567,648 of a 784,800 limit), followed by
+ * 1,531 turn starts that never sampled. A hosted session, and
+ * every other refusal reason, keep the fail-closed refusal.
+ * @param {{ ok?: boolean, inner?: Record<string, unknown> | null }} parsed
+ * @param {Record<string, string | undefined>} env
+ */
+export function isHostlessWakeResumeRefusal(parsed, env) {
+  const inner = parsed?.ok ? parsed.inner : null;
+  return Boolean(
+    inner &&
+    inner.error === 'no_live_pty_host' &&
+    inner.requested !== true &&
+    isWakeResumeChild(env),
+  );
+}
+
+/** @param {string | undefined} deliveryId */
+export function hostlessWakeResumeDecision(deliveryId) {
+  return {
+    continue: true,
+    systemMessage:
+      `No managed carry boundary is possible here: this is a one-turn wake resume (delivery ${boundedDetail(deliveryId, 'unknown')}) ` +
+      'with no live psu-pty host, so refusing native compaction would fail this turn and every later wake on the same ' +
+      'thread (WI-6554700010008779). Codex compacts this thread natively instead. Flush work-item and loop ' +
+      'state before relying on the compacted context; a relaunch through a managed psu host restores the deterministic carry.',
+  };
+}
+
 function readSuperuserToken(env) {
   if (env.PAPERCUSP_MCP_AUTH !== 'superuser-token') return '';
   const path = env.PAPERCUSP_SUPERUSER_TOKEN_PATH ||
@@ -227,11 +300,15 @@ function readSuperuserToken(env) {
  *   fetchImpl?: typeof globalThis.fetch,
  *   readToken?: (env: Record<string, string | undefined>) => string,
  *   inspectTranscript?: (transcriptPath: unknown) => { readable: boolean, forkedFromId: string | null, sampled: boolean | null },
+ *   isNested?: () => boolean,
  * }} [options]
  */
 export async function runManagedPreCompact(payload, options = {}) {
   const env = options.env ?? process.env;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  const isNested = options.isNested ?? nestedCliCached;
+  // Before anything that could refuse or bridge: the managed boundary is not this CLI's.
+  if (isNested()) return nestedCliDecision();
   const input = objectOrNull(payload);
   if (!input || input.hook_event_name !== 'PreCompact' || input.trigger !== 'auto') {
     return preCompactDecision({
@@ -247,6 +324,15 @@ export async function runManagedPreCompact(payload, options = {}) {
   const sid = String(env.PAPERCUSP_SID ?? '').trim();
   if (!mcpUrl || !sid || typeof fetchImpl !== 'function') {
     return preCompactDecision({ ok: false, detail: 'managed MCP URL or session identity is missing' });
+  }
+  // EI-25539460438199657: an owner can retain several native launch rows.
+  // Owner-only requests may select a predecessor with no matching activation
+  // receipt, denying the very carry needed to recover before another sample.
+  // Use Codex's current hook identity on the existing verified MCP carrier;
+  // inherited environment identities must never select this request's row.
+  const nativeId = typeof input.session_id === 'string' ? input.session_id.trim() : '';
+  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(nativeId)) {
+    return preCompactDecision({ ok: false, detail: 'native session identity is missing or malformed' });
   }
   const headers = {
     'Content-Type': 'application/json',
@@ -268,7 +354,7 @@ export async function runManagedPreCompact(payload, options = {}) {
     params: {
       name: 'session:request-compaction',
       arguments: {},
-      _meta: { format: 'json' },
+      _meta: { format: 'json', threadId: nativeId },
     },
   });
   try {
@@ -281,6 +367,9 @@ export async function runManagedPreCompact(payload, options = {}) {
     const raw = await response.text();
     const parsed = parseManagedCarryResponse(raw);
     if (!response.ok && !parsed.ok) parsed.detail = `HTTP ${response.status}: ${parsed.detail}`;
+    if (isHostlessWakeResumeRefusal(parsed, env)) {
+      return hostlessWakeResumeDecision(env.PAPERCUSP_WAKE_DELIVERY_ID);
+    }
     return preCompactDecision(parsed);
   } catch (error) {
     return preCompactDecision({

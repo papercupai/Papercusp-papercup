@@ -42,6 +42,7 @@ import { signWithDeviceKey } from '../identity/sign-with-device-key';
 import { resolveDeviceKeychainId } from '../identity/device-keychain-id';
 import { loadOrGenerateDeviceKeypair } from '../identity/attest';
 import { getAuthenticatedGithubUser } from '../identity/resolve-local-github-identity';
+import { observeFallback } from '../degradation/fallback-observations';
 
 export const PEER_ADDRESSES_ENV = 'PAPERCUSP_AUTHORITY_PEER_ADDRESSES';
 
@@ -69,7 +70,9 @@ function envAddressMap(): Map<string, string> {
       for (const [pubkey, url] of Object.entries(parsed)) {
         if (typeof url === 'string' && url) map.set(pubkey, url);
       }
+      observeFallback('authority-peer-addresses', { eligible: 1, applied: 1, reason: 'applied' });
     } catch (err) {
+      observeFallback('authority-peer-addresses', { eligible: 1, applied: 0, reason: 'invalid-json' });
       if (!_envWarned) {
         _envWarned = true;
         console.warn(

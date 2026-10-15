@@ -137,6 +137,13 @@ support, whose output looks complete either way.
 | `unattended-upgrades` | **NOT-IN-REPOS** | `dnf-automatic` (**AVAILABLE**) | `dnf list` |
 | `minisign` | **NOT-IN-REPOS** | ⚠ see below — the one hard gap | `dnf list` |
 
+Not a substitution, but a gap this table's method missed: `git` was never in the apt contract,
+because stock Ubuntu images ship it, yet the release's content bootstrap shallow-clones the
+first-party bundle with it. The Stream 9 bootc image booted without git and the bootstrap died in
+`install-runtime` with `spawn git ENOENT` (WI-10005779). `git` is now in the apt contract and the
+image installs `git-core`; `bootc-guest-tool-contracts.test.ts` maps every apt contract package to
+the RPM the Containerfile installs, so a new apt name without an RPM row fails there.
+
 `ufw` and `unattended-upgrades` are behavioural rewrites, not package renames: the bootstrap emits
 5 `ufw` invocations and enables `unattended-upgrades` as a unit, so P-306 must re-express both
 policies, not substitute names.

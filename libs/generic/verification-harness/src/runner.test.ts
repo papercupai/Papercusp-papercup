@@ -1,10 +1,12 @@
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { type HarnessContract, HarnessContractError, validateContract } from './contract.js';
-import { formatSummaryLine, loadRunResult, parseSummaryLine, runHarness } from './runner.js';
+import { formatSummaryLine, loadRunResult, parseSummaryLine, pruneRuns, pruneRunsWithReport, runHarness, writeRunResult } from './runner.js';
+import { symlinkSync } from 'node:fs';
+import { retainRunsCommand } from './cli.js';
 import { parseSelectionArgs, planSelection } from './select.js';
 
 const contract: HarnessContract = {
@@ -18,6 +20,197 @@ const contract: HarnessContract = {
 };
 
 const tmp = () => mkdtempSync(path.join(tmpdir(), 'vh-'));
+
+describe('read-only retention preview', () => {
+  const now = Date.now();
+  const names = ['20200101T000000Z-1', '20200102T000000Z-1', '20200103T000000Z-1'];
+  const fixture = () => {
+    const root = tmp();
+    for (const name of names) {
+      mkdirSync(path.join(root, name));
+      writeFileSync(path.join(root, name, 'result.json'), JSON.stringify({ schemaVersion: 1, runId: name, endedAt: new Date(now).toISOString(), verdict: 'pass' }));
+    }
+    return root;
+  };
+  it('shares count eligibility with mutation but leaves all evidence intact', async () => {
+    const root = fixture();
+    const before = names.map(n => readFileSync(path.join(root, n, 'result.json'), 'utf8'));
+    const external = tmp();
+    writeFileSync(path.join(external, 'proof'), 'external');
+    symlinkSync(external, path.join(root, names[0], 'external'));
+    const options = { measureDisk: async () => ({ totalBytes: 1000, availableBytes: 900 }), reserveBytes: () => 100 };
+    const plan = await pruneRunsWithReport(root, 1, now, { ...options, dryRun: true });
+    expect(plan.removed).toEqual([]);
+    expect(plan.preview?.candidates.map(c => path.basename(c.path))).toEqual(names.slice(0, 2));
+    expect(plan.preview?.candidates.every(c => c.allocatedBytes !== null)).toBe(true);
+    expect(names.map(n => readFileSync(path.join(root, n, 'result.json'), 'utf8'))).toEqual(before);
+    expect(readlinkSync(path.join(root, names[0], 'external'))).toBe(external);
+    expect((await pruneRunsWithReport(root, 1, now, options)).removed).toEqual(names.slice(0, 2));
+    expect(readFileSync(path.join(external, 'proof'), 'utf8')).toBe('external');
+  });
+  it('reports a pressure upper bound without simulated recovery and preserves protected/foreign entries', async () => {
+    const root = fixture();
+    symlinkSync(names[2], path.join(root, 'latest'));
+    writeFileSync(path.join(root, names[1], '.vh-keep'), 'pin');
+    mkdirSync(path.join(root, 'retained'));
+    writeFileSync(path.join(root, 'foreign'), 'proof');
+    const plan = await pruneRunsWithReport(root, 30, now, { dryRun: true, measureDisk: async () => ({ totalBytes: 1000, availableBytes: 0 }), reserveBytes: () => 100 });
+    expect(plan.preview?.candidates.map(c => [path.basename(c.path), c.reason])).toEqual([[names[0], 'pressure']]);
+    expect(plan.preview?.kept.map(c => c.reason)).toEqual(['.vh-keep', 'latest']);
+    expect(plan.disk.status).toBe('unresolved');
+    expect(plan.disk.availableAfterBytes).toBeNull();
+    expect(readlinkSync(path.join(root, 'latest'))).toBe(names[2]);
+    expect(readFileSync(path.join(root, names[1], '.vh-keep'), 'utf8')).toBe('pin');
+    expect(readFileSync(path.join(root, 'foreign'), 'utf8')).toBe('proof');
+    expect(readdirSync(root).sort()).toEqual([...names, 'latest', 'retained', 'foreign'].sort());
+  });
+  it('keeps fresh partial runs and exposes unknown disk/root state', async () => {
+    const root = fixture();
+    rmSync(path.join(root, names[0], 'result.json'));
+    const plan = await pruneRunsWithReport(root, 1, now, { dryRun: true, measureDisk: async () => null });
+    expect(plan.preview?.kept).toContainEqual({ path: path.join(root, names[0]), reason: 'incomplete-grace' });
+    expect(plan.disk.status).toBe('unmeasured');
+    expect((await pruneRunsWithReport(path.join(root, 'absent'), 1, now, { dryRun: true })).preview?.rootStatus).toBe('unreadable');
+  });
+  it('exposes zero-effect preview through the existing retain CLI', async () => {
+    const root = fixture();
+    const report = await retainRunsCommand(['--evidence-root', root, '--dry-run']);
+    expect(report.preview?.advisory).toBe(true);
+    expect(report.removed).toEqual([]);
+    expect(readdirSync(root).sort()).toEqual(names);
+  });
+});
+
+describe('evidence root byte ceiling', () => {
+  it('evicts oldest writes until under cap even when count and disk reserve are healthy', async () => {
+    const root = tmp();
+    const names = ['20200101T000000Z-1', '20200102T000000Z-1', '20200103T000000Z-1'];
+    try {
+      for (const [i, name] of names.entries()) {
+        mkdirSync(path.join(root, name));
+        writeFileSync(path.join(root, name, 'result.json'), JSON.stringify({ schemaVersion: 1, runId: name, endedAt: new Date().toISOString(), verdict: 'pass' }));
+        writeFileSync(path.join(root, name, 'bulk'), Buffer.alloc(64 * 1024, 1));
+        const time = new Date(Date.now() - (3 - i) * 3600e3);
+        const { utimesSync } = await import('node:fs');
+        for (const file of [path.join(root, name), path.join(root, name, 'bulk'), path.join(root, name, 'result.json')]) utimesSync(file, time, time);
+      }
+      const options = { maxBytes: 100 * 1024, measureDisk: async () => ({ totalBytes: 1000, availableBytes: 900 }), reserveBytes: () => 100 };
+      const preview = await pruneRunsWithReport(root, 30, Date.now(), { ...options, dryRun: true });
+      expect(preview.preview?.candidates.map(c => c.reason)).toEqual(['size-cap', 'size-cap', 'size-cap']);
+      expect(names.every(name => existsSync(path.join(root, name)))).toBe(true);
+      const report = await pruneRunsWithReport(root, 30, Date.now(), options);
+      expect(report.removed).toEqual(names.slice(0, 2));
+      expect(report.cap?.afterBytes).toBeLessThanOrEqual(options.maxBytes);
+      expect(existsSync(path.join(root, names[2]))).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('reports pins above cap and keeps latest while continuing past protected older runs', async () => {
+    const root = tmp();
+    const names = ['20200101T000000Z-1', '20200102T000000Z-1'];
+    try {
+      for (const name of names) {
+        mkdirSync(path.join(root, name));
+        writeFileSync(path.join(root, name, 'result.json'), JSON.stringify({ schemaVersion: 1, runId: name, endedAt: new Date().toISOString(), verdict: 'pass' }));
+        writeFileSync(path.join(root, name, 'bulk'), Buffer.alloc(64 * 1024, 1));
+      }
+      symlinkSync(names[0], path.join(root, 'latest'));
+      const report = await pruneRunsWithReport(root, 30, Date.now(), { maxBytes: 1, measureDisk: async () => null });
+      expect(report.removed).toEqual([names[1]]);
+      expect(report.cap?.overByBytes).toBeGreaterThan(0);
+      expect(existsSync(path.join(root, names[0]))).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe('declared completion receipt retention', () => {
+  const receipts = ['phases/prepare/source.json', 'phases/execute/lifecycle.json'];
+  const source = Buffer.from('{"source":"original bytes", "sequence":1}\n');
+  const lifecycle = Buffer.from('{"worker":23,"ended":true}\n');
+  const complete = (root: string, runId: string) => runHarness({
+    contract: { name: 'receipt-proof', phases: [{ id: 'prepare' }, { id: 'execute' }] },
+    evidenceRoot: root, runId, retainedArtifacts: receipts,
+    runPhase: async ({ phase, evidenceDir }) => {
+      writeFileSync(path.join(evidenceDir, phase === 'prepare' ? 'source.json' : 'lifecycle.json'),
+        phase === 'prepare' ? source : lifecycle);
+      return { ok: true };
+    },
+  });
+
+  it('preserves exact source and lifecycle bytes for late binding after count pruning', async () => {
+    const root = tmp(), first = '20261010T000001Z-1', second = '20261010T000002Z-2';
+    try {
+      const original = await complete(root, first);
+      await complete(root, second);
+      await pruneRuns(root, 1);
+      expect(existsSync(original.evidenceDir)).toBe(false);
+      expect(readFileSync(path.join(root, 'retained', first, receipts[0]))).toEqual(source);
+      expect(readFileSync(path.join(root, 'retained', first, receipts[1]))).toEqual(lifecycle);
+      expect(readFileSync(path.join(root, 'retained', first, 'result.json')))
+        .toEqual(Buffer.from(JSON.stringify(original, null, 2) + '\n'));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('refuses missing declared phase receipts before publishing retained completion', async () => {
+    const root = tmp(), runId = '20261010T000003Z-3';
+    try {
+      await expect(runHarness({
+        contract: { name: 'receipt-proof', phases: [{ id: 'prepare' }] },
+        evidenceRoot: root, runId, retainedArtifacts: receipts,
+        runPhase: async () => ({ ok: true }),
+      })).rejects.toThrow();
+      expect(existsSync(path.join(root, 'retained', runId, 'result.json'))).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(['prepare', 'execute'])('preserves original failed %s receipts and verdict after count pruning', async failurePhase => {
+    const root = tmp(), runId = '20261012T000001Z-1';
+    try {
+      const original = await runHarness({
+        contract: { name: 'failed-receipt-proof', phases: [{ id: 'prepare' }, { id: 'execute', dependsOn: ['prepare'] }] },
+        evidenceRoot: root, runId, retainedArtifacts: receipts,
+        runPhase: async ({ phase, evidenceDir }) => {
+          writeFileSync(path.join(evidenceDir, phase === 'prepare' ? 'source.json' : 'lifecycle.json'),
+            phase === 'prepare' ? source : lifecycle);
+          return phase === failurePhase ? { ok: false, reasonCode: 'original-rejection', detail: 'original failure' } : { ok: true };
+        },
+      });
+      expect(original.verdict).toBe('fail');
+      expect(original.phases.find(phase => phase.phase === failurePhase)).toMatchObject({
+        reasonCode: 'original-rejection', detail: 'original failure',
+      });
+      await complete(root, '20261012T000002Z-2');
+      expect(await pruneRuns(root, 1)).toContain(runId);
+      expect(existsSync(original.evidenceDir)).toBe(false);
+      expect(readFileSync(path.join(root, 'retained', runId, receipts[0]))).toEqual(source);
+      if (failurePhase === 'execute') expect(readFileSync(path.join(root, 'retained', runId, receipts[1]))).toEqual(lifecycle);
+      else expect(existsSync(path.join(root, 'retained', runId, receipts[1]))).toBe(false);
+      expect(JSON.parse(readFileSync(path.join(root, 'retained', runId, 'result.json'), 'utf8'))).toEqual(original);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('refuses changed retained source bytes without replacing the original', async () => {
+    const root = tmp(), runId = '20261010T000004Z-4';
+    try {
+      const result = await complete(root, runId);
+      writeFileSync(path.join(result.evidenceDir, receipts[0]), '{}');
+      await expect(writeRunResult(result, receipts)).rejects.toThrow('retained harness artifact changed');
+      expect(readFileSync(path.join(root, 'retained', runId, receipts[0]))).toEqual(source);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(['../outside.json', '/absolute.json', 'phases/../source.json', 'phases\\source.json'])
+    ('refuses an unsafe declared receipt path %s before phase execution', async receipt => {
+      const root = tmp(); let ran = false;
+      try {
+        await expect(runHarness({
+          contract: { name: 'receipt-proof', phases: [{ id: 'prepare' }] },
+          evidenceRoot: root, retainedArtifacts: [receipt],
+          runPhase: async () => { ran = true; return { ok: true }; },
+        })).rejects.toThrow('invalid retained harness artifact path');
+        expect(ran).toBe(false);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+});
 
 describe('validateContract', () => {
   it('rejects a forward dependency, an unknown one and a duplicate id', () => {
@@ -246,6 +439,137 @@ vh_finish
     expect(readFileSync(path.join(root, 'latest', 'phases', 'setup', 'out.txt'), 'utf8')).toBe('seeded\n');
   });
 
+  it('keeps a failed bracketed command step, stdout, stderr, and result in phase evidence', () => {
+    const root = tmp();
+    const file = path.join(root, 'capture.sh');
+    writeFileSync(file, `
+set -u
+source ${JSON.stringify(vh)}
+vh_phase prepare ""
+vh_init shell-capture ${JSON.stringify(root)} || exit 2
+vh_begin prepare
+trap 'rc=$?; vh_capture_phase_stop; vh_exit "$rc"' EXIT
+vh_capture_phase_start
+rc=0
+vh_run_step source-snapshot bash -c 'printf "stdout evidence\\n"; printf "stderr evidence\\n" >&2; exit 7' || rc=$?
+exit "$rc"
+`);
+
+    let stdout = '';
+    let stderr = '';
+    let code = 0;
+    try {
+      stdout = execFileSync('bash', [file], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (err) {
+      const e = err as { status: number; stdout: string; stderr: string };
+      code = e.status;
+      stdout = e.stdout;
+      stderr = e.stderr;
+    }
+
+    expect(code).toBe(7);
+    expect(stdout).toContain('stdout evidence');
+    expect(stdout + stderr).toContain('stderr evidence');
+    const commandDir = path.join(root, 'latest', 'phases', 'prepare', 'commands');
+    expect(readFileSync(path.join(commandDir, 'source-snapshot.stdout.log'), 'utf8')).toBe('stdout evidence\n');
+    expect(readFileSync(path.join(commandDir, 'source-snapshot.stderr.log'), 'utf8')).toBe('stderr evidence\n');
+    expect(JSON.parse(readFileSync(path.join(commandDir, 'source-snapshot.result.json'), 'utf8'))).toEqual({
+      step: 'source-snapshot',
+      exitCode: 7,
+    });
+    const result = JSON.parse(readFileSync(path.join(root, 'latest', 'result.json'), 'utf8'));
+    expect(result.phases).toContainEqual(expect.objectContaining({
+      phase: 'prepare',
+      status: 'failed',
+      step: 'source-snapshot',
+      reasonCode: 'exit-7',
+    }));
+    expect(readFileSync(path.join(root, 'latest', 'phases', 'prepare', 'command-output.log'), 'utf8')).toContain(
+      'VH_COMMAND_RESULT phase=prepare step=source-snapshot exit=7',
+    );
+  });
+
+  // WI-6554700010011505: a detached descendant (e.g. a daemon left behind by a
+  // killed prepare step) inherits the capture pipe, so tee never sees EOF. An
+  // unbounded wait in vh_capture_phase_stop then pinned the verifier, and the
+  // Cargo slot lock it held, for 15h after result.json was written.
+  it('stops waiting for the capture tee when a detached descendant still holds its pipe', () => {
+    const root = tmp();
+    const file = path.join(root, 'hold.sh');
+    const holderPidFile = path.join(root, 'holder.pid');
+    writeFileSync(file, `
+set -u
+source ${JSON.stringify(vh)}
+vh_phase prepare ""
+vh_init shell-capture-hold ${JSON.stringify(root)} || exit 2
+vh_begin prepare
+trap 'rc=$?; vh_capture_phase_stop; vh_exit "$rc"' EXIT
+vh_capture_phase_start
+echo "before holder"
+sleep 60 &
+echo "$!" > ${JSON.stringify(holderPidFile)}
+exit 0
+`);
+
+    // Streams go to FILES, not pipes: the holder inherits the harness's saved
+    // stdout/stderr descriptors too, so a pipe would make Node wait on the holder
+    // instead of measuring when the verifier shell itself exits.
+    const outFile = path.join(root, 'stdout.log');
+    const errFile = path.join(root, 'stderr.log');
+    const outFd = openSync(outFile, 'w');
+    const errFd = openSync(errFile, 'w');
+    const started = Date.now();
+    let result: ReturnType<typeof spawnSync>;
+    try {
+      result = spawnSync('bash', [file], {
+        stdio: ['ignore', outFd, errFd],
+        timeout: 20_000,
+        env: { ...process.env, VH_CAPTURE_TEE_GRACE_SEC: '1' },
+      });
+    } finally {
+      closeSync(outFd);
+      closeSync(errFd);
+      if (existsSync(holderPidFile)) {
+        try { process.kill(Number(readFileSync(holderPidFile, 'utf8').trim())); } catch { /* already gone */ }
+      }
+    }
+    const elapsedMs = Date.now() - started;
+    const streams = readFileSync(outFile, 'utf8') + readFileSync(errFile, 'utf8');
+
+    expect(result.signal, streams).toBeNull();
+    expect(result.status, streams).toBe(0);
+    expect(elapsedMs).toBeLessThan(15_000);
+    expect(streams).toContain('VH_CAPTURE_TEE_FORCED phase=prepare grace_sec=1');
+    expect(readFileSync(path.join(root, 'latest', 'phases', 'prepare', 'command-output.log'), 'utf8')).toContain('before holder');
+    expect(existsSync(path.join(root, 'latest', 'result.json'))).toBe(true);
+  }, 30_000);
+
+  it('does not wait out the tee grace when nothing else holds the capture pipe', () => {
+    const root = tmp();
+    const file = path.join(root, 'clean.sh');
+    writeFileSync(file, `
+set -u
+source ${JSON.stringify(vh)}
+vh_phase prepare ""
+vh_init shell-capture-clean ${JSON.stringify(root)} || exit 2
+vh_begin prepare
+trap 'rc=$?; vh_capture_phase_stop; vh_exit "$rc"' EXIT
+vh_capture_phase_start
+echo "clean capture"
+exit 0
+`);
+    const started = Date.now();
+    const stdout = execFileSync('bash', [file], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 20_000,
+      env: { ...process.env, VH_CAPTURE_TEE_GRACE_SEC: '10' },
+    });
+    expect(Date.now() - started).toBeLessThan(8_000);
+    expect(stdout).not.toContain('VH_CAPTURE_TEE_FORCED');
+    expect(readFileSync(path.join(root, 'latest', 'phases', 'prepare', 'command-output.log'), 'utf8')).toContain('clean capture');
+  }, 30_000);
+
   it('--only with --reuse latest reuses setup and skips unselected phases', () => {
     const root = tmp();
     const file = path.join(root, 'h.sh');
@@ -282,7 +606,10 @@ vh_finish
         `vh_init twice ${JSON.stringify(ev)} || exit 3\necho "SECOND=$VH_RUN_DIR"\nvh_run only false\n`,
     );
     const out = execFileSync('bash', [file], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
-    const runs = readdirSync(ev).filter((n) => n !== 'latest' && !n.endsWith('.json')).sort();
+    const runs = readdirSync(ev, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && /^\d{8}T\d{6}Z-\d+(\.\d+)?$/.test(entry.name))
+      .map((entry) => entry.name)
+      .sort();
     expect(runs).toHaveLength(2);
     expect(runs[1]).toBe(`${runs[0]}.1`);
     expect(out).toContain(`SECOND=${path.join(ev, runs[1]!)}`);
@@ -301,5 +628,33 @@ vh_finish
     let out = '';
     try { out = execFileSync('bash', [file], { encoding: 'utf8' }); } catch (err) { out = (err as { stdout: string }).stdout; }
     expect(out).toMatch(/verdict=fail .*first_failure=b\/-\/not-reported/);
+  });
+});
+
+describe('verify-tauri-headless prepare diagnostics', () => {
+  it('captures the prepare phase and names its major fallible stages before boot', () => {
+    const verifier = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../../../scripts/verify-tauri-headless.sh');
+    const source = readFileSync(verifier, 'utf8');
+    const prepareStart = source.indexOf('vh_begin prepare');
+    const bootStart = source.indexOf('vh_begin boot', prepareStart);
+    expect(prepareStart).toBeGreaterThanOrEqual(0);
+    expect(bootStart).toBeGreaterThan(prepareStart);
+    const prepare = source.slice(prepareStart, bootStart);
+    expect(prepare).toContain('vh_capture_phase_start');
+    expect(prepare).toContain('vh_capture_phase_stop');
+    for (const step of [
+      'shared-schema-readiness',
+      'verifier-snapshot-root',
+      'operator-source-snapshot',
+      'verifier-host-bundle',
+      'verifier-host-import-smoke',
+      'assertion-input-manifest',
+      'assertion-script-snapshot',
+      'verifier-bridge-ownership',
+      'freshness-check-script',
+    ]) {
+      expect(prepare).toContain(`vh_run_step ${step}`);
+    }
+    expect(prepare).toContain('vh_step isolated-database-prepare');
   });
 });

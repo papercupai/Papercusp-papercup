@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-006 independent real-goal scorecard readback",
+  "framework": "operational",
+  "plan": "work-on-everything-stewardship-remediation-2026-08-30",
+  "acceptanceBar": "R-5",
+  "specClause": "WOE-P006-REAL-CARD@3",
+  "workItem": "WI-1074216",
+  "evidencePlane": "live",
+  "runtime": "papercusp-su scorecards:get and work_items:get on 2026-10-02; existing card grades the 2026-09-30 real-holder window",
+  "command": [
+    "scorecards:get { issueId: 'EI-24713330305263301' }",
+    "scorecards:get { issueId: 'EI-24713330305263301', criterionKey: '<each of 15 indexed keys>', evidenceOffset: 0 }",
+    "work_items:get { ids: ['WI-10003903','WI-10004329','EI-24556293106348130','WI-10004358'], harness: 'papercusp' }"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-02T19:04:00Z",
+  "finishedAt": "2026-10-02T19:08:00Z",
+  "recordedBy": "su-2060a358-2b0e-4175-b881-149c5eda45ac",
+  "summary": "Read back the existing independent real-goal card EI-24713330305263301 without emitting a duplicate. It grades the actual holder su-af7cfbba-1a21-4530-84c4-5c064614d4bc during 2026-09-30T16:54:04Z–18:29:52Z. Verdict remains FAIL: plan-fleet-materialization is the critical failure and goal-mode-foundation is the critical unknown. All 15 indexed criterion evidence bodies were read to completion. The historical remediation references now have terminal dispositions; this does not turn the historical card green or verify final shipment.",
+  "assertions": [
+    {
+      "id": "existing-independent-card",
+      "passed": true,
+      "evidence": "scorecards:get EI-24713330305263301: createdBy su-4f968faa, grader audit passed by su-778c7ed9 as EI-24713725963525495; subject is the actual agent-run, not a fixture."
+    },
+    {
+      "id": "exact-holder-window-and-fail",
+      "passed": true,
+      "evidence": "subject.ref su-af7cfbba-1a21-4530-84c4-5c064614d4bc; window 16:54:04Z–18:29:52Z; rollup verdict fail, criticalFailures [plan-fleet-materialization], criticalUnknowns [goal-mode-foundation], coverage 15/15."
+    },
+    {
+      "id": "criterion-evidence-readback",
+      "passed": true,
+      "evidence": "scorecards:get index listed 15 keys. Each was fetched with criterionKey/evidenceOffset=0 and returned evidenceRead.complete=true; plan-fleet-materialization says 0 of 1 eligible worklist plans materialized during this holder window."
+    },
+    {
+      "id": "historical-residue-disposition",
+      "passed": true,
+      "evidence": "2026-10-02 work_items:get: WI-10004329, EI-24556293106348130, WI-10004358 are done with terminalOwner su-4f968faa; WI-10003903 is dropped with terminalOwner su-f6e01d34. These are current terminal states of historical references, not a revision of the card's 2026-09-30 FAIL."
+    },
+    {
+      "id": "shipment-is-separate",
+      "passed": true,
+      "evidence": "This readback contains no exact shipped-blob comparison. WOE-P006-SHIPMENT remains open."
+    }
+  ]
+}

@@ -6,10 +6,102 @@ import {
   auditExport,
   checkoutDashboard,
   commerceCatalogDashboard,
+  identityUsageStatement,
   refundDashboard,
   sumMoney,
   supportDashboard,
 } from './commerce-dashboards';
+import { identityPerUseOfferTerms, quoteIdentityInferenceTurn } from './identity-per-use-offer';
+import type { UsageReceiptWire } from './metered-invocation-door-io';
+import { settleRevenue } from '../p2p/revenue-settlement';
+
+describe('identity usage statement (P-018)', () => {
+  const offered = identityPerUseOfferTerms({ identity: { id: 'analyst', version: '1.0.0' },
+    markupBps: 2500, componentBps: 3000, componentDependencies: [
+      { packageKind: 'blueprint', ref: 'base', revision: '1', contentHash: 'a'.repeat(64), author: 'alice' },
+      { packageKind: 'rule', ref: 'review', revision: '1', contentHash: 'b'.repeat(64), author: 'bob' },
+    ] });
+  if (!offered.ok) throw new Error(offered.detail);
+  const receipt = (overrides: Partial<UsageReceiptWire> = {}, billed = 999n): UsageReceiptWire => {
+    const q = quoteIdentityInferenceTurn({ offer: offered.terms, billedInferenceMicros: billed,
+      inferenceCeilingMicros: 1000n, priorRemainderNumerator: 0n });
+    if (!q.ok) throw new Error(q.detail);
+    return { channelId: 'c1', usageNonce: 'turn1', offerId: 'o1', payer: 'buyer', seller: 'seller',
+      releaseRef: offered.terms.skuRef, meterUnit: offered.terms.meterUnit,
+      meterQuantity: q.reservationQuantity.toString(), unitPriceMicros: String(offered.terms.unitPriceMicros),
+      priceVersion: offered.terms.priceVersion, splitManifestHash: offered.terms.splitManifestHash,
+      reservedMicros: q.reservedMarkupMicros.toString(), amountMicros: q.amountMicros.toString(),
+      cumulativeClaimMicros: '250', expiresAtMs: 3000, voucherDigest: 'digest', voucherSignature: 'payer-signature',
+      receiptSignature: 'seller-signature', state: 'settled', reservedAtMs: 1000, settledAtMs: 2000,
+      identityInference: { ceilingMicros: '1000', billedInferenceMicros: billed.toString(),
+        priorRemainderNumerator: '0', remainderNumerator: q.remainderNumerator.toString() }, ...overrides };
+  };
+
+  it('states sub-cent BYOC base, markup and component quotes without claiming payout or inventing outcome success', () => {
+    const statement = identityUsageStatement([receipt()], 'buyer');
+    expect(statement).toMatchObject({ basis: 'hosted-settled-usage', chainFinality: 'not-measured',
+      allocationBasis: 'per-receipt-quote', markupMicros: '249', complete: true, issues: [],
+      costPerAcceptedOutcomeMicros: null, outcomeEvidence: 'unavailable' });
+    expect(statement.lines[0]).toMatchObject({ billedInferenceMicros: '999', markupMicros: '249',
+      allocationQuote: { creatorMicros: '149', daoMicros: '26', componentMicros: '74',
+        componentAuthorsMicros: { alice: '37', bob: '37' } } });
+    const settled = settleRevenue({ settlementId: 'batch', grossMicros: 249n, providerCostMicros: 0n,
+      splitManifest: offered.manifest, daoTreasury: 'actual-treasury' });
+    if (!settled.ok) throw new Error(settled.detail);
+    expect(settled.receipt.allocationsMicros.dao.toString()).toBe(statement.lines[0]!.allocationQuote.daoMicros);
+    expect(JSON.parse(JSON.stringify(statement))).toEqual(statement);
+  });
+
+  it('does not add the repeated inference base of stacked identities to markup charges', () => {
+    const statement = identityUsageStatement([receipt(), receipt({ usageNonce: 'turn2', offerId: 'o2' })], 'buyer');
+    expect(statement.markupMicros).toBe('498');
+    expect(statement.lines.map((line) => line.billedInferenceMicros)).toEqual(['999', '999']);
+    expect(statement).not.toHaveProperty('totalInferenceMicros');
+  });
+
+  it('shows identical buyer/seller lines and never exposes third-party rows or issues', () => {
+    const own = receipt(), foreign = receipt({ payer: 'other-buyer', seller: 'other-seller', usageNonce: 'foreign', amountMicros: '-1' });
+    expect(identityUsageStatement([own, foreign], 'buyer')).toEqual(identityUsageStatement([own], 'seller'));
+    expect(identityUsageStatement([own, foreign], 'stranger')).toMatchObject({ lines: [], markupMicros: '0', issues: [] });
+  });
+
+  it('deduplicates exact retries and refuses both orders of a conflicting nonce', () => {
+    const own = receipt(), changed = receipt({ amountMicros: '250' });
+    expect(identityUsageStatement([own, own], 'buyer').markupMicros).toBe('249');
+    for (const rows of [[own, changed], [changed, own]]) {
+      expect(identityUsageStatement(rows, 'buyer')).toMatchObject({ lines: [], markupMicros: '0', complete: false,
+        issues: [{ reason: 'conflicting-receipt' }] });
+    }
+  });
+
+  it('keeps pending reservations out of inferred cost and charges', () => {
+    const pending = receipt({ state: 'reserved', amountMicros: null, receiptSignature: null, settledAtMs: null,
+      identityInference: { ceilingMicros: '1000', billedInferenceMicros: null, priorRemainderNumerator: null, remainderNumerator: null } });
+    expect(identityUsageStatement([pending], 'buyer')).toMatchObject({ lines: [], markupMicros: '0', reservedReceipts: 1 });
+  });
+
+  it.each([
+    { amountMicros: '250' }, { reservedMicros: '249' }, { meterQuantity: '2' },
+    { splitManifestHash: 'substitution' }, { priceVersion: 'different-price' },
+    { identityInference: { ceilingMicros: '1000', billedInferenceMicros: '1001', priorRemainderNumerator: '0', remainderNumerator: '7500' } },
+    { identityInference: { ceilingMicros: '1000', billedInferenceMicros: '999', priorRemainderNumerator: '0', remainderNumerator: '0' } },
+  ])('refuses inconsistent recorded terms or quote %j', (overrides) => {
+    expect(identityUsageStatement([receipt(overrides)], 'buyer')).toMatchObject({ lines: [], complete: false,
+      issues: [{ reason: 'identity-quote-mismatch' }] });
+  });
+
+  it.each([{ amountMicros: '0249' }, { receiptSignature: null }, { identityInference: undefined },
+    { settledAtMs: 999 }, { unitPriceMicros: '9007199254740992' }])('keeps incomplete evidence visible %j', (overrides) => {
+    expect(identityUsageStatement([receipt(overrides)], 'buyer')).toMatchObject({ complete: false, lines: [],
+      issues: [{ reason: 'incomplete-identity-receipt' }] });
+  });
+
+  it('preserves a recorded zero cost and produces stable receipt order', () => {
+    const zero = receipt({ usageNonce: 'a' }, 0n), paid = receipt({ usageNonce: 'z' });
+    expect(identityUsageStatement([paid, zero], 'buyer')).toEqual(identityUsageStatement([zero, paid], 'buyer'));
+    expect(identityUsageStatement([zero], 'buyer').lines[0]).toMatchObject({ billedInferenceMicros: '0', markupMicros: '0' });
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Fixtures — built through the REAL reducer, not hand-written state literals.

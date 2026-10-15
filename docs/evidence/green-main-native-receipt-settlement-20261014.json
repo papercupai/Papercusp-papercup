@@ -1,0 +1,232 @@
+{
+  "schemaVersion": 1,
+  "kind": "native-receipt-source-settlement",
+  "workItemId": "WI-6554700010010682",
+  "issueId": "EI-25948814148775899",
+  "completionPayload": {
+    "id": "EI-25948814148775899",
+    "harness": "papercusp",
+    "state": "done",
+    "assumptions": "none",
+    "completion": {
+      "summary": "The native operational serializer omitted producer command arguments before persistence. The existing execution-details contract now retains the exact command captured before callback execution, validates optional versioned metadata, and preserves it through the existing PostgreSQL test_runs writer. All six files match committed bytes; local recurrence guards pass. No operational Goal or shipped-runtime claim.",
+      "testsRun": "npm run test:file -- libs/test-config/src/execution-details.test.ts packages/operator-core/lib/agent-tools/testing/record-run.test.ts packages/operator-core/lib/testing-run-store.integration.test.ts; selected six-file lint:tsc",
+      "testResult": "Baseline selected maintained native-command guard failed on missing operational metadata. Final 106 tests passed:35 parser+58 recorder+13 real-PostgreSQL;exact3/3 files;skips0;childSubstituted0;exit0. Selected six-file typecheck exit0;test-config workspace compile passed;no full-tree zero-error claim.",
+      "verifiedHow": "unit",
+      "filesChanged": [
+        "libs/test-config/src/execution-details.ts",
+        "libs/test-config/src/execution-details.test.ts",
+        "packages/operator-core/lib/agent-tools/testing/record-run.ts",
+        "packages/operator-core/lib/agent-tools/testing/record-run.test.ts",
+        "packages/operator-core/lib/testing-run-store.ts",
+        "packages/operator-core/lib/testing-run-store.integration.test.ts"
+      ],
+      "verification": {
+        "coverage": {
+          "population": [
+            "libs/test-config/src/execution-details.ts",
+            "libs/test-config/src/execution-details.test.ts",
+            "packages/operator-core/lib/agent-tools/testing/record-run.ts",
+            "packages/operator-core/lib/agent-tools/testing/record-run.test.ts",
+            "packages/operator-core/lib/testing-run-store.ts",
+            "packages/operator-core/lib/testing-run-store.integration.test.ts"
+          ],
+          "checked": [
+            "libs/test-config/src/execution-details.ts",
+            "libs/test-config/src/execution-details.test.ts",
+            "packages/operator-core/lib/agent-tools/testing/record-run.ts",
+            "packages/operator-core/lib/agent-tools/testing/record-run.test.ts",
+            "packages/operator-core/lib/testing-run-store.ts",
+            "packages/operator-core/lib/testing-run-store.integration.test.ts"
+          ],
+          "notChecked": [],
+          "notApplicable": [],
+          "residue": []
+        }
+      },
+      "rootCauseVerification": {
+        "hypothesis": "operationalExecution omitted the maintained command before submitting execution details to PostgreSQL.",
+        "alternativeHypothesis": "The serializer supplied the complete command but the PostgreSQL writer discarded it.",
+        "distinguishingTest": "Run the maintained native operational command-scope guard with its injected persist callback and inspect the submitted execution object, then round-trip the same optional command through testing-run-store.integration.test.ts on real PostgreSQL.",
+        "testProcedure": "Baseline: npm run test:file -- packages/operator-core/lib/agent-tools/testing/record-run.test.ts --testNamePattern='retains the original native command scope'. After the serializer fix, run the complete three-file parser/recorder/real-PG suite. Read the persisted execution object and the returned real-PG row. Compare six working-file bytes with committed blobs and the pinned test-config gitlink without repeating passing tests.",
+        "testResult": "The baseline capture lacked operational metadata before any PostgreSQL write. The fixed capture retains the original command despite callback mutation, and the real-PG round-trip retains it. The maintained complete suite passed106/exact3/3/skipped0/substituted0; scoped6TSCexit0.",
+        "predictedObservations": {
+          "hypothesis": "The baseline injected persist callback receives no operational.command, even without a database.",
+          "alternativeHypothesis": "The baseline injected persist callback receives the exact command; only a real database read loses it."
+        },
+        "actualObservation": "The baseline assertion failed because the injected persist execution object had no operational field. The fixed command is captured before the callback, survives parser validation and real-PG persistence, and the complete suite passes. All six current files equal committed blobs and retain modification times preceding the green run.",
+        "evidenceRefs": [
+          "~/.papercusp/scratch/c0523-operational-command-red.log",
+          "~/.papercusp/scratch/c0523-operational-command-green.log",
+          "~/.papercusp/scratch/c0523-operational-command-tsc.log",
+          "a275fd1f8cfff720251d68d9d94738cc9c389dd2",
+          "libs/test-config@e94926ce9dbd12d601ca0d522150b51f0981c591"
+        ]
+      }
+    }
+  },
+  "completionReceipt": {
+    "ok": true,
+    "results": [
+      {
+        "ok": true,
+        "id": "EI-25948814148775899",
+        "aliased": false,
+        "requestedState": "done",
+        "appliedState": "done",
+        "completionAuthority": "committed",
+        "countsTowardBurnDown": true,
+        "completionContractVersion": "work-items-completion-v2",
+        "workItem": {
+          "id": "EI-25948814148775899",
+          "kind": "bug",
+          "harness": "papercusp",
+          "state": "done",
+          "title": "Native operational receipts lose producer command and install/window arguments",
+          "assignee": null
+        },
+        "reflect": "Reflect (once, now that this unit of work is done): did any of these bite you\nduring it? If so, file it via `improvements:capture { kind, title, paths? }`.\n\nUniversal:\n  - you retried a call, or the same tool errored more than once on the same input\n  - you wrote a workaround for an awkward tool / API / doc instead of using it as intended\n  - a task that should be trivial fought you past ~3 attempts on the same error class (the \"web-search after 3 loops\" point — the failure is confusing enough to suspect the tooling, not you)\n  - lock or coord contention slowed you (a blocked edit, a stomped change, a presence/heartbeat surprise)\n\nPipeline (you ran the coding harness):\n  - a validator failed on work you (or a peer) handed it — the validation contract is friction-prone\n  - a reviewer returned work — the brief / scoping / convention that produced it is friction-prone\n\nBar: capture only a GENUINE, REPEATABLE improvement (a friction the next agent would hit too), not a one-off or a self-inflicted slip.\nIf nothing genuine bit you, capture nothing — sparseness keeps the queue clean.",
+        "specAdequacy": {
+          "applicable": false,
+          "checked": [],
+          "impactReport": "EI-25948814148775899 is a behavior-changing bug that resolves no active behavior clause. D-012 expects a behavior-changing item to name the clauses it affects — This item has no source plan. Use the harness ad-hoc scope `adhoc-work-item-specs`: author an item-local clause with plans:set-specs while omitting `slug` and passing `planItemId: 'P-25948814148775899'`, then bind this work item and its proof with plans:bind-spec-evidence while also omitting `slug`. Shapes: plans:set-specs takes ONE object under `spec` (not an array) with at least specId, expectedRevision (0 to create), planItemId, behavior, behaviorClass and lifecycleStatus; plans:bind-spec-evidence takes ONE object under `binding` with at least workItemId, specId, specRevision, evidenceKind and evidenceRef, plus exactly one of `measurement` ({ schemaVersion: 1, kind, sourcePaths, ... }) or `sourceFingerprint` (or the ledger form { workItemId, specId, fromTestRun } that derives the rest from a test_runs row). Read the exact enum values with tools:find before the first call. Reported, not enforced (P-016 reports; P-013 turns this into a hard gate)."
+        },
+        "finish": {
+          "idempotent": true,
+          "retrySafe": true,
+          "authorityChanged": false,
+          "complete": true,
+          "workItemState": "done",
+          "completionEvidenceStored": true,
+          "checkpointCleared": true,
+          "planItem": "not-linked",
+          "claimRelease": "not-linked"
+        }
+      }
+    ],
+    "counts": {
+      "ok": 1,
+      "failed": 0
+    },
+    "echo_note": "completion/outputPayload echoes omitted at trimmed tier (they replay your own input) — payloadTier:\"full\" to see the recorded form"
+  },
+  "sourceSettlement": {
+    "head": "a275fd1f8cfff720251d68d9d94738cc9c389dd2",
+    "files": [
+      {
+        "path": "libs/test-config/src/execution-details.ts",
+        "commit": "e94926ce9dbd12d601ca0d522150b51f0981c591",
+        "sha256": "ef3658c10c15bc8fc6fc8078f62d8cea00d50a0e7eb0169fc437d7a3b1774b5b",
+        "equalsCommitted": true,
+        "mtimeNs": 1791972522412580900
+      },
+      {
+        "path": "libs/test-config/src/execution-details.test.ts",
+        "commit": "e94926ce9dbd12d601ca0d522150b51f0981c591",
+        "sha256": "5c8e2d3f66b62ac9edd6d819a29c71ac0e66dddb0cdf94dbedc9b62d46ba32d3",
+        "equalsCommitted": true,
+        "mtimeNs": 1791972418143160600
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/testing/record-run.ts",
+        "commit": "a275fd1f8cfff720251d68d9d94738cc9c389dd2",
+        "sha256": "3eab033faa2fcde4808cc225381f3c259ff8d15f89699434bf760bc777e14b1e",
+        "equalsCommitted": true,
+        "mtimeNs": 1791972523329628700
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/testing/record-run.test.ts",
+        "commit": "a275fd1f8cfff720251d68d9d94738cc9c389dd2",
+        "sha256": "53cc0202ef8afdb08f109fc9865d5cba3061c01879f96898d47feba150ae4da5",
+        "equalsCommitted": true,
+        "mtimeNs": 1791972422903407600
+      },
+      {
+        "path": "packages/operator-core/lib/testing-run-store.ts",
+        "commit": "a275fd1f8cfff720251d68d9d94738cc9c389dd2",
+        "sha256": "f2e8ad7f6f7f472a512182fa70a7e67e7805c88f440dc9c1952d916e7ee29729",
+        "equalsCommitted": true,
+        "mtimeNs": 1791972523333629000
+      },
+      {
+        "path": "packages/operator-core/lib/testing-run-store.integration.test.ts",
+        "commit": "a275fd1f8cfff720251d68d9d94738cc9c389dd2",
+        "sha256": "c3d6c26459982c1087a42c090528d45b7c1bd708e33d551537ee30e02d40f428",
+        "equalsCommitted": true,
+        "mtimeNs": 1791972423043414800
+      }
+    ],
+    "submodulePin": "160000 commit e94926ce9dbd12d601ca0d522150b51f0981c591\tlibs/test-config"
+  },
+  "sqlPlanValidation": {
+    "components": [
+      {
+        "key": "recovery",
+        "statement": "EXPLAIN (FORMAT JSON) of the SQL template with non-evidence sentinel parameters",
+        "syntaxAndColumnsValid": true,
+        "acceptedEvidence": false,
+        "sql": "SELECT CASE WHEN count(*) = 1 THEN 1 ELSE 0 END AS accepted\nFROM harness_shared.test_runs r\nWHERE r.id = -1\nAND r.workspace_id = 'papercusp-workspace' AND r.harness_slug = 'papercusp'\nAND r.file_path = 'packages/operator-core/lib/release/green-main-slo.ts' AND r.framework = 'operational'\nAND r.source = 'local' AND r.run_group_id LIKE 'operational-native:%'\nAND r.status = 'pass' AND r.worktree_dirty = false AND r.commit_sha = '0000000000000000000000000000000000000000'\nAND r.finished_at IS NOT NULL AND r.finished_at >= r.started_at\nAND r.execution_details->>'schemaVersion' = '1'\nAND r.execution_details->>'worktreeDirty' = 'false'\nAND r.execution_details->>'commitSha' = r.commit_sha\nAND r.execution_details->>'workspaceId' = r.workspace_id\nAND r.execution_details->>'harnessSlug' = r.harness_slug\nAND r.execution_details->>'filePath' = r.file_path\nAND r.execution_details->>'runGroupId' = r.run_group_id\nAND r.execution_details->>'passed' = '8'\nAND r.execution_details->>'failed' = '0' AND r.execution_details->>'skipped' = '0'\nAND r.execution_details->>'collectionFailed' = 'false'\nAND coalesce(r.execution_details->>'passedCaseTitlesTruncated', 'false') = 'false'\nAND r.execution_details->'passedCaseTitles' @> '[\"bounded-recovery-window\",\"complete-recovery-population\",\"qualified-recovery-verdicts\",\"recovery-left-boundary-known\",\"all-red-episodes-closed\",\"nonempty-recovery-sample\",\"recovery-median-at-most-4h\",\"recovery-p90-at-most-8h\"]'::jsonb\nAND jsonb_array_length(r.execution_details->'passedCaseTitles') = 8\nAND r.execution_details->'operational'->>'schemaVersion' = '1'\nAND r.execution_details->'operational'->'command' =\n '[\"executeGreenMainRecoveryWindow\",\"papercusp-workspace\",\"schema-validation-only\",\"1\",\"2\"]'::jsonb\nAND r.output_tail LIKE '%original_population_sha256=__POPULATION_SHA256__%'\nAND r.execution_details->'runtimeEnvironmentBefore'->>'schemaVersion' = '1'\nAND r.execution_details->'runtimeEnvironmentAfter'->>'schemaVersion' = '1'\nAND r.execution_details->'runtimeEnvironmentBefore'->>'fingerprint' = '0000000000000000000000000000000000000000000000000000000000000000'\nAND r.execution_details->'runtimeEnvironmentAfter'->>'fingerprint' = '0000000000000000000000000000000000000000000000000000000000000000'\nAND r.execution_details->'runtimeEnvironmentBefore'->'units' @> '[]'::jsonb\nAND r.execution_details->'runtimeEnvironmentAfter'->'units' @> '[]'::jsonb\nAND jsonb_array_length(r.execution_details->'runtimeEnvironmentBefore'->'units') = 0\nAND jsonb_array_length(r.execution_details->'runtimeEnvironmentAfter'->'units') = 0\nAND (r.execution_details->'runtimeEnvironmentBefore'->>'observedAt')::timestamptz <= r.started_at\nAND (r.execution_details->'runtimeEnvironmentAfter'->>'observedAt')::timestamptz >= r.finished_at"
+      },
+      {
+        "key": "admission",
+        "statement": "EXPLAIN (FORMAT JSON) of the SQL template with non-evidence sentinel parameters",
+        "syntaxAndColumnsValid": true,
+        "acceptedEvidence": false,
+        "sql": "SELECT CASE WHEN count(*) = 1 THEN 1 ELSE 0 END AS accepted\nFROM harness_shared.test_runs r\nWHERE r.id = -1\nAND r.workspace_id = 'papercusp-workspace' AND r.harness_slug = 'papercusp'\nAND r.file_path = 'packages/operator-core/lib/release/green-main-slo.ts' AND r.framework = 'operational'\nAND r.source = 'local' AND r.run_group_id LIKE 'operational-native:%'\nAND r.status = 'pass' AND r.worktree_dirty = false AND r.commit_sha = '0000000000000000000000000000000000000000'\nAND r.finished_at IS NOT NULL AND r.finished_at >= r.started_at\nAND r.execution_details->>'schemaVersion' = '1'\nAND r.execution_details->>'worktreeDirty' = 'false'\nAND r.execution_details->>'commitSha' = r.commit_sha\nAND r.execution_details->>'workspaceId' = r.workspace_id\nAND r.execution_details->>'harnessSlug' = r.harness_slug\nAND r.execution_details->>'filePath' = r.file_path\nAND r.execution_details->>'runGroupId' = r.run_group_id\nAND r.execution_details->>'passed' = '9'\nAND r.execution_details->>'failed' = '0' AND r.execution_details->>'skipped' = '0'\nAND r.execution_details->>'collectionFailed' = 'false'\nAND coalesce(r.execution_details->>'passedCaseTitlesTruncated', 'false') = 'false'\nAND r.execution_details->'passedCaseTitles' @> '[\"bounded-admission-window\",\"complete-admission-snapshot-population\",\"original-complete-admission-chains\",\"admission-lifetimes-cover-window-end\",\"nonempty-admission-round-population\",\"admission-rounds-at-most-45min\",\"all-admission-rounds-have-verdicts\",\"at-least-five-consecutive-admission-rounds\",\"admission-round-median-at-most-45min\"]'::jsonb\nAND jsonb_array_length(r.execution_details->'passedCaseTitles') = 9\nAND r.execution_details->'operational'->>'schemaVersion' = '1'\nAND r.execution_details->'operational'->'command' =\n '[\"executeGreenMainAdmissionWindow\",\"papercusp-workspace\",\"schema-validation-only\",\"1\",\"2\"]'::jsonb\nAND r.output_tail LIKE '%original_population_sha256=__POPULATION_SHA256__%'\nAND r.execution_details->'runtimeEnvironmentBefore'->>'schemaVersion' = '1'\nAND r.execution_details->'runtimeEnvironmentAfter'->>'schemaVersion' = '1'\nAND r.execution_details->'runtimeEnvironmentBefore'->>'fingerprint' = '0000000000000000000000000000000000000000000000000000000000000000'\nAND r.execution_details->'runtimeEnvironmentAfter'->>'fingerprint' = '0000000000000000000000000000000000000000000000000000000000000000'\nAND r.execution_details->'runtimeEnvironmentBefore'->'units' @> '[]'::jsonb\nAND r.execution_details->'runtimeEnvironmentAfter'->'units' @> '[]'::jsonb\nAND jsonb_array_length(r.execution_details->'runtimeEnvironmentBefore'->'units') = 0\nAND jsonb_array_length(r.execution_details->'runtimeEnvironmentAfter'->'units') = 0\nAND (r.execution_details->'runtimeEnvironmentBefore'->>'observedAt')::timestamptz <= r.started_at\nAND (r.execution_details->'runtimeEnvironmentAfter'->>'observedAt')::timestamptz >= r.finished_at"
+      },
+      {
+        "key": "idle",
+        "statement": "EXPLAIN (FORMAT JSON) of the SQL template with non-evidence sentinel parameters",
+        "syntaxAndColumnsValid": true,
+        "acceptedEvidence": false,
+        "sql": "SELECT CASE WHEN count(*) = 1 THEN 1 ELSE 0 END AS accepted\nFROM harness_shared.test_runs r\nWHERE r.id = -1\nAND r.workspace_id = 'papercusp-workspace' AND r.harness_slug = 'papercusp'\nAND r.file_path = 'packages/operator-core/lib/release/idle-repair-queue-actuator.ts' AND r.framework = 'operational'\nAND r.source = 'local' AND r.run_group_id LIKE 'operational-native:%'\nAND r.status = 'pass' AND r.worktree_dirty = false AND r.commit_sha = '0000000000000000000000000000000000000000'\nAND r.finished_at IS NOT NULL AND r.finished_at >= r.started_at\nAND r.execution_details->>'schemaVersion' = '1'\nAND r.execution_details->>'worktreeDirty' = 'false'\nAND r.execution_details->>'commitSha' = r.commit_sha\nAND r.execution_details->>'workspaceId' = r.workspace_id\nAND r.execution_details->>'harnessSlug' = r.harness_slug\nAND r.execution_details->>'filePath' = r.file_path\nAND r.execution_details->>'runGroupId' = r.run_group_id\nAND r.execution_details->>'passed' = '6'\nAND r.execution_details->>'failed' = '0' AND r.execution_details->>'skipped' = '0'\nAND r.execution_details->>'collectionFailed' = 'false'\nAND coalesce(r.execution_details->>'passedCaseTitlesTruncated', 'false') = 'false'\nAND r.execution_details->'passedCaseTitles' @> '[\"bounded-idle-actuator-window\",\"complete-idle-actuator-population\",\"original-idle-actuator-receipts\",\"continuous-idle-actuator-observations\",\"nonempty-idle-actuator-episodes\",\"idle-actuator-action-at-most-60min\"]'::jsonb\nAND jsonb_array_length(r.execution_details->'passedCaseTitles') = 6\nAND r.execution_details->'operational'->>'schemaVersion' = '1'\nAND r.execution_details->'operational'->'command' =\n '[\"executeIdleQueueActuatorWindow\",\"papercusp-workspace\",\"schema-validation-only\",\"1\",\"2\"]'::jsonb\nAND r.output_tail LIKE '%original_population_sha256=__POPULATION_SHA256__%'\nAND r.execution_details->'runtimeEnvironmentBefore'->>'schemaVersion' = '1'\nAND r.execution_details->'runtimeEnvironmentAfter'->>'schemaVersion' = '1'\nAND r.execution_details->'runtimeEnvironmentBefore'->>'fingerprint' = '0000000000000000000000000000000000000000000000000000000000000000'\nAND r.execution_details->'runtimeEnvironmentAfter'->>'fingerprint' = '0000000000000000000000000000000000000000000000000000000000000000'\nAND r.execution_details->'runtimeEnvironmentBefore'->'units' @> '[]'::jsonb\nAND r.execution_details->'runtimeEnvironmentAfter'->'units' @> '[]'::jsonb\nAND jsonb_array_length(r.execution_details->'runtimeEnvironmentBefore'->'units') = 0\nAND jsonb_array_length(r.execution_details->'runtimeEnvironmentAfter'->'units') = 0\nAND (r.execution_details->'runtimeEnvironmentBefore'->>'observedAt')::timestamptz <= r.started_at\nAND (r.execution_details->'runtimeEnvironmentAfter'->>'observedAt')::timestamptz >= r.finished_at"
+      },
+      {
+        "key": "invariants",
+        "statement": "EXPLAIN (FORMAT JSON) of the SQL template with non-evidence sentinel parameters",
+        "syntaxAndColumnsValid": true,
+        "acceptedEvidence": false,
+        "sql": "SELECT CASE WHEN count(*) = 1 THEN 1 ELSE 0 END AS accepted\nFROM harness_shared.test_runs r\nWHERE r.id = -1\nAND r.workspace_id = 'papercusp-workspace' AND r.harness_slug = 'papercusp'\nAND r.file_path = 'packages/operator-core/lib/release/gate-live-invariants.ts' AND r.framework = 'operational'\nAND r.source = 'local' AND r.run_group_id LIKE 'operational-native:%'\nAND r.status = 'pass' AND r.worktree_dirty = false AND r.commit_sha = '0000000000000000000000000000000000000000'\nAND r.finished_at IS NOT NULL AND r.finished_at >= r.started_at\nAND r.execution_details->>'schemaVersion' = '1'\nAND r.execution_details->>'worktreeDirty' = 'false'\nAND r.execution_details->>'commitSha' = r.commit_sha\nAND r.execution_details->>'workspaceId' = r.workspace_id\nAND r.execution_details->>'harnessSlug' = r.harness_slug\nAND r.execution_details->>'filePath' = r.file_path\nAND r.execution_details->>'runGroupId' = r.run_group_id\nAND r.execution_details->>'passed' = '5'\nAND r.execution_details->>'failed' = '0' AND r.execution_details->>'skipped' = '0'\nAND r.execution_details->>'collectionFailed' = 'false'\nAND coalesce(r.execution_details->>'passedCaseTitlesTruncated', 'false') = 'false'\nAND r.execution_details->'passedCaseTitles' @> '[\"seven-day-invariant-window\",\"complete-invariant-population\",\"exact-seven-invariant-identities\",\"pass-only-invariant-history\",\"hourly-invariant-history-coverage\"]'::jsonb\nAND jsonb_array_length(r.execution_details->'passedCaseTitles') = 5\nAND r.execution_details->'operational'->>'schemaVersion' = '1'\nAND r.execution_details->'operational'->'command' =\n '[\"executeGateInvariantWindow\",\"papercusp-workspace\",\"schema-validation-only\",\"1\",\"2\"]'::jsonb\nAND r.output_tail LIKE '%original_population_sha256=__POPULATION_SHA256__%'\nAND r.execution_details->'runtimeEnvironmentBefore'->>'schemaVersion' = '1'\nAND r.execution_details->'runtimeEnvironmentAfter'->>'schemaVersion' = '1'\nAND r.execution_details->'runtimeEnvironmentBefore'->>'fingerprint' = '0000000000000000000000000000000000000000000000000000000000000000'\nAND r.execution_details->'runtimeEnvironmentAfter'->>'fingerprint' = '0000000000000000000000000000000000000000000000000000000000000000'\nAND r.execution_details->'runtimeEnvironmentBefore'->'units' @> '[]'::jsonb\nAND r.execution_details->'runtimeEnvironmentAfter'->'units' @> '[]'::jsonb\nAND jsonb_array_length(r.execution_details->'runtimeEnvironmentBefore'->'units') = 0\nAND jsonb_array_length(r.execution_details->'runtimeEnvironmentAfter'->'units') = 0\nAND (r.execution_details->'runtimeEnvironmentBefore'->>'observedAt')::timestamptz <= r.started_at\nAND (r.execution_details->'runtimeEnvironmentAfter'->>'observedAt')::timestamptz >= r.finished_at"
+      },
+      {
+        "key": "alarm_filing",
+        "statement": "EXPLAIN (FORMAT JSON) of the SQL template with non-evidence sentinel parameters",
+        "syntaxAndColumnsValid": true,
+        "acceptedEvidence": false,
+        "sql": "SELECT CASE WHEN count(*) = 1 THEN 1 ELSE 0 END AS accepted\nFROM harness_shared.test_runs r\nWHERE r.id = -1\nAND r.workspace_id = 'papercusp-workspace' AND r.harness_slug = 'papercusp'\nAND r.file_path = 'packages/operator-core/lib/release/gate-live-invariants.ts' AND r.framework = 'operational'\nAND r.source = 'local' AND r.run_group_id LIKE 'operational-native:%'\nAND r.status = 'pass' AND r.worktree_dirty = false AND r.commit_sha = '0000000000000000000000000000000000000000'\nAND r.finished_at IS NOT NULL AND r.finished_at >= r.started_at\nAND r.execution_details->>'schemaVersion' = '1'\nAND r.execution_details->>'worktreeDirty' = 'false'\nAND r.execution_details->>'commitSha' = r.commit_sha\nAND r.execution_details->>'workspaceId' = r.workspace_id\nAND r.execution_details->>'harnessSlug' = r.harness_slug\nAND r.execution_details->>'filePath' = r.file_path\nAND r.execution_details->>'runGroupId' = r.run_group_id\nAND r.execution_details->>'passed' = '5'\nAND r.execution_details->>'failed' = '0' AND r.execution_details->>'skipped' = '0'\nAND r.execution_details->>'collectionFailed' = 'false'\nAND coalesce(r.execution_details->>'passedCaseTitlesTruncated', 'false') = 'false'\nAND r.execution_details->'passedCaseTitles' @> '[\"bounded-invariant-alarm-window\",\"complete-invariant-alarm-population\",\"original-invariant-breach-filing-receipts\",\"nonempty-invariant-breach-episodes\",\"invariant-breach-filings-within-one-tick\"]'::jsonb\nAND jsonb_array_length(r.execution_details->'passedCaseTitles') = 5\nAND r.execution_details->'operational'->>'schemaVersion' = '1'\nAND r.execution_details->'operational'->'command' =\n '[\"executeGateInvariantAlarmWindow\",\"papercusp-workspace\",\"schema-validation-only\",\"1\",\"2\"]'::jsonb\nAND r.output_tail LIKE '%original_population_sha256=__POPULATION_SHA256__%'\nAND r.execution_details->'runtimeEnvironmentBefore'->>'schemaVersion' = '1'\nAND r.execution_details->'runtimeEnvironmentAfter'->>'schemaVersion' = '1'\nAND r.execution_details->'runtimeEnvironmentBefore'->>'fingerprint' = '0000000000000000000000000000000000000000000000000000000000000000'\nAND r.execution_details->'runtimeEnvironmentAfter'->>'fingerprint' = '0000000000000000000000000000000000000000000000000000000000000000'\nAND r.execution_details->'runtimeEnvironmentBefore'->'units' @> '[]'::jsonb\nAND r.execution_details->'runtimeEnvironmentAfter'->'units' @> '[]'::jsonb\nAND jsonb_array_length(r.execution_details->'runtimeEnvironmentBefore'->'units') = 0\nAND jsonb_array_length(r.execution_details->'runtimeEnvironmentAfter'->'units') = 0\nAND (r.execution_details->'runtimeEnvironmentBefore'->>'observedAt')::timestamptz <= r.started_at\nAND (r.execution_details->'runtimeEnvironmentAfter'->>'observedAt')::timestamptz >= r.finished_at"
+      }
+    ],
+    "definition": "Planning validates syntax and column references only. Sentinel inputs are not bound evidence, and no acceptance SELECT was graded."
+  },
+  "nativeOperationalPopulationRead": {
+    "workspace": "papercusp-workspace",
+    "harness": "papercusp",
+    "source": "local",
+    "framework": "operational",
+    "filePaths": [
+      "packages/operator-core/lib/release/green-main-slo.ts",
+      "packages/operator-core/lib/release/gate-live-invariants.ts",
+      "packages/operator-core/lib/release/idle-repair-queue-actuator.ts"
+    ],
+    "rowCount": 0,
+    "positiveControlTestRunId": "21243943",
+    "positiveControlPassed": true,
+    "limit": 5,
+    "scope": "The predicate above only; no claim about null-tenant CI/gate populations."
+  },
+  "progressReport": {
+    "reportId": "rpt_d8f407ef-e56c-4920-a418-be76ddf2f8af",
+    "path": "/reports?sel=rpt_d8f407ef-e56c-4920-a418-be76ddf2f8af",
+    "requestKey": "c0523-native-receipt-progress-20261014-edition1",
+    "bodySha256": "a09c6ceb40b82de60dee29b5170b0bf5d7dbb1df837c54b540f2c483704aeab9",
+    "sourcePath": "docs/evidence/green-main-native-receipt-progress-20261014.md",
+    "readbackVerified": true,
+    "visibility": "owner"
+  },
+  "fullPlanStatus": "unshipped",
+  "constraints": [
+    "No passing test repeats; no source drift since verification in the six edited files.",
+    "No operational Goal pass, amendment approval or shipping claim.",
+    "No LIVE_GATE_OPS, new agents, route changes, manual git or worktrees."
+  ]
+}

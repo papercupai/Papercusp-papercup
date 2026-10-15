@@ -12,7 +12,7 @@ vi.mock('./lsp-adapter.ts', () => ({
   lspClientInventory: () => [],
   resolveServerBin: () => null,
 }));
-import { lspFacade } from './lsp-facade';
+import { lspDaemonFacade as lspFacade } from './lsp-daemon-facade';
 
 const args = { file: '/fixture/spec-evidence-store.ts', line1: 98, character: 25, rootPath: '/fixture' };
 function answer(health: 'healthy' | 'degraded', count: number): CodeIntelAnswer {

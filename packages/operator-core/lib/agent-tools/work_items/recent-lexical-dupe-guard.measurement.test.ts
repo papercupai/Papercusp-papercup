@@ -26,10 +26,11 @@ const firstAsRecentOpenRow: RecentDupeCandidateRow = {
   summary: FIRST.summary,
   state: 'open',
   harness: 'papercusp',
+  hasEmbedding: true,
 };
 
 const depsWith = (rows: RecentDupeCandidateRow[]): RecentLexicalDupeDeps => ({
-  queryRecentOpenItems: async () => rows,
+  queryRecentOpenItems: async () => ({ rows, truncated: false }),
 });
 
 afterEach(() => {
@@ -47,11 +48,11 @@ describe('recent-lexical leg × measurement overlap — R-1 replay of the measur
       { title: SECOND.title, summary: SECOND.summary, harness: 'papercusp' },
       depsWith([firstAsRecentOpenRow]),
     );
-    expect(out).toEqual([
+    expect(out?.candidates).toEqual([
       expect.objectContaining({ id: FIRST.id, source: 'measurement-overlap', state: 'open', harness: 'papercusp' }),
     ]);
     // 8 distinct shared anchors -> 8/9.
-    expect(out?.[0].similarity).toBe(0.89);
+    expect(out?.candidates[0].similarity).toBe(0.89);
   });
 
   it('without the summary (title-only admission) the pair is NOT flagged — one shared anchor is not enough', async () => {
@@ -59,7 +60,7 @@ describe('recent-lexical leg × measurement overlap — R-1 replay of the measur
       { title: SECOND.title, harness: 'papercusp' },
       depsWith([firstAsRecentOpenRow]),
     );
-    expect(out).toEqual([]);
+    expect(out?.candidates).toEqual([]);
   });
 
   it('an unrelated recent row that shares only bare numbers is not flagged', async () => {
@@ -69,12 +70,13 @@ describe('recent-lexical leg × measurement overlap — R-1 replay of the measur
       summary: 'freed 33 GiB, floor 120 GiB',
       state: 'open',
       harness: 'papercusp',
+      hasEmbedding: true,
     };
     const out = await findRecentLexicalDupes(
       { title: SECOND.title, summary: SECOND.summary },
       depsWith([unrelated]),
     );
-    expect(out).toEqual([]);
+    expect(out?.candidates).toEqual([]);
   });
 
   it('a Jaccard hit keeps its lexical-recent source and is not double-reported', async () => {
@@ -83,7 +85,7 @@ describe('recent-lexical leg × measurement overlap — R-1 replay of the measur
       { title: SECOND.title, summary: SECOND.summary },
       depsWith([titleTwin, firstAsRecentOpenRow]),
     );
-    expect(out?.map((c) => [c.id, c.source])).toEqual([
+    expect(out?.candidates.map((c) => [c.id, c.source])).toEqual([
       ['EI-2', 'lexical-recent'],
       [FIRST.id, 'measurement-overlap'],
     ]);
@@ -94,7 +96,7 @@ describe('recent-lexical leg × measurement overlap — R-1 replay of the measur
       { title: SECOND.title, summary: SECOND.summary, excludeId: FIRST.id },
       depsWith([firstAsRecentOpenRow]),
     );
-    expect(out).toEqual([]);
+    expect(out?.candidates).toEqual([]);
   });
 });
 
@@ -108,7 +110,7 @@ describe('recent-lexical leg × measurement overlap — R-5 fail-open', () => {
         throw new Error('extractor exploded');
       },
     );
-    expect(out.map((c) => [c.id, c.source])).toEqual([['EI-2', 'lexical-recent']]);
+    expect(out.candidates.map((c) => [c.id, c.source])).toEqual([['EI-2', 'lexical-recent']]);
   });
 
   it('a >=100 KB summary returns within the leg budget', async () => {
@@ -117,6 +119,6 @@ describe('recent-lexical leg × measurement overlap — R-5 fail-open', () => {
     const t0 = performance.now();
     const out = await findRecentLexicalDupes({ title: SECOND.title, summary: huge }, depsWith([firstAsRecentOpenRow]));
     expect(performance.now() - t0).toBeLessThan(1500);
-    expect(out?.[0]?.id).toBe(FIRST.id);
+    expect(out?.candidates[0]?.id).toBe(FIRST.id);
   });
 });

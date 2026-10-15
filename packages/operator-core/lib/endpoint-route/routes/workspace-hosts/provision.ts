@@ -1,4 +1,4 @@
-/** POST /workspace-hosts/provision — start or resume one durable GCP host provision. */
+/** POST /workspace-hosts/provision — start or resume one durable GCP or AWS host provision. */
 import { defineTool } from '@papercusp/agent-mcp';
 import {
   isWorkspaceHostCanaryIdentityLabelKey,
@@ -12,13 +12,25 @@ import {
   type StartWorkspaceHostProvisioningInput,
 } from '../../../dbos/workspace-host-provision-workflow';
 import { workspaceHostAuditUrl } from '../../../workspace-host/admission-window';
-import { dbosStarted } from '../../../dbos/bootstrap';
+import { awaitDbosLaunchInFlight, dbosStarted } from '../../../dbos/bootstrap';
+
+const defaultAwaitProvisioning = () => awaitDbosLaunchInFlight();
 import { activeWorkspaceId } from '../../../workspace-registry';
 import {
+  listLiveWorkspaceHostIdsOnConnection,
   readWorkspaceHostConnection,
+  readWorkspaceHostIdSpent,
+  WORKSPACE_HOST_FENCE_REFUSED_CODE,
+  WorkspaceHostControllerFenceError,
   type StoredWorkspaceHostConnection,
+  type WorkspaceHostIdSpentError,
 } from '../../../workspace-host/observability-store';
 import {
+  decideWorkspaceHostInstanceCap,
+  workspaceHostConnectionInstanceCap,
+} from '../../../workspace-host/instance-cap';
+import {
+  WORKSPACE_HOST_PROVISION_DEFAULT_REVISION,
   WorkspaceHostProvisioningConnectionError,
   WorkspaceHostProvisioningRequestError,
   validateWorkspaceHostCanaryAdmission,
@@ -30,6 +42,12 @@ import {
 } from '../../../workspace-host/controller-forwarding';
 
 const SAFE_ID = /^[a-z0-9][a-z0-9._:-]{0,159}$/i;
+
+/**
+ * Targets with a registered provider factory (lib/dbos/bootstrap.ts → provider-factories.ts).
+ * Any other target is a typed 501 rather than a workflow failure deep inside the runner.
+ */
+export const WORKSPACE_HOST_PROVISIONABLE_TARGETS: ReadonlySet<string> = new Set(['gcp', 'aws']);
 
 interface ProvisionBody {
   connectionId?: unknown;
@@ -46,7 +64,24 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 export interface WorkspaceHostProvisionRouteDependencies {
   activeWorkspaceId: () => string;
   provisioningAvailable: () => boolean;
+  /** WI-10004957: bounded wait for an in-flight DBOS launch before refusing 503. */
+  awaitProvisioning?: () => Promise<boolean>;
   readConnection: (workspaceId: string, connectionId: string) => Promise<StoredWorkspaceHostConnection | null>;
+  /**
+   * Live hosts already on the connection, for the per-connection instance cap (instance-cap.ts).
+   * Absent = the store read; a tenant surface supplies its RLS-wrapped equivalent.
+   */
+  listLiveHostIds?: (workspaceId: string, connectionId: string) => Promise<string[]>;
+  /**
+   * WI-10006929: the spent-host-id refusal the provision workflow would raise, read before the
+   * workflow is enqueued so the caller gets a synchronous 422 instead of 202 plus a failed
+   * operation. Absent = the store read; a tenant surface supplies its RLS-wrapped equivalent.
+   */
+  readSpentHostId?: (
+    workspaceId: string,
+    hostId: string,
+    request: { operationId?: string; desiredRevision: number },
+  ) => Promise<WorkspaceHostIdSpentError | null>;
   startProvisioning: (
     input: StartWorkspaceHostProvisioningInput,
   ) => ReturnType<typeof startWorkspaceHostProvisioningWorkflow>;
@@ -143,7 +178,10 @@ export function createWorkspaceHostProvisionRoute(
       if (dependencies.authorizeHost && !(await dependencies.authorizeHost(requestedDesired.hostId))) {
         return Response.json({ ok: false, error: 'workspace_host_not_bound' }, { status: 403 });
       }
-      if (!dependencies.provisioningAvailable()) {
+      if (
+        !dependencies.provisioningAvailable() &&
+        !(await (dependencies.awaitProvisioning ?? defaultAwaitProvisioning)())
+      ) {
         try {
           const forwarded = await (dependencies.forwardRequest ?? defaultWorkspaceHostRequestForwarder)(
             '/api/workspace-hosts/provision',
@@ -179,7 +217,7 @@ export function createWorkspaceHostProvisionRoute(
       if (stored.target !== requestedDesired.target) {
         return Response.json({ ok: false, error: 'connection target does not match desired.target' }, { status: 422 });
       }
-      if (requestedDesired.target !== 'gcp') {
+      if (!WORKSPACE_HOST_PROVISIONABLE_TARGETS.has(requestedDesired.target)) {
         return Response.json(
           {
             ok: false,
@@ -188,6 +226,53 @@ export function createWorkspaceHostProvisionRoute(
           },
           { status: 501 },
         );
+      }
+      // One host id is one replaceable host: an id that already ran, or is being destroyed or
+      // retired, is refused HERE with a synchronous 422 (WI-10006929). The workflow's own guard
+      // (WI-10006863) remains the race-safe backstop; a replayed operationId passes through to it.
+      const spent = await (dependencies.readSpentHostId ?? readWorkspaceHostIdSpent)(
+        workspaceId,
+        requestedDesired.hostId,
+        {
+          ...(typeof body.operationId === 'string' ? { operationId: body.operationId } : {}),
+          desiredRevision: WORKSPACE_HOST_PROVISION_DEFAULT_REVISION,
+        },
+      );
+      if (spent) {
+        return Response.json(
+          {
+            ok: false,
+            error: 'workspace-host provisioning request rejected',
+            reason: 'host_id_spent',
+            problems: [spent.message],
+            hostId: spent.hostId,
+            auditUrl: workspaceHostAuditUrl(spent.hostId),
+          },
+          { status: 422 },
+        );
+      }
+      // One live host per hosted sign-up, on every cloud (D-397 / aws-byoc-gcp-parity D-001).
+      // Checked before the workflow starts, so a capped request creates nothing at all.
+      const cap = workspaceHostConnectionInstanceCap(stored.connection);
+      if (cap !== null) {
+        const liveHostIds = await (dependencies.listLiveHostIds ?? listLiveWorkspaceHostIdsOnConnection)(
+          workspaceId,
+          connectionId,
+        );
+        const decision = decideWorkspaceHostInstanceCap({ cap, requestedHostId: requestedDesired.hostId, liveHostIds });
+        if (!decision.admitted) {
+          return Response.json(
+            {
+              ok: false,
+              error: decision.error,
+              message: `this connection already has ${decision.liveHostIds.length} live workspace host(s); the cap is ${decision.cap}`,
+              cap: decision.cap,
+              connectionId,
+              liveHostIds: decision.liveHostIds,
+            },
+            { status: 409 },
+          );
+        }
       }
       // The control query deliberately masks credential references. Rebind the
       // stored raw reference and connection metadata server-side so a browser
@@ -265,6 +350,20 @@ export function createWorkspaceHostProvisionRoute(
         if (error instanceof WorkspaceHostProvisioningConflictError) {
           return Response.json(
             { ok: false, error: 'workspace host already has a provisioning operation in progress' },
+            { status: 409 },
+          );
+        }
+        if (error instanceof WorkspaceHostControllerFenceError) {
+          // WI-10005474: the operation was refused before it began (a newer operation or controller
+          // holds the host). Retrying this operation id replays the refusal; a new one is admissible.
+          return Response.json(
+            {
+              ok: false,
+              error: 'workspace-host provision refused: a newer operation or controller holds this host',
+              reason: WORKSPACE_HOST_FENCE_REFUSED_CODE,
+              hostId: error.hostId,
+              auditUrl: workspaceHostAuditUrl(error.hostId),
+            },
             { status: 409 },
           );
         }

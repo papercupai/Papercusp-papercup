@@ -109,9 +109,16 @@ const GATE_ENV = {
 
 /** The authorised product strings, read from the gate itself (values, at runtime). */
 function authorisedStrings(): string[] {
-  const block = gateSource().match(/AUTHORISED_PRODUCT_STRINGS\s*=\s*\(([\s\S]*?)\n\)/)?.[1];
-  if (!block) throw new Error('AUTHORISED_PRODUCT_STRINGS not found — gate structure changed');
-  return [...block.matchAll(/^\s*(?:"([^"]+)"|'([^']+)')\s*,/gm)].map((m) => m[1] ?? m[2]);
+  // Read the actual Python assignment. A multiline-only regex crossed the
+  // closing parenthesis of an inline tuple and captured an unrelated allowlist.
+  const parsed = spawnSync('python3', ['-c', [
+    'import ast, json, sys',
+    'tree = ast.parse(sys.stdin.read())',
+    'assignment = next(node for node in tree.body if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "AUTHORISED_PRODUCT_STRINGS" for target in node.targets))',
+    'print(json.dumps(ast.literal_eval(assignment.value)))',
+  ].join('\n')], { input: gateSource(), encoding: 'utf8', timeout: 10_000 });
+  if (parsed.status !== 0) throw new Error(`Could not read AUTHORISED_PRODUCT_STRINGS: ${parsed.stderr}`);
+  return JSON.parse(parsed.stdout) as string[];
 }
 
 /**

@@ -47,6 +47,43 @@ export const BANNED_ROUTES: readonly BannedRoute[] = Object.freeze([
   }),
 ]);
 
+/**
+ * A SANCTIONED tool routed for the WRONG question.
+ *
+ * Unlike a banned route, naming the tool is correct guidance for other questions
+ * (`gitnexus.context` IS the topology authority for a known symbol), so a
+ * presence rule would flag the su playbooks' correct "use gitnexus.context for a
+ * known symbol". Only the PAIRING with this question class is a violation: a
+ * routing row whose question cell asks it, or a prose sentence that names the
+ * tool and pitches it for that question with no negation in the same sentence.
+ */
+interface MisroutedQuestion {
+  readonly question: RegExp;
+  readonly tool: string;
+  readonly instead: string;
+  readonly reason: string;
+}
+
+export const MISROUTED_QUESTIONS: readonly MisroutedQuestion[] = Object.freeze([
+  Object.freeze({
+    question: /\bdefinitions?\b|\bdefined\b/i,
+    tool: 'gitnexus.context',
+    instead: 'lsp:query',
+    reason:
+      'a definition lookup routes to lsp:query, which resolves shadowing and re-exports; gitnexus.context answers topology for a known symbol (gitnexus-deterministic-integration P-002, rubric R-2)',
+  }),
+]);
+
+/**
+ * Sentences of one prose paragraph. The misrouting rule is sentence-scoped where
+ * the ban rule is paragraph-scoped: a "NOT `gitnexus.query`" warning in the NEXT
+ * sentence must not excuse a definition pitch in this one (the exact shape of the
+ * debugger.tools.md line this rule was written for).
+ */
+function sentencesOf(text: string): string[] {
+  return text.split(/(?<=[.!?])\s+/);
+}
+
 export interface RoutingViolation {
   readonly line: number;
   readonly tool: string;
@@ -174,6 +211,21 @@ export function judgeCodeIntelRouting(source: string): RoutingVerdict {
         });
       }
     }
+    // The same cell, judged against the row's QUESTION: a sanctioned tool is still
+    // a violation as the authority for a question it does not answer.
+    const question = cells[0]!;
+    for (const misrouted of MISROUTED_QUESTIONS) {
+      if (misrouted.question.test(question) && authority.includes(misrouted.tool)) {
+        violations.push({
+          line: lineNo,
+          tool: misrouted.tool,
+          position: 'authority-cell',
+          instead: misrouted.instead,
+          reason: misrouted.reason,
+          text: trimmed,
+        });
+      }
+    }
   }
 
   // ── Third position: a PROSE paragraph that offers a banned backend as the route.
@@ -224,6 +276,22 @@ export function judgeCodeIntelRouting(source: string): RoutingVerdict {
         reason: banned.reason,
         text: para.text.trim().slice(0, 240),
       });
+    }
+    for (const misrouted of MISROUTED_QUESTIONS) {
+      if (!para.text.includes(misrouted.tool)) continue;
+      for (const sentence of sentencesOf(para.text)) {
+        if (!sentence.includes(misrouted.tool)) continue;
+        positionsChecked += 1;
+        if (!misrouted.question.test(sentence) || NEGATION_MARKER.test(sentence)) continue;
+        violations.push({
+          line: para.start,
+          tool: misrouted.tool,
+          position: 'prose-recommendation',
+          instead: misrouted.instead,
+          reason: misrouted.reason,
+          text: sentence.trim().slice(0, 240),
+        });
+      }
     }
   }
 

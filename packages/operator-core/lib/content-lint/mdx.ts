@@ -11,15 +11,16 @@
  * apps/operator-docs build (every agent's doc regeneration). Detection is the
  * REAL MDX compiler, not a regex: each .mdx is compiled with `@mdx-js/mdx` (the
  * same MDX core astro runs) + remark-gfm (matching starlight's pipeline), so
- * undefined Starlight components compile cleanly and only genuine SYNTAX errors
- * fail — zero false positives on the docs that currently build.
+ * Starlight components compile cleanly. Scope analysis of the generated module
+ * also catches syntactically valid expressions with unbound identifiers: bare
+ * prose such as `{publisher, product, name}` otherwise fails only at render time.
  *
  * `@mdx-js/mdx` + `remark-gfm` are LAZILY imported (the operator process loads
  * this module via the content-detector registry at boot; the heavy MDX core
  * should load only when a dirty `.mdx` actually needs compiling).
  */
 
-/** A single MDX syntax error: source position (1-based) + the compiler's reason. */
+/** An MDX validation error: source position (1-based), when known, + reason. */
 export interface MdxCompileError {
   line: number | null;
   col: number | null;
@@ -234,15 +235,43 @@ function normaliseCompileError(err: unknown): MdxCompileError {
   return { line, col, reason };
 }
 
-/** Compile once under an explicit remark plugin set. `null` ⇒ it compiled. */
+/**
+ * Analyze the compiler's JavaScript, without executing doc imports or expressions.
+ * Reuse Acorn + ESLint's scope analyzer to handle imports, destructuring, nested
+ * functions and forward declarations rather than guessing bindings from prose.
+ * Components supplied by Starlight are already bound by the MDX compiler.
+ */
+async function findUnboundMdxExpression(program: string): Promise<MdxCompileError | null> {
+  const [{ parse }, { analyze }] = await Promise.all([import('acorn'), import('eslint-scope')]);
+  const tokens: import('acorn').Token[] = [];
+  const tree = parse(program, { ecmaVersion: 'latest', sourceType: 'module', ranges: true, onToken: tokens });
+  const scope = analyze(tree as Parameters<typeof analyze>[0], { ecmaVersion: 2024, sourceType: 'module' });
+  for (const reference of scope.globalScope?.through ?? []) {
+    const identifier = reference.identifier;
+    if (Object.hasOwn(globalThis, identifier.name)) continue;
+    // `typeof window` is valid during SSR even when window has no binding.
+    const tokenIndex = tokens.findIndex((token) => token.start === identifier.range?.[0]);
+    if (tokens[tokenIndex - 1]?.type.label === 'typeof') continue;
+    return {
+      // Parsed JavaScript positions are generated positions, not MDX source positions.
+      line: null,
+      col: null,
+      reason: `Unbound MDX expression identifier "${identifier.name}" would fail during rendering; ` +
+        'put literal brace examples in backticks, or import/declare the intended binding',
+    };
+  }
+  return null;
+}
+
+/** Compile + validate under an explicit remark plugin set. `null` ⇒ valid. */
 async function compileUnder(
   compile: MdxCompile,
   body: string,
   remarkPlugins: unknown[],
 ): Promise<MdxCompileError | null> {
   try {
-    await compile(body, { format: 'mdx', remarkPlugins });
-    return null;
+    const program = await compile(body, { format: 'mdx', remarkPlugins });
+    return await findUnboundMdxExpression(String(program));
   } catch (err) {
     return normaliseCompileError(err);
   }
@@ -250,7 +279,7 @@ async function compileUnder(
 
 /**
  * Pure detector: compile one .mdx with the MDX core. Returns `null` when it
- * compiles, or `{ line, col, reason }` on a syntax error. Never throws on a
+ * compiles with bound expressions, or `{ line, col, reason }` on an error. Never throws on a
  * compile error (it is caught + returned); a failure to LOAD the MDX core
  * propagates so the caller can decide (the git-sync guard treats a loader throw
  * as "can't check — don't block").

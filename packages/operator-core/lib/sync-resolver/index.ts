@@ -46,14 +46,17 @@
 
 import { z } from 'zod';
 import { createResolver, type QueryRegistry } from '@papercusp/sync/server';
+import { projectChatFailureTranscript } from '../chat-model-failure';
 // Flat-row sync reads carry page metadata (e.g. the true total) on row[0]._meta;
 // attachListMeta is the one place that convention lives. See ./list-meta.
 import { attachListMeta } from './list-meta';
+import { reportsListArgs, reportsLineageArgs } from './reports';
 // WI-6382: degraded-snapshot provenance. A `learning.*` catch must never return
 // a bare empty — that made a broken substrate byte-identical to an idle healthy
 // one and left every panel's error branch unreachable for the data-layer class.
 import { classifyReadFailure, degraded } from './degraded-snapshot';
 import { createReadDeadline } from './read-deadline';
+import { traceNamedQueryStage } from '../agent-tools/db-diagnostic-correlation-wiring';
 import { createCompanionListQueryPair, readCompanionSummary } from './bounded-list-read';
 import {
   WORK_ITEMS_CURSOR_PAGE_LIMIT,
@@ -61,6 +64,7 @@ import {
   buildWorkItemsPredicate,
   normalizeWorkItemsListArgs,
   readWorkItemsPageFromStore,
+  readWorkItemPresentations,
   readWorkItemsSummaryFromStore,
   workItemsSummarySelection,
   type WorkItemsListWireArgs,
@@ -115,10 +119,8 @@ import {
 import {
   LEARNING_OBSERVATIONS_PAGE_LIMIT,
   buildLearningObservationsPredicate,
-  isDefaultLearningObservationsPage,
   learningObservationsSummarySelection,
   normalizeLearningObservationsArgs,
-  pageLearningObservationsSnapshot,
   readLearningObservationsPageFromStore,
   readLearningObservationsSummaryFromStore,
   type LearningObservationRow,
@@ -257,6 +259,7 @@ const designFeaturesListArgsSchema = z.object({
 });
 
 const learningObservationsFiltersSchema = z.object({
+  triageStates: z.array(z.enum(['awaiting', 'handled'])).max(2).optional(),
   scopes: z.array(z.string().max(300)).max(500).optional(),
   sourceRoles: z.array(z.string().max(160)).max(200).optional(),
   confidences: z.array(z.string().max(80)).max(100).optional(),
@@ -796,11 +799,30 @@ async function resolveHiveMemberSlugs(potHomeSlug: string, workspaceId?: string)
  * is a silent correctness bug: the badge would count a different corpus than
  * the rows it sits above.
  */
+/**
+ * WI-10005548 / D-006: a memory a restricted agent wrote to a shared pool is stored
+ * as a sealed stub. The Learning views are the owner's, and the owner is always a
+ * permitted reader, so they show the text. This runs on the SOURCE rows, before
+ * retainMemoryTitle clamps a title to 200 chars: a stub is longer, so a clamped
+ * title would lose the ref it is opened by.
+ */
+async function unsealMemoriesForOwner<T extends { text: string }>(
+  workspaceId: string | null | undefined,
+  rows: readonly T[],
+): Promise<T[]> {
+  const { unsealRowsForOwner } = await import('../personal-vault/shared-store-seal');
+  return unsealRowsForOwner(rows, {
+    workspaceId,
+    textOf: (row) => row.text,
+    withText: (row, text) => ({ ...row, text }),
+  });
+}
+
 async function retainStoreDeps(
   sql: import('postgres').Sql,
   workspaceId: string,
   hive: string | undefined,
-): Promise<import('./learning-retain-read').RetainFeedDeps> {
+): Promise<import('./learning-retain-read').RetainFeedDeps & Pick<import('./learning-retain-read').RetainDetailDeps, 'getMemory'>> {
   const { currentMemoryBackendChoice } = await import('../memory/backend-selection');
   // Only these two active choices enumerate the canonical Postgres rows.
   // A custom/future backend keeps the pluggable `backend.list()` contract — a
@@ -821,10 +843,28 @@ async function retainStoreDeps(
     if (!avail.ok) throw new Error(avail.reason);
     const scopes = await resolveMemoryScopes();
     if (scopes.length === 0) return [];
-    return backend.list({ scope: scopes.length === 1 ? scopes[0]! : scopes });
+    return unsealMemoriesForOwner(workspaceId, await backend.list({ scope: scopes.length === 1 ? scopes[0]! : scopes }));
   };
 
   return {
+    // Feed, summary, counts and keyed detail must use the same corpus. Canonical
+    // reads need PG only, not an extraction LLM or embedding client.
+    getMemory: async (id) => {
+      let entry: import('./learning-retain-read').RetainMemorySource | null;
+      if (canonicalBacked) {
+        const { listCanonicalRetainMemoriesPage } = await import('./learning-retain-read');
+        [entry = null] = await listCanonicalRetainMemoriesPage(sql, await resolveMemoryScopes(), { window: null, limit: 1, id });
+      } else {
+        const { getMemoryBackend } = await import('../memory/backend');
+        const backend = getMemoryBackend();
+        const avail = await backend.available();
+        if (!avail.ok) throw new Error(avail.reason);
+        entry = await backend.get(id);
+      }
+      if (!entry) return null;
+      const [owned] = await unsealMemoriesForOwner(workspaceId, [entry]);
+      return owned ?? null;
+    },
     // WI-39535: the hive's shared-memory pool as a ledger kind. Scope
     // resolution mirrors learning.hive (learning-hive-read): `hive:<slug>` for
     // a selected pot, every pot's pool under the All-Pots lens (ListOptions.scope
@@ -835,7 +875,10 @@ async function retainStoreDeps(
       ? {
           listMemoriesPage: async (opts) => {
             const { listCanonicalRetainMemoriesPage } = await import('./learning-retain-read');
-            return listCanonicalRetainMemoriesPage(sql, await resolveMemoryScopes(), opts);
+            return unsealMemoriesForOwner(
+              workspaceId,
+              await listCanonicalRetainMemoriesPage(sql, await resolveMemoryScopes(), opts),
+            );
           },
           countMemories: async () => {
             const { countCanonicalRetainMemories } = await import('./learning-retain-read');
@@ -1063,16 +1106,12 @@ const learningObservationsQueryPair = createCompanionListQueryPair({
   domain: 'learning.observations',
   rowsQueryName: 'learning.observations',
   argsSchema: learningObservationsArgsSchema,
-  backingTables: ['harness_shared.work_items'] as const,
+  backingTables: ['harness_shared.work_items', 'harness_shared.work_item_occurrences'] as const,
   normalizeArgs: (args: LearningObservationsWireArgs) => normalizeLearningObservationsArgs(args),
   buildPredicate: buildLearningObservationsPredicate,
-  readPage: async ({ args, predicate }) => {
-    if (isDefaultLearningObservationsPage(args)) {
-      const { readDerivedSnapshotRows } = await import('../derived-reads/registry');
-      await import('../derived-reads/producers');
-      const snapshot = await readDerivedSnapshotRows('learning.observations');
-      return pageLearningObservationsSnapshot(snapshot as LearningObservationRow[], predicate);
-    }
+  // Intake receipts and new occurrences must agree with the companion summary.
+  // The retained-stock snapshot does not carry that live partition.
+  readPage: async ({ predicate }) => {
     const [{ getOrgPg }, { activeWorkspaceId }, { resolveIssuesScopeWorkspace }] = await Promise.all([
       import('@papercusp/db-org'),
       import('../workspace-registry'),
@@ -1118,6 +1157,60 @@ const retainFeedArgsSchema = z
   .optional();
 
 const REGISTRY: Record<string, QueryEntry<unknown>> = {
+  // D-077: explicit refresh, because grading includes file/source currentness
+  // outside PG notifications. One bounded read for the visible listing page;
+  // authority is the server workspace, never a browser principal/work-item.
+  'cupboard.identityOutcomeCosts': {
+    backingTables: [],
+    argsSchema: z.object({ releaseRefs: z.array(z.string().min(1).max(300)).max(100),
+      readKey: z.string().min(1).max(100).optional() }).strict(),
+    resolve: async (raw) => {
+      const refs = [...new Set((raw as { releaseRefs: string[] }).releaseRefs)];
+      if (refs.length === 0) return [];
+      const [{ getOrgPg }, { activeWorkspaceId }, { readIdentityOutcomeCost }, { parseIdentityReleaseSkuRef }] =
+        await Promise.all([import('@papercusp/db-org'), import('../workspace-registry'),
+          import('../cupboard/shadow-metering-reader'), import('../cupboard/identity-per-use-offer')]);
+      const sql = getOrgPg().sql, workspaceId = activeWorkspaceId();
+      const rows = [];
+      // Keep expensive current-grade reads sequential rather than flooding the
+      // shared database with one concurrent population per card.
+      for (const releaseRef of refs) rows.push(parseIdentityReleaseSkuRef(releaseRef)
+        ? await readIdentityOutcomeCost(sql, { workspaceId, releaseRef })
+        : { basis: 'local-funded-release-usage', releaseRef, currency: 'USD', status: 'unavailable',
+          costPerAcceptedOutcomeMicros: null, reason: 'invalid-scope' });
+      return rows;
+    },
+  },
+  // External hosted D1 receipts, scoped by this desktop's server-held GitHub
+  // bearer. No PG backing table or manufactured local ledger. Refresh/page
+  // navigation explicitly re-reads; remote changes are not claimed as pushed.
+  'cupboard.identityUsage': {
+    backingTables: [],
+    argsSchema: z.object({ limit: z.number().int().min(1).max(200).optional(),
+      cursor: z.string().max(2000).optional() }).strict(),
+    resolve: async (raw) => {
+      const { readPrincipalUsagePage } = await import('../cupboard/metered-invocation-door-io');
+      return [await readPrincipalUsagePage(raw as { limit?: number; cursor?: string })];
+    },
+  },
+  'harnessPrs.byHarness': {
+    backingTables: ['harness_shared.pr_review_reports', 'harness_shared.pr_check_status_cache', 'harness_shared.harness_feature_prs', 'harness_shared.routines'],
+    argsSchema: z.object({ harnessSlug: z.string().trim().min(1), scope: z.enum(['harness', 'hive']).optional() }),
+    resolve: async (raw) => {
+      const { harnessSlug, scope } = raw as { harnessSlug: string; scope?: 'harness' | 'hive' };
+      const { readPrsPayload } = await import('../endpoint-route/routes/harness/prs');
+      return [await readPrsPayload(harnessSlug, scope)];
+    },
+  },
+  'harnessPrs.detail': {
+    backingTables: ['harness_shared.pr_review_reports', 'harness_shared.pr_check_status_cache', 'harness_shared.routines', 'harness_shared.pr_reviewer_settings', 'harness_shared.shared_repo_binding_cache'],
+    argsSchema: z.object({ harnessSlug: z.string().trim().min(1), number: z.number().int().positive() }),
+    resolve: async (raw) => {
+      const { harnessSlug, number } = raw as { harnessSlug: string; number: number };
+      const { livePrViewerDeps, readPrViewerDetails } = await import('../pr-host/pr-viewer');
+      return [await readPrViewerDetails(number, await livePrViewerDeps(harnessSlug))];
+    },
+  },
   // identities.surface — P-011's one bounded, flat-row settings read over the
   // existing identity source catalog, launch receipt, control activation, and
   // append-only transition ledger. Provider bindings remain an explicit M3 state.
@@ -1168,6 +1261,24 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         import('../workspace-host/observability-store'),
       ]);
       return readWorkspaceHostControl(activeWorkspaceId());
+    },
+  },
+
+  // desktops.local — the Desktops page's "This computer" grid
+  // (agent-multi-desktops-grid-2026-10-06 P-007, D-015): every local agent desktop,
+  // labelled with its owner and that owner's current work-item. The SAME read as
+  // GET /deploy/local-desktops. NOT trigger-backed: desktop_sessions has no
+  // change-notify trigger, so the registry's roster-visible writes announce this
+  // name themselves (desktop-session-registry LOCAL_DESKTOPS_QUERY), and the grid
+  // re-reads on its visible tick because a claim can change with no registry write.
+  'desktops.local': {
+    backingTables: ['harness_shared.desktop_sessions', 'harness_shared.work_item_claims'],
+    resolve: async () => {
+      const [{ activeWorkspaceId }, { readLocalDesktopRoster }] = await Promise.all([
+        import('../workspace-registry'),
+        import('../endpoint-route/routes/deploy/local-desktops'),
+      ]);
+      return readLocalDesktopRoster(activeWorkspaceId()) as Promise<unknown[]>;
     },
   },
 
@@ -1480,6 +1591,46 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         },
       ),
     ],
+  },
+  'reports.list': {
+    backingTables: ['harness_shared.report_library'],
+    argsSchema: reportsListArgs,
+    resolve: async (args) => (await import('./reports')).resolveReportsList(args as never),
+  },
+  'dao.launches': {
+    backingTables: ['harness_shared.setup_wizard_state'],
+    argsSchema: z.object({}).strict(),
+    resolve: async () => (await import('../dao-launch-store')).listDaoLaunches(),
+  },
+  // Compatibility with the original publish producer's query name.
+  'reports.library': {
+    backingTables: ['harness_shared.report_library'],
+    argsSchema: reportsListArgs,
+    resolve: async (args) => (await import('./reports')).resolveReportsList(args as never),
+  },
+  'reports.lineage': {
+    backingTables: ['harness_shared.report_library'],
+    argsSchema: reportsLineageArgs,
+    resolve: async (args) => (await import('./reports')).resolveReportsLineage(args as never),
+  },
+  // The human-facing sync adapter for reports:get: reuse its exact-ID store
+  // lookup and full wire projection. Never resolve a pin through its lineage.
+  'reports.get': {
+    backingTables: ['harness_shared.report_library'],
+    argsSchema: z.object({ reportId: z.string().min(1).max(400) }).strict(),
+    resolve: async (args) => {
+      const [{ getOrgPg }, { activeWorkspaceId }, { getReport }, { toReportFull, reportsLibraryDisabled }] = await Promise.all([
+        import('@papercusp/db-org'), import('../workspace-registry'),
+        import('../report-library'), import('../agent-tools/reports/_shared'),
+      ]);
+      const disabled = await reportsLibraryDisabled();
+      if (disabled) throw new Error(disabled.message);
+      // Sync routes are operator UI reads; the workspace comes from the bound
+      // server context, while owner visibility belongs to the human UI viewer.
+      const report = await getReport(getOrgPg().sql, activeWorkspaceId(),
+        (args as { reportId: string }).reportId, { isOwner: true });
+      return report ? [toReportFull(report)] : [];
+    },
   },
   'goals.detail': {
     backingTables: [
@@ -1826,12 +1977,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       .object({
         workspaceId: z.string().nullable().optional(),
         endedLimit: clampedLimit(200, 50).optional(),
+        view: z.enum(['full', 'header']).optional(),
       })
       .optional(),
     resolve: async (args) => {
-      const { workspaceId = null, endedLimit = 50 } = (args ?? {}) as {
+      const { workspaceId = null, endedLimit = 50, view = 'full' } = (args ?? {}) as {
         workspaceId?: string | null;
         endedLimit?: number;
+        view?: 'full' | 'header';
       };
       // BOUNDED + EXTRACTED (WI-39825). The four-leg fan-out, its shared read
       // deadline and the per-leg degradation policy now live in
@@ -1839,9 +1992,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // budget can only be proved to fire by moving it, and a resolver's only
       // input is its wire args — so the knob had to become a function parameter
       // rather than a client-visible field. That module's header carries the
-      // full reasoning and the per-leg policy.
-      const { readAdvRoster } = await import('./adv-roster-read');
-      return [await readAdvRoster({ workspaceId, endedLimit })];
+      // full reasoning and the per-leg policy. Read through the shared
+      // owner-sessions entry point so the device session list
+      // (mobile-agent-sessions-2026-10-12 P-001/P-002) is this same roster.
+      const { readSessionRoster } = await import('../owner-sessions/roster');
+      return [await readSessionRoster({ workspaceId, endedLimit, view })];
     },
   },
 
@@ -1929,6 +2084,70 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── potIntegration.createQuestion — P-018 (pot-review-integration-mode-2026-10-05) ──
+  // The new-pot form's "Where should the agents' work go?" question for a pasted
+  // GitHub URL, with the recommendation (and lock) derived from the repo's
+  // checkable facts and the workspace default (PotControlPolicy.newPotIntegrationMode).
+  // One row. NOT table-backed (a GitHub read): the create step re-probes and is
+  // authoritative, so a stale row can only mislabel a badge, never bypass a lock.
+  // An unparseable URL or any failure degrades to [] — the form keeps its
+  // fact-free question.
+  'potIntegration.createQuestion': {
+    argsSchema: z.object({ githubUrl: z.string().min(1).max(500) }),
+    // The only Postgres input is the workspace default (PotControlPolicy); a policy write
+    // re-asks every open form. The GitHub facts are re-probed by the create step.
+    backingTables: ['harness_shared.operator_pot_control_policy'],
+    resolve: async (args) => {
+      const { githubUrl } = args as { githubUrl: string };
+      try {
+        const { parseGithubUrl } = await import('../harness/clone-github');
+        const parsed = parseGithubUrl(githubUrl);
+        if (!parsed) return [];
+        const [{ fetchRepoIntegrationFacts }, { recommendIntegrationMode }, { integrationModeQuestion }, policy] =
+          await Promise.all([
+            import('../harness/github-repo-permissions'),
+            import('../harness/git-sync/integration-mode-recommendation'),
+            import('../harness/git-sync/integration-mode-question'),
+            import('../pot-control-policy'),
+          ]);
+        const repoLabel = `${parsed.owner}/${parsed.repo}`;
+        const defaultMode = policy.resolveNewPotIntegrationModeDefault(policy.placementOverride());
+        const facts = await fetchRepoIntegrationFacts(parsed.owner, parsed.repo);
+        const recommendation = recommendIntegrationMode(facts, { repoLabel, policyDefault: defaultMode });
+        return [{ githubUrl, ...integrationModeQuestion({ repoLabel, recommendation, defaultMode }) }];
+      } catch (err) {
+        console.warn('[potIntegration.createQuestion] read failed:', err instanceof Error ? err.message : err);
+        return [];
+      }
+    },
+  },
+
+  // ── potIntegration.settings — P-017 settings section, live (EI-25188362216785598) ──
+  // The pot-settings form of "Where should the agents' work go?" for one harness slug:
+  // the question (with option availability) and the pot's current answer. The same
+  // read GET /harness/:slug/integration-mode serves (readIntegrationModeSettings), so
+  // the two cannot disagree. One row; `isPot:false` for a project that is not a pot
+  // (the section hides). Pushed by the PUT after a switch, and by any pot_settings
+  // write (a federated switch from a peer). A failed read degrades to [].
+  'potIntegration.settings': {
+    argsSchema: z.object({ slug: z.string().min(1).max(200) }),
+    backingTables: ['harness_shared.pot_settings'],
+    resolve: async (args) => {
+      const { slug } = args as { slug: string };
+      try {
+        const { readIntegrationModeSettings, defaultIntegrationModeSettingsDeps } = await import(
+          '../harness/git-sync/integration-mode-settings'
+        );
+        const r = await readIntegrationModeSettings(defaultIntegrationModeSettingsDeps, slug);
+        if (r.kind !== 'pot') return [{ slug, isPot: false }];
+        return [{ slug, isPot: true, question: r.question, current: r.current, workingCopyUrl: r.workingCopyUrl }];
+      } catch (err) {
+        console.warn('[potIntegration.settings] read failed:', err instanceof Error ? err.message : err);
+        return [];
+      }
+    },
+  },
+
   'harnessTextArtifact.byHarness': {
     // EI-1763: workspaceId scopes the read to the caller's tenant. harness_slug is
     // per-workspace-unique (NOT global), and getOrgPg bypasses RLS, so a slug-only
@@ -1964,14 +2183,23 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { and, eq } = await import('drizzle-orm');
       const t = generated.harnessProjectFilesInHarnessShared;
       const { db } = getOrgPg();
-      return (await db
+      const rows = await db
         .select()
         .from(t)
         .where(
           workspaceId != null
             ? and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId))
             : eq(t.harnessSlug, harnessSlug),
-        )) as unknown[];
+        );
+      if (rows.length || workspaceId == null) return rows as unknown[];
+      // Old writers left workspace_id empty. Recover that config only when the
+      // requested workspace's authoritative registry owns the harness; a foreign
+      // or unknown workspace must still receive no rows. New writes stamp it.
+      const { loadHarnessRegistry } = await import('../harness-registry');
+      const registry = await loadHarnessRegistry(workspaceId);
+      if (!registry.projects.some(project => project.slug === harnessSlug)) return [];
+      return await db.select().from(t)
+        .where(and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, ''))) as unknown[];
     },
   },
 
@@ -2927,6 +3155,28 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   } as QueryEntry<unknown>,
 
+  // governancePolicy.state — the /admin/governance-policy pane's read (plan
+  // papercusp-enterprise-readiness-roadmap-2026-10-09 P-005, WI-6554700010011434). ONE row: the
+  // workspace's inherited org→department→workspace chain, every stored layer and per-layer
+  // version history, from the SAME governance-policy/control.ts the governance:policy tool uses.
+  // Pushed by control.ts#setGovernancePolicyLayer after each committed write (the sole writer);
+  // see the PUSH_EXEMPT entries in resolver-backing-table-coverage.test.ts.
+  'governancePolicy.state': {
+    argsSchema: z
+      .object({
+        workspaceId: z.string().min(1).optional(),
+        versionLimit: z.number().int().min(1).max(100).optional(),
+      })
+      .optional(),
+    backingTables: ['harness_shared.governance_policy_layers', 'harness_shared.governance_policy_layer_versions'],
+    resolve: async (args) => {
+      const { getGovernancePolicyState } = await import('../governance-policy/control');
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const a = (args ?? {}) as { workspaceId?: string; versionLimit?: number };
+      return [await getGovernancePolicyState(a.workspaceId ?? activeWorkspaceId(), { versionLimit: a.versionLimit })];
+    },
+  } as QueryEntry<unknown>,
+
   // workItems.detail — the single-item ON-DEMAND detail read (P-006). The Detail
   // pane fetches ONE enriched row (with the full `summary` + payload/completion
   // blobs the list strips) when a WI is selected, instead of the whole harness
@@ -2935,11 +3185,22 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // table bridge as byHarness.
   'workItems.detail': {
     argsSchema: z.object({ harnessSlug: z.string(), id: z.string().min(1) }),
+    // Report status follows a distinct canonical row: a target write must also
+    // invalidate the reporter's source subscription, not only the target id.
+    backingTables: ['harness_shared.work_items'],
     resolve: async (args) => {
       const { harnessSlug, id } = args as { harnessSlug: string; id: string };
-      const { getEnrichedWorkItem } = await import('../endpoint-route/routes/harness/work-items');
-      const item = await getEnrichedWorkItem(harnessSlug, id);
-      return item ? [item] : [];
+      const { getEnrichedWorkItem } = await traceNamedQueryStage('work-item-detail-import',
+        () => import('../endpoint-route/routes/harness/work-items'));
+      const item = await traceNamedQueryStage('work-item-detail-enrichment',
+        () => getEnrichedWorkItem(harnessSlug, id));
+      if (!item) return [];
+      const [{ getOrgPg }, { activeWorkspaceId }] = await Promise.all([
+        import('@papercusp/db-org'), import('../workspace-registry'),
+      ]);
+      const presentations = await traceNamedQueryStage('work-item-detail-presentation',
+        () => readWorkItemPresentations(getOrgPg().sql, activeWorkspaceId(), [{ id, harnessSlug }]));
+      return [{ ...item, presentation: presentations.get(`${harnessSlug}#${id}`) }];
     },
   },
 
@@ -3116,16 +3377,16 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     }),
     resolve: async (args) => {
       const { harnessSlug, limit } = args as { harnessSlug: string; limit?: number };
-      const [{ getOrgPg }, { activeWorkspaceId }, { resolveDependencyGraphEdges }] = await Promise.all([
+      const [{ getOrgPg }, { activeWorkspaceId }, { resolveDependencyGraphEdges }] = await traceNamedQueryStage('work-item-dependencies-import', () => Promise.all([
         import('@papercusp/db-org'),
         import('../workspace-registry'),
         import('./dependency-graph-edges'),
-      ]);
-      return await resolveDependencyGraphEdges(getOrgPg().sql, {
+      ]));
+      return await traceNamedQueryStage('work-item-dependencies-sql', () => resolveDependencyGraphEdges(getOrgPg().sql, {
         workspaceId: activeWorkspaceId(),
         harnessSlug,
         limit,
-      });
+      }));
     },
   },
 
@@ -3816,6 +4077,30 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // integrations.tickets — Settings → Integrations, ticket providers (linear-asana-task-sync
+  // P-007, D-014): the OAuth ticket providers and the owner's sources with their config, counts
+  // and rules. One row: the whole page. Owner as an explicit argument, workspace server-derived,
+  // as personalVault.importJobs above. Writes through /user/integrations/tickets push this name;
+  // sync passes, rules and admissions written elsewhere arrive through the table bridge (mig 1399).
+  'integrations.tickets': {
+    backingTables: [
+      'harness_shared.data_sources',
+      'harness_shared.admission_rules',
+      'harness_shared.work_admissions',
+      'harness_shared.work_items',
+    ],
+    argsSchema: z.object({ userId: z.string().trim().min(1) }),
+    resolve: async (args) => {
+      const { userId } = args as { userId: string };
+      const [{ getOrgPg }, { activeWorkspaceId }, { ticketIntegrationsOverview }] = await Promise.all([
+        import('@papercusp/db-org'),
+        import('../workspace-registry'),
+        import('../integrations/ticket-integrations'),
+      ]);
+      return [await ticketIntegrationsOverview(getOrgPg().sql, { workspaceId: activeWorkspaceId(), ownerUserId: userId })];
+    },
+  },
+
   // userMemory.total — how many memories the Memory page COULD show, so its
   // bounded window can render a denominator ("Showing 500 of 2,465") instead
   // of a bare count (WI-39540). Without this the page's own row count was the
@@ -4109,7 +4394,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   'plans.cleanupRun': {
     backingTables: ['harness_shared.attention_bulk_runs', 'harness_shared.plan_cleanup_run_findings'],
     resolve: async (args) => {
-      const [{ classifyRunLiveness, getRun, getLatestRun, getActiveRun }, { getRunFindings }, { selectPlanCleanupPaneRun }] =
+      const [{ classifyRunLiveness, getRun, getLatestRun, getActiveRun }, { getRunFindings, getCleanupReviewRuns }, { selectPlanCleanupPaneRun }] =
         await Promise.all([
           import('../attention/bulk-run-store'),
           import('../plan-cleanup/run-store'),
@@ -4121,17 +4406,18 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         // No deep link: an open run (pending/running/review) outranks a newer
         // terminal one, so a failed run can't hide owner-waiting review work
         // (WI-10004730).
-        const run = runId
+        const [run, reviewInventory] = await Promise.all([runId
           ? await getRun(runId)
           : await selectPlanCleanupPaneRun({
               getActive: () => getActiveRun(undefined, 'plan-cleanup'),
               getLatest: () => getLatestRun(undefined, 'plan-cleanup'),
-            });
-        if (!run || run.runKind !== 'plan-cleanup') return [{ run: null, findings: [] }];
+            }), getCleanupReviewRuns()]);
+        if (!run || run.runKind !== 'plan-cleanup') return [{ run: null, findings: [], reviewInventory }];
         return [
           {
             run: { ...run, liveness: classifyRunLiveness(run) },
             findings: await getRunFindings(run.runId, run.workspaceId),
+            reviewInventory,
           },
         ];
       } catch {
@@ -5103,7 +5389,22 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // number — there is no FK from a usage row to its spawning routine, and inventing
   // one would present a guess as a fact (see the module header).
   'automation.catalog': {
-    resolve: async () => {
+    // A selected support operation needs its current declaration, not another
+    // workspace-wide schedule/spend scan. Keep this on the existing catalog.
+    argsSchema: z.object({ supportWorkflow: z.object({
+      harnessSlug: z.string().trim().min(1).max(120),
+      operationId: z.string().trim().min(1).max(200),
+    }).strict().optional() }).strict().optional(),
+    resolve: async (raw) => {
+      const args = raw as { supportWorkflow?: { harnessSlug: string; operationId: string } } | undefined;
+      if (args?.supportWorkflow) {
+        const [{ readCurrentSupportWorkflow }, { getOrgPg }, { activeWorkspaceId }] = await Promise.all([
+          import('../blueprint/operation-service'), import('@papercusp/db-org'), import('../workspace-registry'),
+        ]);
+        return [{ supportWorkflow: await readCurrentSupportWorkflow(getOrgPg().sql, {
+          workspaceId: activeWorkspaceId(), ...args.supportWorkflow,
+        }) }];
+      }
       const { getAutomationCatalog } = await import('../automation/catalog');
       return [await getAutomationCatalog()];
     },
@@ -5465,7 +5766,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       hive: z.string().max(120).optional(),
     }),
     resolve: async (args) => {
-      const a = args as { kind: 'memory' | 'plan' | 'wi' | 'rubric' | 'runbook' | 'recipe'; id: string };
+      const a = args as { kind: 'memory' | 'plan' | 'wi' | 'rubric' | 'runbook' | 'recipe'; id: string; hive?: string };
       if (!a.id) return [];
       const { activeWorkspaceId } = await import('../workspace-registry');
       const { getOrgPg } = await import('@papercusp/db-org');
@@ -5525,12 +5826,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           return null;
         },
         getMemory: async (id) => {
-          const { getMemoryBackend } = await import('../memory/backend');
-          const backend = getMemoryBackend();
-          const avail = await backend.available();
-          if (!avail.ok) throw new Error(avail.reason);
-          const entry = await backend.get(id);
-          return entry ? (entry as typeof entry & { scope?: string }) : null;
+          const deps = await retainStoreDeps(sql, activeWorkspaceId(), a.hive);
+          return deps.getMemory(id);
         },
       });
       return detail ? [detail] : [];
@@ -5543,27 +5840,22 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // server-side from each template's RRULE/cron/one-shot (the rrule lib is the single
   // source of truth; the calendar UI lib stays swappable — D-004). Workspace-scoped
   // via the active-workspace ALS; the harness_shared.harness_plans filter is by
-  // workspace_id (shared table, no schema routing). Best-effort: a read error degrades
-  // to [] rather than a 500, so the calendar shows its empty state.
+  // workspace_id (shared table, no schema routing). Propagate read failures through
+  // sync's error contract so consumers can distinguish them from a healthy empty window.
   'plans.scheduledOccurrences': {
     argsSchema: scheduledOccurrencesArgsSchema,
     resolve: async (args) => {
       const a = args as { rangeStartMs: number; rangeEndMs: number; harnessSlug?: string };
-      try {
-        const { activeWorkspaceId } = await import('../workspace-registry');
-        const { getOrgPg } = await import('@papercusp/db-org');
-        const { gatherScheduledOccurrences } = await import('../harness/routines/scheduled-occurrences');
-        const { sql } = getOrgPg();
-        return await gatherScheduledOccurrences(sql, {
-          workspaceId: activeWorkspaceId(),
-          rangeStartMs: a.rangeStartMs,
-          rangeEndMs: a.rangeEndMs,
-          ...(a.harnessSlug ? { harnessSlug: a.harnessSlug } : {}),
-        });
-      } catch (err) {
-        console.warn('[plans.scheduledOccurrences] read failed:', err instanceof Error ? err.message : err);
-        return [];
-      }
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { gatherScheduledOccurrences } = await import('../harness/routines/scheduled-occurrences');
+      const { sql } = getOrgPg();
+      return await gatherScheduledOccurrences(sql, {
+        workspaceId: activeWorkspaceId(),
+        rangeStartMs: a.rangeStartMs,
+        rangeEndMs: a.rangeEndMs,
+        ...(a.harnessSlug ? { harnessSlug: a.harnessSlug } : {}),
+      });
     },
   },
 
@@ -6785,7 +7077,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           const backend = getMemoryBackend();
           const avail = await backend.available();
           if (!avail.ok) throw new Error(avail.reason);
-          return backend.list({ scope });
+          const { activeWorkspaceId } = await import('../workspace-registry');
+          return unsealMemoriesForOwner(activeWorkspaceId(), await backend.list({ scope }));
         },
         loadPack: (id) => loadKnowledgePack(id),
         listPotSlugs: async () => {
@@ -7459,11 +7752,15 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { and, eq } = await import('drizzle-orm');
       const t = generated.agentChatsConsolidatedInHarnessShared;
       const { db } = getOrgPg();
-      return db
+      const rows = await db
         .select()
         .from(t)
         .where(workspaceId ? and(eq(t.id, id), eq(t.workspaceId, workspaceId)) : eq(t.id, id))
-        .limit(1) as unknown as Promise<unknown[]>;
+        .limit(1);
+      return rows.map((row) => ({
+        ...row,
+        transcript: projectChatFailureTranscript(row.transcript),
+      })) as unknown[];
     },
   },
 
@@ -7486,36 +7783,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  'testing.assertionsByHarness': {
-    argsSchema: z.object({
-      harnessSlug: z.string(),
-      workspaceId: z.string().optional(),
-      planSlug: z.string().optional(),
-    }),
-    resolve: async (args) => {
-      const { harnessSlug, workspaceId, planSlug } = args as {
-        harnessSlug: string;
-        workspaceId?: string;
-        planSlug?: string;
-      };
-      const [{ getOrgPg }, { activeWorkspaceId }] = await Promise.all([
-        import('@papercusp/db-org'),
-        import('../workspace-registry'),
-      ]);
-      const { sql } = getOrgPg();
-      const ws = workspaceId ?? activeWorkspaceId();
-      const rows = await (planSlug
-        ? sql`SELECT val_id, plan_slug, item_id, verify_text, status, requires_test
-              FROM harness_shared.harness_plan_assertions
-             WHERE workspace_id = ${ws} AND harness_slug = ${harnessSlug} AND plan_slug = ${planSlug}
-             ORDER BY val_id`
-        : sql`SELECT val_id, plan_slug, item_id, verify_text, status, requires_test
-              FROM harness_shared.harness_plan_assertions
-             WHERE workspace_id = ${ws} AND harness_slug = ${harnessSlug}
-             ORDER BY val_id`);
-      return [...rows] as unknown[];
-    },
-  },
+  // The VAL-* assertion query that sat here was retired with inline VAL-* assertions
+  // (verification-system-improvements-2026-10-10 P-003). The requirement contract
+  // (plan spec clauses + bound evidence) is the successor.
 
   'operatorConfig.byWorkspace': {
     resolve: async () => {
@@ -7648,6 +7918,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const { limit } = args as { limit: number };
       const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const workspaceId = activeWorkspaceId();
+      // EI-25791449797018815: getOrgPg bypasses RLS. Scope every leg,
+      // including the parent lookup and count, to this request's workspace.
       // BOUNDED (WI-39825) via the shared rows+count fan-out — third site of this
       // shape, and the third with the same `?? rows.length` wrong-total on a failed
       // count. See `bounded-list-read.ts`.
@@ -7671,13 +7945,16 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
                           (SELECT w.harness_slug
                              FROM harness_shared.work_items w
                             WHERE w.feature_id = t.parent_ref
+                              AND w.workspace_id = t.workspace_id
                               AND w.harness_slug IS NOT NULL
                             LIMIT 1)) AS harness_slug,
                  t.created_at, t.last_post_at, t.post_count
             FROM harness_shared.coord_threads t
+           WHERE t.workspace_id = ${workspaceId}
            ORDER BY t.last_post_at DESC NULLS LAST, t.created_at DESC NULLS LAST
            LIMIT ${limit}`.then((r) => [...r]),
-        count: sql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.coord_threads`.then(
+        count: sql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.coord_threads
+          WHERE workspace_id = ${workspaceId}`.then(
           (r) => r[0]?.n ?? null,
         ),
         label: 'conversations.deliberationList',
@@ -7689,6 +7966,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const { id } = args as { id: string };
       const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const workspaceId = activeWorkspaceId();
       // BOUNDED (WI-39825). A thread and its posts: the view is a transcript, so
       // neither leg is supplementary (a thread with silently-missing posts reads as
       // an empty conversation) and a lapse propagates as a labelled failure.
@@ -7704,17 +7983,18 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
                             (SELECT w.harness_slug
                                FROM harness_shared.work_items w
                               WHERE w.feature_id = t.parent_ref
+                                AND w.workspace_id = t.workspace_id
                                 AND w.harness_slug IS NOT NULL
                               LIMIT 1)) AS harness_slug,
                    t.created_at, t.last_post_at, t.post_count
               FROM harness_shared.coord_threads t
-             WHERE t.thread_id = ${id} LIMIT 1`,
+             WHERE t.workspace_id = ${workspaceId} AND t.thread_id = ${id} LIMIT 1`,
           'deliberationDetail thread',
         ),
         withinBudget(
           sql`SELECT id, author_id, body, created_at, harness_slug
               FROM harness_shared.coord_thread_posts
-             WHERE thread_id = ${id}
+             WHERE workspace_id = ${workspaceId} AND thread_id = ${id}
              ORDER BY created_at ASC NULLS LAST
              LIMIT 1000`,
           'deliberationDetail posts',
@@ -7725,7 +8005,15 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         ...post,
         id: typeof post.id === 'bigint' ? Number(post.id) : post.id,
       }));
-      return [{ thread: thread[0], posts: safePosts }];
+      // WI-10005548 / D-006: a post a restricted agent wrote is stored as a sealed
+      // stub; the owner is always a permitted reader, so this view shows the text.
+      const { unsealRowsForOwner } = await import('../personal-vault/shared-store-seal');
+      const ownerPosts = await unsealRowsForOwner(safePosts, {
+        workspaceId,
+        textOf: (post) => (post as { body?: unknown }).body,
+        withText: (post, body) => ({ ...post, body }),
+      });
+      return [{ thread: thread[0], posts: ownerPosts }];
     },
   },
   'conversations.agentChatList': {
@@ -7737,6 +8025,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const { limit, harness, role } = args as { limit: number; harness?: string; role?: string };
       const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const workspaceId = activeWorkspaceId();
       // BOUNDED (WI-39825) via the shared rows+count fan-out. Same shape, and same
       // pre-existing wrong-answer, as projectSpecRevisions.byProject: a failed
       // count resolved to `?? rows.length`, rendering a confident total equal to
@@ -7749,14 +8039,16 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
                  total_input_tokens, total_output_tokens, total_cost_usd_cents,
                  jsonb_array_length(COALESCE(transcript, '[]'::jsonb)) AS turns
             FROM harness_shared.agent_chats_consolidated
-           WHERE (${harness ?? null}::text IS NULL OR harness_slug = ${harness ?? null})
+           WHERE workspace_id = ${workspaceId}
+             AND (${harness ?? null}::text IS NULL OR harness_slug = ${harness ?? null})
              AND (${role ?? null}::text IS NULL OR role = ${role ?? null})
            ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
            LIMIT ${limit}`.then((r) => [...r]),
         count: sql<{ n: number }[]>`
           SELECT count(*)::int AS n
             FROM harness_shared.agent_chats_consolidated
-           WHERE (${harness ?? null}::text IS NULL OR harness_slug = ${harness ?? null})
+           WHERE workspace_id = ${workspaceId}
+             AND (${harness ?? null}::text IS NULL OR harness_slug = ${harness ?? null})
              AND (${role ?? null}::text IS NULL OR role = ${role ?? null})`.then((r) => r[0]?.n ?? null),
         label: 'conversations.agentChatList',
       });
@@ -7767,15 +8059,20 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const { id } = args as { id: string };
       const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const workspaceId = activeWorkspaceId();
       const rows = await sql`
         SELECT id, harness_slug, role, feature_id, title, created_at, updated_at,
                archived_at, transcript, total_input_tokens, total_output_tokens,
                total_cost_usd_cents,
                jsonb_array_length(COALESCE(transcript, '[]'::jsonb)) AS turns
           FROM harness_shared.agent_chats_consolidated
-         WHERE id = ${id}
+         WHERE workspace_id = ${workspaceId} AND id = ${id}
          LIMIT 1`;
-      return rows;
+      return rows.map((row) => ({
+        ...row,
+        transcript: projectChatFailureTranscript(row.transcript),
+      }));
     },
   },
   // P-029 / cockpit D-004: the ONE typed conversation/context projection.
@@ -7861,6 +8158,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         includeMachine?: boolean;
       };
       const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const workspaceId = activeWorkspaceId();
       const kindFilter = kinds && kinds.length > 0 ? kinds : [...CURATED_COORD_ROOT_KINDS];
       const machineOk = includeMachine === true;
       const query = q?.trim() || null;
@@ -7882,14 +8181,15 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
                  c.body,
                  (SELECT count(*)::int
                     FROM harness_shared.coord_event_log r
-                   WHERE r.body ? 'related_msg_id'
+                   WHERE r.workspace_id = c.workspace_id AND r.body ? 'related_msg_id'
                      AND r.body ->> 'related_msg_id' = c.msg_id) AS reply_count,
                  (SELECT max(r.ts)
                     FROM harness_shared.coord_event_log r
-                   WHERE r.body ? 'related_msg_id'
+                   WHERE r.workspace_id = c.workspace_id AND r.body ? 'related_msg_id'
                      AND r.body ->> 'related_msg_id' = c.msg_id) AS last_reply_ts
             FROM harness_shared.coord_event_log c
-           WHERE c.surface = ANY(${[...CURATED_COORD_SURFACES]}::text[])
+           WHERE c.workspace_id = ${workspaceId}
+             AND c.surface = ANY(${[...CURATED_COORD_SURFACES]}::text[])
              AND c.body ->> 'kind' = ANY(${kindFilter}::text[])
              AND NOT (c.body ? 'related_msg_id')
              AND COALESCE(c.body ->> 'from', '') !~* '^system($|[-_:/.])'
@@ -7903,7 +8203,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         sql<{ n: number }[]>`
           SELECT count(*)::int AS n
             FROM harness_shared.coord_event_log c
-           WHERE c.surface = ANY(${[...CURATED_COORD_SURFACES]}::text[])
+           WHERE c.workspace_id = ${workspaceId}
+             AND c.surface = ANY(${[...CURATED_COORD_SURFACES]}::text[])
              AND c.body ->> 'kind' = ANY(${kindFilter}::text[])
              AND NOT (c.body ? 'related_msg_id')
              AND COALESCE(c.body ->> 'from', '') !~* '^system($|[-_:/.])'
@@ -7934,6 +8235,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const { id } = args as { id: string };
       const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const workspaceId = activeWorkspaceId();
       // The reply chain is walked transitively (an ack ON an ack), bounded by
       // depth and row count so a pathological cycle in the data can never turn
       // one pane read into an unbounded recursion. `msg_id` is the join key and
@@ -7943,19 +8246,21 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           SELECT msg_id, ts, harness_slug, body,
                  0::int AS reply_count, NULL::timestamptz AS last_reply_ts
             FROM harness_shared.coord_event_log
-           WHERE msg_id = ${id}
+           WHERE workspace_id = ${workspaceId} AND msg_id = ${id}
            ORDER BY id ASC
            LIMIT 1`,
         sql`
           WITH RECURSIVE chain AS (
             SELECT c.id, c.msg_id, c.ts, c.body, 1 AS depth
               FROM harness_shared.coord_event_log c
-             WHERE c.body ? 'related_msg_id' AND c.body ->> 'related_msg_id' = ${id}
+             WHERE c.workspace_id = ${workspaceId}
+               AND c.body ? 'related_msg_id' AND c.body ->> 'related_msg_id' = ${id}
             UNION ALL
             SELECT c.id, c.msg_id, c.ts, c.body, chain.depth + 1
               FROM harness_shared.coord_event_log c
               JOIN chain ON c.body ->> 'related_msg_id' = chain.msg_id
-             WHERE c.body ? 'related_msg_id' AND chain.depth < 8
+             WHERE c.workspace_id = ${workspaceId}
+               AND c.body ? 'related_msg_id' AND chain.depth < 8
           )
           SELECT DISTINCT ON (msg_id) msg_id, ts, body
             FROM chain
@@ -8268,9 +8573,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // (typically >90s apart), so each invalidation delivers promptly; any miss falls
   // back to the @papercusp/sync 180s drift-repair tick.
   'network.hiveDirectory': {
-    resolve: async () => {
+    argsSchema: z.object({ includeLocalViews: z.boolean().optional() }),
+    resolve: async (args) => {
       const { buildHiveDirectoryRows } = await import('../discovery-hive-rows');
-      return buildHiveDirectoryRows({ includeExpired: false });
+      return buildHiveDirectoryRows({ includeExpired: false, includeLocalViews: (args as { includeLocalViews?: boolean }).includeLocalViews === true });
     },
   },
 
@@ -8339,18 +8645,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ runId: z.string(), suite: z.string().optional() }),
     resolve: async (args) => {
       const { runId, suite } = args as { runId: string; suite?: string };
-      const { listRunResults } = await import('../external-bench/reproducibility/store');
-      const { buildSuiteReport } = await import('@papercusp/bench-metrics');
-      const rows = await listRunResults({ runId, suite });
-      if (rows.length === 0) return [];
-      // buildSuiteReport is single-suite — group rows per suite, one report each.
-      const bySuite = new Map<string, typeof rows>();
-      for (const r of rows) {
-        const list = bySuite.get(r.suite) ?? [];
-        list.push(r);
-        bySuite.set(r.suite, list);
-      }
-      return [...bySuite.values()].map((suiteRows) => buildSuiteReport(suiteRows));
+      const { getRunReports } = await import('../external-bench/reproducibility/store');
+      return getRunReports(runId, { suite });
     },
   },
   // L2 Hive layer (Phase 5 / D-010). evals.fleet = FleetRunSummary[] (P-030
@@ -8412,10 +8708,17 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
   'evals.benchEstimate': {
-    argsSchema: z.object({ taskSetId: z.string().optional(), cap: z.number().optional() }),
+    argsSchema: z.object({ taskSetId: z.string().optional(), cap: z.number().optional(),
+      workspaceId: z.string().optional(), protocolRunId: z.string().optional(),
+      arm: z.string().optional(), seed: z.number().int().nonnegative().optional() }),
     resolve: async (args) => {
-      const { taskSetId, cap } = args as { taskSetId?: string; cap?: number };
-      const { estimateBenchLaunch } = await import('../external-bench/estimate');
+      const { taskSetId, cap, workspaceId, protocolRunId, arm, seed } = args as {
+        taskSetId?: string; cap?: number; workspaceId?: string; protocolRunId?: string; arm?: string; seed?: number;
+      };
+      const { estimateBenchLaunch, estimateCurrentBenchLaunch } = await import('../external-bench/estimate');
+      if (protocolRunId !== undefined) return [await estimateCurrentBenchLaunch({
+        workspaceId: workspaceId ?? 'benchmarks', protocolRunId, arm: arm ?? 'papercusp', seed: seed ?? 1,
+      })];
       return [estimateBenchLaunch({ taskSetId, cap })];
     },
   },

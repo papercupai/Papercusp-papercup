@@ -11,10 +11,18 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { TransactionSql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { readAgentReviewState } from './harness/improvements/agent-review-policy';
+import { computeAgentReviewTiming } from './harness/improvements/flow-metrics';
 import { saveTextArtifact } from './text-artifacts';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 import type { AdmissionRunOutcome } from './work-items-admission-promoter';
 import { readWorkItemClaimHoldProvenance, type OrgSql } from './work-items';
+import {
+  buildDurableParkReleaseContract,
+  firedTriggerCannotCertify,
+  pauseCompletionResumeContradiction,
+  selfReleaseTriggerContradiction,
+} from './durable-park-release-contract';
+import { eventHasSpecificCondition } from './external-condition-reachability';
 
 export const WORK_ITEM_DURABLE_PARK_AUDIT = 'work-item-durable-park-audit';
 /**
@@ -172,7 +180,7 @@ export interface DurableParkAuditReport {
   holdOpenLeases: DurableParkAuditLeaseRow[];
   overdueReviews: {
     thresholdHours: number;
-    timestampBasis: 'scout_routed_ideas.routed_at';
+    timestampBasis: 'agentReview.timing.enteredAt (matching round)';
     rows: DurableParkAuditReviewRow[];
   };
 }
@@ -198,6 +206,7 @@ export type DurableParkReconcileOutcome =
   | 'assigned'
   | 'missing'
   | 'not-durable-park'
+  | 'unverified-condition'
   | 'stale-fingerprint';
 
 export interface DurableParkReconcileRowResult {
@@ -302,6 +311,7 @@ const RELEASE_REACHABILITY = new Set<DurableParkReleaseReachability>([
 export function classifyDurableParkReleaseLiveness(
   payloadValue: unknown,
   parkReason: string | null,
+  parkId?: string | null,
 ): DurableParkReleaseLiveness {
   const payload = record(payloadValue);
   const rawContract = record(payload.claim_hold_release);
@@ -312,18 +322,49 @@ export function classifyDurableParkReleaseLiveness(
   const owner = textOrNull(rawContract.owner);
   const trigger = textOrNull(rawContract.trigger);
   const reachabilityText = textOrNull(rawContract.reachability);
-  const reachability = reachabilityText && RELEASE_REACHABILITY.has(reachabilityText as DurableParkReleaseReachability)
+  const contradiction = condition && trigger ? pauseCompletionResumeContradiction(condition, trigger) : null;
+  // SPEC-BQL-P-004-CLEARER: a self-release trigger (the park's own work-item:done) is stamped
+  // 'reachable' by every writer before this guard, so the stamp alone must not read as tracked.
+  const selfRelease = trigger ? selfReleaseTriggerContradiction(trigger, parkId) : null;
+  // A stored 'satisfied' is the PARKER's park-time stamp and is never refreshed. Builds
+  // before the specific-condition guard (and runtimes still serving one) stamped it from
+  // ANY fired latch, so a broad wake — coord:inbox-wake:<owner>, work-item:claimable,
+  // release:deployed, plan:acceptance:<slug> — reads as a met condition. Re-apply the
+  // same guard the event settler uses: a broad catalogue trigger cannot prove the
+  // condition, so the stamp is unverified rather than a "reconcile now" finding.
+  const broadSatisfied = !contradiction && !selfRelease && trigger && reachabilityText === 'satisfied' &&
+    !eventHasSpecificCondition(trigger, true)
+    ? `stored reachability "satisfied" came from broad trigger "${trigger}", which can wake a consumer but cannot establish the release condition; verify the condition itself and repair the trigger to a subject-bound key`
+    : null;
+  // EI-25664119449929994: a stored 'satisfied' stamp is credible only when the fire it cites
+  // postdates THIS park and is not the parked item's own generic status event. Legacy writers read
+  // the key's lifetime latch at park time, so every live stamp measured 2026-10-11 cited a
+  // pre-park fire. Only the writer's own "event fired at <ts>" evidence is ordered here; free
+  // evidence keeps its stamp because nothing on record contradicts it.
+  const firedEvidence = /^event fired at (.+)$/.exec(textOrNull(rawContract.evidence) ?? '');
+  const parkedAtMs = textOrNull(payload.claim_hold_at) ? Date.parse(String(payload.claim_hold_at)) : NaN;
+  const uncertifiedFire = !contradiction && !selfRelease && !broadSatisfied && trigger && reachabilityText === 'satisfied'
+    ? firedTriggerCannotCertify({
+        trigger,
+        parkId,
+        firedAt: firedEvidence?.[1] ?? null,
+        parkedAtMs: firedEvidence && Number.isFinite(parkedAtMs) ? parkedAtMs : null,
+      })
+    : null;
+  const unverifiable = contradiction ?? selfRelease ?? broadSatisfied ?? uncertifiedFire;
+  const reachability = unverifiable ? 'blocked' : reachabilityText && RELEASE_REACHABILITY.has(reachabilityText as DurableParkReleaseReachability)
     ? (reachabilityText as DurableParkReleaseReachability)
     : null;
-  const evidence = textOrNull(rawContract.evidence);
+  const evidence = unverifiable ?? textOrNull(rawContract.evidence);
   const findings: DurableParkReleaseLivenessFinding[] = [];
 
   if (!condition) {
     findings.push(proseCondition.status === 'missing' ? 'condition-missing' : 'condition-ambiguous');
   }
+  if (contradiction) findings.push('condition-ambiguous');
   if (!owner) findings.push('owner-missing');
   if (!trigger) findings.push('trigger-missing');
-  if (!reachability) findings.push('reachability-unverified');
+  if (!reachability || reachability === 'blocked') findings.push('reachability-unverified');
   if (!evidence) findings.push('evidence-missing');
   if (reachability === 'unreachable') findings.push('condition-unreachable');
   if (reachability === 'satisfied') findings.push('condition-satisfied-still-parked');
@@ -355,6 +396,7 @@ export function classifyDurableParkReleaseLiveness(
  */
 export function durableParkFingerprint(input: { state: string; takenBy: string | null; payload: unknown }): string {
   const payload = record(input.payload);
+  const release = record(payload.claim_hold_release);
   const control = {
     state: input.state,
     takenBy: textOrNull(input.takenBy),
@@ -363,6 +405,13 @@ export function durableParkFingerprint(input: { state: string; takenBy: string |
       by: textOrNull(payload.claim_hold_by),
       reason: textOrNull(payload.claim_hold_reason),
       at: textOrNull(payload.claim_hold_at),
+    },
+    // A new condition, responsible owner, or trigger requires new evidence.
+    // Refreshed reachability/evidence are observations of that same condition.
+    releaseCondition: {
+      condition: textOrNull(release.condition),
+      owner: textOrNull(release.owner),
+      trigger: textOrNull(release.trigger),
     },
     holdOpenLease: {
       by: textOrNull(payload.held_open_by),
@@ -467,6 +516,12 @@ export function planDurableParkClear(
   if (decision.expectedParkFingerprint !== observedParkFingerprint) {
     return result('stale-fingerprint', !!provenance.heldOpen);
   }
+  const release = record(payload.claim_hold_release);
+  if (decision.reasonCode === 'condition-satisfied' && pauseCompletionResumeContradiction(
+    textOrNull(release.condition) ?? '', textOrNull(release.trigger) ?? '',
+  )) {
+    return result('unverified-condition', !!provenance.heldOpen);
+  }
 
   const nextPayload = { ...payload };
   delete nextPayload.claim_hold_by;
@@ -490,6 +545,7 @@ type EventDurableParkSql = OrgSql | TransactionSql;
 
 type EventDurableParkRow = {
   workspace_id: string;
+  harness_slug: string;
   feature_id: string;
   state: string;
   taken_by: string | null;
@@ -499,7 +555,7 @@ type EventDurableParkRow = {
 /**
  * Clear durable parks whose typed release contract names the event that just
  * fired. This is intentionally narrower than external-blocker reconciliation:
- * a durable park has no TTL and must only be cleared by its own exact trigger,
+ * a durable park has no TTL and must only be cleared by its own specific trigger,
  * never by an unrelated event or by the holder's liveness changing.
  *
  * The caller supplies its transaction so announcement latching and park
@@ -515,12 +571,15 @@ export async function reconcileEventDurableParks(
 ): Promise<EventDurableParkReconcileResult> {
   const trigger = eventKey.trim();
   if (!trigger) return { matched: 0, cleared: 0, skipped: 0, preservedLeases: 0 };
+  // The caller has just latched a producer announcement in this transaction.
+  // Even a declared broad notification is only a wake, not condition satisfaction.
+  const specificCondition = eventHasSpecificCondition(trigger, true);
 
   const parsedNow = Date.parse(now);
   const updatedTs = Number.isFinite(parsedNow) ? parsedNow : Date.now();
   const settledBy = actor?.trim() || 'system:event-settlement';
   const rows = await tx<EventDurableParkRow[]>`
-    SELECT workspace_id, feature_id, status AS state, taken_by, payload
+    SELECT workspace_id, harness_slug, feature_id, status AS state, taken_by, payload
       FROM harness_shared.work_items
      WHERE COALESCE(payload, '{}'::jsonb) ->> '_claimHold' = 'true'
        AND NULLIF(COALESCE(payload, '{}'::jsonb) ->> 'claim_hold_by', '') IS NOT NULL
@@ -533,6 +592,10 @@ export async function reconcileEventDurableParks(
   let skipped = 0;
   let preservedLeases = 0;
   for (const row of rows) {
+    if (!specificCondition) {
+      skipped += 1;
+      continue;
+    }
     const expectedParkFingerprint = durableParkFingerprint({
       state: row.state,
       takenBy: row.taken_by,
@@ -582,11 +645,43 @@ export async function reconcileEventDurableParks(
       skipped += 1;
       continue;
     }
+    await writeDurableParkClearReceipt(tx, {
+      workspaceId: row.workspace_id, harnessSlug: row.harness_slug,
+      actor: settledBy, trigger, decision: plan, plan,
+      priorPark: readWorkItemClaimHoldProvenance(row.payload).parked,
+    }, updatedTs);
     cleared += 1;
     if (plan.preservedLease) preservedLeases += 1;
   }
 
   return { matched: rows.length, cleared, skipped, preservedLeases };
+}
+
+/** The same atomic receipt for explicit reconciliation and announced-event settlement. */
+async function writeDurableParkClearReceipt(tx: EventDurableParkSql, input: {
+  workspaceId: string;
+  harnessSlug: string;
+  actor: string;
+  runId?: string;
+  trigger?: string;
+  decision: DurableParkReconcileDecision;
+  plan: DurableParkClearPlan;
+  priorPark: ReturnType<typeof readWorkItemClaimHoldProvenance>['parked'];
+}, nowMs: number): Promise<void> {
+  await tx`
+    INSERT INTO harness_shared.audit_log
+      (id, ts, actor, action, subject, details, workspace_id)
+    VALUES
+      (${`durable-park-clear-${randomUUID()}`}, ${nowMs}, ${input.actor},
+       ${DURABLE_PARK_CLEAR_AUDIT_ACTION}, ${input.decision.id},
+       ${JSON.stringify({
+         runId: input.runId, trigger: input.trigger, harness: input.harnessSlug,
+         reasonCode: input.decision.reasonCode, evidence: input.decision.evidence,
+         expectedParkFingerprint: input.decision.expectedParkFingerprint,
+         observedParkFingerprint: input.plan.observedParkFingerprint,
+         preservedLease: input.plan.preservedLease, priorPark: input.priorPark,
+       })}::text::jsonb,
+       ${input.workspaceId})`;
 }
 
 function ageBucket(ageMs: number): AuditAgeBucket {
@@ -698,7 +793,7 @@ export function buildDurableParkAuditReport(input: {
       axes.durableParks += 1;
       const age = classifyAuditAge(provenance.parked.at, input.nowMs);
       const unparkCondition = classifyUnparkCondition(provenance.parked.reason);
-      const releaseLiveness = classifyDurableParkReleaseLiveness(payload, provenance.parked.reason);
+      const releaseLiveness = classifyDurableParkReleaseLiveness(payload, provenance.parked.reason, row.id);
       parkAgeBuckets[age.bucket] += 1;
       unparkConditions[unparkCondition.status] += 1;
       releaseStatusCounts[releaseLiveness.status] += 1;
@@ -725,11 +820,13 @@ export function buildDurableParkAuditReport(input: {
     const review = readAgentReviewState(payload);
     if (review?.status === 'pending') {
       axes.pendingAgentReview += 1;
-      const routedAtMs = numberOrNull(row.reviewRoutedAtMs);
-      if (routedAtMs == null) {
+      const timing = computeAgentReviewTiming({
+        payload, reviewRoutedAtMs: row.reviewRoutedAtMs, nowMs: input.nowMs,
+      });
+      if (timing.reviewWaitMs == null) {
         missingMetadata.pendingReviewTimestamp += 1;
       } else {
-        const reviewAgeMs = Math.max(0, input.nowMs - routedAtMs);
+        const reviewAgeMs = timing.reviewWaitMs;
         if (reviewAgeMs >= reviewOverdueMs) {
           overdueRows.push({
             id: row.id,
@@ -737,7 +834,7 @@ export function buildDurableParkAuditReport(input: {
             submittedBy: review.submittedBy,
             ledgerIdeaId: review.ledgerIdeaId,
             round: review.round,
-            routedAt: new Date(routedAtMs).toISOString(),
+            routedAt: timing.enteredAt!,
             ageMs: reviewAgeMs,
           });
         }
@@ -785,7 +882,7 @@ export function buildDurableParkAuditReport(input: {
     holdOpenLeases,
     overdueReviews: {
       thresholdHours: reviewOverdueHours,
-      timestampBasis: 'scout_routed_ideas.routed_at',
+      timestampBasis: 'agentReview.timing.enteredAt (matching round)',
       rows: overdueRows,
     },
   };
@@ -885,9 +982,35 @@ export async function runWorkItemDurableParkAudit(opts: {
       payload: row.payload,
       reviewRoutedAtMs: numberOrNull(row.review_routed_at_ms),
     }));
+    // The stored contract is a write-time observation, not a current liveness verdict.
+    // Refresh only the report snapshot; the original payload still supplies CAS evidence.
+    const reportRows: DurableParkAuditSourceRow[] = [];
+    const currentContracts = new Map<string, Promise<Awaited<ReturnType<typeof buildDurableParkReleaseContract>>>>();
+    for (const row of sourceRows) {
+      const payload = record(row.payload);
+      const contract = record(payload.claim_hold_release);
+      const condition = textOrNull(contract.condition);
+      const owner = textOrNull(contract.owner);
+      const trigger = textOrNull(contract.trigger);
+      if (!readWorkItemClaimHoldProvenance(payload).parked || !condition || !owner || !trigger) {
+        reportRows.push(row);
+        continue;
+      }
+      // A self-referential trigger depends on WHICH park carries it, and a fire certifies only
+      // when it postdates THIS park (EI-25664119449929994), so both join the memo key.
+      const selfRelease = trigger.endsWith(`:${row.id}`) ? row.id : null;
+      const parkedAt = textOrNull(payload.claim_hold_at);
+      const key = JSON.stringify([condition, owner, trigger, selfRelease, parkedAt]);
+      let current = currentContracts.get(key);
+      if (!current) {
+        current = buildDurableParkReleaseContract({ condition, owner, trigger, parkId: row.id, parkedAt }, owner);
+        currentContracts.set(key, current);
+      }
+      reportRows.push({ ...row, payload: { ...payload, claim_hold_release: await current } });
+    }
     const completedAtMs = now();
     const report = buildDurableParkAuditReport({
-      rows: sourceRows,
+      rows: reportRows,
       runId,
       workspaceId: opts.workspaceId,
       harnessSlug: opts.harnessSlug,
@@ -968,13 +1091,16 @@ export async function runWorkItemDurableParkAudit(opts: {
   }
 }
 
-const DURABLE_PARK_CLEAR_REASONS = new Set<DurableParkClearReason>([
+/** The closed reason-code set; agent tools derive their input enum from this tuple. */
+export const DURABLE_PARK_CLEAR_REASON_CODES = [
   'condition-satisfied',
   'duplicate-terminal',
   'review-completed',
   'typed-blocker-resolved',
   'operator-directed',
-]);
+] as const satisfies readonly DurableParkClearReason[];
+
+const DURABLE_PARK_CLEAR_REASONS = new Set<DurableParkClearReason>(DURABLE_PARK_CLEAR_REASON_CODES);
 
 type ReconcileDbRow = {
   id: string;
@@ -982,6 +1108,60 @@ type ReconcileDbRow = {
   taken_by: string | null;
   payload: unknown;
 };
+
+/** One row's park control state, in the exact shape `planDurableParkClear` fingerprints. */
+export interface DurableParkControlRow {
+  id: string;
+  state: string;
+  takenBy: string | null;
+  payload: unknown;
+}
+
+/**
+ * Read one row's control state with the SAME predicate and columns the reconciler's
+ * transaction uses, so a fingerprint computed from it is the fingerprint the CAS will
+ * compare (plan D-009: the agent door's read-then-CAS flow must not fingerprint a
+ * differently-normalized projection of the row).
+ */
+export async function readDurableParkControlRow(opts: {
+  workspaceId: string;
+  harnessSlug: string;
+  id: string;
+  sql?: OrgSql;
+}): Promise<DurableParkControlRow | null> {
+  const sql = opts.sql ?? getOrgPg().sql;
+  const rows = await sql<ReconcileDbRow[]>`
+    SELECT feature_id AS id, status AS state, taken_by, payload
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${opts.workspaceId}
+       AND harness_slug = ${opts.harnessSlug}
+       AND feature_id = ${opts.id}`;
+  const row = rows[0];
+  return row ? { id: row.id, state: row.state, takenBy: row.taken_by, payload: row.payload } : null;
+}
+
+/**
+ * Deterministic runId for a single-decision reconcile issued through an agent tool
+ * (plan D-009). Identical input yields the identical runId, so a retry replays the
+ * recorded result instead of re-applying; any change of actor, fingerprint, reason or
+ * evidence yields a NEW runId, so a second attempt against a moved park is evaluated
+ * fresh (and reports `already-cleared` / `stale-fingerprint`) rather than tripping the
+ * reconciler's "runId already used with different input" refusal.
+ */
+export function durableParkSingleReconcileRunId(input: {
+  workspaceId: string;
+  harnessSlug: string;
+  actor: string;
+  decision: DurableParkReconcileDecision;
+}): string {
+  const digest = reconcileInputSha256({
+    workspaceId: input.workspaceId,
+    harnessSlug: input.harnessSlug,
+    actor: input.actor,
+    decisions: [input.decision],
+  });
+  return `${WORK_ITEM_DURABLE_PARK_AUDIT}:reconcile:tool:${input.decision.id}:${digest.slice(0, 32)}`;
+}
 
 function reconcileArtifactPath(runId: string): string {
   const safe = runId.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'run';
@@ -1147,6 +1327,7 @@ export async function runWorkItemDurableParkReconciliation(opts: {
         if (plan.outcome !== 'cleared' || !nextPayload) return outcome;
 
         const priorPayload = record(row.payload);
+        const priorRelease = record(priorPayload.claim_hold_release);
         const updated = await tx<Array<{ payload: unknown }>>`
           UPDATE harness_shared.work_items
              SET payload = CASE
@@ -1170,6 +1351,12 @@ export async function runWorkItemDurableParkReconciliation(opts: {
                    IS NOT DISTINCT FROM ${textOrNull(priorPayload.claim_hold_reason)}
              AND (COALESCE(payload, '{}'::jsonb) ->> 'claim_hold_at')
                    IS NOT DISTINCT FROM ${textOrNull(priorPayload.claim_hold_at)}
+             AND (COALESCE(payload, '{}'::jsonb) -> 'claim_hold_release' ->> 'condition')
+                   IS NOT DISTINCT FROM ${textOrNull(priorRelease.condition)}
+             AND (COALESCE(payload, '{}'::jsonb) -> 'claim_hold_release' ->> 'owner')
+                   IS NOT DISTINCT FROM ${textOrNull(priorRelease.owner)}
+             AND (COALESCE(payload, '{}'::jsonb) -> 'claim_hold_release' ->> 'trigger')
+                   IS NOT DISTINCT FROM ${textOrNull(priorRelease.trigger)}
              AND (COALESCE(payload, '{}'::jsonb) ->> 'held_open_by')
                    IS NOT DISTINCT FROM ${textOrNull(priorPayload.held_open_by)}
              AND (COALESCE(payload, '{}'::jsonb) ->> 'held_open_reason')
@@ -1198,23 +1385,10 @@ export async function runWorkItemDurableParkReconciliation(opts: {
           return retryOutcome;
         }
         const before = readWorkItemClaimHoldProvenance(row.payload);
-        await tx`
-          INSERT INTO harness_shared.audit_log
-            (id, ts, actor, action, subject, details, workspace_id)
-          VALUES
-            (${`durable-park-clear-${randomUUID()}`}, ${now()}, ${opts.actor},
-             ${DURABLE_PARK_CLEAR_AUDIT_ACTION}, ${decision.id},
-             ${JSON.stringify({
-               runId,
-               harness: opts.harnessSlug,
-               reasonCode: decision.reasonCode,
-               evidence: decision.evidence,
-               expectedParkFingerprint: decision.expectedParkFingerprint,
-               observedParkFingerprint: plan.observedParkFingerprint,
-               preservedLease: plan.preservedLease,
-               priorPark: before.parked,
-             })}::text::jsonb,
-             ${opts.workspaceId})`;
+        await writeDurableParkClearReceipt(tx, {
+          workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug,
+          actor: opts.actor, runId, decision, plan, priorPark: before.parked,
+        }, now());
         return outcome;
       });
       rowResults.push(result);

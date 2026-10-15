@@ -22,7 +22,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { SpineSchema } from '@papercusp/orchestrator/blueprint';
 import type { DBOS as DBOSType } from '@dbos-inc/dbos-sdk';
 
@@ -57,12 +57,56 @@ const calls: Array<{ role: string; key: string }> = [];
 /** director decide attempts so far (1=turn0, 2=turn1-attempt1, 3=turn1-attempt2…). */
 let directorAttempts = 0;
 
+type CleanupStep = {
+  name: string;
+  run: () => void | Promise<unknown>;
+};
+
+type CleanupStepResult = {
+  name: string;
+  status: 'completed' | 'timed-out' | 'failed';
+  error?: string;
+};
+
+/** Bound one teardown operation so a stuck DBOS/PG close cannot consume Vitest's 90s hook. */
+async function runCleanupStep(step: CleanupStep, timeoutMs: number): Promise<CleanupStepResult> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  try {
+    await Promise.race([
+      Promise.resolve().then(step.run),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          reject(new Error(`timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+    return { name: step.name, status: 'completed' };
+  } catch (error) {
+    return {
+      name: step.name,
+      status: timedOut ? 'timed-out' : 'failed',
+      error: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function runCleanupSteps(steps: CleanupStep[], timeoutMs: number): Promise<CleanupStepResult[]> {
+  const results: CleanupStepResult[] = [];
+  for (const step of steps) results.push(await runCleanupStep(step, timeoutMs));
+  return results;
+}
+
 beforeAll(async () => {
   adminUri = await getTestPg();
   dbName = `dbos_replay_${randomBytes(5).toString('hex')}`;
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
   } finally {
     await admin.end({ timeout: 5 });
   }
@@ -99,22 +143,51 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-  try {
-    await DBOS.shutdown();
-  } catch {
-    /* best-effort */
-  }
-  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
-  try {
-    await admin.unsafe(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
-  } catch {
-    /* best-effort */
-  } finally {
-    await admin.end({ timeout: 5 });
+  let admin: ReturnType<typeof postgres> | undefined;
+  const results = await runCleanupSteps([
+    { name: 'DBOS.shutdown', run: () => DBOS.shutdown() },
+    { name: 'open admin connection', run: () => { admin = postgres(adminUri, { max: 1, onnotice: () => {} }); } },
+    {
+      name: 'DROP DATABASE',
+      run: () => {
+        if (!admin) throw new Error('admin connection was not created');
+        return admin.unsafe(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
+      },
+    },
+    { name: 'admin.end', run: () => admin?.end({ timeout: 5 }) },
+  ], 20_000);
+  const failures = results.filter((result) => result.status !== 'completed');
+  if (failures.length) {
+    throw new Error(`DBOS crash-replay cleanup did not complete: ${failures
+      .map(({ name, status, error }) => `${name} ${status}${error ? ` (${error})` : ''}`)
+      .join('; ')}`);
   }
 });
 
 describe('DBOS pipeline crash-mid-replay safety (P-007)', () => {
+  it('bounds and identifies a hung cleanup step, then continues to later cleanup', async () => {
+    const neverSettles = () => new Promise<void>(() => {});
+    const shutdownHang = await runCleanupSteps([
+      { name: 'DBOS.shutdown', run: neverSettles },
+      { name: 'DROP DATABASE', run: () => {} },
+    ], 25);
+    expect(shutdownHang.map(({ name, status }) => [name, status])).toEqual([
+      ['DBOS.shutdown', 'timed-out'],
+      ['DROP DATABASE', 'completed'],
+    ]);
+
+    const dropHang = await runCleanupSteps([
+      { name: 'DBOS.shutdown', run: () => {} },
+      { name: 'DROP DATABASE', run: neverSettles },
+      { name: 'admin.end', run: () => {} },
+    ], 25);
+    expect(dropHang.map(({ name, status }) => [name, status])).toEqual([
+      ['DBOS.shutdown', 'completed'],
+      ['DROP DATABASE', 'timed-out'],
+      ['admin.end', 'completed'],
+    ]);
+  });
+
   it('a failed decide step retries WITHOUT re-invoking the completed worker; keys are deterministic', async () => {
     // DBOS logs the (intentional) step failure + retry at warn/error level; the
     // suite's fail-on-console would otherwise fail the test on that expected

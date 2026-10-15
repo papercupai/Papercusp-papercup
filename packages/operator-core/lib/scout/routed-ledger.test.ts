@@ -9,12 +9,15 @@
  * covers the seam's own logic without PG.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { GradeRoutedIdeaDiagnostics } from './routed-ledger';
 
 const h = vi.hoisted(() => ({
   /** Rows the UPDATE … RETURNING yields. */
   updateRows: [] as Array<{ idea_id: string }>,
   /** Rows the existence SELECT yields. */
   selectRows: [] as Array<{ idea_id: string }>,
+  /** Rows the work-item terminal-facts SELECT yields (WI-10007390). */
+  factsRows: [] as Array<{ terminal_owner: string | null; triage_rejected: boolean }>,
   queries: [] as string[],
   /** Interpolated values per query, index-aligned with `queries`. */
   values: [] as unknown[][],
@@ -29,16 +32,21 @@ vi.mock('@papercusp/db-org', async (orig) => ({
       h.values.push(vals);
       if (text.includes('UPDATE harness_shared.scout_routed_ideas')) return Promise.resolve(h.updateRows);
       if (text.includes('SELECT idea_id')) return Promise.resolve(h.selectRows);
+      if (text.includes('SELECT w.terminal_owner')) return Promise.resolve(h.factsRows);
       return Promise.resolve([]);
-    }, { begin: vi.fn() }),
+    }, { begin: vi.fn(async function (this: unknown, write: (sql: unknown) => Promise<unknown>) {
+      return write(this);
+    }) }),
   }),
 }));
 
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
+vi.mock('../experiment/producer-lifecycle-store', async (original) => ({
+  ...(await original<typeof import('../experiment/producer-lifecycle-store')>()),
+  recordProducerObservation: vi.fn(async () => {}),
+}));
 
-const { gradeRoutedIdea, hiveFromPatternRefs, propagatePlanOutcome, propagateWorkItemOutcome } = await import(
-  './routed-ledger'
-);
+const { gradeRoutedIdea, hiveFromPatternRefs, propagatePlanOutcome, propagateWorkItemOutcome, workItemTerminalEntries } = await import('./routed-ledger');
 const sse = await import('../sync-sse');
 const invalidate = vi.mocked(sse.notifySyncInvalidate);
 
@@ -48,6 +56,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 afterEach(() => {
   h.updateRows = [];
   h.selectRows = [];
+  h.factsRows = [];
   h.queries = [];
   h.values = [];
   invalidate.mockClear();
@@ -66,6 +75,31 @@ describe('gradeRoutedIdea (C-2 seam logic)', () => {
     const res = await gradeRoutedIdea({ ideaId: 'i1', grade: 4, feedback: 'sharp', gradedBy: 'Queen' });
     expect(res).toEqual({ applied: true });
     await vi.waitFor(() => expect(invalidate).toHaveBeenCalledWith('learning.scout'));
+  });
+
+  it('emits write, update, and producer-observation phase diagnostics for a committed grade', async () => {
+    h.updateRows = [{ idea_id: 'i1' }];
+    const snapshots: Array<{ phases: GradeRoutedIdeaDiagnostics['phases'] }> = [];
+
+    const res = await gradeRoutedIdea(
+      { ideaId: 'i1', grade: 4, gradedBy: 'su-reviewer' },
+      { onDiagnostics: (diagnostics) => snapshots.push({ phases: { ...diagnostics.phases } }) },
+    );
+
+    expect(res).toEqual({ applied: true });
+    expect(snapshots.find((snapshot) => snapshot.phases.gradeUpdate?.status === 'in-progress')?.phases.gradeUpdate?.startedAt)
+      .toEqual(expect.any(String));
+    expect(snapshots.find((snapshot) => snapshot.phases.producerObservation?.status === 'in-progress')?.phases.producerObservation?.startedAt)
+      .toEqual(expect.any(String));
+    expect(snapshots.at(-1)?.phases).toMatchObject({
+      writeTransaction: { status: 'ok' },
+      gradeUpdate: { status: 'ok' },
+      producerObservation: { status: 'ok' },
+    });
+    expect(snapshots.at(-1)?.phases.producerObservation?.elapsedMs).toEqual(expect.any(Number));
+    await vi.waitFor(() => expect(invalidate).toHaveBeenCalledWith('learning.scout'));
+    await flush();
+    await flush();
   });
 
   it('guarded UPDATE matching nothing + row exists → owner-grade-sovereign, NO invalidate', async () => {
@@ -113,6 +147,7 @@ describe('hiveFromPatternRefs (D-003 target-hive derivation, P-002)', () => {
 describe('propagateWorkItemOutcome (EI-22414305411561114)', () => {
   it('writes a winning outcome for a terminal success and scopes the routed ref', async () => {
     h.updateRows = [{ idea_id: 'idea-1' }];
+    h.factsRows = [{ terminal_owner: 'su-x', triage_rejected: false }];
 
     await expect(
       propagateWorkItemOutcome({
@@ -149,6 +184,63 @@ describe('propagateWorkItemOutcome (EI-22414305411561114)', () => {
       }),
     ).resolves.toBe(0);
     expect(h.queries).toHaveLength(0);
+  });
+
+  /** The outcome value interpolated into the UPDATE, or undefined when no UPDATE ran. */
+  const writtenOutcome = () => {
+    const i = h.queries.findIndex((q) => q.includes('UPDATE harness_shared.scout_routed_ideas'));
+    return i < 0 ? undefined : h.values[i]?.[0];
+  };
+
+  it('WI-10007390: a hygiene close is a LOSS even though `closed` is a winning status', async () => {
+    h.updateRows = [{ idea_id: 'idea-h' }];
+    h.factsRows = [{ terminal_owner: 'improvement-hygiene', triage_rejected: true }];
+
+    await expect(
+      propagateWorkItemOutcome({ workItemId: 'EI-h', state: 'closed', workspaceId: 'ws-1' }),
+    ).resolves.toBe(1);
+    expect(writtenOutcome()).toBe('lost');
+    const factsQuery = h.queries.find((q) => q.includes('SELECT w.terminal_owner')) ?? '';
+    expect(factsQuery).toContain('triageDecision');
+  });
+
+  it('WI-10007390: a done close with no terminal pair is still a win', async () => {
+    h.updateRows = [{ idea_id: 'idea-d' }];
+    h.factsRows = [{ terminal_owner: null, triage_rejected: false }];
+
+    await expect(
+      propagateWorkItemOutcome({ workItemId: 'EI-d', state: 'done', workspaceId: 'ws-1' }),
+    ).resolves.toBe(1);
+    expect(writtenOutcome()).toBe('won');
+  });
+});
+
+describe('workItemTerminalEntries (WI-10007390)', () => {
+  const row = (over: Partial<Parameters<typeof workItemTerminalEntries>[0][number]>) => ({
+    feature_id: 'EI-1',
+    harness_slug: 'papercusp',
+    title: 'Some idea',
+    status: 'done',
+    updated_ts: '1790000000000',
+    terminal_owner: 'su-x',
+    triage_rejected: false,
+    ...over,
+  });
+
+  it('tags each terminal by the shared rule and skips live rows', () => {
+    const entries = workItemTerminalEntries([
+      row({ feature_id: 'EI-won' }),
+      row({ feature_id: 'EI-hyg', status: 'closed', terminal_owner: 'improvement-hygiene' }),
+      row({ feature_id: 'EI-drop', status: 'dropped' }),
+      row({ feature_id: 'EI-bare', status: 'done', terminal_owner: null }),
+      row({ feature_id: 'EI-live', status: 'open' }),
+    ]);
+    expect(entries.map((e) => [e.ref, e.detail])).toEqual([
+      ['wi:EI-won', 'Status: done'],
+      ['wi:EI-hyg', 'Status: rejected'],
+      ['wi:EI-drop', 'Status: dropped'],
+      ['wi:EI-bare', 'Status: done'],
+    ]);
   });
 });
 

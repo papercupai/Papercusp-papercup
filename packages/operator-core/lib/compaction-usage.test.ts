@@ -10,7 +10,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const advSessionRowsMock = vi.hoisted(() => vi.fn(async () => [] as unknown[]));
+const advSessionRowsMock = vi.hoisted(() =>
+  vi.fn(async (_strings: TemplateStringsArray, ..._values: unknown[]) => [] as unknown[]),
+);
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: advSessionRowsMock }),
@@ -21,6 +23,8 @@ import {
   estimateContextTokens,
   estimateContextWindowForOwner,
   fallbackTranscriptFresh,
+  healthyClaudeTranscriptResponseAt,
+  observeHealthyClaudeTranscriptForOwner,
   newestTranscriptUnderOwner,
   parseLaunchCompactionLimitArgv,
   resolveCodexRolloutPathForRef,
@@ -31,6 +35,55 @@ import {
 
 beforeEach(() => {
   advSessionRowsMock.mockResolvedValue([]);
+});
+
+describe('positive live transcript recovery evidence', () => {
+  const now = 1_900_000_000_000;
+  const response = { type: 'assistant', timestamp: new Date(now - 1).toISOString(),
+    message: { model: 'claude', content: [{ type: 'text', text: 'The measured work continues.' }] } };
+  it('uses the actual response clock, including a healthy quote of the provider error', () => {
+    expect(healthyClaudeTranscriptResponseAt(JSON.stringify(response), now)).toBe(now - 1);
+    expect(healthyClaudeTranscriptResponseAt(JSON.stringify({ ...response, message: { ...response.message,
+      content: [{ type: 'text', text: 'I investigated "Prompt is too long".' }] } }), now)).toBe(now - 1);
+  });
+  it.each(['empty', 'partial', 'user-only', 'missing-clock', 'future-clock', 'api-error', 'synthetic',
+    'synthetic-model', 'empty-response'])('does not call %s a healthy measurement', kind => {
+    const record = structuredClone(response) as Record<string, any>;
+    if (kind === 'user-only') record.type = 'user';
+    if (kind === 'missing-clock') delete record.timestamp;
+    if (kind === 'future-clock') record.timestamp = new Date(now + 1).toISOString();
+    if (kind === 'api-error') record.isApiErrorMessage = true;
+    if (kind === 'synthetic') record.isSynthetic = true;
+    if (kind === 'synthetic-model') record.message.model = '<synthetic>';
+    if (kind === 'empty-response') record.message.content = [];
+    expect(healthyClaudeTranscriptResponseAt(kind === 'empty' ? '' : kind === 'partial' ? '{' : JSON.stringify(record), now)).toBeNull();
+  });
+  it('returns the response time from the same reconciled live transcript, with a bounded exact-owner read', async () => {
+    const at = Date.now() - 10;
+    const ref = { agent: 'claude', sessionId: 'current', transcriptOwner: 'original-root' };
+    const readTail = vi.fn(async () => JSON.stringify({ ...response, timestamp: new Date(at).toISOString() }));
+    const result = await observeHealthyClaudeTranscriptForOwner('owner', { resolveRef: async () => ref, readTail });
+    expect(result).toEqual({ sessionId: 'current', measuredAtMs: at });
+    expect(readTail).toHaveBeenCalledWith('owner', 256 * 1024, ref);
+  });
+  it.each(['missing-ref', 'non-claude', 'changing-session', 'changing-root', 'failed-read', 'failed-ref', 'unreadable-tail'])
+    ('preserves %s instead of inventing a healthy response', async kind => {
+      let calls = 0;
+      const result = await observeHealthyClaudeTranscriptForOwner('owner', {
+        resolveRef: async () => {
+          calls++;
+          if (kind === 'failed-ref') throw new Error('reference unreadable');
+          if (kind === 'missing-ref') return null;
+          return { agent: kind === 'non-claude' ? 'codex' : 'claude',
+            sessionId: kind === 'changing-session' && calls > 1 ? 'other' : 'current',
+            transcriptOwner: kind === 'changing-root' && calls > 1 ? 'other-root' : 'root' };
+        }, readTail: async () => {
+          if (kind === 'failed-read') throw new Error('transcript unreadable');
+          return kind === 'unreadable-tail' ? null : JSON.stringify({ ...response, timestamp: new Date(Date.now() - 1).toISOString() });
+        },
+      });
+      expect(result).toBeNull();
+    });
 });
 
 describe('estimateContextTokens (backend gating + degradation)', () => {
@@ -66,6 +119,36 @@ describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)',
     });
   });
 
+  it('selects the latest adv-session deterministically for the context-write fence', async () => {
+    advSessionRowsMock.mockClear();
+    advSessionRowsMock.mockResolvedValue([{ id: 22, agent: 'claude', session_id: 'native-newest' }]);
+    await resolveSessionRef('su-order');
+    const statement = advSessionRowsMock.mock.calls[0]?.[0];
+    expect(statement.join('')).toContain('ORDER BY started_at DESC, id DESC');
+  });
+
+  it('excludes terminal adv-session rows while keeping the active control selectable', async () => {
+    const rows = [
+      { id: 24, agent: 'claude', session_id: 'ended-with-time', started_at: '2026-10-14T12:00:00Z', ended_at: '2026-10-14T12:01:00Z', ended_by: 'self' },
+      { id: 23, agent: 'claude', session_id: 'ended-with-writer-only', started_at: '2026-10-14T11:00:00Z', ended_at: null, ended_by: 'reconciler' },
+      { id: 22, agent: 'claude', session_id: 'native-active', started_at: '2026-10-14T10:00:00Z', ended_at: null, ended_by: null },
+    ];
+    advSessionRowsMock.mockImplementation(async (strings) => {
+      const query = strings.join('');
+      const excludesTerminalRows = query.includes('ended_at IS NULL') && query.includes('ended_by IS NULL');
+      return excludesTerminalRows ? rows.filter((row) => row.ended_at == null && row.ended_by == null) : rows;
+    });
+
+    await expect(resolveSessionRef('su-ended')).resolves.toMatchObject({
+      agent: 'claude',
+      sessionId: 'native-active',
+      sessionKey: 22,
+    });
+    const statement = advSessionRowsMock.mock.calls[0]?.[0];
+    expect(statement.join('')).toContain('ended_at IS NULL');
+    expect(statement.join('')).toContain('ended_by IS NULL');
+  });
+
   it('reads the newest valid last_token_usage and effective model window, never cumulative usage', async () => {
     const event = (tokens: number, total: number, window = 258_400) =>
       JSON.stringify({
@@ -81,7 +164,7 @@ describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)',
       });
     writeFileSync(rollout, `${event(120_000, 9_000_000)}\n${event(156_981, 126_734_214)}\n`);
 
-    expect(codexContextSnapshotFromRollout(rollout)).toEqual({
+    expect(await codexContextSnapshotFromRollout(rollout)).toEqual({
       tokens: 156_981,
       modelContextWindow: 258_400,
     });
@@ -153,7 +236,7 @@ describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)',
     });
   });
 
-  it('D-007 reads the runtime-capped GPT-5.6 effective window from rollout telemetry', () => {
+  it('D-007 reads the runtime-capped GPT-5.6 effective window from rollout telemetry', async () => {
     writeFileSync(
       rollout,
       JSON.stringify({
@@ -167,12 +250,12 @@ describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)',
         },
       }) + '\n',
     );
-    const snapshot = codexContextSnapshotFromRollout(rollout);
+    const snapshot = await codexContextSnapshotFromRollout(rollout);
     expect(snapshot).toEqual({ tokens: 12_345, modelContextWindow: 828_400 });
     expect(snapshot!.modelContextWindow).toBeGreaterThan(400_000);
   });
 
-  it('skips a trailing rate-limit-only event and falls back to input+output when total_tokens is absent', () => {
+  it('skips a trailing rate-limit-only event and falls back to input+output when total_tokens is absent', async () => {
     writeFileSync(
       rollout,
       [
@@ -189,9 +272,88 @@ describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)',
         JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', info: null } }),
       ].join('\n') + '\n',
     );
-    expect(codexContextSnapshotFromRollout(rollout)).toEqual({
+    expect(await codexContextSnapshotFromRollout(rollout)).toEqual({
       tokens: 40_321,
       modelContextWindow: 258_400,
+    });
+  });
+
+  // WI-10005305: the sweep asks for the same rollout twice per pass (tokens, then
+  // window) and again every pass; an unchanged rollout must not be re-read.
+  describe('rollout snapshot memo (WI-10005305)', () => {
+    const tokenLine = (tokens: number) =>
+      `${JSON.stringify({
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          info: { last_token_usage: { total_tokens: tokens }, model_context_window: 258_400 },
+        },
+      })}\n`;
+    const countingOps = () => {
+      const open = vi.fn((p: fs.PathLike, flags?: string | number) => fs.promises.open(p, flags));
+      return { ops: { stat: fs.promises.stat, open } as Pick<typeof fs.promises, 'stat' | 'open'>, open };
+    };
+
+    it('reads an unchanged rollout once and serves the repeat from the memo', async () => {
+      const p = join(dir, 'memo-unchanged.jsonl');
+      writeFileSync(p, tokenLine(111_111));
+      const { ops, open } = countingOps();
+      expect(await codexContextSnapshotFromRollout(p, ops)).toEqual({ tokens: 111_111, modelContextWindow: 258_400 });
+      expect(await codexContextSnapshotFromRollout(p, ops)).toEqual({ tokens: 111_111, modelContextWindow: 258_400 });
+      expect(open).toHaveBeenCalledTimes(1);
+    });
+
+    it('re-reads after a new token_count event is appended', async () => {
+      const p = join(dir, 'memo-append.jsonl');
+      writeFileSync(p, tokenLine(111_111));
+      const { ops, open } = countingOps();
+      expect((await codexContextSnapshotFromRollout(p, ops))?.tokens).toBe(111_111);
+      appendFileSync(p, tokenLine(150_000));
+      expect((await codexContextSnapshotFromRollout(p, ops))?.tokens).toBe(150_000);
+      expect(open).toHaveBeenCalledTimes(2);
+    });
+
+    it('re-reads a rollout replaced by rename even when size and mtime match', async () => {
+      const p = join(dir, 'memo-replaced.jsonl');
+      const fixedTime = new Date('2026-10-02T05:00:00Z');
+      writeFileSync(p, tokenLine(111_111));
+      utimesSync(p, fixedTime, fixedTime);
+      const { ops, open } = countingOps();
+      expect((await codexContextSnapshotFromRollout(p, ops))?.tokens).toBe(111_111);
+
+      const staged = join(dir, 'memo-replaced.staged');
+      writeFileSync(staged, tokenLine(222_222)); // same byte length as 111_111
+      utimesSync(staged, fixedTime, fixedTime);
+      const before = statSync(p);
+      fs.renameSync(staged, p);
+      const after = statSync(p);
+      // Only the inode differs, so this pins the ino component of the memo key.
+      expect(after.size).toBe(before.size);
+      expect(after.mtimeMs).toBe(before.mtimeMs);
+      expect(after.ino).not.toBe(before.ino);
+
+      expect((await codexContextSnapshotFromRollout(p, ops))?.tokens).toBe(222_222);
+      expect(open).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not remember a failed read', async () => {
+      const p = join(dir, 'memo-failed-read.jsonl');
+      writeFileSync(p, tokenLine(111_111));
+      const failing = {
+        stat: fs.promises.stat,
+        open: vi.fn(async () => {
+          throw Object.assign(new Error('EIO'), { code: 'EIO' });
+        }),
+      } as unknown as Pick<typeof fs.promises, 'stat' | 'open'>;
+      expect(await codexContextSnapshotFromRollout(p, failing)).toBeNull();
+
+      const { ops, open } = countingOps();
+      expect((await codexContextSnapshotFromRollout(p, ops))?.tokens).toBe(111_111);
+      expect(open).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns null for a missing rollout', async () => {
+      expect(await codexContextSnapshotFromRollout(join(dir, 'memo-missing.jsonl'))).toBeNull();
     });
   });
 

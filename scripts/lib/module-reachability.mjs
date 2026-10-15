@@ -76,6 +76,7 @@ const DECLARATION_RE = /\.d\.[cm]?ts$/;
 const SOURCE_RE = /\.(?:tsx?|[cm]?js|[cm]ts)$/;
 const EXECUTION_MANIFEST_RE =
   /(?:^|\/)package\.json$|^\.github\/(?:workflows|actions)\/.*\.ya?ml$/;
+const EXECUTION_SCRIPT_RE = /\.(?:sh|bash)$/;
 
 /** Repo-relative paths under a `lib/release/` directory — the gate's own detector domain. */
 const DETECTOR_DIR_RE = /(?:^|\/)lib\/release\//;
@@ -224,7 +225,17 @@ export function parseWorkspaceRelativeMentions(text) {
  */
 export function isExecutionPathMentionSource(file) {
   const path = String(file);
-  return SOURCE_RE.test(path) || EXECUTION_MANIFEST_RE.test(path);
+  return (
+    SOURCE_RE.test(path) || EXECUTION_MANIFEST_RE.test(path) || EXECUTION_SCRIPT_RE.test(path)
+  );
+}
+
+/** Shell comment lines can describe a path without executing it. */
+function stripShellCommentLines(text) {
+  return String(text)
+    .split('\n')
+    .map((line) => (/^\s*#/.test(line) ? '' : line))
+    .join('\n');
 }
 
 /** Normalize a POSIX-ish path, resolving `.` and `..` segments. */
@@ -350,7 +361,8 @@ export function buildImportGraph({
     // Sound prefilter — see the header. A sibling inside lib/release/ may import with a
     // bare './name', so directory membership is checked as well as the substring.
     if (!raw.includes('release/') && !DETECTOR_DIR_RE.test(file)) continue;
-    const text = stripComments(raw);
+    const stripped = stripComments(raw);
+    const text = EXECUTION_SCRIPT_RE.test(file) ? stripShellCommentLines(stripped) : stripped;
     if (!text) continue;
 
     if (SOURCE_RE.test(file)) {
@@ -362,6 +374,17 @@ export function buildImportGraph({
         }
         resolvedEdges += 1;
         add(importers, target, file);
+      }
+
+      // The maintained sidecar spawn planner executes devScriptPath without an
+      // import edge. Resolve its default sibling only when moduleDir is anchored
+      // to this source file and the path is passed to the actual planner call.
+      if (/\bconst\s+moduleDir\s*=\s*dirname\(\s*fileURLToPath\(\s*import\.meta\.url\s*\)\s*\)/.test(text)) {
+        const sidecarPath = /\bresolveSidecarSpawnPlan\s*\(\s*\{[^}]*?\bdevScriptPath\s*:\s*join\(\s*(?:[\w$]+\.moduleDirOverride\s*\?\?\s*)?moduleDir\s*,\s*['"]([\w.-]+\.(?:ts|tsx|mts|js|mjs))['"]\s*\)/g;
+        for (const match of text.matchAll(sidecarPath)) {
+          const target = resolveSpecifier({ specifier: `./${match[1]}`, fromFile: file, fileSet, workspaceDirByName });
+          if (target !== null) add(pathMentions, target, file);
+        }
       }
     }
 

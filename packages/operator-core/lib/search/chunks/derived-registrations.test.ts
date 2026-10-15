@@ -124,7 +124,7 @@ describe('a new store or entry reaches the derived lists with no other edit', ()
     } as unknown as PapercuspChunkSurface;
     const map = withChunkSearchColumns({ work_item: ['harness_shared.work_items.embedding'] }, stores, [entry]);
     expect(map.fixture_source).toEqual(['harness_shared.fixture_chunks.embedding']);
-    expect(map.work_item).toEqual(['harness_shared.work_items.embedding', `${TEXT_CHUNKS_TABLE}.embedding`]);
+    expect(map.work_item).toEqual(['harness_shared.work_items.embedding', `${TEXT_CHUNKS_TABLE}.embedding:fixture`]);
     expect(map.session_turn).toEqual(['harness_shared.session_turn_chunks.embedding']);
   });
 

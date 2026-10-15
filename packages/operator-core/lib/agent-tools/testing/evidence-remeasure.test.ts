@@ -11,6 +11,7 @@ import {
   planTestEvidenceRemeasure,
   remeasureJudgmentLossWarning,
   retireRemeasuredPredecessors,
+  PENDING_TEST_EVIDENCE_ABANDONMENT_GRACE_MS,
 } from './evidence';
 
 type Currentness = {
@@ -20,16 +21,21 @@ type Currentness = {
   unknownReasons: string[];
 };
 
-const recipe = (specId: string, testPath: string) => ({
-  specId, specRevision: 3, testPath, sourcePaths: ['src/subject.ts'], testLayer: 'unit' as const,
+const recipe = (specId: string, testPath: string, sourceGlobs?: string[]) => ({
+  specId, specRevision: 3, testPath, sourcePaths: ['src/subject.ts'],
+  ...(sourceGlobs ? { sourceGlobs } : {}), testLayer: 'unit' as const,
 });
 
 function row(id: number, opts: {
   specId?: string; testPath?: string; kind?: string; phase?: string; revision?: number;
   currentness?: Partial<Currentness>; moved?: unknown; outcome?: string; evidenceRef?: string;
   adequacy?: Record<string, unknown>;
+  sourceGlobs?: string[];
   /** Bound by hand (plans:bind-spec-evidence): no stored recipe, only the measured paths. */
   handBound?: boolean;
+  runId?: string;
+  originRunId?: string;
+  observedAt?: string;
 }) {
   const specId = opts.specId ?? 'S-1';
   const testPath = opts.testPath ?? 'src/subject.test.ts';
@@ -47,10 +53,16 @@ function row(id: number, opts: {
     ),
     details: {
       ...(handBound
-        ? { currentMeasurement: { schemaVersion: 1, kind: 'repo-files', testPaths: [testPath], sourcePaths: ['src/subject.ts'] } }
-        : { testExecution: { phase: opts.phase ?? 'settled', binding: recipe(specId, testPath) } }),
+        ? { currentMeasurement: { schemaVersion: 1, kind: 'repo-files', testPaths: [testPath], sourcePaths: ['src/subject.ts'],
+            ...(opts.sourceGlobs ? { sourceGlobs: opts.sourceGlobs } : {}) } }
+        : { testExecution: { phase: opts.phase ?? 'settled',
+            ...(opts.runId ? { runId: opts.runId } : {}),
+            ...(opts.originRunId ? { originRunId: opts.originRunId } : {}),
+            binding: recipe(specId, testPath, opts.sourceGlobs) } }),
       adequacy: { outcome: opts.outcome ?? 'pass', ...(handBound ? { testLayer: 'unit' } : {}), ...opts.adequacy },
     },
+    testRunId: null,
+    observedAt: opts.observedAt ?? '2026-10-06T00:00:00.000Z',
     currentness,
     ...(opts.moved ? { serverMeasurement: { status: 'measured', movedPaths: opts.moved } } : {}),
   } as never;
@@ -59,6 +71,23 @@ function row(id: number, opts: {
 const sourceStale = { overall: 'stale' as const, dimensions: { spec: 'current', source: 'stale' }, staleReasons: ['source-stale'] };
 
 describe('planTestEvidenceRemeasure', () => {
+  it.each(['error', 'fail'])('re-selects a current settled %s binding that shadows a stale proof', (outcome) => {
+    const plan = planTestEvidenceRemeasure([
+      row(15972, { currentness: sourceStale }),
+      row(16218, { outcome }),
+      row(15969, { specId: 'S-2' }),
+    ]);
+
+    expect(plan.selected).toHaveLength(1);
+    expect(plan.selected[0]).toMatchObject({
+      bindingId: 16218, binding: recipe('S-1', 'src/subject.test.ts'),
+      staleReasons: [], supersedes: [15972, 16218],
+    });
+    expect(plan.skipped).toEqual([
+      { specId: 'S-2', testPath: 'src/subject.test.ts', bindingId: 15969, reason: 'current' },
+    ]);
+  });
+
   it('recovers an exact hand-bound test recipe without replaying the old outcome or adequacy claims', () => {
     const plan = planTestEvidenceRemeasure([
       row(12, {
@@ -81,6 +110,19 @@ describe('planTestEvidenceRemeasure', () => {
     expect(plan.skipped).toEqual([]);
   });
 
+  it('preserves source globs from a hand-bound measurement when recovering its retrospective recipe', () => {
+    const sourceGlobs = ['dynamic/plugins/*/papercusp.json'];
+    const plan = planTestEvidenceRemeasure([
+      row(13, { handBound: true, currentness: sourceStale, sourceGlobs }),
+    ]);
+
+    expect(plan.selected).toMatchObject([{
+      binding: recipe('S-1', 'src/subject.test.ts', sourceGlobs),
+      supersedes: [13],
+    }]);
+    expect(plan.skipped).toEqual([]);
+  });
+
   it('selects only the latest stale-by-drift binding per (clause, test file) and lists every live predecessor', () => {
     const moved = [{ path: 'src/subject.ts', dimension: 'source', change: 'changed' }];
     const plan = planTestEvidenceRemeasure([
@@ -96,6 +138,27 @@ describe('planTestEvidenceRemeasure', () => {
     expect(plan.skipped).toEqual([{ specId: 'S-2', testPath: 'src/other.test.ts', bindingId: 11, reason: 'current' }]);
   });
 
+  it('re-runs a saved recipe when an edited path matches only its source glob', async () => {
+    const sourceGlobs = ['dynamic/plugins/*/papercusp.json'];
+    const moved = [{ path: 'dynamic/plugins/linear-sync/papercusp.json', dimension: 'source', change: 'changed' }];
+    const built = await buildTestEvidenceRemeasure(
+      { workItemId: 'WI-1', planSlug: 'p' },
+      { harnessSlug: 'h' },
+      { list: vi.fn().mockResolvedValue([row(14, { currentness: sourceStale, moved, sourceGlobs })]) },
+    );
+
+    expect(built.plan.selected).toMatchObject([{
+      movedPaths: moved,
+      binding: recipe('S-1', 'src/subject.test.ts', sourceGlobs),
+    }]);
+    expect(built.request).toEqual({
+      workItemId: 'WI-1',
+      planSlug: 'p',
+      bindings: [recipe('S-1', 'src/subject.test.ts', sourceGlobs)],
+    });
+    expect(built.files).toEqual(['src/subject.test.ts']);
+  });
+
   it('never re-measures a clause whose MEANING moved, an in-flight run, or an unmeasurable row', () => {
     const plan = planTestEvidenceRemeasure([
       row(1, { specId: 'S-1', currentness: { overall: 'stale', dimensions: { spec: 'stale' }, staleReasons: ['spec-stale', 'source-stale'] } }),
@@ -107,6 +170,14 @@ describe('planTestEvidenceRemeasure', () => {
     expect(plan.skipped.map((entry) => `${entry.specId}:${entry.reason}`)).toEqual([
       'S-1:clause-moved', 'S-2:run-in-flight', 'S-3:unmeasurable', 'S-4:not-remeasurable',
     ]);
+  });
+
+  it('re-measures an abandoned pending proof even when its file fingerprints are current', () => {
+    const plan = planTestEvidenceRemeasure([row(12, { phase: 'pending' })], new Set([12]));
+
+    expect(plan.selected).toMatchObject([{ bindingId: 12, staleReasons: [], abandonedPending: true,
+      supersedes: [12], binding: recipe('S-1', 'src/subject.test.ts') }]);
+    expect(plan.skipped).toEqual([]);
   });
 
   it('ignores counterexample proofs, which assert a failure against a deliberately broken subject', () => {
@@ -174,6 +245,78 @@ describe('buildTestEvidenceRemeasure', () => {
     expect(built.files).toEqual(['src/subject.test.ts']);
   });
 
+  it('names the checkout each selected proof was measured in, null for the session root (EI-25203154942838341)', async () => {
+    // A proof measured in a hive app's own repo must be re-run THERE: re-measuring it at the
+    // session harness root is what made phone-app bindings permanently unmeasurable (ENOENT).
+    const inHive = row(1, { handBound: true, currentness: sourceStale, specId: 'S-1',
+      testPath: 'packages/data/src/usage.test.ts' }) as { details: { currentMeasurement: Record<string, unknown> } };
+    inHive.details.currentMeasurement.rootHarnessSlug = 'phone-app';
+    const inSession = row(2, { handBound: true, currentness: sourceStale, specId: 'S-2', testPath: 'src/other.test.ts' });
+    const viaRecipe = row(3, { currentness: sourceStale, specId: 'S-3', testPath: 'src/third.test.ts' });
+    const build = (rows: unknown[]) => buildTestEvidenceRemeasure({ workItemId: 'WI-1', planSlug: 'p' },
+      { harnessSlug: 'h' }, { list: vi.fn().mockResolvedValue(rows) });
+
+    expect((await build([inHive])).rootHarnessSlugs).toEqual(['phone-app']);
+    // Unstamped measurements and recipe-only rows were measured at the session root.
+    expect((await build([inSession, viaRecipe])).rootHarnessSlugs).toEqual([null]);
+    const mixed = await build([inHive, inSession]);
+    expect(mixed.plan.selected).toHaveLength(2);
+    expect(mixed.rootHarnessSlugs).toHaveLength(2);
+    expect(mixed.rootHarnessSlugs).toEqual(expect.arrayContaining(['phone-app', null]));
+  });
+
+  it('treats an old pending binding as abandoned only when its run and exact file ledger are absent', async () => {
+    const now = Date.parse('2026-10-06T00:00:00.000Z');
+    const oldRun = 'f04cdb70-ad2d-4757-9ff0-3a3d9f4440ad';
+    const list = vi.fn().mockResolvedValue([row(12, {
+      phase: 'pending', currentness: sourceStale, runId: oldRun, originRunId: oldRun,
+      observedAt: new Date(now - PENDING_TEST_EVIDENCE_ABANDONMENT_GRACE_MS - 1).toISOString(),
+    })]);
+    const runStatus = vi.fn().mockResolvedValue(null);
+    const ledger = vi.fn().mockResolvedValue([]);
+
+    const built = await buildTestEvidenceRemeasure({ workItemId: 'WI-1', planSlug: 'p' },
+      { harnessSlug: 'h', workspaceId: 'ws', root: '/repo' }, { list, runStatus, ledger, now: () => now });
+
+    expect(built.abandonedPendingBindingIds).toEqual([12]);
+    expect(built.request?.bindings).toEqual([recipe('S-1', 'src/subject.test.ts')]);
+    expect(built.plan.selected[0]).toMatchObject({ bindingId: 12, abandonedPending: true });
+    expect(runStatus).toHaveBeenCalledExactlyOnceWith(oldRun, undefined,
+      { workspaceId: 'ws', harnessSlug: 'h', root: '/repo' });
+    expect(ledger).toHaveBeenCalledExactlyOnceWith({ workspaceId: 'ws', harnessSlug: 'h',
+      runGroupId: oldRun, filePaths: ['src/subject.test.ts'] });
+  });
+
+  it.each(['inside grace', 'a live run snapshot', 'an existing file ledger row', 'an unreadable file ledger'])
+    ('keeps pending evidence in flight when it is %s', async reason => {
+      const now = Date.parse('2026-10-06T00:00:00.000Z');
+      const oldRun = 'f04cdb70-ad2d-4757-9ff0-3a3d9f4440ad';
+      const pending = row(12, {
+        phase: 'pending', currentness: sourceStale, runId: oldRun, originRunId: oldRun,
+        // row() returns `never`, so the age is chosen here rather than assigned afterwards.
+        observedAt: new Date(reason === 'inside grace'
+          ? now - 1_000
+          : now - PENDING_TEST_EVIDENCE_ABANDONMENT_GRACE_MS - 1).toISOString(),
+      });
+      const list = vi.fn().mockResolvedValue([pending]);
+      const runStatus = vi.fn().mockResolvedValue(reason === 'a live run snapshot'
+        ? { runId: oldRun, status: 'running', startedAt: now - 10_000, finishedAt: null } as never
+        : null);
+      const ledger = vi.fn().mockResolvedValue(reason === 'an existing file ledger row'
+        ? [{ id: 77, file_path: 'src/subject.test.ts' }] as never
+        : reason === 'an unreadable file ledger' ? null : []);
+
+      const built = await buildTestEvidenceRemeasure({ workItemId: 'WI-1', planSlug: 'p' },
+        { harnessSlug: 'h', workspaceId: 'ws', root: '/repo' }, { list, runStatus, ledger, now: () => now });
+
+      expect(built.abandonedPendingBindingIds).toEqual([]);
+      expect(built.request).toBeNull();
+      expect(built.plan.skipped).toEqual([{ specId: 'S-1', testPath: 'src/subject.test.ts',
+        bindingId: 12, reason: 'run-in-flight' }]);
+      if (reason === 'inside grace') expect(runStatus).not.toHaveBeenCalled();
+      else expect(runStatus).toHaveBeenCalledOnce();
+    });
+
   it('builds a fresh test request from a hand-bound row without carrying forward its old pass or quality claims', async () => {
     const list = vi.fn().mockResolvedValue([
       row(1, {
@@ -225,6 +368,42 @@ describe('retireRemeasuredPredecessors', () => {
     const retract = vi.fn();
     await retireRemeasuredPredecessors(selected, prepared, 'new', scope, { list, retract });
     expect(retract).not.toHaveBeenCalled();
+  });
+});
+
+describe('re-measure never retires a clean-tree proof for a dirty-tree run (WI-10005451)', () => {
+  // Measured 2026-10-02 on WI-10001893: remeasure ran in the shared tree (test_run worktree_dirty=true)
+  // and retracted bindings whose run came from a lint:as-committed clone (worktree_dirty=false); the
+  // acceptance BAR rejects dirty runs, so the one-call repair downgraded an accepted proof.
+  const scope = { workspaceId: 'ws', harnessSlug: 'h', actorId: 'su-x', root: '/r' };
+  const prepared = [{ input: { planSlug: 'p', workItemId: 'WI-1', evidenceRef: 'test-run-group:new:0' } }] as never;
+  const withRun = (bound: unknown, worktreeDirty: boolean | null) =>
+    ({ ...(bound as object), testRunProvenance: { filePath: 'src/subject.test.ts', commitSha: 'abc', worktreeDirty } }) as never;
+  const selected = planTestEvidenceRemeasure([
+    withRun(row(10, { currentness: sourceStale }), false),
+    withRun(row(9, { currentness: sourceStale }), true),
+  ]).selected;
+
+  it('records which superseded rows were measured on a clean tree', () => {
+    expect(selected[0]).toMatchObject({ supersedes: [9, 10], cleanBindingIds: [10] });
+    expect(planTestEvidenceRemeasure([row(10, { currentness: sourceStale })]).selected[0]).not.toHaveProperty('cleanBindingIds');
+  });
+
+  it.each([true, null])('keeps the clean proof when the fresh run worktreeDirty=%s, and retires only the dirty one', async (dirty) => {
+    const list = vi.fn().mockResolvedValue([withRun(row(20, { evidenceRef: 'test-run-group:new:0' }), dirty)]);
+    const retract = vi.fn().mockResolvedValue({ status: 'retracted' });
+    const outcome = await retireRemeasuredPredecessors(selected, prepared, 'new', scope, { list, retract });
+    expect(retract.mock.calls.map(([call]) => call.bindingId)).toEqual([9]);
+    expect(outcome[0]).toMatchObject({ replacementId: 20, retired: [9], cleanProofKept: { bindingIds: [10] } });
+    expect((outcome[0] as { cleanProofKept: { repair: string } }).cleanProofKept.repair).toContain('lint:as-committed');
+  });
+
+  it('lets a known-clean fresh run retire a clean predecessor', async () => {
+    const list = vi.fn().mockResolvedValue([withRun(row(20, { evidenceRef: 'test-run-group:new:0' }), false)]);
+    const retract = vi.fn().mockResolvedValue({ status: 'retracted' });
+    const outcome = await retireRemeasuredPredecessors(selected, prepared, 'new', scope, { list, retract });
+    expect(retract.mock.calls.map(([call]) => call.bindingId)).toEqual([9, 10]);
+    expect(outcome[0]).not.toHaveProperty('cleanProofKept');
   });
 });
 

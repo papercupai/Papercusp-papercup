@@ -659,7 +659,29 @@ describe('LEG E — every BUILT-IN cell agrees with the oracle on every surface'
     // P-007, registered 2026-09-22) — directives are owner speech recorded per workspace and every
     // coord reader in the workspace already sees them through orders:list (that plan's D-004:
     // LABEL, never filter), so a harness-narrow cell would hide a status the list already shows.
-    ).toEqual({ workspace: 15, harness: 12 });
+    // workspace 15 → 16: `memory.cgroupAttribution` projects the existing host memory
+    // resolver's owner-attribution lens with workspace visibility. LEG E's generated case
+    // covers its oracle/get/list parity; this census also binds that new row's visibility.
+    // workspace 16 → 18: `lsp.warmServers` and `lsp.readiness` reuse the daemon lens
+    // while exposing their distinct runtime and per-intent verdicts to the workspace.
+    // harness 12 → 11, workspace 18 → 19: `gate.greenCheckpoint.ownership` WIDENED from
+    // OPERATOR_PIPELINE_VISIBILITY to workspace (committed c3451c17b1). Unlike its gate
+    // siblings its resolver reads the CALLER's own harness, so a target-pot fixer must be
+    // able to read its own gate's owner; leg E now walks it on the workspace arm.
+    // workspace 19 → 20: `verification.health` (verification-system-improvements-2026-10-10
+    // P-002, registered 2026-10-11) is workspace-visible: its resolver is whole-workspace by
+    // construction, so every reader sees the same value.
+    ).toEqual({ workspace: 20, harness: 11 });
+    const attribution = BUILTIN_CELLS.find((spec) => spec.cell === 'memory.cgroupAttribution');
+    expect(attribution, 'the added cell must remain in the real parity walk').toBeDefined();
+    expect(attribution!.visibility).toEqual({ kind: 'workspace' });
+    expect(canReadCell(attribution!, stranger)).toBe(true);
+    for (const cell of ['lsp.warmServers', 'lsp.readiness']) {
+      const runtimeCell = BUILTIN_CELLS.find((spec) => spec.cell === cell);
+      expect(runtimeCell, 'the new runtime lens must participate in the real parity walk').toBeDefined();
+      expect(runtimeCell!.visibility).toEqual({ kind: 'workspace' });
+      expect(canReadCell(runtimeCell!, stranger)).toBe(true);
+    }
     // The census must also stay EXHAUSTIVE. The expectation above names kinds explicitly, so a
     // cell registered under a kind NOT named there would be invisible to it; summing the census
     // back to the registry size is what makes "these are all of them" an assertion rather than

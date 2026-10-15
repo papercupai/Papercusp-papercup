@@ -107,6 +107,37 @@ describe('autoloop:status', () => {
     );
     expect(allowed.ok).toBe(true);
   });
+
+  it('does not let the evidence-only judge override its dispatched harness', async () => {
+    const getAutoLoopState = vi.fn(async () => []);
+    vi.doMock('../../autoloop', () => ({
+      getAutoLoopState,
+      evaluateFireGate: vi.fn(() => ({ allow: true, consecutiveErrors: 0 })),
+    }));
+    mockDbOrgSql([]);
+    const { default: tool } = await import('../autoloop/status');
+
+    const result = await tool.handler(
+      { harnessSlug: 'other-harness' },
+      MAKE_CTX({ role: 'judge', harnessSlug: 'sheets' }),
+    );
+    expect(parsePayload(result as never)).toMatchObject({ error: 'judge_harness_scope_mismatch' });
+    expect(getAutoLoopState).not.toHaveBeenCalled();
+  });
+
+  it('lets the evidence-only judge read its dispatched harness without widening scope', async () => {
+    const getAutoLoopState = vi.fn(async () => []);
+    vi.doMock('../../autoloop', () => ({
+      getAutoLoopState,
+      evaluateFireGate: vi.fn(() => ({ allow: true, consecutiveErrors: 0 })),
+    }));
+    mockDbOrgSql([]);
+    const { default: tool } = await import('../autoloop/status');
+
+    const result = await tool.handler({}, MAKE_CTX({ role: 'judge', harnessSlug: 'sheets' }));
+    expect(parseEnvelope(result as never)).toMatchObject({ harnessSlug: 'sheets', rows: null });
+    expect(getAutoLoopState).toHaveBeenCalledWith('sheets');
+  });
 });
 
 describe('autoloop:control', () => {

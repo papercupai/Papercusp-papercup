@@ -39,12 +39,14 @@ const {
   reportFindingOutcomes,
   getRunFindings,
   getPendingReviewFindings,
+  getCleanupReviewRuns,
   reclassifyLegacyFindings,
 } = await import('./run-store');
 const {
   BulkRunAlreadyActiveError,
   createRun,
   getRun,
+  getRunningRun,
   setRunPhase,
   failRunIfExecuting,
   settleRunPhase,
@@ -52,6 +54,9 @@ const {
   restartRun,
 } = await import('../attention/bulk-run-store');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
+const { startPlanCleanupRun, cleanupWorkflowRunId } = await import('./start-run');
+const { runDeterministicPlanCleanup } = await import('./deterministic-runner');
+const { makePlanCleanupSweepAction } = await import('../harness/routines/plan-cleanup-sweep-action');
 
 /** Findings shaped like scanner output for two plans (deterministic ids). */
 function scanFindings() {
@@ -123,7 +128,173 @@ describe('plan-cleanup run store (real PG)', () => {
     h.ws = `ws-cleanup-run-test-${wsSeq}`;
   });
 
+  it('a scheduled workflow replay resumes persisted findings after a crash without repeating an effect', async () => {
+    const workflowId = `cleanup-recovery-${h.ws}`;
+    const ctx = { workflowId, installSlug: 'papercusp', workspaceId: h.ws, triggerConfig: {}, payloadTemplate: null };
+    let interrupted = true;
+    const dispatch = vi.fn(async () => ({ ok: true }));
+    const launchResolver = vi.fn(async () => ({ ok: true, sessionId: 'test-resolver' }));
+    const deterministic = vi.fn(async (input: Parameters<typeof runDeterministicPlanCleanup>[0]) => {
+      if (interrupted) {
+        interrupted = false;
+        await seedFindings({ runId: input.run.runId, findings: scanFindings() });
+        await executeCleanupFindingAction({
+          runId: input.run.runId, findingId: scanFindings()[0]!.findingId,
+          execute: async () => ({ effect: 'already applied before host crash' }),
+        });
+        throw new Error('simulated host crash before resolver launch');
+      }
+      return runDeterministicPlanCleanup({ ...input, deps: {
+        scanRun: async () => scanFindings().map((f, i) => ({
+          ...f, workspaceId: h.ws, autoApply: i === 0, autoApplyBlockedBy: i === 0 ? null : 'judgment-call',
+        })) as never,
+        dispatch,
+        notify: async () => undefined,
+      } });
+    });
+    const action = makePlanCleanupSweepAction({
+      enabled: async () => true, readRun: getRun, runningRun: getRunningRun,
+      listPlans: async () => ['plan-a', 'plan-b'],
+      select: async (input) => ({ planSlugs: [...input.planSlugs], requested: 2, accepted: 2, truncated: 0 }),
+      readPolicy: async () => ({ level: 'L2', minConfidence: 'medium' }) as never,
+      readLaunchProfile: async () => ({ model: 'gpt-6.1-sol', effort: 'xhigh', account: 'default', carry: 'warm' }),
+      start: (input) => startPlanCleanupRun(input, {
+        runDeterministic: deterministic, launchResolver, invalidate: async () => undefined,
+      }),
+      log: () => undefined,
+    });
+    await expect(action(ctx)).rejects.toThrow('simulated host crash');
+    const runId = cleanupWorkflowRunId(workflowId);
+    const before = (await getRunFindings(runId)).find((f) => f.outcome === 'auto_applied')!;
+    expect((await getRun(runId))?.phase).toBe('pending');
+
+    const replay = await action(ctx);
+    expect(replay.diagnostics).toMatchObject({ outcome: 'resumed', runId, phase: 'running' });
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(launchResolver).toHaveBeenCalledTimes(1);
+    const after = (await getRunFindings(runId)).find((f) => f.findingId === before.findingId)!;
+    expect(after.outcome).toBe('auto_applied');
+    expect(after.decidedAt).toBe(before.decidedAt);
+    expect(after.evidence).toEqual(before.evidence);
+    expect((await getRun(runId))?.autoResolved).toBe(1);
+
+    expect((await action(ctx)).diagnostics).toMatchObject({ outcome: 'existing', runId, phase: 'running' });
+    expect(deterministic).toHaveBeenCalledTimes(2);
+    expect(launchResolver).toHaveBeenCalledTimes(1);
+  });
+
   // ── per-kind single-flight (migration 937 re-keyed index) ─────────────────
+
+  it('inventories older review runs from actual unresolved rows within the workspace', async () => {
+    const first = await createCleanupRun();
+    await seedFindings({ runId: first.runId, findings: scanFindings() });
+    await settleRunPhase({ runId: first.runId });
+    const second = await createCleanupRun();
+    await seedFindings({ runId: second.runId, findings: scanFindings().slice(0, 1) });
+    await settleRunPhase({ runId: second.runId });
+    const inventory = await getCleanupReviewRuns();
+    expect(inventory.total).toBe(2);
+    expect(inventory.runs).toEqual([
+      expect.objectContaining({ runId: second.runId, unresolved: 1 }),
+      expect.objectContaining({ runId: first.runId, unresolved: 3 }),
+    ]);
+    expect(await getCleanupReviewRuns(`${h.ws}-other`)).toEqual({ runs: [], total: 0 });
+  });
+
+  it('reports a supplementary inventory read failure instead of an authoritative empty list', async () => {
+    const original = h.sql;
+    try {
+      h.sql = vi.fn(async () => { throw new Error('database unavailable'); });
+      expect(await getCleanupReviewRuns()).toMatchObject({ runs: [], error: 'Older cleanup reviews could not be loaded.' });
+    } finally {
+      h.sql = original;
+    }
+  });
+
+  async function reviewedRun() {
+    const first = await createCleanupRun();
+    const findings = scanFindings().map((finding) => ({ ...finding, evidenceBasis: ['cleanup-source:v1'] }));
+    await seedFindings({ runId: first.runId, findings });
+    await reportFindingOutcomes({ runId: first.runId, reports: findings.map((finding) => ({
+      findingId: finding.findingId, outcome: 'recommended' as const,
+      recommendationKind: 'cleanup_candidate' as const, recommendationLabel: 'Review',
+      recommendationRationale: 'Evidence requires review',
+    })) });
+    await settleRunPhase({ runId: first.runId });
+    return { first, findings };
+  }
+
+  it('carries unchanged review decisions into the next sweep and reconciles older debt without owner verdicts', async () => {
+    const { first, findings } = await reviewedRun();
+    const second = await createCleanupRun();
+    const result = await seedFindings({ runId: second.runId, findings,
+      reconcile: { harnessSlug: 'papercusp', planSlugs: second.seedRefs,
+        carryReviewFindingIds: findings.map((finding) => finding.findingId) } });
+    expect(result.findings.map((finding) => finding.outcome)).toEqual(['recommended', 'recommended', 'recommended']);
+    expect(result.findings[0].evidenceBasis).toContain(`cleanup-carried:${first.runId}`);
+    expect(result.findings[0].recommendationRationale).toBe('Evidence requires review');
+    expect((await getRun(second.runId))?.recommended).toBe(3);
+    const older = await getRunFindings(first.runId);
+    expect(older.every((finding) => finding.outcome === 'skipped' && finding.disposition === 'routed')).toBe(true);
+    expect(older[0].evidence.at(-1)?.note).toContain(second.runId);
+    expect((await getRun(first.runId))?.phase).toBe('complete');
+    expect((await getRun(first.runId))?.recommended).toBe(0);
+    await settleRunPhase({ runId: second.runId });
+    expect((await getRun(second.runId))?.phase).toBe('review');
+  });
+
+  it.each(['source', 'policy'])('requires a fresh decision when the %s changes', async (change) => {
+    const { first, findings } = await reviewedRun();
+    const second = await createCleanupRun();
+    const result = await seedFindings({ runId: second.runId,
+      findings: change === 'source' ? findings.map((finding) => ({ ...finding, evidenceBasis: ['cleanup-source:v2'] })) : findings,
+      reconcile: { harnessSlug: 'papercusp', planSlugs: second.seedRefs,
+        carryReviewFindingIds: change === 'policy' ? [] : findings.map((finding) => finding.findingId) } });
+    expect(result.findings.every((finding) => finding.outcome === 'pending')).toBe(true);
+    expect((await getRun(first.runId))?.phase).toBe('complete');
+  });
+
+  it('rechecks a carried decision after an action changes the same plan during a sweep', async () => {
+    const { findings } = await reviewedRun();
+    const second = await createCleanupRun();
+    const reconcile = { harnessSlug: 'papercusp', planSlugs: second.seedRefs,
+      carryReviewFindingIds: findings.map((finding) => finding.findingId) };
+    await seedFindings({ runId: second.runId, findings, reconcile });
+    const changed = findings.map((finding) => ({ ...finding, evidenceBasis: ['cleanup-source:v2'] }));
+    const result = await seedFindings({ runId: second.runId, findings: changed, reconcile });
+    expect(result.findings.every((finding) => finding.outcome === 'pending')).toBe(true);
+  });
+
+  it('preserves terminal history and recommendations outside the fresh scan scope', async () => {
+    const { first, findings } = await reviewedRun();
+    await markCleanupFindingAccepted({ runId: first.runId, findingId: findings[0].findingId });
+    const second = await createCleanupRun(['plan-a']);
+    await seedFindings({ runId: second.runId, findings: [],
+      reconcile: { harnessSlug: 'papercusp', planSlugs: second.seedRefs, carryReviewFindingIds: [] } });
+    const older = await getRunFindings(first.runId);
+    expect(older[0].outcome).toBe('accepted');
+    expect(older[1]).toMatchObject({ outcome: 'skipped', disposition: 'routed' });
+    expect(older[2].outcome).toBe('recommended');
+    expect((await getRun(first.runId))?.phase).toBe('review');
+    await expect(seedFindings({ runId: second.runId, findings: [],
+      reconcile: { harnessSlug: 'other-harness', planSlugs: ['plan-b'], carryReviewFindingIds: [] } }))
+      .rejects.toThrow('immutable run membership');
+  });
+
+  it('never reconciles another workspace and retains source identity through automatic action reports', async () => {
+    const ownWorkspace = h.ws;
+    const { first } = await reviewedRun();
+    h.ws = `${ownWorkspace}-other`;
+    const second = await createCleanupRun();
+    const findings = scanFindings().map((finding) => ({ ...finding, evidenceBasis: ['cleanup-source:v1'] }));
+    await seedFindings({ runId: second.runId, findings,
+      reconcile: { harnessSlug: 'papercusp', planSlugs: second.seedRefs,
+        carryReviewFindingIds: findings.map((finding) => finding.findingId) } });
+    expect((await getRunFindings(first.runId, ownWorkspace)).every((finding) => finding.outcome === 'recommended')).toBe(true);
+    await executeCleanupFindingAction({ runId: second.runId, findingId: findings[0].findingId,
+      execute: async () => ({ ok: true }) });
+    expect((await getRunFindings(second.runId))[0].evidenceBasis).toContain('cleanup-source:v1');
+  });
 
   it('lets one inbox run and one plan-cleanup run coexist in a workspace', async () => {
     const cleanup = await createCleanupRun();
@@ -445,6 +616,24 @@ describe('plan-cleanup run store (real PG)', () => {
     expect(await recordRunHeartbeat({ runId: run.runId, resolverOwner: 'su-replacement' })).toMatchObject({
       resolverOwner: 'su-replacement',
     });
+  });
+
+  it('restart derives preserved outcomes and counters from cleanup findings rather than the empty inbox table', async () => {
+    const run = await createCleanupRun();
+    await seedFindings({ runId: run.runId, findings: scanFindings() });
+    await reportFindingOutcomes({ runId: run.runId, reports: [
+      { findingId: scanFindings()[0]!.findingId, outcome: 'auto_applied' },
+      { findingId: scanFindings()[1]!.findingId, outcome: 'recommended' },
+      { findingId: scanFindings()[2]!.findingId, outcome: 'failed', error: 'retained failed decision' },
+    ] });
+    const before = await getRunFindings(run.runId);
+    await failRunIfExecuting({ runId: run.runId, error: 'resolver exited' });
+    const restarted = await restartRun({ runId: run.runId, resolverOwner: 'su-next' });
+    expect(restarted).toMatchObject({ ok: true, preservedOutcomes: 3,
+      run: { phase: 'pending', autoResolved: 1, recommended: 1, failed: 1, skipped: 0 } });
+    const after = await getRunFindings(run.runId);
+    expect(after.map((f) => ({ id: f.findingId, outcome: f.outcome, decidedAt: f.decidedAt, error: f.error })))
+      .toEqual(before.map((f) => ({ id: f.findingId, outcome: f.outcome, decidedAt: f.decidedAt, error: f.error })));
   });
 
   // ── kind-aware settle + review reads ──────────────────────────────────────

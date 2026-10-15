@@ -4,17 +4,111 @@
  * (history pushState/replaceState + popstate vs location.assign/replace).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createRequire } from 'node:module';
 import {
   shouldSoftNavigate,
   resolveClientNavigation,
   navigateClient,
   resolveQuickPanelHandoff,
+  bindQuickPanelEscape,
 } from './client-navigation';
 
 const CUR = 'http://localhost:3070/harness/p';
 const PANEL = 'http://localhost:3070/quick-panel';
+const DESKTOP = 'papercusp://localhost/harness';
+
+describe('Quick Panel Escape across Docs navigation', () => {
+  type Dom = { window: Window & typeof globalThis };
+  const { JSDOM } = createRequire(import.meta.url)('jsdom') as {
+    JSDOM: new (html: string, options: { url: string }) => Dom;
+  };
+  const doms: Dom[] = [];
+  afterEach(() => { for (const dom of doms.splice(0)) dom.window.close(); });
+  function doc(url: string) {
+    const dom = new JSDOM('<input>', { url });
+    doms.push(dom);
+    return dom.window.document;
+  }
+  function escape(document: Document, key = 'Escape') {
+    const win = document.defaultView as Window & typeof globalThis;
+    const event = new win.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+    document.querySelector('input')!.dispatchEvent(event);
+    return event;
+  }
+
+  it('dismisses from the parent and the loaded Docs document, without intercepting other keys', () => {
+    const parent = doc(PANEL);
+    const child = doc('http://localhost:3070/internal/docs/search-palette.html');
+    const frame = parent.createElement('iframe');
+    Object.defineProperty(frame, 'contentDocument', { get: () => child });
+    const dismiss = vi.fn();
+    const unbind = bindQuickPanelEscape(parent, frame, dismiss);
+    escape(child, 'Enter');
+    expect(dismiss).not.toHaveBeenCalled();
+    expect(escape(child).defaultPrevented).toBe(true);
+    expect(dismiss).toHaveBeenCalledOnce();
+    escape(parent);
+    expect(dismiss).toHaveBeenCalledTimes(2);
+    unbind();
+  });
+
+  it('binds the new document after result navigation and removes obsolete and unmounted listeners', () => {
+    const parent = doc(PANEL);
+    const first = doc('http://localhost:3070/internal/docs/search-palette.html');
+    const next = doc('http://localhost:3070/internal/docs/guide/shortcuts');
+    let current: Document | null = first;
+    const frame = parent.createElement('iframe');
+    Object.defineProperty(frame, 'contentDocument', { get: () => current });
+    const dismiss = vi.fn();
+    const unbind = bindQuickPanelEscape(parent, frame, dismiss);
+    current = next;
+    frame.dispatchEvent(new parent.defaultView!.Event('load'));
+    escape(first);
+    expect(dismiss).not.toHaveBeenCalled();
+    escape(next);
+    expect(dismiss).toHaveBeenCalledOnce();
+    unbind();
+    escape(next);
+    escape(parent);
+    frame.dispatchEvent(new parent.defaultView!.Event('load'));
+    escape(next);
+    expect(dismiss).toHaveBeenCalledOnce();
+  });
+
+  it('respects Escape already consumed by the embedded answer and tolerates an inaccessible frame', () => {
+    const parent = doc(PANEL);
+    const child = doc('http://localhost:3070/internal/docs/search-palette.html');
+    const consume = (event: KeyboardEvent) => event.preventDefault();
+    child.defaultView!.addEventListener('keydown', consume);
+    const frame = parent.createElement('iframe');
+    let current: Document | null = child;
+    Object.defineProperty(frame, 'contentDocument', { get: () => current });
+    const dismiss = vi.fn();
+    const unbind = bindQuickPanelEscape(parent, frame, dismiss);
+    escape(child);
+    expect(dismiss).not.toHaveBeenCalled();
+    child.defaultView!.removeEventListener('keydown', consume);
+    escape(child);
+    expect(dismiss).toHaveBeenCalledOnce();
+    current = null; // Cross-origin iframe documents are inaccessible to the parent.
+    frame.dispatchEvent(new parent.defaultView!.Event('load'));
+    escape(child);
+    expect(dismiss).toHaveBeenCalledOnce();
+    escape(parent);
+    expect(dismiss).toHaveBeenCalledTimes(2);
+    unbind();
+  });
+});
 
 describe('shouldSoftNavigate', () => {
+  it('soft-navigates within the native Papercusp origin', () => {
+    expect(shouldSoftNavigate('/settings/shortcuts', DESKTOP)).toBe(true);
+    expect(shouldSoftNavigate('papercusp://localhost/notes', DESKTOP)).toBe(true);
+    // Custom schemes have opaque URL.origin values: two null origins must
+    // never make an untrusted host or scheme count as the desktop origin.
+    expect(shouldSoftNavigate('papercusp://evil.example/notes', DESKTOP)).toBe(false);
+    expect(shouldSoftNavigate('other://localhost/notes', DESKTOP)).toBe(false);
+  });
   it('true for a same-origin target', () => {
     expect(shouldSoftNavigate('/other', CUR)).toBe(true);
     expect(shouldSoftNavigate('http://localhost:3070/x', CUR)).toBe(true);
@@ -30,6 +124,15 @@ describe('shouldSoftNavigate', () => {
 });
 
 describe('resolveClientNavigation', () => {
+  it('preserves native app routes, query and fragment', () => {
+    expect(resolveClientNavigation('/settings/shortcuts?ws=alpha#navigation', DESKTOP)).toEqual({
+      mode: 'soft',
+      href: '/settings/shortcuts?ws=alpha#navigation',
+      replace: false,
+    });
+    expect(resolveClientNavigation('papercusp://evil.example/notes', DESKTOP).mode).toBe('none');
+    expect(resolveClientNavigation('papercusp://localhost/notes', CUR).mode).toBe('none');
+  });
   it('soft-navigates same-origin to a path+search+hash href', () => {
     expect(resolveClientNavigation('http://localhost:3070/a?b=1#c', CUR)).toEqual({
       mode: 'soft',
@@ -87,6 +190,12 @@ describe('resolveClientNavigation', () => {
 // WI-4827: the Quick Panel window must never navigate itself into the full app.
 describe('resolveQuickPanelHandoff', () => {
   const inPanel = { isQuickPanelWindow: true };
+  it('hands off native app routes while retaining the custom-origin boundary', () => {
+    const panel = 'papercusp://localhost/quick-panel';
+    expect(resolveQuickPanelHandoff('/settings/shortcuts', panel, inPanel)).toBe('/settings/shortcuts');
+    expect(resolveQuickPanelHandoff('/quick-panel?tab=docs', panel, inPanel)).toBeNull();
+    expect(resolveQuickPanelHandoff('papercusp://evil.example/notes', panel, inPanel)).toBeNull();
+  });
   it('returns null when NOT the quick-panel window (main app navigates normally)', () => {
     expect(resolveQuickPanelHandoff('/settings/voice', CUR, { isQuickPanelWindow: false })).toBeNull();
   });

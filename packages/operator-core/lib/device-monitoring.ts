@@ -19,18 +19,18 @@
  *   - systemAlerts      — P-007 PURE composer: red-gate + pool-exhaustion → alerts
  *   - monitoringSnapshot— composes them all for the /device/monitoring route
  */
-import {
+import type {
   fetchOrientPipeline,
-  type OrientPipeline,
+  OrientPipeline,
 } from './agent-tools/coordination/pipeline-health';
-import {
+import type {
   accountStatus,
   accountRoutingExhausted,
 } from './deployment/account-pool-store';
-import { listPresence } from './agent-tools/coordination/presence';
-import { fetchPresenceFleet } from './agent-tools/coordination/presence-fleet';
-import { deviceConnectionSnapshot } from './device-store';
-import { mobileJwtSecretStatus } from './device-jwt';
+import type { listPresence } from './agent-tools/coordination/presence';
+import type { fetchPresenceFleet } from './agent-tools/coordination/presence-fleet';
+import type { deviceConnectionSnapshot } from './device-store';
+import type { mobileJwtSecretStatus } from './device-jwt';
 
 // ── P-009 · release-pipeline tile ────────────────────────────────────────────
 
@@ -51,12 +51,28 @@ export interface ReleaseGateTile {
 
 const BLOCKING_RED = new Set(['red', 'stalled', 'wedged', 'conflict']);
 
+/** A null tile alone cannot establish absence: its reader also fails soft on errors. */
+export async function releaseGateApplicability(
+  slug?: string,
+  deps: {
+    read?: typeof import('./git-pipeline-stats').readPipelineRoutineControl;
+  } = {},
+): Promise<'configured' | 'not-applicable' | 'unknown'> {
+  try {
+    const read = deps.read ?? (await import('./git-pipeline-stats')).readPipelineRoutineControl;
+    const routine = await read(slug, 'green-checkpoint');
+    return routine ? 'configured' : 'not-applicable';
+  } catch {
+    return 'unknown';
+  }
+}
+
 export async function releaseGateTile(
   slug?: string,
   deps: { fetch?: typeof fetchOrientPipeline } = {},
 ): Promise<ReleaseGateTile | null> {
   try {
-    const fetch = deps.fetch ?? fetchOrientPipeline;
+    const fetch = deps.fetch ?? (await import('./agent-tools/coordination/pipeline-health')).fetchOrientPipeline;
     const p = await fetch(slug);
     if (!p) return null;
     const tile: ReleaseGateTile = {
@@ -104,8 +120,9 @@ export async function poolTile(
   } = {},
 ): Promise<PoolTile | null> {
   try {
-    const status = deps.status ?? accountStatus;
-    const exhaustedFn = deps.exhausted ?? accountRoutingExhausted;
+    const readers = !deps.status || !deps.exhausted ? await import('./deployment/account-pool-store') : undefined;
+    const status = deps.status ?? readers!.accountStatus;
+    const exhaustedFn = deps.exhausted ?? readers!.accountRoutingExhausted;
     const [rows, exhausted] = await Promise.all([status(ws), exhaustedFn(ws)]);
     const accounts: PoolAccountLite[] = rows.map((r) => ({
       id: r.id,
@@ -154,8 +171,8 @@ export async function fleetsAndPotsTile(
   } = {},
 ): Promise<FleetsAndPotsTile | null> {
   try {
-    const list = deps.list ?? listPresence;
-    const fleetsFn = deps.fleets ?? fetchPresenceFleet;
+    const list = deps.list ?? (await import('./agent-tools/coordination/presence')).listPresence;
+    const fleetsFn = deps.fleets ?? (await import('./agent-tools/coordination/presence-fleet')).fetchPresenceFleet;
     const roster = await list({ workspaceId: ws });
     const fleetMap = await fleetsFn(roster.map((r) => r.ownerId));
 
@@ -227,8 +244,8 @@ export async function connectionTile(
   } = {},
 ): Promise<ConnectionTile | null> {
   try {
-    const snapshot = deps.snapshot ?? deviceConnectionSnapshot;
-    const secretStatus = deps.secretStatus ?? mobileJwtSecretStatus;
+    const snapshot = deps.snapshot ?? (await import('./device-store')).deviceConnectionSnapshot;
+    const secretStatus = deps.secretStatus ?? (await import('./device-jwt')).mobileJwtSecretStatus;
     const snap = await snapshot(deviceId, ws);
     return {
       paired: snap.exists && !snap.revoked,

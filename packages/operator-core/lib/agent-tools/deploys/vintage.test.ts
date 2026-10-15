@@ -6,7 +6,7 @@
  * loaders) so this needs no real git checkout / PG — pure logic only.
  */
 import { describe, it, expect } from 'vitest';
-import tool, { buildVintageReport, noteFor, type GitRunner } from './vintage';
+import tool, { buildVintageReport, createRealGit, noteFor, VINTAGE_GIT_TIMEOUT_MS, type GitRunner } from './vintage';
 import type { RuntimeVintageRow } from '../../runtime-vintage';
 
 function row(overrides: Partial<RuntimeVintageRow> = {}): RuntimeVintageRow {
@@ -166,5 +166,28 @@ describe('noteFor (pure)', () => {
   });
   it('no treeSha short-circuits before behind/ahead matter', () => {
     expect(noteFor(null, null, null)).toBe('no treeSha reported — cannot resolve a commit position.');
+  });
+});
+
+describe('deploys:vintage — realGit routes through the sidecar seam (WI-10006307)', () => {
+  it('runs git -C <repo> via execFileViaSidecar with a per-site subsystem label and a timeout', async () => {
+    const calls: Array<{ command: string; args: string[]; opts: { timeoutMs: number; subsystem: string } }> = [];
+    const git = createRealGit((async (command: string, args: string[], opts: { timeoutMs: number; subsystem: string }) => {
+      calls.push({ command, args, opts });
+      return { stdout: '  abc123\n', stderr: '' };
+    }) as never);
+    await expect(git('/repo', ['rev-parse', 'HEAD'])).resolves.toBe('abc123');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].command).toBe('git');
+    expect(calls[0].args).toEqual(['-C', '/repo', 'rev-parse', 'HEAD']);
+    expect(calls[0].opts.subsystem).toBe('deploys-vintage');
+    expect(calls[0].opts.timeoutMs).toBe(VINTAGE_GIT_TIMEOUT_MS);
+  });
+
+  it('maps a rejected exec (non-zero exit or transport failure) to null', async () => {
+    const git = createRealGit((async () => {
+      throw Object.assign(new Error('exit 128'), { code: 128, stdout: '', stderr: 'fatal' });
+    }) as never);
+    await expect(git('/repo', ['rev-parse', 'nope'])).resolves.toBeNull();
   });
 });

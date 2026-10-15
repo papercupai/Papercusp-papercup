@@ -109,7 +109,7 @@ When the goal is paused, new placement/throughput and traversal may be `unknown`
 
 ## Scorecard contract
 
-Use rubric ref `work-on-everything-stewardship-health`. File all 15 criterion keys in one structured observation. Include the goal id, holder owner id, exact window, deployed generation, and attribution on every non-pass rating. Link concrete follow-up work at scorecard creation time. A partial/fail/severe finding without durable ownership is itself evidence against completion-flow health.
+Use rubric ref `work-on-everything-stewardship-health`. File every criterion key returned by `rubrics:get` for the active revision in one structured observation. Enumerate the current rubric criteria instead of copying a fixed count from this runbook; absent evidence must remain explicitly unknown, with its reason and next evidence action. Include the goal id, holder owner id, exact window, deployed generation, and attribution on every non-pass rating. Link concrete follow-up work at scorecard creation time. A partial/fail/severe finding without durable ownership is itself evidence against completion-flow health.
 
 The rubric is operational, not a release gate. Trends across windows matter more than one isolated card, but a severe boundary violation stands on one occurrence.
 
@@ -130,3 +130,17 @@ The server computes a categorical roll-up for this rubric. Critical failures dom
 ## Registered instrument provenance
 
 Caller-supplied `instrumentSnapshots` are treated as self-reported. Only a server-executed registered resolver may stamp `platform-computed`. The current registered Work on everything base resolver binds an exact current `goal-mode-e2e` subject/window card, requires complete current-contract evidence and a settled grading audit, and persists the source scorecard id as `evidenceRef`.
+
+## Rubric stewardship and correction-cycle evidence
+
+Revision 47 adds three distinct criteria: rubric-coverage-stewardship, rubric-quality-stewardship, and grading-correction-closure. Preserve the existing criteria and grade these duties in the same exact goal/holder operating window.
+
+For coverage, enumerate important selected-worklist and unowned-frontier targets from the canonical portfolio. Link each to a suitable active rubric revision or an owned, evidenced coverage gap. Re-run the cited rubric searches and independent ratification records. A proposal is not active coverage, and raw rubric counts are not coverage.
+
+For quality, read the holder's substantive keep/amend decisions against actual scorecard evidence, unknowns, drift and outcome blind spots. Inspect immutable rubric revisions and reviewer provenance. A justified keep decision is valid; forcing edits creates rubric churn. Lowering standards to manufacture a score increase fails.
+
+For correction closure, follow a warranted, bounded goal-attributed GRADE assignment through its baseline, owned remediation, recurrence guards, deterministic verification and comparable re-grade. Use the goal detail rubricStewardship snapshot as the bounded recent index, then read the linked canonical scorecards and work items. readGoalRubricStewardship and classifyStewardshipCycle reuse the existing scorecard currentness and completion-authority readers. The page is capped at 40 recent cards, explicitly marks incompleteness and never claims a total census. Historical baseline refs are retained only within the same goal scope.
+
+Verified-improvement credit requires the same target kind/ref, rubric ref, revision and criteria hash; an audited baseline preceding verified repairs; and a current audited terminal re-grade after those repairs. The final grader must be independent where the governing rubric requires it. Foreign-goal, unverified, incorrectly ordered, stale or incompletely graded records receive no credit. A changed standard requires a fresh baseline. A healthy baseline without warranted repairs can discharge assessment, but is not an improvement claim.
+
+Negative controls: remove an important target's rubric/gap disposition; weaken a criterion without outcome evidence; remove a repair verification; change target/revision/hash; move repair completion after re-grade; assign the required independent verdict to the implementer; or leave a cycle beyond its declared exit budget. Each must fail or remain explicitly unassessable. Run the conventional goal-rubric-stewardship, scorecards-work-on-everything-contract and WorkOnEverythingPanel regression suites and the migrated goals integration suite. The new duties are critical rollup axes: unknown is unassessable and failure cannot be averaged away.

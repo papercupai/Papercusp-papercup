@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-001 dated complete canonical hold census, 2026-10-08T21:02:11.552Z",
+  "framework": "operational",
+  "command": [
+    "node",
+    "--import",
+    "tsx",
+    "--input-type=module",
+    "-"
+  ],
+  "stdin": "import fs from 'node:fs';\nimport dotenv from 'dotenv';\nprocess.env.DATABASE_URL=dotenv.parse(fs.readFileSync('apps/operator/.env.local')).DATABASE_URL;\nconst {getOrgPg}=await import('@papercusp/db-org');\nconst {holdCensus,renderHoldCensus}=await import('./packages/operator-core/lib/hold-census.ts');\nconst {classifyHolds}=await import('./packages/operator-core/lib/hold-registry.ts');\nconst {sql}=getOrgPg();\nconst started=Date.now();\nconst result=await sql.begin('isolation level repeatable read read only',async client=>{\n const [db]=await client`SELECT current_database() AS database,inet_server_port() AS port`;\n const known=await client`SELECT feature_id FROM harness_shared.work_items WHERE workspace_id='papercusp-workspace' AND harness_slug='papercusp' AND feature_id='WI-10006215'`;\n if(db.database!=='papercusp'||db.port!==5432||known.length!==1)throw new Error('canonical database/positive control mismatch');\n const managed=await client`SELECT system_identifier::text FROM pg_control_system()`;\n const census=await holdCensus('papercusp-workspace',{harness:'papercusp',sampleLimit:50,sql:client});\n const unknownControl=classifyHolds({status:'open',payload:{implementationReadiness:{status:'blocked',reason:'__unknown_P001_positive_control__'}}});\n const knownControl=classifyHolds({status:'open',payload:{_claimHold:true}});\n if(unknownControl.length!==1||unknownControl[0].entry!==null||knownControl.length!==1||knownControl[0].entry===null)throw new Error('classifier controls failed');\n return {at:new Date().toISOString(),elapsedMs:Date.now()-started,database:db,systemIdentifier:managed[0]?.system_identifier,positiveControl:known[0].feature_id,consistentSnapshot:'repeatable-read/read-only',classifierControls:{unregisteredDetected:true,registeredParkMapped:true},note:renderHoldCensus(census),census};\n});\nconsole.log(JSON.stringify(result));\nawait sql.end({timeout:2});",
+  "shellCommand": "node --import tsx --input-type=module - <<'JS' >/tmp/ubp-p001-postrepair-live-census-2107.json\nimport fs from 'node:fs';\nimport dotenv from 'dotenv';\nprocess.env.DATABASE_URL=dotenv.parse(fs.readFileSync('apps/operator/.env.local')).DATABASE_URL;\nconst {getOrgPg}=await import('@papercusp/db-org');\nconst {holdCensus,renderHoldCensus}=await import('./packages/operator-core/lib/hold-census.ts');\nconst {classifyHolds}=await import('./packages/operator-core/lib/hold-registry.ts');\nconst {sql}=getOrgPg();\nconst started=Date.now();\nconst result=await sql.begin('isolation level repeatable read read only',async client=>{\n const [db]=await client`SELECT current_database() AS database,inet_server_port() AS port`;\n const known=await client`SELECT feature_id FROM harness_shared.work_items WHERE workspace_id='papercusp-workspace' AND harness_slug='papercusp' AND feature_id='WI-10006215'`;\n if(db.database!=='papercusp'||db.port!==5432||known.length!==1)throw new Error('canonical database/positive control mismatch');\n const managed=await client`SELECT system_identifier::text FROM pg_control_system()`;\n const census=await holdCensus('papercusp-workspace',{harness:'papercusp',sampleLimit:50,sql:client});\n const unknownControl=classifyHolds({status:'open',payload:{implementationReadiness:{status:'blocked',reason:'__unknown_P001_positive_control__'}}});\n const knownControl=classifyHolds({status:'open',payload:{_claimHold:true}});\n if(unknownControl.length!==1||unknownControl[0].entry!==null||knownControl.length!==1||knownControl[0].entry===null)throw new Error('classifier controls failed');\n return {at:new Date().toISOString(),elapsedMs:Date.now()-started,database:db,systemIdentifier:managed[0]?.system_identifier,positiveControl:known[0].feature_id,consistentSnapshot:'repeatable-read/read-only',classifierControls:{unregisteredDetected:true,registeredParkMapped:true},note:renderHoldCensus(census),census};\n});\nconsole.log(JSON.stringify(result));\nawait sql.end({timeout:2});\nJS",
+  "exitCode": 0,
+  "startedAt": "2026-10-08T21:02:10.461Z",
+  "finishedAt": "2026-10-08T21:02:11.552Z",
+  "summary": "hold census papercusp: scanned=11691 held=3964 no-clearer=0; observation covers the complete dated non-terminal, non-observation papercusp population, not future absence or final deployed-writer enforcement.",
+  "assertions": [
+    {
+      "id": "canonical-database-identity",
+      "passed": true,
+      "evidence": "{\"consistentSnapshot\": \"repeatable-read/read-only\", \"database\": {\"database\": \"papercusp\", \"port\": 5432}, \"systemIdentifier\": \"7635091775813704249\"}"
+    },
+    {
+      "id": "known-work-item-positive-control",
+      "passed": true,
+      "evidence": "Known current P-001 work item WI-10006215 existed in the same read-only repeatable-read snapshot."
+    },
+    {
+      "id": "classifier-positive-and-negative-controls",
+      "passed": true,
+      "evidence": "{\"registeredParkMapped\": true, \"unregisteredDetected\": true}"
+    },
+    {
+      "id": "complete-population-zero-unmapped",
+      "passed": true,
+      "evidence": "hold census papercusp: scanned=11691 held=3964 no-clearer=0; keyset scan exhausted, bounded unmapped list not truncated."
+    }
+  ],
+  "measurement": {
+    "at": "2026-10-08T21:02:11.552Z",
+    "elapsedMs": 1091,
+    "database": {
+      "database": "papercusp",
+      "port": 5432
+    },
+    "systemIdentifier": "7635091775813704249",
+    "positiveControl": "WI-10006215",
+    "consistentSnapshot": "repeatable-read/read-only",
+    "classifierControls": {
+      "unregisteredDetected": true,
+      "registeredParkMapped": true
+    },
+    "note": "hold census papercusp: scanned=11691 held=3964 no-clearer=0",
+    "census": {
+      "workspaceId": "papercusp-workspace",
+      "harness": "papercusp",
+      "scanned": 11691,
+      "held": 3964,
+      "byDomain": {
+        "park": 554,
+        "review": 2345,
+        "blocker": 948,
+        "needs-human": 204,
+        "readiness": 2498
+      },
+      "byKey": {
+        "park:park": 511,
+        "review:revision-requested": 907,
+        "blocker:product-decision": 139,
+        "blocker:external-service-action": 89,
+        "needs-human:strict-human-ask": 204,
+        "readiness:agent-review-revision-requested": 669,
+        "review:pending": 1438,
+        "blocker:live-dependency": 668,
+        "park:lease": 43,
+        "blocker:credential": 33,
+        "blocker:physical-device": 19,
+        "readiness:awaiting-agent-review": 1453,
+        "readiness:corroborated-tool-failure-awaiting-review": 8,
+        "readiness:no-acceptance-evidence-at-creation": 363,
+        "readiness:agent-review-resubmitted": 3,
+        "readiness:legacy-acceptance-adoption cohort bug:0..4102444800000 run lac-apply-1c7f425a-c4f8-407d-a196-4483f2348c95": 2
+      },
+      "byClearerKind": {
+        "lane": 6014,
+        "owner": 484,
+        "routine": 51
+      },
+      "unmappedCount": 0,
+      "unmappedByKey": {},
+      "unmapped": [],
+      "unmappedSampleTruncated": false
+    }
+  },
+  "evidenceRefs": [
+    "thread-post:1165887",
+    "unified-bug-pipeline-and-honest-queue-2026-10-05#D-040",
+    "WI-10006215"
+  ],
+  "rawArtifact": {
+    "path": "/tmp/ubp-p001-postrepair-live-census-2107.json",
+    "sha256": "5fca8726d606edc643dc1947c651d95fbeb981e1e41b22e8ba2c442826487dc2"
+  },
+  "executionReceipt": {
+    "bashId": "540ec4fd",
+    "taskId": "0mv00ve0t8lr64w1eig",
+    "terminalExitCode": 0,
+    "sourceSession": "01a11d45-424b-7742-9080-89e43ea0cff4",
+    "sourceTranscript": "session:codex:01a11d45-424b-7742-9080-89e43ea0cff4",
+    "publicationRedaction": "Host-specific absolute transcript path replaced with a durable session reference; recorded command, measurement and execution receipt preserved."
+  },
+  "limitations": [
+    "Named detector/classifier source files were unchanged against retained pins30798/30900; complete transitive import graph unmeasured.",
+    "Old deployed writer still admits malformed owner contracts; strict-writer deployment is reserved to final shipment under D-040.",
+    "Real human conditions were retained. Silence is not permission."
+  ],
+  "timestampBasis": "startedAt is computed from the measured census at minus elapsedMs; finishedAt is the producer at timestamp, within its repeatable-read transaction."
+}

@@ -4,11 +4,21 @@
  * widening the FEATURE_COLS facade (D-009). The SQL fetch is live-exercised; this pins
  * the merge logic (match by id, null/[] for unmatched + issue-family).
  */
-import { describe, it, expect } from 'vitest';
-import { __test } from './work-items';
+import { describe, it, expect, vi } from 'vitest';
+import type { RouteContext } from '@papercusp/tooldef';
+
+const f = vi.hoisted(() => ({ list: vi.fn(), count: vi.fn() }));
+vi.mock('../../../work-items', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../work-items')>()),
+  listWorkItems: f.list,
+  countWorkItems: f.count,
+}));
+
+import routes, { __test } from './work-items';
 import type { WorkItem } from '../../../work-items';
 
 const { mergeWorkItemDimensions } = __test;
+const listRoute = routes.find((route) => route.method === 'GET' && route.path === '/harness/:slug/work-items')!;
 
 const wi = (id: string, family: 'feature' | 'issue'): WorkItem => ({
   id,
@@ -74,5 +84,30 @@ describe('mergeWorkItemDimensions (P-010 v2 — route-side plan-link + spine joi
     const out = mergeWorkItemDimensions(items, new Map(), new Map());
     expect(out.map((o) => o.id)).toEqual(['F-1', 'EI-2']);
     expect(out.every((o) => o.planItemIds.length === 0 && o.spineRole === null && o.planSlug === null)).toBe(true);
+  });
+});
+
+describe('Work Items queue nature boundary', () => {
+  it('keeps explicit-kind rows and their total restricted to nature=work', async () => {
+    f.list.mockResolvedValue([]);
+    f.count.mockResolvedValue(0);
+    const ctx = { params: { slug: 'nature-test' }, log() {} } as unknown as RouteContext;
+    const response = await listRoute.handler(
+      new Request('http://localhost/api/harness/nature-test/work-items?kind=feature'),
+      ctx,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ harness: 'nature-test', count: 0, total: 0, workItems: [] });
+    expect(f.list).toHaveBeenCalledWith(expect.objectContaining({
+      harness: 'nature-test',
+      kind: 'feature',
+      natures: ['work'],
+    }));
+    expect(f.count).toHaveBeenCalledWith(expect.objectContaining({
+      harness: 'nature-test',
+      kind: 'feature',
+      natures: ['work'],
+    }));
   });
 });

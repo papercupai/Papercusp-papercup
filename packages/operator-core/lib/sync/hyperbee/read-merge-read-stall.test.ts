@@ -328,6 +328,58 @@ describe('WI-2141796 — SLOW-but-served and genuinely-unreadable must not look 
     expect(lateReads(warnSpy).length).toBeGreaterThan(0);
   });
 
+  it('retains one result per held position when multiple timed-out reads settle', async () => {
+    const cursor = createMergeCursor();
+    const ops = [put('a', 1000), put('b', 2000)];
+    const finish: Array<(op: PeerLogOp) => void> = [];
+    const log: AdmittedLog = {
+      keyHex: 'DUPLICATELATE',
+      length: ops.length,
+      get: async (i) => i === 0 ? ops[i] : new Promise<PeerLogOp>((resolve) => finish.push(resolve)),
+    };
+    const applied: string[] = [];
+    const opts = {
+      applyImpl: async (op: OpEnvelope) => { applied.push(op.hbKey ?? ''); return true; },
+      getTimeoutMs: 5,
+    };
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await mergeAdmittedLogsIncremental([log], cursor, opts);
+    await mergeAdmittedLogsIncremental([log], cursor, opts);
+    expect(finish).toHaveLength(2);
+    for (const resolve of finish) resolve(ops[1]);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(cursor.lateReadResults?.size).toBe(1);
+    expect(cursor.lateReadResults?.get('DUPLICATELATE:1')).toEqual({ kind: 'op', op: ops[1] });
+    const result = await mergeAdmittedLogsIncremental([log], cursor, opts);
+    expect(result.caughtUp).toBe(true);
+    expect(applied).toEqual(['a', 'b']);
+    expect(finish).toHaveLength(2);
+    expect(cursor.lateReadResults?.size).toBe(0);
+  });
+
+  it('keeps a served late block when another timed-out attempt rejects', async () => {
+    const cursor = createMergeCursor();
+    const ops = [put('a', 1000), put('b', 2000)];
+    const attempts: Array<{ resolve: (op: PeerLogOp) => void; reject: (error: Error) => void }> = [];
+    const log: AdmittedLog = {
+      keyHex: 'LATEMIXED',
+      length: ops.length,
+      get: async (i) => i === 0 ? ops[i] : new Promise<PeerLogOp>((resolve, reject) => attempts.push({ resolve, reject })),
+    };
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const opts = { applyImpl: async () => true, getTimeoutMs: 5 };
+    await mergeAdmittedLogsIncremental([log], cursor, opts);
+    await mergeAdmittedLogsIncremental([log], cursor, opts);
+    attempts[0].reject(new Error('first attempt failed'));
+    attempts[1].resolve(ops[1]);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(cursor.lateReadResults?.get('LATEMIXED:1')).toEqual({ kind: 'op', op: ops[1] });
+    const result = await mergeAdmittedLogsIncremental([log], cursor, opts);
+    expect(result.caughtUp).toBe(true);
+    expect(cursor.positions.get('LATEMIXED')).toBe(2);
+    expect(attempts).toHaveLength(2);
+  });
+
   it('stays SILENT for a read that never settles — the control that gives the late-read line its meaning', async () => {
     const cursor = createMergeCursor();
     const log = logWithStalledIndex('D00D', [put('a', 1000), put('b', 2000)], 1);

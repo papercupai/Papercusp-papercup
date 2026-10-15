@@ -30,12 +30,18 @@
  *
  * Run: npm run test:file -- packages/operator-core/lib/agent-tools/coordination/tools/send-arg-shape.test.ts
  */
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { z } from 'zod';
 import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
 
 import sendTool, { itemSpec } from './send';
-import { BODY_MUST_BE_ARRAY_MESSAGE, SECTION_ONLY_FIELDS } from '../message-fields';
+import { compactSchemaForResult } from '../../tools/find';
+import {
+  BODY_MUST_BE_ARRAY_MESSAGE,
+  messageBodyArg,
+  messageSectionSchema,
+  SECTION_ONLY_FIELDS,
+} from '../message-fields';
 import { COORD_SEND_MAX_CHUNK_PARTS, DEFAULT_INBOX_BODY_CAP } from './inbox-content-bounds';
 
 type JsonSchemaNode = {
@@ -87,6 +93,16 @@ describe('EI-20223353810864057 — primary coord:send guidance names required su
     expect(summaryDescription).toMatch(/REQUIRED for the single-message form/i);
     expect(summaryDescription).toMatch(/items/);
     expect(summaryDescription).toMatch(/body.*does not replace/i);
+  });
+
+  it('projects single-send required fields into compact tools:find schema output', () => {
+    const schema = z.toJSONSchema(sendTool.args);
+    const compact = compactSchemaForResult(schema) ?? '';
+
+    expect(compact).toContain(
+      'constraint:$ (When `items` is omitted, top-level `to`, `summary`, and `expects` are required; when `items` is used, each item must include its own `to`, `summary`, and `expects`.)',
+    );
+    expect(compact).toContain('summary?:string');
   });
 
   it('teaches the structured why shape on every user-facing schema surface', () => {
@@ -336,6 +352,32 @@ describe('EI-23083567306363709 — `body` schema matches its runtime refusal', (
     expect(
       sendTool.args.safeParse({ items: [{ to: ['peer'], summary: 'hi', expects: 'none', body: [{ text: 'x' }] }] }).success,
     ).toBe(true);
+  });
+});
+
+describe('EI-23790900634867970 — coord:send section inputs stay typed', () => {
+  type SectionInput = z.input<typeof messageSectionSchema>;
+  type BodyInput = NonNullable<z.input<typeof messageBodyArg>>;
+  type ItemBodyInput = NonNullable<z.input<typeof itemSpec>['body']>;
+
+  it('keeps premises as ref strings and the neighboring knowledge fields as object arrays', () => {
+    expectTypeOf<BodyInput>().toMatchTypeOf<Array<{ text: string; premises?: string[] }>>();
+    expectTypeOf<ItemBodyInput>().toMatchTypeOf<Array<{ text: string; premises?: string[] }>>();
+    expectTypeOf<SectionInput['premises']>().toEqualTypeOf<string[] | undefined>();
+    expectTypeOf<SectionInput['youMayNotKnow']>().toEqualTypeOf<
+      Array<{ ref: string; provenance: 'computed' | 'authored' }> | undefined
+    >();
+    expectTypeOf<SectionInput['couldNotDetermine']>().toEqualTypeOf<
+      Array<{ what: string; note?: string }> | undefined
+    >();
+  });
+
+  it('distinguishes ref-string premises from the forYouBecause object on the short callable description', () => {
+    const description = String((sendTool as { description?: unknown }).description ?? '');
+
+    expect(description).toMatch(/body\[\]\.premises` are ref strings/i);
+    expect(description).toContain('body[].forYouBecause: { relation, ref?, note? }');
+    expect(description).toMatch(/body\[\]\.youMayNotKnow` uses \{ref, provenance\} objects/i);
   });
 });
 
@@ -716,10 +758,12 @@ describe('EI-21656724796029687 — forYouBecause is signposted on `expects`, not
   });
 
   it('SIGNPOSTS it: the `expects` arg description names forYouBecause and its exemptions', () => {
+    const description = String((sendTool as { description?: unknown }).description ?? '');
     const schema = z.toJSONSchema(sendTool.args) as {
       properties?: { expects?: { description?: string } };
     };
     const expectsDescription = schema.properties?.expects?.description ?? '';
+    expect(description.slice(0, 100)).toMatch(/directed action\/answer requires `body\[\]\.forYouBecause: \{ relation, ref\?, note\? \}`/i);
     expect(
       expectsDescription,
       'the `expects` arg description must name `forYouBecause` — the requirement is keyed on ' +
@@ -862,5 +906,46 @@ describe("EI-22369606583733422 — the expects!=='none' body cap is discoverable
       });
       expect(tooManyParts.success, `expects:'${expects}' past the part limit must be refused`).toBe(false);
     }
+  });
+});
+
+describe('WI-10005668 — a bare-string `to` is normalized, not misreported as missing', () => {
+  // Measured 24h of tool_invocations: `to: "su-…"` (a scalar recipient) was refused 13x
+  // and re-failed 11 times, because `toPresent` was Array.isArray-only so the caller
+  // who HAD passed a recipient was told "needs `to`: at least one recipient id".
+  const dataTo = (args: unknown): unknown => {
+    const r = sendTool.args.safeParse(args);
+    return r.success ? (r.data as { to?: unknown }).to : undefined;
+  };
+
+  it('accepts a bare-string `to` on the single form and delivers it as a one-element array', () => {
+    expect(sendTool.args.safeParse({ to: 'su-peer', summary: 'hi', expects: 'none' }).success).toBe(true);
+    expect(dataTo({ to: 'su-peer', summary: 'hi', expects: 'none' })).toEqual(['su-peer']);
+  });
+
+  it('accepts a bare-string `to` on an items[] entry too', () => {
+    const args = { items: [{ to: '@fleet:alpha', summary: 'hi', expects: 'none' }] };
+    const r = sendTool.args.safeParse(args);
+    expect(r.success).toBe(true);
+    expect((r.data as { items: Array<{ to: unknown }> }).items[0]?.to).toEqual(['@fleet:alpha']);
+  });
+
+  it('does NOT let the normalization bypass the directed forYouBecause gate', () => {
+    // The scalar becomes a one-element DIRECTED array BEFORE checkStructured runs, so
+    // expects:'action' with no forYouBecause section is still refused — normalizing
+    // `to` must never be a way around a gate the array form hits.
+    const args = { to: 'su-peer', summary: 'hi', expects: 'action', body: [{ text: 'do it' }] };
+    const r = sendTool.args.safeParse(args);
+    expect(r.success).toBe(false);
+    expect(refusal(args)).toMatch(/forYouBecause/);
+  });
+
+  it('keeps the array form working and keeps genuinely missing/empty/wrong-typed `to` refused', () => {
+    expect(dataTo({ to: ['su-peer'], summary: 'hi', expects: 'none' })).toEqual(['su-peer']);
+    for (const bad of ['', 5, null, []] as const) {
+      const args = { to: bad, summary: 'hi', expects: 'none' };
+      expect(sendTool.args.safeParse(args).success, `to: ${JSON.stringify(bad)} must stay refused`).toBe(false);
+    }
+    expect(paths({ summary: 'hi', expects: 'none' })).toContain('to');
   });
 });

@@ -19,6 +19,7 @@ import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identi
 import { deactivateLoop, getLoopStatus } from '../../harness/routines/loop';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
+import { attestLoopControlConsumerView } from '../coordination/control-anchor-consumer-view';
 import {
   GOAL_DISPOSITIONS,
   activeGoalForOwner,
@@ -31,8 +32,23 @@ import {
 } from '../../goals/wind-down-disposition';
 import { evaluateGoalWindDownOutputs } from '../../goals/goal-io-validation';
 import { getLoopCarryNote } from '../../carry-note';
-import { listActiveAwaits, listParkedAwaitsForSubscribers, INBOX_WAKE_KEY_PREFIX } from '../../events/await/store';
+import {
+  listActiveAwaits,
+  listParkedAwaitsForSubscribers,
+  hasPendingDeliberateWakeDelivery,
+  INBOX_WAKE_KEY_PREFIX,
+} from '../../events/await/store';
 import { listActiveComposedRoots } from '../../events/await/compose-store';
+import {
+  boundedAwaitTemplateFor,
+  guaranteesWake,
+  isWakeSource,
+  nonWakeReason,
+  readHeldWorkItems,
+  readWorkItemAwaitTargets,
+  type HeldWorkItem,
+  type WorkItemAwaitTargets,
+} from '../../events/await/wake-source-predicate';
 import { getModes } from '../../modes/store';
 import { modeImpliesAutonomy } from '../../modes/registry';
 import {
@@ -131,13 +147,104 @@ export function survivingAwaitsNote(
   );
 }
 
+/**
+ * P-009: is `id` a real owner directive that told THIS session to stop? Verified, never trusted:
+ * it must exist in this workspace, belong to the loop owner (directives are per-session — the
+ * owner often pastes one message into several sessions), and have been captured by the
+ * UserPromptSubmit hook, i.e. typed by the owner rather than recorded by an agent.
+ */
+export async function verifyOwnerStopDirective(opts: {
+  id: number;
+  ownerId: string;
+  workspaceId: string;
+}): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const { getOwnerDirective } = await import('../../owner-directives');
+  const row = await getOwnerDirective(opts.id);
+  if (!row || row.workspaceId !== opts.workspaceId) return { ok: false, reason: `directive #${opts.id} not found` };
+  if (row.ownerId !== opts.ownerId) {
+    return { ok: false, reason: `directive #${opts.id} belongs to ${row.ownerId}, not ${opts.ownerId}` };
+  }
+  if (row.capturedByHook !== true) {
+    return { ok: false, reason: `directive #${opts.id} was agent-recorded, not captured from an owner-typed turn` };
+  }
+  return { ok: true };
+}
+
+const CLAIM_HOLDER_LISTED_CAP = 10;
+
+/**
+ * The P-009 claim-holder refusal. Pure. Its recovery is a bounded `events:await` keyed to the
+ * blocker a held item states; when no item states one, it is the release path. It never offers
+ * `acknowledgeWakeLessAutonomy` for the held state: that flag is what 100 of 140 self-stopped
+ * parkers passed, and it does not override this refusal.
+ */
+export function buildClaimHolderRefusal(opts: {
+  ownerId: string;
+  args: Record<string, unknown>;
+  claimHolder: {
+    autonomyModes: string[];
+    held: HeldWorkItem[];
+    untimedSources: string[];
+    deadAwaits: Array<{ eventKey: string; reason: string }>;
+  };
+  stopDirectiveRejection: string | null;
+  nowMs: number;
+}): Record<string, unknown> {
+  const { ownerId, claimHolder: ch } = opts;
+  const { acknowledgeWakeLessAutonomy: _ignored, ownerStopDirectiveId: _rejected, ...retryArgs } = opts.args;
+  const heldIds = ch.held.map((h) => h.id);
+  const listed = heldIds.slice(0, CLAIM_HOLDER_LISTED_CAP).join(', ') + (heldIds.length > CLAIM_HOLDER_LISTED_CAP ? `, +${heldIds.length - CLAIM_HOLDER_LISTED_CAP} more` : '');
+  const template = boundedAwaitTemplateFor(ch.held, opts.nowMs);
+  const recovery = template
+    ? {
+        action: 'register-bounded-await-then-retry',
+        steps: [
+          { tool: 'events:await', args: template.args },
+          { tool: 'loop:end', args: retryArgs },
+        ],
+      }
+    : {
+        action: 'release-claims-then-retry',
+        steps: [
+          ...heldIds.map((id) => ({ tool: 'work_items:checkpoint', args: { id, checkpoint: '<what is done, what is left, what it waits on>' } })),
+          { tool: 'work_items:release', args: { ids: heldIds } },
+          // Once claimless, only the conscious P-012 acknowledgement remains.
+          { tool: 'loop:end', args: { ...retryArgs, acknowledgeWakeLessAutonomy: true } },
+        ],
+      };
+  return {
+    ok: false,
+    error: 'wake_less_claim_holder_refused',
+    message:
+      `REFUSED — ${ownerId} holds ${heldIds.length} unfinished work-item(s) [${listed}] in autonomy-implying mode(s) ` +
+      `[${ch.autonomyModes.join(', ')}], and no BOUNDED wake source would survive this stop, so those claims would be stranded. ` +
+      'acknowledgeWakeLessAutonomy does NOT override this refusal. ' +
+      (template
+        ? `Preferred: register the bounded events:await in recovery.steps[0] (keyed to ${template.itemId}'s stated blocker), then retry loop:end. `
+        : 'No held item states a blocker to wait on: checkpoint and release the claims (recovery.steps), then retry. ') +
+      'Other exits: finish the work (work_items:complete), exit the autonomy mode (mode:set { enabled:false }), keep the loop armed, ' +
+      'or — if the owner told this session to stop — retry with ownerStopDirectiveId: <that directive id>.' +
+      (ch.untimedSources.length > 0
+        ? ` Untimed awaits do not count for a claim holder (no promise to fire): ${ch.untimedSources.slice(0, CLAIM_HOLDER_LISTED_CAP).join(', ')}.`
+        : '') +
+      (opts.stopDirectiveRejection ? ` ownerStopDirectiveId rejected: ${opts.stopDirectiveRejection}.` : ''),
+    ownerId,
+    autonomyModes: ch.autonomyModes,
+    heldWorkItems: heldIds.slice(0, CLAIM_HOLDER_LISTED_CAP),
+    ...(ch.untimedSources.length > 0 ? { untimedWakeSources: ch.untimedSources.slice(0, CLAIM_HOLDER_LISTED_CAP) } : {}),
+    ...(ch.deadAwaits.length > 0 ? { deadAwaits: ch.deadAwaits.slice(0, CLAIM_HOLDER_LISTED_CAP) } : {}),
+    ...(opts.stopDirectiveRejection ? { ownerStopDirectiveRejected: opts.stopDirectiveRejection } : {}),
+    recovery,
+  };
+}
+
 export default defineTool({
   name: 'loop:end',
   profile: 'engineer',
   description:
     "End the owner-scoped loop on your own session (or another owner's, with `ownerId`) — stops the recurring warm wake. The routine is deactivated (history kept); an optional `reason` is recorded in the transition log. A GOAL-mode owner with a still-active goal must also pass `disposition` (achieved | killed | handoff) — the wind-down report to the owner is generated from the loop carry-note + reason. Loops are keyed by owner, not by harness; a `harness` arg is accepted for compatibility but has no effect. Re-arm anytime with loop:arm.",
   guidance: {
-    when: 'Stop a loop you armed with loop:arm — the goal is done, you are blocked on something external, or the user says stop. Pass `reason` when a durable stop explanation matters; the call is owner-scoped and ignores `harness`. In GOAL mode with the goal still active, also pass `disposition` (achieved | killed | handoff — handoff takes `handoffTo`). AUTO still on with no event await? The stop REFUSES until `acknowledgeWakeLessAutonomy:true` — pass it in the FIRST call (still required for a finished goal). Better to loop:end than burn empty wakes spinning.',
+    when: 'Stop a loop you armed with loop:arm — the goal is done, your claims are released/handed off, or the owner says stop. Blocked is NOT a stop: work_items:set_blocker + a bounded events:await (on_timeout:\'wake\'), then end the turn. Pass `reason` for a durable stop note; owner-scoped, ignores `harness`. GOAL mode with the goal active: also `disposition` (achieved | killed | handoff + `handoffTo`). AUTO on, no event await, no claims? Pass `acknowledgeWakeLessAutonomy:true` on the FIRST call. Still HOLDING work-items? That flag will not help — register the bounded events:await the refusal names, release the claims, or cite `ownerStopDirectiveId`.',
     notWhen:
       'Pause the WHOLE autoloop / routines engine — that is autoloop:control. End the autonomous hive loop — that is pot:pause.',
     chaining:
@@ -194,7 +301,15 @@ export default defineTool({
       .boolean()
       .optional()
       .describe(
-        'P-012 safety override: consciously end the loop while an autonomy-implying mode remains active and no deliberate independent event await will wake the session.',
+        'P-012 safety override: consciously end the loop while an autonomy-implying mode remains active and no deliberate independent event await will wake the session. Does NOT override the P-009 claim-holder refusal.',
+      ),
+    ownerStopDirectiveId: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        "P-009: the id of the hook-captured owner directive (orders:get) that told THIS session to stop. Lets an autonomous session that still holds work-items end its loop without a bounded wake; verified, never trusted.",
       ),
   }),
   async handler(args, ctx) {
@@ -338,10 +453,13 @@ export default defineTool({
     // Both classifications come from their existing authorities:
     //   - modeImpliesAutonomy covers autonomy-axis modes AND overlays whose
     //     registry declaration implies one (goal/drain today, future modes free);
-    //   - listParkedAwaitsForSubscribers is the deliberate-park read. It excludes
-    //     inbox liveness plumbing, platform-armed claim/fleet interests,
-    //     announcements, and expired rows, none of which means the agent chose an
-    //     event as its next wake source. Its inbox-prefix exception includes only
+    //   - listParkedAwaitsForSubscribers is the deliberate-park read, and
+    //     hasPendingDeliberateWakeDelivery catches a deliberate one-shot that
+    //     already fired but whose delivery has not settled at the turn boundary.
+    //     Both exclude inbox liveness plumbing, platform-armed claim/fleet
+    //     interests, and announcements. The parked-await read also excludes
+    //     expired rows; an already-fired timeout wake still counts while its
+    //     delivery is outstanding. The inbox-prefix exception includes only
     //     bounded wake-on-timeout awaits; the unbounded expiring keepalive remains
     //     liveness plumbing.
     //
@@ -350,19 +468,99 @@ export default defineTool({
     // deactivateLoop; the explicit acknowledgement is the escape hatch. Keep
     // this after the existing goal/output gates so their error precedence and
     // ordinary no-op paths remain unchanged.
-    let deliberateParkedAwait: boolean | null = null;
-    const wakeLessAutonomy =
+    //
+    // P-009 (parked-agent-census-resumption-and-root-cause-2026-10-09, D-008 (1), D-009): WHICH
+    // deliberate parks can fire at all is decided by the one shared predicate
+    // (wake-source-predicate.ts) — an await on a terminal/missing item, or a done-await on an item
+    // this owner itself holds, never wakes anyone and no longer satisfies this guard. And an
+    // autonomous owner that still HOLDS work-items needs a GUARANTEED (bounded, wake-on-timeout)
+    // source: see the claim-holder refusal below.
+    const wakeRead =
       workspaceId && statusBefore?.active === true
-        ? await Promise.all([getModes(workspaceId, ownerId), listParkedAwaitsForSubscribers([ownerId])])
-            .then(([modes, parkedAwaits]) => {
-              deliberateParkedAwait = parkedAwaits.length > 0;
+        ? await Promise.all([
+            getModes(workspaceId, ownerId),
+            listParkedAwaitsForSubscribers([ownerId]),
+            hasPendingDeliberateWakeDelivery(ownerId),
+          ])
+            .then(async ([modes, parkedAwaits, hasPendingDelivery]) => {
               const autonomyModes = modes.map((row) => row.mode).filter((mode) => modeImpliesAutonomy(mode));
-              return autonomyModes.length > 0 && parkedAwaits.length === 0 ? { autonomyModes } : null;
+              const parked = parkedAwaits.map((a) => ({ ...a, subscriberId: ownerId }));
+              // An unreadable target is UNKNOWN, which the predicate treats as live.
+              const targets: WorkItemAwaitTargets = await readWorkItemAwaitTargets(parked).catch(() => new Map());
+              const live = parked.filter((a) => isWakeSource(a, targets, INBOX_WAKE_KEY_PREFIX));
+              const hasIndependentWakeSource = live.length > 0 || hasPendingDelivery;
+              // Positive-finding-only: an unreadable hold set never refuses a stop.
+              const held =
+                autonomyModes.length > 0 ? await readHeldWorkItems(ownerId, workspaceId).catch(() => null) : null;
+              const claimHolder =
+                held && held.length > 0
+                  ? {
+                      autonomyModes,
+                      held,
+                      guaranteed:
+                        hasPendingDelivery || live.some((a) => guaranteesWake(a, targets, INBOX_WAKE_KEY_PREFIX)),
+                      untimedSources: live
+                        .filter((a) => !guaranteesWake(a, targets, INBOX_WAKE_KEY_PREFIX))
+                        .map((a) => a.eventKey),
+                      deadAwaits: parked.flatMap((a) => {
+                        const why = nonWakeReason(a, targets, INBOX_WAKE_KEY_PREFIX);
+                        return why ? [{ eventKey: a.eventKey, reason: why }] : [];
+                      }),
+                    }
+                  : null;
+              return { autonomyModes, hasIndependentWakeSource, claimHolder };
             })
             .catch(() => null)
         : null;
+    const hasIndependentWakeSource: boolean | null = wakeRead?.hasIndependentWakeSource ?? null;
+    const wakeLessAutonomy =
+      wakeRead && wakeRead.autonomyModes.length > 0 && !wakeRead.hasIndependentWakeSource
+        ? { autonomyModes: wakeRead.autonomyModes }
+        : null;
+    // P-009: an autonomous session that still holds unfinished work-items and has no GUARANTEED
+    // wake source strands those claims — measured, 100 of 140 self-stopped parkers had passed
+    // acknowledgeWakeLessAutonomy, and 51 were AUTO + holding claims + no wake source. So that flag
+    // does NOT override this refusal. The exits are: the goal is done (an 'achieved' disposition,
+    // already through the acceptance gate above), the claims are released, a verified owner stop
+    // directive, or a typed fleet wind-down cue. The refusal's recovery is a bounded events:await
+    // keyed to the blocker the held item states, never the acknowledgement.
+    let ownerStopDirectiveHonored: number | null = null;
+    const claimHolder = wakeRead?.claimHolder ?? null;
+    if (claimHolder && !claimHolder.guaranteed && workspaceId) {
+      const goalAchieved = Boolean(activeGoal) && args.disposition === 'achieved';
+      const stopDirective =
+        !goalAchieved && args.ownerStopDirectiveId != null
+          ? await verifyOwnerStopDirective({ id: args.ownerStopDirectiveId, ownerId, workspaceId }).catch(
+              (e: unknown) => ({ ok: false as const, reason: `directive read failed: ${e instanceof Error ? e.message : String(e)}` }),
+            )
+          : null;
+      const fleetCue =
+        !goalAchieved && stopDirective?.ok !== true
+          ? await readFleetWindDownLoopEndAuthorization({ ownerId, workspaceId }).catch(() => null)
+          : null;
+      if (stopDirective?.ok === true) ownerStopDirectiveHonored = args.ownerStopDirectiveId ?? null;
+      if (!goalAchieved && stopDirective?.ok !== true && fleetCue !== true) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(
+                buildClaimHolderRefusal({
+                  ownerId,
+                  args,
+                  claimHolder,
+                  stopDirectiveRejection: stopDirective && !stopDirective.ok ? stopDirective.reason : null,
+                  nowMs: Date.now(),
+                }),
+              ),
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
     const fleetMemberWindDown =
-      deliberateParkedAwait === false &&
+      hasIndependentWakeSource === false &&
       !args.acknowledgeWakeLessAutonomy &&
       workspaceId &&
       statusBefore?.active === true
@@ -378,7 +576,14 @@ export default defineTool({
       wakeLessStopRequiresGuard && !args.acknowledgeWakeLessAutonomy && workspaceId
         ? await readFleetWindDownLoopEndAuthorization({ ownerId, workspaceId }).catch(() => null)
         : null;
-    if (wakeLessStopRequiresGuard && !args.acknowledgeWakeLessAutonomy && fleetWindDownLoopEndAuthorized !== true) {
+    // A verified owner stop directive (P-009) already made the wake-less state the OWNER's choice;
+    // demanding the acknowledgement on top of it would be ceremony, not safety.
+    if (
+      wakeLessStopRequiresGuard &&
+      !args.acknowledgeWakeLessAutonomy &&
+      fleetWindDownLoopEndAuthorized !== true &&
+      ownerStopDirectiveHonored === null
+    ) {
       const recoveryArgs = {
         ...args,
         acknowledgeWakeLessAutonomy: true,
@@ -490,6 +695,15 @@ export default defineTool({
           source: 'loop:end',
         })
       : null;
+    // WI-10005199 (EI-23770243810745552): the `routines` loop row is the WRITE target, but the
+    // wake-source verdict reads the projected `control_state->loop`, and that refresh is
+    // fail-soft (null on timeout while the stop stays committed). A STALE `active:true` there
+    // is the worst direction — the consumer still believes a wake source exists. Attest the
+    // read the consumer will actually do against `{ active:false }`. Exception-only; only
+    // when this call actually ended a loop (a no-op end has no write to attest).
+    const controlConsumerView = ended
+      ? attestLoopControlConsumerView({ active: false, intervalSec: null }, control)
+      : null;
     // EI-21349668185386229: enumerate the wake sources that SURVIVE this stop
     // (see survivingAwaitsNote's header). Fail-soft — a read error must never
     // block the stop; the note then degrades to the scoped-claim wording.
@@ -528,6 +742,7 @@ export default defineTool({
             ownerId,
             ended,
             controlGeneration: control?.generation ?? null,
+            ...(controlConsumerView?.divergedFromWrite ? { controlConsumerView } : {}),
             ...(activeGoal && args.disposition
               ? {
                   goalId: activeGoal.goalId,
@@ -537,6 +752,7 @@ export default defineTool({
                 }
               : {}),
             ...(ended && survivingAwaits !== null ? { survivingAwaits } : {}),
+            ...(ownerStopDirectiveHonored !== null ? { ownerStopDirectiveId: ownerStopDirectiveHonored } : {}),
             note: ended
               ? survivingAwaitsNote(survivingAwaits)
               : 'No active loop found for this owner (already ended or never armed).',

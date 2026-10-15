@@ -28,8 +28,9 @@ export const POST_GO_RELEASE_PLAN_ITEMS = ['P-501', 'P-502', 'P-503'] as const;
 
 /**
  * Release-scoped soak minimums, each backed by a recorded owner ruling.
- * Endgame D-132: the owner removed the timed soak for 0.0.28-alpha; later
- * releases retain the existing 72h default. Keep this keyed by exact release
+ * Endgame D-132 removes the timed soak for 0.0.28-alpha; D-163 carries that
+ * ruling to its 0.0.29-alpha replacement. Other releases retain the 72h default.
+ * Keep this keyed by exact release
  * version: a global edit would silently shorten every later soak.
  */
 export const POST_GO_RELEASE_CANARY_DURATION_OVERRIDES: Readonly<
@@ -38,6 +39,10 @@ export const POST_GO_RELEASE_CANARY_DURATION_OVERRIDES: Readonly<
   '0.0.28-alpha': {
     minimumDurationMs: 0,
     decisionRef: 'p2p-public-release-endgame-2026-09-01#D-132',
+  },
+  '0.0.29-alpha': {
+    minimumDurationMs: 0,
+    decisionRef: 'p2p-public-release-endgame-2026-09-01#D-163',
   },
 });
 

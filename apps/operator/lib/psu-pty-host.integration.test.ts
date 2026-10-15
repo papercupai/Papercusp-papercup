@@ -6,21 +6,24 @@
  * assert the socket + discovery file are created on start and cleaned up on exit.
  * Spawns a real @lydell/node-pty subprocess, so it's an integration test.
  */
-import { describe, it, expect, vi } from 'vitest';
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import net from 'node:net';
 import { createServer } from 'node:http';
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
 import { execPath } from 'node:process';
 import { spawn } from 'node:child_process';
+import { promises as fsPromises } from 'node:fs';
+import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 import {
-  hostThroughPty,
+  hostThroughPty as hostThroughPtyProduction,
   socketPathFor,
   metaPathFor,
   eventLogPathForOwner,
+  appendHostEvent,
   encodeControl,
   KICKOFF_PROOF_PATH_ENV,
   KICKOFF_PROOF_TOKEN_ENV,
@@ -42,15 +45,94 @@ import {
   CODEX_TUI_START_UNOBSERVED_FALLBACK_MULTIPLIER,
   killPtyProcessTree,
   handoffPathFor,
+  sharedDrillLedgerPath,
   MAX_CONTROL_PAYLOAD_BYTES,
   PSU_PTY_DIR,
   IDENTITY_ACTIVATION_REFUSED_REASON,
 } from '../scripts/psu-pty-host.mjs';
+import { reportSessionPortDelivery } from '../scripts/psu-launcher.mjs';
+
+// WI-10008170: the production default `onExit` is `process.exit` — right for the
+// CLI, fatal here. Every test in this file hosts in-process, so a host that ends
+// inside a test calls process.exit in the vitest worker, which vitest reports as
+// an unhandled error that fails the whole file even when every assertion passed.
+// Default it to a no-op for the file; a test that passes its own onExit still wins.
+// Fixture owners have no live session to notify. Keep the detached compaction
+// bridge inside the fixture; completion-order tests supply their own emit spy.
+const hostThroughPty: typeof hostThroughPtyProduction = (o) =>
+  hostThroughPtyProduction({ onExit: () => undefined, emitCompacted: () => null, ...o });
 // The REAL operator-side force-interrupt leg (turn-lifecycle-control Phase 4
 // pty-force, reused by e8630's turn:interrupt tool). Importing the published
 // subpath keeps this an integration test of the actual chain, not a re-impl.
-import { interruptViaPty, findLiveHost } from '@papercusp/operator-core/lib/events/await/psu-pty-discovery';
+import { interruptViaPty, findLiveHost, injectIntoHost } from '@papercusp/operator-core/lib/events/await/psu-pty-discovery';
 import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
+import { linuxProcStateFromStat } from '@papercusp/operator-core/lib/process-identity';
+
+/**
+ * WI-10005017: some respawn tests fail only in whole-file runs, and the failure
+ * reads "expected 1 to be 2" (one child booted where two were expected). That says
+ * nothing about WHY the successor never started. The host's own event log does, but
+ * it lives in the auto-cleaned PSU_PTY_DIR and is gone by the time anyone looks. On
+ * failure, attach the tail of every host event log this test wrote to the failure
+ * output, so a non-reproducing failure carries its own evidence.
+ */
+const FAILURE_EVENT_TAIL_LINES = 30;
+function hostEventTailsSince(dir: string, sinceMs: number, lines = FAILURE_EVENT_TAIL_LINES): string {
+  let names: string[];
+  try {
+    names = readdirSync(dir).filter((n) => n.endsWith('.events.jsonl'));
+  } catch {
+    return `(host event dir ${dir} unreadable)`;
+  }
+  const blocks: string[] = [];
+  for (const name of names) {
+    const path = join(dir, name);
+    try {
+      if (statSync(path).mtimeMs < sinceMs) continue;
+      const tail = readFileSync(path, 'utf8').trim().split('\n').slice(-lines).join('\n');
+      blocks.push(`--- ${name} (last ${lines} events) ---\n${tail}`);
+    } catch {
+      /* a log removed mid-read is not evidence either way */
+    }
+  }
+  return blocks.length ? blocks.join('\n') : '(no host event log written during this test)';
+}
+
+beforeEach((ctx) => {
+  const startedAtMs = Date.now() - 1_000;
+  ctx.onTestFailed(({ task }) => {
+    const evidence = hostEventTailsSince(PSU_PTY_DIR, startedAtMs);
+    console.error(`[WI-10005017] host events for failed test "${task.name}":\n${evidence}`);
+    const first = task.result?.errors?.[0];
+    if (first && typeof first.message === 'string') first.message += `\n[host events]\n${evidence}`;
+  });
+});
+
+describe('failure evidence: host event tails (WI-10005017)', () => {
+  it('includes logs written since the test started, tail-bounded, and skips older ones', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'psu-pty-evidence-'));
+    try {
+      const fresh = join(dir, 'su-fresh.events.jsonl');
+      const stale = join(dir, 'su-stale.events.jsonl');
+      writeFileSync(fresh, Array.from({ length: 40 }, (_, i) => `{"kind":"e${i}"}`).join('\n'));
+      writeFileSync(stale, '{"kind":"old"}\n');
+      const old = new Date(Date.now() - 60_000);
+      utimesSync(stale, old, old);
+      writeFileSync(join(dir, 'su-fresh.json'), '{}');
+      const out = hostEventTailsSince(dir, Date.now() - 10_000, 5);
+      expect(out).toContain('su-fresh.events.jsonl');
+      expect(out).toContain('{"kind":"e39"}');
+      expect(out).toContain('{"kind":"e35"}');
+      expect(out).not.toContain('{"kind":"e34"}');
+      expect(out).not.toContain('su-stale');
+      expect(out).not.toContain('--- su-fresh.json ');
+      expect(hostEventTailsSince(dir, Date.now() + 60_000)).toBe('(no host event log written during this test)');
+      expect(hostEventTailsSince(join(dir, 'missing'), 0)).toMatch(/unreadable/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 /** A fake stdout that accumulates the pty's output; a non-TTY fake stdin. */
 function fakeIo() {
@@ -69,6 +151,91 @@ const FLATTENED_CODEX_READY_FOOTER =
 const FLATTENED_CODEX_STARTING_FOOTER =
   '› Ask Codex to do anythingStarting · GPT-5.6-Sol high · Context 100% left';
 
+it('keeps owner input and real PTY output responsive while discovery rename is stalled', async () => {
+  const ownerId = `su-slow-discovery-${process.pid}-${Date.now()}`;
+  const metaPath = metaPathFor(ownerId);
+  const originalRename = fsPromises.rename;
+  let release!: () => void;
+  const stalled = new Promise<void>((resolve) => { release = resolve; });
+  let renameEntered = false;
+  const rename = vi.spyOn(fsPromises, 'rename').mockImplementation(async (from, to) => {
+    if (String(to) === metaPath) { renameEntered = true; await stalled; }
+    return originalRename(from, to);
+  });
+  const { captured, io } = fakeIo();
+  const stdin = Object.assign(new EventEmitter(), { isTTY: false, resume() {}, pause() {} });
+  const signals = new EventEmitter();
+  let ended = false;
+  const done = hostThroughPty({
+    command: execPath,
+    args: ['-e', String.raw`const {StringDecoder}=require('node:string_decoder');const decoder=new StringDecoder('utf8');let quitTail='';process.stdin.setRawMode(true);process.stdin.on('data',d=>{const text=decoder.write(d);quitTail=(quitTail+text).slice(-8);if(quitTail.includes('QUIT'))process.exit(0);if(text)process.stdout.write('ECHO:'+text+'\n');});process.stdout.write('SLOW_FS_READY\n');`],
+    cwd: process.cwd(), env: hermeticEnv({ PAPERCUSP_SID: ownerId }), ownerId,
+    io: { ...io, stdin }, bridgeTty: false, signalSource: signals, activityPersistMs: 25,
+  }).then((code) => { ended = true; return code; });
+  try {
+    await vi.waitFor(() => {
+      expect(renameEntered).toBe(true);
+      expect(captured()).toContain('SLOW_FS_READY');
+    }, { timeout: 5000 });
+    stdin.emit('data', Buffer.from('owner-input'));
+    await vi.waitFor(() => expect(captured()).toContain('ECHO:owner-input'), { timeout: 3000 });
+    stdin.emit('data', Buffer.from([0xc3]));
+    stdin.emit('data', Buffer.from([0xa9]));
+    await vi.waitFor(() => expect(captured()).toContain('ECHO:é'), { timeout: 3000 });
+    expect(existsSync(metaPath)).toBe(false);
+    stdin.emit('data', Buffer.from('QUIT'));
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    expect(ended).toBe(false);
+    release();
+    expect(await done).toBe(0);
+    expect(existsSync(metaPath)).toBe(false);
+    expect(existsSync(socketPathFor(ownerId))).toBe(false);
+  } finally {
+    release();
+    if (!ended) signals.emit('SIGTERM');
+    await done;
+    rename.mockRestore();
+  }
+}, 15_000);
+
+it('binds, discovers, injects and cleans a byte-bounded control socket for a long owner', async () => {
+  const ownerId = (`su-byte-bound-${process.pid}-${Date.now()}-` + 'x'.repeat(200)).slice(0, 200);
+  const sibling = join(PSU_PTY_DIR, `${ownerId}.sock`);
+  expect(Buffer.byteLength(sibling)).toBeGreaterThan(107);
+  // Distinguish address overflow from a missing native/SRT dependency: the
+  // legacy address fails at the OS bind, while the maintained host below works.
+  const legacy = net.createServer();
+  const error = await new Promise<NodeJS.ErrnoException>(resolve => {
+    legacy.once('error', resolve); legacy.listen(sibling);
+  });
+  expect(error.code).toBe('EINVAL');
+  const sock = socketPathFor(ownerId);
+  const { captured, io } = fakeIo();
+  const done = hostThroughPty({ command: execPath, args: ['-e',
+    "process.stdin.setRawMode?.(true);process.stdin.setEncoding('utf8');process.stdout.write('BOUNDED_SOCKET_READY\\n');process.stdin.on('data',d=>{if(d.includes('COMPLETE')){process.stdout.write('BOUNDED_SOCKET_INJECTED\\n');process.exit(0);}if(d.includes('\\u0004'))process.exit(0);});setTimeout(()=>process.exit(19),10000);"],
+    cwd: process.cwd(), env: hermeticEnv({ PAPERCUSP_SID: ownerId }), ownerId,
+    io, bridgeTty: false, signalSource: new EventEmitter(), onExit: () => undefined,
+  });
+  try {
+    await vi.waitFor(() => expect(captured()).toContain('BOUNDED_SOCKET_READY'), { timeout: 5000 });
+    const meta = JSON.parse(readFileSync(metaPathFor(ownerId), 'utf8'));
+    expect(meta).toMatchObject({ ownerId, sock });
+    expect(Buffer.byteLength(sock)).toBeLessThanOrEqual(100);
+    expect(statSync(sock).isSocket()).toBe(true);
+    expect(statSync(sock).mode & 0o077).toBe(0);
+    expect(findLiveHost(ownerId, undefined, { verifyIdentity: pid => pid === process.pid })?.sock).toBe(sock);
+    const injection = await injectIntoHost(sock, { mode: 'raw', data: 'COMPLETE\n', ownerId });
+    expect(injection).toBe(true);
+    expect(await done, captured()).toBe(0);
+    expect(captured()).toContain('BOUNDED_SOCKET_INJECTED');
+    expect(existsSync(sock)).toBe(false);
+    expect(existsSync(metaPathFor(ownerId))).toBe(false);
+  } finally {
+    if (existsSync(sock)) await injectIntoHost(sock, { mode: 'raw', data: '\u0004', ownerId }).catch(() => undefined);
+    await done;
+  }
+}, 20_000);
+
 /** A deliberately wrong pre-fix control: it checks an exact Ready token. */
 function exactStatusOnlyCodexReady(output: string): boolean {
   const status = [...String(output ?? '').matchAll(/([A-Za-z]+)\s*·[^·\n]{0,120}·\s*Context\s+\d{1,3}%\s+left/g)]
@@ -78,6 +245,191 @@ function exactStatusOnlyCodexReady(output: string): boolean {
 }
 
 describe('managed-pty integration evidence isolation', () => {
+  it('waits for fresh Codex native readiness before writing the first kickoff (WI-10007270)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-initial-native-ready-'));
+    const inputFile = join(root, 'input.txt');
+    const ownerId = `su-initial-native-${process.pid}-${Math.floor(performance.now())}`;
+    const nativeId = '01a117cf-6942-7bc3-9aee-1ff8ac3963b7';
+    const resolveNativeId = vi.fn((_pid: number) => nativeId);
+    const signalSource = new EventEmitter();
+    let confirm: (() => void) | undefined;
+    const onRespawn = vi.fn((_id: string, options: { onConfirmed: () => void }) => {
+      confirm = options.onConfirmed;
+      return false;
+    });
+    const { captured, io } = fakeIo();
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', "const fs=require('fs');let input='';process.stdin.setRawMode?.(true);process.stdin.setEncoding('utf8');process.stdout.write('model: GPT-6.1-Sol medium\\nReady · GPT-6.1-Sol medium · Context 100% left\\n');process.stdin.on('data',d=>{input+=d;fs.appendFileSync(process.env.INPUT_FILE,d);if(input.includes('BEGIN_ACCEPTED_OPERATION'))process.exit(0);});"],
+      cwd: root,
+      env: {
+        ...hermeticEnv(), PAPERCUSP_AGENT: 'codex', INPUT_FILE: inputFile,
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '10',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '20',
+        PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '10',
+      },
+      ownerId, io, bridgeTty: false, kickoff: 'BEGIN_ACCEPTED_OPERATION',
+      resolveRespawnNativeId: resolveNativeId,
+      onRespawn, signalSource, onExit: () => undefined,
+    });
+    try {
+      await vi.waitFor(() => expect(onRespawn).toHaveBeenCalledOnce(), { timeout: 8000 });
+      await vi.waitFor(() => expect(captured()).toContain('Ready · GPT-6.1-Sol medium'), { timeout: 8000 });
+      const discovery = JSON.parse(readFileSync(metaPathFor(ownerId), 'utf8'));
+      expect(discovery.nativeSessionId).toBe(nativeId);
+      expect(resolveNativeId).toHaveBeenCalledWith(discovery.ptyPid);
+      await new Promise(resolve => setTimeout(resolve, 50));
+      expect(existsSync(inputFile)).toBe(false);
+      confirm!();
+      await vi.waitFor(() => {
+        expect(existsSync(inputFile)).toBe(true);
+        expect(readFileSync(inputFile, 'utf8')).toContain('BEGIN_ACCEPTED_OPERATION');
+      }, { timeout: 8000 });
+      expect(onRespawn.mock.calls[0][0]).toBe(nativeId);
+      expect(await done).toBe(0);
+      expect(readFileSync(eventLogPathForOwner(ownerId), 'utf8'))
+        .not.toContain('codex-starting-stuck-snapshot');
+    } finally {
+      signalSource.emit('SIGTERM');
+      await done.catch(() => undefined);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { phase: 'native binding', reason: 'successor-native-id-missing', label: 'respawn binding', fallbackMs: 50 },
+    { phase: 'backend frame', reason: 'codex-backend-frame-not-observed', label: 'launch kickoff', fallbackMs: 50 },
+    { phase: 'delayed backend banner', reason: 'codex-backend-frame-not-observed', label: 'launch kickoff', fallbackMs: 50 },
+    // The overall kickoff budget can expire before the frame timer, whose
+    // clock starts only when the child paints its banner. Neither allows input.
+    { phase: 'backend frame after kickoff deadline', reason: 'codex-backend-frame-not-observed', label: 'launch kickoff', fallbackMs: 500 },
+  ])('preserves startup evidence when the $phase times out before first-turn injection (WI-10007305)', async ({ phase, reason, label, fallbackMs }) => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-missing-native-snapshot-'));
+    const codexHome = join(root, 'codex-home');
+    const inputFile = join(root, 'input.txt');
+    const ownerId = `su-missing-native-${process.pid}-${Math.floor(performance.now())}`;
+    mkdirSync(join(codexHome, 'log'), { recursive: true });
+    writeFileSync(join(codexHome, 'log', 'codex-tui.log'), 'isolated startup phase did not assign a native id\n');
+    const gatedKickoff = phase === 'backend frame after kickoff deadline';
+    // Native registration is not this case's failure. Confirm it immediately
+    // so a slow child boot cannot spend its separate binding deadline first.
+    const onRespawn = vi.fn(async () => true);
+    const { captured, io } = fakeIo();
+    const signalSource = new EventEmitter();
+    const initialOutput = phase === 'native binding'
+      ? '\x1b[6nmodel: GPT-6.1-Sol medium\nReady · GPT-6.1-Sol medium · Context 100% left\n'
+      : '\x1b[6n│ >_ OpenAI Codex (v0.156.1) │\n│ model: loading /model to change │\n› Ask Codex to do anything\n';
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', "const fs=require('fs');process.stdin.setRawMode?.(true);process.stdin.setEncoding('utf8');process.stdin.on('data',d=>fs.appendFileSync(process.env.INPUT_FILE,d));setTimeout(()=>process.stdout.write(process.env.INITIAL_OUTPUT),Number(process.env.INITIAL_OUTPUT_DELAY_MS));"],
+      cwd: root,
+      env: {
+        ...hermeticEnv(), PAPERCUSP_AGENT: 'codex', CODEX_HOME: codexHome,
+        INPUT_FILE: inputFile, INITIAL_OUTPUT: initialOutput,
+        INITIAL_OUTPUT_DELAY_MS: phase === 'delayed backend banner' ? '1500' : '0',
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '500',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: String(fallbackMs),
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '10',
+      },
+      ownerId, io, bridgeTty: false,
+      kickoff: '⟦turn-origin:fleet-kickoff nonce:abcdef0123456789⟧\nMUST_REMAIN_UNSUBMITTED',
+      resolveRespawnNativeId: phase === 'native binding' ? () => null
+        : gatedKickoff ? () => '01a117cf-6942-7bc3-9aee-1ff8ac3963b7' : undefined,
+      onRespawn, signalSource, onExit: () => undefined,
+    });
+    try {
+      await vi.waitFor(() => {
+        const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+          .trim().split('\n').map(line => JSON.parse(line));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: phase === 'native binding' ? 'respawn-binding-unconfirmed' : 'startup-turn-dropped', reason,
+        }));
+        const snapshot = events.find(event => event.kind === 'codex-starting-stuck-snapshot' &&
+          event.label === label && event.reason === reason);
+        expect(snapshot).toMatchObject({
+          label, reason,
+          log: { present: true, tail: ['isolated startup phase did not assign a native id'] },
+        });
+        expect(snapshot.rootPid).toBe(JSON.parse(readFileSync(metaPathFor(ownerId), 'utf8')).ptyPid);
+        if (process.platform === 'linux') {
+          expect(snapshot.procs).toContainEqual(expect.objectContaining({ pid: snapshot.rootPid }));
+        }
+      }, { timeout: 3000 });
+      expect(existsSync(inputFile) ? readFileSync(inputFile, 'utf8') : '').toBe('');
+      if (gatedKickoff) expect(onRespawn).toHaveBeenCalledOnce();
+      else expect(onRespawn).not.toHaveBeenCalled();
+    } finally {
+      signalSource.emit('SIGTERM');
+      await done.catch(() => undefined);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 5000);
+
+  it('does not attempt a marked kickoff after the host ends before its first backend frame', async () => {
+    const ownerId = `su-ended-kickoff-${process.pid}-${Math.floor(performance.now())}`;
+    const signalSource = new EventEmitter();
+    const writeAttempts: string[] = [];
+    const { io } = fakeIo();
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', "process.stdin.on('data',()=>{});setTimeout(()=>process.stdout.write('› Ask Codex\\n'),1500);"],
+      cwd: '/tmp',
+      env: {
+        ...hermeticEnv(), PAPERCUSP_AGENT: 'codex',
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '200',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
+      },
+      ownerId, io, bridgeTty: false, signalSource,
+      kickoff: '⟦turn-origin:fleet-kickoff nonce:abcdef0123456789⟧\nMUST_REMAIN_UNSUBMITTED',
+      spawnPty: (file, args, options, realSpawn) => {
+        const child = realSpawn(file, args, options);
+        const write = child.write.bind(child);
+        child.write = (data: string) => { writeAttempts.push(data); write(data); };
+        return child;
+      },
+    });
+    try {
+      signalSource.emit('SIGTERM');
+      await done;
+      // Cross the kickoff's own deadline after observing completed teardown.
+      // Any surviving fallback task must cancel rather than write to the child.
+      await sleep(250);
+      expect(writeAttempts).toEqual([]);
+      expect(readFileSync(eventLogPathForOwner(ownerId), 'utf8'))
+        .not.toContain('"kind":"startup-turn-written"');
+    } finally {
+      signalSource.emit('SIGTERM');
+      await done;
+    }
+  });
+
+  it('excludes caller launch state and native homes while preserving explicit fixture inputs', () => {
+    const source = {
+      PATH: '/fixture/bin', TERM: 'xterm-256color',
+      PAPERCUSP_PSU_PTY_DIR: PSU_PTY_DIR,
+      PAPERCUSP_AGENT: 'codex', PAPERCUSP_SID: 'live-owner',
+      PAPERCUSP_ADV_SESSION_ID: '123', PAPERCUSP_PSU_HEADLESS: '1',
+      PAPERCUSP_PSU_HEADLESS_NORMALIZED_LOG: '/live/host.log',
+      [KICKOFF_PROOF_PATH_ENV]: '/live/receipt.json',
+      [KICKOFF_PROOF_TOKEN_ENV]: 'caller-token',
+      CODEX_HOME: '/live/codex', CLAUDE_CONFIG_DIR: '/live/claude',
+      PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '9000',
+    };
+    const env = hermeticEnv({ PAPERCUSP_SID: 'fixture-owner' }, source);
+    expect(env.PATH).toBe(source.PATH);
+    expect(env.TERM).toBe(source.TERM);
+    expect(env.PAPERCUSP_PSU_PTY_DIR).toBe(PSU_PTY_DIR);
+    expect(env.PAPERCUSP_SID).toBe('fixture-owner');
+    expect(env.CODEX_HOME).toBe(join(PSU_PTY_DIR, 'codex-home'));
+    expect(env.CLAUDE_CONFIG_DIR).toBe(join(PSU_PTY_DIR, 'claude-home'));
+    for (const key of Object.keys(source).filter((key) => key.startsWith('PAPERCUSP_'))) {
+      if (key !== 'PAPERCUSP_SID' && key !== 'PAPERCUSP_PSU_PTY_DIR') expect(env).not.toHaveProperty(key);
+    }
+    expect(hermeticEnv({ CODEX_HOME: '/fixture/native', [KICKOFF_PROOF_PATH_ENV]: '/fixture/receipt' }, source))
+      .toMatchObject({ CODEX_HOME: '/fixture/native', [KICKOFF_PROOF_PATH_ENV]: '/fixture/receipt' });
+    expect(source.CODEX_HOME).toBe('/live/codex');
+  });
+
   it('redirects host lifecycle evidence away from the live operator corpus', () => {
     const liveDir = join(homedir(), '.papercusp', 'psu-pty');
     expect(process.env.PAPERCUSP_PSU_PTY_DIR).toBeTruthy();
@@ -100,7 +452,7 @@ describe('Codex startup process evidence (EI-24353430528930250)', () => {
         command: '/bin/bash',
         args: ['-c', `"${codexRuntime}" 1.5 & wait`],
         cwd: root,
-        env: { ...process.env, PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex', TERM: 'xterm-256color' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex', TERM: 'xterm-256color' },
         ownerId,
         io,
         bridgeTty: false,
@@ -127,14 +479,20 @@ describe('Codex startup process evidence (EI-24353430528930250)', () => {
 });
 
 describe('plain launch kickoff turn-start proof', () => {
-  it('preserves and submits a long Codex kickoff when the composer only renders its tail', async () => {
+  it.each([
+    { receiptState: 'empty', receiptAllowed: true, nativePublication: 'immediate' },
+    { receiptState: 'nonempty', receiptAllowed: false, nativePublication: 'immediate' },
+    { receiptState: 'empty', receiptAllowed: true, nativePublication: 'gated' },
+    { receiptState: 'nonempty', receiptAllowed: false, nativePublication: 'gated' },
+  ])('preserves and submits a long Codex kickoff when the composer only renders its tail ($receiptState receipt, $nativePublication native publication)', async ({ receiptAllowed, nativePublication }) => {
     const root = mkdtempSync(join(tmpdir(), 'psu-codex-viewport-'));
     const codexHome = join(root, 'codex-home');
     const nativeFile = join(codexHome, 'sessions', '2026', '09', '26', 'rollout.jsonl');
     const submitFile = join(root, 'submitted.txt');
+    const nativeReleaseFile = join(root, 'publish-native');
     const proofPath = join(root, 'kickoff-proof.json');
     const proofToken = 'd'.repeat(48);
-    writeFileSync(proofPath, '', { mode: 0o600 });
+    writeFileSync(proofPath, receiptAllowed ? '' : 'reserved', { mode: 0o600 });
     chmodSync(proofPath, 0o600);
     const ownerId = 'su-codex-viewport-' + process.pid + '-' + Math.floor(performance.now());
     const sock = socketPathFor(ownerId);
@@ -147,20 +505,25 @@ describe('plain launch kickoff turn-start proof', () => {
     const childCode = [
       "const fs=require('fs'),path=require('path');process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
       "let wire='',composer='',submitted=false,paint;const start='\x1b[200~',end='\x1b[201~';",
-      "process.stdout.write('\x1b[?2004hmodel: GPT-5.6-Sol high\\nReady · GPT-5.6-Sol high · Context 100% left\\n');",
+      "process.stdout.write('\x1b[?2004h\x1b[6nmodel: GPT-5.6-Sol high\\nReady · GPT-5.6-Sol high · Context 100% left\\n');",
       "function repaint(){clearTimeout(paint);paint=setTimeout(()=>process.stdout.write('COMPOSER_ECHO:'+composer.slice(-160)+'\\n'),30);}",
-      "function submit(){if(submitted){setTimeout(()=>process.stdout.write('RESUBMIT_ACK\\n'),75);return;}submitted=true;fs.writeFileSync(process.env.SUBMIT_FILE,composer);fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const timestamp=new Date().toISOString();const rows=[{type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:composer}]}},{type:'event_msg',timestamp,payload:{type:'task_started',turn_id:'viewport-1'}},{type:'event_msg',timestamp,payload:{type:'task_complete',turn_id:'viewport-1'}}];fs.writeFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));setTimeout(()=>process.stdout.write('SUBMITTED\\n'),75);}",
+      "function publishNative(){fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const timestamp=new Date().toISOString();const rows=[{type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:composer}]}},{type:'event_msg',timestamp,payload:{type:'task_started',turn_id:'viewport-1'}},{type:'event_msg',timestamp,payload:{type:'task_complete',turn_id:'viewport-1'}}];fs.writeFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));setTimeout(()=>process.stdout.write('SUBMITTED\\n'),75);}",
+      "function submit(){if(submitted){setTimeout(()=>process.stdout.write('RESUBMIT_ACK\\n'),75);return;}submitted=true;fs.writeFileSync(process.env.SUBMIT_FILE,composer);if(process.env.NATIVE_PUBLICATION==='gated'){const gate=setInterval(()=>{if(fs.existsSync(process.env.NATIVE_RELEASE_FILE)){clearInterval(gate);publishNative();}},5);}else publishNative();}",
       "process.stdin.on('data',d=>{if(d.includes('\x04'))process.exit(0);wire+=d;while(wire){if(wire.startsWith(start)){const at=wire.indexOf(end,start.length);if(at<0)break;composer+=wire.slice(start.length,at);wire=wire.slice(at+end.length);repaint();continue;}if(start.startsWith(wire))break;const next=wire.indexOf(start);const take=next<0?wire.length:next;const text=wire.slice(0,take);wire=wire.slice(take);for(const c of text){if(c==='\\r')submit();else composer+=c;}repaint();}});",
-      'setTimeout(()=>process.exit(0),4000);',
     ].join('');
+    const signalSource = new EventEmitter();
     let done: Promise<number> | undefined;
     try {
       done = hostThroughPty({
         command: execPath, args: ['-e', childCode], cwd: root,
         env: {
-          ...process.env, PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
+          ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
           CODEX_HOME: codexHome, NATIVE_FILE: nativeFile, SUBMIT_FILE: submitFile,
+          NATIVE_PUBLICATION: nativePublication, NATIVE_RELEASE_FILE: nativeReleaseFile,
           [KICKOFF_PROOF_PATH_ENV]: proofPath, [KICKOFF_PROOF_TOKEN_ENV]: proofToken,
+          // This child models transcript persistence, with no provider. Keep
+          // the production quota grace out of its receipt/cleanup ordering.
+          PAPERCUSP_PSU_PTY_KICKOFF_QUOTA_GRACE_MS: '1',
           PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '2000',
           PAPERCUSP_PSU_PTY_KICKOFF_MARKER_ECHO_TIMEOUT_MS: '1000',
           PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',
@@ -173,25 +536,109 @@ describe('plain launch kickoff turn-start proof', () => {
         },
         ownerId, io, bridgeTty: false, kickoff,
         nativePersistenceTimeoutMs: 500,
-        signalSource: new EventEmitter(), onExit: () => undefined,
+        signalSource, onExit: () => undefined,
       });
       await vi.waitFor(() => expect(existsSync(submitFile), captured()).toBe(true), { timeout: 2500 });
       expect(readFileSync(submitFile, 'utf8')).toBe(kickoff);
       expect(captured()).toContain('COMPOSER_ECHO:' + marker);
-      expect(readFileSync(nativeFile, 'utf8')).toContain(marker);
-      await vi.waitFor(() => {
-        const proof = readFileSync(proofPath, 'utf8');
-        expect(proof.length).toBeGreaterThan(0);
-        expect(JSON.parse(proof)).toEqual({
-          token: proofToken, persisted: true, nativeRef: nativeFile, reason: null,
-        });
-      }, { timeout: 1500 });
+      if (nativePublication === 'gated') {
+        // Submission precedes transcript publication. The old immediate read
+        // fails here while the host is live and the fixture home is intact.
+        expect(existsSync(sock)).toBe(true);
+        expect(existsSync(root)).toBe(true);
+        expect(() => readFileSync(nativeFile, 'utf8')).toThrowError(expect.objectContaining({ code: 'ENOENT' }));
+        writeFileSync(nativeReleaseFile, 'publish');
+      }
+      await vi.waitFor(() => expect(readFileSync(nativeFile, 'utf8')).toContain(marker), { timeout: 1500 });
+      if (receiptAllowed) {
+        await vi.waitFor(() => {
+          const proof = readFileSync(proofPath, 'utf8');
+          expect(proof.length).toBeGreaterThan(0);
+          expect(JSON.parse(proof)).toEqual({
+            token: proofToken, persisted: true, nativeRef: nativeFile, reason: null,
+          });
+        }, { timeout: 1500 });
+      } else {
+        await vi.waitFor(() => {
+          const rows = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+            .trim().split('\n').map(line => JSON.parse(line));
+          expect(rows.find(row => row.kind === 'kickoff-proof-receipt-publication-failed'))
+            .toMatchObject({
+              persisted: true,
+              reason: 'kickoff-proof-receipt-publish-failed',
+              errorMessage: 'kickoff-proof placeholder is not an empty 0600 file',
+            });
+        }, { timeout: 1500 });
+        expect(readFileSync(proofPath, 'utf8')).toBe('reserved');
+      }
     } finally {
-      if (existsSync(sock)) await rawInject(sock, '\x04');
+      // Keep the fixture alive until the parent finishes proof assertions;
+      // fixed child lifetimes race the gated transcript publication and cleanup.
+      signalSource.emit('SIGTERM');
       await done?.catch(() => undefined);
       rmSync(root, { recursive: true, force: true });
     }
   }, 7000);
+
+  it.each([true, false])('keeps a staged Codex marker through a Starting repaint (recovers=%s)', async (recovers) => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-codex-staged-starting-'));
+    const nativeFile = join(root, 'codex-home', 'sessions', 'rollout.jsonl');
+    const proofPath = join(root, 'proof.json');
+    const ownerId = `su-staged-starting-${process.pid}-${Math.floor(performance.now())}`;
+    const marker = '⟦turn-origin:session-port nonce:0123456789abcdef⟧';
+    const kickoff = `${marker}\nSTAGED-STARTING-PAYLOAD`;
+    const { captured, io } = fakeIo();
+    const signals = new EventEmitter();
+    writeFileSync(proofPath, '', { mode: 0o600 });
+    const childCode = [
+      "const fs=require('fs'),path=require('path');",
+      "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
+      "let input='',echoed=false,starting=false,submitted=false;",
+      "process.stdout.write('\\x1b[6nmodel: GPT-6.1-Sol xhigh\\nReady · GPT-6.1-Sol xhigh · Context 100% left\\n');",
+      "process.stdin.on('data',d=>{if(starting){process.stdout.write('UNSAFE_WRITE_WHILE_STARTING\\n');return;}input+=d;",
+      "if(!echoed&&input.includes('⟧')){echoed=true;starting=true;process.stdout.write('COMPOSER_ECHO:'+input+'\\nStarting · GPT-6.1-Sol xhigh · Context 100% left\\n');",
+      "if(process.env.RECOVERS==='1')setTimeout(()=>{starting=false;process.stdout.write('Ready · GPT-6.1-Sol xhigh · Context 100% left\\n');},300);return;}",
+      "if(!submitted&&input.includes('STAGED-STARTING-PAYLOAD')&&d.includes('\\r')){submitted=true;fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const at=new Date().toISOString();const rows=[{type:'response_item',timestamp:at,payload:{type:'message',role:'user',content:[{type:'input_text',text:input}]}},{type:'event_msg',timestamp:at,payload:{type:'task_started',turn_id:'staged-1'}},{type:'event_msg',timestamp:at,payload:{type:'task_complete',turn_id:'staged-1'}}];fs.writeFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));process.stdout.write('SUBMITTED_ONCE\\n');}});",
+    ].join('');
+    const startedAt = Date.now();
+    const done = hostThroughPty({
+      command: execPath, args: ['-e', childCode], cwd: root,
+      env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
+        CODEX_HOME: join(root, 'codex-home'), NATIVE_FILE: nativeFile, RECOVERS: recovers ? '1' : '0',
+        [KICKOFF_PROOF_PATH_ENV]: proofPath, [KICKOFF_PROOF_TOKEN_ENV]: 'd'.repeat(48),
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '25', PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '20',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '50', PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '2', PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS: '2000',
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '2000', PAPERCUSP_PSU_PTY_CODEX_LAUNCH_STARTING_RETRIES: '0',
+        PAPERCUSP_PSU_PTY_KICKOFF_QUOTA_GRACE_MS: '100',
+        TERM: 'xterm-256color' },
+      ownerId, io, bridgeTty: false, signalSource: signals, kickoff,
+      nativePersistenceTimeoutMs: 2000,
+    });
+    try {
+      await vi.waitFor(() => expect(captured()).toContain('COMPOSER_ECHO:'), { timeout: 3000 });
+      await vi.waitFor(() => expect(readFileSync(proofPath, 'utf8'), captured()).not.toBe(''), { timeout: 6000 });
+      const proof = JSON.parse(readFileSync(proofPath, 'utf8'));
+      const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      expect(captured()).not.toContain('UNSAFE_WRITE_WHILE_STARTING');
+      if (recovers) {
+        expect(proof, JSON.stringify(events)).toMatchObject({ persisted: true, reason: null });
+        const text = JSON.parse(readFileSync(nativeFile, 'utf8').trim().split('\n')[0]).payload.content[0].text;
+        expect(text.split(marker)).toHaveLength(2);
+        expect(text.split('STAGED-STARTING-PAYLOAD')).toHaveLength(2);
+        expect(events.some(row => row.kind === 'startup-turn-dropped')).toBe(false);
+      } else {
+        expect(proof).toMatchObject({ persisted: false, reason: 'kickoff-not-submitted:codex-startup-still-starting' });
+        expect(Date.now() - startedAt).toBeGreaterThanOrEqual(1900);
+        expect(existsSync(nativeFile)).toBe(false);
+        expect(captured()).not.toContain('SUBMITTED_ONCE');
+      }
+    } finally {
+      signals.emit('SIGTERM');
+      await done;
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
 
   it('passes the Codex model offer by keeping the configured model before seeding the first turn', async () => {
     const root = mkdtempSync(join(tmpdir(), 'psu-codex-model-choice-'));
@@ -222,7 +669,7 @@ describe('plain launch kickoff turn-start proof', () => {
       done = hostThroughPty({
         command: execPath, args: ['-e', childCode], cwd: root,
         env: {
-          ...process.env, PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
+          ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
           PAPERCUSP_PSU_HEADLESS: '1', CODEX_HOME: codexHome,
           NATIVE_FILE: nativeFile, CHOICE_FILE: choiceFile,
           [KICKOFF_PROOF_PATH_ENV]: proofPath, [KICKOFF_PROOF_TOKEN_ENV]: proofToken,
@@ -255,13 +702,15 @@ describe('plain launch kickoff turn-start proof', () => {
       await rawInject(sock, 'QUIT\n');
       expect(await done).toBe(0);
     } finally {
-      await done?.catch(() => undefined);
       if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+      await done?.catch(() => undefined);
       rmSync(root, { recursive: true, force: true });
     }
   }, 12_000);
 
-  it('does not resend a kickoff whose native turn completed before marker proof returned', async () => {
+  // File publication can precede delivery of the child's stdout to the host.
+  // The delayed case keeps that observation gap in the maintained suite.
+  it.each([0, 150])('does not resend a kickoff whose native turn completed before marker proof returned (count output delayed %d ms)', async (outputDelayMs) => {
     const root = mkdtempSync(join(tmpdir(), 'psu-fast-kickoff-'));
     const codexHome = join(root, 'codex-home');
     const nativeFile = join(codexHome, 'sessions', '2026', '09', '23', 'rollout.jsonl');
@@ -271,13 +720,14 @@ describe('plain launch kickoff turn-start proof', () => {
     const marker = '⟦turn-origin:fleet-kickoff nonce:abcdef0123456789⟧';
     const kickoff = `${marker}\nBEGIN_FAST_KICKOFF`;
     const { captured, io } = fakeIo();
+    const signalSource = new EventEmitter();
     const childCode = [
       "const fs=require('fs'),path=require('path');",
       "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
       "let markerEchoed=false;process.stdin.on('data',d=>{if(!markerEchoed&&d.includes('⟧')){markerEchoed=true;echoScheduled=true;process.stdout.write('COMPOSER_ECHO:'+d+'\\n');}});",
-      "let input='',seen=0,echoScheduled=false;process.stdout.write('62% context left\\n');",
-      "process.stdin.on('data',d=>{input+=d;const matches=input.match(/BEGIN_FAST_KICKOFF/g)||[];if(!echoScheduled&&matches.length){echoScheduled=true;const echo=input;setTimeout(()=>process.stdout.write('COMPOSER_ECHO:'+echo+'\\n'),75);}while(seen<matches.length){seen++;if(seen===1){fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const at=new Date().toISOString();const turn='fast-'+seen;const rows=[{type:'response_item',timestamp:at,payload:{type:'message',role:'user',content:[{type:'input_text',text:input}]}},{type:'event_msg',timestamp:at,payload:{type:'task_started',turn_id:turn}},{type:'response_item',timestamp:at,payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'done'}]}},{type:'event_msg',timestamp:at,payload:{type:'task_complete',turn_id:turn}}];fs.appendFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));}fs.appendFileSync(process.env.COUNT_FILE,seen+'\\n');process.stdout.write('KICKOFF_COUNT_'+seen+'\\n');}if(seen>0&&d.includes('\\r'))process.stdout.write('RESUBMIT_ACK\\n');if(input.includes('QUIT'))process.exit(0);});",
-      'setTimeout(()=>process.exit(0),5000);',
+      "let input='',seen=0,echoScheduled=false;process.stdout.write('\\x1b[6nmodel: GPT-6.1-Sol xhigh\\n62% context left\\n');",
+      "const printKickoffCount=seen=>{const emit=()=>process.stdout.write('KICKOFF_COUNT_'+seen+'\\n');const delay=Number(process.env.KICKOFF_COUNT_STDOUT_DELAY_MS);if(delay>0)setTimeout(emit,delay);else emit();};",
+      "process.stdin.on('data',d=>{input+=d;const matches=input.match(/BEGIN_FAST_KICKOFF/g)||[];if(!echoScheduled&&matches.length){echoScheduled=true;const echo=input;setTimeout(()=>process.stdout.write('COMPOSER_ECHO:'+echo+'\\n'),75);}while(seen<matches.length){seen++;if(seen===1){fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const at=new Date().toISOString();const turn='fast-'+seen;const rows=[{type:'response_item',timestamp:at,payload:{type:'message',role:'user',content:[{type:'input_text',text:input}]}},{type:'event_msg',timestamp:at,payload:{type:'task_started',turn_id:turn}},{type:'response_item',timestamp:at,payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'done'}]}},{type:'event_msg',timestamp:at,payload:{type:'task_complete',turn_id:turn}}];fs.appendFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));}fs.appendFileSync(process.env.COUNT_FILE,seen+'\\n');printKickoffCount(seen);}if(seen>0&&d.includes('\\r'))process.stdout.write('RESUBMIT_ACK\\n');if(input.includes('QUIT'))process.exit(0);});",
     ].join('');
     let done;
     try {
@@ -286,12 +736,13 @@ describe('plain launch kickoff turn-start proof', () => {
         args: ['-e', childCode],
         cwd: root,
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'codex',
           CODEX_HOME: codexHome,
           NATIVE_FILE: nativeFile,
           COUNT_FILE: countFile,
+          KICKOFF_COUNT_STDOUT_DELAY_MS: String(outputDelayMs),
           PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLL_MS: '10',
           PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLLS: '1',
           PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',
@@ -308,13 +759,24 @@ describe('plain launch kickoff turn-start proof', () => {
         bridgeTty: false,
         kickoff,
         nativePersistenceTimeoutMs: 2_000,
-        signalSource: new EventEmitter(),
+        signalSource,
         onExit: () => undefined,
       });
 
-      const deadline = Date.now() + 3_000;
-      while (!existsSync(countFile) && Date.now() < deadline) await sleep(10);
-      expect(captured()).toContain('KICKOFF_COUNT_1');
+      await vi.waitFor(() => {
+        expect(existsSync(countFile), captured()).toBe(true);
+        expect(captured()).toContain('KICKOFF_COUNT_1');
+        const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+          .split('\n').filter(Boolean).map(line => JSON.parse(line));
+        expect(events.some(event => event.kind === 'turn-delivered' && event.confirmed === 'native')).toBe(true);
+      }, { timeout: 8000 });
+      const phaseEvidence = JSON.stringify({
+        count: existsSync(countFile) ? readFileSync(countFile, 'utf8').trim() : null,
+        nativePublished: existsSync(nativeFile),
+        output: captured(),
+      });
+      expect(existsSync(countFile), phaseEvidence).toBe(true);
+      expect(captured(), phaseEvidence).toContain('KICKOFF_COUNT_1');
       await sleep(400); // enough for the bounded one-poll retry path to expose a duplicate
       await rawInject(sock, 'QUIT\n');
       expect(await done).toBe(0);
@@ -324,8 +786,8 @@ describe('plain launch kickoff turn-start proof', () => {
       expect(output.indexOf(`COMPOSER_ECHO:${marker}`)).toBeGreaterThanOrEqual(0);
       expect(output.indexOf(`COMPOSER_ECHO:${marker}`)).toBeLessThan(output.indexOf('KICKOFF_COUNT_1'));
     } finally {
+      signalSource.emit('SIGTERM');
       await done?.catch(() => undefined);
-      if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
       rmSync(root, { recursive: true, force: true });
     }
   }, 10_000);
@@ -352,9 +814,15 @@ describe('plain launch kickoff turn-start proof', () => {
     const childCode = [
       "const fs=require('fs'),path=require('path');process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
       "const appendNative=fs.appendFileSync;let padded=false;fs.appendFileSync=(file,data,...args)=>{if(!padded&&file===process.env.NATIVE_FILE&&String(data).includes('task_started')){padded=true;appendNative(file,JSON.stringify({type:'system',payload:{text:'x'.repeat(300*1024)}})+'\\n');}return appendNative(file,data,...args);};",
-      "let input='',pending='',submitted=0,echoed=false;process.stdout.write('62% context left\\n');",
+      "let input='',pending='',submitted=0,echoed=false;process.stdout.write('\\x1b[6nmodel: GPT-6.1-Sol xhigh\\n62% context left\\n');",
       "process.stdin.on('data',d=>{input+=d;pending+=d;if(!echoed&&input.includes('⟧')){echoed=true;process.stdout.write('COMPOSER_ECHO:'+input+'\\n');}",
-      "if(d.includes('\\r')){if(pending.includes('BEGIN_DELAYED_KICKOFF')){submitted++;fs.appendFileSync(process.env.COUNT_FILE,submitted+'\\n');if(submitted===1){fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const ts=new Date().toISOString();fs.writeFileSync(process.env.NATIVE_FILE,JSON.stringify({type:'response_item',timestamp:ts,payload:{type:'message',role:'user',content:[{type:'input_text',text:input}]}})+'\\n');const tick=setInterval(()=>process.stdout.write('MODEL_BUSY\\n'),10);setTimeout(()=>{clearInterval(tick);fs.appendFileSync(process.env.NATIVE_FILE,JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:{type:'task_started',turn_id:'delayed-1'}})+'\\n');process.stdout.write('MODEL_STARTED\\n');},1500);}else process.stdout.write('DUPLICATE_KICKOFF\\n');}else process.stdout.write('RESUBMIT_ACK\\n');pending='';}",
+      "if(d.includes('\\r')){if(pending.includes('BEGIN_DELAYED_KICKOFF')){submitted++;fs.appendFileSync(process.env.COUNT_FILE,submitted+'\\n');if(submitted===1){",
+      "fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const ts=new Date().toISOString();fs.writeFileSync(process.env.NATIVE_FILE,JSON.stringify({type:'response_item',timestamp:ts,payload:{type:'message',role:'user',content:[{type:'input_text',text:input}]}})+'\\n');",
+      "const tick=setInterval(()=>process.stdout.write('MODEL_BUSY\\n'),10);",
+      // Keep the TUI busy after task_started is persisted. The retry must notice
+      // the native start and abort from inside the busy gate without writing.
+      "const startWhenRetryQueued=setInterval(()=>{if(!fs.existsSync(process.env.EVENT_LOG_FILE)||!fs.readFileSync(process.env.EVENT_LOG_FILE,'utf8').includes('launch-kickoff-model-turn-absent'))return;clearInterval(startWhenRetryQueued);fs.appendFileSync(process.env.NATIVE_FILE,JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:{type:'task_started',turn_id:'delayed-1'}})+'\\n');process.stdout.write('MODEL_STARTED\\n');setTimeout(()=>clearInterval(tick),250);},10);",
+      "}else process.stdout.write('DUPLICATE_KICKOFF\\n');}else process.stdout.write('RESUBMIT_ACK\\n');pending='';}",
       "if(input.includes('QUIT'))process.exit(0);});",
       'setTimeout(()=>process.exit(0),8000);',
     ].join('');
@@ -363,8 +831,12 @@ describe('plain launch kickoff turn-start proof', () => {
       done = hostThroughPty({
         command: execPath, args: ['-e', childCode], cwd: root,
         env: {
-          ...process.env, PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
+          ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
           CODEX_HOME: codexHome, NATIVE_FILE: nativeFile, COUNT_FILE: countFile,
+          EVENT_LOG_FILE: eventLogPathForOwner(ownerId),
+          // Native retry ordering is the oracle here; the synthetic child
+          // does not model a provider's delayed quota response.
+          PAPERCUSP_PSU_PTY_KICKOFF_QUOTA_GRACE_MS: '1',
           PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLL_MS: '10',
           PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLLS: '1',
           PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',
@@ -409,7 +881,7 @@ describe('plain launch kickoff turn-start proof', () => {
     const { captured, io } = fakeIo();
     const childCode = [
       "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
-      "let input='',echoed=false;process.stdout.write('62% context left\\n');",
+      "let input='',echoed=false;process.stdout.write('\\x1b[6nmodel: GPT-6.1-Sol xhigh\\n62% context left\\n');",
       "process.stdin.on('data',d=>{input+=d;if(!echoed&&input.includes('⟧')){echoed=true;process.stdout.write('COMPOSER_ECHO:'+input.slice(34)+'\\n');}if(d.includes('\\r')){require('fs').appendFileSync(process.env.SUBMIT_FILE,'submitted\\n');process.stdout.write('SUBMITTED\\n');}if(input.includes('QUIT'))process.exit(0);});",
       'setTimeout(()=>process.exit(0),2000);',
     ].join('');
@@ -420,7 +892,7 @@ describe('plain launch kickoff turn-start proof', () => {
         args: ['-e', childCode],
         cwd: root,
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'codex',
           CODEX_HOME: codexHome,
@@ -453,8 +925,8 @@ describe('plain launch kickoff turn-start proof', () => {
       expect(await done).toBe(0);
       expect(existsSync(submitFile)).toBe(false);
     } finally {
-      await done?.catch(() => undefined);
       if (existsSync(sock)) await rawInject(sock, 'QUIT\\n');
+      await done?.catch(() => undefined);
       rmSync(root, { recursive: true, force: true });
     }
   }, 10_000);
@@ -470,7 +942,7 @@ describe('plain launch kickoff turn-start proof', () => {
     const { captured, io } = fakeIo();
     const childCode = [
       "const fs=require('fs');process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
-      "let input='',echoScheduled=false;process.stdout.write('62% context left\\n');",
+      "let input='',echoScheduled=false;process.stdout.write('\\x1b[6nmodel: GPT-6.1-Sol xhigh\\n62% context left\\n');",
       "process.stdin.on('data',d=>{input+=d;if(!echoScheduled&&input.includes('⟧')){echoScheduled=true;setTimeout(()=>process.stdout.write('COMPOSER_ECHO:'+input+'\\n'),2500);}if(d.includes('\\r')){fs.appendFileSync(process.env.SUBMIT_FILE,'submitted\\n');process.stdout.write('SUBMITTED\\n');}if(input.includes('QUIT'))process.exit(0);});",
       'setTimeout(()=>process.exit(0),7000);',
     ].join('');
@@ -481,7 +953,7 @@ describe('plain launch kickoff turn-start proof', () => {
         args: ['-e', childCode],
         cwd: root,
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'codex',
           CODEX_HOME: codexHome,
@@ -515,8 +987,8 @@ describe('plain launch kickoff turn-start proof', () => {
       await rawInject(sock, 'QUIT\\n');
       expect(await done).toBe(0);
     } finally {
-      await done?.catch(() => undefined);
       if (existsSync(sock)) await rawInject(sock, 'QUIT\\n');
+      await done?.catch(() => undefined);
       rmSync(root, { recursive: true, force: true });
     }
   }, 12_000);
@@ -548,7 +1020,7 @@ describe('Claude launch kickoff bracketed-paste regression (EI-24141825238362808
         args: ['-e', childCode],
         cwd: root,
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'claude',
           TERM: 'xterm-256color',
@@ -575,8 +1047,8 @@ describe('Claude launch kickoff bracketed-paste regression (EI-24141825238362808
       await controlInject(sock, 'raw', '\x04');
       expect(await done).toBe(0);
     } finally {
-      await done?.catch(() => undefined);
       if (existsSync(sock)) await controlInject(sock, 'raw', '\x04');
+      await done?.catch(() => undefined);
       rmSync(root, { recursive: true, force: true });
     }
   }, 15_000);
@@ -606,7 +1078,7 @@ describe('Codex resumed and forked quota history (EI-22609012864215464, EI-22800
       args: ['-e', childCode, subcommand, '11111111-1111-4111-8111-111111111111'],
       cwd: '/tmp',
       env: {
-        ...process.env,
+        ...hermeticEnv(),
         PAPERCUSP_SID: ownerId,
         PAPERCUSP_AGENT: 'codex',
         PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
@@ -659,7 +1131,7 @@ describe('Codex resumed and forked quota history (EI-22609012864215464, EI-22800
 function rawInject(sock: string, data: string): Promise<void> {
   return new Promise((resolve) => {
     const c = net.connect(sock, () => {
-      c.write(encodeControl({ mode: 'raw', data }));
+      c.write(encodeControl({ mode: 'raw', data, ownerId: basename(sock, '.sock') }));
       c.end();
     });
     c.on('data', () => {});
@@ -671,7 +1143,7 @@ function rawInject(sock: string, data: string): Promise<void> {
 function controlInject(sock: string, mode: 'turn' | 'raw' | 'osc' | 'reset' | 'recycle', data: string): Promise<void> {
   return new Promise((resolve) => {
     const c = net.connect(sock, () => {
-      c.write(encodeControl({ mode, data }));
+      c.write(encodeControl({ mode, data, ownerId: basename(sock, '.sock') }));
       c.end();
     });
     c.on('data', () => {});
@@ -951,7 +1423,7 @@ describe('session-port managed seed + native persistence helpers', () => {
       args: ['-e', childCode],
       cwd: '/tmp',
       env: {
-        ...process.env,
+        ...hermeticEnv(),
         PAPERCUSP_SID: ownerId,
         PAPERCUSP_AGENT: 'codex',
         PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '260',
@@ -985,6 +1457,9 @@ describe('session-port managed seed + native persistence helpers', () => {
       }, { timeout: 8000 });
       const frame = hostEvents().find((e) => e.kind === 'backend-session-frame-observed');
       expect(frame?.msAfterTuiStart).toBeGreaterThanOrEqual(1_000);
+      // WI-10004943 control: this frame arrived on its own, before any machine
+      // write, so it must not be attributable to one.
+      expect(frame).toHaveProperty('msSinceMachineTurnWriteStarted', null);
       expect(written).toMatchObject({ label: 'launch kickoff', authorizedBy: 'backend-session-frame' });
       expect(written.msSinceBackendFirstFrame).toBeGreaterThanOrEqual(0);
       expect(Date.parse(written.ts)).toBeGreaterThanOrEqual(Date.parse(frame.ts));
@@ -994,17 +1469,372 @@ describe('session-port managed seed + native persistence helpers', () => {
     }
   }, 20_000);
 
+  // WI-10004919: Codex v0.159.3 held its footer at `Starting` (MCP servers
+  // booting) for 86.2s; the 75s backend-frame budget dropped the kickoff 11s
+  // before the Ready frame and the resolver idled at its prompt. Scaled down:
+  // budget = 260ms x 5 = 1.3s from the probe, Ready at ~4.1s. The margin is
+  // wide on purpose: with Ready at ~2.1s the host sometimes observed the TUI
+  // start late enough that Ready beat the budget, so no extension was needed
+  // and the test failed on a correct run (measured 2026-10-01, WI-10004919).
+  it('keeps waiting past the frame budget while the Codex footer still reads Starting', async () => {
+    const ownerId = `su-codex-starting-itest-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const marker = '⟦turn-origin:fleet-kickoff nonce:0123456789abcdef⟧';
+    const kickoff = marker + '\nKICKOFF-AFTER-STARTING';
+    const { captured, io } = fakeIo();
+    const childCode =
+      "process.stdout.write('psu: launcher banner\\n');" +
+      "process.stdin.setEncoding('utf8');let swallowing=false;let b='';" +
+      "process.stdin.on('data',d=>{if(swallowing){process.stdout.write('SWALLOWED:'+JSON.stringify(d)+'\\n');return;}" +
+      "b+=d;let i;while((i=b.search(/[\\r\\n]/))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
+      "if(!line)continue;if(line==='QUIT')process.exit(0);process.stdout.write('ECHO:'+line+'\\n');}});" +
+      "setTimeout(()=>{swallowing=true;process.stdout.write('\\x1b[6n');" +
+      "setTimeout(()=>process.stdout.write('\\x1b[1;1H\\u2502 >_ OpenAI Codex (v0.159.3) \\u2502\\n\\u203a Ask Codex to do anything\\n" +
+      "\\x1b[23;3HStarting \\u00b7 GPT-6.1-Sol xhigh \\u00b7 Context 100% left'),50);" +
+      "setTimeout(()=>{swallowing=false;process.stdout.write('\\x1b[23;3HReady \\u00b7 GPT-6.1-Sol xhigh \\u00b7 Context 100% left');},4000);},100);" +
+      'setTimeout(()=>process.exit(0),25000);';
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', childCode],
+      cwd: '/tmp',
+      env: {
+        ...hermeticEnv(),
+        PAPERCUSP_SID: ownerId,
+        PAPERCUSP_AGENT: 'codex',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '260',
+        PAPERCUSP_PSU_PTY_KICKOFF_MARKER_ECHO_TIMEOUT_MS: '8000',
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
+        PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '25',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+        TERM: 'xterm-256color',
+      },
+      ownerId,
+      io,
+      bridgeTty: false,
+      signalSource: new EventEmitter(),
+      kickoff,
+      onExit: () => undefined,
+    });
+    try {
+      await vi.waitFor(() => expect(captured()).toContain('ECHO:KICKOFF-AFTER-STARTING'), { timeout: 14000 });
+      expect(captured()).not.toContain('SWALLOWED:');
+      const hostEvents = () =>
+        readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line));
+      const written = await vi.waitFor(() => {
+        const row = hostEvents().find((e) => e.kind === 'startup-turn-written');
+        expect(row).toBeDefined();
+        return row;
+      }, { timeout: 8000 });
+      expect(written).toMatchObject({ label: 'launch kickoff', authorizedBy: 'backend-session-frame' });
+      const extended = hostEvents().filter((e) => e.kind === 'launch-kickoff-backend-frame-wait-extended');
+      expect(extended).toHaveLength(1);
+      expect(extended[0]).toMatchObject({ reason: 'codex-footer-starting' });
+      expect(extended[0].elapsedMs).toBeGreaterThanOrEqual(1_300);
+      expect(hostEvents().some((e) => e.kind === 'startup-turn-dropped')).toBe(false);
+      expect(hostEvents().some((e) => e.kind === 'launch-kickoff-backend-frame-timeout')).toBe(false);
+    } finally {
+      if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+      await done;
+    }
+  }, 35_000);
+
+  // WI-10004943 (d): the ordinary kickoff budget used to DROP a kickoff whose Codex
+  // footer still read `Starting` (`codex-startup-still-starting`), discarding the
+  // session's first turn. Production footers read `Starting` for 10-20 minutes and
+  // then painted the frame. The kickoff must be HELD for the frame up to a ceiling.
+  // `readyAtMs` may also be a JS expression string, evaluated inside the child.
+  const codexStartingChild = (readyAtMs: number | string | null, exitAtMs: number) =>
+    "process.stdout.write('psu: launcher banner\\n');" +
+    "process.stdin.setEncoding('utf8');let swallowing=false;let b='';" +
+    "process.stdin.on('data',d=>{if(swallowing){process.stdout.write('SWALLOWED:'+JSON.stringify(d)+'\\n');return;}" +
+    "b+=d;let i;while((i=b.search(/[\\r\\n]/))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
+    "if(!line)continue;if(line==='QUIT')process.exit(0);process.stdout.write('ECHO:'+line+'\\n');}});" +
+    "setTimeout(()=>{swallowing=true;process.stdout.write('\\x1b[6n');" +
+    "setTimeout(()=>process.stdout.write('\\x1b[1;1H\\u2502 >_ OpenAI Codex (v0.159.3) \\u2502\\n\\u2502 model: GPT-6.1-Sol xhigh /model to change \\u2502\\n\\u203a Ask Codex to do anything\\n" +
+    "\\x1b[23;3HStarting \\u00b7 GPT-6.1-Sol xhigh \\u00b7 Context 100% left'),50);" +
+    (readyAtMs === null
+      ? ''
+      : "setTimeout(()=>{swallowing=false;process.stdout.write('\\x1b[23;3HReady \\u00b7 GPT-6.1-Sol xhigh \\u00b7 Context 100% left');}," +
+        readyAtMs + ');') +
+    '},100);' +
+    `setTimeout(()=>process.exit(0),${exitAtMs});`;
+  const runCodexStartingKickoff = (name: string, childCode: string, env: Record<string, string>) => {
+    const ownerId = `su-codex-${name}-itest-${process.pid}-${Math.floor(performance.now())}`;
+    const { captured, io } = fakeIo();
+    const signalSource = new EventEmitter();
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', childCode],
+      cwd: '/tmp',
+      env: {
+        ...hermeticEnv(),
+        PAPERCUSP_SID: ownerId,
+        PAPERCUSP_AGENT: 'codex',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '260',
+        PAPERCUSP_PSU_PTY_KICKOFF_MARKER_ECHO_TIMEOUT_MS: '8000',
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
+        PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '25',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+        // These cases exercise the (d) hold, which a retryable launch reaches
+        // only on its last attempt (WI-10004943); the fresh-child case opts in.
+        PAPERCUSP_PSU_PTY_CODEX_LAUNCH_STARTING_RETRIES: '0',
+        TERM: 'xterm-256color',
+        ...env,
+      },
+      ownerId,
+      io,
+      bridgeTty: false,
+      signalSource,
+      kickoff: '⟦turn-origin:fleet-kickoff nonce:0123456789abcdef⟧\nKICKOFF-HELD',
+      onExit: () => undefined,
+    });
+    const hostEvents = (): Array<Record<string, unknown>> => {
+      const path = eventLogPathForOwner(ownerId);
+      if (!existsSync(path)) return [];
+      return readFileSync(path, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    };
+    return { ownerId, sock: socketPathFor(ownerId), captured, done, hostEvents, signalSource };
+  };
+
+  it('holds a fresh Codex kickoff past its budget while the footer reads Starting, then delivers on the frame', async () => {
+    const run = runCodexStartingKickoff('starting-hold', codexStartingChild(4000, 25_000), {
+      PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '2500',
+      PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS: '15000',
+    });
+    try {
+      await vi.waitFor(() => expect(run.captured()).toContain('ECHO:KICKOFF-HELD'), { timeout: 14000 });
+      expect(run.captured()).not.toContain('SWALLOWED:');
+      const held = run.hostEvents().filter((e) => e.kind === 'kickoff-held-for-codex-frame');
+      expect(held).toHaveLength(1);
+      expect(held[0]).toMatchObject({ label: 'launch kickoff', budgetMs: 2500, holdCeilingMs: 15000 });
+      expect(held[0].elapsedMs as number).toBeGreaterThanOrEqual(2500);
+      expect(run.hostEvents().find((e) => e.kind === 'kickoff-codex-frame-hold-ended'))
+        .toMatchObject({ label: 'launch kickoff', outcome: 'frame-observed' });
+      const written = await vi.waitFor(() => {
+        const row = run.hostEvents().find((e) => e.kind === 'startup-turn-written');
+        expect(row).toBeDefined();
+        return row;
+      }, { timeout: 8000 });
+      expect(written).toMatchObject({ label: 'launch kickoff', authorizedBy: 'backend-session-frame' });
+      expect(run.hostEvents().some((e) => e.kind === 'startup-turn-dropped')).toBe(false);
+    } finally {
+      if (existsSync(run.sock)) await rawInject(run.sock, 'QUIT\n');
+      await run.done;
+    }
+  }, 35_000);
+
+  it('drops a held Codex kickoff at the hold ceiling, without typing into the Starting composer', async () => {
+    const stderrWrite = vi.spyOn(process.stderr, 'write');
+    const run = runCodexStartingKickoff('starting-ceiling', codexStartingChild(null, 9000), {
+      PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '1000',
+      PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS: '3000',
+    });
+    try {
+      const dropped = await vi.waitFor(() => {
+        const row = run.hostEvents().find((e) => e.kind === 'startup-turn-dropped');
+        expect(row).toBeDefined();
+        return row;
+      }, { timeout: 8000 });
+      expect(dropped).toMatchObject({ label: 'launch kickoff', reason: 'codex-startup-still-starting' });
+      expect(run.hostEvents().filter((e) => e.kind === 'kickoff-held-for-codex-frame')).toHaveLength(1);
+      const ended = run.hostEvents().find((e) => e.kind === 'kickoff-codex-frame-hold-ended');
+      expect(ended).toMatchObject({ outcome: 'ceiling-still-starting' });
+      expect(ended?.heldMs as number).toBeGreaterThanOrEqual(1500);
+      expect(run.captured()).not.toContain('SWALLOWED:');
+      expect(run.captured()).not.toContain('ECHO:KICKOFF-HELD');
+      // Positive control for the fresh-child case below, which asserts this
+      // line's ABSENCE through the same spy: a terminal drop must print it.
+      const printed = stderrWrite.mock.calls.map((call) => String(call[0]));
+      expect(printed.some((line) => line.includes(`launch kickoff DROPPED for ${run.ownerId} `))).toBe(true);
+    } finally {
+      stderrWrite.mockRestore();
+      if (existsSync(run.sock)) await rawInject(run.sock, 'QUIT\n');
+      await run.done;
+    }
+  }, 20_000);
+
+  it('ends a held Codex kickoff when the host tears down instead of polling until the ceiling', async () => {
+    const run = runCodexStartingKickoff('starting-host-end', codexStartingChild(null, 25_000), {
+      PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '1000',
+      PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS: '600000',
+    });
+    try {
+      await vi.waitFor(() => expect(run.hostEvents().some((e) => e.kind === 'kickoff-held-for-codex-frame'))
+        .toBe(true), { timeout: 8000 });
+      run.signalSource.emit('SIGTERM');
+      await run.done;
+      const ended = await vi.waitFor(() => {
+        const row = run.hostEvents().find((e) => e.kind === 'kickoff-codex-frame-hold-ended');
+        expect(row).toBeDefined();
+        return row;
+      }, { timeout: 3000 });
+      expect(ended).toMatchObject({ label: 'launch kickoff', outcome: 'host-ended' });
+      expect(run.hostEvents().some((e) => e.kind === 'startup-turn-dropped')).toBe(false);
+    } finally {
+      run.signalSource.emit('SIGTERM');
+      await run.done;
+    }
+  }, 15_000);
+
+  // WI-10004943: in 4 of 4 production cases a Codex footer read `Starting` for
+  // 10-20 minutes and the session frame then appeared 6-18s before a `turn inject`
+  // was confirmed. Either Codex became ready on its own (hung MCP boot) or the
+  // typed input provoked the repaint (a stale footer). The host computed the facts
+  // that decide this but did not record them. This child repaints `Ready` ONLY
+  // when input arrives, so the record must show the write began before the frame,
+  // with the footer still reading `Starting`.
+  // WI-10004943: the (d) hold rescued 0 of 3 stuck launches in production (all still
+  // `Starting` at the ceiling), while a fresh child boots in seconds. A plain fresh
+  // Codex launch whose child is still `Starting` after the stuck threshold gets a
+  // fresh child and the same kickoff, without printing the parsed DROPPED receipt.
+  it('replaces a fresh Codex launch child stuck at Starting and delivers the kickoff on the fresh child', async () => {
+    const mark = join(tmpdir(), `codex-stuck-once-${process.pid}-${Math.floor(performance.now())}`);
+    const markLit = JSON.stringify(mark);
+    // The first child marks the file and never leaves `Starting`; its successor
+    // paints Ready shortly after it boots.
+    const childCode =
+      `const __first=!require('fs').existsSync(${markLit});` +
+      `if(__first)require('fs').writeFileSync(${markLit},'1');` +
+      codexStartingChild('(__first?1e9:300)', 20_000);
+    const stderrWrite = vi.spyOn(process.stderr, 'write');
+    const run = runCodexStartingKickoff('starting-fresh-child', childCode, {
+      PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '8000',
+      PAPERCUSP_PSU_PTY_CODEX_CARRY_STARTING_STUCK_MS: '1500',
+      PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS: '15000',
+      PAPERCUSP_PSU_PTY_CODEX_LAUNCH_STARTING_RETRIES: '1',
+    });
+    try {
+      await vi.waitFor(() => expect(run.captured()).toContain('ECHO:KICKOFF-HELD'), { timeout: 20_000 });
+      expect(run.captured()).not.toContain('SWALLOWED:');
+      const events = run.hostEvents();
+      expect(events.find((e) => e.kind === 'codex-starting-stuck-early-drop'))
+        .toMatchObject({ label: 'launch kickoff', stuckMs: 1500 });
+      const dropped = events.filter((e) => e.kind === 'startup-turn-dropped');
+      expect(dropped).toHaveLength(1);
+      expect(dropped[0]).toMatchObject({
+        label: 'launch kickoff',
+        reason: 'codex-startup-still-starting',
+        earlyStuck: true,
+      });
+      expect(events.find((e) => e.kind === 'launch-kickoff-fresh-child-retry'))
+        .toMatchObject({ label: 'launch kickoff', reason: 'codex-startup-still-starting', attempt: 1, maxRetries: 1 });
+      expect(events.find((e) => e.kind === 'respawned'))
+        .toMatchObject({ mode: 'launch-fresh-child', firstPrompt: false });
+      expect(events.some((e) => e.kind === 'launch-kickoff-fresh-child-failed')).toBe(false);
+      expect(events.some((e) => e.kind === 'host-code-adopting')).toBe(false);
+      const written = await vi.waitFor(() => {
+        const row = run.hostEvents().find((e) => e.kind === 'startup-turn-written');
+        expect(row).toBeDefined();
+        return row;
+      }, { timeout: 8000 });
+      expect(written).toMatchObject({ label: 'launch kickoff' });
+      // The acceptance grader retires a judge on this line; the retried launch
+      // above did deliver, so it must never have been printed for this host.
+      // A prior host can finish an asynchronous drop after its child exits;
+      // the process-wide stderr spy also captures that unrelated receipt.
+      const printed = stderrWrite.mock.calls.map((call) => String(call[0]));
+      expect(printed.some((line) => line.includes(`launch kickoff DROPPED for ${run.ownerId} `))).toBe(false);
+    } finally {
+      stderrWrite.mockRestore();
+      if (existsSync(run.sock)) await rawInject(run.sock, 'QUIT\n');
+      await run.done;
+      rmSync(mark, { force: true });
+    }
+  }, 45_000);
+
+  it('records the write-time footer and the write-to-frame gap for a Codex turn inject', async () => {
+    const ownerId = `su-codex-provoked-frame-itest-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const { captured, io } = fakeIo();
+    const childCode =
+      "process.stdout.write('psu: launcher banner\\n');" +
+      "process.stdin.setEncoding('utf8');let ready=false;let b='';" +
+      "process.stdin.on('data',d=>{" +
+      "if(!ready&&String(d).includes('PROVOKE')){ready=true;" +
+      "process.stdout.write('\\x1b[23;3HReady \\u00b7 GPT-6.1-Sol xhigh \\u00b7 Context 100% left');}" +
+      "b+=d;let i;while((i=b.search(/[\\r\\n]/))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
+      "if(!line)continue;if(line.includes('QUIT'))process.exit(0);process.stdout.write('ECHO:'+line+'\\n');}});" +
+      "setTimeout(()=>{process.stdout.write('\\x1b[6n');" +
+      "setTimeout(()=>process.stdout.write('\\x1b[1;1H\\u2502 >_ OpenAI Codex (v0.159.3) \\u2502\\n\\u203a Ask Codex to do anything\\n" +
+      "\\x1b[23;3HStarting \\u00b7 GPT-6.1-Sol xhigh \\u00b7 Context 100% left'),50);},100);" +
+      'setTimeout(()=>process.exit(0),20000);';
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', childCode],
+      cwd: '/tmp',
+      env: {
+        ...hermeticEnv(),
+        PAPERCUSP_SID: ownerId,
+        PAPERCUSP_AGENT: 'codex',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '260',
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
+        PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '25',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+        TERM: 'xterm-256color',
+      },
+      ownerId,
+      io,
+      bridgeTty: false,
+      signalSource: new EventEmitter(),
+      onExit: () => undefined,
+    });
+    try {
+      const hostEvents = () =>
+        existsSync(eventLogPathForOwner(ownerId))
+          ? readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+            .split('\n')
+            .filter(Boolean)
+            .map((line) => JSON.parse(line))
+          : [];
+      await vi.waitFor(() => {
+        expect(existsSync(sock)).toBe(true);
+        expect(hostEvents().some((e) => e.kind === 'backend-tui-start-observed')).toBe(true);
+        expect(captured()).toContain('Starting');
+      }, { timeout: 8000 });
+      // Calibration: the footer alone is not a session frame.
+      expect(hostEvents().some((e) => e.kind === 'backend-session-frame-observed')).toBe(false);
+      await controlInject(sock, 'turn', 'PROVOKE-TURN');
+      await vi.waitFor(() => expect(captured()).toContain('ECHO:PROVOKE-TURN'), { timeout: 8000 });
+      const delivered = await vi.waitFor(() => {
+        const row = hostEvents().find((e) => e.kind === 'turn-delivered' && e.label === 'turn inject');
+        expect(row).toBeDefined();
+        return row;
+      }, { timeout: 8000 });
+      const frame = hostEvents().find((e) => e.kind === 'backend-session-frame-observed');
+      expect(frame).toBeDefined();
+      expect(delivered.write).toMatchObject({
+        codexFooterAtWrite: 'starting',
+        msSinceBackendFirstFrame: null,
+      });
+      const writeStartedAt = Date.parse(delivered.write.writeStartedAt);
+      expect(Number.isFinite(writeStartedAt)).toBe(true);
+      expect(writeStartedAt).toBeLessThanOrEqual(Date.parse(frame.ts));
+      expect(frame.msSinceMachineTurnWriteStarted).toBeGreaterThanOrEqual(0);
+      expect(frame.msSinceMachineTurnWriteStarted).toBeLessThan(5_000);
+    } finally {
+      if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+      await done;
+    }
+  }, 30_000);
+
   it('waits for a Codex Ready footer before sending a resumed launch kickoff', async () => {
     const ownerId = 'su-codex-resume-ready-itest-' + process.pid + '-' + Math.floor(performance.now());
     const sock = socketPathFor(ownerId);
+    const nativeRoot = mkdtempSync(join(tmpdir(), 'psu-resume-ready-'));
     const { captured, io } = fakeIo();
     const childCode = [
       "process.stdin.setEncoding('utf8');let swallowing=true,b='';",
-      "process.stdin.on('data',d=>{if(String(d).includes('QUIT'))process.exit(0);if(swallowing){process.stdout.write('SWALLOWED:'+JSON.stringify(d)+'\\n');return;}b+=d;let i;while((i=b.search(/[\\r\\n]/))>=0){const line=b.slice(0,i);b=b.slice(i+1);if(!line)continue;process.stdout.write('ECHO:'+line+'\\n');}});",
+      "process.stdin.on('data',d=>{if(String(d).includes('QUIT'))process.exit(0);if(String(d).includes('FIXTURE_READY')){swallowing=false;process.stdout.write('\\x1b[23;3H› Ask Codex to do anything   Ready · GPT-5.6-Sol high · Context 100% left\\n');return;}if(swallowing){process.stdout.write('SWALLOWED:'+JSON.stringify(d)+'\\n');return;}b+=d;let i;while((i=b.search(/[\\r\\n]/))>=0){const line=b.slice(0,i);b=b.slice(i+1);if(!line)continue;process.stdout.write('ECHO:'+line+'\\n');}});",
       "process.stdout.write('psu: launcher banner\\n');",
-      "setTimeout(()=>{process.stdout.write('\\x1b[6n');setTimeout(()=>process.stdout.write('\\x1b[1;1H│ >_ OpenAI Codex (v0.156.1) │\\n│ model: GPT-5.6-Sol high /model to change │\\n› Ask Codex to do anything   Starting · GPT-5.6-Sol high · Context 100% left\\n'),50);},100);",
-      "setTimeout(()=>{swallowing=false;process.stdout.write('\\x1b[23;3H› Ask Codex to do anything   Ready · GPT-5.6-Sol high · Context 100% left\\n');},1200);",
-      'setTimeout(()=>process.exit(0),6000);',
+      "process.stdout.write('\\x1b[6n\\x1b[1;1H│ >_ OpenAI Codex (v0.156.1) │\\n│ model: GPT-5.6-Sol high /model to change │\\n› Ask Codex to do anything   Starting · GPT-5.6-Sol high · Context 100% left\\n');",
+      // The host owns teardown. A fixed child lifetime can end between the
+      // kickoff text and submit CR, so readiness must be proved before QUIT.
     ].join('');
     let done: Promise<number> | undefined;
     try {
@@ -1013,13 +1843,16 @@ describe('session-port managed seed + native persistence helpers', () => {
         args: ['-e', childCode, 'resume'],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
+          CODEX_HOME: nativeRoot,
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'codex',
           PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '3000',
           PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '260',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
           PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '25',
+          PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '25',
+          PAPERCUSP_PSU_PTY_CODEX_RESUBMIT_CR_MS: '25',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
           TERM: 'xterm-256color',
@@ -1031,6 +1864,10 @@ describe('session-port managed seed + native persistence helpers', () => {
         kickoff: 'RESUME-KICKOFF-AFTER-READY',
         onExit: () => undefined,
       });
+      await vi.waitFor(() => expect(captured()).toContain('Starting'), { timeout: 5_000 });
+      expect(captured()).not.toContain('RESUME-KICKOFF-AFTER-READY');
+      const readyReleasedAt = Date.now();
+      await rawInject(sock, 'FIXTURE_READY\n');
       await vi.waitFor(() => expect(captured()).toContain('ECHO:RESUME-KICKOFF-AFTER-READY'), { timeout: 5_000 });
       expect(captured()).not.toContain('SWALLOWED:');
       const written = await vi.waitFor(() => {
@@ -1047,11 +1884,13 @@ describe('session-port managed seed + native persistence helpers', () => {
         authorizedBy: 'startup-ready-marker',
         promptReady: false,
         startupReady: true,
+        codexFooterAtWrite: 'ready',
       });
-      expect(written.msSinceBackendFirstFrame).toBeGreaterThanOrEqual(900);
+      expect(Date.parse(written.ts)).toBeGreaterThanOrEqual(readyReleasedAt);
     } finally {
       if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
       await done?.catch(() => undefined);
+      rmSync(nativeRoot, { recursive: true, force: true });
     }
   }, 8_000);
 
@@ -1073,7 +1912,7 @@ describe('session-port managed seed + native persistence helpers', () => {
         args: ['-e', childCode, 'resume'],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'codex',
           PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '700',
@@ -1121,7 +1960,7 @@ describe('session-port managed seed + native persistence helpers', () => {
     const done = hostThroughPty({
       command: execPath, args: ['-e', childCode], cwd: '/tmp',
       env: {
-        ...process.env, PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude',
+        ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude',
         PAPERCUSP_PSU_HEADLESS: '1', TERM: 'xterm-256color',
         PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
         PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
@@ -1148,7 +1987,7 @@ describe('session-port managed seed + native persistence helpers', () => {
     const done = hostThroughPty({
       command: execPath, args: ['-e', childCode], cwd: '/tmp',
       env: {
-        ...process.env, PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude',
+        ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude',
         PAPERCUSP_ROLE: 'judge', PAPERCUSP_PSU_HEADLESS: '1', TERM: 'xterm-256color',
         PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
         PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
@@ -1170,6 +2009,53 @@ describe('session-port managed seed + native persistence helpers', () => {
     }
   }, 15_000);
 
+  it('waits for the /mcp local-command turn to settle before a fresh headless Claude kickoff', async () => {
+    const ownerId = `su-role-mcp-settle-itest-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const { captured, io } = fakeIo();
+    const frame = '\n❯\u00a0\x1b[2mTry\x1b[7G"how\x1b[12Gdoes\x1b[17Gtooldef\x1b[25Gwork?"\x1b[22m\n';
+    const childCode =
+      `process.stdout.write(${JSON.stringify(frame)});` +
+      "process.stdin.setEncoding('utf8');let input='',mcp=false;" +
+      "process.stdin.on('data',d=>{input+=d;if(!mcp&&/\\/mcp[\\r\\n]/.test(input)){mcp=true;process.stdout.write('Reconnected to papercusp.\\n');setTimeout(()=>process.stdout.write('MCP_COMMAND_SETTLED\\n\\n❯\\n'),250);}if(input.includes('BEGIN_ROLE_KICKOFF')){process.stdout.write('KICKOFF_RECEIVED\\n');setTimeout(()=>process.exit(0),50);}});" +
+      'setTimeout(()=>process.exit(2),10000);';
+    const done = hostThroughPty({
+      command: execPath, args: ['-e', childCode], cwd: '/tmp',
+      env: {
+        ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude',
+        PAPERCUSP_ROLE: 'judge', PAPERCUSP_PSU_HEADLESS: '1', TERM: 'xterm-256color',
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '300',
+        PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '50',
+      },
+      ownerId, io, bridgeTty: false, kickoff: 'BEGIN_ROLE_KICKOFF',
+      mcpReconnectMacro: async ({ write, readTap }: { write: (bytes: string) => void; readTap: () => string }) => {
+        write('/mcp');
+        write('\\r');
+        const deadline = Date.now() + 1_000;
+        while (!readTap().includes('Reconnected to papercusp.') && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        return readTap().includes('Reconnected to papercusp.')
+          ? { ok: true, step: 'direct-reconnected', detail: 'Claude /mcp confirmed this server reconnected' }
+          : { ok: false, step: 'await-connected', detail: 'reconnect output did not arrive' };
+      },
+      signalSource: new EventEmitter(), onExit: () => undefined,
+    });
+    try {
+      const exitCode = await done;
+      const output = captured();
+      expect(output).toContain('Reconnected to papercusp.');
+      expect(output).toContain('MCP_COMMAND_SETTLED');
+      expect(output).toContain('KICKOFF_RECEIVED');
+      expect(output.indexOf('MCP_COMMAND_SETTLED')).toBeLessThan(output.indexOf('KICKOFF_RECEIVED'));
+      expect(exitCode).toBe(0);
+      expect(readFileSync(eventLogPathForOwner(ownerId), 'utf8')).toContain('launch-role-mcp-ready');
+    } finally {
+      if (existsSync(sock)) await rawInject(sock, '\x04');
+    }
+  }, 15_000);
+
   it('auto-advances the headless Claude theme and Security notes prompts exactly once', async () => {
     const ownerId = `su-headless-onboarding-itest-${process.pid}-${Math.floor(performance.now())}`;
     const sock = socketPathFor(ownerId);
@@ -1184,11 +2070,12 @@ describe('session-port managed seed + native persistence helpers', () => {
       args: ['-e', childCode],
       cwd: '/tmp',
       env: {
-        ...process.env,
+        ...hermeticEnv(),
         PAPERCUSP_SID: ownerId,
         PAPERCUSP_AGENT: 'claude',
         PAPERCUSP_PSU_HEADLESS: '1',
-        PAPERCUSP_PSU_HEADLESS_ONBOARDING_STARTUP_MS: '1000',
+        // Exercise the production onboarding contract. Expiry is covered with
+        // an injected clock in the state-machine unit tests.
         PAPERCUSP_FLEET_BG: '',
         PAPERCUSP_FLEET_FG: '',
         PAPERCUSP_FLEET_CURSOR: '',
@@ -1200,13 +2087,18 @@ describe('session-port managed seed + native persistence helpers', () => {
       onExit: () => {},
     });
 
-    const deadline = Date.now() + 5_000;
-    while (!captured().includes('ONBOARDING_READY') && Date.now() < deadline) await sleep(10);
-    expect(captured()).toContain('ONBOARDING_READY');
-    expect((captured().match(/AUTO_CR_1/g) || []).length).toBe(1);
-    expect((captured().match(/AUTO_CR_2/g) || []).length).toBe(1);
-    expect(await done).toBe(0);
-    expect(existsSync(sock)).toBe(false);
+    try {
+      const deadline = Date.now() + 5_000;
+      while (!captured().includes('ONBOARDING_READY') && Date.now() < deadline) await sleep(10);
+      expect(captured()).toContain('ONBOARDING_READY');
+      expect((captured().match(/AUTO_CR_1/g) || []).length).toBe(1);
+      expect((captured().match(/AUTO_CR_2/g) || []).length).toBe(1);
+      expect(await done).toBe(0);
+      expect(existsSync(sock)).toBe(false);
+    } finally {
+      if (existsSync(sock)) await rawInject(sock, '\x04');
+      await done.catch(() => undefined);
+    }
   }, 10_000);
 
   it('signals the forkpty process group and retains a direct-child fallback', () => {
@@ -1266,7 +2158,7 @@ describe('session-port managed seed + native persistence helpers', () => {
       mkdirSync(codexDir, { recursive: true });
       const codexFile = join(codexDir, 'rollout.jsonl');
       const codexSinceMs = Date.now();
-      writeFileSync(codexFile, `${JSON.stringify({ role: 'user', text: marker, timestamp: new Date(codexSinceMs).toISOString() })}\n`);
+      writeFileSync(codexFile, `${JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: marker }] }, timestamp: new Date(codexSinceMs).toISOString() })}\n`);
       expect(findNativeTranscriptMarker({
         agent: 'codex', env: { CODEX_HOME: join(home, 'codex-target') }, marker, sinceMs: codexSinceMs, home,
       })).toBe(codexFile);
@@ -1275,7 +2167,7 @@ describe('session-port managed seed + native persistence helpers', () => {
       mkdirSync(ompDir, { recursive: true });
       const ompFile = join(ompDir, 'thread.jsonl');
       const ompSinceMs = Date.now();
-      writeFileSync(ompFile, `${JSON.stringify({ type: 'message', text: marker, timestamp: new Date(ompSinceMs).toISOString() })}\n`);
+      writeFileSync(ompFile, `${JSON.stringify({ type: 'message', role: 'user', content: marker, timestamp: new Date(ompSinceMs).toISOString() })}\n`);
       const proof = await waitForNativeTranscriptMarker({
         agent: 'omp', env: { PI_CONFIG_DIR: '.omp-target' }, marker, sinceMs: ompSinceMs, home, timeoutMs: 100, pollMs: 5,
       });
@@ -1290,7 +2182,7 @@ describe('session-port managed seed + native persistence helpers', () => {
       const claudeFile = join(claudeDir, `${claudeId}.jsonl`);
       const carryMarker = '⟦turn-origin:self-compaction nonce:0123456789abcdef⟧';
       const claudeSinceMs = Date.now();
-      writeFileSync(claudeFile, `${JSON.stringify({ type: 'user', timestamp: new Date(claudeSinceMs).toISOString(), message: { content: carryMarker } })}\n`);
+      writeFileSync(claudeFile, `${JSON.stringify({ type: 'user', timestamp: new Date(claudeSinceMs).toISOString(), message: { role: 'user', content: carryMarker } })}\n`);
       expect(leadingTurnOriginMarker(`${carryMarker}\nContinue where you left off`)).toBe(carryMarker);
       const ownerMarker = '⟦turn-origin:coord-inject:owner nonce:0123456789abcdef⟧';
       expect(leadingTurnOriginMarker(`${ownerMarker}\nThe owner replied`)).toBe(ownerMarker);
@@ -1356,10 +2248,25 @@ describe('session-port managed seed + native persistence helpers', () => {
       writeFileSync(rollout, `${userRow('bd294b2da8⟧\nYou are the auditor', sinceMs + 1)}\n`, { flag: 'a' });
       const proof = await waitForNativeTranscriptMarker({ agent: 'codex', env, marker, sinceMs, home, timeoutMs: 100, pollMs: 5 });
       expect(proof).toEqual({ persisted: true, nativeRef: rollout, markerTruncated: { lostChars: 39 } });
-      // The exact marker still wins, with no degraded flag.
+      // The immediately following fresh row can upgrade this same-injection
+      // truncated proof to exact, with no degraded flag.
       writeFileSync(rollout, `${userRow(`${marker}\nexact`, sinceMs + 2)}\n`, { flag: 'a' });
       const exact = await waitForNativeTranscriptMarker({ agent: 'codex', env, marker, sinceMs, home, timeoutMs: 100, pollMs: 5 });
       expect(exact).toEqual({ persisted: true, nativeRef: rollout });
+
+      // An intervening user prompt closes the upgrade window, so an exact
+      // marker on a later turn cannot retroactively certify this kickoff.
+      writeFileSync(rollout, [
+        userRow('bd294b2da8⟧\nYou are the auditor', sinceMs + 3),
+        userRow('an unrelated later task', sinceMs + 4),
+        userRow(`${marker}\nexact`, sinceMs + 5),
+      ].join('\n') + '\n');
+      const laterExact = await waitForNativeTranscriptMarker({ agent: 'codex', env, marker, sinceMs, home, timeoutMs: 100, pollMs: 5 });
+      expect(laterExact).toEqual({
+        persisted: true,
+        nativeRef: rollout,
+        markerTruncated: { lostChars: 39 },
+      });
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -1412,7 +2319,7 @@ describe('hostThroughPty real round-trip', () => {
             command: execPath,
             args: ['-e', 'setTimeout(()=>{},10000)'],
             cwd: '/tmp',
-            env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+            env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
             ownerId,
             io: fakeIo().io,
             bridgeTty: false,
@@ -1475,7 +2382,7 @@ describe('hostThroughPty real round-trip', () => {
         args: ['-e', childCode],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'claude',
           PAPERCUSP_PSU_PTY_RESUME_COMPACTION_STARTUP_MS: '1000',
@@ -1526,6 +2433,9 @@ describe('hostThroughPty real round-trip', () => {
       const codexHome = join(root, 'codex-home');
       const nativeFile = join(codexHome, 'sessions', '2026', '08', 'rollout.jsonl');
       const marker = '⟦turn-origin:fleet-kickoff nonce:0123456789abcdef⟧';
+      const kickoffMarkerEchoTimeoutMs = 4_000;
+      const nativePersistenceTimeoutMs = 3_000;
+      const parentReceiptWaitMs = kickoffMarkerEchoTimeoutMs + nativePersistenceTimeoutMs + 1_000;
       const kickoff = `${marker}\nBEGIN_PROOF_KICKOFF`;
       writeFileSync(proofPath, '', { mode: 0o600 });
       chmodSync(proofPath, 0o600);
@@ -1533,8 +2443,8 @@ describe('hostThroughPty real round-trip', () => {
       const childCode = [
         "const fs=require('fs'),path=require('path');",
         "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
-        "let b='',echoed=false;process.stdout.write('62% context left\\n');",
-        "process.stdin.on('data',d=>{b+=d;if(!b.includes('⟧'))return;if(!echoed){echoed=true;process.stdout.write('COMPOSER_ECHO:'+b+'\\n');}if(!b.includes('\\r'))return;fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});fs.writeFileSync(process.env.NATIVE_FILE,JSON.stringify({role:'user',text:process.env.KICKOFF_MARKER})+'\\n');process.stdout.write('KICKOFF_RECEIVED\\n');setTimeout(()=>process.exit(0),50);});",
+        "let b='',echoed=false;process.stdout.write('\\x1b[6nmodel: GPT-6.1-Sol xhigh\\n62% context left\\n');",
+        "process.stdin.on('data',d=>{b+=d;if(!b.includes('⟧'))return;if(!echoed){echoed=true;process.stdout.write('COMPOSER_ECHO:'+b+'\\n');}if(!b.includes('\\r'))return;fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const row={type:'response_item',timestamp:new Date().toISOString(),payload:{type:'message',role:'user',content:[{type:'input_text',text:process.env.KICKOFF_MARKER}]}};fs.writeFileSync(process.env.NATIVE_FILE,JSON.stringify(row)+'\\n');process.stdout.write('KICKOFF_RECEIVED\\n');setTimeout(()=>process.exit(0),50);});",
         'setTimeout(()=>process.exit(2),5000);',
       ].join('');
       let done;
@@ -1544,7 +2454,7 @@ describe('hostThroughPty real round-trip', () => {
           args: ['-e', childCode],
           cwd: root,
           env: {
-            ...process.env,
+            ...hermeticEnv(),
             PAPERCUSP_SID: ownerId,
             PAPERCUSP_AGENT: 'codex',
             CODEX_HOME: codexHome,
@@ -1554,7 +2464,7 @@ describe('hostThroughPty real round-trip', () => {
             [KICKOFF_PROOF_TOKEN_ENV]: token,
             // This test checks parent-receipt publication, so give the
             // separate composer-echo gate its own bounded fixture window.
-            PAPERCUSP_PSU_PTY_KICKOFF_MARKER_ECHO_TIMEOUT_MS: '4000',
+            PAPERCUSP_PSU_PTY_KICKOFF_MARKER_ECHO_TIMEOUT_MS: String(kickoffMarkerEchoTimeoutMs),
             PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',
             PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
             PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '20',
@@ -1569,9 +2479,11 @@ describe('hostThroughPty real round-trip', () => {
           io,
           bridgeTty: false,
           kickoff,
+          nativePersistenceTimeoutMs,
           onExit: () => undefined,
         });
-        const deadline = Date.now() + 8_000;
+        // Cover the echo gate, native proof window, and a short scheduling margin.
+        const deadline = Date.now() + parentReceiptWaitMs;
         while (readFileSync(proofPath, 'utf8').length === 0 && Date.now() < deadline) await sleep(10);
         expect(captured()).toContain('KICKOFF_RECEIVED');
         expect(captured()).toContain(`COMPOSER_ECHO:${marker}`);
@@ -1591,12 +2503,14 @@ describe('hostThroughPty real round-trip', () => {
     15_000,
   );
 
-  it(
-    'acknowledges a managed session-port seed only after the target-native transcript persists its exact marker',
-    async () => {
+  it.each(['claude', 'codex', 'omp'].flatMap((agent) =>
+    ['accepted', 'unknown', 'refused'].map((outcome) => [agent, outcome] as const)))(
+    'publishes managed %s session-port parent proof before HTTP ack and handles %s acknowledgement (EI-259750)',
+    async (agent, outcome) => {
       const root = mkdtempSync(join(tmpdir(), 'psu-port-host-'));
-      const agentDir = join(root, 'omp-agent');
-      const sessionsDir = join(agentDir, 'sessions', 'project');
+      const agentDir = join(root, 'target-native-home');
+      const sessionsDir = agent === 'claude'
+        ? join(agentDir, 'projects', '-tmp') : join(agentDir, 'sessions', 'project');
       mkdirSync(sessionsDir, { recursive: true });
       const nativeFile = join(sessionsDir, 'thread.jsonl');
       const hash = 'c'.repeat(64);
@@ -1604,25 +2518,53 @@ describe('hostThroughPty real round-trip', () => {
       const seed = join(root, 'seed.md');
       writeFileSync(seed, `ported history\n${marker}\n`, { mode: 0o600 });
       chmodSync(seed, 0o600);
+      const proofPath = join(root, 'proof.json');
+      const token = 'c'.repeat(48);
+      writeFileSync(proofPath, '', { mode: 0o600 });
+      chmodSync(proofPath, 0o600);
       const ownerId = `su-port-itest-${process.pid}-${Math.floor(performance.now())}`;
-      const { io } = fakeIo();
-      const onKickoffPersisted = vi.fn(async () => undefined);
+      const { captured, io } = fakeIo();
+      let finishAck!: () => void;
+      const ackDone = new Promise<void>((resolve) => { finishAck = resolve; });
+      const expectedReceipt = { token, persisted: true, nativeRef: nativeFile, reason: null };
+      const onExit = vi.fn();
+      let nativeProofObserved!: () => void;
+      const nativeProof = new Promise<void>((resolve) => { nativeProofObserved = resolve; });
+      const onKickoffPersisted = vi.fn(async () => {
+        expect(JSON.parse(readFileSync(proofPath, 'utf8'))).toEqual(expectedReceipt);
+        nativeProofObserved();
+        await ackDone;
+        if (outcome !== 'accepted') {
+          const fetchImpl = vi.fn()
+            .mockResolvedValueOnce(new Response(JSON.stringify({ ok: false, forwardingResult: 'outcome_unknown' }), { status: 502 }))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, port: { status: outcome === 'unknown' ? 'pending' : 'failed', targetAdvSessionId: 999 } }), { status: 200 }));
+          return reportSessionPortDelivery(
+            { portId: '22222222-2222-4222-8222-222222222222', targetAdvSessionId: 999 },
+            { persisted: true, renderedHash: hash, nativeRef: nativeFile },
+            { fetchImpl, operatorUrl: 'http://operator', token: 'test', coordOwnerId: ownerId, appendEventImpl: appendHostEvent },
+          );
+        }
+      });
+      let done: Promise<number> | undefined;
       const childCode = [
         "const fs=require('fs'),path=require('path');",
         "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
-        "let ready=false,b='',wrote=false;process.stdout.write('\\x1b[6n');setTimeout(()=>{ready=true;process.stdout.write('omp v16.3.3\\nREADY\\n');},400);",
-        "process.stdin.on('data',d=>{b+=d;if(!wrote&&b.includes(process.env.PORT_MARKER)&&(b.includes('\\r')||b.includes('\\n'))){if(!ready){process.stdout.write('EARLY-SEED\\n');process.exit(3);return;}wrote=true;fs.mkdirSync(path.dirname(process.env.PORT_NATIVE_FILE),{recursive:true});fs.writeFileSync(process.env.PORT_NATIVE_FILE,JSON.stringify({type:'message',role:'user',text:process.env.PORT_MARKER})+'\\n');process.stdout.write('WORKING\\n');setTimeout(()=>process.exit(0),1200);}});",
+        "let ready=false,b='',wrote=false;setTimeout(()=>{ready=true;process.stdout.write(process.env.PORT_READY_OUTPUT);},400);",
+        // The real native transcript persists the whole user turn, including
+        // both its origin marker (submit verification) and port checksum.
+        // Echo the composer before CR so Codex's separate submit gate is exercised.
+        "process.stdin.on('data',d=>{b+=d;process.stdout.write(d);if(wrote&&b.includes('EXIT_AFTER_RECEIPT')){process.stdout.write('EXITING\\n');process.exit(0);return;}if(!wrote&&b.includes(process.env.PORT_MARKER)&&b.includes('\\r')){if(!ready){process.stdout.write('EARLY-SEED\\n');process.exit(3);return;}wrote=true;const content=b.slice(b.indexOf('⟦turn-origin:session-port'),b.indexOf(process.env.PORT_MARKER)+process.env.PORT_MARKER.length);const timestamp=new Date().toISOString();const row=process.env.PAPERCUSP_AGENT==='codex'?{type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:content}]}}:process.env.PAPERCUSP_AGENT==='claude'?{type:'user',timestamp,message:{role:'user',content}}:{type:'message',role:'user',content,timestamp};fs.mkdirSync(path.dirname(process.env.PORT_NATIVE_FILE),{recursive:true});fs.writeFileSync(process.env.PORT_NATIVE_FILE,JSON.stringify(row)+'\\n');process.stdout.write('ANSWER_OWNER:'+process.env.PAPERCUSP_SID+'\\nWORKING\\n');}});",
         "setTimeout(()=>process.exit(2),10000);",
       ].join('');
       try {
-        const done = hostThroughPty({
+        done = hostThroughPty({
           command: execPath,
           args: ['-e', childCode],
           cwd: root,
           env: {
-            ...process.env,
+            ...hermeticEnv(),
             PAPERCUSP_SID: ownerId,
-            PAPERCUSP_AGENT: 'omp',
+            PAPERCUSP_AGENT: agent,
             PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
             PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '5000',
             PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
@@ -1630,8 +2572,14 @@ describe('hostThroughPty real round-trip', () => {
             PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
             PAPERCUSP_TURN_PROVENANCE_DIR: join(root, 'provenance'),
             PI_CODING_AGENT_DIR: agentDir,
+            CODEX_HOME: agentDir,
+            CLAUDE_CONFIG_DIR: agentDir,
+            PORT_READY_OUTPUT: agent === 'claude' ? '❯\n' : agent === 'codex'
+              ? '\x1b[6nmodel: GPT-6.1-Sol xhigh\n62% context left\n' : 'omp v16.3.3\nREADY\n',
             PORT_MARKER: marker,
             PORT_NATIVE_FILE: nativeFile,
+            [KICKOFF_PROOF_PATH_ENV]: proofPath,
+            [KICKOFF_PROOF_TOKEN_ENV]: token,
             TERM: 'xterm-256color',
           },
           ownerId,
@@ -1642,17 +2590,133 @@ describe('hostThroughPty real round-trip', () => {
           sessionPort: { renderedHash: hash },
           onKickoffPersisted,
           nativePersistenceTimeoutMs: 3000,
-          onExit: () => undefined,
+          onExit,
         });
+        await Promise.race([
+          nativeProof,
+          done.then(() => { throw new Error('fixture child exited before native proof'); }),
+        ]);
         const deadline = Date.now() + 5000;
-        while (onKickoffPersisted.mock.calls.length === 0 && Date.now() < deadline) await sleep(25);
         expect(onKickoffPersisted).toHaveBeenCalledTimes(1);
-        expect(onKickoffPersisted.mock.calls[0]?.[0]).toEqual({
+        expect(onKickoffPersisted.mock.calls[0]?.[0], captured()).toEqual({
           persisted: true,
           renderedHash: hash,
           nativeRef: nativeFile,
         });
-        await done;
+        expect(readFileSync(nativeFile, 'utf8')).toContain('⟦turn-origin:session-port nonce:');
+        expect(captured()).toContain(`ANSWER_OWNER:${ownerId}`);
+        if (outcome !== 'accepted') {
+          const originalNative = readFileSync(nativeFile, 'utf8');
+          finishAck();
+          const event = outcome === 'unknown' ? 'session-port-delivery-ack-pending' : 'session-port-delivery-ack-failed';
+          while (!readFileSync(eventLogPathForOwner(ownerId), 'utf8').includes(event) && Date.now() < deadline) await sleep(25);
+          expect(readFileSync(eventLogPathForOwner(ownerId), 'utf8')).toContain(event);
+          if (outcome === 'unknown') {
+            expect(await Promise.race([done.then(() => true), sleep(100).then(() => false)])).toBe(false);
+            expect(onExit).not.toHaveBeenCalled();
+            expect(JSON.parse(readFileSync(proofPath, 'utf8'))).toEqual(expectedReceipt);
+            expect(readFileSync(nativeFile, 'utf8')).toBe(originalNative);
+            await rawInject(socketPathFor(ownerId), 'EXIT_AFTER_RECEIPT\n');
+            expect(await done).toBe(0);
+            expect(onExit.mock.calls[0]?.[1]).toBeFalsy();
+          } else {
+            await done;
+            // node-pty reports a signal kill with exitCode=0. The signal
+            // callback is the authoritative lifecycle evidence.
+            expect(onExit.mock.calls[0]?.[1]).toBe('SIGHUP');
+          }
+          expect(onKickoffPersisted).toHaveBeenCalledTimes(1);
+          return;
+        }
+        // Drive the child exit after the parent proof, while the HTTP ack is
+        // still held, rather than racing transcript scanning with a timer.
+        await rawInject(socketPathFor(ownerId), 'EXIT_AFTER_RECEIPT\n');
+        while (!captured().includes('EXITING') && Date.now() < deadline) await sleep(25);
+        expect(captured()).toContain('EXITING');
+        expect(await Promise.race([done.then(() => true), sleep(50).then(() => false)])).toBe(false);
+        expect(JSON.parse(readFileSync(proofPath, 'utf8'))).toEqual(expectedReceipt);
+        expect(onKickoffPersisted).toHaveBeenCalledTimes(1);
+        finishAck();
+        expect(await done).toBe(0);
+      } finally {
+        finishAck();
+        await rawInject(socketPathFor(ownerId), 'EXIT_AFTER_RECEIPT\n').catch(() => undefined);
+        await done?.catch(() => undefined);
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    15_000,
+  );
+
+  it.each(['child-exit', 'missing-native-marker'])(
+    'publishes a managed session-port negative parent proof for %s before acknowledgement and cleanup',
+    async (failure) => {
+      const root = mkdtempSync(join(tmpdir(), 'psu-port-negative-'));
+      const hash = 'b'.repeat(64);
+      const marker = `[PAPERCUSP SESSION PORT CHECKSUM ${hash}]`;
+      const seed = join(root, 'seed.md');
+      const proofPath = join(root, 'proof.json');
+      const token = 'b'.repeat(48);
+      writeFileSync(seed, `ported history\n${marker}\n`, { mode: 0o600 });
+      chmodSync(seed, 0o600);
+      writeFileSync(proofPath, '', { mode: 0o600 });
+      chmodSync(proofPath, 0o600);
+      const ownerId = `su-port-negative-${process.pid}-${failure}-${Math.floor(performance.now())}`;
+      const { io } = fakeIo();
+      const onExit = vi.fn();
+      const onKickoffPersisted = vi.fn(async (proof) => {
+        expect(JSON.parse(readFileSync(proofPath, 'utf8'))).toEqual({
+          token, persisted: false, nativeRef: null, reason: proof.error,
+        });
+      });
+      const childCode = [
+        "const fs=require('fs'),path=require('path');",
+        "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
+        // Isolate child-exit from missing-marker verification. Scheduling an
+        // exit after submission races the 300ms scanner and does not guarantee
+        // which valid negative disposition wins.
+        "process.stdout.write('omp v16.3.3\\nREADY\\n');if(process.env.PORT_FAILURE==='child-exit')process.exit(3);let b='',submitted=false;",
+        // Submit proof exists, but the exact managed checksum does not.
+        "process.stdin.on('data',d=>{b+=d;if(!submitted&&b.includes(process.env.PORT_MARKER)&&(b.includes('\\r')||b.includes('\\n'))){submitted=true;fs.mkdirSync(path.dirname(process.env.PORT_NATIVE_FILE),{recursive:true});fs.writeFileSync(process.env.PORT_NATIVE_FILE,JSON.stringify({type:'message',role:'user',content:b.split('\\n')[0],timestamp:new Date().toISOString()})+'\\n');process.stdout.write('SUBMITTED\\n');}});",
+        "setTimeout(()=>process.exit(2),10000);",
+      ].join('');
+      try {
+        await hostThroughPty({
+          command: execPath,
+          args: ['-e', childCode],
+          cwd: root,
+          env: {
+            ...hermeticEnv(),
+            PAPERCUSP_SID: ownerId,
+            PAPERCUSP_AGENT: 'omp',
+            PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+            PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '25',
+            PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
+            PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '50',
+            PAPERCUSP_TURN_PROVENANCE_DIR: join(root, 'provenance'),
+            PI_CODING_AGENT_DIR: join(root, 'omp-agent'),
+            PORT_MARKER: marker,
+            PORT_FAILURE: failure,
+            PORT_NATIVE_FILE: join(root, 'omp-agent', 'sessions', 'project', 'thread.jsonl'),
+            [KICKOFF_PROOF_PATH_ENV]: proofPath,
+            [KICKOFF_PROOF_TOKEN_ENV]: token,
+            TERM: 'xterm-256color',
+          },
+          ownerId,
+          io,
+          bridgeTty: false,
+          kickoffFile: seed,
+          sessionPort: { renderedHash: hash },
+          onKickoffPersisted,
+          nativePersistenceTimeoutMs: 300,
+          onExit,
+        });
+        expect(onKickoffPersisted).toHaveBeenCalledTimes(1);
+        expect(onKickoffPersisted.mock.calls[0]?.[0]).toMatchObject({ persisted: false, renderedHash: hash });
+        const receipt = JSON.parse(readFileSync(proofPath, 'utf8'));
+        expect(receipt.reason).toContain(failure === 'child-exit' ? 'target child exited' : 'not found in the omp native transcript');
+        expect(receipt.persisted).toBe(false);
+        if (failure === 'child-exit') expect(onExit).toHaveBeenCalledWith(3, null);
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
@@ -1686,7 +2750,7 @@ describe('hostThroughPty real round-trip', () => {
           args: ['-e', childCode],
           cwd: root,
           env: {
-            ...process.env,
+            ...hermeticEnv(),
             PAPERCUSP_SID: ownerId,
             PAPERCUSP_AGENT: 'omp',
             PAPERCUSP_LAUNCHED_BY: 'su-parent',
@@ -1711,12 +2775,21 @@ describe('hostThroughPty real round-trip', () => {
         while (!/GRAND:\d+/.test(captured()) && Date.now() < deadline) await sleep(25);
         const grandPid = Number(captured().match(/GRAND:(\d+)/)?.[1]);
         expect(grandPid).toBeGreaterThan(1);
+        expect(() => process.kill(grandPid, 0)).not.toThrow();
+
+        const processState = () => {
+          try { return linuxProcStateFromStat(readFileSync(`/proc/${grandPid}/stat`, 'utf8')); }
+          catch (error) { return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'absent' : 'unknown'; }
+        };
+        const states = { beforeSignal: processState(), afterSignal: '', afterHostExit: '', afterWait: '' };
 
         signals.emit('SIGTERM');
+        states.afterSignal = processState() ?? 'unknown';
         // External kill must not wait for node-pty's asynchronous child exit
         // event: fleet:kill may SIGKILL this host during that gap.
         expect(reapScopeResidue).toHaveBeenCalledTimes(1);
         await done;
+        states.afterHostExit = processState() ?? 'unknown';
         expect(onKickoffPersisted).toHaveBeenCalledTimes(1);
         expect(onKickoffPersisted.mock.calls[0]?.[0]).toMatchObject({
           persisted: false,
@@ -1729,10 +2802,21 @@ describe('hostThroughPty real round-trip', () => {
         let alive = true;
         const reapDeadline = Date.now() + 2000;
         while (alive && Date.now() < reapDeadline) {
-          try { process.kill(grandPid, 0); } catch { alive = false; }
+          const state = processState();
+          // SIGKILL has terminated a zombie; its PID remains visible until the
+          // adopting parent reaps it. kill(pid, 0) alone cannot measure execution.
+          if (state === 'Z' || state === 'X' || state === 'absent') alive = false;
+          else {
+            try { process.kill(grandPid, 0); }
+            catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') alive = false; }
+          }
           if (alive) await sleep(25);
         }
-        expect(alive).toBe(false);
+        let childStat = 'absent';
+        try { childStat = readFileSync(`/proc/${grandPid}/stat`, 'utf8'); } catch { /* disappeared after probe */ }
+        states.afterWait = processState() ?? 'unknown';
+        console.info(`PTY_SIGTERM_PROCESS_STATES ${JSON.stringify(states)}`);
+        expect(alive, `SIGTERM grandchild ${grandPid} states ${JSON.stringify(states)} proc stat: ${childStat}`).toBe(false);
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
@@ -1748,49 +2832,54 @@ describe('hostThroughPty real round-trip', () => {
       const meta = metaPathFor(ownerId);
       const { captured, io } = fakeIo();
 
-      // Child reads stdin, echoes "ECHO:<line>" per newline-terminated line, then
-      // exits after a bounded window so the test can't hang.
+      // Child acknowledges its installed reader and exits on the test's command.
       const childCode =
         "process.stdin.setEncoding('utf8');let b='';" +
-        "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);process.stdout.write('ECHO:'+line+'\\n');}});" +
-        'setTimeout(()=>process.exit(0),3000);';
+        "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);if(line==='QUIT')process.exit(0);process.stdout.write('ECHO:'+line+'\\n');}});" +
+        "process.stdout.write('READER_READY\\n');";
 
       let exitCode: number | null = null;
+      const signalSource = new EventEmitter();
       const done = hostThroughPty({
         command: execPath,
         args: ['-e', childCode],
         cwd: '/tmp',
-        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
         ownerId,
         advSessionId: 4242,
         io,
         bridgeTty: false,
+        signalSource,
         onExit: (c: number) => { exitCode = c; },
       });
 
-      await sleep(400);
-      // Created on start
-      expect(existsSync(sock)).toBe(true);
-      expect(existsSync(meta)).toBe(true);
-      const m = JSON.parse(readFileSync(meta, 'utf8'));
-      expect(m.ownerId).toBe(ownerId);
-      expect(m.advSessionId).toBe('4242');
-      expect(m.sock).toBe(sock);
-      expect(typeof m.pid).toBe('number');
+      try {
+        await vi.waitFor(() => expect(captured()).toContain('READER_READY'), { timeout: 8000 });
+        // Created on start
+        expect(existsSync(sock)).toBe(true);
+        expect(existsSync(meta)).toBe(true);
+        const m = JSON.parse(readFileSync(meta, 'utf8'));
+        expect(m.ownerId).toBe(ownerId);
+        expect(m.advSessionId).toBe('4242');
+        expect(m.sock).toBe(sock);
+        expect(typeof m.pid).toBe('number');
 
-      // Inject a line via the control socket → the child reads it from stdin.
-      await rawInject(sock, 'hello-wake\n');
-      await sleep(500);
-      expect(captured()).toContain('ECHO:hello-wake');
+        // Inject a line via the control socket → the child reads it from stdin.
+        await rawInject(sock, 'hello-wake\n');
+        await vi.waitFor(() => expect(captured()).toContain('ECHO:hello-wake'), { timeout: 8000 });
 
-      // Let the child's own timeout end it; wait for host resolution.
-      const code = await done;
-      expect(code).toBe(0);
-      expect(exitCode).toBe(0);
+        await rawInject(sock, 'QUIT\n');
+        const code = await done;
+        expect(code).toBe(0);
+        expect(exitCode).toBe(0);
 
-      // Cleaned up on exit
-      expect(existsSync(sock)).toBe(false);
-      expect(existsSync(meta)).toBe(false);
+        // Cleaned up on exit
+        expect(existsSync(sock)).toBe(false);
+        expect(existsSync(meta)).toBe(false);
+      } finally {
+        signalSource.emit('SIGTERM');
+        await done;
+      }
     },
     20_000,
   );
@@ -1804,54 +2893,98 @@ describe('hostThroughPty real round-trip', () => {
       const { captured, io } = fakeIo();
 
       const childCode =
-        "process.stdin.setEncoding('utf8');let b='';" +
+        "process.stdin.setRawMode?.(true);process.stdin.setEncoding('utf8');let b='';" +
         "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);process.stdout.write('ECHO:'+line+'\\n');}});" +
-        'setTimeout(()=>process.exit(0),4000);';
+        "process.stdout.write('MISDELIVERY_CHILD_READY\\n');";
+      const signalSource = new EventEmitter();
 
       const done = hostThroughPty({
         command: execPath,
         args: ['-e', childCode],
         cwd: '/tmp',
-        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
         ownerId,
         advSessionId: 4243,
         io,
+        signalSource,
         bridgeTty: false,
         onExit: () => undefined,
       });
 
       try {
-        await sleep(400);
+        await vi.waitFor(() => expect(captured()).toContain('MISDELIVERY_CHILD_READY'), { timeout: 2000 });
         expect(existsSync(sock)).toBe(true);
 
         // Addressed to a DIFFERENT agent — the host must refuse to run it, no
         // matter that the socket write itself succeeds (same-UID trust boundary
         // only guards WHO can connect, not WHOM the message is for).
         await envelopeInject(sock, { mode: 'raw', data: 'should-not-land\n', ownerId: 'su-someone-else' });
-        await sleep(500);
+        await vi.waitFor(() => {
+          const events = readFileSync(eventLog, 'utf8')
+            .trim()
+            .split('\n')
+            .filter(Boolean)
+            .map((l) => JSON.parse(l));
+          const rejected = events.find(
+            (e) => e.kind === 'control-payload-rejected' && e.reason === 'ownerId-mismatch',
+          );
+          expect(rejected).toMatchObject({ expected: ownerId, got: 'su-someone-else', mode: 'raw' });
+        }, { timeout: 2000 });
         expect(captured()).not.toContain('ECHO:should-not-land');
-        const events = readFileSync(eventLog, 'utf8')
-          .trim()
-          .split('\n')
-          .filter(Boolean)
-          .map((l) => JSON.parse(l));
-        const rejected = events.find(
-          (e) => e.kind === 'control-payload-rejected' && e.reason === 'ownerId-mismatch',
-        );
-        expect(rejected).toMatchObject({ expected: ownerId, got: 'su-someone-else', mode: 'raw' });
 
         // The host itself is otherwise unharmed: a correctly-addressed (or
         // unaddressed, pre-EI-153-shaped) message still lands normally.
         await envelopeInject(sock, { mode: 'raw', data: 'should-land\n', ownerId });
-        await sleep(500);
-        expect(captured()).toContain('ECHO:should-land');
+        await vi.waitFor(() => expect(captured()).toContain('ECHO:should-land'), { timeout: 2000 });
       } finally {
-        // The child self-exits on its own 4s timeout — just wait for host resolution.
+        signalSource.emit('SIGTERM');
         await done.catch(() => undefined);
       }
     },
     20_000,
   );
+
+  it('rejects unsupported control envelopes with a NACK and zero child input, then accepts a supported request', async () => {
+    const ownerId = `su-itest-control-version-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const { captured, io } = fakeIo();
+    const signals = new EventEmitter();
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', "process.stdin.setRawMode(true);process.stdin.on('data',d=>process.stdout.write('INPUT:'+d.toString('hex')+'\\n'));process.stdout.write('CONTROL_READY\\n');"],
+      cwd: '/tmp', env: hermeticEnv({ PAPERCUSP_SID: ownerId }), ownerId,
+      io, signalSource: signals, bridgeTty: false,
+    });
+    const send = (envelope: Record<string, unknown>): Promise<Record<string, unknown>> => new Promise((resolve, reject) => {
+      const conn = net.connect(sock, () => conn.end(JSON.stringify(envelope)));
+      const output = createTextCollector(conn);
+      conn.on('error', reject);
+      conn.on('close', () => {
+        try { resolve(JSON.parse(output.text().trim())); } catch (error) { reject(error); }
+      });
+    });
+    try {
+      await vi.waitFor(() => expect(captured()).toContain('CONTROL_READY'), { timeout: 5000 });
+      for (const envelope of [
+        { v: 1, mode: 'hooks-inventory', data: '/hooks' },
+        { v: 2, mode: 'raw', data: 'unsupported-version' },
+      ]) {
+        expect(await send({ ...envelope, ownerId })).toMatchObject({ ok: false, reason: 'unsupported-control-envelope' });
+      }
+      expect(captured()).not.toContain('INPUT:');
+      expect(await send({ v: 1, mode: 'hooks-observe', observationVersion: 1, ownerId,
+        expectedAdvSessionId: 'wrong', expectedNativeSessionId: 'wrong', expectedHostStartedAt: 1,
+        expectedChildGeneration: 1, expectedHostCodeVersion: 'wrong' })).toMatchObject({ ok: false });
+      expect(captured()).not.toContain('INPUT:');
+      expect(await send({ v: 1, mode: 'raw', data: 'still-responsive', ownerId })).toMatchObject({ ok: true });
+      await vi.waitFor(() => expect(captured()).toContain(`INPUT:${Buffer.from('still-responsive').toString('hex')}`), { timeout: 5000 });
+      const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+      expect(events.filter((event) => event.kind === 'control-payload-rejected' && event.reason === 'unsupported-control-envelope')).toHaveLength(2);
+    } finally {
+      signals.emit('SIGTERM');
+      await done.catch(() => undefined);
+    }
+  }, 20_000);
 
   it(
     "WI-2141435: control-payload-unaddressed fires with envelope:true for a v1 envelope that " +
@@ -1869,7 +3002,7 @@ describe('hostThroughPty real round-trip', () => {
         command: execPath,
         args: ['-e', 'setTimeout(()=>process.exit(0),4000);'],
         cwd: '/tmp',
-        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
         ownerId,
         advSessionId: 424535,
         io,
@@ -1929,9 +3062,8 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
         "process.stdout.write('BOOT:'+process.pid+'\\n❯\\n');" +
         "const marker=process.argv[process.argv.length-1];" +
         "let repaint=null;if(marker==='RECYCLED'){repaint=setInterval(()=>process.stdout.write('.'),20);}" +
-        "process.stdin.setEncoding('utf8');let b='';" +
-        "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
-        "if(line==='QUIT'){process.exit(0);}if(repaint){clearInterval(repaint);repaint=null;}process.stdout.write('ECHO:'+line+'\\n');}});" +
+        "process.stdin.setEncoding('utf8');let b='',mcp=false,carryEchoed=false;" +
+        "process.stdin.on('data',d=>{b+=d;if(repaint){clearInterval(repaint);repaint=null;}if(!mcp&&(b.includes('/mcp\\r')||b.includes('/mcp\\n'))){mcp=true;process.stdout.write('MCP_DIALOG\\n❯ 1. papercusp-su connecting\\n');setTimeout(()=>process.stdout.write('MCP_RECONNECTED\\n❯ 1. papercusp-su connected\\n'),250);}if(!carryEchoed&&b.includes('CARRIED')){carryEchoed=true;process.stdout.write('ECHO:CARRIED\\n');}if(b.includes('QUIT'))process.exit(0);});" +
         'setTimeout(()=>process.exit(0),15000);';
       let exitCode: number | null = null;
       const done = hostThroughPty({
@@ -1939,7 +3071,7 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
         args: ['-e', childCode, 'INITIAL'],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'claude',
           TERM: 'xterm-256color',
@@ -1959,8 +3091,7 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
       });
 
       try {
-        await sleep(600);
-        expect(captured()).toContain('BOOT:');
+        await vi.waitFor(() => expect(captured()).toContain('BOOT:'), { timeout: 8000 });
         await envelopeInject(sock, {
           mode: 'carry-respawn',
           data: 'CARRIED',
@@ -1971,8 +3102,16 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
         const deadline = Date.now() + 5_000;
         while (!captured().includes('ECHO:CARRIED') && Date.now() < deadline) await sleep(25);
         expect(captured()).toContain('ECHO:CARRIED');
+        expect(captured()).toContain('MCP_DIALOG');
+        expect(captured()).toContain('MCP_RECONNECTED');
+        expect(captured().indexOf('MCP_RECONNECTED')).toBeLessThan(captured().indexOf('ECHO:CARRIED'));
         const events = readFileSync(eventLog, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
         expect(events.filter((event) => event.kind === 'busy-gate-expired' && event.mode === 'carry-respawn')).toEqual([]);
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-mcp-ready',
+          serverName: 'papercusp-su',
+          attempts: 1,
+        }));
         expect(JSON.parse(readFileSync(meta, 'utf8')).carryDropCount ?? 0).toBe(0);
       } finally {
         if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
@@ -1987,18 +3126,227 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
   );
 
   it(
+    'does not submit a carry when papercusp-su readiness fails after the fresh TUI boots',
+    async () => {
+      const ownerId = `su-recycle-claude-mcp-failed-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const { captured, io } = fakeIo();
+      const signalSource = new EventEmitter();
+      const childCode =
+        "process.stdout.write('BOOT:'+process.pid+'\\n❯\\n');" +
+        "process.stdin.setEncoding('utf8');let b='',mcpDialogs=0;" +
+        "process.stdin.on('data',d=>{b+=d;if(mcpDialogs<2&&(b.includes('/mcp\\r')||b.includes('/mcp\\n'))){mcpDialogs++;process.stdout.write('MCP_DIALOG\\n❯ 1. unrelated-server connected\\n');}if(b.includes('CARRY_MUST_NOT_BE_WRITTEN'))process.stdout.write('ECHO:FORBIDDEN_CARRY\\n');if(b.includes('QUIT'))process.exit(0);});" +
+        'setTimeout(()=>process.exit(0),30000);';
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode, 'INITIAL'],
+        cwd: '/tmp',
+        env: {
+          ...hermeticEnv(),
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'claude',
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '200',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '300',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '2000',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS: '40',
+          PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '100',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '50',
+          PAPERCUSP_PSU_PTY_CARRY_PROOF_RETRIES: '0',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        signalSource,
+        mintCarryRespawnArgs: (args: string[]) => ({ args: args.slice(0, -1).concat('RECYCLED'), nativeId: null }),
+        onExit: (code: number) => { exitCode = code; },
+      });
+
+      try {
+        await vi.waitFor(() => expect(captured()).toContain('BOOT:'), { timeout: 5_000 });
+        await envelopeInject(sock, {
+          mode: 'carry-respawn',
+          data: 'CARRY_MUST_NOT_BE_WRITTEN',
+          systemPromptAddendum: 'deterministic carry',
+          sessionClass: 'claude-su',
+        });
+        const deadline = Date.now() + 24_000;
+        let events: Array<Record<string, unknown>> = [];
+        while (Date.now() < deadline) {
+          if (existsSync(eventLog)) {
+            const contents = readFileSync(eventLog, 'utf8').trim();
+            events = contents ? contents.split('\n').map((line) => JSON.parse(line)) : [];
+            if (events.some((event) => event.kind === 'respawn-carry-mcp-unavailable')) break;
+          }
+          await sleep(50);
+        }
+
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-mcp-unavailable',
+          serverName: 'papercusp-su',
+          attempts: 2,
+        }));
+        expect(captured()).not.toContain('ECHO:FORBIDDEN_CARRY');
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-dropped',
+          reason: 'carry-mcp-unavailable',
+        }));
+        expect(events.some((event) => event.kind === 'respawn-carry-delivered')).toBe(false);
+        // Lifecycle emission precedes serialized async discovery publication.
+        // Observe the persisted transition before asserting its counter.
+        await vi.waitFor(() => {
+          expect(JSON.parse(readFileSync(meta, 'utf8')).carryDropCount).toBe(1);
+        }, { timeout: 5_000 });
+      } finally {
+        signalSource.emit('SIGTERM');
+        await done;
+        if (existsSync(eventLog)) unlinkSync(eventLog);
+      }
+      expect(exitCode).toBe(0);
+      expect(existsSync(sock)).toBe(false);
+      expect(existsSync(meta)).toBe(false);
+    },
+    32_000,
+  );
+
+  it(
+    'retries a carry on one fresh child when MCP becomes ready after the first epoch',
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), 'psu-carry-mcp-delay-'));
+      const claudeConfig = join(root, 'claude');
+      mkdirSync(join(claudeConfig, 'projects', '-tmp'), { recursive: true });
+      const ownerId = `su-recycle-claude-mcp-delay-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const nativeIds = [
+        'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      ];
+      const marker = '⟦turn-origin:self-compaction nonce:fedcba9876543210⟧';
+      const childCode =
+        "const fs=require('node:fs'),path=require('node:path');" +
+        "const nativeId=process.argv[process.argv.length-1],epoch=process.argv[process.argv.length-2];" +
+        "process.stdout.write('BOOT:'+epoch+'\\n❯\\n');" +
+        "process.stdin.setEncoding('utf8');let b='',recorded=false;" +
+        "process.stdin.on('data',d=>{b+=d;if(!recorded&&b.includes('⟦turn-origin:self-compaction nonce:fedcba9876543210⟧')){" +
+        "const file=path.join(process.env.CLAUDE_CONFIG_DIR,'projects','-tmp',nativeId+'.jsonl');" +
+        "fs.mkdirSync(path.dirname(file),{recursive:true});" +
+        "fs.appendFileSync(file,JSON.stringify({type:'user',timestamp:new Date().toISOString(),message:{role:'user',content:[{type:'text',text:'⟦turn-origin:self-compaction nonce:fedcba9876543210⟧'}]}})+'\\n');" +
+        "recorded=true;process.stdout.write('CARRY_ACCEPTED\\n');}if(b.includes('QUIT'))process.exit(0);});" +
+        'setTimeout(()=>process.exit(0),30000);';
+      let epoch = 0;
+      const reconnectAttempts: Array<{ epoch: number; serverName: string }> = [];
+      const { captured, io } = fakeIo();
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode, 'INITIAL'],
+        cwd: '/tmp',
+        env: {
+          ...hermeticEnv(),
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'claude',
+          PAPERCUSP_PSU_HEADLESS: '0',
+          CLAUDE_CONFIG_DIR: claudeConfig,
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '300',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '2000',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '10',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '25',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '50',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        nativePersistenceTimeoutMs: 500,
+        mintCarryRespawnArgs: (args: string[]) => {
+          epoch += 1;
+          return {
+            args: args.slice(0, -1).concat(`CARRY_EPOCH_${epoch}`, nativeIds[epoch - 1]),
+            nativeId: nativeIds[epoch - 1],
+          };
+        },
+        // The fake CLI has a known identity before testing MCP recovery.
+        onRespawn: async () => true,
+        mcpReconnectMacro: async ({ serverName }: { serverName: string }) => {
+          reconnectAttempts.push({ epoch, serverName });
+          if (epoch === 1) {
+            return { ok: false, step: 'await-connected', detail: 'MCP endpoint still unavailable' };
+          }
+          await sleep(25);
+          return { ok: true, step: 'direct-reconnected', detail: 'MCP endpoint recovered' };
+        },
+        onExit: () => {},
+      });
+
+      try {
+        await vi.waitFor(() => expect(captured()).toContain('BOOT:'), { timeout: 2_000 });
+        await envelopeInject(sock, {
+          mode: 'carry-respawn',
+          ownerId,
+          data: `${marker}\nContinue after MCP reconnect`,
+          systemPromptAddendum: 'delayed MCP recovery regression',
+          sessionClass: 'claude-su',
+        });
+        await vi.waitFor(() => {
+          const log = existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '';
+          expect(log).toContain('"kind":"respawn-carry-delivered"');
+        }, { timeout: 8_000 });
+
+        const events = readFileSync(eventLog, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+        expect(reconnectAttempts).toEqual([
+          { epoch: 1, serverName: 'papercusp-su' },
+          { epoch: 1, serverName: 'papercusp-su' },
+          { epoch: 2, serverName: 'papercusp-su' },
+        ]);
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-mcp-unavailable', serverName: 'papercusp-su', attempts: 2,
+        }));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-fresh-epoch-retry',
+          reason: 'carry-mcp-unavailable', attempt: 1, maxRetries: 1,
+        }));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-mcp-ready', serverName: 'papercusp-su', attempts: 1,
+        }));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-delivered', nativeId: nativeIds[1],
+        }));
+        expect(events.some((event) => event.kind === 'respawn-carry-dropped')).toBe(false);
+        expect(captured()).toContain('BOOT:CARRY_EPOCH_2');
+        expect(captured()).toContain('CARRY_ACCEPTED');
+        expect(JSON.parse(readFileSync(metaPathFor(ownerId), 'utf8')).carryDropCount ?? 0).toBe(0);
+      } finally {
+        if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+        await done.catch(() => undefined);
+        if (existsSync(eventLog)) unlinkSync(eventLog);
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    15_000,
+  );
+
+  it(
     'replaces the child process, keeps the host (socket/meta) alive, and opens the fresh process on the carry-note',
     async () => {
       const ownerId = `su-recycle-itest-${process.pid}-${Math.floor(performance.now())}`;
       const sock = socketPathFor(ownerId);
       const meta = metaPathFor(ownerId);
       const { captured, io } = fakeIo();
+      const fixtureRoot = mkdtempSync(join(tmpdir(), 'psu-recycle-boot-'));
+      const bootRelease = join(fixtureRoot, 'ready');
 
       // Child prints BOOT:<pid> once on start, echoes stdin lines, exits on QUIT
       // (or a 15s safety net). The per-boot pid marker lets us prove the process
       // was actually replaced by the recycle, not just re-injected.
       const childCode =
-        "process.stdout.write('BOOT:'+process.pid+'\\n');" +
+        "const fs=require('fs');process.stdout.write('BOOT_PENDING\\n');" +
+        "const boot=setInterval(()=>{if(fs.existsSync(process.env.BOOT_RELEASE)){clearInterval(boot);process.stdout.write('BOOT:'+process.pid+'\\n');}},10);" +
         "process.stdin.setEncoding('utf8');let b='';" +
         "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
         "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
@@ -2010,8 +3358,9 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
         args: ['-e', childCode],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
+          BOOT_RELEASE: bootRelease,
           // Reproduce the live failure deterministically: the fake successor
           // emits BOOT output but never Codex's version-specific composer
           // footer. The bounded fallback must admit it via output quiescence.
@@ -2031,9 +3380,17 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
         onExit: (c: number) => { exitCode = c; },
       });
 
-      await sleep(600);
-      const bootsBefore = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
-      expect(bootsBefore).toHaveLength(1); // exactly one child so far
+      try {
+      // Deliberately hold BOOT until the test releases it. A fixed post-spawn
+      // sleep cannot prove readiness; this real child exists before BOOT does.
+      await vi.waitFor(() => expect(captured()).toContain('BOOT_PENDING'), { timeout: 8000 });
+      expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(0);
+      writeFileSync(bootRelease, 'ready');
+      const bootsBefore = await vi.waitFor(() => {
+        const boots = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
+        expect(boots).toHaveLength(1);
+        return boots;
+      }, { timeout: 8000 });
       const pid1 = bootsBefore[0];
       const ptyPid1 = JSON.parse(readFileSync(meta, 'utf8')).ptyPid;
       expect(ptyPid1).toBe(pid1);
@@ -2042,12 +3399,22 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
       // The host kills the child, fresh-spawns it in the SAME host (same
       // socket/meta/SID), and opens the fresh process on the carry.
       await controlInject(sock, 'reset', 'CARRIED');
-      await sleep(2500); // kill + respawn + boot + output-quiet(200) + submit CR
-
-      const bootsAfter = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
-      expect(bootsAfter).toHaveLength(2); // the child was actually respawned
+      const bootsAfter = await vi.waitFor(() => {
+        const boots = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
+        expect(boots).toHaveLength(2);
+        expect(captured()).toContain('ECHO:CARRIED');
+        return boots;
+      }, { timeout: 8000 });
       const pid2 = bootsAfter[1];
       expect(pid2).not.toBe(pid1); // a genuinely new process
+      const stopEvents = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+        .trim().split('\n').map((line) => JSON.parse(line));
+      // Backend-aware reset enters the existing recycle path.
+      expect(stopEvents.find((event) => event.kind === 'respawn-predecessor-stop-started'))
+        .toMatchObject({ mode: 'recycle', predecessorPid: pid1 });
+      expect(stopEvents.find((event) => event.kind === 'respawn-predecessor-stop-finished'))
+        .toMatchObject({ mode: 'recycle', predecessorPid: pid1, forceKillRequested: false, exitObserved: true });
+      expect(stopEvents.some((event) => event.kind === 'respawn-predecessor-force-kill')).toBe(false);
       // The carry-note was injected as the opening turn of the fresh context.
       expect(captured()).toContain('ECHO:CARRIED');
 
@@ -2066,6 +3433,11 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
       expect(exitCode).toBe(0);
       expect(existsSync(sock)).toBe(false);
       expect(existsSync(meta)).toBe(false);
+      } finally {
+        if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+        await done.catch(() => undefined);
+        rmSync(fixtureRoot, { recursive: true, force: true });
+      }
     },
     25_000,
   );
@@ -2089,7 +3461,7 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
         args: ['-e', childCode],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'codex',
           PAPERCUSP_ADV_SESSION_ID: '42',
@@ -2136,6 +3508,24 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
       }
       expect(predecessorAlive).toBe(false);
 
+      const stopEvents = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+        .trim().split('\n').map((line) => JSON.parse(line));
+      const started = stopEvents.findIndex((event) => event.kind === 'respawn-predecessor-stop-started');
+      const forced = stopEvents.findIndex((event) => event.kind === 'respawn-predecessor-force-kill');
+      const finished = stopEvents.findIndex((event) => event.kind === 'respawn-predecessor-stop-finished');
+      const respawned = stopEvents.findIndex((event) => event.kind === 'respawned');
+      expect(started).toBeGreaterThanOrEqual(0);
+      expect(forced).toBeGreaterThan(started);
+      expect(finished).toBeGreaterThan(forced);
+      expect(respawned).toBeGreaterThan(finished);
+      expect(stopEvents[forced]).toMatchObject({
+        mode: 'recycle', predecessorPid: firstBoot, signal: 'SIGKILL',
+      });
+      expect(stopEvents[finished]).toMatchObject({
+        mode: 'recycle', predecessorPid: firstBoot, forceKillRequested: true, exitObserved: true,
+        signal: 'SIGKILL',
+      });
+
       await rawInject(sock, 'QUIT\n');
       await done;
       expect(existsSync(sock)).toBe(false);
@@ -2165,19 +3555,23 @@ describe('carry-respawn TERMINAL FALLBACK — a successor that emits NOTHING sti
       // terminal fallback, the host skipped its delivery loop entirely and never
       // once tried to write — so a healthy successor sat at its prompt, silent,
       // while every wake was deferred and the agent was dead until a human typed.
+      const root = mkdtempSync(join(tmpdir(), 'psu-zero-output-ready-'));
+      const readerReady = join(root, 'reader-ready');
+      const signalSource = new EventEmitter();
       const childCode =
         "process.stdin.setEncoding('utf8');let b='';" +
         "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
         "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
-        'setTimeout(()=>process.exit(0),15000);';
+        "require('fs').writeFileSync(process.env.READER_READY,'ready');";
 
       const done = hostThroughPty({
         command: execPath,
         args: ['-e', childCode],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
+          READER_READY: readerReady,
           // A backend whose readiness marker this child will never emit, plus a
           // short fallback window — so the ONLY thing that can deliver the carry
           // is the terminal fallback itself.
@@ -2209,27 +3603,278 @@ describe('carry-respawn TERMINAL FALLBACK — a successor that emits NOTHING sti
         ownerId,
         io,
         bridgeTty: false,
+        signalSource,
         onExit: () => {},
       });
 
-      await sleep(600);
-      // Precondition, asserted rather than assumed: the child really is silent.
-      // If it ever starts emitting, this test would still pass while no longer
-      // testing the zero-output path at all — a vacuous guard.
-      expect(captured()).toBe('');
+      try {
+        // A file proves the silent child's reader exists without adding stdout.
+        await vi.waitFor(() => expect(existsSync(readerReady)).toBe(true), { timeout: 8000 });
+        // Precondition, asserted rather than assumed: the child really is silent.
+        // If it ever starts emitting, this test would still pass while no longer
+        // testing the zero-output path at all — a vacuous guard.
+        expect(captured()).toBe('');
 
-      await controlInject(sock, 'recycle', 'CARRIED');
-      await sleep(2500);
+        await controlInject(sock, 'recycle', 'CARRIED');
 
-      // The continuation turn started with no human input. This is the item's
-      // acceptance criterion stated as an assertion.
-      expect(captured()).toContain('ECHO:CARRIED');
+        // The continuation turn started with no human input. This is the item's
+        // acceptance criterion stated as an assertion.
+        await vi.waitFor(() => expect(captured()).toContain('ECHO:CARRIED'), { timeout: 8000 });
 
-      await rawInject(sock, 'QUIT\n');
-      await done;
+        await rawInject(sock, 'QUIT\n');
+        await done;
+      } finally {
+        signalSource.emit('SIGTERM');
+        await done;
+        rmSync(root, { recursive: true, force: true });
+      }
     },
     25_000,
   );
+
+  it.each(['staging-proxy', undefined] as const)(
+    'stores only operator-pin enums for an interactive stale host (route=%s) and preserves the D-008 no-reexec refusal',
+    async (route) => {
+      const ownerId = `su-stale-host-direct-3170-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const { captured, io } = fakeIo();
+      const childCode =
+        "process.stdout.write('BOOT:'+process.pid+'\\n❯\\n');" +
+        "process.stdin.setEncoding('utf8');let b='';" +
+        "process.stdin.on('data',d=>{b+=d;if(b.includes('QUIT'))process.exit(0);});" +
+        'setTimeout(()=>process.exit(0),15000);';
+      const env = {
+        ...hermeticEnv(),
+        PAPERCUSP_SID: ownerId,
+        PAPERCUSP_OPERATOR_URL: 'http://agent:PRIVATE-CREDENTIAL@127.0.0.1:3170/api/mcp?token=PRIVATE-TOKEN',
+        PAPERCUSP_TEST_SECRET: 'UNRELATED-PRIVATE-VALUE',
+        TERM: 'xterm-256color',
+      };
+      delete env.PAPERCUSP_PSU_REEXEC;
+      delete env.PAPERCUSP_PSU_REEXEC_PPID;
+
+      const reexecs: number[] = [];
+      const signalSource = new EventEmitter();
+      let done: Promise<void> | undefined;
+      try {
+        done = hostThroughPty({
+          command: execPath,
+          args: ['-e', childCode, 'ORIGINAL'],
+          cwd: '/tmp',
+          env,
+          ownerId,
+          io,
+          bridgeTty: true,
+          signalSource,
+          hostCodeStalenessFn: () => ({ stale: true, loaded: 'a'.repeat(64), onDisk: 'b'.repeat(64) }),
+          healOperatorPin: async () => {
+            const from = env.PAPERCUSP_OPERATOR_URL;
+            const to = 'http://agent:DESTINATION-CREDENTIAL@127.0.0.1:9171/api/mcp?token=DESTINATION-TOKEN';
+            env.PAPERCUSP_OPERATOR_URL = to;
+            return { from, to, route };
+          },
+          mintRecycleArgs: (a: string[]) => ({ args: a, nativeId: null }),
+          onReexec: ({ code }: { code: number }) => { reexecs.push(code); },
+          onExit: () => {},
+        });
+
+        await vi.waitFor(() => expect(captured()).toContain('BOOT:'), { timeout: 5_000 });
+        await controlInject(sock, 'recycle', '');
+
+        const deadline = Date.now() + 8_000;
+        let eventLogText = '';
+        let staleRow: Record<string, unknown> | undefined;
+        while (Date.now() < deadline) {
+          if (existsSync(eventLog)) {
+            eventLogText = readFileSync(eventLog, 'utf8');
+            staleRow = eventLogText
+              .split('\n')
+              .filter(Boolean)
+              .map((line) => JSON.parse(line))
+              .find((event) => event.kind === 'host-code-stale');
+            // Inspect the complete transition: the old snapshot could stop at
+            // host-code-stale, before the routing/healing event leaked its URL.
+            if (staleRow && eventLogText.includes('"kind":"respawned"')) break;
+          }
+          await sleep(25);
+        }
+
+        expect(staleRow).toMatchObject({
+          kind: 'host-code-stale',
+          operatorPin: 'direct-3170',
+          bridgeTty: true,
+          notAdoptingReason: 'interactive-tty',
+          willAdopt: false,
+        });
+        expect(reexecs).toEqual([]);
+        const pinEvent = eventLogText.split('\n').filter(Boolean).map((line) => JSON.parse(line))
+          .find((event) => event.kind === (route === 'staging-proxy' ? 'operator-pin-routed' : 'operator-pin-healed'));
+        expect(pinEvent).toMatchObject({ from: 'direct-3170', to: 'other', mode: 'recycle' });
+        expect(env.PAPERCUSP_OPERATOR_URL).toContain('DESTINATION-CREDENTIAL');
+        expect(eventLogText).not.toContain('PRIVATE-CREDENTIAL');
+        expect(eventLogText).not.toContain('PRIVATE-TOKEN');
+        expect(eventLogText).not.toContain('DESTINATION-CREDENTIAL');
+        expect(eventLogText).not.toContain('DESTINATION-TOKEN');
+        expect(eventLogText).not.toContain('UNRELATED-PRIVATE-VALUE');
+      } finally {
+        signalSource.emit('SIGTERM');
+        if (done) await done;
+      }
+    },
+    25_000,
+  );
+});
+
+describe('carry completion follows native delivery and reanchor (WI-10004791)', () => {
+  // WI-10005106: `stuckOnce` boots the first carry child stuck at the Codex
+  // `Starting` footer and the next one Ready; the carry must be delivered on the
+  // fresh-epoch retry. `persists:false` keeps every child at `Starting`: one
+  // fresh-epoch retry, then the last attempt holds to its ceiling and drops.
+  it.each([
+    { persists: true, deferred: false, stuckOnce: false },
+    { persists: true, deferred: true, stuckOnce: false },
+    { persists: false, deferred: false, stuckOnce: false },
+    { persists: true, deferred: false, stuckOnce: true },
+  ])('does not confuse a booted Codex with a completed carry (persists=$persists, deferred=$deferred, stuckOnce=$stuckOnce)', async ({ persists, deferred, stuckOnce }) => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-carry-completion-'));
+    const codexHome = join(root, 'codex');
+    const nativeId = '01a0f68e-3037-7dc3-b898-a1cc12441884';
+    const nativeFile = join(codexHome, 'sessions', '2026', '10', '01', `rollout-2026-10-01T10-00-00-${nativeId}.jsonl`);
+    const ownerId = `su-carry-completion-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const eventLog = eventLogPathForOwner(ownerId);
+    const marker = '⟦turn-origin:self-compaction nonce:fedcba9876543210⟧';
+    const { captured, io } = fakeIo();
+    const order: string[] = [];
+    let confirm!: () => void;
+    const report = vi.fn(async (id: string, options: { onConfirmed: () => void }) => {
+      expect(id).toBe(nativeId);
+      expect(readFileSync(nativeFile, 'utf8')).toContain(marker);
+      if (deferred) {
+        confirm = () => { order.push('reanchor'); options.onConfirmed(); };
+        return false;
+      }
+      order.push('reanchor');
+      return true;
+    });
+    const emit = vi.fn(() => { order.push('emit'); return null; });
+    const childCode = [
+      "const fs=require('fs'),path=require('path');",
+      "const c=process.env.BOOT_COUNTER,n=fs.existsSync(c)?Number(fs.readFileSync(c,'utf8'))+1:1;fs.writeFileSync(c,String(n));",
+      "const starting=n>1&&(process.env.PERSISTS!=='yes'||(process.env.STUCK_ONCE==='yes'&&n===2));",
+      "process.stdout.write('BOOT:'+process.pid+'\\n'+(starting?'Starting':'Ready')+' · GPT-6.1-Sol xhigh · Context 100% left\\n');",
+      "process.stdin.setEncoding('utf8');let b='';process.stdin.on('data',d=>{b+=d;let at;while((at=b.indexOf('\\n'))>=0){const line=b.slice(0,at);b=b.slice(at+1);if(line==='QUIT')process.exit(0);",
+      "if(n>1&&!starting){fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const timestamp=new Date().toISOString();fs.appendFileSync(process.env.NATIVE_FILE,JSON.stringify({type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:line}]}})+'\\n');}",
+      "process.stdout.write('ECHO:'+line+'\\n');}});setTimeout(()=>process.exit(0),8000);",
+    ].join('');
+    // This test exercises a child with a KNOWN Starting/Ready footer. Pause its
+    // deadline clock only during OS process boot, until its actual first output
+    // reaches the host. The separate zero-output test covers the unobserved-boot
+    // fallback. Keep the 600ms stuck threshold and 1500ms budget unchanged.
+    const wallNow = Date.now.bind(Date);
+    let bootStartedAt: number | null = null;
+    let bootTimeMs = 0;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() =>
+      (bootStartedAt ?? wallNow()) - bootTimeMs);
+    const signalSource = new EventEmitter();
+    const done = hostThroughPty({
+      command: execPath, args: ['-e', childCode], cwd: root,
+      env: {
+        ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
+        CODEX_HOME: codexHome, BOOT_COUNTER: join(root, 'boots'), NATIVE_FILE: nativeFile,
+        PERSISTS: persists ? 'yes' : 'no', TERM: 'xterm-256color',
+        STUCK_ONCE: stuckOnce ? 'yes' : 'no',
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+        PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '500',
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '1500',
+        PAPERCUSP_PSU_PTY_CODEX_CARRY_STARTING_STUCK_MS: '600',
+        PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS: '2000',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
+        PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '10',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+      },
+      ownerId, io, bridgeTty: false, signalSource,
+      spawnPty: (file, args, options, realSpawn) => {
+        bootStartedAt = wallNow();
+        const spawned = realSpawn(file, args, options);
+        return new Proxy(spawned, {
+          get(target, property) {
+            if (property === 'onData') {
+              return (handler: (data: string) => void) => target.onData((data: string) => {
+                if (bootStartedAt !== null) {
+                  bootTimeMs += wallNow() - bootStartedAt;
+                  bootStartedAt = null;
+                }
+                handler(data);
+              });
+            }
+            const value = Reflect.get(target, property, target);
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        });
+      },
+      mintCarryRespawnArgs: (args: string[]) => ({ args, nativeId: null, launchContextPath: '/test/carry.md' }),
+      onRespawn: report, emitCompacted: emit, nativePersistenceTimeoutMs: 200, onExit: () => {},
+    });
+    try {
+      await vi.waitFor(() => expect(captured()).toContain('BOOT:'), { timeout: 8000 });
+      await envelopeInject(sock, {
+        mode: 'carry-respawn', ownerId, data: `${marker}\nContinue saved work`,
+        systemPromptAddendum: 'verified carry completion',
+      });
+      const hostRows = () => readFileSync(eventLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+      await vi.waitFor(() => {
+        expect(hostRows().some((row) => (persists
+          ? row.kind === 'respawn-carry-delivered'
+          : row.kind === 'respawn-carry-dropped' && row.reason === 'codex-startup-still-starting'))).toBe(true);
+      }, { timeout: 9000 });
+      const boots = () => readFileSync(join(root, 'boots'), 'utf8');
+      const freshEpochRetries = () => hostRows().filter((row) => row.kind === 'respawn-carry-fresh-epoch-retry');
+      if (stuckOnce) {
+        // The stuck child was abandoned at the 600ms stuck threshold, well inside
+        // the 1500ms budget, and the carry landed on the fresh successor.
+        expect(boots()).toBe('3');
+        expect(hostRows().find((row) => row.kind === 'codex-starting-stuck-early-drop'))
+          .toMatchObject({ label: 'recycle carry-note', stuckMs: 600, budgetMs: 1500 });
+        expect(freshEpochRetries()).toEqual([
+          expect.objectContaining({ reason: 'codex-startup-still-starting', attempt: 1 }),
+        ]);
+      }
+      if (!persists) {
+        // One fresh-epoch retry, then the LAST attempt holds (bounded by the
+        // ceiling) instead of retrying again.
+        expect(boots()).toBe('3');
+        expect(freshEpochRetries()).toEqual([
+          expect.objectContaining({ reason: 'codex-startup-still-starting', attempt: 1 }),
+        ]);
+        expect(hostRows().filter((row) => row.kind === 'kickoff-held-for-codex-frame')).toHaveLength(1);
+      }
+      if (persists) {
+        if (deferred) {
+          expect(order).toEqual([]);
+          expect(emit).not.toHaveBeenCalled();
+          confirm();
+        }
+        expect(order).toEqual(['reanchor', 'emit']);
+        expect(report).toHaveBeenCalledOnce();
+        expect(emit).toHaveBeenCalledWith(ownerId, 'carry-respawn', { nativeId });
+      } else {
+        expect(order).toEqual([]);
+        expect(report).not.toHaveBeenCalled();
+        expect(emit).not.toHaveBeenCalled();
+        expect(readFileSync(eventLog, 'utf8')).toContain('"reason":"codex-startup-still-starting"');
+      }
+      await rawInject(sock, 'QUIT\n');
+      expect(await done).toBe(0);
+    } finally {
+      clock.mockRestore();
+      signalSource.emit('SIGTERM');
+      await done.catch(() => undefined);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
 });
 
 describe('P-020 carry-respawn drill correlation', () => {
@@ -2250,13 +3895,25 @@ describe('P-020 carry-respawn drill correlation', () => {
         'setTimeout(()=>process.exit(0),15000);';
       const nativeId = 'ddddabcd-1234-5678-9abc-def012345678';
       const carryPath = '/safe/carry-drill-d-1.md';
+      // The fresh claude-su path checks /mcp readiness before writing the carry.
+      // Give that precondition a deterministic healthy response in this fake CLI.
+      const mcpAwareChildCode = childCode.replace(
+        "process.stdin.setEncoding('utf8');",
+        "process.stdin.setEncoding('utf8');let mcpBuffer='',mcpReady=false;process.stdin.on('data',d=>{mcpBuffer+=d;if(!mcpReady&&(mcpBuffer.includes('/mcp\\r')||mcpBuffer.includes('/mcp\\n'))){mcpReady=true;process.stdout.write('MCP_DIALOG\\n❯ 1. papercusp-su connected\\n');}});",
+      );
+      // The readiness macro closes its dialog with escape keys. Echo the carry
+      // marker when the fake CLI receives it, without treating those keys as text.
+      const carryAwareChildCode = mcpAwareChildCode.replace(
+        "process.stdin.setEncoding('utf8');",
+        "process.stdin.setEncoding('utf8');let carryBuffer='',carryEchoed=false;process.stdin.on('data',d=>{carryBuffer+=d;if(!carryEchoed&&carryBuffer.includes('⟦carry-drill:d-1⟧')){carryEchoed=true;process.stdout.write('ECHO:⟦carry-drill:d-1⟧\\n');}});",
+      );
       let exitCode: number | null = null;
       const done = hostThroughPty({
         command: execPath,
-        args: ['-e', childCode],
+        args: ['-e', carryAwareChildCode],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'claude',
           TERM: 'xterm-256color',
@@ -2269,6 +3926,7 @@ describe('P-020 carry-respawn drill correlation', () => {
         io,
         bridgeTty: false,
         mintCarryRespawnArgs: (args: string[]) => ({ args, nativeId, launchContextPath: carryPath }),
+        onRespawn: async () => true,
         onExit: (code: number) => { exitCode = code; },
       });
 
@@ -2288,13 +3946,24 @@ describe('P-020 carry-respawn drill correlation', () => {
           await sleep(25);
         }
         expect(captured()).toContain('ECHO:⟦carry-drill:d-1⟧');
+        expect(captured()).toContain('MCP_DIALOG');
+        expect(captured().indexOf('MCP_DIALOG')).toBeLessThan(captured().indexOf('ECHO:⟦carry-drill:d-1⟧'));
         const events = readFileSync(eventLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-binding-confirmed',
+          nativeId,
+        }));
         expect(events).toContainEqual(expect.objectContaining({
           kind: 'carry-drill-respawned',
           drillId: 'd-1',
           sessionClass: 'claude-su',
           nativeId,
           launchContextPath: carryPath,
+        }));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-mcp-ready',
+          serverName: 'papercusp-su',
+          attempts: 1,
         }));
         expect(events).toContainEqual(expect.objectContaining({
           kind: 'carry-drill-carry-delivered',
@@ -2312,6 +3981,257 @@ describe('P-020 carry-respawn drill correlation', () => {
     },
     25_000,
   );
+});
+
+describe('carry-drill busy-gate metric correlation (WI-6554700010012191)', () => {
+  it('persists a tagged fake-PTY expiry measurement in the owner log and shared ledger', async () => {
+    const nonce = process.pid + '-' + Math.floor(performance.now());
+    const ownerId = 'su-busy-gate-drill-itest-' + nonce;
+    const drillId = 'fake-busy-gate-' + nonce;
+    const sessionClass = 'codex-su';
+    const sock = socketPathFor(ownerId);
+    const eventLog = eventLogPathForOwner(ownerId);
+    const ledgerPath = sharedDrillLedgerPath(PSU_PTY_DIR);
+    const { captured, io } = fakeIo();
+    const childCode = [
+      "process.stdout.write('BOOT:'+process.pid+'\\n');",
+      "setInterval(()=>process.stdout.write('SPIN\\n'),20);",
+      "process.stdin.setEncoding('utf8');process.stdin.on('data',d=>{if(d.includes('QUIT'))process.exit(0);});",
+      'setTimeout(()=>process.exit(0),15000);',
+    ].join('');
+    let done: Promise<number> | undefined;
+    try {
+      done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: '/tmp',
+        env: {
+          ...hermeticEnv(),
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'codex',
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '1000',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '250',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '2000',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS: '20',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        nativePersistenceTimeoutMs: 100,
+      });
+      await vi.waitFor(() => {
+        expect(captured()).toContain('SPIN');
+      }, { timeout: 5000 });
+
+      await envelopeInject(sock, {
+        mode: 'carry-respawn',
+        ownerId,
+        data: 'SYNTHETIC_BUSY_GATE_CARRY',
+        systemPromptAddendum: 'safe fake-PTY expiry reproduction',
+        drillId,
+        sessionClass,
+      });
+      const readRows = (file: string): Array<Record<string, unknown>> =>
+        existsSync(file)
+          ? readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
+          : [];
+      const hostMetric = await vi.waitFor(() => {
+        const row = readRows(eventLog).find((candidate) =>
+          candidate.kind === 'busy-gate-expired' && candidate.drillId === drillId);
+        expect(row).toBeDefined();
+        return row!;
+      }, { timeout: 5000 });
+      const sharedMetric = readRows(ledgerPath).find((candidate) =>
+        candidate.kind === 'busy-gate-expired' && candidate.drillId === drillId);
+
+      expect(Number.isFinite(Date.parse(String(hostMetric.ts)))).toBe(true);
+      expect(hostMetric).toMatchObject({
+        kind: 'busy-gate-expired',
+        mode: 'carry-respawn',
+        drillId,
+        sessionClass,
+        capMs: 250,
+        quietMs: 1000,
+      });
+      expect(typeof hostMetric.observedMaxQuietMs).toBe('number');
+      expect(typeof hostMetric.verifier).toBe('string');
+      expect(sharedMetric).toMatchObject({
+        kind: 'busy-gate-expired',
+        ownerId,
+        mode: 'carry-respawn',
+        drillId,
+        sessionClass,
+        capMs: 250,
+        observedMaxQuietMs: hostMetric.observedMaxQuietMs,
+        quietMs: 1000,
+        verifier: hostMetric.verifier,
+      });
+      expect(Number.isFinite(Date.parse(String(sharedMetric?.ts)))).toBe(true);
+
+      await rawInject(sock, 'QUIT\n');
+      expect(await done).toBe(0);
+    } finally {
+      if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+      await done?.catch(() => undefined);
+    }
+  }, 15_000);
+});
+
+describe('host-code adopted carry drill lifecycle (EI-25602595012290893)', () => {
+  it('records adopted drill respawn and delivery in both lifecycle ledgers', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-adopted-carry-drill-'));
+    const codexHome = join(root, 'codex-home');
+    const nativeId = 'acba1234-1234-4234-8234-123456789abc';
+    const drillId = `d-adopt-${process.pid}-${Math.floor(performance.now())}`;
+    const sessionClass = 'codex-su';
+    const launchContextPath = '/safe/adopted-carry-context.md';
+    const nativeFile = join(codexHome, 'sessions', '2026', '10', '10', `rollout-${nativeId}.jsonl`);
+    const ownerId = `su-adopted-carry-drill-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const eventLog = eventLogPathForOwner(ownerId);
+    const ledgerPath = sharedDrillLedgerPath(PSU_PTY_DIR);
+    const marker = '⟦turn-origin:carry-drill nonce:0123456789abcdef⟧';
+    const kickoff = `${marker}\nADOPTED_DRILL_CARRY`;
+    const { captured, io } = fakeIo();
+    const childCode = [
+      "const fs=require('fs'),path=require('path');process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
+      "let input='',echoed=false,submitted=false;process.stdout.write('\\x1b[6nmodel: GPT-6.1-Sol xhigh\\n62% context left\\nReady · GPT-6.1-Sol xhigh · Context 100% left\\n');",
+      "process.stdin.on('data',d=>{if(d.includes('\\x04'))process.exit(0);input+=d;if(!echoed&&input.includes('⟧')){echoed=true;process.stdout.write('COMPOSER_ECHO:'+input+'\\n');}if(!submitted&&input.includes(process.env.TURN_MARKER)&&input.includes('\\r')){submitted=true;fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const timestamp=new Date().toISOString();const rows=[{type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:process.env.TURN_MARKER}]}},{type:'event_msg',timestamp,payload:{type:'task_started',turn_id:'adopted-drill-1'}}];fs.writeFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));process.stdout.write('KICKOFF_SUBMITTED\\n');}if(input.includes('QUIT'))process.exit(0);});",
+      'setTimeout(()=>process.exit(0),12000);',
+    ].join('');
+    let done: Promise<number> | undefined;
+    try {
+      done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: root,
+        env: {
+          ...hermeticEnv(),
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'codex',
+          CODEX_HOME: codexHome,
+          NATIVE_FILE: nativeFile,
+          TURN_MARKER: marker,
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+          PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '50',
+          PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLL_MS: '10',
+          PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLLS: '1',
+          TERM: 'xterm-256color',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        kickoff,
+        adoptedCarryRespawn: { nativeId, drillId, sessionClass, launchContextPath },
+        nativePersistenceTimeoutMs: 1500,
+        onRespawn: async () => true,
+        signalSource: new EventEmitter(),
+        onExit: () => undefined,
+      });
+      await vi.waitFor(() => {
+        const rows = existsSync(eventLog)
+          ? readFileSync(eventLog, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+          : [];
+        expect(rows.some(row => row.kind === 'carry-drill-carry-delivered' && row.drillId === drillId)).toBe(true);
+      }, { timeout: 5000 });
+      expect(captured()).toContain('KICKOFF_SUBMITTED');
+      const ownerRows = readFileSync(eventLog, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+      const sharedRows = existsSync(ledgerPath)
+        ? readFileSync(ledgerPath, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+        : [];
+      for (const rows of [ownerRows, sharedRows]) {
+        expect(rows).toContainEqual(expect.objectContaining({
+          kind: 'carry-drill-respawned', drillId, sessionClass, nativeId, launchContextPath,
+        }));
+        expect(rows).toContainEqual(expect.objectContaining({
+          kind: 'carry-drill-carry-delivered', drillId, sessionClass, nativeId, launchContextPath,
+          adopted: true,
+        }));
+      }
+      await rawInject(sock, 'QUIT\n');
+      expect(await done).toBe(0);
+    } finally {
+      if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+      await done?.catch(() => undefined);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it('records an unverified adopted drill carry as dropped in both lifecycle ledgers', async () => {
+    const ownerId = `su-adopted-carry-drop-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const eventLog = eventLogPathForOwner(ownerId);
+    const ledgerPath = sharedDrillLedgerPath(PSU_PTY_DIR);
+    const drillId = `d-drop-${process.pid}-${Math.floor(performance.now())}`;
+    const sessionClass = 'codex-su';
+    const launchContextPath = '/safe/unverified-carry-context.md';
+    const nativeId = 'bcba1234-1234-4234-8234-123456789abc';
+    const { captured, io } = fakeIo();
+    const childCode = [
+      "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);let input='';",
+      "process.stdout.write('\\x1b[6nmodel: GPT-6.1-Sol xhigh\\n62% context left\\nReady · GPT-6.1-Sol xhigh · Context 100% left\\n');",
+      "process.stdin.on('data',d=>{if(d.includes('\\x04')||d.includes('QUIT'))process.exit(0);input+=d;if(input.includes('UNVERIFIED_ADOPTED_CARRY'))process.stdout.write('COMPOSER_ECHO:'+input+'\\n');});",
+      'setTimeout(()=>process.exit(0),12000);',
+    ].join('');
+    let done: Promise<number> | undefined;
+    try {
+      done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: '/tmp',
+        env: {
+          ...hermeticEnv(),
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'codex',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+          PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '50',
+          TERM: 'xterm-256color',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        kickoff: 'UNVERIFIED_ADOPTED_CARRY',
+        adoptedCarryRespawn: { nativeId, drillId, sessionClass, launchContextPath },
+        nativePersistenceTimeoutMs: 100,
+        onRespawn: async () => true,
+        signalSource: new EventEmitter(),
+        onExit: () => undefined,
+      });
+      await vi.waitFor(() => {
+        const rows = existsSync(eventLog)
+          ? readFileSync(eventLog, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+          : [];
+        expect(rows.some(row => row.kind === 'carry-drill-carry-dropped' && row.drillId === drillId)).toBe(true);
+      }, { timeout: 5000 });
+      const ownerRows = readFileSync(eventLog, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+      const sharedRows = existsSync(ledgerPath)
+        ? readFileSync(ledgerPath, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+        : [];
+      for (const rows of [ownerRows, sharedRows]) {
+        expect(rows).toContainEqual(expect.objectContaining({
+          kind: 'carry-drill-respawned', drillId, sessionClass, nativeId, launchContextPath,
+        }));
+        expect(rows).toContainEqual(expect.objectContaining({
+          kind: 'carry-drill-carry-dropped', drillId, sessionClass, nativeId, launchContextPath,
+          reason: 'missing-leading-turn-origin',
+        }));
+      }
+      expect(captured()).toContain('COMPOSER_ECHO:UNVERIFIED_ADOPTED_CARRY');
+      await rawInject(sock, 'QUIT\n');
+      expect(await done).toBe(0);
+    } finally {
+      if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+      await done?.catch(() => undefined);
+    }
+  }, 15_000);
 });
 
 describe('carry-respawn native turn-start proof (EI-21561923024113260)', () => {
@@ -2341,9 +4261,14 @@ describe('carry-respawn native turn-start proof (EI-21561923024113260)', () => {
         args: ['-e', childCode],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'claude',
+          // This fixture exercises a plain Claude child. A live headless
+          // session enables the onboarding/composer gate and makes this
+          // synthetic backend (which paints no onboarding frames) wait until
+          // its carry budget expires before testing native turn-start proof.
+          PAPERCUSP_PSU_HEADLESS: '0',
           CLAUDE_CONFIG_DIR: claudeConfig,
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
@@ -2365,6 +4290,8 @@ describe('carry-respawn native turn-start proof (EI-21561923024113260)', () => {
         bridgeTty: false,
         nativePersistenceTimeoutMs: 200,
         mintCarryRespawnArgs: (args: string[]) => ({ args, nativeId, launchContextPath: '/tmp/carry.md' }),
+        // Confirm identity so failure is specifically missing native turn proof.
+        onRespawn: async () => true,
         onExit: () => {},
       });
 
@@ -2460,7 +4387,7 @@ describe('carry-respawn STALENESS guard — only drills expire; production carri
         args: ['-e', childCode],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           // Keep this fixture hermetic when the suite runs inside a live psu
           // session. Ambient identity/configuration must not rewrite the
@@ -2581,7 +4508,7 @@ describe('RECYCLE respawns with FRESH session args + re-anchors identity (WI-198
         command: execPath,
         args: ['-e', childCode, 'ORIGINAL'],
         cwd: '/tmp',
-        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
         ownerId,
         io,
         bridgeTty: false,
@@ -2601,7 +4528,10 @@ describe('RECYCLE respawns with FRESH session args + re-anchors identity (WI-198
 
       // RECYCLE (no carry — we're testing the respawn argv/identity, not carry inject).
       await controlInject(sock, 'recycle', '');
-      await sleep(2500); // kill + respawn + boot
+      // The host's predecessor fence waits for the real node-pty exit callback;
+      // a fixed 2.5s sleep races that callback under a whole-file run and then
+      // reports a missing successor even though recycle is still progressing.
+      await vi.waitFor(() => expect(captured()).toContain('ARGV:RECYCLED'), { timeout: 10_000 });
 
       // The respawn ran the REWRITTEN argv (proves spawnChild(recycleArgs) wiring)…
       expect(captured()).toContain('ARGV:RECYCLED');
@@ -2655,7 +4585,7 @@ describe('RECYCLE respawn report ordering', () => {
         args: ['-e', childCode, 'ORIGINAL'],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'codex',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
@@ -2746,11 +4676,12 @@ describe('ADOPTION — a stale host hands the session to a fresh launcher instea
         args: ['-e', childCode, 'ORIGINAL'],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_ADV_SESSION_ID: '42',
           CODEX_HOME: '/tmp/codex-home-for-handoff',
           PAPERCUSP_AGENT: 'codex',
+          PAPERCUSP_FS_MUTEX_LOCK_DIR: '/isolated/explicit-mutex-root',
           TERM: 'xterm-256color',
           // The shim's advertisement. Without it the host must NOT exit — see the
           // control below, which is the safety-critical half of this pair. The
@@ -2817,6 +4748,7 @@ describe('ADOPTION — a stale host hands the session to a fresh launcher instea
           PAPERCUSP_AGENT: 'codex',
           PAPERCUSP_ADV_SESSION_ID: '42',
           CODEX_HOME: '/tmp/codex-home-for-handoff',
+          PAPERCUSP_FS_MUTEX_LOCK_DIR: '/isolated/explicit-mutex-root',
           DISABLE_AUTO_COMPACT: '1',
           DISABLE_COMPACT: '1',
         },
@@ -2847,7 +4779,8 @@ describe('ADOPTION — a stale host hands the session to a fresh launcher instea
       const ownerId = `su-adopt-noshim-itest-${process.pid}-${Math.floor(performance.now())}`;
       const sock = socketPathFor(ownerId);
       const { captured, io } = fakeIo();
-      const env = { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' };
+      const signalSource = new EventEmitter();
+      const env = { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' };
       delete env.PAPERCUSP_PSU_REEXEC;
       delete env.PAPERCUSP_PSU_REEXEC_PPID;
 
@@ -2860,48 +4793,57 @@ describe('ADOPTION — a stale host hands the session to a fresh launcher instea
         ownerId,
         io,
         bridgeTty: false,
+        signalSource,
         hostCodeStalenessFn: () => ({ stale: true, loaded: 'a'.repeat(64), onDisk: 'b'.repeat(64) }),
         mintRecycleArgs: (a: string[]) => ({ args: a, nativeId: null }),
         onReexec: ({ code }: { code: number }) => { reexecs.push(code); },
         onExit: () => {},
       });
 
-      await sleep(600);
-      expect([...captured().matchAll(/BOOT:/g)].length).toBe(1);
+      try {
+        await vi.waitFor(() => expect([...captured().matchAll(/BOOT:/g)]).toHaveLength(1), { timeout: 5_000 });
 
-      await controlInject(sock, 'recycle', '');
-      await sleep(2500);
+        await controlInject(sock, 'recycle', '');
+        await vi.waitFor(() => {
+          expect(readFileSync(eventLogPathForOwner(ownerId), 'utf8'))
+            .toContain('"kind":"respawn-predecessor-stop-finished"');
+        }, { timeout: 8_000 });
+        await vi.waitFor(() => expect([...captured().matchAll(/BOOT:/g)]).toHaveLength(2), { timeout: 5_000 });
 
-      // Respawned in place, exactly as before WI-38292 — a stale host, but a live
-      // session — and the re-exec door was never opened.
-      expect([...captured().matchAll(/BOOT:/g)].length).toBe(2);
-      expect(reexecs).toEqual([]);
-      // The staleness is still REPORTED, so the condition stays visible.
-      const eventLog = readFileSync(eventLogPathForOwner(ownerId), 'utf8');
-      expect(eventLog).toContain('"kind":"host-code-stale"');
-      // WI-10001514: and the row now says WHY it did not adopt. Without that, this
-      // no-shim headless host — which COULD have adopted safely and is a real gap —
-      // is byte-identical to an interactive host refusing correctly, which is why
-      // 7,021 of 9,087 measured stale detections were unattributable to either
-      // cause. This case is the sharp one: onReexec IS wired and only the shim
-      // advertisement is missing, so the reason must name the CODE, not the
-      // callback. Asserting the exact discriminator keeps the two from collapsing
-      // back into one label.
-      const staleRow = eventLog
-        .split('\n')
-        .filter(Boolean)
-        .map((line) => JSON.parse(line))
-        .find((e) => e.kind === 'host-code-stale');
-      expect(staleRow).toBeDefined();
-      expect(staleRow.adoptable).toBe(false);
-      expect(staleRow.willAdopt).toBe(false);
-      expect(staleRow.notAdoptingReason).toBe('no-reexec-code');
-      expect(staleRow.bridgeTty).toBe(false);
-      expect(staleRow.hasReexecCallback).toBe(true);
-      expect(existsSync(handoffPathFor(ownerId))).toBe(false);
+        // Respawned in place, exactly as before WI-38292 — a stale host, but a live
+        // session — and the re-exec door was never opened.
+        expect([...captured().matchAll(/BOOT:/g)].length).toBe(2);
+        expect(reexecs).toEqual([]);
+        // The staleness is still REPORTED, so the condition stays visible.
+        const eventLog = readFileSync(eventLogPathForOwner(ownerId), 'utf8');
+        expect(eventLog).toContain('"kind":"host-code-stale"');
+        // WI-10001514: and the row now says WHY it did not adopt. Without that, this
+        // no-shim headless host — which COULD have adopted safely and is a real gap —
+        // is byte-identical to an interactive host refusing correctly, which is why
+        // 7,021 of 9,087 measured stale detections were unattributable to either
+        // cause. This case is the sharp one: onReexec IS wired and only the shim
+        // advertisement is missing, so the reason must name the CODE, not the
+        // callback. Asserting the exact discriminator keeps the two from collapsing
+        // back into one label.
+        const staleRow = eventLog
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line))
+          .find((e) => e.kind === 'host-code-stale');
+        expect(staleRow).toBeDefined();
+        expect(staleRow.adoptable).toBe(false);
+        expect(staleRow.willAdopt).toBe(false);
+        expect(staleRow.notAdoptingReason).toBe('no-reexec-code');
+        expect(staleRow.bridgeTty).toBe(false);
+        expect(staleRow.hasReexecCallback).toBe(true);
+        expect(existsSync(handoffPathFor(ownerId))).toBe(false);
 
-      await rawInject(sock, 'QUIT\n');
-      await done;
+        await rawInject(sock, 'QUIT\n');
+        await done;
+      } finally {
+        signalSource.emit('SIGTERM');
+        await done;
+      }
     },
     25_000,
   );
@@ -2914,17 +4856,100 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
   // staging restart. The heal under test runs with its REAL default (no injection),
   // so the refusal is recognised from a genuine refused socket.
   const childCode =
+    "if(process.env.PINHEAL_CHILD_LOG)require('fs').appendFileSync(process.env.PINHEAL_CHILD_LOG,JSON.stringify({phase:'boot',pid:process.pid,url:process.env.PAPERCUSP_OPERATOR_URL,at:Date.now()})+'\\n');" +
     "process.stdout.write('BOOT:'+process.env.PAPERCUSP_OPERATOR_URL+'\\n');" +
     "process.stdin.setEncoding('utf8');let b='';" +
     "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
     "if(line==='QUIT'){process.exit(0);}}});" +
     'setTimeout(()=>process.exit(0),15000);';
 
-  it.each([true, false])(
-    'a refused pin changes in the respawned child only when managed=%s',
-    async (managed) => {
+  it('waits for a delayed predecessor exit notification before spawning the successor', async () => {
+    const ownerId = `su-recycle-exit-fence-${process.pid}-${Math.floor(performance.now())}`;
+    const { captured, io } = fakeIo();
+    const signalSource = new EventEmitter();
+    const delayedExits: Array<() => void> = [];
+    let exitsReleased = false;
+    const releaseExits = () => {
+      exitsReleased = true;
+      for (const notify of delayedExits.splice(0)) notify();
+    };
+    let spawns = 0;
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', "for(const signal of ['SIGHUP','SIGTERM','SIGINT'])process.on(signal,()=>{});" + childCode],
+      cwd: '/tmp',
+      env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+      ownerId,
+      io,
+      bridgeTty: false,
+      signalSource,
+      hostCodeStalenessFn: () => ({ stale: false }),
+      mintRecycleArgs: (args: string[]) => ({ args, nativeId: null }),
+      spawnPty: (file, args, options, realSpawn) => {
+        const spawned = realSpawn(file, args, options);
+        if (++spawns === 1) {
+          const onExit = spawned.onExit.bind(spawned);
+          return new Proxy(spawned, {
+            get(target, property) {
+              if (property === 'onExit') {
+                return (handler: (event: { exitCode: number; signal: number }) => void) =>
+                  onExit((event: { exitCode: number; signal: number }) => {
+                    if (exitsReleased) handler(event);
+                    else delayedExits.push(() => handler(event));
+                  });
+              }
+              const value = Reflect.get(target, property, target);
+              return typeof value === 'function' ? value.bind(target) : value;
+            },
+          });
+        }
+        return spawned;
+      },
+    });
+    const events = () => readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+      .trim().split('\n').map((line) => JSON.parse(line));
+    try {
+      await vi.waitFor(() => expect(captured()).toContain('BOOT:'), { timeout: 5_000 });
+      await controlInject(socketPathFor(ownerId), 'recycle', '');
+      await vi.waitFor(() => expect(events().some((e) => e.kind === 'respawn-predecessor-force-kill'))
+        .toBe(true), { timeout: 8_000 });
+      // Observe both the REAL child's exit and the old one-second diagnostic
+      // cap while its notification is withheld. Wall-clock sleeps cannot prove
+      // which of those phases ran first, especially in a whole-file run.
+      await vi.waitFor(() => {
+        expect(delayedExits.length).toBeGreaterThan(0);
+        expect(events().some((e) => e.kind === 'respawn-predecessor-stop-pending')).toBe(true);
+      }, { timeout: 5_000 });
+      expect(spawns).toBe(1);
+      expect(events().some((e) => e.kind === 'respawn-predecessor-stop-finished')).toBe(false);
+      releaseExits();
+      await vi.waitFor(() => expect(spawns).toBe(2), { timeout: 5_000 });
+      const lifecycle = events();
+      const stopped = lifecycle.findIndex((e) => e.kind === 'respawn-predecessor-stop-finished');
+      expect(lifecycle[stopped]).toMatchObject({ exitObserved: true, forceKillRequested: true, signal: 'SIGKILL' });
+      expect(lifecycle.findIndex((e) => e.kind === 'respawned')).toBeGreaterThan(stopped);
+    } finally {
+      releaseExits();
+      // Teardown must not depend on the successor having installed its stdin
+      // reader, or a dropped QUIT waits for the child's 15s safety timer.
+      signalSource.emit('SIGTERM');
+      await done;
+    }
+  }, 25_000);
+
+  it.each([
+    [true, false], [false, false],
+    [true, true], [false, true],
+  ])(
+    'a refused pin changes in the respawned child only when managed=%s (graceful signal resistant=%s)',
+    async (managed, gracefulSignalResistant) => {
+      // WI-10004944: the heal accepts a replacement proxy only if it serves
+      // /api/mcp (d24b79f750, psu-pty-host.mjs `proxyMcpRouteExists`). A real
+      // Streamable HTTP endpoint answers a GET with 405; a 404 there means "not
+      // an operator" and the heal correctly declines. This fixture 404'd the
+      // route, so the managed case failed deterministically from that commit on.
       const proxy = createServer((req, res) => {
-        res.writeHead(req.url === '/api/health' ? 200 : 404);
+        res.writeHead(req.url === '/api/health' ? 200 : req.url === '/api/mcp' ? 405 : 404);
         res.end('ok');
       });
       await new Promise<void>((r) => proxy.listen(0, '127.0.0.1', r));
@@ -2937,12 +4962,16 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
       const ownerId = `su-pinheal-itest-${process.pid}-${Math.floor(performance.now())}`;
       const sock = socketPathFor(ownerId);
       const { captured, io } = fakeIo();
+      const childLog = join(PSU_PTY_DIR, `${ownerId}.child.jsonl`);
+      const signalSource = new EventEmitter();
+      const spawnEvidence: Array<{ pid: number; at: number; data: string; exit: unknown }> = [];
       const env: NodeJS.ProcessEnv = {
-        ...process.env,
+        ...hermeticEnv(),
         PAPERCUSP_SID: ownerId,
         TERM: 'xterm-256color',
         PAPERCUSP_OPERATOR_URL: `http://localhost:${deadPort}`,
         PAPERCUSP_MCP_PROXY_PORT: String(proxyPort),
+        PINHEAL_CHILD_LOG: childLog,
       };
       delete env.PAPERCUSP_PSU_REEXEC;
       delete env.PAPERCUSP_PSU_REEXEC_PPID;
@@ -2952,12 +4981,23 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
 
       const done = hostThroughPty({
         command: execPath,
-        args: ['-e', childCode],
+        args: ['-e', (gracefulSignalResistant
+          ? "for(const signal of ['SIGHUP','SIGTERM','SIGINT'])process.on(signal,()=>{});"
+          : '') + childCode],
         cwd: '/tmp',
         env,
         ownerId,
         io,
         bridgeTty: false,
+        signalSource,
+        spawnPty: (file, args, options, realSpawn) => {
+          const spawned = realSpawn(file, args, options);
+          const evidence = { pid: spawned.pid, at: Date.now(), data: '', exit: null as unknown };
+          spawnEvidence.push(evidence);
+          spawned.onData((data: string) => { evidence.data = `${evidence.data}${data}`.slice(-4096); });
+          spawned.onExit((event: unknown) => { evidence.exit = event; });
+          return spawned;
+        },
         hostCodeStalenessFn: () => ({ stale: false }),
         mintRecycleArgs: (a: string[]) => ({ args: a, nativeId: null }),
         onExit: () => {},
@@ -2971,11 +5011,28 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
         expect(captured()).not.toContain(`BOOT:http://127.0.0.1:${proxyPort}`);
 
         await controlInject(sock, 'recycle', '');
+        // RECYCLE fences the predecessor before it can boot a successor. A
+        // graceful-signal-resistant child legitimately uses the host's 5s
+        // graceful wait plus its bounded hard-kill wait. Observe that phase
+        // separately; starting the 5s BOOT assertion at injection races it.
+        await vi.waitFor(() => {
+          expect(readFileSync(eventLogPathForOwner(ownerId), 'utf8'))
+            .toContain('"kind":"respawn-predecessor-stop-finished"');
+        }, { timeout: 8_000 });
         await vi.waitFor(() => {
           expect(captured().split('BOOT:').length - 1).toBe(2);
         }, { timeout: 5000 });
 
         const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8');
+        const lifecycle = events.trim().split('\n').map((line) => JSON.parse(line));
+        const stopped = lifecycle.findIndex((event) => event.kind === 'respawn-predecessor-stop-finished');
+        const respawned = lifecycle.findIndex((event) => event.kind === 'respawned');
+        expect(stopped).toBeGreaterThanOrEqual(0);
+        expect(respawned).toBeGreaterThan(stopped);
+        expect(lifecycle[stopped]).toMatchObject({ exitObserved: true });
+        if (gracefulSignalResistant) {
+          expect(lifecycle[stopped]).toMatchObject({ forceKillRequested: true, signal: 'SIGKILL' });
+        }
         if (managed) {
           expect(captured()).toContain(`BOOT:http://127.0.0.1:${proxyPort}`);
           expect(env.PAPERCUSP_OPERATOR_URL_PROVENANCE).toBe('psu-launcher');
@@ -2989,7 +5046,21 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
 
         await rawInject(sock, 'QUIT\n');
         await done;
+      } catch (error) {
+        // Preserve the distinction between a child that never reached JS, a
+        // child that wrote bytes before the host bridge, and a host that ended.
+        // The phase ledger is fixture-owned and contains no inherited secrets.
+        console.error('[pin-heal child evidence]', JSON.stringify({
+          ownerId, managed, gracefulSignalResistant, spawnEvidence,
+          childLog: existsSync(childLog) ? readFileSync(childLog, 'utf8') : 'not-written',
+          captured: captured().slice(-4096),
+        }));
+        throw error;
       } finally {
+        // A failed assertion must not leave a host's global signal listeners,
+        // child, socket, or timers active during the next parameterized case.
+        signalSource.emit('SIGTERM');
+        await done;
         await new Promise<void>((r) => proxy.close(() => r()));
       }
     },
@@ -3007,7 +5078,7 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
     const sock = socketPathFor(ownerId);
     const { captured, io } = fakeIo();
     const env: NodeJS.ProcessEnv = {
-      ...process.env,
+      ...hermeticEnv(),
       PAPERCUSP_SID: ownerId,
       TERM: 'xterm-256color',
       PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3170',
@@ -3037,6 +5108,12 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
       }, { timeout: 5000 });
 
       await controlInject(sock, 'recycle', '');
+      // The exit fence may spend its graceful stop budget before spawning.
+      // Start the successor assertion only after that phase is observed.
+      await vi.waitFor(() => {
+        expect(readFileSync(eventLogPathForOwner(ownerId), 'utf8'))
+          .toContain('"kind":"respawn-predecessor-stop-finished"');
+      }, { timeout: 8_000 });
       await vi.waitFor(() => {
         expect(captured().split('BOOT:').length - 1).toBe(2);
       }, { timeout: 5000 });
@@ -3145,7 +5222,7 @@ describe('RECYCLE re-renders the base persona instead of inheriting it (stale-pr
       cwd: '/tmp',
       // PAPERCUSP_AGENT=claude so the REAL mint synthesizes a --session-id for this
       // resume-shaped argv instead of no-op'ing (the 2026-07-18 mint gap).
-      env: { ...process.env, PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude', TERM: 'xterm-256color' },
+      env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude', TERM: 'xterm-256color' },
       ownerId,
       io,
       bridgeTty: false,
@@ -3256,7 +5333,7 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
       // the carry — so 'ECHO:CARRIED' landing proves the retry loop worked.
       const childCode =
         "process.stdout.write('BOOT:'+process.pid+'\\n');" +
-        'let n=0;const iv=setInterval(()=>{process.stdout.write(".");if(++n>35)clearInterval(iv);},20);' +
+        'let n=0;const iv=setInterval(()=>{process.stdout.write(".");if(++n>35){clearInterval(iv);process.stdout.write("INITIAL_SETTLED\\n");}},20);' +
         "process.stdin.setEncoding('utf8');let b='';" +
         "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
         "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
@@ -3268,7 +5345,7 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
         args: ['-e', childCode],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'codex',
           PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '300',
@@ -3285,15 +5362,19 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
         onExit: (c: number) => { exitCode = c; },
       });
 
-      await sleep(1200); // let the initial child boot + finish its spin
-      expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(1);
+      try {
+      await vi.waitFor(() => {
+        expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(1);
+        expect(captured()).toContain('INITIAL_SETTLED');
+      }, { timeout: 8000 });
 
       await controlInject(sock, 'recycle', 'CARRIED');
-      // kill + respawn + boot + ~700ms spin + retries across the 300ms cap until it
-      // settles + quiet(150) + submit CR — comfortably inside this window.
-      await sleep(4000);
-
-      const bootsAfter = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
+      const bootsAfter = await vi.waitFor(() => {
+        const boots = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
+        expect(boots).toHaveLength(2);
+        expect(captured()).toContain('ECHO:CARRIED');
+        return boots;
+      }, { timeout: 8000 });
       expect(bootsAfter).toHaveLength(2); // genuinely respawned
       // The carry landed via RETRY (the fresh child was busy past the first cap).
       expect(captured()).toContain('ECHO:CARRIED');
@@ -3307,6 +5388,14 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
       expect(exitCode).toBe(0);
       expect(existsSync(sock)).toBe(false);
       expect(existsSync(meta)).toBe(false);
+      } catch (error) {
+        const eventLog = eventLogPathForOwner(ownerId);
+        console.error(`[${ownerId}] output=${captured()}\n${existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '(no host events yet)'}`);
+        throw error;
+      } finally {
+        if (existsSync(sock)) await rawInject(sock, 'QUIT\n').catch((error) => console.error(error));
+        await done.catch((error: unknown) => console.error(error));
+      }
     },
     30_000,
   );
@@ -3318,6 +5407,8 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
       const sock = socketPathFor(ownerId);
       const meta = metaPathFor(ownerId);
       const { captured, io } = fakeIo();
+      const fixtureRoot = mkdtempSync(join(tmpdir(), 'psu-recycle-drop-boot-'));
+      const bootRelease = join(fixtureRoot, 'ready');
 
       // WI-1818 (clean-boundary-only kill): the pre-recycle busy gate is now
       // unconditional (applies regardless of bridgeTty), so the ORIGINAL child
@@ -3333,10 +5424,12 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
       // lands (raw inject bypasses the gate; the stdin handler fires between
       // the non-blocking spin ticks).
       const childCode =
-        "process.stdout.write('BOOT:'+process.pid+'\\n');" +
+        "const fs=require('fs');" +
         "const marker=process.argv[process.argv.length-1];" +
+        "const boot=()=>{process.stdout.write('BOOT:'+process.pid+'\\n');" +
         "if(marker==='RECYCLED'){setInterval(()=>process.stdout.write('.'),20);}" +
-        "else{let n=0;const iv=setInterval(()=>{process.stdout.write('.');if(++n>8)clearInterval(iv);},20);}" +
+        "else{let n=0;const iv=setInterval(()=>{process.stdout.write('.');if(++n>8){clearInterval(iv);process.stdout.write('INITIAL_SETTLED\\n');}},20);}};" +
+        "if(marker==='RECYCLED'){boot();}else{process.stdout.write('BOOT_PENDING\\n');const gate=setInterval(()=>{if(fs.existsSync(process.env.BOOT_RELEASE)){clearInterval(gate);boot();}},10);}" +
         "process.stdin.setEncoding('utf8');let b='';" +
         "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
         "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
@@ -3348,8 +5441,9 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
         args: ['-e', childCode, 'INITIAL'],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
+          BOOT_RELEASE: bootRelease,
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '150',
           PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '200',
@@ -3371,26 +5465,25 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
         onExit: (c: number) => { exitCode = c; },
       });
 
-      await sleep(800);
-      expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(1);
+      let releaseBoot: ReturnType<typeof setTimeout> | undefined;
+      try {
+      await vi.waitFor(() => expect(captured()).toContain('BOOT_PENDING'), { timeout: 8000 });
+      expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(0);
+      // Keep a real child alive without BOOT beyond the old 800ms assumption.
+      releaseBoot = setTimeout(() => writeFileSync(bootRelease, 'ready'), 900);
+      await vi.waitFor(() => {
+        expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(1);
+        expect(captured()).toContain('INITIAL_SETTLED');
+      }, { timeout: 8000 });
 
       await controlInject(sock, 'recycle', 'CARRIED');
-      // Under the full integration suite, CPU scheduling can delay the fresh
-      // child beyond the old one-shot 2500ms sleep even though the host is
-      // progressing normally. Poll for the observable respawn marker within a
-      // bounded budget so this test measures the carry-drop contract rather
-      // than a scheduler-specific wall-clock slice.
-      const bootsDeadline = Date.now() + 8_000;
-      let bootsAfter = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
-      let metaAfter = JSON.parse(readFileSync(meta, 'utf8'));
-      while (
-        (bootsAfter.length < 2 || metaAfter.carryDropCount !== 1) &&
-        Date.now() < bootsDeadline
-      ) {
-        await sleep(50);
-        bootsAfter = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
-        metaAfter = JSON.parse(readFileSync(meta, 'utf8'));
-      }
+      const { bootsAfter, metaAfter } = await vi.waitFor(() => {
+        const bootsAfter = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
+        const metaAfter = JSON.parse(readFileSync(meta, 'utf8'));
+        expect(bootsAfter).toHaveLength(3);
+        expect(metaAfter.carryDropCount).toBe(1);
+        return { bootsAfter, metaAfter };
+      }, { timeout: 8000 });
       expect(bootsAfter).toHaveLength(3); // original + one bounded fresh-epoch retry
       // The carry was NEVER injected (the fresh child never reached its prompt)…
       expect(captured()).not.toContain('ECHO:CARRIED');
@@ -3415,6 +5508,18 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
       expect(exitCode).toBe(0);
       expect(existsSync(sock)).toBe(false);
       expect(existsSync(meta)).toBe(false);
+      } catch (error) {
+        // Preserve this fixture's evidence before teardown, rather than relying
+        // on the directory-wide failure hook to find a preceding fixture's log.
+        const eventLog = eventLogPathForOwner(ownerId);
+        console.error(`[${ownerId}] output=${captured()}\n${existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '(no host events yet)'}`);
+        throw error;
+      } finally {
+        clearTimeout(releaseBoot);
+        if (existsSync(sock)) await rawInject(sock, 'QUIT\n').catch((error) => console.error(error));
+        await done.catch((error: unknown) => console.error(error));
+        rmSync(fixtureRoot, { recursive: true, force: true });
+      }
     },
     30_000,
   );
@@ -3440,7 +5545,7 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
         args: ['-e', childCode],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'claude',
           PAPERCUSP_PSU_HEADLESS: '0',
@@ -3533,7 +5638,7 @@ describe('final interactive terminal handoff (WI-42458)', () => {
         command: execPath,
         args: ['-e', childCode],
         cwd: '/tmp',
-        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
         ownerId,
         io: { stdin, stdout },
         bridgeTty: true,
@@ -3578,7 +5683,7 @@ describe('force interrupt via the operator-side interruptViaPty (Phase 4 pty-for
         command: 'bash',
         args: ['--norc', '--noprofile', '-i'],
         cwd: '/tmp',
-        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color', PS1: '$ ' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color', PS1: '$ ' },
         ownerId,
         io: { stdin, stdout },
         bridgeTty: false,
@@ -3630,6 +5735,9 @@ describe('orphan / vanished-terminal teardown (WI-3141)', () => {
       const ownerId = `su-orphan-eof-${process.pid}-${Math.floor(performance.now())}`;
       const sock = socketPathFor(ownerId);
       const meta = metaPathFor(ownerId);
+      const childLog = join(PSU_PTY_DIR, `${ownerId}.child.jsonl`);
+      const signalSource = new EventEmitter();
+      const spawnEvidence: Array<{ pid: number; data: string; exit: unknown }> = [];
       let captured = '';
       const stdout = { columns: 80, rows: 24, write: (d: Buffer | string) => { captured += d.toString(); }, on() {}, off() {} };
       const stdin = Object.assign(new EventEmitter(), { isTTY: true, resume() {}, pause() {}, setRawMode() {} });
@@ -3637,6 +5745,7 @@ describe('orphan / vanished-terminal teardown (WI-3141)', () => {
       // Long-lived child (20s net) that would keep the host alive forever if the
       // terminal-close teardown didn't fire.
       const childCode =
+        "require('node:fs').writeFileSync(process.env.ORPHAN_CHILD_LOG,JSON.stringify({phase:'js-start',pid:process.pid})+'\\n');" +
         "process.stdout.write('BOOT:'+process.pid+'\\n');" +
         'process.stdin.on(\'data\',()=>{});' +
         'setTimeout(()=>process.exit(0),20000);';
@@ -3646,34 +5755,45 @@ describe('orphan / vanished-terminal teardown (WI-3141)', () => {
         command: execPath,
         args: ['-e', childCode],
         cwd: '/tmp',
-        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color', ORPHAN_CHILD_LOG: childLog },
         ownerId,
         io: { stdin, stdout },
         bridgeTty: true,
+        signalSource,
+        spawnPty: (file, args, options, realSpawn) => {
+          const spawned = realSpawn(file, args, options);
+          const evidence = { pid: spawned.pid, data: '', exit: null as unknown };
+          spawnEvidence.push(evidence);
+          spawned.onData((data: string) => { evidence.data = `${evidence.data}${data}`.slice(-4096); });
+          spawned.onExit((event: unknown) => { evidence.exit = event; });
+          return spawned;
+        },
         onExit: (c: number) => { exitCode = c; },
       });
 
-      // Poll for BOOT rather than a fixed sleep — fork/pty-startup latency
-      // varies under load; a fixed 500ms sleep flakes on a busy box (the
-      // 2026-07-26 red-test watchdog catch, EI-18679045634730262: this file's
-      // other tests already use this poll instead of a fixed sleep for the
-      // same reason).
-      const bootDeadline = Date.now() + 5_000;
-      while (Date.now() < bootDeadline && !captured.includes('BOOT:')) {
-        await sleep(20);
+      try {
+        await vi.waitFor(() => expect(captured).toContain('BOOT:'), { timeout: 5_000 });
+        expect(existsSync(sock)).toBe(true);
+
+        // Close the live terminal before the child's 20s safety timer.
+        (stdin as EventEmitter).emit('close');
+
+        const code = await done;
+        expect(code).toBe(0);
+        expect(exitCode).toBe(0);
+        expect(existsSync(sock)).toBe(false);
+        expect(existsSync(meta)).toBe(false);
+      } catch (error) {
+        console.error('[orphan EOF child evidence]', JSON.stringify({
+          ownerId, spawnEvidence, captured,
+          childLog: existsSync(childLog) ? readFileSync(childLog, 'utf8') : 'not-written',
+          events: existsSync(eventLogPathForOwner(ownerId)) ? readFileSync(eventLogPathForOwner(ownerId), 'utf8') : 'not-written',
+        }));
+        throw error;
+      } finally {
+        signalSource.emit('SIGTERM');
+        await done;
       }
-      expect(existsSync(sock)).toBe(true);
-      expect(captured).toContain('BOOT:');
-
-      // The terminal closes: stdin hits EOF/close. The host must tear down promptly
-      // (well inside this test's budget — not the child's 20s safety net).
-      (stdin as EventEmitter).emit('close');
-
-      const code = await done;
-      expect(code).toBe(0);
-      expect(exitCode).toBe(0);
-      expect(existsSync(sock)).toBe(false);
-      expect(existsSync(meta)).toBe(false);
     },
     20_000,
   );
@@ -3688,11 +5808,15 @@ describe('orphan / vanished-terminal teardown (WI-3141)', () => {
       const ownerId = `su-orphan-ppid-${process.pid}-${Math.floor(performance.now())}`;
       const sock = socketPathFor(ownerId);
       const meta = metaPathFor(ownerId);
+      const childLog = join(PSU_PTY_DIR, `${ownerId}.child.jsonl`);
+      const signalSource = new EventEmitter();
+      const spawnEvidence: Array<{ pid: number; data: string; exit: unknown }> = [];
       let captured = '';
       const stdout = { columns: 80, rows: 24, write: (d: Buffer | string) => { captured += d.toString(); }, on() {}, off() {} };
       const stdin = Object.assign(new EventEmitter(), { isTTY: true, resume() {}, pause() {}, setRawMode() {} });
 
       const childCode =
+        "require('node:fs').writeFileSync(process.env.ORPHAN_CHILD_LOG,JSON.stringify({phase:'js-start',pid:process.pid})+'\\n');" +
         "process.stdout.write('BOOT:'+process.pid+'\\n');" +
         'process.stdin.on(\'data\',()=>{});' +
         'setTimeout(()=>process.exit(0),20000);';
@@ -3705,35 +5829,46 @@ describe('orphan / vanished-terminal teardown (WI-3141)', () => {
         command: execPath,
         args: ['-e', childCode],
         cwd: '/tmp',
-        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color', PAPERCUSP_PSU_PTY_ORPHAN_POLL_MS: '100' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color', PAPERCUSP_PSU_PTY_ORPHAN_POLL_MS: '100', ORPHAN_CHILD_LOG: childLog },
         ownerId,
         io: { stdin, stdout },
         bridgeTty: true,
+        signalSource,
+        spawnPty: (file, args, options, realSpawn) => {
+          const spawned = realSpawn(file, args, options);
+          const evidence = { pid: spawned.pid, data: '', exit: null as unknown };
+          spawnEvidence.push(evidence);
+          spawned.onData((data: string) => { evidence.data = `${evidence.data}${data}`.slice(-4096); });
+          spawned.onExit((event: unknown) => { evidence.exit = event; });
+          return spawned;
+        },
         parentPidFn: () => fakeParent,
         onExit: (c: number) => { exitCode = c; },
       });
 
-      // Poll for BOOT rather than a fixed sleep — fork/pty-startup latency
-      // varies under load; a fixed 500ms sleep flakes on a busy box (the
-      // 2026-07-26 red-test watchdog catch, EI-18679045634730262: this file's
-      // other tests already use this poll instead of a fixed sleep for the
-      // same reason).
-      const bootDeadline = Date.now() + 5_000;
-      while (Date.now() < bootDeadline && !captured.includes('BOOT:')) {
-        await sleep(20);
+      try {
+        await vi.waitFor(() => expect(captured).toContain('BOOT:'), { timeout: 5_000 });
+        expect(existsSync(sock)).toBe(true);
+
+        // The launching shell exits → we get reparented to init. The watchdog's
+        // next poll must observe ppid===1 and tear the orphaned host down.
+        fakeParent = 1;
+        const code = await done;
+        expect(code).toBe(0);
+        expect(exitCode).toBe(0);
+        expect(existsSync(sock)).toBe(false);
+        expect(existsSync(meta)).toBe(false);
+      } catch (error) {
+        console.error('[orphan child evidence]', JSON.stringify({
+          ownerId, spawnEvidence, captured,
+          childLog: existsSync(childLog) ? readFileSync(childLog, 'utf8') : 'not-written',
+          events: existsSync(eventLogPathForOwner(ownerId)) ? readFileSync(eventLogPathForOwner(ownerId), 'utf8') : 'not-written',
+        }));
+        throw error;
+      } finally {
+        signalSource.emit('SIGTERM');
+        await done;
       }
-      expect(existsSync(sock)).toBe(true);
-      expect(captured).toContain('BOOT:');
-
-      // The launching shell exits → we get reparented to init. The watchdog's next
-      // poll (≤100ms) must observe ppid===1 and tear the orphaned host down.
-      fakeParent = 1;
-
-      const code = await done;
-      expect(code).toBe(0);
-      expect(exitCode).toBe(0);
-      expect(existsSync(sock)).toBe(false);
-      expect(existsSync(meta)).toBe(false);
     },
     20_000,
   );
@@ -3747,53 +5882,66 @@ describe('WI-3455 — discovery key ownership + self-heal (the su-a8f52 strandin
       const sock = socketPathFor(ownerId);
       const meta = metaPathFor(ownerId);
       const { captured, io } = fakeIo();
+      const signalSource = new EventEmitter();
 
       const childCode =
         "process.stdin.setEncoding('utf8');let b='';" +
         "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
         "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
+        "process.stdout.write('READY\\n');" +
         'setTimeout(()=>process.exit(0),15000);';
 
       const done = hostThroughPty({
         command: execPath,
         args: ['-e', childCode],
         cwd: '/tmp',
-        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
         ownerId,
         io,
         bridgeTty: false,
         activityPersistMs: 150,
+        signalSource,
         onExit: () => {},
       });
 
-      await sleep(400);
-      expect(existsSync(sock)).toBe(true);
-      expect(existsSync(meta)).toBe(true);
+      try {
+        // Socket existence proves the host is listening, not that the child has
+        // installed its stdin handler. Observe both before deleting discovery.
+        await vi.waitFor(() => {
+          expect(captured()).toContain('READY');
+          expect(existsSync(sock)).toBe(true);
+          expect(existsSync(meta)).toBe(true);
+        }, { timeout: 5_000 });
 
-      // Simulate the trample: a duplicate host / janitor race deletes BOTH.
-      unlinkSync(meta);
-      unlinkSync(sock);
-      expect(existsSync(meta)).toBe(false);
-      expect(existsSync(sock)).toBe(false);
+        // Simulate the trample: a duplicate host / janitor race deletes BOTH.
+        unlinkSync(meta);
+        unlinkSync(sock);
+        expect(existsSync(meta)).toBe(false);
+        expect(existsSync(sock)).toBe(false);
 
-      // Within a few ticks the live host re-asserts its key…
-      await sleep(800);
-      expect(existsSync(meta)).toBe(true);
-      expect(existsSync(sock)).toBe(true);
-      const healed = JSON.parse(readFileSync(meta, 'utf8'));
-      expect(healed.ownerId).toBe(ownerId);
-      expect(healed.pid).toBe(process.pid);
+        // Wait for the existing activity tick's observable repair.
+        await vi.waitFor(() => {
+          expect(existsSync(meta)).toBe(true);
+          expect(existsSync(sock)).toBe(true);
+          const healed = JSON.parse(readFileSync(meta, 'utf8'));
+          expect(healed.ownerId).toBe(ownerId);
+          expect(healed.pid).toBe(process.pid);
+        }, { timeout: 5_000 });
 
-      // …and the re-bound socket actually accepts injection again.
-      await rawInject(sock, 'post-heal\n');
-      await sleep(500);
-      expect(captured()).toContain('ECHO:post-heal');
+        // Kernel terminal echo is insufficient: the child's response proves the
+        // re-bound socket reaches the running child after discovery repair.
+        await rawInject(sock, 'post-heal\n');
+        await vi.waitFor(() => expect(captured()).toContain('ECHO:post-heal'), { timeout: 5_000 });
 
-      await rawInject(sock, 'QUIT\n');
-      const code = await done;
-      expect(code).toBe(0);
-      expect(existsSync(sock)).toBe(false);
-      expect(existsSync(meta)).toBe(false);
+        await rawInject(sock, 'QUIT\n');
+        const code = await done;
+        expect(code).toBe(0);
+        expect(existsSync(sock)).toBe(false);
+        expect(existsSync(meta)).toBe(false);
+      } finally {
+        signalSource.emit('SIGTERM');
+        await done;
+      }
     },
     20_000,
   );
@@ -3818,7 +5966,7 @@ describe('WI-3455 — discovery key ownership + self-heal (the su-a8f52 strandin
         command: execPath,
         args: ['-e', childCode],
         cwd: '/tmp',
-        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
         ownerId,
         io,
         bridgeTty: false,
@@ -3873,7 +6021,7 @@ describe('WI-3455 — discovery key ownership + self-heal (the su-a8f52 strandin
         command: execPath,
         args: ['-e', childCode],
         cwd: '/tmp',
-        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
         ownerId,
         io,
         bridgeTty: false,
@@ -3966,12 +6114,15 @@ describe('SHUTDOWN — a finished agent session exits and closes its own window 
       const { io } = fakeIo();
 
       let exitCode: number | null = null;
+      // This fixture owns its child PGID, while its host shares the test run's
+      // scope with Vitest and esbuild. Never sweep that scope on shutdown.
+      const reapScopeResidue = vi.fn(() => ({ killedPids: [], failedPids: [] }));
       const done = hostThroughPty({
         command: execPath,
         args: ['-e', LONG_LIVED_CHILD],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           TERM: 'xterm-256color',
           // The structural discriminator: injectLaunchedByArg stamps this onto every
@@ -3982,6 +6133,7 @@ describe('SHUTDOWN — a finished agent session exits and closes its own window 
         advSessionId: 6638,
         io,
         bridgeTty: false,
+        reapScopeResidue,
         onExit: (c: number) => {
           exitCode = c;
         },
@@ -3991,13 +6143,22 @@ describe('SHUTDOWN — a finished agent session exits and closes its own window 
       const m = JSON.parse(readFileSync(meta, 'utf8'));
       // Advertised so a would-be requester can see the verdict before sending.
       expect(m.caps).toContain('shutdown');
+      expect(m.caps).toContain('shutdown-identity');
       expect(m.launchedBy).toBe('su-the-launching-agent');
+
+      const staleAck = await injectForAck(sock, {
+        mode: 'shutdown', data: 'stale confirmed stop', ownerId, expectedStartedAt: m.startedAt + 1,
+      });
+      expect(staleAck).toMatchObject({ ok: false, reason: 'shutdown-refused:stale-host' });
+      expect(exitCode).toBeNull();
+      expect(existsSync(sock)).toBe(true);
 
       const startedAt = Date.now();
       const ack = await injectForAck(sock, {
         mode: 'shutdown',
         data: 'fleet wound down',
         ownerId,
+        expectedStartedAt: m.startedAt,
       });
       // The ACK must arrive BEFORE the teardown races the socket away — otherwise a
       // successful shutdown reads to the caller as a transport miss and gets retried.
@@ -4008,6 +6169,7 @@ describe('SHUTDOWN — a finished agent session exits and closes its own window 
       expect(Date.now() - startedAt).toBeLessThan(20_000);
       expect(typeof code).toBe('number');
       expect(exitCode).not.toBeNull();
+      expect(reapScopeResidue).not.toHaveBeenCalled();
       // The window is gone: same cleanup path as any other child exit.
       expect(existsSync(sock)).toBe(false);
       expect(existsSync(meta)).toBe(false);
@@ -4026,7 +6188,7 @@ describe('SHUTDOWN — a finished agent session exits and closes its own window 
       // A hand-started psu carries no launcher provenance. Delete rather than blank
       // it, so a runner that happens to export one cannot mask the refusal.
       const env: NodeJS.ProcessEnv = {
-        ...process.env,
+        ...hermeticEnv(),
         PAPERCUSP_SID: ownerId,
         TERM: 'xterm-256color',
       };

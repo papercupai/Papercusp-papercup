@@ -147,6 +147,7 @@ function expectPinnedBeforeSpawn(owner: string): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  h.failRunIfExecuting.mockResolvedValue(null);
   h.createRun.mockResolvedValue({ ...baseRun });
   h.getRun.mockResolvedValue({ ...baseRun, phase: 'review' });
   h.setRunPhase.mockImplementation(async (input: { phase: string; resolverOwner?: string }) => ({
@@ -200,6 +201,42 @@ describe('Inbox bulk-resolver owner lifecycle', () => {
     expect(response.status).toBe(200);
     const owner = spawnedOwner();
     expectPinnedBeforeSpawn(owner);
+  });
+
+  it('fails an exit captured during launch after the run is marked running', async () => {
+    h.spawnHeadless.mockResolvedValueOnce({
+      status: 'ok',
+      pid: 42,
+      terminal: 'headless',
+      child: { once: vi.fn() },
+      childExit: Promise.resolve({ code: 137, signal: null }),
+      display: null,
+      desktopEnvResolvedVia: null,
+    });
+
+    const response = await handler(
+      post('/api/admin/attention-bulk-resolve', {
+        op: 'start',
+        items: [{ itemId: 'coord-escalation:1' }],
+      }),
+      ctx(),
+    );
+
+    expect(response.status).toBe(200);
+    await vi.waitFor(() => expect(h.failRunIfExecuting).toHaveBeenCalledTimes(1));
+
+    const runningIndex = h.setRunPhase.mock.calls.findIndex(([input]) => input.phase === 'running');
+    expect(runningIndex).toBeGreaterThanOrEqual(0);
+    expect(h.setRunPhase.mock.invocationCallOrder[runningIndex]).toBeLessThan(
+      h.failRunIfExecuting.mock.invocationCallOrder[0]!,
+    );
+    expect(h.failRunIfExecuting).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: 'run-1',
+        resolverOwner: spawnedOwner(),
+        error: 'resolver process ended before settling the run: exit 137',
+      }),
+    );
   });
 
   it('rotates the owner in restartRun before spawning the replacement', async () => {

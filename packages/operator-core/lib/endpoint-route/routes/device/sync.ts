@@ -14,6 +14,9 @@ import { DEVICE_AUTH, devicePrincipal } from './_shared';
 import { recentToasts, recentAuditEntries, currentlyRunning } from '../../../device-feeds';
 import { listHarnessesFor, harnessStatusFor } from '../../../device-harnesses';
 import { readCandidates, refreshCandidates } from '../../../operator-standing-candidates';
+import { deviceSessionsVersion, pageDeviceSessions } from '../../../owner-sessions/device-roster';
+import { parseDeviceSessionFilters, parseDeviceSessionsLimit, readDeviceSessionRows } from './sessions';
+import { requireDeviceAgentSessions } from '../../../owner-sessions/device-authority';
 
 /**
  * GET /device/rest-query — REST query endpoint for libs/sync's polling
@@ -73,6 +76,24 @@ const restQuery = defineTool({
         case 'standingCandidates.list': {
           const candidates = await refreshCandidates().catch(() => readCandidates());
           return Response.json({ rows: candidates, version: String(Date.now()) });
+        }
+        case 'deviceSessions.list': {
+          const denied = await requireDeviceAgentSessions(devicePrincipal(ctx));
+          if (denied) return denied;
+          // mobile-agent-sessions P-002: the first page of GET /device/sessions,
+          // versioned by the workspace's session content (not the clock), so the
+          // phone's cache refetches on a presence change and not on every poll.
+          const parsed = parseDeviceSessionFilters(args);
+          if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 });
+          const limit = parseDeviceSessionsLimit(args.limit);
+          if (!limit.ok) return Response.json({ error: 'invalid_limit' }, { status: 400 });
+          const { rows, degradedFields } = await readDeviceSessionRows(workspaceId);
+          const page = pageDeviceSessions(rows, { filters: parsed.filters, limit: limit.limit });
+          return Response.json({
+            rows: page.sessions,
+            version: deviceSessionsVersion(rows),
+            ...(degradedFields ? { degradedFields } : {}),
+          });
         }
         default:
           return Response.json({ error: `unknown query: ${name}` }, { status: 400 });

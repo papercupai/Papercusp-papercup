@@ -341,6 +341,45 @@ describe('metered selection — included allowance first, metered as overflow (P
     expect(b.stateUntil!).toBeLessThanOrEqual(t1 + FIVE_HOURS_MS);
   });
 
+  it('operator readmit clears the named credit-wall governor across model buckets without releasing another account', async () => {
+    let recovered = false;
+    const port = await boot([apiKey('keyA', 'sk-keyA'), apiKey('keyB', 'sk-keyB')], (c) =>
+      recovered && c === 'sk-keyA' ? API() : NO_CREDIT(),
+    );
+    const pinA = { [ACCOUNT_HEADER]: 'keyA', [ACCOUNT_PIN_HEADER]: 'hard' };
+    const pinB = { [ACCOUNT_HEADER]: 'keyB', [ACCOUNT_PIN_HEADER]: 'hard' };
+    // Actual upstream billing failures populate both the governor and the failover pool.
+    expect((await fire(port, pinA)).status).not.toBe(200);
+    const sonnet = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...pinA },
+      body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 4, messages: [{ role: 'user', content: 'hi' }] }),
+    });
+    await sonnet.text();
+    expect(sonnet.status).not.toBe(200);
+    expect((await fire(port, pinB)).status).not.toBe(200);
+    const before = await billing(port);
+    expect(before.byAccount.keyA.wall?.cause).toBe('billing-error');
+    expect(before.byAccount.keyB.wall?.cause).toBe('billing-error');
+    const bHits = hitsOf('sk-keyB');
+    recovered = true;
+    const readmit = await fetch(`http://127.0.0.1:${port}/admin/readmit?account=keyA`, { method: 'POST' });
+    expect(await readmit.json()).toMatchObject({ ok: true, readmitted: ['keyA'], healthyAccounts: 1 });
+    expect(await fire(port, pinA)).toEqual({ status: 200, routed: 'keyA' });
+    const servedSonnet = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...pinA },
+      body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 4, messages: [{ role: 'user', content: 'hi' }] }),
+    });
+    await servedSonnet.text();
+    expect(servedSonnet.status).toBe(200);
+    expect((await fire(port, pinB)).status).toBe(429);
+    expect(hitsOf('sk-keyB')).toBe(bHits);
+    const after = await billing(port);
+    expect(after.byAccount.keyA.wall).toBeUndefined();
+    expect(after.byAccount.keyB.wall).toEqual(before.byAccount.keyB.wall);
+  });
+
   it('R-36: a credit-walled account shows its wall cause in stats and is not auto-selected while the wall holds', async () => {
     const port = await boot([apiKey('keyA', 'sk-keyA'), apiKey('keyB', 'sk-keyB')], (c) =>
       c === 'sk-keyA' ? NO_CREDIT() : API(),

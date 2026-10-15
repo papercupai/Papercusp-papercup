@@ -159,8 +159,11 @@ const ALLOW = new Set([]);
  * @typedef {object} NegativeAssertion
  * @property {number} line - 1-indexed line of the assertion in the test file.
  * @property {string} kind - Rendered matcher form, e.g. `not.toMatch(/…/)`.
- * @property {string} lit - The static string the assertion pins.
+ * @property {string} lit - The static string the assertion pins. For an alternation it is the
+ *   regex source as written, which keeps the baseline key and the report greppable.
  * @property {string} span - The matched assertion text, used to exclude self-references.
+ * @property {string[]} [alts] - Set only for a regex alternation (`/a|b/`): the plain string of
+ *   each branch. The assertion is vacuous only when EVERY branch is unproducible.
  */
 
 /**
@@ -387,6 +390,36 @@ export function regexSourceToLiteral(src) {
   return out;
 }
 
+/**
+ * The plain string of every branch of a TOP-LEVEL alternation (`/old banner|older banner/`),
+ * or null unless there are at least two branches and every one is a plain literal
+ * (regexSourceToLiteral). A `|` inside a class or group makes that branch non-literal, so
+ * splitting on every unescaped `|` is enough. An empty branch matches everything, which
+ * makes a negative assertion always FAIL rather than always pass, so it is not judged.
+ *
+ * Judging alternation as one literal was a live false positive on the first sweep (the
+ * header's discriminator list): `a|b` never appears verbatim anywhere. Judging each branch
+ * separately, and flagging only when every branch is unproducible, has no such problem.
+ *
+ * @param {string} src - The regex source (no delimiters, no flags).
+ * @returns {string[] | null}
+ */
+export function regexSourceToAlternatives(src) {
+  const branches = [];
+  let start = 0;
+  for (let i = 0; i < src.length; i++) {
+    if (src[i] === '\\') i++;
+    else if (src[i] === '|') {
+      branches.push(src.slice(start, i));
+      start = i + 1;
+    }
+  }
+  branches.push(src.slice(start));
+  if (branches.length < 2) return null;
+  const lits = branches.map(regexSourceToLiteral);
+  return lits.every((l) => l !== null && l.length > 0) ? /** @type {string[]} */ (lits) : null;
+}
+
 function unescapeJs(s) {
   return s.replace(/\\(u\{([0-9a-fA-F]+)\}|u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2})|.)/g, (m, tail, uu, u4, x2) => {
     if (uu) return String.fromCodePoint(parseInt(uu, 16));
@@ -397,7 +430,46 @@ function unescapeJs(s) {
   });
 }
 
-const RE_NEG_REGEX = /\.not\.toMatch\(\s*\/((?:\\.|\[(?:\\.|[^\]\\])*\]|[^/\\\n])+)\/[gimsuvy]*\s*\)/g;
+const RE_NEG_REGEX = /\.not\.toMatch\(\s*\/((?:\\.|\[(?:\\.|[^\]\\])*\]|[^/\\\n])+)\/([dgimsuvy]*)\s*\)/g;
+
+/**
+ * Testing Library ABSENCE queries (WI-6554700010009190): `expect(screen.queryByText(X)).toBeNull()`
+ * and its siblings say "this copy is not rendered", which is a negative assertion on X even
+ * though no `.not.` appears. They were invisible here, so a reworded component left them
+ * passing forever (AdvEvalsTab.test.tsx pinned `Real graded run` after the copy became
+ * `real graded runs`). Only queries whose argument IS user-visible copy are read: the first
+ * argument of the text-matching queries and the `name` option of `queryByRole`. A role or a
+ * test id is an identifier, never prose, so it could never gate anyway.
+ * Groups: query, quote, string, template, regex source, regex flags, options, matcher.
+ */
+const RE_NEG_QUERY =
+  /expect\(\s*(?:[\w$]+\.|within\((?:[^()]|\([^()]*\))*\)\.)*(queryBy(?:Text|LabelText|PlaceholderText|DisplayValue|AltText|Title))\(\s*(?:(['"])((?:\\.|(?!\2)[^\n])*)\2|`([^`$\n]*)`|\/((?:\\.|\[(?:\\.|[^\]\\])*\]|[^/\\\n])+)\/([dgimsuvy]*))\s*(?:,\s*(\{[^{}]*\}))?\s*,?\s*\)\s*,?\s*\)\s*\.(toBeNull\(\)|toBeFalsy\(\)|not\.toBeTruthy\(\)|not\.toBeInTheDocument\(\)|toBe\(\s*null\s*\))/g;
+/** Groups: query, role quote, quote, string, template, regex source, regex flags, matcher. */
+const RE_NEG_ROLE_QUERY =
+  /expect\(\s*(?:[\w$]+\.|within\((?:[^()]|\([^()]*\))*\)\.)*(queryByRole)\(\s*(['"])[\w-]+\2\s*,\s*\{[^{}]*?\bname:\s*(?:(['"])((?:\\.|(?!\3)[^\n])*)\3|`([^`$\n]*)`|\/((?:\\.|\[(?:\\.|[^\]\\])*\]|[^/\\\n])+)\/([dgimsuvy]*))[^{}]*\}\s*,?\s*\)\s*,?\s*\)\s*\.(toBeNull\(\)|toBeFalsy\(\)|not\.toBeTruthy\(\)|not\.toBeInTheDocument\(\)|toBe\(\s*null\s*\))/g;
+
+/**
+ * The plain strings a static text-matcher argument can match: `{ lit }` for one literal,
+ * `{ lit, alts }` for a plain-branch alternation, or null when it is not judgeable by
+ * "does this exact string exist". A case-insensitive regex (`/x/i`) is null: the corpus probe
+ * is case-sensitive, so `/real graded run/i` would read as absent while matching
+ * `Real graded runs` in the source.
+ *
+ * @param {{ str?: string, tmpl?: string, re?: string, flags?: string }} arg
+ * @returns {{ lit: string, alts?: string[] } | null}
+ */
+function matcherLiterals({ str, tmpl, re, flags = '' }) {
+  if (str !== undefined) return str.includes('${') ? null : { lit: unescapeJs(str) };
+  if (tmpl !== undefined) return { lit: tmpl };
+  if (re === undefined || flags.includes('i')) return null;
+  const lit = regexSourceToLiteral(re);
+  if (lit !== null) return { lit };
+  const alts = regexSourceToAlternatives(re);
+  return alts ? { lit: re, alts } : null;
+}
+
+/** The rendered argument shape for a `kind` label. */
+const argShape = (str, tmpl) => (str !== undefined ? "'…'" : tmpl !== undefined ? '`…`' : '/…/');
 const RE_NEG_STRING = /\.not\.(toContain|toMatch|toContainEqual)\(\s*(['"])((?:\\.|(?!\2)[^\n])*)\2\s*\)/g;
 const RE_NEG_TEMPLATE = /\.not\.(toContain|toMatch)\(\s*`([^`$\n]*)`\s*\)/g;
 
@@ -418,8 +490,8 @@ export function extractNegativeLiterals(text) {
   /** @type {NegativeAssertion[]} */
   const out = [];
   for (const m of text.matchAll(RE_NEG_REGEX)) {
-    const lit = regexSourceToLiteral(m[1]);
-    if (lit !== null) out.push({ line: lineOf(m.index), kind: 'not.toMatch(/…/)', lit, span: m[0] });
+    const got = matcherLiterals({ re: m[1], flags: m[2] });
+    if (got) out.push({ line: lineOf(m.index), kind: 'not.toMatch(/…/)', ...got, span: m[0] });
   }
   for (const m of text.matchAll(RE_NEG_STRING)) {
     if (!m[3].includes('${')) out.push({ line: lineOf(m.index), kind: `not.${m[1]}('…')`, lit: unescapeJs(m[3]), span: m[0] });
@@ -427,14 +499,46 @@ export function extractNegativeLiterals(text) {
   for (const m of text.matchAll(RE_NEG_TEMPLATE)) {
     out.push({ line: lineOf(m.index), kind: `not.${m[1]}(\`…\`)`, lit: m[2], span: m[0] });
   }
+  for (const m of text.matchAll(RE_NEG_QUERY)) {
+    const [, query, , str, tmpl, re, flags, opts, matcher] = m;
+    // `exact: false` is a case-insensitive substring match and a normalizer rewrites the
+    // text, so "this exact string exists nowhere" proves nothing for either.
+    if (opts && /\bexact:\s*false\b|\bnormalizer\b/.test(opts)) continue;
+    const got = matcherLiterals({ str, tmpl, re, flags });
+    const kind = `expect(${query}(${argShape(str, tmpl)})).${matcher.replace(/\s+/g, '')}`;
+    if (got) out.push({ line: lineOf(m.index), kind, ...got, span: m[0] });
+  }
+  for (const m of text.matchAll(RE_NEG_ROLE_QUERY)) {
+    const [, query, , , str, tmpl, re, flags, matcher] = m;
+    const got = matcherLiterals({ str, tmpl, re, flags });
+    const kind = `expect(${query}(…, { name: ${argShape(str, tmpl)} })).${matcher.replace(/\s+/g, '')}`;
+    if (got) out.push({ line: lineOf(m.index), kind, ...got, span: m[0] });
+  }
   return out.sort((a, b) => a.line - b.line);
 }
+
+/**
+ * Testing Library PRESENCE queries are positive assertions too: `getByText('x')` throws when
+ * `x` is not rendered. Reading them lets an RTL test that pins the new copy with `getByText`
+ * and the old copy with `queryByText(…)).toBeNull()` read as the RENAMED ratchet it is.
+ */
+const RE_POS_QUERY =
+  /\b(?:get|find)(?:All)?By(?:Text|LabelText|PlaceholderText|DisplayValue|AltText|Title)\(\s*(?:(['"])((?:\\.|(?!\1)[^\n])*)\1|\/((?:\\.|\[(?:\\.|[^\]\\])*\]|[^/\\\n])+)\/[dgimsuvy]*)/g;
+const RE_POS_ROLE_QUERY =
+  /\b(?:get|find)(?:All)?ByRole\(\s*(['"])[\w-]+\1\s*,\s*\{[^{}]*?\bname:\s*(?:(['"])((?:\\.|(?!\2)[^\n])*)\2|\/((?:\\.|\[(?:\\.|[^\]\\])*\]|[^/\\\n])+)\/[dgimsuvy]*)/g;
 
 function positiveLiterals(text) {
   const out = [];
   for (const m of text.matchAll(RE_POS_STRING)) if (!m[3].includes('${')) out.push(unescapeJs(m[3]));
   for (const m of text.matchAll(RE_POS_REGEX)) {
     const lit = regexSourceToLiteral(m[1]);
+    if (lit) out.push(lit);
+  }
+  for (const [str, re] of [
+    ...[...text.matchAll(RE_POS_QUERY)].map((m) => [m[2], m[3]]),
+    ...[...text.matchAll(RE_POS_ROLE_QUERY)].map((m) => [m[3], m[4]]),
+  ]) {
+    const lit = str !== undefined ? (str.includes('${') ? null : unescapeJs(str)) : regexSourceToLiteral(re);
     if (lit) out.push(lit);
   }
   return out.filter((s) => s.length >= 4);
@@ -689,42 +793,62 @@ export function judgeFile({ file, text, includes, subjectIncludes }) {
   let haystack = text;
   for (const n of new Set(negatives.map((n) => n.span))) haystack = haystack.split(n).join('\n');
 
-  for (const c of negatives) {
-    const lit = c.lit;
-    if (!lit || lit.length < MIN_LITERAL) continue;
-    considered++;
+  /** @param {string} lit */
+  const producible = (lit) => {
     const trimmed = lit.trim();
-    if (includes(lit) || (trimmed !== lit && trimmed.length >= MIN_LITERAL && includes(trimmed))) continue;
+    const alsoTrimmed = trimmed !== lit && trimmed.length >= MIN_LITERAL;
+    return (
+      includes(lit) ||
+      (alsoTrimmed && includes(trimmed)) ||
+      // Fixture evidence: the test itself builds this string.
+      haystack.includes(lit) ||
+      (alsoTrimmed && haystack.includes(trimmed)) ||
+      // "No extra suffix/prefix" guard over a string this file proves is producible.
+      positives.some((p) => p !== lit && lit.includes(p))
+    );
+  };
+  /**
+   * @param {string} lit
+   * @param {{ fragment: string } | null} drift
+   * @returns {{ verdict: VacuousVerdict, fragment: string | null }}
+   */
+  const verdictOf = (lit, drift) => {
+    if (!drift || !proseShaped(lit)) return { verdict: 'ORPHANED', fragment: drift?.fragment ?? null };
+    // Locality: only the subject can prove ITS emitter was reworded.
+    const local = subjectIncludes ? driftFragment(lit, subjectIncludes) : drift;
+    if (!local) return { verdict: 'COINCIDENT', fragment: drift.fragment };
+    const pinned = local.fragment.trim();
+    // The same file positively asserts the new wording: a rename ratchet, not a dead guard.
+    const renamed = pinned.length >= MIN_FRAGMENT && positives.some((p) => p.includes(pinned));
+    return { verdict: renamed ? 'RENAMED' : 'DRIFTED', fragment: local.fragment };
+  };
 
-    // Fixture evidence: the test itself builds this string.
-    if (haystack.includes(lit) || (trimmed !== lit && trimmed.length >= MIN_LITERAL && haystack.includes(trimmed))) continue;
-
-    // "No extra suffix/prefix" guard over a string this file proves is producible.
-    if (positives.some((p) => p !== lit && lit.includes(p))) continue;
-
+  for (const c of negatives) {
+    // An alternation is judged branch by branch; a plain literal is the one-branch case.
+    const alts = c.alts ?? [c.lit];
+    // A branch below the floor proves nothing by its absence, so neither does the whole.
+    if (alts.some((a) => !a || a.length < MIN_LITERAL)) continue;
+    considered++;
+    // One producible branch is enough: the assertion can still fail through it.
+    if (alts.some(producible)) continue;
     if (suppressed(lines, c.line)) continue;
 
-    const drift = driftFragment(lit, includes);
-    if (drift && residueIsComposed(drift.residue, haystack)) continue; // runtime-composed
-    /** @type {VacuousVerdict} */
-    let verdict = 'ORPHANED';
-    let fragment = drift?.fragment ?? null;
-    if (drift && proseShaped(lit)) {
-      // Locality: only the subject can prove ITS emitter was reworded.
-      const local = subjectIncludes ? driftFragment(lit, subjectIncludes) : drift;
-      if (!local) {
-        verdict = 'COINCIDENT';
-      } else {
-        fragment = local.fragment;
-        const pinned = local.fragment.trim();
-        // The same file positively asserts the new wording: a rename ratchet, not a dead guard.
-        verdict = pinned.length >= MIN_FRAGMENT && positives.some((p) => p.includes(pinned)) ? 'RENAMED' : 'DRIFTED';
-      }
+    const drifts = alts.map((a) => driftFragment(a, includes));
+    if (drifts.some((d) => d && residueIsComposed(d.residue, haystack))) continue; // runtime-composed
+    // The most serious branch speaks for the assertion: one reworded branch is a dead guard.
+    let best = verdictOf(alts[0], drifts[0]);
+    for (let i = 1; i < alts.length; i++) {
+      const v = verdictOf(alts[i], drifts[i]);
+      const rank = VERDICT_RANK[v.verdict] - VERDICT_RANK[best.verdict];
+      if (rank > 0 || (rank === 0 && best.fragment === null && v.fragment !== null)) best = v;
     }
-    findings.push({ file, line: c.line, kind: c.kind, lit, verdict, fragment });
+    findings.push({ file, line: c.line, kind: c.kind, lit: c.lit, verdict: best.verdict, fragment: best.fragment });
   }
   return { considered, findings };
 }
+
+/** How close a verdict is to a live drift, for combining an alternation's branches. */
+const VERDICT_RANK = { ORPHANED: 0, COINCIDENT: 1, RENAMED: 2, DRIFTED: 3 };
 
 // ── run ───────────────────────────────────────────────────────────────────────────
 /**
@@ -952,12 +1076,14 @@ function main(argv) {
     if (query.length > 0) queries.add(query);
   };
   for (const text of testTexts.values()) {
-    for (const { lit } of extractNegativeLiterals(text)) {
-      if (!lit || lit.length < MIN_LITERAL) continue;
-      addQuery(lit);
-      const trimmed = lit.trim();
-      if (trimmed.length >= MIN_LITERAL) addQuery(trimmed);
-      addDriftQueries(queries, lit);
+    for (const negative of extractNegativeLiterals(text)) {
+      for (const lit of negative.alts ?? [negative.lit]) {
+        if (!lit || lit.length < MIN_LITERAL) continue;
+        addQuery(lit);
+        const trimmed = lit.trim();
+        if (trimmed.length >= MIN_LITERAL) addQuery(trimmed);
+        addDriftQueries(queries, lit);
+      }
     }
   }
   for (const text of docTexts.values()) {
@@ -979,7 +1105,8 @@ function main(argv) {
   for (const f of testFiles) {
     const text = testTexts.get(f);
     if (text === undefined) continue;
-    if (!text.includes('.not.to')) continue;
+    // Cheap pre-filter: every extracted shape contains one of these two markers.
+    if (!text.includes('.not.to') && !text.includes('queryBy')) continue;
     const subjects = resolveSubjectFiles(f, text, corpusTextOf);
     const subjectText = subjects.map((s) => corpusTextOf.get(s) ?? '').join('\n \n');
     const subjectIncludes = subjects.length > 0 ? (/** @type {string} */ s) => subjectText.includes(s) : undefined;

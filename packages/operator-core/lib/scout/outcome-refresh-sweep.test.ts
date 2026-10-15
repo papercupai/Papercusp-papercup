@@ -12,9 +12,11 @@ vi.mock('../pot/started', () => ({
   listBlenderMaintenanceWorkspaceIds: vi.fn(() => []),
 }));
 vi.mock('./routed-ledger', () => ({
+  AGENT_REVIEW_LEDGER_ORIGIN: 'agent-review',
   refreshScoutOutcomes: vi.fn(async () => ({ total: 0, byLens: {}, ranked: [] })),
   countStalePendingIdeas: vi.fn(async () => 0),
   readPendingOutcomeCandidates: vi.fn(async () => []),
+  readTerminalUnresolvedRefIdeaIds: vi.fn(async () => []),
 }));
 vi.mock('../pot/watchdog', () => ({
   recentWatchdogFires: vi.fn(async () => 0),
@@ -29,6 +31,7 @@ import {
   scoutPortfolioFrontierItemBudget,
   scoutPortfolioFrontierTimeBudgetMs,
   scoutOutcomeRefreshSweep,
+  agentReviewOutcomeBatchSize,
   __resetOutcomeRefreshThrottleForTests,
 } from './outcome-refresh-sweep';
 
@@ -84,6 +87,7 @@ describe('scoutOutcomeRefreshSweep — orchestration (injected deps, no PG)', ()
     refreshScoutOutcomes: vi.fn(async () => ({ total: 0, byLens: {}, ranked: [] }) as never),
     countStalePendingIdeas: vi.fn(async () => 0),
     readPendingOutcomeCandidates: vi.fn(async () => []),
+    readTerminalUnresolvedRefIdeaIds: vi.fn(async () => [] as string[]),
     readPortfolioGradingBacklog: vi.fn(async () => 0),
     readPortfolioFrontierCheckpoint: vi.fn(async () => null),
     writePortfolioFrontierCheckpoint: vi.fn(async () => undefined),
@@ -230,6 +234,62 @@ describe('scoutOutcomeRefreshSweep — orchestration (injected deps, no PG)', ()
     expect(d.openEscalation).not.toHaveBeenCalled();
   });
 
+  // WI-10005247: a shipped goal-plan route (origin su-ideate, never verified)
+  // sat 27h behind a cursor deep in the scout region because the lap ignored
+  // outcome_checked_at. The sweep must verify it on the very next wake and must
+  // not drag the round-robin cursor onto it.
+  it('verifies a never-checked su-ideate route first and leaves the round-robin cursor alone', async () => {
+    const written: Array<{ cursorIdeaId: string | null }> = [];
+    const d = deps({
+      readPortfolioGradingBacklog: vi.fn(async () => 861),
+      readPendingOutcomeCandidates: vi.fn(async () => [
+        {
+          ideaId: 'goal-plan:stranded',
+          origin: 'su-ideate',
+          routedRef: 'plan:frontier-remediation',
+          routedAtMs: NOW - 27 * 3_600_000,
+          humanGrade: 4,
+          outcomeCheckedAtMs: null,
+        },
+        ...['s1', 's2', 's3', 's4'].map((id, i) => ({
+          ideaId: id,
+          origin: 'scout',
+          routedRef: `wi:${id}`,
+          routedAtMs: NOW - 90 * 86_400_000 + i,
+          humanGrade: null,
+          outcomeCheckedAtMs: NOW - 600_000,
+        })),
+      ]),
+      readPortfolioFrontierCheckpoint: vi.fn(async () => ({
+        version: 1 as const,
+        phase: 'outcome-verification' as const,
+        cursorIdeaId: 's1',
+        cursorGrade: null,
+        cursorRoutedAtMs: NOW - 90 * 86_400_000,
+        currentIdeaId: null,
+        itemBudget: 25,
+        timeBudgetMs: 5_000,
+        consumedItems: 3,
+        elapsedMs: 10,
+        gradingBacklog: 861,
+        pendingOutcomes: 5,
+        evidenceSource: null,
+        updatedAt: new Date(NOW - 1_000).toISOString(),
+      })),
+      writePortfolioFrontierCheckpoint: vi.fn(async (_ws: string, cp: { cursorIdeaId: string | null }) => {
+        written.push(cp);
+      }),
+    });
+    await scoutOutcomeRefreshSweep(d);
+    const refreshed = (d.refreshScoutOutcomes as ReturnType<typeof vi.fn>).mock.calls.map(
+      (call) => (call[0] as { ideaIds: string[]; origin?: string }),
+    );
+    expect(refreshed[0]).toMatchObject({ ideaIds: ['goal-plan:stranded'], origin: 'su-ideate' });
+    expect(refreshed).toHaveLength(3);
+    // cursor advanced only by the round-robin rows (s2, s3), not by the priority pick
+    expect(written.at(-1)?.cursorIdeaId).toBe('s3');
+  });
+
   it('rechecks at the write boundary and narrows to the reserved slice when grading arrives', async () => {
     const readBacklog = vi.fn(async () => 0);
     readBacklog.mockResolvedValueOnce(0).mockResolvedValueOnce(1);
@@ -348,5 +408,102 @@ describe('scoutOutcomeRefreshSweep — orchestration (injected deps, no PG)', ()
     await scoutOutcomeRefreshSweep(d);
     const later = await scoutOutcomeRefreshSweep({ ...d, now: NOW + 901_000 });
     expect(later).toHaveLength(1);
+  });
+});
+
+// WI-10007540: agent-review routes sit outside the learning frontier, so a route whose
+// work item terminalized without the eager write stayed outcome NULL forever (885 rows
+// measured 2026-10-08). The sweep now settles exactly those rows in a bounded batch.
+describe('scoutOutcomeRefreshSweep — agent-review terminal reconciliation (WI-10007540)', () => {
+  const baseDeps = (over: Parameters<typeof scoutOutcomeRefreshSweep>[0] = {}) => ({
+    listBlenderMaintenanceScopes: vi.fn(async () => [{ workspaceId: 'ws1', installSlug: 'papercusp' }]),
+    refreshScoutOutcomes: vi.fn(async () => ({ total: 0, byLens: {}, ranked: [] }) as never),
+    countStalePendingIdeas: vi.fn(async () => 0),
+    readPendingOutcomeCandidates: vi.fn(async () => []),
+    readTerminalUnresolvedRefIdeaIds: vi.fn(async () => [] as string[]),
+    readPortfolioGradingBacklog: vi.fn(async () => 0),
+    readPortfolioFrontierCheckpoint: vi.fn(async () => null),
+    writePortfolioFrontierCheckpoint: vi.fn(async () => undefined),
+    recentWatchdogFires: vi.fn(async () => 0),
+    recordFire: vi.fn(async () => undefined),
+    openEscalation: vi.fn(async () => ({}) as never),
+    now: NOW,
+    ...over,
+  });
+
+  const evidence = (ideaId: string, status: 'won' | 'lost' | 'unknown') => ({
+    ideaId,
+    origin: 'agent-review',
+    routedRef: `wi:${ideaId}`,
+    status,
+    sourceKind: status === 'unknown' ? 'none' : 'completion',
+    sourceRef: status === 'unknown' ? null : `wi:${ideaId}`,
+    observedAt: new Date(NOW).toISOString(),
+    reason: 'test',
+  });
+
+  it('refreshes the terminal-but-unresolved agent-review ids under origin agent-review and counts the settled ones', async () => {
+    const refresh = vi.fn(async () => ({
+      total: 0,
+      byLens: {},
+      ranked: [],
+      refreshed: [evidence('EI-1', 'won'), evidence('EI-2', 'lost'), evidence('EI-3', 'unknown')],
+    }) as never);
+    const d = baseDeps({
+      refreshScoutOutcomes: refresh,
+      readTerminalUnresolvedRefIdeaIds: vi.fn(async () => ['EI-1', 'EI-2', 'EI-3']),
+    });
+    const results = await scoutOutcomeRefreshSweep(d);
+    expect(d.readTerminalUnresolvedRefIdeaIds).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      origin: 'agent-review',
+      limit: 200,
+    });
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      harnessSlug: 'papercusp',
+      origin: 'agent-review',
+      ideaIds: ['EI-1', 'EI-2', 'EI-3'],
+    });
+    // 'unknown' is still pending: only won/lost count as settled.
+    expect(results[0]).toMatchObject({ outcome: 'refreshed', agentReviewReconciled: 2 });
+  });
+
+  it('never calls refresh when no agent-review route is terminal-but-unresolved, and omits the count', async () => {
+    const d = baseDeps();
+    const results = await scoutOutcomeRefreshSweep(d);
+    expect(d.readTerminalUnresolvedRefIdeaIds).toHaveBeenCalledTimes(1);
+    expect(d.refreshScoutOutcomes).not.toHaveBeenCalled();
+    expect(results[0]).not.toHaveProperty('agentReviewReconciled');
+  });
+
+  it('is fail-soft: a reconciliation error leaves the workspace result refreshed', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const d = baseDeps({
+      readTerminalUnresolvedRefIdeaIds: vi.fn(async () => {
+        throw new Error('join timed out');
+      }),
+    });
+    const results = await scoutOutcomeRefreshSweep(d);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('agent-review reconciliation failed'));
+    warn.mockRestore();
+    expect(results[0]).toMatchObject({ outcome: 'refreshed', reason: '0 verified; no stale-pending' });
+    expect(results[0]).not.toHaveProperty('agentReviewReconciled');
+  });
+
+  it('honours the batch env override, and <=0 disables only this pass', async () => {
+    vi.stubEnv('PAPERCUSP_AGENT_REVIEW_OUTCOME_BATCH', '7');
+    expect(agentReviewOutcomeBatchSize()).toBe(7);
+    const d = baseDeps();
+    await scoutOutcomeRefreshSweep(d);
+    expect(d.readTerminalUnresolvedRefIdeaIds).toHaveBeenCalledWith(expect.objectContaining({ limit: 7 }));
+
+    __resetOutcomeRefreshThrottleForTests();
+    vi.stubEnv('PAPERCUSP_AGENT_REVIEW_OUTCOME_BATCH', '0');
+    const off = baseDeps();
+    const results = await scoutOutcomeRefreshSweep(off);
+    expect(off.readTerminalUnresolvedRefIdeaIds).not.toHaveBeenCalled();
+    expect(results[0]).toMatchObject({ outcome: 'refreshed' });
   });
 });

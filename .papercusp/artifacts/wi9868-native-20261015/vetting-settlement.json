@@ -1,0 +1,38 @@
+{
+  "results": [
+    {
+      "rubric": {
+        "revision": 4
+      },
+      "vetting": {
+        "required": true,
+        "satisfied": true,
+        "state": "vetted",
+        "reason": "current",
+        "gateEnabled": true,
+        "metaRubricRef": "meta-acceptance-rubric",
+        "currentRevision": 4,
+        "currentCriteriaHash": "1c3a34bccfe4db6b7a01b3105407383a3dece3245630bdda2c8fa5ed4cdcf2dc",
+        "attestedRevision": 4,
+        "attestedCriteriaHash": "1c3a34bccfe4db6b7a01b3105407383a3dece3245630bdda2c8fa5ed4cdcf2dc",
+        "attestedRevisions": [
+          4
+        ],
+        "attestationIssueId": "EI-26065615015866689",
+        "consultId": null,
+        "workItemId": "WI-6554700010009999",
+        "candidates": [
+          {
+            "issueId": "EI-26065615015866689",
+            "createdAt": "2026-10-15T17:01:47.576Z",
+            "rejectedBy": null,
+            "detail": "settled attestation for the current revision",
+            "attestedRevision": 4,
+            "attestedCriteriaHash": "1c3a34bccfe4db6b7a01b3105407383a3dece3245630bdda2c8fa5ed4cdcf2dc"
+          }
+        ],
+        "diagnosis": null
+      }
+    }
+  ]
+}

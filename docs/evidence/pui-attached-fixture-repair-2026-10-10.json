@@ -1,0 +1,2262 @@
+{
+  "schemaVersion": 1,
+  "candidate6a0Acceptance": {
+    "sourceSha": "6a0f8070d6832d81e7519793579ad01d81b109b6",
+    "archiveSha256": "eb37033f0775024939604c4acde4d9068591be29e36d1d0db7372585580049a6",
+    "binarySha256": "f19165cb36daa0a032c56e5d14aaf2aee38a7a079df0ddf1054f87f8cc405375",
+    "taskId": "0mv649rimvr16ub1jf8",
+    "ok": false,
+    "terminalAt": "2026-10-13T04:12:45.931Z",
+    "rootExitCode": 1,
+    "rootLogPath": ".papercusp/scratch/bash-c5579d44-4f8.log",
+    "rootLogSha256": "223b582558f0d767128c5af4f9da496cb0abfee104ded397fd5d66b4c447ed40",
+    "verdictPath": "/tmp/pui-acceptance-7534f/candidates/source-6a0f8070d6832d81e7519793579ad01d81b109b6/pui-6a0f-full-approval-20261013-0325.acceptance.json",
+    "verdictSha256": "48f12e35f2b4aec3f4fda39d55b6f8ac2750b46160a1149e50bd9cb14c9e2b0b",
+    "legs": [
+      {
+        "engine": "scripted",
+        "status": 0,
+        "evidence": "/tmp/pui-acceptance-7534f/run-6a0f-full-approval-20261013-0325/evidence-scripted.json",
+        "rows": 66
+      },
+      {
+        "engine": "claude",
+        "status": 0,
+        "evidence": "/tmp/pui-acceptance-7534f/run-6a0f-full-approval-20261013-0325/evidence-claude.json",
+        "rows": 5
+      },
+      {
+        "engine": "codex",
+        "status": 1,
+        "evidence": "/tmp/pui-acceptance-7534f/run-6a0f-full-approval-20261013-0325/evidence-codex.json",
+        "rows": 1
+      },
+      {
+        "engine": "omp",
+        "status": 1,
+        "evidence": "/tmp/pui-acceptance-7534f/run-6a0f-full-approval-20261013-0325/evidence-omp.json",
+        "rows": 4
+      }
+    ],
+    "refusals": [
+      "installed-product codex test leg did not exit successfully (status 1)",
+      "installed-product omp test leg did not exit successfully (status 1)",
+      "Linux x86_64 × Codex is advertised without installed-product evidence for PUI_INSTALLED_REAL_ENGINE_ACCEPTANCE",
+      "Linux x86_64 × Codex is advertised without installed-product evidence for PUI_OPERATOR_PROCESS_ACCEPTANCE",
+      "Linux x86_64 × OMP is advertised without installed-product evidence for PUI_OPERATOR_PROCESS_ACCEPTANCE"
+    ],
+    "repair": {
+      "status": "canonical helpers pass; focused native proof in progress",
+      "files": [
+        {
+          "path": "packages/operator-core/lib/pui-e2e/vt-screen.ts",
+          "sha256": "4c368898035808418498ca89c170c3e1c1bd7fa268d5ea9a0ceba55f3749e900",
+          "commit": "c2e730cc31e1a78f87ae571d5ed631b3fbed7fde"
+        },
+        {
+          "path": "packages/operator-core/lib/pui-e2e/vt-screen.test.ts",
+          "sha256": "8b52fee3f40267619c70e1773538e340c4d3edc5c3b0d26274b10c5f64ba1a96",
+          "commit": "c2e730cc31e1a78f87ae571d5ed631b3fbed7fde"
+        },
+        {
+          "path": "packages/operator-core/lib/pui-e2e/native-provider-trace.ts",
+          "sha256": "b7acc0fef27bd3795ae1c0b5ecd7416fe9eabdba10a14c310fa45a8de76fa932",
+          "commit": "c2e730cc31e1a78f87ae571d5ed631b3fbed7fde"
+        },
+        {
+          "path": "packages/operator-core/lib/pui-e2e/native-provider-trace.test.ts",
+          "sha256": "c4247beb14071b512ce7bbb3c35605a1e1c6b14ed77a967bbb5b0d63dbf32292",
+          "commit": "c2e730cc31e1a78f87ae571d5ed631b3fbed7fde"
+        },
+        {
+          "path": "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts",
+          "sha256": "e4c721842a54d7b3508379c65867b9747c48c4115a9434f60a7601fba26a117c",
+          "commit": "c2e730cc31e1a78f87ae571d5ed631b3fbed7fde"
+        }
+      ],
+      "helperRunId": "f8a229b5-743a-40f6-82cf-e624e2e645b5",
+      "helperTestRunIds": [
+        21257087,
+        21257088
+      ],
+      "helperPassed": 42,
+      "helperFailed": 0,
+      "helperSkipped": 0,
+      "scopedTypecheck": "five changed files clean; exit0; no project/gate claim",
+      "diagnosticScope": "parent-operator Codex RPC receipts only; not OS-child traffic",
+      "focusedCodex": {
+        "taskId": "0mv9lekc4j4shaucxep",
+        "rootLogPath": ".papercusp/scratch/bash-2800c2d9-4ac.log",
+        "deadline": "2026-10-15T14:16:49.648Z",
+        "terminalEvent": "task:terminal:0mv9lekc4j4shaucxep",
+        "awaitId": 306341,
+        "status": "terminal1 before native legs; Docker stock smoke timed out",
+        "terminalAt": "2026-10-15T13:54:52.002Z",
+        "rootExitCode": 1,
+        "nativeLegsRan": 0,
+        "verdictPath": "/tmp/pui-acceptance-7534f/candidates/source-6a0f8070d6832d81e7519793579ad01d81b109b6/pui-codex-trace-repair-20261015-1346.partial.acceptance.json"
+      },
+      "stockSmokeRepair": {
+        "workItem": "EI-26054003608529816",
+        "status": "done; canonical tests pass",
+        "rootCause": "Interrupted Docker smoke lost its inconclusive state and was treated as a completed candidate failure, suppressing every native leg.",
+        "originalContainer": {
+          "id": "c173f27f97b5",
+          "candidateMount": "/tmp/pui-acceptance-7534f/run-codex-trace-repair-20261015-1346/unit/pui-0.1.0-linux-x86_64",
+          "state": "created",
+          "pid": 0,
+          "startedAt": "0001-01-01T00:00:00Z",
+          "disposition": "identity inspected; owned orphan removed"
+        },
+        "fix": "Reuse StockMachineResult.unmeasured for interrupted invocation and absent terminal status; name smoke containers for timeout cleanup and the existing orphan sweep. Completed nonzero binary exits still block legs; unmeasured smokes still refuse release.",
+        "files": [
+          "packages/operator-core/lib/pui-e2e/release-acceptance-run.ts",
+          "packages/operator-core/lib/pui-e2e/release-acceptance.test.ts"
+        ],
+        "testRunId": "f05429fc-a118-4811-a244-abadd389c512",
+        "testRunIds": [21257148],
+        "passed": 59,
+        "failed": 0,
+        "skipped": 0,
+        "limitation": "Docker delay origin remains undiagnosed; these are harness tests, not native-product acceptance."
+      },
+      "focusedNativeAfterSmokeRepair": {
+        "taskId": "0mv9m427ugij21l1mus",
+        "rootLogPath": ".papercusp/scratch/bash-6e0ce6bd-de2.log",
+        "deadline": "2026-10-15T15:06:39.218Z",
+        "work": "/tmp/pui-acceptance-7534f/run-native-focus-repair-20261015-1406",
+        "verdictPath": "/tmp/pui-acceptance-7534f/candidates/source-6a0f8070d6832d81e7519793579ad01d81b109b6/pui-native-focus-repair-20261015-1406.partial.acceptance.json",
+        "scope": "Codex and OMP parent greeting/tool/interrupt/continue plus explicit approval/effect/same-identity OS restart; live-tree diagnostic fixture, immutable6a0 archive; partial/source-drift release refusal expected",
+        "account": "auto",
+        "mode": "auto",
+        "planEnabled": true,
+        "approvalEnabled": true,
+        "codexModel": "gpt-5.5",
+        "ompModel": "unpinned per D-013",
+        "status": "terminal1; OMP focused journey passed; Codex provider rejected selected gpt-5.5 model",
+        "terminalAt": "2026-10-15T14:21:47.005Z",
+        "rootExitCode": 1,
+        "verdictSha256": "455feb50041693dd7226fe7fb2cc7622c9b2a894d8c0a3e72c2c886165273c8a",
+        "releaseAccepted": false,
+        "omp": {
+          "childExitCode": 0,
+          "passed": 2,
+          "failed": 0,
+          "skipped": 96,
+          "logPath": "/tmp/pui-acceptance-7534f/run-native-focus-repair-20261015-1406/vitest-omp.log",
+          "logSha256": "c70d027313e23948ca673b074163f9a9afa1a870ad318d8c8c13d059594abec7",
+          "approvalCardReplyStatus": 200,
+          "toolCompleted": true,
+          "exactEffectVerified": true,
+          "effectSha256": "7568420c08dc999407f80d3283b546ac5b107538e4501d4d5466badebdd21a87",
+          "nativeSessionId": "01a13fef-40dd-7407-b167-c05d68f9ed87",
+          "sameIdentityAcrossRestart": true,
+          "operatorPids": [2881613, 2929177],
+          "runtimeGenerations": [0, 1],
+          "model": "papercusp-gateway/claude-sonnet-4-6",
+          "scope": "Current-build fixture repair with immutable6a0 binary; no full candidate acceptance inference"
+        },
+        "codex": {
+          "childExitCode": 1,
+          "passed": 0,
+          "failed": 2,
+          "skipped": 96,
+          "evidenceRows": 0,
+          "logPath": "/tmp/pui-acceptance-7534f/run-native-focus-repair-20261015-1406/vitest-codex.log",
+          "logSha256": "87a343d4b531017e204be7f55e16a53055ed25e1496f049e4cc6c16202fc9f90",
+          "providerRefusal": "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
+          "catalogModelForNextProbe": "gpt-5.4",
+          "workItem": "EI-26056366901923516",
+          "originalMissingCardRootCause": "unconfirmed",
+          "guardRepair": {
+            "surfaceReused": "su-session-attached-live-rate-limit.ts and existing PUI native waits",
+            "testRunId": "fa10841a-eb7a-484c-83d9-978781e0d890",
+            "testRunIds": [21257274],
+            "passed": 17,
+            "failed": 0,
+            "skipped": 0
+          }
+        },
+        "followupCodex": {
+          "taskId": "0mv9na6apc778nb1sb3",
+          "rootLogPath": ".papercusp/scratch/bash-887dc509-fc6.log",
+          "deadline": "2026-10-15T15:39:24.048Z",
+          "work": "/tmp/pui-acceptance-7534f/run-codex-supported-model-20261015-1440",
+          "verdictPath": "/tmp/pui-acceptance-7534f/candidates/source-6a0f8070d6832d81e7519793579ad01d81b109b6/pui-codex-supported-model-20261015-1440.partial.acceptance.json",
+          "model": "gpt-5.4",
+          "account": "auto",
+          "mode": "auto",
+          "planEnabled": true,
+          "approvalEnabled": true,
+          "status": "terminal1; provider also rejected catalog-listed gpt-5.4; no native acceptance rows",
+          "auditRef": "thread-post:1183327",
+          "terminalAt": "2026-10-15T14:48:01.281Z",
+          "rootExitCode": 1,
+          "nativePassed": 0,
+          "nativeFailed": 2,
+          "nativeSkipped": 96,
+          "nativeEvidenceRows": 0,
+          "nativeLogSha256": "b17cd034016f44dec3e7006e60a9c372fc28f8e6e03035b4e7741d1bd49b50f3",
+          "verdictSha256": "8f168df139d0b8ec9506daaa329aff5320a7435b6647117fb2a204ba45ed791a",
+          "providerRefusal": "The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account.",
+          "correction": "Catalog presence did not establish account access; earlier supported-model wording is retracted. Native missing-card root remains unconfirmed.",
+          "gatewayEvidence": {
+            "owner": "su-eec55cf8-e464-4273-a160-aaa2b7d69eb3",
+            "model": "gpt-5.4",
+            "finalStatus": 400,
+            "attempts": 6,
+            "failovers": 5,
+            "requestId": "2b07b96e-d53e-4d98-a1d5-973aca64fe95:24505"
+          },
+          "guardRepair": {
+            "cause": "Direct vi.waitFor correlated/rendered reply waits retried definitive provider errors until timeout",
+            "fix": "Reuse pollUntil beforeCheck refusal guard; preserve exact turn/session assertions",
+            "testRunId": "35897309-0cf8-46c8-9d42-185e8642163c",
+            "testRunIds": [21257312, 21257313],
+            "passed": 25,
+            "failed": 0,
+            "skipped": 0
+          },
+          "automaticPreflightRepair": {
+            "surfaceReused": "Existing routed-account release preflight, gateway port resolver, SSE parser and Codex refusal classifier",
+            "behavior": "Probe the selected model on the same auto route before archive/setup/long suites; stop definitive model refusal; require response.completed for a successful probe; keep interrupted and unavailable probes unmeasured",
+            "testRunId": "9aef4719-91d4-40b0-af8f-ad623043dab0",
+            "testRunIds": [21257320],
+            "passed": 66,
+            "failed": 0,
+            "skipped": 0
+          },
+          "completedModelProbe": {
+            "startedAt": "2026-10-15T14:53:53.177Z",
+            "finishedAt": "2026-10-15T14:53:55.621Z",
+            "owner": "su-7534ff62-a124-4ac1-a913-a60b3107d8e7",
+            "model": "gpt-6.1-sol",
+            "status": 200,
+            "routedAccount": "aviynw2_codex",
+            "terminal": "response.completed",
+            "scope": "Gateway inference only; not installed native PUI acceptance"
+          },
+          "nextProbe": {
+            "taskId": "0mv9nz2uz13y4kx4bsj",
+            "rootLogPath": ".papercusp/scratch/bash-434883c9-4d3.log",
+            "deadline": "2026-10-15T15:58:46.008Z",
+            "work": "/tmp/pui-acceptance-7534f/run-codex-route-preflight-20261015-1500",
+            "verdictPath": "/tmp/pui-acceptance-7534f/candidates/source-6a0f8070d6832d81e7519793579ad01d81b109b6/pui-codex-route-preflight-20261015-1500.partial.acceptance.json",
+            "model": "gpt-6.1-sol",
+            "account": "auto",
+            "mode": "auto",
+            "planEnabled": true,
+            "approvalEnabled": true,
+            "auditRef": "thread-post:1183368",
+            "status": "terminal failure: native basic journey passed; restart journey blocked by a second pending native approval; partial/current-build release remains refused",
+            "terminalAt": "2026-10-15T15:13:14.133Z",
+            "exitCode": 1,
+            "rootLogSha256": "d87e1106328ea37a8d654e108945d6583f1043970c3198637aae2d02a66ae88b",
+            "codexLogPath": "/tmp/pui-acceptance-7534f/run-codex-route-preflight-20261015-1500/vitest-codex.log",
+            "codexLogSha256": "54310e04ea4b10be99306adb9348ca9f6f1e779a7570d6c294b311d4b08d5e79",
+            "verdictSha256": "604bdc6919700c17109daf5c62d9926dd6ee5609ffd92fe8bab3d799fb46833e",
+            "codexTests": { "passed": 1, "failed": 1, "skipped": 96, "childExitCode": 1 },
+            "nativeBasicJourney": {
+              "state": "passed",
+              "tag": "PUI_INSTALLED_REAL_ENGINE_ACCEPTANCE",
+              "nativeSessionId": "01a1401e-4efd-72c2-ba6b-5cd4b4323c55",
+              "chatId": "e7abd446-e421-488d-813c-0fec75e8b1e1",
+              "evidencePath": "/tmp/pui-acceptance-7534f/run-codex-route-preflight-20261015-1500/evidence-codex.json",
+              "scope": "Installed greeting, real file tool, interrupt, continue and native resume; current-build fixture, not a matched full candidate or OS-process restart pass"
+            },
+            "nativeRestartFailure": {
+              "workItem": "EI-26058952084813820",
+              "nativeSessionId": "01a1401b-d144-7f72-bc42-cc3d0342a49e",
+              "turnId": "pui-turn-pui-1792076931615855957",
+              "firstApproval": {
+                "correlationId": "f274470f-cfdd-49e9-85cb-a3a0c46de9c5",
+                "cardReplyStatus": 200,
+                "cardClosedSequence": 28,
+                "toolCompletedSequence": 30,
+                "toolIsError": false,
+                "exactEffectAssertionPassed": true,
+                "receiptEmitted": false,
+                "scope": "The failure line follows the exact file assertion; receipt emission was incorrectly deferred until after send readiness"
+              },
+              "pendingFollowup": {
+                "correlationId": "0aca2eb1-65a5-4179-91a7-7a08d90c9f3b",
+                "cardOpenedSequence": 33,
+                "waitingForOwnerSequence": 34,
+                "reason": "May I verify the note contents and trailing newline?",
+                "tool": "Bash",
+                "answered": false
+              },
+              "failedBoundary": "waitForSendReady after the first verified effect, before greeting or operator OS restart",
+              "rootCause": "The fixture treated waiting-for-owner while a second native card was open as a completed turn",
+              "repair": "Retain the first approval receipt immediately; explicitly decline only same-turn follow-ups for this fixture file, require no open cards plus turn completion, then observe send readiness",
+              "repairFiles": [
+                "packages/operator-core/lib/pui-e2e/release-acceptance.ts",
+                "packages/operator-core/lib/pui-e2e/release-acceptance.test.ts",
+                "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts"
+              ],
+              "verificationStatus": "final registered helper suite passed 79 tests with zero skips and three-file types passed; repaired native OS-restart replay running",
+              "repairVerification": {
+                "initialHelperTask": "0mv9oqsi51naw8z6gf7",
+                "initialHelperResult": "78 passed; superseded because the file-boundary guard changed during the run",
+                "finalHelperTask": "0mv9ox4hqsakaqs9apg",
+                "finalHelperLog": ".papercusp/scratch/bash-27819a93-0ed.log",
+                "finalHelperResult": "79 passed, 0 failed, 0 skipped; terminal 0 at 2026-10-15T15:26:45.127Z; source stamped after the last edit",
+                "typecheckTask": "0mv9ouy7z78epn9v9s9",
+                "typecheckLog": ".papercusp/scratch/bash-18588979-44c.log",
+                "typecheckResult": "three named files and four resolved importers checked; zero errors; terminal 0 at 2026-10-15T15:25:23.156Z",
+                "sourceSha256": {
+                  "release-acceptance.ts": "e4481f1202b22fa79c32c78173bf5a4db3b56658dbb51cc913110af5f85dbc3f",
+                  "release-acceptance.test.ts": "e52898ba106f6d69e897497e1cf64f7687a77e9367a609c9af1d7f719af0ca18",
+                  "agent-chat-pty.integration.test.ts": "fbacb40f075acae389c4e0a7a34100dc925e01201f43e0ed7eb185c25b50a990"
+                },
+                "attemptAuditRef": "thread-post:1183397",
+                "nativeReplay": {
+                  "taskId": "0mv9p2san1hq5mma1ct",
+                  "rootLogPath": ".papercusp/scratch/bash-fa0ab890-a24.log",
+                  "deadline": "2026-10-15T16:29:38.546Z",
+                  "work": "/tmp/pui-acceptance-7534f/run-codex-followup-decline-20261015-1530",
+                  "verdictPath": "/tmp/pui-acceptance-7534f/candidates/source-6a0f8070d6832d81e7519793579ad01d81b109b6/pui-codex-followup-decline-20261015-1530.partial.acceptance.json",
+                  "filter": "restores the same native conversation after the operator OS process exits",
+                  "model": "gpt-6.1-sol",
+                  "account": "auto",
+                  "mode": "auto",
+                  "planEnabled": true,
+                  "approvalEnabled": true,
+                  "status": "native restart case passed; partial/current-build release remains refused",
+                  "rootExitCode": 1,
+                  "rootTerminalAt": "2026-10-15T15:37:26.882Z",
+                  "rootLogSha256": "adce62a218c619e86964793a66fd88baae8fdee44db0fadd0d6eff482a782305",
+                  "codexLogPath": "/tmp/pui-acceptance-7534f/run-codex-followup-decline-20261015-1530/vitest-codex.log",
+                  "codexLogSha256": "de290e8c9af698aa5331422880d4c300858c7216d9ff61270163c522e90639aa",
+                  "verdictSha256": "8dd52f89591776876cdc34e8923711d6d4c088fdcf3f29d12a096297fd6c4046",
+                  "codexTests": { "passed": 1, "failed": 0, "skipped": 97, "childExitCode": 0 },
+                  "nativeApproval": {
+                    "turnId": "pui-turn-pui-1792078599549688973",
+                    "correlationId": "5bfb9b5d-ffbc-4cb3-8db5-592757b8b8b6",
+                    "cardReplyStatus": 200,
+                    "toolCompleted": true,
+                    "exactEffectVerified": true,
+                    "effectSha256": "f4bcbd31ee5e6dc2cd36b266f8e465f6c14dccbe1186f1576968f35835e9b6f9"
+                  },
+                  "nativeRestart": {
+                    "chatId": "7a6f50de-0b3e-4ee1-89aa-9ed843d2b0ad",
+                    "nativeSessionId": "01a14035-53d7-70d2-b8a8-6255f5d37884",
+                    "firstPid": 2842042,
+                    "secondPid": 2873814,
+                    "savedRuntimeGeneration": 0,
+                    "resumedRuntimeGeneration": 1,
+                    "savedAndResumedIdentityEqual": true,
+                    "accountServed": "aviynw2_codex"
+                  },
+                  "optionalFollowupDenialReceipts": 0,
+                  "scope": "The native first-approval/effect/OS-restart journey passed. This replay did not request an optional follow-up; its scoped-denial policy is covered by registered helper regressions. Runner/candidate source mismatch, partial coverage and lowercase diagnostic advertising metadata refuse the overall release verdict. This is not immutable full-candidate acceptance."
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "candidateCe62Acceptance": {
+    "sourceSha": "ce62d173d11f5920bf71bf04bc086f2a69d6d640",
+    "packageTaskId": "0mv9plrw1i0tejg1wx8",
+    "packageLogPath": ".papercusp/scratch/bash-fdc6dd0b-184.log",
+    "packageTerminalAt": "2026-10-15T15:46:30.974Z",
+    "packageExitCode": 0,
+    "archive": "/tmp/pui-acceptance-7534f/candidates/source-ce62d173d11f5920bf71bf04bc086f2a69d6d640/pui-0.1.0-linux-x86_64.tar.gz",
+    "archiveSha256": "c292d6942fcac6c50a7df439d6e4552af3591c0d52f8c3666c9b095c3812bb41",
+    "binarySha256": "3602b3154090498cd1b09647a2fc047b13ae21b408e070ebd7aea6935ae2afb2",
+    "companionSha256": "248702154be831721f4967a5cce730260c860c4ee8ac89c205ae08a66114d3e7",
+    "sourceDirty": false,
+    "verification": "Rehashed the retained archive and both manifest artifacts, and verified the manifest's committed source and sourceDirty:false. Six relevant source modules matched this commit before packaging.",
+    "attemptAuditRef": "thread-post:1183418",
+    "fullAcceptance": {
+      "taskId": "0mv9pt7qbxd4nvpbfp2",
+      "rootLogPath": ".papercusp/scratch/bash-f143e934-134.log",
+      "deadline": "2026-10-15T17:50:11.613Z",
+      "work": "/tmp/pui-acceptance-7534f/run-ce62-full-approval-20261015-1550",
+      "verdictPath": "/tmp/pui-acceptance-7534f/candidates/source-ce62d173d11f5920bf71bf04bc086f2a69d6d640/pui-ce62-full-approval-20261015-1550.acceptance.json",
+      "launcher": "apps/tui/scripts/release-acceptance.sh with its maintained immutable checkout isolation",
+      "advertise": ["Linux x86_64:Claude", "Linux x86_64:Codex", "Linux x86_64:OMP"],
+      "models": { "claude": "sonnet", "codex": "gpt-6.1-sol", "omp": "automatic selected model" },
+      "account": "auto",
+      "mode": "auto",
+      "planEnabled": true,
+      "approvalEnabled": true,
+      "testFilter": null,
+      "status": "complete; aggregate verdict accepted",
+      "terminal": {
+        "taskExitCode": 0,
+        "taskTerminalAt": "2026-10-15T16:43:34.793Z",
+        "rootLogPath": ".papercusp/scratch/bash-f143e934-134.log",
+        "rootLogSha256": "29677c18690c3c1530edbc9479c390e69b53a7426edf36d4e3227d47694635b9",
+        "verdictPath": "/tmp/pui-acceptance-7534f/candidates/source-ce62d173d11f5920bf71bf04bc086f2a69d6d640/pui-ce62-full-approval-20261015-1550.acceptance.json",
+        "verdictSha256": "ee574b9bf275ea4802ad1016fa3836f323e7a7dd72d8add41dad83977efef450",
+        "verdictOk": true,
+        "refusals": [],
+        "runnerHead": "ce62d173d11f5920bf71bf04bc086f2a69d6d640",
+        "archiveSha256": "c292d6942fcac6c50a7df439d6e4552af3591c0d52f8c3666c9b095c3812bb41",
+        "candidateBinarySha256": "3602b3154090498cd1b09647a2fc047b13ae21b408e070ebd7aea6935ae2afb2",
+        "legs": {
+          "scripted": {"status": 0, "rows": 66, "logSha256": "3e98a909fe82f794f84fb8f72b864717e5b23a0bd14810ef722614d511b4b086", "passed": 87, "skipped": 11},
+          "claude": {"status": 0, "rows": 5, "logSha256": "9422ec7d7cd47f91c02ac5d0a53ef05503b6458765321acbed18cc406b96ef71", "passed": 13, "skipped": 85, "nativeApproval": true, "processRestart": true, "sameNativeIdentity": true},
+          "codex": {"status": 0, "rows": 4, "logSha256": "373617757cd0366737950c511dc0bd933b6c054b0f609ee51905b4351b2b8383", "passed": 12, "skipped": 86, "nativeApproval": true, "processRestart": true, "sameNativeIdentity": true},
+          "omp": {"status": 0, "rows": 5, "logSha256": "e154054f63febdac60fddacc4fedf3c07023df3fad7085b90a097cb228908a9d", "passed": 13, "skipped": 85, "nativeApproval": true, "processRestart": true, "sameNativeIdentity": true}
+        },
+        "advertisedCells": ["Linux x86_64 × Claude", "Linux x86_64 × Codex", "Linux x86_64 × OMP"],
+        "macOSAdvertised": false,
+        "suiteProvenanceMatched": true,
+        "stockMachineSmokePassed": true,
+        "cloudDeviceStartPassed": true
+      },
+      "progress": {
+        "observedWindowUtc": "2026-10-15 16:43-17:12",
+        "rootLiveness": "task terminal state completed exit 0; aggregate verdict and all per-leg logs were independently read",
+        "nextTerminalAwaitId": 307315,
+        "nextTerminalAwaitExpiresAt": "2026-10-15T16:49:00.658Z",
+        "scripted": {
+          "childExitCode": 0,
+          "passed": 87,
+          "skipped": 11,
+          "logPath": "/tmp/pui-acceptance-7534f/run-ce62-full-approval-20261015-1550/vitest-scripted.log"
+        },
+        "claude": {
+          "childExitCode": 0,
+          "passed": 13,
+          "skipped": 85,
+          "logPath": "/tmp/pui-acceptance-7534f/run-ce62-full-approval-20261015-1550/vitest-claude.log",
+          "logSha256": "9422ec7d7cd47f91c02ac5d0a53ef05503b6458765321acbed18cc406b96ef71",
+          "nativeSessionId": "d646c760-4fe2-486d-ada0-c280206d930a",
+          "approvalReplyStatus": 200,
+          "toolCompleted": true,
+          "exactEffectVerified": true,
+          "effectSha256": "7c54a5086f522df0d4758f1230ba956fa4e7aa8272d4f7dfb187c45d6a93fc21",
+          "firstOperatorPid": 1148017,
+          "secondOperatorPid": 1183661,
+          "savedRuntimeGeneration": 0,
+          "resumedRuntimeGeneration": 1,
+          "sameSavedAndResumedIdentity": true,
+          "candidateSourceAndBinaryMatch": true
+        },
+        "codex": {
+          "childExitCode": 0,
+          "passed": 12,
+          "skipped": 86,
+          "logPath": "/tmp/pui-acceptance-7534f/run-ce62-full-approval-20261015-1550/vitest-codex.log",
+          "nativeApprovalAndRestart": "receipt and same-identity OS restart observed; child exit 0"
+        },
+        "omp": {
+          "status": "native approval and OS restart observed; child exit 0",
+          "logPath": "/tmp/pui-acceptance-7534f/run-ce62-full-approval-20261015-1550/vitest-omp.log",
+          "nativeSessionId": "01a1406d-2d43-7510-81b6-c6e715a553fa",
+          "approvalReplyStatus": 200,
+          "toolCompleted": true,
+          "exactEffectVerified": true,
+          "effectSha256": "8113f846020844c27d4c5d6001288af1b558509978e9fcabb1e324bff5376eeb",
+          "resumedProcessPid": 1974380,
+          "resumedRuntimeGeneration": 1,
+          "passed": 13,
+          "skipped": 85,
+          "childExitCode": 0
+        },
+        "allChildLegsExit0": true,
+        "aggregateVerdictPending": false,
+        "fullCandidateAccepted": true,
+        "bindingIds": [47028, 47029, 47030, 47031],
+        "retractedBindingIds": [47022, 47023, 47024, 47025],
+        "bindingCurrentness": "ledger-derived test bindings 47028-47031 report currentness current; earlier caller-attested operational rows were retracted as unknown",
+        "barAndGradeBlocker": {
+          "activeRubricRevision": 16,
+          "activeRubricCriteriaHash": "9dd8a68c940e70de35f5fa8e9ca3bb318ffbd299cc8fb0b609d76d6a35527b09",
+          "snapshotSourceRubricRevision": 14,
+          "scorecardsEvaluate": "acceptance_bar_contract_not_ready",
+          "blockingCodes": ["bar_snapshot_proof_stale", "bar_snapshot_proof_inadequate", "bar_snapshot_evidence_plane_unmet"],
+          "note": "P-030 candidate proof is complete; BAR contract re-projection/current proof and independent grade remain separate gates."
+        }
+      }
+    },
+    "publicationStatus": "Not published; full matching acceptance, required grade and final candidate-specific Avi approval remain pending"
+  },
+  "scope": {
+    "plane": "local current-build fixture",
+    "backend": "claude",
+    "publicRelease": false,
+    "immutableCandidateAcceptance": false
+  },
+  "workItems": [
+    "EI-25629382681124496",
+    "EI-25629013485041838",
+    "WI-10003592"
+  ],
+  "testFile": "packages/operator-core/lib/su-session-attached-live.integration.test.ts",
+  "testFileSha256": "6c0223ca8e731509221d8518c9258cf71f9f71bfb5ec9f54c5694298bf82a3db",
+  "testFileCommit": "6977f24609f59f40b0a790eb04b3f8c3ec5e6d23",
+  "taskId": "0mv2zlv7ifd85ixfkb2",
+  "logPath": ".papercusp/scratch/bash-c40221d3-14b.log",
+  "logSha256": "903cdb8a47190913ab2322fbaa57e6651d0eded9dfd71c7af98b0230caa9077b",
+  "frameworkResultLines": [
+    " Test Files  1 passed (1)",
+    "      Tests  7 passed (7)",
+    "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=9d860ad90e uncommittedPaths=0/1 provenance=unknown startedAt=2026-10-10T22:50:05.668Z skippedTests=0",
+    "[capability:bash] JOB END: status=completed exit=0 at 2026-10-10T22:53:12.728Z — this line was recorded by the transient-service runner; its file-backed sink survives loss of the operator host and is authoritative for durable output.",
+    "[capability:bash] JOB END: status=completed exit=0 at 2026-10-10T22:53:12.789Z — this line marks the job reaching an OBSERVED terminal state; if it is ABSENT, no terminal marker has been durably recorded yet: the job may still be running, or it may have died before its close handler wrote JOB END. Check capability:bash_output/task ledger; recovery writes JOB DIED after a ledger-confirmed unobserved death."
+  ],
+  "receipt": {
+    "acceptance": "attached-su-identity",
+    "workspaceId": "papercusp-workspace",
+    "harness": "papercusp",
+    "chatId": "b3a25c92-c17e-4145-9fb3-15d4311d1a4d",
+    "ownerId": "su-6099db35-39f4-4f62-a66d-17c82e353fce",
+    "nativeSessionId": "99e57318-d05e-477b-a0df-30ba09ccda64",
+    "requestedModel": "sonnet",
+    "nativeModel": "sonnet[1m]",
+    "actualModel": "sonnet[1m]",
+    "accountRoute": "auto",
+    "toolIdentity": true,
+    "reply": true
+  },
+  "reproductionCommand": "set -euo pipefail\ncd \"$(git rev-parse --show-toplevel)\"\nexport PAPERCUSP_REAL_ATTACHED_ENGINE=1\nexport PAPERCUSP_ATTACHED_TEST_MODEL=sonnet\nexport PAPERCUSP_ATTACHED_TEST_ACCOUNT=auto\nexport PAPERCUSP_ATTACHED_TEST_HARNESS=papercusp\nexport PUI_NATIVE_ACCOUNT_CATALOG=\"$PWD/.papercusp/scratch/pui-account-catalog-47a6-7534f-20261010.json\"\nexport TMPDIR=/tmp/pui-acceptance-7534f\nexport PC_EXECUTED_SOURCE_MAP_WORKSPACE=@papercusp/operator-core\nexport PC_EXECUTED_SOURCE_MAP_ROOT=\"$PWD\"\nexport PC_EXECUTED_SOURCE_MAP_OUT=/tmp/pui-acceptance-7534f/attached-identity-full-source-map-20261010-2250.json\nexport PC_EXECUTED_SOURCE_MAP_NO_PERSIST=1\nnpm run test:file -- packages/operator-core/lib/su-session-attached-live.integration.test.ts",
+  "fixtureRepairs": [
+    "Dedicated test-owned PostgreSQL and private Hono operator; admin DSN port must match the owned PG process.",
+    "Reuse actual Claude configuration materialization with the private operator bearer; assert advertised protocol tool names before launching the provider.",
+    "Explicit sonnet launch input and real native argv assertion, preserving the exact sonnet[1m] value.",
+    "Answer only the correlated empty-argument coord:whoami approval through the existing card-response HTTP route; unrelated requests fail immediately.",
+    "Maintain six native-card regression checks and redacted pending-card/tool timeout diagnostics."
+  ],
+  "sourceCapture": {
+    "path": "/tmp/pui-acceptance-7534f/attached-identity-full-source-map-20261010-2250.json",
+    "sha256": "377e94c104f7c14ec300dcb8d6dda3c9faad8b5a91061b8678fcf66b11733916",
+    "scope": "repository-worker-vite-original-sources",
+    "status": "changed",
+    "changedSources": [
+      {
+        "path": "packages/operator-core/lib/scratch-gc.ts",
+        "sha256": "7850f971bbb037cf9a3eddb9b1b1f5d4d20256b2b2cb23e6b2c290e72f3a5659",
+        "currentSha256": "61d1288fb3407881b1230ea4562a7bf4cc52d98dc61fe76fd50142376603277b"
+      }
+    ],
+    "missingAtCollectionReasons": 4436,
+    "otherReasons": [
+      "collection-source-mismatch:packages/operator-core/lib/scratch-gc.ts",
+      "source-changed:packages/operator-core/lib/scratch-gc.ts"
+    ]
+  },
+  "limitations": [
+    "The recorded auto value is account routing, not proof of the serving account.",
+    "Shared HEAD moved. Captured repository sources include a changed scratch-gc.ts and dynamic modules absent at collection. This pass is not an immutable commit or exact installed-candidate verdict.",
+    "No BAR adequacy, independent product grading, final candidate approval or public shipment is asserted."
+  ],
+  "nextEvidence": {
+    "archiveSource": "47a681df756563cd9f260b00bb3ad9e20527f796",
+    "archiveSha256": "6d98c2ef536329b2feb3fb00fac6b881a8e9f3e8f1dffc5229c0bc0f33127964",
+    "acceptanceTaskId": "0mv2zua6eub49n6xokb",
+    "acceptanceLogPath": ".papercusp/scratch/bash-563c3668-af7.log",
+    "acceptanceOutPath": "/tmp/pui-acceptance-7534f/candidates/source-47a681df756563cd9f260b00bb3ad9e20527f796/pui-47a6-cache-guard-2256.acceptance.json",
+    "state": "terminal failed exit 1 at 2026-10-10T23:48:47.153Z; scripted/Codex/Claude exit 0, OMP exit 1 with missing operator-process acceptance; full verdict refused"
+  },
+  "projectSelectionPreflight": {
+    "plane": "local current-build fixture against retained installed binary; no native inference",
+    "binarySha256": "e0cfc371fb1289595da1c0246a124cdbf68880c3386405c3cedd928d480d1d0f",
+    "failedRun": {
+      "taskId": "0mv406seg1f82nfcdz1",
+      "testRunId": 21084115,
+      "logPath": ".papercusp/scratch/bash-5ef23d7a-f47.log",
+      "logSha256": "dcc8d1ebb81d112037fb422c90cb3a139bf6a47f48bee1f7f3512fe159647493",
+      "exitCode": 1,
+      "terminalAt": "2026-10-11T15:59:54.223Z",
+      "result": "1 failed / 91 skipped; project selection timed out with Connection: Unavailable after Connected; cause unconfirmed"
+    },
+    "passingRun": {
+      "taskId": "0mv40s9zc1wygful1lv",
+      "testRunId": 21088335,
+      "logPath": ".papercusp/scratch/bash-1bb92d60-432.log",
+      "logSha256": "61d816735b76a2fd3911939ffe56c4da1f90ffb8ba08ba80714081209995385d",
+      "exitCode": 0,
+      "terminalAt": "2026-10-11T16:15:45.480Z",
+      "result": "1 passed / 91 skipped; project papercusp selected, Runtime rendered, zero native launch responses and zero native events",
+      "ledgerCommit": "c9a2ecca438781185a40b89374cc93dae30e4516",
+      "ledgerWorktreeDirty": true,
+      "testFileSha256": "a2fca49b928e9f38fec96b490bafc592a42c662311cadcb36b5b93077069bd96",
+      "operatorFixtureSha256": "b35ea28d5632a09a30ff975a38c5dd27a49c1ce3297f762fc6ad70176428e847",
+      "sourceMapPath": "/tmp/pui-acceptance-7534f/omp-context-20261011-1611/source-map.json",
+      "sourceMapSha256": "392da6a6d48ef806f6c912d27e73884d261fe9f271cdf238c971d78a5949d8f4"
+    },
+    "limitations": [
+      "The successful preflight checks identity and project response bodies before typing; these reads may warm server caches. It does not establish the cause of the earlier disconnect.",
+      "The fixture source and setup driver changed after this passing run; its source hashes above identify the bytes it tested.",
+      "No native restart/approval, serving-account identity, immutable full-candidate acceptance, BAR adequacy, independent grading, final Avi approval or public shipment is established."
+    ],
+    "nextAction": "Verify the corrected native task assignment and OMP operator-process restart/approval journey; preserve original full-candidate refused verdict."
+  },
+  "nativeApprovalFixtureRepair": {
+    "workItem": "EI-25701191623415602",
+    "failedTaskId": "0mv414d431ibepuh1nf",
+    "failedTestRunId": 21090981,
+    "failedLogPath": ".papercusp/scratch/bash-000409a8-e11.log",
+    "failedLogSha256": "a20b197326eb287942ea5c754a5cf3ce10b2db602efa029abd883ad2d8c16fec",
+    "failedTerminalAt": "2026-10-11T16:27:01.695Z",
+    "failedExitCode": 1,
+    "observedNativeModel": "papercusp-gateway/claude-sonnet-4-6",
+    "observation": "Setup reached native launch. The model refused the controller-owned task claim and temporary approval-marker request without opening a tool card; the test waited 120 seconds after the turn ended.",
+    "correction": "Start the native session without a first turn through Sessions > New, assign its actual descriptor owner before submitting work, ask it to verify the assignment, use an ordinary temporary text note, preserve prerequisite MCP approvals and the exact native tool-card/effect checks.",
+    "detector": {
+      "testFile": "packages/operator-core/lib/pui-e2e/release-acceptance.test.ts",
+      "testGroup": "native approval terminal wait",
+      "taskId": "0mv41nww8y8pdzsr50m",
+      "testRunId": 21091031,
+      "logPath": ".papercusp/scratch/bash-9f929183-df7.log",
+      "logSha256": "d56b89f318a6bc82a8b99da42fa2cde21680587d681fe1e4fba9f4ccf10b9ef2",
+      "terminalAt": "2026-10-11T16:37:22.072Z",
+      "exitCode": 0,
+      "result": "5 passed / 36 skipped; matching-turn terminal refusal, pending-card, earlier-turn, reasoning, initial-idle, failed and ended controls"
+    },
+    "bundledNativeAttempt": {
+      "taskId": "0mv45q2m21vdsjoz1ad",
+      "testRunId": 21101191,
+      "logPath": ".papercusp/scratch/bash-80d2ba98-4c2.log",
+      "logSha256": "a4a288299a220c5dccfe98888c7a48b4955322048ef656ebec77167f2e90c776",
+      "terminalAt": "2026-10-11T18:33:46.005Z",
+      "exitCode": 1,
+      "result": "1 failed / 93 skipped; reached native launch and actual-owner task assignment, then failed fast on a confirmed provider 429 before the native tool card or restart",
+      "nativeOwnerId": "su-c224265e-03df-46f8-8507-b3507c3ae480",
+      "nativeSessionId": "01a12c3d-90eb-74a8-9f85-efd53b276c25",
+      "backend": "omp",
+      "nativeModel": "papercusp-gateway/claude-sonnet-4-6",
+      "accountRoute": "auto",
+      "reportedServingAccountForFailedTurn": "aviynw6",
+      "approvalWorkItem": "EI-90000006",
+      "assignmentVerified": true,
+      "providerError": "429 rate_limit_error: This request would exceed your account's rate limit. Please try again later.",
+      "retryAfterMs": 156398000,
+      "privateOperatorIdentity": "200 / 5 ms on failure probe; seeded project response 200 / 5 ms",
+      "installedDoctor": "Local install and operator identity OK; expected STALE generation warning because retained candidate47a6 is exercised against the repaired current-build operator.",
+      "capacityCheck": "Claude projection had no fresh serviceable account and one unknown console-credit reading. A bounded read-only probe of that unknown account returned HTTP 400 without usage headers, so its capacity remains unknown; no aggregate exhaustion claim, rate reset or policy bypass.",
+      "limitations": "Actual owner assignment was observed; no successful provider turn, native approval card/effect, OS restart, successful serving-account acceptance, clean-source BAR or full-candidate verdict was established."
+    },
+    "limitations": [
+      "The five detector controls remain scoped helper evidence. The corrected current-build native journey subsequently passed in mountedSuApprovalRepair.resumedNativeVerification (ledger 21161988); that run verified the explicit target approval, exact effect, same turn/session and OS-process restart.",
+      "The original Connection: Unavailable cause remains unconfirmed.",
+      "The successful native receipt reports accountServed=aviynw8 on both process legs, with accountRoute=auto. It is current-build repair evidence; clean full-candidate acceptance, BAR adequacy, independent grading, final Avi approval and public shipment remain separate."
+    ]
+  },
+  "coldStartupProfile": {
+    "workItem": "EI-25697542669399195",
+    "plane": "private current-build operator with retained installed PUI; cold setup only; no native inference",
+    "binarySha256": "e0cfc371fb1289595da1c0246a124cdbf68880c3386405c3cedd928d480d1d0f",
+    "archiveSha256": "6d98c2ef536329b2feb3fb00fac6b881a8e9f3e8f1dffc5229c0bc0f33127964",
+    "failedRun": {
+      "taskId": "0mv43457r1b0r4hzcza",
+      "testRunId": 21091790,
+      "logPath": ".papercusp/scratch/bash-c21b7bb6-92b.log",
+      "logSha256": "41566cb1953f16738e4aee889dba0adb8ec6627ae1aca6315d9c6e68c256f4ac",
+      "terminalAt": "2026-10-11T17:21:54.799Z",
+      "exitCode": 1,
+      "result": "1 failed / 93 skipped; healthy footer timeout before any native launch",
+      "frameworkResult": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=failed head=e8439192d1 uncommittedPaths=0/1 provenance=unknown startedAt=2026-10-11T17:16:40.085Z skippedTests=93",
+      "profilePath": "/tmp/pui-acceptance-7534f/cold-identity-profile-20261011-1716/timing/operator-549229-af09aab3-5841-4bb1-a6cd-9db51a5a0c80.json",
+      "profileSha256": "cd0ddfd06a546396c4ba2aaf3b682060202f8bd07ddda1464cedf4f0f032f9af",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/harness/papercup/agent-chats",
+          "status": 500,
+          "wallMs": 7270,
+          "eventLoopMaxMs": 7147.094015
+        },
+        {
+          "method": "POST",
+          "path": "/api/agent-mcp/run-tool",
+          "toolName": "accounts:status",
+          "status": 408,
+          "wallMs": 30793,
+          "eventLoopMaxMs": 30618.419199
+        }
+      ],
+      "cpuAttribution": [
+        {
+          "source": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts",
+          "handlerSampledMs": 27794,
+          "synchronousEsmHookSampledMs": 23106
+        },
+        {
+          "source": "packages/operator-core/lib/endpoint-route/routes/agent-chats/index.ts",
+          "handlerSampledMs": 6590,
+          "synchronousEsmHookSampledMs": 4618
+        }
+      ]
+    },
+    "rootCause": "Request-time dynamic imports traverse the already loaded CommonJS catalog/chat-data graph through tsx's synchronous Node ESM hooks, blocking the private HTTP event loop.",
+    "repair": "Reuse static module dependencies for chat CRUD, palette invocation and palette catalog listing. Preserve existing principal/dispatch checks and client timeouts.",
+    "recurrenceGuard": {
+      "testFile": "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts",
+      "testName": "operator OS cold startup verifies identity before native launch",
+      "checks": "Both observer conditions must finish the installed client's own accounts:status request with wall time and measured HTTP loop delay below 3000ms; no REST prewarming or native launch.",
+      "taskId": "0mv43udy21yvq76y63p",
+      "testRunId": 21098100,
+      "logPath": ".papercusp/scratch/bash-ed82bef9-c65.log",
+      "logSha256": "29b3a34152fb3566bf624f28873fcc9aa277caa8099a603c2ad33aafd9af840f",
+      "state": "terminal failed exit 1 at 2026-10-11T17:42:39.962Z; both cold controls selected, 2 failed / 92 skipped; initial identity and account-status complete but remaining startup loop stalls exceed the guard",
+      "observations": [
+        {
+          "observer": false,
+          "initialIdentityMs": 34,
+          "accountStatusMs": 94,
+          "accountStatusCode": 200,
+          "eventLoopMaxMs": 7683.964927
+        },
+        {
+          "observer": true,
+          "initialIdentityMs": 39,
+          "accountStatusMs": 151,
+          "accountStatusCode": 200,
+          "eventLoopMaxMs": 6144.655359
+        }
+      ],
+      "remainingCpuAttribution": "New profiles locate synchronous ESM waits in plans:attention's readInbox/readAckedMsgIds lazy import and telemetry defaultGoalRehydrator. Redundant attention imports are removed; intentional telemetry cycles remain lazy. The acceptance fixture is being aligned with the served operator's bundled loader.",
+      "profiles": [
+        {
+          "path": "/tmp/pui-acceptance-7534f/cold-identity-repair-20261011-1736/timing/operator-1749256-97efea1f-7855-46bd-9fea-3381130cdc5d.json",
+          "sha256": "efd011a59fa336962ddd95c7a497134c1022af75708270c440cc13da6fc244a2"
+        },
+        {
+          "path": "/tmp/pui-acceptance-7534f/cold-identity-repair-20261011-1736/timing/operator-1860399-d6fc9b9e-7403-4061-ac58-c127fd93caee.json",
+          "sha256": "d2c0f7413ec58c47669726b1fbfda9b9131acb453996ec0af40aeeb161d36390"
+        }
+      ],
+      "detectorCorrection": "Wait only for request completion; assert its immutable wall/loop measurements once, without retrying a historical maximum for 40 seconds."
+    },
+    "bundledRecurrence": {
+      "rootCause": "The private acceptance child used tsx source loading while the served operator uses the maintained esbuild bundle under plain Node; source-loader stalls are not proof of a shipped bundled-host stall.",
+      "productionSource": "apps/operator/scripts/systemd/papercup-staging-api.service.d/95-bundled-entry.conf",
+      "builder": "apps/operator/bin/bundle-host.sh",
+      "sharedBuildInputs": "apps/operator/bin/bundle-host-common.sh",
+      "fixtureEntry": "packages/operator-core/lib/pui-e2e/operator-process.mts",
+      "repair": "Reuse the existing fixture bundle helper and production builder; static imports let the builder inline app, host registry and observation into one graph; fork with no tsx loader and emit the exact bundle hash.",
+      "taskId": "0mv44noa4xkyul619i5",
+      "logPath": ".papercusp/scratch/bash-22f1a53d-149.log",
+      "deadline": "2026-10-11T18:14:10.304Z",
+      "state": "failed before either cold control executed; authoritative JOB END adopted",
+      "testRunId": 21099325,
+      "logSha256": "18fe36c485975dc159d2fa05f044c4ea0308fbfcad2fb8e710426409e11ecaac",
+      "exitCode": 1,
+      "terminalAt": "2026-10-11T18:03:11.352Z",
+      "frameworkResult": "1 failed file / 94 skipped tests; beforeAll fixture build failed; no cold timing or native evidence",
+      "buildFailure": "The maintained bundle restricted-hold gate correctly refused a live org-admin database read inherited from the integration process. The fixture builder had not supplied the existing VITEST-only census fixture.",
+      "recurrenceRepair": "Reuse PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE exactly as bundle-host-fallback.test.ts does: an explicit private fixture census, scoped only to the builder subprocess. Production fail-closed census and strict cold timing controls stay unchanged. Source edit and fresh verification are pending.",
+      "fixtureWorkItem": "EI-25707128043245334",
+      "passingRun": {
+        "taskId": "0mv45c7vc1knm5lf1io",
+        "testRunId": 21100487,
+        "logPath": ".papercusp/scratch/bash-c3bbf6a4-433.log",
+        "logSha256": "d1f89340a3427c5f0cf95fc8d3964e229f56e3832cc59cb79cdaa1d308a532d7",
+        "terminalAt": "2026-10-11T18:23:39.832Z",
+        "exitCode": 0,
+        "result": "2 passed / 92 skipped; both literal cold startup controls; native launches zero",
+        "bundleSha256": "5ea423f6a5c6ab933e9de02ec7cc14416503add0fb27d43665822f3ac2613533",
+        "bundleBuildMs": 76307,
+        "runtime": "plain-node",
+        "tsxLoader": false,
+        "censusSource": "private-test-fixture",
+        "testFileSha256": "7014d2a3705635aa59b0edf44d87b7d8c0bf46d87747db03a686421e9df8face",
+        "fixtureEntrySha256": "38acf689906080be578645e7061083c0b3255f9445a3c63d5e219b4a9d782451",
+        "controls": [
+          {
+            "observerViewStateRead": false,
+            "identityStatus": 200,
+            "identityMs": 41,
+            "accountStatus": 200,
+            "accountStatusMs": 130,
+            "eventLoopDelayMaxMsSinceReadyAtAccountResponse": 221.904895,
+            "nativeLaunches": 0
+          },
+          {
+            "observerViewStateRead": true,
+            "identityStatus": 200,
+            "identityMs": 43,
+            "accountStatus": 200,
+            "accountStatusMs": 85,
+            "eventLoopDelayMaxMsSinceReadyAtAccountResponse": 152.305663,
+            "nativeLaunches": 0
+          }
+        ],
+        "provenance": "Current-build fixture only; TEST_FILE_RESULT reports unknown commit provenance after shared HEAD movement, ledger source is dirty. No clean as-committed BAR or immutable full-candidate claim.",
+        "cpuProfiles": [
+          {
+            "path": "/tmp/pui-acceptance-7534f/cold-identity-census-20261011-1819/timing/operator-157142-8a757a8c-933c-4ef1-b386-436caaba61a8.json",
+            "sha256": "273896485263385fa248bfe077e8aa12d262db9d90a2f022012140352463dd88"
+          },
+          {
+            "path": "/tmp/pui-acceptance-7534f/cold-identity-census-20261011-1819/timing/operator-170164-5e36bd82-d0f8-45e2-958f-078337f20052.json",
+            "sha256": "a5351bd7aa43b995e47bc85bc5affebdfb97c32fdbd4ece92a3d751f77a8fea3"
+          }
+        ]
+      },
+      "limitations": "Both cold controls only; no native launch, approval, restart or immutable full-candidate verdict."
+    },
+    "repairSourceSha256": {
+      "packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts": "8f0a9b2e44a550dcc4fda414f22f25bcbb8511089084c4b404a3e420a83133b2",
+      "packages/operator-core/lib/endpoint-route/routes/agent-mcp/capabilities.ts": "cd8afe220b38ae8e93552dd253188c6436d7a4d330c145068658b9c0e8a1046e",
+      "packages/operator-core/lib/endpoint-route/routes/agent-chats/index.ts": "cffc073a57c8f10cc7a95a1ce199d7749385b70b69104e995dc17c10e9d168d9",
+      "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts": "50c531880e70f983d9397b2238720e0660246f9b6c859d2858008cb6a4f614a1"
+    },
+    "limitations": [
+      "The profile ties this cold startup stall to synchronous module loading; it does not establish the earlier Connection: Unavailable cause or the observer's causal role.",
+      "The changed invocation path passes 10 route tests; chat context/catalog checks add 7 passes with unknown commit provenance. Both cold controls now pass the unchanged three-second request/loop guard on the production bundle loader. This proves the corrected private fixture; no native approval/restart or immutable full-candidate acceptance is established.",
+      "The original full47a6 verdict remains refused. BAR adequacy, independent grading and final Avi candidate approval remain required."
+    ]
+  },
+  "nativeResumeHomeRepair": {
+    "workItem": "EI-25697542669399195",
+    "plane": "local current-build operator fixture with retained installed 47a6 PUI binary; not immutable full-candidate acceptance",
+    "failedRun": {
+      "taskId": "0mv5lj63x1bkkes9qdy",
+      "testRunId": 21155108,
+      "logPath": ".papercusp/scratch/bash-f3b96652-92e.log",
+      "logSha256": "0e267b31478501d4a65667f77e1e6585adadf6f30df6f8812d649abc50127cc5",
+      "terminalAt": "2026-10-12T18:49:19.853Z",
+      "exitCode": 1,
+      "firstOperatorPid": 2165056,
+      "secondOperatorPid": 2247838,
+      "port": 41033,
+      "nativePostExitHolder": "clean-scan; held=false",
+      "attachOutcome": {
+        "httpStatus": 503,
+        "status": "error",
+        "code": "attached_engine_start_failed",
+        "error": "The native transcript is unavailable or still being restored"
+      },
+      "nativeModel": "papercusp-gateway/claude-sonnet-4-6",
+      "accountRoute": "auto",
+      "accountServed": "aviynw6",
+      "firstLeg": "Passed native approval, exact effect, completed same-turn/session tool and greeting assertions before OS exit; no standalone first-leg receipt existed in this run."
+    },
+    "rootCause": "The launcher transcript preflight hardcoded the default OMP store although launch and native-resume environment used PAPERCUSP_SU_OMP_HOMES_DIR. Structured resume also omitted the persisted descriptor agentHome from the preflight source. The preflight therefore refused a valid private native transcript before the existing exact-home resolver ran.",
+    "alternativeHypothesis": "Archive timing or provider capacity prevented the transcript from being restored.",
+    "distinguishingTest": "Canonical filesystem launcher tests create the exact native transcript in saved/configured homes without any provider or archive, then check transcript presence and native resume environment. A negative control puts the same thread id only in an unrelated default home. Structured-resume test refuses unless descriptor agentHome reaches transcript preflight.",
+    "negativeControl": {
+      "testRunIds": [
+        21155678,
+        21155682
+      ],
+      "result": "Three launcher regressions and the structured-resume regression failed on unchanged production source."
+    },
+    "guardVerification": {
+      "testRunIds": [
+        21155704,
+        21155707
+      ],
+      "launcherTestsPassed": 13,
+      "structuredResumeTestsPassed": 21,
+      "exitCode": 0,
+      "logPath": "/tmp/pui-acceptance-7534f/fire28-resume-guards.log",
+      "logSha256": "830e6f92c35476704b8ddc01f25a5f910af7a9e525da9a7f9f61b395dbee134a",
+      "scope": "Current working-tree regressions; uncommitted source provenance stamped by runner."
+    },
+    "repair": "Reuse one tracked OMP agent-home derivation for transcript and native environment; pass the saved descriptor home into structured resume; fail closed when an explicit home lacks its transcript. Retain completed native approval and pre-restart transcript receipts before cleanup and assert transcript can be located before OS exit.",
+    "sourceSha256": {
+      "apps/operator/scripts/psu-launcher.mjs": "30cfabc90fae4fb2770f90d1dc12ee0043efa72c63037e477b4c48cc9b6793df",
+      "apps/operator/lib/psu-launcher.test.ts": "944bf06166a256c3eceb30c17aceb291a63ab6a3d0ee35261c6136201c24cccf",
+      "packages/operator-core/lib/su-session-resume.ts": "e907bf8298804fa019e586c480bb859059117e48566f3b5a3879dadee86a1756",
+      "packages/operator-core/lib/su-session-resume.test.ts": "0be9c4a63552b352744ccf815bddcf2d05d212fb6e53f58e2212fb45d0242a04",
+      "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts": "c09549a7805eb7b1f9f5f231d33b032dcf4be4e75f562627be608c849ef34967"
+    },
+    "nativeVerification": {
+      "taskId": "0mv5mv6fm123qa1klp1",
+      "logPath": ".papercusp/scratch/bash-95364ead-1dc.log",
+      "root": "/tmp/pui-acceptance-7534f/omp-restart-root-fix-20261012-1918",
+      "deadline": "2026-10-12T19:36:39.687Z",
+      "state": "Failed before restart: approval fixture waited for the note card while OMP requested approval for a mounted MCP work-item lookup.",
+      "testRunId": 21155813,
+      "terminalAt": "2026-10-12T19:25:08.891Z",
+      "exitCode": 1,
+      "pendingApprovalTitle": "Write(xd://mcp__papercusp_su__work_items_get)",
+      "followUpWorkItem": "EI-25803053154996876",
+      "logSha256": "5df3cdcbd081a85b6edda3fa786bbe46726a19af8e4be3a4444dac8cb9925cea"
+    },
+    "limitations": [
+      "The retained full47a6 verdict remains refused. The resumed current-build native approval/restart journey passed as recorded below; this is not clean as-committed full-candidate acceptance. The earlier native run failed before exercising the repaired restart path.",
+      "No OMP model pin, account substitution, permission bypass, timeout increase or cold REST prewarm was introduced. Independent grading and exact final Avi approval remain required."
+    ]
+  },
+  "mountedSuApprovalRepair": {
+    "workItem": "EI-25803053154996876",
+    "rootCause": "The fixture recognized only direct papercusp-su MCP approval titles, while OMP's connected MCP devices request native Write(xd://...) approval. The existing prerequisite driver ignored this card and waited for the separate requested-note card.",
+    "repair": "Extend the existing release-acceptance helper and shared fixture classifiers to recognize only Papercusp SU mounted devices. Approve mounted Write calls once; never grant all native Write permission. Leave ordinary filesystem writes, Bash effects and other servers' devices for explicit approval. Add pending-card titles to the timeout diagnostic.",
+    "guardVerification": {
+      "testRunId": 21155887,
+      "testsPassed": 14,
+      "testsSkipped": 36,
+      "exitCode": 0,
+      "logPath": "/tmp/pui-acceptance-7534f/fire28-mounted-mcp-guards.log",
+      "logSha256": "5e41079d696249d327c485e86151f9908b220c86e5666c690611600919332126",
+      "scope": "Canonical Vitest native approval terminal and prerequisite classifier controls; the corresponding real native journey is recorded separately below."
+    },
+    "typecheckVerification": {
+      "taskId": "0mv5sfizd1sa77wu1kb",
+      "logPath": ".papercusp/scratch/bash-c83dc4a3-ffb.log",
+      "logSha256": "84fdf4bf769b62642d6a0f6ebe11038791d6aaab2566fef6c4abc1b1074efb30",
+      "exitCode": 0,
+      "terminalAt": "2026-10-12T21:53:35.018Z",
+      "command": "npm run lint:tsc -- --files=packages/operator-core/lib/pui-e2e/release-acceptance.ts,packages/operator-core/lib/pui-e2e/release-acceptance.test.ts,packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts",
+      "scope": "Three named files and four resolved importers; zero type errors. This is focused type evidence in addition to the canonical tests."
+    },
+    "sourceSha256": {
+      "packages/operator-core/lib/pui-e2e/release-acceptance.ts": "8a5ed02c31fe8b66afd54c44d9c087ca2c5fa4a00898176e2ad0acfbb6e05a82",
+      "packages/operator-core/lib/pui-e2e/release-acceptance.test.ts": "8be5712ce2caa00a2091835a0f9bdcaabf24b5968a0dd98123d72cfbd2da49e6",
+      "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts": "d5e16ab06441002c789a58c28afda75a78c80a431cbb408cfc22523c82de14a9"
+    },
+    "nativeVerification": {
+      "taskId": "0mv5nmz651f2fiuabl4",
+      "logPath": ".papercusp/scratch/bash-ac98c238-049.log",
+      "root": "/tmp/pui-acceptance-7534f/omp-restart-mounted-fix-20261012-1940",
+      "deadline": "2026-10-12T19:58:16.655Z",
+      "state": "Canceled for Avi's system-wide pause; task ledger confirms killed by scope SIGTERM with escalation. No test verdict.",
+      "terminalAt": "2026-10-12T19:40:26.965Z",
+      "exitCode": 143,
+      "testVerdict": "undetermined"
+    },
+    "resumedNativeVerification": {
+      "taskId": "0mv5renic1ml67t51oc",
+      "logPath": ".papercusp/scratch/bash-2990b343-b0b.log",
+      "root": "/tmp/pui-acceptance-7534f/omp-restart-mounted-resume-20261012-2125",
+      "deadline": "2026-10-12T21:43:46.764Z",
+      "state": "Passed: explicit native target-note approval/effect and same conversation after a second operator OS process.",
+      "resumeMessage": "coord-send-0a0f2ad1c8b670fe61d36a7d8f086f77edc79224edd71d32ec108f7cf72fe338",
+      "attemptAuditPosts": [
+        1177646,
+        1177647
+      ],
+      "testRunId": 21161988,
+      "terminalAt": "2026-10-12T21:34:08.500Z",
+      "exitCode": 0,
+      "logSha256": "4e1bd4fc3e4a301936d8ad8d4b8015f5f433e192eccd470ef89425358cf5fc72",
+      "testsPassed": 1,
+      "testsSkipped": 93,
+      "approvalReceipt": {
+        "marker": "PUI_OPERATOR_NATIVE_APPROVAL_RECEIPT",
+        "turnId": "pui-turn-pui-1791840732220479798",
+        "correlationId": "4ee5f5cc-afa5-47b2-98f0-f73d81108c3b",
+        "toolCallId": "toolu_017Lni1LdyE2UTUXjbFkJeSh",
+        "nativeTool": "write",
+        "choice": "Yes",
+        "cardReplyStatus": 200,
+        "toolCompleted": true,
+        "exactEffectVerified": true,
+        "sameTurnAndSession": true,
+        "effectSha256": "ab73d437b9af0599768bf22ffcb8c4bd9d222e6f855c554395b9eaf14e9d8f4e"
+      },
+      "restartReceipt": {
+        "marker": "PUI_OPERATOR_PROCESS_ACCEPTANCE",
+        "firstOperatorPid": 2379860,
+        "secondOperatorPid": 2475952,
+        "firstInstanceId": "734567e8-7f45-47fd-82df-7f2a7a1e9781",
+        "secondInstanceId": "11d30cf0-066c-4375-917f-828611d8a2da",
+        "sameNativeIdentity": true,
+        "nativeSessionId": "01a13207-bffd-74de-8fd0-a537c256a53c",
+        "runtimeGenerationBefore": 0,
+        "runtimeGenerationAfter": 1,
+        "sameNativeHome": true,
+        "sameModelAndAccount": true,
+        "model": "papercusp-gateway/claude-sonnet-4-6",
+        "accountRoute": "auto",
+        "preExitTranscriptSha256": "f3cb43896222e22c961eefe9546e31eda09ac4eae233fa0aeb23aa9eef427b89",
+        "resumedLifecycle": "waiting-for-owner"
+      },
+      "sourceCapture": {
+        "path": "/tmp/pui-acceptance-7534f/omp-restart-mounted-resume-20261012-2125/source-map.json",
+        "sha256": "fd29a6effc16892166cfec4a5bce40efd8056eb587513b2069476a11c902a79d",
+        "recordedSha": "3592f5530dbcace48d9d84b86d398fd860b26b00",
+        "worktreeDirty": true,
+        "status": "changed",
+        "scope": "Local repair evidence. Named launcher, fixture and approval helper collected hashes match the retained repair; the overall source capture contains uncaptured modules and does not qualify as clean BAR proof."
+      }
+    },
+    "limitations": "Canonical mounted-device classifiers and the current-build native target-note approval/restart journey passed. The journey does not retain a standalone mounted-prerequisite receipt and is not immutable full-candidate acceptance. All original publication holds remain."
+  },
+  "candidate3592Acceptance": {
+    "workItems": [
+      "WI-10003592",
+      "EI-25697542669399195",
+      "WI-6554700010009476",
+      "WI-6554700010009475"
+    ],
+    "taskId": "0mv5sum732mjm6lb9dn",
+    "rootLog": ".papercusp/scratch/bash-7058e61d-330.log",
+    "rootLogSha256": "7e685061d0d9a147967e3d8dd520ef54f238b0f4b5f7ec6672b0d6f051c107d9",
+    "terminalAt": "2026-10-12T23:17:42.188Z",
+    "exitCode": 1,
+    "verdictPath": "/tmp/pui-acceptance-7534f/candidates/source-3592f5530dbcace48d9d84b86d398fd860b26b00/pui-3592-native-repair-20261012-2205.acceptance.json",
+    "verdictSha256": "4dfdfc6082701ab7273321a5dabca9c2e187e094cd8acd1cd91da72520c9c3f6",
+    "checkedAt": "2026-10-12T23:15:27.686Z",
+    "ok": false,
+    "candidate": {
+      "sourceSha": "3592f5530dbcace48d9d84b86d398fd860b26b00",
+      "artifact": "linux-x86_64",
+      "archive": "/tmp/pui-acceptance-7534f/candidates/source-3592f5530dbcace48d9d84b86d398fd860b26b00/pui-0.1.0-linux-x86_64.tar.gz",
+      "archiveSha256": "c47f52c06d3f68013a1b41120b778e3ba51ea6f160813f6b3f07cde23a20264c",
+      "installRoot": "/tmp/pui-acceptance-7534f/run-3592-native-repair-20261012-2205/home/.local/share/pui",
+      "installedBinarySha256": "a42541b60da113213ce66ca877320fe44feb1d41246d4d01a6ea71416c0146e6",
+      "advertise": [
+        {
+          "platform": "Linux x86_64",
+          "backend": "Claude"
+        },
+        {
+          "platform": "Linux x86_64",
+          "backend": "Codex"
+        },
+        {
+          "platform": "Linux x86_64",
+          "backend": "OMP"
+        }
+      ]
+    },
+    "refusals": [
+      "installed-product codex test leg did not exit successfully (status 1)",
+      "installed-product claude test leg did not exit successfully (status 1)",
+      "installed-product omp test leg did not exit successfully (status 1)",
+      "Linux x86_64 × Claude is advertised without installed-product evidence for PUI_INSTALLED_REAL_ENGINE_ACCEPTANCE"
+    ],
+    "legs": [
+      {
+        "backend": "codex",
+        "logPath": "/tmp/pui-acceptance-7534f/run-3592-native-repair-20261012-2205/vitest-codex.log",
+        "logSha256": "d047eac52c2f9fae5282634ec7109d6a1ae4cbedd707c93b05cb8e707a0f306c",
+        "coldFailures": [
+          {
+            "observer": false,
+            "accountRequests": 0,
+            "eventLoopMaxMs": 225.968127
+          },
+          {
+            "observer": true,
+            "accountRequests": 0,
+            "eventLoopMaxMs": 162.398207
+          }
+        ],
+        "restartReceiptCount": 1,
+        "errors": [
+          "AssertionError: the installed client must finish its cold account-status request: expected undefined to be defined"
+        ],
+        "childExit": [
+          "--- child exit: code=1 signal=none ---"
+        ]
+      },
+      {
+        "backend": "claude",
+        "logPath": "/tmp/pui-acceptance-7534f/run-3592-native-repair-20261012-2205/vitest-claude.log",
+        "logSha256": "33adb838d8825225789ae8683f247a2608e9104c6c1050d34e7adfbb7faf991c",
+        "coldFailures": [
+          {
+            "observer": false,
+            "accountRequests": 0,
+            "eventLoopMaxMs": 152.043519
+          },
+          {
+            "observer": true,
+            "accountRequests": 0,
+            "eventLoopMaxMs": 147.980287
+          }
+        ],
+        "restartReceiptCount": 1,
+        "errors": [
+          "AssertionError: the installed client must finish its cold account-status request: expected undefined to be defined",
+          "AssertionError: native text must reach the host before completion: expected '' to match /\\b1\\s+2\\s+3\\b/"
+        ],
+        "childExit": [
+          "--- child exit: code=1 signal=none ---"
+        ]
+      },
+      {
+        "backend": "omp",
+        "logPath": "/tmp/pui-acceptance-7534f/run-3592-native-repair-20261012-2205/vitest-omp.log",
+        "logSha256": "265ce7591ea6ae504d4d8f94a4f0e74f894b8e8df27837e8d8a207c337b5492e",
+        "coldFailures": [
+          {
+            "observer": false,
+            "accountRequests": 0,
+            "eventLoopMaxMs": 258.342911
+          },
+          {
+            "observer": true,
+            "accountRequests": 0,
+            "eventLoopMaxMs": 176.947199
+          }
+        ],
+        "restartReceiptCount": 1,
+        "errors": [
+          "AssertionError: the installed client must finish its cold account-status request: expected undefined to be defined"
+        ],
+        "childExit": [
+          "--- child exit: code=1 signal=none ---"
+        ]
+      }
+    ],
+    "coldRootCause": "The restored Plans pane intentionally omits account reads; preflight waited for a request its own UI stimulus never sent. Zero starts and healthy identity/footer distinguish this from the prior event-loop stall.",
+    "streamRootCause": "Claude interpreted write-the-numbers as a file task and waited on native Write /tmp/numbers_placeholder.txt approval. No numeric delta was possible while that owner decision was pending.",
+    "repairs": [
+      "Cold probe enters Overview via h through the installed client, before its first accounts:status request; no REST prewarm or native launch.",
+      "Bounded numeric stimulus now explicitly requests chat output and disallows files/commands/tools.",
+      "Fail fast when lifecycle leaves running before numeric deltas; aggregate split chunks and preserve exact interrupt-turn events."
+    ],
+    "auditPosts": [
+      1177828,
+      1177829,
+      1177830
+    ],
+    "helperVerification": {
+      "taskId": "0mv5wef00wnj9yn1c00",
+      "logPath": ".papercusp/scratch/bash-396bfe81-183.log",
+      "logSha256": "7d0ecfcde33467f2ada3acec12d82ff3168ffb19e08f70895b1669b6082c289b",
+      "exitCode": 0,
+      "terminalAt": "2026-10-12T23:44:32.770Z",
+      "summary": [
+        " Test Files  1 passed (1)",
+        "      Tests  50 passed (50)",
+        "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=f8d6ba4fd1 uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-12T23:44:05.910Z skippedTests=0"
+      ],
+      "sourceMapPath": "/tmp/pui-acceptance-7534f/interrupt-cold-helper-source-map-20261012-2345.json",
+      "plane": "current-build uncommitted source; not immutable candidate"
+    },
+    "focusedVerification": {
+      "taskId": "0mv5whcd610klf9d1jg",
+      "rootLog": ".papercusp/scratch/bash-cd2b971c-cce.log",
+      "root": "/tmp/pui-acceptance-7534f/run-3592-cold-inline-repair-20261012-2350",
+      "verdictPath": "/tmp/pui-acceptance-7534f/candidates/source-3592f5530dbcace48d9d84b86d398fd860b26b00/pui-3592-cold-inline-repair-20261012-2350.partial.acceptance.json",
+      "deadline": "2026-10-13T00:15:50.348Z",
+      "state": "Three focused tests passed, zero failures; partial current-build release verdict remains refused by design.",
+      "plane": "current-build filtered runner over exact3592 installed binary; release verdict remains partial/refused",
+      "rootExitCode": 1,
+      "terminalAt": "2026-10-12T23:53:01.385Z",
+      "rootLogSha256": "c0ea8fd4370ea79ee4678695e0a20178d551a4149c7e99a277f6da94072e2d7b",
+      "verdictSha256": "833cef1939a871fed2e478f1de6129a7e93af3daa363885f09db45d0a68385b7",
+      "verdictOk": false,
+      "refusals": [
+        "the runner checkout ~/papercupai-workspace/papercusp was at e291a4ea027e1102382486d13073d8cd05bdd275 before the legs, not the candidate source 3592f5530dbcace48d9d84b86d398fd860b26b00, so the suites and operator fixture ran other code (run apps/tui/scripts/release-acceptance.sh, which checks the candidate out in isolation)",
+        "the runner checkout ~/papercupai-workspace/papercusp had 72 uncommitted tracked change(s) before the legs (M .papercusp/tool-catalog.json; M apps/operator-docs/src/content/docs/agent-insights/rtk-cross-platform-integration.mdx; M apps/operator/lib/psu-launcher.test.ts; M apps/operator/lib/release/green-checkpoint-real-deps.test.ts; M apps/operator/lib/release/green-checkpoint.test.ts; ...), so the suites and operator fixture ran other code",
+        "the runner checkout ~/papercupai-workspace/papercusp was at 8f54d89cac3d4fb604d3bd55870d430d9975bd44 after the legs, not the candidate source 3592f5530dbcace48d9d84b86d398fd860b26b00, so the suites and operator fixture ran other code (run apps/tui/scripts/release-acceptance.sh, which checks the candidate out in isolation)",
+        "the runner checkout ~/papercupai-workspace/papercusp had 69 uncommitted tracked change(s) after the legs (M .papercusp/tool-catalog.json; M apps/operator-docs/src/content/docs/agent-insights/rtk-cross-platform-integration.mdx; M apps/operator/bin/bundle-host.sh; M apps/operator/lib/psu-launcher.test.ts; M apps/operator/lib/release/green-checkpoint-real-deps.test.ts; ...), so the suites and operator fixture ran other code",
+        "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts as run is not the candidate's committed copy, so its evidence describes other code",
+        "packages/operator-core/lib/pui-e2e/release-acceptance.ts as run is not the candidate's committed copy, so its evidence describes other code",
+        "Linux x86_64 × Claude is advertised without installed-product evidence for PUI_OPERATOR_PROCESS_ACCEPTANCE",
+        "Linux x86_64 × Claude is advertised without installed-product evidence for PUI_INSTALLED_NATIVE_QUESTION_ACCEPTANCE",
+        "required capability 'First prompt and streamed response' on Linux x86_64 has no installed-product evidence for PUI_COMPOSER_ACCEPTANCE",
+        "required capability 'Persona, tools and permissions' on Linux x86_64 has no installed-product evidence for PUI_R03_CONTEXT_ACCEPTANCE",
+        "required capability 'Persona, tools and permissions' on Linux x86_64 has no installed-product evidence for PUI_SETUP_ACCEPTANCE",
+        "required capability 'Persona, tools and permissions' on Linux x86_64 has no installed-product evidence for PUI_APPROVAL_ALLOW_ACCEPTANCE",
+        "required capability 'Editable task list' on Linux x86_64 has no installed-product evidence for PUI_TASK_ACCEPTANCE",
+        "required capability 'Plans and work-item links' on Linux x86_64 has no installed-product evidence for PUI_TASK_PROMOTE_ACCEPTANCE",
+        "required capability 'Multiline prompt editing' on Linux x86_64 has no installed-product evidence for PUI_EDITOR_UNDO_ACCEPTANCE",
+        "required capability 'Multiline prompt editing' on Linux x86_64 has no installed-product evidence for PUI_EDITOR_HISTORY_ACCEPTANCE",
+        "required capability 'Multiline prompt editing' on Linux x86_64 has no installed-product evidence for AUTO_BAR_R_05_ACCEPTANCE",
+        "required capability 'Transcript navigation and copying' on Linux x86_64 has no installed-product evidence for PUI_EDITOR_COPY_ACCEPTANCE",
+        "required capability 'Tool requests and command output' on Linux x86_64 has no installed-product evidence for PUI_TOOLS_DIFF_ACCEPTANCE",
+        "required capability 'Code changes and diffs' on Linux x86_64 has no installed-product evidence for PUI_TOOLS_DIFF_ACCEPTANCE",
+        "required capability 'Approvals and permission scope' on Linux x86_64 has no installed-product evidence for PUI_APPROVAL_ALLOW_ACCEPTANCE",
+        "required capability 'Approvals and permission scope' on Linux x86_64 has no installed-product evidence for PUI_APPROVAL_DENY_ACCEPTANCE",
+        "required capability 'Interactive questions' on Linux x86_64 has no installed-product evidence for PUI_QUESTION_ACCEPTANCE",
+        "required capability 'New/switch/rename/archive sessions' on Linux x86_64 has no installed-product evidence for PUI_SESSION_LIFECYCLE_ACCEPTANCE",
+        "required capability 'New/switch/rename/archive sessions' on Linux x86_64 has no installed-product evidence for PUI_SETUP_ACCEPTANCE",
+        "required capability 'Legacy history continuation and fork' on Linux x86_64 has no installed-product evidence for PUI_LEGACY_CONTINUATION_ACCEPTANCE",
+        "required capability 'Interrupt, end and recovery' on Linux x86_64 has no installed-product evidence for PUI_R06_RECOVERY_ACCEPTANCE",
+        "required capability 'Interrupt, end and recovery' on Linux x86_64 has no installed-product evidence for PUI_P009_END_ACCEPTANCE",
+        "required capability 'Model/account/effort/mode settings' on Linux x86_64 has no installed-product evidence for PUI_SETUP_ACCEPTANCE",
+        "required capability 'Model/account/effort/mode settings' on Linux x86_64 has no installed-product evidence for PUI_SETTINGS_PICKERS_ACCEPTANCE",
+        "required capability 'Context, usage and compaction' on Linux x86_64 has no installed-product evidence for PUI_USAGE_ACCEPTANCE",
+        "required capability 'Context, usage and compaction' on Linux x86_64 has no installed-product evidence for PUI_R03_CONTEXT_ACCEPTANCE",
+        "required capability 'Commands, help, skills and plugins' on Linux x86_64 has no installed-product evidence for PUI_COMMANDS_ACCEPTANCE",
+        "required capability 'Files and attachments' on Linux x86_64 has no installed-product evidence for PUI_FILE_CONTEXT_ACCEPTANCE",
+        "required capability 'Authentication and first-run setup' on Linux x86_64 has no installed-product evidence for PUI_EMPTY_REGISTRY_ONBOARDING_ACCEPTANCE",
+        "required capability 'Authentication and first-run setup' on Linux x86_64 has no installed-product evidence for PUI_SETUP_RECONNECT_ACCEPTANCE",
+        "required capability 'Installation, update and support' on Linux x86_64 has no installed-product evidence for PUI_ABOUT_SUPPORT_ACCEPTANCE"
+      ],
+      "legs": [
+        {
+          "engine": "scripted",
+          "status": 0,
+          "evidence": "/tmp/pui-acceptance-7534f/run-3592-cold-inline-repair-20261012-2350/evidence-scripted.json",
+          "rows": 0
+        },
+        {
+          "engine": "claude",
+          "status": 0,
+          "evidence": "/tmp/pui-acceptance-7534f/run-3592-cold-inline-repair-20261012-2350/evidence-claude.json",
+          "rows": 1
+        }
+      ],
+      "claudeLogPath": "/tmp/pui-acceptance-7534f/run-3592-cold-inline-repair-20261012-2350/vitest-claude.log",
+      "claudeLogSha256": "eba50d9d4fbd1801adcf30b3480e83ce4f34f1f3d9842dbe7a5a14053f8d0bdc",
+      "testSummary": [
+        " Test Files  1 passed | 1 skipped (2)",
+        "      Tests  3 passed | 95 skipped (98)",
+        "--- child exit: code=0 signal=none ---"
+      ],
+      "coldReceipts": [
+        {
+          "observer": false,
+          "nativeLaunches": 0,
+          "accountSpans": [
+            {
+              "step": "operator-api",
+              "method": "POST",
+              "pathname": "/api/agent-mcp/run-tool",
+              "toolName": "accounts:status",
+              "status": 200,
+              "durationMs": 51,
+              "eventLoopDelayMaxMsSinceReady": 275.513343,
+              "at": "2026-10-12T23:51:47.239Z"
+            }
+          ]
+        },
+        {
+          "observer": true,
+          "nativeLaunches": 0,
+          "accountSpans": [
+            {
+              "step": "operator-api",
+              "method": "POST",
+              "pathname": "/api/agent-mcp/run-tool",
+              "toolName": "accounts:status",
+              "status": 200,
+              "durationMs": 54,
+              "eventLoopDelayMaxMsSinceReady": 126.091263,
+              "at": "2026-10-12T23:52:05.260Z"
+            }
+          ]
+        }
+      ],
+      "streamingEvidence": {
+        "turnId": "pui-turn-pui-1791849148614467160",
+        "observedAt": "2026-10-12T23:52:30.816Z",
+        "partialText": "1\n2\n3",
+        "visibleNumbers": [
+          1,
+          2,
+          3
+        ],
+        "lifecycle": "running",
+        "completed": false
+      },
+      "identity": {
+        "agentChatId": "36ef77bf-35e3-46c6-845a-5b18657f50e9",
+        "advSessionId": 1,
+        "backend": "claude",
+        "nativeSessionId": "cfc47cf8-ca25-43d0-8154-f3ef6484308b",
+        "ownerId": "su-1a43a047-2674-4987-9e26-e1a170f6314e",
+        "workspaceId": "pui-agent-chat-e2e",
+        "harnessSlug": "papercusp"
+      },
+      "resumedIdentity": {
+        "agentChatId": "36ef77bf-35e3-46c6-845a-5b18657f50e9",
+        "advSessionId": 1,
+        "backend": "claude",
+        "nativeSessionId": "cfc47cf8-ca25-43d0-8154-f3ef6484308b",
+        "ownerId": "su-1a43a047-2674-4987-9e26-e1a170f6314e",
+        "workspaceId": "pui-agent-chat-e2e",
+        "harnessSlug": "papercusp"
+      },
+      "resumedRuntimeGeneration": 1,
+      "commandTypes": [
+        "owner_turn",
+        "owner_turn",
+        "owner_turn",
+        "interrupt",
+        "owner_turn",
+        "end",
+        "owner_turn",
+        "end"
+      ],
+      "sourceMapPath": "/tmp/pui-acceptance-7534f/cold-inline-repair-source-map-20261012-2350.json",
+      "sourceMapStatus": "Not generated: direct Vitest acceptance runner does not emit the npm test:file source-map output. The path was requested in the environment and is absent. Retained log and current source hashes provide bounded local verification; new immutable full acceptance is required.",
+      "sourceSha256": {
+        "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts": "64d135876263fa78b765e9b61d007b846ccef294ca7d883c8318f55b6db63c57",
+        "packages/operator-core/lib/pui-e2e/release-acceptance.ts": "c8118c8ab56a3aec50bc41a2c144eed3671969998fa610cb1a650a7b66bde377",
+        "packages/operator-core/lib/pui-e2e/release-acceptance.test.ts": "a11029b368d24706fe217966d6023cb1741b5dc0cf4fcba6cbbdec0e1bcda772"
+      },
+      "commitAtRead": "8f54d89cac3d4fb604d3bd55870d430d9975bd44",
+      "commitComparison": "At read, committed helper/test hashes match; the integration-file cold navigation and streaming detector edits remain uncommitted. No exact committed-candidate proof is inferred."
+    },
+    "limitations": [
+      "Full immutable3592 acceptance remains refused.",
+      "Three native restart receipts are scoped evidence, not full acceptance.",
+      "Current BAR/spec/calibration binding, independent grading, exact final Avi candidate approval and public publication remain held."
+    ]
+  },
+  "candidate299829Acceptance": {
+    "workItem": "WI-10003592",
+    "scope": "Immutable299829 full installed-product acceptance passed; exact native Write approval supplement and current BAR/calibration/grading/final Avi approval/publication remain.",
+    "sourceSha": "2998298920a789179489753fd7cb06d7c5fc4922",
+    "sourceVerification": {
+      "integrationSha256": "64d135876263fa78b765e9b61d007b846ccef294ca7d883c8318f55b6db63c57",
+      "helperSha256": "c8118c8ab56a3aec50bc41a2c144eed3671969998fa610cb1a650a7b66bde377",
+      "helperTestSha256": "a11029b368d24706fe217966d6023cb1741b5dc0cf4fcba6cbbdec0e1bcda772",
+      "evidenceJsonSha256AtCommit": "1a5a4507b23381e9ab84fe18ed6f65c5c47ac65a18647d5b2be9df1bbe10178c",
+      "matchCurrentAtRead": true
+    },
+    "fixtureBugsSettled": [
+      "WI-6554700010009476",
+      "WI-6554700010009475"
+    ],
+    "package": {
+      "taskId": "0mv5x90d78a51htw5ok",
+      "logPath": ".papercusp/scratch/bash-af94642c-1ed.log",
+      "logSha256": "4c653d4fe63a5a477686a031280dd7747e11754b5e44f9c9588bc1fc74d73db6",
+      "terminalAt": "2026-10-13T00:09:24.618Z",
+      "exitCode": 0,
+      "archivePath": "/tmp/pui-acceptance-7534f/candidates/source-2998298920a789179489753fd7cb06d7c5fc4922/pui-0.1.0-linux-x86_64.tar.gz",
+      "archiveSha256": "8b35812958950b2e5b13c522ee82318bf26aa64f9daecb914cd0cacd8d204e79",
+      "manifest": {
+        "binaryPath": "bin/pui",
+        "binarySha256": "6403d56396dd6a3c282a3591f96995cfcf67ef7a89175a6f02797c510b5ee002",
+        "builtAtEpoch": 1791849900,
+        "companionPath": "pui-companion.wasm",
+        "companionSha256": "728dc56dbb36499134f8a321618e9947d6a700302d331fe7877e2016e83f5049",
+        "schemaVersion": 1,
+        "sourceDirty": false,
+        "sourceSha": "2998298920a789179489753fd7cb06d7c5fc4922",
+        "target": "linux-x86_64",
+        "version": "0.1.0"
+      }
+    },
+    "fullAcceptance": {
+      "taskId": "0mv5xe05t1f63qfq17c",
+      "logPath": ".papercusp/scratch/bash-e8378d32-4dc.log",
+      "root": "/tmp/pui-acceptance-7534f/run-299829-cold-inline-full-20261013-0015",
+      "verdictPath": "/tmp/pui-acceptance-7534f/candidates/source-2998298920a789179489753fd7cb06d7c5fc4922/pui-299829-cold-inline-full-20261013-0015.acceptance.json",
+      "deadline": "2026-10-13T04:11:14.176Z",
+      "testFilter": null,
+      "allowLiveTree": false,
+      "advertisedCells": [
+        "Linux x86_64:Claude",
+        "Linux x86_64:Codex",
+        "Linux x86_64:OMP"
+      ],
+      "realLegs": [
+        "codex:gpt-5.5",
+        "claude:sonnet",
+        "omp"
+      ],
+      "account": "auto",
+      "planEnabled": true,
+      "accountCatalogPath": ".papercusp/scratch/pui-account-catalog-299829-7534f-20261013.json",
+      "auditPost": 1177857,
+      "state": "Accepted exact full immutable candidate, all4childlegs exit0; explicit write-approval branch was disabled and requires separate exact-candidate probe.",
+      "terminalAt": "2026-10-13T01:14:05.358Z",
+      "exitCode": 0,
+      "logSha256": "6c1a1e6588252fcd13f1b28fdb03cbf8eec2bb24dc4f23e007aeb22490a8420a",
+      "checkedAt": "2026-10-13T01:12:33.617Z",
+      "verdictOk": true,
+      "verdictSha256": "7a6f51b77780fb791e67f617f469012089ddc73905711c051d89737376c20449",
+      "refusals": [],
+      "runnerHead": "2998298920a789179489753fd7cb06d7c5fc4922",
+      "candidate": {
+        "sourceSha": "2998298920a789179489753fd7cb06d7c5fc4922",
+        "artifact": "linux-x86_64",
+        "archive": "/tmp/pui-acceptance-7534f/candidates/source-2998298920a789179489753fd7cb06d7c5fc4922/pui-0.1.0-linux-x86_64.tar.gz",
+        "archiveSha256": "8b35812958950b2e5b13c522ee82318bf26aa64f9daecb914cd0cacd8d204e79",
+        "installRoot": "/tmp/pui-acceptance-7534f/run-299829-cold-inline-full-20261013-0015/home/.local/share/pui",
+        "installedBinarySha256": "6403d56396dd6a3c282a3591f96995cfcf67ef7a89175a6f02797c510b5ee002",
+        "advertise": [
+          {
+            "platform": "Linux x86_64",
+            "backend": "Claude"
+          },
+          {
+            "platform": "Linux x86_64",
+            "backend": "Codex"
+          },
+          {
+            "platform": "Linux x86_64",
+            "backend": "OMP"
+          }
+        ]
+      },
+      "legStatuses": [
+        {
+          "engine": "scripted",
+          "status": 0,
+          "evidence": "/tmp/pui-acceptance-7534f/run-299829-cold-inline-full-20261013-0015/evidence-scripted.json",
+          "rows": 66
+        },
+        {
+          "engine": "codex",
+          "status": 0,
+          "evidence": "/tmp/pui-acceptance-7534f/run-299829-cold-inline-full-20261013-0015/evidence-codex.json",
+          "rows": 4
+        },
+        {
+          "engine": "claude",
+          "status": 0,
+          "evidence": "/tmp/pui-acceptance-7534f/run-299829-cold-inline-full-20261013-0015/evidence-claude.json",
+          "rows": 5
+        },
+        {
+          "engine": "omp",
+          "status": 0,
+          "evidence": "/tmp/pui-acceptance-7534f/run-299829-cold-inline-full-20261013-0015/evidence-omp.json",
+          "rows": 5
+        }
+      ],
+      "retainedLegProof": [
+        {
+          "backend": "scripted",
+          "logPath": "/tmp/pui-acceptance-7534f/run-299829-cold-inline-full-20261013-0015/vitest-scripted.log",
+          "logSha256": "f392897f55a91d20a8c3b4f9321741b89783b1fafcb4e8ab27ac6f75d7848f7b",
+          "summary": [
+            " Test Files  2 passed (2)",
+            "      Tests  87 passed | 11 skipped (98)",
+            "--- child exit: code=0 signal=none ---"
+          ],
+          "coldReceipts": []
+        },
+        {
+          "backend": "codex",
+          "logPath": "/tmp/pui-acceptance-7534f/run-299829-cold-inline-full-20261013-0015/vitest-codex.log",
+          "logSha256": "67b55481504dfd1b40df7f20e86d3cfa87a6e32ad975f074978304779362bd7c",
+          "summary": [
+            " Test Files  2 passed (2)",
+            "      Tests  12 passed | 86 skipped (98)",
+            "--- child exit: code=0 signal=none ---"
+          ],
+          "coldReceipts": [
+            {
+              "observer": false,
+              "nativeLaunches": 0,
+              "accountSpans": [
+                {
+                  "step": "operator-api",
+                  "method": "POST",
+                  "pathname": "/api/agent-mcp/run-tool",
+                  "toolName": "accounts:status",
+                  "status": 200,
+                  "durationMs": 56,
+                  "eventLoopDelayMaxMsSinceReady": 302.776319,
+                  "at": "2026-10-13T00:53:30.979Z"
+                }
+              ]
+            },
+            {
+              "observer": true,
+              "nativeLaunches": 0,
+              "accountSpans": [
+                {
+                  "step": "operator-api",
+                  "method": "POST",
+                  "pathname": "/api/agent-mcp/run-tool",
+                  "toolName": "accounts:status",
+                  "status": 200,
+                  "durationMs": 116,
+                  "eventLoopDelayMaxMsSinceReady": 236.453887,
+                  "at": "2026-10-13T00:53:46.127Z"
+                }
+              ]
+            }
+          ],
+          "restartReceipt": {
+            "binarySha256": "6403d56396dd6a3c282a3591f96995cfcf67ef7a89175a6f02797c510b5ee002",
+            "first": {
+              "pid": 69400,
+              "instanceId": "ab492cb1-da87-4469-aa64-2eb526c1e5f4"
+            },
+            "second": {
+              "pid": 96884,
+              "instanceId": "93a31602-a27e-4d2f-9328-14093dd92ef1"
+            },
+            "identity": {
+              "agentChatId": "8bbaca5b-b74c-4aab-8081-e2370a873e85",
+              "advSessionId": 1,
+              "backend": "codex",
+              "nativeSessionId": "01a132c1-19d9-7043-929c-468ab9844c9d",
+              "ownerId": "su-ed62813d-1170-43c5-bd40-f0243b3cfb42",
+              "workspaceId": "pui-agent-chat-e2e",
+              "harnessSlug": "papercusp"
+            },
+            "resumedIdentity": {
+              "agentChatId": "8bbaca5b-b74c-4aab-8081-e2370a873e85",
+              "advSessionId": 1,
+              "backend": "codex",
+              "nativeSessionId": "01a132c1-19d9-7043-929c-468ab9844c9d",
+              "ownerId": "su-ed62813d-1170-43c5-bd40-f0243b3cfb42",
+              "workspaceId": "pui-agent-chat-e2e",
+              "harnessSlug": "papercusp"
+            },
+            "runtimeGenerations": [
+              0,
+              1
+            ],
+            "models": [
+              "gpt-5.5",
+              "gpt-5.5"
+            ],
+            "accountRoutes": [
+              "auto",
+              "auto"
+            ],
+            "nativeApproval": null
+          },
+          "nativeJourney": {
+            "streamingEvidence": {
+              "turnId": "pui-turn-pui-1791852982161419004",
+              "observedAt": "2026-10-13T00:56:25.941Z",
+              "partialText": "1\n2\n3\n4\n5\n",
+              "visibleNumbers": [
+                1,
+                2,
+                3,
+                4,
+                5
+              ],
+              "lifecycle": "running",
+              "completed": false
+            },
+            "identity": {
+              "agentChatId": "9d98e8d8-6d2c-42f8-87f1-34899e93909b",
+              "advSessionId": 4,
+              "backend": "codex",
+              "nativeSessionId": "01a132c2-7047-7b01-b10b-0b1e63497aab",
+              "ownerId": "su-8cd78063-3e1c-4b1b-b01c-22e1921da531",
+              "workspaceId": "pui-agent-chat-e2e",
+              "harnessSlug": "papercusp"
+            },
+            "resumedIdentity": {
+              "agentChatId": "9d98e8d8-6d2c-42f8-87f1-34899e93909b",
+              "advSessionId": 4,
+              "backend": "codex",
+              "nativeSessionId": "01a132c2-7047-7b01-b10b-0b1e63497aab",
+              "ownerId": "su-8cd78063-3e1c-4b1b-b01c-22e1921da531",
+              "workspaceId": "pui-agent-chat-e2e",
+              "harnessSlug": "papercusp"
+            },
+            "resumedGeneration": 1,
+            "readStart": {
+              "name": "commandExecution",
+              "callId": "call_ukUb9wUwuZtYkKeUMj88b5Ct",
+              "turnId": "pui-turn-pui-1791852973579610502",
+              "session": {
+                "agentChatId": "9d98e8d8-6d2c-42f8-87f1-34899e93909b",
+                "advSessionId": 4,
+                "backend": "codex",
+                "nativeSessionId": "01a132c2-7047-7b01-b10b-0b1e63497aab",
+                "ownerId": "su-8cd78063-3e1c-4b1b-b01c-22e1921da531",
+                "workspaceId": "pui-agent-chat-e2e",
+                "harnessSlug": "papercusp"
+              }
+            },
+            "readEnd": {
+              "callId": "call_ukUb9wUwuZtYkKeUMj88b5Ct",
+              "turnId": "pui-turn-pui-1791852973579610502",
+              "session": {
+                "agentChatId": "9d98e8d8-6d2c-42f8-87f1-34899e93909b",
+                "advSessionId": 4,
+                "backend": "codex",
+                "nativeSessionId": "01a132c2-7047-7b01-b10b-0b1e63497aab",
+                "ownerId": "su-8cd78063-3e1c-4b1b-b01c-22e1921da531",
+                "workspaceId": "pui-agent-chat-e2e",
+                "harnessSlug": "papercusp"
+              },
+              "isError": false
+            },
+            "nativeReadApprovals": [],
+            "commandTypes": [
+              "owner_turn",
+              "owner_turn",
+              "owner_turn",
+              "interrupt",
+              "owner_turn",
+              "end",
+              "owner_turn",
+              "end"
+            ]
+          }
+        },
+        {
+          "backend": "claude",
+          "logPath": "/tmp/pui-acceptance-7534f/run-299829-cold-inline-full-20261013-0015/vitest-claude.log",
+          "logSha256": "e665921056cdfa393d0901aac27e48edf160fd2556ada862991bfa12789ce85e",
+          "summary": [
+            " Test Files  2 passed (2)",
+            "      Tests  13 passed | 85 skipped (98)",
+            "--- child exit: code=0 signal=none ---"
+          ],
+          "coldReceipts": [
+            {
+              "observer": false,
+              "nativeLaunches": 0,
+              "accountSpans": [
+                {
+                  "step": "operator-api",
+                  "method": "POST",
+                  "pathname": "/api/agent-mcp/run-tool",
+                  "toolName": "accounts:status",
+                  "status": 200,
+                  "durationMs": 52,
+                  "eventLoopDelayMaxMsSinceReady": 270.008319,
+                  "at": "2026-10-13T01:01:49.976Z"
+                }
+              ]
+            },
+            {
+              "observer": true,
+              "nativeLaunches": 0,
+              "accountSpans": [
+                {
+                  "step": "operator-api",
+                  "method": "POST",
+                  "pathname": "/api/agent-mcp/run-tool",
+                  "toolName": "accounts:status",
+                  "status": 200,
+                  "durationMs": 63,
+                  "eventLoopDelayMaxMsSinceReady": 220.200959,
+                  "at": "2026-10-13T01:02:02.770Z"
+                }
+              ]
+            }
+          ],
+          "restartReceipt": {
+            "binarySha256": "6403d56396dd6a3c282a3591f96995cfcf67ef7a89175a6f02797c510b5ee002",
+            "first": {
+              "pid": 524932,
+              "instanceId": "87df8fa8-6da7-47ee-b1b3-fdd39c4cfa47"
+            },
+            "second": {
+              "pid": 538694,
+              "instanceId": "9bc965a4-d482-401f-8edd-665abe8ecee3"
+            },
+            "identity": {
+              "agentChatId": "7ecc2c4d-6ad2-4c9c-a0ba-1b54da22d88d",
+              "advSessionId": 2,
+              "backend": "claude",
+              "nativeSessionId": "8346de1d-95f7-4aac-8e48-57ed6977fde1",
+              "ownerId": "su-8c76d526-e1cc-46a2-9912-f2ac0e8e18b8",
+              "workspaceId": "pui-agent-chat-e2e",
+              "harnessSlug": "papercusp"
+            },
+            "resumedIdentity": {
+              "agentChatId": "7ecc2c4d-6ad2-4c9c-a0ba-1b54da22d88d",
+              "advSessionId": 2,
+              "backend": "claude",
+              "nativeSessionId": "8346de1d-95f7-4aac-8e48-57ed6977fde1",
+              "ownerId": "su-8c76d526-e1cc-46a2-9912-f2ac0e8e18b8",
+              "workspaceId": "pui-agent-chat-e2e",
+              "harnessSlug": "papercusp"
+            },
+            "runtimeGenerations": [
+              0,
+              1
+            ],
+            "models": [
+              "claude-sonnet-5",
+              "claude-sonnet-5"
+            ],
+            "accountRoutes": [
+              "auto",
+              "auto"
+            ],
+            "nativeApproval": null
+          },
+          "nativeJourney": {
+            "streamingEvidence": {
+              "turnId": "pui-turn-pui-1791853453983824125",
+              "observedAt": "2026-10-13T01:04:16.058Z",
+              "partialText": "1\n2\n3",
+              "visibleNumbers": [
+                1,
+                2,
+                3
+              ],
+              "lifecycle": "running",
+              "completed": false
+            },
+            "identity": {
+              "agentChatId": "4effd2d9-e03c-4bdd-b860-5f19f632f0dc",
+              "advSessionId": 5,
+              "backend": "claude",
+              "nativeSessionId": "0f3f37c4-29ce-4e5c-b9e7-d7aa1def7de4",
+              "ownerId": "su-2e94c25c-6bb2-4ed8-94a1-a0c8c2347a20",
+              "workspaceId": "pui-agent-chat-e2e",
+              "harnessSlug": "papercusp"
+            },
+            "resumedIdentity": {
+              "agentChatId": "4effd2d9-e03c-4bdd-b860-5f19f632f0dc",
+              "advSessionId": 5,
+              "backend": "claude",
+              "nativeSessionId": "0f3f37c4-29ce-4e5c-b9e7-d7aa1def7de4",
+              "ownerId": "su-2e94c25c-6bb2-4ed8-94a1-a0c8c2347a20",
+              "workspaceId": "pui-agent-chat-e2e",
+              "harnessSlug": "papercusp"
+            },
+            "resumedGeneration": 1,
+            "readStart": {
+              "name": "Read",
+              "callId": "toolu_01N2n1veF7mWxPEmWAqS768B",
+              "turnId": "pui-turn-pui-1791853446368212095",
+              "session": {
+                "agentChatId": "4effd2d9-e03c-4bdd-b860-5f19f632f0dc",
+                "advSessionId": 5,
+                "backend": "claude",
+                "nativeSessionId": "0f3f37c4-29ce-4e5c-b9e7-d7aa1def7de4",
+                "ownerId": "su-2e94c25c-6bb2-4ed8-94a1-a0c8c2347a20",
+                "workspaceId": "pui-agent-chat-e2e",
+                "harnessSlug": "papercusp"
+              }
+            },
+            "readEnd": {
+              "callId": "toolu_01N2n1veF7mWxPEmWAqS768B",
+              "turnId": "pui-turn-pui-1791853446368212095",
+              "session": {
+                "agentChatId": "4effd2d9-e03c-4bdd-b860-5f19f632f0dc",
+                "advSessionId": 5,
+                "backend": "claude",
+                "nativeSessionId": "0f3f37c4-29ce-4e5c-b9e7-d7aa1def7de4",
+                "ownerId": "su-2e94c25c-6bb2-4ed8-94a1-a0c8c2347a20",
+                "workspaceId": "pui-agent-chat-e2e",
+                "harnessSlug": "papercusp"
+              },
+              "isError": false
+            },
+            "nativeReadApprovals": [
+              "Read /tmp/pui-acceptance-7534f/pui-agent-chat-e2e-dnDRdC/read-498a0f82.txt"
+            ],
+            "commandTypes": [
+              "owner_turn",
+              "owner_turn",
+              "owner_turn",
+              "interrupt",
+              "owner_turn",
+              "end",
+              "owner_turn",
+              "end"
+            ]
+          }
+        },
+        {
+          "backend": "omp",
+          "logPath": "/tmp/pui-acceptance-7534f/run-299829-cold-inline-full-20261013-0015/vitest-omp.log",
+          "logSha256": "59f2fac6aed813c31d0e0cb9a2e55e7e659da8c0160a5b9bb9de168f877631b8",
+          "summary": [
+            " Test Files  2 passed (2)",
+            "      Tests  13 passed | 85 skipped (98)",
+            "--- child exit: code=0 signal=none ---"
+          ],
+          "coldReceipts": [
+            {
+              "observer": false,
+              "nativeLaunches": 0,
+              "accountSpans": [
+                {
+                  "step": "operator-api",
+                  "method": "POST",
+                  "pathname": "/api/agent-mcp/run-tool",
+                  "toolName": "accounts:status",
+                  "status": 200,
+                  "durationMs": 53,
+                  "eventLoopDelayMaxMsSinceReady": 175.112191,
+                  "at": "2026-10-13T01:08:58.861Z"
+                }
+              ]
+            },
+            {
+              "observer": true,
+              "nativeLaunches": 0,
+              "accountSpans": [
+                {
+                  "step": "operator-api",
+                  "method": "POST",
+                  "pathname": "/api/agent-mcp/run-tool",
+                  "toolName": "accounts:status",
+                  "status": 200,
+                  "durationMs": 63,
+                  "eventLoopDelayMaxMsSinceReady": 216.924159,
+                  "at": "2026-10-13T01:09:10.405Z"
+                }
+              ]
+            }
+          ],
+          "restartReceipt": {
+            "binarySha256": "6403d56396dd6a3c282a3591f96995cfcf67ef7a89175a6f02797c510b5ee002",
+            "first": {
+              "pid": 815518,
+              "instanceId": "c48a3523-7123-4913-ac31-944ae3b6e69a"
+            },
+            "second": {
+              "pid": 831208,
+              "instanceId": "d9e79c4f-7092-45a1-8401-05440541a771"
+            },
+            "identity": {
+              "agentChatId": "0cdf52ce-74d6-45b5-9b8b-640fe4811251",
+              "advSessionId": 2,
+              "backend": "omp",
+              "nativeSessionId": "01a132cf-98e8-752b-a21e-ed439e4ae2a8",
+              "ownerId": "su-fc763418-d8e5-4808-98e6-ccc06351434d",
+              "workspaceId": "pui-agent-chat-e2e",
+              "harnessSlug": "papercusp"
+            },
+            "resumedIdentity": {
+              "agentChatId": "0cdf52ce-74d6-45b5-9b8b-640fe4811251",
+              "advSessionId": 2,
+              "backend": "omp",
+              "nativeSessionId": "01a132cf-98e8-752b-a21e-ed439e4ae2a8",
+              "ownerId": "su-fc763418-d8e5-4808-98e6-ccc06351434d",
+              "workspaceId": "pui-agent-chat-e2e",
+              "harnessSlug": "papercusp"
+            },
+            "runtimeGenerations": [
+              0,
+              1
+            ],
+            "models": [
+              "papercusp-gateway/claude-sonnet-4-6",
+              "papercusp-gateway/claude-sonnet-4-6"
+            ],
+            "accountRoutes": [
+              "auto",
+              "auto"
+            ],
+            "nativeApproval": null
+          },
+          "nativeJourney": {
+            "streamingEvidence": {
+              "turnId": "pui-turn-pui-1791853916783732510",
+              "observedAt": "2026-10-13T01:11:58.756Z",
+              "partialText": "The user wants me to list numbers from 1 through 1000, one per line, with no other text. Let me do that.1\n2\n3\n4\n5",
+              "visibleNumbers": [
+                1,
+                2,
+                3,
+                4,
+                5
+              ],
+              "lifecycle": "running",
+              "completed": false
+            },
+            "identity": {
+              "agentChatId": "44219067-a6f1-467e-89f5-db31f3178833",
+              "advSessionId": 5,
+              "backend": "omp",
+              "nativeSessionId": "01a132d0-caa2-75b6-806d-e229ca95cee9",
+              "ownerId": "su-8dd83d5d-28a6-41af-a577-6962c1224147",
+              "workspaceId": "pui-agent-chat-e2e",
+              "harnessSlug": "papercusp"
+            },
+            "resumedIdentity": {
+              "agentChatId": "44219067-a6f1-467e-89f5-db31f3178833",
+              "advSessionId": 5,
+              "backend": "omp",
+              "nativeSessionId": "01a132d0-caa2-75b6-806d-e229ca95cee9",
+              "ownerId": "su-8dd83d5d-28a6-41af-a577-6962c1224147",
+              "workspaceId": "pui-agent-chat-e2e",
+              "harnessSlug": "papercusp"
+            },
+            "resumedGeneration": 1,
+            "readStart": {
+              "name": "read",
+              "callId": "toolu_016dX1bM5VMLUNyaLaZypChi",
+              "turnId": "pui-turn-pui-1791853908359770730",
+              "session": {
+                "agentChatId": "44219067-a6f1-467e-89f5-db31f3178833",
+                "advSessionId": 5,
+                "backend": "omp",
+                "nativeSessionId": "01a132d0-caa2-75b6-806d-e229ca95cee9",
+                "ownerId": "su-8dd83d5d-28a6-41af-a577-6962c1224147",
+                "workspaceId": "pui-agent-chat-e2e",
+                "harnessSlug": "papercusp"
+              }
+            },
+            "readEnd": {
+              "callId": "toolu_016dX1bM5VMLUNyaLaZypChi",
+              "turnId": "pui-turn-pui-1791853908359770730",
+              "session": {
+                "agentChatId": "44219067-a6f1-467e-89f5-db31f3178833",
+                "advSessionId": 5,
+                "backend": "omp",
+                "nativeSessionId": "01a132d0-caa2-75b6-806d-e229ca95cee9",
+                "ownerId": "su-8dd83d5d-28a6-41af-a577-6962c1224147",
+                "workspaceId": "pui-agent-chat-e2e",
+                "harnessSlug": "papercusp"
+              },
+              "isError": false
+            },
+            "nativeReadApprovals": [],
+            "commandTypes": [
+              "owner_turn",
+              "owner_turn",
+              "owner_turn",
+              "interrupt",
+              "owner_turn",
+              "end",
+              "owner_turn",
+              "end"
+            ]
+          }
+        }
+      ],
+      "coverageBoundary": "PUI_REAL_APPROVAL was unset. The explicit native Write approval/effect branch did not run; approved native Read is only measured for Claude in the greeting journey. Do not claim exact-candidate write approval from this full verdict."
+    },
+    "limitations": [
+      "Original3592 and47a6 full refusals are retained as separate generations.",
+      "New299829 full verdict passes its declared matrix; explicit native Write approval branch was disabled and is not implied.",
+      "Current BAR/spec/calibration clean proof binding, independent grading, final Avi candidate approval and publication remain required."
+    ],
+    "nativeApprovalSupplement": {
+      "taskId": "0mv601nqk1kloe5hk6y",
+      "rootLogPath": ".papercusp/scratch/bash-d7e12869-301.log",
+      "rootLogSha256": "6d8bec4ff1a338dcfd6043571da3960d5e7b270a51ee19a6f9a794d58d3cb978",
+      "verdictPath": "/tmp/pui-acceptance-7534f/candidates/source-2998298920a789179489753fd7cb06d7c5fc4922/pui-299829-native-approval-20261013-0130.partial.acceptance.json",
+      "verdictSha256": "334211b4d3adbe0bda4c9fa436cf89ea6d7a1456a4a2eb292d53e4bbd85201e3",
+      "profile": {
+        "approval": "1",
+        "mode": "auto",
+        "plan": "1",
+        "account": "auto",
+        "nativePermissions": "default",
+        "modelPins": [
+          "codex:gpt-5.5",
+          "claude:sonnet",
+          "omp(unset)"
+        ]
+      },
+      "legs": [
+        {
+          "engine": "scripted",
+          "status": 0,
+          "evidence": "/tmp/pui-acceptance-7534f/run-299829-native-approval-20261013-0130/evidence-scripted.json",
+          "rows": 0
+        },
+        {
+          "engine": "codex",
+          "status": 1,
+          "evidence": "/tmp/pui-acceptance-7534f/run-299829-native-approval-20261013-0130/evidence-codex.json",
+          "rows": 0
+        },
+        {
+          "engine": "claude",
+          "status": 1,
+          "evidence": "/tmp/pui-acceptance-7534f/run-299829-native-approval-20261013-0130/evidence-claude.json",
+          "rows": 0
+        },
+        {
+          "engine": "omp",
+          "status": 0,
+          "evidence": "/tmp/pui-acceptance-7534f/run-299829-native-approval-20261013-0130/evidence-omp.json",
+          "rows": 1
+        }
+      ],
+      "receipts": [
+        {
+          "backend": "codex",
+          "logPath": "/tmp/pui-acceptance-7534f/run-299829-native-approval-20261013-0130/vitest-codex.log",
+          "logSha256": "eb2c6b1302015276ec5f6755fde3ca1ac729ff694d7e138aeb4aded179aba8f6",
+          "summary": [
+            "⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯",
+            " Test Files  1 failed | 1 skipped (2)",
+            "      Tests  1 failed | 97 skipped (98)",
+            "--- child exit: code=1 signal=none ---"
+          ],
+          "approvalReceipts": [],
+          "errors": [
+            "AssertionError: the native tool must request approval within 120 seconds; pending cards: none: expected false to be true // Object.is equality"
+          ]
+        },
+        {
+          "backend": "claude",
+          "logPath": "/tmp/pui-acceptance-7534f/run-299829-native-approval-20261013-0130/vitest-claude.log",
+          "logSha256": "897180be1ca2ba695a66c5cc877a23f9bade42c95f57b2f80e88d4017ea8dcae",
+          "summary": [
+            "⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯",
+            " Test Files  1 failed | 1 skipped (2)",
+            "      Tests  1 failed | 97 skipped (98)",
+            "--- child exit: code=1 signal=none ---"
+          ],
+          "approvalReceipts": [
+            {
+              "backend": "claude",
+              "session": {
+                "backend": "claude",
+                "ownerId": "su-3a182f51-41ab-431f-b7fd-44828f400765",
+                "agentChatId": "6b636d12-a8ed-4e75-8900-bd6477b0adee",
+                "harnessSlug": "papercusp",
+                "workspaceId": "pui-agent-chat-e2e",
+                "advSessionId": 1,
+                "nativeSessionId": "e0720b8d-0e61-4d57-9c0f-a9730f7e6581"
+              },
+              "turnId": "pui-turn-pui-1791855632361967786",
+              "correlationId": "60bd38e0-cef9-4739-af32-ddf947af64cc",
+              "choice": "Yes",
+              "cardReplyStatus": 200,
+              "toolCallId": "toolu_01VLV2i8RPkvBsPY4H1xsdEb",
+              "toolCompleted": true,
+              "exactEffectVerified": true,
+              "effectSha256": "6575195ccdb47efc29521d1a1e7bd434187d4055bf3eba4fae24f0d681ee8a46"
+            }
+          ],
+          "errors": [
+            "Error: Correlated reply was not rendered:"
+          ]
+        },
+        {
+          "backend": "omp",
+          "logPath": "/tmp/pui-acceptance-7534f/run-299829-native-approval-20261013-0130/vitest-omp.log",
+          "logSha256": "750b7f92ebb27d8fe58aab33bc3f8131e6e2a5cb778b79e7192d38969e906824",
+          "summary": [
+            " Test Files  1 passed | 1 skipped (2)",
+            "      Tests  1 passed | 97 skipped (98)",
+            "--- child exit: code=0 signal=none ---"
+          ],
+          "approvalReceipts": [
+            {
+              "backend": "omp",
+              "session": {
+                "backend": "omp",
+                "ownerId": "su-d556d480-201e-4f30-869b-e088125126fe",
+                "agentChatId": "3da5dcb3-74c8-449a-ac3e-d216687ca8fa",
+                "harnessSlug": "papercusp",
+                "workspaceId": "pui-agent-chat-e2e",
+                "advSessionId": 1,
+                "nativeSessionId": "01a132f0-0b1c-77bd-a8e2-7965862c9fad"
+              },
+              "turnId": "pui-turn-pui-1791855955152265690",
+              "correlationId": "3a75d6f4-d83b-4d65-9f8c-de4ec848b07b",
+              "choice": "Yes",
+              "cardReplyStatus": 200,
+              "toolCallId": "toolu_018Rwvc3RsuXYRyekP2bwgxc",
+              "toolCompleted": true,
+              "exactEffectVerified": true,
+              "effectSha256": "ec4ae0c46d58d7cc811bf2a2109b4e6d925c8dee9a95da60c039b4a45eea42bd"
+            }
+          ],
+          "restartReceipt": {
+            "first": {
+              "pid": 2542272,
+              "instanceId": "dc4db96f-5b03-4462-b9b8-c005037e65f2"
+            },
+            "second": {
+              "pid": 2607385,
+              "instanceId": "c7e9ef34-d784-4ab4-ba0e-ed14797befef"
+            },
+            "identity": {
+              "agentChatId": "3da5dcb3-74c8-449a-ac3e-d216687ca8fa",
+              "advSessionId": 1,
+              "backend": "omp",
+              "nativeSessionId": "01a132f0-0b1c-77bd-a8e2-7965862c9fad",
+              "ownerId": "su-d556d480-201e-4f30-869b-e088125126fe",
+              "workspaceId": "pui-agent-chat-e2e",
+              "harnessSlug": "papercusp"
+            },
+            "resumedIdentity": {
+              "agentChatId": "3da5dcb3-74c8-449a-ac3e-d216687ca8fa",
+              "advSessionId": 1,
+              "backend": "omp",
+              "nativeSessionId": "01a132f0-0b1c-77bd-a8e2-7965862c9fad",
+              "ownerId": "su-d556d480-201e-4f30-869b-e088125126fe",
+              "workspaceId": "pui-agent-chat-e2e",
+              "harnessSlug": "papercusp"
+            },
+            "generations": [
+              0,
+              1
+            ],
+            "approval": {
+              "card": {
+                "correlationId": "3a75d6f4-d83b-4d65-9f8c-de4ec848b07b",
+                "createdAt": 1791855989583,
+                "prompt": "Do you want to make this edit to /tmp/pui-acceptance-7534f/.pui-note-8e0ab60b-6b59-480c-a745-27feeac3efea.txt?\nContent:\nTemporary text note 729cd958-e795-443f-b17e-7f1a70df9bc6",
+                "fallbackText": "Do you want to make this edit to /tmp/pui-acceptance-7534f/.pui-note-8e0ab60b-6b59-480c-a745-27feeac3efea.txt?\nContent:\nTemporary text note 729cd958-e795-443f-b17e-7f1a70df9bc6",
+                "approval": {
+                  "title": "Write(/tmp/pui-acceptance-7534f/.pui-note-8e0ab60b-6b59-480c-a745-27feeac3efea.txt)",
+                  "question": "Do you want to make this edit to /tmp/pui-acceptance-7534f/.pui-note-8e0ab60b-6b59-480c-a745-27feeac3efea.txt?",
+                  "body": [
+                    "Content:",
+                    "Temporary text note 729cd958-e795-443f-b17e-7f1a70df9bc6"
+                  ]
+                },
+                "presentation": {
+                  "kind": "radio",
+                  "options": [
+                    {
+                      "id": "yes",
+                      "label": "Yes"
+                    },
+                    {
+                      "id": "always",
+                      "label": "Yes, and don't ask again for Write this session"
+                    },
+                    {
+                      "id": "no",
+                      "label": "No, and tell OMP what to do instead"
+                    }
+                  ]
+                },
+                "allowDecline": true
+              },
+              "start": {
+                "type": "tool",
+                "phase": "started",
+                "turnId": "pui-turn-pui-1791855955152265690",
+                "callId": "toolu_018Rwvc3RsuXYRyekP2bwgxc",
+                "name": "write",
+                "input": {
+                  "path": "/tmp/pui-acceptance-7534f/.pui-note-8e0ab60b-6b59-480c-a745-27feeac3efea.txt",
+                  "content": "Temporary text note 729cd958-e795-443f-b17e-7f1a70df9bc6\n"
+                },
+                "schema": "papercusp.su-session/v1",
+                "protocolVersion": 1,
+                "eventId": "3da5dcb3-74c8-449a-ac3e-d216687ca8fa:287",
+                "sequence": 287,
+                "at": "2026-10-13T01:46:29.583Z",
+                "session": {
+                  "agentChatId": "3da5dcb3-74c8-449a-ac3e-d216687ca8fa",
+                  "advSessionId": 1,
+                  "backend": "omp",
+                  "nativeSessionId": "01a132f0-0b1c-77bd-a8e2-7965862c9fad",
+                  "ownerId": "su-d556d480-201e-4f30-869b-e088125126fe",
+                  "workspaceId": "pui-agent-chat-e2e",
+                  "harnessSlug": "papercusp"
+                }
+              },
+              "end": {
+                "type": "tool",
+                "phase": "completed",
+                "turnId": "pui-turn-pui-1791855955152265690",
+                "callId": "toolu_018Rwvc3RsuXYRyekP2bwgxc",
+                "name": "write",
+                "output": {
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "[/tmp/pui-acceptance-7534f/.pui-note-8e0ab60b-6b59-480c-a745-27feeac3efea.txt#649F]\nSuccessfully wrote 57 bytes to /tmp/pui-acceptance-7534f/.pui-note-8e0ab60b-6b59-480c-a745-27feeac3efea.txt"
+                    }
+                  ],
+                  "details": {
+                    "resolvedPath": "/tmp/pui-acceptance-7534f/.pui-note-8e0ab60b-6b59-480c-a745-27feeac3efea.txt"
+                  }
+                },
+                "isError": false,
+                "schema": "papercusp.su-session/v1",
+                "protocolVersion": 1,
+                "eventId": "3da5dcb3-74c8-449a-ac3e-d216687ca8fa:290",
+                "sequence": 290,
+                "at": "2026-10-13T01:46:29.660Z",
+                "session": {
+                  "agentChatId": "3da5dcb3-74c8-449a-ac3e-d216687ca8fa",
+                  "advSessionId": 1,
+                  "backend": "omp",
+                  "nativeSessionId": "01a132f0-0b1c-77bd-a8e2-7965862c9fad",
+                  "ownerId": "su-d556d480-201e-4f30-869b-e088125126fe",
+                  "workspaceId": "pui-agent-chat-e2e",
+                  "harnessSlug": "papercusp"
+                }
+              },
+              "fixturePath": "/tmp/pui-acceptance-7534f/.pui-note-8e0ab60b-6b59-480c-a745-27feeac3efea.txt",
+              "result": "Temporary text note 729cd958-e795-443f-b17e-7f1a70df9bc6",
+              "replies": [
+                {
+                  "path": "/api/operator/conversations/3da5dcb3-74c8-449a-ac3e-d216687ca8fa/card-response",
+                  "status": 200
+                }
+              ]
+            }
+          },
+          "errors": []
+        }
+      ],
+      "state": "Native explicit approval: OMP passed; Claude approval/effect passed but subsequent greeting was not submitted/rendered; Codex no card/native assistant or tool progress within120s. Filtered verdict refused. Original full accepted matrix remains separate.",
+      "workItems": [
+        "WI-6554700010009554",
+        "WI-6554700010009555"
+      ],
+      "repair": {
+        "prompt": "Only framework OMP asks work_items:get; bare Claude/Codex requests only the native file action. Claude SDK deliberately uses strictMcpConfig:true/mcpServers:{}. Codex root still unconfirmed pending real probe.",
+        "composer": "After producer waiting-for-owner, wait for installed composer send-readiness and verify exact greeting draft before Enter. Prior failure only synchronized producer state.",
+        "auditPosts": [
+          1178016,
+          1178017,
+          1178018
+        ],
+        "helperVerification": {
+          "taskId": "0mv61j17xo00b4110fs",
+          "logPath": ".papercusp/scratch/bash-b51eea0d-2c5.log",
+          "logSha256": "bd3699a20ea62b53fe76daa719a3c37b1d332b71e18c6d59a1b24b2d22d50e12",
+          "exitCode": 0,
+          "terminalAt": "2026-10-13T02:07:59.261Z",
+          "summary": [
+            " Test Files  1 passed (1)",
+            "      Tests  53 passed (53)",
+            "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=0a16d4a6fa uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-13T02:07:09.147Z skippedTests=0"
+          ],
+          "sourceMapPath": "/tmp/pui-acceptance-7534f/approval-bare-composer-helper-source-map-20261013-0210.json",
+          "plane": "current-build, uncommitted source"
+        },
+        "nativeVerification": {
+          "taskId": "0mv61j1w7mniz9jx8w7",
+          "rootLogPath": ".papercusp/scratch/bash-f0c55098-feb.log",
+          "root": "/tmp/pui-acceptance-7534f/run-299829-approval-bare-composer-20261013-0210",
+          "verdictPath": "/tmp/pui-acceptance-7534f/candidates/source-2998298920a789179489753fd7cb06d7c5fc4922/pui-299829-approval-bare-composer-20261013-0210.partial.acceptance.json",
+          "deadline": "2026-10-13T03:07:08.171Z",
+          "state": "Terminal: all three native approval/restart legs passed. Root exit1 is expected because current-build and filtered coverage are refused for release acceptance.",
+          "rootExitCode": 1,
+          "terminalAt": "2026-10-13T02:24:56.924Z",
+          "rootLogSha256": "7122c1dfd29a9cecd6158779140156165a4e1599e187b936221b61e654ee2ff8",
+          "verdictSha256": "c9927263f3815ebaf949a69898bf52f4a21f489ed310ce5f65c8e3932e730a4b",
+          "childExitCodes": { "scripted": 0, "codex": 0, "claude": 0, "omp": 0 },
+          "receipts": [
+            {
+              "backend": "codex",
+              "logPath": "/tmp/pui-acceptance-7534f/run-299829-approval-bare-composer-20261013-0210/vitest-codex.log",
+              "logSha256": "8ef8d888afccb661f0a5283a1f761cfc4802ad6584acfa3eae43585727ca1373",
+              "testResult": "1 passed, 97 skipped; child exit0",
+              "cardReplyStatus": 200,
+              "toolCompleted": true,
+              "exactEffectVerified": true,
+              "effectSha256": "3bf5ba705baeba694a06b9a0dfbd41491dfc7f7043f8279ec0586fa773107737",
+              "sameIdentityAcrossOsRestart": true,
+              "runtimeGenerations": [0, 1]
+            },
+            {
+              "backend": "claude",
+              "logPath": "/tmp/pui-acceptance-7534f/run-299829-approval-bare-composer-20261013-0210/vitest-claude.log",
+              "logSha256": "9b38d4874c987a3a1570208c32f89549bff250ecbdff6a18476109332fc0e9cd",
+              "testResult": "1 passed, 97 skipped; child exit0",
+              "cardReplyStatus": 200,
+              "toolCompleted": true,
+              "exactEffectVerified": true,
+              "effectSha256": "45834dd2171e971c4a151c1efc323787bb0c85ff01e384cc263ed93541dceb02",
+              "sameIdentityAcrossOsRestart": true,
+              "runtimeGenerations": [0, 1]
+            },
+            {
+              "backend": "omp",
+              "logPath": "/tmp/pui-acceptance-7534f/run-299829-approval-bare-composer-20261013-0210/vitest-omp.log",
+              "logSha256": "3c15b1e1b58b8ffd1051d3fb51e194f2c5c0221bfb79fe1a321d1e7bcb44cf45",
+              "testResult": "1 passed, 97 skipped; child exit0",
+              "cardReplyStatus": 200,
+              "toolCompleted": true,
+              "exactEffectVerified": true,
+              "effectSha256": "49bf7e4d2df4b65ef1a295ddb5d8397ca37d020eebb58ea909fdb271148fe3ba",
+              "sameIdentityAcrossOsRestart": true,
+              "runtimeGenerations": [0, 1]
+            }
+          ],
+          "awaitReconciled": { "awaitId": 285381, "deliveryId": 725882, "status": "delivered", "outstandingDeliveries": 0 },
+          "committedRepair": {
+            "sourceSha": "abd8c87ff839dc8231dbfe67b303fcef72d56b1a",
+            "workingMatchesCommittedAt": "6a0f8070d6832d81e7519793579ad01d81b109b6",
+            "paths": [
+              { "path": "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts", "sha256": "aa20b651cdf7dea10396c84c13960a6f7571056bce0b37ce55fd3b8e1133fd8b" },
+              { "path": "packages/operator-core/lib/pui-e2e/release-acceptance.ts", "sha256": "bc25a410f45d4a97d2d036dc2d1837ffcc945e3071a97695ebecb911d2392573" }
+            ]
+          },
+          "limitations": [
+            "Current-build fixture/native adapters ran over immutable299829binary; this is not a clean exact-source release verdict.",
+            "Codex no-card original cause was not uniquely isolated. Backend-appropriate stimulus plus composer synchronization passed; no provider/sandbox bypass was used.",
+            "Exact committed repaired fixture, full acceptance, calibration, independent grading and final Avi approval/public install remain open."
+          ],
+          "terminalAwaitId": 285381,
+          "awaitDeadline": "2026-10-13T02:26:14.232Z",
+          "plane": "Current-build fixture over exact installed299829 binary; partial/current-source verdict must remain refused"
+        }
+      },
+      "evidenceBoundary": "Failure dump retains last30events/last20responses, so those arrays are not a complete traffic census. No provider/capacity/resource cause inferred. Historical34homeguard whole-file hashes do not all match299829; preserve scoped historical proof only."
+    }
+  }
+}

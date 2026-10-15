@@ -6,6 +6,7 @@ import type { WorkspaceHostControlRow } from "./workspace-view-model";
 
 const H = vi.hoisted(() => ({
   rows: [] as WorkspaceHostControlRow[],
+  localRows: [] as unknown[],
   params: {} as Record<string, unknown>,
   updates: [] as Array<[string, unknown]>,
   loading: false,
@@ -14,24 +15,22 @@ const H = vi.hoisted(() => ({
 }));
 
 vi.mock("@papercusp/sync", () => ({
-  useSyncQuery: () => ({
-    data: H.rows,
-    loading: H.loading,
-    error: H.error,
-    invalidate: H.invalidate,
-  }),
+  useSyncQuery: ({ queryName }: { queryName: string }) =>
+    queryName === "desktops.local"
+      ? { data: H.localRows, loading: false, error: null, invalidate: H.invalidate }
+      : {
+          data: H.rows,
+          loading: H.loading,
+          error: H.error,
+          invalidate: H.invalidate,
+        },
   useSyncMutate: () => vi.fn(),
 }));
-vi.mock("nuqs", async () => {
+vi.mock("nuqs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("nuqs")>();
   const React = await import("react");
-  const parser = (defaultValue: unknown = null): any => ({
-    defaultValue,
-    withDefault: (value: unknown) => parser(value),
-    withOptions: () => parser(defaultValue),
-  });
   return {
-    parseAsString: parser(),
-    parseAsStringEnum: () => parser(),
+    ...actual,
     useQueryState: (key: string, config?: { defaultValue?: unknown }) => {
       const [value, setValue] = React.useState<unknown>(
         H.params[key] ?? config?.defaultValue ?? null,
@@ -123,6 +122,7 @@ beforeEach(() => {
     workspace("Old workspace", "absent"),
     workspace("Research workspace"),
   ];
+  H.localRows = [];
   H.params = { app: "desktops", step: "operate", tab: "desktops" };
   H.updates = [];
   H.loading = false;
@@ -182,12 +182,59 @@ describe("portal Desktops entry — approved option B", () => {
     ).toBeNull();
   });
 
-  it("keeps an honest empty destination when no active workspace exists", async () => {
+  it("opens This computer when no active cloud workspace exists", async () => {
     H.rows = [workspace("Removed workspace", "absent")];
     openDesktops();
-    expect(await screen.findByText("No desktop workspaces yet")).toBeTruthy();
+    expect(
+      await screen.findByRole("region", { name: "Desktops on this computer" }),
+    ).toBeTruthy();
+    expect(screen.getByText("No agent desktops on this computer")).toBeTruthy();
+    expect(
+      (screen.getByRole("combobox", { name: "Desktop workspace" }) as HTMLSelectElement)
+        .value,
+    ).toBe("local");
     expect(
       screen.queryByRole("list", { name: "Managed workspace hosts" }),
     ).toBeNull();
+  });
+
+  it("offers This computer beside the cloud workspaces and switches to it in URL state", async () => {
+    H.localRows = [
+      {
+        id: "ds-1",
+        slug: "papercusp",
+        kind: "xvfb",
+        scope: "agent",
+        scopeRef: "su-1:main",
+        display: 110,
+        displayRaw: ":110",
+        displayGeometry: { width: 1280, height: 800, depth: 24 },
+        captureGeometry: { width: 1280, height: 800 },
+        state: "ready",
+        viewerMode: "none",
+        viewerActor: null,
+        capabilities: {},
+        lastActiveAt: null,
+        owner: "su-1",
+        name: "browser",
+        workItemId: "WI-12",
+        workItemIntent: null,
+      },
+    ];
+    openDesktops();
+    expect(
+      await screen.findByRole("region", { name: "Desktops for Research workspace" }),
+    ).toBeTruthy();
+    const picker = screen.getByRole("combobox", { name: "Desktop workspace" });
+    expect(
+      [...(picker as HTMLSelectElement).options].map((option) => option.textContent),
+    ).toEqual(["This computer", "Research workspace"]);
+    fireEvent.change(picker, { target: { value: "local" } });
+    expect(
+      await screen.findByRole("region", { name: "Desktops on this computer" }),
+    ).toBeTruthy();
+    expect(H.updates).toContainEqual(["desktopHost", "local"]);
+    expect(screen.getByRole("button", { name: "Watch browser" })).toBeTruthy();
+    expect(screen.getByText("Agent su-1")).toBeTruthy();
   });
 });

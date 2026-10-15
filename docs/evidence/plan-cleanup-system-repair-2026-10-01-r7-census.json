@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "plan-cleanup-system-repair-2026-10-01 BAR R-7: before-and-after plan-cleanup census, WI-2140580 superseded by a fresh run",
+  "framework": "operational",
+  "command": [
+    "POST http://127.0.0.1:3170/api/admin/plan-cleanup?workspace=papercusp-workspace {op:'start', harness:'papercusp', planSlugs:<the 26 plans named in WI-2140580>}",
+    "dev:pg_query SELECT phase, requested_by, total_items, auto_resolved, recommended, failed, created_at, finished_at FROM harness_shared.attention_bulk_runs WHERE run_id='bulk-da041f27-109c-43a7-b63a-a55519b941c0'",
+    "work_items:get { ids: ['EI-21355873806996660','WI-2107951','WI-2140580'], harness: 'papercusp' }",
+    "plans:get { slug: 'plan-cleanup-system-repair-2026-10-01', decisionId: 'D-006', harness: 'papercusp' }"
+  ],
+  "startedAt": "2026-10-01T13:19:53.000Z",
+  "finishedAt": "2026-10-01T13:23:30.000Z",
+  "exitCode": 0,
+  "summary": "The before-and-after census is recorded and every R-7 falsifier is cleared. Before: run bulk-bc6d1eeb (2026-09-01) left 26 recommendations on WI-2140580. After: run bulk-da041f27, started on :3170 over exactly those 26 plans, settled review at 13:21:32Z with 23 recommendations, 0 auto-applied and 0 failed. WI-2140580 is now terminal (deprecated, stored as dropped, 13:23:05Z) with a completionRef and comment (thread-post 1153429) pointing at the fresh run. EI-21355873806996660 and WI-2107951 are done. Decision D-006 replaces D-005's comment-only handling.",
+  "assertions": [
+    {
+      "id": "r-7-fresh-run-over-same-plans",
+      "passed": true,
+      "evidence": "attention_bulk_runs bulk-da041f27-109c-43a7-b63a-a55519b941c0: run_kind plan-cleanup, phase review, requested_by owner, total_items 26, recommended 23, auto_resolved 0, failed 0, created 13:19:53Z, finished 13:21:32Z. plans:cleanup-manifest lists the same 26 plan slugs that WI-2140580 names."
+    },
+    {
+      "id": "r-7-wi-2140580-superseded-with-pointer",
+      "passed": true,
+      "evidence": "work_items:get WI-2140580: state dropped, closedAt 2026-10-01T13:23:05Z, completionRef 'Superseded by fresh plan-cleanup run bulk-da041f27-109c-43a7-b63a-a55519b941c0 over the same 26 plans ...'; comment post 1153429 points the owner at that run's review list."
+    },
+    {
+      "id": "r-7-ei-21355873806996660-closed",
+      "passed": true,
+      "evidence": "work_items:get EI-21355873806996660: state done."
+    },
+    {
+      "id": "r-7-wi-2107951-commented",
+      "passed": true,
+      "evidence": "work_items:get WI-2107951: state done, with the census comment recorded by P-007 (WI-10004810)."
+    }
+  ],
+  "planSlug": "plan-cleanup-system-repair-2026-10-01",
+  "decision": "D-006 (supersedes D-005)",
+  "recordedBy": "su-3d43bdee-11b4-4008-8867-0d51e16a732b"
+}

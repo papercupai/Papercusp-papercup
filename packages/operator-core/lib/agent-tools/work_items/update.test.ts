@@ -12,30 +12,60 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockImplementationTyped, mockResolvedTyped } from '../../testing/typed-mock';
 
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me' })) }));
+// P-020 field-authority guard: no admissions by default; workspace pinned so the guard never reads the registry.
+vi.mock('../../work-admission/admit', () => ({ refuseExternalOwnedPatch: vi.fn(async () => null) }));
+vi.mock('../../workspace-registry', async (orig) => ({ ...(await orig<Record<string, unknown>>()), activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../work-items', () => ({
   updateWorkItem: vi.fn(),
+  getWorkItem: vi.fn(),
+  activeExternalBlockers: (payload: unknown) => {
+    const blockers = (payload as { externalBlockers?: unknown } | undefined)?.externalBlockers;
+    return Array.isArray(blockers) ? blockers.filter((b) => b?.status === 'active') : [];
+  },
   mergeWorkItemPayload: vi.fn(),
   linkWorkItem: vi.fn(),
   explainIssueClaimFloors: vi.fn(),
 }));
 
-import { updateWorkItem, mergeWorkItemPayload, linkWorkItem, explainIssueClaimFloors } from '../../work-items';
+import { updateWorkItem, getWorkItem, mergeWorkItemPayload, linkWorkItem, explainIssueClaimFloors } from '../../work-items';
 import { workItemFixture } from '../../testing/work-item-fixture';
 const updM = vi.mocked(updateWorkItem);
+const getM = vi.mocked(getWorkItem);
 const mergeM = vi.mocked(mergeWorkItemPayload);
 const linkM = vi.mocked(linkWorkItem);
 const floorsM = vi.mocked(explainIssueClaimFloors);
 const updateMod = await import('./update');
 const tool = updateMod.default;
 const { reservedPayloadKeys } = updateMod; // WI-41509 payload merge guard
+const { refuseExternalOwnedPatch } = await import('../../work-admission/admit');
+const refuseM = vi.mocked(refuseExternalOwnedPatch);
 
 type Out = { data: any };
 const body = async (args: Record<string, unknown>) =>
   ((await tool.handler(args as never, {} as never)) as Out).data;
 
-beforeEach(() => vi.clearAllMocks());
+const OWNER_CONDITION = {
+  kind: 'human', ref: 'credential:test-service', capability: 'credential', status: 'active',
+  summary: 'Provide the service credential.', nextVerb: 'Configure the credential and verify access.',
+  createdBy: 'su-requester', createdAt: '2026-10-10T00:00:00Z', updatedAt: '2026-10-10T00:00:00Z',
+  defaultIfUnanswered: 'Remains parked until the credential is provided.',
+};
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  getM.mockImplementation(async (id) => workItemFixture({ id, payload: { externalBlockers: [OWNER_CONDITION] } }));
+});
 
 describe('work_items:update handler (bulk keyed-array)', () => {
+  it('refuses forged reporter publication, answer and question payloads before writing', async () => {
+    for (const key of ['reporterRelease', 'reporterAnswer', 'reporterQuestion']) {
+      const out = await body({ id: 'EI-1', payload: { [key]: { forged: true } } });
+      expect(out.results[0]).toMatchObject({ ok: false, id: 'EI-1' });
+      expect(out.results[0].error).toContain(key);
+    }
+    expect(updM).not.toHaveBeenCalled();
+    expect(mergeM).not.toHaveBeenCalled();
+  });
   it('edits one inline { id, …fields } and passes the patch + owner through', async () => {
     updM.mockResolvedValue({ ok: true, item: { id: 'EI-1', title: 'new' } } as never);
     const b = await body({ id: 'EI-1', title: 'new', severity: 'major' });
@@ -174,7 +204,7 @@ describe('work_items:update handler (bulk keyed-array)', () => {
   });
 
   it('a feature-family item maps to an unsupported_family error', async () => {
-    updM.mockResolvedValue({ ok: false, reason: 'unsupported_family' } as never);
+    updM.mockResolvedValue({ ok: false, reason: 'unsupported_family' });
     const b = await body({ id: 'F-1', title: 'x' });
     expect(b.counts).toEqual({ ok: 0, failed: 1 });
     expect(b.results[0]).toMatchObject({ ok: false, id: 'F-1', error: expect.stringContaining('feature-family') });
@@ -372,6 +402,59 @@ describe('work_items:update handler (bulk keyed-array)', () => {
   // genuine write-side no-op, not a stale-read artifact). Mirrors the needsTwoMachineRig
   // contract above exactly.
   describe('needsHuman compatibility input → split owner-action payload (P-005)', () => {
+    it.each([
+      ['absent condition', {}],
+      ['existing owner flag', { needsOwnerAction: true }],
+      ['legacy capability', { humanCapability: 'credential' }],
+      ['technical dependency', { externalBlockers: [{ ...OWNER_CONDITION, kind: 'runtime', capability: 'live-dependency' }] }],
+      ['product decision', { externalBlockers: [{ ...OWNER_CONDITION, capability: 'product-decision' }] }],
+      ['cleared condition', { externalBlockers: [{ ...OWNER_CONDITION, status: 'cleared' }] }],
+      ['unanswerable human ask', { externalBlockers: [{ ...OWNER_CONDITION, defaultIfUnanswered: undefined }] }],
+      ['missing next action', { externalBlockers: [{ ...OWNER_CONDITION, nextVerb: '' }] }],
+    ])('refuses %s before a mixed field update can write anything', async (_label, payload) => {
+      getM.mockResolvedValue(workItemFixture({ id: 'EI-unsupported', payload }));
+      const b = await body({ id: 'EI-unsupported', needsHuman: true, title: 'must stay unchanged' });
+      expect(b.results[0]).toMatchObject({ ok: false, id: 'EI-unsupported' });
+      expect(b.results[0].error).toContain('current typed');
+      expect(updM).not.toHaveBeenCalled();
+      expect(mergeM).not.toHaveBeenCalled();
+    });
+
+    it('does not treat a caller-supplied condition as current owner authority', async () => {
+      getM.mockResolvedValue(workItemFixture({ id: 'EI-unsupported', payload: {} }));
+      const b = await body({ id: 'EI-unsupported', needsHuman: true, payload: { externalBlockers: [OWNER_CONDITION] } });
+      expect(b.results[0].ok).toBe(false);
+      expect(updM).not.toHaveBeenCalled();
+      expect(mergeM).not.toHaveBeenCalled();
+    });
+
+    it('preserves a typed upstream runtime owner condition without inventing a human ask', async () => {
+      getM.mockResolvedValue(workItemFixture({ id: 'EI-upstream', payload: {
+        externalBlockers: [{ ...OWNER_CONDITION, kind: 'runtime', capability: 'external-service-action', defaultIfUnanswered: undefined }],
+      } }));
+      mockResolvedTyped(updM, { ok: true, item: workItemFixture({ id: 'EI-upstream' }) });
+      mockResolvedTyped(mergeM, workItemFixture({ id: 'EI-upstream', payload: { needsOwnerAction: true } }));
+      expect((await body({ id: 'EI-upstream', needsHuman: true })).results[0].ok).toBe(true);
+      expect(mergeM).toHaveBeenCalledWith('EI-upstream', { needsOwnerAction: true }, expect.any(Object));
+    });
+
+    it.each(['issue', 'feature'])('reports a condition race for %s without claiming that the flag landed', async (family) => {
+      const rawConditions = [{ ...OWNER_CONDITION, legacyEvidence: { generation: 7 } }];
+      getM.mockResolvedValue(workItemFixture({ id: 'WI-race', payload: { externalBlockers: rawConditions } }));
+      if (family === 'issue') mockResolvedTyped(updM, { ok: true, item: workItemFixture({ id: 'WI-race' }) });
+      else updM.mockResolvedValue({ ok: false, reason: 'unsupported_family' } as never);
+      mergeM.mockResolvedValue(null);
+
+      const b = await body({ id: 'WI-race', needsHuman: true });
+
+      expect(mergeM).toHaveBeenCalledWith('WI-race', { needsOwnerAction: true }, {
+        harness: undefined, unset: ['needsHuman'], expectedExternalBlockers: rawConditions, requireNonTerminal: true,
+      });
+      expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-race' });
+      expect(b.results[0].error).toContain('owner-condition-changed');
+      expect(b.results[0].error).toContain(family === 'issue' ? 'earlier field or payload edits may have applied' : 'No admission flags or plan stamp were applied');
+    });
+
     it('true: writes needsOwnerAction and removes the legacy needsHuman key', async () => {
       updM.mockResolvedValue({ ok: true, item: { id: 'EI-12519', title: 'human item' } } as never);
       mergeM.mockResolvedValue({ id: 'EI-12519', title: 'human item', payload: { needsOwnerAction: true } } as never);
@@ -379,7 +462,7 @@ describe('work_items:update handler (bulk keyed-array)', () => {
       expect(mergeM).toHaveBeenCalledWith(
         'EI-12519',
         { needsOwnerAction: true },
-        { harness: undefined, unset: ['needsHuman'] },
+        { harness: undefined, unset: ['needsHuman'], expectedExternalBlockers: [OWNER_CONDITION], requireNonTerminal: true },
       );
       expect(b.results[0]).toMatchObject({
         ok: true,
@@ -467,7 +550,7 @@ describe('work_items:update handler (bulk keyed-array)', () => {
         expect(mergeM).toHaveBeenCalledWith(
           'WI-3496',
           { needsOwnerAction: true },
-          { harness: undefined, unset: ['needsHuman'] },
+          { harness: undefined, unset: ['needsHuman'], expectedExternalBlockers: [OWNER_CONDITION], requireNonTerminal: true },
         );
         expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-3496' });
       });
@@ -480,7 +563,7 @@ describe('work_items:update handler (bulk keyed-array)', () => {
         expect(mergeM).toHaveBeenCalledWith(
           'WI-3500',
           { needs_2_machine_rig: true, needsOwnerAction: true },
-          { harness: undefined, unset: ['needsHuman'] },
+          { harness: undefined, unset: ['needsHuman'], expectedExternalBlockers: [OWNER_CONDITION], requireNonTerminal: true },
         );
         expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-3500' });
       });
@@ -730,5 +813,33 @@ describe('work_items:update — body/summary alias + strict (WI-4492)', () => {
       expect(updM).not.toHaveBeenCalled();
       expect(mergeM).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('work_items:update field authority (enterprise-data-sources P-020)', () => {
+  it('refuses a title edit on an admitted item before any write', async () => {
+    refuseM.mockResolvedValueOnce({
+      code: 'field_owned_by_source',
+      message: 'title on EI-9 is owned by its source (record r-1)',
+      fields: ['title'],
+    });
+    const b = await body({ id: 'EI-9', title: 'renamed' });
+    expect(refuseM).toHaveBeenCalledWith('ws-test', 'EI-9', ['title']);
+    expect(updM).not.toHaveBeenCalled();
+    expect(b.results[0]).toMatchObject({ ok: false, id: 'EI-9' });
+    expect(String(b.results[0].error)).toContain('field_owned_by_source');
+  });
+
+  it('passes both title and body to the guard and writes when the item was not admitted', async () => {
+    mockResolvedTyped(updM, { ok: true, item: workItemFixture({ id: 'EI-1', title: 't' }) });
+    await body({ id: 'EI-1', title: 't', body: 'b' });
+    expect(refuseM).toHaveBeenCalledWith('ws-test', 'EI-1', ['title', 'body']);
+    expect(updM).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not consult admissions for an edit that touches neither title nor body', async () => {
+    mockResolvedTyped(updM, { ok: true, item: workItemFixture({ id: 'EI-1' }) });
+    await body({ id: 'EI-1', severity: 'major' });
+    expect(refuseM).not.toHaveBeenCalled();
   });
 });

@@ -77,6 +77,7 @@ import {
   type ReadOnlyDispatchEnv,
   valueAtPath,
 } from './events/await/predicate-watch';
+import { pinModuleState } from '@papercusp/module-singleton';
 
 /**
  * The outcome of a cell value read. Three-valued by construction (D-038 axis 2), and
@@ -652,6 +653,67 @@ export interface CellReadEnv {
 export const CELL_READ_TIMEOUT_MS = Number(process.env.PAPERCUSP_CELL_READ_TIMEOUT_MS) || 10_000;
 
 /**
+ * Identical CONCURRENT resolver dispatches share one in-flight promise
+ * (WI-6554700010008923, oversized-tool-results-reduction-2026-10-12#P-004).
+ *
+ * Several cells can share one resolver. `deploy.3070.sha`, `git.mainBehindStaging` and
+ * `gate.greenCheckpoint.candidate` all poll `dev:pipeline_position {}`. A reader that fetches
+ * them together, as the TUI status bar does every tick, used to start one full pipeline
+ * computation per cell. Measured 2026-10-12: one TUI client made 1,041 calls per hour,
+ * averaging 228 KB and about 1.3 s each.
+ *
+ * This shares only work that is already in flight. Nothing is cached after it settles,
+ * so every caller still gets a value computed after it asked. That keeps the "read it
+ * RIGHT NOW" contract.
+ *
+ * The key includes everything that can change what the dispatch returns or is allowed to
+ * see: tool, args, workspace, harness, role, the reader (`onBehalfOf`) and the caller
+ * context. Two readers never share a result, so this cannot widen anyone's view.
+ * A call with an `AbortSignal` is never shared, because one caller aborting must not
+ * cancel the others.
+ */
+const resolverInflight = pinModuleState('@papercusp/operator-core.cell-read.resolver-inflight', () => ({
+  byKey: new Map<string, Promise<unknown>>(),
+}));
+
+/** `null` = do not coalesce this dispatch. */
+export function resolverDispatchKey(
+  tool: string,
+  args: Record<string, unknown>,
+  env: CellReadEnv,
+  onBehalfOf: string,
+): string | null {
+  if (env.signal) return null;
+  let callerContext = '';
+  if (env.callerContext) {
+    try {
+      callerContext = JSON.stringify(env.callerContext);
+    } catch {
+      return null; // not serializable, so we cannot prove two contexts are equal
+    }
+  }
+  return JSON.stringify([tool, args, env.workspaceId, env.harnessSlug, env.role, onBehalfOf, callerContext]);
+}
+
+function coalescedResolverDispatch(key: string | null, start: () => Promise<unknown>): Promise<unknown> {
+  if (key === null) return start();
+  const existing = resolverInflight.byKey.get(key);
+  if (existing) return existing;
+  const p = start();
+  resolverInflight.byKey.set(key, p);
+  const clear = () => {
+    if (resolverInflight.byKey.get(key) === p) resolverInflight.byKey.delete(key);
+  };
+  p.then(clear, clear);
+  return p;
+}
+
+/** Test seam: how many resolver dispatches are in flight and shareable right now. */
+export function __resolverInflightCountForTests(): number {
+  return resolverInflight.byKey.size;
+}
+
+/**
  * Read one cell's value AS a specific reader.
  *
  * TOTAL — never throws, and (WI-6488) never waits past CELL_READ_TIMEOUT_MS either.
@@ -775,15 +837,20 @@ async function readCellValue(
   const timedOut = Symbol('cell-read:dispatch-timed-out');
   let payload: unknown;
   try {
-    const dispatch = dispatchReadOnlyTool(spec.changeSignal.tool, args, {
-      workspaceId: env.workspaceId,
-      harnessSlug: env.harnessSlug,
-      role: env.role,
-      onBehalfOf: reader.ownerId,
-      spawnId: CELL_READ_SPAWN_ID,
-      ...(env.callerContext ? { callerContext: env.callerContext } : {}),
-      ...(env.signal ? { signal: env.signal } : {}),
-    });
+    const resolverTool = spec.changeSignal.tool;
+    const dispatch = coalescedResolverDispatch(
+      resolverDispatchKey(resolverTool, args, env, reader.ownerId),
+      () =>
+        dispatchReadOnlyTool(resolverTool, args, {
+          workspaceId: env.workspaceId,
+          harnessSlug: env.harnessSlug,
+          role: env.role,
+          onBehalfOf: reader.ownerId,
+          spawnId: CELL_READ_SPAWN_ID,
+          ...(env.callerContext ? { callerContext: env.callerContext } : {}),
+          ...(env.signal ? { signal: env.signal } : {}),
+        }),
+    );
     // A dispatch that loses the race can still reject LATER, after we've already
     // returned via the timeout branch below — and nothing else will be listening for
     // that rejection at that point. Swallow it here so a slow-then-failing resolver

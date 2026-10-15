@@ -77,9 +77,9 @@ const TIER_TARGET_CHARS = { trimmed: RESULT_DOOR_BUDGET_CHARS, standard: RESULT_
 
 /**
  * Each rung: how many rows get the FULL projection (the rest degrade to an
- * id-preserving stub, so correlation NEVER breaks), the TOTAL checkpoint chars
- * shared across them, and the TOTAL summary chars shared across them. Ordered
- * most→least generous.
+ * id-preserving stub, so correlation NEVER breaks), and the total checkpoint,
+ * summary, lifecycle and operational-brief chars shared across those rows.
+ * Ordered most→least generous.
  *
  * `summaryTotal` sits BELOW `checkpointTotal` at every rung on purpose: the
  * checkpoint is this tool's payload and is degraded last (point 1 above), so when
@@ -87,20 +87,20 @@ const TIER_TARGET_CHARS = { trimmed: RESULT_DOOR_BUDGET_CHARS, standard: RESULT_
  */
 const DEGRADATION_LADDER = {
   trimmed: [
-    { fullRows: 100, checkpointTotal: 6_000, summaryTotal: 2_400, lifecycleTotal: 2_400 },
-    { fullRows: 25, checkpointTotal: 3_000, summaryTotal: 1_200, lifecycleTotal: 1_200 },
-    { fullRows: 12, checkpointTotal: 1_200, summaryTotal: 600, lifecycleTotal: 600 },
-    { fullRows: 6, checkpointTotal: 600, summaryTotal: 0, lifecycleTotal: 300 },
-    { fullRows: 3, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0 },
-    { fullRows: 0, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0 },
+    { fullRows: 100, checkpointTotal: 6_000, summaryTotal: 2_400, lifecycleTotal: 2_400, operationalBriefTotal: 3_600 },
+    { fullRows: 25, checkpointTotal: 3_000, summaryTotal: 1_200, lifecycleTotal: 1_200, operationalBriefTotal: 2_400 },
+    { fullRows: 12, checkpointTotal: 1_200, summaryTotal: 600, lifecycleTotal: 600, operationalBriefTotal: 1_200 },
+    { fullRows: 6, checkpointTotal: 600, summaryTotal: 0, lifecycleTotal: 300, operationalBriefTotal: 0 },
+    { fullRows: 3, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0, operationalBriefTotal: 0 },
+    { fullRows: 0, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0, operationalBriefTotal: 0 },
   ],
   standard: [
-    { fullRows: 100, checkpointTotal: 16_000, summaryTotal: 4_000, lifecycleTotal: 4_000 },
-    { fullRows: 50, checkpointTotal: 8_000, summaryTotal: 2_400, lifecycleTotal: 2_400 },
-    { fullRows: 25, checkpointTotal: 3_000, summaryTotal: 1_200, lifecycleTotal: 1_200 },
-    { fullRows: 12, checkpointTotal: 1_200, summaryTotal: 600, lifecycleTotal: 600 },
-    { fullRows: 6, checkpointTotal: 600, summaryTotal: 0, lifecycleTotal: 300 },
-    { fullRows: 0, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0 },
+    { fullRows: 100, checkpointTotal: 16_000, summaryTotal: 4_000, lifecycleTotal: 4_000, operationalBriefTotal: 4_200 },
+    { fullRows: 50, checkpointTotal: 8_000, summaryTotal: 2_400, lifecycleTotal: 2_400, operationalBriefTotal: 3_000 },
+    { fullRows: 25, checkpointTotal: 3_000, summaryTotal: 1_200, lifecycleTotal: 1_200, operationalBriefTotal: 1_800 },
+    { fullRows: 12, checkpointTotal: 1_200, summaryTotal: 600, lifecycleTotal: 600, operationalBriefTotal: 0 },
+    { fullRows: 6, checkpointTotal: 600, summaryTotal: 0, lifecycleTotal: 300, operationalBriefTotal: 0 },
+    { fullRows: 0, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0, operationalBriefTotal: 0 },
   ],
 } as const;
 
@@ -128,6 +128,15 @@ const SUMMARY_USEFUL_MIN_CHARS = 200;
 const LIFECYCLE_USEFUL_MIN_CHARS = 200;
 
 /**
+ * A work-item operational brief is requested explicitly and carries structured
+ * claim/blocker/evidence facts as well as a rendered text view. Keep it on the
+ * same rung-shared budget as other row-scaled prose: fixed per-row caps would
+ * multiply across `ids` and turn a bulk read into stubs. Below this share, drop
+ * the whole brief with the existing payload-level loss disclosure.
+ */
+const OPERATIONAL_BRIEF_USEFUL_MIN_CHARS = 700;
+
+/**
  * Per-row caps for the fields whose size does NOT scale with the row count in a
  * way the ladder must arbitrate. `summary` is deliberately NOT here: it is the
  * one bulk field a caller can multiply by 100, so its budget is ladder-shared
@@ -151,6 +160,9 @@ const FIELD_CAPS = {
     priorAttemptRefs: 6,
     priorAttemptResolved: 2,
     priorAttemptResolvedText: 600,
+    operationalBriefString: 256,
+    operationalBriefArray: 8,
+    operationalBriefObjectKeys: 24,
   },
   standard: {
     title: 300,
@@ -169,6 +181,9 @@ const FIELD_CAPS = {
     priorAttemptRefs: 20,
     priorAttemptResolved: 5,
     priorAttemptResolvedText: 1_400,
+    operationalBriefString: 512,
+    operationalBriefArray: 12,
+    operationalBriefObjectKeys: 32,
   },
 } as const;
 
@@ -288,6 +303,27 @@ function hasCompletionEvidence(value: unknown): boolean {
 }
 
 /**
+ * In-band reference left in `workItem.terminalCompletionEvidence` when the same
+ * record is already emitted as the row's `completion` alias. get.ts derives
+ * `completion` from `workItem.terminalCompletionEvidence`, so a shaped row used to
+ * carry one completion record twice (measured 2026-10-13: 4,691 of a 12,430-char
+ * trimmed single read, EI-25800471035573592). Shaped tiers emit it once; the
+ * explicit 'full' tier is unshaped and keeps both. Plan
+ * oversized-tool-results-reduction-2026-10-12 P-001.
+ */
+export const COMPLETION_EMITTED_AT_ROW =
+  "[same record as this row's `completion`, emitted once]";
+
+function sameCompletionRecord(rowCompletion: unknown, nested: unknown): boolean {
+  if (rowCompletion === undefined || rowCompletion === nested) return true;
+  try {
+    return JSON.stringify(rowCompletion) === JSON.stringify(nested);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Keep the persisted completion record useful at every result tier without
  * replaying an unbounded jsonb payload. The scalar presence bit is intentionally
  * separate: a reader must still know that evidence exists when a large nested
@@ -369,6 +405,9 @@ function projectWorkItem(
   caps: FieldCaps,
   summaryChars: number,
   dropped: Set<string>,
+  includeCompletionEvidence = true,
+  // True only when the caller's row emits this same record as `completion`.
+  completionEmittedAtRow = false,
 ): unknown {
   if (!raw || typeof raw !== "object") return raw ?? null;
   const w = raw as Row;
@@ -378,8 +417,13 @@ function projectWorkItem(
   const terminal = ANY_FAMILY_TERMINAL_STATES.includes(state);
   const rawCompletionEvidence = w.terminalCompletionEvidence;
   const completionEvidencePresent = hasCompletionEvidence(rawCompletionEvidence);
-  const completionEvidence = completionEvidencePresent
-    ? projectCompletionEvidence(rawCompletionEvidence, caps, dropped, "workItem.terminalCompletionEvidence")
+  if (completionEvidencePresent && !includeCompletionEvidence) {
+    dropped.add("workItem.terminalCompletionEvidence");
+  }
+  const completionEvidence = completionEvidencePresent && includeCompletionEvidence
+    ? completionEmittedAtRow
+      ? COMPLETION_EMITTED_AT_ROW
+      : projectCompletionEvidence(rawCompletionEvidence, caps, dropped, "workItem.terminalCompletionEvidence")
     : null;
   const shouldExposeCompletionAuthority =
     terminal || completionAuthority != null;
@@ -539,6 +583,7 @@ function compactSingleRow(
     "priorAttempts",
     "priorAttemptRefResolution",
     "citedFacts",
+    "operationalBrief",
   ]) {
     if (r[field] !== undefined) dropped.add(field);
   }
@@ -547,8 +592,16 @@ function compactSingleRow(
     ok: r.ok ?? true,
     id: r.id ?? w?.id ?? null,
     ...(r.availability !== undefined ? { availability: r.availability } : {}),
-    workItem: projectWorkItem(r.workItem, caps, 0, dropped),
+    workItem: projectWorkItem(
+      r.workItem,
+      caps,
+      0,
+      dropped,
+      true,
+      completionPresent && sameCompletionRecord(r.completion, w?.terminalCompletionEvidence),
+    ),
     ...(completionRelevant ? { completion, hasCompletionEvidence: completionPresent } : {}),
+    ...projectAssumptionFlags(r.assumptionFlags, caps, dropped, true),
     // `threadLimit` is an explicit bounded diagnostic request, not incidental
     // detail. Keep it even at the exact-read floor: dropping it here turns the
     // caller's measured recent window into silence precisely on large items.
@@ -563,6 +616,9 @@ function compactSingleRow(
     // two-number object, so it never meaningfully competes for that budget.
     ...(r.threadLimitClamped !== undefined ? { threadLimitClamped: r.threadLimitClamped } : {}),
     checkpoint: clip(checkpoint, checkpointCap),
+    ...(typeof checkpoint === "string" && checkpoint.length > checkpointCap
+      ? { checkpointTruncated: true }
+      : {}),
     ...(r.checkpointChecks !== undefined
       ? { checkpointChecks: projectCheckpointChecks(r.checkpointChecks, caps, dropped) }
       : {}),
@@ -665,6 +721,28 @@ function projectCitedFacts(raw: unknown, caps: FieldCaps, dropped: Set<string>):
     ...(cited.length > caps.citedFacts
       ? { citedTruncated: { shown: kept.length, total: cited.length } }
       : {}),
+  };
+}
+
+/**
+ * P-003 (R-3): a fact this closed item's completion assumptions cited was retracted
+ * or superseded. Kept at EVERY tier — it is a "read before trusting this close"
+ * warning, small, and the whole point is that it stays visible. The compact form
+ * keeps only what names the fact and the reason (`line` renders both). Truncation
+ * is disclosed as `{ shown, total }`, never silently.
+ */
+function projectAssumptionFlags(raw: unknown, caps: FieldCaps, dropped: Set<string>, compact: boolean): Row {
+  if (!Array.isArray(raw) || raw.length === 0) return {};
+  const kept = raw.slice(0, caps.citedFacts).map((f) => {
+    if (!f || typeof f !== "object") return f;
+    const e = f as Row;
+    const line = typeof e.line === "string" ? clip(e.line, caps.warning) : e.line;
+    return compact ? { condition: e.condition, factRef: e.factRef, line } : { ...e, line };
+  });
+  if (raw.length > kept.length) dropped.add("assumptionFlags");
+  return {
+    assumptionFlags: kept,
+    ...(raw.length > kept.length ? { assumptionFlagsTruncated: { shown: kept.length, total: raw.length } } : {}),
   };
 }
 
@@ -804,21 +882,186 @@ function projectPriorAttemptRefResolution(
   };
 }
 
+function projectOperationalBriefValue(
+  value: unknown,
+  maxString: number,
+  maxArray: number,
+  maxObjectKeys: number,
+  path: string,
+  clippedPaths: Set<string>,
+  compact: boolean,
+): unknown {
+  if (typeof value === "string") {
+    const identityPath = compact && [
+      "operationalBrief.schemaVersion",
+      "operationalBrief.surface",
+      "operationalBrief.subject",
+      "operationalBrief.state.status",
+      "operationalBrief.state.value",
+      "operationalBrief.owner.status",
+      "operationalBrief.owner.value",
+    ].includes(path);
+    const importantAction = compact && path === "operationalBrief.nextAction.value";
+    const provenance = compact && /\.(?:source|reason)$/.test(path);
+    const stringCap = identityPath
+      ? Number.POSITIVE_INFINITY
+      : importantAction
+        ? Math.max(maxString, 160)
+        : provenance
+          ? 8
+          : maxString;
+    if (value.length <= stringCap) return value;
+    clippedPaths.add(path);
+    if (compact) return `${value.slice(0, stringCap)}…[TRUNCATED +${value.length - stringCap}]`;
+    return clip(value, stringCap);
+  }
+  if (Array.isArray(value)) {
+    if (value.length > maxArray) clippedPaths.add(path);
+    return value
+      .slice(0, maxArray)
+      .map((entry, index) => projectOperationalBriefValue(
+        entry,
+        maxString,
+        maxArray,
+        maxObjectKeys,
+        `${path}[${index}]`,
+        clippedPaths,
+        compact,
+      ));
+  }
+  if (!value || typeof value !== "object") return value;
+  const entries = Object.entries(value as Row);
+  if (entries.length > maxObjectKeys) clippedPaths.add(path);
+  return Object.fromEntries(
+    entries.slice(0, maxObjectKeys).map(([key, entry]) => [
+      key,
+      projectOperationalBriefValue(
+        entry,
+        maxString,
+        maxArray,
+        maxObjectKeys,
+        path ? `${path}.${key}` : key,
+        clippedPaths,
+        compact,
+      ),
+    ]),
+  );
+}
+
+/**
+ * `operationalBrief` is an opt-in row attachment, but ids may request 100 rows.
+ * Bound its structured fields and rendered duplicate together, then disclose any
+ * clips in both the brief and the parent `_shapeNote`. The rung-shared budget
+ * keeps one brief from multiplying into a bulk-read overflow.
+ */
+function projectOperationalBrief(
+  raw: unknown,
+  caps: FieldCaps,
+  maxChars: number,
+  dropped: Set<string>,
+  compact = false,
+): unknown {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    dropped.add("operationalBrief");
+    return undefined;
+  }
+  if (maxChars < OPERATIONAL_BRIEF_USEFUL_MIN_CHARS) {
+    dropped.add("operationalBrief");
+    return undefined;
+  }
+  const rawRow = raw as Row;
+  const compactOmissions = compact
+    ? new Set(["text", "facts", "unknowns"].filter((key) => Object.hasOwn(rawRow, key)))
+    : new Set<string>();
+  const source = compactOmissions.size > 0
+    ? Object.fromEntries(Object.entries(rawRow).filter(([key]) => !compactOmissions.has(key)))
+    : rawRow;
+  const initialClippedPaths = new Set<string>();
+  for (const key of compactOmissions) initialClippedPaths.add(`operationalBrief.${key}`);
+  if (initialClippedPaths.size === 0 && jsonLen(source) <= maxChars) return source;
+
+  const minimumStringCap = compact ? 12 : 40;
+  const initialStringCap = Math.min(
+    caps.operationalBriefString,
+    Math.max(minimumStringCap, Math.floor(maxChars / 8)),
+  );
+  const stringCaps = [...new Set([
+    initialStringCap,
+    Math.max(minimumStringCap, Math.floor(initialStringCap / 2)),
+    minimumStringCap,
+  ])];
+  const initialArrayCap = Math.min(caps.operationalBriefArray, Math.max(1, Math.floor(maxChars / 400)));
+  const arrayCaps = [...new Set([initialArrayCap, Math.max(1, Math.floor(initialArrayCap / 2)), 1])];
+
+  for (const maxString of stringCaps) {
+    for (const maxArray of arrayCaps) {
+      const clippedPaths = new Set(initialClippedPaths);
+      const projected = projectOperationalBriefValue(
+        source,
+        maxString,
+        maxArray,
+        caps.operationalBriefObjectKeys,
+        "operationalBrief",
+        clippedPaths,
+        compact,
+      ) as Row;
+      const paths = compact
+        ? [
+            ...initialClippedPaths,
+            ...[...clippedPaths].filter((clippedPath) => !initialClippedPaths.has(clippedPath)).sort(),
+          ]
+        : [...clippedPaths].sort();
+      const shaped = paths.length > 0
+        ? {
+            ...projected,
+            shapeNote: {
+              clipped: true,
+              paths: paths.slice(0, compact ? 4 : 8),
+              ...(paths.length > (compact ? 4 : 8)
+                ? { additionalPaths: paths.length - (compact ? 4 : 8) }
+                : {}),
+            },
+          }
+        : projected;
+      const shapedChars = jsonLen(shaped);
+      if (shapedChars <= maxChars) {
+        dropped.add("operationalBrief(clipped)");
+        return shaped;
+      }
+    }
+  }
+
+  dropped.add("operationalBrief");
+  return undefined;
+}
+
 function projectRow(
   r: Row,
   caps: FieldCaps,
   checkpointChars: number,
   summaryChars: number,
   lifecycleChars: number,
+  operationalBriefChars: number,
   dropped: Set<string>,
+  includeCompletionEvidence = true,
+  compactIdentity = false,
 ): Row {
   if (r.ok === false) return r; // an error row is already tiny and self-describing
+  if (r.reportAttachments !== undefined) return r; // producer bounds one metadata list + a <=2048-byte page
 
   const checkpoint = r.checkpoint;
   if (typeof checkpoint === "string" && checkpoint.length > checkpointChars) {
     dropped.add("checkpoint(clipped)");
   }
   const w = r.workItem as Row | undefined;
+  const operationalBrief = projectOperationalBrief(
+    r.operationalBrief,
+    caps,
+    operationalBriefChars,
+    dropped,
+    compactIdentity,
+  );
   // Disclose the summary's fate in the SAME two shapes used for the checkpoint:
   // a full drop and a clip are different losses and a reader acts differently on
   // them (a clip is recoverable from what is in hand; a drop is not).
@@ -829,7 +1072,8 @@ function projectRow(
   if (w?.payload !== undefined) dropped.add("workItem.payload");
   const rawCompletion = r.completion !== undefined ? r.completion : w?.terminalCompletionEvidence;
   const completionPresent = hasCompletionEvidence(rawCompletion);
-  const completion = completionPresent
+  if (completionPresent && !includeCompletionEvidence) dropped.add("completion");
+  const completion = completionPresent && includeCompletionEvidence
     ? projectCompletionEvidence(rawCompletion, caps, dropped, "completion")
     : null;
   const state = typeof w?.state === "string" ? w.state.toLowerCase() : "";
@@ -879,11 +1123,44 @@ function projectRow(
     };
   }
 
+  // A compact candidate-identity row exists to preserve id/title/state after
+  // all the ordinary detail rungs failed. Prior-attempt records are valuable
+  // when requested, but their per-row compiler budget still multiplies across
+  // a five-row read and can make this last identity-preserving rung exceed the
+  // result door too. Keep the omission explicit and let an id-only re-read
+  // recover the history for a row that needs it.
+  const priorAttempts = compactIdentity
+    ? undefined
+    : r.priorAttempts
+      ? projectPriorAttempts(r.priorAttempts, caps, dropped)
+      : undefined;
+  if (compactIdentity && r.priorAttempts !== undefined && r.priorAttempts !== null) {
+    dropped.add("priorAttempts");
+  }
+  const priorAttemptRefResolution = compactIdentity
+    ? undefined
+    : r.priorAttemptRefResolution
+      ? projectPriorAttemptRefResolution(r.priorAttemptRefResolution, caps, dropped)
+      : undefined;
+  if (compactIdentity && r.priorAttemptRefResolution !== undefined && r.priorAttemptRefResolution !== null) {
+    dropped.add("priorAttemptRefResolution");
+  }
+
   return {
     ok: r.ok ?? true,
     id: r.id ?? null,
     ...(r.availability !== undefined ? { availability: r.availability } : {}),
-    workItem: projectWorkItem(r.workItem, caps, summaryChars, dropped),
+    workItem: projectWorkItem(
+      r.workItem,
+      caps,
+      summaryChars,
+      dropped,
+      includeCompletionEvidence,
+      completionPresent &&
+        includeCompletionEvidence &&
+        sameCompletionRecord(r.completion, w?.terminalCompletionEvidence),
+    ),
+    ...(operationalBrief !== undefined ? { operationalBrief } : {}),
     ...(r.threadWindow !== undefined
       ? {
           threadWindow: projectThreadWindow(
@@ -903,6 +1180,9 @@ function projectRow(
     // THE payload of this tool. Degraded only after everything above was already
     // dropped, and never without the loud in-band marker.
     checkpoint: clip(checkpoint, checkpointChars),
+    ...(typeof checkpoint === "string" && checkpoint.length > checkpointChars
+      ? { checkpointTruncated: true }
+      : {}),
     // `completion` is the read-side alias for the persisted completion record.
     // Keep `hasCompletionEvidence` even when the evidence body is clipped or
     // compacted, so a tier artifact cannot be read as a real absence.
@@ -946,16 +1226,82 @@ function projectRow(
     // Conditional "read before acting" warnings this tool's `returns` promises.
     ...(r.priorWorkWarning ? { priorWorkWarning: clip(r.priorWorkWarning, caps.warning) } : {}),
     ...(r.citedFacts ? { citedFacts: projectCitedFacts(r.citedFacts, caps, dropped) } : {}),
+    ...projectAssumptionFlags(r.assumptionFlags, caps, dropped, false),
     ...(r.planItemBlocked ? { planItemBlocked: r.planItemBlocked } : {}),
     ...(r.planItemClaimCollision ? { planItemClaimCollision: r.planItemClaimCollision } : {}),
     ...(r.planItemTextDrift ? { planItemTextDrift: r.planItemTextDrift } : {}),
     ...(r.holder ? { holder: r.holder } : {}),
     ...(shapedLifecycle ? { lifecycle: shapedLifecycle } : {}),
-    ...(r.priorAttempts ? { priorAttempts: projectPriorAttempts(r.priorAttempts, caps, dropped) } : {}),
-    ...(r.priorAttemptRefResolution
-      ? {
-          priorAttemptRefResolution: projectPriorAttemptRefResolution(r.priorAttemptRefResolution, caps, dropped),
-        }
+    ...(priorAttempts !== undefined ? { priorAttempts } : {}),
+    ...(priorAttemptRefResolution !== undefined ? { priorAttemptRefResolution } : {}),
+  };
+}
+
+const COMPACT_IDENTITY_ROW_FIELDS = new Set([
+  "ok",
+  "id",
+  "availability",
+  "workItem",
+  "completion",
+  "hasCompletionEvidence",
+]);
+
+const COMPACT_IDENTITY_WORK_ITEM_FIELDS = new Set([
+  "id",
+  "kind",
+  "family",
+  "harness",
+  "state",
+  "title",
+  "severity",
+  "origin",
+  "completionAuthority",
+  "assignee",
+]);
+
+/**
+ * Keep a multi-row overflow rung useful as a candidate index. The ordinary
+ * projector deliberately retains checkpoint qualifiers and read-side details;
+ * repeated across rows, those fields can exhaust the door before downstream
+ * overflow recovery can preserve the requested item identities. Details remain
+ * recoverable with an exact single-item read, while terminal authority and the
+ * completion-presence bit stay in band.
+ */
+function compactIdentityRow(sourceRow: Row, row: Row, dropped: Set<string>): Row {
+  if (row.ok === false || row._stub === true || row.reportAttachments !== undefined) return row;
+
+  for (const key of Object.keys(row)) {
+    if (!COMPACT_IDENTITY_ROW_FIELDS.has(key)) dropped.add(key);
+  }
+
+  const rawWorkItem = row.workItem;
+  let workItem: unknown = rawWorkItem;
+  if (rawWorkItem && typeof rawWorkItem === "object" && !Array.isArray(rawWorkItem)) {
+    const source = rawWorkItem as Row;
+    for (const key of Object.keys(source)) {
+      if (!COMPACT_IDENTITY_WORK_ITEM_FIELDS.has(key)) dropped.add(`workItem.${key}`);
+    }
+    workItem = Object.fromEntries(
+      Object.entries(source).filter(([key]) => COMPACT_IDENTITY_WORK_ITEM_FIELDS.has(key)),
+    );
+  }
+
+  const sourceWorkItem = sourceRow.workItem as Row | undefined;
+  const state = typeof sourceWorkItem?.state === "string" ? sourceWorkItem.state.toLowerCase() : "";
+  const hasEvidence =
+    hasCompletionEvidence(sourceRow.completion !== undefined
+      ? sourceRow.completion
+      : sourceWorkItem?.terminalCompletionEvidence) ||
+    hasCompletionEvidence(sourceWorkItem?.terminalCompletionEvidence);
+  const completionRelevant = hasEvidence || ANY_FAMILY_TERMINAL_STATES.includes(state);
+
+  return {
+    ok: row.ok ?? true,
+    id: row.id ?? null,
+    ...(row.availability !== undefined ? { availability: row.availability } : {}),
+    ...(row.workItem !== undefined ? { workItem } : {}),
+    ...(completionRelevant
+      ? { completion: null, hasCompletionEvidence: hasEvidence }
       : {}),
   };
 }
@@ -1034,6 +1380,36 @@ function shapeChecksOnly(data: Row, tier: WorkItemsGetTier): unknown {
   };
 }
 
+/** Exact checkpoint pages are already source-bounded; keep them whole and avoid
+ * passing the page through the ordinary checkpoint degradation ladder. */
+function shapeCheckpointOnly(data: Row): unknown {
+  const { __checkpointOnly: _marker, ...envelope } = data;
+  const results = Array.isArray(data.results) ? data.results : [];
+  return {
+    ...envelope,
+    results: results.map((raw) => {
+      if (!raw || typeof raw !== "object") return raw;
+      const row = raw as Row;
+      if (row.ok === false) return row;
+      return {
+        ok: row.ok ?? true,
+        id: row.id ?? null,
+        checkpointPage: row.checkpointPage ?? null,
+        ...(row.checkpointReadFailed ? { checkpointReadFailed: true } : {}),
+        checkpointAgeMs: row.checkpointAgeMs ?? null,
+        checkpointUpdatedAtMs: row.checkpointUpdatedAtMs ?? null,
+        ...(row.checkpointContentHash !== undefined
+          ? { checkpointContentHash: row.checkpointContentHash }
+          : {}),
+      };
+    }),
+    _shapeNote: {
+      checkpointOnly: true,
+      next: "Follow checkpointPage.nextOffset; restart from offset 0 if checkpointContentHash changes.",
+    },
+  };
+}
+
 export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknown {
   const d = data as ({ results?: unknown[] } & Row) | null | undefined;
   if (!d || !Array.isArray(d.results)) return data;
@@ -1041,6 +1417,7 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
     const { __resumeOnly: _marker, ...resume } = d;
     return resume; // The one-item producer budgets whole fields before the result door.
   }
+  if (d.__checkpointOnly === true) return shapeCheckpointOnly(d);
   if (d.__checksOnly === true) return shapeChecksOnly(d, tier);
   const caps = FIELD_CAPS[tier];
   const rows = d.results.map((r) => (r && typeof r === "object" ? (r as Row) : ({} as Row)));
@@ -1048,29 +1425,85 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
   const target = TIER_TARGET_CHARS[tier];
 
   let out: unknown;
-  // Two attempts per rung — this ordering is what makes "the checkpoint is
-  // degraded LAST" true rather than aspirational. Descending a rung CUTS THE
-  // CHECKPOINT, so before we do that we retry the SAME rung with the summary
-  // budget withdrawn. A summary therefore only ever spends slack the rung already
-  // had; it can never buy its bytes from the checkpoint. (Without this, adding any
-  // summary spend at rung 1 pushed the 5,000-char-checkpoint single-item read down
-  // to a rung that clipped it to 3,000 — reintroducing EI-19447969329510166's
-  // exact defect from a new direction.)
-  const attempts: Array<{ rung: number; withSummary: boolean }> = [];
+  // Before descending a rung, retry at the same checkpoint budget with the
+  // summary withdrawn, then with the requested operational brief withdrawn.
+  // Descending a rung cuts the checkpoint, so optional/read-side attachments
+  // give way first; the summary can never buy its bytes from the checkpoint.
+  const attempts: Array<{
+    rung: number;
+    withSummary: boolean;
+    withOperationalBrief: boolean;
+    compactIdentity?: boolean;
+  }> = [];
   for (let rung = 0; rung < ladder.length; rung += 1) {
-    if (ladder[rung].summaryTotal > 0) attempts.push({ rung, withSummary: true });
-    attempts.push({ rung, withSummary: false });
+    const hasSummaryBudget = ladder[rung].summaryTotal > 0;
+    const hasBriefBudget = ladder[rung].operationalBriefTotal > 0;
+    if (hasSummaryBudget && hasBriefBudget) {
+      attempts.push({ rung, withSummary: true, withOperationalBrief: true });
+      attempts.push({ rung, withSummary: false, withOperationalBrief: true });
+      attempts.push({ rung, withSummary: false, withOperationalBrief: false });
+    } else if (hasSummaryBudget) {
+      attempts.push({ rung, withSummary: true, withOperationalBrief: false });
+      attempts.push({ rung, withSummary: false, withOperationalBrief: false });
+    } else if (hasBriefBudget) {
+      attempts.push({ rung, withSummary: false, withOperationalBrief: true });
+      attempts.push({ rung, withSummary: false, withOperationalBrief: false });
+    } else {
+      attempts.push({ rung, withSummary: false, withOperationalBrief: false });
+    }
   }
+  // Completion evidence is exposed twice on each ordinary row: once under the
+  // row-level `completion` alias and again under `workItem`. Individually bounded
+  // fields can therefore exceed the door together. Before any no-brief rung can
+  // return, make a compact pass that preserves row identity and a requested brief
+  // while keeping completion evidence presence (not its body).
+  const briefRequested = rows.some((row) => row.operationalBrief !== undefined && row.operationalBrief !== null);
+  const compactIdentityAttempt = {
+    rung: ladder.length - 1,
+    withSummary: false,
+    withOperationalBrief: true,
+    compactIdentity: true,
+  };
+  const firstNoBriefAttempt = attempts.findIndex((attempt) => !attempt.withOperationalBrief);
+  const firstIdentityLossAttempt = attempts.findIndex(
+    (attempt) => ladder[attempt.rung].fullRows < rows.length,
+  );
+  const compactIdentityInsertAt =
+    briefRequested && firstNoBriefAttempt >= 0
+      ? firstNoBriefAttempt
+      : rows.length <= 5 && firstIdentityLossAttempt >= 0
+        ? firstIdentityLossAttempt
+        : attempts.length - 1;
+  attempts.splice(
+    compactIdentityInsertAt,
+    0,
+    compactIdentityAttempt,
+  );
 
   for (let attempt = 0; attempt < attempts.length; attempt += 1) {
-    const { rung, withSummary } = attempts[attempt];
-    const { fullRows, checkpointTotal, summaryTotal, lifecycleTotal } = ladder[rung];
+    const { rung, withSummary, withOperationalBrief, compactIdentity } = attempts[attempt];
+    const { fullRows, checkpointTotal, summaryTotal, lifecycleTotal, operationalBriefTotal } = compactIdentity
+      ? {
+          // When there is no requested operational brief, the compact pass is
+          // a candidate-summary rung: keep every selected row's title/state if
+          // that identity projection fits, then let the measured ladder below
+          // it fall back to stubs for wider reads. A fixed three-row allowance
+          // made a five-ID candidate read lose the last two titles even when
+          // the compact identity for all five fit (EI-25516863626705437).
+          fullRows: rows.length === 1 ? 1 : briefRequested ? 3 : rows.length,
+          checkpointTotal: 0,
+          summaryTotal: 0,
+          lifecycleTotal: 0,
+          operationalBriefTotal: rows.length === 1 ? 1_200 : 2_700,
+        }
+      : ladder[rung];
     const dropped = new Set<string>();
     const carrying = rows
       .slice(0, fullRows)
       .filter((r) => typeof r.checkpoint === "string" && r.checkpoint.length > 0).length;
-    const checkpointChars =
-      carrying === 0 ? 0 : Math.max(caps.checkpointMin, Math.floor(checkpointTotal / carrying));
+    const checkpointChars = compactIdentity
+      ? 0
+      : carrying === 0 ? 0 : Math.max(caps.checkpointMin, Math.floor(checkpointTotal / carrying));
 
 
     // Divided across the rows that actually HAVE a summary, so one row's read is
@@ -1106,16 +1539,44 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
       carryingLifecycle === 0 ? 0 : Math.floor(lifecycleTotal / carryingLifecycle);
     const lifecycleChars =
       lifecycleShare >= LIFECYCLE_USEFUL_MIN_CHARS ? lifecycleShare : 0;
+    const carryingOperationalBriefs = rows
+      .slice(0, fullRows)
+      .filter((r) => r.operationalBrief !== undefined && r.operationalBrief !== null).length;
+    const operationalBriefShare =
+      !withOperationalBrief || carryingOperationalBriefs === 0
+        ? 0
+        : Math.floor(operationalBriefTotal / carryingOperationalBriefs);
+    const operationalBriefChars =
+      operationalBriefShare >= OPERATIONAL_BRIEF_USEFUL_MIN_CHARS ? operationalBriefShare : 0;
 
     const singleItemFloor = rows.length === 1 && fullRows === 0;
     const stubCompletionEvidenceIds: unknown[] = [];
-    const projected = rows.map((r, i) =>
-      i < fullRows
-        ? projectRow(r, caps, checkpointChars, summaryChars, lifecycleChars, dropped)
-        : singleItemFloor
-          ? compactSingleRow(r, caps, tier, dropped)
-          : stubRow(r, dropped, stubCompletionEvidenceIds),
-    );
+    const projected = rows.map((r, i) => {
+      if (i < fullRows) {
+        const shaped = projectRow(
+          r,
+          caps,
+          checkpointChars,
+          summaryChars,
+          lifecycleChars,
+          operationalBriefChars,
+          dropped,
+          !compactIdentity,
+          compactIdentity === true,
+        );
+        if (compactIdentity && rows.length > 1 && !briefRequested) {
+          const identity = shaped.workItem as Row | null | undefined;
+          const hasCandidateLabel = typeof identity?.title === "string" && identity.title.trim().length > 0;
+          return hasCandidateLabel
+            ? compactIdentityRow(r, shaped, dropped)
+            : stubRow(r, dropped, stubCompletionEvidenceIds);
+        }
+        return shaped;
+      }
+      return singleItemFloor
+        ? compactSingleRow(r, caps, tier, dropped)
+        : stubRow(r, dropped, stubCompletionEvidenceIds);
+    });
     const stubbedCount = singleItemFloor ? 0 : Math.max(0, rows.length - fullRows);
     if (stubbedCount > 0) dropped.add(`rows(${stubbedCount} stubbed)`);
     const stubCompletionEvidence =
@@ -1125,8 +1586,56 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
           ? { all: true as const }
           : { ids: stubCompletionEvidenceIds };
 
+    // `read` is written by the source handler before this shaper runs. Preserve
+    // its requested/availability counts, then add how many available rows this
+    // tier leaves detailed versus id-only. Each id-only stub retains its own ID
+    // as the reread handle; the later result-door must preserve those IDs ahead
+    // of these aggregate counts.
+    const readInfo =
+      d.read && typeof d.read === "object" && !Array.isArray(d.read)
+        ? (d.read as Row)
+        : null;
+    const availableRows = rows.flatMap((sourceRow, index) => {
+      const shapedRow = projected[index];
+      return sourceRow.ok === true && sourceRow.availability === "available" && shapedRow
+        ? [{ sourceRow, shapedRow }]
+        : [];
+    });
+    const detailRows = availableRows.filter(({ shapedRow }) => {
+      const w = shapedRow.workItem;
+      return shapedRow._stub !== true && w !== null && typeof w === "object";
+    }).length;
+    const existingStubRows = rows.filter((r) => r._stub === true).length;
+    const availableCount =
+      typeof readInfo?.available === "number"
+        ? readInfo.available
+        : availableRows.length + existingStubRows;
+    const stubbedRows = Math.max(existingStubRows, availableCount - detailRows);
+
+    // A clipped prior-attempt brief has a different recovery route from other
+    // tier-relative clips. Its work_items:get contract exposes the full source
+    // through priorAttemptRefs using the record's rawRef.
+    const clippedPriorAttemptText = [...dropped].some(
+      (field) => field.startsWith("priorAttempts.") && field.endsWith("(text clipped)"),
+    );
+    const otherDropsNeedFullTier = [...dropped].some(
+      (field) => !(field.startsWith("priorAttempts.") && field.endsWith("(text clipped)")),
+    );
+    const tierRecoveryGuidance = otherDropsNeedFullTier
+      ? `Fields were dropped or clipped for the '${tier}' tier. Re-read with payloadTier:'full' — it is FRAMEWORK-RESERVED and absent from this tool's published schema, so route it through your host's raw-args dispatch path (papercusp: tools:invoke { name:'work_items:get', args:{ …, payloadTier:'full' } }).`
+      : "";
+
     out = {
       ...d,
+      ...(readInfo
+        ? {
+            read: {
+              ...readInfo,
+              detailRows,
+              stubbedRows,
+            },
+          }
+        : {}),
       results: projected,
       ...(dropped.size > 0
         ? {
@@ -1174,7 +1683,11 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
                   )
                   ? "⚠ COMPLETION EVIDENCE EXISTS but its body was clipped or reduced at this tier; `hasCompletionEvidence` (or `_shapeNote.stubbed.completionEvidence` for stub rows) remains authoritative. Re-read with payloadTier:'full' before treating the item as evidence-free. "
                   : ""
-              }Fields were dropped or clipped for the '${tier}' tier. Re-read with payloadTier:'full' — it is FRAMEWORK-RESERVED and absent from this tool's published schema, so route it through your host's raw-args dispatch path (papercusp: tools:invoke { name:'work_items:get', args:{ …, payloadTier:'full' } }).`,
+              }${
+                clippedPriorAttemptText
+                  ? "Prior-attempt record text marked `textTruncated` has a field-specific drill-down. Re-read it with its `rawRef` in `priorAttemptRefs`; a `payloadTier:'full'` retry alone does not retrieve that record's full source text. "
+                  : ""
+              }${tierRecoveryGuidance}`,
             },
           }
         : {}),

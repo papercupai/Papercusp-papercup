@@ -41,9 +41,43 @@ function sourceBlock(source: string, time: string): string[] {
   ];
 }
 
-function runHealthcheck(dumpSnapshotAgeSeconds: number, status: Record<string, unknown> = {}) {
+interface UnitCgroupFixture {
+  unit: string;
+  /** cgroup.procs content, one pid per line. */
+  procs: string;
+  /** Successive `systemctl show -p SubState` answers; the last one repeats. */
+  subStates: string[];
+}
+
+function runHealthcheck(
+  dumpSnapshotAgeSeconds: number,
+  status: Record<string, unknown> = {},
+  unitCgroup?: UnitCgroupFixture,
+) {
   const root = mkdtempSync(join(tmpdir(), 'kopia-healthcheck-source-age-'));
   tempDirs.push(root);
+  // Every run gets its OWN unit-cgroup root (absent unless a fixture is given), so no
+  // case ever reads the host's real kopia unit cgroups (WI-6554700010011924).
+  const unitCgroupRoot = join(root, 'unit-cgroups');
+  const fakeSystemctl = join(root, 'systemctl-stub.sh');
+  const subStateCounter = join(root, 'substate-count');
+  if (unitCgroup) {
+    const cg = join(unitCgroupRoot, 'app.slice', unitCgroup.unit);
+    mkdirSync(cg, { recursive: true });
+    writeFileSync(join(cg, 'cgroup.procs'), unitCgroup.procs);
+  }
+  writeFileSync(
+    fakeSystemctl,
+    [
+      '#!/usr/bin/env bash',
+      'n=$(cat "$TEST_SUBSTATE_COUNTER" 2>/dev/null || echo 0)',
+      'IFS=, read -ra states <<< "$TEST_SUBSTATES"',
+      'i=$(( n < ${#states[@]} ? n : ${#states[@]} - 1 ))',
+      'echo $((n + 1)) > "$TEST_SUBSTATE_COUNTER"',
+      'printf "%s\\n" "${states[$i]}"',
+    ].join('\n') + '\n',
+  );
+  chmodSync(fakeSystemctl, 0o755);
 
   const home = join(root, 'home');
   const dumpDir = join(root, 'db-dumps');
@@ -79,6 +113,7 @@ function runHealthcheck(dumpSnapshotAgeSeconds: number, status: Record<string, u
     fakeKopia,
     [
       '#!/usr/bin/env bash',
+      '[ "$KOPIA_LOG_DIR" = "$KOPIA_TEST_EXPECT_LOG_DIR" ] || { echo "missing KOPIA_LOG_DIR" >&2; exit 90; }',
       'if [ "$1" != "snapshot" ] || [ "$2" != "list" ]; then exit 2; fi',
       'case "$3" in',
       '  --all) printf %s\\n ' + shellQuote(allSources) + ' ;;',
@@ -94,7 +129,7 @@ function runHealthcheck(dumpSnapshotAgeSeconds: number, status: Record<string, u
   const fakeSudo = join(fakeBin, 'sudo');
   writeFileSync(
     fakeSudo,
-    '#!/usr/bin/env bash\nif [ "$1" = "-n" ]; then shift; fi\nexec "$@"\n',
+    '#!/usr/bin/env bash\nwhile [ "$1" = "-n" ] || [ "$1" = "--" ]; do shift; done\nexec "$@"\n',
   );
   chmodSync(fakeSudo, 0o755);
 
@@ -102,12 +137,7 @@ function runHealthcheck(dumpSnapshotAgeSeconds: number, status: Record<string, u
   chmodSync(alertStub, 0o755);
 
   const source = readFileSync(SOURCE_SCRIPT, 'utf8');
-  const kopiaReferences = source.match(/\/usr\/bin\/kopia/g) ?? [];
-  if (kopiaReferences.length === 0) throw new Error('healthcheck no longer calls the expected absolute Kopia path');
-  writeFileSync(
-    testScript,
-    source.replaceAll('/usr/bin/kopia', shellQuote(fakeKopia)),
-  );
+  writeFileSync(testScript, source);
   chmodSync(testScript, 0o755);
   writeFileSync(join(scriptDir, 'kopia-cache-bootstrap.sh'), readFileSync(CACHE_BOOTSTRAP, 'utf8'));
 
@@ -120,6 +150,10 @@ function runHealthcheck(dumpSnapshotAgeSeconds: number, status: Record<string, u
       TZ: 'America/New_York',
       PATH: fakeBin + ':' + (process.env.PATH ?? '/usr/bin:/bin'),
       PAPERCUSP_HOST_PG_DUMP_DIR: dumpDir,
+      KOPIA_HEALTHCHECK_BIN: fakeKopia,
+      KOPIA_HEALTHCHECK_SUDO: fakeSudo,
+      KOPIA_LOG_DIR: join(root, 'kopia-cli-logs'),
+      KOPIA_TEST_EXPECT_LOG_DIR: join(root, 'kopia-cli-logs'),
       KOPIA_HEALTHCHECK_LOG_DIR: logDir,
       HEALTHCHECK_STATE_DIR: stateDir,
       ODDSMITH_DISCOVERY: join(root, 'missing-oddsmith.json'),
@@ -127,10 +161,15 @@ function runHealthcheck(dumpSnapshotAgeSeconds: number, status: Record<string, u
       BACKUP_ALERT_CMD: alertStub,
       TEST_ALERT_LOG: alertLog,
       MAX_SNAP_AGE_S: '3600',
+      KOPIA_UNIT_CGROUP_ROOT: unitCgroupRoot,
+      KOPIA_HEALTHCHECK_SYSTEMCTL: fakeSystemctl,
+      TEST_SUBSTATES: (unitCgroup?.subStates ?? ['dead']).join(','),
+      TEST_SUBSTATE_COUNTER: subStateCounter,
     },
   });
 
   return {
+    systemctlCalls: existsSync(subStateCounter) ? Number(readFileSync(subStateCounter, 'utf8').trim()) : 0,
     result,
     log: readFileSync(join(logDir, 'healthcheck.log'), 'utf8'),
     alertLog: existsSync(alertLog) ? readFileSync(alertLog, 'utf8') : '',
@@ -197,5 +236,87 @@ describe('Kopia healthcheck dump duty cycle (WI-10004603)', () => {
     expect(run.result.status, evidence).toBe(1);
     expect(evidence).toContain('Postgres dump source snapshot is STALE');
     expect(evidence).not.toContain('near-continuous');
+  });
+});
+
+describe('Kopia healthcheck: a process that outlived its stopped unit (WI-6554700010011924)', () => {
+  // Measured 2026-10-14 04:53Z: ExecStopPost timed out, systemd logged "Unit process
+  // ... remains running after unit stopped", and the unit sat in auto-restart for 30 min
+  // with a root process still in its cgroup. Nothing paged.
+  it('fails when a stopped kopia unit still holds a process in its cgroup', () => {
+    const run = runHealthcheck(10 * 60, {}, {
+      unit: 'kopia-home-snapshot.service',
+      procs: '3691914\n473367\n',
+      subStates: ['auto-restart'],
+    });
+    const evidence = [run.result.stdout, run.result.stderr, run.log].join('\n');
+
+    expect(run.result.status, evidence).toBe(1);
+    expect(evidence).toContain('outlived their stopped unit');
+    expect(evidence).toContain('kopia-home-snapshot.service is stopped but its cgroup still holds pid(s) 3691914 473367');
+    expect(run.log).not.toContain('OK: dump ');
+  });
+
+  it('stays green while the unit is legitimately running', () => {
+    const run = runHealthcheck(10 * 60, {}, {
+      unit: 'kopia-snapshots.service',
+      procs: '4242\n',
+      subStates: ['running'],
+    });
+
+    expect(run.result.status, [run.result.stdout, run.result.stderr, run.log].join('\n')).toBe(0);
+    expect(run.log).toContain('OK: dump ');
+  });
+
+  it('does not flag a unit that starts between the two SubState reads', () => {
+    const run = runHealthcheck(10 * 60, {}, {
+      unit: 'kopia-home-snapshot.service',
+      procs: '5151\n',
+      subStates: ['auto-restart', 'start-pre'],
+    });
+
+    expect(run.result.status, [run.result.stdout, run.result.stderr, run.log].join('\n')).toBe(0);
+    expect(run.systemctlCalls).toBe(2);
+  });
+
+  it('asks systemd nothing when the unit cgroup is empty', () => {
+    const run = runHealthcheck(10 * 60, {}, {
+      unit: 'kopia-home-snapshot.service',
+      procs: '',
+      subStates: ['failed'],
+    });
+
+    expect(run.result.status, [run.result.stdout, run.result.stderr, run.log].join('\n')).toBe(0);
+    expect(run.systemctlCalls).toBe(0);
+  });
+
+  it('a stale dump source leads the page, and the leftover still rides on it (never silenced)', () => {
+    // A leaked walk is likeliest exactly while backups are failing. The first version
+    // only checked for leftovers after every other check passed, so a stale dump hid it.
+    const run = runHealthcheck(3 * 60 * 60, {}, {
+      unit: 'kopia-home-snapshot.service',
+      procs: '3691914\n',
+      subStates: ['auto-restart'],
+    });
+    const evidence = [run.result.stdout, run.result.stderr, run.log].join('\n');
+    const failLine = run.log.split('\n').find((l) => l.includes('FAIL: ')) ?? '';
+
+    expect(run.result.status, evidence).toBe(1);
+    expect(failLine).toContain('Postgres dump source snapshot is STALE');
+    expect(failLine).toContain('ALSO: Kopia process(es) outlived their stopped unit');
+    expect(failLine).toContain('kopia-home-snapshot.service is stopped but its cgroup still holds pid(s) 3691914');
+    expect(failLine.indexOf('STALE')).toBeLessThan(failLine.indexOf('ALSO:'));
+  });
+
+  it('does not append the leftover note to its own page', () => {
+    const run = runHealthcheck(10 * 60, {}, {
+      unit: 'kopia-home-snapshot.service',
+      procs: '3691914\n',
+      subStates: ['auto-restart'],
+    });
+    const failLine = run.log.split('\n').find((l) => l.includes('FAIL: ')) ?? '';
+
+    expect(failLine).toContain('outlived their stopped unit');
+    expect(failLine).not.toContain('ALSO:');
   });
 });

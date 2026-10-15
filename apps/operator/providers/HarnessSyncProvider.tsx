@@ -40,6 +40,7 @@ import {
   setSyncDeltaCodec,
   CONNECTION_CAPPED_MAX_IN_FLIGHT,
   syncMetrics,
+  type SyncProviderProps,
 } from '@papercusp/sync';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { invoke } from '@tauri-apps/api/core';
@@ -62,6 +63,24 @@ const DEFAULT_REST_ENDPOINT = '/api/zero-harness';
 // there the tick IS the freshness source.
 const DEFAULT_SSE_DRIFT_REPAIR_MS = 180_000;
 const HOSTED_QUERY_NAME_ALLOWLIST = ['workspaceHosts.control'] as const;
+
+/** Same-origin diagnostics ingress; no telemetry ring or forwarding. */
+export function reportSyncTransportFallback(
+  mechanism: 'browser-sync-transport',
+  decision: Parameters<NonNullable<SyncProviderProps['observeFallback']>>[1],
+): void {
+  const transport = resolveBrowserApiTransport();
+  const endpoint = transport.mode === 'hosted'
+    ? `${transport.restEndpoint}/fallback-observation`
+    : '/api/desktop/telemetry-report';
+  void fetch(endpoint, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ kind: 'fallback-observation', payload: {
+      source: 'sync-transport', mechanism,
+      eligible: decision.eligible, applied: decision.applied, reason: decision.reason, scope: decision.scope,
+    } }),
+  }).catch(() => { /* best-effort local diagnostics must not break sync */ });
+}
 
 // One QueryClient for the app lifetime. Module-scope (not useMemo) so it
 // survives the provider unmount/remount that happens on some route swaps.
@@ -144,11 +163,33 @@ async function readIpcClient(): Promise<string | null> {
     // positive IPC proof can dispatch before other startup work fills the cap.
     finish.mark('importReady');
     finish.mark('invokeStarted');
-    let status: { client?: string };
+    // WebKitGTK lacks Long Tasks entries. Keep a bounded timer observation
+    // alongside the native snapshot so a slow reply cannot be mistaken for
+    // slow Rust work or an unmeasured renderer stall. Stop also records the
+    // final gap: the invoke continuation can precede an overdue timer.
+    const rendererIntervalMs = 50;
+    finish.startRenderer(rendererIntervalMs);
+    // timer-classification: must-sample — renderer event-loop lateness probe; it reads no store, and no push event can stand in for measuring timer drift
+    const rendererTimer = setInterval(() => finish.observeRenderer('timer'), rendererIntervalMs);
+    const rendererDeadline = setTimeout(() => {
+      clearInterval(rendererTimer);
+      finish.observeRenderer('deadline');
+    }, IPC_ASSERT_TIMEOUT_MS);
+    let status: { client?: string; snapshotStartedAtUnixMs?: number; snapshotDurationMs?: number };
     try {
-      status = await invoke<{ client?: string }>('endpoint_ipc_status');
+      status = await invoke<typeof status>('endpoint_ipc_status');
     } finally {
       finish.mark('invokeCompleted');
+      clearInterval(rendererTimer);
+      clearTimeout(rendererDeadline);
+      finish.observeRenderer('reply');
+    }
+    // Rust's monotonic duration separates snapshot work from dispatch/reply
+    // delay. Translate its epoch start onto the existing page clock; older
+    // shells omit these fields, so an absent measurement stays absent.
+    if (typeof status?.snapshotStartedAtUnixMs === 'number' &&
+        typeof status.snapshotDurationMs === 'number') {
+      finish.recordNative(status.snapshotStartedAtUnixMs - performance.timeOrigin, status.snapshotDurationMs);
     }
     client = status?.client ?? null;
     return client;
@@ -306,6 +347,7 @@ export function HarnessSyncProvider({
         maxInFlightFetches={resolveMaxInFlightFetches(ipcCarriesFetch)}
         persistExcludeQueryNames={PERSIST_EXCLUDE_QUERY_NAMES}
         queryNameAllowlist={browserTransport.queryNameAllowlist}
+        observeFallback={reportSyncTransportFallback}
       >
         {children}
       </SyncProvider>

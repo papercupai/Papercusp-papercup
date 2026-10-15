@@ -24,17 +24,20 @@ import type { FleetTaskResult, HiveBacklogResult, HiveBacklogRunRequest } from '
 import type { ArmAttempt, BenchTask, CloneTaskRepo, ExtractDiff, GenerationStopReason, TaskCheckout } from './types';
 import { gatewayPort, GATEWAY_BASE_URL_ENV, GATEWAY_SDK_URL_ENV } from '../inference-gateway/spawn-env';
 import { PRIORITY_HEADER } from '../inference-gateway/gateway';
+import { benchDefaultModelId } from './model-registry-snapshot';
 
 /** Must match `_common.py` RESULT_SENTINEL. */
 export const RESULT_SENTINEL = '@@COMPETITOR_RESULT@@';
 
 /**
- * FAIRNESS-CRITICAL (D-004): every arm — competitors included — runs claude-opus-4-8 @ xhigh via the SAME
- * localhost inference gateway the bees use, NOT the frameworks' default models. The base url reads the port
- * from spawn-env (never hardcoded); xhigh is realized as extended thinking at DEFAULT_THINKING_BUDGET_TOKENS
- * (the raw-API equivalent of the claude CLI's `--effort xhigh` — owner-confirmed).
+ * FAIRNESS-CRITICAL (D-004): every arm — competitors included — runs the SAME model @ xhigh via the SAME
+ * localhost inference gateway the bees use, NOT the frameworks' default models. The model is the benchmark
+ * default alias resolved from the model registry (model-registry-snapshot.ts, R-9), never a literal id; a run
+ * records the registry snapshot it resolved from. The base url reads the port from spawn-env (never
+ * hardcoded); xhigh is realized as extended thinking at DEFAULT_THINKING_BUDGET_TOKENS (the raw-API
+ * equivalent of the claude CLI's `--effort xhigh` — owner-confirmed).
  */
-export const DEFAULT_COMPETITOR_MODEL = 'claude-opus-4-8';
+export const DEFAULT_COMPETITOR_MODEL: string = benchDefaultModelId();
 export const DEFAULT_THINKING_BUDGET_TOKENS = 32000;
 
 /** The localhost inference-gateway base url (port from spawn-env's gatewayPort(), env-overridable). */
@@ -68,7 +71,7 @@ export interface CompetitorDriverConfig {
   pythonBin: string;
   /** absolute path to competitors/run_<fw>.py. */
   runnerScript: string;
-  /** litellm-style model string, e.g. 'anthropic/claude-opus-4-8'. */
+  /** litellm-style model string, `anthropic/<model id>` (the id resolved from the model registry). */
   model: string;
   /** Anthropic-compatible base url (the inference gateway) — same for every arm (fair routing). */
   baseUrl?: string | null;
@@ -302,7 +305,7 @@ export function runnerScriptPath(competitorId: CompetitorArmId): string {
 }
 
 export interface BindLiveCompetitorsOptions {
-  /** Default DEFAULT_COMPETITOR_MODEL ('claude-opus-4-8') — fairness: every arm uses the same model. */
+  /** Default DEFAULT_COMPETITOR_MODEL (the registry-resolved benchmark default) — fairness: every arm uses the same model. */
   model?: string;
   /** Default gatewayBaseUrl() (the bees' inference gateway, port from spawn-env). */
   baseUrl?: string | null;
@@ -338,9 +341,11 @@ export function bindLiveCompetitorDrivers(opts: BindLiveCompetitorsOptions): Com
         competitorId: id,
         pythonBin: venvPython(id),
         runnerScript: runnerScriptPath(id),
-        model: opts.model,
+        model: opts.model ?? DEFAULT_COMPETITOR_MODEL,
         baseUrl: opts.baseUrl ?? null,
         apiKeyEnv: opts.apiKeyEnv,
+        thinkingBudgetTokens: opts.thinkingBudgetTokens,
+        maxTokens: opts.maxTokens,
         maxIterations: opts.maxIterations,
         perTaskTimeoutMs: opts.perTaskTimeoutMs,
         concurrency: opts.concurrency,

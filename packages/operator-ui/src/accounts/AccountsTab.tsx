@@ -36,6 +36,7 @@ import {
 import { useSyncQuery } from '@papercusp/sync';
 import { useAccountOverride } from './use-account-override';
 import { operatorUi } from '../seam';
+import { creditView, formatCreditBalance, poolCreditSummary, isClaudeApiAccount, type CreditBalance } from './credit-balances';
 
 // Full pool-account row — mirrors AccountStatusRow (operator-core account-pool-store).
 // Sync rows are untyped on the client by convention, so we restate the shape.
@@ -49,12 +50,15 @@ interface AccountRate {
   utilizationAt?: number;
   utilization7d?: number;
   windowResetAt7d?: number;
+  creditBalance?: CreditBalance;
+  lastProbeFailedAt?: number;
 }
 interface PoolAccount {
   id: string;
   provider?: 'claude' | 'codex';
   label?: string;
   credentialRef: string;
+  creditWalletId?: string;
   boundTo: string[];
   available: boolean;
   sustainedlyLimited: boolean;
@@ -188,7 +192,8 @@ export default function AccountsTab({ active }: { active: boolean }) {
   // evaluated first.
   const { Link } = operatorUi();
   const now = useNow(active);
-  const { data: accounts, loading } = useSyncQuery<PoolAccount>({ queryName: 'accounts.pool', enabled: active });
+  const { data: accounts, loading, error, failureReason, invalidate } = useSyncQuery<PoolAccount>({ queryName: 'accounts.pool', enabled: active });
+  const readError = error ?? failureReason;
   const {
     overrideBusy,
     forced,
@@ -217,6 +222,8 @@ export default function AccountsTab({ active }: { active: boolean }) {
       limited: rows.filter((a) => a.sustainedlyLimited).length,
       forced: forced.size,
       excluded: excluded.size,
+      codexCredits: poolCreditSummary(rows, 'codex', now),
+      claudeCredits: poolCreditSummary(rows, 'claude', now),
     };
   }, [accounts, excluded.size, forced.size, now]);
 
@@ -245,12 +252,18 @@ export default function AccountsTab({ active }: { active: boolean }) {
           </div>
         </div>
         <div className="pclsb-acct__summary" aria-label="Account pool summary">
+          {accounts.length === 0 && (loading || readError) ? (
+            <span>{readError ? 'Account pool unavailable' : 'Loading accounts…'}</span>
+          ) : (<>
           <span><b>{poolSummary.available}/{poolSummary.total}</b> avail</span>
           <span><b>{poolSummary.claude}</b> Claude</span>
           <span><b>{poolSummary.codex}</b> Codex</span>
           <span><b>{poolSummary.paused}</b> paused</span>
           <span><b>{poolSummary.limited}</b> limited</span>
+          {poolSummary.codexCredits && <span aria-label="Codex pool credits"><b>{poolSummary.codexCredits}</b></span>}
+          {poolSummary.claudeCredits && <span aria-label="Claude API pool credits"><b>{poolSummary.claudeCredits}</b></span>}
           <span><b>{poolSummary.forced || poolSummary.excluded ? `${poolSummary.forced}/${poolSummary.excluded}` : 'off'}</b> steer</span>
+          </>)}
         </div>
       </header>
 
@@ -296,7 +309,13 @@ export default function AccountsTab({ active }: { active: boolean }) {
         </div>
       )}
 
-      {loading && accounts.length === 0 ? (
+      {readError && (
+        <div className="pclsb-panel__empty" role="alert">
+          Could not load accounts. {accounts.length > 0 ? 'Showing previously loaded accounts. ' : ''}
+          <button type="button" onClick={invalidate}>Retry</button>
+        </div>
+      )}
+      {readError && accounts.length === 0 ? null : loading && accounts.length === 0 ? (
         <div className="pclsb-panel__empty">Loading accounts…</div>
       ) : accounts.length === 0 ? (
         <div className="pclsb-panel__empty">No accounts in the pool yet.</div>
@@ -304,6 +323,7 @@ export default function AccountsTab({ active }: { active: boolean }) {
         <ul className="pclsb-acct__list">
           {accounts.map((a) => {
             const provider = accountProvider(a);
+            const credits = creditView(a, now);
             const isForced = forced.has(a.id);
             const isExcluded = excluded.has(a.id);
             const isDefault = defaultAccountId === a.id;
@@ -396,6 +416,16 @@ export default function AccountsTab({ active }: { active: boolean }) {
                     <UsageMeter label={primaryUsageLabel(provider)} value={a.rate.utilization} reset={reset5h} />
                     <UsageMeter label={secondaryUsageLabel(provider)} value={a.rate.utilization7d} reset={reset7d} />
                   </div>
+                  {credits && (
+                    <div className="pclsb-acct__facts" aria-label={`Credit balance for ${a.id}`}>
+                      <strong>{credits.balance ? formatCreditBalance(credits.balance) : 'Credit balance unavailable'}</strong>
+                      {credits.state !== 'fresh' && <span>{credits.balance ? `Last reading · ${credits.state}` : 'Not measured'}</span>}
+                      {credits.balance?.observedAt && <span>as of {fmtAgo(credits.balance.observedAt, now)}</span>}
+                      {isClaudeApiAccount(a) && (
+                        <a href="https://platform.claude.com/settings/billing" target="_blank" rel="noopener noreferrer">View API billing</a>
+                      )}
+                    </div>
+                  )}
 
                   <div className="pclsb-acct__facts">
                     <span>{providerLabel(provider)}</span>

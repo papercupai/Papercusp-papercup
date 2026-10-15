@@ -25,6 +25,7 @@ import { dirname } from 'node:path';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { registerOverrideConcern, type OverrideEntry } from './config-overrides/registry';
 import { papercuspPath } from './papercusp-root';
+import { BlueprintRoleSchema, LaunchAccountSchema, type BlueprintLaunchBackup } from '@papercusp/orchestrator/blueprint';
 import {
   AGENT_BACKENDS,
   BULK_RESOLVER_CARRY_MODES,
@@ -80,6 +81,8 @@ export interface AgentConfig {
       $AGENT_ROLE_BACKENDS and applied by buildInvokeOnce before the role model
       is appended. */
   roleBackends?: Record<string, AgentBackend>;
+  roleAccounts?: Record<string, string | null>;
+  roleBackups?: Record<string, BlueprintLaunchBackup[]>;
   /** Per-surface backend overrides for the in-app brains. A surface absent
       from the map inherits the global `backend`. Lets you run e.g. oracle on
       claude-code while the operator stays on omp. Resolved per-call via
@@ -131,6 +134,8 @@ const DEFAULT_CONFIG: AgentConfig = {
   cmd: '',
   models: {},
   roleBackends: {},
+  roleAccounts: {},
+  roleBackups: {},
   backends: {},
   surfaceModels: {},
   tiers: [],
@@ -154,6 +159,8 @@ export async function readAgentConfig(): Promise<AgentConfig> {
           )
         : {},
     roleBackends: parseRoleBackends(raw.roleBackends),
+    roleAccounts: parseRoleAccounts(raw.roleAccounts),
+    roleBackups: parseRoleBackups(raw.roleBackups),
     backends: parseBackends(raw.backends),
     surfaceModels: parseSurfaceModels(raw.surfaceModels),
     tiers: parseTiers(raw.tiers),
@@ -368,6 +375,43 @@ export function parseRoleBackends(raw: unknown): Record<string, AgentBackend> {
   return out;
 }
 
+export function parseRoleAccounts(raw: unknown): Record<string, string | null> {
+  const out: Record<string, string | null> = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [role, value] of Object.entries(raw)) {
+    const parsed = LaunchAccountSchema.safeParse(value);
+    if (role.trim() && parsed.success) out[role.trim()] = parsed.data;
+  }
+  return out;
+}
+
+export function parseRoleBackups(raw: unknown): Record<string, BlueprintLaunchBackup[]> {
+  const out: Record<string, BlueprintLaunchBackup[]> = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [role, backups] of Object.entries(raw)) {
+    const parsed = BlueprintRoleSchema.safeParse({ id: role, backups });
+    if (role.trim() && parsed.success && parsed.data.backups) out[role.trim()] = parsed.data.backups;
+  }
+  return out;
+}
+
+/** Writes refuse invalid declarations before any stored configuration changes. */
+export function roleRoutingProblem(cfg: Pick<AgentConfig, 'roleAccounts' | 'roleBackups' | 'models' | 'roleBackends'>): string | null {
+  for (const field of ['roleAccounts', 'roleBackups'] as const) {
+    const raw = cfg[field];
+    if (raw === undefined) continue;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return `${field} must be a role-keyed map`;
+    for (const [role, value] of Object.entries(raw)) {
+      const parsed = BlueprintRoleSchema.safeParse({
+        id: role, model: cfg.models?.[role], backend: cfg.roleBackends?.[role],
+        ...(field === 'roleAccounts' ? { account: value } : { backups: value }),
+      });
+      if (!role.trim() || !parsed.success) return `${field}.${role}: ${parsed.success ? 'role id must not be blank' : parsed.error.message}`;
+    }
+  }
+  return null;
+}
+
 /** Validate the per-surface backend map: keep only known surface keys
     mapped to concrete (non-'auto') backends. Unknown keys / invalid
     backends are dropped silently — absence means "inherit the global". */
@@ -396,6 +440,8 @@ export function parseSurfaceModels(raw: unknown): Partial<Record<SurfaceKey, str
 }
 
 export async function writeAgentConfig(cfg: AgentConfig): Promise<AgentConfig> {
+  const problem = roleRoutingProblem(cfg);
+  if (problem) throw new Error(`role launch config rejected: ${problem}`);
   await writeOperatorState('operator_agent_config', cfg);
   applyToProcessEnv(cfg);
   await writeShellEnvFile(cfg).catch(() => {
@@ -607,7 +653,7 @@ function agentConfigOverrides(cfg: AgentConfig): OverrideEntry[] {
   if (cfg.cmd !== DEFAULT_CONFIG.cmd) {
     out.push({ key: 'cmd', effective: cfg.cmd, default: DEFAULT_CONFIG.cmd, layer: 'pg-settings' });
   }
-  for (const k of ['models', 'roleBackends', 'backends', 'surfaceModels', 'tierCeilings'] as const) {
+  for (const k of ['models', 'roleBackends', 'roleAccounts', 'roleBackups', 'backends', 'surfaceModels', 'tierCeilings'] as const) {
     const v = cfg[k] ?? {};
     if (Object.keys(v).length > 0) out.push({ key: k, effective: v, default: {}, layer: 'pg-settings' });
   }

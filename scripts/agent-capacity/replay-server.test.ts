@@ -1,5 +1,6 @@
 import http from 'node:http';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -12,6 +13,7 @@ import {
   newReplayState,
   pairFor,
   pairTasks,
+  recordedTaskCallIds,
   recordedTaskPrefix,
   reportedTaskOutputs,
   taskOutputRefs,
@@ -24,6 +26,7 @@ import {
   parseReplayUrl,
   replaceAcross,
   rewriteExchange,
+  shouldHold,
   sseEvents,
   startReplayServer,
   takeExchange,
@@ -287,6 +290,14 @@ const bashChunks = (command: string, cut: number) => {
 };
 const backgrounded = (p: string) => `Command did not complete within its 120s timeout and was moved to the background (ID: x). Output is being written to: ${p}. You will be notified when it completes.`;
 
+const taskOutputPath = (ref: { uid: string; project?: string; session?: string; task: string }) =>
+  path.join('/tmp', `claude-${ref.uid}`, ref.project!, ref.session!, 'tasks', `${ref.task}.output`);
+
+const cliTaskResult = (toolUseId: string, outputPath: string) => JSON.stringify({
+  type: 'user',
+  message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: [{ type: 'text', text: backgrounded(outputPath) }] }] },
+});
+
 describe('background-task output paths', () => {
   it('parses literal paths with their prefix, and globbed ones with uid and task only', () => {
     expect(taskOutputRefs(`${TAIL}; ${GLOB}`)).toEqual([
@@ -312,8 +323,13 @@ describe('background-task output paths', () => {
         { role: 'user', content: [{ type: 'tool_use', id: 'odd', input: { command: `tail ${REC_TASK_PATH}` } }] },
       ],
     };
-    expect(reportedTaskOutputs(Buffer.from(JSON.stringify(body)))).toEqual([{ uid: '1001', task: 'bofqc99b6', project: REP_PROJECT, session: REP_SESSION }]);
+    expect(reportedTaskOutputs(Buffer.from(JSON.stringify(body)))).toEqual([{ uid: '1001', task: 'bofqc99b6', project: REP_PROJECT, session: REP_SESSION, callId: 't0' }]);
     expect(reportedTaskOutputs(Buffer.from('not json /tmp/claude-1/a/b/tasks/x.output'))).toEqual([]);
+  });
+
+  it('recovers recorded task ids from the CLI result tool_use_id', () => {
+    const cli = [cliTaskResult('call-a', REC_TASK_PATH), cliTaskResult('call-b', REC_TASK_PATH.replace('bl4w01qwj', 'b2nd'))].join('\n');
+    expect(recordedTaskCallIds(cli)).toEqual(new Map([['bl4w01qwj', 'call-a'], ['b2nd', 'call-b']]));
   });
 
   it('never learns a recorded task id the replay quoted back in an error, and pairs ids in order of first appearance', () => {
@@ -344,6 +360,7 @@ describe('background-task output paths', () => {
 describe('startReplayServer', () => {
   let corpus: string;
   let srv: ReplayServer;
+  let externalTaskRoot: string | null = null;
   const logFile = () => path.join(corpus, 'served.jsonl');
 
   const post = (url: string, body: unknown, method = 'POST') =>
@@ -366,10 +383,12 @@ describe('startReplayServer', () => {
 
   beforeEach(() => {
     corpus = mkdtempSync(path.join(tmpdir(), 'replay-server-'));
+    externalTaskRoot = null;
   });
   afterEach(async () => {
     await srv?.close();
     rmSync(corpus, { recursive: true, force: true });
+    if (externalTaskRoot) rmSync(externalTaskRoot, { recursive: true, force: true });
   });
 
   it('replays recorded bytes, status and content type; answers 400 once the recording is used up', async () => {
@@ -395,6 +414,32 @@ describe('startReplayServer', () => {
       ['exhausted', 400, null],
     ]);
     expect(served[0].reqBytes).toBe(fingerprintRequest(Buffer.from(JSON.stringify(body))).bytes);
+  });
+
+  it('logs redacted current and recorded tool-output metadata for Codex replay requests', async () => {
+    const RESP = '/v1/responses';
+    const recordedBody = {
+      model: 'm', tools: [],
+      input: [{ type: 'custom_tool_call_output', call_id: 'nested-call', output: 'recorded private output' }],
+    };
+    const replayBody = {
+      model: 'm', tools: [],
+      input: [{ type: 'custom_tool_call_output', call_id: 'nested-call', output: 'replayed private output is longer' }],
+    };
+    const recorded = ex(0, { path: RESP, messages: 1, tools: 0 });
+    recorded.req = { ...recorded.req, ...fingerprintRequest(Buffer.from(JSON.stringify(recordedBody))) };
+    writeSession('s1', [recorded]);
+    srv = await startReplayServer({ corpusDir: corpus, speed: 0, logFile: logFile() });
+
+    const response = await post(`${srv.baseUrl('s1', 'a')}${RESP}`, replayBody);
+    expect(response.status).toBe(200);
+    await srv.close();
+
+    const [served] = readFileSync(logFile(), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as ServedRecord);
+    expect(served.inputToolOutputs).toEqual(fingerprintRequest(Buffer.from(JSON.stringify(replayBody))).inputToolOutputs);
+    expect(served.recordedInputToolOutputs).toEqual(recorded.req.inputToolOutputs);
+    expect(JSON.stringify(served)).not.toContain('recorded private output');
+    expect(JSON.stringify(served)).not.toContain('replayed private output');
   });
 
   it('keeps separate consumption state per instance of the same recording', async () => {
@@ -465,6 +510,10 @@ describe('startReplayServer', () => {
   it('serves a Claude tail of a background task with the task path THIS instance reported, and logs a task it never reported', async () => {
     const recorded = ex(0, { chunks: bashChunks(TAIL, JSON.stringify({ command: TAIL }).indexOf('tasks/') - 9), messages: 3, tools: 0 });
     writeSession('s1', [recorded]);
+    const actualRef = taskOutputRefs(REP_TASK_PATH)[0];
+    externalTaskRoot = path.join('/tmp', `claude-${actualRef.uid}`, actualRef.project!);
+    mkdirSync(path.dirname(taskOutputPath(actualRef)), { recursive: true });
+    writeFileSync(taskOutputPath(actualRef), 'replay output\n');
     srv = await startReplayServer({ corpusDir: corpus, speed: 0, logFile: logFile() });
     const history = (result: string) => ({
       model: 'm',
@@ -480,7 +529,10 @@ describe('startReplayServer', () => {
       post(`${srv.baseUrl('s1', 'b')}${MSG}`, history('42 passed')), // finished inside its timeout here
     ]);
     const command = (buf: Buffer) => JSON.parse(reassemble(ex(0, { chunks: [encodeChunk(0, buf)] })).cb1).command;
-    expect(command(a.body)).toBe(`sleep 100; tail -5 ${REP_TASK_PATH}`);
+    const replayRef = taskOutputRefs(command(a.body))[0];
+    const replayFile = taskOutputPath(replayRef);
+    expect(command(a.body)).toBe(`sleep 100; tail -5 ${replayFile}`);
+    expect(readFileSync(replayFile, 'utf8')).toBe('replay output\n');
     expect(command(b.body)).toBe(TAIL);
     await srv.close();
     const served = readFileSync(logFile(), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as ServedRecord);
@@ -490,6 +542,87 @@ describe('startReplayServer', () => {
     expect(by.a.taskOutputUnmapped).toBeUndefined();
     expect(by.b.taskOutputIds).toBeUndefined();
     expect(by.b.taskOutputUnmapped).toEqual(['bl4w01qwj']);
+    expect(existsSync(replayFile)).toBe(false);
+  });
+
+  it('materializes an inline recorded task result as a replay-owned output file', async () => {
+    const callId = 'toolu-inline-a';
+    const recorded = ex(0, { chunks: bashChunks(TAIL, JSON.stringify({ command: TAIL }).indexOf('tasks/') - 9), messages: 3, tools: 0 });
+    writeSession('inline', [recorded]);
+    writeFileSync(path.join(corpus, 'inline', 'cli.jsonl'), cliTaskResult(callId, REC_TASK_PATH) + '\n');
+    srv = await startReplayServer({ corpusDir: corpus, speed: 0, logFile: logFile() });
+    const history = {
+      model: 'm',
+      tools: [],
+      messages: [
+        { role: 'user', content: 'check the command result' },
+        { role: 'assistant', content: [{ type: 'tool_use', id: callId, name: 'Bash', input: { command: 'uv run pytest' } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: callId, content: [{ type: 'text', text: '42 passed\n' }] }] },
+      ],
+    };
+    const response = await post(`${srv.baseUrl('inline', 'only-inline')}${MSG}`, history);
+    const command = JSON.parse(reassemble(ex(0, { chunks: [encodeChunk(0, response.body)] })).cb1).command as string;
+    const [replayRef] = taskOutputRefs(command);
+    expect(replayRef).toBeDefined();
+    const replayFile = taskOutputPath(replayRef);
+    expect(command).toContain(replayFile);
+    expect(readFileSync(replayFile, 'utf8')).toBe('42 passed\n');
+    await srv.close();
+    expect(existsSync(replayFile)).toBe(false);
+    const [served] = readFileSync(logFile(), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as ServedRecord);
+    expect(served.taskOutputIds).toEqual({ bl4w01qwj: replayRef.task });
+    expect(served.taskOutputUnmapped).toBeUndefined();
+  });
+
+  it('pairs inline A and background B by tool_use_id, and removes replay-owned outputs on close', async () => {
+    const callA = 'toolu-inline-a';
+    const callB = 'toolu-background-b';
+    const recordedA = REC_TASK_PATH;
+    const recordedB = REC_TASK_PATH.replace('bl4w01qwj', 'b2nd');
+    const commandText = `tail -5 ${recordedA}; tail -5 ${recordedB}`;
+    const recorded = ex(0, { chunks: bashChunks(commandText, JSON.stringify({ command: commandText }).indexOf('tasks/') + 12), messages: 3, tools: 0 });
+    writeSession('mixed', [recorded]);
+    writeFileSync(path.join(corpus, 'mixed', 'cli.jsonl'), [cliTaskResult(callA, recordedA), cliTaskResult(callB, recordedB)].join('\n') + '\n');
+
+    const uid = String(typeof process.getuid === 'function' ? process.getuid() : 1000);
+    const actualRef = { uid, project: `replay-test-${randomUUID()}`, session: randomUUID(), task: `live-${randomUUID().slice(0, 8)}` };
+    const actualFile = taskOutputPath(actualRef);
+    externalTaskRoot = path.join('/tmp', `claude-${uid}`, actualRef.project);
+    mkdirSync(path.dirname(actualFile), { recursive: true });
+    writeFileSync(actualFile, 'background B output\n');
+
+    srv = await startReplayServer({ corpusDir: corpus, speed: 0, logFile: logFile() });
+    const history = {
+      model: 'm',
+      tools: [],
+      messages: [
+        { role: 'user', content: 'wait for both commands' },
+        { role: 'assistant', content: [
+          { type: 'tool_use', id: callA, name: 'Bash', input: { command: 'uv run pytest A' } },
+          { type: 'tool_use', id: callB, name: 'Bash', input: { command: 'uv run pytest B' } },
+        ] },
+        { role: 'user', content: [
+          { type: 'tool_result', tool_use_id: callA, content: [{ type: 'text', text: 'inline A output\n' }] },
+          { type: 'tool_result', tool_use_id: callB, content: [{ type: 'text', text: backgrounded(taskOutputPath(actualRef)) }] },
+        ] },
+      ],
+    };
+    const response = await post(`${srv.baseUrl('mixed', 'inline-then-background')}${MSG}`, history);
+    const command = JSON.parse(reassemble(ex(0, { chunks: [encodeChunk(0, response.body)] })).cb1).command as string;
+    const replayRefs = taskOutputRefs(command);
+    expect(replayRefs).toHaveLength(2);
+    expect(replayRefs[0].task).not.toBe(actualRef.task);
+    expect(replayRefs[1].task).toBe(actualRef.task);
+    expect(readFileSync(taskOutputPath(replayRefs[0]), 'utf8')).toBe('inline A output\n');
+    expect(readFileSync(taskOutputPath(replayRefs[1]), 'utf8')).toBe('background B output\n');
+    const served = readFileSync(logFile(), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as ServedRecord);
+    expect(served[0].taskOutputIds).toEqual({ bl4w01qwj: replayRefs[0].task, b2nd: actualRef.task });
+    expect(served[0].taskOutputUnmapped).toBeUndefined();
+
+    await srv.close();
+    expect(existsSync(taskOutputPath(replayRefs[0]))).toBe(false);
+    expect(existsSync(taskOutputPath(replayRefs[1]))).toBe(false);
+    expect(readFileSync(actualFile, 'utf8')).toBe('background B output\n');
   });
 
   it('honours recorded delays scaled by speed', async () => {
@@ -511,5 +644,84 @@ describe('startReplayServer', () => {
     srv = await startReplayServer({ corpusDir: corpus, speed: 0 });
     expect((await post(`${srv.url}/r/nope/a${MSG}`, {})).status).toBe(404);
     expect((await post(`${srv.url}/v1/messages`, {})).status).toBe(404);
+  });
+
+  // P-015 parked agents: one held reply per matching instance, released for all at once.
+  it('holds a parked instance\'s Nth streamed reply behind keepalive comments until releaseHolds, and no one else\'s', async () => {
+    writeSession('s1', [ex(0, { messages: 1, tools: 3 }), ex(1, { messages: 1, tools: 3 })]);
+    srv = await startReplayServer({ corpusDir: corpus, speed: 0, logFile: logFile(), hold: { instancePrefix: 'park-', atRequest: 2, keepaliveMs: 20 } });
+    const body = { model: 'm', stream: true, messages: [{}], tools: [{}, {}, {}] };
+    const url = (instance: string) => `${srv.baseUrl('s1', instance)}${MSG}`;
+
+    // Request 1 of a parked instance and both requests of an active one are served at once.
+    expect((await post(url('park-1'), body)).ms).toBeLessThan(200);
+    expect((await post(url('act-1'), body)).ms).toBeLessThan(200);
+    expect((await post(url('act-1'), body)).ms).toBeLessThan(200);
+    expect(srv.held()).toBe(0);
+
+    // Request 2 of the parked instance waits for the release.
+    const pending = post(url('park-1'), body);
+    await new Promise((r) => setTimeout(r, 150));
+    expect(srv.held()).toBe(1);
+    expect(srv.releaseHolds()).toBe(1);
+    const r2 = await pending;
+    expect(r2.status).toBe(200);
+    expect(r2.ms).toBeGreaterThanOrEqual(140);
+    const text = r2.body.toString('utf8');
+    // Keepalives are SSE comments ahead of the untouched recording.
+    expect(text).toMatch(/^(: papercusp-capacity hold\n\n)+event: message_start\ndata: \{"seq":1\}\n\nevent: message_stop\ndata: \{\}\n\n$/);
+    expect(srv.held()).toBe(0);
+    expect(srv.releaseHolds()).toBe(0); // idempotent
+
+    // After the release nothing is held, even a parked instance reaching its hold point.
+    await post(url('park-2'), body);
+    expect((await post(url('park-2'), body)).ms).toBeLessThan(200);
+    await srv.close();
+
+    const served = readFileSync(logFile(), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as ServedRecord);
+    const heldRows = served.filter((s) => s.heldMs !== undefined);
+    expect(heldRows.map((s) => [s.instance, s.seq])).toEqual([['park-1', 1]]);
+    expect(heldRows[0].heldMs).toBeGreaterThanOrEqual(140);
+  });
+
+  it('close() never hangs on a reply still held, even with a long keepalive', async () => {
+    writeSession('s1', [ex(0, { messages: 1, tools: 3 })]);
+    srv = await startReplayServer({ corpusDir: corpus, speed: 0, hold: { instancePrefix: 'park-', atRequest: 1, keepaliveMs: 60_000 } });
+    // close() also drops every connection, so the client may see an end or a reset; only the shutdown is asserted.
+    const outcome = new Promise<string>((resolve) => {
+      const data = Buffer.from(JSON.stringify({ model: 'm', stream: true, messages: [{}], tools: [{}, {}, {}] }));
+      const r = http.request(`${srv.baseUrl('s1', 'park-1')}${MSG}`, { method: 'POST', headers: { 'content-type': 'application/json', 'content-length': data.length } }, (res) => {
+        res.on('data', () => {});
+        res.on('error', () => resolve('error'));
+        res.on('end', () => resolve('end'));
+        res.on('close', () => resolve('close'));
+      });
+      r.on('error', () => resolve('request-error'));
+      r.end(data);
+    });
+    await new Promise((r) => setTimeout(r, 80));
+    expect(srv.held()).toBe(1);
+    const t0 = Date.now();
+    await srv.close();
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(['end', 'close', 'error', 'request-error']).toContain(await outcome);
+  });
+});
+
+describe('shouldHold', () => {
+  const plan = { instancePrefix: 'T-p', atRequest: 4 };
+  const h = { instance: 'T-p0-i0', requestNumber: 4, contentType: 'text/event-stream; charset=utf-8', alreadyHeld: false, released: false };
+  it('holds the first streamed reply at or after the hold point of a matching instance', () => {
+    expect(shouldHold(plan, h)).toBe(true);
+    expect(shouldHold(plan, { ...h, requestNumber: 6 })).toBe(true);
+  });
+  it('never holds without a plan, before the hold point, twice, after the release, a non-matching instance or a JSON reply', () => {
+    expect(shouldHold(undefined, h)).toBe(false);
+    expect(shouldHold(plan, { ...h, requestNumber: 3 })).toBe(false);
+    expect(shouldHold(plan, { ...h, alreadyHeld: true })).toBe(false);
+    expect(shouldHold(plan, { ...h, released: true })).toBe(false);
+    expect(shouldHold(plan, { ...h, instance: 'T-s0-i0' })).toBe(false);
+    expect(shouldHold(plan, { ...h, contentType: 'application/json' })).toBe(false);
+    expect(shouldHold(plan, { ...h, contentType: null })).toBe(false);
   });
 });

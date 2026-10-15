@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Phone P-009 R-44 export privacy allowlist mutation guard, re-run at the D-022 source",
+  "framework": "shell",
+  "command": [
+    "bash .papercusp/scratch/p009-probes-3.sh  # papercusp root",
+    "scripts/mutation-probe.sh --file \"$PHONE_APP_ROOT/packages/data/src/postgres-store.ts\" --relocation overlay --mutate 's/callContentExport\\(toCall\\(row\\), row.segments, row.voicemail\\)/({ format: \"papercusp-phone-call-v1\", call: toCall(row), segments: row.segments, voicemail: row.voicemail })/' --test \"cd $PHONE_APP_ROOT/packages/data && npx vitest run src/call-export.integration.test.ts\""
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T05:37:03Z",
+  "finishedAt": "2026-10-06T05:37:46Z",
+  "summary": "1/1 copy-out overlay mutant CAUGHT. The registered export integration suite passed against the canonical and the relocated canonical snapshot (9/9 each), then a PostgreSQL export mutant that returns the persisted call without its privacy allowlist (callContentExport bypassed) failed the intended assertion (1 failed | 8 passed: 'call export (postgres) > exports ordered content and read state without private media or conversation authority'). Re-runs the 2026-10-02 probe (docs/evidence/phone-p009-export-mutation-2026-10-02.json) at phone-app subject commit f23379183d7457d050541d1ae92c0d05554f3cf1 because the D-022 change re-fingerprinted postgres-store.ts. Software falsifiability only; no public PSTN or shipment claim.",
+  "assertions": [
+    { "id": "export-caught", "passed": true, "evidence": "packages/data/src/postgres-store.ts export allowlist bypassed: baseline 9/9, copy 9/9, mutant 1 failed | 8 passed" }
+  ],
+  "subjectRepository": "phone-app harness repository (~/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/phone-app); probes[].subject/tests are relative to that root.",
+  "subjectCommit": "f23379183d7457d050541d1ae92c0d05554f3cf1",
+  "plan": "phone-public-telephone-service-2026-10-01",
+  "planItem": "P-009",
+  "workItem": "WI-10004987",
+  "recordedAt": "2026-10-06T05:39:00Z",
+  "recordedBy": "su-2b9fe461-077c-4fd4-8cd7-c43499f17892",
+  "method": "papercusp scripts/mutation-probe.sh copy-out --relocation overlay (mutant bound over the real path in a private mount namespace; shared tree never mutated; tree integrity verified byte-identical afterwards), phone-app's own Vitest.",
+  "scope": "Falsifiability of the R-44 export privacy allowlist on the production PostgreSQL store.",
+  "probes": [
+    {
+      "name": "export",
+      "clauses": ["AUTO-BAR-R-44-P-009"],
+      "subject": "packages/data/src/postgres-store.ts",
+      "mutation": "callContentExport(toCall(row), row.segments, row.voicemail) replaced by a raw object carrying the full persisted call (private recordingUri and conversation authority leak into the export)",
+      "tests": ["packages/data/src/call-export.integration.test.ts"],
+      "failedTest": "call export (postgres) > exports ordered content and read state without private media or conversation authority",
+      "baseline": "9/9 passed",
+      "copyBaseline": "9/9 passed",
+      "mutant": "1 failed | 8 passed",
+      "verdict": "caught"
+    }
+  ],
+  "harnessErrors": []
+}

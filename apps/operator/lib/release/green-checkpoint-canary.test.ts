@@ -7,6 +7,18 @@
 import { describe, it, expect } from 'vitest';
 import { checkResultParser, buildGreenCheckpointParserCanary } from './green-checkpoint-canary';
 import { runGateCanary } from '@papercusp/operator-core/lib/gates/canary';
+import { captureGateSuiteVerdictReplay, checkGateSuiteVerdictReplay } from '@papercusp/operator-core/lib/release/gate-hygiene-split';
+
+it('classifies an actual captured decision regression as gate-broken through the existing canary', async () => {
+  const prior = captureGateSuiteVerdictReplay({ candidate: 'a'.repeat(40), runId: 'prior', measuredAtMs: 1 }, {
+    green: false, infraFault: false, failures: ['product.test.ts'], rootScripts: {}, failingCasesByFile: null,
+  });
+  const definition = { id: 'green-checkpoint:measured-suite-replay', describe: 'replay measured inputs',
+    run: async () => checkGateSuiteVerdictReplay(prior) };
+  expect((await runGateCanary(definition, false)).canaryOk).toBe(true);
+  prior.expected.disposition = 'green';
+  expect((await runGateCanary(definition, false)).classification).toMatchObject({ verdict: 'gate-broken', alarm: 'gate' });
+});
 
 describe('checkResultParser', () => {
   it('passes against the real green-checkpoint.ts parser today', () => {

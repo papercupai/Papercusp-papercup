@@ -5,21 +5,36 @@
  * idempotent, the store maps rows → P-011's TaskRunResult, cost is DERIVED via
  * priceRun, and the emitFromAttempt infra-failure path nulls `resolved`.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { substrateSignalRates, type CoordEvent, type FleetRunSummary } from '@papercusp/bench-metrics';
+import { substrateSignalRates, mergeCapabilityEvidence, withCapabilityEvidence, readCapabilityEvidence,
+  classifyExercise, type CoordEvent, type FleetRunSummary } from '@papercusp/bench-metrics';
+import type { EnsembleSelectorReceipt } from '../run-topology';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import type { OrgSql } from './db';
+import { stopInvalidationListener } from '../../sync-sse';
 import { preregister, computePreregHash } from './prereg';
-import { emitRollout, emitFromAttempt } from './emit';
-import { listRunResults, listSuites, getRollout, getPrereg } from './store';
+import { emitRollout, emitFromAttempt, rolloutIdFor } from './emit';
+import { listRunResults, listSuites, getRollout, getPrereg, getRunReports } from './store';
 import { emitFleetRun, fleetRunIdFor, listFleetRuns, getCoordTrace } from './fleet';
 import { exportRunBundle } from './export';
 import type { EmitRolloutInput } from './schema';
 import type { ArmAttempt, BenchTask, GradeResult } from '../types';
+import { currentProtocolFixture } from './_protocol-test-fixture';
+
+// Keep the real invalidation bus and pg_notify adapter, but bind its host pool
+// to the same disposable database as the benchmark writes. The live-PG guard
+// remains enabled and catches any notifier that escapes this fixture.
+const notificationDb = vi.hoisted(() => ({ sql: null as unknown as OrgSql }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@papercusp/db-org')>(),
+  getOrgPg: () => ({ sql: notificationDb.sql }),
+}));
+
+const notifications: Array<{ name: string; args?: Record<string, unknown> }> = [];
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../../libs/papercusp/libs/db/sql');
@@ -94,6 +109,8 @@ function input(overrides: Partial<EmitRolloutInput> & { preregHash: string }): E
 beforeAll(async () => {
   db = await createFreshPgDb('benchrepro');
   sql = db.sql as unknown as OrgSql;
+  notificationDb.sql = sql;
+  await db.sql.listen('sync_invalidate', payload => notifications.push(JSON.parse(payload)));
   for (const m of MIGRATIONS) await db.sql.unsafe(migrationSql(m));
   // Superuser bypasses RLS, but disable it so the test is role-agnostic.
   await db.sql.unsafe(`
@@ -107,6 +124,7 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
+  await stopInvalidationListener();
   if (repoRoot) rmSync(repoRoot, { recursive: true, force: true });
   await db?.cleanup();
 });
@@ -166,6 +184,13 @@ describe('emitRollout', () => {
     const rollout = await getRollout(rolloutId, { sql, workspaceId: WS });
     expect(rollout?.rawGraderOutput).toBe('{"resolved": true}');
     expect(rollout?.submission).toBe('diff --git a/x b/x');
+    await vi.waitFor(() => {
+      expect(notifications).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'evals.runs', args: { runId: RUN } }),
+        expect.objectContaining({ name: 'evals.report', args: { runId: RUN } }),
+        expect.objectContaining({ name: 'evals.suites', args: {} }),
+      ]));
+    });
   });
 
   it('is idempotent on re-emit of the same (run, task, arm, seed)', async () => {
@@ -181,7 +206,111 @@ describe('emitRollout', () => {
   });
 });
 
+describe('current frozen rollout emission', () => {
+  async function frozenInput(name: string, model = 'configured-alias') {
+    const protocol = currentProtocolFixture(`current-emit-${name}`);
+    protocol.arms.forEach(arm => { arm.model = model; });
+    protocol.priceSchedule.rates[0].model = model;
+    const { preregHash } = await preregister({ runId: protocol.runId, config: protocol,
+      suites: ['swe-bench-pro'], sql, workspaceId: WS, repoRoot });
+    const base = input({ preregHash });
+    const attempt: EmitRolloutInput = { ...base, runId: protocol.runId, taskId: 't1', seed: 1,
+      generation: { ...base.generation, modelId: model, tokensOut: 500_000, tokensCacheRead: 200_000, tokensTotal: 1_700_000 },
+      grading: { ...base.grading, family: protocol.grader.family, version: protocol.grader.version } };
+    return { protocol, attempt };
+  }
+
+  it.each(['configured-alias', 'claude-opus-4-8[1m]'])('persists frozen prices and agrees with regenerated report for %s', async model => {
+    const { protocol, attempt } = await frozenInput(model === 'configured-alias' ? 'alias' : 'known', model);
+    await emitRollout(attempt, { sql, workspaceId: WS });
+    const [row] = await listRunResults({ runId: protocol.runId, sql, workspaceId: WS });
+    expect(row.priceTableVersion).toBe(protocol.priceSchedule.version);
+    expect(row.costUsd).toBeCloseTo(2.1);
+    const [report] = await getRunReports(protocol.runId, { sql, workspaceId: WS });
+    expect(report.priceTableVersion).toBe(row.priceTableVersion);
+    expect(report.arms.find(arm => arm.arm === attempt.arm)?.cost.costUsd).toBeCloseTo(row.costUsd);
+  });
+
+  it('refuses a caller override that differs from frozen prices without writing either row', async () => {
+    const { protocol, attempt } = await frozenInput('override', 'claude-opus-4-8[1m]');
+    await expect(emitRollout(attempt, { sql, workspaceId: WS,
+      priceTable: { version: 'mutable-override', prices: { 'claude-opus-4-8[1m]': {
+        inputPerMtok: 0, outputPerMtok: 0, cacheReadPerMtok: 0, cacheWritePerMtok: 0 } } } }))
+      .rejects.toThrow(/frozen.*price/);
+    expect(await listRunResults({ runId: protocol.runId, sql, workspaceId: WS })).toEqual([]);
+    expect(await getRollout(rolloutIdFor(attempt.runId, attempt.suite, attempt.taskId, attempt.arm, attempt.seed), { sql, workspaceId: WS })).toBeNull();
+  });
+
+  it('requires a frozen cache-write rate before persisting cache-write usage', async () => {
+    const { protocol, attempt } = await frozenInput('write-missing');
+    attempt.generation.tokensCacheWrite = 10;
+    await expect(emitRollout(attempt, { sql, workspaceId: WS })).rejects.toThrow(/frozen cache-write/);
+    expect(await listRunResults({ runId: protocol.runId, sql, workspaceId: WS })).toEqual([]);
+  });
+
+  it.each(['run', 'suite', 'task', 'arm', 'seed', 'model', 'grader'])('refuses frozen %s identity drift in the emission transaction', async field => {
+    const { protocol, attempt } = await frozenInput(`drift-${field}`, 'claude-opus-4-8[1m]');
+    if (field === 'run') attempt.runId = 'other-run';
+    if (field === 'suite') attempt.suite = 'swe-bench-verified';
+    if (field === 'task') attempt.taskId = 'other-task';
+    if (field === 'arm') attempt.arm = 'other-arm';
+    if (field === 'seed') attempt.seed = 99;
+    if (field === 'model') attempt.generation.modelId = 'claude-opus-4-8';
+    if (field === 'grader') attempt.grading.version = 'mutable-grader';
+    await expect(emitRollout(attempt, { sql, workspaceId: WS })).rejects.toThrow(/frozen/);
+    expect(await listRunResults({ runId: protocol.runId, sql, workspaceId: WS })).toEqual([]);
+    expect(await listRunResults({ runId: attempt.runId, sql, workspaceId: WS })).toEqual([]);
+  });
+});
+
 describe('emitFromAttempt — infra failure nulls resolved (METR discipline)', () => {
+  it('preserves attempt identity and missing-cost evidence in the canonical stored row', async () => {
+    const preregHash = computePreregHash(baseConfig);
+    const armMeta = { costUsdMeasurementMissing: true, currentExecution: { evidenceRefs: ['source:closed-turn'] } };
+    await emitFromAttempt({ runId: RUN, preregHash, arm: 'papercusp', seed: 9,
+      task: { benchmark: 'swe-bench-pro', instanceId: 'metadata-task', problemStatement: 'fixture', graderMeta: {} },
+      attempt: { arm: 'papercusp', blueprintId: 'fixture', instanceId: 'metadata-task', seed: '9', diff: '',
+        tokensIn: 100, tokensOut: 20, costUsd: 0, turns: 1, wallClockMs: 10, trajectoryRef: 'source:closed-turn',
+        stopReason: 'done', armMeta },
+      grade: { instanceId: 'metadata-task', prefix: '9', resolved: true, rawGraderOutput: null,
+        graderFamily: 'swe-bench-pro', graderVersion: 'sweap-2026-06' },
+      modelId: 'claude-opus-4-8[1m]', harnessVersion: 'fixture' }, { sql, workspaceId: WS });
+    const row = (await listRunResults({ runId: RUN, sql, workspaceId: WS })).find(row => row.taskId === 'metadata-task')!;
+    expect(row.armMeta).toEqual(armMeta);
+  });
+
+  // BM-P-004-exercise-evidence + BM-P-004-selector-control: the driver's merged evidence (with an
+  // unreported contributor's NULL counts) and the ensemble selector receipt must survive the canonical
+  // emit → store round-trip. A null that came back as 0 or vanished would turn "unmeasured" into "unused".
+  it('round-trips merged capability evidence (null counts preserved) and the selector receipt', async () => {
+    const preregHash = computePreregHash(baseConfig);
+    const evidence = mergeCapabilityEvidence([
+      [{ capability: 'memory-recall', available: true, delivered: 2, used: 1, refs: ['ti:solver-0'] },
+        { capability: 'locks', available: true, delivered: 0, used: 0 }],
+      [{ capability: 'memory-recall', available: true, delivered: 1, used: 1, refs: ['ti:solver-1'] }],
+      null,
+    ]);
+    const selector: EnsembleSelectorReceipt = { id: 'judge-v1', kind: 'judge-agent', via: 'judge',
+      pickIndex: 1, candidateIndices: [0, 1] };
+    const armMeta = withCapabilityEvidence({ ensembleSize: 3, solvers: 3, candidates: 2, pickIndex: 1, selector }, evidence)!;
+    await emitFromAttempt({ runId: RUN, preregHash, arm: 'papercusp', seed: 10,
+      task: { benchmark: 'swe-bench-pro', instanceId: 'evidence-task', problemStatement: 'fixture', graderMeta: {} },
+      attempt: { arm: 'papercusp', blueprintId: 'fixture', instanceId: 'evidence-task', seed: '10', diff: '',
+        tokensIn: 100, tokensOut: 20, costUsd: 0, turns: 1, wallClockMs: 10, trajectoryRef: 'source:closed-turn',
+        stopReason: 'done', armMeta },
+      grade: { instanceId: 'evidence-task', prefix: '10', resolved: true, rawGraderOutput: null,
+        graderFamily: 'swe-bench-pro', graderVersion: 'sweap-2026-06' },
+      modelId: 'claude-opus-4-8[1m]', harnessVersion: 'fixture' }, { sql, workspaceId: WS });
+    const row = (await listRunResults({ runId: RUN, sql, workspaceId: WS })).find(row => row.taskId === 'evidence-task')!;
+    expect(row.armMeta?.selector).toEqual(selector);
+    const stored = readCapabilityEvidence(row);
+    expect(stored).toEqual(evidence);
+    const memory = stored.find(e => e.capability === 'memory-recall')!;
+    expect(memory).toMatchObject({ available: true, delivered: null, used: null });
+    expect(classifyExercise(memory)).toBe('unknown');
+    expect(stored.find(e => e.capability === 'locks')).toMatchObject({ available: true, delivered: null, used: null });
+  });
+
   it('a generation error → resolved null, generationStatus error, graderStatus error', async () => {
     const preregHash = computePreregHash(baseConfig);
     const task: BenchTask = {
@@ -318,6 +447,26 @@ describe('L2 fleet layer — fleet run + coordination trace (MAST)', () => {
 });
 
 describe('exportRunBundle — publishes L1 rollout cards + L2 fleet runs/traces', () => {
+  it('product report and exported manifest retain the same frozen task/seed/arm population', async () => {
+    const runId = 'frozen-report-population';
+    const config = {
+      ...baseConfig, taskIds: ['assigned-a', 'assigned-b'], seeds: [0, 1, 2],
+      arms: ['papercusp', 'baseline-b-native'],
+    };
+    const { preregHash } = await preregister({ runId, suites: ['swe-bench-pro'], config, repoRoot, sql, workspaceId: WS });
+    await emitRollout(input({ runId, preregHash, taskId: 'assigned-a', seed: 0, grading: {
+      resolved: true, status: 'passed', family: 'swe-bench-pro', version: 'sweap-2026-06',
+    } }), { sql, workspaceId: WS });
+    const [report] = await getRunReports(runId, { sql, workspaceId: WS });
+    expect(report.arms[0].passAt1).toBeCloseTo(1 / 6);
+    expect(report.arms[1]).toMatchObject({ arm: 'baseline-b-native', tasks: 2, attempts: 0, passAt1: 0 });
+    const exported = await exportRunBundle(runId, { repoRoot, sql, workspaceId: WS });
+    const manifest = JSON.parse(readFileSync(join(repoRoot, exported.manifestPath), 'utf8'));
+    expect(manifest.preregistration.config).toEqual(config);
+    expect(manifest.reports).toEqual([report]);
+    expect(manifest.reports[0].assignment.basis).toBe('frozen');
+    expect(manifest.reports[0].assignment.seeds).toEqual([0, 1, 2]);
+  });
   it('writes a manifest + rollout files + fleet files under benchmarks/', async () => {
     const res = await exportRunBundle(RUN, { repoRoot, sql, workspaceId: WS });
     expect(res.count).toBeGreaterThanOrEqual(2);

@@ -1,8 +1,8 @@
 /**
  * pot-wake-pg.integration.test.ts — autoloop-hive-operator-rebuild-2026-06-05 P0.
  *
- * Proves, against a real Postgres (testcontainer) with migration 158 applied +
- * the baseline `routines` table shape, that the self-declared wake round-trips:
+ * Proves, against the canonical fully migrated org fixture, that the
+ * self-declared wake store round-trips:
  *   - declarePotTimeWake: one-shot routine row (no cron) with the clamped
  *     explicit next_fire_at, payload {blueprintId:'coding', launchInstallSlug},
  *     target system:blueprint-run.
@@ -11,36 +11,31 @@
  *     second claim loses. A cron routine stays active and advances.
  *   - hive_wake state (migration 158): subscriptions + lastWakeAt round-trip.
  *
- * Mirrors curation-pg.integration.test.ts's testcontainer setup (mocks
- * `@papercusp/db-org` getOrgPg + `workspace-registry` activeWorkspaceId).
+ * Uses real workspace-scoped transactions and the same schema/serializers as
+ * production; a hand-curated migration subset misses new carry-note columns.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import postgres from 'postgres';
-import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { getTestPg } from '@papercusp/test-config/pg';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
-const readMigration = (f: string) =>
-  readFileSync(resolve(SQL_DIR, f), 'utf8')
-    .split('\n')
-    .filter((line) => !/^\s*\\/.test(line))
-    .join('\n');
+import type postgres from 'postgres';
+import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 
 const WS = 'ws-hivetest';
 const SLUG = 'pot-test-harness';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  appSql: undefined as unknown as postgres.Sql,
+}));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return {
     ...(await orig<typeof import('@papercusp/db-org')>()),
     ...actual,
     getOrgPg: () => ({ sql: h.sql }),
-    withWorkspace: async (_ws: string, fn: (tx: postgres.Sql) => unknown) => fn(h.sql),
+    withWorkspace: (ws: string, fn: (tx: postgres.TransactionSql) => unknown) =>
+      h.appSql.begin(async (tx) => {
+        await tx`SELECT set_config('app.workspace_id', ${ws}, true)`;
+        return fn(tx);
+      }),
   };
 });
 vi.mock('../workspace-registry', async () => {
@@ -62,84 +57,23 @@ const {
   POT_WAKE_ROUTINE_NAME,
 } = await import('./wake');
 const { claimDueRoutine } = await import('../harness/routines/claim');
-const { _resetReactionsForTests } = await import('../events/registry');
+const { _resetReactionsForTests, listReactionRules, registerReactionRule } = await import('../events/registry');
 
 let rootSql: postgres.Sql;
-let dbName: string;
+let db: OrgTestDb;
+let priorRules: ReturnType<typeof listReactionRules> = [];
 
 beforeAll(async () => {
-  const adminUri = await getTestPg();
-  dbName = `hive_${randomBytes(5).toString('hex')}`;
-  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
-  try {
-    await admin.unsafe(`CREATE DATABASE "${dbName}"`);
-  } finally {
-    await admin.end({ timeout: 5 });
-  }
-  const u = new URL(adminUri);
-  u.pathname = `/${dbName}`;
-  rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
-  await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
-  await rootSql.unsafe(`DO $$ BEGIN CREATE ROLE harness_app; EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
-  await rootSql.unsafe(`DO $$ BEGIN CREATE ROLE harness_zero; EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
-  // The baseline `routines` shape (000-baseline.sql) — columns + the unique
-  // constraint upsertRoutine's ON CONFLICT (install_slug, name) needs.
-  await rootSql.unsafe(`
-    CREATE TABLE harness_shared.routines (
-      id text NOT NULL PRIMARY KEY,
-      install_slug text NOT NULL,
-      name text NOT NULL,
-      trigger_kind text NOT NULL,
-      trigger_config jsonb NOT NULL,
-      target_role text NOT NULL,
-      payload_template jsonb,
-      concurrency text DEFAULT 'queue' NOT NULL,
-      catchup text DEFAULT 'skip-old' NOT NULL,
-      active boolean DEFAULT true NOT NULL,
-      last_fired_at timestamptz,
-      next_fire_at timestamptz,
-      created_at timestamptz DEFAULT now() NOT NULL,
-      updated_at timestamptz DEFAULT now() NOT NULL,
-      metadata jsonb,
-      workspace_id text NOT NULL,
-      -- migration 323 (B-LOOP-1): the loop-recurrence columns upsertRoutine now
-      -- INSERTs. Hand-rolled here like the sibling routines-runtime.integration
-      -- schema; omitting them drifts this test from head and the INSERT fails
-      -- (column reschedule_interval_sec ... does not exist).
-      reschedule_interval_sec integer,
-      target_owner_id text,
-      -- migration 408 (schedule-inventory-and-ephemeral-tier): listDueCronRoutines
-      -- filters tier = durable, so the hand-rolled DDL needs this column or the
-      -- due-list query fails (column tier does not exist). Pre-existing drift.
-      tier text NOT NULL DEFAULT 'durable',
-      CONSTRAINT routines_install_slug_name_key UNIQUE (install_slug, name)
-    )
-  `);
-  // 158 creates the legacy `pot_wake` table; 198 renames it to `hive_wake` (the
-  // unify-launch-mechanics pot→hive rename, 2026-06-09). The cup-lexicon rename
-  // (2026-07-09/10, mig 554) later flipped the canonical direction back —
-  // hive_wake -> pot_wake, the CURRENT name wake.ts's readPotWakeState/
-  // updateOperatorState reads/writes (key 'pot_wake') — so apply all three
-  // (158, 198, 554) so the test DB matches head (EI-9435: this test was red on
-  // a corrupted 198 filename, then, once fixed, red again on the missing
-  // pot_wake table until 554 was added here too — same fix already applied in
-  // declared-event-wake-e2e.integration.test.ts). 554 is a self-contained set of
-  // per-table to_regclass(...) IS NOT NULL guarded DO blocks, so applying the
-  // whole file is safe against this hand-curated minimal schema.
-  await rootSql.unsafe(readMigration('158-pot-wake-state.sql')).simple();
-  await rootSql.unsafe(readMigration('198-rename-pot-wake-to-hive-wake.sql')).simple();
-  await rootSql.unsafe(readMigration('554-cup-lexicon-db-rename-phase1.sql')).simple();
-  // 472 — the Mug carry-note converged onto the shared carry-note substrate
-  // (su-cold-auto-mode P-001): setPotCarryNote now writes carry_notes, not the
-  // hive_wake payload. The data-fold's work_item_checkpoints branch is IF-EXISTS
-  // guarded (absent here) and the hive_wake branch is a no-op (empty at migrate).
-  await rootSql.unsafe(readMigration('472-carry-notes.sql')).simple();
-  h.sql = rootSql;
+  priorRules = listReactionRules();
+  db = await createOrgTestDb();
+  rootSql = h.sql = db.adminSql;
+  h.appSql = db.appSql;
 }, 90_000);
 
 afterAll(async () => {
   _resetReactionsForTests();
-  await rootSql?.end({ timeout: 5 });
+  priorRules.forEach(registerReactionRule);
+  await db?.cleanup();
 });
 
 describe('declarePotTimeWake (the one-shot time wake)', () => {

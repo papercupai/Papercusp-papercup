@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10005538",
+  "parentWorkItem": "WI-10004890",
+  "planItem": "papercusp-log-performance-remediation-2026-09-23#P-011",
+  "plane": "live-current-build-operator-api",
+  "raw": {
+    "path": "docs/evidence/papercusp-oct1-p011-live-descendants-r1-2026-10-02.json",
+    "bytes": 50224,
+    "sha256": "46a1fe47032a28a529e6d38e2eb5457a3ec7138061bf71ee9a9a31212df0255a"
+  },
+  "execution": {
+    "testPath": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+    "testLayer": "integration",
+    "testRunId": 20542223,
+    "result": "9 passed, 0 failed, 0 skipped",
+    "nativeExit": 0,
+    "routerHead": "420c28a3f8d43b340625b826bba2180c0520d61a",
+    "ledgerWorktreeDirty": true,
+    "guardRunId": 20542211,
+    "guardResult": "8 passed, 0 failed, 1 live test skipped",
+    "guardScope": "Entry parsing, exact executable/service arguments, ancestry, explicit census residue, PID reuse and existing reader guards. The skipped live test supplied no evidence.",
+    "types": "Focused maintained typecheck: 0 errors; exact sampler file only.",
+    "logs": [
+      "/tmp/su-7db4f-p011-descendants-guard-r2.log",
+      "/tmp/su-7db4f-p011-descendants-live-r1.log",
+      "/tmp/su-7db4f-p011-descendant-types-r1.log"
+    ]
+  },
+  "runtime": {
+    "mainPid": 2990074,
+    "mainStartTicks": "515553",
+    "healthBuildBefore": "6e7015a225",
+    "healthBuildAfter": "6e7015a225",
+    "bundleDiskSha256Before": "05a33a7373b9bd4713bb789fe9111ed4eb0acbc9dc090330ea246f9e0fe29d71",
+    "bundleDiskSha256After": "05a33a7373b9bd4713bb789fe9111ed4eb0acbc9dc090330ea246f9e0fe29d71",
+    "nodeExecutableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+    "route": "Maintained operator-api current-build staging route on port 3170; committed generation, shared database/workspace.",
+    "cleanup": {
+      "openedInspectorClosed": true,
+      "mainProcessIdentityPreserved": true
+    }
+  },
+  "coverage": {
+    "samples": 9,
+    "idleWindows": 3,
+    "idleMsPerWindow": 2000,
+    "ordinaryReadRequests": 24,
+    "concurrency": 2,
+    "descendantCapPerSample": 64,
+    "observedDescendantsPerSample": 2,
+    "notCheckedDescendants": [],
+    "observedProcessIdentities": [
+      {
+        "pid": 2990074,
+        "startTicks": "515553",
+        "parentPid": 4229,
+        "role": "named-main"
+      },
+      {
+        "pid": 3144692,
+        "startTicks": "541058",
+        "parentPid": 2990074,
+        "role": "other-descendant",
+        "entry": "systemd-scope-env-runner.mjs"
+      },
+      {
+        "pid": 3144739,
+        "startTicks": "541066",
+        "parentPid": 3144692,
+        "role": "same-entry-operator-descendant",
+        "entry": "hono-host.mjs"
+      }
+    ],
+    "nativeEsbuildServicesObserved": 0,
+    "definition": "Nine serial, bounded samples of this main process and its descendant tree. No missing/capped descendant was recorded in these samples. This is not an atomic process census, a host-wide census or proof of absence outside the sampled tree/times."
+  },
+  "measurementDefinitions": {
+    "pssBytes": "smaps_rollup Pss kernel kB times 1024, per observed process.",
+    "observedPssBytes": "Sum of serial per-process PSS observations in the bounded named tree; not cgroup memory or total retained bytes.",
+    "heapAndNative": "Main-PID Node/V8 counters. Heap, external, ArrayBuffer and PSS overlap; no subtraction or additive native partition.",
+    "processRole": "Exact executable hash, parsed entry and verified ancestry; not actual HTTP routing or allocation ownership.",
+    "lifetime": "Same PID/startTicks/executable is a sampled identity. Not observed since the previous sample is not proof of exit.",
+    "forcedDiagnosticOperations": []
+  },
+  "namedSourceSha256BeforeAndAfter": {
+    "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts": "99ddac98c7a3376b67353f6e1cf374906dcc5cd9483ffc5019771ffee29c8b84",
+    "scripts/cdp-inspector.mjs": "d3114909e8418ebf5fb2a6c9d2b706e15325cc3dca92b7440b3c84df1e043075",
+    "scripts/lib/identity-leak-patterns.mjs": "0251ea6963a731f86a0162ce125e7b0f4826a8492c39c0e89092d8aaa1693b1e",
+    "apps/operator/bin/hono-host.ts": "d0bd77254d9b0ec9216a4cd2d52d911f78fa8a7751ce90a2a734b3717d9b56bd"
+  },
+  "fullTransitiveSourceCurrentness": "unknown",
+  "allocationOwner": "unknown",
+  "compilerCaller": "unknown",
+  "workerRequestAssignment": "unknown",
+  "acceptance": {
+    "fulfilled": "Scoped sampler change: executable/entry/ancestry attribution, explicit bounded census and non-exit lifecycle semantics with actual current-build process/resource observations and maintained regression guards.",
+    "notFulfilled": "Parent P011 retained/native/worker ownership, matched selected-intervention savings, historical compiler disposition, R8/R9, independent acceptance and final shipment remain open.",
+    "nextDistinguishingObservation": "Bind the same-entry descendant to its actual runtime role and PID-bound V8/owner counters under comparable idle and ordinary workload. An executable/entry match alone cannot name a request worker or a retained allocation owner."
+  },
+  "limits": [
+    "Ambient staging workload was uncontrolled; idle means no probe HTTP requests.",
+    "Ordinary calls checked HTTP success and bounded row counts, not full useful-context parity between interventions.",
+    "No profiler, queryObjects, forced GC, service restart or process kill was requested.",
+    "The new observation does not replay or reinterpret the settled R4 private paired comparison.",
+    "No observed zero-esbuild sample proves recovery of the historical 4.2 GiB services.",
+    "Home paths in emitted evidence use the existing identity-safe serializer; raw argv and environment were not published."
+  ]
+}

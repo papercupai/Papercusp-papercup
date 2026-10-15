@@ -14,14 +14,19 @@ const sidecarMode =
   process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE === '1' ||
   process.env.PAPERCUSP_GATEWAY_SIDECAR_MODE === '1' ||
   process.env.PAPERCUSP_EMBED_SIDECAR_MODE === '1' ||
-  process.env.PAPERCUSP_RESOURCE_GOVERNOR_MONITOR_MODE === '1';
+  process.env.PAPERCUSP_RESOURCE_GOVERNOR_MONITOR_MODE === '1' ||
+  process.env.PAPERCUSP_REPAIR_PRECHECK_WORKER_MODE === '1' ||
+  process.env.PAPERCUSP_LSP_DAEMON_MODE === '1';
 const port = Number(process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT ?? 3070);
 const hostname = resolveBindHost();
+// The verifier evaluates the import graph without starting a listener. Its
+// smoke must work while the real operator owns the default port (WI-10007056).
+const importSmoke = process.argv.includes('--papercusp-import-smoke');
 
 // The primary checks for an unrelated port holder before it forks. Workers
 // intentionally join an existing SO_REUSEPORT listener; an exclusive probe in
 // each replacement worker would mistake a healthy sibling for a conflict.
-if (cluster.isPrimary && !sidecarMode && !portAvailableSync(port, hostname)) {
+if (cluster.isPrimary && !sidecarMode && !importSmoke && !portAvailableSync(port, hostname)) {
   console.error(
     `[hono-host] fatal EADDRINUSE during pre-bootstrap port check: ${hostname}:${port} is already in use`,
   );

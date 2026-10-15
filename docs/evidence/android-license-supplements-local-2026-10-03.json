@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Android offline license supplements and isolated notice producer",
+  "framework": "operational",
+  "command": [
+    "make",
+    "test-android-library-notices"
+  ],
+  "workingDirectory": "papercup-rust-mobile",
+  "startedAt": "2026-10-03T00:41:17.736145+00:00",
+  "finishedAt": "2026-10-03T00:41:30.564460+00:00",
+  "timestampSource": "Birth time and final modification time of retained command log; exit0 observed from execution envelope.",
+  "exitCode": 0,
+  "summary": "Maintained isolated debug/release notice producer check passed normal/add/remove graph transitions and twenty damaged controls per variant/phase. Five formerly linked-only records retain offline texts and exact source provenance; JAIN SIP NIST and Sun/BEA notices remain distinct. Production metadata and compiled resource fingerprints unchanged during the isolated test.",
+  "scope": "Local supplemental metadata generation, resource compilation and JVM schema check; no new native execution or signed candidate/phone/Play/complete rights/source-delivery acceptance",
+  "mobileCommitAtCapture": "a555fe85f9c8bdfec98fe4ca89bf3107d223be60",
+  "sourceFiles": [
+    {
+      "path": "papercup-rust-mobile/android/app/build.gradle.kts",
+      "sha256": "0f3517b0b3668789876e7d5dea15c6b5543222836dbce9177547b8550ec3e5f4"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-library-notices-test.sh",
+      "sha256": "142793b5db663e2ab2a533bd074587c54b5945a91e45c54766a7fcc3c2fc6b31"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/SOURCES.json",
+      "sha256": "37b3d17ea19ed92cb658b6ca64c2459c4a2337ce2ff242657eb6205ee17ebd56"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/android-sdk.json",
+      "sha256": "fdf78b929e58d10e6eab87ee68ac509964127170d74af8c521b70e5d60e0e9da"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/jain-sip.json",
+      "sha256": "eca66be7d59936df549821d0d6167a7b7885043ca6cf7d7b24ea1c8db0fabe68"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/libyuv.json",
+      "sha256": "8c25e6b1bd14c6956ebf6d6b79d553a979ca03b6a28153714e22b7792579d6f9"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/mlkit.json",
+      "sha256": "8b05a0d3c2ab7219dfbbb2d67e4d9e3f28e8eb8d72fb2465380ff5a84418f9a2"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/webrtc.json",
+      "sha256": "ce77d39ae995c4276e7f761028aa19a515d3c7d486a0410576089d0ba5d8b04d"
+    }
+  ],
+  "testFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-library-notices-test.sh",
+      "sha256": "142793b5db663e2ab2a533bd074587c54b5945a91e45c54766a7fcc3c2fc6b31"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "runtime-graph-population",
+      "passed": true,
+      "evidence": "Actual release221/222/221 and debug227/228/227 library/module populations and selected versions matched through cached add/remove transitions."
+    },
+    {
+      "id": "five-offline-supplements",
+      "passed": true,
+      "evidence": "All five override contents and SHA-256 provenance matched actual generated debug/release licenses and referencing selected module versions."
+    },
+    {
+      "id": "jain-sip-distinct-notices",
+      "passed": true,
+      "evidence": "NIST warranty/conditions and original Sun/BEA copyright/use-subject-to-license notice retained. Removing API notice while retaining NIST conditions was rejected."
+    },
+    {
+      "id": "twenty-damaged-controls",
+      "passed": true,
+      "evidence": "Per variant and phase: four graph/base-license controls, five omitted supplemental texts, five substituted texts, five unlinked references and one missing JAIN SIP API notice rejected."
+    },
+    {
+      "id": "isolated-producer-outputs",
+      "passed": true,
+      "evidence": "Existing app build directory and both metadata producer output sets were inside the unique temporary check directory; normal app raw debug/release metadata and compiled release resource SHA-256 values remained unchanged before/after."
+    },
+    {
+      "id": "compiled-raw-supplements",
+      "passed": true,
+      "evidence": "Separately executed :app:mergeReleaseResources succeeded. Compiled release raw_aboutlibraries.json.flat contains byte-identical normal release metadata with the five supplements."
+    },
+    {
+      "id": "jvm-schema-regression",
+      "passed": true,
+      "evidence": "Separately executed LibraryNoticesTest: three tests, zero failures/errors/skips. No new native UI run claimed."
+    }
+  ],
+  "isolationBefore": {
+    "android/app/build/generated/aboutLibraries/release/res/raw/aboutlibraries.json": "0c0aff1bb491d60cb9e05d120c1770bf1cc5d9ceeea9fb351aaf35331861caf5",
+    "android/app/build/generated/aboutLibraries/debug/res/raw/aboutlibraries.json": "c9aa7e5ae91026774689c3a18fbe6303db28c67ccdefa14bd467b70642b422f2",
+    "android/app/build/intermediates/merged_res/release/mergeReleaseResources/raw_aboutlibraries.json.flat": "7879c4600e6fc69072469983c6e7a5ff6d359c8680a9f8e033a83b4bed74d902"
+  },
+  "isolationAfter": {
+    "android/app/build/generated/aboutLibraries/release/res/raw/aboutlibraries.json": "0c0aff1bb491d60cb9e05d120c1770bf1cc5d9ceeea9fb351aaf35331861caf5",
+    "android/app/build/generated/aboutLibraries/debug/res/raw/aboutlibraries.json": "c9aa7e5ae91026774689c3a18fbe6303db28c67ccdefa14bd467b70642b422f2",
+    "android/app/build/intermediates/merged_res/release/mergeReleaseResources/raw_aboutlibraries.json.flat": "7879c4600e6fc69072469983c6e7a5ff6d359c8680a9f8e033a83b4bed74d902"
+  },
+  "retainedLogs": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-supplemental-notices-isolated-20261003.log",
+      "sha256": "d592d981d0f10014ba3a7189b58f1ef70f77aaa548e5b1873032215b8d9042ed"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-supplemental-resource-unit-20261003.log",
+      "sha256": "64407d2e75d343ab7efde1f25b0892ef88dc77a75b728a7b302ff2d30bb9951c"
+    }
+  ],
+  "retainedUnitReport": {
+    "path": "papercup-rust-mobile/android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.LibraryNoticesTest.xml",
+    "sha256": "f1a34b05ffed702ecda4858ab23d91b5d01cb2fc2dfec121db79ff1d5697d352",
+    "name": "com.papercuspai.operator.mobile.LibraryNoticesTest",
+    "tests": "3",
+    "skipped": "0",
+    "failures": "0",
+    "errors": "0",
+    "timestamp": "2026-10-03T00:37:21.016Z",
+    "time": "0.11"
+  },
+  "limitations": [
+    "Original native3/72host result and original8 auth result remain historical artifact evidence; this run executes no new native tests.",
+    "Upstream libyuv/WebRTC license snapshots do not prove exact native source or complete third-party payload coverage.",
+    "JAIN SIP API license/distribution rights and complete transitive/native/model/Rust source/notice coverage remain governed by the open P007 work item.",
+    "No signed candidate, physical phone, OS biometric, Google account acceptance, Play upload/install, or recipient-accessible corresponding-source delivery claim."
+  ]
+}

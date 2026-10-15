@@ -1,4 +1,8 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { resolveBridge } from './bridge-client.js';
 import { createVerifier } from './index.js';
 import { findScreen, findScreenByRoute, SCREENS } from './screens.js';
 
@@ -9,9 +13,37 @@ function json(value: unknown, status = 200): Response {
   });
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
 
 describe('Tauri verification surface', () => {
+  it('falls back to /tmp for a PID token when the runtime temp directory differs', async () => {
+    const pid = Date.now() * 1000 + Math.floor(Math.random() * 1000);
+    const runtimeTempDir = await mkdtemp(join('/tmp', 'tauri-verify-runtime-'));
+    const fallbackTokenPath = join('/tmp', `tauri-dev-bridge-${pid}.token`);
+
+    try {
+      await writeFile(
+        fallbackTokenPath,
+        JSON.stringify({ pid, port: 4444, token: 'fallback-token' }),
+        { flag: 'wx' },
+      );
+      vi.stubEnv('TMPDIR', runtimeTempDir);
+      expect(tmpdir()).toBe(runtimeTempDir);
+
+      await expect(resolveBridge({ tauriPID: pid })).resolves.toEqual({
+        ok: true,
+        value: { pid, port: 4444, token: 'fallback-token' },
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(fallbackTokenPath, { force: true });
+      await rm(runtimeTempDir, { recursive: true, force: true });
+    }
+  });
+
   it('never silently chooses among live desktops', async () => {
     const verifier = createVerifier();
     expect(verifier.config()).toEqual({ timeout: 10_000 });

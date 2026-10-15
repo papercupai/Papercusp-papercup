@@ -366,7 +366,7 @@ export const OPERATOR_STATE_SYNC_NAMES: Partial<Record<StateTable, readonly stri
   // WI-2145092: the workspace work-scope policy lives under this row's `workScope` key.
   // The /admin/work-scope pane reads workScope.policy and must learn a set/clear
   // (workspace:work_scope or POST /api/work-scope/*) without a remount.
-  operator_pot_control_policy: ['workScope.policy'],
+  operator_pot_control_policy: ['workScope.policy', 'potIntegration.createQuestion'],
 };
 
 async function notifyOperatorStateSync(table: StateTable): Promise<void> {

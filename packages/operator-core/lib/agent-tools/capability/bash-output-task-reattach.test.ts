@@ -124,6 +124,8 @@ describe('capability:bash_output — durable task attachment', () => {
     expect(bashOutput.args.safeParse({ task_id: 'task-1' }).success).toBe(true);
     expect(bashOutput.args.safeParse({ bash_id: 'bash-1', task_id: 'task-1' }).success).toBe(true);
     expect(bashOutput.args.safeParse({}).success).toBe(false);
+    expect(bashOutput.args.safeParse({ filter: '^keep' }).success).toBe(false);
+    expect(bashOutput.args.safeParse({ bash_id: '', task_id: 'task-1' }).success).toBe(false);
   });
 
   it('resolves through task_id when both handles are supplied and agree', async () => {
@@ -215,6 +217,79 @@ describe('capability:bash_output — durable task attachment', () => {
     expect(String(payload.advice)).not.toContain('will keep growing');
     expect(String(payload.advice)).not.toContain('read log_path directly');
     expect(jobs.startBackground).not.toHaveBeenCalled();
+  });
+
+  it('keeps a confirmed-live task running when its output contains an earlier JOB END marker', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'bash-live-stale-end-marker-'));
+    const logPath = join(stateDir, 'live.log');
+    try {
+      writeFileSync(
+        logPath,
+        `earlier task output${formatJobLogEndMarker('completed', 0, Date.UTC(2026, 9, 2, 11, 17, 33))}`,
+      );
+      store.getTask.mockResolvedValue(
+        taskRow({
+          startedAt: new Date(Date.UTC(2026, 9, 2, 11, 48, 47)).toISOString(),
+          logPath,
+        }),
+      );
+      jobs.getJob.mockReturnValue(null);
+
+      const result = await bashOutput.handler({ task_id: 'task-carry-1' }, ctx('ws-current', stateDir));
+      const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+
+      expect(result.isError).toBeUndefined();
+      expect(payload).toMatchObject({ status: 'running', running: true, recovered_from_ledger: true });
+      expect(payload).not.toHaveProperty('recovered_from_log_marker');
+      expect(jobs.startBackground).not.toHaveBeenCalled();
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a scope-active task running when its output contains an earlier JOB END marker', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'bash-scope-live-stale-end-marker-'));
+    const logPath = join(stateDir, 'live.log');
+    try {
+      const fakeBin = join(stateDir, 'bin');
+      mkdirSync(fakeBin, { recursive: true });
+      const fakeSystemctl = join(fakeBin, 'systemctl');
+      writeFileSync(fakeSystemctl, '#!/bin/sh\nprintf "active\\n"\n');
+      chmodSync(fakeSystemctl, 0o755);
+      writeFileSync(
+        logPath,
+        `earlier task output${formatJobLogEndMarker('completed', 0, Date.UTC(2026, 9, 2, 11, 17, 33))}`,
+      );
+      store.getTask.mockResolvedValue(
+        taskRow({
+          taskId: 'tskcarry5678',
+          rootTaskId: 'tskcarry5678',
+          pid: null,
+          processIdentity: null,
+          cgroupPath: null,
+          scopeUnit: 'pc-tskcarry5678.service',
+          logPath,
+        }),
+      );
+      jobs.getJob.mockReturnValue(null);
+      const previousPath = process.env.PATH;
+      process.env.PATH = `${fakeBin}:${previousPath ?? ''}`;
+
+      try {
+        const result = await bashOutput.handler({ task_id: 'tskcarry5678' }, ctx('ws-current', stateDir));
+        const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+
+        expect(result.isError).toBeUndefined();
+        expect(payload).toMatchObject({ status: 'running', running: true, recovered_from_scope: true });
+        expect(payload).not.toHaveProperty('recovered_from_log_marker');
+        expect(jobs.startBackground).not.toHaveBeenCalled();
+      } finally {
+        if (previousPath === undefined) delete process.env.PATH;
+        else process.env.PATH = previousPath;
+      }
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 
   // EI-22185525501280167: the exact reported shape — systemd CONFIRMS the job's

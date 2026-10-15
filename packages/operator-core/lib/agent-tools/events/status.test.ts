@@ -6,6 +6,9 @@
  * for awaits; delivery_id/channel/last_error for deliveries), that the meter is
  * omitted unless meter:true, and that all three store reads run.
  */
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
@@ -46,7 +49,7 @@ vi.mock('../../events/await/compose-store', () => ({
   loadTreeLeaves: vi.fn(async () => []),
 }));
 
-import status from './status';
+import status, { turnProofFields } from './status';
 import {
   deliveryBacklogSummary,
   inspectEventKey,
@@ -58,16 +61,44 @@ import { listMyEventKeySubscriptions } from '../coordination/event-subscriptions
 import { hostAudienceResolvers } from '../coordination/audience-host';
 import { resolveLiveRoleHolders } from '../coordination/role-slot-live-resolve';
 import { resolveSessionStates } from '../coordination/liveness-oracle';
-import type { DeliveryRow } from '../../events/await/types';
+import { CHARS_PER_TOKEN_ESTIMATE } from '../../context-doors';
+import { applyResultDoorAsync, resetResultDoorAggregatesForTests, RESULT_DOOR_TOKENS, type DoorableResult } from '../../result-door';
+import { _resetScratchUsageForTests } from '../../scratch-gc';
+import { readVolatileScratchReference } from '../../scratch-reference';
+import type { AwaitRow, DeliveryRow } from '../../events/await/types';
 import type { SubscriptionRow } from '@papercusp/coordination/capabilities';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof status.handler>[1];
-const call = async (args: Record<string, unknown>) => {
-  const res = (await status.handler(args as never, ctx)) as { content: Array<{ text: string }> };
+const call = async (
+  args: Record<string, unknown>,
+  callerCtx = ctx,
+) => {
+  const res = (await status.handler(args as never, callerCtx)) as { content: Array<{ text: string }> };
   return JSON.parse(res.content[0].text);
 };
 
-const AWAIT_ROW = { id: 11, eventKey: 'lock:grant:t1', policy: 'wake', note: 'n', expiresTs: 'E', timeoutBehavior: 'wake', createdAt: 'C' };
+const AWAIT_ROW: AwaitRow = {
+  id: 11,
+  workspaceId: 'ws-x',
+  subscriberId: 'su-status',
+  eventKey: 'lock:grant:t1',
+  policy: 'wake',
+  note: 'n',
+  wakeHandle: null,
+  timeoutBehavior: 'wake',
+  expiresTs: '2026-10-11T01:00:00.000Z',
+  createdAt: '2026-10-11T00:00:00.000Z',
+  firedAt: null,
+  firedReason: null,
+  cancelledAt: null,
+  cancelReason: null,
+  once: true,
+  minSleepSec: null,
+  urgency: false,
+  payloadFilter: null,
+  scopeKind: null,
+  scopeRef: null,
+};
 // Typed as the real DeliveryRow (EI-21878602849246427) rather than a partial literal cast
 // `as never` at each use. The cast defeats vi.mocked()'s signature check, so a fixture that
 // goes stale when DeliveryRow gains a required field fails at RUNTIME in an unrelated file
@@ -91,6 +122,9 @@ const DELIVERY_ROW: DeliveryRow = {
   minSleepSec: null,
   coalescedCount: 1,
   source: null,
+  turnProof: null,
+  turnStartedAt: null,
+  pickupDeadlineAt: null,
 };
 const EVENT_SUBSCRIPTION_ROW: SubscriptionRow = {
   id: 33,
@@ -104,7 +138,7 @@ const EVENT_SUBSCRIPTION_ROW: SubscriptionRow = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(listActiveAwaits).mockResolvedValue([AWAIT_ROW] as never);
+  vi.mocked(listActiveAwaits).mockResolvedValue([AWAIT_ROW]);
   vi.mocked(listMyEventKeySubscriptions).mockResolvedValue([EVENT_SUBSCRIPTION_ROW]);
   vi.mocked(listRecentDeliveries).mockResolvedValue([DELIVERY_ROW]);
   vi.mocked(deliveryBacklogSummary).mockResolvedValue({
@@ -120,6 +154,48 @@ beforeEach(() => {
 });
 
 describe('events:status projection', () => {
+  it('admits the evidence-only judge role', () => {
+    expect(status.agentRoles).toContain('judge');
+  });
+
+  it('judge default view stays scoped to the caller identity', async () => {
+    const judgeCtx = { ...ctx, role: 'judge' } as typeof ctx;
+    const out = await call({}, judgeCtx);
+
+    expect(listActiveAwaits).toHaveBeenCalledWith('su-status');
+    expect(listRecentDeliveries).toHaveBeenCalledWith('su-status', 10);
+    expect(listMyEventKeySubscriptions).toHaveBeenCalledWith({
+      ownerId: 'su-status',
+      ownerLabel: 's',
+      source: 'static-client',
+      workspaceId: 'ws-x',
+      userId: null,
+    });
+    expect(inspectEventKey).not.toHaveBeenCalled();
+    expect(wakeMeter).not.toHaveBeenCalled();
+    expect(out).not.toHaveProperty('event_inspection');
+    expect(out).not.toHaveProperty('meter');
+  });
+
+  it('judge cannot inspect arbitrary event keys or the fleet wake meter', async () => {
+    const judgeCtx = { ...ctx, role: 'judge' } as typeof ctx;
+
+    await expect(call({ event: 'work-item:claimable' }, judgeCtx)).rejects.toThrow();
+    await expect(call({ meter: true }, judgeCtx)).rejects.toThrow();
+    expect(inspectEventKey).not.toHaveBeenCalled();
+    expect(wakeMeter).not.toHaveBeenCalled();
+  });
+
+  it('judge await_id reads only the caller-owned delivery row', async () => {
+    const judgeCtx = { ...ctx, role: 'judge' } as typeof ctx;
+
+    const out = await call({ await_id: 11 }, judgeCtx);
+
+    expect(listRecentDeliveries).toHaveBeenCalledWith('su-status', 1, 11);
+    expect(inspectEventKey).not.toHaveBeenCalled();
+    expect(out).not.toHaveProperty('event_inspection');
+  });
+
   it('opts out of the ambient workspace transaction for concurrent projected reads', () => {
     expect(status.skipWorkspaceTx).toBe(true);
   });
@@ -131,9 +207,9 @@ describe('events:status projection', () => {
       event: 'lock:grant:t1',
       policy: 'wake',
       note: 'n',
-      expires_ts: 'E',
+      expires_ts: '2026-10-11T01:00:00.000Z',
       on_timeout: 'wake',
-      created_at: 'C',
+      created_at: '2026-10-11T00:00:00.000Z',
     });
   });
 
@@ -163,7 +239,7 @@ describe('events:status projection', () => {
     vi.mocked(listActiveAwaits).mockResolvedValueOnce([
       AWAIT_ROW,
       { ...AWAIT_ROW, id: 12, eventKey: 'other:event' },
-    ] as never);
+    ]);
 
     const out = await call({ await_id: 12 });
 
@@ -173,9 +249,9 @@ describe('events:status projection', () => {
         event: 'other:event',
         policy: 'wake',
         note: 'n',
-        expires_ts: 'E',
+        expires_ts: '2026-10-11T01:00:00.000Z',
         on_timeout: 'wake',
-        created_at: 'C',
+        created_at: '2026-10-11T00:00:00.000Z',
       },
     ]);
   });
@@ -207,10 +283,75 @@ describe('events:status projection', () => {
       status: 'parked',
       channel: 'inbox',
       turn_invoked: false,
+      turn_proof: null,
+      turn_started_at: null,
       attempts: 2,
       last_error: 'boom',
       created_at: 'C2',
       delivered_at: null,
+    });
+  });
+
+  // P-006 / D-005: events:status is the LATER seam that reports pickup. `status:'delivered'`
+  // only says the delivery reached its channel; turn_proof says whether a turn started.
+  it('reports turn_proof per delivery: the deadline only while awaiting, the start time once proven', async () => {
+    vi.mocked(listRecentDeliveries).mockResolvedValueOnce([
+      {
+        ...DELIVERY_ROW,
+        id: 40,
+        status: 'delivered',
+        channel: 'psu-socket-inject',
+        deliveredAt: '2026-10-10T20:00:00.000Z',
+        turnProof: 'awaiting',
+        pickupDeadlineAt: '2026-10-10T20:10:00.000Z',
+      },
+      {
+        ...DELIVERY_ROW,
+        id: 41,
+        status: 'delivered',
+        channel: 'psu-socket-inject',
+        deliveredAt: '2026-10-10T19:00:00.000Z',
+        turnProof: 'observed',
+        turnStartedAt: '2026-10-10T19:01:30.000Z',
+        // A resolved row keeps its stale deadline in the ledger; it must not be rendered.
+        pickupDeadlineAt: '2026-10-10T19:10:00.000Z',
+      },
+      {
+        ...DELIVERY_ROW,
+        id: 42,
+        status: 'delivered',
+        channel: 'inbox',
+        deliveredAt: '2026-10-10T18:00:00.000Z',
+        turnProof: 'not-picked-up',
+        pickupDeadlineAt: '2026-10-10T18:10:00.000Z',
+      },
+    ]);
+
+    const out = await call({});
+
+    expect(out.recent_wakes[0]).toMatchObject({
+      delivery_id: 40,
+      status: 'delivered',
+      turn_invoked: true,
+      turn_proof: 'awaiting',
+      turn_started_at: null,
+      pickup_deadline_at: '2026-10-10T20:10:00.000Z',
+    });
+    expect(out.recent_wakes[1]).toMatchObject({
+      delivery_id: 41,
+      turn_proof: 'observed',
+      turn_started_at: '2026-10-10T19:01:30.000Z',
+    });
+    expect(out.recent_wakes[1]).not.toHaveProperty('pickup_deadline_at');
+    // The silent failure the ledger used to hide: delivered, and no turn ever started.
+    expect(out.recent_wakes[2]).toMatchObject({ delivery_id: 42, status: 'delivered', turn_proof: 'not-picked-up' });
+    expect(out.recent_wakes[2]).not.toHaveProperty('pickup_deadline_at');
+  });
+
+  it('turnProofFields renders a pre-1441 row as unknown (null), never as an outcome', () => {
+    expect(turnProofFields({ turnProof: null, turnStartedAt: null, pickupDeadlineAt: null })).toEqual({
+      turn_proof: null,
+      turn_started_at: null,
     });
   });
 
@@ -389,6 +530,103 @@ describe('events:status projection', () => {
     expect(listRecentDeliveries).not.toHaveBeenCalled();
     expect(deliveryBacklogSummary).not.toHaveBeenCalled();
     expect(listMyEventKeySubscriptions).not.toHaveBeenCalled();
+  });
+
+  it('bounds hot exact-key history, keeps the newest rows, and reports omitted rows within the response budget', async () => {
+    const longValue = 'x'.repeat(8_000);
+    const announcements = Array.from({ length: 50 }, (_, index) => ({
+      id: 50 - index,
+      causalGeneration: 50 - index,
+      subscriberId: `su-announcer-${index}`,
+      createdAt: `2026-07-${String(13 - Math.floor(index / 24)).padStart(2, '0')}T12:00:00.000Z`,
+      note: longValue,
+      expectedCondition: { kind: 'predicate', predicate: { summary: longValue } },
+      firedPayload: null,
+      firedAt: null,
+      firedReason: null,
+      firedBy: null,
+      cancelledAt: null,
+      supersededAt: '2026-07-13T12:10:00.000Z',
+    }));
+    const waiters = Array.from({ length: 200 }, (_, index) => ({
+      ...AWAIT_ROW,
+      id: 300 - index,
+      eventKey: 'git-sync:committed',
+      subscriberId: `su-waiter-${index}`,
+      policy: 'wake',
+      createdAt: '2026-07-13T12:01:00.000Z',
+      firedAt: null,
+      firedReason: null,
+      cancelledAt: null,
+      expiresTs: null,
+      rootId: null,
+    }));
+    const deliveries = Array.from({ length: 200 }, (_, index) => ({
+      ...DELIVERY_ROW,
+      id: 500 - index,
+      eventKey: 'git-sync:committed',
+      subscriberId: `su-delivery-${index}`,
+      lastError: longValue,
+      createdAt: '2026-07-13T12:05:00.000Z',
+      deliveredAt: null,
+    }));
+    vi.mocked(inspectEventKey).mockResolvedValueOnce({
+      announcements,
+      waiters,
+      deliveries,
+      fireLatch: null,
+    } as never);
+
+    const out = await call({ event: 'git-sync:committed' });
+
+    expect(inspectEventKey).toHaveBeenCalledWith('git-sync:committed');
+    expect(out.event_inspection.history_window.limit).toBe(10);
+    expect(out.event_inspection.history_window.declarations).toMatchObject({ loaded_rows: 50, more_available: true });
+    expect(out.event_inspection.history_window.waiters).toMatchObject({ loaded_rows: 200, more_available: true });
+    expect(out.event_inspection.history_window.wake_outcomes).toMatchObject({ loaded_rows: 200, more_available: true });
+    expect(out.event_inspection.waiters.map((row: { await_id: number }) => row.await_id))
+      .toEqual([...out.event_inspection.waiters.map((row: { await_id: number }) => row.await_id)].sort((a, b) => b - a));
+    if (out.event_inspection.waiters.length > 0) expect(out.event_inspection.waiters[0].await_id).toBe(300);
+    if (out.event_inspection.wake_outcomes.length > 0) expect(out.event_inspection.wake_outcomes[0].delivery_id).toBe(500);
+    expect(out.event_inspection.wake_outcomes.every((row: { last_error?: string; last_error_truncated?: boolean }) =>
+      row.last_error_truncated === true && (row.last_error?.length ?? 0) <= 257,
+    )).toBe(true);
+    expect(out.event_inspection.history_window.waiters.shown).toBe(out.event_inspection.waiters.length);
+    expect(out.event_inspection.history_window.wake_outcomes.shown).toBe(out.event_inspection.wake_outcomes.length);
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(5_000);
+  });
+
+  it('previews a single oversized announcement instead of letting one row exceed the exact-key response budget', async () => {
+    const longValue = 'x'.repeat(8_000);
+    vi.mocked(inspectEventKey).mockResolvedValueOnce({
+      announcements: [{
+        id: 1,
+        causalGeneration: 1,
+        subscriberId: 'su-emitter',
+        createdAt: '2026-07-13T12:00:00.000Z',
+        note: longValue,
+        expectedCondition: { kind: 'predicate', predicate: { summary: longValue } },
+        firedPayload: null,
+        firedAt: null,
+        firedReason: null,
+        cancelledAt: null,
+        supersededAt: '2026-07-13T12:10:00.000Z',
+      }],
+      waiters: [],
+      deliveries: [],
+      fireLatch: null,
+    } as never);
+
+    const out = await call({ event: 'gate:large-expected-condition' });
+    const declaration = out.event_inspection.declarations[0];
+
+    expect(declaration.note_truncated).toBe(true);
+    expect(declaration.note_chars).toBe(8_000);
+    expect(declaration.note.length).toBeLessThanOrEqual(257);
+    expect(declaration.expected_truncated).toBe(true);
+    expect(declaration.expected.original_chars).toBeGreaterThan(512);
+    expect(declaration.expected.preview.length).toBe(512);
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(5_000);
   });
 
   it('maps an expired current declaration to expired and preserves superseded precedence', async () => {
@@ -713,5 +951,121 @@ describe('events:status — workspace-global scope is explicit', () => {
     expect(shape).not.toHaveProperty('workspace');
     expect(status.description).toMatch(/workspace-global/i);
     expect(status.description).toMatch(/do not pass `harness` or `workspace`/i);
+  });
+});
+
+describe('events:status result-door spill recovery', () => {
+  it('keeps real caller-scoped handler output recoverable after ENOTDIR and leaves a small response unspilled', async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'papercusp-status-spill-test-'));
+    const scratchRoot = join(sandbox, 'scratch');
+    const previousScratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+    const previousDoorOff = process.env.PAPERCUSP_RESULT_DOOR_OFF;
+    const runId = '11111111-2222-4333-8444-555555555555';
+    const doorBudgetChars = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
+    const doorOptions = {
+      toolName: 'tools:invoke',
+      nestedTargetToolName: 'events:status',
+      workspaceId: 'ws-x',
+      ownerId: 'su-status',
+      runId,
+    } as const;
+
+    resetResultDoorAggregatesForTests();
+    _resetScratchUsageForTests();
+    process.env.PAPERCUSP_SCRATCH_ROOT = scratchRoot;
+    delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+
+    try {
+      const controlHandlerResult = await status.handler({}, ctx) as unknown as DoorableResult;
+      const controlText = (controlHandlerResult.content[0] as { type: 'text'; text: string }).text;
+      const controlDoorResult = await applyResultDoorAsync(controlHandlerResult, doorOptions);
+      expect(controlText.length).toBeLessThan(doorBudgetChars);
+      expect(controlDoorResult.content).toEqual(controlHandlerResult.content);
+      expect(controlDoorResult._meta?.resultDoor).toBeUndefined();
+      expect(existsSync(scratchRoot)).toBe(false);
+      expect(listActiveAwaits).toHaveBeenLastCalledWith('su-status');
+
+      const note = 'caller-scoped await fixture '.repeat(80);
+      const largeRows: AwaitRow[] = Array.from(
+        { length: Math.ceil((doorBudgetChars * 1.5) / note.length) + 1 },
+        (_, index) => ({
+          ...AWAIT_ROW,
+          id: 100 + index,
+          eventKey: `lock:grant:spill-fixture-${index}`,
+          note: `${index}: ${note}`,
+        }),
+      );
+      vi.mocked(listActiveAwaits).mockResolvedValueOnce(largeRows);
+
+      const handlerResult = await status.handler({}, ctx) as unknown as DoorableResult;
+      const originalHandlerText = (handlerResult.content[0] as { type: 'text'; text: string }).text;
+      expect(listActiveAwaits).toHaveBeenLastCalledWith('su-status');
+      expect(originalHandlerText.length).toBeGreaterThan(doorBudgetChars);
+
+      const blocker = join(sandbox, 'scratch-is-a-file');
+      writeFileSync(blocker, 'x');
+      process.env.PAPERCUSP_SCRATCH_ROOT = join(blocker, 'scratch');
+      _resetScratchUsageForTests();
+
+      // Pass the exact content returned by status.handler through the real nested-tool door.
+      const doorResult = await applyResultDoorAsync(handlerResult, doorOptions);
+      const resultText = (doorResult.content.find((item) => item.type === 'text') as { text: string }).text;
+      const meta = doorResult._meta?.resultDoor as {
+        spillFailed?: boolean;
+        spillPath?: string | null;
+        spillUri?: string | null;
+        spillErrorCode?: string;
+        recoveryCursor?: Record<string, unknown>;
+      } | undefined;
+
+      expect(resultText.length).toBeLessThan(originalHandlerText.length);
+      expect(JSON.stringify(doorResult.content)).not.toContain(sandbox);
+      expect(meta).toMatchObject({
+        spillFailed: true,
+        spillPath: null,
+        spillUri: null,
+        spillErrorCode: 'ENOTDIR',
+        recoveryCursor: {
+          kind: 'volatile-scratch-page',
+          tool: 'capability:read',
+          reason: 'spill-write-failed',
+        },
+      });
+
+      const cursor = meta?.recoveryCursor;
+      if (!cursor) throw new Error('missing volatile recovery cursor');
+      const cursorArgs = cursor.args && typeof cursor.args === 'object'
+        ? cursor.args as Record<string, unknown>
+        : undefined;
+      const uri = typeof cursor.uri === 'string'
+        ? cursor.uri
+        : typeof cursorArgs?.uri === 'string'
+          ? cursorArgs.uri
+          : undefined;
+      if (!uri) throw new Error('volatile recovery cursor has no URI');
+
+      const reference = readVolatileScratchReference(uri, { workspaceId: 'ws-x', ownerId: 'su-status' });
+      const bodyOffset = reference.manifest.bodyOffsetInPayload ?? 0;
+      const recoveredPage = reference.payload.subarray(bodyOffset).toString('utf8');
+      let recoveredText = recoveredPage;
+      try {
+        const recoveredEnvelope = JSON.parse(recoveredPage) as {
+          content?: Array<{ type?: unknown; text?: unknown }>;
+        };
+        const text = recoveredEnvelope.content?.find((item) => item.type === 'text')?.text;
+        if (typeof text === 'string') recoveredText = text;
+      } catch {
+        // Plain-text scratch pages already contain the exact original handler text.
+      }
+      expect(recoveredText).toBe(originalHandlerText);
+    } finally {
+      if (previousScratchRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+      else process.env.PAPERCUSP_SCRATCH_ROOT = previousScratchRoot;
+      if (previousDoorOff === undefined) delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+      else process.env.PAPERCUSP_RESULT_DOOR_OFF = previousDoorOff;
+      resetResultDoorAggregatesForTests();
+      _resetScratchUsageForTests();
+      rmSync(sandbox, { recursive: true, force: true });
+    }
   });
 });

@@ -1,0 +1,63 @@
+{
+  "schemaVersion": "p008-current-owner-density-evidence-v1",
+  "workItem": "WI-10002830",
+  "taskId": "0mupwst3q1u0w835ck3",
+  "taskExitCode": 0,
+  "taskStatus": "completed",
+  "logPath": ".papercusp/scratch/bash-56a34c0f-4d6.log",
+  "logSha256": "2e150fd849cfe93f9a745a3540a96b656e2fa729fad5454d548e538d17bee2aa",
+  "receipt": {
+    "clientClosed": true,
+    "constructedInputs": true,
+    "densitySha256": "f278503f3e9082ca0241c65aadb9dbbeac9001ab4d7c86a3b49b3acc43bd6d21",
+    "elapsedMs": 181,
+    "endedAt": "2026-10-01T19:10:27.942Z",
+    "identity": {
+      "database": "papercusp",
+      "isolation": "repeatable read",
+      "lock_timeout": "1s",
+      "pid": 3884240,
+      "read_only": "on",
+      "server_version_num": "180004",
+      "statement_timeout": "5s"
+    },
+    "paramsSha256": "bcdf331a7ed9d831c8a83c4c875081244abf1a50d3cbea503938c54786cc0f55",
+    "requestedSessions": 2985,
+    "results": [
+      {
+        "elapsedMs": 87,
+        "matched_turns": 71345,
+        "max_turns": 406,
+        "median_turns": 17,
+        "min_turns": 1,
+        "owner_mismatches": 0,
+        "owner_nulls": 0,
+        "p90_turns": 54,
+        "scope": "current constructed map; original natural-query values unrecovered",
+        "sessions": 2985,
+        "sessions_with_mismatch": 0,
+        "sessions_without_turns": 0
+      }
+    ],
+    "schemaVersion": "p008-current-owner-density-v1",
+    "selectedRows": 2985,
+    "selectionElapsedMs": 57,
+    "selectionSha256": "9d19a49a174912e7a19fe51c7efdfd26b02d782a697ca448aa56caa80309f991",
+    "sourcePath": "packages/operator-core/lib/search/session-ingest.ts",
+    "sourceSha256": "81276d349520ea93952d19232ede4a677c75a23783984d3b12215177f4395789",
+    "stage": "read-only-transaction-complete",
+    "startedAt": "2026-10-01T19:10:27.761Z",
+    "status": "ok",
+    "uniqueIds": 2985,
+    "workItem": "WI-10002830"
+  },
+  "executedScript": "import { createDedicatedOrgPg } from '@papercusp/db-org';\nimport { readFileSync } from 'node:fs';\nimport { createHash } from 'node:crypto';\nconst hash = x => createHash('sha256').update(x).digest('hex');\nconst started = Date.now();\nconst sourcePath = 'packages/operator-core/lib/search/session-ingest.ts';\nconst source = readFileSync(sourcePath, 'utf8');\nconst expectedSource = '81276d349520ea93952d19232ede4a677c75a23783984d3b12215177f4395789';\nconst receipt = { schemaVersion:'p008-current-owner-density-v1', workItem:'WI-10002830', startedAt:new Date(started).toISOString(), sourcePath, sourceSha256:hash(source), requestedSessions:2985, constructedInputs:true, results:[], clientClosed:false };\nif (receipt.sourceSha256 !== expectedSource) throw new Error('Source fingerprint changed; inspect before measuring');\nconst { sql } = createDedicatedOrgPg('p008-density-fire102', { max:1 });\nconst selection = \"SELECT DISTINCT ON(session_id) session_id, owner FROM harness_shared.session_turns WHERE workspace_id='default' AND source_kind='claude' AND owner IS NOT NULL ORDER BY session_id,turn_idx LIMIT 2985\";\nconst density = `WITH resolved AS MATERIALIZED (SELECT * FROM UNNEST($1::text[],$2::text[]) AS r(session_id,owner)), per_session AS MATERIALIZED (SELECT r.session_id, count(t.turn_idx)::bigint AS matched_turns, count(t.turn_idx) FILTER (WHERE t.owner IS DISTINCT FROM r.owner)::bigint AS owner_mismatches, count(t.turn_idx) FILTER (WHERE t.owner IS NULL)::bigint AS owner_nulls FROM resolved r LEFT JOIN harness_shared.session_turns t ON t.workspace_id='default' AND t.source_kind='claude' AND t.session_id=r.session_id GROUP BY r.session_id) SELECT count(*)::int AS sessions, sum(matched_turns)::bigint AS matched_turns, min(matched_turns)::bigint AS min_turns, percentile_disc(0.5) WITHIN GROUP(ORDER BY matched_turns) AS median_turns, percentile_disc(0.9) WITHIN GROUP(ORDER BY matched_turns) AS p90_turns, max(matched_turns)::bigint AS max_turns, sum(owner_mismatches)::bigint AS owner_mismatches, sum(owner_nulls)::bigint AS owner_nulls, count(*) FILTER(WHERE owner_mismatches>0)::int AS sessions_with_mismatch, count(*) FILTER(WHERE matched_turns=0)::int AS sessions_without_turns FROM per_session`;\nreceipt.selectionSha256=hash(selection); receipt.densitySha256=hash(density);\ntry {\n  await sql.begin('isolation level repeatable read read only', async tx => {\n    receipt.stage='set-bounds';\n    await tx.unsafe(\"SET LOCAL statement_timeout='5s'\");\n    await tx.unsafe(\"SET LOCAL lock_timeout='1s'\");\n    receipt.identity=(await tx.unsafe(\"SELECT pg_backend_pid() AS pid,current_database() AS database,current_setting('transaction_read_only') AS read_only,current_setting('statement_timeout') AS statement_timeout,current_setting('lock_timeout') AS lock_timeout,current_setting('transaction_isolation') AS isolation,current_setting('server_version_num') AS server_version_num\"))[0];\n    if(receipt.identity.read_only!=='on'||receipt.identity.statement_timeout!=='5s'||receipt.identity.lock_timeout!=='1s') throw new Error('Bounds verification failed');\n    receipt.stage='select-constructed-map';\n    let t=Date.now(); const rows=await tx.unsafe(selection); receipt.selectionElapsedMs=Date.now()-t;\n    receipt.selectedRows=rows.length; receipt.uniqueIds=new Set(rows.map(r=>r.session_id)).size;\n    if(rows.length!==2985 || receipt.uniqueIds!==2985) throw new Error('Constructed map cardinality did not match requested scope');\n    const ids=rows.map(r=>r.session_id), owners=rows.map(r=>r.owner);\n    receipt.paramsSha256=hash(JSON.stringify([ids,owners]));\n    receipt.stage='density-count';\n    t=Date.now(); const result=await tx.unsafe(density,[ids,owners]);\n    receipt.results.push({scope:'current constructed map; original natural-query values unrecovered',elapsedMs:Date.now()-t,...result[0]});\n    receipt.stage='read-only-transaction-complete';\n  });\n  receipt.status='ok';\n} catch(error) { receipt.status='error'; receipt.error={code:error.code??null,message:error.message}; }\nfinally { try { await sql.end({timeout:5}); receipt.clientClosed=true; } catch(error) {receipt.cleanupError=error.message;} receipt.endedAt=new Date().toISOString(); receipt.elapsedMs=Date.now()-started; }\nconsole.log(JSON.stringify(receipt,(_,v)=>typeof v==='bigint'?String(v):v));\nprocess.exit(receipt.status==='ok' && receipt.clientClosed ? 0:1);",
+  "limitations": [
+    "Current PK-ordered map constructed from stored first-turn owners; original natural-query map values remain unrecovered.",
+    "2985-session sample is ordered by session_id,turn_idx; it is not representative of all sessions or a reproduction of the original UPDATE input population.",
+    "Matched-turn counts and owner mismatches are measured at the repeatable-read snapshot of this dedicated SELECT transaction.",
+    "SELECT query round-trip elapsed time is not an UPDATE execution measurement or a whole-query I/O decomposition.",
+    "No production UPDATE, auto_explain reconfiguration, shared bg-host restart or release-gate action occurred.",
+    "The prior private 179-session/4099-turn runtime guard remains dated passing evidence; this SELECT does not certify adoption or shipment."
+  ]
+}

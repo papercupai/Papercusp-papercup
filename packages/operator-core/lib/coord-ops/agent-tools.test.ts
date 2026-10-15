@@ -101,10 +101,16 @@ describe('coord:ask-owner tool args (askOwnerArgs)', () => {
       escalate: vi.fn().mockResolvedValue({ msg_id: 'e1' }),
       sleep: vi.fn().mockResolvedValue(undefined),
       readAnswer: vi.fn().mockResolvedValue({ answered: false, answer: null }),
+      findOverlappingGoalAsk: vi.fn().mockResolvedValue({ goalId: null, compared: 0, overlap: null }),
     };
     const args = askOwnerArgs.parse({ question: 'Ship it?' });
     const out = await askOp.run(args, makeCtx(caps));
-    expect(out).toEqual({ answered: false, answer: null, conversation_id: 'c1' });
+    expect(out).toEqual({
+      answered: false,
+      answer: null,
+      conversation_id: 'c1',
+      goal_ask_dedup: { status: 'not-in-goal' },
+    });
     expect(caps.sleep).not.toHaveBeenCalled();
     expect(caps.readAnswer).toHaveBeenCalledTimes(1);
   });

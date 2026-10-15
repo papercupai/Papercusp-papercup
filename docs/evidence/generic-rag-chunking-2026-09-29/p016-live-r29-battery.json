@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "generic-rag-chunking-2026-09-29 R-29 live docs:search battery (P-016 re-measure): text past the first 2,000 chars of long harness docs returns the doc with a section",
+  "framework": "operational",
+  "command": [
+    "N=10 HARNESS=papercusp npx tsx .papercusp/scratch/rag-carry/p013-live-r29-battery.mts (the P-013 battery, unchanged): for the 10 longest papercusp harness docs, one sentence taken from past the first 2,000 characters by a fixed rule (the sentence at 60% of the qualifying list), run the working-tree docs:search handler { query, harness:'papercusp', semantic:true, limit:8 } against the live operator DB (native PG :5432, database papercusp), and record whether the target doc returns with a section anchor"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T13:59:20.000Z",
+  "finishedAt": "2026-10-01T13:59:57.563Z",
+  "summary": "10 queries, 10/10 returned the target doc and 10/10 returned it with a section (semantic leg status 'ran' on every query, embed mode gemma, 1,492 embedded papercusp doc_sections). Named record: docs/reports/latest-agent-frameworks-tools-research-2026-09-14 (55,548 chars) queried with text at offset 29,286 returned at doc rank 1 with similarity 0.658. Before the P-013 fix the same battery returned a section for 4/10.",
+  "assertions": [
+    {
+      "id": "r29-doc-returned",
+      "passed": true,
+      "evidence": "Doc ranks: papercusp-performance-remediation-2026-09-23 4, harness-state/AGENTS 1, august-unshipped-no-active-agents-2026-08-25 1, review-system-time-audit-2026-09-23 1, latest-agent-frameworks-tools-research-2026-09-14 1, main-greening-plan-relevance-audit-2026-09-12 1, identities-v1-integration-audit 1, knowledge-graphs-context-management-2026-09-14 1, backend-reliability-2026-09-13 2, backend-reliability-followthrough-2026-09-13 1."
+    },
+    {
+      "id": "r29-section-returned",
+      "passed": true,
+      "evidence": "Every one of the 10 hits carried a section anchor and similarity (0.582, 0.677, 0.721, 0.594, 0.658, 0.693, 0.696, 0.634, 0.650, 0.601); the target doc's best section ranked 10, 1, 1, 5, 1, 1, 1, 3, 9, 27 by raw cosine among the harness's sections."
+    }
+  ],
+  "plan": "generic-rag-chunking-2026-09-29",
+  "bar": "R-29",
+  "planItem": "P-013 (re-measured live under P-016)",
+  "measuredBy": "su-e8708a1c-a5a4-4a8b-9acb-8bcceab2a91c",
+  "supersedes": "live battery bound as spec evidence 16315 (2026-09-30T04:19:54Z; staled when peer commits changed semantic-leg.ts and doc-embed-sync.ts)",
+  "note": "[self-imposed under AUTO; owner directives #970/#1180] Raw output: .papercusp/scratch/rag-carry/p016-live-r29-battery.log (R29_BATTERY line)."
+}

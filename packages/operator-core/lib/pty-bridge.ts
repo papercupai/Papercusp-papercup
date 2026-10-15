@@ -143,6 +143,8 @@ export interface PtyHandle {
    * alongside the pty.
    */
   headless: InstanceType<ReturnType<typeof getHeadlessTerminal>>;
+  /** Explicit cleanup ends screen retention; natural exit retains its final screen. */
+  headlessDisposed: boolean;
   serializer: InstanceType<ReturnType<typeof getSerializeAddon>>;
 }
 
@@ -356,6 +358,7 @@ export function spawnPty(opts: SpawnPtyOpts): PtyHandle {
     history: [],
     historyBytes: 0,
     headless,
+    headlessDisposed: false,
     serializer,
   };
   handles.set(id, handle);
@@ -398,7 +401,7 @@ export function spawnPty(opts: SpawnPtyOpts): PtyHandle {
     // reconnect window.
     setTimeout(() => {
       handles.delete(id);
-      try { handle.headless.dispose(); } catch { /* */ }
+      disposePtyScreen(handle);
     }, 30_000).unref?.();
   });
 
@@ -459,6 +462,12 @@ export function resizePty(id: string, cols: number, rows: number, accessScope: P
 }
 
 /** Kill the pty process. Idempotent. */
+function disposePtyScreen(handle: PtyHandle): void {
+  if (handle.headlessDisposed) return;
+  handle.headlessDisposed = true;
+  try { handle.headless.dispose(); } catch { /* already disposed */ }
+}
+
 export function killPty(id: string, accessScope: PtyAccessScope): boolean {
   const handle = getPty(id, accessScope);
   if (!handle) return false;
@@ -469,7 +478,7 @@ export function killPty(id: string, accessScope: PtyAccessScope): boolean {
   // Free the headless terminal — no consumers can ask for replay once
   // a pty is explicitly killed (vs the soft "client disconnected" path
   // where the handle stays alive for resume).
-  try { handle.headless.dispose(); } catch { /* already disposed */ }
+  disposePtyScreen(handle);
   return true;
 }
 
@@ -513,9 +522,10 @@ export function getHistory(id: string, accessScope: PtyAccessScope): Buffer | nu
  */
 export async function getScreenSerialization(id: string, accessScope: PtyAccessScope): Promise<string | null> {
   const handle = getPty(id, accessScope);
-  if (!handle) return null;
+  if (!handle || handle.headlessDisposed) return null;
   try {
     await new Promise<void>((resolve) => handle.headless.write('', resolve));
+    if (handle.headlessDisposed) return null;
     return handle.serializer.serialize({ scrollback: HEADLESS_SCROLLBACK });
   } catch {
     return null;

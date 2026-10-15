@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { pathToFileURL } from 'node:url';
 import { pinModuleState } from '@papercusp/module-singleton';
-import { compileAgentSpecification, type ResolvedCapabilityProviderInput } from '@papercusp/orchestrator/blueprint';
+import { compileAgentSpecification, replayAgentSpecification, type ResolvedCapabilityProviderInput } from '@papercusp/orchestrator/blueprint';
 import type { KernelEnforcementRequest } from '@papercusp/agent-mcp';
-import { appliedIdentityArtifact, appliedOrCurrentIdentityArtifact, checkIdentityGrantKernel as checkCurrentIdentityGrantKernel, launchRecordAdmitsApplied, IDENTITY_BREAK_GLASS, IDENTITY_RESOLUTION_CACHE_MAX, IDENTITY_RESOLUTION_CACHE_TTL_MS, readIdentityGrantPolicy, readIdentityReactionCeiling, validateIdentityInstallGrants, type IdentityGrantPolicy } from './identity-grants-port';
+import { appliedIdentityArtifact, appliedOrCurrentIdentityArtifact, checkIdentityGrantKernel as checkCurrentIdentityGrantKernel, launchRecordAdmitsApplied, resolveIdentityArtifact, IDENTITY_BREAK_GLASS, IDENTITY_RESOLUTION_CACHE_MAX, IDENTITY_RESOLUTION_CACHE_TTL_MS, readIdentityGrantPolicy, readIdentityReactionCeiling, validateIdentityInstallGrants, type IdentityGrantPolicy } from './identity-grants-port';
 import type { CapabilityGrantResolutionVerdict } from '../cupboard/capability-grant-resolver';
+import { identityRefusalContract } from './identity-refusal-contract';
 import { isLazyIdentityLaunchRecord, lazyIdentityLaunchRecord } from './lazy-launch-record';
 import { carryIdentityReceiptForControlActivation, type SuLaunchSpecRecord } from '../su-persona-render';
 
@@ -114,6 +115,49 @@ describe('P-005 current identity grants at the common kernel seat', () => {
         } });
     },
   );
+
+  it('authorizes a deny-all worker identity\'s PLATFORM requiredTools under the role ceiling, and nothing else (WI-10007010)', async () => {
+    // The blueprint-operation-worker identity grants no class, so the grant envelope
+    // reaches nothing; before WI-10007010 every required platform tool was refused.
+    const f = fixture({ requires: [], optional: [] });
+    const policy: IdentityGrantPolicy = {
+      ...f.policy,
+      ceilings: [{}, { allowCapabilities: ['work_items:read', 'work_items:write', 'memory:read', 'coord:write', 'mail:send'] }],
+      tools: new Map([
+        ...f.policy.tools,
+        ['work_items:claim', ['work_items:write']],
+        ['work_items:checkpoint', ['work_items:write']],
+        ['plans:set-status', ['plans:write']],
+        ['coord:send', ['coord:write']],
+      ]),
+    };
+    const read = vi.fn(async () => policy);
+    const acceptedOperation = {
+      kind: 'blueprint-operation-worker', workItemId: 'WI-1',
+      operationId: 'prep', specificationRevision: 'b'.repeat(64),
+      requiredTools: ['mail:send', 'plans:set-status', 'work_items:checkpoint', 'work_items:claim'],
+      pin: { kind: 'blueprint-operation', harnessSlug: 'sales', operationId: 'prep',
+        specificationRevision: 'b'.repeat(64), operationVersion: '1.0.0', input: {} },
+    };
+    const record = { ...f.record, acceptedOperation };
+    const call = (toolName: string, capabilities: string[], claimed = true) => checkIdentityGrantKernel(
+      { ...f.request, toolName, capabilities }, f.state, record, read, async () => claimed);
+    const refused = (toolName: string) => ({ decision: 'deny',
+      obligations: { capabilityUnsatisfied: { cause: 'outside-ceiling', toolName } } });
+
+    // Required platform tools inside the role ceiling: the claim door, then a claimed write.
+    expect(await call('work_items:claim', ['work_items:write'])).toMatchObject({ decision: 'allow', applied: true });
+    expect(await call('work_items:checkpoint', ['work_items:write'])).toMatchObject({ decision: 'allow', applied: true });
+    // The receipt's live-claim rule still binds the platform path.
+    expect(await call('work_items:checkpoint', ['work_items:write'], false))
+      .toMatchObject({ decision: 'deny', code: 'operation-claim-stale' });
+    // Required, but outside the role ceiling.
+    expect(await call('plans:set-status', ['plans:write'])).toMatchObject(refused('plans:set-status'));
+    // Inside the role ceiling, but not required by the operation.
+    expect(await call('coord:send', ['coord:write'])).toMatchObject(refused('coord:send'));
+    // Required and inside the ceiling, but provider-reachable: it still needs a grant.
+    expect(await call('mail:send', ['mail:send'])).toMatchObject(refused('mail:send'));
+  });
 
   it.each(['dispatch', 'indirect-dispatch', 'reaction', 'native', 'shell'] as const)(
     'denies tools outside the exact provider set at %s, including superusers',
@@ -700,12 +744,14 @@ describe('P-005 current identity grants at the common kernel seat', () => {
       .filter((line) => !/^function denial\(/.test(line)) // the definition itself
       .map((line) => line.trim());
 
-    expect(callSites).toEqual(['return denial(cause, classRef, toolName, policyRevision);']);
+    // EI-23766133296678780: the chokepoint now also threads the values the gate compared
+    // (`observed`) into the refusal contract. Still exactly ONE call site.
+    expect(callSites).toEqual(['return denial(cause, classRef, toolName, policyRevision, observed);']);
 
     // ...and that sole call must live INSIDE the chokepoint, not in some later
     // function that merely happens to spell the same statement.
     const chokepoint = source.slice(source.indexOf('function denyUnlessRecoveryDoor('));
-    expect(chokepoint).toContain('return denial(cause, classRef, toolName, policyRevision);');
+    expect(chokepoint).toContain('return denial(cause, classRef, toolName, policyRevision, observed);');
   });
 
   // The companion half, and the one that keeps this a DOOR rather than a hole.
@@ -890,6 +936,26 @@ describe('P-005 install and runtime use the same ceiling', () => {
       .toMatchObject([{ cause: 'provider-changed' }]);
   });
 
+  it('WI-10005197: every install-time refusal carries the same lift condition the runtime denial does', async () => {
+    const f = installFixture();
+    const narrowed = { ...f.policy, ceilings: [...f.policy.ceilings, { allowCapabilities: [] }] };
+    const unbound = { ...f.input, resolution: { ...f.input.resolution, ok: false } };
+    const failures = [
+      ...await validateIdentityInstallGrants(f.input, async () => narrowed),                       // outside-ceiling
+      ...await validateIdentityInstallGrants(f.input, async () => { throw new Error('offline'); }), // policy-unavailable
+      ...await validateIdentityInstallGrants(f.input, async () => ({ ...f.policy, bindings: [] })), // provider-changed
+      ...await validateIdentityInstallGrants(unbound, async () => f.policy),                        // provider-unbound
+    ];
+    expect(failures.map((failure) => failure.cause).sort())
+      .toEqual(['outside-ceiling', 'policy-unavailable', 'provider-changed', 'provider-unbound']);
+    for (const failure of failures) {
+      // Same cause => same contract as the runtime kernel verdict (observed is runtime-only).
+      expect(failure.refusal).toEqual(identityRefusalContract(failure.cause));
+      expect(failure.refusal?.liftsWhen).toBeTruthy();
+      expect(failure.refusal?.whoCanMakeItTrue.length).toBeGreaterThan(0);
+    }
+  });
+
   it('checks a selected candidate without first installing it or binding it', async () => {
     const f = installFixture();
     const selection = {
@@ -957,6 +1023,42 @@ describe('P-018 appliedOrCurrentIdentityArtifact (worn-content reads)', () => {
     expect(appliedOrCurrentIdentityArtifact(f.record, null)).toBeNull();
     expect(appliedOrCurrentIdentityArtifact({ ...f.record, specificationArtifact: undefined },
       { ...f.applied, stateRevision: 'state-b' })).toBeNull();
+  });
+});
+
+describe('resolveIdentityArtifact — one replay per distinct artifact (WI-10008237)', () => {
+  it('replays once when the applied receipt IS the record, with the same verdict as two replays', () => {
+    const f = fixture();
+    const replay = vi.fn(replayAgentSpecification);
+    const out = resolveIdentityArtifact(f.record, f.applied, replay);
+    expect(replay).toHaveBeenCalledTimes(1);
+    expect(out).toMatchObject({ kind: 'governed' });
+    if (out.kind !== 'governed') throw new Error('unreachable');
+    expect(out.artifact.specificationRevision).toBe(f.artifact.specificationRevision);
+    expect(out.current).toBe(out.artifact);
+  });
+
+  it('still replays BOTH when the applied receipt is a different, historical artifact', () => {
+    const older = fixture();
+    const newer = compileAgentSpecification({
+      source: { id: 'grant-port-next', workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } } },
+      prompt: { role: 'worker', text: 'Next.' }, inputClosure: [],
+    });
+    const record = {
+      workspaceId: 'ws-a', harnessSlug: 'sales',
+      specificationRevision: newer.specificationRevision, stateRevision: 'state-b', specificationArtifact: newer,
+      identityHistory: [{ ...older.applied, specificationArtifact: older.artifact }],
+    };
+    const replay = vi.fn(replayAgentSpecification);
+    resolveIdentityArtifact(record, older.applied, replay);
+    expect(replay).toHaveBeenCalledTimes(2);
+    expect(replay.mock.calls.map(([v]) => v)).toEqual([older.artifact, newer]);
+  });
+
+  it('a throwing replay is not remembered: the resolution still fails closed as replay-failed', () => {
+    const f = fixture();
+    const replay = vi.fn(() => { throw new Error('specification-hash-mismatch'); });
+    expect(resolveIdentityArtifact(f.record, f.applied, replay)).toEqual({ kind: 'stale-artifact', reason: 'replay-failed' });
   });
 });
 

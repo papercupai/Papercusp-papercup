@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "goal-brief R-3 live chain probe — counterexample forged-owner",
+  "framework": "operational",
+  "command": [
+    "env",
+    "R3_COUNTEREXAMPLE=forged-owner",
+    "npx",
+    "tsx",
+    "docs/evidence/goal-brief-r3-live-probe-2026-09-29.mts"
+  ],
+  "exitCode": 1,
+  "startedAt": "2026-10-02T17:49:11.654Z",
+  "finishedAt": "2026-10-02T17:49:12.402Z",
+  "summary": "0/3 assertions passed; 1 of 2 sessions resolved by the transcript witness alone",
+  "assertions": [
+    {
+      "id": "r3-no-omitted-or-foreign-counted-as-delivered",
+      "passed": false,
+      "evidence": "3/3 delivered rows violate the falsifier; first: [{\"source\":\"activity:6400376\",\"why\":[\"foreign owner/workspace\"]},{\"source\":\"activity:6512596\",\"why\":[\"foreign owner/workspace\"]},{\"source\":\"activity:6512617\",\"why\":[\"foreign owner/workspace\"]}]"
+    },
+    {
+      "id": "r3-generation-to-effect-chain-exists",
+      "passed": false,
+      "evidence": "0 complete chains (0 clean confirmed deliveries, 0 with a matching turn-end)"
+    },
+    {
+      "id": "r3-chain-survives-session-boundary",
+      "passed": false,
+      "evidence": "no owner+goal has complete chains in two native sessions (0 owner+goal groups)"
+    }
+  ],
+  "plan": {
+    "slug": "goal-brief-to-claimed-plan-work-2026-09-23",
+    "specIds": [
+      "AUTO-BAR-R-3-P-004",
+      "AUTO-BAR-R-3-P-007"
+    ],
+    "specRevision": 4
+  },
+  "residualUnknowns": [
+    "Non-omission of the delivered line is attested by the writer (the receipt is staged only when the rendered block contains the action line); injected briefs are not ingested into session_turn_parts, so it is not independently re-observable here.",
+    "Compaction vs cold restart is not distinguished: both start a new native session under the same owner; memory_session_epochs keeps only the latest epoch per session.",
+    "Fleet-leader side: fleet:leader-brief tool_invocations carry no generation/receipt, so the leader half of the shared engine is covered by unit/integration layers (bindings 15943/15944), not by this live probe.",
+    "The span and transcript witnesses both derive from the launch-time identity (PAPERCUSP_SID names the per-owner session-claude dir and the activation span), so neither can catch a launcher that assigned the wrong identity. Transcript-only rows rest on the host transcript file or its ingested copy (D-040; session_turn_parts keeps 14 days); a session pruned from both falls back to foreign."
+  ],
+  "observations": {
+    "population": {
+      "confirmedReceipts": 3,
+      "turnEndObservations": 326,
+      "turnEndStatuses": {
+        "not-applicable/0": 51,
+        "unknown/1": 7,
+        "blocked/2": 6,
+        "in-progress/1": 4,
+        "in-progress/2": 7,
+        "unknown/0": 76,
+        "blocked/1": 8,
+        "due/1": 24,
+        "due/2": 7,
+        "unknown/2": 2,
+        "in-progress/3": 4,
+        "in-progress/4": 3,
+        "blocked/3": 2,
+        "blocked/4": 19,
+        "blocked/5": 39,
+        "due/5": 8,
+        "in-progress/5": 46,
+        "blocked/6": 7,
+        "in-progress/6": 2,
+        "due/6": 1,
+        "unknown/4": 1,
+        "unknown/7": 1,
+        "in-progress/7": 1
+      }
+    },
+    "identityWitnesses": {
+      "64436191-e2c2-49c8-ac48-257a365ae6ef": {
+        "spans": [
+          "su-2e6fb313-137d-4b96-9412-9e7656f49b2c@papercusp-workspace"
+        ],
+        "transcript": [
+          "su-2e6fb313-137d-4b96-9412-9e7656f49b2c"
+        ],
+        "transcriptDisk": [
+          "su-2e6fb313-137d-4b96-9412-9e7656f49b2c"
+        ],
+        "transcriptIngested": [
+          "su-2e6fb313-137d-4b96-9412-9e7656f49b2c"
+        ],
+        "owner": "su-2e6fb313-137d-4b96-9412-9e7656f49b2c",
+        "workspace": "papercusp-workspace"
+      },
+      "59ad5d69-3227-4b4c-81cd-9bc53bda187b": {
+        "spans": [],
+        "transcript": [
+          "su-ce50c06d-20e3-4945-86b7-a0d3b72b8550"
+        ],
+        "transcriptDisk": [],
+        "transcriptIngested": [
+          "su-ce50c06d-20e3-4945-86b7-a0d3b72b8550"
+        ],
+        "owner": "su-ce50c06d-20e3-4945-86b7-a0d3b72b8550",
+        "workspace": "papercusp-workspace"
+      }
+    },
+    "chains": []
+  }
+}

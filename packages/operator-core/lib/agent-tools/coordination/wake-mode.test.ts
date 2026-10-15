@@ -11,6 +11,7 @@ import {
   getDefaultWakeMode,
   setDefaultWakeMode,
   getWakeModeOverride,
+  getWakeModeOverridesFor,
   setWakeMode,
   ensureFleetMemberWakeAuto,
   ensureLaunchedWakeAuto,
@@ -20,7 +21,10 @@ import {
 
 // A Map-backed fake `sql` template tag mimicking the operator_settings KV: an
 // INSERT upserts (key=vals[0] → value=vals[1]); a SELECT returns the row for
-// its key=vals[0] (or none). Enough to exercise the get/set/resolve paths.
+// its key=vals[0] (or none); a `key = ANY(...)` SELECT returns {key, value} for
+// every listed key that exists. A `LIKE` read is deliberately NOT modelled: it
+// returns every row, so a regression to an unscoped scan shows up as rows for
+// owners the caller never asked about.
 function fakeKv() {
   const store = new Map<string, string>();
   const descriptions = new Map<string, string>();
@@ -30,6 +34,15 @@ function fakeKv() {
       store.set(String(vals[0]), String(vals[1]));
       descriptions.set(String(vals[0]), String(vals[2]));
       return Promise.resolve([] as unknown[]);
+    }
+    if (q.includes('ANY(')) {
+      const keys = vals[0] as string[];
+      return Promise.resolve(
+        keys.filter((k) => store.has(k)).map((k) => ({ key: k, value: store.get(k)! })),
+      );
+    }
+    if (q.includes('LIKE')) {
+      return Promise.resolve([...store.entries()].map(([key, value]) => ({ key, value })));
     }
     const v = store.get(String(vals[0])); // SELECT value WHERE key = vals[0]
     return Promise.resolve(v === undefined ? [] : [{ value: v }]);
@@ -80,6 +93,55 @@ describe('wake-mode store (operator_settings KV)', () => {
   it('a garbage stored value falls back to the default', async () => {
     kv.store.set('wake_mode:default', 'nonsense');
     expect(await getDefaultWakeMode()).toBe('auto');
+  });
+});
+
+describe('getWakeModeOverridesFor — owner-scoped batch read (WI-10005228)', () => {
+  it('returns overrides for exactly the requested owners, never the rest of the history', async () => {
+    kv.store.set('wake_mode:agent:s-live-1', 'manual');
+    kv.store.set('wake_mode:agent:s-live-2', 'auto');
+    // Retained history the roster never renders — 10,342 rows of this live on 2026-10-02.
+    for (let i = 0; i < 50; i += 1) kv.store.set(`wake_mode:agent:s-ended-${i}`, 'manual');
+    kv.store.set('wake_mode:default', 'manual');
+
+    const out = await getWakeModeOverridesFor(['s-live-1', 's-live-2', 's-no-override']);
+
+    expect([...out.entries()].sort()).toEqual([
+      ['s-live-1', 'manual'],
+      ['s-live-2', 'auto'],
+    ]);
+  });
+
+  it('issues ONE primary-key probe with the prefixed, de-duplicated keys — not a LIKE scan', async () => {
+    await getWakeModeOverridesFor(['s-1', 's-2', 's-1', '']);
+
+    expect(kv.sql).toHaveBeenCalledTimes(1);
+    const [strings, ...vals] = kv.sql.mock.calls[0] as [TemplateStringsArray, ...unknown[]];
+    const text = strings.join('?');
+    expect(text).toMatch(/WHERE\s+key\s*=\s*ANY\(/);
+    expect(text).not.toMatch(/LIKE/i);
+    expect(vals[0]).toEqual(['wake_mode:agent:s-1', 'wake_mode:agent:s-2']);
+  });
+
+  it('an empty owner set costs no query at all', async () => {
+    expect(await getWakeModeOverridesFor([])).toEqual(new Map());
+    expect(kv.sql).not.toHaveBeenCalled();
+  });
+
+  it('calibration: the fake answers the OLD unscoped LIKE read with the whole history', async () => {
+    // Keeps the first test above from passing vacuously: the pre-WI-10005228 query
+    // (`WHERE key LIKE 'wake_mode:agent:%'`) through this same fake returns every
+    // stored row, so a regression to it would surface the s-ended-* owners there.
+    kv.store.set('wake_mode:agent:s-live-1', 'manual');
+    for (let i = 0; i < 5; i += 1) kv.store.set(`wake_mode:agent:s-ended-${i}`, 'manual');
+    const rows = (await kv.sql`SELECT key, value FROM harness_shared.operator_settings
+      WHERE key LIKE 'wake_mode:agent:%'`) as Array<{ key: string }>;
+    expect(rows).toHaveLength(6);
+  });
+
+  it('drops a garbage stored value (the owner then resolves via the global default)', async () => {
+    kv.store.set('wake_mode:agent:s-1', 'nonsense');
+    expect(await getWakeModeOverridesFor(['s-1'])).toEqual(new Map());
   });
 });
 
@@ -139,6 +201,14 @@ describe('ensureLaunchedWakeAuto — generalized launched-wake-immunity (EI-1996
     expect(await ensureLaunchedWakeAuto('s-solo-launched', { fleetRole: null, launchedByAgent: true })).toBe('auto');
     expect(kv.store.get('wake_mode:agent:s-solo-launched')).toBe('auto');
     expect(await resolveWakeMode('s-solo-launched')).toBe('auto'); // immune to the manual global default
+  });
+  it('preserves an explicit per-agent manual override for a launched member', async () => {
+    await setDefaultWakeMode('auto');
+    await setWakeMode('s-manual-member', 'manual');
+
+    expect(await ensureLaunchedWakeAuto('s-manual-member', { fleetRole: 'member', launchedByAgent: true })).toBeNull();
+    expect(await getWakeModeOverride('s-manual-member')).toBe('manual');
+    expect(await resolveWakeMode('s-manual-member')).toBe('manual');
   });
   it('is a NO-OP for a fleetless, NOT agent-launched session (a human typing `psu su` directly)', async () => {
     await setDefaultWakeMode('manual');

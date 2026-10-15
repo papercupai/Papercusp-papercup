@@ -265,11 +265,41 @@ export async function beginGovernedExecution<T = unknown>(
   // Admission is persisted before the targeted lease.  Every failure after
   // that point must remove the visible receipt; otherwise a failed process
   // start leaves a queued item that the drainer can resurrect later.
-  const cancelStartFailure = async (reason: string, claim?: AdmissionQueueLeaseClaim): Promise<void> => {
+  const cancelStartFailure = async (
+    error: unknown,
+    reason: string,
+    claim?: AdmissionQueueLeaseClaim,
+  ): Promise<unknown> => {
     if (claim) {
       await deps.driver.releaseLease(claim.receiptId, claim.lease.leaseId).catch(() => undefined);
     }
-    await deps.governor.cancel(request.idempotencyKey, reason).catch(() => undefined);
+    const cancellation = await deps.governor.cancel(request.idempotencyKey, reason).catch(() => undefined);
+    // A cancelled receipt is an idempotent tombstone, not a retryable queue entry.
+    // Preserve the measured cleanup result so a pre-child caller can safely use
+    // a new key. Unknown cleanup must never authorize a second receipt.
+    const governedAdmissionStartFailure = Object.freeze({
+      contractVersion: 1,
+      idempotencyKey: request.idempotencyKey,
+      receiptId: outcome.receipt.receiptId,
+      state: cancellation?.state ?? 'unknown',
+      cancellationVerified:
+        cancellation?.idempotencyKey === request.idempotencyKey && cancellation.state === 'cancelled',
+    });
+    if (error && (typeof error === 'object' || typeof error === 'function')) {
+      try {
+        Object.defineProperty(error, 'governedAdmissionStartFailure', {
+          value: governedAdmissionStartFailure,
+          configurable: true,
+        });
+        return error;
+      } catch {
+        // Frozen/primitive thrown values still retain the original error as
+        // cause, including its retryable database code.
+      }
+    }
+    return Object.assign(new Error(error instanceof Error ? error.message : String(error), { cause: error }), {
+      governedAdmissionStartFailure,
+    });
   };
 
   let claim: AdmissionQueueLeaseClaim | null = null;
@@ -280,31 +310,29 @@ export async function beginGovernedExecution<T = unknown>(
       ttlMs: input.leaseTtlMs ?? GOVERNED_EXECUTION_LEASE_TTL_MS,
     });
   } catch (error) {
-    await cancelStartFailure(
+    throw await cancelStartFailure(
+      error,
       `governed execution lease acquisition failed: ${error instanceof Error ? error.message : String(error)}`,
     );
-    throw error;
   }
   if (!claim) {
     const error = new Error(`durable receipt '${outcome.receipt.receiptId}' is not leaseable`);
-    await cancelStartFailure(error.message);
-    throw error;
+    throw await cancelStartFailure(error, error.message);
   }
 
   let running: Awaited<ReturnType<GovernedExecutionDeps['driver']['markRunning']>>;
   try {
     running = await deps.driver.markRunning(claim.receiptId, claim.lease.leaseId);
   } catch (error) {
-    await cancelStartFailure(
+    throw await cancelStartFailure(
+      error,
       `governed execution start failed: ${error instanceof Error ? error.message : String(error)}`,
       claim,
     );
-    throw error;
   }
   if (!running?.changed) {
     const error = new Error(`durable receipt '${claim.receiptId}' could not enter running state`);
-    await cancelStartFailure(error.message, claim);
-    throw error;
+    throw await cancelStartFailure(error, error.message, claim);
   }
 
   let settled = false;

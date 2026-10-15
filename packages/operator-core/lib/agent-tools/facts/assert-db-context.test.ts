@@ -8,6 +8,7 @@ const h = vi.hoisted(() => {
     boundedTx,
     boundedOrgTxn: vi.fn(async (fn: (tx: typeof boundedTx) => Promise<AgentFact>) => fn(boundedTx)),
     readFrozenRepairMarker: vi.fn(),
+    lineageQuery: vi.fn(async (_sql: string, _params: string[]): Promise<Record<string, unknown>[]> => [{ exists: 1 }]),
   };
 });
 
@@ -16,6 +17,12 @@ vi.mock('../../agent-facts/store', async (importOriginal) => {
   return { ...actual, assertFact: h.assertFact };
 });
 vi.mock('../../pg-bounded-txn', () => ({ boundedOrgTxn: h.boundedOrgTxn }));
+// Keep validation real; replace only the source-resolution database boundary.
+vi.mock('../../promotion-lineage', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../promotion-lineage')>();
+  return { ...actual, validatePromotedFrom: (raw: Parameters<typeof actual.validatePromotedFrom>[0], workspace: string) =>
+    actual.validatePromotedFrom(raw, workspace, h.lineageQuery) };
+});
 vi.mock('../../release/frozen-repair-edit-marker', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../release/frozen-repair-edit-marker')>();
   return { ...actual, readFrozenRepairMarker: h.readFrozenRepairMarker };
@@ -53,6 +60,8 @@ describe('facts:assert — own a bounded transaction for the multi-query write',
     h.boundedOrgTxn.mockImplementation(async (fn) => fn(h.boundedTx));
     h.readFrozenRepairMarker.mockReset();
     h.readFrozenRepairMarker.mockReturnValue(null);
+    h.lineageQuery.mockReset();
+    h.lineageQuery.mockResolvedValue([{ exists: 1 }]);
   });
 
   it('uses its own bounded transaction instead of the ambient ctx.tx', async () => {
@@ -68,6 +77,30 @@ describe('facts:assert — own a bounded transaction for the multi-query write',
     expect(h.assertFact).toHaveBeenCalledTimes(1);
     expect(h.assertFact.mock.calls[0][1]).toBe(h.boundedTx);
     expect(h.assertFact.mock.calls[0][1]).not.toBe(ambientTx);
+  });
+
+  it('passes resolved promotion lineage to the canonical fact writer', async () => {
+    const promotedFrom = [{ kind: 'work-item', ref: 'WI-123' }];
+    await assertTool.handler(
+      { scope: 'owner', scopeRef: 'su-test', key: 'promoted-claim', body: 'Source-backed conclusion', promotedFrom } as never,
+      { isSuperuser: true, uiClientId: 'su-test', workspaceId: 'lineage-workspace' } as never,
+    );
+    expect(h.lineageQuery).toHaveBeenCalledWith(expect.stringContaining('harness_shared.work_items'), ['lineage-workspace', 'WI-123']);
+    expect(h.assertFact).toHaveBeenCalledWith(expect.objectContaining({
+      sourceProvenance: expect.objectContaining({ promotedFrom }),
+    }), h.boundedTx);
+  });
+
+  it.each(['missing', 'unavailable'])('refuses %s promotion lineage before the fact transaction', async (state) => {
+    if (state === 'missing') h.lineageQuery.mockResolvedValue([]);
+    else h.lineageQuery.mockRejectedValue(new Error('resolver offline'));
+    await expect(assertTool.handler(
+      { scope: 'owner', scopeRef: 'su-test', key: 'promoted-claim', body: 'Source-backed conclusion',
+        promotedFrom: [{ kind: 'work-item', ref: 'WI-123' }] } as never,
+      { isSuperuser: true, uiClientId: 'su-test', workspaceId: 'lineage-workspace' } as never,
+    )).rejects.toThrow(state === 'missing' ? 'source missing' : 'resolution unavailable');
+    expect(h.boundedOrgTxn).not.toHaveBeenCalled();
+    expect(h.assertFact).not.toHaveBeenCalled();
   });
 
   it('retries the complete bounded transaction on transient contention', async () => {

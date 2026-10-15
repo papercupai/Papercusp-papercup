@@ -6,8 +6,8 @@
  * `auth:'public'` route (reachable without credentials because only the local machine could
  * reach the loopback listener) became reachable from the internet through the tunnel.
  *
- * A remote MCP client needs exactly three things: the discovery documents, the OAuth endpoints,
- * and the MCP resource. This module is that list and nothing else. Every other path answers 404
+ * Remote clients use discovery/OAuth/MCP and the phone's one-use pairing/device-JWT API.
+ * This module enumerates those authenticated surfaces. Every other path answers 404
  * on the external-ingress listener. Exact paths only, never a prefix, so a new route under an
  * allowed directory is not exposed by accident.
  *
@@ -33,11 +33,18 @@ const OAUTH_VERBS = ['protected-resource', 'authorization-server', 'register', '
  */
 export const DEVICE_GRANT_PATHS = ['/api/connected-apps/device/code', '/api/connected-apps/device/token'] as const;
 
+// EI-24788399827381729: the maintained tunnel must also carry the native client.
+// The phone route list is shared with the portal's device-http relay plane
+// (android-public-release-2026-10-01 D-013 #2), so it lives in operator-core.
+import { PHONE_DEVICE_PATHS, isPhoneDevicePath } from '@papercusp/operator-core/lib/device-ingress-paths';
+export { PHONE_DEVICE_PATHS };
+
 export const EXTERNAL_INGRESS_SERVED_PATHS: ReadonlySet<string> = new Set([
   ...Object.keys(MCP_OAUTH_WELL_KNOWN),
   ...OAUTH_VERBS.map((verb) => `${MCP_OAUTH_BASE}/${verb}`),
   MCP_RESOURCE_PATH,
   ...DEVICE_GRANT_PATHS,
+  ...PHONE_DEVICE_PATHS,
 ]);
 
 /**
@@ -49,7 +56,8 @@ export const EXTERNAL_INGRESS_SERVED_PATHS: ReadonlySet<string> = new Set([
  */
 export function isServedOnExternalIngress(pathname: string): boolean {
   const normalized = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname;
-  return EXTERNAL_INGRESS_SERVED_PATHS.has(normalized) || isWebhookPath(normalized);
+  return EXTERNAL_INGRESS_SERVED_PATHS.has(normalized) || isWebhookPath(normalized) ||
+    isPhoneDevicePath(normalized);
 }
 
 /** The refusal for any other path: a plain 404, so the listener does not advertise what exists. */
@@ -58,7 +66,7 @@ export function notServedOnExternalIngress(): Response {
     {
       error: {
         code: 'not_served_on_external_ingress',
-        message: 'This address serves only the MCP endpoint and its OAuth sign-in.',
+        message: 'This path is not available through external ingress.',
       },
     },
     { status: 404 },

@@ -12,6 +12,7 @@
  * burns a suite).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createPhaseTracker } from '@papercusp/tooldef';
 
 const getRubric = vi.fn();
 const getRubricPlanRevision = vi.fn();
@@ -19,13 +20,20 @@ const readRubricPlanRevision = vi.fn();
 const listScorecards = vi.fn();
 const captureImprovement = vi.fn();
 const resolveHarnessPaths = vi.fn();
-const resolvePlanHarnessSlug = vi.fn();
+const resolvePlanHarness = vi.fn();
+const dispatchPendingGradingAudits = vi.hoisted(() => vi.fn(async () => ({})));
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../rubrics')>();
   return {
     ...real,
     getRubric: (...a: unknown[]) => getRubric(...a),
+    // scorecards:emit uses the failure-aware writer read; keep this unit suite on
+    // the same mocked rubric fixtures instead of falling through to live PG.
+    readRubric: async (rubricId: string) => {
+      const rubric = await getRubric(rubricId);
+      return rubric ? { kind: 'found' as const, rubric } : { kind: 'missing' as const };
+    },
     getRubricPlanRevision: (...a: unknown[]) => getRubricPlanRevision(...a),
     readRubricPlanRevision: (...a: unknown[]) => readRubricPlanRevision(...a),
     // The real identity helper closes over the real getRubric, bypassing this suite's mock.
@@ -54,6 +62,10 @@ vi.mock('../../workspace-registry', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../workspace-registry')>();
   return { ...real, activeWorkspaceId: () => 'ws-test' };
 });
+vi.mock('../../grading-integrity', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../grading-integrity')>();
+  return { ...real, dispatchPendingGradingAudits: (...args: unknown[]) => dispatchPendingGradingAudits(...args) };
+});
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const real = await importOriginal<typeof import('@papercusp/db-org')>();
   return { ...real, getOrgPg: () => ({ sql: {} }) };
@@ -76,23 +88,31 @@ vi.mock('../../resolve-harness-paths', () => ({
   resolveHarnessPaths: (...a: unknown[]) => resolveHarnessPaths(...a),
 }));
 vi.mock('../plans/source', () => ({
-  resolvePlanHarnessSlug: (...a: unknown[]) => resolvePlanHarnessSlug(...a),
+  resolvePlanHarness: (...a: unknown[]) => resolvePlanHarness(...a),
 }));
 
 import scorecardEmitTool, {
   emitScorecard,
+  emitScorecardForToolContext,
   runRecoverableScorecardChecks,
   scorecardCheckRunPrefix,
   SCORECARD_EMIT_TIMEOUT_SEC,
   SCORECARD_TEST_CHECK_TIMEOUT_MS,
 } from './emit';
+// Register the real judge-readable target in the projected-tool contract used by probes.
+import './get';
 import { scorecardEvidenceFingerprint } from '../../scorecards';
+import { asStructuredObservation } from '../../harness/improvements/observation-types';
 import type { ObservationRatings } from '../../harness/improvements/observation-types';
 import type {
   evaluateCriterionCargoChecks,
+  evaluateCriterionCoverageChecks,
+  evaluateCriterionProbeChecks,
+  evaluateCriterionRequirementChecks,
   evaluateCriterionTestChecks,
   CriterionCheckRun,
 } from '../../rubrics-criterion-checks';
+import type { recordRubricCheckResults } from '../../check-results-ledger';
 import { REPO_ROOT } from '../docs/_repo-paths';
 
 type EvaluateChecks = typeof evaluateCriterionTestChecks;
@@ -363,6 +383,7 @@ const emitArgs = (over: Record<string, unknown> = {}) => ({
 });
 
 beforeEach(() => {
+  dispatchPendingGradingAudits.mockClear();
   getRubric.mockReset().mockImplementation(async (id: unknown) =>
     id === 'ar-checked-plan' ? CHECKED_RUBRIC : null,
   );
@@ -378,10 +399,99 @@ beforeEach(() => {
   );
   captureImprovement.mockReset().mockResolvedValue({ created: true, issue: { id: 'EI-1' } });
   resolveHarnessPaths.mockReset();
-  resolvePlanHarnessSlug.mockReset();
+  // Default: the subject plan is not store-backed, so checks keep the caller root.
+  resolvePlanHarness.mockReset().mockResolvedValue({ status: 'missing' });
 });
 
 describe('scorecards:emit deterministic criterion checks (P-011)', () => {
+  it.each([
+    { count: 2, failed: 0, accepted: true },
+    { count: 0, failed: 0, accepted: false },
+    { count: 2, failed: 1, accepted: false },
+  ])('preserves ALL evaluator receipts through emission and reading: $count/$failed', async ({ count, failed, accepted }) => {
+    const probe = {
+      kind: 'tool' as const, tool: 'acceptance:read', args: {},
+      schemaRevision: 'synthetic-read-revision',
+    };
+    const all = [
+      { ...probe, expect: { path: '$.count', op: 'eq' as const, value: 2 } },
+      { ...probe, expect: { path: '$.failed', op: 'eq' as const, value: 0 } },
+    ];
+    getRubric.mockResolvedValue({
+      ...CHECKED_RUBRIC,
+      criteria: [CHECKED_RUBRIC.criteria[0], {
+        ...CHECKED_RUBRIC.criteria[1], check: { kind: 'probe', all },
+      }],
+    });
+    // The real evaluator's populated/empty/failing predicates are exercised in
+    // continuity-probes.test.ts. This suite owns the persistence boundary.
+    const children = all.map((child, index) => {
+      const pass = index === 0 ? count === 2 : failed === 0;
+      return { kind: 'probe' as const, probe: child, observed: index === 0 ? count : failed,
+        verdict: pass ? 'pass' as const : 'fail' as const,
+        status: pass ? 'fresh' as const : 'stale' as const,
+        executed: true as const, measuredAt: '2026-10-03T07:00:00Z' };
+    });
+    const run = { kind: 'probe' as const, all: children, executed: true as const,
+      verdict: accepted ? 'pass' as const : 'fail' as const,
+      status: accepted ? 'fresh' as const : 'stale' as const, measuredAt: children[0].measuredAt };
+    const evaluateProbeChecks = vi.fn<typeof evaluateCriterionProbeChecks>().mockResolvedValue(accepted
+      ? { ok: true, checkRuns: { 'det-outcome': run } }
+      : { ok: false, error: 'probe_contradicted', criterionKey: 'det-outcome', rating: RATINGS['det-outcome'].rating, run, detail: 'ALL child predicate failed' });
+    // test-rubric-unification-2026-10-12 P-006 (R-6): every executed probe child writes one
+    // results-ledger row — the contradicted run that refuses this emit included.
+    const recordCheckResults = vi.fn<typeof recordRubricCheckResults>().mockResolvedValue([101, 102]);
+    const result = await emitScorecard(emitArgs() as never, EMIT_INPUT, { evaluateProbeChecks, recordCheckResults });
+    expect(evaluateProbeChecks).toHaveBeenCalledOnce();
+    expect(evaluateProbeChecks.mock.calls[0][0].criteria[1].check).toEqual({ kind: 'probe', all });
+    expect(recordCheckResults).toHaveBeenCalledOnce();
+    const [ledgerResults, ledgerScope] = recordCheckResults.mock.calls[0]!;
+    expect(ledgerScope).toMatchObject({ workspaceId: 'ws-test' });
+    expect(ledgerResults.map((r) => [r.check.id, r.check.rubricRef, r.check.kind, r.check.value, r.check.unit, r.verdict])).toEqual([
+      ['det-outcome:0', CHECKED_RUBRIC.rubricId, 'probe', count, null, count === 2 ? 'pass' : 'fail'],
+      ['det-outcome:1', CHECKED_RUBRIC.rubricId, 'probe', failed, null, failed === 0 ? 'pass' : 'fail'],
+    ]);
+    expect(result.ok).toBe(accepted);
+    if (!accepted) {
+      expect(captureImprovement).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ checkRefusal: { error: 'probe_contradicted' } });
+      return;
+    }
+    expect(result).toMatchObject({ checkLedger: { recorded: 2, testRunIds: [101, 102] } });
+    const observation = captureImprovement.mock.calls[0][0].payloadExtra.observation;
+    const expected = {
+      kind: 'probe', verdict: 'pass', status: 'fresh', executed: true,
+      all: [
+        { probe: all[0], observed: 2, verdict: 'pass', executed: true },
+        { probe: all[1], observed: 0, verdict: 'pass', executed: true },
+      ],
+    };
+    expect(observation.checkRuns['det-outcome']).toMatchObject(expected);
+    expect(asStructuredObservation(observation)?.checkRuns?.['det-outcome']).toEqual(observation.checkRuns['det-outcome']);
+    expect(result).toMatchObject({ checkRuns: { 'det-outcome': expected } });
+  });
+
+  it('reports a results-ledger write failure without changing the probe-checked verdict (P-006)', async () => {
+    const probe = {
+      kind: 'tool' as const, tool: 'acceptance:read', args: {},
+      schemaRevision: 'synthetic-read-revision', expect: { path: '$.count', op: 'eq' as const, value: 2 },
+    };
+    getRubric.mockResolvedValue({
+      ...CHECKED_RUBRIC,
+      criteria: [CHECKED_RUBRIC.criteria[0], { ...CHECKED_RUBRIC.criteria[1], check: { kind: 'probe', probe } }],
+    });
+    const run = { kind: 'probe' as const, probe, observed: 2, verdict: 'pass' as const, status: 'fresh' as const,
+      executed: true as const, measuredAt: '2026-10-03T07:00:00Z' };
+    const evaluateProbeChecks = vi.fn<typeof evaluateCriterionProbeChecks>()
+      .mockResolvedValue({ ok: true, checkRuns: { 'det-outcome': run } });
+    const recordCheckResults = vi.fn<typeof recordRubricCheckResults>().mockRejectedValue(new Error('connection refused'));
+    const result = await emitScorecard(emitArgs() as never, EMIT_INPUT, { evaluateProbeChecks, recordCheckResults });
+    expect(recordCheckResults).toHaveBeenCalledOnce();
+    expect(recordCheckResults.mock.calls[0]![0].map((r) => r.check.id)).toEqual(['det-outcome:0']);
+    expect(result.ok).toBe(true);
+    expect(result).toMatchObject({ checkLedger: { recorded: 0, error: expect.stringMatching(/results-ledger write failed: connection refused/) } });
+  });
+
   it('files a five-file card through the real evaluator and request-bound recovery seam', async () => {
     const checkFiles = [
       'packages/operator-core/lib/agent-tools/scorecards/emit.checks.test.ts',
@@ -430,7 +540,7 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
       checkRuns: { 'det-outcome': PASS_RUN },
     });
     const res = await emitScorecard(emitArgs() as never, EMIT_INPUT, { evaluateChecks });
-    expect(res.ok).toBe(true);
+    expect(res, JSON.stringify(res)).toMatchObject({ ok: true });
     // the evaluator got the rubric's criteria, the canonical ratings, and the ctx root.
     expect(evaluateChecks).toHaveBeenCalledTimes(1);
     const call = evaluateChecks.mock.calls[0][0];
@@ -520,11 +630,11 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
     expect(res.ok).toBe(true);
     expect(resolveHarnessPaths).toHaveBeenCalledWith('papercusp', 'ws-test');
     expect(evaluateChecks.mock.calls[0][0].root).toBe('/tmp/papercusp-target-tree');
-    expect(resolvePlanHarnessSlug).not.toHaveBeenCalled();
+    expect(resolvePlanHarness).not.toHaveBeenCalled();
   });
 
   it('derives targetHive from the rubric subject plan when targetHive is omitted', async () => {
-    resolvePlanHarnessSlug.mockResolvedValue('papercusp');
+    resolvePlanHarness.mockResolvedValue({ status: 'resolved', harnessSlug: 'papercusp' });
     resolveHarnessPaths.mockResolvedValue({
       projectDir: '/tmp/papercusp-target-tree',
       stateDir: '/tmp/papercusp-target-tree/.papercusp',
@@ -546,9 +656,67 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
     );
 
     expect(res.ok).toBe(true);
-    expect(resolvePlanHarnessSlug).toHaveBeenCalledWith('ws-test', CHECKED_RUBRIC.subjectPlan);
+    expect(resolvePlanHarness).toHaveBeenCalledWith('ws-test', CHECKED_RUBRIC.subjectPlan);
     expect(resolveHarnessPaths).toHaveBeenCalledWith('papercusp', 'ws-test');
     expect(evaluateChecks.mock.calls[0][0].root).toBe('/tmp/papercusp-target-tree');
+  });
+
+  // scope-unique-identifiers-2026-07-26 P-006: a subject-plan slug held by several
+  // harnesses used to resolve to the most recently updated one, so the checks ran
+  // in whichever same-slug plan's tree was touched last.
+  it('refuses with the candidates when the subject plan slug is ambiguous and nothing names its harness', async () => {
+    resolvePlanHarness.mockResolvedValue({ status: 'ambiguous', candidates: ['email', 'papercusp'] });
+    const evaluateChecks = vi.fn<EvaluateChecks>();
+
+    const res = await emitScorecard(
+      emitArgs({ sourceHive: 'sb-devboard-hive' }) as never,
+      {
+        createdBy: 'su-grader',
+        ctxHarness: 'sb-devboard-hive',
+        workspaceId: 'ws-test',
+        checkRoot: '/tmp/sb-devboard-grader-tree',
+      },
+      { evaluateChecks },
+    );
+
+    expect(res.ok).toBe(false);
+    expect(res).toMatchObject({
+      checkScopeRefusal: {
+        error: 'subject_plan_ambiguous_across_harnesses',
+        subjectPlan: CHECKED_RUBRIC.subjectPlan,
+        candidates: ['email', 'papercusp'],
+      },
+    });
+    expect(evaluateChecks).not.toHaveBeenCalled();
+    expect(resolveHarnessPaths).not.toHaveBeenCalled();
+  });
+
+  it("uses the rubric's recorded subject harness before any slug lookup", async () => {
+    getRubric.mockResolvedValue({ ...CHECKED_RUBRIC, subjectHarnessSlug: 'email' });
+    resolveHarnessPaths.mockResolvedValue({
+      projectDir: '/tmp/email-target-tree',
+      stateDir: '/tmp/email-target-tree/.papercusp',
+    });
+    const evaluateChecks = vi.fn<EvaluateChecks>().mockResolvedValue({
+      ok: true,
+      checkRuns: { 'det-outcome': PASS_RUN },
+    });
+
+    const res = await emitScorecard(
+      emitArgs({ sourceHive: 'sb-devboard-hive' }) as never,
+      {
+        createdBy: 'su-grader',
+        ctxHarness: 'sb-devboard-hive',
+        workspaceId: 'ws-test',
+        checkRoot: '/tmp/sb-devboard-grader-tree',
+      },
+      { evaluateChecks },
+    );
+
+    expect(res.ok).toBe(true);
+    expect(resolvePlanHarness).not.toHaveBeenCalled();
+    expect(resolveHarnessPaths).toHaveBeenCalledWith('email', 'ws-test');
+    expect(evaluateChecks.mock.calls[0][0].root).toBe('/tmp/email-target-tree');
   });
 
   it('uses the rubric workspace when a superuser dispatch omits workspaceId', async () => {
@@ -641,6 +809,78 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
     expect((res as { reason?: string }).reason).toBe('unchanged-evidence');
     expect(evaluateChecks).not.toHaveBeenCalled();
     expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('records separate timings for every deterministic evaluator', async () => {
+    let clock = 0;
+    const phases = createPhaseTracker({ now: () => clock });
+    const criteria = [
+      { ...CHECKED_RUBRIC.criteria[0], key: 'tests-wait', check: { kind: 'tests', files: ['packages/x/a.test.ts'] } },
+      { ...CHECKED_RUBRIC.criteria[0], key: 'probe-wait', check: { kind: 'probe', probe: { kind: 'tool', tool: 'acceptance:read', args: {}, schemaRevision: 'phase-test', expect: { path: '$.ok', op: 'eq', value: true } } } },
+      { ...CHECKED_RUBRIC.criteria[0], key: 'cargo-wait', check: { kind: 'cargo', manifestPath: 'apps/x/Cargo.toml', sourceFiles: ['apps/x/src/lib.rs'] } },
+      { ...CHECKED_RUBRIC.criteria[0], key: 'coverage-wait', check: { kind: 'coverage', scope: { sourceFiles: ['packages/x/a.ts'] }, floor: 'required' } },
+      { ...CHECKED_RUBRIC.criteria[0], key: 'requirements-wait', check: { kind: 'requirements' } },
+    ];
+    getRubric.mockResolvedValue({ ...CHECKED_RUBRIC, criteria, subjectPlan: 'phase-test-plan' });
+    const ratings = Object.fromEntries(criteria.map(({ key }) => [key, { rating: 'pass', evidence: 'phase timing fixture' }]));
+    const advanceClock = async () => {
+      clock += 7;
+      return { ok: true as const, checkRuns: {} };
+    };
+    const evaluateChecks = vi.fn<EvaluateChecks>().mockImplementation(advanceClock);
+    const evaluateProbeChecks = vi.fn<typeof evaluateCriterionProbeChecks>().mockImplementation(advanceClock);
+    const evaluateCargoChecks = vi.fn<EvaluateCargoChecks>().mockImplementation(advanceClock);
+    const evaluateCoverageChecks = vi.fn<typeof evaluateCriterionCoverageChecks>().mockImplementation(advanceClock);
+    const evaluateRequirementChecks = vi.fn<typeof evaluateCriterionRequirementChecks>().mockImplementation(advanceClock);
+    const recordCheckResults = vi.fn<typeof recordRubricCheckResults>().mockResolvedValue([]);
+
+    const result = await emitScorecard(emitArgs({ ratings }) as never, { ...EMIT_INPUT, phases }, {
+      evaluateChecks,
+      evaluateProbeChecks,
+      evaluateCargoChecks,
+      evaluateCoverageChecks,
+      evaluateRequirementChecks,
+      recordCheckResults,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(phases.intervals()).toEqual([
+      { phase: 'scorecards:emit:checks:tests', startMs: 0, durationMs: 7 },
+      { phase: 'scorecards:emit:checks:probe', startMs: 7, durationMs: 7 },
+      { phase: 'scorecards:emit:checks:cargo', startMs: 14, durationMs: 7 },
+      { phase: 'scorecards:emit:checks:coverage', startMs: 21, durationMs: 7 },
+      { phase: 'scorecards:emit:checks:requirements', startMs: 28, durationMs: 7 },
+    ]);
+  });
+
+  it('forwards the dispatcher phase tracker through the tool-context bridge', async () => {
+    const phases = createPhaseTracker();
+    const probe = {
+      kind: 'tool' as const,
+      tool: 'scorecards:get',
+      args: { issueId: 'EI-phase-bridge-probe' },
+      schemaRevision: 'live',
+      expect: { path: '$.count', op: 'eq' as const, value: 2 },
+    };
+    getRubric.mockResolvedValue({
+      ...CHECKED_RUBRIC,
+      criteria: [CHECKED_RUBRIC.criteria[0], { ...CHECKED_RUBRIC.criteria[1], check: { kind: 'probe', probe } }],
+    });
+    const dispatchTool = vi.fn(async () => ({ count: 2 }));
+    const result = await emitScorecardForToolContext(emitArgs() as never, {
+      uiClientId: 'su-scorecard-phase',
+      isSuperuser: true,
+      workspaceId: 'ws-test',
+      harnessSlug: 'papercusp',
+      role: 'engineer',
+      projectDir: REPO_ROOT,
+      dispatchTool,
+      phases,
+    } as never);
+
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
+    expect(dispatchTool).toHaveBeenCalledOnce();
+    expect(phases.intervals().map(({ phase }) => phase)).toContain('scorecards:emit:checks:probe');
   });
 });
 

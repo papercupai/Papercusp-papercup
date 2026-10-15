@@ -4,6 +4,7 @@ import {
   CONTEXT_GAUGE_CRITICAL_PCT,
   CONTEXT_GAUGE_LOUD_PCT,
   CONTEXT_GAUGE_QUIET_PCT,
+  contextGaugeReadingSource,
   contextGaugeBand,
   renderBandedContextGauge,
   renderContextUsageLine,
@@ -30,6 +31,12 @@ describe('renderContextUsageLine (WI-1795 compaction affordance)', () => {
     expect(renderContextUsageLine(1000, 0)).toBeNull(); // 0 limit is falsy → no divide-by-zero
   });
 
+  it('selects the live transcript source and falls back to the watchdog cache only when absent', () => {
+    expect(contextGaugeReadingSource(152_825)).toBe('live-transcript-bytes/4');
+    expect(contextGaugeReadingSource(null)).toBe('watchdog-cache');
+    expect(contextGaugeReadingSource(undefined)).toBe('watchdog-cache');
+  });
+
   it('renders a bare fact BELOW the threshold (no affordance)', () => {
     const line = renderContextUsageLine(50_000, 158_000); // ~32%
     expect(line).toBe('context: 50000/158000 (32%)');
@@ -44,6 +51,16 @@ describe('renderContextUsageLine (WI-1795 compaction affordance)', () => {
     expect(line).toBe(
       'context: 199236/250000 (80%); observed-input floor 167686 (3 samples), conservative usable runway 82314',
     );
+  });
+
+  it('labels the live transcript-size estimate used by the inbox gauge', () => {
+    const line = renderContextUsageLine(152_825, 250_000, null, null, null, 'live-transcript-bytes/4');
+    expect(line).toContain('count source: live transcript-size estimate (bytes/4)');
+  });
+
+  it('labels the watchdog cache fallback used when the live transcript is unavailable', () => {
+    const line = renderBandedContextGauge(249_043, 250_000, null, null, null, 'watchdog-cache');
+    expect(line).toContain('count source: watchdog-cached estimate');
   });
 
   it('stays a bare fact JUST below the threshold', () => {
@@ -136,14 +153,14 @@ describe('renderBandedContextGauge (P-013/P-015 ambient gauge)', () => {
   });
 
   it('renders a LOUD ⚠ action line in 80–89%', () => {
-    const line = renderBandedContextGauge(85, 100);
+    const line = renderBandedContextGauge(85, 100, true);
     expect(line).toContain('⚠ context: 85/100 (85%)');
     expect(line).toContain('session:request-compaction');
     expect(line).toMatch(/approaching your soft compaction limit/i);
   });
 
   it('renders a CRITICAL ⚠ urgent line at/above 90%', () => {
-    const line = renderBandedContextGauge(95, 100);
+    const line = renderBandedContextGauge(95, 100, true);
     expect(line).toContain('⚠ context: 95/100 (95%)');
     expect(line).toContain('CRITICAL');
     expect(line).toContain('session:request-compaction');
@@ -156,6 +173,14 @@ describe('renderBandedContextGauge (P-013/P-015 ambient gauge)', () => {
     expect(line).toContain('self-compaction is unavailable');
     expect(line).toContain('next wake');
     expect(line).not.toContain('request-compaction');
+  });
+
+  it('keeps the continuation guidance generic when host availability is unknown', () => {
+    const line = renderBandedContextGauge(95, 100, null);
+    expect(line).toContain('CRITICAL');
+    expect(line).toContain("this session's supported continuation path");
+    expect(line).not.toContain('self-compaction is unavailable');
+    expect(line).not.toContain('session:request-compaction');
   });
 
   it('bands exactly on the rounded percent at each boundary', () => {

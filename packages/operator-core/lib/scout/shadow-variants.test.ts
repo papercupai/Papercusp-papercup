@@ -45,13 +45,19 @@ vi.mock('@papercusp/db-org', async (orig) => ({
       },
       // postgres-js exposes the tag itself as the fragment builder; nested
       // sql`` fragments in the pair query call it with no args in the else-branch.
-      { begin: vi.fn() },
+      { begin: vi.fn(async function (this: unknown, write: (sql: unknown) => Promise<unknown>) {
+        return write(this);
+      }) },
     ),
   }),
 }));
 
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'papercusp-workspace' }));
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
+vi.mock('../experiment/producer-lifecycle-store', async (original) => ({
+  ...(await original<typeof import('../experiment/producer-lifecycle-store')>()),
+  recordProducerObservation: vi.fn(async () => {}),
+}));
 
 const {
   recordShadowVariant,

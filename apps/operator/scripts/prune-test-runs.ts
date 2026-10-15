@@ -17,9 +17,10 @@
 
 import postgres from 'postgres';
 
+// Same precedence as the ledger writers (WI-10006736): the dedicated variable wins.
 const url =
-  process.env.HARNESS_ADMIN_DATABASE_URL ??
   process.env.PAPERCUSP_TEST_RUNS_DB_URL ??
+  process.env.HARNESS_ADMIN_DATABASE_URL ??
   'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
 
 function parseKeep(): number {

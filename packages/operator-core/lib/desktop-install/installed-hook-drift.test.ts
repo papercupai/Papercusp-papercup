@@ -109,6 +109,22 @@ describe('detectInstalledHookDrift (WI-10002031)', () => {
     });
   });
 
+  it('ignores directory residue outside an explicit managed hook set', () => {
+    writeBoth('managed-hook.sh', 'same\n');
+    writeBoth('generated.d.mts', 'canonical declaration\n', 'stale declaration\n');
+    writeFileSync(path.join(installedDir, 'retired-hook.sh'), 'unregistered legacy hook\n');
+
+    const report = detectInstalledHookDrift({
+      canonicalDir,
+      installedDir,
+      managedNames: ['managed-hook.sh'],
+    });
+
+    expect(report.checked).toEqual(['managed-hook.sh']);
+    expect(report.drifted).toEqual([]);
+    expect(report.clean).toBe(true);
+  });
+
   it('ignores subdirectories rather than descending or comparing them', () => {
     writeBoth('ask-gate-mirror.sh', 'same\n');
     mkdirSync(path.join(canonicalDir, 'nested'), { recursive: true });
@@ -121,6 +137,14 @@ describe('detectInstalledHookDrift (WI-10002031)', () => {
   });
 
   describe('fail-closed: a failed measurement must never render as a clean machine', () => {
+    it('REFUSES an explicit empty managed set instead of reporting a clean machine', () => {
+      const report = detectInstalledHookDrift({ canonicalDir, installedDir, managedNames: [] });
+
+      expect(report.refused).toBe('managed-set-empty');
+      expect(report.clean).toBe(false);
+      expect(report.checked).toEqual([]);
+    });
+
     // This is the guard-on-the-guard. The predecessor went quiet for ~6 weeks
     // because it read an env var nothing set, and nothing distinguished that
     // silence from a healthy box.

@@ -3,12 +3,18 @@
  *
  * raceDeadline backs the MCP tool-call deadline: a tool exceeding the deadline
  * returns a clean error to the client instead of hanging to maxDuration / a silent
- * tunnel drop, while the tool keeps running server-side (so an idempotent retry can
- * replay it). Pins: fast path passes through, slow path times out, 0 disables, and a
+ * tunnel drop, while the tool keeps running server-side (keyed writes can replay;
+ * retries of read-only calls execute a fresh read). Pins: fast path passes through, slow path times out, 0 disables, and a
  * post-timeout rejection of the orphaned run never surfaces as unhandled.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { raceDeadline, effectiveMcpDeadlineMs, dispatchLegacyWithDeadline } from '../_mcp-host';
+import {
+  raceDeadline,
+  effectiveMcpDeadlineMs,
+  formatMcpReadOnlyDeadlineMessage,
+  dispatchLegacyWithDeadline,
+  dispatchNestedWithMcpDeadline,
+} from '../_mcp-host';
 
 const dispatchMock = vi.hoisted(() => vi.fn());
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => {
@@ -64,6 +70,52 @@ describe('effectiveMcpDeadlineMs (EI-17177)', () => {
   it('a base deadline <= 0 (P2-5 disabled) stays disabled regardless of timeoutSec', () => {
     expect(effectiveMcpDeadlineMs(600, 0)).toBe(0);
     expect(effectiveMcpDeadlineMs(600, -1)).toBe(-1);
+  });
+});
+
+describe('read-only MCP deadline guidance (EI-25270415606873353)', () => {
+  it('explains that retries execute a fresh read instead of replaying the timed-out result', () => {
+    const traceId = 'e57ef6b3-46ef-4cc5-8214-fec83f2a463e';
+    const message = formatMcpReadOnlyDeadlineMessage('coord:presence', 55_000, traceId);
+
+    expect(message).toContain('request_timeout');
+    expect(message).toContain('read-only tool "coord:presence"');
+    expect(message).toContain('results are not stored for idempotent replay');
+    expect(message).toContain('retrying will execute a fresh read');
+    expect(message).toContain(`request trace id: ${traceId}`);
+    expect(message).not.toContain('same _meta.idempotencyKey');
+    expect(message).not.toContain('commit status is UNKNOWN');
+  });
+});
+
+describe('dispatchNestedWithMcpDeadline (tools:invoke)', () => {
+  it('uses the nested target timeout plus buffer and returns a bounded unknown-commit error', async () => {
+    vi.useFakeTimers();
+    try {
+      let settled = false;
+      const dispatch = vi.fn(() => new Promise<never>(() => {}));
+      const pending = dispatchNestedWithMcpDeadline('work_items:checkpoint', 0.02, dispatch, 10).then((result) => {
+        settled = true;
+        return result;
+      });
+
+      // The nested target's 20ms timeout + 5s buffer exceeds the 10ms base.
+      await vi.advanceTimersByTimeAsync(5_019);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+
+      const result = await pending;
+      expect(dispatch).toHaveBeenCalledOnce();
+      expect(result.isError).toBe(true);
+      const message = (result.content[0] as { text: string }).text;
+      expect(message).toContain('request_timeout');
+      expect(message).toContain('work_items:checkpoint');
+      expect(message).toContain('exceeded 5020ms');
+      expect(message).toContain('commit status is UNKNOWN');
+      expect(message).toContain('Re-read the target\'s state before retrying');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

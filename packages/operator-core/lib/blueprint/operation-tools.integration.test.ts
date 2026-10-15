@@ -248,6 +248,7 @@ const OPERATION_SOURCE = {
   operations: [{
     id: 'extract', version: 'A', target: { kind: 'work-item', itemKind: 'feature' },
     execution: { kind: 'agent', role: 'worker' },
+    policy: { identity: { kind: 'identity', ref: 'operation-tools-worker', revision: '1.0.0', contentHash: 'b'.repeat(64) } },
     inputSchema: { type: 'object', required: ['value'], properties: { value: { type: 'string' } }, additionalProperties: false },
     acceptance: { resultSchema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } }, additionalProperties: false } },
     signals: { note: { payloadSchema: { type: 'object', required: ['text'], properties: { text: { type: 'string' } } } } },
@@ -357,6 +358,37 @@ describe('P-017 blueprint:* registration and contract projection', () => {
 });
 
 describe.each<Transport>(['http', 'mcp'])('P-017 blueprint:* lifecycle over %s', (transport) => {
+  it('refuses changed approved revisions while preserving accepted runs through promotion and rollback', async () => {
+    const original = await readBlueprintHashFromPg(db.sql, WORKSPACE, HARNESS);
+    const approved = { ...submitArgs('approved'), expectedSpecificationRevision: original };
+    const { handle } = await ok<{ handle: BlueprintOperationHandle }>(call(transport, ALPHA, T.submit, approved));
+    expect(handle.specificationRevision).toBe(original);
+    const promoted = structuredClone(OPERATION_SOURCE);
+    promoted.operations[0]!.version = 'B';
+    await projectBlueprintToPg(db.sql, {
+      workspaceId: WORKSPACE, harnessSlug: HARNESS,
+      blueprint: BlueprintSchema.parse(promoted), specification: compileAgentSpecification({ source: promoted }),
+    });
+    const next = await readBlueprintHashFromPg(db.sql, WORKSPACE, HARNESS);
+    expect(next).not.toBe(original);
+    expect(await refused(call(transport, ALPHA, T.submit, {
+      ...approved, requestKey: 'stale-new-run',
+    }))).toMatchObject({ code: 'invalid_input', message: expect.stringContaining('revision changed') });
+    expect((await ok<{ handle: BlueprintOperationHandle }>(call(transport, ALPHA, T.submit, approved))).handle).toEqual(handle);
+    const fresh = await ok<{ handle: BlueprintOperationHandle }>(call(transport, ALPHA, T.submit, {
+      ...submitArgs('new-approved'), expectedSpecificationRevision: next,
+    }));
+    expect(fresh.handle.specificationRevision).toBe(next);
+    await projectBlueprintToPg(db.sql, {
+      workspaceId: WORKSPACE, harnessSlug: HARNESS,
+      blueprint: BlueprintSchema.parse(OPERATION_SOURCE), specification: compileAgentSpecification({ source: OPERATION_SOURCE }),
+    });
+    const stillPinned = await ok<{ handle: BlueprintOperationHandle }>(call(transport, ALPHA, T.status, { handle: fresh.handle }));
+    expect(stillPinned.handle.specificationRevision).toBe(next);
+    const [{ count }] = await db.sql<{ count: number }[]>`SELECT count(*)::int AS count FROM harness_shared.blueprint_operation_invocations`;
+    expect(count).toBe(2);
+  });
+
   it('drives submit/replay/status/events/signal/resume/cancel/result through the shared contract', async () => {
     const { handle } = await ok<{ handle: BlueprintOperationHandle }>(
       call(transport, ALPHA, T.submit, submitArgs('lifecycle')));
@@ -535,6 +567,83 @@ describe('P-017 transport parity', () => {
   });
 });
 
+describe.each<Transport>(['http', 'mcp'])('P-012b business review over %s', transport => {
+  async function reviewedOperation() {
+    const source = { ...OPERATION_SOURCE, operations: OPERATION_SOURCE.operations.map(op => ({
+      ...op, acceptance: { ...op.acceptance, businessReview: {
+        accountableOwner: 'engineering-owner', reviewerPrincipals: ['pi:beta', 'pi:alpha'],
+      } },
+    })) };
+    await projectBlueprintToPg(db.sql, { workspaceId: WORKSPACE, harnessSlug: HARNESS,
+      blueprint: BlueprintSchema.parse(source), specification: compileAgentSpecification({ source }) });
+    const { handle } = await ok<{ handle: BlueprintOperationHandle }>(call(transport,
+      { principal: 'alpha', client: 'employee-session' }, T.submit, submitArgs('business')));
+    return handle;
+  }
+  async function complete(handle: BlueprintOperationHandle, answer: string, attempt = 'completion:1') {
+    await settleWithOutput(handle, answer);
+    if (handle.target.kind !== 'work-item') throw new Error('expected work item');
+    await db.sql`UPDATE harness_shared.work_items SET terminal_owner = 'worker', terminal_completion_ref = ${attempt}
+      WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND feature_id = ${handle.target.id}`;
+  }
+  const employee: Caller = { principal: 'alpha', client: 'employee-session' };
+  const reviewer: Caller = { principal: 'beta', client: 'review-session' };
+
+  it.each(['accept', 'reject', 'rework'] as const)('retains a distinct %s decision, exact output and replay receipt', async decision => {
+    const handle = await reviewedOperation();
+    const premature = { handle, channel: 'business-review', requestKey: 'review:1',
+      payload: { decision, reason: 'Reviewed the cited output', resultFingerprint: 'a'.repeat(64) } };
+    expect((await refused(call(transport, reviewer, T.signal, premature))).message).toMatch(/^terminal:/);
+    await complete(handle, 'Prepared engineering handoff');
+    const prepared = await ok<{ businessReview: { state: string; resultFingerprint: string } }>(
+      call(transport, employee, T.result, { handle }));
+    expect(prepared.businessReview.state).toBe('pending');
+    expect(await ok(call(transport, reviewer, T.result, { handle, review: true }))).toMatchObject({ state: 'ready' });
+    // A client alias cannot grant another principal's access or bypass separation.
+    for (const caller of [{ principal: 'alpha', client: 'different-session' },
+      { principal: 'reader', client: 'pi:beta' }] as Caller[]) {
+      expect((await refused(call(transport, caller, T.result, { handle, review: true }))).message).toMatch(/^handle_mismatch:/);
+    }
+    expect((await refused(call(transport, { principal: 'gamma' }, T.result, { handle, review: true }))).message).toMatch(/^scope_mismatch:/);
+    expect((await refused(call(transport, reviewer, T.result, { handle }))).message).toMatch(/^handle_mismatch:/);
+    const request = { ...premature, payload: { ...premature.payload, resultFingerprint: prepared.businessReview.resultFingerprint } };
+    expect((await refused(call(transport, { principal: 'alpha', client: 'different-session' }, T.signal, request))).message).toMatch(/^handle_mismatch:/);
+    const saved = await ok<{ eventId: string }>(call(transport, reviewer, T.signal, request));
+    expect(await ok(call(transport, reviewer, T.signal, request))).toMatchObject({ replayed: true, eventId: saved.eventId });
+    expect((await refused(call(transport, reviewer, T.signal, { ...request,
+      payload: { ...request.payload, reason: 'Changed reason' } }))).message).toMatch(/^input_conflict:/);
+    const result = await ok(call(transport, employee, T.result, { handle }));
+    expect(result).toMatchObject({ state: 'ready', output: { answer: 'Prepared engineering handoff' },
+      businessReview: { state: decision === 'accept' ? 'accepted' : decision === 'reject' ? 'rejected' : 'rework',
+        accountableOwner: 'engineering-owner', decision: { reviewerPrincipal: 'pi:beta', eventId: saved.eventId } } });
+    const events = await ok<{ events: Array<{ kind: string }> }>(call(transport, reviewer, T.events, { handle, review: true }));
+    expect(events.events.filter(event => event.kind === 'business-review')).toHaveLength(1);
+    // Review authorization gives no access to ordinary control inputs.
+    expect((await refused(call(transport, reviewer, T.signal, { handle, channel: 'note',
+      payload: { text: 'foreign' }, requestKey: 'foreign' }))).message).toMatch(/^handle_mismatch:/);
+  });
+
+  it('refuses stale result decisions, worker self-review, and prior-attempt acceptance', async () => {
+    const handle = await reviewedOperation();
+    await complete(handle, 'First output');
+    const first = await ok<{ businessReview: { resultFingerprint: string } }>(call(transport, employee, T.result, { handle }));
+    const input = { handle, channel: 'business-review', requestKey: 'decision',
+      payload: { decision: 'accept', reason: 'Accepted', resultFingerprint: first.businessReview.resultFingerprint } };
+    await ok(call(transport, reviewer, T.signal, input));
+    await complete(handle, 'First output', 'completion:2');
+    expect((await refused(call(transport, reviewer, T.signal, input))).message).toMatch(/^invalid_payload:/);
+    const next = await ok<{ businessReview: { state: string; resultFingerprint: string } }>(call(transport, employee, T.result, { handle }));
+    expect(next.businessReview.state).toBe('pending');
+    expect(next.businessReview.resultFingerprint).not.toBe(first.businessReview.resultFingerprint);
+    expect((await refused(call(transport, reviewer, T.signal, { ...input,
+      payload: { ...input.payload, resultFingerprint: next.businessReview.resultFingerprint } }))).message).toMatch(/^input_conflict:/);
+    if (handle.target.kind !== 'work-item') throw new Error('expected work item');
+    await db.sql`UPDATE harness_shared.work_items SET terminal_owner = 'pi:beta/worker-client'
+      WHERE workspace_id = ${WORKSPACE} AND feature_id = ${handle.target.id}`;
+    expect((await refused(call(transport, reviewer, T.result, { handle, review: true }))).message).toMatch(/^handle_mismatch:/);
+  });
+});
+
 describe.each<Transport>(['http', 'mcp'])('P-011 neutral consumers over %s', (transport) => {
   it('uses one public lifecycle for independent schemas and scopes without creating plans', async () => {
     const secondHarness = 'neutral-consumer-b';
@@ -544,6 +653,7 @@ describe.each<Transport>(['http', 'mcp'])('P-011 neutral consumers over %s', (tr
       operations: [{
         id: 'score', version: 'B', target: { kind: 'work-item', itemKind: 'feature' },
         execution: { kind: 'agent', role: 'worker' },
+        policy: { identity: { kind: 'identity', ref: 'operation-tools-worker', revision: '1.0.0', contentHash: 'b'.repeat(64) } },
         inputSchema: { type: 'object', required: ['count'],
           properties: { count: { type: 'integer' } }, additionalProperties: false },
         acceptance: { resultSchema: { type: 'object', required: ['score'],

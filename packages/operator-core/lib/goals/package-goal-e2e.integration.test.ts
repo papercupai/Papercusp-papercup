@@ -70,6 +70,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   // Fresh-workspace semantics: everything scoped to WS starts empty.
+  await rootSql`DELETE FROM harness_shared.agent_usage_samples WHERE workspace_id = ${WS}`;
   await rootSql`DELETE FROM harness_shared.agent_mode_changes WHERE workspace_id = ${WS}`;
   await rootSql`DELETE FROM harness_shared.agent_modes WHERE workspace_id = ${WS}`;
   await rootSql`DELETE FROM harness_shared.goals WHERE workspace_id = ${WS}`;
@@ -77,11 +78,26 @@ beforeEach(async () => {
 });
 
 /** The REAL deps, with only the documented seams overridden. */
-function e2eDeps(capture: { kickoffPrompt: string | null; launched: string[] }): StartGoalFromPackageDeps {
+function e2eDeps(
+  capture: { kickoffPrompt: string | null; launched: string[] },
+  recordUsage = true,
+): StartGoalFromPackageDeps {
   return {
     ...DEFAULT_DEPS,
-    startById: async (sql, input) =>
-      await startGoalById(sql, input, {
+    startById: async (sql, input) => {
+      // Use the same priced interactive-sample fixture as the holder-liveness
+      // integration suite. The real budget resolver needs measured spend;
+      // an empty ledger must keep refusing instead of being treated as zero.
+      if (recordUsage) {
+        const ts = Date.now();
+        await sql`
+          INSERT INTO harness_shared.agent_usage_samples
+            (workspace_id, ts, bucket_key, provider, model_class, source, ingested_at,
+             harness_slug, goal_id, cost_usd)
+          VALUES (${input.workspaceId}, ${ts}, ${'test:package-goal'}, ${'anthropic'}, ${'test'},
+                  ${'interactive'}, ${ts}, ${HARNESS}, ${input.goalId}, ${0.01})`;
+      }
+      return await startGoalById(sql, input, {
         ...DEFAULT_START_GOAL_BY_ID_DEPS,
         launch: async (launchInput) => {
           capture.launched.push(launchInput.goalId);
@@ -121,7 +137,8 @@ function e2eDeps(capture: { kickoffPrompt: string | null; launched: string[] }):
                               || jsonb_build_object('agentOwnerId', ${ownerId}::text)
              WHERE id = ${goalId} AND workspace_id = ${workspaceId}`;
         },
-      }),
+      });
+    },
     drainEnabled: async () => false,
   };
 }
@@ -205,6 +222,17 @@ describe('P-016 front half: typed start → mint → attach → brief (real seam
     const rows = await rootSql<Array<{ id: string }>>`SELECT id FROM harness_shared.datatype_registry
        WHERE workspace_id = ${WS} AND id = 'plan-ref-list'`;
     expect(rows).toHaveLength(1);
+  });
+
+  it('refuses a package launch when its declared budget has no usage measurement', async () => {
+    const capture = { kickoffPrompt: null as string | null, launched: [] as string[] };
+    await expect(startGoalFromPackage(
+      rootSql,
+      { workspaceId: WS, ref: REF, harness: HARNESS },
+      e2eDeps(capture, false),
+    )).rejects.toThrow('spend CANNOT BE MEASURED');
+    expect(capture.launched).toEqual([]);
+    expect(await rootSql`SELECT 1 FROM harness_shared.agent_usage_samples WHERE workspace_id = ${WS}`).toEqual([]);
   });
 
   it('minting with no harness refuses and leaves the fresh workspace EMPTY', async () => {

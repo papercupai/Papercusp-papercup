@@ -59,9 +59,40 @@ import {
   type SelectionBaseResult,
 } from "./selection-base";
 import { pipelineRef } from "@papercusp/operator-core/lib/release/pipeline-name";
+import { redactSensitiveText } from "@papercusp/operator-core/lib/sensitive-text";
 import { quietCutSecFromEnv } from "@papercusp/operator-core/lib/release/quiet-cut";
 import {
+  buildRedLegsAtR1,
+  decideKnownGoodFreezeCut,
+  formatFreezeCutLine,
+  type FreezeCutRecord,
+  type RedLegsAtR1,
+} from "@papercusp/operator-core/lib/release/known-good-freeze";
+import {
+  buildFrozenRepairBoundedLifeRecord,
+  decideFrozenRepairBoundedLife,
+  frozenRepairBoundedLifeRateLimitedBody,
+  frozenRepairBoundedLifeRetireBody,
+  frozenRepairBoundedLifeSummary,
+  planFrozenRepairCarry,
+  type FrozenRepairBoundedLifeEscalation,
+  type FrozenRepairBoundedLifeRecord,
+  type FrozenRepairBoundedLifeState,
+  type FrozenRepairRecutTarget,
+} from "@papercusp/operator-core/lib/release/frozen-repair-bounded-life";
+import {
+  assessFrozenRepairCarryAtCut,
+  buildFrozenRepairCarryRecord,
+  frozenRepairCarrySummary,
+  type FrozenRepairCarryRecord,
+  type FrozenRepairPendingCarry,
+} from "@papercusp/operator-core/lib/release/frozen-repair-carry";
+import {
   buildTestPassReuseHealth,
+  parsePureProofCaptureResult,
+  parsePureProofCaptureArchive,
+  type PureProofCaptureArchive,
+  type PureProofCaptureResult,
   type TestPassReuseHealth,
 } from "@papercusp/operator-core/lib/release/test-pass-reuse-report";
 import {
@@ -69,6 +100,7 @@ import {
   type GateRoundPhases,
 } from "@papercusp/operator-core/lib/release/gate-round-phases";
 import { CANDIDATE_FOSSIL_AGE_MS } from "@papercusp/operator-core/lib/release/gate-verdict-freshness";
+import { dependencyGenerationInfraCode } from "@papercusp/operator-core/lib/release/admission-fix-precheck";
 import { parseTscDiagnostics } from "@papercusp/operator-core/lib/tsc-diagnostics";
 import type { TscDiagnostic } from "@papercusp/operator-core/lib/tsc-diagnostics";
 import {
@@ -97,7 +129,11 @@ import {
   managedSetInterval,
   type ManagedHandle,
 } from "@papercusp/scheduled-registry";
-import { gateVerdictTargetFromEnv, type GateVerdictTarget } from "@papercusp/operator-core/lib/release/gate-verdict-target";
+import {
+  gateVerdictTargetFromEnv,
+  resolveHomeGateVerdictTarget,
+  type GateVerdictTarget,
+} from "@papercusp/operator-core/lib/release/gate-verdict-target";
 import { gateFireIdFromEnv } from "@papercusp/operator-core/lib/release/gate-fire-ledger";
 import { routineFireIdentityFromEnv } from "@papercusp/operator-core/lib/release/in-flight-candidate";
 import type { WriteFrozenCandidateRepairQueueOptions } from "@papercusp/operator-core/lib/harness/routines/release-actions";
@@ -106,6 +142,7 @@ import type { SnapCacheOutcome } from "@papercusp/operator-core/lib/storage/snap
 import {
   DEPENDENCY_PREBUILD_WAIT_MS,
   awaitDependencyPrebuildState,
+  resolveDependencyGenerationRoot,
   type DependencyPrebuildState,
   type DependencyPrebuildTarget,
 } from "@papercusp/operator-core/lib/release/dependency-generation-prebuild";
@@ -113,9 +150,12 @@ import {
   CHECKPOINT_QUALIFICATION_ATTEMPT_ENV,
   CHECKPOINT_SCHEDULED_RUN_ENV,
   checkpointPidIdentity,
+  probeRunnerLiveness,
   readStoredQualification,
   recordStoredQualificationRunnerProgress,
   reserveStoredQualificationRunner,
+  type QualificationPhysicalRunner,
+  type RunnerLiveness,
   type StoredQualificationMutation,
 } from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
 import type { EmitAwaitedEventOpts } from "@papercusp/operator-core/lib/events/await/engine";
@@ -124,14 +164,22 @@ import {
   isCheckpointCandidateSource,
   type CheckpointCandidateSource,
 } from "@papercusp/operator-core/lib/release/checkpoint-candidate-source";
+import { assessFrozenRepairQueuePreflight } from "@papercusp/operator-core/lib/release/checkpoint-required-ancestor";
 // P-005 / D-008: the hygiene-vs-product classifier. Pure and fail-closed — it decides,
 // it never files and never promotes. Actuation (the condition flip below, and filing the
 // returned drafts) stays here, deliberately, for the same reason green-stall-watchdog's
 // refire DECISION is separated from its firing.
 import {
-  decidePromotion,
+  decideGateSuite,
+  captureGateSuiteVerdictReplay,
+  checkGateSuiteVerdictReplay,
+  type GateSuiteDecisionInput,
+  type GateSuiteVerdictReplay,
   type HygieneWorkItemDraft,
 } from "@papercusp/operator-core/lib/release/gate-hygiene-split";
+import { runGateCanary } from "@papercusp/operator-core/lib/gates/canary";
+import { checkRecordedGateVerdict, recordedGateDecision } from './gate-decision-replay';
+import { gateActionBlocks, gateVerdictAppliesToHead, type GateDecisionReplay } from '@papercusp/operator-core/lib/release/gate-hygiene-split';
 // EI-20063423357086565 — the uncommitted-working-tree reader, reused rather than re-derived:
 // it includes untracked files and deliberately avoids porcelain's whitespace-sensitive
 // column parse. See `failingFilesUncommitted` below.
@@ -163,6 +211,8 @@ import {
   markFrozenRepairVerificationRed,
   parseFrozenRepairSelectiveCoverage,
   recordFrozenRepairSupersededRed,
+  recordFrozenRepairLegMeasurement,
+  type RepairLegMeasurement,
   selectFrozenRepairAdmissionPaths,
   settleFrozenRepairRetestRequest,
   buildFrozenRepairStatusIdentity,
@@ -177,14 +227,19 @@ import {
   type RepairSignatureKind,
   type FrozenRepairRetestRequest,
   type FrozenRepairSelectiveCoverage,
+  frozenRepairRoundExecution,
+  type FrozenRepairFullGateTrigger,
+  type FrozenRepairRoundExecution,
 } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
-import type {
-  FreezeAndConvergeDisposition,
-  TickFreezeObservation,
+import {
+  deriveTickFreezeDisposition,
+  type FreezeAndConvergeDisposition,
+  type TickFreezeObservation,
 } from "@papercusp/operator-core/lib/release/freeze-disposition";
 import {
   describeIntegrationRoot,
   databaseEvidence,
+  gateOperatorPgEnv,
   toolingRoot,
   type GreenCheckpointCapacityMode,
   type ReleaseConfig,
@@ -206,6 +261,7 @@ import {
   describeGenCheckHeal,
   healGenCheckLegs,
   makeRealGenCheckHealIo,
+  publishGenHealGitlinks,
   signatureWithoutHealed,
   type GenCheckHealOutcome,
 } from "./green-checkpoint-gen-check-self-heal";
@@ -229,6 +285,8 @@ import {
   vitestSuiteFailRow,
   VITEST_TEST_FILE_SOURCE,
   parseFailingFilesLine,
+  parseFailedTestFiles,
+  parseSummaryFailedCounts,
 } from "../../../../scripts/lib/vitest-summary.mjs";
 import {
   collectAutoTypecheckRoutes,
@@ -248,10 +306,21 @@ import {
   EXECUTED_MAP_WORKSPACE_ENV,
   executedMapRecordingEnabled,
 } from "../../../../scripts/lib/executed-source-map.mjs";
-import { TEST_REUSE_SKIP_LIST_ENV } from "../../../../scripts/lib/test-pass-reuse.mjs";
+import { recordGateReuseDecision, TEST_REUSE_SKIP_LIST_ENV } from "../../../../scripts/lib/test-pass-reuse.mjs";
 // EI-24538088938561684: a targeted TASK re-run (runGateAtRef — the frozen-repair verification's
 // `<ws> :: test:lane-*` re-run) arms the suite's per-file pass reuse and proof recording.
 import { armTargetedTaskReuse } from "../../../../scripts/lib/targeted-task-reuse.mjs";
+import { applyGitOptionalLocksDefault } from "../../../../scripts/lib/git-optional-locks.mjs";
+// gate-test-reuse-yield-2026-10-01 P-006 (D-005 §1): after the verdict is recorded, capture
+// isolated pass proofs for the pure lane, which records none during the suite (isolate:false).
+import {
+  PURE_PROOF_CAPTURE_BUDGET_ENV,
+  PURE_PROOF_CAPTURE_ENV,
+  PURE_PROOF_CAPTURE_SLICE_ENV,
+  pureProofCaptureBudgetMs,
+  pureProofCaptureEnabled,
+  runPureLaneProofCapture,
+} from "../../../../scripts/lib/pure-lane-proof-capture.mjs";
 // WI-10000288: a repair-signature leg that answers "I verified NOTHING" (EXIT_NOT_CHECKED)
 // is not a failing leg, and judging it as one red-pins the candidate forever — no fix to the
 // SUBJECT can repair a verdict that was never about the subject. These guards infer their
@@ -436,6 +505,17 @@ export interface CheckpointExecutionContext {
   affectedTestProofGroup?: string;
 }
 
+/** WI-10004340: the frozen queue's review clock for a targeted leg runner. The repair-head
+ *  verification (`runGateAtRef(repairHead, ids)`) and the awaiting-fixer hold tick
+ *  (`runRepairTickLegs`) measure `<ws> :: lint:migration-forward-compat` outside the
+ *  candidate suite, so WI-10005212's candidate-suite clock never reached them: a sidecar
+ *  whose reviewBy lapsed after the freeze (987, reviewBy 2026-10-01, queue opened
+ *  2026-10-01T10:39Z) kept repairHead 0d8ad5e3 red on the wall clock. */
+export interface FrozenReviewClockOptions {
+  /** Persisted queue.openedAtMs. Omitted for a tip measurement, which keeps the wall clock. */
+  frozenCandidateOpenedAtMs?: number;
+}
+
 /** A source/test sibling whose newest committed half sits beyond the candidate cut. */
 export interface SplitSourceTestPair {
   candidatePath: string;
@@ -602,6 +682,8 @@ export type StagingLineageAbsorptionResult =
     };
 
 export interface CheckpointDeps {
+  /** Internal trace shared across this physical run's recursive refires. Never live state. */
+  decisionTrace?: GateDecisionReplay[];
   /**
    * Report forward progress from the real checkpoint process. This is deliberately
    * separate from `log`: child output can be noisy or silent, while phase transitions
@@ -783,6 +865,7 @@ export interface CheckpointDeps {
   runGateAtRef?(
     ref: string,
     gateIds: string[],
+    opts?: FrozenReviewClockOptions,
   ): Promise<TargetedGateResult>;
   /** Run the standard post-suite gate legs at an already-materialized targeted tip. */
   runPostSuiteAtRef?(ref: string): Promise<{ pass: boolean; summary: string }>;
@@ -797,6 +880,7 @@ export interface CheckpointDeps {
   runRepairTickLegs?(
     ref: string,
     gateIds: string[],
+    opts?: FrozenReviewClockOptions,
   ): Promise<RepairTickLegs | null>;
   /** P-005 (green-gate-zero-wait-convergence-2026-09-08, R-5, D-001): heal the `gen:*:check`
    *  members of a repair-round red by running the paired `gen:*` writer INSIDE the frozen
@@ -814,6 +898,8 @@ export interface CheckpointDeps {
    *  `if (!green)` behaves EXACTLY as it does today (every red holds the gate). That is the
    *  fail-closed direction on purpose — a stub or older dep can never accidentally promote. */
   readRootScripts?(): Record<string, string>;
+  /** P-014: prior measured inputs; supplied by the CLI, never a live test rerun. */
+  readLastSuiteVerdictReplay?(): Promise<GateSuiteVerdictReplay | null>;
   /** EI-18669342433807110: called right before a stale-candidate auto-refire RECURSES (which can
    *  run a full suite again, minutes, before this process returns) — merges a marker into
    *  `gate_health` so a concurrent reader (coord:orient, dev:why) can tell the cached red for
@@ -1008,7 +1094,7 @@ export interface CheckpointDeps {
    *  provide it and the default deploy behaviour is unchanged. */
   perfGate?(
     candidate: string,
-  ): Promise<{ action: "pass" | "warn" | "block"; summary: string }>;
+  ): Promise<{ action: "pass" | "warn" | "block"; summary: string; replay?: GateDecisionReplay }>;
   /** desktop-performance-suite-2026-07-20 P-011: the desktop-UI perf gate. Runs
    *  post-runGreen / pre-advance on a GREEN candidate: if the latest persisted
    *  desktop-perf run (desktop_perf_runs, P-010) shows a budgeted interaction /
@@ -1018,6 +1104,7 @@ export interface CheckpointDeps {
    *  Optional + FLAG-gated (FLAGS.DESKTOP_PERF_GATE, default ON; a no-op `pass`
    *  when off or when no run is recorded) so existing stubs need not provide it. */
   desktopPerfGate?(candidate: string): Promise<{
+    replay?: GateDecisionReplay;
     action: "pass" | "warn" | "block";
     summary: string;
     /** WI-39685 (cutover-plan D-013): the gate's own verdict class — 'ok' | 'warn' |
@@ -1035,7 +1122,7 @@ export interface CheckpointDeps {
    *  need not provide it and the default deploy behaviour is unchanged. */
   deltaGate?(
     candidate: string,
-  ): Promise<{ action: "pass" | "warn" | "block"; summary: string }>;
+  ): Promise<{ action: "pass" | "warn" | "block"; summary: string; replay?: GateDecisionReplay }>;
   /** EI-11118 (cupboard-public-release P-009 durable fix): the Cupboard prod-
    *  hygiene gate. Runs post-runGreen / pre-advance on a GREEN candidate: scans
    *  the LIVE prod Cupboard storefront for E2E/smoke test-junk rows (the
@@ -1047,7 +1134,7 @@ export interface CheckpointDeps {
    *  behave exactly as before (no call site fires without the dep). */
   cupboardHygieneGate?(
     candidate: string,
-  ): Promise<{ action: "pass" | "warn" | "block"; summary: string }>;
+  ): Promise<{ action: "pass" | "warn" | "block"; summary: string; replay?: GateDecisionReplay }>;
   /** P-016 (release-pipeline-resilience-2026-06-09 D-010): the commit shas between
    *  `from` (exclusive) and `to` (inclusive), OLDEST-FIRST, full shas — the batch the
    *  green-checkpoint is gating. Used by the longest-green-PREFIX salvage to know which
@@ -1095,7 +1182,8 @@ export interface CheckpointDeps {
    *  candidate; the real dep routes every changed file through a discovered owning
    *  `lint:tsc:* --files` gate in the isolated checkpoint tree. `skipped` means no changed
    *  file had a resolvable owning gate, not green. Optional so older/test deps keep their
-   *  current behaviour; runGreen's unscoped post-suite typechecks remain the final assurance. */
+   *  current behaviour; a failed scoped result carries the real dep's independent non-test
+   *  gate inventory, while clean candidates still receive the normal post-suite assurance. */
   runChangedFileTypecheckPreflight?(
     files: string[],
     range?: { from: string; to: string },
@@ -1109,6 +1197,13 @@ export interface CheckpointDeps {
     diagnostics?: CheckpointTypecheckDiagnostic[];
     /** Exact file paths named by the compiler diagnostics. */
     failingFilePaths?: string[];
+    /** The independent non-test gate legs measured after a failed scoped preflight. */
+    failureInventory?: {
+      ran: boolean;
+      output: string;
+      failingSignatures: string[];
+      records: PostSuiteLegRecord[];
+    };
   }>;
   /** WI-2997 (EI-7443 follow-up, item 3): per-file 7d historical flake stats for
    *  the CURRENTLY failing test files, so the not-green broadcast/escalate can
@@ -1193,7 +1288,22 @@ export interface CheckpointDeps {
   /** EI-21051243455875854: fail closed before setupTree/runGreen when the temp
    * filesystem cannot safely absorb a full verdict. Real wiring reuses the
    * standing disk alarm's statfs sampling and critical thresholds. */
-  checkDiskHeadroom?(): Promise<{ ok: boolean; summary: string }>;
+  checkDiskHeadroom?(): Promise<{
+    ok: boolean;
+    summary: string;
+    /** P-022: which precondition refused, when `ok` is false. Absent ⇒ disk headroom. */
+    blocker?: GatePreconditionBlocker;
+  }>;
+  /** P-022: free dependency-generation space before the one bounded precondition retry.
+   *  Production runs the existing retention prune ({@link runDependencyGenerationRetention})
+   *  and returns a one-line receipt. Only called for a `disk-headroom` refusal. */
+  reclaimDependencyHeadroom?(): Promise<string>;
+  /** P-022: delay before the one bounded precondition retry. ABSENT ⇒ no retry (direct callers
+   *  keep the historical single-pass refusal); production wiring supplies
+   *  {@link gatePreconditionRetryDelayMsFromEnv}. */
+  preconditionRetryDelayMs?: number;
+  /** P-022: sleep seam for the precondition retry wait (tests never real-sleep). */
+  preconditionRetrySleep?: (ms: number) => Promise<void>;
   /**
    * WI-606293: is there any provider capacity for the release-fixer to run on?
    *
@@ -1245,6 +1355,20 @@ export interface CheckpointDeps {
     disposition: FreezeAndConvergeDisposition,
   ): Promise<void>;
   /**
+   * WI-6554700010009615: called once per return-funnel pass, AFTER the admission refire (the last
+   * branch that can start another suite) and before the post-verdict steps. The CLI wires it to
+   * tighten its self-watchdog to POST_VERDICT_WATCHDOG_MS. ABSENT means nothing happens.
+   * Synchronous and best-effort: a throw is logged, never fatal.
+   */
+  enterPostVerdictPhase?(): void;
+  /**
+   * WI-6554700010010213: record ONE post-verdict step that hit its deadline (production: a
+   * `green_checkpoint_post_verdict` pipeline event). Called at most once per overrun, bounded by
+   * POST_VERDICT_DEADLINE_RECORD_BOUND_MS; a throw is logged, never fatal. ABSENT means the
+   * overrun is only logged.
+   */
+  recordPostVerdictStepDeadline?(info: PostVerdictStepDeadline): Promise<void>;
+  /**
    * P-008: the per-tick BACKSTOP for the dep above. `converging` and `none` are recorded by
    * no branch, and the stored record is shallow-merged and never cleared, so without this a
    * tick that converges or clears leaves the previous `held`/`retired` record standing and a
@@ -1269,12 +1393,53 @@ export interface CheckpointDeps {
     heldMs: number;
     convergenceHoldMs: number;
   }): Promise<void>;
+  /**
+   * P-013 (green-main-cycle-time-2026-10-08, D-028/D-029): one claimable item per failing
+   * leg of the frozen queue. Called once per tick from the terminal handler with the queue
+   * the tick ended holding; `queue: null` means the queue is gone and every open leg item
+   * resolves. Never called for an UNREADABLE queue. Best-effort: must never fail a tick.
+   */
+  routeFrozenRepairLegsToAgents?(input: {
+    pipeline: string;
+    queue: { candidate: string; repairHead: string; failingTests: readonly string[] } | null;
+  }): Promise<void>;
   /** D-001 / WI-39944: the one serialized frozen-candidate repair queue. These hooks
    * live on the existing gate dependency seam so test stubs and non-recording CLI runs
    * keep the old behavior when the routine metadata target is unavailable. */
   readFrozenRepairQueue?(): Promise<FrozenCandidateRepairQueue | null>;
   /** P-025: branchable storage read; production prefers this over the legacy null API. */
   readFrozenRepairQueueState?(): Promise<FrozenCandidateRepairQueueRead>;
+  /**
+   * P-021 (green-main-cycle-time-2026-10-08, D-023): the frozen queue's BOUNDED LIFE. Without the
+   * read + retire pair the rule is inert (historical stubs, non-recording CLI runs). The retire
+   * re-checks identity, the decision, the 24h rate limit and fixer liveness under the routine row
+   * lock and persists the retirement record in the same write.
+   */
+  readFrozenRepairBoundedLifeState?(): Promise<FrozenRepairBoundedLifeState | null>;
+  retireFrozenRepairQueueForBoundedLife?(
+    queue: FrozenCandidateRepairQueue,
+    record: FrozenRepairBoundedLifeRecord,
+  ): Promise<{ retired: boolean; refusal?: string }>;
+  /** Dedupes the escalation a rate-limited trigger raises (once per candidate per window). */
+  recordFrozenRepairBoundedLifeEscalation?(
+    escalation: FrozenRepairBoundedLifeEscalation,
+  ): Promise<void>;
+  /** P-012 seam: the newest known-good staging commit, or null (re-cut at the staging tip). */
+  resolveKnownGoodRecutTarget?(): Promise<string | null>;
+  /** Blob/gitlink of `path` at `sha` (null = absent). Default: `git ls-tree` in the integration root. */
+  frozenRepairBlobAt?(sha: string, path: string): Promise<string | null>;
+  /**
+   * P-010 (green-main-cycle-time-2026-10-08, D-026/D-027): the PENDING CARRY every retire writes
+   * (bounded-life or owner), read at the next fresh cut. Without the read + consume pair the
+   * carry is inert (historical stubs, non-recording CLI runs).
+   */
+  readFrozenRepairPendingCarry?(): Promise<FrozenRepairPendingCarry | null>;
+  /** Compare-and-swap: replace exactly `pending` with `record` as the last consumed carry.
+   *  False = a newer retire replaced it (the next fresh cut assesses that one). */
+  consumeFrozenRepairCarry?(
+    pending: FrozenRepairPendingCarry,
+    record: FrozenRepairCarryRecord,
+  ): Promise<boolean>;
   writeFrozenRepairQueue?(
     queue: FrozenCandidateRepairQueue | null,
     options: WriteFrozenCandidateRepairQueueOptions,
@@ -1344,6 +1509,7 @@ export interface CheckpointDeps {
   ): Promise<{ infrastructure: boolean; reason: string } | null>;
   dispatchFrozenRepairFixer?(
     queue: FrozenCandidateRepairQueue,
+    checkpointEvidence?: CheckpointEvidence,
   ): Promise<{ spawnId: string | null; runId: string | null } | null>;
   /**
    * WI-10003213: TRUE when the queue's current red measured no failing test — the exact
@@ -1405,6 +1571,8 @@ export interface CheckpointResult {
   /** Compatibility field for older recorders that predate candidateSource. */
   diagnostic?: CheckpointDiagnostic;
   reason:
+    /** The install has no configured local integration branch, so this checkpoint cannot run. */
+    | "not-applicable"
     | "up-to-date"
     /** WI-42350 — this exact sha already reached a RED verdict, so the run declined to re-judge
      *  it and skipped materialization. Distinct from "not-green": that means THIS run judged and
@@ -1599,13 +1767,37 @@ export interface CheckpointResult {
    *  none, so a missing site shows the prior round's numbers as this one's. ABSENT ⇒ the suite
    *  did not run this round (or the runner reported nothing). */
   testPassReuse?: TestPassReuseHealth;
+  /** P-014: exact inputs/decision for the suite interpretation replay canary. */
+  suiteVerdictReplay?: GateSuiteVerdictReplay;
+  suiteReplayCanary?: { status: 'passed' | 'bootstrap' | 'mismatch' | 'unreadable'; detail: string };
   /** P-013: where this round's wall-clock time went — the stamped setup phases, the candidate
    *  suite, and `other` for everything unstamped, against the whole pass's measured time. Built
    *  by runGreenCheckpoint; ABSENT ⇒ the round never reached its candidate suite. */
   roundPhases?: GateRoundPhases;
+  /** P-022 (green-main-cycle-time): which typed setup precondition refused this pass. Stamped
+   *  from the writer's exit-code contract (dependency-generation.sh exit 77 / exit 76, or the
+   *  up-front `checkDiskHeadroom` probe of both), never from prose. Present ⇒ no verdict was
+   *  rendered and a short bounded retry may help; {@link runGreenCheckpoint} consumes it. */
+  preconditionBlocker?: GatePreconditionBlocker;
+  /** P-022: this run already retried once after a typed precondition refusal. Describes the
+   *  FIRST pass's refusal; the rest of the result is the retried pass's own outcome. */
+  preconditionRetry?: {
+    blocker: GatePreconditionBlocker;
+    delayMs: number;
+    cleanup: string;
+    firstSummary: string;
+  };
   /** Internal carrier from runGreenCheckpointInner to runGreenCheckpoint, which consumes it to
    *  build `roundPhases` and removes it. Never present on a result that leaves the gate. */
   roundPhaseStamps?: SetupStretchStamp[];
+  /** P-012 (green-main-cycle-time-2026-10-08): where this run's FRESH cut came from — the newest
+   *  per-sync-passed commit (`known-good`) or the tip side (`staging-tip`, with the reason the
+   *  known-good point was not used). ABSENT ⇒ not a fresh cut (a frozen queue's lineage, an
+   *  explicit candidate, a bounded-life re-cut, a diagnostic run). */
+  freezeCut?: FreezeCutRecord;
+  /** P-012: the legs that were red on this fresh candidate's first round. Present on every
+   *  fresh cut that produced a suite verdict; `legs: []` means R1 was green. */
+  redLegsAtR1?: RedLegsAtR1;
   /** P-005 / D-008: present ⇒ this candidate advanced with HYGIENE failures outstanding. The
    *  gate promoted because no product-correctness test failed, not because nothing failed —
    *  these are the drafts the caller owes the ledger. Same reasoning as `cleanGreen` directly
@@ -1759,6 +1951,130 @@ export async function retireInFlightCandidateAfterResult(
 }
 
 /**
+ * WI-6554700010009570 — a fire whose qualification-runner attachment is refused with `conflict`
+ * because a DIFFERENT, demonstrably live physical runner already holds the attempt lost a launch
+ * race. Measured 2026-10-13 02:14-02:15Z: a manual release:checkpoint-run and a scheduled tick 36s
+ * apart on the same candidate. The scheduled runner attached first, and the manual CLI threw into
+ * the crash path: reason 'error', crashed:true, a no-verdict tick, and a terminal cleanup that
+ * retires the in-flight candidate marker the LIVE holder still owns. Losing the attach race is the
+ * same situation as losing the per-root run lock, so it ends on the same `skipped-locked` terminal
+ * (see retireInFlightCandidateAfterResult above).
+ *
+ * Returns the incumbent ONLY on positive liveness evidence (`live`). `dead`/`unknown`, a runner
+ * that is this process, or a non-conflict status return null. That keeps the loud crash path for
+ * every case where no live run is provably carrying the verdict.
+ *
+ * WI-6554700010009727 — "this process" includes a reservation recorded under the systemd unit
+ * this process runs IN (`self.units`, from `ownCgroupUnits`). Measured 2026-10-13 03:51Z: a
+ * manual reservation carried unit papercup-green-checkpoint-manual-1fxzuva.service with pid and
+ * runId null, while the CLI attached under a different gateFireId. Probing that unit answered
+ * `live` because it was the caller, so the run stood down against itself and no suite ran.
+ */
+export async function liveIncumbentAfterAttachConflict(
+  activation: {
+    status: string;
+    transaction?: {
+      runId: string | null;
+      candidate: string | null;
+      currentPhysicalRunner: QualificationPhysicalRunner | null;
+    };
+  },
+  self: { pid: number; runId: string; units?: readonly string[] },
+  probe: (runner: QualificationPhysicalRunner) => Promise<RunnerLiveness> = (runner) => probeRunnerLiveness(runner),
+): Promise<{ runner: QualificationPhysicalRunner; runId: string | null; candidate: string | null } | null> {
+  if (activation.status !== "conflict") return null;
+  const transaction = activation.transaction;
+  const runner = transaction?.currentPhysicalRunner;
+  if (!transaction || !runner) return null;
+  if (runner.pid != null && runner.pid === self.pid) return null;
+  if (transaction.runId && transaction.runId === self.runId) return null;
+  if (runnerUnitIsOwn(runner, self.units)) return null;
+  const liveness = await probe(runner).catch((): RunnerLiveness => "unknown");
+  if (liveness !== "live") return null;
+  return { runner, runId: transaction.runId, candidate: runner.candidate ?? transaction.candidate };
+}
+
+/**
+ * WI-6554700010009727 — the systemd units (`*.service` / `*.scope`) on this process's cgroup v2
+ * path, outermost first. A detached checkpoint CLI runs inside the transient unit its launcher
+ * reserved, so a reservation naming one of these units belongs to THIS process. An unreadable
+ * cgroup file returns [], which leaves the existing liveness behaviour unchanged.
+ */
+export function ownCgroupUnits(read: () => string = () => readFileSync("/proc/self/cgroup", "utf8")): string[] {
+  let text: string;
+  try {
+    text = read();
+  } catch {
+    return [];
+  }
+  const units: string[] = [];
+  for (const line of text.split("\n")) {
+    const path = line.split(":").slice(2).join(":");
+    for (const segment of path.split("/")) {
+      if (/\.(service|scope)$/.test(segment)) units.push(segment);
+    }
+  }
+  return units;
+}
+
+/** True when the reserved runner's unit is one this process runs inside (WI-6554700010009727). */
+export function runnerUnitIsOwn(
+  runner: Pick<QualificationPhysicalRunner, "unit">,
+  units: readonly string[] | undefined,
+): boolean {
+  const unit = runner.unit?.trim();
+  return Boolean(unit && units?.includes(unit));
+}
+
+/** Report the store's failed invariant without inferring id skew from unit ownership. */
+export function checkpointQualificationAttachmentRefusalSummary(
+  activation: {
+    status: string;
+    refusalReason?: string;
+    transaction?: {
+      attemptId: string;
+      candidate: string | null;
+      runId: string | null;
+      currentPhysicalRunner: QualificationPhysicalRunner | null;
+    };
+  },
+  input: { attemptId?: string; gateFireId?: string; candidate: string | null; runId: string },
+  selfUnits: readonly string[],
+): string {
+  const transaction = activation.transaction;
+  const runner = transaction?.currentPhysicalRunner;
+  const sameUnit = runner && runnerUnitIsOwn(runner, selfUnits);
+  const identitySkew = sameUnit && runner.id !== input.gateFireId;
+  const identity = sameUnit
+    ? ` — reserved runner ${runner.id} is this process's own unit ${runner.unit}; ` +
+      (identitySkew
+        ? `the launcher's reservation id and the transported gateFireId ${input.gateFireId ?? 'unrecorded'} disagree (launcher/CLI version skew, WI-6554700010009727)`
+        : `reservation id and transported gateFireId agree (${runner.id})`)
+    : '';
+  const state = transaction
+    ? `; stored attempt=${transaction.attemptId}, candidate=${transaction.candidate ?? 'null'}, runId=${transaction.runId ?? 'null'}` +
+      `; requested attempt=${input.attemptId ?? 'unrecorded'}, candidate=${input.candidate ?? 'null'}, runId=${input.runId}`
+    : '';
+  return `checkpoint qualification runner attachment refused: ${activation.status}` +
+    `; refusalReason=${activation.refusalReason ?? 'unknown'}${identity}${state}`;
+}
+
+/** The `skipped-locked` summary for a fire that lost the qualification attach race (WI-6554700010009570). */
+export function attachRaceSkipSummary(incumbent: {
+  runner: Pick<QualificationPhysicalRunner, "pid" | "unit">;
+  runId: string | null;
+  candidate: string | null;
+}): string {
+  const who = [
+    incumbent.runId ? `runId ${incumbent.runId.slice(0, 8)}` : null,
+    incumbent.runner.pid != null ? `pid ${incumbent.runner.pid}` : null,
+    incumbent.runner.unit ? `unit ${incumbent.runner.unit}` : null,
+  ].filter(Boolean).join(", ");
+  const on = incumbent.candidate ? ` on ${incumbent.candidate.slice(0, 12)}` : "";
+  return `another live checkpoint runner (${who || "identity unrecorded"})${on} already holds this qualification attempt; it owns the verdict, so this fire stood down instead of crashing (lost the attach race, WI-6554700010009570)`;
+}
+
+/**
  * EI-21533914348699873: every terminal checkpoint verdict resolves the three-way
  * `checkpoint:await` fan-in for the candidate. Keep the global and pipeline-scoped
  * green/red registrations together so an inconclusive result cannot leave either
@@ -1823,6 +2139,69 @@ export async function emitInconclusiveCheckpointVerdict(
     source: "green-checkpoint",
     cancelSiblingKeysFor,
   });
+}
+
+/** The CLI's fail-soft delivery seam; a partial pair is not successful delivery. */
+export async function emitInconclusiveVerdict(
+  result: CheckpointResult,
+  pipeline: string,
+  deps: {
+    emit?: (opts: EmitAwaitedEventOpts) => Promise<unknown>;
+    observeFallback?: typeof import("@papercusp/operator-core/lib/degradation/fallback-observations").observeFallback;
+  } = {},
+): Promise<void> {
+  const observeFallback = deps.observeFallback ??
+    (await import("@papercusp/operator-core/lib/degradation/fallback-observations")).observeFallback;
+  try {
+    const emit = deps.emit ??
+      (await import("@papercusp/operator-core/lib/events/await/engine")).emitAwaitedEvent;
+    await emitInconclusiveCheckpointVerdict(result, pipeline, emit);
+    observeFallback("release-verdict-event", { eligible: 1, applied: 1, reason: "applied", scope: pipeline });
+  } catch (e) {
+    observeFallback("release-verdict-event", { eligible: 1, applied: 0, reason: "inconclusive-emit-failed", scope: pipeline });
+    console.error(
+      `${orchestratorStdoutTag()} green-checkpoint:inconclusive emit FAILED (awaiters will fall back to their timeout): ${e instanceof Error ? e.message : e}`,
+    );
+  }
+}
+
+/** Owner delivery and the condition broadcast remain independent on watchdog kills. */
+export async function onFire(
+  result: CheckpointResult,
+  pipeline: string,
+  deps: import("@papercusp/operator-core/lib/alarm-attention").AlarmAttentionDeps = {},
+): Promise<void> {
+  const conditionKey = `alarm:checkpoint-self-watchdog:${pipeline}`;
+  const title = "Release pipeline WEDGED — green-checkpoint self-watchdog fired (no verdict)";
+  const body = result.summary ?? "self-watchdog fired with no summary";
+  try {
+    const broadcastSevereEvent = deps.broadcast ??
+      (await import("@papercusp/operator-core/lib/severe-event-broadcast")).broadcastSevereEvent;
+    await broadcastSevereEvent({ conditionKey, summary: title, body, oneShot: true });
+  } catch { /* best-effort — the kill proceeds regardless */ }
+  try {
+    // ONE input for both legs, so an injected seam observes exactly what production delivers.
+    const input: import("@papercusp/operator-core/lib/attention-notify").AttentionNotifyInput = {
+      kind: "intervention", title, body, importance: "urgent",
+      data: { candidate: result.candidate, reason: result.reason, conditionKey },
+    };
+    if (deps.notify) await deps.notify(input);
+    else {
+      const { notifyAttention } = await import("@papercusp/operator-core/lib/attention-notify");
+      await notifyAttention(input);
+    }
+  } catch { /* best-effort — the kill proceeds regardless */ }
+}
+
+/** A fresh code verdict of either colour proves the watchdog's no-verdict episode ended. */
+export async function resolveCheckpointSelfWatchdog(
+  result: CheckpointResult,
+  pipeline: string,
+  deps: import("@papercusp/operator-core/lib/alarm-attention").AlarmAttentionDeps = {},
+): Promise<void> {
+  if (result.green == null || !["advanced", "advanced-prefix", "not-green"].includes(result.reason)) return;
+  const { resolveAlarm } = await import("@papercusp/operator-core/lib/alarm-attention");
+  await resolveAlarm(`alarm:checkpoint-self-watchdog:${pipeline}`, "checkpoint-self-watchdog", deps);
 }
 
 export interface CheckpointRunLock {
@@ -1964,7 +2343,17 @@ export function buildSelfWatchdogCheckpointResult(opts: {
   failingTests: string[];
   candidateSource?: CheckpointCandidateSource;
   diagnostic?: CheckpointDiagnostic;
+  watchdog?: { reason: SelfWatchdogFireReason; context: SelfWatchdogFireContext };
 }): CheckpointResult {
+  const fired = opts.watchdog;
+  const watchdogSummary = fired
+    ? `self-watchdog fired: ${fired.reason}; trigger=${fired.context.trigger}` +
+      `; elapsedMs=${fired.context.firedAtMs - fired.context.startedAtMs}` +
+      `; idleForMs=${fired.context.firedAtMs - fired.context.lastProgressAtMs}` +
+      `; idleBudgetMs=${fired.context.idleBudgetMs}; hardCeilingMs=${fired.context.hardCeilingMs}` +
+      (fired.context.tightenedBecause ? `; tightenedBecause=${fired.context.tightenedBecause}` : '') +
+      '; run-lock released and process group is being terminated.'
+    : '';
   return {
     advanced: false,
     candidate: opts.candidate,
@@ -1976,7 +2365,7 @@ export function buildSelfWatchdogCheckpointResult(opts: {
     // `green === null` is the ONLY dispatch for `green-checkpoint:inconclusive`.
     green: null,
     reason: "error",
-    summary: opts.summary,
+    summary: watchdogSummary ? `${watchdogSummary}${opts.summary ? ` ${opts.summary}` : ''}` : opts.summary,
     failingTests: opts.failingTests,
     runId: opts.runId,
   };
@@ -2038,6 +2427,50 @@ export function buildTerminalFailureCheckpointResult(opts: {
   const dependencyPrewarmMissing =
     dependencyGenerationUnusable &&
     detail.includes("no prewarmed dependency generation for input fingerprint");
+
+  // WI-10004849: dependency-generation.sh reserves exit 76 (could not take the materialization
+  // flock in time — another copy holds it) and exit 77 (free space minus the tree would drop the
+  // root fs under git-sync's reserve). Both refuse BEFORE any test runs, so no code verdict was
+  // rendered. Classify on the writer's exit-code contract (shared with the fix precheck), not prose.
+  const depGenExit = /dependency-generation\.sh exited (\d+)/.exec(detail)?.[1];
+  // The real command includes argv between the script path and `exited`, and a
+  // wrapper may remap its exit. The shared classifier also recognizes the
+  // publisher's typed marker, so do not gate that evidence on the short form.
+  const depGenInfra = dependencyGenerationInfraCode(
+    depGenExit ? Number(depGenExit) : null,
+    detail,
+  );
+  if (depGenInfra === "DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT") {
+    return {
+      advanced: false,
+      candidate: opts.candidate,
+      from: null,
+      green: null,
+      reason: "disk-headroom",
+      preconditionBlocker: "disk-headroom",
+      runId: opts.runId,
+      summary:
+        "green-checkpoint could not START: dependency-generation refused to materialize a " +
+        "node_modules tree (exit 77) because the copy would drop root free space below the " +
+        "reserve. NO code verdict was rendered — do not triage this candidate's files. Free disk " +
+        `space (old generations, scratch) before the next run. ${detail}`,
+    };
+  }
+  if (depGenInfra === "DEPENDENCY_GENERATION_LOCK_TIMEOUT") {
+    return {
+      advanced: false,
+      candidate: opts.candidate,
+      from: null,
+      green: null,
+      reason: "infra-inconclusive",
+      preconditionBlocker: "copy-lock",
+      runId: opts.runId,
+      summary:
+        "green-checkpoint deferred before the suite: dependency-generation timed out waiting for " +
+        "the materialization lock held by another copy (exit 76). NO code verdict was rendered; " +
+        `the next run retries once that copy finishes. ${detail}`,
+    };
+  }
 
   if (dependencyPrewarmMissing) {
     // Name the exact fingerprint the producer must publish. Without it the operator reading this
@@ -2290,8 +2723,46 @@ export const MATERIALIZATION_HEARTBEAT_MAX_DURATION_MS =
  *  lock) before a peer attempt would need to force-reclaim it. */
 export const SELF_WATCHDOG_MS = 3 * 60 * 60_000;
 
+/** WI-6554700010009615 stage 1: once runGreenCheckpoint passes the admission refire in its return
+ *  funnel, no further suite can start in this process, so the remaining post-verdict work
+ *  (freeze-disposition write, leg routing, an `awaiting-fixer` tick's P-009 repair-tick legs, the
+ *  terminal emit) gets at most this long. Run b874ad21 recorded its verdict, then sat ~2h until
+ *  SELF_WATCHDOG_MS fired. Sized for a full P-009 leg pass (setupTree + the cheap legs), the only
+ *  long post-verdict step. It only ever pulls the ceiling IN, so the ordering chain
+ *  (suite < self-watchdog < stale-reclaim) is preserved. */
+export const POST_VERDICT_WATCHDOG_MS = 60 * 60_000;
+
+/** WI-6554700010009615 stage 2: from the CLI finalizer's entry (every leg is done) to the verdict
+ *  marker. Pure proof capture then cancels the watchdog and runs on its own bounded budget. */
+export const POST_VERDICT_FINALIZE_WATCHDOG_MS = 15 * 60_000;
+
+/** What armSelfWatchdog returns. */
+export interface SelfWatchdogHandle {
+  cancel: () => void;
+  /** Real phase/command/output progress: resets the idle budget, never the absolute ceiling. */
+  progress: () => void;
+  /**
+   * WI-6554700010009615: pull the absolute ceiling IN to `now + hardCeilingMs`. Run b874ad21
+   * recorded its verdict, then sat ~2h in the return funnel until the 180m ceiling fired;
+   * nothing past the verdict needs that budget. Never extends a deadline, and progress() re-arms
+   * against the tightened one, so it cannot push past it. True only when the deadline moved.
+   */
+  tighten: (opts: { hardCeilingMs: number; reason: string }) => boolean;
+}
+
 /** The two ways a progress-aware self-watchdog can terminate a run. */
 export type SelfWatchdogFireReason = "idle-timeout" | "absolute-hard-ceiling";
+
+/** Snapshot at expiry, before asynchronous terminal publication can change the timing. */
+export interface SelfWatchdogFireContext {
+  trigger: SelfWatchdogTrigger;
+  startedAtMs: number;
+  firedAtMs: number;
+  lastProgressAtMs: number;
+  idleBudgetMs: number;
+  hardCeilingMs: number;
+  tightenedBecause: string | null;
+}
 
 /** Internal transport used only by release-checkpoint-launch.ts's detached MANUAL unit.
  * Scheduled runs omit it and retain SELF_WATCHDOG_MS as their independent parent-death
@@ -2594,8 +3065,31 @@ export function sweepCheckpointSurvivors(
 /** WI-4528 (EI-10800 class): how long the self-watchdog waits for an ASYNC `onFire` — the loud
  *  RED-verdict emit + the urgent attention-notify — to actually SETTLE before it delivers the
  *  guaranteed SIGKILL. Negligible against the 3h watchdog, and BOUNDED so a wedged/hanging emit
- *  can never block the kill this watchdog exists to deliver. */
-export const SELF_WATCHDOG_ONFIRE_GRACE_MS = 8_000;
+ *  can never block the kill this watchdog exists to deliver.
+ *
+ *  WI-6554700010009547: was 8s. Run 85de8fa0's onFire recorded its verdict row, then entered
+ *  signed shard publication (30s deadline, heavy git) and was SIGKILLed at 8s. That lost
+ *  everything after it: the gate_health projection, the fixer dispatch, the stdout marker, the
+ *  inconclusive event, in-flight retirement and the loud notify. The watchdog path now skips
+ *  shard publication (SELF_WATCHDOG_SIGNED_SHARD_DEADLINE_MS), and the grace covers the
+ *  remaining DB round-trips under load: 60s is still negligible against the 180m watchdog. */
+export const SELF_WATCHDOG_ONFIRE_GRACE_MS = 60_000;
+
+/** WI-6554700010009547: the self-watchdog's last-gasp verdict record does not publish signed
+ *  shard verdicts. They are additive evidence for test-pass reuse; the run's test rows stay in
+ *  `test_runs`. Publishing them builds a shard manifest at the candidate sha, which cannot be
+ *  allowed to spend the bounded onFire grace that the marker, events and notify need. */
+export const SELF_WATCHDOG_SIGNED_SHARD_DEADLINE_MS = 0;
+
+/** WI-6554700010009547: verdict-record options for a terminal emit. The normal path keeps the
+ *  default shard deadline; the self-watchdog path must fit inside SELF_WATCHDOG_ONFIRE_GRACE_MS. */
+export function terminalVerdictRecordOptions(
+  path: "normal" | "self-watchdog",
+): { signedShardDeadlineMs?: number } {
+  return path === "self-watchdog"
+    ? { signedShardDeadlineMs: SELF_WATCHDOG_SIGNED_SHARD_DEADLINE_MS }
+    : {};
+}
 
 /** Await `p`, but never longer than `graceMs` — resolves when `p` settles OR the grace elapses,
  *  whichever comes first, and swallows a rejection (the caller proceeds either way). This is what
@@ -2665,12 +3159,12 @@ export function armSelfWatchdog(
      *  targets our OWN process group on the very next synchronous line, so the event loop never
      *  turns again and the emit's continuation never runs. (A sync/absent onFire keeps the
      *  original fully-synchronous kill path.) */
-    onFire?: (reason: SelfWatchdogFireReason) => void | Promise<void>;
+    onFire?: (reason: SelfWatchdogFireReason, context: SelfWatchdogFireContext) => void | Promise<void>;
     /** Max wait for an async `onFire` to settle before the guaranteed kill (injected in tests).
      *  Defaults to SELF_WATCHDOG_ONFIRE_GRACE_MS. */
     onFireGraceMs?: number;
   } = {},
-): { cancel: () => void; progress: () => void } {
+): SelfWatchdogHandle {
   const ms = Math.max(1, opts.ms ?? SELF_WATCHDOG_MS);
   const hardCeilingMs = Math.max(1, opts.hardCeilingMs ?? SELF_WATCHDOG_MS);
   const pid = opts.pid ?? process.pid;
@@ -2687,7 +3181,11 @@ export function armSelfWatchdog(
         : null);
   const onFireGraceMs = opts.onFireGraceMs ?? SELF_WATCHDOG_ONFIRE_GRACE_MS;
   const startedAtMs = Date.now();
-  const hardDeadlineAtMs = startedAtMs + hardCeilingMs;
+  let lastProgressAtMs = startedAtMs;
+  // WI-6554700010009615: mutable because tighten() can pull the ceiling IN (never out).
+  let hardDeadlineAtMs = startedAtMs + hardCeilingMs;
+  let effectiveHardCeilingMs = hardCeilingMs;
+  let tightenedBecause: string | null = null;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let hardTimer: ReturnType<typeof setTimeout> | undefined;
   let cancelled = false;
@@ -2706,18 +3204,28 @@ export function armSelfWatchdog(
     if (cancelled || firedAlready) return;
     firedAlready = true;
     clearTimers();
+    const context: SelfWatchdogFireContext = {
+      trigger: opts.trigger ?? 'scheduled-parent-backstop',
+      startedAtMs,
+      firedAtMs: Date.now(),
+      lastProgressAtMs,
+      idleBudgetMs: ms,
+      hardCeilingMs: effectiveHardCeilingMs,
+      tightenedBecause,
+    };
     const processGroupId = resolveProcessGroupId(pid) ?? pid;
     const triggerDetail =
       opts.trigger === "manual-run-deadline"
         ? "manual checkpoint deadline elapsed (this timer does not imply parent loss)"
-        : "presumed-dead parent (release-actions.ts's runScript never landed its SIGTERM+SIGKILL)";
+        : "scheduled parent backstop elapsed (parent liveness was not measured)";
     const deadlineDetail =
       reason === "absolute-hard-ceiling"
-        ? `absolute hard ceiling elapsed after ${formatSelfWatchdogDuration(hardCeilingMs)}`
+        ? `absolute hard ceiling elapsed after ${formatSelfWatchdogDuration(effectiveHardCeilingMs)}` +
+          (tightenedBecause ? ` (tightened: ${tightenedBecause})` : "")
         : `idle progress budget elapsed after ${formatSelfWatchdogDuration(ms)}`;
     log(
       `self-watchdog fired after ${formatSelfWatchdogDuration(
-        reason === "absolute-hard-ceiling" ? hardCeilingMs : ms,
+        reason === "absolute-hard-ceiling" ? effectiveHardCeilingMs : ms,
       )} with no normal exit — ${deadlineDetail}; ${triggerDetail}; ` +
         `releasing the run-lock and killing this process's ACTUAL group ` +
         `(pid ${pid}, pgid ${processGroupId}) so no orphan can outlive it`,
@@ -2746,7 +3254,7 @@ export function armSelfWatchdog(
     };
     let fired: void | Promise<void>;
     try {
-      fired = opts.onFire?.(reason);
+      fired = opts.onFire?.(reason, context);
     } catch {
       /* best-effort — emit the loud red verdict first, even if the hook fails */
       fired = undefined;
@@ -2774,7 +3282,7 @@ export function armSelfWatchdog(
     idleTimer = setTimeout(
       () =>
         fire(
-          hardDeadlineAtMs - Date.now() <= ms
+          hardDeadlineAtMs - Date.now() <= 0
             ? "absolute-hard-ceiling"
             : "idle-timeout",
         ),
@@ -2794,9 +3302,29 @@ export function armSelfWatchdog(
     },
     progress: () => {
       if (cancelled || firedAlready) return;
+      lastProgressAtMs = Date.now();
       if (idleTimer) clearTimeout(idleTimer);
       idleTimer = undefined;
       scheduleIdleTimer();
+    },
+    tighten: ({ hardCeilingMs: capMs, reason }) => {
+      if (cancelled || firedAlready) return false;
+      const nowMs = Date.now();
+      const cappedAtMs = nowMs + Math.max(1, capMs);
+      if (cappedAtMs >= hardDeadlineAtMs) return false;
+      hardDeadlineAtMs = cappedAtMs;
+      effectiveHardCeilingMs = cappedAtMs - startedAtMs;
+      tightenedBecause = reason;
+      clearTimers();
+      // Same order as arming: the absolute timer first, so a tie is never classed idle.
+      hardTimer = setTimeout(() => fire("absolute-hard-ceiling"), cappedAtMs - nowMs);
+      unref(hardTimer);
+      scheduleIdleTimer();
+      log(
+        `self-watchdog tightened (${reason}): absolute ceiling now ` +
+          `${formatSelfWatchdogDuration(cappedAtMs - nowMs)} from now`,
+      );
+      return true;
     },
   };
 }
@@ -3169,10 +3697,9 @@ export function checkpointRunLockSkipSummary(lock: CheckpointRunLock): string {
   return `green-checkpoint skipped: another checkpoint process owns the run lock${pid}${detail}`;
 }
 
-/** Attach the CLI to the wrapper's pre-spawn reservation only on scheduled launches. */
-export async function activateScheduledCheckpointRunner(
+/** Attach a qualifying CLI process to its pre-spawn reservation. */
+export async function activateCheckpointQualificationRunner(
   input: {
-    scheduled: boolean;
     target: GateVerdictTarget | null;
     attemptId: string | undefined;
     gateFireId: string | undefined;
@@ -3181,8 +3708,8 @@ export async function activateScheduledCheckpointRunner(
     pid: number;
   },
   reserve: typeof reserveStoredQualificationRunner = reserveStoredQualificationRunner,
-): Promise<StoredQualificationMutation | { status: 'not-scheduled' | 'missing-identity' }> {
-  if (!input.scheduled) return { status: 'not-scheduled' };
+): Promise<StoredQualificationMutation | { status: 'not-qualifying' | 'missing-identity' }> {
+  if (!input.attemptId) return { status: 'not-qualifying' };
   if (!input.target || !input.attemptId || !input.gateFireId) return { status: 'missing-identity' };
   return reserve(input.target, {
     attemptId: input.attemptId,
@@ -3203,7 +3730,7 @@ export async function activateScheduledCheckpointRunner(
  * The scheduled launcher (release-actions) reuses a non-terminal logical attempt and starts this
  * CLI with no `--candidate`. Preflight then resolved the integration-branch tip, while the attempt
  * stayed pinned to its own candidate (the repair head a manual run reserved, or the candidate an
- * earlier fire recorded before a pre-suite no-verdict). `activateScheduledCheckpointRunner` refused
+ * earlier fire recorded before a pre-suite no-verdict). `activateCheckpointQualificationRunner` refused
  * that mismatch with `conflict`, the run crashed before any verdict, and every later fire re-joined
  * the same attempt, so the gate stayed wedged. A joined attempt's pinned candidate is therefore the
  * only candidate this run can activate against. Returns null (resolve as before) for a manual run,
@@ -3225,6 +3752,45 @@ export async function scheduledAttemptPinnedCandidate(
   return stored.transaction.candidate?.trim() || null;
 }
 
+/**
+ * Select the candidate a joined scheduled run should prepare. A frozen repair queue can advance
+ * from its original candidate to a runnable repairHead while a scheduled qualification attempt
+ * remains pinned to that older candidate. Reuse the server's queue policy before dependency
+ * prewarm so the generation and the candidate the CLI will judge stay aligned.
+ */
+export async function scheduledAttemptPrewarmTarget(
+  pinnedCandidateInput: string | null,
+  deps: {
+    assess?: typeof assessFrozenRepairQueuePreflight;
+    root?: string;
+  } = {},
+): Promise<{
+  candidate: string;
+  candidateSource: CheckpointCandidateSource;
+} | null> {
+  const pinnedCandidate = pinnedCandidateInput?.trim() || null;
+  if (!pinnedCandidate) return null;
+
+  const assess = deps.assess ?? assessFrozenRepairQueuePreflight;
+  const queuePreflight = await assess(pinnedCandidate, deps.root);
+  if (queuePreflight.reason === "queue-unreadable") {
+    throw new Error(
+      `scheduled checkpoint cannot select a prewarm candidate from the unreadable frozen repair queue${queuePreflight.detail ? `: ${queuePreflight.detail}` : ""}`,
+    );
+  }
+
+  const policyCandidate =
+    queuePreflight.proceed && queuePreflight.candidate?.trim()
+      ? queuePreflight.candidate.trim()
+      : null;
+  const candidate = policyCandidate ?? pinnedCandidate;
+  const candidateSource =
+    policyCandidate && queuePreflight.candidateSource !== "unresolved"
+      ? queuePreflight.candidateSource
+      : "pinned";
+  return { candidate, candidateSource };
+}
+
 export function checkpointRunIdFromScheduledEnv(value: string | undefined, mint: () => string = randomUUID): string {
   const token = value?.trim();
   return token && token !== '1' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(token)
@@ -3233,7 +3799,17 @@ export function checkpointRunIdFromScheduledEnv(value: string | undefined, mint:
 }
 
 /** Keep the exact scheduled runner visibly alive through quiet suite phases. */
-export function startScheduledQualificationProgress(
+function safeQualificationProgressErrorDetail(error: unknown): string | undefined {
+  if (error == null) return undefined;
+  const message = error instanceof Error ? error.message : String(error);
+  const detail = redactSensitiveText(sanitizeCheckpointLogText(message))
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 240);
+  return detail || undefined;
+}
+
+export function startCheckpointQualificationProgress(
   input: {
     target: GateVerdictTarget | null;
     attemptId: string | undefined;
@@ -3251,7 +3827,7 @@ export function startScheduledQualificationProgress(
   const attemptId = input.attemptId;
   const runnerId = input.gateFireId;
   const pidIdentity = checkpointPidIdentity(input.pid);
-  let phase: 'materializing' | 'suite' | 'isolating' | 'delivering' = 'materializing';
+  let phase: 'materializing' | 'suite' | 'isolating' | 'delivering' | 'finalizing' = 'materializing';
   let stopped = false;
   let pending: Promise<void> = Promise.resolve();
   let lastReportedAtMs = Date.now(); // activation already wrote the first progress clock
@@ -3266,10 +3842,12 @@ export function startScheduledQualificationProgress(
         attemptId, runnerId, runId: input.runId, pidIdentity, phase: phaseAtReport, nowMs,
       });
       if (result.status !== 'updated' && result.status !== 'idempotent' && result.status !== 'terminal') {
-        console.warn(`${orchestratorStdoutTag()} scheduled runner progress refused: ${result.status}`);
+        const detail = safeQualificationProgressErrorDetail("error" in result ? result.error : undefined);
+        console.warn(`${orchestratorStdoutTag()} scheduled runner progress refused: ${result.status}${detail ? `; detail: ${detail}` : ''}`);
       }
     }).catch((error) => {
-      console.warn(`${orchestratorStdoutTag()} scheduled runner progress failed: ${error instanceof Error ? error.message : error}`);
+      const detail = safeQualificationProgressErrorDetail(error);
+      console.warn(`${orchestratorStdoutTag()} scheduled runner progress failed${detail ? `: ${detail}` : ''}`);
     });
   };
   const timer = managedSetInterval(
@@ -3282,7 +3860,8 @@ export function startScheduledQualificationProgress(
     note(detail) {
       if (detail?.startsWith('phase:')) {
         const next = detail.slice('phase:'.length);
-        if (next === 'materializing' || next === 'suite' || next === 'isolating' || next === 'delivering') {
+        if (next === 'materializing' || next === 'suite' || next === 'isolating' || next === 'delivering' ||
+            next === 'finalizing') {
           phase = next;
           report(true);
           return;
@@ -3426,6 +4005,175 @@ export function createFatalCheckpointFinalizer(deps: {
   };
 }
 
+/**
+ * The CLI's normal terminal path, attached only to the final runGreenCheckpoint promise.
+ * Record the verdict before capture, and await capture before releasing the judged tree.
+ * Sharing the terminal claim with signal/crash paths also rejects duplicate callbacks.
+ */
+export function createNormalCheckpointFinalizer(deps: {
+  claimTerminal: (owner: "normal") => boolean;
+  emitResult: (result: CheckpointResult) => Promise<void>;
+  captureProofs: () => Promise<unknown>;
+  archiveCapture?: (result: CheckpointResult, capture: unknown, boundaries: {
+    resolvedAtMs: number; terminalEmissionCompletedAtMs: number;
+  }) => Promise<unknown>;
+  warnArchive?: (error: unknown) => void;
+  now?: () => number;
+  releaseAndExit: (code: number) => void;
+}): (result: CheckpointResult) => Promise<void> {
+  return async (result: CheckpointResult): Promise<void> => {
+    if (!deps.claimTerminal("normal")) return;
+    const now = deps.now ?? Date.now;
+    const resolvedAtMs = now();
+    await deps.emitResult(result);
+    const terminalEmissionCompletedAtMs = now();
+    const capture = await deps.captureProofs();
+    try {
+      await deps.archiveCapture?.(result, capture, { resolvedAtMs, terminalEmissionCompletedAtMs });
+    } catch (error) {
+      deps.warnArchive?.(error);
+    }
+    deps.releaseAndExit(0);
+  };
+}
+
+/** The LAST canonical promotion trailer is authoritative; historical clocks remain unknown. */
+export function readGatePromotionDecision(output: string): PureProofCaptureArchive['promotion'] {
+  const line = output.split(/\r?\n/).filter((s) => s.startsWith('GATE_PROMOTION ')).at(-1);
+  if (!line) return null;
+  const entries = line.slice('GATE_PROMOTION '.length).split(' ').map((s): [string, string] => {
+    const at = s.indexOf('=');
+    return [s.slice(0, at), s.slice(at + 1)];
+  });
+  const fields = new Map(entries);
+  if (fields.size !== entries.length) return null;
+  const candidate = fields.get('candidate');
+  const reason = fields.get('reason');
+  const time = fields.get('recordedAtMs');
+  if (!candidate || !/^[0-9a-f]{12}$/.test(candidate) || !reason || !/^[a-z-]+$/.test(reason) ||
+      ['decision-pending', 'superseded-by-refire'].includes(reason) ||
+      !time || !/^\d+$/.test(time) || !Number.isSafeInteger(Number(time)) ||
+      !['true', 'false'].includes(fields.get('promoted') ?? '')) return null;
+  return { candidate, reason, recordedAtMs: Number(time), promoted: fields.get('promoted') === 'true' };
+}
+
+/** Reuse checkpoint artifacts, without minting a pipeline outcome or overwriting prior evidence. */
+export function archivePureProofCapture(
+  logDir: string,
+  receipt: PureProofCaptureArchive,
+  log: (line: string) => void,
+): string | null {
+  const parsed = parsePureProofCaptureArchive(receipt);
+  if (!parsed) { log('PURE_PROOF_CAPTURE_ARCHIVE state=unknown reason=invalid-receipt'); return null; }
+  const file = path.join(logDir, `pure-proof-capture-${parsed.runId}.json`);
+  try {
+    mkdirSync(logDir, { recursive: true });
+    writeFileSync(file, `${JSON.stringify(parsed)}\n`, { flag: 'wx', mode: 0o600 });
+    log(`PURE_PROOF_CAPTURE_ARCHIVE state=recorded path=${file}`);
+    return file;
+  } catch (error) {
+    log(`PURE_PROOF_CAPTURE_ARCHIVE state=unknown reason=${error instanceof Error ? error.message : error}`);
+    return null;
+  }
+}
+
+/** WI-10005994: the marker's `summary` cap. The human result on stderr keeps the full text. */
+export const CHECKPOINT_RESULT_MARKER_SUMMARY_MAX_CHARS = 1000;
+/** POSIX PIPE_BUF on Linux: a single write of at most this many bytes into a pipe is atomic. */
+export const CHECKPOINT_RESULT_MARKER_ATOMIC_BYTES = 4096;
+
+/**
+ * WI-10005994 — the payload the stdout result marker carries.
+ *
+ * Measured 2026-10-03 over 400 checkpoint logs: 392 markers, 3 torn, and every torn one was a
+ * repair-queue verdict of 8-65 KB, dominated by `repairQueue.admissions` (43-58 KB), its
+ * `manifest`, `signature`, and per-leg `repairTickLegs` output tails. No marker reader uses
+ * those (release-actions reads reason/green/candidate/from/runId/summary/failingTests/
+ * flakeSuspects/recorded/candidateSource/diagnostic/advancedTo/promotionPending/gateFireId and
+ * repairQueue.{candidate,phase,repairHead,convergenceRounds}), and the run records the full
+ * result before the marker is written. So the marker drops them, caps `summary`, and names what
+ * it omitted in `markerCompacted`. A result with nothing to compact is returned unchanged, so
+ * ordinary markers stay byte-identical to `JSON.stringify(result)`.
+ */
+export function checkpointResultMarkerPayload(
+  result: CheckpointResult,
+): Record<string, unknown> {
+  const omitted: string[] = [];
+  const out: Record<string, unknown> = { ...result };
+  const max = CHECKPOINT_RESULT_MARKER_SUMMARY_MAX_CHARS;
+  if (typeof result.summary === "string" && result.summary.length > max) {
+    out.summary = `${result.summary.slice(0, max)}… [marker cut ${result.summary.length - max} chars; full summary in the stderr result]`;
+    omitted.push("summary(tail)");
+  }
+  if (result.repairQueue) {
+    const { admissions, manifest, signature, ...queue } = result.repairQueue as unknown as Record<string, unknown>;
+    if (admissions !== undefined) omitted.push("repairQueue.admissions");
+    if (manifest !== undefined) omitted.push("repairQueue.manifest");
+    if (signature !== undefined) omitted.push("repairQueue.signature");
+    if (omitted.some((path) => path.startsWith("repairQueue."))) out.repairQueue = queue;
+  }
+  if (result.repairTickLegs) {
+    const legs = result.repairTickLegs;
+    const compact = {
+      head: legs.head,
+      atMs: legs.atMs,
+      ok: legs.ok,
+      failingSignatures: legs.failingSignatures.slice(0, 20).map((s) => s.slice(0, 128)),
+      legs: legs.legs.map((leg) => ({ id: leg.id, status: leg.status, durationMs: leg.durationMs })),
+    };
+    if (JSON.stringify(compact) !== JSON.stringify(legs)) {
+      out.repairTickLegs = compact;
+      omitted.push("repairTickLegs(outputTails, signature caps)");
+    }
+  }
+  const maxPayloadBytes =
+    CHECKPOINT_RESULT_MARKER_ATOMIC_BYTES -
+    Buffer.byteLength(GREEN_CHECKPOINT_RESULT_MARKER + " \n");
+  const markerPayload = (): Record<string, unknown> =>
+    omitted.length > 0 ? { ...out, markerCompacted: { omitted } } : out;
+  const payloadBytes = (): number => Buffer.byteLength(JSON.stringify(markerPayload()) ?? "");
+  if (payloadBytes() > maxPayloadBytes) {
+    const pathFields = ["failingTests", "flakeSuspects"]
+      .filter((field) => Array.isArray(out[field]))
+      .sort(
+        (a, b) =>
+          Buffer.byteLength(JSON.stringify(out[b]) ?? "") -
+          Buffer.byteLength(JSON.stringify(out[a]) ?? ""),
+      );
+    for (const field of pathFields) {
+      if (payloadBytes() <= maxPayloadBytes) break;
+      delete out[field];
+      omitted.push(field);
+    }
+  }
+  if (omitted.length > 0) out.markerCompacted = { omitted };
+  return out;
+}
+
+/** The one stdout result line: the marker token, a space, then the compacted JSON payload. */
+export function checkpointResultMarkerLine(result: CheckpointResult): string {
+  return `${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify(checkpointResultMarkerPayload(result))}`;
+}
+
+/**
+ * WI-10005994: write to a stdio stream and resolve only once the chunk has been handed to the
+ * OS (the write callback). The terminal seam awaits this between the stderr dump and the
+ * stdout marker so the two cannot interleave inside a shared `2>&1` pipe. An errored or
+ * destroyed stream still calls back, so this never hangs the terminal path.
+ */
+export function writeStdioFlushed(
+  stream: Pick<NodeJS.WritableStream, "write">,
+  text: string,
+): Promise<void> {
+  return new Promise<void>((resolve) => {
+    try {
+      stream.write(text, () => resolve());
+    } catch {
+      resolve();
+    }
+  });
+}
+
 /** Testable terminal-emission seam used by the CLI for every result, including process fatals. */
 export async function emitTerminalCheckpointResult(
   result: CheckpointResult,
@@ -3435,19 +4183,30 @@ export async function emitTerminalCheckpointResult(
      * successor. Optional for callers that are only rendering an already-recorded result.
      */
     record?(result: CheckpointResult): Promise<boolean>;
-    writeHuman(result: CheckpointResult): void;
-    writeMarker(line: string): void;
+    /**
+     * WI-10005994: may return a promise that resolves once the text has been handed to the OS.
+     * The seam AWAITS it before the marker is written: the scheduled launcher runs this CLI as
+     * `2>&1 | sed -u`, so stdout and stderr share ONE pipe, and an unflushed ~170 KB stderr dump
+     * interleaves with the stdout marker in chunks, tearing the marker JSON mid-line.
+     * Typed `unknown` (not `void | Promise<void>`): the seam awaits whatever comes back, and a
+     * plain function returning a value (e.g. `lines.push`) must stay assignable.
+     */
+    writeHuman(result: CheckpointResult): unknown;
+    writeMarker(line: string): unknown;
     emitInconclusive(result: CheckpointResult): Promise<void>;
     emitTerminalEvents?(result: CheckpointResult, recorded: boolean): Promise<void>;
     retire(result: CheckpointResult): Promise<void>;
   },
 ): Promise<void> {
   const recorded = deps.record ? await deps.record(result) : false;
-  const terminal = recorded ? { ...result, recorded: true } : result;
-  deps.writeHuman(terminal);
-  deps.writeMarker(
-    `${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify(terminal)}`,
-  );
+  const terminal = deps.record ? { ...result, recorded } : result;
+  await deps.writeHuman(terminal);
+  await deps.writeMarker(checkpointResultMarkerLine(terminal));
+  // A rejected self-record is a physical diagnostic, not authority over the current
+  // qualification. Keep its marker for the wrapper's identity-checked reconciliation,
+  // but do not cancel incumbent waiters or clear its in-flight candidate. Render-only
+  // callers without a recorder retain the legacy wrapper-owned notification path.
+  if (deps.record && !recorded) return;
   await deps.emitTerminalEvents?.(terminal, recorded);
   if (
     terminal.green === null &&
@@ -4474,6 +5233,70 @@ export function refireDeadlineExceeded(input: {
 }
 
 /**
+ * P-022 (green-main-cycle-time-2026-10-08): the typed setup preconditions a gate pass can be
+ * refused on before rendering any verdict. `disk-headroom` = dependency-generation.sh exit 77
+ * (a dependency copy would drop free space under reserve + margin); `copy-lock` = exit 76 (the
+ * host dependency-copy lock is held by a stalled or wedged copy).
+ */
+export type GatePreconditionBlocker = "disk-headroom" | "copy-lock";
+
+/** One retry per run: a second refusal in the same run is a standing condition, which the
+ *  next scheduled tick (and the disk owner) handle — not something to spin on in-process. */
+export const MAX_GATE_PRECONDITION_RETRIES = 1;
+
+/** Measured 2026-10-12: four consecutive gate fires refused on headroom and each waited for the
+ *  next HOURLY tick, delaying candidate 70e89c73 by ~3h. Five minutes is long enough for the
+ *  retention prune and a finishing copy to settle, and short against the hour it replaces. */
+export const DEFAULT_GATE_PRECONDITION_RETRY_DELAY_MS = 5 * 60_000;
+
+/** The cost a retried pass must still fit inside the run budget: a full candidate suite
+ *  (~55 min measured, CLAUDE.md "costs a ~55min suite"), rounded up. The refused pass is no
+ *  estimate of it — a preflight refusal costs seconds. */
+export const GATE_PRECONDITION_RETRY_PASS_ESTIMATE_MS = 60 * 60_000;
+
+export function gatePreconditionRetryDelayMsFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const raw = env.PAPERCUSP_GATE_PRECONDITION_RETRY_DELAY_MS;
+  if (raw === undefined) return DEFAULT_GATE_PRECONDITION_RETRY_DELAY_MS;
+  const v = Number(raw);
+  return Number.isFinite(v) && v >= 0
+    ? Math.floor(v)
+    : DEFAULT_GATE_PRECONDITION_RETRY_DELAY_MS;
+}
+
+/**
+ * P-022: should this refused pass be retried in-process after a short delay? Pure.
+ * Retries only a typed precondition refusal with no verdict, at most
+ * {@link MAX_GATE_PRECONDITION_RETRIES} times per run, and only when the delay plus a full pass
+ * still fits the shared run budget — a retry killed mid-suite records nothing, which is worse
+ * than the refusal it replaced.
+ */
+export function decideGatePreconditionRetry(input: {
+  result: Pick<CheckpointResult, "green" | "preconditionBlocker">;
+  retriesSoFar: number;
+  elapsedMs: number;
+  delayMs: number;
+  budgetMs: number;
+}):
+  | { retry: true; blocker: GatePreconditionBlocker }
+  | { retry: false; reason: "no-blocker" | "bound-exhausted" | "deadline" } {
+  const blocker = input.result.preconditionBlocker;
+  if (!blocker || input.result.green !== null) return { retry: false, reason: "no-blocker" };
+  if (input.retriesSoFar >= MAX_GATE_PRECONDITION_RETRIES)
+    return { retry: false, reason: "bound-exhausted" };
+  if (
+    refireDeadlineExceeded({
+      elapsedMs: input.elapsedMs + input.delayMs,
+      lastPassMs: GATE_PRECONDITION_RETRY_PASS_ESTIMATE_MS,
+      budgetMs: input.budgetMs,
+    })
+  )
+    return { retry: false, reason: "deadline" };
+  return { retry: true, blocker };
+}
+
+/**
  * Reduce either failing-set representation to ONE comparable key.
  *
  * ⚠ This is the fail-OPEN hazard in the whole feature, so it is a function rather than an inline
@@ -5034,6 +5857,7 @@ export const NON_TEST_GATE_SCRIPTS: Record<string, string[]> = {
   // — but nothing measured that, and the streak reached 19 consecutive reds. Same bar as its
   // siblings: one fast, deterministic, repo-wide node script, no PG or network.
   "lint:no-raw-setinterval": ["lint:no-raw-setinterval"],
+  "lint:condition-rail": ["lint:condition-rail"],
   // WI-10004205 / D-099: deterministic, repo-wide, no PG or network. Slower than its siblings
   // (~50s, still far below the suite), and registering it keeps one unregistered leg from
   // vetoing the rescue for every registered leg beside it (see lint:tsc:papercusp-libs above).
@@ -5051,6 +5875,43 @@ export const NON_TEST_GATE_SCRIPTS: Record<string, string[]> = {
     "lint:plane-guards",
   ],
 };
+
+/** WI-10006055: the gate scripts that census the LIVE plane (the operator DB), not the
+ *  candidate. Every path that runs one must hand it the gate's operator DSN; without one it
+ *  resolves `$PAPERCUSP_HOME/embedded-pg.json`, which on this box is the installed Server
+ *  sidecar (522 agent_facts rows), and reds the gate on a database that is not the operator's.
+ *  Three paths run them: runPostSuiteLegs, runGateAtRef and runRepairTickLegs. Round 24 of
+ *  frozen queue ad82b273 went red through runRepairTickLegs, which passed no DSN, while the
+ *  same lints passed against the operator DB.
+ *
+ *  WI-6554700010009206: `lint:migrations` belongs here too. Its PG leg reads the reservation
+ *  ledger (`harness_shared.migration_reservations`, read-only SELECTs) from the operator DB,
+ *  which is where `db:next-migration` writes it. With no DSN it read the embedded-pg sidecar
+ *  (:24680), which has no reservation rows. That redded the gate at 70e89c73 with
+ *  "917, 1130, 1417..1465 … without a reservation row", while the same lint passed in the
+ *  shared tree. Any new gate leg that opens PG through `scripts/lib/pg-url.mjs` must be
+ *  listed here; `green-checkpoint-plane-dsn.test.ts` checks that for every registered leg. */
+export const LIVE_PLANE_LINT_SCRIPTS: ReadonlySet<string> = new Set([
+  "lint:plane-producers",
+  "lint:declared-consumed",
+  "lint:no-bespoke-state-read",
+  "lint:plane-ratchet",
+  "lint:plane-adoption",
+  "lint:derived-signal-firings",
+  "lint:plane-guards",
+  "lint:migrations",
+]);
+
+/** The env one gate script runs under: the suite env, plus the gate's operator DSN when the
+ *  script is a live-plane lint. `operatorPgEnv` defaults to the gate process's own DSN so a
+ *  caller cannot forget it; pass `{}` to run a plane lint without one. */
+export function gateScriptEnv(
+  script: string,
+  env: NodeJS.ProcessEnv,
+  operatorPgEnv: Readonly<Record<string, string>> = gateOperatorPgEnv(process.env),
+): NodeJS.ProcessEnv {
+  return LIVE_PLANE_LINT_SCRIPTS.has(script) ? { ...env, ...operatorPgEnv } : env;
+}
 
 /** `failingTests` for a red that is ENTIRELY non-test gate failures — never a test
  *  file/workspace name (those go through `runTestsAtRef` via `failingFiles`), and
@@ -5175,7 +6036,13 @@ export function rescueGateIdsFrom(
 export type RepairHeadVerification =
   /** Every selective leg passed AT the repair head; the full canonical gate at that same sha
    *  is the promotion proof (P-007). */
-  | { kind: "green"; summary: string; selectiveCoverage?: FrozenRepairSelectiveCoverage }
+  | {
+      kind: "green";
+      summary: string;
+      selectiveCoverage?: FrozenRepairSelectiveCoverage;
+      /** WI-10007489: the targeted radius this verdict actually ran. */
+      executed?: FrozenRepairRoundExecution;
+    }
   /** At least one leg is still red AT the repair head. `signature` is the FRESH typed
    *  signature (P-006: files as `test-file` + their `workspace-task`, gates as the entries
    *  they were re-run from) and `failingTests` its flat projection, for the re-queued row. */
@@ -5185,9 +6052,11 @@ export type RepairHeadVerification =
       signature: RepairSignatureInput[];
       summary: string;
       selectiveCoverage?: FrozenRepairSelectiveCoverage;
+      /** WI-10007489: the targeted radius this verdict actually ran, recorded on its round. */
+      executed?: FrozenRepairRoundExecution;
     }
-  /** A typed post-suite leg is present, so the FULL gate at the repair head is the only
-   *  runner that can re-measure it. Repair-radius widening never produces this verdict. */
+  /** A typed post-suite leg or a configured target without selective tooling requires
+   *  the FULL gate at the repair head. Repair-radius widening never produces this verdict. */
   | { kind: "full-run-required"; summary: string }
   /** A runner failed to EXECUTE, or a malformed legacy signature cannot be routed safely —
    *  absence of evidence, never a verdict: the queue holds as it is and the next tick retries. */
@@ -5200,13 +6069,16 @@ export type RepairHeadVerification =
  *  explicit `ref`, and every call below passes `queue.repairHead`. */
 export type RepairHeadVerificationDeps = Pick<
   CheckpointDeps,
-  "runTestsAtRef" | "runGateAtRef" | "affectedTestsAtRef"
+  "runTestsAtRef" | "runGateAtRef" | "affectedTestsAtRef" | "decisionTrace"
 > & {
   /** WI-10000288: pairs a workspace-less `test-file` signature entry with the one workspace
    *  directory that contains it (`makeTestWorkspaceResolver(cfg.integrationRoot)` in
    *  production). Without it a multi-workspace signature's test files are unroutable and
    *  the ready-to-verify queue holds forever. */
   resolveTestWorkspace?: TestWorkspaceResolver;
+  /** A target without the platform selector verifies its configured full suite.
+   *  Missing/malformed selective evidence within the platform still holds. */
+  selectiveRepairSupported?: boolean;
 };
 
 /** The paths every admission put on the frozen lineage (the ledger's PROVED diff-tree name
@@ -5856,7 +6728,7 @@ export interface FrozenRepairQueueReconcileResult {
  * The returned queue is what the caller must continue with; its snapshot is stale by definition.
  */
 async function commitFrozenRepairQueueTransition(
-  deps: CheckpointDeps,
+  deps: Pick<CheckpointDeps, "transitionFrozenRepairQueue" | "writeFrozenRepairQueue" | "log">,
   snapshot: FrozenCandidateRepairQueue,
   transition: (fresh: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue,
   label: string,
@@ -5899,9 +6771,10 @@ function verdictTransitionAtHead(
   onSupersededRecord?: (
     fresh: FrozenCandidateRepairQueue,
   ) => FrozenCandidateRepairQueue,
+  trace: GateDecisionReplay[] = [],
 ): (fresh: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue {
   return (fresh) => {
-    if (fresh.repairHead !== measuredHead) {
+    if (!recordedGateDecision('frozen-verdict-head', gateVerdictAppliesToHead, [fresh.repairHead, measuredHead], trace)) {
       onSuperseded(fresh);
       return onSupersededRecord ? onSupersededRecord(fresh) : fresh;
     }
@@ -5939,9 +6812,9 @@ export function describeRepairHeadRunnerFailure(error: unknown): string {
       raw,
     )?.[1];
   if (fingerprint) {
-    // WI-10004151: --ensure-ref now builds from the head's own lockfiles whenever they are
-    // install-equivalent to the live tree's (differing only by live-only workspace links), so
-    // reaching this message means the head's lock needs a REAL install; carry that reason.
+    // WI-10004151: --ensure-ref can use the live graph or a validated cached ancestor.
+    // A remaining miss means neither supplied compatible installed bytes; preserve
+    // the package mismatch and name the remedy without requiring a shared-tree install.
     const refusal = /not install-equivalent to the live tree's:?\s*([\s\S]*)$/.exec(raw)?.[1];
     const reason = refusal
       ? `: ${refusal.replace(/\[dependency-generation\]/g, "").replace(/\s+/g, " ").trim()}`
@@ -5953,9 +6826,11 @@ export function describeRepairHeadRunnerFailure(error: unknown): string {
     return (
       `no prewarmed dependency generation exists for the repair head's lockfile inputs ` +
       `(fingerprint ${fingerprint}); this does not clear on its own. dependency-generation.sh ` +
-      `--ensure-ref builds the head's generation from its own lockfiles only when they install ` +
-      `the same packages as the live tree's (modulo live-only workspace links); this head's ` +
-      `lock needs a real install${detail} (WI-10004151)`
+      `--ensure-ref builds the head's generation from its own lockfiles when they install ` +
+      `the same packages as the live tree or a validated cached generation ` +
+      `(modulo extra workspace links); no compatible installed source was found${detail}. ` +
+      `Install the head's lockfiles in an isolated source or prepare a matching generation ` +
+      `(WI-10004151)`
     );
   }
   const oneLine = raw.replace(/\s+/g, " ").trim() || "no error detail";
@@ -5981,6 +6856,12 @@ export async function verifyRepairHead(
 ): Promise<RepairHeadVerification> {
   const head = queue.repairHead;
   const at = head.slice(0, 8);
+  if (deps.selectiveRepairSupported === false) {
+    return {
+      kind: "full-run-required",
+      summary: `target has no platform selective repair runner; its configured full suite at ${at} decides`,
+    };
+  }
   // A legacy row can still carry the retired staging-mismatch sentinel; it names no leg.
   // A row handed in WITHOUT a typed signature (an in-memory row from before schema 4, or a
   // fixture) is typed the way the parser types a persisted one: derived from the flat list.
@@ -6080,6 +6961,14 @@ export async function verifyRepairHead(
 
   const fileList = [...files.values()];
   const gateList = [...gates];
+  // WI-10007489: the radius this round EXECUTES, stamped on the verdict so the queue's
+  // convergence round records it — "no full-gate fallthrough" is then checkable from history.
+  const executed = frozenRepairRoundExecution({
+    mode: "targeted",
+    fileKeys: fileList.map(failingFileKey),
+    gateIds: gateList,
+    radiusMode: selection.mode,
+  });
   // Sequential on purpose: both runners materialize `head` in the SAME checkpoint tree, and
   // two concurrent setupTree calls on one directory race each other's checkout.
   const fileSettled =
@@ -6097,7 +6986,11 @@ export async function verifyRepairHead(
   const fileRun = fileSettled?.value;
   const gateSettled =
     gateList.length > 0
-      ? await settleRepairHeadRunner(deps.runGateAtRef!(head, gateList))
+      ? await settleRepairHeadRunner(
+          deps.runGateAtRef!(head, gateList, {
+            frozenCandidateOpenedAtMs: queue.openedAtMs,
+          }),
+        )
       : undefined;
   if (gateSettled && ("failure" in gateSettled || gateSettled.value === null)) {
     return {
@@ -6106,6 +6999,25 @@ export async function verifyRepairHead(
     };
   }
   const gateRun = gateSettled?.value;
+  return recordedGateDecision('repair-measurements', interpretRepairHeadMeasurements, [{
+    queue, fileList, gateList, fileRun, gateRun, selection, radiusCoverageComplete, radiusNote, executed,
+  }], deps.decisionTrace ?? []);
+}
+
+/** P-014: interpret the exact targeted measurements without invoking either runner. */
+export function interpretRepairHeadMeasurements(input: {
+  queue: FrozenCandidateRepairQueue;
+  fileList: FailingFile[];
+  gateList: string[];
+  fileRun: Awaited<ReturnType<NonNullable<CheckpointDeps['runTestsAtRef']>>> | undefined;
+  gateRun: Awaited<ReturnType<NonNullable<CheckpointDeps['runGateAtRef']>>> | undefined;
+  selection: ReturnType<typeof selectFrozenRepairAdmissionPaths>;
+  radiusCoverageComplete: boolean;
+  radiusNote: string;
+  executed: FrozenRepairRoundExecution;
+}): RepairHeadVerification {
+  const { queue, fileList, gateList, fileRun, gateRun, selection, radiusCoverageComplete, radiusNote, executed } = input;
+  const head = queue.repairHead, at = head.slice(0, 8);
   // An optional detailed result is evidence only for this exact requested set/head.
   // Aggregate-only older runners remain conservative; malformed detail must never erase
   // a red merely because its array happens to have the right length.
@@ -6132,12 +7044,34 @@ export async function verifyRepairHead(
   // cannot tell us whether a failing batch stopped before its final workspace.
   const completeFiles = !fileRun || (fileOutcomes !== null && fileRun.coverageComplete === true &&
     fileOutcomes.every((entry) => entry.status !== "errored"));
+  // A registered non-gating NOT CHECKED leg is coverage-NEUTRAL (WI-10004928 / D-129 item 2;
+  // validateTargetedGateOutcomes already refused it for any unregistered id). The producer
+  // counts it complete; requiring pass|fail here withheld `gate-run-incomplete` on EVERY live
+  // targeted round (green-main-cycle-time-2026-10-08#P-005 stage 2, rounds of queue 4a0ab756),
+  // so every round fell back to the cumulative radius.
   const completeGates = !gateRun || (gateOutcomes !== null && gateRun.coverageComplete === true &&
-    gateOutcomes.every((entry) => entry.status === "pass" || entry.status === "fail"));
-  const selectiveCoverage: FrozenRepairSelectiveCoverage | undefined = selection.coverageComplete &&
-    radiusCoverageComplete && completeFiles && completeGates
+    gateOutcomes.every((entry) => entry.status === "pass" || entry.status === "fail" || entry.status === "not-checked"));
+  // P-005: name EVERY condition that withheld the receipt, on the round itself. A red round
+  // with no receipt forces the next round back onto the cumulative radius, so "why no
+  // receipt" must be readable from queue history rather than re-derived from logs.
+  const coverageWithheld = ([
+    ["selection-incomplete", selection.coverageComplete],
+    ["radius-census-incomplete", radiusCoverageComplete],
+    ["file-run-incomplete", completeFiles],
+    ["gate-run-incomplete", completeGates],
+  ] as const).filter(([, complete]) => !complete).map(([reason]) => reason);
+  const selectiveCoverage: FrozenRepairSelectiveCoverage | undefined = coverageWithheld.length === 0
     ? { schemaVersion: 1, candidate: queue.candidate, head }
     : undefined;
+  const roundExecution = coverageWithheld.length === 0
+    ? executed
+    : frozenRepairRoundExecution({
+        mode: "targeted",
+        fileKeys: fileList.map(failingFileKey),
+        gateIds: gateList,
+        radiusMode: selection.mode,
+        coverageWithheld,
+      });
 
   // P-006: the fresh signature is TYPED — a failing file is its `test-file` entry plus the
   // `workspace-task` marker for its workspace; a failing gate is re-emitted from the entry it
@@ -6175,7 +7109,20 @@ export async function verifyRepairHead(
     const unresolved = gateOutcomes
       ? gateOutcomes.filter((entry) => entry.status === "fail" || entry.status === "errored").map((entry) => entry.id)
       : gateList;
+    const outcomeById = new Map((gateOutcomes ?? []).map((entry) => [entry.id, entry] as const));
     for (const id of unresolved) {
+      // P-005 stage 3: a soundly narrowed test task is re-queued as its failing FILES plus the
+      // workspace marker — the file run's own shape — so the next round re-runs those files,
+      // not the whole lane. Anything not provably well-formed keeps the task id (never a
+      // dropped red: narrowing only ever replaces a task by the files that make it red).
+      const narrowed = soundNarrowedFiles(outcomeById.get(id));
+      if (narrowed) {
+        for (const f of narrowed) {
+          emit({ kind: "test-file", id: f.file, recipe: `npm run test:file -- ${f.file}`, workspace: f.workspace });
+          emit({ kind: "workspace-task", id: f.workspace, recipe: `npm run test -w ${f.workspace}`, workspace: f.workspace });
+        }
+        continue;
+      }
       const prior = priorById.get(id);
       emit(
         prior
@@ -6197,6 +7144,7 @@ export async function verifyRepairHead(
       failingTests: [...fresh.keys()],
       signature: [...fresh.values()],
       ...(selectiveCoverage ? { selectiveCoverage } : {}),
+      executed: roundExecution,
       summary:
         `still red at repair head ${at}: ` +
         [fileRun?.summary, gateRun?.summary, radiusNote].filter(Boolean).join("; "),
@@ -6205,6 +7153,7 @@ export async function verifyRepairHead(
   return {
     kind: "green",
     ...(selectiveCoverage ? { selectiveCoverage } : {}),
+    executed: roundExecution,
     summary:
       `every selective leg passed at repair head ${at} ` +
       `(${fileList.length} file(s), ${gateList.length} gate(s); ${radiusNote}); ` +
@@ -6490,6 +7439,77 @@ export function validateTargetedFileOutcomes(
 export interface TargetedGateOutcome {
   id: string;
   status: "pass" | "fail" | "errored" | "not-checked";
+  /** Bounded stdout/stderr evidence for a measured nonzero task exit. */
+  outputTail?: string;
+  /** P-005 stage 3: the failing test FILES a failed test task's own output names, when
+   *  {@link narrowFailingTestLeg} could narrow it soundly. The next round re-runs these files
+   *  instead of the whole task. Present only on a `fail` that resolves to one workspace run. */
+  narrowedFiles?: FailingFile[];
+  /** P-005 stage 3: why a failed task was NOT narrowed. Never silent: a failed test task
+   *  carries exactly one of `narrowedFiles` / `narrowWithheld`. */
+  narrowWithheld?: string;
+}
+
+/** P-005 stage 3: why {@link narrowFailingTestLeg} kept a failed task whole. */
+export type TestLegNarrowWithheld =
+  | "not-a-test-script"
+  | "abnormal-termination"
+  | "unhandled-errors"
+  | "no-summary-row"
+  | "multiple-summary-rows"
+  | "no-failed-files-counted"
+  | "failing-file-count-mismatch";
+
+export type TestLegNarrowing =
+  | { narrowed: true; files: string[] }
+  | { narrowed: false; reason: TestLegNarrowWithheld };
+
+/**
+ * PURE (green-main-cycle-time-2026-10-08#D-003 step 3, P-005 stage 3): reduce a FAILED test
+ * task to the failing files its own vitest output names, so the next repair round re-runs those
+ * files instead of the whole lane. Every round used to re-run each red lane whole (the 08:50Z
+ * live queue held 4 whole test lanes), because the red emission re-queued the task id.
+ *
+ * Narrowing is an optimisation, so it is refused whenever the output cannot PROVE it names every
+ * failure. It narrows only when all of these hold:
+ *  - the script is `test` or `test:*` (a vitest task, not a lint or seed leg);
+ *  - the run ended normally: no vitest worker-pool crash marker, no npm signal footer, no
+ *    pure-lane shard signal (a killed run's summary does not cover what it never ran);
+ *  - no `Errors N errors` row and no Unhandled Errors/Rejection section (an unhandled error is
+ *    not attributed to any file, so naming files would drop it);
+ *  - exactly ONE `Test Files` summary row (one vitest process: a sharded lane prints one per
+ *    shard, and a shard that died before its summary would be invisible to a per-row sum);
+ *  - that row counts N >= 1 failed files, and the parsed failing-file set has exactly N members.
+ *
+ * Soundness of the re-run: a lane only FILTERS which files run (`PC_TEST_LANE` is inert unless
+ * set, packages/operator-core/vitest.config.ts), so a named file re-runs under the same config.
+ * Promotion is unaffected: the full gate at the head the targeted round reports green is still
+ * the promotion proof.
+ */
+export function narrowFailingTestLeg(
+  script: string,
+  streams: readonly (string | null | undefined)[],
+): TestLegNarrowing {
+  if (script !== "test" && !script.startsWith("test:")) return { narrowed: false, reason: "not-a-test-script" };
+  const text = stripVitestAnsi(streams.filter((s): s is string => typeof s === "string").join("\n"));
+  if (
+    isWorkerPoolCrash(text) ||
+    /^\s*npm (?:error|ERR!) signal\s+SIG/m.test(text) ||
+    /\bVITEST_PURE_LANE_SHARD state=(?:signaled|spawn-error)\b/.test(text)
+  ) {
+    return { narrowed: false, reason: "abnormal-termination" };
+  }
+  if (/^\s*Errors\s+\d+\s+errors?\b/m.test(text) || /\bUnhandled (?:Errors?|Rejection)\b/.test(text)) {
+    return { narrowed: false, reason: "unhandled-errors" };
+  }
+  const rows = text.match(/^\s*Test Files\s+\d/gm) ?? [];
+  if (rows.length === 0) return { narrowed: false, reason: "no-summary-row" };
+  if (rows.length > 1) return { narrowed: false, reason: "multiple-summary-rows" };
+  const failedFiles = parseSummaryFailedCounts(text)?.testFiles ?? 0;
+  if (failedFiles < 1) return { narrowed: false, reason: "no-failed-files-counted" };
+  const files = parseFailedTestFiles(text);
+  if (files.length !== failedFiles) return { narrowed: false, reason: "failing-file-count-mismatch" };
+  return { narrowed: true, files };
 }
 
 export interface TargetedGateResult {
@@ -6498,7 +7518,11 @@ export interface TargetedGateResult {
   /** Present only on the detailed runner, not legacy aggregate-only responses. */
   perGate?: TargetedGateOutcome[];
   measuredHead?: string;
-  /** NOT CHECKED and execution errors are not reusable coverage, even if non-gating. */
+  /** Execution errors are not reusable coverage. A registered non-gating NOT CHECKED leg
+   * is coverage-NEUTRAL (WI-10004928 / D-129 item 2): it infers its subject from a
+   * working-tree diff that is empty in the gate's clean checkout at EVERY head, so the
+   * full gate measures nothing there either, and re-running it in a later round could
+   * never add evidence. Counting it as incomplete blocked every repair-round receipt. */
   coverageComplete?: boolean;
 }
 
@@ -6525,6 +7549,31 @@ export function validateTargetedGateOutcomes(
   return result.perGate;
 }
 
+const NARROWED_TEST_FILE = new RegExp(`^${VITEST_TEST_FILE_SOURCE}$`);
+
+/**
+ * P-005 stage 3: the narrowed files of a targeted outcome, ONLY when they are fit to replace its
+ * task in the next signature: a `fail` of one workspace run, a non-empty list of test-file paths,
+ * every one paired with that run's workspace. Anything else returns null and the caller keeps
+ * the task whole — a malformed narrowing must never erase a red.
+ */
+export function soundNarrowedFiles(outcome: TargetedGateOutcome | undefined): FailingFile[] | null {
+  if (!outcome || outcome.status !== "fail" || !Array.isArray(outcome.narrowedFiles) || outcome.narrowedFiles.length === 0) return null;
+  const runs = resolveGateRuns([outcome.id]);
+  const workspace = runs.length === 1 ? runs[0]?.workspace : null;
+  if (!workspace) return null;
+  const ok = outcome.narrowedFiles.every((f) =>
+    f !== null && typeof f === "object" && f.workspace === workspace &&
+    typeof f.file === "string" && NARROWED_TEST_FILE.test(f.file));
+  return ok ? outcome.narrowedFiles : null;
+}
+
+/** Per-run budget of a targeted leg's persisted `outputTail`. Below the 2000-char joined
+ *  cap so the `<ws> :: <script>: ` label fits without cutting the digest's first line. */
+const TARGETED_LEG_TAIL_BUDGET = 1_900;
+/** Per-run budget of the same leg's `(output: …)` clause in the one-line summary. */
+const TARGETED_LEG_BRIEF_BUDGET = 600;
+
 /**
  * Measure the complete bounded target set, reusing duplicate physical invocations within
  * this batch only. A first failing script no longer hides passes (or later failures).
@@ -6532,10 +7581,14 @@ export function validateTargetedGateOutcomes(
  */
 export async function measureTargetedGateRuns(
   gateIds: readonly string[],
-  run: (script: string, workspace: string | null) => Promise<{ code: number }>,
+  run: (script: string, workspace: string | null) => Promise<{ code: number; stdout?: string; stderr?: string }>,
 ): Promise<TargetedGateResult> {
   const key = (script: string, workspace: string | null) => JSON.stringify([workspace, script]);
   const measured = new Map<string, TargetedGateOutcome["status"]>();
+  const failureOutputs = new Map<string, string>();
+  const failureBriefs = new Map<string, string>();
+  // P-005 stage 3: a failed run's narrowing verdict, keyed like `measured`.
+  const narrowings = new Map<string, TestLegNarrowing>();
   const summaries: string[] = [];
   for (const { script, workspace } of resolveGateRuns(gateIds)) {
     const label = workspace ? `${workspace} :: ${script}` : script;
@@ -6550,29 +7603,71 @@ export async function measureTargetedGateRuns(
       status = result.code === 0 ? "pass"
         : result.code === EXIT_NOT_CHECKED && isNotCheckedNonGating(label) ? "not-checked"
         : Number.isInteger(result.code) ? "fail" : "errored";
+      if (status === "fail") {
+        // A clean nonzero exit can fail before a test reporter runs. Keep both
+        // streams so a quiet stdout cannot hide the stderr that explains it.
+        // WI-10007516: digest-first over BOTH streams in full, at each consumer's own
+        // budget — a blind tail of each was npm's footer, never the failing test.
+        const streams = [result.stdout, result.stderr];
+        const tail = summarizeLegStreams(streams, TARGETED_LEG_TAIL_BUDGET);
+        if (tail) {
+          failureOutputs.set(key(script, workspace), tail);
+          failureBriefs.set(key(script, workspace), summarizeLegStreams(streams, TARGETED_LEG_BRIEF_BUDGET));
+        }
+        // Only a TEST task has files to narrow to; a lint/seed failure carries no verdict at all.
+        const narrowing = narrowFailingTestLeg(script, streams);
+        if (narrowing.narrowed || narrowing.reason !== "not-a-test-script") {
+          narrowings.set(key(script, workspace), narrowing);
+        }
+      }
     } catch (e) {
       status = "errored";
       const firstLine = (e instanceof Error ? e.message : String(e)).split("\n", 1)[0] ?? "";
       erroredReason = firstLine.replace(/;/g, ",").trim().slice(0, 200) || null;
     }
     measured.set(key(script, workspace), status);
-    summaries.push(`${label}: ${status === "not-checked" ? "NOT CHECKED (examined nothing — not gating)" : status === "pass" ? "pass" : status.toUpperCase()}${erroredReason ? ` (${erroredReason})` : ""}`);
+    const diagnostic = failureBriefs.get(key(script, workspace));
+    const narrowing = narrowings.get(key(script, workspace));
+    const narrowNote = !narrowing ? ""
+      : narrowing.narrowed ? ` [narrowed to ${narrowing.files.length} failing file(s)]`
+      : ` [kept whole: ${narrowing.reason}]`;
+    summaries.push(`${label}: ${status === "not-checked" ? "NOT CHECKED (examined nothing — not gating)" : status === "pass" ? "pass" : status.toUpperCase()}${narrowNote}${erroredReason ? ` (${erroredReason})` : ""}${diagnostic ? ` (output: ${diagnostic.replace(/\s+/g, " ").replace(/;/g, ",")})` : ""}`);
   }
   const perGate = [...new Set(gateIds)].map((id): TargetedGateOutcome => {
-    const statuses = resolveGateRuns([id]).map(({ script, workspace }) => measured.get(key(script, workspace)));
+    const runs = resolveGateRuns([id]);
+    const statuses = runs.map(({ script, workspace }) => measured.get(key(script, workspace)));
+    // P-005 stage 3: an id narrows only when it is ONE failed run in ONE workspace. A
+    // multi-run id (a registry leg) keeps its whole set: one run's files cannot speak for another.
+    const single = runs.length === 1 ? runs[0] : undefined;
+    const narrowing = single ? narrowings.get(key(single.script, single.workspace)) : undefined;
+    const narrowFields: Pick<TargetedGateOutcome, "narrowedFiles" | "narrowWithheld"> =
+      !narrowing || statuses[0] !== "fail" ? {}
+      : !narrowing.narrowed ? { narrowWithheld: narrowing.reason }
+      : !single?.workspace ? { narrowWithheld: "no-workspace" }
+      : { narrowedFiles: narrowing.files.map((file) => ({ workspace: single.workspace as string, file })) };
+    // Each tail LEADS with its digest, so the joined set is bounded from the FRONT: a cut
+    // from the end only ever loses raw tail, never a failing test's name.
+    const outputTail = runs.map(({ script, workspace }) => {
+      const tail = failureOutputs.get(key(script, workspace));
+      return tail ? `${workspace ? `${workspace} :: ` : ""}${script}: ${tail}` : "";
+    }).filter(Boolean).join("\n").slice(0, 2_000);
     return {
       id,
       status: statuses.length === 0 || statuses.some((status) => status === undefined || status === "errored")
         ? "errored"
         : statuses.includes("fail") ? "fail"
         : statuses.includes("not-checked") ? "not-checked" : "pass",
+      ...(outputTail ? { outputTail } : {}),
+      ...narrowFields,
     };
   });
   const pass = perGate.every((entry) => entry.status === "pass" || entry.status === "not-checked");
   return {
     pass,
     perGate,
-    coverageComplete: perGate.every((entry) => entry.status === "pass" || entry.status === "fail"),
+    // `not-checked` is only ever assigned to a registered non-gating script (above), so
+    // only `errored` (thrown, unmapped, spawn failure) leaves the measurement incomplete.
+    coverageComplete: perGate.every((entry) => entry.status !== "errored"),
     summary: summaries.join("; "),
   };
 }
@@ -6939,14 +8034,13 @@ export function needsOwnFileRunner(
  * EI-24542010215430349: stamp a rescue rerun (load-flake isolation, co-execution confirmation,
  * worker-crash workspace rerun) with the executed-source capture the SUITE ran that file under.
  *
- * The suite arms the executed-source-map reporter and its per-file input capture on every unit
- * vitest task (scripts/affected-tests.mjs `recordsExecutedMap`: the `test` script and the lanes).
+ * The suite arms the executed-source-map reporter and its per-file input capture on unit and
+ * integration vitest tasks (scripts/affected-tests.mjs `recordsExecutedMap`).
  * A rescue rerun that runs UNARMED changes a variable the rescue is not meant to change: a red
  * the capture itself causes (a capture-setup crash, a fixture the capture's fs hooks break)
  * passes unarmed and is absorbed as a load flake — false green. Every rescue rerun goes through
  * the workspace's `test` script, so it is armed exactly when the suite would have armed it:
- * recording enabled and no `*.integration.test.*` file (those ran under the unarmed
- * `test:integration` script, so arming them would be the variable change in the other direction).
+ * recording enabled, including files originally run by `test:integration`.
  *
  * Armed NO-PERSIST: a rescue rerun is not a suite run, so nothing it sees becomes a reusable pass
  * proof or retires one. It also never inherits the suite's per-task result file, rows file or
@@ -6967,9 +8061,7 @@ export function armRescueRerunCapture(
   ]) {
     delete env[key];
   }
-  const armed =
-    executedMapRecordingEnabled(env) &&
-    !input.files.some((file) => /\.integration\.test\./.test(file));
+  const armed = executedMapRecordingEnabled(env);
   if (armed) {
     env[EXECUTED_MAP_WORKSPACE_ENV] = input.workspace;
     env[EXECUTED_MAP_NO_PERSIST_ENV] = "1";
@@ -8745,6 +9837,7 @@ export const WORKER_CRASH_MAX_WORKSPACES = 2;
  */
 export const GREEN_CHECKPOINT_SOURCE_ENV_KEYS = [
   "DBUS_SESSION_BUS_ADDRESS",
+  "GIT_OPTIONAL_LOCKS",
   "HOME",
   "LANG",
   "LOGNAME",
@@ -8956,8 +10049,31 @@ export function buildGreenCheckpointEnv(
    *  omitted ⇒ the reporter falls back to its own `git rev-parse HEAD`, which is the
    *  pre-WI-1702898 behaviour and can silently resolve to NULL. */
   judgedCandidate?: string | null,
+  /** WI-10005212: the frozen repair queue's openedAtMs when this run judges a frozen
+   *  candidate. The candidate suite (scripts/affected-tests.mjs) attaches
+   *  lint:migration-forward-compat as an AFFECTED_GUARD task leg, and that guard judges
+   *  sidecar `reviewBy` dates against this clock. Without it the guard leg used the wall
+   *  clock, so a sidecar that lapsed AFTER the queue froze turned a frozen candidate red
+   *  (EI-24490866645335225 class, via the guard-leg path instead of the post-suite one). */
+  frozenCandidateOpenedAtMs?: number,
 ): NodeJS.ProcessEnv {
   const env = canonicalGreenCheckpointSourceEnv(source);
+  // Targeted repair tasks bypass affected-tests, so their Git reads need the same
+  // optional-lock policy as the ordinary suite. A killed status must not strand index.lock.
+  applyGitOptionalLocksDefault(env);
+  // WI-10005212: deleted first so a host-leaked value can never back-date a non-frozen run.
+  delete env.PAPERCUSP_FROZEN_CANDIDATE_OPENED_AT_MS;
+  if (frozenCandidateOpenedAtMs !== undefined) {
+    if (
+      !Number.isSafeInteger(frozenCandidateOpenedAtMs) ||
+      frozenCandidateOpenedAtMs <= 0
+    ) {
+      throw new Error(
+        "frozen candidate openedAtMs is not a valid epoch-millisecond timestamp",
+      );
+    }
+    env.PAPERCUSP_FROZEN_CANDIDATE_OPENED_AT_MS = String(frozenCandidateOpenedAtMs);
+  }
   // EI-19307211919650123 — MUST be set AFTER the strip above (these are the gate
   // declaring its OWN identity, which is exactly what the strip is protecting; cf.
   // GREEN_CHECKPOINT / PC_HEAVY_RELEASE_GATE below).
@@ -9031,6 +10147,16 @@ export function buildGreenCheckpointEnv(
   // gate-owned setting, those imports rewrite tracked __pycache__ files and make the isolated
   // worktree look dirty even though the tested source is unchanged.
   env.PYTHONDONTWRITEBYTECODE = "1";
+  // WI-6554700010008606: pin a shell level so a test's `bash -c` never sources the host's
+  // ~/.bashrc. Bash (built with SSH_SOURCE_BASHRC, as Debian/Ubuntu ship it) treats a
+  // non-interactive `-c` shell whose stdin is a socket as "started by rshd" and sources
+  // ~/.bashrc when its shell level is below 2. Node's spawnSync pipes ARE socketpairs, and
+  // nothing between this builder and the tests (node, npm, dash) sets SHLVL, so every such
+  // shell ran at level 1 and sourced the rc: on this box that re-exported the host's
+  // NODE_OPTIONS (and its secrets file) over the test's own env, so the desktop leg failed
+  // in the gate and passed in every interactive shell. Inherited SHLVL=1 makes bash run at
+  // level 2 and skip that path. Overwrite, never inherit: a launcher's value is identity.
+  env.SHLVL = "1";
   // WI-6140: the release gate's exemption from the pc-heavy admission semaphore.
   // DELIBERATELY NOT keyed off GREEN_CHECKPOINT — that marker is DOUBLE-DUTY (it also
   // makes load-/network-sensitive tests self-exclude via describe.skipIf, see above),
@@ -9081,6 +10207,113 @@ export function buildGreenCheckpointEnv(
   env.VITEST_INTEGRATION_HOOK_TIMEOUT_MS =
     env.VITEST_INTEGRATION_HOOK_TIMEOUT_MS ?? "180000";
   return env;
+}
+
+/** Grace past the capture budget before the run stops waiting for the phase and exits. */
+export const PURE_PROOF_CAPTURE_HARD_GRACE_MS = 5 * 60_000;
+
+/**
+ * gate-test-reuse-yield-2026-10-01 P-006 (D-005 §1): the post-verdict pure-lane proof-capture
+ * phase. Called by the CLI AFTER `emitResult` has recorded the verdict and BEFORE the run lock is
+ * released, so the checkpoint tree stays at the judged sha while capture runs.
+ *
+ * The self-watchdog is cancelled first: its onFire calls emitResult(inconclusive) and raises a
+ * "Release pipeline WEDGED" attention without taking the terminal claim, and the real verdict is
+ * already recorded, so a fire during capture would record a false second result. The phase
+ * bounds itself instead:
+ * its budget (PC_PURE_PROOF_CAPTURE_BUDGET_MS), a per-slice kill, the next-fire yield, and here a
+ * hard deadline past which the run stops waiting and exits (the exit sweep reaps survivors).
+ * Never throws: capture can only cost reuse, never the run.
+ */
+export async function runPostVerdictPureProofCapture(
+  cfg: Pick<ReleaseConfig, "checkpointRoot" | "checkpointLogDir" | "greenCheckpointCapacityMode">,
+  runId: string,
+  cancelWatchdog: () => void,
+  log: (line: string) => void = (line) => console.log(`${orchestratorStdoutTag()} ${line}`),
+  capture: typeof runPureLaneProofCapture = runPureLaneProofCapture,
+  processStartedAtMs: number = Date.now() - process.uptime() * 1000,
+  readNextFireInSec: () => Promise<number | null> = async () => {
+    const { readGreenCheckpointNextFireInSec } = await import(
+      "@papercusp/operator-core/lib/release/gate-collision-guard"
+    );
+    return readGreenCheckpointNextFireInSec();
+  },
+): Promise<PureProofCaptureResult | null> {
+  if (!pureProofCaptureEnabled(process.env)) {
+    log("PURE_PROOF_CAPTURE state=skipped reason=disabled-by-env");
+    return null;
+  }
+  cancelWatchdog();
+  log("GATE_RUN_PHASE phase=pure-proof-capture");
+  const env = buildGreenCheckpointEnv(
+    null,
+    process.env,
+    undefined,
+    cfg.greenCheckpointCapacityMode,
+  ) as Record<string, string | undefined>;
+  // The canonical gate env keeps only an allowlist (canonicalGreenCheckpointSourceEnv), so the
+  // phase's own operator knobs are carried across explicitly or they would silently read defaults.
+  for (const key of [PURE_PROOF_CAPTURE_ENV, PURE_PROOF_CAPTURE_BUDGET_ENV, PURE_PROOF_CAPTURE_SLICE_ENV]) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  // The run's own ceiling (SELF_WATCHDOG_MS from process start) sits inside the build-time ordering
+  // chain (suite < self-watchdog < fire reaper < lock-stale). Capture must end before it, or a long
+  // run plus capture could outlive the reaper and the lock, and another run could take the tree.
+  const runCeilingAtMs = processStartedAtMs + SELF_WATCHDOG_MS;
+  const hardDeadlineMs = Math.max(
+    0,
+    Math.min(
+      pureProofCaptureBudgetMs(env) + PURE_PROOF_CAPTURE_HARD_GRACE_MS,
+      runCeilingAtMs - Date.now(),
+    ),
+  );
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const result = await Promise.race([
+      capture({
+        root: cfg.checkpointRoot,
+        env,
+        runGroupId: `${runId}:pure-proof-capture`,
+        logFile: path.join(cfg.checkpointLogDir, `pure-proof-capture-${runId}.log`),
+        // Lets a notRun skip name the sha this run's suite judged when a repair-queue pass has
+        // since moved the checkout to a newly admitted head (WI-10004717).
+        sinceMs: processStartedAtMs,
+        deps: {
+          log,
+          // The earlier of the next scheduled fire and the run ceiling; an unreadable fire still
+          // leaves the ceiling in force.
+          readNextFireAtMs: async () => {
+            try {
+              const sec = await readNextFireInSec();
+              return sec == null ? runCeilingAtMs : Math.min(Date.now() + sec * 1000, runCeilingAtMs);
+            } catch {
+              return runCeilingAtMs;
+            }
+          },
+        },
+      }),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(() => {
+          log(`PURE_PROOF_CAPTURE state=abandoned reason=hard-deadline(${hardDeadlineMs}ms)`);
+          resolve();
+        }, hardDeadlineMs);
+      }),
+    ]);
+    // Retain the producer's named population for archive consumers; historical aggregates,
+    // timeout completion and malformed records stay unknown instead of becoming zero proofs.
+    const parsed = parsePureProofCaptureResult(result);
+    return parsed?.evidence.runGroupId === `${runId}:pure-proof-capture` ? parsed : null;
+  } catch (e) {
+    log(
+      `PURE_PROOF_CAPTURE state=error reason=${String(e instanceof Error ? e.message : e)
+        .replace(/\s+/g, "_")
+        .slice(0, 160)}`,
+    );
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+  return null;
 }
 
 /**
@@ -9252,35 +10485,120 @@ export function summarizeSuiteOutput(fullOutput: string): string {
  *  names; the raw tail still follows, because a wedge, an npm resolution failure or a
  *  runner crash surfaces there and nowhere else. */
 export function summarizeLegOutput(fullOutput: string, budget = 1200): string {
-  const lines = stripAnsi(fullOutput)
-    .split("\n")
-    .filter((l) => !/^npm error/.test(l));
+  return summarizeLegStreams([fullOutput], budget);
+}
 
-  const isSignal = (l: string): boolean =>
-    // Per-file baseline regression row — the single most useful line in a red leg, because it
-    // names the file AND its baseline/current counts. The producer is `formatRow` in
-    // scripts/lib/tsc-baseline-gate.mjs, reached on the red path by the
-    // `for (const r of result.regressions) console.error(formatRow(r))` loop, and it renders
-    //     `   path/to/file.ts: 12 → 11  (-1)`
-    // with U+2192 — NEVER an ASCII `>`. An earlier version of this pattern required `>` and so
-    // could not match a single real regression. Accept the ASCII spellings too, so a later
-    // re-render cannot silently drop this line again.
-    /\.[cm]?[jt]sx?:\s*\d+\s*(?:→|->|>)\s*\d+/.test(l) ||
-    // raw tsc diagnostics, in either `error TS1234:` or `file(line,col):` form
-    /\berror TS\d{3,5}\b/.test(l) ||
-    /\.[cm]?[jt]sx?\(\d+,\d+\):/.test(l) ||
-    // the gate scripts' own verdict lines
-    /\bLINT_TSC_RESULT\b/.test(l) ||
-    /\bstatus=(?:regressed|partial)\b/.test(l) ||
-    /^\s*FAIL\s+\S/.test(l);
+/** Lines that carry no evidence about WHY a leg failed: npm's lifecycle footer (~450 chars
+ *  per failed workspace script) and the executed-source-map reporter's trailing receipt. */
+const LEG_NOISE_LINE = /^(?:npm error\b|\[executed-source-map\])/;
 
-  const digest = lines.filter(isSignal).slice(0, 25);
+/** Tier 1: lines that NAME what failed (a file, a case, a count, a termination). */
+const isLegFailureSignal = (l: string): boolean =>
+  // Per-file baseline regression row — the single most useful line in a red leg, because it
+  // names the file AND its baseline/current counts. The producer is `formatRow` in
+  // scripts/lib/tsc-baseline-gate.mjs, reached on the red path by the
+  // `for (const r of result.regressions) console.error(formatRow(r))` loop, and it renders
+  //     `   path/to/file.ts: 12 → 11  (-1)`
+  // with U+2192 — NEVER an ASCII `>`. An earlier version of this pattern required `>` and so
+  // could not match a single real regression. Accept the ASCII spellings too, so a later
+  // re-render cannot silently drop this line again.
+  /\.[cm]?[jt]sx?:\s*\d+\s*(?:→|->|>)\s*\d+/.test(l) ||
+  // raw tsc diagnostics, in either `error TS1234:` or `file(line,col):` form
+  /\berror TS\d{3,5}\b/.test(l) ||
+  /\.[cm]?[jt]sx?\(\d+,\d+\):/.test(l) ||
+  // the gate scripts' own verdict lines
+  /\bLINT_TSC_RESULT\b/.test(l) ||
+  /\bstatus=(?:regressed|partial)\b/.test(l) ||
+  // vitest (WI-10007516): the failing file/case, the per-file rollup and the run counts
+  /^\s*FAIL\s+\S/.test(l) ||
+  /^\s*×\s+\S/.test(l) ||
+  /^\s*❯\s+\S+\s+\(\d+\s+tests?[^)]*\|\s*\d+\s+failed\)/.test(l) ||
+  /^\s*(?:Test Files|Tests)\s+.*\b(?:failed|passed)\b/.test(l) ||
+  /^\s*Errors\s+\d+\s+errors?\b/.test(l) ||
+  // node:test, spec (`✖ name`) and TAP (`not ok 3 - name`, `# fail 1`) reporters
+  /^\s*✖\s+\S/.test(l) ||
+  /^\s*not ok\s+\d+/.test(l) ||
+  /^\s*(?:#|ℹ)\s*fail\s+[1-9]/.test(l) ||
+  // process-level terminations — the tell that a red is NOT a substantive test failure
+  /\bTest timed out\b/.test(l) ||
+  /\bWorker (?:exited|terminated) unexpectedly\b/.test(l) ||
+  /^npm error (?:signal\s+SIG[A-Z]+|Missing script:)/.test(l);
+
+/** Tier 2: an error HEADER (`AssertionError: expected …`, `TypeError: …`). Useful beside the
+ *  tier-1 names, but a passing test that logs an expected error prints the same shape, so it
+ *  only fills the slots tier 1 left over and can never push a FAIL name out of the digest. */
+const isLegErrorHeader = (l: string): boolean =>
+  /^\s*(?:[A-Z]\w*)?Error(?:\s*\[[A-Z_]+\])?:\s+\S/.test(l);
+
+const LEG_DIGEST_LINES = 25;
+const LEG_ERROR_HEADER_LINES = 8;
+const LEG_DIGEST_LINE_CHARS = 300;
+
+/** `summarizeLegOutput` over SEVERAL streams of one run (stdout, stderr).
+ *
+ *  WI-10007516, measured 2026-10-07 (pipeline_events 601064): a red `test:lane-stateful`
+ *  repair leg was summarized as `[executed-source-map] written … npm error Lifecycle script
+ *  … command failed` and nothing else. The repair-round capture kept the last 1000 chars of
+ *  each stream and the summary the last 600 of those, which npm's stderr footer and the
+ *  source-map receipt fill exactly — so no artifact named the failing test, and the probe
+ *  that followed (WI-10007508) had to recover it from the test-run ledger. The two other leg
+ *  seams were worse: `stderr || stdout` discards vitest's stdout ENTIRELY whenever npm writes
+ *  its footer to stderr, which it does on every failed script.
+ *
+ *  The digest is taken over EVERY stream, in full. The no-digest fallback still splits the
+ *  budget per stream, so a quiet stdout cannot hide the stderr that explains it (nor the
+ *  reverse); a stream that is nothing BUT npm footer keeps that footer, since a missing
+ *  script or a spawn failure is then the only evidence there is. */
+export function summarizeLegStreams(
+  streams: readonly (string | null | undefined)[],
+  budget = 1200,
+): string {
+  const perStream = streams
+    .filter((s): s is string => typeof s === "string" && s.trim() !== "")
+    .map((s) => stripAnsi(s).split("\n"));
+  if (perStream.length === 0) return "";
+
+  const all = perStream.flat();
+  const seen = new Set<string>();
+  const pick = (pred: (l: string) => boolean, max: number): string[] => {
+    const out: string[] = [];
+    for (const raw of all) {
+      if (out.length >= max) break;
+      if (!pred(raw)) continue;
+      const line = raw.trimEnd().slice(0, LEG_DIGEST_LINE_CHARS);
+      // vitest prints each failing file/case twice (progress + the Failed Tests section).
+      if (seen.has(line.trim())) continue;
+      seen.add(line.trim());
+      out.push(line);
+    }
+    return out;
+  };
+  const names = pick(isLegFailureSignal, LEG_DIGEST_LINES);
+  const digest = [
+    ...names,
+    ...pick(
+      (l) => !isLegFailureSignal(l) && isLegErrorHeader(l),
+      Math.min(LEG_ERROR_HEADER_LINES, LEG_DIGEST_LINES - names.length),
+    ),
+  ];
+
+  // `keepBareNoise`: with no digest, a stream that is NOTHING but npm footer is still the only
+  // evidence there is; beside a digest it says nothing the digest does not.
+  const tail = (share: number, keepBareNoise: boolean): string => {
+    const separators = perStream.length - 1;
+    const each = Math.max(0, Math.floor((share - separators) / perStream.length));
+    return perStream
+      .map((lines) => {
+        const denoised = lines.filter((l) => !LEG_NOISE_LINE.test(l)).join("\n").trim();
+        return (denoised || (keepBareNoise ? lines.join("\n").trim() : "")).slice(-each);
+      })
+      .filter(Boolean)
+      .join("\n");
+  };
   // No recognizable diagnostic (a wedge, a crash, a missing script): the tail is the
   // ONLY evidence there is, so it keeps the whole budget — same fallback as the suite.
-  if (digest.length === 0) return lines.join("\n").slice(-budget);
-  return `${digest.join("\n")}\n\n--- tail ---\n${lines
-    .join("\n")
-    .slice(-Math.floor(budget / 3))}`.slice(0, budget);
+  if (digest.length === 0) return tail(budget, true).slice(-budget);
+  return `${digest.join("\n")}\n\n--- tail ---\n${tail(Math.floor(budget / 3), false)}`.slice(0, budget);
 }
 
 export interface CheckpointOpts {
@@ -9315,6 +10633,9 @@ export interface CheckpointOpts {
   salvageDeadlineMs?: number;
   /** P-001: admission-driven recursive passes, independent of stale-red refire accounting. */
   admissionRefires?: number;
+  /** P-022: typed-precondition retries already performed this run (internal; bounded by
+   *  {@link MAX_GATE_PRECONDITION_RETRIES}). */
+  preconditionRetries?: number;
 }
 
 /** A burst of admissions is finite even when every pass races another writer. The durable marker
@@ -9676,12 +10997,17 @@ async function tryLongestGreenPrefix(
   const confirmWouldOverrun = (): boolean =>
     Date.now() + nextConfirmEstimateMs() > budget.deadlineMs;
   /** Run one confirm suite, charging its measured cost to the budget. */
-  const runConfirm = async (): Promise<
+  const runConfirm = async (
+    confirmedRef: string,
+  ): Promise<
     Awaited<ReturnType<CheckpointDeps["runGreen"]>>
   > => {
     const startedAt = Date.now();
     try {
-      return await deps.runGreen(cfg.checkpointRoot, lastReady);
+      return await deps.runGreen(cfg.checkpointRoot, lastReady, {
+        candidate: confirmedRef,
+        headAtStart: confirmedRef,
+      });
     } finally {
       // Charge in a `finally` so a THROWN confirm still costs its wall-clock. Otherwise a
       // failing confirm would look free and the next estimate would shrink toward zero —
@@ -9720,7 +11046,7 @@ async function tryLongestGreenPrefix(
   }
   let confirm: ConfirmResult | null = initialPrefixUnbuildable
     ? null
-    : await runConfirm();
+    : await runConfirm(prefixTip);
   if (!confirm?.green) {
     // WI-38298: the cheap locator is deliberately conservative, but its first candidate
     // can still be red because an unrelated failure predates the candidate's repair. Do
@@ -9760,7 +11086,7 @@ async function tryLongestGreenPrefix(
         );
         return false;
       }
-      const laterConfirm = await runConfirm();
+      const laterConfirm = await runConfirm(sha);
       if (laterConfirm.green) {
         recoveryPrefix = sha;
         confirm = laterConfirm;
@@ -10042,9 +11368,11 @@ export function formatGatePromotionTrailer(v: {
   promoted: boolean;
   reason: GatePromotionReason;
   advancedTo?: string | null;
+  recordedAtMs?: number;
 }): string {
   const to = v.advancedTo ? ` advancedTo=${v.advancedTo.slice(0, 12)}` : "";
-  return `\nGATE_PROMOTION candidate=${v.candidate.slice(0, 12)} green=${v.green} promoted=${v.promoted} reason=${v.reason}${to}\n`;
+  const clock = v.recordedAtMs === undefined ? '' : ` recordedAtMs=${v.recordedAtMs}`;
+  return `\nGATE_PROMOTION candidate=${v.candidate.slice(0, 12)} green=${v.green} promoted=${v.promoted} reason=${v.reason}${to}${clock}\n`;
 }
 
 /**
@@ -10161,7 +11489,7 @@ export function stampGatePromotion(
 ): void {
   if (!logPath) return;
   try {
-    appendFileSync(logPath, formatGatePromotionTrailer(v));
+    appendFileSync(logPath, formatGatePromotionTrailer({ ...v, recordedAtMs: Date.now() }));
   } catch (e) {
     log?.(
       `warn: GATE_PROMOTION trailer not stamped on ${logPath}: ${e instanceof Error ? e.message : e}`,
@@ -10376,11 +11704,211 @@ export function parseTargetedReVerdictSelection(
   };
 }
 
+async function broadcastHeldGateAlert(
+  deps: Pick<CheckpointDeps, "broadcast" | "heldGateMs">,
+  input: {
+    releaseRef: string;
+    lastReady: string | null;
+    candidate: string;
+    detail: string;
+  },
+): Promise<void> {
+  // docs-audit #2: a held gate must get LOUDER, not go silent. Re-broadcast at each
+  // rising-urgency tier so a long hold keeps surfacing top-of-inbox.
+  const heldMs = await deps.heldGateMs?.().catch(() => null);
+  if (heldMs == null) return;
+  const alert = heldGateAlert(heldMs);
+  if (!alert) return;
+  await deps
+    .broadcast(
+      `${alert.emoji} ${alert.urgency}: green gate held ${alert.ageLabel} — \`${input.releaseRef}\` stuck at ${input.lastReady?.slice(0, 8) ?? "unset"}, ${input.candidate.slice(0, 8)} still not green (blocking every fleet deploy)`,
+      input.detail,
+    )
+    .catch(() => {});
+}
+
+/** P-021: the blob/gitlink `path` names at `sha`, null when absent. `ls-tree` (not
+ * `rev-parse <sha>:<path>`) so an absent path is an empty answer and a broken read THROWS —
+ * which the carry records as `unverified`, never as absent. A non-sha is refused outright: an
+ * empty sha would make `:<path>` read the INDEX copy. */
+async function gitBlobAt(repo: string, sha: string, path: string): Promise<string | null> {
+  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`not a full commit sha: '${sha}'`);
+  const out = String(await git(repo, ["ls-tree", sha, "--", path])).trim();
+  if (!out) return null;
+  const oid = out.split(/\s+/)[2];
+  return oid && /^[0-9a-f]{40}$/.test(oid) ? oid : null;
+}
+
+/**
+ * P-021 (green-main-cycle-time-2026-10-08, D-023): apply the frozen queue's bounded life for
+ * this pass. Returns the retirement record when this pass retired the queue — the caller then
+ * re-cuts at `record.recutTarget` — and null otherwise. Fail-safe: any error KEEPS the queue.
+ */
+async function applyFrozenRepairBoundedLife(
+  cfg: ReleaseConfig,
+  deps: CheckpointDeps,
+  queue: FrozenCandidateRepairQueue,
+  tip: string,
+  lastReady: string | null,
+): Promise<FrozenRepairBoundedLifeRecord | null> {
+  if (!deps.readFrozenRepairBoundedLifeState || !deps.retireFrozenRepairQueueForBoundedLife) {
+    return null;
+  }
+  const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  const short = queue.candidate.slice(0, 8);
+  try {
+    const nowMs = Date.now();
+    const state = await deps.readFrozenRepairBoundedLifeState();
+    const decision = decideFrozenRepairBoundedLife(queue, { nowMs, state });
+    if (decision.kind === "within-bounds") return null;
+    if (decision.kind === "deferred") {
+      deps.log(
+        `P-021 bounded queue life: frozen candidate ${short} crossed its ${decision.trigger} ` +
+          `bound; retirement deferred (${decision.reason})`,
+      );
+      return null;
+    }
+    if (decision.kind === "rate-limited") {
+      deps.log(
+        `P-021 bounded queue life: frozen candidate ${short} crossed its ${decision.trigger} ` +
+          `bound inside the 24h automatic-retire window; ${decision.escalate ? "escalating" : "already escalated"}, not retiring`,
+      );
+      if (decision.escalate) {
+        try {
+          await deps.escalate?.(
+            `frozen candidate ${short} crossed its bounded-life ${decision.trigger} bound, but an automatic retirement already ran in the last 24h`,
+            frozenRepairBoundedLifeRateLimitedBody(queue, decision),
+          );
+          await deps.recordFrozenRepairBoundedLifeEscalation?.({
+            candidate: queue.candidate,
+            trigger: decision.trigger,
+            atMs: nowMs,
+            lastRetireAtMs: decision.lastRetireAtMs,
+          });
+        } catch (e) {
+          deps.log(`warn: P-021 rate-limited escalation failed: ${errorText(e)}`);
+        }
+      }
+      return null;
+    }
+    let offered: string | null = null;
+    try {
+      offered = (await deps.resolveKnownGoodRecutTarget?.()) ?? null;
+    } catch (e) {
+      deps.log(`warn: P-021 known-good re-cut target unavailable, using the staging tip: ${errorText(e)}`);
+    }
+    // P-012: the same lineage + ahead-of-green rules as the fresh cut, so a retire never re-cuts
+    // at a commit off the tip's lineage or at (or behind) the green pin.
+    const cut = await decideKnownGoodFreezeCut({
+      tip,
+      candidate: tip,
+      lastReady,
+      knownGood: offered,
+      isAncestor: (a, b) => isAncestor(cfg.integrationRoot, a, b),
+    });
+    const knownGood = cut.source === "known-good" ? cut.candidate : null;
+    const target: FrozenRepairRecutTarget = knownGood
+      ? { sha: knownGood, source: "known-good" }
+      : { sha: tip, source: "staging-tip" };
+    const blobAt =
+      deps.frozenRepairBlobAt ??
+      ((sha: string, path: string) => gitBlobAt(cfg.integrationRoot, sha, path));
+    const carry = await planFrozenRepairCarry({ queue, target, blobAt });
+    const record = buildFrozenRepairBoundedLifeRecord({ queue, decision, nowMs, target, carry });
+    const outcome = await deps.retireFrozenRepairQueueForBoundedLife(queue, record);
+    if (!outcome.retired) {
+      deps.log(
+        `P-021 bounded queue life: retirement of frozen candidate ${short} refused ` +
+          `(${outcome.refusal ?? "unknown"}); keeping the frozen queue`,
+      );
+      return null;
+    }
+    deps.log(frozenRepairBoundedLifeSummary(record));
+    await deps
+      .escalate?.(
+        `frozen candidate ${short} retired by the bounded-life rule (${record.trigger}); re-cut at ${record.recutTarget.slice(0, 8)}`,
+        frozenRepairBoundedLifeRetireBody(record),
+      )
+      .catch((e) => deps.log(`warn: P-021 retirement escalation failed: ${errorText(e)}`));
+    return record;
+  } catch (e) {
+    deps.log(`warn: P-021 bounded queue life check failed; keeping the frozen queue: ${errorText(e)}`);
+    return null;
+  }
+}
+
+/**
+ * P-010 (green-main-cycle-time-2026-10-08, D-026/D-027): at a FRESH cut (no live queue, no pinned
+ * candidate), carry the fixes of the last retired frozen queue into the candidate. Every admitted
+ * path is checked by content against the candidate (see frozen-repair-carry.ts); if any is
+ * missing or cannot be checked, the staging tip is judged instead. The assessment is recorded by
+ * consuming the pending carry (compare-and-swap). Returns the candidate to judge.
+ *
+ * Fail-safe: a read failure keeps the candidate (and the carry stays pending for the next cut); a
+ * lookup failure inside the assessment reads `unverified` and so advances to the tip.
+ */
+async function applyFrozenRepairCarryAtCut(
+  cfg: ReleaseConfig,
+  deps: CheckpointDeps,
+  candidate: string,
+  boundedLifeRetire: FrozenRepairBoundedLifeRecord | null,
+): Promise<string> {
+  if (!deps.readFrozenRepairPendingCarry || !deps.consumeFrozenRepairCarry) return candidate;
+  const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  let pending: FrozenRepairPendingCarry | null;
+  try {
+    pending = await deps.readFrozenRepairPendingCarry();
+  } catch (e) {
+    deps.log(`warn: P-010 pending carry unreadable; judging ${candidate.slice(0, 8)} and keeping the carry: ${errorText(e)}`);
+    return candidate;
+  }
+  if (!pending) return candidate;
+  // A known-good re-cut deliberately judges an OLDER commit; re-admitting the carried fixes onto
+  // it is P-012's executor, which consults this pending carry. Advancing to the tip here would
+  // undo that choice, so the carry stays pending.
+  if (boundedLifeRetire?.recutTargetSource === "known-good") {
+    deps.log(
+      `P-010 carry from retired ${pending.fromCandidate.slice(0, 8)} left pending: this pass re-cuts at the ` +
+        `known-good target ${candidate.slice(0, 8)}, whose re-admission is P-012's`,
+    );
+    return candidate;
+  }
+  try {
+    const stagingTip = await revParse(cfg.integrationRoot, cfg.integrationBranch);
+    const blobAt =
+      deps.frozenRepairBlobAt ??
+      ((sha: string, path: string) => gitBlobAt(cfg.integrationRoot, sha, path));
+    const initial = await assessFrozenRepairCarryAtCut({ pending, candidate, stagingTip, blobAt });
+    const judged = initial.advanceToTip
+      ? await assessFrozenRepairCarryAtCut({ pending, candidate: stagingTip, stagingTip, blobAt })
+      : initial;
+    const record = buildFrozenRepairCarryRecord({ pending, initial, judged, nowMs: Date.now() });
+    deps.log(frozenRepairCarrySummary(record));
+    let consumed = false;
+    try {
+      consumed = await deps.consumeFrozenRepairCarry(pending, record);
+    } catch (e) {
+      deps.log(`warn: P-010 carry record write failed (the carry stays pending): ${errorText(e)}`);
+    }
+    if (!consumed) {
+      deps.log(
+        `P-010 carry from retired ${pending.fromCandidate.slice(0, 8)} was replaced before it could be recorded; ` +
+          `the next fresh cut assesses the newer carry`,
+      );
+    }
+    return judged.candidate;
+  } catch (e) {
+    deps.log(`warn: P-010 carry assessment failed; judging ${candidate.slice(0, 8)} and keeping the carry: ${errorText(e)}`);
+    return candidate;
+  }
+}
+
 async function runGreenCheckpointInner(
   cfg: ReleaseConfig,
   deps: CheckpointDeps,
   opts: CheckpointOpts = {},
 ): Promise<CheckpointResult> {
+  const decisionTrace = deps.decisionTrace ?? [];
   // EI-19343532231631821 — the deadline bound's two clocks. A stale-red auto-refire RECURSES into
   // this function in the SAME process, so `passStartedAtMs` restarts per pass (it predicts the next
   // pass's cost) while `runStartedAtMs` is threaded through `opts` and measures the WHOLE run.
@@ -10437,6 +11965,10 @@ async function runGreenCheckpointInner(
   // than silently discarding a queue whose state we could not read.
   let repairQueue: FrozenCandidateRepairQueue | null = null;
   let repairVerification = false;
+  // WI-10007489: WHY a repair-head run proceeds to the full gate (set only from verifyRepairHead's
+  // green / full-run-required verdict). A full-gate red at a repair head with this still null is
+  // recorded with no trigger — the unexplained fallthrough the targeted-radius invariant flags.
+  let repairFullGateTrigger: FrozenRepairFullGateTrigger | null = null;
   let initialCandidateVerification = false;
   const withRepairIdentity = <T extends CheckpointResult>(result: T): T => {
     let next = result;
@@ -10481,6 +12013,7 @@ async function runGreenCheckpointInner(
   const dispatchFrozenRepair = async (
     queue: FrozenCandidateRepairQueue,
     allowCreateIfAbsent: boolean,
+    checkpointEvidence?: CheckpointEvidence,
   ): Promise<{
     queue: FrozenCandidateRepairQueue | null;
     fired: FrozenRepairDispatchResult | null;
@@ -10601,7 +12134,7 @@ async function runGreenCheckpointInner(
     try {
       await renewalChain;
       if (!reservationLost) {
-        fired = (await deps.dispatchFrozenRepairFixer?.(dispatchQueue)) ?? null;
+        fired = (await deps.dispatchFrozenRepairFixer?.(dispatchQueue, checkpointEvidence)) ?? null;
       }
     } catch (error) {
       dispatchError = error;
@@ -10795,7 +12328,10 @@ async function runGreenCheckpointInner(
             candidate,
             from: lastReady,
             green: null,
-            reason: "repair-in-progress",
+            // This is a queue read fault, not a live repair hold. Keep the no-verdict
+            // fail-closed behavior, but let the transient-abort path retry it; reserve
+            // `repair-in-progress` for a readable queue that actually has peer-owned work.
+            reason: "infra-inconclusive",
             summary,
             repairQueueRead: read,
           };
@@ -10812,7 +12348,9 @@ async function runGreenCheckpointInner(
         candidate,
         from: lastReady,
         green: null,
-        reason: "repair-in-progress",
+        // A thrown queue read has no peer-owned repair to wait for. Mark it as a transient
+        // no-verdict so the existing bounded retry path rechecks the same frozen lineage.
+        reason: "infra-inconclusive",
         summary,
       };
     }
@@ -10885,6 +12423,19 @@ async function runGreenCheckpointInner(
       summary,
       repairQueue: pendingQueue,
     });
+  }
+  // P-021 (green-main-cycle-time-2026-10-08, D-023): the ONE bounded automatic exception to the
+  // rule below. A queue that made no new failing-count low in 4 rounds, or is older than 24h, is
+  // retired (at most once per install per 24h; a second trigger escalates instead) and this pass
+  // re-cuts at the newest known-good staging commit (P-012) or the staging tip, with the queue's
+  // admitted fixes carried and recorded. See frozen-repair-bounded-life.ts.
+  let boundedLifeRetire: FrozenRepairBoundedLifeRecord | null = null;
+  if (repairQueue && !diagnosticOnly) {
+    boundedLifeRetire = await applyFrozenRepairBoundedLife(cfg, deps, repairQueue, candidate, lastReady);
+    if (boundedLifeRetire) {
+      repairQueue = null;
+      candidate = boundedLifeRetire.recutTarget;
+    }
   }
   // D-004 / P-009 / P-010 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): there is
   // deliberately NO age-, stall- or "fossil"-based release of a pinned candidate here. The
@@ -10994,10 +12545,10 @@ async function runGreenCheckpointInner(
           .frozenRepairFixerAlive?.(repairQueue.fixerSpawnId)
           .catch(() => null)
       : undefined;
-    let decision = decideFrozenCandidateRepairQueue(repairQueue, {
+    let decision = recordedGateDecision('frozen-queue', decideFrozenCandidateRepairQueue, [repairQueue, {
       nowMs: Date.now(),
       fixerAlive,
-    });
+    }], decisionTrace);
 
     if (decision.kind === "recover-dead-fixer") {
       const deadSpawnId = decision.fixerSpawnId;
@@ -11071,9 +12622,9 @@ async function runGreenCheckpointInner(
           );
         }
       }
-      decision = decideFrozenCandidateRepairQueue(repairQueue, {
+      decision = recordedGateDecision('frozen-queue', decideFrozenCandidateRepairQueue, [repairQueue, {
         nowMs: Date.now(),
-      });
+      }], decisionTrace);
     }
 
     // WI-10003213: an UNMEASURED red (legs killed/timed out, no test reported a failure) parks
@@ -11103,9 +12654,9 @@ async function runGreenCheckpointInner(
           markFrozenRepairUnmeasuredRetest(fresh, { nowMs: Date.now() }),
         "unmeasured-red-retest",
       );
-      decision = decideFrozenCandidateRepairQueue(repairQueue, {
+      decision = recordedGateDecision('frozen-queue', decideFrozenCandidateRepairQueue, [repairQueue, {
         nowMs: Date.now(),
-      });
+      }], decisionTrace);
     }
 
     // P-010 / D-011 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): the queue's
@@ -11190,6 +12741,7 @@ async function runGreenCheckpointInner(
         `release:repair-queue { op: 'admit', paths: [...] } to resume verification`;
       deps.log(summary);
       await deps.recordFreezeDisposition?.({
+        ...deriveTickFreezeDisposition({ flagEnabled: true, repairQueue }),
         enabled: true,
         state: "held",
         reason: summary,
@@ -11254,6 +12806,7 @@ async function runGreenCheckpointInner(
           // P-004: a retire CLEARS the queue, so this is precisely the disposition no
           // `repairQueue` reader can ever see. Record it before the run moves on.
           await deps.recordFreezeDisposition?.({
+            ...deriveTickFreezeDisposition({ flagEnabled: true, repairQueue: abandonedQueue }),
             enabled: true,
             state: "retired",
             reason:
@@ -11298,6 +12851,7 @@ async function runGreenCheckpointInner(
           );
           // P-004: the hold is now a READ, not a log line.
           await deps.recordFreezeDisposition?.({
+            ...deriveTickFreezeDisposition({ flagEnabled: true, repairQueue }),
             enabled: true,
             state: "held",
             reason: summary,
@@ -11381,6 +12935,7 @@ async function runGreenCheckpointInner(
             `release:repair-queue { op: 'admit', paths: [...] } to resume verification`;
           deps.log(summary);
           await deps.recordFreezeDisposition?.({
+            ...deriveTickFreezeDisposition({ flagEnabled: true, repairQueue }),
             enabled: true,
             state: "held",
             reason: summary,
@@ -11536,6 +13091,8 @@ async function runGreenCheckpointInner(
       const verifyDeps = {
         ...deps,
         resolveTestWorkspace: makeTestWorkspaceResolver(cfg.integrationRoot),
+        selectiveRepairSupported: !existsSync(path.join(cfg.integrationRoot, "package.json")) ||
+          existsSync(path.join(cfg.integrationRoot, "scripts/affected-tests.mjs")),
       };
       let verification = await verifyRepairHead(verifyDeps, repairQueue);
       deps.log(`repair head ${candidate.slice(0, 8)}: ${verification.summary}`);
@@ -11607,6 +13164,8 @@ async function runGreenCheckpointInner(
               : verification.failingTests,
             signature: redSignature,
             signatureContext: { gateRegistry: NON_TEST_GATE_SCRIPTS },
+            // WI-10007489: the round records the targeted radius that produced this red.
+            ...(verification.executed ? { executed: verification.executed } : {}),
           };
           repairQueue = await commitFrozenRepairQueueTransition(
             deps,
@@ -11614,21 +13173,22 @@ async function runGreenCheckpointInner(
             verdictTransitionAtHead(
               candidate,
               (fresh) =>
-                markFrozenRepairVerificationRed(fresh, {
+                recordedGateDecision('frozen-repair-red', markFrozenRepairVerificationRed, [fresh, {
                   repairHead: candidate,
                   ...supersededRedInput,
                   nowMs: Date.now(),
                   ...(selectiveCoverage ? { selectiveCoverage } : {}),
-                }),
+                }], decisionTrace),
               (fresh) => {
                 supersededBy = fresh;
               },
               (fresh) =>
-                recordFrozenRepairSupersededRed(fresh, {
+                recordedGateDecision('frozen-superseded-red', recordFrozenRepairSupersededRed, [fresh, {
                   measuredHead: candidate,
                   ...supersededRedInput,
                   nowMs: Date.now(),
-                }),
+                }], decisionTrace),
+              decisionTrace,
             ),
             "repair-head-red",
           );
@@ -11663,6 +13223,12 @@ async function runGreenCheckpointInner(
           `frozen repair head ${candidate.slice(0, 8)} could not be verified this tick (${verification.summary}); ` +
           `holding the ready-to-verify queue without spending a suite`;
         deps.log(summary);
+        await broadcastHeldGateAlert(deps, {
+          releaseRef: cfg.releaseRef,
+          lastReady,
+          candidate,
+          detail: verification.summary,
+        });
         return withRepairIdentity({
           advanced: false,
           candidate,
@@ -11676,6 +13242,8 @@ async function runGreenCheckpointInner(
       }
       // "green" / "full-run-required": the full canonical gate runs at `candidate` (the repair
       // head) below — that run, not the selective pass, is the promotion proof (P-007).
+      repairFullGateTrigger =
+        verification.kind === "green" ? "promotion-proof" : "full-run-required";
     }
   }
 
@@ -11699,6 +13267,8 @@ async function runGreenCheckpointInner(
     !opts.candidate &&
     !repairVerification &&
     !initialCandidateVerification &&
+    // P-021: a bounded-life re-cut judges exactly the target its carry was measured against.
+    !boundedLifeRetire &&
     quietCutSecFromEnv() > 0
   ) {
     try {
@@ -11731,6 +13301,66 @@ async function runGreenCheckpointInner(
       deps.log(
         `quiet-cut: skipped (${e instanceof Error ? e.message : e}) — judging the tip as before`,
       );
+    }
+  }
+
+  // P-012 (green-main-cycle-time-2026-10-08): FREEZE FROM KNOWN-GOOD POINTS. A fresh cut judges
+  // the newest staging commit whose per-sync batch check passed (sync_delta.lastPassed), not the
+  // bare tip, when that commit is on the tip's lineage and strictly ahead of the green pin (see
+  // known-good-freeze.ts for why those two rules keep the gate from starving). Not on a
+  // bounded-life re-cut: that run judges exactly the target its carry was measured against,
+  // which P-021 already chose under the same rules. The record rides on the verdict, with the
+  // round's red legs (`redLegsAtR1`), so every fresh candidate says where it came from.
+  let freezeCut: FreezeCutRecord | null = null;
+  if (
+    !opts.candidate &&
+    !repairVerification &&
+    !initialCandidateVerification &&
+    !diagnosticOnly &&
+    !boundedLifeRetire &&
+    repairQueue === null
+  ) {
+    let knownGood: string | null = null;
+    let knownGoodUnreadable = false;
+    try {
+      knownGood = (await deps.resolveKnownGoodRecutTarget?.()) ?? null;
+    } catch (e) {
+      knownGoodUnreadable = true;
+      deps.log(`warn: P-012 known-good point unreadable, judging ${candidate.slice(0, 8)}: ${e instanceof Error ? e.message : e}`);
+    }
+    freezeCut = await decideKnownGoodFreezeCut({
+      tip: candidateBeforeQuietCut,
+      candidate,
+      lastReady,
+      knownGood,
+      knownGoodUnreadable,
+      isAncestor: (a, b) => isAncestor(cfg.integrationRoot, a, b),
+    });
+    if (freezeCut.candidate !== candidate) {
+      candidate = freezeCut.candidate;
+      // A known-good cut steps back off the tip exactly like the quiet cut: publish the excluded
+      // window (tipAtSelection) and run the split-pair detector over it.
+      quietCutApplied = candidate !== candidateBeforeQuietCut;
+    }
+    deps.log(formatFreezeCutLine(freezeCut));
+  }
+
+  // P-010 (green-main-cycle-time-2026-10-08, D-026/D-027): the first FRESH cut after a frozen queue
+  // was retired must hold that queue's admitted fixes. Only a fresh cut: a live queue judges its
+  // own lineage, and an explicit candidate is the caller's choice.
+  if (
+    !opts.candidate &&
+    !repairVerification &&
+    !initialCandidateVerification &&
+    !diagnosticOnly &&
+    repairQueue === null
+  ) {
+    const carried = await applyFrozenRepairCarryAtCut(cfg, deps, candidate, boundedLifeRetire);
+    if (carried !== candidate) {
+      candidate = carried;
+      // The judged commit is the tip now; the quiet cut's excluded window no longer applies.
+      quietCutApplied = false;
+      if (freezeCut) freezeCut = { ...freezeCut, source: "staging-tip", reason: "carry-advanced-to-tip", candidate };
     }
   }
 
@@ -11863,7 +13493,7 @@ async function runGreenCheckpointInner(
   // setupTree (which itself copies node_modules) and before any suite work. This is an
   // inconclusive infrastructure result, never evidence that the candidate is broken.
   if (deps.checkDiskHeadroom) {
-    let headroom: { ok: boolean; summary: string };
+    let headroom: { ok: boolean; summary: string; blocker?: GatePreconditionBlocker };
     try {
       headroom = await deps.checkDiskHeadroom();
     } catch (e) {
@@ -11874,12 +13504,16 @@ async function runGreenCheckpointInner(
     }
     deps.log(`disk-headroom preflight: ${headroom.summary}`);
     if (!headroom.ok) {
+      // P-022: a wedged copy lock is the same condition as setup's own exit 76, so it takes that
+      // path's classification ('infra-inconclusive', self-clearing) rather than 'disk-headroom'.
+      const blocker = headroom.blocker ?? "disk-headroom";
       return {
         advanced: false,
         candidate,
         from: lastReady,
         green: null,
-        reason: "disk-headroom",
+        reason: blocker === "copy-lock" ? "infra-inconclusive" : "disk-headroom",
+        preconditionBlocker: blocker,
         summary: headroom.summary,
       };
     }
@@ -12227,8 +13861,8 @@ async function runGreenCheckpointInner(
   const earlyTypecheckStartedAtMs = Date.now();
   // WI-38422: reject a candidate-scoped type regression BEFORE paying for
   // the full affected-test sweep. This deliberately reuses BOTH existing seams:
-  // `changedFilesForRange` is the exact committed last-green..candidate diff (including
-  // expanded submodule paths), and the real runner below is `lint:tsc -- --files=...`,
+  // `changedFilesForRange` is the exact committed initial-candidate or repair diff
+  // (including expanded submodule paths), and the real runner below is `lint:tsc -- --files=...`,
   // whose explicit attribution cannot confuse a peer's live working-tree edits for this
   // candidate's own files.
   //
@@ -12240,17 +13874,25 @@ async function runGreenCheckpointInner(
   let earlyPreflightFailure: Awaited<
     ReturnType<CheckpointDeps["runGreen"]>
   > | null = null;
+  // P-035: a frozen repair must not re-check the growing last-green backlog on every
+  // round. The early check is provisional, so use the cumulative candidate..repairHead
+  // delta; the mandatory unscoped post-suite typechecks still judge the whole head.
+  // Initial candidates and heads without a frozen repair lineage keep the full diff.
+  const earlyTypecheckBase = repairVerification && repairQueue &&
+    repairQueue.candidate !== candidate
+      ? repairQueue.candidate
+      : lastReady;
   if (deps.runChangedFileTypecheckPreflight && deps.changedFilesForRange) {
     const preflightStartedAtMs = Date.now();
     const elapsed = () =>
       `${((Date.now() - preflightStartedAtMs) / 1000).toFixed(1)}s`;
-    if (!lastReady) {
+    if (!earlyTypecheckBase) {
       deps.log(
         "early changed-file typecheck preflight: skipped (no prior green pin to diff from) — full gate retained",
       );
     } else {
       try {
-        const resolved = await deps.changedFilesForRange(lastReady, candidate);
+        const resolved = await deps.changedFilesForRange(earlyTypecheckBase, candidate);
         if (resolved === null) {
           deps.log(
             `early changed-file typecheck preflight: skipped after ${elapsed()} (changed-file resolution unavailable) — full gate retained`,
@@ -12271,16 +13913,22 @@ async function runGreenCheckpointInner(
           } else {
             const preflight =
               await deps.runChangedFileTypecheckPreflight(files, {
-                from: lastReady,
+                from: earlyTypecheckBase,
                 to: candidate,
               });
             const checkedFiles = preflight.checkedFiles?.length
               ? [...new Set(preflight.checkedFiles)]
               : files;
             if (preflight.status === "failed") {
-              const failingSignatures = preflight.failingSignatures?.length
-                ? [...new Set(preflight.failingSignatures)]
-                : ["lint:tsc"];
+              const failureInventory = preflight.failureInventory;
+              const failingSignatures = [
+                ...new Set([
+                  ...(preflight.failingSignatures?.length
+                    ? preflight.failingSignatures
+                    : ["lint:tsc"]),
+                  ...(failureInventory?.failingSignatures ?? []),
+                ]),
+              ];
               const typecheckPreflight: CheckpointTypecheckPreflight = {
                 status: "failed",
                 checkedFiles,
@@ -12301,13 +13949,27 @@ async function runGreenCheckpointInner(
                 deps.log(
                   `early changed-file typecheck output:\n${preflight.summary}`,
                 );
+              const inventoryDetails = failureInventory?.ran
+                ? "\n\nEarly non-test gate inventory (" +
+                  failureInventory.records.length +
+                  " recorded legs): " +
+                  failureInventory.records
+                    .map((record) => record.id + "=" + record.status)
+                    .join(", ") +
+                  (failureInventory.output.trim()
+                    ? "\n\n" + failureInventory.output
+                    : "")
+                : "";
               const earlySummary =
-                `Early changed-file typecheck failed before the affected-test sweep (${elapsed()}).\n\n` +
-                preflight.summary;
+                "Early changed-file typecheck failed before the affected-test sweep (" +
+                elapsed() +
+                ").\n\n" +
+                preflight.summary +
+                inventoryDetails;
               const earlyLogPath = writeEarlyTypecheckFailureLog({
                 logDir: cfg.checkpointLogDir,
                 candidate,
-                base: lastReady,
+                base: earlyTypecheckBase,
                 runId: deps.runId,
                 checkedFiles: typecheckPreflight.checkedFiles,
                 failingFiles: typecheckPreflight.failingFiles,
@@ -12321,6 +13983,10 @@ async function runGreenCheckpointInner(
                 summary: earlySummary,
                 failingTests: failingSignatures,
                 typecheckPreflight,
+                postSuiteMeasured: failureInventory?.ran ?? false,
+                ...(failureInventory?.ran
+                  ? { postSuiteLegs: failureInventory.records }
+                  : {}),
                 ...(earlyLogPath ? { logPath: earlyLogPath } : {}),
               };
             } else {
@@ -12470,10 +14136,25 @@ async function runGreenCheckpointInner(
   // P-013: what this round observed about itself, attached once to every result that carries
   // the suite's verdict. `roundPhaseStamps` is a carrier only: runGreenCheckpoint turns it into
   // `roundPhases` against the whole pass's measured time and drops it from the public result.
-  const roundObservations: Pick<CheckpointResult, "testPassReuse" | "roundPhaseStamps"> = {
+  // P-012: a fresh cut's candidate suite IS its first round, so its red legs are R1's.
+  const redLegsAtR1 = freezeCut
+    ? buildRedLegsAtR1(freezeCut, { green, failingFiles, postSuiteLegs })
+    : null;
+  const roundObservations: Pick<
+    CheckpointResult,
+    "testPassReuse" | "roundPhaseStamps" | "suiteVerdictReplay" | "freezeCut" | "redLegsAtR1"
+  > = {
     ...(testPassReuse ? { testPassReuse } : {}),
     roundPhaseStamps: [...setupStretch.stamps],
+    ...(freezeCut ? { freezeCut } : {}),
+    ...(redLegsAtR1 ? { redLegsAtR1 } : {}),
   };
+  if (redLegsAtR1) {
+    deps.log(
+      `GATE_RED_LEGS_AT_R1 candidate=${redLegsAtR1.candidate.slice(0, 12)} source=${redLegsAtR1.source} ` +
+        `legs=${redLegsAtR1.legs.length > 0 ? redLegsAtR1.legs.join(",") : "none"}`,
+    );
+  }
   const splitPairNote =
     !green && splitSourceTestPairs.length > 0
       ? `\n\n⚠ SPLIT-PAIR SUSPECTED: the quiet-cut candidate contains one half while the sibling's newest commit is outside the cut: ` +
@@ -12770,22 +14451,18 @@ async function runGreenCheckpointInner(
   //                      buildSelfWatchdogCheckpointResult), not that nothing failed. decidePromotion
   //                      reads an empty list as "nothing failed" and would promote vacuously.
   //   readRootScripts  — absent ⇒ null ⇒ today's behaviour, exactly.
-  const hygieneSplit =
-    green === false &&
-    !infraFault &&
-    (failingTests?.length ?? 0) > 0 &&
-    deps.readRootScripts
-      ? decidePromotion({
-          failures: failingTests ?? [],
-          verdictRendered: true,
-          ctx: {
-            rootScripts: deps.readRootScripts(),
-            // Absent ⇒ every test file stays product. This can only ever ADMIT a file
-            // whose failing cases are ALL registered coverage-class, never hold one.
-            ...(failingCasesByFile ? { failingCasesByFile } : {}),
-          },
-        })
-      : null;
+  const suiteDecisionInput: GateSuiteDecisionInput = {
+    green, infraFault: Boolean(infraFault), failures: failingTests ?? [],
+    rootScripts: green === false && !infraFault && (failingTests?.length ?? 0) > 0 && deps.readRootScripts
+      ? deps.readRootScripts() : null,
+    failingCasesByFile: failingCasesByFile
+      ? [...failingCasesByFile].map(([file, cases]) => [file, [...cases]]) : null,
+  };
+  const { hygieneSplit } = decideGateSuite(suiteDecisionInput);
+  roundObservations.suiteVerdictReplay = captureGateSuiteVerdictReplay({
+    candidate, runId: deps.runId ?? null, measuredAtMs: Date.now(),
+  }, suiteDecisionInput);
+  roundObservations.suiteVerdictReplay.decisions = decisionTrace;
   if (!green && !hygieneSplit?.promote) {
     deps.log(
       `candidate ${candidate.slice(0, 8)} is NOT green — ${cfg.releaseRef} stays at ${lastReady?.slice(0, 8) ?? "unset"}`,
@@ -12864,12 +14541,26 @@ async function runGreenCheckpointInner(
       // union the red post-suite legs, plus which kinds this run measured, so a suite-red run
       // that deferred the post-suite legs EXTENDS the signature instead of silently dropping
       // the lint legs it never re-measured.
-      const measuredSignature = repairSignatureFromVerdict({
-        failingTests,
-        postSuiteMeasured,
-        postSuiteLegs,
-        typecheckPreflight,
-      });
+      // WI-10007489: every round this block appends ran the FULL gate, so each records
+      // `mode:'full'` — the fallthrough the zero-wait-convergence promise forbids is then
+      // countable from the queue's own history. An early typecheck-preflight failure never
+      // ran the suite, so it records no radius (absent = "not recorded", never "nothing ran").
+      const measuredSignature = {
+        ...repairSignatureFromVerdict({
+          failingTests,
+          postSuiteMeasured,
+          postSuiteLegs,
+          typecheckPreflight,
+        }),
+        ...(earlyPreflightFailure
+          ? {}
+          : {
+              executed: frozenRepairRoundExecution({
+                mode: "full",
+                trigger: repairVerification ? repairFullGateTrigger : "candidate",
+              }),
+            }),
+      };
       if (repairVerification && repairQueue) {
         // EI-22430783328866306 (second half): persist the red BEFORE the dispatch attempt,
         // exactly as the ready-to-test branch below does. `reserveFrozenCandidateRepairFixer`
@@ -12913,22 +14604,23 @@ async function runGreenCheckpointInner(
                     fresh.candidate,
                   )
                 : undefined;
-              return markFrozenRepairVerificationRed(fresh, {
+              return recordedGateDecision('frozen-repair-red', markFrozenRepairVerificationRed, [fresh, {
                 repairHead: candidate,
                 ...measuredSignature,
                 nowMs: Date.now(),
                 ...(coverage ? { selectiveCoverage: coverage } : {}),
-              });
+              }], decisionTrace);
             },
             (fresh) => {
               supersededBy = fresh;
             },
             (fresh) =>
-              recordFrozenRepairSupersededRed(fresh, {
+              recordedGateDecision('frozen-superseded-red', recordFrozenRepairSupersededRed, [fresh, {
                 measuredHead: candidate,
                 ...measuredSignature,
                 nowMs: Date.now(),
-              }),
+              }], decisionTrace),
+            decisionTrace,
           ),
           "full-gate-red",
         );
@@ -12967,10 +14659,10 @@ async function runGreenCheckpointInner(
             deps,
             repairQueue,
             (fresh) =>
-              markFrozenCandidateVerificationRed(fresh, {
+              recordedGateDecision('frozen-candidate-red', markFrozenCandidateVerificationRed, [fresh, {
                 ...measuredSignature,
                 nowMs: Date.now(),
-              }),
+              }], decisionTrace),
             "candidate-red",
           );
           if (repairQueue.repairHead !== snapshotHead) {
@@ -12998,13 +14690,11 @@ async function runGreenCheckpointInner(
             );
           }
           const expectedUpdatedAtMs = queueForRedTransition.updatedAtMs;
-          repairQueue = markFrozenCandidateVerificationRed(
-            queueForRedTransition,
-            {
+          repairQueue = recordedGateDecision('frozen-candidate-red', markFrozenCandidateVerificationRed,
+            [queueForRedTransition, {
               ...measuredSignature,
               nowMs: Date.now(),
-            },
-          );
+            }], decisionTrace);
           await deps.writeFrozenRepairQueue(repairQueue, { expectedUpdatedAtMs });
         }
         repairQueueRedPersisted = true;
@@ -13013,10 +14703,10 @@ async function runGreenCheckpointInner(
         // what the owner-visible off switch governs. `decideFrozenConvergenceCycleEntry`
         // holds that policy; an absent dep hook reads as enabled, so this is behaviour-
         // identical unless an owner has explicitly turned the default off.
-        const cycleEntry = decideFrozenConvergenceCycleEntry({
+        const cycleEntry = recordedGateDecision('frozen-cycle', decideFrozenConvergenceCycleEntry, [{
           flagEnabled: (await deps.freezeAndConvergeEnabled?.()) ?? true,
           hasOpenQueue: false,
-        });
+        }], decisionTrace);
         if (cycleEntry.kind === "suppressed") {
           // The owner turned freeze-and-converge off: this red does NOT freeze the
           // candidate, and the gate re-cuts at tip on the next tick. Announced rather than
@@ -13057,10 +14747,10 @@ async function runGreenCheckpointInner(
           deps,
           repairQueue,
           (fresh) =>
-            markFrozenCandidateVerificationRed(fresh, {
+            recordedGateDecision('frozen-candidate-red', markFrozenCandidateVerificationRed, [fresh, {
               ...measuredSignature,
               nowMs: Date.now(),
-            }),
+            }], decisionTrace),
           "deferred-candidate-red",
         );
       }
@@ -13073,7 +14763,7 @@ async function runGreenCheckpointInner(
           // Reserve the durable candidate row before the external fixer launch. The candidate
           // is normally already present from the pre-suite write; allowCreateIfAbsent keeps the
           // compatibility first-red path atomic for callers that learned about C only here.
-          const dispatch = await dispatchFrozenRepair(repairQueue, true);
+          const dispatch = await dispatchFrozenRepair(repairQueue, true, checkpointEvidence);
           if (dispatch.capacityHold) {
             // WI-606293: the queue row is written and the red still stands — we simply do
             // not launch into an exhausted pool. No attempt is spent; the next tick retries.
@@ -13112,6 +14802,7 @@ async function runGreenCheckpointInner(
               ...(typeof cleanGreen === "boolean" ? { cleanGreen } : {}),
               ...(checkpointEvidence ? { checkpointEvidence } : {}),
               ...(typecheckPreflight ? { typecheckPreflight } : {}),
+              ...(postSuiteMeasured !== undefined ? { postSuiteMeasured } : {}),
               ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
               ...roundObservations,
             };
@@ -13125,7 +14816,7 @@ async function runGreenCheckpointInner(
           await deps.writeFrozenRepairQueue(repairQueue, {
             expectedUpdatedAtMs: repairQueue.updatedAtMs,
           });
-          const dispatch = await dispatchFrozenRepair(repairQueue, false);
+          const dispatch = await dispatchFrozenRepair(repairQueue, false, checkpointEvidence);
           repairQueue = dispatch.queue ?? repairQueue;
           fired = dispatch.fired;
         }
@@ -13255,6 +14946,7 @@ async function runGreenCheckpointInner(
         ...(isolationNote ? { isolationNote } : {}),
         ...(failureShape ? { failureShape } : {}),
         ...(lineage ? { lineage } : {}),
+        ...(postSuiteMeasured !== undefined ? { postSuiteMeasured } : {}),
         ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
         ...roundObservations,
       });
@@ -13467,21 +15159,12 @@ async function runGreenCheckpointInner(
         `\`${cfg.releaseRef}\` stays at ${lastReady?.slice(0, 8) ?? "unset"}.\n\nFailing tail:\n${verdictSummary}${lineageNote}${failingSetNote}${alreadyFixedNote}${residueNote}${historicalFlakeNote}`,
       )
       .catch(() => {});
-    // docs-audit #2: a held gate must get LOUDER, not go silent. Past 2h/4h/8h
-    // re-broadcast a rising-urgency alert (the gate blocks EVERY fleet deploy), so a
-    // long-held gate keeps surfacing top-of-inbox instead of one stale escalation.
-    const heldMs = await deps.heldGateMs?.().catch(() => null);
-    if (heldMs != null) {
-      const alert = heldGateAlert(heldMs);
-      if (alert) {
-        await deps
-          .broadcast(
-            `${alert.emoji} ${alert.urgency}: green gate held ${alert.ageLabel} — \`${cfg.releaseRef}\` stuck at ${lastReady?.slice(0, 8) ?? "unset"}, ${candidate.slice(0, 8)} still not green (blocking every fleet deploy)`,
-            verdictSummary,
-          )
-          .catch(() => {});
-      }
-    }
+    await broadcastHeldGateAlert(deps, {
+      releaseRef: cfg.releaseRef,
+      lastReady,
+      candidate,
+      detail: verdictSummary,
+    });
     // Stale-candidate re-triage: is this red still broken at TIP? The quiet-cut judges a
     // commit that is minutes-to-hours old, so a peer fix (or the far side of a half-landed
     // rename) lands between the cut and the verdict. Re-run exactly the named failing files
@@ -13654,7 +15337,7 @@ async function runGreenCheckpointInner(
                     currentTipAfterRetriage,
                   ),
                 }
-              : classifyRedAgainstTip({
+              : recordedGateDecision('red-against-tip', classifyRedAgainstTip, [{
                   candidate,
                   tip,
                   failingTests: failingTests ?? [],
@@ -13668,7 +15351,7 @@ async function runGreenCheckpointInner(
                     runStartedAtMs,
                     passStartedAtMs,
                   ),
-                });
+                }], decisionTrace);
         retriage = {
           ...verdict,
           tip,
@@ -14060,6 +15743,11 @@ async function runGreenCheckpointInner(
       ...(isolationNote ? { isolationNote } : {}),
       ...(failureShape ? { failureShape } : {}),
       ...(lineage ? { lineage } : {}),
+      // The ordinary red carries the round's post-suite record exactly like buildNotGreenResult
+      // and the reservation-blocked terminal. Omitting it here dropped the early typecheck
+      // failure's inventory (WI-38422) from the verdict whenever the salvage fell through.
+      ...(postSuiteMeasured !== undefined ? { postSuiteMeasured } : {}),
+      ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
     };
   }
 
@@ -14135,10 +15823,12 @@ async function runGreenCheckpointInner(
   // block-mode. Flag-gated + fail-soft (a no-op `pass` unless enabled), so the default
   // deploy path is unchanged until the owner opts in.
   const perf = await deps.perfGate?.(candidate).catch(() => undefined);
+  if (perf?.replay) decisionTrace.push(perf.replay);
+  const perfHeld = recordedGateDecision('post-gate-action', gateActionBlocks, [perf?.action ?? null], decisionTrace);
   if (perf && perf.action !== "pass") {
     deps.log(perf.summary);
     await deps.broadcast(perf.summary).catch(() => {});
-    if (perf.action === "block") {
+    if (perfHeld) {
       await deps
         .escalate?.(
           `green-checkpoint held: ${candidate.slice(0, 8)} perf-degraded`,
@@ -14181,6 +15871,8 @@ async function runGreenCheckpointInner(
   const desktopPerf = await deps
     .desktopPerfGate?.(candidate)
     .catch(() => undefined);
+  if (desktopPerf?.replay) decisionTrace.push(desktopPerf.replay);
+  const desktopPerfHeld = recordedGateDecision('post-gate-action', gateActionBlocks, [desktopPerf?.action ?? null], decisionTrace);
   // WI-39685 (cutover-plan D-013): the DETECTOR half. D-008 stopped an UNMEASURED
   // desktop-perf invariant from holding promotion — correct, because an
   // unmeasurable sample is not evidence of a regression — but that left the
@@ -14191,7 +15883,7 @@ async function runGreenCheckpointInner(
   //
   // Deliberately placed BEFORE the block-branch below, which RETURNS: the
   // detector must observe every outcome, including the one that holds promotion.
-  if (desktopPerfDetectorAbsent(desktopPerf)) {
+  if (recordedGateDecision('desktop-detector', desktopPerfDetectorAbsent, [desktopPerf], decisionTrace)) {
     await deps
       .escalateDetector?.(
         `desktop-perf detector ABSENT: ${candidate.slice(0, 8)} judged with the desktop-perf invariant UNMEASURED`,
@@ -14214,7 +15906,7 @@ async function runGreenCheckpointInner(
   if (desktopPerf && desktopPerf.action !== "pass") {
     deps.log(desktopPerf.summary);
     await deps.broadcast(desktopPerf.summary).catch(() => {});
-    if (desktopPerf.action === "block") {
+    if (desktopPerfHeld) {
       // The summary distinguishes an invariant breach from a timing regression;
       // don't hard-code "regressed" into the escalation title, because paging a
       // human at 3am with the wrong failure class costs them the first ten minutes.
@@ -14251,10 +15943,12 @@ async function runGreenCheckpointInner(
   // fail-closed-when-armed (a no-op `pass` unless enabled), so the default deploy
   // path is unchanged until the owner opts in.
   const delta = await deps.deltaGate?.(candidate).catch(() => undefined);
+  if (delta?.replay) decisionTrace.push(delta.replay);
+  const deltaHeld = recordedGateDecision('post-gate-action', gateActionBlocks, [delta?.action ?? null], decisionTrace);
   if (delta && delta.action !== "pass") {
     deps.log(delta.summary);
     await deps.broadcast(delta.summary).catch(() => {});
-    if (delta.action === "block") {
+    if (deltaHeld) {
       await deps
         .escalate?.(
           `green-checkpoint held: ${candidate.slice(0, 8)} delta-unproven`,
@@ -14285,10 +15979,12 @@ async function runGreenCheckpointInner(
   const cupboardHygiene = await deps
     .cupboardHygieneGate?.(candidate)
     .catch(() => undefined);
+  if (cupboardHygiene?.replay) decisionTrace.push(cupboardHygiene.replay);
+  const cupboardHeld = recordedGateDecision('post-gate-action', gateActionBlocks, [cupboardHygiene?.action ?? null], decisionTrace);
   if (cupboardHygiene && cupboardHygiene.action !== "pass") {
     deps.log(cupboardHygiene.summary);
     await deps.broadcast(cupboardHygiene.summary).catch(() => {});
-    if (cupboardHygiene.action === "block") {
+    if (cupboardHeld) {
       await deps
         .escalate?.(
           `green-checkpoint held: ${candidate.slice(0, 8)} cupboard prod storefront polluted`,
@@ -14337,13 +16033,15 @@ async function runGreenCheckpointInner(
       verdictTransitionAtHead(
         candidate,
         (fresh) =>
-          markFrozenRepairVerificationGreen(fresh, {
+          recordedGateDecision('frozen-repair-green', markFrozenRepairVerificationGreen, [fresh, {
             repairHead: candidate,
             nowMs: Date.now(),
-          }),
+          }], decisionTrace),
         (fresh) => {
           greenSupersededBy = fresh;
         },
+        undefined,
+        decisionTrace,
       ),
       "repair-head-green",
     );
@@ -14356,7 +16054,7 @@ async function runGreenCheckpointInner(
       );
     }
     const lineageRef = frozenLineageRef(repairQueue.candidate);
-    const promotion = assessFrozenLineagePromotion({
+    const promotion = recordedGateDecision('frozen-lineage', assessFrozenLineagePromotion, [{
       candidate: repairQueue.candidate,
       repairHead: repairQueue.repairHead,
       judged: candidate,
@@ -14376,7 +16074,7 @@ async function runGreenCheckpointInner(
             : (false as boolean | null),
         )
         .catch(() => null),
-    });
+    }], decisionTrace);
     if (!promotion.promotable) {
       const refusalSummary =
         `frozen repair ${candidate.slice(0, 8)} passed the full canonical gate but may not ` +
@@ -14419,6 +16117,7 @@ async function runGreenCheckpointInner(
       });
   }
   const adv = repairPromotionAdvance;
+  if (adv.replay) decisionTrace.push(adv.replay);
   let stagingAbsorptionNote = "";
   if (repairQueue) {
     // P-008: main's green fast-forward and staging's ancestry bridge are distinct writes.
@@ -14873,7 +16572,14 @@ export function repairTickGateIds(queue: {
  */
 export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
   result: T,
-  deps: Pick<CheckpointDeps, "runRepairTickLegs" | "log">,
+  deps: Pick<
+    CheckpointDeps,
+    | "runRepairTickLegs"
+    | "log"
+    | "transitionFrozenRepairQueue"
+    | "writeFrozenRepairQueue"
+    | "checkDiskHeadroom"
+  >,
 ): Promise<T> {
   if (result.reason !== "repair-in-progress") return result;
   // A stale-candidate auto-refire recurses runGreenCheckpoint IN-PROCESS, so a bubbled-up
@@ -14883,10 +16589,39 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
   if (!queue || queue.phase !== "awaiting-fixer" || !deps.runRepairTickLegs) {
     return result;
   }
+  // WI-6554700010008915: a hold tick returns `repair-in-progress` BEFORE the candidate
+  // path's disk-headroom preflight, yet the legs below still run setupTree (a node_modules
+  // copy) and every leg's scratch writes. On 2026-10-12 a full /tmp turned that into
+  // ENOSPC leg failures folded into queue.legs as `failing`, which read as code reds.
+  // Apply the SAME admission check (fail-closed, like the candidate path): with no headroom
+  // the tick leaves the legs unmeasured, and the lifecycle never infers anything from that.
+  // WI-6554700010009547: entry line, so a stall in the headroom probe or the leg runs is
+  // attributable from the run log (the completion line below only prints on return).
+  deps.log(
+    `P-009 repair-tick legs started at ${queue.repairHead.slice(0, 12)}`,
+  );
+  if (deps.checkDiskHeadroom) {
+    let headroom: { ok: boolean; summary: string };
+    try {
+      headroom = await deps.checkDiskHeadroom();
+    } catch (e) {
+      headroom = {
+        ok: false,
+        summary: `disk headroom probe failed: ${e instanceof Error ? e.message : e}`,
+      };
+    }
+    if (!headroom.ok) {
+      deps.log(
+        `P-009 repair-tick legs NOT measured: disk-headroom — ${headroom.summary}`,
+      );
+      return result;
+    }
+  }
   try {
     const measured = await deps.runRepairTickLegs(
       queue.repairHead,
       repairTickGateIds(queue),
+      { frozenCandidateOpenedAtMs: queue.openedAtMs },
     );
     if (!measured) return result;
     deps.log(
@@ -14896,7 +16631,8 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
           : `FAILING ${measured.failingSignatures.join(", ")}`) +
         ` (awaiting-fixer hold stays measured)`,
     );
-    return { ...result, repairTickLegs: measured };
+    const repairQueue = await foldRepairTickLegsIntoQueue(queue, measured, deps);
+    return { ...result, repairTickLegs: measured, repairQueue };
   } catch (e) {
     deps.log(
       `warn: P-009 repair-tick leg measurement failed: ${e instanceof Error ? e.message : e}`,
@@ -14906,10 +16642,158 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
 }
 
 /**
+ * WI-10005728: fold one hold tick's leg measurement into the queue's per-leg lifecycle
+ * (`queue.legs`) and persist it, so a leg measured red is admitted as `failing` and a later
+ * pass at a newer head marks it `fixed`. Before this, `recordFrozenRepairLegMeasurement` had
+ * no production caller: the tick's measurement reached `gate_health.repairTickLegs` only, and
+ * every leg read `never-admitted` (24 of 24 on queue 6ca43115, 11 of them measured failing).
+ *
+ * Lost-update safe: the fold is applied to the FRESH row through
+ * `commitFrozenRepairQueueTransition`, and is skipped when that row is a different frozen
+ * candidate (the queue was retired and re-opened while the legs ran). `updatedAtMs` never moves
+ * backwards past the fresh row's. Fail-safe like the measurement itself: a failed write is
+ * logged and the hold result keeps the queue it already had.
+ */
+async function foldRepairTickLegsIntoQueue(
+  queue: FrozenCandidateRepairQueue,
+  measured: RepairTickLegs,
+  deps: Pick<CheckpointDeps, "log" | "transitionFrozenRepairQueue" | "writeFrozenRepairQueue">,
+): Promise<FrozenCandidateRepairQueue> {
+  // A `skipped` / `not-checked` leg was not measured: the lifecycle never infers a pass (or a
+  // fail) from silence, so only legs with a real result are folded.
+  const measurements: RepairLegMeasurement[] = [];
+  for (const leg of measured.legs) {
+    if (leg.status === "pass" || leg.status === "fail" || leg.status === "errored") {
+      measurements.push({ id: leg.id, status: leg.status });
+    }
+  }
+  if (measurements.length === 0) return queue;
+  try {
+    return await commitFrozenRepairQueueTransition(
+      deps,
+      queue,
+      (fresh) =>
+        fresh.candidate !== queue.candidate
+          ? fresh
+          : recordFrozenRepairLegMeasurement(fresh, {
+              measurements,
+              head: measured.head,
+              nowMs: Math.max(measured.atMs, fresh.updatedAtMs + 1),
+            }),
+      "repair-tick leg lifecycle",
+    );
+  } catch (e) {
+    deps.log(
+      `warn: WI-10005728 repair-tick leg lifecycle write failed: ${e instanceof Error ? e.message : e}`,
+    );
+    return queue;
+  }
+}
+
+/**
  * Public result boundary. New producers always stamp candidate provenance, while the
  * compatibility `diagnostic` field keeps older recorders fail-closed during version skew.
  */
 export const DERIVED_FREEZE_DISPOSITION_DEADLINE_MS = 30_000;
+
+/** WI-6554700010009547: ceiling for the frozen-repair leg routing step. It reads the open
+ * leg conditions and mints/settles work-items: seconds of DB work, never minutes. */
+export const FROZEN_REPAIR_LEG_ROUTING_DEADLINE_MS = 60_000;
+
+/**
+ * WI-6554700010009547: bound ONE observational post-verdict step. Once a suite verdict
+ * exists, nothing after it may hold the run (its run-lock and checkpoint tree) open. Run
+ * b874ad21 logged `derived freeze-disposition write completed in 54ms`, then printed nothing
+ * for ~2h until the 180m self-watchdog killed it: the steps after that line had no deadline
+ * and logged nothing on entry, so the log could not say which one stalled. Every step routed
+ * through here logs `<label> started` BEFORE it awaits, so a future stall names its own step,
+ * and it resolves `false` at the deadline instead of hanging. The step's promise is abandoned,
+ * not cancelled; the run's normal exit (`releaseAndExit` → `process.exit`) ends it.
+ *
+ * WI-6554700010010213: a deadline overrun is also handed to `onDeadline` (production: one
+ * `green_checkpoint_post_verdict` pipeline event). Without it the bound turned a hang into a
+ * skip that only the checkpoint log recorded, so a step timing out on EVERY run stayed silent.
+ * The recorder is itself bounded by {@link POST_VERDICT_DEADLINE_RECORD_BOUND_MS} and
+ * non-fatal, so a hung recorder cannot re-create the hang the deadline exists to cut.
+ */
+export async function runPostVerdictStepWithDeadline(
+  label: string,
+  step: () => Promise<unknown>,
+  log: (line: string) => void,
+  deadlineMs: number,
+  onDeadline?: PostVerdictDeadlineRecorder,
+): Promise<boolean> {
+  const startedAt = Date.now();
+  log(`${label} started (deadline ${deadlineMs}ms)`);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let completed: boolean;
+  try {
+    completed = await Promise.race([
+      step().then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), deadlineMs);
+      }),
+    ]);
+    log(`${label} ${completed ? 'completed' : 'deadline-exceeded'} in ${Date.now() - startedAt}ms`);
+  } catch (error) {
+    log(`${label} failed: ${error instanceof Error ? error.message : error}`);
+    return false;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+  if (!completed && onDeadline) {
+    await recordPostVerdictDeadline(
+      onDeadline,
+      { label, deadlineMs, elapsedMs: Date.now() - startedAt },
+      log,
+    );
+  }
+  return completed;
+}
+
+/** WI-6554700010010213: what one post-verdict deadline overrun reports. */
+export interface PostVerdictStepDeadline {
+  label: string;
+  deadlineMs: number;
+  elapsedMs: number;
+}
+
+export type PostVerdictDeadlineRecorder = (
+  info: PostVerdictStepDeadline,
+) => Promise<void> | void;
+
+/** WI-6554700010010213: ceiling for recording one deadline overrun. A single best-effort
+ * INSERT: milliseconds normally, and never allowed to hold the run for longer than this. */
+export const POST_VERDICT_DEADLINE_RECORD_BOUND_MS = 5_000;
+
+async function recordPostVerdictDeadline(
+  onDeadline: PostVerdictDeadlineRecorder,
+  info: PostVerdictStepDeadline,
+  log: (line: string) => void,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const recorded = await Promise.race([
+      Promise.resolve()
+        .then(() => onDeadline(info))
+        .then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), POST_VERDICT_DEADLINE_RECORD_BOUND_MS);
+      }),
+    ]);
+    if (!recorded) {
+      log(
+        `${info.label} deadline record did not finish within ${POST_VERDICT_DEADLINE_RECORD_BOUND_MS}ms; abandoned`,
+      );
+    }
+  } catch (error) {
+    log(
+      `${info.label} deadline record failed: ${error instanceof Error ? error.message : error}`,
+    );
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 /** The derived disposition is observational. Once a suite verdict exists, a stuck
  * state writer must not retain the checkpoint tree and suppress the next tick. */
@@ -14917,25 +16801,76 @@ export async function recordDerivedFreezeDispositionWithDeadline(
   write: () => Promise<void>,
   log: (line: string) => void,
   deadlineMs = DERIVED_FREEZE_DISPOSITION_DEADLINE_MS,
+  onDeadline?: PostVerdictDeadlineRecorder,
 ): Promise<boolean> {
-  const startedAt = Date.now();
-  log(`derived freeze-disposition write started (deadline ${deadlineMs}ms)`);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const completed = await Promise.race([
-      write().then(() => true),
-      new Promise<boolean>((resolve) => {
-        timer = setTimeout(() => resolve(false), deadlineMs);
-      }),
-    ]);
-    log(`derived freeze-disposition write ${completed ? 'completed' : 'deadline-exceeded'} in ${Date.now() - startedAt}ms`);
-    return completed;
-  } catch (error) {
-    log(`derived freeze-disposition write failed: ${error instanceof Error ? error.message : error}`);
-    return false;
-  } finally {
-    if (timer) clearTimeout(timer);
+  return runPostVerdictStepWithDeadline(
+    "derived freeze-disposition write",
+    write,
+    log,
+    deadlineMs,
+    onDeadline,
+  );
+}
+
+/**
+ * P-022: reclaim (headroom only), wait, and re-enter {@link runGreenCheckpoint} once. The wait
+ * reports progress at least every minute so a liveness watchdog never reads it as a stall.
+ */
+async function retryAfterGatePrecondition(
+  cfg: ReleaseConfig,
+  deps: CheckpointDeps,
+  opts: CheckpointOpts,
+  retry: {
+    blocker: GatePreconditionBlocker;
+    delayMs: number;
+    firstSummary: string;
+    runStartedAtMs: number;
+  },
+): Promise<CheckpointResult> {
+  const attempt = (opts.preconditionRetries ?? 0) + 1;
+  const startedAtMs = Date.now();
+  let cleanup = "not run (copy-lock refusal)";
+  if (retry.blocker === "disk-headroom") {
+    if (deps.reclaimDependencyHeadroom) {
+      deps.reportProgress?.("phase:precondition-reclaim");
+      try {
+        cleanup = await deps.reclaimDependencyHeadroom();
+      } catch (e) {
+        cleanup = `failed safely (${e instanceof Error ? e.message : e})`;
+      }
+    } else {
+      cleanup = "unavailable";
+    }
   }
+  // Cleanup time counts toward the delay: the point is a short retry, not a longer one.
+  const waitMs = Math.max(0, retry.delayMs - (Date.now() - startedAtMs));
+  deps.log(
+    `GATE_PRECONDITION_RETRY blocker=${retry.blocker} attempt=${attempt}/${MAX_GATE_PRECONDITION_RETRIES} ` +
+      `delayMs=${retry.delayMs} waitMs=${waitMs} cleanup=${cleanup}`,
+  );
+  const sleep =
+    deps.preconditionRetrySleep ??
+    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  for (let remaining = waitMs; remaining > 0; remaining -= 60_000) {
+    deps.reportProgress?.("phase:precondition-retry-wait");
+    await sleep(Math.min(60_000, remaining));
+  }
+  // A crash in the retried pass propagates to the caller's crash handling, exactly like the
+  // admission refire's recursion: swallowing it would report the stale refusal instead.
+  const retried = await runGreenCheckpoint(cfg, deps, {
+    ...opts,
+    preconditionRetries: attempt,
+    runStartedAtMs: retry.runStartedAtMs,
+  });
+  return {
+    ...retried,
+    preconditionRetry: {
+      blocker: retry.blocker,
+      delayMs: retry.delayMs,
+      cleanup,
+      firstSummary: retry.firstSummary,
+    },
+  };
 }
 
 export async function runGreenCheckpoint(
@@ -14943,20 +16878,93 @@ export async function runGreenCheckpoint(
   deps: CheckpointDeps,
   opts: CheckpointOpts = {},
 ): Promise<CheckpointResult> {
+  let suiteReplayCanary: CheckpointResult['suiteReplayCanary'];
+  const { candidateSource, diagnostic } = checkpointCandidateProvenance(opts);
+  const replayProvenance = { candidateSource, ...(diagnostic ? { diagnostic } : {}),
+    ...(deps.gateFireId ? { gateFireId: deps.gateFireId } : {}) };
+  if (deps.readLastSuiteVerdictReplay) {
+    try {
+      const previous = await deps.readLastSuiteVerdictReplay();
+      const replay = previous ? await runGateCanary({
+        id: 'green-checkpoint:measured-suite-replay',
+        describe: 'reproduce the previous measured suite decision with current gate code',
+        run: async () => checkRecordedGateVerdict(previous),
+      }, previous.input.green) : null;
+      suiteReplayCanary = previous && replay
+        ? { status: replay.canaryOk === true ? 'passed' : replay.canaryOk === false ? 'mismatch' : 'unreadable', detail: replay.canaryDetail }
+        : { status: 'bootstrap', detail: 'no recorded measured-suite replay exists yet; the next measured verdict will capture it' };
+      deps.log(`GATE_SUITE_REPLAY status=${suiteReplayCanary.status} ${suiteReplayCanary.detail}`);
+      if (replay && replay.canaryOk !== true) return {
+        advanced: false, candidate: opts.candidate ?? opts.candidateHint ?? '', from: null,
+        green: null, reason: 'infra-inconclusive', summary: suiteReplayCanary.detail,
+        suiteReplayCanary, ...replayProvenance, ...(deps.runId ? { runId: deps.runId } : {}),
+      };
+    } catch (error) {
+      suiteReplayCanary = { status: 'unreadable', detail: `measured-suite replay unavailable: ${error instanceof Error ? error.message : String(error)}` };
+      deps.log(`GATE_SUITE_REPLAY status=unreadable ${suiteReplayCanary.detail}`);
+      return { advanced: false, candidate: opts.candidate ?? opts.candidateHint ?? '', from: null,
+        green: null, reason: 'infra-inconclusive', summary: suiteReplayCanary.detail, suiteReplayCanary,
+        ...replayProvenance, ...(deps.runId ? { runId: deps.runId } : {}),
+      };
+    }
+  }
   const admissionPassStartedAtMs = Date.now();
   const admissionRunStartedAtMs = opts.runStartedAtMs ?? admissionPassStartedAtMs;
-  const { candidateSource, diagnostic } = checkpointCandidateProvenance(opts);
   const innerOpts: CheckpointOpts = {
     ...opts,
     candidateSource,
     ...(diagnostic ? { diagnostic } : {}),
     ...(deps.gateFireId ? { gateFireId: deps.gateFireId } : {}),
   };
-  const { roundPhaseStamps, ...innerResult } = await runGreenCheckpointInner(
-    cfg,
-    deps,
-    innerOpts,
-  );
+  const decisionTrace = deps.decisionTrace ?? [];
+  // P-022: a typed setup-precondition refusal (no verdict) is retried ONCE in this run after a
+  // short delay — reclaiming dependency-generation space first for a headroom refusal — instead
+  // of idling until the next hourly tick. Opt-in on the delay dep: production wiring supplies it;
+  // direct callers keep the historical single-pass refusal. The retried pass takes over this
+  // frame's remaining bookkeeping exactly like the admission refire below.
+  const retryPrecondition = async (
+    refused: Pick<CheckpointResult, "green" | "preconditionBlocker" | "summary">,
+  ): Promise<CheckpointResult | null> => {
+    if (!refused.preconditionBlocker || deps.preconditionRetryDelayMs === undefined) return null;
+    const delayMs = deps.preconditionRetryDelayMs;
+    const decision = decideGatePreconditionRetry({
+      result: refused,
+      retriesSoFar: opts.preconditionRetries ?? 0,
+      elapsedMs: Date.now() - admissionRunStartedAtMs,
+      delayMs,
+      budgetMs: refireRunBudgetMsFromEnv(),
+    });
+    if (!decision.retry) {
+      deps.log(
+        `GATE_PRECONDITION_RETRY skipped blocker=${refused.preconditionBlocker} reason=${decision.reason}`,
+      );
+      return null;
+    }
+    return retryAfterGatePrecondition(cfg, deps, opts, {
+      blocker: decision.blocker,
+      delayMs,
+      firstSummary: refused.summary ?? "",
+      runStartedAtMs: admissionRunStartedAtMs,
+    });
+  };
+  let inner: Awaited<ReturnType<typeof runGreenCheckpointInner>>;
+  try {
+    inner = await runGreenCheckpointInner(cfg, { ...deps, decisionTrace }, innerOpts);
+  } catch (error) {
+    // Measured 2026-10-12: every headroom refusal that day was setup's OWN exit 77, thrown
+    // mid-materialization after the preflight passed — so it never reached a returned result.
+    // Classify it with the crash handler's own function; anything that is not a typed
+    // precondition refusal (or not retried) is rethrown untouched to that handler.
+    const classified = buildTerminalFailureCheckpointResult({
+      candidate: opts.candidate ?? opts.candidateHint ?? "",
+      error,
+      runId: deps.runId ?? "",
+    });
+    const retried = await retryPrecondition(classified);
+    if (retried) return retried;
+    throw error;
+  }
+  const { roundPhaseStamps, ...innerResult } = inner;
   // P-013: the round's phase breakdown, against this whole pass's measured time. Built HERE
   // rather than at each of the inner function's result sites, so `other` covers every step after
   // the candidate suite (re-runs, salvage, promotion) whichever branch the pass took.
@@ -14967,12 +16975,23 @@ export async function runGreenCheckpoint(
   const result: CheckpointResult = roundPhases
     ? { ...innerResult, roundPhases }
     : innerResult;
+  // P-022: the preflight's own (returned) precondition refusal.
+  const preconditionRetried = await retryPrecondition(result);
+  if (preconditionRetried) return preconditionRetried;
   const judgedRepairHead = result.repairVerificationHead ?? result.candidate;
   const repairIdentity = result.repairQueue
     ? buildFrozenRepairStatusIdentity(result.repairQueue)
     : null;
+  const verdictReplay = result.suiteVerdictReplay ?? (decisionTrace.length ? {
+    ...captureGateSuiteVerdictReplay({ candidate: result.candidate, runId: deps.runId ?? null, measuredAtMs: Date.now() },
+      { green: null, infraFault: true, failures: [], rootScripts: null, failingCasesByFile: null }),
+    suiteMeasured: false, decisions: decisionTrace,
+  } : undefined);
   let finalResult: CheckpointResult = {
     ...result,
+    // Seal the complete run trace before handing it to an asynchronous recorder.
+    ...(verdictReplay ? { suiteVerdictReplay: JSON.parse(JSON.stringify(verdictReplay)) as GateSuiteVerdictReplay } : {}),
+    ...(suiteReplayCanary ? { suiteReplayCanary } : {}),
     // P-003 / D-002: a result carrying a repair queue always reserves the generic
     // candidate label for the immutable full-gate pin. repairHead remains explicit;
     // no-suite/provenance fields prevent a mutable head from reading as a pin advance.
@@ -15058,17 +17077,71 @@ export async function runGreenCheckpoint(
   // in-flight-retriage recursion both call this function, and a backstop wired at the
   // entrypoint would miss both. The implementation no-ops when a branch already recorded a
   // disposition, so the recursion's own (inner, final) record wins over the outer frame's.
+  // WI-6554700010009615: from here on the tick is post-verdict (the admission refire above is the
+  // last branch that can start another suite), so the self-watchdog ceiling is pulled in. Run
+  // b874ad21 stalled past this point for ~2h with nothing bounding it but the 180m ceiling.
+  // WI-6554700010009616: publish the post-verdict phase to the qualification runner, so the
+  // lost-run sweep can flag a live run parked here (its heartbeat stays fresh through a hang).
+  deps.reportProgress?.("phase:finalizing");
+  try {
+    deps.enterPostVerdictPhase?.();
+  } catch (e) {
+    deps.log(
+      `warn: post-verdict watchdog tighten failed: ${e instanceof Error ? e.message : e}`,
+    );
+  }
+  // WI-6554700010010213: every bounded post-verdict step reports a deadline overrun here.
+  const recordDeadline = deps.recordPostVerdictStepDeadline;
+  const onPostVerdictDeadline: PostVerdictDeadlineRecorder | undefined = recordDeadline
+    ? (info) => recordDeadline.call(deps, info)
+    : undefined;
   if (deps.recordDerivedFreezeDisposition) {
-    await recordDerivedFreezeDispositionWithDeadline(async () => {
-      await deps.recordDerivedFreezeDisposition?.({
-        flagEnabled:
-          (await deps.freezeAndConvergeEnabled?.().catch(() => true)) ?? true,
-        repairQueue: finalResult.repairQueue ?? null,
-        repairQueueRead: finalResult.repairQueueRead,
-        summary: finalResult.summary ?? null,
-        green: finalResult.green ?? null,
-      });
-    }, deps.log);
+    await recordDerivedFreezeDispositionWithDeadline(
+      async () => {
+        await deps.recordDerivedFreezeDisposition?.({
+          flagEnabled:
+            (await deps.freezeAndConvergeEnabled?.().catch(() => true)) ?? true,
+          repairQueue: finalResult.repairQueue ?? null,
+          repairQueueRead: finalResult.repairQueueRead,
+          summary: finalResult.summary ?? null,
+          green: finalResult.green ?? null,
+        });
+      },
+      deps.log,
+      DERIVED_FREEZE_DISPOSITION_DEADLINE_MS,
+      onPostVerdictDeadline,
+    );
+  }
+  // P-013 (green-main-cycle-time-2026-10-08, D-028/D-029): route each failing leg of the
+  // queue this tick ended holding to its own claimable item, from the same funnel every
+  // return site passes through, so no branch can skip it. An unreadable queue is skipped
+  // rather than treated as "no queue": that would resolve every leg item on a read fault.
+  if (
+    deps.routeFrozenRepairLegsToAgents &&
+    finalResult.repairQueueRead?.status !== "unreadable"
+  ) {
+    const q = finalResult.green ? null : (finalResult.repairQueue ?? null);
+    const routeLegs = deps.routeFrozenRepairLegsToAgents;
+    // WI-6554700010009547: bounded and entry-logged, like the disposition write above. A
+    // failure or a deadline is non-fatal: the held candidate stays correctly held.
+    await runPostVerdictStepWithDeadline(
+      "frozen-repair leg routing",
+      () =>
+        routeLegs({
+          pipeline: pipelineName(cfg.integrationRoot),
+          queue:
+            q && q.candidate && q.repairHead
+              ? {
+                  candidate: q.candidate,
+                  repairHead: q.repairHead,
+                  failingTests: q.failingTests ?? [],
+                }
+              : null,
+        }),
+      deps.log,
+      FROZEN_REPAIR_LEG_ROUTING_DEADLINE_MS,
+      onPostVerdictDeadline,
+    );
   }
   // P-009: an `awaiting-fixer` hold tick renders no suite verdict for hours — keep the
   // cheap non-test legs MEASURED at repairHead so gate_health/failingTests stays fresh
@@ -15177,6 +17250,9 @@ export type CheckpointExec = (
  * install-safe reader mutex, and performs the expensive live-tree publisher
  * only when that exact selector is absent.
  */
+/** The `dependency-generation.sh --retain-as` label for the gate's candidate pin. */
+export const CHECKPOINT_DEPENDENCY_RETAIN_LABEL = "checkpoint-candidate";
+
 export async function ensureCheckpointDependencyGeneration(
   cfg: ReleaseConfig,
   candidate: string,
@@ -15204,6 +17280,11 @@ export async function ensureCheckpointDependencyGeneration(
       cfg.integrationRoot,
       "--ensure-ref",
       candidate,
+      // WI-6554700010008481: pin the generation this gate is about to judge, so
+      // newer staging prebuilds cannot evict it (and its selector) before the run
+      // selects it — the eviction that ended a frozen-queue verify with no verdict.
+      "--retain-as",
+      CHECKPOINT_DEPENDENCY_RETAIN_LABEL,
     ],
     {
       timeoutMs: DEPENDENCY_GENERATION_IDLE_TIMEOUT_MS,
@@ -15245,6 +17326,8 @@ export async function ensureCheckpointDependencyGeneration(
 }
 
 export interface CheckpointDependencyPrebuildDeps {
+  /** Host observer for the existing prebuild-state read; no new delivery path. */
+  observeFallback?: typeof import("@papercusp/operator-core/lib/degradation/fallback-observations").observeFallback;
   /** Explicit null disables the state plane (old/manual launcher compatibility). */
   target?: DependencyPrebuildTarget | null;
   awaitState?: (
@@ -15255,6 +17338,16 @@ export interface CheckpointDependencyPrebuildDeps {
   ) => Promise<DependencyPrebuildState | null>;
   waitMs?: number;
   log?: (message: string) => void;
+  /** Env the checkpoint setup will inherit (defaults to process.env). */
+  env?: NodeJS.ProcessEnv;
+  /** Whether `<generationRoot>/<identity>` exists (defaults to a real stat). */
+  generationPresent?: (generationRoot: string, identity: string) => boolean;
+  /**
+   * The live immutable token of `<generationRoot>/<identity>` in the form the
+   * recorded token uses, or null when unreadable (defaults to
+   * `liveDependencyGenerationToken`). WI-10004826.
+   */
+  liveToken?: (generationRoot: string, identity: string, expectedToken: string) => string | null;
 }
 
 /** Cheap immutable input identity. This reads candidate Git blobs only. */
@@ -15304,6 +17397,36 @@ export async function checkpointDependencyInputFingerprint(
  * the existing install-safe publisher outside the checkpoint serializer; no
  * state-plane failure can relax immutable-generation validation.
  */
+/**
+ * Mirror of dependency-generation.sh's prevalidated-token read (WI-10004826):
+ * `v2:`/`v3:` tokens are the marker's `publication_token=` field; legacy tokens are
+ * `stat %d:%i:%Y:%s` of the generation dir, `|`, then the same for its marker
+ * (or `missing`). Returns null when the generation cannot be read.
+ */
+export function liveDependencyGenerationToken(
+  generationRoot: string,
+  identity: string,
+  expectedToken: string,
+): string | null {
+  const generation = path.join(generationRoot, identity);
+  const marker = path.join(generation, ".papercusp-dependency-generation");
+  try {
+    if (/^v[23]:/.test(expectedToken)) {
+      const line = readFileSync(marker, "utf8")
+        .split("\n")
+        .find((l) => l.startsWith("publication_token="));
+      return line ? line.slice("publication_token=".length) : null;
+    }
+    const statToken = (p: string) => {
+      const s = statSync(p);
+      return `${s.dev}:${s.ino}:${Math.floor(s.mtimeMs / 1000)}:${s.size}`;
+    };
+    return `${statToken(generation)}|${existsSync(marker) ? statToken(marker) : "missing"}`;
+  } catch {
+    return null;
+  }
+}
+
 export async function selectPersistedCheckpointDependencyGeneration(
   cfg: ReleaseConfig,
   candidate: string,
@@ -15344,6 +17467,49 @@ export async function selectPersistedCheckpointDependencyGeneration(
     }
     return null;
   }
+  // WI-10004797: the identity only exists inside the store it was published
+  // into. Setup leases from the store THIS process's env resolves to, so a
+  // marker from another store (PAPERCUSP_DEPENDENCY_GENERATION_ROOT moved, or
+  // producer/consumer envs differ) is a cache miss — re-publish via the
+  // fallback rather than hand setup an identity it will fail to lease (exit 74).
+  const effectiveRoot = resolveDependencyGenerationRoot(
+    cfg.integrationRoot,
+    deps.env ?? process.env,
+  );
+  const present =
+    deps.generationPresent ??
+    ((root: string, identity: string) => existsSync(path.join(root, identity)));
+  if (
+    (state.generationRoot !== undefined && state.generationRoot !== effectiveRoot) ||
+    !present(effectiveRoot, state.identity)
+  ) {
+    log(
+      `${orchestratorStdoutTag()} dependency-prebuild READY identity=${state.identity} is not in ` +
+        `effective generation_root=${effectiveRoot} (published into ${state.generationRoot ?? "unrecorded root"}) ` +
+        `for ${candidate.slice(0, 12)}; joining install-safe fallback`,
+    );
+    return null;
+  }
+  // WI-10004826: presence is not identity. The same content identity can be
+  // republished into the effective store (a root move, or GC + re-publish), and
+  // a LEGACY ready state without a recorded generationRoot then passes the check
+  // above while its token still names the OLD directory. Setup's
+  // dependency_generation_select_prevalidated compares that token and exits 74
+  // ("replaced after validation") with no fallback. Compare the token here, the
+  // same way setup will, and join the install-safe fallback on a mismatch.
+  const liveToken = (deps.liveToken ?? liveDependencyGenerationToken)(
+    effectiveRoot,
+    state.identity,
+    state.token,
+  );
+  if (liveToken === null || liveToken !== state.token) {
+    log(
+      `${orchestratorStdoutTag()} dependency-prebuild READY identity=${state.identity} token is stale ` +
+        `in generation_root=${effectiveRoot} (recorded ${state.token}, live ${liveToken ?? "unreadable"}) ` +
+        `for ${candidate.slice(0, 12)}; joining install-safe fallback`,
+    );
+    return null;
+  }
   log(
     `${orchestratorStdoutTag()} dependency-prebuild READY identity=${state.identity} ` +
       `candidate=${candidate.slice(0, 12)} input=${inputFingerprint}; skipping live generation walk`,
@@ -15369,14 +17535,67 @@ export async function beginCheckpointPreflight(
   candidateRef: string,
   exec: CheckpointExec = runCmd,
   dependencyPrebuildDeps: CheckpointDependencyPrebuildDeps = {},
-): Promise<{
-  candidate: string;
-  prewarmedDependencyGeneration: PrewarmedCheckpointDependencyGeneration;
-  lock: CheckpointRunLock;
-}> {
-  const candidate = await revParse(cfg.integrationRoot, candidateRef);
+): Promise<
+  | {
+      kind: "ready";
+      candidate: string;
+      prewarmedDependencyGeneration: PrewarmedCheckpointDependencyGeneration;
+      lock: CheckpointRunLock;
+    }
+  | {
+      kind: "not-applicable";
+      candidate: string;
+      integrationRef: string;
+      summary: string;
+    }
+> {
+  let candidate: string;
+  try {
+    candidate = await revParse(cfg.integrationRoot, candidateRef);
+  } catch (error) {
+    // A scheduled install may intentionally have no integration branch. Distinguish that
+    // exact condition from a missing repository, broken ref target, or Git execution failure:
+    // only an exact configured local branch proven absent by show-ref is not applicable.
+    if (candidateRef === cfg.integrationBranch) {
+      const configuredBranchRef = cfg.integrationBranch.startsWith("refs/heads/")
+        ? cfg.integrationBranch
+        : `refs/heads/${cfg.integrationBranch}`;
+      try {
+        const branch = await exec(
+          "git",
+          [
+            "-C",
+            cfg.integrationRoot,
+            "show-ref",
+            "--verify",
+            "--quiet",
+            configuredBranchRef,
+          ],
+          { allowNonZero: true },
+        );
+        if (branch.code === 1 && branch.signal == null) {
+          return {
+            kind: "not-applicable",
+            candidate: candidateRef,
+            integrationRef: cfg.integrationBranch,
+            summary:
+              `Configured integration branch "${cfg.integrationBranch}" is absent; ` +
+              "green-checkpoint is not applicable for this installation.",
+          };
+        }
+      } catch {
+        // Keep the original candidate-resolution error when Git cannot establish absence.
+      }
+    }
+    throw error;
+  }
   let prewarmedDependencyGeneration: PrewarmedCheckpointDependencyGeneration | null =
     null;
+  const observeFallback = dependencyPrebuildDeps.observeFallback ??
+    (await import("@papercusp/operator-core/lib/degradation/fallback-observations")).observeFallback;
+  const stateReadEligible = Object.prototype.hasOwnProperty.call(dependencyPrebuildDeps, "target")
+    ? dependencyPrebuildDeps.target != null : gateVerdictTargetFromEnv() != null;
+  const readScope = `${pipelineName(cfg.integrationRoot)}:dependency-prebuild-state`;
   try {
     prewarmedDependencyGeneration =
       await selectPersistedCheckpointDependencyGeneration(
@@ -15385,7 +17604,13 @@ export async function beginCheckpointPreflight(
         exec,
         dependencyPrebuildDeps,
       );
+    if (stateReadEligible) observeFallback("release-state-read", {
+      eligible: 1, applied: 1, reason: "applied", scope: readScope,
+    });
   } catch (error) {
+    observeFallback("release-state-read", {
+      eligible: 1, applied: 0, reason: "prebuild-state-unavailable", scope: readScope,
+    });
     console.error(
       `${orchestratorStdoutTag()} dependency-prebuild state/identity lookup failed for ${candidate.slice(0, 12)}: ` +
         `${error instanceof Error ? error.message : String(error)}; joining fail-closed publisher fallback`,
@@ -15399,7 +17624,7 @@ export async function beginCheckpointPreflight(
   const lock = acquireCheckpointRunLock(
     checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
   );
-  return { candidate, prewarmedDependencyGeneration, lock };
+  return { kind: "ready", candidate, prewarmedDependencyGeneration, lock };
 }
 
 /** A signaled child is not a successful zero-exit command, even though Node reports
@@ -16020,6 +18245,7 @@ interface PostSuiteLegs {
   lintDesignPrimitives: LegOutcome;
   lintNoControlBytes: LegOutcome;
   lintGuardReachability: LegOutcome;
+  lintConditionRail: LegOutcome;
   lintMockCastEscape: LegOutcome;
   /** P-026: D-004's push-don't-poll classification on every NEW recurring timer. Its
    *  only blocking path was .github/workflows/test.yml, which fires on push/PR to
@@ -16092,6 +18318,7 @@ function legsNotRun(skipReason: string): PostSuiteLegs {
     lintDesignPrimitives: skipped,
     lintNoControlBytes: skipped,
     lintGuardReachability: skipped,
+    lintConditionRail: skipped,
     lintMockCastEscape: skipped,
     lintTimerClassification: skipped,
     lintNoRawSetinterval: skipped,
@@ -16146,6 +18373,12 @@ interface PostSuiteRunOptions {
   frozenCandidateOpenedAtMs?: number;
   /** Test seam only. Production always uses the fixed resource-derived ceiling. */
   lowMemoryConcurrency?: number;
+  /** WI-10006055: the operator DSN for the LIVE-plane lints only (see `gateOperatorPgEnv`).
+   *  The suite env drops every DSN by design, so without this the plane lints resolve the
+   *  embedded-pg discovery file, which any local install can own. */
+  operatorPgEnv?: Readonly<Record<string, string>>;
+  /** Skip the costly SPA build when an earlier scoped check already blocks promotion. */
+  skipBuildReason?: string;
   /** EI-203121: real-path run/setup identity; optional keeps injected legacy seams valid. */
   identity?: {
     runId?: string;
@@ -16169,10 +18402,11 @@ interface PostSuiteRunOptions {
  * operator-core type errors reached `main` on 2026-07-26 — the gate reported green having
  * never typechecked, linted, or built the tree.
  *
- * Hoisting them here makes "the suite is considered passing" the single trigger, so the
- * absorption path can pay the same price the native path pays. The chain still
- * short-circuits (a failing leg skips the rest — a red is a red, and the remaining legs
- * cost real gate minutes), and a subject hive without a script still opts out per-leg via
+ * Hoisting them here makes "the suite is considered passing" the normal trigger, so the
+ * absorption path can pay the same price the native path pays. Soft failures do not halt the
+ * diagnostic chain: every independent cheap leg still runs, while an unreadable candidate
+ * manifest hard-stops scripts that cannot be inspected safely. The expensive SPA build is
+ * skipped after a prior failure. A subject hive without a script still opts out per-leg via
  * hasNpmScript. The ORDER is deliberate and asserted by green-checkpoint-real-deps.test.ts:
  * cheapest-and-most-diagnostic first, the expensive SPA build last.
  */
@@ -16710,9 +18944,17 @@ export async function runPostSuiteLegs(
       skipReason: "candidate provides no lint:migrations script",
     };
   } else {
+    // WI-6554700010009206: the reservation leg reads the operator DB's ledger, so this leg
+    // gets the gate's operator DSN like the plane lints below (see LIVE_PLANE_LINT_SCRIPTS).
+    // The suite env drops every DSN. Without one, the leg read the embedded-pg sidecar in the
+    // checkpoint tree, where no apps/operator/.env.local exists.
     const migrations = await exec("npm", ["run", "lint:migrations"], {
       cwd: treeDir,
-      env,
+      env: gateScriptEnv(
+        "lint:migrations",
+        env,
+        options.operatorPgEnv ?? gateOperatorPgEnv(process.env),
+      ),
       allowNonZero: true,
     });
     legs.lintMigrations = {
@@ -16805,6 +19047,7 @@ export async function runPostSuiteLegs(
     | "lintDesignPrimitives"
     | "lintNoControlBytes"
     | "lintGuardReachability"
+    | "lintConditionRail"
     | "lintMockCastEscape"
     | "lintTimerClassification"
     | "lintNoRawSetinterval";
@@ -16862,6 +19105,13 @@ export async function runPostSuiteLegs(
         "an unwired guard rots silently and its green gets quoted as evidence",
     },
     {
+      script: "lint:condition-rail",
+      outcomeKey: "lintConditionRail",
+      signature: "lint:condition-rail",
+      label: "CONDITION RAIL BYPASS RATCHET",
+      failureBanner: "a new silent degradation site or a grown bypass baseline",
+    },
+    {
       script: "lint:mock-cast-escape",
       outcomeKey: "lintMockCastEscape",
       signature: "lint:mock-cast-escape",
@@ -16892,6 +19142,7 @@ export async function runPostSuiteLegs(
     "lintDesignPrimitives",
     "lintNoControlBytes",
     "lintGuardReachability",
+    "lintConditionRail",
     "lintMockCastEscape",
     "lintTimerClassification",
     "lintNoRawSetinterval",
@@ -17052,6 +19303,14 @@ export async function runPostSuiteLegs(
     ];
     const planeFailures: string[] = [];
     let planeRan = 0;
+    // WI-10006055: these lints census the LIVE plane, so they get the gate's operator DSN.
+    // No other leg does; the candidate suite stays DSN-free. An omitted `operatorPgEnv`
+    // defaults to the gate process's own DSN: runPostSuiteAtRef omitted it, so its plane
+    // lints censused the 522-row sidecar instead of the operator DB.
+    const planeEnv: NodeJS.ProcessEnv = {
+      ...env,
+      ...(options.operatorPgEnv ?? gateOperatorPgEnv(process.env)),
+    };
     for (const { script, label } of planeLints) {
       const check = checkNpmScript(treeDir, script);
       if (check === "unreadable") {
@@ -17065,7 +19324,7 @@ export async function runPostSuiteLegs(
       planeRan++;
       const out = await exec("npm", ["run", script], {
         cwd: treeDir,
-        env,
+        env: planeEnv,
         allowNonZero: true,
       });
       if (out.code !== 0) {
@@ -17162,11 +19421,15 @@ export async function runPostSuiteLegs(
   // WI-38185: the build is the one EXPENSIVE leg, so it still short-circuits on ANY prior
   // failure — the cheap legs above now all run (to diagnose the whole red in one pass), but
   // paying for a full SPA bundle on a candidate that already cannot ship would be waste.
-  if (haltedBy || softFailures.length) {
+  // An early scoped typecheck red supplies skipBuildReason even when all full-project checks
+  // pass, since that candidate is still blocked and the bundle cannot change its verdict.
+  if (haltedBy || softFailures.length || options.skipBuildReason) {
     legs.build = {
       status: "skipped",
       skipReason:
-        haltedBy ?? `not run because ${softFailures.join(", ")} failed`,
+        haltedBy ??
+        options.skipBuildReason ??
+        ("not run because " + softFailures.join(", ") + " failed"),
     };
   } else if (!spaWorkspace) {
     legs.build = {
@@ -17260,6 +19523,7 @@ export async function runPostSuiteLegs(
     legs.lintDesignPrimitives,
     legs.lintNoControlBytes,
     legs.lintGuardReachability,
+    legs.lintConditionRail,
     // P-026 / 2026-08-09: was MISSING from this list while its leg (5111) both set
     // `status:'failed'` and `haltedBy` — so a `lint:mock-cast-escape` red skipped
     // `lintPlane` + `build` and STILL reported green. Every leg above must appear
@@ -17391,6 +19655,9 @@ export async function runPostSuiteLegs(
     record("lint:guard-reachability", legs.lintGuardReachability, [
       "lint:guard-reachability",
     ]),
+    record("lint:condition-rail", legs.lintConditionRail, [
+      "lint:condition-rail",
+    ]),
     record("lint:mock-cast-escape", legs.lintMockCastEscape, [
       "lint:mock-cast-escape",
     ]),
@@ -17442,18 +19709,9 @@ export async function runPostSuiteLegs(
 
 /**
  * EI-22062873162576188: choose the account rows a release-fixer dispatch will ACTUALLY
- * authenticate as, out of the provider pool `accountStatus()` reports.
- *
- * WI-606293 added the capacity preflight but measured the POOL, and the dispatch does not
- * use the pool. A blueprint-launched fixer sets neither PAPERCUSP_CODEX_GATEWAY nor
- * PAPERCUSP_ACCOUNT_ID (launch-blueprint.ts carries no account plumbing), and
- * writeSignedSpawnCodexHome then symlinks ~/.codex/auth.json into the per-spawn
- * CODEX_HOME (orchestrator/spawn-mcp.ts) — so it egresses DIRECTLY on the local CLI
- * credential and never reaches a gateway pool account.
- *
- * Consequence measured 2026-09-02: one of seven codex rows had headroom, the preflight
- * passed on THAT row, and three consecutive dispatches died at turn 1 on the walled local
- * credential — each burning a frozen-repair-queue attempt on a guaranteed failure.
+ * authenticate as, out of the provider pool `accountStatus()` reports. The red-event
+ * dispatcher explicitly sends account:'auto', so its child is gateway-routed even when
+ * this checkpoint runner's own environment has no gateway markers.
  *
  * Narrowing is by `credentialRef`, which is measured rather than assumed. When it does not
  * resolve we deliberately fall back to the whole pool: an unknown must keep failing OPEN
@@ -18101,6 +20359,25 @@ export function realCheckpointDeps(
         );
       }
     },
+    async routeFrozenRepairLegsToAgents(input) {
+      // P-013 (D-028/D-029): change-only per-leg items. The routing module reads the open
+      // leg conditions, opens new legs as one-shot conditions and resolves departed ones;
+      // the condition bridge mints and settles the work-items.
+      try {
+        const { routeFrozenRepairLegs } =
+          await import("@papercusp/operator-core/lib/release/frozen-repair-leg-routing");
+        const out = await routeFrozenRepairLegs(input);
+        if (out.opened.length > 0 || out.resolved.length > 0) {
+          console.log(
+            `${orchestratorStdoutTag()} frozen-repair legs: opened ${out.opened.length}, resolved ${out.resolved.length}, routed ${out.plan.routed.length}`,
+          );
+        }
+      } catch (e) {
+        console.warn(
+          `${orchestratorStdoutTag()} frozen-repair leg routing failed (non-fatal): ${e instanceof Error ? e.message : e}`,
+        );
+      }
+    },
     async checkFixerProviderCapacity() {
       const { accountStatus } =
         await import("@papercusp/operator-core/lib/deployment/account-pool-store");
@@ -18130,31 +20407,14 @@ export function realCheckpointDeps(
           summary: `no ${provider} accounts in the pool to measure; not withholding on an unknown`,
         };
       }
-      // EI-22062873162576188: WI-606293 measured the POOL, but the DISPATCH does not use
-      // the pool, and they are not the same population. A blueprint-launched fixer sets
-      // neither PAPERCUSP_CODEX_GATEWAY nor PAPERCUSP_ACCOUNT_ID (launch-blueprint.ts has
-      // no account plumbing at all), and writeSignedSpawnCodexHome then symlinks
-      // ~/.codex/auth.json into the per-spawn CODEX_HOME (orchestrator/spawn-mcp.ts), so
-      // the agent egresses DIRECTLY on the LOCAL CLI credential and never reaches a
-      // gateway pool account. "Some pool account has headroom" is therefore not evidence
-      // that THIS fixer can run.
-      //
-      // Measured 2026-09-02: exactly one of seven codex rows (aviynw5_codex) had headroom,
-      // this preflight passed on it, and three consecutive dispatches died at turn 1 on
-      // the walled LOCAL credential ("You've hit your usage limit ... Sep 8th") — each one
-      // burning a frozen-repair-queue attempt on a guaranteed failure, which is the exact
-      // waste WI-606293 added this preflight to prevent.
-      //
-      // So narrow to the row the fixer will actually authenticate as whenever we can
-      // identify it. Identification is by credentialRef, which is measured, not assumed;
-      // when it does not resolve we fall back to the pool, because an unknown must keep
-      // failing OPEN rather than withhold (same rule as the stale-reading branch below).
+      // release-actions.ts passes account:'auto' to the durable launcher. The child route
+      // is therefore the gateway pool; the ambient environment here belongs to the gate
+      // runner and cannot identify the child's credential. Measure the same pool the child
+      // can use, rather than incorrectly withholding on the runner's local ~/.codex login.
       const { measured, scope } = selectFixerCapacityRows({
         rows,
         provider,
-        gatewayRouted:
-          !!process.env.PAPERCUSP_CODEX_GATEWAY ||
-          !!process.env.PAPERCUSP_ACCOUNT_ID?.trim(),
+        gatewayRouted: true,
         localCodexHome:
           process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex"),
       });
@@ -18256,9 +20516,110 @@ export function realCheckpointDeps(
       // turning a warning-only condition into an indefinitely red release gate.
       // Evaluate every watched filesystem, because any one shared backing volume
       // can exhaust while the others remain healthy.
+      // WI-10007424: the critical-write floor is the disk ALARM's reserve
+      // (min(2% of the fs, 64 GiB)), but setup's dependency copy enforces its OWN
+      // reserve (2%, uncapped on the protected fs) plus a 10 GiB margin. A run
+      // between those two floors passed this preflight and then died mid-setup with
+      // exit 77 (WI-10005705: 43.7 GiB free, 51.0 GiB required), after spending the
+      // fire. Ask the copy path itself, in its pure-measurement mode, so the gate
+      // and the copy cannot disagree about what "enough" means. Exit 77 is the
+      // script's reserved insufficient-headroom code; any other failure of the probe
+      // leaves the critical-write floor as the only admission check and says so.
+      const dependencyCopyHeadroom = async (): Promise<{
+        ok: boolean;
+        summary: string;
+        blocker?: GatePreconditionBlocker;
+      }> => {
+        let probe: Awaited<ReturnType<CheckpointExec>>;
+        try {
+          probe = await exec(
+            "bash",
+            [
+              path.join(
+                toolingRoot(),
+                "apps/operator/bin/release/dependency-generation.sh",
+              ),
+              "--integration",
+              cfg.integrationRoot,
+              "--check-headroom",
+            ],
+            { allowNonZero: true, timeoutMs: 60_000 },
+          );
+        } catch (error) {
+          return {
+            ok: true,
+            summary: `dependency-copy headroom probe unavailable (${error instanceof Error ? error.message : error}); the critical-write floor is the only admission check`,
+          };
+        }
+        const line = `${probe.stdout}\n${probe.stderr}`
+          .split(/\r?\n/)
+          .find((l) => l.includes("DEPENDENCY_GENERATION_HEADROOM_"))
+          ?.replace(/^\[dependency-generation\]\s*/, "")
+          .trim();
+        // P-022: the probe also reports the host dependency-copy lock (a COPY_LOCK line when
+        // free or busy behind a live copy, a LOCK_BUSY line + exit 76 when wedged).
+        const lockLine = `${probe.stdout}\n${probe.stderr}`
+          .split(/\r?\n/)
+          .find(
+            (l) =>
+              l.includes("DEPENDENCY_GENERATION_COPY_LOCK ") ||
+              l.includes("DEPENDENCY_GENERATION_LOCK_BUSY"),
+          )
+          ?.replace(/^\[dependency-generation\]\s*/, "")
+          .trim();
+        if (probe.code === 76) {
+          return {
+            ok: false,
+            blocker: "copy-lock",
+            summary: `dependency copy cannot start: ${lockLine ?? "dependency-generation.sh --check-headroom exited 76 (host dependency-copy lock wedged)"}`,
+          };
+        }
+        if (probe.code === 77) {
+          return {
+            ok: false,
+            blocker: "disk-headroom",
+            summary: `dependency copy cannot start: ${line ?? "dependency-generation.sh --check-headroom exited 77 (insufficient headroom)"}`,
+          };
+        }
+        if (probe.code === 0)
+          return {
+            ok: true,
+            summary: [line ?? "dependency-copy headroom ok", lockLine]
+              .filter((part): part is string => Boolean(part))
+              .join("; "),
+          };
+        return {
+          ok: true,
+          summary: `dependency-copy headroom probe exited ${probe.code}; the critical-write floor is the only admission check`,
+        };
+      };
+      // Names exactly what tripped admission: the critical-write floor, the
+      // dependency-copy floor, or both. Either may be the sole trigger.
+      const describeTrigger = (
+        snapshots: CheckpointDiskSnapshot[],
+        copy: { ok: boolean; summary: string },
+      ) =>
+        [
+          describeBreaches(snapshots) || null,
+          copy.ok ? null : copy.summary,
+        ]
+          .filter((part): part is string => part !== null)
+          .join("; ");
+
       const beforeBreaches = detectCriticalWriteHeadroom(before, policy);
-      if (beforeBreaches.length === 0)
-        return { ok: true, summary: describe(before) };
+      const copyBefore = await dependencyCopyHeadroom();
+      if (beforeBreaches.length === 0 && copyBefore.ok)
+        return {
+          ok: true,
+          summary: `${describe(before)}; ${copyBefore.summary}`,
+        };
+      // P-022: a wedged copy lock is not a space problem, so disk GC cannot clear it.
+      if (copyBefore.blocker === "copy-lock")
+        return {
+          ok: false,
+          blocker: "copy-lock",
+          summary: `${describeTrigger(before, copyBefore)}; initial measurement: ${describe(before)}`,
+        };
 
       // EI-22642378999251872: the old path returned immediately and spent one singleton fire per
       // hour rediscovering the same breach. Reuse the existing age+bytes-bounded fleet-log GC
@@ -18275,8 +20636,10 @@ export function realCheckpointDeps(
           (sum, dir) => sum + dir.removedByAge + dir.removedByCeiling,
           0,
         );
-        const bytesFreed = reclaimed.dirs.reduce(
-          (sum, dir) => sum + dir.bytesFreed,
+        // Logical bytes unlinked — NOT measured reclaim (an open file keeps its
+        // blocks). The measured result is the post-cleanup free-space probe.
+        const bytesUnlinked = reclaimed.dirs.reduce(
+          (sum, dir) => sum + dir.bytesUnlinked,
           0,
         );
         const errors = reclaimed.dirs.reduce(
@@ -18284,8 +20647,8 @@ export function realCheckpointDeps(
           0,
         );
         reclamationParts.push(
-          `fleet logs scanned ${scanned} file(s), removed ${removed}, freed ` +
-            `${(bytesFreed / gib).toFixed(2)} GiB${errors ? `, with ${errors} error(s)` : ""}`,
+          `fleet logs scanned ${scanned} file(s), removed ${removed}, unlinked ` +
+            `${(bytesUnlinked / gib).toFixed(2)} GiB${errors ? `, with ${errors} error(s)` : ""}`,
         );
       } catch (error) {
         reclamationParts.push(
@@ -18330,7 +20693,7 @@ export function realCheckpointDeps(
         return {
           ok: false,
           summary:
-            `${describeBreaches(before)}; initial measurement: ${describe(before)}; ` +
+            `${describeTrigger(before, copyBefore)}; initial measurement: ${describe(before)}; ` +
             `${reclamationSummary}; post-cleanup statfs failed (${error instanceof Error ? error.message : error})`,
         };
       }
@@ -18338,21 +20701,24 @@ export function realCheckpointDeps(
         return {
           ok: false,
           summary:
-            `${describeBreaches(before)}; initial measurement: ${describe(before)}; ` +
+            `${describeTrigger(before, copyBefore)}; initial measurement: ${describe(before)}; ` +
             `${reclamationSummary}; post-cleanup statfs produced no readable snapshots`,
         };
       }
       const afterBreaches = detectCriticalWriteHeadroom(after, policy);
-      if (afterBreaches.length === 0) {
+      const copyAfter = await dependencyCopyHeadroom();
+      if (afterBreaches.length === 0 && copyAfter.ok) {
         return {
           ok: true,
           summary:
             `automatic headroom recovery succeeded; initial measurement: ${describe(before)}; ` +
-            `${reclamationSummary}; after cleanup: ${describe(after)}`,
+            `${reclamationSummary}; after cleanup: ${describe(after)}; ${copyAfter.summary}`,
         };
       }
       return {
         ok: false,
+        // P-022: a copy lock that wedged during cleanup is still a lock problem.
+        blocker: copyAfter.blocker ?? "disk-headroom",
         summary:
           // EI-23424266636870803: the trailing "floor is <criticalFreeBytesMin> GiB and
           // <criticalFreePctMin>% bytes" clause used to live here. It quoted the raw
@@ -18362,9 +20728,37 @@ export function realCheckpointDeps(
           // describeBreaches now carries the applied reserve and the absolute deficit,
           // which is the number a responder needs; a second, differently-derived floor
           // in the same sentence could only disagree with it again.
-          `${describeBreaches(after)}; initial measurement: ${describe(before)}; ` +
+          `${describeTrigger(after, copyAfter)}; initial measurement: ${describe(before)}; ` +
           `${reclamationSummary}; after cleanup: ${describe(after)}`,
       };
+    },
+    // P-022: before the one bounded precondition retry, run the existing dependency-generation
+    // retention prune (the same governed `--prune-only` sweep its routine runs) and report the
+    // MEASURED free-space change beside the integration root — unlinked bytes are not reclaim.
+    preconditionRetryDelayMs: gatePreconditionRetryDelayMsFromEnv(),
+    async reclaimDependencyHeadroom(): Promise<string> {
+      const { statfs } = await import("node:fs/promises");
+      const gib = 1024 ** 3;
+      const freeBytes = async () => {
+        try {
+          const s = await statfs(cfg.integrationRoot);
+          return Number(s.bavail) * Number(s.bsize);
+        } catch {
+          return null;
+        }
+      };
+      const before = await freeBytes();
+      const { runDependencyGenerationRetention } = await import(
+        "@papercusp/operator-core/lib/release/dependency-generation-retention"
+      );
+      const report = await runDependencyGenerationRetention();
+      const after = await freeBytes();
+      const pruned = report.stores.filter((s) => s.status === "pruned").length;
+      const freed =
+        before !== null && after !== null
+          ? `free ${(before / gib).toFixed(2)} → ${(after / gib).toFixed(2)} GiB`
+          : "free space unmeasured";
+      return `dependency retention ${report.status}: ${pruned}/${report.stores.length} store(s) pruned; ${freed}`;
     },
     // P-008: the owner-visible off switch had a DECLARED dep and a documented contract
     // ("the production wiring must fail-safe to TRUE"), a flag key in libs/flags, and a
@@ -18414,6 +20808,46 @@ export function realCheckpointDeps(
     },
     ...(repairTarget
       ? {
+          // P-012: the per-sync batch check's newest PASSED commit (sync_delta.lastPassed). Used
+          // by the fresh cut and the P-021 re-cut, each under decideKnownGoodFreezeCut's rules.
+          async resolveKnownGoodRecutTarget() {
+            const { readSyncDeltaKnownGood } =
+              await import("@papercusp/operator-core/lib/release/sync-batch-delta-check-deps");
+            return readSyncDeltaKnownGood(repairTarget.installSlug);
+          },
+          async readFrozenRepairBoundedLifeState() {
+            const { readFrozenRepairBoundedLifeState } =
+              await import("@papercusp/operator-core/lib/release/frozen-repair-bounded-life-store");
+            return readFrozenRepairBoundedLifeState(repairTarget);
+          },
+          async retireFrozenRepairQueueForBoundedLife(
+            queue: FrozenCandidateRepairQueue,
+            record: FrozenRepairBoundedLifeRecord,
+          ) {
+            const { retireFrozenRepairQueueForBoundedLife } =
+              await import("@papercusp/operator-core/lib/release/frozen-repair-bounded-life-store");
+            return retireFrozenRepairQueueForBoundedLife(repairTarget, queue, record);
+          },
+          async recordFrozenRepairBoundedLifeEscalation(
+            escalation: FrozenRepairBoundedLifeEscalation,
+          ) {
+            const { recordFrozenRepairBoundedLifeEscalation } =
+              await import("@papercusp/operator-core/lib/release/frozen-repair-bounded-life-store");
+            await recordFrozenRepairBoundedLifeEscalation(repairTarget, escalation);
+          },
+          async readFrozenRepairPendingCarry() {
+            const { readFrozenRepairPendingCarry } =
+              await import("@papercusp/operator-core/lib/release/frozen-repair-carry-store");
+            return readFrozenRepairPendingCarry(repairTarget);
+          },
+          async consumeFrozenRepairCarry(
+            pending: FrozenRepairPendingCarry,
+            record: FrozenRepairCarryRecord,
+          ) {
+            const { consumeFrozenRepairCarry } =
+              await import("@papercusp/operator-core/lib/release/frozen-repair-carry-store");
+            return consumeFrozenRepairCarry(repairTarget, pending, record);
+          },
           async readFrozenRepairQueueState() {
             const { readFrozenCandidateRepairQueueState } =
               await import("@papercusp/operator-core/lib/harness/routines/release-actions");
@@ -18615,7 +21049,10 @@ export function realCheckpointDeps(
           // WI-2140605 no-measured-failures). The wiring invariant — dispatcher present iff
           // the reservation trio is — is pinned by
           // green-checkpoint-frozen-repair-dispatcher-wiring.test.ts.
-          async dispatchFrozenRepairFixer(queue: FrozenCandidateRepairQueue) {
+          async dispatchFrozenRepairFixer(
+            queue: FrozenCandidateRepairQueue,
+            checkpointEvidence?: CheckpointEvidence,
+          ) {
             const { dispatchReleaseFixer } =
               await import("@papercusp/operator-core/lib/harness/routines/release-actions");
             return dispatchReleaseFixer(
@@ -18623,7 +21060,30 @@ export function realCheckpointDeps(
               queue.repairHead,
               queue.failingTests,
               queue,
+              checkpointEvidence,
             );
+          },
+          // WI-10007408: the fixer LIVENESS probe and the dead-fixer CLASSIFIER, deleted by
+          // the same sweep c076b0dd95 and never restored with the dispatcher above. Both are
+          // optional-chained by the gate, so their absence failed silently and in the worst
+          // direction: `fixerAlive` read `undefined`, `decideFrozenCandidateRepairQueue` only
+          // re-dispatches on `fixerAlive === false`, so a DEAD fixer became `wait-for-fixer`
+          // (liveness "unknown") on every tick, forever — candidate ad82b273 sat 13h behind
+          // a dead release-fixer while P-018's invariant (same `releaseFixerSpawnAlive`)
+          // reported it dead. Without the classifier, an infrastructure death was never
+          // refunded its attempt. Pinned with the dispatcher by
+          // green-checkpoint-frozen-repair-dispatcher-wiring.test.ts.
+          async frozenRepairFixerAlive(spawnId: string) {
+            const { getOrgPg } = await import("@papercusp/db-org");
+            const { releaseFixerSpawnAlive } =
+              await import("@papercusp/operator-core/lib/release/fixer-liveness");
+            return releaseFixerSpawnAlive(getOrgPg().sql, spawnId);
+          },
+          async classifyDeadFrozenRepairFixer(spawnId: string) {
+            const { getOrgPg } = await import("@papercusp/db-org");
+            const { classifyDeadReleaseFixerSpawn } =
+              await import("@papercusp/operator-core/lib/release/fixer-liveness");
+            return classifyDeadReleaseFixerSpawn(getOrgPg().sql, spawnId);
           },
           // WI-10003213: the same no-measured-failures verdict the dispatcher refuses on,
           // read from the same live row, so the retest and the refusal cannot disagree.
@@ -18820,14 +21280,62 @@ export function realCheckpointDeps(
         }
       }
 
+      // A scoped red currently short-circuits runGreen, so the full-project typechecks and
+      // downstream blocking lints would otherwise stay unmeasured until another gate cycle.
+      // Reuse the existing non-test bundle to capture that failure inventory now. It continues
+      // through soft failures by design; only an unreadable candidate manifest hard-stops it.
+      const failureInventory =
+        failingSignatures.length > 0
+          ? await runPostSuiteLegs(
+              cfg.checkpointRoot,
+              buildGreenCheckpointEnv(
+                null,
+                process.env,
+                runId,
+                cfg.greenCheckpointCapacityMode,
+              ),
+              exec,
+              cfg.spaBuildWorkspace,
+              {
+                operatorPgEnv: gateOperatorPgEnv(process.env),
+                skipBuildReason:
+                  "early changed-file typecheck failure already blocks promotion",
+                ...(range
+                  ? {
+                      identity: {
+                        ...(runId ? { runId } : {}),
+                        candidate: range.to,
+                        headAtStart: range.to,
+                      },
+                    }
+                  : {}),
+              },
+            )
+          : undefined;
+
       return failingSignatures.length > 0
         ? {
             status: "failed",
             checkedFiles,
             summary: summaries.join("\n"),
-            failingSignatures: [...new Set(failingSignatures)],
+            failingSignatures: [
+              ...new Set([
+                ...failingSignatures,
+                ...(failureInventory?.failingSignatures ?? []),
+              ]),
+            ],
             diagnostics,
             failingFilePaths: [...new Set(failingFilePaths)],
+            ...(failureInventory
+              ? {
+                  failureInventory: {
+                    ran: failureInventory.ran,
+                    output: failureInventory.output,
+                    failingSignatures: failureInventory.failingSignatures,
+                    records: failureInventory.records,
+                  },
+                }
+              : {}),
           }
         : {
             status: "passed",
@@ -18843,6 +21351,43 @@ export function realCheckpointDeps(
     // lifetime (the caller stays alive to record the pipeline_event, so the fire is durable).
     emitEvent: terminalEvents.emit,
     flushTerminalEvents: terminalEvents.flush,
+    // WI-6554700010010213: a post-verdict deadline overrun becomes one durable pipeline event, so
+    // a step that times out on every run is queryable rather than a line in one run's log. Its
+    // own kind (migration 1491): on 'green_checkpoint' it would read as a gate outcome. A
+    // non-recording CLI run (no gate target) records nothing, like the disposition writer.
+    // The gate_health marker puts the newest overrun on routines:list health (which surfaces
+    // every gate_health key) beside the event. No counter: the recurrence count is DERIVED from
+    // the events, and a read-modify-write tally on this shallow-merge path would race.
+    async recordPostVerdictStepDeadline(info) {
+      if (!repairTarget) return;
+      const [{ appendPipelineEvent }, { mergeGateHealth }] = await Promise.all([
+        import("@papercusp/operator-core/lib/harness/git-sync/pipeline-events"),
+        import("@papercusp/operator-core/lib/release/gate-health-merge"),
+      ]);
+      const at = new Date().toISOString();
+      await Promise.all([
+        mergeGateHealth(repairTarget, {
+          lastPostVerdictDeadline: {
+            label: info.label,
+            deadlineMs: info.deadlineMs,
+            elapsedMs: info.elapsedMs,
+            at,
+          },
+        }),
+        appendPipelineEvent({
+          workspaceId: repairTarget.workspaceId,
+          installSlug: repairTarget.installSlug,
+          kind: "green_checkpoint_post_verdict",
+          status: "deadline-exceeded",
+          detail: {
+            label: info.label,
+            deadlineMs: info.deadlineMs,
+            elapsedMs: info.elapsedMs,
+            pipeline: pipelineName(cfg.integrationRoot),
+          },
+        }),
+      ]);
+    },
     // EI-13992: real wiring for the migration-currency preflight (see
     // CheckpointDeps.ensureMigrationsCurrent doc) — applies to the SAME dev PG
     // db-boot-migrate targets at operator boot, just without its once-per-process
@@ -19285,7 +21830,30 @@ export function realCheckpointDeps(
         // below judge no candidate, so stamping them would attribute lint/perf rows to
         // a sha they did not measure.
         execution?.candidate,
+        // WI-10005212: the affected-task guard legs (lint:migration-forward-compat) must
+        // judge sidecar reviewBy by the frozen queue's clock, like the post-suite leg does.
+        execution?.frozenCandidateOpenedAtMs,
       );
+      // This is the one candidate-suite call site. Grant dirty-checkout restoration only when
+      // the executed tree is the configured checkpoint checkout and that checkout is not the
+      // protected integration tree. The helper in affected-tests re-verifies Git's actual roots
+      // and the exact candidate SHA before any reset/clean, so a misconfigured or symlinked root
+      // fails open to running the full suite.
+      delete env.PC_TEST_REUSE_DISPOSABLE_CHECKPOINT_ROOT;
+      delete env.PC_TEST_REUSE_INTEGRATION_ROOT;
+      delete env.PC_TEST_REUSE_RELEASE_ROOT;
+      const checkpointRoot = path.resolve(cfg.checkpointRoot);
+      const integrationRoot = path.resolve(cfg.integrationRoot);
+      const releaseRoot = path.resolve(cfg.releaseRoot);
+      if (
+        path.resolve(treeDir) === checkpointRoot &&
+        checkpointRoot !== integrationRoot &&
+        checkpointRoot !== releaseRoot
+      ) {
+        env.PC_TEST_REUSE_DISPOSABLE_CHECKPOINT_ROOT = cfg.checkpointRoot;
+        env.PC_TEST_REUSE_INTEGRATION_ROOT = cfg.integrationRoot;
+        env.PC_TEST_REUSE_RELEASE_ROOT = cfg.releaseRoot;
+      }
       log(
         greenCheckpointCapacityEvidence(cfg.greenCheckpointCapacityMode, env),
       );
@@ -19302,6 +21870,7 @@ export function realCheckpointDeps(
       };
       const postSuiteOptions: PostSuiteRunOptions = {
         identity: postSuiteIdentity,
+        operatorPgEnv: gateOperatorPgEnv(process.env),
         ...(execution?.frozenCandidateOpenedAtMs !== undefined
           ? {
               frozenCandidateOpenedAtMs:
@@ -19335,12 +21904,18 @@ export function realCheckpointDeps(
       }
       // EI-78 `heavy`: the single biggest CPU consumer on this box outside the fleet itself
       // (measured 274s-2773s per run over 19 runs on 2026-07-26).
+      const suiteStartedAtMs = Date.now();
+      let suiteCompletedAtMs: number | null = null;
       const suitePromise = exec(cmd, args, {
         cwd: treeDir,
         env,
         allowNonZero: true,
         heavy: true,
         relayAffectedProgress: true,
+      }).then((result) => {
+        // Measure the child completion itself, before a slower concurrent repair leg.
+        suiteCompletedAtMs = Date.now();
+        return result;
       });
       // P-004 (green-gate-zero-wait-convergence-2026-09-08): a frozen repair
       // already paid for the initial serial verdict. On its re-verification run,
@@ -19790,6 +22365,10 @@ export function realCheckpointDeps(
         suiteOutput,
         resolvedHeadAtStart ?? execution?.candidate,
         Date.now(),
+        runId && suiteCompletedAtMs !== null ? {
+          command: cfg.greenCmd, runGroupId: runId,
+          startedAtMs: suiteStartedAtMs, completedAtMs: suiteCompletedAtMs,
+        } : null,
       );
       if (testPassReuse) log(`TEST_PASS_REUSE_ROUND ${testPassReuse.headline}`);
       return {
@@ -20026,7 +22605,7 @@ export function realCheckpointDeps(
     // the same checkpoint tree / setupTree contract runTestsAtRef relies on. A gate red
     // never populates `failingFiles` (that list is test-FILE-only), so without this seam
     // it fell straight past the stale-candidate rescue with nothing to re-run.
-    async runGateAtRef(ref, gateIds) {
+    async runGateAtRef(ref, gateIds, opts) {
       // Same honest-absence contract as runTestsAtRef: a setupTree throw here propagates
       // to the caller's .catch(() => null), which reads as tipRetest=null → 'tip re-run
       // unavailable' — never a fabricated REPRODUCE for a tip we never actually checked out.
@@ -20051,6 +22630,7 @@ export function realCheckpointDeps(
         // stamp it — but only once the checkout is verified to BE `ref` (a wrong sha is worse
         // than the reporter's own resolution).
         verifiedHead === ref ? ref : null,
+        opts?.frozenCandidateOpenedAtMs,
       );
       const measured = await measureTargetedGateRuns(gateIds, async (script, workspace) => {
         const invocation = workspace
@@ -20080,18 +22660,37 @@ export function realCheckpointDeps(
                 expectedSha: ref,
                 env,
                 scope: "targeted-gate",
-              }).catch((e: unknown) => {
+                // setupTree(ref) uses --prepare-existing, which preserves the isolated
+                // checkpoint source tree. Restore test artifacts to the verified ref before
+                // reuse checks; the opt-in must never be used on shared development checkouts.
+                restoreDirtyCheckpoint: true,
+                checkpointRoot: cfg.checkpointRoot,
+                integrationRoot: cfg.integrationRoot,
+                releaseRoot: cfg.releaseRoot,
+              }).catch(async (e: unknown) => {
+                const reason = `arming-threw(${String(e instanceof Error ? e.message : e).replace(/\s+/g, "_").slice(0, 160)})`;
                 log(
                   `TARGETED_TEST_PASS_REUSE ws=${workspace}::${script} applied=false ` +
-                    `reason=arming-threw(${String(e instanceof Error ? e.message : e).replace(/\s+/g, "_").slice(0, 160)})`,
+                    `reason=${reason}`,
                 );
+                const recorded = await recordGateReuseDecision(`${workspace}::${script}`, { offReason: reason }, {
+                  runContext: env.GREEN_CHECKPOINT === "1" && env.PAPERCUSP_TEST_RUN_SOURCE === "ci"
+                    ? "green-checkpoint"
+                    : "clean-local",
+                  runGroupId: env.PAPERCUSP_TEST_RUN_GROUP,
+                });
+                if (!recorded) log(`TARGETED_TEST_PASS_REUSE ws=${workspace}::${script} alarm-recording-failed=true`);
                 return null;
               })
             : null;
         for (const line of armed?.lines ?? []) log(line);
-        const taskEnv = armed?.env ?? env;
+        // WI-10006055: a live-plane lint re-run here needs the operator DSN too.
+        const taskEnv = gateScriptEnv(script, armed?.env ?? env);
         try {
-          return await exec(invocation.cmd, invocation.args, {
+          const taskArgs = armed?.args?.length
+            ? [...invocation.args, "--", ...armed.args]
+            : invocation.args;
+          return await exec(invocation.cmd, taskArgs, {
             cwd: invocation.cwd,
             env: taskEnv,
             allowNonZero: true,
@@ -20112,7 +22711,7 @@ export function realCheckpointDeps(
     // runGateAtRef above, with additional per-gate duration/lifecycle records (see
     // measureRepairTickLegs for the contract; the hold tick's checkpoint tree is idle,
     // so materializing repairHead here steps on nothing).
-    async runRepairTickLegs(ref, gateIds) {
+    async runRepairTickLegs(ref, gateIds, opts) {
       // WI-10001529: resolve through resolveGateRuns, NOT a bare NON_TEST_GATE_SCRIPTS
       // lookup. The lookup silently DROPPED every id that is not a registry key — which is
       // exactly what a queued `<ws> :: <script>` task signature is — so the one id whose
@@ -20128,6 +22727,9 @@ export function realCheckpointDeps(
         process.env,
         undefined,
         cfg.greenCheckpointCapacityMode,
+        undefined,
+        undefined,
+        opts?.frozenCandidateOpenedAtMs,
       );
       return measureRepairTickLegs(
         {
@@ -20148,17 +22750,21 @@ export function realCheckpointDeps(
                   args: ["run", script],
                   cwd: cfg.checkpointRoot,
                 };
+            // WI-10006055: the round-24 false red — plane lints measured here had no DSN.
+            const scriptEnv = gateScriptEnv(script, env);
             const r = await exec(invocation.cmd, invocation.args, {
               cwd: invocation.cwd,
-              env,
+              env: scriptEnv,
               allowNonZero: true,
-              ...rescueTaskWatchdogOptions(script, env),
+              ...rescueTaskWatchdogOptions(script, scriptEnv),
             });
             return {
               code: r.code,
               // WI-10002075: digest-first, never a blind tail — a red lint leg's last
               // 300 chars are its generic trailer, not the files it named.
-              tail: summarizeLegOutput(r.stderr || r.stdout),
+              // WI-10007516: BOTH streams — `stderr || stdout` dropped vitest's stdout
+              // whenever npm wrote its lifecycle footer to stderr (every failed script).
+              tail: summarizeLegStreams([r.stdout, r.stderr]),
             };
           },
           scriptAvailability: (script) =>
@@ -20190,7 +22796,7 @@ export function realCheckpointDeps(
             ...rescueTaskWatchdogOptions(script, env),
           });
           // WI-10002075: see the repair-tick seam above — same digest-first capture.
-          return { code: r.code, tail: summarizeLegOutput(r.stderr || r.stdout) };
+          return { code: r.code, tail: summarizeLegStreams([r.stdout, r.stderr]) };
         },
         refreshAfterRefMove: async (previous) => {
           const fresh = await this.readFrozenRepairQueue?.();
@@ -20388,6 +22994,26 @@ export function realCheckpointDeps(
     // the pre-push guard on `main` (bin/git-hooks/pre-push). Everyone else's
     // pushes to main are blocked by that hook.
     push: async (ref, baseSha, candidateSha) => {
+      // pot-review-integration-mode P-020 (D-006/D-007): a working-copy (review) pot
+      // publishes its promoted main to ITS FORK and refreshes the standing PR — never
+      // to the main repository. Direct-mode/unowned checkouts fall through to the
+      // origin push below unchanged; an unknown mode THROWS (promotion held).
+      const { publishPromotion, createDefaultPublishPromotionDeps } =
+        await import("@papercusp/operator-core/lib/harness/git-sync/promotion-push-target");
+      const routed = await publishPromotion(
+        {
+          repoPath: cfg.integrationRoot,
+          // The launcher stamps the verdict target; an unstamped run (direct CLI) falls
+          // back to the operator-home workspace so a registered pot home is not held
+          // merely for lack of a workspace id.
+          workspaceId:
+            gateVerdictTargetFromEnv()?.workspaceId ?? resolveHomeGateVerdictTarget()?.workspaceId,
+          sha: candidateSha ?? ref,
+          ref,
+        },
+        await createDefaultPublishPromotionDeps(log),
+      );
+      if (routed.kind !== "origin") return;
       const { gitOriginUrl } =
         await import("@papercusp/operator-core/lib/cupboard/resolve-repo-coords");
       const origin = await gitOriginUrl(cfg.integrationRoot);
@@ -20402,6 +23028,16 @@ export function realCheckpointDeps(
         return;
       }
       const remoteRef = ref.startsWith("refs/") ? ref : `refs/heads/${ref}`;
+      // A gitlink to a gen self-heal submodule commit must resolve on that submodule's
+      // origin before main references it; this throws (holding promotion) if it cannot.
+      const pins = await publishGenHealGitlinks({
+        integrationRoot: cfg.integrationRoot,
+        candidateSha: candidateSha ?? ref,
+        git: (argv, cwd) => exec("git", ["-C", cwd, ...argv], { allowNonZero: true }),
+      });
+      if (pins.length > 0) {
+        log(`git-push: published gate-pin tag(s) ${pins.map((p) => `${p.path}@${p.sha.slice(0, 12)}`).join(", ")}`);
+      }
       await exec(
         "git",
         [
@@ -20453,6 +23089,12 @@ export function realCheckpointDeps(
     // `source: 'green-checkpoint'` so the open/clear pair is idempotent across
     // the hourly tick. Fail-safe — the gate verdict never depends on this.
     async escalate(summary, body) {
+      // The legacy escalation store and its owner-notification dedup cannot hide the condition.
+      try {
+        const { broadcastSevereEvent } = await import("@papercusp/operator-core/lib/severe-event-broadcast");
+        await broadcastSevereEvent({ conditionKey: `alarm:checkpoint-release-red:${pipelineName(cfg.integrationRoot)}`,
+          summary, body, oneShot: true });
+      } catch { /* fail-safe — the gate verdict never depends on the broadcast */ }
       const { openEscalation, listEscalations } =
         await import("@papercusp/operator-core/lib/agent-tools/coordination/escalations");
       // WI-36238: opt this row OUT of the attention TTL sweep. Imported here
@@ -20524,6 +23166,8 @@ export function realCheckpointDeps(
       }
     },
     async clearEscalation() {
+      const { resolveAlarm } = await import("@papercusp/operator-core/lib/alarm-attention");
+      await resolveAlarm(`alarm:checkpoint-release-red:${pipelineName(cfg.integrationRoot)}`, "checkpoint-release-red");
       const { listEscalations, resolveEscalation } =
         await import("@papercusp/operator-core/lib/agent-tools/coordination/escalations");
       const open = await listEscalations({ status: "open" });
@@ -20716,12 +23360,14 @@ function resolveCandidateSha(treeDir: string): string | undefined {
   }
 }
 
-/** P-014 / WI-224710: delete checkpoint-log artifacts older than `days` so the
- *  directory tree doesn't grow unbounded. Workspace-scoped gates publish beneath
- *  per-hive subdirectories, so a top-level-only scan silently misses most logs.
+/** P-014 / WI-224710: bound diagnostic logs by `days`, while retaining create-only
+ *  capture receipts for the gate ledger's 90-day historical evidence window.
+ *  Workspace-scoped gates publish beneath per-hive subdirectories, so recurse.
  *  Best-effort, never follows symlinks, and never throws. */
 function pruneOldLogs(dir: string, days: number): void {
-  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const cutoff = now - days * 24 * 60 * 60 * 1000;
+  const captureCutoff = now - Math.max(days, 90) * 24 * 60 * 60 * 1000;
   const pruneDir = (currentDir: string): void => {
     const entries = (() => {
       try {
@@ -20735,8 +23381,9 @@ function pruneOldLogs(dir: string, days: number): void {
       try {
         if (entry.isDirectory()) {
           pruneDir(p);
-        } else if (entry.isFile() && statSync(p).mtimeMs < cutoff) {
-          unlinkSync(p);
+        } else if (entry.isFile()) {
+          const retainedCapture = /^pure-proof-capture-[A-Za-z0-9:_-]+\.json$/.test(entry.name);
+          if (statSync(p).mtimeMs < (retainedCapture ? captureCutoff : cutoff)) unlinkSync(p);
         }
       } catch {
         /* skip a vanished/locked file */
@@ -21024,6 +23671,8 @@ export function runCmd(
 
 // CLI: `tsx green-checkpoint.ts [--candidate <ref>] [--no-push]`
 if (require.main === module) {
+  // This controller also kills child trees; cover its own read-only Git commands.
+  applyGitOptionalLocksDefault();
   const {
     releaseConfig,
     integrationRootEvidence,
@@ -21061,24 +23710,19 @@ if (require.main === module) {
    * or red, so the emitter retires the global and pipeline-scoped green/red siblings. The
    * await engine's candidate and registration-group filters protect unrelated waits.
    */
-  const emitInconclusiveVerdict = async (
-    r: CheckpointResult,
-  ): Promise<void> => {
-    try {
-      const pipeline = pipelineName(cfg.integrationRoot);
-      const { emitAwaitedEvent } =
-        await import("@papercusp/operator-core/lib/events/await/engine");
-      await emitInconclusiveCheckpointVerdict(r, pipeline, emitAwaitedEvent);
-    } catch (e) {
-      console.error(
-        `${orchestratorStdoutTag()} green-checkpoint:inconclusive emit FAILED (awaiters will fall back to their timeout): ${e instanceof Error ? e.message : e}`,
-      );
-    }
-  };
-
   let stopQualificationProgress: (() => Promise<void>) | undefined;
   let flushTerminalEvents: CheckpointDeps['flushTerminalEvents'];
-  const emitResult = async (r: CheckpointResult): Promise<void> => {
+  let verdictRecordedAtMs: number | null = null;
+  const emitResult = async (
+    r: CheckpointResult,
+    emitOpts: { selfWatchdog?: boolean } = {},
+  ): Promise<void> => {
+    // WI-6554700010009547: entry lines go to STDERR (stdout carries only the marker), so a
+    // stall between the verdict and the marker names its own step in the run log.
+    await writeStdioFlushed(
+      process.stderr,
+      `${orchestratorStdoutTag()} terminal emit started (qualification-progress stop, verdict record, marker)\n`,
+    );
     await stopQualificationProgress?.();
     // The pretty result goes to STDERR (human-readable); STDOUT carries ONLY the
     // single marker line. CRITICAL for cross-version compat: the routine that invokes
@@ -21092,11 +23736,28 @@ if (require.main === module) {
       // WI-10000288: recording belongs inside the one terminal seam, before the marker/event.
       // The pre-lock crash path also calls emitResult; keeping the recorder here prevents an
       // emitted inconclusive wake from leaving its logical qualification falsely `running`.
-      record: recordOwnVerdict,
-      writeHuman: (result) => console.error(JSON.stringify(result, null, 2)),
-      writeMarker: (line) => console.log(line),
+      record: gateVerdictTargetFromEnv() ? async (result) => {
+        await writeStdioFlushed(
+          process.stderr,
+          `${orchestratorStdoutTag()} terminal verdict record started\n`,
+        );
+        const recorded = await recordOwnVerdict(
+          result,
+          terminalVerdictRecordOptions(emitOpts.selfWatchdog ? "self-watchdog" : "normal"),
+        );
+        await writeStdioFlushed(
+          process.stderr,
+          `${orchestratorStdoutTag()} terminal verdict record ${recorded ? "completed" : "not recorded"}\n`,
+        );
+        verdictRecordedAtMs = recorded ? Date.now() : null;
+        return recorded;
+      } : undefined,
+      // WI-10005994: flush-awaited writes, so the stderr dump is fully in the shared `2>&1`
+      // pipe before the first marker byte is written (an unawaited dump tore the marker).
+      writeHuman: (result) => writeStdioFlushed(process.stderr, `${JSON.stringify(result, null, 2)}\n`),
+      writeMarker: (line) => writeStdioFlushed(process.stdout, `${line}\n`),
       // AWAITED (not fire-and-forget): every caller exits immediately after emitResult.
-      emitInconclusive: emitInconclusiveVerdict,
+      emitInconclusive: (result) => emitInconclusiveVerdict(result, pipelineName(cfg.integrationRoot)),
       emitTerminalEvents: async (result, recorded) => {
         await flushTerminalEvents?.(result, recorded);
       },
@@ -21119,6 +23780,9 @@ if (require.main === module) {
         }
       },
     });
+    await resolveCheckpointSelfWatchdog(r, pipelineName(cfg.integrationRoot));
+    // This child exits immediately after the terminal seam; beforeExit cannot drain it.
+    await (await import("@papercusp/operator-core/lib/degradation/fallback-observations")).flushFallbackObservations();
   };
 
   /**
@@ -21140,7 +23804,10 @@ if (require.main === module) {
    * deployed tree driving the integration tree's CLI) working. Any failure here degrades to the
    * same place, so this can never leave the gate blind: the worst case is the old behaviour.
    */
-  const recordOwnVerdict = async (r: CheckpointResult): Promise<boolean> => {
+  const recordOwnVerdict = async (
+    r: CheckpointResult,
+    recordOpts: { signedShardDeadlineMs?: number } = {},
+  ): Promise<boolean> => {
     try {
       const { gateVerdictTargetFromEnv } =
         await import("@papercusp/operator-core/lib/release/gate-verdict-target");
@@ -21151,6 +23818,7 @@ if (require.main === module) {
       return await recordCheckpointVerdict(
         target,
         checkpointVerdictFromResult(r),
+        recordOpts,
       );
     } catch (e) {
       console.error(
@@ -21161,12 +23829,12 @@ if (require.main === module) {
   };
 
   const candidateArg = arg("--candidate");
-  const candidateSource = checkpointCandidateSourceFromCli(
+  let candidateSource = checkpointCandidateSourceFromCli(
     candidateArg,
     arg("--candidate-source"),
     gateVerdictTargetFromEnv() !== null,
   );
-  const { diagnostic } = checkpointCandidateProvenance({ candidateSource });
+  let { diagnostic } = checkpointCandidateProvenance({ candidateSource });
   // WI-4957: ONE runId for this whole process, shared by the normal verdict path
   // (realCheckpointDeps below) AND the self-watchdog emergency-red path (which builds its
   // own event payload independently) — so every event this process could possibly emit
@@ -21174,6 +23842,7 @@ if (require.main === module) {
   const scheduledRunToken = process.env[CHECKPOINT_SCHEDULED_RUN_ENV]?.trim();
   const runId = checkpointRunIdFromScheduledEnv(scheduledRunToken);
   const gateFireId = gateFireIdFromEnv();
+  const processStartedAtMs = Math.floor(Date.now() - process.uptime() * 1000);
   let resolvedCandidateForRun: string | null = null;
 
   /**
@@ -21213,6 +23882,10 @@ if (require.main === module) {
   const beginCheckpoint = async (): Promise<void> => {
     let prewarmedDependencyGeneration: PrewarmedCheckpointDependencyGeneration;
     let lock: CheckpointRunLock;
+    let qualificationProgress: ReturnType<typeof startCheckpointQualificationProgress> = {
+      note: () => {},
+      stop: async () => {},
+    };
     try {
       const pinnedCandidate = await scheduledAttemptPinnedCandidate({
         scheduled: Boolean(scheduledRunToken),
@@ -21220,20 +23893,114 @@ if (require.main === module) {
         target: gateVerdictTargetFromEnv(),
         attemptId: process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim(),
       });
+      // If prewarm fails before the run candidate is resolved, the terminal result must still
+      // identify the qualification attempt that this fire joined, not the moving branch tip.
+      resolvedCandidateForRun = pinnedCandidate;
+      const scheduledPrewarmTarget = await scheduledAttemptPrewarmTarget(
+        pinnedCandidate,
+        { root: cfg.integrationRoot },
+      );
+      if (scheduledPrewarmTarget) {
+        candidateSource = scheduledPrewarmTarget.candidateSource;
+        diagnostic = checkpointCandidateProvenance({ candidateSource }).diagnostic;
+      }
       if (pinnedCandidate) {
+        const selectedCandidate = scheduledPrewarmTarget?.candidate ?? pinnedCandidate;
+        const changedByQueue = selectedCandidate !== pinnedCandidate;
         console.log(
           `${orchestratorStdoutTag()} scheduled fire joined logical attempt ` +
-            `${process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim()}; judging its pinned candidate ` +
-            `${pinnedCandidate.slice(0, 12)} instead of ${cfg.integrationBranch} tip (WI-10002602)`,
+            `${process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim()}; ` +
+            (changedByQueue
+              ? `frozen repair policy selected ${selectedCandidate.slice(0, 12)} instead of stored candidate ${pinnedCandidate.slice(0, 12)}`
+              : `using its pinned candidate ${selectedCandidate.slice(0, 12)}`) +
+            ` for prewarm and suite selection (WI-10004180)`,
         );
       }
+      // Attach before beginCheckpointPreflight: dependency prewarm and generation publication can
+      // take minutes, so the periodic heartbeat must cover that work as well as the suite.
+      const qualificationTarget = gateVerdictTargetFromEnv();
+      const qualificationAttemptId = process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim() || undefined;
+      const qualificationCandidate = candidateArg ?? scheduledPrewarmTarget?.candidate ?? pinnedCandidate ?? null;
+      const activation = await activateCheckpointQualificationRunner({
+        target: qualificationTarget,
+        attemptId: qualificationAttemptId,
+        gateFireId,
+        runId,
+        candidate: qualificationCandidate,
+        pid: process.pid,
+      });
+      if (activation.status !== 'not-qualifying' && activation.status !== 'updated' && activation.status !== 'idempotent') {
+        // WI-6554700010009570: a refusal because a DIFFERENT live runner already holds this attempt
+        // is a lost launch race, not a crash. Stand down on the lock-loser terminal so the no-verdict
+        // streak does not advance and the holder's in-flight candidate marker survives.
+        const selfUnits = ownCgroupUnits();
+        const incumbent = await liveIncumbentAfterAttachConflict(activation, { pid: process.pid, runId, units: selfUnits });
+        if (incumbent) {
+          const summary = attachRaceSkipSummary(incumbent);
+          console.log(`${orchestratorStdoutTag()} ${summary}`);
+          await emitResult({
+            advanced: false,
+            candidate: incumbent.candidate ?? qualificationCandidate ?? cfg.integrationBranch,
+            from: null,
+            green: null,
+            reason: "skipped-locked",
+            summary,
+            candidateSource,
+            ...(diagnostic ? { diagnostic } : {}),
+            ...(gateFireId ? { gateFireId } : {}),
+          });
+          process.exit(0);
+        }
+        throw new Error(checkpointQualificationAttachmentRefusalSummary(activation, {
+          attemptId: qualificationAttemptId, gateFireId, candidate: qualificationCandidate, runId,
+        }, selfUnits));
+      }
+      qualificationProgress = startCheckpointQualificationProgress({
+        target: qualificationTarget,
+        attemptId: qualificationAttemptId,
+        gateFireId,
+        runId,
+        pid: process.pid,
+      });
+      stopQualificationProgress = qualificationProgress.stop;
+
       const preflight = await beginCheckpointPreflight(
         cfg,
-        candidateArg ?? pinnedCandidate ?? cfg.integrationBranch,
+        candidateArg ?? scheduledPrewarmTarget?.candidate ?? pinnedCandidate ?? cfg.integrationBranch,
       );
+      if (preflight.kind === "not-applicable") {
+        await emitResult({
+          advanced: false,
+          candidate: preflight.candidate,
+          from: null,
+          green: null,
+          reason: "not-applicable",
+          summary: preflight.summary,
+          candidateSource,
+          ...(diagnostic ? { diagnostic } : {}),
+          ...(gateFireId ? { gateFireId } : {}),
+        });
+        process.exit(0);
+      }
       resolvedCandidateForRun = preflight.candidate;
       prewarmedDependencyGeneration = preflight.prewarmedDependencyGeneration;
       lock = preflight.lock;
+      if (lock.acquired) {
+        // The preflight may resolve the final executable candidate after dependency preparation.
+        // Refresh the reservation against that exact candidate before entering the suite.
+        const refreshed = await activateCheckpointQualificationRunner({
+          target: qualificationTarget,
+          attemptId: qualificationAttemptId,
+          gateFireId,
+          runId,
+          candidate: resolvedCandidateForRun,
+          pid: process.pid,
+        });
+        if (refreshed.status !== 'not-qualifying' && refreshed.status !== 'updated' && refreshed.status !== 'idempotent') {
+          lock.release();
+          throw new Error(`checkpoint qualification runner candidate refresh refused: ${refreshed.status}`);
+        }
+      }
     } catch (e) {
       console.error(
         `${orchestratorStdoutTag()} FAILED before checkpoint lock:`,
@@ -21278,28 +24045,6 @@ if (require.main === module) {
           process.exit(1);
         });
     } else {
-      const activation = await activateScheduledCheckpointRunner({
-        scheduled: Boolean(scheduledRunToken),
-        target: gateVerdictTargetFromEnv(),
-        attemptId: process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim(),
-        gateFireId,
-        runId,
-        candidate: resolvedCandidateForRun,
-        pid: process.pid,
-      });
-      if (activation.status !== 'not-scheduled' && activation.status !== 'updated' && activation.status !== 'idempotent') {
-        lock.release();
-        await emitCrashResult(new Error(`scheduled qualification runner activation refused: ${activation.status}`));
-        process.exit(1);
-      }
-      const qualificationProgress = startScheduledQualificationProgress({
-        target: scheduledRunToken ? gateVerdictTargetFromEnv() : null,
-        attemptId: process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim(),
-        gateFireId,
-        runId,
-        pid: process.pid,
-      });
-      stopQualificationProgress = qualificationProgress.stop;
       // WI-1319 root fix (c): arm the self-watchdog for the lifetime of this run —
       // canceled on every normal exit path below, so it only ever fires when this run
       // misses its configured deadline (see armSelfWatchdog's doc comment).
@@ -21320,7 +24065,7 @@ if (require.main === module) {
         // single event-loop turn. Every agent parked on the red verdict via checkpoint:await missed
         // it and hung to its own timeout — in the ONE situation (lost parent, abnormal exit) where
         // that wake matters most. armSelfWatchdog now BOUND-awaits this hook before the kill.
-        onFire: async () => {
+        onFire: async (fireReason, fireContext) => {
           // EI-20669541349219660: the suite MAY have finished red before this kill — its
           // parsed failing-file list is persisted beside the run-lock the moment it exists
           // (writeFailingFilesMarker, keyed by runId). Carrying it here is what breaks the
@@ -21333,12 +24078,6 @@ if (require.main === module) {
             ),
             runId,
           );
-          const watchdogSummary =
-            selfWatchdog.trigger === "manual-run-deadline"
-              ? `manual checkpoint exceeded its ${formatSelfWatchdogDuration(selfWatchdog.ms)} deadline with no normal exit — ` +
-                `run-lock released and process group is being terminated.`
-              : `self-watchdog fired after ${formatSelfWatchdogDuration(selfWatchdog.ms)} with no normal exit — ` +
-                `checkpoint run likely lost its supervising parent; run-lock released and process group is being terminated.`;
           // EI-20702428259478130: this verdict is INCONCLUSIVE, not red — see `green: null` in the
           // builder. A watchdog kill means this run never rendered a verdict, so claiming the code
           // is RED is a fabricated measurement.
@@ -21372,9 +24111,8 @@ if (require.main === module) {
             buildSelfWatchdogCheckpointResult({
               candidate: prewarmedDependencyGeneration.candidate,
               runId,
-              summary: carried.note
-                ? `${watchdogSummary} ${carried.note}`
-                : watchdogSummary,
+              summary: carried.note ?? '',
+              watchdog: { reason: fireReason, context: fireContext },
               // EI-20702428259478130: carry the rescued failing-file list on the RESULT rather than
               // only in an event payload. This used to ride on the hand-rolled `green-checkpoint:red`
               // emit below, which is gone (see the block comment there); `failingTests` is a typed
@@ -21386,7 +24124,9 @@ if (require.main === module) {
             });
           // Emits the result marker AND — because `green === null` — dispatches
           // `green-checkpoint:inconclusive` (global + pipeline-scoped) via emitInconclusiveVerdict.
-          await emitResult(inconclusive);
+          // WI-6554700010009547: selfWatchdog skips signed shard publication so the whole
+          // emit fits inside SELF_WATCHDOG_ONFIRE_GRACE_MS.
+          await emitResult(inconclusive, { selfWatchdog: true });
           // EI-20702428259478130: this path used to ALSO hand-roll `green-checkpoint:red` +
           // `green-checkpoint:red:<pipeline>` here. That is deleted rather than converted, for two
           // reasons: (1) emitResult above now fires the inconclusive pair for us, so keeping the red
@@ -21401,24 +24141,7 @@ if (require.main === module) {
             candidateSource !== "pinned" &&
             diagnostic !== "candidate-pinned"
           ) {
-            try {
-              const { notifyAttention } =
-                await import("@papercusp/operator-core/lib/attention-notify");
-              await notifyAttention({
-                kind: "intervention",
-                title:
-                  "Release pipeline WEDGED — green-checkpoint self-watchdog fired (no verdict)",
-                body:
-                  inconclusive.summary ?? "self-watchdog fired with no summary",
-                importance: "urgent",
-                data: {
-                  candidate: inconclusive.candidate,
-                  reason: inconclusive.reason,
-                },
-              });
-            } catch {
-              /* best-effort — the kill proceeds regardless */
-            }
+            await onFire(inconclusive, pipelineName(cfg.integrationRoot));
           }
         },
       });
@@ -21549,6 +24272,45 @@ if (require.main === module) {
         gateFireId,
       );
       flushTerminalEvents = checkpointDeps.flushTerminalEvents;
+      // WI-6554700010009615 stage 1: past the admission refire the run is post-verdict.
+      checkpointDeps.enterPostVerdictPhase = () => {
+        watchdog.tighten({
+          hardCeilingMs: POST_VERDICT_WATCHDOG_MS,
+          reason: "post-verdict return funnel",
+        });
+      };
+      // Same durable verdict target/ledger as normal recording. The reader is memoized for
+      // auto-refires; direct realCheckpointDeps test callers never gain a new ambient DB read.
+      let previousSuiteReplay: Promise<GateSuiteVerdictReplay | null> | undefined;
+      checkpointDeps.readLastSuiteVerdictReplay = () => previousSuiteReplay ??= (async () => {
+        const { gateVerdictTargetFromEnv } = await import('@papercusp/operator-core/lib/release/gate-verdict-target');
+        const target = gateVerdictTargetFromEnv();
+        if (!target) return null;
+        const { readLastGateSuiteVerdictReplay } = await import('@papercusp/operator-core/lib/harness/routines/release-actions');
+        return readLastGateSuiteVerdictReplay(target);
+      })();
+      const finalizeNormalResult = createNormalCheckpointFinalizer({
+        claimTerminal,
+        // emitResult records BEFORE marker/event/exit; capture retains the run lock.
+        emitResult,
+        captureProofs: () => runPostVerdictPureProofCapture(cfg, runId, watchdog.cancel,
+          undefined, undefined, processStartedAtMs),
+        archiveCapture: async (result, capture, boundaries) => {
+          let promotion: PureProofCaptureArchive['promotion'] = null;
+          try {
+            if (result.logPath) promotion = readGatePromotionDecision(readFileSync(result.logPath, 'utf8'));
+          } catch { /* missing artifact is unmeasured */ }
+          archivePureProofCapture(cfg.checkpointLogDir, {
+            version: 1, runId, gateFireId: gateFireId ?? null, pid: process.pid,
+            processStartedAtMs,
+            judgedSha: result.repairVerificationHead ?? result.candidate,
+            ...boundaries, verdictRecordedAtMs, promotion,
+            capture: parsePureProofCaptureResult(capture), archivedAtMs: Date.now(),
+          }, (line) => console.log(`${orchestratorStdoutTag()} ${line}`));
+        },
+        warnArchive: (error) => console.error(`${orchestratorStdoutTag()} capture archive failed: ${error}`),
+        releaseAndExit,
+      });
       runGreenCheckpoint(cfg, checkpointDeps, {
         candidate: candidateArg,
         candidateHint: prewarmedDependencyGeneration.candidate,
@@ -21556,14 +24318,14 @@ if (require.main === module) {
         ...(diagnostic ? { diagnostic } : {}),
         noPush: process.argv.includes("--no-push"),
       })
-        .then(async (r) => {
-          // Claim the terminal race before recording/emitting. If a managed signal already owns
-          // it, its awaited finalizer is responsible for the only marker and process exit.
-          if (!claimTerminal("normal")) return;
-          // emitResult records BEFORE marker/event/exit and stamps `recorded` on the marker, so
-          // the routine never records the same verdict twice and process.exit cannot cut it off.
-          await emitResult(r);
-          releaseAndExit(0);
+        .then((result) => {
+          // WI-6554700010009615 stage 2: every leg is done; only the terminal emit is left before
+          // pure proof capture cancels the watchdog and runs on its own budget.
+          watchdog.tighten({
+            hardCeilingMs: POST_VERDICT_FINALIZE_WATCHDOG_MS,
+            reason: "terminal finalize",
+          });
+          return finalizeNormalResult(result);
         })
         .catch(async (e) => {
           // The same awaited finalizer serves ordinary promise rejection and process-level fatal

@@ -7,11 +7,11 @@
  *   - kind='harness' → harness's role config (out of scope for MCP v1;
  *     this server doesn't admit harness bearers as direct callers).
  *   - kind='system'  → harness_shared.system_principals.capabilities
- *   - kind='pi'      → harness_shared.pi_sessions.capabilities (only if
- *     ended_at IS NULL).
+ *   - kind='pi'      → harness_shared.pi_sessions.capabilities plus an
+ *     optional exact tool-name scope (only if not ended and expires_at is future).
  *
  * In-memory cap state is keyed by (workspace_id, principal_slug) in a
- * bounded TTL+LRU cache (negative results included). Capability writes
+ * bounded TTL+LRU cache (negative results included). Principal writes
  * (provisioning.ts) emit a NOTIFY on PRINCIPAL_INVALIDATE_CHANNEL that
  * this module LISTENs to in order to invalidate eagerly; the TTL bounds
  * staleness if the LISTEN is unavailable.
@@ -79,13 +79,15 @@ function lruGet<V>(map: Map<string, LruEntry<V>>, key: string): LruEntry<V> | un
  * (a negative result — revoked / missing / out-of-scope) takes the shorter
  * negative TTL so a just-provisioned principal racing a probe isn't masked long.
  */
-function lruSet<V>(map: Map<string, LruEntry<V>>, key: string, value: V): void {
+function lruSet<V>(map: Map<string, LruEntry<V>>, key: string, value: V, maxAgeMs?: number): void {
   if (!map.has(key) && map.size >= CACHE_MAX) {
     const oldest = map.keys().next().value;
     if (oldest !== undefined) map.delete(oldest);
   }
   map.delete(key);
-  map.set(key, { value, expiresAt: Date.now() + (value ? CACHE_TTL_MS : NEGATIVE_TTL_MS) });
+  const defaultTtl = value ? CACHE_TTL_MS : NEGATIVE_TTL_MS;
+  const ttl = maxAgeMs === undefined ? defaultTtl : Math.min(defaultTtl, Math.max(1, maxAgeMs));
+  map.set(key, { value, expiresAt: Date.now() + ttl });
 }
 
 /** (workspace_id, principal_slug) → resolved Principal capabilities. */
@@ -110,6 +112,10 @@ function cacheKey(workspaceId: string, slug: string): string {
 
 let listenerStarted = false;
 let listenerWarned = false;
+type InvalidationListenerHandle = { unlisten: () => Promise<void> };
+let invalidationListenerHandle: InvalidationListenerHandle | null = null;
+let invalidationListenerStart: Promise<void> | null = null;
+let invalidationListenerGeneration = 0;
 
 /**
  * Start the LISTEN that makes `invalidate()` fire on capability writes.
@@ -119,6 +125,7 @@ let listenerWarned = false;
 function ensureInvalidationListener(): void {
   if (listenerStarted) return;
   listenerStarted = true;
+  const generation = invalidationListenerGeneration;
   // LISTEN is session-bound and must stay off getOrgPg(), whose query pool is
   // intentionally routed through PgBouncer transaction mode on server hosts.
   // PgBouncer can discard NotificationResponse packets from an unlinked server
@@ -128,21 +135,32 @@ function ensureInvalidationListener(): void {
   // template without .listen — skip silently there.
   const listen = (sql as unknown as { listen?: unknown }).listen;
   if (typeof listen !== 'function') return;
-  void sql
-    .listen(PRINCIPAL_INVALIDATE_CHANNEL, (payload: string) => {
-      try {
-        const parsed = JSON.parse(payload) as { workspace_id?: unknown; slug?: unknown };
-        if (typeof parsed.workspace_id === 'string' && typeof parsed.slug === 'string') {
-          invalidate(parsed.workspace_id, parsed.slug);
-          return;
+  const start = (async () => {
+    try {
+      const handle = await sql.listen(PRINCIPAL_INVALIDATE_CHANNEL, (payload: string) => {
+        try {
+          const parsed = JSON.parse(payload) as { workspace_id?: unknown; slug?: unknown };
+          if (typeof parsed.workspace_id === 'string' && typeof parsed.slug === 'string') {
+            invalidate(parsed.workspace_id, parsed.slug);
+            return;
+          }
+        } catch {
+          // fall through to the safe fallback
         }
-      } catch {
-        // fall through to the safe fallback
+        CACHE.clear();
+        TOKEN_INDEX_CACHE.clear();
+      });
+      // A test reset can retire the db-org listener pool while this fire-and-
+      // forget LISTEN is still connecting. Never let that stale completion
+      // resurrect a socket after teardown; close the returned subscription
+      // immediately instead.
+      if (!listenerStarted || generation !== invalidationListenerGeneration) {
+        await handle.unlisten().catch(() => {});
+        return;
       }
-      CACHE.clear();
-      TOKEN_INDEX_CACHE.clear();
-    })
-    .catch((err: unknown) => {
+      invalidationListenerHandle = handle;
+    } catch (err: unknown) {
+      if (generation !== invalidationListenerGeneration) return;
       listenerStarted = false; // retry on a later resolve
       if (!listenerWarned) {
         listenerWarned = true;
@@ -151,7 +169,12 @@ function ensureInvalidationListener(): void {
           err,
         );
       }
-    });
+    }
+  })();
+  invalidationListenerStart = start;
+  void start.finally(() => {
+    if (invalidationListenerStart === start) invalidationListenerStart = null;
+  });
 }
 
 function bearerHash(bearer: string): string {
@@ -236,8 +259,8 @@ export async function resolveBearer(bearer: string): Promise<Principal | null> {
   const cached = lruGet(CACHE, ck);
   if (cached) return cached.value;
 
-  const capabilities = await loadCapabilities(workspaceId, kind, slug, bh);
-  if (!capabilities) {
+  const authz = await loadPrincipalAuthorization(workspaceId, kind, slug, bh);
+  if (!authz) {
     lruSet(CACHE, ck, null);
     return null;
   }
@@ -250,21 +273,34 @@ export async function resolveBearer(bearer: string): Promise<Principal | null> {
     kind,
     slug,
     workspaceId,
-    capabilities,
+    capabilities: authz.capabilities,
     authMethod: 'bearer-token',
     trust: 'trusted',
+    ...(authz.allowedTools === undefined ? {} : { allowedTools: authz.allowedTools }),
     ...(roles ? { roles } : {}),
   };
-  lruSet(CACHE, ck, principal);
+  const expiresInMs = authz.expiresAtMs === undefined ? undefined : authz.expiresAtMs - Date.now();
+  if (expiresInMs !== undefined && expiresInMs <= 0) {
+    lruSet(CACHE, ck, null);
+    return null;
+  }
+  lruSet(CACHE, ck, principal, expiresInMs);
   return principal;
 }
 
-async function loadCapabilities(
+interface PrincipalAuthorization {
+  capabilities: ReadonlySet<string>;
+  allowedTools?: ReadonlySet<string>;
+  /** PI session expiry as epoch milliseconds; system principals do not expire here. */
+  expiresAtMs?: number;
+}
+
+async function loadPrincipalAuthorization(
   workspaceId: string,
   kind: 'system' | 'pi',
   slug: string,
   expectedHash: string,
-): Promise<ReadonlySet<string> | null> {
+): Promise<PrincipalAuthorization | null> {
   return withWorkspace(workspaceId, async (tx) => {
     if (kind === 'system') {
       const name = slug.startsWith('system:') ? slug.slice('system:'.length) : slug;
@@ -276,20 +312,35 @@ async function loadCapabilities(
       `;
       if (!rows.length) return null;
       if (rows[0].bearer_hash !== expectedHash) return null;
-      return setOf(rows[0].capabilities);
+      return { capabilities: setOf(rows[0].capabilities) };
     }
     // pi
     const sessionId = slug.startsWith('pi:') ? slug.slice('pi:'.length) : slug;
-    const rows = await tx<Array<{ bearer_hash: string; capabilities: unknown; ended_at: Date | null }>>`
-      SELECT bearer_hash, capabilities, ended_at
+    const rows = await tx<Array<{
+      bearer_hash: string;
+      capabilities: unknown;
+      allowed_tools: unknown;
+      ended_at: Date | null;
+      expires_at: Date | string;
+    }>>`
+      SELECT bearer_hash, capabilities, allowed_tools, ended_at, expires_at
         FROM harness_shared.pi_sessions
        WHERE workspace_id = ${workspaceId} AND session_id = ${sessionId}
+         AND expires_at > now()
        LIMIT 1
     `;
     if (!rows.length) return null;
     if (rows[0].ended_at) return null;
     if (rows[0].bearer_hash !== expectedHash) return null;
-    return setOf(rows[0].capabilities);
+    const expiresAtMs = new Date(rows[0].expires_at).getTime();
+    if (!Number.isFinite(expiresAtMs) || Date.now() >= expiresAtMs) return null;
+    return {
+      capabilities: setOf(rows[0].capabilities),
+      ...(rows[0].allowed_tools === null || rows[0].allowed_tools === undefined
+        ? {}
+        : { allowedTools: setOf(rows[0].allowed_tools) }),
+      expiresAtMs,
+    };
   });
 }
 
@@ -335,11 +386,23 @@ export function invalidate(workspaceId: string, slug: string): void {
   CACHE.delete(cacheKey(workspaceId, slug));
 }
 
+/** Test-only — close the lazy LISTEN before rotating the db-org test pool. */
+export async function _stopInvalidationListenerForTests(): Promise<void> {
+  listenerStarted = false;
+  invalidationListenerGeneration += 1;
+  const start = invalidationListenerStart;
+  invalidationListenerStart = null;
+  const handle = invalidationListenerHandle;
+  invalidationListenerHandle = null;
+  if (handle) await handle.unlisten().catch(() => {});
+  await start?.catch(() => {});
+}
+
 /** Test-only. */
-export function _resetAuthCacheForTests(): void {
+export async function _resetAuthCacheForTests(): Promise<void> {
+  await _stopInvalidationListenerForTests();
   CACHE.clear();
   TOKEN_INDEX_CACHE.clear();
-  listenerStarted = false;
   listenerWarned = false;
 }
 

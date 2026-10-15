@@ -13,6 +13,11 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { getEncoding } from 'js-tiktoken';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }));
 
@@ -27,6 +32,7 @@ import {
   CODE2PROMPT_PINNED_VERSION,
   MAX_PACK_BYTES,
   PACK_TEMPLATES,
+  nativeChangeReport,
   packerFacade,
   parseSelectedFiles,
   readGitProvenance,
@@ -39,9 +45,134 @@ import {
   type PackerEffects,
   type PackFormat,
 } from './packer-facade.ts';
-import { isTrustworthyEmpty } from './contracts.ts';
+import { isTrustworthyEmpty, unmeasuredSourceEvidence, type CodeIntelAnswer } from './contracts.ts';
+
+describe('native P010 change report contract', () => {
+  it('cites the reference consumer and rechecks actual source bytes across report reads', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-report-unit-'));
+    const source = 'export function target() { return 1; }\n';
+    writeFileSync(join(root, 'target.ts'), source);
+    const answer: CodeIntelAnswer = { backend: 'typescript-service', intent: 'impact', query: 'target',
+      sites: [{ path: 'consumer.ts', line1: 2, kind: 'function', name: 'target' }],
+      truncation: { truncated: false, totalAvailable: 1, continuation: null },
+      freshness: { health: 'healthy', indexedAt: null, indexedCommit: null, staleVsDisk: false }, latencyMs: 0, error: null };
+    const evidence = unmeasuredSourceEvidence(answer, { repositoryId: 'fixture', identityKind: 'registry', paths: ['.'], basis: 'compiler-project' }, []);
+    const graph = async (): Promise<CodeIntelAnswer> => ({ ...answer, evidence: { ...evidence, sourceScope: {
+      ...evidence.sourceScope, sourceFingerprint: 'fixture-inputs', supportingFiles: [{ path: 'target.ts',
+        contentHash: createHash('sha256').update(source).digest('hex'), language: 'typescript', representation: 'full-source' }],
+    } } });
+    const exec: ExecFn = async (_bin, argv) => ({ stdout: argv[0] === 'diff'
+      ? 'diff --git a/target.ts b/target.ts\n--- a/target.ts\n+++ b/target.ts\n@@ -1 +1 @@\n-old\n+new\n'
+      : argv[0] === 'status' ? '' : 'a'.repeat(40) });
+    const args = { rootPath: root, include: ['target.ts'] };
+    try {
+      const first = await nativeChangeReport(args, { symbol: 'target', file: 'target.ts' }, { exec, graph });
+      expect(first.report.consumers).toEqual([{ path: 'consumer.ts', line1: 2, kind: 'function', name: 'target' }]);
+      expect(first.report.changed[0]).toMatchObject({ path: 'target.ts', line1: 1 });
+      expect(first.report.freshness).toBe('first-read');
+      const repeat = await nativeChangeReport(args, { symbol: 'target', file: 'target.ts', previousFingerprint: first.report.sourceFingerprint }, { exec, graph });
+      expect(repeat.report.freshness).toBe('unchanged');
+      writeFileSync(join(root, 'target.ts'), source + '// source moved during analysis\n');
+      const stale = await nativeChangeReport(args, { symbol: 'target', file: 'target.ts' }, { exec, graph });
+      expect(stale.report.freshness).toBe('unmeasured');
+      expect(stale.report.limitations).toContain('Source changed during analysis: target.ts.');
+      expect(stale.report.testReach).toMatchObject({ status: 'unknown', tests: [], paths: [],
+        executionCoverage: 'unmeasured', gapSuggestion: null });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('refuses an option-shaped revision and an escaping source before running a graph', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-report-path-'));
+    const graph = vi.fn();
+    try {
+      await expect(nativeChangeReport({ rootPath: root, include: ['*.ts'], baseRef: '--output=elsewhere' },
+        { symbol: 'target', file: 'target.ts' }, { graph })).rejects.toThrow(/revision/);
+      await expect(nativeChangeReport({ rootPath: root, include: ['*.ts'] },
+        { symbol: 'target', file: '../other/target.ts' }, { graph })).rejects.toThrow(/repository-relative/);
+      expect(graph).not.toHaveBeenCalled();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('keeps unresolved, truncated, disconnected and compiler-failed test reach unknown', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-test-reach-unit-'));
+    const source = 'export function target() { return 1; }\n';
+    writeFileSync(join(root, 'target.ts'), source);
+    const contentHash = createHash('sha256').update(source).digest('hex');
+    const answer: CodeIntelAnswer = { backend: 'typescript-service', intent: 'impact', query: 'target', sites: [],
+      truncation: { truncated: false, totalAvailable: 0, continuation: null },
+      freshness: { health: 'healthy', indexedAt: null, indexedCommit: null, staleVsDisk: false }, latencyMs: 0, error: null };
+    const evidence = unmeasuredSourceEvidence(answer, { repositoryId: 'fixture', identityKind: 'registry', paths: ['.'], basis: 'compiler-project' }, []);
+    const start = { site: { path: 'target.ts', line1: 1, kind: 'function' as const, name: 'target' }, contentHash, versionedSymbolId: 'target-id' };
+    const complete: CodeIntelAnswer = { ...answer, evidence: { ...evidence, sourceScope: { ...evidence.sourceScope,
+      sourceFingerprint: 'inputs', supportingFiles: [{ path: 'target.ts', contentHash, language: 'typescript', representation: 'full-source' }] } },
+      traversal: { direction: 'downstream', maxDepth: 5, maxPaths: 20, start, paths: [], truncationReasons: [], outcome: 'not-found-in-scope' } };
+    const exec: ExecFn = async () => ({ stdout: '' });
+    const run = (result: CodeIntelAnswer) => nativeChangeReport({ rootPath: root, include: ['target.ts'] },
+      { symbol: 'target', file: 'target.ts' }, { exec, graph: async () => result });
+    try {
+      const negative = await run(complete);
+      expect(negative.report.testReach).toMatchObject({ status: 'not-found-in-scope', tests: [], executionCoverage: 'unmeasured' });
+      expect(negative.report.testReach.gapSuggestion).toContain('run the baseline suite');
+      for (const degraded of [
+        { ...complete, error: 'compiler unavailable' },
+        { ...complete, truncation: { ...complete.truncation, truncated: true } },
+        { ...complete, traversal: { ...complete.traversal!, outcome: 'incomplete' as const } },
+        { ...complete, traversal: { ...complete.traversal!, paths: [{ siteIndices: [42], walk: 'reverse' as const }] } },
+      ]) expect((await run(degraded)).report.testReach).toMatchObject({ status: 'unknown', gapSuggestion: null });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
 
 const BASE: PackerArgs = { include: ['packages/**/*.ts'], rootPath: '/repo' };
+
+describe('native P021 symbol/source bundle evidence boundary', () => {
+  it('expands omitted compiler records and preserves inferred provenance without substituting changed source', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-graph-bundle-unit-'));
+    const source = 'export function target() { return "CAPTURED_LITERAL"; }\n';
+    writeFileSync(join(root, 'target.ts'), source);
+    const contentHash = createHash('sha256').update(source).digest('hex');
+    const site = { path: 'target.ts', line1: 1, kind: 'function' as const, name: 'target' };
+    const secret = 'export const credential = "SECRET_DENIED_LITERAL";\n';
+    writeFileSync(join(root, 'credentials.ts'), secret);
+    const secretHash = createHash('sha256').update(secret).digest('hex');
+    const answer: CodeIntelAnswer = { backend: 'typescript-service', intent: 'impact', query: 'target',
+      sites: [...Array.from({ length: 40 }, () => site), { ...site, path: 'credentials.ts' }], error: null, latencyMs: 0,
+      truncation: { truncated: false, totalAvailable: 40, continuation: null },
+      freshness: { health: 'healthy', indexedAt: null, indexedCommit: null, staleVsDisk: false } };
+    const evidence = unmeasuredSourceEvidence(answer, { repositoryId: 'fixture', identityKind: 'registry', paths: ['.'], basis: 'compiler-project' }, []);
+    const graph: CodeIntelAnswer = { ...answer, evidence: { ...evidence,
+      sourceScope: { ...evidence.sourceScope, sourceFingerprint: 'inputs', supportingFiles: [
+        { path: 'target.ts', contentHash, language: 'typescript', representation: 'full-source' },
+        { path: 'credentials.ts', contentHash: secretHash, language: 'typescript', representation: 'full-source' }] },
+      siteIdentities: answer.sites.map((location, siteIndex) => ({ siteIndex, sourcePath: location.path,
+        contentHash: location.path === 'target.ts' ? contentHash : secretHash, versionedSymbolId: `identity-${siteIndex}` })),
+      relationships: answer.sites.map((_site, siteIndex) => ({ siteIndex, kind: 'callers', origin: 'syntax', knowledge: 'inferred', runtimeExecution: 'unknown' })) } };
+    let document = '';
+    const run = () => nativeChangeReport({ rootPath: root, include: ['target.ts'] }, { symbol: 'target', file: 'target.ts' },
+      { graph: async () => graph, exec: async () => ({ stdout: '' }), writeArtifact: async body => {
+        document = body; return join(root, 'captured.json'); } });
+    try {
+      const bundle = (await run()).report.bundle;
+      expect(bundle.kind).toBe('native-source-path');
+      expect(bundle.context.sources[0]).toMatchObject({ contentHash, text: source });
+      expect(bundle.omitted.symbols).toBeGreaterThan(0);
+      expect(bundle.omitted.edges).toBeGreaterThan(0);
+      expect(bundle.tokens.retained).toBe(getEncoding('o200k_base').encode(JSON.stringify(bundle.context), [], []).length);
+      expect(bundle.tokens.retained).toBeLessThanOrEqual(bundle.tokens.budget);
+      const expanded = JSON.parse(document);
+      expect(expanded.context.symbols).toHaveLength(41);
+      expect(document).not.toContain('SECRET_DENIED_LITERAL');
+      expect(expanded.context.edges[39]).toMatchObject({ knowledge: 'inferred', origin: 'syntax', runtimeExecution: 'unknown' });
+      expect(createHash('sha256').update(document).digest('hex')).toBe(bundle.expansion.sha256);
+      writeFileSync(join(root, 'target.ts'), 'export function target() { return "NEWER_SOURCE"; }\n');
+      const stale = (await run()).report.bundle;
+      expect(stale.context.sources).toEqual([]);
+      expect(stale.coverage.unavailableFiles).toEqual(['target.ts', 'credentials.ts']);
+      expect(document).not.toContain('NEWER_SOURCE');
+      expect(JSON.stringify(expanded)).toContain('CAPTURED_LITERAL');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
 
 /** A matrix wide enough that a builder cannot pass by special-casing one input. */
 const ARG_MATRIX: PackerArgs[] = [
@@ -444,6 +575,34 @@ describe('provenance states what the pack actually is', () => {
     // able to blow the caller's context budget.
     expect(r.artifact!.preview.length).toBeLessThanOrEqual(4096);
     expect(r.artifact!.provenance.chars).toBeGreaterThan(400_000);
+    expect(r.artifact!.bundle).toMatchObject({ truncated: true, tokens: { source: null },
+      expansion: { tool: 'capability:read', args: { file_path: '/scratch/pack.xml' } } });
+    expect(r.artifact!.bundle!.tokens.measuredChars).toBeLessThanOrEqual(256);
+  }, 10_000);
+
+  it('P021 recovers omitted literal source through the hash-bound artifact and measures retained Unicode tokens', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-pack-bundle-'));
+    const body = `<file path="a.ts">// literal <|endoftext|> is source, not a control token\n${'const λ = "你好🙂";\n'.repeat(600)}OMITTED_LITERAL_SOURCE</file>`;
+    const path = join(root, 'pack.xml');
+    try {
+      const packed = await packerFacade('pack', BASE, stubEffects({ writeArtifact: async document => {
+        writeFileSync(path, document); return path;
+      } }, body));
+      const artifact = packed.artifact!, bundle = artifact.bundle!;
+      expect(bundle.sourcePaths).toEqual(['a.ts']);
+      expect(bundle.truncated).toBe(true);
+      expect(artifact.preview).not.toContain('OMITTED_LITERAL_SOURCE');
+      expect(body.startsWith(artifact.preview)).toBe(true);
+      expect(artifact.preview).not.toMatch(/[\uD800-\uDBFF]$/);
+      expect(bundle.tokens.retained).toBe(getEncoding('o200k_base').encode(artifact.preview, [], []).length);
+      expect(bundle.tokens.retained).toBeLessThanOrEqual(bundle.tokens.budget);
+      const expanded = readFileSync(bundle.expansion.args.file_path, 'utf8');
+      expect(expanded).toBe(body);
+      expect(expanded).toContain('OMITTED_LITERAL_SOURCE');
+      expect(createHash('sha256').update(expanded).digest('hex')).toBe(bundle.expansion.sha256);
+      expect(bundle.tokens.source).toBeNull();
+      expect(bundle.tokens.measuredPrefix).toBe(getEncoding('o200k_base').encode(body.slice(0, bundle.tokens.measuredChars), [], []).length);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it('a pack at the byte ceiling reports truncated:true', async () => {

@@ -231,6 +231,9 @@ export function parseScoutConfigBlock(raw: unknown): ScoutConfigOverride {
     if (isFiniteNumber(n.semanticBaselineQuantile)) {
       nov.semanticBaselineQuantile = n.semanticBaselineQuantile;
     }
+    // D-002/D-003 stage-1 recall knobs (the duplicate-candidate shortlist).
+    if (isFiniteNumber(n.recallFloor)) nov.recallFloor = n.recallFloor;
+    if (isFiniteNumber(n.shortlistSize)) nov.shortlistSize = n.shortlistSize;
     const ds = asStringArray(n.decidedStates);
     if (ds) nov.decidedStates = ds;
     if (Object.keys(nov).length > 0) out.novelty = nov;

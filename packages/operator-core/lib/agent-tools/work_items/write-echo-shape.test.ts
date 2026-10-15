@@ -7,7 +7,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/work_items/write-echo-shape.test.ts
  */
 import { describe, expect, it } from "vitest";
-import { shapeWorkItemWriteEcho } from "./write-echo-shape";
+import { COMPLETION_DIGEST_SUMMARY_CAP, shapeWorkItemWriteEcho } from "./write-echo-shape";
 
 const fullRow = {
   id: "WI-9",
@@ -51,7 +51,15 @@ describe("shapeWorkItemWriteEcho (P-025)", () => {
     expect(JSON.stringify(out).length).toBeLessThan(2_000); // the 25KB+ echo is gone
   });
 
-  it("trimmed drops completion/outputPayload echoes with ONE loud envelope note; standard keeps them", () => {
+  it("trimmed drops completion/outputPayload echoes; standard digests them; each with ONE loud envelope note", () => {
+    const completion = {
+      summary: "did the thing ".repeat(40),
+      status: "done",
+      workItem: "WI-9",
+      agent: "su · su-1",
+      whatLanded: ["a.ts"],
+      testResult: "r".repeat(3_000),
+    };
     const env = {
       ok: true,
       results: [
@@ -59,8 +67,8 @@ describe("shapeWorkItemWriteEcho (P-025)", () => {
           ok: true,
           id: "WI-9",
           workItem: fullRow,
-          completion: { summary: "did the thing", status: "done", whatLanded: ["a.ts"] },
-          outputPayload: { huge: true },
+          completion,
+          outputPayload: { huge: "h".repeat(2_000) },
         },
       ],
       counts: { ok: 1, failed: 0 },
@@ -70,9 +78,28 @@ describe("shapeWorkItemWriteEcho (P-025)", () => {
     expect(row).not.toHaveProperty("completion");
     expect(row).not.toHaveProperty("outputPayload");
     expect(String(trimmed.echo_note)).toContain('payloadTier:"full"');
+
+    // oversized-tool-results-reduction-2026-10-12 D-003: standard keeps a DIGEST, not the replay.
     const std = shapeWorkItemWriteEcho(env, "standard") as Record<string, unknown>;
     const stdRow = (std.results as Record<string, unknown>[])[0];
-    expect(stdRow.completion).toEqual(env.results[0].completion);
+    const digest = stdRow.completion as Record<string, unknown>;
+    expect(digest.status).toBe("done");
+    expect(digest.workItem).toBe("WI-9");
+    expect(digest.agent).toBe("su · su-1");
+    expect(String(digest.summary).length).toBeLessThanOrEqual(COMPLETION_DIGEST_SUMMARY_CAP);
+    expect(digest.fields).toEqual(Object.keys(completion));
+    expect(digest.chars).toBe(JSON.stringify(completion).length);
+    expect(digest).not.toHaveProperty("testResult");
+    expect(stdRow.outputPayload).toEqual({ fields: ["huge"], chars: JSON.stringify(env.results[0].outputPayload).length });
+    expect(String(std.echo_note)).toContain('payloadTier:"full"');
+    expect(String(std.echo_note)).toContain("standard");
+    expect(JSON.stringify(stdRow).length).toBeLessThan(1_000); // the ~5.5KB authored echo is gone
+  });
+
+  it("standard leaves rows without authored echoes untouched and adds no note", () => {
+    const env = { ok: true, results: [{ ok: true, id: "WI-9", reflect: "r" }], counts: { ok: 1, failed: 0 } };
+    const std = shapeWorkItemWriteEcho(env, "standard") as Record<string, unknown>;
+    expect((std.results as Record<string, unknown>[])[0]).toEqual({ ok: true, id: "WI-9", reflect: "r" });
     expect(std).not.toHaveProperty("echo_note");
   });
 

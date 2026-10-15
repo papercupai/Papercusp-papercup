@@ -106,25 +106,38 @@ interface Found {
  * declared a few lines above. Classifying the identifier itself (rather than the
  * literal text `X_RUBRIC_VERSION`) is what makes this immune to naming.
  */
+function classifyVersionExpression(expr: string, lines: readonly string[]): Classification {
+  const head = expr.trim();
+  if (/^['"`]/.test(head)) return 'literal';
+  if (/^derive[A-Za-z0-9_]*\s*\(/.test(head)) return 'derived';
+
+  if (/^[A-Za-z0-9_]+$/.test(head)) {
+    for (const candidate of lines) {
+      const c = CONST_DECL.exec(candidate);
+      if (c && c[1] === head) return classifyRhs(c[2]!);
+    }
+  }
+  return 'unclassifiable';
+}
+
 export function classifyRubricAt(lines: readonly string[], declIndex: number): Classification {
+  const declaration = lines[declIndex]!;
+  const openingBrace = declaration.indexOf('{');
+  if (openingBrace >= 0) {
+    // Some valid rubric declarations keep the whole object on one line. Check
+    // that line before scanning the following, two-space-indented properties.
+    const inline = /(?:\{|,)\s*version\s*:\s*([^,}]+)/.exec(
+      declaration.slice(openingBrace),
+    );
+    if (inline) return classifyVersionExpression(inline[1]!, lines);
+  }
+
   for (let i = declIndex + 1; i < lines.length; i += 1) {
     const line = lines[i]!;
     if (/^\};?\s*$/.test(line)) break; // end of this rubric literal
     const m = VERSION_FIELD.exec(line);
     if (!m) continue;
-
-    const expr = m[1]!.trim();
-    if (/^['"`]/.test(expr)) return 'literal';
-    if (/^derive[A-Za-z0-9_]*\s*\(/.test(expr)) return 'derived';
-
-    if (/^[A-Za-z0-9_]+$/.test(expr)) {
-      for (const candidate of lines) {
-        const c = CONST_DECL.exec(candidate);
-        if (c && c[1] === expr) return classifyRhs(c[2]!);
-      }
-      return 'unclassifiable';
-    }
-    return 'unclassifiable';
+    return classifyVersionExpression(m[1]!, lines);
   }
   // No own `version` key: the rubric spreads another and inherits its identity.
   return 'inherited';
@@ -240,6 +253,11 @@ const PINNED: Readonly<Record<string, Classification>> = Object.freeze({
   // be circular, since this rubric exists to measure the text wrapped AROUND rubrics.
   // Pinned rather than path-excluded so it stays visible and accounted for.
   'libs/testing-shell/src/llm/judge.ts::SCAFFOLD_PROBE_RUBRIC': 'literal',
+
+  // The memory-answer bench uses a one-line JudgeRubric declaration with a derived
+  // version constant. Keep it in the population pin even though its version is not
+  // formatted on a separate property line.
+  'packages/operator-core/lib/memory/bench/answer-usefulness.ts::ANSWER_RUBRIC': 'derived',
 });
 
 describe('rubric versions are derived from rubric content', () => {
@@ -313,6 +331,19 @@ describe('rubric versions are derived from rubric content', () => {
     it("reads anything else as 'unclassifiable' rather than guessing", () => {
       expect(classifyRhs('SOME_OTHER_CONST;')).toBe('unclassifiable');
       expect(classifyRhs('computeVersion(x);')).toBe('unclassifiable');
+    });
+
+    it('classifies a version on the rubric declaration line', () => {
+      const derivedLines = [
+        "const INLINE_RUBRIC_VERSION = deriveRubricVersion('inline', CONTENT);",
+        'export const INLINE_RUBRIC: JudgeRubric = { version: INLINE_RUBRIC_VERSION, axes: [] };',
+      ];
+      expect(classifyRubricAt(derivedLines, 1)).toBe('derived');
+
+      const literalLines = [
+        "export const INLINE_RUBRIC: JudgeRubric = { version: '1.0.0', axes: [] };",
+      ];
+      expect(classifyRubricAt(literalLines, 0)).toBe('literal');
     });
   });
 

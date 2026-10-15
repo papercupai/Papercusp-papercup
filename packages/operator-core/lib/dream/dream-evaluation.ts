@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { capabilityHash } from './capability-contracts';
 import { DEFAULT_DREAM_CYCLE_CONFIG, type DreamCycleConfig } from './dream-config';
 import { DreamProblemContextSchema, scopeDreamProblems, type DreamProblemContext } from './capability-pass';
+import type { CapabilitySamplingSnapshot } from './capability-sampler';
 
 /** Protocol and evidence for the existing Dream/Blender experiment paths. No scheduler or spend switch. */
 export const DREAM_EVALUATION_ARMS = ['blender', 'uniform-pair', 'structured-pair', 'structured-triple'] as const;
@@ -41,6 +42,14 @@ export const DreamEvaluationProtocolSchema = z
       scope: z.object({ workspaceId: text, potSlug: text }).strict(),
       problemContext: DreamProblemContextSchema,
       inputHash: sha,
+      graphAblation: z.object({
+        treatments: z.tuple([z.literal('graph'), z.literal('control')]),
+        populationIds: z.array(text).min(2).max(200).refine(ids => new Set(ids).size === ids.length),
+        samplerHash: sha,
+        attemptsPerTreatment: z.number().int().min(1).max(50),
+        usdPerTreatment: z.number().finite().positive(),
+        outcomeAssessment: z.literal('blinded-independent-executed-benefit'),
+      }).strict().optional(),
     }).strict().optional(),
     seed: text,
     models: z.object({ generator: text, reviewer: text }).strict(),
@@ -162,6 +171,8 @@ export interface DreamPilotPin {
   arm: DreamEvaluationArm;
   /** Shared assignment for the pair/triple ablation, separate from the unique attempt identity. */
   matchedPairIndex?: number;
+  /** Graph/control share the ordinary structured-pair arm and its governor. */
+  graphTreatment?: 'graph' | 'control';
 }
 export const DreamPilotPinSchema = z
   .object({
@@ -169,6 +180,7 @@ export const DreamPilotPinSchema = z
     pin: sha,
     arm: z.enum(DREAM_EVALUATION_ARMS),
     matchedPairIndex: z.number().int().min(0).max(49).optional(),
+    graphTreatment: z.enum(['graph', 'control']).optional(),
   })
   .strict();
 
@@ -186,6 +198,7 @@ export function requireDreamPilotProtocol(
     cycle: Pick<DreamCycleConfig, 'maxCostUsd' | 'rolling24hCostUsd'>;
     manifestRevision?: string;
     scope?: { workspaceId: string; potSlug: string };
+    samplerHash?: string;
   },
 ) {
   const protocol = DreamEvaluationProtocolSchema.parse(input.protocol);
@@ -203,6 +216,18 @@ export function requireDreamPilotProtocol(
   }
   if (protocol.models.generator !== current.generator || protocol.models.reviewer !== current.reviewer)
     throw new Error('Dream pilot model configuration changed');
+  const ablation = protocol.comparison?.graphAblation;
+  if (ablation) {
+    if (!input.graphTreatment || input.arm !== 'structured-pair' || input.matchedPairIndex === undefined ||
+        input.matchedPairIndex >= ablation.attemptsPerTreatment)
+      throw new Error('Graph comparison requires a bounded paired treatment');
+    if (current.samplerHash !== ablation.samplerHash)
+      throw new Error('Graph comparison sampler changed');
+    if (protocol.limits.cycleUsd > ablation.usdPerTreatment)
+      throw new Error('Graph comparison treatment budget is smaller than a cycle');
+  } else if (input.graphTreatment !== undefined) {
+    throw new Error('Graph treatment lacks a preregistered comparison');
+  }
   if (current.mode !== 'manual') throw new Error('Dream pilot requires manual control');
   if (input.matchedPairIndex !== undefined &&
       (!Number.isInteger(input.matchedPairIndex) || input.matchedPairIndex < 0 || input.matchedPairIndex >= 50 ||
@@ -222,6 +247,27 @@ export function requireDreamPilotProtocol(
   )
     throw new Error('Dream pilot arm does not match sampler configuration');
   return protocol;
+}
+
+/** Called AFTER source/graph verification. Both treatments pay for and verify the
+ * same population; only graph hints and the graph field supplied to models differ.
+ * Snapshot identity intentionally measures source versions, not that presentation. */
+export function applyDreamGraphTreatment(snapshot: CapabilitySamplingSnapshot, pilot: DreamPilotPin | null): CapabilitySamplingSnapshot {
+  const ablation = pilot?.protocol ? DreamEvaluationProtocolSchema.parse(pilot.protocol).comparison?.graphAblation : undefined;
+  if (!ablation) return snapshot;
+  const protocol = DreamEvaluationProtocolSchema.parse(pilot!.protocol);
+  const ids = snapshot.eligible.map(entry => entry.packet.unit.id).sort();
+  if (snapshot.fingerprint !== protocol.sourceSnapshot || snapshot.manifestRevision !== protocol.comparison!.manifestRevision ||
+      snapshot.exclusions.length || JSON.stringify(ids) !== JSON.stringify([...ablation.populationIds].sort()))
+    throw new Error('Graph comparison population changed or is incomplete');
+  if (!snapshot.eligible.some(entry => entry.packet.graph?.status === 'measured' && entry.packet.graph.candidates.length))
+    throw new Error('Graph comparison has no measured graph treatment');
+  if (pilot!.graphTreatment === 'graph') return snapshot;
+  if (pilot!.graphTreatment !== 'control') throw new Error('Graph comparison treatment is missing');
+  return { ...snapshot, eligible: snapshot.eligible.map(entry => {
+    const { graph: _graph, ...packet } = entry.packet;
+    return { ...entry, packet };
+  }) };
 }
 
 export interface DreamEvaluationCost {
@@ -317,6 +363,92 @@ export function summarizeDreamComparison(input: {
     humanCalibration: input.humanCalibrationRef?.trim() ? 'referenced-not-independently-verified' as const : 'missing' as const,
     verdict: 'inconclusive' as const,
   };
+}
+
+/** The graph ablation uses two treatments of structured-pair, not four new arms.
+ * Failed attempts remain in the denominator; missing labels never mean rejection. */
+export function summarizeDreamGraphComparison(input: {
+  protocol: unknown;
+  attempts: readonly {
+    runId: string; treatment: 'graph' | 'control'; pairIndex: number;
+    sourceSnapshot: string | null; inputHash: string | null; unitIds: readonly string[];
+    candidateCaseId: string | null; accountedUsd: number; unknownCostCalls: number;
+  }[];
+  independent: null | {
+    ref: string;
+    labels: readonly { caseId: string; verdict: 'accept' | 'reject' | 'unverified';
+      family: string; novelty: 'duplicate' | 'refinement' | 'unknown' | 'scoped-novel';
+      qualified: boolean | null }[];
+  };
+}) {
+  const protocol = DreamEvaluationProtocolSchema.parse(input.protocol);
+  const comparison = protocol.comparison;
+  const ablation = comparison?.graphAblation;
+  if (!comparison || !ablation) throw new Error('Missing registered graph comparison');
+  const identities = new Set<string>(), assignments = new Set<string>(), candidates = new Set<string>();
+  for (const row of input.attempts) {
+    const assignment = row.treatment + ':' + row.pairIndex;
+    if (!row.runId.trim() || identities.has(row.runId) || assignments.has(assignment) ||
+        !ablation.treatments.includes(row.treatment) || !Number.isInteger(row.pairIndex) ||
+        row.pairIndex < 0 || row.pairIndex >= ablation.attemptsPerTreatment)
+      throw new Error('Duplicate or invalid graph trial identity');
+    if (!Number.isFinite(row.accountedUsd) || row.accountedUsd < 0 ||
+        !Number.isInteger(row.unknownCostCalls) || row.unknownCostCalls < 0)
+      throw new Error('Invalid graph trial accounting');
+    identities.add(row.runId); assignments.add(assignment);
+    if (row.candidateCaseId) {
+      if (candidates.has(row.candidateCaseId)) throw new Error('Duplicate candidate case');
+      candidates.add(row.candidateCaseId);
+    }
+  }
+  const labels = new Map(input.independent?.labels.map(label => [label.caseId, label]) ?? []);
+  if (input.independent && (!input.independent.ref.trim() || labels.size !== input.independent.labels.length ||
+      [...labels.values()].some(label => !candidates.has(label.caseId) || !label.family.trim() ||
+        !['accept', 'reject', 'unverified'].includes(label.verdict) ||
+        !['duplicate', 'refinement', 'unknown', 'scoped-novel'].includes(label.novelty) ||
+        (label.qualified !== null && typeof label.qualified !== 'boolean') ||
+        (label.qualified === true && (label.verdict !== 'accept' || label.novelty !== 'scoped-novel')))))
+    throw new Error('Invalid independent graph assessment');
+  const treatments = ablation.treatments.map(treatment => {
+    const rows = input.attempts.filter(row => row.treatment === treatment);
+    const cases = rows.filter(row => row.candidateCaseId !== null);
+    const assessed = cases.flatMap(row => labels.has(row.candidateCaseId!) ? [labels.get(row.candidateCaseId!)!] : []);
+    const complete = assessed.length === cases.length && input.independent !== null;
+    const qualified = complete && assessed.every(label => label.qualified !== null)
+      ? new Set(assessed.filter(label => label.qualified).map(label => label.family)).size : null;
+    const duplicates = assessed.filter(label => label.novelty === 'duplicate').length;
+    const refinements = assessed.filter(label => label.novelty === 'refinement').length;
+    const noveltyComplete = complete && assessed.every(label => label.novelty !== 'unknown');
+    const accountedUsd = rows.reduce((sum, row) => sum + row.accountedUsd, 0);
+    return { treatment, attempts: rows.length, plannedAttempts: ablation.attemptsPerTreatment,
+      spendCapUsd: ablation.usdPerTreatment, accountedUsd, withinSpendCap: accountedUsd <= ablation.usdPerTreatment,
+      candidateCount: cases.length, noCandidateAttempts: rows.length - cases.length,
+      independentLabels: assessed.length, missingLabels: cases.length - assessed.length,
+      duplicateCandidates: duplicates, refinementCandidates: refinements,
+      noveltyUnknownCandidates: assessed.filter(label => label.novelty === 'unknown').length,
+      duplicateRate: noveltyComplete && cases.length ? duplicates / cases.length : null,
+      refinementRate: noveltyComplete && cases.length ? refinements / cases.length : null,
+      qualifiedFamilies: qualified,
+      unknownCostCalls: rows.reduce((sum, row) => sum + row.unknownCostCalls, 0) };
+  });
+  const matchedPairs = Array.from({ length: ablation.attemptsPerTreatment }, (_, pairIndex) => {
+    const graph = input.attempts.find(row => row.treatment === 'graph' && row.pairIndex === pairIndex);
+    const control = input.attempts.find(row => row.treatment === 'control' && row.pairIndex === pairIndex);
+    return { pairIndex, graphRunId: graph?.runId ?? null, controlRunId: control?.runId ?? null,
+      complete: !!graph && !!control,
+      sameUnits: !!graph && !!control && graph.unitIds.length >= 2 &&
+        JSON.stringify(graph.unitIds) === JSON.stringify(control.unitIds) };
+  });
+  return { treatments, matchedPairs,
+    completeAttempts: treatments.every(row => row.attempts === row.plannedAttempts),
+    commonInput: input.attempts.length > 0 && input.attempts.every(row =>
+      row.sourceSnapshot === protocol.sourceSnapshot && row.inputHash === comparison.inputHash),
+    equalSpendCaps: true,
+    independentRef: input.independent?.ref ?? null,
+    // Local compute and engineering time are not priced by the Dream provider ledger.
+    fullyAttributedCost: false,
+    usefulOutcomesPerDollar: null,
+    verdict: 'inconclusive' as const };
 }
 
 export type DreamBenchmarkVerdict = 'accept' | 'reject' | 'unverified';

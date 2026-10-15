@@ -39,6 +39,11 @@ import { BUDGET, budgetViolations, formatViolations, HARD_CAP, type BudgetViolat
 export type EscalateHardCapFn = (violation: BudgetViolation) => Promise<void>;
 
 export async function defaultEscalateHardCap(v: BudgetViolation): Promise<void> {
+  // Import-only qualification owns no runtime services. Its registry imports
+  // still report weight warnings, but must not query or mutate a database.
+  // Reuse the existing background-task switch and serve CLI contract.
+  if (process.env.PAPERCUSP_DISABLE_BACKGROUND_TASKS === '1'
+    || process.argv[2] === '--verify-boot-imports') return;
   const watchdogKey = `tool-weight-hard-cap:${v.name}`;
   // EI-18689219855601091: an authoritative pre-filter BEFORE planning a capture —
   // mirrors every other watchdog caller of `findIssuesByWatchdogKeys` (per its own

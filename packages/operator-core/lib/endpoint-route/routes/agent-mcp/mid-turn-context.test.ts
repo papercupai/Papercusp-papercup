@@ -77,6 +77,7 @@ import routes, {
   splitLegQueries,
 } from './mid-turn-context';
 import { CORPUS_BLOCK_HEADING } from '../../../memory/corpus-recall';
+import { setSessionConfinementResolver } from '../../../capability-envelope/session-confinement-port';
 
 const endpoint = routes[0] as unknown as {
   handler: (req: Request) => Promise<Response>;
@@ -92,6 +93,17 @@ const post = async (body: unknown): Promise<{ ok: boolean; text: string }> => {
   return (await res.json()) as { ok: boolean; text: string };
 };
 
+it('suppresses live mid-turn memory, rule and failure-hint delivery for a frozen native session', async () => {
+  setSessionConfinementResolver(() => ({ denyTools: [], denyOutside: ['coord:whoami'],
+    denyAmbientContext: true, reason: 'frozen benchmark', imposedBy: 'host' }));
+  try {
+    expect(await post({ owner: 'su-frozen', workspace: 'private', tool: 'Read', toolInput: { file_path: 'code.ts' } })).toEqual({ ok: true, text: '' });
+    expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();
+    expect(evaluateHookContextSinkMock).not.toHaveBeenCalled();
+    expect(takePendingFailureLoopHintMock).not.toHaveBeenCalled();
+  } finally { setSessionConfinementResolver(undefined); }
+});
+
 /** Each test gets a fresh session id — the rate/dedup state is keyed by owner. */
 let seq = 0;
 const owner = (): string => `sess-${++seq}`;
@@ -99,6 +111,7 @@ const owner = (): string => `sess-${++seq}`;
 const firstCall = () => buildMemoryContextBlockMock.mock.calls[0]![0] as Record<string, unknown>;
 
 beforeEach(() => {
+  setSessionConfinementResolver(() => null);
   buildMemoryContextBlockMock.mockReset().mockResolvedValue('MEM');
   withMidTurnMemoryAdmissionMock
     .mockReset()
@@ -108,6 +121,28 @@ beforeEach(() => {
   takePendingFailureLoopHintMock.mockReset().mockReturnValue(null);
   buildFailureLoopHintTextMock.mockReset().mockResolvedValue('FAILURE LOOP HINT');
   evaluateHookContextSinkMock.mockReset().mockResolvedValue({ text: '', result: null });
+});
+
+it('charges identity preparation to the native response wall before starting the memory builder', async () => {
+  resolveClaimedWorkItemIdForOwnerMock.mockImplementationOnce(async () => {
+    await new Promise(resolve => setTimeout(resolve, 80));
+    return undefined;
+  });
+  const began = Date.now();
+  const result = await post({ owner: owner(), workspace: 'ws-test',
+    tool: 'Grep', toolInput: { pattern: 'diagnostic evidence' }, wallMs: 1000 });
+  const input = firstCall() as { deadline?: { remainingMs(): number }; respondByMs?: number };
+  expect(result.text).toBe('MEM');
+  expect(input.respondByMs).toBeGreaterThanOrEqual(began + 750);
+  expect(input.respondByMs).toBeLessThanOrEqual(began + 780);
+  expect(input.deadline?.remainingMs()).toBeLessThan(700);
+  expect(input.deadline?.remainingMs()).toBeGreaterThan(0);
+});
+
+it('preserves the existing memory budget when the caller declares no native response wall', async () => {
+  await post({ owner: owner(), tool: 'Grep', toolInput: { pattern: 'diagnostic evidence' } });
+  expect(firstCall()).not.toHaveProperty('deadline');
+  expect(firstCall()).not.toHaveProperty('respondByMs');
 });
 
 /** Every coverage event recorded this test, flattened across calls. */
@@ -481,11 +516,12 @@ describe('mid-turn-context — the budget is enforced HERE, because injection.ts
     expect(OVERSIZED.length).toBeGreaterThan(4000);
   });
 
-  it('keeps the HANDLE when it clips — scope and id survive, so the teaser is actionable', async () => {
+  it('keeps the memory id when clipping without prescribing a possibly unavailable tool', async () => {
     buildMemoryContextBlockMock.mockResolvedValueOnce(OVERSIZED);
     const out = await post({ owner: owner(), tool: 'Grep', toolInput: { pattern: 'slow session history' } });
     expect(out.text).toContain('id=980ce692');
-    expect(out.text).toContain('memory:search');
+    expect(out.text).toContain('(clipped; id retained)');
+    expect(out.text).not.toContain('memory:search');
   });
 
   it('leaves a block already within budget byte-identical', () => {

@@ -28,6 +28,7 @@ import {
   percentile,
   summarizeByDay,
   summarizeOverall,
+  summarizeStartupCacheEvidence,
   utcDay,
   type LaunchSample,
 } from './launch-cost-metrics';
@@ -1287,5 +1288,128 @@ describe('summarizeByDay', () => {
 
   it('returns an empty array, not a fabricated day, for no samples', () => {
     expect(summarizeByDay([])).toEqual([]);
+  });
+});
+
+describe('summarizeStartupCacheEvidence — token-efficiency-prompts-cache-and-behavior-2026-10-11 P-001', () => {
+  const hash = (seed: string, bytes = 100) => ({ sha16: seed.padEnd(16, '0').slice(0, 16), bytes });
+  type Over = {
+    ownerId?: string; requestId?: number; startedAt?: number; model?: string; messages?: number; tools?: number;
+    systemBlocks?: number; markers?: Array<{ section: 'tools' | 'system' | 'messages'; index: number; block: number | null; ttl: '5m' | '1h' | 'default' }>;
+    read?: number | null; write?: number | null; input?: number | null; layout?: null; outcome?: string;
+    /** Byte sizes of messages[0] content blocks; omitted = no first-message layout recorded. */
+    firstBlocks?: number[];
+  };
+  const line = (o: Over = {}) => {
+    const systemBlocks = o.systemBlocks ?? 2;
+    const record = {
+      schema: 'startup-cache-evidence/v1', requestId: o.requestId ?? 1, ownerId: o.ownerId ?? 'su-a',
+      provider: 'claude', protocol: 'anthropic-messages', transport: 'oauth-http', model: o.model ?? 'claude-opus-test',
+      authorizationScope: 'acct', tools: null, instructions: null,
+      layout: o.layout === null ? null : {
+        tools: { count: o.tools ?? 90, deferred: 0 },
+        system: { form: 'blocks', blockCount: systemBlocks, blocks: Array.from({ length: systemBlocks }, (_, i) => hash(`s${i}`)) },
+        messages: {
+          count: o.messages ?? 1,
+          first: o.firstBlocks
+            ? {
+              role: 'user', blockCount: o.firstBlocks.length, hash: hash('m0', o.firstBlocks.reduce((a, b) => a + b, 0)),
+              blocks: o.firstBlocks.map((bytes, i) => hash(`m0b${i}`, bytes)),
+            }
+            : null,
+        },
+        markers: o.markers ?? [{ section: 'system', index: 0, block: null, ttl: '1h' }],
+        truncated: false,
+      },
+      native: { sessionId: null, threadId: null }, startedAt: o.startedAt ?? 1000, finalizedAt: 2000,
+      inputTokens: o.input === undefined ? 3 : o.input,
+      cacheReadTokens: o.read === undefined ? 4000 : o.read,
+      cacheWriteTokens: o.write === undefined ? 80000 : o.write,
+      reuse: 'unobserved', outcome: o.outcome ?? 'ok', finalStatus: 200,
+    };
+    // journald -o cat prints the payload alone; other formats prefix it — both must parse.
+    return `Oct 12 01:00:00 host gateway[1]: startup-cache-evidence/v1 ${JSON.stringify(record)}`;
+  };
+
+  it('counts a journal line repeated by the reader once, and says how many it dropped', () => {
+    const a = line({ ownerId: 'su-a', requestId: 1 });
+    const summary = summarizeStartupCacheEvidence([a, a, line({ ownerId: 'su-b', requestId: 2 })]);
+    expect(summary).toMatchObject({ evidenceLines: 3, duplicates: 1, requests: 2 });
+    expect(summary.startup).toMatchObject({ requests: 2, owners: 2, measured: 2, cacheWriteTokens: 160000 });
+    // Same owner and request counter but a different start = a gateway restart reused the counter: NOT a duplicate.
+    expect(summarizeStartupCacheEvidence([a, line({ ownerId: 'su-a', requestId: 1, startedAt: 9999 })]).duplicates).toBe(0);
+  });
+
+  it('keeps a row with a missing counter as unknown — never a zero in totals or medians', () => {
+    const summary = summarizeStartupCacheEvidence([
+      line({ ownerId: 'su-a', write: 90000, read: 1000, input: 5 }),
+      line({ ownerId: 'su-b', write: null, read: null, input: null, outcome: 'upstream-429' }),
+      line({ ownerId: 'su-c', write: 70000, read: null, input: 5 }),
+    ]);
+    expect(summary.startup).toMatchObject({
+      requests: 3, measured: 1, unknownUsage: 2,
+      cacheWriteTokens: 90000, cacheReadTokens: 1000, uncachedInputTokens: 5,
+      medianCacheWriteTokens: 90000, medianCacheReadTokens: 1000,
+    });
+    // A median over an empty measured set is null, not 0.
+    const none = summarizeStartupCacheEvidence([line({ write: null })]);
+    expect(none.startup.medianCacheWriteTokens).toBeNull();
+    expect(none.startupWriteShare).toBeNull();
+  });
+
+  it('applies the gateway startup predicate: mid-conversation and tool-less rows are not startups', () => {
+    const summary = summarizeStartupCacheEvidence([
+      line({ ownerId: 'su-a', write: 80000 }),
+      line({ ownerId: 'su-b', messages: 40, write: 20000 }),
+      line({ ownerId: 'su-c', tools: 0, write: 0 }),
+      line({ ownerId: 'su-d', layout: null, write: 5000 }),
+    ]);
+    expect(summary).toMatchObject({ requests: 4, noLayout: 1 });
+    expect(summary.startup).toMatchObject({ requests: 1, cacheWriteTokens: 80000 });
+    expect(summary.all).toMatchObject({ requests: 4, cacheWriteTokens: 105000 });
+    expect(summary.startupWriteShare).toBeCloseTo(80000 / 105000, 6);
+  });
+
+  it('groups startups by model, transport, system block count and breakpoint layout, largest first', () => {
+    const boundary = [{ section: 'system' as const, index: 1, block: null, ttl: '1h' as const }];
+    const summary = summarizeStartupCacheEvidence([
+      line({ ownerId: 'su-a', write: 78000, read: 3700 }),
+      line({ ownerId: 'su-b', write: 79000, read: 3600 }),
+      line({ ownerId: 'su-c', write: 77000, read: 3800 }),
+      line({ ownerId: 'su-d', systemBlocks: 3, markers: boundary, write: 2000, read: 84600 }),
+      line({ ownerId: 'su-e', model: 'claude-sonnet-test', write: 1, read: 1 }),
+    ]);
+    expect(summary.groups.map((g) => [g.requests, g.systemBlocks, g.markers])).toEqual([
+      // ties break on the key, so the opus boundary cohort precedes the sonnet one
+      [3, 2, 's0:1h'], [1, 3, 's1:1h'], [1, 2, 's0:1h'],
+    ]);
+    expect(summary.groups[2]!.model).toBe('claude-sonnet-test');
+    expect(summary.groups[0]).toMatchObject({ model: 'claude-opus-test', owners: 3, medianCacheWriteTokens: 78000, medianCacheReadTokens: 3700 });
+    expect(summary.groups.find((g) => g.systemBlocks === 3)).toMatchObject({ medianCacheReadTokens: 84600, medianCacheWriteTokens: 2000 });
+  });
+
+  it('reports the median messages[0] block-0 size per cohort (the repo-guide block R-9 bounds the relocation uplift by), null when unrecorded', () => {
+    const relocated = [{ section: 'system' as const, index: 1, block: null, ttl: '1h' as const }, { section: 'messages' as const, index: 0, block: 0, ttl: '1h' as const }];
+    const summary = summarizeStartupCacheEvidence([
+      line({ ownerId: 'su-a', markers: relocated, firstBlocks: [90000, 400] }),
+      line({ ownerId: 'su-b', markers: relocated, firstBlocks: [92000, 600] }),
+      line({ ownerId: 'su-c', markers: relocated, firstBlocks: [94000] }),
+      // A member without a first-message layout neither counts as zero nor shifts the median.
+      line({ ownerId: 'su-d', markers: relocated }),
+      line({ ownerId: 'su-e' }),
+    ]);
+    const byMarkers = new Map(summary.groups.map((g) => [g.markers, g]));
+    expect(byMarkers.get('s1:1h,m0:1h')).toMatchObject({ requests: 4, medianFirstMessageBlock0Bytes: 92000 });
+    expect(byMarkers.get('s0:1h')).toMatchObject({ requests: 1, medianFirstMessageBlock0Bytes: null });
+  });
+
+  it('counts schema-marked lines that do not parse as malformed and ignores unrelated lines', () => {
+    const summary = summarizeStartupCacheEvidence([
+      'unrelated journal line',
+      'startup-cache-evidence/v1 {not json',
+      line().replace('"ownerId":"su-a"', '"ownerId":""'),
+      line(),
+    ]);
+    expect(summary).toMatchObject({ evidenceLines: 3, malformed: 2, requests: 1 });
   });
 });

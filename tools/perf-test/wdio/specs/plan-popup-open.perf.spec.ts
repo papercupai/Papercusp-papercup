@@ -18,7 +18,7 @@
 import { browser } from "@wdio/globals";
 import { recordInteractionMs, recordMeasure } from "../perf-report";
 import { collectPageStartupTrace, collectWebVitals, describeReading, evaluateRequiredPageLoad } from "../web-vitals-probe";
-import { APP_MOUNT_TIMEOUT_MS, installPopupLayoutProbe, installPopupReactProbe, readPlanPopupCandidates, waitForAppMount, waitForPackagedAppUrl } from "../app-mount";
+import { APP_MOUNT_TIMEOUT_MS, installPopupLayoutProbe, installPopupReactProbe, readPlanPopupCandidates, readPlanPopupAttemptInPage, triggerPlanPopupAttemptInPage, waitForAppMount, waitForPackagedAppUrl } from "../app-mount";
 // Imported by PATH for the same reason app-mount.ts imports it that way: this
 // runner sits outside the npm workspace set, so `@papercusp/gui-readiness` does
 // not resolve here. The module is a pure function with no dependencies.
@@ -50,6 +50,34 @@ const MAX_ROWS_TO_TRY = 5;
 // is deliberately kept OUT of the npm workspace (README), so it cannot import the
 // canonical constant — keep the two in sync when the budget changes.
 const PLAN_POPUP_OPEN_BUDGET_MS = 1500;
+
+/**
+ * The packaged WebView may use papercusp://localhost rather than the verifier
+ * host's HTTP page. Inspect the measured document: package or host hashes alone
+ * do not prove which font treatment WebKit used. The accepted build uses Noto
+ * Sans; explicit plain is reserved for controlled diagnostic arms.
+ */
+async function verifyBodyFontTreatment(): Promise<void> {
+  const treatment = process.env.PAPERCUSP_PERF_BODY_FONT_TREATMENT ?? 'noto-sans';
+  if (treatment !== 'plain' && treatment !== 'noto-sans') {
+    throw new Error(`unknown PAPERCUSP_PERF_BODY_FONT_TREATMENT: ${treatment}`);
+  }
+  const observed = await browser.execute(() => ({
+    href: location.href,
+    inlineStyle: document.body?.getAttribute('style') ?? null,
+    computedFontFamily: document.body ? getComputedStyle(document.body).fontFamily : null,
+  }));
+  const expectedStyle = treatment === 'noto-sans'
+    ? 'font-family: Noto Sans, sans-serif'
+    : null;
+  console.log(`[perf-runtime-treatment] ${JSON.stringify({ treatment, expectedStyle, ...observed })}`);
+  if (observed.inlineStyle !== expectedStyle) {
+    throw new Error(
+      `measured document missed ${treatment} font treatment: expected body style ` +
+      `${JSON.stringify(expectedStyle)}, got ${JSON.stringify(observed.inlineStyle)} at ${observed.href}`,
+    );
+  }
+}
 
 /** Run the shared quiet primitive inside the packaged webview. */
 async function waitForMainThreadQuietInPage(): Promise<void> {
@@ -102,6 +130,7 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
       scopedUrl.hash = '';
       await browser.url(scopedUrl.toString());
     }
+    await verifyBodyFontTreatment();
     // 1. Wait for the operator UI to mount real app content.
     // URL discovery and the second navigation share one mount budget.
     await waitForAppMount(browser, Math.max(1, APP_MOUNT_TIMEOUT_MS - (Date.now() - mountStartedAt)));
@@ -368,23 +397,9 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
       // before the CURRENT trigger, so a later plan can never be credited with
       // an earlier plan's timing.
       clickedAt = Date.now();
-      const clicked = await browser.execute((name) => {
-        try {
-          performance.clearMeasures?.(name);
-          performance.clearMarks?.(`${name}:start`);
-        } catch {
-          /* ignore */
-        }
-        const trigger = document.querySelector<HTMLElement>(
-          '[data-testid="plan-dash-open-full"]',
-        );
-        if (!trigger) return false;
-        trigger.click();
-        performance.mark(`${name}:trigger-return`);
-        return true;
-      }, INTERACTION_NAME);
-      triggerFound ||= clicked;
-      if (!clicked) {
+      const attempt = await browser.execute(triggerPlanPopupAttemptInPage, INTERACTION_NAME);
+      triggerFound ||= attempt.clicked;
+      if (!attempt.clicked) {
         lastFailure = "dashboard action vanished before the click";
         attempts.push(`${candidate.slug} [${candidate.harness ?? "?"}]: ${lastFailure}`);
         continue;
@@ -418,34 +433,23 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
         },
       ).catch(() => "timeout" as const);
 
-      if (outcome === "measured") {
+      const unfinished = await browser.execute(readPlanPopupAttemptInPage, INTERACTION_NAME, attempt);
+      if (unfinished.measureCount > 0) {
         opened = candidate;
         break;
       }
-
-      const unfinished = await browser.execute((name) => {
-        const metrics = (window as unknown as {
-          __sync_metrics__?: { snapshot(): { scheduler?: unknown } };
-        }).__sync_metrics__;
-        return {
-          scheduler: metrics?.snapshot().scheduler ?? null,
-          phases: performance.getEntriesByType('measure')
-            .filter((entry) => entry.name.startsWith(`${name}:phase:`))
-            .map((entry) => ({ name: entry.name, ms: Math.round(entry.duration) })),
-          placeholder: document.querySelector('[data-testid="plan-popup-body"] .pc-plans__placeholder')?.textContent?.trim() ?? null,
-          startMarkAgeMs: (() => {
-            const mark = performance.getEntriesByName(`${name}:start`, 'mark').at(-1);
-            return mark ? performance.now() - mark.startTime : null;
-          })(),
-        };
-      }, INTERACTION_NAME);
       console.log('[perf] plan-popup unfinished', JSON.stringify({ outcome, ...unfinished }));
+      if (outcome === "measured") {
+        throw new Error(`INCONCLUSIVE: the poll saw a measure but the current attempt did not retain one; plan=${candidate.slug}`);
+      }
 
       // A timed-out attempt that already DISPATCHED the plan request is a slow
       // sample, not a void one — retrying it onto the next row would keep only
       // the attempts fast enough to finish (classifyAttemptTimeout, P-007).
       if (outcome === "timeout") {
         const attemptDiagnosis = classifyAttemptTimeout({
+          measureCount: unfinished.measureCount,
+          beginObserved: attempt.startTimeMs !== null,
           startMarkPresent: unfinished.startMarkAgeMs !== null,
           startMarkAgeMs: unfinished.startMarkAgeMs,
           staleStartMs: STALE_START_MS,
@@ -459,6 +463,15 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
               : null,
         });
         console.log('[perf] plan-popup attempt timeout', JSON.stringify(attemptDiagnosis));
+        if (attemptDiagnosis.verdict === "measured") {
+          opened = candidate;
+          break;
+        }
+        if (attemptDiagnosis.verdict === "inconclusive") {
+          throw new Error(`INCONCLUSIVE: ${attemptDiagnosis.reason}; plan=${candidate.slug}; ` +
+            `triggerAtMs=${unfinished.triggerAtMs}; capturedStartTimeMs=${unfinished.capturedStartTimeMs}; ` +
+            `phases=${JSON.stringify(unfinished.phases)}. No performance number or void retry is justified.`);
+        }
         if (attemptDiagnosis.verdict === "slow") {
           // endInteraction discards a start older than STALE_START_MS, so a
           // measure can still land until then: wait for the TRUE duration.
@@ -586,8 +599,8 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
     if (!opened) {
       throw new Error(
         [
-          `UNMEASURABLE: no dashboard plan opened from the first ${candidates.length} sidebar row(s) — ` +
-            `this run never exercised "${INTERACTION_NAME}", so it is NOT a perf verdict`,
+          `UNMEASURABLE: no attempt produced a completed "${INTERACTION_NAME}" measure from the first ${candidates.length} sidebar row(s) — ` +
+            `the observations below do not establish a performance verdict`,
           `last outcome: ${lastFailure ?? "(no rows to try)"}`,
           ...attempts.map((a) => `  tried ${a}`),
           `the timed trigger is PlanDashboard's "Open full plan" action; the row click only navigates.`,
@@ -663,7 +676,7 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
         .filter(Boolean)
         .join(" ");
 
-      throw new Error(
+      if (!diagnosis.ok) throw new Error(
         `${describeInteractionMeasureFailure(
           INTERACTION_NAME,
           MEASURE_WAIT_MS,

@@ -1,0 +1,11 @@
+{
+  "origin": "http://127.0.0.1:3170",
+  "runtimeUnits": ["hono-host:3170"],
+  "resumeMatrix": {
+    "sourceAdvSessionIds": [42167, 42168, 42169]
+  },
+  "consultBrief": {
+    "questions": [],
+    "existingConversationId": "conv-request-7eac012e4e0cdf971c14af7ae9e28b9fb92ce8ea398586806c441da193a27435"
+  }
+}

@@ -106,6 +106,37 @@ describe('OMP SU-session backend — PUI entry and native session translation', 
     } finally { adapter.dispose(); }
   });
 
+  it('keeps the turn running across a toolUse stop and ends it on the final stop (pui-chat-first-ux P-025)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omp-su-tooluse-'));
+    tempDirs.push(dir);
+    const transcriptPath = join(dir, `${Date.now()}_${THREAD_A}.jsonl`);
+    // The shape OMP really writes: the message that carries the tool call
+    // stops with `toolUse`, the tool result follows, then the reply stops.
+    const midTurn = [
+      { type: 'session', id: THREAD_A, timestamp: '2026-08-28T00:00:00.000Z', cwd: '/workspace' },
+      { type: 'message', id: 'user-1', message: { role: 'user', content: [{ type: 'text', text: 'edit calc.js' }] } },
+      { type: 'message', id: 'assistant-1', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'Change add().' }, { type: 'toolCall', id: 'call-edit', name: 'edit', arguments: { i: 'add c', input: '[calc.js#5ED7]\nPUT 1.=3:\n+x\n' } }], stopReason: 'toolUse' } },
+      { type: 'message', id: 'tool-1', message: { role: 'toolResult', content: [{ type: 'text', text: '[calc.js#FB74]\n1:x' }], toolCallId: 'call-edit' } },
+    ];
+    writeFileSync(transcriptPath, midTurn.map((line) => JSON.stringify(line)).join('\n') + '\n');
+    const adapter = createOmpSuSessionAdapter(binding(), runtime(THREAD_A, dir, transcriptPath), {
+      agentChatId: 'agent-chat-omp-tooluse', register: false,
+    });
+    const turnEnds = () => events(adapter).filter((event) =>
+      event.type === 'lifecycle' && event.state === 'waiting-for-owner').length;
+    try {
+      await adapter.consumeTranscriptSnapshot();
+      expect(adapter.host.descriptor().lifecycle).toBe('running');
+      expect(turnEnds()).toBe(0);
+      writeFileSync(transcriptPath, [...midTurn,
+        { type: 'message', id: 'assistant-2', message: { role: 'assistant', content: [{ type: 'text', text: 'add now takes c.' }], stopReason: 'stop' } },
+      ].map((line) => JSON.stringify(line)).join('\n') + '\n');
+      await adapter.consumeTranscriptSnapshot();
+      expect(adapter.host.descriptor().lifecycle).toBe('waiting-for-owner');
+      expect(turnEnds()).toBe(1);
+    } finally { adapter.dispose(); }
+  });
+
   it('replays a session file idempotently: an early and a late snapshot each show a record once (WI-10004162)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'omp-su-replay-'));
     tempDirs.push(dir);

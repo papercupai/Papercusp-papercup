@@ -24,6 +24,20 @@ const pool = (id: string): AccountPool => {
 };
 
 describe('gateway provider adapters', () => {
+  it('rejects a required output limit unless the concrete transport declares enforcement', () => {
+    const lanes = makeGatewayLaneRegistry({ claudePool: pool('claude-a'), codexPool: pool('codex-a'),
+      anthropicUpstreamBase: 'https://anthropic.test', openaiUpstreamBase: 'https://openai.test' });
+    const rows = gatewayLaneConformanceMatrix(lanes);
+    for (const row of rows) {
+      const required = { ...row, requireOutputTokenLimit: true };
+      if (row.transport === 'bearer-http') expect(assertGatewayLaneCapability(row.lane, required).enforcesOutputTokenLimit).toBe(true);
+      else expect(() => assertGatewayLaneCapability(row.lane, required)).toThrow(/output-token-limit/);
+    }
+    const bearer = lanes.openaiResponses.transports.find(t => t.id === 'bearer-http')!;
+    delete bearer.enforcesOutputTokenLimit;
+    const row = rows.find(r => r.transport === 'bearer-http')!;
+    expect(() => assertGatewayLaneCapability(row.lane, { ...row, requireOutputTokenLimit: true })).toThrow(/output-token-limit/);
+  });
   it('declares a static lane registry across client, protocol, upstream, and transport axes', () => {
     const lanes = makeGatewayLaneRegistry({
       claudePool: pool('claude-a'),

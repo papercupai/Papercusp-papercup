@@ -86,6 +86,10 @@ export function sidecarUnitViolations(src: string, sc: Sidecar): string[] {
   if (one('EnvironmentFile') !== '%h/.papercusp/app-producer.env') {
     v.push(`EnvironmentFile must be the injected %h/.papercusp/app-producer.env, got: ${one('EnvironmentFile')}`);
   }
+  const tokenFileVar = `${sc.app.toUpperCase()}_PLATFORM_TOKEN_FILE`;
+  if (!(svc.Environment ?? []).includes(`${tokenFileVar}=%h/.papercusp/${sc.app}-platform-token`)) {
+    v.push(`${tokenFileVar} must name the dedicated injected app credential (WI-10006978)`);
+  }
   for (const env of svc.Environment ?? []) {
     if (env.startsWith(`${sc.localModeVar}=`)) {
       v.push(`${sc.localModeVar} must not be set in the unit (bypasses jwtVerify)`);
@@ -140,16 +144,16 @@ describe('tracked app-sidecar systemd units (EI-23439593071892927)', () => {
       const svc = u.Service ?? {};
       const execStart = svc.ExecStart?.[0] ?? '';
       const violations: string[] = [];
-      if (execStart !== '${PHONE_NODE_BIN} --import tsx --watch src/index.ts') {
+      if (execStart !== '${PHONE_NODE_BIN} --import tsx src/index.ts') {
         violations.push(
-          `ExecStart must use Node's watcher for the phone sidecar, got: ${execStart || '<missing>'}`,
+          `ExecStart must supervise the phone HTTP process directly, got: ${execStart || '<missing>'}`,
         );
       }
       if (svc.WorkingDirectory?.[0] !== '${PHONE_SIDECAR_DIR}') {
         violations.push(`WorkingDirectory must remain the rendered SIDECAR_DIR, got: ${svc.WorkingDirectory?.[0]}`);
       }
-      if (svc.Restart?.[0] !== 'always') {
-        violations.push(`Restart must be always, got: ${svc.Restart?.[0]}`);
+      if (svc.Restart?.[0] !== 'on-failure') {
+        violations.push(`Restart must be on-failure, got: ${svc.Restart?.[0]}`);
       }
       if (!(u.Install?.WantedBy ?? []).includes('default.target')) {
         violations.push('Install.WantedBy must include default.target');
@@ -157,7 +161,7 @@ describe('tracked app-sidecar systemd units (EI-23439593071892927)', () => {
       return violations;
     }
 
-    it('keeps source-change restart in the tracked template', () => {
+    it('lets systemd supervise and restart the HTTP process directly', () => {
       expect(existsSync(PHONE_TEMPLATE), `${PHONE_TEMPLATE} is missing`).toBe(true);
       expect(phoneTemplateViolations(source())).toEqual([]);
     });
@@ -170,16 +174,16 @@ describe('tracked app-sidecar systemd units (EI-23439593071892927)', () => {
       expect(deploy).toContain("'${PHONE_SIDECAR_DIR}'");
     });
 
-    it('rejects the old plain-tsx command that served stale code', () => {
-      const mutant = source().replace('--import tsx --watch src/index.ts', '--import tsx src/index.ts');
+    it('rejects a watcher parent that can remain alive after its HTTP child dies', () => {
+      const mutant = source().replace('--import tsx src/index.ts', '--import tsx --watch src/index.ts');
       expect(mutant).not.toBe(source());
-      expect(phoneTemplateViolations(mutant).join('\n')).toMatch(/Node's watcher/);
+      expect(phoneTemplateViolations(mutant).join('\n')).toMatch(/HTTP process directly/);
     });
 
-    it('rejects a crash-only restart policy that omits the requested always-restart contract', () => {
-      const mutant = source().replace('Restart=always', 'Restart=on-failure');
+    it('rejects a restart policy that does not recover a failed HTTP process', () => {
+      const mutant = source().replace('Restart=on-failure', 'Restart=no');
       expect(mutant).not.toBe(source());
-      expect(phoneTemplateViolations(mutant).join('\n')).toMatch(/Restart must be always/);
+      expect(phoneTemplateViolations(mutant).join('\n')).toMatch(/Restart must be on-failure/);
     });
   });
 
@@ -220,6 +224,18 @@ describe('tracked app-sidecar systemd units (EI-23439593071892927)', () => {
       const mutant = good.replace(/^EnvironmentFile=.*$/m, '');
       expect(mutant).not.toBe(good);
       expect(sidecarUnitViolations(mutant, email).join('\n')).toMatch(/EnvironmentFile must be/);
+    });
+
+    it('dropping the dedicated platform credential is caught', () => {
+      const mutant = good.replace(/^Environment=EMAIL_PLATFORM_TOKEN_FILE=.*$/m, '');
+      expect(mutant).not.toBe(good);
+      expect(sidecarUnitViolations(mutant, email).join('\n')).toMatch(/EMAIL_PLATFORM_TOKEN_FILE must name/);
+    });
+
+    it('using the superuser credential as the app default is caught', () => {
+      const mutant = good.replace('/email-platform-token', '/superuser-token');
+      expect(mutant).not.toBe(good);
+      expect(sidecarUnitViolations(mutant, email).join('\n')).toMatch(/EMAIL_PLATFORM_TOKEN_FILE must name/);
     });
   });
 });

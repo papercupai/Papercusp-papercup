@@ -64,7 +64,11 @@ describe('vm/install-server.sh extra KEY=VAL environment (faked sudo/systemctl/a
     // The first start: record whether the drop-in already existed when linger started the unit.
     stub(
       'loginctl',
-      [`[ -f "${home()}/${DROPIN}" ] && echo DROPIN_PRESENT_AT_LINGER >> "${dir}/systemctl.log"`, 'exit 0'].join('\n'),
+      [
+        `echo "loginctl $*" >> "${dir}/systemctl.log"`,
+        `[ -f "${home()}/${DROPIN}" ] && echo DROPIN_PRESENT_AT_LINGER >> "${dir}/systemctl.log"`,
+        'exit 0',
+      ].join('\n'),
     );
     stub('dpkg-query', 'exit 0');
     stub('pgrep', 'exit 1');
@@ -136,5 +140,105 @@ describe('vm/install-server.sh extra KEY=VAL environment (faked sudo/systemctl/a
     expect(r.status).toBe(2);
     expect(r.stdout).toContain('BAD_ENV_ARG lower=1');
     expect(existsSync(path.join(dir, 'systemctl.log'))).toBe(false);
+  });
+
+  // P-011 multi-tenant density (WI-10004383): one Linux user per tenant Server.
+  const runAs = (user: string | undefined) =>
+    spawnSync('bash', [SCRIPT, 'gs://b/server.deb', SHA], {
+      encoding: 'utf8',
+      env: { ...env(), ...(user === undefined ? {} : { SVC_USER: user }) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+  it('runs the Server as pcsrv by default', () => {
+    const r = runAs(undefined);
+    expect(r.status).toBe(0);
+    expect(log()).toMatch(/^loginctl enable-linger pcsrv$/m);
+  });
+
+  it('runs the Server as the SVC_USER tenant when given', () => {
+    const r = runAs('pctenant3');
+    expect(r.status).toBe(0);
+    expect(log()).toMatch(/^loginctl enable-linger pctenant3$/m);
+    expect(log()).not.toMatch(/enable-linger pcsrv$/m);
+  });
+
+  it('refuses a malformed SVC_USER before touching anything', () => {
+    const r = runAs('Bad User');
+    expect(r.status).toBe(2);
+    expect(r.stdout).toContain('BAD_SVC_USER Bad User');
+    expect(existsSync(path.join(dir, 'systemctl.log'))).toBe(false);
+  });
+
+  // WI-10006853: c1011r's apt-get trickled at ~0 B/s on one mirror connection for 20+ min while
+  // a fresh request answered in 45 ms. Each download attempt is wall-bounded and retried.
+  describe('bounded apt download (fetch + apt path, marker absent)', () => {
+    const aptLog = () => path.join(dir, 'apt-calls.log');
+    beforeEach(() => {
+      // No marker, so the fetch + apt branch runs. Host paths are never touched: rm and the
+      // marker tee are swallowed, gcloud and sha256sum are faked.
+      stub(
+        'sudo',
+        [
+          'while [ "$1" = "-u" ]; do shift 2; done',
+          'while [[ "$1" == *=* ]]; do shift; done',
+          'case "$1" in',
+          '  test) exit 0 ;;',
+          '  cat) case "$2" in',
+          '         /var/lib/papercusp-capacity-installed.sha256) exit 1 ;;',
+          `         /proc/999/environ) [ -f "${dir}/environ" ] && exec cat "${dir}/environ"; exit 1 ;;`,
+          '       esac ;;',
+          '  rm) exit 0 ;;',
+          '  tee) cat > /dev/null; exit 0 ;;',
+          '  install) shift; a=(); while [ $# -gt 0 ]; do case "$1" in -o|-g) shift 2 ;; *) a+=("$1"); shift ;; esac; done; exec install "${a[@]}" ;;',
+          'esac',
+          'exec "$@"',
+        ].join('\n'),
+      );
+      stub('gcloud', 'exit 0');
+      stub('sha256sum', `echo "${SHA}  $1"`);
+      // The first FAKE_APT_HANGS download attempts hang (exec, so timeout's TERM reaches it).
+      stub(
+        'apt-get',
+        [
+          `echo "$*" >> "${aptLog()}"`,
+          'case " $* " in *" --download-only "*)',
+          `  n=$(( $(cat "${dir}/apt.n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "${dir}/apt.n"`,
+          '  [ "$n" -le "$((FAKE_APT_HANGS + 0))" ] && exec /bin/sleep 30 ;;',
+          'esac',
+          'exit 0',
+        ].join('\n'),
+      );
+    });
+    const runApt = (vars: Record<string, string>) =>
+      spawnSync('bash', [SCRIPT, 'gs://b/server.deb', SHA], {
+        encoding: 'utf8',
+        env: { ...env(), APT_ATTEMPT_SEC: '1', APT_LOG: path.join(dir, 'apt-install.log'), ...vars },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 60_000,
+      });
+    const calls = () => readFileSync(aptLog(), 'utf8').trim().split('\n');
+
+    it('retries a hung download on a fresh attempt, then installs from the cache', () => {
+      const r = runApt({ FAKE_APT_HANGS: '1' });
+      expect(r.status, r.stdout + r.stderr).toBe(0);
+      expect(r.stdout).toMatch(/^APT_DOWNLOAD_RETRY attempt=1 rc=124 /m);
+      expect(r.stdout).not.toMatch(/APT_DOWNLOAD_RETRY attempt=2/);
+      expect(r.stdout).toMatch(/^T_APT=\d+$/m);
+      const installs = calls().filter((c) => c.startsWith('install '));
+      expect(installs.filter((c) => c.includes('--download-only'))).toHaveLength(2);
+      // the real install comes last and is not a download-only call
+      expect(installs.at(-1)).not.toContain('--download-only');
+      expect(installs.at(-1)).toContain('/var/tmp/papercusp-server.deb');
+    });
+
+    it('fails loudly (exit 4, APT_DOWNLOAD_FAILED) when every attempt hangs, and never installs', () => {
+      const r = runApt({ FAKE_APT_HANGS: '99', APT_ATTEMPTS: '2' });
+      expect(r.status).toBe(4);
+      expect(r.stdout).toMatch(/^APT_DOWNLOAD_RETRY attempt=2 rc=124 /m);
+      expect(r.stdout).toContain('APT_DOWNLOAD_FAILED attempts=2 attempt_sec=1');
+      expect(calls().filter((c) => c.startsWith('install ') && !c.includes('--download-only'))).toHaveLength(0);
+      expect(r.stdout).not.toMatch(/T_APT=/);
+    });
   });
 });

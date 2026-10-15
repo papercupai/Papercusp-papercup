@@ -29,6 +29,8 @@ afterEach(() => {
   vi.doUnmock('../../../operator-fuzzy-dedup');
   vi.doUnmock('../../../operator-preferences');
   vi.doUnmock('../../../operator-prompt');
+  vi.doUnmock('../converse-prompt');
+  vi.doUnmock('../../../serving-generation');
   vi.doUnmock('drizzle-orm/postgres-js');
   vi.doUnmock('drizzle-orm');
 });
@@ -194,6 +196,46 @@ describe('operator:dedup_check', () => {
 });
 
 describe('operator:preview_prompt', () => {
+  async function mockConverse() {
+    const scanner = vi.fn();
+    const converse = vi.fn(async () => ({
+      systemPromptText: 'actual chat system',
+      userPromptText: 'actual chat user',
+      userPromptTextDelta: 'actual chat delta',
+    }));
+    const generation = { state: 'unknown', reason: 'build-sha-unknown' };
+    vi.doMock('../../../operator-prompt', () => ({ buildOperatorPrompt: scanner }));
+    vi.doMock('../converse-prompt', () => ({ buildOperatorPrompt: converse }));
+    vi.doMock('../../../serving-generation', () => ({ readServingGeneration: vi.fn(async () => generation) }));
+    const { default: tool } = await import('../preview_prompt');
+    return { scanner, converse, generation, tool };
+  }
+
+  it('previews the actual converse builder with public, tool-less defaults and no user recall', async () => {
+    const { scanner, converse, generation, tool } = await mockConverse();
+    const result = await tool.handler({ request: 'What is Papercusp?', brain: 'converse', userId: 'ignored-private-user', showFirstRun: true }, MAKE_CTX());
+    expect(scanner).not.toHaveBeenCalled();
+    expect(converse).toHaveBeenCalledWith({
+      messages: [{ role: 'user', content: 'What is Papercusp?' }],
+      trigger: 'user_message', role: 'papercup', hostTrust: 'public',
+      audienceMode: 'novice', modality: 'text', toolNames: [],
+    }, null);
+    expect(parsePayload(result as never)).toMatchObject({
+      systemPromptText: 'actual chat system',
+      userPromptText: 'actual chat user',
+      userPromptTextDelta: 'actual chat delta',
+      provenance: { builder: 'operator/converse-prompt', role: 'papercup', hostTrust: 'public', toolNames: [], toolSelection: 'empty-default', servingGeneration: generation },
+    });
+  });
+
+  it('passes the exact deep-role catalog and trust inputs without selecting additional tools', async () => {
+    const { converse, tool } = await mockConverse();
+    const toolNames = ['mcp__agentmcp__docs:search', 'mcp__agentmcp__docs:get'];
+    const result = await tool.handler({ request: 'Explain the cloud', brain: 'converse', role: 'papercup-deep', hostTrust: 'owner', audienceMode: 'engineer', modality: 'voice', toolNames }, MAKE_CTX());
+    expect(converse).toHaveBeenCalledWith(expect.objectContaining({ role: 'papercup-deep', hostTrust: 'owner', audienceMode: 'engineer', modality: 'voice', toolNames }), null);
+    expect(parsePayload(result as never).provenance).toMatchObject({ toolNames, toolSelection: 'caller-supplied' });
+  });
+
   it('builds with default placeholder userId', async () => {
     const buildOperatorPrompt = vi.fn(async () => ({
       promptText: 'fixture',

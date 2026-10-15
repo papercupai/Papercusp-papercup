@@ -1,11 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { withBoundedTimeout } from './bounded-timeout';
+import * as recorder from './degradation/fallback-observations';
 
 describe('withBoundedTimeout (WI-3818)', () => {
   beforeEach(() => {
+    vi.spyOn(recorder, 'observeFallback').mockReturnValue(true);
     vi.useFakeTimers();
   });
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
 

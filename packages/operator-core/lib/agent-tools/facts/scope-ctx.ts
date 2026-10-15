@@ -49,10 +49,22 @@ export async function resolveScopeRefFromCtx(
   const needsDefault =
     !(scopeRef ?? '').trim() && (scope === 'owner' || scope === 'harness' || scope === 'role');
   if (!needsDefault) return scopeRef;
-  const { resolveAgentIdentity, deriveAgentRole } = await import('../coordination/identity');
+  const {
+    resolveAgentIdentity,
+    deriveAgentRole,
+    verifiedSpawnSessionAlias,
+  } = await import('../coordination/identity');
   const identity = resolveAgentIdentity(ctx);
+  // A trusted signed spawn speaks as `system:<role>/<sessionId>`, but its
+  // owner-scoped facts are keyed by the verified bare session id. Reuse the
+  // coordination identity's narrow alias guard; never strip an arbitrary
+  // principal prefix from an untrusted bearer/client identity.
+  const ownerId =
+    scope === 'owner'
+      ? verifiedSpawnSessionAlias(ctx, identity.ownerId) ?? identity.ownerId
+      : identity.ownerId;
   return resolveFactScopeRef(scope, scopeRef, {
-    ownerId: identity.ownerId,
+    ownerId,
     harnessSlug: ctx.harnessSlug,
     role: deriveAgentRole(identity),
   });

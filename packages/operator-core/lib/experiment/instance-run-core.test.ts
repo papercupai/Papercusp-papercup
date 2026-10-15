@@ -75,6 +75,18 @@ describe('armToInstanceVariant', () => {
 });
 
 describe('instanceResultsToExperimentResult', () => {
+  it('retains measured failure spend and withholds a winner on unknown charges', () => {
+    const result = cannedResult('baseline', 8);
+    result.costMeasured = false;
+    result.outcomes[0].judgeCostMeasured = false;
+    const out = instanceResultsToExperimentResult([{ variant: { armId: BASELINE_ID, label: 'baseline', bootSpec: {} as InstanceVariant['bootSpec'] }, result }]);
+    expect(out.totalCostUsd).toBeCloseTo(0.15);
+    expect(out.costMeasured).toBe(false);
+    expect(out.arms[0].costMeasured).toBe(false);
+    expect(out.winner).toBeNull();
+    expect(Object.values(out.scorecardScores!)).toEqual([null, null, null, null]);
+  });
+
   it('maps per-arm results → mean composite + compareArms verdict', () => {
     const mk = (armId: string, mean: number): { variant: InstanceVariant; result: BeekeeperResult } => ({
       variant: { armId, label: armId, bootSpec: { manifest: { instanceId: armId } } as InstanceVariant['bootSpec'] },
@@ -91,6 +103,14 @@ describe('instanceResultsToExperimentResult', () => {
 });
 
 describe('instanceRunCore', () => {
+  it('stops before booting another arm after an unmeasured judge charge', async () => {
+    const runBeekeeperBattery = vi.fn(async () => ({ ...cannedResult('unknown', 0, 'errored'), costMeasured: false }));
+    const out = await instanceRunCore(req(), { workspaceId: 'ws', deps: {} as BeekeeperDeps }, { runBeekeeperBattery });
+    expect(runBeekeeperBattery).toHaveBeenCalledTimes(1);
+    expect(out.costMeasured).toBe(false);
+    expect(out.winner).toBeNull();
+  });
+
   it('refuses (staged) with NO spend when ctx.instance.deps is absent', async () => {
     const runBeekeeperBattery = vi.fn();
     await expect(instanceRunCore(req(), { workspaceId: 'ws' }, { runBeekeeperBattery })).rejects.toThrow(

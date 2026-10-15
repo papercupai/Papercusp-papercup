@@ -10,8 +10,10 @@
  */
 
 import { z } from 'zod';
+import type { Sql } from 'postgres';
 import { defineTool } from '@papercusp/tooldef';
 import type { PapercuspToolContext } from '@papercusp/operator-core/lib/agent-tools/_tool-context';
+import { bm25LegIfAvailable } from '@papercusp/operator-core/lib/search/lexical/rank';
 
 const SLUG_RE = /^[a-z0-9._-]+$/i;
 
@@ -52,11 +54,30 @@ export default defineTool({
 
     // Branch on whether an FTS query was supplied. Without one we
     // return rows ranked by `updated_ts DESC` (recency); with one we
-    // use ts_rank_cd.
+    // rank with BM25 when the work_items BM25 index is live (the view is a
+    // straight projection of work_items; plan bm25-lexical-search-evoke-adoption-2026-10-10
+    // P-005), else ts_rank_cd.
     const tags = (args.tags ?? []).filter((t) => typeof t === 'string' && t.length > 0);
     let rows: FeatureRow[] = [];
     try {
-      if (args.query && args.query.trim().length > 0) {
+      const bm25 = args.query && args.query.trim().length > 0
+        ? await bm25LegIfAvailable(tx as unknown as Sql, 'work_items', args.query)
+        : null;
+      if (bm25) {
+        rows = await tx<FeatureRow[]>`
+          SELECT feature_id, title, summary, status,
+                 (SELECT array_agg(value) FROM jsonb_array_elements_text(COALESCE(tags, '[]'::jsonb))) AS tags,
+                 updated_ts,
+                 ${bm25.score} AS rank
+            FROM harness_shared.harness_features_consolidated
+           WHERE harness_slug = ${args.slug}
+             AND ${bm25.match}
+             AND (${args.status ?? null}::text IS NULL OR status = ${args.status ?? null})
+             AND (${tags.length === 0}::boolean OR tags ?| ${tags}::text[])
+           ORDER BY ${bm25.order}, updated_ts DESC NULLS LAST
+           LIMIT ${args.limit}
+        `;
+      } else if (args.query && args.query.trim().length > 0) {
         rows = await tx<FeatureRow[]>`
           SELECT feature_id, title, summary, status,
                  (SELECT array_agg(value) FROM jsonb_array_elements_text(COALESCE(tags, '[]'::jsonb))) AS tags,

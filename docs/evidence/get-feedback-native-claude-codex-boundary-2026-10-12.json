@@ -1,0 +1,664 @@
+{
+  "schemaVersion": "get-feedback-bounded-native-observation-v1",
+  "observedAt": "2026-10-12T03:32:00Z",
+  "workItem": "WI-10005889",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "requester": "su-e16e0da4-f858-4e10-9665-55116edbc36b",
+  "scope": "Genuine staging-operator Claude-to-Codex consultation with two isolated answering launches and typed replies. Does not establish physical native-call attribution, complete source isolation, the three-cell matrix, R6 cohort adequacy or shipment.",
+  "runtime": {
+    "port": 3170,
+    "buildSha": "e35cac8404",
+    "committedSource": "e35cac84042426d62b75f0c87ce7afebce5ab308",
+    "mainPid": 675168,
+    "servingCheckout": "../papercusp-staging.generations/.candidate-e35cac840424.tUrYpk/checkout",
+    "servingCheckoutRelativeTo": "canonical repository root",
+    "namedSourceComparison": "Seven driver/boundary production files in serving generation and canonical tree matched committed e35 bytes before request. This is not a complete executed-source graph.",
+    "identity": "Pinned :3170 coord:whoami returned the exact requester and papercusp-workspace."
+  },
+  "firstRequest": {
+    "requestKey": "get-feedback-native-claude-codex-boundary-e16e0-20261012-v1",
+    "conversationId": "conv-request-83fd2fc5ecc1ca2daff49c69b69768a03b61dd0503343e0d44d0fef9ab8eea42",
+    "state": "no_qualified_responder",
+    "observed": "Raw candidate pool, source observations and dispatch attempts are empty.",
+    "cause": "Caller supplied an exact subject_ref citation absent from non-self eligible same-profile transcript evidence. Router applies that whole-reference predicate before aggregation.",
+    "distinguishingControl": "Zero same-profile non-self eligible turns contained the literal plan#D-017 citation; the same corpus predicate without the citation returned an actual Claude turn. No backend-capacity conclusion follows."
+  },
+  "requestKey": "get-feedback-native-claude-codex-boundary-e16e0-20261012-v2",
+  "conversationId": "conv-request-f6c279643f8221a91e965c33149991443aa56f1d84cc72bffbbcfe287f123e4a",
+  "requestChange": "Fresh substantive request retains backend/state constraints and relevance floors, omits literal subject_ref, and records the measured first-request outcome in tried. Original request remains immutable.",
+  "constraints": { "sourceBackend": "claude", "sourceState": "ended", "targetBackend": "codex" },
+  "sources": [
+    {
+      "ownerId": "su-11be44f3-0243-4685-a84f-7ad340f38aef",
+      "advSessionId": 34494,
+      "nativeSessionId": "18ec2e3a-96a4-458f-937e-4f21620d8e6a",
+      "before": {
+        "capturedAt": "2026-10-12T03:28:08.925Z",
+        "kind": "archive-manifest",
+        "completeBytes": 1507016,
+        "highWaterBytes": 1507016,
+        "sha256": "2bc55e610af401624642ad560b28f9a05eb1e31f6e8a7f7393c48ca7f349ada2",
+        "fileIdentity": null,
+        "canonicalHeldWorkItems": [],
+        "claimsScope": "Canonical nonterminal held work-items only; plan-only claims, wakes and actor history are separate."
+      }
+    },
+    {
+      "ownerId": "su-1501cf66-7e51-42e8-b991-931b29c25170",
+      "advSessionId": 34479,
+      "nativeSessionId": "1783713f-41e8-464e-9f47-88cf4b24a100",
+      "before": {
+        "capturedAt": "2026-10-12T03:28:09.018Z",
+        "kind": "archive-manifest",
+        "completeBytes": 1116090,
+        "highWaterBytes": 1116090,
+        "sha256": "6611d7d1e36230e26ece89f482d6c057bbd55627f8918621407cb8c9327b8f7c",
+        "fileIdentity": null,
+        "canonicalHeldWorkItems": [],
+        "claimsScope": "Canonical nonterminal held work-items only; plan-only claims, wakes and actor history are separate."
+      }
+    }
+  ],
+  "answering": [
+    {
+      "ownerId": "su-50ffa70f-4279-42cf-a14f-fd6813f6f5fb",
+      "advSessionId": 41242,
+      "nativeSessionId": "01a12e27-5945-7463-9c9a-c830df116e56",
+      "backend": "codex",
+      "recordedModel": "gpt-5.6-sol",
+      "portId": "d2f248b5-6598-4aaf-9320-0f2e60dd26f9",
+      "portStatus": "delivered",
+      "sourceAdvSessionId": 34494,
+      "sourceHashMatchesBefore": true,
+      "dispatchAt": "2026-10-12T03:28:19.190Z",
+      "replyPostId": 1175491,
+      "replyAt": "2026-10-12T03:28:53.118Z",
+      "nativeRef": "~/.papercusp/su-codex-homes/session-41242/sessions/2026/10/11/rollout-2026-10-11T23-28-13-01a12e27-5945-7463-9c9a-c830df116e56.jsonl"
+    },
+    {
+      "ownerId": "su-1af3aa1a-9fff-49a3-b276-a594330ecaac",
+      "advSessionId": 41243,
+      "nativeSessionId": "01a12e28-01fe-71c3-8324-2f9478308754",
+      "backend": "codex",
+      "recordedModel": "gpt-5.6-sol",
+      "portId": "6887c090-dee2-48c2-b896-02ac50c12fd0",
+      "portStatus": "delivered",
+      "sourceAdvSessionId": 34479,
+      "sourceHashMatchesBefore": true,
+      "dispatchAt": "2026-10-12T03:29:02.281Z",
+      "replyPostId": 1175493,
+      "replyAt": "2026-10-12T03:29:39.798Z",
+      "nativeRef": "~/.papercusp/su-codex-homes/session-41243/sessions/2026/10/11/rollout-2026-10-11T23-28-56-01a12e28-01fe-71c3-8324-2f9478308754.jsonl"
+    }
+  ],
+  "followupVerification": {
+    "collectedAt": "2026-10-12T03:50:00Z",
+    "scope": "Two existing ended-Claude to Codex replies; bounded physical reply joins and endpoint corroboration only.",
+    "governingDecisions": [
+      "D-006",
+      "D-017"
+    ],
+    "physicalReplies": [
+      {
+        "advSessionId": 41242,
+        "nativeSessionId": "01a12e27-5945-7463-9c9a-c830df116e56",
+        "kickoff": {
+          "line": 9,
+          "at": "2026-10-12T03:28:16.049Z",
+          "renderedSha256": "f7ecf94e8d2ed766f8edea167dc174485add455c6f7283905ffd9cc1318edd7a",
+          "matchesPortReceipt": true,
+          "containsExactPortAndSourceEvidence": true
+        },
+        "reply": {
+          "line": 39,
+          "at": "2026-10-12T03:28:53.238Z",
+          "physicalItemId": "exec-b29aa9e6-5f0d-493a-8e0f-d5afcc92a48b",
+          "callIdSha256": "dd3817d3a96410d06e78ecaf3c0334a8062b7fc7cf1dba612d00864649ba5b89",
+          "nativeSessionSha256": "14e12dabd3337e80aa9d351d8bb640fb99190ce96f1b581065fbb7da793d01c0",
+          "bodySha256": "0b6d55eacf77f2f24928bbd017598d5d116313e1b765d4bf6ebac3ea7fda10b0",
+          "postId": 1175491,
+          "serverInvocationId": 36612947,
+          "serverAt": "2026-10-12T03:28:53.235Z",
+          "serverOwner": "su-50ffa70f-4279-42cf-a14f-fd6813f6f5fb",
+          "serverCarrier": "meta:threadId",
+          "serverBinding": "bound",
+          "serverSelectedAdvSessionId": 41242,
+          "launchSelection": "caller-row",
+          "launchXmin": "863033407",
+          "kernelAvailability": "available",
+          "servingHost": "port-3170",
+          "servingBuildSha": "e35cac8404",
+          "nativeResultOk": true,
+          "callFingerprintMatches": true,
+          "bodyFingerprintMatches": true
+        },
+        "observedNativeFile": {
+          "bytes": 470488,
+          "sha256": "262e3f6ab8f1b6295ea39f9fd1f911d8e6f53fe38303fb10eed974f380762879"
+        }
+      },
+      {
+        "advSessionId": 41243,
+        "nativeSessionId": "01a12e28-01fe-71c3-8324-2f9478308754",
+        "kickoff": {
+          "line": 9,
+          "at": "2026-10-12T03:28:59.421Z",
+          "renderedSha256": "fe230004b1698740792cd3136a1f33b8e08f4a64f68e224c8d7a6805cc9d5139",
+          "matchesPortReceipt": true,
+          "containsExactPortAndSourceEvidence": true
+        },
+        "reply": {
+          "line": 57,
+          "at": "2026-10-12T03:29:39.871Z",
+          "physicalItemId": "exec-278e9b69-e822-4b8e-84af-b22ef0670e41",
+          "callIdSha256": "21d07292b98d8d848f86a98b74f651f69d8c19ca636c92334307ede1b1f8bab5",
+          "nativeSessionSha256": "6fe029fc3a75db945bcb34faed69784a49618076dbced0ecd6a80aaf04cbc6e8",
+          "bodySha256": "4d50f130ea779fea695bce79da99612d8902509308043d8b85870c7c8b9e9e77",
+          "postId": 1175493,
+          "serverInvocationId": 36613427,
+          "serverAt": "2026-10-12T03:29:39.868Z",
+          "serverOwner": "su-1af3aa1a-9fff-49a3-b276-a594330ecaac",
+          "serverCarrier": "meta:threadId",
+          "serverBinding": "bound",
+          "serverSelectedAdvSessionId": 41243,
+          "launchSelection": "caller-row",
+          "launchXmin": "863043429",
+          "kernelAvailability": "available",
+          "servingHost": "port-3170",
+          "servingBuildSha": "e35cac8404",
+          "nativeResultOk": true,
+          "callFingerprintMatches": true,
+          "bodyFingerprintMatches": true
+        },
+        "observedNativeFile": {
+          "bytes": 521117,
+          "sha256": "ebb1478cb2d8b5ed6fcc7f9421889771274cfff93e628b5afefed58507b5dbea"
+        }
+      }
+    ],
+    "afterSourcePrefixes": [
+      {
+        "advSessionId": 34494,
+        "path": "~/.papercusp/session-claude/su-11be44f3-0243-4685-a84f-7ad340f38aef/projects/-home-<user>-papercupai-workspace-papercusp/18ec2e3a-96a4-458f-937e-4f21620d8e6a.jsonl",
+        "device": 66307,
+        "inode": 57428200,
+        "links": 1,
+        "completeBytes": 1507016,
+        "size": 1507016,
+        "sha256": "2bc55e610af401624642ad560b28f9a05eb1e31f6e8a7f7393c48ca7f349ada2",
+        "matchesBeforeArchive": true
+      },
+      {
+        "advSessionId": 34479,
+        "path": "~/.papercusp/session-claude/su-1501cf66-7e51-42e8-b991-931b29c25170/projects/-home-<user>-papercupai-workspace-papercusp/1783713f-41e8-464e-9f47-88cf4b24a100.jsonl",
+        "device": 66307,
+        "inode": 57429239,
+        "links": 1,
+        "completeBytes": 1116090,
+        "size": 1116090,
+        "sha256": "6611d7d1e36230e26ece89f482d6c057bbd55627f8918621407cb8c9327b8f7c",
+        "matchesBeforeArchive": true
+      }
+    ],
+    "sourceReadMethod": "Exactly one source-native file per tracked owner projects home. O_RDONLY|O_NOFOLLOW descriptor; fstat and bounded read; SHA-256 of exact captured completeBytes. Before observations are archive-manifest, so descriptor continuity from before is unknown and this is not live-source acceptance.",
+    "afterClaims": {
+      "canonicalAssignedRows": [
+        {
+          "sourceAdvSessionId": 34494,
+          "count": 0
+        },
+        {
+          "sourceAdvSessionId": 34479,
+          "count": 0
+        }
+      ],
+      "canonicalPositiveControl": "Root WI-10007521 has the requester as taken_by in the same workspace; count 1. Query intentionally includes terminal rows, a superset of the before held-nonterminal population.",
+      "livePlanClaims": [
+        {
+          "sourceAdvSessionId": 34494,
+          "count": 0
+        },
+        {
+          "sourceAdvSessionId": 34479,
+          "count": 0
+        }
+      ],
+      "planPositiveControl": "Same workspace, requester plan#P-002 live claim count 1.",
+      "limit": "No before plan-only census was captured; after plan absence is not a before/after equality proof. Canonical endpoint equality does not exclude ABA."
+    },
+    "recordedActorWindow": {
+      "startInclusive": "2026-10-12T03:28:08Z",
+      "endExclusive": "2026-10-12T03:35:00Z",
+      "owners": "Both exact source owners and both exact answering owners.",
+      "recordedCalls": 18,
+      "successfulReplyPositiveControl": 2,
+      "listedMutationOrWakeCalls": 0,
+      "invocationIds": [
+        36612612,
+        36612708,
+        36612709,
+        36612753,
+        36612947,
+        36612952,
+        36612995,
+        36613000,
+        36613147,
+        36613153,
+        36613195,
+        36613196,
+        36613292,
+        36613293,
+        36613294,
+        36613427,
+        36613428,
+        36613458
+      ],
+      "listedTools": [
+        "work_items:claim",
+        "work_items:release",
+        "work_items:create",
+        "work_items:update",
+        "work_items:complete",
+        "work_items:set_state",
+        "plan_items:claim",
+        "plan_items:release",
+        "plans:set-status",
+        "coord:declare-intent",
+        "coord:orient",
+        "coord:dispatch",
+        "coord:wake",
+        "coord:send",
+        "loop:arm",
+        "mode:set"
+      ],
+      "nestedToolsInvokeIncluded": true,
+      "limit": "MCP ledger subset only. Native shell/file actions and system actors, complete mutation taxonomy, source-owned port lineage and complete wake delivery histories remain unknown. This does not fulfill the full D-006 census."
+    },
+    "writerEvidence": [
+      "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts:1646-1702",
+      "packages/operator-core/lib/projected-tool-deps.ts:617-649,858-885",
+      "packages/operator-core/lib/carry-brief.ts:565-610",
+      "packages/operator-core/lib/plan-items/claims.ts:138-188"
+    ],
+    "controls": {
+      "status": "passed-local-dirty",
+      "testFile": "packages/operator-core/lib/endpoint-route/__tests__/mcp-handler-gating-matrix.test.ts",
+      "change": "Extend existing three backend-pair D-006 cases with per-call thread/call fingerprints; inherited valid source carrier must not override the answerer's actual native thread; legitimate source-owned continuation remains usable after spoofed claim/release.",
+      "firstRun": "/dev/shm/get-feedback-native-actor-controls-20261012T0346.log",
+      "firstResult": "1 passed, 2 failed, 356 unselected. Missing concrete workspace in new per-call fixtures triggered native_tool_owner_invalid_lineage. Corrected using the existing ungoverned launch-row fixture; no production behavior change.",
+      "finalRun": "/dev/shm/get-feedback-native-actor-controls-final-20261012T0349.log",
+      "finalResult": "3 passed, 0 failed, 356 unselected; process exit 0. Named test path dirty at measured run on 14f32c7e05. This is conventional local transport evidence, not committed-source adequacy or a physical native acceptance substitute.",
+      "executedSourceGraph": "unknown",
+      "independentProof": {
+        "observedAt": "2026-10-12T04:36:00Z",
+        "scope": "Committed conventional MCP transport/classifier proof; not a physical native consultation or universal source-immutability verdict.",
+        "commitSha": "fc8692c1b4fcfb653ced7952945e881f1c3aaac7",
+        "cleanRun": {
+          "testRunId": 21136763,
+          "source": "local",
+          "result": "3 passed, 0 failed, 356 unselected",
+          "worktreeDirty": false,
+          "log": "/dev/shm/get-feedback-native-actor-clean-20261012T0429.log",
+          "sourceCapture": "/dev/shm/get-feedback-native-actor-clean-20261012T0429.sources.json",
+          "sourceCaptureSha256": "468b2156686aeba891472afdd7224a8ce7e9453b51ea789211ff36c2ea7feb28",
+          "capturedSourceStatus": "stable",
+          "capturedSourceReasons": [],
+          "inputsCaptured": true
+        },
+        "mutation": {
+          "seam": "Native identity carrier priority in _mcp-host.ts",
+          "before": "const nativeSessionId = nativeThread || nativeSessionHeader || nativeSessionQuery;",
+          "mutant": "const nativeSessionId = nativeSessionHeader || nativeSessionQuery || nativeThread;",
+          "originalHostSha256": "4757412355454f6e412ba75bf66e32ae01064be2da583ae278b66db5821c28f9",
+          "executedMutantHostSha256": "8d3d2b6217ba95b74d4fc3404957c808fe08679acc5b66913ff0b34d1b9b1c55",
+          "relocation": "overlay",
+          "baselineTestRunId": 21136773,
+          "copyBaselineTestRunId": 21136786,
+          "mutantTestRunId": 21136797,
+          "ledgerSource": "mutation-probe",
+          "controlResults": "Both controls passed 3, failed 0, unselected 356",
+          "mutantResult": "2 passed, 1 failed, 356 unselected",
+          "failingCase": "isolated consult native identity guard (get-feedback D-006) 'claude' → 'codex' 'convert' rejects source identity before dispatch while both owners remain usable",
+          "distinguishingObservation": "The expected request_rejected: superuser_foreign_native_session became a later authorization_denied: Kernel preflight refusal. This detects loss of the intended foreign-native auth boundary; it does not demonstrate a successful source claim or an actual impersonating write.",
+          "mutantParse": "unchecked",
+          "assertionEvidence": "test-file-assertion-failure",
+          "treeIntegrity": "verified byte-identical by maintained mutation-probe runner",
+          "log": "/dev/shm/get-feedback-native-actor-mutation-20261012T0430.log",
+          "sourceCapturePrefix": "/dev/shm/get-feedback-native-actor-mutation-20261012T0430",
+          "baselineAndCopyCaptureSha256": "86d4e0aaffd33992737d79416dd6f521f5f80adbb12f231e831d5dd7b2dc4a43",
+          "mutantCaptureSha256": "327661466bda94a35539f5d3d7d571913db6b43cf2b31598921ec59a5b38d4d6",
+          "captureScope": "All three phase diagnostics contain stable Vite original sources with no reasons and the expected host SHA; their rows arrays are empty. Do not infer full read/effect coverage from these diagnostics.",
+          "descriptorLimit": "The maintained runner withheld execution_details.mutation because its deployed reader predates that descriptor parser; the explicit runner result and named canonical receipts retain phase attribution."
+        },
+        "namedCurrentSourceHashes": {
+          "packages/operator-core/lib/endpoint-route/__tests__/mcp-handler-gating-matrix.test.ts": "53128c99acb275f51f730203125896bc2da9c735bfb0c73cd464e69e926eb171",
+          "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts": "4757412355454f6e412ba75bf66e32ae01064be2da583ae278b66db5821c28f9",
+          "packages/operator-core/lib/adv-sessions.ts": "1302d7954d1430be339b8f5ca28ab2e2f55c85d99ca4688742b031709d38b8ab"
+        },
+        "acceptanceQualification": {
+          "observedAt": "2026-10-12T04:54:07.309749+00:00",
+          "scope": "Measured fixture calibration and clause binding of the existing conventional actor proof; R2 acceptance remains failed. This qualifies the prior proof without rerunning tests or changing product code.",
+          "specId": "AUTO-BAR-R-2-P-002",
+          "specRevision": 3,
+          "specFingerprint": "303150bcfd1bdf5fda39cc3ec030c7e6e7719f31ff2c862a2258dad8a186620d",
+          "bindings": {
+            "positive": 38597,
+            "mutation": 38598,
+            "status": "Both server-measured CURRENT on explicit normal3170; no stale or unknown reasons.",
+            "testLayer": "unit",
+            "sourceFingerprint": "sha256-file-set-v1:92414a2f522d3db53d2ff07f9add98d848bb7008ef71feb0d0837e2267d363db",
+            "testFingerprint": "sha256-file-set-v1:f17249af9bc4bb8c08ae687c1ae01f0d2a7d4765d117e7c6ccb95fb3dad07343",
+            "fixtureFingerprint": "sha256-file-set-v1:f17249af9bc4bb8c08ae687c1ae01f0d2a7d4765d117e7c6ccb95fb3dad07343",
+            "sourcePaths": [
+              "packages/operator-core/lib/adv-sessions.ts",
+              "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts"
+            ],
+            "fixturePaths": [
+              "packages/operator-core/lib/endpoint-route/__tests__/mcp-handler-gating-matrix.test.ts"
+            ],
+            "fixtureFree": false,
+            "fixtureCalibrated": true,
+            "mutationTarget": "AUTO-BAR-R-2-P-002"
+          },
+          "calibration": {
+            "inputs": "Exact committed inline native rows541/542/543 plus controlled launch/kernel witnesses. The conventional test file is the measured fixture input.",
+            "positiveControl": "Source original and continuation plus answering owner reach the dispatcher under their actual native identities; the source continuation remains usable after spoof attempts.",
+            "negativeControl": "The answering native thread cannot override its physical actor with an inherited valid source header/query: exact foreign-native auth rejection precedes the dispatcher and emits the expected error audit.",
+            "sensitivity": "Saved baseline21136773 and copy21136786 pass3/0; saved header-first overlay mutant21136797 fails exactly one selected case with a later Kernel preflight refusal replacing the expected foreign-native auth rejection.",
+            "oracle": "Literal auth boundary, explicit dispatcher count and expected native row/call fingerprints are independent of the classifier result. No successful impersonating write is inferred."
+          },
+          "governingAdequacy": {
+            "governing": true,
+            "evaluatorBuild": {
+              "sha": "3bf47f42b7",
+              "version": "0.0.0"
+            },
+            "verdict": "fail",
+            "ratings": {
+              "traceability": "pass",
+              "fixture-calibration": "pass",
+              "falsifiability": "pass",
+              "correct-layer": "unknown",
+              "oracle-independence": "pass",
+              "execution-integrity": "pass",
+              "freshness": "fail",
+              "plan-class-risk-floor": "pass",
+              "disclosed-gap": "fail"
+            },
+            "wouldBlock": [
+              "correct-layer",
+              "freshness",
+              "disclosed-gap"
+            ],
+            "scope": "Exact live R2 clause with no workItemIds, evidenceRefs, bindingIds or immutable-revision pins; independent server evaluation, not independent human review or full plan acceptance."
+          },
+          "historicalDiagnostic": {
+            "path": "/dev/shm/get-feedback-p002-actor-adequacy-20261012T0453.json",
+            "governing": false,
+            "reason": "workItemIds restricted the evidence cohort. The earlier description as governing was withdrawn in user commentary and work-item post1175633 before the corrected unscoped grade."
+          },
+          "evidenceRefs": [
+            "/dev/shm/get-feedback-p002-actor-binding-20261012T0452.json",
+            "/dev/shm/get-feedback-p002-actor-current-20261012T0453.json",
+            "/dev/shm/get-feedback-p002-actor-governing-full-20261012T0455.json"
+          ],
+          "evidenceSha256": {
+            "binding": "6903b2f24829fb5e2ad68378ff2780e9f1379ba4e29395427bd6ceb8153626e7",
+            "currentness": "3ce08b81b50397ca918862f2bc53a08fcc83f8c1264b0361228a3c1bbf85d776",
+            "governingGrade": "0014d757ae305918a5b88e7997683b4b1d5892a7ad3405afb3a87f9c994335f4"
+          },
+          "preservation": {
+            "priorArtifactSha256": "1b1a76d9db91897bd2fa2b5a23b836968dcc9de391fc9f4f6fb0960743cdc470",
+            "priorArtifactBytes": 30756,
+            "method": "Remove only the raw text from the acceptanceQualification key through its closing comma immediately before the sibling limits key. This recovers the prior exact bytes; JSON reserialization changes older formatting and is not an exact-byte check. boundedCensus and the original trial/proof remain unchanged."
+          },
+          "remaining": [
+            "Current passing proofs for the registered launcher, consult-dispatch and session-port service files are not established by this scoped actor proof; stale sibling bindings remain historical and were not withdrawn.",
+            "Bindings38597/38598 explicitly disclose synthetic transport scope, unchecked mutant parse and absent physical native/source-immutability proof.",
+            "The bind response reports current acceptance rubric revision8 unvetted/rejected-attestation. This was retained, not treated as an acceptance pass.",
+            "Genuine same-source live D017 observation, historical missing BEFORE plan-only signatures and full D006 actor/wake/system coverage remain open.",
+            "Other native matrix cells, original R6 bounds and exact shipment remain separate and open. No product edit, test rerun, native launch, binding retirement or LIVE_GATE_OPS occurred in this qualification."
+          ]
+        },
+        "limits": [
+          "All named current sources matched the committed proof input at the measured read; no current runtime or final shipment is inferred.",
+          "The production row classifier and MCP boundary execute, while launch rows, funding/kernel witnesses and dispatcher effects are controlled suite fixtures.",
+          "Original local-dirty result and its unknown graph remain historical and unchanged.",
+          "Clause binding, measured fixture calibration and governing independent adequacy still require separate acceptance work.",
+          "Completed bounded census, historical missing before plan claims, genuine concurrent live-source observation, other native cells, original R6 bounds and exact shipment remain separate."
+        ]
+      }
+    },
+    "boundedCensus": {
+      "collectedAt": "2026-10-12 04:17:47 UTC",
+      "window": {
+        "startInclusive": "2026-10-12T03:28:08Z",
+        "endExclusive": "2026-10-12T03:35:00Z"
+      },
+      "verdict": "Expanded bounded recorded census; full D-006 immutability acceptance remains unknown.",
+      "sourcePortLineage": {
+        "relation": "harness_shared.session_ports joined to adv_sessions",
+        "method": "Source-indexed ports prepared before end; retain new ports or targets whose lifetime overlaps window. Recursive source-port target join, cycle guard and depth cap 8; same-workspace target 41242 positive control passed.",
+        "roots": [
+          34494,
+          34479
+        ],
+        "observedOverlappingTargets": [
+          {
+            "sourceAdvSessionId": 34494,
+            "targetAdvSessionId": 41242,
+            "portId": "d2f248b5-6598-4aaf-9320-0f2e60dd26f9",
+            "ownerId": "su-50ffa70f-4279-42cf-a14f-fd6813f6f5fb",
+            "nativeSessionId": "01a12e27-5945-7463-9c9a-c830df116e56",
+            "launchParentOwner": "su-e16e0da4-f858-4e10-9665-55116edbc36b"
+          },
+          {
+            "sourceAdvSessionId": 34479,
+            "targetAdvSessionId": 41243,
+            "portId": "6887c090-dee2-48c2-b896-02ac50c12fd0",
+            "ownerId": "su-1af3aa1a-9fff-49a3-b276-a594330ecaac",
+            "nativeSessionId": "01a12e28-01fe-71c3-8324-2f9478308754",
+            "launchParentOwner": "su-50ffa70f-4279-42cf-a14f-fd6813f6f5fb"
+          }
+        ],
+        "launchParentLimit": "Launch parent is the invoking continuation. The second argv records --launched-by=su-50ffa70f; it remains disjoint from both retained source owners. Launch ancestry is separate from source-port ancestry."
+      },
+      "recordedActorCalls": {
+        "exactFourOwnerCalls": 18,
+        "groups": 11,
+        "completeVerbPopulation": [
+          "activity:report",
+          "consult:reply",
+          "conversations:get",
+          "journal:record-turn",
+          "tools:find",
+          "tools:invoke"
+        ],
+        "nestedInvokeIds": [
+          36612709,
+          36613196,
+          36613293
+        ],
+        "nestedInvokeTargets": "All three are conversations:get for the exact closed V2 request; two args payloads are serialized JSON strings.",
+        "expandedReferenceMethod": "MATERIALIZED time-bounded workspace tool_invocations window; match source/answerer owners, native UUIDs, port UUIDs and direct adv_session_id/advSessionId fields in args. Includes every actor, not only the four owners.",
+        "expandedReferenceCalls": 25,
+        "additionalRequesterInvocationIds": [
+          36613538,
+          36613541,
+          36613542,
+          36613543,
+          36613544,
+          36613565,
+          36614047
+        ],
+        "additionalRequesterTools": [
+          "dev:resolve_owner",
+          "code:run",
+          "activity:report",
+          "dev:pg_query"
+        ],
+        "positiveControl": "Exact successful reply 36612947 passed.",
+        "limit": "Settled MCP calls only; refs hidden in opaque/truncated arguments, uncatalogued system writes and alternate paths are not excluded."
+      },
+      "nativeActions": {
+        "method": "O_RDONLY|O_NOFOLLOW; descriptor fstat; read bounded to file high-water; timestamp-filter response_item function_call/custom_tool_call rows. Inspected all non-reply scripts and matched reply-only script callees to prior physical reply proof.",
+        "files": [
+          {
+            "advSessionId": 41242,
+            "path": "~/.papercusp/su-codex-homes/session-41242/sessions/2026/10/11/rollout-2026-10-11T23-28-13-01a12e27-5945-7463-9c9a-c830df116e56.jsonl",
+            "bytes": 470488,
+            "device": 66307,
+            "inode": 57429228,
+            "sha256": "262e3f6ab8f1b6295ea39f9fd1f911d8e6f53fe38303fb10eed974f380762879",
+            "stableSize": true,
+            "callLines": [
+              17,
+              23,
+              29,
+              37
+            ]
+          },
+          {
+            "advSessionId": 41243,
+            "path": "~/.papercusp/su-codex-homes/session-41243/sessions/2026/10/11/rollout-2026-10-11T23-28-56-01a12e28-01fe-71c3-8324-2f9478308754.jsonl",
+            "bytes": 521117,
+            "device": 66307,
+            "inode": 57430268,
+            "sha256": "ebb1478cb2d8b5ed6fcc7f9421889771274cfff93e628b5afefed58507b5dbea",
+            "stableSize": true,
+            "callLines": [
+              17,
+              23,
+              29,
+              39,
+              48,
+              55
+            ]
+          }
+        ],
+        "observedCallCount": 10,
+        "shellWrapperCallLines": {
+          "target41242": [],
+          "target41243": [
+            29,
+            39,
+            48
+          ]
+        },
+        "shellCommands": "ptool tools:find; ptool tools:invoke(conversations:get) twice; rg source read; sed source read. No source edit, claim mutation, or wake command appears in those inspected scripts.",
+        "otherCalls": "Metadata discovery, conversation read and exact consult:reply; hooks additionally account for activity:report and journal:record-turn in MCP ledger.",
+        "limit": "This is the captured native file population in the fixed window, not an OS-wide syscall or unrecorded-system census."
+      },
+      "systemPortAudit": {
+        "writer": "packages/operator-core/lib/session-port/telemetry.ts:110",
+        "actor": "system:session-port",
+        "records": [
+          "session-port-e86a7905-e5be-4c87-a380-f282fb2923b6",
+          "session-port-ed6fb6ca-ca97-4e98-98c3-fd98b8209839",
+          "session-port-ae5b0924-4c63-47d3-b864-4172ea2d11cf",
+          "session-port-6b8f20a3-3fce-4684-af77-c6ba7cf80433",
+          "session-port-8256fafe-68a8-4f3a-94db-99de9a1585d6",
+          "session-port-46a6711f-cd4e-4b5f-9401-1ae376ad7b6f",
+          "session-port-f5fac6ba-8d06-4ed2-b027-0fd34e1386c8",
+          "session-port-acb3b952-fa5b-4c17-a2d4-e2f3b7897934"
+        ],
+        "stagesPerPort": [
+          "inspected",
+          "prepared",
+          "pending",
+          "delivered"
+        ],
+        "joins": "Each pending/delivered row names its exact source/target ids; every source_hash matches the saved canonical source prefix.",
+        "queryScope": "audit_log millisecond ts bounds; tenant/default workspaces; exact source/target/port subjects plus bounded details references.",
+        "positiveControl": "Exact source:34494 inspected audit record passed. Actor-only filtering would have omitted these system records; subject matching is required.",
+        "limit": "Writer catches persistence failures and returns false. Audit_log is not a complete normal-claim or all-system mutation ledger."
+      },
+      "wakeCensus": {
+        "deliveries": {
+          "workspace": "default",
+          "recordedRows": 0,
+          "positiveControlId": 678725,
+          "positiveControlAt": "2026-10-12T02:58:31.198088Z"
+        },
+        "requiredAttempts": {
+          "workspaces": [
+            "default",
+            "papercusp-workspace"
+          ],
+          "recordedRows": 0,
+          "positiveControlId": 33433,
+          "positiveControlAt": "2026-10-11T21:37:17.968005Z"
+        },
+        "overlappingRetainedSubscriptions": [
+          {
+            "id": 278431,
+            "subscriber": "su-50ffa70f-4279-42cf-a14f-fd6813f6f5fb",
+            "createdAt": "2026-10-12T03:28:12.138340Z",
+            "firedAt": null,
+            "cancelledAt": "2026-10-12T04:06:29.029011Z"
+          },
+          {
+            "id": 278437,
+            "subscriber": "su-1af3aa1a-9fff-49a3-b276-a594330ecaac",
+            "createdAt": "2026-10-12T03:28:55.474861Z",
+            "firedAt": null,
+            "cancelledAt": "2026-10-12T04:06:29.029011Z"
+          }
+        ],
+        "subscriptionPositiveControlId": 270796,
+        "failedInitialControl": "Requester had no wake row in the observed window; that first zero was inconclusive. Exact retained rows subsequently passed.",
+        "writerEvidence": [
+          "packages/operator-core/lib/events/await/store.ts:89,2198,3680",
+          "packages/operator-core/lib/agent-tools/coordination/inbox-wake.ts:245"
+        ],
+        "limit": "Delivery/attempt positive controls are outside the fixed window and do not attest continuous recorder liveness. Required-attempt writer is fail-soft and omits staged, timed-out and fire-error outcomes. The event_key_fires latch overwrites last payload/actor and is not append-only history. Zero recorded rows does not prove no attempted wake."
+      },
+      "claimHistoryLimit": {
+        "beforePlanOnly": "Not captured; cannot reconstruct a historical before snapshot from current plan_item_claims.",
+        "endpointState": "Prior after zero canonical assignments and zero live plan claims remain endpoint evidence only.",
+        "writerEvidence": [
+          "packages/operator-core/lib/plan-items/claims.ts:138,413",
+          "packages/operator-core/lib/work-items.ts:5890",
+          "packages/operator-core/lib/work-items-events.ts:110,431",
+          "packages/operator-core/lib/work-item-lifecycle-history.ts:92"
+        ],
+        "explanation": "Plan claims overwrite/delete current rows. Normal claim events are detached/fail-soft, key-fire latches overwrite last state, and lifecycle reader explicitly declares unrecorded nonterminal transitions. Matching endpoints and these recorded zeros cannot exclude ABA."
+      },
+      "remainingOwnedBy": "WI-10005889 / WI-10007521",
+      "outstanding": [
+        "Historical before plan-only population and full system/direct-mutation coverage remain unknown.",
+        "Genuine same-source concurrent work and D-017 live-source observation remain separate from this ended-source trial.",
+        "Conventional guards remain local-dirty; independent adequacy, remaining native cells, original R6 bounds and exact shipment remain open."
+      ]
+    },
+    "outstanding": [
+      "Full D-006 actor/mutation/wake census and same-source port lineage",
+      "Conventional controls independent proof requirements and genuine concurrent-source observation",
+      "Remaining native matrix cells and D-017 genuinely live-source case",
+      "Original R6 cohort 4/shortfall 4/unknown, receipt-removal drill",
+      "Independent acceptance and exact shipment"
+    ]
+  },
+  "routingLimits": "Raw snapshot preserves four Claude sources with unavailable exact archives and one backend mismatch as exclusions; these are not successful or capacity-walled cases. Selected answering launches are floor-qualified conversions.",
+  "projectDecision": "Adopt actor-bound dispatch-window verification and pickup evidence in the maintained native-consult integration suite. Same-owner source continuation is legitimate independent work; spoofed owner or attempted source-held mutation must fail closed even when before/after census matches. Prefix and claim equality is corroboration. sourceUntouched:true is an implementation promise, not measured isolation.",
+  "openAcceptance": [
+    "Exact native kickoff and physical MCP reply call-to-server attribution",
+    "Source after-prefix and canonical claim comparison",
+    "Complete D-006 claim-mutating actor and wake census, including source-owned ported lineage",
+    "Conventional negative control for spoofed source identity and positive source-continuation control",
+    "Remaining native matrix cells and D-017 live-source observation",
+    "Original R6 cohort population 4, shortfall 4 and explicit unknown preserved; receipt-removal replication remains open",
+    "Independent acceptance and exact R7 shipment"
+  ],
+  "evidenceRefs": [
+    "/dev/shm/get-feedback-native-staging-sync-20261012T0305.log",
+    "/dev/shm/get-feedback-native-claude-codex-boundary-20261012T0326.accept.json",
+    "/dev/shm/get-feedback-native-boundary-routing-20261012T0330.json",
+    "/dev/shm/get-feedback-native-subject-control-20261012T0333.json",
+    "/dev/shm/get-feedback-native-claude-codex-boundary-v2-20261012T0328.accept.json",
+    "/dev/shm/get-feedback-native-boundary-v2-state-20261012T0330.json",
+    "/dev/shm/get-feedback-native-boundary-v2-conversation-20261012T0333.json",
+    "/dev/shm/get-feedback-native-boundary-v2-advs-20261012T0334.json",
+    "/dev/shm/get-feedback-native-boundary-v2-close-20261012T0335.json"
+  ]
+}

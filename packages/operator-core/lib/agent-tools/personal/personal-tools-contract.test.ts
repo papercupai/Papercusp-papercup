@@ -13,6 +13,14 @@ vi.mock('../../personal-vault/store', () => ({
   searchPersonalDocuments: mocks.search,
 }));
 vi.mock('../../personal-vault/authorization', () => ({ authorizePersonalAccess: mocks.authorize }));
+// Labelling has its own suites (disclosure-labels / disclosure-ledger); here every result is unrestricted.
+vi.mock('../../personal-vault/disclosure-ledger', () => ({
+  discloseDocuments: async (_sql: unknown, params: { documents: unknown[] }) => ({
+    documents: params.documents,
+    withheld: 0,
+    disclosed: 0,
+  }),
+}));
 vi.mock('../../personal-vault/embedding', () => ({
   PERSONAL_EMBEDDER_MODE: 'gemma',
   buildPersonalQueryEmbedder: async () => mocks.embed,

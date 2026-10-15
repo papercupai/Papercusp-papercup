@@ -1,9 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { diffPolicyIgnores, IGNORE_PATTERNS } from './policy';
+import { configureBackup } from './config';
+import { BACKUP_RETENTION_PIN, WorkspaceBackup } from './workspace-backup';
+import type { Sql } from 'postgres';
 
 /**
  * Covers the ignore-rule diff that applyGlobalPolicy relies on. The
@@ -119,6 +122,42 @@ describe.skipIf(!kopiaAvailable)('applyGlobalPolicy ignore round-trip (real kopi
     try { await kopia(['repository', 'disconnect'], env); } catch { /* best effort */ }
     if (workspaceRoot) await rm(workspaceRoot, { recursive: true, force: true });
   });
+
+  it('keeps historical held bytes through aggressive expiry and permits expiry only after release', async () => {
+    let holds = ['hold-on-a-different-workspace-in-the-dump'];
+    configureBackup({ getSql: () => (() => Promise.resolve([])) as unknown as Sql,
+      workspacesRoot: () => workspaceRoot, ensureSchema: async () => {},
+      getHarnessAdminUrl: () => ({ url: 'postgres://test', source: 'test' }),
+      withRetentionLease: async (fn) => fn(holds) });
+    const backup = new WorkspaceBackup({ workspaceId: 'retention-test', workspaceRoot });
+    await kopiaOk(['policy', 'set', '--global', '--keep-latest=1', '--keep-hourly=0', '--keep-daily=0',
+      '--keep-weekly=0', '--keep-monthly=0', '--keep-annual=0', '--ignore-identical-snapshots=false'], env);
+    const data = join(workspaceRoot, 'held-data');
+    await mkdir(data);
+    await writeFile(join(data, 'held.txt'), 'historical held body');
+    const first = JSON.parse(await kopiaOk(['snapshot', 'create', data, '--json'], env)).rootEntry.obj as string;
+    await kopiaOk(['snapshot', 'pin', '--add=operator-preserve', first], env);
+    await (backup as any).pinForRetention(env);
+    await writeFile(join(data, 'held.txt'), 'current body');
+    const second = JSON.parse(await kopiaOk(['snapshot', 'create', `--pin=${BACKUP_RETENTION_PIN}`, data, '--json'], env)).rootEntry.obj as string;
+    await (backup as any).expireWithRetentionLease(env);
+    await kopiaOk(['snapshot', 'expire', '--all', '--delete'], env);
+    const kept = JSON.parse(await kopiaOk(['snapshot', 'list', '--all', '--json'], env));
+    expect(kept.map((r: { rootEntry: { obj: string } }) => r.rootEntry.obj)).toEqual(expect.arrayContaining([first, second]));
+    const restored = join(workspaceRoot, 'held-restore');
+    await kopiaOk(['snapshot', 'restore', first, restored], env);
+    expect(await readFile(join(restored, 'held.txt'), 'utf8')).toBe('historical held body');
+    // Release removes only Papercusp's pin, never an operator's independent pin.
+    holds = [];
+    await (backup as any).expireWithRetentionLease(env);
+    expect(JSON.parse(await kopiaOk(['snapshot', 'list', '--all', '--json'], env)).map((r: { rootEntry: { obj: string } }) => r.rootEntry.obj))
+      .toContain(first);
+    await kopiaOk(['snapshot', 'pin', '--remove=operator-preserve', first], env);
+    await kopiaOk(['snapshot', 'expire', '--all', '--delete'], env);
+    const released = JSON.parse(await kopiaOk(['snapshot', 'list', '--all', '--json'], env));
+    expect(released.map((r: { rootEntry: { obj: string } }) => r.rootEntry.obj)).not.toContain(first);
+    expect(released.map((r: { rootEntry: { obj: string } }) => r.rootEntry.obj)).toContain(second);
+  }, 60_000);
 
   it('adds the desired set, then drops a stale entry on the next apply', async () => {
     // First apply — simulate a user-added excludedPath 'stale-path'.

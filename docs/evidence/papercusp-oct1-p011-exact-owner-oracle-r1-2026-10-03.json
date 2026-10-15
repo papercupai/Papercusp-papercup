@@ -1,0 +1,134 @@
+{
+  "schemaVersion": "p011-exact-owner-independent-v1",
+  "proof": {
+    "path": "docs/evidence/papercusp-oct1-p011-exact-owner-retainers-r1-2026-10-02.json",
+    "sha256": "283cd13234d20676fc29a85bf883c21b607f099da449c404ca3c1ece7f4bd235",
+    "bytes": 847097,
+    "result": {
+      "processIdentity": "2506527:2370975:7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+      "recordedBuildSha": "69c1baeac4",
+      "snapshotSha256": "4bbcf7a75820d57a930a322152c935a144d34d1e8e7d2a9007e37c6c89494fa7",
+      "owners": [
+        {
+          "owner": "@papercusp/memory:host",
+          "id": 1702725,
+          "index": 851362,
+          "selfSizeBytes": 32,
+          "dominatorRetainedV8Bytes": 1480,
+          "observedDirectParentIndexes": [
+            312071,
+            851361
+          ],
+          "directParentsNotChecked": 0
+        },
+        {
+          "owner": "@papercusp/memory.local-embedder-worker",
+          "id": 1702749,
+          "index": 851374,
+          "selfSizeBytes": 136,
+          "dominatorRetainedV8Bytes": 1752,
+          "observedDirectParentIndexes": [
+            312071,
+            851373
+          ],
+          "directParentsNotChecked": 0
+        },
+        {
+          "owner": "@papercusp/operator-core.harnessCoreCaches",
+          "id": 7665431,
+          "index": 3832715,
+          "selfSizeBytes": 56,
+          "dominatorRetainedV8Bytes": 256,
+          "observedDirectParentIndexes": [
+            312071,
+            2775235
+          ],
+          "directParentsNotChecked": 0
+        },
+        {
+          "owner": "@papercusp/operator-core.operatorCache",
+          "id": 7664881,
+          "index": 3832440,
+          "selfSizeBytes": 48,
+          "dominatorRetainedV8Bytes": 1328,
+          "observedDirectParentIndexes": [
+            312071,
+            2775236
+          ],
+          "directParentsNotChecked": 0
+        },
+        {
+          "owner": "@papercusp/operator-core.snapshot-fold-slots",
+          "id": 7671075,
+          "index": 3835537,
+          "selfSizeBytes": 40,
+          "dominatorRetainedV8Bytes": 144,
+          "observedDirectParentIndexes": [
+            312071,
+            2775265
+          ],
+          "directParentsNotChecked": 0
+        },
+        {
+          "owner": "@papercusp/lexicon:host",
+          "id": 7675099,
+          "index": 3837549,
+          "selfSizeBytes": 32,
+          "dominatorRetainedV8Bytes": 320,
+          "observedDirectParentIndexes": [
+            312071,
+            2775272
+          ],
+          "directParentsNotChecked": 0
+        },
+        {
+          "owner": "@papercusp/operator-core.repoCitationTrackingCache",
+          "id": 2659349,
+          "index": 1329674,
+          "selfSizeBytes": 64,
+          "dominatorRetainedV8Bytes": 1128,
+          "observedDirectParentIndexes": [
+            312071,
+            1329673
+          ],
+          "directParentsNotChecked": 0
+        },
+        {
+          "owner": "@papercusp/operator-core.agentsAcrossWorkspaceCache",
+          "id": 2659129,
+          "index": 1329564,
+          "selfSizeBytes": 48,
+          "dominatorRetainedV8Bytes": 48,
+          "observedDirectParentIndexes": [
+            312071,
+            1329563
+          ],
+          "directParentsNotChecked": 0
+        },
+        {
+          "owner": "@papercusp/operator-core.midTurnMemoryAdmission",
+          "id": 6105983,
+          "index": 3052991,
+          "selfSizeBytes": 64,
+          "dominatorRetainedV8Bytes": 576,
+          "observedDirectParentIndexes": [
+            312071,
+            2775303
+          ],
+          "directParentsNotChecked": 0
+        }
+      ],
+      "scope": "Historical private snapshot; no new runtime measurement.",
+      "definition": "Per-node dominator-owned V8 self_size; incoming parents are not dominators. Never sum overlapping retained sizes.",
+      "nativePhysicalOwnership": "unknown",
+      "productionSavings": "unmeasured",
+      "loadedBuildIdentity": "unknown"
+    }
+  },
+  "independentOf": "No producer import, constructor-label join or class/parent aggregate retained total.",
+  "limitations": [
+    "Saved private snapshot forced GC and pause; no new live acceptance.",
+    "Exact singleton IDs identify graph nodes, not historical PostgreSQL initiating calls.",
+    "Dominator-owned V8 bytes do not establish native physical allocation or production savings."
+  ]
+}

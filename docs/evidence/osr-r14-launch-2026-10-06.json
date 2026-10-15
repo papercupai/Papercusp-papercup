@@ -1,0 +1,261 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "evidencePlane": "live",
+  "name": "R-14: secret scanners on the pinned public launch cut \u2014 complete finding ledger",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "AUTO-BAR-R-14-P-013",
+  "workItemId": "WI-10003960",
+  "subjectCommit": "3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c",
+  "command": [
+    "git -C <clone of Papercusp/papercusp-app> archive 3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c | tar -x -C gatecut",
+    "node scripts/source-preview.mjs gate gatecut --target public --json gate-findings.json"
+  ],
+  "startedAt": "2026-10-06T03:46:13Z",
+  "finishedAt": "2026-10-06T03:47:50Z",
+  "gateOutput": [
+    "  \u2713 audit-release-bundle: clean",
+    "  \u2713 audit-release-bundle --scan-dir: clean",
+    "  \u2713 gitleaks: clean",
+    "  \u2713 trufflehog: clean",
+    "GATE: clean",
+    "EXIT=0"
+  ],
+  "findingLedger": [
+    {
+      "detector": "gitleaks",
+      "rule": "generic-api-key",
+      "path": "apps/operator/app/_components/ChatwootWidget.tsx",
+      "line": 34,
+      "sha256": "1c7b8ccd65555055982e6c0a04b13972e952c8a348b3a14861bce87d826542b1",
+      "allowlisted": true
+    },
+    {
+      "detector": "gitleaks",
+      "rule": "generic-api-key",
+      "path": "apps/operator/app/_components/voice/VoiceButton.tsx",
+      "line": 66,
+      "sha256": "acb5d88f3018c6535bcec37767389bc0f811e4b74c9925d5e98dd10cdd53a6d0",
+      "allowlisted": true
+    },
+    {
+      "detector": "gitleaks",
+      "rule": "curl-auth-user",
+      "path": "apps/operator-public/README.md",
+      "line": 193,
+      "sha256": "02aa14ea0f0138aa99dc49a6ac9fd872a56980f463ee699509444ac122017667",
+      "allowlisted": true
+    },
+    {
+      "detector": "gitleaks",
+      "rule": "generic-api-key",
+      "path": "apps/operator-vite/src/components/adv/dream-view.fixture.json",
+      "line": 383,
+      "sha256": "b34c42adeb37349ce8a633c66ba4235b9e6e5299ae686931d9a226bd28874ea3",
+      "allowlisted": true
+    },
+    {
+      "detector": "gitleaks",
+      "rule": "generic-api-key",
+      "path": "apps/operator-vite/src/components/adv/dream-view.fixture.json",
+      "line": 911,
+      "sha256": "b34c42adeb37349ce8a633c66ba4235b9e6e5299ae686931d9a226bd28874ea3",
+      "allowlisted": true
+    },
+    {
+      "detector": "gitleaks",
+      "rule": "generic-api-key",
+      "path": "apps/tui/src/models.rs",
+      "line": 4609,
+      "sha256": "3eb1bd439947eb762998e566ccc2e099c791118b2f40579cc4f7da2b5061b7f9",
+      "allowlisted": true
+    },
+    {
+      "detector": "gitleaks",
+      "rule": "jwt",
+      "path": "libs/papercusp/packages/cli/src/secret-scrubber.node-test.ts",
+      "line": 75,
+      "sha256": "1a2d174bf663e3da838706f04ac77846e4c1267b92f6156e7d2610bf279c15fb",
+      "allowlisted": true
+    },
+    {
+      "detector": "gitleaks",
+      "rule": "generic-api-key",
+      "path": "libs/papercusp/packages/orchestrator/src/spawn-mcp.ts",
+      "line": 1049,
+      "sha256": "2b4026fd2fd85a4483c6925028497b5ab6bfbc33588ba99ae750458deb8b38c6",
+      "allowlisted": true
+    },
+    {
+      "detector": "gitleaks",
+      "rule": "generic-api-key",
+      "path": "packages/operator-core/lib/harness/canonical-hive-invite.ts",
+      "line": 61,
+      "sha256": "c4a8b0b701917f77eee757673b9b66b25047e90356728687492837550ba9c9c8",
+      "allowlisted": true
+    },
+    {
+      "detector": "gitleaks",
+      "rule": "generic-api-key",
+      "path": "packages/operator-core/lib/posthog-public-defaults.ts",
+      "line": 30,
+      "sha256": "3f22ffe56a3cd614153eb52a25b09f9c7b34653a8da5b05f76f689335b76d5d0",
+      "allowlisted": true
+    },
+    {
+      "detector": "gitleaks",
+      "rule": "generic-api-key",
+      "path": "packages/operator-core/lib/session-port/types.ts",
+      "line": 4,
+      "sha256": "9f9896ac62d17bb1cbddf7544c717dfbbcd27e8a36ef53697156463c6dfdf27d",
+      "allowlisted": true
+    },
+    {
+      "detector": "gitleaks",
+      "rule": "generic-api-key",
+      "path": "packages/operator-core/lib/sync/pot-git/physical-drill-phase-i.ts",
+      "line": 630,
+      "sha256": "62325c3ff51a6b19a9845707b6e64d5e08440fb49970bef0bcedd551ecd8e27e",
+      "allowlisted": true
+    },
+    {
+      "detector": "gitleaks",
+      "rule": "generic-api-key",
+      "path": "packages/operator-core/lib/workspace-host/image-scan-secret-allowances.ts",
+      "line": 166,
+      "sha256": "e3a1dda78f9bcf46546091b5928ca1949f95a198c2e704c9d9f78be81dd9c94d",
+      "allowlisted": true
+    },
+    {
+      "detector": "gitleaks",
+      "rule": "generic-api-key",
+      "path": "papercusp-desktop/bin/lib/replication-soak-diagnostics.selftest.sh",
+      "line": 49,
+      "sha256": "f445801e0cb899262c9b9e219836880d73ca2d1b0b9c15fb959c90eb121234e3",
+      "allowlisted": true
+    },
+    {
+      "detector": "gitleaks",
+      "rule": "generic-api-key",
+      "path": "papercusp-desktop/bin/lib/replication-soak-diagnostics.selftest.sh",
+      "line": 54,
+      "sha256": "f445801e0cb899262c9b9e219836880d73ca2d1b0b9c15fb959c90eb121234e3",
+      "allowlisted": true
+    },
+    {
+      "detector": "gitleaks",
+      "rule": "generic-api-key",
+      "path": "papercusp-desktop/bin/lib/release-artifacts.selftest.sh",
+      "line": 212,
+      "sha256": "e7bfe46c361496b999741aee8c92c68f421c49dd71d2f86b7238d3be83a016b8",
+      "allowlisted": true
+    },
+    {
+      "detector": "gitleaks",
+      "rule": "generic-api-key",
+      "path": "scripts/measure-fanout-firewall-economics.mjs",
+      "line": 291,
+      "sha256": "07c6ff450b53f6548173485a9d307653569d99aa3b265d86a3e2bcd0dc9bbb96",
+      "allowlisted": true
+    },
+    {
+      "detector": "trufflehog",
+      "rule": "UnifyID",
+      "path": "apps/operator/public/internal/docs/reference/plans-index.html",
+      "line": 5982,
+      "sha256": "dda5f5a16c11d79cfd9891a0cd9b9020a4ccda6be837a3769b5c36f559ff95d4",
+      "allowlisted": true
+    },
+    {
+      "detector": "trufflehog",
+      "rule": "UnifyID",
+      "path": "apps/operator-docs/src/content/docs/agent-insights/bare-fetch-failed-spawns-are-loopback-undici-codes.mdx",
+      "line": 20,
+      "sha256": "8b65177cb24860c6a575c8c8111b406ce400e62d3d5ddbefcb8e7e2eeac9ef4a",
+      "allowlisted": true
+    },
+    {
+      "detector": "trufflehog",
+      "rule": "URI",
+      "path": "apps/tui/src/http.rs",
+      "line": 880,
+      "sha256": "ff4d877fdc623d1062b7cf2740bdeca7717f2335b168d7c59655bdf2c998740b",
+      "allowlisted": true
+    },
+    {
+      "detector": "trufflehog",
+      "rule": "URI",
+      "path": "apps/tui/src/http.rs",
+      "line": 910,
+      "sha256": "a418b081cdaafce524b0830f9567499d59c57f3a6989a48c162a7b841de93ceb",
+      "allowlisted": true
+    },
+    {
+      "detector": "trufflehog",
+      "rule": "URI",
+      "path": "apps/tui/src/http.rs",
+      "line": 1057,
+      "sha256": "ff4d877fdc623d1062b7cf2740bdeca7717f2335b168d7c59655bdf2c998740b",
+      "allowlisted": true
+    },
+    {
+      "detector": "trufflehog",
+      "rule": "URI",
+      "path": "apps/tui/src/self_install.rs",
+      "line": 2757,
+      "sha256": "1f2774b5d9966b19059630fb4f709c118e9a8736e4a016dee7ccbbb6002977a2",
+      "allowlisted": true
+    },
+    {
+      "detector": "trufflehog",
+      "rule": "Postgres",
+      "path": "libs/papercusp/packages/cli/src/pg-client.node-test.ts",
+      "line": 45,
+      "sha256": "eb6e163f1ebc4b71ede5c842ec49f9eb3414c8945ad5bee5255ba11a345a29b1",
+      "allowlisted": true
+    },
+    {
+      "detector": "trufflehog",
+      "rule": "URI",
+      "path": "papercusp-desktop/src-tauri/src/main.rs",
+      "line": 5690,
+      "sha256": "af68163c3d2cde3c6007e6fd630a098b9eaeffee147214aa4863996141c8eff5",
+      "allowlisted": true
+    }
+  ],
+  "findingLedgerSha256": "3ea88f6ab87e2c46c8add32f248cd6c714518efcf4c112cfd2fe7e5c9b51951e",
+  "summary": "The actual export gate re-run on the exact public launch cut (git archive of 3c1ed9a1) ran all 4 detectors (audit-release-bundle, audit-release-bundle --scan-dir, gitleaks, trufflehog) and returned GATE: clean, EXIT=0. Its complete finding ledger has 25 findings: 25 are reviewed false positives, each matched to scripts/source-preview-allowlist.json by exact sha256 (25/25 hash matches); 0 are unreviewed. No finding is classified as a real credential, so no rotation record is owed.",
+  "assertions": [
+    {
+      "id": "all-detectors-ran",
+      "passed": true,
+      "evidence": "['\u2713 audit-release-bundle: clean', '\u2713 audit-release-bundle --scan-dir: clean', '\u2713 gitleaks: clean', '\u2713 trufflehog: clean']"
+    },
+    {
+      "id": "gate-clean-exit-0",
+      "passed": true,
+      "evidence": "gate.out ends 'GATE: clean' / EXIT=0"
+    },
+    {
+      "id": "no-unreviewed-finding",
+      "passed": true,
+      "evidence": "ledger 25 findings; allowlisted(reviewed)=25; unreviewed=0"
+    },
+    {
+      "id": "reviewed-fps-match-exact-hash",
+      "passed": true,
+      "evidence": "25 of 25 reviewed findings have their sha256 in the allowlist entries (44 reviewed hashes)"
+    },
+    {
+      "id": "no-real-credential-without-rotation",
+      "passed": true,
+      "evidence": "0 findings classified real (all ledger entries are hash-matched reviewed false positives); rotation records owed: 0"
+    }
+  ],
+  "limitations": [
+    "The gate's allowlist holds previously reviewed false positives matched by exact value hash; a reviewed entry is not a rotation record and none is claimed.",
+    "Unit guard coverage (source-preview-gate.test.ts planted tokens / crashed scanners) is bound separately as tree evidence."
+  ],
+  "exitCode": 0
+}

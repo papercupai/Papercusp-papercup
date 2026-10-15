@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "PUI resume reopens the original backend with its conversation, live on staging (consult-backed-parking-2026-10-12#P-012, SPEC-P-012@1)",
+  "command": ["bash", ".papercusp/scratch/cbp-p013/run.sh"],
+  "startedAt": "2026-10-13T03:10:39Z",
+  "finishedAt": "2026-10-13T03:12:17Z",
+  "exitCode": 0,
+  "summary": "The PUI-shape leg of the P-013 live resume matrix (docs/evidence/cbp-p013-live-resume-matrix-2026-10-13.json, puiResumeOriginalBackend). For one real tracked session per backend (claude adv 42034, omp adv 42036, codex adv 42045), the canonical launcher apps/operator/scripts/psu-launcher.mjs was run against the staging operator :3170 (build 3e8525d881) as `--resume <adv id>` with no --agent, which is the argv PUI's ended-session pane runs (apps/tui/src/app.rs resume_spec). The run added --no-picker --headless, which selects the picker's default row; psu-pui-resume.test.ts pins that the default row is the original backend. Each launch reopened the ORIGINAL backend on the SAME native conversation id, whose native transcript holds that session's marker reply. No launch opened a different backend or a broken pane.",
+  "plane": {
+    "operator": "staging :3170 via staging proxy :9171, /api/health sha 3e8525d881",
+    "launcher": "apps/operator/scripts/psu-launcher.mjs (canonical tree, blob 8c2805c87cd5f50386834c73c379987eaa80c2d1)",
+    "sourceMatrix": "docs/evidence/cbp-p013-live-resume-matrix-2026-10-13.json (sha256 c5800856fc0f28b6abfe08e78767b57db834c6635302cd5c76ac40f9f8e3f0e0), recorded by su-a2d144e1"
+  },
+  "cases": [
+    { "backend": "claude", "advSessionId": 42034, "native": "09881b50-6286-4916-a0fc-2f2affb7f01a", "marker": "cbp13-claude-7f3a", "resumedArgv": "claude --resume 09881b50-6286-4916-a0fc-2f2affb7f01a ...", "launchLog": ".papercusp/scratch/bash-1da13e03-7b4.log" },
+    { "backend": "omp", "advSessionId": 42036, "native": "01a13331-7bd3-74d1-aecb-6bb95cc45cd7", "marker": "cbp13-omp-5d1c", "resumedArgv": "omp -r 01a13331-7bd3-74d1-aecb-6bb95cc45cd7 ...", "launchLog": ".papercusp/scratch/bash-f84135aa-9a7.log" },
+    { "backend": "codex", "advSessionId": 42045, "native": "01a13335-6b1a-71a2-bfea-279da4044d57", "marker": "cbp13-codex-9e41", "resumedArgv": "codex ... resume 01a13335-6b1a-71a2-bfea-279da4044d57", "launchLog": ".papercusp/scratch/bash-efe55885-393.log" }
+  ],
+  "assertions": [
+    { "id": "original-backend", "passed": true, "evidence": "Each launch log prints 'psu: resuming <backend>' with the source session's own backend (claude/omp/codex); none switched backend." },
+    { "id": "same-conversation", "passed": true, "evidence": "Each resumed argv carries the source session's own native conversation id, and that id's native transcript contains the session's marker reply (sameNativeConversation=true in the source matrix)." },
+    { "id": "no-broken-pane", "passed": true, "evidence": "All three launches reached the backend TUI and rendered output; none exited with a refusal or an empty pane." }
+  ],
+  "limitations": [
+    "The PUI binary itself did not drive these launches. It runs the same `psu --resume <adv id>` argv, pinned by the Rust test resume_spec_reopens_every_backend_and_holds_the_pane_on_exit.",
+    "The ~/.local/bin/psu shim resolves the release launcher until green main carries this change; the run pinned the canonical launcher via PAPERCUSP_PSU_LAUNCHER."
+  ]
+}

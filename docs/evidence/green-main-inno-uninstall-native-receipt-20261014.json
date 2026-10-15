@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Focused Inno uninstall cleanup with persistent private Wine lifecycle",
+  "framework": "shell",
+  "command": ["bash", "-c", "BASH_XTRACEFD=3 timeout 600 bash -x bin/lib/inno-uninstall-cleanup.selftest.sh"],
+  "cwd": "papercusp-desktop",
+  "exitCode": 0,
+  "startedAt": "2026-10-14T16:32:34.919Z",
+  "finishedAt": "2026-10-14T16:34:33.608Z",
+  "summary": "Recorded from saved native execution exec-a3f2be28-c5af-42c7-b80b-389885ce2747; no rerun. Maintained lifecycle fault injection and real Wine compilation/install/uninstall passed without toolchain skip. Scope is the standalone uninstall-cleanup selftest. The original failed aggregate, legacy follow-up, runtime closure and full-plan shipment remain separate obligations.",
+  "assertions": [
+    {"id": "wine-lifecycle-fault-controls", "passed": true, "evidence": "Saved log: Wine startup and compiler failures retain diagnostics and fail the test; one owned display and persistent server survive every phase; teardown waits before display exit."},
+    {"id": "real-inno-compilation", "passed": true, "evidence": "Saved log: [Code] section compiles; no SKIP output; native terminal exit 0."},
+    {"id": "sibling-and-shared-runtime-protection", "passed": true, "evidence": "Saved log: sibling role resolved, shared runtime kept with sibling installed and removable only without sibling; empty role directory removed and nonempty directory preserved."},
+    {"id": "autostart-cleanup-and-preservation", "passed": true, "evidence": "Saved log: target Run value, StartupApproved marker and dangling shortcut removed; sibling Run value and user configuration survived."}
+  ],
+  "workItemId": "EI-25971079786392324",
+  "nativeExecution": {"sessionId": "01a13b2e-b43f-7511-b168-5ed9a7616762", "eventOrdinal": 494, "eventId": "exec-a3f2be28-c5af-42c7-b80b-389885ce2747"},
+  "source": {"path": "papercusp-desktop/bin/lib/inno-uninstall-cleanup.selftest.sh", "sha256": "cb43b84004c5cdc1453d5f727a9de9de9ee7f2855331b6e685e2154bd6ff0bfe", "committedRepoHeadAtRead": "d646444ec2e3fd8f0906555cf6a606343497e4e7"},
+  "logs": [
+    {"path": "~/.papercusp/scratch/c0523-inno-wine-lifecycle-v1.log", "sha256": "f2084f0e02d45d74c6a13110c85958ff2d5882d9240c64b0e275d19b5af93265"},
+    {"path": "~/.papercusp/scratch/c0523-inno-wine-lifecycle-v1.trace", "sha256": "bb8b3112cca17b33fa49e6451f4d18b64a458edeb38d7a32cdbaade2d4b6f6bd"}
+  ],
+  "referencePathConvention": "Home paths use ~; saved logs and native event are unchanged.",
+  "runtimeClosure": "unmeasured",
+  "operationalAcceptance": false,
+  "requirementDisposition": {"standalone-uninstall-cleanup": "verified-local", "original-aggregate": "historical-fail-preserved", "legacy-lifecycle-class": "owned-follow-up-EI-25973450727337503", "full-plan": "unshipped"}
+}

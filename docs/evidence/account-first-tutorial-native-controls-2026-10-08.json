@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "kind": "manual-accessibility-evidence",
+  "pathNotation": "Home-scoped source roots use $HOME; expand that prefix to the verifying account's home directory. Original execution receipts and measured hashes are unchanged.",
+  "name": "Account-first full-product guide native controls",
+  "workItemId": "WI-10007573",
+  "planSlug": "cloud-app-live-tutorial-2026-10-01",
+  "specId": "AUTO-BAR-R-12-P-010",
+  "specRevision": 7,
+  "observedAt": "2026-10-08T20:23:19.849Z",
+  "procedure": "Maintained product-guide Portal Playwright pause seam with exact root940d/Portal6c8 source. Actual consumed package exports and relative telemetry imports were remapped to frozen source and passed readiness. Xvfb99, fresh DBus/AT-SPI, native Chrome and Orca. Keyboard Return changed billing lesson; Help expanded; public billing question typed, Tab focused Ask AI Help, Return exercised request; Pause/Resume restored focus. Deliberate stop143 after review.",
+  "result": "Mounted guide remained readable and controls operable at native200% zoom; Orca announced billing and Help question controls; pause/resume focus verified.",
+  "evidence": {
+    "sourceManifest": {
+      "schemaVersion": 1,
+      "root": "/dev/shm/papercusp-lint-as-committed-940d3f99a9-MIQAbn",
+      "sourceRoot": "$HOME/papercupai-workspace/papercusp",
+      "portalRoot": "/dev/shm/papercusp-lint-as-committed-6c8ae45599-aHVCdq",
+      "portalSourceRoot": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+      "rootCommit": "940d3f99a9f2d8bd692471b84db1801f74291c3f",
+      "portalCommit": "6c8ae45599203810f4e0a0dc328befd5482ddeed",
+      "files": [
+        {
+          "path": "packages/operator-core/lib/onboarding/product-tutorial-lesson.ts",
+          "sha256": "b91a3ea0338f77ad37f990f63cb8e5f7406dda731373e457684a471841a51ea4"
+        },
+        {
+          "path": "packages/operator-ui/src/onboarding/product-tutorial.tsx",
+          "sha256": "ae0fe892c3299b0eec086a625ca234d266662d087bd94eb90dc7d6d603bdad83"
+        },
+        {
+          "path": "packages/operator-ui/src/browser-telemetry.tsx",
+          "sha256": "465b90f33d7bc3ca21c96da30b74f09234cd389967f51e2dfde12b8ce61923d5"
+        }
+      ],
+      "portalFiles": [
+        {
+          "path": "packages/ui/src/shell.tsx",
+          "sha256": "14f336724f9c4f844327df8f55e0335d89bb3a99cd0f30e65a695e8841d9da52"
+        },
+        {
+          "path": "packages/ui/src/auth.tsx",
+          "sha256": "7aef72afb0a431396db5f004bb55f10a19f664e0f948434fc7a61c05cbeefaa4"
+        },
+        {
+          "path": "packages/ui/src/shell-model.ts",
+          "sha256": "92bb9a49f04ae9da8c27299e60afb316997a18efde6042910a41256d2fcc6a6f"
+        },
+        {
+          "path": "app/tokens.css",
+          "sha256": "956a7e727acee15f2bfcff0d58eb3288bf5f4ee7da3ec2692a4499a7c421b9b6"
+        },
+        {
+          "path": "app/globals.css",
+          "sha256": "5e11ab8e97f8eb535504677f1a40b78b83fec7c3171f2e6f3dde7dc112ac95de"
+        },
+        {
+          "path": "playwright.config.ts",
+          "sha256": "7f282f66b2706f5f2cbe4f13ec4bda1059f506bc351f0db6af5e63d205710887"
+        },
+        {
+          "path": "e2e/portal-product-tutorial.spec.ts",
+          "sha256": "aca99fed88b1dfa327f33253ab090b204d66f899eb30b99af789399ae79d585c"
+        }
+      ],
+      "observedAt": "2026-10-08T19:59:08.646Z"
+    },
+    "refs": [
+      {
+        "path": "/tmp/tutorial-product-native-review-20261008T2018.json",
+        "sha256": "7bfe2e39fb4d478727c2cec82f7e615c3f1650a8a349bcdb36fb4ee56f1fae11"
+      },
+      {
+        "path": "/tmp/tutorial-product-native-controls-disposition-20261008.txt",
+        "sha256": "27f4159e3ff7506dd1ad3d97908c0511f5d5790c5281ed943061b8fb17a2248a"
+      },
+      {
+        "path": "/tmp/tutorial-product-native-zoom200-confirmed-20261008.png",
+        "sha256": "714ad7eaa5eb7b740f349de55e0a3ef3050d0168907df962179391202ece0cfe"
+      },
+      {
+        "path": "/tmp/tutorial-product-native-import-preflight-20261008T2017.log",
+        "sha256": "46087ae13c2b6b32d843c0c76af966ab500811243120017b7b748d90d27ac9df"
+      },
+      {
+        "path": "/tmp/tutorial-import-custody-remap-source-inventory-20261008T2017.log",
+        "sha256": "c28a730b49076fd6115a88bebe3e6503a505554aa823a58ff90d8d21611fd19f"
+      },
+      {
+        "path": "/tmp/tutorial-product-native-review-20261008T2018-speech.log",
+        "sha256": "afd1fbcac232656ab949f9ec873ccfed82b64bbc64755756b384021d4b2c97b0"
+      }
+    ],
+    "speechExcerpts": [
+      "16:19:34.411479 - SPEECH OUTPUT: 'alert Zoom: 200%' {'established': False, 'family': {'name': None, 'gender': None, 'lang': None, 'dialect': None, 'variant': None}}",
+      "16:19:34.450697 - SPEECH OUTPUT: 'notification Zoom: 200%' {'established': False, 'family': {'name': None, 'gender': None, 'lang': None, 'dialect': None, 'variant': None}}",
+      "16:20:29.501435 - SPEECH OUTPUT: 'Understand the bills clickable.' {'established': False, 'family': {'name': None, 'gender': None, 'lang': None, 'dialect': None, 'variant': None}}",
+      "16:20:29.788405 - SPEECH OUTPUT: 'Understand the bills' {'established': False, 'family': {'name': None, 'gender': None, 'lang': None, 'dialect': None, 'variant': None}}",
+      "16:20:29.803620 - SPEECH OUTPUT: '0 explanations reviewed. Product tasks are verified separately.' {'established': False, 'family': {'name': None, 'gender': None, 'lang': None, 'dialect': None, 'variant': None}}",
+      "16:21:47.260521 - SPEECH OUTPUT: 'Ask AI Help push button.' {'established': False, 'family': {'name': None, 'gender': None, 'lang': None, 'dialect': None, 'variant': None}}",
+      "16:22:46.430252 - SPEECH OUTPUT: 'Understand the bills clickable.' {'established': False, 'family': {'name': None, 'gender': None, 'lang': None, 'dialect': None, 'variant': None}}",
+      "16:22:46.438722 - SPEECH OUTPUT: '0 explanations reviewed. Product tasks are verified separately.' {'established': False, 'family': {'name': None, 'gender': None, 'lang': None, 'dialect': None, 'variant': None}}"
+    ],
+    "controls": "PAUSE_FOCUS True\nRESUME_AUTOFOCUS True\nBILLING_RESUMED_FOCUS True\n"
+  },
+  "adequacy": "Current vetted R12 requires manual accessibility evidence. This scoped product guide review supplements the preserved Cloud manual review; browser reload is independently covered by saved selectednormal20937742/full40. No requirement for native reload was found in R12@7/rubric10.",
+  "limitations": [
+    "Manual control/AT/zoom evidence only; no automated native PASS",
+    "No native reload performed",
+    "No real provider response, human-heard audio, protected voice, whole-app pure-Tab or production acceptance claimed",
+    "Mounted route fixture, not authenticated hosted journey",
+    "Review used then-dirty launcher; that launcher/helper is now committed and exact full suites passed without repeating the manual review"
+  ]
+}

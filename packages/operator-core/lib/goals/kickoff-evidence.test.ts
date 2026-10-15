@@ -31,7 +31,8 @@ interface Fixture {
         standing?: boolean;
         killCriterion?: string | null;
       };
-  reads?: Partial<Record<GoalKickoffRead, string>>;
+  // One timestamp per read, or several when a read was repeated in the window.
+  reads?: Partial<Record<GoalKickoffRead, string | string[]>>;
   reportAt?: string | null;
   reportGoalId?: string;
   reportEnvelope?: Record<string, unknown>;
@@ -87,8 +88,15 @@ function mockSql(fixture: Fixture): Sql {
 
     if (text.includes('FROM harness_shared.tool_invocations')) {
       if (fixture.evidenceError) return Promise.reject(new Error(fixture.evidenceError));
+      // Emulate the query's per-tool aggregate over every recorded invocation,
+      // so a repeated read exercises min() vs max() for real (WI-10004981).
+      const aggregate = /\bmin\(invoked_at\)/i.test(text) ? 'min' : /\bmax\(invoked_at\)/i.test(text) ? 'max' : null;
+      if (!aggregate) return Promise.reject(new Error('mockSql: reads query has no min/max(invoked_at) aggregate'));
       return Promise.resolve(
-        Object.entries(fixture.reads ?? {}).map(([tool_name, invoked_at]) => ({ tool_name, invoked_at })),
+        Object.entries(fixture.reads ?? {}).map(([tool_name, at]) => {
+          const all = (Array.isArray(at) ? at : [at]).slice().sort();
+          return { tool_name, invoked_at: aggregate === 'min' ? all[0] : all[all.length - 1] };
+        }),
       );
     }
 
@@ -165,6 +173,18 @@ describe('GOAL kickoff required-leg gate', () => {
     });
     expect(evidence.complete).toBe(false);
     expect(evidence.missing).toEqual(['owner-report']);
+  });
+
+  it('keeps accepting a valid report after a later routine re-read of a required read (WI-10004981)', async () => {
+    // Observed 2026-10-01: a four-heading report at 18:15:17Z, then a goals:list
+    // re-read at 18:17:31Z, re-locked capability:launch-agent under max().
+    const { evidence } = await read({
+      reads: { ...completeReads(), 'goals:list': ['2026-08-29T21:41:00.000Z', '2026-08-29T21:50:00.000Z'] },
+      reportAt: '2026-08-29T21:45:00.000Z',
+    });
+    expect(evidence.missing).toEqual([]);
+    expect(evidence.complete).toBe(true);
+    expect(evidence.ownerReportAt).toBe('2026-08-29T21:45:00.000Z');
   });
 
   it('refuses a report for a different goal subject', async () => {
@@ -276,6 +296,7 @@ describe('GOAL kickoff required-leg gate', () => {
         cost: 'COST',
         ownerWalled: 'OWNER-WALLED',
         killed: 'KILLED',
+        nextWake: 'NEXT WAKE',
       });
     });
 

@@ -1,13 +1,52 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
+import { spawnSync } from 'node:child_process';
+import { createServer } from 'node:net';
 import { PassThrough } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { transformSync } from 'esbuild';
+
+it('records a real node:test child when the focused router starts without a TS loader', () => {
+  const router = new URL('../../../../scripts/test-files.mjs', import.meta.url).href;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+    import { tmpdir } from 'node:os';
+    import { join } from 'node:path';
+    import { spawnSync } from 'node:child_process';
+    console.error('NODE_LEDGER_STAGE import-router');
+    const { loadNodeTestLedger } = await import(${JSON.stringify(router)});
+    console.error('NODE_LEDGER_STAGE load-ledger');
+    const { beginNodeTestLedger } = await loadNodeTestLedger();
+    console.error('NODE_LEDGER_STAGE begin-session');
+    const dir = mkdtempSync(join(tmpdir(), 'plain-node-ledger-'));
+    try {
+      writeFileSync(join(dir, 'fx.test.mjs'), "import { test } from 'node:test'; test('recorded case', () => {});");
+      const rows = [];
+      const session = await beginNodeTestLedger({ repoRoot: dir,
+        readSnapshot: async () => ({ commit: 'feedface00', porcelain: '' }),
+        writeRows: async batch => { rows.push(...batch); } });
+      console.error('NODE_LEDGER_STAGE run-child');
+      const run = spawnSync(process.execPath, ['--test', ...session.reporterArgs, 'fx.test.mjs'],
+        { cwd: dir, encoding: 'utf8', timeout: 20_000, env: { ...process.env, NODE_OPTIONS: '' } });
+      if (run.status !== 0) throw new Error(JSON.stringify({ status: run.status, signal: run.signal,
+        error: run.error?.message, stderr: run.stderr, stdout: run.stdout }));
+      console.error('NODE_LEDGER_STAGE record-result');
+      const result = await session.record();
+      console.log(JSON.stringify({ recorded: result.recorded, reason: result.reason,
+        status: rows[0]?.status, cases: rows[0]?.executionDetails?.passedCaseTitles }));
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  `], { encoding: 'utf8', timeout: 30_000, env: { ...process.env, NODE_OPTIONS: '' } });
+  expect(child.status, JSON.stringify({ status: child.status, signal: child.signal,
+    error: child.error?.message, stderr: child.stderr, stdout: child.stdout })).toBe(0);
+  expect(JSON.parse(child.stdout.trim())).toMatchObject({ recorded: 1, reason: null,
+    status: 'pass', cases: ['recorded case'] });
+});
 // The production entrypoint deliberately stays executable by plain Node.
 import {
   aggregateGroupResults,
+  buildNodeTestArgs,
   canonicalMatch,
   classifyGovernedAdmissionFailure,
   collectionAttributionMarker,
@@ -21,6 +60,7 @@ import {
   groupRoutes,
   isTestFilePath,
   listedFiles,
+  loadNodeTestLedger,
   main,
   looksLikeMidInstallCorruption,
   looksLikeSilentCollectionFailure,
@@ -28,8 +68,13 @@ import {
   publishPreemptReadyMarker,
   transformFailureMarker,
   perGroupVitestArgs,
+  perGroupVitestEnv,
+  privateIntegrationVerifierInputs,
   runCapturedTestProcess,
+  runGovernedTestFileProcess,
+  runTestFilesCli,
   runVitestList,
+  readTestChildDiagnostic,
   stopTestScope,
   testScopeRuntimeMaxSec,
   suppressInjectedJsonReportNotice,
@@ -37,8 +82,11 @@ import {
   resolveTestChildLauncher,
   testFileRunTimeoutMs,
   testFileListTimeoutMs,
+  testsExecutedFrom,
+  testsSkippedFrom,
   userBusReachable,
   vitestRunFailed,
+  vitestConfigLoaderPolicy,
   warnIfInstallInFlight,
   withoutOutputFileArg,
   DEFAULT_TEST_FILE_RUN_TIMEOUT_MS,
@@ -57,9 +105,7 @@ import {
   // is not recognized by tsc).
   // @ts-expect-error
 } from '../../../../scripts/test-files.mjs';
-// @ts-expect-error — same plain-Node .mjs launcher, no declaration file.
 import { workspaceTestInvocation } from '../../../../scripts/workspace-test.mjs';
-// @ts-expect-error — same plain-Node .mjs CLI, no declaration file.
 import { repoLockName } from '../../../../scripts/npm-install-safe.mjs';
 
 // Tests of main() are harness-scoped even when a caller invokes test:file without
@@ -73,6 +119,164 @@ afterEach(() => {
 });
 
 describe('test-files router', () => {
+  it('routes committed private proof inputs through the existing freezer before collection', () => {
+    const root = mkdtempSync(join(tmpdir(), 'private-verifier-route-'));
+    const env = { NODE_OPTIONS: '--import=/repo/scripts/lib/committed-source-loader.mjs' };
+    try {
+      writeFileSync(join(root, 'private.test.ts'), "import { recordIsolatedIntegrationProof } from './isolated-integration-proof';\nrecordIsolatedIntegrationProof({});");
+      writeFileSync(join(root, 'guard.test.ts'), "import { captureIsolatedWorker } from './isolated-integration-proof';");
+      expect(privateIntegrationVerifierInputs(root, ['private.test.ts'], env)).toEqual([
+        'packages/operator-core/test/isolated-integration-proof.ts',
+        'packages/operator-core/test/private-http-workspace-preflight.ts', 'private.test.ts', 'scripts/test-files.mjs',
+      ]);
+      expect(privateIntegrationVerifierInputs(root, ['private.test.ts'], {})).toBeNull();
+      expect(privateIntegrationVerifierInputs(root, ['private.test.ts'], {},
+        ['--import=/repo/scripts/lib/committed-source-loader.mjs'])).toEqual(expect.arrayContaining(['private.test.ts']));
+      expect(() => privateIntegrationVerifierInputs(root, ['../foreign.test.ts'], env))
+        .toThrow(/must belong to the selected repository/);
+      expect(privateIntegrationVerifierInputs(root, ['guard.test.ts'], env)).toBeNull();
+      writeFileSync(join(root, '.verifier-source.json'), '{}');
+      expect(privateIntegrationVerifierInputs(root, ['private.test.ts'], env)).toBeNull();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('hands the private command to verifier-run before any list or test child is started', async () => {
+    const file = 'packages/operator-core/lib/endpoint-route/__tests__/portal-aggregate-create-private.e2e.test.ts';
+    const oldOptions = process.env.NODE_OPTIONS;
+    const list = vi.fn(), run = vi.fn(); let receiptDir: string | undefined;
+    const stages: string[] = [];
+    const preflight = vi.fn(async () => { stages.push('pg-preflight'); });
+    const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      process.env.NODE_OPTIONS = '--import=/repo/scripts/lib/committed-source-loader.mjs';
+      const frozen = vi.fn(async options => {
+        stages.push('source-freeze'); receiptDir = join(options.receiptPath, '..'); return 7;
+      });
+      expect(await main([resolve(REPO_ROOT, file), '--', '--testNamePattern=private Create'], {
+        preflightPrivateIntegrationPgImpl: preflight,
+        runPrivateVerifierImpl: frozen, runVitestListImpl: list, runCapturedTestProcessImpl: run,
+      })).toBe(7);
+      expect(stages).toEqual(['pg-preflight', 'source-freeze']);
+      expect(list).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
+      expect(frozen).toHaveBeenCalledWith(expect.objectContaining({ repo: REPO_ROOT,
+        ref: expect.stringMatching(/^[a-f0-9]{40}$/), inputs: expect.arrayContaining([file]),
+        command: [process.execPath, '--import', 'tsx', 'scripts/test-files.mjs', file,
+          '--', '--testNamePattern=private Create'],
+      }));
+    } finally {
+      if (oldOptions === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = oldOptions;
+      warning.mockRestore(); if (receiptDir) rmSync(receiptDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an unavailable private-proof PG before source copying or any test child', async () => {
+    const file = 'packages/operator-core/lib/endpoint-route/__tests__/portal-aggregate-create-private.e2e.test.ts';
+    const oldOptions = process.env.NODE_OPTIONS;
+    const frozen = vi.fn(), list = vi.fn(), run = vi.fn();
+    const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      process.env.NODE_OPTIONS = '--import=/repo/scripts/lib/committed-source-loader.mjs';
+      const preflight = vi.fn(async () => { throw new Error('TEST SUBSTRATE STORAGE LOW: private PG required'); });
+      expect(await main([resolve(REPO_ROOT, file)], {
+        preflightPrivateIntegrationPgImpl: preflight,
+        runPrivateVerifierImpl: frozen, runVitestListImpl: list, runCapturedTestProcessImpl: run,
+      })).toBe(2);
+      expect(preflight).toHaveBeenCalledOnce();
+      expect(frozen).not.toHaveBeenCalled();
+      expect(list).not.toHaveBeenCalled();
+      expect(run).not.toHaveBeenCalled();
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('TEST SUBSTRATE STORAGE LOW'));
+    } finally {
+      if (oldOptions === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = oldOptions;
+      warning.mockRestore();
+    }
+  });
+  it('keeps guarded config imports native for both collection and execution', () => {
+    const guarded = { NODE_OPTIONS: '--import=/checkout/scripts/lib/committed-source-loader.mjs' };
+    expect(vitestConfigLoaderPolicy(['-t', 'selected'], guarded, [])).toEqual({
+      configLoaderArgs: ['--configLoader', 'native'], vitestArgs: ['-t', 'selected'] });
+    expect(vitestConfigLoaderPolicy(['--configLoader=native', '-t', 'selected'], guarded, [])).toEqual({
+      configLoaderArgs: ['--configLoader', 'native'], vitestArgs: ['-t', 'selected'] });
+    expect(vitestConfigLoaderPolicy(['--configLoader', 'runner'], {}, [])).toEqual({
+      configLoaderArgs: ['--configLoader', 'runner'], vitestArgs: [] });
+    for (const loader of ['runner', 'bundle']) expect(() =>
+      vitestConfigLoaderPolicy(['--configLoader', loader], guarded, [])).toThrow('requires --configLoader native');
+    expect(vitestConfigLoaderPolicy([], {}, ['--import', '/checkout/scripts/lib/committed-source-loader.mjs'])
+      .configLoaderArgs).toEqual(['--configLoader', 'native']);
+    expect(vitestConfigLoaderPolicy([], {}, []).configLoaderArgs).toEqual([]);
+  });
+
+  it.each(['apps/operator/vitest.config.ts', 'packages/operator-core/vitest.integration.config.ts'])(
+    'loads actual TS config %s through the native committed source boundary', (configPath) => {
+    const child = spawnSync(process.execPath, ['--import', './scripts/lib/committed-source-loader.mjs',
+      '--input-type=module', '-e', `
+        import { loadConfigFromFile } from 'vite';
+        const config = await loadConfigFromFile({ command:'serve', mode:'test' },
+          ${JSON.stringify(configPath)}, undefined, 'silent', undefined, 'native');
+        if (!config?.config?.test) throw new Error('Actual operator config did not load');
+        console.log('guarded-native-config-loaded');
+      `], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 30_000, env: { ...process.env, NODE_OPTIONS: '' } });
+    expect(child.status, child.stderr).toBe(0);
+    expect(child.stdout).toContain('guarded-native-config-loaded');
+  });
+  it('runs only the selected Node case through the common router selector', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'node-router-selector-'));
+    try {
+      const file = join(dir, 'selector.test.mjs');
+      const unwanted = join(dir, 'unwanted');
+      const { beginNodeTestLedger } = await loadNodeTestLedger();
+      const startLedger = () => beginNodeTestLedger({ repoRoot: dir,
+        readSnapshot: async () => ({ commit: 'feedface00', porcelain: '' }),
+        writeRows: async () => {} });
+      writeFileSync(file, `import { test } from 'node:test';
+        import { writeFileSync } from 'node:fs';
+        test('selected (case)', () => {});
+        test('unrelated case', () => { writeFileSync(${JSON.stringify(unwanted)}, 'ran'); throw new Error('must not run'); });`);
+      const selectedLedger = await startLedger();
+      const args = buildNodeTestArgs([file], [
+        '--reporter=json', '--outputFile', join(dir, 'vitest.json'),
+        '-t', '^selected \\(case\\)$',
+      ], { reporterArgs: selectedLedger.reporterArgs });
+      const run = spawnSync(process.execPath, args, { encoding: 'utf8', timeout: 10_000 });
+      expect(run.status, run.stderr || run.stdout).toBe(0);
+      expect(existsSync(unwanted)).toBe(false);
+      expect(testsExecutedFrom(run.stdout)).toBe(1);
+      expect(await selectedLedger.record()).toMatchObject({ counts: { executed: 1 } });
+
+      const absentLedger = await startLedger();
+      const absent = spawnSync(process.execPath, buildNodeTestArgs([file], ['--testNamePattern=^absent$'],
+        { reporterArgs: absentLedger.reporterArgs }),
+        { encoding: 'utf8', timeout: 10_000 });
+      expect(absent.status, absent.stderr || absent.stdout).toBe(0);
+      expect(await absentLedger.record()).toMatchObject({ recorded: 0, counts: { executed: 0 } });
+      expect(existsSync(unwanted)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps Node preflight/reporting options and excludes Vitest reporting options', () => {
+    expect(buildNodeTestArgs(['a.test.js'], [
+      '--reporter', 'json', '--outputFile=result.json', '--testNamePattern=--model=', '--test-reporter=tap',
+    ], { nodeArgs: ['--test-global-setup=preflight.mjs'], reporterArgs: ['--test-reporter=ledger.mjs'] }))
+      .toEqual(['--test', '--test-global-setup=preflight.mjs', '--test-reporter=ledger.mjs',
+        '--test-name-pattern=--model=', '--test-reporter=tap', 'a.test.js']);
+    const summary = '# tests 3\n# pass 1\n# fail 1\n# skipped 1\n';
+    expect(testsExecutedFrom(summary)).toBe(2);
+    expect(testsSkippedFrom(summary)).toBe(1);
+    expect(testsExecutedFrom(summary.replace('# tests 3', '# tests 4'))).toBeNull();
+  });
+
+  it('accepts and routes conventional CLI Node:test files with their package preflight', () => {
+    const file = 'libs/papercusp/packages/cli/src/install-atomic.node-test.ts';
+    expect(isTestFilePath(file)).toBe(true);
+    const route = discoverTestRoute(file);
+    expect(route).toMatchObject({ runner: 'node', config: null,
+      cwd: resolve(REPO_ROOT, 'libs/papercusp/packages/cli'),
+      requested: 'src/install-atomic.node-test.ts',
+      nodeArgs: ['--test-global-setup=monorepo-host-preflight.mjs'] });
+    expect(groupRoutes([route])[0].nodeArgs).toEqual(route.nodeArgs);
+  });
   it('supports a bounded CLI watchdog override for slow-but-progressing files', () => {
     expect(testFileRunTimeoutMs({})).toBe(DEFAULT_TEST_FILE_RUN_TIMEOUT_MS);
     expect(testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: '540000' })).toBe(540_000);
@@ -145,6 +349,29 @@ describe('test-files router', () => {
     expect(route.cwd).toBe(resolve(REPO_ROOT, 'libs/generic/tooldef'));
     expect(route.config).toBe('vitest.config.ts');
     expect(route.requested).toBe('src/strict-args.test.ts');
+  });
+
+  it('honors negated workspace patterns when resolving package-relative test paths', () => {
+    const root = mkdtempSync(join(tmpdir(), 'test-file-router-workspace-exclude-'));
+    try {
+      const active = join(root, 'packages', 'active');
+      const checkpoint = join(root, 'packages', 'ignored-checkpoint');
+      for (const pkg of [active, checkpoint]) {
+        mkdirSync(join(pkg, 'lib'), { recursive: true });
+        writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: basename(pkg) }));
+        writeFileSync(join(pkg, 'vitest.config.ts'), 'export default {};\n');
+        writeFileSync(join(pkg, 'lib', 'same.test.ts'), '');
+      }
+      writeFileSync(join(root, 'package.json'), JSON.stringify({
+        workspaces: ['packages/*', '!packages/*-checkpoint'],
+      }));
+
+      const route = discoverVitestRoute('lib/same.test.ts', root);
+      expect(route.cwd).toBe(active);
+      expect(route.requested).toBe(join('lib', 'same.test.ts'));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   // EI-24442044145393058: the recorded test layer is the ROUTED config's runtime label, so a
@@ -378,6 +605,79 @@ describe('test-files router', () => {
         .toEqual(['-t', 'my test', '--reporter=json']);
     });
 
+    it('isolates source-map OUT with the same naming rule while preserving the shared RESULT sink', () => {
+      const env = Object.freeze({ PC_EXECUTED_SOURCE_MAP_OUT: '/tmp/my.dir/sources',
+        PC_EXECUTED_SOURCE_MAP_RESULT: '/tmp/result.jsonl', PAPERCUSP_TEST_RUN_RECEIPT_FILE: '/tmp/receipt.jsonl' });
+      const children = [0, 1, 2].map(index => perGroupVitestEnv(env, index, 3));
+      expect(children.map(child => child.PC_EXECUTED_SOURCE_MAP_OUT))
+        .toEqual(['/tmp/my.dir/sources', '/tmp/my.dir/sources.1.json', '/tmp/my.dir/sources.2.json']);
+      for (const child of children) {
+        expect(child.PC_EXECUTED_SOURCE_MAP_RESULT).toBe(env.PC_EXECUTED_SOURCE_MAP_RESULT);
+        expect(child.PAPERCUSP_TEST_RUN_RECEIPT_FILE).toBe(env.PAPERCUSP_TEST_RUN_RECEIPT_FILE);
+      }
+      expect(env.PC_EXECUTED_SOURCE_MAP_OUT).toBe('/tmp/my.dir/sources');
+      expect(perGroupVitestEnv({ PC_EXECUTED_SOURCE_MAP_OUT: '/tmp/sources.json' }, 0, 1)
+        .PC_EXECUTED_SOURCE_MAP_OUT).toBe('/tmp/sources.json');
+      expect(perGroupVitestEnv({ PC_EXECUTED_SOURCE_MAP_OUT: 'sources.json' }, 1, 3)
+        .PC_EXECUTED_SOURCE_MAP_OUT).toBe(resolve('sources.1.json'));
+      const unarmed = { PC_EXECUTED_SOURCE_MAP_OUT: ' ' };
+      expect(perGroupVitestEnv(unarmed, 1, 3)).toBe(unarmed);
+      expect(perGroupVitestEnv({}, 1, 3)).toEqual({});
+    });
+
+    it('preserves each source-map group and detail rerun output through main()', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'source-map-groups-'));
+      const originalOut = join(root, 'sources.json');
+      const files = ['one/a.test.ts', 'one/b.test.ts', 'two/c.test.ts', 'three/d.test.ts'];
+      const saved = { PC_EXECUTED_SOURCE_MAP_OUT: process.env.PC_EXECUTED_SOURCE_MAP_OUT,
+        PAPERCUSP_TEST_RUN_RECEIPT_FILE: process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE };
+      process.env.PC_EXECUTED_SOURCE_MAP_OUT = originalOut;
+      delete process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+      const captures: Array<{ path: string; files: string[] }> = [];
+      try {
+        for (const dir of ['one', 'two', 'three']) {
+          mkdirSync(join(root, dir));
+          writeFileSync(join(root, dir, 'vitest.config.ts'), 'export default {};');
+        }
+        for (const file of files) writeFileSync(join(root, file), '');
+        const code = await main(files, {
+          repoRoot: root,
+          restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
+          runVitestListImpl: async (_command: string, args: string[]) => ({ status: 0, signal: null,
+            stdout: args.filter(arg => arg.endsWith('.test.ts')).join('\n'), stderr: '', timedOut: false }),
+          runCapturedTestProcessImpl: async (_command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
+            const requested = args.filter(arg => arg.endsWith('.test.ts'));
+            const path = options.env.PC_EXECUTED_SOURCE_MAP_OUT!;
+            captures.push({ path, files: requested });
+            writeFileSync(path, JSON.stringify(requested));
+            const failed = requested.length === 2;
+            return { status: failed ? 1 : 0, signal: null, timedOut: false, stderr: '',
+              stdout: failed ? '❯ a.test.ts (0 test)\n❯ b.test.ts (0 test)\nTest Files 2 failed (2)\n'
+                : 'Test Files 1 passed (1)\nTests 1 passed (1)\n' };
+          },
+        });
+        expect(code).toBe(1); // The first group's red must survive the later green groups.
+        expect(captures.map(capture => capture.path)).toEqual([originalOut,
+          join(root, 'sources.detail-0.json'), join(root, 'sources.detail-1.json'),
+          join(root, 'sources.1.json'), join(root, 'sources.2.json')]);
+        for (const capture of captures) {
+          expect(JSON.parse(readFileSync(capture.path, 'utf8'))).toEqual(capture.files);
+          expect(logSpy.mock.calls.some(([line]) => String(line).includes(`path=${JSON.stringify(capture.path)}`))).toBe(true);
+        }
+        expect(JSON.parse(readFileSync(originalOut, 'utf8'))).toEqual(['a.test.ts', 'b.test.ts']);
+        expect(process.env.PC_EXECUTED_SOURCE_MAP_OUT).toBe(originalOut);
+      } finally {
+        logSpy.mockRestore(); errorSpy.mockRestore(); stdoutSpy.mockRestore();
+        for (const [key, value] of Object.entries(saved)) {
+          if (value === undefined) delete process.env[key]; else process.env[key] = value;
+        }
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
     it('strips --outputFile for the detail-recovery re-runs, in both arg forms', () => {
       // Those re-run individual files only to print detail; keeping the path would
       // clobber the group's real report with a single file's results.
@@ -416,6 +716,25 @@ describe('test-files router', () => {
     ]);
   });
 
+  it('extracts named-project file listings without treating project labels as paths', () => {
+    const cwd = resolve(REPO_ROOT, 'apps/operator-public');
+    const output = '[treasury-integration] src/__tests__/treasury.test.ts\n' +
+      '[unit] src/__tests__/settlements.test.ts\n' +
+      '[another project] src/__tests__/treasury.test.ts\n' +
+      '[warning] irrelevant process warning\n';
+    expect(listedFiles(output, cwd, true)).toEqual([
+      resolve(cwd, 'src/__tests__/treasury.test.ts'),
+      resolve(cwd, 'src/__tests__/settlements.test.ts'),
+    ]);
+  });
+
+  it('extracts named-project tree listings through the same canonical path format', () => {
+    const cwd = resolve(REPO_ROOT, 'apps/operator-public');
+    const output = '[treasury-integration] src/__tests__/treasury.test.ts > suite > case\n';
+    expect(listedFiles(output, cwd, true)).toEqual([resolve(cwd, 'src/__tests__/treasury.test.ts')]);
+    expect(listedFiles(output, cwd)).toEqual([resolve(cwd, 'src/__tests__/treasury.test.ts')]);
+  });
+
   it('keeps the filesOnly parser compatible with Vitest tree-shaped test stubs', () => {
     const cwd = resolve(REPO_ROOT, 'packages/operator-core');
     expect(listedFiles('lib/a.test.ts > suite > skipped test\n', cwd, true)).toEqual([
@@ -441,16 +760,28 @@ describe('test-files router', () => {
     expect(() => discoverVitestRoute('libs/generic/tooldef/src/no-such.test.ts')).toThrow(/does not exist/);
   });
 
-  // EI-14278: a config-less `libs/generic/*` submodule (its own package.json `"test": "vitest run"`,
-  // zero explicit vitest config — the borrowable-libs shape) must route to the package cwd config-less
-  // (config: null) instead of throwing `no Vitest config owns …`. Without this, ~25 real generic libs
-  // (plan-parser, memory, result-encoding, …) are unroutable via `npm run test:file` and each agent
-  // rediscovers the `cd libs/generic/<name> && npm test` escape hatch.
+  // EI-14278: a config-less Vitest package must route to its own cwd. Keep
+  // the fixture isolated: maintained generic packages can gain explicit configs.
   it('routes a config-less libs/generic/* package to its own cwd with config: null', () => {
-    const route = discoverVitestRoute('libs/generic/plan-parser/src/index.test.ts');
-    expect(route.cwd).toBe(resolve(REPO_ROOT, 'libs/generic/plan-parser'));
-    expect(route.config).toBeNull();
-    expect(route.requested).toBe('src/index.test.ts');
+    const root = mkdtempSync(join(tmpdir(), 'router-configless-package-'));
+    const pkg = join(root, 'libs/generic/fixture');
+    try {
+      mkdirSync(join(pkg, 'src'), { recursive: true });
+      writeFileSync(join(pkg, 'package.json'), JSON.stringify({ scripts: { test: 'vitest run' } }));
+      writeFileSync(join(pkg, 'src/index.test.ts'), '');
+      writeFileSync(join(root, 'vitest.config.ts'), 'export default {};');
+      const file = 'libs/generic/fixture/src/index.test.ts';
+      expect(discoverVitestRoute(file, root)).toMatchObject({
+        cwd: pkg, config: null, requested: 'src/index.test.ts',
+      });
+      // Adding a package config must take precedence over its own fallback.
+      writeFileSync(join(pkg, 'vitest.config.ts'), 'export default {};');
+      expect(discoverVitestRoute(file, root)).toMatchObject({
+        cwd: pkg, config: 'vitest.config.ts', requested: 'src/index.test.ts',
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('still prefers an explicit vitest.config.* over the config-less package fallback', () => {
@@ -468,6 +799,13 @@ describe('test-files router', () => {
     expect(route.requested).toBe(
       '../../../templates/papercusp-android-app/checks/composition-integrity.fixture.test.ts',
     );
+  });
+
+  it('routes the operation-first reference guard to template-kit instead of root mirror discovery', () => {
+    const route = discoverVitestRoute('templates/papercusp-ops-pots/checks/operation-first-triggers.test.ts');
+    expect(route.cwd).toBe(resolve(REPO_ROOT, 'libs/generic/template-kit'));
+    expect(route.config).toBe('vitest.config.ts');
+    expect(route.requested).toBe('../../../templates/papercusp-ops-pots/checks/operation-first-triggers.test.ts');
   });
 
   it('routes papercusp-app composition checks to template-kit instead of root discovery', () => {
@@ -538,7 +876,10 @@ describe('workspace test launcher — explicit paths use the owning-config guard
     ]);
 
     expect(invocation).toMatchObject({ command: process.execPath, routed: true });
+    // WI-10005802: the router starts under the committed-source loader, so its own code runs HEAD bytes.
     expect(invocation.args).toEqual([
+      '--import',
+      resolve(REPO_ROOT, 'scripts/lib/committed-source-loader.mjs'),
       resolve(REPO_ROOT, 'scripts/test-files.mjs'),
       'lib/agent-tools/release/checkpoint-run.test.ts',
       'lib/release/green-checkpoint.test.ts',
@@ -562,14 +903,24 @@ describe('workspace test launcher — explicit paths use the owning-config guard
     ])).toMatchObject({
       routed: true,
       args: [
+        '--import',
+        resolve(REPO_ROOT, 'scripts/lib/committed-source-loader.mjs'),
         resolve(REPO_ROOT, 'scripts/test-files.mjs'),
         'lib/release/green-checkpoint-watchdog.integration.test.ts',
       ],
     });
   });
 
-  it('warns when focused test IDs will be unbindable for harness-scoped proof', () => {
-    expect(unscopedFocusedRunWarning({})).toContain('PAPERCUSP_TEST_RUN_HARNESS');
+  it('reports an unset parent harness without predicting the reporter ledger scope', () => {
+    // The child reporter can receive its scope after the parent checks its env.
+    // A missing parent pin cannot establish a NULL harness in the ledger.
+    for (const env of [{}, { PAPERCUSP_TEST_RUN_HARNESS: '   ' }]) {
+      const warning = unscopedFocusedRunWarning(env);
+      expect(warning).toContain('scope is unverified');
+      expect(warning).toContain('authoritative testing:runs row');
+      expect(warning).not.toContain('is unscoped');
+      expect(warning).not.toContain('cannot be bound');
+    }
     expect(unscopedFocusedRunWarning({ PAPERCUSP_TEST_RUN_HARNESS: 'papercusp' })).toBeNull();
   });
 });
@@ -599,7 +950,169 @@ describe('vitestRunFailed — exit code and summary must agree (EI-2112468250477
   });
 });
 
+describe('collection child identity evidence (WI-10007991)', () => {
+  it('retains only bounded identities from the owned tree without reading argv or scanning the host', () => {
+    const readFileImpl = vi.fn((path: string) => {
+      if (path.endsWith('/children')) return path.includes('/4100/') ? '4101 4102' : '';
+      if (path.endsWith('/status')) return 'Name:\tnpm exec vitest\nState:\tS (sleeping)\nPPid:\t4000\n';
+      if (path.endsWith('/wchan')) return 'do_wait\n';
+      throw new Error('unexpected read');
+    });
+    const readdirImpl = vi.fn((path: string) => [path.split('/')[2]]);
+    expect(readTestChildDiagnostic(4100, { readFileImpl, readdirImpl })).toMatchObject({
+      status: 'measured', rootPid: 4100, truncated: false, unreadableFields: 0,
+      processes: [4100, 4101, 4102].map(pid => ({ pid, parentPid: 4000,
+        name: 'npm exec vitest', state: 'S', waitChannel: 'do_wait' })),
+    });
+    expect(readdirImpl.mock.calls.every(([path]) => /^\/proc\/410[012]\/task$/.test(path))).toBe(true);
+    expect(readFileImpl.mock.calls.some(([path]) => /cmdline|environ/.test(path))).toBe(false);
+  });
+
+  it('caps both tree residents and per-process task reads and marks the omitted population', () => {
+    const readFileImpl = vi.fn((path: string) => {
+      if (path.endsWith('/children')) return Array.from({ length: 30 }, (_, i) => String(4201 + i)).join(' ');
+      return path.endsWith('/wchan') ? '0' : 'Name:\tnode\nState:\tR (running)\nPPid:\t4200\n';
+    });
+    const readdirImpl = vi.fn(() => Array.from({ length: 80 }, (_, i) => String(4200 + i)));
+    const snapshot = readTestChildDiagnostic(4200, { readFileImpl, readdirImpl });
+    expect(snapshot.truncated).toBe(true);
+    expect(snapshot.processes).toHaveLength(16);
+    expect(snapshot.processes[0].waitChannel).toBeNull();
+    expect(readFileImpl.mock.calls.filter(([path]) => path.endsWith('/children'))).toHaveLength(16 * 32);
+    expect(readdirImpl).not.toHaveBeenCalledWith('/proc');
+  });
+
+  it('preserves unknowns when procfs is unreadable rather than claiming an empty healthy tree', () => {
+    const unavailable = () => { throw new Error('EACCES'); };
+    expect(readTestChildDiagnostic(4300, { readFileImpl: unavailable, readdirImpl: unavailable })).toMatchObject({
+      status: 'partial', unreadableFields: 3,
+      processes: [{ pid: 4300, parentPid: null, name: null, state: null, waitChannel: null }],
+    });
+    expect(readTestChildDiagnostic(undefined)).toMatchObject({ status: 'unavailable', processes: [] });
+  });
+
+  it('calibrates the pre-reap evidence guard against a permanently disabled-reader control', async () => {
+    // The same behavioral guard must accept the real runner and reject this
+    // deliberately wrong wrapper; no mutation of the shared source is needed.
+    const omitDiagnostic = (command: string, args: string[], options: object) =>
+      runVitestList(command, args, { ...options, readProcessDiagnosticImpl: null });
+    vi.useFakeTimers();
+    try {
+      for (const [run, shouldPass] of [[runVitestList, true], [omitDiagnostic, false]] as const) {
+        const child = Object.assign(new EventEmitter(), { pid: 4350,
+          stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+        const events: string[] = [];
+        const snapshot = { status: 'partial', rootPid: 4350,
+          processes: [{ pid: 4350, name: 'vitest', state: 'S', waitChannel: 'futex_wait_queue' }] };
+        const pending = run('npx', ['vitest', 'list', '--filesOnly', 'a.test.ts'], {
+          env: { PATH: '/usr/bin' }, timeoutMs: 100, killGraceMs: 20,
+          systemdRunPath: null, setsidPath: '/usr/bin/setsid',
+          spawnImpl: () => child, onProgress: () => {},
+          readProcessDiagnosticImpl: () => { events.push('snapshot'); return snapshot; },
+          killProcessImpl: (_child: unknown, signal: string) => { events.push(signal); return 'group'; },
+        });
+        await vi.advanceTimersByTimeAsync(120);
+        child.emit('close', null, 'SIGKILL');
+        const result = await pending;
+        const assertEvidence = () => {
+          expect(result.processDiagnostic).toEqual(snapshot);
+          expect(events.indexOf('snapshot')).toBeGreaterThanOrEqual(0);
+          expect(events.indexOf('snapshot')).toBeLessThan(events.indexOf('SIGTERM'));
+        };
+        if (shouldPass) assertEvidence();
+        else expect(assertEvidence).toThrow();
+      }
+    } finally { vi.useRealTimers(); }
+  });
+});
+
 describe('bounded observable Vitest child execution (EI-21400813289605169)', () => {
+  it.each(['available', 'unavailable', 'default', 'disabled'] as const)(
+    'retains bounded worker-termination evidence before exit with a %s reader (EI-25678025879775952)', async (mode) => {
+      const child = Object.assign(new EventEmitter(), {
+        pid: process.pid, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+      });
+      const snapshot = { status: 'partial', rootPid: child.pid,
+        processes: [{ pid: child.pid, name: 'node', state: 'S', waitChannel: null }] };
+      const reader = vi.fn(() => {
+        if (mode === 'unavailable') throw new Error('EACCES');
+        return snapshot;
+      });
+      const progress: string[] = [];
+      const pending = runCapturedTestProcess('npx', ['vitest', 'run', 'a.test.ts'], {
+        cwd: '/repo', files: ['a.test.ts'], env: { PATH: '/usr/bin' },
+        systemdRunPath: null, setsidPath: null,
+        spawnImpl: () => child,
+        ...(mode === 'default' ? {} : { readProcessDiagnosticImpl: mode === 'disabled' ? null : reader }),
+        onProgress: (line: string) => progress.push(line),
+        governedProcessImpl: (_governedOptions: unknown, run: Function) =>
+          run(undefined, undefined, { inherited: true }),
+      });
+      child.stdout.write(' ❯ a.test.ts (1 test | 1 failed) 1ms\n');
+      child.stderr.write('[vitest-pool]: Timeout term');
+      expect(reader).not.toHaveBeenCalled();
+      child.stderr.write('inating forks worker for test files a.test.ts.\n');
+      child.stderr.write('[vitest-pool]: Failed to terminate forks worker for test files a.test.ts.\n');
+      const diagnostics = progress.filter((line) => line.startsWith('TEST_FILE_CHILD_DIAGNOSTIC '));
+      expect(diagnostics).toHaveLength(mode === 'disabled' ? 0 : 1);
+      expect(child.kill).not.toHaveBeenCalled();
+      child.emit('close', 1, null);
+      const result = await pending;
+      expect(result).toMatchObject({ status: 1, signal: null, timedOut: false });
+      expect(result.stderr).toContain('Timeout terminating forks worker');
+      if (mode === 'disabled') expect(result.processDiagnostic).toBeNull();
+      else {
+        expect(diagnostics[0]).toContain('"trigger":"worker-termination"');
+        expect(result.processDiagnostic).toEqual(mode === 'unavailable'
+          ? { status: 'unavailable', reason: 'reader-error', processes: [], truncated: false }
+          : mode === 'default' ? expect.objectContaining({ rootPid: child.pid }) : snapshot);
+      }
+      if (mode === 'available' || mode === 'unavailable') expect(reader).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('settles a real assertion-failing worker after file completion without a teardown timeout (EI-25678025879775952)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vitest-failure-stop-'));
+    const file = 'controlled.test.mjs';
+    const config = join(dir, 'vitest.config.mjs');
+    const progress: string[] = [];
+    const completed = vi.fn();
+    try {
+      writeFileSync(config, `export default ${JSON.stringify({
+        root: dir,
+        test: { include: [file], environment: 'node', pool: 'forks', maxWorkers: 1 },
+      })};`);
+      writeFileSync(join(dir, file),
+        `import { test, expect } from ${JSON.stringify(resolve(REPO_ROOT, 'node_modules/vitest/dist/index.js'))};\n` +
+        `test('controlled assertion failure', () => expect('actual').toBe('expected'));\n`);
+      const result = await runCapturedTestProcess(process.execPath, [
+        resolve(REPO_ROOT, 'node_modules/vitest/vitest.mjs'),
+        'run', '--config', config, '--reporter=default',
+      ], {
+        cwd: dir,
+        env: { ...process.env, NODE_OPTIONS: '', FORCE_COLOR: '0', NO_COLOR: '1' },
+        files: [file],
+        timeoutMs: 30_000,
+        watchdogMaxMs: 30_000,
+        onProgress: (line: string) => progress.push(line),
+        onAllFilesComplete: completed,
+        governedProcessImpl: (_governedOptions: unknown, run: Function) =>
+          run(undefined, undefined, { inherited: true }),
+      });
+      const output = result.stdout + result.stderr;
+      expect(output).toContain('controlled assertion failure');
+      expect(output).toMatch(/Tests\s+1 failed/);
+      expect(result, output).toMatchObject({ status: 1, signal: null, timedOut: false, error: null });
+      expect(completed).toHaveBeenCalledTimes(1);
+      expect(progress.find((line) => line.includes('state=file-completed'))).toContain('pendingFiles=[]');
+      expect(progress.at(-1)).toContain('state=finished');
+      expect(output).not.toMatch(/Timeout terminating .* worker|Failed to terminate .* worker/);
+      expect(vitestRunFailed({ status: result.status, output })).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 45_000);
+
   it('prefers a detached systemd user scope while keeping the owned process-group watchdog', async () => {
     vi.useFakeTimers();
     try {
@@ -639,12 +1152,15 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
           spawnImpl,
           killProcessImpl,
           stopScopeImpl,
+          probeScopeSupportImpl: async () => ({ ok: true }),
           onProgress,
           governedProcessImpl: (_governedOptions: unknown, run: Function) =>
             run(undefined, undefined, { inherited: true }),
         },
       );
 
+      await vi.advanceTimersByTimeAsync(0);
+      expect(spawnImpl).toHaveBeenCalledTimes(1);
       const spawnArgs = spawnImpl.mock.calls[0]?.[1] as string[];
       const scopeUnit = spawnArgs.find((arg) => arg.startsWith('--unit='))?.slice('--unit='.length);
       expect(scopeUnit).toMatch(/^papercusp-test-\d+-[0-9a-z]+-\d+\.scope$/);
@@ -769,7 +1285,52 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
     }
   });
 
-  it('bounds a silent Vitest collection preflight and reaps its owned process group', async () => {
+  it.each(['positional', 'equals', 'equals-dash'])('rejects a %s JSON output path before collection can overwrite test source', async (form) => {
+    const root = mkdtempSync(join(tmpdir(), 'vitest-collection-source-'));
+    const source = join(root, form === 'equals-dash' ? '--protected.test.ts' : 'protected.test.ts');
+    const original = "import { it } from 'vitest'; it('protected case', () => {});\n";
+    writeFileSync(source, original);
+    const spawnImpl = vi.fn(() => {
+      writeFileSync(source, '[{"name":"collected case"}]');
+      throw new Error('unsafe collection child launched');
+    });
+    try {
+      const jsonArgs = form === 'positional' ? ['--json', source]
+        : [`--json=${form === 'equals-dash' ? '--protected.test.ts' : source}`];
+      await expect(Promise.resolve().then(() => runVitestList('npx', ['vitest', 'list', ...jsonArgs], {
+        cwd: root, spawnImpl, systemdRunPath: null, setsidPath: null,
+      }))).rejects.toThrow('use --json=true for stdout');
+      expect(spawnImpl).not.toHaveBeenCalled();
+      expect(readFileSync(source, 'utf8')).toBe(original);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(['--json', '--json=true'])('collects named cases through stdout with %s', async (jsonArg) => {
+    const child = new EventEmitter() as EventEmitter & {
+      pid: number; stdout: PassThrough; stderr: PassThrough; kill: ReturnType<typeof vi.fn>;
+    };
+    child.pid = 4239;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = vi.fn();
+    const cases = [{ name: 'suite > selected case', file: '/repo/protected.test.ts' }];
+    const spawnImpl = vi.fn(() => {
+      queueMicrotask(() => {
+        child.stdout.end(JSON.stringify(cases));
+        child.emit('close', 0, null);
+      });
+      return child;
+    });
+    const result = await runVitestList('npx', ['vitest', 'list', 'protected.test.ts', jsonArg], {
+      cwd: '/repo', env: { PATH: '/usr/bin' }, spawnImpl, systemdRunPath: null,
+      setsidPath: null, onProgress: vi.fn(), readProcessDiagnosticImpl: null,
+    });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual(cases);
+    expect(spawnImpl).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, true])('bounds a silent Vitest collection preflight and reaps its owned process group (reader throws: %s)', async (readerThrows) => {
     vi.useFakeTimers();
     try {
       const child = new EventEmitter() as EventEmitter & {
@@ -785,6 +1346,12 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       const spawnImpl = vi.fn((..._args: unknown[]) => child);
       const killProcessImpl = vi.fn(() => 'group');
       const progress = vi.fn();
+      const processDiagnostic = { status: 'partial', rootPid: 4240, truncated: false,
+        processes: [{ pid: 4240, name: 'npm exec vitest', state: 'S', waitChannel: 'do_wait' }] };
+      const readProcessDiagnosticImpl = vi.fn(() => {
+        if (readerThrows) throw new Error('diagnostic reader failed');
+        return processDiagnostic;
+      });
 
       const resultPromise = runVitestList(
         'npx',
@@ -803,6 +1370,7 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
           spawnImpl,
           killProcessImpl,
           onProgress: progress,
+          readProcessDiagnosticImpl,
         },
       );
 
@@ -812,6 +1380,9 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
         expect.objectContaining({ stdio: ['ignore', 'pipe', 'pipe'] }),
       );
       await vi.advanceTimersByTimeAsync(100);
+      expect(readProcessDiagnosticImpl).toHaveBeenCalledWith(4240);
+      expect(readProcessDiagnosticImpl.mock.invocationCallOrder[0]).toBeLessThan(killProcessImpl.mock.invocationCallOrder[0]);
+      expect(progress.mock.calls.map(([line]) => String(line)).join('\n')).toContain('TEST_FILE_CHILD_DIAGNOSTIC');
       expect(killProcessImpl).toHaveBeenCalledWith(child, 'SIGTERM', true);
       await vi.advanceTimersByTimeAsync(20);
       expect(killProcessImpl).toHaveBeenCalledWith(child, 'SIGKILL', true);
@@ -821,6 +1392,9 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
         status: null,
         signal: 'SIGKILL',
         timedOut: true,
+        processDiagnostic: readerThrows
+          ? { status: 'unavailable', reason: 'reader-error', processes: [], truncated: false }
+          : processDiagnostic,
       });
       expect(progress.mock.calls.map(([line]) => String(line)).join('\n')).toContain('state=timeout');
     } finally {
@@ -854,10 +1428,12 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
         setsidPath: '/usr/bin/setsid',
         spawnImpl,
         stopScopeImpl,
+        probeScopeSupportImpl: async () => ({ ok: true }),
         onProgress,
         governedProcessImpl: (_governedOptions: unknown, run: Function) =>
           run(undefined, undefined, { inherited: true }),
       });
+      await vi.waitFor(() => expect(spawnImpl).toHaveBeenCalledTimes(1));
       const spawnArgs = spawnImpl.mock.calls[0]?.[1] as string[];
       const scopeUnit = spawnArgs.find((arg) => arg.startsWith('--unit='))?.slice('--unit='.length);
 
@@ -926,14 +1502,13 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
 
   it('resolves the launcher against the env the child actually gets', () => {
     const base = { command: 'npx', args: ['vitest', 'run', 'a.test.ts'] };
-    // systemd-run --user needs a user bus: XDG_RUNTIME_DIR or DBUS_SESSION_BUS_ADDRESS.
+    // An explicit user bus address works independently of the runtime directory.
     expect(userBusReachable({ PATH: '/usr/bin' })).toBe(false);
-    expect(userBusReachable({ XDG_RUNTIME_DIR: '/run/user/1000' })).toBe(true);
     expect(userBusReachable({ DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus' })).toBe(true);
     expect(
       resolveTestChildLauncher({
         ...base,
-        env: { PATH: '/usr/bin', XDG_RUNTIME_DIR: '/run/user/1000' },
+        env: { PATH: '/usr/bin', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus' },
         systemdRunPath: '/usr/bin/systemd-run',
         setsidPath: '/usr/bin/setsid',
         scopeUnit: 'papercusp-test-1-a-1.scope',
@@ -955,7 +1530,7 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
     // once the router died). Omitting both still yields a named, bounded scope.
     const defaulted = resolveTestChildLauncher({
       ...base,
-      env: { PATH: '/usr/bin', XDG_RUNTIME_DIR: '/run/user/1000' },
+      env: { PATH: '/usr/bin', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus' },
       systemdRunPath: '/usr/bin/systemd-run',
       setsidPath: '/usr/bin/setsid',
     });
@@ -1014,12 +1589,149 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       expect(
         resolveTestChildLauncher({
           ...base,
-          env: { PATH: '/usr/bin', XDG_RUNTIME_DIR: '/run/user/1000', ...managedMarker },
+          env: { PATH: '/usr/bin', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus', ...managedMarker },
           systemdRunPath: '/usr/bin/systemd-run',
           setsidPath: '/usr/bin/setsid',
         }),
       ).toMatchObject({ launcher: 'systemd-run' });
     }
+  });
+
+  it.skipIf(process.platform === 'win32')('uses setsid for a private XDG directory until it contains a real bus socket', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'router-bus-'));
+    const bus = join(dir, 'bus');
+    const server = createServer();
+    const options = {
+      command: 'npx', args: ['vitest', 'run', 'a.test.ts'], env: { XDG_RUNTIME_DIR: dir },
+      systemdRunPath: '/usr/bin/systemd-run', setsidPath: '/usr/bin/setsid',
+    };
+    try {
+      expect(userBusReachable(options.env)).toBe(false);
+      expect(resolveTestChildLauncher(options)).toMatchObject({ launcher: 'setsid', ownsProcessGroup: true });
+      // An ordinary file named bus is not an IPC endpoint either.
+      writeFileSync(bus, 'not a bus socket');
+      expect(userBusReachable(options.env)).toBe(false);
+      expect(resolveTestChildLauncher(options)).toMatchObject({ launcher: 'setsid' });
+      rmSync(bus);
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(bus, resolve);
+      });
+      expect(userBusReachable(options.env)).toBe(true);
+      expect(resolveTestChildLauncher(options)).toMatchObject({ launcher: 'systemd-run', ownsProcessGroup: true });
+    } finally {
+      if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
+    expect(userBusReachable(options.env)).toBe(false);
+  });
+
+  it.each(['disconnected transport', 'probe timeout', 'missing launcher'])(
+    'checks a harmless scope before the test payload and uses setsid after %s (EI-25807722383059921)', async reason => {
+      const child = Object.assign(new EventEmitter(), {
+        pid: 4347, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+      });
+      const env = { PATH: '/usr/bin', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/stale/bus' };
+      const probeScopeSupportImpl = vi.fn(async () => ({ ok: false, reason }));
+      const spawnImpl = vi.fn(() => child);
+      const progress: string[] = [];
+      const pending = runCapturedTestProcess('npx', ['vitest', 'run', 'a.test.ts'], {
+        files: ['a.test.ts'], env, systemdRunPath: '/usr/bin/systemd-run', setsidPath: '/usr/bin/setsid',
+        probeScopeSupportImpl, spawnImpl, onProgress: (line: string) => progress.push(line),
+        governedProcessImpl: (_options: unknown, run: Function) => run(undefined, env, { inherited: true }),
+      });
+      await vi.waitFor(() => expect(spawnImpl).toHaveBeenCalledTimes(1));
+      child.emit('close', 0, null);
+      await expect(pending).resolves.toMatchObject({ status: 0, signal: null, timedOut: false });
+      const tracedEnv = expect.objectContaining({ ...env, PAPERCUSP_TEST_STARTUP_TRACE: '1',
+        NODE_OPTIONS: expect.stringContaining('/scripts/lib/vitest-startup-trace.mjs') });
+      expect(probeScopeSupportImpl).toHaveBeenCalledWith(expect.objectContaining({ env: tracedEnv, systemdRunPath: '/usr/bin/systemd-run' }));
+      expect(spawnImpl).toHaveBeenCalledWith('/usr/bin/setsid', ['--wait', 'npx', 'vitest', 'run', 'a.test.ts'],
+        expect.objectContaining({ env: tracedEnv }));
+      expect(env).toEqual({ PATH: '/usr/bin', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/stale/bus' });
+      expect(progress).toContainEqual(expect.stringContaining('TEST_FILE_SCOPE_PREFLIGHT'));
+      expect(progress).toContainEqual(expect.stringContaining(reason));
+    },
+  );
+
+  it('keeps a failed payload verdict after a successful harmless scope probe without retrying it (EI-25807722383059921)', async () => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4348, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+    });
+    const env = {
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/reachable/bus',
+      PAPERCUSP_TEST_SECRET: 'scope-diagnostic-must-not-leak',
+    };
+    const probeScopeSupportImpl = vi.fn(async () => ({ ok: true }));
+    const spawnImpl = vi.fn(() => child);
+    const pending = runCapturedTestProcess('npx', ['vitest', 'run', 'a.test.ts'], {
+      env, systemdRunPath: '/usr/bin/systemd-run', setsidPath: '/usr/bin/setsid',
+      probeScopeSupportImpl, spawnImpl, stopScopeImpl: () => ({ tasks: 0 }), onProgress: () => {},
+      governedProcessImpl: (_options: unknown, run: Function) => run(undefined, env, { inherited: true }),
+    });
+    await vi.waitFor(() => expect(spawnImpl).toHaveBeenCalledTimes(1));
+    child.stderr.write('AssertionError: Failed to start transient scope is fixture text\n');
+    child.emit('close', 1, null);
+    await expect(pending).resolves.toMatchObject({ status: 1, timedOut: false,
+      stderr: expect.stringContaining('AssertionError') });
+    expect(probeScopeSupportImpl).toHaveBeenCalledTimes(1);
+    expect((spawnImpl.mock.calls[0] as unknown[] | undefined)?.[0]).toBe('/usr/bin/systemd-run');
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['unadmitted scope', '', '', true, true],
+    ['assertion verdict', 'Tests  1 failed (1)\n', '', true, false],
+    ['admitted scope payload', '', 'Running scope as unit: papercusp-test-fixture.scope\n', true, false],
+    ['process-group payload', '', '', false, false],
+  ])('qualifies post-preflight scope output for %s without replaying the payload (EI-25878128777441671)', async (_label, stdout, prefix, supported, launchFailed) => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4350, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+    });
+    const env = {
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/reachable/bus',
+      PAPERCUSP_TEST_SECRET: 'scope-diagnostic-must-not-leak',
+    };
+    const spawnImpl = vi.fn(() => child);
+    const pending = runCapturedTestProcess('npx', ['vitest', 'run', 'a.test.ts'], {
+      env, systemdRunPath: '/usr/bin/systemd-run', setsidPath: '/usr/bin/setsid',
+      probeScopeSupportImpl: async () => ({ ok: supported }), spawnImpl,
+      stopScopeImpl: () => ({ tasks: 0 }), onProgress: () => {},
+      governedProcessImpl: (_options: unknown, run: Function) => run(undefined, env, { inherited: true }),
+    });
+    await vi.waitFor(() => expect(spawnImpl).toHaveBeenCalledTimes(1));
+    child.stdout.write(stdout);
+    child.stderr.write(`${prefix}Failed to start transient scope unit: Transport endpoint is not connected\n`);
+    child.emit('close', 1, null);
+    const result = await pending;
+    expect(result).toMatchObject({
+      status: 1, timedOut: false,
+      error: launchFailed ? expect.objectContaining({ code: 'TEST_SCOPE_LAUNCH_FAILED' }) : null,
+      stderr: expect.stringContaining('Transport endpoint is not connected'),
+    });
+    if (launchFailed) {
+      const error = result.error as Error & { scopeLaunchEvidence?: Record<string, unknown> };
+      const evidence = error.scopeLaunchEvidence;
+      const spawnArgs = (spawnImpl.mock.calls[0] as unknown[])[1] as string[];
+      expect(evidence).toMatchObject({
+        launcher: '/usr/bin/systemd-run',
+        scopeUnit: spawnArgs[3]?.slice('--unit='.length),
+        probePassed: true,
+        systemdArgs: spawnArgs.slice(0, 6),
+        payloadArgumentCount: 3,
+        busEnvironment: {
+          xdgRuntimeDirSet: false,
+          runtimeSystemdPrivateSocketExists: false,
+          runtimeBusSocketExists: false,
+          dbusSessionAddressSet: true,
+          dbusAddressTransport: 'unix',
+          dbusSessionUnixSocketExists: expect.any(Boolean),
+        },
+      });
+      expect(error.message).toContain(`scopeEvidence=${JSON.stringify(evidence)}`);
+      expect(error.message).not.toContain(env.PAPERCUSP_TEST_SECRET);
+    }
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
   });
 
   it('falls back to setsid --wait when the child env cannot reach a user bus', async () => {
@@ -1055,7 +1767,10 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
     expect(spawnImpl).toHaveBeenCalledWith(
       '/usr/bin/setsid',
       ['--wait', 'npx', 'vitest', 'run', 'a.test.ts'],
-      expect.objectContaining({ env: { PATH: '/usr/bin' }, stdio: ['ignore', 'pipe', 'pipe'] }),
+      expect.objectContaining({ env: expect.objectContaining({ PATH: '/usr/bin',
+        PAPERCUSP_TEST_STARTUP_TRACE: '1',
+        NODE_OPTIONS: expect.stringContaining('/scripts/lib/vitest-startup-trace.mjs') }),
+        stdio: ['ignore', 'pipe', 'pipe'] }),
     );
     child.emit('close', 0, null);
     await expect(resultPromise).resolves.toMatchObject({ status: 0, signal: null, timedOut: false });
@@ -1122,16 +1837,26 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
     expect(source).toContain('TEST_FILE_LIST_WATCHDOG');
   });
 
-  it('refuses a timed-out collection preflight without starting Vitest tests', async () => {
+  it.each([
+    { name: 'quiet timeout', stdout: '', stderr: '', timedOut: true, error: null },
+    { name: 'diagnostic timeout', stdout: 'collecting first file\n',
+      stderr: 'Running as unit: original-collection.scope\nwaiting for transform\n', timedOut: true, error: null },
+    { name: 'verbose timeout', stdout: 'stdout-start\n' + 'x'.repeat(20_000) + '\nstdout-end',
+      stderr: 'original-collection.scope\n' + 'y'.repeat(20_000) + '\nlast-transform', timedOut: true, error: null },
+    { name: 'spawn error', stdout: '', stderr: 'launch failed\n', timedOut: false,
+      error: Object.assign(new Error('child could not start'), { code: 'ENOENT' }) },
+  ])('refuses a collection failure without starting tests and retains evidence: $name', async (scenario) => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const runVitestListMock = vi.fn(async () => ({
       status: null,
       signal: 'SIGKILL',
-      stdout: '',
-      stderr: '',
-      error: null,
-      timedOut: true,
+      stdout: scenario.stdout,
+      stderr: scenario.stderr,
+      error: scenario.error,
+      timedOut: scenario.timedOut,
+      freezeMs: 73,
+      processDiagnostic: { status: 'partial', rootPid: 4240, processes: [{ pid: 4240, name: 'npm exec vitest' }] },
     }));
     const runCapturedTestProcessMock = vi.fn();
     try {
@@ -1145,9 +1870,25 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       expect(code).toBe(2);
       expect(runVitestListMock).toHaveBeenCalledTimes(1);
       expect(runCapturedTestProcessMock).not.toHaveBeenCalled();
-      expect(errorSpy.mock.calls.map(([line]) => String(line)).join('\n')).toContain(
-        'TEST_FILE_LIST_WATCHDOG',
-      );
+      const lines = errorSpy.mock.calls.map(([line]) => String(line));
+      if (scenario.timedOut) expect(lines.join('\n')).toContain('TEST_FILE_LIST_WATCHDOG');
+      const diagnosticLine = lines.find(line => line.startsWith('TEST_FILE_LIST_DIAGNOSTIC '));
+      expect(diagnosticLine).toBeDefined();
+      const diagnostic = JSON.parse(diagnosticLine!.slice('TEST_FILE_LIST_DIAGNOSTIC '.length));
+      expect(diagnostic).toMatchObject({ cwd: 'packages/operator-core', signal: 'SIGKILL',
+        exitStatus: 'none', freezeMs: 73, errorCode: scenario.error?.code ?? null,
+        processDiagnostic: { status: 'partial', rootPid: 4240, processes: [{ pid: 4240, name: 'npm exec vitest' }] },
+        files: ['lib/__tests__/test-file-router.test.ts'] });
+      for (const channel of ['stdout', 'stderr'] as const) {
+        const captured = scenario[channel];
+        if (captured.length <= 768) {
+          expect(diagnostic[channel]).toEqual({ text: captured, omittedChars: 0 });
+        } else {
+          expect(diagnostic[channel]).toEqual({ head: captured.slice(0, 384), tail: captured.slice(-384),
+            omittedChars: captured.length - 768 });
+        }
+      }
+      expect(diagnosticLine!.length).toBeLessThan(2_500);
     } finally {
       errorSpy.mockRestore();
       logSpy.mockRestore();
@@ -1157,7 +1898,7 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
   it('remains importable by CommonJS-transformed consumers while settling its async exit code', () => {
     const source = readFileSync(new URL('../../../../scripts/test-files.mjs', import.meta.url), 'utf8');
     expect(() => transformSync(source, { format: 'cjs', loader: 'js', platform: 'node' })).not.toThrow();
-    expect(source).toContain('void main().then(');
+    expect(source).toContain('void runTestFilesCli().then(');
   });
 });
 
@@ -1439,6 +2180,276 @@ describe('main() — failed assertion details survive private report cleanup (EI
   });
 });
 
+describe('main() — evidence runs require inserted Vitest ledger receipts', () => {
+  const file = 'packages/operator-core/lib/__tests__/test-file-router.test.ts';
+
+  it.each(['shouldRecordTestRunPath', 'missingTestRunReceiptPaths'])(
+    'refuses a pinned reporter missing %s before collection or execution', async missingExport => {
+      const priorReceiptFile = process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+      process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = join(tmpdir(), 'unused-router-preflight-receipt.jsonl');
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const list = vi.fn(), run = vi.fn();
+      const reporter: Record<string, unknown> = {
+        shouldRecordTestRunPath: () => true, missingTestRunReceiptPaths: () => [],
+      };
+      // An export with the right name and wrong type is just as incompatible
+      // as an absent export; check callable shape, not key presence.
+      reporter[missingExport] = missingExport === 'shouldRecordTestRunPath' ? undefined : 'not callable';
+      try {
+        expect(await main([file], {
+          restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
+          loadVitestReceiptReporterImpl: async () => reporter,
+          runVitestListImpl: list, runCapturedTestProcessImpl: run,
+        })).toBe(2);
+        expect(list).not.toHaveBeenCalled();
+        expect(run).not.toHaveBeenCalled();
+        const errors = errorSpy.mock.calls.map(([line]) => String(line)).join('\n');
+        expect(errors).toContain('TEST_FILE_LEDGER_RECEIPT_PREFLIGHT');
+        expect(errors).toContain(missingExport);
+        expect(logSpy.mock.calls.map(([line]) => String(line)).join('\n')).not.toContain('TEST_FILE_RESULT');
+      } finally {
+        logSpy.mockRestore(); errorSpy.mockRestore();
+        if (priorReceiptFile === undefined) delete process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+        else process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = priorReceiptFile;
+      }
+    },
+  );
+
+  async function runEvidenceCase(writeReceipt: boolean,
+    failure?: { outcome: 'failed' | 'timeout'; reason: string; errorCode?: string },
+    admission: 'skip' | 'admit' | 'refuse' = 'skip') {
+    const dir = mkdtempSync(join(tmpdir(), 'test-file-receipt-verdict-'));
+    const receiptFile = join(dir, 'receipts.jsonl');
+    const priorReceiptFile = process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+    const priorReporterDisabled = process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER;
+    const priorAdmission = process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
+    process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = receiptFile;
+    delete process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER;
+    delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
+    const childAdmissionMarkers: Array<string | undefined> = [];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const runCapturedTestProcessMock = vi.fn(async (_command: string, _args: string[], options: any) => {
+      childAdmissionMarkers.push(options.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT);
+      if (writeReceipt || failure) {
+        const filePath = 'packages/operator-core/lib/__tests__/test-file-router.test.ts';
+        writeFileSync(options.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE, `${JSON.stringify({
+          receiptId: 'router-test-receipt', attempt: 0, filePath, status: 'pass',
+          row: { filePath, startedAt: '2026-10-14T17:00:00.000Z', finishedAt: '2026-10-14T17:00:01.000Z' },
+          ...(failure ? { ...failure, replayable: false } : { outcome: 'inserted', id: 'test-run-901' }),
+        })}\n`);
+      }
+      return { status: 0, signal: null, stdout: 'Test Files 1 passed (1)\nTests 1 passed (1)\n',
+        stderr: '', timedOut: false, error: null };
+    });
+
+    try {
+      const code = await main([file], {
+        restrictedHoldPreflightImpl: () => admission === 'refuse'
+          ? { verdict: 'refuse', error: 'restricted_write_held', hint: 'Fixture restricted write is held.' }
+          : { verdict: admission },
+        runVitestListImpl: async () => ({ status: 0, signal: null,
+          stdout: 'lib/__tests__/test-file-router.test.ts\n', stderr: '', timedOut: false, error: null }),
+        runCapturedTestProcessImpl: runCapturedTestProcessMock,
+      });
+      return {
+        code,
+        childAdmissionMarkers,
+        output: logSpy.mock.calls.map(([line]) => String(line)).join('\n'),
+        errors: errorSpy.mock.calls.map(([line]) => String(line)).join('\n'),
+      };
+    } finally {
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+      if (priorReceiptFile === undefined) delete process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+      else process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = priorReceiptFile;
+      if (priorReporterDisabled === undefined) delete process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER;
+      else process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER = priorReporterDisabled;
+      if (priorAdmission === undefined) delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
+      else process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT = priorAdmission;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('withholds a passing terminal marker when a recordable Vitest file has no inserted receipt', async () => {
+    const result = await runEvidenceCase(false);
+
+    expect(result.code).toBe(2);
+    expect(result.errors).toContain('TEST_FILE_LEDGER_RECEIPT_MISSING');
+    expect(result.errors).toContain('packages/operator-core/lib/__tests__/test-file-router.test.ts');
+    expect(result.output).not.toContain('TEST_FILE_RESULT');
+  });
+
+  it('keeps the passing terminal marker when the current run inserted its receipt', async () => {
+    const result = await runEvidenceCase(true);
+
+    expect(result.code).toBe(0);
+    expect(result.output).toContain('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');
+    expect(result.errors).not.toContain('TEST_FILE_LEDGER_RECEIPT_MISSING');
+  });
+
+  it('forwards a real router admission to receipt-consuming Vitest children', async () => {
+    const result = await runEvidenceCase(true, undefined, 'admit');
+    expect(result.code).toBe(0);
+    expect(result.childAdmissionMarkers).toEqual(['admitted-by-test-router']);
+  });
+
+  it('starts no receipt-consuming Vitest child when admission is refused', async () => {
+    const result = await runEvidenceCase(true, undefined, 'refuse');
+    expect(result.code).toBe(2);
+    expect(result.childAdmissionMarkers).toEqual([]);
+    expect(result.errors).toContain('restricted_write_held');
+  });
+
+  it.each(['failed', 'timeout'] as const)('retains the %s receipt reason when withholding a terminal verdict', async outcome => {
+    const result = await runEvidenceCase(false, { outcome, reason: 'pg_insert_timeout_15000ms', errorCode: 'CONNECT_TIMEOUT' });
+    expect(result.code).toBe(2);
+    expect(result.errors).toContain(`\"outcome\":\"${outcome}\"`);
+    expect(result.errors).toContain('pg_insert_timeout_15000ms');
+    expect(result.errors).toContain('CONNECT_TIMEOUT');
+    expect(result.errors).not.toContain('startedAt');
+    expect(result.output).not.toContain('TEST_FILE_RESULT');
+  });
+
+  it('does not create or require a receipt sink for ordinary focused runs', async () => {
+    const priorReceiptFile = process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+    const priorReporterDisabled = process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER;
+    delete process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+    delete process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER;
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const runCapturedTestProcessMock = vi.fn(async (_command: string, _args: string[], options: any) => {
+      expect(options.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE).toBeUndefined();
+      return { status: 0, signal: null, stdout: 'Test Files 1 passed (1)\nTests 1 passed (1)\n',
+        stderr: '', timedOut: false, error: null };
+    });
+
+    try {
+      const code = await main([file], {
+        restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
+        runVitestListImpl: async () => ({ status: 0, signal: null,
+          stdout: 'lib/__tests__/test-file-router.test.ts\n', stderr: '', timedOut: false, error: null }),
+        runCapturedTestProcessImpl: runCapturedTestProcessMock,
+      });
+      const output = logSpy.mock.calls.map(([line]) => String(line)).join('\n');
+      const errors = errorSpy.mock.calls.map(([line]) => String(line)).join('\n');
+
+      expect(code).toBe(0);
+      expect(runCapturedTestProcessMock).toHaveBeenCalledOnce();
+      expect(output).toContain('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');
+      expect(errors).not.toContain('TEST_FILE_LEDGER_RECEIPT_MISSING');
+    } finally {
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+      if (priorReceiptFile === undefined) delete process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+      else process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = priorReceiptFile;
+      if (priorReporterDisabled === undefined) delete process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER;
+      else process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER = priorReporterDisabled;
+    }
+  });
+});
+
+// EI-25671809770924720: pc-heavy addresses its two marker paths to the router it launched. Every
+// child the router spawns receives `process.env`, so a router that left them there handed the
+// parent's unique barrier to any test that spawns a nested router — which then refused with
+// EEXIST against its live parent before running a single assertion.
+describe('main() — the pc-heavy marker addresses stop at this router (EI-25671809770924720)', () => {
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  let stdoutSpy: ReturnType<typeof vi.spyOn>;
+  let markerDir: string;
+
+  beforeEach(() => {
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    markerDir = mkdtempSync(join(tmpdir(), 'test-files-marker-consume-'));
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+    stdoutSpy.mockRestore();
+    rmSync(markerDir, { recursive: true, force: true });
+  });
+
+  it('publishes its own barriers from the consumed paths and spawns children without them', async () => {
+    const readyFile = join(markerDir, 'ready.AbC123');
+    const finalizationFile = join(markerDir, 'finalization.XyZ789');
+    const owner = (path: string) => (existsSync(path) ? readFileSync(path, 'utf8').trim() : null);
+    const seen: Array<{
+      childReady: string | undefined;
+      childFinalization: string | undefined;
+      readyOwner: string | null;
+      finalizationOwner: string | null;
+    }> = [];
+    const runCapturedTestProcessMock = vi.fn(
+      async (
+        _command: string,
+        args: string[],
+        options: { env?: NodeJS.ProcessEnv; onAllFilesComplete?: () => void },
+      ) => {
+        // What a nested router spawned by a test in this child would inherit.
+        const childEnv = options.env ?? {};
+        options.onAllFilesComplete?.();
+        seen.push({
+          childReady: childEnv.PC_HEAVY_PREEMPT_READY_FILE,
+          childFinalization: childEnv.PC_HEAVY_PSI_FINALIZATION_FILE,
+          readyOwner: owner(readyFile),
+          finalizationOwner: owner(finalizationFile),
+        });
+        const outputArg = args.find((arg) => arg.startsWith('--outputFile='));
+        if (outputArg) {
+          writeFileSync(outputArg.slice('--outputFile='.length), JSON.stringify({
+            testResults: [{
+              name: '/repo/lib/ok.test.ts',
+              status: 'passed',
+              assertionResults: [{ status: 'passed', fullName: 'router > passes' }],
+            }],
+          }));
+        }
+        return { status: 0, signal: null, stdout: '', stderr: '', timedOut: false };
+      },
+    );
+
+    const savedReady = process.env.PC_HEAVY_PREEMPT_READY_FILE;
+    const savedFinalization = process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+    process.env.PC_HEAVY_PREEMPT_READY_FILE = readyFile;
+    process.env.PC_HEAVY_PSI_FINALIZATION_FILE = finalizationFile;
+    let leftInProcessEnv: { ready: string | undefined; finalization: string | undefined };
+    try {
+      await main(
+        ['packages/operator-core/lib/__tests__/test-file-router.test.ts'],
+        { runCapturedTestProcessImpl: runCapturedTestProcessMock },
+      );
+    } finally {
+      leftInProcessEnv = {
+        ready: process.env.PC_HEAVY_PREEMPT_READY_FILE,
+        finalization: process.env.PC_HEAVY_PSI_FINALIZATION_FILE,
+      };
+      if (savedReady === undefined) delete process.env.PC_HEAVY_PREEMPT_READY_FILE;
+      else process.env.PC_HEAVY_PREEMPT_READY_FILE = savedReady;
+      if (savedFinalization === undefined) delete process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+      else process.env.PC_HEAVY_PSI_FINALIZATION_FILE = savedFinalization;
+    }
+
+    expect(runCapturedTestProcessMock).toHaveBeenCalled();
+    for (const child of seen) {
+      // The child sees neither address...
+      expect(child.childReady).toBeUndefined();
+      expect(child.childFinalization).toBeUndefined();
+      // ...while THIS router still published both barriers at the paths pc-heavy gave it.
+      expect(child.readyOwner).toBe(String(process.pid));
+      expect(child.finalizationOwner).toBe(String(process.pid));
+    }
+    expect(leftInProcessEnv).toEqual({ ready: undefined, finalization: undefined });
+    // main()'s finally still removes the barriers it published.
+    expect(existsSync(readyFile)).toBe(false);
+    expect(existsSync(finalizationFile)).toBe(false);
+  });
+});
+
 describe('suppressInjectedJsonReportNotice', () => {
   it('removes only the notice for the disposable injected path', () => {
     const reportPath = '/dev/shm/pcv/papercusp-test-files-report-example/group-0.json';
@@ -1467,6 +2478,118 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     errSpy.mockRestore();
   });
 
+  it('preserves the originating exception when admission fails before spawn', async () => {
+    const origin = new ReferenceError('pinModuleState is not defined');
+    origin.stack = 'ReferenceError: pinModuleState is not defined\n    at originalAdmission (/provider/execution.ts:12:3)';
+    const spawnImpl = vi.fn();
+    const result = await runCapturedTestProcess('node', ['--version'], {
+      cwd: REPO_ROOT,
+      spawnImpl,
+      governedProcessImpl: async () => { throw origin; },
+    });
+
+    expect(spawnImpl).not.toHaveBeenCalled();
+    expect(result.governedAdmissionError).toBe(true);
+    expect(result.error.cause).toBe(origin);
+    expect(result.error.cause.stack).toContain('/provider/execution.ts:12:3');
+  });
+
+  it.each([0, 1])('retains the captured exit %s when governor finalization fails after close', async (status) => {
+    const origin = Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' });
+    const child = Object.assign(new EventEmitter(), {
+      pid: 424242,
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+    });
+    const spawnImpl = vi.fn(() => child);
+    const governedProcessImpl = vi.fn(async (_options: unknown, run: Function) => {
+      await run(undefined, undefined, { inherited: true });
+      throw origin;
+    });
+    const promise = runCapturedTestProcess('vitest', ['run', 'a.test.ts'], {
+      cwd: REPO_ROOT,
+      files: ['a.test.ts'],
+      spawnImpl,
+      governedProcessImpl,
+      systemdRunPath: null,
+      setsidPath: null,
+      onProgress: vi.fn(),
+    });
+    child.stdout.write('a.test.ts (1 test)\n');
+    child.stderr.write('captured child diagnostic\n');
+    child.emit('close', status, null);
+    const result = await promise;
+
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+    expect(governedProcessImpl).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      status,
+      signal: null,
+      stdout: 'a.test.ts (1 test)\n',
+      stderr: 'captured child diagnostic\n',
+      error: null,
+      timedOut: false,
+    });
+    expect(result.governedAdmissionError).not.toBe(true);
+    expect(result.governedFinalizationError.cause).toBe(origin);
+    expect(result.actualDemand).toBeDefined();
+  });
+
+  it.each([0, 1])('also preserves an actual synchronous Node child after finalization failure, exit %s', async (status) => {
+    const origin = new Error('Node receipt finish failed');
+    const run = vi.fn(() => spawnSync(process.execPath, ['-e', `process.stdout.write('child output'); process.exit(${status})`], {
+      encoding: 'utf8',
+    }));
+    const result = await runGovernedTestFileProcess(async (_options: unknown, callback: Function) => {
+      await callback();
+      throw origin;
+    }, { demand: { cpuWeight: 1 } }, run);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ status, stdout: 'child output', signal: null });
+    expect(result.governedAdmissionError).not.toBe(true);
+    expect(result.governedFinalizationError.cause).toBe(origin);
+  });
+
+  it.each([0, 1])('keeps the measured verdict and refuses an overall green after finalization failure, child exit %s', async (status) => {
+    const readyMarker = process.env.PC_HEAVY_PREEMPT_READY_FILE;
+    const finalizationMarker = process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+    delete process.env.PC_HEAVY_PREEMPT_READY_FILE;
+    delete process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    let code: number;
+    try {
+      code = await main(['packages/operator-core/lib/__tests__/test-file-router.test.ts'], {
+        runCapturedTestProcessImpl: async () => ({
+          status,
+          signal: null,
+          stdout: `Test Files 1 ${status === 0 ? 'passed' : 'failed'} (1)\nTests 1 ${status === 0 ? 'passed' : 'failed'} (1)\n`,
+          stderr: '',
+          error: null,
+          timedOut: false,
+          governedFinalizationError: new Error('receipt finish failed', {
+            cause: new Error('original settlement stack'),
+          }),
+        }),
+      });
+    } finally {
+      if (readyMarker === undefined) delete process.env.PC_HEAVY_PREEMPT_READY_FILE;
+      else process.env.PC_HEAVY_PREEMPT_READY_FILE = readyMarker;
+      if (finalizationMarker === undefined) delete process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+      else process.env.PC_HEAVY_PSI_FINALIZATION_FILE = finalizationMarker;
+      stdoutSpy.mockRestore();
+    }
+    const output = logSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
+    const errors = errSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
+    expect(code).toBe(3);
+    expect(output).toContain(`TEST_FILE_RESULT requested=1 executed=1 matched=1 status=${status === 0 ? 'passed' : 'failed'}`);
+    expect(output).toContain('finalizationError=true');
+    expect(errors).toContain('TEST_FILE_FINALIZATION_ERROR');
+    expect(errors).toContain('receipt finish failed');
+    expect(errors).toContain('original settlement stack');
+    expect(errors).not.toContain('TEST_FILE_ADMISSION_ERROR');
+    expect(errors).not.toContain('no test file ran');
+  });
+
   it.each(['admission-starved', 'undetermined'])('preserves the admission cause alongside NOT-MEASURED for %s', async (failureKind) => {
     const readyMarker = process.env.PC_HEAVY_PREEMPT_READY_FILE;
     const finalizationMarker = process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
@@ -1483,7 +2606,11 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
             stdout: '',
             stderr: '',
             timedOut: false,
-            error: Object.assign(new Error('statement timeout'), { code: 'GOVERNED_ADMISSION_FAILED' }),
+            error: Object.assign(new Error('statement timeout', {
+              cause: Object.assign(new Error('statement timeout'), {
+                stack: 'Error: statement timeout\n    at origin (/provider/admission.ts:42:7)',
+              }),
+            }), { code: 'GOVERNED_ADMISSION_FAILED' }),
             governedAdmissionError: true,
             governedAdmissionFailureKind: failureKind,
           }),
@@ -1500,6 +2627,7 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     const output = errSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
     expect(output).toContain(`TEST_FILE_NOT_MEASURED requested=1 executed=0 matched=1 measuredFiles=0 status=not-measured reason=${failureKind}`);
     expect(output).toContain(`TEST_FILE_ADMISSION_ERROR kind=${failureKind} detail="statement timeout"`);
+    expect(output).toContain('origin="Error: statement timeout\\n    at origin (/provider/admission.ts:42:7)"');
     expect(output).not.toContain('TEST_FILE_RESULT');
   });
 });
@@ -1615,10 +2743,18 @@ describe('looksLikeMidInstallCorruption (EI-18662389554660036)', () => {
   });
 
   it('flags an ERR_MODULE_NOT_FOUND stack that points into node_modules (a half-written package)', () => {
+    const missingModule = join(REPO_ROOT, 'node_modules/vitest/node_modules/@vitest/mocker/dist/node.js');
     const stack = `node:internal/modules/esm/resolve:something
-Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/repo/node_modules/vitest/node_modules/@vitest/mocker/dist/node.js'
+Error [ERR_MODULE_NOT_FOUND]: Cannot find module '${missingModule}'
     at new NodeError (node:internal/errors:405:5)`;
     expect(looksLikeMidInstallCorruption(stack)).toBe(true);
+  });
+
+  it('does NOT attribute an isolated scratch checkout dependency failure to the shared install', () => {
+    const stack = `node:internal/modules/esm/resolve:something
+Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'get-tsconfig' imported from /dev/shm/pcv/wi5764-loader-GsWRfz/repo/node_modules/tsx/dist/register-CFH5oNdT.mjs
+    at new NodeError (node:internal/errors:405:5)`;
+    expect(looksLikeMidInstallCorruption(stack)).toBe(false);
   });
 
   it('does NOT flag an unrelated MODULE_NOT_FOUND with no node_modules path (a real missing-file bug)', () => {
@@ -1698,14 +2834,16 @@ describe('warnIfInstallInFlight (EI-19304880034803985 — the HANG-path hint)', 
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
-  it('prints the TEST_FILE_MID_INSTALL_SUSPECTED hint, naming the pid and the caller label, when the mutex IS held', () => {
+  it('prints the TEST_FILE_MID_INSTALL_SUSPECTED hint for a running writer using callback start time', () => {
     // Mirror withFsMutex's own on-disk shape exactly (mkdir + owner.json) —
     // repoLockName()'s digest is already alnum+hyphen, so no safeName() rewrite applies.
     const lockDir = join(tmpLockRootDir, `${repoLockName()}.lock`);
     mkdirSync(lockDir, { recursive: true });
     writeFileSync(
       join(lockDir, 'owner.json'),
-      JSON.stringify({ pid: 424242, host: 'test-host', startedAt: '2026-08-02T00:00:00.000Z' }),
+      JSON.stringify({ pid: 424242, host: 'test-host', phase: 'running',
+        startedAt: '2026-08-02T00:00:00.000Z', acquiredAt: '2026-08-02T00:01:00.000Z',
+        runningAt: '2026-08-02T00:02:00.000Z' }),
     );
 
     warnIfInstallInFlight('`vitest list` (group cwd=y)');
@@ -1716,6 +2854,35 @@ describe('warnIfInstallInFlight (EI-19304880034803985 — the HANG-path hint)', 
     expect(msg).toContain('pid 424242');
     expect(msg).toContain('`vitest list` (group cwd=y)');
     expect(msg).toMatch(/may HANG \(not fail\)/);
+    expect(msg).toContain('since 2026-08-02T00:02:00.000Z');
+    expect(msg).not.toContain('since 2026-08-02T00:00:00.000Z');
+  });
+
+  it('reports a draining writer without claiming the install callback is running', () => {
+    const lockDir = join(tmpLockRootDir, `${repoLockName()}.lock`);
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(join(lockDir, 'owner.json'), JSON.stringify({ pid: 424242,
+      phase: 'draining-readers', acquiredAt: '2026-08-02T00:01:00.000Z' }));
+    warnIfInstallInFlight('reader-backed test');
+    const [msg] = errorSpy.mock.calls[0] as [string];
+    expect(msg).toContain('TEST_FILE_INSTALL_DRAINING_READERS');
+    expect(msg).toContain('since 2026-08-02T00:01:00.000Z');
+    expect(msg).toContain('admitted readers can continue');
+    expect(msg).not.toContain('TEST_FILE_MID_INSTALL_SUSPECTED');
+    expect(msg).not.toContain('may HANG');
+  });
+
+  it.each([undefined, 'future-phase'])('keeps an unknown writer phase honest (%s)', (phase) => {
+    const lockDir = join(tmpLockRootDir, `${repoLockName()}.lock`);
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(join(lockDir, 'owner.json'), JSON.stringify({ pid: 424242, phase,
+      startedAt: '2026-08-02T00:00:00.000Z' }));
+    warnIfInstallInFlight('legacy writer');
+    const [msg] = errorSpy.mock.calls[0] as [string];
+    expect(msg).toContain('TEST_FILE_INSTALL_MUTEX_HELD');
+    expect(msg).toContain('phase is unknown');
+    expect(msg).not.toContain('TEST_FILE_MID_INSTALL_SUSPECTED');
+    expect(msg).not.toContain('since 2026-08-02T00:00:00.000Z');
   });
 
   it('never throws even if the peek itself would be inconclusive (fail-open, per peekFsMutexSync)', () => {
@@ -1723,6 +2890,41 @@ describe('warnIfInstallInFlight (EI-19304880034803985 — the HANG-path hint)', 
     rmSync(tmpLockRootDir, { recursive: true, force: true });
     expect(() => warnIfInstallInFlight('cold path')).not.toThrow();
     expect(errorSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('direct test-files CLI install reader lease (EI-24946572521324679)', () => {
+  it('takes the repo reader lease and propagates the marker for an unmarked CLI run', async () => {
+    const lockName = repoLockName();
+    const otherLockName = 'npm-install-aaaaaaaaaaaa';
+    const env = { PAPERCUSP_INSTALL_MUTEX_HELD: otherLockName };
+    const args = ['packages/operator-core/lib/__tests__/test-file-router.test.ts'];
+    const run = vi.fn(async () => {
+      expect(env.PAPERCUSP_INSTALL_MUTEX_HELD).toBe([otherLockName, lockName].join(','));
+      return 7;
+    });
+    const acquireReadLease = vi.fn(async (_name, withLease) => withLease());
+
+    await expect(runTestFilesCli(args, { env, acquireReadLease, run })).resolves.toBe(7);
+
+    expect(acquireReadLease).toHaveBeenCalledOnce();
+    expect(acquireReadLease).toHaveBeenCalledWith(lockName, expect.any(Function));
+    expect(run).toHaveBeenCalledWith(args);
+    expect(env.PAPERCUSP_INSTALL_MUTEX_HELD).toBe(otherLockName);
+  });
+
+  it('bypasses nested acquisition when the matching repo marker is already present', async () => {
+    const lockName = repoLockName();
+    const env = { PAPERCUSP_INSTALL_MUTEX_HELD: ['npm-install-aaaaaaaaaaaa', lockName].join(',') };
+    const args = ['packages/operator-core/lib/__tests__/test-file-router.test.ts'];
+    const run = vi.fn(async () => 0);
+    const acquireReadLease = vi.fn();
+
+    await expect(runTestFilesCli(args, { env, acquireReadLease, run })).resolves.toBe(0);
+
+    expect(run).toHaveBeenCalledWith(args);
+    expect(acquireReadLease).not.toHaveBeenCalled();
+    expect(env.PAPERCUSP_INSTALL_MUTEX_HELD).toBe(['npm-install-aaaaaaaaaaaa', lockName].join(','));
   });
 });
 
@@ -1734,7 +2936,9 @@ describe('TEST_FILE_RESULT presence is a verdict, so a run that executed nothing
   // Four corpus rows were written that way in ~37s each. The false reading is indistinguishable
   // from a true one AND argues for the wrong conclusion (drop the candidate), so it is the
   // expensive direction. `--dry` is chosen here deliberately: it is the one path that reaches the
-  // reporting branch WITHOUT spawning vitest, so this stays a fast unit test of the real main().
+  // reporting branch without executing tests. Route matching still runs `vitest list`, so the
+  // marker assertions inject a deterministic listing and the separate integration guard below
+  // exercises the real collection child.
   let logSpy: ReturnType<typeof vi.spyOn>;
   let errSpy: ReturnType<typeof vi.spyOn>;
 
@@ -1750,14 +2954,34 @@ describe('TEST_FILE_RESULT presence is a verdict, so a run that executed nothing
   const linesFrom = (spy: ReturnType<typeof vi.spyOn>) =>
     spy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
 
+  const dryRunListOptions = () => ({
+    runVitestListImpl: async (_command: string, args: string[], options: { cwd: string }) => {
+      const requested = args.at(-1);
+      expect(requested).toBe('lib/__tests__/test-file-router.test.ts');
+      return {
+        status: 0,
+        stdout: `${resolve(options.cwd, requested!)}\n`,
+        stderr: '',
+        timedOut: false,
+        error: null,
+      };
+    },
+  });
+
   it('a dry run does NOT print TEST_FILE_RESULT', async () => {
-    const code = await main(['--dry', 'packages/operator-core/lib/__tests__/test-file-router.test.ts']);
+    const code = await main(
+      ['--dry', 'packages/operator-core/lib/__tests__/test-file-router.test.ts'],
+      dryRunListOptions(),
+    );
     expect(code).toBe(0);
     expect(linesFrom(logSpy)).not.toContain('TEST_FILE_RESULT');
   });
 
   it('a dry run still reports machine-readably, under its own marker', async () => {
-    await main(['--dry', 'packages/operator-core/lib/__tests__/test-file-router.test.ts']);
+    await main(
+      ['--dry', 'packages/operator-core/lib/__tests__/test-file-router.test.ts'],
+      dryRunListOptions(),
+    );
     const out = linesFrom(logSpy);
     expect(out).toContain('TEST_FILE_DRYRUN');
     expect(out).toMatch(/TEST_FILE_DRYRUN .*executed=0 .*status=dry-run/);
@@ -1771,7 +2995,7 @@ describe('TEST_FILE_RESULT presence is a verdict, so a run that executed nothing
     const out = linesFrom(logSpy);
     expect(out).toMatch(/TEST_FILE_DRYRUN requested=1 .*matched=1/);
     expect(out).toContain('matched lib/__tests__/test-file-router.test.ts');
-  });
+  }, 150_000);
 });
 
 describe('parseTransformFailure (EI-19462803905923939)', () => {

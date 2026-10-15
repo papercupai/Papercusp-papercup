@@ -34,6 +34,12 @@
 
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import {
+  derivePlanLifecycle,
+  derivePlanStatusTransition,
+  findTerminalPlanChildMutations,
+  type TerminalPlanChildMutation,
+} from '@papercusp/plan-parser';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock } from './with-plan-lock';
@@ -47,8 +53,8 @@ import { lintParsed, type LintFinding } from './lint';
 import { hashPlanContent } from './content-hash';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
-import { stampTerminalNowBlock } from './terminal-now-stamp';
 import { parseRequirementBars } from '../../acceptance-bar-seed';
+import { productShapingWriteAdvisory } from './product-shaping';
 
 /**
  * `dev:pg_query` exposes PostgreSQL bigint values as decimal strings, while
@@ -105,7 +111,6 @@ export type SetContentValue =
       slug: string;
       contentHash: string;
       warning?: string;
-      nowStamped?: boolean;
       parseFeedback: ItemParseSummary;
       /**
        * WI-40825: plan items whose SEMANTIC text this write changed or removed.
@@ -116,6 +121,9 @@ export type SetContentValue =
        * whoever is executing it. Empty/absent ⇒ this write touched no item text.
        */
       itemTextChanges?: PlanItemTextChange[];
+      /** True when this write changes whether the current lifecycle status warrants
+       *  an automatic drained-plan transition. The reaction rule rechecks under lock. */
+      planDrainTransitionChanged?: boolean;
     }
   | { ok: false; code: 'not_found' }
   | {
@@ -148,6 +156,13 @@ export type SetContentValue =
       /** Items that would move backward off a terminal (done/dropped)
        *  status — see detectStatusRegressions. */
       regressions: StatusRegressionEntry[];
+    }
+  | {
+      ok: false;
+      code: 'terminal_parent_child_mutation';
+      parentStatus: string;
+      changes: TerminalPlanChildMutation[];
+      message: string;
     }
   | {
       ok: false;
@@ -330,7 +345,7 @@ export async function evaluateSetContent(
   expectedHash: string | undefined,
   opts: {
     expectedVersion?: number;
-    meta?: { version: number; contentHash: string } | null;
+    meta?: { version: number; contentHash: string; planStatus?: string | null } | null;
     allowShrink?: boolean;
     /**
      * EI-18756269998422483: opt this call into the item-status-regression
@@ -445,11 +460,21 @@ export async function evaluateSetContent(
   // (plans:edit, set-content, and set-content-chunk) must not skip activation,
   // admission, acceptance, supersede, or terminal cleanup gates. Legacy plans
   // convert only through set-frontmatter, which now accepts non-terminal starts.
-  const currentStatus = currentParsed.frontmatter.status ?? null;
+  // The PG row is the lifecycle authority. A prior writer can leave its
+  // frontmatter stale; comparing only the two markdown bodies would treat that
+  // stale value as unchanged, then withPlanLock would persist it back into the
+  // canonical status column on this otherwise unrelated edit.
+  const storedPlanStatus = opts.meta?.planStatus;
+  const currentContentStatus = currentParsed.frontmatter.status ?? null;
+  // `status` is a nullable derived index. Older rows and lightweight test seeds
+  // can legitimately leave it NULL, so only a populated value can override the
+  // canonical markdown status.
+  const currentStatus = storedPlanStatus != null ? storedPlanStatus : currentContentStatus;
   const proposedStatus = proposed.frontmatter.status ?? null;
   const legacyConversion = currentParsed.isLegacy && !proposed.isLegacy;
   if (legacyConversion || currentStatus !== proposedStatus) {
     const writer = currentParsed.isLegacy ? 'plans:set-frontmatter' : 'plans:set-plan-status';
+    const statusMismatch = storedPlanStatus != null && storedPlanStatus !== currentContentStatus;
     return {
       newBody: null,
       value: {
@@ -458,22 +483,34 @@ export async function evaluateSetContent(
         currentStatus,
         proposedStatus,
         writer,
-        message: writer === 'plans:set-frontmatter'
+        message: statusMismatch
+          ? `The canonical plan status '${currentStatus ?? 'missing'}' disagrees with the current markdown status '${currentContentStatus ?? 'missing'}'; use ${writer} to reconcile lifecycle status before this content write.`
+          : writer === 'plans:set-frontmatter'
           ? 'Legacy plans must be converted with plans:set-frontmatter and a non-terminal initial status.'
           : 'Plan lifecycle status changes must use plans:set-plan-status so the lifecycle gates and cleanup run.',
       },
     };
   }
 
-  // WI-38303: raw-content writers may still edit prose on an already-terminal
-  // plan. Preserve the terminal-Now invariant in the shared evaluator before
-  // lint and derived indexes are written. Idempotent and prepend-only; an
-  // absent Now block remains absent.
-  const terminalStamp = stampTerminalNowBlock(body, proposed.frontmatter.status ?? '');
-  const nowStamped = terminalStamp !== null;
-  if (terminalStamp !== null) {
-    body = terminalStamp;
-    proposed = parsePlan(body, { filePath });
+  const terminalChildChanges = findTerminalPlanChildMutations(
+    currentStatus,
+    currentParsed.items.map((item) => ({ id: item.id, status: item.storedStatus })),
+    proposed.items.map((item) => ({ id: item.id, status: item.storedStatus })),
+  );
+  if (currentStatus && terminalChildChanges.length > 0) {
+    return {
+      newBody: null,
+      value: {
+        ok: false,
+        code: 'terminal_parent_child_mutation',
+        parentStatus: currentStatus,
+        changes: terminalChildChanges,
+        message:
+          'the parent plan is still ' +
+          currentStatus +
+          '; use plans:set-plan-status to transition it before adding or reopening a nonterminal child',
+      },
+    };
   }
 
   // A raw edit may change the BAR source without crossing a lifecycle gate.
@@ -545,6 +582,11 @@ export async function evaluateSetContent(
   // stamp above. The PG lookup for work_items minted from these items is the
   // HANDLER's job (this evaluator stays pure); see plan-items/text-drift-report.
   const itemTextChanges = detectItemTextChanges(currentParsed, proposed);
+  const priorDrainTarget =
+    derivePlanStatusTransition(currentStatus, derivePlanLifecycle(currentParsed.items))?.to ?? null;
+  const nextDrainTarget =
+    derivePlanStatusTransition(currentStatus, derivePlanLifecycle(proposed.items))?.to ?? null;
+  const planDrainTransitionChanged = priorDrainTarget !== nextDrainTarget;
   return {
     newBody: body,
     value: {
@@ -552,9 +594,9 @@ export async function evaluateSetContent(
       slug,
       contentHash: hashPlanContent(body),
       ...(warning ? { warning } : {}),
-      ...(nowStamped ? { nowStamped: true } : {}),
       parseFeedback,
       ...(itemTextChanges.length > 0 ? { itemTextChanges } : {}),
+      ...(planDrainTransitionChanged ? { planDrainTransitionChanged: true } : {}),
     },
   };
 }
@@ -609,6 +651,9 @@ export default defineTool({
         }),
     );
 
+    if (result.kind === 'refused') {
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result.value) }], isError: true };
+    }
     if (result.kind === 'busy') {
       return {
         content: [
@@ -670,6 +715,10 @@ export default defineTool({
           `almost always a stale read clobbering someone else's completed work. Re-fetch via plans:get and carry its ` +
           `version/contentHash, or use plans:set-status for a real single-item flip. If the regression is genuinely ` +
           `intentional, retry with allowStatusRegression: true.`;
+      } else if (v.code === 'terminal_parent_child_mutation') {
+        payload.parentStatus = v.parentStatus;
+        payload.changes = v.changes;
+        payload.message = v.message;
       } else if (v.code === 'plan_status_change_requires_lifecycle_writer') {
         payload.currentStatus = v.currentStatus;
         payload.proposedStatus = v.proposedStatus;
@@ -698,6 +747,7 @@ export default defineTool({
       v.itemTextChanges,
       result.scope.harnessSlug,
     );
+    const shapingAdvisory = productShapingWriteAdvisory(args.content);
 
     return {
       content: [
@@ -707,10 +757,10 @@ export default defineTool({
             ok: true,
             slug: v.slug,
             contentHash: v.contentHash,
+            ...(v.planDrainTransitionChanged ? { planDrainTransitionChanged: true } : {}),
             // Surfacing (EI-83 fix #2): present only when the write removed
             // items/decisions — so even an allowed shrink is visible.
             ...(v.warning ? { warning: v.warning } : {}),
-            ...(v.nowStamped ? { nowStamped: true } : {}),
             version: result.version,
             filePath: result.filePath,
             // Item-parse feedback (WI-3363), computed in evaluateSetContent.
@@ -724,6 +774,8 @@ export default defineTool({
             // removed. A whole-document write is the easiest way to reword an
             // item without noticing anyone is executing it.
             ...(planItemDrift ? { planItemDrift } : {}),
+            // R-9: advisory only — the write above already landed.
+            ...(shapingAdvisory ? { productShaping: shapingAdvisory } : {}),
           }),
         },
       ],

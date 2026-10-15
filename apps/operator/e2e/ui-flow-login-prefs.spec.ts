@@ -44,11 +44,21 @@ async function doSignup(page: import('@playwright/test').Page, username: string)
   await page.getByLabel(/^username$/i).fill(username);
   await displayNameInput.fill(`E2E ${username.slice(-6)}`);
 
-  // Submit
-  await page.getByRole('button', { name: /^create user$/i }).click();
+  // Submit, and read the signup response. A refused signup (e.g. 403
+  // signup_disabled when papercusp-open-signup is off and a user already exists)
+  // only shows a toast and stays on /login, which used to surface as a blind 10s
+  // waitForURL timeout (WI-10006791). Fail with the server's own error instead.
+  const [signupRes] = await Promise.all([
+    page.waitForResponse((r) => r.url().includes('/api/auth/signup') && r.request().method() === 'POST', { timeout: 15_000 }),
+    page.getByRole('button', { name: /^create user$/i }).click(),
+  ]);
+  expect(signupRes.ok(), `POST /api/auth/signup -> ${signupRes.status()} ${await signupRes.text().catch(() => '')}`).toBe(true);
 
   // Wait for redirect off /login
-  await page.waitForURL((u) => !u.toString().includes('/login'), { timeout: 10_000 });
+  await page.waitForURL((u) => !u.toString().includes('/login'), {
+    timeout: 10_000,
+    waitUntil: 'commit',
+  });
 }
 
 async function skipIfPgUnavailable(request: import('@playwright/test').APIRequestContext): Promise<boolean> {

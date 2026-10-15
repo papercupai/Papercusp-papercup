@@ -76,8 +76,12 @@ export interface IndexBloatReindexResult {
   reindexed: ReindexedIndex[];
   /** Bytes returned to the OS across all successful rebuilds. */
   bytesReclaimed: number;
+  /** Leftover *_ccnew / *_ccold duplicates found this run (dryRun lists them without dropping). */
+  orphansFound: string[];
   /** Leftover *_ccnew / *_ccold duplicates dropped this run. */
   orphansDropped: string[];
+  /** Leftovers this run could NOT drop (e.g. lock_timeout behind a long transaction), with the error. */
+  orphanDropFailures: Array<{ index: string; error: string }>;
   /** Set when the run declined to do anything, naming the guard that tripped. */
   skipped?: 'long-running-transaction' | 'low-disk' | 'no-candidates';
   /** True when the per-run cap or time budget cut the sweep short. */
@@ -98,6 +102,8 @@ export interface IndexBloatReindexOpts {
   timeBudgetMs?: number;
   /** Refuse to run when a transaction has been open longer than this. Default 60s. */
   maxOpenTxnSeconds?: number;
+  /** lock_timeout for each orphan DROP INDEX CONCURRENTLY. Default 10s. */
+  orphanLockTimeoutMs?: number;
   /** Refuse to run below this much free disk on the data directory. Default 20 GiB. */
   minFreeDiskBytes?: number;
   /** Report candidates without touching anything. */
@@ -113,6 +119,7 @@ const DEFAULTS = {
   maxIndexesPerRun: 12,
   timeBudgetMs: 10 * 60_000,
   maxOpenTxnSeconds: 60,
+  orphanLockTimeoutMs: 10_000,
   minFreeDiskBytes: 20 * 1024 * 1024 * 1024,
   schemas: ['harness_shared'],
 };
@@ -136,9 +143,57 @@ export async function runIndexBloatReindexOnce(
   const result: IndexBloatReindexResult = {
     reindexed: [],
     bytesReclaimed: 0,
+    orphansFound: [],
     orphansDropped: [],
+    orphanDropFailures: [],
     truncated: false,
   };
+
+  // --- Clean leftovers FIRST, independent of Guard 1 below. ---
+  // An orphaned *_ccnew from an interrupted REINDEX / CREATE INDEX CONCURRENTLY is INVALID
+  // but usually indisready, so every write maintains it while no query can use it. This
+  // cleanup used to run AFTER Guard 1, so one >60s transaction at tick time (a pg_dump
+  // backup is routinely open then) skipped it, and the failure path was a bare catch:
+  // leftovers accumulated unseen (WI-6554700010008628: 8 orphans, ~740 MB, 2026-10-11).
+  // DROP INDEX CONCURRENTLY waits for every lock holder on the table, so each drop runs on
+  // a reserved connection under a bounded lock_timeout: behind a long transaction it fails
+  // fast and is REPORTED in orphanDropFailures instead of parking. A table with an index
+  // build in flight is excluded, so a running REINDEX never loses its own *_ccnew.
+  const orphans = await sql<Array<{ schema_name: string; index_name: string }>>`
+    SELECT n.nspname AS schema_name, c.relname AS index_name
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_index i ON i.indexrelid = c.oid
+     WHERE c.relkind = 'i'
+       AND n.nspname = ANY(${o.schemas})
+       AND (c.relname LIKE '%\_ccnew' OR c.relname LIKE '%\_ccold'
+            OR c.relname ~ '_cc(new|old)[0-9]+$')
+       AND NOT i.indisprimary
+       AND NOT EXISTS (SELECT 1 FROM pg_constraint con WHERE con.conindid = c.oid)
+       AND NOT EXISTS (SELECT 1 FROM pg_stat_progress_create_index p WHERE p.relid = i.indrelid)
+  `;
+  result.orphansFound = orphans.map((orph) => `${orph.schema_name}.${orph.index_name}`);
+  if (orphans.length > 0 && !o.dryRun) {
+    const conn = await sql.reserve();
+    try {
+      await conn.unsafe(`SET lock_timeout = ${Math.max(1, Math.floor(o.orphanLockTimeoutMs))}`);
+      for (const orph of orphans) {
+        const ref = `${orph.schema_name}.${orph.index_name}`;
+        try {
+          await conn.unsafe(
+            `DROP INDEX CONCURRENTLY IF EXISTS "${orph.schema_name}"."${orph.index_name}"`,
+          );
+          result.orphansDropped.push(ref);
+        } catch (err) {
+          result.orphanDropFailures.push({ index: ref, error: (err as Error).message });
+        }
+      }
+    } finally {
+      // The setting is session-scoped: reset it before the connection returns to the pool.
+      await conn.unsafe('RESET lock_timeout').catch(() => undefined);
+      conn.release();
+    }
+  }
 
   // --- Guard 1: a long-open transaction makes CONCURRENTLY park instead of progress. ---
   const [{ max_open_seconds: maxOpen } = { max_open_seconds: 0 }] = await sql<
@@ -153,31 +208,6 @@ export async function runIndexBloatReindexOnce(
   if (Number(maxOpen) > o.maxOpenTxnSeconds) {
     result.skipped = 'long-running-transaction';
     return result;
-  }
-
-  // --- Always clean leftovers first: an orphaned *_ccnew is a duplicate index being ---
-  // --- maintained on every write, so dropping it is pure win and costs nothing.     ---
-  const orphans = await sql<Array<{ schema_name: string; index_name: string }>>`
-    SELECT n.nspname AS schema_name, c.relname AS index_name
-      FROM pg_class c
-      JOIN pg_namespace n ON n.oid = c.relnamespace
-      JOIN pg_index i ON i.indexrelid = c.oid
-     WHERE c.relkind = 'i'
-       AND n.nspname = ANY(${o.schemas})
-       AND (c.relname LIKE '%\_ccnew' OR c.relname LIKE '%\_ccold'
-            OR c.relname ~ '_cc(new|old)[0-9]+$')
-       AND NOT i.indisprimary
-       AND NOT EXISTS (SELECT 1 FROM pg_constraint con WHERE con.conindid = c.oid)
-  `;
-  for (const orph of orphans) {
-    try {
-      await sql.unsafe(
-        `DROP INDEX CONCURRENTLY IF EXISTS "${orph.schema_name}"."${orph.index_name}"`,
-      );
-      result.orphansDropped.push(`${orph.schema_name}.${orph.index_name}`);
-    } catch {
-      // A leftover we cannot drop is not worth failing the sweep over.
-    }
   }
 
   // --- Guard 2: a concurrent rebuild needs room for a full second copy of the index. ---

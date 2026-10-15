@@ -17,6 +17,7 @@ import {
   Check,
   ChevronDown,
   FlaskConical,
+  FileText,
   Gauge,
   GitBranch,
   GraduationCap,
@@ -47,7 +48,7 @@ import { ALL_HARNESSES_OPTION, resolveAdvHarnessSelection } from './adv-harness-
 import { useShortcutAction } from '@/lib/hotkeys';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
-import { usePathname, useSearchParams } from '@/lib/router-compat/navigation';
+import { usePathname, useRouter, useSearchParams } from '@/lib/router-compat/navigation';
 import { isPortalEmbedLocation } from '@papercusp/operator-core/lib/portal-embed';
 import { CATEGORICAL } from '@/app/harness/theme';
 // PotsRunningPill ("▶ N POT running") was the first pill in this strip until
@@ -725,7 +726,9 @@ export function useAdvScopeShortcuts({
           ? slugs[0]
           : slugs[slugs.length - 1]
         : slugs[(idx + dir + slugs.length) % slugs.length];
-    if (!next || next === activeSlug) return;
+    // All Pots retains the last slug. A one-pot list must still leave that
+    // scope even when the shortcut selects the same retained slug.
+    if (!next || (!allMode && next === activeSlug)) return;
     if (allMode) await setScopeMode('expanded');
     await setActiveSlug(next);
     await setActiveHarness(null);
@@ -767,6 +770,7 @@ export function AdvScopeProvider({ children }: { children: React.ReactNode }) {
  * bodies (AdvPotBar).
  */
 export default function AdvShell({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
   const pathname = usePathname() ?? '';
   const searchParams = useSearchParams();
   const portalEmbed = isPortalEmbedLocation(pathname, searchParams.toString());
@@ -998,6 +1002,7 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
   // Health is flag-gated (SYSTEM_HEALTH_TAB, default ON): hide its strip entry
   // when off (the kill-switch — the resolver/tick also no-op).
   const healthOn = useFlag(FLAGS.SYSTEM_HEALTH_TAB);
+  const reportsLibraryOn = useFlag(FLAGS.REPORTS_LIBRARY);
   const baseVisibleTabs = visibleAdvTabs(allMode).filter((tab) => tab.id !== 'health' || healthOn);
   // Under "All Pots" the per-pot tabs are normally hidden from the strip. But if
   // the user flips to "All" while parked ON a per-pot tab, KEEP that tab pinned +
@@ -1161,6 +1166,10 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
                 tabs={secondaryTabs}
                 recentIds={recentSecondaryTabs}
                 activeTab={renderedActiveTab}
+                onOpenReports={reportsLibraryOn ? () => {
+                  setMoreOpen(false);
+                  router.push('/reports');
+                } : undefined}
                 onSelect={(id) => {
                   void setActiveTab(id);
                   setMoreOpen(false);
@@ -1707,12 +1716,14 @@ function AdvMoreMenu({
   recentIds,
   activeTab,
   onSelect,
+  onOpenReports,
 }: {
   groups: typeof SECONDARY_TAB_GROUPS;
   tabs: AdvTabDef[];
   recentIds: AdvTabId[];
   activeTab: AdvTabId;
   onSelect: (id: AdvTabId) => void;
+  onOpenReports?: () => void;
 }) {
   // Keyed explicitly by the full AdvTabId (not the narrower Exclude<…,'prs'>
   // TS would otherwise infer from `tabs`): recentIds/group.tabIds are typed
@@ -1739,12 +1750,19 @@ function AdvMoreMenu({
         )}
         {groups.map((group) => {
           const groupTabs = group.tabIds.map((id) => byId.get(id)).filter((t): t is AdvTabDef => !!t);
-          if (groupTabs.length === 0) return null;
+          const showReports = group.id === 'insights' && !!onOpenReports;
+          if (groupTabs.length === 0 && !showReports) return null;
           return (
             <CmdK.Group key={group.id} heading={group.label} className="pc-advshell__more-group">
               {groupTabs.map((t) => (
                 <AdvMoreMenuItem key={t.id} tab={t} active={t.id === activeTab} onSelect={onSelect} />
               ))}
+              {showReports && (
+                <CmdK.Item value="Reports" onSelect={onOpenReports} className="pc-advshell__more-item">
+                  <FileText size={13} aria-hidden />
+                  <span>Reports</span>
+                </CmdK.Item>
+              )}
             </CmdK.Group>
           );
         })}

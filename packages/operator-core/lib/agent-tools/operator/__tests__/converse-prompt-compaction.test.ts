@@ -10,6 +10,7 @@
  * sibling converse-prompt-surface.test.ts mocking style.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+vi.mock('../../../degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
 
 const h = vi.hoisted(() => ({
   prefs: null as Record<string, unknown> | null,

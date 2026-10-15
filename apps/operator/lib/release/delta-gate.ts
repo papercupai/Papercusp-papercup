@@ -80,6 +80,7 @@ export interface ScenarioVerdict {
 }
 
 export interface DeltaGateDecision {
+  replay?: import('@papercusp/operator-core/lib/release/gate-hygiene-split').GateDecisionReplay;
   action: DeltaGateAction;
   reasons: string[];
   summary: string;
@@ -235,8 +236,13 @@ export async function runDeltaGate(
   candidateSha: string | undefined,
   io: DeltaGateIO,
 ): Promise<DeltaGateDecision> {
+  const decide = (flagEnabled: boolean, verdicts: ScenarioVerdict[]) => {
+    const input = { flagEnabled, verdicts, now: io.now() };
+    const decision = evaluateDeltaGate(input, policy, candidateSha);
+    return { ...decision, replay: captureGateDecisionReplay('delta', [input, policy, candidateSha], decision) };
+  };
   if (!policy.enabled) {
-    return evaluateDeltaGate({ flagEnabled: false, verdicts: [], now: io.now() }, policy, candidateSha);
+    return decide(false, []);
   }
   let flagEnabled = false;
   try {
@@ -246,7 +252,7 @@ export async function runDeltaGate(
     flagEnabled = true;
   }
   if (!flagEnabled) {
-    return evaluateDeltaGate({ flagEnabled: false, verdicts: [], now: io.now() }, policy, candidateSha);
+    return decide(false, []);
   }
   let verdicts: ScenarioVerdict[] = [];
   try {
@@ -256,5 +262,7 @@ export async function runDeltaGate(
     // an unverified opt-in.
     verdicts = [];
   }
-  return evaluateDeltaGate({ flagEnabled, verdicts, now: io.now() }, policy, candidateSha);
+  return decide(flagEnabled, verdicts);
 }
+
+import { captureGateDecisionReplay } from '@papercusp/operator-core/lib/release/gate-hygiene-split';

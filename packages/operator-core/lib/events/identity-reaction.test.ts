@@ -119,6 +119,7 @@ function wearer(over: Partial<IdentityWearer> & {
     ownerId: OWNER, workspaceId: WS, role: IDENTITY_WEARER_ROLE, harnessSlug: 'papercusp', revisionTag: TAG,
     rules: {
       applied: { specificationRevision: TAG.padEnd(64, '0'), stateRevision: 's1' },
+      packagePins: [],
       pins: { rules: [{ identityId: 'ops-identity', pinRef, rule }], unreadable: [] },
       sync: { rules: [], unreadable: [] },
       declaredClassNeeds,

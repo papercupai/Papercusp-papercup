@@ -139,6 +139,7 @@ function issue(p: Partial<EngineerIssue> & { id: string; title: string }): Engin
     assignedBy: null,
     assignedAt: null,
     payload: null,
+    parent: null,
     foundDuring: null,
     linkedFeatureId: null,
     createdBy: null,
@@ -150,10 +151,12 @@ function issue(p: Partial<EngineerIssue> & { id: string; title: string }): Engin
     origin: 'local',
     terminalOwner: null,
     terminalCompletionRef: null,
+    completionAuthority: null,
     featureOrder: null,
     createdAt: '2026-06-01T00:00:00Z',
     updatedAt: '2026-06-01T00:00:00Z',
     closedAt: null,
+    goalId: null,
     ...p,
   };
 }

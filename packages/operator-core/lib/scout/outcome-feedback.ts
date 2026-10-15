@@ -35,6 +35,7 @@
  */
 
 import type { ChangeFeedEntry } from '../curation/change-feed';
+import { CHANGE_FEED_COMPLETION_STATUSES } from '../curation/change-feed-deps';
 import { CREATIVE_LENSES, type CreativeLens } from './types';
 
 /**
@@ -56,7 +57,22 @@ export type IdeaOutcome =
   /** The routed artifact reached a losing terminal state (gym rejected / superseded). */
   | 'lost'
   /** Not yet terminal in the change feed — outcome still unknown. */
-  | 'pending';
+  | 'pending'
+  /**
+   * Can never reach a terminal verdict (plan scout-su-ideate-pipeline-gaps-2026-10-08
+   * P-002): the idea's rail is PAUSED (paused-rails.ts) and the artifact has no
+   * terminal record, or the ref is a legacy shared gym ref whose per-idea verdict is
+   * unknowable. Excluded from `routed`, `pending` and every win-rate denominator.
+   * Reversible: the refresh sweep re-classifies the whole corpus, so an idea on a
+   * rail that resumes reads 'pending' again on the next refresh.
+   */
+  | 'unresolvable';
+
+/** Options for {@link classifyIdeaOutcome}. */
+export interface ClassifyIdeaOutcomeOptions {
+  /** Rails that are paused right now ({@link readPausedRails} in paused-rails.ts). */
+  pausedRails?: ReadonlySet<RoutedRail>;
+}
 
 /** A typed feedback-driven successor filing. `readRoutedIdeas` derives these from
  * coord_links `revises` edges; release scoring still validates origin + chronology. */
@@ -132,6 +148,19 @@ export interface RoutedIdeaProvenance {
   createdBy?: string;
   /** Typed successor filings pointing back to this routed idea via rel='revises'. */
   feedbackRevisions?: FeedbackRevision[];
+  /**
+   * The ledger's CACHED outcome (column `outcome`, written by refreshScoutOutcomes).
+   * Absent when the row was never checked. Read by {@link tallyRoutedOutcomes} for the
+   * success-metrics outcome tally; the lens-weight math re-classifies from the feed.
+   */
+  outcome?: IdeaOutcome;
+  /**
+   * Ledger `origin` (scout / su-ideate / dream / agent-review / ...), mapped by
+   * readRoutedIdeas. Absent on in-memory provenance built at cycle time (always
+   * scout). success-metrics uses it to keep agent-review rows out of every ideation
+   * bar and report them in their own bucket (scout-su-ideate-pipeline-gaps P-008 / R-18).
+   */
+  origin?: string;
 }
 
 /**
@@ -153,6 +182,12 @@ export interface LensOutcomeStat<L extends string = CreativeLens> {
   /** Loss mass — fractional under grading, see {@link LensOutcomeStat.won}. */
   lost: number;
   pending: number;
+  /**
+   * Ungraded ideas from this lens whose outcome is 'unresolvable' (paused rail or a
+   * legacy shared gym ref, P-002). NOT part of `routed`: they can never decide, so
+   * they are kept out of every denominator and only reported here.
+   */
+  unresolvable: number;
   /** won / (won + lost) over DECIDED ideas only; null when nothing decided yet. */
   winRate: number | null;
   /**
@@ -226,18 +261,23 @@ export interface LensWeightOptions {
 export function classifyIdeaOutcome(
   prov: RoutedIdeaProvenance,
   completionByRef: ReadonlyMap<string, ChangeFeedEntry>,
+  opts: ClassifyIdeaOutcomeOptions = {},
 ): IdeaOutcome {
   // D-003 / P-002 (blender-loop-repair-2026-08-16, EI-20597534704604481): a
   // LEGACY shared gym ref (`gym:SP-NNN` — the pre-batch-stamp per-cycle counter
   // ids) joined MANY ideas onto ONE frozen niche verdict: 600 of 746 decided
   // outcomes were copies of 4 dead July verdicts, flattening lens weights to
-  // near-uniform. Their true per-idea outcomes are unknowable, so they classify
-  // 'pending' permanently — which also makes the next refreshScoutOutcomes
-  // batch-UPDATE repair the 600 poisoned cached rows in place. Batch-stamped
-  // ids (`gym:SP-<stamp>-NNN`, recombine.ts) do not match.
-  if (prov.rail === 'gym' && /^gym:SP-\d+$/.test(prov.routedRef)) return 'pending';
+  // near-uniform. Their true per-idea outcomes are unknowable. They classified
+  // 'pending' until scout-su-ideate-pipeline-gaps-2026-10-08 P-002, which made
+  // them 'unresolvable': 'pending' claimed they were still deciding, and kept
+  // 607 of them in every pending count. Batch-stamped ids
+  // (`gym:SP-<stamp>-NNN`, recombine.ts) do not match.
+  if (prov.rail === 'gym' && /^gym:SP-\d+$/.test(prov.routedRef)) return 'unresolvable';
   const entry = completionByRef.get(prov.routedRef);
-  if (!entry) return 'pending';
+  // P-002: an idea on a PAUSED rail with no terminal record can never decide. A
+  // terminal record that already exists still decides it (below): pausing a rail
+  // does not erase verdicts it reached before the pause.
+  if (!entry) return opts.pausedRails?.has(prov.rail) ? 'unresolvable' : 'pending';
   // instance (InstanceSubject / apiary) eval — reconciliation P-006: a genome variant
   // that the battery PROMOTED (beat the champion beyond the noise band + held the
   // meta-eval) won; any other decided verdict lost. Both eval subjects feed lens
@@ -277,7 +317,10 @@ export function classifyIdeaOutcome(
   // `winRate = won / (won + lost)` could not fall for any ungraded filing.
   // Human grading masked this for su-ideate (88% graded) but not for scout
   // (9% graded), which is where the 56 of those 63 rows sit.
-  if (entry.kind === 'completion' && isWorkItemLossStatus(gymStatusOf(entry))) return 'lost';
+  // WI-10007390: `rejected` is the tag workItemOutcomeTag emits for a winning
+  // STATUS that is not a winning OUTCOME (an improvement-hygiene close of a
+  // duplicate / aged-out filing) — a loss, like the true loss terminals.
+  if (entry.kind === 'completion' && isWorkItemLossTag(gymStatusOf(entry))) return 'lost';
   // plan-run: SPOF 5 / P-006 (autonomous-loop-prod-audit-2026-07-02) — a plan
   // routed by Scout that reaches the ABANDONED terminal (harness_plans
   // op_status='dropped', isTerminalStatus) must resolve 'lost', not sit
@@ -323,6 +366,68 @@ function isWorkItemLossStatus(status: string): boolean {
   return (WORK_ITEM_LOSS_STATUSES as readonly string[]).includes(status);
 }
 
+/**
+ * WI-10007390 — the completion-entry tag for a work item that reached a WINNING
+ * status without a winning OUTCOME: the improvement-hygiene sweep (hygiene.ts)
+ * closes duplicates and aged-out, never-claimed minor filings as `closed` and
+ * stamps `ideaLifecycle.triageDecision = 'reject'`. `closed` is in
+ * {@link CHANGE_FEED_COMPLETION_STATUSES}, so without this tag a rejected idea
+ * scored as a landed one (su-ideate) or sat pending (scout). One word, so
+ * {@link gymStatusOf}'s `Status: <word>` parse reads it back.
+ */
+export const WORK_ITEM_REJECTED_TAG = 'rejected';
+
+/** The `terminal_owner` the improvement-hygiene sweep stamps on its closes (hygiene.ts). */
+export const IMPROVEMENT_HYGIENE_OWNER = 'improvement-hygiene';
+
+/** True when a completion entry's status tag means the idea LOST. */
+function isWorkItemLossTag(tag: string): boolean {
+  return isWorkItemLossStatus(tag) || tag === WORK_ITEM_REJECTED_TAG;
+}
+
+/** The facts a ref-scoped work-item read needs to decide a `wi:` idea's fate. */
+export interface WorkItemTerminalFacts {
+  status: string | null | undefined;
+  terminalOwner?: string | null;
+  /** `payload.ideaLifecycle.triageDecision === 'reject'`. */
+  triageRejected?: boolean;
+}
+
+/**
+ * WI-10007390 — the ONE rule for what a routed `wi:` idea's work-item terminal
+ * means for the idea. Returns the `Status: <tag>` a ref-scoped read emits, or
+ * `null` for "emit no entry" (the idea stays pending).
+ *
+ * - a loss status (`dropped` / `deprecated`) → that status (lost);
+ * - a winning status closed by the hygiene sweep, or triage-rejected →
+ *   {@link WORK_ITEM_REJECTED_TAG} (lost);
+ * - any other winning status → the status (won). The terminal status is the
+ *   idea's fate (su-ideate-learning-substrate P-016); completion-record
+ *   metadata is not required, because the close routes write it to different
+ *   columns (`payload._completionEvidence` vs `terminal_completion_ref`) and
+ *   legacy closes wrote neither;
+ * - a live status → `null` (no entry; the idea stays pending).
+ *
+ * Before this rule the scout read required `terminal_completion_ref`, which a
+ * `work_items:complete` close never writes, so 340 scout ideas on terminal
+ * items read pending (205 done, 135 hygiene-closed) and scout recorded 2 wins
+ * in total; the su-ideate read had no hygiene exception, so 46 hygiene closes
+ * counted as wins.
+ */
+export function workItemOutcomeTag(facts: WorkItemTerminalFacts): string | null {
+  const status = (facts.status ?? '').trim().toLowerCase();
+  if (isWorkItemLossStatus(status)) return status;
+  if (!(CHANGE_FEED_COMPLETION_STATUSES as readonly string[]).includes(status)) return null;
+  if (facts.terminalOwner === IMPROVEMENT_HYGIENE_OWNER || facts.triageRejected) return WORK_ITEM_REJECTED_TAG;
+  return status;
+}
+
+/** The idea outcome a {@link workItemOutcomeTag} result settles, or null when it settles nothing. */
+export function outcomeOfWorkItemTag(tag: string | null): Exclude<IdeaOutcome, 'pending'> | null {
+  if (tag === null) return null;
+  return isWorkItemLossTag(tag) ? 'lost' : 'won';
+}
+
 /** Extract a status/decision label from a change-feed entry's detail ("Status: <x>") or title. */
 function gymStatusOf(entry: ChangeFeedEntry): string {
   const fromDetail = entry.detail?.match(/status:\s*([a-z]+)/i)?.[1];
@@ -333,7 +438,59 @@ function gymStatusOf(entry: ChangeFeedEntry): string {
 
 /** Empty stat for a lens with no routed ideas (neutral, floor-eligible). */
 function emptyStat<L extends string>(lens: L): LensOutcomeStat<L> {
-  return { lens, routed: 0, won: 0, lost: 0, pending: 0, winRate: null, weight: 0 };
+  return { lens, routed: 0, won: 0, lost: 0, pending: 0, unresolvable: 0, winRate: null, weight: 0 };
+}
+
+/**
+ * Outcome tally over a set of routed ideas, read from each idea's CACHED ledger
+ * outcome (plan scout-su-ideate-pipeline-gaps-2026-10-08 P-002 / R-3). An
+ * 'unresolvable' idea, or an unchecked/pending idea on a PAUSED rail, is counted in
+ * `unresolvable` only: never in `routed`, `pending`, `decided` or the win-rate
+ * denominator. Grade-blind on purpose, like the ledger `outcome` column it reads.
+ */
+export interface RoutedOutcomeTally {
+  /** Ideas that can still decide: won + lost + pending. */
+  routed: number;
+  won: number;
+  lost: number;
+  pending: number;
+  /** Ideas that can never decide (paused rail / legacy gym ref). Excluded from every denominator. */
+  unresolvable: number;
+  /** won + lost. */
+  decided: number;
+  /** won / decided; null when nothing is decided. */
+  winRate: number | null;
+}
+
+/** Pure tally of cached outcomes; see {@link RoutedOutcomeTally}. */
+export function tallyRoutedOutcomes(
+  ideas: readonly RoutedIdeaProvenance[],
+  opts: ClassifyIdeaOutcomeOptions = {},
+): RoutedOutcomeTally {
+  let won = 0;
+  let lost = 0;
+  let pending = 0;
+  let unresolvable = 0;
+  for (const idea of ideas) {
+    const cached = idea.outcome ?? 'pending';
+    if (cached === 'won') won += 1;
+    else if (cached === 'lost') lost += 1;
+    else if (cached === 'unresolvable') unresolvable += 1;
+    // A pending/unchecked row on a paused rail is unresolvable even before the next
+    // refresh re-stamps the cached column — the tally must not lag the pause.
+    else if (opts.pausedRails?.has(idea.rail)) unresolvable += 1;
+    else pending += 1;
+  }
+  const decided = won + lost;
+  return {
+    routed: won + lost + pending,
+    won,
+    lost,
+    pending,
+    unresolvable,
+    decided,
+    winRate: decided > 0 ? won / decided : null,
+  };
 }
 
 /**
@@ -373,15 +530,50 @@ function validGradeOf(prov: RoutedIdeaProvenance): number | null {
 export function computeLensOutcomes<L extends string = CreativeLens>(
   provenance: readonly RoutedIdeaProvenance[],
   completions: readonly ChangeFeedEntry[],
-  opts: LensWeightOptions & { lenses?: readonly L[] } = {},
+  opts: LensWeightOptions & { lenses?: readonly L[] } & ClassifyIdeaOutcomeOptions = {},
 ): LensOutcomeReport<L> {
-  const lenses = opts.lenses ?? (CREATIVE_LENSES as readonly string[] as readonly L[]);
   const completionByRef = new Map<string, ChangeFeedEntry>();
   for (const e of completions) {
     // First-wins matches gatherCompletions' dedup; refs are unique per artifact.
     if (!completionByRef.has(e.ref)) completionByRef.set(e.ref, e);
   }
+  return lensOutcomeReportFrom(provenance, (prov) => classifyIdeaOutcome(prov, completionByRef, opts), opts);
+}
 
+/**
+ * The same per-lens report, recomputed from each row's CACHED outcome (the ledger
+ * `outcome` column the corrected resolver wrote in refreshScoutOutcomes) instead of a
+ * fresh change-feed join. A missing/'pending' cache still passes through
+ * {@link classifyIdeaOutcome} with no feed, so paused-rail and legacy-gym rows read
+ * 'unresolvable' exactly as the resolver reads them.
+ *
+ * scout-su-ideate-pipeline-gaps-2026-10-08 P-008 / R-19: this is the independent
+ * recompute that proves a persisted lens weight comes from the corrected outcomes —
+ * refreshScoutOutcomes writes the cache and the weights from ONE classification, so the
+ * two must agree; a disagreement means a weight was derived from an outcome the resolver
+ * reads differently.
+ */
+export function computeLensOutcomesFromCached<L extends string = CreativeLens>(
+  provenance: readonly RoutedIdeaProvenance[],
+  opts: LensWeightOptions & { lenses?: readonly L[] } & ClassifyIdeaOutcomeOptions = {},
+): LensOutcomeReport<L> {
+  const noFeed = new Map<string, ChangeFeedEntry>();
+  return lensOutcomeReportFrom(
+    provenance,
+    (prov) =>
+      prov.outcome === 'won' || prov.outcome === 'lost' || prov.outcome === 'unresolvable'
+        ? prov.outcome
+        : classifyIdeaOutcome(prov, noFeed, opts),
+    opts,
+  );
+}
+
+function lensOutcomeReportFrom<L extends string>(
+  provenance: readonly RoutedIdeaProvenance[],
+  outcomeOf: (prov: RoutedIdeaProvenance) => IdeaOutcome,
+  opts: LensWeightOptions & { lenses?: readonly L[] },
+): LensOutcomeReport<L> {
+  const lenses = opts.lenses ?? (CREATIVE_LENSES as readonly string[] as readonly L[]);
   const byLens = Object.fromEntries(
     lenses.map((l) => [l, emptyStat(l)]),
   ) as Record<L, LensOutcomeStat<L>>;
@@ -391,8 +583,15 @@ export function computeLensOutcomes<L extends string = CreativeLens>(
     // lens outside the roster falls through to the skip, never a type hole.
     const stat = (byLens as Record<string, LensOutcomeStat<L> | undefined>)[prov.lens];
     if (!stat) continue; // ignore an unknown/sentinel lens rather than throwing
-    stat.routed += 1;
     const grade = validGradeOf(prov);
+    // P-002: an ungraded idea that can never decide stays out of `routed` and every
+    // denominator. A graded one still counts: the grade decides it (C-5 / D-002).
+    const feedOutcome = grade === null ? outcomeOf(prov) : null;
+    if (feedOutcome === 'unresolvable') {
+      stat.unresolvable += 1;
+      continue;
+    }
+    stat.routed += 1;
     if (grade !== null) {
       // C-5 / D-002: a grade DOMINATES the change-feed outcome — the graded
       // idea is decided by the grader regardless of feed state (a graded
@@ -401,12 +600,9 @@ export function computeLensOutcomes<L extends string = CreativeLens>(
       const credit = winCredit(grade);
       stat.won += credit;
       stat.lost += 1 - credit;
-    } else {
-      const outcome = classifyIdeaOutcome(prov, completionByRef);
-      if (outcome === 'won') stat.won += 1;
-      else if (outcome === 'lost') stat.lost += 1;
-      else stat.pending += 1;
-    }
+    } else if (feedOutcome === 'won') stat.won += 1;
+    else if (feedOutcome === 'lost') stat.lost += 1;
+    else stat.pending += 1;
   }
 
   for (const lens of lenses) {

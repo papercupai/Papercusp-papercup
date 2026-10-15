@@ -67,9 +67,13 @@ describe('Tool type extensions', () => {
         architect: { perRun: 5 },
       },
       timeoutSec: 60,
-      largeOutput: true,
+      // `largeOutput` is a transport flag on the MCP exposure (ToolExposureMcp), not a
+      // top-level ToolDefinition field. A stale top-level copy passed here for months because
+      // vitest never typechecks; the package tsconfig (WI-10006702) is what now catches it.
+      expose: { mcp: { name: 'repomix.pack', largeOutput: true } },
     };
     expect(repomixPack.name).toBe('repomix.pack');
+    expect(repomixPack.expose?.mcp?.largeOutput).toBe(true);
     expect(repomixPack.roles).toContain('worker');
     expect(repomixPack.rolesQuota?.worker?.perChunk).toBe(1);
   });

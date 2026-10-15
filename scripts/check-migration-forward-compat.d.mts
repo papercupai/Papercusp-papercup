@@ -22,6 +22,21 @@ export function isEnforcedMigrationFile(file: any): boolean;
  * @returns {boolean}
  */
 export function isMigrationArtifactFile(file: string): boolean;
+/**
+ * The artifacts the BLOCKING destructive-DDL scan enforces on, sorted by
+ * migration number: armed `NNN-*.sql` plus `.sql.PENDING-CODE-DEPLOY` (parking
+ * an applied migration must not evade the scan), never `.sql.DRAFT`. A draft is
+ * the authoring window: the runner never applies it, the PostToolUse nudge is
+ * what covers it, and only the draft dependency check below reads it. Enforcing
+ * DDL on it froze staging-sync on a committed draft (WI-6554700010008502).
+ *
+ * @param {string[]} files
+ * @returns {{ file: string, num: number }[]}
+ */
+export function selectDdlEnforcedArtifacts(files: string[]): {
+    file: string;
+    num: number;
+}[];
 /** True when `file` is an enforced migration that has not been armed yet. */
 export function isDraftMigrationFile(file: any): boolean;
 /** The sidecar filename for a migration, keyed on its EFFECTIVE `.sql` name. */

@@ -120,7 +120,7 @@ export default defineTool({
         .min(1)
         .optional()
         .describe(
-          'the cup to read (its session/owner id). REQUIRED-EXACTLY-ONE of cupId | fleet — both are marked optional here only because either may be the one you pass; a call with NEITHER, or with BOTH, is rejected',
+          'the concrete session/owner id to read. The literal "self" is not a selector here; use coord:whoami to get your ownerId. REQUIRED-EXACTLY-ONE of cupId | fleet — both are marked optional here only because either may be the one you pass; a call with NEITHER, or with BOTH, is rejected',
         ),
       fleet: z
         .string()
@@ -163,9 +163,18 @@ export default defineTool({
     }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
+    const requestedCupId = args.cupId;
+    if (requestedCupId?.trim() === 'self') {
+      throw Object.assign(
+        new Error(
+          `cupId must be a concrete session/owner ID, not the literal "self". To read your own claim spec, use { cupId: '${ident.ownerId}' } for this session.`,
+        ),
+        { code: 'invalid_claim_spec_selector' },
+      );
+    }
     const workspaceId = resolveClaimSpecWorkspace(args.workspace ?? ident.workspaceId);
     const fleetSlug = args.fleet ? args.fleet.trim() : null;
-    const targetCupId = fleetSlug ? fleetSpecBeeKey(fleetSlug) : (args.cupId as string);
+    const targetCupId = fleetSlug ? fleetSpecBeeKey(fleetSlug) : (requestedCupId as string);
     const record = await getClaimSpecRecord({ cupId: targetCupId, workspaceId });
 
     // EI-20304090779240149: a fleet read answers about the FLEET, and its envelope is

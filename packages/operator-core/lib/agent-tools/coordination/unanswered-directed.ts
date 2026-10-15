@@ -424,6 +424,8 @@ export async function fetchUnansweredDirected(
     nowMs?: number;
     lookbackMs?: number;
     perRecipientCap?: number;
+    /** Explicit workspace for background sweeps that scan multiple coord partitions. */
+    workspaceId?: string;
     /** DI seam (unit tests): override the positive death-evidence read used for
      *  the EI-20085805220385722 live/stale split. */
     endedSendersFn?: EndedSendersFn;
@@ -435,7 +437,7 @@ export async function fetchUnansweredDirected(
   const cap = opts.perRecipientCap ?? UNANSWERED_NEWEST_CAP;
   const senderCap = UNANSWERED_SENDER_CAP;
   const sql = coordSql();
-  const workspaceId = coordWorkspaceId();
+  const workspaceId = opts.workspaceId ?? coordWorkspaceId();
   // P-013: an expectEffect directive is answered by the named side effect itself,
   // even when the recipient never sends a reply. Resolve these through the same
   // actuation reader used by fleet:leader-brief, then exclude only proven-satisfied
@@ -443,298 +445,217 @@ export async function fetchUnansweredDirected(
   const satisfiedEffectMsgIds = await fetchSatisfiedDirectiveMessageIds(recipientIds, {
     nowMs,
     lookbackMs: opts.lookbackMs,
+    workspaceId,
   });
-  const rows = await sql<UnansweredDirectedRow[]>`
-    -- WI-6853 / P-017 + WI-6875 — ONE scan of coord_event_log feeds every correlated lookup
-    -- this statement used to re-scan the table for.
+  // P-005 (plan papercusp-performance-audit-2026-10-12, decision D-002): JIT is off for
+  // this one statement. Its estimated cost (~750k on the live box, inflated by
+  // jsonb-expression misestimates) is far above jit_above_cost, so every bulk call paid
+  // 110-180 ms of LLVM code emission for a statement that executes in 150-380 ms.
+  // SET LOCAL needs a transaction; the setting ends with it.
+  const rows = await sql.begin(async (tx) => {
+    await tx`SET LOCAL jit = off`;
+    return await tx<UnansweredDirectedRow[]>`
+    -- P-005 (papercusp-performance-audit-2026-10-12, D-002): start from the ASKS and probe
+    -- for their answers, so the cost grows with the directed asks addressed to the roster,
+    -- not with everything the roster ever wrote.
     --
-    -- THE ORIGINAL PATHOLOGY (all three sites shared it): PostgreSQL has NO STATISTICS for
-    -- jsonb expressions, so a filter on \`body->>'from'\` / \`body->>'related_msg_id'\` that
-    -- actually discards ~75k rows is estimated at 1 row. Believing each probe trivial, the
-    -- planner happily re-ran it per candidate row. Measured on the live workspace:
-    --   * the \`unanswered\` loose-reply count — 14 loops x 75,192 rows removed (~1.05M rows
-    --     examined, 129ms/loop), 76% of the statement's total runtime;
-    --   * \`open_asks\`' exact-threaded-reply NOT EXISTS — 75,372 rows, ~148ms;
-    --   * \`directed\`'s WI-4537(c) ACK-PING-PONG EXISTS — 75,422 rows, ~157ms.
+    -- WHAT THIS REPLACED. WI-6853 / WI-6875 (P-017) materialized every message ever
+    -- authored by a roster member (a roster_authored CTE) and anti-joined the asks against
+    -- it, because the planner trusted a 1-row estimate for jsonb-expression filters and
+    -- re-ran each correlated probe over ~75k rows. That removed the per-row rescans but made
+    -- the cost track the roster's whole authored history. Measured 2026-10-12 on the live
+    -- box: 2,880 ms mean over 26,430 calls (pg_stat_statements); top-100 roster 1,237 ms,
+    -- the roster_authored scan alone 29,458 rows and 109,798 buffers.
     --
-    -- INDEXES CANNOT FIX THIS, and that is the counter-intuitive part worth recording: two
-    -- purpose-built partial indexes (on (workspace_id, (body->>'from'), ts), and on the
-    -- expectsReply predicate) were built, ANALYZEd and EXPLAINed transactionally, and the
-    -- planner ignored BOTH — it already believed the scans returned one row. When the estimate
-    -- and the actual diverge by ~5 orders of magnitude, the ESTIMATE is the bug, so the fix has
-    -- to remove the per-row correlation rather than add another access path.
+    -- HOW THIS FORM AVOIDS BOTH TRAPS.
+    --   * Every lookup is a correlated LATERAL fenced with OFFSET 0, so the planner cannot
+    --     flatten it into a join and choose a hash join over every reply-shaped row (unfenced
+    --     it did: 62,654 rows, 629 ms). Each probe is an index lookup keyed by the ask:
+    --       the asks       -> coord_event_log_msgs_to_expects_reply_gin (migration 1479)
+    --       replies        -> coord_event_log_related_msg_id_idx
+    --       ack ping-pong  -> coord_event_log_msg_id_idx (the msg_id column equals
+    --                         body->>'msg_id' on every message row)
+    --       loose replies  -> coord_event_log_msgs_from_idx plus
+    --                         coord_event_log_msgs_from_system_session_idx (migration 1479),
+    --                         only for recipients that still have open asks
+    --   * Each body is decompressed ONCE. Bodies average ~2.5 kB and are stored
+    --     pglz-compressed, and every body->>'x' decompresses the whole value again (~4 us).
+    --     LATERAL (SELECT body || '{}'::jsonb ... OFFSET 0) yields one decompressed copy and
+    --     the fields are read from it. Predicates a partial index must prove (expectsReply,
+    --     the to-array overlap) stay on the base column.
     --
-    -- THE ROSTER PRE-FILTER is what makes one scan enough, and it is exactly
-    -- equivalence-preserving rather than a heuristic narrowing. Every one of these lookups
-    -- requires the row to be authored by a RECIPIENT we are asking about
-    -- (\`= o.recipient\` / \`= d.recipient\` / \`= r\`), and those are all already constrained by
-    -- \`r = ANY(recipientIds)\`. A row authored by anyone outside the roster could never have
-    -- satisfied any of them, so dropping it cannot change a verdict. Live selectivity:
-    -- 11,093 of 75,357 rows (6.8x); only 1,283 of those carry a related_msg_id (59x).
+    -- SEMANTICS ARE UNCHANGED, including what is deliberately NOT time-bounded: the
+    -- threaded-reply and ack ping-pong lookups have no time bound, and a message's 'ts' is
+    -- supplied by its sender (peer hosts' clocks included), so nothing here assumes the
+    -- insertion-time ts column tracks body ts. Loose replies keep their lookback and are also
+    -- limited to rows no older than the pair's oldest open ask, which the count below already
+    -- requires (lr.ts_ms >= o.ts_ms). A 'system:<role>/<session>' sender still counts as
+    -- <session> (identity.ts senderMatchesFilter); 'body ? related_msg_id' stays a
+    -- key-presence test.
     --
-    -- NOT time-bounded, deliberately. The two EXISTS sites are not bounded in the original,
-    -- and a message's 'ts' is SENDER-SUPPLIED in the body — so inferring "a reply must postdate
-    -- its ask" would import an assumption the current semantics do not make. \`loose_replies\`
-    -- below re-applies its own lookback, which the original DOES have.
-    --
-    -- AS MATERIALIZED is REQUIRED on both: with a single reference PG would inline the CTE and
-    -- re-scan per loop, reinstating the exact cost being removed.
-    --
-    -- Verified equivalent against live data before landing, at every level: loose_replies
-    -- (1,058 = 1,058 rows), the open_asks set (20 = 20), and the end-to-end aggregate
-    -- (9 = 9 recipients, 16 = 16 total) — EXCEPT empty in BOTH directions each time.
-    -- 2,545ms -> 985ms (P-017) -> 224ms (WI-6875), means of 3 paired runs.
-    WITH roster_authored AS MATERIALIZED (
-      SELECT ra.id,
-             ra.workspace_id,
-             ra.body->>'from'              AS from_id,
-             ra.body->>'msg_id'            AS msg_id,
-             ra.body->>'related_msg_id'    AS related_msg_id,
-             ra.body->'why'->>'goalRef'    AS goal_ref,
-             -- carried SEPARATELY from related_msg_id on purpose: \`body ? 'related_msg_id'\`
-             -- and \`body->>'related_msg_id' IS NOT NULL\` disagree when the key is present with
-             -- a JSON null value. Zero such rows today, but loose_replies' predicate is the
-             -- key-presence test, so it must stay the key-presence test.
-             ra.body ? 'related_msg_id'    AS has_related,
-             ra.body->'to'                 AS to_arr,
-             (ra.body->>'ts')::timestamptz AS ts,
-             (extract(epoch FROM (ra.body->>'ts')::timestamptz) * 1000)::bigint AS ts_ms
-        FROM harness_shared.coord_event_log ra
-       WHERE ra.workspace_id = ${workspaceId}
-         AND ra.surface = 'messages'
-         AND ra.body->>'from' = ANY(${recipientIds}::text[])
-    ),
-    -- The LOOSE-REPLY set — \`unanswered\` below needs, per open ask, "how many un-threaded
-    -- replies did this recipient send back to that sender after the ask". DERIVED from
-    -- roster_authored rather than scanning the table again (WI-6875): it is a strict subset of
-    -- it, so the second scan was pure duplication — removing it took 344ms -> 224ms and
-    -- 213,798 -> 164,639 buffers.
-    --
-    -- DISTINCT on the message id is a semantic guard, not a tidy-up, and note it is the
-    -- OPPOSITE of what the two EXISTS sites below want. The predicate it replaces is
-    -- \`body->'to' @> to_jsonb(ARRAY[o.from_id])\` — a per-MESSAGE containment test, so a message
-    -- whose 'to' array lists the same id twice counts ONCE. Unnesting with LATERAL would count
-    -- it twice and could silently clear an ask that is still open. The EXISTS sites only test
-    -- existence, where a duplicate cannot change the answer, so they take no DISTINCT.
-    --
-    -- The ts bound stays a TIMESTAMPTZ comparison; comparing the derived bigint ts_ms instead
-    -- would introduce truncation the original does not have.
-    loose_replies AS MATERIALIZED (
-      SELECT DISTINCT ra.id,
-             ra.workspace_id,
-             ra.from_id,
-             rt AS to_id,
-             (extract(epoch FROM ra.ts) * 1000)::bigint AS ts_ms
-        FROM roster_authored ra
-        CROSS JOIN LATERAL jsonb_array_elements_text(ra.to_arr) AS rt
-       WHERE NOT ra.has_related
-         AND jsonb_typeof(ra.to_arr) = 'array'
-         AND ra.ts >= to_timestamp(${sinceMs}::double precision / 1000)
-    ),
-    directed AS (
+    -- Verified 2026-10-12 against the previous form with identical bound parameters on the
+    -- live workspace: identical result rows for the top 20 / 50 / 100 recipients, at
+    -- 154 vs 352 ms, 266 vs 1,396 ms and 302-384 vs 1,251-1,994 ms (JIT off for both).
+    -- unanswered-directed-query-plan.integration.test.ts keeps the previous form as a frozen
+    -- oracle and asserts equivalence and the access paths.
+    WITH directed AS MATERIALIZED (
       SELECT
         e.id AS event_id,
         e.workspace_id,
-        e.body->>'msg_id' AS msg_id,
-        e.body->>'from' AS from_id,
-        e.body->>'summary' AS summary,
-        e.body->'why'->>'goalRef' AS goal_ref,
-        (extract(epoch FROM (e.body->>'ts')::timestamptz) * 1000)::bigint AS ts_ms,
+        eb.b->>'msg_id' AS msg_id,
+        eb.b->>'from' AS from_id,
+        eb.b->>'summary' AS summary,
+        eb.b->'why'->>'goalRef' AS goal_ref,
+        (extract(epoch FROM (eb.b->>'ts')::timestamptz) * 1000)::bigint AS ts_ms,
         r AS recipient
-        FROM harness_shared.coord_event_log e
-        CROSS JOIN LATERAL jsonb_array_elements_text(e.body->'to') AS r
-       WHERE e.workspace_id = ${workspaceId}
-         AND e.surface = 'messages'
-         -- WI-7048 ROW PRE-FILTER — load-bearing for the PLAN, not for the RESULT.
-         -- The real recipient test is \`r = ANY(recipientIds)\` below, on a value CROSS
-         -- JOIN LATERAL only produces AFTER the row is read, so no index can reach it and
-         -- this CTE was a full Parallel Seq Scan: 3,015,763 buffers / 1,988ms measured
-         -- 2026-08-31 against 442,827 rows. \`?|\` asks the same question of the ROW
-         -- ("does this 'to' array contain any of these ids"), which GIN can answer from
-         -- coord_event_log_msgs_to_gin (migration 1053): 85 buffers / 0.28ms.
-         --
-         -- EXACTLY EQUIVALENCE-PRESERVING, not a heuristic narrowing: a row can only
-         -- yield a matching \`r\` if its 'to' array contains one of these ids, so every row
-         -- this removes would have been discarded by the LATERAL filter anyway. Verified
-         -- as an identity on live data (100 = 100 rows, non-empty in both directions).
-         --
-         -- NOTE the surviving \`ts\` bound below does NOT bound this scan and never did:
-         -- \`body->>'ts'\` is SENDER-SUPPLIED text, so it is a post-scan filter on an
-         -- unindexable expression. Adding time bounds here is not the lever; this is.
-         AND e.body->'to' ?| ${recipientIds}::text[]
-         AND (e.body->>'kind' IS NULL OR e.body->>'kind' = 'message')
-         AND NOT (e.body ? 'audience')
-         AND jsonb_typeof(e.body->'to') = 'array'
-         AND r = ANY(${recipientIds}::text[])
-         AND e.body->>'from' IS DISTINCT FROM r
-         AND (e.body->>'msg_id' IS NULL OR NOT (e.body->>'msg_id' = ANY(${[...satisfiedEffectMsgIds]}::text[])))
-         AND (e.body->>'ts')::timestamptz >= to_timestamp(${sinceMs}::double precision / 1000)
-         -- WI-4553: only the SENDER can distinguish a question from an FYI.
-         -- Missing/false is the backwards-compatible non-obligation default.
-         AND (e.body->>'expectsReply') = 'true'
-         -- EI-19315474516256070: \`expects\` (string, D-048's REQUIRED coord:send field) and
-         -- \`expectsReply\` (legacy boolean, independently settable by any RAW sendMessage()
-         -- caller via \`opts.expectsReply\`) are two DIFFERENT envelope keys that can diverge —
-         -- the coord:send TOOL keeps them in lockstep (\`expectsReply = expects !== 'none'\`),
-         -- but a raw sendMessage() caller can pass BOTH \`expectsReply:true\` AND
-         -- \`extra:{ expects:'none' }\` (or have \`expects\` overwritten to 'none' by the
-         -- write-time machine-emitter stamp in messages.ts AFTER expectsReply was already set),
-         -- leaving a row that says "no reply wanted" and "reply wanted" at once. Measured live
-         -- 2026-08-02: exactly one such row in papercusp-workspace
-         -- (work_items/request_release.ts's release-request send, whose \`auto:true\` triggers the
-         -- write-time \`expects:'none'\` stamp even though it also passes \`expectsReply:true\`).
-         -- When the sender EXPLICITLY declared \`expects:'none'\`, that is the more specific,
-         -- more recent signal (D-048 supersedes the legacy field) and wins — a sender who said
-         -- "no reply needed" cannot be overridden by a stale/inconsistent boolean.
-         -- WI-7147: release requests are machine-lifecycle envelopes for
-         -- transport purposes, but carry a real reply deadline and reclaim /
-         -- escalation consequence. Keep this explicit obligation visible even
-         -- though the emitter stamps auto:true / expects:none.
-         AND ((e.body->>'expects') IS DISTINCT FROM 'none'
-              OR e.body->>'lifecycle' = 'release_request')
-         -- WI-4537 (a): machine LIFECYCLE chatter is not an obligation. sendMessage now
-         -- auto-stamps this for every machine sender (messages.ts), so it is reliable going
-         -- forward.
-         AND ((e.body->>'auto') IS DISTINCT FROM 'true'
-              OR e.body->>'lifecycle' = 'release_request')
-         -- WI-4537 (b): …and the SAME machine-sender rule again, structurally — because the
-         -- write-time stamp cannot reach the rows ALREADY written without it, and those are the
-         -- bulk of the noise today (~490 unflagged robot rows vs ~314 flagged). Shared pattern,
-         -- so this and the stamp can never disagree.
-         AND NOT (e.body->>'from' ~ ${MACHINE_SENDER_PATTERN})
-         -- WI-4537 (c): the ACK-PING-PONG. A message that is itself a REPLY to something the
-         -- RECIPIENT sent is an ANSWER arriving, not a question landing — yet it was counted as
-         -- a fresh obligation on the recipient, who could only clear it by acking the ack (whose
-         -- ack the peer would then owe…). 184 of 2791 unanswered rows fleet-wide were exactly
-         -- this: peers' "done ✓" / "Ack — confirmed" replies, logged forever as mail the asker
-         -- still owes an answer to.
-         -- WI-6875: reads the pre-materialized \`roster_authored\` above instead of re-scanning
-         -- coord_event_log (75,422 rows, ~157ms) per candidate row. Predicate set unchanged:
-         -- same author, same msg_id match, same absence of a time bound.
-         --
-         -- EI-22192594388203470: the ping-pong heuristic above is structural (does this message
-         -- REPLY to something the recipient sent?) and cannot tell an ack arriving from a NEW
-         -- decision request that happens to be threaded onto the recipient's own prior message —
-         -- e.g. B replies to A's directive with expects:'action', refusing it and asking A to pick
-         -- a different mechanism. That reply carries related_msg_id, so the structural rule alone
-         -- swallowed it as "answer arriving", and \`unanswered_only\` reported a confident 0 to A
-         -- while B sat genuinely blocked on a decision only A could make. An explicit expects:
-         -- 'action'/'answer' on the CANDIDATE message itself is the sender's OWN declaration that
-         -- this is a fresh ask, not an ack — it outranks the structural reply-chain heuristic, so
-         -- such a message is never swallowed here regardless of what it replies to. expects:'ack'
-         -- (or absent/'none', already filtered above) still ping-pongs as before.
-         AND NOT (
-           e.body ? 'related_msg_id'
-           AND (e.body->>'expects') IS DISTINCT FROM 'action'
-           AND (e.body->>'expects') IS DISTINCT FROM 'answer'
-           AND EXISTS (
-             SELECT 1 FROM roster_authored ra
-              WHERE ra.workspace_id = e.workspace_id
-                AND ra.msg_id = e.body->>'related_msg_id'
-                AND ra.from_id = r
-           )
-         )
+      FROM harness_shared.coord_event_log e
+      CROSS JOIN LATERAL (SELECT e.body || '{}'::jsonb AS b OFFSET 0) eb
+      CROSS JOIN LATERAL jsonb_array_elements_text(
+        CASE WHEN jsonb_typeof(eb.b->'to') = 'array' THEN eb.b->'to' ELSE '[]'::jsonb END
+      ) AS r
+      WHERE e.workspace_id = ${workspaceId}
+        AND e.surface = 'messages'
+        AND e.body->'to' ?| ${recipientIds}::text[]
+        AND (e.body->>'expectsReply') = 'true'
+        AND (eb.b->>'kind' IS NULL OR eb.b->>'kind' = 'message')
+        AND NOT (eb.b ? 'audience')
+        AND jsonb_typeof(eb.b->'to') = 'array'
+        AND r = ANY(${recipientIds}::text[])
+        AND eb.b->>'from' IS DISTINCT FROM r
+        AND (eb.b->>'msg_id' IS NULL OR NOT (eb.b->>'msg_id' = ANY(${[...satisfiedEffectMsgIds]}::text[])))
+        AND (eb.b->>'ts')::timestamptz >= to_timestamp(${sinceMs}::double precision / 1000)
+        AND ((eb.b->>'expects') IS DISTINCT FROM 'none'
+             OR eb.b->>'lifecycle' = 'release_request')
+        AND ((eb.b->>'auto') IS DISTINCT FROM 'true'
+             OR eb.b->>'lifecycle' = 'release_request')
+        AND NOT (eb.b->>'from' ~ ${MACHINE_SENDER_PATTERN})
+        -- WI-4537(c) ack ping-pong: a non-action, non-answer reply to something the
+        -- recipient itself sent is not a fresh ask.
+        AND NOT (
+          eb.b ? 'related_msg_id'
+          AND (eb.b->>'expects') IS DISTINCT FROM 'action'
+          AND (eb.b->>'expects') IS DISTINCT FROM 'answer'
+          AND EXISTS (
+            SELECT 1 FROM harness_shared.coord_event_log ra
+             WHERE ra.workspace_id = e.workspace_id
+               AND ra.msg_id = eb.b->>'related_msg_id'
+               AND ra.surface = 'messages'
+               AND CASE
+                     WHEN ra.body->>'from' LIKE 'system:%' AND strpos(ra.body->>'from', '/') > 0
+                     THEN substr(ra.body->>'from', strpos(ra.body->>'from', '/') + 1)
+                     ELSE ra.body->>'from'
+                   END = r
+          )
+        )
     ),
-    -- EI-22458045233456597: one substantive reply can answer a cluster of
-    -- directed asks about the same stable goal/subject. "why.goalRef" is the
-    -- persisted one-goal pointer stamped by coord:send (explicitly or from the
-    -- sender's current goal); only an exact threaded reply to an ask in that
-    -- cluster gets this coalescing treatment. The reply timestamp/event id
-    -- keeps a later ask in the same goal open.
+    -- Threaded replies (related_msg_id = the ask) written by the ask's recipient.
+    replies AS MATERIALIZED (
+      SELECT rr.reply_event_id, d.msg_id AS asked_msg_id, d.recipient, rr.goal_ref, rr.reply_ts_ms
+        FROM (SELECT DISTINCT workspace_id, msg_id, recipient FROM directed WHERE msg_id IS NOT NULL) d
+        CROSS JOIN LATERAL (
+          SELECT ra.id AS reply_event_id,
+                 rb.b->'why'->>'goalRef' AS goal_ref,
+                 (extract(epoch FROM (rb.b->>'ts')::timestamptz) * 1000)::bigint AS reply_ts_ms
+            FROM harness_shared.coord_event_log ra
+            CROSS JOIN LATERAL (SELECT ra.body || '{}'::jsonb AS b OFFSET 0) rb
+           WHERE (ra.body->>'related_msg_id') = d.msg_id
+             AND ra.body ? 'related_msg_id'
+             AND ra.workspace_id = d.workspace_id
+             AND ra.surface = 'messages'
+             AND CASE
+                   WHEN rb.b->>'from' LIKE 'system:%' AND strpos(rb.b->>'from', '/') > 0
+                   THEN substr(rb.b->>'from', strpos(rb.b->>'from', '/') + 1)
+                   ELSE rb.b->>'from'
+                 END = d.recipient
+          OFFSET 0
+        ) rr
+    ),
+    -- EI-22458045233456597: one exact reply clears every EARLIER same-goal ask from
+    -- that sender, never a later one.
     answered_goal_clusters AS MATERIALIZED (
-      SELECT DISTINCT d.workspace_id,
-             d.recipient,
-             d.from_id,
-             d.goal_ref,
-             ra.ts_ms AS reply_ts_ms,
-             ra.id AS reply_event_id
+      SELECT DISTINCT d.workspace_id, d.recipient, d.from_id, d.goal_ref,
+             rp.reply_ts_ms, rp.reply_event_id
         FROM directed d
-        JOIN roster_authored ra
-          ON ra.workspace_id = d.workspace_id
-         AND ra.from_id = d.recipient
-         AND ra.related_msg_id = d.msg_id
+        JOIN replies rp ON rp.asked_msg_id = d.msg_id AND rp.recipient = d.recipient
        WHERE d.goal_ref IS NOT NULL
-         AND ra.goal_ref = d.goal_ref
+         AND rp.goal_ref = d.goal_ref
     ),
-    -- (1) An EXACT threaded reply/ack to THIS specific ask, authored by the
-    -- recipient, answers it outright — no pairing, no ambiguity. Evaluated per
-    -- (msg_id, recipient), never msg_id alone: one message fans out to N
-    -- recipients, and recipient A replying must not clear B's obligation.
-    open_asks AS (
+    open_asks AS MATERIALIZED (
       SELECT d.*,
              row_number() OVER (
                PARTITION BY d.recipient, d.from_id ORDER BY d.ts_ms DESC, d.msg_id DESC
              ) AS ask_rank
         FROM directed d
-       -- WI-6875: reads the pre-materialized \`roster_authored\` above instead of re-scanning
-       -- coord_event_log (75,372 rows, ~148ms) per candidate row. Comparing
-       -- \`ra.related_msg_id = d.msg_id\` naturally excludes rows carrying no related_msg_id,
-       -- since NULL never equals anything — matching the original's implicit requirement that
-       -- the key be present.
        WHERE NOT EXISTS (
-         SELECT 1 FROM roster_authored ra
-          WHERE ra.workspace_id = d.workspace_id
-            AND ra.from_id = d.recipient
-            AND ra.related_msg_id = d.msg_id
-       )
+               SELECT 1 FROM replies rp
+                WHERE rp.asked_msg_id = d.msg_id AND rp.recipient = d.recipient
+             )
          AND NOT EXISTS (
-           SELECT 1 FROM answered_goal_clusters agc
-            WHERE agc.workspace_id = d.workspace_id
-              AND agc.recipient = d.recipient
-              AND agc.from_id = d.from_id
-              AND agc.goal_ref = d.goal_ref
-              AND (
-                agc.reply_ts_ms > d.ts_ms
-                OR (agc.reply_ts_ms = d.ts_ms AND agc.reply_event_id >= d.event_id)
-              )
-         )
+               SELECT 1 FROM answered_goal_clusters agc
+                WHERE agc.workspace_id = d.workspace_id
+                  AND agc.recipient = d.recipient
+                  AND agc.from_id = d.from_id
+                  AND agc.goal_ref = d.goal_ref
+                  AND (agc.reply_ts_ms > d.ts_ms
+                       OR (agc.reply_ts_ms = d.ts_ms AND agc.reply_event_id >= d.event_id))
+             )
     ),
+    ask_pairs AS (
+      SELECT recipient, from_id AS asker, min(ts_ms) AS oldest_ts_ms
+        FROM open_asks
+       GROUP BY recipient, from_id
+    ),
+    -- WI-5345 / WI-6729: un-threaded messages a recipient sent back to the asker. Read
+    -- only for recipients that still have open asks.
+    loose_candidates AS MATERIALIZED (
+      SELECT ar.recipient, c.id, c.b->'to' AS to_arr,
+             (extract(epoch FROM (c.b->>'ts')::timestamptz) * 1000)::bigint AS ts_ms
+        FROM (SELECT DISTINCT recipient FROM ask_pairs) ar
+        CROSS JOIN LATERAL (
+          SELECT x.id, xb.b
+            FROM harness_shared.coord_event_log x
+            CROSS JOIN LATERAL (SELECT x.body || '{}'::jsonb AS b OFFSET 0) xb
+           WHERE x.workspace_id = ${workspaceId} AND x.surface = 'messages'
+             AND x.body->>'from' = ar.recipient
+          UNION ALL
+          SELECT x.id, xb.b
+            FROM harness_shared.coord_event_log x
+            CROSS JOIN LATERAL (SELECT x.body || '{}'::jsonb AS b OFFSET 0) xb
+           WHERE x.workspace_id = ${workspaceId} AND x.surface = 'messages'
+             AND x.body->>'from' LIKE 'system:%'
+             AND strpos(x.body->>'from', '/') > 0
+             AND substr(x.body->>'from', strpos(x.body->>'from', '/') + 1) = ar.recipient
+        ) c
+       WHERE CASE
+               WHEN c.b->>'from' LIKE 'system:%' AND strpos(c.b->>'from', '/') > 0
+               THEN substr(c.b->>'from', strpos(c.b->>'from', '/') + 1)
+               ELSE c.b->>'from'
+             END = ar.recipient
+         AND NOT (c.b ? 'related_msg_id')
+         AND (c.b->>'ts')::timestamptz >= to_timestamp(${sinceMs}::double precision / 1000)
+    ),
+    loose_replies AS MATERIALIZED (
+      SELECT DISTINCT lc.id, p.recipient AS from_id, p.asker AS to_id, lc.ts_ms
+        FROM ask_pairs p
+        JOIN loose_candidates lc ON lc.recipient = p.recipient AND lc.ts_ms >= p.oldest_ts_ms
+       WHERE EXISTS (
+               SELECT 1
+                 FROM jsonb_array_elements_text(
+                        CASE WHEN jsonb_typeof(lc.to_arr) = 'array' THEN lc.to_arr ELSE '[]'::jsonb END
+                      ) AS rt
+                WHERE rt = p.asker
+             )
+    ),
+    -- N un-threaded replies clear the N most recent asks from that sender.
     unanswered AS (
-      -- (2) WI-6729: the LOOSE branch, now NARROWED and PAIRED. An un-threaded
-      -- directed message back to the original sender after the ask still counts
-      -- as a reply (EI-13819 / WI-5345 — this fleet's agents overwhelmingly
-      -- answer in fresh standalone messages rather than re-threading onto the
-      -- exact msg_id that set expectsReply), but two rails stop it silently
-      -- eating real obligations:
-      --
-      --   NARROWED — a reply carrying a related_msg_id that points at some
-      --   OTHER message is positive evidence it is about something ELSE, so it
-      --   is no longer loose evidence for this ask. (A reply threaded to THIS
-      --   ask is already branch (1).) Previously ANY threaded reply to a sender
-      --   cleared EVERY open ask from them, regardless of topic.
-      --
-      --   PAIRED — one reply may clear at most ONE ask. Ranking a sender's open
-      --   asks newest-first, the k-th needs k loose replies after it. A single
-      --   "on another note…" can no longer retire three distinct questions; the
-      --   newest clears and the older ones stay open.
-      --
-      -- The direction of error is deliberate. This can leave open an ask that
-      -- was in substance answered — a cheap, self-correcting extra nudge —
-      -- rather than drop one that was not. The counter drives leader-brief,
-      -- fleet:assignments and coord:inbox{unanswered_only}, where a false ZERO
-      -- is indistinguishable from a true zero and loses the commitment
-      -- silently and permanently. It cannot re-introduce EI-13819's stuck-at-1
-      -- either: continued correspondence always converges (m loose replies
-      -- clear the m newest open asks), so a live exchange never sticks.
-      -- Reads from the pre-materialized \`loose_replies\` above rather than re-scanning
-      -- coord_event_log per row (WI-6853). The predicate set is unchanged — same author,
-      -- same addressee, same "after the ask" bound, same one-reply-clears-one-ask pairing
-      -- against ask_rank.
       SELECT o.* FROM open_asks o
        WHERE (
          SELECT count(*) FROM loose_replies lr
-          WHERE lr.workspace_id = o.workspace_id
-            AND lr.from_id = o.recipient
+          WHERE lr.from_id = o.recipient
             AND lr.to_id = o.from_id
             AND lr.ts_ms >= o.ts_ms
        ) < o.ask_rank
     ),
-    -- EI-20085805220385722: the per-(recipient,sender) rollup that makes the
-    -- live/stale split computable. It CANNOT come from the newest_* arrays
-    -- above: those are sliced [1:cap] while cnt is count(*) over every row, so
-    -- a sender past the cap is simply absent — and a partition derived from
-    -- them would yield a partial staleCount that READS like a total, which is
-    -- worse than no split at all.
     per_sender AS (
       SELECT recipient, from_id AS sender, count(*)::bigint AS scnt, min(ts_ms) AS soldest
         FROM unanswered
@@ -767,7 +688,8 @@ export async function fetchUnansweredDirected(
       FROM unanswered u
       JOIN sender_rollup sr ON sr.recipient = u.recipient
      GROUP BY u.recipient, sr.sender_total, sr.sender_ids, sr.sender_cnts, sr.sender_oldest_ts_ms
-  `;
+    `;
+  });
   const map = rowsToUnansweredMap(rows, nowMs, cap);
   return decorateUnansweredLiveness(map, opts);
 }

@@ -22,7 +22,9 @@
  * federated.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { boundedOrgTxn } from './pg-bounded-txn';
 import { resolveConcreteWorkspaceId } from './workspace-registry';
+import { sealSharedTextInTxOrRefuse } from './personal-vault/shared-store-seal';
 import {
   setCarryNote,
   setCarryNoteWithPrior,
@@ -47,6 +49,8 @@ import {
 } from './freshness';
 import { resolveCurrentTokens } from './freshness/resolvers';
 import { stampDeclaredDeps } from './freshness/stamp';
+import { parseCarryRefStamps, stampCarryRefs } from './carry-ref-stamps';
+import type { DepStamp } from './freshness/index';
 
 export interface WorkItemCheckpointRef {
   /**
@@ -103,27 +107,32 @@ export function workItemCheckpointScope(harness: string | null | undefined, work
  *  look like a fresh re-claim and destroyed the meaning of `takenAt`. */
 async function bumpCheckpointProgressAnchor(ref: WorkItemCheckpointRef, ws: string): Promise<void> {
   try {
-    const { sql } = getOrgPg();
     // Issue ids are workspace-unique, while feature ids are harness-scoped. One
     // base-table write therefore handles both families without touching the
     // `engineer_issues` view (whose assigned_at aliases the claim-time taken_at).
     // Credit only a currently-held row, matching markFeatureProgress/
     // markIssueProgress and keeping holderless historical checkpoints out of the
     // live progress signal.
-    await sql`
-      UPDATE harness_shared.work_items
-         SET last_progress_at = now()
-       WHERE workspace_id = ${ws}
-         AND feature_id = ${ref.workItemId}
-         AND taken_by IS NOT NULL
-         AND taken_by <> ''
-         AND (
-           item_kind IN ('bug', 'change', 'task')
-           OR (
-             ${ref.harness !== null && ref.harness !== undefined && ref.harness !== CHECKPOINT_WILDCARD_HARNESS}
-             AND harness_slug = ${ref.harness}
-           )
-         )`;
+    // The carry-note transaction has already committed. Keep this best-effort
+    // follow-up bounded too: an unbounded pool/row-lock wait here kept the MCP
+    // request open after the checkpoint was durable, so the caller saw a timeout
+    // and a concurrent loop checkpoint could remain queued behind it.
+    await boundedOrgTxn(async (tx) => {
+      await tx`
+        UPDATE harness_shared.work_items
+           SET last_progress_at = now()
+         WHERE workspace_id = ${ws}
+           AND feature_id = ${ref.workItemId}
+           AND taken_by IS NOT NULL
+           AND taken_by <> ''
+           AND (
+             item_kind IN ('bug', 'change', 'task')
+             OR (
+               ${ref.harness !== null && ref.harness !== undefined && ref.harness !== CHECKPOINT_WILDCARD_HARNESS}
+               AND harness_slug = ${ref.harness}
+             )
+           )`;
+    });
   } catch {
     /* best-effort */
   }
@@ -192,6 +201,13 @@ export async function setWorkItemCheckpointWithPrior(
      * {@link setCarryNoteWithPrior}; see its `transform` doc for the contract.
      */
     transform?: (priorNote: string | null, note: string | null | undefined) => string | null | undefined;
+    /**
+     * personal-data-reader-set-labels P-012 / D-006: the agent that authored this
+     * checkpoint. While it holds a restricted Personal Vault disclosure the stored
+     * note (and its journal entry) is a sealed stub; the text is opened with
+     * personal:open-sealed. Omit for system writers, which hold no disclosures.
+     */
+    writerOwnerId?: string | null;
   },
 ): Promise<WorkItemCheckpointWithPriorResult> {
   // EI-9013: canonicalize the workspace AT THE SUBSTRATE — a caller that passes
@@ -279,6 +295,16 @@ export async function setWorkItemCheckpointWithPrior(
   // work-item checkpoint is the SAME kind of durable-continuity write a successor
   // inherits, so it deserves the SAME fail-fast + typed-error contract, not the
   // strictly worse "hang until the client times out with an unknown outcome" one.
+  // P-002 / D-006: stamp the references this checkpoint cites. Its own id is excluded —
+  // every checkpoint write moves the item's own version, so it would always read CHANGED.
+  const refStamps = typeof checkpoint === 'string' && checkpoint.trim()
+    ? await stampCarryRefs({
+        text: checkpoint,
+        workspaceId: ws,
+        harness: ref.harness,
+        exclude: [`work-item:${ref.workItemId}`],
+      })
+    : undefined;
   const { stored, priorLength, blockedReason } = await setCarryNoteWithPrior(
     { scope: workItemScope(checkpointScopeHarness(ref.harness), ref.workItemId), workspaceId: ws },
     checkpoint,
@@ -292,7 +318,22 @@ export async function setWorkItemCheckpointWithPrior(
       guard: opts?.guard,
       ...(opts?.transform ? { transform: opts.transform } : {}),
       ...(depsSpecified ? { deps: depsPayload } : {}),
+      ...(refStamps ? { refStamps } : {}),
       ...(opts?.workItem ? { workItem: opts.workItem } : {}),
+      ...(opts?.writerOwnerId?.trim()
+        ? {
+            seal: async (tx, note) =>
+              (
+                await sealSharedTextInTxOrRefuse(tx, {
+                  workspaceId: ws,
+                  writerOwnerId: opts.writerOwnerId,
+                  store: 'work-item-checkpoint',
+                  text: note,
+                  context: { workItemId: ref.workItemId, harness: ref.harness ?? null },
+                })
+              ).text,
+          }
+        : {}),
       bounded: true,
     },
   );
@@ -331,6 +372,46 @@ export async function getWorkItemCheckpointDeps(ref: WorkItemCheckpointRef): Pro
   } catch {
     return null;
   }
+}
+
+/**
+ * P-002 (carry-recheck-and-governed-memory-2026-10-14, D-006): the REFERENCE version stamps
+ * (`deps.refs`) of several work-item checkpoints in ONE query per workspace, keyed by
+ * work-item id, each with the stored note so a caller can keep only the stamps that note
+ * still cites. Same row selection as {@link getWorkItemCheckpointDeps}; a blank note, a
+ * missing row or a failed read simply yields no entry (never a guessed baseline).
+ */
+export async function getWorkItemCheckpointRefStamps(
+  refs: readonly WorkItemCheckpointRef[],
+): Promise<Map<string, { note: string; stamps: DepStamp[] }>> {
+  const out = new Map<string, { note: string; stamps: DepStamp[] }>();
+  const byWs = new Map<string, Map<string, string>>();
+  for (const ref of refs) {
+    const ws = resolveConcreteWorkspaceId(ref.workspaceId);
+    if (!ws || !ref.workItemId) continue;
+    const scopes = byWs.get(ws) ?? new Map<string, string>();
+    scopes.set(workItemScope(checkpointScopeHarness(ref.harness), ref.workItemId), ref.workItemId);
+    byWs.set(ws, scopes);
+  }
+  await Promise.all(
+    [...byWs].map(async ([ws, scopes]) => {
+      try {
+        const { sql } = getOrgPg();
+        const rows = await sql<{ scope: string; deps: unknown; note: string | null }[]>`
+          SELECT scope, deps, note FROM harness_shared.carry_notes
+           WHERE workspace_id = ${ws} AND scope = ANY(${[...scopes.keys()]})`;
+        for (const row of rows) {
+          const id = scopes.get(row.scope);
+          const note = row.note ?? '';
+          if (!id || !note.trim()) continue;
+          out.set(id, { note, stamps: parseCarryRefStamps(row.deps) });
+        }
+      } catch {
+        /* no stamps for this workspace — the delivery says nothing rather than guessing */
+      }
+    }),
+  );
+  return out;
 }
 
 /**

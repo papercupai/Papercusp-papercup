@@ -23,13 +23,14 @@
  *     is about.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 
 type SyncCall = { queryName: string; enabled?: boolean; args?: Record<string, unknown> };
-const { syncCalls, contractRow } = vi.hoisted(() => ({
+const { syncCalls, contractRow, workItemOverrides } = vi.hoisted(() => ({
   syncCalls: [] as SyncCall[],
   contractRow: { current: null as unknown },
+  workItemOverrides: { current: {} as Record<string, unknown> },
 }));
 
 const WORK_ITEM = {
@@ -48,7 +49,7 @@ vi.mock('@papercusp/sync', async (importOriginal) => ({
     syncCalls.push({ queryName: opts.queryName, enabled: opts.enabled, args: opts.args });
     const enabled = opts.enabled !== false;
     let data: unknown[] = [];
-    if (enabled && opts.queryName === 'workItems.detail') data = [WORK_ITEM];
+    if (enabled && opts.queryName === 'workItems.detail') data = [{ ...WORK_ITEM, ...workItemOverrides.current }];
     if (enabled && opts.queryName === 'workItems.behaviorContract' && contractRow.current) {
       data = [contractRow.current];
     }
@@ -71,10 +72,11 @@ vi.mock('@papercusp/papercusp-shared', () => ({ openFeatureChat: vi.fn() }));
 vi.mock('../../harness/FeatureEditor', () => ({ default: () => null }));
 
 import DetailPanel from './DetailPanel';
+import { CHAT_PLAN_POPUP_PARAM } from '../../_components/chat/chat-ref-popup-params';
 
-function renderDetail(searchParams: string) {
+function renderDetail(searchParams: string, onUrlUpdate = vi.fn()) {
   return render(
-    <NuqsTestingAdapter searchParams={searchParams}>
+    <NuqsTestingAdapter searchParams={searchParams} onUrlUpdate={onUrlUpdate}>
       <DetailPanel
         panelId={'p1' as never}
         panelType={'detail' as never}
@@ -121,6 +123,33 @@ afterEach(() => {
   cleanup();
   syncCalls.length = 0;
   contractRow.current = null;
+  workItemOverrides.current = {};
+});
+
+describe('DetailPanel intake acceptance evidence (R-10)', () => {
+  it('renders evidence, completion provenance and the governing plan as navigable links', async () => {
+    const onUrlUpdate = vi.fn();
+    workItemOverrides.current = {
+      planSlug: 'intake-plan',
+      presentation: {
+        stage: 'accepted-ready',
+        label: 'Accepted ready',
+        reason: 'current acceptance',
+        evidenceRefs: ['WI-42', 'https://example.test/evidence', 'test-run:20403529'],
+        completionRef: 'test-run:20403528',
+      },
+    };
+    renderDetail('?sel=WI-1', onUrlUpdate);
+    expect(screen.getByRole('link', { name: 'https://example.test/evidence' }).getAttribute('href'))
+      .toBe('https://example.test/evidence');
+    expect(screen.getByText('test-run:20403529').tagName).toBe('CODE');
+    expect(screen.getByText('test-run:20403528').tagName).toBe('CODE');
+    fireEvent.click(screen.getByRole('button', { name: 'intake-plan · decisions' }));
+    await waitFor(() => expect(onUrlUpdate).toHaveBeenCalled());
+    expect(onUrlUpdate.mock.lastCall?.[0].searchParams.get(CHAT_PLAN_POPUP_PARAM)).toBe('h1::intake-plan');
+    fireEvent.click(screen.getByRole('button', { name: 'WI-42' }));
+    await waitFor(() => expect(onUrlUpdate.mock.lastCall?.[0].searchParams.get('sel')).toBe('WI-42'));
+  });
 });
 
 describe('DetailPanel behavior-contract subscription (P-011)', () => {

@@ -1,10 +1,34 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TestModule } from 'vitest/node';
 import {
   collectVitestModuleErrors,
   formatVitestErrorForOutput,
   formatVitestOutputTail,
 } from './admin-test-runs-reporter';
+import AdminTestRunsReporter from './admin-test-runs-reporter';
+
+const database = vi.hoisted(() => {
+  const sql = Object.assign(vi.fn(async () => []), { end: vi.fn(async () => undefined) });
+  return { sql, open: vi.fn(() => sql) };
+});
+vi.mock('postgres', () => ({ default: database.open }));
+
+describe('legacy reporter shared ledger routing', () => {
+  afterEach(() => { vi.unstubAllEnvs(); vi.clearAllMocks(); });
+
+  it.each([true, false])('persists outside the disposable app database when dedicated ledger=%s', async dedicated => {
+    vi.stubEnv('HARNESS_ADMIN_DATABASE_URL', 'postgresql://isolated/app');
+    vi.stubEnv('PAPERCUSP_TEST_RUNS_DB_URL', dedicated ? 'postgresql://shared/ledger' : undefined);
+    const reporter = new AdminTestRunsReporter();
+    reporter.onTestModuleEnd({ moduleId: MODULE, state: () => 'passed', errors: () => [],
+      diagnostic: () => ({ duration: 1 }), children: { allTests: () => [] } } as unknown as TestModule);
+    await reporter.onTestRunEnd();
+    expect(database.open).toHaveBeenCalledWith(dedicated ? 'postgresql://shared/ledger' : 'postgresql://isolated/app',
+      expect.any(Object));
+    expect(database.sql).toHaveBeenCalledTimes(1);
+    expect(database.sql.end).toHaveBeenCalledTimes(1);
+  });
+});
 
 const MODULE = '/repo/packages/operator-core/lib/pc-heavy.test.ts';
 const DISPLAY = 'packages/operator-core/lib/pc-heavy.test.ts';

@@ -44,9 +44,9 @@ export default defineTool({
   name: 'platform:contribute',
   profile: 'engineer',
   description:
-    "Send a local improvement UPSTREAM from a platform-mode install. kind:'knowledge-pack' exports the self-hive's organic learnings + lists them on the Comb (lands PENDING — operator-moderated); kind:'pr' pushes the change to the USER'S FORK and opens a human-reviewed PR fork→canonical Papercusp (never a direct push). Root-only, reason-audited. By default it PREPARES but does not send: the live push/PR/publish fires ONLY with confirm:true AND credentials/remote present, else returns {ok, prepared:true, needs:[...]}.",
+    "Contribute upstream through existing platform surfaces: knowledge-pack publishes a moderated Comb listing, pr opens a fork→canonical PR, report files anonymously through the canonical joined-Pot shared intake and existing issue federation. Reports return queued, never an unverified upstream receipt. Root-only; confirm:true is required to submit. Without consent or prerequisites, returns prepared:true with needs.",
   guidance: {
-    when: 'The user explicitly wants to contribute a platform-mode improvement UPSTREAM to Papercusp — publish a knowledge-pack to the Comb, or open a fork→canonical PR. Requires platform:enable first (the self-hive must be standing).',
+    when: 'The user explicitly wants to contribute a knowledge-pack or fork PR (requires platform:enable), or submit an installed-app problem report (requires canonical-Pot membership and confirm:true consent). A report returns queued for existing federation, not an upstream delivery receipt.',
     notWhen:
       'Enabling platform mode / standing up the self-hive — platform:enable. Publishing a pack for an ARBITRARY (non-platform) hive — knowledge_packs:export + knowledge_packs:publish. Opening a PR for a normal harness feature — the orchestrator fork-PR hook.',
     chaining:
@@ -66,9 +66,9 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z.object({
     kind: z
-      .enum(['knowledge-pack', 'pr'])
+      .enum(['knowledge-pack', 'pr', 'report'])
       .describe(
-        "Which upstream round-trip: 'knowledge-pack' (export + publish to the Comb, lands PENDING) or 'pr' (push to the user's fork + open a PR into canonical Papercusp).",
+        "Contribution kind: knowledge-pack (moderated Comb listing), pr (fork→canonical PR), or report (shared intake + existing canonical-Pot federation, with explicit consent).",
       ),
     confirm: z
       .boolean()
@@ -116,6 +116,21 @@ export default defineTool({
     prBody: hardText(8000).optional().describe("kind:'pr' — the PR body."),
 
     workspace: z.string().max(120).optional().describe('Workspace id (default: active workspace).'),
+    report: z.object({
+      text: z.string().min(1).max(8000),
+      title: z.string().max(120).optional(),
+      reportContext: z.object({
+        app: z.string().max(200).optional(),
+        appVersion: z.string().max(200).optional(),
+        screen: z.object({
+          route: z.string().max(2000).optional(),
+          url: z.string().max(2000).optional(),
+          state: z.record(z.string(), z.string().max(2000)).optional(),
+        }).strict().optional(),
+        recentErrors: z.array(z.object({ message: z.string().min(1).max(2000), source: z.string().max(200).optional() }).strict()).max(10).optional(),
+        logExcerpt: z.string().max(6000).optional(),
+      }).strict().optional(),
+    }).strict().optional().describe("kind:'report': anonymous report for the canonical joined Pot. confirm:true records consent; optional logExcerpt must be explicitly opted in. Returns queued, not received upstream."),
   }),
   async handler(args, ctx) {
     // Root-only enforcement (mirrors platform:enable / pot:dissolve): an outward
@@ -145,6 +160,7 @@ export default defineTool({
       ...(args.featureBranch ? { featureBranch: args.featureBranch } : {}),
       ...(args.prTitle ? { prTitle: args.prTitle } : {}),
       ...(args.prBody ? { prBody: args.prBody } : {}),
+      ...(args.report ? { report: args.report } : {}),
     });
 
     // Best-effort audit (mirrors platform:enable): record the contribution intent

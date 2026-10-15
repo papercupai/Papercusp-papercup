@@ -17,12 +17,13 @@ import {
   modelWindowForTier,
 } from '../../agent-config-constants';
 import { classifyLoopModelSpec } from '../../agent-loop/model-selection';
+import { listLaunchModelAliases } from '../../model-context-budget.mjs';
 
 export default defineTool({
   name: 'config:tiers-get',
   profile: 'engineer',
   description:
-    'Read the model-tier menu (stored, else the committed defaults) with each tier’s effective soft compaction limit — explicit per-tier value, else the model-derived default floor((window − margin) / 1.2). Also returns the per-role tier ceilings.',
+    'Read the model-tier menu with effective soft compaction limits, per-role tier ceilings and the shared launchAliases catalog for fleet:launch-on-plan, capability:launch-agent and psu --model.',
   capability: 'operator:read',
   guidance: {
     when: 'You need the tier menu (names, specs, backends) or the compaction limit a tier would seed — e.g. before editing it via config:tiers-set or picking a capability:launch-agent / fleet:launch-on-plan tier.',
@@ -50,6 +51,7 @@ export default defineTool({
         ok: true,
         stored,
         tiers,
+        launchAliases: listLaunchModelAliases(),
         tierCeilings: cfg.tierCeilings ?? {},
       },
     };

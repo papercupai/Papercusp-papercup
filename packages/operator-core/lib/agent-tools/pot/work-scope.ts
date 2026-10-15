@@ -23,7 +23,7 @@ export default defineTool({
   name: 'workspace:work_scope',
   profile: 'engineer',
   description:
-    "Read or set the workspace WORK-SCOPE policy: which harnesses agents may be launched into / pull work from (e.g. allowHarnesses ['papercusp','papercusp/*']). Enforced at launch / claim / promotion / fixer-dispatch chokepoints; absent ⇒ everything allowed. set/clear are audited + revertible.",
+    "Read or set the workspace WORK-SCOPE policy: which harnesses agents may be launched into / pull work from (e.g. allowHarnesses ['papercusp','papercusp/*']). check can simulate a proposedPolicy without activating it. Enforced at launch / claim / promotion / fixer-dispatch chokepoints; absent ⇒ everything allowed. set/clear are audited + revertible.",
   capability: 'operator:write',
   guidance: {
     when: "The owner wants agents confined to one project (\"only papercusp work right now\"): set { mode:'enforce', allowHarnesses:['papercusp','papercusp/*'] }. `check` answers whether one harness/plan/goal/work-item is in scope. `get` shows the policy + the ledger of recent denials/holds/re-homes.",
@@ -41,6 +41,8 @@ export default defineTool({
       plan: z.string().min(1).max(200).optional(),
       goal: z.string().min(1).max(200).optional(),
       workItem: z.string().min(1).max(120).optional(),
+      proposedPolicy: workScopeSetSchema.omit({ dryRun: true }).optional()
+        .describe('Evaluate this proposed policy without reading or changing the stored policy.'),
     }),
     workScopeSetSchema.extend({ op: z.literal('set') }),
     z.object({ op: z.literal('clear'), dryRun: z.boolean().optional() }),
@@ -58,12 +60,12 @@ export default defineTool({
       });
     }
     if (args.op === 'check') {
-      const policy = await readWorkScopePolicy();
+      const policy = args.proposedPolicy ?? await readWorkScopePolicy();
       const verdict = evaluateWorkScope(
         { harness: args.harness, plan: args.plan ?? null, goal: args.goal ?? null, workItem: args.workItem ?? null },
         policy,
       );
-      return json({ ok: true, verdict });
+      return json({ ok: true, verdict, ...(args.proposedPolicy ? { simulated: true } : {}) });
     }
 
     if (!isOperatorConfigWriteRole(ctx.role)) {

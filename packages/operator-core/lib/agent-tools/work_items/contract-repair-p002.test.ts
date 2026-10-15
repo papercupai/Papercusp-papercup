@@ -167,19 +167,29 @@ describe("work_items:get argument contract (P-002)", () => {
   });
 
   describe("`limit` is refused rather than aliased", () => {
-    it("is not accepted by the schema", () => {
+    it("is refused unless checkpointOnly is paging the checkpoint, never aliased", () => {
       // The plan's worked ALIAS-vs-BETTER-ERROR example: aliasing `limit` to
       // `threadLimit` would answer "how many comment posts" to a caller who may
-      // well have asked "how many work-items".
+      // well have asked "how many work-items". Since the checkpointOnly page read
+      // (get.checkpoint.test.ts) `limit` is a DECLARED key with exactly one
+      // narrow meaning, the checkpoint page size, so the refusal is pinned on
+      // BEHAVIOUR: every other use of `limit` must still fail to parse.
       expect(parse({ id: "WI-1", limit: 5 }).success).toBe(false);
-      expect(declaredKeys()).not.toContain("limit");
+      expect(parse({ id: "WI-1", threadLimit: 5, limit: 5 }).success).toBe(false);
+      expect(parse({ ids: ["WI-1", "WI-2"], limit: 5 }).success).toBe(false);
+      expect(parse({ id: "WI-1", checkpointOnly: true, limit: 5 }).success).toBe(true);
     });
 
     it("names BOTH destinations, so the rejection is not a dead end", () => {
-      const target = redirects().limit;
-      expect(typeof target).toBe("string");
-      expect(target as string).toContain("ids");
-      expect(target as string).toContain("threadLimit");
+      // The refusal is the schema refine's message (a redirect for a declared
+      // key never renders), so read the parse issue the caller actually gets.
+      const result = parse({ id: "WI-1", limit: 5 }) as {
+        success: boolean;
+        error?: { issues: Array<{ message: string }> };
+      };
+      const message = (result.error?.issues ?? []).map((issue) => issue.message).join("\n");
+      expect(message).toContain("ids");
+      expect(message).toContain("threadLimit");
     });
   });
 

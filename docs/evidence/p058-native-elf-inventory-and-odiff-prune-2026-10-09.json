@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-058 complete native ELF inventory and unused odiff payload regression",
+  "framework": "node",
+  "command": [
+    "env",
+    "TMPDIR=/mnt/backup/portable-server-p058/elf-prune-regression-20261009/tmp",
+    "$HOME/.local/node25/bin/node",
+    "--test",
+    "--test-global-setup=papercusp-desktop/test/monorepo-host-preflight.mjs",
+    "papercusp-desktop/test/build-desktop-sidecar-dependency-closure.test.js",
+    "papercusp-desktop/test/verify-sidecar-bundle-spa-layout.test.js",
+    "papercusp-desktop/test/server-container.test.js",
+    "papercusp-desktop/test/server-native-builder.test.js",
+    "papercusp-desktop/test/sidecar-stage-resume.test.js"
+  ],
+  "cwd": ".",
+  "startedAt": "2026-10-09T18:33:49.050Z",
+  "finishedAt": "2026-10-09T18:34:04.719Z",
+  "timestampSource": "The runner log creation and final write timestamps; canonical Node summary duration is 15603.209485 ms.",
+  "exitCode": 0,
+  "summary": "125 canonical Node tests passed, with zero failures, cancellations or skips. The real desktop global preflight ran. TMPDIR selects test-fixture storage only; no shared install-mutex override or disabled preflight was used. These are source regression proofs, not acceptance of a new ARM artifact. Native8 remains rejected.",
+  "assertions": [
+    {
+      "id": "canonical-focused-suite",
+      "passed": true,
+      "evidence": "Runner exit 0; actual Node summary tests=125, pass=125, fail=0, cancelled=0, skipped=0, todo=0. Raw log SHA 832eb5d14ed30d5cf15f1cbbed8a35196a70f890665bb96f75cef5e58c19f14a."
+    },
+    {
+      "id": "whole-payload-target-elf-controls",
+      "passed": true,
+      "evidence": "Real Linux linkage branch uses the maintained OCI inventory helper. ARM64 and AMD64 controls admit target headers and reject foreign extensionless odiff/arbitrary deep paths, non-executable ELFs, malformed class/endian/truncated headers and escaping links. Contained link positive control passes."
+    },
+    {
+      "id": "real-importer-and-pixelmatch",
+      "passed": true,
+      "evidence": "The real installed lost-pixel comparator eagerly imports the byte-identical pruned odiff JS wrapper, then compares black versus white PNGs via pixelmatch and writes the difference. execFile is a throwing negative control; no native odiff dispatch occurs."
+    },
+    {
+      "id": "copier-preserves-requester-identity",
+      "passed": true,
+      "evidence": "Top-level odiff 2.6.1 and nested odiff 2.5.0 retain package identity and JS while their unused bin, platform-* and _export payloads are removed. Source donors remain intact. Existing nested posthog/rusha and required/optional dependency controls pass. A different-package prune is refused."
+    },
+    {
+      "id": "helper-binding-and-existing-native-guards",
+      "passed": true,
+      "evidence": "Receipt independently binds verifier, manifest writer and ELF inventory helper. Stage identity also binds the helper and rejects changed helper bytes on resume. Existing target loader, addon library/runpath, factory, allocator and stage-resume controls pass."
+    }
+  ],
+  "workItemId": "EI-25526231122479676",
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "evidencePlane": "source-regression",
+  "candidateAccepted": false,
+  "rawLogFile": "/mnt/backup/portable-server-p058/elf-prune-regression-20261009/tests3.log",
+  "rawLogSha256": "832eb5d14ed30d5cf15f1cbbed8a35196a70f890665bb96f75cef5e58c19f14a",
+  "sourceHashes": {
+    "papercusp-desktop/bin/build-desktop-sidecar.sh": "1edde9e521b3029f44ef3f30988f064fdefa6a22310df0cea56076681e5619a7",
+    "papercusp-desktop/bin/verify-sidecar-bundle.sh": "78efda72efe92e24199d9049038691d3dc764a250d39fe25b369ef48178de2fa",
+    "papercusp-desktop/bin/lib/server-container.mjs": "fe6ca813fb06d6f33106265ffe2c47429321bae046159be85490563a78dc3434",
+    "papercusp-desktop/bin/lib/sidecar-stage-state.js": "7cdc6c1e95c892a3b5f0f53eece6d0890401508e94759864ef6f9bfde8bcc9fc"
+  },
+  "testHashes": {
+    "papercusp-desktop/test/build-desktop-sidecar-dependency-closure.test.js": "fd07c593c2950661bdc6d4b84fdcceecb5e7c148d744a3048563e668d6dde17b",
+    "papercusp-desktop/test/verify-sidecar-bundle-spa-layout.test.js": "e147e4ee41ae387190a626a1dfc3af90ec3998a0fb74f2c576952d40e8826ca4",
+    "papercusp-desktop/test/server-container.test.js": "1fa11071f3c80c59c248815def5ffe473899f64e2dad82946b7f74e57ebd7ac2",
+    "papercusp-desktop/test/server-native-builder.test.js": "855df00a3fac236d25fcae6875e1a9f18237b0c07407cf1489f6cd5d9052238b",
+    "papercusp-desktop/test/sidecar-stage-resume.test.js": "836c2ec82647a1aa6fc8eeaf6711139cd51955feabb5247d67bba74499d3e3a0"
+  }
+}

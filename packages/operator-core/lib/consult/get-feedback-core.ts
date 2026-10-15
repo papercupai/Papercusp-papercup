@@ -32,13 +32,14 @@
  *    reply verbs). expires_at derives from the contract.
  */
 import type { Sql } from 'postgres';
+import { createHash, randomUUID } from 'node:crypto';
 import { withIterativeScan, type PgHandle } from '@papercusp/search';
 import type { RouteResult, RoutingCandidate, SelectionVia } from './relevance-router';
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 import { DEFAULT_SIM_FLOOR, selectResponders, selectionSnapshot } from './relevance-router';
 import { advanceCascade, digestFromRow, makeDigestEntry, selectionFromRouting } from './cascade-core';
 import { selectConsultEvidenceSource } from './consult-dispatch';
-import { consultResponderVerbMenu } from './responder-verb-menu';
+import { consultCurrentReviewContext, consultResponderVerbMenu } from './responder-verb-menu';
 import { sourceAuditCascadeMetaFromRouting, sourceAuditWakeCopy, type SourceAuditCascadeMeta } from './grading-cascade';
 import { proseProfilePredicateSql } from '../search/prose-vector-dims';
 
@@ -78,7 +79,12 @@ export const MAX_CONSULT_DEPTH = 2;
  * Imported AND re-exported: a bare `export … from` would satisfy downstream
  * importers while leaving no local binding for the selection site below. */
 import { selectionPolicy } from '@papercusp/ranked-selection';
-import { DEFAULT_MIN_RESPONDERS, DEFAULT_MAX_RESPONDERS } from './selection-policies';
+import {
+  BAR_CRITIQUE_POLICY,
+  DEFAULT_MIN_RESPONDERS,
+  DEFAULT_MAX_RESPONDERS,
+  RUBRIC_VETTING_POLICY,
+} from './selection-policies';
 export { DEFAULT_MIN_RESPONDERS, DEFAULT_MAX_RESPONDERS };
 
 /** The latched park/reply key for a consult conversation — the ONE format every
@@ -98,9 +104,13 @@ export interface ConsultReviewerModel {
 }
 
 export interface GetFeedbackRequest {
+  /** Reuse on transport retries; a new key explicitly asks for a fresh consult. */
+  requestKey?: string;
   workspaceId: string;
   requesterId: string;
   question: string;
+  /** The production binding supplies its actual launch permission. */
+  allowDispatch?: boolean;
   tried?: string;
   observed?: string;
   decisionAtStake?: string;
@@ -110,6 +120,12 @@ export interface GetFeedbackRequest {
   originTaskRef?: string | null;
   /** Optional exact durable subject whose transcript mentions must justify routing. */
   subjectRef?: string | null;
+  /** Explicit source refs from the caller, retained in the accepted request payload. */
+  subjectRefs?: string[];
+  /** Public-manual anchors expanded before the request is persisted and dispatched. */
+  resolvedSubjectRefs?: string[];
+  /** Public manual refs that could not be expanded completely; they block floor qualification. */
+  unresolvedSubjectRefs?: string[];
   /** Exclude owners from candidacy — e.g. exhausted-menu decliners on a FRESH
    * re-route (the cascade itself is server-driven now, D-005/P-013: declines
    * and expiries advance the selected menu without a re-call). */
@@ -149,8 +165,10 @@ export interface GetFeedbackRequest {
    */
   policy?: string;
   reviewerModel?: ConsultReviewerModel;
+  /** Internal testing:run constraint, included in the saved payload fingerprint. */
+  nativeConsult?: import('./native-consult').NativeConsultConstraints;
   /** Internal consumer metadata, persisted before any delivery or revival. */
-  cascade?: SourceAuditCascadeMeta;
+  cascade?: SourceAuditCascadeMeta | import('./decision-review').DecisionReviewCascadeMeta;
 }
 
 /** P-005 creation-side refusals — structural, BEFORE any conversation/row is
@@ -159,9 +177,12 @@ export interface GetFeedbackRequest {
 export type GetFeedbackError =
   | { error: 'parent_consult_not_found'; parent_consult_id: string; hint: string }
   | { error: 'consult_depth_exceeded'; depth: number; max_depth: number; hint: string }
-  | { error: 'consult_cycle'; lineage: string[]; hint: string };
+  | { error: 'consult_cycle'; lineage: string[]; hint: string }
+  | { error: 'bar_critique_requires_plan'; hint: string };
 
 export interface GetFeedbackDeps {
+  /** Internal recovery context, never an externally supplied conversation id. */
+  acceptedRequest?: { conversation_id: string; thread_id: string; leaseToken: string };
   getSql: () => Sql;
   route: (params: {
     workspaceId: string;
@@ -169,10 +190,15 @@ export interface GetFeedbackDeps {
     question: string;
     /** Exact durable subject (relevance-router `subjectRef`); forwarded from the request. */
     subjectRef?: string | null;
+    /** Full source-ref set, including public-manual `documents:` anchors. */
+    subjectRefs?: string[];
+    /** Unexpanded public-manual document refs; candidates cannot clear the floor with these present. */
+    unresolvedSubjectRefs?: string[];
     excludeOwners?: string[];
   }) => Promise<RouteResult>;
   /** Opens the kind='consult' conversation (bound to openConversation in prod). */
   open: (input: {
+    id?: string;
     kind: 'consult';
     title: string;
     body: string;
@@ -217,7 +243,7 @@ export interface GetFeedbackDeps {
     /** HOW it was reached, for the requester-facing provenance note. Optional so
      *  a PG-free or legacy binding keeps the plain delivery-count contract. */
     dispatch?: {
-      operation: 'fork' | 'convert' | null;
+      operation: 'fork' | 'convert' | 'brief' | null;
       agent: string | null;
       model: string | null;
       verified: boolean | null;
@@ -225,6 +251,138 @@ export interface GetFeedbackDeps {
     };
   }>;
   now?: () => Date;
+}
+
+export interface AcceptedFeedbackResult {
+  ok: true;
+  verdict: 'accepted';
+  conversation_id: string;
+  thread_id: string;
+  request_key: string;
+  state: string;
+  pending: boolean;
+  /** Persisted routing outcome; lifecycle state alone cannot distinguish an
+   * unmeasured route, a measured absence, or deliberate retrieval-only. */
+  result?: GetFeedbackResult | GetFeedbackError;
+  latency_contract: LatencyContract;
+  park_key: string | null;
+  hint: string;
+}
+
+interface AcceptedRequest {
+  version: 1;
+  key: string;
+  fingerprint: string;
+  payload: GetFeedbackRequest;
+  leaseToken?: string | null;
+  leaseUntil?: string | null;
+  attempts?: number;
+  result?: GetFeedbackResult | GetFeedbackError;
+  lastError?: string;
+}
+
+function requestFingerprint(req: GetFeedbackRequest): string {
+  // Normalize object order and undefined values so a transport retry hashes
+  // identically even when its client serializes optional fields differently.
+  const canonical = (value: unknown): unknown => Array.isArray(value)
+    ? value.map(canonical)
+    : value && typeof value === 'object'
+      ? Object.fromEntries(Object.entries(value).filter(([key, v]) => key !== 'requestKey' && v !== undefined)
+        .sort(([a], [b]) => a.localeCompare(b)).map(([key, v]) => [key, canonical(v)]))
+      : value;
+  return createHash('sha256').update(JSON.stringify(canonical(req))).digest('hex');
+}
+
+/** Persist before embeddings or launches. Conversation-store creation and the
+ * consult PK both converge on the same requester/workspace/key identity. */
+export async function acceptFeedbackRequestCore(
+  req: GetFeedbackRequest,
+  deps: Pick<GetFeedbackDeps, 'getSql' | 'open'>,
+): Promise<AcceptedFeedbackResult | { error: 'request_key_conflict'; conversation_id: string; hint: string }> {
+  const sql = deps.getSql();
+  const fingerprint = requestFingerprint(req);
+  const key = req.requestKey?.trim() || `auto:${fingerprint}`;
+  const id = `conv-request-${createHash('sha256').update(JSON.stringify([req.workspaceId, req.requesterId, key])).digest('hex')}`;
+  const opened = await deps.open({ id, kind: 'consult', title: consultTitle(req.question), body: consultBody(req),
+    ...(req.topics?.length ? { topics: req.topics } : {}),
+    ...(req.harnessSlug ? { harness_slug: req.harnessSlug } : {}), direct_to: [] });
+  const request: AcceptedRequest = { version: 1, key, fingerprint, payload: req, attempts: 0 };
+  await sql`
+    INSERT INTO harness_shared.consult_state
+      (workspace_id, conversation_id, requester_id, state, question, latency_contract, routing)
+    VALUES (${req.workspaceId}, ${opened.conversation_id}, ${req.requesterId}, 'routing', ${req.question},
+      ${req.latencyContract ?? 'proceed'}, ${sql.json({
+        deliveryIntent: req.allowDispatch === false ? 'retrieval-only' : 'dispatch', request,
+      } as never)})
+    ON CONFLICT (workspace_id, conversation_id) DO NOTHING`;
+  const rows = await sql<{ state: string; routing: { request: AcceptedRequest } }[]>`
+    SELECT state, routing FROM harness_shared.consult_state
+    WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${opened.conversation_id}
+      AND requester_id = ${req.requesterId}`;
+  const row = rows[0];
+  if (!row || row.routing.request?.fingerprint !== fingerprint) return {
+    error: 'request_key_conflict', conversation_id: opened.conversation_id,
+    hint: 'This request_key already names a different question or options. Reuse its original payload for recovery, or use a new key for a fresh consult.',
+  };
+  const latency = req.latencyContract ?? 'proceed';
+  const result = row.routing.request.result;
+  const outcomeHint = result?.hint ?? (row.state === 'routing' ? ''
+    : 'No routing result is recorded; lifecycle state is not a measured no-expert verdict.');
+  return { ok: true, verdict: 'accepted', conversation_id: opened.conversation_id, thread_id: opened.thread_id,
+    request_key: key, state: row.state,
+    ...(result ? { result } : {}),
+    pending: !row.routing.request.result && ['routing', 'awaiting_responder', 'active'].includes(row.state),
+    latency_contract: latency, park_key: latency === 'hard-blocked' ? consultParkKey(opened.conversation_id) : null,
+    hint: `Accepted as ${opened.conversation_id}; current state is ${row.state}. ${outcomeHint ? `${outcomeHint} ` : ''}Read conversations:get { id: '${opened.conversation_id}' } for routing and replies. Reuse request_key '${key}' with the same payload after a timeout; use a new key for a fresh consult. Pending means accepted work, not a launched or answered session.` };
+}
+
+/** A bounded CAS lease owns preparation. Once the core commits the selected
+ * awaiting row, retries leave delivery to its existing stamp/attempt/expiry
+ * lifecycle; they never replay the launch because a response was lost. */
+export async function continueFeedbackRequestCore(
+  workspaceId: string,
+  conversationId: string,
+  deps: { getSql: () => Sql; now?: () => Date;
+    execute: (req: GetFeedbackRequest, accepted: NonNullable<GetFeedbackDeps['acceptedRequest']>) => Promise<GetFeedbackResult | GetFeedbackError> },
+): Promise<boolean> {
+  const sql = deps.getSql();
+  const now = deps.now?.() ?? new Date();
+  const token = randomUUID();
+  const rows = await sql<{ requester_id: string; routing: { request: AcceptedRequest } }[]>`
+    UPDATE harness_shared.consult_state
+       SET routing = jsonb_set(routing, '{request}', (routing->'request') ||
+         ${sql.json({ leaseToken: token, leaseUntil: new Date(now.getTime() + 120_000).toISOString() } as never)}),
+           updated_at = ${now.toISOString()}::timestamptz
+     WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
+       AND state = 'routing' AND closed_at IS NULL AND routing #>> '{request,version}' = '1'
+       AND COALESCE((routing #>> '{request,leaseUntil}')::timestamptz, '-infinity'::timestamptz) <= ${now.toISOString()}::timestamptz
+     RETURNING requester_id, routing`;
+  const row = rows[0];
+  if (!row) return false;
+  const request = row.routing.request;
+  if (request.payload.workspaceId !== workspaceId || request.payload.requesterId !== row.requester_id ||
+      request.fingerprint !== requestFingerprint(request.payload)) throw new Error('consult-request-provenance-mismatch');
+  try {
+    const result = await deps.execute(request.payload, { conversation_id: conversationId, thread_id: `thr-${conversationId}`, leaseToken: token });
+    await sql`
+      UPDATE harness_shared.consult_state SET routing = jsonb_set(routing, '{request}',
+        (routing->'request') || ${sql.json({ result, leaseToken: null, leaseUntil: null } as never)}),
+        state = CASE WHEN state = 'routing' THEN 'no_qualified_responder' ELSE state END
+      WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
+        AND routing #>> '{request,leaseToken}' = ${token}`;
+  } catch (error) {
+    const attempts = (request.attempts ?? 0) + 1;
+    await sql`
+      UPDATE harness_shared.consult_state SET routing = jsonb_set(routing, '{request}',
+        (routing->'request') || ${sql.json({ attempts, leaseToken: null,
+          leaseUntil: new Date(now.getTime() + 30_000).toISOString(),
+          lastError: String(error).slice(0, 500) } as never)}),
+        state = CASE WHEN state = 'routing' AND ${attempts} >= 3 THEN 'no_qualified_responder' ELSE state END
+      WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
+        AND routing #>> '{request,leaseToken}' = ${token}`;
+    throw error;
+  }
+  return true;
 }
 
 /**
@@ -280,17 +438,22 @@ export interface GetFeedbackResult {
    * outcome; `state` reports the conversation's lifecycle, which on this path is
    * still genuinely "no responder attached" and is what the DB CHECK persists.
    */
-  verdict: 'routed' | 'no_qualified_responder' | 'served_from_archive' | 'relevance_unmeasured';
+  /** `no_launchable_responder` (consult-backed-parking P-003, bar R-2): experts
+   * WERE selected but no answering session could be launched for any of them.
+   * That is a dispatch failure, not the measured absence `no_qualified_responder`
+   * reports, so the two never share a verdict or a stored state. */
+  verdict: 'routed' | 'no_qualified_responder' | 'no_launchable_responder' | 'served_from_archive' | 'relevance_unmeasured' | 'retrieval_only';
   /** WHY, honestly (D-003: distinct causes must stay distinguishable).
-   * `embed_unavailable` always accompanies verdict `relevance_unmeasured`; the
-   * other two accompany `no_qualified_responder`. */
-  reason?: 'below_floor' | 'no_available_responder' | 'embed_unavailable';
+   * `embed_unavailable` / `evidence_unavailable` accompany verdict
+   * `relevance_unmeasured`; `below_floor` accompanies `no_qualified_responder`;
+   * `no_available_responder` accompanies `no_launchable_responder`. */
+  reason?: 'below_floor' | 'no_available_responder' | 'embed_unavailable' | 'evidence_unavailable' | 'retrieval_only';
   conversation_id: string;
   thread_id: string;
   /** 'served_from_archive' is a TS-surface state only — the DB row reuses
    * state='closed_answered' with outcome.source='archive' (P-006; no enum
    * widening in migration 834's CHECK). */
-  state: 'awaiting_responder' | 'no_qualified_responder' | 'served_from_archive';
+  state: 'awaiting_responder' | 'no_qualified_responder' | 'no_launchable_responder' | 'served_from_archive';
   responder: RoutingCandidate | null;
   /** How the responder entered the selected set (D-002): 'floor' = cleared the
    * routing floors; 'minimum' = best-available fill below them (weigh the
@@ -331,7 +494,7 @@ export interface GetFeedbackResult {
   dispatch?: {
     sourceOwnerId: string;
     answeringOwnerId: string | null;
-    operation: 'fork' | 'convert' | null;
+    operation: 'fork' | 'convert' | 'brief' | null;
     agent: string | null;
     model: string | null;
     verified: boolean | null;
@@ -347,7 +510,7 @@ export interface GetFeedbackResult {
      * { answer?, confidence?, evidence?, reason? }). */
     answer: unknown;
   };
-  degraded?: 'embed-unavailable';
+  degraded?: 'embed-unavailable' | 'evidence-unavailable';
   hint: string;
 }
 
@@ -368,6 +531,9 @@ interface ConsultArchiveRow {
  * A question without named refs remains compatible only with another question
  * without named refs, so a specific archived answer cannot silently answer a
  * generic request (or vice versa).
+ * Version-stamped slugs are also refs when callers omit the kind word, as in
+ * "vet acceptance-example-2026-08-30". Without this fallback, both that
+ * specific request and an unrelated dated rubric can look subjectless here.
  */
 export function consultSubjectKeys(question: string): string[] {
   const keys = new Set<string>();
@@ -376,8 +542,21 @@ export function consultSubjectKeys(question: string): string[] {
     const kind = match[1].toLowerCase().replace(/[\s-]+/g, '-');
     keys.add(`${kind}:${match[2].toLowerCase()}`);
   }
-  const explicitIds = /\b((?:WI|EI|F|D)-\d{1,12})\b/gi;
+  const untypedDatedSlug = /\b([a-z0-9][a-z0-9._/]*(?:-[a-z0-9][a-z0-9._/]*){1,}-\d{4}-\d{2}-\d{2})\b/gi;
+  for (const match of question.matchAll(untypedDatedSlug)) {
+    keys.add(`slug:${match[1].toLowerCase()}`);
+  }
+  // EI- tails are ~17 digits and slotted WI- ids are 16 (migration 1442), so the
+  // digit run must not be capped below that: a capped run plus \b matches nothing.
+  const explicitIds = /\b((?:WI|EI|F|D)-\d{1,20})\b/gi;
   for (const match of question.matchAll(explicitIds)) keys.add(`id:${match[1].toUpperCase()}`);
+  // A review of the same subject can become stale when its criteria change.
+  // Keep explicitly requested revision/digest pins in the archive identity too;
+  // an unpinned answer cannot stand in for a pinned construction review.
+  const revisionPin = /\b(?:rev(?:ision)?)[\s:#=]*(\d+)\b/gi;
+  for (const match of question.matchAll(revisionPin)) keys.add(`revision:${match[1]}`);
+  const hashPin = /\b(?:criteria[\s_-]*)?hash[\s:#=]*([a-f0-9]{7,64})\b/gi;
+  for (const match of question.matchAll(hashPin)) keys.add(`hash:${match[1].toLowerCase()}`);
   return [...keys].sort();
 }
 
@@ -588,6 +767,31 @@ export interface BriefCandidate {
   evidence: Array<{ session_id: string; turn_idx: number; sim: number; lexicalRank?: number }>;
 }
 
+/**
+ * EI-24833606853730057: tell "refused before any model was tried" apart from "every
+ * model was walled" using the consult's persisted dispatch walks. A walk that
+ * records `dispatched:false` with an EMPTY `attempts` list never reached the rank
+ * loop (source ownership, transcript availability, cool-down…), so no account reset
+ * will fix it, and the requester's hint must not claim one will.
+ */
+export function summarizePreLaunchRefusals(walks: unknown): { total: number; refused: number; details: string[] } {
+  const list = Array.isArray(walks) ? walks : [];
+  let total = 0;
+  let refused = 0;
+  const details: string[] = [];
+  for (const walk of list) {
+    if (!walk || typeof walk !== 'object') continue;
+    const w = walk as { dispatched?: unknown; attempts?: unknown; detail?: unknown };
+    if (w.dispatched !== false) continue;
+    total += 1;
+    if (!Array.isArray(w.attempts) || w.attempts.length > 0) continue;
+    refused += 1;
+    const detail = typeof w.detail === 'string' ? w.detail.trim() : '';
+    if (detail && !details.includes(detail) && details.length < 3) details.push(detail.slice(0, 240));
+  }
+  return { total, refused, details };
+}
+
 /** Compact why-you-were-chosen evidence for the wake body (D-008 §5) — refs
  * resolvable via sessions:read, so relevance validation is a cheap check. */
 function evidenceLine(c: Pick<BriefCandidate, 'evidence'>): string {
@@ -640,6 +844,8 @@ export interface VettingConsultCritique {
   declinePosts: number;
   /** Distinct authors of the critique posts, so the stamp can name the critics. */
   critics: string[];
+  /** Present only when the emitter is the persisted rubric-vetting answerer and authored a non-decline critique post. */
+  routedVettingCritic?: string;
   /**
    * Present when the caller supplied rubric/plan refs to bind the consult to a
    * specific vetting subject. A match must occur in the durable opening
@@ -670,6 +876,34 @@ function vettingConsultRelevance(
     }
   }
   return { matched: matchedRefs.size > 0, matchedRefs: [...matchedRefs], via: [...via] };
+}
+
+/** A consult's source responder and the session that actually answered can
+ * differ. Only the router's durable rubric-vetting policy + answeringOwnerId
+ * stamp can let that answerer count their own critique as evidence for the
+ * scorecard they authored. */
+function isRoutedRubricVettingAnswerer(routing: unknown, emitterId: string): boolean {
+  let snapshot = routing;
+  if (typeof snapshot === 'string') {
+    try {
+      snapshot = JSON.parse(snapshot) as unknown;
+    } catch {
+      return false;
+    }
+  }
+  if (snapshot === null || typeof snapshot !== 'object' || Array.isArray(snapshot)) return false;
+  const root = snapshot as Record<string, unknown>;
+  if (root.policy !== RUBRIC_VETTING_POLICY) return false;
+  const selection = root.selection;
+  if (selection === null || typeof selection !== 'object' || Array.isArray(selection)) return false;
+  const selected = (selection as Record<string, unknown>).selected;
+  return (
+    Array.isArray(selected) &&
+    selected.some((entry) => {
+      if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return false;
+      return (entry as Record<string, unknown>).answeringOwnerId === emitterId;
+    })
+  );
 }
 
 /**
@@ -705,7 +939,7 @@ export async function readVettingConsultCritique(
   relevanceRefs: readonly string[] = [],
 ): Promise<VettingConsultCritique> {
   const stateRows = (await sql`
-    SELECT state, requester_id, responder_id, question, outcome
+    SELECT state, requester_id, responder_id, question, outcome, routing
       FROM harness_shared.consult_state
      WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
      LIMIT 1
@@ -715,6 +949,7 @@ export async function readVettingConsultCritique(
     responder_id: string | null;
     question: string;
     outcome: unknown;
+    routing: unknown;
   }>;
   const stateRow = stateRows[0];
   if (!stateRow) {
@@ -757,26 +992,30 @@ export async function readVettingConsultCritique(
     };
   }
 
+  const emitterIsRoutedVettingAnswerer =
+    emitterId !== stateRow.requester_id && isRoutedRubricVettingAnswerer(stateRow.routing, emitterId);
   const postRows = (await sql`
     SELECT kind, author_id
       FROM harness_shared.consult_post_meta pm
      WHERE pm.workspace_id = ${workspaceId}
        AND pm.conversation_id = ${conversationId}
        AND pm.author_id IS NOT NULL
-       AND pm.author_id <> ${emitterId}
        AND pm.author_id <> ${stateRow.requester_id}
   `) as unknown as { kind: string; author_id: string }[];
 
   const critics = new Set<string>();
   let critiquePosts = 0;
   let declinePosts = 0;
+  let routedVettingCritic: string | undefined;
   for (const post of postRows) {
+    if (post.author_id === emitterId && !emitterIsRoutedVettingAnswerer) continue;
     if (post.kind === 'decline') {
       declinePosts += 1;
       continue;
     }
     critiquePosts += 1;
     critics.add(post.author_id);
+    if (post.author_id === emitterId && emitterIsRoutedVettingAnswerer) routedVettingCritic = emitterId;
   }
   return {
     exists: true,
@@ -784,6 +1023,7 @@ export async function readVettingConsultCritique(
     critiquePosts,
     declinePosts,
     critics: [...critics].sort(),
+    ...(routedVettingCritic ? { routedVettingCritic } : {}),
     ...(relevanceRefs.length > 0
       ? { relevance: vettingConsultRelevance(relevanceRefs, [{ via: 'question', text: stateRow.question }])! }
       : {}),
@@ -822,6 +1062,33 @@ async function readConsultLineage(
   return parentDepth == null ? null : { parentDepth, owners };
 }
 
+/**
+ * D-002 provenance, stated rather than implied: the requester needs to know
+ * that the reply will come from a NEW session, not from the expert — otherwise
+ * they will read the answer as that agent's considered position and, worse,
+ * expect that agent to remember the exchange.
+ *
+ * consult-backed-parking-2026-10-12 P-002 / D-008: a `brief` launch is a FRESH
+ * session holding only the expert's cited turns — never their session — so it
+ * gets its own wording instead of the fork/convert one.
+ */
+export function renderDispatchProvenanceNote(p: GetFeedbackResult['dispatch'] | null | undefined): string {
+  if (!p) return '';
+  const target = `${p.agent ?? '?'}/${p.model ?? '?'}`;
+  const liveness = p.verified === true ? ' (live)' : ' (booting — the cascade expiry guards the reply)';
+  if (p.operation === 'brief') {
+    return ` 🧭 No agent was woken: launched a FRESH session on ${target}` +
+      `${p.answeringOwnerId ? ` as ${p.answeringOwnerId}` : ''}, briefed with turns cited from ` +
+      `${p.sourceOwnerId}'s transcript${liveness}. ` +
+      `It holds only those quoted turns, not their session; ${p.sourceOwnerId} was not asked and will not remember it.`;
+  }
+  return ` 🧭 No agent was woken: ${p.operation === 'convert' ? 'CONVERTED' : 'FORKED'} ` +
+    `${p.sourceOwnerId}'s session onto ${target}` +
+    `${p.answeringOwnerId && p.answeringOwnerId !== p.sourceOwnerId ? ` as ${p.answeringOwnerId}` : ''}` +
+    `${liveness}. ` +
+    `The answer reasons over their transcript; they were not asked and will not remember it.`;
+}
+
 export async function getFeedbackCore(
   req: GetFeedbackRequest,
   deps: GetFeedbackDeps,
@@ -829,6 +1096,16 @@ export async function getFeedbackCore(
   const sql = deps.getSql();
   const now = deps.now ? deps.now() : new Date();
   const latency: LatencyContract = req.latencyContract ?? 'proceed';
+
+  // P-007 / SPEC-P-007-CRITIQUE-REF: plans:start finds a plan's critiques by
+  // origin_task_ref = plan slug, so a bar-critique without one could never count.
+  // Refuse it here instead of letting it default to the requester's wip item.
+  if (req.policy === BAR_CRITIQUE_POLICY && !(typeof req.originTaskRef === 'string' && req.originTaskRef.trim())) {
+    return {
+      error: 'bar_critique_requires_plan',
+      hint: `policy:'${BAR_CRITIQUE_POLICY}' critiques one plan's bars: pass origin_task_ref:'<plan slug>' so plans:start can count it.`,
+    };
+  }
 
   // 0) Recursion lineage (P-005, D-005 / D-007 §7): a consult opened from
   //    within a consult carries parent depth+1 (structural refusal past the
@@ -894,6 +1171,10 @@ export async function getFeedbackCore(
     requesterId: req.requesterId,
     question: req.question,
     subjectRef: req.subjectRef ?? null,
+    ...((req.resolvedSubjectRefs ?? req.subjectRefs) !== undefined
+      ? { subjectRefs: req.resolvedSubjectRefs ?? req.subjectRefs }
+      : {}),
+    ...(req.unresolvedSubjectRefs?.length ? { unresolvedSubjectRefs: req.unresolvedSubjectRefs } : {}),
     ...(excludeOwners.length ? { excludeOwners } : {}),
   });
   // The production router applies these exclusions in SQL, but the core also
@@ -911,6 +1192,7 @@ export async function getFeedbackCore(
     [...excludeOwners, req.requesterId].filter((owner) => !cycleCheckOwners.has(owner)),
   );
   route.qualified = route.qualified.filter((candidate) => !excludedFromCandidacy.has(candidate.ownerId));
+  route.snapshot.deliveryIntent = req.allowDispatch === false ? 'retrieval-only' : 'dispatch';
   route.snapshot.candidates = route.snapshot.candidates.filter(
     (candidate) => !excludedFromCandidacy.has(candidate.ownerId),
   );
@@ -944,7 +1226,7 @@ export async function getFeedbackCore(
   //     The SELECT doubles as the capability probe: pgvector absent / column
   //     not migrated throws, and the leg degrades to normal routing (the
   //     per-source degrade contract) — the INSERT then also skips the column.
-  const archiveFloor = req.archiveFloor ?? DEFAULT_ARCHIVE_FLOOR;
+  const archiveFloor = req.nativeConsult ? 2 : req.archiveFloor ?? DEFAULT_ARCHIVE_FLOOR;
   const qVecStr = route.queryVec && route.queryVec.length > 0 && route.queryProfile
     ? JSON.stringify(route.queryVec)
     : null;
@@ -978,7 +1260,9 @@ export async function getFeedbackCore(
         (candidate) =>
           Number(candidate.sim) >= archiveFloor && archiveSubjectsMatch(req.question, candidate.question),
       );
-      if (top) archiveHit = { ...top, sim: Number(top.sim) };
+      // A bar critique must be a fresh reading of THIS plan's current bars; an
+      // archived answer to a similar question cannot pin them (P-007).
+      if (top && req.policy !== BAR_CRITIQUE_POLICY) archiveHit = { ...top, sim: Number(top.sim) };
     } catch {
       embeddingColumnOk = false;
     }
@@ -991,7 +1275,7 @@ export async function getFeedbackCore(
   // exclusion predicate. Prod (buildClient, prepare:false) sends text and
   // single-encodes either way; sql.json() single-encodes under BOTH modes.
   if (archiveHit) {
-    const opened = await deps.open({
+    const opened = deps.acceptedRequest ?? await deps.open({
       kind: 'consult',
       title: consultTitle(req.question),
       body: consultBody(req),
@@ -1032,7 +1316,7 @@ export async function getFeedbackCore(
     //     analytic and leaving the row un-orderable against its own siblings.
     //     Both timestamps now come from the SAME clock, so the row cannot
     //     close before it opens.
-    await sql`
+    const persisted = await sql`
       INSERT INTO harness_shared.consult_state
         (workspace_id, conversation_id, requester_id, responder_id, state, question,
          latency_contract, origin_task_ref, routing, outcome, closed_at, wakes_used,
@@ -1044,7 +1328,17 @@ export async function getFeedbackCore(
          ${sql.json(outcome as never)}, now(), 0,
          ${depth}, ${req.parentConsultId ?? null}, ${qVecStr}::vector,
          ${route.queryMode}, ${route.queryProfile!.profileId})
+      ON CONFLICT (workspace_id, conversation_id) DO UPDATE SET
+        state = EXCLUDED.state, responder_id = EXCLUDED.responder_id,
+        origin_task_ref = EXCLUDED.origin_task_ref, outcome = EXCLUDED.outcome,
+        closed_at = EXCLUDED.closed_at, depth = EXCLUDED.depth, parent_consult_id = EXCLUDED.parent_consult_id,
+        routing = EXCLUDED.routing || jsonb_build_object('request', consult_state.routing->'request'),
+        query_embedding = EXCLUDED.query_embedding, query_embedding_mode = EXCLUDED.query_embedding_mode,
+        query_embedding_profile = EXCLUDED.query_embedding_profile
+      WHERE consult_state.state = 'routing' AND consult_state.routing #>> '{request,leaseToken}' = ${deps.acceptedRequest?.leaseToken ?? null}
+      RETURNING conversation_id
     `;
+    if (persisted.length === 0) throw new Error('consult-request-lease-lost');
     return {
       ok: true,
       verdict: 'served_from_archive',
@@ -1122,6 +1416,7 @@ export async function getFeedbackCore(
   // recognize a review consult (rubric-vetting) and convert it to pullable work.
   if (req.policy) route.snapshot.policy = req.policy;
   if (req.reviewerModel) route.snapshot.reviewerModel = req.reviewerModel;
+  if (req.nativeConsult) route.snapshot.nativeConsult = req.nativeConsult;
   const chosenSel = selected[0] ?? null;
   const chosen = chosenSel?.candidate ?? null;
   const chosenVia: SelectionVia | null = chosenSel?.via ?? null;
@@ -1158,7 +1453,7 @@ export async function getFeedbackCore(
   //     agent through the back door the wake seam just stopped using. Nobody
   //     needs the subscription anyway — appendPost auto-joins a contributor, so
   //     the answering session can post without being enrolled first.
-  const opened = await deps.open({
+  const opened = deps.acceptedRequest ?? await deps.open({
     kind: 'consult',
     title: consultTitle(req.question),
     body: consultBody(req),
@@ -1180,8 +1475,12 @@ export async function getFeedbackCore(
   // selectee's allowlist exhausted, and the honest terminal for that is
   // `no_available_responder` with NO responder named (see 7c). `chosen` itself
   // is non-null on this path, so the widening is the walk's, not the route's.
-  let finalChosen: RoutingCandidate | null = chosen;
-  let finalChosenVia: SelectionVia | null = chosenVia;
+  const retrievalOnly = req.allowDispatch === false;
+  // Retrieval preserves the ranked menu but never attaches an answering
+  // identity or enters the dispatch/cascade path. The persisted no-responder
+  // state is inert; deliveryIntent distinguishes it from failed dispatch.
+  let finalChosen: RoutingCandidate | null = retrievalOnly ? null : chosen;
+  let finalChosenVia: SelectionVia | null = retrievalOnly ? null : chosenVia;
   const provisionalState: GetFeedbackResult['state'] = finalChosen
     ? 'awaiting_responder'
     : 'no_qualified_responder';
@@ -1194,8 +1493,9 @@ export async function getFeedbackCore(
   // query_embedding is stored whenever the column exists (embeddingColumnOk —
   // proven by the archive probe) and this route produced a vector: every
   // consult forward-fills the P-006 retrieval cache, hit or miss.
+  let persisted;
   if (embeddingColumnOk && qVecStr) {
-    await sql`
+    persisted = await sql`
       INSERT INTO harness_shared.consult_state
         (workspace_id, conversation_id, requester_id, responder_id, state, question,
          latency_contract, origin_task_ref, routing, expires_at, wakes_used,
@@ -1206,9 +1506,18 @@ export async function getFeedbackCore(
          ${originRef}, ${sql.json(route.snapshot as never)}, ${provisionalExpiresAt},
          ${provisionalWillWake ? 1 : 0}, ${depth}, ${req.parentConsultId ?? null}, ${qVecStr}::vector,
          ${route.queryMode}, ${route.queryProfile!.profileId})
+      ON CONFLICT (workspace_id, conversation_id) DO UPDATE SET
+        responder_id = EXCLUDED.responder_id, state = EXCLUDED.state,
+        origin_task_ref = EXCLUDED.origin_task_ref, expires_at = EXCLUDED.expires_at,
+        wakes_used = EXCLUDED.wakes_used, depth = EXCLUDED.depth, parent_consult_id = EXCLUDED.parent_consult_id,
+        routing = EXCLUDED.routing || jsonb_build_object('request', consult_state.routing->'request'),
+        query_embedding = EXCLUDED.query_embedding, query_embedding_mode = EXCLUDED.query_embedding_mode,
+        query_embedding_profile = EXCLUDED.query_embedding_profile
+      WHERE consult_state.state = 'routing' AND consult_state.routing #>> '{request,leaseToken}' = ${deps.acceptedRequest?.leaseToken ?? null}
+      RETURNING conversation_id
     `;
   } else {
-    await sql`
+    persisted = await sql`
       INSERT INTO harness_shared.consult_state
         (workspace_id, conversation_id, requester_id, responder_id, state, question,
          latency_contract, origin_task_ref, routing, expires_at, wakes_used,
@@ -1218,8 +1527,16 @@ export async function getFeedbackCore(
          ${finalChosen?.ownerId ?? null}, ${provisionalState}, ${req.question}, ${latency},
          ${originRef}, ${sql.json(route.snapshot as never)}, ${provisionalExpiresAt},
          ${provisionalWillWake ? 1 : 0}, ${depth}, ${req.parentConsultId ?? null})
+      ON CONFLICT (workspace_id, conversation_id) DO UPDATE SET
+        responder_id = EXCLUDED.responder_id, state = EXCLUDED.state,
+        origin_task_ref = EXCLUDED.origin_task_ref, expires_at = EXCLUDED.expires_at,
+        wakes_used = EXCLUDED.wakes_used, depth = EXCLUDED.depth, parent_consult_id = EXCLUDED.parent_consult_id,
+        routing = EXCLUDED.routing || jsonb_build_object('request', consult_state.routing->'request')
+      WHERE consult_state.state = 'routing' AND consult_state.routing #>> '{request,leaseToken}' = ${deps.acceptedRequest?.leaseToken ?? null}
+      RETURNING conversation_id
     `;
   }
+  if (persisted.length === 0) throw new Error('consult-request-lease-lost');
 
 
   // An empty selection is now a pure ROUTING verdict, and that is the D-002
@@ -1230,11 +1547,17 @@ export async function getFeedbackCore(
   // below_floor. The third case — an expert was selected but no allowed model
   // could be launched from their transcript — is only knowable AFTER the
   // dispatch walk, and is recorded there as `no_available_responder`.
-  let reason: GetFeedbackResult['reason'] = finalChosen
-    ? undefined
-    : route.snapshot.degraded === 'embed-unavailable'
-      ? 'embed_unavailable'
-      : 'below_floor';
+  // Set only on the exhausted-menu terminal (7c); drives the honest hint there.
+  let preLaunchRefusals: ReturnType<typeof summarizePreLaunchRefusals> | null = null;
+  let reason: GetFeedbackResult['reason'] = retrievalOnly
+    ? 'retrieval_only'
+    : finalChosen
+      ? undefined
+      : route.snapshot.degraded === 'embed-unavailable'
+        ? 'embed_unavailable'
+        : route.snapshot.degraded === 'evidence-unavailable'
+          ? 'evidence_unavailable'
+        : 'below_floor';
 
   // 4) Delivery gating is SELECTION only — the per-task wake budget is REMOVED
   //    (D-005: maxResponders is the only per-consult bound; residual spam guards
@@ -1262,7 +1585,9 @@ export async function getFeedbackCore(
   let woke = 0;
   let pickupConfirmed = false;
   const briefFor = (candidate: RoutingCandidate, via: SelectionVia | null) => {
-    const auditCopy = req.cascade ? sourceAuditWakeCopy(req.cascade, opened.conversation_id) : null;
+    // consult-backed-parking D-013: a decision-review cascade uses the default consult copy.
+    const auditCopy = req.cascade?.flavor === 'grading-integrity' ? sourceAuditWakeCopy(req.cascade, opened.conversation_id) : null;
+    const reviewCopy = consultCurrentReviewContext(req.policy);
     return {
       summary:
         auditCopy?.summary ??
@@ -1271,6 +1596,8 @@ export async function getFeedbackCore(
       // that implies); the verb menu does NOT. Keeping the menu out of the ternary is the point
       // of EI-21761566265989000: three inline copies is how all three came to omit the READ door.
       body: auditCopy?.body ?? (
+        `QUESTION: ${req.question}\n` +
+        (reviewCopy ? `${reviewCopy}\n` : '') +
         (candidate.fallback === 'lexical'
           ? `The semantic embedder is UNAVAILABLE. You are the bounded MANUAL-REVIEW pick from lexical text_tsv evidence (token overlap only; this is NOT a qualified semantic route).\n` +
             `Lexical evidence: ${evidenceLine(candidate)}. Review the question independently, state what you can and cannot ground, and do not present token overlap as expertise.\n`
@@ -1279,10 +1606,10 @@ export async function getFeedbackCore(
             `This is a FIRST-PRINCIPLES review request, not a claim the transcript covers it — do NOT decline solely for lack of context. Review the question on its merits and state plainly what you can and cannot ground.\n`
           : `Routed by transcript relevance (relevance ${candidate.relevance.toFixed(2)}, sim ${candidate.signals.similarity.toFixed(2)}).\n` +
             `Why this transcript: ${evidenceLine(candidate)} — sessions:read resolves the refs.\n` +
-            `Validate relevance FIRST; decline cheaply if the context doesn't cover it. Answer FROM the transcript, citing evidence.\n`) +
+            (reviewCopy ? '' : `Validate relevance FIRST; decline cheaply if the context doesn't cover it. Answer FROM the transcript, citing evidence.\n`)) +
         consultResponderVerbMenu({
           conversationId: opened.conversation_id,
-          ...(via === 'minimum'
+          ...(reviewCopy || via === 'minimum'
             ? { evidenceNote: 'answer requires evidence — labeled first-principles reasoning is admissible here' }
             : {}),
           ...(candidate.fallback !== 'lexical' && via !== 'minimum'
@@ -1297,9 +1624,9 @@ export async function getFeedbackCore(
       responder: finalChosen.ownerId,
       conversationId: opened.conversation_id,
       evidence: finalChosen.evidence,
-      // Stamp the answering identity the moment that session starts, not when
-      // the dispatcher returns: it can post during the verification wait, and
-      // the reply gate refuses an author the row does not name yet. The
+      // Stamp before a fork is launched: its first turn can reply while
+      // spawnHeadless is waiting for the kickoff receipt. Conversions retain
+      // their existing identity and stamp before verification; the
       // post-dispatch stamp below remains the backstop.
       onAnsweringOwner: (owner) =>
         stampAnsweringOwner(sql, req.workspaceId, opened.conversation_id, 0, owner),
@@ -1327,7 +1654,16 @@ export async function getFeedbackCore(
     //     the next selectee. This is R-6 in the general case: a walled backend
     //     costs one expert, never the consult.
     let cascadeContinues = false;
-    if (queued === 0 && finalSelected.length > 1) {
+    // WI-6554700010008590: a single-seat menu still has a failover target when the
+    // routing pool holds candidates the menu never seated. advanceCascade's
+    // min-ANSWERS refill draws from exactly that untried remainder, so gating on
+    // `finalSelected.length > 1` alone stranded a bar-critique consult whose only
+    // seat was refused pre-launch (transcript not_archived) with seven untried
+    // candidates — two of them live — and ended it no_qualified_responder.
+    const seatedOwners = new Set(finalSelected.map((s) => s.candidate.ownerId));
+    const hasUntriedPool = minResponders > 0 &&
+      route.snapshot.candidates.some((c) => !seatedOwners.has(c.ownerId));
+    if (queued === 0 && (finalSelected.length > 1 || hasUntriedPool)) {
       const failedOwner = finalSelected[0]!.candidate.ownerId;
       let failoverReach: Awaited<ReturnType<GetFeedbackDeps['reach']>> | undefined;
       const advanced = await advanceCascade(
@@ -1402,16 +1738,26 @@ export async function getFeedbackCore(
     //     terminal the old code could not express — it had a revival to try.
     if (queued === 0 && !cascadeContinues) {
       reason = 'no_available_responder';
-      state = 'no_qualified_responder';
+      // P-003 / R-2: experts were selected and every one was attempted, so this
+      // is NOT the measured absence no_qualified_responder reports.
+      state = 'no_launchable_responder';
       expiresAt = null;
       // …and DROP the responder. Nothing was launched, so naming one would
       // promise an answer that is not coming — the park key, the verdict and
       // the hint all derive from this, and each is only honest once it is null.
       finalChosen = null;
       finalChosenVia = null;
+      try {
+        const walkRows = await sql<{ walks: unknown }[]>`
+          SELECT dispatch_attempts AS walks FROM harness_shared.consult_state
+           WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${opened.conversation_id}`;
+        preLaunchRefusals = summarizePreLaunchRefusals(walkRows[0]?.walks);
+      } catch {
+        /* the hint falls back to the generic wording; the verdict is unaffected */
+      }
       await sql`
         UPDATE harness_shared.consult_state
-           SET state = 'no_qualified_responder',
+           SET state = 'no_launchable_responder',
                responder_id = NULL,
                expires_at = NULL,
                updated_at = ${now.toISOString()}::timestamptz
@@ -1431,18 +1777,7 @@ export async function getFeedbackCore(
     finalChosen?.fallback === 'lexical'
       ? ' ⚠ Semantic embedding was unavailable: this is a BOUNDED MANUAL-REVIEW pick from lexical text_tsv token matches, not a qualified semantic responder. Validate independently.'
       : '';
-  // D-002 provenance, stated rather than implied: the requester needs to know
-  // that the reply will come from a NEW session reasoning over the expert's
-  // transcript, not from the expert — otherwise they will read the answer as
-  // that agent's considered position and, worse, expect that agent to remember
-  // the exchange.
-  const dispatchNote = dispatchProvenance
-    ? ` 🧭 No agent was woken: ${dispatchProvenance.operation === 'convert' ? 'CONVERTED' : 'FORKED'} ` +
-      `${dispatchProvenance.sourceOwnerId}'s session onto ${dispatchProvenance.agent ?? '?'}/${dispatchProvenance.model ?? '?'}` +
-      `${dispatchProvenance.answeringOwnerId && dispatchProvenance.answeringOwnerId !== dispatchProvenance.sourceOwnerId ? ` as ${dispatchProvenance.answeringOwnerId}` : ''}` +
-      `${dispatchProvenance.verified === true ? ' (live)' : ' (booting — the cascade expiry guards the reply)'}. ` +
-      `The answer reasons over their transcript; they were not asked and will not remember it.`
-    : '';
+  const dispatchNote = renderDispatchProvenanceNote(dispatchProvenance);
   const wakeNote = pickupConfirmed
     ? `answering session live for ${finalChosen?.ownerId}'s transcript`
     : `answering session launched for ${finalChosen?.ownerId}'s transcript; it is still booting — the cascade expiry guards the reply`;
@@ -1458,9 +1793,16 @@ export async function getFeedbackCore(
   const hint = finalChosen
     ? latency === 'hard-blocked'
       ? `Routed + ${wakeNote}. Park on events:await { event: '${parkKey}' } and end your turn — the reply wakes you (latched). Expires ${expiresAt}.${viaNote}${fallbackNote}${dispatchNote}${autoExcludedNoteText}`
-      : `Routed + ${wakeNote}; the reply lands in conversation ${opened.conversation_id}. PROCEED on your own judgment meanwhile and reconcile when it arrives. Declines/expiries advance the cascade SERVER-side (the next expert is dispatched with the feedback so far, D-005) — no re-call needed unless the whole menu exhausts.${viaNote}${fallbackNote}${dispatchNote}${autoExcludedNoteText}`
+      : `Routed + ${wakeNote}; the reply lands in conversation ${opened.conversation_id}. PROCEED on your own judgment meanwhile and apply relevant advice to your project when it arrives. Declines/expiries advance the cascade SERVER-side (the next expert is dispatched with the feedback so far, D-005) — no re-call needed unless the whole menu exhausts.${viaNote}${fallbackNote}${dispatchNote}${autoExcludedNoteText}`
+    : retrievalOnly
+      ? 'Retrieval-only: dispatch was disabled. No answering session was requested; do not park. Read remaining_candidates with sessions:read / sessions:search and decide from their transcript evidence.'
     : reason === 'embed_unavailable'
       ? `The embedder is unavailable on this host — similarity could NOT be measured, so there is no ranking to fill a minimum from (cannot-measure ≠ measured-nothing). Proceed on your own judgment; retry later if the answer matters.`
+      : reason === 'evidence_unavailable'
+        ? 'Problem-specific expertise could not be fully measured within the bounded evidence check. This does not prove no expert exists. Read the candidate transcript references and retry if the answer matters.'
+      : reason === 'no_available_responder' && preLaunchRefusals && preLaunchRefusals.total > 0 &&
+          preLaunchRefusals.refused === preLaunchRefusals.total
+        ? `Matching experts were selected, but every dispatch walk (${preLaunchRefusals.total}) was refused BEFORE any model was tried, so no account wall is involved and retrying after a reset will not help: ${preLaunchRefusals.details.join(' | ')}. Nothing is coming, so do not park: remaining_candidates lists the experts; read their transcripts via sessions:read / sessions:search (retrieval fallback) and proceed.`
       : reason === 'no_available_responder'
         ? `Matching experts were selected, but NO allowed model could be launched from any of their transcripts — every ranked model was walled, unreachable for that backend, or failed to launch. Nothing is coming, so do not park: remaining_candidates lists the experts; read their transcripts via sessions:read / sessions:search (retrieval fallback) and proceed. Retrying once a walled account resets is reasonable.`
         : `No transcript cleared this question's relevance floor (and no minimum-fill applied — either min 0 was requested or nothing matched at all): there is no best-available reviewer to route to. Proceed on your own judgment (first-class honest verdict, not an error).`;
@@ -1470,11 +1812,15 @@ export async function getFeedbackCore(
     // Derived from `reason` rather than re-testing `snapshot.degraded`, so the
     // verdict and the reason can never drift into disagreeing about the same
     // route (EI-21485716602970457).
-    verdict: finalChosen
-      ? 'routed'
-      : reason === 'embed_unavailable'
-        ? 'relevance_unmeasured'
-        : 'no_qualified_responder',
+    verdict: retrievalOnly
+      ? 'retrieval_only'
+      : finalChosen
+        ? 'routed'
+        : reason === 'embed_unavailable' || reason === 'evidence_unavailable'
+          ? 'relevance_unmeasured'
+          : reason === 'no_available_responder'
+            ? 'no_launchable_responder'
+            : 'no_qualified_responder',
     ...(reason ? { reason } : {}),
     conversation_id: opened.conversation_id,
     thread_id: opened.thread_id,
@@ -1482,7 +1828,7 @@ export async function getFeedbackCore(
     responder: finalChosen,
     responder_via: finalChosenVia,
     remaining_candidates: (finalSelected.length > 0
-      ? finalSelected.slice(1)
+      ? retrievalOnly ? finalSelected : finalSelected.slice(1)
       : route.qualified.map((c) => ({ candidate: c, via: 'floor' as SelectionVia }))
     ).map((s) => ({
       ownerId: s.candidate.ownerId,

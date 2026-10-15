@@ -42,14 +42,21 @@
  * proxy is a pure per-request passthrough — no session state to lose across a restart.
  */
 import http from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
+import { parser as createStreamJsonParser } from "stream-json";
 import { normalizeMcpName } from "@papercusp/tooldef";
 import {
   MCP_DATA_PLANE_DEGRADED_AT_HEADER,
   MCP_REQUEST_TRACE_HEADER,
   MAX_MCP_REQUEST_TRACE_ID_CHARS,
+  logMcpRequestTrace,
 } from "@papercusp/operator-core/lib/mcp-request-trace";
-import { isCheapRepeatingBeat } from "@papercusp/operator-core/lib/system-health/mcp-proxy-beats";
+import {
+  isCheapRepeatingBeat,
+  isFastFailPrecheck,
+} from "@papercusp/operator-core/lib/system-health/mcp-proxy-beats";
+import { MCP_PROXY_FAILURE_LOG_MAX_BYTES } from "@papercusp/operator-core/lib/system-health/mcp-proxy-health";
 import {
   isBoundedDevTelemetryArgs,
   isBoundedCoordPresenceArgs,
@@ -62,6 +69,7 @@ import {
   isBoundedTestingRunStatusArgs,
 } from "@papercusp/operator-core/lib/endpoint-route/routes/transport/mcp-admission";
 import { classifyCapabilityBashEffect } from "@papercusp/operator-core/lib/agent-tools/capability/bash-effect";
+import { foreignLoopbackPeerForSocket } from "@papercusp/operator-core/lib/auth/loopback-peer-trust";
 export {
   CHEAP_REPEATING_BEAT_PATHS,
   isCheapRepeatingBeat,
@@ -198,7 +206,7 @@ function failureLogPath(): string {
     join(homedir(), ".papercusp", "mcp-proxy-failures.jsonl")
   );
 }
-export const DEFAULT_FAILURE_LOG_MAX_BYTES = 10 * 1024 * 1024;
+export const DEFAULT_FAILURE_LOG_MAX_BYTES = MCP_PROXY_FAILURE_LOG_MAX_BYTES;
 function failureLogMaxBytes(): number {
   const configured = Number(
     process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG_MAX_BYTES,
@@ -257,6 +265,358 @@ function recordProxyFailure(rec: Record<string, unknown>): void {
   } catch {
     /* telemetry must never break the proxy */
   }
+}
+
+const MAX_MCP_PROXY_SUCCESS_TOOL_NAMES = 64;
+const MAX_MCP_PROXY_SUCCESS_TOOL_NAME_CHARS = 128;
+const MAX_MCP_PROXY_SUCCESS_STAGE_MS = 10 * 60 * 1000;
+
+type NativeSessionAttribution = {
+  pseudonym: string | null;
+  source: string;
+  trust: string;
+};
+
+function nativeSessionAttribution(
+  headers: http.IncomingHttpHeaders,
+): NativeSessionAttribution {
+  const carrier = headers["x-papercusp-native-session"];
+  if (typeof carrier !== "string") {
+    return {
+      pseudonym: null,
+      source: carrier === undefined ? "absent" : "header:x-papercusp-native-session",
+      trust: carrier === undefined ? "unavailable" : "unusable",
+    };
+  }
+  const nativeSessionId = carrier.trim();
+  if (
+    nativeSessionId.length === 0 ||
+    nativeSessionId.length > MAX_MCP_PROXY_SUCCESS_TOOL_NAME_CHARS ||
+    !/^[A-Za-z0-9._:-]+$/.test(nativeSessionId)
+  ) {
+    return {
+      pseudonym: null,
+      source: "header:x-papercusp-native-session",
+      trust: "unusable",
+    };
+  }
+  return {
+    pseudonym: createHash("sha256")
+      .update(nativeSessionId)
+      .digest("hex")
+      .slice(0, 24),
+    source: "header:x-papercusp-native-session",
+    trust: "unverified-client-assertion",
+  };
+}
+
+function boundedMcpProxyStageMs(value: number): number {
+  return Number.isFinite(value)
+    ? Math.min(MAX_MCP_PROXY_SUCCESS_STAGE_MS, Math.max(0, Math.floor(value)))
+    : 0;
+}
+
+type McpResponseTelemetrySummary = {
+  resultSeen: boolean;
+  errorSeen: boolean;
+  toolsArraySeen: boolean;
+  toolCount: number;
+  toolNames: string[];
+};
+
+type McpResponseTelemetryObserver = {
+  write(chunk: Buffer): void;
+  finish(): Promise<McpResponseTelemetrySummary | null>;
+};
+
+/**
+ * Observe only the small result fields needed for MCP success telemetry. The SAX
+ * parser never assembles descriptions, schemas, or the response body, and the
+ * streamable-HTTP bytes continue through the original pipe untouched.
+ */
+function createMcpResponseTelemetryObserver(
+  contentType: string | string[] | undefined,
+): McpResponseTelemetryObserver {
+  type Frame = {
+    kind: "object" | "array";
+    role: "batch" | "response" | "result" | "tools" | "tool" | "other";
+    pendingKey?: string;
+    nameSeen: boolean;
+  };
+  type NameCapture = { value: string; chars: number };
+
+  const isEventStream = /text\/event-stream/i.test(
+    Array.isArray(contentType) ? contentType.join(",") : (contentType ?? ""),
+  );
+  const parser = createStreamJsonParser.asStream({
+    jsonStreaming: true,
+    packKeys: false,
+    packStrings: false,
+    packNumbers: false,
+  });
+  const decoder = isEventStream ? new StringDecoder("utf8") : null;
+  const frames: Frame[] = [];
+  const toolNames: string[] = [];
+  let resultSeen = false;
+  let errorSeen = false;
+  let toolsArraySeen = false;
+  let toolCount = 0;
+  let failed = false;
+  let finished = false;
+  let settled = false;
+  let inKey = false;
+  let keyBuffer = "";
+  let keyOverflow = false;
+  let activeName: NameCapture | null = null;
+  let sseMode: "prefix" | "data" | "other" = "prefix";
+  let ssePrefix = "";
+  let sseSkipOptionalSpace = false;
+  let sseEventHasData = false;
+  let ssePendingData = "";
+  let resolveCompletion: (
+    summary: McpResponseTelemetrySummary | null,
+  ) => void = () => {};
+  const completion = new Promise<McpResponseTelemetrySummary | null>(
+    (resolve) => {
+      resolveCompletion = resolve;
+    },
+  );
+
+  const settle = (summary: McpResponseTelemetrySummary | null): void => {
+    if (settled) return;
+    settled = true;
+    resolveCompletion(summary);
+  };
+  const fail = (): void => {
+    failed = true;
+    settle(null);
+  };
+  const appendNameChunk = (chunk: string): void => {
+    if (!activeName || activeName.chars >= MAX_MCP_PROXY_SUCCESS_TOOL_NAME_CHARS)
+      return;
+    const printable = chunk.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+    for (const character of printable) {
+      if (activeName.chars >= MAX_MCP_PROXY_SUCCESS_TOOL_NAME_CHARS) break;
+      activeName.value += character;
+      activeName.chars++;
+    }
+  };
+  const valueStarts = new Set([
+    "startObject",
+    "startArray",
+    "startString",
+    "startNumber",
+    "stringValue",
+    "numberValue",
+    "trueValue",
+    "falseValue",
+    "nullValue",
+  ]);
+  const beginValue = (tokenName: string): void => {
+    const parent = frames[frames.length - 1];
+    const key = parent?.kind === "object" ? parent.pendingKey : undefined;
+    if (parent?.kind === "object" && parent.role === "response") {
+      if (key === "result") resultSeen = true;
+      if (key === "error") errorSeen = true;
+    }
+    if (parent?.kind === "array" && parent.role === "tools" && valueStarts.has(tokenName)) {
+      if (toolCount < Number.MAX_SAFE_INTEGER) toolCount++;
+      else failed = true;
+    }
+    if (parent?.kind === "object" && parent.role === "tool" && key === "name") {
+      if (
+        tokenName === "startString" &&
+        !parent.nameSeen &&
+        toolNames.length < MAX_MCP_PROXY_SUCCESS_TOOL_NAMES
+      ) {
+        activeName = { value: "", chars: 0 };
+      }
+      parent.nameSeen = true;
+    }
+    if (parent?.kind === "object") parent.pendingKey = undefined;
+  };
+  const childRole = (
+    kind: "object" | "array",
+    parent: Frame | undefined,
+    key: string | undefined,
+  ): Frame["role"] => {
+    if (!parent) return kind === "array" ? "batch" : "response";
+    if (parent.kind === "array" && parent.role === "batch" && kind === "object")
+      return "response";
+    if (parent.kind === "object" && parent.role === "response" && key === "result" && kind === "object")
+      return "result";
+    if (parent.kind === "object" && parent.role === "result" && key === "tools" && kind === "array") {
+      toolsArraySeen = true;
+      return "tools";
+    }
+    if (parent.kind === "array" && parent.role === "tools" && kind === "object")
+      return "tool";
+    return "other";
+  };
+  parser.on("data", (token: { name: string; value?: unknown }) => {
+    if (failed) return;
+    try {
+      if (token.name === "startKey") {
+        inKey = true;
+        keyBuffer = "";
+        keyOverflow = false;
+        return;
+      }
+      if (token.name === "endKey") {
+        const frame = frames[frames.length - 1];
+        if (frame?.kind === "object")
+          frame.pendingKey = keyOverflow ? "" : keyBuffer;
+        inKey = false;
+        keyBuffer = "";
+        keyOverflow = false;
+        return;
+      }
+      if (token.name === "stringChunk") {
+        const chunk = typeof token.value === "string" ? token.value : "";
+        if (inKey) {
+          if (keyBuffer.length < 16) {
+            const remaining = 16 - keyBuffer.length;
+            keyBuffer += chunk.slice(0, remaining);
+            if (chunk.length > remaining) keyOverflow = true;
+          } else {
+            keyOverflow = true;
+          }
+        } else {
+          appendNameChunk(chunk);
+        }
+        return;
+      }
+      if (token.name === "endString") {
+        if (activeName) {
+          const sanitized = activeName.value.trim();
+          if (
+            sanitized.length > 0 &&
+            toolNames.length < MAX_MCP_PROXY_SUCCESS_TOOL_NAMES
+          )
+            toolNames.push(sanitized);
+          activeName = null;
+        }
+        return;
+      }
+      if (token.name === "startObject" || token.name === "startArray") {
+        const kind = token.name === "startObject" ? "object" : "array";
+        const parent = frames[frames.length - 1];
+        const key = parent?.kind === "object" ? parent.pendingKey : undefined;
+        const role = childRole(kind, parent, key);
+        beginValue(token.name);
+        frames.push({ kind, role, nameSeen: false });
+        return;
+      }
+      if (token.name === "endObject" || token.name === "endArray") {
+        frames.pop();
+        return;
+      }
+      if (
+        token.name === "startString" ||
+        token.name === "startNumber" ||
+        token.name === "stringValue" ||
+        token.name === "numberValue" ||
+        token.name === "trueValue" ||
+        token.name === "falseValue" ||
+        token.name === "nullValue"
+      ) {
+        beginValue(token.name);
+      }
+    } catch {
+      fail();
+    }
+  });
+  parser.on("error", fail);
+  parser.on("end", () => {
+    if (failed) {
+      settle(null);
+      return;
+    }
+    settle({
+      resultSeen,
+      errorSeen,
+      toolsArraySeen,
+      toolCount,
+      toolNames,
+    });
+  });
+
+  const flushSseData = (): void => {
+    if (ssePendingData.length === 0) return;
+    parser.write(ssePendingData);
+    ssePendingData = "";
+  };
+  const appendSseData = (value: string): void => {
+    ssePendingData += value;
+    if (ssePendingData.length >= 1024) flushSseData();
+  };
+  const feedEventStreamText = (text: string): void => {
+    for (const character of text) {
+      if (character === "\r") continue;
+      if (character === "\n") {
+        if (sseMode === "prefix" && ssePrefix.length === 0 && sseEventHasData) {
+          appendSseData("\n");
+          flushSseData();
+          sseEventHasData = false;
+        }
+        sseMode = "prefix";
+        ssePrefix = "";
+        sseSkipOptionalSpace = false;
+        continue;
+      }
+      if (sseMode === "prefix") {
+        ssePrefix += character;
+        if ("data:".startsWith(ssePrefix)) {
+          if (ssePrefix === "data:") {
+            sseMode = "data";
+            if (sseEventHasData) appendSseData("\n");
+            sseEventHasData = true;
+            sseSkipOptionalSpace = true;
+            ssePrefix = "";
+          }
+        } else {
+          sseMode = "other";
+          ssePrefix = "";
+        }
+        continue;
+      }
+      if (sseMode === "data") {
+        if (sseSkipOptionalSpace) {
+          sseSkipOptionalSpace = false;
+          if (character === " ") continue;
+        }
+        appendSseData(character);
+      }
+    }
+  };
+
+  return {
+    write(chunk: Buffer): void {
+      if (failed || finished) return;
+      try {
+        if (decoder) feedEventStreamText(decoder.write(chunk));
+        else parser.write(chunk);
+      } catch {
+        fail();
+      }
+    },
+    finish(): Promise<McpResponseTelemetrySummary | null> {
+      if (!finished) {
+        finished = true;
+        try {
+          if (decoder) {
+            feedEventStreamText(decoder.end());
+            if (sseEventHasData) appendSseData("\n");
+            flushSseData();
+          }
+          parser.end();
+        } catch {
+          fail();
+        }
+      }
+      return completion;
+    },
+  };
 }
 
 export interface McpProxyOptions {
@@ -413,6 +773,18 @@ export interface McpProxyOptions {
    * `DEFAULT_HEARTBEAT_INTERVAL_MS` (env `PAPERCUSP_MCP_PROXY_HEARTBEAT_MS`); `0` disables.
    */
   heartbeatIntervalMs?: number;
+  /**
+   * WI-10005688 — peer-uid gate for every request, the same one the inference gateway runs
+   * (WI-10003621). The proxy binds 127.0.0.1 and injects the superuser bearer, so on a host
+   * where loopback is shared with another account (a hosted workspace host, a vm-release
+   * Server, or several tenants' Servers on one Linux box) a caller of another uid must be
+   * refused before anything is forwarded. Returns the foreign verdict to refuse, null to
+   * proceed. Default `foreignLoopbackPeerForSocket`: a no-op unless the loopback peer-uid
+   * policy is active, so a single-user host pays no /proc read per connection.
+   */
+  loopbackPeerGate?: (
+    socket: import("node:net").Socket,
+  ) => { uid: number | null; reason: string } | null;
   log?: (s: string) => void;
 }
 
@@ -706,6 +1078,72 @@ export function forwardingResultForUpstreamFailure(
     : MCP_PROXY_FORWARDING_RESULTS.notForwarded;
 }
 
+/**
+ * WI-10006908 — the upstream (:3070) connection closed AFTER sending response headers. For an
+ * SSE response the MCP client's request is resolved only by a JSON-RPC response carrying its id: a stream that
+ * merely ends or errors raises a transport error but leaves the request pending until the
+ * client's own request timeout (measured: a live tools/call hung to Claude's 300s limit). So the
+ * proxy answers each forwarded REQUEST id itself with a JSON-RPC error, then ends the stream.
+ *
+ * Returns the SSE text to write, or null when the body carries no request ids (nothing pending
+ * to resolve). Notifications (no id) and responses (no method) are skipped. Bounded so a
+ * pathological batch cannot turn one failure into an unbounded write.
+ */
+export const MAX_UPSTREAM_DEATH_ERROR_EVENTS = 64;
+export const UPSTREAM_DIED_MID_STREAM_RPC_CODE = -32000;
+export function upstreamDeathSseErrorEvents(
+  requestBody: Buffer,
+  traceId: string,
+): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(requestBody.toString("utf8"));
+  } catch {
+    return null;
+  }
+  const msgs = Array.isArray(parsed) ? parsed : [parsed];
+  const events: string[] = [];
+  for (const m of msgs) {
+    if (!m || typeof m !== "object") continue;
+    const { id, method } = m as { id?: unknown; method?: unknown };
+    if (typeof method !== "string") continue;
+    if (typeof id !== "string" && typeof id !== "number") continue;
+    const response = {
+      jsonrpc: "2.0",
+      id,
+      error: {
+        code: UPSTREAM_DIED_MID_STREAM_RPC_CODE,
+        message:
+          `Papercusp MCP proxy: the upstream connection for this ${method} closed before ` +
+          "the response completed. The call was dispatched, so " +
+          "its effects are UNKNOWN: check state before retrying a write.",
+        data: {
+          kind: "upstream_died_mid_stream",
+          forwardingResult: MCP_PROXY_FORWARDING_RESULTS.outcomeUnknown,
+          traceId,
+        },
+      },
+    };
+    events.push(`event: message\ndata: ${JSON.stringify(response)}\n\n`);
+    if (events.length >= MAX_UPSTREAM_DEATH_ERROR_EVENTS) break;
+  }
+  return events.length ? events.join("") : null;
+}
+
+/**
+ * True when the bytes already forwarded end on an SSE event boundary (or none were forwarded),
+ * so an appended event parses as its own event. Mid-event, an appended event would be glued
+ * onto a truncated one and fail to parse — the caller must destroy the stream instead.
+ */
+export function endsOnSseEventBoundary(forwardedTail: string): boolean {
+  return (
+    forwardedTail === "" ||
+    forwardedTail.endsWith("\n\n") ||
+    forwardedTail.endsWith("\r\n\r\n") ||
+    forwardedTail.endsWith("\r\r")
+  );
+}
+
 export interface PreparedForward {
   body: Buffer;
   headers: http.IncomingHttpHeaders;
@@ -771,9 +1209,10 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "docs:outline",
   "search:fulltext",
   "search:semantic",
-  // session transcript recall is a read-only search; replaying after a stale-socket
-  // reset cannot double-apply a mutation.
-  "sessions:search",
+  // LSP compiler intelligence is read-only and safe to replay after a socket reset.
+  "lsp:query",
+  // Session reads refresh live transcripts into persistent index state; keep them
+  // outside this pure-read retry allowlist so a reset cannot overlap ingestion.
   // memory recall (search ONLY — remember/forget mutate the store)
   "memory:search",
   // work-item / plan reads
@@ -781,12 +1220,19 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "work_items:get",
   "work_items:search",
   "work_items:claimable",
-  // Exact rubric+subject audit reads are side-effect-free and safe to replay.
+  // Reads the current scheduler lane spec without claiming or changing work.
+  "scheduler:get_claim_spec",
+  // Process inventory is a ledger read; its optional reconciliation is dry-run only.
+  "processes:list",
+  // Scorecard reads use seed-free rubric resolution; a missing/malformed rubric stays
+  // unknown instead of entering the first-party lazy-seed writer.
+  "scorecards:get",
   "scorecards:list",
   // The bounded grading preflight is also side-effect-free and safe to replay.
   "scorecards:evaluate",
   "plans:get",
   "plans:get-specs",
+  "plans:get-spec-evidence",
   "plans:list",
   "plans:items",
   "plans:search",
@@ -812,8 +1258,9 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   // coord:read fetches one message without advancing the inbox read cursor;
   // unlike coord:inbox, replaying it cannot mutate coordination state.
   "coord:read",
-  // conversations:list only reads conversation rows/topics; replaying it is safe
+  // Conversation reads only fetch rows, topics, consult state and posts; replaying them is safe
   // for reconciliation after a preceding consult write has an unknown outcome.
+  "conversations:get",
   "conversations:list",
   "events:catalog",
   "events:status",
@@ -902,6 +1349,11 @@ function isReadOnlyToolCall(m: unknown): boolean {
   const name = forwardedToolName(m);
   if (name === null) return false;
   if (READ_ONLY_TOOLS_LOOKUP.has(name)) return true;
+  // loop:checkpoint is mixed-effect: `{ read: true }` is a pure carry snapshot,
+  // while every other shape can write. Replay only that exact read mode after a
+  // post-connect reset; leave checkpoint writes on the keyed path.
+  if (isLoopCheckpointReadOnlyContinuationArgs(name, forwardedToolArgs(m)))
+    return true;
   // release:cut is a mixed-effect tool. Only its status operation reads local
   // markers/logs and systemd state; every other operation must keep the keyed path.
   if (name === RELEASE_CUT_NAME) {
@@ -960,7 +1412,11 @@ export function prepareForward(
   // abort/replay the upstream after the handshake's 8s no-header limit. Keep
   // proxy replay off even when the body has a bootstrap idempotency key: the
   // route's ledger can fail open, so only psu's typed same-key retry may recover.
-  if (opts.requestPath?.split("?")[0]?.replace(/\/+$/, "") === "/api/agent-mcp/console/bootstrap-su") {
+  const requestPath = opts.requestPath?.split("?")[0]?.replace(/\/+$/, "");
+  if (
+    requestPath === "/api/agent-mcp/console/bootstrap-su" ||
+    requestPath === "/api/agent-mcp/console/bootstrap-role"
+  ) {
     return { body, headers, klass: "opaque", hasCodeRunWrapper: false, rpcMethods: [] };
   }
   const msgs = Array.isArray(parsed) ? parsed : [parsed];
@@ -973,8 +1429,18 @@ export function prepareForward(
     (m as { method?: unknown }).method === "tools/call";
   const calls = msgs.filter(isCall);
   const hasCodeRunWrapper = calls.some(isCodeRunToolCall);
+  // Absence of tools/call is not evidence of write freedom: REST delivery and
+  // lifecycle bodies have no call either. Reuse the curated handshake methods,
+  // and reject unknown/malformed batch members before any readonly/keyed path.
+  const recognizedBatch = msgs.length > 0 && msgs.every((message) =>
+    isCall(message) || (!!message && typeof message === "object" &&
+      !Array.isArray(message) && typeof (message as { method?: unknown }).method === "string" &&
+      RESERVED_CONTROL_PLANE_METHODS.has((message as { method: string }).method)),
+  );
+  if (!recognizedBatch)
+    return { body, headers, klass: "opaque", hasCodeRunWrapper, rpcMethods };
   if (calls.length === 0)
-    return { body, headers, klass: "idempotent", hasCodeRunWrapper, rpcMethods }; // no write → free safe retry
+    return { body, headers, klass: "idempotent", hasCodeRunWrapper, rpcMethods };
 
   if (!opts.keyingEnabled)
     return { body, headers, klass: "opaque", hasCodeRunWrapper, rpcMethods }; // kill-switch → refused-only
@@ -1143,6 +1609,117 @@ export function retryAfterMs(
   const secs = raw != null && raw !== "" ? Number(raw) : NaN;
   const ms = Number.isFinite(secs) && secs >= 0 ? secs * 1000 : fallbackMs;
   return Math.max(0, Math.min(ms, maxMs));
+}
+
+const MCP_ADMISSION_REASON_ALLOWLIST = new Set([
+  "loop_pressure_critical",
+  "operator_admission_capacity",
+]);
+export const MAX_MCP_ADMISSION_REASON_BODY_BYTES = 4 * 1024;
+const MCP_ADMISSION_REASON_READ_BUDGET_MS = 50;
+
+function parseMcpAdmissionReason(body: Buffer): string | undefined {
+  if (body.byteLength > MAX_MCP_ADMISSION_REASON_BODY_BYTES) return undefined;
+  try {
+    const parsed = JSON.parse(body.toString("utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return undefined;
+    const error = (parsed as { error?: unknown }).error;
+    if (!error || typeof error !== "object" || Array.isArray(error))
+      return undefined;
+    const data = (error as { data?: unknown }).data;
+    if (!data || typeof data !== "object" || Array.isArray(data))
+      return undefined;
+    const reason = (data as { reason?: unknown }).reason;
+    return typeof reason === "string" && MCP_ADMISSION_REASON_ALLOWLIST.has(reason)
+      ? reason
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Read only the small JSON-RPC admission envelope; always drain the rest without retaining it. */
+function readMcpAdmissionReason(
+  response: http.IncomingMessage,
+): Promise<string | undefined> {
+  const contentLength = response.headers["content-length"];
+  const declaredBytes = Number(
+    Array.isArray(contentLength) ? contentLength[0] : contentLength,
+  );
+  if (
+    Number.isFinite(declaredBytes) &&
+    declaredBytes > MAX_MCP_ADMISSION_REASON_BODY_BYTES
+  ) {
+    response.resume();
+    return Promise.resolve(undefined);
+  }
+
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    let settled = false;
+    let cleaned = false;
+    let timer: NodeJS.Timeout | undefined;
+    const finish = (reason?: string): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(reason);
+    };
+    const cleanup = (): void => {
+      if (cleaned) return;
+      cleaned = true;
+      if (timer) clearTimeout(timer);
+      response.off("data", onData);
+      response.off("end", onEnd);
+      response.off("aborted", onAborted);
+      response.off("error", onError);
+      response.off("close", onClose);
+    };
+    const stopBufferingAndDrain = (): void => {
+      chunks.length = 0;
+      response.off("data", onData);
+      response.resume();
+    };
+    const onData = (chunk: Buffer): void => {
+      if (settled) return;
+      const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      if (bytes + data.byteLength > MAX_MCP_ADMISSION_REASON_BODY_BYTES) {
+        finish();
+        stopBufferingAndDrain();
+        return;
+      }
+      chunks.push(data);
+      bytes += data.byteLength;
+    };
+    const onEnd = (): void => {
+      if (!settled) finish(parseMcpAdmissionReason(Buffer.concat(chunks, bytes)));
+      cleanup();
+    };
+    const onAborted = (): void => {
+      finish();
+      cleanup();
+    };
+    const onError = (): void => {
+      finish();
+      cleanup();
+    };
+    const onClose = (): void => {
+      finish();
+      cleanup();
+    };
+
+    response.on("data", onData);
+    response.once("end", onEnd);
+    response.once("aborted", onAborted);
+    response.once("error", onError);
+    response.once("close", onClose);
+    timer = setTimeout(() => {
+      finish();
+      stopBufferingAndDrain();
+    }, MCP_ADMISSION_REASON_READ_BUDGET_MS);
+  });
 }
 
 /**
@@ -1373,10 +1950,10 @@ function forwardOnce(
  *  NEXT beat carry the liveness signal. Deliberately far below `retryWindowMs`. */
 export const CHEAP_REPEATING_BEAT_RETRY_WINDOW_MS = 2000;
 
-/** The retry window this REQUEST gets — the restart-sized default, unless it is a cheap
- *  repeating beat, which must fail fast rather than amplify (EI-19294517824914302). */
+/** The retry window this REQUEST gets — restart-sized by default, short for cheap repeating
+ *  beats and fail-closed preflights that must surface promptly rather than amplify retries. */
 export function effectiveRetryWindowMs(url: string, windowMs: number): number {
-  return isCheapRepeatingBeat(url)
+  return isCheapRepeatingBeat(url) || isFastFailPrecheck(url)
     ? Math.min(CHEAP_REPEATING_BEAT_RETRY_WINDOW_MS, windowMs)
     : windowMs;
 }
@@ -1509,6 +2086,8 @@ export const DEFAULT_COORD_SEND_QUEUE_WAIT_MS = 20_000;
  * durable checkpoint/completion writes do not become ambiguous by default.
  */
 export const DEFAULT_IMPROVEMENTS_CAPTURE_QUEUE_WAIT_MS = 20_000;
+/** Bound the one emergency toolFailure waiter below the common 55s MCP client deadline. */
+const TOOL_FAILURE_CAPTURE_QUEUE_WAIT_MS = 45_000;
 const configuredCriticalContinuationQueueWaitLogMs = Number(
   process.env.PAPERCUSP_MCP_PROXY_CRITICAL_CONTINUATION_QUEUE_WAIT_LOG_MS ??
     5_000,
@@ -1548,6 +2127,9 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set(
   [
     "scheduler:get_next",
     "coord:orient",
+    // Work-item and plan claim transitions may be followed by this explicit
+    // intent declaration; keep it on the same recovery/control-plane reserve.
+    "coord:declare-intent",
     "coord:send",
     // The automatic status glance is a read-only liveness surface. Keep it on the
     // reserved admission path so a saturated ordinary pool cannot hide the fleet
@@ -1585,6 +2167,9 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set(
     // traffic is saturated so concurrent recovery waits can actually register.
     "events:await",
     "events:cancel",
+    // A bounded events:status read lets a worker inspect await/wake state when a
+    // liveness event is silent. Keep that recovery read available during saturation.
+    "events:status",
     "work_items:checkpoint",
     "work_items:claimable",
     "work_items:complete",
@@ -1727,6 +2312,8 @@ export function isMcpProxyWatchdogProbePath(requestPath: unknown): boolean {
 // saturated. Heartbeat is intentionally absent: it is a cheap repeating beat
 // and should fail fast rather than consume a reserved slot.
 export const RESERVED_CONTROL_PLANE_PATHS = new Set([
+  "/api/adv/sessions/port/delivery",
+  "/api/adv/sessions/port/status",
   "/api/adv/sessions/resumable",
   "/api/agent-mcp/console/bootstrap-su/options",
   "/api/agent-mcp/console/bootstrap-su",
@@ -1743,6 +2330,10 @@ export const RESERVED_CONTROL_PLANE_PATHS = new Set([
 // as continuation checkpoints. Heartbeat is deliberately excluded: it repeats
 // and may fail fast under pressure.
 export const CRITICAL_SESSION_LIFECYCLE_PATHS = new Set([
+  // Reconciliation follows the mutation on the same durability socket rather
+  // than contending with ordinary traffic or reconnect handshakes.
+  "/api/adv/sessions/port/delivery",
+  "/api/adv/sessions/port/status",
   "/api/agent-mcp/console/bootstrap-su/session-ended",
   "/api/agent-mcp/console/bootstrap-su/session-resumed",
   "/api/agent-mcp/console/bootstrap-su/session-resume-finalized",
@@ -1855,6 +2446,10 @@ export function coordSendToolNames(
 
 interface ImprovementsCaptureIdentity {
   improvementsCapture: boolean;
+  /** Read-only duplicate checks bypass the persisted-capture lane. */
+  readOnlyDuplicateCheck: boolean;
+  /** Incident reports need one capture slot outside normal capture saturation. */
+  toolFailureCapture: boolean;
   /** Bounded, argument-free tool identities safe to expose in health + failure telemetry. */
   tools: string[];
 }
@@ -1869,11 +2464,29 @@ function classifyImprovementsCaptureCall(
   requestPath?: string,
 ): ImprovementsCaptureIdentity {
   if (isCriticalSessionLifecyclePath(requestPath)) {
-    return { improvementsCapture: false, tools: [] };
+    return {
+      improvementsCapture: false,
+      readOnlyDuplicateCheck: false,
+      toolFailureCapture: false,
+      tools: [],
+    };
   }
   try {
     const parsed = JSON.parse(rawBody.toString("utf8")) as unknown;
     const messages = Array.isArray(parsed) ? parsed : [parsed];
+    let toolFailureCapture = false;
+    let readOnlyDuplicateCheck = true;
+    const isReadOnlyDuplicateCheckArgs = (args: unknown): boolean => {
+      if (!args || typeof args !== "object" || Array.isArray(args))
+        return false;
+      const input = args as {
+        checkDuplicatesOnly?: unknown;
+        toolFailure?: unknown;
+      };
+      return (
+        input.checkDuplicatesOnly === true && input.toolFailure === undefined
+      );
+    };
     const isCapture = messages.every((message) => {
       if (!message || typeof message !== "object") return false;
       const call = message as {
@@ -1883,7 +2496,17 @@ function classifyImprovementsCaptureCall(
       if (call.method !== "tools/call" || typeof call.params?.name !== "string")
         return false;
       const calledTool = normalizeMcpName(call.params.name);
-      if (calledTool === IMPROVEMENTS_CAPTURE_TOOL_NAME) return true;
+      if (calledTool === IMPROVEMENTS_CAPTURE_TOOL_NAME) {
+        const args = call.params.arguments;
+        readOnlyDuplicateCheck =
+          readOnlyDuplicateCheck && isReadOnlyDuplicateCheckArgs(args);
+        if (args && typeof args === "object" && !Array.isArray(args)) {
+          const toolFailure = (args as { toolFailure?: unknown }).toolFailure;
+          if (toolFailure && typeof toolFailure === "object")
+            toolFailureCapture = true;
+        }
+        return true;
+      }
       if (calledTool !== TOOLS_INVOKE_NAME) return false;
       const invokeArgs = call.params.arguments;
       if (
@@ -1893,16 +2516,48 @@ function classifyImprovementsCaptureCall(
       )
         return false;
       const target = (invokeArgs as { name?: unknown }).name;
-      return (
+      const isDeferredCapture =
         typeof target === "string" &&
-        normalizeMcpName(target) === IMPROVEMENTS_CAPTURE_TOOL_NAME
-      );
+        normalizeMcpName(target) === IMPROVEMENTS_CAPTURE_TOOL_NAME;
+      if (isDeferredCapture) {
+        const deferredArgs = (invokeArgs as { args?: unknown }).args;
+        readOnlyDuplicateCheck =
+          readOnlyDuplicateCheck &&
+          isReadOnlyDuplicateCheckArgs(deferredArgs);
+        if (
+          deferredArgs &&
+          typeof deferredArgs === "object" &&
+          !Array.isArray(deferredArgs)
+        ) {
+          const toolFailure = (deferredArgs as { toolFailure?: unknown })
+            .toolFailure;
+          if (toolFailure && typeof toolFailure === "object")
+            toolFailureCapture = true;
+        }
+      }
+      return isDeferredCapture;
     });
     return isCapture && messages.length > 0
-      ? { improvementsCapture: true, tools: ["improvements:capture"] }
-      : { improvementsCapture: false, tools: [] };
+      ? {
+          improvementsCapture: true,
+          readOnlyDuplicateCheck:
+            readOnlyDuplicateCheck && !toolFailureCapture,
+          toolFailureCapture,
+          tools: ["improvements:capture"],
+        }
+      : {
+          improvementsCapture: false,
+          readOnlyDuplicateCheck: false,
+          toolFailureCapture: false,
+          tools: [],
+        };
   } catch {
-    return { improvementsCapture: false, tools: [] };
+    return {
+      improvementsCapture: false,
+      readOnlyDuplicateCheck: false,
+      toolFailureCapture: false,
+      tools: [],
+    };
   }
 }
 
@@ -2245,14 +2900,20 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     });
   const ownsImprovementsCaptureAgent =
     opts.improvementsCaptureAgent === undefined;
-  // EI-22728723476698098 — incident captures get one independent socket. A capture is safe to
-  // retry after the proxy explicitly says it was not forwarded, but it must not sit behind a
-  // long completion/checkpoint on the shared durability socket and lose the client's deadline.
+  // EI-22728723476698098 — incident captures get an independent pool bounded by the existing
+  // reserved-control-plane concurrency budget. A single socket made one slow capture block all
+  // independent reports until the 20s queue dwell shed them; sharing the existing reserve lets
+  // parallel captures progress without creating a separate, unbounded capacity allowance.
+  const improvementsCaptureConcurrencyCeiling = Math.max(
+    1,
+    reservedControlPlaneGuaranteedFloor,
+  );
   const improvementsCaptureAgent =
     opts.improvementsCaptureAgent ??
     new http.Agent({
       keepAlive: false,
-      maxSockets: 1,
+      // Reserve one socket outside normal capture capacity for toolFailure incident records.
+      maxSockets: improvementsCaptureConcurrencyCeiling + 1,
     });
   const maxHandshakeInFlight =
     opts.maxHandshakeInFlight ?? DEFAULT_MAX_HANDSHAKES_IN_FLIGHT;
@@ -2291,6 +2952,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   )
     ? Math.max(0, Math.floor(configuredImprovementsCaptureQueue))
     : 0;
+  // Preserve the emergency in-flight toolFailure slot and allow one extra bounded FIFO
+  // alongside the configured normal improvements:capture queue capacity.
+  const maxToolFailureCaptureQueue = maxImprovementsCaptureQueue + 1;
   const maxCriticalContinuationQueueWaitMs =
     opts.maxCriticalContinuationQueueWaitMs ??
     DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_MS;
@@ -2327,6 +2991,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   let criticalContinuationInFlight = 0;
   let coordSendInFlight = 0;
   let improvementsCaptureInFlight = 0;
+  let toolFailureCaptureInFlight = 0;
   const maxHoldMs = opts.maxHoldMs ?? DEFAULT_MAX_HOLD_MS;
   const initializeSlowMs = opts.initializeSlowMs ?? DEFAULT_INITIALIZE_SLOW_MS;
   const inFlightStarts = new Map<number, number>();
@@ -2341,6 +3006,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     traceId: string;
     tools: string[];
     conflictKeys: string[] | null;
+    toolFailureCapture?: boolean;
   }
   const criticalContinuationRequests = new Map<
     number,
@@ -2401,6 +3067,25 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         };
   };
 
+  const improvementsCaptureBlocker = (
+    now = Date.now(),
+  ): { tools: string[]; ageMs: number; traceId: string } | null => {
+    let oldest: ContinuationRequestDetails | null = null;
+    for (const details of improvementsCaptureRequests.values()) {
+      if (oldest == null || details.startedAtMs < oldest.startedAtMs)
+        oldest = details;
+    }
+    return oldest == null
+      ? null
+      : {
+          tools: oldest.tools
+            .slice(0, 4)
+            .map((tool) => tool.slice(0, MAX_MCP_PROXY_SUCCESS_TOOL_NAME_CHARS)),
+          ageMs: Math.max(0, now - oldest.startedAtMs),
+          traceId: oldest.traceId.slice(0, MAX_MCP_PROXY_TRACE_ID_CHARS),
+        };
+  };
+
   const recordForwardCompletion = (completedAtMs: number): void => {
     completedForwardAtMs.push(completedAtMs);
     const cutoffMs = completedAtMs - SHED_DRAIN_RATE_WINDOW_MS;
@@ -2446,6 +3131,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     traceId: string;
     tools: string[];
     maxWaitMs: number;
+    toolFailureCapture: boolean;
   }
   const improvementsCaptureQueue: QueuedImprovementsCapture[] = [];
   // Resolve one waiter at a time so the async continuation can increment the live counters
@@ -2458,6 +3144,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   let coordSendGrantReservations = 0;
   let pumpCoordSendQueue: () => void = () => {};
   let improvementsCaptureGrantReservations = 0;
+  let toolFailureCaptureGrantReservations = 0;
   let pumpImprovementsCaptureQueue: () => void = () => {};
 
   const handshakeQueueLength = (): number =>
@@ -2685,11 +3372,19 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     pumpCoordSendQueue();
   };
 
-  const canGrantImprovementsCapture = (): boolean =>
-    !shouldShedForInFlight(
-      improvementsCaptureInFlight + improvementsCaptureGrantReservations,
-      1,
-    );
+  const canGrantImprovementsCapture = (
+    toolFailureCapture = false,
+  ): boolean =>
+    (toolFailureCapture
+      ? !shouldShedForInFlight(
+          toolFailureCaptureInFlight + toolFailureCaptureGrantReservations,
+          1,
+        )
+      : !shouldShedForInFlight(
+          improvementsCaptureInFlight - toolFailureCaptureInFlight +
+            improvementsCaptureGrantReservations,
+          improvementsCaptureConcurrencyCeiling,
+        ));
 
   const cancelQueuedImprovementsCapture = (
     waiter: QueuedImprovementsCapture,
@@ -2751,15 +3446,18 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   };
 
   pumpImprovementsCaptureQueue = (): void => {
-    while (improvementsCaptureQueue.length > 0) {
-      const waiter = improvementsCaptureQueue.shift();
-      if (!waiter || waiter.cancelled) continue;
-      if (!canGrantImprovementsCapture()) {
-        improvementsCaptureQueue.unshift(waiter);
-        return;
+    for (let index = 0; index < improvementsCaptureQueue.length; index++) {
+      const waiter = improvementsCaptureQueue[index];
+      if (!waiter || waiter.cancelled || waiter.granted) {
+        improvementsCaptureQueue.splice(index, 1);
+        index--;
+        continue;
       }
+      if (!canGrantImprovementsCapture(waiter.toolFailureCapture)) continue;
+      improvementsCaptureQueue.splice(index, 1);
       waiter.granted = true;
-      improvementsCaptureGrantReservations++;
+      if (waiter.toolFailureCapture) toolFailureCaptureGrantReservations++;
+      else improvementsCaptureGrantReservations++;
       waiter.resolve(true);
       // The continuation that received this reservation increments the live counter before the
       // event loop returns here, so one grant per pump is the fail-closed hand-off.
@@ -2915,8 +3613,35 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     });
   };
 
+  const loopbackPeerGate =
+    opts.loopbackPeerGate ?? ((socket: import("node:net").Socket) => foreignLoopbackPeerForSocket(socket));
   const server = http.createServer((req, res) => {
     const receivedAt = Date.now();
+    // The degraded marker describes MCP data-plane health only. REST endpoints
+    // share this listener, but their failures must not affect /api/mcp callers.
+    const isMcpApiRequest = req.url?.split("?")[0] === "/api/mcp";
+    // WI-10005688: refuse a loopback caller of another uid before anything runs or is
+    // forwarded (the proxy injects the superuser bearer, so forwarding would act as us).
+    const foreignPeer = loopbackPeerGate(req.socket);
+    if (foreignPeer) {
+      log(`refused loopback peer uid=${foreignPeer.uid ?? "unknown"} (${foreignPeer.reason})`);
+      record({ kind: "foreign_loopback_peer_refused", uid: foreignPeer.uid, reason: foreignPeer.reason });
+      res.writeHead(403, { "content-type": "application/json", connection: "close" });
+      res.end(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: null,
+          error: {
+            code: -32001,
+            message:
+              "mcp-proxy: loopback callers other than the operator service account are refused on this host",
+          },
+          reason: foreignPeer.reason,
+          mcpProxy: true,
+        }),
+      );
+      return;
+    }
     if (req.method === "GET" && req.url === MCP_PROXY_LOCAL_HEALTH_PATH) {
       let target: McpProxyTarget | null = null;
       try {
@@ -2972,6 +3697,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           traceId: details.traceId,
           tools: details.tools,
           ageMs: Math.max(0, healthNow - details.startedAtMs),
+          ...(details.toolFailureCapture ? { toolFailureCapture: true } : {}),
         }));
       const waitingImprovementsCaptureRequests = improvementsCaptureQueue
         .filter((waiter) => !waiter.cancelled && !waiter.granted)
@@ -2981,6 +3707,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           tools: waiter.tools,
           ageMs: Math.max(0, healthNow - waiter.enqueuedAtMs),
           maxWaitMs: waiter.maxWaitMs,
+          ...(waiter.toolFailureCapture ? { toolFailureCapture: true } : {}),
         }));
       res.writeHead(200, { "content-type": "application/json" });
       res.end(
@@ -3013,11 +3740,16 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               requests: waitingCriticalContinuationRequests,
             },
             improvementsCapture: improvementsCaptureInFlight,
-            improvementsCaptureMax: 1,
+            improvementsCaptureMax: improvementsCaptureConcurrencyCeiling,
+            improvementsCaptureToolFailureInFlight: toolFailureCaptureInFlight,
+            improvementsCaptureToolFailureMax: 1,
             improvementsCaptureRequests: activeImprovementsCaptureRequests,
             improvementsCaptureQueue: {
               waiting: improvementsCaptureQueueLength(),
               max: maxImprovementsCaptureQueue,
+              toolFailureMax: maxToolFailureCaptureQueue,
+              waiterCapacity:
+                maxImprovementsCaptureQueue + maxToolFailureCaptureQueue,
               maxWaitMs: improvementsCaptureQueueWaitMs,
               oldestAgeMs:
                 waitingImprovementsCaptureRequests.length > 0
@@ -3140,7 +3872,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         // create (3,450 simultaneous held requests, measured 2026-08-01).
         const inFlightNow = inFlightStarts.size;
         const requestTraceId = randomUUID();
-        const reservedControlPlane = isReservedControlPlaneCall(
+        const reservedControlPlaneBase = isReservedControlPlaneCall(
           rawBody,
           req.url,
         );
@@ -3153,10 +3885,19 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           rawBody,
           req.url,
         );
+        const readOnlyDuplicateCheck =
+          improvementsCaptureIdentity.readOnlyDuplicateCheck;
+        // A no-persistence duplicate check should not sit behind persisted captures. Reuse the
+        // existing bounded control-plane pool instead of adding another capacity/config lane.
+        const reservedControlPlane =
+          reservedControlPlaneBase || readOnlyDuplicateCheck;
         const coordSend = coordSendIdentity.coordSend;
         const coordSendTools = coordSendIdentity.tools;
         const improvementsCapture =
-          improvementsCaptureIdentity.improvementsCapture;
+          improvementsCaptureIdentity.improvementsCapture &&
+          !readOnlyDuplicateCheck;
+        const toolFailureCapture =
+          improvementsCaptureIdentity.toolFailureCapture;
         const improvementsCaptureTools = improvementsCaptureIdentity.tools;
         const criticalContinuation = criticalContinuationIdentity.critical;
         const criticalContinuationTools = criticalContinuationIdentity.tools;
@@ -3265,13 +4006,35 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           return;
         }
         // EI-22728723476698098 — pure improvements:capture incident records get a dedicated
-        // one-socket lane. A long checkpoint/completion on criticalContinuationAgent must not
-        // consume the capture's entire client deadline; mixed batches remain on the shared lane.
-        if (improvementsCapture && !canGrantImprovementsCapture()) {
+        // lane bounded by the reserved control-plane budget. A slow checkpoint/completion on
+        // criticalContinuationAgent must not consume the capture's entire client deadline;
+        // mixed batches remain on the shared lane.
+        if (
+          improvementsCapture &&
+          !canGrantImprovementsCapture(toolFailureCapture)
+        ) {
           pumpImprovementsCaptureQueue();
-          if (
-            maxImprovementsCaptureQueue <= improvementsCaptureQueueLength()
-          ) {
+          const queuedToolFailureCaptures = improvementsCaptureQueue.filter(
+            (waiter) =>
+              !waiter.cancelled &&
+              !waiter.granted &&
+              waiter.toolFailureCapture,
+          ).length;
+          const queuedNormalCaptures =
+            improvementsCaptureQueueLength() - queuedToolFailureCaptures;
+          const queueClass = toolFailureCapture ? "tool-failure" : "normal";
+          const queueWaiters = toolFailureCapture
+            ? queuedToolFailureCaptures
+            : queuedNormalCaptures;
+          const queueCapacity = toolFailureCapture
+            ? maxToolFailureCaptureQueue
+            : maxImprovementsCaptureQueue;
+          const queueFull = queueWaiters >= queueCapacity;
+          if (queueFull) {
+            const blocker = improvementsCaptureBlocker();
+            const blockedByDetail = blocker
+              ? ` — blocked by ${blocker.tools.join(",") || "an unnamed capture"} in flight ${blocker.ageMs}ms (trace ${blocker.traceId})`
+              : " — no capture request was in flight";
             const retryAfterSec = retryAfterSecForDrainRate(
               improvementsCaptureInFlight,
               1,
@@ -3288,14 +4051,15 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 error: "mcp_proxy_improvements_capture_queue_full",
                 retryable: true,
                 forwardingResult: "not_forwarded" satisfies McpProxyForwardingResult,
-                detail: `proxy improvements:capture FIFO already has ${improvementsCaptureQueueLength()} waiter(s) (queue max ${maxImprovementsCaptureQueue})`,
+                detail: `proxy improvements:capture ${queueClass} FIFO already has ${queueWaiters} waiter(s) (queue max ${queueCapacity})${blockedByDetail}`,
                 retryAfterSec,
                 traceId: requestTraceId,
+                ...(blocker ? { blockedBy: blocker } : {}),
               }),
             );
             log(
               `shed improvements:capture request ${requestTraceId} — ` +
-                `${improvementsCaptureQueueLength()}/${maxImprovementsCaptureQueue} waiters`,
+                `${queueWaiters}/${queueCapacity} ${queueClass} waiters`,
             );
             record({
               kind: "shed_improvements_capture_queue_full",
@@ -3303,9 +4067,13 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               path: req.url,
               traceId: requestTraceId,
               tools: improvementsCaptureTools,
+              queueClass,
+              queueWaiters,
+              queueCapacity,
               improvementsCaptureInFlight,
               queueLength: improvementsCaptureQueueLength(),
               maxImprovementsCaptureQueue,
+              blockedBy: blocker,
               retryAfterSec,
               forwardingResult: "not_forwarded",
             });
@@ -3323,7 +4091,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               expired: false,
               traceId: requestTraceId,
               tools: improvementsCaptureTools,
-              maxWaitMs: improvementsCaptureQueueWaitMs,
+              maxWaitMs: toolFailureCapture
+                ? TOOL_FAILURE_CAPTURE_QUEUE_WAIT_MS
+                : improvementsCaptureQueueWaitMs,
+              toolFailureCapture,
             };
             improvementsCaptureQueue.push(queuedImprovementsCapture);
             cancelQueuedAdmission = (): void => {
@@ -3387,6 +4158,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   maxImprovementsCaptureQueue,
                   maxImprovementsCaptureQueueWaitMs:
                     queuedImprovementsCapture.maxWaitMs,
+                  blockedBy: improvementsCaptureBlocker(),
                 });
                 armImprovementsCaptureWaitWatch();
               }, nextDelayMs);
@@ -3408,6 +4180,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               maxImprovementsCaptureQueue,
               maxImprovementsCaptureQueueWaitMs:
                 improvementsCaptureQueueWaitMs,
+              blockedBy: improvementsCaptureBlocker(enqueuedAtMs),
               forwardingResult: "queued",
             });
           });
@@ -3415,14 +4188,25 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           cancelQueuedAdmission = null;
           if (!granted || clientGone) {
             if (granted) {
-              improvementsCaptureGrantReservations = Math.max(
-                0,
-                improvementsCaptureGrantReservations - 1,
-              );
+              if (toolFailureCapture) {
+                toolFailureCaptureGrantReservations = Math.max(
+                  0,
+                  toolFailureCaptureGrantReservations - 1,
+                );
+              } else {
+                improvementsCaptureGrantReservations = Math.max(
+                  0,
+                  improvementsCaptureGrantReservations - 1,
+                );
+              }
               pumpImprovementsCaptureQueue();
             } else if (queuedImprovementsCapture.expired && !clientGone) {
               const waitedMs =
                 Date.now() - queuedImprovementsCapture.enqueuedAtMs;
+              const blocker = improvementsCaptureBlocker();
+              const blockedByDetail = blocker
+                ? ` — blocked by ${blocker.tools.join(",") || "an unnamed capture"} in flight ${blocker.ageMs}ms (trace ${blocker.traceId})`
+                : " — no capture request was in flight; the slot was released before the retry";
               res.writeHead(429, {
                 "content-type": "application/json",
                 "retry-after": "2",
@@ -3433,9 +4217,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   error: "mcp_proxy_improvements_capture_queue_dwell",
                   retryable: true,
                   forwardingResult: "not_forwarded" satisfies McpProxyForwardingResult,
-                  detail: `improvements:capture waited ${waitedMs}ms in the dedicated FIFO (max ${queuedImprovementsCapture.maxWaitMs}ms) — shed; retry`,
+                  detail: `improvements:capture waited ${waitedMs}ms in the dedicated FIFO (max ${queuedImprovementsCapture.maxWaitMs}ms) — shed; retry${blockedByDetail}`,
                   retryAfterSec: 2,
                   traceId: requestTraceId,
+                  ...(blocker ? { blockedBy: blocker } : {}),
                 }),
               );
               record({
@@ -3449,15 +4234,23 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 queueLength: improvementsCaptureQueueLength(),
                 maxImprovementsCaptureQueueWaitMs:
                   queuedImprovementsCapture.maxWaitMs,
+                blockedBy: blocker,
                 forwardingResult: "not_forwarded",
               });
             }
             return;
           }
-          improvementsCaptureGrantReservations = Math.max(
-            0,
-            improvementsCaptureGrantReservations - 1,
-          );
+          if (toolFailureCapture) {
+            toolFailureCaptureGrantReservations = Math.max(
+              0,
+              toolFailureCaptureGrantReservations - 1,
+            );
+          } else {
+            improvementsCaptureGrantReservations = Math.max(
+              0,
+              improvementsCaptureGrantReservations - 1,
+            );
+          }
         }
         // EI-21669304707115602 — pure coord:send handoffs have a dedicated continuation
         // lane. They must not wait behind a long completion/checkpoint on the shared critical
@@ -4126,12 +4919,14 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         inFlightStarts.set(inFlightId, inFlightStartedAt);
         if (improvementsCapture) {
           improvementsCaptureInFlight++;
+          if (toolFailureCapture) toolFailureCaptureInFlight++;
           improvementsCaptureInFlightStarts.set(inFlightId, inFlightStartedAt);
           improvementsCaptureRequests.set(inFlightId, {
             startedAtMs: inFlightStartedAt,
             traceId: requestTraceId,
             tools: improvementsCaptureTools,
             conflictKeys: null,
+            toolFailureCapture,
           });
         } else if (coordSend) {
           coordSendInFlight++;
@@ -4191,7 +4986,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           const traceId = requestTraceId;
           fwd.headers = withDataPlaneDegradedHeader(
             { ...fwd.headers, [MCP_PROXY_TRACE_HEADER]: traceId },
-            lastDataPlaneInstabilityAtMs,
+            isMcpApiRequest ? lastDataPlaneInstabilityAtMs : 0,
           );
           // WI-41042 detector gap: `klass:'idempotent'` folds initialize,
           // tools/list, ping, resources and prompts together. Preserve only the
@@ -4202,29 +4997,37 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             ...(fwd.rpcMethods.length ? { rpcMethods: fwd.rpcMethods } : {}),
           };
           const isInitialize = fwd.rpcMethods.includes("initialize");
+          const isToolsList = fwd.rpcMethods.includes("tools/list");
           const recordInitializeStage = (
-            outcome: "slow_response" | "timeout_retry" | "timeout_exhausted",
+            outcome:
+              | "success"
+              | "slow_response"
+              | "timeout_retry"
+              | "timeout_exhausted",
             upstreamMs: number,
+            nativeSession?: NativeSessionAttribution,
           ): void => {
-            const totalMs = Date.now() - receivedAt;
+            const totalMs = boundedMcpProxyStageMs(Date.now() - receivedAt);
             if (
               !isInitialize ||
               (outcome === "slow_response" && totalMs < initializeSlowMs)
             )
               return;
             // Privacy boundary: request-specific fields are limited to the proxy-owned trace id,
-            // a finite outcome enum, and stage durations. Never add methods, tool names, args,
-            // headers, URLs, bodies, or error text to this record.
+            // a finite outcome enum, bounded stage durations, and pseudonymous native-session
+            // attribution with an explicit trust label. Never add raw headers, URLs, bodies,
+            // tool names, or error text to this record.
             record({
               kind: "initialize_stage",
               traceId,
               outcome,
               stages: {
-                bodyReadMs: Math.max(0, bodyReadyAt - receivedAt),
-                admissionWaitMs: Math.max(0, admittedAt - bodyReadyAt),
-                upstreamMs: Math.max(0, upstreamMs),
-                totalMs: Math.max(0, totalMs),
+                bodyReadMs: boundedMcpProxyStageMs(bodyReadyAt - receivedAt),
+                admissionWaitMs: boundedMcpProxyStageMs(admittedAt - bodyReadyAt),
+                upstreamMs: boundedMcpProxyStageMs(upstreamMs),
+                totalMs,
               },
+              ...(nativeSession ? { nativeSession } : {}),
             });
           };
           // EI-19294517824914302: a cheap repeating beat fails fast instead of burning the
@@ -4255,7 +5058,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             // must not carry a timestamp that expired while it was queued/backing off.
             fwd.headers = withDataPlaneDegradedHeader(
               fwd.headers,
-              lastDataPlaneInstabilityAtMs,
+              isMcpApiRequest ? lastDataPlaneInstabilityAtMs : 0,
             );
             attempts++;
             const attemptStartedAt = Date.now();
@@ -4340,6 +5143,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 upstreamErr: outcome.err
                   ? String(outcome.err.message ?? outcome.err)
                   : undefined,
+                ...rpcTrace,
               });
               break;
             }
@@ -4372,21 +5176,26 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 )
               ) {
                 backpressureRetries++;
-                lastDataPlaneInstabilityAtMs = Date.now();
+                if (isMcpApiRequest) {
+                  lastDataPlaneInstabilityAtMs = Date.now();
+                }
                 fwd.headers = withDataPlaneDegradedHeader(
                   fwd.headers,
-                  lastDataPlaneInstabilityAtMs,
+                  isMcpApiRequest ? lastDataPlaneInstabilityAtMs : 0,
                 );
                 const waitMs = retryAfterMs(
                   ures.headers["retry-after"],
                   backoff,
                   MAX_BACKPRESSURE_WAIT_MS,
                 );
-                ures.resume(); // discard the shed/boot-window body so the (keepAlive:false) socket is released
+                const absorbed429 = isBackpressureStatus(status);
+                const admissionReason = absorbed429
+                  ? await readMcpAdmissionReason(ures)
+                  : undefined;
+                if (!absorbed429)
+                  ures.resume(); // discard the boot-window body so its socket is released
                 record({
-                  kind: isBackpressureStatus(status)
-                    ? "absorb_429"
-                    : "absorb_boot_status",
+                  kind: absorbed429 ? "absorb_429" : "absorb_boot_status",
                   method: req.method,
                   path: req.url,
                   status,
@@ -4394,9 +5203,124 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   backpressureRetries,
                   waitMs,
                   elapsedMs: elapsed,
+                  ...(absorbed429
+                    ? {
+                        traceId,
+                        ...(admissionReason ? { reason: admissionReason } : {}),
+                      }
+                    : {}),
                 });
                 await new Promise((r) => setTimeout(r, waitMs));
                 continue;
+              }
+              if (
+                status >= 200 &&
+                status < 300 &&
+                (isInitialize || isToolsList)
+              ) {
+                try {
+                  const observer = createMcpResponseTelemetryObserver(
+                    ures.headers["content-type"],
+                  );
+                  let responseFinished = false;
+                  let observationFinished = false;
+                  let observation: McpResponseTelemetrySummary | null = null;
+                  let telemetryRecorded = false;
+                  const recordSuccessfulObservation = (): void => {
+                    if (
+                      telemetryRecorded ||
+                      !responseFinished ||
+                      !observationFinished ||
+                      !observation ||
+                      !observation.resultSeen ||
+                      observation.errorSeen
+                    )
+                      return;
+                    const recordInitializeSuccess = isInitialize;
+                    const recordToolsListSuccess =
+                      isToolsList && observation.toolsArraySeen;
+                    if (!recordInitializeSuccess && !recordToolsListSuccess)
+                      return;
+                    telemetryRecorded = true;
+                    const nativeSession = nativeSessionAttribution(req.headers);
+                    const stages = {
+                      bodyReadMs: boundedMcpProxyStageMs(
+                        bodyReadyAt - receivedAt,
+                      ),
+                      admissionWaitMs: boundedMcpProxyStageMs(
+                        admittedAt - bodyReadyAt,
+                      ),
+                      upstreamMs: boundedMcpProxyStageMs(upstreamMs),
+                      totalMs: boundedMcpProxyStageMs(Date.now() - receivedAt),
+                    };
+                    const toolCount = observation.toolCount;
+                    const toolNames = observation.toolNames;
+                    setImmediate(() => {
+                      if (recordInitializeSuccess)
+                        recordInitializeStage(
+                          "success",
+                          upstreamMs,
+                          nativeSession,
+                        );
+                      if (recordToolsListSuccess)
+                        record({
+                          kind: "tools_list_stage",
+                          traceId,
+                          outcome: "success",
+                          toolCount,
+                          toolNames,
+                          stages,
+                          nativeSession,
+                        });
+                    });
+                  };
+                  ures.on("data", (chunk: Buffer) => observer.write(chunk));
+                  ures.once("end", () => {
+                    void observer
+                      .finish()
+                      .then((summary) => {
+                        observation = summary;
+                        observationFinished = true;
+                        recordSuccessfulObservation();
+                      })
+                      .catch(() => {
+                        observation = null;
+                        observationFinished = true;
+                        recordSuccessfulObservation();
+                      });
+                  });
+                  ures.once("error", () => {
+                    observation = null;
+                    observationFinished = true;
+                    recordSuccessfulObservation();
+                  });
+                  res.once("finish", () => {
+                    responseFinished = true;
+                    recordSuccessfulObservation();
+                  });
+                } catch {
+                  // Telemetry setup is best-effort; the original response pipe owns delivery.
+                }
+              }
+              // This is the proxy's flush boundary, not proof the remote client consumed the body.
+              let upstreamDiedMidStream = false;
+              if (fwd.rpcMethods.includes("tools/call")) {
+                res.once("finish", () => {
+                  const httpStatus = res.statusCode;
+                  logMcpRequestTrace({
+                    traceId,
+                    toolName: "tools/call",
+                    stage: "proxy_response_finished",
+                    elapsedMs: boundedMcpProxyStageMs(Date.now() - receivedAt),
+                    outcome:
+                      !upstreamDiedMidStream &&
+                      httpStatus >= 200 &&
+                      httpStatus < 300
+                        ? "success"
+                        : "rejected",
+                    httpStatus,
+                  });
+                });
               }
               res.writeHead(status, ures.headers);
               // WI-35737: an MCP response is an SSE stream that stays open long after headers
@@ -4409,6 +5333,46 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               res.on("close", () => {
                 if (!ures.destroyed) ures.destroy();
               });
+              // WI-10006908 — the REVERSE direction. `pipe` does not end the destination when
+              // the SOURCE aborts, and :3070 flushes SSE headers the instant a tools/call opens
+              // (primeSseResponse), so a worker death mid-call (memory-watchdog recycle,
+              // event-loop-sentinel SIGKILL, deploy restart) used to leave the client response
+              // open forever: the agent hung to its own idle timeout (300s for Claude).
+              let forwardedTail = "";
+              ures.on("data", (chunk: Buffer) => {
+                forwardedTail = (forwardedTail + chunk.toString("latin1")).slice(-4);
+              });
+              ures.once("close", () => {
+                if (ures.complete || res.writableEnded || res.destroyed) return;
+                upstreamDiedMidStream = true;
+                const isSse = String(ures.headers["content-type"] ?? "")
+                  .toLowerCase()
+                  .includes("text/event-stream");
+                const errorEvents =
+                  isSse && endsOnSseEventBoundary(forwardedTail)
+                    ? upstreamDeathSseErrorEvents(rawBody, traceId)
+                    : null;
+                record({
+                  kind: "upstream_died_mid_stream",
+                  method: req.method,
+                  path: req.url,
+                  status,
+                  attempts,
+                  klass: fwd.klass,
+                  elapsedMs: Date.now() - started,
+                  clientResolution: errorEvents ? "jsonrpc_error_events" : "destroyed",
+                  forwardingResult: forwardingResultForUpstreamFailure(true),
+                  ...rpcTrace,
+                });
+                log(
+                  `upstream response closed mid-stream after ${Date.now() - started}ms (trace ${traceId}); ` +
+                    (errorEvents
+                      ? "answered the pending request id(s) with a JSON-RPC error"
+                      : "destroyed the client response"),
+                );
+                if (errorEvents) res.end(errorEvents);
+                else res.destroy();
+              });
               ures.pipe(res);
               if (attempts > 1) {
                 log(
@@ -4417,7 +5381,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 record({
                   kind: "recovered",
                   method: req.method,
-                  path: req.url,
+                  ...(!(isInitialize || isToolsList) ? { path: req.url } : {}),
                   status,
                   attempts,
                   postConnectRetries,
@@ -4445,10 +5409,12 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               return;
             }
             last = outcome;
-            lastDataPlaneInstabilityAtMs = Date.now();
+            if (isMcpApiRequest) {
+              lastDataPlaneInstabilityAtMs = Date.now();
+            }
             fwd.headers = withDataPlaneDegradedHeader(
               fwd.headers,
-              lastDataPlaneInstabilityAtMs,
+              isMcpApiRequest ? lastDataPlaneInstabilityAtMs : 0,
             );
             if (!outcome.connected) {
               // Refused / pre-connect: the request provably never reached the selected
@@ -4543,12 +5509,29 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           if (clientGone) return;
           // Exhausted the window (or a post-connect error we must not / no longer replay).
           const refused = last && !last.connected;
-          res.writeHead(refused ? 503 : 502, {
+          const failureStatus = refused ? 503 : 502;
+          // A locally generated MCP failure still crosses the proxy response boundary. Keep
+          // the same bounded trace event as a forwarded tools/call response so journald can
+          // correlate an upstream reset with the trace id returned to the client.
+          if (fwd.rpcMethods.includes("tools/call")) {
+            res.once("finish", () => {
+              logMcpRequestTrace({
+                traceId,
+                toolName: "tools/call",
+                stage: "proxy_response_finished",
+                elapsedMs: boundedMcpProxyStageMs(Date.now() - receivedAt),
+                outcome: "rejected",
+                httpStatus: failureStatus,
+              });
+            });
+          }
+          res.writeHead(failureStatus, {
             "content-type": "application/json",
             "retry-after": "5",
           });
           res.end(
             JSON.stringify({
+              traceId,
               error: refused
                 ? "mcp_proxy_upstream_unavailable"
                 : "mcp_proxy_upstream_error",
@@ -4580,7 +5563,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             }),
           );
           log(
-            `upstream ${refused ? "unavailable" : "error"} after ${attempts} attempt(s): ${last?.err?.message ?? last?.err}`,
+            `upstream ${refused ? "unavailable" : "error"} after ${attempts} attempt(s) (trace ${traceId}): ${last?.err?.message ?? last?.err}`,
           );
           record({
             kind: refused ? "exhausted_refused" : "upstream_error",
@@ -4590,6 +5573,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             attempts,
             postConnectRetries,
             klass: fwd.klass,
+            connected: Boolean(last?.connected),
             elapsedMs: Date.now() - started,
             detail: String(last?.err?.message ?? last?.err ?? "unknown"),
             forwardingResult: forwardingResultForUpstreamFailure(
@@ -4607,6 +5591,12 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               0,
               improvementsCaptureInFlight - 1,
             );
+            if (toolFailureCapture) {
+              toolFailureCaptureInFlight = Math.max(
+                0,
+                toolFailureCaptureInFlight - 1,
+              );
+            }
             improvementsCaptureInFlightStarts.delete(inFlightId);
             improvementsCaptureRequests.delete(inFlightId);
           } else if (coordSend) {
@@ -4712,16 +5702,34 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   return server;
 }
 
+/**
+ * The upstream named in the startup log line. Must resolve through the same
+ * option precedence as `resolveTargetCandidates` — the bin entry passes
+ * `resolveTargets` (never `targetPort`), so reading `opts.targetPort` here
+ * logged `127.0.0.1:undefined` (WI-10004334).
+ */
+export function describeMcpProxyTarget(opts: McpProxyOptions): string {
+  if (!opts.resolveTargets && opts.resolveTarget)
+    return "dynamic operator.json target";
+  try {
+    const [primary, ...fallbacks] = resolveTargetCandidates(opts).map(
+      (t) => `${t.host}:${t.port}`,
+    );
+    return fallbacks.length
+      ? `${primary} (fallback ${fallbacks.join(", ")})`
+      : primary!;
+  } catch (err) {
+    return `unresolved target (${(err as Error).message})`;
+  }
+}
+
 /** Start the proxy from env/opts. Returns the listening server. */
 export function startMcpProxy(opts: McpProxyOptions): http.Server {
   const log = opts.log ?? ((s: string) => console.log(`[mcp-proxy] ${s}`));
   const server = createMcpProxy(opts);
   server.listen(opts.listenPort, opts.listenHost ?? "127.0.0.1", () => {
-    const target = opts.resolveTarget
-      ? "dynamic operator.json target"
-      : `${opts.targetHost ?? "127.0.0.1"}:${opts.targetPort}`;
     log(
-      `listening on ${opts.listenHost ?? "127.0.0.1"}:${opts.listenPort} → ${target} ` +
+      `listening on ${opts.listenHost ?? "127.0.0.1"}:${opts.listenPort} → ${describeMcpProxyTarget(opts)} ` +
         `(retry-on-refused window ${opts.retryWindowMs}ms)`,
     );
   });

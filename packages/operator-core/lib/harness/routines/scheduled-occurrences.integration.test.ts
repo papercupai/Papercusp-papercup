@@ -10,6 +10,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
+import { drizzle } from 'drizzle-orm/postgres-js';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { gatherScheduledOccurrences, listPlanSchedules } from './scheduled-occurrences';
 
@@ -174,5 +175,26 @@ describe('listPlanSchedules (D-020 — raw schedule read for the editor)', () =>
   it('excludes instance plans and returns [] when nothing is scheduled', async () => {
     await insertPlan({ slug: 'tmpl@run-1', schedule: { kind: 'rrule', rrule: 'FREQ=DAILY' }, templateSlug: 'tmpl' });
     expect(await listPlanSchedules(sql, { workspaceId: WS })).toEqual([]);
+  });
+
+  it('reads one-shot and expiring schedules after Drizzle changes the real pool timestamp parsers', async () => {
+    await insertPlan({ slug: 'drizzle-one-shot', scheduledAt: '2026-06-12T15:00:00.123Z' });
+    await insertPlan({ slug: 'drizzle-expiry', schedule: { kind: 'rrule', rrule: 'FREQ=DAILY', dtstart: '2026-06-01T09:00:00Z' },
+      expiresAt: '2026-06-12T23:59:59Z' });
+    const parsers = sql.options.parsers;
+    const originals = { ...parsers };
+    try {
+      drizzle(sql);
+      const raw = await sql`SELECT scheduled_at FROM harness_shared.harness_plans WHERE workspace_id = ${WS} AND plan_slug = 'drizzle-one-shot'`;
+      expect(typeof raw[0].scheduled_at).toBe('string');
+      const occurrences = await gather();
+      expect(occurrences.filter(row => row.templateSlug === 'drizzle-expiry')).toHaveLength(3);
+      expect(occurrences.find(row => row.templateSlug === 'drizzle-one-shot')?.occurrenceMs).toBe(Date.parse('2026-06-12T15:00:00.123Z'));
+      const summaries = await listPlanSchedules(sql, { workspaceId: WS });
+      expect(summaries.find(row => row.templateSlug === 'drizzle-one-shot')?.scheduledAt).toBe('2026-06-12T15:00:00.123Z');
+      expect(summaries.find(row => row.templateSlug === 'drizzle-expiry')?.expiresAt).toBe('2026-06-12T23:59:59.000Z');
+    } finally {
+      Object.assign(parsers, originals);
+    }
   });
 });

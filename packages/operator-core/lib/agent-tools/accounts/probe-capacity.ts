@@ -139,6 +139,8 @@ function reportRow(r: CapacityProbeResult) {
     upstream: {
       utilization: r.windows.utilization,
       utilization7d: r.windows.utilization7d,
+      usageCreditsAvailable: r.windows.usageCreditsAvailable,
+      creditBalance: r.windows.creditBalance,
       ...(r.windows.bucket ? { bucket: r.windows.bucket } : {}),
     },
     verdict: !r.ok
@@ -149,6 +151,7 @@ function reportRow(r: CapacityProbeResult) {
           ? 'UNWALLED (stale projection)'
           : 'confirmed',
     ...(r.error ? { error: r.error } : {}),
+    ...(r.httpRefusal ? { httpRefusal: r.httpRefusal } : {}),
   };
 }
 
@@ -183,6 +186,7 @@ function hasPremiumHeadroom(account: ClaudeAccount, result: CapacityProbeResult,
       ...(windows.windowResetAt !== undefined ? { windowResetAt: windows.windowResetAt } : {}),
       ...(windows.utilization7d !== undefined ? { utilization7d: windows.utilization7d } : {}),
       ...(windows.windowResetAt7d !== undefined ? { windowResetAt7d: windows.windowResetAt7d } : {}),
+      ...(windows.usageCreditsAvailable !== undefined ? { usageCreditsAvailable: windows.usageCreditsAvailable } : {}),
       ...(hasFreshWindow ? { utilizationAt: observedAt } : {}),
     },
   };
@@ -242,7 +246,7 @@ export async function runCapacityProbe(args: CapacityProbeArgs) {
         continue;
       }
       const w = r.windows;
-      if (w.utilization === undefined && w.utilization7d === undefined) continue;
+      if (w.utilization === undefined && w.utilization7d === undefined && w.usageCreditsAvailable === undefined) continue;
       if (w.bucket === 'base_model_inference') continue; // reserve meter — reported, never projected
       // WI-41147 leg c: the shared write-seam wrapper — records the window AND states any
       // burn-verdict wall the fresh reading implies (fact + severe-event on the transition
@@ -254,6 +258,8 @@ export async function runCapacityProbe(args: CapacityProbeArgs) {
           windowResetAt: w.windowResetAt,
           utilization7d: w.utilization7d,
           windowResetAt7d: w.windowResetAt7d,
+          usageCreditsAvailable: w.usageCreditsAvailable,
+          creditBalance: w.creditBalance,
         },
         t,
         ws,

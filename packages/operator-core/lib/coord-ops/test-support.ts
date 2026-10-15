@@ -15,10 +15,14 @@ export interface FakeCapsConfig {
   answer?: () => { answered: boolean; answer: string | null };
   /** What `runProgram` returns (sub-program recursion). */
   onRunProgram?: (input: RunProgramInput) => ProgramOutcome;
+  /** What `findOverlappingGoalAsk` resolves (default: caller is in no goal). Throw to simulate a failed read. */
+  goalAsk?: (question: string) => Awaited<ReturnType<CoordOpCaps['findOverlappingGoalAsk']>>;
 }
 
 export interface CallLog {
   openThread: Parameters<CoordOpCaps['openThread']>[0][];
+  findOverlappingGoalAsk: Parameters<CoordOpCaps['findOverlappingGoalAsk']>[0][];
+  readAnswer: Parameters<CoordOpCaps['readAnswer']>[0][];
   postThread: Parameters<CoordOpCaps['postThread']>[0][];
   spawnRoles: ResolvedSpawn[][];
   escalate: Parameters<CoordOpCaps['escalate']>[0][];
@@ -31,6 +35,8 @@ export interface CallLog {
 export function makeFakeCaps(cfg: FakeCapsConfig = {}): { caps: CoordOpCaps; calls: CallLog } {
   const calls: CallLog = {
     openThread: [],
+    findOverlappingGoalAsk: [],
+    readAnswer: [],
     postThread: [],
     spawnRoles: [],
     escalate: [],
@@ -48,6 +54,10 @@ export function makeFakeCaps(cfg: FakeCapsConfig = {}): { caps: CoordOpCaps; cal
       calls.openThread.push(input);
       return { thread_id: 'thr-fake', conversation_id: 'conv-fake' };
     },
+    async findOverlappingGoalAsk(input) {
+      calls.findOverlappingGoalAsk.push(input);
+      return cfg.goalAsk ? cfg.goalAsk(input.question) : { goalId: null, compared: 0, overlap: null };
+    },
     async postThread(input) {
       calls.postThread.push(input);
       const post = { id: ++postSeq, author_id: 'self', body: input.body, created_ts: '2026-06-04T00:00:00Z' };
@@ -57,7 +67,8 @@ export function makeFakeCaps(cfg: FakeCapsConfig = {}): { caps: CoordOpCaps; cal
     async listPosts() {
       return cfg.posts ? cfg.posts() : store;
     },
-    async readAnswer() {
+    async readAnswer(input) {
+      calls.readAnswer.push(input);
       return cfg.answer ? cfg.answer() : { answered: false, answer: null };
     },
     async spawnRoles(specs) {

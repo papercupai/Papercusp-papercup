@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Android real JNI JNA callback lifecycle red and green control",
+  "framework": "operational",
+  "command": [
+    "android/gradlew",
+    "-p",
+    "android",
+    ":app:connectedDebugAndroidTest",
+    "-Pandroid.testInstrumentationRunnerArguments.class=com.papercuspai.operator.mobile.UniffiCallbackTest"
+  ],
+  "startedAt": "2026-10-02T13:49:01Z",
+  "finishedAt": "2026-10-02T13:49:44.819392+00:00",
+  "exitCode": 0,
+  "summary": "Actual ART/JNA/Rust control: test-only detach=true aborts ART; default supported daemon=true/detach=false policy passes one maintained Android JUnit test and four real HTTP/Rust/JNA requests without failures or skips. This isolates callback detach policy; the later Inbox 503 is a separate fixture defect.",
+  "repository": "papercup-rust-mobile",
+  "containingSourceCommit": "d1e1ee255886a9d898bbc3cc8a1e82f02287b4c8",
+  "sourceFiles": [
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/AndroidManifest.xml",
+      "sha256": "f2156e5cd114b6c1f21e9fee92505d1b8671f9d5395eba1d5b8167e6e58caaa0"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/PapercupApplication.kt",
+      "sha256": "64d99440c8c918d82ca528d4454bd650c21c3eb0232c7153d0d5b78cf44e95ab"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/UniffiCallbackTest.kt",
+      "sha256": "96d13216044dc5efe645c7e57f6e509bda62a041edc2dc29b40d14b0c2cd7426"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build.gradle.kts",
+      "sha256": "9e412c8c5f580d75cb5c858f41bdea55c2ba357c8dc6bac20497b6d1b82986e3"
+    }
+  ],
+  "workItem": "EI-24874864704987534",
+  "rawEvidence": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/native-inbox-isolated-20261002-1350-preflight/callback-control-result.json",
+      "sha256": "39055b9a49f9be850522108d46c3c2173919bee35369d50695fe0739e93a1cb9"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "red-actual-ART-abort",
+      "passed": true,
+      "evidence": "detach=true reproduced ART attempting to detach while still running code."
+    },
+    {
+      "id": "green-real-JNI-execution",
+      "passed": true,
+      "evidence": "detach=false executed one test and four requests; zero failures/errors/skips."
+    },
+    {
+      "id": "TLS-worker-disposal",
+      "passed": true,
+      "evidence": "Official JNA native callback.c pthread TLS destructor detaches attached daemon threads at thread exit."
+    }
+  ],
+  "scope": "Local maintained regression and debug-native preparation only; no signed-candidate, automatic CI, physical-phone or Play acceptance.",
+  "nativeControl": {
+    "startedAt": "2026-10-02T13:49:01Z",
+    "finishedAt": "2026-10-02T13:49:44.819392+00:00",
+    "redExitCode": 1,
+    "redArtAbortConfirmed": true,
+    "greenExitCode": 0,
+    "greenTests": 1,
+    "greenFailures": 0,
+    "greenErrors": 0,
+    "greenSkipped": 0,
+    "realRustJnaRequests": 4,
+    "artifacts": [
+      {
+        "path": "papercup-rust-mobile/android/app/build/outputs/apk/debug/app-debug.apk",
+        "sha256": "3508007473a4652a8754f02506ec2c62395b7892ff8c19ad5dbf1a824f2f47d5"
+      },
+      {
+        "path": "papercup-rust-mobile/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk",
+        "sha256": "a56641647a08e3385804aa46a202acc1bec5475ca2b329a613e489587fa908f4"
+      }
+    ]
+  },
+  "sourceDirtyAtExecution": true,
+  "artifactBindingNote": "Artifact hashes are retained at execution; current build paths may contain later bytes."
+}

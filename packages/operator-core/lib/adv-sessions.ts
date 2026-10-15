@@ -12,12 +12,15 @@
  * `adv:sessions_list` MCP tool (later).
  */
 
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, withWorkspace } from '@papercusp/db-org';
+import type { Sql, TransactionSql } from 'postgres';
 import { boundedOrgTxn } from './pg-bounded-txn';
 import { activeWorkspaceId } from './workspace-registry';
 import type { SuAgent } from './su-agents';
 import { caveat, type FieldCaveat } from './field-reliability';
 import { trackDetached } from './detached-imports';
+import { recordSessionIdentityReanchor } from './session-identity-attribution';
+import { traceNamedQueryStage } from './agent-tools/db-diagnostic-correlation-wiring';
 
 /**
  * Log a best-effort read/write failure UNLESS it's PG's undefined_table
@@ -187,6 +190,10 @@ export interface AdvSessionRow {
    * value is what let a mass reap read as two voluntary exits.
    */
   endedSignal: string | null;
+  /** Deliberate operator retirement survives terminal-marker reconciliation. */
+  retiredAt?: string | null;
+  retiredBy?: string | null;
+  retiredReason?: string | null;
   /** Cross-backend session-port lineage. A port target remains hidden from
    * resumable surfaces until portStatus='delivered'. */
   portId?: string | null;
@@ -304,6 +311,9 @@ export function mapAdvSessionRow(r: {
   /** Optional for the same reason as {@link ended_by}: a SELECT that omits it maps to
    *  null, which reads as "no signal recorded" rather than inventing one. */
   ended_signal?: string | null;
+  retired_at?: string | Date | null;
+  retired_by?: string | null;
+  retired_reason?: string | null;
   port_id?: string | null;
   port_source_adv_session_id?: number | string | null;
   port_status?: string | null;
@@ -337,6 +347,9 @@ export function mapAdvSessionRow(r: {
     exitCode: r.exit_code,
     endedBy: (r.ended_by as AdvSessionEndedBy | null) ?? null,
     endedSignal: r.ended_signal ?? null,
+    retiredAt: toIsoTimestamp(r.retired_at),
+    retiredBy: r.retired_by ?? null,
+    retiredReason: r.retired_reason ?? null,
     portId: r.port_id ?? null,
     portSourceAdvSessionId: r.port_source_adv_session_id == null ? null : Number(r.port_source_adv_session_id),
     portStatus: r.port_status ?? null,
@@ -366,7 +379,7 @@ export async function workspaceForCoordOwner(coordOwnerId: string): Promise<stri
     const rows = await sql<{ workspace_id: string }[]>`
       SELECT workspace_id FROM harness_shared.adv_sessions
        WHERE coord_owner_id = ${coordOwnerId}
-       ORDER BY started_at DESC
+       ORDER BY started_at DESC, id DESC
        LIMIT 1
     `;
     ws = rows[0]?.workspace_id ?? null;
@@ -435,7 +448,7 @@ export async function listPendingWorkbenchLaunches(
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
-             display, launch_argv, launched_at, started_at, ended_at, exit_code, ended_by, ended_signal
+             display, launch_argv, launched_at, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE display = 'workbench'
          AND launched_at IS NULL
@@ -612,7 +625,7 @@ export async function listStartingTerminalLaunches(
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
-             display, launch_argv, launched_at, started_at, ended_at, exit_code, ended_by, ended_signal
+             display, launch_argv, launched_at, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE display = ${DISPLAY_TERMINAL_LAUNCH}
          AND (ended_at IS NULL OR session_id IS NULL)
@@ -1011,6 +1024,8 @@ export function hasAdvSessionTerminalEvidence(
 export interface AdvSessionExpectedBinding {
   coordOwnerId: string;
   sessionId: string | null;
+  /** Exact OMP source handle, alongside the unchanged session_id binding. */
+  ompThreadId?: string | null;
   /** PostgreSQL's full-precision started_at::text, never a JS Date round-trip. */
   startedAt: string;
 }
@@ -1077,6 +1092,13 @@ export async function markAdvSessionEnded(
        RETURNING id
     `;
     if (r.length) {
+      // Only the winning terminal CAS may stop this launch's private native
+      // route. A stale exit rejected for a resumed successor has no effect.
+      try {
+        await (await import('./blueprint/support-workflow-native-launch')).stopSupportOperationNativeLaunch(id);
+      } catch (error) {
+        console.warn(`[adv-sessions] private native route cleanup failed: ${(error as Error)?.message ?? error}`);
+      }
       // EI-21185611167428939: the psu parent can authoritatively observe +
       // record a child exit even when the separate best-effort SessionEnd
       // lifecycle hook never reaches activity:report. Schedule the same lease
@@ -1273,7 +1295,20 @@ export type AdvSessionResumeReservation =
       leaseExpiresAt: string;
     }
   | { status: 'live'; acquired: false }
+  | { status: 'retired'; acquired: false }
   | { status: 'missing'; acquired: false };
+
+/** Fence every registration for an owner before terminating its process. Pending
+ * reservations are invalidated so a prepared resume cannot finalize after kill. */
+export async function retireAdvSessionsByOwner(ownerId: string, actor: string, reason: string): Promise<void> {
+  const { sql } = getOrgPg();
+  await sql`
+    UPDATE harness_shared.adv_sessions
+       SET retired_at = now(), retired_by = ${`fleet:kill:${actor}`}, retired_reason = ${reason},
+           resume_claim_key = NULL, resume_claimed_at = NULL
+     WHERE coord_owner_id = ${ownerId}
+  `;
+}
 
 /**
  * Reserve the right to resume one adv-session WITHOUT asserting liveness.
@@ -1291,6 +1326,7 @@ export async function acquireAdvSessionResume(
   leaseSec: number = RESUME_RESERVATION_LEASE_SEC,
   staleActiveSec: number = RESUME_CLAIM_WINDOW_SEC,
   localLivenessEvidence?: unknown,
+  allowRetired: boolean = false,
 ): Promise<AdvSessionResumeReservation> {
   const key = resumeClaimKey.trim();
   if (!key) throw new Error('resumeClaimKey must be non-empty');
@@ -1304,17 +1340,19 @@ export async function acquireAdvSessionResume(
         agent: string | null;
         ended_at: Date | string | null;
         ended_by: string | null;
+        retired_at: Date | string | null;
         started_at: Date | string;
         resume_claim_key: string | null;
         resume_claimed_at: Date | string | null;
       }>
     >`
-      SELECT agent, ended_at, ended_by, started_at, resume_claim_key, resume_claimed_at
+      SELECT agent, ended_at, ended_by, retired_at, started_at, resume_claim_key, resume_claimed_at
         FROM harness_shared.adv_sessions
        WHERE id = ${id}
        FOR UPDATE
     `;
     if (!row) return { status: 'missing', acquired: false } as const;
+    if (row.retired_at != null && !allowRetired) return { status: 'retired', acquired: false } as const;
 
     const nowMs = Date.now();
     const claimedAtMs = row.resume_claimed_at == null ? null : new Date(row.resume_claimed_at).getTime();
@@ -1378,6 +1416,7 @@ async function transitionAdvSessionResume(
   resumeClaimKey: string,
   transition: AdvSessionResumeTransition,
   launchArgv?: string[] | null,
+  allowRetired: boolean = false,
 ): Promise<boolean> {
   const key = resumeClaimKey.trim();
   if (!key) return false;
@@ -1407,6 +1446,11 @@ async function transitionAdvSessionResume(
        FOR UPDATE
     `;
     if (receipt?.summary?.kind === receiptKind && typeof receipt.summary.transitioned === 'boolean') {
+      if (transition === 'finalize' && receipt.summary.transitioned) {
+        // Reconcile receipts from finalizations committed by an older runtime,
+        // without reopening the row or touching the reservation again.
+        await recordSuLaunchSpecInTransaction(tx, id, null);
+      }
       return receipt.summary.transitioned;
     }
 
@@ -1415,6 +1459,9 @@ async function transitionAdvSessionResume(
         ? await tx<{ id: number }[]>`
           UPDATE harness_shared.adv_sessions
              SET ended_at = NULL, exit_code = NULL, ended_by = NULL, ended_signal = NULL,
+                 retired_at = CASE WHEN ${allowRetired} THEN NULL ELSE retired_at END,
+                 retired_by = CASE WHEN ${allowRetired} THEN NULL ELSE retired_by END,
+                 retired_reason = CASE WHEN ${allowRetired} THEN NULL ELSE retired_reason END,
                  started_at = now(), shutdown_accepted_at = NULL,
                  resume_claim_key = NULL, resume_claimed_at = NULL,
                  launch_argv = COALESCE(
@@ -1422,6 +1469,7 @@ async function transitionAdvSessionResume(
                    launch_argv
                  )
            WHERE id = ${id} AND resume_claim_key = ${key}
+             AND (retired_at IS NULL OR ${allowRetired})
           RETURNING id
         `
         : await tx<{ id: number }[]>`
@@ -1431,6 +1479,11 @@ async function transitionAdvSessionResume(
           RETURNING id
         `;
     const transitioned = rows.length > 0;
+    if (transition === 'finalize' && transitioned) {
+      // Liveness and the exact already-acknowledged identity must commit together
+      // before the managed host declares the resumed process ready.
+      await recordSuLaunchSpecInTransaction(tx, id, null);
+    }
     const summary = JSON.stringify({ kind: receiptKind, transitioned });
     await tx`
       UPDATE harness_shared.agent_launch_idempotency
@@ -1448,8 +1501,9 @@ export async function finalizeAdvSessionResume(
   id: number,
   resumeClaimKey: string,
   launchArgv?: string[] | null,
+  allowRetired: boolean = false,
 ): Promise<boolean> {
-  return transitionAdvSessionResume(id, resumeClaimKey, 'finalize', launchArgv);
+  return transitionAdvSessionResume(id, resumeClaimKey, 'finalize', launchArgv, allowRetired);
 }
 
 /** Release a pre-spawn/failed reservation while preserving terminal evidence. */
@@ -1482,14 +1536,19 @@ export async function releaseAdvSessionResume(id: number, resumeClaimKey: string
  * Throws on a genuine datastore fault instead of swallowing it, so a caller can
  * tell "could not evaluate the claim" apart from "lost the race". Returning
  * `false` for an unreachable database would report a race that never happened.
+ * An owner-bound row must be the latest registration for that owner, including
+ * legacy callers without expectedOwnerId. Registration id is immutable;
+ * started_at is bumped by resumes and cannot establish successor identity.
  */
 export async function claimAdvSessionResume(
   id: number,
   resumeClaimKey: string | null = null,
   windowSec: number = RESUME_CLAIM_WINDOW_SEC,
-): Promise<boolean> {
+  expectedOwnerId: string | null = null,
+): Promise<boolean | 'retired'> {
   const { sql } = getOrgPg();
   const key = resumeClaimKey?.trim() || null;
+  const ownerId = expectedOwnerId?.trim() || null;
 
   // Legacy callers did not carry a replay key. Preserve their single-winner
   // behavior, but clear the COMPLETE terminal tuple: ended_by/ended_signal are
@@ -1502,6 +1561,16 @@ export async function claimAdvSessionResume(
              started_at = now(), shutdown_accepted_at = NULL,
              resume_claim_key = NULL, resume_claimed_at = NULL
        WHERE id = ${id}
+         AND retired_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM harness_shared.adv_sessions AS successor
+            WHERE successor.coord_owner_id = adv_sessions.coord_owner_id
+              AND successor.id > adv_sessions.id
+         )
+         AND (
+           ${ownerId}::text IS NULL
+           OR coord_owner_id = ${ownerId}
+         )
          AND (
            ended_at IS NOT NULL
            OR ended_by IS NOT NULL
@@ -1513,7 +1582,11 @@ export async function claimAdvSessionResume(
          )
       RETURNING id
     `;
-    return rows.length > 0;
+    if (rows.length > 0) return true;
+    const [retirement] = await sql<Array<{ retired_at: Date | string | null }>>`
+      SELECT retired_at FROM harness_shared.adv_sessions WHERE id = ${id}
+    `;
+    return retirement?.retired_at != null ? 'retired' : false;
   }
 
   // WI-41450: the old launcher used a hard HTTP deadline around this mutation.
@@ -1526,12 +1599,20 @@ export async function claimAdvSessionResume(
   // the follower waits, then reads the winner's completed verdict.
   const ledgerKey = `psu-resume:${id}:${key}`;
   return sql.begin(async (tx) => {
-    const [target] = await tx<Array<{ workspace_id: string }>>`
-      SELECT workspace_id
+    const [target] = await tx<Array<{ workspace_id: string; coord_owner_id: string | null; retired_at: Date | string | null }>>`
+      SELECT workspace_id, coord_owner_id, retired_at
         FROM harness_shared.adv_sessions
        WHERE id = ${id}
+         AND NOT EXISTS (
+           SELECT 1 FROM harness_shared.adv_sessions AS successor
+            WHERE successor.coord_owner_id = adv_sessions.coord_owner_id
+              AND successor.id > adv_sessions.id
+         )
+       FOR UPDATE
     `;
     if (!target) return false;
+    if (target.retired_at != null) return 'retired' as const;
+    if (ownerId && target.coord_owner_id !== ownerId) return false;
 
     const workspaceId = target.workspace_id;
     await tx`
@@ -1558,6 +1639,16 @@ export async function claimAdvSessionResume(
              started_at = now(), shutdown_accepted_at = NULL,
              resume_claim_key = NULL, resume_claimed_at = NULL
        WHERE id = ${id}
+         AND retired_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM harness_shared.adv_sessions AS successor
+            WHERE successor.coord_owner_id = adv_sessions.coord_owner_id
+              AND successor.id > adv_sessions.id
+         )
+         AND (
+           ${ownerId}::text IS NULL
+           OR coord_owner_id = ${ownerId}
+         )
          AND (
            ended_at IS NOT NULL
            OR ended_by IS NOT NULL
@@ -1618,6 +1709,7 @@ export async function reactivateAdvSessionByOwner(coordOwnerId: string): Promise
           LIMIT 1
        )
          AND resume_claim_key IS NULL
+         AND retired_at IS NULL
          -- Owner activity may come from a NEW row. Reviving its retired
          -- predecessor would make that older artifact newest to the kernel.
          AND NOT EXISTS (
@@ -1632,6 +1724,27 @@ export async function reactivateAdvSessionByOwner(coordOwnerId: string): Promise
   } catch (e) {
     warnUnlessMissingTable(e, 'reactivateAdvSessionByOwner');
     return false;
+  }
+}
+
+/**
+ * WI-10004917: once an owner's row names `sessionId`, give that native incarnation an
+ * applied identity span. Without one, every owner-by-native-session oracle reads its
+ * turns as foreign. Runs on a no-op re-anchor too: the spawn path can stamp the id
+ * before the report lands (WI-41555), and a retried report must heal a span its first
+ * attempt failed to write. The recorder replays when the owner's latest span already
+ * names the id. Best-effort: span hygiene must never fail a re-anchor.
+ */
+async function recordReanchorSpan(
+  workspaceId: string | null,
+  owner: string | null,
+  sessionId: string,
+): Promise<void> {
+  if (!workspaceId || !owner) return;
+  try {
+    await recordSessionIdentityReanchor({ workspaceId, ownerId: owner, nativeSessionId: sessionId });
+  } catch (e) {
+    warnUnlessMissingTable(e, 'recordSessionIdentityReanchor');
   }
 }
 
@@ -1666,19 +1779,22 @@ export async function reanchorAdvSessionNativeId(
     // EI-21417550055038906: clear the COMPLETE terminal tuple (ended_by/
     // ended_signal too, matching claimAdvSessionResume) — leaving them behind
     // creates a half-live row whose residue later reads as terminal evidence.
-    const rows = await sql<{ id: number; owner: string | null }[]>`
+    const rows = await sql<{ id: number; owner: string | null; workspace_id: string }[]>`
       UPDATE harness_shared.adv_sessions
          SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL, ended_by = NULL,
              ended_signal = NULL, started_at = now(), shutdown_accepted_at = NULL,
              resume_claim_key = NULL, resume_claimed_at = NULL
        WHERE id = ${id} AND session_id IS DISTINCT FROM ${sessionId}
-      RETURNING id, coord_owner_id AS owner
+      RETURNING id, coord_owner_id AS owner, workspace_id
     `;
     // The owner rides back so the respawn route can clear the frozen context
     // gauge (the successor keeps the coord ownerId, so the in-process usage
     // cache would otherwise serve the DEAD predecessor's near-limit estimate
     // for up to a watchdog cadence — the "89% on a fresh successor" bug).
-    if (rows.length > 0) return { reanchored: true, owner: rows[0]?.owner ?? null };
+    if (rows.length > 0) {
+      await recordReanchorSpan(rows[0]?.workspace_id ?? null, rows[0]?.owner ?? null, sessionId);
+      return { reanchored: true, owner: rows[0]?.owner ?? null };
+    }
     // WI-41555: a NO-OP re-anchor is NOT "no owner". The UPDATE above is guarded
     // by `session_id IS DISTINCT FROM`, so a row that ALREADY names this native
     // id matches ZERO rows — exactly what happens when the spawn path stamped the
@@ -1691,9 +1807,10 @@ export async function reanchorAdvSessionNativeId(
     // still the live transcript for this owner.
     // `reanchored` answers "did I change the row"; `owner` answers "whose row is
     // it". They are independent facts, and respawn hygiene keys off the second.
-    const existing = await sql<{ owner: string | null }[]>`
-      SELECT coord_owner_id AS owner FROM harness_shared.adv_sessions WHERE id = ${id}
+    const existing = await sql<{ owner: string | null; workspace_id: string }[]>`
+      SELECT coord_owner_id AS owner, workspace_id FROM harness_shared.adv_sessions WHERE id = ${id}
     `;
+    await recordReanchorSpan(existing[0]?.workspace_id ?? null, existing[0]?.owner ?? null, sessionId);
     return { reanchored: false, owner: existing[0]?.owner ?? null };
   } catch (e) {
     warnUnlessMissingTable(e, 'reanchorAdvSessionNativeId');
@@ -1728,9 +1845,10 @@ export async function reanchorAdvSessionNativeIdByOwner(
     // active row; if there is no active row, accept only a single total row.
     // Two active rows (or two terminal rows) are ambiguous and must not let one
     // session's native id overwrite another session's home key.
-    const target = await sql<{ id: number }[]>`
+    const target = await sql<{ id: number; workspace_id: string }[]>`
       WITH owner_rows AS (
         SELECT id,
+               workspace_id,
                ended_at,
                ended_by,
                count(*) FILTER (WHERE ended_at IS NULL AND ended_by IS NULL) OVER () AS active_count,
@@ -1738,15 +1856,16 @@ export async function reanchorAdvSessionNativeIdByOwner(
           FROM harness_shared.adv_sessions
          WHERE coord_owner_id = ${coordOwnerId}
       ), target AS (
-        SELECT id
+        SELECT id, workspace_id
           FROM owner_rows
          WHERE (active_count = 1 AND ended_at IS NULL AND ended_by IS NULL)
             OR (active_count = 0 AND total_count = 1)
       )
-      SELECT id FROM target LIMIT 1
+      SELECT id, workspace_id FROM target LIMIT 1
     `;
     const targetId = target[0]?.id;
     if (targetId == null) return { reanchored: false, owner: null };
+    const targetWorkspaceId = target[0]?.workspace_id ?? null;
     const rows = await sql<{ id: number }[]>`
       UPDATE harness_shared.adv_sessions
          SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL,
@@ -1756,13 +1875,13 @@ export async function reanchorAdvSessionNativeIdByOwner(
        WHERE id = ${targetId} AND session_id IS DISTINCT FROM ${sessionId}
       RETURNING id
     `;
-    if (rows.length > 0) return { reanchored: true, owner: coordOwnerId };
     // WI-41555 (see the sibling above for the full reasoning): a row that ALREADY
     // names this native id updates zero rows, and the caller's respawn hygiene —
     // the context-usage + anchor cache clears — must still run for that owner.
     // Confirm the owner really does have a row, then report it with
     // reanchored:false so "did I change it" stays honest.
-    return { reanchored: false, owner: coordOwnerId };
+    await recordReanchorSpan(targetWorkspaceId, coordOwnerId, sessionId);
+    return { reanchored: rows.length > 0, owner: coordOwnerId };
   } catch (e) {
     warnUnlessMissingTable(e, 'reanchorAdvSessionNativeIdByOwner');
     return { reanchored: false, owner: null };
@@ -1771,6 +1890,13 @@ export async function reanchorAdvSessionNativeIdByOwner(
 
 /** How a reported native session id relates to the owner's tracked incarnation. */
 export type OwnerNativeSessionBinding = 'bound' | 'unbound' | 'foreign';
+
+/** Privacy-safe stage names preserved when the native-session authority read fails. */
+export type NativeSessionVerificationPhase =
+  | 'transaction_setup'
+  | 'owner_row_lookup_by_id'
+  | 'owner_candidate_rows_lookup'
+  | 'row_classification';
 
 export interface OwnerNativeSessionRow {
   id: number;
@@ -1784,7 +1910,8 @@ export interface OwnerNativeSessionRow {
  *   - `bound`   — some candidate is already bound to `sessionId`.
  *   - `unbound` — no candidate carries a native id yet (first binding; the
  *                 SessionStart reanchor is how it gets one).
- *   - `foreign` — the owner's incarnation is bound to a DIFFERENT native session.
+ *   - `foreign` — the owner's incarnation is bound to a DIFFERENT native session,
+ *                 or an explicitly requested incarnation cannot be verified.
  *
  * WI-10003957: `foreign` is what a nested CLI looks like. `PAPERCUSP_SID` is
  * inherited by every descendant of an su (native Bash, capability:bash jobs,
@@ -1806,36 +1933,143 @@ export function classifyOwnerNativeSessionRows(
   return { binding: 'foreign', boundSessionId: bound.session_id!.trim(), advSessionId: Number(bound.id) };
 }
 
+const NATIVE_SESSION_VERIFY_STATEMENT_TIMEOUT_MS = 2_000;
+const NATIVE_SESSION_VERIFY_LOCK_TIMEOUT_MS = 1_000;
+// A process-wide DB acquisition deadline may be shorter than the admin-pool
+// queue wait. Give this verifier one explicit 7.5s attempt rather than making
+// a normal queue delay look like a failed session binding.
+const NATIVE_SESSION_VERIFY_ACQUIRE_TIMEOUT_MS = 7_500;
+
+type OwnerNativeSessionClassification = {
+  binding: OwnerNativeSessionBinding;
+  boundSessionId: string | null;
+  advSessionId: number | null;
+};
+
+// MCP clients may dispatch several tools from the same native session at once.
+// Share only an identical lookup while it is in flight; never cache a settled
+// authority result, so the next request still observes session re-anchoring or
+// revocation.
+const ownerNativeSessionLookupsInFlight = new Map<string, Promise<OwnerNativeSessionClassification>>();
+
 /**
  * Is `sessionId` the native session the owner's adv_sessions row is bound to?
  * With `advSessionId` (the launcher-exported PAPERCUSP_ADV_SESSION_ID) only that
- * row is consulted, when it belongs to the owner. Throws on a PG error, so the
- * caller decides the fail direction.
+ * owner/id pair is consulted. A missing, foreign-owned or invalid explicit row
+ * is `foreign`, with no candidate id; it must not become a first binding or
+ * borrow another incarnation's binding. Throws on a PG error, so the caller
+ * decides the fail direction. This checks row consistency, not physical actor
+ * identity: the input is still caller-presented.
  */
 export async function classifyOwnerNativeSession(opts: {
   ownerId: string;
   sessionId: string;
   advSessionId?: number | null;
+  workspaceId?: string | null;
 }): Promise<{ binding: OwnerNativeSessionBinding; boundSessionId: string | null; advSessionId: number | null }> {
-  const { sql } = getOrgPg();
-  let rows: OwnerNativeSessionRow[] = [];
-  if (opts.advSessionId != null) {
-    rows = await sql<OwnerNativeSessionRow[]>`
-      SELECT id, session_id, (ended_at IS NULL AND ended_by IS NULL) AS active
-        FROM harness_shared.adv_sessions
-       WHERE id = ${opts.advSessionId} AND coord_owner_id = ${opts.ownerId}
-    `;
+  if (opts.advSessionId != null && (!Number.isSafeInteger(opts.advSessionId) || opts.advSessionId <= 0)) {
+    return { binding: 'foreign', boundSessionId: null, advSessionId: null };
   }
-  if (rows.length === 0) {
-    rows = await sql<OwnerNativeSessionRow[]>`
-      SELECT id, session_id, (ended_at IS NULL AND ended_by IS NULL) AS active
-        FROM harness_shared.adv_sessions
-       WHERE coord_owner_id = ${opts.ownerId}
-       ORDER BY (ended_at IS NULL AND ended_by IS NULL) DESC, id DESC
-       LIMIT 20
-    `;
+
+  const workspaceId = opts.workspaceId?.trim() || null;
+  const key = JSON.stringify([opts.ownerId, opts.sessionId, opts.advSessionId ?? null, workspaceId]);
+  const existing = ownerNativeSessionLookupsInFlight.get(key);
+  if (existing) return existing;
+
+  let shared!: Promise<OwnerNativeSessionClassification>;
+  shared = classifyOwnerNativeSessionUnshared({ ...opts, workspaceId }).finally(() => {
+    if (ownerNativeSessionLookupsInFlight.get(key) === shared) {
+      ownerNativeSessionLookupsInFlight.delete(key);
+    }
+  });
+  ownerNativeSessionLookupsInFlight.set(key, shared);
+  return shared;
+}
+
+async function classifyOwnerNativeSessionUnshared(opts: {
+  ownerId: string;
+  sessionId: string;
+  advSessionId?: number | null;
+  workspaceId?: string | null;
+}): Promise<OwnerNativeSessionClassification> {
+
+  let phase: NativeSessionVerificationPhase = 'transaction_setup';
+  try {
+    const classifyRows = async (sql: ReturnType<typeof getOrgPg>['sql']): Promise<OwnerNativeSessionClassification> => {
+      let rows: OwnerNativeSessionRow[];
+      // Capture before the closure: TS does not carry the `!= null` narrowing of a
+      // property access into a lazily-invoked callback.
+      const advSessionId = opts.advSessionId;
+      if (advSessionId != null) {
+        phase = 'owner_row_lookup_by_id';
+        rows = await traceNamedQueryStage('native-session-verifier-owner-row-lookup', () => sql<OwnerNativeSessionRow[]>`
+          SELECT id, session_id, (ended_at IS NULL AND ended_by IS NULL) AS active
+            FROM harness_shared.adv_sessions
+           WHERE id = ${advSessionId} AND coord_owner_id = ${opts.ownerId}
+        `);
+        if (rows.length === 0) {
+          return { binding: 'foreign', boundSessionId: null, advSessionId: null };
+        }
+      } else {
+        phase = 'owner_candidate_rows_lookup';
+        rows = await traceNamedQueryStage('native-session-verifier-owner-candidate-rows-lookup', () => sql<OwnerNativeSessionRow[]>`
+          SELECT id, session_id, (ended_at IS NULL AND ended_by IS NULL) AS active
+            FROM harness_shared.adv_sessions
+           WHERE coord_owner_id = ${opts.ownerId}
+           ORDER BY (ended_at IS NULL AND ended_by IS NULL) DESC, id DESC
+           LIMIT 20
+        `);
+      }
+      phase = 'row_classification';
+      return classifyOwnerNativeSessionRows(rows, opts.sessionId);
+    };
+
+    if (opts.workspaceId) {
+      // A bound match inside the request's RLS scope is sufficient. Negative
+      // results need the existing global read to preserve cross-workspace
+      // unbound/foreign semantics exactly.
+      const scoped = await traceNamedQueryStage('native-session-verifier-workspace-transaction', () =>
+        withWorkspace(opts.workspaceId!, classifyRows, {
+          readOnly: true,
+          acquireTimeoutMs: NATIVE_SESSION_VERIFY_ACQUIRE_TIMEOUT_MS,
+          acquireRetries: 0,
+          statementTimeoutMs: NATIVE_SESSION_VERIFY_STATEMENT_TIMEOUT_MS,
+          lockTimeoutMs: NATIVE_SESSION_VERIFY_LOCK_TIMEOUT_MS,
+        }));
+      if (scoped.binding === 'bound') return scoped;
+    }
+
+    return await traceNamedQueryStage('native-session-verifier-global-transaction', () =>
+      boundedOrgTxn(classifyRows, {
+        readOnly: true,
+        acquireTimeoutMs: NATIVE_SESSION_VERIFY_ACQUIRE_TIMEOUT_MS,
+        // postgres-js cannot cancel a begin that is still queued when the local
+        // acquisition deadline wins. This verifier runs before every MCP call, so
+        // retrying would add another pending org-admin acquisition per request.
+        // Fail closed on the first measured timeout instead of amplifying that queue.
+        acquireRetries: 0,
+        // This verifier runs before every MCP tool call, so an overly short global
+        // override can turn normal org-admin pool queuing into an auth failure.
+        // Keep query and lock budgets narrow after a connection has been acquired.
+        statementTimeoutMs: NATIVE_SESSION_VERIFY_STATEMENT_TIMEOUT_MS,
+        lockTimeoutMs: NATIVE_SESSION_VERIFY_LOCK_TIMEOUT_MS,
+      }));
+  } catch (error) {
+    // Keep the original error and fail-closed behavior, but expose the last
+    // verifier phase to the pre-dispatch telemetry seam without logging SQL or row data.
+    if (error && (typeof error === 'object' || typeof error === 'function')) {
+      try {
+        Object.defineProperty(error, 'nativeSessionVerificationPhase', {
+          value: phase,
+          configurable: true,
+          enumerable: false,
+        });
+      } catch {
+        // A non-extensible error still fails closed; its existing diagnostics survive.
+      }
+    }
+    throw error;
   }
-  return classifyOwnerNativeSessionRows(rows, opts.sessionId);
 }
 
 /**
@@ -1844,10 +2078,118 @@ export async function classifyOwnerNativeSession(opts: {
  * sources instead of inheriting the predecessor's already-rendered file
  * (stale-prompt-render-in-live-sessions-2026-08-02 P-002).
  *
- * Returns false on failure so launch callers can refuse without a receipt.
- * Replacing a render must retain the still-applied artifact until real delivery
- * acknowledges its successor; persisting a launch is not an activation ACK.
+ * Replacing a render or reviving a retained row must retain the still-applied
+ * artifact until delivery acknowledges its successor. The caller's transaction
+ * owns rollback, so resume readiness cannot commit without receipt retention.
  */
+async function recordSuLaunchSpecInTransaction(
+  tx: Sql | TransactionSql,
+  advSessionId: number | null,
+  coordOwnerId: string | null,
+  launchSpec?: unknown,
+): Promise<boolean> {
+  // Prefer the exact row id; fall back to the owner's NEWEST row for the
+  // interactive cohort. Lock across read/merge/write so concurrent refreshes
+  // cannot discard each other's immutable receipts.
+  const exactId = advSessionId != null && advSessionId > 0 ? advSessionId : null;
+  const rows = await tx<{
+    id: number;
+    workspace_id: string;
+    coord_owner_id: string | null;
+    launch_spec: unknown;
+    applied: unknown;
+  }[]>`
+    SELECT a.id, a.workspace_id, a.coord_owner_id, a.launch_spec,
+           b.control_state->'activation'->'applied' AS applied
+      FROM harness_shared.adv_sessions a
+      LEFT JOIN harness_shared.session_briefs b
+        ON b.workspace_id = a.workspace_id AND b.owner_id = a.coord_owner_id
+     WHERE (${exactId}::bigint IS NOT NULL AND a.id = ${exactId})
+        OR (${exactId}::bigint IS NULL AND a.coord_owner_id = ${coordOwnerId})
+     ORDER BY a.started_at DESC, a.id DESC
+     LIMIT 1
+     FOR UPDATE OF a
+  `;
+  const row = rows[0];
+  if (!row) return false;
+  // Non-persona sessions still use this lifecycle seam. Resuming them must
+  // not create a launch record, an activation, or an authority receipt.
+  if (launchSpec === undefined && !row.launch_spec) return true;
+  const { retainSuLaunchIdentityHistory } = await import('./su-persona-render');
+  const appliedPair = row.applied !== null && typeof row.applied === 'object' && !Array.isArray(row.applied)
+    ? row.applied as Record<string, unknown>
+    : null;
+  const appliedSpecificationRevision = typeof appliedPair?.specificationRevision === 'string'
+    ? appliedPair.specificationRevision
+    : null;
+  const appliedStateRevision = typeof appliedPair?.stateRevision === 'string'
+    ? appliedPair.stateRevision
+    : null;
+  // Activation state belongs to the stable coord owner, but launch records are per adv-session row.
+  // If this row is new, retain only the exact real applied receipt from a sibling row; never copy
+  // its whole history or synthesize a receipt from the next render.
+  const matchingReceipts = appliedSpecificationRevision && appliedStateRevision
+    ? await tx<{ receipt: unknown }[]>`
+        SELECT candidate.receipt
+          FROM harness_shared.adv_sessions prior
+          CROSS JOIN LATERAL (
+            SELECT jsonb_build_object(
+              'stack', prior.launch_spec->'stack',
+              'selectedIdentity', prior.launch_spec->'selectedIdentity',
+              'specificationRevision', prior.launch_spec->'specificationRevision',
+              'stateRevision', prior.launch_spec->'stateRevision',
+              'specificationArtifact', prior.launch_spec->'specificationArtifact',
+              'recordedAt', prior.started_at
+            ) AS receipt, 0 AS source_order
+             WHERE prior.launch_spec->>'specificationRevision' = ${appliedSpecificationRevision}
+               AND prior.launch_spec->>'stateRevision' = ${appliedStateRevision}
+               AND prior.launch_spec->'specificationArtifact'->>'specificationRevision' = ${appliedSpecificationRevision}
+            UNION ALL
+            SELECT history.receipt, 1 AS source_order
+              FROM jsonb_array_elements(
+                CASE WHEN jsonb_typeof(prior.launch_spec->'identityHistory') = 'array'
+                     THEN prior.launch_spec->'identityHistory' ELSE '[]'::jsonb END
+              ) AS history(receipt)
+             WHERE history.receipt->>'specificationRevision' = ${appliedSpecificationRevision}
+               AND history.receipt->>'stateRevision' = ${appliedStateRevision}
+               AND history.receipt->'specificationArtifact'->>'specificationRevision' = ${appliedSpecificationRevision}
+          ) AS candidate
+         WHERE prior.workspace_id = ${row.workspace_id}
+           AND prior.coord_owner_id = ${row.coord_owner_id}
+           AND prior.id <> ${row.id}
+         ORDER BY prior.started_at DESC, prior.id DESC, candidate.source_order
+         LIMIT 1
+      `
+    : [];
+  const currentRecord =
+    row.launch_spec !== null &&
+    typeof row.launch_spec === 'object' &&
+    !Array.isArray(row.launch_spec)
+      ? row.launch_spec as Record<string, unknown>
+      : null;
+  const inheritedReceipt = matchingReceipts[0]?.receipt;
+  const previous = inheritedReceipt
+    ? {
+        ...(currentRecord ?? {}),
+        identityHistory: [
+          ...(Array.isArray(currentRecord?.identityHistory) ? currentRecord.identityHistory : []),
+          inheritedReceipt,
+        ],
+      }
+    : row.launch_spec;
+  const retained = retainSuLaunchIdentityHistory(previous, launchSpec ?? row.launch_spec, row.applied);
+  if (launchSpec === undefined && JSON.stringify(retained) === JSON.stringify(row.launch_spec)) return true;
+  const payload = JSON.stringify(retained);
+  const updated = await tx<{ id: number }[]>`
+    UPDATE harness_shared.adv_sessions SET launch_spec = ${payload}::text::jsonb
+     WHERE id = ${row.id}
+    RETURNING id
+  `;
+  return updated.length > 0;
+}
+
+/** Persist a new render using the same receipt-retention transaction as resume.
+ * Return false on failure so launch callers can refuse without a receipt. */
 export async function recordSuLaunchSpec(
   advSessionId: number | null,
   coordOwnerId: string | null,
@@ -1856,33 +2198,7 @@ export async function recordSuLaunchSpec(
   if (!launchSpec) return false;
   if ((advSessionId == null || advSessionId <= 0) && !coordOwnerId) return false;
   try {
-    const { retainSuLaunchIdentityHistory } = await import('./su-persona-render');
-    // Prefer the exact row id; fall back to the owner's NEWEST row for the
-    // interactive cohort. Lock the selected row across read/merge/write so two
-    // concurrent refreshes cannot discard each other's immutable receipts.
-    return await boundedOrgTxn(async (tx) => {
-      const exactId = advSessionId != null && advSessionId > 0 ? advSessionId : null;
-      const rows = await tx<{ id: number; launch_spec: unknown; applied: unknown }[]>`
-        SELECT a.id, a.launch_spec, b.control_state->'activation'->'applied' AS applied
-          FROM harness_shared.adv_sessions a
-          LEFT JOIN harness_shared.session_briefs b
-            ON b.workspace_id = a.workspace_id AND b.owner_id = a.coord_owner_id
-         WHERE (${exactId}::bigint IS NOT NULL AND a.id = ${exactId})
-            OR (${exactId}::bigint IS NULL AND a.coord_owner_id = ${coordOwnerId})
-         ORDER BY a.started_at DESC, a.id DESC
-         LIMIT 1
-         FOR UPDATE OF a
-      `;
-      const row = rows[0];
-      if (!row) return false;
-      const payload = JSON.stringify(retainSuLaunchIdentityHistory(row.launch_spec, launchSpec, row.applied));
-      const updated = await tx<{ id: number }[]>`
-        UPDATE harness_shared.adv_sessions SET launch_spec = ${payload}::jsonb
-         WHERE id = ${row.id}
-        RETURNING id
-      `;
-      return updated.length > 0;
-    });
+    return await boundedOrgTxn((tx) => recordSuLaunchSpecInTransaction(tx, advSessionId, coordOwnerId, launchSpec));
   } catch (e) {
     warnUnlessMissingTable(e, 'recordSuLaunchSpec');
     return false;
@@ -2017,7 +2333,7 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal,
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason,
              to_jsonb(a)->'launch_argv' AS launch_argv,
              to_jsonb(a)->>'port_id' AS port_id,
              to_jsonb(a)->>'port_source_adv_session_id' AS port_source_adv_session_id,
@@ -2207,7 +2523,7 @@ export async function listResumableSessions(
              a.plan_slug, a.agent, a.role, a.feature, a.mode, a.terminal_bin, a.pid,
              a.window_id, a.omp_thread_id, a.label, a.cwd, a.coord_owner_id, a.session_id,
              a.launch_argv,
-             a.started_at, selected.last_active_at, a.ended_at, a.exit_code, a.ended_by, a.ended_signal
+             a.started_at, selected.last_active_at, a.ended_at, a.exit_code, a.ended_by, a.ended_signal, a.retired_at, a.retired_by, a.retired_reason
         FROM selected
         JOIN harness_shared.adv_sessions a ON a.id = selected.id
        ORDER BY selected.last_active_at DESC
@@ -2267,7 +2583,7 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
              -- sessions recover the harness scope persisted at launch time.
              to_jsonb(a)->'launch_spec'->>'harnessSlug' AS harness_slug,
              plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal,
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason,
              to_jsonb(a)->'launch_argv' AS launch_argv,
              to_jsonb(a)->>'port_id' AS port_id,
              to_jsonb(a)->>'port_source_adv_session_id' AS port_source_adv_session_id,
@@ -2289,7 +2605,9 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
 }
 
 /**
- * Resolve the newest still-active launch row for one coordination owner.
+ * Resolve the newest registration for one coordination owner when still active.
+ * A resumed predecessor's activity timestamp cannot supersede a later row;
+ * when the later registration ends, never fall back to an active old row.
  *
  * This is deliberately keyed by `coord_owner_id`, not a native transcript id:
  * focus/mark/wake requests start from the stable handle exposed by
@@ -2297,11 +2615,16 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
  * No recency cutoff is applied — a genuinely live interactive terminal can
  * remain open for days. The owner id is globally unique, but the active
  * workspace predicate keeps this low-level control read inside the caller's
- * workspace just like {@link getAdvSession}.
+ * workspace just like {@link getAdvSession}. Server-side callers can pass an
+ * explicit resolved workspace; legacy in-process callers use the active one.
  */
-export async function getLatestActiveAdvSessionByOwner(coordOwnerId: string): Promise<AdvSessionRow | null> {
+export async function getLatestActiveAdvSessionByOwner(
+  coordOwnerId: string,
+  workspaceId?: string | null,
+): Promise<AdvSessionRow | null> {
   const ownerId = coordOwnerId.trim();
   if (!ownerId) return null;
+  const scopedWorkspaceId = workspaceId?.trim() || activeWorkspaceId();
   try {
     const rows = await boundedOrgTxn(
       (tx) => tx<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
@@ -2309,17 +2632,22 @@ export async function getLatestActiveAdvSessionByOwner(coordOwnerId: string): Pr
                to_jsonb(a)->'launch_spec'->>'harnessSlug' AS harness_slug,
                plan_slug, agent, role, feature, mode, terminal_bin, pid,
                window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
-               started_at, ended_at, exit_code, ended_by, ended_signal,
+               started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason,
                to_jsonb(a)->'launch_argv' AS launch_argv,
                to_jsonb(a)->>'port_id' AS port_id,
                to_jsonb(a)->>'port_source_adv_session_id' AS port_source_adv_session_id,
                to_jsonb(a)->>'port_status' AS port_status,
                to_jsonb(a)->'port_metadata' AS port_metadata
           FROM harness_shared.adv_sessions a
-         WHERE workspace_id = ${activeWorkspaceId()}
+         WHERE workspace_id = ${scopedWorkspaceId}
            AND coord_owner_id = ${ownerId}
            AND ended_at IS NULL
-         ORDER BY started_at DESC
+           AND NOT EXISTS (
+             SELECT 1 FROM harness_shared.adv_sessions AS successor
+              WHERE successor.coord_owner_id = a.coord_owner_id
+                AND successor.id > a.id
+           )
+         ORDER BY id DESC
          LIMIT 1
       `,
     );
@@ -2339,7 +2667,7 @@ export async function getAdvSessionInWorkspace(id: number, workspaceId: string):
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
              to_jsonb(a)->'launch_argv' AS launch_argv,
-             started_at, ended_at, exit_code, ended_by, ended_signal,
+             started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason,
              to_jsonb(a)->>'port_id' AS port_id,
              to_jsonb(a)->>'port_source_adv_session_id' AS port_source_adv_session_id,
              to_jsonb(a)->>'port_status' AS port_status,
@@ -2396,8 +2724,18 @@ export async function updateAdvSessionPortStatus(
  * unit tests and typecheck both green — the fixtures set the field by hand, so
  * only a live drive could see it.
  */
-export async function advSessionsByCoordOwner(limit = 500): Promise<Map<string, AdvSessionRow>> {
+export async function advSessionsByCoordOwner(
+  limit = 500,
+  coordOwnerIds?: readonly string[],
+): Promise<Map<string, AdvSessionRow>> {
   const out = new Map<string, AdvSessionRow>();
+  // Exact targeted hydration must not scan the global recent-session window:
+  // older requested owners can be outside it, and multiple incarnations of
+  // one owner must not consume another owner's slot.
+  const ids = coordOwnerIds == null
+    ? null
+    : [...new Set(coordOwnerIds.filter((id) => id && !id.startsWith('fed:')))];
+  if (ids?.length === 0) return out;
   try {
     const { sql } = getOrgPg();
     const rows = await sql<
@@ -2405,6 +2743,8 @@ export async function advSessionsByCoordOwner(limit = 500): Promise<Map<string, 
         id: number;
         /** See the docblock: omitting this maps to null, not a type error. */
         launch_argv?: string[] | null;
+        display?: string | null;
+        launched_at?: string | Date | null;
         workspace_id: string;
         plan_slug: string | null;
         agent: string | null;
@@ -2424,17 +2764,19 @@ export async function advSessionsByCoordOwner(limit = 500): Promise<Map<string, 
         exit_code: number | null;
       }>
     >`
-      SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+      SELECT ${ids ? sql`DISTINCT ON (coord_owner_id)` : sql``}
+             id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, launch_argv,
-             started_at, ended_at, exit_code, ended_by, ended_signal
+             display, launched_at, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE coord_owner_id IS NOT NULL
-       ORDER BY started_at DESC
+         ${ids ? sql`AND coord_owner_id = ANY(${ids}::text[])` : sql``}
+       ORDER BY ${ids ? sql`coord_owner_id,` : sql``} id DESC
        LIMIT ${limit}
     `;
     for (const r of rows) {
       const mapped = mapAdvSessionRow(r);
-      // ORDER BY started_at DESC → first seen per owner is the most recent.
+      // Registration ids are immutable; resume activity can bump started_at.
       if (mapped.coordOwnerId && !out.has(mapped.coordOwnerId)) out.set(mapped.coordOwnerId, mapped);
     }
   } catch (e) {
@@ -2512,7 +2854,7 @@ export async function listRecordedLiveSessions(
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT DISTINCT ON (coord_owner_id)
              id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE ended_at IS NULL
          AND coord_owner_id IS NOT NULL
@@ -2629,7 +2971,7 @@ export async function listEndedAdvSessionsByOwners(coordOwnerIds: string[]): Pro
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT DISTINCT ON (coord_owner_id)
              id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE ended_at IS NOT NULL
          AND coord_owner_id = ANY(${ids}::text[])
@@ -2803,10 +3145,10 @@ export async function latestAdvSessionByCoordOwner(coordOwnerId: string): Promis
     const { sql } = getOrgPg();
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE coord_owner_id = ${coordOwnerId}
-       ORDER BY started_at DESC
+       ORDER BY id DESC
        LIMIT 1
     `;
     const r = rows[0];
@@ -2835,7 +3177,7 @@ export async function latestLiveAdvSessionByLabel(label: string, workspaceId: st
     const cutoffIso = new Date(Date.now() - RECORDED_LIVE_MAX_AGE_MS).toISOString();
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE label = ${label}
          AND workspace_id = ${workspaceId}
@@ -2902,7 +3244,7 @@ export async function listEndedAdvSessions(
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE ended_at IS NOT NULL
          -- Match the transcript handles understood by endedSessionStreamUrl:
@@ -3082,7 +3424,7 @@ export async function advSessionsByTranscriptHandles(handles: {
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, launch_argv, started_at, ended_at, exit_code, ended_by, ended_signal
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, launch_argv, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE (${sessionIds}::text[] IS NOT NULL AND session_id = ANY(${sessionIds}::text[]))
           OR (${ompThreadIds}::text[] IS NOT NULL AND omp_thread_id = ANY(${ompThreadIds}::text[]))
@@ -3145,7 +3487,7 @@ export async function advSessionsByIdToken(token: string, opts: { limit?: number
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE lower(coord_owner_id) LIKE ${pattern}
           OR lower(session_id)     LIKE ${pattern}

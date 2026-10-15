@@ -9,10 +9,16 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vite
 
 vi.mock('../../../harness-registry', () => ({ loadHarnessRegistry: vi.fn() }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws1' }));
+vi.mock('../in-workspace-txn', () => ({ inWorkspaceTxn: vi.fn(async (_d: string, _o: string, fn: (tx: unknown) => unknown) => fn({})) }));
+vi.mock('../su-lock-store', () => ({ tryAcquire: vi.fn(), tryRelease: vi.fn(), tryFinishHookOperation: vi.fn(), readQueue: vi.fn(), getTxPool: vi.fn() }));
+vi.mock('../../../edit-attribution', () => ({ recordEditAttributionStrict: vi.fn() }));
 
 import { loadHarnessRegistry } from '../../../harness-registry';
 import { getDomainToHarnessSlug, getHarnessToPotSlug } from '../../../authority/file-lock-routing';
-import { _testing } from '../file-lock-authority-wiring';
+import { _testing, adaptSuLockStore, finishHookOperationAtAuthority } from '../file-lock-authority-wiring';
+import { tryAcquire, tryFinishHookOperation } from '../su-lock-store';
+import { recordEditAttributionStrict } from '../../../edit-attribution';
+import type { FileLockReleaseParams } from '../../../authority/file-lock-authority-ops';
 
 beforeEach(() => {
   _testing.reset();
@@ -29,6 +35,81 @@ const REGISTRY = {
     { slug: 'org-hive', path: '/fake/org', harness_kind: 'hive' }, // its own Hive home
   ],
 };
+
+describe('hook operation authority store adapter', () => {
+  const operation = { id: '71d933be-413a-48b0-83af-8856650a917b', deadline: '2026-06-05T00:30:00Z',
+    paths: ['a.ts'], intent: 'PreToolUse:Edit', ttlSec: 600, outcome: 'completed' as const };
+  const params: FileLockReleaseParams = { owner: 'A', coordinationDomain: '/repo', operation,
+    nativeEditProof: { success: true, source: 'claude', tool: 'Edit', paths: ['a.ts'] } };
+  const finished = { ok: true as const, released: [] as string[], requestedPaths: ['a.ts'],
+    goalRef: null, heldBefore: 0, state: 'completed' as const };
+
+  beforeEach(() => {
+    vi.mocked(tryFinishHookOperation).mockReset();
+    vi.mocked(recordEditAttributionStrict).mockReset();
+    vi.mocked(tryFinishHookOperation).mockResolvedValue(finished);
+    vi.mocked(recordEditAttributionStrict).mockResolvedValue(undefined);
+  });
+
+  it('attributes a recognized edit after a lost acquire reply even when no paths were released', async () => {
+    const r = await finishHookOperationAtAuthority(params);
+    expect(r).toMatchObject({ ok: true, operationId: operation.id, attributed: ['a.ts'], released: [] });
+    expect(recordEditAttributionStrict).toHaveBeenCalledWith(expect.objectContaining({
+      repoRoot: '/repo', files: ['a.ts'], agentId: 'A', dispatchCallId: operation.id,
+    }));
+  });
+
+  it('reuses the stable ledger key on duplicate completion', async () => {
+    await finishHookOperationAtAuthority(params);
+    await finishHookOperationAtAuthority(params);
+    expect(recordEditAttributionStrict).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(recordEditAttributionStrict).mock.calls.map(([p]) => p.dispatchCallId)).toEqual([operation.id, operation.id]);
+  });
+
+  it('does not attribute a scope refused by the operation store', async () => {
+    vi.mocked(tryFinishHookOperation).mockResolvedValue({ ok: false, reason: 'operation_conflict' });
+    expect(await finishHookOperationAtAuthority(params)).toMatchObject({ ok: false, reason: 'operation_conflict' });
+    expect(recordEditAttributionStrict).not.toHaveBeenCalled();
+  });
+
+  it('rejects mismatched paths and unrecognized tools before touching the store', async () => {
+    for (const proof of [{ ...params.nativeEditProof!, paths: ['b.ts'] }, { ...params.nativeEditProof!, tool: 'Bash' }]) {
+      expect(await finishHookOperationAtAuthority({ ...params, nativeEditProof: proof })).toMatchObject({ ok: false, reason: 'operation_proof_conflict' });
+    }
+    expect(tryFinishHookOperation).not.toHaveBeenCalled();
+    expect(recordEditAttributionStrict).not.toHaveBeenCalled();
+  });
+
+  it('rejects noncanonical finish-before-acquire scope without a tombstone or attribution', async () => {
+    for (const paths of [['../escape.ts'], ['/absolute.ts'], ['./a.ts'], ['a//b.ts'], ['a.ts', 'a.ts'], ['a\\b.ts']]) {
+      const r = await finishHookOperationAtAuthority({ ...params,
+        operation: { ...operation, paths }, nativeEditProof: { ...params.nativeEditProof!, paths } });
+      expect(r).toMatchObject({ ok: false, reason: 'operation_conflict' });
+    }
+    expect(tryFinishHookOperation).not.toHaveBeenCalled();
+    expect(recordEditAttributionStrict).not.toHaveBeenCalled();
+  });
+
+  it('cancellation persists terminal state without inventing edit proof', async () => {
+    await finishHookOperationAtAuthority({ ...params, nativeEditProof: undefined,
+      operation: { ...operation, outcome: 'cancelled' } });
+    expect(tryFinishHookOperation).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ outcome: 'cancelled' }));
+    expect(recordEditAttributionStrict).not.toHaveBeenCalled();
+  });
+
+  it('strict ledger failure rejects completion so the enclosing transaction cannot commit release', async () => {
+    vi.mocked(recordEditAttributionStrict).mockRejectedValue(new Error('ledger unavailable'));
+    await expect(finishHookOperationAtAuthority(params)).rejects.toThrow('ledger unavailable');
+  });
+
+  it('passes fixed operation admission metadata through acquire and reports its refusal faithfully', async () => {
+    vi.mocked(tryAcquire).mockResolvedValue({ ok: false, busy: [], reason: 'operation_finished' });
+    const r = await adaptSuLockStore().acquire({ owner: 'A', coordinationDomain: '/repo', paths: ['a.ts'],
+      intent: 'PreToolUse:Edit', ttlSec: 600, automatic: true, operation });
+    expect(r).toMatchObject({ ok: false, reason: 'operation_finished', operationId: operation.id });
+    expect(tryAcquire).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ operation }));
+  });
+});
 
 describe('file-lock-authority-wiring resolver snapshot', () => {
   it('maps domain→slug from the registry; an unknown/unmanaged domain → null (N=1 passthrough)', async () => {

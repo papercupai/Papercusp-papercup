@@ -35,6 +35,12 @@ describe('ACKNOWLEDGED_CONTENT_DRIFT (WI-10004651)', () => {
       /repaired by 1288-/,
     );
   });
+
+  it('1398 is acknowledged because its executable SQL matches the applied blob', () => {
+    const filename = '1398-retire-probation-freshness-readiness-reasons.sql';
+    expect(ACKNOWLEDGED_CONTENT_DRIFT.get(filename)).toMatch(/comments-only.*db:check_drift/i);
+    expect(selectNewContentDrift([entry(filename, 'unclassified')])).toEqual([]);
+  });
 });
 
 describe('selectNewContentDrift (WI-10004651)', () => {

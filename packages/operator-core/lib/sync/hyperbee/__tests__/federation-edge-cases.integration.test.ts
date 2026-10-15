@@ -54,6 +54,14 @@ import {
   FILL_WORKSPACE_ID_DDL,
   HARNESS_ISSUES_CONSOLIDATED_FED_DDL,
 } from '../../../../test/_work-items-schema';
+import { stubHivePolicyReadsForSuite } from './_hive-policy-read-stubs';
+
+// The merge pass reads the hive policy + roster through the LIVE org pool, and a failed
+// read now leaves the pass unapplied (WI-10007530), so every pass here failed on the
+// integration live-DSN guard (WI-6554700010008455). This suite federates a non-Hive
+// harness: model the successful absent-policy read. Registered BEFORE the file's own
+// afterEach so the stub outlives substrate teardown passes.
+stubHivePolicyReadsForSuite();
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../../../../..');
@@ -355,14 +363,17 @@ async function bootTwoPeers(dbTag: string): Promise<TwoPeers> {
     swarmOverride: swarmA,
     verifyBindingOverride: async (_pk, _login, userId) =>
       userId === idB.userId ? 'verified' : 'fail',
-    applyOverride: (op) => {
-      applyA ??= buildPeerApply(dbA.sql, handleA!.ownLog.keyHex);
+    applyOverride: (op, ctx) => {
+      applyA ??= buildPeerApply(dbA.sql, ctx.ownLogKeyHex);
       return applyA(op);
     },
     mergePollMs: 0,
     pendingRetryMs: 0,
     loadRevokedOverride: async () => new Set(),
     announceIdentityOverride: idA.override,
+    // Not a re-key test: without this the boot resolves Hive scope through the LIVE org
+    // pool, which the integration live-DSN guard refuses (WI-6554700010008455).
+    rekeyDepsOverride: null,
   });
   cleanups.push(async () => {
     await handleA?.close();
@@ -377,14 +388,15 @@ async function bootTwoPeers(dbTag: string): Promise<TwoPeers> {
     swarmOverride: swarmB,
     verifyBindingOverride: async (_pk, _login, userId) =>
       userId === idA.userId ? 'verified' : 'fail',
-    applyOverride: (op) => {
-      applyB ??= buildPeerApply(dbB.sql, handleB!.ownLog.keyHex);
+    applyOverride: (op, ctx) => {
+      applyB ??= buildPeerApply(dbB.sql, ctx.ownLogKeyHex);
       return applyB(op);
     },
     mergePollMs: 0,
     pendingRetryMs: 0,
     loadRevokedOverride: async () => new Set(),
     announceIdentityOverride: idB.override,
+    rekeyDepsOverride: null, // see boot A (WI-6554700010008455)
   });
   cleanups.push(async () => {
     await handleB?.close();

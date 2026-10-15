@@ -21,19 +21,38 @@ import {
 } from './capability-toolset';
 import { runLoopChatTurn } from './chat-engine';
 import type { ModelPort } from './model-port';
-import type { ApprovalPort, LoopTool } from './loop';
+import type { ApprovalPort, LoopTool, LoopProviderRequestInfo } from './loop';
+import { customerAgentExecutionRequired } from '../auth/loopback-peer-trust';
 import {
   flushPendingTelemetry,
   PROJECTED_DEPS,
 } from '../projected-tool-deps';
 
 export interface OperatorOwnedLoopPortOptions {
-  /** Test seam; production uses createRoutedModelPort inside chat-engine. */
-  modelPort?: ModelPort;
+  /** Private customer-VM composition. The host pins local workspace/cwd and
+   * supplies BOTH model and tool authority from one authenticated channel.
+   * This is not an invocation argument; labels in input cannot install it. */
+  customerExecution?: {
+    readonly workspaceId: string;
+    readonly projectDir: string;
+    readonly bind: (signal?: AbortSignal) => Promise<{
+      readonly modelPort: ModelPort;
+      readonly tools: LoopTool[];
+      readonly signal: AbortSignal;
+    }>;
+  };
+  /** A fixed port, or a trusted host factory evaluated anew for each invocation.
+   * The factory closes over authenticated host/session state and receives only
+   * cancellation; run/workspace/account labels are not billing authority.
+   * An absent port uses createRoutedModelPort inside chat-engine. */
+  modelPort?: ModelPort | ((signal?: AbortSignal) => ModelPort | Promise<ModelPort>);
   /** Test/specialized-host seam; production derives capability:* tools. */
   tools?: LoopTool[];
   /** Test seam. Production flushes the shared deferred tool ledger once/turn. */
   flushTelemetry?: () => Promise<void>;
+  /** Trusted host composition, never an agent-supplied billing writer. */
+  onProviderRequest?(info: LoopProviderRequestInfo,
+    context: Readonly<{ runId: string; workspaceId: string; harnessSlug: string }>): Promise<void>;
 }
 
 const unattendedApprovalPort: ApprovalPort = {
@@ -102,11 +121,60 @@ function buildCapabilityTools(
 export function createOperatorOwnedLoopPort(
   options: OperatorOwnedLoopPortOptions = {},
 ): OwnedLoopInvokePort {
+  const customerExecution = options.customerExecution && Object.freeze({ ...options.customerExecution });
   return {
-    async invoke(request) {
-      const tools = options.tools ?? buildCapabilityTools(request);
+    async invoke(input) {
+      const request = Object.freeze({ ...input });
       const flushTelemetry = options.flushTelemetry ?? flushPendingTelemetry;
+      const captureContext = Object.freeze({ runId: request.runId,
+        workspaceId: request.workspaceId, harnessSlug: request.harnessSlug });
+      const capture = options.onProviderRequest;
+      const configuredModelPort = options.modelPort;
       try {
+        if (request.signal?.aborted) return { exitCode: 130, stderr: 'owned-loop turn aborted' };
+        // This operator-owned host cannot supply customer OS/tool authority.
+        // A model factory alone never authorizes the ambient capability doors.
+        if (customerAgentExecutionRequired() && !customerExecution) {
+          return { exitCode: 1, stderr: 'owned-loop customer execution host unavailable' };
+        }
+        if (customerExecution && (!customerExecution.workspaceId.trim()
+          || request.workspaceId !== customerExecution.workspaceId
+          || request.cwd !== customerExecution.projectDir
+          || request.projectDir !== customerExecution.projectDir)) {
+          return { exitCode: 1, stderr: 'owned-loop customer execution host unavailable' };
+        }
+        let modelPort: ModelPort | undefined;
+        let customerTools: LoopTool[] | undefined;
+        let executionSignal = request.signal;
+        let onAbort: (() => void) | undefined;
+        try {
+          if (customerExecution || typeof configuredModelPort === 'function') {
+            const pending = Promise.resolve().then(async () => {
+              if (!customerExecution) return (configuredModelPort as (signal?: AbortSignal) => ModelPort | Promise<ModelPort>)(request.signal);
+              const bound = await customerExecution.bind(request.signal);
+              if (typeof bound?.modelPort?.stream !== 'function' || !Array.isArray(bound.tools)
+                || !(bound.signal instanceof AbortSignal)) throw new Error('invalid customer host');
+              customerTools = bound.tools;
+              executionSignal = request.signal ? AbortSignal.any([request.signal, bound.signal]) : bound.signal;
+              return bound.modelPort;
+            });
+            const aborted = request.signal ? new Promise<never>((_resolve, reject) => {
+              onAbort = () => reject(new Error('aborted'));
+              request.signal!.addEventListener('abort', onAbort, { once: true });
+            }) : undefined;
+            modelPort = await (aborted ? Promise.race([pending, aborted]) : pending);
+          } else modelPort = configuredModelPort;
+          // A supplied factory must not silently fall back to ambient routing.
+          if ((customerExecution || configuredModelPort) && typeof modelPort?.stream !== 'function') throw new Error('invalid host port');
+        } catch {
+          if (request.signal?.aborted) return { exitCode: 130, stderr: 'owned-loop turn aborted' };
+          return { exitCode: 1, stderr: customerExecution
+            ? 'owned-loop customer execution host unavailable' : 'owned-loop model host unavailable' };
+        } finally {
+          if (onAbort) request.signal!.removeEventListener('abort', onAbort);
+        }
+        if (executionSignal?.aborted) return { exitCode: 130, stderr: 'owned-loop turn aborted' };
+        const tools = customerExecution ? customerTools! : options.tools ?? buildCapabilityTools(request);
         const result = await runLoopChatTurn({
           chatId: request.runId,
           workspaceId: request.workspaceId,
@@ -124,10 +192,12 @@ export function createOperatorOwnedLoopPort(
             },
           },
           model: request.model,
-          ...(request.signal !== undefined ? { signal: request.signal } : {}),
+          ownerId: captureContext.runId,
+          ...(executionSignal !== undefined ? { signal: executionSignal } : {}),
           tools,
           approvals: unattendedApprovalPort,
-          ...(options.modelPort ? { port: options.modelPort } : {}),
+          ...(modelPort ? { port: modelPort } : {}),
+          ...(capture ? { onProviderRequest: (info: LoopProviderRequestInfo) => capture(info, captureContext) } : {}),
         });
 
         if (result.errorMessage) {

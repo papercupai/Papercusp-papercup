@@ -24,12 +24,37 @@
 import { networkInterfaces } from 'node:os';
 
 export interface AdvertisedBaseUrl {
-  kind: 'mesh' | 'lan' | 'tunnel';
+  kind: 'mesh' | 'lan' | 'tunnel' | 'relay';
   url: string;
 }
 
 type IfaceMap = ReturnType<typeof networkInterfaces>;
 type EnvMap = Record<string, string | undefined>;
+
+/**
+ * The portal device relay base URL when THIS operator is an enrolled hosted
+ * workspace (android-public-release D-013 #1/#3, D-017): `<portal>/api/workspaces/<id>`.
+ * The phone's client appends `/api/device/<route>`, which the portal relays to this
+ * machine. Null on a desktop/local install. The portal origin is the hosted control
+ * plane's own origin (`PAPERCUSP_HOSTED_CONTROL_PLANE_URL`, the same env the connector
+ * dials); a ws(s) or socket-path form is normalised to its https origin.
+ */
+export function hostedDeviceRelayBaseUrl(workspaceId: string | null | undefined, env: EnvMap = process.env): string | null {
+  const id = workspaceId?.trim();
+  if (!id || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id)) return null;
+  if (!env.PAPERCUSP_HOSTED_CONNECTOR_BEARER?.trim()) return null;
+  const base = env.PAPERCUSP_HOSTED_CONTROL_PLANE_URL?.trim();
+  if (!base) return null;
+  let origin: string;
+  try {
+    const parsed = new URL(base);
+    const secure = parsed.protocol === 'https:' || parsed.protocol === 'wss:';
+    origin = `${secure ? 'https' : 'http'}://${parsed.host}`;
+  } catch {
+    return null;
+  }
+  return `${origin}/api/workspaces/${id}`;
+}
 
 /**
  * WireGuard/mesh interface names. `papercusp` is the Defguard network's
@@ -102,8 +127,14 @@ export function advertisedBaseUrls(opts?: {
   port?: string | number | null;
   ifaces?: IfaceMap;
   env?: EnvMap;
+  /** The paired workspace; on a hosted machine it selects the portal relay URL. */
+  workspaceId?: string | null;
 }): AdvertisedBaseUrl[] {
   const env = opts?.env ?? process.env;
+  // A hosted machine's mesh/LAN addresses are VM-private and unreachable from a
+  // phone, so the portal relay is its ONLY route (D-013 #3).
+  const relay = hostedDeviceRelayBaseUrl(opts?.workspaceId, env);
+  if (relay) return [{ kind: 'relay', url: relay }];
   const ifaces = opts?.ifaces ?? networkInterfaces();
   const port = String(opts?.port ?? env.PORT ?? '3055');
 

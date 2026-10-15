@@ -121,13 +121,14 @@ export const DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE = [
   '🔁 Loop wake (every ~{intervalSec}s after each turn settles). You are continuing your OWN warm session toward: {goal}',
   '',
   'Each wake:',
-  '1. Decide the next concrete unit(s) of work. If the goal is DONE or there\'s nothing left to do, call `loop:end` and stop — do not spin on empty wakes. An idle SELF-PULLER (your scheduler:get_next / work_items:claim_next came back empty) parks on a standing wake watch instead of polling: register `watch:create { pattern: "work-item:claimable", wake:true, once:false, payload_filter: <your claim spec\'s view> }`, then `loop:end` — do not pass `targetKind` with `wake:true`; the watch re-invokes you on every matching claimable transition and remains armed after a re-miss, so your pull stays the authoritative claim. If AUTO (or another autonomy-implying mode) remains active without that deliberate wake watch, use `loop:end { acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true }` so the wake-less safety guard does not refuse the stop.',
+  '1. Decide the next concrete unit(s) of work. If the goal is DONE (every item you claimed is completed, released or handed off), call `loop:end` and stop — do not spin on empty wakes. An idle SELF-PULLER that holds NO claims (your scheduler:get_next / work_items:claim_next came back empty) parks on a standing wake watch instead of polling: register `watch:create { pattern: "work-item:claimable", wake:true, once:false, payload_filter: <your claim spec\'s view> }`, then `loop:end` — do not pass `targetKind` with `wake:true`; the watch re-invokes you on every matching claimable transition and remains armed after a re-miss, so your pull stays the authoritative claim. If AUTO (or another autonomy-implying mode) remains active without that deliberate wake watch, use `loop:end { acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true }` so the wake-less safety guard does not refuse the stop — that acknowledgement covers a claimless stop only.',
   '2. Work it per your persona\'s "Working as a fleet MEMBER — the member operating loop" contract — create + ' +
     'self-assign the unit atomically, pick `kind` by what it IS, finish with `work_items:complete { completion }` ' +
     'evidence (never a bare "done" assertion). harness:{harness}, assign_to:{ownerId}.',
-  "3. When this iteration's work is done (or you are blocked), END YOUR TURN. The loop re-wakes this same session ~{intervalSec}s after the turn settles.",
+  "3. When this iteration's work is done, END YOUR TURN. The loop re-wakes this same session ~{intervalSec}s after the turn settles.",
+  '   BLOCKED on one thing? Keep doing every unit that does not depend on it. When EVERYTHING left is blocked: record it on the held item (`work_items:set_blocker`), register a bounded `events:await { event: <the specific unblocking event — the owner\'s answer, work-item:unblocked:<id>, the gate verdict>, timeout_sec, on_timeout:\'wake\' }`, then END YOUR TURN. Being blocked is never a reason to call `loop:end`.',
   '',
-  'To stop: `loop:end`. If AUTO (or another autonomy-implying mode) remains active without a deliberate event await, pass `acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true`; otherwise the wake-less safety guard refuses the stop. If you are blocked on something external (a build, another agent, an owner decision), call `loop:end` and say why rather than burning wakes spinning. `loop:status` shows the loop state.',
+  'To stop: `loop:end` — only when the goal is done, your claims are released or handed off, or the owner told this session to stop (cite it with `ownerStopDirectiveId`). If AUTO (or another autonomy-implying mode) remains active without a deliberate event await, pass `acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true` for a claimless stop; otherwise the wake-less safety guard refuses it. While you still hold unfinished work-items that flag does NOT help: the stop is refused until a bounded wake source exists — follow the refusal\'s `recovery` (the bounded events:await, or checkpoint + release). `loop:status` shows the loop state.',
 ].join('\n');
 
 /**
@@ -146,7 +147,7 @@ export const MONITOR_LOOP_WAKE_PROMPT_TEMPLATE = [
   '2. Act ONLY on deltas: something stalled/failed/blocked → unblock it, re-steer, or escalate. Nothing changed → write a one-line loop:checkpoint and END YOUR TURN — a quiet wake is a SUCCESS, not a license to invent work. Do NOT create work_items for routine checks; only file one when a delta needs real follow-up work.',
   '3. END YOUR TURN when this check settles. The loop re-wakes this same session ~{intervalSec}s after the turn settles.',
   '',
-  'To stop: `loop:end`. If AUTO (or another autonomy-implying mode) remains active without a deliberate event await, pass `acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true`; otherwise the wake-less safety guard refuses the stop. `loop:status` shows the loop state.',
+  'To stop: `loop:end` — when the watched thing is finished, your claims are released or handed off, or the owner told this session to stop. If AUTO (or another autonomy-implying mode) remains active without a deliberate event await, pass `acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true` for a claimless stop; otherwise the wake-less safety guard refuses it. Still holding unfinished work-items? That flag does NOT help — follow the refusal\'s `recovery` (a bounded events:await, or checkpoint + release). `loop:status` shows the loop state.',
 ].join('\n');
 
 /**
@@ -275,7 +276,7 @@ function renderDrivenWorkItemLine(workItem: string): string {
     `turns the work_items:checkpoint mandate above from an "if" into a REQUIREMENT each wake: work_items:checkpoint`,
     `{ id:'${workItem}', checkpoint } is the ONE piece of in-flight state a successor/reclaimer INHERITS if this`,
     'session dies mid-work — refresh it before every turn ends, at least as often as the carry-note. Finish it with',
-    `work_items:complete { id:'${workItem}', … } when the goal is done (then loop:end; if AUTO or another autonomy-implying mode remains active without a deliberate event await, pass acknowledgeOpenDirectives:true and acknowledgeWakeLessAutonomy:true).`,
+    `work_items:complete { id:'${workItem}', … } when the goal is done (then loop:end; if AUTO or another autonomy-implying mode remains active without a deliberate event await and you hold no other unfinished work-items, pass acknowledgeOpenDirectives:true and acknowledgeWakeLessAutonomy:true). Blocked instead of done? Record work_items:set_blocker plus a bounded events:await on the unblocking event (on_timeout:'wake') and END YOUR TURN — do not loop:end.`,
   ].join('\n');
 }
 
@@ -644,6 +645,13 @@ export async function materializeLoop(input: MaterializeLoopInput): Promise<{
   // Best-effort; a stamp failure must never fail the arm (materializeLoop already succeeded).
   try {
     await stampLoopArmedAt(sql, row.id, now.getTime());
+    // The guard deliberately performs zero reads on an unbounded fire, so the
+    // confirmed arm is the recovery measurement when a re-arm removes both bounds.
+    if ((input.active ?? true) && !(input.maxFires != null && input.maxFires > 0)
+      && !(input.maxDurationSec != null && input.maxDurationSec > 0)) {
+      const { resolveAlarm } = await import('../../alarm-attention');
+      await resolveAlarm(`alarm:loop-dead-man:${row.id}`, 'loop-dead-man');
+    }
   } catch (e) {
     console.warn(
       `[loop] stampLoopArmedAt failed for routine ${row.id} (loop still armed): ${e instanceof Error ? e.message : e}`,
@@ -941,6 +949,8 @@ export async function transferLoopOwnership(
 
 /** A lean view of an owner's loop, for loop:status / observability. */
 export interface LoopStatus {
+  /** Durable native execution recovery verdict from the existing routine metadata. */
+  executionRecovery?: import('./loop-execution-recovery').ExecutionRecoveryState;
   name: string;
   ownerId: string;
   harnessSlug: string;
@@ -1091,6 +1101,11 @@ export interface LoopStatus {
    *  interface): most rows genuinely have `last_withheld_at IS NULL`, so a required field would
    *  force every construction site to assert a value that does not exist. */
   lastWithheldAt?: string | null;
+  /** WI-10005352 — WHICH path withheld that fire (`autoloop_state.last_withheld_reason`):
+   *  `'fire-gate'` (backoff/circuit deny) or `'await-blocking'` (loop-fire's blocking-await
+   *  suppression, which has ALSO re-armed `next_fire_at` to the await's resume threshold).
+   *  Same optional-on-semantics reasoning as `lastWithheldAt`: null when nothing was withheld. */
+  lastWithheldReason?: string | null;
   /** EI-16210: the most recent `event_wake_deliveries` row recorded for THIS loop's own
    *  wake (`source = 'loop:<routineId>'`) — the actual delivery-ladder outcome behind a
    *  generic `lastDeliveryOutcome:'loop-stuck-backstop'`. Distinguishes "the wake was
@@ -1103,6 +1118,9 @@ export interface LoopStatus {
   lastWakeStatus: string | null;
   /** ISO of the wake row's `delivered_at` (or `created_at` if never delivered). */
   lastWakeAt: string | null;
+  /** ISO of the wake row's `created_at` dispatch stamp. Unlike lastWakeAt, this is not delayed
+   *  until the delivery settles, so a loop turn that finishes before delivered_at remains provable. */
+  lastWakeCreatedAt?: string | null;
   /** The delivery ladder's captured error text for that wake, if any (e.g. a spawn
    *  failure) — null on a clean delivery or when no wake row exists. */
   lastWakeError: string | null;
@@ -1118,6 +1136,19 @@ export interface LoopStatus {
    *  it is the completion signal used by turnsStalled. Optional for legacy
    *  fixture compatibility; production status rows always populate it. */
   lastLoopTurnAt?: string | null;
+  /** Latest completed loop-origin turn after the most recent wake settled through
+   *  suppressed-redundant, coalesced, or inbox delivery
+   *  was dispatched, regardless of the current arm. `lastLoopTurnAt` is intentionally
+   *  arm-scoped for turnsStalled; recovery proof for an older wake must survive re-arm. */
+  lastSuppressedWakeLoopTurnAt?: string | null;
+  /** EI-24933871787030971 — completion proof for the latest fire when its
+   *  delivery outcome was recorded as `loop-delivered-wake-no-loop-turn`.
+   *  Unlike lastLoopTurnAt, this is scoped to `routines.last_fired_at`, not
+   *  `metadata.armed_at`: a later loop:arm must not hide a delayed real turn
+   *  that completed after the failed fire. Null when that latest outcome is
+   *  not the no-turn failure, or when no matching loop-fire turn is proven.
+   */
+  lastFailedFireLoopTurnCompletedAt?: string | null;
   /** WI-6951: ISO of the most recent GENUINE turn completion — the lifecycle session-end
    *  marker deliberately EXCLUDED (EI-19316779460752535 widened the SOURCE from the
    *  journal alone to journal ∪ session_turns assistant turns, because the journal covers
@@ -1239,7 +1270,8 @@ export const LOOP_FIRE_STARVATION_MIN_MISSED_OPPORTUNITIES = 3;
  *
  * Missing or contradictory timestamps fail quiet. A recent presence beat also
  * suppresses the signal because a live owner may simply be in a legitimately
- * long first turn; the stalled-loop actor can use its reachability evidence for
+ * long first turn — but only until a post-arm prompt older than the floor proves
+ * that turn ended (WI-6554700010012442); the stalled-loop actor can use its reachability evidence for
  * any stronger action. This function only contributes to the read-only
  * `loop:status` stalled verdict.
  */
@@ -1251,6 +1283,10 @@ export function computeLoopFireStarvation(input: {
   armedAtMs: number | null;
   lastFiredAtMs: number | null;
   lastActiveAtMs?: number | null;
+  /** Earliest owner prompt (session_turns speaker='user') after `armedAtMs`. Its
+   *  existence proves the arming turn ended, which lifts the presence suppression
+   *  once it is older than the floor (WI-6554700010012442). */
+  firstPromptAfterArmAtMs?: number | null;
   /** Required for the unparked scheduler-wedge shape; parked loops use the infinity sentinel. */
   nextFireAtMs?: number | null;
   intervalSec: number | null;
@@ -1280,12 +1316,23 @@ export function computeLoopFireStarvation(input: {
     if (!Number.isFinite(input.lastFiredAtMs) || input.lastFiredAtMs >= armedAtMs) return false;
   }
 
+  const floorMs = turnsStalledFloorMs(input.intervalSec);
   const lastActiveAtMs = input.lastActiveAtMs;
   const activeRecently =
     lastActiveAtMs != null &&
     Number.isFinite(lastActiveAtMs) &&
-    nowMs - lastActiveAtMs < turnsStalledFloorMs(input.intervalSec);
-  if (activeRecently) return false;
+    nowMs - lastActiveAtMs < floorMs;
+  // WI-6554700010012442: a fresh presence beat only excuses zero fires while the
+  // arming turn may still be running. A prompt after the arm proves that turn ended,
+  // so once that prompt is older than the floor, other wakes (inbox, fleet awaits)
+  // keeping presence fresh no longer explain a loop that never fired.
+  const firstPromptAfterArmAtMs = input.firstPromptAfterArmAtMs;
+  const armingTurnEndedPastFloor =
+    firstPromptAfterArmAtMs != null &&
+    Number.isFinite(firstPromptAfterArmAtMs) &&
+    firstPromptAfterArmAtMs > armedAtMs &&
+    nowMs - firstPromptAfterArmAtMs >= floorMs;
+  if (activeRecently && !armingTurnEndedPastFloor) return false;
 
   // Parked loops carry no concrete nextFireAt by design: their current fire is
   // already in flight, so the no-post-arm-fire evidence is sufficient. An
@@ -1488,6 +1535,103 @@ export async function rearmFireStarvedLoop(sql: Sql, routineId: string, reason: 
   `;
 }
 
+/** P-007: host-recovery routes one loop may take inside HOST_RECOVERY_ROUTE_WINDOW_MS. */
+export const HOST_RECOVERY_ROUTE_MAX = 3;
+/** P-007: the route budget window; matches the executor's auth-recovery window (6h). */
+export const HOST_RECOVERY_ROUTE_WINDOW_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * P-007 (parked-agent-census-resumption-and-root-cause-2026-10-09) — keep a turn-stalled loop
+ * ARMED and make it due now, because its host reports a condition the next wake recovers (a
+ * dead provider login or a quota wall the executor recycles). Disarming that loop is what
+ * stranded 37 of 61 turns-stalled sessions on 2026-10-10.
+ *
+ * The budget is enforced by the write itself, not by a read before it: the row is updated only
+ * while `metadata.stalled_host_recovery` holds fewer than `max` routes inside the window, and
+ * the RETURNING row is the verdict. `false` means the budget is spent (or the loop is no longer
+ * armed). A spent budget must retain a recovery wall, never erase the loop obligation.
+ */
+export async function routeStalledLoopToHostRecovery(
+  sql: Sql,
+  routineId: string,
+  reason: string,
+  condition: string,
+  opts: { max?: number; windowMs?: number; deferFire?: boolean } = {},
+): Promise<{ routed: boolean }> {
+  const max = opts.max ?? HOST_RECOVERY_ROUTE_MAX;
+  const windowMs = opts.windowMs ?? HOST_RECOVERY_ROUTE_WINDOW_MS;
+  const rows = await sql<Array<{ id: string }>>`
+    WITH cur AS (
+      SELECT id,
+             (extract(epoch from now()) * 1000)::bigint AS now_ms,
+             (metadata->'stalled_host_recovery'->>'windowStartMs')::bigint AS window_start_ms,
+             COALESCE((metadata->'stalled_host_recovery'->>'count')::int, 0) AS route_count
+        FROM harness_shared.routines
+       WHERE id = ${routineId} AND active = TRUE
+       FOR UPDATE
+    ), budget AS (
+      SELECT id, now_ms,
+             (window_start_ms IS NULL OR now_ms - window_start_ms >= ${windowMs}) AS window_expired,
+             window_start_ms, route_count
+        FROM cur
+    )
+    UPDATE harness_shared.routines AS r
+       SET next_fire_at = CASE WHEN ${opts.deferFire === true} THEN r.next_fire_at ELSE now() END,
+           metadata = COALESCE(r.metadata, '{}'::jsonb)
+                    || jsonb_build_object(
+                         'loop_rearmed_reason', ${reason}::text,
+                         'loop_rearmed_at', now()::text,
+                         'loop_rearmed_from_next_fire_at', to_jsonb(r.next_fire_at::text),
+                         'stalled_host_recovery', jsonb_build_object(
+                           'windowStartMs', CASE WHEN b.window_expired THEN b.now_ms ELSE b.window_start_ms END,
+                           'count', CASE WHEN b.window_expired THEN 1 ELSE b.route_count + 1 END,
+                           'lastAtMs', b.now_ms,
+                           'lastCondition', ${condition}::text
+                         )
+                       ),
+           updated_at = now()
+      FROM budget b
+     WHERE r.id = b.id
+       AND r.active = TRUE
+       AND (b.window_expired OR b.route_count < ${max})
+    RETURNING r.id
+  `;
+  return { routed: rows.length > 0 };
+}
+
+/** Retain an unhealthy owner's obligation on its existing routine. The guard owns
+ * the bounded retry; the owner page carries any prerequisite it cannot repair.
+ * This CAS cannot undo loop:end, and an unchanged wall cannot slide its probe
+ * forever into the future or page on every sweep. */
+export async function retainStalledLoopRecoveryWall(
+  sql: Sql,
+  routineId: string,
+  wall: { ownerId: string; condition: string; reason: string; remedy: string },
+): Promise<{ retained: boolean; changed: boolean }> {
+  const rows = await sql<Array<{ changed: boolean }>>`
+    WITH cur AS (
+      SELECT id, metadata, next_fire_at,
+             (metadata #>> '{stalled_host_recovery,wall,reason}') IS DISTINCT FROM ${wall.reason} AS changed
+        FROM harness_shared.routines
+       WHERE id = ${routineId} AND active = TRUE AND target_owner_id = ${wall.ownerId}
+       FOR UPDATE
+    )
+    UPDATE harness_shared.routines AS r
+       SET metadata = jsonb_set(COALESCE(r.metadata, '{}'::jsonb), '{stalled_host_recovery}',
+             COALESCE(r.metadata->'stalled_host_recovery', '{}'::jsonb) || jsonb_build_object(
+               'wall', jsonb_build_object('ownerId', ${wall.ownerId}::text, 'responsible', 'stalled-loops-guard',
+                 'condition', ${wall.condition}::text, 'reason', ${wall.reason}::text, 'remedy', ${wall.remedy}::text,
+                 'observedAt', now()::text))),
+           next_fire_at = CASE WHEN NOT cur.changed AND cur.next_fire_at > now()
+                AND cur.next_fire_at <> 'infinity'::timestamptz THEN cur.next_fire_at
+             ELSE now() + (${HOST_RECOVERY_ROUTE_WINDOW_MS}::bigint * interval '1 millisecond') END,
+           updated_at = now()
+      FROM cur WHERE r.id = cur.id AND r.active = TRUE AND r.target_owner_id = ${wall.ownerId}
+    RETURNING cur.changed
+  `;
+  return { retained: rows.length > 0, changed: rows[0]?.changed === true };
+}
+
 /**
  * WI-37546 — UN-disarm a loop this system disarmed, when its owner turns out to still be
  * working. The third member of the family above: `autoPauseLoopRoutine` stops firing at an
@@ -1552,11 +1696,16 @@ export async function rearmFireStarvedLoop(sql: Sql, routineId: string, reason: 
  * survives, but it pins the words to THIS revival even after a later disarm overwrites
  * `loop_paused_reason` with a fresh one.
  *
- * Guarded `AND active = FALSE` so it is a no-op against a loop that is already running — this
- * write must never disturb the cadence of a healthy loop, and a concurrent `loop:arm` by the
- * owner should win rather than be re-stamped by the sweep.
+ * The UPDATE compares the selected pause timestamp and reason as well as `active = FALSE`.
+ * A concurrent `loop:end` changes that pause snapshot, so a stale candidate cannot restore the
+ * loop. A concurrent `loop:arm` already makes it active, so that write also wins.
  */
-export async function reviveDisarmedLoop(sql: Sql, routineId: string, reason: string): Promise<void> {
+export async function reviveDisarmedLoop(
+  sql: Sql,
+  routineId: string,
+  candidatePause: { pausedAtMs: number; pauseReason: string },
+  reason: string,
+): Promise<boolean> {
   const revived = await sql<
     Array<{
       workspace_id: string;
@@ -1593,7 +1742,10 @@ export async function reviveDisarmedLoop(sql: Sql, routineId: string, reason: st
                          'fire_count_at_arm', COALESCE((metadata->>'fire_count')::int, 0)
                        ),
            updated_at = now()
-     WHERE id = ${routineId} AND active = FALSE
+     WHERE id = ${routineId}
+       AND active = FALSE
+       AND metadata->>'loop_paused_reason' = ${candidatePause.pauseReason}
+       AND (metadata->'pause'->>'pausedAtMs')::bigint = ${candidatePause.pausedAtMs}
     RETURNING workspace_id, install_slug, name, target_role, target_owner_id,
               reschedule_interval_sec,
               (metadata->>'loop_revived_count')::int AS revived_count,
@@ -1612,8 +1764,8 @@ export async function reviveDisarmedLoop(sql: Sql, routineId: string, reason: st
   // re-disarmed twice is a distinct, diagnosable shape, and the mutable counter alone can
   // never show the sequence because a later disarm overwrites the reason beside it.
   //
-  // Guarded `AND active = FALSE`, so a returned row always crossed FALSE -> TRUE; a no-op
-  // against an already-running loop correctly logs nothing.
+  // A returned row proves the active and candidate-pause predicates both matched and the CAS
+  // crossed FALSE -> TRUE. A stale candidate or an already-running loop logs nothing.
   const row = revived[0];
   if (row) {
     void recordLoopTransition(sql, {
@@ -1636,6 +1788,7 @@ export async function reviveDisarmedLoop(sql: Sql, routineId: string, reason: st
       },
     });
   }
+  return row !== undefined;
 }
 
 /**
@@ -1877,6 +2030,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     armedAtMs,
     lastFiredAtMs: lastFiredMs,
     lastActiveAtMs: presenceMs,
+    firstPromptAfterArmAtMs: r.first_prompt_after_arm_at ? new Date(r.first_prompt_after_arm_at).getTime() : null,
     nextFireAtMs: nextFireAtIso == null ? null : Date.parse(nextFireAtIso),
     intervalSec,
   });
@@ -1932,12 +2086,21 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     lastDeliveryOutcome: r.last_delivery_outcome ?? null,
     consecutiveErrors: r.consecutive_errors == null ? 0 : Number(r.consecutive_errors),
     lastWithheldAt: r.last_withheld_at ? new Date(r.last_withheld_at).toISOString() : null,
+    lastWithheldReason: r.last_withheld_reason ?? null,
     lastWakeChannel: r.last_wake_channel ?? null,
     lastWakeStatus: r.last_wake_status ?? null,
     lastWakeAt: r.last_wake_at ? new Date(r.last_wake_at).toISOString() : null,
+    lastWakeCreatedAt: r.last_wake_created_at ? new Date(r.last_wake_created_at).toISOString() : null,
     lastWakeError: r.last_wake_error ?? null,
+    ...(r.metadata?.executionRecovery ? { executionRecovery: r.metadata.executionRecovery } : {}),
     lastTurnAt: r.last_turn_at ? new Date(r.last_turn_at).toISOString() : null,
     lastLoopTurnAt: r.last_loop_turn_at ? new Date(r.last_loop_turn_at).toISOString() : null,
+    lastSuppressedWakeLoopTurnAt: r.last_suppressed_wake_loop_turn_at
+      ? new Date(r.last_suppressed_wake_loop_turn_at).toISOString()
+      : null,
+    lastFailedFireLoopTurnCompletedAt: r.last_failed_fire_loop_turn_completed_at
+      ? new Date(r.last_failed_fire_loop_turn_completed_at).toISOString()
+      : null,
     lastRealTurnAt: r.last_real_turn_at ? new Date(r.last_real_turn_at).toISOString() : null,
     turnsStalled,
     parkedForSec: parked && parkedMs != null ? Math.max(0, Math.round(parkedMs / 1000)) : null,
@@ -1990,6 +2153,7 @@ export async function getLoopStatuses(
            -- read it). Selected here because it is the ONLY signal that separates "the fire went
            -- out and reached nobody" from "the fire never went out" — see LoopStatus.lastWithheldAt.
            a.last_withheld_at    AS last_withheld_at,
+           a.last_withheld_reason AS last_withheld_reason,
            (SELECT max(ag.created_at) FROM harness_shared.agent_activity ag
              WHERE ag.owner_id = r.target_owner_id AND ag.kind = 'lifecycle'
                AND ag.summary = ${SESSION_END_MARKER} AND ag.created_at > r.last_fired_at) AS lifecycle_completed_at,
@@ -2120,6 +2284,86 @@ export async function getLoopStatuses(
                      (r.metadata->>'armed_at')::timestamptz,
                      '-infinity'::timestamptz
                    ))                                                    AS last_loop_turn_at,
+           -- WI-6554700010012442: the earliest prompt after the arm proves the arming turn
+           -- ended, which lifts fire-starvation's presence suppression past the floor.
+           -- A NULL armed_at compares against +infinity, so it yields NULL (no evidence).
+           -- Uses session_turns_owner_ts_idx like last_loop_turn_at above.
+           (SELECT min(fp.ts)
+              FROM harness_shared.session_turns fp
+             WHERE fp.owner = r.target_owner_id
+               AND fp.speaker = 'user'
+               AND fp.ts > COALESCE(
+                     (r.metadata->>'armed_at')::timestamptz,
+                     'infinity'::timestamptz
+                   ))                                                    AS first_prompt_after_arm_at,
+           -- EI-25552514553135466: turnsStalled needs the current arm's loop-turn clock
+           -- above, but suppressed-wake recovery needs proof tied to the dispatched wake.
+           -- Re-arming after a genuine loop-origin turn otherwise hides that completion and
+           -- leaves the old suppressed delivery looking unrecovered forever. Keep this
+           -- second clock scoped to the latest non-turn delivery's dispatch time instead.
+           -- Inbox fallback and cursor coalescing also need this recovery proof.
+           CASE WHEN lw.channel IN ('suppressed-redundant', 'coalesced', 'inbox') AND lw.created_at IS NOT NULL
+                THEN (SELECT max((
+                  SELECT max(a2.ts)
+                    FROM harness_shared.session_turns a2
+                   WHERE a2.workspace_id = u.workspace_id
+                     AND a2.source_kind = u.source_kind
+                     AND a2.session_id = u.session_id
+                     AND a2.speaker = 'assistant'
+                     AND a2.turn_idx > u.turn_idx
+                     AND a2.turn_idx < COALESCE((
+                           SELECT min(u2.turn_idx)
+                             FROM harness_shared.session_turns u2
+                            WHERE u2.workspace_id = u.workspace_id
+                              AND u2.source_kind = u.source_kind
+                              AND u2.session_id = u.session_id
+                              AND u2.speaker = 'user'
+                              AND u2.turn_idx > u.turn_idx
+                         ), 2147483647)
+                ))
+                  FROM harness_shared.session_turns u
+                 WHERE u.owner = r.target_owner_id
+                   AND u.speaker = 'user'
+                   AND u.turn_origin = 'loop-fire'
+                   AND u.ts > lw.created_at)
+                ELSE NULL
+           END                                                               AS last_suppressed_wake_loop_turn_at,
+           -- EI-24933871787030971: lastLoopTurnAt is arm-scoped for turnsStalled, so a
+           -- re-arm after a delayed real loop turn hides the evidence needed to clear a
+           -- sticky last_status='loop-delivered-wake-no-loop-turn'. Keep a separate,
+           -- per-fire proof: only compute it while that is still the latest recorded outcome,
+           -- and only from loop-fire prompts strictly after this routine's latest fire.
+           -- This bounded owner+time lookup prevents a prior fire's assistant row from
+           -- repairing a newer failure; the status classifier also compares the returned
+           -- completion timestamp strictly against last_fired_at.
+           CASE WHEN a.last_status = 'loop-delivered-wake-no-loop-turn'
+                      AND r.last_fired_at IS NOT NULL
+                THEN (SELECT max((
+                  SELECT max(a2.ts)
+                    FROM harness_shared.session_turns a2
+                   WHERE a2.workspace_id = u.workspace_id
+                     AND a2.source_kind = u.source_kind
+                     AND a2.session_id = u.session_id
+                     AND a2.speaker = 'assistant'
+                     AND a2.ts > r.last_fired_at
+                     AND a2.turn_idx > u.turn_idx
+                     AND a2.turn_idx < COALESCE((
+                           SELECT min(u2.turn_idx)
+                             FROM harness_shared.session_turns u2
+                            WHERE u2.workspace_id = u.workspace_id
+                              AND u2.source_kind = u.source_kind
+                              AND u2.session_id = u.session_id
+                              AND u2.speaker = 'user'
+                              AND u2.turn_idx > u.turn_idx
+                         ), 2147483647)
+                ))
+                  FROM harness_shared.session_turns u
+                 WHERE u.owner = r.target_owner_id
+                   AND u.speaker = 'user'
+                   AND u.turn_origin = 'loop-fire'
+                   AND u.ts > r.last_fired_at)
+                ELSE NULL
+           END                                                               AS last_failed_fire_loop_turn_completed_at,
            -- EI-20217869515819188: compute the largest observed gap in this arm's
            -- wake-delivery history without fetching the whole event ledger into JS.
            -- COALESCE(delivered_at, created_at) matches lastWakeAt's existing
@@ -2145,6 +2389,7 @@ export async function getLoopStatuses(
            lw.channel                                                    AS last_wake_channel,
            lw.status                                                     AS last_wake_status,
            COALESCE(lw.delivered_at, lw.created_at)                      AS last_wake_at,
+           lw.created_at                                                 AS last_wake_created_at,
            lw.last_error                                                 AS last_wake_error
       FROM harness_shared.routines r
       LEFT JOIN harness_shared.autoloop_state a
@@ -2171,7 +2416,13 @@ export async function getLoopStatuses(
   // Reuse an injected transaction directly. A top-level client still takes the
   // bounded READ ONLY path with its acquisition and statement deadlines.
   const rows = typeof (sql as Sql).begin === 'function'
-    ? await boundedPgReadTxn<any[]>((tx) => read(tx), { client: sql as Sql })
+    ? await boundedPgReadTxn<any[]>((tx) => read(tx), {
+        client: sql as Sql,
+        // When the client came from getOrgPg() above, it is the org-admin pool.
+        // Passing it explicitly is necessary for owner reads, but it otherwise
+        // hides the pool identity from boundedPgReadTxn's acquisition diagnostics.
+        ...(opts.sql ? {} : { acquirePool: 'org-admin' }),
+      })
     : await read(sql);
   for (const r of rows) {
     const ownerId = String(r.target_owner_id);
@@ -2516,6 +2767,19 @@ export async function autoArmFleetMemberLoop(opts: {
       }
     }
 
+    const mode = existing?.mode ?? priorLoopFacts?.mode ?? 'work';
+    const priorMonitor = priorLoopFacts?.monitor ?? existing?.monitor;
+    if (
+      mode === 'monitor' &&
+      (existing?.monitor?.remainingNoDeltaBudget === 0 ||
+        priorLoopFacts?.monitor?.remainingNoDeltaBudget === 0 ||
+        (!priorMonitor && existing?.monitorStanddown?.code === 'no_delta_budget_exhausted'))
+    ) {
+      // Recovery cannot renew an exhausted monitoring mandate. Keep the row and
+      // its existing push watches untouched; an explicit arm can renew a budget.
+      return { armed: false, reason: 'no-delta-budget-exhausted', loopName: existing?.name };
+    }
+
     const intervalSec = existing?.intervalSec ?? priorLoopFacts?.intervalSec ?? LOOP_INTERVAL_FLOOR_SEC;
     const goal =
       priorLoopFacts?.goal ??
@@ -2523,7 +2787,6 @@ export async function autoArmFleetMemberLoop(opts: {
       derivedGoal;
     const carry = opts.carry ?? existing?.carry ?? priorLoopFacts?.carry ?? 'warm';
     const continuation = existing?.continuation ?? priorLoopFacts?.continuation ?? 'settle';
-    const mode = existing?.mode ?? priorLoopFacts?.mode ?? 'work';
     const kickoff = buildLoopWakePrompt({
       ownerId: opts.ownerId,
       intervalSec,
@@ -2546,6 +2809,7 @@ export async function autoArmFleetMemberLoop(opts: {
       carry,
       continuation,
       mode,
+      ...(mode === 'monitor' && priorMonitor ? { monitor: priorMonitor } : {}),
       // The rescue reconciler can race an explicit member loop:arm. The explicit
       // arm wins; a stale system repair must never overwrite its newer mission or
       // cadence after the initial status read above.

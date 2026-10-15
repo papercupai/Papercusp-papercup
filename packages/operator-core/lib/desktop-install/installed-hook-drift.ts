@@ -82,7 +82,8 @@ export interface HookDrift {
 
 export type HookDriftRefusal =
   | 'canonical-dir-unreadable'
-  | 'installed-dir-unreadable';
+  | 'installed-dir-unreadable'
+  | 'managed-set-empty';
 
 export interface HookDriftReport {
   canonicalDir: string;
@@ -113,6 +114,8 @@ export interface DetectInstalledHookDriftOptions {
   listFilesFn?: (dir: string) => string[];
   /** Test seam for reading a file's bytes. Defaults to a real `readFileSync`. */
   readFileFn?: (filePath: string) => Buffer;
+  /** Explicit installed/registered population; unrelated direct files are ignored. */
+  managedNames?: readonly string[];
 }
 
 function defaultListFiles(dir: string): string[] {
@@ -126,7 +129,8 @@ function sha256(bytes: Buffer): string {
 }
 
 /**
- * Compare every hook in `canonicalDir` against `installedDir`.
+ * Compare managed hooks in `canonicalDir` against `installedDir`.
+ * When `managedNames` is omitted, every direct canonical file is in scope.
  *
  * Returns a structured report rather than throwing: the caller (a watchdog)
  * decides how loudly to surface it, and a thrown error inside a sweep is far
@@ -158,11 +162,18 @@ export function detectInstalledHookDrift(
     return { ...base, checked: [], drifted: [], clean: false, refused: 'installed-dir-unreadable' };
   }
 
+  const compareNames = opts.managedNames === undefined
+    ? canonicalNames
+    : [...new Set(opts.managedNames)];
+  if (opts.managedNames !== undefined && compareNames.length === 0) {
+    return { ...base, checked: [], drifted: [], clean: false, refused: 'managed-set-empty' };
+  }
+
   const installedSet = new Set(installedNames);
   const drifted: HookDrift[] = [];
   const checked: string[] = [];
 
-  for (const name of [...canonicalNames].sort()) {
+  for (const name of [...compareNames].sort()) {
     checked.push(name);
 
     let canonicalBytes: Buffer;
@@ -215,12 +226,12 @@ export function detectInstalledHookDrift(
     }
   }
 
-  // An installed hook with no canonical counterpart still FIRES on this box, so
-  // it is reported rather than ignored — a retired rail left armed is the same
-  // class of surprise as a stale one, just pointing the other way.
-  const canonicalSet = new Set(canonicalNames);
+  // In generic directory mode, an installed hook with no canonical counterpart
+  // still FIRES on this box, so report it. Managed mode uses its explicit
+  // population and ignores unrelated installed directory residue.
+  const canonicalSet = new Set(compareNames);
   for (const name of [...installedNames].sort()) {
-    if (canonicalSet.has(name)) continue;
+    if (opts.managedNames !== undefined || canonicalSet.has(name)) continue;
     let installedHash: string | null = null;
     try {
       installedHash = sha256(readFile(path.join(installedDir, name)));

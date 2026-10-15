@@ -36,11 +36,14 @@ import {
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
   buildWorkspaceHostBootstrap,
   validateWorkspaceHostImageArtifact,
+  workspaceHostImageModel,
   type WorkspaceHostAgentRuntimeInstall,
+  type WorkspaceHostBootcRelease,
   type WorkspaceHostBootstrapRelease,
   type WorkspaceHostBootstrapService,
   type WorkspaceHostBootstrapStatusChannel,
   type WorkspaceHostImageArtifact,
+  type WorkspaceHostModel,
 } from '@papercusp/deployment-driver';
 import { buildFrameworkInstallSpec } from '../endpoint-route/routes/desktop/setup-pty-commands';
 import {
@@ -76,6 +79,15 @@ export const DEFAULT_WORKSPACE_HOST_MINIMUM_NODE_MAJOR = 22;
 /** Everything the render needs, with every value already validated. */
 export interface WorkspaceHostProvisionBootstrapProfile {
   release: WorkspaceHostBootstrapRelease;
+  /**
+   * The host model of the published artifact, carried with its release (WI-10006865). Required,
+   * not defaulted: dropping it rendered every bootc host's bootstrap as Ubuntu, which then failed
+   * `validate-host` on the first real provision while the clean room (which carried the artifact
+   * whole) passed.
+   */
+  hostModel: WorkspaceHostModel;
+  /** The artifact's bootc image identity; present exactly when `hostModel` is `'bootc-image'`. */
+  bootc?: WorkspaceHostBootcRelease;
   migrationId: string;
   minimumNodeMajor: number;
   service: WorkspaceHostBootstrapService;
@@ -101,6 +113,12 @@ export class WorkspaceHostProvisionBootstrapProfileError extends Error {
 
 export interface ResolveWorkspaceHostProvisionBootstrapProfileInput {
   env?: Readonly<Record<string, string | undefined>>;
+  /**
+   * Internal controller-selected release pin for one durable operation. HTTP routes deliberately
+   * do not accept or populate this value; it avoids mutating the controller-wide environment when
+   * independent release experiments run concurrently.
+   */
+  bootstrapReleaseOverride?: WorkspaceHostProvisionBootstrapReleaseOverride;
   /** Test seam; production reads the real filesystem. */
   readTextFile?: (path: string) => Promise<string>;
   /**
@@ -114,9 +132,16 @@ export interface ResolveWorkspaceHostProvisionBootstrapProfileInput {
   evaluatorPid?: number;
 }
 
+/** The exact signed release and migration identity selected for one workspace-host operation. */
+export interface WorkspaceHostProvisionBootstrapReleaseOverride {
+  readonly manifestPath: string;
+  readonly migrationId: string;
+}
+
 interface WorkspaceHostProvisionManifestResolutionContext {
   evaluator: string;
   remediation: string;
+  releaseSelection: string;
 }
 
 /**
@@ -180,25 +205,40 @@ export async function resolveWorkspaceHostProvisionBootstrapProfile(
   const manifestResolutionContext = await resolveManifestResolutionContext(
     input.resolveServiceUnit ?? resolveOwnServiceUnit,
     input.evaluatorPid ?? process.pid,
+    input.bootstrapReleaseOverride !== undefined,
   );
 
-  const manifestPath = (env[WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile] ?? '').trim();
-  let release: WorkspaceHostBootstrapRelease | undefined;
+  const manifestPath = (
+    input.bootstrapReleaseOverride
+      ? input.bootstrapReleaseOverride.manifestPath ?? ''
+      : env[WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile] ?? ''
+  ).trim();
+  const manifestPathLabel = input.bootstrapReleaseOverride
+    ? 'operation bootstrapReleaseOverride.manifestPath'
+    : WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile;
+  let release: ResolvedWorkspaceHostRelease | undefined;
   if (!manifestPath) {
-    problems.push(`${WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile} is not set`);
+    problems.push(`${manifestPathLabel} is not set`);
   } else if (!isAbsolute(manifestPath)) {
     // Same reasoning as the controller trust store: a relative path resolves against whatever
     // working directory the controller happened to start in, which makes the release a function
     // of how the process was launched.
     problems.push(
-      `${WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile} must be an absolute path (got '${manifestPath}')`,
+      `${manifestPathLabel} must be an absolute path (got '${manifestPath}')`,
     );
   } else {
     release = await readRelease(manifestPath, readTextFile, problems, manifestResolutionContext);
   }
 
-  const migrationId = (env[WORKSPACE_HOST_PROVISION_ENV.migrationId] ?? '').trim();
-  if (!migrationId) problems.push(`${WORKSPACE_HOST_PROVISION_ENV.migrationId} is not set`);
+  const migrationId = (
+    input.bootstrapReleaseOverride
+      ? input.bootstrapReleaseOverride.migrationId ?? ''
+      : env[WORKSPACE_HOST_PROVISION_ENV.migrationId] ?? ''
+  ).trim();
+  const migrationIdLabel = input.bootstrapReleaseOverride
+    ? 'operation bootstrapReleaseOverride.migrationId'
+    : WORKSPACE_HOST_PROVISION_ENV.migrationId;
+  if (!migrationId) problems.push(`${migrationIdLabel} is not set`);
 
   const minimumNodeMajor = readInteger(
     env[WORKSPACE_HOST_PROVISION_ENV.minimumNodeMajor],
@@ -239,7 +279,9 @@ export async function resolveWorkspaceHostProvisionBootstrapProfile(
   }
 
   return {
-    release,
+    release: release.release,
+    hostModel: release.hostModel,
+    ...(release.bootc ? { bootc: release.bootc } : {}),
     migrationId,
     minimumNodeMajor,
     service: { name: serviceName, port: servicePort },
@@ -265,6 +307,8 @@ export function renderWorkspaceHostProvisionBootstrap(
     contractVersion: WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
     action: 'install',
     hostId,
+    hostModel: profile.hostModel,
+    ...(profile.bootc ? { bootc: profile.bootc } : {}),
     release: profile.release,
     migrationId: profile.migrationId,
     minimumNodeMajor: profile.minimumNodeMajor,
@@ -292,11 +336,22 @@ const WORKSPACE_HOST_AGENT_HOME = `/home/${DEFAULT_WORKSPACE_HOST_AGENT_USER}`;
  * through `~` rather than relative paths, and the bootstrap runs each argv under an explicit
  * `HOME=$AGENT_HOME`, which is what makes them land in the agent identity's own home.
  */
-function workspaceHostAgentRuntimeInstalls(): WorkspaceHostAgentRuntimeInstall[] {
+export function workspaceHostAgentRuntimeInstalls(): WorkspaceHostAgentRuntimeInstall[] {
   return (['claude', 'codex', 'omp'] as const).map((agent) => {
     const spec = buildFrameworkInstallSpec(agent, 'linux', WORKSPACE_HOST_AGENT_HOME);
     return { agent, command: spec.command, args: spec.args };
   });
+}
+
+/**
+ * The parts of a validated artifact the bootstrap render needs. The release alone is NOT enough:
+ * the host model and bootc identity decide which host the script validates and how it installs,
+ * so they travel with the release from the one artifact rather than being defaulted downstream.
+ */
+interface ResolvedWorkspaceHostRelease {
+  release: WorkspaceHostBootstrapRelease;
+  hostModel: WorkspaceHostModel;
+  bootc?: WorkspaceHostBootcRelease;
 }
 
 async function readRelease(
@@ -304,7 +359,7 @@ async function readRelease(
   readTextFile: (path: string) => Promise<string>,
   problems: string[],
   manifestResolutionContext: WorkspaceHostProvisionManifestResolutionContext,
-): Promise<WorkspaceHostBootstrapRelease | undefined> {
+): Promise<ResolvedWorkspaceHostRelease | undefined> {
   let raw: string;
   try {
     raw = await readTextFile(manifestPath);
@@ -346,7 +401,13 @@ async function readRelease(
     problems.push(unsupported);
     return undefined;
   }
-  return validated.release;
+  const hostModel = workspaceHostImageModel(validated);
+  return {
+    release: validated.release,
+    hostModel,
+    // The validator already requires `bootc` exactly when the model is bootc-image.
+    ...(validated.hostModel === 'bootc-image' ? { bootc: { ...validated.bootc } } : {}),
+  };
 }
 
 /**
@@ -394,7 +455,7 @@ function agentHomeBundleSupportProblem(
       `so it cannot be shown to parse the '${WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION}' agent-home ` +
       `material this controller emits. A publication cut before that field existed also predates the ` +
       `contract version it would have to accept. Re-cut the publication from current source and ` +
-      `republish, then repoint ${WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile}. ` +
+      `republish, then ${manifestResolutionContext.releaseSelection}. ` +
       `${manifestResolutionContext.evaluator}. ${manifestResolutionContext.remediation}`
     );
   }
@@ -414,6 +475,7 @@ function agentHomeBundleSupportProblem(
 async function resolveManifestResolutionContext(
   resolveServiceUnit: () => Promise<string | null>,
   evaluatorPid: number,
+  operationScopedRelease: boolean,
 ): Promise<WorkspaceHostProvisionManifestResolutionContext> {
   let serviceUnit: string | null = null;
   try {
@@ -423,15 +485,27 @@ async function resolveManifestResolutionContext(
   }
   if (serviceUnit) {
     return {
-      evaluator: `manifest was read by systemd unit '${serviceUnit}' (MainPID ${evaluatorPid}) after request forwarding`,
-      remediation:
-        `update ${WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile} in '~/.config/systemd/user/${serviceUnit}.d/53-workspace-host-identity.conf', then run 'systemctl --user daemon-reload' and 'systemctl --user restart ${serviceUnit}' (repointing the request-only endpoint's unit has no effect)`,
+      evaluator: operationScopedRelease
+        ? `operation-scoped bootstrap release manifest was read by systemd unit '${serviceUnit}' (MainPID ${evaluatorPid}) after request forwarding`
+        : `manifest was read by systemd unit '${serviceUnit}' (MainPID ${evaluatorPid}) after request forwarding`,
+      remediation: operationScopedRelease
+        ? 'select a compatible manifest and migration identity in this operation’s bootstrapReleaseOverride'
+        : `update ${WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile} in '~/.config/systemd/user/${serviceUnit}.d/53-workspace-host-identity.conf', then run 'systemctl --user daemon-reload' and 'systemctl --user restart ${serviceUnit}' (repointing the request-only endpoint's unit has no effect)`,
+      releaseSelection: operationScopedRelease
+        ? 'select the resulting manifest in this operation’s bootstrapReleaseOverride'
+        : `repoint ${WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile}`,
     };
   }
   return {
-    evaluator: `manifest was read by process PID ${evaluatorPid}; no systemd .service unit could be resolved`,
-    remediation:
-      `if this request was forwarded, update ${WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile} on the background controller that received it, not the request-only endpoint, then restart that controller`,
+    evaluator: operationScopedRelease
+      ? `operation-scoped bootstrap release manifest was read by process PID ${evaluatorPid}; no systemd .service unit could be resolved`
+      : `manifest was read by process PID ${evaluatorPid}; no systemd .service unit could be resolved`,
+    remediation: operationScopedRelease
+      ? 'select a compatible manifest and migration identity in this operation’s bootstrapReleaseOverride'
+      : `if this request was forwarded, update ${WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile} on the background controller that received it, not the request-only endpoint, then restart that controller`,
+    releaseSelection: operationScopedRelease
+      ? 'select the resulting manifest in this operation’s bootstrapReleaseOverride'
+      : `repoint ${WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile}`,
   };
 }
 

@@ -16,11 +16,15 @@
  */
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join, posix, relative } from 'node:path';
+import { dirname, join, posix, relative } from 'node:path';
 
-import type { RunReport } from '@papercusp/testing-shell/llm';
+import type { LlmCallDiagnosticSummary, RunReport } from '@papercusp/testing-shell/llm';
+import { resolveTestRunHarnessSlug, resolveTestRunWorkspaceId } from '@papercusp/test-config/admin-test-runs-reporter';
 import {
   TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
+  parseRecordedRuntimeEnvironment,
+  type RecordedRuntimeEnvironment,
+  type RuntimeEnvironmentCaptureStatus,
   type TestRunExecutionDetails,
 } from '@papercusp/test-config/execution-details';
 
@@ -49,6 +53,10 @@ export interface LlmScenarioLedgerContext {
   harnessSlug: string | null;
   commitSha: string | null;
   worktreeDirty: boolean;
+  runtimeEnvironmentBefore?: RecordedRuntimeEnvironment;
+  runtimeEnvironmentAfter?: RecordedRuntimeEnvironment;
+  runtimeEnvironmentBeforeCaptureStatus?: RuntimeEnvironmentCaptureStatus;
+  runtimeEnvironmentAfterCaptureStatus?: RuntimeEnvironmentCaptureStatus;
   /** Fallback clock when the report carries no runs. */
   now?: Date;
 }
@@ -71,8 +79,33 @@ export function llmScenarioLedgerRow(report: RunReport, ledger: LlmScenarioLedge
   const startedAt = starts.length ? new Date(Math.min(...starts)) : now;
   const finishedAt = ends.length ? new Date(Math.max(...ends)) : now;
 
+  const diagnosticTail = report.runs.flatMap((run, index) => {
+    const parts: string[] = [];
+    if (run.summary.timeout) {
+      const timeout = run.summary.timeout;
+      parts.push(`run${index + 1}:timeout=${timeout.cause}/${timeout.stage}/turn=${timeout.turnIndex}`);
+    }
+    const diagnostics = run.summary.llmCallDiagnostics;
+    if (diagnostics) {
+      const failures = diagnostics.events.filter((event) =>
+        event.phase === 'transport-error' || event.phase === 'stream-error');
+      const recent = (failures.length > 0 ? failures : diagnostics.events).slice(-2);
+      for (const event of recent) {
+        const fields = [`run${index + 1}:${event.phase}`, `attempt=${event.attempt}`];
+        if (event.status !== null) fields.push(`status=${event.status}`);
+        if (event.transportFailureCode) fields.push(`code=${event.transportFailureCode}`);
+        if (event.callerAborted !== undefined && event.callerAborted !== null)
+          fields.push(`callerAborted=${event.callerAborted}`);
+        if (event.callerAbortReason) fields.push(`abortReason=${event.callerAbortReason}`);
+        parts.push(fields.join(' '));
+      }
+      if (diagnostics.omitted > 0) parts.push(`run${index + 1}:diagnosticsOmitted=${diagnostics.omitted}`);
+    }
+    return parts;
+  }).join('; ').slice(0, 800);
+  const outputTailBase = `llm-test ${report.scenarioId} verdict=${report.verdict} runs=${report.runs.length} passed=${passed} failed=${failed} errored=${errored}`;
   const outputTail = status === 'pass' ? null
-    : `llm-test ${report.scenarioId} verdict=${report.verdict} runs=${report.runs.length} passed=${passed} failed=${failed} errored=${errored}`;
+    : `${outputTailBase}${diagnosticTail ? `; ${diagnosticTail}` : ''}`.slice(0, 1200);
 
   return {
     filePath: ledger.filePath,
@@ -89,6 +122,7 @@ export function llmScenarioLedgerRow(report: RunReport, ledger: LlmScenarioLedge
       workspaceId: ledger.workspaceId,
       harnessSlug: ledger.harnessSlug,
       testNamePattern: null,
+      scenarioId: report.scenarioId,
       testLayer: 'llm',
       // An errored run measured nothing it could pass; count it against the file.
       passed,
@@ -98,6 +132,12 @@ export function llmScenarioLedgerRow(report: RunReport, ledger: LlmScenarioLedge
       mutationPhase: null,
       commitSha: ledger.commitSha,
       worktreeDirty: ledger.worktreeDirty,
+      ...(ledger.runtimeEnvironmentBefore ? { runtimeEnvironmentBefore: ledger.runtimeEnvironmentBefore } : {}),
+      ...(ledger.runtimeEnvironmentAfter ? { runtimeEnvironmentAfter: ledger.runtimeEnvironmentAfter } : {}),
+      ...(ledger.runtimeEnvironmentBeforeCaptureStatus
+        ? { runtimeEnvironmentBeforeCaptureStatus: ledger.runtimeEnvironmentBeforeCaptureStatus } : {}),
+      ...(ledger.runtimeEnvironmentAfterCaptureStatus
+        ? { runtimeEnvironmentAfterCaptureStatus: ledger.runtimeEnvironmentAfterCaptureStatus } : {}),
     },
   };
 }
@@ -121,11 +161,18 @@ export function resolveScenarioSourceFile(
   if (!existsSync(scenariosRoot)) return undefined;
   const files = listScenarioSources(scenariosRoot);
   const targetDir = join(scenariosRoot, target);
-  for (const pool of [files.filter((f) => f.startsWith(`${targetDir}/`)), files]) {
+  const pools = [
+    { files: files.filter((f) => f.startsWith(`${targetDir}/`)), allowRolePrefix: true },
+    // The whole-tree fallback ignores a bare role prefix (`` `su-${n}` ``): outside the
+    // scenario's own target dir it names any id of that role, so a fixture id builder in
+    // a helper file captured su-S37 and misattributed its llm rows (gitnexus P-015).
+    { files, allowRolePrefix: false },
+  ];
+  for (const pool of pools) {
     let best: { file: string; score: number } | null = null;
     let tie = false;
-    for (const file of pool) {
-      const score = idMatchScore(readFileSync(file, 'utf8'), scenarioId);
+    for (const file of pool.files) {
+      const score = idMatchScore(readFileSync(file, 'utf8'), scenarioId, pool.allowRolePrefix);
       if (score === 0) continue;
       if (!best || score > best.score) { best = { file, score }; tie = false; }
       else if (score === best.score) tie = true;
@@ -145,13 +192,18 @@ function listScenarioSources(dir: string): string[] {
   return out;
 }
 
-/** Infinity for an exact quoted id; else the length of the longest `` `prefix${ `` it extends. */
-function idMatchScore(source: string, id: string): number {
+/**
+ * Infinity for an exact quoted id; else the length of the longest `` `prefix${ `` it extends.
+ * A role-only prefix (one segment, e.g. `su-`, `sn-`) counts only when `allowRolePrefix`.
+ */
+function idMatchScore(source: string, id: string, allowRolePrefix: boolean): number {
   for (const q of ["'", '"', '`']) if (source.includes(`${q}${id}${q}`)) return Number.POSITIVE_INFINITY;
   let best = 0;
   for (const m of source.matchAll(/`([A-Za-z0-9_-]+)\$\{/g)) {
     const prefix = m[1]!;
-    if (prefix.includes('-') && id.startsWith(prefix) && id.length > prefix.length) best = Math.max(best, prefix.length);
+    if (!prefix.includes('-') || !id.startsWith(prefix) || id.length <= prefix.length) continue;
+    if (!allowRolePrefix && prefix.split('-').filter(Boolean).length < 2) continue;
+    best = Math.max(best, prefix.length);
   }
   return best;
 }
@@ -164,13 +216,75 @@ export function scenarioLedgerPath(absPath: string | undefined, root: string): s
   return rel.split(/[/\\]/).join(posix.sep);
 }
 
-/** Snapshot taken BEFORE the scenario runs, so the row can prove the tree was stable. */
-export function beginLlmScenarioLedger(): WorktreeGitSnapshot | null {
+type RuntimeReader = () => Promise<RecordedRuntimeEnvironment | null>;
+type RuntimeCapture = { status: RuntimeEnvironmentCaptureStatus; witness?: RecordedRuntimeEnvironment };
+const PROCESS_BOOT_TIME = new Date(Date.now() - process.uptime() * 1000).toISOString();
+export interface LlmScenarioLedgerStart {
+  worktree: WorktreeGitSnapshot | null;
+  runtime: RuntimeCapture;
+  readRuntimeEnvironment?: RuntimeReader;
+}
+
+/** Use the executing in-process SUT, rather than its external inference provider. */
+export async function prepareLlmScenarioRuntimeReader(
+  scenarioFilePath: string | undefined,
+  transport: string,
+): Promise<RuntimeReader | undefined> {
+  if (transport !== 'in-process') return undefined;
   try {
-    return captureWorktreeSnapshot();
-  } catch {
-    return null;
-  }
+    const workspaceId = resolveTestRunWorkspaceId();
+    if (!workspaceId) return async () => null;
+    const root = resolveAgentWorkspaceRoot(scenarioFilePath ? { projectDir: dirname(scenarioFilePath) } : {});
+    const snapshot = captureWorktreeSnapshot(root);
+    if (!snapshot.commit) return async () => null;
+    const { reportRuntimeVintage, listRuntimeVintage, measureRuntimeVintageEnvironment } = await import('../runtime-vintage');
+    // Concurrent CLI processes use separate units; the kernel still verifies the
+    // actual local PID. Repeated scenarios in this process share one boot instant.
+    const units = [`llm-test-in-process-${process.pid}`];
+    await reportRuntimeVintage({ unit: units[0]!, workspaceId, pid: process.pid,
+      treeSha: snapshot.commit, buildTime: PROCESS_BOOT_TIME });
+    // Retain the original own-unit pin once. Each boundary independently reads
+    // the live kernel through measureRuntimeVintageEnvironment; a fleet-wide PG
+    // census cannot consume the bounded observation window after a model turn.
+    const rows = (await listRuntimeVintage(workspaceId, undefined, units))
+      .map(row => ({ ...row, extra: { ...row.extra } }));
+    return async () => {
+      const fingerprint = measureRuntimeVintageEnvironment(rows, units);
+      return fingerprint ? { schemaVersion: 1, units, fingerprint, observedAt: new Date().toISOString() } : null;
+    };
+  } catch { return async () => null; }
+}
+
+/** Same bounded, recorder-owned observation contract as the Vitest reporter. */
+async function captureRuntimeEnvironment(read?: RuntimeReader): Promise<RuntimeCapture> {
+  if (!read) return { status: 'not-configured' };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = Symbol('runtime-capture-timeout');
+  try {
+    const result = await Promise.race([
+      Promise.resolve().then(read),
+      new Promise<typeof timedOut>(resolve => { timer = setTimeout(() => resolve(timedOut), 1_000); }),
+    ]);
+    if (result === timedOut) return { status: 'timed-out' };
+    if (result === null) return { status: 'unavailable' };
+    const parsed = parseRecordedRuntimeEnvironment(result);
+    if (!parsed) return { status: 'invalid' };
+    return { status: 'captured', witness: { ...parsed, units: [...parsed.units], observedAt: new Date().toISOString() } };
+  } catch { return { status: 'error' }; }
+  finally { if (timer) clearTimeout(timer); }
+}
+
+/** Snapshot taken BEFORE the scenario runs, so the row can prove the tree and SUT were stable. */
+export async function beginLlmScenarioLedger(
+  scenarioFilePath?: string,
+  readRuntimeEnvironment?: RuntimeReader,
+): Promise<LlmScenarioLedgerStart> {
+  let worktree: WorktreeGitSnapshot | null = null;
+  try {
+    const root = resolveAgentWorkspaceRoot(scenarioFilePath ? { projectDir: dirname(scenarioFilePath) } : {});
+    worktree = captureWorktreeSnapshot(root);
+  } catch { /* A missing tree snapshot must keep cleanliness unproven. */ }
+  return { worktree, runtime: await captureRuntimeEnvironment(readRuntimeEnvironment), readRuntimeEnvironment };
 }
 
 /**
@@ -180,24 +294,34 @@ export function beginLlmScenarioLedger(): WorktreeGitSnapshot | null {
 export async function recordLlmScenarioTestRun(
   report: RunReport,
   scenarioFilePath: string | undefined,
-  before: WorktreeGitSnapshot | null,
+  before: LlmScenarioLedgerStart | null,
 ): Promise<number | null> {
   try {
-    const root = resolveAgentWorkspaceRoot({});
+    // The scenario's executed source owns this receipt. An inherited integration
+    // root may point at the shared tree while lint:as-committed runs a private clone.
+    const root = resolveAgentWorkspaceRoot(scenarioFilePath ? { projectDir: dirname(scenarioFilePath) } : {});
     const filePath = scenarioLedgerPath(scenarioFilePath, root);
-    if (!filePath) return null;
+    if (!filePath) {
+      console.warn('[llm-test] test-run ledger source unavailable', { scenarioFilePath, root });
+      return null;
+    }
 
-    const after = captureWorktreeSnapshot();
-    const worktreeDirty = before ? computeWorktreeDirty(before, after) : true;
+    const runtimeAfter = await captureRuntimeEnvironment(before?.readRuntimeEnvironment);
+    const after = captureWorktreeSnapshot(root);
+    const worktreeDirty = before?.worktree ? computeWorktreeDirty(before.worktree, after) : true;
     const { branch } = await resolveGitContext().catch(() => ({ branch: null as string | null }));
     const runGroupId = process.env.PAPERCUSP_TEST_RUN_GROUP ?? report.matrixGroupId ?? null;
-    const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID ?? null;
-    const harnessSlug = process.env.PAPERCUSP_TEST_RUN_HARNESS ?? null;
+    const workspaceId = resolveTestRunWorkspaceId();
+    const harnessSlug = resolveTestRunHarnessSlug();
 
     const row = llmScenarioLedgerRow(report, {
       root, filePath, runGroupId, workspaceId, harnessSlug,
       commitSha: after.commit ?? null,
       worktreeDirty,
+      runtimeEnvironmentBefore: before?.runtime.witness,
+      runtimeEnvironmentAfter: runtimeAfter.witness,
+      runtimeEnvironmentBeforeCaptureStatus: before?.runtime.status ?? 'not-configured',
+      runtimeEnvironmentAfterCaptureStatus: runtimeAfter.status,
     });
 
     // Same pool + options as ./storage, so the two writers share one connection budget.
@@ -209,12 +333,43 @@ export async function recordLlmScenarioTestRun(
       VALUES
         (${row.filePath}, 'llm-test', ${row.status}, ${row.durationMs}, ${row.startedAt}, ${row.finishedAt},
          ${row.outputTail}, ${runGroupId}, ${resolveTestRunSource()}, ${branch ?? null}, ${after.commit ?? null},
-         ${harnessSlug}, ${workspaceId}, ${worktreeDirty}, ${JSON.stringify(row.executionDetails)}::jsonb)
+         ${harnessSlug}, ${workspaceId}, ${worktreeDirty}, ${row.executionDetails as never}::jsonb)
       RETURNING id
     `) as unknown as Array<{ id: string | number }>;
     const id = inserted[0]?.id;
     return id === undefined ? null : Number(id);
-  } catch {
+  } catch (error) {
+    console.warn('[llm-test] test-run ledger write failed', error instanceof Error ? error.message : String(error));
     return null;
   }
+}
+
+/** Record a runner exception that occurred before runScenario could return a RunReport. */
+export async function recordLlmScenarioTestRunFailure(
+  failure: {
+    scenarioId: string;
+    startedAt: Date;
+    finishedAt: Date;
+    llmCallDiagnostics: LlmCallDiagnosticSummary;
+  },
+  scenarioFilePath: string | undefined,
+  before: LlmScenarioLedgerStart | null,
+): Promise<number | null> {
+  // This synthetic report intentionally contains only the fields consumed by
+  // llmScenarioLedgerRow: state, timing, timeout, and the bounded diagnostics.
+  const report = {
+    scenarioId: failure.scenarioId,
+    verdict: 'errored',
+    runs: [{
+      status: 'errored',
+      summary: {
+        startedAt: failure.startedAt,
+        finishedAt: failure.finishedAt,
+        llmCallDiagnostics: failure.llmCallDiagnostics,
+      },
+    }],
+    varianceByAxis: {},
+    varianceFindings: [],
+  } as unknown as RunReport;
+  return recordLlmScenarioTestRun(report, scenarioFilePath, before);
 }

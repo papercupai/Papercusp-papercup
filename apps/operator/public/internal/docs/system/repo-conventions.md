@@ -190,12 +190,16 @@ gen:borrowable`; source of truth `scripts/gen-borrowable-catalog.mjs`). It lists
 each borrowable lib with its description + repo, grouped by domain, plus a
 "reusable with host wiring" section for libs that keep a Papercusp tie-in by
 design (`locks`, `coordination`, `backup`, `docs-engine`, `host-platform`).
-As of 2026-05-31, **every borrowable lib is its own standalone (private)
-submodule under `libs/generic/*` → `github.com/Papercusp/<name>`** — the
-borrowable submodules were physically regrouped there, and the borrowable
-in-repo `packages/*` libs (rrf, search, memory, ipc-framing, ipc-endpoint-server,
-desktop-ipc, rate-limit, plan-parser, embedded-pg-discovery) were promoted to
-their own private repos. Only the kept-tie-in libs stay in `packages/` / `libs/`.
+`BORROWABLE.md` is the per-library location catalog. On 2026-05-31 the
+borrowable submodules were physically regrouped under `libs/generic/*`, and
+some in-repo packages were promoted to private repositories. The current tree
+also has ordinary superproject directories under `libs/generic/*`, and the
+catalog includes in-repo libraries, so the directory name alone does not prove
+a path is a submodule. Check the exact target with
+`git -C <path> rev-parse --show-toplevel`; when it returns the superproject
+root, use superproject-relative Git refs. Use target-relative refs only when
+the command returns the submodule root. The detailed check is in
+[git-evidence-and-containment-recipes](/internal/docs/agent-insights/git-evidence-and-containment-recipes).
 Consumers import by package name (`@papercusp/<name>`), so the location is
 transparent. When you make a lib generic — or notice domain coupling leaking into
 one — add/adjust it in the generator and re-run. See

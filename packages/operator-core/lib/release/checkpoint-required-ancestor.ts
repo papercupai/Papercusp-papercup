@@ -4,6 +4,7 @@ import {
   currentCheckpointCandidate,
 } from '../release-checkpoint-launch';
 import { integrationRoot } from '../release-deploy-launch';
+import { gateVerdictTargetFromEnv, type GateVerdictTarget } from './gate-verdict-target';
 import {
   decideFrozenCandidateRepairQueue,
   type FrozenCandidateRepairQueue,
@@ -237,7 +238,22 @@ export function resolveRunnableCandidate(
  * Keeping this read beside the required-ancestor guard prevents the manual launcher from
  * inventing a second queue policy.
  */
-async function readFrozenRepairQueueState(): Promise<FrozenRepairQueueState> {
+/**
+ * WI-10008171: key the frozen-queue read by the install this checkpoint GATES, not by the
+ * operator's home harness. A runner launched for another install (e.g. calendar) carries
+ * its target in the gate-verdict env; reading the home queue instead made that runner
+ * adopt papercusp's repairHead, a commit absent from its own integration root. Only a
+ * caller with no gate target (an operator-side launcher for its home install) falls back.
+ */
+export function frozenRepairQueueReadTarget(
+  home: () => GateVerdictTarget,
+  env: NodeJS.ProcessEnv = process.env,
+  target?: GateVerdictTarget,
+): GateVerdictTarget {
+  return target ?? gateVerdictTargetFromEnv(env) ?? home();
+}
+
+async function readFrozenRepairQueueState(target?: GateVerdictTarget): Promise<FrozenRepairQueueState> {
   const [
     { activeWorkspaceId },
     { operatorHomeHarnessSlug },
@@ -247,10 +263,12 @@ async function readFrozenRepairQueueState(): Promise<FrozenRepairQueueState> {
     import('../harness/operator-home-harness'),
     import('../harness/routines/release-actions'),
   ]);
-  const repairQueue = await readFrozenCandidateRepairQueue({
-    workspaceId: activeWorkspaceId(),
-    installSlug: operatorHomeHarnessSlug(),
-  });
+  const repairQueue = await readFrozenCandidateRepairQueue(
+    frozenRepairQueueReadTarget(() => ({
+      workspaceId: activeWorkspaceId(),
+      installSlug: operatorHomeHarnessSlug(),
+    }), process.env, target),
+  );
 
   let fixerAlive: boolean | null = null;
   if (repairQueue?.phase === 'awaiting-fixer' && repairQueue.fixerSpawnId) {
@@ -282,11 +300,12 @@ async function readFrozenRepairQueueState(): Promise<FrozenRepairQueueState> {
 export async function assessFrozenRepairQueuePreflight(
   predictedCandidate: string | null = null,
   root = integrationRoot(),
+  target?: GateVerdictTarget,
 ): Promise<FrozenRepairQueuePreflight> {
   let repairQueue: FrozenCandidateRepairQueue | null = null;
   let fixerAlive: boolean | null = null;
   try {
-    const state = await readFrozenRepairQueueState();
+    const state = await readFrozenRepairQueueState(target);
     repairQueue = state.repairQueue;
     fixerAlive = state.fixerAlive;
     const { queueDecision } = state;
@@ -343,12 +362,13 @@ export async function assessRequiredAncestorPreflight(
   requiredAncestor: string,
   predictedCandidate: string | null,
   root = integrationRoot(),
+  target?: GateVerdictTarget,
 ): Promise<RequiredAncestorPreflight> {
   let repairQueue: FrozenCandidateRepairQueue | null = null;
   let fixerAlive: boolean | null = null;
   let queueDecision: FrozenRepairQueueDecision;
   try {
-    const state = await readFrozenRepairQueueState();
+    const state = await readFrozenRepairQueueState(target);
     repairQueue = state.repairQueue;
     fixerAlive = state.fixerAlive;
     queueDecision = state.queueDecision;

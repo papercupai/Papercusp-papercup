@@ -55,6 +55,9 @@ const MAXIMAL_ROW: RosterRow = {
   // — state —
   intent: 'doing things',
   intentDeclaredAt: '2026-06-14T00:50:00.000Z',
+  // P-010 (#D-006): intent provenance — derived from the held work item below.
+  intentSource: 'derived',
+  intentDerivedFrom: { workItemId: 'WI-1', planItemRef: 'plan-x#P-002' },
   currentPlanSlug: 'plan-x',
   currentView: 'harness/papercup',
   currentFiles: ['a.ts'],
@@ -76,6 +79,8 @@ const MAXIMAL_ROW: RosterRow = {
   sessionState: 'live',
   wakeable: true,
   confirmLiveness: false,
+  // P-011(a) / D-011: null on a live row (set only alongside sessionState 'suspect').
+  wedged: null,
   loopArmed: false,
   selfWake: 'loop',
   // EI-22805550006169069: the forward-looking schedule pair — a turn is in flight
@@ -93,6 +98,9 @@ const MAXIMAL_ROW: RosterRow = {
   // P-011: derivation input behind lastActiveSecAgo/lastActiveSource — same dropped
   // lane as lastActiveAt, and mergeTier1 strips it before rows are ever built.
   turnPartLastAt: '2026-06-14T00:58:00.000Z',
+  // P-010: derivation input behind intent/intentSource/intentDerivedFrom — dropped,
+  // and mergeTier1 strips it before rows are ever built.
+  heldWorkIntent: { workItemId: 'WI-1', title: 'doing things', planItemRef: 'plan-x#P-002' },
 };
 
 /** A local PresenceRecord (pre-enrichment) for the byte-stability pipeline test. */
@@ -138,7 +146,7 @@ describe('partitionPresenceRow', () => {
       claimCount: 2,
       wakeMode: 'auto',
     });
-    expect(liveness).toEqual({ lastActiveSecAgo: 42, lastActiveSource: 'presence', intentStale: false, intentAgeSec: 600, intentDivergent: false, stale: false, sessionState: 'live', wakeable: true, confirmLiveness: false, loopArmed: false, selfWake: 'loop', dormantScheduled: true, nextFireAt: null, onDesktop: true, viewerAttached: true, contextPressure: 'ok', contextPressureAgeSec: 10 });
+    expect(liveness).toEqual({ lastActiveSecAgo: 42, lastActiveSource: 'presence', intentStale: false, intentAgeSec: 600, intentDivergent: false, stale: false, sessionState: 'live', wakeable: true, confirmLiveness: false, wedged: null, loopArmed: false, selfWake: 'loop', dormantScheduled: true, nextFireAt: null, onDesktop: true, viewerAttached: true, contextPressure: 'ok', contextPressureAgeSec: 10 });
     // raw timestamps live in no lane
     expect(identity).not.toHaveProperty('heartbeatAt');
     expect(state).not.toHaveProperty('lastActiveAt');

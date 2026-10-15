@@ -22,9 +22,12 @@
 import { createHash } from 'node:crypto';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { verifyFinalizationCertificate, type FinalizationCertificate } from '../agent-tools/plans/governance-round';
+import { productionPlanAdmissionCertificateSource, type AuthenticatedGovernanceFinalization,
+  type AuthenticatedGovernanceFinalizationSource, type GovernanceFinalizationInput } from '../agent-tools/plans/plan-admission-certificate-source';
 import { authorizeTreasuryTransfer, type SafeTreasuryConfig, type TreasuryTransferRequest } from './treasury-controls';
 import { buildEvmBatchSettlementRequest, type EvmBatchSettlementRequest, type EvmSettlementConfig } from './evm-settlement';
 import type { PaymentChannelState } from './payment-channel';
+import type { RefusalContract } from '../capability-envelope/refusal-contract-types';
 
 /** Finalized actions that MAY be mirrored on-chain. */
 export const MIRRORABLE_ACTION_KINDS = ['treasury-transfer', 'settlement-batch'] as const;
@@ -48,9 +51,8 @@ export type BridgeAction =
 export interface MirrorRequest {
   readonly certificate: FinalizationCertificate;
   /**
-   * The certificate hash the action was authorized under. Must equal
-   * `certificate.certificateHash`; this is what stops an action ratified in one
-   * round from being replayed under a different round's certificate.
+   * The certificate hash the action was authorized under. Both this identity
+   * and the exact approvedActionHash inside the certificate must match.
    */
   readonly authorizedByCertificateHash: string;
   readonly action: BridgeAction;
@@ -68,6 +70,7 @@ export interface MirrorPlan {
 }
 
 export type BridgeRefusalCode =
+  | 'unverified-governance'
   | 'certificate-not-admitted'
   | 'certificate-tampered'
   | 'decision-not-mirrorable'
@@ -75,7 +78,15 @@ export type BridgeRefusalCode =
   | 'treasury-refused'
   | 'settlement-refused';
 
-export type BridgeResult = { ok: true; plan: MirrorPlan } | { ok: false; code: BridgeRefusalCode; detail: string };
+export type BridgeResult =
+  | { ok: true; plan: MirrorPlan }
+  | {
+      ok: false;
+      code: BridgeRefusalCode;
+      detail: string;
+      /** WI-10005197: what would LIFT this refusal. Present on the treasury / settlement policy refusals. */
+      refusal?: RefusalContract;
+    };
 
 export function isMirrorableActionKind(kind: string): kind is MirrorableActionKind {
   return (MIRRORABLE_ACTION_KINDS as readonly string[]).includes(kind);
@@ -86,13 +97,33 @@ function mirrorId(certificateHash: string, kind: MirrorableActionKind, body: Rea
 }
 
 /**
+ * Commitment to the complete typed action, including chain, adapter/config,
+ * recipient/asset/amount and receipt/voucher bindings. Bigint amounts use their
+ * exact decimal representation. Ratifiers pin this on GovernanceRound BEFORE
+ * signing; attaching a digest only at execution cannot authorize an action.
+ */
+export function governanceActionHash(action: BridgeAction): string {
+  const body: unknown = JSON.parse(JSON.stringify(action, (_key, value: unknown) =>
+    typeof value === 'bigint' ? value.toString() : value));
+  return createHash('sha256').update(canonicalJson({ domain: 'papercusp:governance-action:v1', action: body })).digest('hex');
+}
+
+/**
  * Build the on-chain mirror for a finalized decision, or refuse. Pure: it never
  * submits anything — submission is the injected edge (`executeOnChainMirror`).
  */
-export function planOnChainMirror(input: MirrorRequest): BridgeResult {
+export function planOnChainMirror(input: MirrorRequest, decision?: AuthenticatedGovernanceFinalization): BridgeResult {
   const { certificate, action } = input;
   if (!verifyFinalizationCertificate(certificate)) {
     return { ok: false, code: 'certificate-tampered', detail: 'finalization certificate hash does not match its contents' };
+  }
+  // This context belongs to the trusted execution edge, never the wire request.
+  // The production source authenticates owner policy, keys, ballots and current
+  // controls and reconstructs the verdict. A self-computable hash proves none of that.
+  if (!decision?.certificate || decision.governance?.roundId !== certificate.roundId ||
+      decision.governance.status !== 'finalized' ||
+      canonicalJson(decision.certificate) !== canonicalJson(certificate)) {
+    return { ok: false, code: 'unverified-governance', detail: 'the exact decision requires independently authenticated current governance' };
   }
   if (input.authorizedByCertificateHash !== certificate.certificateHash) {
     return { ok: false, code: 'action-not-bound-to-certificate', detail: 'action was authorized under a different governance round' };
@@ -100,12 +131,32 @@ export function planOnChainMirror(input: MirrorRequest): BridgeResult {
   if (!certificate.admitted) {
     return { ok: false, code: 'certificate-not-admitted', detail: `round ${certificate.roundId} was not admitted: ${certificate.reason}` };
   }
+  if (isMirrorableActionKind(action.kind) &&
+      (typeof certificate.approvedActionHash !== 'string' ||
+       certificate.approvedActionHash !== governanceActionHash(action))) {
+    return { ok: false, code: 'action-not-bound-to-certificate', detail: 'exact action bytes do not match the commitment ratified in the governance round' };
+  }
   // Narrow on the action itself, not via a predicate over `action.kind`: a type
   // predicate on a property does not narrow the parent union, and the settlement
   // arm below needs the discriminated member, not the widened one.
   if (action.kind === 'treasury-transfer') {
     const authorized = authorizeTreasuryTransfer(action.treasury, action.request);
-    if (!authorized.ok) return { ok: false, code: 'treasury-refused', detail: `${authorized.code}: ${authorized.detail}` };
+    if (!authorized.ok) {
+      return {
+        ok: false,
+        code: 'treasury-refused',
+        detail: `${authorized.code}: ${authorized.detail}`,
+        refusal: {
+          observed: { treasuryCode: authorized.code, role: action.request.role, chainId: String(action.treasury.chainId) },
+          liftsWhen:
+            'the transfer request satisfies the treasury policy rule named in observed.treasuryCode (role enabled, ' +
+            'policy approved, token and recipient on the allowlist, amount within the role cap and bound to a ' +
+            'settlement receipt). Re-sending the SAME request cannot lift it: the requester corrects the request, ' +
+            'or the treasury OWNERS change the Safe/Roles configuration through a new governance round',
+          whoCanMakeItTrue: ['another-agent', 'owner'],
+        },
+      };
+    }
     const body = {
       amountMicros: action.request.amountMicros.toString(),
       recipient: action.request.recipient.toLowerCase(),
@@ -137,7 +188,21 @@ export function planOnChainMirror(input: MirrorRequest): BridgeResult {
     amountMicros: action.amountMicros,
     voucherDigests: action.voucherDigests,
   });
-  if (!built.ok) return { ok: false, code: 'settlement-refused', detail: `${built.code}: ${built.detail}` };
+  if (!built.ok) {
+    return {
+      ok: false,
+      code: 'settlement-refused',
+      detail: `${built.code}: ${built.detail}`,
+      refusal: {
+        observed: { settlementCode: built.code, voucherCount: String(action.voucherDigests.length) },
+        liftsWhen:
+          'the batch-settlement request is buildable: the EVM settlement config, payment channel and voucher ' +
+          'digests satisfy the rule named in observed.settlementCode. Re-sending the SAME batch cannot lift it: ' +
+          'the requester rebuilds the batch from a valid channel state, or the settlement OWNER corrects the EVM config',
+        whoCanMakeItTrue: ['another-agent', 'owner'],
+      },
+    };
+  }
   return {
     ok: true,
     plan: {
@@ -157,15 +222,37 @@ export interface OnChainSubmitter {
   submit(plan: MirrorPlan): Promise<{ ok: true; txHash: string } | { ok: false; detail: string }>;
 }
 
+export interface OnChainGovernanceSource {
+  resolve(certificate: FinalizationCertificate): Promise<AuthenticatedGovernanceFinalization>;
+}
+
+/** Pin workspace, pot policy and clock at the trusted edge, independently of requests. */
+export function createOnChainGovernanceSource(
+  context: Omit<GovernanceFinalizationInput, 'planRevisionHash' | 'nowMs'> & { nowMs: () => number },
+  source: AuthenticatedGovernanceFinalizationSource = productionPlanAdmissionCertificateSource,
+): OnChainGovernanceSource {
+  return { async resolve(certificate) {
+    const nowMs = context.nowMs();
+    const resolved = await source.resolveFinalization({ ...context,
+      planRevisionHash: certificate.planRevisionHash, nowMs });
+    return resolved.certificate && nowMs <= resolved.certificate.finalizedAtMs + context.policy.ratificationWindowSec * 1_000
+      ? resolved : { certificate: null, governance: resolved.governance };
+  } };
+}
+
 /** Records which mirrors already executed, so a replayed certificate cannot double-spend. */
 export interface MirrorLedger {
+  /** Serialize the check, submission and receipt for one certificate. Durable
+   * implementations must enforce this across their workers, not just one process.
+   * Submitters must also honor mirrorId as an idempotency key across crash/retry. */
+  runExclusive<T>(certificateHash: string, execute: () => Promise<T>): Promise<T>;
   has(mirrorId: string): Promise<boolean> | boolean;
   record(mirrorId: string, txHash: string): Promise<void> | void;
 }
 
 export type MirrorExecution =
   | { ok: true; mirrorId: string; txHash: string; replayed: boolean; decisionStanding: true }
-  | { ok: false; code: BridgeRefusalCode; detail: string; decisionStanding: false }
+  | { ok: false; code: BridgeRefusalCode; detail: string; decisionStanding: false; refusal?: RefusalContract }
   | { ok: false; code: 'submission-failed'; detail: string; mirrorId: string; decisionStanding: true };
 
 /**
@@ -180,9 +267,26 @@ export async function executeOnChainMirror(input: {
   request: MirrorRequest;
   submitter: OnChainSubmitter;
   ledger: MirrorLedger;
+  /** Independently configured authority/store source. Omission fails closed. */
+  governance?: OnChainGovernanceSource;
 }): Promise<MirrorExecution> {
-  const planned = planOnChainMirror(input.request);
-  if (!planned.ok) return { ok: false, code: planned.code, detail: planned.detail, decisionStanding: false };
+  // Pin the request across awaits. The wire caller cannot substitute action
+  // bytes after the authority or bounded adapter has validated them.
+  const request = structuredClone(input.request);
+  return input.ledger.runExclusive(request.certificate.certificateHash, async (): Promise<MirrorExecution> => {
+  let decision: AuthenticatedGovernanceFinalization | undefined;
+  try { decision = await input.governance?.resolve(request.certificate); }
+  catch { /* An unreadable authority is not approval. */ }
+  const planned = planOnChainMirror(request, decision);
+  if (!planned.ok) {
+    return {
+      ok: false,
+      code: planned.code,
+      detail: planned.detail,
+      decisionStanding: false,
+      ...(planned.refusal ? { refusal: planned.refusal } : {}),
+    };
+  }
 
   const { plan } = planned;
   if (await input.ledger.has(plan.mirrorId)) {
@@ -194,12 +298,27 @@ export async function executeOnChainMirror(input: {
   }
   await input.ledger.record(plan.mirrorId, submitted.txHash);
   return { ok: true, mirrorId: plan.mirrorId, txHash: submitted.txHash, replayed: false, decisionStanding: true };
+  });
 }
 
 /** In-memory ledger for tests and single-process pilots; production supplies a durable one. */
 export function createInMemoryMirrorLedger(): MirrorLedger & { entries(): ReadonlyMap<string, string> } {
   const seen = new Map<string, string>();
+  const running = new Map<string, Promise<void>>();
   return {
+    async runExclusive<T>(id: string, execute: () => Promise<T>): Promise<T> {
+      const preceding = running.get(id) ?? Promise.resolve();
+      let release!: () => void;
+      const barrier = new Promise<void>(resolve => { release = resolve; });
+      const queued = preceding.then(() => barrier);
+      running.set(id, queued);
+      await preceding;
+      try { return await execute(); }
+      finally {
+        release();
+        if (running.get(id) === queued) running.delete(id);
+      }
+    },
     has: (id) => seen.has(id),
     record: (id, txHash) => {
       seen.set(id, txHash);

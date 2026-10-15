@@ -1,0 +1,380 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "name": "P058 committed memory-hydration HOST release ARM original-deadline qualification",
+  "command": [
+    "node",
+    ".papercusp/scratch/p058-memory-hydration-release-20261011/supplemental-closure.mjs",
+    "qualify2"
+  ],
+  "cwd": ".",
+  "startedAt": "2026-10-11T20:45:20.884Z",
+  "finishedAt": "2026-10-11T20:48:39.121Z",
+  "timestampsScope": "Runner phase including full pre/post inventory checks; child elapsed is separately recorded",
+  "exitCode": 1,
+  "summary": "The fresh committed memory-hydration HOST release passed all five maintained dependency-closure tests and ARM static import resolution. The unchanged original60000ms boot probe still failed with ETIMEDOUT after76365ms and no boot marker. Exact cleanup and complete before/after input bindings passed. This candidate remains rejected; no unchanged qualification was replayed.",
+  "workItemId": "EI-25500068013952985",
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "sourceCommit": "a5141b360f18ada206edb6674766c8541a32d458",
+  "evidencePlane": "frozen-committed-source-HOST-release-in-preserved-local-ARM-runtime",
+  "candidateAccepted": false,
+  "originalDeadlineMs": 60000,
+  "diagnostic": {
+    "executable": "/opt/papercusp/sidecar/bin/node",
+    "cwd": "/opt/papercusp/sidecar",
+    "elapsedMs": 76365,
+    "pid": 29,
+    "status": 0,
+    "signal": null,
+    "errorCode": "ETIMEDOUT",
+    "allocatorCap": "2",
+    "home": "/tmp/papercusp-boot-imports-MEvzNw",
+    "receiptObserved": false
+  },
+  "failure": "podman failed (1): boot import closure FAILED: spawnSync /opt/papercusp/sidecar/bin/node ETIMEDOUT\n{\"executable\":\"/opt/papercusp/sidecar/bin/node\",\"cwd\":\"/opt/papercusp/sidecar\",\"elapsedMs\":76365,\"pid\":29,\"status\":0,\"signal\":null,\"errorCode\":\"ETIMEDOUT\",\"allocatorCap\":\"2\",\"home\":\"/tmp/papercusp-boot-imports-MEvzNw\",\"receiptObserved\":false}\n[child stdout tail]\n\n[child stderr tail]",
+  "ownership": {
+    "schemaVersion": 1,
+    "engine": "podman",
+    "imageId": "sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921",
+    "platform": "linux/arm64",
+    "leaseTimeoutMs": 15000,
+    "leaseRoot": "/mnt/backup/portable-server-p058/memory-hydration-release-20261011/original-deadline-qualification2/.native-producer-owner-LFlRCD",
+    "clockRoot": "/mnt/backup/portable-server-p058/memory-hydration-release-20261011/original-deadline-qualification2/.native-producer-owner-LFlRCD/clock",
+    "status": "failed",
+    "containerName": "papercusp-native-8f2f429c-d2f1-4117-abf8-302e3d2ae1df",
+    "ownerToken": "b51d1aad-7e50-41c8-8cb4-9b5d8bd623ea",
+    "cleanupPending": false,
+    "containerId": "188d3ce2f91cc61fa6a7eb8937e22aee31dec3c31c6c8d2c6c3f1f0e9494c725",
+    "error": "podman failed (1): boot import closure FAILED: spawnSync /opt/papercusp/sidecar/bin/node ETIMEDOUT\n{\"executable\":\"/opt/papercusp/sidecar/bin/node\",\"cwd\":\"/opt/papercusp/sidecar\",\"elapsedMs\":76365,\"pid\":29,\"status\":0,\"signal\":null,\"errorCode\":\"ETIMEDOUT\",\"allocatorCap\":\"2\",\"home\":\"/tmp/papercusp-boot-imports-MEvzNw\",\"receiptObserved\":false}\n[child stdout tail]\n\n[child stderr tail]",
+    "removed": true
+  },
+  "build": {
+    "status": "passed",
+    "startedAt": "2026-10-11T20:15:43.646Z",
+    "finishedAt": "2026-10-11T20:19:29.409Z",
+    "sourceCommit": "a5141b360f18ada206edb6674766c8541a32d458",
+    "sourceReceiptSha256": "dd46d1b49de1a8995754470f3bb38f78fba4123d258d6e1136a3e7b952750c17",
+    "argv": [
+      "bash",
+      "scripts/pc-heavy.sh",
+      "bash",
+      "apps/operator/bin/bundle-host.sh",
+      "bin/serve.ts",
+      "/mnt/backup/portable-server-p058/memory-hydration-release-20261011/release-output/serve.mjs",
+      "release"
+    ],
+    "cwd": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-arm-memory-hydration-source-20261011",
+    "exitCode": 0,
+    "profile": "release",
+    "artifacts": {
+      "serve.mjs": {
+        "sha256": "f20d260ad57faa0fb50e80c73edf7453a56c693f719fcd2db682835593925a81",
+        "bytes": 56765632
+      },
+      "serve.mjs.meta.json": {
+        "sha256": "1a881051df6209232f444b67a3029decf3b479b0aa57665c37788f4e84ba6e84",
+        "bytes": 10072251
+      },
+      "spawner-sidecar.mjs": {
+        "sha256": "89bded2333a3529a592fa00f60c989073b782db4979413e1f0c2b7aede13e357",
+        "bytes": 54172460
+      },
+      "spawner-sidecar.mjs.meta.json": {
+        "sha256": "3c760d2a65fa8aa9cc02f856e858f86f11eae61d7e7be5983b7f58f1c6d0dba8",
+        "bytes": 9874852
+      }
+    },
+    "candidateAccepted": false
+  },
+  "dependencies": {
+    "status": "passed",
+    "donor": "/home/builduser/papercupai-workspace/papercusp",
+    "mode": "maintained full install-equivalent locked hardlink snapshot",
+    "sourceCommit": "a5141b360f18ada206edb6674766c8541a32d458",
+    "dependencyEquivalenceSha256": "cb4ec96979dccda1e539caa9654abf3899bdc04e5076ee5ce55fb25d042a1e19",
+    "stamp": "donor=/home/builduser/papercupai-workspace/papercusp\nmode=hardlink\ntrees=98\ntakenAtUtc=2026-10-11T20:14:47Z\n",
+    "runtimeBindingSha256": "8916906bb029f72db08babd93aae8918a6d1c3a4feeaa4f9d3f1ecf06dacc904",
+    "sourceReceiptSha256": "dd46d1b49de1a8995754470f3bb38f78fba4123d258d6e1136a3e7b952750c17",
+    "originalCaptureAdopted": true,
+    "candidateAccepted": false
+  },
+  "supplemental": {
+    "inventory": {
+      "sha256": "4481af5cf402a15957a0dd9ab8b86fcc3b261dd54db84a74480b2593c212edea",
+      "bytes": 22442452,
+      "entries": 44,
+      "elfFiles": []
+    },
+    "packages": [
+      "base64-js",
+      "js-tiktoken"
+    ],
+    "added": [
+      "js-tiktoken"
+    ],
+    "scriptSha256": "720aac6a01196a61ce10b7f14ef4de9bb1b0243d4a547d1da5a4479b64b54dbd"
+  },
+  "canonicalClosureTests": {
+    "argv": [
+      "node",
+      "--test",
+      "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-arm-memory-hydration-source-20261011/papercusp-desktop/test/build-desktop-sidecar-dependency-closure.test.js"
+    ],
+    "builderSha256": "589a6152e53fd17c2429b551e82ce676fcd3f59d98f004dfd51763a5e05e4f19",
+    "testSha256": "fd07c593c2950661bdc6d4b84fdcceecb5e7c148d744a3048563e668d6dde17b",
+    "logSha256": "dd4367749a1d65c36fdc2036aff30a077b9b2312ce8bbc810ee90e07cdace6f1",
+    "passed": 5,
+    "failed": 0,
+    "skipped": 0
+  },
+  "staticResolution": {
+    "status": "passed",
+    "specifiers": [
+      "@aws-sdk/client-ec2",
+      "@aws-sdk/client-ssm",
+      "@dbos-inc/dbos-sdk",
+      "@lydell/node-pty",
+      "@mcp-ui/server",
+      "@papercusp/embedded-postgres-server/src/migration-runner.js",
+      "@smithy/core",
+      "@smithy/core/cbor",
+      "@smithy/core/checksum",
+      "@smithy/core/client",
+      "@smithy/core/config",
+      "@smithy/core/endpoints",
+      "@smithy/core/protocols",
+      "@smithy/core/retry",
+      "@smithy/core/schema",
+      "@smithy/core/serde",
+      "acorn",
+      "fast-check",
+      "js-tiktoken",
+      "mingo",
+      "mingo/operators/query",
+      "mingo/util",
+      "typescript",
+      "undici",
+      "viem",
+      "viem/accounts",
+      "viem/chains"
+    ],
+    "guestOutput": "P058_LAZY_TARGET_STATIC2_PASS\n",
+    "ownership": {
+      "schemaVersion": 1,
+      "engine": "podman",
+      "imageId": "sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921",
+      "platform": "linux/arm64",
+      "leaseTimeoutMs": 15000,
+      "leaseRoot": "/mnt/backup/portable-server-p058/memory-hydration-release-20261011/static-resolution2/.native-producer-owner-KasRwU",
+      "clockRoot": "/mnt/backup/portable-server-p058/memory-hydration-release-20261011/static-resolution2/.native-producer-owner-KasRwU/clock",
+      "status": "completed",
+      "containerName": "papercusp-native-a3a608b8-f846-4f44-ad47-c178aa0fffb7",
+      "ownerToken": "fd4f516e-8f77-4710-9656-52e9539409d8",
+      "cleanupPending": false,
+      "containerId": "df08840d1ccb8e255e60c7d61c367777242ef4017520da0fe114593f8217a2f7",
+      "exitCode": 0,
+      "removed": true
+    }
+  },
+  "postExecutionBindings": {
+    "before": {
+      "sourceReceiptSha256": "dd46d1b49de1a8995754470f3bb38f78fba4123d258d6e1136a3e7b952750c17",
+      "buildSha256": "03b11c6b48653c932ad5b57f96389890bb772a10412d1f270eaeab6e4527a44a",
+      "builderSha256": "589a6152e53fd17c2429b551e82ce676fcd3f59d98f004dfd51763a5e05e4f19",
+      "canonicalTestSha256": "fd07c593c2950661bdc6d4b84fdcceecb5e7c148d744a3048563e668d6dde17b",
+      "helperSha256": "478ec0548be8792d553d3f722cc904b230bcbc8fcd2cc39c7b611fe89d2e9137",
+      "oldOverlay": {
+        "sha256": "cedde981291a486ce1f23a3e143efd0ff9222ef148bc2c27bddbfeb8cad807c4",
+        "bytes": 136031718,
+        "entries": 27985,
+        "elfFiles": []
+      },
+      "inputs": [
+        {
+          "name": "base64-js",
+          "dir": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-arm-memory-hydration-source-20261011/node_modules/base64-js",
+          "version": "1.5.1",
+          "inventory": {
+            "sha256": "ac22aff4d3c00bc0bbfa6868a56debfd7cc235f738bf428a523f42c985ec65f0",
+            "bytes": 9624,
+            "entries": 7,
+            "elfFiles": []
+          }
+        },
+        {
+          "name": "js-tiktoken",
+          "dir": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-arm-memory-hydration-source-20261011/node_modules/js-tiktoken",
+          "version": "1.0.21",
+          "inventory": {
+            "sha256": "14d59d3180b203e838c44023b6fcb9b8c0a1e454d9745fcc7cf981b7d30e3342",
+            "bytes": 22432828,
+            "entries": 35,
+            "elfFiles": []
+          }
+        }
+      ]
+    },
+    "after": {
+      "sourceReceiptSha256": "dd46d1b49de1a8995754470f3bb38f78fba4123d258d6e1136a3e7b952750c17",
+      "buildSha256": "03b11c6b48653c932ad5b57f96389890bb772a10412d1f270eaeab6e4527a44a",
+      "builderSha256": "589a6152e53fd17c2429b551e82ce676fcd3f59d98f004dfd51763a5e05e4f19",
+      "canonicalTestSha256": "fd07c593c2950661bdc6d4b84fdcceecb5e7c148d744a3048563e668d6dde17b",
+      "helperSha256": "478ec0548be8792d553d3f722cc904b230bcbc8fcd2cc39c7b611fe89d2e9137",
+      "oldOverlay": {
+        "sha256": "cedde981291a486ce1f23a3e143efd0ff9222ef148bc2c27bddbfeb8cad807c4",
+        "bytes": 136031718,
+        "entries": 27985,
+        "elfFiles": []
+      },
+      "inputs": [
+        {
+          "name": "base64-js",
+          "dir": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-arm-memory-hydration-source-20261011/node_modules/base64-js",
+          "version": "1.5.1",
+          "inventory": {
+            "sha256": "ac22aff4d3c00bc0bbfa6868a56debfd7cc235f738bf428a523f42c985ec65f0",
+            "bytes": 9624,
+            "entries": 7,
+            "elfFiles": []
+          }
+        },
+        {
+          "name": "js-tiktoken",
+          "dir": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-arm-memory-hydration-source-20261011/node_modules/js-tiktoken",
+          "version": "1.0.21",
+          "inventory": {
+            "sha256": "14d59d3180b203e838c44023b6fcb9b8c0a1e454d9745fcc7cf981b7d30e3342",
+            "bytes": 22432828,
+            "entries": 35,
+            "elfFiles": []
+          }
+        }
+      ]
+    },
+    "runnerSha256": "720aac6a01196a61ce10b7f14ef4de9bb1b0243d4a547d1da5a4479b64b54dbd",
+    "helperSha256": "478ec0548be8792d553d3f722cc904b230bcbc8fcd2cc39c7b611fe89d2e9137",
+    "bindingSha256": "4a053437fa54da416b4b50003b9a03f6435cb72f3817e39f6ac099a29f7f44a7",
+    "buildSha256": "03b11c6b48653c932ad5b57f96389890bb772a10412d1f270eaeab6e4527a44a",
+    "configSha256": "883609ef13c9592de1bc21ede81699e9ffa13cb4ea6d0cfa3b85c91388ac52f5"
+  },
+  "artifactRefs": [
+    {
+      "path": "/mnt/backup/portable-server-p058/memory-hydration-release-20261011/source-receipt.json",
+      "sha256": "dd46d1b49de1a8995754470f3bb38f78fba4123d258d6e1136a3e7b952750c17"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/memory-hydration-release-20261011/executor-binding.json",
+      "sha256": "181abfc7e9d835eb0249081838738a9e8ab4d39577f4d404c036230b6c8214f9"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/memory-hydration-release-20261011/dependencies.json",
+      "sha256": "8cf11c13b32930d86677fba17a15ceab9ffe2ab0125c17b13a8e9b8d54637927"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/memory-hydration-release-20261011/dependency-equivalence.json",
+      "sha256": "cb4ec96979dccda1e539caa9654abf3899bdc04e5076ee5ce55fb25d042a1e19"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/memory-hydration-release-20261011/build.json",
+      "sha256": "03b11c6b48653c932ad5b57f96389890bb772a10412d1f270eaeab6e4527a44a"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/memory-hydration-release-20261011/build.log",
+      "sha256": "afcd8bbb95d51240041740a08c47e0eff442dd163983ed2dc2f5260799b62fb1"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/memory-hydration-release-20261011/supplemental-binding.json",
+      "sha256": "4a053437fa54da416b4b50003b9a03f6435cb72f3817e39f6ac099a29f7f44a7"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/memory-hydration-release-20261011/supplemental-copier.sh",
+      "sha256": "c8c9f1b3701e9daa89da00bf40fd746aa3c6d48e9808e7967483a475f2f0b9d1"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/memory-hydration-release-20261011/supplemental-copier.log",
+      "sha256": "48dbe2c8006ff10f6903d4343da20e01769694ce1ef1fba43fc243eef94bf437"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/memory-hydration-release-20261011/supplemental-canonical-tests.json",
+      "sha256": "820da55999a09a856f98daf0f2b5390839896392e4cbff5d4b26e92591749bd8"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/memory-hydration-release-20261011/supplemental-canonical-tests.log",
+      "sha256": "dd4367749a1d65c36fdc2036aff30a077b9b2312ce8bbc810ee90e07cdace6f1"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/memory-hydration-release-20261011/static2-config.json",
+      "sha256": "668e3c765dcbdb3ea84383e7939c68ad7bcbff15268398c0b020f563331840b2"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/memory-hydration-release-20261011/static2.json",
+      "sha256": "dadbdb151314880e433264ca744f25f1ce3900f0b91ac9aab568261a49160db4"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/memory-hydration-release-20261011/qualify2-config.json",
+      "sha256": "883609ef13c9592de1bc21ede81699e9ffa13cb4ea6d0cfa3b85c91388ac52f5"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/memory-hydration-release-20261011/qualify2.json",
+      "sha256": "b8c0dceeeb4256c3e336ac88d1134c68d9c9debfd65c9fa0dd1fdd9abf4b2163"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/memory-hydration-release-20261011/qualify2-log-collector.json",
+      "sha256": "3d0909d52f3fc2b7c1abc68968589b0a5aea807825c309f1e7da5fe27864cec6"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/memory-hydration-release-20261011/qualify2-guest.log",
+      "sha256": "916b2ecb29a7f951f3886e1ac578bdfee7170c22e3613223fb6409f2455e7995"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "committed-source-and-release-build",
+      "passed": true,
+      "evidence": "Complete 39180-file source verification and all four emitted release artifacts matched the source/build receipts before and after qualification."
+    },
+    {
+      "id": "maintained-dependency-closure-suite",
+      "passed": true,
+      "evidence": "Five maintained node:test dependency-closure tests passed; builder and test hashes match the frozen source and remained stable before/after."
+    },
+    {
+      "id": "supplemental-pure-js-closure",
+      "passed": true,
+      "evidence": "Maintained copier staged js-tiktoken and base64-js; complete 44-entry inventory 4481af5cf402a15957a0dd9ab8b86fcc3b261dd54db84a74480b2593c212edea remained unchanged with zero ELF files. Whole retained external overlay also remained bound."
+    },
+    {
+      "id": "arm-static-external-resolution",
+      "passed": true,
+      "evidence": "All 27 emitted non-builtin ESM specifiers plus base64-js resolved to existing files under arm64/Nodev24.18.1/uid1001; exact static container removed."
+    },
+    {
+      "id": "original60000ms-boot-imports",
+      "passed": false,
+      "evidence": "Unchanged canonical child timeout 60000ms returned ETIMEDOUT with elapsedMs=76365, allocatorCap=2, receiptObserved=false and no success marker."
+    },
+    {
+      "id": "owned-cleanup-and-input-stability",
+      "passed": true,
+      "evidence": "Exact qualification container removed=true, cleanupPending=false; original/supplemental overlays, complete committed source, all four bundles and engine config hashes remained unchanged."
+    }
+  ],
+  "counts": {
+    "passed": 5,
+    "failed": 1,
+    "skipped": 0,
+    "cancelled": 0
+  },
+  "limitations": [
+    "This is a changed HOST release plus supplemental pure-JS closure in a preserved ARM runtime, not an assembled or installed native candidate.",
+    "The historical profile identifies multiple startup phases and does not establish one total startup cause; no performance attribution to memory hydration is inferred from this attempt.",
+    "Podman supplementary logs --follow was refused under journald log-driver/file events-backend; its collector receipt is retained and is not a boot verdict. The canonical failure diagnostic is retained independently.",
+    "Trusted registry/signing selection, paired publication, installed-native acceptance and final shipment remain open."
+  ],
+  "evidenceSerialization": {
+    "serializer": "scripts/lib/identity-leak-patterns.mjs::serializeIdentitySafeJson",
+    "scope": "Public serialization of new evidence; original saved execution receipts remain unchanged."
+  }
+}

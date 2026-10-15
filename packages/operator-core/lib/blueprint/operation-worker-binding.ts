@@ -46,7 +46,7 @@ const MODEL_EFFORT_SUFFIX = /:(low|medium|high|xhigh|max|ultra)$/i;
  * even when the caller supplied a compatible alias. The caller's selector
  * can choose within an allowed/preferred list but cannot widen that list. */
 export function selectAcceptedOperationWorkerModel(
-  binding: AcceptedOperationWorkerBinding | null,
+  binding: Pick<AcceptedOperationWorkerBinding, 'modelPolicy'> | null,
   requestedModel: string | null,
   backend: 'claude' | 'omp' | 'codex',
 ): AcceptedOperationWorkerBinding['modelSelection'] | null {
@@ -386,6 +386,161 @@ export function programRootEffectWhereSql(
   )`;
 }
 
+/** D-036/D-037: an external voice executor is not an applied CLI worker or a
+ * program operation. This registration belongs on the producing item's payload.
+ * Only the authenticated host adapter may construct it from admitted records. */
+export interface ExternalRuntimeProducerBinding {
+  kind: 'external-runtime-producer';
+  workspaceId: string;
+  harnessSlug: string;
+  /** Canonical storage scope after pot-member rehoming. */
+  storageHarnessSlug: string;
+  workItemId: string;
+  executionOwnerId: string;
+  ownerId: string;
+  callKey: string;
+  callId: string;
+  runId: string;
+  jobId: string;
+  configurationSha256: string;
+  registeredAt: string;
+}
+
+/** Read from the host's retained call records, never an end-report payload.
+ * A lost worker's partial digest is deliberately insufficient for success. */
+export interface ExternalRuntimeStoredOutcome {
+  binding: ExternalRuntimeProducerBinding;
+  endReason: 'completed' | 'worker-lost' | 'failed' | 'cancelled';
+  endedAt: string | null;
+  transcriptSegmentCount: number;
+  transcriptSha256: string;
+  /** Independently recomputed from the retained transcript at verification. */
+  retainedSegmentCount: number;
+  retainedSha256: string;
+  contentDeleted: boolean;
+}
+
+/** Shared precondition for both canonical work-item families. This is only
+ * binding/evidence validation, not completion authority: callers still use the
+ * normal evidence grader and must repeat binding/holder/epoch in the UPDATE. */
+export function assertExternalRuntimeProducerOutcome(input: {
+  workspaceId: string;
+  by: string;
+  item: Pick<WorkItem, 'id' | 'harness' | 'assignee' | 'payload'>;
+  stored: ExternalRuntimeStoredOutcome;
+}): ExternalRuntimeProducerBinding {
+  const { item, stored, by, workspaceId } = input;
+  const binding = stored.binding;
+  const fields: (keyof ExternalRuntimeProducerBinding)[] = [
+    'workspaceId', 'harnessSlug', 'storageHarnessSlug', 'workItemId', 'executionOwnerId', 'ownerId',
+    'callKey', 'callId', 'runId', 'jobId', 'configurationSha256', 'registeredAt',
+  ];
+  if (binding.kind !== 'external-runtime-producer' ||
+      fields.some((key) => typeof binding[key] !== 'string' || !binding[key].trim()) ||
+      !/^[a-f0-9]{64}$/.test(binding.configurationSha256) ||
+      !Number.isFinite(Date.parse(binding.registeredAt))) {
+    throw new Error('external runtime producer registration is malformed');
+  }
+  const payload = item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
+    ? item.payload as Record<string, unknown> : {};
+  if (binding.workspaceId !== workspaceId || binding.workItemId !== item.id ||
+      binding.storageHarnessSlug !== item.harness || binding.executionOwnerId !== by ||
+      item.assignee !== by || !isDeepStrictEqual(payload.externalRuntimeProducer, binding)) {
+    throw new Error('external runtime producer binding or current holder changed');
+  }
+  if (stored.endReason !== 'completed' || !stored.endedAt ||
+      !Number.isFinite(Date.parse(stored.endedAt)) ||
+      Date.parse(stored.endedAt) < Date.parse(binding.registeredAt) || stored.contentDeleted ||
+      !Number.isSafeInteger(stored.transcriptSegmentCount) || stored.transcriptSegmentCount < 0 ||
+      !/^[a-f0-9]{64}$/.test(stored.transcriptSha256) ||
+      stored.retainedSegmentCount !== stored.transcriptSegmentCount ||
+      stored.retainedSha256 !== stored.transcriptSha256) {
+    throw new Error('external runtime producer has no verified complete retained transcript');
+  }
+  return binding;
+}
+
+/** Internal host adapter input, deliberately absent from public tool schemas.
+ * The callback reads retained host records; a worker's report is not that read. */
+export interface ExternalRuntimeCompletionAttempt {
+  binding: ExternalRuntimeProducerBinding;
+  updatedTs: number;
+  readStoredOutcome(): Promise<ExternalRuntimeStoredOutcome>;
+}
+
+export interface VerifiedExternalRuntimeCompletion {
+  readonly binding: Readonly<ExternalRuntimeProducerBinding>;
+  readonly updatedTs: number;
+  readonly transcript: Readonly<{ endedAt: string; segmentCount: number; sha256: string }>;
+}
+
+// A structurally matching object is not a trusted read. Only receipts minted by
+// the verifier in this process may reach a canonical writer; recovery re-verifies.
+const verifiedExternalRuntimeCompletions = new WeakSet<object>();
+export function assertVerifiedExternalRuntimeCompletion(receipt: VerifiedExternalRuntimeCompletion): void {
+  if (!verifiedExternalRuntimeCompletions.has(receipt)) {
+    throw new Error('external runtime completion receipt was not minted by the trusted verifier');
+  }
+}
+
+/** Capture the attempt before asynchronous I/O, then compare the trusted read.
+ * Returning a detached frozen receipt prevents later callback/caller mutations
+ * from changing the effect predicate that the canonical writer will execute. */
+export async function verifyExternalRuntimeCompletionAttempt(input: {
+  attempt: ExternalRuntimeCompletionAttempt;
+  workspaceId: string;
+  by: string;
+  item: Pick<WorkItem, 'id' | 'harness' | 'assignee' | 'payload' | 'state' | 'updatedAt'>;
+}): Promise<VerifiedExternalRuntimeCompletion> {
+  const binding = Object.freeze({ ...input.attempt.binding });
+  const updatedTs = input.attempt.updatedTs;
+  if (!Number.isSafeInteger(updatedTs) || updatedTs <= 0 ||
+      Date.parse(input.item.updatedAt) !== updatedTs ||
+      (ANY_FAMILY_TERMINAL_STATES as readonly string[]).includes(input.item.state)) {
+    throw new Error('external runtime completion attempt is stale or terminal');
+  }
+  const payload = input.item.payload && typeof input.item.payload === 'object' && !Array.isArray(input.item.payload)
+    ? input.item.payload as Record<string, unknown> : {};
+  if (Object.prototype.hasOwnProperty.call(payload, 'reopenHistory') ||
+      Object.prototype.hasOwnProperty.call(payload, 'blueprintCancellation')) {
+    throw new Error('external runtime completion attempt was cancelled or reopened');
+  }
+  const stored = await input.attempt.readStoredOutcome();
+  if (!isDeepStrictEqual(binding, stored.binding)) {
+    throw new Error('external runtime completion attempt differs from trusted host registration');
+  }
+  assertExternalRuntimeProducerOutcome({ ...input, stored });
+  const transcript = Object.freeze({ endedAt: stored.endedAt!,
+    segmentCount: stored.transcriptSegmentCount, sha256: stored.transcriptSha256 });
+  const receipt = Object.freeze({ binding, updatedTs, transcript });
+  verifiedExternalRuntimeCompletions.add(receipt);
+  return receipt;
+}
+
+/** Repeat the verified registration, claim and attempt epoch at the write.
+ * Reuses the canonical payload, not a second completion or receipt store. */
+export function externalRuntimeCompletionEffectWhereSql(
+  sql: Sql,
+  receipt: VerifiedExternalRuntimeCompletion,
+  columns: { payload: 'payload' | 'wi.payload'; id: 'feature_id' | 'wi.feature_id';
+    harness: 'harness_slug' | 'wi.harness_slug'; holder: 'taken_by' | 'wi.taken_by';
+    status: 'status' | 'wi.status'; updated: 'updated_ts' | 'wi.updated_ts' },
+) {
+  assertVerifiedExternalRuntimeCompletion(receipt);
+  const { binding, updatedTs } = receipt;
+  const payload = sql.unsafe(columns.payload);
+  return sql`(
+    ${sql.unsafe(columns.id)} = ${binding.workItemId}
+    AND ${sql.unsafe(columns.harness)} IN (${binding.storageHarnessSlug}, ${`harness:${binding.storageHarnessSlug}`})
+    AND ${sql.unsafe(columns.holder)} = ${binding.executionOwnerId}
+    AND ${sql.unsafe(columns.updated)} = ${updatedTs}
+    AND NOT (${sql.unsafe(columns.status)} = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
+    AND NOT (COALESCE(${payload}, '{}'::jsonb) ? 'reopenHistory')
+    AND NOT (COALESCE(${payload}, '{}'::jsonb) ? 'blueprintCancellation')
+    AND ${payload}->'externalRuntimeProducer' = ${JSON.stringify(binding)}::text::jsonb
+  )`;
+}
+
 const RECEIPT_READ_FAULT = 'active operation worker receipt could not be read';
 
 /** EI-24400810686776632: the receipt read fails CLOSED on any error, which is right, but a
@@ -407,10 +562,11 @@ export function describeOperationReceiptReadFault(err: unknown): string {
 export async function readActiveOperationWorkerClaimBinding(
   workspaceId: string,
   ownerId: string,
+  opts?: { sql?: Sql; throwOnError?: boolean },
 ): Promise<ActiveOperationWorkerClaimRead> {
   if (!workspaceId.trim() || !ownerId.trim()) return { status: 'unavailable', reason: 'claim target scope is missing' };
   try {
-    const { sql } = getOrgPg();
+    const sql = opts?.sql ?? getOrgPg().sql;
     const [session] = await sql<Array<{ id: number; role: string | null }>>`
       SELECT id, role FROM harness_shared.adv_sessions
        WHERE workspace_id = ${workspaceId} AND coord_owner_id = ${ownerId}
@@ -509,19 +665,26 @@ export async function readActiveOperationWorkerClaimBinding(
       },
     };
   } catch (err) {
+    // The scheduler's bounded transaction must see PostgreSQL timeout errors intact
+    // so it can report contention rather than a generic operation-authority failure.
+    if (opts?.throwOnError) throw err;
     return { status: 'unavailable', reason: describeOperationReceiptReadFault(err) };
   }
 }
 
 export async function resolveAcceptedOperationWorkerBinding(input: {
-  sql: Sql;
+  sql?: Sql;
   workspaceId: string;
   harnessSlug: string;
   workItemId: string;
   role: string;
   repoDir: string;
+  /** Return no binding for a different accepted worker role when this caller is
+   * only checking whether a generic launch matches the operation. */
+  roleMismatch?: 'error' | 'ignore';
 }): Promise<AcceptedOperationWorkerBinding | null> {
   return runWithWorkspace(input.workspaceId, async () => {
+    const sql = input.sql ?? getOrgPg().sql;
     // WI-10004367: a pot MEMBER harness's accepted item is stored under the pot home slug.
     const storageHarnessSlug = await workItemStorageSlug(input.harnessSlug, input.workspaceId);
     const item = await getWorkItem(input.workItemId, storageHarnessSlug);
@@ -532,11 +695,12 @@ export async function resolveAcceptedOperationWorkerBinding(input: {
       ? item.payload as Record<string, unknown> : null;
     if (!payload?.blueprintOperation) return null;
 
-    const { pin, operation } = await readAcceptedBlueprintDirectWorkItem(input.sql, input.workspaceId, item);
+    const { pin, operation } = await readAcceptedBlueprintDirectWorkItem(sql, input.workspaceId, item);
     if (pin.harnessSlug !== input.harnessSlug) {
       throw new Error('operation worker launch requires a work item in its harness');
     }
     if (operation.execution?.kind !== 'agent' || operation.execution.role !== input.role) {
+      if (input.roleMismatch === 'ignore') return null;
       throw new Error('accepted blueprint operation does not authorize this worker role');
     }
     const ref = operation.policy.identity;

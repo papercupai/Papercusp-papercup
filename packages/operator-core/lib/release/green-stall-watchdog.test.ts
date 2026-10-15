@@ -5,15 +5,31 @@
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import type { Sql } from 'postgres';
+import { promisify } from 'node:util';
 
-// EI-9922: stub `execFileSync` itself so the stderr-suppression assertion below is
-// deterministic regardless of what git checkout (or non-repo) the test runs inside —
-// mirrors workspace-map.test.ts's EI-8794 approach.
+const childProcessMocks = vi.hoisted(() => ({ execFile: vi.fn() }));
+
+// EI-9922: stub async `execFile` so stderr suppression and fail-soft behavior are
+// deterministic regardless of what git checkout (or non-repo) the test runs inside.
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
-  return { ...actual, execFileSync: vi.fn(actual.execFileSync) };
+  return { ...actual, execFile: childProcessMocks.execFile };
 });
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+
+// Match Node's execFile promisifier: the callback API resolves both output streams as an object.
+Object.defineProperty(childProcessMocks.execFile, promisify.custom, {
+  value: (...args: unknown[]) =>
+    new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+      Reflect.apply(childProcessMocks.execFile, undefined, [
+        ...args,
+        (error: Error | null, stdout: string, stderr: string) => {
+          if (error) reject(error);
+          else resolve({ stdout, stderr });
+        },
+      ]);
+    }),
+});
 
 // EI-10103: checkMainBehindStaging's DB writes are exercised with mocked sql/notify/broadcast
 // surfaces (mirrors workspace-for-harness.test.ts's mock-the-dependency unit style) rather than
@@ -88,6 +104,7 @@ import {
   lastReleaseTriggerPauseOwner,
   evaluateReleaseTriggerFireStale,
   evaluateStrandedRepairQueue,
+  evaluateQuietLiveFixer,
   type StrandedRepairQueueSnapshot,
   checkReleaseTriggerFireStale,
   attributeVerdictStale,
@@ -98,6 +115,7 @@ import {
   readGateFireOwnerWall,
   resolveVerdictlessRefireEpisode,
   wakeAbandonedCheckpointAwaits,
+  readCheckpointRunState,
   type CheckpointEvidence,
 } from './green-stall-watchdog';
 import type { StoredInFlightCandidate } from './in-flight-candidate';
@@ -109,6 +127,14 @@ import { RECORDED_INCONCLUSIVE_STATUSES, classifyGateAbort } from './gate-abort-
 
 const H = 60 * 60 * 1000;
 const NOW = 1_750_000_000_000; // fixed epoch ms
+
+function mockGitStdout(...outputs: string[]): void {
+  childProcessMocks.execFile.mockImplementation(
+    (_command: string, _args: string[], _options: object, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+      callback(null, outputs.shift() ?? '', '');
+    },
+  );
+}
 
 const deadCheckpointMarker = (over: Partial<StoredInFlightCandidate> = {}): StoredInFlightCandidate => ({
   candidate: 'deadbeef00112233445566778899aabbccddeeff',
@@ -1162,6 +1188,50 @@ describe('checkGreenStall checkpoint-run routing (EI-20378004056924553)', () => 
   });
 });
 
+describe('readCheckpointRunState routing eligibility', () => {
+  it('does not count an expected non-gated route skip as a degraded eligible read', async () => {
+    const observeFallback = vi.fn((_mechanism: string, _decision: unknown) => true);
+    const readLock = vi.fn();
+    const readPhase = vi.fn();
+
+    await expect(readCheckpointRunState('no-gate', 'coverage', {
+      route: async () => ({ root: '/DEFAULT', extraEnv: {}, clearEnv: [], skip: { reason: 'gate_disabled' } }),
+      observeFallback,
+      readLock,
+      readPhase,
+    })).resolves.toEqual({});
+
+    expect(observeFallback).not.toHaveBeenCalled();
+    expect(readLock).not.toHaveBeenCalled();
+    expect(readPhase).not.toHaveBeenCalled();
+  });
+
+  it('keeps a misconfigured gated route visible with a specific degradation reason', async () => {
+    const observeFallback = vi.fn((_mechanism: string, _decision: unknown) => true);
+
+    await expect(readCheckpointRunState('bad-gate', 'coverage', {
+      route: async () => ({
+        root: '/DEFAULT',
+        extraEnv: {},
+        clearEnv: [],
+        skip: { reason: 'integration-equals-release', misconfigured: true },
+      }),
+      observeFallback,
+    })).resolves.toEqual({});
+
+    expect(observeFallback).toHaveBeenCalledWith(
+      'release-state-read',
+      expect.objectContaining({
+        eligible: 1,
+        applied: 0,
+        reason: 'routing-misconfigured',
+        scope: 'coverage:bad-gate:checkpoint-run-state',
+      }),
+      { workspaceId: 'coverage' },
+    );
+  });
+});
+
 describe('evaluatePausedGreenCheckpoint (EI-21190903677660085)', () => {
   const overdue = {
     active: false,
@@ -2128,31 +2198,31 @@ describe('evaluateMainBehindStaging in-flight-aware remedy (EI-19459452257836856
 
 describe('computeMainBehindStaging git shell-out (EI-9922 no-stderr-leak)', () => {
   // On a PACKAGED install this watchdog's boot pass shells git in a NON-repo dir.
-  // `execFileSync`'s default stdio inherits the child's stderr, so it spammed
-  // 'fatal: not a git repository' onto serve.log every boot + interval. gitOut must
-  // pin stdio to ['ignore','pipe','ignore'] so stderr is discarded.
-  it('EI-9922: shells git with stderr suppressed (stdio ["ignore","pipe","ignore"])', () => {
-    (vi.mocked(execFileSync) as unknown as { mockReturnValueOnce: (v: string) => void }).mockReturnValueOnce('0\n');
-    computeMainBehindStaging('/some/packaged/install');
-    expect(vi.mocked(execFileSync)).toHaveBeenCalledWith(
+  // `execFile` captures child output by default; gitOut consumes stdout and discards stderr.
+  it('EI-9922: shells git asynchronously using captured output and keeps the fail-soft behavior', async () => {
+    mockGitStdout('0\n');
+    await expect(computeMainBehindStaging('/some/packaged/install')).resolves.toEqual({
+      commitsBehind: 0,
+      behindMs: null,
+    });
+    expect(execFile).toHaveBeenCalledWith(
       'git',
-      expect.arrayContaining(['rev-list']),
-      expect.objectContaining({ stdio: ['ignore', 'pipe', 'ignore'] }),
+      ['-C', '/some/packaged/install', 'rev-list', '--count', 'main..staging'],
+      { encoding: 'utf8' },
+      expect.any(Function),
     );
-    vi.mocked(execFileSync).mockReset();
   });
 
-  it('EI-9922: fails open (all-null) without throwing when git rejects (non-repo)', () => {
-    (vi.mocked(execFileSync) as unknown as { mockImplementationOnce: (fn: () => never) => void }).mockImplementationOnce(
-      () => {
-        throw new Error('fatal: not a git repository (or any parent up to mount point /)');
+  it('EI-9922: fails open (all-null) without throwing when async git rejects (non-repo)', async () => {
+    childProcessMocks.execFile.mockImplementationOnce(
+      (_command: string, _args: string[], _options: object, callback: (error: Error) => void) => {
+        callback(new Error('fatal: not a git repository (or any parent up to mount point /)'));
       },
     );
-    expect(computeMainBehindStaging('/some/packaged/install')).toEqual({
+    await expect(computeMainBehindStaging('/some/packaged/install')).resolves.toEqual({
       commitsBehind: null,
       behindMs: null,
     });
-    vi.mocked(execFileSync).mockReset();
   });
 });
 
@@ -2192,7 +2262,7 @@ describe('checkMainBehindStaging DB wiring (EI-10103: workspace_id NOT NULL)', (
     notifyAttentionMock.mockClear();
     broadcastSevereEventMock.mockClear();
     broadcastSevereEventResolvedMock.mockClear();
-    vi.mocked(execFileSync).mockReset();
+    childProcessMocks.execFile.mockReset();
     warnSpy.mockRestore();
   });
 
@@ -2201,9 +2271,7 @@ describe('checkMainBehindStaging DB wiring (EI-10103: workspace_id NOT NULL)', (
   // computeMainBehindStaging's two git calls (rev-list --count, then log --format=%ct --reverse)
   // are the only ones made.
   function mockStalledGit() {
-    (vi.mocked(execFileSync) as unknown as { mockReturnValueOnce: (v: string) => { mockReturnValueOnce: (v: string) => void } })
-      .mockReturnValueOnce('30\n')
-      .mockReturnValueOnce(`${Math.floor((Date.now() - 2 * H) / 1000)}\n`);
+    mockGitStdout('30\n', `${Math.floor((Date.now() - 2 * H) / 1000)}\n`);
   }
 
   it('threads a resolved, non-null workspace_id into the escalation insert (previously always NULL)', async () => {
@@ -2267,7 +2335,7 @@ describe('checkMainBehindStaging DB wiring (EI-10103: workspace_id NOT NULL)', (
 
   it('does not insert at all when nothing is stalled (no regression to the happy path)', async () => {
     // in-sync (0 commits behind) — evaluateMainBehindStaging never alarms.
-    (vi.mocked(execFileSync) as unknown as { mockReturnValueOnce: (v: string) => void }).mockReturnValueOnce('0\n');
+    mockGitStdout('0\n');
     const { sql, calls } = makeFakeSql([]);
     const result = await checkMainBehindStaging(sql, { root: '/fake/repo', harnessSlug: 'papercusp' });
     expect(result.alarmed).toBe(false);
@@ -2287,16 +2355,14 @@ describe('checkMainBehindStaging gate-advance suppression wiring (EI-10202)', ()
     resolveWorkspaceForHarnessMock.mockReset();
     notifyAttentionMock.mockClear();
     broadcastSevereEventMock.mockClear();
-    vi.mocked(execFileSync).mockReset();
+    childProcessMocks.execFile.mockReset();
     warnSpy.mockRestore();
   });
 
   // git: 30 commits / 2h behind (over both DEFAULT thresholds) — the same stalled
   // git snapshot the EI-10103 suite uses.
   function mockStalledGit() {
-    (vi.mocked(execFileSync) as unknown as { mockReturnValueOnce: (v: string) => { mockReturnValueOnce: (v: string) => void } })
-      .mockReturnValueOnce('30\n')
-      .mockReturnValueOnce(`${Math.floor((Date.now() - 2 * H) / 1000)}\n`);
+    mockGitStdout('30\n', `${Math.floor((Date.now() - 2 * H) / 1000)}\n`);
   }
 
   /** A fake sql that ALSO answers the gate_health lastGreenAt read this path now
@@ -3462,6 +3528,30 @@ describe('evaluateStrandedRepairQueue (WI-10002439)', () => {
     expect(v.reason).not.toContain('STRANDED SHAPE');
   });
 
+  it('a lapsed claim lease with a live holder is not "none live" (WI-10005262)', () => {
+    // Measured 2026-10-02: holder su-3ee17ad9 live and driving a verify run, lease lapsed at
+    // 03:03Z, and the watchdog broadcast an URGENT "STRANDED — none live".
+    for (const holder of ['live', 'parked', 'recorded'] as const) {
+      const v = evaluateStrandedRepairQueue(
+        base({ fixerSpawnId: null, fixerAlive: null, gateOwnership: 'lease-expired', gateHolderSessionState: holder }),
+      );
+      expect(v.alarm).toBe(true);
+      expect(v.stranded).toBe(false);
+      expect(v.reason).toContain(`gate ownership lease-expired (holder ${holder})`);
+      expect(v.reason).not.toContain('STRANDED SHAPE');
+    }
+  });
+
+  it('a lapsed lease whose holder ended or is unmeasured still counts as absent', () => {
+    for (const holder of ['ended', null, undefined] as const) {
+      const v = evaluateStrandedRepairQueue(
+        base({ fixerSpawnId: null, fixerAlive: null, gateOwnership: 'lease-expired', gateHolderSessionState: holder }),
+      );
+      expect(v.stranded).toBe(true);
+      expect(v.reason).toContain('STRANDED SHAPE');
+    }
+  });
+
   it('a stalled but live owner is not absent; an ended owner is', () => {
     expect(evaluateStrandedRepairQueue(base({ gateOwnership: 'held-stalled' })).stranded).toBe(false);
     expect(evaluateStrandedRepairQueue(base({ gateOwnership: 'held-by-ended-session' })).stranded).toBe(true);
@@ -3502,5 +3592,46 @@ describe('evaluateStrandedRepairQueue (WI-10002439)', () => {
     const starter = src.slice(src.indexOf('export function startGreenStallWatchdog('));
     expect(starter.length).toBeGreaterThan(0);
     expect(starter).toMatch(/\n\s*void checkStrandedRepairQueue\(sql\);/);
+  });
+});
+
+describe('evaluateQuietLiveFixer advisory (EI-24932471671159980)', () => {
+  const tenMinutes = 10 * 60_000;
+  const base = (over: Partial<Parameters<typeof evaluateQuietLiveFixer>[0]> = {}) =>
+    evaluateQuietLiveFixer({
+      phase: 'awaiting-fixer',
+      fixerSpawnId: 'spawn-1',
+      fixerAlive: true,
+      lastOutputAtMs: 1_000,
+      nowMs: 1_000 + tenMinutes,
+      ...over,
+    });
+
+  it('nudges only after the shared 10-minute stream-silence threshold', () => {
+    expect(base()).toEqual({ state: 'silent', silentMs: tenMinutes });
+    expect(base({ nowMs: 1_000 + tenMinutes - 1 })).toEqual({
+      state: 'active',
+      silentMs: tenMinutes - 1,
+    });
+  });
+
+  it('missing output or uncertain liveness is unknown, never a stale-fixer verdict', () => {
+    expect(base({ lastOutputAtMs: null })).toEqual({ state: 'unknown', silentMs: null });
+    expect(base({ fixerAlive: null })).toEqual({ state: 'unknown', silentMs: null });
+  });
+
+  it('does not classify a changed phase, missing fixer, or dead fixer as a quiet live fixer', () => {
+    expect(base({ phase: 'ready-to-verify' }).state).toBe('not-applicable');
+    expect(base({ fixerSpawnId: null }).state).toBe('not-applicable');
+    expect(base({ fixerAlive: false }).state).toBe('not-applicable');
+  });
+
+  it('the production queue watchdog invokes the advisory classifier', async () => {
+    const { readFileSync } = await import('node:fs');
+    const subject = process.env.STRANDED_WIRING_SUBJECT ?? new URL('./green-stall-watchdog.ts', import.meta.url);
+    const src = readFileSync(subject, 'utf8');
+    const check = src.slice(src.indexOf('export async function checkStrandedRepairQueue('));
+    expect(check).toContain('evaluateQuietLiveFixer(');
+    expect(check).toContain('STRANDED_REPAIR_FIXER_SILENCE_PHASE');
   });
 });

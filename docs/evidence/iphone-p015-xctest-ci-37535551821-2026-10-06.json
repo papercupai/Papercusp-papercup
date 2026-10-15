@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "iPhone P-015 BYOC cloud-relay XCTest results from macOS CI run 37535551821 (iPhone release gate job 112515424352)",
+  "framework": "operational",
+  "command": [
+    "gh", "workflow", "run", "ci.yml", "--ref", "master"
+  ],
+  "commandNote": "Run 37535551821 was a workflow_dispatch on papercup-rust-mobile master (verified with gh run view). Its job 'iPhone release gate (iOS 26 SDK)' runs xcodebuild test for PapercupTests and PapercupUITests on an iOS simulator.",
+  "startedAt": "2026-10-06T21:40:44Z",
+  "finishedAt": "2026-10-06T21:48:31Z",
+  "exitCode": 0,
+  "summary": "GitHub Actions run 37535551821 at papercup-rust-mobile 093238a51c16ccd1d09657474d9ad1478e61a176: the iPhone job 112515424352 concluded success, and every XCTest case bound to the four BYOC-P-015 clauses passed. The run's overall conclusion is failure only because the separate Android job 112515424608 failed (Android lane, D-015); that job does not build or run the iOS app.",
+  "plan": "iphone-public-release-2026-08-11",
+  "planItem": "P-015",
+  "workItem": "WI-10006857",
+  "repo": {
+    "checkout": "papercup-rust-mobile",
+    "commit": "093238a51c16ccd1d09657474d9ad1478e61a176"
+  },
+  "rawLog": {
+    "source": "gh run view 37535551821 --job 112515424352 --log",
+    "localCopy": "/tmp/su-d34a-p015-ios-112515424352.log",
+    "lines": 3193,
+    "sha256": "c01d56bb536eb56029b4df61449466e42a043af7c7b011fb6e6490a3a5d06723"
+  },
+  "sourcePaths": [
+    "ios/Papercup/Sources/Papercup/ConnectionMonitor.swift",
+    "ios/Papercup/Sources/Papercup/FriendlyError.swift",
+    "ios/Papercup/Sources/Papercup/SettingsView.swift",
+    "ios/Papercup/Sources/Papercup/DiagnosticsView.swift"
+  ],
+  "testPaths": [
+    "ios/PapercupTests/ConnectionMonitorTests.swift",
+    "ios/PapercupTests/FriendlyErrorTests.swift",
+    "ios/PapercupTests/DesktopRouteTests.swift",
+    "ios/PapercupUITests/CloudWorkspaceOfflineUITests.swift"
+  ],
+  "clauseMap": {
+    "BYOC-P-015-offline-message@1": [
+      "PapercupTests.FriendlyErrorTests testCloudWorkspaceOfflineSaysTheCloudWorkspaceIsOffline",
+      "PapercupTests.ConnectionMonitorTests testCloudWorkspaceOfflineIsOfflineNotUnpairedAndNamesTheCloud",
+      "PapercupUITests.CloudWorkspaceOfflineUITests testCloudWorkspaceOfflineThenRecoversWithoutRepairing"
+    ],
+    "BYOC-P-015-offline-recovery@2": [
+      "PapercupTests.ConnectionMonitorTests testRelaySequenceWorkspaceOfflineThenBackReconnectsWithoutRepairing",
+      "PapercupUITests.CloudWorkspaceOfflineUITests testCloudWorkspaceOfflineThenRecoversWithoutRepairing"
+    ],
+    "BYOC-P-015-relay-label@1": [
+      "PapercupUITests.CloudWorkspaceOfflineUITests testCloudWorkspaceShowsRelayLabelInSettings"
+    ],
+    "BYOC-P-015-relay-route@2": [
+      "PapercupTests.DesktopRouteTests testRelayKindIsParsedTrimmedAndKeptInAdvertisedOrder",
+      "PapercupTests.FriendlyErrorTests testRelayRefusalCodeParsesOnlyTheRelayPrefix",
+      "PapercupTests.FriendlyErrorTests testRelayRefusalNamesTheCodeAndIsNeitherRetryNorRePair"
+    ]
+  },
+  "assertions": [
+    {
+      "id": "ci-iphone-job-success",
+      "passed": true,
+      "evidence": "Job 112515424352 'iPhone release gate (iOS 26 SDK)' conclusion success. Every 'Executed N tests' summary line in the raw log reports 0 failures (0 unexpected)."
+    },
+    {
+      "id": "PapercupTests.FriendlyErrorTests testCloudWorkspaceOfflineSaysTheCloudWorkspaceIsOffline",
+      "passed": true,
+      "evidence": "Test Case '-[PapercupTests.FriendlyErrorTests testCloudWorkspaceOfflineSaysTheCloudWorkspaceIsOffline]' passed (0.001 seconds)"
+    },
+    {
+      "id": "PapercupTests.ConnectionMonitorTests testCloudWorkspaceOfflineIsOfflineNotUnpairedAndNamesTheCloud",
+      "passed": true,
+      "evidence": "Test Case '-[PapercupTests.ConnectionMonitorTests testCloudWorkspaceOfflineIsOfflineNotUnpairedAndNamesTheCloud]' passed (0.001 seconds)"
+    },
+    {
+      "id": "PapercupTests.ConnectionMonitorTests testRelaySequenceWorkspaceOfflineThenBackReconnectsWithoutRepairing",
+      "passed": true,
+      "evidence": "Test Case '-[PapercupTests.ConnectionMonitorTests testRelaySequenceWorkspaceOfflineThenBackReconnectsWithoutRepairing]' passed (0.001 seconds)"
+    },
+    {
+      "id": "PapercupTests.DesktopRouteTests testRelayKindIsParsedTrimmedAndKeptInAdvertisedOrder",
+      "passed": true,
+      "evidence": "Test Case '-[PapercupTests.DesktopRouteTests testRelayKindIsParsedTrimmedAndKeptInAdvertisedOrder]' passed (0.001 seconds)"
+    },
+    {
+      "id": "PapercupTests.FriendlyErrorTests testRelayRefusalCodeParsesOnlyTheRelayPrefix",
+      "passed": true,
+      "evidence": "Test Case '-[PapercupTests.FriendlyErrorTests testRelayRefusalCodeParsesOnlyTheRelayPrefix]' passed (0.001 seconds)"
+    },
+    {
+      "id": "PapercupTests.FriendlyErrorTests testRelayRefusalNamesTheCodeAndIsNeitherRetryNorRePair",
+      "passed": true,
+      "evidence": "Test Case '-[PapercupTests.FriendlyErrorTests testRelayRefusalNamesTheCodeAndIsNeitherRetryNorRePair]' passed (0.001 seconds)"
+    },
+    {
+      "id": "PapercupUITests.CloudWorkspaceOfflineUITests testCloudWorkspaceOfflineThenRecoversWithoutRepairing",
+      "passed": true,
+      "evidence": "Test Case '-[PapercupUITests.CloudWorkspaceOfflineUITests testCloudWorkspaceOfflineThenRecoversWithoutRepairing]' passed (9.624 seconds)"
+    },
+    {
+      "id": "PapercupUITests.CloudWorkspaceOfflineUITests testCloudWorkspaceShowsRelayLabelInSettings",
+      "passed": true,
+      "evidence": "Test Case '-[PapercupUITests.CloudWorkspaceOfflineUITests testCloudWorkspaceShowsRelayLabelInSettings]' passed (9.153 seconds)"
+    }
+  ],
+  "scopeLimit": "Pass results only. Falsifiability (mutants caught) for these clauses is not established by this record. XCTest runs only on macOS, so mutants need a macOS CI run or the local Mac VM. The unit-layer Rust relay client tests for BYOC-P-015-relay-route are recorded separately."
+}

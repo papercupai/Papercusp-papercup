@@ -1,20 +1,30 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as recorder from '../degradation/fallback-observations';
+
+beforeEach(() => { vi.spyOn(recorder, 'observeFallback').mockReturnValue(true); });
+afterEach(() => { vi.restoreAllMocks(); });
 import { execFileSync } from 'node:child_process';
 import {
   evaluatePrimaryCount,
   countBackgroundPrimaries,
+  assertPgReadAllStatsCapabilityAtBoot,
+  PG_READ_ALL_STATS_CAPABILITY_SUBJECT,
   lastRoutineFireAgeSec,
   routinesDemonstrablyFiring,
   d026QuiescenceIsActive,
   readD026QuiescenceEvidence,
+  readD026QuiescenceEvidenceAsync,
   defaultIsCutQuiescing,
+  defaultIsCutQuiescingAsync,
   readBackgroundPrimaryLoadState,
+  readBackgroundPrimaryLoadStateAsync,
   D026_RESTORE_UNIT,
   runSinglePrimaryCheck,
   openSinglePrimaryConditions,
   _resetSinglePrimaryDebounce,
 } from './single-primary-check';
-import { readCutStatus } from '../release-cut-launch';
+import { readCutStatus, readCutStatusAsync } from '../release-cut-launch';
+import type { EscalationRecord } from '../agent-tools/coordination/escalations';
 
 // EI-20517156511202200 fixture: `systemctl --user is-active` for the CUT unit. Node's
 // execFileSync throws on a non-zero exit but still captures stdout on the thrown error —
@@ -25,11 +35,28 @@ import { readCutStatus } from '../release-cut-launch';
 // `vi.mock('node:child_process', () => ({ execFileSync: vi.fn() }))` nukes every other
 // export (spawn/execFile/fork/...) for the whole file's transitive import graph, which can
 // crash an unrelated module at import time (see check-no-eager-execfile-promisify.mjs).
-const childProcessMocks = vi.hoisted(() => ({ execFileSync: vi.fn() }));
+const childProcessMocks = vi.hoisted(() => ({
+  execFileSync: vi.fn(),
+}));
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return { ...actual, execFileSync: childProcessMocks.execFileSync };
 });
+const sidecarMocks = vi.hoisted(() => ({ execFileViaSidecar: vi.fn() }));
+vi.mock('../fleet/git-via-sidecar', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../fleet/git-via-sidecar')>();
+  return { ...actual, execFileViaSidecar: sidecarMocks.execFileViaSidecar };
+});
+
+/** Answer `systemctl --user is-active <unit>` per unit, the way real systemctl does. */
+function mockAsyncIsActive(stateFor: (unit: string) => string): void {
+  sidecarMocks.execFileViaSidecar.mockImplementation(async (_cmd: string, args: string[]) => {
+    const unit = args[2] ?? '';
+    const state = stateFor(unit);
+    if (state !== 'active') throw Object.assign(new Error('Command failed'), { stdout: `${state}\n` });
+    return { stdout: `${state}\n`, stderr: '', code: 0 };
+  });
+}
 
 function mockIsActiveOutput(state: 'active' | 'activating' | 'deactivating' | 'inactive' | 'failed'): void {
   childProcessMocks.execFileSync.mockImplementation(() => {
@@ -242,6 +269,77 @@ describe('readBackgroundPrimaryLoadState', () => {
   it('returns unknown when the unit state is empty', () => {
     vi.mocked(execFileSync).mockReturnValue('');
     expect(readBackgroundPrimaryLoadState('papercusp-bg-host.service')).toBeNull();
+  });
+});
+
+// jev-memory-timeouts-to-zero-2026-10-01: the sync readers above wait on systemctl
+// with execFileSync, freezing the caller's event loop 107-237 ms per read. The
+// liveness alarm and the single-primary timer now use these async twins.
+describe('D-026 evidence without blocking the event loop', () => {
+  beforeEach(() => {
+    vi.mocked(execFileSync).mockReset();
+    sidecarMocks.execFileViaSidecar.mockReset().mockRejectedValue(new Error('Unexpected systemctl probe'));
+  });
+  afterEach(() => sidecarMocks.execFileViaSidecar.mockReset());
+
+  it('probes the cut unit and the restore unit, same as the sync reader', async () => {
+    const calls: string[] = [];
+    const evidence = await readD026QuiescenceEvidenceAsync({
+      isUnitActiveAsync: async (unit) => {
+        calls.push(unit);
+        return unit === D026_RESTORE_UNIT;
+      },
+      isCutActiveAsync: async (unit) => {
+        calls.push(unit);
+        return unit === 'papercup-release-cut';
+      },
+      // Hermetic, as in the sync case: no cut-started marker on disk.
+      readCutStatusAsync: (d) => readCutStatusAsync({ ...d, existsSync: () => false }),
+    });
+    expect(evidence).toEqual({ cutActive: true, restoreActive: true });
+    expect(calls).toEqual(['papercup-release-cut', D026_RESTORE_UNIT]);
+  });
+
+  it('keeps the deactivating rule: a stopping cut still quiesces, a stopping restore does not', async () => {
+    mockAsyncIsActive((unit) => (unit === D026_RESTORE_UNIT ? 'active' : 'deactivating'));
+    expect(await defaultIsCutQuiescingAsync('papercup-release-cut')).toBe(true);
+    const evidence = await readD026QuiescenceEvidenceAsync({
+      readCutStatusAsync: (d) => readCutStatusAsync({ ...d, existsSync: () => false }),
+    });
+    expect(evidence).toEqual({ cutActive: true, restoreActive: true });
+
+    mockAsyncIsActive((unit) => (unit === D026_RESTORE_UNIT ? 'deactivating' : 'inactive'));
+    expect(await defaultIsCutQuiescingAsync('papercup-release-cut')).toBe(false);
+    expect(
+      await readD026QuiescenceEvidenceAsync({
+        readCutStatusAsync: (d) => readCutStatusAsync({ ...d, existsSync: () => false }),
+      }),
+    ).toEqual({ cutActive: false, restoreActive: false });
+  });
+
+  it('lets the event loop run while systemctl has not answered', async () => {
+    const pending: Array<(value: { stdout: string; stderr: string; code: number }) => void> = [];
+    sidecarMocks.execFileViaSidecar.mockImplementation(() => new Promise((resolve) => pending.push(resolve)));
+    const read = readD026QuiescenceEvidenceAsync({
+      readCutStatusAsync: (d) => readCutStatusAsync({ ...d, existsSync: () => false }),
+    });
+    let ticked = false;
+    await new Promise<void>((resolve) => setTimeout(() => { ticked = true; resolve(); }, 0));
+    expect(ticked).toBe(true);
+    expect(pending).toHaveLength(2);
+    for (const resolve of pending) resolve({ stdout: 'active\n', stderr: '', code: 0 });
+    expect(await read).toEqual({ cutActive: true, restoreActive: true });
+    expect(execFileSync).not.toHaveBeenCalled();
+  });
+
+  it('reads the background unit LoadState, and null when systemctl fails', async () => {
+    sidecarMocks.execFileViaSidecar.mockImplementationOnce(async (_cmd: string, args: string[]) => {
+      expect(args).toEqual(['--user', 'show', 'papercusp-bg-host.service', '-p', 'LoadState', '--value']);
+      return { stdout: 'masked\n', stderr: '', code: 0 };
+    });
+    expect(await readBackgroundPrimaryLoadStateAsync('papercusp-bg-host.service')).toBe('masked');
+    sidecarMocks.execFileViaSidecar.mockRejectedValueOnce(new Error('no bus'));
+    expect(await readBackgroundPrimaryLoadStateAsync('papercusp-bg-host.service')).toBeNull();
   });
 });
 
@@ -509,6 +607,96 @@ describe('evaluatePrimaryCount — unread count (WI-7291)', () => {
     });
     expect(verdict.key).toBe('no-primary');
     expect(verdict.countObserved).not.toBe(false);
+  });
+});
+
+describe('assertPgReadAllStatsCapabilityAtBoot (EI-19447868110362941)', () => {
+  it('opens one actionable blocker when the host role lacks stats visibility', async () => {
+    const sql = vi.fn(async (_query: TemplateStringsArray) => [
+      { role_name: 'harness_admin', can_read_all_stats: false },
+    ]);
+    const openEscalation = vi.fn(async (_input: unknown) => ({ msg_id: 'stats-missing', repeatCount: 1 }));
+    const notifyAttention = vi.fn(async (_input: unknown) => undefined);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await expect(
+        assertPgReadAllStatsCapabilityAtBoot({
+          sql: sql as never,
+          openEscalation: openEscalation as never,
+          notifyAttention: notifyAttention as never,
+        }),
+      ).resolves.toBe('missing');
+
+      expect(sql).toHaveBeenCalledTimes(1);
+      const query = sql.mock.calls[0]?.[0].join(' ') ?? '';
+      expect(query).toContain("pg_has_role(current_user, 'pg_read_all_stats', 'member')");
+      expect(query).toContain('pg_roles');
+      expect(openEscalation).toHaveBeenCalledTimes(1);
+      expect(openEscalation.mock.calls[0]?.[0]).toMatchObject({
+        severity: 'blocker',
+        meta: { subjectSignature: PG_READ_ALL_STATS_CAPABILITY_SUBJECT },
+      });
+      expect(notifyAttention).toHaveBeenCalledTimes(1);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it('does not send another urgent page while the same blocker is already open', async () => {
+    const sql = vi.fn(async (_query: TemplateStringsArray) => [
+      { role_name: 'harness_admin', can_read_all_stats: false },
+    ]);
+    const openEscalation = vi.fn(async (_input: unknown) => ({ msg_id: 'stats-missing', repeatCount: 2 }));
+    const notifyAttention = vi.fn(async (_input: unknown) => undefined);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await expect(
+        assertPgReadAllStatsCapabilityAtBoot({
+          sql: sql as never,
+          openEscalation: openEscalation as never,
+          notifyAttention: notifyAttention as never,
+        }),
+      ).resolves.toBe('missing');
+
+      expect(openEscalation).toHaveBeenCalledTimes(1);
+      expect(notifyAttention).not.toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it('resolves the prior blocker once a later boot confirms the role capability', async () => {
+    const sql = vi.fn(async (_query: TemplateStringsArray) => [
+      { role_name: 'harness_admin', can_read_all_stats: true },
+    ]);
+    const listOpenEscalations = vi.fn(async (_subject: string) => [{
+      ts: '2026-10-10T10:00:00.000Z',
+      msg_id: 'stats-missing',
+      from: 'system-health',
+      to: ['human'],
+      kind: 'escalation',
+      severity: 'blocker',
+      summary: 'stats visibility missing',
+      resolved: null,
+    } satisfies EscalationRecord]);
+    const resolveEscalation = vi.fn(async (_msgId: string, _note: string) => ({ kind: 'resolved' }));
+
+    await expect(
+      assertPgReadAllStatsCapabilityAtBoot({
+        sql: sql as never,
+        listOpenEscalations,
+        resolveEscalation,
+      }),
+    ).resolves.toBe('available');
+
+    expect(sql).toHaveBeenCalledTimes(1);
+    expect(listOpenEscalations).toHaveBeenCalledWith(PG_READ_ALL_STATS_CAPABILITY_SUBJECT);
+    expect(resolveEscalation).toHaveBeenCalledWith(
+      'stats-missing',
+      'Boot assertion confirms current_user can read pg_stat_activity across roles.',
+    );
   });
 });
 

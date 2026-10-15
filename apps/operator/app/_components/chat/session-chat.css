@@ -7,18 +7,6 @@
   line-height: 1.5;
   overflow: hidden;
 }
-/* The shared PapercupChat sheet carries light-host fallbacks. This host is
-   dark, so bind both bubble fills and foregrounds explicitly. */
-.session-chat .op-chat-shared {
-  --pc-chat-surface: var(--bg);
-  --pc-chat-fg: var(--fg);
-  --pc-chat-fg-mute: var(--fg-mute);
-  --pc-chat-border: var(--border);
-  --pc-chat-bubble-assistant: var(--bg-2);
-  --pc-chat-bubble-assistant-fg: var(--fg);
-  --pc-chat-bubble-user: var(--bg-popover, var(--bg));
-  --pc-chat-bubble-user-fg: var(--fg);
-}
 .session-chat .oracle-body {
   flex: 1 1 auto;
   min-height: 0;

@@ -24,7 +24,7 @@
  */
 import { readlinkSync, statSync } from 'node:fs';
 
-import { registerSystemAction, type SystemActionCtx } from './system-actions';
+import { createSubPassHealth, registerSystemAction, type SystemActionCtx } from './system-actions';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { REPO_ROOT } from '../../agent-tools/docs/_repo-paths';
@@ -32,6 +32,8 @@ import { isTaskManagerEnabled } from '../../task-manager/enabled';
 import { reconcileTick } from '../../task-manager/reconcile-tick';
 import { defaultForeignSignature } from '../../task-manager/scan';
 import { gcTerminalTasks, listLiveTasks, listTasks, markStranded, residueTaskId } from '../../task-manager/store';
+import { archiveReapTail } from '../../task-manager/reap-archive';
+import { sidecarOrphanForPass } from '../../task-manager/sidecar-orphan-probe';
 import {
   consultAnswerFacts,
   consultSettlement,
@@ -168,6 +170,14 @@ let lastReaperAtMs: number | null = null;
  */
 const FAILED_UNIT_SWEEP_INTERVAL_MS = 5 * 60_000;
 let lastFailedUnitSweepAtMs: number | null = null;
+/**
+ * WI-10005164: the fail-soft sub-passes below catch their own errors so the
+ * kernel reconcile always runs. This tracker returns any still-failing one as
+ * the routine's `softError` (its `last_error`) on every tick until that
+ * sub-pass next succeeds. The lifecycle sweep threw 42703 on every hourly pass
+ * for a day while this routine read healthy (WI-10005157).
+ */
+const subPassHealth = createSubPassHealth();
 let failedUnitSweepCursor = 0;
 
 /** Re-notify throttle for the enforcement alarm (P-006). Shorter than the
@@ -217,10 +227,12 @@ registerSystemAction('task-reconcile', async (ctx: SystemActionCtx) => {
         if (collected.errors > 0 || collected.refused > 0 || collected.resetFailed > 0) console.warn(summary);
         else console.info(summary);
       }
+      subPassHealth.record('failed-task-unit-collector', null);
     } catch (err) {
       // This maintenance pass may preserve a failed unit for the next attempt;
       // it must never suppress the kernel/ledger reconcile that carries it.
       console.warn('[failed-task-unit-collector] sweep failed', err);
+      subPassHealth.record('failed-task-unit-collector', err);
     }
   }
 
@@ -261,9 +273,11 @@ registerSystemAction('task-reconcile', async (ctx: SystemActionCtx) => {
             `${outcome.detail ? ` — ${outcome.detail}` : ''}`,
         );
       }
+      subPassHealth.record('task-lifecycle', null);
     } catch (err) {
       // This judgement layer must never break the kernel reconcile/reaper pass.
       console.warn('[task-lifecycle] sweep failed', err);
+      subPassHealth.record('task-lifecycle', err);
     }
   }
 
@@ -311,11 +325,15 @@ registerSystemAction('task-reconcile', async (ctx: SystemActionCtx) => {
     // never reach an agent session, a fleet member, or the owner's desktop.
     try {
       sweepHost((io) => sweepA11yBuses(io));
+      subPassHealth.record('a11y-bus-sweep', null);
     } catch (err) {
       // A sweep failure must never fail the reconcile tick that carries it.
       console.warn('[a11y-bus-sweep] sweep failed', err);
+      subPassHealth.record('a11y-bus-sweep', err);
     }
   }
+
+  return subPassHealth.result();
 });
 
 /**
@@ -641,7 +659,11 @@ async function reapAgentSessionResidue(
     if (!on) return;
 
     const workspaceId = ctx.workspaceId ?? undefined;
-    const live = (await listLiveTasks(workspaceId)).filter((r) => r.class === 'agent-session');
+    const liveAll = await listLiveTasks(workspaceId);
+    const live = liveAll.filter((r) => r.class === 'agent-session');
+    // WI-6554700010011963: live sidecars are judged only by the orphaned-sidecar
+    // class (declared parent gone), never by the agent-session classes.
+    const liveSidecars = liveAll.filter((r) => r.class === 'sidecar');
     const dayAgoMs = Date.now() - 24 * 3600_000;
     const terminal = (
       await listTasks({
@@ -666,8 +688,8 @@ async function reapAgentSessionResidue(
       logPath: fileBackedStdoutLogPath(candidate.pids),
     }));
 
-    const scopePidCountForUnit = (scopeUnit: string): number | null => {
-      const abs = absCgroupDir(scopeCgroupRelPath(userManagerRoot, 'agent-session', scopeUnit));
+    const scopePidCountForUnit = (scopeUnit: string, taskClass: TaskRow['class'] = 'agent-session'): number | null => {
+      const abs = absCgroupDir(scopeCgroupRelPath(userManagerRoot, taskClass, scopeUnit));
       if (!nodeCgroupFs.isDir(abs)) return 0; // scope absent — a real zero
       return walkCgroupTree(abs, nodeCgroupFs).reduce((s, g) => s + g.pids.length, 0);
     };
@@ -693,7 +715,7 @@ async function reapAgentSessionResidue(
     const consultStates = await readConsultStatesForReaper(live);
 
     const verdict = decideReaps({
-      rows: [...live, ...terminal],
+      rows: [...live, ...terminal, ...liveSidecars],
       managedResidue,
       census:
         freshOwners === null
@@ -706,9 +728,10 @@ async function reapAgentSessionResidue(
         // service), which is what made an earlier pass count the operator's
         // processes as survivors.
         if (!row.scopeUnit) return null;
-        return scopePidCountForUnit(row.scopeUnit);
+        return scopePidCountForUnit(row.scopeUnit, row.class);
       },
-      scopePidCountForScope: scopePidCountForUnit,
+      scopePidCountForScope: (scopeUnit) => scopePidCountForUnit(scopeUnit),
+      sidecarOrphanFor: sidecarOrphanForPass(liveSidecars, Date.now()),
       // A no-row scope whose spawner is still alive belongs to that spawner, which
       // is how an isolated store's operator looks from here (readScopeHolder).
       scopeHolderForScope: (scopeUnit) => {
@@ -865,23 +888,7 @@ function nodeReapEffects(): ReapEffects {
   return {
     async archiveTail(d: ReapDecision): Promise<string | null> {
       if (!d.logPath) return null;
-      const { mkdir, open, writeFile } = await import('node:fs/promises');
-      const { homedir } = await import('node:os');
-      const { join } = await import('node:path');
-      const dir = join(homedir(), '.papercusp', 'reap-archive', new Date().toISOString().slice(0, 10));
-      await mkdir(dir, { recursive: true });
-      const dest = join(dir, `${d.taskId}.tail.log`);
-      const fh = await open(d.logPath, 'r');
-      try {
-        const { size } = await fh.stat();
-        const len = Math.min(size, 128 * 1024);
-        const buf = Buffer.alloc(len);
-        await fh.read(buf, 0, len, size - len);
-        await writeFile(dest, buf);
-      } finally {
-        await fh.close();
-      }
-      return dest;
+      return archiveReapTail(d.taskId, d.logPath);
     },
     async stopUnit(scopeUnit: string): Promise<boolean> {
       const { execFile } = await import('node:child_process');

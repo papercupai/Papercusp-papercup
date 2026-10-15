@@ -28,7 +28,10 @@ describe('SU harness reader scope guidance', () => {
       expect(genericTools).not.toContain('harness:get');
       expect(genericTools).not.toContain('harness:status');
       expect(prompt).toMatch(
-        /Important exception:\s+`harness:get` and `harness:status` take their own `slug`\/`slugs` arguments;\s+do\s+\*\*not\*\* add a top-level `harness` field/,
+        /Important exception:\s+`harness:get` takes its own `slug` and `harness:status` takes `slug`\/`slugs`;\s+do\s+\*\*not\*\* add a top-level `harness` field/,
+      );
+      expect(prompt).toMatch(
+        /Both accept an optional `workspace` argument for unscoped superuser calls that need a workspace transaction/,
       );
     });
   }

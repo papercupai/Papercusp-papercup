@@ -1,0 +1,149 @@
+{
+  "schemaVersion": 1,
+  "plan": "public-manual-expansion-and-freshness-2026-10-03",
+  "workItem": "WI-10005823",
+  "date": "2026-10-03",
+  "implementationRoute": "self",
+  "newGuides": [
+    "quickstart",
+    "plans-and-work",
+    "agent-modes-and-fleets",
+    "accounts-and-billing",
+    "voice"
+  ],
+  "manual": {
+    "sourceRoot": "apps/papercusp-docs/src/content/docs",
+    "articles": 14,
+    "existingArticlesReviewedAndAnchored": 9,
+    "navigation": "apps/papercusp-docs/astro.config.mjs",
+    "publicationGuard": "apps/papercusp-docs/scripts/source-contract.mjs",
+    "guardRejects": [
+      "missing required guides",
+      "missing sidebar destinations",
+      "missing, dead or escaping source anchors",
+      "broken article links",
+      "links into private engineering documentation"
+    ],
+    "tracking": "The existing .papercusp/docs.json root remains engineering documentation; public-manual is an additional contained file-authoritative source, not copied prose.",
+    "baselineReceipt": "harness_docs:anchor returned 14 anchored/fresh results and 0 failures for public-manual/*.mdx.",
+    "sourceTruthScope": "Guides describe supported source-backed actions and make availability, permission and shipment distinctions explicit; no fixed provider prices, quotas or installer commands are promised."
+  },
+  "verification": [
+    {
+      "kind": "unit",
+      "files": ["apps/operator/lib/public-docs-readiness.test.ts"],
+      "result": "33 passed",
+      "rawLog": "/tmp/public-manual-source-tests.log"
+    },
+    {
+      "kind": "unit",
+      "files": [
+        "packages/operator-core/lib/harness/docs/doc-fs.test.ts",
+        "packages/operator-core/lib/harness/docs/harness-repo.test.ts",
+        "packages/operator-core/lib/endpoint-route/__tests__/project-docs.test.ts",
+        "packages/operator-core/lib/harness/docs/public-manual-drift.test.ts",
+        "packages/operator-core/lib/harness/docs/manual-anchor.test.ts",
+        "packages/operator-core/lib/harness/docs/merged-read.test.ts",
+        "packages/operator-core/lib/harness/docs/doc-steward-dispatch.test.ts",
+        "packages/operator-core/lib/harness/docs/sweep-after-sync.test.ts"
+      ],
+      "result": "59 passed",
+      "rawLog": "/tmp/public-manual-core-tests.log"
+    },
+    {
+      "kind": "isolated-current-build-integration",
+      "file": "packages/operator-core/lib/harness/docs/harness-docs-e2e.integration.test.ts",
+      "result": "13 passed",
+      "command": "node scripts/with-test-pg.mjs --isolated-runtime -- node_modules/.bin/vitest run --config packages/operator-core/vitest.integration.config.ts packages/operator-core/lib/harness/docs/harness-docs-e2e.integration.test.ts",
+      "proves": [
+        "actual namespaced file body is read without a second canonical PG body",
+        "PG content remains the writer's empty-string metadata-only sentinel",
+        "canonical authored/generated writes to the file-authoritative source are refused",
+        "a real source commit triggers public-page review through the existing post-sync sweep",
+        "steward routing receives the exact canonical sourceFile",
+        "verification establishes a fresh baseline"
+      ],
+      "rawLog": "/tmp/public-manual-pg-tests.log",
+      "durableExecutionArtifact": "docs/evidence/public-manual-pg-runtime-20261003.json"
+    },
+    {
+      "kind": "build",
+      "result": "Actual Astro/Starlight build passed, emitting 14 articles plus 404 and a rebuilt Pagefind index",
+      "output": "apps/papercusp-docs/.astro/public-manual-20261003",
+      "command": "npm exec --workspace @papercupai/papercusp-docs -- astro build --outDir .astro/public-manual-20261003",
+      "rawLog": "/tmp/public-manual-build.log"
+    },
+    {
+      "kind": "production-integration",
+      "file": "apps/operator/lib/public-docs-readiness.integration.test.ts",
+      "result": "9 passed",
+      "origin": "https://app.papercusp.com",
+      "proves": [
+        "new and existing guide HTML plus referenced public resources match exact built artifact bytes",
+        "anonymous GET and HEAD work",
+        "missing pages return 404",
+        "encoded traversal and private documentation requests are rejected"
+      ],
+      "requestConcurrency": 4,
+      "perRequestDeadlineMs": 8000,
+      "rawLog": "/tmp/public-manual-production-http.log"
+    },
+    {
+      "kind": "production-browser",
+      "file": "apps/operator/e2e/public-manual.spec.ts",
+      "origin": "https://app.papercusp.com",
+      "result": "6 passed, 0 skipped",
+      "proves": [
+        "all five new guides are reached from navigation and survive reload",
+        "all five new guides are readable at mobile viewport width without overflow",
+        "a new guide is searchable through the actual Pagefind dialog"
+      ],
+      "rawReport": "/tmp/public-manual-new-guides-browser.json",
+      "durableExecutionArtifact": "docs/evidence/public-manual-browser-20261003.json"
+    },
+    {
+      "kind": "production-browser-predecessor-suite",
+      "file": "portal/e2e/portal-public-docs.spec.ts",
+      "result": "3 browser journeys passed; exhaustive serial HTTP scenario hit its total 30-second budget before finishing",
+      "disposition": "Not reported green; maintained canonical integration proof now tests the same HTTP/HEAD/private boundaries in bounded batches and passed on production",
+      "rawReport": "/tmp/public-manual-production-browser.json"
+    },
+    {
+      "kind": "typecheck",
+      "result": "Focused owning typecheck checked 9 named files plus type references/direct importers (38 total) with 0 errors",
+      "rawLog": "/tmp/public-manual-focused-typecheck.log",
+      "fullSharedCheck": "The full shared operator-core check had unrelated regressed files; evidence was handed once to the live gate owner, not silently ignored or described as green."
+    },
+    {
+      "kind": "managed-portal-build",
+      "result": "Full managed Next standalone build passed and staged an immutable candidate without promotion",
+      "release": "vv4uPwX7PYWpDFpiBk6WJ-20261003052945309-2616378-6b41a07a",
+      "rawLog": "/tmp/public-manual-portal-build.log"
+    }
+  ],
+  "publication": {
+    "status": "Expanded content observed on the actual cloud portal",
+    "observedServingRelease": "q3HYExTtQ9FxdkYWdXHUy-20261003052221901-2268715-f1547e68",
+    "mechanism": "Existing managed portal automatic build/publication",
+    "notPerformed": ["manual git commit/push", "force-deploy past the shared red gate", "edits to operator release/checkpoint worktrees"]
+  },
+  "remaining": [
+    {
+      "scope": "formal plan acceptance",
+      "evidence": "Spec-quality card EI-24934490382704840 is pass but requires a non-author grading-integrity audit",
+      "blocker": "The automatic fresh-judge launch failed because --account=auto had no allowed Claude account, and correctly refused a default-login fallback",
+      "safeNext": "Use the supported independent-auditor dispatcher with an available authorized backend; do not self-audit or bypass account policy"
+    },
+    {
+      "scope": "background freshness acceptance evidence",
+      "evidence": "dev:pipeline_position for doc-fs.ts at 2026-10-03T06:00Z measured bg-host build7b95e65226 containing the extension; saved realPG13 tests remain passing",
+      "safeNext": "Bind saved real-PG execution evidence and current runtime containment; do not compete with the live gate owner"
+    },
+    {
+      "scope": "automatic agent repair",
+      "evidence": "Existing papercusp-doc-steward flag resolved false",
+      "safeNext": "Do not claim automatic agent repair is enabled or turn on broad autonomous spawning without a scoped approved policy"
+    }
+  ],
+  "completionClaim": "Documentation expansion and production reader verification are complete; the overall plan is not yet formally shipped and background automation rollout remains explicit."
+}

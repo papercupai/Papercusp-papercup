@@ -41,7 +41,11 @@ export {
   getPrereg,
   type SuiteSummary,
 } from './store';
-export { exportRunBundle, type ExportResult } from './export';
+export { exportRunBundle, exportCampaignBundle, type ExportResult } from './export';
+export {
+  buildCampaignBundle, writeCampaignBundle, campaignEntryFromRollout, campaignEntriesFromFrontierSweResults, campaignDate,
+  type CampaignBundle, type CampaignEntry, type CampaignManifest, type LabelCorrectionInput,
+} from './campaign-bundle';
 export type { RolloutRecord, PreregRecord, EmitRolloutInput } from './schema';
 // L2 Hive layer (Phase 5 / D-010) — fleet runs + the MAST coordination trace.
 export {

@@ -32,6 +32,8 @@ export const CONTRACT_PATHS = Object.freeze({
   connection: 'libs/papercusp/libs/db/src/connection.ts',
   serializer: 'libs/papercusp/libs/db/src/raw-serializers.ts',
   orgTestFixture: 'packages/operator-core/test/_org-test-db.ts',
+  // A second hand-rolled postgres() fixture shared by ~50 plan-tool integration suites.
+  planToolFixture: 'packages/operator-core/lib/agent-tools/plans/__tests__/_pg-tool-fixture.ts',
 });
 
 function parse(fileName, source) {
@@ -305,6 +307,15 @@ export function inspectJsonbSerializerContract(sources) {
     );
   }
 
+  // Without it a pre-stringified `${JSON.stringify(v)}::jsonb` write is encoded TWICE
+  // and lands as a jsonb STRING, so plan-tool tests read a shape production never writes.
+  const planToolFixture = parse(CONTRACT_PATHS.planToolFixture, sources.planToolFixture);
+  if (!hasCall(planToolFixture, 'restoreRawJsonbSerializer', 'admin')) {
+    problems.push(
+      `${CONTRACT_PATHS.planToolFixture}: the raw postgres() admin client must call restoreRawJsonbSerializer(admin) so tests match production`,
+    );
+  }
+
   return problems;
 }
 
@@ -314,6 +325,10 @@ export function checkJsonbSerializerContract(root = ROOT) {
     serializer: readFileSync(resolve(root, CONTRACT_PATHS.serializer), 'utf8'),
     orgTestFixture: readFileSync(
       resolve(root, CONTRACT_PATHS.orgTestFixture),
+      'utf8',
+    ),
+    planToolFixture: readFileSync(
+      resolve(root, CONTRACT_PATHS.planToolFixture),
       'utf8',
     ),
   });

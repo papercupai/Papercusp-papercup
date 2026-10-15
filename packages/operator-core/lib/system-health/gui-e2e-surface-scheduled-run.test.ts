@@ -1,6 +1,14 @@
 import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { REPO_ROOT } from '../agent-tools/docs/_repo-paths';
 import {
+  GUI_E2E_SURFACE_SCHEDULED_SID,
+  RUN_TIMEOUT_MS,
+  guiE2eSurfaceSuiteEnv,
   runGuiE2eSurfaceScheduledRun,
   parseGuiE2eSurfaceSuiteOutput,
   type GuiE2eSurfaceScheduledRunIO,
@@ -63,6 +71,88 @@ describe('parseGuiE2eSurfaceSuiteOutput', () => {
   it('returns an empty array when nothing matches', () => {
     expect(parseGuiE2eSurfaceSuiteOutput('no leg lines here at all')).toEqual([]);
   });
+
+  it("parses the runner's own P000 line for a leg that died before printing one", () => {
+    expect(
+      parseGuiE2eSurfaceSuiteOutput('P000_TAURI_SURFACE_VERIFY_FAIL leg=login reason=verifier-exit rc=1 log=/tmp/x'),
+    ).toEqual([{ leg: 'login', ok: false }]);
+  });
+});
+
+describe('guiE2eSurfaceSuiteEnv (WI-10006730)', () => {
+  it('gives the scheduled suite an attributable PAPERCUSP_SID when the host has none', () => {
+    expect(guiE2eSurfaceSuiteEnv({ PATH: '/bin' })).toEqual({ PATH: '/bin', PAPERCUSP_SID: GUI_E2E_SURFACE_SCHEDULED_SID });
+    expect(guiE2eSurfaceSuiteEnv({ PAPERCUSP_SID: '  ' }).PAPERCUSP_SID).toBe(GUI_E2E_SURFACE_SCHEDULED_SID);
+  });
+
+  it("keeps a caller's own PAPERCUSP_SID", () => {
+    expect(guiE2eSurfaceSuiteEnv({ PAPERCUSP_SID: 'su-abc' }).PAPERCUSP_SID).toBe('su-abc');
+  });
+});
+
+/**
+ * Runs the REAL scripts/tauri-surface-verify-suite.sh against stub legs and a stub verifier
+ * (its TAURI_SURFACE_VERIFY_SUITE_LEGS / _VERIFIER seams), then parses its output with the
+ * producer's own parser. Guards the class WI-10006730 found: a leg whose verifier dies before the
+ * leg runs must still yield a parseable FAIL naming it, never "0 legs parsed".
+ */
+describe('tauri-surface-verify-suite.sh per-leg verdict contract', () => {
+  function runSuite(legs: Record<string, string | null>, verifier: string) {
+    const dir = mkdtempSync(join(tmpdir(), 'pcv-suite-test-'));
+    try {
+      const verifierPath = join(dir, 'verifier.sh');
+      writeFileSync(verifierPath, `#!/usr/bin/env bash\n${verifier}\n`);
+      chmodSync(verifierPath, 0o755);
+      const entries = Object.entries(legs).map(([leg, body]) => {
+        const script = join(dir, `${leg}.sh`);
+        if (body !== null) writeFileSync(script, `${body}\n`);
+        return `${leg}:0:${script}`;
+      });
+      const run = spawnSync('bash', [join(REPO_ROOT, 'scripts/tauri-surface-verify-suite.sh')], {
+        encoding: 'utf8',
+        env: {
+          PATH: process.env.PATH ?? '/usr/bin:/bin',
+          TAURI_SURFACE_VERIFY_SUITE_LEGS: entries.join(' '),
+          TAURI_SURFACE_VERIFY_SUITE_VERIFIER: verifierPath,
+          TAURI_SURFACE_VERIFY_SUITE_OUT: join(dir, 'out'),
+        },
+        timeout: 30_000,
+      });
+      return { status: run.status, legs: parseGuiE2eSurfaceSuiteOutput(`${run.stdout}\n${run.stderr}`) };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  // Runs the leg, then prints teardown noise so the leg's own verdict falls outside `tail -n 8`.
+  // The suite invokes `<verifier> -- bash <leg script>`.
+  const runLegThenTeardown = 'shift; "$@"; rc=$?; for i in $(seq 1 12); do echo "teardown $i"; done; exit $rc';
+
+  it('names every leg as failed when the verifier refuses before the leg runs', () => {
+    const r = runSuite(
+      { login: 'echo P007_TAURI_SURFACE_VERIFY_OK leg=login', gym: 'echo P004_TAURI_SURFACE_VERIFY_OK leg=gym' },
+      'echo "FATAL: PAPERCUSP_SID is unset" >&2; exit 1',
+    );
+    expect(r.status).toBe(1);
+    expect(r.legs).toEqual([{ leg: 'login', ok: false }, { leg: 'gym', ok: false }]);
+  });
+
+  it("re-emits a passing leg's own verdict even when teardown pushed it out of the tail", () => {
+    const r = runSuite({ login: 'echo P007_TAURI_SURFACE_VERIFY_OK leg=login output=/tmp/x' }, runLegThenTeardown);
+    expect(r.status).toBe(0);
+    expect(r.legs).toEqual([{ leg: 'login', ok: true }]);
+  });
+
+  it('fails a leg that exits 0 without printing a verdict, and a missing leg script', () => {
+    const r = runSuite({ quiet: 'echo done', ghost: null }, runLegThenTeardown);
+    expect(r.status).toBe(1);
+    expect(r.legs).toEqual([{ leg: 'quiet', ok: false }, { leg: 'ghost', ok: false }]);
+  });
+
+  it("keeps a leg's own FAIL verdict without adding a second line", () => {
+    const r = runSuite({ gym: 'echo P004_TAURI_SURFACE_VERIFY_FAIL leg=gym output=/tmp/y; exit 1' }, runLegThenTeardown);
+    expect(r.status).toBe(1);
+    expect(r.legs).toEqual([{ leg: 'gym', ok: false }]);
+  });
 });
 
 describe('runGuiE2eSurfaceScheduledRun', () => {
@@ -95,6 +185,9 @@ describe('runGuiE2eSurfaceScheduledRun', () => {
       [expect.stringContaining('tauri-surface-verify-suite.sh')],
       expect.objectContaining({ cwd: expect.any(String) }),
     );
+    // WI-10006730: without a PAPERCUSP_SID the verifier refuses every leg.
+    const spawnEnv = (spawnFn.mock.calls[0] as unknown as [string, string[], { env: NodeJS.ProcessEnv }])[2].env;
+    expect(spawnEnv.PAPERCUSP_SID).toBeTruthy();
   });
 
   it('resolves ran:true on a nonzero exit and ESCALATES naming the failing leg(s) — not a tick failure', async () => {
@@ -195,7 +288,7 @@ describe('runGuiE2eSurfaceScheduledRun', () => {
       const kill = vi.fn();
       (child as unknown as { kill: typeof kill }).kill = kill;
       const p = runGuiE2eSurfaceScheduledRun(fakeIo);
-      await vi.advanceTimersByTimeAsync(40 * 60 * 1000 + 1);
+      await vi.advanceTimersByTimeAsync(RUN_TIMEOUT_MS + 1);
       const r = await p;
       expect(r.ran).toBe(true);
       expect(r.timedOut).toBe(true);

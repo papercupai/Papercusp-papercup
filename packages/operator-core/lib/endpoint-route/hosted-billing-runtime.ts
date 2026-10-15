@@ -15,21 +15,39 @@
  *   PAPERCUSP_STRIPE_WEBHOOK_SECRET_REF       env:/file: ref to the endpoint's whsec_…
  *   PAPERCUSP_HOSTED_BILLING_PLANS            JSON [{ planKey, priceId, label, description? }]
  *   PAPERCUSP_STRIPE_PORTAL_CONFIGURATION_ID  optional bpc_… (API-created portal configuration)
+ *   PAPERCUSP_STRIPE_ACCOUNT_ID               optional acct_…; credentials must resolve to this account
+ *   PAPERCUSP_HOSTED_BILLING_RECEIPTS_WORKSPACE_ID
+ *                                             optional: the workspace whose reconciliation pass
+ *                                             records this Stripe account's payment receipts
+ *                                             (P-046). Unset = `/receipts` answers 503.
  *
- * stripe-subscription-signup-2026-10-01 P-005.
+ * stripe-subscription-signup-2026-10-01 P-005; receipts WI-10004802.
  */
+import { createHash } from 'node:crypto';
+import { withWorkspace } from '@papercusp/db-org';
 import { withHostedServiceContext } from '@papercusp/db-org/tenant-context';
+import type { Sql } from 'postgres';
 import { Hono } from 'hono';
+import type { RefusalContract } from '../capability-envelope/refusal-contract-types';
 import type { HostedPrincipalResolver } from '../auth/hosted-principal-resolver';
+import { isHostedPrincipal, type HostedPrincipal } from '../auth/hosted-principal';
+import type { OpenRouterRequestCapture, OpenRouterRequestContext } from '../agent-loop/model-port';
+import type { HostedBudgetRequest, PostgresHostedBudgetStore } from '../auth/hosted/billing/budget-store';
 import { PostgresHostedBillingStore, type HostedBillingStore } from '../auth/hosted/billing/billing-store';
+import type { HostedBillingFailureObserver } from '../auth/hosted/billing/billing-recovery';
+import { PostgresHostedUsageStore } from '../auth/hosted/billing/usage-store';
+import { createOpenRouterHostedUsageCollector } from '../auth/hosted/billing/openrouter-usage';
+import { createHostedUsageSource, type HostedBillingUsageSource, type HostedUsageCollector } from '../auth/hosted/billing/usage-service';
 import type { HostedSubscriptionEntitlementProvider } from '../auth/hosted/billing/entitlement-seam';
-import { createStripeBillingClient } from '../auth/hosted/billing/stripe-billing-client';
+import { createStripeBillingClient, STRIPE_API_BASE } from '../auth/hosted/billing/stripe-billing-client';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
-import { resolveSecretRef } from '../inference-gateway/egress-providers/secret-ref';
+import { customerPaymentReceipts } from '../cupboard/payment-receipt-store';
+import { assertPinnedGcpSecretReference, resolveSecretRef } from '../inference-gateway/egress-providers/secret-ref';
 import {
   HOSTED_BILLING_ROUTES,
   createHostedBillingRoutes,
   type HostedBillingPlan,
+  type HostedBillingReceiptSource,
   type HostedBillingRoute,
   type HostedBillingStripe,
 } from './routes/hosted-billing';
@@ -42,12 +60,44 @@ export interface HostedBillingRuntimeConfiguration {
   readonly publicOrigin: string;
   readonly stripeSecretKeyRef: string | null;
   readonly stripeWebhookSecretRef: string | null;
+  readonly requireManagedSecrets?: boolean;
   readonly plans: readonly HostedBillingPlan[];
   /** Explicit customer-portal configuration (`bpc_…`, not a secret); null = Stripe's dashboard default. */
   readonly stripePortalConfigurationId?: string | null;
+  /** Pin the credential's account identity, independently of its test/live mode. */
+  readonly stripeAccountId?: string | null;
+  /** Workspace whose ledger holds this Stripe account's payment receipts; null = receipts not served. */
+  readonly receiptsWorkspaceId?: string | null;
 }
 
 const PORTAL_CONFIGURATION_ID = /^bpc_[A-Za-z0-9]+$/;
+const ACCOUNT_ID = /^acct_[A-Za-z0-9]+$/;
+const WORKSPACE_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
+
+/** A malformed receipts workspace id is a configuration error, never silently ignored. */
+export function parseReceiptsWorkspaceId(raw: string | undefined): string | null {
+  const value = raw?.trim();
+  if (!value) return null;
+  if (!WORKSPACE_ID.test(value)) {
+    throw new TypeError('hosted_billing_configuration_invalid:PAPERCUSP_HOSTED_BILLING_RECEIPTS_WORKSPACE_ID');
+  }
+  return value;
+}
+
+/** Runs one read inside a workspace-scoped transaction (the receipt tables are workspace-RLS). */
+export type HostedBillingWorkspaceRunner = <T>(workspaceId: string, fn: (sql: Sql) => Promise<T>) => Promise<T>;
+
+/**
+ * The default receipts source: the given workspace's ledger, read under that
+ * workspace's RLS context. The route passes only the signed-in org's own
+ * customer id, so this can never list another customer's payments.
+ */
+export function workspaceReceiptSource(
+  workspaceId: string,
+  runWorkspace: HostedBillingWorkspaceRunner = (id, fn) => withWorkspace(id, fn),
+): HostedBillingReceiptSource {
+  return (stripeCustomerId) => runWorkspace(workspaceId, (sql) => customerPaymentReceipts(workspaceId, stripeCustomerId, { sql }));
+}
 
 /** A malformed portal configuration id is a configuration error, never silently ignored. */
 export function parseStripePortalConfigurationId(raw: string | undefined): string | null {
@@ -56,6 +106,13 @@ export function parseStripePortalConfigurationId(raw: string | undefined): strin
   if (!PORTAL_CONFIGURATION_ID.test(value)) {
     throw new TypeError('hosted_billing_configuration_invalid:PAPERCUSP_STRIPE_PORTAL_CONFIGURATION_ID');
   }
+  return value;
+}
+
+export function parseStripeAccountId(raw: string | undefined): string | null {
+  const value = raw?.trim();
+  if (!value) return null;
+  if (!ACCOUNT_ID.test(value)) throw new TypeError('hosted_billing_configuration_invalid:PAPERCUSP_STRIPE_ACCOUNT_ID');
   return value;
 }
 
@@ -95,16 +152,42 @@ export function readHostedBillingRuntimeConfiguration(
 ): HostedBillingRuntimeConfiguration {
   const publicOrigin = env.PAPERCUSP_HOSTED_PUBLIC_ORIGIN?.trim();
   if (!publicOrigin) throw new TypeError('hosted_billing_runtime_configuration_missing:PAPERCUSP_HOSTED_PUBLIC_ORIGIN');
+  const requireManagedSecrets = env.PAPERCUSP_DEPLOYMENT_ENVIRONMENT === 'production';
+  if (requireManagedSecrets) {
+    assertPinnedGcpSecretReference(env.PAPERCUSP_STRIPE_SECRET_KEY_REF ?? '');
+    assertPinnedGcpSecretReference(env.PAPERCUSP_STRIPE_WEBHOOK_SECRET_REF ?? '');
+  }
   return {
     publicOrigin,
     stripeSecretKeyRef: optionalRef(env.PAPERCUSP_STRIPE_SECRET_KEY_REF),
     stripeWebhookSecretRef: optionalRef(env.PAPERCUSP_STRIPE_WEBHOOK_SECRET_REF),
+    ...(requireManagedSecrets ? { requireManagedSecrets: true } : {}),
     plans: parseHostedBillingPlans(env.PAPERCUSP_HOSTED_BILLING_PLANS),
     stripePortalConfigurationId: parseStripePortalConfigurationId(env.PAPERCUSP_STRIPE_PORTAL_CONFIGURATION_ID),
+    stripeAccountId: parseStripeAccountId(env.PAPERCUSP_STRIPE_ACCOUNT_ID),
+    receiptsWorkspaceId: parseReceiptsWorkspaceId(env.PAPERCUSP_HOSTED_BILLING_RECEIPTS_WORKSPACE_ID),
   };
 }
 
+/** One fresh server-authorized request. The reader must verify current model,
+ * key ownership/privacy policy and a provider-enforced maximum independently
+ * of token estimates; the budget store verifies funding/liability separately.
+ * An opaque reference, local account label or this type is not that evidence. */
+export interface HostedOpenRouterAuthorization {
+  readonly request: HostedBudgetRequest;
+  readonly credentialRef: string;
+  readonly isByok: boolean;
+  readonly evidenceRef: string;
+}
+
+/** Private host reader, freshly authenticated on each request. A channel can
+ * use its existing connector resolver without forwarding a browser cookie or
+ * accepting a serialized principal as authority. */
+export type HostedOpenRouterPrincipalSource = Headers | (() => Promise<
+  { readonly ok: true; readonly principal: HostedPrincipal } | { readonly ok: false }>);
+
 export interface HostedBillingRuntimeDependencies {
+  readonly observeFailure?: HostedBillingFailureObserver;
   /** The hosted-auth runtime's resolver — billing never re-implements session authority. */
   readonly resolvePrincipal: HostedPrincipalResolver;
   readonly resolveSecret?: (reference: string) => Promise<string>;
@@ -118,6 +201,24 @@ export interface HostedBillingRuntimeDependencies {
    */
   readonly liveModeAllowed?: () => Promise<boolean>;
   readonly entitlementProvider?: HostedSubscriptionEntitlementProvider;
+  /** Overrides the configured receipts source (tests, or a composition with its own ledger access). */
+  readonly receipts?: HostedBillingReceiptSource;
+  /** Trusted server source overrides and collectors; no request can install a collector. */
+  readonly usage?: HostedBillingUsageSource;
+  readonly usageStore?: Pick<PostgresHostedUsageStore, 'append' | 'readRecords' | 'readOpenRouterBindings'>
+    & Partial<Pick<PostgresHostedUsageStore, 'createOpenRouterRequestCapture'>>;
+  /** Optional authenticated native-host composition. No reader = no admission.
+   * Every stream (including retries/compaction) needs fresh authorization and
+   * a distinct reservation. Inject bounded readers; no production default. */
+  readonly openRouterAdmission?: {
+    readonly budget: Pick<PostgresHostedBudgetStore, 'executeOnce'>;
+    readonly authorize: (input: Readonly<{ principal: HostedPrincipal;
+      context: Readonly<OpenRouterRequestContext> }>) => Promise<HostedOpenRouterAuthorization | null>;
+    readonly now: () => number;
+  };
+  readonly usageCollectors?: readonly HostedUsageCollector[];
+  /** Workspace-scoped transaction runner for the default receipts source. */
+  readonly runWorkspace?: HostedBillingWorkspaceRunner;
   readonly clock?: () => Date;
 }
 
@@ -126,21 +227,115 @@ export interface HostedBillingRuntime {
   readonly mounted: readonly HostedBillingRoute[];
   readonly configured: boolean;
   readonly unavailableReason: string | null;
+  /** Private router seam. Reuses the hosted session resolver per request;
+   * never promotes a local loop principal/ownerId into customer authority. */
+  readonly openRouterRequestCapture: (source: HostedOpenRouterPrincipalSource, signal?: AbortSignal) =>
+    (context: Readonly<OpenRouterRequestContext>) => OpenRouterRequestCapture;
 }
 
-async function resolveStripe(
-  configuration: HostedBillingRuntimeConfiguration,
+function hostedOpenRouterCapture(
   dependencies: HostedBillingRuntimeDependencies,
+  store: NonNullable<HostedBillingRuntimeDependencies['usageStore']>,
+): HostedBillingRuntime['openRouterRequestCapture'] {
+  const resolvePrincipal = dependencies.resolvePrincipal;
+  const resolveSecret = dependencies.resolveSecret ?? resolveSecretRef;
+  const authorize = dependencies.openRouterAdmission?.authorize;
+  const now = dependencies.openRouterAdmission?.now;
+  const sourceBudget = dependencies.openRouterAdmission?.budget;
+  const budget = sourceBudget ? { executeOnce: sourceBudget.executeOnce.bind(sourceBudget) } : undefined;
+  const createCapture = store.createOpenRouterRequestCapture?.bind(store);
+  return (source, signal) => {
+    const sessionHeaders = typeof source === 'function' ? undefined : new Headers(source);
+    const readPrincipal = typeof source === 'function' ? source
+      : () => resolvePrincipal(new Headers(sessionHeaders));
+    return selected => {
+      const context = Object.freeze({ modelId: selected.modelId, servedAccount: selected.servedAccount,
+        credentialSha256: selected.credentialSha256 });
+      let capture: OpenRouterRequestCapture | undefined;
+      let revalidate: (() => Promise<void>) | undefined;
+      let running = false;
+      let failed = false;
+      return async observation => {
+        if (running || failed) { failed = true; throw new Error('Hosted OpenRouter capture is not resumable'); }
+        running = true;
+        try {
+          if (signal?.aborted) throw new Error('aborted');
+          const admitting = !capture;
+          if (!capture) {
+            if (!authorize || !now || !budget || !createCapture
+              || observation.provider !== 'openrouter' || observation.modelId !== context.modelId
+              || observation.response || observation.identityUncertain
+              || !/^[a-f0-9]{64}$/.test(context.credentialSha256)) throw new Error('admission unavailable');
+            const resolution = await readPrincipal();
+            if (!resolution.ok || !isHostedPrincipal(resolution.principal)
+              || !resolution.principal.permissions.has('workspace:operate')
+              || !resolution.principal.selectedWorkspaceId || signal?.aborted || failed) throw new Error('tenant denied');
+            const principal = resolution.principal;
+            // Derive scope before calling any other reader. Its result cannot
+            // substitute another tenant even if it mutates its input principal.
+            const scope = Object.freeze({ controlWorkspaceId: principal.workspaceId,
+              organizationId: principal.activeOrganizationId, customerWorkspaceId: principal.selectedWorkspaceId! });
+            const identity = Object.freeze({ workspaceId: principal.workspaceId, userId: principal.userId,
+              activeOrganizationId: principal.activeOrganizationId, selectedWorkspaceId: principal.selectedWorkspaceId,
+              sessionId: principal.sessionId, sessionVersion: principal.sessionVersion });
+            revalidate = async () => {
+              const current = await readPrincipal();
+              if (!current.ok || !isHostedPrincipal(current.principal)
+                || !current.principal.permissions.has('workspace:operate') || signal?.aborted || failed
+                || (Object.keys(identity) as Array<keyof typeof identity>)
+                  .some(key => current.principal[key] !== identity[key])) throw new Error('tenant changed');
+            };
+            const authority = await authorize(Object.freeze({ principal, context }));
+            if (!authority || signal?.aborted || failed) throw new Error('authority denied');
+            const { credentialRef, isByok, evidenceRef } = authority;
+            const request = Object.freeze({ ...authority.request, scope: Object.freeze({ ...authority.request.scope }) });
+            if (request.scope.controlWorkspaceId !== scope.controlWorkspaceId
+              || request.scope.organizationId !== scope.organizationId
+              || request.scope.customerWorkspaceId !== scope.customerWorkspaceId
+              || !/^(?:env:[A-Za-z_][A-Za-z0-9_]*|file:\/[A-Za-z0-9._/-]+)$/.test(credentialRef)) throw new Error('authority mismatch');
+            await revalidate();
+            const key = (await resolveSecret(credentialRef)).trim();
+            if (!key || createHash('sha256').update(key).digest('hex') !== context.credentialSha256
+              || signal?.aborted || failed) throw new Error('credential mismatch');
+            await revalidate();
+            capture = createCapture({ budget, request, context, credentialRef, isByok, evidenceRef, now });
+          }
+          await capture(observation);
+          // Reservation may have committed while authorization changed. Keep
+          // that obligation unresolved and refuse wire I/O; never roll it back
+          // by assertion. Later identity observations still reconcile it.
+          if (admitting) await revalidate!();
+        } catch {
+          failed = true;
+          // Neither upstream error text, credential refs nor tenant/authority
+          // records may cross the native event/SSE boundary. Never retry a
+          // failed capture or assume its durable reservation was rolled back.
+          throw new Error('Hosted OpenRouter authorization or capture failed; reservation remains unresolved');
+        } finally { running = false; }
+      };
+    };
+  };
+}
+
+export async function resolveHostedBillingStripe(
+  configuration: HostedBillingRuntimeConfiguration,
+  dependencies: Pick<HostedBillingRuntimeDependencies, 'resolveSecret' | 'liveModeAllowed' | 'fetchImpl'>,
 ): Promise<{ stripe: HostedBillingStripe | null; reason: string | null }> {
+  if (configuration.requireManagedSecrets) {
+    assertPinnedGcpSecretReference(configuration.stripeSecretKeyRef ?? '');
+    assertPinnedGcpSecretReference(configuration.stripeWebhookSecretRef ?? '');
+  }
   if (!configuration.stripeSecretKeyRef || !configuration.stripeWebhookSecretRef) {
     return { stripe: null, reason: 'billing_not_configured' };
   }
   if (configuration.plans.length === 0) return { stripe: null, reason: 'no_plans_configured' };
   const resolveSecret = dependencies.resolveSecret ?? resolveSecretRef;
-  const [secretKey, webhookSecret] = await Promise.all([
+  const [resolvedSecretKey, resolvedWebhookSecret] = await Promise.all([
     resolveSecret(configuration.stripeSecretKeyRef),
     resolveSecret(configuration.stripeWebhookSecretRef),
   ]);
+  const secretKey = resolvedSecretKey.trim();
+  const webhookSecret = resolvedWebhookSecret.trim();
   if (!/^whsec_[A-Za-z0-9]+$/.test(webhookSecret)) return { stripe: null, reason: 'invalid_webhook_secret' };
   const liveModeAllowed = dependencies.liveModeAllowed ? await dependencies.liveModeAllowed().catch(() => false) : false;
   const built = createStripeBillingClient({
@@ -149,6 +344,25 @@ async function resolveStripe(
     liveModeAllowed,
   });
   if (!built.ok) return { stripe: null, reason: built.code };
+  if (configuration.stripeAccountId) {
+    // A test credential is not proof that it belongs to the intended business.
+    // Verify once at composition; never expose credentials or provider errors.
+    try {
+      const response = await (dependencies.fetchImpl ?? fetch)(`${STRIPE_API_BASE}/account`, {
+        headers: { Authorization: `Bearer ${secretKey}` },
+        signal: AbortSignal.timeout(10_000),
+        redirect: 'error',
+      });
+      if (!response.ok) return { stripe: null, reason: 'stripe_account_unavailable' };
+      const account: unknown = await response.json();
+      if (!account || typeof account !== 'object' || !('id' in account) || typeof account.id !== 'string') {
+        return { stripe: null, reason: 'stripe_account_unavailable' };
+      }
+      if (account.id !== configuration.stripeAccountId) return { stripe: null, reason: 'stripe_account_mismatch' };
+    } catch {
+      return { stripe: null, reason: 'stripe_account_unavailable' };
+    }
+  }
   return {
     stripe: {
       client: built.client,
@@ -168,15 +382,29 @@ export async function createHostedBillingRuntime(
   configuration: HostedBillingRuntimeConfiguration,
   dependencies: HostedBillingRuntimeDependencies,
 ): Promise<HostedBillingRuntime> {
-  const { stripe, reason } = await resolveStripe(configuration, dependencies);
+  const { stripe, reason } = await resolveHostedBillingStripe(configuration, dependencies);
   const store = dependencies.store ?? new PostgresHostedBillingStore(dependencies.runService ?? withHostedServiceContext);
+  const usageStore = dependencies.usageStore ?? new PostgresHostedUsageStore(dependencies.runService ?? withHostedServiceContext);
   const routes = createHostedBillingRoutes({
     publicOrigin: configuration.publicOrigin,
     plans: configuration.plans,
     store,
     stripe,
+    observeFailure: dependencies.observeFailure,
     unavailableReason: reason,
     entitlementProvider: dependencies.entitlementProvider,
+    receipts: dependencies.receipts
+      ?? (configuration.receiptsWorkspaceId
+        ? workspaceReceiptSource(configuration.receiptsWorkspaceId, dependencies.runWorkspace)
+        : undefined),
+    usage: dependencies.usage ?? createHostedUsageSource({
+      store: usageStore,
+      collectors: dependencies.usageCollectors ?? [createOpenRouterHostedUsageCollector({
+        store: usageStore, readCredential: dependencies.resolveSecret ?? resolveSecretRef,
+        fetch: dependencies.fetchImpl,
+      })],
+      maximumAgeMs: 5 * 60_000,
+    }),
     clock: dependencies.clock,
   });
   const mounted = routes.map((route) => `${route.method} ${route.path}`);
@@ -202,10 +430,25 @@ export async function createHostedBillingRuntime(
         return denial(status, resolution.reason);
       }
       if (required.some((permission) => !resolution.principal.capabilities.has(permission))) {
-        return Response.json({ ok: false, error: { code: 'forbidden', message: 'permission_missing' } }, { status: 403 });
+        return Response.json({
+          ok: false,
+          error: {
+            code: 'forbidden',
+            message: 'permission_missing',
+            refusal: {
+              observed: { route: `${route.method} ${route.path}`, required: required.join(',') },
+              liftsWhen:
+                'the session principal holds every capability the billing route requires (a hosted-membership ' +
+                'role change by the organization owner/admin; the session then re-resolves on its next request). ' +
+                'Retrying the same session without the capability changes nothing',
+              whoCanMakeItTrue: ['owner'],
+            } satisfies RefusalContract,
+          },
+        }, { status: 403 });
       }
       return route.handler(context.req.raw, { principal: resolution.principal });
     });
   }
-  return { app, mounted: routes, configured: stripe !== null, unavailableReason: reason };
+  return { app, mounted: routes, configured: stripe !== null, unavailableReason: reason,
+    openRouterRequestCapture: hostedOpenRouterCapture(dependencies, usageStore) };
 }

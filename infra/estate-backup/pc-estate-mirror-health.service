@@ -10,7 +10,8 @@ OnFailure=pc-estate-mirror-alert.service
 [Service]
 Type=oneshot
 Nice=19
-ExecStart=%h/papercupai-workspace/papercusp/infra/estate-backup/pc-estate-mirror.sh health
+# Private per-invocation snapshot, same reason as pc-estate-mirror.service.
+ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/infra/estate-backup/pc-estate-mirror.sh health
 
 [Install]
 WantedBy=default.target

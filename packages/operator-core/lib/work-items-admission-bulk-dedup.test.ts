@@ -16,6 +16,8 @@ import {
   guardBulkRecurrenceIdentity,
   isRetryableModelCallError,
   maxPairsForOutputBudget,
+  runBulkJudgeCallWithDeadline,
+  BulkJudgeCallTimeoutError,
   BULK_JUDGE_MAX_OUTPUT_TOKENS,
   BULK_JUDGE_TOKENS_PER_PAIR,
 } from './work-items-admission-bulk-dedup';
@@ -248,6 +250,96 @@ describe('isRetryableModelCallError', () => {
     // a raw socket failure from some non-LlmCallError call path
     expect(isRetryableModelCallError(new Error('connect ECONNRESET 1.2.3.4:443'))).toBe(true);
     expect(isRetryableModelCallError(new Error('JSON parse error'))).toBe(false);
+  });
+});
+
+describe('runBulkJudgeCallWithDeadline (WI-10006427)', () => {
+  // A call that never settles on its own, like the hung codex request measured
+  // 2026-10-06; it only reacts to its AbortSignal.
+  const hungCall = () => {
+    const seen: { signal?: AbortSignal } = {};
+    const call = (signal: AbortSignal) => {
+      seen.signal = signal;
+      return new Promise<never>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('transport: terminated')));
+      });
+    };
+    return { call, seen };
+  };
+
+  it('renews the lease while a call is in flight, then aborts it at the deadline as a retryable timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const { call, seen } = hungCall();
+      const heartbeat = vi.fn(async () => undefined);
+      const pending = runBulkJudgeCallWithDeadline(call, { timeoutMs: 1_000, heartbeatMs: 300, heartbeat });
+      const outcome = pending.then(
+        () => 'resolved',
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(950);
+      expect(heartbeat).toHaveBeenCalledTimes(3);
+      expect(seen.signal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(100);
+      const error = await outcome;
+      expect(error).toBeInstanceOf(BulkJudgeCallTimeoutError);
+      expect(seen.signal?.aborted).toBe(true);
+      // The deadline must reach the transport ladder, not fail the stage outright.
+      expect(isRetryableModelCallError(error)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('returns a call that settles before the deadline, without heartbeats', async () => {
+    vi.useFakeTimers();
+    try {
+      const heartbeat = vi.fn(async () => undefined);
+      const pending = runBulkJudgeCallWithDeadline(
+        () => new Promise<string>((resolve) => setTimeout(() => resolve('judged'), 100)),
+        { timeoutMs: 1_000, heartbeatMs: 300, heartbeat },
+      );
+      await vi.advanceTimersByTimeAsync(150);
+      await expect(pending).resolves.toBe('judged');
+      expect(heartbeat).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('passes a non-timeout call failure through unchanged', async () => {
+    const failure = new Error('400 model refused');
+    await expect(
+      runBulkJudgeCallWithDeadline(() => Promise.reject(failure), {
+        timeoutMs: 1_000,
+        heartbeatMs: 300,
+        heartbeat: async () => undefined,
+      }),
+    ).rejects.toBe(failure);
+  });
+
+  it('aborts the in-flight call when a heartbeat throws (a sibling shard failed the stage)', async () => {
+    vi.useFakeTimers();
+    try {
+      const { call, seen } = hungCall();
+      const stop = new Error('bulk stage stopped: a sibling shard already failed the stage');
+      const pending = runBulkJudgeCallWithDeadline(call, {
+        timeoutMs: 10_000,
+        heartbeatMs: 300,
+        heartbeat: async () => {
+          throw stop;
+        },
+      });
+      const outcome = pending.then(
+        () => 'resolved',
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(350);
+      expect(await outcome).toBe(stop);
+      expect(seen.signal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

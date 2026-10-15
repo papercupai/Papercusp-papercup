@@ -115,13 +115,30 @@ export async function computeIdeateOverdue(
     deps.countObservationsSince(input.ownerId, lastPassMs),
     deps.readIdeaQueue(input.workspaceId),
   ]);
-  const ideasDrained = queue.total > 0 && queue.pending === 0;
+  return ideateOverdueFromCounts({ observationsSince, queue, lastPassMs, nowMs, threshold });
+}
 
-  // Reuse the pure Scout gate, but ZERO every time floor so the verdict keys
-  // purely on observation count / ideas-drained — never elapsed time (D-015).
-  // With minInterval/minFrictionInterval/maxInterval all 0 and idleRatio 0, the
-  // gate fires iff frictionSignals ≥ frictionThreshold (friction-triggered) OR the
-  // idea pipeline drained (ideas-drained). lastRunAtMs feeds only lastPassAgoMs.
+/**
+ * The D-015 verdict itself, over counts already read — the ONE definition shared
+ * by this orient fold (per caller) and the hourly su-ideate schedule (per harness,
+ * scout/su-ideate-schedule.ts; plan scout-su-ideate-pipeline-gaps-2026-10-08 D-005).
+ *
+ * Reuses the pure Scout gate with EVERY time floor zeroed, so the verdict keys
+ * purely on observation count / ideas-drained — never elapsed time. With
+ * minInterval/minFrictionInterval/maxInterval all 0 and idleRatio 0, the gate
+ * fires iff frictionSignals ≥ frictionThreshold (friction-triggered) OR the idea
+ * pipeline drained (ideas-drained). lastPassMs feeds only lastPassAgoMs.
+ */
+export function ideateOverdueFromCounts(input: {
+  observationsSince: number;
+  queue: { total: number; pending: number };
+  lastPassMs: number | null;
+  nowMs: number;
+  threshold?: number;
+}): IdeateHint {
+  const { observationsSince, queue, lastPassMs, nowMs } = input;
+  const threshold = input.threshold ?? suIdeateObsThreshold();
+  const ideasDrained = queue.total > 0 && queue.pending === 0;
   const state: ScoutCadenceState = {
     idleRatio: 0,
     frictionSignals: observationsSince,

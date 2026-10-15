@@ -25,6 +25,11 @@ export const SPEC_QUALITY_CRITERIA = [
 export type SpecQualityCriterion = (typeof SPEC_QUALITY_CRITERIA)[number];
 export type SpecQualityRating = 'pass' | 'fail' | 'unknown' | 'waived' | 'not-applicable';
 
+export interface SpecQualityReplaySnapshot {
+  planContentHash: string;
+  clausesAsOf: string;
+}
+
 export interface SpecQualityRatingEntry {
   rating: SpecQualityRating;
   evidence: string;
@@ -44,6 +49,16 @@ export interface PlanSpecQualityResult {
     uncoveredPlanItemIds: string[];
     invalidExemptionSpecIds: string[];
     draftSpecIds: string[];
+    atomicityClauseDiagnostics: SpecQualityAtomicityClauseDiagnostic[];
+    atomicityDetectorControls: Array<{ behavior: string; expected: 'atomic' | 'compound'; actual: 'atomic' | 'compound'; passed: boolean }>;
+    implementationIndependenceClauseDiagnostics: SpecQualityClauseDiagnostic[];
+    implementationIndependenceDetectorControls: Array<{ behavior: string; expected: 'coupled' | 'independent'; actual: 'coupled' | 'independent'; passed: boolean }>;
+    prerequisiteRuntimeBarMismatches: Array<{
+      prerequisiteItemId: string;
+      barKey: string;
+      projectionSpecId: string;
+      dependentImplementationItemIds: string[];
+    }>;
   };
   scorecardDraft: {
     rubricRef: typeof SPEC_QUALITY_RUBRIC_REF;
@@ -54,6 +69,40 @@ export interface PlanSpecQualityResult {
     terminal: true;
   };
 }
+
+/** The dependency slice needed to validate BAR ownership during plan activation. */
+export interface SpecQualityPlanItem {
+  id: string;
+  blockedBy?: readonly string[];
+}
+
+export type SpecQualityAtomicityClauseDiagnostic = SpecQualityClauseDiagnostic;
+
+export type SpecQualityClauseDiagnostic =
+  | {
+      specId: string;
+      planItemId: string;
+      behavior: string;
+      disposition: 'evaluated';
+      rating: 'pass';
+      reason: null;
+    }
+  | {
+      specId: string;
+      planItemId: string;
+      behavior: string;
+      disposition: 'evaluated';
+      rating: 'fail';
+      reason: string;
+    }
+  | {
+      specId: string;
+      planItemId: string;
+      behavior: string;
+      disposition: 'excluded';
+      rating: 'not-applicable';
+      reason: string;
+    };
 
 const CONTRACT_STATUSES = new Set(['active', 'accepted']);
 const CURRENT_SET_STATUSES = new Set(['draft', 'active', 'accepted', 'exempt']);
@@ -66,33 +115,6 @@ function fail(evidence: string, suggestion: string): SpecQualityRatingEntry {
   return { rating: 'fail', evidence, suggestion };
 }
 
-function clauseReference(clause: SpecClauseRevision): string {
-  const source = clause.sourceBar;
-  return source
-    ? `${clause.specId} (AUTO-BAR projection from rubric ${source.rubricSlug}, BAR ${source.barKey}, criterion.model)`
-    : clause.specId;
-}
-
-function projectedRepairSuggestion(clauses: readonly SpecClauseRevision[], fallback: string): string {
-  const projected = clauses.filter((clause) => clause.sourceBar || clause.specId.startsWith('AUTO-BAR-'));
-  if (projected.length === 0) return fallback;
-  const sources = [
-    ...new Set(
-      projected.map((clause) =>
-        clause.sourceBar
-          ? `${clause.sourceBar.rubricSlug} BAR ${clause.sourceBar.barKey}`
-          : `${clause.specId} (source pin unavailable; inspect plans:get-specs)`,
-      ),
-    ),
-  ];
-  return (
-    `These AUTO-BAR clauses are projections from ${sources.join(', ')}. ` +
-    'Amend the canonical criterion.model/acceptance condition with rubrics:amend; do not repair ' +
-    'projected behavior through plans:set-specs, because a later BAR re-projection may replace it. ' +
-    fallback
-  );
-}
-
 function unknown(evidence: string): SpecQualityRatingEntry {
   return { rating: 'unknown', evidence };
 }
@@ -102,7 +124,7 @@ function notApplicable(evidence: string): SpecQualityRatingEntry {
 }
 
 function rerunnableEvidence(
-  input: { planSlug: string; harnessSlug: string; classRef: PlanClassRubricRef },
+  input: { planSlug: string; harnessSlug: string; classRef: PlanClassRubricRef; replaySnapshot?: SpecQualityReplaySnapshot },
   criterion: SpecQualityCriterion,
   evidence: string,
   expectedSpecSetHash: string,
@@ -114,25 +136,198 @@ function rerunnableEvidence(
     `Source store: plans:get-specs { ${planArgs} }. ` +
     `Re-run exactly: plans:evaluate-spec-quality { ${evaluationArgs} }; ` +
     `confirm the returned specSetHash equals ${JSON.stringify(expectedSpecSetHash)}; ` +
-    `inspect ratings[${JSON.stringify(criterion)}]. ${evidence}`
+    `inspect ratings[${JSON.stringify(criterion)}]. ${evidence}` +
+    (input.replaySnapshot ? ' Historical replay (same rated snapshot): plans:evaluate-spec-quality ' +
+      JSON.stringify({ slug: input.planSlug, harness: input.harnessSlug, classRef: input.classRef,
+        expectedSpecSetHash, replaySnapshot: input.replaySnapshot }) + '.' : '')
   );
+}
+
+/** Replay metadata is orthogonal to the current gate's exact findings. Do not
+ * relax the stored card fingerprint or normalize any other evidence text. */
+export function specQualityEvidenceWithoutReplay(evidence: string, input: {
+  planSlug: string; classRef: PlanClassRubricRef; specSetHash: string;
+}): string {
+  const marker = ' Historical replay (same rated snapshot): plans:evaluate-spec-quality ';
+  const at = evidence.lastIndexOf(marker);
+  if (at < 0 || !evidence.endsWith('.')) return evidence;
+  try {
+    const args = JSON.parse(evidence.slice(at + marker.length, -1));
+    if (args.slug !== input.planSlug || args.classRef !== input.classRef ||
+      args.expectedSpecSetHash !== input.specSetHash || typeof args.harness !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(args.replaySnapshot?.planContentHash ?? '') ||
+      !Number.isFinite(Date.parse(args.replaySnapshot?.clausesAsOf))) return evidence;
+    return evidence.slice(0, at);
+  } catch { return evidence; }
 }
 
 function trimmedField(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-function validExplicitExemption(clause: SpecClauseRevision): boolean {
+export function validExplicitExemption(clause: SpecClauseRevision): boolean {
   if (clause.lifecycleStatus !== 'exempt' || clause.behaviorClass !== 'non-automated') return false;
   const exemption = clause.exemption;
   if (!exemption || typeof exemption !== 'object' || Array.isArray(exemption)) return false;
   return Boolean(trimmedField(exemption.justification) && trimmedField(exemption.provenance));
 }
 
+function sourceBarIdentity(clause: SpecClauseRevision): string | null {
+  const pin = clause.sourceBar;
+  if (!pin) return null;
+  return JSON.stringify([
+    pin.rubricSlug,
+    pin.barKey,
+    pin.barHash,
+    pin.barSetHash,
+    pin.rubricRevision,
+    pin.evidencePlane,
+  ]);
+}
+
+function requiresRuntimeEvidence(clause: SpecClauseRevision): boolean {
+  return clause.requiredTestLayers.length > 0 || clause.requiredEvidence.length > 0 || clause.mutationRequired;
+}
+
+function dependentItemIdsOf(
+  prerequisiteItemId: string,
+  planItemIds: readonly string[],
+  planItems: readonly SpecQualityPlanItem[],
+): string[] {
+  const inPlan = new Set(planItemIds);
+  const descendants = new Set<string>();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const item of planItems) {
+      if (!inPlan.has(item.id) || item.id === prerequisiteItemId || descendants.has(item.id)) continue;
+      if ((item.blockedBy ?? []).some((blocker) => blocker === prerequisiteItemId || descendants.has(blocker))) {
+        descendants.add(item.id);
+        changed = true;
+      }
+    }
+  }
+  return [...descendants].sort();
+}
+
+function prerequisiteRuntimeBarMismatches(input: {
+  planItemIds: readonly string[];
+  planItems?: readonly SpecQualityPlanItem[];
+  behavioralClauses: readonly SpecClauseRevision[];
+  validExemptions: readonly SpecClauseRevision[];
+}): PlanSpecQualityResult['details']['prerequisiteRuntimeBarMismatches'] {
+  if (!input.planItems?.length) return [];
+
+  const explicitlyNonCode = new Set(
+    input.validExemptions
+      .filter((clause) => clause.requiredTestLayers.length === 0 && !clause.mutationRequired)
+      .map((clause) => clause.planItemId),
+  );
+  const runtimeProjections = input.behavioralClauses.filter(
+    (clause) => clause.sourceBar && requiresRuntimeEvidence(clause),
+  );
+  const runtimeImplementations = input.behavioralClauses.filter(
+    (clause) =>
+      !clause.sourceBar &&
+      clause.behaviorClass !== 'non-automated' &&
+      requiresRuntimeEvidence(clause),
+  );
+  const mismatches: PlanSpecQualityResult['details']['prerequisiteRuntimeBarMismatches'] = [];
+
+  for (const prerequisiteItemId of explicitlyNonCode) {
+    // An active independent behavior contract makes this a mixed/code item, not a
+    // purely non-code prerequisite. Do not use the exemption to classify it away.
+    if (input.behavioralClauses.some(
+      (clause) =>
+        clause.planItemId === prerequisiteItemId &&
+        !clause.sourceBar &&
+        clause.behaviorClass !== 'non-automated',
+    )) continue;
+
+    const descendants = dependentItemIdsOf(prerequisiteItemId, input.planItemIds, input.planItems);
+    if (descendants.length === 0) continue;
+    const descendantSet = new Set(descendants);
+    const ownProjections = runtimeProjections.filter((clause) => clause.planItemId === prerequisiteItemId);
+    for (const projection of ownProjections) {
+      const identity = sourceBarIdentity(projection);
+      if (!identity) continue;
+      const dependentImplementationItemIds = [...new Set(
+        runtimeProjections
+          .filter((candidate) =>
+            descendantSet.has(candidate.planItemId) &&
+            sourceBarIdentity(candidate) === identity &&
+            !explicitlyNonCode.has(candidate.planItemId) &&
+            runtimeImplementations.some((contract) => contract.planItemId === candidate.planItemId),
+          )
+          .map((candidate) => candidate.planItemId),
+      )].sort();
+      if (dependentImplementationItemIds.length === 0) continue;
+      mismatches.push({
+        prerequisiteItemId,
+        barKey: projection.sourceBar!.barKey,
+        projectionSpecId: projection.specId,
+        dependentImplementationItemIds,
+      });
+    }
+  }
+
+  return mismatches.sort((a, b) =>
+    a.prerequisiteItemId.localeCompare(b.prerequisiteItemId) ||
+    a.barKey.localeCompare(b.barKey) ||
+    a.projectionSpecId.localeCompare(b.projectionSpecId),
+  );
+}
+
 function implementationCouplingReason(behavior: string): string | null {
   const sourcePresence = specBehaviorImplementationPresenceReason(behavior);
   if (sourcePresence) return sourcePresence;
   if (/\.(?:[cm]?[jt]sx?|rs|py|sql|sh)\b/i.test(behavior)) return 'names an implementation file';
+  const internalRouteCall =
+    /\b(?:call(?:s|ed)?|invoke(?:s|d)?|route(?:s|d)?|wire(?:s|d)?)\b[^.\n]{0,160}\/(?:admin|internal|oauth|api)(?:\/[A-Za-z0-9._~-]+)*/i.exec(behavior);
+  if (internalRouteCall) {
+    return 'prescribes an internal route ' + JSON.stringify(internalRouteCall[0].trim());
+  }
+  const operationReference = /\b[a-z][a-z0-9]*(?:-[a-z0-9]+)+\s+(?:op|operation)\b/i.exec(behavior);
+  if (operationReference) {
+    return 'names an internal operation ' + JSON.stringify(operationReference[0]);
+  }
+  const existingSurfaceReuse =
+    /\b(?:extend|extends|reuse|reuses|modify|modifies|wire|wires|integrate|integrates)\b[^.\n]{0,80}\bexisting\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|records?|capability)\b/i.exec(behavior);
+  if (existingSurfaceReuse) {
+    return 'prescribes reuse of an existing implementation surface ' + JSON.stringify(existingSurfaceReuse[0].trim());
+  }
+  // A contract can prescribe machinery without a reuse verb ("through the
+  // existing runtime"), or name the machinery directly ("Reuse PostHog").
+  // Restrict the former to implementation nouns and usage/subject positions:
+  // an existing customer/account is an observable identity, not code coupling.
+  const implementationPrescription =
+    /\b(?:through|via|using)\s+(?:the\s+)?existing\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|records?|capability)\b/i.exec(behavior) ??
+    /\bexisting\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|records?|capability)\s+(?:implements?|handles?|runs?|invokes?|provides?)\b/i.exec(behavior);
+  if (implementationPrescription) {
+    return 'prescribes implementation reuse or selection ' + JSON.stringify(implementationPrescription[0].trim());
+  }
+  // Reusing verification proof does not choose the implementation under test.
+  // Inspect each imperative separately so a proof-reuse instruction cannot hide
+  // a later machinery choice. All source/route/storage/construct checks still
+  // inspect the complete behavior, including any qualifying proof condition.
+  const verificationProofReuse = /^reuse\s+(?:(?:the|prior|previous|current|clean|passing|verified|existing)\s+)*(?:(?:verification|test|check|proof)\s+)?(?:receipts?|evidence|(?:test|check)\s+results?)(?:\s+(?:when|if)\s+[^.!?;\n]+)?$/i;
+  const imperativePrescriptions = /(?:^|[.!?;]\s*)(?:reuse|extend|modify|wire|integrate|evaluate)\s+(?!(?:of|is|was|will|must|can|may)\b)[^.!?;\n]+/gi;
+  for (const match of behavior.matchAll(imperativePrescriptions)) {
+    const prescription = match[0].replace(/^[.!?;]\s*/, '').trim();
+    if (!verificationProofReuse.test(prescription)) {
+      return 'prescribes implementation reuse or selection ' + JSON.stringify(prescription);
+    }
+  }
+  const filesystemPermission =
+    /\b0[0-7]{3}\b[^.!?\n]{0,60}\b(?:file|file\s+system|filesystem|directory)\b|\b(?:file|file\s+system|filesystem|directory)\b[^.!?\n]{0,60}\b0[0-7]{3}\b/i.exec(behavior);
+  const namedStorageBackend =
+    /\b(?:stored|persisted|written|saved|kept|mirrored|replicated)\b[^.!?\n]{0,80}\b(?:postgres(?:ql)?|mysql|mariadb|sqlite|redis|s3|object\s+storage|keychain|key\s+store)\b|\b(?:postgres(?:ql)?|mysql|mariadb|sqlite|redis|s3|object\s+storage|keychain|key\s+store)\b[^.!?\n]{0,80}\b(?:database|storage|store)\b/i.exec(behavior);
+  const storageEncryptionOrMirroring =
+    /\b(?:encrypt(?:ed|ion|ing)?|mirror(?:s|ed|ing)?|replicat(?:e|es|ed|ing|ion)|replica)\b[^.!?\n]{0,80}\b(?:postgres(?:ql)?|database|db|file|filesystem|storage|store)\b|\b(?:postgres(?:ql)?|database|db|file|filesystem|storage|store)\b[^.!?\n]{0,80}\b(?:encrypt(?:ed|ion|ing)?|mirror(?:s|ed|ing)?|replicat(?:e|es|ed|ing|ion)|replica)\b/i.exec(behavior);
+  const storageMechanism = filesystemPermission ?? namedStorageBackend ?? storageEncryptionOrMirroring;
+  if (storageMechanism) {
+    return 'prescribes a storage mechanism ' + JSON.stringify(storageMechanism[0].trim());
+  }
   const constructReference =
     /\b(?:function|class|method|variable|private field|implementation detail)\s+(`[^`]+`|'[^']+'|"[^"]+"|[A-Za-z_$][A-Za-z0-9_$]*)/gi;
   for (const match of behavior.matchAll(constructReference)) {
@@ -142,6 +337,29 @@ function implementationCouplingReason(behavior: string): string | null {
     const identifierLooksLikeSymbol =
       /^[A-Z_$]/.test(identifier) || /[_$]/.test(identifier) || /[A-Z0-9]/.test(identifier.slice(1));
     if (explicitlyQuoted || identifierLooksLikeSymbol) {
+      return 'names implementation construct ' + JSON.stringify(match[0]) + ' instead of an observable contract';
+    }
+  }
+  // A bare lower-camel identifier is also an implementation reference: clauses
+  // can name a function directly (for example, `runSyncBatchDeltaCheck
+  // evaluates the batch`) without an introductory "function" or code quotes.
+  // Public platform and device product names (Apple brands them lowerCamel)
+  // describe the environment visible to a user, not code. Continue scanning
+  // after them so a later actual implementation symbol still fails.
+  const publicPlatformNames = new Set([
+    'macOS',
+    'iOS',
+    'iPadOS',
+    'watchOS',
+    'tvOS',
+    'visionOS',
+    'iPhone',
+    'iPad',
+    'iPod',
+    'iMac',
+  ]);
+  for (const match of behavior.matchAll(/\b[a-z_$][A-Za-z0-9_$]*[A-Z][A-Za-z0-9_$]*\b/g)) {
+    if (!publicPlatformNames.has(match[0])) {
       return 'names implementation construct ' + JSON.stringify(match[0]) + ' instead of an observable contract';
     }
   }
@@ -194,6 +412,22 @@ export function specQualitySubjectRef(planSlug: string, classRef: PlanClassRubri
 }
 
 /**
+ * The plan items that owe a spec contract: every item except a deliberately
+ * dropped one. A dropped item is a recorded departure (`plans:set-status
+ * { status:'dropped', note }`), so demanding a clause or exemption for it forced
+ * authors to file fake exemptions just to start a plan (WI-10006208). Every
+ * caller that feeds `planItemIds` to the spec-quality evaluator or gate builds
+ * the list through this one function so the rule cannot drift between them.
+ */
+export function specQualityPlanItemIds(
+  items: ReadonlyArray<{ id: string; storedStatus?: string | null; status?: string | null }>,
+): string[] {
+  // The canonical derived index stores `status`; the Markdown parser exposes
+  // `storedStatus`. Preflight, locked approval and promotion must agree on both.
+  return items.filter((item) => (item.storedStatus ?? item.status) !== 'dropped').map((item) => item.id);
+}
+
+/**
  * Grade one exact current set. Every plan item must either own an active behavior
  * clause or an explicit non-automated exemption; absence is never inferred as
  * non-behavioral.
@@ -202,9 +436,11 @@ export function evaluatePlanSpecQuality(input: {
   planSlug: string;
   harnessSlug: string;
   planItemIds: readonly string[];
+  planItems?: readonly SpecQualityPlanItem[];
   clauses: readonly SpecClauseRevision[];
   classRef: PlanClassRubricRef;
   expectedSpecSetHash?: string;
+  replaySnapshot?: SpecQualityReplaySnapshot;
 }): PlanSpecQualityResult {
   const planItemIds = [...new Set(input.planItemIds)].sort();
   const currentSet = input.clauses
@@ -264,105 +500,251 @@ export function evaluatePlanSpecQuality(input: {
     group.push(clause);
     behaviorGroups.set(key, group);
   }
-  // EI-24372921924901236: BAR projection deliberately repeats the canonical
-  // behavior for every mapped item. It supplements, but cannot replace, unique
-  // item contracts. Keep ordinary copies and mismatched source pins uncertain.
-  const independentContractItems = new Set(
-    [...behaviorGroups.values()]
-      .filter((group) => new Set(group.map((clause) => clause.planItemId)).size === 1)
-      .flatMap((group) =>
-        group
-          .filter((clause) => !clause.sourceBar && !clause.specId.startsWith('AUTO-BAR-'))
-          .map((clause) => clause.planItemId),
-      ),
-  );
-  const corroboratedSharedBar = (group: SpecClauseRevision[]): boolean => {
-    const pin = group[0]?.sourceBar;
-    if (!pin) return false;
-    return group.every((clause) => {
-      const source = clause.sourceBar;
-      return (
-        source != null &&
-        source.rubricSlug === pin.rubricSlug &&
-        source.rubricRevision === pin.rubricRevision &&
-        source.barKey === pin.barKey &&
-        source.barHash === pin.barHash &&
-        source.barSetHash === pin.barSetHash &&
-        source.evidencePlane === pin.evidencePlane &&
-        independentContractItems.has(clause.planItemId)
-      );
-    });
-  };
-  const duplicateBehaviorReuse = [...behaviorGroups.values()]
+  // A sourceBar pin makes this clause a projection of the canonical acceptance
+  // BAR, repeated once for each mapped plan item. It is not an independently
+  // authored item contract, so item coverage, atomicity, and falsifiability use
+  // unpinned item clauses. The first-party implementation-independence rubric
+  // applies to active behavior text, so that criterion also checks BAR copies.
+  const isProjectedBar = (clause: SpecClauseRevision) => clause.sourceBar != null;
+  const isUnpinnedAutoBar = (clause: SpecClauseRevision) =>
+    !clause.sourceBar && clause.specId.startsWith('AUTO-BAR-');
+  const itemBehavioral = behavioral.filter((clause) => !isProjectedBar(clause));
+  const independentItemBehavioral = itemBehavioral.filter((clause) => !isUnpinnedAutoBar(clause));
+  const barPinMismatches = [...behaviorGroups.values()]
     .filter((group) => new Set(group.map((clause) => clause.planItemId)).size > 1)
-    .filter((group) => !corroboratedSharedBar(group))
+    .filter((group) => group.some((clause) => isProjectedBar(clause) || isUnpinnedAutoBar(clause)))
+    .filter((group) => {
+      const pin = group[0]?.sourceBar;
+      return !pin || group.some((clause) => {
+        const source = clause.sourceBar;
+        return (
+          source == null ||
+          source.rubricSlug !== pin.rubricSlug ||
+          source.barKey !== pin.barKey ||
+          source.barHash !== pin.barHash ||
+          source.barSetHash !== pin.barSetHash ||
+          source.evidencePlane !== pin.evidencePlane
+        );
+      });
+    })
+    .map((group) => {
+      const specIds = [...new Set(group.map((clause) => clause.specId))].sort();
+      return 'projected specs ' + specIds.join(', ') + ' do not share one identical source BAR pin';
+    });
+  const itemBehaviorGroups = new Map<string, SpecClauseRevision[]>();
+  for (const clause of itemBehavioral) {
+    const key = normalizeSpecSemanticText(clause.behavior);
+    const group = itemBehaviorGroups.get(key) ?? [];
+    group.push(clause);
+    itemBehaviorGroups.set(key, group);
+  }
+  const duplicateBehaviorReuse = [...itemBehaviorGroups.values()]
+    .filter((group) => new Set(group.map((clause) => clause.planItemId)).size > 1)
     .map((group) => {
       const specIds = [...new Set(group.map((clause) => clause.specId))].sort();
       const itemIds = [...new Set(group.map((clause) => clause.planItemId))].sort();
       return 'specs ' + specIds.join(', ') + ' reuse the same behavior text across plan items ' + itemIds.join(', ');
     });
-  const coveredItems = new Set([...behavioral, ...validExemptions].map((clause) => clause.planItemId));
+  const unpinnedAutoBarIds = itemBehavioral.filter(isUnpinnedAutoBar).map((clause) => clause.specId).sort();
+  const coveredItems = new Set([...independentItemBehavioral, ...validExemptions].map((clause) => clause.planItemId));
   const uncoveredPlanItemIds = planItemIds.filter((itemId) => !coveredItems.has(itemId));
+  const runtimeBarMismatches = prerequisiteRuntimeBarMismatches({
+    planItemIds,
+    planItems: input.planItems,
+    behavioralClauses: behavioral,
+    validExemptions,
+  });
+  const projectionEvidence = behavioral.some((clause) => clause.sourceBar)
+    ? ` ${behavioral.filter((clause) => clause.sourceBar).length} sourceBar-pinned projection(s) are excluded as copies of canonical acceptance BARs; added or meaning-changed BAR projections are checked on rubric writes, while unchanged legacy BARs are not re-certified here.`
+    : '';
   ratings['item-contract-coverage'] = uncoveredPlanItemIds.length
     ? fail(
         `Plan item(s) lack an active clause or valid explicit exemption: ${uncoveredPlanItemIds.join(', ')}.`,
         'Add at least one active behavioral clause per item, or an explicit non-automated exemption with justification and provenance.',
       )
-    : duplicateBehaviorReuse.length
+    : runtimeBarMismatches.length
+      ? fail(
+          'Runtime BAR projection(s) are assigned to explicitly non-code prerequisite item(s) even though dependent implementation item(s) carry the same BAR: ' +
+            runtimeBarMismatches.map((entry) =>
+              `${entry.projectionSpecId} on ${entry.prerequisiteItemId} -> ${entry.dependentImplementationItemIds.join(', ')}`,
+            ).join('; ') +
+            '.',
+          'Move runtime BAR mappings off non-code prerequisites and onto the dependent implementation item(s), then regenerate the exact spec-quality card. Keep the canonical shipment BAR contract unchanged.',
+        )
+      : barPinMismatches.length || duplicateBehaviorReuse.length || unpinnedAutoBarIds.length
       ? unknown(
-          'Potential contract coverage issue: ' +
-            duplicateBehaviorReuse.join('; ') +
+        'Potential contract coverage issue: ' +
+            [
+              ...barPinMismatches,
+              ...(unpinnedAutoBarIds.length
+                ? ['AUTO-BAR specs lack a trusted source BAR pin: ' + unpinnedAutoBarIds.join(', ')]
+                : []),
+              ...duplicateBehaviorReuse,
+            ].join('; ') +
             '. Review whether these clauses represent independent item contracts.',
         )
-      : pass(`All ${planItemIds.length} plan item(s) are covered by active clauses or explicit exemptions.`);
+      : pass(`All ${planItemIds.length} plan item(s) are covered by active item clauses or explicit exemptions.${projectionEvidence}`);
 
-  const atomicityFailures = behavioral
-    .map((clause) => ({ clause, reason: specBehaviorNonAtomicReason(clause.behavior) }))
-    .filter((entry): entry is { clause: SpecClauseRevision; reason: string } => Boolean(entry.reason));
+  const atomicityEvaluation = behavioral.map((clause) => {
+    let diagnostic: SpecQualityAtomicityClauseDiagnostic;
+    if (isProjectedBar(clause)) {
+      diagnostic = {
+        specId: clause.specId,
+        planItemId: clause.planItemId,
+        behavior: clause.behavior,
+        disposition: 'excluded',
+        rating: 'not-applicable',
+        reason: 'sourceBar-pinned BAR projection is not an independent item behavior clause.',
+      };
+    } else {
+      const reason = specBehaviorNonAtomicReason(clause.behavior);
+      diagnostic = reason === null
+        ? {
+            specId: clause.specId,
+            planItemId: clause.planItemId,
+            behavior: clause.behavior,
+            disposition: 'evaluated',
+            rating: 'pass',
+            reason: null,
+          }
+        : {
+            specId: clause.specId,
+            planItemId: clause.planItemId,
+            behavior: clause.behavior,
+            disposition: 'evaluated',
+            rating: 'fail',
+            reason,
+          };
+    }
+    return { clause, diagnostic };
+  });
+  const draftSourceBarProjections = draftClauses.filter((clause) => isProjectedBar(clause));
+  const draftProjectionDiagnostics: SpecQualityAtomicityClauseDiagnostic[] = draftSourceBarProjections.map((clause) => ({
+    specId: clause.specId,
+    planItemId: clause.planItemId,
+    behavior: clause.behavior,
+    disposition: 'excluded',
+    rating: 'not-applicable',
+    reason: 'draft sourceBar-pinned BAR projection is not an active item behavior clause.',
+  }));
+  const atomicityClauseDiagnostics = [
+    ...atomicityEvaluation.map(({ diagnostic }) => diagnostic),
+    ...draftProjectionDiagnostics,
+  ];
+  const atomicityFailures = atomicityEvaluation.flatMap(({ clause, diagnostic }) => {
+    if (diagnostic.disposition !== 'evaluated' || diagnostic.rating !== 'fail') return [];
+    return [{ clause, reason: diagnostic.reason }];
+  });
+  // State the evaluated population on the rating itself (WI-10006862): a grader reading
+  // only the evidence must be able to tell which share of the active behavioral clauses the
+  // verdict covers, and that sourceBar projections were excluded rather than judged atomic.
+  const atomicityEvaluatedCount = atomicityEvaluation.filter(({ diagnostic }) => diagnostic.disposition === 'evaluated').length;
+  const activeSourceBarExcludedCount = behavioral.filter((clause) => isProjectedBar(clause)).length;
+  const draftSourceBarExcludedCount = draftSourceBarProjections.length;
+  const atomicityCoverage =
+    ` Coverage: ${atomicityEvaluatedCount} of ${behavioral.length} active behavioral clause(s) evaluated` +
+    (activeSourceBarExcludedCount
+      ? `; ${activeSourceBarExcludedCount} active sourceBar-pinned BAR projection(s) excluded (new or meaning-changed canonical BAR projections are checked on rubric writes; unchanged legacy BARs are not re-certified here)`
+      : '') +
+    (draftSourceBarExcludedCount
+      ? `; ${draftSourceBarExcludedCount} draft sourceBar-pinned projection(s) excluded from the active population`
+      : '') +
+    '; per-clause dispositions are in details.atomicityClauseDiagnostics.';
+  // Exercise both sides of the predicate in the result itself. A no-hit census
+  // alone cannot show that a broken detector would reject a compound contract.
+  const atomicityDetectorControls = [
+    { behavior: 'The price sheet reproduces measured costs, separates platform margin and specifies an allowance.', expected: 'compound' as const },
+    { behavior: 'The customer journey satisfies the security and operating promises.', expected: 'compound' as const },
+    { behavior: 'The price sheet reproduces the measured cost for each workload case.', expected: 'atomic' as const },
+    { behavior: 'The customer journey stops when the inference allowance is exhausted.', expected: 'atomic' as const },
+  ].map((control) => {
+    const actual = specBehaviorNonAtomicReason(control.behavior) === null ? 'atomic' as const : 'compound' as const;
+    return { ...control, actual, passed: actual === control.expected };
+  });
+  const atomicityControlsPassed = atomicityDetectorControls.every((control) => control.passed);
+  const atomicityControlEvidence =
+    ' Detector controls: two compound counterexamples rejected and two single-outcome controls accepted; see details.atomicityDetectorControls.' +
+    ' Coverage is structural pattern detection, not a proof of arbitrary natural-language semantics.';
   ratings['atomic-observable-behavior'] =
     behavioral.length === 0
-      ? notApplicable('0 behavioral clause(s) are available for structural atomicity evaluation.')
+      ? notApplicable(
+          `0 active behavioral clause(s) are available for structural atomicity evaluation.${draftSourceBarExcludedCount ? ` ${draftSourceBarExcludedCount} draft sourceBar-pinned projection(s) are excluded from the active population.` : ''}` +
+            (draftSourceBarExcludedCount ? ' Per-clause dispositions are in details.atomicityClauseDiagnostics.' : ''),
+        )
+      : itemBehavioral.length === 0
+        ? notApplicable(`Only sourceBar-pinned projections are present; they are not independent item contracts.${atomicityCoverage}`)
+      : !atomicityControlsPassed
+        ? unknown(`The atomicity detector failed its counterexample/single-outcome controls; no atomicity pass is earned.${atomicityCoverage}`)
       : atomicityFailures.length
         ? fail(
-            atomicityFailures.map(({ clause, reason }) => `${clauseReference(clause)}:${reason}`).join('; '),
-            projectedRepairSuggestion(
-              atomicityFailures.map(({ clause }) => clause),
-              'Split compound outcomes into atomic clauses with one observable behavior each.',
-            ),
+            atomicityFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; ') + '.' + atomicityCoverage,
+            'Split compound outcomes into atomic clauses with one observable behavior each.',
           )
-        : pass(`${behavioral.length} behavioral clause(s) are structurally atomic.`);
+        : pass(`${itemBehavioral.length} independent item behavior clause(s) passed the supported structural atomicity checks.${projectionEvidence}${atomicityCoverage}${atomicityControlEvidence}`);
 
-  const falsifiabilityFailures = behavioral
+  const falsifiabilityFailures = itemBehavioral
     .map((clause) => ({ clause, reason: specBehaviorNonFalsifiableReason(clause.behavior) }))
     .filter((entry): entry is { clause: SpecClauseRevision; reason: string } => Boolean(entry.reason));
   ratings.falsifiability =
     behavioral.length === 0
       ? notApplicable('0 behavioral clause(s) are available for falsifiability evaluation.')
+      : itemBehavioral.length === 0
+        ? notApplicable('Only AUTO-BAR projections are present; they are not independent item contracts.')
       : falsifiabilityFailures.length
         ? fail(
-            falsifiabilityFailures.map(({ clause, reason }) => `${clauseReference(clause)}:${reason}`).join('; '),
-            projectedRepairSuggestion(
-              falsifiabilityFailures.map(({ clause }) => clause),
-              'Rewrite vague or discretionary text as a concrete outcome that can be shown false.',
-            ),
+            falsifiabilityFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; '),
+            'Rewrite vague or discretionary text as a concrete outcome that can be shown false.',
           )
-        : pass(`${behavioral.length} behavioral clause(s) state falsifiable outcomes.`);
+        : pass(`${itemBehavioral.length} independent item behavior clause(s) state falsifiable outcomes.${projectionEvidence}`);
 
-  const couplingFailures = behavioral
-    .map((clause) => ({ clause, reason: implementationCouplingReason(clause.behavior) }))
-    .filter((entry): entry is { clause: SpecClauseRevision; reason: string } => Boolean(entry.reason));
+  const implementationIndependenceClauseDiagnostics: SpecQualityClauseDiagnostic[] = currentSet.map((clause) => {
+    const identity = { specId: clause.specId, planItemId: clause.planItemId, behavior: clause.behavior };
+    if (!CONTRACT_STATUSES.has(clause.lifecycleStatus)) {
+      return { ...identity, disposition: 'excluded', rating: 'not-applicable',
+        reason: `${clause.lifecycleStatus} clause is outside the active/accepted behavioral population.` };
+    }
+    const reason = implementationCouplingReason(clause.behavior);
+    return reason
+      ? { ...identity, disposition: 'evaluated', rating: 'fail', reason }
+      : { ...identity, disposition: 'evaluated', rating: 'pass', reason: null };
+  });
+  const couplingFailures = implementationIndependenceClauseDiagnostics.filter(
+    (entry) => entry.disposition === 'evaluated' && entry.rating === 'fail',
+  );
+  const implementationIndependenceDetectorControls = [
+    { behavior: 'The customer job completes through the existing runtime.', expected: 'coupled' as const },
+    { behavior: 'The existing cloud subscription flow implements the approved offer.', expected: 'coupled' as const },
+    { behavior: 'A failure produces an alarm through the existing alarm subscription mechanism.', expected: 'coupled' as const },
+    { behavior: 'Reuse the runtime usage ledger for per-call token counts.', expected: 'coupled' as const },
+    { behavior: 'Reuse PostHog for consented portal events.', expected: 'coupled' as const },
+    { behavior: 'Reuse prior clean receipts when current; reuse PostHog for consented portal events.', expected: 'coupled' as const },
+    { behavior: 'An existing customer sees their subscription after signing in.', expected: 'independent' as const },
+    { behavior: 'The customer reuses an existing account when accepting an invitation.', expected: 'independent' as const },
+    { behavior: 'Reuse of an expired invitation is refused.', expected: 'independent' as const },
+    { behavior: 'Reuse prior clean receipts when current; do not recreate proof just for recovery.', expected: 'independent' as const },
+  ].map((control) => {
+    const actual = implementationCouplingReason(control.behavior) === null ? 'independent' as const : 'coupled' as const;
+    return { ...control, actual, passed: actual === control.expected };
+  });
+  const implementationIndependenceControlsPassed = implementationIndependenceDetectorControls.every((control) => control.passed);
+  const implementationIndependenceCoverage =
+    ' Detector coverage: implementation filenames/symbols, internal route literals, named operations, mandated reuse of existing surfaces (including runtimes, flows, ledgers and mechanisms), imperative implementation selection, filesystem permission modes, named storage backends, encryption, and mirroring. Inspected ' +
+    behavioral.length + ' active/accepted behavior clause(s), including ' +
+    behavioral.filter(isProjectedBar).length + ' sourceBar-pinned acceptance BAR projection(s).' +
+    ` ${currentSet.length - behavioral.length} draft/exempt clause(s) excluded; per-clause dispositions are in details.implementationIndependenceClauseDiagnostics.` +
+    ' Detector controls: see details.implementationIndependenceDetectorControls for coupled counterexamples and independent observable outcomes.' +
+    ' Coverage is structural pattern detection, not a proof of arbitrary natural-language semantics.';
   ratings['implementation-independence'] =
     behavioral.length === 0
       ? notApplicable('0 behavioral clause(s) are available for implementation-independence evaluation.')
+      : !implementationIndependenceControlsPassed
+        ? unknown('The implementation-independence detector failed its coupled/independent controls; no pass is earned.' + implementationIndependenceCoverage)
       : couplingFailures.length
         ? fail(
-            couplingFailures.map(({ clause, reason }) => `${clauseReference(clause)}:${reason}`).join('; '),
-            projectedRepairSuggestion(
-              couplingFailures.map(({ clause }) => clause),
-              'Describe externally observable behavior instead of filenames or internal constructs.',
-            ),
+            couplingFailures.map(({ specId, reason }) => `${specId}:${reason}`).join('; ') + '.' + implementationIndependenceCoverage,
+            'Describe externally observable behavior instead of filenames or internal constructs.',
           )
-        : pass('No active clause is coupled to an obvious implementation filename or construct.');
+        : pass('No active/accepted behavior clause is coupled to an implementation detail covered by the detector.' + implementationIndependenceCoverage);
 
   const invalidExemptionSpecIds = exemptions
     .filter((clause) => !validExplicitExemption(clause))
@@ -376,7 +758,7 @@ export function evaluatePlanSpecQuality(input: {
       ? pass(`${exemptions.length} non-behavioral exemption(s) carry explicit justification and provenance.`)
       : { rating: 'not-applicable', evidence: 'No clause claims a non-behavioral exemption.' };
 
-  const classFit = planClassFit(input.classRef, behavioral);
+  const classFit = planClassFit(input.classRef, itemBehavioral);
   const everyItemExplicitlyExempt =
     planItemIds.length > 0 &&
     planItemIds.every((itemId) => validExemptions.some((clause) => clause.planItemId === itemId));
@@ -439,7 +821,16 @@ export function evaluatePlanSpecQuality(input: {
     ratings,
     verdict,
     wouldBlock,
-    details: { uncoveredPlanItemIds, invalidExemptionSpecIds, draftSpecIds },
+    details: {
+      uncoveredPlanItemIds,
+      invalidExemptionSpecIds,
+      draftSpecIds,
+      atomicityClauseDiagnostics,
+      atomicityDetectorControls,
+      implementationIndependenceClauseDiagnostics,
+      implementationIndependenceDetectorControls,
+      prerequisiteRuntimeBarMismatches: runtimeBarMismatches,
+    },
     scorecardDraft: {
       rubricRef: SPEC_QUALITY_RUBRIC_REF,
       subject: { kind: 'plan', ref: subjectRef },

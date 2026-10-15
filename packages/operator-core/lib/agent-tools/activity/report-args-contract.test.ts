@@ -35,6 +35,20 @@ const report = reportTool as unknown as ToolLike;
 const reportKeys = declaredKeys(report);
 const redirects = report.guidance?.argRedirects ?? {};
 
+describe('activity:report hook fallback ingress', () => {
+  const row = { eligible: 1, applied: 0, reason: 'lock-transport-unavailable', observed_at: '2026-10-12T11:00:00.000Z' };
+  it('accepts only bounded measured lock outcomes without caller-supplied scope or authority', () => {
+    expect(reportTool.args.safeParse({ agent: 'omp', hook_fallbacks: [row] }).success).toBe(true);
+    expect(reportTool.args.safeParse({ hook_fallbacks: [{ ...row, applied: 1, reason: 'applied' }] }).success).toBe(true);
+    for (const bad of [{ ...row, eligible: 2 }, { ...row, applied: 1 }, { ...row, reason: 'arbitrary' },
+      { ...row, scope: 'another-owner' }, { ...row, workspaceId: 'another-workspace' },
+      { ...row, mechanism: 'other' }, { ...row, observed_at: 'invalid' }]) {
+      expect(reportTool.args.safeParse({ hook_fallbacks: [bad] }).success).toBe(false);
+    }
+    expect(reportTool.args.safeParse({ hook_fallbacks: Array(65).fill(row) }).success).toBe(false);
+  });
+});
+
 describe('activity:report guidance.argRedirects (EI-22571277074273886)', () => {
   it('relocates ownerId to the declared owner key on the same tool', () => {
     const redirect = redirects.ownerId;

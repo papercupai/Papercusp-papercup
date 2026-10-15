@@ -27,6 +27,26 @@ const createWorkItemMock = vi.fn(async (input: { kind: string; title: string; ha
   payload: input.payload,
 }));
 const linkWorkItemMock = vi.fn(async (...args: unknown[]) => {});
+let planItemRows: Array<{ planSlug: string; itemId: string; status: string }> = [];
+const getPlanItemRowMock = vi.fn(async (slug: string) => {
+  const rows = planItemRows.filter((row) => row.planSlug === slug);
+  if (rows.length === 0) return null;
+  return {
+    planSlug: slug,
+    archived: false,
+    isLegacy: false,
+    content: '',
+    items: rows.map((row) => ({
+      id: row.itemId,
+      status: row.status,
+      text: '',
+      importance: '',
+      blockedBy: [],
+      decisionRefs: [],
+      phase: null,
+    })),
+  } as never;
+});
 let planCollisionRows: Array<{ feature_id: string; status: string }> = [];
 const sqlQueryMock = vi.fn(async (strings: readonly string[], ..._args: unknown[]) =>
   strings.join('').includes('SELECT wi.feature_id, wi.status') ? planCollisionRows : [],
@@ -57,6 +77,7 @@ vi.mock('../../datatype-registry-store', async (importOriginal) => ({
 vi.mock('../../datatype-payload-validation', () => ({ validateDatatypePayload: () => ({ ok: true as const }) }));
 vi.mock('../../routing-gate-hints', () => ({ matchRoutingGateHint: () => null }));
 vi.mock('../../issue-blocks-merge', () => ({ planItemRef: (s: string, i: string) => `${s}#${i}`, PLAN_ITEM_KIND: 'plan_item' }));
+vi.mock('../plans/source', () => ({ getPlanItemRow: (slug: string) => getPlanItemRowMock(slug) }));
 vi.mock('./semantic-dupe-guard', () => ({ findSemanticDupes: vi.fn(async () => null) }));
 vi.mock('./recent-lexical-dupe-guard', () => ({ findRecentLexicalDupes: vi.fn(async () => null) }));
 vi.mock('./fulltext-lexical-dupe-guard', () => ({ findFulltextLexicalDupes: vi.fn(async () => null) }));
@@ -71,6 +92,11 @@ beforeEach(() => {
   sqlMock.mockClear();
   sqlMock.begin.mockClear();
   planCollisionRows = [];
+  planItemRows = [
+    { planSlug: 'some-plan', itemId: 'P-413', status: 'todo' },
+    { planSlug: 'caller-plan', itemId: 'P-999', status: 'todo' },
+  ];
+  getPlanItemRowMock.mockClear();
 });
 
 describe('createOneWorkItem × plan-item finish stamp (EI-19390496242545842)', () => {
@@ -213,5 +239,76 @@ describe('createOneWorkItem × plan-item finish stamp (EI-19390496242545842)', (
     expect(createWorkItemMock).toHaveBeenCalledTimes(1);
     const query = sqlMock.mock.calls.map(([strings]) => strings.join('')).join('\n');
     expect(query).toContain('NOT (wi.status = ANY(');
+  });
+
+  it.each(['done', 'dropped'])('refuses a %s plan item at create time', async (status) => {
+    planItemRows[0] = { planSlug: 'some-plan', itemId: 'P-413', status };
+
+    const r = await createOneWorkItem(
+      {
+        kind: 'bug',
+        title: 'work for a terminal plan item',
+        harness: 'papercusp',
+        targetPlanItem: { slug: 'some-plan', itemId: 'P-413' },
+      },
+      ctx,
+    );
+
+    expect(r).toMatchObject({ ok: false, error: 'terminal_plan_item' });
+    if (!r.ok) expect(r.message).toContain('status=' + status);
+    expect(createWorkItemMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a terminal explicit payload stamp even when targetPlanItem is absent', async () => {
+    planItemRows[0] = { planSlug: 'some-plan', itemId: 'P-413', status: 'done' };
+
+    const r = await createOneWorkItem(
+      {
+        kind: 'bug',
+        title: 'work for a terminal plan item',
+        harness: 'papercusp',
+        payload: {
+          plan_item: { plan_slug: 'some-plan', item_id: 'P-413', harness_slug: 'papercusp' },
+        },
+      },
+      ctx,
+    );
+
+    expect(r).toMatchObject({ ok: false, error: 'terminal_plan_item' });
+    expect(createWorkItemMock).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the plan item cannot be read', async () => {
+    getPlanItemRowMock.mockRejectedValueOnce(new Error('plan reader unavailable'));
+
+    const r = await createOneWorkItem(
+      {
+        kind: 'bug',
+        title: 'work for an unreadable plan item',
+        harness: 'papercusp',
+        targetPlanItem: { slug: 'some-plan', itemId: 'P-413' },
+      },
+      ctx,
+    );
+
+    expect(r).toMatchObject({ ok: false, error: 'plan_item_status_unavailable' });
+    expect(createWorkItemMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a plan item id absent from the resolved plan', async () => {
+    planItemRows = [];
+
+    const r = await createOneWorkItem(
+      {
+        kind: 'bug',
+        title: 'work for a missing plan item',
+        harness: 'papercusp',
+        targetPlanItem: { slug: 'some-plan', itemId: 'P-413' },
+      },
+      ctx,
+    );
+
+    expect(r).toMatchObject({ ok: false, error: 'plan_item_not_found' });
+    expect(createWorkItemMock).not.toHaveBeenCalled();
   });
 });

@@ -91,7 +91,60 @@ export const REAP_PRESENCE_FRESH_MS = 15 * 60_000;
  *  replied in (flush its transcript, end the turn) before it is stopped. */
 export const REAP_CONSULT_SETTLED_GRACE_MS = 3 * 60_000;
 
-export type ReapKind = 'terminal-residue' | 'managed-residue' | 'consult-settled' | 'quiet-zombie';
+/**
+ * WI-6554700010011963: how long a sidecar must be continuously observed orphaned
+ * before the reaper stops it. The sidecar's own in-process parent-death watch
+ * (process-supervision/parent-death-watch.ts) notices within ~5s and drains
+ * gracefully; this backstop only catches the sidecar whose watch never fires
+ * (wedged event loop, an entrypoint that never armed it).
+ */
+export const REAP_SIDECAR_ORPHAN_GRACE_MS = 60_000;
+
+export type ReapKind =
+  | 'terminal-residue'
+  | 'orphaned-sidecar'
+  | 'managed-residue'
+  | 'consult-settled'
+  | 'quiet-zombie';
+
+// ── orphaned sidecars (WI-6554700010011963) ────────────────────────────────
+//
+// Every sidecar launched through resolveSidecarSpawnPlan carries
+// PAPERCUSP_DESKTOP_PARENT_PID: the host that owns it. When that host dies
+// without stopping it (SIGKILL, a superseded staging generation, a crash), the
+// sidecar's scope survives on its own: it is a systemd scope, not a child of
+// the host's cgroup. On 2026-10-14 sixteen such orphans held ~99 GiB and pushed
+// the desktop into swap. The in-process watch is the primary defence; this class
+// is the external backstop that does not depend on the orphan's own event loop.
+
+/** What the IO layer measured about one live sidecar's declared parent. */
+export interface SidecarParentProbe {
+  declaredPid: number;
+  parentAlive: boolean;
+  /** /proc/<declaredPid>/stat starttime (clock ticks since boot); null = unreadable. */
+  parentStartTicks: number | null;
+  /** /proc/<sidecar pid>/stat starttime; null = unreadable. */
+  sidecarStartTicks: number | null;
+}
+
+/**
+ * Why this sidecar is orphaned, or null when its declared parent is still the
+ * process that launched it. A parent cannot start AFTER its child, so a live
+ * declared pid whose start time is later than the sidecar's is a recycled pid
+ * (pids wrap about daily on the dev box) — that needs no stored state. When either
+ * start time is unreadable, only plain liveness is judged.
+ */
+export function sidecarOrphanReason(p: SidecarParentProbe): string | null {
+  if (!p.parentAlive) return `declared parent pid ${p.declaredPid} is gone`;
+  if (
+    p.parentStartTicks !== null &&
+    p.sidecarStartTicks !== null &&
+    p.parentStartTicks > p.sidecarStartTicks
+  ) {
+    return `declared parent pid ${p.declaredPid} was recycled (it started after this sidecar)`;
+  }
+  return null;
+}
 
 // ── consult answering sessions (EI-24106882795589775) ──────────────────────
 //
@@ -193,6 +246,7 @@ const CONSULT_SETTLED_STATES = new Set([
   'closed_cant_help',
   'declined',
   'no_qualified_responder',
+  'no_launchable_responder',
 ]);
 
 function selectedAnsweringOwners(selected: unknown): (string | null)[] {
@@ -482,6 +536,13 @@ export interface ReaperInputs {
    * tick; null for a row ⇒ unknown / still active, never a reap.
    */
   consultSettlementFor?: (row: TaskRow, facts: ConsultAnswerFacts) => ConsultSettlement | null;
+  /**
+   * WI-6554700010011963: for a LIVE `sidecar` row, whether its declared parent is
+   * gone and since when this process first saw that. null = no parent contract or
+   * parent still alive; 'unreadable' = could not tell (spared, never reaped).
+   * Missing ⇒ the orphaned-sidecar class is off for the tick.
+   */
+  sidecarOrphanFor?: (row: TaskRow) => { reason: string; firstObservedMs: number } | null | 'unreadable';
   now: number;
   maxPerTick?: number;
 }
@@ -511,6 +572,12 @@ export function decideReaps(inputs: ReaperInputs): ReaperVerdict {
   const quietClassDisabled = inputs.census.degraded;
 
   for (const row of inputs.rows) {
+    if (row.class === 'sidecar') {
+      const d = decideSidecarOrphan(row, inputs);
+      if (d?.reap) reap.push(d.reap);
+      if (d?.spare) spared.push(d.spare);
+      continue;
+    }
     if (row.class !== 'agent-session') continue;
     // `scopeUnit` is the ONLY addressability key, and it is a UNIQUE column
     // (`task_ledger_scope_unit_key`). Everything below resolves through it.
@@ -644,13 +711,52 @@ export function decideReaps(inputs: ReaperInputs): ReaperVerdict {
   // Longest-standing residue first, bounded per tick.
   const order: Record<ReapKind, number> = {
     'terminal-residue': 0,
-    'managed-residue': 1,
-    'consult-settled': 2,
-    'quiet-zombie': 3,
+    'orphaned-sidecar': 1,
+    'managed-residue': 2,
+    'consult-settled': 3,
+    'quiet-zombie': 4,
   };
   reap.sort((a, b) => order[a.kind] - order[b.kind]);
   const deferred = Math.max(0, reap.length - cap);
   return { reap: reap.slice(0, cap), spared, quietClassDisabled, deferred };
+}
+
+/** The orphaned-sidecar class for one row (WI-6554700010011963). Live rows only. */
+function decideSidecarOrphan(
+  row: TaskRow,
+  inputs: ReaperInputs,
+): { reap?: ReapDecision; spare?: SpareDecision } | null {
+  if (!inputs.sidecarOrphanFor) return null;
+  if (!row.scopeUnit) return null;
+  if (isTerminalState(row.state) || row.endedAt != null) return null;
+  if (isAutoReapExempt(row)) {
+    return { spare: { taskId: row.taskId, why: 'autoReapExempt (sidecar)' } };
+  }
+  const orphan = inputs.sidecarOrphanFor(row);
+  if (orphan === null) return null;
+  if (orphan === 'unreadable') {
+    return { spare: { taskId: row.taskId, why: 'sidecar parent contract unreadable — not judged' } };
+  }
+  const age = inputs.now - orphan.firstObservedMs;
+  if (age < REAP_SIDECAR_ORPHAN_GRACE_MS) {
+    return {
+      spare: {
+        taskId: row.taskId,
+        why: `${orphan.reason}; orphaned ${Math.round(age / 1000)}s — its own parent-death watch gets the first ${REAP_SIDECAR_ORPHAN_GRACE_MS / 1000}s`,
+      },
+    };
+  }
+  const pids = inputs.scopePidCount(row);
+  if (pids === null || pids <= 0) return null;
+  return {
+    reap: {
+      taskId: row.taskId,
+      scopeUnit: row.scopeUnit,
+      logPath: row.logPath ?? null,
+      kind: 'orphaned-sidecar',
+      why: `${orphan.reason}; orphaned ${Math.round(age / 1000)}s and its own watch did not stop it, ${pids} process(es)`,
+    },
+  };
 }
 
 // ── execution (all IO injected) ─────────────────────────────────────────────
@@ -822,8 +928,8 @@ export async function executeReaps(
     let note: string | undefined;
     try {
       ok = await effects.stopUnit(d.scopeUnit);
-      // Both classes stop a row the ledger still records as RUNNING.
-      if (ok && (d.kind === 'quiet-zombie' || d.kind === 'consult-settled')) {
+      // These classes stop a row the ledger still records as RUNNING.
+      if (ok && (d.kind === 'quiet-zombie' || d.kind === 'consult-settled' || d.kind === 'orphaned-sidecar')) {
         await effects.closeAsReaped(d.taskId, d.why);
       }
     } catch (err) {

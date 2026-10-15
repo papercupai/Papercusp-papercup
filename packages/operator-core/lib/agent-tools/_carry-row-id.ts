@@ -49,10 +49,14 @@ export function carryRowTextSchema(
 export const CARRY_ROW_ID_SCHEMA = z
   .string()
   .max(CARRY_ROW_ID_INPUT_HARD_MAX)
+  .meta({ 'x-soft-maxLength': CARRY_ROW_ID_MAX })
   .optional()
   .describe(
     "Stable id for this row (e.g. 'gate-green'), independent of wording. Lets you RE-WORD the claim without " +
-      'losing its evidence/age, and is what rowsMode:\'merge\' upserts on. Stored identities are limited to 40 characters; bounded longer inputs are repaired and reported, while inputs over the hard backstop are rejected. Omitted ⇒ identity is the claim text.',
+      'losing its evidence/age, and is what rowsMode:\'merge\' upserts on. ' +
+      `Soft cap: ${CARRY_ROW_ID_MAX} chars; longer inputs are accepted and truncated with a reported repair. ` +
+      `Hard input backstop: ${CARRY_ROW_ID_INPUT_HARD_MAX} chars; larger inputs are rejected. ` +
+      'Omitted ⇒ identity is the claim text.',
   );
 
 /**

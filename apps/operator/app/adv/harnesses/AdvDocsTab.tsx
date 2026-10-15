@@ -101,29 +101,39 @@ const advDocsCache = pinModuleState<AdvDocsCache>(
   () => new Map(),
 );
 
+function docsCacheKey(slug: string, path: string | null): string {
+  return `${slug}\x00${path ?? ''}`;
+}
+
 export default function AdvDocsTab({ slug }: { slug: string }) {
   const t = useLexicon();
   // ?docpath= is the selected doc — URL-backed (nuqs) so it deep-links + is agent-driveable.
   const [docPath, setDocPath] = useQueryState('docpath', parseAsString);
   const [data, setData] = useState<MergedDocsResponse | null>(
-    () => advDocsCache.get(`${slug}\x00${docPath ?? ''}`) ?? null,
+    () => advDocsCache.get(docsCacheKey(slug, docPath)) ?? null,
   );
   const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const [readPending, setReadPending] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
   useEffect(() => {
     if (!slug) {
       setData({ ok: true, files: [], entries: [], activePath: null, content: null, activeEntry: null });
+      setError(null);
+      setReadPending(false);
       return;
     }
     let cancel = false;
-    const cacheKey = `${slug} ${docPath ?? ''}`;
+    const cacheKey = docsCacheKey(slug, docPath);
     // Stale-while-revalidate: render the cached tree immediately; only blank to
     // "Loading docs…" for a (harness, doc) we have never fetched.
     const cached = advDocsCache.get(cacheKey) ?? null;
     setData(cached);
     setError(null);
+    setActionError(null);
+    setReadPending(true);
     const params = new URLSearchParams();
     if (docPath) params.set('path', docPath);
     params.set('recompute', '1'); // git-accurate freshness for the doc being viewed
@@ -135,9 +145,11 @@ export default function AdvDocsTab({ slug }: { slug: string }) {
         setData(j);
       })
       .catch((e: unknown) => {
-        // Keep showing the stale tree if we have one; only surface the error on a
-        // cold visit with nothing cached.
-        if (!cancel && !cached) setError(e instanceof Error ? e.message : String(e));
+        // Cached docs remain readable, but a failed refresh must stay visible.
+        if (!cancel) setError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (!cancel) setReadPending(false);
       });
     return () => {
       cancel = true;
@@ -154,28 +166,43 @@ export default function AdvDocsTab({ slug }: { slug: string }) {
   const runAction = useCallback(
     async (action: 'regenerate' | 'verify', docId: string) => {
       setBusy(action);
+      setActionError(null);
       try {
-        await fetch(`/api/harness/${encodeURIComponent(slug)}/docs/${action}`, {
+        const response = await fetch(`/api/harness/${encodeURIComponent(slug)}/docs/${action}`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ docId }),
         });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        setReloadKey((k) => k + 1);
+      } catch (e: unknown) {
+        const label = action === 'verify' ? 're-verify' : 'regenerate';
+        setActionError(`Could not ${label} ${docId}: ${e instanceof Error ? e.message : String(e)}`);
       } finally {
         setBusy(null);
-        setReloadKey((k) => k + 1);
       }
     },
     [slug],
   );
 
-  if (error) return <div className="pc-adv-harness-panel__empty">Could not load docs: {error}</div>;
+  const readStatus = error ? (
+    <div className="pc-adv-harness-panel__empty" role="alert">
+      <p>Could not {data ? 'refresh' : 'load'} docs: {error}</p>
+      <button type="button" disabled={readPending} onClick={() => setReloadKey((k) => k + 1)}>
+        Retry
+      </button>
+    </div>
+  ) : readPending && data ? <p role="status">Refreshing docs…</p> : null;
+
+  if (error && !data) return readStatus;
   if (!data) return <div className="pc-adv-harness-panel__empty">Loading docs…</div>;
   if (data.reason === 'unknown_harness') {
-    return <div className="pc-adv-harness-panel__empty">Unknown {t('pot', { lower: true })} “{slug}”.</div>;
+    return <div className="pc-adv-harness-panel__empty">{readStatus}Unknown {t('pot', { lower: true })} “{slug}”.</div>;
   }
   if (!data.files.length) {
     return (
       <div className="pc-adv-harness-panel__empty">
+        {readStatus}
         No project docs yet. Add markdown under <code>docs/</code> in this {t('pot', { lower: true })}’s repo to populate this tab.
       </div>
     );
@@ -214,6 +241,8 @@ export default function AdvDocsTab({ slug }: { slug: string }) {
         ))}
       </aside>
       <main className="pc-adv-docs__article">
+        {readStatus}
+        {actionError && <p role="alert">{actionError}</p>}
         {activeRel && (
           <header className="pc-adv-docs__head">
             <div className="pc-adv-docs__crumb">{activeRel}</div>

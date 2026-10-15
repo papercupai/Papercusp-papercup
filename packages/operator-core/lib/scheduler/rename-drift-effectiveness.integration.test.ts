@@ -47,7 +47,7 @@ import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../te
 import {
   COORD_REF_HOLDERS_DDL,
   HARNESS_FEATURES_CONSOLIDATED_DDL,
-  USER_TRUST_LIST_DDL,
+  applyClaimPathReadDeps,
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
@@ -111,6 +111,33 @@ vi.mock('../agent-tools/plans/source', () => ({
   },
 }));
 
+// WI-10005221: promotePlanItems' pre-start acceptance-BAR gate fails CLOSED unless the plan is
+// positively identified as legacy. This fixture hand-rolls its schema and mocks readPlanBySlug, so
+// the BAR snapshot reader finds no plan (bar_snapshot_plan_missing) and promotion mints nothing.
+// Keep the lifecycle seam satisfied, exactly as plan-workitem-promotion-run.integration.test.ts
+// does; the evaluator is covered by its own suites.
+vi.mock('../acceptance-bar-lifecycle-evaluator', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../acceptance-bar-lifecycle-evaluator')>();
+  return {
+    ...actual,
+    readAndEvaluateAcceptanceBarLifecycle: vi.fn(async () => ({ satisfied: true })),
+  };
+});
+// Same class, next gate: the spec-quality gate reads first-class clauses through resolvePlanScope,
+// which this fixture's readPlanBySlug-only source mock does not export, so the read throws and the
+// gate correctly fails closed (spec_quality_unavailable). Return the legacy no-clause report-only
+// verdict, as the sibling fixture does.
+vi.mock('../agent-tools/plans/plan-spec-quality-gate', () => ({
+  evaluatePlanSpecQualityGate: vi.fn(async () => ({
+    satisfied: true,
+    applicable: false,
+    mode: 'report-only',
+    planSlug: 'mock',
+    specSetHash: null,
+    wouldBlock: ['no-first-class-spec-clauses'],
+  })),
+}));
+
 const run = await import('../plan-workitem-promotion-run');
 const wi = await import('../work-items');
 const { featureRef } = await import('../issue-blocks-merge');
@@ -130,7 +157,7 @@ beforeAll(async () => {
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
-  await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(COORD_REF_HOLDERS_DDL).simple();
   await db.sql
@@ -177,7 +204,12 @@ async function promoteFeatures(
   items: { id: string; text: string; blockedBy?: string[] }[],
 ): Promise<Map<string, string>> {
   h.plans.set(PLAN, { items: items.map((i) => ({ ...i, status: 'todo' })) });
-  await run.promotePlanItems(base);
+  const promotion = await run.promotePlanItems(base);
+  // WI-10005221: a gate exit (acceptance bar, spec quality, dependency, triad) mints
+  // nothing and used to surface only as UNDEFINED_VALUE from setFeatureStatus. Name it.
+  if (promotion.promoted === 0) {
+    throw new Error(`promotePlanItems minted nothing: ${JSON.stringify(promotion).slice(0, 1500)}`);
+  }
   const rows = await db.sql<{ feature_id: string; title: string }[]>`
     SELECT feature_id, title FROM harness_shared.harness_features_consolidated
      WHERE item_kind = 'feature'`;

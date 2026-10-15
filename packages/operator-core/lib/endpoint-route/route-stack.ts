@@ -79,6 +79,8 @@ export interface RouteExecution {
    *  header when present. Null for streaming/chunked responses (no header) —
    *  never consumes/clones the body, so this can't break a streaming route. */
   responseBytes: number | null;
+  /** Profile-specific presentation for unexpected handler/stack failures. */
+  errorPresenter?: (error: unknown) => { code: string; message: string };
 }
 
 /* ─── Step contract ──────────────────────────────────────────────────── */
@@ -553,10 +555,14 @@ const invokeStep: RouteStep = {
         return errorResponse(err.status, err.code, err.message);
       }
       exec.status = 'error';
+      const presented = exec.errorPresenter?.(err) ?? {
+        code: 'handler_error',
+        message: err instanceof Error ? err.message : String(err),
+      };
       return errorResponse(
         500,
-        'handler_error',
-        err instanceof Error ? err.message : String(err),
+        presented.code,
+        presented.message,
       );
     }
   },
@@ -614,7 +620,11 @@ export async function runRouteStack(
     response = short ?? errorResponse(500, 'handler_error', 'route stack produced no response');
   } catch (err) {
     exec.status = 'error';
-    response = errorResponse(500, 'handler_error', err instanceof Error ? err.message : String(err));
+    const presented = exec.errorPresenter?.(err) ?? {
+      code: 'handler_error',
+      message: err instanceof Error ? err.message : String(err),
+    };
+    response = errorResponse(500, presented.code, presented.message);
   } finally {
     if (exec.timeoutTimer) clearTimeout(exec.timeoutTimer);
     // EI-7069: Content-Length only — never .clone()/read the body. A streaming

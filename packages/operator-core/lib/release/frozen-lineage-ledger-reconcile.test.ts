@@ -14,6 +14,7 @@ import {
   type FrozenCandidateRepairQueue,
 } from './frozen-candidate-repair-queue';
 import { admitPathsOntoRepairHead, frozenLineageRef } from './repair-head-admission';
+import { ADMISSION_GIT_DATE_MS } from './admission-commit-date';
 import {
   countReconciledAdmissions,
   parseAdmissionCommitMessage,
@@ -136,7 +137,8 @@ describe('reconcileFrozenRepairQueueWithLineageRef — real git (P-027 / D-014)'
     expect(git(root, ['rev-parse', frozenLineageRef(candidate)])).toBe(h2);
 
     const stale = queueAt(candidate); // repairHead === candidate, admissions absent
-    const out = reconcileFrozenRepairQueueWithLineageRef(stale, { root });
+    const reconciledAtMs = T0 + 60_000;
+    const out = reconcileFrozenRepairQueueWithLineageRef(stale, { root, nowMs: reconciledAtMs });
     expect(out.status).toBe('reconciled');
     expect(out.refHead).toBe(h2);
     expect(out.queue).not.toBe(stale);
@@ -158,7 +160,12 @@ describe('reconcileFrozenRepairQueueWithLineageRef — real git (P-027 / D-014)'
       provenance: 'reconciled-from-ref',
     });
     expect(e1.blobs['lib/a.ts']).toBe(git(root, ['rev-parse', `${h1}:lib/a.ts`]));
-    expect(e1.atMs).toBe(Number(git(root, ['show', '-s', '--format=%ct', h1])) * 1000);
+    // WI-10006866: door commits carry the synthetic ADMISSION_GIT_DATE (deterministic shas), so
+    // their committer time is NOT an admission time. Positive control first: the commit really is
+    // synthetic. Then: the rebuilt entry records when the row learned of it, never 2000-01-01.
+    expect(Number(git(root, ['show', '-s', '--format=%ct', h1])) * 1000).toBe(ADMISSION_GIT_DATE_MS);
+    expect(e1.atMs).toBe(reconciledAtMs);
+    expect(out.queue.admissions!.every((a) => a.atMs !== ADMISSION_GIT_DATE_MS)).toBe(true);
     // Entry 2: chained on entry 1's head, from the staging commit that carried fix b.
     expect(e2).toMatchObject({
       fromRepairHead: h1,

@@ -514,7 +514,7 @@ describe('ask-gate-mirror — operator-dependent request bodies', () => {
   let home: string;
   let server: Server;
   let port: number;
-  let lastCalls: Array<{ tool: string; args: Record<string, any> }>;
+  let lastCalls: Array<{ tool: string; args: Record<string, any>; url: string }>;
 
   beforeAll(async () => {
     home = fs.mkdtempSync(join(os.tmpdir(), 'askgate-stub-home-'));
@@ -526,7 +526,7 @@ describe('ask-gate-mirror — operator-dependent request bodies', () => {
       req.on('data', (d) => (body += d));
       req.on('end', () => {
         const rpc = JSON.parse(body) as { params: { name: string; arguments: Record<string, any> } };
-        lastCalls.push({ tool: rpc.params.name, args: rpc.params.arguments });
+        lastCalls.push({ tool: rpc.params.name, args: rpc.params.arguments, url: req.url ?? '' });
         const result = { jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] } };
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify(result));
@@ -559,6 +559,31 @@ describe('ask-gate-mirror — operator-dependent request bodies', () => {
       env: { HOME: home, PAPERCUSP_SID: 'su-test', PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${port}` },
     });
   }
+
+  it.each(['session_id', 'sessionId'])('binds %s to the request context for successive incarnations of the same owner', async (sessionKey) => {
+    const sessions = ['b498efb5-b135-4cc8-8266-82833e929d52', 'd7fa5010-bb1f-4d17-841d-f31a1fb4cb95'];
+    for (const sessionId of sessions) {
+      const r = await run({
+        hook_event_name: 'PostToolUse',
+        tool_name: 'AskUserQuestion',
+        tool_use_id: 'same-ref',
+        [sessionKey]: sessionId,
+        tool_input: {},
+      });
+      expect(r.status).toBe(0);
+      expect(r.stdout.trim()).toBe('');
+    }
+    expect(lastCalls).toHaveLength(2);
+    expect(lastCalls.map((call) => call.args.sessionId)).toEqual(sessions);
+    const contexts = lastCalls.map((call) => new URL(call.url, 'http://127.0.0.1'));
+    expect(contexts.map((url) => url.searchParams.get('native_session'))).toEqual(sessions);
+    for (const url of contexts) {
+      expect(url.pathname).toBe('/api/mcp');
+      expect(url.searchParams.get('client')).toBe('su-test');
+      expect(url.searchParams.get('origin')).toBe('hook');
+      expect(url.searchParams.get('superuser')).toBe('1');
+    }
+  });
 
   it('PreToolUse AskUserQuestion → opens a gate with kind:ask, the question + options + refId', async () => {
     const r = await run({

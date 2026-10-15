@@ -15,6 +15,55 @@ function deps(active: any[] = []): InterestAutoArmDeps {
 }
 
 describe('reconcileInterestEventAwaits', () => {
+  it.each([
+    ['unfiltered', null],
+    ['filtered', { result: { equals: 'ready' } }],
+  ])('preserves an explicit bounded %s wake without changing its control state', async (_name, payloadFilter) => {
+    const manual = {
+      id: 12, eventKey: 'work-item:done:WI-source', policy: 'wake', once: true,
+      wakeHandle: null, boundTo: null, expiresTs: '2030-01-01T00:00:00.000Z',
+      timeoutBehavior: 'expire', payloadFilter, note: 'explicit source wait',
+    };
+    const before = structuredClone(manual);
+    const d = deps([manual]);
+    const out = await reconcileInterestEventAwaits(
+      { ownerId: 'agent-1', eventKeys: [manual.eventKey], boundTo: { kind: 'work-item-blocked', ref: 'WI-1' }, note: 'blocked holder' },
+      d,
+    );
+    expect(out.await_ids).toEqual([manual.id]);
+    expect(d.register).not.toHaveBeenCalled();
+    expect(d.cancel).not.toHaveBeenCalled();
+    expect(manual).toEqual(before);
+  });
+
+  it('keeps explicit predicate siblings and retires only this lifecycle’s redundant wake', async () => {
+    const binding = { kind: 'work-item-blocked', ref: 'WI-1' } as const;
+    const eventKey = 'work-item:done:WI-source';
+    const d = deps([
+      { id: 12, eventKey, policy: 'wake', once: true, boundTo: null, payloadFilter: { result: { equals: 'one' } } },
+      { id: 13, eventKey, policy: 'wake', once: true, boundTo: null, payloadFilter: { result: { equals: 'two' } } },
+      { id: 14, eventKey, policy: 'wake', once: true, wakeHandle: {}, boundTo: binding },
+      { id: 15, eventKey: 'manual:other', policy: 'wake', once: true, boundTo: null },
+    ]);
+    const out = await reconcileInterestEventAwaits(
+      { ownerId: 'agent-1', eventKeys: [eventKey], boundTo: binding, note: 'blocked holder' }, d,
+    );
+    expect(out.await_ids).toEqual([12, 13]);
+    expect(d.cancel).toHaveBeenCalledExactlyOnceWith({ awaitId: 14, subscriberId: 'agent-1' });
+    expect(d.register).not.toHaveBeenCalled();
+  });
+
+  it('does not adopt a composed leaf as an independent lifecycle wake', async () => {
+    const eventKey = 'work-item:done:WI-source';
+    const d = deps([{ id: 12, eventKey, policy: 'wake', once: true, wakeHandle: {}, boundTo: null, rootId: 3 }]);
+    const out = await reconcileInterestEventAwaits(
+      { ownerId: 'agent-1', eventKeys: [eventKey], boundTo: { kind: 'work-item-blocked', ref: 'WI-1' }, note: 'blocked holder' }, d,
+    );
+    expect(out.await_ids).not.toContain(12);
+    expect(d.cancel).not.toHaveBeenCalled();
+    expect(d.register).toHaveBeenCalledOnce();
+  });
+
   it('is idempotent and returns an events:cancel handle for the exact lifecycle edges', async () => {
     const d = deps([
       { id: 7, eventKey: 'claim:released:WI-1', policy: 'wake', once: true, wakeHandle: {}, boundTo: { kind: 'work-item-claim', ref: 'WI-1' } },

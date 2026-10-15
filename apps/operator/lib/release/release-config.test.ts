@@ -435,6 +435,22 @@ describe('databaseEvidence — which database is this gate run dialing', () => {
     const line = databaseEvidence({});
     expect(line).toContain('<unset>');
     expect(line).toContain('source=none');
+    expect(line).toContain('discovery file');
+  });
+
+  /* WI-10006055: the :3070 operator pins its DB with HARNESS_ADMIN_DATABASE_URL, not DATABASE_URL.
+   * Reading only DATABASE_URL printed `<unset>` for a correctly pinned run, hiding the one datum
+   * that separates "pinned" from "falls through to another install's discovery-file DB". */
+  it('honours the db package precedence: HARNESS_ADMIN_DATABASE_URL > HARNESS_DATABASE_URL > DATABASE_URL', () => {
+    const admin = databaseEvidence({
+      HARNESS_ADMIN_DATABASE_URL: 'postgresql://harness_admin:s3cret@localhost:5432/papercusp',
+      DATABASE_URL: 'postgresql://other:pw@localhost:24680/papercusp',
+    });
+    expect(admin).toContain('localhost:5432/papercusp');
+    expect(admin).toContain('source=HARNESS_ADMIN_DATABASE_URL');
+    expect(admin).not.toContain('s3cret');
+    expect(databaseEvidence({ HARNESS_DATABASE_URL: 'postgresql://a:b@h:1/d' })).toContain('source=HARNESS_DATABASE_URL');
+    expect(databaseEvidence({ DATABASE_URL: 'postgresql://a:b@h:1/d' })).toContain('source=DATABASE_URL');
   });
 
   /* The pin is only a pin if the pre-fix behaviour fails it. Before this change the gate emitted

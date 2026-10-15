@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "BBWE not-code realization probe: P-001 owner review (R-1) and P-002 declared budgets (R-10)",
+  "framework": "node",
+  "command": [
+    "node",
+    "docs/evidence/bbwe-not-code-realization-probe-2026-10-06.mjs",
+    "--out",
+    "docs/evidence/bbwe-not-code-realization-2026-10-06.json"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T05:41:50.199Z",
+  "finishedAt": "2026-10-06T05:41:51.188Z",
+  "summary": "Read-only re-measurement against the live Papercusp database. 10/10 assertions passed. P-001 realizes the owner review behind R-1 and authorized implementation before activation; P-002 declared the R-10 workloads and budgets before measurement or tuning.",
+  "assertions": [
+    {
+      "id": "p001-owner-correction-turn-63",
+      "passed": true,
+      "evidence": "codex:01a0cf8f-d604-70a1-9760-a39906275e5f:63 speaker=user at 2026-09-23T23:19:39.101-04:00: owner asks that blueprints create work items directly and that small well-defined tasks skip the plan step (R-1's direct-invocation scope)."
+    },
+    {
+      "id": "p001-owner-approval-turn-107",
+      "passed": true,
+      "evidence": "codex:01a0cf8f-d604-70a1-9760-a39906275e5f:107 speaker=user at 2026-09-24T01:00:29.839-04:00: \"Put yourself on auto mode and implement the plan yourself now from start to finish\"."
+    },
+    {
+      "id": "p001-owner-carry-turn-119",
+      "passed": true,
+      "evidence": "codex:01a0cf8f-d604-70a1-9760-a39906275e5f:119 speaker=user at 2026-09-24T03:06:55.229-04:00: \"the stand-down is lifted put yourself on auto mode and carry this plan to shipped status yourself now\"."
+    },
+    {
+      "id": "p001-d015-reconciles-turn-63",
+      "passed": true,
+      "evidence": "D-015 (P-002 source contract and owner-surface baseline) records the reviewed owner correction: Owner corrections are in source session turn 63 (direct item and optional plan) and turns 79/81/85/90/93 (DBOS/event questions); this plan's D-001."
+    },
+    {
+      "id": "p001-activation-follows-approval",
+      "passed": true,
+      "evidence": "first activation audit 2026-09-24T01:05:34.556172-04:00 follows turn 107 (2026-09-24T01:00:29.839-04:00); latest activation audit #7: M-019 <- session_turn:codex:01a0cf8f-d604-70a1-9760-a39906275e5f:107 -> P-001,P-015,section:Now; M-021 <- session_turn:codex:01a0cf8f-d604-70a1-9760-a39906275e5f:119 -> P-001,P-002,D-005,section:Now."
+    },
+    {
+      "id": "p001-implementation-after-approval",
+      "passed": true,
+      "evidence": "22 implementation work items promoted from the plan; earliest created 2026-09-24T03:57:48.488-04:00, after owner approval turn 107 (2026-09-24T01:00:29.839-04:00)."
+    },
+    {
+      "id": "p001-p002-items-done",
+      "passed": true,
+      "evidence": "plan item status: P-001=done, P-002=done, P-013=done."
+    },
+    {
+      "id": "p002-d016-declares-fixed-workloads",
+      "passed": true,
+      "evidence": "D-016 \"P-002 fixed workload and provisional performance budget\" is dated 2026-09-24, defines workloads (A), (B), (D) and states its numeric limits are \"prospective and frozen now\"; first workload: (A) direct one-item operation."
+    },
+    {
+      "id": "p002-d016-before-first-r10-measurement",
+      "passed": true,
+      "evidence": "D-016 first appears in plan revision at 2026-09-24T19:03:38.708-04:00; first R-10 evidence binding at 2026-09-28T03:08:18.091255-04:00."
+    },
+    {
+      "id": "p002-d016-before-p013-claim",
+      "passed": true,
+      "evidence": "D-016 first revision 2026-09-24T19:03:38.708-04:00 precedes P-013 work item WI-10002948 first claim 2026-09-26T19:52:16.73867-04:00; P-002 work item WI-10002929 status=done."
+    }
+  ]
+}

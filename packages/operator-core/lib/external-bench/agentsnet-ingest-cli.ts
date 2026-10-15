@@ -4,8 +4,9 @@
  * Idempotent — safe to re-run as the pilot accumulates more instances.
  *
  *   npx tsx packages/operator-core/lib/external-bench/agentsnet-ingest-cli.ts \
- *     [resultsDir] [runId] [arm] [workspaceId]
+ *     [resultsDir] [runId] [arm] [workspaceId] [modelId]
  *
+ * modelId defaults to the single `model_name` the result files record (R-9: never a hard-coded id).
  * Needs the score column (migration 302) applied to the target DB.
  */
 import { resolveBenchWorkspace } from './bench-workspace';
@@ -23,7 +24,7 @@ async function main() {
     resultsDir,
     runId,
     arm,
-    modelId: 'claude-opus-4-8',
+    modelId: process.argv[6] || undefined,
     harnessVersion: 'agentsnet@vendored-2026-06-17',
     label: 'AgentsNet (opus-as-nodes, route A)',
     workspaceId,

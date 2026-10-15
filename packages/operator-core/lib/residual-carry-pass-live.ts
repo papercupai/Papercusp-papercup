@@ -364,8 +364,8 @@ function sampleDeps(overrides: Partial<MaintenanceResidualSampleDeps>): Maintena
     },
     resolveCanonicalClass: async (ownerId) => {
       try {
-        const { findLiveHost, sessionClassForHost } = await import('./events/await/psu-pty-discovery');
-        const host = findLiveHost(ownerId);
+        const { findLiveHostAsync, sessionClassForHost } = await import('./events/await/psu-pty-discovery');
+        const host = await findLiveHostAsync(ownerId);
         return host ? sessionClassForHost(host) : null;
       } catch {
         return null;

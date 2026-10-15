@@ -9,6 +9,8 @@
  * `fetch` and the base URL are injectable so tests drive a local fake of the API.
  */
 
+import type { CloudflaredIngressConfig } from './config';
+
 export const CLOUDFLARE_API_BASE = 'https://api.cloudflare.com/client/v4';
 
 export class CloudflareApiError extends Error {
@@ -31,6 +33,9 @@ export interface CloudflareZone {
   readonly id: string;
   readonly name: string;
   readonly account?: { readonly id: string };
+  readonly status?: string;
+  readonly paused?: boolean;
+  readonly name_servers?: ReadonlyArray<string>;
 }
 export interface CloudflareTunnel {
   readonly id: string;
@@ -45,6 +50,12 @@ export interface CloudflareDnsRecord {
   readonly name: string;
   readonly content: string;
   readonly proxied?: boolean;
+}
+
+/** The remotely managed configuration actually delivered to tunnel connectors. */
+export interface CloudflareTunnelConfiguration {
+  readonly config: CloudflaredIngressConfig;
+  readonly version?: number;
 }
 
 export interface CloudflareApiOptions {
@@ -103,6 +114,8 @@ export function cloudflareApi(opts: CloudflareApiOptions) {
       call<CloudflareTunnel[]>('GET', `/accounts/${enc(accountId)}/cfd_tunnel?name=${enc(name)}&is_deleted=false`),
     getTunnel: (accountId: string, tunnelId: string) =>
       call<CloudflareTunnel>('GET', `/accounts/${enc(accountId)}/cfd_tunnel/${enc(tunnelId)}`),
+    getTunnelConfig: (accountId: string, tunnelId: string) =>
+      call<CloudflareTunnelConfiguration>('GET', `/accounts/${enc(accountId)}/cfd_tunnel/${enc(tunnelId)}/configurations`),
     createTunnel: (accountId: string, name: string) =>
       call<CloudflareTunnel>('POST', `/accounts/${enc(accountId)}/cfd_tunnel`, { name, config_src: 'cloudflare' }),
     putTunnelConfig: (accountId: string, tunnelId: string, config: unknown) =>

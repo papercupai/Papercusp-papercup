@@ -60,4 +60,14 @@ registerSystemAction('gc-desktop-sessions', async (ctx: SystemActionCtx) => {
         failures.map((s) => `${s.kind}${s.display} ${s.action} — ${s.failed}`).join('; '),
     );
   }
+
+  // A stand-down is a race the sweep caught (a desktop driven after the scan), not
+  // a failure — logged so a desktop that is ALWAYS stood down stays visible.
+  const stood = result.sessions.filter((s) => s.stoodDown && !s.failed);
+  if (stood.length > 0) {
+    console.log(
+      `[gc-desktop-sessions] stood down on ${stood.length} session(s): ` +
+        stood.map((s) => `${s.kind}${s.display} ${s.action} — ${s.stoodDown}`).join('; '),
+    );
+  }
 });

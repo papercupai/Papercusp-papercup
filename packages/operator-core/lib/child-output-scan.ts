@@ -29,10 +29,81 @@ export interface ChunkUnsafeSite {
  * Deliberately NOT matched: `chunks.push(d)` (byte-exact, correct) and
  * `acc += 'a literal'` (not a chunk).
  */
-const ACCUMULATE = /\+=\s*(?:String\(|`\$\{|[A-Za-z_$][\w$]*\??\.toString\()/;
+const ACCUMULATE = /\+=\s*(?:String\(|`\$\{|[A-Za-z_$][\w$]*\??\.toString\(\s*(?:(?:'utf8'|"utf8"|'utf-8'|"utf-8")\s*)?\))/i;
+
+/** The same lossy decode hidden in a bounded reassignment, e.g. `s = (s + String(d)).slice(-n)`. */
+const ASSIGN_ACCUMULATE =
+  /([A-Za-z_$][\w$]*)\s*=\s*\(?\s*\1\s*\+\s*(?:String\(|`\$\{|[A-Za-z_$][\w$]*\??\.toString\(\s*(?:(?:'utf8'|"utf8"|'utf-8'|"utf-8")\s*)?\))/i;
+
+const accumulatesDecodedChunk = (line: string): boolean =>
+  ACCUMULATE.test(line) || ASSIGN_ACCUMULATE.test(line);
+
+const escapeIdentifier = (value: string): string => value.replace(/\$/g, '\\$');
+
+/** A text concat can hide the decode behind a differently-named temporary. */
+const combinesDecodedChunk = (line: string, parameter: string | null): boolean => {
+  if (parameter === null) return false;
+  const escaped = escapeIdentifier(parameter);
+  const decoded =
+    `(?:String\\(\\s*${escaped}\\s*\\)|${escaped}\\??\\.toString\\(\\s*(?:(?:'utf8'|"utf8"|'utf-8'|"utf-8")\\s*)?\\))`;
+  return new RegExp(`\\+\\s*${decoded}`).test(line);
+};
+
+/** Find `const text = chunk.toString()` so a later `output += text` is visible. */
+const decodedAlias = (line: string, parameter: string | null): string | null => {
+  if (parameter === null) return null;
+  const escaped = escapeIdentifier(parameter);
+  const decoded =
+    `(?:String\\(\\s*${escaped}\\s*\\)|${escaped}\\??\\.toString\\(\\s*(?:(?:'utf8'|"utf8"|'utf-8'|"utf-8")\\s*)?\\)|\\x60\\$\\{\\s*${escaped}\\s*\\}\\x60)`;
+  return new RegExp(`\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*${decoded}`).exec(line)?.[1] ?? null;
+};
+
+const accumulatesAlias = (line: string, alias: string): boolean => {
+  const escaped = escapeIdentifier(alias);
+  return (
+    new RegExp(`\\+=\\s*${escaped}(?![\\w$.])`).test(line) ||
+    new RegExp(`([A-Za-z_$][\\w$]*)\\s*=\\s*\\(?\\s*\\1\\s*\\+\\s*${escaped}(?![\\w$.])`).test(line)
+  );
+};
+
+/** A bare string accumulation of the handler's chunk parameter is unsafe too. */
+const accumulatesChunkParameter = (line: string, parameter: string | null): boolean =>
+  parameter !== null && new RegExp(`\\+=\\s*${parameter}(?![\\w$.])`).test(line);
 
 /** Opens a `data` subscription: `.on('data',` / `.addListener("data",` */
 const DATA_HANDLER = /\.(?:on|addListener|once)\(\s*['"]data['"]\s*,/;
+
+/** A `.on('data', append)` / `.addListener('data', append)` reference. */
+const namedDataCallback = (line: string): string | null =>
+  /\.(?:on|addListener|once)\(\s*['"]data['"]\s*,\s*([A-Za-z_$][\w$]*)\s*\)/.exec(line)?.[1] ?? null;
+
+function findNamedCallback(lines: string[], name: string): { start: number; end: number; parameter: string } | null {
+  const escaped = escapeIdentifier(name);
+  const declarations = [
+    new RegExp(`\\b(?:const|let|var)\\s+${escaped}\\s*=\\s*(?:async\\s*)?\\(\\s*([A-Za-z_$][\\w$]*)(?:\\s*:[^,)=]+)?\\s*\\)\\s*=>\\s*\\{`),
+    new RegExp(`\\b(?:const|let|var)\\s+${escaped}\\s*=\\s*(?:async\\s*)?([A-Za-z_$][\\w$]*)\\s*=>\\s*\\{`),
+    new RegExp(`\\bfunction\\s+${escaped}\\s*\\(\\s*([A-Za-z_$][\\w$]*)(?:\\s*:[^,)=]+)?\\s*\\)\\s*\\{`),
+  ];
+  for (let i = 0; i < lines.length; i++) {
+    const match = declarations.map((pattern) => pattern.exec(lines[i])).find(Boolean);
+    if (!match) continue;
+    const parameter = match[1];
+    const open = lines[i].indexOf('{', match.index);
+    if (open < 0) continue;
+    let depth = 0;
+    for (let j = i; j < Math.min(i + 40, lines.length); j++) {
+      const line = lines[j];
+      for (let k = j === i ? open : 0; k < line.length; k++) {
+        if (line[k] === '{') depth++;
+        else if (line[k] === '}') {
+          depth--;
+          if (depth === 0) return { start: i, end: j, parameter };
+        }
+      }
+    }
+  }
+  return null;
+}
 
 /**
  * Resolve a line to its enclosing TOP-LEVEL symbol.
@@ -60,14 +131,55 @@ export function enclosingTopLevelSymbol(lines: string[], lineIdx: number): strin
  * { stderr += String(e) })` — an Error, not a chunk, and correct) is not
  * mistaken for one inside the data handler.
  */
-export function scanSource(file: string, src: string): ChunkUnsafeSite[] {
+export function scanSource(
+  file: string,
+  src: string,
+  // Direct parameter accumulation is opt-in for known Buffer-backed streams;
+  // streams with setEncoding() legitimately emit strings.
+  options: { includeBareChunkParameter?: boolean } = {},
+): ChunkUnsafeSite[] {
   const lines = src.split('\n');
   const hits: ChunkUnsafeSite[] = [];
   const seen = new Set<number>();
 
+  const scanRegion = (start: number, end: number, chunkParameter: string | null): void => {
+    const aliases = new Map<string, number>();
+    const reportedAliases = new Set<string>();
+    for (let j = start; j <= end; j++) {
+      const line = lines[j];
+      const alias = decodedAlias(line, chunkParameter);
+      if (alias && !aliases.has(alias)) aliases.set(alias, j);
+      const unsafe =
+        accumulatesDecodedChunk(line) ||
+        combinesDecodedChunk(line, chunkParameter) ||
+        (options.includeBareChunkParameter === true && accumulatesChunkParameter(line, chunkParameter));
+      if (unsafe && !seen.has(j)) {
+        seen.add(j);
+        hits.push({ file, line: j + 1, text: line.trim(), symbol: enclosingTopLevelSymbol(lines, j) });
+      }
+      for (const [name, aliasLine] of aliases) {
+        if (reportedAliases.has(name) || !accumulatesAlias(line, name) || seen.has(aliasLine)) continue;
+        seen.add(aliasLine);
+        reportedAliases.add(name);
+        hits.push({ file, line: aliasLine + 1, text: lines[aliasLine].trim(), symbol: enclosingTopLevelSymbol(lines, aliasLine) });
+      }
+    }
+  };
+
   for (let i = 0; i < lines.length; i++) {
     const open = DATA_HANDLER.exec(lines[i]);
     if (open === null) continue;
+    const named = namedDataCallback(lines[i]);
+    if (named) {
+      const callback = findNamedCallback(lines, named);
+      if (callback) scanRegion(callback.start, callback.end, callback.parameter);
+      continue;
+    }
+    const callback =
+      /,\s*(?:async\s*)?(?:\(\s*([A-Za-z_$][\w$]*)\b|([A-Za-z_$][\w$]*)\s*=>|function\s*\(\s*([A-Za-z_$][\w$]*))/.exec(
+        lines[i],
+      );
+    const chunkParameter = callback?.[1] ?? callback?.[2] ?? callback?.[3] ?? null;
 
     // Walk from `.on(` to its matching close paren, tracking paren depth.
     //
@@ -78,20 +190,9 @@ export function scanSource(file: string, src: string): ChunkUnsafeSite[] {
     // 0 and skips it. That mistake made this scanner miss ~84% of real sites.
     let depth = 0;
     let started = false;
+    let end = i;
     for (let j = i; j < Math.min(i + 40, lines.length); j++) {
       const line = lines[j];
-      const insideAtLineStart = started && depth > 0;
-
-      if ((j === i || insideAtLineStart) && ACCUMULATE.test(line) && !seen.has(j)) {
-        seen.add(j);
-        hits.push({
-          file,
-          line: j + 1,
-          text: line.trim(),
-          symbol: enclosingTopLevelSymbol(lines, j),
-        });
-      }
-
       for (let k = j === i ? open.index : 0; k < line.length; k++) {
         if (line[k] === '(') {
           depth++;
@@ -100,8 +201,10 @@ export function scanSource(file: string, src: string): ChunkUnsafeSite[] {
           depth--;
         }
       }
+      end = j;
       if (started && depth <= 0) break;
     }
+    scanRegion(i, end, chunkParameter);
   }
   return hits;
 }

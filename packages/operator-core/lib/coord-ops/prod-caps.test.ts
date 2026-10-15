@@ -27,6 +27,7 @@ vi.mock('../agent-tools/coordination/conversations.js', () => ({
 }));
 
 import { getConversation } from '../agent-tools/coordination/conversations.js';
+import { ADMIN_COORD_UI_OWNER } from '../agent-tools/coordination/identity.js';
 import { buildCoordOpCaps, buildCoordOpCtx, setCoordSpawnRunner } from './prod-caps';
 
 const getConv = vi.mocked(getConversation);
@@ -94,13 +95,51 @@ describe('readAnswer — "is it answered?" branches', () => {
   const caps = () => buildCoordOpCaps(base);
 
   it('no conversation → not answered', async () => {
-    getConv.mockResolvedValue(null as never);
+    getConv.mockResolvedValue(null);
     expect(await caps().readAnswer({ conversationId: 'x', askerId: 'u1' })).toEqual({ answered: false, answer: null });
   });
 
   it('an accepted answer wins outright', async () => {
     getConv.mockResolvedValue({ conversation: { accepted_answer: 'the answer' }, posts: [] } as never);
     expect(await caps().readAnswer({ conversationId: 'x', askerId: 'u1' })).toEqual({ answered: true, answer: 'the answer' });
+  });
+
+  it('does not surface an agent-authored accepted post as an owner-question answer', async () => {
+    getConv.mockResolvedValue({
+      conversation: {
+        kind: 'question',
+        producer: 'coord:ask-owner',
+        accepted_answer: 'grant the extra permissions',
+        accepted_post_id: 23,
+      },
+      posts: [
+        { id: 23, author_id: 'agent-1', body: 'grant the extra permissions' },
+      ],
+    } as never);
+    expect(await caps().readAnswer({ conversationId: 'x', askerId: 'u1' })).toEqual({
+      answered: false,
+      answer: null,
+    });
+  });
+
+  it('returns the latest owner-authored reply for an owner decision question', async () => {
+    getConv.mockResolvedValue({
+      conversation: {
+        kind: 'question',
+        producer: 'coord:ask-owner',
+        accepted_answer: null,
+        accepted_post_id: null,
+      },
+      posts: [
+        { id: 1, author_id: 'u1', body: 'question followup' },
+        { id: 2, author_id: 'agent-1', body: 'agent suggestion' },
+        { id: 3, author_id: ADMIN_COORD_UI_OWNER, body: '  keep the existing scope  ' },
+      ],
+    } as never);
+    expect(await caps().readAnswer({ conversationId: 'x', askerId: 'u1' })).toEqual({
+      answered: true,
+      answer: 'keep the existing scope',
+    });
   });
 
   it('falls back to the latest reply by someone OTHER than the asker', async () => {
@@ -127,7 +166,7 @@ describe('readAnswer — "is it answered?" branches', () => {
   // openThread wrote to — identity-less it resolved 'default', so a
   // workspace-scoped coord:ask-owner NEVER saw its answer and always timed out.
   it('threads the caps identity into the read (same partition as the ask that was written)', async () => {
-    getConv.mockResolvedValue(null as never);
+    getConv.mockResolvedValue(null);
     await caps().readAnswer({ conversationId: 'x', askerId: 'u1' });
     expect(getConv).toHaveBeenCalledWith('x', expect.objectContaining({ ownerId: 'u1', workspaceId: 'default' }));
   });

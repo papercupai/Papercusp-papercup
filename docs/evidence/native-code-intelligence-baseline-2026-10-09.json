@@ -1,0 +1,284 @@
+{
+  "schema": "native-code-intelligence-baseline/v1",
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "item": "P-001",
+  "workItem": "WI-10007864",
+  "capturedAt": "2026-10-09T18:29:31.019673+00:00",
+  "headAtCapture": "4cbb674b8571ea3560c2b8630efe4f157c6bbde2",
+  "hostPathProvenance": "Installed-package paths use the shared identity-leak serializer's anonymized builduser locator; resolve the vendor suffix under the current home. Package hashes retain the measured content identity.",
+  "sources": [
+    {
+      "path": "packages/operator-core/lib/agent-tools/gitnexus/query.ts",
+      "sha256": "7e3921b56a2474ee6a3a77150a0156caa3b409142363c5263697263a3eb567a6"
+    },
+    {
+      "path": "packages/operator-core/lib/code-intelligence/first-party-callers.ts",
+      "sha256": "d0b5332d142599f2f239329f2345c9cfd52ef1b73e8c5a6ec1ac2e913a80e400"
+    },
+    {
+      "path": "packages/operator-core/lib/code-intelligence/first-party-callers-offthread.ts",
+      "sha256": "54bb1f53674304aee639cb783cac5d16d8cf0d43d098f37f857748517923206a"
+    },
+    {
+      "path": "packages/operator-core/lib/code-intelligence/gitnexus-facade.ts",
+      "sha256": "14d35e5750eda37145c05e9cc6b722ea515c7f7ef2a1f4aa2e894ae73aa20d06"
+    },
+    {
+      "path": "packages/operator-core/lib/code-intelligence/lsp-adapter.ts",
+      "sha256": "22ab7c926d1e407fbb7442b4ecdc118930a5a6c12f07b1dd3b2c7820f1ff56de"
+    },
+    {
+      "path": "packages/operator-core/lib/code-intelligence/lsp-capability-matrix.ts",
+      "sha256": "570573ae07b608bd27945fd19b5b750ac1e49c03cce2ecee2f08e72d79633ef8"
+    },
+    {
+      "path": "packages/operator-core/lib/code-intelligence/lsp-facade.ts",
+      "sha256": "045284f8995c86ad6792a69ad39c023348c5db94e988fbad2aaa9f17dc12290d"
+    },
+    {
+      "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+      "sha256": "f2418f98241a389111e890426872c7c83f49f29e024529b3ef934790ce8b8fac"
+    },
+    {
+      "path": "packages/operator-core/lib/code-intelligence/contracts.ts",
+      "sha256": "55d27fe74aedb6c9734cc066a3fb9d5ea408b8abb0258b627bd7b152fad764f2"
+    },
+    {
+      "path": "packages/operator-core/lib/code-intelligence/fair-comparison-admission.ts",
+      "sha256": "6f1d5d8bfbff11d80a7926d97e77f218abba24b0946a18b58978e48be6133130"
+    },
+    {
+      "path": "packages/operator-core/lib/code-intelligence/fair-comparison.ts",
+      "sha256": "226ae77cfbd07738db74fa5a759e329cf8c8c888489292cb521d25da292aa023"
+    },
+    {
+      "path": "packages/operator-core/lib/code-intelligence/engine-comparison.ts",
+      "sha256": "85335b33d29b104bf23a6b38db0dee0f6728a29200f4ed7c35231903f4add63a"
+    },
+    {
+      "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+      "sha256": "02f8667ed2a6e0d9d45642b495c87c4be7b31bbe55d740ba180bcbddbcc73038"
+    },
+    {
+      "path": "scripts/gen-graph-dependency-snapshot.mjs",
+      "sha256": "51a60598c4bcda84d96af94404d54628c4d750dec47a65d56cd621f8e560c79e"
+    },
+    {
+      "path": "scripts/lib/graph-dependency-suggestions.mjs",
+      "sha256": "e48295b239a318131a1cc9f2c88129094b8c9ba5a7ed2521e62e397f351b7aa2"
+    },
+    {
+      "path": "packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts",
+      "sha256": "6b8b122ff8e2c22d75437524d6cca68fa7aa82970e77f3534a7fdfb9b5302a4c"
+    },
+    {
+      "path": "docs/evidence/gitnexus-p017-backend-bakeoff-2026-10-06.json",
+      "sha256": "84071e206a44a01b8ffedfaa8445fde69c1099c06ff930b61e70ee2a2d72932a"
+    }
+  ],
+  "installedPackages": [
+    {
+      "path": "/home/builduser/.papercusp/vendor/gitnexus/node_modules/gitnexus/package.json",
+      "name": "gitnexus",
+      "version": "1.6.9",
+      "license": "PolyForm-Noncommercial-1.0.0",
+      "sha256": "19b863bcd78488e174e251a1690ab69555caf0a669077771a701b62aa49b4fae",
+      "basis": "installed package metadata; no new upstream or legal verdict"
+    },
+    {
+      "path": "/home/builduser/.papercusp/vendor-candidates/gitnexus-1.6.12/node_modules/gitnexus/package.json",
+      "name": "gitnexus",
+      "version": "1.6.12",
+      "license": "PolyForm-Noncommercial-1.0.0",
+      "sha256": "e84215e817d751daefc5d74ae2e37e1b3f94564462298609ceebebe0a7b17680",
+      "basis": "installed package metadata; no new upstream or legal verdict"
+    },
+    {
+      "path": "/home/builduser/.papercusp/vendor/lsp/node_modules/typescript-language-server/package.json",
+      "name": "typescript-language-server",
+      "version": "6.0.0",
+      "license": "Apache-2.0",
+      "sha256": "aa2ab5a5d765774cbdfdd53cb188d6a6a5749d6f65629bf7c411a3cef6902e79",
+      "basis": "installed package metadata; no new upstream or legal verdict"
+    },
+    {
+      "path": "node_modules/typescript/package.json",
+      "name": "@typescript/typescript6",
+      "version": "6.0.2",
+      "license": "Apache-2.0",
+      "sha256": "d9b8fb53c67c947fece83bcb73fa8512227ea6a12b110e096fdab8ecdc02b655",
+      "basis": "installed package metadata; no new upstream or legal verdict"
+    }
+  ],
+  "identityBasis": "Individual current-tree content hashes; HEAD does not cover uncommitted edits",
+  "routes": [
+    {
+      "tool": "graph:query",
+      "operations": [
+        "callers"
+      ],
+      "backend": "typescript-service",
+      "languageScope": [
+        "javascript",
+        "typescript"
+      ],
+      "basis": "current source; per-question forked compiler call hierarchy plus labelled unresolved calls; source completeness unverified"
+    },
+    {
+      "tool": "graph:query",
+      "operations": [
+        "symbol",
+        "callees",
+        "impact",
+        "health"
+      ],
+      "backend": "gitnexus",
+      "languageScope": "index dependent; language/intent certification unmeasured",
+      "basis": "indexed evidence; per-answer freshness/health/coverage must be checked"
+    },
+    {
+      "tool": "lsp:query",
+      "operations": [
+        "symbol",
+        "references",
+        "implementations",
+        "diagnostics",
+        "workspace_symbols",
+        "refactor_preview",
+        "health"
+      ],
+      "backend": "lsp-adapter",
+      "languageScope": [
+        "javascript",
+        "typescript",
+        "rust"
+      ],
+      "unsupportedFirstCohort": [
+        "python",
+        "go"
+      ],
+      "basis": "shared daemon; per server-identity/intent capability cells; declaration is not certification"
+    },
+    {
+      "tool": "code:pack",
+      "operations": [
+        "pack"
+      ],
+      "backend": "repomix",
+      "basis": "existing packer facade; context packaging is not semantic graph proof"
+    },
+    {
+      "tool": "code:pack",
+      "operations": [
+        "diff"
+      ],
+      "backend": "code2prompt",
+      "basis": "existing packer facade; context packaging is not semantic graph proof"
+    },
+    {
+      "tool": "snapshot producer",
+      "operations": [
+        "--first-party"
+      ],
+      "backend": "first-party-imports",
+      "basis": "implemented source-derived import edges; writes sibling dependency-snapshot.first-party.json; current routine still invokes --gitnexus-bin, so availability does not establish selector cutover"
+    }
+  ],
+  "policy": [
+    {
+      "subject": "GitNexus",
+      "distribution": "excluded",
+      "internalUse": "existing recorded route only; no broader clearance inferred",
+      "telemetry": "unverified; current arm admission says offline-only",
+      "refs": [
+        "gitnexus-deterministic-integration-2026-10-05#D-004",
+        "gitnexus-deterministic-integration-2026-10-05#D-005"
+      ]
+    },
+    {
+      "subject": "comparison candidates",
+      "distribution": "unreviewed unless a separate approved decision with evidence is registered",
+      "refs": [
+        "packages/operator-core/lib/code-intelligence/fair-comparison-admission.ts"
+      ]
+    },
+    {
+      "subject": "backend retirement",
+      "decision": "unresolved; no retirement performed",
+      "refs": [
+        "gitnexus-deterministic-integration-2026-10-05#D-026",
+        "gitnexus-deterministic-integration-2026-10-05#P-012"
+      ]
+    }
+  ],
+  "independentFollowups": [
+    {
+      "id": "WI-10006543",
+      "stateAtRead": "blocked",
+      "scope": "deployed route, anchoring and evidence remain on original lane"
+    },
+    {
+      "id": "WI-10006809",
+      "stateAtRead": "done",
+      "scope": "first-party source snapshot producer; live selector cutover not inferred"
+    },
+    {
+      "id": "WI-10007660",
+      "stateAtRead": "done",
+      "scope": "cost-label documentary correction settled"
+    },
+    {
+      "id": "gitnexus-deterministic-integration-2026-10-05#P-012",
+      "stateAtRead": "todo",
+      "scope": "measured keep/narrow/scale-back"
+    },
+    {
+      "id": "gitnexus-deterministic-integration-2026-10-05#P-018",
+      "stateAtRead": "todo",
+      "scope": "48h deployed routine and real gate-run evidence"
+    }
+  ],
+  "runtimeObservation": {
+    "tool": "dev:pipeline_position",
+    "observedAt": "2026-10-09T18:23:55Z",
+    "path": "packages/operator-core/lib/agent-tools/gitnexus/query.ts",
+    "testClass": "operator-api",
+    "runtimes": [
+      {
+        "runtime": "staging-operator",
+        "buildSha": "ad00f10153",
+        "containsChangedPath": true
+      },
+      {
+        "runtime": "release-operator",
+        "buildSha": "d740fc3802",
+        "containsChangedPath": false
+      },
+      {
+        "runtime": "bg-host",
+        "buildSha": "7bae8603ea",
+        "containsChangedPath": true
+      },
+      {
+        "runtime": "gateway",
+        "buildSha": "d11b9995e2",
+        "containsChangedPath": true
+      }
+    ],
+    "limits": "path containment snapshot, not behavioral request or final release proof"
+  },
+  "verification": {
+    "command": "npm test -- --run lib/code-intelligence/native-ecosystem.test.ts lib/code-intelligence/fair-comparison-admission.test.ts",
+    "cwd": "packages/operator-core",
+    "filesPassed": 2,
+    "testsPassed": 15,
+    "exitCode": 0,
+    "tested": "distribution purpose guard; incumbent exception containment; separate approval; empty evidence; pinned licence/telemetry guards",
+    "notTested": [
+      "new Python/Go adapters",
+      "whole-plan acceptance",
+      "deployed behavior",
+      "backend retirement"
+    ]
+  }
+}

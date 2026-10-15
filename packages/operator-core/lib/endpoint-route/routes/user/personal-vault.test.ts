@@ -75,11 +75,6 @@ vi.mock('../../../external-triggers/google-workspace', async (importOriginal) =>
     googleWorkspaceOAuthField: (ref: string) => ref.replace('google-workspace:', ''),
   };
 });
-vi.mock('../../../external-triggers/facebook', () => ({
-  FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN: 'facebook-personal-vault',
-  FACEBOOK_PERSONAL_VAULT_SOURCE_KINDS: ['facebook'],
-  facebookPersonalVaultOAuthField: (ref: string) => ref.replace('facebook-personal-vault:', ''),
-}));
 vi.mock('../../../oauth/providers', () => ({
   GOOGLE_GMAIL_READONLY_SCOPE: 'https://www.googleapis.com/auth/gmail.readonly',
   GOOGLE_GMAIL_COMPOSE_SCOPE: 'https://www.googleapis.com/auth/gmail.compose',
@@ -169,7 +164,7 @@ beforeEach(() => {
   mocks.enabled.mockResolvedValue(true);
   mocks.stats.mockResolvedValue({ sources: [{ source: 'gmail', documents: 2, newest_at: null }], unembedded: 1 });
   mocks.listGrants.mockResolvedValue([]);
-  mocks.replaceGrant.mockResolvedValue({ id: 'grant-1', scopes: ['personal:gmail'], revoked: 0 });
+  mocks.replaceGrant.mockResolvedValue({ id: 'grant-1', scopes: ['personal:mail'], revoked: 0 });
   mocks.revokeGrant.mockResolvedValue(true);
   mocks.purge.mockResolvedValue({ documents: 2, cursors: 1, aliases: 1, identities: 1 });
   mocks.reserveImport.mockResolvedValue({
@@ -272,7 +267,7 @@ beforeEach(() => {
       'https://www.googleapis.com/auth/contacts.readonly',
     ],
   });
-  mocks.parsePlan.mockReturnValue({ frontmatter: { raw: { personalScopes: ['personal:gmail'] } } });
+  mocks.parsePlan.mockReturnValue({ frontmatter: { raw: { personalScopes: ['personal:mail'] } } });
   mocks.sql.mockResolvedValue([
     { plan_slug: 'meeting-prep', harness_slug: 'papercusp', template_slug: null, content: 'plan' },
   ]);
@@ -322,20 +317,6 @@ describe('Personal Vault owner routes', () => {
             expect.objectContaining({ id: 'gmail', enabled: true, status: 'connected' }),
             expect.objectContaining({ id: 'calendar', enabled: true, status: 'connected' }),
             expect.objectContaining({ id: 'contacts', enabled: true, status: 'connected' }),
-            // D-019 IN ACTION, and the whole reason the YouTube scopes are kept
-            // out of GOOGLE_WORKSPACE_SCOPES: this connection never consented to
-            // them, so the capability must report NOT connected and name what is
-            // missing. Had they been added to the presumed-granted list, this
-            // would read connected — and the owner would discover otherwise via
-            // a 403 at call time.
-            expect.objectContaining({
-              id: 'youtube',
-              connected: false,
-              missingScopes: [
-                'https://www.googleapis.com/auth/youtube.readonly',
-                'https://www.googleapis.com/auth/youtube.force-ssl',
-              ],
-            }),
           ],
         },
         facebook: {
@@ -346,6 +327,11 @@ describe('Personal Vault owner routes', () => {
         },
       },
     });
+    // D-038: only Google capabilities with an implemented Personal Vault ingest
+    // path are surfaced. The YouTube social adapters are a separate pipeline.
+    expect(payload.integrations.google.capabilities.map((capability: { id: string }) => capability.id)).toEqual([
+      'gmail', 'calendar', 'contacts',
+    ]);
     expect(mocks.stats).toHaveBeenCalledWith(mocks.sql, 'ws-test', 'user-1');
     const body = JSON.stringify(payload);
     expect(body).not.toContain('historyId');
@@ -423,7 +409,7 @@ describe('Personal Vault owner routes', () => {
     ]);
   });
 
-  it('reports a persisted disabled YouTube capability as disabled on readback', async () => {
+  it('does not surface a connected YouTube source as a Personal Vault capability without an ingest path', async () => {
     mocks.listSources.mockResolvedValueOnce([
       {
         id: 'gmail-source',
@@ -446,8 +432,8 @@ describe('Personal Vault owner routes', () => {
         ownerUserId: 'user-1',
         providerAccountId: 'owner@example.com',
         credentialRef: 'google-workspace:owner-user-1',
-        status: 'disabled',
-        config: { capabilityEnabled: false },
+        status: 'connected',
+        config: { capabilityEnabled: true },
         cursor: {},
         lastError: null,
         lastConnectedAt: '2026-08-23T00:00:00.000Z',
@@ -458,18 +444,12 @@ describe('Personal Vault owner routes', () => {
     const response = await invoke('GET', '/user/personal-vault', new Request('http://localhost/user/personal-vault'));
     expect(response.status).toBe(200);
     const payload = await response.json();
-    expect(payload.integrations.google.capabilities).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: 'youtube',
-          sourceKind: 'youtube',
-          enabled: false,
-          connected: false,
-          status: 'disabled',
-          missingScopes: [],
-        }),
-      ]),
-    );
+    expect(payload.integrations.google.capabilities.map((capability: { id: string }) => capability.id)).toEqual([
+      'gmail', 'calendar', 'contacts',
+    ]);
+    expect(payload.integrations.google.accounts[0].sources.map((source: { kind: string }) => source.kind)).toEqual([
+      'gmail',
+    ]);
   });
 
   it('disconnects Google sources and clears server-side token fields without purging vault data', async () => {
@@ -565,7 +545,7 @@ describe('Personal Vault owner routes', () => {
         kind: 'facebook',
         ownerUserId: 'user-1',
         providerAccountId: 'facebook-user-1',
-        credentialRef: 'facebook-personal-vault:owner-user-1',
+        credentialRef: 'provider:facebook:owner-user-1',
         status: 'connected',
         config: { coverage: ['profile', 'posts', 'photo-metadata'], displayName: 'Owner One' },
         cursor: { since: 'secret-provider-watermark', lastSyncAt: '2026-08-23T00:15:00.000Z' },
@@ -579,7 +559,7 @@ describe('Personal Vault owner routes', () => {
         kind: 'facebook',
         ownerUserId: 'user-1',
         providerAccountId: 'facebook-user-2',
-        credentialRef: 'facebook-personal-vault:owner-user-2',
+        credentialRef: 'provider:facebook:owner-user-2',
         status: 'connected',
         config: { coverage: ['profile', 'posts', 'photo-metadata'], displayName: 'Owner Two' },
         cursor: { since: 'other-secret-watermark', lastSyncAt: '2026-08-23T00:20:00.000Z' },
@@ -590,7 +570,7 @@ describe('Personal Vault owner routes', () => {
     ]);
     mocks.disconnectSources.mockResolvedValue({
       sources: 1,
-      credentialRefs: ['facebook-personal-vault:owner-user-2'],
+      credentialRefs: ['provider:facebook:owner-user-2'],
     });
 
     const statusResponse = await invoke(
@@ -644,14 +624,14 @@ describe('Personal Vault owner routes', () => {
       ['facebook'],
       'facebook-user-2',
     );
-    expect(mocks.tokenUpdate).toHaveBeenCalledWith('facebook-personal-vault', 'papercusp', {
+    expect(mocks.tokenUpdate).toHaveBeenCalledWith('provider:facebook', 'papercusp', {
       'owner-user-2': null,
       'owner-user-2_refresh': null,
       'owner-user-2_expires_at': null,
       'owner-user-2_expired': true,
     });
     expect(mocks.tokenUpdate).not.toHaveBeenCalledWith(
-      'facebook-personal-vault',
+      'provider:facebook',
       'papercusp',
       expect.objectContaining({ 'owner-user-1': null }),
     );
@@ -663,12 +643,12 @@ describe('Personal Vault owner routes', () => {
       {
         kind: 'facebook',
         providerAccountId: 'facebook-user-1',
-        credentialRef: 'facebook-personal-vault:owner-user-1',
+        credentialRef: 'provider:facebook:owner-user-1',
       },
       {
         kind: 'facebook',
         providerAccountId: 'facebook-user-2',
-        credentialRef: 'facebook-personal-vault:owner-user-2',
+        credentialRef: 'provider:facebook:owner-user-2',
       },
     ]);
     const response = await invoke(
@@ -931,7 +911,7 @@ describe('Personal Vault owner routes', () => {
     await expect(preview.json()).resolves.toMatchObject({
       principalType: 'plan-template',
       principalId: 'meeting-prep',
-      declaredScopes: ['personal:gmail'],
+      declaredScopes: ['personal:mail'],
     });
 
     const approval = await invoke(
@@ -955,7 +935,7 @@ describe('Personal Vault owner routes', () => {
       expect.objectContaining({
         principalType: 'plan-template',
         principalId: 'meeting-prep',
-        scopes: ['personal:gmail'],
+        scopes: ['personal:mail'],
       }),
     );
   });
@@ -963,9 +943,9 @@ describe('Personal Vault owner routes', () => {
 
 describe('declaredPersonalScopes', () => {
   it('normalizes aliases and deduplicates them', () => {
-    expect(declaredPersonalScopes({ personalScopes: ['Gmail', 'personal:gmail', 'calendar'] })).toEqual([
+    expect(declaredPersonalScopes({ personalScopes: ['Mail', 'personal:mail', 'calendar'] })).toEqual([
       'personal:calendar',
-      'personal:gmail',
+      'personal:mail',
     ]);
   });
 });

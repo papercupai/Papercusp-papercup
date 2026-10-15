@@ -511,7 +511,9 @@ export function clampSinceDays(sinceDays: number | undefined): number {
  */
 function adoptionQueryBody(dateWhereClause: string): string {
   return `
-WITH calls AS (
+-- Keep the two consumers independently plannable instead of spooling the whole
+-- seven-day call stream to disk (EI-25299577060523251).
+WITH calls AS NOT MATERIALIZED (
   SELECT
     spawn_id,
     role,
@@ -568,7 +570,8 @@ turned AS (
   FROM gapped
 ),
 tool_turn_counts AS (
-  SELECT spawn_id, tool_name, count(DISTINCT turn_id) AS turns_for_tool, count(*) AS raw_calls
+  SELECT spawn_id, tool_name, count(DISTINCT turn_id) AS turns_for_tool, count(*) AS raw_calls,
+    max(turn_id) AS last_turn
   FROM turned
   GROUP BY spawn_id, tool_name
 ),
@@ -578,13 +581,12 @@ work_agg AS (
     COALESCE(sum(raw_calls), 0)::int      AS work_calls,
     count(*)::int                         AS distinct_tools,
     COALESCE(max(raw_calls), 0)::int      AS max_same_tool,
-    COALESCE(max(turns_for_tool), 0)::int AS max_same_tool_turns
+    COALESCE(max(turns_for_tool), 0)::int AS max_same_tool_turns,
+    -- turn_id starts at one and increments once per boundary, so its maximum
+    -- is the spawn's distinct-turn count. Derive it in this existing aggregate:
+    -- a second consumer of turned forced another large materialized stream.
+    COALESCE(max(last_turn), 0)::int AS distinct_turns
   FROM tool_turn_counts
-  GROUP BY spawn_id
-),
-spawn_turns AS (
-  SELECT spawn_id, count(DISTINCT turn_id)::int AS distinct_turns
-  FROM turned
   GROUP BY spawn_id
 )
 SELECT
@@ -594,11 +596,10 @@ SELECT
   COALESCE(wa.distinct_tools, 0)      AS distinct_tools,
   COALESCE(wa.max_same_tool, 0)       AS max_same_tool,
   COALESCE(wa.max_same_tool_turns, 0) AS max_same_tool_turns,
-  COALESCE(st.distinct_turns, 0)      AS distinct_turns,
+  COALESCE(wa.distinct_turns, 0)      AS distinct_turns,
   ps.used_code_run
 FROM per_spawn ps
 LEFT JOIN work_agg wa USING (spawn_id)
-LEFT JOIN spawn_turns st USING (spawn_id)
 `;
 }
 

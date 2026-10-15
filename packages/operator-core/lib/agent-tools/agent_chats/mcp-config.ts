@@ -27,10 +27,8 @@
  * still carry is the flaky empty-turn culprit that pattern replaced.
  */
 
-import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { selfUrl } from '../../self-url';
+import { readSuperuserToken as readSharedSuperuserToken } from '../../superuser-token';
 import { activeWorkspaceId } from '../../workspace-registry';
 
 /**
@@ -70,14 +68,10 @@ export interface AgentChatsMcpConfig {
 /** Read the loopback superuser token — the chat spawn's credential for the
  *  operator's own MCP endpoint. Empty string when absent (unprovisioned
  *  build) — the caller degrades to the pre-P-004 no-tools behavior rather
- *  than failing the chat turn. */
+ *  than failing the chat turn. Goes through the shared reader so the bearer
+ *  is the one the operator validates (`$PAPERCUSP_HOME` honoured, WI-10006617). */
 function readSuperuserToken(): string {
-  try {
-    const token = readFileSync(join(homedir(), '.papercusp', 'superuser-token'), 'utf8').trim();
-    return token.length >= 16 ? token : '';
-  } catch {
-    return '';
-  }
+  return readSharedSuperuserToken() ?? '';
 }
 
 /**

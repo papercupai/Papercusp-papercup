@@ -18,7 +18,7 @@ function base(patch: Partial<Pick<ScheduledWatchdogStatus, 'config' | 'scheduler
     },
     scheduler: {
       kind: 'dbos-operation' as const,
-      parentWorkflow: 'routinesTick' as const,
+      parentWorkflow: 'routinesSweepTick' as const,
       operation: 'su-ideate-ungraded-sweep' as const,
       lastExecutionAt: '2026-07-19T00:01:00.000Z',
       lastWorkflowStatus: 'SUCCESS',
@@ -87,6 +87,48 @@ describe('classifyScheduledWatchdogStatus', () => {
         name: 'mode:set',
         args: { mode: 'grade', enabled: true },
       },
+    });
+  });
+
+  it('does not label an eligible backlog as awaiting sweep after a post-eligibility fire', () => {
+    const result = classifyScheduledWatchdogStatus(base({
+      scheduler: {
+        lastExecutionAt: '2026-07-18T00:02:00.000Z',
+        lastResultCount: 1,
+        lastNudgedCount: 0,
+      } as never,
+      eligibility: {
+        byOrigin: { 'su-ideate': { pendingCount: 2, eligibleCount: 2, oldestRoutedAt: '2026-07-11T00:00:00.000Z' } },
+        total: { pendingCount: 2, eligibleCount: 2, oldestRoutedAt: '2026-07-11T00:00:00.000Z', firstEligibleAt: '2026-07-18T00:00:00.000Z' },
+      } as never,
+      fire: {
+        count: 1,
+        lastFireAt: '2026-07-18T00:01:00.000Z',
+        lastReason: '[origin=su-ideate] 1 filing(s) nudged',
+      } as never,
+    }));
+
+    expect(result).toMatchObject({
+      ok: false,
+      effectiveState: 'eligible-after-fire',
+      summary: expect.stringContaining('eligible filing(s) (su-ideate: 2) remain; a watchdog fire was recorded'),
+      nextVerb: {
+        name: 'mode:set',
+        args: { mode: 'grade', enabled: true },
+      },
+    });
+  });
+
+  it('reports unknown when eligible rows cannot be compared to the sweep time', () => {
+    expect(classifyScheduledWatchdogStatus(base({
+      eligibility: {
+        byOrigin: { scout: { pendingCount: 1, eligibleCount: 1, oldestRoutedAt: null } },
+        total: { pendingCount: 1, eligibleCount: 1, oldestRoutedAt: null, firstEligibleAt: null },
+      } as never,
+    }))).toMatchObject({
+      ok: false,
+      effectiveState: 'eligibility-window-unknown',
+      summary: expect.stringContaining('timestamps cannot be compared'),
     });
   });
 

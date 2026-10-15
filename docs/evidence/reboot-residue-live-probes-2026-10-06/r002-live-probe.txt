@@ -1,0 +1,41 @@
+# r002-live-probe.sh — cold re-run after WI-10006503 (gateway cold-start budget 300s -> 900s), 2026-10-06.
+# Redacted: home directory -> $HOME, user/host names replaced. The /v1/models body line is omitted (it only echoes the alias).
+# Cold state: idle-backend-reaper was overdue (see WI-10006506 comment 1159258), so llama-ornith was stopped by hand
+# (the same end state the reaper produces) and the model blob was evicted from the page cache. The eviction is verified by
+# the drop in host Cached and by a 1 GiB blob read running at disk speed. A mincore-based residency check was NOT used:
+# it reported 100% even on a freshly evicted control file.
+EVICTION_CONTROL read_first_1GiB_ms=9655 cached_kB_before=23371756 cached_kB_after=15568852 method=posix_fadvise(DONTNEED) on blob after systemctl --user stop llama-ornith at 2026-10-06T07:38:08Z (idle-backend-reaper overdue since 07:30:07Z)
+START 2026-10-06T07:40:29Z
+PRE ornith=inactive kokoro=active ollama=active ollama_nrestarts=14211
+PRE embed_device=auto embed_sidecar=active
+PRE gpu=9286 MiB, 14833 MiB
+PRE_GPU_APP 8737, $HOME/.local/node25/bin/node, 1818 MiB
+PRE_GPU_APP 3351172, $HOME/.voicemode/services/kokoro/.venv/bin/python, 1020 MiB
+PRE_GPU_APP 714750, node, 5982 MiB
+COMPLETION_HTTP=200 after 353s
+COMPLETION_MODEL="model":"maxwell1500/ornith-35b:IQ3_M"
+COMPLETION_HAS_CHOICES=1
+MODELS_11435_HTTP=200
+MODELS_11435_HAS_ORNITH=1
+LOCAL_BACKENDS_ORNITH="enabled":true
+POST ornith=active ollama=active ollama_nrestarts=14211 kokoro=active
+POST gpu=22955 MiB, 1164 MiB
+POST_GPU_APP 8737, $HOME/.local/node25/bin/node, 1818 MiB
+POST_GPU_APP 3351172, $HOME/.voicemode/services/kokoro/.venv/bin/python, 1020 MiB
+POST_GPU_APP 714750, node, 5982 MiB
+POST_GPU_APP 2637594, /usr/local/lib/ollama/llama-server, 13678 MiB
+--- gateway journal since 2026-10-06T07:40:29Z (ornith/audit/drift/oom/fail)
+Oct 06 03:40:29 <host> env[2010253]: [inference-gateway:info] inference-gateway: local backend 'ornith-llamaserver' (llama-ornith.service) is not answering — starting it on demand
+Oct 06 03:40:29 <host> env[2010253]: [inference-gateway:info] inference-gateway: unit audit clean for 'ornith-llamaserver' — unit matches catalog 'ornith-35b-iq3m-llama-server' (params, required env, engine binary)
+Oct 06 03:43:05 <host> env[2010253]: [inference-gateway:error] upstream fetch failed request=a8e2b63a-dba4-4798-b659-da92e0e1be47:1141 code=upstream-error on 'aviynw9': inference-gateway: claude upstream failed: fetch failed (ETIMEDOU
+Oct 06 03:45:03 <host> env[2010253]: [inference-gateway:info] inference-gateway: local backend 'ornith-llamaserver' started on demand and is answering — routing resumed
+GATEWAY_BAD_LINES=0
+--- llama-ornith journal since 2026-10-06T07:40:29Z
+Oct 06 03:40:29 <host> systemd[4054]: Started llama-ornith.service - llama-server serving ornith-35b IQ3_M (local-concurrent-inference-2026-07-02 P-001) — 2 parallel slots
+LLAMA_LOG_NEW_BYTES=6066
+LLAMA_LOG_BAD_LINES=0
+LLAMA_LOG_LOADED=2
+END 2026-10-06T07:46:23Z
+PROBE_EXIT=0
+# Note: the 03:43:05 (local time) error line is a claude-upstream ETIMEDOUT on another account. It matched the probe's
+# 'fail' grep filter; it is not the ornith path, and GATEWAY_BAD_LINES (oom/load-fail/drift) is 0.

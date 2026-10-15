@@ -9,7 +9,6 @@
  * must carry writer evidence in source.
  */
 import { readFileSync } from "node:fs";
-import ts from "typescript";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 import { describeUnscanned, listTrackedFiles } from "./lib/tracked-files.mjs";
 import { stripCommentsAndStrings } from "./lib/strip-comments-and-strings.mjs";
@@ -377,7 +376,42 @@ export const RESOURCE_GOVERNOR_INVENTORY = Object.freeze([
  */
 export const RESOURCE_GOVERNOR_SCANNER_PATH =
   "scripts/check-resource-governor-enforcement.mjs";
+const INLINE_PROMISIFIED_RESOURCE_START =
+  /\bpromisify\s*\(\s*(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\)\s*\(/;
+function resourceStartCallCount(source) {
+  const code = stripCommentsAndStrings(source);
+  const directStarts = [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(/g)].length;
+  const inlinePromisifiedStarts = [
+    ...code.matchAll(new RegExp(INLINE_PROMISIFIED_RESOURCE_START.source, "g")),
+  ].length;
+  return directStarts + inlinePromisifiedStarts;
+}
+
 export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
+  {
+    path: "scripts/tauri-surface-verify-dao-workbench.mts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/tauri-surface-verify-dao-workbench.mts (EI-25462239328125754): an isolated native DAO Workbench acceptance driver, matching the existing reviewed native surface verifiers. It requires PAPERCUSP_VERIFY_TAURI_ISOLATED=1 and a verifier workspace/PG scope. Its single execFileSync primitive invokes the native bridge against an explicit target PID, waits for each call, and has a 65s deadline. It creates no detached worker or resident queue; the serving Tauri runtime is owned by the enclosing isolated verifier.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return resourceStartCallCount(source) === 1 &&
+        source.includes("assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1')") &&
+        source.includes("assert.match(ws, /^verify-tauri-isolated-") &&
+        source.includes("'--pid', process.env.VERIFY_TAURI_PID!") &&
+        source.includes("timeout: 65_000") &&
+        !/\bdetached\s*:\s*true/.test(code) && !/\bnew\s+(?:Worker|Piscina)\s*\(/.test(code) &&
+        !hasCalledResourceStartAlias(code);
+    },
+  },
+  {
+    path: "scripts/workspace-host/reconcile-hosted-gcp-roles.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/workspace-host/reconcile-hosted-gcp-roles.ts: this is a directly invoked operator CLI, not a runtime lane. Its sole process start is one synchronous execFileSync('gcloud', ['auth', 'print-access-token']) call to obtain the operator's GCP credential; it is awaited to completion and returns one captured token. reconcilePapercuspHostedRoles then handles the two fixed role specs sequentially with in-process fetch calls and at most three attempts per role. It creates no worker, background task, or resident queue. The hosted-role repair is intentionally performed by an operator identity while the control plane only attests roles read-only (WI-10005251), so runtime admission would gate the explicit repair path without governing persistent capacity.",
+  },
   {
     path: "scripts/share-source.mjs",
     code: "resource-start-outside-admission",
@@ -412,6 +446,88 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     disposition: "bypass",
     reason:
       "P-016 reviewed bypass disposition for scripts/verify-identities-r3.mjs: this is P-015 R-3's live self-drill VERIFICATION driver, the sibling of the reviewed verify-identities-r4.mjs row, run by hand in an observing session. Its starts are three synchronous execFileSync calls, each awaited to completion before the next and retaining only one captured stdout string: `node scripts/mcp-call.mjs` (one tool call, timeout 180s, 8 MiB maxBuffer), the production user-prompt-submit hook (timeout 30s, 8 MiB maxBuffer), and one `git rev-parse HEAD`. It holds no resident queue and adds no residency after it exits. Routing it through Governor.admit would gate an evidence-producing acceptance drill behind the runtime capacity it is meant to observe.",
+  },
+  {
+    path: "scripts/verify-cloud-workspaces-aws.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/verify-cloud-workspaces-aws.mjs (WI-10005277): this is an isolated Tauri UI acceptance driver, not a serving or scheduled runtime. It requires PAPERCUSP_VERIFY_TAURI_ISOLATED=1, a private display >= :90, a live bridge PID, and verifier binaries before acting. Cloud list and mutation responses are intercepted by `window.__cwNative` fixtures; the evidence explicitly records `syntheticCloudResponses=true` and `realAwsLifecycleProven=false`, so the script starts no AWS worker or resource. Its only process-start primitive is `command()`, synchronous `execFileSync` with a 120-second per-child timeout. Every tauri-agent-tools, poll, bash, xdotool, and screenshot child is awaited to exit before the next call; it retains output only for this acceptance run, detaches no child, and holds no resident queue. It adds no independently managed runtime capacity for Governor.admit to meter.",
+  },
+  {
+    path: "scripts/tauri-surface-verify-goal-report.mts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/tauri-surface-verify-goal-report.mts: this is an isolated Tauri UI acceptance driver launched by tauri-surface-verify-suite.sh through verify-tauri-headless.sh, not a serving or scheduled runtime. It requires PAPERCUSP_VERIFY_TAURI_ISOLATED=1. Its native and DOM-poll execFileSync calls are awaited with 60s/90s timeouts, and its sole longer-lived child is one ffmpeg screen recorder explicitly stopped in finally with SIGINT, awaited for exit, then SIGKILLed after a 10s bound. It creates no detached worker or resident work queue; the finite recorder exists only for this disposable acceptance run and adds no independently managed application capacity for Governor.admit to meter.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return (
+        [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(/g)].length === 4 &&
+        source.includes("assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1'") &&
+        source.includes("timeout: 60_000") &&
+        source.includes("timeout: 90_000") &&
+        code.includes("recording = spawn(") &&
+        source.includes("recording.kill('SIGINT')") &&
+        source.includes("recording!.once('exit'") &&
+        source.includes("recording!.kill('SIGKILL')") &&
+        source.includes("}, 10_000).unref()") &&
+        !/\bdetached\s*:\s*true/.test(code) &&
+        !/\bnew\s+(?:Worker|Piscina)\s*\(/.test(code) &&
+        !hasCalledResourceStartAlias(code)
+      );
+    },
+  },
+  {
+    path: "scripts/tauri-surface-verify-reports.mts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/tauri-surface-verify-reports.mts (EI-25357092317407008; third start reviewed under WI-10007542; fourth under WI-6554700010008629; fifth under WI-6554700010008580; sixth under EI-25822025814936255): disposable isolated Tauri acceptance, with no resident queue or detached worker. The two native bridge/poll execFileSync sites have 60s/90s deadlines. The third runs the exact frozen native test files through test:file, admitted upstream by runGovernedTestProcess. The fourth publishes the kernel-measured native runtime witness in one awaited Node child with a 60s deadline. The fifth runs only a prepared source-snapshot bundle with its recorded SHA-256 checked before execFile, preserving the owned private workspace and discovery directory, a 300s deadline, and 4MiB output bound. The sixth invokes the maintained frozen bundle-host.sh synchronously for unique receipt-attested script inputs before the test runner starts, with a 300s preparation deadline and the same verified private test environment. That recipe retains its dependency-reader mutex and restricted-source checks. verifyVerifierSourceSync checks the archive before and after compilation; profile entries bind the resulting bytes to their source-root paths. Preparation does not consume or widen the native journey's 300s limit. All children are awaited and exit within the enclosing isolated verifier operation; none adds independent managed serving capacity.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return resourceStartCallCount(source) === 7 &&
+        [...code.matchAll(/\bexecFileSync\s*\(/g)].length === 6 &&
+        [...code.matchAll(/\bexecFile\s*\(/g)].length === 1 &&
+        // Fifth start: the awaited native child, with its owned profile restored.
+        source.includes("const env = nativeChildEnvironment(profile);") &&
+        source.includes("execFile(process.execPath, [bundle, ...args], {") &&
+        source.includes("assert.ok(prepared, 'Native child must be bundled from the verified source before the test starts')") &&
+        source.includes("assert.equal(prepared.bundle, bundle,") &&
+        source.includes("digest('hex'), prepared.sha256,") &&
+        source.includes("cwd: sourceRoot, env, timeout: 300_000, maxBuffer: 4 * 1024 * 1024,") &&
+        source.includes("return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {") &&
+        source.includes("if (!error) { resolve({ stdout, stderr }); return; }") &&
+        source.includes("assert.equal(env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1'") &&
+        source.includes("profile.tauriPID === Number(env.VERIFY_TAURI_PID)") &&
+        source.includes("execFileSync('npm', ['run', 'test:file', '--', ...testFiles],") &&
+        source.includes("const testEnv = nativeTestDatabaseEnvironment(profile);") &&
+        source.includes("{ cwd: sourceRoot, stdio: 'inherit', env: { ...testEnv,") &&
+        source.includes("assert.equal(env.PAPERCUSP_SKIP_PG_DISCOVERY, '1'") &&
+        source.includes("PAPERCUSP_TEST_PG_ADMIN_URL: address.toString()") &&
+        source.includes("recordedDataDir === dataDir && port === address.port") &&
+        source.includes("command[command.indexOf('-D') + 1] === dataDir") &&
+        // Sixth start: finite frozen-source preparation, with no compiler fallback.
+        source.includes("execFileSync('bash', [join(sourceRoot, 'apps/operator/bin/bundle-host.sh'), join(sourceRoot, script), bundle],") &&
+        source.includes("{ cwd: sourceRoot, stdio: 'inherit', timeout: 300_000, env: testEnv }") &&
+        source.includes("new Set(nativeScripts).size === nativeScripts.length") &&
+        source.includes("receipt.files.some((entry: { path: string }) => entry.path === script)") &&
+        source.split("verifyVerifierSourceSync(sourceRoot, receipt").length - 1 === 2 &&
+        // Fourth start (WI-6554700010008629): the bounded runtime-vintage witness child.
+        source.includes("await import('./packages/operator-core/lib/runtime-vintage.ts');") &&
+        source.includes("verifyVerifierSourceSync(sourceRoot, receipt") &&
+        source.includes("{ cwd: sourceRoot, stdio: 'inherit',") &&
+        // Keep one isolation assert in each native-operation, committed-test, and Reports
+        // fixture phase. Dropping any phase's assertion re-flags the source.
+        source.split("assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1'").length - 1 === 2 &&
+        source.includes("assert.ok(pid && workspace && process.env.VERIFY_TAURI_POLL") &&
+        source.includes("cwd: sourceRoot, stdio: 'inherit', timeout: 60_000, env: nativeLedgerEnvironment(),") &&
+        source.includes("timeout: 60_000") &&
+        source.includes("timeout: 90_000") &&
+        !/\bdetached\s*:\s*true/.test(code) &&
+        !/\bnew\s+(?:Worker|Piscina)\s*\(/.test(code) &&
+        !hasCalledResourceStartAlias(code);
+    },
   },
   {
     path: "scripts/fixmic.mjs",
@@ -491,11 +607,79 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/agent-capacity/session-process.ts: `runAsync` spawns native `cp -a --reflink=auto` and `rm -rf` (copy workdir mode), or `sudo -n mount -t overlay` / `sudo -n umount` (overlay workdir mode, WI-10004672), to prepare a session work dir from a prepared checkout and remove it afterwards. Each child is awaited to its exit code, is not detached, and holds nothing after exit (an overlay mount is a kernel object the same session unmounts), so it adds no residency or queue of its own. It is called only by load-driver.ts and record-session.ts after their assertHostAdmission check, once per session they were already admitted to run (WI-10004522).",
   },
   {
+    path: "scripts/lib/pure-lane-proof-capture.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/lib/pure-lane-proof-capture.mjs (gate-test-reuse-yield P-006, WI-10004717): the green-checkpoint's post-verdict capture of pure-lane test proofs. It has two starts. `defaultGit` runs synchronous read-only `git -C <root>` reads (`rev-parse HEAD`, `status --porcelain`) bounded by a 30 s timeout, SIGKILL and a 64 MiB maxBuffer; each exits before capture continues. `defaultRunSlice` is only the `spawnProcess` seam handed to runVitestProcess, which wraps every slice in runGovernedTestProcess with a declared memory and file-descriptor demand, the same governed launcher each `test:lane-pure` shard uses, so the vitest child is admitted there rather than here. Slices run one at a time, each awaited to exit and killed (SIGTERM, then SIGKILL 10 s later) past its timeout, and the loop stops before the next scheduled gate fire. Nothing is detached and no queue outlives the call.",
+  },
+  {
+    path: "scripts/lib/schema-symbol-drift.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/lib/schema-symbol-drift.mjs: the symbol-level judge that decides whether a regenerated libs/papercusp/libs/db schema voids a gate test proof. Its starts are synchronous `execFileSync` calls behind injectable `exec` seams. `gitReadAtSha` runs `git ls-tree` and `git show <sha>:<path>` reads, walking into submodule gitlinks, each bounded by a 30 s timeout, SIGKILL and a 64 MiB maxBuffer. `drizzleConstructionSmoke` runs one `node --import tsx -e` child (120 s timeout) that imports the two generated schema files and runs drizzle's eager relational-config construction, and the judge evaluates it at most once per run. Every call is awaited to exit and only returns text. Its one production caller is scripts/affected-tests.mjs (`gitSchemaDriftJudge`), which already runs inside the gate run or a pc-heavy test slot, so it adds no residency or queue of its own. Any read, git or smoke failure answers 'affected', the conservative verdict.",
+  },
+  {
+    path: "scripts/lib/tsc-service.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/lib/tsc-service.mjs (WI-10005362): the scoped lint:tsc client of the shared typecheck service. Its only starts are in `tscServiceTemplateSocket`, reached only when PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE is set (hosted workspace hosts): two synchronous `spawnSync('systemctl', ['--user', 'start' | 'show', <unit>])` calls against the caller's own user manager, each bounded by a 15 s timeout and awaited to exit before the client continues. Nothing is detached and no queue is kept. `systemctl --user start` only makes the per-checkout socket unit listen; the typecheck server it may socket-activate runs in its own systemd unit under the MemoryHigh/MemoryMax limits written by customerTscServiceInstallLines (libs/generic/deployment-driver/src/workspace-host-bootstrap.ts), the same shape as the tower's papercup-tsc-service unit, so its residency is bounded by that cgroup rather than by this client. Any start or show failure returns an error and the caller falls back to its own compile.",
+  },
+  {
     path: "scripts/lib/targeted-task-reuse.mjs",
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
       "P-016 reviewed bypass disposition for scripts/lib/targeted-task-reuse.mjs: its only starts are synchronous `execFileSync` reads, `git` (120 s timeout, 64 MB maxBuffer) to fingerprint a task's inputs and `node -p process.version` (30 s timeout) to resolve the runner identity. Each is awaited to exit, not detached, and holds nothing after exit. Its callers are green-checkpoint.ts (`armTargetedTaskReuse`, inside the gate run) and scripts/affected-tests.mjs (inside a pc-heavy test slot or the gate run), both already admitted, so it adds no residency or queue of its own (EI-24538088938561684).",
+  },
+  {
+    path: "scripts/lib/restricted-hold-preflight.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/lib/restricted-hold-preflight.mjs (plan personal-data-reader-set-labels-2026-10-01 D-012; WI-10005713, WI-10005724): its only start is spawnCensus, ONE synchronous `spawnSync(process.execPath, ['--import', 'tsx', restricted-hold-preflight-cli.ts, ...])` (120 s timeout, 16 MiB maxBuffer) that reads the restricted-write census and refuses the test run while a disclosure is held. The parent blocks until the child exits, so it never runs concurrently with the work it guards, detaches nothing and holds nothing after exit. Its callers are scripts/test-files.mjs (spawned by testing:run's governed router start or a pc-heavy slot) and the vitest-root globalSetup in libs/test-config (inside runGovernedTestProcess or the gate run), both admitted; plus two pre-launch gates that run it BEFORE the live-tree work they guard starts: apps/operator/bin/bundle-restricted-hold-gate.mjs (from apps/operator/bin/bundle-host.sh, WI-10005745) and scripts/restricted-hold-tree-gate.mjs (from papercusp-desktop/bin/tauri-guarded dev and scripts/verify-tauri-headless.sh, WI-10005763). The attended desktop dev door has no admission of its own, but there the census is one timeout-bounded read that exits before the launch proceeds. Every caller runs it at most once per process, so it adds no residency or queue of its own. Pinned by matchesSource to that one timeout-bounded start: a second start in this file falls out of the exemption.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(/g)].length === 1 &&
+        /\bconst result = spawn\(process\.execPath,/.test(code) && /\btimeout:\s*timeoutMs\b/.test(code) &&
+        !/\bnew\s+Worker\s*\(|\bnew\s+Piscina\s*\(|\.admit\s*\(|\bdetached\b/.test(code) &&
+        !hasCalledResourceStartAlias(code);
+    },
+  },
+  {
+    path: "scripts/cloud-prod/provision-cloud-sql.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/cloud-prod/provision-cloud-sql.ts (plan cloud-portal-public-release-2026-10-13 P-004, WI-6554700010011217): an operator-run infrastructure-as-code CLI (plan | up | verify | status) that provisions the production Cloud SQL instance in GCP. It is not a runtime lane and nothing imports it at boot. Its only start is realGcloud: ONE `execFile('gcloud', args, { maxBuffer: 32 MiB, timeout: GCLOUD_TIMEOUT_MS })` per call, awaited to completion before the next call. It retains only that call's captured stdout/stderr, detaches nothing and holds no resident queue, so it adds no residency after it exits. The capacity it creates lives in Google Cloud, not on this host. Gating it behind Governor.admit would make the production database unprovisionable or unverifiable while the dev box is under load, which is a category error. Pinned by matchesSource to that one timeout-bounded start: a second start in this file falls out of the exemption.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(/g)].length === 1 &&
+        /\btimeout:\s*GCLOUD_TIMEOUT_MS\b/.test(code) &&
+        !/\bnew\s+Worker\s*\(|\bnew\s+Piscina\s*\(|\.admit\s*\(|\bdetached\b/.test(code) &&
+        !hasCalledResourceStartAlias(code);
+    },
+  },
+  {
+    path: "scripts/lib/committed-source-loader.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/lib/committed-source-loader.mjs (plan personal-data-reader-set-labels-2026-10-01 D-012; WI-10005764, WI-10005802): the `--import` load hook makes the `spawnCensus` restricted-hold census child execute only committed bytes. Its only start is the `git(top, args)` helper: one synchronous `execFileSync(gitExecutable, ['-C', top, ...args])` site that reads `ls-tree -r HEAD` (once per checkout, cached), `check-ignore -q` (per untracked module), and `cat-file blob` (per differing module). The executable resolves through realpath to an absolute executable; each read has a 60 s timeout, is awaited, and leaves no resident child. The hook runs only inside the timeout-bounded restricted-hold census child, which already owns admission. The exact executable-resolution and single-read shape is pinned below.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync|exec|execSync)\s*\(/g)].length === 1 &&
+        /\breturn execFileSync\(gitExecutable, \['-C', top, \.\.\.args\]/.test(source) &&
+        source.includes("const COMMITTED_SOURCE_GIT_ENV = 'PAPERCUSP_COMMITTED_SOURCE_GIT';") &&
+        source.includes("if (configured && !isAbsolute(configured))") &&
+        source.includes("const resolved = realpathSync(candidate);") &&
+        source.includes("accessSync(resolved, fsConstants.X_OK);") &&
+        /\btimeout:\s*GIT_TIMEOUT_MS\b/.test(code) &&
+        !/\bnew\s+Worker\s*\(|\bnew\s+Piscina\s*\(|\.admit\s*\(|\bdetached\b/.test(code) &&
+        !hasCalledResourceStartAlias(code);
+    },
   },
   {
     path: "apps/operator/lib/release/cut-seed-cli.ts",
@@ -673,13 +857,6 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed upstream disposition for packages/operator-core/lib/harness/routines/release-actions.ts: this scheduled routine child is launched under the surrounding durable scheduler/operation, which owns admission, cancellation, and release; adding a second local receipt would double-count the same work.",
   },
   {
-    path: "packages/operator-core/lib/harness/routines/supervision-reconcile-action.ts",
-    code: "resource-start-outside-admission",
-    disposition: "bypass",
-    reason:
-      "P-016 reviewed bypass disposition for packages/operator-core/lib/harness/routines/supervision-reconcile-action.ts: this scheduled routine child is bounded and awaited (or release/control metadata), creates no independent resident queue, and must remain runnable while productive capacity is pressured.",
-  },
-  {
     path: "packages/operator-core/lib/harness/routines/task-reconcile-action.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",
@@ -726,7 +903,17 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for packages/operator-core/lib/release/checkpoint-qualification-transaction.ts: its only detected start is a `systemctl --user is-active <unit>` status probe that is bounded, awaited, and read for release/checkpoint control metadata; it spawns no worker, creates no resident queue, and must stay runnable while productive capacity is pressured.",
+      "P-016 reviewed bypass disposition for checkpoint-qualification-transaction.ts: its sole process start is a timeout-bounded, awaited systemctl is-active probe for the unit of an already-recorded runner. It reads release/checkpoint control metadata, creates no worker or resident queue, and must remain available while productive capacity is pressured.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return resourceStartCallCount(source) === 1 &&
+        source.includes("await promisify(execFile)('systemctl', ['--user', 'is-active', unit], {") &&
+        source.includes("timeout: 5_000,") &&
+        source.includes("if (!unit) return 'unknown';") &&
+        !/\bdetached\s*:\s*true/.test(code) &&
+        !/\bnew\s+(?:Worker|Piscina)\s*\(/.test(code) &&
+        !hasCalledResourceStartAlias(code);
+    },
   },
   {
     path: "packages/operator-core/lib/release/checkpoint-required-ancestor.ts",
@@ -888,6 +1075,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     disposition: "upstream",
     reason:
       "P-016 reviewed upstream disposition for packages/operator-core/lib/system-health/compute.ts: this system-health probe/run is launched under the surrounding durable scheduler/operation, which owns admission, cancellation, and release; adding a second local receipt would double-count the same work.",
+  },
+  {
+    path: "packages/operator-core/lib/system-health/rtk-liveness.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass for packages/operator-core/lib/system-health/rtk-liveness.ts: one synchronous `rtk --version` probe per hourly installed-hook-drift sweep (WI-6554700010009291), capped at a 5-second timeout and awaited in-line; it starts no resident work and runs no user command.",
   },
   {
     path: "packages/operator-core/lib/system-health/desktop-perf-scheduled-run.ts",
@@ -1261,6 +1455,20 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/content-lint-runner.mjs: this CI/guard helper subprocess is bounded and awaited (or release/control metadata), creates no independent resident queue, and must remain runnable while productive capacity is pressured.",
   },
   {
+    path: "scripts/gate-liveness-sentinel.mts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/gate-liveness-sentinel.mts (plan green-main-cycle-time-2026-10-08 P-023): the out-of-operator red-gate liveness alarm, one tick per systemd timer fire. Its only start is ONE awaited `execFile(file, args, { cwd: ROOT, timeout: timeoutMs, ... })` used for two alarm deliveries — the mcp-call notifications:send_owner client (90 s) and notify-send (15 s) — at most once each per tick, and only while a breach is open. It must stay runnable when the operator and productive capacity are down, because that outage is exactly what it reports; it detaches nothing and holds nothing after exit. Pinned by matchesSource to that one timeout-bounded start.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync|exec|execSync)\s*\(/g)].length === 1 &&
+        /\bexecFile\(file, args, \{ cwd: ROOT, timeout: timeoutMs\b/.test(code) &&
+        !/\bnew\s+Worker\s*\(|\bnew\s+Piscina\s*\(|\.admit\s*\(|\bdetached\b/.test(code) &&
+        !hasCalledResourceStartAlias(code);
+    },
+  },
+  {
     path: "scripts/gen-agent-env.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",
@@ -1273,6 +1481,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     disposition: "bypass",
     reason:
       "P-016 reviewed bypass disposition for scripts/gen-declarations.ts: this CI/guard helper subprocess is bounded and awaited (or release/control metadata), creates no independent resident queue, and must remain runnable while productive capacity is pressured.",
+  },
+  {
+    path: "scripts/lib/stale-declaration-suppressions.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/lib/stale-declaration-suppressions.ts: importerSources is a build-time helper called by gen-declarations.ts to diagnose newly unused TypeScript suppressions. Its sole process start is one synchronous execFileSync('git', ['-C', repoRoot, 'grep', '-l', '-F', ...patterns, '--', ...importerGlobs]) over the finite tracked source tree, with captured output bounded by maxBuffer. The caller awaits that metadata search before the in-process suppression scan; an empty module set starts nothing, exit 1 means a measured empty result, and other failures remain null/not-measured. It starts no detached worker, provider request, runtime schedule, or resident queue; admitting this local build metadata read would gate the diagnostic rather than govern persistent capacity.",
   },
   {
     path: "scripts/gen-doc-projections.ts",
@@ -1422,6 +1637,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/pg-autotune.ts: this CI/guard helper subprocess is bounded and awaited (or release/control metadata), creates no independent resident queue, and must remain runnable while productive capacity is pressured.",
   },
   {
+    path: "scripts/plugin-mirror-export.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/plugin-mirror-export.mjs: its only starts are synchronous execFileSync `git ls-tree` / `git show` metadata reads of one committed plugin package. execFileSync blocks its caller, so each child is awaited by construction and cannot outlive the call; the file declares no interval, worker, detached spawn or unref, so it parks no resident queue and cannot materially increase residency while productive capacity is pressured.",
+  },
+  {
     path: "scripts/proc-guard.mjs",
     code: "unbounded-resident-queue",
     disposition: "semantic",
@@ -1514,13 +1736,6 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     disposition: "bypass",
     reason:
       "P-016 reviewed bypass disposition for packages/operator-core/lib/harness/routines/dead-target-probe.ts: execFileAsync(git rev-parse --verify --quiet HEAD^{commit}) and (git status --porcelain --untracked-files=no) are two bounded, explicitly-timed-out reads (probeTimeoutMs) run per install per sweep to classify an install's git object store as readable/corrupt/absent/unknown; both are awaited, read-only, and create no independent resident queue.",
-  },
-  {
-    path: "packages/operator-core/lib/harness/routines/frozen-candidate-drift-sweep-action.ts",
-    code: "resource-start-outside-admission",
-    disposition: "bypass",
-    reason:
-      "P-016 reviewed bypass disposition for packages/operator-core/lib/harness/routines/frozen-candidate-drift-sweep-action.ts: spawnSync(git log <candidate>..<branch> --name-only) is one bounded synchronous metadata read (explicit maxBuffer) used to compute a residual drift finding; it creates no independent resident queue.",
   },
   {
     // frozen-candidate-stays-frozen-through-all-fixes-2026-09-03 P-003 / D-010: this is the
@@ -1703,6 +1918,20 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/lib/release-task-journal.mts: its two execFileSync calls are bounded, awaited git show/ls-tree metadata reads against one pinned source SHA; they start no resident worker or queue and must complete before the journal identity can be accepted.",
   },
   {
+    path: "scripts/measure-startup-cache.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/measure-startup-cache.ts (plan token-efficiency-prompts-cache-and-behavior-2026-10-11 P-001): its single spawnSync is one synchronous, awaited, unit-scoped `journalctl --grep startup-cache-evidence/v1` read with a 120s timeout, run by an operator on demand. It starts no worker, no detached child and no resident queue, and the measurement instrument must stay runnable while productive capacity is pressured. journal-read.ts was not reused because its 1,000-line result cap is below one day of gateway evidence lines.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return resourceStartCallCount(source) === 1 &&
+        source.includes("spawnSync('journalctl', args,") &&
+        source.includes("timeout: 120_000") &&
+        !/\bdetached\s*:\s*true/.test(code) && !/\bnew\s+(?:Worker|Piscina)\s*\(/.test(code);
+    },
+  },
+  {
     path: "scripts/lib/stale-swap-leftovers.mjs",
     code: "unbounded-resident-queue",
     disposition: "semantic",
@@ -1780,11 +2009,67 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for near-duplicate-guard-compare-cli.ts: gitBlob runs one awaited execFileSync(git hash-object <path>) per compared artifact to stamp provenance on this operator-invoked bench CLI; a failure is caught as null. It exits immediately and creates no detached worker or resident queue.",
   },
   {
+    path: "packages/operator-core/lib/search/bench/chunk-search-ab-cli.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for chunk-search-ab-cli.ts: its sole child-process call reads Git metadata for measuredCode provenance (HEAD, blob and dirty state), with a 30-second timeout and 1 MiB output bound. The attended A/B CLI awaits each read, catches failures as explicit error text, detaches nothing and creates no resident process queue. This disposition rejects additional child starts or removal of the read bounds.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(/g)].length === 1 &&
+        source.includes("execFileSync('git', ['-C', repo, ...args]") &&
+        /timeout:\s*30_000/.test(code) && /maxBuffer:\s*1024\s*\*\s*1024/.test(code) &&
+        !START_NON_VERB.test(code) && !hasCalledResourceStartAlias(code);
+    },
+  },
+  {
+    path: "packages/operator-core/lib/search/bench/bm25-bakeoff-cli.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for bm25-bakeoff-cli.ts (WI-10008294, plan bm25-lexical-search-evoke-adoption-2026-10-10 P-001): an attended, operator-invoked research bench. Every child start is a blocking spawnSync (docker build/run/exec/restart/logs, a read-only `docker image inspect` preflight for --skip-build, one read-only sudo psql COPY, git rev-parse); the parent waits for each to exit, detaches nothing and keeps no resident queue. The one long-lived resource, the throwaway bake-off container, is removed by `docker rm -f` in a finally block unless the operator passes --keep. This disposition rejects any asynchronous or detached start (spawn/fork/execFile) or removal of the finally cleanup.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return [...code.matchAll(/\b(?:spawn|fork|execFile|execFileSync|exec|execSync)\s*\(/g)].length === 0 &&
+        [...code.matchAll(/\bspawnSync\s*\(/g)].length === 6 &&
+        source.includes("if (!args.keep) spawnSync('docker', ['rm', '-f', c.name]") &&
+        !START_NON_VERB.test(code) && !hasCalledResourceStartAlias(code);
+    },
+  },
+  {
     path: "packages/operator-core/lib/search/embedding-space-parity-cases.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
       "P-016 reviewed bypass disposition for embedding-space-parity-cases.ts: censusFilterCallSites runs one awaited execFileSync(git grep --untracked -lE) over packages/apps/libs to enumerate call-site files for an in-process AST census. It is a bounded local metadata search that exits immediately and starts no detached worker or resident queue.",
+  },
+  {
+    path: "packages/operator-core/lib/release/admission-import-completeness.ts",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition for admission-import-completeness.ts: pending is a function-local import-data traversal frontier, seeded only from the finite admission source map. Each entry is synchronously consumed by shift; imported bindings are restricted to sourceByPath and deduplicated by visited before their exported data enters the frontier. It starts no work and retains no queue after the probe returns. The source predicate requires that consumption and deduplication and rejects any additional queue writer.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      const writers = [...code.matchAll(RESIDENT_QUEUE)];
+      return writers.length === 1 && writers[0][1] === "pending" &&
+        code.includes("const pending = sources.map(") &&
+        code.includes("const visited = new Set<string>();") &&
+        code.includes("while (pending.length > 0)") &&
+        code.includes("pending.shift()") &&
+        code.includes("sourceByPath.has(candidate)") &&
+        code.includes("if (visited.has(key)) continue;") &&
+        code.includes("visited.add(key);") &&
+        code.includes("pending.push({ path: imported, data: value });") &&
+        !/\b(?:async|await)\b/.test(code);
+    },
+  },
+  {
+    path: "packages/operator-core/lib/release/admission-offthread.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for admission-offthread.ts: its Worker is a process-scoped execution host for the frozen-repair queue's synchronous builders, not a per-request worker. pinModuleState gives one HostState per process and ensureWorker shares state.ready; runAdmissionJob permits one active job and refuses overlap instead of retaining queued work; the worker is unrefed between jobs and terminated by the idle reaper, with failed starts and worker errors clearing shared state. It starts no detached worker or independent schedule. admission-offthread.test.ts covers fail-fast overlap, idle reaping, and a later fresh start.",
   },
   {
     path: "scripts/check-tracked-ignored.mjs",
@@ -1793,16 +2078,660 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     reason:
       "P-016 reviewed bypass disposition for scripts/check-tracked-ignored.mjs: this CI lint script runs awaited spawnSync(git ls-files / check-ignore) metadata reads per repository with a 256 MiB output bound. Each exits immediately, and it creates no detached worker or resident queue.",
   },
+  {
+    path: "scripts/lib/graph-dependency-suggestions.mjs",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition for scripts/lib/graph-dependency-suggestions.mjs: this is a call-local traversal frontier, not queued background work. Both initial changed-path seeds and discovered importers are deduplicated in `seen` and limited by the existing MAX_VISITED_FILES bound; excess seeds set `truncated` and are omitted from suggestions, while the baseline selection remains untouched. The cursor-index walk retains at most that same bound and is discarded when the suggestion call returns.",
+  },
+  {
+    path: "packages/operator-core/lib/harness/routines/operator-e2e-isolated-action.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for operator-e2e-isolated-action.ts: the routine starts exactly one isolated E2E task through managedSpawn, classed as test-run with the existing memory and runtime limits, a task-ledger identity, and a single-flight check. This is already admitted and accounted at the task manager boundary; the local spawn alias is only the injected managedSpawn seam.",
+    matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+      source.includes("const spawn = opts.spawnFn ?? managedSpawn;") &&
+      source.includes("class: 'test-run'") &&
+      source.includes("memoryMaxBytes: OPERATOR_E2E_MEMORY_MAX_BYTES") &&
+      source.includes("runtimeMaxSec: OPERATOR_E2E_RUNTIME_MAX_SEC") &&
+      source.includes("if (inFlight.length > 0)"),
+  },
+  {
+    path: "packages/operator-core/lib/release/staging-fix-proposal-cli.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for staging-fix-proposal-cli.ts: its sole direct process start reads one local Git integration ref before constructing an operator-invoked proposal. The multi-minute precheck is delegated to createCheckpointTreeFixPrecheckRunner in its own precheck tree; this read itself creates no resident job or retry queue.",
+    matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+      source.includes("execFileSync('git', ['rev-parse', '--verify'") &&
+      source.includes("createCheckpointTreeFixPrecheckRunner({") &&
+      source.includes("precheckRoot,"),
+  },
+  {
+    path: "packages/operator-core/lib/sync/hyperbee/seed-frozen-execution.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for seed-frozen-execution.ts: each committed security-package row gets one awaited Python stdlib tar inspection after the HTTPS response is timeout-bounded and its lockfile sha512 is verified. The child emits only the file-digest map under a 16 MiB output bound; it is finite snapshot construction, not serving or resident work.",
+    matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+      source.includes("const archive = JSON.parse(execFileSync('python3'") &&
+      source.includes("AbortSignal.timeout(120000)") &&
+      source.includes("maxBuffer: 16 * 1024 * 1024") &&
+      source.includes("createHash('sha512').update(bytes)"),
+  },
+  {
+    path: "packages/operator-core/lib/system-health/claude-update-canary.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for claude-update-canary.ts: one ephemeral CLI probe per configured canary variant is routed through the inference gateway with an isolated owner header, a 150-second timeout, a 4 MiB output ceiling, and unconditional temporary-directory cleanup. It leaves no resident child or queue.",
+    matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+      source.includes("const PROBE_TIMEOUT_MS = 150_000") &&
+      source.includes("execFile(input.binary, args, { cwd, env, timeout: PROBE_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024") &&
+      source.includes("ANTHROPIC_BASE_URL: `http://127.0.0.1:${gatewayPort()}`") &&
+      source.includes("finally {\n    if (dir) await fs.rm(dir, { recursive: true, force: true }).catch(() => {});"),
+  },
+  {
+    path: "scripts/e2e-fixture-affected.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for e2e-fixture-affected.mjs: this operator-invoked test runner first ensures the Playwright browser and then runs only the selected fixture specs with one worker; --print exits before either child. It creates no service process or resident queue.",
+    matchesSource: (source) => resourceStartCallCount(source) === 2 &&
+      source.includes("scripts/ensure-playwright-browsers.mjs") &&
+      source.includes('["--no-install", "playwright", "test", ...specArgs, "--workers=1"]') &&
+      source.includes("if (args.print || selection.selected.length === 0) return 0;"),
+  },
+  {
+    path: "scripts/provision-lsp.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for provision-lsp.ts: a manually invoked, foreground provisioning CLI (`tsx scripts/provision-lsp.ts python go`) that installs the pinned pyright/gopls versions into the LSP adapter's versioned vendor directories. Its three children (an `npm install --prefix <vendor dir>` of the exact pyright pin, a `go install` of the exact gopls pin with GOTOOLCHAIN=local, and a `gopls version` check) run synchronously with inherited stdio and exit before the command returns. It never runs inside the operator, a routine, or a test, and leaves no service, worker, or resident process behind.",
+    matchesSource: (source) => resourceStartCallCount(source) === 3 &&
+      source.includes("execFileSync('npm', ['install', '--prefix', dir, '--save-exact', `pyright@${PYRIGHT_VERSION}`], { stdio: 'inherit' })") &&
+      source.includes("execFileSync(go, ['install', `golang.org/x/tools/gopls@${GOPLS_VERSION}`], {") &&
+      source.includes("execFileSync(join(bin, 'gopls'), ['version'], { stdio: 'inherit' })") &&
+      !/\bdetached\s*:\s*true/.test(stripCommentsAndStrings(source)),
+  },
+  {
+    path: "scripts/gen-asana-openapi-subset.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for gen-asana-openapi-subset.mjs: this manually invoked generator reads the immutable Asana OpenAPI commit with a 64 MiB output ceiling, then runs the pinned openapi-typescript version to produce checked-in artifacts. Both children exit before the generator returns; no runtime service or resident process is created.",
+    matchesSource: (source) => resourceStartCallCount(source) === 2 &&
+      source.includes("const ASANA_OAS_COMMIT = '1b1c15108d490fc5b780bb83e070293b5815d522';") &&
+      source.includes("execFileSync('curl', ['-fsSL', SOURCE_URL], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })") &&
+      source.includes("execFileSync('npx', ['-y', OPENAPI_TYPESCRIPT, typegenInput, '-o', tmpDts]"),
+  },
+  {
+    path: "scripts/gen-asana-openapi-subset.mjs",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition for gen-asana-openapi-subset.mjs: queue is a call-local schema-reference traversal over the pinned OpenAPI document. The `seen` set consumes each schema name once, references are read only from `all`, and the frontier is discarded when this one-shot generator returns; it is not queued runtime work.",
+    matchesSource: (source) => source.includes("const seen = new Set();") &&
+      source.includes("const queue = [...ROOT_SCHEMAS];") &&
+      source.includes("queue.push(...bodyRefs);") &&
+      source.includes("while (queue.length > 0)") &&
+      source.includes("if (seen.has(name)) continue;") &&
+      source.includes("seen.add(name);") &&
+      source.includes("collectRefs(all[name], refs);") &&
+      source.includes("queue.push(...refs);"),
+  },
+  {
+    path: "scripts/gen-graph-dependency-snapshot.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for gen-graph-dependency-snapshot.mjs: direct Cypher intentionally starts the gitnexus CLI once per bounded page and sends its large stdout to a temporary file; runCliToFile kills the child at the supplied timeout and removes the file in finally. First-party source enumeration is a one-shot local Git read with a 256 MiB output ceiling. This is an attended snapshot generator, not an MCP request path.",
+    matchesSource: (source) => resourceStartCallCount(source) === 2 &&
+      source.includes("runToFile = runCliToFile") &&
+      source.includes("const timer = setTimeout(() => child.kill(\"SIGKILL\"), timeoutMs);") &&
+      source.includes("rmSync(dir, { recursive: true, force: true });") &&
+      source.includes("maxBuffer: 1 << 28") &&
+      source.includes("const MAX_PAGES = 20000;"),
+  },
+  {
+    path: "scripts/npm-install-safe.mjs",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition for npm-install-safe.mjs: pending is a call-local manifest-closure traversal. It is seeded from the repository's workspace manifests, deduplicated by `inspected`/`inputPaths`, and accepts file dependencies only when their target stays strictly inside the repository; it holds no install work after the layout probe returns.",
+    matchesSource: (source) => source.includes('const pending = ["package.json", ...workspaceManifestPaths];') &&
+      source.includes("const inspected = new Set();") &&
+      source.includes("while (pending.length > 0)") &&
+      source.includes("if (inspected.has(manifestPath)) continue;") &&
+      source.includes("if (!isStrictlyWithin(repoRoot, targetPath))") &&
+      source.includes("if (!inputPaths.has(targetRelative)) {\n          inputPaths.add(targetRelative);\n          pending.push(targetRelative);"),
+  },
+  {
+    path: "scripts/remeasure-callers.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for remeasure-callers.ts: the only child is one local `git rev-parse HEAD` read for provenance in this explicitly operator-run CLI. Caller analysis then runs in-process and returns one row per finite fixture sample; it starts no resident worker or background queue.",
+    matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+      source.includes("execFileSync('git', ['rev-parse', 'HEAD']") &&
+      source.includes("const root = process.cwd();") &&
+      source.includes("if (isCliEntry(import.meta.url))"),
+  },
+  {
+    path: "scripts/review-cloud-tutorial-native.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for review-cloud-tutorial-native.mjs: the attended native tutorial review runs under pc-heavy with one headed Playwright worker. Its browser readiness probe owns a process group and 15s deadline with SIGTERM/SIGKILL cleanup; the desktop phase tracks its window-manager, accessibility and test children and stops them in finally. These four lexical start sites create no serving workload.",
+    matchesSource: (source) => resourceStartCallCount(source) === 4 &&
+      source.includes("scripts/pc-heavy.sh") &&
+      source.includes("--workers=1") &&
+      source.includes("const stop = () => { for (const c of children)") &&
+      source.includes("} finally { stop(); }"),
+  },
+  {
+    path: "scripts/reviewer-operator-assert.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for reviewer-operator-assert.mjs: the isolated ptool seed call has a 60-second deadline and the native-capture transport (an awaited `ssh -o BatchMode=yes -o ConnectTimeout=20` into the explicitly named mobile host, which replaced the earlier `gh run watch` path in d2956e100b) has a 65-minute deadline; both cap output at 2 MiB. The only resident child is a loopback socat relay on the verifier's reserved port; readiness is limited to five seconds, and finally terminates the relay. Its launcher runs the assertion inside the disposable Tauri verifier.",
+    matchesSource: (source) => resourceStartCallCount(source) === 3 &&
+      source.includes("timeout: 60_000, maxBuffer: 2_000_000") &&
+      source.includes("timeout: 65 * 60_000 });") &&
+      source.includes("'ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=20'") &&
+      source.includes("TCP-LISTEN:${relayPort},bind=127.0.0.1,fork,reuseaddr") &&
+      source.includes("const deadline = Date.now() + 5000;") &&
+      source.includes("} finally { stop(); }"),
+  },
+  {
+    path: "scripts/tauri-surface-verify-reporter-status.mts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for tauri-surface-verify-reporter-status.mts: its one native Tauri-driver start is inside the scheduled isolated reporter-status phase and every command has a 60-second timeout. The phase requires the isolated verifier DB and a concrete target PID; it leaves no process or queue behind.",
+    matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+      source.includes("execFileSync(tool, [...args, '--pid', pid], { encoding: 'utf8', timeout: 60_000 })") &&
+      source.includes("assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1'") &&
+      source.includes("runPhase(ctx)"),
+  },
+  {
+    path: "scripts/pg-url.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/pg-url.mjs (reviewed under WI-10007542 after its `--exec` mode landed 2026-10-08): this is a directly invoked DSN resolver CLI, not a runtime lane. Its one start is `--exec -- COMMAND`, an env-binding wrapper in the shape of `env VAR=… cmd`: it spawns exactly the caller-named child with shell:false and inherited stdio, sets only HARNESS_ADMIN_DATABASE_URL, awaits the child's exit and returns its code. It refuses to start anything unless an explicit env or isolated-PG pin selected the database. The child's cost belongs to the door that invoked pg-url (a capability:bash task, or pc-heavy when the caller wraps it), which already confines and accounts for the whole subtree, so a second receipt here would double-count the same work.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return resourceStartCallCount(source) === 1 &&
+        source.includes("const child = spawn(executable, commandArgs, {") &&
+        source.includes("shell: false,") &&
+        source.includes("stdio: 'inherit',") &&
+        source.includes("child.once('exit', (code) => resolve(code ?? 1));") &&
+        source.includes("if (args.mode === 'exec' && !['env', 'isolated-pg-port'].includes(resolution.source))") &&
+        !/\bdetached\b/.test(code) &&
+        !/\bnew\s+(?:Worker|Piscina)\s*\(/.test(code) &&
+        !hasCalledResourceStartAlias(code);
+    },
+  },
+  {
+    path: "scripts/with-documenso-sandbox.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/with-documenso-sandbox.mjs (WI-6554700010009231; readiness extension WI-6554700010009544): a one-shot isolated e2e wrapper, never a serving or scheduled runtime. Its reviewed finite Docker/openssl clients and wrapped-command child retain process-group stop and finally cleanup. The legacy shape has no reaper. The reaper shape retains its sole Testcontainers import for the socket path, --rm, 30s no-client and 1s reconnection timeouts, owner-label filter acknowledgement before allocation, awaited remover, and fail-closed residue check. A readiness-enabled reaper shape adds only one Docker spawnSync client with a5s deadline and100000-byte output bound. Its caller passes the owned database, password redactions and stop predicate to the existing finite31-attempt loop; that loop reads TCP pg_isready and terminal container state, preserving bounded failure evidence. matchesSource pins this exact extension as well as the original lifecycle. Any other start, missing timeout, unlimited readiness loop, widened label filter or dropped cleanup falls out of this disposition.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      // Without the reaper: the shape committed at 8cc9307dd5, where cleanup is
+      // two of the seven starts. With it: cleanup removes through the awaited
+      // dockerAllocation client, leaving five starts, and the reaper must stay
+      // bounded and filtered to this run's owner label.
+      const testcontainersImports = [
+        ...source.matchAll(/(?:\bfrom\s+|\bimport\s*\(?\s*|\brequire\s*\(\s*)['"]@?testcontainers\b/g),
+      ].length;
+      const hasReadiness = /\bwaitForSandboxPostgres\b/.test(code);
+      const readinessPinned = !hasReadiness || (
+        [...source.matchAll(/\bdiagnosticRun\s*=\s*args\s*=>\s*spawnSync\('docker', args, \{ encoding: 'utf8', timeout: 5000, maxBuffer: 100_000 \}\)/g)].length === 3 &&
+        source.includes("await runPhase('database-ready', () => waitForSandboxPostgres(database,") &&
+        source.includes("{ run: diagnosticRun, secrets: [databasePassword], isStopped: () => stopped }));") &&
+        source.includes("attempts = 31, isStopped = () => false") &&
+        source.includes("for (let attempt = 0; ; attempt++) {\n    if (isStopped()) return;") &&
+        source.includes("stalledAttempts = observedStage > startupStage ? 1 : stalledAttempts + 1;") &&
+        source.includes("if (terminal || stalledAttempts >= attempts)")
+      );
+      const shapePinned = source.includes("REAPER_IMAGE")
+        ? resourceStartCallCount(source) === 8 && readinessPinned &&
+          testcontainersImports === 1 &&
+          source.includes("import { getContainerRuntimeClient, Wait } from 'testcontainers';") &&
+          source.includes("getClient = getContainerRuntimeClient, allocate = dockerAllocation,") &&
+          source.includes("const containerId = await allocate(['run', '-d', '--rm', '--pull=missing', '--name', name,") &&
+          source.includes("'-e', 'RYUK_CONNECTION_TIMEOUT=30s', '-e', 'RYUK_RECONNECTION_TIMEOUT=1s', REAPER_IMAGE]);") &&
+          source.includes("socket.write('label=papercusp.test.owner=' + owner + '\\n')") &&
+          source.includes("  reaper.assertConnected();\n  containers.push(name);") &&
+          source.includes("    reaper.assertConnected();\n    await dockerAllocation(['network', 'create', ") &&
+          source.includes("  remove = args => dockerAllocation(args) }) {") &&
+          source.includes("try { await remove(['rm', '-f', '-v', name]); }") &&
+          source.includes("try { await remove(['network', 'rm', network]); }") &&
+          source.includes("if (remainingContainers || remainingNetworks) {") &&
+          (source.includes("try { await cleanupSandboxResources({ containers, network, networkCreated, inspect: docker }); }") ||
+            (source.includes("if (containers.length || networkCreated) {") &&
+              source.includes("await cleanupSandboxResources({ containers, network, networkCreated, inspect: docker });"))) &&
+          source.includes("    try { await runPhase('cleanup', cleanup); }\n    finally { reaper?.close(); }")
+        : resourceStartCallCount(source) === 7 &&
+          testcontainersImports === 0 &&
+          source.includes("    await cleanup();");
+      return shapePinned &&
+        [...code.matchAll(/\bspawnChild\s*\(/g)].length === 1 &&
+        source.includes("spawnChild = spawn, pendingAfterMs = 30_000,") &&
+        source.includes("child = spawn(command[0], command.slice(1), { stdio: 'inherit', detached: true,") &&
+        source.includes("try { process.kill(-child.pid, 'SIGTERM'); } catch { /* already ended */ }") &&
+        !/\bnew\s+(?:Worker|Piscina)\s*\(/.test(code) &&
+        !/\b(?:fork|execFile|execFileSync)\s*\(/.test(code) &&
+        !/\bpromisify\s*\(/.test(code);
+    },
+  },
+  {
+    path: "packages/operator-core/lib/system-health/cluster-lag-watchdog.ts",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition for packages/operator-core/lib/system-health/cluster-lag-watchdog.ts (WI-6554700010009231): `pending` is the watchdog's per-worker recovery state, not a work queue. It maps a cluster worker id to whether that killed worker's exit has been observed. An entry is set only when the scan SIGKILLs a silent worker (and flipped on that worker's exit), and is deleted when the worker's heartbeat resumes or a replacement worker's first heartbeat arrives. So it holds at most one entry per cluster worker, carries no work to execute, and only decides whether the cluster-lag condition is still open; condition delivery is the separate ordered `delivery` chain. Pinned by matchesSource to that declaration, its heartbeat delete, and `pending` being the file's only queue-shaped write.",
+    matchesSource: (source) =>
+      source.includes("const pending = new Map<number, boolean>(); // worker id → exit observed") &&
+      source.includes("pending.delete(worker.id);") &&
+      [...stripCommentsAndStrings(source, "cluster-lag-watchdog.ts").matchAll(RESIDENT_QUEUE)]
+        .map((match) => match[1])
+        .join(",") === "pending,pending",
+  },
+  {
+    path: "packages/operator-core/lib/release/sibling-tree-root.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for packages/operator-core/lib/release/sibling-tree-root.ts (WI-6554700010009501): one awaited read-only git rev-parse probe identifies the enclosing checkout for sibling-tree path resolution. Each child has a 10s timeout and 64KiB output bound; the existing outer walk visits at most 16 ancestors and stops on the first failed probe. It creates no resident workload or queue.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return [...code.matchAll(/\bexecFileAsync\s*\(/g)].length === 1 &&
+        source.includes("const execFileAsync = promisify(execFile);") &&
+        source.includes("execFileAsync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], {") &&
+        source.includes("timeout: 10_000") && source.includes("maxBuffer: 64 * 1024") &&
+        source.includes("const MAX_ENCLOSING_HOPS = 16;") &&
+        source.includes("for (let hop = 0; hop < MAX_ENCLOSING_HOPS; hop++)");
+    },
+  },
+  {
+    path: "scripts/bench-work-item-continuations.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/bench-work-item-continuations.ts: this explicit staging measurement uses the attributed mcp-call CLI to measure real work-item writes and readbacks. It requires the current session and already-owned items; each child is awaited with a 35s timeout, 1MiB output bound, and propagated abort signal. The fixed experiment drains all outstanding calls in finally.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return resourceStartCallCount(source) === 0 &&
+        source.includes("const exec = promisify(execFile);") &&
+        [...code.matchAll(/(?<![\w$.])exec\s*\(/g)].length === 1 &&
+        source.includes("resolve(ROOT, 'scripts/mcp-call.mjs')") &&
+        source.includes("timeout: 35_000, maxBuffer: 1024 * 1024, signal");
+    },
+  },
+  {
+    path: "scripts/bench-work-item-continuations.ts",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition for scripts/bench-work-item-continuations.ts: pending holds exactly the three controlled outstanding promises (held, cancelled, ordered), not queued work. The scenario creates those three at fixed call sites and awaits all of them with Promise.allSettled in finally.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return [...code.matchAll(RESIDENT_QUEUE)].map((match) => match[1]).join(",") ===
+          "pending,pending,pending" &&
+        source.includes("pending.push(heldWrite);") &&
+        source.includes("pending.push(cancelled);") &&
+        source.includes("pending.push(ordered);") &&
+        source.includes("await Promise.allSettled(pending);");
+    },
+  },
+  {
+    path: "scripts/bench-work-items-get.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/bench-work-items-get.ts: this one-shot staging cohort measures attributed mcp-call startup and authoritative summary reads. It accepts 1–10 item ids and 1–10 repeats, executes calls sequentially (at most 100), and bounds each child to 35s and 1MiB output; it creates no independently managed serving capacity.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return resourceStartCallCount(source) === 0 &&
+        source.includes("const exec = promisify(execFile);") &&
+        [...code.matchAll(/(?<![\w$.])exec\s*\(/g)].length === 1 &&
+        source.includes("timeout: 35_000, maxBuffer: 1024 * 1024") &&
+        source.includes("input.ids.length > 10") && source.includes("input.repeats > 10") &&
+        source.includes("if (port !== '3170')");
+    },
+  },
+  {
+    path: "scripts/lib/git-index-fault.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/lib/git-index-fault.mjs: the explicit audit-sink diagnostic uses bounded synchronous sudo/auditctl and state reads under one 10s probe deadline. Each execFileSync inherits the remaining timeout, caps output at 4MiB, and exits before the probe continues; it creates no resident worker or queue.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return resourceStartCallCount(source) === 1 &&
+        source.includes("run = (args, budget) => execFileSync('sudo', ['-n', ...args], {") &&
+        source.includes("timeout: budget, killSignal: 'SIGKILL'") &&
+        source.includes("maxBuffer: 4 * 1024 * 1024") &&
+        source.includes("const deadline = started + Math.min(10_000, Math.max(1, timeoutMs));") &&
+        source.includes("process.argv.includes('--audit-sink')");
+    },
+  },
+  {
+    path: "scripts/lib/related-tests.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "upstream",
+    reason:
+      "P-016 reviewed upstream disposition for scripts/lib/related-tests.mjs: its three awaited child sites only enumerate maintained test inputs (command-selection, safe glob expansion, and Vitest config contracts) for the root test:affected job admitted by pc-heavy. The two selector reads have 10s deadlines; config resolution has a 120s deadline and 64MiB output bound. Actual test execution remains with the governed test runner.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return resourceStartCallCount(source) === 3 &&
+        source.includes("execFileSync(executable, args, { cwd: wsRoot, encoding: 'utf8', timeout: 10_000 })") &&
+        source.includes("execFileSync('/bin/sh', ['-c',") &&
+        source.includes("execFileSync(process.execPath, [path.join(root, 'scripts/resolve-vitest-config-contracts.mjs')") &&
+        source.includes("timeout: 120_000") && source.includes("maxBuffer: 64 * 1024 * 1024") &&
+        !/\bspawn\s*\(/.test(code);
+    },
+  },
+  {
+    path: "scripts/resolve-vitest-config-contracts.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "upstream",
+    reason:
+      "P-016 reviewed upstream disposition for scripts/resolve-vitest-config-contracts.mjs: the single child synchronizes and inspects an Astro test-selection workspace for the admitted test:affected selector. Requests are processed sequentially; each child has a 120s timeout and 64MiB output bound, and actual tests run only in the governed test runner.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return resourceStartCallCount(source) === 1 &&
+        source.includes("execFileSync(process.execPath, [fileURLToPath(import.meta.url), '--astro-selection-child']") &&
+        source.includes("timeout: 120_000, maxBuffer: 64 * 1024 * 1024") &&
+        source.includes("for (const request of requests)");
+    },
+  },
+  {
+    path: "scripts/review-cloud-tutorial-native.mjs",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition for scripts/review-cloud-tutorial-native.mjs: pending is the browser-readiness probe's CDP request correlation map, not a work queue. Entries are created only for protocol SEND ids and removed on matching RECV; the isolated browser process is killed on its 15s deadline, and remaining ids are diagnostic output.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return [...code.matchAll(RESIDENT_QUEUE)].map((match) => match[1]).join(",") === "pending" &&
+        source.includes("const phases = [], pending = new Map();") &&
+        source.includes("pending.set(message.id, { id: message.id, method: message.method, at: match[1] });") &&
+        source.includes("pending.delete(message.id);") &&
+        source.includes("pending: [...pending.values()]") &&
+        source.includes("timeoutMs = 15000");
+    },
+  },
 ]);
 export const P016_DISPOSITION_REGISTRY = new Map(
-  P016_REVIEWED_DISPOSITIONS.map(({ path, code, disposition, reason }) => [
+  P016_REVIEWED_DISPOSITIONS.map(({ path, code, disposition, reason, matchesSource }) => [
     `${path}::${code}`,
-    { disposition, reason },
+    { disposition, reason, ...(matchesSource ? { matchesSource } : {}) },
   ]),
 );
 
 export const BYPASS_REGISTRY = new Map([
   ...P016_DISPOSITION_REGISTRY,
+  [
+    "packages/operator-core/lib/agent-tools/coordination/inbox-visibility.ts::unbounded-resident-queue",
+    {
+      disposition: "semantic",
+      reason:
+        "The pending Map inside relevantSystemNoticeDelivery is a per-call index of digest metadata for the current input rows. The function fills it while filtering, reads it while building returned state, and discards it on return; it neither schedules work nor retains a queue between calls. The source pin keeps this exact Map type, set/get use, return, and sole queue-shaped write.",
+      matchesSource: (source) => {
+        const start = source.indexOf("export function relevantSystemNoticeDelivery<");
+        const end = source.indexOf("\nexport function coalesceRepeatedBroadcasts", start);
+        if (start < 0 || end < 0) return false;
+        const section = source.slice(start, end);
+        const code = stripCommentsAndStrings(section, "inbox-visibility.ts");
+        const writers = [...code.matchAll(RESIDENT_QUEUE)];
+        return section.includes("const pending = new Map<T, { key: string; fingerprint: string }>();") &&
+          section.includes("pending.set(entry, { key, fingerprint });") &&
+          section.includes("const notice = pending.get(entry);") &&
+          section.includes("return { entries: kept, state, suppressed: entries.length - kept.length };") &&
+          writers.length === 1 && writers[0][1] === "pending";
+      },
+    },
+  ],
+  [
+    "packages/operator-core/lib/llm-testing/isolated-hosted-test-user.mts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "P-015 reviewed test-helper disposition: this child isolates the tsx module graph for hosted-test fixtures, not a serving or scheduled runtime. Each child speaks over IPC, serializes requests, and is stopped on fixture close or failure; stop sends SIGTERM, escalates to SIGKILL after one second, and awaits exit. The child adds no detached worker or retained queue beyond the current test fixture.",
+      matchesSource: (source) => {
+        const code = stripCommentsAndStrings(source);
+        return resourceStartCallCount(source) === 1 &&
+          source.includes("const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', worker], {") &&
+          source.includes("stdio: ['ignore', 'ignore', 'ignore', 'ipc'],") &&
+          source.includes("child.kill('SIGTERM');") &&
+          source.includes("const timer = setTimeout(() => child.kill('SIGKILL'), 1_000);") &&
+          source.includes("try { await exited; } finally { clearTimeout(timer); }") &&
+          source.includes("finally { await stop(); }") &&
+          !/\bdetached\s*:\s*true/.test(code) &&
+          !hasCalledResourceStartAlias(code);
+      },
+    },
+  ],
+  [
+    "packages/operator-core/lib/agent-tools/work_items/semantic-dedup-probe-alarm.ts::unbounded-resident-queue",
+    {
+      disposition: "semantic",
+      reason:
+        "P-014 reviewed semantic disposition for semantic-dedup-probe-alarm.ts (WI-6554700010009231): the module-level `pending` Map holds one promise-chain TAIL per condition-key prefix, which serializes that prefix's alarm raise/recover delivery in arrival order. Each chained run belongs to the request that appended it, and that request awaits it; `finally` deletes the entry once the newest tail settles. So the map holds at most one entry per distinct prefix, the chain is never longer than the requests currently awaiting it, and nothing stays resident after they return. Pinned by matchesSource to that set/await/delete triple and to `pending` being the file's only queue-shaped write.",
+      matchesSource: (source) =>
+        source.includes("const pending = new Map<string, Promise<void>>();") &&
+        source.includes("pending.set(prefix, next);") &&
+        source.includes("try { await next; } finally { if (pending.get(prefix) === next) pending.delete(prefix); }") &&
+        [...stripCommentsAndStrings(source, "semantic-dedup-probe-alarm.ts").matchAll(RESIDENT_QUEUE)]
+          .map((match) => match[1])
+          .join(",") === "pending",
+    },
+  ],
+  [
+    "packages/operator-core/lib/endpoint-route/routes/transport/pgbouncer-pool-sample.mjs::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "Reviewed bypass disposition for pgbouncer-pool-sample.mjs (WI-10006055): a deadline diagnostic shared by the MCP host and the MCP proxy watchdog. Each sample runs at most two `psql` children through an injectable execFile alias: a PgBouncer `SHOW POOLS` admin query (5-second timeout) and a direct pg_stat_activity snapshot (1.5-second timeout). Both use killSignal SIGKILL and a 32 KiB output ceiling. A per-process debounce (MIN_SAMPLE_INTERVAL_MS, 20 s by default) refuses overlapping samples. It must stay runnable when the pool or PgBouncer is the thing being diagnosed, so admission behind that same capacity would defeat it. It creates no worker, queue or resident process.",
+      matchesSource: (source) => resourceStartCallCount(source) === 0 &&
+        source.includes("execFileImpl = execFile,") &&
+        source.includes("timeout: timeoutMs,") &&
+        source.includes("killSignal: 'SIGKILL',") &&
+        source.includes("maxBuffer: MAX_PSQL_BUFFER_BYTES,") &&
+        source.includes("const ACTIVITY_TIMEOUT_MS = 1_500;") &&
+        source.includes("if (requestedAtMs - lastSampleAt < MIN_SAMPLE_INTERVAL_MS) {") &&
+        !/\bdetached\s*:\s*true/.test(stripCommentsAndStrings(source)),
+    },
+  ],
+  [
+    "packages/operator-core/lib/agent-tools/plans/spec-test-adequacy.ts::unbounded-resident-queue",
+    {
+      disposition: "semantic",
+      reason:
+        "Reviewed semantic disposition for spec-test-adequacy.ts (WI-10006055): in metadataCoverageLimitations, pending is a function-local depth-first stack over one evidence details object. It is seeded with that object alone, consumed synchronously by pop, and each object is expanded at most once per disclosure mode (three modes) because the seen WeakMap skips any revisit at the same or a lower mode, so cycles terminate. It starts no work, holds no handle, and is discarded when the function returns. The source predicate requires that single writer, the pop consumption and the seen dedup, and rejects any additional queue writer.",
+      matchesSource: (source) => {
+        const code = stripCommentsAndStrings(source);
+        const writers = [...code.matchAll(RESIDENT_QUEUE)];
+        return writers.length === 1 && writers[0][1] === "pending" &&
+          code.includes("const seen = new WeakMap<object, number>();") &&
+          code.includes("while (pending.length > 0) {") &&
+          code.includes("pending.pop()!") &&
+          code.includes("if ((seen.get(value) ?? -1) >= mode) continue;") &&
+          code.includes("seen.set(value, mode);") &&
+          code.includes("pending.push({ value: child,");
+      },
+    },
+  ],
+  [
+    "packages/operator-core/lib/endpoint-route/hosted-workspace-session.ts::unbounded-resident-queue",
+    {
+      disposition: "semantic",
+      reason:
+        "Reviewed semantic disposition for hosted-workspace-session.ts (WI-10006055): in authorizeHostSession, pending is the per-connector-socket set of in-flight authority request IDs, not queued work. A request is refused once 64 are in flight or when its ID is already present; each ID is removed in the finally that also clears the 15-second authority timer; and the set lives in a WeakMap keyed by the socket, so it is released with the connection. The authority read it guards is a single awaited principal lookup per request, not a started worker. The source predicate requires the 64 ceiling, the dedup, the finally removal and the WeakMap owner, and rejects any additional queue writer.",
+      matchesSource: (source) => {
+        const code = stripCommentsAndStrings(source);
+        const writers = [...code.matchAll(RESIDENT_QUEUE)];
+        return writers.length === 1 && writers[0][1] === "pending" &&
+          code.includes("private readonly authorityRequests = new WeakMap<HostedWorkspaceRelaySocket, Set<string>>();") &&
+          code.includes("const pending = this.authorityRequests.get(socket) ?? new Set<string>();") &&
+          code.includes("if (pending.size >= 64 || pending.has(requestId)) return;") &&
+          code.includes("pending.add(requestId);") &&
+          code.includes("finally { if (timer) clearTimeout(timer); pending.delete(requestId); }");
+      },
+    },
+  ],
+  ["apps/operator/scripts/psu-terminal-diagnostics.mjs::resource-start-outside-admission", {
+    disposition: "bypass",
+    reason:
+      "EI-25462239328125754: one call-local stty -a read of the interactive launcher terminal. It must work before an operator or admission service exists. The child is killed after 750ms or 8192 output characters, and its promise settles on close/error/timeout. It creates no application worker or resident queue. This disposition covers that single bounded terminal read, not arbitrary spawnCommand calls.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return resourceStartCallCount(source) === 0 &&
+        [...code.matchAll(/\bspawnCommand\s*\(/g)].length === 1 &&
+        source.includes("spawnCommand('stty', ['-a']") &&
+        source.includes("platform === 'win32' || !interactive") &&
+        source.includes("child.kill(); finish(null); }, 750)") &&
+        source.includes("text.length > 8192") &&
+        !/\bdetached\s*:\s*true/.test(code) && !/\bnew\s+(?:Worker|Piscina)\s*\(/.test(code);
+    },
+  }],
+  [
+    "packages/operator-core/lib/agent-tools/per-use-chokepoint.ts::resource-start-outside-admission",
+    {
+      disposition: "semantic",
+      reason:
+        "Reviewed semantic disposition for per-use-chokepoint.ts (WI-10007542; owner lane WI-10004291): the detector's `.admit(` arm fires on funded per-use tool-turn admission (SuCodexTurnLifecycle['admit'] and the installed-plugin funding host), which reserves a buyer's money for one paid tool invocation before the tools:invoke dispatch runs. It starts no child process, worker or resident queue and holds no machine capacity of its own; the tool handler it guards is dispatched by the existing tools:invoke path, whose own process starts are scanned at their own sites. A monetary entitlement decision is policy state, not a resource start for Governor.admit to meter.",
+      matchesSource: (source) => {
+        const code = stripCommentsAndStrings(source);
+        return resourceStartCallCount(source) === 0 &&
+          !hasCalledResourceStartAlias(code) &&
+          !/\bnew\s+(?:Worker|Piscina)\s*\(|\bdetached\b/.test(code) &&
+          !/\bfrom\s+['"]node:child_process['"]|\brequire\s*\(\s*['"](?:node:)?child_process['"]/.test(source) &&
+          source.includes("type NativeAdmissionContext = Parameters<SuCodexTurnLifecycle['admit']>[0];");
+      },
+    },
+  ],
+  [
+    "packages/operator-core/lib/agent-tools/plans/committed-tree-reader.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "Reviewed bypass disposition for committed-tree-reader.ts: the sole child is a local `git cat-file --batch` reader with a per-batch timeout, awaited child close, and bounded blob batching. It reads immutable commit objects for the requested path closure; no detached process or resident work is retained.",
+      matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+        source.includes("spawn('git', ['-C', repoDir, 'cat-file', '--batch']") &&
+        source.includes("BLOB_BATCH_TIMEOUT_MS") &&
+        source.includes("const timer = setTimeout(() => child.kill('SIGKILL'), BLOB_BATCH_TIMEOUT_MS)") &&
+        source.includes("child.on('close'"),
+    },
+  ],
+  [
+    "packages/operator-core/lib/agent-tools/plans/committed-tree-reader.ts::unbounded-resident-queue",
+    {
+      disposition: "semantic",
+      reason:
+        "Reviewed semantic disposition for committed-tree-reader.ts: queue is a per-call Git repository/submodule traversal frontier. Commits and pending repositories deduplicate work, listed records cache completed tree prefixes, and only gitlinks intersecting the requested base paths are enqueued; the local frontier is discarded when the read returns.",
+      matchesSource: (source) => source.includes("const pending = new Set<string>();") &&
+        source.includes("if (commits.has(repo) || pending.has(repo)) return;") &&
+        source.includes("const queue: Array<{ repo: string; commit: string; prefixes: string[] }> = [];") &&
+        source.includes("const listed = new Set<string>();") &&
+        source.includes("if (entry.mode === '160000')") &&
+        source.includes("if (covered.length)"),
+    },
+  ],
+  [
+    "packages/operator-core/lib/memory/bench/measurement-dossier.fixture.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "Reviewed bypass disposition for measurement-dossier.fixture.ts: its single execFileSync site is a test-fixture helper that runs finite git init/add/commit commands in a newly created temporary repository; cleanup removes that repository. It is not imported by a serving path.",
+      matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+        source.includes("execFileSync('git'") &&
+        source.includes("mkdtempSync(path.join(os.tmpdir(), 'measurement-dossier-'))") &&
+        source.includes("cleanup: () => fs.rmSync(root, { recursive: true, force: true })"),
+    },
+  ],
+  [
+    "packages/operator-core/lib/memory/bench/measurement-dossier.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "Reviewed bypass disposition for measurement-dossier.ts: repoRootOf performs one synchronous local `git rev-parse --show-toplevel` metadata read to identify which repository owns an operator-supplied dossier; failures return null and no child survives the read.",
+      matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+        source.includes("execFileSync('git', ['-C', path.dirname(path.resolve(file)), 'rev-parse', '--show-toplevel']") &&
+        source.includes("Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_'))") &&
+        source.includes("catch {\n    return null;\n  }"),
+    },
+  ],
+  [
+    "packages/operator-core/lib/memory/bench/tracked-evidence.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "Reviewed bypass disposition for tracked-evidence.ts: its shared git helper performs awaited, read-only rev-parse and ls-files metadata queries for the finite evidence paths in an operator-provided dossier. Missing files and non-tracked manifests return null; it creates no resident process or queue.",
+      matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+        source.includes("return execFileSync('git', ['-C', cwd, ...args]") &&
+        source.includes("git(repoRoot, ['ls-files', '--error-unmatch', '--', repoRelative])") &&
+        source.includes("if (!repoRelative || repoRelative.startsWith('../')) return null;"),
+    },
+  ],
+  [
+    "packages/operator-core/lib/memory/bench/fixtures/native-ort-teardown-control.mjs::resource-start-outside-admission",
+    {
+      disposition: "upstream",
+      reason:
+        "Reviewed upstream disposition for WI-10005599's 130-byte native Mul teardown control: native-cuda-allocation-preflight.test.ts runs capture under the canonical test parent (runGovernedTestProcess/withGovernedAdmissionContext), which owns the receipt and test deadline. capture/debug-capture propagate process.env and await child close/pipe EOF; target owns one FILE Worker and awaits termination. No embedding weights, service, detach or resident queue. Source conditioning pins the tiny graph, three nested starts and awaited lifetime. Historical standalone capability:bash launches remain task-attributed only: their typed admission inheritance is unmeasured and is not certified by this source disposition.",
+      matchesSource: (source) => {
+        const code = stripCommentsAndStrings(source);
+        return [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(/g)].length === 2 &&
+          [...code.matchAll(/\bnew\s+Worker\s*\(/g)].length === 1 &&
+          !/\bnew\s+Piscina\s*\(|\.admit\s*\(/.test(code) && !hasCalledResourceStartAlias(code) &&
+          source.includes("const graphSha = '71f431c4e9321ec6fbeb158d02ed240459a7dcc98673fa79a4f439ce42efaf10'") &&
+          /embeddingModelInferencePerformed:\s*false/.test(code) &&
+          [...code.matchAll(/await\s+worker\.terminate\s*\(/g)].length === 2 && /child\.once\s*\(/.test(code) &&
+          /env:\s*process\.env/.test(code);
+      },
+    },
+  ],
+  [
+    "packages/operator-core/lib/agent-tools/work_items/completion-freshness.ts::unbounded-resident-queue",
+    {
+      disposition: "semantic",
+      reason:
+        "Reviewed semantic disposition: createPersistedCompletionHistorySearchMemo retains completed Git-search verdicts for CompletionHistoryMemoStore.save, not future resource starts. flush writes and clears those records and restores failed writes; hydrate restores saved results. The existing memo limit evicts old cache results without throttling productive work. Scope this disposition to pending writes inside that memo and reject any additional resident queue or removal of persistence.",
+      matchesSource: (source) => {
+        const code = stripCommentsAndStrings(source);
+        const start = code.indexOf('export function createPersistedCompletionHistorySearchMemo(');
+        const end = code.indexOf('\n}', start) + 2;
+        return start >= 0 && end > start && /\bstore\.save\s*\(/.test(code.slice(start, end)) &&
+          [...code.matchAll(RESIDENT_QUEUE)].every((match) =>
+            match[1] === 'pending' && match.index >= start && match.index < end);
+      },
+    },
+  ],
+  [
+    "apps/operator/scripts/psu-pty-host.mjs::unbounded-resident-queue",
+    {
+      disposition: "semantic",
+      reason:
+        "P-013 reviewed semantic disposition: resolveLinuxCodexStartupPid uses a function-local breadth-first walk of an existing process tree, stops descending at maxDepth (default 4), and discards its traversal queue on return; it enqueues no resident work or child process.",
+    },
+  ],
+  [
+    "packages/operator-core/lib/dbos/routines-workflow.ts::unbounded-resident-queue",
+    {
+      disposition: "semantic",
+      reason:
+        "P-015 reviewed semantic disposition: remainingStartsByQueue is a per-tick Map of available-start counters initialized from dispatchEpoch.queues and decremented as workflows are scheduled; it tracks admission credits, not queued work.",
+    },
+  ],
   // Outside every P-016 inventory row's paths (agent-tools/testing/), so it is
   // dispositioned here beside its sibling affected-plan.ts rather than in
   // P016_REVIEWED_DISPOSITIONS, whose census covers only P-016 paths.
@@ -1814,6 +2743,22 @@ export const BYPASS_REGISTRY = new Map([
         "Reviewed bypass disposition for mutation-probe-fence.ts: committedUnchanged runs awaited `git ls-tree -z HEAD` and `git hash-object` metadata reads over the probe's finite path list via promisified execFile, each bounded by a 5-second timeout and 1 MiB output, with an outer 10-second deadline that keeps the fence in force on a stall. It detaches nothing and creates no resident queue.",
     },
   ],
+  // Same directory, same reason it lives here rather than in P016_REVIEWED_DISPOSITIONS.
+  [
+    "packages/operator-core/lib/agent-tools/testing/restricted-hold-fence.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "Reviewed bypass disposition for restricted-hold-fence.ts (plan personal-data-reader-set-labels-2026-10-01 D-012; WI-10005634, WI-10005724): its only start is runGit, an awaited `execFile('git', ...)` (60-second GIT_TIMEOUT_MS, 64 MiB maxBuffer) used by listDirtyFilesRecursive for one `git submodule status --recursive` and then one `git status --porcelain` per repository, strictly sequential, so at most one git metadata read runs at a time. It runs inside one testing:run request, before the governed router start it gates. A timeout or failure throws, and the fence then refuses the run (fail-closed). It detaches nothing and creates no resident queue.",
+      matchesSource: (source) => {
+        const code = stripCommentsAndStrings(source);
+        return [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(/g)].length === 1 &&
+          source.includes("execFile('git', args, { cwd, timeout: GIT_TIMEOUT_MS,") &&
+          !/\bnew\s+Worker\s*\(|\bnew\s+Piscina\s*\(|\.admit\s*\(|\bdetached\b/.test(code) &&
+          !hasCalledResourceStartAlias(code);
+      },
+    },
+  ],
   [
     "packages/operator-core/lib/agent-identities/sink-evaluator.ts::hidden-or-static-capacity",
     {
@@ -1823,20 +2768,11 @@ export const BYPASS_REGISTRY = new Map([
     },
   ],
   [
-    "packages/operator-core/lib/agent-tools/testing/mutation-probe-fence.ts::unbounded-resident-queue",
+    "packages/operator-core/lib/agent-tools/testing/mutation-probe-closure.ts::unbounded-resident-queue",
     {
       disposition: "semantic",
       reason:
-        "P-014 reviewed semantic disposition: this import-closure queue is a per-request graph traversal, not resident work. Each file enters once, the metafile input population is refused above CLOSURE_FILE_CAP (20,000), and the build has a 20-second deadline. It starts no independent task and is discarded when the one preflight returns.",
-    },
-  ],
-  [
-    "packages/operator-core/lib/agent-tools/work_items/complete.ts::resource-start-outside-admission",
-    {
-      disposition: "bypass",
-      reason:
-        "EI-23172979870567206: defaultCompletionTrackedness performs one synchronous read-only git ls-files --error-unmatch probe for one candidate path. It ignores output, has a 5s timeout and SIGKILL bound, retains no worker or queue, and must remain available for completion/recovery under pressure. The source predicate pins this exact call and refuses any additional resource start; unknown Git outcomes retain the durability warning.",
-      matchesSource: matchesReviewedCompletionTrackedness,
+        "P-014 reviewed semantic disposition for mutation-probe-closure.ts: this import-closure queue is a per-request graph traversal, not resident work. Each file enters once, the metafile input population is refused above CLOSURE_FILE_CAP (20,000), and the build has a 20-second deadline. It starts no independent task and is discarded when the one preflight returns.",
     },
   ],
   [
@@ -1852,14 +2788,6 @@ export const BYPASS_REGISTRY = new Map([
   // residency": single short-lived plumbing processes, awaited, no worker, no queue.
   // Governing them would add an admission round-trip per call to operations whose
   // whole cost is less than the admission record they would write.
-  [
-    "packages/operator-core/lib/agent-tools/plans/evidence-measurement-pin.ts::resource-start-outside-admission",
-    {
-      disposition: "bypass",
-      reason:
-        "defaultGitRunner awaits one local git plumbing read for a pinned measurement, with a 5-second timeout and 1 MiB output bound; it starts no resident worker or queue",
-    },
-  ],
   [
     "packages/operator-core/lib/agent-tools/plans/audit.ts::resource-start-outside-admission",
     {
@@ -2004,14 +2932,6 @@ export const BYPASS_REGISTRY = new Map([
     },
   ],
   [
-    "packages/operator-core/lib/inference-gateway/credential-store.ts::resource-start-outside-admission",
-    {
-      disposition: "bypass",
-      reason:
-        "security/keychain credential lookup via awaited spawnSync; bounded metadata read that exits immediately and creates no resident provider work",
-    },
-  ],
-  [
     "packages/operator-core/lib/inference-gateway/gateway-sidecar-spawn.ts::resource-start-outside-admission",
     {
       disposition: "bypass",
@@ -2134,6 +3054,23 @@ export const BYPASS_REGISTRY = new Map([
     },
   ],
   [
+    "apps/operator/scripts/psu-operator-down-diagnosis.mjs::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "Reviewed P-013 bypass disposition for psu-operator-down-diagnosis.mjs: the psu launcher uses this control-path helper only after its operator health request stays pending, to identify the systemd unit that is down. The helper's only child start is a synchronous `systemctl --user` read with a 3-second timeout; commands are awaited, sequential and return captured output. It creates no worker, detached child, durable queue or resident work. psu-launcher guards the notice to once per launcher process. This is an operator recovery diagnostic, not runtime workload; its exact source predicate below rejects added starts or removal of the bounded systemctl timeout.",
+      matchesSource: (source) => {
+        const code = stripCommentsAndStrings(source);
+        return [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(/g)].length === 1 &&
+          source.includes('const SYSTEMCTL_TIMEOUT_MS = 3_000;') &&
+          source.includes('spawnSync("systemctl", ["--user", ...args, "--no-pager"], {') &&
+          code.includes("timeout: SYSTEMCTL_TIMEOUT_MS") &&
+          !/\bnew\s+(?:Worker|Piscina)\s*\(/.test(code) &&
+          !/\bdetached\s*:\s*true/.test(code);
+      },
+    },
+  ],
+  [
     "packages/operator-core/lib/agent-auth-detect.ts::resource-start-outside-admission",
     {
       disposition: "bypass",
@@ -2183,14 +3120,6 @@ export const BYPASS_REGISTRY = new Map([
       disposition: "bypass",
       reason:
         "scopeExecFile is promisify(execFile) used for bounded systemd/cgroup liveness metadata; it probes an already-recorded task and starts no resident work.",
-    },
-  ],
-  [
-    "packages/operator-core/lib/agent-tools/deploys/vintage.ts::resource-start-outside-admission",
-    {
-      disposition: "bypass",
-      reason:
-        "pexec is promisify(execFile) used for bounded git ref/vintage reads; the command is awaited and creates no resident queue.",
     },
   ],
   [
@@ -2289,6 +3218,14 @@ export const BYPASS_REGISTRY = new Map([
         "execFileAsync is promisify(execFile) for bounded, user-requested git fetch/rebase/status operations in a durable user worktree; git owns recovery state and no in-memory resident queue is created.",
     },
   ],
+  [
+    "packages/operator-core/lib/agent-tools/capability/rtk-rewrite.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "`rtk rewrite <command>` — one string-to-string translation per capability:bash call (WI-6554700010009291), killed after RTK_REWRITE_TIMEOUT_MS (2s) and awaited before the governed job spawn; it runs no user work and leaves nothing resident. The command it returns is executed by bash-jobs' existing admitted spawn.",
+    },
+  ],
   // ── reviewed retry around a receipt-producing write (EI-21850494041821321) ───
   [
     "packages/operator-core/lib/resource-governor/queue.ts::retry-around-receipt",
@@ -2350,6 +3287,7 @@ function isLocalCallbackBinding(code, name) {
 }
 function hasResourceStart(code) {
   if (START_NON_VERB.test(code)) return true;
+  if (INLINE_PROMISIFIED_RESOURCE_START.test(code)) return true;
   for (const verb of START_VERBS) {
     if (!new RegExp(`\\b${verb}\\s*\\(`).test(code)) continue;
     if (isLocalCallbackBinding(code, verb)) continue;
@@ -2365,12 +3303,18 @@ function hasResourceStart(code) {
 // it turns ordinary domain words such as `spawnRowKind` into false starts.
 const ALIAS_BIND =
   /\b([A-Za-z_$][\w$]*)\s*[=:]\s*(?:promisify\s*\(\s*)?(?:spawn|spawnSync|fork|execFile|execFileSync)\s*[,\)\s;}]/g;
+// Lazy wrappers avoid eagerly promisifying an undefined test mock. They still
+// invoke the same child-process primitive; Reflect.apply is not an exemption.
+const LAZY_PROMISIFY_ALIAS_BIND =
+  /\b([A-Za-z_$][\w$]*)\s*=\s*\(\s*\([^)]*\)\s*=>\s*Reflect\.apply\s*\(\s*\(\s*[A-Za-z_$][\w$]*\s*\?\?=\s*promisify\s*\(\s*(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\)\s*\)/g;
 function hasCalledResourceStartAlias(code) {
   const aliases = new Set();
-  for (const match of code.matchAll(ALIAS_BIND)) {
-    const name = match[1];
-    if (/^(?:spawn|spawnSync|fork|execFile|execFileSync)$/.test(name)) continue;
-    aliases.add(name);
+  for (const pattern of [ALIAS_BIND, LAZY_PROMISIFY_ALIAS_BIND]) {
+    for (const match of code.matchAll(pattern)) {
+      const name = match[1];
+      if (/^(?:spawn|spawnSync|fork|execFile|execFileSync)$/.test(name)) continue;
+      aliases.add(name);
+    }
   }
   for (const name of aliases) {
     const escaped = name.replace(/\$/g, "\\$");
@@ -2384,7 +3328,7 @@ const RELEASE = /\.release\s*\(|\bAdmissionRelease\b/;
 const STATIC_CAP =
   /\b(?:maxConcurrent|maxWorkers|maxQueue|maxSimultaneous|capacityCeiling)\b\s*(?:[:=]|\?\?)\s*\d+/i;
 const HIDDEN_SEMAPHORE = /\b(?:Semaphore|semaphore|p-limit|Bottleneck)\b/;
-const DURABLE = /\b(?:work_items|durable|receipt|postgres|DBOS)\b/i;
+const DURABLE_QUEUE_OBJECT = /(?:work_items|durable|receipt|postgres|DBOS)/i;
 // Match collections whose identifier says they are a queue/backlog.  The old
 // `(?:queue|pending|backlog)\w*` prefix also matched diagnostic Sets such as
 // `pendingGradingAuditTargetIds.add(...)`: that is an ID accumulator, not a
@@ -2393,7 +3337,13 @@ const DURABLE = /\b(?:work_items|durable|receipt|postgres|DBOS)\b/i;
 // case, while requiring a Queue/Backlog suffix for compound names so pending
 // IDs, tokens, and targets do not look like resident work.
 const RESIDENT_QUEUE =
-  /\b(?:queue|backlog|pending|[A-Za-z_$][\w$]*(?:Queue|Backlog))\.(?:push|set|add)\s*\(/;
+  /\b((?:[A-Za-z_$][\w$]*\.)*(?:queue|backlog|pending|[A-Za-z_$][\w$]*(?:Queue|Backlog)))\.(?:push|set|add)\s*\(/g;
+function hasUndurableResidentQueue(code) {
+  for (const match of code.matchAll(RESIDENT_QUEUE)) {
+    if (!DURABLE_QUEUE_OBJECT.test(match[1] ?? "")) return true;
+  }
+  return false;
+}
 const RECEIPT_WRITE =
   /\b(?:[A-Za-z_$][\w$]*\.)*(?:enqueue|enqueueReceipt|createReceipt|persistReceipt|insertReceipt|saveReceipt|writeReceipt|storeReceipt)\s*\(/i;
 const DISHONEST_METRIC =
@@ -2452,8 +3402,7 @@ export function inspectGovernorSource(source) {
   ) {
     findings.push("hidden-or-static-capacity");
   }
-  if (RESIDENT_QUEUE.test(code) && !DURABLE.test(code))
-    findings.push("unbounded-resident-queue");
+  if (hasUndurableResidentQueue(code)) findings.push("unbounded-resident-queue");
   if (hasRetryAroundReceipt(code)) findings.push("retry-around-receipt");
   if (
     /\bgovernor\.admit\s*\(/.test(code) &&
@@ -2464,45 +3413,6 @@ export function inspectGovernorSource(source) {
   if (DISHONEST_METRIC.test(code))
     findings.push("undefined-partial-or-stale-metric-coerced-to-zero");
   return findings;
-}
-
-/**
- * A metadata disposition must not cover a later resident start in the same file.
- * Compare parsed call syntax (not comments/formatting), then rescan with ONLY that
- * reviewed call removed. A changed command, weakened bound, or another detected
- * start therefore restores the original finding instead of inheriting the bypass.
- */
-function matchesReviewedCompletionTrackedness(source) {
-  const parse = (text) =>
-    ts.createSourceFile("complete.ts", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  const file = parse(source);
-  if (file.parseDiagnostics.length) return false;
-  const calls = [];
-  function visit(node) {
-    if (
-      ts.isCallExpression(node) &&
-      ts.isIdentifier(node.expression) &&
-      node.expression.text === "execFileSync"
-    ) calls.push(node);
-    ts.forEachChild(node, visit);
-  }
-  visit(file);
-  if (calls.length !== 1) return false;
-  const call = calls[0];
-  let enclosing = call.parent;
-  while (enclosing && !ts.isFunctionDeclaration(enclosing)) enclosing = enclosing.parent;
-  if (enclosing?.name?.text !== "defaultCompletionTrackedness") return false;
-  const expected = parse(`execFileSync('git', ['-C', repoRoot, 'ls-files', '--error-unmatch', '--', repoRelativePath], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'ignore', 'ignore'],
-    timeout: 5_000,
-    killSignal: 'SIGKILL',
-  });`);
-  const printer = ts.createPrinter({ removeComments: true });
-  const print = (node, root) => printer.printNode(ts.EmitHint.Expression, node, root);
-  if (print(call, file) !== print(expected.statements[0].expression, expected)) return false;
-  const remaining = source.slice(0, call.getStart(file)) + "undefined" + source.slice(call.end);
-  return !inspectGovernorSource(remaining).includes("resource-start-outside-admission");
 }
 
 /**

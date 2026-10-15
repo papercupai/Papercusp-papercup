@@ -1,0 +1,331 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Automatic hosted Android API36 16KB run36945086700 attempt1 with retained tested APKs",
+  "framework": "operational",
+  "command": [
+    "GitHub Actions",
+    "ci.yml",
+    "event=schedule",
+    "run=36945086700",
+    "attempt=1",
+    "job=110645245672"
+  ],
+  "startedAt": "2026-10-02T00:15:42Z",
+  "finishedAt": "2026-10-02T00:51:55Z",
+  "exitCode": 0,
+  "summary": "Automatic current-source run executed host and native checks on a8d7. XML proves 1 native launcher test and 28 debug plus 28 release unit tests, zero failures/errors/skips. Both tested APK byte copies agree and the artifact download SHA matches GitHub digest. This is debug native/CI retention proof, not signed-candidate/user-journey/phone/Play acceptance.",
+  "repository": "papercup-rust-mobile",
+  "sourceCommit": "a8d7d4a618b03c8fd679af610ff804232d59cd2b",
+  "runUrl": "https://github.com/Papercusp/papercup-rust-mobile/actions/runs/36945086700",
+  "event": "schedule",
+  "artifactId": 11203166278,
+  "archiveSha256": "3fe9a5e44d2d710ecad881db26d4a848cd2fa927f0a3f5cdc9e075314cf0caa8",
+  "archiveBytes": 138722937,
+  "apkBytesRetained": true,
+  "apks": [
+    {
+      "archivePath": "android-ci-proof/apks/app-debug.apk",
+      "directArchivePath": "android/app/build/outputs/apk/debug/app-debug.apk",
+      "bytes": 114135093,
+      "sha256": "7c0278a02064f8f312df3937ed2980b1436793e1e4bd6dea0b184ef8325e9acd"
+    },
+    {
+      "archivePath": "android-ci-proof/apks/app-debug-androidTest.apk",
+      "directArchivePath": "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk",
+      "bytes": 356715,
+      "sha256": "8b3001f1bb32de9f08837c6464974f6959d0ff03fee8d896c0efbadc9b310aab"
+    }
+  ],
+  "rawEvidence": {
+    "path": "papercup-rust-mobile/android/app/build/ci-evidence/github-36945086700-attempt1/job.log",
+    "sha256": "c2768f5e7698ee4ab1b4a525c6c7c4757a562a78fe7abe43a5e9b90ba5bc81aa",
+    "archivePath": "papercup-rust-mobile/android/app/build/ci-evidence/github-36945086700-attempt1/artifact.zip"
+  },
+  "testCounts": {
+    "native": {
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "debugUnit": {
+      "tests": 28,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "releaseUnit": {
+      "tests": 28,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  "rustResultSummaries": [
+    {
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 0
+    },
+    {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 0
+    },
+    {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 0
+    },
+    {
+      "passed": 28,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 0
+    },
+    {
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 0
+    },
+    {
+      "passed": 58,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 0
+    },
+    {
+      "passed": 4,
+      "failed": 0,
+      "ignored": 1,
+      "filtered": 0
+    },
+    {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 2
+    },
+    {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 0
+    }
+  ],
+  "uniqueXmlResults": [
+    {
+      "path": "android-ci-proof/native-results/connected/debug/TEST-emulator-5554 - 16-_app-.xml",
+      "sha256": "4497d8f516e7858bae9c00635b9ab30ed2fcea56b18e41b30e3a425030a55f9c",
+      "tests": 1,
+      "caseNames": [
+        "launcherActivityStarts"
+      ]
+    },
+    {
+      "path": "android-ci-proof/unit-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml",
+      "sha256": "bff60a561a8195b29ac4b387d3e23fd65396437c0c5a410cd3ef005033d14e7b",
+      "tests": 5,
+      "caseNames": [
+        "unavailableMonitoringIsDistinctFromZeroPresence",
+        "systemAlertOnlyFeedIsVisibleAndCounted",
+        "missingGroupContentCannotClaimInboxZero",
+        "presenceDoesNotClaimExecutingWork",
+        "genuinelyEmptyFeedCanShowInboxZero"
+      ]
+    },
+    {
+      "path": "android-ci-proof/unit-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.EndpointSecurityTest.xml",
+      "sha256": "9bf2804973409c21bd55408127be96412ab88d8a82904184fcb77c6c06fe64c4",
+      "tests": 3,
+      "caseNames": [
+        "releaseRejectsCleartextAndMalformedEndpoints",
+        "debugAllowsOnlyExplicitLoopbackCleartext",
+        "releaseAcceptsHttps"
+      ]
+    },
+    {
+      "path": "android-ci-proof/unit-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml",
+      "sha256": "caf522faf200e076c48867d6b33cb97be887cb054d1d37df6e9eff7f8b568911",
+      "tests": 7,
+      "caseNames": [
+        "unknownThrowableNeverLeaksItsInternals",
+        "serverErrorsMapByStatus",
+        "timeoutBecomesRetryGuidance",
+        "everyShapeStartsWithTheAttemptedAction",
+        "decodeFailurePointsAtVersionSkew",
+        "rawReqwestNetworkErrorBecomesReachabilityGuidance",
+        "unauthorizedPointsAtRePairing"
+      ]
+    },
+    {
+      "path": "android-ci-proof/unit-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.VoiceMicDenialTest.xml",
+      "sha256": "791dbdc7df8e6760279ff4812189a67d256b57035e652b82841636c39c036057",
+      "tests": 3,
+      "caseNames": [
+        "permanentDenialPointsAtSettings",
+        "denialCopyNeverLeaksInternals",
+        "firstDenialProducesActionableMicPermissionFailure"
+      ]
+    },
+    {
+      "path": "android-ci-proof/unit-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.VoicePrivacyConsentTest.xml",
+      "sha256": "698f0a7923cfb6b3c5931435d34171e67b91c3f780e484e4c85484f56481538f",
+      "tests": 4,
+      "caseNames": [
+        "disclosureNamesCloudProcessorsAndDataUse",
+        "cloudVoiceIsBlockedUntilConsent",
+        "inAppPolicyDisclosesEveryShippedProcessor",
+        "desktopLocalVoiceDoesNotRequireCloudConsent"
+      ]
+    },
+    {
+      "path": "android-ci-proof/unit-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml",
+      "sha256": "458fe6db16b88e28296245edf7ad9b0327a5d42008576f692c7f5f42ee30b613",
+      "tests": 6,
+      "caseNames": [
+        "successfulSwitchPersistsTokenAndWorkspaceBeforeReturning",
+        "mismatchedWorkspaceOrEmptyTokenCannotReplaceCredentials",
+        "revokedOrExpiredSessionPreservesExistingCredentials",
+        "storageFailureIsNotReportedAsSuccessfulSwitch",
+        "cancelledBiometricOrRequestDoesNotPersist",
+        "subsequentSwitchUsesTheReplacementCredentials"
+      ]
+    },
+    {
+      "path": "android-ci-proof/unit-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml",
+      "sha256": "0420191dd5698cf995887d67fed831fedc0c86d5aeb0cdd0a350deafd7208113",
+      "tests": 5,
+      "caseNames": [
+        "unavailableMonitoringIsDistinctFromZeroPresence",
+        "systemAlertOnlyFeedIsVisibleAndCounted",
+        "missingGroupContentCannotClaimInboxZero",
+        "presenceDoesNotClaimExecutingWork",
+        "genuinelyEmptyFeedCanShowInboxZero"
+      ]
+    },
+    {
+      "path": "android-ci-proof/unit-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.EndpointSecurityTest.xml",
+      "sha256": "9422953c3263faa0c03336ec9abc55149e97cbe7bf757f1037b39b9e0bdace5f",
+      "tests": 3,
+      "caseNames": [
+        "releaseRejectsCleartextAndMalformedEndpoints",
+        "debugAllowsOnlyExplicitLoopbackCleartext",
+        "releaseAcceptsHttps"
+      ]
+    },
+    {
+      "path": "android-ci-proof/unit-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml",
+      "sha256": "deac67daf9b431625f2d9b370277298e35efd932643d205b4f88adb93523a06f",
+      "tests": 7,
+      "caseNames": [
+        "unknownThrowableNeverLeaksItsInternals",
+        "serverErrorsMapByStatus",
+        "timeoutBecomesRetryGuidance",
+        "everyShapeStartsWithTheAttemptedAction",
+        "decodeFailurePointsAtVersionSkew",
+        "rawReqwestNetworkErrorBecomesReachabilityGuidance",
+        "unauthorizedPointsAtRePairing"
+      ]
+    },
+    {
+      "path": "android-ci-proof/unit-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.VoiceMicDenialTest.xml",
+      "sha256": "2d2c82b367cf36854814f61e0b768b62b68e7ef365f9a972745a564767925554",
+      "tests": 3,
+      "caseNames": [
+        "permanentDenialPointsAtSettings",
+        "denialCopyNeverLeaksInternals",
+        "firstDenialProducesActionableMicPermissionFailure"
+      ]
+    },
+    {
+      "path": "android-ci-proof/unit-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.VoicePrivacyConsentTest.xml",
+      "sha256": "f598d71fe2df8bb806f25bd209148bb66160eb9e7a4ea77011173ebc58aa7215",
+      "tests": 4,
+      "caseNames": [
+        "disclosureNamesCloudProcessorsAndDataUse",
+        "cloudVoiceIsBlockedUntilConsent",
+        "inAppPolicyDisclosesEveryShippedProcessor",
+        "desktopLocalVoiceDoesNotRequireCloudConsent"
+      ]
+    },
+    {
+      "path": "android-ci-proof/unit-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml",
+      "sha256": "ead3fa358d02009b19c964d665464e669f60e937ed9b8a5444586084d4783775",
+      "tests": 6,
+      "caseNames": [
+        "successfulSwitchPersistsTokenAndWorkspaceBeforeReturning",
+        "mismatchedWorkspaceOrEmptyTokenCannotReplaceCredentials",
+        "revokedOrExpiredSessionPreservesExistingCredentials",
+        "storageFailureIsNotReportedAsSuccessfulSwitch",
+        "cancelledBiometricOrRequestDoesNotPersist",
+        "subsequentSwitchUsesTheReplacementCredentials"
+      ]
+    }
+  ],
+  "sourceFiles": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "sha256": "e3962158104c6e61fcfc99409c73e346897521fa5804d564faa25275fd340bc7"
+    },
+    {
+      "path": "tools/run-android-checks.sh",
+      "sha256": "0fe988f4ab8ed39210da22ccb3d2afc3f95e076394645b0c9a5169c8ebee74da"
+    },
+    {
+      "path": "tools/tests/android-ci-contract-test.sh",
+      "sha256": "fc6f56b2d1402570723424b876fdec0940b66e87bc2ab364cb695f61800be6fb"
+    },
+    {
+      "path": "tools/tests/run-android-checks-test.sh",
+      "sha256": "c8bb2b130608c7b9e3da98e4ce2fcd015f87699f2fb5fe81de12d2a8271102ca"
+    },
+    {
+      "path": "android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/PapercupAppSmokeTest.kt",
+      "sha256": "194e5f99cf4fee9f8fa1ad6a83640313e225c392ac4d070e2923f8c75498e0ff"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "automatic-scheduled-execution",
+      "passed": true,
+      "evidence": "GitHub event and retained event.txt are schedule; host/native steps executed successfully rather than cache-hit skips."
+    },
+    {
+      "id": "test-reports-executed",
+      "passed": true,
+      "evidence": "Unique native/debug/release XML testcase counts agree with suite declarations; zero suite or case failures/errors/skips."
+    },
+    {
+      "id": "tested-apk-bytes-retained",
+      "passed": true,
+      "evidence": "Both app and instrumentation APKs are in proof-cache and direct-output archive paths; copies are identical; recorded app SHA matches bytes."
+    },
+    {
+      "id": "download-identity",
+      "passed": true,
+      "evidence": "Archive SHA256 matches GitHub artifact digest and every ZIP member CRC passes."
+    },
+    {
+      "id": "host-checks-executed",
+      "passed": true,
+      "evidence": "Job metadata and retained log show host Rust/build/bindings/alignment/unit/lint/privacy/provenance phases succeeded."
+    },
+    {
+      "id": "pre-reactivation-admission",
+      "passed": true,
+      "evidence": "Run created00:15:40Z predates recovery re-enable00:29:22Z. No reactivation causality is claimed."
+    }
+  ],
+  "disclosedGaps": [
+    "Native execution is launcherActivityStarts, not paired journeys or signed/minified-candidate acceptance.",
+    "Actual phone, both voice/push journeys, reviewer access, provider settings/license clearance and Play/public-install evidence remain incomplete.",
+    "Earlier missing-schedule report is contradicted by this run record; cause of the prior absence result remains unconfirmed.",
+    "The hosted Rust workspace run explicitly ignored the opt-in live_p0_contract_smoke; separate saved live proof remains required for that boundary."
+  ]
+}

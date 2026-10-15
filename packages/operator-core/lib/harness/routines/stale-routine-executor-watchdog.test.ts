@@ -7,13 +7,26 @@
  * healthy-unresolvable (fail-safe), healthy-unchanged-commit, and the one true
  * stale case.
  */
-import { describe, expect, it } from 'vitest';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  GATE_CODE_RESTART_LEAD_SEC,
   RESTART_SAFETY_NOTE,
   ROUTINE_DRIFT_NAME_CAP,
   STALE_EXECUTOR_GIT_SYNC_DRAIN_SEC,
   STALE_EXECUTOR_RESTART_COOLDOWN_MS,
+  STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS,
+  STALE_EXECUTOR_DRAIN_REFUSAL_BACKOFF_MAX_MS,
+  staleExecutorRetryBackoffMs,
+  defaultPtoolScriptPath,
+  evaluateGateCodeFastPath,
+  gateCodeFastPathMinUptimeSec,
+  judgeGateCodeRestartWindow,
+  resetGateCodeFastPathStateForTests,
+  resetStaleExecutorRestartStateForTests,
   restartStaleBgHostExecutor,
   evaluateExecutorStaleness,
   executorAlarmContext,
@@ -24,14 +37,19 @@ import {
   staleExecutorThresholdSec,
   waitForStaleExecutorRestartGeneration,
   type ExecutorStalenessVerdict,
+  type GateCodeFastPathInput,
 } from './stale-routine-executor-watchdog';
 import {
+  GATE_SOURCE_PATHSPECS,
   captureProcessBootIdentity,
   processBootTimeMs,
   resolveCommitsBehind,
+  resolveGateCodeDrift,
   resolveRoutineCodeDrift,
+  resolveSourceDrift,
   type RoutineCodeDrift,
 } from '../../dbos/process-boot-identity';
+import type { GateCollisionProbe } from '../../release/gate-collision-guard';
 
 const TWO_H = 2 * 3_600_000;
 const BOOT = 1_000_000;
@@ -62,6 +80,21 @@ describe('process boot identity — import timing cannot reset executor age', ()
     expect(resolveCalls).toBe(1);
     expect(identity.bootTimeMs).toBe(3_000);
     await expect(identity.bootCommit).resolves.toBe('a'.repeat(40));
+  });
+
+  it('pins the loaded bundle even when the checkout at boot contains a newer commit', async () => {
+    const readGit = vi.fn(async (args: string[]) =>
+      args.includes('HEAD') ? 'b'.repeat(40) : 'a'.repeat(40));
+    const identity = captureProcessBootIdentity({ loadedSha: 'a'.repeat(10), readGit });
+    await expect(identity.bootCommit).resolves.toBe('a'.repeat(40));
+    expect(readGit).toHaveBeenCalledWith(['rev-parse', '--verify', `${'a'.repeat(10)}^{commit}`]);
+  });
+
+  it.each([null, '', 'HEAD', 'not-a-source-sha'])('keeps missing or invalid loaded identity unknown: %s', async loadedSha => {
+    const readGit = vi.fn(async () => 'b'.repeat(40));
+    const identity = captureProcessBootIdentity({ loadedSha, readGit });
+    await expect(identity.bootCommit).resolves.toBeNull();
+    expect(readGit).not.toHaveBeenCalled();
   });
 });
 
@@ -292,6 +325,10 @@ describe('executorIdentity — a stable per-process key that never conflates two
 });
 
 describe('stale bg-host remediation — guarded, injectable, and generation-verified', () => {
+  // The in-flight latch and cooldown are module state; a refused attempt now arms a
+  // retry backoff (WI-10007644), so each case starts from a clean actuator.
+  beforeEach(() => resetStaleExecutorRestartStateForTests());
+
   const staleVerdict = (): ExecutorStalenessVerdict => ({
     stale: true,
     reason: 'test stale bg-host executor',
@@ -381,6 +418,13 @@ describe('stale bg-host remediation — guarded, injectable, and generation-veri
     nowMs += STALE_EXECUTOR_RESTART_COOLDOWN_MS + 1;
   });
 
+  it('WI-6554700010010584: drains for the full git-sync barrier ceiling, not a shorter budget', async () => {
+    // 45s refused 17/17: a pass already inside its pointer-bump phase cannot yield and
+    // measured 70-90s. A budget above the ceiling would be rejected by the restart schema.
+    const { GIT_SYNC_RESTART_BARRIER_DRAIN_SEC } = await import('../../release/gate-collision-guard');
+    expect(STALE_EXECUTOR_GIT_SYNC_DRAIN_SEC).toBe(GIT_SYNC_RESTART_BARRIER_DRAIN_SEC);
+  });
+
   it('does not invoke the restart command for another identity or a healthy verdict', async () => {
     let calls = 0;
     const run = async () => {
@@ -397,6 +441,130 @@ describe('stale bg-host remediation — guarded, injectable, and generation-veri
     ).resolves.toMatchObject({ attempted: false, code: 'not_stale' });
     expect(calls).toBe(0);
   });
+
+  it('fails loudly as ptool_script_missing, naming the path, when the resolved ptool script does not exist (WI-10007644)', async () => {
+    const saved = process.env.PAPERCUSP_PTOOL_SCRIPT;
+    process.env.PAPERCUSP_PTOOL_SCRIPT = '/nonexistent/wi-10007644/ptool.mjs';
+    let ptoolCalls = 0;
+    try {
+      const result = await restartStaleBgHostExecutor('port-3271', staleVerdict(), {
+        now: () => 5_000_000_000_000,
+        run: async (command) => {
+          if (command !== 'systemctl') ptoolCalls += 1;
+          return { stdout: '101\n' };
+        },
+      });
+      expect(result).toMatchObject({ attempted: true, restarted: false, code: 'ptool_script_missing' });
+      expect(result.error).toContain('/nonexistent/wi-10007644/ptool.mjs');
+      expect(ptoolCalls).toBe(0);
+    } finally {
+      if (saved === undefined) delete process.env.PAPERCUSP_PTOOL_SCRIPT;
+      else process.env.PAPERCUSP_PTOOL_SCRIPT = saved;
+    }
+  });
+
+  it('backs off after a refused attempt instead of re-running the drain on every tick (WI-10007644)', async () => {
+    let nowMs = 7_000_000_000_000;
+    let ptoolCalls = 0;
+    const run = async (command: string) => {
+      if (command === 'systemctl') return { stdout: '101\n' };
+      ptoolCalls += 1;
+      return {
+        stdout: JSON.stringify({ ok: false, reason: 'git_sync_barrier_drain_timeout' }),
+        error: 'Command failed: exit 5',
+      };
+    };
+    const deps = { now: () => nowMs, run, ptoolScript: '/tmp/ptool.mjs' };
+
+    await expect(restartStaleBgHostExecutor('port-3271', staleVerdict(), deps)).resolves.toMatchObject({
+      attempted: true,
+      restarted: false,
+      code: 'git_sync_barrier_drain_timeout',
+    });
+    nowMs += 30_000; // the next routinesTick
+    await expect(restartStaleBgHostExecutor('port-3271', staleVerdict(), deps)).resolves.toMatchObject({
+      attempted: false,
+      code: 'restart_cooldown',
+    });
+    expect(ptoolCalls).toBe(1);
+
+    nowMs += STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS;
+    await expect(restartStaleBgHostExecutor('port-3271', staleVerdict(), deps)).resolves.toMatchObject({
+      attempted: true,
+      code: 'git_sync_barrier_drain_timeout',
+    });
+    expect(ptoolCalls).toBe(2);
+    // The backoff is a short retry window, never the post-success cooldown.
+    expect(STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS).toBeLessThan(STALE_EXECUTOR_RESTART_COOLDOWN_MS);
+  });
+
+  it('doubles the wait across consecutive drain refusals and resets it after a restart (WI-6554700010009238)', async () => {
+    let nowMs = 6_000_000_000_000;
+    let ptoolCalls = 0;
+    let answer: Record<string, unknown> = { ok: false, reason: 'git_sync_barrier_drain_timeout' };
+    const run = async (command: string) => {
+      if (command === 'systemctl') return { stdout: '101\n' };
+      ptoolCalls += 1;
+      return answer.ok === false
+        ? { stdout: JSON.stringify(answer), error: 'Command failed: exit 5' }
+        : { stdout: JSON.stringify(answer) };
+    };
+    const deps = {
+      now: () => nowMs,
+      run,
+      ptoolScript: '/tmp/ptool.mjs',
+      verifyGeneration: async () => ({ verified: true, beforePid: 101, observedPid: 202, code: 'generation_changed' as const }),
+    };
+    const attempt = () => restartStaleBgHostExecutor('port-3271', staleVerdict(), deps);
+
+    // Refusal #1 waits 3 min, #2 waits 6 min, #3 waits 12 min.
+    for (const waitMs of [3, 6, 12].map((m) => m * 60_000)) {
+      await expect(attempt()).resolves.toMatchObject({ attempted: true, code: 'git_sync_barrier_drain_timeout' });
+      nowMs += waitMs - 1_000;
+      await expect(attempt()).resolves.toMatchObject({ attempted: false, code: 'restart_cooldown' });
+      nowMs += 1_000;
+    }
+    expect(ptoolCalls).toBe(3);
+
+    // A successful restart resets the count: the next refusal waits the base 3 min again.
+    answer = { ok: true, restarted: true, restartedFromPid: 101 };
+    await expect(attempt()).resolves.toMatchObject({ restarted: true, code: 'restarted' });
+    nowMs += STALE_EXECUTOR_RESTART_COOLDOWN_MS;
+    answer = { ok: false, reason: 'git_sync_barrier_drain_timeout' };
+    await expect(attempt()).resolves.toMatchObject({ attempted: true, code: 'git_sync_barrier_drain_timeout' });
+    nowMs += STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS;
+    await expect(attempt()).resolves.toMatchObject({ attempted: true, code: 'git_sync_barrier_drain_timeout' });
+  });
+
+  it('staleExecutorRetryBackoffMs: base for one refusal, doubling, capped at 30 min', () => {
+    expect(staleExecutorRetryBackoffMs(0)).toBe(STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS);
+    expect(staleExecutorRetryBackoffMs(1)).toBe(STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS);
+    expect(staleExecutorRetryBackoffMs(2)).toBe(2 * STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS);
+    expect(staleExecutorRetryBackoffMs(4)).toBe(8 * STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS);
+    expect(staleExecutorRetryBackoffMs(9)).toBe(STALE_EXECUTOR_DRAIN_REFUSAL_BACKOFF_MAX_MS);
+  });
+});
+
+describe('defaultPtoolScriptPath — the same ptool.mjs from source AND from the host bundle (WI-10007644)', () => {
+  // This test file sits beside the watchdog: routines → harness → lib → operator-core → packages → repo.
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../..');
+  const expected = path.join(repoRoot, 'apps', 'operator', 'scripts', 'ptool.mjs');
+
+  it('from the source module it names the real, existing ptool.mjs', () => {
+    expect(defaultPtoolScriptPath()).toBe(expected);
+    expect(existsSync(defaultPtoolScriptPath())).toBe(true);
+  });
+
+  it('from the esbuild host bundle bg-host runs it names the SAME file — the old fixed-hop URL left the repo', () => {
+    const bundleUrl = pathToFileURL(path.join(repoRoot, 'apps', 'operator', 'dist-host', 'hono-host.mjs')).href;
+    expect(defaultPtoolScriptPath(bundleUrl)).toBe(expected);
+
+    // Control: the pre-fix expression, evaluated from that same bundle location,
+    // resolves outside the checkout — the production failure this pins.
+    const legacy = fileURLToPath(new URL('../../../../../apps/operator/scripts/ptool.mjs', bundleUrl));
+    expect(legacy).not.toBe(expected);
+    expect(legacy.startsWith(repoRoot + path.sep)).toBe(false);
+  });
 });
 
 describe('staleRoutineExecutorSweep — remediation runs before alert debounce', () => {
@@ -408,6 +576,8 @@ describe('staleRoutineExecutorSweep — remediation runs before alert debounce',
     process.env.PAPERCUSP_DBOS_ROUTINES = '1';
     process.env.PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC = '1';
     const order: string[] = [];
+    // A coalesced restart IS an attempt, so the sweep logs its outcome (WI-10007644).
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       const result = await staleRoutineExecutorSweep(
         { now: 100_000, workspaceId: 'test-workspace', installSlug: 'test-harness' },
@@ -432,7 +602,61 @@ describe('staleRoutineExecutorSweep — remediation runs before alert debounce',
       expect(result.reason).toBe('debounced');
       expect(result.restart).toMatchObject({ attempted: true, coalesced: true, code: 'coalesced' });
       expect(order).toEqual(['restart', 'debounce']);
+      expect(warn.mock.calls.map((call) => String(call[0]))).toContain(
+        '[stale-routine-executor] auto-restart (port-3271): coalesced',
+      );
     } finally {
+      warn.mockRestore();
+      if (savedPort === undefined) delete process.env.PAPERCUSP_HONO_PORT;
+      else process.env.PAPERCUSP_HONO_PORT = savedPort;
+      if (savedRoutines === undefined) delete process.env.PAPERCUSP_DBOS_ROUTINES;
+      else process.env.PAPERCUSP_DBOS_ROUTINES = savedRoutines;
+      if (savedThreshold === undefined) delete process.env.PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC;
+      else process.env.PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC = savedThreshold;
+    }
+  });
+
+  it('logs every attempted restart outcome, and stays quiet when nothing was attempted (WI-10007644)', async () => {
+    const savedPort = process.env.PAPERCUSP_HONO_PORT;
+    const savedRoutines = process.env.PAPERCUSP_DBOS_ROUTINES;
+    const savedThreshold = process.env.PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC;
+    process.env.PAPERCUSP_HONO_PORT = '3271';
+    process.env.PAPERCUSP_DBOS_ROUTINES = '1';
+    process.env.PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC = '1';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const sweep = (restartResult: Awaited<ReturnType<typeof restartStaleBgHostExecutor>>) =>
+      staleRoutineExecutorSweep(
+        { now: 100_000, workspaceId: 'test-workspace', installSlug: 'test-harness' },
+        {
+          bootCommit: 'a'.repeat(40),
+          currentCommit: 'b'.repeat(40),
+          bootTimeMs: 0,
+          commitsBehind: 3,
+          routineDrift: { changed: [], addedSinceBoot: [] },
+          restart: async () => restartResult,
+          recentWatchdogFires: async () => 1,
+        },
+      );
+    const restartLines = () =>
+      warn.mock.calls.map((call) => String(call[0])).filter((line) => line.includes('auto-restart'));
+    try {
+      await sweep({
+        attempted: true,
+        restarted: false,
+        coalesced: false,
+        verified: false,
+        code: 'ptool_script_missing',
+        error: 'ptool script not found at /x/ptool.mjs',
+      });
+      expect(restartLines()).toEqual([
+        '[stale-routine-executor] auto-restart (port-3271): ptool_script_missing — ptool script not found at /x/ptool.mjs',
+      ]);
+
+      warn.mockClear();
+      await sweep({ attempted: false, restarted: false, coalesced: false, verified: false, code: 'restart_cooldown' });
+      expect(restartLines()).toEqual([]);
+    } finally {
+      warn.mockRestore();
       if (savedPort === undefined) delete process.env.PAPERCUSP_HONO_PORT;
       else process.env.PAPERCUSP_HONO_PORT = savedPort;
       if (savedRoutines === undefined) delete process.env.PAPERCUSP_DBOS_ROUTINES;
@@ -862,5 +1086,274 @@ describe('resolveRoutineCodeDrift — fail-safe and argv-safe', () => {
       await expect(resolveRoutineCodeDrift(bad, 'd'.repeat(40))).resolves.toBeNull();
       await expect(resolveRoutineCodeDrift('d'.repeat(40), bad)).resolves.toBeNull();
     }
+  });
+});
+
+// ── WI-10007644 step 2 (P-014): restart for gate-code changes, between measurements ──
+
+describe('gate-code drift probe — scoped to the gate code bg-host runs in-process', () => {
+  it('watches operator-core release modules and release-actions, not the per-run green-checkpoint script', () => {
+    expect(GATE_SOURCE_PATHSPECS).toContain('packages/operator-core/lib/release/');
+    expect(GATE_SOURCE_PATHSPECS).toContain('packages/operator-core/lib/harness/routines/release-actions.ts');
+    // green-checkpoint.ts is spawned as a fresh tsx per run, so it is never stale in bg-host.
+    expect(GATE_SOURCE_PATHSPECS.some((p) => p.startsWith('apps/operator/'))).toBe(false);
+  });
+
+  it('shares the routine probe\'s fail-safe and argv guards', async () => {
+    const sha = 'e'.repeat(40);
+    await expect(resolveGateCodeDrift(sha, sha)).resolves.toEqual({ changed: [], addedSinceBoot: [] });
+    await expect(resolveGateCodeDrift('--output=/tmp/pwned', sha)).resolves.toBeNull();
+    await expect(resolveSourceDrift(sha, 'f'.repeat(40), [])).resolves.toBeNull();
+  });
+});
+
+describe('judgeGateCodeRestartWindow — restart only between gate measurements', () => {
+  const probe = (over: Partial<GateCollisionProbe> = {}): GateCollisionProbe => ({
+    probeFailed: false,
+    runLockHeld: false,
+    runElapsedSec: null,
+    nextFireInSec: 600,
+    refire: null,
+    ...over,
+  });
+
+  it('opens when no run is in flight and the next fire is inside the lead window', () => {
+    expect(judgeGateCodeRestartWindow(probe())).toMatchObject({ open: true });
+    expect(judgeGateCodeRestartWindow(probe({ nextFireInSec: GATE_CODE_RESTART_LEAD_SEC }))).toMatchObject({ open: true });
+  });
+
+  it('stays closed on every unknown, in-flight, imminent, overdue or distant reading', () => {
+    const closed: Array<[GateCollisionProbe | null, RegExp]> = [
+      [null, /unreadable/],
+      [probe({ probeFailed: true }), /unreadable/],
+      [probe({ runLockHeld: true, runElapsedSec: 1_800 }), /run is in flight \(30m in\)/],
+      [probe({ refire: { candidate: 'abc' } as unknown as GateCollisionProbe['refire'] }), /auto-refire/],
+      [probe({ nextFireInSec: null }), /unknown/],
+      [probe({ nextFireInSec: 60 }), /collision window/],
+      [probe({ nextFireInSec: -30 }), /overdue/],
+      [probe({ nextFireInSec: -3_600 }), /overdue/],
+      [probe({ nextFireInSec: GATE_CODE_RESTART_LEAD_SEC + 1 }), /outside the 15m lead window/],
+    ];
+    for (const [p, why] of closed) {
+      const w = judgeGateCodeRestartWindow(p);
+      expect(w.open).toBe(false);
+      expect(w.reason).toMatch(why);
+    }
+  });
+});
+
+describe('evaluateGateCodeFastPath — the pure decider', () => {
+  const MIN = 600_000;
+  const base: GateCodeFastPathInput = {
+    identity: 'port-3271',
+    bootCommit: 'a'.repeat(40),
+    currentCommit: 'b'.repeat(40),
+    bootTimeMs: 0,
+    now: MIN + 1,
+    minUptimeMs: MIN,
+    gateCodeDrift: { changed: ['packages/operator-core/lib/release/fixer-liveness.ts'], addedSinceBoot: [] },
+    window: { open: true, reason: 'no gate run in flight and the next fire is 10m away' },
+  };
+
+  it('restarts a bg-host whose in-process gate code changed, once the gate is between measurements', () => {
+    const v = evaluateGateCodeFastPath(base);
+    expect(v.restart).toBe(true);
+    expect(v.files).toEqual(['packages/operator-core/lib/release/fixer-liveness.ts']);
+    expect(v.reason).toContain('fixer-liveness.ts');
+    expect(v.reason).toContain('between gate measurements');
+  });
+
+  it('waits, naming the changed files and why, while the gate is mid-measurement', () => {
+    const v = evaluateGateCodeFastPath({ ...base, window: { open: false, reason: 'a green-checkpoint run is in flight' } });
+    expect(v.restart).toBe(false);
+    expect(v.files).toHaveLength(1);
+    expect(v.reason).toMatch(/waiting to restart between gate measurements: a green-checkpoint run is in flight/);
+  });
+
+  it('never restarts for another identity, when disabled, too young, unmoved, unresolvable, or with no gate change', () => {
+    const cases: Array<[Partial<GateCodeFastPathInput>, RegExp]> = [
+      [{ identity: 'port-3070' }, /not the bg-host/],
+      [{ minUptimeMs: 0 }, /disabled/],
+      [{ now: MIN - 1 }, /uptime under/],
+      [{ bootCommit: null }, /unresolvable/],
+      [{ currentCommit: 'a'.repeat(40) }, /nothing committed/],
+      [{ gateCodeDrift: null }, /drift unresolvable/],
+      [{ gateCodeDrift: { changed: [], addedSinceBoot: [] } }, /no in-process gate source/],
+    ];
+    for (const [over, why] of cases) {
+      const v = evaluateGateCodeFastPath({ ...base, ...over });
+      expect(v.restart).toBe(false);
+      expect(v.reason).toMatch(why);
+    }
+  });
+
+  it('defaults to a 10-minute uptime floor, env-tunable, with <=0 as the kill switch', () => {
+    const saved = process.env.PAPERCUSP_STALE_GATE_CODE_MIN_UPTIME_SEC;
+    try {
+      delete process.env.PAPERCUSP_STALE_GATE_CODE_MIN_UPTIME_SEC;
+      expect(gateCodeFastPathMinUptimeSec()).toBe(600);
+      process.env.PAPERCUSP_STALE_GATE_CODE_MIN_UPTIME_SEC = '0';
+      expect(gateCodeFastPathMinUptimeSec()).toBe(0);
+    } finally {
+      if (saved === undefined) delete process.env.PAPERCUSP_STALE_GATE_CODE_MIN_UPTIME_SEC;
+      else process.env.PAPERCUSP_STALE_GATE_CODE_MIN_UPTIME_SEC = saved;
+    }
+  });
+});
+
+describe('staleRoutineExecutorSweep — gate-code fast path on a young bg-host', () => {
+  const env = { PAPERCUSP_HONO_PORT: '3271', PAPERCUSP_DBOS_ROUTINES: '1', PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC: '7200' };
+  let saved: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    resetGateCodeFastPathStateForTests();
+    resetStaleExecutorRestartStateForTests();
+    saved = Object.fromEntries(Object.keys(env).map((k) => [k, process.env[k]]));
+    Object.assign(process.env, env);
+    delete process.env.PAPERCUSP_STALE_GATE_CODE_MIN_UPTIME_SEC;
+    return () => {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    };
+  });
+
+  // 30 minutes old: past the 10m fast-path floor, well under the 2h staleness floor.
+  const sweep = (over: Parameters<typeof staleRoutineExecutorSweep>[1]) =>
+    staleRoutineExecutorSweep(
+      { now: 30 * 60_000, workspaceId: 'test-workspace', installSlug: 'test-harness' },
+      {
+        bootCommit: 'a'.repeat(40),
+        currentCommit: 'b'.repeat(40),
+        bootTimeMs: 0,
+        gateCodeDrift: { changed: ['packages/operator-core/lib/release/frozen-candidate-repair-queue.ts'], addedSinceBoot: [] },
+        clearExecutorStalenessAlarm: async () => false,
+        recentWatchdogFires: async () => {
+          throw new Error('a gate-code restart must never page');
+        },
+        raiseExecutorStalenessAlarm: async () => {
+          throw new Error('a gate-code restart must never page');
+        },
+        ...over,
+      },
+    );
+
+  it('does not announce recovery for a young process still loading an older bundle', async () => {
+    const clearAlarm = vi.fn(async () => true);
+    const result = await sweep({
+      gateCodeDrift: { changed: [], addedSinceBoot: [] },
+      clearExecutorStalenessAlarm: clearAlarm,
+    });
+    expect(result.recovered).toBe(false);
+    expect(clearAlarm).not.toHaveBeenCalled();
+  });
+
+  it.each(['boot', 'current'] as const)('does not announce recovery when the %s identity is unknown', async missing => {
+    const clearAlarm = vi.fn(async () => true);
+    const result = await sweep({
+      ...(missing === 'boot' ? { bootCommit: null } : { currentCommit: null }),
+      clearExecutorStalenessAlarm: clearAlarm,
+    });
+    expect(result.recovered).toBe(false);
+    expect(clearAlarm).not.toHaveBeenCalled();
+  });
+
+  it('clears the previous alarm when the loaded commit matches current source', async () => {
+    const clearAlarm = vi.fn(async () => true);
+    const result = await sweep({ currentCommit: 'a'.repeat(40), clearExecutorStalenessAlarm: clearAlarm });
+    expect(result.recovered).toBe(true);
+    expect(clearAlarm).toHaveBeenCalledOnce();
+  });
+
+  it('restarts with the gate-code trigger when the gate is between measurements, without paging', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const seen: ExecutorStalenessVerdict[] = [];
+    try {
+      const result = await sweep({
+        gateProbe: async () => ({ probeFailed: false, runLockHeld: false, runElapsedSec: null, nextFireInSec: 420, refire: null }),
+        restart: async (_identity, verdict) => {
+          seen.push(verdict);
+          return { attempted: true, restarted: true, coalesced: false, verified: true, code: 'restarted' };
+        },
+      });
+      expect(result.outcome).toBe('gate-code-restart');
+      expect(result.restart).toMatchObject({ restarted: true, code: 'restarted' });
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toMatchObject({ stale: true, trigger: 'gate-code' });
+      expect(seen[0].reason).toContain('frozen-candidate-repair-queue.ts');
+      expect(warn.mock.calls.map((c) => String(c[0]))).toContain(
+        '[stale-routine-executor] auto-restart (port-3271, gate-code): restarted',
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('defers while a run is in flight: no restart, one log line per boot..HEAD pair', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    let restarts = 0;
+    try {
+      const deps = {
+        gateProbe: async (): Promise<GateCollisionProbe> => ({
+          probeFailed: false,
+          runLockHeld: true,
+          runElapsedSec: 900,
+          nextFireInSec: 3_000,
+          refire: null,
+        }),
+        restart: async () => {
+          restarts += 1;
+          return { attempted: true, restarted: true, coalesced: false, verified: true, code: 'restarted' };
+        },
+      };
+      const first = await sweep(deps);
+      await sweep(deps);
+      expect(first.outcome).toBe('healthy');
+      expect(first.gateCode).toMatchObject({ restart: false });
+      expect(first.gateCode?.reason).toMatch(/run is in flight/);
+      expect(restarts).toBe(0);
+      const lines = warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('gate-code fast path'));
+      expect(lines).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not even probe the gate when no gate code changed, nor judge a process under the floor', async () => {
+    let probes = 0;
+    const gateProbe = async () => {
+      probes += 1;
+      return null;
+    };
+    const quiet = await sweep({ gateCodeDrift: { changed: [], addedSinceBoot: [] }, gateProbe });
+    expect(quiet.outcome).toBe('healthy');
+    expect(quiet.gateCode).toMatchObject({ restart: false });
+    const young = await staleRoutineExecutorSweep(
+      { now: 5 * 60_000, workspaceId: 'test-workspace', installSlug: 'test-harness' },
+      { bootCommit: 'a'.repeat(40), currentCommit: 'b'.repeat(40), bootTimeMs: 0, gateProbe, clearExecutorStalenessAlarm: async () => false },
+    );
+    expect(young.outcome).toBe('healthy');
+    expect(young.gateCode).toBeUndefined();
+    expect(probes).toBe(0);
+  });
+
+  it('labels the gate-code restart distinctly in the dev:restart reason', async () => {
+    let stdin = '';
+    await restartStaleBgHostExecutor(
+      'port-3271',
+      { stale: true, reason: 'gate code changed', ageMs: 30 * 60_000, trigger: 'gate-code' },
+      {
+        now: () => 9_100_000_000_000,
+        ptoolScript: '/tmp/ptool.mjs',
+        run: async (command, _args, options) => {
+          if (command === 'systemctl') return { stdout: '101\n' };
+          stdin = options.stdin;
+          return { stdout: JSON.stringify({ ok: true, coalesced: true }) };
+        },
+      },
+    );
+    expect(JSON.parse(stdin).reason).toBe(
+      'auto-restart bg-host executor between gate measurements: in-process gate code changed since boot; port-3271',
+    );
   });
 });

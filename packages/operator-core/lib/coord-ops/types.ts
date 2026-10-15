@@ -26,6 +26,7 @@ import type { ZodType } from 'zod';
 import type { ProgramOutcome } from '@papercusp/step-program';
 import type { InterestAutoArmHandle } from '../interest-auto-arm.js';
 import type { ConversationProducer } from '../agent-tools/coordination/conversations-store.js';
+import type { GoalAskOverlap } from './goal-ask-dedup.js';
 export type { ProgramOutcome };
 
 /** A thread post as the collect/aggregate ops consume it (a slim ThreadPostRow). */
@@ -87,6 +88,15 @@ export interface CoordOpCaps {
     /** Replace an open owner ask instead of creating a second live gate. */
     supersedes_conversation_id?: string;
   }): Promise<{ thread_id: string; conversation_id: string; interest_watch?: InterestAutoArmHandle }>;
+
+  /**
+   * P-006 owner-ask dedup: the caller's goal (`session_briefs.goal_id`, null when
+   * the caller belongs to no goal), how many open goal-lineage owner asks were
+   * compared, and the one overlapping `question`, if any. See goal-ask-dedup.ts.
+   */
+  findOverlappingGoalAsk(input: {
+    question: string;
+  }): Promise<{ goalId: string | null; compared: number; overlap: GoalAskOverlap | null }>;
 
   /** Post to a thread. Wraps `conversations.postReply` / `answerQuestion`. */
   postThread(input: {

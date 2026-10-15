@@ -204,7 +204,7 @@ describe('HostedWorkspaceHostSessionAdapter — relay usage on app-http opens (P
     const h = hostWithUsage(() => { throw new Error('sink down'); }, (message) => warnings.push(message));
     await h.adapter.accept({ type: 'relay.open', channelId: 'app-1', kind: 'app-http', audience: 'app', role: 'controller', relayUsage: usage });
     expect(h.sent).toContainEqual({ type: 'relay', channelId: 'app-1', payload: { type: 'http.ready' } });
-    expect(warnings).toEqual(['relay usage report failed: sink down']);
+    expect(warnings).toEqual(['relay_usage_report_failed']);
   });
 });
 

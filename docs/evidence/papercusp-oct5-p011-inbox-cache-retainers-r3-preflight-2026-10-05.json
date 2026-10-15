@@ -1,0 +1,116 @@
+{
+  "schemaVersion": "p011-admitted-cache-retainer-preflight-v1",
+  "ownerId": "su-7db4feb8-04cb-46ce-80c2-844aa23006d2",
+  "workItem": "WI-10006064",
+  "deadlineWorkItem": "EI-25163485246886918",
+  "parent": "WI-10004890",
+  "plan": "papercusp-log-performance-remediation-2026-09-23#P-011",
+  "measuredAt": "2026-10-05T18:31:26.648Z",
+  "receipts": [
+    {
+      "path": "scripts/cdp-inspector.mjs",
+      "bytes": 66663,
+      "sha256": "bb15dc2ac1ec9cb60d26d62d0790610f2cd097a9171b37c39465c8f5a7d22112",
+      "matchesPrevious": true
+    },
+    {
+      "path": "scripts/cdp-inspector.d.mts",
+      "bytes": 17204,
+      "sha256": "a1376f105ad1895e7d64088885e63f1ade5853484dd2eadb4a6632af6ef88963",
+      "matchesPrevious": true
+    },
+    {
+      "path": "packages/operator-core/lib/cdp-inspector.test.ts",
+      "bytes": 79987,
+      "sha256": "d05b5c168ec2d1e3fca03c8a592018d00bd594ba60b7c2f39d38f4f188cd3e9f",
+      "matchesPrevious": true
+    },
+    {
+      "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+      "bytes": 212957,
+      "sha256": "4d8db96fc5d2ec92d8dfbcfe0b790e6329b72ab0fff258e1852de0819d098903",
+      "matchesPrevious": true
+    },
+    {
+      "path": "packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts",
+      "bytes": 79432,
+      "sha256": "3561f7439050cefa5eaf0efa5444e212d472484ad933b55910534dc6fb3fa3f3",
+      "matchesPrevious": true
+    },
+    {
+      "path": "packages/operator-core/lib/event-loop-cpu-recorder.ts",
+      "bytes": 6170,
+      "sha256": "496812aee19fe61c96956ed24e3f3dc3975844bd92af9c688e1b7ae7ef9ffcd9",
+      "matchesPrevious": true
+    },
+    {
+      "path": "packages/operator-core/lib/event-loop-lag-monitor.ts",
+      "bytes": 50798,
+      "sha256": "d361d749d586cee97838afd97ce796e5695aba9c8eec5e8dedd15119e99c06df",
+      "matchesPrevious": true
+    },
+    {
+      "path": "scripts/test-files.mjs",
+      "bytes": 180974,
+      "sha256": "745d6ec3613bbcc7a525ecba32c05b660ed0f4b078f9ed7b6e18948747515657",
+      "matchesPrevious": true
+    }
+  ],
+  "binaries": [
+    {
+      "path": "/home/builduser/papercupai-workspace/papercusp/.heap-retainers-cargo-target/release/papercusp-heap-retainers",
+      "sha256": "dfa7a07393597b99fc2c92e3587930ea0e6f7c406bb8c534c786d4fe76a69f02",
+      "version": "papercusp-heap-retainers 0.1.0",
+      "exit": 0,
+      "matchesPrevious": true
+    },
+    {
+      "path": "/home/builduser/papercupai-workspace/papercusp/.heap-retainers-cargo-target/decoder-control/bin/v8-heap",
+      "sha256": "2697f0cf15785272b24e08e0bcec0a43c8fd5f2ba4fec8a4ffda1d89d8f7ff24",
+      "version": "v8-heap-cli 0.1.0",
+      "exit": 0,
+      "matchesPrevious": true
+    }
+  ],
+  "processes": [
+    {
+      "pid": 4079881,
+      "startTicks": "1171970",
+      "exists": false
+    },
+    {
+      "pid": 4193282,
+      "startTicks": "1185718",
+      "exists": false
+    },
+    {
+      "pid": 138047,
+      "startTicks": "1199702",
+      "exists": false
+    },
+    {
+      "pid": 228872,
+      "startTicks": "1213709",
+      "exists": false
+    }
+  ],
+  "newOutputAbsent": true,
+  "newLogAbsent": true,
+  "deadlineAudit": "docs/evidence/papercusp-oct5-p011-atomic-cache-id-lifetime-qualification-r1-2026-10-05.json",
+  "originalInterruptedRaw": "docs/evidence/papercusp-oct5-p011-inbox-cache-retainers-r2-interrupted-2026-10-05.json",
+  "runnerBudgetMs": 1200000,
+  "privateRuntimeBudgetMs": 900000,
+  "plane": "isolated-current-build-operator-api",
+  "testFile": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+  "testName": "compares order-reversed full inbox keys with observed HTTP overlap",
+  "output": "docs/evidence/papercusp-oct5-p011-inbox-cache-retainers-r3-2026-10-05.json",
+  "runnerLog": ".papercusp/logs/su-7db4f-p011-inbox-cache-retainers-r3-live.log",
+  "scope": {
+    "fullExecutedSourceGraph": "unknown",
+    "productionMemorySavings": "unmeasured",
+    "nativePhysicalOwnership": "unmeasured",
+    "fullP011Acceptance": false,
+    "shipmentVerified": false
+  },
+  "decoderRecovery": "Prior ephemeral path absent; reused existing retained decoder with exactly matching SHA256 and version."
+}

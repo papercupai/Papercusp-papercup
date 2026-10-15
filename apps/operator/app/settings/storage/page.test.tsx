@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 /* ── Mocks (hoisted) ───────────────────────────────────────────────────── */
 const h = vi.hoisted(() => ({
   rows: [] as unknown[],
+  reclaim: null as string | null,
   flagOn: true,
   doTrim: vi.fn(async () => ({
     ok: true,
@@ -29,7 +30,7 @@ import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', async () => {
   const React = await import('react');
   const useQueryState = (_key: string, parser?: { defaultValue?: unknown }) => {
-    const [v, setV] = React.useState(parser && 'defaultValue' in parser ? parser.defaultValue : null);
+    const [v, setV] = React.useState(_key === 'reclaim' ? h.reclaim : parser && 'defaultValue' in parser ? parser.defaultValue : null);
     return [v, async (nv: unknown) => setV(nv ?? null)];
   };
   return {
@@ -83,6 +84,7 @@ let fetchMock: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   h.rows = [pgRow(), fedRow()];
   h.flagOn = true;
+  h.reclaim = null;
   h.doTrim.mockClear();
   fetchMock = vi.fn(async () => ({
     ok: true,
@@ -97,6 +99,26 @@ afterEach(() => {
 });
 
 describe('Storage settings page', () => {
+  it('opens the exact receipt linked by the disk alarm and shows effects and partial failures', async () => {
+    h.reclaim = 'linked-receipt';
+    fetchMock.mockImplementation(async () => ({ ok: true, json: async () => ({ ok: true, result: { content: [{ type: 'text', text: JSON.stringify({ receipt: {
+      id: 'linked-receipt', finishedAt: '2026-10-13T12:00:00Z', complete: false, dryRun: false,
+      devices: [{ path: '/mnt/data', beforeFreeBytes: 80 * 1024 ** 3, afterFreeBytes: 90 * 1024 ** 3 }],
+      entries: [{ path: '/tmp/expired-build', status: 'removed', bytes: 10 * 1024 ** 3 }],
+      delegates: [], errors: ['holder scan incomplete'],
+    } }) }] } }), text: async () => '' }));
+    render(<StorageSettingsPage />);
+    await waitFor(() => expect(screen.getByText(/expired-build/)).toBeTruthy());
+    expect(screen.getByText('holder scan incomplete')).toBeTruthy();
+    expect(screen.getByText('90.0 GB')).toBeTruthy();
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({ name: 'storage:census', args: { receiptId: 'linked-receipt', payloadTier: 'full' } });
+  });
+  it('shows a missing receipt instead of displaying another run as the requested receipt', async () => {
+    h.reclaim = 'missing';
+    fetchMock.mockImplementation(async () => ({ ok: true, json: async () => ({ ok: true, result: { data: { receipt: { id: 'different' } } } }), text: async () => '' }));
+    render(<StorageSettingsPage />);
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('Cleanup receipt not found'));
+  });
   it('renders a card per category', () => {
     render(<StorageSettingsPage />);
     expect(screen.getByRole('heading', { name: 'Storage' })).toBeTruthy();

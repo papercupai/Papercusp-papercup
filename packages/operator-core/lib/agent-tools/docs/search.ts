@@ -19,6 +19,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { runHybridSearch, isVectorOnly, type SearchSource, type Listing, type PgHandle } from '@papercusp/search';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { engineeringAdapter } from './_engineering-adapter';
+import { searchPublicManual, isPublicManualRole } from './_public-manual';
 import { assessDocsCoverage, docsCoverageNote } from './semantic-coverage';
 import {
   HARNESS_REQUIRED_DETAIL,
@@ -53,6 +54,11 @@ const MIN_CANDIDATES = 30;
  * the caller gets an explicit `harness:'engineering'` re-run for the full hybrid ranking.
  */
 const CROSS_SURFACE_PROBE_LIMIT = 5;
+
+// Calls normally finish well below the outer 55s tool deadline. Emit one log
+// breadcrumb for a phase that remains active past this point, without logging
+// the query or adding a timeout that changes search behavior.
+const DOCS_SEARCH_PHASE_WARN_MS = 20_000;
 
 export const RETIREMENT_AUTHORITY_SLUG = 'agent-insights/mug-kettle-cup-tier-is-retired';
 
@@ -277,6 +283,7 @@ export function normalizeDocsSearchArgs(raw: unknown): unknown {
 const argsSchema = z.preprocess(
   normalizeDocsSearchArgs,
   z.object({
+    scope: z.literal('public').optional().describe('Read only the canonical public user manual and FAQ. Never accesses project or engineering docs; cannot combine with harness.'),
     query: z
       .string()
       .min(2)
@@ -326,7 +333,7 @@ export default defineTool({
   // ambient workspace transaction across that work pins org-app pool slots and lets a
   // search burst starve unrelated workspace calls at the 45s acquisition deadline.
   skipWorkspaceTx: true,
-  agentRoles: [...SU_ROLES, 'papercup-deep'],
+  agentRoles: [...SU_ROLES, 'papercup', 'papercup-deep'],
   modality: ['text'],
   rolesQuota: {
     worker: { perChunk: 8 },
@@ -346,12 +353,62 @@ export default defineTool({
     })
     .passthrough(),
   async handler(args, ctx) {
+    if (args.scope === 'public' || isPublicManualRole(ctx.role)) {
+      if (args.harness) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'public_scope_conflict', surface: 'public' }) }], isError: true };
+      const result = await searchPublicManual({ query: args.query, limit: args.limit });
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }], structuredContent: result, ...('error' in result ? { isError: true } : {}) };
+    }
     const ctxAny = ctx as {
       harnessSlug?: string;
       isSuperuser?: boolean;
       signal?: AbortSignal;
       metadata?: (d: Record<string, unknown>) => void;
       progress?: (pct: number, msg: string) => void;
+      log?: (msg: string) => void;
+    };
+    const docsSearchStartedAtMs = Date.now();
+    const docsSearchActivePhases = new Map<string, number>();
+    const docsSearchCompletedMs: Record<string, number> = {};
+    let innerMeta: Record<string, unknown> = {};
+    let resolvedSurface: string | undefined;
+    let resolvedHarnessSlug: string | undefined;
+    const docsSearchTimingSnapshot = () => ({
+      version: 1,
+      totalElapsedMs: Math.max(0, Date.now() - docsSearchStartedAtMs),
+      completedMs: { ...docsSearchCompletedMs },
+      active: [...docsSearchActivePhases.entries()].map(([phase, startedAtMs]) => ({
+        phase,
+        elapsedMs: Math.max(0, Date.now() - startedAtMs),
+      })),
+    });
+    const publishDocsSearchTiming = () => {
+      ctxAny.metadata?.({
+        ...innerMeta,
+        ...(resolvedSurface ? { surface: resolvedSurface } : {}),
+        ...(resolvedHarnessSlug ? { harness_slug: resolvedHarnessSlug } : {}),
+        docsSearchTiming: docsSearchTimingSnapshot(),
+      });
+    };
+    const timeDocsSearchPhase = async <T>(phase: string, operation: () => Promise<T>): Promise<T> => {
+      const startedAtMs = Date.now();
+      docsSearchActivePhases.set(phase, startedAtMs);
+      publishDocsSearchTiming();
+      let warned = false;
+      const timer = setTimeout(() => {
+        if (!docsSearchActivePhases.has(phase)) return;
+        warned = true;
+        ctxAny.log?.('[docs:search timing] ' + phase + ' still pending after at least ' + DOCS_SEARCH_PHASE_WARN_MS + 'ms');
+      }, DOCS_SEARCH_PHASE_WARN_MS);
+      try {
+        return await operation();
+      } finally {
+        clearTimeout(timer);
+        docsSearchActivePhases.delete(phase);
+        const durationMs = Math.max(0, Date.now() - startedAtMs);
+        docsSearchCompletedMs[phase] = durationMs;
+        if (warned) ctxAny.log?.('[docs:search timing] ' + phase + ' completed in ' + durationMs + 'ms');
+        publishDocsSearchTiming();
+      }
     };
     // EI-18894866320087268: 'engineering' is a distinct sentinel from 'all'/'*' that a
     // workspace-scoped session CAN use (see isEngineeringDocsSentinel's doc comment) —
@@ -373,7 +430,9 @@ export default defineTool({
       };
     }
     const effectiveSlug = scope.kind === 'all' ? '*' : scope.slug;
-    const resolved = await resolveAdapter(effectiveSlug, { isSuperuser: ctxAny.isSuperuser });
+    const resolved = await timeDocsSearchPhase('adapterResolution', () =>
+      resolveAdapter(effectiveSlug, { isSuperuser: ctxAny.isSuperuser }),
+    );
     if (resolved.error) {
       return {
         content: [
@@ -384,6 +443,9 @@ export default defineTool({
     }
     const limit = args.limit;
     const sourceKey = resolved.adapter.name;
+    resolvedSurface = resolved.surface;
+    resolvedHarnessSlug = scope.kind === 'harness' ? scope.slug : undefined;
+    publishDocsSearchTiming();
 
     // P-016: docs:search runs on `@papercusp/search`'s `runHybridSearch`
     // instead of hand-rolling RRF over two legs it ran itself. What changes,
@@ -410,7 +472,6 @@ export default defineTool({
     // forwarding ctxAny.metadata directly, so it can be merged into ONE final
     // metadata() call below that reflects the POST-fusion counts rather than
     // the over-fetched intermediate ones.
-    let innerMeta: Record<string, unknown> = {};
     // The lexical leg's own envelope (query/tokenCount/hitCount), captured for
     // the payload. Undefined only if the leg FAILED — the engine catches a
     // source throw and degrades, so that now yields a semantic-only result
@@ -432,22 +493,33 @@ export default defineTool({
     // wanted, resolveDocsEmbedder returns a REJECTING embedder on every
     // degraded path, so a dead embedder reports `blocked` (D-023).
     const { embedder, embeddingMode } = semanticOn
-      ? await resolveDocsEmbedder()
+      ? await timeDocsSearchPhase('embedderResolution', () => resolveDocsEmbedder())
       : { embedder: null, embeddingMode: null };
 
+    const semanticRanker = embeddingMode
+      ? docSectionsRanker(sourceKey, embeddingMode, (h: DocSemanticHit) => {
+          const prior = hydration.get(h.slug);
+          hydration.set(h.slug, {
+            hit: prior?.hit ?? { slug: h.slug, url: h.url, title: h.title, score: 0, excerpt: h.excerpt },
+            anchor: h.anchor,
+          });
+        })
+      : undefined;
     const source: SearchSource = {
       name: sourceKey,
       async lexical({ limit: candidateLimit }): Promise<Listing> {
-        const response = await searchDocs(
-          resolved.adapter,
-          { ...args, limit: Math.max(candidateLimit, MIN_CANDIDATES) },
-          {
-            ...(ctxAny.signal && { signal: ctxAny.signal }),
-            ...(ctxAny.progress && { progress: ctxAny.progress }),
-            metadata: (d) => {
-              innerMeta = d;
+        const response = await timeDocsSearchPhase('lexicalSearch', () =>
+          searchDocs(
+            resolved.adapter,
+            { ...args, limit: Math.max(candidateLimit, MIN_CANDIDATES) },
+            {
+              ...(ctxAny.signal && { signal: ctxAny.signal }),
+              ...(ctxAny.progress && { progress: ctxAny.progress }),
+              metadata: (d) => {
+                innerMeta = d;
+              },
             },
-          },
+          ),
         );
         lexicalResponse = response;
         return response.hits.map((h) => {
@@ -475,20 +547,17 @@ export default defineTool({
       // embedder above is what still makes that state report as `blocked`:
       // the engine sets it when the query embed throws, before any source's
       // embedding method would have been consulted.
-      ...(embeddingMode
+      ...(semanticRanker
         ? {
-            embedding: docSectionsRanker(sourceKey, embeddingMode, (h: DocSemanticHit) => {
-              const prior = hydration.get(h.slug);
-              hydration.set(h.slug, {
-                hit: prior?.hit ?? { slug: h.slug, url: h.url, title: h.title, score: 0, excerpt: h.excerpt },
-                anchor: h.anchor,
-              });
-            }),
+            embedding: (params) =>
+              timeDocsSearchPhase('docSectionsQuery', () => semanticRanker(params)),
           }
         : {}),
     };
 
-    const { results, legs, applied } = await runHybridSearch([source], {
+    const { results, legs, applied } = await timeDocsSearchPhase(
+      'hybridSearch',
+      () => runHybridSearch([source], {
       caller: 'docs:search',
       sql: lazyOrgSql,
       query: args.query,
@@ -525,7 +594,8 @@ export default defineTool({
       // query) — at that point the opt-out is the thing costing recall.
       lexicalCascade: false,
       ...(ctxAny.signal ? { signal: ctxAny.signal } : {}),
-    });
+      }),
+    );
 
     let semanticHitCount = 0;
     const fusedHits: Array<SearchHit & { semantic?: true; similarity?: number; anchor?: string }> = results.map((r) => {
@@ -599,12 +669,14 @@ export default defineTool({
     ) {
       try {
         authorityLookupAttempted = retirementAuthorityQuery;
-        const probe = await searchDocs(
-          engineeringAdapter,
-          retirementAuthorityQuery
-            ? { query: RETIREMENT_AUTHORITY_SLUG, limit: 1 }
-            : { ...args, limit: Math.min(limit, CROSS_SURFACE_PROBE_LIMIT) },
-          { ...(ctxAny.signal && { signal: ctxAny.signal }) },
+        const probe = await timeDocsSearchPhase('crossSurfaceProbe', () =>
+          searchDocs(
+            engineeringAdapter,
+            retirementAuthorityQuery
+              ? { query: RETIREMENT_AUTHORITY_SLUG, limit: 1 }
+              : { ...args, limit: Math.min(limit, CROSS_SURFACE_PROBE_LIMIT) },
+            { ...(ctxAny.signal && { signal: ctxAny.signal }) },
+          ),
         );
         if (probe.hits.length > 0) {
           const rankedProbeHits = rankRetirementAuthorityHits(args.query, probe.hits);
@@ -661,10 +733,12 @@ export default defineTool({
     if (retirementAuthorityQuery && !authorityHit && !authorityLookupAttempted) {
       try {
         authorityLookupAttempted = true;
-        const exact = await searchDocs(
-          engineeringAdapter,
-          { query: RETIREMENT_AUTHORITY_SLUG, limit: 1 },
-          { ...(ctxAny.signal && { signal: ctxAny.signal }) },
+        const exact = await timeDocsSearchPhase('authorityLookup', () =>
+          searchDocs(
+            engineeringAdapter,
+            { query: RETIREMENT_AUTHORITY_SLUG, limit: 1 },
+            { ...(ctxAny.signal && { signal: ctxAny.signal }) },
+          ),
         );
         authorityHit = rankRetirementAuthorityHits(args.query, exact.hits).find(
           (hit) => hit.slug === RETIREMENT_AUTHORITY_SLUG,
@@ -679,7 +753,9 @@ export default defineTool({
     // P-009 / D-022: the wearer's identity-installed pack docs, read ONLY through its applied
     // doc keys (a non-wearer holds none and gets the unchanged result). They are the procedure
     // the caller's own identity pinned, so they rank ahead of the general corpus.
-    const packageDocHits = await wearerPackageDocHits(ctx, args.query, limit);
+    const packageDocHits = await timeDocsSearchPhase('packageDocHits', () =>
+      wearerPackageDocHits(ctx, args.query, limit),
+    );
     const reportedHits = surfacedAuthority
       ? [surfacedAuthority, ...packageDocHits, ...finalHits.filter((hit) => hit.slug !== surfacedAuthority.slug)].slice(0, limit)
       : packageDocHits.length > 0 ? [...packageDocHits, ...finalHits].slice(0, limit) : finalHits;
@@ -693,7 +769,9 @@ export default defineTool({
     // stays absent on the healthy path and whenever the semantic leg did not run (see
     // semantic-coverage.ts for both suppression rules). Fail-soft: a null assessment
     // simply says nothing.
-    const embedCoverage = docsCoverageNote(await assessDocsCoverage(), legsAny?.semantic);
+    const embedCoverage = await timeDocsSearchPhase('embedCoverage', async () =>
+      docsCoverageNote(await assessDocsCoverage(), legsAny?.semantic),
+    );
     const payload: Record<string, unknown> = {
       ...(lexicalResponse ?? { query: args.query, tokenCount: 0, hitCount: 0 }),
       ...(surfacedAuthority ? { currentAuthority: surfacedAuthority } : {}),
@@ -727,6 +805,7 @@ export default defineTool({
       ...(crossSurface
         ? { crossSurfaceProbed: 'engineering', crossSurfaceHits: (crossSurface.hits as unknown[]).length }
         : {}),
+      docsSearchTiming: docsSearchTimingSnapshot(),
     });
     return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
   },

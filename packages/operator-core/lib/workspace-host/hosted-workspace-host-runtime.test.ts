@@ -5,15 +5,52 @@ import {
   readHostedWorkspaceHostConfig,
   registerHostedCustomerWorkspace,
   __resetHostedWorkspaceHostRuntime,
+  defaultHostedAudit,
+  defaultRelayUsageReport,
+  defaultMembershipReport,
 } from './hosted-workspace-host-runtime';
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readRegistry } from '../workspace-registry';
 import { hostedDesktopAuditRow, isHostedDesktopAuditAction } from '../desktop/desktop-audit';
+import * as desktopAudit from '../desktop/desktop-audit';
+import { DrizzleQueryError } from 'drizzle-orm/errors';
 import { HostedWorkspaceConnectorClient, type HostedConnectorClientSocket } from './hosted-connector-client';
 import { HOSTED_HOST_SESSION_IDLE_MS, type HostedHostAuditEvent, type HostedHostPty } from './hosted-session-host';
+import SecretStream from '@hyperswarm/secret-stream';
+import { ByocSealedChannel } from './byoc-sealed-channel';
+
+vi.mock('../connected-apps/alert-sweep', () => ({
+  onRelayUsageReported: () => Promise.reject(new Error('CUSTOMER_REPORT_CONTENT_5e18')),
+}));
+vi.mock('../connected-apps/membership-report', () => ({
+  onMembershipReported: () => Promise.reject(new Error('CUSTOMER_REPORT_CONTENT_5e18')),
+}));
+
+it('keeps default audit and report failure consoles free of database binding and arbitrary error content', async () => {
+  const marker = 'CUSTOMER_AUDIT_CONTENT_a7bf';
+  const error = new DrizzleQueryError('insert into audit_log values ($1)', [marker], new Error(marker));
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const audit = vi.spyOn(desktopAudit, 'recordDesktopAudit').mockImplementation((_event, deps) => { deps!.onError!(error); });
+  try {
+    defaultHostedAudit({ action: 'desktop_watch_started', organizationId: 'org_1', customerWorkspaceId: 'cust_1',
+      hostId: 'host_1', generation: 1, detail: marker });
+    defaultRelayUsageReport('cust_1', { bytes: 42 });
+    defaultMembershipReport({ customerWorkspaceId: 'cust_1' });
+    await vi.waitFor(() => expect(warning).toHaveBeenCalledTimes(3));
+    expect(warning.mock.calls).toEqual(expect.arrayContaining([
+      ['[hosted-workspace-host] audit write failed:', 'desktop_audit_write_failed'],
+      ['[hosted-workspace-host] relay usage report failed:', 'relay_usage_report_failed'],
+      ['[hosted-workspace-host] membership report failed:', 'membership_report_failed'],
+    ]));
+    expect(JSON.stringify(warning.mock.calls)).not.toContain(marker);
+    expect(JSON.stringify(warning.mock.calls)).not.toContain('CUSTOMER_REPORT_CONTENT_5e18');
+    expect(JSON.stringify(warning.mock.calls)).not.toContain('insert into');
+  } finally { audit.mockRestore(); warning.mockRestore(); }
+});
 
 class FakePty extends EventEmitter implements HostedHostPty {
   killed = false;
@@ -29,7 +66,7 @@ class FakePty extends EventEmitter implements HostedHostPty {
   kill() {
     this.killed = true;
   }
-  snapshot() {
+  snapshot(): Promise<string | null> {
     return Promise.resolve(null);
   }
   onData(listener: (data: Buffer) => void) {
@@ -209,6 +246,97 @@ describe('hostedDesktopAuditRow', () => {
 });
 
 describe('createHostedWorkspaceHostRuntime', () => {
+  it.each(['default', 'custom'] as const)(
+    'keeps supported hosted customer filesystem faults out of the %s warning sink',
+    async (sink) => {
+      vi.useRealTimers();
+      const marker = 'BYOC_CUSTOMER_PATH_6ae2';
+      const root = mkdtempSync(join(tmpdir(), 'byoc-warning-'));
+      const consoleWarning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const customWarning = vi.fn();
+      const faults: NodeJS.ErrnoException[] = [];
+      const hostKey = SecretStream.keyPair(Buffer.alloc(32, 51));
+      let releaseSnapshot!: () => void;
+      const snapshotReady = new Promise<void>((resolve) => { releaseSnapshot = resolve; });
+      // An actual OS fault, not an Error marker injected into adapter.accept.
+      const customerFile = async (path: string) => {
+        try { return await readFile(join(root, path), 'utf8'); }
+        catch (error) { faults.push(error as NodeJS.ErrnoException); throw error; }
+      };
+      const pty = new FakePty();
+      const snapshot = vi.spyOn(pty, 'snapshot').mockImplementation(async () => {
+        await snapshotReady;
+        return customerFile(marker);
+      });
+      const lookup = vi.fn(async (id: string) => { await customerFile(id); return null; });
+      const { value, sockets } = runtime({
+        workspaceRoot: root,
+        onWarning: sink === 'default' ? undefined : customWarning,
+        createPty: () => pty,
+        loadMachineNoiseKeyPair: async () => hostKey,
+        desktop: { lookup, thumbnail: async () => null },
+      });
+      try {
+        value.start();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        const socket = sockets[0]!;
+        socket.emitOpen();
+        socket.emitMessage({ type: 'bound', role: 'connector', binding: { ...BINDING, hosting: 'byoc' } });
+        const open = { type: 'relay.open', channelId: 'warning-ch', userId: 'u', hostedSessionId: 's',
+          audience: 'workspace-operator', role: 'controller', kind: 'pty' };
+        socket.emitMessage(open);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual({
+          type: 'relay.close', channelId: 'warning-ch', reason: 'byoc_plaintext_relay_refused',
+        });
+        expect(snapshot).not.toHaveBeenCalled();
+        expect(faults).toEqual([]);
+
+        // The production composition root currently supplies a paired-phone key
+        // resolver only for device-http. Do not claim this PTY is a usable BYOC
+        // content path (installed-path follow-up EI-25861548830571123).
+        socket.emitMessage({ ...open, sealed: true });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual({
+          type: 'relay.close', channelId: 'warning-ch', reason: 'sealed_channel_unavailable',
+        });
+        expect(snapshot).not.toHaveBeenCalled();
+        expect(faults).toEqual([]);
+
+        // The same runtime/warning writer serves a supported hosted customer
+        // channel. Only the filesystem dependency is faulted, not accept().
+        socket.emitMessage({ type: 'bound', role: 'connector', binding: BINDING });
+        socket.emitMessage(open);
+        releaseSnapshot();
+        const warning = sink === 'default' ? consoleWarning : customWarning;
+        await vi.waitFor(() => expect(warning).toHaveBeenCalledTimes(1));
+        // The second fault is derived from the customer's actual request.
+        socket.emitMessage({ type: 'relay', channelId: 'warning-ch', payload: {
+          type: 'desktop.thumbnail', requestId: 'r1', desktopSessionId: marker,
+        } });
+        await vi.waitFor(() => expect(warning).toHaveBeenCalledTimes(2));
+        expect(lookup).toHaveBeenCalledWith(marker);
+        expect(faults).toHaveLength(2);
+        for (const fault of faults) {
+          expect(fault.code).toBe('ENOENT');
+          expect(fault.message).toContain(marker);
+        }
+        expect(warning.mock.calls).toEqual(sink === 'default' ? [
+          ['[hosted-workspace-host] envelope_failed'],
+          ['[hosted-workspace-host] desktop_query_failed'],
+        ] : [['envelope_failed'], ['desktop_query_failed']]);
+        expect(JSON.stringify(warning.mock.calls)).not.toContain(marker);
+        expect(JSON.stringify(warning.mock.calls)).not.toContain(root);
+      } finally {
+        releaseSnapshot();
+        value.stop();
+        snapshot.mockRestore();
+        consoleWarning.mockRestore();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('has no adapter until the control plane says who we are', () => {
     const { value, sockets } = runtime();
     expect(value.adapter).toBeNull();
@@ -488,6 +616,68 @@ describe('createHostedWorkspaceHostRuntime', () => {
   });
 });
 
+// D-013 #6: the runtime hands every adapter it builds the machine Noise key (the one the pair
+// QR advertises) and a device lookup scoped to the BOUND customer workspace, which is where
+// pairing stored the phone. Without this wiring the session-host's sealed channel is dead code.
+describe('sealed device-http channel wiring (D-013 #6)', () => {
+  const hostKey = SecretStream.keyPair(Buffer.alloc(32, 31));
+  const phoneKey = SecretStream.keyPair(Buffer.alloc(32, 41));
+  const OPEN = { type: 'relay.open', channelId: 'dev-ch', kind: 'device-http', audience: 'device', sealed: true } as const;
+  const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+  beforeEach(() => vi.useRealTimers());
+
+  async function boundRuntime(overrides: Record<string, unknown>) {
+    const r = runtime(overrides);
+    r.value.start();
+    await tick(); // the machine key load settles before the binding arrives
+    r.sockets[0]!.emitOpen();
+    r.sockets[0]!.emitMessage({ type: 'bound', role: 'connector', binding: BINDING });
+    const frames = () =>
+      r.sockets[0]!.sent.map((raw) => JSON.parse(raw) as Record<string, unknown>).filter((f) => f.channelId === 'dev-ch');
+    return { ...r, frames };
+  }
+
+  it('serves no sealed channel when the machine key is disabled', async () => {
+    const find = vi.fn(async () => 'dev-a');
+    const { value, frames } = await boundRuntime({ loadMachineNoiseKeyPair: null, findDeviceIdByNoiseKey: find });
+    await value.adapter!.accept(OPEN);
+    expect(frames()).toContainEqual({ type: 'relay.close', channelId: 'dev-ch', reason: 'sealed_channel_unavailable' });
+    expect(find).not.toHaveBeenCalled();
+    value.stop();
+  });
+
+  it("completes the phone's handshake with the machine key and resolves the device in the BOUND workspace", async () => {
+    const find = vi.fn(async (_workspaceId: string, key: string) =>
+      (key === phoneKey.publicKey.toString('base64') ? 'dev-a' : null));
+    const { value, frames } = await boundRuntime({ loadMachineNoiseKeyPair: async () => hostKey, findDeviceIdByNoiseKey: find });
+    const errors: Error[] = [];
+    const phone = new ByocSealedChannel({
+      initiator: true,
+      localKeyPair: phoneKey,
+      expectedRemotePublicKey: hostKey.publicKey,
+      sendPacket: (packet) => { void value.adapter!.accept({ type: 'relay', channelId: 'dev-ch', payload: packet as never }); },
+      onFrame: () => {},
+      onError: (error) => errors.push(error),
+    });
+    let opened = false;
+    void phone.opened.then(() => { opened = true; }, () => {});
+    await value.adapter!.accept(OPEN);
+    // Deliver the host's packets to the phone one per event, as the websocket relay does.
+    let delivered = 0;
+    for (let i = 0; i < 200 && (!opened || find.mock.calls.length === 0); i++) {
+      const relayed = frames().filter((f) => f.type === 'relay');
+      if (delivered < relayed.length) phone.receive(relayed[delivered++]!.payload as never);
+      await tick();
+    }
+    expect(errors).toEqual([]);
+    expect(opened).toBe(true);
+    expect(find).toHaveBeenCalledWith('cust_1', phoneKey.publicKey.toString('base64'));
+    expect(frames()).not.toContainEqual(expect.objectContaining({ type: 'relay.close' }));
+    value.stop();
+  });
+});
+
 // WI-10003163: a hosted host has no desktop shell to run first-run `ensure_initialized()`,
 // so the bound customer workspace must become the operator's registered, current workspace.
 describe('hosted customer workspace registration (WI-10003163)', () => {
@@ -540,7 +730,7 @@ describe('hosted customer workspace registration (WI-10003163)', () => {
       bind(sockets, 0, { ...BINDING, customerWorkspaceId });
       expect(value.adapter).not.toBeNull();
       expect(readRegistry()).toEqual({ workspaces: [] });
-      expect(warnings.join('\n')).toMatch(/refusing to register hosted customer workspace/);
+      expect(warnings).toEqual(['binding_hook_failed']);
     },
   );
 

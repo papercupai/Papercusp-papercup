@@ -1,0 +1,172 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Papercusp performance R2 current-build HTTP latency receipt",
+  "framework": "node",
+  "command": [
+    "node",
+    "--input-type=module",
+    "-e",
+    "const originalFetch=globalThis.fetch;globalThis.fetch=async(...a)=>{const start=performance.now();const r=await originalFetch(...a);await r.clone().text();console.error('R2_HTTP_TIMING '+JSON.stringify({ms:Math.round(performance.now()-start),status:r.status}));return r;};process.argv=['node','scripts/mcp-call.mjs','search:fulltext','--json','-','--client',process.env.PAPERCUSP_SID,'--workspace','papercusp-workspace','--harness','papercusp','--port','3170'];await import('./scripts/mcp-call.mjs');"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T15:11:51.826367+00:00",
+  "finishedAt": "2026-10-01T15:11:58.643421+00:00",
+  "summary": "Three operational assertions passed over20 sequential attributed local MCP requests. HTTP p95 nearest-rank710ms, maximum1118ms. This records the actual HTTP measurement; complete R2 acceptance and a fresh L4 counterexample remain open.",
+  "assertions": [
+    {
+      "id": "twenty-attributed-successful-requests",
+      "passed": true,
+      "evidence": "20 official scripts/mcp-call.mjs invocations with exactselfSID su-25bc0450-2829-42b9-a2dd-1431c99e4ba8, workspace papercusp-workspace, harness papercusp, port3170 returned exit0 and exactly one measured HTTP200 response each."
+    },
+    {
+      "id": "http-p95-at-most-one-second",
+      "passed": true,
+      "evidence": "Nearest-rank index19 of20 sorted HTTP measurements=710ms; maximum1118ms. One request exceeded1s, so this assertion applies to the declared sample p95 only."
+    },
+    {
+      "id": "http-boundary-excludes-cli-startup",
+      "passed": true,
+      "evidence": "Timing wraps the official helper's fetch from request-start through consumption of a cloned complete response body. CLI process wall times are recorded separately; no shell startup is included in HTTP latency."
+    }
+  ],
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "workItem": "WI-10004474",
+  "specId": "AUTO-BAR-R-2-P-002",
+  "specRevision": 5,
+  "evidencePlane": "live",
+  "commandRepeated": 20,
+  "stdinQueries": [
+    "corpus recall",
+    "furnishedfinder",
+    "memory admission",
+    "WI-10004474"
+  ],
+  "stdinTemplate": {
+    "query": "rotated stdinQueries[i%4]",
+    "scope": [
+      "session_turn"
+    ],
+    "limit": 5
+  },
+  "measurement": {
+    "startedAt": "2026-10-01T15:11:51.826367+00:00",
+    "finishedAt": "2026-10-01T15:11:58.643421+00:00",
+    "scope": "attributed official mcp-call to3170; HTTP request start through complete response body; excludes CLI startup",
+    "rows": [
+      {
+        "query": "corpus recall",
+        "httpMs": 567,
+        "cliMs": 635
+      },
+      {
+        "query": "furnishedfinder",
+        "httpMs": 710,
+        "cliMs": 770
+      },
+      {
+        "query": "memory admission",
+        "httpMs": 1118,
+        "cliMs": 1362
+      },
+      {
+        "query": "WI-10004474",
+        "httpMs": 470,
+        "cliMs": 543
+      },
+      {
+        "query": "corpus recall",
+        "httpMs": 96,
+        "cliMs": 157
+      },
+      {
+        "query": "furnishedfinder",
+        "httpMs": 99,
+        "cliMs": 162
+      },
+      {
+        "query": "memory admission",
+        "httpMs": 107,
+        "cliMs": 166
+      },
+      {
+        "query": "WI-10004474",
+        "httpMs": 100,
+        "cliMs": 164
+      },
+      {
+        "query": "corpus recall",
+        "httpMs": 93,
+        "cliMs": 156
+      },
+      {
+        "query": "furnishedfinder",
+        "httpMs": 98,
+        "cliMs": 163
+      },
+      {
+        "query": "memory admission",
+        "httpMs": 116,
+        "cliMs": 459
+      },
+      {
+        "query": "WI-10004474",
+        "httpMs": 102,
+        "cliMs": 168
+      },
+      {
+        "query": "corpus recall",
+        "httpMs": 95,
+        "cliMs": 157
+      },
+      {
+        "query": "furnishedfinder",
+        "httpMs": 80,
+        "cliMs": 160
+      },
+      {
+        "query": "memory admission",
+        "httpMs": 111,
+        "cliMs": 172
+      },
+      {
+        "query": "WI-10004474",
+        "httpMs": 97,
+        "cliMs": 174
+      },
+      {
+        "query": "corpus recall",
+        "httpMs": 99,
+        "cliMs": 156
+      },
+      {
+        "query": "furnishedfinder",
+        "httpMs": 89,
+        "cliMs": 511
+      },
+      {
+        "query": "memory admission",
+        "httpMs": 256,
+        "cliMs": 322
+      },
+      {
+        "query": "WI-10004474",
+        "httpMs": 191,
+        "cliMs": 261
+      }
+    ],
+    "httpP95NearestRankMs": 710,
+    "httpMaxMs": 1118
+  },
+  "priorEvidence": [
+    "thread-post:1153616",
+    "thread-post:1153620",
+    "spec-evidence:18997"
+  ],
+  "residualUnknowns": [
+    "No per-response serving SHA was captured in this receipt; current runtime containment is recorded separately by dev:pipeline_position.",
+    "This receipt does not assert a conventional CI test or a fresh ledger-backed counterexample.",
+    "Sequential local warm20query sample does not establish universal latency.",
+    "Frozen25turn recall comparison is recorded separately; historical zero-rank ties have no total-order oracle."
+  ]
+}

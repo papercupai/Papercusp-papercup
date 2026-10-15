@@ -136,12 +136,15 @@ describe('EI-13120: periodic path re-verify bounds a cross-process-stale anchor'
     // Past the TTL this process can no longer prove the anchor names the owner's live
     // transcript, so it renders nothing rather than a possibly-stale number...
     expect(currentContextTokensSyncForOwner('owner-sync')).toBeNull();
-    // ...but kicked a background async reseed. Flush the microtask queue (fake
-    // timers don't otherwise interleave with the mocked Promise chain) so it
-    // settles, then the anchor is corrected for every subsequent caller (sync or
-    // async) on this process.
-    await vi.advanceTimersByTimeAsync(0);
-    expect(sqlMock).toHaveBeenCalled();
-    expect(currentContextTokensSyncForOwner('owner-sync')).toBe(await tokensFromFileSize(successorFile));
+    // ...but kicked a background async reseed. The reseed awaits real async fs
+    // (tokensFromFileSize is async), which settles on the libuv loop rather than the
+    // microtask queue, so a single advanceTimersByTimeAsync(0) can return first.
+    // Poll until it lands; the anchor is then corrected for every subsequent
+    // caller (sync or async) on this process.
+    const expected = await tokensFromFileSize(successorFile);
+    await vi.waitFor(() => {
+      expect(sqlMock).toHaveBeenCalled();
+      expect(currentContextTokensSyncForOwner('owner-sync')).toBe(expected);
+    });
   });
 });

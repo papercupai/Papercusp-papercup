@@ -50,6 +50,83 @@ export interface CaptureResult {
   target: string;
   ok: boolean;
   detail?: string;
+  diagnostics?: CaptureDiagnostics;
+}
+
+export interface CaptureDiagnostics {
+  status: number | null;
+  requestId: string | null;
+  type: 'anthropic' | 'openai' | 'unknown' | null;
+  classification:
+    | 'rate_limited' | 'usage_limit' | 'overloaded' | 'timeout' | 'transient_io' | 'auth'
+    | 'context_overflow' | 'agent_crash' | 'empty_output' | 'malformed_output' | 'permanent'
+    | null;
+  transport: 'anthropic-direct' | 'gateway-pool' | null;
+  transportFailureCode:
+    | 'ECONNREFUSED' | 'ECONNRESET' | 'ETIMEDOUT' | 'ENOTFOUND' | 'EAI_AGAIN' | 'EPIPE'
+    | 'UND_ERR_CONNECT_TIMEOUT' | 'UND_ERR_HEADERS_TIMEOUT' | 'UND_ERR_BODY_TIMEOUT'
+    | 'UND_ERR_SOCKET' | 'ABORT_ERR' | null;
+}
+
+const CAPTURE_DIAGNOSTIC_TYPES = new Set(['anthropic', 'openai', 'unknown']);
+const CAPTURE_DIAGNOSTIC_CLASSIFICATIONS = new Set([
+  'rate_limited', 'usage_limit', 'overloaded', 'timeout', 'transient_io', 'auth',
+  'context_overflow', 'agent_crash', 'empty_output', 'malformed_output', 'permanent',
+]);
+const CAPTURE_DIAGNOSTIC_TRANSPORTS = new Set(['anthropic-direct', 'gateway-pool']);
+const CAPTURE_DIAGNOSTIC_FAILURE_CODES = new Set([
+  'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'EPIPE',
+  'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_SOCKET', 'ABORT_ERR',
+]);
+
+function enumOrNull(value: unknown, allowed: ReadonlySet<string>): string | null {
+  return typeof value === 'string' && allowed.has(value) ? value : null;
+}
+
+function ownDataProperty(value: unknown, key: string): unknown {
+  if (!value || typeof value !== 'object') return undefined;
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor && 'value' in descriptor ? descriptor.value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function sanitizeCaptureDiagnostics(value: unknown): CaptureDiagnostics | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const status = raw.status;
+  const requestId = raw.requestId;
+  const safeRequestId = typeof requestId === 'string'
+    && requestId.trim().length <= 160
+    && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(requestId.trim())
+    ? requestId.trim()
+    : null;
+  return {
+    status: typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599
+      ? status
+      : null,
+    requestId: safeRequestId,
+    type: enumOrNull(raw.type, CAPTURE_DIAGNOSTIC_TYPES) as CaptureDiagnostics['type'],
+    classification: enumOrNull(raw.classification, CAPTURE_DIAGNOSTIC_CLASSIFICATIONS) as CaptureDiagnostics['classification'],
+    transport: enumOrNull(raw.transport, CAPTURE_DIAGNOSTIC_TRANSPORTS) as CaptureDiagnostics['transport'],
+    transportFailureCode: enumOrNull(raw.transportFailureCode, CAPTURE_DIAGNOSTIC_FAILURE_CODES) as CaptureDiagnostics['transportFailureCode'],
+  };
+}
+
+function captureDiagnosticsFromError(error: unknown): CaptureDiagnostics | undefined {
+  const seen = new Set<unknown>();
+  let current = error;
+  for (let depth = 0; depth < 8 && current && typeof current === 'object'; depth++) {
+    if (seen.has(current)) break;
+    seen.add(current);
+    const diagnostics = sanitizeCaptureDiagnostics(ownDataProperty(current, 'diagnostics'));
+    if (diagnostics) return diagnostics;
+    current = ownDataProperty(current, 'cause');
+  }
+  return undefined;
 }
 
 /**
@@ -128,6 +205,12 @@ export async function captureResolvedAnswer(input: CaptureInput): Promise<Captur
     }
     return { target: `mem0:${scopeKey}`, ok: true };
   } catch (err) {
-    return { target: 'mem0_error', ok: false, detail: (err as Error).message };
+    const diagnostics = captureDiagnosticsFromError(err);
+    return {
+      target: 'mem0_error',
+      ok: false,
+      detail: (err as Error).message,
+      ...(diagnostics ? { diagnostics } : {}),
+    };
   }
 }

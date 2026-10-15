@@ -13,10 +13,11 @@
  *      the coverage read is unavailable or throws;
  *   3. the surface asked about is the one the guard actually reads.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import {
   findSemanticDupes,
+  SEMANTIC_DUPE_GUARD_BUDGET_MS,
   type SemanticDupeCandidate,
   type SemanticDupeDeps,
 } from './semantic-dupe-guard';
@@ -131,6 +132,30 @@ describe('coverage never costs a verdict', () => {
     expect(r).not.toBeNull();
     expect(r!.hard.map((c) => c.id)).toEqual(['EI-9']);
     expect(r!.coverage?.verdict).toBe('unknown');
+  });
+
+  it('returns the semantic verdict within its budget when the optional coverage read hangs', async () => {
+    vi.useFakeTimers();
+    try {
+      let settled = false;
+      const pending = findSemanticDupes(
+        { title: 't' },
+        deps([cand('EI-COVERAGE-HUNG', 0.99)], () => new Promise<CoverageSnapshot>(() => {})),
+      ).then((result) => {
+        settled = true;
+        return result;
+      });
+
+      // Let classification finish and the independent coverage read start, then
+      // exhaust the shared prescreen budget without ever resolving that read.
+      await vi.advanceTimersByTimeAsync(SEMANTIC_DUPE_GUARD_BUDGET_MS + 1);
+      expect(settled).toBe(true);
+      const result = await pending;
+      expect(result?.hard.map((candidate) => candidate.id)).toEqual(['EI-COVERAGE-HUNG']);
+      expect(result?.coverage).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // Pins the deliberate inertness, not an accident: without an injected seam the real

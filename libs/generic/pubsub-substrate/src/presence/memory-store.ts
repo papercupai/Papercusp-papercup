@@ -47,6 +47,9 @@ export class InMemoryPresenceStore implements PresenceStore {
     // populate-once-then-keep for role/hive — mirror the PG COALESCE.
     const merged: PresenceInput = {
       ...input,
+      host: input.host === undefined ? existing?.input.host : input.host,
+      pid: input.pid === undefined ? existing?.input.pid : input.pid,
+      tty: input.tty === undefined ? existing?.input.tty : input.tty,
       agentRole: input.agentRole ?? existing?.input.agentRole ?? null,
       potSlug: input.potSlug ?? existing?.input.potSlug ?? null,
       // populate-once-then-keep, same as agentRole/potSlug: an omitted or

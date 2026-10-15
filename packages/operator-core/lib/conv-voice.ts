@@ -36,7 +36,7 @@ export interface ConvVoiceWriteResult {
   modelId?: string;
 }
 
-async function ensureVoiceInLibrary(
+export async function ensureVoiceInLibrary(
   xiKey: string,
   voiceId: string,
 ): Promise<{ ok: true; name: string } | { ok: false; status: number; error: string }> {

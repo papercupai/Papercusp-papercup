@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "packaged-local-model-inference-binding/v1",
+  "evidencePlane": "extracted-payload",
+  "distributionProfile": "dogfood",
+  "sidecarRoot": "/mnt/backup/portable-server-p058/amd-native-build8-20261009/native-amd64-release8",
+  "nodeSha256": "31e214a604403cf3afddd264e7b367fe559980459453bd9738a3977260a564db",
+  "workerSha256": "55db52efb109a460e8b1ea01d58d322a3d786fdef2640d7b49e675aefb3735d4",
+  "productContract": {
+    "path": "/home/marsh-office/papercupai-workspace/papercusp/papercusp-desktop/src-tauri/distribution-contract.json",
+    "sha256": "8b81dbca5a2b1e4f6d1a160a28cad7183556581bbd89233d56a9e90c9c284e43"
+  },
+  "modelVerifierSha256": "46a42a06bb8b6d7640f5a37cdeaaadbe3b53a98c77001740b23a1e88be57919b",
+  "sourceCommit": "58d5a1c744632d7bf72772a0f97e4c338ef0d04b",
+  "nativeStampSha256": "2eed6fe80e9dc2e28e16f0aff52595d4bc917cd0b7c61cabadfe9887c2325912",
+  "nativeProvenanceSha256": "5051f9d29c6447221bb969cabb364cfad5303a86f49ed68be45cc4c4082c5ced",
+  "testSha256": "0b8a2d475254f0dd71e8e0d8ac13e0485d2ed9b342ee27b67bd5b5ed27318c52",
+  "payloadInventorySha256": "c9a14d0b62bfaebf56fa8d743227931f4fa0dac9febed9a379bab67a726b1311",
+  "nativeQualificationReceiptSha256": "a8accc1d104496ba030a181cd4b42abf6a9ad1bf5ededfdba12727c71fa3f8bd",
+  "networkIsolation": "offline environment and local-only worker controls; host namespace"
+}

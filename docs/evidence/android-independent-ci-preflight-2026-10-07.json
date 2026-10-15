@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Independent Android CI exact service-environment preflight",
+  "framework": "operational",
+  "command": [
+    "python3",
+    "tools/android-ci.py",
+    "--preflight"
+  ],
+  "startedAt": "2026-10-07T18:46:39.440611+00:00",
+  "finishedAt": "2026-10-07T18:46:42.284231+00:00",
+  "exitCode": 0,
+  "summary": "The independent Linux Android executor completed real preflight with its configured service PATH after maintained OS ripgrep installation. It checked required commands, exact prepared operator bundle freshness, pinned Rust availability, emulator loader, API36/16KB system-image presence, available AVD space and KVM access. This is setup evidence only; host/connected/paired checks, signed-candidate, physical-phone and Play acceptance remain separate.",
+  "sourceCommit": "fdd8387293d5b83e77d150bf0295de5d91a39807",
+  "sourceDirty": true,
+  "sourceFingerprint": "0d365854e7321d2329f304540663464797ac80ffae75c284b244594a4fcbfad8",
+  "operatorCommit": "1137758b891079d226fbdfa9151d15f66031a648",
+  "execution": {
+    "executor": "local-systemd",
+    "attemptId": "20261007T184639Z-89f2653d",
+    "retainedReceipt": "$PAPERCUP_ANDROID_CI_STATE/attempts/20261007T184639Z-89f2653d/result.json",
+    "defaultState": "$HOME/.local/state/papercusp/android-ci",
+    "environmentSource": "External $HOME/.config/papercusp/android-ci.env; Node25 executable path and Android SDK path; prepared staging.current was resolved under staging GC lock and pinned before re-exec."
+  },
+  "assertions": [
+    {
+      "id": "prepared-counterpart-bundle-freshness",
+      "passed": true,
+      "evidence": "operator-freshness exit0; log SHA256 c956c267f332f84d17c83df739e3764dc5e75b70a76dc49b6e8a17a53e6b6b8b"
+    },
+    {
+      "id": "rust-toolchain-preflight",
+      "passed": true,
+      "evidence": "rust-preflight exit0; log SHA256 71898dff3c6432efdb734448f5be423843b12dd8075283501aad41600c41899c"
+    },
+    {
+      "id": "emulator-loader-preflight",
+      "passed": true,
+      "evidence": "emulator-preflight exit0; log SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "avd-space-preflight",
+      "passed": true,
+      "evidence": "avd-space-preflight exit0; log SHA256 9fd161c887cbafa4da6cc8c7ee3e2566aaebe57898449d02f26ccdf8edee084d"
+    },
+    {
+      "id": "service-environment-and-native-prerequisites",
+      "passed": true,
+      "evidence": "Executor returned preflight-passed after required command inventory, Node25, API36/16KB image and accessible KVM checks."
+    }
+  ],
+  "acceptanceBoundary": {
+    "hostExecuted": false,
+    "connectedExecuted": false,
+    "pairedExecuted": false,
+    "publishableAdmission": false,
+    "physicalPhone": false,
+    "googlePlay": false
+  },
+  "migrationRefs": [
+    "WI-10007209",
+    "android-public-release-2026-10-01#D-022",
+    "android-public-release-2026-10-01#P-016"
+  ]
+}

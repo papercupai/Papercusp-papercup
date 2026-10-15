@@ -1,0 +1,328 @@
+{
+  "schemaVersion": "p008-owner-input-fingerprint-evidence-v1",
+  "workItem": "WI-10002830",
+  "sourceFingerprints": {
+    "packages/operator-core/lib/search/session-ingest.ts": "958f9bdc47721b971bf2f0d0494828ba40bee453ac20cf5f93cf2bb7771539e9",
+    "packages/operator-core/lib/search/session-ingest-phases.test.ts": "1fac1a3e2707471554d773d42f79e5e18488bd8143aec768228b1d75a137d3c5",
+    "packages/operator-core/lib/search/session-ingest-runtime.integration.test.ts": "5f2358eb127739cd3a6c22d29237102d7698eadc7b1488e0461268c04d8e7343"
+  },
+  "logs": {
+    "red": {
+      "path": "/tmp/p008-owner-fingerprint-red-20261001.log",
+      "sha256": "1a42516fb2375c3ada601ee1d524b08955b69fd0a33d084bfc9a478c1e3e5e39",
+      "results": [
+        "TEST_FILE_PROVENANCE head=96a73d3d41 testedPaths=1 uncommitted=1 unknown=0 phase=pre-run startedAt=2026-10-01T20:33:29.935Z",
+        " Test Files  1 failed (1)",
+        "      Tests  3 failed | 2 passed (5)",
+        "TEST_FILE_PROVENANCE head=96a73d3d41 testedPaths=1 uncommitted=1 unknown=0 phase=post-run startedAt=2026-10-01T20:33:46.003Z",
+        "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=failed head=96a73d3d41 uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-01T20:33:29.935Z skippedTests=0"
+      ]
+    },
+    "unit": {
+      "path": "/tmp/p008-owner-fingerprint-unit-20261001.log",
+      "sha256": "d4b2b6f1be267da02b27c1bc305ae480f052c52db9104bc28dca3b7d7a048d80",
+      "results": [
+        "TEST_FILE_PROVENANCE head=96a73d3d41 testedPaths=5 uncommitted=1 unknown=0 phase=pre-run startedAt=2026-10-01T20:35:15.890Z",
+        " Test Files  5 passed (5)",
+        "      Tests  28 passed (28)",
+        "TEST_FILE_PROVENANCE head=96a73d3d41 testedPaths=5 uncommitted=1 unknown=0 phase=post-run startedAt=2026-10-01T20:35:30.394Z",
+        "TEST_FILE_RESULT requested=5 executed=5 matched=5 status=passed head=96a73d3d41 uncommittedPaths=1/5 provenance=stamped startedAt=2026-10-01T20:35:15.890Z skippedTests=0"
+      ]
+    },
+    "runtime": {
+      "path": "/tmp/p008-owner-fingerprint-runtime-20261001.log",
+      "sha256": "be881120b9a582297c54858a934c4153c9b700a71f18b3b846b9df7fdef27768",
+      "results": [
+        "TEST_FILE_PROVENANCE head=8a33b9bffc testedPaths=1 uncommitted=1 unknown=0 phase=pre-run startedAt=2026-10-01T20:37:06.154Z",
+        " Test Files  1 passed (1)",
+        "      Tests  2 passed (2)",
+        "TEST_FILE_PROVENANCE head=8a33b9bffc testedPaths=1 uncommitted=1 unknown=0 phase=post-run startedAt=2026-10-01T20:38:12.863Z",
+        "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=8a33b9bffc uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-01T20:37:06.154Z skippedTests=0"
+      ]
+    },
+    "typecheck": {
+      "path": "/tmp/p008-owner-fingerprint-tsc-20261001.log",
+      "sha256": "f594753b778ca192ec5f4dd8824dce5fd2c50439b11c3d831a59f25690eeed4f",
+      "results": [],
+      "output": "\n> @papercupai/papercusp-monorepo@0.0.1 lint:tsc\n> node scripts/lint-tsc.mjs --files=packages/operator-core/lib/search/session-ingest.ts,packages/operator-core/lib/search/session-ingest-phases.test.ts,packages/operator-core/lib/search/session-ingest-runtime.integration.test.ts\n\nLINT_TSC_RUN_STAMP label=operator-core at=2026-10-01T20:39:03.210Z head=8a33b9bffc scope=files files=3\n  checked files : packages/operator-core/lib/search/session-ingest.ts\n                 packages/operator-core/lib/search/session-ingest-phases.test.ts\n                 packages/operator-core/lib/search/session-ingest-runtime.integration.test.ts\ngen:declarations: no enrolled modules explicitly selected; no declarations published\nTSC_SERVICE used=1 checked=25 named=3 typeReferencing=3 importers=19 errors=0 queuedMs=1804 checkMs=1335 snapshotAgeMs=1335\n   (shared typecheck service: judged your files, files referencing their exported types, and their direct importers — not the whole project. A transitive importer is judged by the bare run; PAPERCUSP_TSC_SERVICE=0 forces the full compile.)\nTSC operator-core: 0 type errors across 0 file(s) (baseline total 0) [--files]\n✓ Every operator-core file is at or under its type-error baseline.\nLINT_TSC_RESULT label=operator-core scope=files exit=0 status=clean at=2026-10-01T20:39:03.210Z head=8a33b9bffc\n"
+    }
+  },
+  "privateReceipts": [
+    {
+      "sourceHash": "958f9bdc47721b971bf2f0d0494828ba40bee453ac20cf5f93cf2bb7771539e9",
+      "head": "8a33b9bffc263a1b7185104448942cbe60bad350",
+      "child": {
+        "pid": 1261962,
+        "node": "v25.9.0",
+        "backgroundWorkers": "1"
+      },
+      "workload": {
+        "id": "synthetic-offset-tail-v1",
+        "homes": 320,
+        "filesPerHome": 15,
+        "changedFiles": 80,
+        "usefulTurns": 64,
+        "parts": 640,
+        "repeats": 4
+      },
+      "home": "/tmp/pcv/papercusp-test-runtime-h9ReVw/home",
+      "dbPort": "39505",
+      "homeRemoved": true,
+      "dataDirRemoved": true,
+      "dbPortClosed": true,
+      "ownerRepairControl": {
+        "sourceKind": "claude",
+        "requested": 179,
+        "turns": 4099,
+        "turnDensity": {
+          "min": 1,
+          "median": 13,
+          "max": 156
+        },
+        "sqlHash": "c33700f42ffa35ce2682fc96000aa49d0d8824cd23d605e682d77c585282df42",
+        "parameterHash": "4b925231e68c290162fe7f94d1c32663509bbcbae2d8734cf4c0d4fbcb0425a5",
+        "rollbackPreserved": true
+      },
+      "ownerRepairReceipts": [
+        {
+          "sourceKind": "claude",
+          "operation": "sessionOwners",
+          "requested": 179,
+          "startedAtMs": 1790887058736,
+          "durationMs": 246.8,
+          "status": "completed",
+          "inputSha256": "814262cc71027bacc348933d07dfa2f83637056193f2c4b4cdcc4bf1c996dfd2",
+          "updated": 4099
+        },
+        {
+          "sourceKind": "codex",
+          "operation": "sessionOwners",
+          "requested": 4800,
+          "startedAtMs": 1790887059381,
+          "durationMs": 12.7,
+          "status": "completed",
+          "inputSha256": "1879c2d7580ce91d002217f4a5d7d7f3ced7731b4a6a51413f203b41e8fd19f3",
+          "updated": 0
+        },
+        {
+          "sourceKind": "codex",
+          "operation": "codexAdvSessions",
+          "requested": 320,
+          "startedAtMs": 1790887059394,
+          "durationMs": 2.7,
+          "status": "completed",
+          "updated": 0
+        }
+      ],
+      "codexUsefulOwnerReceipts": [
+        {
+          "sourceKind": "codex",
+          "operation": "sessionOwners",
+          "requested": 4800,
+          "startedAtMs": 1790887051451,
+          "durationMs": 9.6,
+          "status": "completed",
+          "inputSha256": "ad2c2e8ccba2e9570963dd9c56278b8bcdef64f9d978741d27ab119e23a0456f",
+          "updated": 0
+        },
+        {
+          "sourceKind": "codex",
+          "operation": "sessionOwners",
+          "requested": 4800,
+          "startedAtMs": 1790887052443,
+          "durationMs": 10.1,
+          "status": "completed",
+          "inputSha256": "481c4df42e4ee5528d8eaa3dbb9e0dee10e232a13980c2856ff266dc8c1892da",
+          "updated": 0
+        },
+        {
+          "sourceKind": "codex",
+          "operation": "sessionOwners",
+          "requested": 4800,
+          "startedAtMs": 1790887053516,
+          "durationMs": 10.2,
+          "status": "completed",
+          "inputSha256": "cbdf023edcdddac21ddc17fb5cb8c1026e3367bfa1567e2b6fc77a803c99f845",
+          "updated": 0
+        },
+        {
+          "sourceKind": "codex",
+          "operation": "sessionOwners",
+          "requested": 4800,
+          "startedAtMs": 1790887054557,
+          "durationMs": 16.2,
+          "status": "completed",
+          "inputSha256": "a0137f283240e3964e2c2761b8ddb515427b401044476cc20b9a3cb20599b72c",
+          "updated": 0
+        }
+      ],
+      "rollbackPreserved": true
+    },
+    {
+      "sourceHash": "958f9bdc47721b971bf2f0d0494828ba40bee453ac20cf5f93cf2bb7771539e9",
+      "head": "8a33b9bffc263a1b7185104448942cbe60bad350",
+      "child": {
+        "pid": 1286672,
+        "node": "v25.9.0",
+        "backgroundWorkers": "1"
+      },
+      "workload": {
+        "id": "synthetic-offset-tail-v1",
+        "homes": 320,
+        "filesPerHome": 15,
+        "changedFiles": 80,
+        "usefulTurns": 64,
+        "parts": 640,
+        "repeats": 4
+      },
+      "home": "/tmp/pcv/papercusp-test-runtime-1FpEnw/home",
+      "dbPort": "35381",
+      "homeRemoved": true,
+      "dataDirRemoved": true,
+      "dbPortClosed": true,
+      "ownerRepairControl": {
+        "sourceKind": "claude",
+        "requested": 179,
+        "turns": 4099,
+        "turnDensity": {
+          "min": 1,
+          "median": 13,
+          "max": 156
+        },
+        "sqlHash": "c33700f42ffa35ce2682fc96000aa49d0d8824cd23d605e682d77c585282df42",
+        "parameterHash": "88c678283b9b77ff93c4c77a50743d416363a625d3d784da8e95cbe1350a72a7",
+        "rollbackPreserved": true
+      },
+      "ownerRepairReceipts": [
+        {
+          "sourceKind": "claude",
+          "operation": "sessionOwners",
+          "requested": 179,
+          "startedAtMs": 1790887083414,
+          "durationMs": 335.4,
+          "status": "completed",
+          "inputSha256": "4e360376e170b859db154cce1bd2b1ecfe9b719c86e3302ee086aadb725c1aa8",
+          "updated": 4099
+        },
+        {
+          "sourceKind": "codex",
+          "operation": "sessionOwners",
+          "requested": 4800,
+          "startedAtMs": 1790887084152,
+          "durationMs": 10.1,
+          "status": "completed",
+          "inputSha256": "49f9198068fac3ac06e3065f778bd4dbe8445cce69a2adf5797c0f9271fa792d",
+          "updated": 0
+        },
+        {
+          "sourceKind": "codex",
+          "operation": "codexAdvSessions",
+          "requested": 320,
+          "startedAtMs": 1790887084162,
+          "durationMs": 2.5,
+          "status": "completed",
+          "updated": 0
+        }
+      ],
+      "codexUsefulOwnerReceipts": [
+        {
+          "sourceKind": "codex",
+          "operation": "sessionOwners",
+          "requested": 4800,
+          "startedAtMs": 1790887073880,
+          "durationMs": 9.7,
+          "status": "completed",
+          "inputSha256": "8b828e311f1635a827e952c52fb89a2d0f670096414c67ef4d6f38c489dea9df",
+          "updated": 0
+        },
+        {
+          "sourceKind": "codex",
+          "operation": "sessionOwners",
+          "requested": 4800,
+          "startedAtMs": 1790887075182,
+          "durationMs": 17.1,
+          "status": "completed",
+          "inputSha256": "916d6ca7b85d0a6fc28f7c84c42b8b6f90ed35286ecc2d36b16453f1b8d85f4b",
+          "updated": 0
+        },
+        {
+          "sourceKind": "codex",
+          "operation": "sessionOwners",
+          "requested": 4800,
+          "startedAtMs": 1790887076700,
+          "durationMs": 17.2,
+          "status": "completed",
+          "inputSha256": "00740a33a21989cc26d7f487a4edaa5508aae763600eba3dc37f5e7359d9b3c1",
+          "updated": 0
+        },
+        {
+          "sourceKind": "codex",
+          "operation": "sessionOwners",
+          "requested": 4800,
+          "startedAtMs": 1790887078214,
+          "durationMs": 11.3,
+          "status": "completed",
+          "inputSha256": "106c490ffcebf1d14fd32fbbbcaff72b8363101885bc3a0428e3b869bf6d8548",
+          "updated": 0
+        }
+      ],
+      "rollbackPreserved": true
+    }
+  ],
+  "limitations": [
+    "Current canonical-source private runtime proof; does not recover earlier natural input values.",
+    "SHA-256 fingerprints JSON.stringify([sessionIds,owners]) in exact UNNEST order; it cannot reconstruct those arrays.",
+    "Existing metadataBackfills completion receipt gains one field; no new table, service, scanner, timer or SQL round trip.",
+    "Private synthetic populations are 4800 Codex sessions and 179 Claude sessions/4099 Claude turns, not the shared natural corpus.",
+    "No shared bg-host restart, immutable whole-import-graph provenance, live wait-cause/app-impact proof, R-8 acceptance, release-gate operation or shipment claim.",
+    "The fingerprint is order-sensitive. Unequal fingerprints can reflect only changed mtime traversal order, not necessarily changed membership or owners."
+  ],
+  "commands": {
+    "red": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/search/session-ingest-phases.test.ts",
+    "unit": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/search/session-ingest-phases.test.ts packages/operator-core/lib/search/session-ingest-backfill.test.ts packages/operator-core/lib/search/session-ingest-adv-metadata.test.ts packages/operator-core/lib/search/session-ingest-psu-roots.test.ts packages/operator-core/lib/search/session-ingest-yield.test.ts",
+    "runtime": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/search/session-ingest-runtime.integration.test.ts",
+    "typecheck": "npm run lint:tsc -- --files=packages/operator-core/lib/search/session-ingest.ts,packages/operator-core/lib/search/session-ingest-phases.test.ts,packages/operator-core/lib/search/session-ingest-runtime.integration.test.ts"
+  },
+  "exitCodes": {
+    "red": 1,
+    "unit": 0,
+    "runtime": 0,
+    "typecheck": 0
+  },
+  "summary": {
+    "red": {
+      "passed": 2,
+      "failed": 3,
+      "skipped": 0
+    },
+    "unit": {
+      "passed": 28,
+      "failed": 0,
+      "skipped": 0
+    },
+    "runtime": {
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    },
+    "typecheck": {
+      "status": "clean",
+      "scope": "named files, type-referencing files and direct importers"
+    }
+  },
+  "currentBuildTestRoute": {
+    "id": "background-federation",
+    "source": "canonical tree loaded by bg-host, not the :3170 API bundle",
+    "runtime": "bg-host",
+    "route": "node scripts/with-test-pg.mjs --isolated-runtime -- <current-build background assertion>",
+    "routeFile": "scripts/with-test-pg.mjs",
+    "isolation": "Disposable migrated DB, HOME/device keychain, workspace and ports; runtime credentials stripped.",
+    "prerequisites": [
+      "Current-build background command",
+      "local embedded PG and migration assets",
+      "explicit teardown assertion"
+    ],
+    "verification": "Actual child environment and build identity, background behavior, private-state write and cleanup receipt.",
+    "readiness": "requires-prerequisites"
+  }
+}

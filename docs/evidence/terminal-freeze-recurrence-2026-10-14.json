@@ -1,0 +1,2471 @@
+{
+  "schemaVersion": "terminal-identity-repair-v1",
+  "workItem": "WI-6554700010013067",
+  "startedAt": "2026-10-14T16:07:22.928Z",
+  "finishedAt": "2026-10-14T16:10:21.208Z",
+  "candidates": [
+    {
+      "pid": 3351453,
+      "ownerId": "su-01248af5-137e-4f7c-82d7-1715d6ecf725",
+      "ptyPid": 3690226
+    },
+    {
+      "pid": 3909298,
+      "ownerId": "su-02633d57-8699-4efd-aa7e-2e05b3365527",
+      "ptyPid": 2746666
+    },
+    {
+      "pid": 3569589,
+      "ownerId": "su-0353474c-1a6f-456e-bb47-647a146050e1",
+      "ptyPid": 3135393
+    },
+    {
+      "pid": 1983473,
+      "ownerId": "su-03b5a051-9444-44ad-977b-b87006a70341",
+      "ptyPid": 340279
+    },
+    {
+      "pid": 872785,
+      "ownerId": "su-055e916b-4218-4d93-9e0d-4a2c57fe9026",
+      "ptyPid": 879954
+    },
+    {
+      "pid": 2793709,
+      "ownerId": "su-08664d7f-dbcc-4e78-b2db-f9978e6076e8",
+      "ptyPid": 2823731
+    },
+    {
+      "pid": 909033,
+      "ownerId": "su-0a2c66a2-10a7-4d9a-84c3-3c7ab8550ef4",
+      "ptyPid": 1297505
+    },
+    {
+      "pid": 3371372,
+      "ownerId": "su-0abdb075-3e8f-4a3d-856a-199f47c1c3ce",
+      "ptyPid": 169063
+    },
+    {
+      "pid": 1424988,
+      "ownerId": "su-0b7ff69d-5fcb-4dd5-a2c5-4fcbab4964c7",
+      "ptyPid": 1909840
+    },
+    {
+      "pid": 2127345,
+      "ownerId": "su-0c193750-e6cc-40b0-81a4-2b8b61d92e3f",
+      "ptyPid": 603527
+    },
+    {
+      "pid": 2087436,
+      "ownerId": "su-0d2affd0-2198-4734-b54f-186234343375",
+      "ptyPid": 1439823
+    },
+    {
+      "pid": 1622097,
+      "ownerId": "su-0e4db6a0-49d5-400e-acf2-121effa56c27",
+      "ptyPid": 1642691
+    },
+    {
+      "pid": 2303859,
+      "ownerId": "su-0e4ff1d0-1c03-4add-8909-213370683e21",
+      "ptyPid": 806841
+    },
+    {
+      "pid": 2660217,
+      "ownerId": "su-0f38adbc-c692-4dfe-8ed2-4b5404762ff7",
+      "ptyPid": 2882134
+    },
+    {
+      "pid": 1240032,
+      "ownerId": "su-133ed038-4e22-47d6-89c7-e7cd09791af2",
+      "ptyPid": 1366521
+    },
+    {
+      "pid": 190682,
+      "ownerId": "su-14d6b6ef-6549-4c3f-bf9f-0e86a0e96f00",
+      "ptyPid": 3000947
+    },
+    {
+      "pid": 2243555,
+      "ownerId": "su-166e1335-67a7-4e39-b973-5c74df3cadcb",
+      "ptyPid": 2295067
+    },
+    {
+      "pid": 3732862,
+      "ownerId": "su-1c4234ac-daad-4171-8282-479adcf4c88a",
+      "ptyPid": 2643203
+    },
+    {
+      "pid": 672901,
+      "ownerId": "su-1ccb709f-9d2a-4cc9-bd09-e28f899d24ad",
+      "ptyPid": 1641824
+    },
+    {
+      "pid": 3851761,
+      "ownerId": "su-212d9806-6115-4ef6-9f90-55d0da7211ea",
+      "ptyPid": 1395706
+    },
+    {
+      "pid": 2455500,
+      "ownerId": "su-2245b010-6ebe-4f99-815a-7e84e66fdf8b",
+      "ptyPid": 1525132
+    },
+    {
+      "pid": 1561486,
+      "ownerId": "su-2342c61e-5b1d-4f29-9016-d0692cc241ae",
+      "ptyPid": 1564516
+    },
+    {
+      "pid": 1281913,
+      "ownerId": "su-23c7fc91-515d-4107-b31b-74a3d0faac72",
+      "ptyPid": 1300462
+    },
+    {
+      "pid": 2152633,
+      "ownerId": "su-23d26824-25a2-4979-9b57-a86ba389c2ca",
+      "ptyPid": 2180665
+    },
+    {
+      "pid": 126291,
+      "ownerId": "su-2564a37a-107c-48a0-a6fe-d97929063a1f",
+      "ptyPid": 4051641
+    },
+    {
+      "pid": 1943943,
+      "ownerId": "su-25a3d4d3-cb70-4685-a0de-d8fd1cd4f918",
+      "ptyPid": 3479565
+    },
+    {
+      "pid": 1482219,
+      "ownerId": "su-26943f5d-c097-42e4-913a-f2ea7b2fca4a",
+      "ptyPid": 2504492
+    },
+    {
+      "pid": 2408177,
+      "ownerId": "su-27805c90-3aa1-4b99-8ada-54bce3842d7f",
+      "ptyPid": 2429372
+    },
+    {
+      "pid": 1727578,
+      "ownerId": "su-29018994-8946-41ea-bd40-a8fb40c5872a",
+      "ptyPid": 2100808
+    },
+    {
+      "pid": 1609880,
+      "ownerId": "su-29b06aca-3216-41f9-b568-e8bc547a7c32",
+      "ptyPid": 1653814
+    },
+    {
+      "pid": 3718894,
+      "ownerId": "su-29c0fedf-c614-4bca-a6ca-7028d99055aa",
+      "ptyPid": 3752187
+    },
+    {
+      "pid": 1670960,
+      "ownerId": "su-2a4e1f4a-e579-4f68-b90f-69f3b26b8641",
+      "ptyPid": 2169501
+    },
+    {
+      "pid": 2169562,
+      "ownerId": "su-2a7e6d3d-2b60-4531-b48f-7f036b0b9394",
+      "ptyPid": 2355064
+    },
+    {
+      "pid": 595315,
+      "ownerId": "su-2ad46958-628a-4c17-bbd6-ebe812805f73",
+      "ptyPid": 1360371
+    },
+    {
+      "pid": 72108,
+      "ownerId": "su-2b9c0938-1963-4a3e-829d-8c9270b7d27e",
+      "ptyPid": 2767015
+    },
+    {
+      "pid": 1752934,
+      "ownerId": "su-2c2b6ea4-8d79-462b-932f-8c5a6b06a6b1",
+      "ptyPid": 3269907
+    },
+    {
+      "pid": 2194523,
+      "ownerId": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "ptyPid": 338258
+    },
+    {
+      "pid": 1936485,
+      "ownerId": "su-2df29f65-8444-4804-b246-f8840cef8fd9",
+      "ptyPid": 14793
+    },
+    {
+      "pid": 3624585,
+      "ownerId": "su-32b95ef6-169a-43ae-a8a5-e367fbc40b2b",
+      "ptyPid": 3709015
+    },
+    {
+      "pid": 2984305,
+      "ownerId": "su-34e04dbe-24fc-4579-a522-1610ae9761f7",
+      "ptyPid": 1906128
+    },
+    {
+      "pid": 1046994,
+      "ownerId": "su-357e43d6-080a-4a92-a347-c14d82a4232d",
+      "ptyPid": 1049225
+    },
+    {
+      "pid": 2564106,
+      "ownerId": "su-36986ccc-d8dc-4139-bf7a-9363281b06c8",
+      "ptyPid": 3592390
+    },
+    {
+      "pid": 2089280,
+      "ownerId": "su-37c2c6ca-c16b-4b74-a551-02e09d4f6e3f",
+      "ptyPid": 2121257
+    },
+    {
+      "pid": 3450022,
+      "ownerId": "su-37ffa216-14c7-4113-9981-b9b358da4155",
+      "ptyPid": 3506189
+    },
+    {
+      "pid": 2962811,
+      "ownerId": "su-38c4b8ff-c242-4dbb-9b0e-b053bcb99401",
+      "ptyPid": 3777524
+    },
+    {
+      "pid": 1774056,
+      "ownerId": "su-39585af5-b385-429d-813d-f65f1b561bb0",
+      "ptyPid": 739950
+    },
+    {
+      "pid": 1845686,
+      "ownerId": "su-3a3a10c1-d7b8-46cd-80cd-c24ad2c0bcd9",
+      "ptyPid": 2504675
+    },
+    {
+      "pid": 3780109,
+      "ownerId": "su-3cde87ef-8d98-4dbf-b0f1-a6570a8238bd",
+      "ptyPid": 1812214
+    },
+    {
+      "pid": 2775783,
+      "ownerId": "su-3e892ec3-60a5-40c1-8b7e-3c0b24d1039e",
+      "ptyPid": 1764330
+    },
+    {
+      "pid": 1661020,
+      "ownerId": "su-424d5476-0b13-401a-a926-0aaa9f212391",
+      "ptyPid": 2810425
+    },
+    {
+      "pid": 3053843,
+      "ownerId": "su-4ba8586b-3859-4ecf-a094-ba5d9f5e7bfd",
+      "ptyPid": 326666
+    },
+    {
+      "pid": 3785968,
+      "ownerId": "su-50591fd4-cda2-459c-af03-691c4107f736",
+      "ptyPid": 4079882
+    },
+    {
+      "pid": 155561,
+      "ownerId": "su-50f71624-3c60-4db3-b43d-06160dbc957c",
+      "ptyPid": 3606946
+    },
+    {
+      "pid": 3890107,
+      "ownerId": "su-51c5f29f-f7cc-4c96-aa72-0be374f2f5f6",
+      "ptyPid": 1838471
+    },
+    {
+      "pid": 769486,
+      "ownerId": "su-51edba27-5372-4c49-8a17-af2ede9bb198",
+      "ptyPid": 829132
+    },
+    {
+      "pid": 2091026,
+      "ownerId": "su-5541a53f-2723-4a0c-88a6-dd9191ffbd2a",
+      "ptyPid": 2411126
+    },
+    {
+      "pid": 2761537,
+      "ownerId": "su-55769027-ea65-49d0-a287-7d16b4b38627",
+      "ptyPid": 4152821
+    },
+    {
+      "pid": 217564,
+      "ownerId": "su-587ab736-5cbc-4de5-a3d5-24651c054d11",
+      "ptyPid": 2823672
+    },
+    {
+      "pid": 1245377,
+      "ownerId": "su-592ef0c5-b0ed-47d6-ad26-a089169482a7",
+      "ptyPid": 1255402
+    },
+    {
+      "pid": 3088365,
+      "ownerId": "su-5d6e108e-cac3-4a1c-97ea-f48b6245638f",
+      "ptyPid": 2405
+    },
+    {
+      "pid": 3456261,
+      "ownerId": "su-5d6ff64b-a9ee-4b18-8e73-02dfd939a96c",
+      "ptyPid": 1386664
+    },
+    {
+      "pid": 2200435,
+      "ownerId": "su-5e26d68f-60b7-4d7c-b1b7-0dbf07bcc96d",
+      "ptyPid": 2067113
+    },
+    {
+      "pid": 851496,
+      "ownerId": "su-5e71ed64-4775-4722-81a3-f05f42f4f799",
+      "ptyPid": 1266974
+    },
+    {
+      "pid": 483163,
+      "ownerId": "su-5e86e622-0a42-4e11-9cb5-b44e36856641",
+      "ptyPid": 681648
+    },
+    {
+      "pid": 1454661,
+      "ownerId": "su-62f0062b-7713-4905-b6dc-f34b9a358764",
+      "ptyPid": 1468761
+    },
+    {
+      "pid": 142282,
+      "ownerId": "su-64244b21-7448-404d-aa24-633e4d279424",
+      "ptyPid": 149163
+    },
+    {
+      "pid": 3825207,
+      "ownerId": "su-65ecc301-e683-4b7f-85ee-98c2871ef59f",
+      "ptyPid": 3447217
+    },
+    {
+      "pid": 3625590,
+      "ownerId": "su-6788d0ac-d425-4756-a9b3-3a451df401be",
+      "ptyPid": 204143
+    },
+    {
+      "pid": 3408792,
+      "ownerId": "su-67c067a4-a97b-41ee-82ca-06b9be615327",
+      "ptyPid": 3994933
+    },
+    {
+      "pid": 1953319,
+      "ownerId": "su-69e68df2-36d7-46b4-97ba-59c51ef8ffeb",
+      "ptyPid": 1973884
+    },
+    {
+      "pid": 1801937,
+      "ownerId": "su-6a5fd507-931c-46ee-8485-8e7f3f64e3a7",
+      "ptyPid": 1814616
+    },
+    {
+      "pid": 3749402,
+      "ownerId": "su-6c29fd94-ae38-453e-86e6-e81f44a698c5",
+      "ptyPid": 2709746
+    },
+    {
+      "pid": 1125030,
+      "ownerId": "su-6e85a865-632a-4ae9-acae-b7d2fa30f451",
+      "ptyPid": 1129613
+    },
+    {
+      "pid": 1819252,
+      "ownerId": "su-70531ddd-3eed-4530-8e41-1aa7d47c7791",
+      "ptyPid": 2928569
+    },
+    {
+      "pid": 796532,
+      "ownerId": "su-70bd7b0b-bd59-4ea3-8288-fbe76edb24cb",
+      "ptyPid": 842491
+    },
+    {
+      "pid": 3551513,
+      "ownerId": "su-70c554c7-11e6-4f95-908e-cf37c23031de",
+      "ptyPid": 2894607
+    },
+    {
+      "pid": 1382496,
+      "ownerId": "su-73f621d7-bae1-4bbb-b045-a11b5c47a384",
+      "ptyPid": 1889184
+    },
+    {
+      "pid": 2115649,
+      "ownerId": "su-7534ff62-a124-4ac1-a913-a60b3107d8e7",
+      "ptyPid": 1696593
+    },
+    {
+      "pid": 1427379,
+      "ownerId": "su-762b9af2-3f26-4bd1-9789-779e20f1662c",
+      "ptyPid": 1434286
+    },
+    {
+      "pid": 1319627,
+      "ownerId": "su-7813359c-e643-4587-9b3f-4becb2397ea4",
+      "ptyPid": 1424670
+    },
+    {
+      "pid": 121380,
+      "ownerId": "su-785860a2-29c5-40fd-a470-bc04d6efe569",
+      "ptyPid": 494002
+    },
+    {
+      "pid": 2007515,
+      "ownerId": "su-785c58ed-71cc-46e2-9735-f845a606c627",
+      "ptyPid": 2764802
+    },
+    {
+      "pid": 3687562,
+      "ownerId": "su-7e8ed3c8-b348-49e6-b7df-c4aa7dab54f3",
+      "ptyPid": 247649
+    },
+    {
+      "pid": 1609538,
+      "ownerId": "su-8198501a-f9af-4627-845f-7db8acc34113",
+      "ptyPid": 1777599
+    },
+    {
+      "pid": 1806112,
+      "ownerId": "su-81a4dc41-f10d-42b6-9d03-9e99489cfd58",
+      "ptyPid": 1828027
+    },
+    {
+      "pid": 1829135,
+      "ownerId": "su-81bb8095-b84c-4d05-82d5-c857e979124b",
+      "ptyPid": 1910690
+    },
+    {
+      "pid": 600803,
+      "ownerId": "su-833bc5dc-7541-4e8e-bb15-eeb4e74ee7aa",
+      "ptyPid": 635249
+    },
+    {
+      "pid": 971022,
+      "ownerId": "su-8554c5b1-cd5a-4fd7-afbe-82bb68a75438",
+      "ptyPid": 981035
+    },
+    {
+      "pid": 4174358,
+      "ownerId": "su-85cc9087-1e89-407c-9f50-8e402754722d",
+      "ptyPid": 2058
+    },
+    {
+      "pid": 3429982,
+      "ownerId": "su-85d36834-59c5-4328-a21d-7adc5623b75a",
+      "ptyPid": 3542974
+    },
+    {
+      "pid": 2134745,
+      "ownerId": "su-8cfdf300-1288-4d6a-8ba6-bf89121f6cff",
+      "ptyPid": 2295982
+    },
+    {
+      "pid": 1653049,
+      "ownerId": "su-8df00c9a-c33a-4292-a81c-7a2bc6e0d307",
+      "ptyPid": 2482542
+    },
+    {
+      "pid": 3109387,
+      "ownerId": "su-91e1b8eb-8d31-4fe2-a4b7-b0791a2bd649",
+      "ptyPid": 3118137
+    },
+    {
+      "pid": 2546144,
+      "ownerId": "su-93d354ef-cf31-47cd-8692-3d8cc7645c57",
+      "ptyPid": 2672304
+    },
+    {
+      "pid": 1240893,
+      "ownerId": "su-96edad8d-1fc5-433d-8171-03bccdd4bd92",
+      "ptyPid": 2371813
+    },
+    {
+      "pid": 440887,
+      "ownerId": "su-97b68245-28a2-431e-a1c4-a0d018969d9a",
+      "ptyPid": 866612
+    },
+    {
+      "pid": 3761528,
+      "ownerId": "su-98e61f58-9674-4d6a-88fd-b9cd6194fc9b",
+      "ptyPid": 3782654
+    },
+    {
+      "pid": 823535,
+      "ownerId": "su-9b9af65b-ec38-4e45-a98b-eacd7ff3dea5",
+      "ptyPid": 892887
+    },
+    {
+      "pid": 2352993,
+      "ownerId": "su-9e66a68d-2451-4a45-88db-633a23171b79",
+      "ptyPid": 2494874
+    },
+    {
+      "pid": 3795854,
+      "ownerId": "su-a0e4fac4-1b6d-4964-b920-2e69444b0255",
+      "ptyPid": 3810309
+    },
+    {
+      "pid": 815351,
+      "ownerId": "su-a1388868-c9eb-4e89-9b35-1b80146c3eb7",
+      "ptyPid": 1649628
+    },
+    {
+      "pid": 183718,
+      "ownerId": "su-a92ec1b4-ca99-4f52-b6ec-6195ba4d4e3a",
+      "ptyPid": 3861574
+    },
+    {
+      "pid": 464984,
+      "ownerId": "su-ac4f14a4-6c8b-45da-821b-73196391b494",
+      "ptyPid": 475350
+    },
+    {
+      "pid": 3423833,
+      "ownerId": "su-b0dc22a9-95e3-42f5-8047-1ba27be48c9c",
+      "ptyPid": 3443879
+    },
+    {
+      "pid": 3317013,
+      "ownerId": "su-b0f459d2-421f-4287-a914-fa1a8d324f83",
+      "ptyPid": 3340403
+    },
+    {
+      "pid": 3816539,
+      "ownerId": "su-b11f76ed-5823-4fe4-a597-1ebc5c3a441e",
+      "ptyPid": 3835621
+    },
+    {
+      "pid": 3061383,
+      "ownerId": "su-b36b4692-520c-4a71-ae87-d0399bd81c9e",
+      "ptyPid": 837959
+    },
+    {
+      "pid": 3430913,
+      "ownerId": "su-b53bc730-cf97-42c1-804a-906e355053c2",
+      "ptyPid": 3438970
+    },
+    {
+      "pid": 3946775,
+      "ownerId": "su-b6269baa-ffa3-4a0d-a81c-c52148b8150e",
+      "ptyPid": 1536094
+    },
+    {
+      "pid": 3856096,
+      "ownerId": "su-b6399fe8-73e2-4b5e-ae06-3f73d3a32401",
+      "ptyPid": 3870710
+    },
+    {
+      "pid": 808803,
+      "ownerId": "su-b68c3e13-77bc-42cb-b5ed-e33ee76452cc",
+      "ptyPid": 880546
+    },
+    {
+      "pid": 1352413,
+      "ownerId": "su-b7320e93-c75a-4a6d-99ab-581fc2eab4e3",
+      "ptyPid": 3962761
+    },
+    {
+      "pid": 3759871,
+      "ownerId": "su-bb58e00c-a16b-449f-b312-8646ebb2d12e",
+      "ptyPid": 1275230
+    },
+    {
+      "pid": 2512627,
+      "ownerId": "su-bb8e4c0e-215c-4757-846e-7d92124182c6",
+      "ptyPid": 2587969
+    },
+    {
+      "pid": 3789786,
+      "ownerId": "su-bdcd315c-af8a-4bfc-9e52-d73604f24ae2",
+      "ptyPid": 3633271
+    },
+    {
+      "pid": 3496692,
+      "ownerId": "su-c04397d1-7c42-418d-a14c-026ceca4d008",
+      "ptyPid": 609146
+    },
+    {
+      "pid": 1019554,
+      "ownerId": "su-c05233eb-d1be-4e44-b16e-51d9d3532894",
+      "ptyPid": 1480971
+    },
+    {
+      "pid": 1865598,
+      "ownerId": "su-c21ef110-23d9-40c8-996a-533b8085bfb2",
+      "ptyPid": 1870824
+    },
+    {
+      "pid": 3703072,
+      "ownerId": "su-c270ea81-86f8-4e24-aa03-6fcf12ab8bde",
+      "ptyPid": 560617
+    },
+    {
+      "pid": 2075680,
+      "ownerId": "su-c7a48b7b-f8fd-4215-aa09-5fe6bebc007c",
+      "ptyPid": 3699411
+    },
+    {
+      "pid": 1552308,
+      "ownerId": "su-c817144f-b276-410c-9685-7baad6e5f9ee",
+      "ptyPid": 1584464
+    },
+    {
+      "pid": 713322,
+      "ownerId": "su-cdc9a540-470a-4660-bffc-f0d3cfd0b4c4",
+      "ptyPid": 353640
+    },
+    {
+      "pid": 1092897,
+      "ownerId": "su-d1247140-f934-4d6b-9cbc-aa3882364a26",
+      "ptyPid": 1096603
+    },
+    {
+      "pid": 2550154,
+      "ownerId": "su-d14d0d3e-762b-4661-a73b-473c8cfdb422",
+      "ptyPid": 2116567
+    },
+    {
+      "pid": 3867728,
+      "ownerId": "su-d5c71efc-9926-433f-b5eb-6045ae8ca56a",
+      "ptyPid": 1951427
+    },
+    {
+      "pid": 1432882,
+      "ownerId": "su-d79d84cf-7fb9-4cda-a53c-aabdcf078517",
+      "ptyPid": 3465929
+    },
+    {
+      "pid": 2426859,
+      "ownerId": "su-d8130961-3272-4a5f-8f4c-a7f8d337b333",
+      "ptyPid": 18456
+    },
+    {
+      "pid": 3692133,
+      "ownerId": "su-dae9d804-7887-4fc2-b09f-d62f9430b5ba",
+      "ptyPid": 1771036
+    },
+    {
+      "pid": 3149137,
+      "ownerId": "su-dc8753b2-7583-4d2b-a403-b0b08c2c4448",
+      "ptyPid": 3182936
+    },
+    {
+      "pid": 2668615,
+      "ownerId": "su-dd6af82f-1cd4-4cdb-bcf8-ebe921942a3d",
+      "ptyPid": 2685189
+    },
+    {
+      "pid": 1279736,
+      "ownerId": "su-df8a45a0-ac59-4037-8a63-9d45e9f62d55",
+      "ptyPid": 862550
+    },
+    {
+      "pid": 3364894,
+      "ownerId": "su-e16e0da4-f858-4e10-9665-55116edbc36b",
+      "ptyPid": 1941422
+    },
+    {
+      "pid": 1665643,
+      "ownerId": "su-e4ea8936-7a2f-4b81-ba98-f21cc6f699d2",
+      "ptyPid": 1595467
+    },
+    {
+      "pid": 2413849,
+      "ownerId": "su-e6e38587-6da4-4e14-9878-9550d762aa9b",
+      "ptyPid": 2536154
+    },
+    {
+      "pid": 441793,
+      "ownerId": "su-e7208581-4177-450e-a2a9-65d871758d61",
+      "ptyPid": 604244
+    },
+    {
+      "pid": 3609327,
+      "ownerId": "su-e78cc6d7-340f-49eb-baf6-4fc6ca294d16",
+      "ptyPid": 2595041
+    },
+    {
+      "pid": 2491211,
+      "ownerId": "su-e8830e4d-146e-41db-92ea-a9d97e648e5e",
+      "ptyPid": 2553215
+    },
+    {
+      "pid": 1841820,
+      "ownerId": "su-e9e81a50-2c36-4231-a340-43ebca1804aa",
+      "ptyPid": 1844082
+    },
+    {
+      "pid": 2621424,
+      "ownerId": "su-ec5efb56-8a98-4efe-a8e2-02017ee78bb8",
+      "ptyPid": 1780307
+    },
+    {
+      "pid": 2036591,
+      "ownerId": "su-ec67d65a-222d-4bc0-8d52-c81e99a00bbf",
+      "ptyPid": 2049376
+    },
+    {
+      "pid": 3052562,
+      "ownerId": "su-f054245c-2b04-4a57-9eda-1655fbfcd8ae",
+      "ptyPid": 1200735
+    },
+    {
+      "pid": 1862231,
+      "ownerId": "su-f146f0a3-5ec9-4b19-bac2-b1903f1f6cb1",
+      "ptyPid": 922362
+    },
+    {
+      "pid": 1682918,
+      "ownerId": "su-f31eb02a-1307-4b7a-98ca-001a0574178e",
+      "ptyPid": 1727059
+    },
+    {
+      "pid": 1761688,
+      "ownerId": "su-f6634c6e-3452-4178-a558-99a67e52df0b",
+      "ptyPid": 2633431
+    },
+    {
+      "pid": 3243180,
+      "ownerId": "su-fa0e5a79-95f8-4dff-949e-b4c446528c04",
+      "ptyPid": 2980608
+    },
+    {
+      "pid": 2209834,
+      "ownerId": "su-faee16ea-3b47-454a-ae48-f949b51c6d8d",
+      "ptyPid": 3277200
+    },
+    {
+      "pid": 3895100,
+      "ownerId": "su-fbce18bf-ab91-435d-b28b-fe11815ad7da",
+      "ptyPid": 2222433
+    },
+    {
+      "pid": 1331760,
+      "ownerId": "su-fe90d8f4-29ad-4a9a-ad14-c750470ab52e",
+      "ptyPid": 1336732
+    },
+    {
+      "pid": 2781628,
+      "ownerId": "su-respawn-1db5c456985bcdba8027f1f19cb4b185",
+      "ptyPid": 3084676
+    },
+    {
+      "pid": 3753269,
+      "ownerId": "su-respawn-80c8e4065aac34e2ea45c7655f6b43fe",
+      "ptyPid": 23019
+    },
+    {
+      "pid": 1834148,
+      "ownerId": "su-respawn-8af86521e1078640e5b4d34fa8398e84",
+      "ptyPid": 1637846
+    }
+  ],
+  "results": [
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "30cfabc90fae4fb2770f90d1dc12ee0043efa72c63037e477b4c48cc9b6793df",
+      "afterHash": "bedd81bd4ac5239d2a605b67382d6e2d8a32ce7ec7aafbf91aded4aaae8a2bfe",
+      "pid": 3351453,
+      "ownerId": "su-01248af5-137e-4f7c-82d7-1715d6ecf725",
+      "nativeChildPid": 3690226,
+      "startTicks": "62606117",
+      "inspectorClosed": true
+    },
+    {
+      "needed": false,
+      "applied": false,
+      "beforeHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "afterHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "pid": 3909298,
+      "ownerId": "su-02633d57-8699-4efd-aa7e-2e05b3365527",
+      "nativeChildPid": 2746666,
+      "startTicks": "75616056",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "30cfabc90fae4fb2770f90d1dc12ee0043efa72c63037e477b4c48cc9b6793df",
+      "afterHash": "bedd81bd4ac5239d2a605b67382d6e2d8a32ce7ec7aafbf91aded4aaae8a2bfe",
+      "pid": 3569589,
+      "ownerId": "su-0353474c-1a6f-456e-bb47-647a146050e1",
+      "nativeChildPid": 3135393,
+      "startTicks": "62647333",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "4eb67657399283d179af6201a9ed0653144990185e1af6fd3af32056d0dfd346",
+      "afterHash": "daf6ae10266c3c59d5b041269d13b3940b7eacc4e96f583c81761db0186a1a60",
+      "pid": 1983473,
+      "ownerId": "su-03b5a051-9444-44ad-977b-b87006a70341",
+      "nativeChildPid": 340279,
+      "startTicks": "66028618",
+      "inspectorClosed": true
+    },
+    {
+      "needed": false,
+      "applied": false,
+      "beforeHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "afterHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "pid": 872785,
+      "ownerId": "su-055e916b-4218-4d93-9e0d-4a2c57fe9026",
+      "nativeChildPid": 879954,
+      "startTicks": "78036430",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "739d9f3790b1c8b5f1bca3d73e2bcfca38b350033ef819c0b5c74cf43d058a1c",
+      "afterHash": "157c90d3368cfffc8e0da2168ce6df0c4ef722f70edb8f967b04658b819e3482",
+      "pid": 2793709,
+      "ownerId": "su-08664d7f-dbcc-4e78-b2db-f9978e6076e8",
+      "nativeChildPid": 2823731,
+      "startTicks": "21046358",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "30cfabc90fae4fb2770f90d1dc12ee0043efa72c63037e477b4c48cc9b6793df",
+      "afterHash": "bedd81bd4ac5239d2a605b67382d6e2d8a32ce7ec7aafbf91aded4aaae8a2bfe",
+      "pid": 909033,
+      "ownerId": "su-0a2c66a2-10a7-4d9a-84c3-3c7ab8550ef4",
+      "nativeChildPid": 1297505,
+      "startTicks": "63258995",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "2234839ba4ef90b2ee787e24aaf7b93f5cd7af2f40582b13a6bc964e4e1549ff",
+      "afterHash": "b5cba6720b598f25239696c172b475864cd963efc383ace9343c11d99e92d174",
+      "pid": 3371372,
+      "ownerId": "su-0abdb075-3e8f-4a3d-856a-199f47c1c3ce",
+      "nativeChildPid": 169063,
+      "startTicks": "54812746",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "4b377f4888238cf2f57326bbab084f4243665bb56379dda77d3576de46976d8c",
+      "afterHash": "cb573c3dac36818a87facf50ac76ac952f3cb9fae692bc44e2f0113821ad51ac",
+      "pid": 1424988,
+      "ownerId": "su-0b7ff69d-5fcb-4dd5-a2c5-4fcbab4964c7",
+      "nativeChildPid": 1909840,
+      "startTicks": "45932226",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "8a861a884314c490593e1f2b0659a2f106ecb21bd95a3dae608a008039f97b71",
+      "afterHash": "bf64868a84a6604f702d325ffcb8a2f154e28c2bb82372ff182d86a0d0e90b3d",
+      "pid": 2127345,
+      "ownerId": "su-0c193750-e6cc-40b0-81a4-2b8b61d92e3f",
+      "nativeChildPid": 603527,
+      "startTicks": "54221011",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "4b377f4888238cf2f57326bbab084f4243665bb56379dda77d3576de46976d8c",
+      "afterHash": "cb573c3dac36818a87facf50ac76ac952f3cb9fae692bc44e2f0113821ad51ac",
+      "pid": 2087436,
+      "ownerId": "su-0d2affd0-2198-4734-b54f-186234343375",
+      "nativeChildPid": 1439823,
+      "startTicks": "45534490",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "fc67135a02d3712da9a868133af076b7efd7906e9945a94ab4ba68e1c927a3f9",
+      "afterHash": "db69e0780bb54c4753ebe31aebe3b1ebf72c986d07dd50696452f467a318a179",
+      "pid": 1622097,
+      "ownerId": "su-0e4db6a0-49d5-400e-acf2-121effa56c27",
+      "nativeChildPid": 1642691,
+      "startTicks": "35381278",
+      "inspectorClosed": true
+    },
+    {
+      "pid": 2303859,
+      "ownerId": "su-0e4ff1d0-1c03-4add-8909-213370683e21",
+      "ptyPid": 806841,
+      "error": "V8 refused terminal repair: BlockedByActiveFunction"
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "4b377f4888238cf2f57326bbab084f4243665bb56379dda77d3576de46976d8c",
+      "afterHash": "cb573c3dac36818a87facf50ac76ac952f3cb9fae692bc44e2f0113821ad51ac",
+      "pid": 2660217,
+      "ownerId": "su-0f38adbc-c692-4dfe-8ed2-4b5404762ff7",
+      "nativeChildPid": 2882134,
+      "startTicks": "45611134",
+      "inspectorClosed": true
+    },
+    {
+      "needed": false,
+      "applied": false,
+      "beforeHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "afterHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "pid": 1240032,
+      "ownerId": "su-133ed038-4e22-47d6-89c7-e7cd09791af2",
+      "nativeChildPid": 1366521,
+      "startTicks": "75325739",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "18f6924f05b22f40525aa35272675347961ae687d55b25c1172be6b0e9c68bb8",
+      "afterHash": "7ebb89765ea5a96eb06c2f928d9c988070b01e4709c254af44d3c51299798af5",
+      "pid": 190682,
+      "ownerId": "su-14d6b6ef-6549-4c3f-bf9f-0e86a0e96f00",
+      "nativeChildPid": 3000947,
+      "startTicks": "36291839",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "4b377f4888238cf2f57326bbab084f4243665bb56379dda77d3576de46976d8c",
+      "afterHash": "cb573c3dac36818a87facf50ac76ac952f3cb9fae692bc44e2f0113821ad51ac",
+      "pid": 2243555,
+      "ownerId": "su-166e1335-67a7-4e39-b973-5c74df3cadcb",
+      "nativeChildPid": 2295067,
+      "startTicks": "45557028",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "31b36e7579f3d4d4e8dfcb1b26a62c97187bc1277d5bb338b338605633f0636d",
+      "afterHash": "de0eb12dfcb926bbc3307f0568dcd7816e7aa181c06b15415c1bb61077db3238",
+      "pid": 3732862,
+      "ownerId": "su-1c4234ac-daad-4171-8282-479adcf4c88a",
+      "nativeChildPid": 2643203,
+      "startTicks": "71825828",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "add331e8c26c958df82c340ce62b99d66604b3da2bd81f7940e2d80d3667f526",
+      "afterHash": "a941828406576a2a7cd3fc2674fe9e5cbe6d163a0949e375479aa5f198ecc64f",
+      "pid": 672901,
+      "ownerId": "su-1ccb709f-9d2a-4cc9-bd09-e28f899d24ad",
+      "nativeChildPid": 1641824,
+      "startTicks": "28267521",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "31b36e7579f3d4d4e8dfcb1b26a62c97187bc1277d5bb338b338605633f0636d",
+      "afterHash": "de0eb12dfcb926bbc3307f0568dcd7816e7aa181c06b15415c1bb61077db3238",
+      "pid": 3851761,
+      "ownerId": "su-212d9806-6115-4ef6-9f90-55d0da7211ea",
+      "nativeChildPid": 1395706,
+      "startTicks": "71838856",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "4b377f4888238cf2f57326bbab084f4243665bb56379dda77d3576de46976d8c",
+      "afterHash": "cb573c3dac36818a87facf50ac76ac952f3cb9fae692bc44e2f0113821ad51ac",
+      "pid": 2455500,
+      "ownerId": "su-2245b010-6ebe-4f99-815a-7e84e66fdf8b",
+      "nativeChildPid": 1525132,
+      "startTicks": "45584549",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "54b0706d51d11453d7e849085b7bfff41fc4c29eec07a31c5303ef10eaacfdd7",
+      "afterHash": "a0cfa9b7076fadd456d8ede2efb59caf3cd146a460a1d9585350947472769747",
+      "pid": 1561486,
+      "ownerId": "su-2342c61e-5b1d-4f29-9016-d0692cc241ae",
+      "nativeChildPid": 1564516,
+      "startTicks": "23956716",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "30cfabc90fae4fb2770f90d1dc12ee0043efa72c63037e477b4c48cc9b6793df",
+      "afterHash": "bedd81bd4ac5239d2a605b67382d6e2d8a32ce7ec7aafbf91aded4aaae8a2bfe",
+      "pid": 1281913,
+      "ownerId": "su-23c7fc91-515d-4107-b31b-74a3d0faac72",
+      "nativeChildPid": 1300462,
+      "startTicks": "63307623",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "739d9f3790b1c8b5f1bca3d73e2bcfca38b350033ef819c0b5c74cf43d058a1c",
+      "afterHash": "157c90d3368cfffc8e0da2168ce6df0c4ef722f70edb8f967b04658b819e3482",
+      "pid": 2152633,
+      "ownerId": "su-23d26824-25a2-4979-9b57-a86ba389c2ca",
+      "nativeChildPid": 2180665,
+      "startTicks": "22060008",
+      "inspectorClosed": true
+    },
+    {
+      "needed": false,
+      "applied": false,
+      "beforeHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "afterHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "pid": 126291,
+      "ownerId": "su-2564a37a-107c-48a0-a6fe-d97929063a1f",
+      "nativeChildPid": 4051641,
+      "startTicks": "75650119",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "4b377f4888238cf2f57326bbab084f4243665bb56379dda77d3576de46976d8c",
+      "afterHash": "cb573c3dac36818a87facf50ac76ac952f3cb9fae692bc44e2f0113821ad51ac",
+      "pid": 1943943,
+      "ownerId": "su-25a3d4d3-cb70-4685-a0de-d8fd1cd4f918",
+      "nativeChildPid": 3479565,
+      "startTicks": "45515655",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "4b377f4888238cf2f57326bbab084f4243665bb56379dda77d3576de46976d8c",
+      "afterHash": "cb573c3dac36818a87facf50ac76ac952f3cb9fae692bc44e2f0113821ad51ac",
+      "pid": 1482219,
+      "ownerId": "su-26943f5d-c097-42e4-913a-f2ea7b2fca4a",
+      "nativeChildPid": 2504492,
+      "startTicks": "45461939",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "7f0480476fa39b0e22f83a6cc72035968789d7bfecd87a382df2212ed592c4c1",
+      "afterHash": "b3e63a2b8f8899748c1a9a7db4f41862b13b0579d8ca735a1106ba253b73d6ff",
+      "pid": 2408177,
+      "ownerId": "su-27805c90-3aa1-4b99-8ada-54bce3842d7f",
+      "nativeChildPid": 2429372,
+      "startTicks": "53379989",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "4b377f4888238cf2f57326bbab084f4243665bb56379dda77d3576de46976d8c",
+      "afterHash": "cb573c3dac36818a87facf50ac76ac952f3cb9fae692bc44e2f0113821ad51ac",
+      "pid": 1727578,
+      "ownerId": "su-29018994-8946-41ea-bd40-a8fb40c5872a",
+      "nativeChildPid": 2100808,
+      "startTicks": "45484355",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "4b377f4888238cf2f57326bbab084f4243665bb56379dda77d3576de46976d8c",
+      "afterHash": "cb573c3dac36818a87facf50ac76ac952f3cb9fae692bc44e2f0113821ad51ac",
+      "pid": 1609880,
+      "ownerId": "su-29b06aca-3216-41f9-b568-e8bc547a7c32",
+      "nativeChildPid": 1653814,
+      "startTicks": "45963164",
+      "inspectorClosed": true
+    },
+    {
+      "needed": false,
+      "applied": false,
+      "beforeHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "afterHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "pid": 3718894,
+      "ownerId": "su-29c0fedf-c614-4bca-a6ca-7028d99055aa",
+      "nativeChildPid": 3752187,
+      "startTicks": "77857448",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "8a861a884314c490593e1f2b0659a2f106ecb21bd95a3dae608a008039f97b71",
+      "afterHash": "bf64868a84a6604f702d325ffcb8a2f154e28c2bb82372ff182d86a0d0e90b3d",
+      "pid": 1670960,
+      "ownerId": "su-2a4e1f4a-e579-4f68-b90f-69f3b26b8641",
+      "nativeChildPid": 2169501,
+      "startTicks": "54175101",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "add331e8c26c958df82c340ce62b99d66604b3da2bd81f7940e2d80d3667f526",
+      "afterHash": "a941828406576a2a7cd3fc2674fe9e5cbe6d163a0949e375479aa5f198ecc64f",
+      "pid": 2169562,
+      "ownerId": "su-2a7e6d3d-2b60-4531-b48f-7f036b0b9394",
+      "nativeChildPid": 2355064,
+      "startTicks": "26043575",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "30cfabc90fae4fb2770f90d1dc12ee0043efa72c63037e477b4c48cc9b6793df",
+      "afterHash": "bedd81bd4ac5239d2a605b67382d6e2d8a32ce7ec7aafbf91aded4aaae8a2bfe",
+      "pid": 595315,
+      "ownerId": "su-2ad46958-628a-4c17-bbd6-ebe812805f73",
+      "nativeChildPid": 1360371,
+      "startTicks": "63225461",
+      "inspectorClosed": true
+    },
+    {
+      "needed": false,
+      "applied": false,
+      "beforeHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "afterHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "pid": 72108,
+      "ownerId": "su-2b9c0938-1963-4a3e-829d-8c9270b7d27e",
+      "nativeChildPid": 2767015,
+      "startTicks": "76679687",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "4b377f4888238cf2f57326bbab084f4243665bb56379dda77d3576de46976d8c",
+      "afterHash": "cb573c3dac36818a87facf50ac76ac952f3cb9fae692bc44e2f0113821ad51ac",
+      "pid": 1752934,
+      "ownerId": "su-2c2b6ea4-8d79-462b-932f-8c5a6b06a6b1",
+      "nativeChildPid": 3269907,
+      "startTicks": "45489581",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "8a861a884314c490593e1f2b0659a2f106ecb21bd95a3dae608a008039f97b71",
+      "afterHash": "bf64868a84a6604f702d325ffcb8a2f154e28c2bb82372ff182d86a0d0e90b3d",
+      "pid": 2194523,
+      "ownerId": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "nativeChildPid": 338258,
+      "startTicks": "54227160",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "8a861a884314c490593e1f2b0659a2f106ecb21bd95a3dae608a008039f97b71",
+      "afterHash": "bf64868a84a6604f702d325ffcb8a2f154e28c2bb82372ff182d86a0d0e90b3d",
+      "pid": 1936485,
+      "ownerId": "su-2df29f65-8444-4804-b246-f8840cef8fd9",
+      "nativeChildPid": 14793,
+      "startTicks": "54203202",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "f82191cffc8c376344cd259ce530c6b56b2f86ce6e26d626ad62579b0354f5fb",
+      "afterHash": "28bdffbd87e4da678e671f0f0c7aa9bc527152ea4a0c7fa8bfcb1d99497bb656",
+      "pid": 3624585,
+      "ownerId": "su-32b95ef6-169a-43ae-a8a5-e367fbc40b2b",
+      "nativeChildPid": 3709015,
+      "startTicks": "64105037",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "739d9f3790b1c8b5f1bca3d73e2bcfca38b350033ef819c0b5c74cf43d058a1c",
+      "afterHash": "157c90d3368cfffc8e0da2168ce6df0c4ef722f70edb8f967b04658b819e3482",
+      "pid": 2984305,
+      "ownerId": "su-34e04dbe-24fc-4579-a522-1610ae9761f7",
+      "nativeChildPid": 1906128,
+      "startTicks": "21072085",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "fc67135a02d3712da9a868133af076b7efd7906e9945a94ab4ba68e1c927a3f9",
+      "afterHash": "db69e0780bb54c4753ebe31aebe3b1ebf72c986d07dd50696452f467a318a179",
+      "pid": 1046994,
+      "ownerId": "su-357e43d6-080a-4a92-a347-c14d82a4232d",
+      "nativeChildPid": 1049225,
+      "startTicks": "34694827",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "4b377f4888238cf2f57326bbab084f4243665bb56379dda77d3576de46976d8c",
+      "afterHash": "cb573c3dac36818a87facf50ac76ac952f3cb9fae692bc44e2f0113821ad51ac",
+      "pid": 2564106,
+      "ownerId": "su-36986ccc-d8dc-4139-bf7a-9363281b06c8",
+      "nativeChildPid": 3592390,
+      "startTicks": "45597686",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "fc67135a02d3712da9a868133af076b7efd7906e9945a94ab4ba68e1c927a3f9",
+      "afterHash": "db69e0780bb54c4753ebe31aebe3b1ebf72c986d07dd50696452f467a318a179",
+      "pid": 2089280,
+      "ownerId": "su-37c2c6ca-c16b-4b74-a551-02e09d4f6e3f",
+      "nativeChildPid": 2121257,
+      "startTicks": "35440423",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "739d9f3790b1c8b5f1bca3d73e2bcfca38b350033ef819c0b5c74cf43d058a1c",
+      "afterHash": "157c90d3368cfffc8e0da2168ce6df0c4ef722f70edb8f967b04658b819e3482",
+      "pid": 3450022,
+      "ownerId": "su-37ffa216-14c7-4113-9981-b9b358da4155",
+      "nativeChildPid": 3506189,
+      "startTicks": "21120907",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "4b377f4888238cf2f57326bbab084f4243665bb56379dda77d3576de46976d8c",
+      "afterHash": "cb573c3dac36818a87facf50ac76ac952f3cb9fae692bc44e2f0113821ad51ac",
+      "pid": 2962811,
+      "ownerId": "su-38c4b8ff-c242-4dbb-9b0e-b053bcb99401",
+      "nativeChildPid": 3777524,
+      "startTicks": "45633557",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "8a861a884314c490593e1f2b0659a2f106ecb21bd95a3dae608a008039f97b71",
+      "afterHash": "bf64868a84a6604f702d325ffcb8a2f154e28c2bb82372ff182d86a0d0e90b3d",
+      "pid": 1774056,
+      "ownerId": "su-39585af5-b385-429d-813d-f65f1b561bb0",
+      "nativeChildPid": 739950,
+      "startTicks": "54186249",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "8a861a884314c490593e1f2b0659a2f106ecb21bd95a3dae608a008039f97b71",
+      "afterHash": "bf64868a84a6604f702d325ffcb8a2f154e28c2bb82372ff182d86a0d0e90b3d",
+      "pid": 1845686,
+      "ownerId": "su-3a3a10c1-d7b8-46cd-80cd-c24ad2c0bcd9",
+      "nativeChildPid": 2504675,
+      "startTicks": "54193873",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "31b36e7579f3d4d4e8dfcb1b26a62c97187bc1277d5bb338b338605633f0636d",
+      "afterHash": "de0eb12dfcb926bbc3307f0568dcd7816e7aa181c06b15415c1bb61077db3238",
+      "pid": 3780109,
+      "ownerId": "su-3cde87ef-8d98-4dbf-b0f1-a6570a8238bd",
+      "nativeChildPid": 1812214,
+      "startTicks": "71830838",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "739d9f3790b1c8b5f1bca3d73e2bcfca38b350033ef819c0b5c74cf43d058a1c",
+      "afterHash": "157c90d3368cfffc8e0da2168ce6df0c4ef722f70edb8f967b04658b819e3482",
+      "pid": 2775783,
+      "ownerId": "su-3e892ec3-60a5-40c1-8b7e-3c0b24d1039e",
+      "nativeChildPid": 1764330,
+      "startTicks": "21043844",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "8a861a884314c490593e1f2b0659a2f106ecb21bd95a3dae608a008039f97b71",
+      "afterHash": "bf64868a84a6604f702d325ffcb8a2f154e28c2bb82372ff182d86a0d0e90b3d",
+      "pid": 1661020,
+      "ownerId": "su-424d5476-0b13-401a-a926-0aaa9f212391",
+      "nativeChildPid": 2810425,
+      "startTicks": "54173919",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "739d9f3790b1c8b5f1bca3d73e2bcfca38b350033ef819c0b5c74cf43d058a1c",
+      "afterHash": "157c90d3368cfffc8e0da2168ce6df0c4ef722f70edb8f967b04658b819e3482",
+      "pid": 3053843,
+      "ownerId": "su-4ba8586b-3859-4ecf-a094-ba5d9f5e7bfd",
+      "nativeChildPid": 326666,
+      "startTicks": "21081211",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "72feeda733a48c5331f08d4c54b616292807db0b08e57dd5c873c8e3594afc44",
+      "afterHash": "9db9473cffd1c1ccf9b976c1f09a7021da6808ae3d5e7becc08326ece13bef61",
+      "pid": 3785968,
+      "ownerId": "su-50591fd4-cda2-459c-af03-691c4107f736",
+      "nativeChildPid": 4079882,
+      "startTicks": "51949913",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "ba725a670172016c393c10924d32a86413f9a4b249aad8a7c47c203a1398d90a",
+      "afterHash": "6baf399502afc86bf13cacad830adb41cb4968cd49bce31109e0ca03cd031912",
+      "pid": 155561,
+      "ownerId": "su-50f71624-3c60-4db3-b43d-06160dbc957c",
+      "nativeChildPid": 3606946,
+      "startTicks": "19480877",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "31b36e7579f3d4d4e8dfcb1b26a62c97187bc1277d5bb338b338605633f0636d",
+      "afterHash": "de0eb12dfcb926bbc3307f0568dcd7816e7aa181c06b15415c1bb61077db3238",
+      "pid": 3890107,
+      "ownerId": "su-51c5f29f-f7cc-4c96-aa72-0be374f2f5f6",
+      "nativeChildPid": 1838471,
+      "startTicks": "71843400",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "30cfabc90fae4fb2770f90d1dc12ee0043efa72c63037e477b4c48cc9b6793df",
+      "afterHash": "bedd81bd4ac5239d2a605b67382d6e2d8a32ce7ec7aafbf91aded4aaae8a2bfe",
+      "pid": 769486,
+      "ownerId": "su-51edba27-5372-4c49-8a17-af2ede9bb198",
+      "nativeChildPid": 829132,
+      "startTicks": "63244466",
+      "inspectorClosed": true
+    },
+    {
+      "needed": false,
+      "applied": false,
+      "beforeHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "afterHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "pid": 2091026,
+      "ownerId": "su-5541a53f-2723-4a0c-88a6-dd9191ffbd2a",
+      "nativeChildPid": 2411126,
+      "startTicks": "75424149",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "739d9f3790b1c8b5f1bca3d73e2bcfca38b350033ef819c0b5c74cf43d058a1c",
+      "afterHash": "157c90d3368cfffc8e0da2168ce6df0c4ef722f70edb8f967b04658b819e3482",
+      "pid": 2761537,
+      "ownerId": "su-55769027-ea65-49d0-a287-7d16b4b38627",
+      "nativeChildPid": 4152821,
+      "startTicks": "21041808",
+      "inspectorClosed": true
+    },
+    {
+      "needed": false,
+      "applied": false,
+      "beforeHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "afterHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "pid": 217564,
+      "ownerId": "su-587ab736-5cbc-4de5-a3d5-24651c054d11",
+      "nativeChildPid": 3000506,
+      "startTicks": "77940939",
+      "inspectorClosed": true
+    },
+    {
+      "pid": 1245377,
+      "ownerId": "su-592ef0c5-b0ed-47d6-ad26-a089169482a7",
+      "ptyPid": 1255402,
+      "error": "V8 refused terminal repair preview: BlockedByActiveFunction"
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "add331e8c26c958df82c340ce62b99d66604b3da2bd81f7940e2d80d3667f526",
+      "afterHash": "a941828406576a2a7cd3fc2674fe9e5cbe6d163a0949e375479aa5f198ecc64f",
+      "pid": 3088365,
+      "ownerId": "su-5d6e108e-cac3-4a1c-97ea-f48b6245638f",
+      "nativeChildPid": 2405,
+      "startTicks": "28106624",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "2234839ba4ef90b2ee787e24aaf7b93f5cd7af2f40582b13a6bc964e4e1549ff",
+      "afterHash": "b5cba6720b598f25239696c172b475864cd963efc383ace9343c11d99e92d174",
+      "pid": 3456261,
+      "ownerId": "su-5d6ff64b-a9ee-4b18-8e73-02dfd939a96c",
+      "nativeChildPid": 1386664,
+      "startTicks": "54370955",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "4b377f4888238cf2f57326bbab084f4243665bb56379dda77d3576de46976d8c",
+      "afterHash": "cb573c3dac36818a87facf50ac76ac952f3cb9fae692bc44e2f0113821ad51ac",
+      "pid": 2200435,
+      "ownerId": "su-5e26d68f-60b7-4d7c-b1b7-0dbf07bcc96d",
+      "nativeChildPid": 2067113,
+      "startTicks": "45551858",
+      "inspectorClosed": true
+    },
+    {
+      "pid": 851496,
+      "ownerId": "su-5e71ed64-4775-4722-81a3-f05f42f4f799",
+      "ptyPid": 1266974,
+      "error": "V8 refused terminal repair: BlockedByActiveFunction"
+    },
+    {
+      "pid": 483163,
+      "ownerId": "su-5e86e622-0a42-4e11-9cb5-b44e36856641",
+      "ptyPid": 681648,
+      "error": "Loaded launcher script is ambiguous; repair refused"
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "4b377f4888238cf2f57326bbab084f4243665bb56379dda77d3576de46976d8c",
+      "afterHash": "cb573c3dac36818a87facf50ac76ac952f3cb9fae692bc44e2f0113821ad51ac",
+      "pid": 1454661,
+      "ownerId": "su-62f0062b-7713-4905-b6dc-f34b9a358764",
+      "nativeChildPid": 1468761,
+      "startTicks": "45458368",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "513bed0bf61f5326b8dee969fc13885c270161f721f57eeacd2032b8d2b923d0",
+      "afterHash": "cf92bb735681696a23b285c519be5f1c0b490eb2138b8f0eb9b621f6253b2e54",
+      "pid": 142282,
+      "ownerId": "su-64244b21-7448-404d-aa24-633e4d279424",
+      "nativeChildPid": 149163,
+      "startTicks": "34030827",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "31b36e7579f3d4d4e8dfcb1b26a62c97187bc1277d5bb338b338605633f0636d",
+      "afterHash": "de0eb12dfcb926bbc3307f0568dcd7816e7aa181c06b15415c1bb61077db3238",
+      "pid": 3825207,
+      "ownerId": "su-65ecc301-e683-4b7f-85ee-98c2871ef59f",
+      "nativeChildPid": 3447217,
+      "startTicks": "71836306",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "30cfabc90fae4fb2770f90d1dc12ee0043efa72c63037e477b4c48cc9b6793df",
+      "afterHash": "bedd81bd4ac5239d2a605b67382d6e2d8a32ce7ec7aafbf91aded4aaae8a2bfe",
+      "pid": 3625590,
+      "ownerId": "su-6788d0ac-d425-4756-a9b3-3a451df401be",
+      "nativeChildPid": 204143,
+      "startTicks": "62655255",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "88e8f8651d8e8c607e0c8bb93cc6baf88b3df3f6e34101a43ea7f2551ba58c23",
+      "afterHash": "744c82f5bd5b339739c85968b1a6e77274d4146c4fd6a92b8340a23d9645c3fe",
+      "pid": 3408792,
+      "ownerId": "su-67c067a4-a97b-41ee-82ca-06b9be615327",
+      "nativeChildPid": 3994933,
+      "startTicks": "19889983",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "4b377f4888238cf2f57326bbab084f4243665bb56379dda77d3576de46976d8c",
+      "afterHash": "cb573c3dac36818a87facf50ac76ac952f3cb9fae692bc44e2f0113821ad51ac",
+      "pid": 1953319,
+      "ownerId": "su-69e68df2-36d7-46b4-97ba-59c51ef8ffeb",
+      "nativeChildPid": 1973884,
+      "startTicks": "43841274",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "e2f12662184f91fae7d1e147f3a9129389608a937113b9939597644c21a44c04",
+      "afterHash": "f67d9a1e63bb3f4fd55e44c4f6ec8e0b8b83402d2b8d50ce0c2f45906490fd19",
+      "pid": 1801937,
+      "ownerId": "su-6a5fd507-931c-46ee-8485-8e7f3f64e3a7",
+      "nativeChildPid": 1814616,
+      "startTicks": "69995574",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "31b36e7579f3d4d4e8dfcb1b26a62c97187bc1277d5bb338b338605633f0636d",
+      "afterHash": "de0eb12dfcb926bbc3307f0568dcd7816e7aa181c06b15415c1bb61077db3238",
+      "pid": 3749402,
+      "ownerId": "su-6c29fd94-ae38-453e-86e6-e81f44a698c5",
+      "nativeChildPid": 2709746,
+      "startTicks": "71827595",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "e21c46fd89b47ac59c7a5bbe81bbe6aa00bb2101b44483405eff56b490772564",
+      "afterHash": "e76c290504bf36dc6277c296df931d55fa7b1aad8f566e3b485892e5e10a0e17",
+      "pid": 1125030,
+      "ownerId": "su-6e85a865-632a-4ae9-acae-b7d2fa30f451",
+      "nativeChildPid": 1129613,
+      "startTicks": "48436624",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "9dd2e3f620883b654e077c6faa1cd6fa7900c6f3c52193aa71878bd16f066775",
+      "afterHash": "62418f7e352bfa72e5dbaf3770300e23d020c842a7cf2ea14ad5fa10665e52c2",
+      "pid": 1819252,
+      "ownerId": "su-70531ddd-3eed-4530-8e41-1aa7d47c7791",
+      "nativeChildPid": 2928569,
+      "startTicks": "46842412",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "30cfabc90fae4fb2770f90d1dc12ee0043efa72c63037e477b4c48cc9b6793df",
+      "afterHash": "bedd81bd4ac5239d2a605b67382d6e2d8a32ce7ec7aafbf91aded4aaae8a2bfe",
+      "pid": 796532,
+      "ownerId": "su-70bd7b0b-bd59-4ea3-8288-fbe76edb24cb",
+      "nativeChildPid": 842491,
+      "startTicks": "63248002",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "30cfabc90fae4fb2770f90d1dc12ee0043efa72c63037e477b4c48cc9b6793df",
+      "afterHash": "bedd81bd4ac5239d2a605b67382d6e2d8a32ce7ec7aafbf91aded4aaae8a2bfe",
+      "pid": 3551513,
+      "ownerId": "su-70c554c7-11e6-4f95-908e-cf37c23031de",
+      "nativeChildPid": 2894607,
+      "startTicks": "62643924",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "30cfabc90fae4fb2770f90d1dc12ee0043efa72c63037e477b4c48cc9b6793df",
+      "afterHash": "bedd81bd4ac5239d2a605b67382d6e2d8a32ce7ec7aafbf91aded4aaae8a2bfe",
+      "pid": 1382496,
+      "ownerId": "su-73f621d7-bae1-4bbb-b045-a11b5c47a384",
+      "nativeChildPid": 1889184,
+      "startTicks": "63319537",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "4b377f4888238cf2f57326bbab084f4243665bb56379dda77d3576de46976d8c",
+      "afterHash": "cb573c3dac36818a87facf50ac76ac952f3cb9fae692bc44e2f0113821ad51ac",
+      "pid": 2115649,
+      "ownerId": "su-7534ff62-a124-4ac1-a913-a60b3107d8e7",
+      "nativeChildPid": 1696593,
+      "startTicks": "45539083",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "9dd2e3f620883b654e077c6faa1cd6fa7900c6f3c52193aa71878bd16f066775",
+      "afterHash": "62418f7e352bfa72e5dbaf3770300e23d020c842a7cf2ea14ad5fa10665e52c2",
+      "pid": 1427379,
+      "ownerId": "su-762b9af2-3f26-4bd1-9789-779e20f1662c",
+      "nativeChildPid": 1434286,
+      "startTicks": "47258110",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "4b377f4888238cf2f57326bbab084f4243665bb56379dda77d3576de46976d8c",
+      "afterHash": "cb573c3dac36818a87facf50ac76ac952f3cb9fae692bc44e2f0113821ad51ac",
+      "pid": 1319627,
+      "ownerId": "su-7813359c-e643-4587-9b3f-4becb2397ea4",
+      "nativeChildPid": 1424670,
+      "startTicks": "46328463",
+      "inspectorClosed": true
+    },
+    {
+      "needed": false,
+      "applied": false,
+      "beforeHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "afterHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "pid": 121380,
+      "ownerId": "su-785860a2-29c5-40fd-a470-bc04d6efe569",
+      "nativeChildPid": 494002,
+      "startTicks": "75649770",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "e2f12662184f91fae7d1e147f3a9129389608a937113b9939597644c21a44c04",
+      "afterHash": "f67d9a1e63bb3f4fd55e44c4f6ec8e0b8b83402d2b8d50ce0c2f45906490fd19",
+      "pid": 2007515,
+      "ownerId": "su-785c58ed-71cc-46e2-9735-f845a606c627",
+      "nativeChildPid": 2764802,
+      "startTicks": "70022901",
+      "inspectorClosed": true
+    },
+    {
+      "needed": false,
+      "applied": false,
+      "beforeHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "afterHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "pid": 3687562,
+      "ownerId": "su-7e8ed3c8-b348-49e6-b7df-c4aa7dab54f3",
+      "nativeChildPid": 247649,
+      "startTicks": "77851597",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "30cfabc90fae4fb2770f90d1dc12ee0043efa72c63037e477b4c48cc9b6793df",
+      "afterHash": "bedd81bd4ac5239d2a605b67382d6e2d8a32ce7ec7aafbf91aded4aaae8a2bfe",
+      "pid": 1609538,
+      "ownerId": "su-8198501a-f9af-4627-845f-7db8acc34113",
+      "nativeChildPid": 1777599,
+      "startTicks": "63348561",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "8a861a884314c490593e1f2b0659a2f106ecb21bd95a3dae608a008039f97b71",
+      "afterHash": "bf64868a84a6604f702d325ffcb8a2f154e28c2bb82372ff182d86a0d0e90b3d",
+      "pid": 1806112,
+      "ownerId": "su-81a4dc41-f10d-42b6-9d03-9e99489cfd58",
+      "nativeChildPid": 1828027,
+      "startTicks": "54189896",
+      "inspectorClosed": true
+    },
+    {
+      "needed": false,
+      "applied": false,
+      "beforeHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "afterHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "pid": 1829135,
+      "ownerId": "su-81bb8095-b84c-4d05-82d5-c857e979124b",
+      "nativeChildPid": 1910690,
+      "startTicks": "75803497",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "4b377f4888238cf2f57326bbab084f4243665bb56379dda77d3576de46976d8c",
+      "afterHash": "cb573c3dac36818a87facf50ac76ac952f3cb9fae692bc44e2f0113821ad51ac",
+      "pid": 600803,
+      "ownerId": "su-833bc5dc-7541-4e8e-bb15-eeb4e74ee7aa",
+      "nativeChildPid": 635249,
+      "startTicks": "43680893",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "400fa74394325023b9f41fa2f377c2bfb8bd96eb9f9076ecec21f67feeca288b",
+      "afterHash": "a8d1bb8916733d1179d412bd324383f604d264ff6c55c68c07a29d0f01be590d",
+      "pid": 971022,
+      "ownerId": "su-8554c5b1-cd5a-4fd7-afbe-82bb68a75438",
+      "nativeChildPid": 981035,
+      "startTicks": "72685040",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "513bed0bf61f5326b8dee969fc13885c270161f721f57eeacd2032b8d2b923d0",
+      "afterHash": "cf92bb735681696a23b285c519be5f1c0b490eb2138b8f0eb9b621f6253b2e54",
+      "pid": 4174358,
+      "ownerId": "su-85cc9087-1e89-407c-9f50-8e402754722d",
+      "nativeChildPid": 2058,
+      "startTicks": "34569415",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "72feeda733a48c5331f08d4c54b616292807db0b08e57dd5c873c8e3594afc44",
+      "afterHash": "9db9473cffd1c1ccf9b976c1f09a7021da6808ae3d5e7becc08326ece13bef61",
+      "pid": 3429982,
+      "ownerId": "su-85d36834-59c5-4328-a21d-7adc5623b75a",
+      "nativeChildPid": 3542974,
+      "startTicks": "52299498",
+      "inspectorClosed": true
+    },
+    {
+      "needed": false,
+      "applied": false,
+      "beforeHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "afterHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "pid": 2134745,
+      "ownerId": "su-8cfdf300-1288-4d6a-8ba6-bf89121f6cff",
+      "nativeChildPid": 2295982,
+      "startTicks": "75429241",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "8a861a884314c490593e1f2b0659a2f106ecb21bd95a3dae608a008039f97b71",
+      "afterHash": "bf64868a84a6604f702d325ffcb8a2f154e28c2bb82372ff182d86a0d0e90b3d",
+      "pid": 1653049,
+      "ownerId": "su-8df00c9a-c33a-4292-a81c-7a2bc6e0d307",
+      "nativeChildPid": 2482542,
+      "startTicks": "54173059",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "31b36e7579f3d4d4e8dfcb1b26a62c97187bc1277d5bb338b338605633f0636d",
+      "afterHash": "de0eb12dfcb926bbc3307f0568dcd7816e7aa181c06b15415c1bb61077db3238",
+      "pid": 3109387,
+      "ownerId": "su-91e1b8eb-8d31-4fe2-a4b7-b0791a2bd649",
+      "nativeChildPid": 3118137,
+      "startTicks": "71714073",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "8a861a884314c490593e1f2b0659a2f106ecb21bd95a3dae608a008039f97b71",
+      "afterHash": "bf64868a84a6604f702d325ffcb8a2f154e28c2bb82372ff182d86a0d0e90b3d",
+      "pid": 2546144,
+      "ownerId": "su-93d354ef-cf31-47cd-8692-3d8cc7645c57",
+      "nativeChildPid": 2672304,
+      "startTicks": "54274687",
+      "inspectorClosed": true
+    },
+    {
+      "needed": false,
+      "applied": false,
+      "beforeHash": "2401d3a0d4d0cd786b7a07a1df3f03b6ccefbf4b622f4a84d78d10ecec150a67",
+      "afterHash": "2401d3a0d4d0cd786b7a07a1df3f03b6ccefbf4b622f4a84d78d10ecec150a67",
+      "pid": 1240893,
+      "ownerId": "su-96edad8d-1fc5-433d-8171-03bccdd4bd92",
+      "nativeChildPid": 2371813,
+      "startTicks": "74369129",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "1d9c203bc7493599efbc4183d9e9206c56877a98507684e0c06552d5fb95fbfd",
+      "afterHash": "e0128fd41cc4985968e3d8fd11074d9545e69eb8c98f8f9eaf4a81ef46b0cba1",
+      "pid": 440887,
+      "ownerId": "su-97b68245-28a2-431e-a1c4-a0d018969d9a",
+      "nativeChildPid": 866612,
+      "startTicks": "17983512",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "add331e8c26c958df82c340ce62b99d66604b3da2bd81f7940e2d80d3667f526",
+      "afterHash": "a941828406576a2a7cd3fc2674fe9e5cbe6d163a0949e375479aa5f198ecc64f",
+      "pid": 3761528,
+      "ownerId": "su-98e61f58-9674-4d6a-88fd-b9cd6194fc9b",
+      "nativeChildPid": 3782654,
+      "startTicks": "28170775",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "30cfabc90fae4fb2770f90d1dc12ee0043efa72c63037e477b4c48cc9b6793df",
+      "afterHash": "bedd81bd4ac5239d2a605b67382d6e2d8a32ce7ec7aafbf91aded4aaae8a2bfe",
+      "pid": 823535,
+      "ownerId": "su-9b9af65b-ec38-4e45-a98b-eacd7ff3dea5",
+      "nativeChildPid": 892887,
+      "startTicks": "63250633",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "739d9f3790b1c8b5f1bca3d73e2bcfca38b350033ef819c0b5c74cf43d058a1c",
+      "afterHash": "157c90d3368cfffc8e0da2168ce6df0c4ef722f70edb8f967b04658b819e3482",
+      "pid": 2352993,
+      "ownerId": "su-9e66a68d-2451-4a45-88db-633a23171b79",
+      "nativeChildPid": 2494874,
+      "startTicks": "21502622",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "72feeda733a48c5331f08d4c54b616292807db0b08e57dd5c873c8e3594afc44",
+      "afterHash": "9db9473cffd1c1ccf9b976c1f09a7021da6808ae3d5e7becc08326ece13bef61",
+      "pid": 3795854,
+      "ownerId": "su-a0e4fac4-1b6d-4964-b920-2e69444b0255",
+      "nativeChildPid": 3810309,
+      "startTicks": "52332876",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "400fa74394325023b9f41fa2f377c2bfb8bd96eb9f9076ecec21f67feeca288b",
+      "afterHash": "a8d1bb8916733d1179d412bd324383f604d264ff6c55c68c07a29d0f01be590d",
+      "pid": 815351,
+      "ownerId": "su-a1388868-c9eb-4e89-9b35-1b80146c3eb7",
+      "nativeChildPid": 1649628,
+      "startTicks": "73277948",
+      "inspectorClosed": true
+    },
+    {
+      "needed": false,
+      "applied": false,
+      "beforeHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "afterHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "pid": 183718,
+      "ownerId": "su-a92ec1b4-ca99-4f52-b6ec-6195ba4d4e3a",
+      "nativeChildPid": 3861574,
+      "startTicks": "75654120",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "513bed0bf61f5326b8dee969fc13885c270161f721f57eeacd2032b8d2b923d0",
+      "afterHash": "cf92bb735681696a23b285c519be5f1c0b490eb2138b8f0eb9b621f6253b2e54",
+      "pid": 464984,
+      "ownerId": "su-ac4f14a4-6c8b-45da-821b-73196391b494",
+      "nativeChildPid": 475350,
+      "startTicks": "34072909",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "add331e8c26c958df82c340ce62b99d66604b3da2bd81f7940e2d80d3667f526",
+      "afterHash": "a941828406576a2a7cd3fc2674fe9e5cbe6d163a0949e375479aa5f198ecc64f",
+      "pid": 3423833,
+      "ownerId": "su-b0dc22a9-95e3-42f5-8047-1ba27be48c9c",
+      "nativeChildPid": 3443879,
+      "startTicks": "28135693",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "2234839ba4ef90b2ee787e24aaf7b93f5cd7af2f40582b13a6bc964e4e1549ff",
+      "afterHash": "b5cba6720b598f25239696c172b475864cd963efc383ace9343c11d99e92d174",
+      "pid": 3317013,
+      "ownerId": "su-b0f459d2-421f-4287-a914-fa1a8d324f83",
+      "nativeChildPid": 3340403,
+      "startTicks": "55286084",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "f82191cffc8c376344cd259ce530c6b56b2f86ce6e26d626ad62579b0354f5fb",
+      "afterHash": "28bdffbd87e4da678e671f0f0c7aa9bc527152ea4a0c7fa8bfcb1d99497bb656",
+      "pid": 3816539,
+      "ownerId": "su-b11f76ed-5823-4fe4-a597-1ebc5c3a441e",
+      "nativeChildPid": 3835621,
+      "startTicks": "64130504",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "0822301fffed10918f3b59483013b0cb1fd3ebcb806d88cf07bbec94041188b6",
+      "afterHash": "5443bedf7af7d5640e8728e6ec51166c162d76104b7dd5a7df901101a491c43f",
+      "pid": 3061383,
+      "ownerId": "su-b36b4692-520c-4a71-ae87-d0399bd81c9e",
+      "nativeChildPid": 837959,
+      "startTicks": "64040645",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "30cfabc90fae4fb2770f90d1dc12ee0043efa72c63037e477b4c48cc9b6793df",
+      "afterHash": "bedd81bd4ac5239d2a605b67382d6e2d8a32ce7ec7aafbf91aded4aaae8a2bfe",
+      "pid": 3430913,
+      "ownerId": "su-b53bc730-cf97-42c1-804a-906e355053c2",
+      "nativeChildPid": 3438970,
+      "startTicks": "62622548",
+      "inspectorClosed": true
+    },
+    {
+      "needed": false,
+      "applied": false,
+      "beforeHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "afterHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "pid": 3946775,
+      "ownerId": "su-b6269baa-ffa3-4a0d-a81c-c52148b8150e",
+      "nativeChildPid": 1536094,
+      "startTicks": "75618856",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "30cfabc90fae4fb2770f90d1dc12ee0043efa72c63037e477b4c48cc9b6793df",
+      "afterHash": "bedd81bd4ac5239d2a605b67382d6e2d8a32ce7ec7aafbf91aded4aaae8a2bfe",
+      "pid": 3856096,
+      "ownerId": "su-b6399fe8-73e2-4b5e-ae06-3f73d3a32401",
+      "nativeChildPid": 3870710,
+      "startTicks": "62682316",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "30cfabc90fae4fb2770f90d1dc12ee0043efa72c63037e477b4c48cc9b6793df",
+      "afterHash": "bedd81bd4ac5239d2a605b67382d6e2d8a32ce7ec7aafbf91aded4aaae8a2bfe",
+      "pid": 808803,
+      "ownerId": "su-b68c3e13-77bc-42cb-b5ed-e33ee76452cc",
+      "nativeChildPid": 880546,
+      "startTicks": "63249228",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "400fa74394325023b9f41fa2f377c2bfb8bd96eb9f9076ecec21f67feeca288b",
+      "afterHash": "a8d1bb8916733d1179d412bd324383f604d264ff6c55c68c07a29d0f01be590d",
+      "pid": 1352413,
+      "ownerId": "su-b7320e93-c75a-4a6d-99ab-581fc2eab4e3",
+      "nativeChildPid": 3962761,
+      "startTicks": "73341128",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "31b36e7579f3d4d4e8dfcb1b26a62c97187bc1277d5bb338b338605633f0636d",
+      "afterHash": "de0eb12dfcb926bbc3307f0568dcd7816e7aa181c06b15415c1bb61077db3238",
+      "pid": 3759871,
+      "ownerId": "su-bb58e00c-a16b-449f-b312-8646ebb2d12e",
+      "nativeChildPid": 1275230,
+      "startTicks": "71829030",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "2234839ba4ef90b2ee787e24aaf7b93f5cd7af2f40582b13a6bc964e4e1549ff",
+      "afterHash": "b5cba6720b598f25239696c172b475864cd963efc383ace9343c11d99e92d174",
+      "pid": 2512627,
+      "ownerId": "su-bb8e4c0e-215c-4757-846e-7d92124182c6",
+      "nativeChildPid": 2587969,
+      "startTicks": "54722422",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "9dd2e3f620883b654e077c6faa1cd6fa7900c6f3c52193aa71878bd16f066775",
+      "afterHash": "62418f7e352bfa72e5dbaf3770300e23d020c842a7cf2ea14ad5fa10665e52c2",
+      "pid": 3789786,
+      "ownerId": "su-bdcd315c-af8a-4bfc-9e52-d73604f24ae2",
+      "nativeChildPid": 3633271,
+      "startTicks": "47521358",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "2234839ba4ef90b2ee787e24aaf7b93f5cd7af2f40582b13a6bc964e4e1549ff",
+      "afterHash": "b5cba6720b598f25239696c172b475864cd963efc383ace9343c11d99e92d174",
+      "pid": 3496692,
+      "ownerId": "su-c04397d1-7c42-418d-a14c-026ceca4d008",
+      "nativeChildPid": 609146,
+      "startTicks": "54375808",
+      "inspectorClosed": true
+    },
+    {
+      "needed": false,
+      "applied": false,
+      "beforeHash": "2401d3a0d4d0cd786b7a07a1df3f03b6ccefbf4b622f4a84d78d10ecec150a67",
+      "afterHash": "2401d3a0d4d0cd786b7a07a1df3f03b6ccefbf4b622f4a84d78d10ecec150a67",
+      "pid": 1019554,
+      "ownerId": "su-c05233eb-d1be-4e44-b16e-51d9d3532894",
+      "nativeChildPid": 1480971,
+      "startTicks": "74337248",
+      "inspectorClosed": true
+    },
+    {
+      "needed": false,
+      "applied": false,
+      "beforeHash": "2401d3a0d4d0cd786b7a07a1df3f03b6ccefbf4b622f4a84d78d10ecec150a67",
+      "afterHash": "2401d3a0d4d0cd786b7a07a1df3f03b6ccefbf4b622f4a84d78d10ecec150a67",
+      "pid": 1865598,
+      "ownerId": "su-c21ef110-23d9-40c8-996a-533b8085bfb2",
+      "nativeChildPid": 1870824,
+      "startTicks": "73876401",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "31b36e7579f3d4d4e8dfcb1b26a62c97187bc1277d5bb338b338605633f0636d",
+      "afterHash": "de0eb12dfcb926bbc3307f0568dcd7816e7aa181c06b15415c1bb61077db3238",
+      "pid": 3703072,
+      "ownerId": "su-c270ea81-86f8-4e24-aa03-6fcf12ab8bde",
+      "nativeChildPid": 560617,
+      "startTicks": "71819113",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "4b377f4888238cf2f57326bbab084f4243665bb56379dda77d3576de46976d8c",
+      "afterHash": "cb573c3dac36818a87facf50ac76ac952f3cb9fae692bc44e2f0113821ad51ac",
+      "pid": 2075680,
+      "ownerId": "su-c7a48b7b-f8fd-4215-aa09-5fe6bebc007c",
+      "nativeChildPid": 3699411,
+      "startTicks": "45532951",
+      "inspectorClosed": true
+    },
+    {
+      "needed": false,
+      "applied": false,
+      "beforeHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "afterHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "pid": 1552308,
+      "ownerId": "su-c817144f-b276-410c-9685-7baad6e5f9ee",
+      "nativeChildPid": 1584464,
+      "startTicks": "75774063",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "513bed0bf61f5326b8dee969fc13885c270161f721f57eeacd2032b8d2b923d0",
+      "afterHash": "cf92bb735681696a23b285c519be5f1c0b490eb2138b8f0eb9b621f6253b2e54",
+      "pid": 713322,
+      "ownerId": "su-cdc9a540-470a-4660-bffc-f0d3cfd0b4c4",
+      "nativeChildPid": 353640,
+      "startTicks": "34117407",
+      "inspectorClosed": true
+    },
+    {
+      "needed": false,
+      "applied": false,
+      "beforeHash": "2401d3a0d4d0cd786b7a07a1df3f03b6ccefbf4b622f4a84d78d10ecec150a67",
+      "afterHash": "2401d3a0d4d0cd786b7a07a1df3f03b6ccefbf4b622f4a84d78d10ecec150a67",
+      "pid": 1092897,
+      "ownerId": "su-d1247140-f934-4d6b-9cbc-aa3882364a26",
+      "nativeChildPid": 1096603,
+      "startTicks": "74347752",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "2234839ba4ef90b2ee787e24aaf7b93f5cd7af2f40582b13a6bc964e4e1549ff",
+      "afterHash": "b5cba6720b598f25239696c172b475864cd963efc383ace9343c11d99e92d174",
+      "pid": 2550154,
+      "ownerId": "su-d14d0d3e-762b-4661-a73b-473c8cfdb422",
+      "nativeChildPid": 2116567,
+      "startTicks": "54728218",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "31b36e7579f3d4d4e8dfcb1b26a62c97187bc1277d5bb338b338605633f0636d",
+      "afterHash": "de0eb12dfcb926bbc3307f0568dcd7816e7aa181c06b15415c1bb61077db3238",
+      "pid": 3867728,
+      "ownerId": "su-d5c71efc-9926-433f-b5eb-6045ae8ca56a",
+      "nativeChildPid": 1951427,
+      "startTicks": "71840412",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "513bed0bf61f5326b8dee969fc13885c270161f721f57eeacd2032b8d2b923d0",
+      "afterHash": "cf92bb735681696a23b285c519be5f1c0b490eb2138b8f0eb9b621f6253b2e54",
+      "pid": 1432882,
+      "ownerId": "su-d79d84cf-7fb9-4cda-a53c-aabdcf078517",
+      "nativeChildPid": 3465929,
+      "startTicks": "34218557",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "4b377f4888238cf2f57326bbab084f4243665bb56379dda77d3576de46976d8c",
+      "afterHash": "cb573c3dac36818a87facf50ac76ac952f3cb9fae692bc44e2f0113821ad51ac",
+      "pid": 2426859,
+      "ownerId": "su-d8130961-3272-4a5f-8f4c-a7f8d337b333",
+      "nativeChildPid": 18456,
+      "startTicks": "45581803",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "31b36e7579f3d4d4e8dfcb1b26a62c97187bc1277d5bb338b338605633f0636d",
+      "afterHash": "de0eb12dfcb926bbc3307f0568dcd7816e7aa181c06b15415c1bb61077db3238",
+      "pid": 3692133,
+      "ownerId": "su-dae9d804-7887-4fc2-b09f-d62f9430b5ba",
+      "nativeChildPid": 1771036,
+      "startTicks": "71815747",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "31b36e7579f3d4d4e8dfcb1b26a62c97187bc1277d5bb338b338605633f0636d",
+      "afterHash": "de0eb12dfcb926bbc3307f0568dcd7816e7aa181c06b15415c1bb61077db3238",
+      "pid": 3149137,
+      "ownerId": "su-dc8753b2-7583-4d2b-a403-b0b08c2c4448",
+      "nativeChildPid": 3182936,
+      "startTicks": "71719316",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "ae011a333244610693910f47e4c4a68f02e667f9a35d3cccb729532cf4cdccf0",
+      "afterHash": "61b101c7b343bd73f1c00b1419104dcc9db7f90bb1848ded845ae4323fdf3699",
+      "pid": 2668615,
+      "ownerId": "su-dd6af82f-1cd4-4cdb-bcf8-ebe921942a3d",
+      "nativeChildPid": 2685189,
+      "startTicks": "29529929",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "8a861a884314c490593e1f2b0659a2f106ecb21bd95a3dae608a008039f97b71",
+      "afterHash": "bf64868a84a6604f702d325ffcb8a2f154e28c2bb82372ff182d86a0d0e90b3d",
+      "pid": 1279736,
+      "ownerId": "su-df8a45a0-ac59-4037-8a63-9d45e9f62d55",
+      "nativeChildPid": 862550,
+      "startTicks": "54134852",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "fed519885515e41025903c6fc1d1f4f01b57877fb62b13757c12c90c7c3494bc",
+      "afterHash": "ba494d40e014bcc341d300b60ea4989dd624709fdc880bb631dd9776de84b811",
+      "pid": 3364894,
+      "ownerId": "su-e16e0da4-f858-4e10-9665-55116edbc36b",
+      "nativeChildPid": 2948017,
+      "startTicks": "55759119",
+      "inspectorClosed": true
+    },
+    {
+      "needed": false,
+      "applied": false,
+      "beforeHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "afterHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "pid": 1665643,
+      "ownerId": "su-e4ea8936-7a2f-4b81-ba98-f21cc6f699d2",
+      "nativeChildPid": 1595467,
+      "startTicks": "77520192",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "739d9f3790b1c8b5f1bca3d73e2bcfca38b350033ef819c0b5c74cf43d058a1c",
+      "afterHash": "157c90d3368cfffc8e0da2168ce6df0c4ef722f70edb8f967b04658b819e3482",
+      "pid": 2413849,
+      "ownerId": "su-e6e38587-6da4-4e14-9878-9550d762aa9b",
+      "nativeChildPid": 2536154,
+      "startTicks": "21512537",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "30cfabc90fae4fb2770f90d1dc12ee0043efa72c63037e477b4c48cc9b6793df",
+      "afterHash": "bedd81bd4ac5239d2a605b67382d6e2d8a32ce7ec7aafbf91aded4aaae8a2bfe",
+      "pid": 441793,
+      "ownerId": "su-e7208581-4177-450e-a2a9-65d871758d61",
+      "nativeChildPid": 604244,
+      "startTicks": "62764993",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "30cfabc90fae4fb2770f90d1dc12ee0043efa72c63037e477b4c48cc9b6793df",
+      "afterHash": "bedd81bd4ac5239d2a605b67382d6e2d8a32ce7ec7aafbf91aded4aaae8a2bfe",
+      "pid": 3609327,
+      "ownerId": "su-e78cc6d7-340f-49eb-baf6-4fc6ca294d16",
+      "nativeChildPid": 2595041,
+      "startTicks": "62653328",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "7f0480476fa39b0e22f83a6cc72035968789d7bfecd87a382df2212ed592c4c1",
+      "afterHash": "b3e63a2b8f8899748c1a9a7db4f41862b13b0579d8ca735a1106ba253b73d6ff",
+      "pid": 2491211,
+      "ownerId": "su-e8830e4d-146e-41db-92ea-a9d97e648e5e",
+      "nativeChildPid": 2553215,
+      "startTicks": "53388329",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "513bed0bf61f5326b8dee969fc13885c270161f721f57eeacd2032b8d2b923d0",
+      "afterHash": "cf92bb735681696a23b285c519be5f1c0b490eb2138b8f0eb9b621f6253b2e54",
+      "pid": 1841820,
+      "ownerId": "su-e9e81a50-2c36-4231-a340-43ebca1804aa",
+      "nativeChildPid": 1844082,
+      "startTicks": "34283568",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "4b377f4888238cf2f57326bbab084f4243665bb56379dda77d3576de46976d8c",
+      "afterHash": "cb573c3dac36818a87facf50ac76ac952f3cb9fae692bc44e2f0113821ad51ac",
+      "pid": 2621424,
+      "ownerId": "su-ec5efb56-8a98-4efe-a8e2-02017ee78bb8",
+      "nativeChildPid": 1780307,
+      "startTicks": "45606073",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "add331e8c26c958df82c340ce62b99d66604b3da2bd81f7940e2d80d3667f526",
+      "afterHash": "a941828406576a2a7cd3fc2674fe9e5cbe6d163a0949e375479aa5f198ecc64f",
+      "pid": 2036591,
+      "ownerId": "su-ec67d65a-222d-4bc0-8d52-c81e99a00bbf",
+      "nativeChildPid": 2049376,
+      "startTicks": "29443509",
+      "inspectorClosed": true
+    },
+    {
+      "pid": 3052562,
+      "ownerId": "su-f054245c-2b04-4a57-9eda-1655fbfcd8ae",
+      "ptyPid": 1200735,
+      "error": "Discovery PID is not a Node terminal host; repair refused before signaling"
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "4b377f4888238cf2f57326bbab084f4243665bb56379dda77d3576de46976d8c",
+      "afterHash": "cb573c3dac36818a87facf50ac76ac952f3cb9fae692bc44e2f0113821ad51ac",
+      "pid": 1862231,
+      "ownerId": "su-f146f0a3-5ec9-4b19-bac2-b1903f1f6cb1",
+      "nativeChildPid": 922362,
+      "startTicks": "45507020",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "30cfabc90fae4fb2770f90d1dc12ee0043efa72c63037e477b4c48cc9b6793df",
+      "afterHash": "bedd81bd4ac5239d2a605b67382d6e2d8a32ce7ec7aafbf91aded4aaae8a2bfe",
+      "pid": 1682918,
+      "ownerId": "su-f31eb02a-1307-4b7a-98ca-001a0574178e",
+      "nativeChildPid": 1727059,
+      "startTicks": "63358637",
+      "inspectorClosed": true
+    },
+    {
+      "needed": false,
+      "applied": false,
+      "beforeHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "afterHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "pid": 1761688,
+      "ownerId": "su-f6634c6e-3452-4178-a558-99a67e52df0b",
+      "nativeChildPid": 2633431,
+      "startTicks": "75387042",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "2234839ba4ef90b2ee787e24aaf7b93f5cd7af2f40582b13a6bc964e4e1549ff",
+      "afterHash": "b5cba6720b598f25239696c172b475864cd963efc383ace9343c11d99e92d174",
+      "pid": 3243180,
+      "ownerId": "su-fa0e5a79-95f8-4dff-949e-b4c446528c04",
+      "nativeChildPid": 2980608,
+      "startTicks": "55279805",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "4b377f4888238cf2f57326bbab084f4243665bb56379dda77d3576de46976d8c",
+      "afterHash": "cb573c3dac36818a87facf50ac76ac952f3cb9fae692bc44e2f0113821ad51ac",
+      "pid": 2209834,
+      "ownerId": "su-faee16ea-3b47-454a-ae48-f949b51c6d8d",
+      "nativeChildPid": 3277200,
+      "startTicks": "45552949",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "ba725a670172016c393c10924d32a86413f9a4b249aad8a7c47c203a1398d90a",
+      "afterHash": "6baf399502afc86bf13cacad830adb41cb4968cd49bce31109e0ca03cd031912",
+      "pid": 3895100,
+      "ownerId": "su-fbce18bf-ab91-435d-b28b-fe11815ad7da",
+      "nativeChildPid": 2222433,
+      "startTicks": "19419557",
+      "inspectorClosed": true
+    },
+    {
+      "needed": true,
+      "applied": true,
+      "beforeHash": "513bed0bf61f5326b8dee969fc13885c270161f721f57eeacd2032b8d2b923d0",
+      "afterHash": "cf92bb735681696a23b285c519be5f1c0b490eb2138b8f0eb9b621f6253b2e54",
+      "pid": 1331760,
+      "ownerId": "su-fe90d8f4-29ad-4a9a-ad14-c750470ab52e",
+      "nativeChildPid": 1336732,
+      "startTicks": "34200011",
+      "inspectorClosed": true
+    },
+    {
+      "needed": false,
+      "applied": false,
+      "beforeHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "afterHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "pid": 2781628,
+      "ownerId": "su-respawn-1db5c456985bcdba8027f1f19cb4b185",
+      "nativeChildPid": 3084676,
+      "startTicks": "75504439",
+      "inspectorClosed": true
+    },
+    {
+      "needed": false,
+      "applied": false,
+      "beforeHash": "2401d3a0d4d0cd786b7a07a1df3f03b6ccefbf4b622f4a84d78d10ecec150a67",
+      "afterHash": "2401d3a0d4d0cd786b7a07a1df3f03b6ccefbf4b622f4a84d78d10ecec150a67",
+      "pid": 3753269,
+      "ownerId": "su-respawn-80c8e4065aac34e2ea45c7655f6b43fe",
+      "nativeChildPid": 23019,
+      "startTicks": "74111510",
+      "inspectorClosed": true
+    },
+    {
+      "needed": false,
+      "applied": false,
+      "beforeHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "afterHash": "0b95f9648e840695870060c1392ff71ba67fc2a2a274cb27aa2544144cfce0da",
+      "pid": 1834148,
+      "ownerId": "su-respawn-8af86521e1078640e5b4d34fa8398e84",
+      "nativeChildPid": 1637846,
+      "startTicks": "75803950",
+      "inspectorClosed": true
+    }
+  ],
+  "followups": [
+    {
+      "pid": 483163,
+      "ownerId": "su-5e86e622-0a42-4e11-9cb5-b44e36856641",
+      "ptyPid": 681648,
+      "applied": true,
+      "inspectorClosed": true,
+      "receiptSource": "Native shell/CDP results in this session transcript",
+      "note": "Successful first operation before batch"
+    },
+    {
+      "pid": 2303859,
+      "ownerId": "su-0e4ff1d0-1c03-4add-8909-213370683e21",
+      "ptyPid": 806841,
+      "applied": true,
+      "inspectorClosed": true,
+      "receiptSource": "Native shell/CDP results in this session transcript",
+      "note": "Guarded successful retry after the active function returned"
+    },
+    {
+      "pid": 1245377,
+      "ownerId": "su-592ef0c5-b0ed-47d6-ad26-a089169482a7",
+      "ptyPid": 1255402,
+      "applied": true,
+      "inspectorClosed": true,
+      "receiptSource": "Native shell/CDP results in this session transcript",
+      "note": "Guarded successful retry after the active function returned"
+    },
+    {
+      "pid": 851496,
+      "ownerId": "su-5e71ed64-4775-4722-81a3-f05f42f4f799",
+      "ptyPid": 1266974,
+      "applied": true,
+      "inspectorClosed": true,
+      "receiptSource": "Native shell/CDP results in this session transcript",
+      "note": "Original loaded script ID87 read and repaired explicitly"
+    }
+  ],
+  "verification": {
+    "durationSec": 20.05,
+    "sampleIterations": 411,
+    "sampledPids": 150,
+    "globalLockWaitObservations": {},
+    "alive": 150,
+    "sameHostAndChild": 141,
+    "nativeIdsPresent": 117,
+    "untouchedHost3052562Waits": 0,
+    "evidenceRef": "/tmp/papercusp-capability/scratch/bash-c01839ae-d29.log"
+  },
+  "tests": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- apps/operator/scripts/psu-terminal-repair.test.ts apps/operator/scripts/psu-launcher-codex-writer-lock.test.ts",
+    "passed": 36,
+    "failed": 0,
+    "skipped": 0,
+    "head": "07a9ea0bcc",
+    "startedAt": "2026-10-14T16:16:11.680Z",
+    "typecheck": "Focused TypeScript passed; generated declaration enrollment passed"
+  },
+  "residue": [
+    {
+      "workItem": "WI-6554700010013107",
+      "pid": 3052562,
+      "reason": "Packaged Node exposes no SIGUSR1 inspector; no global-lock wait observed, loaded source unverified."
+    }
+  ],
+  "summary": {
+    "appliedHosts": 126,
+    "alreadyCurrent": 24,
+    "unverifiedHosts": 1
+  }
+}

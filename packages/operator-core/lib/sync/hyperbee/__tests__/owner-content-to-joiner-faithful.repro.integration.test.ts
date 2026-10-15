@@ -423,8 +423,8 @@ describe('FAITHFUL repro — OWNER writes to its hive-home harness; does it fede
         swarmOverride: swarmOwner,
         verifyBindingOverride: async (_pk, _login, userId) =>
           userId === idJoiner.userId ? 'verified' : 'fail',
-        applyOverride: (op) => {
-          applyOwner ??= buildPeerApply(dbOwner.sql, handleOwner!.ownLog.keyHex);
+        applyOverride: (op, ctx) => {
+          applyOwner ??= buildPeerApply(dbOwner.sql, ctx.ownLogKeyHex);
           return applyOwner(op);
         },
         mergePollMs: 0,

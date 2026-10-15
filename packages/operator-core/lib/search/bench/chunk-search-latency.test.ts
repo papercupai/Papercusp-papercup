@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   CHUNK_SEARCH_LATENCY_QUERIES,
   D024_BASELINE_P95_MS,
+  D024_LOADAVG_START,
   D024_QUERY_SET_HASH,
+  d024LoadMatch,
   percentile,
   querySetHash,
   r33Verdicts,
@@ -61,5 +63,46 @@ describe('chunk-search latency bench (R-33, D-024)', () => {
     expect(bySite.consult.withinBound).toBeNull();
     expect(bySite.work_items_search.bound).toBe(500);
     expect(bySite.consult.bound).toBe(17.5);
+  });
+
+  describe('D-038 load match: all three averages within 20% of D-024 at start and end', () => {
+    const IN_BAND = [72, 78, 92];
+
+    it('derives the band from D-024s start triple 69.9 / 75.9 / 90.2', () => {
+      expect(D024_LOADAVG_START).toEqual([69.9, 75.9, 90.2]);
+      const { band } = d024LoadMatch(IN_BAND, IN_BAND);
+      expect(band).toEqual({
+        '1m': { min: 55.9, max: 83.9 },
+        '5m': { min: 60.7, max: 91.1 },
+        '15m': { min: 72.2, max: 108.2 },
+      });
+    });
+
+    it('matches when every average is in band at both ends', () => {
+      const m = d024LoadMatch(IN_BAND, [80, 85, 100]);
+      expect(m.matched).toBe(true);
+      expect(m.outOfBand).toEqual([]);
+    });
+
+    it('rejects attempt 5 (1-min in the old 57..86 band, 5/15-min far above)', () => {
+      // Recorded loadavgStart/End of .papercusp/scratch/rag-carry/r33-attempts/attempt-5-021058Z.json.
+      const m = d024LoadMatch([85.45, 110.13, 128.41], [103.46, 113.6, 121.77]);
+      expect(m.matched).toBe(false);
+      expect(m.outOfBand).toContain('start 5m 110.1 > 91.1');
+      expect(m.outOfBand).toContain('start 15m 128.4 > 108.2');
+      expect(m.outOfBand).toContain('end 1m 103.5 > 83.9');
+    });
+
+    it('rejects a run that leaves the band only at the end', () => {
+      const m = d024LoadMatch(IN_BAND, [70, 95, 100]);
+      expect(m.matched).toBe(false);
+      expect(m.outOfBand).toEqual(['end 5m 95 > 91.1']);
+    });
+
+    it('rejects load below the band and a missing average', () => {
+      const m = d024LoadMatch([40, 78, 92], [72, 78]);
+      expect(m.matched).toBe(false);
+      expect(m.outOfBand).toEqual(['start 1m 40 < 55.9', 'end 15m missing']);
+    });
   });
 });

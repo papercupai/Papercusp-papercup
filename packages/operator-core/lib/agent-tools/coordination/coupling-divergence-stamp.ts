@@ -74,6 +74,13 @@ export const COUPLING_DIVERGENCE_STAMPS_MAX = 40;
 
 export const COUPLING_DIVERGENCE_FIELD = 'couplingDivergence';
 
+/** Internal timing boundaries for the production relation reader. */
+export interface PeerRelationsReadStageTiming {
+  name: string;
+  elapsedMs: number;
+  status: 'ok' | 'error';
+}
+
 /** A section as this module reads it — structural, so any section shape fits. */
 interface SectionLike {
   forYouBecause?: ForYouBecause | undefined;
@@ -163,6 +170,8 @@ export type PeerRelationsReader = (
      * so tests and internal re-use wire no instrument.
      */
     observe?: (census: DerivedSignalCensus) => void;
+    /** Optional private diagnostic seam; callback failures never affect the read. */
+    onStageTiming?: (timing: PeerRelationsReadStageTiming) => void;
   },
 ) => Promise<ReadonlyMap<string, readonly DerivedCouplingRelation[]>>;
 
@@ -173,14 +182,29 @@ export type PeerRelationsReader = (
  * unfortunate: the sender has explicitly said that edge should not surface.
  */
 export const readPeerRelations: PeerRelationsReader = async (selfOwnerId, opts) => {
+  const measure = async <T>(name: string, action: () => T | Promise<T>): Promise<T> => {
+    const startedAt = performance.now();
+    let status: PeerRelationsReadStageTiming['status'] = 'error';
+    try {
+      const value = await action();
+      status = 'ok';
+      return value;
+    } finally {
+      try {
+        opts.onStageTiming?.({ name, elapsedMs: Math.max(0, performance.now() - startedAt), status });
+      } catch {
+        /* Diagnostics must never affect the relation read or a coord:send. */
+      }
+    }
+  };
   const [{ resolvePresenceScope, assemblePresenceSnapshot }, { couplingSourcesFor }, { deriveCouplings }, { listCouplingsFor, resolveCoupledPeers }, { fileLockCoordinationDomain }] =
-    await Promise.all([
+    await measure('load-dependencies', () => Promise.all([
       import('./presence-snapshot'),
       import('./coupling-sources'),
       import('../../coord/coupling-derivation'),
       import('../../coord/couplings'),
       import('../locks/coordination-domain'),
-    ]);
+    ]));
   // EI-20042650315152947: WITHOUT a `coordinationDomain`, `couplingSourcesFor`
   // omits the `heldFiles` source ENTIRELY (coupling-sources.ts:201-206), so
   // `holds-a-lock-on` cannot derive here at all — it is structurally unwired,
@@ -203,23 +227,24 @@ export const readPeerRelations: PeerRelationsReader = async (selfOwnerId, opts) 
   //
   // Fail-soft, like every other leg here: a throw degrades to the previous
   // behaviour (no lock signal) rather than failing a send.
-  let coordinationDomain: string | undefined;
-  try {
-    coordinationDomain = fileLockCoordinationDomain();
-  } catch {
-    coordinationDomain = undefined;
-  }
+  const coordinationDomain = await measure('coordination-domain', () => {
+    try {
+      return fileLockCoordinationDomain();
+    } catch {
+      return undefined;
+    }
+  });
   const ctx = {
     ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
     ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
   };
-  const resolved = await resolvePresenceScope(ctx, {});
-  const snapshot = await assemblePresenceSnapshot(resolved, {});
+  const resolved = await measure('resolve-presence-scope', () => resolvePresenceScope(ctx, {}));
+  const snapshot = await measure('assemble-presence-snapshot', () => assemblePresenceSnapshot(resolved, {}));
   const rosterOwnerIds = snapshot.active
     .map((r) => (r as { ownerId?: unknown }).ownerId)
     .filter((v): v is string => typeof v === 'string' && v.length > 0);
 
-  const derived = await deriveCouplings(
+  const derived = await measure('derive-couplings', () => deriveCouplings(
     selfOwnerId,
     snapshot.active,
     {
@@ -238,12 +263,14 @@ export const readPeerRelations: PeerRelationsReader = async (selfOwnerId, opts) 
       // reason it exists.
       ...(opts.observe ? { observe: opts.observe } : {}),
     },
-  );
-  const edges = await listCouplingsFor(selfOwnerId, opts.workspaceId ?? undefined);
+  ));
+  const edges = await measure('list-coupling-edges', () => listCouplingsFor(selfOwnerId, opts.workspaceId ?? undefined));
   const byPeer = new Map<string, readonly DerivedCouplingRelation[]>();
-  for (const p of resolveCoupledPeers(selfOwnerId, derived, edges)) {
-    byPeer.set(p.ownerId, p.derivedRelations ?? []);
-  }
+  await measure('resolve-coupled-peers', () => {
+    for (const p of resolveCoupledPeers(selfOwnerId, derived, edges)) {
+      byPeer.set(p.ownerId, p.derivedRelations ?? []);
+    }
+  });
   return byPeer;
 };
 

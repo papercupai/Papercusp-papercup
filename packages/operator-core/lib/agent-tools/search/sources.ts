@@ -24,7 +24,25 @@
 // these sources is exactly a surface the policy is calibrated for; that makes
 // the coverage structural instead of another thing to remember.
 import '../../search/configure-search-defaults';
+import { createReportSearchSource } from './report-source';
+import { createDocSearchSource, createPlanSearchSource } from './knowledge-sources';
+import { HEADLINE_OPTS } from './headline-options';
+import { boundedOrgTxn } from '../../pg-bounded-txn';
+export { HEADLINE_OPTS } from './headline-options';
 import type { SearchSource, SearchSourceParams, Listing } from '@papercusp/search';
+import type { Sql, TransactionSql } from 'postgres';
+import {
+  boundedExactTopK,
+  bm25LegIfAvailable,
+  headlineTsQuery,
+  lexicalEngine,
+  lexicalLeg,
+  mergeExactAndBm25,
+  runBm25TopK,
+  type LexicalLeg,
+  type SqlFragment,
+} from '../../search/lexical/rank';
+import type { Bm25CorpusTable } from '../../search/lexical/corpora';
 // WI-37603: every `embedding` leg below runs through this. Without it an HNSW
 // scan stops at `hnsw.ef_search` (40) and silently returns fewer rows than the
 // engine's `candidateLimit = limit * 3` asked for — measured 40 rows for a
@@ -43,6 +61,7 @@ const ENGINEER_ISSUES_CHUNK_PARENT = {
   key: ['base_harness_slug', 'issue_id'],
 } as const;
 import { OWNER_CANDIDATE_TURN_VERDICTS } from '../../turn-provenance/turn-ref';
+import { restrictedTurnSql } from '../../personal-vault/transcript-exclusion';
 import { PROSE_EMBEDDING_SPACE } from '../../search/prose-vector-dims';
 
 /** Exact stored-space predicate for every vector source below. No extra read:
@@ -59,23 +78,23 @@ function proseProfileSql(
   return PROSE_EMBEDDING_SPACE.sourceFilterSql(p, profileColumn, modeColumn);
 }
 
-/**
- * Standard ts_headline options for all four surfaces.
- *
- * EXPORTED so the RENDERERS can pin themselves to it instead of re-asserting
- * the delimiter from memory. `StartSel` overrides ts_headline's `<b>` default,
- * and a renderer that assumes the default silently stops highlighting: it looks
- * for a marker the engine never sends, finds none, and emits the whole headline
- * as plain text with the literal `<mark>` tags showing. Nothing throws, and a
- * renderer test written against the ASSUMED delimiter passes just as happily as
- * one written against the real one — which is exactly how
- * `GlobalSearchDialog.renderHighlight` sat splitting on `<b>` while every test
- * stayed green. Derive the marker from here; do not copy it.
- */
-export const HEADLINE_OPTS =
-  'StartSel=<mark>, StopSel=</mark>, MaxFragments=2, FragmentDelimiter=" … ", MaxWords=18, MinWords=5, ShortWord=2';
-
 const trunc = (s: string): string => s.slice(0, 200) + (s.length > 200 ? '…' : '');
+
+/**
+ * The lexical leg for a source whose legacy ranking is plain
+ * `ts_rank_cd(<tsv>, plainto_tsquery('english', q))` behind `<tsv> @@ …`: BM25 when
+ * its index is live (plan bm25-lexical-search-evoke-adoption-2026-10-10 P-005),
+ * else exactly that ranking.
+ */
+function plainLexicalLeg(sql: SearchSourceParams['sql'], table: Bm25CorpusTable, query: string, tsvColumn: string) {
+  const tq = sql`plainto_tsquery('english', ${query})`;
+  const tsv = sql(tsvColumn);
+  return lexicalLeg(sql as unknown as Sql, {
+    table,
+    query,
+    legacy: { score: sql`ts_rank_cd(${tsv}, ${tq})`, match: sql`${tsv} @@ ${tq}` },
+  });
+}
 
 /**
  * How many rows a per-lexeme document-frequency probe will count before it
@@ -241,12 +260,49 @@ function lexicalSql(
   table: ReturnType<SearchSourceParams['sql']>,
   /** Optional exact-token vector used only for fallback-only transcript rows. */
   simpleTsv?: ReturnType<SearchSourceParams['sql']>,
+  /**
+   * The BM25 (pg_textsearch) leg from `bm25LegIfAvailable`, when BM25 ranks this
+   * source's corpus (plan bm25-lexical-search-evoke-adoption-2026-10-10 P-005).
+   * The match is disjunctive and the ORDER BY is the bare BM25 distance so the
+   * index drives the top-k scan.
+   *
+   * ⚠ BM25 does NOT make the AND list redundant (retracted 2026-10-11, R-13, D-016).
+   * This comment used to say BM25's summed per-term IDF already ranks a document
+   * matching more query terms above one matching fewer. Measured false for a
+   * verbatim fragment of a long document whose terms are individually common:
+   * BM25 ranked five such targets 11, 60, 286, 402 and >500 where AND +
+   * `ts_rank_cd` ranked them 1-2. So a source with a BM25 leg ALSO runs this
+   * function's AND mode as an exact list and fuses the two (`mergeExactAndBm25`).
+   *
+   * ─── BM25_TOP_K_NOTE (R-18, D-019) ──────────────────────────────────────────
+   * The BM25 branch's `rank` and `match` each re-evaluate the `<@>` distance per row.
+   * The two BM25 callers below (work_item, session_turn) therefore splice neither: they
+   * read the top-k matches from `bm25TopK` through `runBm25TopK` (rank.ts, which documents
+   * the shape, the measurement, and the scan-score check in BM25_SCAN_SCORE_NOTE) and
+   * derive `rank` as `-bm25_d`.
+   */
+  bm25?: LexicalLeg | null,
 ) {
   const sql = p.sql;
   // `?? ` and not `||`: a caller passing 0 is asking for the argmin-only
   // control arm, not for the default.
   const anchorDfBudget = p.lexicalAnchorDfBudget ?? ANCHOR_DF_BUDGET;
   const orText = sql`replace(plainto_tsquery('english', ${p.query})::text, ' & ', ' | ')`;
+  const legacyOrder = sql`coverage DESC, rank DESC`;
+
+  if (bm25) {
+    return {
+      with: sql`WITH q AS (SELECT ${orText}::tsquery AS orq)`,
+      join: sql`, q`,
+      coverage: sql`1`,
+      fallbackOnly: sql`FALSE`,
+      rank: bm25.score,
+      match: bm25.match,
+      order: bm25.order,
+      headlineQuery: sql`q.orq`,
+      headlineConfig: sql`'english'::regconfig`,
+    };
+  }
 
   // EI-24045346484356708: there is deliberately NO literal-substring arm in
   // `match` here any more. It used to be `(tsv @@ q.andq OR position(...) > 0)`,
@@ -266,6 +322,7 @@ function lexicalSql(
       )`,
       join: sql`, q`,
       coverage: sql`1`,
+      order: legacyOrder,
       fallbackOnly: simpleTsv
         ? sql`NOT (${tsv} @@ q.andq) AND NOT (${simpleTsv} @@ q.simpleq)`
         : sql`FALSE`,
@@ -322,6 +379,7 @@ function lexicalSql(
             OR (n < ${DF_PROBE_CAP} AND prior + n <= ${anchorDfBudget})
       )`,
     join: sql`, q, anchor`,
+    order: legacyOrder,
     fallbackOnly: simpleTsv
       ? sql`NOT (${tsv} @@ anchor.a) AND NOT (${simpleTsv} @@ q.simpleq)`
       : sql`FALSE`,
@@ -367,9 +425,10 @@ function lexicalSql(
 const escalations: SearchSource = {
   name: 'escalations',
   async lexical({ sql, query, workspaceId, scopeFilter, limit }: SearchSourceParams): Promise<Listing> {
+    const leg = await plainLexicalLeg(sql, 'harness_escalations', query, 'body_tsv');
     const rows = (await sql`
       SELECT harness_slug, phase, escalation, supervisor_notes,
-             ts_rank_cd(body_tsv, plainto_tsquery('english', ${query})) AS rank,
+             ${leg.score} AS rank,
              ts_headline('english',
                COALESCE(escalation, '') || E'\n' || COALESCE(supervisor_notes, ''),
                plainto_tsquery('english', ${query}),
@@ -378,8 +437,8 @@ const escalations: SearchSource = {
         FROM harness_shared.harness_escalations
        WHERE workspace_id = ${workspaceId}
          AND (${scopeFilter}::text IS NULL OR harness_slug = ${scopeFilter})
-         AND body_tsv @@ plainto_tsquery('english', ${query})
-    ORDER BY rank DESC LIMIT ${limit}
+         AND ${leg.match}
+    ORDER BY ${leg.order} LIMIT ${limit}
     `) as unknown as Array<{ harness_slug: string; phase: string; escalation: string | null; supervisor_notes: string | null; rank: number; highlight: string }>;
     return rows.map((r) => {
       const body = `${r.escalation ?? ''}\n${r.supervisor_notes ?? ''}`.trim();
@@ -437,17 +496,18 @@ const escalations: SearchSource = {
 const brainstorm: SearchSource = {
   name: 'brainstorm',
   async lexical({ sql, query, workspaceId, scopeFilter, limit }: SearchSourceParams): Promise<Listing> {
+    const leg = await plainLexicalLeg(sql, 'harness_brainstorm', query, 'content_tsv');
     const rows = (await sql`
       SELECT harness_slug, phase, content,
-             ts_rank_cd(content_tsv, plainto_tsquery('english', ${query})) AS rank,
+             ${leg.score} AS rank,
              ts_headline('english', content,
                plainto_tsquery('english', ${query}),
                ${HEADLINE_OPTS}) AS highlight
         FROM harness_shared.harness_brainstorm
        WHERE workspace_id = ${workspaceId}
          AND (${scopeFilter}::text IS NULL OR harness_slug = ${scopeFilter})
-         AND content_tsv @@ plainto_tsquery('english', ${query})
-    ORDER BY rank DESC LIMIT ${limit}
+         AND ${leg.match}
+    ORDER BY ${leg.order} LIMIT ${limit}
     `) as unknown as Array<{ harness_slug: string; phase: string; content: string; rank: number; highlight: string }>;
     return rows.map((r) => ({
       key: `brainstorm:${r.harness_slug}:${r.phase}`,
@@ -575,9 +635,10 @@ const turns: SearchSource = {
 const decisions: SearchSource = {
   name: 'decisions',
   async lexical({ sql, query, workspaceId, scopeFilter, limit }: SearchSourceParams): Promise<Listing> {
+    const leg = await plainLexicalLeg(sql, 'harness_decisions', query, 'body_tsv');
     const rows = (await sql`
       SELECT harness_slug, line_hash, verb, args, iso,
-             ts_rank_cd(body_tsv, plainto_tsquery('english', ${query})) AS rank,
+             ${leg.score} AS rank,
              ts_headline('english',
                coalesce(verb, '') || ' ' || coalesce(args, ''),
                plainto_tsquery('english', ${query}),
@@ -585,8 +646,8 @@ const decisions: SearchSource = {
         FROM harness_shared.harness_decisions
        WHERE workspace_id = ${workspaceId}
          AND (${scopeFilter}::text IS NULL OR harness_slug = ${scopeFilter})
-         AND body_tsv @@ plainto_tsquery('english', ${query})
-    ORDER BY rank DESC LIMIT ${limit}
+         AND ${leg.match}
+    ORDER BY ${leg.order} LIMIT ${limit}
     `) as unknown as Array<{ harness_slug: string; line_hash: string; verb: string; args: string; iso: string; rank: number; highlight: string }>;
     return rows.map((r) => {
       const body = `${r.verb} ${r.args}`.trim();
@@ -728,7 +789,31 @@ const workItem: SearchSource = {
   async lexical(p: SearchSourceParams): Promise<Listing> {
     const { sql, workspaceId, scopeFilter, limit } = p;
     // P-017 / D-062 — see lexicalSql. Byte-identical without `lexicalMode`.
-    const lex = lexicalSql(p, sql`_search`, sql`harness_shared.engineer_issues`);
+    // P-005: BM25 indexes the BASE table's title+summary+notes and the view exposes
+    // no notes, so the BM25 leg joins each view row to its base row by primary key.
+    const bm25 = await bm25LegIfAvailable(sql as unknown as Sql, 'work_items', p.query, 'w');
+    const lex = lexicalSql(p, sql`_search`, sql`harness_shared.engineer_issues`, undefined, bm25);
+    // R-13 / D-016: with BM25 live, the legacy AND + cover-density list rides beside
+    // it and the two are fused, so a verbatim fragment is not lost (EXACT_LIST_MAX_AND_ROWS).
+    const exact = bm25
+      ? lexicalSql({ ...p, lexicalMode: 'and' }, sql`_search`, sql`harness_shared.engineer_issues`)
+      : null;
+    const from = bm25
+      ? sql`harness_shared.engineer_issues ei
+            JOIN harness_shared.work_items w
+              ON w.harness_slug = ei.base_harness_slug AND w.feature_id = ei.issue_id`
+      : sql`harness_shared.engineer_issues ei`;
+    // R-18 / D-019: the headline input is capped at 4000 chars (the session_turn source's
+    // cap) and skipped under the engine's highlight deferral (WI-4734, `hydrateHighlights`
+    // below). Measured on the R-18 tail query #35: ts_headline over the full title+body of
+    // 30 rows (bodies up to 59k chars) cost 170-270 ms of a 460-510 ms list.
+    // Declared BEFORE `rows`: `list` runs inside the transaction below.
+    const headline = (l: ReturnType<typeof lexicalSql>, title: typeof from, body: typeof from) =>
+      p.wantHighlight === false
+        ? sql`''`
+        : sql`ts_headline('english', left(coalesce(${title}, '') || E'\n' || coalesce(${body}, ''), 4000),
+               ${l.headlineQuery},
+               ${HEADLINE_OPTS})`;
     // EI-21924046411702156: see LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS. This tool
     // runs `ctx.tx` = a bare `getOrgPg()` handle with no ambient bound, so the
     // bound must be installed HERE, per the readiness-reconcile.ts pattern
@@ -737,23 +822,47 @@ const workItem: SearchSource = {
     // whatever runs next on the same connection).
     const rows = (await sql.begin(async (tx) => {
       await tx.unsafe(`SET LOCAL statement_timeout = ${LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS}`);
-      return tx`
-      ${lex.with}
-      SELECT issue_id, scope, title, body, kind, state, severity, lane,
-             coalesce(updated_at, created_at) AS updated_at,
-             ${lex.coverage} AS coverage,
-             ${lex.rank} AS rank,
-             ts_headline('english', coalesce(title, '') || E'\n' || coalesce(body, ''),
-               ${lex.headlineQuery},
-               ${HEADLINE_OPTS}) AS highlight
-        FROM harness_shared.engineer_issues ${lex.join}
-       WHERE workspace_id = ${workspaceId}
-         -- the scope column stores 'operator' | 'harness:<slug>' — a bare harness_slug
-         -- filter (as the other sources take it) maps to the 'harness:<slug>' form.
-         AND (${scopeFilter}::text IS NULL OR scope = 'harness:' || ${scopeFilter}::text)
-         AND ${lex.match}
-    ORDER BY coverage DESC, rank DESC LIMIT ${limit}
-    `;
+      // BM25_TOP_K_NOTE / BM25_SCAN_SCORE_NOTE (rank.ts): the BM25 list is the top-k shape,
+      // scored by the index scan when the server allows it and checked by runBm25TopK.
+      const primary = (bm25?.distance
+        ? await runBm25TopK(
+            sql as unknown as Sql,
+            tx as unknown as Sql,
+            {
+              distance: bm25.distance,
+              scanScore: bm25.scanScore ?? null,
+              columns: sql`ei.issue_id, ei.scope, ei.title, ei.body, ei.kind, ei.state, ei.severity, ei.lane,
+                           coalesce(ei.updated_at, ei.created_at) AS updated_at`,
+              from,
+              where: sql`ei.workspace_id = ${workspaceId}
+                     AND (${scopeFilter}::text IS NULL OR ei.scope = 'harness:' || ${scopeFilter}::text)`,
+              limit,
+            },
+            async (topK) => (await list(tx, lex, from, topK)) as unknown as Array<{ issue_id: string; rank: number }>,
+            (r) => -r.rank,
+          )
+        : await list(tx, lex, from)) as unknown as Array<{ issue_id: string; rank: number }>;
+      if (!exact) return primary;
+      const exactTop = boundedExactTopK(sql as unknown as Sql, {
+        columns: sql`ei.issue_id, ei.base_harness_slug`,
+        from: sql`harness_shared.engineer_issues ei`,
+        where: sql`ei.workspace_id = ${workspaceId}
+               AND (${scopeFilter}::text IS NULL OR ei.scope = 'harness:' || ${scopeFilter}::text)`,
+        tsv: sql`ei._search`, query: p.query, limit,
+      });
+      const exactRows = (await tx`
+        ${exact.with}
+        SELECT ei.issue_id, ei.scope, ei.title, ei.body, ei.kind, ei.state, ei.severity, ei.lane,
+               coalesce(ei.updated_at, ei.created_at) AS updated_at,
+               e.exact_rank AS rank,
+               ${headline(exact, sql`ei.title`, sql`ei.body`)} AS highlight
+          FROM (${exactTop}) e
+          JOIN harness_shared.engineer_issues ei
+            ON ei.issue_id = e.issue_id AND ei.base_harness_slug = e.base_harness_slug
+          ${exact.join}
+      ORDER BY e.exact_rank DESC`) as unknown as Array<{ issue_id: string; rank: number }>;
+      if (exactRows.length === 0) return primary;
+      return mergeExactAndBm25(exactRows, primary, (r) => r.issue_id, limit);
     })) as unknown as Array<{
       issue_id: string;
       scope: string;
@@ -765,13 +874,50 @@ const workItem: SearchSource = {
       lane: string | null;
       updated_at: string | Date | null;
       rank: number;
+      fusionRank?: number;
       highlight: string;
     }>;
+    function list(
+      tx: TransactionSql,
+      l: ReturnType<typeof lexicalSql>,
+      source: typeof from,
+      /** The BM25 leg's top-k subquery body (`bm25TopK`, via `runBm25TopK`): selects the top-k shape. */
+      topK: SqlFragment | null = null,
+    ) {
+      if (topK) {
+        // See BM25_TOP_K_NOTE / bm25TopK: scored once, match applied after the limit.
+        return tx`
+      ${l.with}
+      SELECT s.issue_id, s.scope, s.title, s.body, s.kind, s.state, s.severity, s.lane, s.updated_at,
+             1 AS coverage,
+             (-s.bm25_d)::float8 AS rank,
+             ${headline(l, sql`s.title`, sql`s.body`)} AS highlight
+        FROM (${topK}) s ${l.join}
+    ORDER BY s.bm25_d
+    `;
+      }
+      return tx`
+      ${l.with}
+      SELECT ei.issue_id, ei.scope, ei.title, ei.body, ei.kind, ei.state, ei.severity, ei.lane,
+             coalesce(ei.updated_at, ei.created_at) AS updated_at,
+             ${l.coverage} AS coverage,
+             ${l.rank} AS rank,
+             ${headline(l, sql`ei.title`, sql`ei.body`)} AS highlight
+        FROM ${source} ${l.join}
+       WHERE ei.workspace_id = ${workspaceId}
+         -- the scope column stores 'operator' | 'harness:<slug>' — a bare harness_slug
+         -- filter (as the other sources take it) maps to the 'harness:<slug>' form.
+         AND (${scopeFilter}::text IS NULL OR ei.scope = 'harness:' || ${scopeFilter}::text)
+         AND ${l.match}
+    ORDER BY ${l.order} LIMIT ${limit}
+    `;
+    }
     return rows.map((r) => {
       const body = `${r.title}\n${r.body}`.trim();
       return {
         key: `work_item:${r.issue_id}`,
         score: r.rank,
+        ...(r.fusionRank === undefined ? {} : { fusionRank: r.fusionRank }),
         row: {
           source: 'work_item',
           source_id: r.issue_id,
@@ -830,9 +976,12 @@ const workItem: SearchSource = {
       SELECT e.issue_id, e.scope, e.title, e.body, e.kind, e.state, e.severity, e.lane,
              coalesce(e.updated_at, e.created_at) AS updated_at,
              1 - b.distance AS sim,
-             ts_headline('english', coalesce(e.title, '') || E'\n' || coalesce(e.body, ''),
-               plainto_tsquery('english', ${query}),
-               ${HEADLINE_OPTS}) AS highlight
+             -- Same cap and deferral as the lexical leg's headline (R-18).
+             ${p.wantHighlight === false
+               ? p.sql`''`
+               : p.sql`ts_headline('english', left(coalesce(e.title, '') || E'\n' || coalesce(e.body, ''), 4000),
+                   plainto_tsquery('english', ${query}),
+                   ${HEADLINE_OPTS})`} AS highlight
         FROM best b
         JOIN harness_shared.engineer_issues e
           ON e.base_harness_slug = b.base_harness_slug AND e.issue_id = b.issue_id
@@ -872,6 +1021,26 @@ const workItem: SearchSource = {
       };
     });
   },
+  /** WI-4734 / R-18: batched ts_headline for the FINAL fused top-N only. The engine
+   *  calls this under `deferHighlight` after passing `wantHighlight: false` to both
+   *  legs above, so a deferring caller pays the headline for the hits it returns, not
+   *  for every row of each leg's over-fetch. Same input cap and query choice as the
+   *  inline headline: an OR of the terms when BM25 ranks work_items (its rows can match
+   *  only some terms), else the AND query (`headlineTsQuery`). One query, never per hit. */
+  async hydrateHighlights(p: SearchSourceParams, sourceIds: string[]): Promise<Map<string, string>> {
+    if (sourceIds.length === 0) return new Map();
+    const engine = await lexicalEngine(p.sql as unknown as Sql, 'work_items');
+    const hq = headlineTsQuery(p.sql as unknown as Sql, engine, p.query);
+    const rows = (await p.sql`
+      SELECT ei.issue_id,
+             ts_headline('english', left(coalesce(ei.title, '') || E'\n' || coalesce(ei.body, ''), 4000),
+               ${hq}, ${HEADLINE_OPTS}) AS highlight
+        FROM harness_shared.engineer_issues ei
+       WHERE ei.workspace_id = ${p.workspaceId}
+         AND ei.issue_id = ANY(${sourceIds}::text[])
+    `) as unknown as Array<{ issue_id: string; highlight: string }>;
+    return new Map(rows.map((r) => [r.issue_id, r.highlight]));
+  },
 };
 
 /**
@@ -905,7 +1074,45 @@ const sessionTurnFilterSql = (p: SearchSourceParams) => {
     sourceKind: f.sourceKind ?? null,
     since: f.since ?? null,
     until: f.until ?? null,
+    readerIds: f.readerIds ?? null,
   };
+};
+
+/**
+ * D-006 / P-013 (personal-data-reader-set-labels): a turn an agent recorded
+ * inside one of its disclosure windows is excluded from matching, so it never
+ * competes for a result slot and the result size reveals nothing about its text
+ * (personal-vault/transcript-exclusion.ts). `filters.readerIds` names the caller's
+ * identities, whose OWN restricted turns stay visible to it. FAIL CLOSED
+ * (WI-10005570): a caller that names no reader (search:semantic, search:fulltext,
+ * any future surface) is treated as nobody, so every restricted turn is excluded.
+ */
+const sessionTurnReaderSql = (p: SearchSourceParams, qualifier: string) => {
+  const readerIds = p.filters?.readerIds ?? [];
+  const sql = p.sql as unknown as Parameters<typeof restrictedTurnSql>[0];
+  return p.sql`NOT ${restrictedTurnSql(sql, qualifier, readerIds) as never}`;
+};
+
+/**
+ * The session_turn source's scope predicate over the alias `st`: workspace,
+ * harness and the filter bag, without the reader rule. Shared with the
+ * query-independent withheld count in sessions:search so the count and the
+ * search cover the same rows.
+ */
+export const sessionTurnScopeSql = (p: Pick<SearchSourceParams, 'sql' | 'workspaceId' | 'scopeFilter' | 'filters'>) => {
+  const f = sessionTurnFilterSql(p as SearchSourceParams);
+  return p.sql`
+          (st.workspace_id = ${p.workspaceId} OR st.workspace_id = 'default')
+      AND (${p.scopeFilter ?? null}::text IS NULL OR st.harness_slug = ${p.scopeFilter ?? null})
+      AND (${f.owners}::text[] IS NULL OR st.owner = ANY(${f.owners}::text[]))
+      AND (${f.speaker}::text IS NULL OR st.speaker = ${f.speaker})
+      AND (${f.turnOrigin}::text IS NULL OR st.turn_origin_verdict = ${f.turnOrigin})
+      AND (${f.ownerOnly}::boolean IS NULL OR NOT ${f.ownerOnly} OR st.turn_origin_verdict IN ('owner-typed', 'owner-dialog'))
+      AND (${f.ownerCandidates}::boolean IS NULL OR NOT ${f.ownerCandidates} OR st.turn_origin_verdict = ANY(${f.ownerCandidateVerdicts}::text[]))
+      AND (${f.sessionId}::text IS NULL OR st.session_id = ${f.sessionId})
+      AND (${f.sourceKind}::text IS NULL OR st.source_kind = ${f.sourceKind})
+      AND (${f.since}::timestamptz IS NULL OR COALESCE(st.ts, st.ingested_at) >= ${f.since}::timestamptz)
+      AND (${f.until}::timestamptz IS NULL OR COALESCE(st.ts, st.ingested_at) < ${f.until}::timestamptz)`;
 };
 
 /**
@@ -951,12 +1158,29 @@ const sessionTurn: SearchSource = {
     // `undefined` is the supported degradation: literal-token recall falls back
     // to the bounded substring FILL below. RE-ARM ORDER if this is ever
     // revisited: apply migration 1163 FIRST, then restore this argument.
-    const lex = lexicalSql(
-      p,
-      p.sql`text_tsv`,
-      p.sql`harness_shared.session_turns`,
-      undefined,
-    );
+    p.signal?.throwIfAborted();
+    const sourceSql = p.sql as unknown as Sql;
+    const bm25 = await bm25LegIfAvailable(sourceSql, 'session_turns', p.query, undefined, {
+      // availabilityFor calls this only on a cache miss, so cached lookups do
+      // not acquire a transaction. Its key remains sourceSql, not this tx.
+      availabilityLoader: (read) => boundedOrgTxn(
+        (tx) => read(tx as unknown as Sql),
+        {
+          client: p.sql,
+          signal: p.signal,
+          readOnly: true,
+          statementTimeoutMs: LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS,
+        },
+      ),
+      signal: p.signal,
+    });
+    p.signal?.throwIfAborted();
+    const lex = lexicalSql(p, p.sql`text_tsv`, p.sql`harness_shared.session_turns`, undefined, bm25);
+    // R-13 / D-016: with BM25 live, the legacy AND + cover-density list rides beside
+    // it and the two are fused (see the work_item source and EXACT_LIST_MAX_AND_ROWS).
+    const exact = bm25
+      ? lexicalSql({ ...p, lexicalMode: 'and' }, p.sql`text_tsv`, p.sql`harness_shared.session_turns`)
+      : null;
     // The caller's scope + filter bag as ONE predicate, shared by the primary
     // query and the literal fill so the two can never disagree about scope —
     // workspace isolation above all. A function, so each query embeds a fresh
@@ -972,54 +1196,127 @@ const sessionTurn: SearchSource = {
       AND (${f.sessionId}::text IS NULL OR session_id = ${f.sessionId})
       AND (${f.sourceKind}::text IS NULL OR source_kind = ${f.sourceKind})
       AND (${f.since}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${f.since}::timestamptz)
-      AND (${f.until}::timestamptz IS NULL OR COALESCE(ts, ingested_at) < ${f.until}::timestamptz)`;
+      AND (${f.until}::timestamptz IS NULL OR COALESCE(ts, ingested_at) < ${f.until}::timestamptz)
+      AND ${sessionTurnReaderSql(p, 'session_turns')}`;
     // EI-24045346484356708: the coverage-graded branch never admitted literal
     // rows (its match is the anchor alone), so the fill stays 'and'-mode only.
     const literalToken =
       p.lexicalMode === 'coverage-graded' ? null : compactLiteralToken(p.query);
-    type SessionTurnLexicalRow = { source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; harness_slug: string | null; ts: string | null; text: string; rank: number; highlight: string };
-    // EI-21924046411702156: see LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS. Same
-    // bare-`getOrgPg()`-pool exposure as `workItem.lexical` above — this tool's
-    // `ctx.tx` also bypasses `withWorkspace`'s ambient bound (`crossWorkspace:
-    // true`), so the bound is installed HERE, per the readiness-reconcile.ts
-    // `SET LOCAL` pattern.
-    const rows = (await p.sql.begin(async (tx) => {
-      await tx.unsafe(`SET LOCAL statement_timeout = ${LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS}`);
+    type SessionTurnLexicalRow = { source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; harness_slug: string | null; ts: string | null; text: string; rank: number; fusionRank?: number; highlight: string };
+    // The hybrid engine aborts this signal when the source budget expires.
+    // boundedOrgTxn makes active postgres-js queries in the primary read
+    // observe that abort while retaining the source's 8s statement cap.
+    const primary = await boundedOrgTxn(async (tx) => {
+      // R2 live proof: correlated transcript terms can be underestimated 25x.
+      // Setup cost 100 still selected a serial rank/sort over 88k matches.
+      // Full-query current/profile/current controls selected two workers at
+      // setup cost 0 and tuple cost 0.01 (~0.4s versus ~0.9–1.1s), preserving
+      // all top-20 rank values. Keep these costs transaction-local and cap
+      // workers below the host's default 8; the literal fill disables workers.
+      await tx.unsafe('SET LOCAL max_parallel_workers_per_gather = 2');
+      await tx.unsafe('SET LOCAL parallel_setup_cost = 0');
+      await tx.unsafe('SET LOCAL parallel_tuple_cost = 0.01');
       // PRIMARY — index-served only (`lex.match` carries no substring arm).
-      const primary = (await tx`
-      ${lex.with}
-      SELECT source_kind, session_id, turn_idx, speaker, owner, harness_slug, ts, text,
-             ${lex.coverage} AS coverage,
-             ${lex.rank} AS rank,
+      const list = (
+        l: ReturnType<typeof lexicalSql>,
+        /** The BM25 leg's top-k subquery body (`bm25TopK`, via `runBm25TopK`): selects the top-k shape. */
+        topK: SqlFragment | null = null,
+      ) => topK
+        // See BM25_TOP_K_NOTE / bm25TopK: scored once, match applied after the limit.
+        // The BM25 leg's fallbackOnly is the constant FALSE, so its highlight is the plain
+        // headline.
+        ? tx`
+      ${l.with}
+      SELECT s.source_kind, s.session_id, s.turn_idx, s.speaker, s.owner, s.harness_slug, s.ts, s.text,
+             1 AS coverage,
+             (-s.bm25_d)::float8 AS rank,
              ${p.wantHighlight === false
                ? p.sql`''`
-               : p.sql`CASE WHEN ${lex.fallbackOnly}
+               : p.sql`ts_headline(${l.headlineConfig}, left(s.text, 4000),
+                         ${l.headlineQuery},
+                         ${HEADLINE_OPTS})`} AS highlight
+        FROM (${topK}) s ${l.join}
+    ORDER BY s.bm25_d
+    `
+        : tx`
+      ${l.with}
+      SELECT source_kind, session_id, turn_idx, speaker, owner, harness_slug, ts, text,
+             ${l.coverage} AS coverage,
+             ${l.rank} AS rank,
+             ${p.wantHighlight === false
+               ? p.sql`''`
+               : p.sql`CASE WHEN ${l.fallbackOnly}
                        THEN left(text, 4000)
-                       ELSE ts_headline(${lex.headlineConfig}, left(text, 4000),
-                         ${lex.headlineQuery},
+                       ELSE ts_headline(${l.headlineConfig}, left(text, 4000),
+                         ${l.headlineQuery},
                          ${HEADLINE_OPTS})
                    END`} AS highlight
-        FROM harness_shared.session_turns ${lex.join}
+        FROM harness_shared.session_turns ${l.join}
        WHERE ${scoped()}
-         AND ${lex.match}
-    ORDER BY coverage DESC, rank DESC LIMIT ${p.limit}
-    `) as unknown as SessionTurnLexicalRow[];
+         AND ${l.match}
+    ORDER BY ${l.order} LIMIT ${p.limit}
+    `;
+      // BM25_SCAN_SCORE_NOTE (rank.ts): scored by the index scan when the server allows it,
+      // checked by runBm25TopK.
+      let primary = (bm25?.distance
+        ? await runBm25TopK(
+            p.sql as unknown as Sql,
+            tx as unknown as Sql,
+            {
+              distance: bm25.distance,
+              scanScore: bm25.scanScore ?? null,
+              columns: p.sql`source_kind, session_id, turn_idx, speaker, owner, harness_slug, ts, text`,
+              from: p.sql`harness_shared.session_turns`,
+              where: scoped(),
+              limit: p.limit,
+            },
+            async (topK) => (await list(lex, topK)) as unknown as SessionTurnLexicalRow[],
+            (r) => -r.rank,
+          )
+        : await list(lex)) as unknown as SessionTurnLexicalRow[];
+      if (exact) {
+        const exactTop = boundedExactTopK(p.sql as unknown as Sql, {
+          columns: p.sql`workspace_id, source_kind, session_id, turn_idx`,
+          from: p.sql`harness_shared.session_turns`, where: scoped(),
+          tsv: p.sql`text_tsv`, query: p.query, limit: p.limit,
+        });
+        const exactRows = (await tx`
+          ${exact.with}
+          SELECT s.source_kind, s.session_id, s.turn_idx, s.speaker, s.owner, s.harness_slug, s.ts, s.text,
+                 e.exact_rank AS rank,
+                 ${p.wantHighlight === false ? p.sql`''`
+                   : p.sql`ts_headline(${exact.headlineConfig}, left(s.text, 4000),
+                            ${exact.headlineQuery}, ${HEADLINE_OPTS})`} AS highlight
+            FROM (${exactTop}) e
+            JOIN harness_shared.session_turns s USING (workspace_id, source_kind, session_id, turn_idx)
+            ${exact.join}
+        ORDER BY e.exact_rank DESC`) as unknown as SessionTurnLexicalRow[];
+        if (exactRows.length > 0) {
+          primary = mergeExactAndBm25(exactRows, primary, (r) => `${r.source_kind}\u0000${r.session_id}\u0000${r.turn_idx}`, p.limit);
+        }
+      }
 
-      // FILL — EI-24045346484356708. A literal-only row scores ts_rank_cd = 0,
-      // so under the old single OR query it could only ever occupy slots the
-      // dictionary match left empty. Running it ONLY for those slots, only for
-      // a compact token, and only over the newest LITERAL_FALLBACK_WINDOW_ROWS
-      // in-scope turns keeps that recall while removing the full-table scan
-      // from every other call. Newest-first among the fill rows.
-      const need = p.limit - primary.length;
-      if (literalToken === null || need <= 0) return primary;
-      // Fail-soft: the fill is a recall supplement, so if it errors (its own
-      // statement bound, a cancel) the SAVEPOINT rolls back just the fill and
-      // the index-served rows are still returned rather than the whole leg.
-      const fill = await tx
-        .savepoint(async (sp) => {
-          await sp.unsafe('SET LOCAL max_parallel_workers_per_gather = 0');
-          return (await sp`
+      return primary;
+    }, {
+      client: p.sql,
+      acquirePool: 'org-admin',
+      signal: p.signal,
+      readOnly: true,
+      statementTimeoutMs: LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS,
+    });
+
+    // FILL — EI-24045346484356708. A literal-only row scores ts_rank_cd = 0,
+    // so under the old single OR query it could only ever occupy slots the
+    // dictionary match left empty. Running it ONLY for those slots, only for
+    // a compact token, and only over the newest LITERAL_FALLBACK_WINDOW_ROWS
+    // in-scope turns keeps that recall while removing the full-table scan
+    // from every other call. Newest-first among the fill rows. Use its own
+    // bounded transaction so cancellation does not depend on a nested savepoint
+    // query that the outer transaction's cancellation tracker cannot see.
+    const need = p.limit - primary.length;
+    const fill = literalToken === null || need <= 0 ? [] : await boundedOrgTxn(async tx => {
+      await tx.unsafe('SET LOCAL max_parallel_workers_per_gather = 0');
+      return (await tx`
       SELECT source_kind, session_id, turn_idx, speaker, owner, harness_slug, ts, text,
              0 AS rank,
              ${p.wantHighlight === false ? p.sql`''` : p.sql`left(text, 4000)`} AS highlight
@@ -1034,13 +1331,18 @@ const sessionTurn: SearchSource = {
     ORDER BY ingested_at DESC
        LIMIT ${need}
     `) as unknown as SessionTurnLexicalRow[];
-        })
-        .catch(() => [] as SessionTurnLexicalRow[]);
-      return [...primary, ...fill];
-    })) as unknown as SessionTurnLexicalRow[];
+    }, {
+      client: p.sql,
+      acquirePool: 'org-admin',
+      signal: p.signal,
+      readOnly: true,
+      statementTimeoutMs: LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS,
+    }).catch(() => [] as SessionTurnLexicalRow[]);
+    const rows = [...primary, ...fill];
     return rows.map((r) => ({
       key: `session_turn:${r.source_kind}:${r.session_id}:${r.turn_idx}`,
       score: r.rank,
+      ...(r.fusionRank === undefined ? {} : { fusionRank: r.fusionRank }),
       row: {
         source: 'session_turn',
         source_id: `${r.source_kind}:${r.session_id}:${r.turn_idx}`,
@@ -1095,17 +1397,8 @@ const sessionTurn: SearchSource = {
     // them inside BOTH legs before each leg's LIMIT, exactly as the two
     // hand-written legs did.
     const parentFilter = p.sql`
-          (st.workspace_id = ${p.workspaceId} OR st.workspace_id = 'default')
-      AND (${p.scopeFilter}::text IS NULL OR st.harness_slug = ${p.scopeFilter})
-      AND (${f.owners}::text[] IS NULL OR st.owner = ANY(${f.owners}::text[]))
-      AND (${f.speaker}::text IS NULL OR st.speaker = ${f.speaker})
-      AND (${f.turnOrigin}::text IS NULL OR st.turn_origin_verdict = ${f.turnOrigin})
-      AND (${f.ownerOnly}::boolean IS NULL OR NOT ${f.ownerOnly} OR st.turn_origin_verdict IN ('owner-typed', 'owner-dialog'))
-      AND (${f.ownerCandidates}::boolean IS NULL OR NOT ${f.ownerCandidates} OR st.turn_origin_verdict = ANY(${f.ownerCandidateVerdicts}::text[]))
-      AND (${f.sessionId}::text IS NULL OR st.session_id = ${f.sessionId})
-      AND (${f.sourceKind}::text IS NULL OR st.source_kind = ${f.sourceKind})
-      AND (${f.since}::timestamptz IS NULL OR COALESCE(st.ts, st.ingested_at) >= ${f.since}::timestamptz)
-      AND (${f.until}::timestamptz IS NULL OR COALESCE(st.ts, st.ingested_at) < ${f.until}::timestamptz)`;
+          ${sessionTurnScopeSql(p)}
+      AND ${sessionTurnReaderSql(p, 'st')}`;
     // WI-37603. The outer tag is the TRANSACTION handle (iterative scan on);
     // the nested `p.sql` fragments stay on the outer handle, which is safe
     // because a postgres.js fragment is a lazy builder — only the outer query
@@ -1177,12 +1470,17 @@ const sessionTurn: SearchSource = {
       idxs.push(turnIdx);
     }
     if (kinds.length === 0) return new Map();
+    // R-18: the headline query follows the lexical engine (`headlineTsQuery`). Under BM25 a
+    // hit can match only SOME query terms, so the AND query would miss it and fall through
+    // to the raw 4000-char head; the OR of its terms gives it the same headline the inline
+    // path (lexicalSql's `q.orq`) gave it before search:semantic deferred highlights.
+    const engine = await lexicalEngine(p.sql as unknown as Sql, 'session_turns');
+    const hq = headlineTsQuery(p.sql as unknown as Sql, engine, p.query);
     const rows = (await p.sql`
       SELECT st.source_kind, st.session_id, st.turn_idx,
              CASE
-               WHEN st.text_tsv @@ plainto_tsquery('english', ${p.query})
-               THEN ts_headline('english', left(st.text, 4000),
-                 plainto_tsquery('english', ${p.query}), ${HEADLINE_OPTS})
+               WHEN st.text_tsv @@ ${hq}
+               THEN ts_headline('english', left(st.text, 4000), ${hq}, ${HEADLINE_OPTS})
                ELSE left(st.text, 4000)
              END AS highlight
         FROM harness_shared.session_turns st
@@ -1254,5 +1552,6 @@ const coordMessage: SearchSource = {
 
 /** The seven prose surfaces, keyed by `scope` name. */
 export const SEARCH_SOURCES: SearchSource[] = [
-  escalations, brainstorm, turns, decisions, workItem, sessionTurn, coordMessage,
+  escalations, brainstorm, turns, decisions, workItem, sessionTurn, coordMessage, createReportSearchSource(),
+  createPlanSearchSource(), createDocSearchSource(),
 ];

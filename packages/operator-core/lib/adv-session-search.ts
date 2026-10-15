@@ -136,7 +136,11 @@ export interface TranscriptTurnHit {
    * must read as "no claim", never as a default.
    */
   matchedBy?: MatchProvenance;
-  /** Pre-fusion ts_rank_cd score, when a lexical leg returned this turn. */
+  /**
+   * Pre-fusion lexical score, when a lexical leg returned this turn: BM25 when the
+   * session_turns BM25 index ranks the leg, else ts_rank_cd. Comparable only with other
+   * lexical scores from the same search.
+   */
   lexicalScore?: number;
   /** Pre-fusion cosine similarity, when the vector leg returned this turn. */
   semanticScore?: number;

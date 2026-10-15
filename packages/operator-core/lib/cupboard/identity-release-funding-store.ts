@@ -1,8 +1,8 @@
 /**
  * Local store for the identity activation gate (agent-economy-flywheel-2026-08-30
  * P-016, decision D-011): `harness_shared.identity_release_funding` holds, per
- * workspace and identity release, the cached pricing verdict and the hosted
- * payment channel bound to pay for it.
+ * workspace and SKU, the hosted payment channel bound to pay for it. Identity
+ * releases also retain their cached pricing verdict (P-007, D-065).
  *
  * A LEAF module on purpose. The commerce checkout door binds a channel through it,
  * and that door is compiled into apps/operator-public (the Worker). Reaching it
@@ -18,7 +18,7 @@ import { isIdentityReleaseSkuRef } from './identity-per-use-offer';
 export type IdentityChannelSource = 'per-use-checkout' | 'explicit';
 
 /** One row of `harness_shared.identity_release_funding`. */
-export interface IdentityReleaseFundingRow {
+export interface ReleaseFundingRow {
   readonly skuRef: string;
   readonly channelId: string | null;
   readonly pricingState: 'free' | 'priced' | null;
@@ -27,11 +27,29 @@ export interface IdentityReleaseFundingRow {
   readonly pricingCheckedAtMs: number | null;
 }
 
+export type IdentityReleaseFundingRow = ReleaseFundingRow;
+
+/** SKU is opaque: preserve its exact bytes. Legacy identity refs keep the
+ * original prefix validation; other hosted SKUs must be bounded and nonblank. */
+export function isReleaseFundingSkuRef(skuRef: string): boolean {
+  return isIdentityReleaseSkuRef(skuRef) || (skuRef.length > 0 && skuRef.length <= 300 &&
+    skuRef.trim() === skuRef && !/[\u0000-\u001f\u007f]/.test(skuRef));
+}
+
 export async function readIdentityReleaseFunding(
   sql: Sql,
   workspaceId: string,
   skuRefs: readonly string[],
 ): Promise<Map<string, IdentityReleaseFundingRow>> {
+  return readReleaseFunding(sql, workspaceId, skuRefs.filter(isIdentityReleaseSkuRef));
+}
+
+/** A stored binding selects a channel; it never attests funds or authority. */
+export async function readReleaseFunding(
+  sql: Sql,
+  workspaceId: string,
+  skuRefs: readonly string[],
+): Promise<Map<string, ReleaseFundingRow>> {
   if (skuRefs.length === 0) return new Map();
   const rows = await sql<{
     sku_ref: string; channel_id: string | null; pricing_state: 'free' | 'priced' | null;
@@ -58,6 +76,7 @@ export async function recordIdentityReleasePricing(
   verdict: IdentityPricingVerdict,
 ): Promise<void> {
   if (verdict.kind === 'unverifiable') return;
+  if (!isIdentityReleaseSkuRef(skuRef)) throw new Error(`not an identity release skuRef: ${skuRef}`);
   const offerId = verdict.kind === 'priced' ? verdict.offerId : null;
   const unitMicros = verdict.kind === 'priced' ? verdict.unitPriceMicros : null;
   await sql`
@@ -88,6 +107,17 @@ export async function bindIdentityReleaseFundingChannel(
   },
 ): Promise<void> {
   if (!isIdentityReleaseSkuRef(input.skuRef)) throw new Error(`not an identity release skuRef: ${input.skuRef}`);
+  return bindReleaseFundingChannel(sql, input);
+}
+
+/** Record an exact owner-verified hosted channel for an identity or tool SKU.
+ * Hosted admission must re-read channel state and verify payer and budget. */
+export async function bindReleaseFundingChannel(
+  sql: Sql,
+  input: Parameters<typeof bindIdentityReleaseFundingChannel>[1],
+): Promise<void> {
+  if (!isReleaseFundingSkuRef(input.skuRef)) throw new Error('a funding channel binding needs an exact bounded skuRef');
+  if (!input.workspaceId.trim()) throw new Error('a funding channel binding needs a workspaceId');
   if (!input.channelId.trim()) throw new Error('a funding channel binding needs a channelId');
   await sql`
     INSERT INTO harness_shared.identity_release_funding

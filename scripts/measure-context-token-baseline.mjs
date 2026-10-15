@@ -23,12 +23,11 @@
  *
  * Usage: node scripts/measure-context-token-baseline.mjs [days] [outJsonPath]
  */
-import { createReadStream } from 'node:fs';
-import { readdir, stat } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 import { writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { createInterface } from 'node:readline';
+import { walkRawTranscripts as walk, readRawTranscript } from './lib/raw-session-corpus.mjs';
 
 const DAYS = Number(process.argv[2] || 6);
 const OUT = process.argv[3] || '/tmp/context-token-baseline.json';
@@ -36,20 +35,6 @@ const CUTOFF = Date.now() - DAYS * 86400_000;
 const ROOTS = [join(homedir(), '.claude', 'projects'), join(homedir(), '.papercusp', 'session-claude')];
 /** chars→tokens estimate. Labelled everywhere it is used; never presented as a count. */
 const CPT = 4;
-
-async function* walk(dir) {
-  let entries;
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const e of entries) {
-    const p = join(dir, e.name);
-    if (e.isDirectory()) yield* walk(p);
-    else if (e.isFile() && e.name.endsWith('.jsonl')) yield p;
-  }
-}
 
 /** Length of a tool_result's content, which may be a string or a block array. */
 function resultChars(content) {
@@ -173,17 +158,13 @@ for (const root of ROOTS) {
       // real output). Tracked so the injected share always has a denominator.
       injected.hostResidual += hits[0].at;
     }
-    const rl = createInterface({ input: createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity });
-    for await (const line of rl) {
-      if (!line.trim()) continue;
+    for await (const item of readRawTranscript(file)) {
       lines += 1;
-      let rec;
-      try {
-        rec = JSON.parse(line);
-      } catch {
+      if (item.error) {
         badLines += 1;
         continue;
       }
+      const rec = item.record;
       // ── INJECTED CONTEXT arrives as its OWN record type, not as a content
       // block, and was therefore invisible to this scan entirely (measured on a
       // live transcript: 66 `attachment` records / 91,872 bytes, ~70% of the

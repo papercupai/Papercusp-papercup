@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-058 typed owned-container inspection and absence reconciliation",
+  "framework": "shell",
+  "cwd": "papercusp-desktop",
+  "parentWorkItemId": "WI-10007352",
+  "workItemId": "EI-25630465007917186",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "evidencePlane": "conventional-node-test-and-owned-absence-read",
+  "candidateAccepted": false,
+  "command": [
+    "node",
+    "--test",
+    "--test-global-setup=test/monorepo-host-preflight.mjs",
+    "test/server-container.test.js"
+  ],
+  "startedAt": "2026-10-10T21:53:03.843Z",
+  "finishedAt": "2026-10-10T21:57:02.379Z",
+  "timestampEvidence": "Suite start is approximately log mtime minus reported node:test duration; actual absence timestamps come from its saved measured receipt. These are separate runs.",
+  "exitCode": 0,
+  "summary": "Conventional suite passed 123 tests with no failures, cancellations or skips. New absent immutable-container regression first failed on old source for both Docker and Podman, then passed. The maintained helper subsequently confirmed the already-removed exact profile5 container absent in 129 ms and left its original receipt unchanged. No ARM workload or daemon restart was launched.",
+  "sourceHashes": {
+    "papercusp-desktop/bin/lib/server-container.mjs": "478ec0548be8792d553d3f722cc904b230bcbc8fcd2cc39c7b611fe89d2e9137",
+    "papercusp-desktop/test/server-container.test.js": "604218cc1fe24b33886443e88f26d273b8a49e60eef52b1f15871ed0f84c6c1d"
+  },
+  "rawLog": {
+    "path": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/typed-inspect-regression-20261010.log",
+    "sha256": "03fb25fb4b27c522f0ca8f0c217f08438b4389b5a6e0b4986641f16f19b1a006",
+    "bytes": 9663
+  },
+  "actualAbsence": {
+    "schemaVersion": 1,
+    "workItemId": "EI-25630465007917186",
+    "startedAt": "2026-10-10T21:57:02.249Z",
+    "finishedAt": "2026-10-10T21:57:02.379Z",
+    "elapsedMs": 129,
+    "containerId": "00325c4beccc61e2f3cdd175b2b5ff981ffd85cb4985210faf3e7344aae432d9",
+    "removed": true,
+    "cleanupPending": false,
+    "originalReceiptUnchanged": true,
+    "originalReceiptSha256": "728f8c748f548d8e3e9efda5da4b29716c54575051ac33640db787e672bbb7b7",
+    "scope": "Absence-only lookup of the already-removed immutable profile5 container via the maintained typed helper; no create, start, or removal.",
+    "evidence": {
+      "path": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/typed-inspect-actual-absence-20261010.json",
+      "sha256": "253cde63a6a59498666f9470d8bfabe6050d46817767695416d22d03c0793a5f",
+      "bytes": 583
+    }
+  },
+  "regression": {
+    "framework": "node:test",
+    "testPath": "papercusp-desktop/test/server-container.test.js",
+    "passed": 123,
+    "failed": 0,
+    "skipped": 0,
+    "newCase": "reconciliation settles an absent immutable container without generic inspect fallback",
+    "redBeforeFix": "Current continuation executed the new case before the source change; Docker and Podman subtests failed with ETIMEDOUT inspecting another object namespace."
+  },
+  "assertions": [
+    {
+      "id": "container-only-read",
+      "passed": true,
+      "evidence": "All three known-container reads use --type container; producer and boot fixtures enforce the namespace."
+    },
+    {
+      "id": "absent-immutable-id-settles",
+      "passed": true,
+      "evidence": "New Docker and Podman regressions persist removed:true, cleanupPending:false and clear the stale cleanup error after one absent lookup."
+    },
+    {
+      "id": "existing-ownership-and-create-guards",
+      "passed": true,
+      "evidence": "Complete 123-test suite retained image/token matching, late-create reconciliation, foreign-owner refusal and cleanup-failure behavior."
+    },
+    {
+      "id": "actual-maintained-helper-read",
+      "passed": true,
+      "evidence": "The structured actualAbsence receipt above records the maintained helper's absence-only lookup of immutable container 00325c4beccc61e2f3cdd175b2b5ff981ffd85cb4985210faf3e7344aae432d9 in 129 ms: removed:true, cleanupPending:false, originalReceiptUnchanged:true. Original receipt SHA-256 remains 728f8c748f548d8e3e9efda5da4b29716c54575051ac33640db787e672bbb7b7. No create, start, or removal occurred."
+    }
+  ],
+  "limitations": [
+    "The Docker generic-inspect fallback internals were not traced; the paired same-endpoint reads isolate namespace selection as the cleanup defect.",
+    "Original ARM boot timeout and Docker create/start delay remain separate open work.",
+    "No installed-native or final release acceptance is established."
+  ]
+}

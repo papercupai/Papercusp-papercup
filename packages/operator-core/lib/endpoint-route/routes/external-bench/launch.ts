@@ -17,18 +17,18 @@
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { isSafeRunId } from '../../../external-bench/preserved-runs';
-import { launchBenchRun, cancelBenchRun } from '../../../external-bench/run-launcher';
+import { launchBenchRun, cancelBenchRun, type LaunchBenchRunInput } from '../../../external-bench/run-launcher';
 import { gradeBenchRun } from '../../../external-bench/grade-runner';
 import { deleteBenchRun } from '../../../external-bench/run-store';
 import { buildExportBundle } from '../../../external-bench/export-bundle';
-import { estimateBenchLaunch } from '../../../external-bench/estimate';
+import { estimateBenchLaunch, estimateCurrentBenchLaunch } from '../../../external-bench/estimate';
 
 const launch = defineTool({
   method: 'POST',
   path: '/external-bench/runs/launch',
-  auth: 'loopback',
+  auth: { capabilities: ['capability:terminal'] },
   timeoutSec: 30,
-  async handler(req) {
+  async handler(req, ctx) {
     let body: {
       arm?: string;
       taskSetId?: string;
@@ -38,6 +38,7 @@ const launch = defineTool({
       maxUsdPerTask?: number;
       maxTokensPerTask?: number;
       maxUsdPerRun?: number;
+      current?: LaunchBenchRunInput['current'];
     };
     try {
       body = (await req.json()) as typeof body;
@@ -57,7 +58,15 @@ const launch = defineTool({
         maxUsdPerTask: body.maxUsdPerTask,
         maxTokensPerTask: body.maxTokensPerTask,
         maxUsdPerRun: body.maxUsdPerRun,
-      });
+        current: body.current,
+      }, body.current ? { currentContext: {
+        principal: ctx.principal ? { ...ctx.principal, capabilities: new Set(ctx.principal.capabilities) } : null,
+        workspaceId: body.current.workspaceId,
+        log: message => ctx.log('info', message),
+        signal: new AbortController().signal,
+        progress: () => {},
+        emit: () => {},
+      } } : {});
       return Response.json({ ok: true, runId });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -95,6 +104,10 @@ const estimate = defineTool({
   auth: 'loopback',
   async handler(req) {
     const params = new URL(req.url).searchParams;
+    if (params.has('protocolRunId')) return Response.json(await estimateCurrentBenchLaunch({
+      workspaceId: params.get('workspaceId') ?? 'benchmarks', protocolRunId: params.get('protocolRunId') ?? '',
+      arm: params.get('arm') ?? 'papercusp', seed: Number(params.get('seed') ?? 1),
+    }));
     const taskSetId = params.get('taskSetId') || '11-task-pilot';
     const cap = Number(params.get('cap') ?? 5) || 5;
     return Response.json(estimateBenchLaunch({ taskSetId, cap }));

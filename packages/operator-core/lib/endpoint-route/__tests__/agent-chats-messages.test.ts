@@ -275,7 +275,8 @@ describe('POST /harness/:slug/agent-chats/:chatId/messages — route handler', (
       role: string; content: string; error?: boolean;
     }>;
     const last = markerTranscript[markerTranscript.length - 1];
-    expect(last).toMatchObject({ role: 'assistant', content: msg, error: true });
+    expect(last).toMatchObject({ role: 'assistant', content: 'That turn did not complete. Try asking again.', error: true });
+    expect(last.content).not.toContain(msg);
   }, 45_000);
 
   it('404s when the chat row does not exist', async () => {

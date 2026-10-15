@@ -132,6 +132,7 @@ export function verifyPostimages({
   hashInstalled,
   modifiedPatchPaths = [],
   untrackedPatchPaths = [],
+  nonPatchPackagePaths = [],
 }) {
   const errors = [];
   let checked = 0;
@@ -139,6 +140,16 @@ export function verifyPostimages({
 
   if (patches.length === 0) {
     errors.push('HEAD contains no tracked patch-package patch files');
+  }
+  if (nonPatchPackagePaths.length > 0) {
+    // patch-package scans every patches/*.patch and refuses one whose package is absent from
+    // node_modules. It only WARNS locally but exits non-zero under CI=true, so such a file
+    // breaks every CI `npm ci` while every dev-box install looks clean (WI-10006890).
+    errors.push(
+      'patches/ contains patch(es) with no node_modules/ target, which patch-package refuses ' +
+        '(fatally under CI=true); keep out-of-repo vendor patches in vendor-patches/: ' +
+        nonPatchPackagePaths.join(', '),
+    );
   }
   if (modifiedPatchPaths.length > 0) {
     errors.push(
@@ -225,10 +236,14 @@ export function checkInstalledPatchPostimages({ repoRoot = REPO_ROOT } = {}) {
     .sort();
   const committedPatches = [];
   const modifiedPatchPaths = [];
+  const nonPatchPackagePaths = [];
 
   for (const patchPath of allTrackedPatchPaths) {
     const committedText = runGit(repoRoot, ['show', 'HEAD:' + patchPath]);
-    if (!hasNodeModulesPatchTarget(committedText)) continue;
+    if (!hasNodeModulesPatchTarget(committedText)) {
+      nonPatchPackagePaths.push(patchPath);
+      continue;
+    }
     const committed = Buffer.from(committedText, 'utf8');
     const workingPath = resolve(repoRoot, patchPath);
     if (!existsSync(workingPath)) {
@@ -254,10 +269,17 @@ export function checkInstalledPatchPostimages({ repoRoot = REPO_ROOT } = {}) {
     );
   });
 
+  for (const path of listWorkingPatchFiles(repoRoot)) {
+    if (nonPatchPackagePaths.includes(path)) continue;
+    const workingText = readFileSync(resolve(repoRoot, path), 'utf8');
+    if (!hasNodeModulesPatchTarget(workingText)) nonPatchPackagePaths.push(path);
+  }
+
   return verifyPostimages({
     patches: committedPatches,
     modifiedPatchPaths,
     untrackedPatchPaths,
+    nonPatchPackagePaths,
     hashInstalled: (targetPath) => {
       const absolutePath = resolve(repoRoot, targetPath);
       if (!absolutePath.startsWith(resolve(repoRoot) + sep)) {

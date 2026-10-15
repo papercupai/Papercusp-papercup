@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
+import { redactSensitiveText } from '@papercusp/operator-core/lib/sensitive-text';
 import { ArrowUpRight, MessageCircle } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import { useLexicon } from '@/lib/useLexicon';
@@ -30,7 +31,15 @@ import WorkItemDiscussion, {
 import {
   decodeScopedRef,
   encodeScopedRef,
+  CHAT_PLAN_POPUP_PARAM,
 } from '../../_components/chat/chat-ref-popup-params';
+import { WORK_ITEM_PRESENTATION_LABELS, WORK_ITEM_PRESENTATION_REASONS } from '@papercusp/operator-core/lib/work-item-presentation-contract';
+import { formatItemWorkEvidence } from '@papercusp/operator-core/lib/item-activity';
+
+/** Reporter enrichment is loaded only by workItems.detail, never the grid feed. */
+export interface WorkItemDetailRow extends WorkItemRow {
+  reporterStatus?: Awaited<ReturnType<typeof import('@papercusp/operator-core/lib/harness/improvements/reporter-status').readReporterStatus>>;
+}
 
 // work-item-status-full-unify P-007: the settable feature statuses are the UNIFIED
 // lifecycle tokens (feature `todo`→`open`, `passed`→`done`, `deprecated`→`dropped`;
@@ -223,8 +232,9 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
   // P-004: selected-row authority is the existing one-row detail query. A
   // selection must remain resolvable even when the item is beyond the current
   // keyset page (or excluded by a filter), so page membership is never consulted.
-  const workItemDetailQuery = useSyncQuery<WorkItemRow>({
+  const workItemDetailQuery = useSyncQuery<WorkItemDetailRow>({
     queryName: 'workItems.detail',
+    requestClass: 'interactive-control',
     args: { harnessSlug: slug, id: kind === 'workItem' ? selectedId : '' },
     enabled: Boolean(slug) && kind === 'workItem' && Boolean(selectedId),
   });
@@ -277,11 +287,18 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
   }
 
   if (selectedId && !feature && !issue && !workItem && !agent) {
+    // Sync exposes the latest failed attempt during automatic retries, before
+    // `error` settles. A resolver failure must not look like a healthy spinner.
+    const detailError = workItemDetailQuery.error ??
+      (workItemDetailQuery.failureCount > 0 ? workItemDetailQuery.failureReason : null);
+    if (kind === 'workItem' && detailError) {
+      return <Empty tone="error">Unable to load {selectedId}: {detailError.message}</Empty>;
+    }
     // The id is in the URL but the lists haven't settled yet (or it's a
     // stale selection). Show a brief loading state until the lists load.
     if (
       (kind === 'feature' && featureLoading) ||
-      issues === null ||
+      (kind === 'issue' && issues === null) ||
       (kind === 'workItem' && workItemDetailQuery.loading) ||
       (kind === 'agent' && agentRows === null)
     ) {
@@ -474,7 +491,7 @@ export function WorkItemDetail({
   showDiscussionAction = true,
 }: {
   slug: string;
-  workItem: WorkItemRow;
+  workItem: WorkItemDetailRow;
   onSelect: (id: string) => void;
   onBack?: () => void;
   /**
@@ -488,6 +505,7 @@ export function WorkItemDetail({
   showDiscussionAction?: boolean;
 }) {
   const [openingChat, setOpeningChat] = useState(false);
+  const [, setAcceptancePlan] = useQueryState(CHAT_PLAN_POPUP_PARAM, parseAsString);
   const openChat = async () => {
     setOpeningChat(true);
     try {
@@ -525,6 +543,12 @@ export function WorkItemDetail({
         <StatusPill status={workItem.state as HarnessStatus} size="xs" />
       ),
     ],
+    ['Acceptance', workItem.presentation ? WORK_ITEM_PRESENTATION_LABELS[workItem.presentation.stage] : '—'],
+    ['Work evidence', formatItemWorkEvidence(workItem.presentation?.workEvidence)],
+    ['Reason', workItem.presentation ? (() => {
+      const [reason, ...detail] = workItem.presentation.reason.split(': ');
+      return `${WORK_ITEM_PRESENTATION_REASONS[reason] ?? reason}${detail.length ? `: ${detail.join(': ')}` : ''}`;
+    })() : '—'],
     ['Severity', workItem.severity ? <SeverityPill severity={workItem.severity} size="xs" /> : '—'],
     [
       'Assignee',
@@ -567,10 +591,28 @@ export function WorkItemDetail({
           {workItem.planSlug ? (
             <div className="pc-adv-detail__field-row">
               <span className="pc-adv-detail__field-label">Plan</span>
-              <code className="pc-adv-detail__pointer">{workItem.planSlug}</code>
+              <button type="button" className="pc-adv-detail__link pc-adv-detail__link-btn"
+                onClick={() => void setAcceptancePlan(encodeScopedRef(slug, workItem.planSlug!))}>
+                {workItem.planSlug} · decisions
+              </button>
             </div>
           ) : null}
         </div>
+        {workItem.reporterStatus ? <ReporterStatusSection slug={slug} workItem={workItem} /> : null}
+        {workItem.presentation && (workItem.presentation.evidenceRefs.length > 0 || workItem.presentation.completionRef) ? (
+          <div className="pc-adv-detail__section" aria-label="Acceptance evidence">
+            <h3>Acceptance evidence and completion</h3>
+            {[...workItem.presentation.evidenceRefs, ...(workItem.presentation.completionRef ? [workItem.presentation.completionRef] : [])].map((ref, index) => (
+              <div key={`${ref}-${index}`}>
+                {/^(WI|EI|F|I|BA)-\d+$/.test(ref) ? (
+                  <button type="button" className="pc-adv-detail__link pc-adv-detail__link-btn" onClick={() => onSelect(ref)}>{ref}</button>
+                ) : /^https?:\/\//.test(ref) ? (
+                  <a className="pc-adv-detail__link" href={ref} target="_blank" rel="noreferrer">{ref}</a>
+                ) : <code className="pc-adv-detail__pointer">{ref}</code>}
+              </div>
+            ))}
+          </div>
+        ) : null}
         {workItem.summary ? (
           <div className="pc-adv-detail__section">
             <div className="pc-adv-detail__prose">{workItem.summary}</div>
@@ -607,6 +649,44 @@ export function WorkItemDetail({
       <DetailStyles />
     </div>
   );
+}
+
+export function ReporterStatusSection({ slug, workItem }: { slug: string; workItem: WorkItemDetailRow }) {
+  const [answer, setAnswer] = useState('');
+  const [preview, setPreview] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const status = workItem.reporterStatus;
+  useEffect(() => { setAnswer(''); setPreview(null); setSaved(false); setError(null); }, [workItem.id, status?.followUp?.question.id]);
+  if (!status) return null;
+  const reply = async () => {
+    if (!preview || !status.followUp) return;
+    setSending(true); setError(null);
+    try {
+      const response = await fetch('/api/desktop/report-problem', { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ operation: 'answer-follow-up', id: status.sourceId, harness: slug, questionId: status.followUp.question.id, text: preview }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? `HTTP ${response.status}`);
+      setSaved(true);
+    } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+    finally { setSending(false); }
+  };
+  return <section className="pc-adv-detail__section" aria-label="Your report">
+    <h3>Your report</h3>
+    <p role="status">{status.label}</p>
+    {status.followUp ? <>
+      <p>{status.followUp.question.text}</p>
+      {status.followUp.answer ? <p>Your reply: {status.followUp.answer.text}</p>
+        : saved ? <p>Your reply was saved and queued for delivery.</p>
+          : workItem.origin === 'local' ? <>
+            <label>Your reply<textarea value={answer} maxLength={4000} onChange={(event) => { setAnswer(event.target.value); setPreview(null); }} /></label>
+            <button type="button" disabled={!answer.trim() || sending} onClick={() => setPreview(redactSensitiveText(answer.trim()))}>Review reply</button>
+            {preview ? <><pre>{preview}</pre><button type="button" disabled={sending} onClick={() => void reply()}>{sending ? 'Sending…' : 'Send reply'}</button></> : null}
+          </> : null}
+    </> : null}
+    {error ? <p role="alert">{error}</p> : null}
+  </section>;
 }
 
 function WorkItemDiscussionSection({

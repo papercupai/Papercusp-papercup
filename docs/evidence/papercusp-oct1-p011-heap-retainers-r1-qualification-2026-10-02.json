@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10005600",
+  "parent": "WI-10004890",
+  "plane": "serving-artifact-private-operator-api-retainer-attempt",
+  "outcome": "failed",
+  "raw": {
+    "path": "docs/evidence/papercusp-oct1-p011-heap-retainers-r1-2026-10-02.json",
+    "bytes": 621037,
+    "sha256": "7f89904433b2301e88b00bd6c3c28687bce959146c8332ce789bc7c3601f81bd"
+  },
+  "test": {
+    "testRunId": 20554387,
+    "passed": 0,
+    "failed": 1,
+    "filteredSkipped": 17,
+    "source": "local",
+    "layer": "integration",
+    "exitCode": 1,
+    "routerRunStartHead": "fe64fbeeee",
+    "routerProvenance": "unknown: shared-tree HEAD moved during run; complete import graph not recorded"
+  },
+  "guard": {
+    "testRunId": 20553839,
+    "passed": 5,
+    "skipped": 0,
+    "scope": "historical graph fixture guard, before diagnostic changes; local dirty named test"
+  },
+  "servingOrigin": {
+    "pid": 2061128,
+    "startTicks": "1367205",
+    "buildSha": "62eaa6335b",
+    "bundleSha256": "6e90c5e6a609ec9b7b73c3f80b22996554d78bdb5119da95851238570f028d46",
+    "observedAt": "2026-10-02T18:56:55.410Z"
+  },
+  "measuredBundleMatches": true,
+  "sources": [
+    {
+      "path": "scripts/analyze-heap-snapshots.mjs",
+      "runStartCommitSha256": "b627efce53f6874f85b6836c89af9753c39eb78f9ada38928ed9c75cf775d0b3",
+      "currentSha256": "877c0a1e821efdeca55d54db7da48a9a0903e6fcf4ed69fc9c3fc143bec0032b",
+      "proof": "Run-start committed source reference only; complete transitive graph not recorded."
+    },
+    {
+      "path": "scripts/analyze-heap-snapshots.d.mts",
+      "runStartCommitSha256": "70d76c71d2a3e81d8970aec99b5432a6e87cbc2ee4d96baa2d1465cc6a01c189",
+      "currentSha256": "d5e1b5c857c7b5ca47fb90439283bab7d84b63490044b7a1a26a039f79128d6d",
+      "proof": "Run-start committed source reference only; complete transitive graph not recorded."
+    },
+    {
+      "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+      "runStartCommitSha256": "efadee30590cd71885310302ee639c8701f7d786a00d4e9a78e7f254fa3cdf28",
+      "currentSha256": "73b7e8bb7a00abb912e3f23d969f706a9bc81fe871e7af7aeecc0ccba345b1bb",
+      "proof": "Run-start committed source reference only; complete transitive graph not recorded."
+    },
+    {
+      "path": "scripts/cdp-inspector.mjs",
+      "runStartCommitSha256": "31075a5ed406304cd4733ad3b3ae9807e636d03420d767ceefe7ea481dabd968",
+      "currentSha256": "31075a5ed406304cd4733ad3b3ae9807e636d03420d767ceefe7ea481dabd968",
+      "proof": "Run-start committed source reference only; complete transitive graph not recorded."
+    },
+    {
+      "path": "scripts/with-test-pg.mjs",
+      "runStartCommitSha256": "0f9dd85f70d585515d9e869ffc7c3533a01250d794fc5c95936005906daa8085",
+      "currentSha256": "0f9dd85f70d585515d9e869ffc7c3533a01250d794fc5c95936005906daa8085",
+      "proof": "Run-start committed source reference only; complete transitive graph not recorded."
+    },
+    {
+      "path": "scripts/test-files.mjs",
+      "runStartCommitSha256": "4255ee1644532ff3a5ffbb5e1f2a457d4eea209abc8f7d7b49153d760f14404d",
+      "currentSha256": "4255ee1644532ff3a5ffbb5e1f2a457d4eea209abc8f7d7b49153d760f14404d",
+      "proof": "Run-start committed source reference only; complete transitive graph not recorded."
+    }
+  ],
+  "measurement": {
+    "phase": "private-heap-retainer-analysis",
+    "error": "RuntimeError: unreachable",
+    "samples": 13,
+    "windows": 3,
+    "snapshotBytes": 570499298,
+    "nodeCount": 4882743,
+    "totalNodeSelfSizeBytes": 497731866,
+    "captureAndStreamingCensusMs": 106122,
+    "retainerResult": "absent"
+  },
+  "cleanup": {
+    "hostReaped": true,
+    "snapshotRemoved": true,
+    "temporarySnapshotPersisted": false
+  },
+  "limitations": [
+    "Parser cause remains unknown; no resource/load explanation measured.",
+    "No successful dominator ownership result.",
+    "Post-snapshot rows check did not execute after graph failure.",
+    "Private forced-GC/snapshot baseline; host logs also report automatic allocation profiling.",
+    "Not production savings, complete retained ownership, useful-context/concurrency acceptance or shipment."
+  ]
+}

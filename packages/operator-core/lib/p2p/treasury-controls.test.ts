@@ -109,6 +109,29 @@ describe('Safe deployment records', () => {
 });
 
 describe('reconciled treasury routing', () => {
+  it('binds component author identity in transfer digests and refuses missing, wrong-chain or inconsistent payees', () => {
+    const recon: SettlementReconciliation = { ...reconciliation(), componentAllocationsMicros: { alice: 250n, bob: 250n } };
+    const input = { config, deployment: deployment(), reconciliation: recon, token, role: 'settlement' as const,
+      routedShares: ['component'] as const, mainnetCapitalApproved: false,
+      componentPayees: { alice: { walletAddress: recipient, chainId: config.chainId }, bob: { walletAddress: recipient, chainId: config.chainId } } };
+    const result = planTreasuryRouting(input);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.detail);
+    expect(result.transfers.map((t) => [t.payeeId, t.amountMicros])).toEqual([['alice', 250n], ['bob', 250n]]);
+    expect(new Set(result.transfers.map((t) => t.safeTxHash)).size).toBe(2);
+    const events = result.transfers.map((transfer, sequence) => buildTreasuryTransferEvent({
+      streamId: 'treasury:channel', issuer: AUTOMATION, sequence, occurredAtMs: 1,
+      reconciliation: recon, transfer, deployment: deployment(),
+      transaction: { transactionHash: `0x${'b'.repeat(64)}`, blockNumber: 42n },
+    }));
+    expect(new Set(events.map((e) => e.idempotencyKey)).size).toBe(2);
+    expect(events.map((e) => e.payload.payeeId)).toEqual(['alice', 'bob']);
+    expect(planTreasuryRouting({ ...input, componentPayees: { alice: input.componentPayees.alice } }).ok).toBe(false);
+    expect(planTreasuryRouting({ ...input, componentPayees: { ...input.componentPayees, bob: { walletAddress: recipient, chainId: 1 } } }).ok).toBe(false);
+    expect(planTreasuryRouting({ ...input, reconciliation: { ...recon, componentAllocationsMicros: { alice: 251n, bob: 250n } } }).ok).toBe(false);
+    expect(planTreasuryRouting({ ...input, reconciliation: { ...recon, componentAllocationsMicros: { alice: -1n, bob: 501n } } }).ok).toBe(false);
+  });
+
   it('plans a bounded transfer of the DAO share, bound to the settlement receipt', () => {
     const recon = reconciliation();
     const plan = planTreasuryRouting({

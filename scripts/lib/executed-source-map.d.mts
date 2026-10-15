@@ -10,6 +10,12 @@ export function executedMapRecordingEnabled(env?: Record<string, string | undefi
  * (libs/test-config/src/admin-test-runs-reporter.ts `tryGetPg`), so reader and writer can
  * never disagree about which database holds the rows. Pure over an env.
  *
+ * The dedicated ledger variable wins over the app's admin URL (WI-10006736). An isolated
+ * verifier (verify-tauri-headless.sh VERIFY_TAURI_ISOLATED_DB=1) exports
+ * HARNESS_ADMIN_DATABASE_URL pointing at its throwaway database, so a run that must keep
+ * its results sets PAPERCUSP_TEST_RUNS_DB_URL to the shared ledger. With the old order
+ * every isolated result was written into the throwaway database and destroyed at teardown.
+ *
  * @param {Record<string, string | undefined>} [env]
  * @returns {{ url: string, source: 'HARNESS_ADMIN_DATABASE_URL' | 'PAPERCUSP_TEST_RUNS_DB_URL' | 'default' }}
  */
@@ -54,9 +60,10 @@ export function rowsToExecutedMap(rows: Array<{
  *        a `pg` Client (scripts/lib/pg-url.mjs `connectScriptPg`)
  * @param {string} o.workspaceName npm workspace name
  * @param {string} o.repoRoot
+ * @param {string[]} [o.files] Optional repo-relative test-file scope; an empty list avoids a query.
  * @returns {Promise<{ map: import('./related-tests.mjs').ExecutedMap, rows: number }>}
  */
-export function loadExecutedSourceMap({ client, workspaceName, repoRoot }: {
+export function loadExecutedSourceMap({ client, workspaceName, repoRoot, files }: {
     client: {
         query: (text: string, values?: unknown[]) => Promise<{
             rows: any[];
@@ -64,6 +71,7 @@ export function loadExecutedSourceMap({ client, workspaceName, repoRoot }: {
     };
     workspaceName: string;
     repoRoot: string;
+    files?: string[] | undefined;
 }): Promise<{
     map: import("./related-tests.mjs").ExecutedMap;
     rows: number;
@@ -86,9 +94,33 @@ export function rowsToReuseProofs(rows: Array<Record<string, unknown>>): Map<str
  * @param {{ query: (text: string, values?: unknown[]) => Promise<{ rows: any[] }> }} o.client
  * @param {string} o.workspaceName
  * @param {string} o.runContext
+ * @param {string[]} [o.files] Optional repo-relative test-file scope; an empty list avoids a query.
  * @returns {Promise<{ proofs: Map<string, import('./test-pass-reuse.mjs').ReuseProof>, rows: number }>}
  */
-export function loadReuseProofs({ client, workspaceName, runContext }: {
+export function loadReuseProofs({ client, workspaceName, runContext, files }: {
+    client: {
+        query: (text: string, values?: unknown[]) => Promise<{
+            rows: any[];
+        }>;
+    };
+    workspaceName: string;
+    runContext: string;
+    files?: string[] | undefined;
+}): Promise<{
+    proofs: Map<string, import("./test-pass-reuse.mjs").ReuseProof>;
+    rows: number;
+}>;
+/**
+ * List only the test-file keys with pass proofs for one workspace and run context. Lane callers
+ * use this narrow result to classify membership before fetching the wide proof arrays.
+ *
+ * @param {object} o
+ * @param {{ query: (text: string, values?: unknown[]) => Promise<{ rows: any[] }> }} o.client
+ * @param {string} o.workspaceName
+ * @param {string} o.runContext
+ * @returns {Promise<{ files: string[], rows: number }>}
+ */
+export function loadReuseProofFiles({ client, workspaceName, runContext }: {
     client: {
         query: (text: string, values?: unknown[]) => Promise<{
             rows: any[];
@@ -97,7 +129,7 @@ export function loadReuseProofs({ client, workspaceName, runContext }: {
     workspaceName: string;
     runContext: string;
 }): Promise<{
-    proofs: Map<string, import("./test-pass-reuse.mjs").ReuseProof>;
+    files: string[];
     rows: number;
 }>;
 /**
@@ -143,19 +175,63 @@ export function gitChangedBetween({ repoRoot, exec, relative }: {
  * submodule change as the bare gitlink path, which no executed module ever equals, so a change
  * inside any of the ~38 submodules used to read as "no drift". A moved gitlink is diffed INSIDE
  * the submodule between the two pinned commits. Anything that cannot be diffed (a submodule
- * added, removed or type-changed; a pinned commit missing from the local clone) returns false,
- * and the caller reads that as "cannot tell" (stale), never as "nothing changed".
+ * type-changed; a pinned commit missing from the local clone) returns false, and the caller
+ * reads that as "cannot tell" (stale), never as "nothing changed". Added and removed gitlinks
+ * are diffed against the empty tree so their present-side source paths are known.
  *
  * @returns {boolean} true when the full recursive diff was computed
  */
-export function collectRecursiveDiff({ exec, repoDir, prefix, a, b, out }: {
+export function collectRecursiveDiff({ exec, repoDir, prefix, a, b, out, emptyTrees }: {
     exec: any;
     repoDir: any;
     prefix: any;
     a: any;
     b: any;
     out: any;
+    emptyTrees?: Map<any, any> | undefined;
 }): boolean;
+/**
+ * Every package.json in the tree at `sha` (gate-test-reuse-yield-2026-10-01 D-009), superproject
+ * and submodules: gitlinks are followed at the commit the tree pins, recursively, and node_modules
+ * paths are skipped. Returns each manifest's text by repo-relative path, and every script command
+ * in them. Throws on any failure (a sha or pinned submodule commit this clone lacks, a manifest
+ * that is not a JSON object, a non-object `scripts`), because a manifest it cannot read could
+ * invoke any script; the caller treats a throw as "cannot tell".
+ *
+ * @param {{ exec: (file: string, args: string[], opts: object) => string | Buffer, repoRoot: string, sha: string }} o
+ * @returns {{ texts: Map<string, string>, commands: Array<{ rel: string, name: string, command: string }> }}
+ */
+export function treeScriptCommands({ exec, repoRoot, sha }: {
+    exec: (file: string, args: string[], opts: object) => string | Buffer;
+    repoRoot: string;
+    sha: string;
+}): {
+    texts: Map<string, string>;
+    commands: Array<{
+        rel: string;
+        name: string;
+        command: string;
+    }>;
+};
+/**
+ * Build selectReusablePasses' `inertGlobalChange` seam over a real git checkout
+ * (gate-test-reuse-yield-2026-10-01 P-002, P-005, D-009). Two root files can be inert, each read
+ * at both shas with `git show`: package.json, judged by rootPackageJsonChangeIsInert, and
+ * package-lock.json, judged by comparing packageLockInstallView (the lockfile's view is computed
+ * once per sha, because many proofs share the judged sha and the file is over 1 MB). D-009: so can
+ * any non-root package.json, judged by workspacePackageJsonChangeIsInert against the script
+ * commands of the whole tree at BOTH shas (treeScriptCommands, once per sha; it also supplies the
+ * manifest texts, so a manifest inside a submodule is read at its pinned commit). Every other
+ * path, and any read that fails (a sha missing from this clone, a file absent on one side),
+ * answers false, so the change stays global. Results are cached per (path, from, to).
+ *
+ * @param {{ repoRoot: string, exec?: (file: string, args: string[], opts: object) => string | Buffer }} o
+ * @returns {(rel: string, fromSha: string, toSha: string) => boolean}
+ */
+export function gitInertGlobalChange({ repoRoot, exec }: {
+    repoRoot: string;
+    exec?: (file: string, args: string[], opts: object) => string | Buffer;
+}): (rel: string, fromSha: string, toSha: string) => boolean;
 /**
  * One greppable line per workspace selection, so a run that did not narrow is never silent
  * about why.
@@ -225,6 +301,17 @@ export function readExecutedMapResults(filePath: string, { readFile }?: {
     readFile?: (p: string) => string;
 }): ExecutedMapResultRead;
 /**
+ * Name every actual audit draw using the initial task's reporter snapshot. Console pass rows
+ * and separate retries are never a substitute. Missing/ambiguous reporter evidence stays unknown.
+ * @param {string} taskLabel
+ * @param {ExecutedMapResultRead | null | undefined} read
+ * @param {{ watch: Map<string, string> } | null | undefined} reuseWatch
+ * @returns {string[]}
+ */
+export function formatTestReuseAuditResultLines(taskLabel: string, read: ExecutedMapResultRead | null | undefined, reuseWatch: {
+    watch: Map<string, string>;
+} | null | undefined): string[];
+/**
  * The per-task RESULT lines (one per flush, or one `outcome=no-report` line).
  *
  * @param {string} taskLabel
@@ -293,6 +380,16 @@ export type TaskReportExpectation = {
     reason: "enrolled-config" | "unenrolled-config" | "no-config" | "not-vitest" | "node-test-runner" | "wrapper-unreadable" | "compound-command" | "no-command";
     config: string | null;
 };
+export type ExecutedMapFileResults = {
+    version: 1;
+    runnerIdentity: string;
+    runContext: string;
+    runGroupId: string | null;
+    files: Array<{
+        testFile: string;
+        verdict: "pass" | "fail" | "unknown";
+    }>;
+};
 export type ExecutedMapResult = {
     outcome: string;
     rows: number;
@@ -301,6 +398,8 @@ export type ExecutedMapResult = {
     dirty: boolean;
     sha: string | null;
     error: string | null;
+    workspaceName?: string | null;
+    fileResults?: ExecutedMapFileResults | null;
 };
 /**
  * `expectsReport` is stamped by the runner from `resolveTaskReportExpectation` (absent/null = unknown).

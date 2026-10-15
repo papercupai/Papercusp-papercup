@@ -22,9 +22,11 @@
 import http from 'node:http';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { processMonotonicClock } from '../process-monotonic-clock';
+import { readProcessIdentity } from '../process-identity';
 import { normalizeModelId } from '@papercusp/model-pricing';
 import { resolveCodexModel } from '../model-context-budget.mjs';
-import { readFileSync } from 'node:fs';
+import { ONE_MILLION_MODEL_ALIASES, resolveGatewayModel, type GatewayModelResolution } from './model-aliases';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ActiveOperationAttestationContext, ActiveOperationModelPolicyRead } from '../blueprint/operation-worker-binding';
 import type { DirectOperationModelAttestation } from '../blueprint/operation-service';
@@ -56,6 +58,12 @@ import {
   ProviderAdmissionLifecycle,
   type ProviderLaneId,
 } from './provider-admission-lifecycle';
+import {
+  claudeRateLimitScope,
+  codexCliRateLimitScope,
+  codexRateLimitScope,
+  type RateLimitScope,
+} from './upstream-outcome-classifier';
 import { accountLoadKey, ACCOUNT_INFLIGHT_LOAD_WEIGHT, FIVE_HOURS_MS, type AccountBurnAction } from './account-failover';
 import { selectAffectedOwners } from './affected-owners';
 import { CLAUDE_CONTEXT_1M_BETA, withClientBetas, scrubSecrets } from './credential-store';
@@ -69,6 +77,12 @@ import {
 } from './anthropic-billing';
 import { classifyCredential401Streak, DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD } from './credential-health';
 import { createCodexModelRefusalRegistry, type CodexModelRefusalEntry } from './codex-model-refusals';
+import {
+  classifyTransportFailure,
+  createUpstreamReachabilityTracker,
+  type UpstreamReachabilitySnapshot,
+} from './upstream-reachability';
+import { describeFetchError } from '../loopback-fetch';
 import { dbHealthSnapshot, type DbHealthSnapshot } from './db-health';
 import { evaluateSelfHeal, pickReclaimTarget, classifySlotReconcile } from './gateway-self-heal';
 import { probeEgress } from './egress-probe';
@@ -82,6 +96,7 @@ import {
   makeGatewayLaneRegistry,
   makeGatewayProviderAdapters,
   providerForGatewayRequest,
+  REQUIRE_OUTPUT_TOKEN_LIMIT_HEADER,
   type GatewayLaneDescriptor,
   type GatewayLegacyExecutorId,
 } from './provider-adapters';
@@ -127,6 +142,7 @@ import type { AccountPool, ActiveAccount } from './provider-contracts';
 export type { AccountPool, ActiveAccount } from './provider-contracts';
 import {
   GatewayRequestTelemetry,
+  readGatewayNativeCorrelation,
   classifyGatewayTelemetryOutcome,
   type GatewayRequestSpan,
   type GatewayRequestTelemetrySnapshot,
@@ -134,6 +150,14 @@ import {
   type GatewayTelemetryProvider,
   type GatewayTelemetryTransport,
 } from './request-stage-telemetry';
+import {
+  GATEWAY_REQUEST_OUTCOME_DEFAULT_LIMIT,
+  GATEWAY_REQUEST_OUTCOME_MAX_LIMIT,
+  gatewayRequestOutcomeRecord,
+  recordGatewayRequestOutcome,
+  reportGatewayRequestOutcomes,
+  type GatewayRequestOutcomeStore,
+} from './gateway-request-outcome-store';
 import {
   codexCliResponsesCompletionSse,
   codexCliResponsesBody,
@@ -165,9 +189,11 @@ import {
 } from './codex-oauth-proxy';
 import type { AccountEgress, ClaudeAccount } from '../deployment/account-pool';
 import { egressEntries } from '../deployment/account-pool';
-import { egressCacheKey, egressIsHttpProxy, egressIsSocks5Proxy } from './egress-dispatcher';
+import { egressCacheKey, egressIsHttpProxy, egressIsSocks5Proxy, egressIsSupportedProxy } from './egress-dispatcher';
 import {
   CACHE_POLICY_VERSION,
+  cacheSplitBoundaryEnabled,
+  resolveRelocateSystemTail,
   deferLargeToolsEnabled,
   deferMinToolBytesFromEnv,
   rewriteAnthropicCacheBody,
@@ -176,6 +202,13 @@ import {
   type AnthropicCacheStats,
   type OpenAiCacheStats,
 } from './cache-policy';
+import {
+  chooseSupportedEffort,
+  createEffortClampCache,
+  parseUnsupportedEffortError,
+  readRequestEffort,
+  rewriteRequestEffort,
+} from './effort-clamp';
 import type { LocalBackend, LocalBackendPool } from './local-backend-pool';
 import {
   AdmitImmediatelyDriver,
@@ -378,6 +411,12 @@ const ORG_DISALLOWED_RE =
  *  observed $0 fail: "Server is temporarily limiting requests · Rate limited" → bee exits rc=1 in ~10s),
  *  and routes around a usage cap (which the bee won't retry at all). */
 const INTERNAL_RETRY_MAX_ATTEMPTS = 6;
+/** ONE REQUEST CANNOT BURN EVERY ACCOUNT (gateway-admission-congestion-only-2026-10-13 R-5 / P-004).
+ *  How many attempts of a single request may end in a TTFB timeout before the gateway stops failing
+ *  it over. A prompt that has failed to start on two accounts is slow because of the prompt (a very
+ *  large uncached upload), not the account; each further failover re-uploads it into the same slow
+ *  start while every other request waits behind those uploads. The caller gets the 504 instead. */
+const TTFB_TIMEOUT_MAX_ATTEMPTS = 2;
 /** Short backoff before retrying a TRANSIENT 429 on a freshly-rotated account (the throttle is
  *  account-specific, so a different account usually sidesteps it; the pause just avoids a hot loop). */
 const TRANSIENT_429_BACKOFF_MS = 400;
@@ -693,6 +732,11 @@ export const PIN_YIELDED_HEADER = 'x-papercusp-pin-yielded';
  *  sonnet so the call succeeds instead of hard-failing. Makes the silent-substitution VISIBLE to the
  *  caller + observable in the journal. Value: `opus->sonnet`. Not forwarded upstream. */
 export const MODEL_DOWNGRADED_HEADER = 'x-papercusp-model-downgraded';
+/** WI-10005833: set on the response back to the client when the gateway rewrote the request's
+ *  `output_config.effort` because the model refuses that level (learned from an upstream 400 naming the
+ *  supported levels). Makes the substitution visible to the caller. Value: `<from>-><to>`, e.g.
+ *  `xhigh->max`. Not forwarded upstream. */
+export const EFFORT_CLAMPED_HEADER = 'x-papercusp-effort-clamped';
 /** Set on the response back to the client when the gateway's internal retry ladder for a 429/529
  *  (bounded transient-wait + absorb +, for opus, the last-resort downgrade) is fully EXHAUSTED and
  *  the terminal upstream status is being forwarded as the gateway's final answer. Value: the number
@@ -780,7 +824,39 @@ export function hasContext1mBeta(betaHeader: string | null | undefined): boolean
  *  downgrade target — a beta the model rejects is a 400, no better than the overflow it would prevent. */
 export function supportsContext1m(model: string, priorContext1mModel?: string | null): boolean {
   if (priorContext1mModel && model === priorContext1mModel) return true;
-  return Object.values(ONE_MILLION_MODEL_ALIASES).includes(model);
+  return Object.values(ONE_MILLION_MODEL_ALIASES).includes(model) || isDefaultContext1mModel(model);
+}
+
+/** WI-10006049: API model ids of the Claude families papercusp serves at 1M BY DEFAULT —
+ *  generation-5+ opus, sonnet and fable (the API-id side of agent-config-constants
+ *  DEFAULT_1M_FAMILY_RE, which covers launch SPECS like `opus`/`sonnet-5`). Measured against the
+ *  2.1.289 CLI: its 1M aliases are exactly opus/sonnet/fable/opusplan `[1m]`, and their API ids
+ *  are dated point releases (`claude-opus-5-5`, `claude-fable-5-1`, `claude-sonnet-5-5`) that the
+ *  ONE_MILLION_MODEL_ALIASES table (the bare `-5` ids) does not list. Deliberately NOT haiku and NOT
+ *  the 4.x generations: a 1M beta the model rejects is a 400. */
+export function isDefaultContext1mModel(model: string | null | undefined): boolean {
+  return /^claude-(?:opus|sonnet|fable)-(?:[5-9]|[1-9]\d+)(?:[-.][0-9a-z.-]*)?$/i.test(String(model ?? '').trim());
+}
+
+/** WI-10006049 (owner Avi 2026-10-05 #1369/#1371: "if the default is 1m that sounds good" ·
+ *  "make sure this works for all claude models too not just opus"): a papercusp-managed caller
+ *  (it carries the owner header) asking for a 1M-capable family WITHOUT the 1M beta is served at
+ *  1M anyway. This is what makes the default survive Claude Code's bare `/model` menu: on 2.1.289
+ *  the menu saves the 200k `opus`/`sonnet`/`fable` pick and the CLI then sends no beta, which
+ *  re-seeded sessions at a 158k limit below their own ~130-165k fixed prompt (a respawn storm).
+ *  Below 200k input tokens the beta changes nothing about price or limits; above it, it is the
+ *  difference between a served request and "Prompt is too long". Un-owned callers are untouched.
+ *  Pure; the request handler applies it. */
+export function shouldDefaultContext1m(args: {
+  owner: string | null | undefined;
+  url: string;
+  model: string;
+  context1m: boolean;
+  clientHas1m: boolean;
+}): boolean {
+  if (!args.owner || args.context1m || args.clientHas1m) return false;
+  if (!args.url.startsWith('/v1/messages')) return false;
+  return isDefaultContext1mModel(args.model);
 }
 
 /** Below this many (bytes/4-estimated) input tokens a 200k window is not in danger, so a caller that
@@ -874,11 +950,7 @@ function acceptedCodexModelAllows(
 }
 
 function forwardedClaudeEffort(bodyBuf: Buffer): string | null {
-  try {
-    const parsed = JSON.parse(bodyBuf.toString('utf8')) as { output_config?: { effort?: unknown } };
-    return typeof parsed.output_config?.effort === 'string' && parsed.output_config.effort.trim()
-      ? parsed.output_config.effort.trim().toLowerCase() : null;
-  } catch { return null; }
+  return readRequestEffort(bodyBuf);
 }
 
 /** Convert only an accepted Anthropic policy entry to an upstream API id.
@@ -907,17 +979,9 @@ export function rewriteRequestModel(bodyBuf: Buffer, newModel: string): Buffer |
   }
 }
 
-/** Claude CLI's `[1m]` marker is a client-side window selector, not an Anthropic API model id. */
-const ONE_MILLION_MODEL_ALIASES: Record<string, string> = {
-  opus: 'claude-opus-5',
-  sonnet: 'claude-sonnet-5',
-  fable: 'claude-fable-5',
-};
-
-export interface GatewayModelResolution {
-  model: string;
-  context1m: boolean;
-}
+// The `[1m]` alias table and its resolver live in a pure module so non-gateway consumers (the
+// benchmark model-registry snapshot, WI-10008259) can read them without loading this server.
+export { ONE_MILLION_MODEL_ALIASES, resolveGatewayModel, type GatewayModelResolution } from './model-aliases';
 
 /** Reasoning-effort ladder a fallback-lineup Codex model advertises (standard = low..xhigh, max adds max, ultra adds ultra). */
 export type CodexFallbackReasoningTier = 'standard' | 'max' | 'ultra';
@@ -1031,17 +1095,6 @@ export const CODEX_GATEWAY_FALLBACK_LINEUP: readonly CodexFallbackLineupEntry[] 
   },
 ];
 
-/** Resolve a CLI model marker to the real upstream model id and its beta requirement. */
-export function resolveGatewayModel(model: string): GatewayModelResolution {
-  if (!/\[1m\]/i.test(model)) return { model, context1m: false };
-  // The marker is inserted before an optional CLI effort suffix (e.g. opus[1m]:high).
-  const unmarked = model.replace(/\[1m\]/gi, '').replace(/:(?:low|medium|high|xhigh|max)$/i, '');
-  return {
-    model: ONE_MILLION_MODEL_ALIASES[unmarked.toLowerCase()] ?? unmarked,
-    context1m: true,
-  };
-}
-
 /** Normalize a buffered Anthropic request once, before admission and upstream forwarding. */
 export function normalizeGatewayRequestBody(bodyBuf: Buffer): {
   body: Buffer;
@@ -1107,7 +1160,21 @@ const cacheDeferLargeToolsOn = () => deferLargeToolsEnabled();
 const cacheDeferMinToolBytes = () => deferMinToolBytesFromEnv();
 /** P-004 stable/volatile system split — ON by default (measured +66k shared tokens/session);
  *  PAPERCUSP_CACHE_SPLIT_BOUNDARY=0 kills it. */
-const cacheSplitBoundaryOn = () => process.env.PAPERCUSP_CACHE_SPLIT_BOUNDARY !== '0';
+const cacheSplitBoundaryOn = () => cacheSplitBoundaryEnabled();
+/**
+ * Whether to relocate the split system tail after messages[0] block 0
+ * (token-efficiency-prompts-cache-and-behavior-2026-10-11 P-015). The env var forces it per host
+ * (`=1` on, `=0` off); otherwise the registered flag GATEWAY_RELOCATE_SYSTEM_TAIL decides
+ * (getFlag is TTL-cached, so a per-request read is cheap). A flag-read failure keeps the
+ * previous layout.
+ */
+function relocateSystemTailOn(): Promise<boolean> {
+  return resolveRelocateSystemTail(async () => {
+    const { getFlag } = await import('@papercusp/flags/server');
+    const { FLAGS } = await import('@papercusp/flags');
+    return getFlag(FLAGS.GATEWAY_RELOCATE_SYSTEM_TAIL, 'system');
+  });
+}
 /** How many `prompt_cache_key` buckets the codex traffic is spread across. OpenAI degrades a
  *  single key past ~15 req/min; fewer buckets = more cross-session sharing. */
 const codexCacheShards = () => {
@@ -1123,6 +1190,7 @@ const STRIP_REQUEST = new Set([
   'x-papercusp-account',
   'x-papercusp-account-pin',
   'x-papercusp-owner',
+  REQUIRE_OUTPUT_TOKEN_LIMIT_HEADER,
   'content-length',
   'accept-encoding',
   'connection',
@@ -1141,19 +1209,45 @@ export interface GatewayCarryTrialAttempt {
   readonly attemptId: string;
   readonly manifestSha256: string;
   readonly armId: string;
-  readonly transport: 'oauth-http' | 'bearer-http';
+  readonly transport: 'oauth-http' | 'bearer-http' | 'anthropic-http';
   readonly accountId: string;
+  readonly credentialHeader: 'authorization' | 'x-api-key';
   readonly credentialSha256: string;
   readonly target: string;
   readonly body: string;
   readonly bodySha256: string;
+  /** Caller-observed native IDs; only host/source reconciliation may attest them. */
+  readonly nativeSessionId?: string;
+  readonly nativeTurnId?: string;
   readonly clockId: string;
   readonly signal: AbortSignal;
 }
 
+/** Per-provider attempt evidence, separate from aggregate caller usage. Headers
+ * or a fetch error cannot establish a charge; only refusal before fetch is a
+ * measured zero. The controller retains OPEN reservations for unknown usage.
+ * No request body or raw credential is copied into this result. */
+export type GatewayCarryTrialAttemptResult = Readonly<Omit<GatewayCarryTrialAttempt, 'body' | 'signal'> & {
+  reservationRef: string;
+} & ({ outcome: 'send-refused'; responseStatus: null; costUsd: 0; costUsdMeasurementMissing: false } |
+  { outcome: 'fetch-failed' | 'response-headers'; responseStatus: number | null; costUsdMeasurementMissing: true } |
+  { outcome: 'response-completed'; responseStatus: number; costUsdMeasurementMissing: true;
+    responseSha256: string; responseBytes: number; providerCompletion: CodexProviderCompletionEvidence } |
+  { outcome: 'response-incomplete'; responseStatus: number; costUsdMeasurementMissing: true;
+    responseSha256: string; responseBytes: number })>;
+
 export interface GatewayCarryTrialBinding {
   readonly manifestSha256: string;
   readonly armId: string;
+  /** Host-owned worker attribution and report scope. A private credential
+   * cannot select another worker through a request header or report query. */
+  readonly ownerId?: string;
+  /** Host-frozen ceiling for native clients that omit max_output_tokens.
+   * Applied only after this private binding authenticates the caller. */
+  readonly outputTokenLimit?: number;
+  /** Explicit host-owned inference protocols. Omission retains the original
+   * OpenAI-only binding; an Anthropic arm cannot use unobserved alternate routes. */
+  readonly protocols?: readonly ('openai-responses' | 'anthropic-messages')[];
   /** SHA256 of a controller-issued high-entropy Bearer token for THIS arm.
    * This is a dedicated gateway binding, not a caller-selected owner/arm header. */
   readonly requestTokenSha256: string;
@@ -1162,15 +1256,88 @@ export interface GatewayCarryTrialBinding {
     readonly reservationRef: string;
     readonly clockId: string;
     readonly validUntilMonotonicMs: number;
+    /** Trusted controller check of current revocation and admitted bounds.
+     * Runs synchronously immediately before the actual provider send. It must
+     * return undefined; an async check cannot authorize a write. Omission
+     * preserves the existing bounded-trial receipt's expiry-only contract. */
+    readonly validateAuthorization?: () => void;
+    /** Optional private controller observer. Runs once for this exact provider
+     * attempt before its response headers reach the retry kernel. Observer
+     * failure refuses the route; it never refunds or settles unknown usage. */
+    readonly observeAttemptResult?: (result: GatewayCarryTrialAttemptResult) => Promise<void>;
+    /** Source-bound body closure, separate from the immediate header result.
+     * Provider token usage alone never authorizes monetary settlement. */
+    readonly observeAttemptCompletion?: (result: GatewayCarryTrialAttemptResult) => Promise<void>;
   } | null>;
 }
 
+export type GatewayGoalBudgetDecision =
+  | { readonly allowed: true }
+  | {
+      readonly allowed: false;
+      readonly status: 403 | 503;
+      readonly code: string;
+      readonly message: string;
+    };
+
+class GoalInferenceAdmissionRefusal extends Error {
+  constructor(
+    readonly status: 403 | 503,
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'GoalInferenceAdmissionRefusal';
+  }
+}
+
+function respondGoalInferenceAdmissionRefusal(
+  error: unknown,
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  writeJson: (
+    response: http.ServerResponse,
+    status: number,
+    body: unknown,
+    extra?: Record<string, string>,
+  ) => void,
+): boolean {
+  if (!(error instanceof GoalInferenceAdmissionRefusal)) return false;
+  req.resume();
+  const retryable = error.status === 503;
+  if (!res.headersSent) {
+    writeJson(
+      res,
+      error.status,
+      {
+        type: 'error',
+        error: {
+          type: retryable ? 'overloaded_error' : 'permission_error',
+          code: error.code,
+          message: error.message,
+        },
+        gateway: true,
+      },
+      retryable
+        ? { 'retry-after': String(LOADSHED_RETRY_AFTER_SEC), 'x-should-retry': 'true' }
+        : { 'x-should-retry': 'false' },
+    );
+  } else if (!res.destroyed) {
+    res.destroy();
+  }
+  return true;
+}
+
 export interface GatewayDeps {
+  /** Optional test seam; production writes and reads use the durable PostgreSQL store. */
+  requestOutcomeStore?: GatewayRequestOutcomeStore;
   /** Dedicated bounded-trial gateway only. No production grant issuer is implied.
    * When bound, every request is authenticated and only Codex HTTP Responses
    * inference is allowed. Reservations are never implicitly refunded on failure.
    * The controller owns durable CAS, charge settlement and R4/R5 approval checks. */
   carryTrial?: GatewayCarryTrialBinding;
+  /** Applied operation authority, refreshed for each final provider retry. */
+  readAcceptedOperationBudgetBinding?: (ownerId: string) => Promise<GatewayCarryTrialBinding | null>;
   /** Server-side accepted-operation policy read at a model substitution boundary.
    * A failed read is an explicit unavailable verdict, never permission to downgrade. */
   readAcceptedOperationModelPolicy?: (
@@ -1190,6 +1357,8 @@ export interface GatewayDeps {
   admissionGovernor?: GatewayAdmissionGovernor;
   /** Optional parent lineage when the gateway is itself running under a governed request. */
   admissionParent?: AdmissionContext | null;
+  /** Per-turn goal budget check; runs before body spool and durable admission. */
+  checkGoalInferenceAdmission?: (ownerId: string) => Promise<GatewayGoalBudgetDecision>;
   /** Single-account fallback: a fresh bearer for the bound account (the resolver's `current`).
    *  Superseded by `pool` when present. */
   token?(): Promise<string>;
@@ -1219,7 +1388,7 @@ export interface GatewayDeps {
   codexCliRun?: (opts: CodexCliRunOpts) => Promise<CodexCliRunResult>;
   /** Read a configured CLI account's native models cache. The default reads
    *  `<CODEX_HOME>/models_cache.json`; injected in tests to keep fixtures local. */
-  codexModelsCacheRead?: (home: string) => unknown;
+  codexModelsCacheRead?: (home: string) => Promise<unknown>;
   /** Fresh account-catalog cache lifetime. Zero disables freshness reuse while retaining
    *  in-flight coalescing + the last-known-good failure fallback (test seam). */
   codexModelsCatalogTtlMs?: number;
@@ -1432,8 +1601,8 @@ export interface GatewayDeps {
   /** LOCAL inference-backend pool (local-concurrent-inference-2026-07-02 P-004, D-002): when present,
    *  a POST to `/v1/chat/completions` or `/v1/completions` whose `model` matches a registered local
    *  backend (llama-server | vllm | ollama) is proxied DIRECTLY to that backend — least-loaded routing,
-   *  no account/credential/governor involvement (local backends need none). Absent ⇒ those two routes
-   *  fall through to the normal 404 (byte-identical to today). */
+   *  no cloud account/credential involvement (local backends need none). Absent ⇒ those two routes
+   *  return a local-pool 404 without cloud forwarding. */
   localBackends?: LocalBackendPool;
   /** Per-attempt timeout for a local-backend proxy request. Default DEFAULT_LOCAL_BACKEND_TIMEOUT_MS (5m). */
   localBackendTimeoutMs?: number;
@@ -1678,6 +1847,15 @@ export interface GatewayStats {
     allDown: boolean;
     configured: boolean;
   };
+  /** Fresh, IP-redacted measurement of the direct-egress routes shared by this account population. */
+  egressExitIpHealth?: {
+    accountCount: number;
+    directAccountCount: number;
+    directRouteCount: number;
+    sampledDirectRouteCount: number;
+    distinctDirectExitIpCount: number;
+    sameDirectExitIp: boolean;
+  };
   /** Count of 429s shed at ADMISSION because the WHOLE pool was throttled with a far-off reset — the
    *  fail-fast path (B-GW-1) that frees the slot immediately instead of taking the acquire/retry path. */
   shedAllThrottled: number;
@@ -1689,6 +1867,15 @@ export interface GatewayStats {
    *  pool-wide (a hard 403 org-disallow / usage-cap / unified-window rejection it could not route or wait
    *  around). A non-zero value = the fleet is running critical work on sonnet because opus is exhausted. */
   opusToSonnetDowngrades: number;
+  /** WI-10005833: unsupported reasoning-effort clamp. `retries` = requests retried once after an upstream
+   *  400 named their `output_config.effort` unsupported; `rewrites` = requests rewritten from a learned
+   *  clamp before they were sent; `learned` = the live (model, from → to) substitutions. A non-zero
+   *  `retries` means some launch path is still sending a level its model refuses. */
+  effortClamps: {
+    retries: number;
+    rewrites: number;
+    learned: Array<{ model: string; from: string; to: string; learnedAt: number; applied: number }>;
+  };
   /** The admission backlog cap that triggers load-shedding (0 = unbounded). */
   maxQueued: number;
   /** The CONFIGURED admission-concurrency cap (the AIMD ceiling). `admission.maxConcurrent` is the LIVE
@@ -1796,6 +1983,16 @@ export interface GatewayStats {
    * when every account is out but one has a known return, or null when no return is known.
    */
   codexEarliestRecoveryAt?: number | null;
+  /**
+   * WI-10007199: WHY no Codex account can serve, when none can (null while one can).
+   * `upstream-unreachable` = fresh transport failures (DNS / connect / timeout) across accounts and no
+   * HTTP response since — a network outage, which no other account, credit or reset can fix.
+   * `accounts-unserviceable` = the upstream answers, but every account is parked (usage walls, auth
+   * quarantine, failover backoff). Consumers must not word the first as a usage wall.
+   */
+  codexUnserviceableCause?: 'upstream-unreachable' | 'temporary-cooldown' | 'accounts-unserviceable' | null;
+  /** WI-10007199: Codex upstream reachability, independent of account capacity. */
+  codexReachability?: UpstreamReachabilitySnapshot;
   /** Bee-FACING final 503s (2026-06-22 audit) — what the bee receives after the gateway exhausts internal
    *  retries. Makes egress-proxy leakage visible (it isn't a rate shed, so shedAllThrottled never counted it). */
   beeFacing503: { egressExhausted: number; tokenStall: number };
@@ -2216,9 +2413,20 @@ export function accumulateGatewayRouteUsage(
 export function createInferenceGateway(deps: GatewayDeps) {
   // Snapshot the binding so a mutable dependency cannot change an arm or remove
   // its enforcement while the request is queued or waiting on authorization.
-  const carryTrial = deps.carryTrial ? Object.freeze({ ...deps.carryTrial }) : null;
+  const carryTrialProtocols: NonNullable<GatewayCarryTrialBinding['protocols']> = deps.carryTrial?.protocols === undefined
+    ? ['openai-responses'] : deps.carryTrial.protocols;
+  if (deps.carryTrial && (!Array.isArray(carryTrialProtocols) || carryTrialProtocols.length === 0 ||
+    carryTrialProtocols.length > 2 || new Set(carryTrialProtocols).size !== carryTrialProtocols.length ||
+    carryTrialProtocols.some(protocol => protocol !== 'openai-responses' && protocol !== 'anthropic-messages'))) {
+    throw new Error('inference-gateway: invalid carry trial protocols');
+  }
+  const carryTrial = deps.carryTrial ? Object.freeze({ ...deps.carryTrial,
+    protocols: Object.freeze([...carryTrialProtocols]),
+  }) : null;
   if (carryTrial && (!/^[a-f0-9]{64}$/.test(carryTrial.manifestSha256) ||
     !/^[a-f0-9]{64}$/.test(carryTrial.requestTokenSha256) || !carryTrial.armId.trim() ||
+    carryTrial.ownerId !== undefined && (!carryTrial.ownerId.trim() || carryTrial.ownerId !== carryTrial.ownerId.trim()) ||
+    carryTrial.outputTokenLimit !== undefined && (!Number.isSafeInteger(carryTrial.outputTokenLimit) || carryTrial.outputTokenLimit <= 0) ||
     typeof carryTrial.authorizeAttempt !== 'function')) {
     throw new Error('inference-gateway: invalid carry trial binding');
   }
@@ -2232,34 +2440,162 @@ export function createInferenceGateway(deps: GatewayDeps) {
     accountId: string | undefined,
     target: string,
     init: { headers: Record<string, string>; body?: Uint8Array | null; signal: AbortSignal },
-  ): Promise<() => void> {
-    if (!carryTrial) return () => {};
-    if (!carryTrialRequests.has(req) || !accountId || !init.body || init.signal.aborted) throw trialRefusal();
-    const authorization = new Headers(init.headers).get('authorization');
-    if (!authorization) throw trialRefusal();
+  ): Promise<(send: () => Promise<Response>) => Promise<Response>> {
+    const ownerId = (req.headers[OWNER_HEADER] as string | undefined)?.trim();
+    let binding: GatewayCarryTrialBinding | null = carryTrial;
+    if (!binding && ownerId && deps.readAcceptedOperationBudgetBinding) {
+      try { binding = await deps.readAcceptedOperationBudgetBinding(ownerId); }
+      catch { throw trialRefusal(); }
+    }
+    if (!binding) return send => send();
+    if ((carryTrial && !carryTrialRequests.has(req)) || !accountId || !init.body || init.signal.aborted) throw trialRefusal();
+    if (!carryTrial && transport !== 'oauth-http' && binding.outputTokenLimit !== undefined) {
+      const body = JSON.parse(Buffer.from(init.body).toString('utf8'));
+      const field = transport === 'anthropic-http' ? 'max_tokens' : 'max_output_tokens';
+      if (body[field] !== undefined && (!Number.isSafeInteger(body[field]) || body[field] <= 0)) throw trialRefusal();
+      body[field] = Math.min(body[field] ?? binding.outputTokenLimit, binding.outputTokenLimit);
+      init.body = new Uint8Array(Buffer.from(JSON.stringify(body)));
+    }
+    const headers = new Headers(init.headers);
+    const authorization = headers.get('authorization');
+    const apiKey = transport === 'anthropic-http' ? headers.get('x-api-key') : null;
+    // Hash the actual selected provider credential, not the incoming binding
+    // token. Ambiguous auth shapes cannot establish which credential pays.
+    if ((!authorization && !apiKey) || (authorization && apiKey)) throw trialRefusal();
+    const credentialHeader = authorization ? 'authorization' : 'x-api-key';
+    const credential = authorization ?? apiKey!;
     const body = Buffer.from(init.body).toString('utf8');
     const attemptId = randomUUID();
+    const native = transport === 'anthropic-http' ? null : readGatewayNativeCorrelation(JSON.parse(body));
+    const attempt: GatewayCarryTrialAttempt = Object.freeze({
+      attemptId, manifestSha256: binding.manifestSha256, armId: binding.armId,
+      transport, accountId, target, body,
+      bodySha256: createHash('sha256').update(init.body).digest('hex'),
+      ...(native?.status === 'observed' ? { nativeSessionId: native.threadId!, nativeTurnId: native.turnId! } : {}),
+      credentialHeader, credentialSha256: createHash('sha256').update(credential).digest('hex'),
+      clockId: processMonotonicClock.id, signal: init.signal,
+    });
     let reservation: Awaited<ReturnType<GatewayCarryTrialBinding['authorizeAttempt']>>;
     try {
-      reservation = await carryTrial.authorizeAttempt(Object.freeze({
-        attemptId, manifestSha256: carryTrial.manifestSha256, armId: carryTrial.armId,
-        transport, accountId, target, body,
-        bodySha256: createHash('sha256').update(init.body).digest('hex'),
-        credentialSha256: createHash('sha256').update(authorization).digest('hex'),
-        clockId: processMonotonicClock.id, signal: init.signal,
-      }));
+      reservation = await binding.authorizeAttempt(attempt);
     } catch { throw trialRefusal(); } // Do not expose private controller errors.
     // Copy the receipt: mutation after return must not extend the send window.
     const receipt = reservation ? { ...reservation } : null;
-    return () => {
+    let checked = false;
+    let invoked = false;
+    const check = () => {
       // Last synchronous check INSIDE the observed fetch callback, after any
       // authorization wait. Post-send headers-write evidence still judges the
       // actual D017 band; this is not proof of remote receipt or invoice cost.
-      if (init.signal.aborted || !receipt || receipt.attemptId !== attemptId ||
+      if (checked || init.signal.aborted || !receipt || receipt.attemptId !== attemptId ||
         typeof receipt.reservationRef !== 'string' || !receipt.reservationRef.trim() ||
         receipt.clockId !== processMonotonicClock.id ||
         !Number.isFinite(receipt.validUntilMonotonicMs) ||
-        processMonotonicClock.now() >= receipt.validUntilMonotonicMs) throw trialRefusal();
+        processMonotonicClock.now() >= receipt.validUntilMonotonicMs ||
+        (receipt.observeAttemptResult !== undefined && typeof receipt.observeAttemptResult !== 'function') ||
+        (receipt.observeAttemptCompletion !== undefined && typeof receipt.observeAttemptCompletion !== 'function')) throw trialRefusal();
+      checked = true;
+      // The asynchronous issuer result is not evidence that authority remains
+      // live at the write. Reuse the caller guard's synchronous-check contract;
+      // private controller errors must never escape in a gateway response.
+      try {
+        if (receipt.validateAuthorization !== undefined) {
+          if (typeof receipt.validateAuthorization !== 'function') throw trialRefusal();
+          const validation: unknown = receipt.validateAuthorization();
+          if (validation !== undefined) {
+            void Promise.resolve(validation).catch(() => {});
+            throw trialRefusal();
+          }
+        }
+      } catch { throw trialRefusal(); }
+      // The callback itself can revoke the signal or cross the send deadline.
+      if (init.signal.aborted || processMonotonicClock.now() >= receipt.validUntilMonotonicMs) throw trialRefusal();
+    };
+    const observe = async (disposition: Pick<GatewayCarryTrialAttemptResult, 'outcome' | 'responseStatus' | 'costUsdMeasurementMissing'> & { costUsd?: 0 }) => {
+      if (!receipt?.observeAttemptResult || typeof receipt.observeAttemptResult !== 'function') return;
+      const { body: _body, signal: _signal, ...identity } = attempt;
+      try {
+        await receipt.observeAttemptResult(Object.freeze({ ...identity,
+          reservationRef: receipt.reservationRef, ...disposition }) as GatewayCarryTrialAttemptResult);
+      } catch { throw trialRefusal(); }
+    };
+    return async send => {
+      if (invoked) throw trialRefusal();
+      invoked = true;
+      try { check(); } catch (error) {
+        // A matching issued receipt may be reconciled as zero only when no
+        // fetch was invoked. A malformed/foreign receipt is never attributed.
+        if (receipt?.attemptId === attemptId && receipt.clockId === attempt.clockId &&
+          typeof receipt.reservationRef === 'string' && receipt.reservationRef.trim()) {
+          await observe({ outcome: 'send-refused', responseStatus: null, costUsd: 0, costUsdMeasurementMissing: false });
+        }
+        throw error;
+      }
+      let response: Response;
+      try { response = await send(); } catch (error) {
+        await observe({ outcome: 'fetch-failed', responseStatus: null, costUsdMeasurementMissing: true });
+        // Network exceptions can contain private routes or credentials. The
+        // exact attempt identity stays with the controller, not the response.
+        throw new GatewayRequestKernelError('carry trial provider attempt failed', {
+          code: 'upstream-error', outcome: 'gateway-error', status: 502, retryable: false,
+        });
+      }
+      try {
+        await observe({ outcome: 'response-headers', responseStatus: response.status, costUsdMeasurementMissing: true });
+      } catch (error) {
+        // Reporting failed after the provider send. Release the response body,
+        // preserve the unknown charge, and never expose the private error.
+        await response.body?.cancel().catch(() => {});
+        throw error;
+      }
+      if (!receipt?.observeAttemptCompletion) return response;
+      const observer = receipt.observeAttemptCompletion;
+      const { body: _body, signal: _signal, ...identity } = attempt;
+      const hash = createHash('sha256');
+      let bytes = 0, terminal = false, malformed = false;
+      let decoder: ReturnType<typeof createCodexProviderCompletionDecoder> | undefined;
+      try {
+        if (response.ok) decoder = createCodexProviderCompletionDecoder(response.headers.get('content-type') ?? '',
+          transport === 'anthropic-http' ? 'anthropic-messages' : 'openai-responses');
+      } catch { malformed = true; }
+      const close = async (eof: boolean) => {
+        if (terminal) return;
+        terminal = true;
+        let providerCompletion: CodexProviderCompletionEvidence | undefined;
+        if (eof && !malformed && decoder) {
+          try { providerCompletion = decoder.finish(); } catch { malformed = true; }
+        }
+        const proof = { ...identity, reservationRef: receipt.reservationRef, responseStatus: response.status,
+          responseSha256: hash.digest('hex'), responseBytes: bytes, costUsdMeasurementMissing: true as const };
+        try {
+          await observer(Object.freeze(providerCompletion
+            ? { ...proof, outcome: 'response-completed', providerCompletion }
+            : { ...proof, outcome: 'response-incomplete' }));
+        } catch { throw trialRefusal(); }
+      };
+      if (!response.body) { await close(true); return response; }
+      const reader = response.body.getReader();
+      // Observe the actual consumed provider body, without teeing a second
+      // unbounded stream or retaining private response text. A valid completion
+      // followed by a malformed tail is still an incomplete source.
+      const observedBody = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          try {
+            const chunk = await reader.read();
+            if (chunk.done) { await close(true); controller.close(); return; }
+            hash.update(chunk.value); bytes += chunk.value.byteLength;
+            if (!Number.isSafeInteger(bytes)) malformed = true;
+            if (decoder && !malformed) { try { decoder.push(chunk.value); } catch { malformed = true; } }
+            controller.enqueue(chunk.value);
+          } catch {
+            await reader.cancel().catch(() => {});
+            await close(false).catch(() => {});
+            controller.error(trialRefusal());
+          }
+        },
+        async cancel() { await reader.cancel().catch(() => {}); await close(false); },
+      });
+      return new Response(observedBody, { status: response.status, statusText: response.statusText, headers: response.headers });
     };
   }
   const processStartedAt = Date.now();
@@ -2276,7 +2612,32 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // incarnations can never coin the same fallback key, while the sequence counters still keep
   // keys unique WITHIN one process's lifetime exactly as before.
   const gatewayProcessInstanceId = randomUUID();
-  const requestStageTelemetry = new GatewayRequestTelemetry();
+  // First request per owner is journaled as bounded startup-cache evidence (R-10): the 256-row
+  // in-process ring spans only minutes, so a ten-launch cohort rolls out before it can be assessed.
+  // `log` is initialised later in this closure but is only invoked at request-completion time.
+  const requestStageTelemetry = new GatewayRequestTelemetry({
+    onStartupEvidence: (line, record) => {
+      log('info', line);
+      // Reuse the first-request sink and exact owner header; no time-window join.
+      void Promise.all([import('../fleet/spawn-tree'), import('@papercusp/db-org')])
+        .then(([{ recordSpawnFirstGatewayRequest }, { getOrgPg }]) =>
+          recordSpawnFirstGatewayRequest(getOrgPg().sql, {
+            ownerId: record.ownerId, requestId: `${gatewayProcessInstanceId}:${record.requestId}`,
+            requestOrdinal: record.requestId,
+            provider: record.provider, protocol: record.protocol, model: record.model,
+            effort: record.effort ?? null, servingAccountId: record.authorizationScope,
+            outcome: record.outcome, finalStatus: record.finalStatus, startedAt: record.startedAt,
+          }))
+        .catch(error => log('warn', `spawn first-request evidence write failed: ${error instanceof Error ? error.message : String(error)}`));
+    },
+    onCompleted: (timeline) => {
+      const row = gatewayRequestOutcomeRecord(gatewayProcessInstanceId, timeline);
+      const write = deps.requestOutcomeStore
+        ? deps.requestOutcomeStore.record(row)
+        : recordGatewayRequestOutcome(row);
+      void write.catch(error => log('warn', `request outcome evidence write failed: ${error instanceof Error ? error.message : String(error)}`));
+    },
+  });
   interface RequestTelemetryState {
     span: GatewayRequestSpan;
     finished: boolean;
@@ -2503,7 +2864,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const codexCliPool = deps.codexCliPool;
   const codexCliRun = deps.codexCliRun ?? runCodexCliCompletion;
   const codexModelsCacheRead =
-    deps.codexModelsCacheRead ?? ((home: string) => readFileSync(join(home, 'models_cache.json'), 'utf8'));
+    deps.codexModelsCacheRead ?? ((home: string) => readFile(join(home, 'models_cache.json'), 'utf8'));
   const codexModelsCatalogTtlMs = Math.max(
     0,
     Math.floor(deps.codexModelsCatalogTtlMs ?? DEFAULT_CODEX_MODELS_CATALOG_TTL_MS),
@@ -2568,6 +2929,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
    *  came from one serviceable account or from the MIN floor. */
   let serviceableAccountsFn: () => number | null = () => null;
   let lastServiceableAccounts: number | null = null;
+  /** Live healthy-account count per provider lane: the floor a contraction respects
+   *  (plan gateway-admission-congestion-only-2026-10-13#P-002, WI-6554700010012367).
+   *  Wired below once both pools' serviceability readers exist; null = unknown. */
+  let laneHealthyAccountsFn: (lane: ProviderLaneId) => number | null = () => null;
 
   // ────────────────────────────────────────────────────────────────────────────
   // P-010: ONE capless admission lifecycle for every provider lane.
@@ -2595,6 +2960,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     contractionFraction: deps.aimd?.decreaseFactor,
     contractionThreshold: deps.aimd?.decreaseThreshold ?? DEFAULT_AIMD_DECREASE_THRESHOLD,
     healthySamplesPerIncrease: deps.aimd?.increaseEvery ?? DEFAULT_AIMD_INCREASE_EVERY,
+    healthyAccountsFor: (lane) => laneHealthyAccountsFn(lane),
     log,
   });
 
@@ -2660,6 +3026,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // transparently moves pacing onto the new account's fresh bucket. The QUEUE is the concurrency
   // authority, so make the governor's own concurrency cap non-binding (raise it to the queue cap)
   // and let the governor enforce only rate/pause/pace — safe in the gateway's own process.
+  const accountGovernors = new Map<string, Set<RateLimitGovernor>>();
   const governorForAccount = (model: string, accountId: string): RateLimitGovernor => {
     // EI-2648: thread `accountId` into the injected factory too. The default branch already keys
     // by account; without this the injected branch could not, so a test double had no way to make
@@ -2667,6 +3034,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const g = deps.governorFor
       ? deps.governorFor(model, accountId)
       : governorForBackend('claude-code', model, undefined, accountId);
+    let buckets = accountGovernors.get(accountId);
+    if (!buckets) accountGovernors.set(accountId, (buckets = new Set()));
+    buckets.add(g);
     // The QUEUE is the concurrency authority, so the governor's own concurrency
     // limit must stay non-binding. It now tracks the LIVE learned window rather
     // than a configured cap, so a lane that grows past its seed does not start
@@ -2846,6 +3216,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
    *  around them per model; entries lapse on a TTL and clear on the next 2xx, so an account marked
    *  here is never removed from the pool and never needs a manual flip to come back. */
   const codexModelRefusals = createCodexModelRefusalRegistry();
+  /** WI-10007199: can the gateway reach the Codex upstream AT ALL? Kept apart from account capacity
+   *  so a host network outage is reported as one, not as every account being usage-walled. */
+  const codexReachability = createUpstreamReachabilityTracker();
   const orgDisallowedStreak = new Map<string, number>();
   // ── Per-account egress IP POOL rotation (gateway-per-account-egress-ip-pool-2026-06-30) ──────────────
   // An account can carry a POOL of egress IPs (ActiveAccount.egressPool). The gateway round-robins an
@@ -3108,6 +3481,50 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // request would have failed on it. No governor is penalized (there is no request/model context) — the
   // `egressPauseUntil` map alone steers selection (keyOf ⇒ Infinity) and pin-yield away from the account.
   const lastEgressOkAt = new Map<string, number>();
+  // Direct-egress identity is sampled independently of proxy reachability. A unique default/local-address
+  // route can represent several credentials, so the probe set is route-keyed instead of account-keyed.
+  const directEgressIdentitySamples = new Map<string, { exitIp: string; observedAt: number }>();
+  const directEgressIdentityProbeAt = new Map<string, number>();
+  const directEgressIdentityProbePending = new Set<string>();
+  const directEgressRouteKey = (egress: AccountEgress | undefined): string => egress?.localAddress ?? '';
+  const directEgressIdentitySampleMaxAgeMs = Math.max(proactiveEgressProbeMs * 3, 60_000);
+  function computeEgressExitIpHealth(fallback: ActiveAccount): NonNullable<GatewayStats['egressExitIpHealth']> {
+    const accounts = providerAccounts(fallback);
+    const directRoutes = new Map<string, AccountEgress | undefined>();
+    let directAccountCount = 0;
+    for (const account of accounts) {
+      const configured = effectiveEgressEntries(account);
+      if (configured.some((entry) => egressIsSupportedProxy(entry.proxyUrl))) continue;
+      directAccountCount++;
+      for (const route of configured.length ? configured : [undefined]) {
+        if (route && egressIsSupportedProxy(route.proxyUrl)) continue;
+        directRoutes.set(directEgressRouteKey(route), route);
+      }
+    }
+    const now = Date.now();
+    const freshIps = new Set<string>();
+    let sampledDirectRouteCount = 0;
+    for (const key of directRoutes.keys()) {
+      const sample = directEgressIdentitySamples.get(key);
+      if (!sample || now - sample.observedAt > directEgressIdentitySampleMaxAgeMs) continue;
+      sampledDirectRouteCount++;
+      freshIps.add(sample.exitIp);
+    }
+    const directRouteCount = directRoutes.size;
+    return {
+      accountCount: accounts.length,
+      directAccountCount,
+      directRouteCount,
+      sampledDirectRouteCount,
+      distinctDirectExitIpCount: freshIps.size,
+      sameDirectExitIp:
+        accounts.length > 1 &&
+        directAccountCount === accounts.length &&
+        directRouteCount > 0 &&
+        sampledDirectRouteCount === directRouteCount &&
+        freshIps.size === 1,
+    };
+  }
   const proactiveProbeFailStreak = new Map<string, number>();
   let proactiveProbeLastTickAt = 0;
   let proactiveProbeOpens = 0;
@@ -3116,8 +3533,38 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const entries = providerAccounts(claudeFallback);
     if (!entries.length) return;
     proactiveProbeLastTickAt = Date.now();
+    // Sample each distinct direct route at the existing proactive-probe cadence. This stays bounded for
+    // the common box-default case (one probe even when many accounts share that route) and gives /stats a
+    // fresh, IP-redacted basis to distinguish a genuinely shared exit from an unmeasured/partial pool.
+    const directRoutes = new Map<string, AccountEgress | undefined>();
+    for (const account of entries) {
+      const configured = effectiveEgressEntries(account);
+      if (configured.some((entry) => egressIsSupportedProxy(entry.proxyUrl))) continue;
+      for (const route of configured.length ? configured : [undefined]) {
+        if (route && egressIsSupportedProxy(route.proxyUrl)) continue;
+        const routeKey = directEgressRouteKey(route);
+        if (Date.now() - (directEgressIdentityProbeAt.get(routeKey) ?? 0) < proactiveEgressProbeMs) continue;
+        if (directEgressIdentityProbePending.has(routeKey)) continue;
+        directRoutes.set(routeKey, route);
+      }
+    }
+    const directProbeTasks = [...directRoutes].map(async ([routeKey, egress]) => {
+      directEgressIdentityProbeAt.set(routeKey, Date.now());
+      directEgressIdentityProbePending.add(routeKey);
+      try {
+        const probe = await doProbeEgress(
+          { id: 'direct-egress-identity', egress } as ClaudeAccount,
+          { timeoutMs: EGRESS_PROBE_HTTP_TIMEOUT_MS },
+        );
+        if (probe.exitIp) directEgressIdentitySamples.set(routeKey, { exitIp: probe.exitIp, observedAt: Date.now() });
+      } catch {
+        // A failed identity sample stays unknown; it must never be interpreted as proof of a shared IP.
+      } finally {
+        directEgressIdentityProbePending.delete(routeKey);
+      }
+    });
     await Promise.allSettled(
-      entries.map(async (account) => {
+      [...directProbeTasks, ...entries.map(async (account) => {
         const id = account.accountId;
         const now = Date.now();
         // Resolve the proxy route from the EFFECTIVE POOL, not the legacy singular `account.egress`
@@ -3125,7 +3572,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // pool-configured account — so this prober never ran, and the DEAD-PROXY watchdog it feeds went
         // silent from 2026-06-30 through a 16-day, three-proxy outage. `effectiveEgressEntries` also
         // applies the kill-switch, so the explicit `proxyEgressDisabled` check is subsumed.
-        const proxyEntry = effectiveEgressEntries(account).find((e) => e.proxyUrl);
+        const proxyEntry = effectiveEgressEntries(account).find((e) => egressIsSupportedProxy(e.proxyUrl));
         if (!proxyEntry) return; // only proxy routes flap; box-direct is the fallback everything shares
         if ((egressPauseUntil.get(id) ?? 0) > now) return; // circuit already open — half-open prober owns recovery
         if (egressProbePending.has(id)) return;
@@ -3161,7 +3608,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         } catch (err) {
           log('warn', `inference-gateway: proactive egress probe error for '${id}': ${(err as Error).message}`);
         }
-      }),
+      })],
     );
   }
   const proactiveProbeHandle =
@@ -3259,6 +3706,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
   let shedAllThrottled = 0; // fail-fast: 429s shed at admission because the whole pool was throttled (B-GW-1)
   let bareBurstRotateSuppressed = 0; // G1 (WI-649): bare-429 rotate-retries suppressed because ≥half the pool was out of rotation (fleet-wide storm)
   let opusToSonnetDowngrades = 0; // WI-1073: last-resort opus→sonnet downgrades (opus walled pool-wide → sonnet-vs-nothing)
+  // WI-10005833: unsupported reasoning-effort clamp. The cache is per gateway instance, learned from
+  // upstream 400s that list the model's supported levels.
+  const effortClampCache = createEffortClampCache();
+  let effortClampRetries = 0; // requests retried once after a 400 named their effort unsupported
+  let effortClampRewrites = 0; // requests rewritten from a learned clamp before they were sent
   let upstreamErrors = 0;
   let failovers = 0;
   let egressCircuitOpens = 0; // B-GW-EGRESS: per-account egress-proxy circuit opens (dead/flapping IP, transport-failure streak)
@@ -3395,6 +3847,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       /** When the store TOOK this reading (`utilizationAt`). The store↔pool reconciliation clears a
        *  park only on a reading NEWER than the park — an older reading says nothing about it. */
       readingAt?: number;
+      usageCreditsAvailable?: boolean;
     }
   >();
   /** P-008 (anthropic-credits-gateway-2026-09-30): each Claude account's latest billing state, parsed
@@ -3428,6 +3881,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
   /** True while this subscription account is past its allowance and serving from usage credits. */
   const inUsageCredits = (account: ActiveAccount, at: number): boolean => {
     if (account.authMode === 'api-key') return false;
+    const h = accountRateHints.get(account.accountId);
+    if (h?.usageCreditsAvailable === true && [
+      { utilization: h.utilization, resetAt: h.windowResetAt },
+      { utilization: h.utilization7d, resetAt: h.windowResetAt7d },
+    ].some((window) => (window.utilization ?? 0) >= HINT_CAPACITY_FULL_AT &&
+      !(window.resetAt !== undefined && window.resetAt <= at))) return true;
     const b = claudeBillingByAccount.get(account.accountId);
     return b?.state === 'usage-credits' && !(b.until !== undefined && b.until <= at);
   };
@@ -3508,7 +3967,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       paused:
         (cgov?.state.pausedUntil ?? 0) > at ||
         (egressPauseUntil.get(accountId) ?? 0) > at ||
-        (!overage && (h?.pausedUntil ?? 0) > at),
+        ((!overage || h?.usageCreditsAvailable === true) && (h?.pausedUntil ?? 0) > at),
       exhausted: !overage && !!unified?.rejected && !(unified.resetAt > 0 && unified.resetAt <= at),
       transportHealth: (egressFailStreak.get(accountId) ?? 0) > 0 ? 'degraded' : 'healthy',
       inFlight: cgov ? Math.max(0, cgov.state.inFlight + inFlightAdjustment) : undefined,
@@ -3521,7 +3980,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             { utilization: h?.utilization7d, resetAt: h?.windowResetAt7d },
           ],
       now: at,
-      burnAction: h?.burnAction,
+      burnAction: overage ? undefined : h?.burnAction,
       billing: account.authMode === 'api-key' || overage ? 'metered' : 'included',
       meteredPolicy: account.meteredPolicy,
     });
@@ -3555,9 +4014,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
     };
     if (h) {
       consider(h.pausedUntil);
-      if ((h.utilization ?? 0) >= HINT_CAPACITY_FULL_AT) consider(h.windowResetAt);
-      if ((h.utilization7d ?? 0) >= HINT_CAPACITY_FULL_AT) consider(h.windowResetAt7d);
-      if (h.burnAction === 'shed') consider(h.windowResetAt7d);
+      if (h.usageCreditsAvailable !== true) {
+        if ((h.utilization ?? 0) >= HINT_CAPACITY_FULL_AT) consider(h.windowResetAt);
+        if ((h.utilization7d ?? 0) >= HINT_CAPACITY_FULL_AT) consider(h.windowResetAt7d);
+        if (h.burnAction === 'shed') consider(h.windowResetAt7d);
+      }
     }
     consider(egressPauseUntil.get(accountId));
     return recoverAt > 0 ? recoverAt : undefined;
@@ -3593,6 +4054,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
       egressPool,
       token: async () => '',
     }));
+  // P-002 floor: a contraction never takes a lane below its count of healthy accounts.
+  // The same serviceability readers `/stats` publishes, so the floor and the reported
+  // healthy count cannot disagree.
+  laneHealthyAccountsFn = (lane) => {
+    if (lane === 'claude') return serviceableHealthyCount();
+    const at = Date.now();
+    return (
+      codexServiceableCount(deps.codexPool, at) +
+      codexServiceableCount(codexCliPool, at, codexCliPool ? [] : codexCliHealthEntries())
+    );
+  };
   /** The codex POOL's recovery horizon for ONE 429 decision (0 = a sibling can serve now; epoch ms = the
    *  earliest known return; Infinity = every account is out with no known reset) — the pool's
    *  `earliestAvailableAt` under the shared health key + the store's hint horizon, with the account that
@@ -3891,7 +4363,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       model && codexModelRefusals.isRefused(account.accountId, model) ? Infinity : accountHealthKey(account, Date.now());
     return {
       active: (override) => source.active(override ?? keyOf),
-      onExhausted: (accountId, resetAt, override) => source.onExhausted(accountId, resetAt, override ?? keyOf),
+      onExhausted: (accountId, resetAt, override, park) => source.onExhausted(accountId, resetAt, override ?? keyOf, park),
       select: (accountId) => source.select?.(accountId) ?? null,
       readmit: (accountId, opts) => source.readmit?.(accountId, opts) ?? false,
       parkState: (accountId) => source.parkState?.(accountId),
@@ -4213,6 +4685,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             JSON.parse(m[1]) as {
               message?: {
                 id?: string;
+                model?: string;
                 usage?: {
                   input_tokens?: number;
                   cache_read_input_tokens?: number;
@@ -4221,6 +4694,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               };
             }
           ).message;
+          stageSpan?.recordProviderIdentity(message?.id, message?.model, null, accountId);
           const u = message?.usage;
           if (u) {
             const inputTokens = observedCount(u.input_tokens);
@@ -4255,7 +4729,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   /** Responses API twin of `observeCacheUsage`. Streaming usage arrives on a late
    *  `response.completed` SSE event as `response.usage`; non-streaming responses expose `usage`
    *  at the top level. Parse incrementally so a long agent stream never needs to be buffered. */
-  function observeOpenAiCacheUsage(stream: Readable, accountId: string, didFailover: boolean, stageSpan?: GatewayRequestSpan): void {
+  function observeOpenAiCacheUsage(stream: Readable, accountId: string, didFailover: boolean, stageSpan?: GatewayRequestSpan): () => void {
     let carry = '';
     let done = false;
     const detach = () => {
@@ -4267,13 +4741,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
       if (!text || text === '[DONE]') return false;
       try {
         const parsed = JSON.parse(text) as {
+          type?: string;
+          status?: string;
           id?: string;
+          model?: string;
+          reasoning?: { effort?: string };
           usage?: {
             input_tokens?: number;
             input_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
           };
           response?: {
+            status?: string;
             id?: string;
+            model?: string;
+            reasoning?: { effort?: string };
             usage?: {
               input_tokens?: number;
               input_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
@@ -4282,6 +4763,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
         };
         const usage = parsed.response?.usage ?? parsed.usage;
         if (!usage) return false;
+        const providerResponse = parsed.response ?? parsed;
+        if (parsed.type === 'response.completed' || !parsed.type && providerResponse.status === 'completed') {
+          stageSpan?.recordProviderIdentity(providerResponse.id, providerResponse.model, providerResponse.reasoning?.effort, accountId);
+        }
         const read = observedCount(usage.input_tokens_details?.cached_tokens);
         const create = observedCount(usage.input_tokens_details?.cache_write_tokens);
         const total = observedCount(usage.input_tokens);
@@ -4316,11 +4801,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
       if (carry.length > 1_048_576) carry = carry.slice(-65_536);
     };
     const onEnd = () => {
-      if (!done && carry) finish(carry);
-      else finish();
+      if (!done && carry) inspect(carry);
+      finish();
     };
     stream.on('data', onData);
     stream.on('end', onEnd);
+    // PassThrough.end() schedules its readable end callback. The adapter can
+    // finish the downstream response first, freezing the request timeline.
+    // Give both adapters the same idempotent, bounded tail flush so provider
+    // evidence is recorded before that response finishes, including JSON and
+    // SSE whose final data line has no newline.
+    return onEnd;
   }
   const cacheSummary = (t: CacheTally): GatewayCacheCounts => ({
     read: t.coverage.readKnown === t.coverage.requests ? t.read : null,
@@ -4404,6 +4895,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
       );
     const codexEarliestRecoveryAt =
       codexHealthyAccounts > 0 ? 0 : codexRecoveryHorizons.length > 0 ? Math.min(...codexRecoveryHorizons) : Infinity;
+    const codexReach = codexReachability.snapshot(now);
+    // A pool park is not proof of quota exhaustion. Only a known cooldown on an
+    // otherwise serviceable account may make launch advisory; quota, auth and
+    // legacy/unknown parks remain blocking, as do independent durable usage walls.
+    const codexTemporarilyCooling = [deps.codexPool, codexCliPool].some((source) =>
+      source?.entries?.().some((account) =>
+        source.parkState?.(account.accountId)?.cause === 'cooldown' && accountHealthKey(account, now) < Infinity));
+    const codexUnserviceableCause: GatewayStats['codexUnserviceableCause'] =
+      codexHealthyAccounts > 0 || codexAccountCount() === 0
+        ? null
+        : codexReach.unreachable
+          ? 'upstream-unreachable'
+          : codexTemporarilyCooling ? 'temporary-cooldown' : 'accounts-unserviceable';
     const paceEntry = (st: typeof snap) => ({
       smoothRpm: st.smoothRpm === true,
       rpm: st.limits.rpm ?? null,
@@ -4474,9 +4978,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // (never diverges from what pickEgress actually sees) — the CAUSE `accounts:status`'s "accounts
       // unavailable" SYMPTOM never showed.
       egressProxyHealth: computeEgressProxyHealth(active),
+      egressExitIpHealth: computeEgressExitIpHealth(active),
       shedAllThrottled,
       bareBurstRotateSuppressed,
       opusToSonnetDowngrades,
+      effortClamps: {
+        retries: effortClampRetries,
+        rewrites: effortClampRewrites,
+        learned: effortClampCache
+          .entries()
+          .map(({ model: m, from, to, learnedAt, applied }) => ({ model: m, from, to, learnedAt, applied })),
+      },
       clamp: {
         mode: clampMode,
         recommendation: Number.isFinite(lastServiceableRecommendation) ? lastServiceableRecommendation : null,
@@ -4531,6 +5043,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
        *  the model for that account. In the pool, not parked; each lapses or clears on a 2xx. */
       codexModelRefusals: codexModelRefusals.snapshot(),
       codexEarliestRecoveryAt: Number.isFinite(codexEarliestRecoveryAt) ? codexEarliestRecoveryAt : null,
+      codexUnserviceableCause,
+      codexReachability: codexReach,
       beeFacing503: { egressExhausted: beeEgressExhausted, tokenStall: beeTokenStall },
       // EI-535 (gateway-healthz-stale-latch fix): `snap.unified` freezes at its last-observed value once
       // traffic goes idle — no new upstream response means recordHeaders never runs again to update it.
@@ -4681,6 +5195,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // the canonical durable gateway governor, so no local per-client cap/circuit may shed work before
     // a receipt exists.
     const ownerId = (req.headers[OWNER_HEADER] as string | undefined)?.trim();
+    const clientAbort = new AbortController();
+    const onClientAbort = () => clientAbort.abort(new Error('local downstream disconnected'));
+    req.once('aborted', onClientAbort);
+    res.once('close', onClientAbort);
+    if (req.aborted || res.destroyed) onClientAbort();
     try {
       stageSpan?.beginStage('bodyRead');
       let bodyBuf: Buffer;
@@ -4757,6 +5276,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         await executeGatewayRequestKernel<LocalRouteValue, LocalRouteValue, LocalChunk, LocalResponseMetadata>({
           request: {
             lane: gatewayLaneRegistry.localOpenAiChat,
+            signal: clientAbort.signal,
             body: (async function* () {
               yield bodyBuf;
             })(),
@@ -4794,6 +5314,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // real improvement and belongs in its own change (D-003).
           inFlight: { register: () => ({ unregister: () => undefined }) },
           downstream: {
+            signal: clientAbort.signal,
             start: ({ status, metadata }) => {
               res.writeHead(status, { 'content-type': metadata.contentType });
             },
@@ -4901,6 +5422,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
           /* already torn down */
         }
       }
+    } finally {
+      req.off('aborted', onClientAbort);
+      res.off('close', onClientAbort);
     }
   }
 
@@ -5039,7 +5563,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     return task;
   }
 
-  function codexModelsResponse(cliHome?: string, liveCatalog?: CodexModelsCatalog | null) {
+  async function codexModelsResponse(cliHome?: string, liveCatalog?: CodexModelsCatalog | null) {
     const reasoningDescriptions = {
       low: 'Fast responses with lighter reasoning',
       medium: 'Balances speed and reasoning depth for everyday tasks',
@@ -5102,7 +5626,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
       supports_image_detail_original: true,
       context_window: contextWindow,
       max_context_window: maxContextWindow,
-      comp_hash: 'papercusp-gateway',
+      // NO comp_hash here, deliberately (WI-10005673). Codex compares each turn's comp_hash with
+      // the previous turn's and, when both are present and differ, compacts before the turn
+      // (CompactionReason::CompHashChanged). This used to say 'papercusp-gateway' while the live
+      // upstream catalog says e.g. '3000', so every thread that crossed between the two sources
+      // compacted on its next turn, and the managed PreCompact hook turned that into a
+      // carry-respawn that lost the history. The gateway does not know the compaction hash, so
+      // it must not claim one: Codex skips the check when either side is absent.
       effective_context_window_percent: 95,
       experimental_supported_tools: [],
       input_modalities: ['text', 'image'],
@@ -5158,7 +5688,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     let localCatalog: unknown = null;
     if (cliHome) {
       try {
-        localCatalog = codexModelsCacheRead(cliHome);
+        localCatalog = await codexModelsCacheRead(cliHome);
       } catch {
         /* live/static fallback below */
       }
@@ -5179,7 +5709,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const modelsBySlug = new Map(fallbackModels.map((entry) => [entry.slug, entry]));
     // Old pool-home cache first, then the freshly fetched account catalog. Later sources win
     // metadata while retaining any reasoning level the safer fallback knew about.
-    for (const source of [localModels, liveModels]) {
+    // comp_hash is taken ONLY from the live account catalog (WI-10005673). A pool-home cache can
+    // be arbitrarily stale, and serving its hash while live is unavailable reintroduces the
+    // cross-source flip that forces Codex into a pre-turn CompHashChanged compaction.
+    const withoutCompHash = (row: CodexModel): CodexModel => {
+      const { comp_hash: _staleCompHash, ...rest } = row;
+      return rest as CodexModel;
+    };
+    for (const source of [localModels.map(withoutCompHash), liveModels]) {
       for (const incoming of source) {
         const prior = modelsBySlug.get(incoming.slug);
         if (!prior) order.push(incoming.slug);
@@ -5251,6 +5788,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // WI-1073: at-most-once guard — we downgrade a walled OPUS request to sonnet only ONCE per request,
     // so a failed sonnet retry forwards (never opus→sonnet→sonnet looping).
     let opusDowngraded = false;
+    // WI-10005833: at-most-once guard for the unsupported-effort retry, plus what was substituted (for
+    // the response header). A second effort 400 after the retry is forwarded, never looped on.
+    let effortClampRetried = false;
+    let effortClampedFrom: string | null = null;
+    let effortClampedTo: string | null = null;
     let est = { inTok: 0, outTok: 1024 };
     // Streaming requests get the SHORT TTFB headers deadline (first byte in seconds); non-streaming the
     // generous one (headers only after the full generation). Default false → generous, so an unparseable
@@ -5269,6 +5811,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         const cached = rewriteAnthropicCacheBody(bodyBuf, {
           injectToolsBreakpoint: cacheToolsBreakpointEnabled,
           splitBoundary: cacheSplitBoundaryEnabled,
+          relocateSystemTail: cacheSplitBoundaryEnabled && (await relocateSystemTailOn()),
           deferLargeTools: cacheDeferLargeToolsEnabled,
           deferMinToolBytes: cacheDeferMinToolBytesValue,
         });
@@ -5412,6 +5955,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // window in the beta header before it reaches us. The header is therefore
     // part of the effective request window even when body normalization did not
     // see the marker.
+    // WI-10006049: the 1M DEFAULT for papercusp-managed callers on a 1M-capable family — decided
+    // HERE, before the window is read, so account/model alternates are chosen for the window the
+    // request will actually be served at (see shouldDefaultContext1m).
+    if (
+      shouldDefaultContext1m({
+        owner: wantOwner,
+        url,
+        model,
+        context1m,
+        clientHas1m: hasContext1mBeta(req.headers['anthropic-beta'] as string | undefined),
+      })
+    ) {
+      context1m = true;
+    }
     const requestedWindow1m = context1m || hasContext1mBeta(req.headers['anthropic-beta'] as string | undefined);
     if (operationModelPolicy.status === 'bound' && pool.healthyCount) {
       const policy = operationModelPolicy.policy;
@@ -6042,6 +6599,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // Carried ACROSS passes: the live `attempt` counter bounds rotations for the
       // WHOLE request, not per ladder entry, so each pass gets only what is left.
       let attemptsUsed = 0;
+      /** R-5: attempts of this request that ended in a TTFB timeout, across every pass. */
+      let ttfbTimeoutsUsed = 0;
       let curEgressKey = egressCacheKey(active.accountId, undefined);
       let lastTransportHadProxy = false;
       let shedRecorded = false;
@@ -6145,7 +6704,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       let lastExhaustResetAt = 0;
 
       // ── the deferred pair (seam 3) ───────────────────────────────────────────
-      let pendingThrottle = false;
+      /** The scope of a 429 awaiting the routing decision (WI-6554700010011426), or null. */
+      let pendingThrottle: RateLimitScope | null = null;
       let pendingTransport: { account: ActiveAccount; egressKey: string; stalled: boolean } | null = null;
 
       /** The live account-level egress circuit (gateway.ts pre-migration :4222-4257). */
@@ -6190,13 +6750,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
        * this pass produced no further attempt.
        */
       const resolvePending = (nextReason: ClaudeRouteReason | null) => {
-        if (pendingThrottle) {
-          pendingThrottle = false;
+        const throttleScope = pendingThrottle;
+        if (throttleScope) {
+          pendingThrottle = null;
           // Fix B: a 429 we successfully routed around is a ROUTING event, not
           // pool-wide over-drive, and must stay invisible to global AIMD. A next
           // attempt of ANY reason is exactly the live `routedAround` — both the
-          // cross-account rotate and the sibling-IP retry set it.
-          if (nextReason === null) providerAdmission.recordThrottle('claude');
+          // cross-account rotate and the sibling-IP retry set it. The shared
+          // classifier also keeps an account-scoped (usage-cap) 429 off the window.
+          providerAdmission.recordOutcome(
+            'claude',
+            { kind: 'rate-limited', scope: throttleScope, routedAround: nextReason !== null },
+            stageSpan?.requestId,
+          );
         }
         const transport = pendingTransport;
         if (transport) {
@@ -6266,8 +6832,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // rather than the error's identity so no error-normalisation can lose it.
       const INTERCEPT = new Error('claude gateway: caller intercepted before relay');
       type Intercept = {
-        action: 'wait' | 'absorb' | 'downgrade';
+        action: 'wait' | 'absorb' | 'downgrade' | 'effort-clamp';
         status: number;
+        /** Account that supplied this response; an absorb candidate may never acquire a slot. */
+        accountId: string;
         outHeaders: Record<string, string>;
         peeked: string;
         waitMs: number;
@@ -6316,6 +6884,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
           outHeaders[PIN_YIELDED_HEADER] = `${pinned.accountId}->${metadata.accountId}`;
         }
         if (opusDowngraded) outHeaders[MODEL_DOWNGRADED_HEADER] = 'opus->sonnet';
+        if (effortClampedFrom && effortClampedTo) {
+          outHeaders[EFFORT_CLAMPED_HEADER] = `${effortClampedFrom}->${effortClampedTo}`;
+        }
         return outHeaders;
       };
 
@@ -6326,8 +6897,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
         if (res.writableEnded || res.destroyed) return;
         // EI-7168: this request was admitted, got a 2xx, already recorded its
         // optimistic success, and then died mid-relay — the expensive failure.
-        // Correct that record with an immediate hard clamp, once.
-        providerAdmission.recordHardFailure('claude');
+        // Correct that record with one unit of congestion pressure for this request
+        // (WI-6554700010011426: sustained across distinct requests, never an instant clamp).
+        providerAdmission.recordOutcome('claude', { kind: 'transport-failure' }, stageSpan?.requestId);
         if (!sseForward) {
           try {
             res.destroy();
@@ -6350,6 +6922,37 @@ export function createInferenceGateway(deps: GatewayDeps) {
         }
       };
 
+      // WI-10005833: an accepted operation policy that pins an exact effort is enforced before any I/O
+      // (the 503 above). Substituting a different level would violate it, so the clamp stays off there
+      // and the upstream 400 is forwarded unchanged.
+      const effortPinnedByPolicy =
+        operationModelPolicy.status === 'bound' && Boolean(operationModelPolicy.policy.effort);
+      /** Rewrite this request's `output_config.effort` from `from` to `to`; false when the body carries none. */
+      const clampRequestEffort = (from: string, to: string): boolean => {
+        const rewritten = rewriteRequestEffort(bodyBuf, to);
+        if (!rewritten) return false;
+        bodyBuf = rewritten;
+        effortClampedFrom ??= from;
+        effortClampedTo = to;
+        return true;
+      };
+      /**
+       * The substitution an upstream 400 body calls for, or null. Non-null only when the body names an
+       * unsupported effort, that level is the one this request carries in `output_config.effort`, a
+       * supported level exists to move to, and the body can be rewritten — so an intercept taken on it
+       * always retries instead of falling through to a forward that skips the outcome records.
+       */
+      const effortClampFor = (peeked: string): { from: string; to: string; supported: string[] } | null => {
+        if (effortPinnedByPolicy || effortClampRetried) return null;
+        const unsupported = parseUnsupportedEffortError(peeked);
+        if (!unsupported) return null;
+        const from = readRequestEffort(bodyBuf);
+        if (!from || from !== unsupported.requested) return null;
+        const to = chooseSupportedEffort(from, unsupported.supported);
+        if (!to || !rewriteRequestEffort(bodyBuf, to)) return null;
+        return { from, to, supported: unsupported.supported };
+      };
+
       for (;;) {
         clearIntercept();
         // A caller-level wait/absorb logs its own retry line, so a line left pending
@@ -6358,6 +6961,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
         shedRecorded = false;
         rotateSuppressRecorded = false;
         let attemptsThisPass = 0;
+
+        // WI-10005833: rewrite a level this model is already known to refuse BEFORE sending, so only
+        // the first request per (model, level) pays the 400 round trip. Checked on every pass because
+        // a pass may follow a model substitution (the WI-1073 downgrade), whose id has its own entry.
+        if (!effortPinnedByPolicy) {
+          const requestedEffort = readRequestEffort(bodyBuf);
+          const learned = requestedEffort ? effortClampCache.apply(model, requestedEffort) : null;
+          if (requestedEffort && learned && clampRequestEffort(requestedEffort, learned)) {
+            effortClampRewrites++;
+          }
+        }
 
         const kernelAdapter = createClaudeKernelAdapter({
           // D-010: `proxy` spent this request's one `pool.active()` across the ~500
@@ -6416,7 +7030,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
             const fetchInit: FetchInit = { method: init.method, headers: init.headers, signal: init.signal };
             if (init.body) fetchInit.body = init.body as unknown as BodyInit;
             if (init.dispatcher) fetchInit.dispatcher = init.dispatcher as UndiciDispatcher;
-            const upstream = await doFetch(target, fetchInit as RequestInit);
+            const authorizedSend = await authorizeCarryTrialAttempt(req, 'anthropic-http', init.diagnosticAccountId, target, init);
+            if (init.body) fetchInit.body = init.body as unknown as BodyInit;
+            if (carryTrial || deps.readAcceptedOperationBudgetBinding) fetchInit.redirect = 'error';
+            // Authorization sees the adapter's final body and selected provider
+            // account. Re-check its copied receipt synchronously at every send.
+            const upstream = await authorizedSend(() => doFetch(target, fetchInit as RequestInit));
             return {
               status: upstream.status,
               headers: upstream.headers,
@@ -6489,6 +7108,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // The live `attempt` bounds rotations for the WHOLE request, so a pass
               // gets only the remainder — and a budget RESET restores the full count.
               maxAttempts: Math.max(1, INTERNAL_RETRY_MAX_ATTEMPTS - attemptsUsed),
+              // R-5: the TTFB bound is per REQUEST, so a pass gets only what is left of it.
+              maxTtfbTimeouts: Math.max(1, TTFB_TIMEOUT_MAX_ATTEMPTS - ttfbTimeoutsUsed),
             },
             telemetry: requestStageTelemetry,
             // D-008: adopt the span this HTTP request already opened, or the kernel
@@ -6506,6 +7127,23 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // re-admitting would deadlock on itself); step (iii-b) swaps in the real
               // controller HERE and drops the bridge's, so exactly one of the two admits.
               run: (context, task) => kernelAdmission.run(context, task),
+              // R-3 / P-003: once the response streams, hand the lane slot back. This
+              // request's self-heal registry entry leaves with it (the registry must stay a
+              // subset of HELD slots, or the valve could reclaim a healthy stream and the
+              // reconcile guard reads `registry>slots`). The per-account governor slot
+              // (`gov.acquire`) is untouched and still bounds per-account concurrency.
+              ...(kernelAdmission.releaseForStream
+                ? {
+                    releaseForStream: () => {
+                      const entry = inFlightReg.get(reqId);
+                      if (entry) {
+                        inFlightReg.delete(reqId);
+                        if (!entry.reclaimed) lastDrainAt.claude = Date.now();
+                      }
+                      kernelAdmission.releaseForStream?.();
+                    },
+                  }
+                : {}),
               observeAttempt: ({ context, response, error }) => {
                 // Settle the previous attempt's deferred effects now that the
                 // adapter's routing answer is visible on THIS attempt's route.
@@ -6524,6 +7162,21 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 const egressKey = context.route.value.egress.key;
 
                 if (error) {
+                  // A controller refusal occurred before provider I/O. It is a
+                  // gateway policy outcome, not an account or egress failure.
+                  if (error.code === 'invalid-route') {
+                    lastTransportHadProxy = false;
+                    return;
+                  }
+                  const requestRef = `${gatewayProcessInstanceId}:${stageSpan?.requestId ?? 'unobserved'}`;
+                  // A client disconnect is not evidence that the upstream or its
+                  // egress proxy failed. Keep the kernel's typed cancellation
+                  // separate before touching either failure counter or cooldown.
+                  if (error.code === 'cancelled') {
+                    log('info', `downstream cancelled request=${requestRef} code=cancelled on '${account.accountId}': ${error.message}`);
+                    lastTransportHadProxy = false;
+                    return;
+                  }
                   upstreamErrors++;
                   // The adapter's STATUS discriminates a token failure (503) from a
                   // transport failure (502); a TTFB timeout surfaces as its own code
@@ -6546,10 +7199,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
                     lastTransportHadProxy = false;
                     return;
                   }
-                  const stalled = error.code === 'ttfb-timeout' || error.code === 'cancelled';
+                  const stalled = error.code === 'ttfb-timeout';
+                  if (stalled) ttfbTimeoutsUsed += 1;
+                  // WI-6554700010009426: an admitted attempt that died on the wire (TTFB
+                  // deadline / transport) spent its slot and produced nothing. It adds ONE
+                  // unit of congestion pressure per request (WI-6554700010011426, plan D-001):
+                  // a herd of distinct failing requests still contracts the lane, but one
+                  // slow prompt failing over cannot walk the window down attempt by attempt.
+                  providerAdmission.recordOutcome('claude', { kind: 'transport-failure' }, stageSpan?.requestId);
                   log(
                     'error',
-                    `upstream fetch ${stalled ? 'STALLED (aborted)' : 'failed'} on '${account.accountId}': ${error.message}`,
+                    `upstream fetch ${stalled ? 'STALLED (aborted)' : 'failed'} request=${requestRef} code=${error.code} on '${account.accountId}': ${error.message}`,
                   );
                   // SCOPING: only an account WITH an http proxy can have a DEAD
                   // proxy. A no-proxy account that transport-fails is an
@@ -6608,8 +7268,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 lastExhaustResetAt = 0;
 
                 if (classification?.kind === 'credit-wall') {
-                  // Credit exhaustion (402 billing_error, 400 "specified API usage
-                  // limits", 429 enforced_spend_limit_reached) is a billing WALL on
+                  // Credit exhaustion (402 billing_error, 400 billing_error / low-credit /
+                  // specified API-usage-limit, 429 enforced_spend_limit_reached) is a billing WALL on
                   // THIS account, not a transient (plan anthropic-credits-gateway
                   // D-004): pause it until its reset so the selector skips it, then
                   // rotate. The cause is logged; the body and credential are not.
@@ -6684,9 +7344,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
                     if (coldRestCause !== 'not-cold-rest') {
                       shape429Suffix += ` [cold-rest-cause=${coldRestCause} since-readmit=${msSinceReadmit ?? '-'}ms]`;
                     }
-                    // Deferred: an AIMD throttle is recorded only for a 429 that
-                    // could NOT be routed around (seam 3).
-                    pendingThrottle = true;
+                    // Deferred: settled once the routing decision is known (seam 3).
+                    // The SHAPE decides account-scoped vs transient (WI-6554700010011426).
+                    pendingThrottle = claudeRateLimitScope(shape429);
                   }
 
                   if (status === 529) {
@@ -6864,6 +7524,23 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 const classification = metadata.classification;
                 const retryIntent = classification !== null && classification.kind !== 'forward';
 
+                // WI-10005833: a 400 refusing the request's reasoning effort names the supported levels
+                // itself, so retry once at a supported level instead of relaying a 400 that ends the
+                // caller's turn. Decided here, before anything is relayed; applied in the catch.
+                if (status === 400 && !res.headersSent && effortClampFor(metadata.peekedBody ?? '')) {
+                  interception.taken = {
+                    status,
+                    accountId: metadata.accountId,
+                    outHeaders,
+                    peeked: metadata.peekedBody ?? '',
+                    transient: false,
+                    action: 'effort-clamp',
+                    waitMs: 0,
+                    backoffMs: 0,
+                  };
+                  throw INTERCEPT;
+                }
+
                 if (retryIntent) {
                   const decision = decideThrottleRecovery({
                     status,
@@ -6883,6 +7560,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                   });
                   const base: Omit<Intercept, 'action' | 'waitMs' | 'backoffMs'> = {
                     status,
+                    accountId: metadata.accountId,
                     outHeaders,
                     peeked: metadata.peekedBody ?? '',
                     transient: decision.transient,
@@ -7032,11 +7710,66 @@ export function createInferenceGateway(deps: GatewayDeps) {
           resolvePending(null);
           attemptsUsed += attemptsThisPass;
 
+          const failure =
+            error instanceof GatewayRequestKernelError
+              ? error
+              : new GatewayRequestKernelError(error instanceof Error ? error.message : String(error), {
+                  code: 'gateway-error',
+                  outcome: 'gateway-error',
+                  status: 500,
+                  cause: error,
+                });
+
           // Read-and-clear through the helper (see its declaration): going through a
           // call is what keeps control-flow analysis from having narrowed this to
           // `null` at the pass reset, which would make every field access below TS2339.
-          const taken = takeIntercept();
+          let taken = takeIntercept();
+          // A retry's pacing can spend the slot-hold budget AFTER route selection.
+          // The kernel then sheds before dispatch, bypassing downstream.start and
+          // its outer recovery ladder. Give that shed the same absorb decision and
+          // release/re-acquire path as a relayed throttle. A zero slot budget can
+          // never dispatch, so refreshing it would only spin until absorb expires.
+          if (!taken && failure.code === 'retry-budget-exhausted' && internalRetryDeadlineMs > 0 &&
+              !reqAbort.signal.aborted) {
+            const status = failure.status === 529 ? 529 : 429;
+            const decision = decideThrottleRecovery({
+              status,
+              retryIntent: true,
+              lastExhaustResetAt,
+              state: { transientWaitedMs, retryDeadlineAt, absorbDeadlineAt, headersSent: res.headersSent },
+              budgets: {
+                waitCapMs: ALL_THROTTLED_RECOVERY_WAIT_CAP_MS,
+                transientTotalWaitBudgetMs: TRANSIENT_TOTAL_WAIT_BUDGET_MS,
+                overloadBackoffMs: OVERLOAD_529_BACKOFF_MS,
+              },
+            });
+            if (decision.action === 'absorb') {
+              taken = {
+                action: 'absorb', status, accountId: active.accountId,
+                outHeaders: { 'content-type': 'application/json' },
+                peeked: JSON.stringify({ type: 'error', gateway: true, error: {
+                  type: status === 529 ? 'overloaded_error' : 'rate_limit_error', message: failure.message,
+                } }),
+                transient: decision.transient, waitMs: 0, backoffMs: decision.backoffMs,
+              };
+            }
+          }
           if (taken) {
+            if (taken.action === 'effort-clamp') {
+              // WI-10005833: at most once per request. `effortClampFor` already proved the rewrite
+              // applies; it is re-derived from the same peeked body and the unchanged request body.
+              const clamp = effortClampFor(taken.peeked);
+              effortClampRetried = true;
+              if (clamp && clampRequestEffort(clamp.from, clamp.to)) {
+                effortClampCache.learn(model, clamp.from, clamp.to);
+                effortClampRetries++;
+                log(
+                  'warn',
+                  `inference-gateway: upstream 400 — ${model} does not support effort '${clamp.from}' (supported: ${clamp.supported.join(', ')}) → retrying once at '${clamp.to}' for '${wantOwner ?? 'unpinned'}' on '${active.accountId}'; later ${model} '${clamp.from}' requests are rewritten before sending (WI-10005833)`,
+                );
+                continue;
+              }
+            }
             if (taken.action === 'wait') {
               transientWaitedMs += taken.waitMs;
               log(
@@ -7207,14 +7940,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // An absorb that gave up still routed and still owes its outcome
               // record; a downgrade-rung forward never recorded one.
               if (absorbGaveUp) {
-                recordRoute(affinityKey ?? wantOwner, active.accountId, model, {
+                // The re-acquire can select a different account without sending another
+                // upstream request. Attribute the retained response to its actual supplier.
+                stageSpan?.setServingAccount(taken.accountId);
+                recordRoute(affinityKey ?? wantOwner, taken.accountId, model, {
                   context1m: servedContext1m,
                   nativeSessionId,
                 });
                 recordOwnerOutcome(
                   wantOwner,
                   taken.status < 400 ? 'ok' : taken.status === 429 ? 'upstream_429' : 'upstream_error',
-                  { account: active.accountId, status: taken.status },
+                  { account: taken.accountId, status: taken.status },
                 );
               }
               // EI-21921571654476580: this IS the gateway's final answer — wait,
@@ -7236,7 +7972,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 );
                 log(
                   'warn',
-                  `inference-gateway: upstream ${taken.status} retry ladder EXHAUSTED on '${active.accountId}' for ${model} after ${attemptsUsed} attempt(s) — forwarding terminal ${taken.status} with x-should-retry=false`,
+                  `inference-gateway: upstream ${taken.status} retry ladder EXHAUSTED on '${taken.accountId}' for ${model} after ${attemptsUsed} attempt(s) — forwarding terminal ${taken.status} with x-should-retry=false`,
                 );
               }
               res.writeHead(taken.status, taken.outHeaders);
@@ -7247,15 +7983,6 @@ export function createInferenceGateway(deps: GatewayDeps) {
           }
 
           endCacheProbe();
-          const failure =
-            error instanceof GatewayRequestKernelError
-              ? error
-              : new GatewayRequestKernelError(error instanceof Error ? error.message : String(error), {
-                  code: 'gateway-error',
-                  outcome: 'gateway-error',
-                  status: 500,
-                  cause: error,
-                });
 
           if (failure.code === 'request-ceiling') {
             log(
@@ -7284,10 +8011,49 @@ export function createInferenceGateway(deps: GatewayDeps) {
             return;
           }
 
+          if (failure.code === 'invalid-route') {
+            sendJson(res, failure.status ?? 403, { type: 'error', gateway: true,
+              error: { type: 'invalid_request_error', message: failure.message } },
+              { 'x-should-retry': 'false' });
+            return;
+          }
+
           if (attestationFailed) {
             sendJson(res, 503, { type: 'error',
               error: { type: 'api_error', message: 'accepted operation request attestation could not be verified or persisted' },
               gateway: true }, { 'x-should-retry': 'false' });
+            return;
+          }
+
+          // WI-6554700010011504: the wedge-prevention deadline ran out between a chosen
+          // route and its attempt. That is the ladder's SHED — the same terminal status the
+          // retry ladder forwards when it is exhausted (x-should-retry=false + the
+          // attempt count), never an "upstream stall" 502. The kernel carries the status
+          // the retry was rescuing: an exhausted 529 overload stays a 529 (not a
+          // misleading rate limit); everything else is the throttle shed's 429.
+          if (failure.code === 'retry-budget-exhausted') {
+            retryBudgetExhausted(); // records the shed exactly once (idempotent)
+            const overloaded = failure.status === 529;
+            sendJson(
+              res,
+              overloaded ? 529 : 429,
+              {
+                type: 'error',
+                error: {
+                  type: overloaded ? 'overloaded_error' : 'rate_limit_error',
+                  message: `inference-gateway: internal-retry deadline ${internalRetryDeadlineMs}ms exhausted for ${model} (last account '${active.accountId}'${overloaded ? ', upstream overloaded' : ''}); no account could take the request`,
+                },
+                gateway: true,
+              },
+              {
+                ...shapeTerminalThrottle({
+                  attempts: attemptsUsed,
+                  retriesExhaustedHeader: RETRIES_EXHAUSTED_HEADER,
+                  suppressClientRetry: true,
+                }).headers,
+                [ROUTED_ACCOUNT_HEADER]: active.accountId,
+              },
+            );
             return;
           }
 
@@ -7327,6 +8093,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
             if (
               ABSORB_STALLS_ON &&
               everRotated &&
+              // R-5: a request that has hit its TTFB bound is not re-entered — holding it
+              // through the stall would just upload the same slow prompt to more accounts.
+              ttfbTimeoutsUsed < TTFB_TIMEOUT_MAX_ATTEMPTS &&
               absorbDeadlineAt > 0 &&
               Date.now() < absorbDeadlineAt &&
               !res.headersSent
@@ -7445,6 +8214,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const chunks: Buffer[] = [];
     let bufferedBytes = 0;
     return {
+      get contentType() { return decoder.contentType(); },
       push(chunk: Uint8Array) {
         decoder.push(chunk);
         if (!bufferBody) return;
@@ -7803,6 +8573,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // the slot this request already holds. It is also why the slot cannot move down to
           // this seam: this transport commits its response head BEFORE the kernel call below.
           run: (context, task) => kernelAdmission.run(context, task),
+          // R-3 / P-003: hand the lane slot back once the response streams.
+          ...(kernelAdmission.releaseForStream ? { releaseForStream: () => kernelAdmission.releaseForStream?.() } : {}),
           observeAttempt: ({ context, error }) => {
             attemptsSeen = context.attempt;
             const account = context.route.accountId ?? cli.accountId;
@@ -7812,17 +8584,24 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // The CLI home encapsulates its own credential — there is no token to
             // resolve — so the auth stage stays the zero-width seam it was.
             if (!error) return;
+            const requestRef = `${gatewayProcessInstanceId}:${stageSpan?.requestId ?? 'unobserved'}`;
+            if (error.code === 'cancelled') {
+              log('info', `inference-gateway: codex-cli downstream cancelled request=${requestRef} code=cancelled on '${account}': ${error.message}`);
+              return;
+            }
             lastFailureDetail = error.message;
             if (isCodexRateLimitFailure(error.message)) {
               codexUpstream429++;
               recordRoutingUpstream429('codex', account);
-              providerAdmission.recordThrottle('codex');
+              // Admission hears this 429 only if the request ENDS on it (the terminal
+              // handler below): a 429 the kernel fails over past is a routing event,
+              // not congestion (WI-6554700010011426).
               recordOwnerOutcome(routing.ownerId, 'upstream_429', { account, status: 429, detail: 'cli-bridge' });
               log('warn', `inference-gateway: codex-cli bridge rate-limited on '${account}': ${error.message}`);
             } else {
               codexUpstreamErrors++;
               recordOwnerOutcome(routing.ownerId, 'upstream_error', { account, detail: 'cli-bridge' });
-              log('error', `inference-gateway: codex-cli bridge failed on '${account}': ${error.message}`);
+              log('error', `inference-gateway: codex-cli bridge failed request=${requestRef} code=${error.code} on '${account}': ${error.message}`);
             }
             // THE ONE HOOK THAT FIRES ON EVERY ATTEMPT. Credential death must park
             // the account even on the LAST attempt, when no retry remains and the
@@ -7947,6 +8726,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
         ? detail
         : `inference-gateway: codex-cli bridge failed: ${detail}`;
       const rateLimited = isCodexRateLimitFailure(lastFailureDetail || detail);
+      if (rateLimited) {
+        // The request ENDS on a rate limit nothing routed around. The shared
+        // classifier keeps a usage/session-limit wall off the window.
+        providerAdmission.recordOutcome(
+          'codex',
+          { kind: 'rate-limited', scope: codexCliRateLimitScope(lastFailureDetail || detail), routedAround: false },
+          stageSpan?.requestId,
+        );
+      }
       const rateShape = rateLimited
         ? shapeTerminalThrottle({
             attempts: attemptsSeen,
@@ -8137,16 +8925,21 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const onResClose = () => abortRequest('codex downstream response closed');
     req.once('aborted', onReqAborted);
     res.once('close', onResClose);
-    res.setTimeout(downstreamIdleMs, () => res.destroy());
+    // Auth and bounded quota-prefix inspection withhold bytes intentionally.
+    // Kernel TTFB/request-ceiling guards own this phase; socket idle starts at relay.
+    res.setTimeout(0, () => res.destroy());
 
     // Per-attempt bookkeeping the kernel deliberately does NOT own.
     let attemptsSeen = 0;
     let lastAccountId = cli.accountId;
     let cacheProbe: PassThrough | null = null;
+    let finishCacheObservation: (() => void) | null = null;
     let acceptedRelay: ReturnType<typeof acceptedCodexResponse> | null = null;
     let pendingAcceptedHead: { status: number; headers: Record<string, string> } | null = null;
     const endCacheProbe = () => {
       if (!cacheProbe) return;
+      finishCacheObservation?.();
+      finishCacheObservation = null;
       cacheProbe.end();
       cacheProbe = null;
     };
@@ -8185,6 +8978,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
         requestHeaders: req.headers,
         stripRequestHeaders: STRIP_REQUEST,
         streaming: wantStream,
+        onStreamObservation: (observation) => log('info', 'inference-gateway: codex OAuth stream-evidence/v1 ' +
+          JSON.stringify({ requestId: stageSpan?.requestId ?? null, ownerId: routing.ownerId ?? null,
+            model: bodyModel || null, ...observation })),
         // Public Luna may be backed by the ChatGPT subscription's hidden reserve
         // tier after a premium-window 429. The adapter keeps the public model in
         // telemetry and only rewrites the retry body at the upstream seam.
@@ -8253,17 +9049,51 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // — it rejoined rotation still walled and re-burned an upstream 429 on nearly every
           // request. The codex parser reads the real dialect (exhausted-window resets + retry-after).
           const parsed = parseCodexRateReset(headers);
-          return { resetAt: parsed.resetAt, retryAfterMs: parsed.retryAfterMs };
+          return { resetAt: parsed.resetAt, retryAfterMs: parsed.retryAfterMs, transient: parsed.transient };
         },
         onEgressAttempt: (id) => egressAttemptsByAccount.set(id, (egressAttemptsByAccount.get(id) ?? 0) + 1),
-        onEgressFailure: (id) => egressFailsByAccount.set(id, (egressFailsByAccount.get(id) ?? 0) + 1),
+        onEgressFailure: (id, error) => {
+          egressFailsByAccount.set(id, (egressFailsByAccount.get(id) ?? 0) + 1);
+          // WI-6554700010009426: an ADMITTED codex attempt that died on the wire (TTFB
+          // deadline / connect / DNS / reset — downstream cancels and local terminal
+          // decisions never reach this hook) is a measured upstream fault (D-005), the
+          // same evidence the claude lane already contracts on (EI-7168). Without it the
+          // codex lane only ever heard 429s and successes, so on 2026-10-12 its capless
+          // window kept EXPANDING (5878→6196) through ~8,900 TTFB timeouts while a
+          // mass-resume herd saturated egress; every abort failed over and re-uploaded
+          // the whole body, and the gateway collapsed for ~35 min (claude too).
+          // WI-6554700010011426: but contracting on EVERY attempt over-corrected — a few
+          // huge prompts timing out across their failovers pinned the window at its floor
+          // of 4 with 100+ queued. One unit of pressure per REQUEST, sustained across
+          // distinct requests (plan D-001), keeps the herd guard and frees the lane.
+          providerAdmission.recordOutcome('codex', { kind: 'transport-failure' }, stageSpan?.requestId);
+          const description = describeFetchError(error);
+          const edge = codexReachability.noteTransportFailure(id, description, classifyTransportFailure(error), Date.now());
+          if (edge === 'became-unreachable') {
+            const r = codexReachability.snapshot(Date.now());
+            log(
+              'error',
+              `inference-gateway: Codex upstream UNREACHABLE — ${r.transportFailuresSinceResponse} transport failures across ` +
+                `${r.accountsFailingSinceResponse} account(s) with no HTTP response since ` +
+                `${r.lastResponseAt ? new Date(r.lastResponseAt).toISOString() : 'start'} (latest ${r.lastTransportFailureKind}: ${description}). ` +
+                `The latest attempt ended before an HTTP response; the measured failure kind above distinguishes DNS, connection, and response-timeout failures. ` +
+                `Accounts parked by these failures do not establish usage exhaustion or a local network outage.`,
+            );
+          }
+        },
+        onUpstreamResponse: (id) => {
+          if (codexReachability.noteResponse(id, Date.now()) === 'became-reachable') {
+            log('warn', `inference-gateway: Codex upstream reachable again ('${id}' got an HTTP response)`);
+          }
+        },
         fetch: async (target, init) => {
           const fetchInit: FetchInit = { method: init.method, headers: init.headers, signal: init.signal };
           if (init.body) fetchInit.body = init.body as unknown as BodyInit;
           if (init.dispatcher) fetchInit.dispatcher = init.dispatcher as UndiciDispatcher;
-          const check = await authorizeCarryTrialAttempt(req, 'oauth-http', init.diagnosticAccountId, target, init);
-          if (carryTrial) fetchInit.redirect = 'error'; // A redirect would be another, unreserved send.
-          const send = () => { check(); return doFetch(target, fetchInit as RequestInit); };
+          const authorizedSend = await authorizeCarryTrialAttempt(req, 'oauth-http', init.diagnosticAccountId, target, init);
+          if (init.body) fetchInit.body = init.body as unknown as BodyInit;
+          if (carryTrial || deps.readAcceptedOperationBudgetBinding) fetchInit.redirect = 'error';
+          const send = () => authorizedSend(() => doFetch(target, fetchInit as RequestInit));
           const upstream = stageSpan
             ? await stageSpan.observeUpstreamFetch(target, init.method, init.diagnosticAccountId, send)
             : await send();
@@ -8340,6 +9170,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             bodyIdleTimeoutMs: upstreamBodyIdleTimeoutMs,
             downstreamIdleTimeoutMs: downstreamIdleMs,
             maxAttempts: INTERNAL_RETRY_MAX_ATTEMPTS,
+            maxTtfbTimeouts: TTFB_TIMEOUT_MAX_ATTEMPTS,
           },
           telemetry: requestStageTelemetry,
           span: stageSpan,
@@ -8355,6 +9186,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // the slot this request already holds. It is also why the slot cannot move down to
             // this seam: this transport commits its response head BEFORE the kernel call below.
             run: (context, task) => kernelAdmission.run(context, task),
+            // R-3 / P-003: hand the lane slot back once the response streams.
+            ...(kernelAdmission.releaseForStream ? { releaseForStream: () => kernelAdmission.releaseForStream?.() } : {}),
             observeAttempt: ({ context, response, error }) => {
               attemptsThisPass = context.attempt;
               attemptsSeen = attemptsUsed + context.attempt;
@@ -8365,12 +9198,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
               if (account !== lastAccountId) codexFailovers++;
               lastAccountId = account;
               if (error) {
+                const requestRef = `${gatewayProcessInstanceId}:${stageSpan?.requestId ?? 'unobserved'}`;
+                if (error.code === 'cancelled') {
+                  log('info', `inference-gateway: codex OAuth downstream cancelled request=${requestRef} code=cancelled on '${account}': ${error.message}`);
+                  return;
+                }
                 const authRefresh =
                   context.route.value.reason === 'refresh' ? kernelAdapter.noteRefreshFailure(context, error) : null;
                 // The STATUS discriminates the token-resolve throw (503) from the
-                // transport throw (502); a TTFB timeout, the request ceiling and a
-                // downstream abort all surfaced through the old transport catch, so
-                // they classify the same way here.
+                // transport throw (502). Cancellation was separated above; genuine
+                // deadlines retain their existing failure accounting.
                 const tokenResolve = error.status === 503;
                 codexUpstreamErrors++;
                 recordOwnerOutcome(routing.ownerId, 'upstream_error', {
@@ -8400,7 +9237,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 }
                 log(
                   'error',
-                  `inference-gateway: codex OAuth ${tokenResolve ? 'token resolve' : 'upstream'} failed on '${account}': ${error.message}`,
+                  `inference-gateway: codex OAuth ${tokenResolve ? 'token resolve' : 'upstream'} failed request=${requestRef} code=${error.code} on '${account}': ${error.message}`,
                 );
                 return;
               }
@@ -8412,7 +9249,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
               if (response.status === 429) {
                 codexUpstream429++;
                 recordRoutingUpstream429('codex', account);
-                providerAdmission.recordThrottle('codex');
+                // Admission hears only a TERMINAL 429 (downstream.start below), classified
+                // there: a routed-around or out-of-usage 429 is not congestion (WI-6554700010011426).
                 recordOwnerOutcome(routing.ownerId, 'upstream_429', { account, status: 429 });
               } else if (response.status >= 200 && response.status < 300) {
                 providerAdmission.recordSuccess('codex');
@@ -8451,6 +9289,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // confirm → un-wedge → capacity-gated wake recovery (stall-waker.ts).
               if (status === 429) {
                 const parsed = parseCodexRateReset(metadata.headers);
+                // The ladder is exhausted, so nothing routed around this 429. The shared
+                // classifier counts it as congestion only when it is TRANSIENT; an
+                // exhausted (out-of-usage / weekly) window leaves the window alone.
+                providerAdmission.recordOutcome(
+                  'codex',
+                  { kind: 'rate-limited', scope: codexRateLimitScope(parsed), routedAround: false },
+                  stageSpan?.requestId,
+                );
                 const now = Date.now();
                 const ladderResetAt = parsed.resetAt ?? (parsed.transient ? now + bare429FailoverBackoffMs : 0);
                 // The absorb is a bet the POOL recovers inside the budget — ask the pool when that is
@@ -8539,7 +9385,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // its own 'data' listener once it has the usage record.
               cacheProbe.on('data', () => undefined);
               cacheProbe.on('error', () => undefined);
-              observeOpenAiCacheUsage(
+              finishCacheObservation = observeOpenAiCacheUsage(
                 cacheProbe,
                 metadata.accountId,
                 attemptsSeen > 1 || metadata.pinYieldedFrom !== null,
@@ -8584,6 +9430,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 pendingAcceptedHead = { status, headers: outHeaders };
                 res.setTimeout(0);
               } else {
+                res.setTimeout(downstreamIdleMs);
                 res.writeHead(status, outHeaders);
               }
             },
@@ -8614,6 +9461,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               endCacheProbe();
               if (acceptedRelay && pendingAcceptedHead) {
                 const chunks = await acceptedRelay.finish();
+                pendingAcceptedHead.headers['content-type'] ??= acceptedRelay.contentType;
                 res.setTimeout(downstreamIdleMs);
                 res.writeHead(pendingAcceptedHead.status, pendingAcceptedHead.headers);
                 await flushAcceptedCodexChunks(res, chunks);
@@ -8773,8 +9621,34 @@ export function createInferenceGateway(deps: GatewayDeps) {
           return;
         }
 
+        const streamFailure = failure.cause && typeof failure.cause === 'object'
+          ? failure.cause as { protocol?: unknown; responseId?: unknown; error?: unknown }
+          : null;
+        const incompleteOAuthStream = failure.code === 'upstream-error' &&
+          streamFailure?.protocol === 'openai-responses';
+        if (incompleteOAuthStream) {
+          recordOwnerOutcome(routing.ownerId, 'upstream_error', {
+            account: lastAccountId, status: 502, detail: 'oauth-stream-incomplete',
+          });
+          log('error', 'inference-gateway: codex OAuth incomplete stream on ' + lastAccountId + ': ' + failure.message);
+        }
         if (res.headersSent) {
-          res.destroy();
+          if (incompleteOAuthStream && !reqAbort.signal.aborted && !res.destroyed && !res.writableEnded) {
+            // The kernel has already exposed output, so replay is unsafe. End
+            // truthfully instead of making the native client diagnose a socket
+            // disconnect or inventing a successful Responses completion.
+            const responseId = typeof streamFailure?.responseId === 'string' && streamFailure.responseId.trim()
+              ? streamFailure.responseId
+              : null;
+            const error = streamFailure?.error && typeof streamFailure.error === 'object'
+              ? streamFailure.error : { code: 'server_error', message: failure.message };
+            const terminal = responseId
+              ? { type: 'response.failed', response: { id: responseId, status: 'failed', error } }
+              : { type: 'error', error };
+            res.end('event: ' + terminal.type + '\ndata: ' + JSON.stringify(terminal) + '\n\n');
+          } else {
+            res.destroy();
+          }
           return;
         }
 
@@ -8848,6 +9722,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
     let preBody: Buffer | undefined;
     let requestModel: string | null = null;
     let requestEffort: string | null = null;
+    const outputLimitHeader = req.headers[REQUIRE_OUTPUT_TOKEN_LIMIT_HEADER];
+    const hostOutputLimit = carryTrialRequests.has(req) ? carryTrial?.outputTokenLimit : undefined;
+    const requiresOutputTokenLimit = outputLimitHeader !== undefined || hostOutputLimit !== undefined;
+    const invalidOutputLimit = () => {
+      req.resume();
+      sendJson(res, 400, { type: 'error', gateway: true,
+        error: { type: 'invalid_request_error', code: 'output_token_limit_invalid',
+          message: 'Required output limit needs the header true and a positive integer max_output_tokens' } },
+        { 'x-should-retry': 'false' });
+    };
+    if (outputLimitHeader !== undefined && outputLimitHeader !== 'true') {
+      invalidOutputLimit();
+      return;
+    }
     if (req.method === 'POST' && url.startsWith('/v1/responses')) {
       stageSpan?.beginStage('bodyRead');
       try {
@@ -8875,6 +9763,18 @@ export function createInferenceGateway(deps: GatewayDeps) {
         stageSpan?.setNativeCorrelation(parsed);
         if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object')
           throw new Error('request body must be a JSON object');
+        if (hostOutputLimit !== undefined) {
+          if (parsed.max_output_tokens === undefined) parsed.max_output_tokens = hostOutputLimit;
+          else if (!Number.isSafeInteger(parsed.max_output_tokens) || (parsed.max_output_tokens as number) > hostOutputLimit) {
+            invalidOutputLimit();
+            return;
+          }
+        }
+        if (requiresOutputTokenLimit && (!Number.isSafeInteger(parsed.max_output_tokens) ||
+            (parsed.max_output_tokens as number) <= 0)) {
+          invalidOutputLimit();
+          return;
+        }
         const modelSpec = typeof parsed.model === 'string' ? parsed.model : undefined;
         // Reuse the bridge parser as the one request-boundary policy seam. It
         // resolves omitted models, normalizes aliases/effort, and throws on the
@@ -9089,7 +9989,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const routedAccount = cli ? cli.accountId : active.accountId;
       const pinYieldedFrom = cli ? cliInitialPinYieldedFrom : bearerInitialPinYieldedFrom;
       const liveCatalog = cli ? await liveCodexModelsCatalog(cli, url) : null;
-      sendJson(res, 200, codexModelsResponse(cli?.home, liveCatalog), {
+      sendJson(res, 200, await codexModelsResponse(cli?.home, liveCatalog), {
         [ROUTED_ACCOUNT_HEADER]: routedAccount,
         ...(pinYieldedFrom ? { [PIN_YIELDED_HEADER]: `${pinYieldedFrom}->${routedAccount}` } : {}),
       });
@@ -9125,6 +10025,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
         yieldedFrom: cliInitialPinYieldedFrom,
       });
       const transport = codexOAuthProxyEnabled ? 'oauth-http' : 'cli-exec';
+      // Subscription normalization removes max_output_tokens; cli-exec cannot
+      // enforce it either. Refuse before auth, normalization, or execution.
+      if (requiresOutputTokenLimit &&
+          adapter.lane.transports.find(t => t.id === transport)?.enforcesOutputTokenLimit !== true) {
+        sendJson(res, 422, { type: 'error', gateway: true,
+          error: { type: 'invalid_request_error', code: 'output_token_limit_unsupported',
+            message: `Selected Codex transport '${transport}' cannot enforce the required output token limit` } },
+          { 'x-should-retry': 'false' });
+        return;
+      }
       await executeCodexLegacyTransport(
         legacyExecutorForGatewayTransport(adapter.lane, transport),
         { req, res, cli, url, preBody, routing: { hardPin, pinned: cliPin, ownerId: wantOwner }, acceptedOperation },
@@ -9203,10 +10113,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // the same Node stream it piped downstream; the kernel hands chunks to
     // `downstream.write`, so they are tee'd into this PassThrough instead.
     let cacheProbe: PassThrough | null = null;
+    let finishCacheObservation: (() => void) | null = null;
     let acceptedRelay: ReturnType<typeof acceptedCodexResponse> | null = null;
     let pendingAcceptedHead: { status: number; headers: Record<string, string> } | null = null;
     const endCacheProbe = () => {
       if (!cacheProbe) return;
+      finishCacheObservation?.();
+      finishCacheObservation = null;
       cacheProbe.end();
       cacheProbe = null;
     };
@@ -9306,9 +10219,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // rather than the per-attempt re-copy the widening would otherwise force.
         if (init.body) fetchInit.body = init.body as unknown as BodyInit;
         if (init.dispatcher) fetchInit.dispatcher = init.dispatcher as UndiciDispatcher;
-        const check = await authorizeCarryTrialAttempt(req, 'bearer-http', init.diagnosticAccountId, target, init);
-        if (carryTrial) fetchInit.redirect = 'error';
-        const send = () => { check(); return doFetch(target, fetchInit as RequestInit); };
+        const authorizedSend = await authorizeCarryTrialAttempt(req, 'bearer-http', init.diagnosticAccountId, target, init);
+        if (init.body) fetchInit.body = init.body as unknown as BodyInit;
+        if (carryTrial || deps.readAcceptedOperationBudgetBinding) fetchInit.redirect = 'error';
+        const send = () => authorizedSend(() => doFetch(target, fetchInit as RequestInit));
         const upstream = stageSpan
           ? await stageSpan.observeUpstreamFetch(target, init.method, init.diagnosticAccountId, send)
           : await send();
@@ -9382,6 +10296,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             bodyIdleTimeoutMs: upstreamBodyIdleTimeoutMs,
             downstreamIdleTimeoutMs: downstreamIdleMs,
             maxAttempts: INTERNAL_RETRY_MAX_ATTEMPTS,
+            maxTtfbTimeouts: TTFB_TIMEOUT_MAX_ATTEMPTS,
           },
           telemetry: requestStageTelemetry,
           // D-008: adopt the span this HTTP request already opened. Without it the
@@ -9397,6 +10312,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // whole body, so exactly one of the two admits and re-admitting here would deadlock
             // against the slot this request already holds.
             run: (context, task) => kernelAdmission.run(context, task),
+            // R-3 / P-003: hand the lane slot back once the response streams.
+            ...(kernelAdmission.releaseForStream ? { releaseForStream: () => kernelAdmission.releaseForStream?.() } : {}),
             observeAttempt: ({ context, response, error }) => {
               attemptsThisPass = context.attempt;
               attemptsSeen = attemptsUsed + context.attempt;
@@ -9405,29 +10322,35 @@ export function createInferenceGateway(deps: GatewayDeps) {
               if (lastRouteKey !== null && lastRouteKey !== context.route.key) codexFailovers++;
               lastRouteKey = context.route.key;
               if (error) {
+                const requestRef = `${gatewayProcessInstanceId}:${stageSpan?.requestId ?? 'unobserved'}`;
+                if (error.code === 'cancelled') {
+                  log('info', `inference-gateway: Codex bearer downstream cancelled request=${requestRef} code=cancelled on '${account}': ${error.message}`);
+                  return;
+                }
                 // The STATUS is the only discriminator between the token-read throw
                 // (`prepareAttempt`, 503) and the transport throw (`executeAttempt`,
-                // 502); a TTFB timeout, the request ceiling and a downstream abort all
-                // surfaced through the old transport catch, so they classify the same
-                // way here. Do not "tidy" those statuses in the adapter.
+                // 502). Genuine deadlines retain their failure accounting; a
+                // downstream cancellation does not identify an upstream failure.
                 const tokenResolve = error.status === 503;
                 codexUpstreamErrors++;
                 recordOwnerOutcome(wantOwner, 'upstream_error', {
                   account,
                   detail: tokenResolve ? 'bearer-token-resolve' : 'bearer-transport',
                 });
-                if (tokenResolve) {
-                  log('error', `inference-gateway: Codex token read failed on '${account}': ${error.message}`);
-                }
+                log('error', `inference-gateway: Codex ${tokenResolve ? 'token read' : 'upstream'} failed request=${requestRef} code=${error.code} on '${account}': ${error.message}`);
                 return;
               }
               if (!response) return;
+              // Project every bearer attempt through the same rate-window observer as the
+              // OAuth lane; a 429 still carries authoritative credit and window headers.
+              const responseModel = parseCodexRequestShape(context.body).model ?? '';
+              deps.onResponse?.(response.metadata.headers, response.status, responseModel, account);
               if (response.status === 429) {
                 // Counted here even when the kernel goes on to rotate: the old path
-                // recorded the throttle against the account that emitted it.
+                // recorded the throttle against the account that emitted it. Admission
+                // hears only the TERMINAL 429, classified in downstream.start (WI-6554700010011426).
                 codexUpstream429++;
                 recordRoutingUpstream429('codex', account);
-                providerAdmission.recordThrottle('codex');
                 recordOwnerOutcome(wantOwner, 'upstream_429', { account, status: 429 });
               } else if (response.status >= 200 && response.status < 300) {
                 providerAdmission.recordSuccess('codex');
@@ -9464,6 +10387,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // covers the rest.)
               if (status === 429) {
                 const parsed = parseCodexRateReset(metadata.headers);
+                // The ladder is exhausted, so nothing routed around this 429. The shared
+                // classifier counts it as congestion only when it is TRANSIENT; an
+                // exhausted (out-of-usage / weekly) window leaves the window alone.
+                providerAdmission.recordOutcome(
+                  'codex',
+                  { kind: 'rate-limited', scope: codexRateLimitScope(parsed), routedAround: false },
+                  stageSpan?.requestId,
+                );
                 const now = Date.now();
                 const ladderResetAt = parsed.resetAt ?? (parsed.transient ? now + bare429FailoverBackoffMs : 0);
                 // Same pool-horizon gate as the OAuth lane (P-003): absorb only when the pool can recover
@@ -9557,7 +10488,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // the rest of a long agent stream in memory.
               cacheProbe.on('data', () => undefined);
               cacheProbe.on('error', () => undefined);
-              observeOpenAiCacheUsage(cacheProbe, metadata.accountId, attemptsSeen > 1 || pinYieldedFrom !== null, stageSpan);
+              finishCacheObservation = observeOpenAiCacheUsage(cacheProbe, metadata.accountId, attemptsSeen > 1 || pinYieldedFrom !== null, stageSpan);
             },
             write: async (chunk) => {
               cacheProbe?.write(chunk);
@@ -9586,6 +10517,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               endCacheProbe();
               if (acceptedRelay && pendingAcceptedHead) {
                 const chunks = await acceptedRelay.finish();
+                pendingAcceptedHead.headers['content-type'] ??= acceptedRelay.contentType;
                 res.setTimeout(downstreamIdleMs);
                 res.writeHead(pendingAcceptedHead.status, pendingAcceptedHead.headers);
                 await flushAcceptedCodexChunks(res, chunks);
@@ -9768,6 +10700,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
      * controller implements this; the kernel-facing `run` remains pass-through.
      */
     park?<TResult>(wait: () => Promise<void>, resume: () => Promise<TResult>): Promise<TResult>;
+    /**
+     * R-3 / P-003 (gateway-admission-congestion-only-2026-10-13): free the lane slot this
+     * request holds because its committed response is now STREAMING, while the handler
+     * keeps relaying outside the slot. Only the remote provider-lane controller implements
+     * it; a local lane omits it (its streaming is the GPU work the slot paces). Handlers
+     * forward it to the kernel as `releaseForStream`, which calls it at the commit point.
+     */
+    releaseForStream?(): void;
   };
 
   /**
@@ -9807,7 +10747,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
     url: string,
     laneAdmission: GatewayLaneAdmission,
   ): Promise<void> {
-    return laneAdmission.run(undefined, () => proxyAdmitted(req, res, url, passThroughLaneAdmission));
+    // R-3: the admitted handler keeps the pass-through `run`, but can still hand its slot
+    // back once the response streams.
+    const admittedLaneControl: GatewayLaneAdmission = laneAdmission.releaseForStream
+      ? { run: passThroughLaneAdmission.run, releaseForStream: laneAdmission.releaseForStream }
+      : passThroughLaneAdmission;
+    return laneAdmission.run(undefined, () => proxyAdmitted(req, res, url, admittedLaneControl));
   }
 
   async function proxyOpenAi(
@@ -9816,12 +10761,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
     url: string,
     laneAdmission: GatewayLaneAdmission,
   ): Promise<void> {
-    const admittedLaneControl: GatewayLaneAdmission = laneAdmission.park
-      ? {
-          run: passThroughLaneAdmission.run,
-          park: laneAdmission.park,
-        }
-      : passThroughLaneAdmission;
+    const admittedLaneControl: GatewayLaneAdmission =
+      laneAdmission.park || laneAdmission.releaseForStream
+        ? {
+            run: passThroughLaneAdmission.run,
+            ...(laneAdmission.park ? { park: laneAdmission.park } : {}),
+            // R-3: hand the slot back once the response streams.
+            ...(laneAdmission.releaseForStream ? { releaseForStream: laneAdmission.releaseForStream } : {}),
+          }
+        : passThroughLaneAdmission;
     return laneAdmission.run(undefined, () => proxyOpenAiAdmitted(req, res, url, admittedLaneControl));
   }
 
@@ -9840,7 +10788,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
    * outlive its socket) from every lane. Measured at the split: two of the three entry sites
    * cross this governor, and for `localOpenAiChat` it is the ONLY real admission it has.
    *
-   * `async` because the spool must persist the body BEFORE the admission decision is taken.
+   * `async` because the spool must persist the body BEFORE the durable admission decision is taken.
    * Callers already treat the result as a promise, so this is not a contract change — the
    * bypass path below still returns without awaiting anything.
    */
@@ -9877,9 +10825,25 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // happens to pass — is what implements the deliberate UNQUEUED path for codex
     // `/v1/models`, so metadata is never starved behind an Anthropic storm.
     if (gatewayAdmissionBypassKeyForRequest(opts.req.method, opts.req.url)) return execute();
-    // D-004: the body is persisted BEFORE the admission decision, so queue depth stops scaling
+    // D-004: after the goal-budget preflight, the body is persisted BEFORE durable admission,
+    // so queue depth stops scaling
     // resident memory and the receipt can be executed after this socket is gone. A client that
     // already spooled its own payload passes the ref explicitly and is left alone.
+    if (ownerId && deps.checkGoalInferenceAdmission) {
+      let decision: GatewayGoalBudgetDecision;
+      try {
+        decision = await deps.checkGoalInferenceAdmission(ownerId);
+      } catch {
+        throw new GoalInferenceAdmissionRefusal(
+          503,
+          'goal_budget_admission_unavailable',
+          'goal budget could not be verified; inference is refused before provider dispatch',
+        );
+      }
+      if (!decision.allowed) {
+        throw new GoalInferenceAdmissionRefusal(decision.status, decision.code, decision.message);
+      }
+    }
     const clientPayloadRef = (opts.req.headers['x-papercusp-payload-ref'] as string | undefined)?.trim() || undefined;
     let spooledPayloadRef = clientPayloadRef;
     if (!clientPayloadRef) {
@@ -10047,8 +11011,18 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const token = /^Bearer ([^\s]+)$/.exec(requestHeader(req, 'authorization') ?? '')?.[1];
       const authenticated = token && timingSafeEqual(createHash('sha256').update(token).digest(),
         Buffer.from(carryTrial.requestTokenSha256, 'hex'));
-      const supported = (req.method === 'POST' && requestPath === '/v1/responses') ||
-        (req.method === 'GET' && requestPath === '/v1/models');
+      const openaiAllowed = carryTrial.protocols.includes('openai-responses');
+      const anthropicAllowed = carryTrial.protocols.includes('anthropic-messages');
+      // A scoped execution host must observe its own provider evidence. Keep
+      // this existing read authenticated and owner-specific; no fleet census
+      // or other admin route is admitted by the private inference credential.
+      const reportOwners = req.method === 'GET' && requestPath === '/admin/owner-report'
+        ? new URL(url, 'http://127.0.0.1').searchParams.getAll('owner') : [];
+      const ownerReport = reportOwners.length === 1 && reportOwners[0].trim().length > 0 &&
+        (carryTrial.ownerId === undefined || reportOwners[0].trim() === carryTrial.ownerId);
+      const supported = (openaiAllowed && req.method === 'POST' && requestPath === '/v1/responses') ||
+        (openaiAllowed && req.method === 'GET' && requestPath === '/v1/models') ||
+        (anthropicAllowed && req.method === 'POST' && requestPath === '/v1/messages') || ownerReport;
       if (!authenticated || !supported) {
         req.resume();
         sendJson(res, 403, { error: { message: 'carry trial request not authorized' } },
@@ -10056,6 +11030,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         return;
       }
       carryTrialRequests.add(req);
+      if (carryTrial.ownerId !== undefined) req.headers[OWNER_HEADER] = carryTrial.ownerId;
     }
     if (req.method === 'GET' && requestPath === GATEWAY_FLAG_ATTEST_PATH) {
       const requestUrl = new URL(url, 'http://127.0.0.1');
@@ -10153,20 +11128,47 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // P-008 (gateway-rayobyte-hardening): the per-owner outcome ledger. `?owner=<id>` → that owner's
       // counters + recent events + last-routed account + live pin; no owner → the TOP erroring owners
       // (by non-ok outcomes) so "who is having a bad time right now" is one call.
-      const owner = decodeURIComponent(url.match(/[?&]owner=([^&]+)/)?.[1] ?? '');
+      const requestUrl = new URL(url, 'http://127.0.0.1');
+      const owner = requestUrl.searchParams.get('owner')?.trim() ?? '';
       if (owner) {
+        const parseBoundedInteger = (key: string): number | undefined => {
+          const raw = requestUrl.searchParams.get(key);
+          if (raw === null) return undefined;
+          if (!/^\d{1,16}$/.test(raw)) return NaN;
+          const value = Number(raw);
+          return Number.isSafeInteger(value) ? value : NaN;
+        };
+        const fromMs = parseBoundedInteger('from');
+        const toMs = parseBoundedInteger('to');
+        const requestedLimit = parseBoundedInteger('limit');
+        if ([fromMs, toMs, requestedLimit].some(value => value !== undefined && !Number.isFinite(value)) ||
+            fromMs !== undefined && toMs !== undefined && fromMs >= toMs) {
+          sendJson(res, 400, { ok: false, error: 'from/to must be increasing epoch-millisecond values; limit must be an integer' });
+          return;
+        }
+        const limit = requestedLimit === undefined
+          ? GATEWAY_REQUEST_OUTCOME_DEFAULT_LIMIT
+          : Math.max(1, Math.min(GATEWAY_REQUEST_OUTCOME_MAX_LIMIT, requestedLimit));
         const e = ownerLedger.get(owner) ?? null;
         const route = lastRouteByOwner.get(owner) ?? null;
         const pin = ownerPinMap.get(owner) ?? null;
-        sendJson(res, 200, {
+        const readOutcomes = deps.requestOutcomeStore
+          ? deps.requestOutcomeStore.report({ ownerId: owner, fromMs, toMs, limit })
+          : reportGatewayRequestOutcomes({ ownerId: owner, fromMs, toMs, limit });
+        void readOutcomes.then(requestOutcomes => sendJson(res, 200, {
           ok: true,
           now: Date.now(),
           owner,
+          process: { pid: process.pid, identity: readProcessIdentity(process.pid), startedAt: processStartedAt,
+            instanceId: gatewayProcessInstanceId },
           ledger: e,
           lastRoute: route,
           pin,
           stageTelemetry: requestStageTelemetry.snapshotForOwner(owner),
+          requestOutcomes,
           routingQuality: routingQualitySnapshot(owner),
+        })).catch(() => {
+          if (!res.headersSent) sendJson(res, 503, { ok: false, error: 'durable request outcome report unavailable', owner });
         });
         return;
       }
@@ -10195,6 +11197,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
         aimd: s.aimd,
         codexAimd: s.codexAimd,
         codexHealthyAccounts: s.codexHealthyAccounts,
+        codexUnserviceableCause: s.codexUnserviceableCause,
+        codexReachability: s.codexReachability,
         codexModelRefusals: s.codexModelRefusals,
         // THE CONTRADICTION THIS ENDPOINT USED TO WITHHOLD. `admission.maxConcurrent` and `aimd.effective`
         // were both forwarded while `clamp` — the only field that explains a gap between them — was not, so
@@ -10266,16 +11270,25 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const ids = account
         ? [account]
         : [...new Set(targetPools.flatMap((p) => (p.entries?.() ?? []).map((e) => e.accountId)))];
-      for (const targetPool of targetPools) {
-        for (const id of ids) targetPool.readmit?.(id, { reason: 'admin' });
-      }
-      const at = Date.now();
-      const healthyAccounts =
-        provider === 'codex'
-          ? codexServiceableCount(deps.codexPool, at) +
-            codexServiceableCount(codexCliPool, at, codexCliPool ? [] : codexCliHealthEntries())
-          : (pool.healthyCount?.() ?? 1);
-      sendJson(res, 200, { ok: true, provider, readmitted: ids, healthyAccounts });
+      void (async () => {
+        if (provider === 'claude') {
+          for (const id of ids) {
+            for (const governor of accountGovernors.get(id) ?? []) await governor.operatorReadmit();
+          }
+        }
+        for (const targetPool of targetPools) {
+          for (const id of ids) targetPool.readmit?.(id, { reason: 'admin' });
+        }
+        const at = Date.now();
+        const healthyAccounts =
+          provider === 'codex'
+            ? codexServiceableCount(deps.codexPool, at) +
+              codexServiceableCount(codexCliPool, at, codexCliPool ? [] : codexCliHealthEntries())
+            : (serviceableHealthyCount() ?? 1);
+        sendJson(res, 200, { ok: true, provider, readmitted: ids, healthyAccounts });
+      })().catch(() => {
+        sendJson(res, 503, { ok: false, provider, error: { type: 'api_error', message: 'inference-gateway: account readmit failed' } });
+      });
       return;
     }
     if (req.method === 'POST' && requestPath === '/admin/clamp-mode') {
@@ -10714,11 +11727,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
     // LOCAL backend pool (D-002): llama-server/vllm/ollama's OpenAI-compatible surface is
     // `/v1/chat/completions` + `/v1/completions` — DISTINCT from `/v1/messages` (Anthropic) and
-    // `/v1/responses` (Codex), so this never shadows the existing routes. Only intercepted when a
-    // local-backend pool is actually wired; otherwise falls through unchanged (byte-identical to today).
+    // `/v1/responses` (Codex), so this never shadows the existing routes. These paths always
+    // belong to the local lane: a missing pool must refuse, never forward source to a cloud account.
     if (
       req.method === 'POST' &&
-      deps.localBackends &&
       (url.startsWith('/v1/chat/completions') || url.startsWith('/v1/completions'))
     ) {
       const span = beginRequestTelemetry(req, res, 'local', 'openai-chat', 'local-http');
@@ -10739,6 +11751,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         lane: gatewayLaneRegistry.localOpenAiChat,
         task: () => proxyLocal(req, res, localUrl),
       }).catch((e) => {
+        if (respondGoalInferenceAdmissionRefusal(e, req, res, sendJson)) return;
         markRequestGatewayError(req);
         log('error', `inference-gateway: local-backend handler crashed: ${(e as Error).message}`);
         if (!res.headersSent)
@@ -10770,6 +11783,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         lane: providerAdapters.codex.lane,
         task: () => proxyOpenAi(req, res, url, passThroughLaneAdmission),
       }).catch((e) => {
+        if (respondGoalInferenceAdmissionRefusal(e, req, res, sendJson)) return;
         codexUpstreamErrors++;
         log('error', `codex models handler crashed: ${(e as Error).message}`);
         if (!res.headersSent)
@@ -10860,12 +11874,29 @@ export function createInferenceGateway(deps: GatewayDeps) {
         req.off('aborted', onCallerGone);
         res.off('close', onCallerGone);
       };
+      // R-3 / P-003 — PACE UPLOADS, NOT OPEN STREAMS. The handler runs to completion as
+      // `outcome`, but the queue callback settles on whichever comes first: the handler
+      // finishing, or `releaseForStream` firing at the kernel's commit point because the
+      // response is now streaming. Either way the slot is freed by the queue's own
+      // task-settle path (still the sole release authority), and the codex registry entry
+      // below leaves `inFlightReg` with it, keeping the registry a subset of held slots.
+      // The caller still receives the handler's own result or failure via `outcome`.
+      let outcome!: Promise<TResult>;
+      let markReleased!: () => void;
+      const released = new Promise<void>((resolve) => {
+        markReleased = resolve;
+      });
+      releaseCurrentSlot = () => markReleased();
+      const runUntilReleased = async (): Promise<void> => {
+        outcome = task();
+        await Promise.race([outcome, released]);
+      };
       return admissionQueue
         .run(
           pri,
           async () => {
             markProviderAdmitted();
-            if (providerId !== 'codex') return task();
+            if (providerId !== 'codex') return runUntilReleased();
             const reqId = ++reqSeq;
             inFlightReg.set(reqId, {
               id: reqId,
@@ -10890,7 +11921,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               },
             });
             try {
-              return await task();
+              return await runUntilReleased();
             } finally {
               const entry = inFlightReg.get(reqId);
               if (entry) {
@@ -10901,9 +11932,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
           },
           { signal: abandoned.signal, ...(tier !== undefined ? { tier } : {}) },
         )
+        .then(() => outcome)
         .finally(detach);
     };
+    /** R-3: releases the slot of the run currently in flight (a park re-entry installs its own). */
+    let releaseCurrentSlot: (() => void) | null = null;
     const providerLaneAdmission: GatewayLaneAdmission = {
+      releaseForStream: () => releaseCurrentSlot?.(),
       run: async (_context, initialTask) => {
         let task = initialTask;
         for (;;) {
@@ -10935,6 +11970,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           ? proxyOpenAi(req, res, url, providerLaneAdmission)
           : proxy(req, res, url, providerLaneAdmission),
     }).catch((e) => {
+      if (respondGoalInferenceAdmissionRefusal(e, req, res, sendJson)) return;
       // D-003 permits a request to fail for invalid input or an inability to persist truthfully —
       // and for nothing else. These two branches are those cases; both happen BEFORE admission, so
       // no receipt exists and no upstream work has started.
@@ -11271,6 +12307,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         burnAction?: AccountBurnAction;
         /** When the store took the reading (`utilizationAt`); gates the store↔pool park reconciliation. */
         readingAt?: number;
+        usageCreditsAvailable?: boolean;
       }>,
     ): void {
       accountRateHints.clear();
@@ -11284,6 +12321,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             windowResetAt7d: h.windowResetAt7d,
             burnAction: h.burnAction,
             readingAt: h.readingAt,
+            usageCreditsAvailable: h.usageCreditsAvailable,
           });
         }
       }

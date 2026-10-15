@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "name": "P058 complete ARM native namespace and guarded original deadline",
+  "command": ["bash", ".papercusp/scratch/p058-direct-arm-closed-20261011/boot-probe2.sh", ".papercusp/scratch/p058-direct-arm-closed-20261011/native-arm64-release10"],
+  "cwd": ".",
+  "startedAt": "2026-10-11T00:36:39.986Z",
+  "finishedAt": "2026-10-11T00:37:43.403Z",
+  "exitCode": 1,
+  "summary": "Restored ARM native package and runtime library closure passes all11 guarded native loads. The guarded full frozen HOST import graph then fails its unchanged60000ms child deadline: ETIMEDOUT, no success receipt. This is failed full-graph evidence, with independently passing native preflight.",
+  "workItemId": "EI-25639520292031822",
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "candidateAccepted": false,
+  "evidencePlane": "direct-binfmt-arm64-diagnosis",
+  "nativeExecReceipt": "cd4a9b",
+  "inputBinding": {
+    "nativeArchiveSha256": "e62cf9d2fb3148bfb8fec5f65bcc1eae067740318628445b1ed26af72fbc5a18",
+    "nativeStampSha256": "42d0ad383174cdd3013fc36d1454f6897ceb8af1de8cdeb87601bdf6a80247b3",
+    "nativeProvenanceSha256": "e1e3076ad430d5ad9ff8f314003ba6d820e4c80fd4f0ddd55145ac28543e9f28",
+    "rootfsArchiveSha256": "277f892ed0254a7ef058586fb9186ebdaadae408860ec8f7f5a0ffc8c401baf4",
+    "runtimeNodeSha256": "a990a8ae388fc285ddbce280e63fca48cfd7695f632b66aec6ed581566eace99",
+    "serveSha256": "2cbbcca8d8da25a7bf972da3fa21e88a1f61cbfc17c842aa05615e63c3487365",
+    "overlayInventorySha256": "978c0594cdaf5ae326406e2d562d3ab2e71befe0d10f9c70635fb50d3a10054c",
+    "verifierSha256": "8acb89ad5c88469a944472b909ffad8d2c5e4506212a0ce02a7943e1eab8cfd0",
+    "bootHelperSha256": "e4e22d8372c61fff79e259aa367f76be5bb80bb667a616628c5d79f28aeffe3d",
+    "probeSha256": "7cf6fac8301db322543441a15923b754e3e17e8637d8852529f24e6f20f6f99a"
+  },
+  "construction": {
+    "nativeBase": "qualified native-arm64-release10 archive",
+    "overlaidPackages": 142,
+    "overlayInventoryEntriesRehashed": 25728,
+    "runtimeLibraryEntriesRestored": 6590,
+    "libutilSha256": "c2c2f3733137b0acaee7b3abb9d6ee8ce05783013bce6e20da363cd7eb986703",
+    "runtime": { "arch": "arm64", "node": "24.18.1", "uid": 1000 },
+    "omittedPayload": ["db-seed.dump", "models", "spa", "internal-docs"]
+  },
+  "nativePreflight": {
+    "guard": "existing verifier GUARD_EOF; physical in-bundle CommonJS resolution and actual native loading",
+    "passed": ["sharp", "better-sqlite3", "@lydell/node-pty", "sodium-native", "udx-native", "rocksdb-native", "quickbit-native", "rabin-native", "simdle-native", "fs-native-extensions", "onnxruntime-node"],
+    "failed": [],
+    "skipped": []
+  },
+  "fullGraph": {
+    "canonicalTimeoutMs": 60000,
+    "parentElapsedMs": 63414.7028,
+    "observedChildElapsedMs": 61387,
+    "childStatus": 0,
+    "childSignal": null,
+    "childErrorCode": "ETIMEDOUT",
+    "receiptObserved": false,
+    "result": "failed",
+    "note": "A zero child status does not accept a spawnSync timeout; the verifier requires no spawn error and the explicit receipt. Parent/child elapsed values include their distinct startup/termination scopes."
+  },
+  "rawEvidence": {
+    "root": ".papercusp/scratch/p058-direct-arm-closed-20261011",
+    "sha256": {
+      "prepare.json": "622bc80800660d3fb05d52eaa4434a268ac627053b5c24b6dcbea399c6698055",
+      "runtime-precheck2.json": "0c272a96698e74fbea8a510754d0ede6c97ee3a66771ca8e553b6fef69eeec34",
+      "runtime-library-closure.json": "572813ea67d9aceb01f52ba6d3051cf0a6e5d5a131f42412ded3a78c59d5d979",
+      "native-preflight.json": "2413008c3c2a34bcbee39447742e3048d3fd2198598fe72531befd382ddbea79",
+      "boot3-result.json": "ecf3de3b62a1dcf584fcdbd92dbf0831fe17b135197eaa0a7c4fc71bec112db5",
+      "boot3-stdout.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "boot3-stderr.log": "b7b7f893faf6b2505380994158cf630716ac014d4aee5aaced69f5c7bc411ff4",
+      "target-addon-result.json": "a14ea16eddd2639d0bb95a356b5d8c17e2222963b22d0d22d77298cf4d4007e2"
+    }
+  },
+  "assertions": [
+    { "id": "exact-native-base", "passed": true, "evidence": "Native archive and metadata rehashed before extraction; original per-package overlay copied rather than replacing the native tree." },
+    { "id": "complete-native-runtime-preflight", "passed": true, "evidence": "All11 positively listed native packages load inside the bundle after restoring full verified rootfs libraries." },
+    { "id": "full-import-deadline", "passed": false, "evidence": "ETIMEDOUT after original60000ms deadline; no PAPERCUSP_BOOT_IMPORTS_OK." },
+    { "id": "failure-retained", "passed": true, "evidence": "Exact terminal result and both output streams read back and hashed; earlier rejected trees and runs preserved." }
+  ],
+  "limitations": [
+    "Direct UID1000/binfmt differs from isolated container UID1001 and physical ARM hardware.",
+    "New verifier adds namespace hooks; this run is distinct from historical original-helper measurements.",
+    "The original ARM startup timeout cause remains unresolved; no claim that a particular library cost causes it.",
+    "Frozen child stderr carries a reports:publish prompt-weight warning for its frozen code, not a measured current live gate verdict.",
+    "No current collector, installed-native, trusted signing/publication, transfer or shipment acceptance."
+  ]
+}

@@ -14,6 +14,7 @@ import type { PlanItem } from '@papercusp/plan-parser';
 const M = vi.hoisted(() => ({
   list: vi.fn(),
   apply: vi.fn(),
+  inScope: vi.fn(),
 }));
 
 vi.mock('./source', async (importOriginal) => {
@@ -22,6 +23,10 @@ vi.mock('./source', async (importOriginal) => {
 });
 vi.mock('./plan-drain-transition', () => ({ applyPlanDrainTransition: M.apply }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-under-test' }));
+vi.mock('../../work-scope-policy', () => ({
+  isHarnessInScope: M.inScope,
+  primeWorkScopePolicy: vi.fn(),
+}));
 
 import {
   DEFAULT_PLAN_DRAIN_SWEEP_CAP,
@@ -63,6 +68,8 @@ const row = (planSlug: string, status: string, itemStatuses: string[]) =>
 beforeEach(() => {
   M.list.mockReset();
   M.apply.mockReset();
+  M.inScope.mockReset();
+  M.inScope.mockReturnValue(true);
   M.list.mockResolvedValue([]);
   M.apply.mockResolvedValue({ applied: true, from: 'ready', to: 'awaiting-acceptance', reason: 'r' });
 });
@@ -129,6 +136,26 @@ describe('sweepDrainedPlanStatuses candidate enumeration', () => {
     }
   });
 
+  it('records a scope refusal against the plan that was refused', async () => {
+    M.list.mockImplementation(async ({ status }: { status: string }) =>
+      status === 'ready' ? [row('out-of-scope', 'ready', ['done'])] : [],
+    );
+    M.inScope.mockReturnValue(false);
+
+    const result = await sweepDrainedPlanStatuses();
+
+    expect(result.skipped).toEqual({ scope_denied: 1 });
+    expect(result.outcomes).toEqual([
+      {
+        planSlug: 'out-of-scope',
+        harnessSlug: 'papercusp',
+        outcome: 'scope_denied',
+        reason: 'out_of_scope',
+      },
+    ]);
+    expect(M.apply).not.toHaveBeenCalled();
+  });
+
   it('applies only the rows whose graph warrants a move', async () => {
     M.list.mockImplementation(async ({ status }: { status: string }) =>
       status === 'ready'
@@ -143,6 +170,16 @@ describe('sweepDrainedPlanStatuses candidate enumeration', () => {
     expect(M.apply).toHaveBeenCalledExactlyOnceWith('drained', 'papercusp');
     expect(result.applied).toEqual([
       { planSlug: 'drained', harnessSlug: 'papercusp', from: 'ready', to: 'awaiting-acceptance', reason: 'r' },
+    ]);
+    expect(result.outcomes).toEqual([
+      {
+        planSlug: 'drained',
+        harnessSlug: 'papercusp',
+        outcome: 'applied',
+        from: 'ready',
+        to: 'awaiting-acceptance',
+        reason: 'r',
+      },
     ]);
   });
 });
@@ -162,6 +199,8 @@ describe('sweepDrainedPlanStatuses bounding and staleness', () => {
     expect(result.applied).toHaveLength(3);
     expect(result.deferredToNextTick).toBe(4);
     expect(M.apply).toHaveBeenCalledTimes(3);
+    expect(result.outcomes.filter((outcome) => outcome.outcome === 'deferred')).toHaveLength(4);
+    expect(result.outcomes.filter((outcome) => outcome.outcome === 'applied')).toHaveLength(3);
   });
 
   // CONTROL for the cap: without it the same input would flip all 7. If the cap
@@ -204,6 +243,10 @@ describe('sweepDrainedPlanStatuses bounding and staleness', () => {
     expect(result.warranted).toBe(2);
     expect(result.applied).toEqual([]);
     expect(result.skipped).toEqual({ no_transition_warranted: 2 });
+    expect(result.outcomes).toEqual([
+      { planSlug: 'plan-0', harnessSlug: 'papercusp', outcome: 'skipped', reason: 'no_transition_warranted' },
+      { planSlug: 'plan-1', harnessSlug: 'papercusp', outcome: 'skipped', reason: 'no_transition_warranted' },
+    ]);
   });
 
   it('records a lock contention as busy and keeps sweeping the rest', async () => {
@@ -218,5 +261,10 @@ describe('sweepDrainedPlanStatuses bounding and staleness', () => {
 
     expect(result.skipped).toEqual({ busy: 1 });
     expect(result.applied).toHaveLength(2);
+    expect(result.outcomes).toEqual(
+      expect.arrayContaining([
+        { planSlug: 'plan-0', harnessSlug: 'papercusp', outcome: 'skipped', reason: 'busy' },
+      ]),
+    );
   });
 });

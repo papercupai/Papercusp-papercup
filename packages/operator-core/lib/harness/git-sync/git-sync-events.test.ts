@@ -35,6 +35,32 @@ const HOLDER = {
 };
 
 describe('emitGitSyncCommittedEvent (P-102)', () => {
+  it('EI-255886: uses saved producer time when an old commit is emitted after a newer wait', async () => {
+    const emit = typedEmit();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(4_000);
+    try {
+      emitGitSyncCommittedEvent(SHA, { emit, scope: SCOPE_A }, 1_000);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const payload = emit.mock.calls.find(([opts]) => opts.key === 'git-sync:committed')?.[0].payload;
+      expect(payloadMatchesFilter({ ...SCOPE_A, committedAtMs: { gt: 2_000 } }, payload)).toBe(false);
+      expect(payloadMatchesFilter({ ...SCOPE_A, committedAtMs: { gt: 500 } }, payload)).toBe(true);
+      expect(payload).toMatchObject({ sha: SHA, committedAtMs: 1_000 });
+      expect(emit.mock.calls.map(([opts]) => opts.key)).toContain(`git-sync:committed:${SHA}`);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('EI-255886: missing legacy producer time cannot be synthesized from emission time', async () => {
+    const emit = typedEmit();
+    emitGitSyncCommittedEvent(SHA, { emit, scope: SCOPE_A });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const payload = emit.mock.calls.find(([opts]) => opts.key === 'git-sync:committed')?.[0].payload;
+    expect(payloadMatchesFilter({ ...SCOPE_A, committedAtMs: { gt: 500 } }, payload)).toBe(false);
+    expect(payload).not.toHaveProperty('committedAtMs');
+    expect(emit.mock.calls.map(([opts]) => opts.key)).toContain(`git-sync:committed:${SHA}`);
+  });
+
   it('fires BOTH the global git-sync:committed and the per-sha key, with payload.sha', async () => {
     const emit = typedEmit();
     emitGitSyncCommittedEvent(SHA, { emit, scope: SCOPE_A });
@@ -55,7 +81,7 @@ describe('emitGitSyncCommittedEvent (P-102)', () => {
     }
   });
 
-  it('captures producer time before a delayed prior emit can reach a later no-SHA boundary', async () => {
+  it('retains producer time when a delayed prior emit reaches a later no-SHA boundary', async () => {
     let releaseEmit!: () => void;
     const emitGate = new Promise<void>((resolve) => {
       releaseEmit = resolve;
@@ -66,7 +92,7 @@ describe('emitGitSyncCommittedEvent (P-102)', () => {
     });
     const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
 
-    emitGitSyncCommittedEvent(SHA, { emit, scope: SCOPE_A });
+    emitGitSyncCommittedEvent(SHA, { emit, scope: SCOPE_A }, 1_000);
     await Promise.resolve();
 
     const delayedPayload = emit.mock.calls[0]?.[0].payload;
@@ -121,7 +147,7 @@ describe('emitGitSyncCommittedEvent (P-102)', () => {
 
   it('scopes a global wake to its harness and workspace (two-harness regression)', async () => {
     const emit = typedEmit();
-    emitGitSyncCommittedEvent(SHA, { emit, scope: SCOPE_A });
+    emitGitSyncCommittedEvent(SHA, { emit, scope: SCOPE_A }, 1_000);
     await new Promise((r) => setTimeout(r, 0));
 
     const globalPayload = emit.mock.calls.find((call) => call[0].key === 'git-sync:committed')?.[0].payload;

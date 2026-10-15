@@ -1,0 +1,24 @@
+---
+import Search from '@astrojs/starlight/components/Search.astro';
+---
+
+<Search {...Astro.props} />
+
+<script>
+  // Keep Starlight's search UI, shortcuts and focus handling. Its Pagefind
+  // input mounts during idle time, which can happen after the dialog opens.
+  if (!import.meta.env.DEV) {
+    for (const search of document.querySelectorAll('site-search')) {
+      if (search.querySelector('input')) continue;
+      const dialog = search.querySelector('dialog');
+      const observer = new MutationObserver(() => {
+        const input = search.querySelector('input');
+        if (!input) return;
+        observer.disconnect();
+        // Closing search before initialization completes must not steal focus.
+        if (dialog?.open) input.focus();
+      });
+      observer.observe(search, { childList: true, subtree: true });
+    }
+  }
+</script>

@@ -11,6 +11,7 @@ const dispatchMocks = vi.hoisted(() => ({
     dispatchMocks.captured = ctx;
   }),
   captured: null as Record<string, unknown> | null,
+  done: vi.fn(),
 }));
 
 vi.mock('@papercusp/sse', async (importOriginal) => ({
@@ -21,6 +22,7 @@ vi.mock('@papercusp/sse', async (importOriginal) => ({
       event: vi.fn(),
       onClose: vi.fn(),
       close: vi.fn(),
+      done: dispatchMocks.done,
     });
     return new Response('stream-started', { status: 200 });
   }),
@@ -75,6 +77,30 @@ describe('operator-converse route watchdog (EI-110)', () => {
     // worse contention storm; `null` (matching every sibling SSE route) is the
     // structural fix. Regression guard for reverting to a magic number.
     expect((route as { timeoutSec?: number | null }).timeoutSec).toBeNull();
+  });
+});
+
+describe('operator-converse isolated tutorial transport', () => {
+  it.each([
+    { hostTrust: 'owner' }, { principalToken: 'borrowed' }, { conversationId: 'private' },
+    { role: 'papercup' }, { lessonContext: { version: 3, step: 'billing', transcript: 'private' } },
+  ])('rejects lesson authority or context expansion before dispatch %j', async extra => {
+    const response = await handler({ hostTrust: 'public', lessonContext: { version: 3, step: 'billing', status: 'ready' }, ...extra });
+    expect(response.status).toBe(400);
+    expect(dispatchMocks.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('forwards the validated lesson into the tool-less brain seam', async () => {
+    dispatchMocks.dispatch.mockImplementationOnce(async function* () {
+      yield { kind: 'done', result: { content: [{ type: 'text', text: JSON.stringify({ assembled: 'Your provider bills infrastructure.', totalCost: 0.01 }) }] } } as never;
+    });
+    const context = { version: 3, step: 'billing', status: 'ready' };
+    const response = await handler({ hostTrust: 'public', role: 'operator', lessonContext: context,
+      uiClientId: 'llm-testing/tutorial-transport', messages: [{ role: 'user', content: 'Who charges cloud resources?' }] });
+    expect(response.status).toBe(200);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(dispatchMocks.dispatch.mock.calls[0][2]).toMatchObject({ hostTrust: 'public', lessonContext: context, sessionUser: null });
+    expect(dispatchMocks.done).toHaveBeenCalledWith({ costUsd: 0.01, answer: 'Your provider bills infrastructure.' });
   });
 });
 

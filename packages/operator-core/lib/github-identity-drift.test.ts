@@ -32,9 +32,10 @@
  * plain arguments — nothing about the assertion depends on which identity is
  * "canonical"). Those are allowlisted below rather than treated as drift.
  */
-import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 // eslint-disable-next-line import/no-relative-packages
 import { listFilesIncludingUntracked } from '../../../scripts/lib/tracked-files.mjs';
 
@@ -80,30 +81,93 @@ const ALLOWLISTED_FORK_FIXTURES = new Set([
 
 const TEXT_EXTENSIONS = /\.(ts|tsx|js|jsx|mjs|cjs|mdx|md|astro|json|html)$/i;
 
-describe('github identity drift guard (WI-4978)', () => {
-  it('no source file links to papercupai as if it owned the product repo', () => {
-    const { files } = listFilesIncludingUntracked(ROOT) as { files: string[] };
-    const offenders: Array<{ path: string; line: number; text: string }> = [];
+function findIdentityDrift(root: string, files = (listFilesIncludingUntracked(root) as { files: string[] }).files) {
+  const offenders: Array<{ path: string; line: number; text: string }> = [];
 
-    for (const relPath of files) {
-      if (!TEXT_EXTENSIONS.test(relPath)) continue;
-      if (EXCLUDED_PATH_SEGMENTS.some((seg) => relPath.includes(seg))) continue;
-      if (ALLOWLISTED_FORK_FIXTURES.has(relPath)) continue;
+  for (const relPath of files) {
+    if (!TEXT_EXTENSIONS.test(relPath)) continue;
+    if (EXCLUDED_PATH_SEGMENTS.some((seg) => relPath.includes(seg))) continue;
+    if (ALLOWLISTED_FORK_FIXTURES.has(relPath)) continue;
+    // Managed report snapshots archive historical plan/work-item text, including
+    // deliberately quoted bad-link examples. They are generated evidence, not
+    // authored product links. Keep ordinary docs/evidence JSON in the scan.
+    if (relPath.startsWith('.papercusp/reports/')) continue;
 
-      let content: string;
-      try {
-        content = readFileSync(join(ROOT, relPath), 'utf8');
-      } catch {
-        continue; // symlink / race / binary — not this guard's concern
-      }
-      if (!WRONG_OWNER_REPO.test(content)) continue;
-
-      content.split('\n').forEach((line, idx) => {
-        if (WRONG_OWNER_REPO.test(line)) {
-          offenders.push({ path: relPath, line: idx + 1, text: line.trim() });
-        }
-      });
+    let content: string;
+    try {
+      content = readFileSync(join(root, relPath), 'utf8');
+    } catch {
+      continue; // symlink / race / binary — not this guard's concern
     }
+    if (!WRONG_OWNER_REPO.test(content)) continue;
+
+    content.split('\n').forEach((line, idx) => {
+      const match = WRONG_OWNER_REPO.exec(line);
+      if (!match) return;
+      // A one-line JSON source can be megabytes long. Show the offending link
+      // with bounded surrounding context rather than dumping the entire file.
+      const start = Math.max(0, match.index - 80);
+      const end = Math.min(line.length, match.index + match[0].length + 80);
+      const text = line.length <= 320 ? line.trim()
+        : `${start > 0 ? '… ' : ''}${line.slice(start, end)}${end < line.length ? ' …' : ''}`;
+      offenders.push({ path: relPath, line: idx + 1, text });
+    });
+  }
+  return offenders;
+}
+
+describe('github identity drift guard (WI-4978)', () => {
+  const fixtureRoots: string[] = [];
+  afterEach(() => {
+    for (const root of fixtureRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+  const fixture = () => {
+    const root = mkdtempSync(join(tmpdir(), 'github-identity-source-'));
+    fixtureRoots.push(root);
+    return root;
+  };
+  const write = (root: string, path: string, content: string) => {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), content);
+  };
+
+  it('ignores generated historical reports while detecting fresh authored TS and evidence JSON', () => {
+    const root = fixture();
+    const link = 'https://github.com/papercupai/papercup';
+    const report = '.papercusp/reports/portfolio/snapshot.json';
+    write(root, report, JSON.stringify({ plans: [{ content: link }] }));
+    // Supply the Git-enumerated path shape: a non-Git filesystem fallback
+    // skips .papercusp before the source/artifact boundary can be exercised.
+    expect(findIdentityDrift(root, [report])).toEqual([]);
+    write(root, 'apps/operator/app/support/page.tsx', `export const issueUrl = '${link}';`);
+    write(root, 'docs/evidence/source.json', JSON.stringify({ issueUrl: link }));
+    expect(findIdentityDrift(root, [report, 'apps/operator/app/support/page.tsx', 'docs/evidence/source.json'])
+      .map(row => row.path).sort()).toEqual([
+      'apps/operator/app/support/page.tsx', 'docs/evidence/source.json',
+    ]);
+  });
+
+  it('keeps similarly named authored paths in scope', () => {
+    const root = fixture();
+    write(root, '.papercusp/reports-source/navigation.json', '{"url":"https://github.com/papercupai/papercusp"}');
+    expect(findIdentityDrift(root, ['.papercusp/reports-source/navigation.json'])).toEqual([
+      expect.objectContaining({ path: '.papercusp/reports-source/navigation.json', line: 1 }),
+    ]);
+  });
+
+  it('bounds a long source-line diagnostic around the actual offending link', () => {
+    const root = fixture();
+    const link = 'https://github.com/papercupai/papercup';
+    write(root, 'docs/navigation.json', JSON.stringify({ padding: 'x'.repeat(100_000), issueUrl: link }));
+    const offenders = findIdentityDrift(root);
+    expect(offenders).toHaveLength(1);
+    expect(offenders[0]).toMatchObject({ path: 'docs/navigation.json', line: 1 });
+    expect(offenders[0]!.text).toContain(link);
+    expect(offenders[0]!.text.length).toBeLessThan(320);
+  });
+
+  it('no source file links to papercupai as if it owned the product repo', () => {
+    const offenders = findIdentityDrift(ROOT);
 
     if (offenders.length > 0) {
       const detail = offenders

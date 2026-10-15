@@ -17,8 +17,9 @@
  *      empty-state placeholder that implies something is missing.
  */
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within, waitFor } from '@testing-library/react';
 import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
+import { readTypedPropertyCollection, type TypedPropertySchemaDocument } from '@papercusp/operator-core/lib/typed-properties';
 import type { GoalDetailInput } from './goal-detail-model';
 
 /* P-023: the popup's two expand buttons reach the DESKTOP shell for full
@@ -234,6 +235,142 @@ function openPanelsMenu() {
 }
 
 describe('GoalDetailPanel', () => {
+  it.each(['plans', 'tea'] as const)('edits an arbitrary %s declaration through the generic panel and preserves refused choices', async (kind) => {
+    const property = kind === 'plans' ? 'worklist' : 'tea_choices';
+    const policyName = kind === 'plans' ? 'worklist_policy' : 'tea_policy';
+    const ids = kind === 'plans' ? ['plan:alpha/first', 'plan:beta/second'] : ['mint', 'chamomile'];
+    // Typed so its enum fields (editable_by, collection.source/order) keep their
+    // literal types; an un-annotated literal widens them to string, which tsc rejects.
+    const schema: TypedPropertySchemaDocument = {
+      [property]: { datatype: kind === 'plans' ? 'plan-ref-list' : 'string-list', editable_by: 'both',
+        collection: { source: kind === 'plans' ? 'active-workspace-plans' : 'manual', policy: policyName,
+          order: kind === 'plans' ? 'priority' : 'display', selectable: true, defaultSelected: true } },
+      [policyName]: { datatype: 'ordered-selection-policy', editable_by: 'owner', default: { order: [], excluded: [] } },
+    };
+    let policy = { order: [...ids], excluded: [] as string[] };
+    let version = 4;
+    let refused = false;
+    const writes = vi.fn(async (_url: string, options: RequestInit) => {
+      const posted = JSON.parse(options.body as string);
+      expect(posted).toMatchObject({ goalId: 'goal-1', property: policyName, expectedVersion: version });
+      expect(posted).not.toHaveProperty('provenance');
+      if (refused) return { ok: false, json: async () => ({ error: 'stale', actualVersion: version + 1 }) };
+      policy = posted.value;
+      version++;
+      return { ok: true, json: async () => ({ ok: true, version }) };
+    });
+    vi.stubGlobal('fetch', writes);
+    const snapshot = () => {
+      const selection = readTypedPropertyCollection({ propertySchema: schema, property,
+        properties: {
+          [property]: { value: ids, version: 2, edited_by: 'agent', provenance: 'agent-edit', edited_at: '2026-10-01T00:00:00Z' },
+          [policyName]: { value: policy, version, edited_by: 'owner', provenance: 'owner-edit', edited_at: '2026-10-01T00:00:00Z' },
+        }, ...(kind === 'plans' ? { source: { ok: true as const, items: ids } } : {}) });
+      if (!selection.ok || !selection.configured) throw new Error('Invalid collection fixture');
+      const base = detail();
+      return { ...base, goal: { ...base.goal!, goalPackage: { ref: 'arbitrary-collection' } },
+        goalData: { propertySchema: schema, collections: { [property]: { selection,
+          rows: selection.items.map((row) => ({ ...row, label: row.id, state: 'ready', reason: null })) } } } };
+    };
+    try {
+      const view = renderPanel(snapshot());
+      expect(screen.queryByTestId('work-on-everything-console')).toBeNull();
+      const editor = within(screen.getByTestId('goal-data'));
+      fireEvent.click(editor.getByRole('button', { name: `Move ${ids[1]} up` }));
+      await waitFor(() => expect(writes).toHaveBeenCalledTimes(1));
+      expect(policy.order).toEqual([ids[1], ids[0]]);
+      expect(editor.getAllByRole('listitem')[0].textContent).toContain(ids[0]);
+      syncResult = { data: [snapshot()], loading: false, error: null };
+      view.rerender(<GoalDetailPanel goalId="goal-1" workspaceId="ws-real" nowMs={NOW} onClose={() => {}} />);
+      await waitFor(() => expect(editor.getByRole('checkbox', { name: `Include ${ids[0]}` })).toHaveProperty('disabled', false));
+      expect(editor.getAllByRole('listitem')[0].textContent).toContain(ids[1]);
+      fireEvent.click(editor.getByRole('checkbox', { name: `Include ${ids[0]}` }));
+      await waitFor(() => expect(writes).toHaveBeenCalledTimes(2));
+      expect(policy.excluded).toEqual([ids[0]]);
+      syncResult = { data: [snapshot()], loading: false, error: null };
+      view.rerender(<GoalDetailPanel goalId="goal-1" workspaceId="ws-real" nowMs={NOW} onClose={() => {}} />);
+      await waitFor(() => expect(editor.getByRole('checkbox', { name: `Include ${ids[0]}` })).toHaveProperty('disabled', false));
+      expect(editor.getByRole('checkbox', { name: `Include ${ids[0]}` }).getAttribute('aria-checked')).toBe('false');
+      refused = true;
+      fireEvent.click(editor.getByRole('checkbox', { name: `Include ${ids[0]}` }));
+      await waitFor(() => expect(editor.getByRole('alert').textContent).toContain('stale'));
+      expect(policy.excluded).toEqual([ids[0]]);
+      expect(editor.getByRole('checkbox', { name: `Include ${ids[0]}` }).getAttribute('aria-checked')).toBe('false');
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('opens the progress console for the legacy typed worklist without package-install metadata', () => {
+    const base = detail();
+    renderPanel({ ...base, goal: { ...base.goal!, status: 'paused', goalPackage: null }, goalData: {
+      propertySchema: { worklist: { datatype: 'plan-ref-list', editable_by: 'both', collection: {
+        source: 'active-workspace-plans', policy: 'worklist_policy', order: 'priority',
+        selectable: true, defaultSelected: false } } }, collections: {}, error: 'Plan source unavailable.',
+    } });
+    expect(screen.getByTestId('work-on-everything-console')).toBeTruthy();
+    // Recognition survives a degraded collection read, so the dedicated retry
+    // state appears instead of silently reverting to the generic goal detail.
+    expect(screen.getByRole('alert').textContent).toContain('Goal data could not be read');
+    expect(screen.queryByTestId('goal-ends-section')).toBeNull();
+  });
+  it('opens the dedicated 02C destination only for the declared Work on Everything package', () => {
+    const base = detail();
+    renderPanel({ ...base, goal: { ...base.goal!, title: 'Renamed ongoing goal',
+      goalPackage: { ref: 'work-on-everything' } } });
+    expect(screen.getByTestId('work-on-everything-console')).toBeTruthy();
+    // Never blank: a goal reply without its data section names that reason and offers Retry.
+    const problem = screen.getByRole('alert');
+    expect(within(problem).getByRole('heading', { name: 'Goal data did not load' })).toBeTruthy();
+    expect(within(problem).getByRole('button', { name: 'Retry' })).toBeTruthy();
+    expect(screen.queryByTestId('goal-ends-section')).toBeNull();
+  });
+  it('shows the ongoing work overview first for standing goals and opens actual completed work', () => {
+    const base = detail();
+    const onOpenWorkItem = vi.fn();
+    const onOpenPlan = vi.fn();
+    renderPanel({ ...base, goal: { ...base.goal!, standing: true },
+      activity: [{ id: 'WI-outcome', title: 'Verified release repair', status: 'done', closedAt: '2026-08-10T12:00:00Z' }],
+      goalModeState: { portfolio: { priorities: ['Reconcile the release plan', 'Place the next item'] } },
+      plans: [{ planSlug: 'release', harnessSlug: 'alpha', title: 'Release plan', openItems: 3, stamped: true }],
+      waitingOnYouTotal: 31 }, { onOpenWorkItem, onOpenPlan });
+    const overview = screen.getByTestId('ongoing-work-overview');
+    const ends = screen.getByTestId('goal-ends-section');
+    expect(overview.compareDocumentPosition(ends) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(overview).getByRole('heading', { name: 'Where work is moving' })).toBeTruthy();
+    expect(overview.textContent).toContain('Where work is moving');
+    expect(overview.textContent).toContain('Reconcile the release plan');
+    expect(overview.textContent).toContain('31 waiting on you');
+    fireEvent.click(within(overview).getByRole('button', { name: 'Verified release repair' }));
+    expect(onOpenWorkItem).toHaveBeenCalledWith('WI-outcome');
+    fireEvent.click(within(overview).getByRole('button', { name: 'Release plan' }));
+    expect(onOpenPlan).toHaveBeenCalledWith('alpha', 'release');
+  });
+
+  it('keeps ordinary goals on their existing detail without an ongoing overview', () => {
+    renderPanel(detail());
+    expect(screen.queryByTestId('ongoing-work-overview')).toBeNull();
+    expect(screen.getByText('This goal ends when')).toBeTruthy();
+  });
+
+  it('opens a standing mobile goal with the overview unobscured and keeps the Work drawer selectable', () => {
+    vi.stubGlobal('matchMedia', vi.fn((query: string) => ({ matches: true, media: query,
+      addEventListener: vi.fn(), removeEventListener: vi.fn() })));
+    try {
+      const base = detail();
+      renderPanel({ ...base, goal: { ...base.goal!, standing: true } });
+      expect(screen.getByTestId('ongoing-work-overview')).toBeTruthy();
+      expect(screen.queryByTestId('goal-work-rail')).toBeNull();
+      const menu = openPanelsMenu();
+      fireEvent.click(within(menu).getByRole('checkbox', { name: 'Work' }));
+      expect(screen.getByTestId('goal-work-rail')).toBeTruthy();
+      cleanup();
+      // Control: the change does not alter an ordinary mobile goal's default.
+      renderPanel(detail());
+      expect(screen.getByTestId('goal-work-rail')).toBeTruthy();
+    } finally {
+      cleanup();
+      vi.unstubAllGlobals();
+    }
+  });
   it('renders nothing and fires no query while closed', () => {
     render(<GoalDetailPanel goalId={null} workspaceId="ws-real" nowMs={NOW} onClose={() => {}} />);
     expect(document.body.textContent).not.toContain('This goal ends when');

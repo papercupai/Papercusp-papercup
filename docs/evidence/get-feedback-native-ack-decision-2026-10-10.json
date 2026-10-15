@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 1,
+  "kind": "native-consultation-acknowledgement-observation",
+  "planSlug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemRefs": [
+    "WI-10007521",
+    "EI-25532882040525639"
+  ],
+  "observedAt": "2026-10-10T22:54:40.375457+00:00",
+  "status": "scoped-native-reply-observed; pending-cascade-unverified",
+  "conversationId": "conv-request-35263aea458d1b2cf409481fe3b54b77cc5e5f2875e652fcae0c924d6bfccd13",
+  "reply": {
+    "postId": 1172876,
+    "authorId": "su-ee2b03f5-2f58-4204-be36-baaee822c5ee",
+    "createdAt": "2026-10-10T22:21:49.399Z",
+    "bodySha256": "5e0828bc1c94d314a56236020f1f076149804451dba8a64fcc3ef193d5b6bc81"
+  },
+  "identity": {
+    "answeringOwnerId": "su-ee2b03f5-2f58-4204-be36-baaee822c5ee",
+    "sourceOwnerId": "su-1a1a38d9-6dd9-4150-b96b-e7aa31d9f023",
+    "sourceAndAnsweringAreDistinct": true,
+    "nativeSessionId": "1d16b462-4fe1-4190-b3c7-e12a11b7a353",
+    "nativeSessionFingerprintMatches": true,
+    "authenticatedNativeSession": {
+      "binding": "bound",
+      "carrier": "query:native_session",
+      "valueFingerprint": "93a92dc4012b854e0f9f8e973851911f985c4d982ffe357a836414ee798ebc82",
+      "candidateAdvSessionId": 39923
+    },
+    "authenticatedLaunchRecord": {
+      "xmin": "845160665",
+      "selection": "caller-row",
+      "advSessionId": "39923"
+    }
+  },
+  "nativeAction": {
+    "callLine": 319,
+    "callTimestamp": "2026-10-10T22:21:47.677Z",
+    "callId": "toolu_019J6ZihFBnX84QW1wHDKiny",
+    "nativeTool": "Bash",
+    "commandSha256": "552b91a604a1b54a1eb635cb731b8f94eac0b82ee576aec4f328c43f652962e1",
+    "typedVerbPresent": true,
+    "resultLine": 327,
+    "resultTimestamp": "2026-10-10T22:21:50.647Z",
+    "isError": false,
+    "result": {
+      "ok": true,
+      "post_id": 1172876,
+      "role": "responder",
+      "state": "active",
+      "exchanges_used": 0,
+      "max_exchanges": 4,
+      "cascade": {
+        "advanced_to": null,
+        "exhausted": true,
+        "woke": 0
+      },
+      "hint": "Answer posted (exchange 0/4); the requester was signaled via consult:reply:conv-request-35263aea458d1b2cf409481fe3b54b77cc5e5f2875e652fcae0c924d6bfccd13. When the thread is settled, close it: consult:close { outcome: 'answered' }. Cascade menu exhausted — you were the last selectee."
+    },
+    "resultContentSha256": "e2870e359eb01a677866b8a465567ad218e136c17b958f0f99b62b9a05540393",
+    "nativePathTemplate": "~/.papercusp/session-claude/su-ee2b03f5-2f58-4204-be36-baaee822c5ee/projects/{projectKey}/1d16b462-4fe1-4190-b3c7-e12a11b7a353.jsonl",
+    "nativeSnapshotSha256": "e3a44d2152d3fec54626b6d94bf28d10bcc432594f7a8b13d6a152879da9fb54",
+    "nativeSnapshotBytes": 2041427,
+    "transport": "recorded native Bash invocation of ptool typed consult:reply; not a direct native MCP tool_use",
+    "callIdFingerprint": "not recorded by query:native_session carrier; no direct-MCP call-id equality claim"
+  },
+  "invocation": {
+    "id": "35633476",
+    "coord_owner_id": "su-ee2b03f5-2f58-4204-be36-baaee822c5ee",
+    "tool_name": "consult:reply",
+    "status": "ok",
+    "duration_ms": 195,
+    "serving_build_sha": "0f3e571b38",
+    "native_session": {
+      "binding": "bound",
+      "carrier": "query:native_session",
+      "valueFingerprint": "93a92dc4012b854e0f9f8e973851911f985c4d982ffe357a836414ee798ebc82",
+      "candidateAdvSessionId": 39923
+    },
+    "launch_record": {
+      "xmin": "845160665",
+      "selection": "caller-row",
+      "advSessionId": "39923"
+    },
+    "settlement": {
+      "stage": "inner_dispatch_settled",
+      "outcome": "success",
+      "traceId": "73bfc61e-a662-46b9-a218-2532ec3cddf6",
+      "elapsedMs": 280,
+      "settledAt": "2026-10-10T22:21:49.573Z",
+      "afterDeadline": false,
+      "phaseTimingsMs": {
+        "advisory": 0,
+        "resultDoor": 0,
+        "advisoryFlagReads": 0,
+        "postDispatchToSettlement": 0
+      }
+    }
+  },
+  "requesterDecision": {
+    "postId": 1172878,
+    "authorId": "su-e16e0da4-f858-4e10-9665-55116edbc36b",
+    "bodySha256": "9b05d92f79a3cb0979bc0f545d786136ecd5d5c9296e2a104b60930be392d8e5",
+    "decision": "Apply the advisor recommendation as the real-PG lease-owning continuation regression; keep normal pending native disposition and R6/R7 open.",
+    "implementedRegressionRef": {
+      "file": "packages/operator-core/lib/consult/consult-verbs-core.integration.test.ts",
+      "testRunId": 21008885,
+      "scope": "saved original local-dirty 92 passed/0 failed/0 skipped; executed graph absent; not re-run in this observation"
+    }
+  },
+  "disposition": {
+    "cascade": {
+      "advanced_to": null,
+      "exhausted": true,
+      "woke": 0
+    },
+    "pendingCascadeCovered": false,
+    "reason": "This successful answer exhausted the selected menu. It exercises no next launch or pending acknowledgement.",
+    "closedState": "closed_answered"
+  },
+  "retainedReads": [
+    {
+      "path": "/dev/shm/get-feedback-native-ack-physical-20261010-2255.json",
+      "sha256": "5bb13281d176d16485dcb5acc9ecc01c2802b2c566ea943d65094d1ff5533a62"
+    },
+    {
+      "path": "/dev/shm/get-feedback-native-ack-telemetry-20261010-2255.json",
+      "sha256": "be2b66a27adcb5b7c5f9ad676a9e6389ad812df376fca3eedcf155250a6b5e73"
+    },
+    {
+      "path": "/dev/shm/get-feedback-successor-2249-native-read.json",
+      "sha256": "e874b0bf7dc3431c634b8f9a6890620ccb0645fbae3149e2a0dfd8e1982a9c5b"
+    }
+  ],
+  "historicalActorProof": {
+    "path": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-native-actors-2026-10-09.json",
+    "sha256": "32a33207fc41b85c6312471ebbb5c276d82c4385a8b1d2bed3dba7811a123885",
+    "meaning": "Three historical native MCP call fingerprints already correlated there; earlier unverified wording is superseded by its correction. Preserve both historical artifacts unchanged."
+  },
+  "remaining": [
+    "Normal native pending disposition with early acknowledgement and actual continuation-performed launch.",
+    "Original inference failure cause is unknown.",
+    "Current staging build identity and source containment at the next trial are unverified.",
+    "R6 closed backend matrix and original quality-cohort shortfall remain separate.",
+    "Independent acceptance and exact final shipment remain open."
+  ],
+  "reuse": "Existing docs/evidence manual-provenance surface; original ledgers and historical artifacts unchanged."
+}

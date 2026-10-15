@@ -7,7 +7,7 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/release-cut-launch.test.ts
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -37,6 +37,7 @@ import {
   CUT_STARTED,
   PLATFORMS,
   cutUnitFor,
+  cutUnitForTask,
   cutLogFor,
   cutDoneFor,
   cutStartedFor,
@@ -76,11 +77,48 @@ describe('version / channel validation', () => {
 });
 
 describe('buildCutEnv — LOCAL-only enforced', () => {
+  it('transports D166 private inputs as a fresh full read-only source cut, with no cached seed', () => {
+    const seedUuidIdempotency = { plansPath: '/private/row plans.json', plansSha256: 'a'.repeat(64), sourceStoreDir: '/private/frozen source',
+      censusPath: "/private/census's config.json", censusSha256: 'b'.repeat(64) };
+    expect(buildCutEnv({}, sourceSha, { ownerName: 'Avi', fullHistory: true, seedUuidIdempotency }))
+      .toMatchObject({ PAPERCUSP_SEED_UUID_PLAN_PATH: seedUuidIdempotency.plansPath,
+        PAPERCUSP_SEED_UUID_PLAN_SHA256: seedUuidIdempotency.plansSha256,
+        PAPERCUSP_SEED_UUID_CENSUS_PATH: seedUuidIdempotency.censusPath,
+        PAPERCUSP_SEED_UUID_CENSUS_SHA256: seedUuidIdempotency.censusSha256,
+        PAPERCUSP_SEED_STORE_DIR: seedUuidIdempotency.sourceStoreDir, PAPERCUSP_SEED_REUSE_CORESTORE: '0',
+        PAPERCUSP_SEED_FORCE: '1', PAPERCUSP_SEED_CORESTORE: '1', PAPERCUSP_SEED_SPARSE: '0',
+        PAPERCUSP_SEED_SNAPSHOT_DIR: '', PAPERCUSP_SEED_DEPTH: '' });
+    for (const bad of [{ reuseSeed: true }, { seedless: true },
+      { seedUuidIdempotency: { ...seedUuidIdempotency, plansSha256: 'bad' } },
+      { seedUuidIdempotency: { ...seedUuidIdempotency, censusSha256: 'bad' } },
+      { seedUuidIdempotency: { ...seedUuidIdempotency, censusPath: 'relative' } },
+      { seedUuidIdempotency: { ...seedUuidIdempotency, censusPath: undefined as never } },
+      { seedUuidIdempotency: { ...seedUuidIdempotency, sourceStoreDir: 'relative' } }]) {
+      expect(() => buildCutEnv({}, sourceSha, { ownerName: 'Avi', seedUuidIdempotency, ...bad })).toThrow();
+    }
+  });
+
+  it('passes only the explicitly supplied private seed finding proof to the detached cut', () => {
+    const source = 'a'.repeat(40);
+    expect(buildCutEnv({}, source, { ownerName: 'Avi' }))
+      .not.toHaveProperty('PAPERCUSP_RELEASE_SEED_FINDING_PROOF');
+    expect(buildCutEnv({}, source, { ownerName: 'Avi', seedFindingProof: '/private/proof.json' }))
+      .toHaveProperty('PAPERCUSP_RELEASE_SEED_FINDING_PROOF', '/private/proof.json');
+  });
   const sourceSha = '1feac8dd867c6566af834445a58b5a2e43b14649';
   const runtime = { ownerName: 'Avi' };
+  it('binds focused proof to the task harness and never treats all-scope as a harness', () => {
+    expect(buildCutEnv({}, sourceSha, { ...runtime, harnessSlug: ' customer-app ' }))
+      .toHaveProperty('PAPERCUSP_TEST_RUN_HARNESS', 'customer-app');
+    for (const harnessSlug of [undefined, null, '', ' ', '*', 'all']) {
+      expect(buildCutEnv({}, sourceSha, { ...runtime, harnessSlug }))
+        .not.toHaveProperty('PAPERCUSP_TEST_RUN_HARNESS');
+    }
+  });
   it('always disables GitHub publish; adds only requested legs', () => {
     expect(buildCutEnv({}, sourceSha, runtime)).toEqual({
       PAPERCUSP_PUBLISH_GITHUB: '0',
+      PAPERCUSP_RELEASE_DEFER_TAG: '0',
       PAPERCUSP_EXPECTED_SOURCE_SHA: sourceSha,
       PAPERCUSP_RELEASE_OWNER_NAME: 'Avi',
       DEPENDENCY_GENERATION_FORCE_COPY: '1',
@@ -89,6 +127,7 @@ describe('buildCutEnv — LOCAL-only enforced', () => {
     });
     expect(buildCutEnv({ mac: true, windows: true, arm64: true }, sourceSha, runtime)).toEqual({
       PAPERCUSP_PUBLISH_GITHUB: '0',
+      PAPERCUSP_RELEASE_DEFER_TAG: '0',
       PAPERCUSP_EXPECTED_SOURCE_SHA: sourceSha,
       PAPERCUSP_RELEASE_OWNER_NAME: 'Avi',
       DEPENDENCY_GENERATION_FORCE_COPY: '1',
@@ -101,6 +140,7 @@ describe('buildCutEnv — LOCAL-only enforced', () => {
     // A false/undefined leg is not injected.
     expect(buildCutEnv({ mac: false }, sourceSha, { ownerName: ' Avi ', ownerEmail: ' owner@example.test ', reuseSeed: true })).toEqual({
       PAPERCUSP_PUBLISH_GITHUB: '0',
+      PAPERCUSP_RELEASE_DEFER_TAG: '0',
       PAPERCUSP_EXPECTED_SOURCE_SHA: sourceSha,
       PAPERCUSP_RELEASE_OWNER_NAME: 'Avi',
       PAPERCUSP_RELEASE_OWNER_EMAIL: 'owner@example.test',
@@ -113,6 +153,15 @@ describe('buildCutEnv — LOCAL-only enforced', () => {
       .toHaveProperty('PAPERCUSP_SKIP_SEED_CUT', '1');
     expect(() => buildCutEnv({}, sourceSha, { ownerName: 'Avi', reuseSeed: true, seedless: true }))
       .toThrow(/seed_mode_conflict/);
+  });
+
+  it('defers tags only by explicit opt-in while keeping publish disabled and exact source binding', () => {
+    const env = buildCutEnv({}, sourceSha, { ...runtime, deferTag: true });
+    expect(env).toMatchObject({ PAPERCUSP_RELEASE_DEFER_TAG: '1', PAPERCUSP_PUBLISH_GITHUB: '0',
+      PAPERCUSP_EXPECTED_SOURCE_SHA: sourceSha });
+    for (const deferTag of [undefined, false]) {
+      expect(buildCutEnv({}, sourceSha, { ...runtime, deferTag })).toHaveProperty('PAPERCUSP_RELEASE_DEFER_TAG', '0');
+    }
   });
 
   it('renders full-history as a present-empty seed depth and rejects modes that skip the seed cut', () => {
@@ -180,8 +229,12 @@ describe('buildCutEnv — LOCAL-only enforced', () => {
 
 describe('buildCutArgv', () => {
   const sourceSha = '1feac8dd867c6566af834445a58b5a2e43b14649';
+  const root = '/root/papercusp-desktop';
+  const rootLog = cutLogFor(undefined, root);
+  const rootDone = cutDoneFor(undefined, root);
+  const rootStarted = cutStartedFor(undefined, root);
   const argv = buildCutArgv(
-    '/root/papercusp-desktop',
+    root,
     '0.0.8',
     'alpha',
     { mac: true },
@@ -198,9 +251,39 @@ describe('buildCutArgv', () => {
     expect(argv).toContain('--working-directory=/root/papercusp-desktop');
     expect(argv).toContain('--setenv=PATH=/usr/bin:/bin');
   });
+  it.each([undefined, ...PLATFORMS])('accepts the readiness child for platform %s', (platform) => {
+    for (const releaseTaskId of [undefined, 'readinesstask']) {
+      const readinessArgv = buildCutArgv(
+        root,
+        '0.0.8',
+        'alpha',
+        {},
+        sourceSha,
+        '/usr/bin:/bin',
+        {
+          ownerName: 'Avi',
+          releaseTaskId,
+          releaseOperationId: releaseTaskId ? 'readiness-operation' : undefined,
+        },
+        platform,
+      );
+      // systemd defaults Type=notify to NotifyAccess=main, which rejects the
+      // systemd-notify child and times out even after the cutter has started.
+      expect(readinessArgv).toContain('--property=Type=notify');
+      expect(readinessArgv).toContain('--property=NotifyAccess=all');
+      const command = readinessArgv.at(-1)!;
+      const notifyAt = command.indexOf('systemd-notify --ready || exit $?;');
+      expect(notifyAt).toBeGreaterThan(command.indexOf(`> ${cutStartedFor(platform, root)}`));
+      expect(notifyAt).toBeGreaterThan(command.indexOf('flock -n 9'));
+      expect(notifyAt).toBeLessThan(command.indexOf('PAPERCUSP_PUBLISH_GITHUB='));
+    }
+  });
   it('runs the cutter LOCAL-only, clears the stale sentinel, records the exit code', () => {
-    expect(inner).toContain(`rm -f ${CUT_DONE}`);
-    expect(inner).toContain(`> ${CUT_STARTED}`);
+    expect(inner).toContain(`rm -f ${rootDone}`);
+    expect(inner).toContain(`> ${rootStarted}`);
+    expect(inner).toContain(`ln -sfn '${rootLog}' '${CUT_LOG}'`);
+    expect(inner).toContain(`ln -sfn '${rootDone}' '${CUT_DONE}'`);
+    expect(inner).toContain(`ln -sfn '${rootStarted}' '${CUT_STARTED}'`);
     expect(inner).toContain("PAPERCUSP_PUBLISH_GITHUB='0'");
     expect(inner).toContain(`PAPERCUSP_EXPECTED_SOURCE_SHA='${sourceSha}'`);
     expect(inner).toContain(`PAPERCUSP_RELEASE_OWNER_NAME='Avi O'\"'\"'Neil'`);
@@ -211,8 +294,8 @@ describe('buildCutArgv', () => {
     expect(inner).toContain(`bash -c 'source "$1" "$2" "$3"'`);
     expect(inner).toContain("'/root/papercusp-desktop/bin/release-local.sh'");
     expect(inner).toContain("'/current/papercusp-desktop/bin/release-local.sh' '0.0.8' 'alpha'");
-    expect(inner).toContain(`> ${CUT_LOG} 2>&1`);
-    expect(inner).toContain(`echo "DONE:$?" > ${CUT_DONE}`);
+    expect(inner).toContain(`> ${rootLog} 2>&1`);
+    expect(inner).toContain(`echo "DONE:$?" > ${rootDone}`);
   });
   it('never pushes a tag or creates a GitHub release', () => {
     expect(inner).not.toMatch(/gh release/);
@@ -570,6 +653,20 @@ describe('preflightCut', () => {
       expect(r.go).toBe(false);
       expect(r.blockers.join()).toMatch(/release-tag: .*desktop-v0\.0\.25-alpha is missing .*prepare-tag/);
     });
+    it('approved tag deferral never probes refs and retains signing and in-flight blockers', () => {
+      const remoteTagSha = vi.fn(() => { throw new Error('must not probe deferred refs'); });
+      const r = preflightCut({}, { root, release, deferTag: true }, { ...base, remoteTagSha });
+      expect(r.go).toBe(true);
+      expect(remoteTagSha).not.toHaveBeenCalled();
+      expect(r.checks.find((c) => c.name === 'release-tag')?.detail).toContain('Candidate/GO/publication remain blocked');
+      const blocked = preflightCut({}, { root, release, deferTag: true }, {
+        ...base, remoteTagSha, exists: (p) => allPresent.has(p) && p !== key, isUnitActive: () => true,
+      });
+      expect(blocked.go).toBe(false);
+      expect(blocked.blockers.join()).toMatch(/signing-key/);
+      expect(blocked.blockers.join()).toMatch(/no-cut-in-flight/);
+      expect(remoteTagSha).not.toHaveBeenCalled();
+    });
     it('a tag pointing at another commit is a HARD blocker', () => {
       const r = preflightCut({}, { root, release }, { ...base, remoteTagSha: () => 'c'.repeat(40) });
       expect(r.go).toBe(false);
@@ -622,6 +719,61 @@ describe('preflightCut', () => {
     expect(r.go).toBe(true);
     expect(r.checks.some((c) => c.name === 'leg:mac')).toBe(true);
     expect(r.checks.some((c) => c.name === 'leg:windows')).toBe(true);
+  });
+  describe('native smoke targets (WI-10004346)', () => {
+    const orchestratorRoot = '/orch/papercusp-desktop';
+    const detector = `${orchestratorRoot}/bin/smoke-target-preflight.sh`;
+    const withDetector = (p: string) => allPresent.has(p) || p === detector;
+    const run = (legs: { mac?: boolean; windows?: boolean }, probes: Record<string, { exitCode: number | null; output: string }>) => {
+      const calls: string[] = [];
+      const r = preflightCut(legs, { root, orchestratorRoot }, {
+        ...dependencyReady,
+        home,
+        exists: withDetector,
+        isUnitActive: () => false,
+        runSmokeTargetPreflight: (script, platform) => {
+          expect(script).toBe(detector);
+          calls.push(platform);
+          return probes[platform];
+        },
+      });
+      return { r, calls };
+    };
+    it('probes only the requested legs, and READY is ok', () => {
+      const { r, calls } = run({ mac: true }, { mac: { exitCode: 0, output: 'SMOKE_TARGET_READY mac' } });
+      expect(calls).toEqual(['mac']);
+      expect(r.checks.find((c) => c.name === 'smoke-target:mac')!.ok).toBe(true);
+      expect(r.checks.some((c) => c.name === 'smoke-target:windows')).toBe(false);
+    });
+    it('NOT-READY / STOPPED / unmeasured are surfaced as warnings, never blockers', () => {
+      const { r } = run({ mac: true, windows: true }, {
+        mac: { exitCode: 2, output: 'SMOKE_TARGET_BLOCKER baseline-missing: no 0.0.27 GUI\nSMOKE_TARGET_NOT_READY mac' },
+        windows: { exitCode: 3, output: 'windows VM stopped\nboot: systemctl --user start windows-vm.service' },
+      });
+      expect(r.go).toBe(true);
+      const mac = r.checks.find((c) => c.name === 'smoke-target:mac')!;
+      expect(mac).toMatchObject({ ok: false, warnOnly: true });
+      expect(mac.detail).toMatch(/NOT-READY.*baseline-missing/);
+      const win = r.checks.find((c) => c.name === 'smoke-target:windows')!;
+      expect(win).toMatchObject({ ok: false, warnOnly: true });
+      expect(win.detail).toMatch(/STOPPED.*systemctl --user start windows-vm/);
+
+      const timedOut = run({ mac: true }, { mac: { exitCode: null, output: '' } }).r;
+      expect(timedOut.checks.find((c) => c.name === 'smoke-target:mac')!.detail).toMatch(/UNMEASURED/);
+      expect(timedOut.go).toBe(true);
+    });
+    it('a missing detector is reported as unmeasured, not READY, and nothing is run', () => {
+      const r = preflightCut({ windows: true }, { root, orchestratorRoot }, {
+        ...dependencyReady,
+        home,
+        exists: (p) => allPresent.has(p),
+        isUnitActive: () => false,
+        runSmokeTargetPreflight: () => { throw new Error('must not run'); },
+      });
+      const c = r.checks.find((x) => x.name === 'smoke-target:windows')!;
+      expect(c).toMatchObject({ ok: false, warnOnly: true });
+      expect(c.detail).toMatch(/UNMEASURED/);
+    });
   });
   it('a per-leg in-flight check looks at that platform\'s OWN unit, not the whole-cut one', () => {
     // The whole-cut unit is active, but we're preflighting the 'mac' LEG — a distinct unit —
@@ -699,6 +851,15 @@ describe('cutUnitFor / cutLogFor / cutDoneFor', () => {
       seen.add(unit);
     }
   });
+  it('keeps explicit roots in distinct stable status paths while rootless helpers remain host-wide', () => {
+    const rootA = '/mnt/data/offload/root-a/papercusp-desktop';
+    const rootB = '/mnt/data/offload/root-b/papercusp-desktop';
+    expect(cutLogFor(undefined, rootA)).toMatch(/^\/tmp\/papercup-release-cut-[a-f0-9]{24}\.log$/);
+    expect(cutDoneFor('mac', rootA)).not.toBe(cutDoneFor('mac', rootB));
+    expect(cutStartedFor(undefined, rootA)).not.toBe(cutStartedFor(undefined, rootB));
+    expect(cutLogFor()).toBe(CUT_LOG);
+    expect(cutDoneFor()).toBe(CUT_DONE);
+  });
 });
 
 describe('legsForPlatform', () => {
@@ -742,8 +903,8 @@ describe('buildCutArgv — a staging-checkout orchestrator holds the staging-syn
     expect(inner).toContain(
       `flock --shared --close --verbose --timeout 1200 --conflict-exit-code ${STAGING_SYNC_LOCK_TIMEOUT_EXIT} '${STAGING_SYNC_LOCK}' bash -c 'source "$1" "$2" "$3"'`,
     );
-    // The DONE sentinel still records the wrapped cutter's exit code.
-    expect(inner).toContain(`echo "DONE:$?" > ${CUT_DONE}`);
+    // The root-scoped DONE sentinel still records the wrapped cutter's exit code.
+    expect(inner).toContain(`echo "DONE:$?" > ${cutDoneFor(undefined, '/ws/papercusp-relcut-0022/papercusp-desktop')}`);
   });
 
   it('omits the staging-sync wrapper but retains the logical cut-slot lock for other orchestrators', () => {
@@ -845,8 +1006,9 @@ describe.skipIf(process.platform !== 'linux')('wrapWithStagingSyncLock — real 
 
 describe('buildCutArgv with a platform', () => {
   it('targets the per-leg unit + log + done, not the whole-cut ones', () => {
+    const root = '/root/papercusp-desktop';
     const argv = buildCutArgv(
-      '/root/papercusp-desktop',
+      root,
       '0.0.8',
       'alpha',
       { mac: true },
@@ -859,9 +1021,9 @@ describe('buildCutArgv with a platform', () => {
     const inner = argv[argv.length - 1]!;
     const unit = cutUnitFor('mac');
     expect(argv).toContain(`--unit=${unit}`);
-    expect(inner).toContain(`rm -f ${cutDoneFor('mac')}`);
-    expect(inner).toContain(`> ${cutLogFor('mac')} 2>&1`);
-    expect(inner).toContain(`echo "DONE:$?" > ${cutDoneFor('mac')}`);
+    expect(inner).toContain(`rm -f ${cutDoneFor('mac', root)}`);
+    expect(inner).toContain(`> ${cutLogFor('mac', root)} 2>&1`);
+    expect(inner).toContain(`echo "DONE:$?" > ${cutDoneFor('mac', root)}`);
     expect(inner).not.toContain(CUT_DONE); // sanity: not the bare whole-cut done-file path
   });
 
@@ -920,6 +1082,32 @@ describe('readCutStatus with a platform', () => {
     });
     expect(mac.state).toBe('done');
     expect(windows.state).toBe('running');
+  });
+  it('reads distinct root-scoped markers so one root cannot report another root\'s active cut', () => {
+    const rootA = '/mnt/data/offload/root-a/papercusp-desktop';
+    const rootB = '/mnt/data/offload/root-b/papercusp-desktop';
+    const startedA = cutStartedFor('linux', rootA);
+    const doneA = cutDoneFor('linux', rootA);
+    const logA = cutLogFor('linux', rootA);
+    const startedB = cutStartedFor('linux', rootB);
+    const logB = cutLogFor('linux', rootB);
+    const files = new Map<string, string>([
+      [startedA, 'STARTED:1\nOPERATION:op-a\nTASK:taska001\n'],
+      [doneA, 'DONE:0'],
+      [logA, 'root A finished'],
+      [startedB, 'STARTED:2\nOPERATION:op-b\nTASK:taskb001\n'],
+      [logB, 'root B running'],
+    ]);
+    const read = (root: string) => readCutStatus({
+      root,
+      platform: 'linux',
+      existsSync: (p) => files.has(p),
+      readFileSync: (p) => files.get(p) ?? '',
+      isUnitActive: (unit) => unit === cutUnitForTask('taskb001'),
+    });
+
+    expect(read(rootA)).toMatchObject({ state: 'done', logPath: logA, donePath: doneA });
+    expect(read(rootB)).toMatchObject({ state: 'running', logPath: logB, donePath: cutDoneFor('linux', rootB) });
   });
 });
 
@@ -1402,7 +1590,7 @@ describe('buildCutArgv — the started marker carries the operation identity', (
     expect(cmd).toContain("printf 'STARTED:%s\\nOPERATION:%s\\nTASK:%s\\n'");
     expect(cmd).toContain("'op-1'");
     expect(cmd).toContain("'task1'");
-    expect(cmd).toContain(`> ${CUT_STARTED}`);
+    expect(cmd).toContain(`> ${cutStartedFor(undefined, '/root/papercusp-desktop')}`);
   });
 
   it('writes the plain timestamp-only marker for an unmanaged cut', () => {

@@ -96,9 +96,25 @@ describe('overlayCanonicalDocs', () => {
     );
     expect(readCanonical).toHaveBeenCalledTimes(2);
     expect(readCanonical).toHaveBeenLastCalledWith('papercusp', [
+      'agent-insights/existing',
       'agent-insights/existing.mdx',
       'agent-insights/existing.md',
     ]);
+  });
+
+  it('resolves canonical content stored under its extensionless Starlight slug', async () => {
+    const base = releaseSource();
+    const docId = 'claude-md';
+    const raw = '---\ntitle: Canonical Claude guide\n---\n# Canonical heading\n\nCanonical body';
+    const readCanonical = vi.fn(async (_harnessSlug: string, ids: readonly string[]) =>
+      new Map(ids.includes(docId) ? [[docId, raw]] : []),
+    );
+    const source = overlayRequestedCanonicalDocs(base, readCanonical, 'papercusp', [docId]);
+
+    const page = await source.getPage(docId);
+    expect(page).toMatchObject({ slug: docId, title: 'Canonical Claude guide' });
+    expect(await source.getContent(page!)).toContain('Canonical body');
+    expect(readCanonical).toHaveBeenCalledWith('papercusp', [docId, `${docId}.mdx`, `${docId}.md`]);
   });
 });
 

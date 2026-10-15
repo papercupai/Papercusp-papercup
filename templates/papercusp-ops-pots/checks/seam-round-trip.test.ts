@@ -18,8 +18,9 @@
  *     validInput: object          // a payload.in fixture the gate must ACCEPT
  *     validOutput: object         // a payload.out fixture the gate must ACCEPT
  *     invalidOutput: object       // a payload.out fixture the gate must REJECT
- *     agentBlueprint: string      // stable app-agent blueprint — cross-checks workItem.kind
- *     operation: {                // registered plan-target operation declared by that blueprint
+ *     agentBlueprint: string      // stable app-agent blueprint — cross-checks workItem.kind; must declare NO operations
+ *     rootBlueprint?: string      // the app's ROOT blueprint (default .papercusp/blueprint.yaml) — where operations live (D-003)
+ *     operation: {                // registered plan-target operation declared by the ROOT blueprint
  *       id: string
  *       version: string
  *       planTemplate: { ref: string, revision: string, contentHash: sha256 }
@@ -67,6 +68,8 @@ interface SeamSection {
   validOutput: Record<string, unknown>;
   invalidOutput: Record<string, unknown>;
   agentBlueprint: string;
+  /** The app's ROOT blueprint, where operations live (D-003). Default `.papercusp/blueprint.yaml`. */
+  rootBlueprint?: string;
   operation: {
     id: string;
     version: string;
@@ -131,9 +134,20 @@ describe.skipIf(!section)("seam-round-trip", () => {
     expect(() => parseOut(section!.invalidOutput)).toThrow();
   });
 
-  it("the stable app-agent blueprint declares the same seam kind and pinned plan operation", () => {
-    const doc = parse(readFileSync(inApp(section!.agentBlueprint), "utf8")) as {
+  it("the stable app-agent blueprint declares the same seam kind and no operations", () => {
+    const agent = parse(readFileSync(inApp(section!.agentBlueprint), "utf8")) as {
       workItem?: { kind?: string };
+      operations?: unknown;
+    };
+    expect(agent.workItem?.kind).toBe(section!.workItemKind);
+    expect(
+      agent.operations,
+      "operations belong in the app's root .papercusp/blueprint.yaml (D-003); blueprint:submit never resolves them from a pots-plane blueprint",
+    ).toBeUndefined();
+  });
+
+  it("the app's root blueprint declares the pinned plan operation", () => {
+    const doc = parse(readFileSync(inApp(section!.rootBlueprint ?? ".papercusp/blueprint.yaml"), "utf8")) as {
       operations?: Array<{
         id?: string;
         version?: string;
@@ -145,7 +159,6 @@ describe.skipIf(!section)("seam-round-trip", () => {
         acceptance?: { resultSchema?: unknown };
       }>;
     };
-    expect(doc.workItem?.kind).toBe(section!.workItemKind);
     const operation = doc.operations?.find((candidate) => candidate.id === section!.operation.id);
     expect(operation, `missing operations[] declaration ${section!.operation.id}`).toBeDefined();
     expect(operation?.version).toBe(section!.operation.version);

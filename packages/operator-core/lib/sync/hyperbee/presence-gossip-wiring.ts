@@ -39,6 +39,7 @@ import {
   type PresenceGossipHandle,
   type PresenceDelKey,
   type SessionPresenceEntry,
+  type SignedPresenceFrame,
 } from './presence-gossip';
 import { getSharedSwarm } from './swarm';
 import { applySessionPresenceSet } from './session-presence-store';
@@ -179,6 +180,8 @@ export function createAdmissionReporter(opts: AdmissionReporterOpts): AdmissionR
  *  identity — wire-presence resolves it off the booted handle's own log). */
 export interface PresenceGossipWriter {
   getOwnRow: () => Promise<SharedPresenceRow | null>;
+  /** Current workspace session set for a pair-time hello (P-005). */
+  getOwnSessions: () => Promise<SessionPresenceEntry[]>;
   /** Sign frame bytes with THIS device's key. */
   sign: (bytes: Buffer) => Promise<Buffer>;
   /** This device's raw-32 base64 pubkey (frame identity for del frames). */
@@ -366,14 +369,36 @@ async function ensureState(): Promise<WiringState> {
         const binding = bindings.get(topicHex);
         const writer = binding?.writer;
         if (!writer) return [];
+        const frames: SignedPresenceFrame[] = [];
+        const frameTs = Date.now();
         try {
           const row = await writer.getOwnRow();
-          if (!row) return [];
-          // Re-sign at pair time so the freshness window holds.
-          return [await buildPresencePutFrame(row, Date.now(), writer.sign)];
+          if (row) {
+            // Re-sign at pair time so the freshness window holds.
+            frames.push(await buildPresencePutFrame(row, frameTs, writer.sign));
+          }
         } catch {
-          return [];
+          // The session snapshot remains independently useful if row collection fails.
         }
+        try {
+          const sessions = await writer.getOwnSessions();
+          frames.push(
+            await buildSessionsFrame(
+              {
+                devicePubkey: writer.devicePubkey,
+                githubUserId: writer.githubUserId,
+                machineLabel: writer.machineLabel,
+                potSlug: writer.potSlug,
+              },
+              sessions,
+              frameTs,
+              writer.sign,
+            ),
+          );
+        } catch {
+          // Best-effort hello: a roster read failure must not break channel pairing.
+        }
+        return frames;
       },
     });
     state = { gossip, bindings };
@@ -455,8 +480,8 @@ export function invalidatePresenceGossipMemberCache(
 /**
  * Broadcast THIS machine's presence row as a signed gossip frame (the writer
  * path — callers gate on FLAGS.PRESENCE_GOSSIP; the topic's registered writer
- * signs). Returns false when the gossip/writer is unavailable (caller treats
- * it as a skipped beat — the TTL absorbs it).
+ * signs). Returns true only when at least one paired channel was sent the frame
+ * and no channel send threw.
  */
 export async function broadcastPresencePut(topicHex: string, row: SharedPresenceRow): Promise<boolean> {
   try {
@@ -464,8 +489,7 @@ export async function broadcastPresencePut(topicHex: string, row: SharedPresence
     const writer = s.bindings.get(topicHex)?.writer;
     if (!writer) return false;
     const frame = await buildPresencePutFrame(row, Date.now(), writer.sign);
-    s.gossip.broadcast(topicHex, frame);
-    return true;
+    return s.gossip.broadcast(topicHex, frame);
   } catch (e) {
     // EI-18767449529288937: this catch used to be fully silent, collapsing a real
     // send/sign FAILURE into the same bare `false` as the benign "no writer bound
@@ -485,7 +509,7 @@ export async function broadcastPresencePut(topicHex: string, row: SharedPresence
 /**
  * Broadcast THIS machine's full current session set (P-005 — the session-grain
  * roster beat). Receivers replace the device's previous set. Returns false when
- * the gossip/writer is unavailable (a skipped beat; the TTL absorbs it).
+ * no paired channel was sent the frame or any channel send threw.
  */
 export async function broadcastSessions(
   topicHex: string,
@@ -506,8 +530,7 @@ export async function broadcastSessions(
       Date.now(),
       writer.sign,
     );
-    s.gossip.broadcast(topicHex, frame);
-    return true;
+    return s.gossip.broadcast(topicHex, frame);
   } catch {
     return false;
   }
@@ -524,8 +547,7 @@ export async function broadcastPresenceDel(
     const writer = s.bindings.get(topicHex)?.writer;
     if (!writer) return false;
     const frame = await buildPresenceDelFrame(writer.devicePubkey, del, Date.now(), writer.sign);
-    s.gossip.broadcast(topicHex, frame);
-    return true;
+    return s.gossip.broadcast(topicHex, frame);
   } catch {
     return false;
   }

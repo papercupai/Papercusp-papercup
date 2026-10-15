@@ -1,0 +1,31 @@
+---
+rel_path: "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-EI-25417893975896906-2547a0bc3fb2358123ee34855eaf782b-reconcile.json"
+updated_at: 1791672950433
+_body: "content"
+---
+
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:EI-25417893975896906:2547a0bc3fb2358123ee34855eaf782b",
+  "inputSha256": "2547a0bc3fb2358123ee34855eaf782b85342d8057794303adb9fdfd9b708699",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-10-10T22:55:50.433Z",
+  "actor": "su-6baa8b9a-8d72-4223-b6d2-bf9f687dcfcb",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "EI-25417893975896906",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "02d0ea24b970202bda7d8ee67ee9249e4bfcac32f65e22dffd796e1519ede22a",
+      "observedParkFingerprint": "02d0ea24b970202bda7d8ee67ee9249e4bfcac32f65e22dffd796e1519ede22a",
+      "reasonCode": "condition-satisfied",
+      "evidence": "Park release trigger is work-item:done:EI-25403881334911643 (condition: 'Re-evaluate this related report when the fleet leader completes the shared spill-writer incident; close as covered only if the verified result includes this activity:recent failure, otherwise require a new exact failure trace.'). Re-read 2026-10-10T22:55Z (su-6baa8, psql on harness_shared.work_items, workspace papercusp-workspace): EI-25403881334911643 status=dropped, taken_by none; EI-25417893975896906 status=open, taken_by null. Condition clause beyond the trigger, verified: the declared trigger target EI-25403881334911643 (the shared incident) reached a terminal state as DROPPED at 2026-10-09T23:14:53Z, not completed with a verified result. The 'close as covered' branch is therefore unavailable, and the condition's own fallback applies: 'otherwise require a new exact failure trace'. The re-evaluation is due and travels with the row. The trigger target is terminal, so the release condition is met. The re-evaluation the condition describes is the next claimant's work and travels with the row. Settled under plan bug-queue-legitimacy-and-actionable-validation-2026-10-10 P-004 / D-009.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-EI-25417893975896906-2547a0bc3fb2358123ee34855eaf782b-reconcile.json"
+}

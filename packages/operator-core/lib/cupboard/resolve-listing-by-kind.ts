@@ -46,11 +46,15 @@ export interface ResolvedListingCoords {
   priceAmountMicros?: number;
   /** The version the storefront currently serves, when the row names one. */
   releaseVersion?: string;
+  /** Opaque commerce SKU and authenticated storefront publisher; never infer from a tool alias. */
+  skuRef?: string;
+  publisherId?: string;
+  releaseContentHash?: string;
   /** The Worker's publish-time content pin (migration 028: `pinned_commit_sha` +
    *  `pinned_tree_digest`). Undefined ⇒ the row carries none (pre-028, or a code
    *  kind), so an install can only place the branch tip UNVERIFIED. Present ⇒ the
    *  installer must fetch exactly this commit and verify the digest (P-002). */
-  pin?: { commitSha: string; treeDigest: string };
+  pin?: { commitSha: string; treeDigest: string; releaseContentHash?: string };
 }
 
 export type ResolveListingResult = ResolvedListingCoords | { error: string; status: number };
@@ -72,7 +76,7 @@ const num = (v: unknown): number | null => {
 /** Pull the installer-relevant coordinates out of a raw listing row. Null when the
  *  row carries no usable repo URL — a listing we cannot clone is not resolvable,
  *  however well-formed the rest of it is. */
-function coordsFromRow(row: Record<string, unknown>): ResolvedListingCoords | null {
+export function coordsFromRow(row: Record<string, unknown>): ResolvedListingCoords | null {
   const githubUrl =
     str(row.github_url) ??
     (str(row.github_owner) && str(row.github_name)
@@ -91,11 +95,22 @@ function coordsFromRow(row: Record<string, unknown>): ResolvedListingCoords | nu
           pin: {
             commitSha: str(row.pinned_commit_sha) as string,
             treeDigest: str(row.pinned_tree_digest) as string,
+            // P-011: the origin copy's Merkle root, when the publisher shipped one.
+            ...(str(row.release_content_hash)
+              ? { releaseContentHash: str(row.release_content_hash) as string }
+              : {}),
           },
         }
       : {}),
     ...(str(row.requires_rubrics) ? { requiresRubrics: str(row.requires_rubrics) as string } : {}),
-    ...(str(row.price_model) ? { priceModel: str(row.price_model) as string } : {}),
+    ...(str(row.pricing_model) ?? str(row.price_model)
+      ? { priceModel: (str(row.pricing_model) ?? str(row.price_model)) as string } : {}),
+    ...(str(row.sku_ref) ? { skuRef: str(row.sku_ref) as string } : {}),
+    ...(typeof row.publisher_github_user_id === 'number' &&
+        Number.isSafeInteger(row.publisher_github_user_id) && row.publisher_github_user_id > 0
+      ? { publisherId: `gh:${row.publisher_github_user_id}` } : {}),
+    ...(str(row.release_content_hash)
+      ? { releaseContentHash: str(row.release_content_hash) as string } : {}),
     ...(num(row.price_amount_micros) !== null
       ? { priceAmountMicros: num(row.price_amount_micros) as number }
       : {}),

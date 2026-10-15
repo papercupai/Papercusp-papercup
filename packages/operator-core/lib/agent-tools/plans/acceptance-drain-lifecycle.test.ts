@@ -45,6 +45,22 @@ vi.mock('./source', async (importOriginal) => {
 vi.mock('../../plan-acceptance-gate', () => ({
   evaluatePlanAcceptanceGate: M.evaluate,
 }));
+// P-006 (verification-system-improvements-2026-10-10 D-039): the drain transition now
+// asks the blind gap review door before moving a plan to awaiting-acceptance. This
+// lifecycle suite is not about that door, whose real DB reads would hit the mocked sql
+// above and fail closed; it reads as not applicable here. The door itself is exercised by
+// plan-acceptance-gate-blind-review.integration.test.ts.
+vi.mock('../../blind-review-gate', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../blind-review-gate')>()),
+  evaluateBlindReviewGate: async () => ({
+    satisfied: true,
+    applicable: false,
+    notApplicableReason: 'pre-cohort',
+    acceptedReviewIds: [],
+    rejectedReviews: [],
+    undispositionedGaps: [],
+  }),
+}));
 vi.mock('../../coord/condition-upsert', () => ({
   upsertConditionWorkItem: M.upsert,
 }));
@@ -72,7 +88,23 @@ const PLAN = 'drained-plan-2026-09-20';
 // this suite MOCKS to answer the acceptance-filing probe. Unpinned, a second
 // primary obligation appeared on the agenda below (measured 2026-09-22,
 // WI-2144525). It has its own suite; pin it empty here.
-const NO_OWNER_DIRECTIVES = { ownerDirectives: async () => [], waitingOn: async () => [] };
+//
+// The same applies to the plan-acceptance read itself (D-039): the reader's
+// DEFAULT `planAcceptance` dep now serves the PERSISTED closure observation
+// (goals/plan-closure-observations), not an inline gate evaluation, so with the
+// mocked `getOrgPg().sql` it resolved to "plan does not resolve" -> `unknown` /
+// `inspect` instead of the `due` / `repair` this lifecycle asserts (measured
+// 2026-10-01T22:42Z, run 20452719, before any consult-reconciliation edit).
+// This suite's subject is the drain -> filing -> obligation join over the MOCKED
+// gate verdict, so it pins the dep to that same verdict; the persisted-read path
+// has its own coverage in the plan-closure-observations tests.
+const NO_OWNER_DIRECTIVES = {
+  ownerDirectives: async () => [],
+  waitingOn: async () => [],
+  fleetStaffing: async () => [],
+  strandedGoalWork: async (_ws: string, goalId: string) => ({ goalId, thresholdMs: 0, total: 0, refusedCount: 0, sample: [], truncatedByLimit: false }),
+  planAcceptance: async (_workspaceId: string, planSlug: string) => M.evaluate(planSlug),
+};
 let currentBody: string;
 
 function planBody(status: string, itemStatus = 'done'): string {
@@ -138,9 +170,14 @@ beforeEach(() => {
     async (
       _ctx: unknown,
       _opts: unknown,
-      mutator: (current: string, meta: unknown) => Promise<{ newBody: string | null; value: unknown }>,
+      mutator: (
+        current: string,
+        meta: unknown,
+        scope: { workspaceId: string; harnessSlug: string },
+      ) => Promise<{ newBody: string | null; value: unknown }>,
     ) => {
-      const mutation = await mutator(currentBody, {});
+      // The real lock hands every mutator the scope it resolved (WI-6554700010010577).
+      const mutation = await mutator(currentBody, {}, { workspaceId: WS, harnessSlug: 'papercusp' });
       if (mutation.newBody !== null) currentBody = mutation.newBody;
       return {
         kind: 'applied',

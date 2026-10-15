@@ -19,8 +19,9 @@ export async function wornMemoryIdentityIds(ownerId: string, workspaceId: string
     import('../agent-tools/coordination/control-anchor'),
     import('../capability-envelope/identity-grants-port'),
   ]);
+  // Narrowed to the applied receipt (WI-10004801): the selection below reads nothing else.
   const artifact = appliedOrCurrentIdentityArtifact(
-    await readGateSelectedLaunchSpec(sql, ownerId, workspaceId), rows[0].applied);
+    await readGateSelectedLaunchSpec(sql, ownerId, workspaceId, [rows[0].applied]), rows[0].applied);
   if (!artifact) throw new Error('Applied identity content is unavailable; refusing unstamped memory write.');
   return [...new Set(artifact.inputs.filter((input) => input.kind === 'package' && input.packageKind === 'blueprint')
     .map((input) => input.ref))];

@@ -10,7 +10,8 @@ import {
   authorizeWorkItemDispatch,
   assignAndWakeActionableWorkItems,
 } from './agent-tools/coordination/actionable-work-item-dispatch';
-import { WORK_ITEM_ADMISSION_PROMOTER } from './work-items-admission-promoter';
+import { WORK_ITEM_ADMISSION_PROMOTER, type PromoterRunResult } from './work-items-admission-promoter';
+import { issueOwnAuthorWhereSql } from './work-items-admission';
 import { decodeOperatorSecretKey } from './operator-secret-key';
 import { getModes } from './modes/store';
 import { AUDIT_MODE, auditModeMutationDenyReason } from './capability-envelope/audit-mode-guard';
@@ -23,7 +24,19 @@ import {
   type AdmissionRecoveryAuthority,
 } from './work-item-admission-authority';
 
-const recoveryStageSchema = z.enum(['queued', 'authorize', 'screen', 'assign', 'wake', 'await-pickup']);
+const recoveryStageSchema = z.enum(['queued', 'authorize', 'screen', 'assign', 'wake', 'await-pickup', 'picked-up']);
+const pickupVerdictSchema = z.enum(['confirmed', 'not-yet', 'unreadable']);
+const pickupObservationSchema = z.object({
+  requestId: z.string().uuid(),
+  workItemId: z.string().min(1),
+  target: z.string().min(1),
+  deliveredAt: z.string(),
+  observedAt: z.string(),
+  verdict: pickupVerdictSchema,
+  activityAt: z.string().nullable(),
+  source: z.literal('last-progress-at').nullable(),
+  reason: z.string().min(1).max(1000),
+});
 const requestSchema = z.object({
   version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
   requestId: z.string().uuid(),
@@ -39,6 +52,10 @@ const requestSchema = z.object({
   stage: recoveryStageSchema.optional(),
   /** Only a later target-owned pickup can establish execution. */
   pickupConfirmed: z.literal(false),
+  /** Delivery instant for the most recent successfully queued wake. */
+  deliveredAt: z.string().optional(),
+  /** Separate, later observation; never a wake-fan return value. */
+  pickupObservation: pickupObservationSchema.optional(),
   note: z.string().min(1).max(DEFAULT_INBOX_BODY_CAP).optional(),
   body: z.string().max(DEFAULT_INBOX_BODY_CAP).optional(),
   authority: admissionAuthoritySchema.optional(),
@@ -48,8 +65,20 @@ const requestSchema = z.object({
   message: 'legacy recovery requests cannot carry unsigned authority',
 }).refine((r) => r.version !== 3 || r.authority !== undefined, {
   message: 'v3 recovery requests require authenticated authority',
+}).refine((r) => r.pickupObservation === undefined || r.pickupObservation.requestId === r.requestId, {
+  message: 'pickup observation must match the immutable recovery request id',
 });
 export type AdmissionRecoveryRequest = z.infer<typeof requestSchema>;
+export type AdmissionRecoveryPickupVerdict = z.infer<typeof pickupVerdictSchema>;
+export type AdmissionRecoveryPickupObservation = z.infer<typeof pickupObservationSchema>;
+export interface AdmissionRecoveryActivityReading {
+  assignee: string | null;
+  lastProgressAt: string | Date | null;
+}
+export type AdmissionRecoveryActivityReader = (
+  scope: AdmissionRecoveryScope,
+  target: string,
+) => Promise<AdmissionRecoveryActivityReading | null>;
 export interface AdmissionRecoveryScope {
   workspaceId: string;
   harnessSlug: string;
@@ -80,11 +109,15 @@ interface RecoveryItem {
   taken_by: string | null;
   admission: string | null;
   payload: Record<string, unknown> | null;
+  last_progress_at: string | Date | null;
 }
 export interface AdmissionRecoveryDeps {
   authorize: (scope: AdmissionRecoveryScope, request: Pick<AdmissionRecoveryRequest, 'caller' | 'target' | 'authority' | 'note' | 'body'>) => Promise<void>;
-  screen: (scope: AdmissionRecoveryScope, beforePersist: () => Promise<void>) => Promise<unknown>;
+  screen: (scope: AdmissionRecoveryScope, beforePersist: () => Promise<void>) =>
+    Promise<Pick<PromoterRunResult, 'runId' | 'guardRefusals'> | void>;
   dispatch: typeof assignAndWakeActionableWorkItems;
+  /** Test seam for target-owned progress reads; production reads the canonical work-item row. */
+  readPickupActivity?: AdmissionRecoveryActivityReader;
   /** Test seam for an isolated direct-PG database; production creates a direct lock client. */
   lockSql?: Sql;
 }
@@ -165,12 +198,32 @@ async function verifyRequest(sql: Sql, scope: AdmissionRecoveryScope, request: A
 
 async function readItem(sql: Sql, scope: AdmissionRecoveryScope): Promise<RecoveryItem> {
   const [item] = await sql<RecoveryItem[]>`
-    SELECT feature_id, status, origin, taken_by, admission, payload
+    SELECT feature_id, status, origin, taken_by, admission, payload, last_progress_at
       FROM harness_shared.work_items
      WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
        AND feature_id = ${scope.workItemId}`;
   if (!item) throw new AdmissionRecoveryRefused('the exact original work item was not found in this scope');
   return item;
+}
+
+/**
+ * WI-10006515: an own-node row stranded at origin='remote' is OURS. `origin` records how a row
+ * ARRIVED, not who wrote it (WI-10003565), so "repaired by its originating actor" names THIS
+ * node. Heal the label on the base table before the eligibility gate, as the claim and write
+ * paths do (selfHealOwnNodeOriginIfStranded): left at 'remote', every later write through the
+ * engineer_issues view is a silent no-op. The WHERE clause IS the identity check, so a true
+ * peer's row is untouched and still refused. Runs on the caller's handle (inside its transaction
+ * where there is one), so a refusal later in that transaction rolls the heal back too.
+ */
+async function healOwnNodeStrand(sql: Sql, scope: AdmissionRecoveryScope, item: RecoveryItem): Promise<RecoveryItem> {
+  if (item.origin !== 'remote') return item;
+  const healed = await sql<{ feature_id: string }[]>`
+    UPDATE harness_shared.work_items wi SET origin = 'local'
+     WHERE wi.workspace_id = ${scope.workspaceId} AND wi.harness_slug = ${scope.harnessSlug}
+       AND wi.feature_id = ${scope.workItemId} AND wi.origin = 'remote'
+       AND ${issueOwnAuthorWhereSql(sql, scope.workspaceId)}
+     RETURNING wi.feature_id`;
+  return healed.length === 1 ? { ...item, origin: 'local' } : item;
 }
 
 function assertItemEligible(item: RecoveryItem, target: string): void {
@@ -220,6 +273,195 @@ async function lockRequest(sql: Sql, scope: AdmissionRecoveryScope): Promise<boo
   return row?.locked === true;
 }
 
+/** Pure classifier: a delivery receipt is not pickup; only this later target-owned
+ * work-item progress observation can confirm pickup. */
+export function classifyAdmissionRecoveryPickup(input: {
+  requestId: string;
+  workItemId: string;
+  target: string;
+  deliveredAt: string;
+  reading: AdmissionRecoveryActivityReading | null;
+  nowMs?: number;
+}): AdmissionRecoveryPickupObservation {
+  const observedAt = new Date(input.nowMs ?? Date.now()).toISOString();
+  const make = (
+    verdict: AdmissionRecoveryPickupVerdict,
+    activityAt: string | null,
+    source: AdmissionRecoveryPickupObservation['source'],
+    reason: string,
+  ): AdmissionRecoveryPickupObservation => ({
+    requestId: input.requestId,
+    workItemId: input.workItemId,
+    target: input.target,
+    deliveredAt: input.deliveredAt,
+    observedAt,
+    verdict,
+    activityAt,
+    source,
+    reason,
+  });
+  const deliveredMs = Date.parse(input.deliveredAt);
+  if (!Number.isFinite(deliveredMs)) {
+    return make('unreadable', null, null, 'recovery delivery instant is unreadable; pickup cannot be measured');
+  }
+  if (!input.reading) {
+    return make('unreadable', null, null, 'target work-item activity could not be read; measurement failed, not evidence of no pickup');
+  }
+  if (input.reading.assignee !== input.target) {
+    return make('not-yet', null, null, 'the target does not currently hold the original work item; target-owned pickup remains unconfirmed');
+  }
+  if (input.reading.lastProgressAt == null) {
+    return make('not-yet', null, 'last-progress-at', 'no target-owned work-item progress is visible yet');
+  }
+  const activityMs = input.reading.lastProgressAt instanceof Date
+    ? input.reading.lastProgressAt.getTime()
+    : Date.parse(input.reading.lastProgressAt);
+  if (!Number.isFinite(activityMs)) {
+    return make('unreadable', null, 'last-progress-at', 'target work-item progress timestamp is unreadable; measurement failed');
+  }
+  const activityAt = new Date(activityMs).toISOString();
+  if (activityMs > deliveredMs) {
+    return make('confirmed', activityAt, 'last-progress-at', 'the target recorded work-item progress strictly after recovery delivery');
+  }
+  return make('not-yet', activityAt, 'last-progress-at', 'the target work-item progress predates recovery delivery; pickup remains unconfirmed');
+}
+
+function assertPickupObservationIdentity(
+  scope: AdmissionRecoveryScope,
+  request: AdmissionRecoveryRequest,
+): void {
+  const observation = request.pickupObservation;
+  if (!observation) {
+    if (request.stage === 'picked-up') {
+      throw new AdmissionRecoveryRefused('picked-up stage has no matching pickup observation');
+    }
+    return;
+  }
+  const deliveredAt = request.deliveredAt ?? request.updatedAt;
+  if (
+    observation.requestId !== request.requestId ||
+    observation.workItemId !== scope.workItemId ||
+    observation.target !== request.target ||
+    observation.deliveredAt !== deliveredAt
+  ) {
+    throw new AdmissionRecoveryRefused('stored pickup observation does not match the recovery request, item, target, and delivery instant');
+  }
+  if ((observation.verdict === 'confirmed') !== (request.stage === 'picked-up')) {
+    throw new AdmissionRecoveryRefused('pickup stage does not match its three-valued observation');
+  }
+}
+
+function samePickupObservationEvidence(
+  previous: AdmissionRecoveryPickupObservation | undefined,
+  current: AdmissionRecoveryPickupObservation,
+): boolean {
+  return !!previous &&
+    previous.requestId === current.requestId &&
+    previous.workItemId === current.workItemId &&
+    previous.target === current.target &&
+    previous.deliveredAt === current.deliveredAt &&
+    previous.verdict === current.verdict &&
+    previous.activityAt === current.activityAt &&
+    previous.source === current.source &&
+    previous.reason === current.reason;
+}
+
+async function readAdmissionRecoveryActivity(
+  sql: Sql,
+  scope: AdmissionRecoveryScope,
+): Promise<AdmissionRecoveryActivityReading | null> {
+  try {
+    const item = await readItem(sql, scope);
+    return { assignee: item.taken_by, lastProgressAt: item.last_progress_at };
+  } catch {
+    // A failed activity read is unreadable, never evidence that the target did not act.
+    return null;
+  }
+}
+
+/** Re-read the target's own item progress after delivery and persist a request-bound
+ * three-valued receipt. Identical evidence is idempotent; only confirmed advances stage. */
+export async function observeAdmissionRecoveryPickup(
+  args: AdmissionRecoveryScope & { requestId: string; target: string; nowMs?: number },
+  deps: { readActivity?: AdmissionRecoveryActivityReader } = {},
+  sql: Sql = getOrgPg().sql,
+): Promise<AdmissionRecoveryPickupObservation> {
+  const initial = await sql.begin(async (rawTx) => {
+    const tx = rawTx as unknown as Sql;
+    const item = await readItem(tx, args);
+    const request = savedRequest(item);
+    if (!request || request.requestId !== args.requestId || request.target !== args.target) {
+      throw new AdmissionRecoveryRefused('pickup observation does not match the saved recovery request and target');
+    }
+    await verifyRequest(tx, args, request);
+    assertPickupObservationIdentity(args, request);
+    if (request.state === 'delivered' && request.stage === 'picked-up') {
+      return { request, alreadyConfirmed: request.pickupObservation! };
+    }
+    if (request.state !== 'delivered' || request.stage !== 'await-pickup') {
+      throw new AdmissionRecoveryRefused('pickup can only be observed for the exact delivered request awaiting pickup');
+    }
+    return { request, alreadyConfirmed: null };
+  });
+  if (initial.alreadyConfirmed) return initial.alreadyConfirmed;
+
+  // Older delivered records predate deliveredAt; their updatedAt was written at
+  // the successful delivery transition, so it is the compatible wake instant.
+  const deliveredAt = initial.request.deliveredAt ?? initial.request.updatedAt;
+  const readActivity = deps.readActivity ??
+    ((scope: AdmissionRecoveryScope) => readAdmissionRecoveryActivity(sql, scope));
+  let reading: AdmissionRecoveryActivityReading | null = null;
+  try {
+    reading = await readActivity(args, args.target);
+  } catch {
+    // A failed read is a failed measurement, not a negative pickup verdict.
+  }
+  const observation = classifyAdmissionRecoveryPickup({
+    requestId: args.requestId,
+    workItemId: args.workItemId,
+    target: args.target,
+    deliveredAt,
+    reading,
+    nowMs: args.nowMs,
+  });
+
+  return sql.begin(async (rawTx) => {
+    const tx = rawTx as unknown as Sql;
+    const item = await readItem(tx, args);
+    const current = savedRequest(item);
+    if (!current || current.requestId !== args.requestId || current.target !== args.target) {
+      throw new AdmissionRecoveryRefused('recovery request changed during pickup observation');
+    }
+    await verifyRequest(tx, args, current);
+    assertPickupObservationIdentity(args, current);
+    if (current.state === 'delivered' && current.stage === 'picked-up') {
+      return current.pickupObservation!;
+    }
+    if (
+      current.state !== 'delivered' ||
+      current.stage !== 'await-pickup' ||
+      (current.deliveredAt ?? current.updatedAt) !== deliveredAt
+    ) {
+      throw new AdmissionRecoveryRefused('recovery delivery changed during pickup observation');
+    }
+    if (samePickupObservationEvidence(current.pickupObservation, observation)) {
+      return current.pickupObservation!;
+    }
+    const rawCurrent = item.payload?._admissionRecovery;
+    const updatedRequest = requestSchema.parse({
+      ...current,
+      deliveredAt,
+      stage: observation.verdict === 'confirmed' ? 'picked-up' : 'await-pickup',
+      pickupObservation: observation,
+      updatedAt: observation.observedAt,
+    });
+    if (!await writeRequest(tx, args, updatedRequest, rawCurrent)) {
+      throw new AdmissionRecoveryRefused('original recovery changed during pickup observation');
+    }
+    return observation;
+  });
+}
+
 /** One item, one durable request. No create, re-title, claim override, or screening bypass. */
 export async function requestAdmissionRecovery(
   input: AdmissionRecoveryScope & { caller: string; target: string; note?: string; body?: string; authority?: AdmissionRecoveryAuthority },
@@ -233,7 +475,7 @@ export async function requestAdmissionRecovery(
   return sql.begin(async (rawTx) => {
     const tx = rawTx as unknown as Sql;
     const locked = await lockRequest(tx, input);
-    const item = await readItem(tx, input);
+    const item = await healOwnNodeStrand(tx, input, await readItem(tx, input));
     assertItemEligible(item, input.target);
     const rawPrevious = item.payload?._admissionRecovery;
     // This is a NEW authorized request, not replay by the routine. A rotated key or
@@ -288,7 +530,11 @@ export async function runAdmissionRecoveries(
   const rows = await sql<{ feature_id: string }[]>`
     SELECT feature_id FROM harness_shared.work_items
      WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
-       AND payload->'_admissionRecovery'->>'state' = 'queued'
+       AND (
+         payload->'_admissionRecovery'->>'state' = 'queued'
+         OR (payload->'_admissionRecovery'->>'state' = 'delivered'
+           AND payload->'_admissionRecovery'->>'stage' = 'await-pickup')
+       )
      ORDER BY feature_id LIMIT 20`;
   if (rows.length === 0) return 0;
 
@@ -314,7 +560,10 @@ export async function runAdmissionRecoveries(
           const rawRequest = original.payload?._admissionRecovery;
           try {
             const request = savedRequest(original);
-            if (!request || request.state !== 'queued') return null;
+            if (
+              !request ||
+              (request.state !== 'queued' && !(request.state === 'delivered' && request.stage === 'await-pickup'))
+            ) return null;
             return { request, rawRequest };
           } catch (error) {
             if (!(error instanceof AdmissionRecoveryRefused)) throw error;
@@ -329,10 +578,27 @@ export async function runAdmissionRecoveries(
         });
         if (!setup) continue;
         const { request, rawRequest } = setup;
+        if (request.state === 'delivered') {
+          try {
+            await observeAdmissionRecoveryPickup({
+              ...exact, requestId: request.requestId, target: request.target,
+            }, { readActivity: deps.readPickupActivity }, sql);
+          } catch (error) {
+            if (!(error instanceof AdmissionRecoveryRefused)) throw error;
+            await sql.begin(async (rawTx) => {
+              const tx = rawTx as unknown as Sql;
+              await writeRequest(tx, exact, {
+                ...request, state: 'held', stage: 'await-pickup',
+                reason: error.message.slice(0, 2000), updatedAt: new Date().toISOString(),
+              }, rawRequest);
+            });
+          }
+          continue;
+        }
         const assertAllowed = async () => {
           await verifyRequest(sql, exact, request);
           await assertRoutineActive(sql, exact, request.routineId);
-          const live = await readItem(sql, exact);
+          const live = await healOwnNodeStrand(sql, exact, await readItem(sql, exact));
           const current = savedRequest(live);
           // SQL jsonb equality ignores object-key ordering, unlike JSON.stringify.
           const [same] = await sql<{ unchanged: boolean }[]>`
@@ -351,14 +617,29 @@ export async function runAdmissionRecoveries(
         try {
           await assertAllowed();
           const item = await readItem(sql, exact);
+          let screening: Awaited<ReturnType<AdmissionRecoveryDeps['screen']>> = undefined;
           if (item.admission === 'pending' || item.admission === 'unreviewed') {
             stage = 'screen';
-            await deps.screen(exact, assertAllowed);
+            screening = await deps.screen(exact, assertAllowed);
           }
           await assertAllowed();
           const screened = await readItem(sql, exact);
           if (screened.admission === 'pending') {
-            throw new AdmissionRecoveryRefused('screening left the original item pending; repair its named admission hold and retry this same item');
+            // Guarded component writes leave the rows unchanged, so their current
+            // refusal lives in the screening receipt rather than admissionHold.
+            const refusals = screening?.guardRefusals?.filter(({ itemId }) => itemId === exact.workItemId) ?? [];
+            const hold = screened.payload?.admissionHold as { reason?: unknown; runId?: unknown } | undefined;
+            const named = refusals.length > 0
+              ? ` (admission guard from run ${screening!.runId}: ${refusals.map(({ reason, detail }) => `${reason}: ${detail}`).join('; ')})`
+              : typeof hold?.reason === 'string' && hold.reason.trim()
+                ? ` (admission hold${typeof hold.runId === 'string' ? ` from run ${hold.runId}` : ''}: ${hold.reason.trim()})`
+                : ' (the promoter recorded no hold reason)';
+            const repair = refusals.some(({ reason }) => reason === 'outside-mutation-scope')
+              ? 'use the ordinary component screening/review route, then retry this same item within its authorized scope'
+              : 'repair its named admission hold and retry this same item';
+            throw new AdmissionRecoveryRefused(
+              `screening left the original item pending${named}; ${repair}`,
+            );
           }
           stage = 'assign';
           const result = await deps.dispatch({
@@ -389,12 +670,19 @@ export async function runAdmissionRecoveries(
             if (!currentRequest || !same?.unchanged) return false;
             await verifyRequest(tx, exact, currentRequest);
             await assertRoutineActive(tx, exact, request.routineId);
-            return writeRequest(tx, exact, {
-              ...request, state: result.ok && queued ? 'delivered' : 'held', stage,
+            const updatedAt = new Date().toISOString();
+            const updatedRequest = {
+              ...request, state: result.ok && queued ? 'delivered' as const : 'held' as const, stage,
               reason: result.assignment?.skipped[0]?.reason ?? result.assignment?.failed[0]?.reason ?? result.warning ??
                 (queued ? 'wake queued; target pickup remains unconfirmed' : 'dispatch did not queue a wake'),
-              updatedAt: new Date().toISOString(),
-            }, rawRequest);
+              updatedAt,
+            };
+            if (result.ok && queued) updatedRequest.deliveredAt = updatedAt;
+            else {
+              delete updatedRequest.deliveredAt;
+              delete updatedRequest.pickupObservation;
+            }
+            return writeRequest(tx, exact, updatedRequest, rawRequest);
           });
           if (!updated) throw new AdmissionRecoveryRefused('original recovery identity changed');
         } catch (error) {

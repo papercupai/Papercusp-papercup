@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Enterprise P-010 Linux candidate: credentials, service delegation and no-login boot",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "isolated-candidate",
+  "command": [
+    "Maintained papercusp-desktop/scripts/linux-test-vm/vmctl: reset/up clean; install exact Server, seed and GUI debs",
+    "Independent fresh VM p010-creds-94154-e20f8391: install identical debs; test generated and published default PostgreSQL credentials; compare SHA-256 values",
+    "Stop papercusp-server.service; launch GUI, then separately launch Server; inspect operator cgroup; invoke actual tray Quit",
+    "Disable tester autologin; persist old boot ID outside /tmp; reboot; probe using root SSH before any tester login"
+  ],
+  "startedAt": "2026-10-15T08:39:00Z",
+  "finishedAt": "2026-10-15T09:22:30Z",
+  "exitCode": 0,
+  "summary": "Three bounded package acceptance issues passed on manifest e20f8391: host credentials, shipped boot-start helper/no-login reboot, and GUI/Server delegation with tray lifetime. This is not a four-probe PASS: installed ptool authenticated access failed and is recorded separately. P-010 parent, macOS/onTarget/license and final shipment remain open.",
+  "workItems": ["WI-6554700010012477", "WI-6554700010012562", "WI-6554700010012567"],
+  "parentWorkItem": "WI-10007905",
+  "candidate": {
+    "manifestPath": "/mnt/bench/work/su-def82-recut-bebcc40b-20261014T2004Z/candidate-manifest.json",
+    "manifestSha256": "e20f839152a048fd91f558cd228917ec08a3ec3fdf49bc4b9acc1c3543acb46b",
+    "sourceSha": "bebcc40baf8a1cbf3d83709e79c7774e9e298d37",
+    "desktopSha": "080b6b0d27609a5cb91adc97b48efd321a4b2038",
+    "payloads": {
+      "Papercusp Server_0.0.26_amd64.deb": "e1e7ed1dcf0f9a723174cc870fdb7e20aac6496411d8049e5fca6dc2346b4137",
+      "papercusp-server-seed_0.0.26_all.deb": "a37df7cd6b95720e1f6724a87b811e9ff833b99f73cd028a3da7d9a299af5e33",
+      "Papercusp GUI_0.0.26_amd64.deb": "f59b137710f70314c2f447933528d9f18969eb12eb9639bcbc0b2243ed6a25f3"
+    },
+    "admission": "Consumer rehashed six Linux payload/signature files and checked sizes against the manifest; guest rehashed all three payloads before apt install. Both fresh installation tasks exited zero."
+  },
+  "assertions": [
+    {"id": "2477-generated-auth-default-refusal", "passed": true, "evidence": "On both independent fresh installations, owner/admin/app/zero authenticated with generated secrets and refused published defaults. Task 0mv9bjbq1tk45x56v42 completed exit 0; .papercusp/scratch/bash-7da3c500-603.log records TWO_HOST_ALL_FOUR_CREDENTIALS_DISTINCT PASS. No secrets are retained here."},
+    {"id": "2477-credentials-persist-after-reboot", "passed": true, "evidence": "Task 0mv9bx990c9pxv41616 completed exit 0: all four credential SHA-256 values matched the first-install values after reboot; embedded-pg-credentials.json mode was 0600. .papercusp/scratch/bash-7011d876-c7d.log."},
+    {"id": "2562-helper-shipped-executable", "passed": true, "evidence": "Exact Server dpkg archive contains /usr/sbin/papercusp-server-enable-boot-start mode0755, 4128 bytes; real installed helper enabled lingering and papercusp-server.service. Both exact install tasks completed zero: 0mv9amy22fdvu3q12e4 and 0mv9aue591b3ldtt1gi."},
+    {"id": "2562-no-login-reboot", "passed": true, "evidence": "Root-only task 0mv9bt4z21b4ltabg6x completed zero at 09:18:16Z: boot ID changed 70b0b1a8-0dcc-4d11-a41b-6fc6a2549aec to 194757cc-5be5-4f53-b8b0-5b09268ad3e1; testerSessions=[]; Linger=yes; unit active; MainPID883 belongs to papercusp-server.service cgroup; discovery http://127.0.0.1:15022/api/health returned200. .papercusp/scratch/bash-eabf3f2b-bf7.log."},
+    {"id": "2567-gui-starts-stopped-unit", "passed": true, "evidence": "Task 0mv9bb2uo1pv1drb18k completed zero at09:05:03Z: GUI_STARTS_STOPPED_UNIT PASS operator_pid=9461 unit_cgroup=True. .papercusp/scratch/bash-5d799936-a0d.log."},
+    {"id": "2567-direct-server-starts-unit", "passed": true, "evidence": "Task 0mv9beqxj18b4zrm1yl completed zero at09:07:27Z: SERVER_DIRECT_STARTS_UNIT PASS operator_pid=14615. .papercusp/scratch/bash-e85a1ba5-700.log."},
+    {"id": "2567-actual-tray-quit-keeps-server", "passed": true, "evidence": "Actual Gio com.canonical.dbusmenu Quit click, task 0mv9bm4vv1eit9i11h7 exit0: TRAY_QUIT_LEAVES_UNIT_HEALTHY PASS; launcher exited, operator PID unchanged, service active, health200. .papercusp/scratch/bash-16d47d73-4ae.log."},
+    {"id": "clean-vm-handback", "passed": true, "evidence": "Private credential VM powered down; restored autologin.conf and restarted getty. .papercusp/scratch/bash-f59ad2fb-79f.log confirms tester seat0 tty1 active. locks:release_resource released exclusive lease958e54ce-4f55-4731-991a-dd477ba3c19c/fence35. Exact declared handback event fired with MIXED verdict; release and enterprise fleet leads notified."}
+  ],
+  "credentialComparison": {
+    "first": {"owner":"0fd6112d24a2bfc13521a6f3f5f406dd21265cabf06ecb3081439842aee68331","admin":"e0c8a53b3b70880e3ce41676d990864032d24a84a3c0918e8e1fafb1dfb7c6ea","app":"f5ee13317f33081f80892cd13c5b10131d7ff9bc178af8485be8179a6c58d8bd","zero":"d8a34dd547b5ef4e846b869ad7a050d60e04131ecfc787e5e7bba43c73a2e189"},
+    "second": {"owner":"b09689e4d26d8b40f650493778cbce07c4ed7907a77d5bcd71aebb6073850ced","admin":"334bc0f6f764189dc23c8614c4b4e099edda61a2d9d1f1a6e4463a7e0e1850fa","app":"dfd8a29ab9e94364260d0aa0baf15e9d192536bc9b4cd8c3740bbdb99db1ca52","zero":"ac827a80227fff79be7ef503d0c3a996d872a57cb907187728e651e5b72f1633"},
+    "afterRebootEqualsFirst": true,
+    "fileMode": "0600"
+  },
+  "recurrenceGuards": [
+    "papercusp-desktop/src-tauri/src/main.rs cargo tests: packaged_builds_key_embedded_pg_to_host_credentials; spawn_serve_passes_host_credentials_flag",
+    "papercusp-desktop/test/build-desktop-sidecar-workspace-install.test.js: Server overlay and installed boot-helper contract",
+    "papercusp-desktop/src-tauri/src/main.rs cargo tests: systemd route and GUI sibling launch; saved copy-out mutation probes M1/M2/M3/M4"
+  ],
+  "limitations": [
+    "The first reboot proof attempt lost /tmp files and was invalid; only the later persistent-marker, root-only reboot is PASS.",
+    "Installed ptool --help succeeded but authenticated tool access failed; see enterprise-p010-linux-ptool-failure-20261015.json.",
+    "This isolated Linux candidate proof does not accept macOS, customer deployment custody, license, the parent outcome, or final release.",
+    "Historical source/unit/mutation results are referenced from work-item checkpoints; they were not rerun to reconstruct evidence."
+  ]
+}

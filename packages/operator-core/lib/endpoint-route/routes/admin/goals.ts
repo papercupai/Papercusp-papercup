@@ -72,7 +72,7 @@ const ADMIN_UI_CLIENT_ID = ADMIN_COORD_UI_OWNER;
  * `start-existing` closes that exact gap: it can only act on an already-registered
  * id and pairs the active transition with a canonical holder launch.
  */
-const WRITE_VERBS = new Set(['update', 'create', 'start-from-package', 'start-existing']);
+const WRITE_VERBS = new Set(['update', 'create', 'start-from-package', 'start-existing', 'set-property', 'apply-package-update']);
 
 /* `start-from-package` (P-009, work-on-everything-goal-2026-08-23): the packages
    rail's one-click start. It does NOT reopen the agentless-top-level-goal hole the
@@ -254,7 +254,8 @@ export async function startExistingGoal(
   });
 }
 
-export async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response> {
+export async function dispatchWrite(req: Request, ctx: RouteContext,
+  toolDispatch: typeof handleHttpToolRequest = handleHttpToolRequest): Promise<Response> {
   const csrf = requireAllowedOriginOr403(req);
   if (csrf) return csrf;
 
@@ -306,7 +307,7 @@ export async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Re
   if (verb === 'start-existing') {
     return startExistingGoal(body, {
       updateGoal: (updateBody) =>
-        handleHttpToolRequest(
+        toolDispatch(
           {
             method: 'POST',
             pathname: '/api/agent-tools/goals/update',
@@ -323,7 +324,7 @@ export async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Re
     });
   }
 
-  const result = await handleHttpToolRequest(
+  const result = await toolDispatch(
     {
       method: 'POST',
       pathname: `/api/agent-tools/goals/${verb}`,

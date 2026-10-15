@@ -34,7 +34,13 @@ import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { compileJsonSchema } from '../json-schema-validation';
-import type { GatewayRequestTelemetrySnapshot } from '../inference-gateway/request-stage-telemetry';
+import {
+  isStartupRequestLayout,
+  parseStartupPrefixRowLine,
+  STARTUP_CACHE_EVIDENCE_SCHEMA,
+  type GatewayRequestTelemetrySnapshot,
+  type StartupPrefixRow,
+} from '../inference-gateway/request-stage-telemetry';
 import type { SuStdioReceipt, SuStdioReceiptState } from '../su-session-stdio-peer';
 
 /** The three prompt-side token fields, plus their sum. */
@@ -1288,4 +1294,151 @@ export function evaluateCarryTaskPairs(samples: readonly CarryTaskEvaluation[]) 
   if (uncertainty.task.delta.upper >= 0) insufficient.push('task-improvement-not-supported-by-paired-95-ci');
   return { status: failures.length ? 'fail' as const : insufficient.length ? 'insufficient' as const : 'pass' as const,
     pairs: pairs.length, insufficient, failures, metrics };
+}
+
+/**
+ * Startup cache cost from the gateway journal — the committed instrument for
+ * plan `token-efficiency-prompts-cache-and-behavior-2026-10-11` P-001.
+ *
+ * Answers: how many cache tokens does a session WRITE and READ on its first request, by prompt
+ * layout, and what share of all journaled cache writes is that startup write? The transcript
+ * instrument above measures the first-turn prompt TOTAL; it cannot see how the provider split
+ * that total between a cache write (1.25x/2x price) and a read (0.1x), which is exactly what
+ * the cache-boundary and system-tail changes move.
+ *
+ * Source rows are the gateway's `startup-cache-evidence/v1` journal lines, parsed by the
+ * gateway's own `parseStartupPrefixRowLine` (one parser, no drift), and "startup" is the
+ * gateway's own `isStartupRequestLayout` predicate (full tool set, at most
+ * STARTUP_MAX_MESSAGES messages) — the same rows the R-10 cohort sizer counts.
+ *
+ * HONESTY RAILS:
+ *  - A row missing ANY of the three usage counters (a 429, a cancelled stream, an exec route)
+ *    is counted in `unknownUsage` and excluded from every total and median. It is never a zero.
+ *  - Medians are `null` over an empty measured set, never 0.
+ *  - A journal line repeated by the reader (overlapping windows, concatenated exports) is
+ *    counted once: identity is (ownerId, requestId, startedAt). `duplicates` reports how many
+ *    were dropped so a shrinking total cannot silently be a dedupe artifact.
+ *  - Lines that carry the schema marker but do not parse are counted in `malformed`.
+ */
+export interface StartupCacheTotals {
+  /** Rows whose read, write and uncached counters are all reported. */
+  measured: number;
+  /** Rows with at least one counter missing — excluded from totals and medians. */
+  unknownUsage: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  uncachedInputTokens: number;
+  medianCacheReadTokens: number | null;
+  medianCacheWriteTokens: number | null;
+  medianUncachedInputTokens: number | null;
+}
+
+export interface StartupCacheGroup extends StartupCacheTotals {
+  /** `model | transport | system blocks | breakpoint positions` — the prompt layout cohort. */
+  key: string;
+  model: string | null;
+  transport: string;
+  systemBlocks: number;
+  /** Breakpoints as `<section initial><index>:<ttl>`, e.g. `s1:1h,m0:5m`; empty = no breakpoint. */
+  markers: string;
+  requests: number;
+  owners: number;
+  /**
+   * Median byte size of messages[0] content block 0 over members that recorded it; null when none
+   * did. In a Claude Code start that block is the shared repo-guide (CLAUDE.md) reminder, so the
+   * read uplift a tail relocation can buy is bounded by it (plan R-9). A layout attribute, so it
+   * is taken over every member, not only rows with usage.
+   */
+  medianFirstMessageBlock0Bytes: number | null;
+}
+
+export interface StartupCacheSummary {
+  /** Lines carrying the startup-cache-evidence/v1 marker. */
+  evidenceLines: number;
+  malformed: number;
+  duplicates: number;
+  /** Unique requests after dedupe. */
+  requests: number;
+  /** Unique requests with no recorded layout — cannot be classified as startup or not. */
+  noLayout: number;
+  startup: StartupCacheTotals & { requests: number; owners: number };
+  /** Every unique journaled request, startup or not (the journal holds each owner's first observed request only). */
+  all: StartupCacheTotals & { requests: number };
+  /** Startup cache-write tokens / all journaled cache-write tokens, over measured rows; null when nothing was written. */
+  startupWriteShare: number | null;
+  /** Startup layout cohorts, largest first. */
+  groups: StartupCacheGroup[];
+}
+
+function startupMarkerSignature(row: StartupPrefixRow): string {
+  return (row.layout?.markers ?? []).map((m) => `${m.section[0]}${m.index}:${m.ttl}`).join(',');
+}
+
+function summarizeStartupTotals(rows: readonly StartupPrefixRow[]): StartupCacheTotals {
+  const measured = rows.filter((r) => r.cacheReadTokens !== null && r.cacheWriteTokens !== null && r.inputTokens !== null);
+  const reads = measured.map((r) => r.cacheReadTokens!);
+  const writes = measured.map((r) => r.cacheWriteTokens!);
+  const uncached = measured.map((r) => r.inputTokens!);
+  const sum = (values: readonly number[]) => values.reduce((total, value) => total + value, 0);
+  return {
+    measured: measured.length,
+    unknownUsage: rows.length - measured.length,
+    cacheReadTokens: sum(reads),
+    cacheWriteTokens: sum(writes),
+    uncachedInputTokens: sum(uncached),
+    medianCacheReadTokens: reads.length ? median(reads) : null,
+    medianCacheWriteTokens: writes.length ? median(writes) : null,
+    medianUncachedInputTokens: uncached.length ? median(uncached) : null,
+  };
+}
+
+export function summarizeStartupCacheEvidence(lines: Iterable<string>): StartupCacheSummary {
+  const marker = `${STARTUP_CACHE_EVIDENCE_SCHEMA} {`;
+  let evidenceLines = 0, malformed = 0, duplicates = 0;
+  const seen = new Set<string>();
+  const rows: StartupPrefixRow[] = [];
+  for (const line of lines) {
+    if (!line.includes(marker)) continue;
+    evidenceLines++;
+    const row = parseStartupPrefixRowLine(line);
+    if (!row) { malformed++; continue; }
+    const identity = JSON.stringify([row.ownerId, row.requestId, row.startedAt]);
+    if (seen.has(identity)) { duplicates++; continue; }
+    seen.add(identity);
+    rows.push(row);
+  }
+  const startups = rows.filter((row) => isStartupRequestLayout(row.layout));
+  const groups = new Map<string, StartupPrefixRow[]>();
+  for (const row of startups) {
+    const key = [row.model ?? 'unknown-model', row.transport, `sys${row.layout!.system.blockCount}`, `mk=${startupMarkerSignature(row)}`].join(' | ');
+    (groups.get(key) ?? groups.set(key, []).get(key)!).push(row);
+  }
+  const all = summarizeStartupTotals(rows);
+  const startup = summarizeStartupTotals(startups);
+  return {
+    evidenceLines, malformed, duplicates,
+    requests: rows.length,
+    noLayout: rows.filter((row) => row.layout === null).length,
+    startup: { ...startup, requests: startups.length, owners: new Set(startups.map((row) => row.ownerId)).size },
+    all: { ...all, requests: rows.length },
+    startupWriteShare: all.cacheWriteTokens > 0 ? startup.cacheWriteTokens / all.cacheWriteTokens : null,
+    groups: [...groups.entries()]
+      .map(([key, members]) => ({
+        key,
+        model: members[0]!.model,
+        transport: members[0]!.transport,
+        systemBlocks: members[0]!.layout!.system.blockCount,
+        markers: startupMarkerSignature(members[0]!),
+        requests: members.length,
+        owners: new Set(members.map((row) => row.ownerId)).size,
+        medianFirstMessageBlock0Bytes: ((sizes: number[]) => (sizes.length ? median(sizes) : null))(
+          members.flatMap((row) => {
+            const bytes = row.layout?.messages.first?.blocks?.[0]?.bytes;
+            return typeof bytes === 'number' ? [bytes] : [];
+          }),
+        ),
+        ...summarizeStartupTotals(members),
+      }))
+      .sort((a, b) => b.requests - a.requests || a.key.localeCompare(b.key)),
+  };
 }

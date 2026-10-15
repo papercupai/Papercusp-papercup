@@ -66,6 +66,7 @@ const CONVERTED = [
   'packages/operator-core/lib/harness/git-sync/run-git-sync.ts',
   'packages/operator-core/lib/harness-state/git-export/git-committer.ts',
   'packages/operator-core/lib/release-deploy-launch.ts',
+  'packages/operator-core/lib/memory/embed-sidecar-spawn.ts',
 ];
 
 /**
@@ -82,7 +83,6 @@ const BASELINE: Record<string, number> = {
   'apps/operator/scripts/hooks/cc/__tests__/spawn-hook.ts': 2,
   // Submodule sites — invisible to a non-recursive `git ls-files`, and the
   // reason this guard recurses. Two of them are live orchestrator code.
-  'libs/papercusp-shared/src/agent/chat-stream.ts': 2,
   'libs/papercusp/packages/cli/src/install-atomic.node-test.ts': 2,
   'libs/papercusp/packages/orchestrator/src/bus-posts.test.ts': 1,
   'libs/papercusp/packages/orchestrator/src/chunk-loop-driver.test.ts': 2,
@@ -119,7 +119,6 @@ const BASELINE: Record<string, number> = {
   'packages/operator-core/lib/harness/routines/p2p-perf-actions.ts': 2,
   'packages/operator-core/lib/harness/routines/release-actions.ts': 4,
   'packages/operator-core/lib/inference-gateway/codex-cli-bridge.ts': 2,
-  'packages/operator-core/lib/memory/embed-sidecar-spawn.ts': 1,
   'packages/operator-core/lib/p2p/sandbox/drill.ts': 1,
   'packages/operator-core/lib/p2p/sandbox/network-egress.ts': 1,
   'packages/operator-core/lib/p2p/sandbox/os-user-isolation.ts': 1,
@@ -129,9 +128,6 @@ const BASELINE: Record<string, number> = {
   'packages/operator-core/lib/release-cut-launch.ts': 1,
   'packages/operator-core/lib/service-health.test.ts': 1,
   'packages/operator-core/lib/sync/pot-git/ref-announce-tick.integration.test.ts': 2,
-  'packages/operator-core/lib/task-manager/managed-spawn.ts': 1,
-  'templates/papercusp-tauri-desktop-shell/checks/boot-e2e.test.ts': 2,
-  'templates/papercusp-web-host/checks/boot-e2e.test.ts': 2,
 };
 
 const FIX_HINT =
@@ -326,6 +322,19 @@ describe('chunk-split UTF-8 corruption guard (WI-6728)', () => {
     expect(regressed, `A converted site regressed to raw accumulation:\n${regressed.join('\n')}`).toEqual([]);
   });
 
+  it('the proxy test response readers do not concatenate raw data chunks', () => {
+    const file = 'apps/operator/lib/mcp-proxy/proxy.test.ts';
+    const src = readFileSync(join(REPO_ROOT, file), 'utf8');
+    const regressed = scanSource(file, src, { includeBareChunkParameter: true }).map(
+      (h) => `${h.line} (in ${h.symbol ?? '<top level>'}) ${h.text}`,
+    );
+    expect(src).toContain('createTextCollector');
+    expect(
+      regressed,
+      `Proxy response readers must use the UTF-8-safe collector:\n${regressed.join('\n')}`,
+    ).toEqual([]);
+  });
+
   it('the converted sites actually IMPORT the safe helper', () => {
     // Distinct from the assertion above: a file can reach zero raw
     // accumulators by losing its output capture entirely, which would pass
@@ -369,6 +378,22 @@ describe('the scanner itself (a blind detector makes the guard green and worthle
     expect(hits[0].symbol).toBe('go');
   });
 
+  it('finds bounded assignment-based concatenation inside a data handler', () => {
+    const src = `function go() {\n  child.stderr.on('data', (chunk) => {\n    errors = (errors + String(chunk)).slice(-12_000);\n  });\n}`;
+    expect(scanSource('x.ts', src)).toMatchObject([{ line: 3, symbol: 'go' }]);
+  });
+
+  it('does not flag byte-preserving latin1 conversion', () => {
+    const src = `function go() {\n  response.on('data', (chunk) => {\n    tail = (tail + chunk.toString("latin1")).slice(-4);\n  });\n}`;
+    expect(scanSource('x.ts', src)).toEqual([]);
+  });
+
+  it('finds direct accumulation of a data-handler chunk parameter', () => {
+    const src = `function go() {\n  response.on('data', (chunk) => (body += chunk));\n}`;
+    const hits = scanSource('x.ts', src, { includeBareChunkParameter: true });
+    expect(hits).toMatchObject([{ line: 2, symbol: 'go' }]);
+  });
+
   it('finds the template-literal form', () => {
     const src = "function go() {\n  s.on('data', (d) => { acc += `${d}`; });\n}";
     expect(scanSource('x.ts', src).length).toBe(1);
@@ -409,5 +434,26 @@ describe('the scanner itself (a blind detector makes the guard green and worthle
       '};',
     ];
     expect(enclosingTopLevelSymbol(lines, 2)).toBe('runGitLocal');
+  });
+
+  it('finds a per-chunk decode hidden behind an accumulated alias', () => {
+    const src = `function go() {\n  child.stdout.on('data', (chunk) => {\n    const decoded = chunk.toString('utf8');\n    output += decoded;\n  });\n}`;
+    expect(scanSource('x.ts', src)).toMatchObject([
+      { line: 3, symbol: 'go', text: "const decoded = chunk.toString('utf8');" },
+    ]);
+  });
+
+  it('finds decoded chunk aliases in named data callbacks', () => {
+    const src = `function go() {\n  const append = (chunk: Buffer) => {\n    const decoded = String(chunk);\n    output += decoded;\n  };\n  child.stdout.addListener('data', append);\n}`;
+    expect(scanSource('x.ts', src)).toMatchObject([
+      { line: 3, symbol: 'go', text: 'const decoded = String(chunk);' },
+    ]);
+  });
+
+  it('finds a named function callback with direct per-chunk decoding', () => {
+    const src = `function append(chunk: Buffer) {\n  output += chunk.toString('utf8');\n}\nfunction go() {\n  child.stdout.on('data', append);\n}`;
+    expect(scanSource('x.ts', src)).toMatchObject([
+      { line: 2, symbol: 'append', text: "output += chunk.toString('utf8');" },
+    ]);
   });
 });

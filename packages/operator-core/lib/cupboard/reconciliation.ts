@@ -75,11 +75,15 @@ export interface DaoSnapshot {
   /** DAO transfers settled on chain, in whole cents (the unit the journal records them in). */
   readonly transferredCents: number;
   /**
-   * DAO share accrued according to an independent source (the commerce ledger's
-   * settlement allocations). Absent: the journal's own dao-payable credits are
-   * the accrual, and the invariant then checks the TRANSFER leg against the chain.
+   * The DAO share accrued on the CHAIN rail according to the commerce ledger, not
+   * the journal: the Worker's DAO allocation of every FINAL settlement batch
+   * finalized before the period end, rounded to cents per batch exactly as the
+   * import rounds it (D-032). The engine adds the journal's dao-payable credits
+   * on off-chain entries (the Stripe and bank rails, tied to those sources by
+   * their matching checks), so a missing, duplicated or mis-split chain-rail
+   * accrual in the journal breaks the invariant.
    */
-  readonly accruedCents?: number;
+  readonly chainAccruedCents: number;
 }
 
 export interface SafeSnapshot {
@@ -234,6 +238,20 @@ function matchingVerdict(
   };
 }
 
+/**
+ * dao-payable credits posted by entries that do NOT cite the chain. The chain
+ * rail's accrual comes from the Worker instead (D-032), so it is the one part of
+ * the accrual the journal cannot vouch for itself.
+ */
+export function daoCreditedOffChain(entries: readonly JournalEntry[]): number {
+  let cents = 0;
+  for (const entry of entries) {
+    if (entry.externalRef.kind === 'chain-tx') continue;
+    for (const line of entry.lines) if (line.account === 'dao-payable' && line.side === 'credit') cents += line.cents;
+  }
+  return cents;
+}
+
 /** Evaluate every invariant for one period. Balances are stocks (cumulative to the period end); matching covers flows within it. */
 export function evaluateReconciliation(input: {
   readonly entries: readonly JournalEntry[];
@@ -271,12 +289,15 @@ export function evaluateReconciliation(input: {
     if (read.status !== 'ok') verdicts.push(unavailable(invariant, read, 'the DAO transfer record on chain', period.mode, true));
     else {
       const payable = balance('dao-payable');
-      const accrued = read.value.accruedCents ?? credited('dao-payable');
+      const offChain = daoCreditedOffChain(upToEnd);
+      const accrued = offChain + read.value.chainAccruedCents;
       const expected = accrued - read.value.transferredCents;
       verdicts.push({
         invariant,
         status: payable === expected ? 'ok' : 'broken',
-        detail: `journal dao-payable ${payable}c; accrued ${accrued}c - transferred on chain ${read.value.transferredCents}c = ${expected}c`,
+        detail:
+          `journal dao-payable ${payable}c; accrued ${accrued}c (off-chain journal ${offChain}c + final settlements ${read.value.chainAccruedCents}c)` +
+          ` - transferred on chain ${read.value.transferredCents}c = ${expected}c`,
       });
     }
   }

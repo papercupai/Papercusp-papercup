@@ -1,3 +1,4 @@
+import { paymentTestOpening, signPaymentTestVoucher } from '@papercusp/operator-core/lib/p2p/_payment-voucher-fixture';
 /**
  * P-034 DAO treasury routing through the shipped Worker production door.
  *
@@ -12,7 +13,7 @@
  * under test and seeding a `final` row would assert it against a fixture rather
  * than against the lifecycle that produces one.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, inject, it, vi } from 'vitest';
 import type {
   EvmSettlementFacilitator,
   EvmTransactionObservation,
@@ -24,6 +25,10 @@ import {
   type CumulativePaymentVoucher,
 } from '@papercusp/operator-core/lib/p2p/microcharge.ts';
 import { revenueSplitManifest } from '@papercusp/operator-core/lib/p2p/revenue-settlement.ts';
+import { authorizeTreasuryTransfer } from '@papercusp/operator-core/lib/p2p/treasury-controls.ts';
+import { perUseRollup } from '@papercusp/operator-core/lib/cupboard/ledger-p2p-bridge.ts';
+import type { CommerceEvent } from '@papercusp/operator-core/lib/p2p/commerce-events.ts';
+import { identityPerUseOfferTerms, type IdentityPerUseOfferTerms } from '@papercusp/operator-core/lib/cupboard/identity-per-use-offer.ts';
 import {
   RECONCILIATION_SIGNATURE_HEADER,
   TRANSFER_GATE_MAX_AGE_MS,
@@ -31,9 +36,13 @@ import {
   signReconciliationRequest,
 } from '@papercusp/operator-core/lib/cupboard/reconciliation-hmac.ts';
 import { buildApi } from '../routes/index.ts';
+import { resolveTreasuryConfig } from '../routes/treasury.ts';
 import type { SafeTreasuryAdapter } from '../treasury-adapter.ts';
 import { makeEnv } from './fake-d1.ts';
 import { makeSqliteDb } from './sqlite-d1.ts';
+import { verifyLedgerStream, witnessLedgerStream } from '../ledger-chain-store.ts';
+import { readReconciliationInputs } from '../transfer-gate-store.ts';
+import { AuthError } from '../auth.ts';
 
 const auth = vi.hoisted(() => ({ resolveGithubBearer: vi.fn() }));
 vi.mock('../auth.ts', async (importOriginal) => {
@@ -164,12 +173,12 @@ function bearer(body?: unknown): RequestInit {
   return {
     method: 'POST',
     headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: body === undefined ? undefined : JSON.stringify(paymentTestOpening(body, { payer: 'gh:7', chainId: CHAIN_ID, stablecoinAddress: STABLECOIN, settlementContractAddress: SETTLEMENT_CONTRACT, walletAddress: SIGNER })),
   };
 }
 
 function voucher(nonce: string, cumulative: number): CumulativePaymentVoucher {
-  return {
+  return signPaymentTestVoucher({
     channelId: CHANNEL,
     payer: 'gh:7',
     seller: 'gh:9',
@@ -182,7 +191,7 @@ function voucher(nonce: string, cumulative: number): CumulativePaymentVoucher {
     expiresAtMs: 4_000_000_000_000,
     cumulativeClaimMicros: BigInt(cumulative),
     signature: `sig-${nonce}`,
-  };
+  });
 }
 
 async function bindWallet(db: D1Database): Promise<void> {
@@ -196,8 +205,11 @@ async function bindWallet(db: D1Database): Promise<void> {
     .run();
 }
 
-async function seedSettledReceipt(db: D1Database, nonce: string, cumulative: number): Promise<void> {
-  const v = voucher(nonce, cumulative);
+async function seedSettledReceipt(db: D1Database, nonce: string, cumulative: number, splitManifestHash = SPLIT.manifestHash, terms?: IdentityPerUseOfferTerms): Promise<void> {
+  const v = signPaymentTestVoucher({ ...voucher(nonce, cumulative), splitManifestHash, ...(terms ? {
+    releaseRef: terms.skuRef, priceVersion: terms.priceVersion, pricePerUnitMicros: BigInt(terms.unitPriceMicros),
+    meterQuantity: BigInt(cumulative / terms.unitPriceMicros),
+  } : {}) });
   await db
     .prepare(
       `INSERT INTO usage_receipts
@@ -205,7 +217,7 @@ async function seedSettledReceipt(db: D1Database, nonce: string, cumulative: num
           meter_unit, meter_quantity, unit_price_micros, price_version, split_manifest_hash,
           reserved_micros, amount_micros, cumulative_claim_micros, expires_at_ms,
           voucher_digest, voucher_signature, receipt_signature, state, reserved_at_ms, settled_at_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'call', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'receipt-sig', 'settled', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'receipt-sig', 'settled', ?, ?)`,
     )
     .bind(
       CHANNEL,
@@ -215,10 +227,11 @@ async function seedSettledReceipt(db: D1Database, nonce: string, cumulative: num
       v.payer,
       v.seller,
       v.releaseRef,
+      terms?.meterUnit ?? 'call',
       Number(v.meterQuantity),
       Number(v.pricePerUnitMicros),
       v.priceVersion,
-      SPLIT.manifestHash,
+      v.splitManifestHash,
       cumulative,
       cumulative,
       cumulative,
@@ -255,7 +268,7 @@ async function recordDeployment(api: Api, env: Env2, overrides: Record<string, u
 }
 
 /** Drive a settlement all the way to FINAL through the real P-033 routes. */
-async function settleToFinal(api: Api, db: D1Database, env: Env2): Promise<string> {
+async function settleToFinal(api: Api, db: D1Database, env: Env2, splitManifestHash = SPLIT.manifestHash, terms?: IdentityPerUseOfferTerms): Promise<string> {
   await bindWallet(db);
   const opened = await api.request(
     '/commerce/payment-channels',
@@ -263,7 +276,7 @@ async function settleToFinal(api: Api, db: D1Database, env: Env2): Promise<strin
     env,
   );
   if (opened.status !== 201) throw new Error(`channel open failed: ${opened.status} ${await opened.text()}`);
-  await seedSettledReceipt(db, 'n1', 10_000);
+  await seedSettledReceipt(db, 'n1', 10_000, splitManifestHash, terms);
 
   const claimed = await api.request(`/commerce/payment-channels/${CHANNEL}/settlements`, bearer(), env);
   if (claimed.status !== 201) throw new Error(`claim failed: ${claimed.status} ${await claimed.text()}`);
@@ -333,6 +346,30 @@ describe('POST /commerce/treasury/safe-deployments', () => {
 });
 
 describe('POST /commerce/payment-channels/:channelId/settlements/:batchId/treasury', () => {
+  it('reconciles retained author amounts and refuses a changed recipient even when the component total is preserved', async () => {
+    const { adapter, submitTransfer } = fakeTreasuryAdapter();
+    const componentDependencies = [
+      { packageKind: 'blueprint', ref: 'parent', revision: '1.0.0', contentHash: 'a'.repeat(64), author: 'alice' },
+      { packageKind: 'pack', ref: 'knowledge', revision: '2.0.0', contentHash: 'b'.repeat(64), author: 'bob' },
+    ];
+    const split = revenueSplitManifest({ version: 'v1', sharesBps: SHARES, componentDependencies });
+    const { api, db, env } = harness({ REVENUE_SPLIT_MANIFEST: JSON.stringify({ version: 'v1', sharesBps: SHARES, componentDependencies }) }, adapter);
+    const batchId = await settleToFinal(api, db, env, split.manifestHash);
+    await recordDeployment(api, env);
+    expect((await route(api, env, batchId)).status).toBe(200);
+    expect(submitTransfer).toHaveBeenCalledTimes(1);
+    const row = await db.prepare('SELECT allocations_micros FROM settlement_batches WHERE batch_id = ?')
+      .bind(batchId).first<{ allocations_micros: string }>();
+    const allocations = JSON.parse(row!.allocations_micros) as Record<string, unknown>;
+    allocations.componentAuthors = { alice: '250', mallory: '250' };
+    await db.prepare('UPDATE settlement_batches SET allocations_micros = ? WHERE batch_id = ?')
+      .bind(JSON.stringify(allocations), batchId).run();
+    const refused = await route(api, env, batchId);
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({ error: 'reconciliation_failed' });
+    expect(submitTransfer).toHaveBeenCalledTimes(1);
+  });
+
   it('routes the reconciled DAO share into the Safe and records an auditable receipt', async () => {
     const { adapter, submitTransfer } = fakeTreasuryAdapter();
     const { api, db, env } = harness({}, adapter);
@@ -507,8 +544,8 @@ describe('POST /commerce/payment-channels/:channelId/settlements/:batchId/treasu
     expect(submitTransfer).toHaveBeenCalledTimes(1);
   });
 
-  it('reports a rail refusal instead of recording a transfer that never happened', async () => {
-    const { adapter } = fakeTreasuryAdapter({ failTransfer: true });
+  it('reserves an uncertain rail outcome and prevents a retry from submitting it twice', async () => {
+    const { adapter, submitTransfer } = fakeTreasuryAdapter({ failTransfer: true });
     const { api, db, env } = harness({}, adapter);
     const batchId = await settleToFinal(api, db, env);
     await recordDeployment(api, env);
@@ -516,8 +553,13 @@ describe('POST /commerce/payment-channels/:channelId/settlements/:batchId/treasu
     const response = await route(api, env, batchId);
     expect(response.status).toBe(502);
     expect((await response.json()) as Record<string, unknown>).toMatchObject({ error: 'treasury_transfer_failed', share: 'dao' });
-    const { results } = await db.prepare(`SELECT transfer_id FROM treasury_transfers`).all<{ transfer_id: string }>();
-    expect(results).toHaveLength(0);
+    const { results } = await db.prepare(`SELECT submission_state, transaction_hash FROM treasury_transfers`).all();
+    expect(results).toEqual([{ submission_state: 'pending', transaction_hash: '' }]);
+    expect((await route(api, env, batchId)).status).toBe(409);
+    expect(submitTransfer).toHaveBeenCalledTimes(1);
+    expect((await witnessLedgerStream(db, 'treasury.transfers', Date.now())).appended).toBe(0);
+    expect(await verifyLedgerStream(db, 'treasury.transfers')).toMatchObject({ ok: true, unchainedCount: 0 });
+    expect(await readReconciliationInputs(db, Date.now())).toMatchObject({ daoTransfers: [] });
   });
 
   it('fails closed when the treasury policy is unconfigured, and refuses routing a payee share', async () => {
@@ -543,6 +585,217 @@ describe('POST /commerce/payment-channels/:channelId/settlements/:batchId/treasu
   });
 });
 
+describe('component author payouts on the existing settlement resource', () => {
+  const ALICE = `0x${'a'.repeat(40)}`;
+  const BOB = `0x${'b'.repeat(40)}`;
+  const componentDependencies = [
+    { packageKind: 'blueprint', ref: 'parent', revision: '1.0.0', contentHash: 'a'.repeat(64), author: 'gh:11' },
+    { packageKind: 'pack', ref: 'knowledge', revision: '2.0.0', contentHash: 'b'.repeat(64), author: 'gh:12' },
+  ];
+  const split = revenueSplitManifest({ version: 'v1', sharesBps: SHARES, componentDependencies });
+
+  async function prepared(overrides: Partial<Record<string, string>> = {}, adapter = fakeTreasuryAdapter().adapter, useIdentityOffer = false) {
+    const offer = identityPerUseOfferTerms({ identity: { id: 'widget', version: '1.0.0' },
+      creatorBps: 8500, componentBps: 500, componentDependencies });
+    if (!offer.ok) throw new Error(offer.detail);
+    const h = harness({ REVENUE_SPLIT_MANIFEST: JSON.stringify({ version: 'v1', sharesBps: SHARES, componentDependencies }),
+      TREASURY_COMPONENT_RECIPIENTS: `${ALICE},${BOB}`, ...overrides }, adapter);
+    if (useIdentityOffer) h.env.REVENUE_SPLIT_MANIFEST = JSON.stringify({ version: 'v1', sharesBps: SHARES });
+    const batchId = await settleToFinal(h.api, h.db, h.env, useIdentityOffer ? offer.manifest.manifestHash : split.manifestHash,
+      useIdentityOffer ? offer.terms : undefined);
+    await recordDeployment(h.api, h.env);
+    for (const [principal, wallet] of [['gh:11', ALICE], ['gh:12', BOB]]) {
+      await h.db.prepare(`INSERT INTO wallet_bindings
+        (principal_id, wallet_address, chain_id, challenge_id, verified_at_ms, created_at_ms, updated_at_ms)
+        VALUES (?, ?, ?, ?, 1, 1, 1)`).bind(principal, wallet, CHAIN_ID, `challenge-${principal}`).run();
+    }
+    return { ...h, batchId };
+  }
+
+  function payout(h: Awaited<ReturnType<typeof prepared>>, body?: unknown) {
+    return h.api.request(`/commerce/payment-channels/${CHANNEL}/settlements/${h.batchId}/treasury?scope=components`, bearer(body), h.env);
+  }
+
+  it('calibrates the signed identity fixture against its final integer allocations before any payout', async () => {
+    expect(inject('papercuspTestLayer')).toBe('integration');
+    const { adapter, submitTransfer } = fakeTreasuryAdapter();
+    const h = await prepared({}, adapter, true);
+    const usage = await h.db.prepare(`SELECT meter_quantity, unit_price_micros, amount_micros, state
+      FROM usage_receipts WHERE channel_id = ? AND usage_nonce = 'n1'`)
+      .bind(CHANNEL).first();
+    // These literal amounts are independent of the split implementation:
+    // fifty 200-micro uses, 500 component basis points and 1000 DAO basis points.
+    expect(usage).toMatchObject({ meter_quantity: 50, unit_price_micros: 200, amount_micros: 10000, state: 'settled' });
+    const batch = await h.db.prepare(`SELECT claim_micros, provider_cost_micros, distributable_micros,
+      allocations_micros, state FROM settlement_batches WHERE batch_id = ?`)
+      .bind(h.batchId).first<{ claim_micros: number; provider_cost_micros: number;
+        distributable_micros: number; allocations_micros: string; state: string }>();
+    expect(batch).toMatchObject({ claim_micros: 10000, provider_cost_micros: 0,
+      distributable_micros: 10000, state: 'final' });
+    expect(JSON.parse(batch!.allocations_micros)).toMatchObject({ creator: '8500', component: '500', dao: '1000',
+      componentAuthors: { 'gh:11': '250', 'gh:12': '250' } });
+    expect(submitTransfer).not.toHaveBeenCalled();
+  });
+
+  it('settles signed identity terms with exact authors independently of the deployment-wide manifest', async () => {
+    const { adapter, submitTransfer } = fakeTreasuryAdapter();
+    const h = await prepared({}, adapter, true);
+    expect((await payout(h)).status).toBe(200);
+    expect(submitTransfer.mock.calls.map(([transfer]) => [transfer.recipient, transfer.amountMicros])).toEqual([[ALICE, 250n], [BOB, 250n]]);
+    expect((await route(h.api, h.env, h.batchId)).status).toBe(200);
+    expect(submitTransfer.mock.calls[2]![0]).toMatchObject({ share: 'dao', amountMicros: 1000n });
+    h.raw.prepare("UPDATE usage_receipts SET price_version = 'identity-markup-v1;markup=2000;creator=9000;component=0;dao=1000'").run();
+    const refused = await payout(h);
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({ error: 'reconciliation_failed' });
+    expect(submitTransfer).toHaveBeenCalledTimes(3);
+  });
+
+  it('pays each verified author exact micros, records signed distinct receipts, and replays once', async () => {
+    const { adapter, submitTransfer } = fakeTreasuryAdapter();
+    const h = await prepared({}, adapter);
+    const response = await payout(h, { recipient: OWNER_A, amountMicros: 999_999, policyApproved: true });
+    expect(response.status).toBe(200);
+    const body = await response.json() as { transfers: Array<{ payeeId: string; proofEventId: string; safeTxHash: string }> };
+    expect(body.transfers).toMatchObject([
+      { share: 'component', payeeId: 'gh:11', recipient: ALICE, amountMicros: '250', submissionState: 'submitted' },
+      { share: 'component', payeeId: 'gh:12', recipient: BOB, amountMicros: '250', submissionState: 'submitted' },
+    ]);
+    expect(new Set(body.transfers.map((t) => t.safeTxHash)).size).toBe(2);
+    const payoutEvents: CommerceEvent[] = [];
+    for (const transfer of body.transfers) {
+      const proof = await h.db.prepare('SELECT payload, signature FROM commerce_event_log WHERE event_id = ?')
+        .bind(transfer.proofEventId).first<{ payload: string; signature: string }>();
+      expect(JSON.parse(proof!.payload)).toMatchObject({ payeeId: transfer.payeeId, amountMicros: '250', share: 'component',
+        recipient: transfer.payeeId === 'gh:11' ? ALICE : BOB, splitManifestHash: split.manifestHash });
+      expect(proof!.signature).toBe('fake-treasury-signature');
+      expect(JSON.parse(proof!.payload)).toMatchObject({ channelId: CHANNEL, payer: 'gh:7', payoutStatus: 'submitted' });
+      payoutEvents.push({ eventId: transfer.proofEventId, streamId: 'treasury:channel', kind: 'revenue-split', version: 1,
+        issuer: AUTOMATION, sequence: payoutEvents.length, occurredAtMs: Date.now(), idempotencyKey: transfer.proofEventId,
+        payload: JSON.parse(proof!.payload), signature: proof!.signature });
+    }
+    expect(perUseRollup(payoutEvents).channels[0]?.submittedPayouts).toEqual({ daoMicros: '0', componentAuthorsMicros: { 'gh:11': '250', 'gh:12': '250' } });
+    expect((await payout(h)).status).toBe(200);
+    expect(submitTransfer).toHaveBeenCalledTimes(2);
+    // DAO capital remains a distinct transfer on the same batch.
+    expect((await route(h.api, h.env, h.batchId)).status).toBe(200);
+    expect(submitTransfer).toHaveBeenCalledTimes(3);
+    expect(await verifyLedgerStream(h.db, 'treasury.transfers')).toMatchObject({ ok: true, unchainedCount: 0 });
+  });
+
+  it('binds the author into otherwise identical authorization and records distinct payout proofs', async () => {
+    const { adapter, submitTransfer } = fakeTreasuryAdapter();
+    const h = await prepared({}, adapter);
+    // Verified wallet enrollment is one-to-one. Exercise the payee-only digest
+    // counterfactual at its writer, then route authors with valid bindings.
+    expect(() => h.raw.prepare('UPDATE wallet_bindings SET wallet_address = ? WHERE principal_id = ?')
+      .run(ALICE, 'gh:12')).toThrow(/UNIQUE constraint/);
+    const policy = resolveTreasuryConfig(h.env, adapter);
+    if (!policy.ok) throw new Error(policy.detail);
+    const request = { role: 'settlement' as const, token: STABLECOIN, recipient: TREASURY,
+      amountMicros: 250n, settlementReceiptHash: 'same-receipt', policyApproved: true };
+    const first = authorizeTreasuryTransfer(policy.config, { ...request, payeeId: 'gh:11' });
+    const second = authorizeTreasuryTransfer(policy.config, { ...request, payeeId: 'gh:12' });
+    if (!first.ok || !second.ok) throw new Error('valid authorization control refused');
+    expect(first.safeTxHash).not.toBe(second.safeTxHash);
+    expect(authorizeTreasuryTransfer(policy.config, { ...request, payeeId: 'gh:11' })).toEqual(first);
+    const response = await payout(h);
+    expect(response.status).toBe(200);
+    const body = await response.json() as { transfers: Array<{ payeeId: string; safeTxHash: string; proofEventId: string }> };
+    expect(submitTransfer.mock.calls.map(([transfer]) => [transfer.recipient, transfer.amountMicros]))
+      .toEqual([[ALICE, 250n], [BOB, 250n]]);
+    expect(body.transfers.map((transfer) => transfer.payeeId)).toEqual(['gh:11', 'gh:12']);
+    expect(new Set(body.transfers.map((transfer) => transfer.safeTxHash)).size).toBe(2);
+    expect(new Set(body.transfers.map((transfer) => transfer.proofEventId)).size).toBe(2);
+    expect((await payout(h)).status).toBe(200);
+    expect(submitTransfer).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['missing', 'other-chain', 'not-allowlisted', 'cap', 'mainnet', 'paused', 'not-final', 'tampered', 'no-safe'] as const)(
+    'refuses %s evidence before any author transfer', async (failure) => {
+      const { adapter, submitTransfer } = fakeTreasuryAdapter();
+      const h = await prepared({}, adapter);
+      if (failure === 'missing') h.raw.prepare('DELETE FROM wallet_bindings WHERE principal_id = ?').run('gh:12');
+      if (failure === 'other-chain') h.raw.prepare('UPDATE wallet_bindings SET chain_id = 1 WHERE principal_id = ?').run('gh:12');
+      if (failure === 'not-allowlisted') h.env.TREASURY_COMPONENT_RECIPIENTS = ALICE;
+      if (failure === 'cap') h.env.TREASURY_SETTLEMENT_MAX_MICROS = '249';
+      if (failure === 'mainnet') await recordDeployment(h.api, h.env, { network: 'mainnet' });
+      if (failure === 'paused') h.raw.prepare('UPDATE treasury_transfer_gate SET open = 0').run();
+      if (failure === 'not-final') h.raw.prepare("UPDATE settlement_batches SET state = 'claimed', finalized_at_ms = NULL WHERE batch_id = ?").run(h.batchId);
+      if (failure === 'no-safe') h.raw.prepare('DELETE FROM treasury_safe_deployments').run();
+      if (failure === 'tampered') {
+        const row = h.raw.prepare('SELECT allocations_micros FROM settlement_batches WHERE batch_id = ?').get(h.batchId) as { allocations_micros: string };
+        const allocations = JSON.parse(row.allocations_micros);
+        allocations.componentAuthors = { 'gh:11': '249', 'gh:12': '251' };
+        h.raw.prepare('UPDATE settlement_batches SET allocations_micros = ? WHERE batch_id = ?').run(JSON.stringify(allocations), h.batchId);
+      }
+      expect((await payout(h)).status).toBe(409);
+      expect(submitTransfer).not.toHaveBeenCalled();
+      expect(h.raw.prepare('SELECT COUNT(*) AS n FROM treasury_transfers').get()).toMatchObject({ n: 0 });
+    },
+  );
+
+  it('requires configured payout authority and restricts the batch to its authenticated buyer', async () => {
+    const { adapter, submitTransfer } = fakeTreasuryAdapter();
+    const h = await prepared({}, adapter);
+    delete h.env.TREASURY_COMPONENT_RECIPIENTS;
+    expect((await payout(h)).status).toBe(503);
+    h.env.TREASURY_COMPONENT_RECIPIENTS = `${ALICE},${BOB}`;
+    auth.resolveGithubBearer.mockResolvedValue({ id: 8, login: 'stranger' });
+    expect((await payout(h)).status).toBe(404);
+    expect(submitTransfer).not.toHaveBeenCalled();
+  });
+
+  it('elects one sender when two requests race before the first chain receipt', async () => {
+    const { adapter, submitTransfer } = fakeTreasuryAdapter();
+    const h = await prepared({}, adapter);
+    let release!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    submitTransfer.mockImplementationOnce(async () => {
+      entered();
+      await pending;
+      return { transactionHash: TRANSFER_TX, blockNumber: 300n };
+    });
+    const first = payout(h);
+    await started;
+    const second = await payout(h);
+    expect(second.status).toBe(409);
+    expect(await second.json()).toMatchObject({ error: 'treasury_transfer_pending' });
+    expect(submitTransfer).toHaveBeenCalledTimes(1);
+    release();
+    expect((await first).status).toBe(200);
+    expect(submitTransfer).toHaveBeenCalledTimes(2);
+    expect((await payout(h)).status).toBe(200);
+    expect(submitTransfer).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps successful author transfers recorded when a later submission fails', async () => {
+    const { adapter, submitTransfer } = fakeTreasuryAdapter();
+    const h = await prepared({}, adapter);
+    submitTransfer.mockResolvedValueOnce({ transactionHash: TRANSFER_TX, blockNumber: 300n })
+      .mockRejectedValueOnce(new Error('uncertain chain outcome'));
+    expect((await payout(h)).status).toBe(502);
+    expect((await payout(h)).status).toBe(409);
+    expect(submitTransfer).toHaveBeenCalledTimes(2);
+    expect(h.raw.prepare('SELECT payee_id, submission_state FROM treasury_transfers ORDER BY payee_id').all()).toEqual([
+      { payee_id: 'gh:11', submission_state: 'submitted' }, { payee_id: 'gh:12', submission_state: 'pending' },
+    ]);
+    expect(await verifyLedgerStream(h.db, 'treasury.transfers')).toMatchObject({ ok: true, unchainedCount: 0 });
+  });
+
+  it('records a completed transfer even when signing its proof fails', async () => {
+    const { adapter, submitTransfer } = fakeTreasuryAdapter();
+    const h = await prepared({}, { ...adapter, signTreasuryProof: async () => { throw new Error('signer unavailable'); } });
+    const response = await payout(h);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ unprovenTransfers: ['gh:11', 'gh:12'] });
+    expect((await payout(h)).status).toBe(200);
+    expect(submitTransfer).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('the P-043 reconciliation gate on DAO transfers', () => {
   // A low-entropy test key, not a credential.
   const SECRET = 'k'.repeat(32);
@@ -562,6 +815,50 @@ describe('the P-043 reconciliation gate on DAO transfers', () => {
       env,
     );
   }
+
+  it.each([
+    ['unauthorized', 401],
+    ['invalid-config', 503],
+    ['batch_not_final', 409],
+    ['reconciliation_failed', 409],
+    ['safe_deployment_unrecorded', 409],
+    ['routing_refused', 409],
+  ] as const)('preserves %s before checking a closed transfer gate', async (error, status) => {
+    const { adapter, submitTransfer } = fakeTreasuryAdapter();
+    const { api, db, raw, env } = harness({}, adapter);
+    const batchId = await settleToFinal(api, db, env);
+    if (error !== 'safe_deployment_unrecorded') await recordDeployment(api, env);
+    raw.prepare('UPDATE treasury_transfer_gate SET open = 0, reasons_json = ?').run('["seeded break"]');
+    if (error === 'unauthorized') auth.resolveGithubBearer.mockRejectedValue(new AuthError('missing_bearer'));
+    if (error === 'invalid-config') env.TREASURY_SAFE_THRESHOLD = '0';
+    if (error === 'batch_not_final') raw.prepare('UPDATE settlement_batches SET state = ?, finalized_at_ms = NULL WHERE batch_id = ?').run('claimed', batchId);
+    if (error === 'reconciliation_failed') {
+      const row = raw.prepare('SELECT allocations_micros FROM settlement_batches WHERE batch_id = ?').get(batchId) as { allocations_micros: string };
+      const allocations = JSON.parse(row.allocations_micros) as Record<string, string>;
+      allocations.dao = String(BigInt(allocations.dao!) - 1n);
+      allocations.host = String(BigInt(allocations.host!) + 1n);
+      raw.prepare('UPDATE settlement_batches SET allocations_micros = ? WHERE batch_id = ?').run(JSON.stringify(allocations), batchId);
+    }
+    if (error === 'routing_refused') env.TREASURY_SETTLEMENT_MAX_MICROS = '1';
+    const response = await route(api, env, batchId);
+    expect(response.status).toBe(status);
+    expect(await response.json()).toMatchObject({ error });
+    expect(submitTransfer).not.toHaveBeenCalled();
+    expect(raw.prepare('SELECT COUNT(*) AS n FROM treasury_transfers').get()).toMatchObject({ n: 0 });
+  });
+
+  it.each(['disputed', 'refunded'])('omits a formerly FINAL %s batch from independent reconciliation inputs', async (state) => {
+    const { adapter, submitTransfer } = fakeTreasuryAdapter();
+    const { api, db, raw, env } = harness({}, adapter);
+    const batchId = await settleToFinal(api, db, env);
+    const before = await readReconciliationInputs(db, Date.now());
+    expect(before.finalSettlementBatches.map((batch) => batch.batchId)).toEqual([batchId]);
+    raw.prepare('UPDATE settlement_batches SET state = ?, finalized_at_ms = NULL WHERE batch_id = ?').run(state, batchId);
+    const after = await readReconciliationInputs(db, Date.now());
+    expect(after.finalSettlementBatches).toEqual([]);
+    expect(raw.prepare('SELECT state FROM settlement_batches WHERE batch_id = ?').get(batchId)).toMatchObject({ state });
+    expect(submitTransfer).not.toHaveBeenCalled();
+  });
 
   it('pauses DAO transfers for every gate state except a fresh, open, treasury-reconciled one', async () => {
     const { adapter, submitTransfer } = fakeTreasuryAdapter();

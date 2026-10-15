@@ -1,5 +1,4 @@
 import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
-import { DEFAULT_SCOUT_CRITIC_MODEL } from '../scout/models';
 
 export const DREAM_FRAGMENT_KINDS = ['observation', 'work_item', 'memory', 'stat'] as const;
 
@@ -97,7 +96,7 @@ export const DEFAULT_DREAM_PASS_CONFIG: Readonly<DreamPassConfig> = Object.freez
 });
 
 export const DEFAULT_DREAM_REVIEW_CONFIG: Readonly<DreamReviewConfig> = Object.freeze({
-  model: DEFAULT_SCOUT_CRITIC_MODEL,
+  model: LEARNING_MODEL_SPEC,
   duplicateSimilarityThreshold: 0.85,
   minTotalScore: 5,
   maxNoteChars: 600,

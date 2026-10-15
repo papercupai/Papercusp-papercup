@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "kind": "fixture-calibration-evidence",
+  "workItemId": "WI-10004768",
+  "planSlug": "android-public-release-2026-10-01",
+  "fixture": {
+    "rootHarnessSlug": "papercup-rust-mobile",
+    "sourcePath": "android/app/src/main/kotlin/com/papercuspai/operator/mobile/PlansScreen.kt",
+    "sourceSha256": "26b206496863829ba59e44f13119fda9ba3d2d48986c23cdd110c36b1acd7481",
+    "testPath": "android/app/src/test/kotlin/com/papercuspai/operator/mobile/PlanItemsContractTest.kt",
+    "testSha256": "a60cb2bf96373668097d2682e573cac3e56f2262db798c16d1d2144c89903643",
+    "executionArtifact": "docs/evidence/android-p002-kotlin-host-2026-10-07.json",
+    "testRunId": 20888551,
+    "executionScope": "Ten PlanItemsContractTest JVM assertions: five fresh debug and five fresh release. Not JNI/device/candidate proof."
+  },
+  "independentContract": {
+    "rootHarnessSlug": "papercusp",
+    "superprojectCommit": "0d2b29c4e661dc72b5f84ac16f91370b653a2003",
+    "parserCommit": "7eee9032461e6d4710a4bc08e1111c094019d522",
+    "files": [
+      { "path": "packages/operator-core/lib/endpoint-route/routes/device/plans.ts", "sha256": "3fd7a9aead97e906e3b855cffcf22cb744122cf343af049538f645ec0eecaa24", "matchesCommit": true },
+      { "path": "packages/operator-core/lib/endpoint-route/routes/device/plans.test.ts", "sha256": "9d30165aa1364362c22cf3857914a85c2fdb3a3621567b22f18213c75a30998b", "matchesCommit": true },
+      { "path": "libs/generic/plan-parser/src/parser.ts", "sha256": "0cda9aaf2020d89293226cd40195fac59a4b36080613f2c48ca3a34007f7a47f", "matchesCommit": true },
+      { "path": "libs/generic/plan-parser/src/effective-status.ts", "sha256": "1492459cdf50235dba22c6db514e8dcdac5003973ea6c34461b6271167c72a36", "matchesCommit": true },
+      { "path": "libs/generic/plan-parser/src/parser-now-keywords.test.ts", "sha256": "17c2c1a4489d751cc5925dea57cd34b28f2999426fa592a5d7f4f8a0b0493764", "matchesCommit": true },
+      { "path": "libs/generic/plan-parser/src/effective-status.test.ts", "sha256": "924c7343cbd107d3b5749b0c025bce34333b1bc6fea923cd403970c6b567b1ec", "matchesCommit": true }
+    ],
+    "parserExecution": {
+      "command": "npm run test:file -- libs/generic/plan-parser/src/parser-now-keywords.test.ts libs/generic/plan-parser/src/effective-status.test.ts",
+      "log": "/tmp/android-p002-kotlin-calibration-parser-20261007.log",
+      "finishedAt": "2026-10-07T07:36:54.977Z",
+      "passed": 41,
+      "failed": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "ledgerScope": "Unverified: runner reported no explicit PAPERCUSP_TEST_RUN_HARNESS. This file records the observed process/log result, not a canonical test-run id."
+    },
+    "handlerExecution": {
+      "testRunId": 20888295,
+      "passed": 11,
+      "artifact": "docs/evidence/android-p002-null-status-calibration-2026-10-07.json",
+      "scope": "Maintained server route tests use mocked datastore rows and real status resolution. Source and test hashes match that artifact."
+    }
+  },
+  "calibration": [
+    "The real parser emits storedStatus and authority, defaulting authority to system and accepting owner. Maintained parser tests independently assert those authority values.",
+    "The current plans detail handler resolves effectiveStatus and serializes items with their storedStatus and authority. The maintained handler test independently expects wip/blocked/blocked/done effective statuses; the Kotlin precedence case expects blocked over stored todo.",
+    "The Kotlin serverItems fixture uses done/needs-human/wip stored tokens and system/owner/omitted authority. These values and fields agree with the independent parser contract. Optional display fields do not establish additional server behavior.",
+    "Legacy status, null fields, invalid entries and malformed JSON are deliberate compatibility/adversarial inputs, not claims that the current server emits them. Their expected fallback values are explicitly asserted in the Kotlin tests."
+  ],
+  "bindingStatus": "Prepared only. No cross-root calibration binding or acceptance claim until the serving fixtureRootHarnessSlug contract is verified."
+}

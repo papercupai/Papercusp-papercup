@@ -363,6 +363,79 @@ describe('resolveLocalAnnounceIdentity', () => {
     expect(identity.attestationGistId).toBe('gist-refreshed');
   });
 
+  // WI-10006733: without the hint, every authoring resolve past the 60s fresh
+  // window walked every gist on the account (~104 pages, ~2 min on papercupai).
+  it('hands the stale cache gist to the resolver as a hint for the SAME device (WI-10006733)', async () => {
+    const cachePath = join(await mkdtemp(join(tmpdir(), 'papercusp-announce-')), 'identity.json');
+    await writeFile(
+      cachePath,
+      JSON.stringify({
+        version: 1,
+        savedAt: Date.now() - 60 * 60_000,
+        keychainId: '4242:m',
+        devicePubkeyBase64: 'PUBKEY==',
+        githubUserId: 4242,
+        githubLogin: 'alice',
+        attestationGistId: 'gist-known',
+      }),
+      'utf8',
+    );
+    const resolveAttestationGistId = vi.fn(async () => 'gist-known');
+
+    const identity = await resolveLocalAnnounceIdentity({
+      logCoreKeyHex: LOG_CORE_KEY,
+      cachePath,
+      resolveGithubUser: stubUser(4242, 'alice'),
+      buildKeychainId: (uid: number) => `${uid}:m`,
+      loadKeypair: stubKeypair(),
+      resolveAttestationGistId,
+    });
+
+    expect(resolveAttestationGistId).toHaveBeenCalledTimes(1);
+    expect(resolveAttestationGistId).toHaveBeenCalledWith(
+      expect.objectContaining({ keychainId: '4242:m', knownGistId: 'gist-known' }),
+    );
+    expect(identity.attestationGistId).toBe('gist-known');
+  });
+
+  it('never hints a cached gist that belongs to a different device or user (WI-10006733)', async () => {
+    for (const mismatch of [
+      { keychainId: '4242:other-machine' },
+      { devicePubkeyBase64: 'OTHERKEY==' },
+      { githubUserId: 9999 },
+    ]) {
+      const cachePath = join(await mkdtemp(join(tmpdir(), 'papercusp-announce-')), 'identity.json');
+      await writeFile(
+        cachePath,
+        JSON.stringify({
+          version: 1,
+          savedAt: Date.now() - 60 * 60_000,
+          keychainId: '4242:m',
+          devicePubkeyBase64: 'PUBKEY==',
+          githubUserId: 4242,
+          githubLogin: 'alice',
+          attestationGistId: 'gist-not-mine',
+          ...mismatch,
+        }),
+        'utf8',
+      );
+      const resolveAttestationGistId = vi.fn(async (_args: unknown) => 'gist-fresh');
+
+      await resolveLocalAnnounceIdentity({
+        logCoreKeyHex: LOG_CORE_KEY,
+        cachePath,
+        resolveGithubUser: stubUser(4242, 'alice'),
+        buildKeychainId: (uid: number) => `${uid}:m`,
+        loadKeypair: stubKeypair(),
+        resolveAttestationGistId,
+      });
+
+      const args = resolveAttestationGistId.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+      expect(args).toBeDefined();
+      expect(args).not.toHaveProperty('knownGistId');
+    }
+  });
+
   it('rejects a cached identity when the keychain pubkey no longer matches the cached pubkey', async () => {
     const cachePath = join(await mkdtemp(join(tmpdir(), 'papercusp-announce-')), 'identity.json');
     await writeFile(

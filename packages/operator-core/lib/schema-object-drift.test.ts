@@ -16,6 +16,7 @@ import {
   normalizeIndexDefinition,
   type IndexCensusEntry,
 } from './schema-object-drift';
+import { INDEX_MANIFEST } from './db-schema-reference/index-manifest';
 
 function idx(
   schema: string,
@@ -205,5 +206,17 @@ describe('describeSchemaObjectDrift', () => {
     const impostor = idx('harness_shared', 'x_key', 'work_items', 'CREATE UNIQUE INDEX x_key ON harness_shared.work_items USING btree (id)', true);
     const text = describeSchemaObjectDrift(compareIndexCensus(BASE, [...BASE, impostor]));
     expect(text).toContain('[constraint-backed]');
+  });
+});
+
+describe('the committed index manifest', () => {
+  it('lists each (schema, name) once', () => {
+    // A census that joined pg_constraint on conindid alone repeated an index once
+    // per foreign key referencing it (WI-10005064). compareIndexCensus keys by
+    // (schema, name), so repeats inflate referenceIndexCount and repeat
+    // referenceOnly findings instead of failing loudly — pin it here.
+    const keys = INDEX_MANIFEST.indexes.map((e) => `${e.schema}.${e.name}`);
+    const repeated = [...new Set(keys.filter((k, i) => keys.indexOf(k) !== i))];
+    expect(repeated).toEqual([]);
   });
 });

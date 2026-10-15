@@ -35,8 +35,15 @@ import { activeWorkspaceId } from '../workspace-registry';
 /** Older observations are re-evaluated even when the fingerprint still matches. */
 export const PLAN_CLOSURE_OBSERVATION_MAX_AGE_MS = 10 * 60_000;
 
-/** The gate fields `resolvePlanClosure` consumes — and so the only ones persisted. */
-export type PlanClosureGateFields = Pick<PlanAcceptanceGateVerdict, 'satisfied' | 'code' | 'skipped' | 'message'>;
+/**
+ * The persisted gate fields: the four `resolvePlanClosure` consumes, plus the rubric and
+ * grader the independent-verification obligation names (D-039 — the turn-start
+ * obligation reader serves this observation instead of running the gate inline).
+ */
+export type PlanClosureGateFields = Pick<
+  PlanAcceptanceGateVerdict,
+  'satisfied' | 'code' | 'skipped' | 'message' | 'rubricId' | 'gradedBy'
+>;
 
 /** Gate inputs captured when an evaluation begins. Watermarks are epoch microseconds as text. */
 export interface PlanClosureFingerprint {
@@ -51,9 +58,16 @@ export interface PlanClosureFingerprint {
   metaScorecardWatermark: string | null;
 }
 
-export type PlanClosureObservationRead =
+export type PlanClosureObservationRead = (
   | { planSlug: string; status: 'fresh'; gate: PlanClosureGateFields; observedAt: string }
-  | { planSlug: string; status: 'stale' | 'absent' | 'ambiguous'; detail: string };
+  | { planSlug: string; status: 'stale' | 'absent' | 'ambiguous'; detail: string }
+) & { /** Current canonical lifecycle, independent of the recorded gate's freshness. */ planStatus?: string };
+
+export interface QualifiedPlanClosureRef { planSlug: string; harnessSlug: string }
+type PlanClosureSubject = string | QualifiedPlanClosureRef;
+export function planClosureSubjectKey(subject: PlanClosureSubject): string {
+  return typeof subject === 'string' ? subject : `plan:${subject.harnessSlug}/${subject.planSlug}`;
+}
 
 /**
  * Whether a gate call answers the same question the closure read asks
@@ -69,6 +83,7 @@ export function isCanonicalClosureGateCall(opts: PlanAcceptanceGateOpts): boolea
 interface FingerprintRow {
   plan_slug: string;
   harness_slug: string;
+  plan_status: string | null;
   matches: number;
   fingerprint: PlanClosureFingerprint;
   fingerprint_matches: boolean | null;
@@ -76,6 +91,8 @@ interface FingerprintRow {
   code: string | null;
   skipped: string | null;
   message: string | null;
+  rubric_id: string | null;
+  graded_by: string | null;
   observed_fingerprint: PlanClosureFingerprint | null;
   observed_at: Date | string | null;
 }
@@ -90,20 +107,23 @@ async function readFingerprintRows(sql: Sql, workspaceId: string, planSlugs: rea
   if (slugs.length === 0) return [];
   return sql<FingerprintRow[]>`
     WITH subject AS (
-      SELECT p.plan_slug, p.harness_slug, p.version, p.acceptance_bar_epoch,
+      SELECT p.plan_slug, p.harness_slug, p.status AS plan_status, p.version, p.acceptance_bar_epoch,
              count(*) OVER (PARTITION BY p.plan_slug)::int AS matches
         FROM harness_shared.harness_plans AS p
        WHERE p.workspace_id = ${workspaceId}
          AND p.plan_slug = ANY(${slugs}::text[])
     ), rubric AS (
-      SELECT r.template_data ->> 'subjectPlan' AS subject_plan, r.plan_slug AS rubric_id, r.version
+      SELECT r.template_data ->> 'subjectPlan' AS subject_plan, r.harness_slug, r.plan_slug AS rubric_id, r.version
         FROM harness_shared.harness_plans AS r
        WHERE r.workspace_id = ${workspaceId}
          AND r.template = 'rubric'
          AND r.template_data ->> 'kind' = 'acceptance'
          AND r.template_data ->> 'subjectPlan' = ANY(${slugs}::text[])
-    ), current_fp AS (
-      SELECT s.plan_slug, s.harness_slug, s.matches,
+    ), current_fp AS MATERIALIZED (
+      -- The fingerprint is returned AND compared with the stored observation.
+      -- Inlining this CTE repeats every watermark subquery for both uses
+      -- (four plans measured 172-174ms vs 104-105ms with one evaluation).
+      SELECT s.plan_slug, s.harness_slug, s.plan_status, s.matches,
              jsonb_build_object(
                'planVersion', s.version::text,
                'acceptanceBarEpoch', s.acceptance_bar_epoch,
@@ -117,6 +137,7 @@ async function readFingerprintRows(sql: Sql, workspaceId: string, planSlugs: rea
                  SELECT max(a.audit_seq)::text
                    FROM harness_shared.plan_audits AS a
                   WHERE a.workspace_id = ${workspaceId}
+                    AND a.harness_slug = s.harness_slug
                     AND a.plan_slug = s.plan_slug),
                'specBindings', (
                  SELECT max(b.id)::text || ':' || (count(*) FILTER (WHERE b.retracted_at IS NOT NULL))::text
@@ -127,26 +148,26 @@ async function readFingerprintRows(sql: Sql, workspaceId: string, planSlugs: rea
                'rubrics', COALESCE((
                  SELECT jsonb_agg(r.rubric_id || '@' || r.version::text ORDER BY r.rubric_id)
                    FROM rubric AS r
-                  WHERE r.subject_plan = s.plan_slug), '[]'::jsonb),
+                  WHERE r.subject_plan = s.plan_slug AND r.harness_slug = s.harness_slug), '[]'::jsonb),
                'scorecardWatermark', (
                  SELECT floor(extract(epoch FROM max(GREATEST(sc.created_at, sc.updated_at))) * 1000000)::bigint::text
                    FROM harness_shared.engineer_issues AS sc
                   WHERE sc.workspace_id = ${workspaceId}
                     AND sc.payload -> 'observation' ->> 'rubricRef' IN (
-                      SELECT r.rubric_id FROM rubric AS r WHERE r.subject_plan = s.plan_slug)),
+                      SELECT r.rubric_id FROM rubric AS r WHERE r.subject_plan = s.plan_slug AND r.harness_slug = s.harness_slug)),
                'metaScorecardWatermark', (
                  SELECT floor(extract(epoch FROM max(GREATEST(sc.created_at, sc.updated_at))) * 1000000)::bigint::text
                    FROM harness_shared.engineer_issues AS sc
                   WHERE sc.workspace_id = ${workspaceId}
                     AND sc.payload -> 'observation' ->> 'rubricRef' = ${META_ACCEPTANCE_RUBRIC_ID}
                     AND sc.payload -> 'observation' -> 'subject' ->> 'ref' IN (
-                      SELECT r.rubric_id FROM rubric AS r WHERE r.subject_plan = s.plan_slug))
+                      SELECT r.rubric_id FROM rubric AS r WHERE r.subject_plan = s.plan_slug AND r.harness_slug = s.harness_slug))
              ) AS fingerprint
         FROM subject AS s
     )
-    SELECT fp.plan_slug, fp.harness_slug, fp.matches, fp.fingerprint,
+    SELECT fp.plan_slug, fp.harness_slug, fp.plan_status, fp.matches, fp.fingerprint,
            (o.fingerprint = fp.fingerprint) AS fingerprint_matches,
-           o.satisfied, o.code, o.skipped, o.message,
+           o.satisfied, o.code, o.skipped, o.message, o.rubric_id, o.graded_by,
            o.fingerprint AS observed_fingerprint, o.observed_at
       FROM current_fp AS fp
       LEFT JOIN harness_shared.plan_closure_observations AS o
@@ -173,9 +194,9 @@ export function changedFingerprintKeys(
  */
 export function judgePlanClosureObservation(
   planSlug: string,
-  rows: readonly Pick<FingerprintRow,
+  rows: readonly (Pick<FingerprintRow,
     'matches' | 'fingerprint' | 'fingerprint_matches' | 'satisfied' | 'code' | 'skipped' | 'message' |
-    'observed_fingerprint' | 'observed_at'>[],
+    'observed_fingerprint' | 'observed_at'> & Partial<Pick<FingerprintRow, 'rubric_id' | 'graded_by' | 'plan_status'>>)[],
   now: Date,
   maxAgeMs = PLAN_CLOSURE_OBSERVATION_MAX_AGE_MS,
 ): PlanClosureObservationRead {
@@ -186,14 +207,16 @@ export function judgePlanClosureObservation(
     return { planSlug, status: 'ambiguous', detail: `plan slug '${planSlug}' resolves in ${Math.max(rows.length, rows[0].matches)} harnesses` };
   }
   const row = rows[0];
+  const lifecycle = row.plan_status == null ? {} : { planStatus: row.plan_status };
   if (row.observed_at == null || row.satisfied == null) {
-    return { planSlug, status: 'absent', detail: `no acceptance-gate verdict has been recorded for '${planSlug}' yet` };
+    return { planSlug, ...lifecycle, status: 'absent', detail: `no acceptance-gate verdict has been recorded for '${planSlug}' yet` };
   }
   const observedAt = new Date(row.observed_at);
   if (row.fingerprint_matches !== true) {
     const changed = changedFingerprintKeys(row.observed_fingerprint, row.fingerprint);
     return {
       planSlug,
+      ...lifecycle,
       status: 'stale',
       detail: `the recorded acceptance-gate verdict for '${planSlug}' (${observedAt.toISOString()}) predates a change to ${changed.join(', ') || 'its inputs'}`,
     };
@@ -202,18 +225,22 @@ export function judgePlanClosureObservation(
   if (!Number.isFinite(ageMs) || ageMs > maxAgeMs) {
     return {
       planSlug,
+      ...lifecycle,
       status: 'stale',
       detail: `the recorded acceptance-gate verdict for '${planSlug}' is ${Math.round(ageMs / 1000)}s old (max ${Math.round(maxAgeMs / 1000)}s)`,
     };
   }
   return {
     planSlug,
+    ...lifecycle,
     status: 'fresh',
     gate: {
       satisfied: row.satisfied,
       code: row.code as PlanClosureGateFields['code'],
       ...(row.skipped ? { skipped: row.skipped as PlanClosureGateFields['skipped'] } : {}),
       ...(row.message != null ? { message: row.message } : {}),
+      ...(row.rubric_id ? { rubricId: row.rubric_id } : {}),
+      ...(row.graded_by ? { gradedBy: row.graded_by } : {}),
     } as PlanClosureGateFields,
     observedAt: observedAt.toISOString(),
   };
@@ -223,15 +250,23 @@ export function judgePlanClosureObservation(
 export async function readPlanClosureObservations(args: {
   workspaceId: string;
   planSlugs: readonly string[];
+  /** Explicit qualified refs do not inherit bare-slug ambiguity. */
+  planRefs?: readonly QualifiedPlanClosureRef[];
   sql?: Sql;
   now?: Date;
 }): Promise<Map<string, PlanClosureObservationRead>> {
   const sql = args.sql ?? getOrgPg().sql;
-  const rows = await readFingerprintRows(sql, args.workspaceId, args.planSlugs);
+  const rows = await readFingerprintRows(sql, args.workspaceId,
+    [...args.planSlugs, ...(args.planRefs ?? []).map((ref) => ref.planSlug)]);
   const now = args.now ?? new Date();
   const out = new Map<string, PlanClosureObservationRead>();
   for (const planSlug of new Set(args.planSlugs)) {
     out.set(planSlug, judgePlanClosureObservation(planSlug, rows.filter((row) => row.plan_slug === planSlug), now));
+  }
+  for (const ref of args.planRefs ?? []) {
+    const qualifiedRows = rows.filter((row) => row.plan_slug === ref.planSlug && row.harness_slug === ref.harnessSlug)
+      .map((row) => ({ ...row, matches: 1 }));
+    out.set(planClosureSubjectKey(ref), judgePlanClosureObservation(ref.planSlug, qualifiedRows, now));
   }
   return out;
 }
@@ -266,15 +301,19 @@ export async function beginPlanClosureObservation(planSlug: string): Promise<{
         if (!row) return;
         await sql`
           INSERT INTO harness_shared.plan_closure_observations
-            (workspace_id, harness_slug, plan_slug, satisfied, code, skipped, message, fingerprint, observed_at, build_sha)
+            (workspace_id, harness_slug, plan_slug, satisfied, code, skipped, message, rubric_id, graded_by,
+             fingerprint, observed_at, build_sha)
           VALUES (${workspaceId}, ${harnessSlug}, ${planSlug}, ${verdict.satisfied}, ${verdict.code ?? null},
-                  ${verdict.skipped ?? null}, ${verdict.message ?? null}, ${sql.json(row.fingerprint as never)},
+                  ${verdict.skipped ?? null}, ${verdict.message ?? null}, ${verdict.rubricId ?? null},
+                  ${verdict.gradedBy ?? null}, ${sql.json(row.fingerprint as never)},
                   ${observedAt}, ${verdict.buildProvenance?.sha ?? null})
           ON CONFLICT (workspace_id, harness_slug, plan_slug) DO UPDATE SET
             satisfied = EXCLUDED.satisfied,
             code = EXCLUDED.code,
             skipped = EXCLUDED.skipped,
             message = EXCLUDED.message,
+            rubric_id = EXCLUDED.rubric_id,
+            graded_by = EXCLUDED.graded_by,
             fingerprint = EXCLUDED.fingerprint,
             observed_at = EXCLUDED.observed_at,
             build_sha = EXCLUDED.build_sha
@@ -295,21 +334,24 @@ const refreshState = pinModuleState('@papercusp/operator-core.planClosureObserva
  * most one evaluation per plan runs per process; the gate's own write refreshes the row.
  */
 export function refreshPlanClosureObservations(
-  planSlugs: readonly string[],
-  evaluate: (planSlug: string) => Promise<unknown> = async (planSlug) => {
+  planSlugs: readonly PlanClosureSubject[],
+  evaluate: (planSlug: string, harnessSlug?: string) => Promise<unknown> = async (planSlug, harnessSlug) => {
     const { evaluatePlanAcceptanceGate } = await import('../plan-acceptance-gate');
-    return evaluatePlanAcceptanceGate(planSlug);
+    return evaluatePlanAcceptanceGate(planSlug, harnessSlug ? { harnessSlug } : {});
   },
 ): string[] {
   const started: string[] = [];
-  for (const planSlug of new Set(planSlugs)) {
-    if (refreshState.inFlight.has(planSlug)) continue;
-    refreshState.inFlight.add(planSlug);
-    started.push(planSlug);
+  for (const subject of planSlugs) {
+    const key = planClosureSubjectKey(subject);
+    const planSlug = typeof subject === 'string' ? subject : subject.planSlug;
+    const harnessSlug = typeof subject === 'string' ? undefined : subject.harnessSlug;
+    if (refreshState.inFlight.has(key)) continue;
+    refreshState.inFlight.add(key);
+    started.push(key);
     void Promise.resolve()
-      .then(() => evaluate(planSlug))
+      .then(() => evaluate(planSlug, harnessSlug))
       .catch(() => undefined)
-      .finally(() => refreshState.inFlight.delete(planSlug));
+      .finally(() => refreshState.inFlight.delete(key));
   }
   return started;
 }

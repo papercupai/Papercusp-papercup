@@ -24,11 +24,12 @@ import { shapeAgentToolsList } from './list-shape';
 export default defineTool({
   name: 'agent_tools:list',
   description:
-    'List MCP-exposed tools with permission status for the caller. Each entry includes name, description, capability, roles allowlist, an `allowed` flag with `reason` when blocked, AND per-tool `guidance` (when/notWhen/chaining resolved for the queried role). Use to discover what you can call without trial-and-error.',
+    'List MCP-exposed tools with permission status for the caller. Each catalog row uses `name` and includes description, capability, roles allowlist, an `allowed` flag with `reason` when blocked, and per-tool `guidance`. Rows do not include `argSchema`; use `tools:find { query }` for exact argument schemas.',
   capability: 'agent_tools:read',
   guidance: {
     when: 'Your tools playbook didn\'t cover a user request and you need to discover what\'s callable. Returns the full catalog filtered by your role, with each tool\'s guidance — treat this as the runtime fallback playbook.',
     notWhen: 'Don\'t use as a fishing expedition. If your playbook covers it, just call the tool. `agent_tools:list` costs a tool call.',
+    chaining: 'Catalog rows expose `name` and permission metadata, not `tool` or `argSchema`. Use `tools:find { query }` when you need the exact arguments accepted by a tool.',
     // EI-21672500371422859: this tool narrows by `filter` (a literal substring over the
     // catalog) while its sibling discovery verb tools:find narrows by `query` (an intent).
     // A caller arriving from tools:find reaches for `query` here, and the bare

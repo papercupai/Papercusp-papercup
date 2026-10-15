@@ -12,6 +12,7 @@ import {
   CRITICAL_ROUTINE_ACTIONS,
   FLEET_CONTROL_ACTIONS,
   TRIGGER_POLL_ACTIONS,
+  TRIGGERS_QUEUE_ACTIONS,
   HEAVY_ROUTINE_ACTIONS,
   DEPLOY_TRIGGER_ACTIONS,
   queueForRoutine,
@@ -20,15 +21,18 @@ import {
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
 /**
- * 2026-06-23 routines-queue-starvation fix: git-sync must land on the protected `routines-critical` lane so
- * a saturated shared `routines` queue (long routines holding every slot) can never starve it (the 7h
- * deploy-freeze). EI-21386288922867645 adds a separate latency-isolated loop lane after a five-minute loop
+ * 2026-06-23 routines-queue-starvation fix: must-never-starve quick actions land on the protected
+ * `routines-critical` lane so a saturated shared `routines` queue (long routines holding every slot) cannot
+ * starve git-sync (the 7h deploy-freeze) or the deterministic admission floor. EI-21386288922867645 adds a
+ * separate latency-isolated loop lane after a five-minute loop
  * sat behind the shared queue for ~11 minutes. Long/unknown system actions and agent roles still default to
  * the shared queue, so neither protected lane can be silently occupied by a new arbitrary routine.
  */
-describe('queueForRoutine — the protected git-sync lane', () => {
+describe('queueForRoutine — the protected critical lane', () => {
   it('routes the critical system action (git-sync) to the protected lane', () => {
     expect(queueForRoutine('system:git-sync')).toBe(ROUTINES_CRITICAL_QUEUE);
+    expect(queueForRoutine('system:work-item-admission-fail-open')).toBe(ROUTINES_CRITICAL_QUEUE);
+    expect(queueForRoutine('system:work-item-admission-promoter')).toBe(ROUTINES_QUEUE);
   });
 
   it('routes EVERY critical action in the set to the protected lane', () => {
@@ -55,8 +59,8 @@ describe('queueForRoutine — the protected git-sync lane', () => {
     expect(queueForRoutine('system:pre-git-sync')).toBe(ROUTINES_QUEUE);
   });
 
-  it('the protected set is deliberately minimal — only git-sync today', () => {
-    expect([...CRITICAL_ROUTINE_ACTIONS]).toEqual(['git-sync']);
+  it('the protected set contains only the must-never-starve quick actions', () => {
+    expect([...CRITICAL_ROUTINE_ACTIONS]).toEqual(['git-sync', 'work-item-admission-fail-open']);
   });
 });
 
@@ -74,8 +78,12 @@ describe('queueForRoutine — the latency-isolated loop lane', () => {
 });
 
 describe('queueForRoutine — the fleet-control lane (EI-22526486100493483)', () => {
-  it('routes every fleet-control action to its own serial lane', () => {
-    expect([...FLEET_CONTROL_ACTIONS]).toEqual(['fleet-headcount-governor']);
+  it('routes every fleet-control action to its dedicated lane', () => {
+    expect([...FLEET_CONTROL_ACTIONS]).toEqual([
+      'fleet-headcount-governor',
+      'fleet-transition-sweep',
+      'presence-transition-sweep',
+    ]);
     for (const action of FLEET_CONTROL_ACTIONS) {
       expect(queueForRoutine(`system:${action}`)).toBe(ROUTINES_FLEET_CONTROL_QUEUE);
     }
@@ -117,8 +125,18 @@ describe('queueForRoutine — operator-home release-finalizer lane (EI-214466371
 
 describe('queueForRoutine — bounded heavy/background lane (EI-22469496587311452)', () => {
   it('routes the exact gitnexus reindex action to the serial heavy lane', () => {
-    expect([...HEAVY_ROUTINE_ACTIONS]).toEqual(['gitnexus-reindex']);
+    expect([...HEAVY_ROUTINE_ACTIONS]).toEqual(['gitnexus-reindex', 'work-item-admission-bulk-dedup']);
     expect(queueForRoutine('system:gitnexus-reindex')).toBe(ROUTINES_HEAVY_QUEUE);
+  });
+
+  // D-005 (work-queue-bulk-cleanup-remediation-2026-10-01): a bulk-dedup stage held a
+  // shared-queue slot for 1h53m while the window was 3, and 117 cron routines went
+  // overdue. Its fires must never share the housekeeping lane again.
+  it('routes bulk-dedup to heavy, protects fail-open, and keeps other admission actions shared', () => {
+    expect(queueForRoutine('system:work-item-admission-bulk-dedup')).toBe(ROUTINES_HEAVY_QUEUE);
+    expect(queueForRoutine('system:work-item-admission-fail-open')).toBe(ROUTINES_CRITICAL_QUEUE);
+    expect(queueForRoutine('system:work-item-admission-promoter')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('system:work-item-admission-bulk-dedup-census')).toBe(ROUTINES_QUEUE);
   });
 
   it('keeps near-miss and non-system targets on the shared queue (exact match)', () => {
@@ -156,9 +174,7 @@ describe('queueForRoutine — the deploy-launcher lane (EI-23909857328600541)', 
     expect(queueForRoutine('release-trigger')).toBe(ROUTINES_QUEUE);
   });
 
-  it('does NOT ride the git-sync critical lane, whose set stays git-sync-only', () => {
-    // The critical lane is concurrency-2 and deliberately single-action; widening it
-    // would re-create inside that lane the contention it exists to prevent.
+  it('does NOT ride the critical lane, whose actions must be quick and must-never-starve', () => {
     expect(CRITICAL_ROUTINE_ACTIONS.has('release-trigger')).toBe(false);
     expect(queueForRoutine('system:release-trigger')).not.toBe(ROUTINES_CRITICAL_QUEUE);
     expect(shouldFireUnderPoolShed('system:release-trigger')).toBe(false);
@@ -180,7 +196,7 @@ describe('queueForRoutine — the deploy-launcher lane (EI-23909857328600541)', 
       expect(queueForRoutine(starver)).toBe(ROUTINES_QUEUE);
       expect(queueForRoutine(starver)).not.toBe(ROUTINES_DEPLOY_QUEUE);
     }
-    expect(queueForRoutine('system:google-gmail-poll')).toBe(ROUTINES_TRIGGERS_QUEUE);
+    expect(queueForRoutine('system:connector-sync')).toBe(ROUTINES_TRIGGERS_QUEUE);
   });
 });
 
@@ -199,8 +215,9 @@ describe('queueForRoutine — the external-source poll lane (WI-41662)', () => {
   });
 
   it('routes the measured-starved polls specifically (the regression this lane exists for)', () => {
-    expect(queueForRoutine('system:google-gmail-poll')).toBe(ROUTINES_TRIGGERS_QUEUE);
-    expect(queueForRoutine('system:google-calendar-poll')).toBe(ROUTINES_TRIGGERS_QUEUE);
+    // Gmail (P-008) and Google Calendar (P-009) sync moved onto the provider connector, so
+    // their lane is connector-sync's.
+    expect(queueForRoutine('system:connector-sync')).toBe(ROUTINES_TRIGGERS_QUEUE);
   });
 
   it('keeps the LONG routine that starved them OFF this lane — else the starvation returns inside it', () => {
@@ -209,9 +226,9 @@ describe('queueForRoutine — the external-source poll lane (WI-41662)', () => {
   });
 
   it('keeps near-miss names on the shared queue (exact match)', () => {
-    expect(queueForRoutine('system:google-gmail-poll-status')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('system:connector-sync-status')).toBe(ROUTINES_QUEUE);
     expect(queueForRoutine('system:pre-pr-poll')).toBe(ROUTINES_QUEUE);
-    expect(queueForRoutine('google-gmail-poll')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('connector-sync')).toBe(ROUTINES_QUEUE);
   });
 
   it('does NOT widen the critical floor — a poll still sheds under PG-pool pressure', () => {
@@ -227,6 +244,27 @@ describe('queueForRoutine — the external-source poll lane (WI-41662)', () => {
   });
 });
 
+describe('queueForRoutine — bounded trigger and import handlers', () => {
+  it('routes trigger dispatch and personal-vault import with the existing source-poll lane', () => {
+    expect([...TRIGGERS_QUEUE_ACTIONS]).toEqual([
+      ...TRIGGER_POLL_ACTIONS,
+      'external-trigger-dispatch',
+      'personal-vault-import',
+    ]);
+    for (const action of ['external-trigger-dispatch', 'personal-vault-import']) {
+      expect(queueForRoutine(`system:${action}`)).toBe(ROUTINES_TRIGGERS_QUEUE);
+      expect(shouldFireUnderPoolShed(`system:${action}`)).toBe(false);
+      expect(CRITICAL_ROUTINE_ACTIONS.has(action)).toBe(false);
+    }
+  });
+
+  it('keeps unrelated and near-miss handlers on the ordinary queue', () => {
+    expect(queueForRoutine('system:external-trigger-dispatch-status')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('system:personal-vault-import-status')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('system:blueprint-run')).toBe(ROUTINES_QUEUE);
+  });
+});
+
 /**
  * EI-11171 critical-routine floor: when routinesTickImpl sheds on critical PG-pool starvation it
  * must still fire the protected critical-queue routine (git-sync) — the old bare `return` skipped
@@ -236,6 +274,8 @@ describe('queueForRoutine — the external-source poll lane (WI-41662)', () => {
 describe('shouldFireUnderPoolShed — the critical-routine floor (EI-11171)', () => {
   it('FIRES git-sync under a shed (the must-never-starve floor)', () => {
     expect(shouldFireUnderPoolShed('system:git-sync')).toBe(true);
+    expect(shouldFireUnderPoolShed('system:work-item-admission-fail-open')).toBe(true);
+    expect(shouldFireUnderPoolShed('system:work-item-admission-promoter')).toBe(false);
   });
 
   it('FIRES every protected critical action under a shed', () => {

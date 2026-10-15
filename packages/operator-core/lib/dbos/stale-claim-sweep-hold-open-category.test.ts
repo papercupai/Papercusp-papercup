@@ -20,11 +20,16 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { sendMessage } = vi.hoisted(() => ({
+const { sendMessage, staleClaimState, recordInvoluntaryClaimReleases } = vi.hoisted(() => ({
   sendMessage: vi.fn(async (_identity: unknown, _opts: Record<string, unknown>) => ({})),
+  staleClaimState: { released: [] as Record<string, unknown>[] },
+  recordInvoluntaryClaimReleases: vi.fn(
+    async (_sql: unknown, _opts: Record<string, unknown>) => ({ audited: 1, notified: 0, failures: [] as string[] }),
+  ),
 }));
 
 vi.mock('../agent-tools/coordination/messages', () => ({ sendMessage }));
+vi.mock('../claim-release-notice', () => ({ recordInvoluntaryClaimReleases }));
 
 // A minimal callable tagged-template stub — the P-017 lease-backstop leg (not
 // under test here) calls `sql\`...\`` directly rather than through a mocked
@@ -63,7 +68,7 @@ vi.mock('../coord-liveness-config', () => ({
 // explicitly below. Every remaining export is a constant or a pure SQL-fragment builder.
 vi.mock('../work-items-stale-claims', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../work-items-stale-claims')>()),
-  reclaimStaleWorkItemClaims: async () => ({ released: [] }),
+  reclaimStaleWorkItemClaims: async () => ({ released: staleClaimState.released }),
   reclaimStaleIssueClaims: async () => ({ released: [], orphanLeasesCleared: 0 }),
   reconcileStrandedWipWorkItems: async () => [],
 }));
@@ -129,6 +134,7 @@ import { buildDefaultChecks } from './in-process-periodic';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  staleClaimState.released = [];
 });
 
 afterEach(() => {
@@ -180,5 +186,73 @@ describe('stale-claim-sweep tick — hold-open-sweep broadcast category (EI-1818
     // third hold is inert residue that must not be named or counted.
     expect(opts.summary).toContain('lifted 2 EXPIRED hold(s)');
     expect(opts.summary).not.toContain('EI-3');
+  });
+
+  it('audits each work-item release with its reason while preserving the direct holder notice', async () => {
+    staleClaimState.released = [
+      {
+        workspace_id: 'ws-1',
+        harness_slug: 'papercusp',
+        feature_id: 'EI-claim-source',
+        item_kind: 'bug',
+        former_taken_by: 'su-former-holder',
+        former_status: 'wip',
+        new_status: 'open',
+        requeue_count: 1,
+        action: 'requeued',
+        reason: 'dead',
+      },
+      {
+        workspace_id: 'ws-1',
+        harness_slug: 'papercusp',
+        feature_id: 'EI-claim-source-exit',
+        item_kind: 'bug',
+        former_taken_by: 'su-dead-spawn',
+        former_status: 'wip',
+        new_status: 'open',
+        requeue_count: 1,
+        action: 'requeued',
+        reason: 'spawn-exit',
+      },
+    ];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const tick = buildDefaultChecks().find((c) => c.name === 'stale-claim-sweep')!.tick;
+    await tick();
+
+    expect(recordInvoluntaryClaimReleases).toHaveBeenCalledTimes(2);
+    expect(recordInvoluntaryClaimReleases.mock.calls.map(([, opts]) => opts)).toEqual([
+      expect.objectContaining({
+        workspaceId: 'ws-1',
+        harness: 'papercusp',
+        actor: 'reaper:dead',
+        reason: 'dead',
+        released: [{ workItemId: 'EI-claim-source', takenBy: 'su-former-holder', reason: 'dead' }],
+        notify: false,
+      }),
+      expect.objectContaining({
+        workspaceId: 'ws-1',
+        harness: 'papercusp',
+        actor: 'reaper:spawn-exit',
+        reason: 'spawn-exit',
+        released: [{ workItemId: 'EI-claim-source-exit', takenBy: 'su-dead-spawn', reason: 'spawn-exit' }],
+        notify: false,
+      }),
+    ]);
+    expect(sendMessage).toHaveBeenCalledTimes(3);
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: 'stale-claim-sweep' }),
+      expect.objectContaining({
+        to: ['su-former-holder'],
+        summary: expect.stringContaining('Your claim on EI-claim-source was reclaimed (reason: dead'),
+      }),
+    );
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: 'stale-claim-sweep' }),
+      expect.objectContaining({
+        to: ['su-dead-spawn'],
+        summary: expect.stringContaining('Your claim on EI-claim-source-exit was reclaimed (reason: spawn-exit'),
+      }),
+    );
+    warnSpy.mockRestore();
   });
 });

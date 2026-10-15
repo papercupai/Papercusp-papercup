@@ -1,0 +1,76 @@
+{
+ "schemaVersion": 1,
+ "kind": "operational-test-evidence",
+ "framework": "node",
+ "command": [
+  "npx",
+  "tsx",
+  "packages/operator-core/lib/search/bench/bm25-bakeoff-cli.ts",
+  "--corpus",
+  "work-items",
+  "--methods",
+  "tsv_and,pgts",
+  "--out",
+  "docs/evidence/bm25-bakeoff-work-items-2026-10-11.json"
+ ],
+ "exitCode": 0,
+ "startedAt": "2026-10-11T11:16:56Z",
+ "finishedAt": "2026-10-11T11:27:55.979Z",
+ "provenance": {
+  "sourceReport": "docs/evidence/bm25-bakeoff-work-items-2026-10-11.json",
+  "sourceReportSha256": "f605e046cefdad7d84e1010cf37b3cf8301b60e638b76cb4417f4bce381bc651",
+  "benchCommit": "c20d6c21f9bc37ff4c2cf1b3ad9b65346b2d6572",
+  "serverVersion": "18.6 (Debian 18.6-1.pgdg13+2)",
+  "corpus": {
+   "key": "work-items",
+   "queryForm": "title (body = summary)",
+   "rows": 76856,
+   "source": "operator-db-copy"
+  },
+  "loadavg": {
+   "start": [
+    454.33,
+    317.13,
+    254.08
+   ],
+   "end": [
+    179.96,
+    209.63,
+    229.69
+   ],
+   "cores": 128
+  },
+  "evidencePlane": "live",
+  "plan": "bm25-lexical-search-evoke-adoption-2026-10-10",
+  "commandRepresentation": "bm25-bakeoff-cli arguments for this corpus; --out names the committed copy of the run output"
+ },
+ "name": "BM25 work-item known-item benchmark (R-1, R-2, R-3)",
+ "assertions": [
+  {
+   "id": "r1-min-ratio-at-least-1.5",
+   "passed": true,
+   "evidence": "min of four pgts/tsv_and ratios = 1.714; ratios {\"recallAt10.short\": 1.819, \"mrrAt10.short\": 1.714, \"recallAt10.title\": 3.462, \"mrrAt10.title\": 3.689} (short = 4-keyword form, title = full-title form)"
+  },
+  {
+   "id": "r1-at-least-1000-queries-per-form",
+   "passed": true,
+   "evidence": "n per arm and form: {\"pgts.short\": 1000, \"tsv_and.short\": 1000, \"pgts.title\": 1000, \"tsv_and.title\": 1000}"
+  },
+  {
+   "id": "r1-baseline-same-run-same-sample",
+   "passed": true,
+   "evidence": "tsv_and and pgts summaries come from the same run output with equal n per form; paired[] rows compare them query by query"
+  },
+  {
+   "id": "r2-p95-at-most-50ms",
+   "passed": true,
+   "evidence": "pgts p95 ms per form {\"short\": 4.33, \"title\": 9.63}; loadavg {'start': [454.33, 317.13, 254.08], 'end': [179.96, 209.63, 229.69], 'cores': 128}"
+  },
+  {
+   "id": "r3-p50-at-most-10ms",
+   "passed": true,
+   "evidence": "pgts p50 ms per form {\"short\": 2.2, \"title\": 3.76}"
+  }
+ ],
+ "summary": "76856 work items, 1000 queries per form; min ratio 1.71; p95 max 9.6 ms; p50 max 3.8 ms"
+}

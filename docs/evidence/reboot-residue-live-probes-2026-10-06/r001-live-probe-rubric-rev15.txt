@@ -1,0 +1,20 @@
+START 2026-10-06T10:07:59Z
+T0 MainPID=3758554 NRestarts=0 LoadState=loaded ActiveState=active SubState=running 
+unit_execstart=~/.agenticmail/bin/start-server.sh
+script_exec_line=exec "/home/linuxbrew/.linuxbrew/bin/node" "/home/linuxbrew/.linuxbrew/lib/node_modules/agenticmail/node_modules/@agenticmail/api/dist/index.js"
+exec_node=/home/linuxbrew/.linuxbrew/bin/node
+exec_entry=/home/linuxbrew/.linuxbrew/lib/node_modules/agenticmail/node_modules/@agenticmail/api/dist/index.js
+ENTRY_EXISTS=yes
+entry_sha256=770632bdf7ad5260f6375bf0098934825a29e528b2b318bf71be0898d9af722d
+npm_root_g[/home/linuxbrew/.linuxbrew/bin]=/home/linuxbrew/.linuxbrew/lib/node_modules
+ENTRY_UNDER_GLOBAL_ROOT=yes
+global_pkg_versions=0.5.54 agenticmail / 0.5.62 @agenticmail/api
+live_argv=/home/linuxbrew/.linuxbrew/bin/node /home/linuxbrew/.linuxbrew/lib/node_modules/agenticmail/node_modules/@agenticmail/api/dist/index.js 
+LIVE_ARGV_MATCHES_EXEC=yes
+configured_api=127.0.0.1:3150
+health_route_mount=1
+HEALTH_HTTP=200 body={"status":"ok","version":"0.5.62","services":{"api":"ok","stalwart":"ok"},"timestamp":"2026-10-06T10:08:00.846Z"}
+literal_api_health_http=404
+T1 MainPID=3758554 NRestarts=0 LoadState=loaded ActiveState=active SubState=running 
+NRESTARTS_STABLE=yes (0->0 over 60s)
+END 2026-10-06T10:09:00Z

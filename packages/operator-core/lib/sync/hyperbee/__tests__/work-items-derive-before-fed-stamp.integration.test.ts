@@ -23,6 +23,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import postgres from 'postgres';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
+import { reconcileWorkItemCompletionEventIntents } from '../../../work-item-completion-event-reconciler';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../../../../../..');
@@ -244,5 +245,116 @@ describe('work_items derivation triggers fire before the federation stamp (WI-10
       SELECT closed_ts::text AS closed_ts FROM harness_shared.work_items
        WHERE workspace_id = ${WS} AND feature_id = ${id}`;
     expect(row.closed_ts).not.toBeNull(); // the derivation still ran on the real close
+  });
+});
+
+describe('a completion-event intent belongs to the node that made the close (WI-10005136, mig 1328)', () => {
+  const INTENT_KEY = '_completionEventIntentId';
+  const WS_RECONCILE = 'ws-completion-intent-origin';
+
+  async function intentOf(ws: string, id: string): Promise<string | null> {
+    const [r] = await sql<{ intent: string | null }[]>`
+      SELECT payload->>${INTENT_KEY} AS intent FROM harness_shared.work_items
+       WHERE workspace_id = ${ws} AND feature_id = ${id}`;
+    return r.intent;
+  }
+
+  async function clockIn(ws: string, id: string): Promise<Clock> {
+    const [r] = await sql<Clock[]>`
+      SELECT fed_ts::text AS fed_ts, fed_hlc, origin FROM harness_shared.work_items
+       WHERE workspace_id = ${ws} AND feature_id = ${id}`;
+    return r;
+  }
+
+  /** An open replica of a peer's item, as the projection inserts it. */
+  async function seedPeerOpen(ws: string, id: string, hlc: string): Promise<void> {
+    await sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, item_kind,
+         origin, fed_ts, fed_hlc, payload)
+      VALUES (${ws}, ${HARNESS}, ${id}, 'peer item', 'body', 'todo', 'feature',
+              'remote', 9999999980000, ${hlc}, ${sql.json({})})`;
+  }
+
+  /** The projection applying the peer's next op: the wire clock moves, origin stays remote. */
+  async function applyPeerOp(
+    ws: string, id: string, fields: { status: string; fedTs: number; hlc: string; payload: Record<string, unknown> },
+  ): Promise<void> {
+    await sql`
+      UPDATE harness_shared.work_items
+         SET status = ${fields.status}, payload = ${sql.json(fields.payload as never)},
+             fed_ts = ${fields.fedTs}, fed_hlc = ${fields.hlc}, origin = 'remote'
+       WHERE workspace_id = ${ws} AND feature_id = ${id}`;
+  }
+
+  it("applying a peer's close does not mint a local intent, re-stamp the row, or ship an op", async () => {
+    const id = nextId('F');
+    await seedPeerOpen(WS, id, '009999999980000:peerbbbb');
+    await applyPeerOp(WS, id, { status: 'done', fedTs: 9999999980500, hlc: '009999999980500:peerbbbb', payload: {} });
+    const opsAfterApply = await outboxCount(id);
+
+    expect(await intentOf(WS, id)).toBeNull();
+    expect(await clockOf(id)).toEqual({ fed_ts: '9999999980500', fed_hlc: '009999999980500:peerbbbb', origin: 'remote' });
+    expect(await outboxCount(id)).toBe(opsAfterApply);
+  });
+
+  it("keeps the publisher's intent verbatim, and does not restore it when the publisher's acknowledgement arrives", async () => {
+    const id = nextId('F');
+    await seedPeerOpen(WS, id, '009999999981000:peercccc');
+    await applyPeerOp(WS, id, {
+      status: 'done', fedTs: 9999999981500, hlc: '009999999981500:peercccc', payload: { [INTENT_KEY]: 'peer-intent-1' },
+    });
+    expect(await intentOf(WS, id)).toBe('peer-intent-1');
+
+    // The publisher fired its event and cleared the key. This node has no matching local
+    // fire, which before mig 1328 made the trigger restore the stale intent.
+    await applyPeerOp(WS, id, { status: 'done', fedTs: 9999999982000, hlc: '009999999982000:peercccc', payload: {} });
+    expect(await intentOf(WS, id)).toBeNull();
+    expect((await clockOf(id)).origin).toBe('remote');
+  });
+
+  it('positive control: a local close still mints an intent', async () => {
+    const id = nextId('F');
+    await sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, item_kind, origin, payload)
+      VALUES (${WS}, ${HARNESS}, ${id}, 'close me locally', 'body', 'todo', 'feature', 'local', ${sql.json({})})`;
+    await sql`UPDATE harness_shared.work_items SET status = 'done' WHERE workspace_id = ${WS} AND feature_id = ${id}`;
+
+    expect(await intentOf(WS, id)).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it("the reconciler sweeps only this node's closes and leaves a peer's pending intent untouched", async () => {
+    const localId = nextId('F');
+    await sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, item_kind, origin, payload)
+      VALUES (${WS_RECONCILE}, ${HARNESS}, ${localId}, 'local close', 'body', 'todo', 'feature', 'local', ${sql.json({})})`;
+    await sql`UPDATE harness_shared.work_items SET status = 'done'
+               WHERE workspace_id = ${WS_RECONCILE} AND feature_id = ${localId}`;
+
+    const peerId = nextId('F');
+    await seedPeerOpen(WS_RECONCILE, peerId, '009999999983000:peerdddd');
+    await applyPeerOp(WS_RECONCILE, peerId, {
+      status: 'done', fedTs: 9999999983500, hlc: '009999999983500:peerdddd', payload: { [INTENT_KEY]: 'peer-intent-2' },
+    });
+    const peerClockBefore = await clockIn(WS_RECONCILE, peerId);
+    expect(await intentOf(WS_RECONCILE, localId)).not.toBeNull();
+    expect(await intentOf(WS_RECONCILE, peerId)).toBe('peer-intent-2');
+
+    const asked: string[] = [];
+    let emitted = 0;
+    const result = await reconcileWorkItemCompletionEventIntents(WS_RECONCILE, {
+      sql: sql as never,
+      getItem: (async (id: string) => { asked.push(id); return null; }) as never,
+      emitDone: (async () => { emitted += 1; }) as never,
+      nowMs: Date.now() + 60_000,
+    });
+
+    expect(asked).toEqual([localId]);
+    expect(result.considered).toBe(1);
+    expect(emitted).toBe(0);
+    expect(await intentOf(WS_RECONCILE, peerId)).toBe('peer-intent-2');
+    expect(await clockIn(WS_RECONCILE, peerId)).toEqual(peerClockBefore);
   });
 });

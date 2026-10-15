@@ -30,6 +30,7 @@
  *     possible there; here `selectFailover` must decline instead, which is
  *     why it consults `triedRouteKeys` rather than just the current id.
  */
+import { describeFetchError } from '../loopback-fetch';
 import type { GatewayTransportId } from './provider-adapters';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import { presentedSecretsFromHeaders, scrubbedErrorBody } from './error-body-scrub';
@@ -336,8 +337,8 @@ export function createCodexBearerKernelAdapter(opts: CodexBearerAdapterOptions):
         if (error instanceof GatewayRequestKernelError && !error.retryable) throw error;
         account.invalidateToken?.();
         throw new GatewayRequestKernelError(
-          `inference-gateway: Codex upstream failed: ${(error as Error).message}`,
-          { code: 'upstream-error', outcome: 'upstream-error', status: 502, retryable: true },
+          `inference-gateway: Codex upstream failed: ${describeFetchError(error)}`,
+          { code: 'upstream-error', outcome: 'upstream-error', status: 502, retryable: true, cause: error },
         );
       }
 

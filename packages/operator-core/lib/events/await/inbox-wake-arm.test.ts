@@ -30,11 +30,16 @@ const h = vi.hoisted(() => {
     // `live` remains the legacy any-live result so the regression fails against
     // the pre-fix implementation.
     latestLive: undefined as unknown[] | undefined,
+    cancelled: [] as Array<{ cancelled_at: string }>,
     fail: false,
   };
-  const sql = (strings: TemplateStringsArray) => {
+  const sql = (strings: TemplateStringsArray, ...values: unknown[]) => {
     if (state.fail) return Promise.reject(new Error('pg down'));
     const text = strings.join(' ');
+    if (text.includes('cancelled_at IS NOT NULL')) {
+      const cutoff = String(values[2] ?? '');
+      return Promise.resolve(state.cancelled.filter((row) => row.cancelled_at >= cutoff));
+    }
     if (text.includes('event_awaits')) return Promise.resolve(state.armed);
     if (text.includes('adv_sessions')) {
       return Promise.resolve(
@@ -162,6 +167,7 @@ describe('ensureInboxWakeArmedForActiveSession (self-heal)', () => {
     h.state.armed = [];
     h.state.live = [];
     h.state.latestLive = undefined;
+    h.state.cancelled = [];
     h.state.fail = false;
   });
 
@@ -211,6 +217,31 @@ describe('ensureInboxWakeArmedForActiveSession (self-heal)', () => {
     vi.clearAllMocks();
     const second = await ensureInboxWakeArmedForActiveSession({ ownerId: 'su-heal-4' });
     expect(second).toBe(false); // throttled
+    expect(upsertInboxWakeAwait).not.toHaveBeenCalled();
+  });
+
+  it('forceRecheck bypasses a prior-incarnation throttle after resume, but still honors a current-incarnation opt-out', async () => {
+    const ownerId = 'su-heal-resumed-after-cancel';
+    h.state.live = [{ one: 1 }];
+    h.state.cancelled = [{ cancelled_at: '2026-08-21T03:01:00.000Z' }];
+
+    // The prior incarnation was explicitly cancelled, so an ordinary hot-path
+    // check records the throttle and declines to resurrect that session.
+    await expect(ensureInboxWakeArmedForActiveSession({ ownerId })).resolves.toBe(false);
+    expect(upsertInboxWakeAwait).not.toHaveBeenCalled();
+
+    // claimAdvSessionResume advances started_at for the resumed incarnation.
+    // The old cancellation is now before that boundary; the explicit recheck
+    // must bypass the warm throttle and arm the resumed process before spawn.
+    h.state.latestLive = [{ started_at: '2026-08-21T03:02:00.000Z' }];
+    await expect(ensureInboxWakeArmedForActiveSession({ ownerId, forceRecheck: true })).resolves.toBe(true);
+    expect(upsertInboxWakeAwait).toHaveBeenCalledTimes(1);
+
+    // A cancellation made during the resumed incarnation remains authoritative,
+    // even for another forced recheck.
+    h.state.cancelled = [{ cancelled_at: '2026-08-21T03:03:00.000Z' }];
+    vi.clearAllMocks();
+    await expect(ensureInboxWakeArmedForActiveSession({ ownerId, forceRecheck: true })).resolves.toBe(false);
     expect(upsertInboxWakeAwait).not.toHaveBeenCalled();
   });
 

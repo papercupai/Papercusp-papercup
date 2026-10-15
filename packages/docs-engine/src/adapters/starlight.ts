@@ -22,9 +22,9 @@
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { humanize } from '../shared.js';
-import { renderMdxToMarkdown } from '../render-mdx.js';
+import { raceWithAbort, renderMdxToMarkdown, throwIfAborted } from '../render-mdx.js';
 import { parseOkfFrontmatter } from '../okf.js';
-import type { DocPage, DocSource, SectionMeta } from '../types.js';
+import type { DocContentOptions, DocPage, DocSource, SectionMeta } from '../types.js';
 
 export interface StarlightContentAdapterOptions {
   /** Stable identifier for cache namespacing + telemetry. */
@@ -41,6 +41,8 @@ export interface StarlightContentAdapterOptions {
   baseUrl?: string;
   /** Max scan depth. Defaults to 8 (deep enough for any practical section nesting). */
   maxDepth?: number;
+  /** Published corpus revision. A changed revision drops metadata and rendered answers. */
+  getRevision?: () => string | Promise<string>;
 }
 
 const MAX_FILE_BYTES = 1024 * 1024;
@@ -62,6 +64,9 @@ interface StarlightPage extends DocPage {
   renderedBody?: string;
   /** Shared by concurrent cold readers so one corpus search performs one render per page. */
   renderedBodyPromise?: Promise<string>;
+  /** Cancel queued page renders only after every caller stops waiting. */
+  renderController?: AbortController;
+  renderWaiters?: number;
 }
 
 export interface StarlightContentSource extends DocSource {
@@ -126,6 +131,72 @@ async function readSafe(absPath: string): Promise<string | null> {
   }
 }
 
+async function getCachedPageContent(page: StarlightPage, signal?: AbortSignal): Promise<string> {
+  throwIfAborted(signal);
+  if (page.renderedBody !== undefined) return page.renderedBody;
+
+  if (page.renderedBodyPromise && page.renderController?.signal.aborted) {
+    const cancelled = page.renderedBodyPromise;
+    try {
+      return await raceWithAbort(cancelled, signal);
+    } catch (error) {
+      throwIfAborted(signal);
+      if (page.renderedBody !== undefined) return page.renderedBody;
+      // The cancelled promise has now settled and cleared itself. Start a fresh
+      // shared render for this caller instead of reusing an aborted controller.
+      return await getCachedPageContent(page, signal);
+    }
+  }
+
+  if (!page.renderedBodyPromise) {
+    const controller = new AbortController();
+    page.renderController = controller;
+    page.renderWaiters = 0;
+    const pending = (async () => {
+      const raw = await readSafe(page.absolutePath);
+      if (raw === null) {
+        throw new Error(`starlightContentAdapter: could not read ${page.absolutePath}`);
+      }
+      throwIfAborted(controller.signal);
+      const { body } = parseFrontmatter(raw);
+      const rendered = /\.mdx$/i.test(page.absolutePath)
+        ? await renderMdxToMarkdown(body, page.absolutePath, controller.signal)
+        : body;
+      page.renderedBody = rendered;
+      return rendered;
+    })();
+    let shared: Promise<string>;
+    shared = pending.catch((error) => {
+      if (page.renderedBodyPromise === shared) {
+        page.renderedBodyPromise = undefined;
+        page.renderController = undefined;
+        page.renderWaiters = 0;
+      }
+      throw error;
+    });
+    page.renderedBodyPromise = shared;
+    // A caller can abort while this shared render remains queued. Keep the
+    // rejection observed even after the final waiter leaves.
+    void shared.catch(() => undefined);
+  }
+
+  const shared = page.renderedBodyPromise;
+  if (!shared) throw new Error(`starlightContentAdapter: render promise missing for ${page.slug}`);
+  const controller = page.renderController;
+  page.renderWaiters = (page.renderWaiters ?? 0) + 1;
+  try {
+    return await raceWithAbort(shared, signal);
+  } finally {
+    if (page.renderedBodyPromise === shared) {
+      page.renderWaiters = Math.max(0, (page.renderWaiters ?? 1) - 1);
+      if (page.renderWaiters === 0) {
+        if (page.renderedBody === undefined) controller?.abort();
+        else page.renderController = undefined;
+      }
+    }
+  }
+}
+
 async function walkContent(root: string, maxDepth: number): Promise<string[]> {
   const out: string[] = [];
   async function walk(dir: string, depth: number): Promise<void> {
@@ -157,13 +228,37 @@ export function starlightContentAdapter(opts: StarlightContentAdapterOptions): S
   const maxDepth = opts.maxDepth ?? 8;
 
   let pageCache: Map<string, StarlightPage> | null = null;
+  let cachedRevision: string | undefined;
+  let cacheGeneration = 0;
+  let pageBuild: Promise<Map<string, StarlightPage>> | null = null;
 
   function invalidate(): void {
     pageCache = null;
+    pageBuild = null;
+    cacheGeneration += 1;
   }
 
   async function buildPages(): Promise<Map<string, StarlightPage>> {
+    // Sample before a cache hit too. A failed revision read must not serve an
+    // answer whose freshness could not be established.
+    const revision = await opts.getRevision?.();
+    if (revision !== cachedRevision) {
+      invalidate();
+      cachedRevision = revision;
+    }
     if (pageCache) return pageCache;
+    if (pageBuild) return pageBuild;
+    const generation = cacheGeneration;
+    const building = loadPages(generation);
+    pageBuild = building;
+    try {
+      return await building;
+    } finally {
+      if (pageBuild === building) pageBuild = null;
+    }
+  }
+
+  async function loadPages(generation: number): Promise<Map<string, StarlightPage>> {
     const cache = new Map<string, StarlightPage>();
     const files = await walkContent(contentRoot, maxDepth);
     for (const abs of files) {
@@ -196,7 +291,8 @@ export function starlightContentAdapter(opts: StarlightContentAdapterOptions): S
       };
       cache.set(slug, page);
     }
-    pageCache = cache;
+    // An old in-flight scan cannot repopulate a newer revision's cache.
+    if (generation === cacheGeneration) pageCache = cache;
     return cache;
   }
 
@@ -214,28 +310,17 @@ export function starlightContentAdapter(opts: StarlightContentAdapterOptions): S
       const { absolutePath: _abs, ...page } = sp;
       return page;
     },
-    async getContent(page: DocPage): Promise<string> {
-      const cache = await buildPages();
-      const sp = cache.get(page.slug);
-      if (!sp) throw new Error(`starlightContentAdapter: page ${page.slug} not found`);
-      if (sp.renderedBody !== undefined) return sp.renderedBody;
-      if (sp.renderedBodyPromise) return sp.renderedBodyPromise;
-      sp.renderedBodyPromise = (async () => {
-        const raw = await readSafe(sp.absolutePath);
-        if (raw === null) {
-          throw new Error(`starlightContentAdapter: could not read ${sp.absolutePath}`);
-        }
-        const { body } = parseFrontmatter(raw);
-        const rendered = /\.mdx$/i.test(sp.absolutePath) ? await renderMdxToMarkdown(body, sp.absolutePath) : body;
-        sp.renderedBody = rendered;
-        return rendered;
+    async getContent(page: DocPage, options?: DocContentOptions): Promise<string> {
+      const signal = options?.signal;
+      const work = (async () => {
+        throwIfAborted(signal);
+        const cache = await buildPages();
+        throwIfAborted(signal);
+        const sp = cache.get(page.slug);
+        if (!sp) throw new Error(`starlightContentAdapter: page ${page.slug} not found`);
+        return await getCachedPageContent(sp, signal);
       })();
-      try {
-        return await sp.renderedBodyPromise;
-      } catch (error) {
-        sp.renderedBodyPromise = undefined;
-        throw error;
-      }
+      return await raceWithAbort(work, signal);
     },
     // WI-1511581: the file exactly as it sits on disk — frontmatter included, MDX
     // unrendered. Not cached alongside `renderedBody`: this is the authoring read,

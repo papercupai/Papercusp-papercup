@@ -1,0 +1,983 @@
+{
+  "schemaVersion": "p011-inbox-cache-heap-independent-v1",
+  "proof": {
+    "path": "docs/evidence/papercusp-oct5-p011-inbox-cache-retainers-r3-2026-10-05.json",
+    "bytes": 898901,
+    "sha256": "652d7726b63a2aa802ab1cf902c51ddbc5dd3d78abef15fedd11494314609c57",
+    "result": [
+      {
+        "arm": 0,
+        "mode": "baseline",
+        "result": {
+          "owners": {
+            "processIdentity": "2978743:1418048:7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "recordedBuildSha": "f9d7e04106",
+            "snapshotSha256": "1fe8ff4e2589418d58fad725d06694ab94ef43d9d4d1b45170322ba44f1c87b3",
+            "owners": [
+              {
+                "owner": "@papercusp/operator-core.operatorCache",
+                "id": 5144139,
+                "index": 2572069,
+                "selfSizeBytes": 48,
+                "dominatorRetainedV8Bytes": 192,
+                "observedDirectParentIndexes": [
+                  413811,
+                  2572068
+                ],
+                "directParentsNotChecked": 0
+              }
+            ],
+            "verifiedNodes": [
+              {
+                "id": 5144139,
+                "index": 2572069,
+                "selfSizeBytes": 48,
+                "dominatorRetainedV8Bytes": 192,
+                "observedDirectParentIndexes": [
+                  413811,
+                  2572068
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 8819301,
+                "index": 4409650,
+                "selfSizeBytes": 32,
+                "dominatorRetainedV8Bytes": 8458288,
+                "observedDirectParentIndexes": [
+                  4412280
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 8819433,
+                "index": 4409716,
+                "selfSizeBytes": 32,
+                "dominatorRetainedV8Bytes": 8458288,
+                "observedDirectParentIndexes": [
+                  4412277
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 8819589,
+                "index": 4409794,
+                "selfSizeBytes": 32,
+                "dominatorRetainedV8Bytes": 8458288,
+                "observedDirectParentIndexes": [
+                  4412283
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 8824555,
+                "index": 4412277,
+                "selfSizeBytes": 64,
+                "dominatorRetainedV8Bytes": 8458600,
+                "observedDirectParentIndexes": [
+                  4413099
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 8824561,
+                "index": 4412280,
+                "selfSizeBytes": 64,
+                "dominatorRetainedV8Bytes": 8458600,
+                "observedDirectParentIndexes": [
+                  4413099
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 8824567,
+                "index": 4412283,
+                "selfSizeBytes": 64,
+                "dominatorRetainedV8Bytes": 8458600,
+                "observedDirectParentIndexes": [
+                  4413099
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 8826209,
+                "index": 4413104,
+                "selfSizeBytes": 64,
+                "dominatorRetainedV8Bytes": 8458600,
+                "observedDirectParentIndexes": [
+                  4413099
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 8826213,
+                "index": 4413106,
+                "selfSizeBytes": 64,
+                "dominatorRetainedV8Bytes": 8458600,
+                "observedDirectParentIndexes": [
+                  4413099
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 8826217,
+                "index": 4413108,
+                "selfSizeBytes": 64,
+                "dominatorRetainedV8Bytes": 8458600,
+                "observedDirectParentIndexes": [
+                  4413099
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 8826221,
+                "index": 4413110,
+                "selfSizeBytes": 64,
+                "dominatorRetainedV8Bytes": 8458600,
+                "observedDirectParentIndexes": [
+                  4413099
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 8826225,
+                "index": 4413112,
+                "selfSizeBytes": 64,
+                "dominatorRetainedV8Bytes": 8458600,
+                "observedDirectParentIndexes": [
+                  4413099
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 8836919,
+                "index": 4418459,
+                "selfSizeBytes": 32,
+                "dominatorRetainedV8Bytes": 8458288,
+                "observedDirectParentIndexes": [
+                  4413104
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 8836931,
+                "index": 4418465,
+                "selfSizeBytes": 32,
+                "dominatorRetainedV8Bytes": 8458288,
+                "observedDirectParentIndexes": [
+                  4413106
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 8836943,
+                "index": 4418471,
+                "selfSizeBytes": 32,
+                "dominatorRetainedV8Bytes": 8458288,
+                "observedDirectParentIndexes": [
+                  4413108
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 8836955,
+                "index": 4418477,
+                "selfSizeBytes": 32,
+                "dominatorRetainedV8Bytes": 8458288,
+                "observedDirectParentIndexes": [
+                  4413110
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 8836967,
+                "index": 4418483,
+                "selfSizeBytes": 32,
+                "dominatorRetainedV8Bytes": 8458288,
+                "observedDirectParentIndexes": [
+                  4413112
+                ],
+                "directParentsNotChecked": 0
+              }
+            ],
+            "scope": "Historical private snapshot; no new runtime measurement.",
+            "definition": "Per-node dominator-owned V8 self_size; incoming parents are not dominators. Never sum overlapping retained sizes.",
+            "nativePhysicalOwnership": "unknown",
+            "productionSavings": "unmeasured",
+            "loadedBuildIdentity": "unknown"
+          },
+          "relations": [
+            {
+              "keyDigest": "1926bb34181802fa2a894ab04ca48c57fd59f5508ba0ba30554da03734f01d1e",
+              "entryId": 8826221,
+              "valueId": 8836955,
+              "status": "observed-direct-property"
+            },
+            {
+              "keyDigest": "3d19fc2c61ce660c4af941845e274991d9b23d382607224ae4ffb737e9048171",
+              "entryId": 8824567,
+              "valueId": 8819589,
+              "status": "observed-direct-property"
+            },
+            {
+              "keyDigest": "674867b98c7086fff7d790e60485a8b66ad4ae70c2e58cf308ec3200f26f9079",
+              "entryId": 8826225,
+              "valueId": 8836967,
+              "status": "observed-direct-property"
+            },
+            {
+              "keyDigest": "99edcc440b2bdafbf8ef519dfc7749a36f5fa3654f4880a231225347f53c3c4c",
+              "entryId": 8826209,
+              "valueId": 8836919,
+              "status": "observed-direct-property"
+            },
+            {
+              "keyDigest": "9a8c56f234c70268b8e2f1193f15c4ed679dc2c886644fc27e3deb208f37fb41",
+              "entryId": 8824555,
+              "valueId": 8819433,
+              "status": "observed-direct-property"
+            },
+            {
+              "keyDigest": "9fc09746bf68238f34ea12df655d05b34b97e584c8181f78c997ddad2d453f62",
+              "entryId": 8826217,
+              "valueId": 8836943,
+              "status": "observed-direct-property"
+            },
+            {
+              "keyDigest": "a11571556c31cf1e97dfcfb45ab28bbba4e680ab34a883aedd6fa1b45368bb83",
+              "entryId": 8826213,
+              "valueId": 8836931,
+              "status": "observed-direct-property"
+            },
+            {
+              "keyDigest": "b75956f8e188a5f01dcfe491e79090acd4354af71e93308d2f213d25077265cb",
+              "entryId": 8824561,
+              "valueId": 8819301,
+              "status": "observed-direct-property"
+            }
+          ],
+          "uniquePayloadNodes": [
+            {
+              "id": 8819301,
+              "index": 4409650,
+              "selfSizeBytes": 32,
+              "dominatorRetainedV8Bytes": 8458288,
+              "observedDirectParentIndexes": [
+                4412280
+              ],
+              "directParentsNotChecked": 0
+            },
+            {
+              "id": 8819433,
+              "index": 4409716,
+              "selfSizeBytes": 32,
+              "dominatorRetainedV8Bytes": 8458288,
+              "observedDirectParentIndexes": [
+                4412277
+              ],
+              "directParentsNotChecked": 0
+            },
+            {
+              "id": 8819589,
+              "index": 4409794,
+              "selfSizeBytes": 32,
+              "dominatorRetainedV8Bytes": 8458288,
+              "observedDirectParentIndexes": [
+                4412283
+              ],
+              "directParentsNotChecked": 0
+            },
+            {
+              "id": 8836919,
+              "index": 4418459,
+              "selfSizeBytes": 32,
+              "dominatorRetainedV8Bytes": 8458288,
+              "observedDirectParentIndexes": [
+                4413104
+              ],
+              "directParentsNotChecked": 0
+            },
+            {
+              "id": 8836931,
+              "index": 4418465,
+              "selfSizeBytes": 32,
+              "dominatorRetainedV8Bytes": 8458288,
+              "observedDirectParentIndexes": [
+                4413106
+              ],
+              "directParentsNotChecked": 0
+            },
+            {
+              "id": 8836943,
+              "index": 4418471,
+              "selfSizeBytes": 32,
+              "dominatorRetainedV8Bytes": 8458288,
+              "observedDirectParentIndexes": [
+                4413108
+              ],
+              "directParentsNotChecked": 0
+            },
+            {
+              "id": 8836955,
+              "index": 4418477,
+              "selfSizeBytes": 32,
+              "dominatorRetainedV8Bytes": 8458288,
+              "observedDirectParentIndexes": [
+                4413110
+              ],
+              "directParentsNotChecked": 0
+            },
+            {
+              "id": 8836967,
+              "index": 4418483,
+              "selfSizeBytes": 32,
+              "dominatorRetainedV8Bytes": 8458288,
+              "observedDirectParentIndexes": [
+                4413112
+              ],
+              "directParentsNotChecked": 0
+            }
+          ],
+          "aliasGroups": [
+            {
+              "valueId": 8819301,
+              "keyDigests": [
+                "b75956f8e188a5f01dcfe491e79090acd4354af71e93308d2f213d25077265cb"
+              ]
+            },
+            {
+              "valueId": 8819433,
+              "keyDigests": [
+                "9a8c56f234c70268b8e2f1193f15c4ed679dc2c886644fc27e3deb208f37fb41"
+              ]
+            },
+            {
+              "valueId": 8819589,
+              "keyDigests": [
+                "3d19fc2c61ce660c4af941845e274991d9b23d382607224ae4ffb737e9048171"
+              ]
+            },
+            {
+              "valueId": 8836919,
+              "keyDigests": [
+                "99edcc440b2bdafbf8ef519dfc7749a36f5fa3654f4880a231225347f53c3c4c"
+              ]
+            },
+            {
+              "valueId": 8836931,
+              "keyDigests": [
+                "a11571556c31cf1e97dfcfb45ab28bbba4e680ab34a883aedd6fa1b45368bb83"
+              ]
+            },
+            {
+              "valueId": 8836943,
+              "keyDigests": [
+                "9fc09746bf68238f34ea12df655d05b34b97e584c8181f78c997ddad2d453f62"
+              ]
+            },
+            {
+              "valueId": 8836955,
+              "keyDigests": [
+                "1926bb34181802fa2a894ab04ca48c57fd59f5508ba0ba30554da03734f01d1e"
+              ]
+            },
+            {
+              "valueId": 8836967,
+              "keyDigests": [
+                "674867b98c7086fff7d790e60485a8b66ad4ae70c2e58cf308ec3200f26f9079"
+              ]
+            }
+          ],
+          "gaps": [],
+          "definition": "Distinct snapshot IDs only; per-node dominator sizes may overlap and are never summed.",
+          "nativePhysicalOwnership": "unknown",
+          "physicalSavings": "unmeasured"
+        }
+      },
+      {
+        "arm": 1,
+        "mode": "shared",
+        "result": {
+          "owners": {
+            "processIdentity": "3147511:1432397:7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "recordedBuildSha": "f9d7e04106",
+            "snapshotSha256": "d9ad074c306edafc6b983bd7a70f7960a8f8108637dcc11f2aa3790511fbd155",
+            "owners": [
+              {
+                "owner": "@papercusp/operator-core.operatorCache",
+                "id": 4219899,
+                "index": 2109949,
+                "selfSizeBytes": 48,
+                "dominatorRetainedV8Bytes": 192,
+                "observedDirectParentIndexes": [
+                  355799,
+                  2109948
+                ],
+                "directParentsNotChecked": 0
+              }
+            ],
+            "verifiedNodes": [
+              {
+                "id": 4219899,
+                "index": 2109949,
+                "selfSizeBytes": 48,
+                "dominatorRetainedV8Bytes": 192,
+                "observedDirectParentIndexes": [
+                  355799,
+                  2109948
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 5026773,
+                "index": 2513386,
+                "selfSizeBytes": 64,
+                "dominatorRetainedV8Bytes": 8466440,
+                "observedDirectParentIndexes": [
+                  2513384
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 8522361,
+                "index": 4261180,
+                "selfSizeBytes": 32,
+                "dominatorRetainedV8Bytes": 8465688,
+                "observedDirectParentIndexes": [
+                  2513386
+                ],
+                "directParentsNotChecked": 0
+              }
+            ],
+            "scope": "Historical private snapshot; no new runtime measurement.",
+            "definition": "Per-node dominator-owned V8 self_size; incoming parents are not dominators. Never sum overlapping retained sizes.",
+            "nativePhysicalOwnership": "unknown",
+            "productionSavings": "unmeasured",
+            "loadedBuildIdentity": "unknown"
+          },
+          "relations": [
+            {
+              "keyDigest": "0ce7df9b6a79728be475cfada62ad2b1bb1d0299f80371ad4e307533bd45d5aa",
+              "entryId": 5026773,
+              "valueId": 8522361,
+              "status": "observed-direct-property"
+            }
+          ],
+          "uniquePayloadNodes": [
+            {
+              "id": 8522361,
+              "index": 4261180,
+              "selfSizeBytes": 32,
+              "dominatorRetainedV8Bytes": 8465688,
+              "observedDirectParentIndexes": [
+                2513386
+              ],
+              "directParentsNotChecked": 0
+            }
+          ],
+          "aliasGroups": [
+            {
+              "valueId": 8522361,
+              "keyDigests": [
+                "0ce7df9b6a79728be475cfada62ad2b1bb1d0299f80371ad4e307533bd45d5aa"
+              ]
+            }
+          ],
+          "gaps": [],
+          "definition": "Distinct snapshot IDs only; per-node dominator sizes may overlap and are never summed.",
+          "nativePhysicalOwnership": "unknown",
+          "physicalSavings": "unmeasured"
+        }
+      },
+      {
+        "arm": 2,
+        "mode": "shared",
+        "result": {
+          "owners": {
+            "processIdentity": "3319914:1449020:7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "recordedBuildSha": "f9d7e04106",
+            "snapshotSha256": "eaae877bfd8abdd7c13a38e188e5c220e8066eb59ed33f4093b4fea9b4e5bbdd",
+            "owners": [
+              {
+                "owner": "@papercusp/operator-core.operatorCache",
+                "id": 1924557,
+                "index": 962278,
+                "selfSizeBytes": 48,
+                "dominatorRetainedV8Bytes": 8468072,
+                "observedDirectParentIndexes": [
+                  357783,
+                  977953
+                ],
+                "directParentsNotChecked": 0
+              }
+            ],
+            "verifiedNodes": [
+              {
+                "id": 1924557,
+                "index": 962278,
+                "selfSizeBytes": 48,
+                "dominatorRetainedV8Bytes": 8468072,
+                "observedDirectParentIndexes": [
+                  357783,
+                  977953
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 8093999,
+                "index": 4046999,
+                "selfSizeBytes": 64,
+                "dominatorRetainedV8Bytes": 8466440,
+                "observedDirectParentIndexes": [
+                  4046997
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 8975327,
+                "index": 4487663,
+                "selfSizeBytes": 32,
+                "dominatorRetainedV8Bytes": 8465688,
+                "observedDirectParentIndexes": [
+                  4046999
+                ],
+                "directParentsNotChecked": 0
+              }
+            ],
+            "scope": "Historical private snapshot; no new runtime measurement.",
+            "definition": "Per-node dominator-owned V8 self_size; incoming parents are not dominators. Never sum overlapping retained sizes.",
+            "nativePhysicalOwnership": "unknown",
+            "productionSavings": "unmeasured",
+            "loadedBuildIdentity": "unknown"
+          },
+          "relations": [
+            {
+              "keyDigest": "0ce7df9b6a79728be475cfada62ad2b1bb1d0299f80371ad4e307533bd45d5aa",
+              "entryId": 8093999,
+              "valueId": 8975327,
+              "status": "observed-direct-property"
+            }
+          ],
+          "uniquePayloadNodes": [
+            {
+              "id": 8975327,
+              "index": 4487663,
+              "selfSizeBytes": 32,
+              "dominatorRetainedV8Bytes": 8465688,
+              "observedDirectParentIndexes": [
+                4046999
+              ],
+              "directParentsNotChecked": 0
+            }
+          ],
+          "aliasGroups": [
+            {
+              "valueId": 8975327,
+              "keyDigests": [
+                "0ce7df9b6a79728be475cfada62ad2b1bb1d0299f80371ad4e307533bd45d5aa"
+              ]
+            }
+          ],
+          "gaps": [],
+          "definition": "Distinct snapshot IDs only; per-node dominator sizes may overlap and are never summed.",
+          "nativePhysicalOwnership": "unknown",
+          "physicalSavings": "unmeasured"
+        }
+      },
+      {
+        "arm": 3,
+        "mode": "baseline",
+        "result": {
+          "owners": {
+            "processIdentity": "3511848:1463417:7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "recordedBuildSha": "f9d7e04106",
+            "snapshotSha256": "d82ff44301e0a2477b5e5e4ceef0c82ffd23d8f85bd62601d210a12558f9430f",
+            "owners": [
+              {
+                "owner": "@papercusp/operator-core.operatorCache",
+                "id": 1413063,
+                "index": 706531,
+                "selfSizeBytes": 48,
+                "dominatorRetainedV8Bytes": 67679488,
+                "observedDirectParentIndexes": [
+                  301957,
+                  706530
+                ],
+                "directParentsNotChecked": 0
+              }
+            ],
+            "verifiedNodes": [
+              {
+                "id": 1413063,
+                "index": 706531,
+                "selfSizeBytes": 48,
+                "dominatorRetainedV8Bytes": 67679488,
+                "observedDirectParentIndexes": [
+                  301957,
+                  706530
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 8999723,
+                "index": 4499861,
+                "selfSizeBytes": 32,
+                "dominatorRetainedV8Bytes": 8458288,
+                "observedDirectParentIndexes": [
+                  4500183
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 9000367,
+                "index": 4500183,
+                "selfSizeBytes": 64,
+                "dominatorRetainedV8Bytes": 8458600,
+                "observedDirectParentIndexes": [
+                  4514770
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 9029543,
+                "index": 4514771,
+                "selfSizeBytes": 64,
+                "dominatorRetainedV8Bytes": 8458600,
+                "observedDirectParentIndexes": [
+                  4514770
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 9029545,
+                "index": 4514772,
+                "selfSizeBytes": 64,
+                "dominatorRetainedV8Bytes": 8458600,
+                "observedDirectParentIndexes": [
+                  4514770
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 9029547,
+                "index": 4514773,
+                "selfSizeBytes": 64,
+                "dominatorRetainedV8Bytes": 8458600,
+                "observedDirectParentIndexes": [
+                  4514770
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 9029549,
+                "index": 4514774,
+                "selfSizeBytes": 64,
+                "dominatorRetainedV8Bytes": 8458600,
+                "observedDirectParentIndexes": [
+                  4514770
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 9029551,
+                "index": 4514775,
+                "selfSizeBytes": 64,
+                "dominatorRetainedV8Bytes": 8458600,
+                "observedDirectParentIndexes": [
+                  4514770
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 9029553,
+                "index": 4514776,
+                "selfSizeBytes": 64,
+                "dominatorRetainedV8Bytes": 8458600,
+                "observedDirectParentIndexes": [
+                  4514770
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 9029555,
+                "index": 4514777,
+                "selfSizeBytes": 64,
+                "dominatorRetainedV8Bytes": 8458600,
+                "observedDirectParentIndexes": [
+                  4514770
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 9055485,
+                "index": 4527742,
+                "selfSizeBytes": 32,
+                "dominatorRetainedV8Bytes": 8458288,
+                "observedDirectParentIndexes": [
+                  4514773
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 9065671,
+                "index": 4532835,
+                "selfSizeBytes": 32,
+                "dominatorRetainedV8Bytes": 8458288,
+                "observedDirectParentIndexes": [
+                  4514771
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 9066215,
+                "index": 4533107,
+                "selfSizeBytes": 32,
+                "dominatorRetainedV8Bytes": 8458288,
+                "observedDirectParentIndexes": [
+                  4514777
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 9066775,
+                "index": 4533387,
+                "selfSizeBytes": 32,
+                "dominatorRetainedV8Bytes": 8458288,
+                "observedDirectParentIndexes": [
+                  4514776
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 9130079,
+                "index": 4565039,
+                "selfSizeBytes": 32,
+                "dominatorRetainedV8Bytes": 8458288,
+                "observedDirectParentIndexes": [
+                  4514774
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 9233921,
+                "index": 4616960,
+                "selfSizeBytes": 32,
+                "dominatorRetainedV8Bytes": 8458288,
+                "observedDirectParentIndexes": [
+                  4514775
+                ],
+                "directParentsNotChecked": 0
+              },
+              {
+                "id": 9233973,
+                "index": 4616986,
+                "selfSizeBytes": 32,
+                "dominatorRetainedV8Bytes": 8458288,
+                "observedDirectParentIndexes": [
+                  4514772
+                ],
+                "directParentsNotChecked": 0
+              }
+            ],
+            "scope": "Historical private snapshot; no new runtime measurement.",
+            "definition": "Per-node dominator-owned V8 self_size; incoming parents are not dominators. Never sum overlapping retained sizes.",
+            "nativePhysicalOwnership": "unknown",
+            "productionSavings": "unmeasured",
+            "loadedBuildIdentity": "unknown"
+          },
+          "relations": [
+            {
+              "keyDigest": "1926bb34181802fa2a894ab04ca48c57fd59f5508ba0ba30554da03734f01d1e",
+              "entryId": 9029551,
+              "valueId": 9233921,
+              "status": "observed-direct-property"
+            },
+            {
+              "keyDigest": "3d19fc2c61ce660c4af941845e274991d9b23d382607224ae4ffb737e9048171",
+              "entryId": 9029547,
+              "valueId": 9055485,
+              "status": "observed-direct-property"
+            },
+            {
+              "keyDigest": "674867b98c7086fff7d790e60485a8b66ad4ae70c2e58cf308ec3200f26f9079",
+              "entryId": 9029543,
+              "valueId": 9065671,
+              "status": "observed-direct-property"
+            },
+            {
+              "keyDigest": "99edcc440b2bdafbf8ef519dfc7749a36f5fa3654f4880a231225347f53c3c4c",
+              "entryId": 9029545,
+              "valueId": 9233973,
+              "status": "observed-direct-property"
+            },
+            {
+              "keyDigest": "9a8c56f234c70268b8e2f1193f15c4ed679dc2c886644fc27e3deb208f37fb41",
+              "entryId": 9029549,
+              "valueId": 9130079,
+              "status": "observed-direct-property"
+            },
+            {
+              "keyDigest": "9fc09746bf68238f34ea12df655d05b34b97e584c8181f78c997ddad2d453f62",
+              "entryId": 9029555,
+              "valueId": 9066215,
+              "status": "observed-direct-property"
+            },
+            {
+              "keyDigest": "a11571556c31cf1e97dfcfb45ab28bbba4e680ab34a883aedd6fa1b45368bb83",
+              "entryId": 9000367,
+              "valueId": 8999723,
+              "status": "observed-direct-property"
+            },
+            {
+              "keyDigest": "b75956f8e188a5f01dcfe491e79090acd4354af71e93308d2f213d25077265cb",
+              "entryId": 9029553,
+              "valueId": 9066775,
+              "status": "observed-direct-property"
+            }
+          ],
+          "uniquePayloadNodes": [
+            {
+              "id": 8999723,
+              "index": 4499861,
+              "selfSizeBytes": 32,
+              "dominatorRetainedV8Bytes": 8458288,
+              "observedDirectParentIndexes": [
+                4500183
+              ],
+              "directParentsNotChecked": 0
+            },
+            {
+              "id": 9055485,
+              "index": 4527742,
+              "selfSizeBytes": 32,
+              "dominatorRetainedV8Bytes": 8458288,
+              "observedDirectParentIndexes": [
+                4514773
+              ],
+              "directParentsNotChecked": 0
+            },
+            {
+              "id": 9065671,
+              "index": 4532835,
+              "selfSizeBytes": 32,
+              "dominatorRetainedV8Bytes": 8458288,
+              "observedDirectParentIndexes": [
+                4514771
+              ],
+              "directParentsNotChecked": 0
+            },
+            {
+              "id": 9066215,
+              "index": 4533107,
+              "selfSizeBytes": 32,
+              "dominatorRetainedV8Bytes": 8458288,
+              "observedDirectParentIndexes": [
+                4514777
+              ],
+              "directParentsNotChecked": 0
+            },
+            {
+              "id": 9066775,
+              "index": 4533387,
+              "selfSizeBytes": 32,
+              "dominatorRetainedV8Bytes": 8458288,
+              "observedDirectParentIndexes": [
+                4514776
+              ],
+              "directParentsNotChecked": 0
+            },
+            {
+              "id": 9130079,
+              "index": 4565039,
+              "selfSizeBytes": 32,
+              "dominatorRetainedV8Bytes": 8458288,
+              "observedDirectParentIndexes": [
+                4514774
+              ],
+              "directParentsNotChecked": 0
+            },
+            {
+              "id": 9233921,
+              "index": 4616960,
+              "selfSizeBytes": 32,
+              "dominatorRetainedV8Bytes": 8458288,
+              "observedDirectParentIndexes": [
+                4514775
+              ],
+              "directParentsNotChecked": 0
+            },
+            {
+              "id": 9233973,
+              "index": 4616986,
+              "selfSizeBytes": 32,
+              "dominatorRetainedV8Bytes": 8458288,
+              "observedDirectParentIndexes": [
+                4514772
+              ],
+              "directParentsNotChecked": 0
+            }
+          ],
+          "aliasGroups": [
+            {
+              "valueId": 8999723,
+              "keyDigests": [
+                "a11571556c31cf1e97dfcfb45ab28bbba4e680ab34a883aedd6fa1b45368bb83"
+              ]
+            },
+            {
+              "valueId": 9055485,
+              "keyDigests": [
+                "3d19fc2c61ce660c4af941845e274991d9b23d382607224ae4ffb737e9048171"
+              ]
+            },
+            {
+              "valueId": 9065671,
+              "keyDigests": [
+                "674867b98c7086fff7d790e60485a8b66ad4ae70c2e58cf308ec3200f26f9079"
+              ]
+            },
+            {
+              "valueId": 9066215,
+              "keyDigests": [
+                "9fc09746bf68238f34ea12df655d05b34b97e584c8181f78c997ddad2d453f62"
+              ]
+            },
+            {
+              "valueId": 9066775,
+              "keyDigests": [
+                "b75956f8e188a5f01dcfe491e79090acd4354af71e93308d2f213d25077265cb"
+              ]
+            },
+            {
+              "valueId": 9130079,
+              "keyDigests": [
+                "9a8c56f234c70268b8e2f1193f15c4ed679dc2c886644fc27e3deb208f37fb41"
+              ]
+            },
+            {
+              "valueId": 9233921,
+              "keyDigests": [
+                "1926bb34181802fa2a894ab04ca48c57fd59f5508ba0ba30554da03734f01d1e"
+              ]
+            },
+            {
+              "valueId": 9233973,
+              "keyDigests": [
+                "99edcc440b2bdafbf8ef519dfc7749a36f5fa3654f4880a231225347f53c3c4c"
+              ]
+            }
+          ],
+          "gaps": [],
+          "definition": "Distinct snapshot IDs only; per-node dominator sizes may overlap and are never summed.",
+          "nativePhysicalOwnership": "unknown",
+          "physicalSavings": "unmeasured"
+        }
+      }
+    ]
+  },
+  "independentOf": "No producer or inspector import; raw digest/content/process/snapshot/native-node correspondence.",
+  "limitations": [
+    "Snapshots forced GC after resource windows; selected V8 nodes may have overlapping dominator subtrees.",
+    "Native physical ownership, worker clones, full executed graph, full P011 acceptance and shipment remain open."
+  ]
+}

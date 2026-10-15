@@ -14,8 +14,11 @@ import {
   VNC_STREAM_IDLE_MS,
   _setFrameVncDepsForTests,
   _resetFrameVncForTests,
+  type KasmDialPlan,
   type VncBridgeWs,
 } from './frame-vnc';
+import { hostedDesktopGrant } from '../desktop/hosted-desktop-channel';
+import type { HostedDesktopDialInput, HostedDesktopSocket } from '../workspace-host/hosted-session-host';
 import {
   DESKTOP_VIEWER_HEARTBEAT_DIVISOR,
   VIEWER_STREAM_TEARDOWN_CEILING_SEC,
@@ -217,6 +220,7 @@ function localRecord(over: Partial<DesktopSessionRecord> = {}): DesktopSessionRe
     kind: 'xvfb-local',
     scope: 'pot',
     scopeRef: 'h1',
+    name: null,
     hostRef: null,
     ownerPid: process.pid,
     ownerBootId: 'boot-1',
@@ -257,6 +261,9 @@ function localDeps(admitted: Record<string, DesktopSessionRecord>, over: Paramet
       viewerWrites.push({ id, mode: viewer.mode, actor: viewer.actor });
       return true;
     },
+    // No KasmVNC lease in this process unless a test says so (D-015) — keeps the
+    // x11vnc cases off the real lease/backends modules.
+    resolveKasmDesktop: async () => null,
     ...over,
   });
   return { audits, viewerWrites };
@@ -632,5 +639,252 @@ describe('viewer heartbeat + idle-stream teardown (P-014 / D-008 rule 4)', () =>
     expect(VNC_STREAM_IDLE_MS).toBeGreaterThan(
       desktopViewerHeartbeatMs() * DESKTOP_VIEWER_HEARTBEAT_DIVISOR,
     );
+  });
+});
+
+// ── D-015: a KasmVNC desktop this process leases is dialled, not x11vnc'd ─────
+
+const KASM_CREDS = {
+  view: { user: 'kasm-view', secret: 'view-secret' },
+  control: { user: 'kasm-control', secret: 'control-secret' },
+};
+
+function kasmPlan(mode: 'watch' | 'takeover'): KasmDialPlan {
+  return {
+    endpoint: { host: '127.0.0.1', port: 6901 },
+    grant: hostedDesktopGrant(mode === 'takeover' ? 'controller' : 'observer', KASM_CREDS),
+  };
+}
+
+/** A HostedDesktopSocket the test drives by hand. */
+function fakeKasmSocket() {
+  const listeners: { data: ((d: Buffer) => void) | null; close: ((r: string) => void) | null } = {
+    data: null,
+    close: null,
+  };
+  const sock = {
+    sent: [] as Buffer[],
+    closed: 0,
+    send(d: Buffer) {
+      sock.sent.push(d);
+      return true;
+    },
+    close() {
+      sock.closed += 1;
+    },
+    onData(l: (d: Buffer) => void) {
+      listeners.data = l;
+      return () => { listeners.data = null; };
+    },
+    onClose(l: (r: string) => void) {
+      listeners.close = l;
+      return () => { listeners.close = null; };
+    },
+    emitData: (d: Buffer) => listeners.data?.(d),
+    emitClose: (r: string) => listeners.close?.(r),
+  };
+  return sock;
+}
+
+/** A dial whose outcome the test releases, so pre-dial behaviour is observable. */
+function deferredDial() {
+  const calls: HostedDesktopDialInput[] = [];
+  let resolveDial: (s: HostedDesktopSocket) => void = () => undefined;
+  let rejectDial: (e: unknown) => void = () => undefined;
+  const dialKasm = (input: HostedDesktopDialInput) => {
+    calls.push(input);
+    return new Promise<HostedDesktopSocket>((res, rej) => {
+      resolveDial = res;
+      rejectDial = rej;
+    });
+  };
+  return {
+    calls,
+    dialKasm,
+    resolve: (s: HostedDesktopSocket) => resolveDial(s),
+    reject: (e: unknown) => rejectDial(e),
+  };
+}
+
+/** Let the dial's .then() run. */
+const settle = () => new Promise<void>((r) => setTimeout(r, 0));
+
+describe('KasmVNC upstream for leased local desktops (D-015)', () => {
+  async function mintLocal(mode: 'watch' | 'takeover', over: Parameters<typeof _setFrameVncDepsForTests>[0]) {
+    const spawn = vi.fn(() => fakeChild());
+    const ctx = localDeps(
+      { ':110': localRecord() },
+      { spawn: spawn as unknown as typeof import('node:child_process').spawn, ...over },
+    );
+    const t = await createVncSession({
+      slug: 'h1', workspaceId: 'ws', display: 110, mode, actor: 'user:a', target: 'local',
+    });
+    return { ...ctx, spawn, t };
+  }
+
+  it('a desktop this process leases mints an rfb:kasmvnc ticket carrying the mode-matched grant', async () => {
+    const asked: [string, string][] = [];
+    const { t } = await mintLocal('watch', {
+      resolveKasmDesktop: async (id, mode) => {
+        asked.push([id, mode]);
+        return kasmPlan(mode);
+      },
+    });
+    expect(t.rfb).toBe('kasmvnc');
+    expect(asked).toEqual([['ds-local-1', 'watch']]);
+    const s = consumeTicket(t.ticket)!;
+    expect(s.kasm?.grant).toMatchObject({ action: 'watch', user: 'kasm-view', inputAllowed: false });
+    // One secret only: a watcher's plan never carries the control secret.
+    expect(JSON.stringify(s.kasm)).not.toContain('control-secret');
+  });
+
+  it('no lease here (resolver null) or a resolver failure keeps the x11vnc path: rfb:standard', async () => {
+    const none = await mintLocal('watch', { resolveKasmDesktop: async () => null });
+    expect(none.t.rfb).toBe('standard');
+    _resetFrameVncForTests();
+    const failing = await mintLocal('watch', {
+      resolveKasmDesktop: async () => {
+        throw new Error('lease module unavailable');
+      },
+    });
+    expect(failing.t.rfb).toBe('standard');
+    expect(consumeTicket(failing.t.ticket)!.kasm).toBeNull();
+  });
+
+  it('frame sessions never ask for a KasmVNC plan', async () => {
+    const resolveKasmDesktop = vi.fn(async () => kasmPlan('watch'));
+    deps({ resolveKasmDesktop });
+    const t = await createVncSession({ slug: 'h1', workspaceId: 'ws', display: 99, mode: 'watch', actor: 'u' });
+    expect(t.rfb).toBe('standard');
+    expect(resolveKasmDesktop).not.toHaveBeenCalled();
+  });
+
+  it('bridges over the dialled socket: no spawn, pre-dial bytes flushed in order, then both directions', async () => {
+    const dial = deferredDial();
+    const { t, spawn, audits, viewerWrites } = await mintLocal('takeover', {
+      resolveKasmDesktop: async (_id, mode) => kasmPlan(mode),
+      dialKasm: dial.dialKasm,
+    });
+    const ws = fakeWs();
+    const child = bridgeVncSession(ws, consumeTicket(t.ticket)! as never);
+
+    expect(child).toBeNull();
+    expect(spawn).not.toHaveBeenCalled();
+    expect(dial.calls).toHaveLength(1);
+    expect(dial.calls[0]).toMatchObject({
+      desktopSessionId: 'ds-local-1',
+      endpoint: { host: '127.0.0.1', port: 6901 },
+      grant: { action: 'takeover', user: 'kasm-control', inputAllowed: true },
+    });
+    expect(audits.at(-1)).toMatchObject({ action: 'frame-vnc.takeover-started', subject: 'local:h1:110' });
+
+    // The viewer speaks before the dial lands; those bytes must not be lost.
+    ws.emit('message', Buffer.from('a'));
+    ws.emit('message', Buffer.from('b'));
+    const sock = fakeKasmSocket();
+    dial.resolve(sock);
+    await settle();
+    expect(sock.sent.map(String)).toEqual(['a', 'b']);
+
+    ws.emit('message', Buffer.from('c'));
+    expect(sock.sent.map(String)).toEqual(['a', 'b', 'c']);
+    sock.emitData(Buffer.from('server-frame'));
+    expect(ws.sent.map((d) => Buffer.from(d).toString())).toEqual(['server-frame']);
+    expect(activeVncSessions('h1')).toHaveLength(1);
+    expect(viewerWrites).toContainEqual({ id: 'ds-local-1', mode: 'takeover', actor: 'user:a' });
+  });
+
+  it('the pre-dial queue is bounded', async () => {
+    const dial = deferredDial();
+    const { t } = await mintLocal('watch', {
+      resolveKasmDesktop: async (_id, mode) => kasmPlan(mode),
+      dialKasm: dial.dialKasm,
+    });
+    const ws = fakeWs();
+    bridgeVncSession(ws, consumeTicket(t.ticket)! as never);
+    for (let i = 0; i < 100; i++) ws.emit('message', Buffer.from(String(i)));
+    const sock = fakeKasmSocket();
+    dial.resolve(sock);
+    await settle();
+    expect(sock.sent).toHaveLength(64);
+    expect(String(sock.sent[0])).toBe('0');
+  });
+
+  it('the desktop closing its socket ends the session and clears the viewer', async () => {
+    const dial = deferredDial();
+    const { t, audits, viewerWrites } = await mintLocal('watch', {
+      resolveKasmDesktop: async (_id, mode) => kasmPlan(mode),
+      dialKasm: dial.dialKasm,
+    });
+    const ws = fakeWs();
+    bridgeVncSession(ws, consumeTicket(t.ticket)! as never);
+    const sock = fakeKasmSocket();
+    dial.resolve(sock);
+    await settle();
+
+    sock.emitClose('kasmvnc-exited');
+    expect(ws.close).toHaveBeenCalled();
+    expect(activeVncSessions()).toHaveLength(0);
+    expect(audits.at(-1)).toMatchObject({
+      action: 'frame-vnc.ended',
+      details: expect.objectContaining({ why: 'remote-closed', target: 'local' }),
+    });
+    await settle();
+    expect(viewerWrites.at(-1)).toEqual({ id: 'ds-local-1', mode: 'none', actor: null });
+  });
+
+  it('a failed dial ends the session with kasmvnc-dial-failed and never falls back to spawning', async () => {
+    const dial = deferredDial();
+    const { t, spawn, audits } = await mintLocal('watch', {
+      resolveKasmDesktop: async (_id, mode) => kasmPlan(mode),
+      dialKasm: dial.dialKasm,
+    });
+    const ws = fakeWs();
+    bridgeVncSession(ws, consumeTicket(t.ticket)! as never);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    dial.reject(new Error('ECONNREFUSED 127.0.0.1:6901'));
+    await settle();
+    warn.mockRestore();
+
+    expect(ws.close).toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+    expect(audits.at(-1)).toMatchObject({
+      action: 'frame-vnc.ended',
+      details: expect.objectContaining({ why: 'kasmvnc-dial-failed' }),
+    });
+  });
+
+  it('a viewer that leaves before the dial lands closes the late socket and sends it nothing', async () => {
+    const dial = deferredDial();
+    const { t, audits } = await mintLocal('watch', {
+      resolveKasmDesktop: async (_id, mode) => kasmPlan(mode),
+      dialKasm: dial.dialKasm,
+    });
+    const ws = fakeWs();
+    bridgeVncSession(ws, consumeTicket(t.ticket)! as never);
+    ws.emit('message', Buffer.from('early'));
+    ws.emit('close');
+    expect(audits.at(-1)).toMatchObject({ details: expect.objectContaining({ why: 'viewer-left' }) });
+
+    const sock = fakeKasmSocket();
+    dial.resolve(sock);
+    await settle();
+    expect(sock.closed).toBe(1);
+    expect(sock.sent).toEqual([]);
+  });
+
+  it('a viewer leaving after the dial closes the socket', async () => {
+    const dial = deferredDial();
+    const { t } = await mintLocal('watch', {
+      resolveKasmDesktop: async (_id, mode) => kasmPlan(mode),
+      dialKasm: dial.dialKasm,
+    });
+    const ws = fakeWs();
+    bridgeVncSession(ws, consumeTicket(t.ticket)! as never);
+    const sock = fakeKasmSocket();
+    dial.resolve(sock);
+    await settle();
+    ws.emit('close');
+    expect(sock.closed).toBe(1);
   });
 });

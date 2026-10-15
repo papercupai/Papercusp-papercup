@@ -13,6 +13,7 @@ import { ensureInstallId } from '../../../setup-wizard-install-id';
 import { getPosthogConfigWithSource } from '../../../posthog-config';
 import { POSTHOG_PUBLIC_DEFAULTS } from '../../../posthog-public-defaults';
 import { defineTool } from '@papercusp/agent-mcp';
+import { customerAgentExecutionRequired } from '../../../auth/loopback-peer-trust';
 
 function resolveHostKey(): { host: string; projectKey: string } {
   const envHost = process.env.PAPERCUSP_POSTHOG_HOST;
@@ -30,6 +31,11 @@ export default defineTool({
   path: '/desktop/telemetry-config',
   auth: {},
   async handler() {
+    // Customer hosts use explicit scoped aggregate export. A desktop toggle or
+    // maintainer build must not enable browser SDK capture on a BYOC runtime.
+    if (customerAgentExecutionRequired()) {
+      return Response.json({ enabled: false, reason: 'customer-data-local' });
+    }
     const installId = await ensureInstallId();
     const state = await readOperatorState<{ telemetry_enabled?: boolean }>('setup_wizard_state');
 

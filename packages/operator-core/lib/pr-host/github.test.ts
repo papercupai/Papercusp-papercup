@@ -16,6 +16,7 @@ function mockOctokit(overrides: Partial<{
   reposGetContent: unknown;
 }>): Octokit {
   return {
+    paginate: vi.fn(async (method, args) => (await method(args)).data),
     pulls: {
       create: vi.fn().mockResolvedValue(overrides.pullsCreate ?? { data: makePrData() }),
       get: vi.fn().mockResolvedValue(overrides.pullsGet ?? { data: makePrData() }),
@@ -23,10 +24,16 @@ function mockOctokit(overrides: Partial<{
       createReview: vi.fn().mockResolvedValue(overrides.pullsCreateReview ?? { data: {} }),
       merge: vi.fn().mockResolvedValue(overrides.pullsMerge ?? { data: { sha: 'abc123' } }),
       list: vi.fn().mockResolvedValue(overrides.pullsList ?? { data: [makePrData()] }),
+      listCommits: vi.fn().mockResolvedValue({ data: [{ sha: 'deadbeef', commit: { message: 'Fix', author: { name: 'Alice' } }, html_url: 'https://github.com/commit' }] }),
+      listFiles: vi.fn().mockResolvedValue({ data: [{ filename: 'file.ts', status: 'modified', additions: 1, deletions: 0, patch: '@@\n+safe' }] }),
+      update: vi.fn().mockResolvedValue({ data: {} }),
     },
     repos: {
       getContent: vi.fn().mockResolvedValue(overrides.reposGetContent ?? { data: '' }),
+      getCombinedStatusForRef: vi.fn().mockResolvedValue({ data: { statuses: [] } }),
+      getBranch: vi.fn().mockResolvedValue({ data: { commit: { sha: 'base' } } }),
     },
+    checks: { listForRef: vi.fn().mockResolvedValue({ data: [] }) },
   } as unknown as Octokit;
 }
 
@@ -48,6 +55,49 @@ function makePrData(n = 42) {
 }
 
 const REMOTE = 'github.com/owner/repo';
+
+describe('GitHub PR viewer', () => {
+  it('lists merged and closed history using pagination and neutral identities', async () => {
+    const oc = mockOctokit({ pullsList: { data: [makePrData(), { ...makePrData(43), state: 'closed', merged_at: '2026-10-05', merge_commit_sha: 'landed' }, { ...makePrData(44), state: 'closed' }] } });
+    const r = await new GitHubPrHost(oc).listPrs({ remote: REMOTE, state: 'all' });
+    expect(r.ok && r.data.map(p => [p.ref.number, p.state])).toEqual([[42, 'open'], [43, 'merged'], [44, 'closed']]);
+    expect(oc.paginate).toHaveBeenCalledWith(oc.pulls.list, expect.objectContaining({ state: 'all', per_page: 100 }));
+  });
+  it("reports each PR's head repository, null when the head fork is gone (WI-10006271)", async () => {
+    const fromFork = { ...makePrData(50), head: { sha: 'f1', ref: 'fix/thing', repo: { full_name: 'potbot/repo' } } };
+    const forkDeleted = { ...makePrData(51), head: { sha: 'f2', ref: 'fix/thing', repo: null } };
+    const oc = mockOctokit({ pullsList: { data: [fromFork, forkDeleted] } });
+    const r = await new GitHubPrHost(oc).listPrs({ remote: REMOTE, state: 'all' });
+    expect(r.ok && r.data.map((p) => [p.ref.number, p.head_repo])).toEqual([[50, 'potbot/repo'], [51, null]]);
+  });
+  it('loads commits, patches, target and diff without calling absent checks green', async () => {
+    const oc = mockOctokit({});
+    vi.mocked(oc.pulls.get).mockImplementation(async (args) => ({ data: args?.mediaType ? 'diff --git file.ts\n+safe' : makePrData() }) as unknown as Awaited<ReturnType<Octokit['pulls']['get']>>);
+    const r = await new GitHubPrHost(oc).getPrDetails({ remote: REMOTE, number: 42 });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.data.pr.checks_state).toBe('unknown');
+      expect(r.data.files[0].patch).toContain('+safe');
+      expect(r.data.commits[0].message).toBe('Fix');
+      expect(r.data.targetSha).toBe('base');
+    }
+  });
+  it('rejects details when the head changes during the read', async () => {
+    const oc = mockOctokit({});
+    vi.mocked(oc.pulls.get).mockResolvedValueOnce({ data: makePrData() } as unknown as Awaited<ReturnType<Octokit['pulls']['get']>>)
+      .mockResolvedValueOnce({ data: 'diff' } as unknown as Awaited<ReturnType<Octokit['pulls']['get']>>)
+      .mockResolvedValueOnce({ data: { ...makePrData(), head: { sha: 'moved', ref: 'fix/thing' } } } as unknown as Awaited<ReturnType<Octokit['pulls']['get']>>);
+    const r = await new GitHubPrHost(oc).getPrDetails({ remote: REMOTE, number: 42 });
+    expect(!r.ok && r.error.kind).toBe('conflict');
+  });
+  it('closes the requested PR and surfaces host failures', async () => {
+    const oc = mockOctokit({});
+    expect((await new GitHubPrHost(oc).closePr({ remote: REMOTE, number: 42 })).ok).toBe(true);
+    expect(oc.pulls.update).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', pull_number: 42, state: 'closed' });
+    vi.mocked(oc.pulls.update).mockRejectedValue({ status: 403, message: 'denied' });
+    expect((await new GitHubPrHost(oc).closePr({ remote: REMOTE, number: 42 })).ok).toBe(false);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // parseRemote

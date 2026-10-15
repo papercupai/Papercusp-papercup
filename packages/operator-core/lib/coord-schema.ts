@@ -53,6 +53,7 @@ import {
   UNVERIFIED_RELAY_TAG,
 } from './agent-tools/coordination/relay-provenance';
 import {
+  canonicalRefKey,
   detectEntryBodyRefs,
   isBodyRefEligible,
   readBodyRefsOptOut,
@@ -157,6 +158,9 @@ export interface CoordLineSource {
    *  entries are cast wholesale). Read ONLY by the directed-question clip (P-004);
    *  `unknown` so a malformed/absent value degrades to "not directed", never throws. */
   to?: unknown;
+  /** Origin harness from the envelope; body-ref hydration uses it to keep
+   *  repeated per-harness WI ids scoped to the cited message. */
+  harness_slug?: unknown;
   /** Audience-selector stamp (`@fleet:…`/'*') — present ⇒ a fan-out, not a directed
    *  message, even though `to` resolved to concrete ownerIds at send time. */
   audience?: unknown;
@@ -467,7 +471,7 @@ export function renderInjection(entries: CoordLineSource[], opts: RenderInjectio
       const refs = opts.bodyRefs;
       const hits = detectEntryBodyRefs(e).flatMap((r) => {
         if (r.kind !== 'work-item') return [];
-        const h = refs.get(r.id);
+        const h = refs.get(canonicalRefKey(r)) ?? (r.harness ? undefined : refs.get(r.id));
         return h ? [h] : [];
       });
       bodyRefsSuffix = renderBodyRefsSuffix(hits);

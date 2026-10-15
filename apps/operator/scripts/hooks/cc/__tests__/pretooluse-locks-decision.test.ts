@@ -20,8 +20,14 @@ import * as os from "node:os";
 import { dirname, join } from "node:path";
 import { createServer, type Server } from "node:http";
 
-const HOOK = join(__dirname, "..", "pretooluse-locks-acquire.sh");
-const POST_HOOK = join(__dirname, "..", "posttooluse-locks-release.sh");
+// Overridable so a falsifiability probe can point the suite at a COPY of an older
+// hook outside the shared tree (never mutate the tracked file in place).
+const HOOK =
+  process.env.PAPERCUSP_TEST_LOCKS_ACQUIRE_HOOK ??
+  join(__dirname, "..", "pretooluse-locks-acquire.sh");
+const POST_HOOK =
+  process.env.PAPERCUSP_TEST_LOCKS_RELEASE_HOOK ??
+  join(__dirname, "..", "posttooluse-locks-release.sh");
 
 let home: string, cache: string, ws: string, repo: string;
 let server: Server;
@@ -35,13 +41,24 @@ let nextInner: unknown = { ok: true, lock_id: "stub-lock" };
 let nextInnerSeq: unknown[] | null = null;
 /** Simulate a stale operator that rejects the newer coordination_domain arg. */
 let rejectCoordinationDomain = false;
+/** Simulate a serving operator that rejects hook_operation despite tools/list. */
+let rejectHookOperation = false;
+/** Reject hook_operation only after the native operation authority is pinned. */
+let rejectHookOperationAfterAuthority = false;
 /** Optionally frame the response as text/event-stream (the hook parses both). */
 let useSse = false;
 /** Simulate an acquire that committed but returned an empty MCP content array. */
 let emptyAcquireContent = false;
+/** WI-6554700010010405: when set, every locks:* tools/call is refused with this
+ * text as an isError tool result, before any authority preparation. */
+let acquireRefusalText: string | null = null;
 /** Recovery responses keyed by tool name; null leaves the existing static reply path. */
 let recoveryQueueInner: unknown | null = null;
 let recoveryReleaseInner: unknown | null = null;
+/** WI-6554700010011017: an operation-UNqualified origin (its lock schemas omit
+ * hook_operation). Only that legacy path runs the queue-based acquire recovery.
+ * Pair it with an isolated cache dir: the hook caches the origin verdict there. */
+let legacyOrigin = false;
 let lastRequest: { url: string; body: Record<string, any> } | null = null;
 let requests: Array<{ url: string; body: Record<string, any> }> = [];
 
@@ -74,12 +91,49 @@ beforeAll(async () => {
     req.on("data", (d) => (body += d));
     req.on("end", () => {
       const parsed = JSON.parse(body) as Record<string, any>;
-      lastRequest = { url: req.url ?? "", body: parsed };
-      requests.push(lastRequest);
+      // D-004(4): the hook reads tools/list (read-only) to qualify an origin
+      // before it uses the native operation protocol. This stub is an
+      // operation-aware origin, so its lock schemas declare hook_operation.
+      // The read is not a lock request, so it is not recorded in `requests`.
+      if (parsed.method === "tools/list") {
+        const tools = ["locks:acquire", "locks:release", "locks:cancel_wait"].map((name) => ({
+          name,
+          inputSchema: {
+            type: "object",
+            properties: legacyOrigin ? { paths: {} } : { paths: {}, hook_operation: {} },
+          },
+        }));
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tools } }));
+        return;
+      }
       const args = parsed.params?.arguments as Record<string, any> | undefined;
       const toolName = parsed.params?.name as string | undefined;
+      const operation = args?.hook_operation;
+      // The legacy assertions count mutations. The separate operation-fence
+      // suite verifies read-only preparation and persistence before HTTP.
+      if (acquireRefusalText !== null && String(toolName ?? "").startsWith("locks:")) {
+        lastRequest = { url: req.url ?? "", body: parsed };
+        requests.push(lastRequest);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { isError: true,
+          content: [{ type: "text", text: acquireRefusalText }] } }));
+        return;
+      }
+      if (toolName === 'locks:acquire' && operation && !operation.authority &&
+          !rejectCoordinationDomain && !rejectHookOperation) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text',
+          text: JSON.stringify({ ok: false, reason: 'operation_authority_required', operation_authority: 'decision-fixture' }),
+        }] } }));
+        return;
+      }
+      lastRequest = { url: req.url ?? "", body: parsed };
+      requests.push(lastRequest);
       const rejectsDomain =
         rejectCoordinationDomain && args?.coordination_domain;
+      const rejectsHookOperation = toolName === "locks:acquire" && operation &&
+        (rejectHookOperation || (rejectHookOperationAfterAuthority && operation.authority));
       let recoveryInner: unknown | null = null;
       if (toolName === "locks:queue" && recoveryQueueInner !== null) {
         recoveryInner = JSON.parse(JSON.stringify(recoveryQueueInner));
@@ -87,6 +141,9 @@ beforeAll(async () => {
         if (Array.isArray(rows) && args?.owner) {
           for (const row of rows) {
             if (row?.owner === "$REQUEST_OWNER") row.owner = args.owner;
+            // Stamped at reply time: recovery only matches a lock acquired
+            // within 2s of its own acquire attempt.
+            if (row?.acquired_ts === "$NOW") row.acquired_ts = new Date().toISOString();
           }
         }
       } else if (
@@ -95,7 +152,26 @@ beforeAll(async () => {
       ) {
         recoveryInner = recoveryReleaseInner;
       }
-      const rpc = rejectsDomain
+      const decorateOperation = (raw: unknown) => {
+        const value = typeof raw === 'function' ? raw(operation) : raw;
+        return operation && value && typeof value === 'object'
+        ? { ...value, operation_id: operation.id,
+            ...(toolName === 'locks:release' || toolName === 'locks:cancel_wait'
+              ? { state: toolName === 'locks:release' ? 'completed' : 'cancelled' } : {}) }
+        : value;
+      };
+      const rpc = rejectsHookOperation
+        ? {
+            jsonrpc: "2.0",
+            id: 1,
+            error: {
+              code: -32602,
+              message: rejectsDomain
+                ? 'invalid_input: invalid_args: Unrecognized keys: "coordination_domain", "hook_operation"'
+                : 'invalid_input: invalid_args: Unrecognized key: "hook_operation"',
+            },
+          }
+        : rejectsDomain
         ? {
             jsonrpc: "2.0",
             id: 1,
@@ -119,7 +195,7 @@ beforeAll(async () => {
                   content: [
                     {
                       type: "text",
-                      text: JSON.stringify(recoveryInner),
+                      text: JSON.stringify(decorateOperation(recoveryInner)),
                     },
                   ],
                 },
@@ -131,11 +207,11 @@ beforeAll(async () => {
                   content: [
                     {
                       type: "text",
-                      text: JSON.stringify(
+                      text: JSON.stringify(decorateOperation(
                         nextInnerSeq && nextInnerSeq.length
                           ? nextInnerSeq.shift()
                           : nextInner,
-                      ),
+                      )),
                     },
                   ],
                 },
@@ -164,13 +240,22 @@ afterAll(async () => {
 });
 
 afterEach(() => {
+  // Native tool identities are unique per real call; cases intentionally reuse
+  // fixture ids, so terminal tombstones must not leak across test boundaries.
+  for (const file of fs.readdirSync(cache)) {
+    if (file.endsWith('.operation.json')) fs.rmSync(join(cache, file));
+  }
   nextInner = { ok: true, lock_id: "stub-lock" };
   nextInnerSeq = null;
   rejectCoordinationDomain = false;
+  rejectHookOperation = false;
+  rejectHookOperationAfterAuthority = false;
   useSse = false;
   emptyAcquireContent = false;
+  acquireRefusalText = null;
   recoveryQueueInner = null;
   recoveryReleaseInner = null;
+  legacyOrigin = false;
   lastRequest = null;
   requests = [];
 });
@@ -201,6 +286,12 @@ async function runPost(
   input: object,
   extraEnv: Record<string, string> = {},
 ): Promise<{ status: number | null; stdout: string }> {
+  // These pre-existing post-hook cases verify tokens cached by the old hook
+  // across an upgrade. Seed that legacy cache shape explicitly. The separate
+  // lock-operation-fence suite exercises new operation completion/recovery.
+  for (const file of fs.readdirSync(cache)) {
+    if (file.endsWith('.operation.json')) fs.rmSync(join(cache, file));
+  }
   const { status, stdout } = await runHookProcess("bash", [POST_HOOK], {
     input: JSON.stringify(input),
     env: {
@@ -233,6 +324,27 @@ const nativeBatchInput = (
 });
 
 describe("cc PreToolUse hook — operator decision rendering (stub operator)", () => {
+  it("a serving-candidate workspace root skips canonical edits; the canonical workspace reaches arbitration (EI-25920487778813638)", async () => {
+    const candidate = join(ws, 'papercusp-staging.generations', '.candidate-test');
+    fs.mkdirSync(candidate, { recursive: true });
+    const input = {
+      tool_name: 'apply_patch',
+      tool_input: { command: '*** Begin Patch\n*** Update File: sub/scope.ts\n@@\n-old\n+new\n*** End Patch' },
+      tool_use_id: 'scope-counterfactual', session_id: 'scope-owner', cwd: repo,
+    };
+    const identity = { PAPERCUSP_SID: 'scope-owner', PAPERCUSP_LOCK_SID: 'scope-owner' };
+    const outside = await run(input, { ...identity, PAPERCUSP_WORKSPACE_ROOT: candidate });
+    expect(outside).toEqual({ status: 0, stdout: '' });
+    expect(requests.filter((request) => request.body.params?.name)).toEqual([]);
+    expect(fs.existsSync(join(cache, 'owner-scope-owner-last-decision.json'))).toBe(false);
+
+    const coordinated = await run(input, { ...identity, PAPERCUSP_WORKSPACE_ROOT: ws });
+    expect(coordinated.status).toBe(0);
+    expect(lastRequest?.body.params.name).toBe('locks:acquire');
+    expect(lastRequest?.body.params.arguments.paths).toEqual(['sub/scope.ts']);
+    expect(fs.existsSync(join(cache, 'owner-scope-owner-last-decision.json'))).toBe(true);
+  });
+
   it("grant (ok:true) → allow (exit 0, no decision) and CACHES the lock_id for release", async () => {
     nextInner = { ok: true, lock_id: "lock-xyz" };
     const r = await run(editOf("sub/grant.ts", "tu-grant"));
@@ -257,6 +369,7 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     expect(fs.readFileSync(join(cache, "tu-grant.domain"), "utf8")).toBe(
       fs.realpathSync(repo),
     );
+    expect(fs.readFileSync(join(cache, "tu-grant.session"), "utf8")).toBe("s");
   });
 
   it("Codex multi-file apply_patch → caches and releases every touched path", async () => {
@@ -338,7 +451,7 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
         coordination_domain: fs.realpathSync(repo),
       },
     });
-    for (const suffix of ["lock", "paths", "owner", "domain"])
+    for (const suffix of ["lock", "paths", "owner", "session", "domain"])
       expect(fs.existsSync(join(cache, `${toolUseId}.${suffix}`))).toBe(false);
   });
 
@@ -476,10 +589,60 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
       status: "granted",
       tool_use_ids: ["tu-batch-first", "tu-batch-second"],
       paths: ["sub/batch-first.ts", "sub/batch-second.ts"],
+      // An operator that does not report newly_held gives no way to tell
+      // already-held from new, so nothing is set aside for attestation.
+      attest_paths: [],
     });
   });
 
-  it("ambiguous acquire response → releases only the fresh automatic lock it can identify", async () => {
+  it("Claude batch partly under the owner's explicit hold → state carries the held subset as attest_paths (WI-10006900)", async () => {
+    nextInner = { ok: true, lock_id: "manual-lock", newly_held: ["sub/held-new.ts"] };
+    const transcriptPath = join(home, "claude-transcript-held.jsonl");
+    const ids = ["tu-held-new", "tu-held-old"];
+    const rel = ["sub/held-new.ts", "sub/held-old.ts"];
+    fs.writeFileSync(
+      transcriptPath,
+      `${JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: ids.map((id, i) => ({
+            type: "tool_use",
+            id,
+            name: "Edit",
+            input: { file_path: join(repo, rel[i]) },
+          })),
+        },
+      })}\n`,
+    );
+    const env = { PAPERCUSP_SID: "batch-held-session", PAPERCUSP_LOCK_SID: "batch-held-session" };
+    const outs = await Promise.all(
+      ids.map((id, i) => run(nativeBatchInput(transcriptPath, rel[i], id), env)),
+    );
+    for (const out of outs) {
+      expect(out.status).toBe(0);
+      expect(out.stdout).toBe("");
+    }
+
+    // The cache is shared across this describe, so select THIS batch's state.
+    const state = fs
+      .readdirSync(cache)
+      .filter((name) => name.startsWith("batch-") && name.endsWith(".state.json"))
+      .map((name) => JSON.parse(fs.readFileSync(join(cache, name), "utf8")))
+      .find((s) => Array.isArray(s.tool_use_ids) && s.tool_use_ids.includes(ids[0]));
+    expect(state).toBeDefined();
+    expect(state).toMatchObject({
+      status: "granted",
+      lock_id: "manual-lock",
+      release_paths: ["sub/held-new.ts"],
+      attest_paths: ["sub/held-old.ts"],
+      coordination_domain: fs.realpathSync(repo),
+    });
+    // The batch path never leaves a per-call attest sidecar; PostToolBatch owns it.
+    for (const id of ids) expect(fs.existsSync(join(cache, `${id}.attest`))).toBe(false);
+  });
+
+  it("ambiguous acquire response retains its operation without guessing a fresh automatic holder", async () => {
     emptyAcquireContent = true;
     recoveryQueueInner = {
       active_locks: [
@@ -520,25 +683,22 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     });
 
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe("");
+    // WI-6554700010010405: an ambiguous reply still fails open, but never
+    // silently, and never claims a grant the hook could not confirm.
+    const out = JSON.parse(r.stdout);
+    expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
+    const context: string = out.hookSpecificOutput.additionalContext;
+    expect(context).toContain("NOT confirmed lock-protected");
+    expect(context).toContain("no text content in tool result");
     expect(requests.map((request) => request.body.params.name)).toEqual([
       "locks:acquire",
-      "locks:queue",
-      "locks:release",
     ]);
-    expect(requests[1].body.params.arguments).toMatchObject({
-      owner: "test-owner",
-      paths: ["sub/ambiguous.ts"],
-    });
-    expect(requests[2].body.params.arguments).toMatchObject({
-      lock_id: "orphan-lock",
-      paths: ["sub/ambiguous.ts"],
-      coordination_domain: fs.realpathSync(repo),
-    });
     expect(fs.existsSync(join(cache, "tu-ambiguous.lock"))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(join(cache, 'tu-ambiguous.operation.json'), 'utf8')))
+      .toMatchObject({ paths: ['sub/ambiguous.ts'], operation: { authority: 'decision-fixture' } });
   });
 
-  it("stale operator rejects coordination_domain → retries without it and emits a non-blocking advisory", async () => {
+  it("stale operator rejects coordination_domain without an unsafe operation downgrade", async () => {
     rejectCoordinationDomain = true;
     nextInner = { ok: true, lock_id: "legacy-lock" };
     const r = await run(editOf("sub/legacy-operator.ts", "tu-legacy-operator"));
@@ -547,26 +707,72 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     const out = JSON.parse(r.stdout);
     expect(out.hookSpecificOutput).toMatchObject({
       hookEventName: "PreToolUse",
-      permissionDecision: "allow",
+      permissionDecision: "deny",
     });
     expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(
-      /compatibility fallback/i,
-    );
-    expect(out.hookSpecificOutput.additionalContext).toMatch(/version skew/i);
-    expect(out.hookSpecificOutput.additionalContext).toMatch(
-      /retained file-lock enforcement/i,
+      /rejected the operation scope/i,
     );
 
-    expect(requests).toHaveLength(2);
+    expect(requests).toHaveLength(1);
     expect(requests[0].body.params.arguments.coordination_domain).toBe(
       fs.realpathSync(repo),
     );
-    expect(requests[1].body.params.arguments).not.toHaveProperty(
-      "coordination_domain",
+    expect(fs.existsSync(join(cache, 'tu-legacy-operator.lock'))).toBe(false);
+  });
+
+  it("denies and retains an operation when the serving operator rejects its advertised scope", async () => {
+    rejectCoordinationDomain = true;
+    rejectHookOperation = true;
+    const toolUseId = "tu-legacy-operation";
+    const r = await run(editOf("sub/legacy-operation.ts", toolUseId));
+    expect(r.status).toBe(0);
+
+    const out = JSON.parse(r.stdout);
+    expect(out.hookSpecificOutput).toMatchObject({
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+    });
+    expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(
+      /rejected the native operation scope before authority was prepared/i,
     );
-    expect(
-      fs.readFileSync(join(cache, "tu-legacy-operator.lock"), "utf8"),
-    ).toBe("legacy-lock");
+    expect(requests).toHaveLength(1);
+    expect(requests[0].body.params.arguments.hook_operation).toBeDefined();
+    expect(requests[0].body.params.arguments.coordination_domain).toBe(
+      fs.realpathSync(repo),
+    );
+    expect(requests[0].body.params.arguments.hook_operation.authority).toBeUndefined();
+    expect(fs.existsSync(join(cache, `${toolUseId}.lock`))).toBe(false);
+    const operationRecord = JSON.parse(
+      fs.readFileSync(join(cache, `${toolUseId}.operation.json`), "utf8"),
+    );
+    expect(operationRecord.operation.id).toEqual(expect.any(String));
+    expect(operationRecord.operation.authority).toBeFalsy();
+  });
+
+  it("does not downgrade after the native operation authority has been prepared", async () => {
+    rejectHookOperationAfterAuthority = true;
+    const toolUseId = "tu-authorized-operation";
+    const r = await run(editOf("sub/authorized-operation.ts", toolUseId));
+    expect(r.status).toBe(0);
+
+    const out = JSON.parse(r.stdout);
+    expect(out.hookSpecificOutput).toMatchObject({
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+    });
+    expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(
+      /rejected the native operation scope after authority was prepared/i,
+    );
+    expect(requests).toHaveLength(1);
+    expect(requests[0].body.params.arguments.hook_operation.authority).toBe(
+      "decision-fixture",
+    );
+    expect(requests[0].body.params.arguments).toHaveProperty("coordination_domain");
+    const record = JSON.parse(
+      fs.readFileSync(join(cache, `${toolUseId}.operation.json`), "utf8"),
+    );
+    expect(record.operation.authority).toBe("decision-fixture");
+    expect(fs.existsSync(join(cache, `${toolUseId}.lock`))).toBe(false);
   });
 
   it("PostToolUse releases through the same physical domain as PreToolUse", async () => {
@@ -750,16 +956,22 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     }
   }, 20_000);
 
-  it.each(["exec", "functions.exec"])(
-    "failed nested apply_patch is recovered when its %s parent completes",
-    async (parentToolName) => {
+  it.each([
+    ["exec", "relative"],
+    ["functions.exec", "relative"],
+    ["exec", "absolute"],
+    ["functions.exec", "absolute"],
+    ["functions.exec", "foreign"],
+  ])(
+    "nested apply_patch recovery checks its %s parent's %s paths",
+    async (parentToolName, pathStyle) => {
       const identity = {
         PAPERCUSP_LOCK_SID: "test-parent-owner",
         PAPERCUSP_SID: "test-parent-owner",
       };
       const patch = [
         "*** Begin Patch",
-        "*** Update File: sub/failed-nested.ts",
+        `*** Update File: ${pathStyle === "absolute" ? join(fs.realpathSync(repo), "sub/failed-nested.ts") : "sub/failed-nested.ts"}`,
         "@@",
         "-before",
         "+after",
@@ -794,13 +1006,21 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
         released: ["sub/failed-nested.ts"],
         held_before: 1,
       };
+      const parentPatch =
+        pathStyle === "foreign"
+          ? patch.replace(
+              "sub/failed-nested.ts",
+              join(dirname(repo), "foreign-repo", "sub/failed-nested.ts"),
+            )
+          : patch;
       const parent = await runPost(
         {
           tool_name: parentToolName,
           tool_input: {
-            source: `const result = await tools.apply_patch(${JSON.stringify(patch)}); text(result);`,
+            source: `const result = await tools.apply_patch(${JSON.stringify(parentPatch)}); text(result);`,
           },
           tool_use_id: `tu-parent-${parentToolName.replace(/\W/g, "-")}`,
+          tool_response: { status: 'completed' },
           session_id: "s",
           cwd: repo,
         },
@@ -808,6 +1028,15 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
       );
 
       expect(parent.status).toBe(0);
+      if (pathStyle === "foreign") {
+        expect(requests.map((request) => request.body.params.name)).toEqual([
+          "locks:acquire",
+        ]);
+        for (const suffix of ["lock", "paths", "domain"]) {
+          expect(fs.existsSync(join(cache, `tu-failed-nested.${suffix}`))).toBe(true);
+        }
+        return;
+      }
       expect(requests.map((request) => request.body.params.name)).toEqual([
         "locks:acquire",
         "locks:queue",
@@ -827,6 +1056,41 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
           false,
         );
       }
+    },
+  );
+
+  it.each(["same-session", "foreign-owner", "foreign-session", "failed-retry", "explicit-hold", "active-batch", "missing-session"])(
+    "native retry consumes only the completed %s automatic token",
+    async (scenario) => {
+      const identity = { PAPERCUSP_LOCK_SID: "test-retry-owner", PAPERCUSP_SID: "test-retry-owner" };
+      const path = `sub/retry-${scenario}.ts`;
+      const patch = ["*** Begin Patch", `*** Update File: ${path}`, "@@", "-before", "+after", "*** End Patch"].join("\n");
+      const failedId = `tu-first-${scenario}`;
+      const retryId = `tu-retry-${scenario}`;
+      nextInner = { ok: true, lock_id: failedId, newly_held: [path] };
+      await run({ tool_name: "apply_patch", tool_input: patch, tool_use_id: failedId, session_id: "s", cwd: repo }, identity);
+      expect(fs.existsSync(join(cache, `${failedId}.lock`))).toBe(true);
+      if (scenario === "foreign-owner") fs.writeFileSync(join(cache, `${failedId}.owner`), "peer-owner");
+      if (scenario === "foreign-session") fs.writeFileSync(join(cache, `${failedId}.session`), "other-native-session");
+      if (scenario === "missing-session") fs.unlinkSync(join(cache, `${failedId}.session`));
+      if (scenario === "active-batch") fs.writeFileSync(join(cache, `${failedId}.batch`), "{}");
+
+      // The first patch failed before mutation and had no PostToolUse. A retry
+      // reuses that hold, so PreToolUse writes only an attest, not a release token.
+      nextInner = { ok: true, lock_id: failedId, newly_held: [] };
+      await run({ tool_name: "apply_patch", tool_input: patch, tool_use_id: retryId, session_id: "s", cwd: repo }, identity);
+      expect(fs.existsSync(join(cache, `${retryId}.lock`))).toBe(false);
+      recoveryQueueInner = { active_locks: [{ lock_id: failedId, path, owner: "test-retry-owner", intent: scenario === "explicit-hold" ? "deliberate multi-file hold" : "PreToolUse:apply_patch" }] };
+      recoveryReleaseInner = { ok: true, released: [path], held_before: 1 };
+      await runPost({ tool_name: "apply_patch", tool_input: { command: patch }, tool_use_id: retryId, session_id: "s", cwd: repo,
+        tool_response: scenario === "failed-retry" ? { ok: false, error: "expected lines not found" } : { success: true } }, identity);
+
+      const recovered = requests.filter((r) => r.body.params.name === "locks:release" && r.body.params.arguments.lock_id === failedId);
+      expect(recovered).toHaveLength(scenario === "same-session" ? 1 : 0);
+      expect(fs.existsSync(join(cache, `${failedId}.lock`))).toBe(!["same-session", "explicit-hold"].includes(scenario));
+      // A deliberate hold has no matching automatic token and must never be
+      // selected by this recovery. The release is always the exact old token.
+      if (scenario === "same-session") expect(recovered[0].body.params.arguments).toMatchObject({ lock_id: failedId, paths: [path] });
     },
   );
 
@@ -864,6 +1128,7 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
           source: `await tools.apply_patch(${JSON.stringify(patch)});`,
         },
         tool_use_id: "tu-parent-queue-unknown",
+        tool_response: { status: 'completed' },
         session_id: "s",
         cwd: repo,
       },
@@ -963,6 +1228,99 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
       decision: "already-held",
       release_paths: [],
       lock_id: "manual-lock",
+    });
+  });
+
+  // WI-10006831: the already-held edit above used to reach no attribution at
+  // all (no release token ⇒ no native_edit_proof ⇒ no ledger row). The attest
+  // sidecar carries it to a retain:true release that keeps the hold.
+  describe("already-held attestation (WI-10006831)", () => {
+    const releaseCalls = () =>
+      requests.filter((r) => r.body.params?.name === "locks:release");
+    const successfulEdit = (rel: string, toolUseId: string) => ({
+      ...editOf(rel, toolUseId),
+      hook_event_name: "PostToolUse",
+      tool_response: { filePath: join(repo, rel), oldString: "a", newString: "b" },
+    });
+
+    it("attests a successful edit with retain and proof-only paths, never a release selector", async () => {
+      nextInner = { ok: true, lock_id: "manual-lock", newly_held: [] };
+      await run(editOf("sub/attest.ts", "tu-attest"));
+      expect(
+        JSON.parse(fs.readFileSync(join(cache, "tu-attest.attest"), "utf8")),
+      ).toMatchObject({ paths: ["sub/attest.ts"], domain: repo });
+
+      requests = [];
+      nextInner = {
+        ok: true,
+        retained: ["sub/attest.ts"],
+        released: [],
+        attributed: ["sub/attest.ts"],
+      };
+      const r = await runPost(successfulEdit("sub/attest.ts", "tu-attest"));
+      expect(r.status).toBe(0);
+
+      const calls = releaseCalls();
+      expect(calls).toHaveLength(1);
+      const args = calls[0].body.params.arguments;
+      expect(args).toEqual({
+        retain: true,
+        coordination_domain: repo,
+        native_edit_proof: {
+          success: true,
+          source: "claude",
+          tool: "Edit",
+          paths: ["sub/attest.ts"],
+        },
+      });
+      // An operator predating `retain` strips it; without these keys it must
+      // refuse instead of releasing the deliberate hold.
+      expect(args).not.toHaveProperty("paths");
+      expect(args).not.toHaveProperty("lock_id");
+      expect(fs.existsSync(join(cache, "tu-attest.attest"))).toBe(false);
+      expect(
+        JSON.parse(fs.readFileSync(join(cache, "last-attest.json"), "utf8")),
+      ).toMatchObject({ attributed: true, paths: ["sub/attest.ts"] });
+    });
+
+    it("consumes the sidecar without any release call when the edit failed", async () => {
+      nextInner = { ok: true, lock_id: "manual-lock", newly_held: [] };
+      await run(editOf("sub/attest-fail.ts", "tu-attest-fail"));
+      expect(fs.existsSync(join(cache, "tu-attest-fail.attest"))).toBe(true);
+
+      requests = [];
+      await runPost({
+        ...editOf("sub/attest-fail.ts", "tu-attest-fail"),
+        hook_event_name: "PostToolUse",
+        tool_response: { is_error: true, content: "old_string not found" },
+      });
+
+      expect(releaseCalls()).toHaveLength(0);
+      expect(fs.existsSync(join(cache, "tu-attest-fail.attest"))).toBe(false);
+    });
+
+    it("records an unconfirmed attestation instead of claiming it", async () => {
+      nextInner = { ok: true, lock_id: "manual-lock", newly_held: [] };
+      await run(editOf("sub/attest-refused.ts", "tu-attest-refused"));
+
+      nextInner = { ok: false, error: "retain_paths_not_held", not_held: ["sub/attest-refused.ts"] };
+      await runPost(successfulEdit("sub/attest-refused.ts", "tu-attest-refused"));
+
+      expect(
+        JSON.parse(fs.readFileSync(join(cache, "last-attest.json"), "utf8")),
+      ).toMatchObject({ attributed: false });
+    });
+
+    it.each([
+      ["a fresh grant (the path is released, not attested)", { ok: true, lock_id: "fresh-lock", newly_held: ["sub/attest-fresh.ts"] }],
+      ["an operator that does not report newly_held", { ok: true, lock_id: "old-op-lock" }],
+    ])("writes no attest sidecar for %s", async (_label, grant) => {
+      nextInner = grant;
+      await run(editOf("sub/attest-fresh.ts", "tu-attest-fresh"));
+      expect(fs.existsSync(join(cache, "tu-attest-fresh.attest"))).toBe(false);
+      for (const suffix of [".lock", ".paths", ".domain", ".owner"]) {
+        fs.rmSync(join(cache, `tu-attest-fresh${suffix}`), { force: true });
+      }
     });
   });
 
@@ -1075,6 +1433,124 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     expect(reason).toContain('paths:["sub/held.ts"]');
     // A deny must NOT have cached any lock (nothing to release).
     expect(fs.existsSync(join(cache, "tu-busy.lock"))).toBe(false);
+  });
+
+  it("denies instead of failing open when the operator refuses the session identity (WI-6554700010010405)", async () => {
+    acquireRefusalText = "request_rejected: superuser_foreign_native_session";
+    const r = await run(editOf("sub/held.ts", "tu-identity-refused"));
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+    const reason: string = out.hookSpecificOutput.permissionDecisionReason;
+    expect(reason).toContain("superuser_foreign_native_session");
+    expect(reason).toContain("capability:edit");
+    // The authority admitted nothing, so no recovery or settle call may follow.
+    const lockCalls = requests.filter((q) => String(q.body.params?.name ?? "").startsWith("locks:"));
+    expect(lockCalls).toHaveLength(1);
+    expect(fs.existsSync(join(cache, "tu-identity-refused.lock"))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(join(cache, "last-error.json"), "utf8"))).toMatchObject({
+      handler: "pretooluse",
+      phase: "identity-refused",
+      detail: "request_rejected: superuser_foreign_native_session",
+    });
+  });
+
+  it("keeps a transient refusal fail-open but tells the model the edit is not lock-protected (WI-6554700010010405)", async () => {
+    acquireRefusalText = "request_rejected: superuser_native_session_verifier_unavailable";
+    const r = await run(editOf("sub/held.ts", "tu-verifier-unavailable"));
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
+    const context: string = out.hookSpecificOutput.additionalContext;
+    expect(context).toContain("NOT lock-protected");
+    expect(context).toContain("superuser_native_session_verifier_unavailable");
+    expect(fs.existsSync(join(cache, "tu-verifier-unavailable.lock"))).toBe(false);
+  });
+
+  // WI-6554700010011018: all three authorization_denied locks:acquire rows of
+  // 2026-10-13 07:35-08:16Z (tool_invocations 37402636, 37402689, 37419171) were
+  // this kernel-preflight identity-state refusal. It is not the caller-identity
+  // deny pattern, so it must keep the fail-open WITH a visible advisory.
+  it("keeps the kernel-preflight stale-artifact refusal fail-open with a visible advisory (WI-6554700010011018)", async () => {
+    acquireRefusalText =
+      'Kernel preflight denied tool "locks:acquire": Identity capability (unresolved): stale-artifact (locks:acquire)';
+    const r = await run(editOf("sub/held.ts", "tu-stale-artifact"));
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
+    const context: string = out.hookSpecificOutput.additionalContext;
+    expect(context).toContain("NOT lock-protected");
+    expect(context).toContain("stale-artifact");
+    expect(fs.existsSync(join(cache, "tu-stale-artifact.lock"))).toBe(false);
+  });
+
+  // WI-6554700010011017: the error marker has one slot. A failed recovery step
+  // used to overwrite the refusal that caused the fail-open, so the marker kept
+  // only "recovery-queue" and never said why the edit was unprotected.
+  async function runLegacyOriginRecovery(toolUseId: string) {
+    legacyOrigin = true;
+    const isolatedCache = fs.mkdtempSync(join(os.tmpdir(), "cchook-dec-recovery-"));
+    try {
+      const r = await run(editOf("sub/held.ts", toolUseId), {
+        PAPERCUSP_LOCKS_CACHE_DIR: isolatedCache,
+        PAPERCUSP_LOCK_SID: "test-recovery-owner",
+      });
+      expect(r.status).toBe(0);
+      expect(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision).toBe("allow");
+      const records = ["last-error.json", "owner-test-recovery-owner-last-error.json"].map(
+        (marker) => JSON.parse(fs.readFileSync(join(isolatedCache, marker), "utf8")),
+      );
+      expect(records[1].owner).toBe("test-recovery-owner");
+      return records;
+    } finally {
+      fs.rmSync(isolatedCache, { recursive: true, force: true });
+    }
+  }
+
+  it("keeps the primary refusal when the recovery queue read also refuses (WI-6554700010011017)", async () => {
+    acquireRefusalText = "request_rejected: superuser_native_session_verifier_unavailable";
+    const records = await runLegacyOriginRecovery("tu-recovery-queue-refused");
+    expect(requests.map((q) => q.body.params?.name)).toEqual(["locks:acquire", "locks:queue"]);
+    for (const record of records) {
+      expect(record).toMatchObject({
+        handler: "pretooluse",
+        phase: "parse",
+        detail: "request_rejected: superuser_native_session_verifier_unavailable",
+      });
+      expect(record.recovery).toHaveLength(1);
+      expect(record.recovery[0].phase).toBe("recovery-queue");
+      expect(record.recovery[0].detail).toContain("superuser_native_session_verifier_unavailable");
+      expect(record).not.toHaveProperty("recovery_dropped");
+    }
+  });
+
+  it("bounds recovery failures on the primary record and counts the dropped ones (WI-6554700010011017)", async () => {
+    emptyAcquireContent = true;
+    const lockIds = ["rl-1", "rl-2", "rl-3", "rl-4"];
+    recoveryQueueInner = {
+      active_locks: lockIds.map((lock_id) => ({
+        lock_id,
+        path: "sub/held.ts",
+        owner: "$REQUEST_OWNER",
+        intent: "PreToolUse:Edit",
+        coordination_domain: fs.realpathSync(repo),
+        acquired_ts: "$NOW",
+      })),
+      waiting: [],
+    };
+    recoveryReleaseInner = { ok: false, reason: "release_refused" };
+    const records = await runLegacyOriginRecovery("tu-recovery-release-refused");
+    expect(requests.map((q) => q.body.params?.name)).toEqual([
+      "locks:acquire", "locks:queue", ...lockIds.map(() => "locks:release"),
+    ]);
+    for (const record of records) {
+      expect(record).toMatchObject({ phase: "parse", detail: "no text content in tool result" });
+      expect(record.recovery).toHaveLength(3);
+      expect(record.recovery.map((entry: { phase: string }) => entry.phase)).toEqual([
+        "recovery-release", "recovery-release", "recovery-release",
+      ]);
+      expect(record.recovery_dropped).toBe(1);
+    }
   });
 
   it("server refusal with a `reason` (e.g. policy) → deny carrying that reason", async () => {
@@ -1549,19 +2025,21 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     const spillPath = join(scratchRoot, ...relative);
     const grant = { ok: true, lock_id: 'spilled-hook-lock', newly_held: ['sub/spilled.ts'] };
     fs.mkdirSync(dirname(spillPath), { recursive: true });
-    fs.writeFileSync(spillPath, `result-door magic\nmanifest\n${JSON.stringify({
-      content: [
-        { type: 'text', text: 'See also: locks:release' },
-        { type: 'text', text: JSON.stringify(grant) },
-      ],
-    })}\n`);
-    nextInner = {
+    nextInner = (operation: { id: string }) => {
+      fs.writeFileSync(spillPath, `result-door magic\nmanifest\n${JSON.stringify({
+        content: [
+          { type: 'text', text: 'See also: locks:release' },
+          { type: 'text', text: JSON.stringify({ ...grant, operation_id: operation.id }) },
+        ],
+      })}\n`);
+      return {
       schemaVersion: 'papercusp.output-envelope/v1',
       content: [{
         kind: 'reference',
         uri: `papercusp://scratch/${relative.join('/')}`,
         preview: '{"ok":false,"reason":"preview is not authoritative"}',
       }],
+      };
     };
 
     const r = await run(editOf('sub/spilled.ts', 'tu-spilled'), {
@@ -1696,6 +2174,128 @@ describe("EI-19324697909459657: persistent-transient escalation", () => {
     );
     expect(out.hookSpecificOutput.permissionDecisionReason).not.toMatch(
       /PERSISTENT transient contention/i,
+    );
+  });
+});
+
+// WI-10006390: every lock entry is relative to its OWN repository, and one
+// locks:acquire names one coordination_domain. The hook used to send a
+// cross-repository path set with NO domain, so the server filed a submodule
+// file such as libs/papercusp/libs/db/sql/X under the superproject as
+// 'libs/db/sql/X' — a key that never conflicts with a peer's real lock on it.
+describe("WI-10006390: cross-repository edits never lock under the wrong domain", () => {
+  const SUB_REL = "libs/wi390-sub";
+  let sub: string;
+  const acquiresOf = () =>
+    requests.filter((request) => request.body.params.name === "locks:acquire");
+  const patchOf = (paths: string[]) =>
+    [
+      "*** Begin Patch",
+      ...paths.flatMap((path) => [`*** Update File: ${path}`, "@@", "-before", "+after"]),
+      "*** End Patch",
+    ].join("\n");
+
+  beforeAll(() => {
+    sub = join(repo, SUB_REL);
+    fs.mkdirSync(join(sub, "sql"), { recursive: true });
+    // A submodule's .git is a gitlink FILE, exactly like the fixture superproject's.
+    fs.writeFileSync(join(sub, ".git"), "gitdir: /nonexistent-wi390-sub\n");
+    for (const rel of ["sql/x.sql", "sql/y.sql"])
+      fs.writeFileSync(join(sub, rel), "before\n");
+    for (const rel of ["sub/wi390-top.ts", "sub/wi390-batch-top.ts"])
+      fs.writeFileSync(join(repo, rel), "before\n");
+  });
+
+  it("positive control: a submodule-only Codex patch locks submodule-relative paths in the submodule domain", async () => {
+    nextInner = { ok: true, lock_id: "wi390-sub-lock", newly_held: ["sql/x.sql"] };
+    const pre = await run(
+      {
+        tool_name: "apply_patch",
+        tool_input: patchOf([`${SUB_REL}/sql/x.sql`]),
+        tool_use_id: "tu-wi390-sub-only",
+        session_id: "codex-session",
+        cwd: repo,
+      },
+      { PAPERCUSP_LOCK_SID: "wi390-owner", PAPERCUSP_SID: "wi390-owner" },
+    );
+    expect(pre.status).toBe(0);
+    expect(pre.stdout).toBe("");
+    const acquires = acquiresOf();
+    expect(acquires).toHaveLength(1);
+    expect(acquires[0].body.params.arguments.paths).toEqual(["sql/x.sql"]);
+    expect(acquires[0].body.params.arguments.coordination_domain).toBe(
+      fs.realpathSync(sub),
+    );
+  });
+
+  it("a Codex patch spanning the superproject and a submodule is refused before any acquire", async () => {
+    const pre = await run(
+      {
+        tool_name: "apply_patch",
+        tool_input: patchOf([`${SUB_REL}/sql/x.sql`, "sub/wi390-top.ts"]),
+        tool_use_id: "tu-wi390-cross",
+        session_id: "codex-session",
+        cwd: repo,
+      },
+      { PAPERCUSP_LOCK_SID: "wi390-owner", PAPERCUSP_SID: "wi390-owner" },
+    );
+    expect(pre.status).toBe(0); // deny path emits JSON then exits 0
+    const out = JSON.parse(pre.stdout);
+    expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+    const reason: string = out.hookSpecificOutput.permissionDecisionReason;
+    expect(reason).toContain("2 repositories");
+    expect(reason).toContain(`${fs.realpathSync(sub)} -> sql/x.sql`);
+    expect(reason).toContain(`${fs.realpathSync(repo)} -> sub/wi390-top.ts`);
+    expect(reason).toContain("one apply_patch per repository");
+    // The defect was a GRANTED lock under the wrong keys; nothing may be acquired.
+    expect(acquiresOf()).toHaveLength(0);
+    expect(fs.existsSync(join(cache, "tu-wi390-cross.lock"))).toBe(false);
+  });
+
+  it("a Claude native batch spanning two repositories locks each call in its own domain", async () => {
+    const transcriptPath = join(home, "wi390-transcript.jsonl");
+    const subFile = join(sub, "sql/y.sql");
+    const topFile = join(repo, "sub/wi390-batch-top.ts");
+    fs.writeFileSync(
+      transcriptPath,
+      `${JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "tu-wi390-b-sub", name: "Edit", input: { file_path: subFile } },
+            { type: "tool_use", id: "tu-wi390-b-top", name: "Edit", input: { file_path: topFile } },
+          ],
+        },
+      })}\n`,
+    );
+    const env = { PAPERCUSP_SID: "wi390-batch", PAPERCUSP_LOCK_SID: "wi390-batch" };
+    const [first, second] = await Promise.all([
+      run(nativeBatchInput(transcriptPath, `${SUB_REL}/sql/y.sql`, "tu-wi390-b-sub"), env),
+      run(nativeBatchInput(transcriptPath, "sub/wi390-batch-top.ts", "tu-wi390-b-top"), env),
+    ]);
+    expect(first.status).toBe(0);
+    expect(second.status).toBe(0);
+    expect(first.stdout).toBe("");
+    expect(second.stdout).toBe("");
+
+    const byDomain = Object.fromEntries(
+      acquiresOf().map((request) => [
+        request.body.params.arguments.coordination_domain,
+        request.body.params.arguments.paths,
+      ]),
+    );
+    expect(acquiresOf()).toHaveLength(2);
+    expect(byDomain).toEqual({
+      [fs.realpathSync(sub)]: ["sql/y.sql"],
+      [fs.realpathSync(repo)]: ["sub/wi390-batch-top.ts"],
+    });
+    // Per-call fallback: each call caches its OWN release token and domain.
+    expect(fs.readFileSync(join(cache, "tu-wi390-b-sub.domain"), "utf8").trim()).toBe(
+      fs.realpathSync(sub),
+    );
+    expect(fs.readFileSync(join(cache, "tu-wi390-b-top.domain"), "utf8").trim()).toBe(
+      fs.realpathSync(repo),
     );
   });
 });

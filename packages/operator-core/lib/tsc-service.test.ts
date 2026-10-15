@@ -5,21 +5,33 @@
  * existing parser reads service output unchanged.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+const nativeDir = dirname(createRequire(import.meta.url).resolve('@typescript/native/package.json'));
+const { API } = await import(pathToFileURL(join(nativeDir, 'dist/api/async/api.js')).href);
 // eslint-disable-next-line import/no-relative-packages
 import {
   TSC_SERVICE_ENV,
+  TSC_SERVICE_UNIT_TEMPLATE_ENV,
   baselineWithinScope,
   checkedSetFor,
+  formatTscServiceBanner,
   lineAndCharacter,
   lineStarts,
+  refreshProjectRootFiles,
   readTextOrNull,
   renderDiagnostics,
   serviceProjectFromTscCommand,
+  systemdEscapePath,
   tscServiceEligibility,
   tscServiceSocketPath,
+  tscServiceTemplateSocket,
+  tscServiceTemplateSocketUnit,
+  typecheckViaService,
+  unescapeSystemctlValue,
 } from '../../../scripts/lib/tsc-service.mjs';
 // eslint-disable-next-line import/no-relative-packages
 import { parseTscErrors } from '../../../scripts/lib/tsc-baseline-gate.mjs';
@@ -70,6 +82,100 @@ describe('tscServiceSocketPath', () => {
   it('prefers the explicit override, then XDG_RUNTIME_DIR', () => {
     expect(tscServiceSocketPath({ PAPERCUSP_TSC_SERVICE_SOCKET: '/tmp/x.sock' })).toBe('/tmp/x.sock');
     expect(tscServiceSocketPath({ XDG_RUNTIME_DIR: '/run/user/7' })).toBe('/run/user/7/papercusp-tsc-service.sock');
+  });
+});
+
+// WI-10005362: hosted hosts run one template instance per checkout.
+describe('systemdEscapePath', () => {
+  it('matches `systemd-escape --path` (vectors captured from systemd 255)', () => {
+    expect(systemdEscapePath('/srv/papercusp/workspaces/papercusp')).toBe('srv-papercusp-workspaces-papercusp');
+    expect(systemdEscapePath('/srv/papercusp/workspaces/papercusp-desktop/')).toBe('srv-papercusp-workspaces-papercusp\\x2ddesktop');
+    expect(systemdEscapePath('/home/x/.dir/a b/ü')).toBe('home-x-.dir-a\\x20b-\\xc3\\xbc');
+    expect(systemdEscapePath('/')).toBe('-');
+    expect(systemdEscapePath('/a//b/./c')).toBe('a-b-c');
+    expect(systemdEscapePath('/.hidden/x')).toBe('\\x2ehidden-x');
+  });
+
+  it('names the socket unit for the resolved checkout', () => {
+    expect(tscServiceTemplateSocketUnit('papercusp-tsc-service', '/srv/papercusp/workspaces/papercusp/')).toBe(
+      'papercusp-tsc-service@srv-papercusp-workspaces-papercusp.socket',
+    );
+  });
+});
+
+describe('tscServiceTemplateSocket', () => {
+  const unit = 'papercusp-tsc-service@srv-w-repo.socket';
+  type Call = { command: string; args: string[]; env: Record<string, string | undefined> };
+  function fakeRun(results: Array<{ status: number | null; stdout?: string; stderr?: string }>) {
+    const calls: Call[] = [];
+    // `options: object` matches the client's injected `run` contract; the client always passes `{ env }`.
+    const run = (command: string, args: string[], options: object) => {
+      calls.push({ command, args, env: (options as { env: Record<string, string | undefined> }).env });
+      return results[calls.length - 1] ?? { status: 1, stdout: '', stderr: 'unexpected call' };
+    };
+    return { calls, run };
+  }
+
+  it('starts the instance socket, then returns the path systemd bound (without the type suffix)', () => {
+    const { calls, run } = fakeRun([
+      { status: 0, stdout: '' },
+      { status: 0, stdout: '/run/user/1001/papercusp-tsc-service-srv-w-repo.sock (Stream)\n' },
+    ]);
+    const located = tscServiceTemplateSocket({ template: 'papercusp-tsc-service', root: '/srv/w/repo', env: {}, run });
+    expect(located).toEqual({ unit, socketPath: '/run/user/1001/papercusp-tsc-service-srv-w-repo.sock' });
+    expect(calls.map((c) => [c.command, ...c.args])).toEqual([
+      ['systemctl', '--user', 'start', unit],
+      ['systemctl', '--user', 'show', '-p', 'Listen', '--value', unit],
+    ]);
+    // systemctl --user finds the user bus through XDG_RUNTIME_DIR, which an SSH exec may not carry.
+    expect(calls[0].env.XDG_RUNTIME_DIR).toMatch(/^\/run\/user\/\d+$/);
+  });
+
+  it('decodes systemctl show escaping, so an escaped instance path matches the socket on disk', () => {
+    // Shape measured on systemd 255 for a checkout whose path holds a `-`: the socket file name
+    // holds a literal `\x2d`, which `systemctl show` prints as `\\x2d`.
+    const printed = '/run/user/1001/papercusp-tsc-service-srv-ws-papercusp\\\\x2ddesktop.sock (Stream)\n';
+    const { run } = fakeRun([{ status: 0 }, { status: 0, stdout: printed }]);
+    const located = tscServiceTemplateSocket({ template: 'papercusp-tsc-service', root: '/srv/ws/papercusp-desktop', env: {}, run });
+    expect(located).toEqual({
+      unit: 'papercusp-tsc-service@srv-ws-papercusp\\x2ddesktop.socket',
+      socketPath: '/run/user/1001/papercusp-tsc-service-srv-ws-papercusp\\x2ddesktop.sock',
+    });
+    expect(unescapeSystemctlValue('a\\xc3\\xbcb\\\\c\\tz')).toBe('aüb\\c\tz');
+    expect(unescapeSystemctlValue('/plain/path.sock')).toBe('/plain/path.sock');
+  });
+
+  it('reports a failed start without asking for the socket, so the caller falls back to the CLI', () => {
+    const { calls, run } = fakeRun([{ status: 5, stderr: 'Unit papercusp-tsc-service@srv-w-repo.socket not found.\n' }]);
+    const located = tscServiceTemplateSocket({ template: 'papercusp-tsc-service', root: '/srv/w/repo', env: { XDG_RUNTIME_DIR: '/run/user/9' }, run });
+    expect(located).toEqual({ unit, error: expect.stringContaining('not found') });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].env.XDG_RUNTIME_DIR).toBe('/run/user/9');
+  });
+
+  it('refuses a unit that bound no unix socket', () => {
+    const { run } = fakeRun([{ status: 0 }, { status: 0, stdout: '\n' }]);
+    expect(tscServiceTemplateSocket({ template: 'papercusp-tsc-service', root: '/srv/w/repo', env: {}, run })).toEqual({
+      unit,
+      error: `${unit} reports no unix socket`,
+    });
+  });
+});
+
+describe('typecheckViaService under a unit template', () => {
+  it('falls back (returns null and says why) when the template instance cannot start', async () => {
+    const lines: string[] = [];
+    const response = await typecheckViaService({
+      root: '/nonexistent/checkout',
+      project: '/nonexistent/checkout/tsconfig.json',
+      files: ['a.ts'],
+      label: 'test',
+      log: (line) => lines.push(line),
+      // A template name no user manager has: the real `systemctl --user start` refuses it.
+      env: { [TSC_SERVICE_UNIT_TEMPLATE_ENV]: 'papercusp-tsc-service-test-absent', XDG_RUNTIME_DIR: '/nonexistent/runtime' },
+    });
+    expect(response).toBeNull();
+    expect(lines.join('\n')).toMatch(/TSC_SERVICE unavailable .*papercusp-tsc-service-test-absent@nonexistent-checkout\.socket/);
   });
 });
 
@@ -132,6 +238,91 @@ describe('renderDiagnostics', () => {
   });
 });
 
+describe('refreshProjectRootFiles', () => {
+  it('reports files newly included and deleted from a loaded project program', async () => {
+    const currentSnapshot = {
+      getProject: () => ({ rootFiles: ['/repo/lib/kept.ts', '/repo/lib/deleted.ts'] }),
+      dispose: () => { disposed = true; },
+    };
+    const nextSnapshot = { getProject: () => ({ rootFiles: ['/repo/lib/kept.ts', '/repo/lib/created.ts'] }), dispose: () => {} };
+    const calls: unknown[] = [];
+    let disposed = false;
+    const api = {
+      parseConfigFile: async () => ({ fileNames: ['/repo/lib/kept.ts', '/repo/lib/created.ts'] }),
+      updateSnapshot: async (params: unknown) => { calls.push(params); return nextSnapshot; },
+    };
+
+    const result = await refreshProjectRootFiles({ api, snapshot: currentSnapshot, projects: ['/repo/tsconfig.json'] });
+
+    expect(calls).toEqual([{ fileChanges: { created: ['/repo/lib/created.ts'], deleted: ['/repo/lib/deleted.ts'] } }]);
+    expect(disposed).toBe(true);
+    expect(result).toBe(nextSnapshot);
+  });
+
+  it('leaves the snapshot alone when the include set is unchanged', async () => {
+    const currentSnapshot = {
+      getProject: () => ({ rootFiles: ['/repo/lib/a.ts', '/repo/lib/b.ts'] }),
+      dispose: () => { disposed = true; },
+    };
+    let disposed = false;
+    let updated = false;
+    const api = {
+      parseConfigFile: async () => ({ fileNames: ['/repo/lib/b.ts', '/repo/lib/a.ts'] }),
+      updateSnapshot: async () => { updated = true; return currentSnapshot; },
+    };
+
+    const result = await refreshProjectRootFiles({ api, snapshot: currentSnapshot, projects: ['/repo/tsconfig.json'] });
+
+    expect(result).toBe(currentSnapshot);
+    expect(disposed).toBe(false);
+    expect(updated).toBe(false);
+  });
+});
+
+describe('refreshProjectRootFiles with the native TypeScript API', () => {
+  it('removes deleted roots and includes recreated roots in the loaded program', async () => {
+    const testDir = mkdtempSync(join(tmpdir(), 'tsc-service-root-refresh-'));
+    const config = join(testDir, 'tsconfig.json');
+    const keptFile = join(testDir, 'kept.ts');
+    const changedFile = join(testDir, 'changed.ts');
+    writeFileSync(config, JSON.stringify({ compilerOptions: { noEmit: true }, include: ['*.ts'] }));
+    writeFileSync(keptFile, 'export const kept = true;\n');
+    writeFileSync(changedFile, 'export const removed = true;\n');
+
+    const api = new API({ cwd: testDir });
+    let snapshot: any;
+    try {
+      snapshot = await api.updateSnapshot({ openProjects: [config] });
+      expect(snapshot.getProject(config)?.rootFiles).toContain(changedFile);
+
+      rmSync(changedFile);
+      snapshot = await api.updateSnapshot({ fileChanges: { invalidateAll: true } });
+      // Invalidation refreshes contents but leaves the old include-root set loaded.
+      expect(snapshot.getProject(config)?.rootFiles).toContain(changedFile);
+      const staleDiagnostics = await snapshot.getProject(config)?.program.getProgramDiagnostics();
+      expect(staleDiagnostics?.some((diagnostic: any) => diagnostic.code === 6053)).toBe(true);
+
+      snapshot = await refreshProjectRootFiles({ api, snapshot, projects: [config] });
+      expect(snapshot.getProject(config)?.rootFiles).not.toContain(changedFile);
+      const deletionDiagnostics = await snapshot.getProject(config)?.program.getProgramDiagnostics();
+      expect(deletionDiagnostics?.some((diagnostic: any) => diagnostic.code === 6053)).toBe(false);
+
+      writeFileSync(changedFile, 'export const recreated: number = \"wrong\";\n');
+      snapshot = await api.updateSnapshot({ fileChanges: { invalidateAll: true } });
+      expect(snapshot.getProject(config)?.rootFiles).not.toContain(changedFile);
+
+      snapshot = await refreshProjectRootFiles({ api, snapshot, projects: [config] });
+      expect(snapshot.getProject(config)?.rootFiles).toContain(changedFile);
+      const recreationDiagnostics = await snapshot.getProject(config)?.program.getSemanticDiagnostics(changedFile);
+      expect(recreationDiagnostics?.some((diagnostic: any) => diagnostic.code === 2322)).toBe(true);
+    } finally {
+      snapshot?.dispose();
+      await api.close();
+      rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('checkedSetFor', () => {
   let dir = '';
   afterEach(() => {
@@ -139,7 +330,7 @@ describe('checkedSetFor', () => {
     dir = '';
   });
 
-  it('checks the named files, exported-type referencers and direct importers — nothing else', () => {
+  it('checks resolved importers, excluding bare type-name collisions', () => {
     dir = mkdtempSync(join(tmpdir(), 'tsc-service-scope-'));
     const write = (rel: string, body: string) => {
       mkdirSync(join(dir, rel, '..'), { recursive: true });
@@ -149,6 +340,7 @@ describe('checkedSetFor', () => {
     write('lib/uses-type.ts', "const s: Shape = { sides: 1 };\n");
     write('lib/sub/imports-rel.ts', "import { area } from '../shapes.js';\narea();\n");
     write('app/imports-alias.ts', "import { area } from '@/lib/shapes';\narea();\n");
+    write('tsconfig.json', JSON.stringify({ compilerOptions: { baseUrl: '.', paths: { '@/*': ['./*'] } } }));
     write('lib/unrelated.ts', "import { other } from './other.js';\n");
     write('node_modules/pkg/index.d.ts', 'export type Shape = 1;\n');
     const abs = (rel: string) => join(dir, rel);
@@ -156,11 +348,10 @@ describe('checkedSetFor', () => {
       root: dir,
       named: ['lib/shapes.ts', 'lib/not-in-program.ts'],
       programFiles: ['lib/shapes.ts', 'lib/uses-type.ts', 'lib/sub/imports-rel.ts', 'app/imports-alias.ts', 'lib/unrelated.ts', 'node_modules/pkg/index.d.ts'].map(abs),
-      typeNames: new Set(['Shape']),
       readText: readTextOrNull,
     });
-    expect(scope.files.sort()).toEqual(['app/imports-alias.ts', 'lib/shapes.ts', 'lib/sub/imports-rel.ts', 'lib/uses-type.ts'].map(abs).sort());
-    expect(scope).toMatchObject({ named: 1, typeReferencing: 1, importers: 2, namedNotInProgram: ['lib/not-in-program.ts'] });
+    expect(scope.files.sort()).toEqual(['app/imports-alias.ts', 'lib/shapes.ts', 'lib/sub/imports-rel.ts'].map(abs).sort());
+    expect(scope).toMatchObject({ named: 1, typeReferencing: 0, importers: 2, namedNotInProgram: ['lib/not-in-program.ts'] });
   });
 
   it('treats an index file as importable by its directory', () => {
@@ -172,10 +363,72 @@ describe('checkedSetFor', () => {
       root: dir,
       named: ['lib/feature/index.ts'],
       programFiles: [join(dir, 'lib/feature/index.ts'), join(dir, 'lib/caller.ts')],
-      typeNames: new Set(),
       readText: readTextOrNull,
     });
     expect(scope.importers).toBe(1);
+  });
+
+  it('retains every caller through shared barrels and cycles while reading each module once', () => {
+    dir = mkdtempSync(join(tmpdir(), 'tsc-service-scope-'));
+    const abs = (name: string) => join(dir, name);
+    writeFileSync(abs('changed.ts'), 'export interface Shape { sides: number }\n');
+    writeFileSync(abs('barrel.ts'), "export type { Shape } from './changed.js';\nexport type { Other } from './cycle.js';\n");
+    writeFileSync(abs('cycle.ts'), "export type { Shape } from './barrel.js';\nexport interface Other { value: number }\n");
+    const callers = Array.from({ length: 40 }, (_, i) => `caller-${i}.ts`);
+    for (const caller of callers) {
+      writeFileSync(abs(caller), "import type { Shape } from './barrel.js';\nexport const shape: Shape = { sides: 4 };\n");
+    }
+    const reads = new Map<string, number>();
+    const scope = checkedSetFor({
+      root: dir,
+      named: ['changed.ts'],
+      programFiles: [...callers, 'changed.ts', 'cycle.ts'].map(abs),
+      readText: (file: string) => {
+        reads.set(file, (reads.get(file) ?? 0) + 1);
+        return readTextOrNull(file);
+      },
+    });
+    expect(scope.files.sort()).toEqual([...callers, 'changed.ts', 'cycle.ts'].map(abs).sort());
+    expect(scope.importers).toBe(callers.length + 1);
+    expect([...reads.keys()].sort()).toEqual([...callers, 'changed.ts', 'cycle.ts', 'barrel.ts'].map(abs).sort());
+    expect([...reads.values()].every((count) => count === 1)).toBe(true);
+  });
+});
+
+// WI-10007624: on a mixed --files run, operator-core's leg printed "2 named file(s) are not in this
+// project's program" for apps/operator files the operator leg had already judged clean, beside its own
+// status=clean. It read as a false green. Routed files must be named as judged elsewhere.
+describe('formatTscServiceBanner', () => {
+  const response = (namedNotInProgram: string[]) =>
+    ({
+      ok: true,
+      checked: ['x'],
+      counts: { named: 2, typeReferencing: 0, importers: 0 },
+      errorCount: 0,
+      queuedMs: 1,
+      checkMs: 1,
+      snapshotAgeMs: 1,
+      namedNotInProgram,
+    }) as unknown as Parameters<typeof formatTscServiceBanner>[0];
+  const routedOp = ['apps/operator/lib/a.ts', 'apps/operator/lib/b.test.ts'];
+
+  it('names routed files as judged by their own leg, never as not-in-program', () => {
+    const lines = formatTscServiceBanner(response(routedOp), { routedAway: routedOp.map((f) => `./${f}`) }).join('\n');
+    expect(lines).not.toContain("not in this project's program");
+    expect(lines).toContain('2 named file(s) belong to another project and were judged by its own leg');
+    expect(lines).toContain('apps/operator/lib/a.ts');
+  });
+
+  it('keeps a file nobody judged on the not-in-program line', () => {
+    const lines = formatTscServiceBanner(response([...routedOp, 'stray/c.ts']), { routedAway: routedOp }).join('\n');
+    expect(lines).toContain("1 named file(s) are not in this project's program, as with the CLI: stray/c.ts");
+    expect(lines).toContain('2 named file(s) belong to another project');
+  });
+
+  it('without a routed set, behaves exactly as before', () => {
+    const lines = formatTscServiceBanner(response(['stray/c.ts'])).join('\n');
+    expect(lines).toContain("1 named file(s) are not in this project's program");
+    expect(lines).not.toContain('belong to another project');
   });
 });
 

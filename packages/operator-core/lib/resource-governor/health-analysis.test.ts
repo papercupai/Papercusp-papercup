@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   LIVE_HEALTH_SCHEMA_VERSION,
   LIVE_HEALTH_SIGNAL_KEYS,
@@ -18,12 +18,100 @@ import {
   NON_CAUSAL_CAPACITY_SIGNALS,
   RollingHealthyBaselineStore,
   RollingHealthAnalyzer,
+  healthObjectiveConditionKey,
   liveHealthFrameFromSnapshot,
   type HealthAnalysisFrame,
+  type HealthConditionContext,
 } from './health-analysis';
 
 const START = 1_700_000_000_000;
 const STEP = 5_000;
+
+function conditionHarness() {
+  const open = new Map<string, number>();
+  const opened: string[] = [], resolved: string[] = [];
+  const context: HealthConditionContext = { workspaceId: 'fixture',
+    readOpenConditions: async () => [...open].map(([conditionKey, openedAtMs]) => ({ conditionKey, openedAtMs })),
+    rail: { broadcast: async event => {
+      expect(event.oneShot).toBe(true);
+      if (!open.has(event.conditionKey!)) opened.push(event.conditionKey!);
+      open.set(event.conditionKey!, open.get(event.conditionKey!) ?? START + 4 * STEP);
+      return true;
+    }, resolve: async event => {
+      if (!open.delete(event.conditionKey)) return false;
+      resolved.push(event.conditionKey); return true;
+    } } };
+  return { open, opened, resolved, context };
+}
+
+describe('original resource health objective condition lifecycle', () => {
+  const key = healthObjectiveConditionKey('fixture', 'operator:fixture', 'operator-event-loop-latency',
+    'latency.eventLoopP95Ms', 'operator:fixture');
+  it('opens before returning, survives a new analyzer, resolves measured recovery and reopens', async () => {
+    const h = conditionHarness();
+    const analyzer = primedAnalyzer();
+    expect((await analyzer.evaluate(frame(4, { 'latency.eventLoopP95Ms': 300 }), h.context)).state).toBe('degraded');
+    expect(h.opened).toContain(key);
+    await analyzer.evaluate(frame(4, { 'latency.eventLoopP95Ms': 300 }), h.context);
+    expect(h.opened.filter(value => value === key)).toHaveLength(1);
+    await new RollingHealthAnalyzer().evaluate(frame(5), h.context);
+    expect(h.open.has(key)).toBe(true); // no known numeric baseline after restart
+    await primedAnalyzer().evaluate(frame(5), h.context);
+    expect(h.resolved).toContain(key);
+    await analyzer.evaluate(frame(6, { 'latency.eventLoopP95Ms': 300 }), h.context);
+    expect(h.opened.filter(value => value === key)).toHaveLength(2);
+  });
+  it('independently resolves a recovered objective while another stays breached', async () => {
+    const h = conditionHarness(), analyzer = primedAnalyzer();
+    await analyzer.evaluate(frame(4, { 'latency.eventLoopP95Ms': 300, 'provider.rateLimited': true }), h.context);
+    expect(h.open.size).toBe(2);
+    await analyzer.evaluate(frame(5, { 'provider.rateLimited': true }), h.context);
+    expect(h.open.size).toBe(1); expect(h.resolved).toContain(key);
+  });
+  it.each(['missing', 'stale', 'old', 'future', 'low-confidence', 'bad-value', 'bad-unit', 'bad-clock'])(
+    'preserves an episode through %s evidence', async kind => {
+      const h = conditionHarness(), analyzer = primedAnalyzer();
+      await analyzer.evaluate(frame(4, { 'latency.eventLoopP95Ms': 300 }), h.context);
+      const valid = frame(5), signal = 'latency.eventLoopP95Ms';
+      const measured = valid.signals[signal]!;
+      const signals = { ...valid.signals };
+      if (kind === 'missing') delete signals[signal];
+      else signals[signal] = (kind === 'stale' ? staleLiveHealthReading(signal, measured, valid.atMs) :
+        { ...measured, ...(kind === 'old' ? { observedAtMs: START, lastMeasuredAtMs: START } : {}),
+          ...(kind === 'future' ? { observedAtMs: valid.atMs + 1 } : {}),
+          ...(kind === 'low-confidence' ? { confidence: 0.1 } : {}),
+          ...(kind === 'bad-value' ? { value: Number.NaN } : {}),
+          ...(kind === 'bad-unit' ? { unit: 'boolean' } : {}),
+          ...(kind === 'bad-clock' ? { collectedAtMs: Number.NaN } : {}) }) as LiveHealthReading;
+      await analyzer.evaluate({ ...valid, signals }, h.context);
+      expect(h.open.has(key)).toBe(true); expect(h.resolved).not.toContain(key);
+    });
+  it('preserves foreign scopes, newer episodes and failed reads', async () => {
+    const h = conditionHarness(), analyzer = primedAnalyzer();
+    await analyzer.evaluate(frame(4, { 'latency.eventLoopP95Ms': 300 }), h.context);
+    await analyzer.evaluate(frame(5, {}, 'foreign'), h.context);
+    await analyzer.evaluate(frame(5), { ...h.context, workspaceId: 'foreign' });
+    await analyzer.evaluate(frame(5), { ...h.context, readOpenConditions: async () => { throw new Error('unreadable'); } });
+    h.open.set(key, START + 8 * STEP);
+    await analyzer.evaluate(frame(5), h.context);
+    expect(h.open.has(key)).toBe(true); expect(h.resolved).not.toContain(key);
+  });
+  it('keeps the verdict and other objective delivery when broadcast or resolution fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const h = conditionHarness(), analyzer = primedAnalyzer();
+    const send = h.context.rail!.broadcast!;
+    const broadcast = vi.fn(async (event: Parameters<typeof send>[0]) => {
+      if (event.conditionKey === key) throw new Error('transport'); return send(event);
+    });
+    expect((await analyzer.evaluate(frame(4, { 'latency.eventLoopP95Ms': 300, 'provider.rateLimited': true }),
+      { ...h.context, rail: { ...h.context.rail, broadcast } })).state).toBe('degraded');
+    expect(h.open.size).toBe(1); expect(broadcast).toHaveBeenCalledTimes(2);
+    await analyzer.evaluate(frame(5), { ...h.context, rail: { resolve: async () => { throw new Error('transport'); } } });
+    expect(h.open.size).toBe(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('[resource-health] condition resolution failed'));
+    warn.mockRestore();
+  });
+});
 
 function reading(key: LiveHealthSignalKey, value: number | boolean, atMs: number, confidence = 1): LiveHealthReading {
   const spec = LIVE_HEALTH_SIGNAL_SPECS[key];
@@ -42,6 +130,10 @@ const HEALTHY_VALUES: Partial<Record<LiveHealthSignalKey, number | boolean>> = {
   'cpu.hostUtilizationPct': 35,
   'cpu.processUtilizationPct': 20,
   'cpu.psiSomePct': 0.1,
+  'io.psiSomePct': 0.1,
+  'io.psiFullPct': 0,
+  'io.processReadBytesPerSec': 0,
+  'io.processWriteBytesPerSec': 0,
   'latency.eventLoopP95Ms': 8,
   'memory.hostUsedBytes': 8 * 1024 ** 3,
   'memory.workingSetBytes': 512 * 1024 ** 2,
@@ -95,6 +187,9 @@ describe('resource-governor rolling health analysis', () => {
       DEFAULT_SERVICE_OBJECTIVES.map((objective) => objective.signal),
     );
     for (const signal of NON_CAUSAL_CAPACITY_SIGNALS) expect(objectiveSignals.has(signal)).toBe(false);
+    expect(NON_CAUSAL_CAPACITY_SIGNALS).toEqual(
+      expect.arrayContaining(['io.processReadBytesPerSec', 'io.processWriteBytesPerSec']),
+    );
     expect(new Set(LIVE_HEALTH_SIGNAL_KEYS).size).toBe(LIVE_HEALTH_SIGNAL_KEYS.length);
   });
 
@@ -164,6 +259,8 @@ describe('resource-governor rolling health analysis', () => {
         'memory.hostUsedBytes': 120 * 1024 ** 3,
         'memory.workingSetBytes': 32 * 1024 ** 3,
         'memory.swapUsedBytes': 48 * 1024 ** 3,
+        'io.processReadBytesPerSec': 64 * 1024 ** 2,
+        'io.processWriteBytesPerSec': 32 * 1024 ** 2,
         'queue.oldestAgeMs': 3_600_000,
       }),
     );
@@ -173,6 +270,8 @@ describe('resource-governor rolling health analysis', () => {
         'cpu.hostUtilizationPct',
         'memory.hostUsedBytes',
         'memory.swapUsedBytes',
+        'io.processReadBytesPerSec',
+        'io.processWriteBytesPerSec',
         'queue.oldestAgeMs',
       ]),
     );
@@ -227,6 +326,31 @@ describe('resource-governor rolling health analysis', () => {
       expect.arrayContaining([
         expect.objectContaining({ causeSignal: 'memory.swapInBytesPerSec', resource: 'memory', actionable: true }),
         expect.objectContaining({ causeSignal: 'memory.psiFullPct', resource: 'memory', actionable: true }),
+      ]),
+    );
+  });
+
+  it('attributes full I/O pressure only when service progress degrades', () => {
+    const pressureOnly = primedAnalyzer().evaluate(frame(4, { 'io.psiFullPct': 12 }));
+    expect(pressureOnly).toMatchObject({ state: 'healthy', actionable: false, severity: 'none' });
+
+    const stalled = primedAnalyzer().evaluate(
+      frame(4, {
+        'io.psiFullPct': 12,
+        'progress.heartbeatLagMs': 900,
+        'latency.eventLoopP95Ms': 180,
+      }),
+    );
+    expect(stalled).toMatchObject({ state: 'degraded', actionable: true, severity: 'critical' });
+    expect(stalled.actionableResources).toContain('io');
+    expect(stalled.attributions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          causeSignal: 'io.psiFullPct',
+          outcomeSignal: 'latency.eventLoopP95Ms',
+          resource: 'io',
+          actionable: true,
+        }),
       ]),
     );
   });

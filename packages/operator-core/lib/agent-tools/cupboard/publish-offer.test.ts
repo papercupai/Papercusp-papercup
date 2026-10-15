@@ -1,10 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { generateKeyPairSync, sign } from 'node:crypto';
 
 const io = vi.hoisted(() => ({
   postCommerceOffer: vi.fn(),
+  readBlueprintReleaseRevenueDependencies: vi.fn(),
+  resolveLocalGithubIdentity: vi.fn(),
+  loadHiveKeyStatus: vi.fn(),
+  signWithHiveKey: vi.fn(),
 }));
 
 vi.mock('../../cupboard/commerce-door-gate-io', () => io);
+vi.mock('../../cupboard/blueprint-release', () => ({ readBlueprintReleaseRevenueDependencies: io.readBlueprintReleaseRevenueDependencies }));
+vi.mock('../../blueprint/installed-blueprints', () => ({ INSTALLED_BLUEPRINTS_DIR: () => '/retained-blueprints' }));
+vi.mock('../../identity/resolve-local-github-identity', () => ({ resolveLocalGithubIdentity: io.resolveLocalGithubIdentity }));
+vi.mock('../../identity/hive-keypair', () => ({ loadHiveKeyStatus: io.loadHiveKeyStatus, signWithHiveKey: io.signWithHiveKey }));
 
 import tool from './publish-offer';
 import {
@@ -12,6 +21,9 @@ import {
   identityMarkupSplitManifest,
   identityPerUseOfferTerms,
 } from '../../cupboard/identity-per-use-offer';
+import { sellerReceiptAuthoritySigningBytes, verifySellerReceiptAuthority } from '../../p2p/metered-invocation';
+
+const NEVER_EMIT_SELLER_TOKEN = 'never-emit-me';
 
 const PER_USE_INPUT = {
   productId: 'prod-use',
@@ -101,6 +113,40 @@ describe('cupboard:publish-offer agent-tool production door', () => {
       status: 422,
     });
   });
+
+  it.each([false, true])('signs publisher-bound offer identity with the chosen hive and forwards the same authenticated bearer (identity=%s)', async identity => {
+    const pair = generateKeyPairSync('ed25519');
+    const pubkeyBase64 = pair.publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64');
+    io.resolveLocalGithubIdentity.mockResolvedValue({ kind: 'ok', githubUserId: 42, token: NEVER_EMIT_SELLER_TOKEN });
+    io.loadHiveKeyStatus.mockResolvedValue({ kind: 'ok', pubkeyBase64 });
+    io.signWithHiveKey.mockImplementation(async (_workspace, _hive, bytes) => sign(null, bytes, pair.privateKey));
+    io.postCommerceOffer.mockResolvedValue({ ok: true });
+    const input = identity ? { ...PER_USE_INPUT, skuRef: undefined, unitPriceMicros: undefined,
+      meterUnit: undefined, priceVersion: undefined, splitManifestHash: undefined,
+      identityRelease: { id: 'publisher-identity', version: '1.0.0' } } : PER_USE_INPUT;
+    const result = await tool.handler(tool.args.parse({ ...input,
+      receiptSigningHive: { workspaceId: 'seller-ws', hiveSlug: 'seller-hive' } }), {} as never);
+    expect(body(result)).toMatchObject({ ok: true });
+    const request = io.postCommerceOffer.mock.calls[0]![0];
+    const binding = { seller: 'gh:42', productId: PER_USE_INPUT.productId, offerId: PER_USE_INPUT.offerId,
+      skuRef: identity ? 'identity-release:publisher-identity@1.0.0' : PER_USE_INPUT.skuRef, pubkeyBase64 };
+    expect(io.loadHiveKeyStatus).toHaveBeenCalledExactlyOnceWith('seller-ws', 'seller-hive');
+    expect(io.signWithHiveKey).toHaveBeenCalledExactlyOnceWith('seller-ws', 'seller-hive', sellerReceiptAuthoritySigningBytes(binding));
+    expect(request.receiptAuthority.pubkeyBase64).toBe(pubkeyBase64);
+    expect(verifySellerReceiptAuthority(binding, request.receiptAuthority)).toBe(true);
+    expect(io.postCommerceOffer.mock.calls[0]![1]).toEqual({ authToken: NEVER_EMIT_SELLER_TOKEN });
+  });
+
+  it.each(['github', 'key'] as const)('refuses unavailable %s authority before signing or publishing', async unavailable => {
+    io.resolveLocalGithubIdentity.mockResolvedValue(unavailable === 'github' ? { kind: 'unavailable' }
+      : { kind: 'ok', githubUserId: 42, token: NEVER_EMIT_SELLER_TOKEN });
+    io.loadHiveKeyStatus.mockResolvedValue({ kind: 'missing' });
+    expect(body(await tool.handler(tool.args.parse({ ...PER_USE_INPUT,
+      receiptSigningHive: { workspaceId: 'seller-ws', hiveSlug: 'seller-hive' } }), {} as never)))
+      .toMatchObject({ ok: false, error: unavailable === 'github' ? 'gh_auth_required' : 'seller_signing_key_required' });
+    expect(io.signWithHiveKey).not.toHaveBeenCalled();
+    expect(io.postCommerceOffer).not.toHaveBeenCalled();
+  });
 });
 
 // flywheel P-015 / R-1: an identity release carries a per-use offer whose
@@ -117,9 +163,11 @@ describe('cupboard:publish-offer for a paid identity release', () => {
   };
   const SKU = 'identity-release:papercusp-engineer@1.2.0';
   const DEFAULT_PRICE_VERSION = 'identity-markup-v1;markup=2000;creator=9000;component=0;dao=1000';
+  const components = [{ packageKind: 'blueprint', ref: 'dependency', revision: '1.0.0', contentHash: 'a'.repeat(64), author: 'alice' }];
 
   beforeEach(() => {
     vi.clearAllMocks();
+    io.readBlueprintReleaseRevenueDependencies.mockResolvedValue(components);
   });
 
   function storeEcho() {
@@ -166,10 +214,26 @@ describe('cupboard:publish-offer for a paid identity release', () => {
     );
     const sent = io.postCommerceOffer.mock.calls[0]![0] as { perUse: Record<string, unknown> };
     expect(sent.perUse.unitPriceMicros).toBe(350);
-    expect(sent.perUse.priceVersion).toBe('identity-markup-v1;markup=3500;creator=6000;component=3000;dao=1000');
+    const expected = identityPerUseOfferTerms({ identity: IDENTITY_INPUT.identityRelease, markupBps: 3500,
+      creatorBps: 6000, componentBps: 3000, componentDependencies: components });
+    if (!expected.ok) throw new Error(expected.detail);
+    expect(sent.perUse.priceVersion).toBe(expected.terms.priceVersion);
     expect(sent.perUse.splitManifestHash).toBe(
-      identityMarkupSplitManifest({ creatorBps: 6000, componentBps: 3000 }).manifestHash,
+      identityMarkupSplitManifest({ creatorBps: 6000, componentBps: 3000, componentDependencies: components }).manifestHash,
     );
+    expect(io.readBlueprintReleaseRevenueDependencies).toHaveBeenCalledWith('/retained-blueprints', IDENTITY_INPUT.identityRelease);
+  });
+
+  it('refuses missing attribution and forged component terms before publishing to the Worker', async () => {
+    const input = { ...IDENTITY_INPUT, identityRelease: { ...IDENTITY_INPUT.identityRelease, componentBps: 3000 } };
+    io.readBlueprintReleaseRevenueDependencies.mockRejectedValueOnce(new Error('no pinned publisher id'));
+    expect(body(await tool.handler(tool.args.parse(input), {} as never))).toMatchObject({ ok: false, error: 'identity-component-closure' });
+    const forged = identityPerUseOfferTerms({ identity: IDENTITY_INPUT.identityRelease, componentBps: 3000,
+      componentDependencies: components.map((pin) => ({ ...pin, author: 'mallory' })) });
+    if (!forged.ok) throw new Error(forged.detail);
+    expect(body(await tool.handler(tool.args.parse({ ...PER_USE_INPUT, ...forged.terms }), {} as never)))
+      .toMatchObject({ ok: false, error: 'identity-offer-mismatch' });
+    expect(io.postCommerceOffer).not.toHaveBeenCalled();
   });
 
   it('refuses a caller-supplied skuRef or term beside identityRelease, and a non-per-use identity offer', () => {

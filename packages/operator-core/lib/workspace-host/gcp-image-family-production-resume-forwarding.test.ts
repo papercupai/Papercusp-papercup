@@ -14,7 +14,7 @@
 import type { WorkspaceHostProviderConnection } from '@papercusp/deployment-driver';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { executeGcpImageFamilyRelease } from './gcp-image-family';
+import { executeGcpImageFamilyRelease, GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS } from './gcp-image-family';
 import { executeConfiguredGcpImageFamilyRelease } from './gcp-image-family-production';
 
 vi.mock('./gcp-image-family', async (importOriginal) => ({
@@ -112,5 +112,58 @@ describe('executeConfiguredGcpImageFamilyRelease execution forwarding', () => {
     const call = executorMock.mock.calls[0];
     expect(call).toHaveLength(2);
     expect(call?.[2]).toBeUndefined();
+  });
+});
+
+/**
+ * WI-10006408 — the same HOP for the request's SBOM-derived guest-tool versions: the seam must
+ * hand them to the adapter that pins the image provenance, and refuse a contradicting operator
+ * file before the executor (and so before any billable build) runs.
+ */
+describe('executeConfiguredGcpImageFamilyRelease guest-tool version forwarding', () => {
+  const derived = Object.fromEntries(
+    GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS.map((name, index) => [name, `1.${index}-1.el10`]),
+  );
+  const pinnedBy = (adapter: unknown) =>
+    (adapter as { pinnedGuestToolVersions?: Readonly<Record<string, string>> }).pinnedGuestToolVersions;
+
+  beforeEach(() => {
+    executorMock.mockClear();
+  });
+
+  it('pins the adapter to the request-carried SBOM versions when no operator file is given', async () => {
+    await executeConfiguredGcpImageFamilyRelease(
+      { projectId: PROJECT_ID, guestToolVersions: derived } as never,
+      connection(),
+      compositionOptions(),
+    );
+    expect(executorMock).toHaveBeenCalledTimes(1);
+    expect(pinnedBy(executorMock.mock.calls[0]?.[1])).toEqual(derived);
+  });
+
+  it('accepts an operator file that restates the SBOM versions', async () => {
+    await executeConfiguredGcpImageFamilyRelease(
+      { projectId: PROJECT_ID, guestToolVersions: derived } as never,
+      connection(),
+      { ...compositionOptions(), guestToolVersions: { curl: ` ${derived.curl} ` } },
+    );
+    expect(pinnedBy(executorMock.mock.calls[0]?.[1])).toEqual(derived);
+  });
+
+  it('refuses an operator file that contradicts the SBOM before the executor runs', async () => {
+    await expect(
+      executeConfiguredGcpImageFamilyRelease(
+        { projectId: PROJECT_ID, guestToolVersions: derived } as never,
+        connection(),
+        { ...compositionOptions(), guestToolVersions: { 'google-guest-agent': '0.1' } },
+      ),
+    ).rejects.toThrow(/disagrees with the bake SBOM: google-guest-agent \(override 0\.1; SBOM /);
+    expect(executorMock).not.toHaveBeenCalled();
+  });
+
+  it('CONTROL: an adapter composed without the request versions is not pinned', async () => {
+    // Without this, pinnedBy() reading the wrong field would make the first case pass vacuously.
+    await executeConfiguredGcpImageFamilyRelease({ projectId: PROJECT_ID } as never, connection(), compositionOptions());
+    expect(pinnedBy(executorMock.mock.calls[0]?.[1])).toBeUndefined();
   });
 });

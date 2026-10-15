@@ -53,12 +53,13 @@ const mocks = vi.hoisted(() => {
     return JSON.stringify(handle.accessScope) === JSON.stringify(scope) ? handle : undefined;
   });
   const writePty = vi.fn((_id: string, data: Buffer) => {
+    if (state.handle?.killed) return false;
     state.writes.push(data.toString('utf8'));
     return true;
   });
   const getScreenSerialization = vi.fn(async () => '\u001b[2JREADY>');
   const resizePty = vi.fn((_id: string, cols: number, rows: number) => {
-    if (!state.handle) return false;
+    if (!state.handle || state.handle.killed) return false;
     state.handle.headless.cols = cols;
     state.handle.headless.rows = rows;
     state.resizes.push({ cols, rows });
@@ -362,6 +363,38 @@ describe('interactive PTY capability family', () => {
       replacement_started: false,
     });
     expect(mocks.spawnPty).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports terminal truth for mutations while an exited handle is retained for its final screen', async () => {
+    await ptyOpenTool.handler({ command: 'bash' }, ctx());
+    mocks.state.task = { ...mocks.state.task, state: 'exited', exitCode: 0, exitReason: null };
+    mocks.state.handle!.killed = true;
+    mocks.state.handle!.exitCode = 0;
+    for (const result of [
+      await ptyWriteStdinTool.handler({ task_id: 'mptysession001', data: 'late\n' }, ctx()),
+      await ptyResizeTool.handler({ task_id: 'mptysession001', cols: 100, rows: 30 }, ctx()),
+    ]) {
+      expect(parseText(result)).toMatchObject({ reason: 'pty_session_ended', state: 'exited', exit_code: 0, replacement_started: false });
+    }
+    expect(mocks.writePty).not.toHaveBeenCalled();
+    expect(mocks.resizePty).not.toHaveBeenCalled();
+    const final = await ptyReadScreenTool.handler({ task_id: 'mptysession001' }, ctx());
+    expect((final as any).content[0].resource.text).toBe('\u001b[2JREADY>');
+  });
+
+  it('releases the environment transport when a governed PTY cannot spawn', async () => {
+    const release = vi.fn();
+    mocks.beginSyncEnrolment.mockImplementationOnce(() => ({
+      taskId: 'mptysession001', confined: true, unconfinedReason: null,
+      unitKind: 'scope', scopeUnit: 'pc-mptysession001.scope', enrolled: true,
+      registrationReady: null, releaseEnvironmentTransport: release,
+      wrap: vi.fn((binary: string, argv: string[]) => ({ binary, argv })),
+    }));
+    mocks.spawnPty.mockImplementationOnce(() => { throw new Error('governor refused spawn'); });
+    const result = await ptyOpenTool.handler({ command: 'bash' }, ctx());
+    expect(parseText(result)).toMatchObject({ reason: 'pty_spawn_failed' });
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(mocks.completeSyncEnrolment).not.toHaveBeenCalled();
   });
 
   it('kills a live PTY through the durable task manager after its local handle is lost', async () => {

@@ -46,6 +46,10 @@ import { _resetBootHistoryForTests } from '../boot-history';
 import { openOwnLog, type OwnLog } from '../peer-log';
 import { buildAnnounce, type SignedAnnounce } from '../announce';
 import { CURRENT_SCHEMA_VERSION } from '../schema-version';
+import { stubHivePolicyReadsForSuite } from './_hive-policy-read-stubs';
+
+// WI-10007530: no PG here, and the merge pass no longer swallows a failed policy read.
+stubHivePolicyReadsForSuite();
 
 const cleanups: Array<() => void | Promise<void>> = [];
 

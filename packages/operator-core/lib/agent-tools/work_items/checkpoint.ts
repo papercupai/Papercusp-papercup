@@ -57,8 +57,8 @@
  * checkpoint with no built-in signal that data was lost. Uses
  * `setWorkItemCheckpointWithPrior`, which surfaces the prior length for FREE (the row
  * is already SELECTed FOR UPDATE inside the write transaction to build the journal
- * ring) — no extra round-trip, so the existing "plain replace never pre-reads"
- * contract (see the append-mode tests) is unaffected.
+ * ring) — no extra round-trip; both replacement and append build their stored body
+ * from the prior selected inside the write transaction.
  *
  * EI-18140632570924965: EI-9325's shrinkWarning was WARN-ONLY — it still executed
  * the destructive write in the same call. Confirmed live: a plain replace on WI-4487
@@ -106,21 +106,14 @@
  * Deliberately NOT `z.coerce.boolean()` — that coerces via `Boolean(x)`, which would
  * turn the string `"false"` into `true`.
  *
- * WI-7190: `append: true` used to arm NO shrink guard at all — the one mode whose
- * whole contract is "never lose the existing text" was the mode with no shrink
- * protection. Confirmed live: a caller's append pre-read (the `getWorkItemCheckpoint`
- * call above, used only to build the joined text) came back empty on a resolvable
- * item while a real 10,671-char checkpoint existed — the join then had nothing to
- * join onto, `checkpointToStore` collapsed to just the addendum, and the write
- * silently REPLACED the prior checkpoint while still returning
- * `ok:true, verified:true`. Fix: the append path now ALSO arms a guard — run inside
- * the SAME locked write transaction as `setWorkItemCheckpointWithPrior`'s own prior
- * read — that compares what the tool's separate pre-read saw against the
- * AUTHORITATIVE prior read at write time. If the pre-read came back
- * null/empty/errored while the authoritative prior is substantial (>500 chars), the
- * write is refused (`append_base_unreadable`) instead of silently degrading to a
- * replace. `confirmShrink: true` still forces it through (same escape hatch as the
- * plain-replace guard), for a caller that genuinely wants to reset the checkpoint.
+ * WI-7190 / EI-25882323366169485: append used to build its joined body with a
+ * separate `getWorkItemCheckpoint` read before the locked write. If that read failed
+ * or returned empty, the append either refused a valid correction or risked replacing
+ * the carried note. The durable fix is to join the submitted addendum with the
+ * authoritative prior INSIDE `setWorkItemCheckpointWithPrior`'s locked transform.
+ * There is no read-before-write race or extra read whose failure can strand append;
+ * the existing body-preservation guard still refuses an append that would be trimmed
+ * away by the checkpoint size cap.
  *
  * EI-19447043119380534: `{ id, checks }` with `checkpoint` OMITTED used to DESTROY the
  * body — it rendered a note consisting only of the `## Checks` section and returned
@@ -159,7 +152,11 @@ import { lookupWorkItem } from './_lookup';
 import { deriveRepoPathsFromText } from './_derive-paths';
 import { unresolvedRefsInBody, unresolvedRefsWarning } from './unresolved-refs';
 import { unresolvedPlanDecisionRefs } from '../coordination/decision-ref-advisory';
-import { carryRowTextSchema, CARRY_ROW_ID_SCHEMA } from '../_carry-row-id';
+import {
+  carryRowTextSchema,
+  CARRY_ROW_ID_SCHEMA,
+  CARRY_ROW_REPLACES_SCHEMA,
+} from '../_carry-row-id';
 import { detectPauseDeclaration, pauseNotEnforcedWarning } from '../../carry-note-pause-declaration';
 import { runBulk, bulkContent } from '../_bulk';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
@@ -168,6 +165,7 @@ import {
   expandCurrentTurnSentinel,
   hasCurrentTurnSentinel,
   markUnverifiedOwnerAttribution,
+  normalizeUnverifiedOwnerAttributionMarkers,
   ownerAttributionEnforcement,
   retainedDirectiveMatches,
   retainedProvenanceText,
@@ -183,11 +181,13 @@ import {
   coerceCarryRowShape,
   type CarryArgRepair,
   evidenceFirst,
-  lintRelativeScratchPaths,
+  FALSIFIER_MISSING_NOTE,
+  checksMissingFalsifier,
   RELATIVE_SCRATCH_ADVISORY,
   normalizeCheckEntries,
   normalizeFlattenedContinuityProbeRow,
   patchExistingCheckEntries,
+  resolveCarryRowRefs,
   renderCheckLine,
   renderCarryNote,
   sanitizeCarryRowId,
@@ -196,9 +196,11 @@ import {
   truncateCarryField,
   withCarryNoteChecks,
   withCarryNoteWalls,
+  withStableCarryRowIds,
   CHECKPOINT_BODY_CAP_CHARS,
   type WorkItemSubject,
 } from '../../carry-note';
+import { filterTrackedRelativeScratchPaths } from '../checkpoint-relative-scratch';
 import { detectScopeOverreach } from '../../carry-note-probe-scope';
 import { describeUnreadRun } from '../../carry-note-unread-run';
 import { uncoveredAbsencePremises } from '../../premises-claim-port';
@@ -207,6 +209,7 @@ import {
   evaluateFrozenLineageCarryText,
   frozenLineageCarryViolationPayload,
 } from '../../release/frozen-lineage-execution-policy';
+import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target';
 import { LIMITS } from '../limits';
 
 /**
@@ -224,6 +227,62 @@ import { continuityPredicateSchema, continuityProbeSchema } from '../../continui
  *  accidental collision between two DIFFERENT checkpoint bodies is not a real concern. */
 function shortHash(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 12);
+}
+
+type CheckpointPhase = { itemId: string; itemIndex: number; itemCount: number; phase: string };
+type CheckpointPhaseContext = { log?: (message: string) => void };
+
+function emitCheckpointPhase(
+  ctx: CheckpointPhaseContext,
+  detail: CheckpointPhase,
+  state: 'started' | 'completed' | 'failed',
+  elapsedMs?: number,
+): void {
+  if (typeof ctx.log !== 'function') return;
+  try {
+    ctx.log(
+      `[work_items:checkpoint:phase] ${JSON.stringify({
+        ...detail,
+        state,
+        ...(elapsedMs === undefined ? {} : { elapsedMs }),
+      })}`,
+    );
+  } catch {
+    // Diagnostic logging must never change checkpoint persistence semantics.
+  }
+}
+
+/** Batch-call phase markers survive the caller's deadline, identifying the last
+ * awaited phase even when work_items:checkpoint itself returns after that caller
+ * has timed out. The shorthand path stays quiet. */
+async function observeCheckpointPhase<T>(
+  ctx: CheckpointPhaseContext,
+  detail: CheckpointPhase,
+  run: () => Promise<T> | T,
+): Promise<T> {
+  const started = performance.now();
+  emitCheckpointPhase(ctx, detail, 'started');
+  try {
+    const result = await run();
+    emitCheckpointPhase(ctx, detail, 'completed', Math.round(performance.now() - started));
+    return result;
+  } catch (error) {
+    emitCheckpointPhase(ctx, detail, 'failed', Math.round(performance.now() - started));
+    throw error;
+  }
+}
+
+function observeCheckpointSyncPhase<T>(ctx: CheckpointPhaseContext, detail: CheckpointPhase, run: () => T): T {
+  const started = performance.now();
+  emitCheckpointPhase(ctx, detail, 'started');
+  try {
+    const result = run();
+    emitCheckpointPhase(ctx, detail, 'completed', Math.round(performance.now() - started));
+    return result;
+  } catch (error) {
+    emitCheckpointPhase(ctx, detail, 'failed', Math.round(performance.now() - started));
+    throw error;
+  }
 }
 
 /**
@@ -273,16 +332,22 @@ async function unresolvedProsePathsInCheckpoint(
 /** Count the rows an additive checks write needs before normalization applies its cap. */
 function appendChecksOverflowCount(
   priorNote: string | null,
-  suppliedChecks: ReadonlyArray<{ id?: string; claim: string }> | undefined,
+  suppliedChecks: ReadonlyArray<{ id?: string; claim: string; replaces?: string }> | undefined,
 ): number {
   if (suppliedChecks === undefined) return 0;
-  const priorChecks = splitCarryNoteChecks(priorNote).checks;
+  const refs = resolveCarryRowRefs({
+    priorWalls: [],
+    priorChecks: splitCarryNoteChecks(priorNote).checks,
+    checks: suppliedChecks,
+  });
+  const priorChecks = refs.priorChecks;
+  const resolvedChecks = refs.checks ?? [];
   // A legacy note may exceed today's cap. Updating only rows that already exist
   // is an in-place patch, not an overflowing union, so preserve the full legacy
   // evidence instead of refusing the refresh or normalizing away its tail.
-  if (suppliedChecks.length > 0 && patchExistingCheckEntries(suppliedChecks, priorChecks) !== null) return 0;
+  if (resolvedChecks.length > 0 && patchExistingCheckEntries(resolvedChecks, priorChecks) !== null) return 0;
   const unionKeys = new Set(
-    [...suppliedChecks, ...priorChecks]
+    [...resolvedChecks, ...priorChecks]
       .filter((row) => (row.claim ?? '').trim().length > 0)
       .map((row) => carryRowKey(row)),
   );
@@ -335,6 +400,7 @@ type AppendChecksOverflowRow = {
   id?: string;
   claim: string;
   recheck?: string;
+  falsifier?: string;
   verified?: string;
   observed?: string;
   contested?: string;
@@ -435,6 +501,14 @@ function fitChecksForAppendBody(
         repairs,
       );
     }
+    if (typeof out.falsifier === 'string') {
+      out.falsifier = truncateCarryField(
+        out.falsifier,
+        CARRY_ROW_SOFT_CAPS.falsifier,
+        `carriedChecks[${i}].falsifier`,
+        repairs,
+      );
+    }
     if (typeof out.verified === 'string') {
       out.verified = truncateCarryField(
         out.verified,
@@ -462,20 +536,9 @@ function fitChecksForAppendBody(
     return out;
   });
 
-  let merged = bounded;
-  if (withCarryNoteChecks(body, merged).length <= CHECKPOINT_CAP) {
-    return { merged, dropped: [], truncatedFields: repairs.length };
-  }
-
-  // Put evidence-bearing rows first only when the cap actually bites; stable
-  // ordering within each tier keeps ordinary notes from churning.
-  merged = evidenceFirst(merged);
-  const dropped: AppendChecksOverflowRow[] = [];
-  while (merged.length > 0 && withCarryNoteChecks(body, merged).length > CHECKPOINT_CAP) {
-    dropped.push(merged.pop()!);
-  }
-
-  return { merged, dropped: dropped.reverse(), truncatedFields: repairs.length };
+  // A byte cap never closes a carried row. If these rows leave no room for the
+  // submitted append, appendBodyPreservationGuard refuses that append atomically.
+  return { merged: bounded, dropped: [], truncatedFields: repairs.length };
 }
 
 /**
@@ -497,7 +560,10 @@ function appendChecksOverflowRows(
   suppliedChecks: ReadonlyArray<{
     id?: string;
     claim: string;
+    replaces?: string;
     recheck?: string;
+    falsifier?: string;
+    sampleAdequate?: boolean;
     verified?: string;
     observed?: string;
     contested?: string;
@@ -505,19 +571,26 @@ function appendChecksOverflowRows(
   }>,
 ): AppendChecksOverflowRow[] {
   if (suppliedChecks.length === 0) return [];
-  const priorChecks = splitCarryNoteChecks(priorNote).checks;
+  const refs = resolveCarryRowRefs({
+    priorWalls: [],
+    priorChecks: splitCarryNoteChecks(priorNote).checks,
+    checks: suppliedChecks,
+  });
+  const priorChecks = refs.priorChecks;
+  const resolvedChecks = refs.checks ?? [];
 
   // An all-existing keyed refresh is patched in place and deliberately preserves
   // over-cap legacy rows, so it cannot produce an additive-cap eviction.
-  if (patchExistingCheckEntries(suppliedChecks, priorChecks) !== null) return [];
+  if (patchExistingCheckEntries(resolvedChecks, priorChecks) !== null) return [];
 
-  const merged = normalizeCheckEntries([...suppliedChecks, ...priorChecks], priorChecks);
+  const merged = normalizeCheckEntries([...resolvedChecks, ...priorChecks], priorChecks);
   const keptKeys = new Set(merged.map((row) => carryRowKey(row)));
   const evicted = priorChecks.filter((row) => row.claim.trim().length > 0 && !keptKeys.has(carryRowKey(row)));
 
   return evicted.slice(0, CARRY_NOTE_MAX_CHECKS * CARRY_CAP_HARD_MULTIPLE).map((row) => {
     const id = sanitizeCarryRowId(row.id);
     const recheck = row.recheck?.trim();
+    const falsifier = row.falsifier?.trim();
     const verified = row.verified?.trim();
     const observed = row.observed?.trim();
     const contested = row.contested?.trim();
@@ -525,6 +598,7 @@ function appendChecksOverflowRows(
       ...(id ? { id } : {}),
       claim: row.claim.trim(),
       ...(recheck ? { recheck } : {}),
+      ...(falsifier ? { falsifier } : {}),
       ...(verified ? { verified } : {}),
       ...(observed ? { observed } : {}),
       ...(contested ? { contested } : {}),
@@ -592,7 +666,11 @@ class FrozenCarryCheckpointError extends Error {
 function frozenWorkItemCarryViolation(text: string | null | undefined): FrozenCarryViolationPayload | null {
   if (!text?.trim()) return null;
   return frozenLineageCarryViolationPayload(
-    evaluateFrozenLineageCarryText({ surface: 'work-item-checkpoint', text }),
+    evaluateFrozenLineageCarryText({
+      surface: 'work-item-checkpoint',
+      text,
+      target: resolveHomeGateVerdictTarget(),
+    }),
   );
 }
 
@@ -682,6 +760,19 @@ const checkpointBodySchema = checkpointBodySpec().meta({ id: 'work-items-checkpo
  */
 const rootCarryAliasField = z.string().max(CHECKPOINT_CAP).nullish();
 
+/**
+ * WI-10005640: `items[]` entries take the SAME carry vocabulary as the single
+ * shorthand. Measured 2026-10-02: ~40 `items.N: Unrecognized keys: "did","left",
+ * "insight","next"` refusals/48h across ~15 owners — the natural batch shape is
+ * the loop carry-note shape, and rejecting it at the entry level made callers
+ * discover the `checkpoint:{…}` nesting by failing. Folded per entry with the SAME
+ * `checkpointFromRootAliases` as the root (explicit `checkpoint` wins). One
+ * `$defs` id keeps the published argSchema (PINNED shrink-only) from growing 7×.
+ */
+// No `.describe`: compact delivery INLINES $refs (schema-ref-inline.ts), so a description
+// here is paid 7x there (+558 B measured). The entry's `checkpoint` description documents it.
+const itemCarryAliasField = rootCarryAliasField.meta({ id: 'work-items-checkpoint-carry-alias-v1' });
+
 function checkpointFromRootAliases(args: {
   checkpoint?: string | null;
   note?: string | null;
@@ -737,13 +828,12 @@ function rowsModeSpec() {
     .describe(
       'P-013: how supplied `checks` rows are applied. `merge` (default) unions ' +
         'supplied rows onto the carried set, so an incremental check update cannot drop unmentioned rows. `merge` + ' +
-        '`checks:[]` is a no-op; use explicit `replace` + `checks:[]` to clear rows. This controls CHECK ROWS only, ' +
+        '`checks:[]` is a no-op under either mode unless `retireIds` names individual rows. This controls CHECK ROWS only, ' +
         "and `retireIds` is rejected unless `rowsMode:'replace'` is explicit — it is never silently ignored on a merge. " +
         "never the checkpoint body. With `append:true` + `rowsMode:'replace'`, row retirement requires exact `retireIds`, " +
         "even with `confirmRetire:true`. A full authoritative body+rows replacement is `append:false, rowsMode:'replace', " +
-        'confirmShrink:true, confirmRetire:true`. Without confirmShrink, a >50% body shrink is auto-preserved and its ' +
-        'checks become additive; without confirmRetire, omitted carried checks are refused before write. Prefer ' +
-        '`retireIds` over a blind `confirmRetire:true` when your view of the carried set may be an excerpt.',
+        'confirmShrink:true, retireIds:[...]`. Without retireIds, omitted carried rows survive. ' +
+        'confirmRetire never authorizes omission or cap eviction. Without confirmShrink a >50% body shrink is auto-preserved.',
     );
 }
 
@@ -765,15 +855,17 @@ function retireIdsSpec() {
     .max(CARRY_NOTE_MAX_CHECKS * 2)
     .optional()
     .describe(
-      "rowsMode:'replace' safety, STRONGER than `confirmRetire` alone (EI-21923095696933477): name exactly the " +
+      "rowsMode:'replace' safety: name exactly the " +
         'carried row `id`s (or claim text for a row with no `id` — the same identity `carryRowKey` uses) you intend ' +
         'to retire. The write refuses — even with confirmRetire:true — unless this set EXACTLY matches what would ' +
         'actually be dropped, naming both any row you missed and any name that would not have dropped, so an ' +
-        'unlisted stored row can never be dropped by omission. Use this instead of a blind confirmRetire:true ' +
-        "whenever your view of the carried set may be an excerpt (e.g. a post-compaction carry document) rather " +
-        'than the full stored list — call work_items:get first for the complete set, or send `rowsMode:"replace"` ' +
-        'with neither `confirmRetire` nor `retireIds` to see the full drop list in a refusal before committing to one.',
-    );
+        'unlisted stored row can never be dropped by omission. Required for retirement under every append/body shape. ' +
+        'Call work_items:get { checksOnly:true } for stored ids before choosing which rows to close.',
+    )
+    .meta({
+      'x-papercusp-call-constraint':
+        "Requires effective `rowsMode:'replace'`; an `items[]` entry overrides the root setting, and omitted `rowsMode` defaults to `'merge'`.",
+    });
 }
 
 /** EI-9036: join an addendum onto the prior checkpoint text, bounded to CHECKPOINT_CAP.
@@ -876,6 +968,10 @@ function checksSpec() {
             // the other, which is also what made coerceCarryRowShape's key -> id
             // repair inert here.
             id: CARRY_ROW_ID_SCHEMA,
+            // P-025: re-word an id-less carried check as a one-row keyed update at the
+            // cap. Shared with loop:checkpoint so both carry surfaces accept the same
+            // [#id] or exact-claim reference and preserve the target's evidence/age.
+            replaces: CARRY_ROW_REPLACES_SCHEMA,
             claim: carryRowTextSchema(CARRY_ROW_SOFT_CAPS.claim, 'The claim about external state, stated concretely.', {
               min: 1,
             }),
@@ -891,6 +987,17 @@ function checksSpec() {
               CARRY_ROW_SOFT_CAPS.recheck,
               'The concrete probe that would falsify the claim.',
             ).optional(),
+            // EI-23771449112267271: same contract as loop:checkpoint's `falsifier` /
+            // `sampleAdequate` (and facts:assert `falsifier`). Persisted / write-time only
+            // respectively; the SHARED normalizer in ../../carry-note owns both semantics.
+            falsifier: carryRowTextSchema(
+              CARRY_ROW_SOFT_CAPS.falsifier,
+              'Result that would mean this claim is FALSE (as facts:assert `falsifier`). A probe says how to look; this says what refutes it.',
+            ).optional(),
+            sampleAdequate: z
+              .boolean()
+              .optional()
+              .describe('`false` = probed, but the sample could not discriminate the claim from its negation; renders ? not ✓.'),
             verified: carryRowTextSchema(
               CARRY_ROW_SOFT_CAPS.verified,
               'The EVIDENCE STRING (what you actually observed). For compatibility, boolean `true`/`false` ' +
@@ -978,19 +1085,20 @@ function checksSpec() {
         '`## Checks` section every time this checkpoint is re-injected. Put hash/id/timestamp/state expectations ' +
         'HERE rather than in checkpoint prose, so the probe travels with the claim and a successor can tell an ' +
         'ASSERTED claim from a VERIFIED one. Carry-forward semantics: OMITTED preserves the existing rows (a ' +
-        "plain rewrite never silently drops them) and [] clears them. With `append: true` or `rowsMode:'merge'` a supplied list is " +
+        "plain rewrite never silently drops them) and [] preserves them. With `append: true` or `rowsMode:'merge'` a supplied list is " +
         `UNIONED onto the carried set (supplied wins on matching claim text), but capped at ` +
         `${CARRY_NOTE_MAX_CHECKS}: an unconfirmed checks-only overflow refuses atomically before it can drop rows; ` +
-        '`confirmRetire:true` explicitly permits the cap eviction and reports the dropped carried rows. A body-bearing ' +
+        '`confirmRetire:true` cannot authorize cap eviction. A body-bearing ' +
         'append/merge still stores the body and every carried row, admits supplied rows only into vacant slots, and ' +
         'returns `checksNotRetained`/`checksNotRetainedRows` for supplied rows that did not fit. Retire stale rows with ' +
         'a plain replace first, or append without `checks` to leave the carried set untouched. ' +
         "WITHOUT append, `rowsMode:'merge'` (the default) unions the supplied list with the carried set; use explicit " +
-        "`rowsMode:'replace'` to send the FULL set you want stored, because any stored claim you leave out is DROPPED — " +
-        'that is how you RETIRE a stale check. A supplied ' +
+        "`rowsMode:'replace'` plus exact `retireIds` to close individual carried rows. Without retireIds, omitted rows survive. A supplied " +
         "row whose claim text matches a stored one inherits that row's recheck/verified/contested/sinceMs when " +
         'you omit them, so re-sending a claim never loses its evidence. Supplying `verified` clears an inherited ' +
         '`contested` and vice versa — they are two renderings of ONE evidence slot, not independent fields — and ' +
+        'under merge, use `replaces` with the carried row id or exact old claim to re-word an id-less row at the cap ' +
+        'without treating it as a new addition. Unmatched refs are reported and treated as additions. ' +
         'evidence that contradicts itself (for example "STILL RUNNING") is auto-downgraded to ⚠ CONTESTED rather ' +
         'than rendering as ✓ VERIFIED. Rows dropped come back as `checksDropped`; additive-cap refusals also include the exact stored rows as `checksDroppedRows` with sanitized ids. A bare string row is accepted as shorthand for `{ claim: <that string> }`.',
     );
@@ -1047,6 +1155,10 @@ const itemSpec = z.object({
   checkpoint: checkpointBodySchema.describe(
     'compressed in-flight state; null or clear:true ⇒ clear; omission requires `checks`, `dependsOn`, `learned`, or `learnedLevel` as a metadata-only patch; blank string requires confirmClear:true; accepts the structured { did, left, insight, next } carry-note shape and loop aliases',
   ),
+  did: itemCarryAliasField,
+  left: itemCarryAliasField,
+  insight: itemCarryAliasField,
+  next: itemCarryAliasField,
   clear: looseBoolean().describe(
     'explicitly clear the checkpoint body. Equivalent to checkpoint:null and rejected with a non-blank checkpoint.',
   ),
@@ -1059,16 +1171,11 @@ const itemSpec = z.object({
     .optional()
     .describe('per-item harness (else the batch `harness` default / ctx / item lookup)'),
   append: looseBoolean().describe(
-      'EI-9036: append `checkpoint` onto the EXISTING stored checkpoint (joined with a `---` separator) instead ' +
-      'of replacing it. By default supplied `checks` are UNIONED onto the carried set rather than replacing it ' +
-      '(EI-19944669306930709); explicit `rowsMode:\'replace\'` still replaces the check rows while append controls ' +
-      'only the body. Reads the current checkpoint first via the same path a ' +
-      'future pickup uses. A missing `checkpoint` is allowed with `checks` as an additive, body-preserving patch. ' +
-      'Otherwise append requires a non-blank `checkpoint` (append + clear is contradictory — rejected, not silently ' +
-      'treated as a clear). Bounded to the 32000-char cap: the superseded tail of the prior content is trimmed first if the join would ' +
-      `overflow it, preserving the oldest baseline and newest addendum whenever they fit. A body-bearing checks union that exceeds the ${CARRY_NOTE_MAX_CHECKS}-row cap still stores the body and carried ` +
-      'rows, and reports supplied rows that did not fit; an unconfirmed checks-only overflow refuses, while `confirmRetire:true` permits and reports the cap eviction. Retire stale rows with a ' +
-      'plain replace first or omit `checks`.',
+      'EI-9036: append `checkpoint` onto the EXISTING stored checkpoint (joined with `---`) instead of replacing it; ' +
+      'supplied `checks` are UNIONED onto the carried set (EI-19944669306930709; `rowsMode:\'replace\'` replaces check rows only). ' +
+      'No `checkpoint` + `checks` = additive body-preserving patch; otherwise a non-blank `checkpoint` is required ' +
+      '(append + clear is rejected). Bounded to the 32000-char cap (superseded prior tail is trimmed first). ' +
+      `Checks beyond the ${CARRY_NOTE_MAX_CHECKS}-row cap are reported; checks-only overflow refuses without deleting carried rows.`,
   ),
   confirmShrink: looseBoolean().describe(
     'EI-18140632570924965: a plain replace (no append) that would shrink a substantial prior checkpoint by ' +
@@ -1077,7 +1184,7 @@ const itemSpec = z.object({
   ),
   rowsMode: rowsModeSpec(),
   confirmRetire: looseBoolean().describe(
-    "rowsMode:'replace' safety (WI-42106) and merge-cap consent (EI-22489206594122743): if supplied checks would RETIRE carried rows, or a merge would evict carried rows at the cap, refuse before writing unless true. The refusal names every affected claim.",
+    'Compatibility field. Does not authorize omitted-row retirement or cap eviction; use exact `retireIds`.',
   ),
   retireIds: retireIdsSpec(),
   dependsOn: dependsOnSpec(),
@@ -1085,15 +1192,11 @@ const itemSpec = z.object({
   learned: learnedSpec(),
   learnedLevel: learnedLevelSpec(),
   unchanged: looseBoolean().describe(
-    'P-007/R-06: ATTEST that the stored checkpoint is still current instead of rewriting it. Refreshes the ' +
-      'checkpoint\'s freshness — clearing the flush gate\'s stale-checkpoint tripwire — while leaving the body ' +
-      'byte-identical, so a parked or blocked agent stops paying a prose rewrite for state that has not moved. ' +
-      'REQUIRES `contentHash` (the hash this tool returned on the write you are attesting to; work_items:get ' +
-      'also carries it). Mutually exclusive with checkpoint/clear/append/checks/dependsOn — an attestation writes ' +
-      'no text by construction. It is BOUNDED and cannot conceal changed state: it refuses if the hash does not ' +
-      'match what is stored (attestation_hash_mismatch), if the work-item row itself moved after the body was ' +
-      'written (attestation_state_changed), or once the chain/age budget is spent (attestation_exhausted) — at ' +
-      'which point a real checkpoint is required. A genuine write resets the budget.',
+    'P-007/R-06: ATTEST the stored checkpoint is still current instead of rewriting it (refreshes freshness, ' +
+      'body byte-identical). REQUIRES `contentHash` (from a prior write\'s result or work_items:get); mutually ' +
+      'exclusive with checkpoint/clear/append/checks/dependsOn. BOUNDED: refuses with attestation_hash_mismatch, ' +
+      'attestation_state_changed (item row moved after the body) or attestation_exhausted (chain/age budget spent) ' +
+      '— then write a real checkpoint; a genuine write resets the budget.',
   ),
   contentHash: contentHashSpec().describe(
       'The stored checkpoint hash you are attesting to (the `contentHash` a prior write returned). Required with ' +
@@ -1131,7 +1234,7 @@ export default defineTool({
     // belongs in `returns`, demand-loaded via tools:find rather than baked into
     // every system prompt (the WI-9334 move).
     '`rowsMode:"merge"` adds check rows while replacing the body; `"replace"` retires rows. ' +
-    'Full body+rows replacement requires `append:false, rowsMode:"replace", confirmShrink:true, confirmRetire:true`.',
+    'Full body+rows replacement requires `append:false, rowsMode:"replace", confirmShrink:true, retireIds:[...]`.',
   guidance: {
     when:
       'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor needs — ' +
@@ -1153,16 +1256,16 @@ export default defineTool({
       'A body reporting a run you LAUNCHED BUT HAVE NOT READ (in-flight wording plus a log/bash_id reference) while storing no check rows ' +
       'returns `unreadRunLint { flagged, note, signals }` — pass `checks:[{ claim, recheck }]` and OMIT `verified` so the row renders ' +
       '? PREDICTED and your successor re-measures instead of trusting the prose; any stored check row suppresses it. Advisory, never a refusal. ' +
-      'Every write is verify-read: a suspicious shrink is retried as a safe append, a disagreeing append is BLOCKED, ' +
+      'Every write is verify-read: a suspicious shrink is retried as a safe append, and append joins against the locked prior, ' +
       'and every refusal carries `errorCode` + recovery args. ' +
       'A non-clear write to a terminal item is refused with `errorCode:"terminal_item"`; reopen it explicitly with ' +
       '`work_items:set_state { id, state:"open", force:true }`, then claim it before resuming work. ' +
-      'A blocked write carries `errorCode` (`shrink_blocked` / `append_base_unreadable`) plus structured `recovery` args: ' +
+      'A blocked write carries `errorCode` plus structured `recovery` args: ' +
       '`append:true` to preserve prior content (also the form for a concise successor addendum to a detailed prior note), ' +
-      'or `append:false, rowsMode:"replace", confirmShrink:true, confirmRetire:true` for an intentional full body+rows replacement. ' +
+      'or `append:false, rowsMode:"replace", confirmShrink:true, retireIds:[...]` for an intentional full body+rows replacement. ' +
       'A verify-read miss is `checkpoint_verify_failed`. ' +
       'EI-21923095696933477: retiring rows off a carry-document EXCERPT rather than a fresh work_items:get read? ' +
-      'Prefer `retireIds` over a blind `confirmRetire:true` — name exactly which carried row ids/claims to drop; ' +
+      'Retirement requires `retireIds` — name exactly which carried row ids/legacy claims to close; ' +
       'the write refuses (`checkpoint_retire_ids_mismatch`, naming both directions of the mismatch) unless that ' +
       'set exactly matches what the replace would actually drop, so an unlisted stored row can never be dropped by omission.',
   },
@@ -1176,6 +1279,22 @@ export default defineTool({
   args: z
     .object({
       id: z.string().min(1).optional().describe('single shorthand: the work-item id (use with `checkpoint`)'),
+      // Keep the attestation pair early so compact discovery retains it when
+      // later nested fields consume the bounded schema budget.
+      unchanged: looseBoolean().describe(
+        'single shorthand default for `unchanged`; also the items[] default. ATTEST that the stored checkpoint ' +
+          'is still current instead of rewriting it. Requires `contentHash`. Do not send `checkpoint`, ' +
+          '`did`/`left`/`insight`/`next`, `clear`, `append`, `checks`, or `dependsOn` with `unchanged:true`; ' +
+          'omit `unchanged` when writing a new body. Conflicting fields return `attestation_conflicting_args`.',
+      ).meta({
+        'x-papercusp-call-constraint':
+          'when `unchanged:true` => `contentHash` required; `checkpoint`, `clear:true`, `append:true`, `checks`, ' +
+          '`retireIds`, and `dependsOn` forbidden (violations return `attestation_conflicting_args`); ' +
+          '`confirmRetire` cannot authorize a row mutation.',
+      }),
+      contentHash: contentHashSpec().describe(
+        'single shorthand default for `contentHash`; also the items[] default. Required with `unchanged`.',
+      ),
       /** The compressed in-flight state. Null ⇒ CLEAR the checkpoint.
        *  Omission is allowed only alongside `checks`, `dependsOn`, `learned`, or
        *  `learnedLevel`, which are metadata-only patches that preserve the stored body
@@ -1230,35 +1349,19 @@ export default defineTool({
         'single shorthand default for `rowsMode`; also the items[] default. This controls CHECK ROWS only, not the body. ' +
           "`merge` unions supplied checks without appending the body. With `append:true` + `rowsMode:'replace'`, " +
           '`retireIds` are required for any retired row; `confirmRetire:true` alone is not sufficient. A complete body+rows replacement is ' +
-          "append:false, rowsMode:'replace', confirmShrink:true, confirmRetire:true.",
+          "append:false, rowsMode:'replace', confirmShrink:true, retireIds:[...]. Without retireIds, omitted rows survive.",
       ),
       confirmRetire: looseBoolean().describe(
-        "single shorthand default for `confirmRetire`; also the items[] default. For non-append rowsMode:'replace', it authorizes retiring carried checks. With append:true + rowsMode:'replace', exact retireIds are required instead.",
+        'single shorthand compatibility field, also the items[] default. Cannot authorize omission or cap eviction; retirement requires exact `retireIds`.',
       ),
       retireIds: retireIdsSpec().describe(
-        "single shorthand default for `retireIds`; also the items[] default. A STRONGER, opt-in alternative to " +
-          "`confirmRetire` (EI-21923095696933477): name exactly the carried row ids/claims a rowsMode:'replace' " +
-          'should retire, and the write refuses on any mismatch instead of trusting a blind confirmRetire:true.',
+        "single shorthand default for `retireIds`; also the items[] default. Name exactly the carried row ids (legacy claim text for rows without ids) a rowsMode:'replace' " +
+          'should retire. Required for every retirement; the write refuses on any mismatch.',
       ),
       checks: checksSchema,
       dependsOn: dependsOnSpec(),
       learned: learnedSpec(),
       learnedLevel: learnedLevelSpec(),
-      // P-007/R-06. These MUST exist on the single shorthand, not only on the items[]
-      // entry: the whole point of an attestation is the one-item call an agent makes
-      // at a compaction boundary, and this object is `.strict()`, so declaring them
-      // only on the batch shape makes the documented `{ id, unchanged, contentHash }`
-      // call fail Zod validation before the tool body ever runs — a feature that reads
-      // as shipped and is unreachable.
-      unchanged: looseBoolean().describe(
-        'single shorthand default for `unchanged`; also the items[] default. ATTEST that the stored checkpoint ' +
-          'is still current instead of rewriting it. Requires `contentHash`. Do not send `checkpoint`, ' +
-          '`did`/`left`/`insight`/`next`, `clear`, `append`, `checks`, or `dependsOn` with `unchanged:true`; ' +
-          'omit `unchanged` when writing a new body. Conflicting fields return `attestation_conflicting_args`.',
-      ),
-      contentHash: contentHashSpec().describe(
-        'single shorthand default for `contentHash`; also the items[] default. Required with `unchanged`.',
-      ),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || Boolean(a.id) || Boolean(a.workItem), {
       message: 'pass { id, checkpoint? } (workItem aliases id) for one, or items:[{ id, checkpoint? }] for many',
@@ -1270,14 +1373,19 @@ export default defineTool({
     .refine(
       (a) =>
         !a.items?.length ||
-        [a.note, a.did, a.left, a.insight, a.next, a.keyInsight, a.nextAction, a.goal, a.workItem].every(
+        [a.checkpoint, a.note, a.did, a.left, a.insight, a.next, a.keyInsight, a.nextAction, a.goal, a.workItem].every(
           (value) => value === undefined,
         ),
       {
-        message: 'loop carry aliases apply only to the single shorthand; put checkpoint on each items[] entry',
+        message:
+          'root-level checkpoint/carry aliases apply only to the single shorthand; with items[] put checkpoint (or did/left/insight/next) on each entry',
         path: ['items'],
       },
-    ),
+    )
+    .meta({
+      'x-papercusp-call-constraint':
+        'With `items[]`, omit root-level `checkpoint`, `note`, `did`, `left`, `insight`, `next`, `keyInsight`, `nextAction`, `goal`, and `workItem`; put checkpoint content or per-item carry aliases on each entry. Root-level `confirmShrink`, `append`, `rowsMode`, `confirmRetire`, and `retireIds` remain defaults for entries.',
+    }),
   result: z
     .object({
       ok: z.boolean().optional(),
@@ -1290,7 +1398,8 @@ export default defineTool({
     const c = ctx as { harnessSlug?: string | null; workspaceId?: string | null; spawnId?: string | null };
     const inlineCheckpoint = checkpointFromRootAliases(args);
     const items = args.items?.length
-      ? args.items
+      ? // WI-10005640: fold each entry's own carry aliases (explicit `checkpoint` wins).
+        args.items.map((entry) => ({ ...entry, checkpoint: checkpointFromRootAliases(entry) }))
       : [
           {
             id: (args.id ?? args.workItem) as string,
@@ -1317,9 +1426,20 @@ export default defineTool({
             contentHash: args.contentHash,
           },
         ];
+    const traceCheckpointPhases = args.items !== undefined;
+    let nextBatchItemIndex = 0;
     const env = await runBulk(
       items,
       async (it) => {
+        const itemIndex = ++nextBatchItemIndex;
+        const phaseDetail = (phase: string): CheckpointPhase => ({
+          itemId: it.id,
+          itemIndex,
+          itemCount: items.length,
+          phase,
+        });
+        const runPhase = <T>(phase: string, run: () => Promise<T> | T): Promise<T> =>
+          traceCheckpointPhases ? observeCheckpointPhase(ctx, phaseDetail(phase), run) : Promise.resolve(run());
         // `checkpointBodySpec` accepts the structured compatibility object as an
         // input shape, then its preprocess normalizes a valid object to the stored
         // string before this handler runs. `defineTool` types handler arguments from
@@ -1332,15 +1452,19 @@ export default defineTool({
         const wantsConfirmClear = it.confirmClear ?? args.confirmClear ?? false;
         const wantsAppend = it.append ?? args.append ?? false;
         const rawSuppliedChecks = it.checks ?? args.checks;
-        const rowsMode = it.rowsMode ?? args.rowsMode ?? 'merge';
         const wantsRetireIds = it.retireIds ?? args.retireIds;
+        const requestedRowsMode = it.rowsMode ?? args.rowsMode ?? 'merge';
+        // Without individually named retirements, a replace-style checkpoint
+        // updates supplied rows and preserves every omitted carried row.
+        const rowsMode = requestedRowsMode === 'replace' && wantsRetireIds !== undefined
+          ? 'replace' : 'merge';
         // EI-23618780798277092: `retireIds` only has meaning for an explicit
         // replace. The default merge path does not retire rows, so accepting this
         // combination would acknowledge the request while silently ignoring the
         // named retirements and leaving the caller's replacement rows at the cap.
         // Reject before lookup/store work so the contradictory shape is visibly
         // actionable and cannot be mistaken for a successful checkpoint write.
-        if (it.unchanged !== true && wantsRetireIds !== undefined && rowsMode !== 'replace') {
+        if (it.unchanged !== true && wantsRetireIds !== undefined && requestedRowsMode !== 'replace') {
           return {
             ok: false as const,
             id: it.id,
@@ -1455,7 +1579,7 @@ export default defineTool({
         // aimed at, overwriting a peer's in-flight state — the exact corruption
         // EI-18132462898750489 added the guard to stop, and it failed open precisely when
         // the database was unhealthy. Fail CLOSED: unreadable is not unowned.
-        const lookup = await lookupWorkItem(it.id, hintHarness);
+        const lookup = await runPhase('work-item-lookup', () => lookupWorkItem(it.id, hintHarness));
         if (lookup.status === 'unreadable') {
           return {
             ok: false as const,
@@ -1467,14 +1591,15 @@ export default defineTool({
               'persists check database health (dev:pg_health). Your checkpoint text was NOT saved.',
           };
         }
-        const item = lookup.status === 'found' ? lookup.item : null;
-        if (!item && !hintHarness) {
+        if (lookup.status === 'missing') {
           return {
             ok: false as const,
             id: it.id,
-            error: `could not resolve a harness for work_item '${it.id}' — pass { harness }`,
+            error: `work_item_not_found — work_item '${it.id}' does not exist. Your checkpoint text was NOT saved.`,
+            errorCode: 'work_item_not_found',
           };
         }
+        const item = lookup.item;
         // EI-18132462898750489: refuse a checkpoint write/clear on an item ASSIGNED to
         // someone else. Before this guard the write silently succeeded for anyone, which
         // both corrupted the real holder's in-flight state and gave the writer a false
@@ -1498,9 +1623,9 @@ export default defineTool({
           };
         }
         // The item's own harness is authoritative (null for a harness-null item — the
-        // store canonicalizes it). Fall back to the hint only when the item can't be
-        // resolved (e.g. a not-yet-persisted id).
-        const harness: string | null = item ? (item.harness ?? null) : (hintHarness ?? null);
+        // store canonicalizes it). A harness hint disambiguates lookup; it never
+        // authorizes a checkpoint for an id that lookup confirmed is missing.
+        const harness: string | null = item.harness ?? null;
         const workspaceId = resolveConcreteWorkspaceId(c.workspaceId);
         // EI-9036: append:true joins onto the EXISTING checkpoint instead of replacing
         // it — the fix for the "meant to add a short addendum, silently wiped the
@@ -1679,27 +1804,18 @@ export default defineTool({
           };
         }
         let checkpointToStore = checkpoint;
-        // WI-7190: this pre-read is a SEPARATE call (getWorkItemCheckpoint) from the
-        // authoritative prior the write transaction reads a few lines below (inside
-        // setWorkItemCheckpointWithPrior's own SELECT ... FOR UPDATE). Track what it
-        // saw — `appendPriorRaw` (null/failed vs. real content) — so the guard below
-        // can catch the two paths disagreeing BEFORE the write commits, instead of
-        // silently joining onto nothing and clobbering a real prior checkpoint while
-        // still reporting ok:true/verified:true.
-        let appendPriorRaw: string | null = null;
-        let appendPreReadFailed = false;
         // EI-20283744332352340: the guard below must key off "a join was ATTEMPTED",
         // not off `wantsAppend`. A checks-only patch (`append:true` + `checks`, no
         // `checkpoint` — the documented body-preserving shape carved out at :536)
-        // performs no pre-read and no join at all: `checkpointToStore` stays
-        // undefined and the body is preserved by the store's own transform, which
-        // reads the authoritative prior inside the locked transaction. Testing
+        // performs no join at all: `checkpointToStore` stays undefined and the body
+        // is preserved by the store's own transform, which reads the authoritative
+        // prior inside the locked transaction. Testing
         // `wantsAppend` there fired on a null that only means "never attempted",
         // refusing every checks-only patch against a >500-char checkpoint — and its
         // recovery block then offered `confirmShrink:true`, pointing the caller at
         // the destructive replace this guard exists to prevent.
-        // Holds the addendum being joined (and narrows it to `string` for the join
-        // below); `null` IS the "no join attempted" signal the guard reads.
+        // Holds the addendum being joined; `null` IS the "no join attempted" signal
+        // used by the locked transform and append body-preservation guard.
         const joinAddendum = wantsAppend && checkpoint ? checkpoint : null;
         const didAttemptJoin = joinAddendum !== null;
         // EI-22624970955266330: what `appendBodyPreservationGuard` must compare against is
@@ -1709,32 +1825,6 @@ export default defineTool({
         // was never meant to police. Track the transformed addendum here and keep it in
         // step with every transform applied to `checkpointToStore`.
         let joinAddendumStored = joinAddendum;
-        if (joinAddendum !== null) {
-          try {
-            appendPriorRaw = await getWorkItemCheckpoint({ harness, workItemId: it.id, workspaceId });
-          } catch {
-            appendPriorRaw = null;
-            appendPreReadFailed = true;
-          }
-          // EI-19298690705878336: strip any rendered `## Checks` section out of the
-          // prior BEFORE joining. That section runs to the end of the document (there
-          // is no following heading to bound it), so appending after it would bury the
-          // addendum INSIDE the section — where the re-render then drops it as an
-          // unparseable row. Caught by test: the addendum vanished entirely.
-          // The rows are NOT lost by stripping here: the transform below recovers them
-          // from the stored prior note, which the store reads inside its own locked
-          // transaction.
-          // Walls are rendered as the final section. Joining after a trailing Walls
-          // section makes the addendum look like wall-section content, so the parser
-          // drops it as an unparseable wall row and the body-preservation guard reports
-          // a false `append_body_overflow`. Remove both structured sections before the
-          // join, then reattach walls after the new body; the locked transform below
-          // reattaches checks in their canonical before-walls position.
-          const { body: priorBody, walls: priorWalls } = splitCarryNoteWalls(
-            appendPriorRaw !== null ? splitCarryNoteChecks(appendPriorRaw).body : null,
-          );
-          checkpointToStore = withCarryNoteWalls(joinCheckpoint(priorBody, joinAddendum), priorWalls);
-        }
         // EI-8824: c.workspaceId is '*' for an unscoped superuser session (the
         // read-scoping wildcard) — passing it straight through as `?? undefined`
         // let the truthy '*' win and persisted the checkpoint under a literal
@@ -1749,8 +1839,8 @@ export default defineTool({
         // the *WithPrior variant ONLY on that path: it costs no extra round-trip (the
         // row is already SELECTed FOR UPDATE inside the same write transaction to
         // build the journal ring) and gives us the prior length for free to warn on.
-        // append mode already reads + folds the prior text explicitly above, so it
-        // can't hit this failure mode; a clear has no "shrink" to warn about either.
+        // append mode composes the prior text in the store's locked transform, so it
+        // also has no separate read-then-write window; a clear has no "shrink" either.
         // EI-18140632570924965: a plain replace (not append, not a clear) that
         // would shrink a substantial prior checkpoint by more than half is BLOCKED
         // by default — the same threshold EI-9325's shrinkWarning already used to
@@ -1794,6 +1884,13 @@ export default defineTool({
           out.claim = truncateCarryField(out.claim, CARRY_ROW_SOFT_CAPS.claim, `checks[${i}].claim`, repairs);
           if (typeof out.recheck === 'string')
             out.recheck = truncateCarryField(out.recheck, CARRY_ROW_SOFT_CAPS.recheck, `checks[${i}].recheck`, repairs);
+          if (typeof out.falsifier === 'string')
+            out.falsifier = truncateCarryField(
+              out.falsifier,
+              CARRY_ROW_SOFT_CAPS.falsifier,
+              `checks[${i}].falsifier`,
+              repairs,
+            );
           if (typeof out.verified === 'string')
             out.verified = truncateCarryField(
               out.verified,
@@ -1823,11 +1920,13 @@ export default defineTool({
         // stored narrative when owner authority is not mechanically established.
         const successfulActions =
           hasPotentialActionClaim(currentProvenanceText)
-            ? await readSuccessfulActionInvocations({
-                workspaceId,
-                spawnId: c.spawnId,
-                coordOwnerId: ident.ownerId,
-              })
+            ? await runPhase('provenance-action-proof-read', () =>
+                readSuccessfulActionInvocations({
+                  workspaceId,
+                  spawnId: c.spawnId,
+                  coordOwnerId: ident.ownerId,
+                }),
+              )
             : undefined;
         // EI-19425644478222007: expand `[turn:self]` / `[turn:current]` into this write's
         // REAL anchor (see carry-surface-provenance-stamp for why a sentinel beats making
@@ -1839,7 +1938,9 @@ export default defineTool({
         // turn leaves the sentinel verbatim and still lint-flagged.
         const sentinelTurn =
           hasCurrentTurnSentinel(currentProvenanceText) || hasCurrentTurnSentinel(checkpointToStore)
-            ? await resolveCurrentTurnStamp(ident.ownerId).catch(() => null)
+            ? await runPhase('provenance-current-turn-stamp', () =>
+                resolveCurrentTurnStamp(ident.ownerId).catch(() => null),
+              )
             : null;
         if (sentinelTurn) {
           checkpointToStore = expandCurrentTurnSentinel(checkpointToStore, sentinelTurn);
@@ -1854,9 +1955,12 @@ export default defineTool({
           joinAddendumStored =
             expandCurrentTurnSentinel(joinAddendumStored, sentinelTurn) ?? joinAddendumStored;
         }
-        const preWriteStamp = await stampCarrySurfaceProvenance(currentProvenanceText, ident.ownerId, {
-          successfulActions,
-        });
+        const preWriteStamp = await runPhase('provenance-carry-surface-stamp', () =>
+          stampCarrySurfaceProvenance(currentProvenanceText, ident.ownerId, {
+            successfulActions,
+            ...(sentinelTurn ? { currentTurnStamp: sentinelTurn } : {}),
+          }),
+        );
         const ownerEnforcement = ownerAttributionEnforcement(currentProvenanceText, preWriteStamp);
         if (ownerEnforcement.unverified) {
           checkpointToStore = markUnverifiedOwnerAttribution(checkpointToStore);
@@ -1897,18 +2001,18 @@ export default defineTool({
         // `rowsMode:'merge'` is additive for a body write and for the checks-only
         // patch shape. An explicit clear remains a true clear, preserving the
         // work_items:complete cleanup contract.
-        const additiveRowsMode = rowsMode === 'merge' && (isChecksOnlyPatch || !isClear);
+        // A narrative clear is still a rewrite: open check rows survive until
+        // individually retired. work_items:complete uses the store directly for
+        // terminal cleanup, so it is unaffected by this tool-boundary contract.
+        const additiveRowsMode = rowsMode === 'merge';
         // `append` governs the BODY. An explicit rowsMode:'replace' remains authoritative
         // for CHECK ROWS, so callers can append a narrative update while retiring the
         // exact carried rows named by retireIds. Previously `wantsAppend` unconditionally
         // made this true, neutralizing rowsMode:'replace' and reporting that no rows would
         // drop (EI-23151788119236015).
         const additiveChecks = rowsMode === 'replace' ? false : wantsAppend || additiveRowsMode;
-        // A CLEAR wipes the checks too, UNLESS the caller supplied some in the same
-        // call. This is a DELIBERATE divergence from loop:checkpoint, where checks
-        // survive a note clear: work_items:complete clears the checkpoint as terminal
-        // cleanup, and rows surviving that would resurrect a checks-only checkpoint on
-        // an already-closed item.
+        // Body clears preserve open rows. Terminal completion uses the underlying
+        // store directly and retains its separate cleanup contract.
         // EI-19460631385508515: a SUPPLIED `checks` list REPLACES the stored set —
         // normalizeCheckEntries iterates only the incoming rows and uses the prior set
         // solely to inherit recheck/verified/sinceMs onto claims that reappear. A stored
@@ -1920,17 +2024,35 @@ export default defineTool({
         // captures what went missing so the loss is VISIBLE in the result rather than
         // inferable only by diffing a count you would have to have recorded beforehand.
         let droppedCheckClaims: string[] = [];
+        let unmatchedCheckRefs: string[] = [];
         let suppliedChecksNotRetained: AppendChecksOverflowRow[] = [];
         let preserveCarriedChecksOnOverflow = false;
         const checksTransform =
-          suppliedChecks !== undefined || !isClear || isDependencyOnlyPatch || isLearnedMetadataPatch
-            ? (priorNote: string | null, incoming: string | null | undefined) => {
+            (priorNote: string | null, incoming: string | null | undefined) => {
                 const priorSplit = splitCarryNoteChecks(priorNote);
-                const prior = priorSplit.checks;
-                // `incoming` may carry its OWN rendered `## Checks` — append mode folds
-                // the whole prior note in, section and all — so strip it before
+                const originalPrior = priorSplit.checks;
+                // P-025: resolve a one-row reword against the authoritative locked
+                // prior before capacity checks/upsert. The resolver promotes an
+                // id-less target to a stable id so its evidence and age survive.
+                const resolvedRefs = resolveCarryRowRefs({
+                  priorWalls: [],
+                  priorChecks: originalPrior,
+                  checks: suppliedChecks,
+                });
+                const prior = resolvedRefs.priorChecks;
+                const resolvedSuppliedChecks = resolvedRefs.checks;
+                unmatchedCheckRefs = resolvedRefs.unmatched;
+                // `incoming` may carry its OWN rendered `## Checks` — strip it before
                 // re-attaching or the note ends up with two Checks sections.
                 const { body: incomingBody } = splitCarryNoteChecks(incoming ?? '');
+                // Append the body using the authoritative row locked by the store.
+                // The prior may have changed since any caller read, and no separate
+                // pre-read is required to build the submitted note. Keep structured
+                // checks/walls out of the join and restore the carried walls last.
+                const { body: priorBodyForAppend, walls: priorWallsForAppend } = splitCarryNoteWalls(priorSplit.body);
+                const bodyWithAppend = didAttemptJoin
+                  ? withCarryNoteWalls(joinCheckpoint(priorBodyForAppend, incomingBody), priorWallsForAppend)
+                  : incomingBody;
                 // EI-19447043119380534: on a checks-only patch the caller supplied no body
                 // at all, so the STORED one is the body — read authoritatively here, inside
                 // the store's locked transaction, so a concurrent writer cannot interleave.
@@ -1945,14 +2067,15 @@ export default defineTool({
                   ? priorSplit.body
                   : shouldAppendRefresh
                     ? joinCheckpointNewestFirst(incomingBody, priorSplit.body)
-                    : incomingBody;
+                    : bodyWithAppend;
+                body = normalizeUnverifiedOwnerAttributionMarkers(body) ?? body;
                 if (ownerEnforcement.unverified) body = markUnverifiedOwnerAttribution(body) ?? body;
                 if (shouldAppendRefresh) autoAppendedRefresh = true;
                 const patchedExistingChecks =
                   (additiveChecks || (preservePriorOnShrink && rowsMode !== 'replace')) &&
-                  suppliedChecks !== undefined &&
-                  suppliedChecks.length > 0
-                    ? patchExistingCheckEntries(suppliedChecks, prior, Date.now())
+                  resolvedSuppliedChecks !== undefined &&
+                  resolvedSuppliedChecks.length > 0
+                    ? patchExistingCheckEntries(resolvedSuppliedChecks, prior, Date.now())
                     : null;
                 // EI-19944669306930709: under `append: true` the supplied rows are
                 // UNIONED onto the carried set instead of replacing it. `append` is an
@@ -1994,19 +2117,19 @@ export default defineTool({
                 // `checksNotRetained` while the stale carried rows were kept as `checks`.
                 const checksAdditiveOnThisWrite = additiveChecks || (preservePriorOnShrink && rowsMode !== 'replace');
                 const effectiveChecks =
-                  suppliedChecks === undefined
+                  resolvedSuppliedChecks === undefined
                     ? undefined
-                    : checksAdditiveOnThisWrite
-                      ? [...suppliedChecks, ...orderCarriedForUnion(suppliedChecks, prior)]
-                      : suppliedChecks;
+                      : checksAdditiveOnThisWrite
+                      ? [...resolvedSuppliedChecks, ...orderCarriedForUnion(resolvedSuppliedChecks, prior)]
+                      : resolvedSuppliedChecks;
                 // An empty additive list is a true no-op, including for legacy notes
                 // that exceed today's cap. Do not run the carried rows back through
                 // normalizeCheckEntries, or the recovery would succeed only after
                 // silently evicting the very rows it promised to preserve.
                 const preserveEmptyAdditiveChecks = additiveChecks && suppliedChecks?.length === 0;
                 const preservedOverflow =
-                  preserveCarriedChecksOnOverflow && suppliedChecks !== undefined
-                    ? mergeChecksPreservingCarried(prior, suppliedChecks)
+                  preserveCarriedChecksOnOverflow && resolvedSuppliedChecks !== undefined
+                    ? mergeChecksPreservingCarried(prior, resolvedSuppliedChecks)
                     : null;
                 if (preservedOverflow) suppliedChecksNotRetained = preservedOverflow.notRetained;
                 let merged = preservedOverflow
@@ -2049,10 +2172,16 @@ export default defineTool({
                 // rewording as a lost predecessor, even though the row was replaced
                 // in place and retained its slot/evidence.
                 const keptCheckKeys = new Set(merged.map((c) => carryRowKey(c)));
-                const droppedRows = prior.filter(
-                  (c) => c.claim.trim().length > 0 && !keptCheckKeys.has(carryRowKey(c)),
-                );
+                const droppedRows = originalPrior.filter((c, i) => {
+                  const resolvedPrior = prior[i] ?? c;
+                  return c.claim.trim().length > 0 && !keptCheckKeys.has(carryRowKey(resolvedPrior));
+                });
                 droppedCheckClaims = droppedRows.map((c) => c.claim.trim());
+                if (rowsMode === 'merge' && droppedRows.length > 0) {
+                  // Neither confirmRetire nor legacy cap normalization names a
+                  // row. Refuse atomically instead of deleting carried evidence.
+                  throw new ReplaceWouldDropError(droppedCheckClaims, true);
+                }
                 // EI-21923095696933477: retireIds is a STRONGER, opt-in check — the
                 // caller names exactly which rows they intend to retire, so an
                 // unlisted stored row can never be dropped by omission. It gates
@@ -2096,9 +2225,9 @@ export default defineTool({
                 }
                 if (merged.length === 0)
                   return enforceFrozenWorkItemCarry(body.length > 0 ? body : null, currentProvenanceText);
-                const rendered = withCarryNoteChecks(body, merged);
+                const rendered = withStableCarryRowIds(withCarryNoteChecks(body, merged));
                 if (rendered.length <= CHECKPOINT_CAP)
-                  return enforceFrozenWorkItemCarry(rendered, currentProvenanceText);
+                  return enforceFrozenWorkItemCarry(withStableCarryRowIds(rendered), currentProvenanceText);
                 // Over cap: trim the BODY and re-attach, so the checks — bounded to
                 // CARRY_NOTE_MAX_CHECKS rows — are never the part that gets cut.
                 // EI-21472322403787688: trim DIRECTION follows the body's ordering.
@@ -2111,9 +2240,16 @@ export default defineTool({
                 const trimmedBody = shouldAppendRefresh
                   ? body.slice(0, keepBody) + TRUNCATION_MARKER
                   : TRUNCATION_MARKER + body.slice(Math.min(overflow, body.length));
-                return enforceFrozenWorkItemCarry(withCarryNoteChecks(trimmedBody, merged), currentProvenanceText);
-              }
-            : undefined;
+                return enforceFrozenWorkItemCarry(withStableCarryRowIds(withCarryNoteChecks(trimmedBody, merged)), currentProvenanceText);
+              };
+        const timedChecksTransform = traceCheckpointPhases
+          ? (priorNote: string | null, incoming: string | null | undefined) =>
+              observeCheckpointSyncPhase(
+                ctx,
+                phaseDetail('locked-check-row-transform'),
+                () => checksTransform(priorNote, incoming),
+              )
+          : checksTransform;
         /**
          * EI-21228214077347799: the shrink guard and the checks-overflow guard protect
          * INDEPENDENT axes — the first the BODY being replaced, the second the check ROWS
@@ -2152,30 +2288,6 @@ export default defineTool({
                     'if this replace is intentional.'
                   : null
             : null;
-        const appendBaseGuard: CheckpointGuard | null =
-          additiveChecks && !wantsConfirmShrink
-            ? // WI-7190: `append:true` used to arm NO guard at all — "the one mode whose
-              // whole contract is 'never lose the existing text' was the mode with no
-              // shrink protection." Confirmed live: the tool's own pre-read
-              // (getWorkItemCheckpoint, above) came back empty on a resolvable item while
-              // a 10,671-char checkpoint genuinely existed — the join then had nothing to
-              // join onto, so `checkpointToStore` was just the addendum, and the write
-              // silently REPLACED the real checkpoint while still returning
-              // ok:true/verified:true. `_priorNote`/`priorLen` here are the AUTHORITATIVE
-              // prior — read inside this same locked transaction, independent of the
-              // tool's separate pre-read above — so disagreement between the two is
-              // exactly the failure signature: the write path resolves the item, the
-              // (different) read path used to build the join does not.
-              (_priorNote, priorLen) =>
-                didAttemptJoin && priorLen > 500 && (appendPriorRaw === null || appendPriorRaw.length === 0)
-                  ? `append_base_unreadable — the append pre-read returned ${appendPreReadFailed ? 'an error' : 'nothing'} ` +
-                    `while the current checkpoint is ${priorLen} chars (read authoritatively at write time, inside ` +
-                    'the same locked transaction as this write). Appending now would silently REPLACE it instead of ' +
-                    'joining — refusing the write rather than losing it. Retry (a transient read/key mismatch is the ' +
-                    'likely cause), pass { harness } explicitly, or pass { confirmShrink: true } to force the replace ' +
-                    'if that is actually intended.'
-                  : null
-            : null;
         /**
          * EI-21282889275455257: checks are rendered INTO the checkpoint body. A
          * checks-only patch promises to preserve that body, but the transform below
@@ -2212,7 +2324,7 @@ export default defineTool({
         const appendBodyPreservationGuard: CheckpointGuard | null =
           !wantsConfirmShrink && didAttemptJoin && joinAddendumStored
             ? (priorNote, priorLen) => {
-                const candidate = checksTransform?.(priorNote, checkpointToStore);
+                const candidate = timedChecksTransform?.(priorNote, checkpointToStore);
                 const candidateBody = candidate
                   ? splitCarryNoteWalls(splitCarryNoteChecks(candidate).body).body.trim()
                   : '';
@@ -2238,8 +2350,8 @@ export default defineTool({
                   'No carried check row is evicted by this refusal, or would be by proceeding past it — this guard ' +
                   'concerns the append body only. Two ways forward, with different costs: ' +
                   '(1) SAFE — first retire specific stale rows in a separate, non-append write ' +
-                  '({ rowsMode: "replace", retireIds: [...] } naming exactly what to drop, or ' +
-                  '`confirmRetire: true`), which frees cap room without touching this note, then retry this append; ' +
+                  '({ rowsMode: "replace", checks: [], retireIds: [...] } naming the specific row IDs), ' +
+                  'which frees cap room without replacing the prose, then retry this append; ' +
                   '(2) pass { confirmShrink: true } to THIS append — it keeps every carried check row intact but ' +
                   'silently trims or entirely drops the append body you are submitting now, so use it only when ' +
                   'losing this new note (never the checks) is acceptable.'
@@ -2277,6 +2389,12 @@ export default defineTool({
                 // body-shrink retry set `preservePriorOnShrink` — see the matching
                 // note on `checksAdditiveOnThisWrite` above.
                 if (!(additiveChecks || (preservePriorOnShrink && rowsMode !== 'replace'))) return null;
+                const refs = resolveCarryRowRefs({
+                  priorWalls: [],
+                  priorChecks: splitCarryNoteChecks(_priorNote).checks,
+                  checks: suppliedChecks,
+                });
+                unmatchedCheckRefs = refs.unmatched;
                 const overflowCount = appendChecksOverflowCount(_priorNote, suppliedChecks);
                 if (overflowCount === 0) return null;
                 /**
@@ -2303,18 +2421,12 @@ export default defineTool({
                  * the whole distinction: refuse CALLER-caused eviction, absorb LEGACY
                  * over-cap state.
                  */
-                const legacyExcess = priorChecksOverCapCount(_priorNote);
-                if (legacyExcess > 0) {
-                  legacyOverCapNormalization.legacyExcess = legacyExcess;
-                  return null;
-                }
                 // EI-22489206594122743: `confirmRetire:true` is the explicit one-call
                 // consent for the same merge-cap eviction that `loop:checkpoint` already
                 // permits. Without this escape, the checks-only branch below refused the
                 // write unconditionally, so the documented confirmation had no effect
                 // even though the transform could safely report the exact carried rows
                 // it evicted. Keep the default refusal for an unconfirmed additive write.
-                if (wantsConfirmRetire) return null;
                 // EI-21602661222231785: the body is the primary checkpoint payload;
                 // optional check capacity must not strand it. For body-bearing writes,
                 // proceed atomically while the transform preserves every carried row,
@@ -2348,14 +2460,10 @@ export default defineTool({
           checksDropped: error.droppedChecks,
           ...(error.retireIdsRequired ? { retireIdsRequired: true } : {}),
           message:
-            error.retireIdsRequired
-              ? "append:true with rowsMode:'replace' would RETIRE the carried checks named above. confirmRetire:true " +
-                'is not sufficient for this combination — NOTHING was written. Retry with `retireIds` naming exactly ' +
-                'the rows above, or omit rowsMode to preserve the carried checks.'
-              : "rowsMode:'replace' would RETIRE the carried checks named above and confirmRetire was not true — " +
-                'NOTHING was written. Re-send the FULL current set under replace with confirmRetire:true, or name ' +
-                'exactly the rows above in `retireIds` for a mismatch-checked retirement, or omit ' +
-                'rowsMode entirely (merge is the default and preserves unmentioned rows up to the cap).',
+            'This write would remove carried checks without individually authorized retirement — NOTHING was written. ' +
+            'Read work_items:get with checksOnly:true, then name exactly the row IDs to close in `retireIds` ' +
+            "under rowsMode:'replace', or omit retireIds to preserve the carried checks. confirmRetire:true " +
+            'does not authorize row deletion.',
         });
         // EI-21923095696933477: the retireIds sibling of replaceWouldDropResponse —
         // reports what was requested vs what would actually drop so the caller can
@@ -2379,8 +2487,8 @@ export default defineTool({
               `Requested: ${error.requested.length ? error.requested.join(', ') : '(none)'}. ` +
               `Would actually drop: ${error.actual.length ? error.actual.join(', ') : '(none)'}. ` +
               sameIdUpdateHint +
-              'Re-send retireIds naming exactly the rows in "Would actually drop", or omit retireIds and use ' +
-              'confirmRetire:true instead.',
+              'Re-send retireIds naming exactly the row IDs in "Would actually drop", or omit retireIds to preserve ' +
+              'the carried rows.',
           };
         };
         // EI-21864672058763701 / EI-21864782390076614: setWorkItemCheckpointWithPrior
@@ -2403,20 +2511,28 @@ export default defineTool({
         });
         let res;
         try {
-          res = await setWorkItemCheckpointWithPrior({ harness, workItemId: it.id, workspaceId }, checkpointToStore, {
-            ...(typeof (joinAddendumStored ?? checkpointToStore) === 'string'
-              ? { latestUpdate: (joinAddendumStored ?? checkpointToStore)! } : {}),
-            ...(item ? { workItem: item as WorkItemSubject } : {}),
-            ...(checksTransform ? { transform: checksTransform } : {}),
-            guard: composeGuards(
-              appendBaseGuard,
-              bodyPreservationGuard,
-              overflowGuard,
-              appendBodyPreservationGuard,
-              shrinkGuard,
+          res = await runPhase('store-write-transaction', () =>
+            setWorkItemCheckpointWithPrior(
+              { harness, workItemId: it.id, workspaceId },
+              checkpointToStore,
+              {
+                ...(typeof (joinAddendumStored ?? checkpointToStore) === 'string'
+                  ? { latestUpdate: (joinAddendumStored ?? checkpointToStore)! }
+                  : {}),
+                ...(item ? { workItem: item as WorkItemSubject } : {}),
+                // P-012 / D-006: a writer holding a restricted disclosure stores a sealed stub.
+                writerOwnerId: ident.ownerId,
+                ...(timedChecksTransform ? { transform: timedChecksTransform } : {}),
+                guard: composeGuards(
+                  bodyPreservationGuard,
+                  overflowGuard,
+                  appendBodyPreservationGuard,
+                  shrinkGuard,
+                ),
+                ...depsOpt,
+              },
             ),
-            ...depsOpt,
-          });
+          );
         } catch (error) {
           if (error instanceof FrozenCarryCheckpointError) return { ...error.payload, id: it.id };
           if (error instanceof RetireIdsMismatchError) return retireIdsMismatchResponse(error);
@@ -2448,16 +2564,19 @@ export default defineTool({
         if (res.blockedReason?.includes('plain replace would shrink') && isPlainReplace && !wantsConfirmShrink) {
           preservePriorOnShrink = true;
           try {
-            res = await setWorkItemCheckpointWithPrior(
-              { harness, workItemId: it.id, workspaceId },
-              checkpointToStore,
-              {
-                ...(typeof checkpointToStore === 'string' ? { latestUpdate: checkpointToStore } : {}),
-                ...(item ? { workItem: item as WorkItemSubject } : {}),
-                ...(checksTransform ? { transform: checksTransform } : {}),
-                guard: composeGuards(bodyPreservationGuard, overflowGuard),
-                ...depsOpt,
-              },
+            res = await runPhase('store-write-shrink-retry', () =>
+              setWorkItemCheckpointWithPrior(
+                { harness, workItemId: it.id, workspaceId },
+                checkpointToStore,
+                {
+                  ...(typeof checkpointToStore === 'string' ? { latestUpdate: checkpointToStore } : {}),
+                  ...(item ? { workItem: item as WorkItemSubject } : {}),
+                  ...(timedChecksTransform ? { transform: timedChecksTransform } : {}),
+                  writerOwnerId: ident.ownerId,
+                  guard: composeGuards(bodyPreservationGuard, overflowGuard),
+                  ...depsOpt,
+                },
+              ),
             );
           } catch (error) {
             if (error instanceof FrozenCarryCheckpointError) return { ...error.payload, id: it.id };
@@ -2474,12 +2593,9 @@ export default defineTool({
         const depsStamped = res.depsStamped;
         const depsRecomputed = res.recomputed;
         if (blockedReason) {
-          // WI-7190: the append guard's reason already carries its own leading error
-          // code (`append_base_unreadable — …`) — don't relabel it `shrink_blocked`,
-          // it isn't a shrink, it's the append's pre-read disagreeing with the
-          // authoritative prior. Anything WITHOUT its own code (the plain-replace
-          // guard's message, or a caller-supplied reason in a test double) keeps the
-          // original `shrink_blocked — ` prefix unchanged.
+          // A guard may carry its own error code (for example the append body/check
+          // capacity guards); preserve it. Uncoded reasons such as a plain-replace
+          // shrink keep the established `shrink_blocked — ` prefix.
           const hasOwnCode = /^[a-z][a-z0-9_]*\s+—\s/.test(blockedReason);
           const errorCode = hasOwnCode ? blockedReason.split(' — ', 1)[0] : 'shrink_blocked';
           const bodyRecoveryArg =
@@ -2494,7 +2610,7 @@ export default defineTool({
             // a failed call and a second read of prose. Keep both choices explicit:
             // append preserves the detailed prior; confirmShrink is the deliberate
             // full-replacement escape hatch. `append:false` is included on replace
-            // because this option also serves append_base_unreadable failures.
+            // because the same refusal shape can arise on an append or replace.
             // Preserve the caller's original body in the retry args. The guarded
             // write did not change the stored checkpoint, so replaying that original
             // body without checks is the actionable body-only recovery. Omitting it
@@ -2534,6 +2650,15 @@ export default defineTool({
                     row.claim.length > 300 ? `${row.claim.slice(0, 300)}…` : row.claim,
                   ),
                   checksDroppedRows: appendChecksOverflowDiagnostics,
+              }
+              : {}),
+            ...(unmatchedCheckRefs.length > 0
+              ? {
+                  unmatchedRowRefs: unmatchedCheckRefs,
+                  unmatchedRowRefsNote:
+                    'These `replaces` refs named no carried check row (match is by [#id] or EXACT claim text). ' +
+                    'An unmatched row was treated as a new addition and was not written because this additive ' +
+                    'write would exceed the checks cap.',
                 }
               : {}),
             ...(errorCode === 'append_body_overflow' && appendBodyOverflowDetails
@@ -2565,7 +2690,7 @@ export default defineTool({
         let readBackFailed = false;
         if (stored !== null) {
           try {
-            readBack = await getWorkItemCheckpoint({ harness, workItemId: it.id, workspaceId });
+            readBack = await runPhase('verify-read', () => getWorkItemCheckpoint({ harness, workItemId: it.id, workspaceId }));
           } catch (error) {
             // EI-22707338795824591: the write transaction has already COMMITTED by
             // the time this verifier runs. Collapsing a reader exception to `null`
@@ -2632,7 +2757,7 @@ export default defineTool({
         // that will be handed over. Explicit null tokens are advisory only;
         // resolver failures stay fail-open inside the helper.
         const prosePathLint =
-          stored !== null ? await unresolvedProsePathsInCheckpoint(stored, { workspaceId, harness }) : undefined;
+          stored !== null ? await runPhase('prose-path-advisory', () => unresolvedProsePathsInCheckpoint(stored, { workspaceId, harness })) : undefined;
         // ── P-017: the durable half, posted to the effort thread in this same call ──
         // Deliberately AFTER the read-back verify, and fail-soft: the checkpoint is the
         // thing a successor cannot do without, so a thread that refuses a post must
@@ -2641,14 +2766,14 @@ export default defineTool({
         const learnedText = (it.learned ?? args.learned ?? '').trim();
         let learnedResult: Awaited<ReturnType<typeof postLearnedAtLevel>> | null = null;
         if (learnedText) {
-          learnedResult = await postLearnedAtLevel({
+          learnedResult = await runPhase('learned-thread-post', () => postLearnedAtLevel({
             workItemId: it.id,
             level: it.learnedLevel ?? args.learnedLevel,
             text: learnedText,
             harness,
             authorId: ident.ownerId,
             workspaceId,
-          }).catch(() => null);
+          }).catch(() => null));
         }
         // ── D-010: run the READER'S extractor at WRITE time and hand back what it
         // found. No gate, no rejection, no new required args — the writer's inability
@@ -2674,7 +2799,7 @@ export default defineTool({
         // on one client's edit path while ptool/MCP/API write straight past it, and
         // ref resolution here is workspace-scoped and fail-soft, so a false "does not
         // exist" would block a legitimate federated ref.
-        const unresolvedRefs = stored !== null ? await unresolvedRefsInBody(stored, { known: [it.id] }) : undefined;
+        const unresolvedRefs = stored !== null ? await runPhase('work-item-ref-advisory', () => unresolvedRefsInBody(stored, { known: [it.id] })) : undefined;
         const unresolvedRefsWarningText = unresolvedRefs ? unresolvedRefsWarning(it.id, unresolvedRefs.missing) : undefined;
         // EI-22995965169175295: inspect the FINAL stored carry-note so qualified
         // decision refs retained from earlier compaction hops are covered too.
@@ -2682,10 +2807,10 @@ export default defineTool({
         // advisory is strictly fail-open and never changes checkpoint success.
         const decisionRefAdvisory =
           stored !== null
-            ? await unresolvedPlanDecisionRefs(stored, {
+            ? await runPhase('plan-decision-ref-advisory', () => unresolvedPlanDecisionRefs(stored, {
                 workspaceId,
                 harnessSlug: harness,
-              }).catch(() => undefined)
+              }).catch(() => undefined))
             : undefined;
         return {
           ok: true as const,
@@ -2780,10 +2905,13 @@ export default defineTool({
            * STORED note, like its siblings, so it reports what a successor is actually
            * re-injected with. Advisory + fail-open.
            */
-          ...(() => {
+          ...await (async () => {
             try {
               if (stored === null) return {};
-              const refs = lintRelativeScratchPaths(splitCarryNoteChecks(stored).body);
+              const refs = await filterTrackedRelativeScratchPaths(splitCarryNoteChecks(stored).body, {
+                workspaceId,
+                harness,
+              });
               return refs.length > 0
                 ? { scratchPathLint: { flagged: true as const, note: RELATIVE_SCRATCH_ADVISORY, refs } }
                 : {};
@@ -2816,6 +2944,22 @@ export default defineTool({
                       claims,
                     },
                   }
+                : {};
+            } catch {
+              return {};
+            }
+          })(),
+          /**
+           * EI-23771449112267271: warn-only — a ✓ row WRITTEN IN THIS CALL with no falsifier
+           * (same contract as facts:assert `recheckMissing` and loop:checkpoint's
+           * `falsifierMissing`). Scoped to the SUPPLIED rows so legacy carried rows never nag;
+           * `sampleAdequate:false` rows are already downgraded to ? and are skipped by the helper.
+           */
+          ...(() => {
+            try {
+              const missing = checksMissingFalsifier(suppliedChecks ?? []);
+              return missing.length > 0
+                ? { falsifierMissing: { flagged: true as const, note: FALSIFIER_MISSING_NOTE, rows: missing } }
                 : {};
             } catch {
               return {};
@@ -2902,6 +3046,14 @@ export default defineTool({
                         `the stored rows untouched.`,
               }
             : {}),
+          ...(unmatchedCheckRefs.length > 0
+            ? {
+                unmatchedRowRefs: unmatchedCheckRefs,
+                unmatchedRowRefsNote:
+                  'These `replaces` refs named no carried check row (match is by [#id] or EXACT claim text). ' +
+                  'An unmatched row was treated as a new addition.',
+              }
+            : {}),
           ...(suppliedChecksNotRetained.length > 0
             ? {
                 checksNotRetained: suppliedChecksNotRetained.map((row) =>
@@ -2913,6 +3065,7 @@ export default defineTool({
                     ...(id ? { id } : {}),
                     claim: row.claim.trim(),
                     ...(row.recheck?.trim() ? { recheck: row.recheck.trim() } : {}),
+                    ...(row.falsifier?.trim() ? { falsifier: row.falsifier.trim() } : {}),
                     ...(row.verified?.trim() ? { verified: row.verified.trim() } : {}),
                     ...(row.contested?.trim() ? { contested: row.contested.trim() } : {}),
                   };
@@ -3051,7 +3204,7 @@ export default defineTool({
             ? {
                 rowsModeNote:
                   "rowsMode:'merge' (the default) treats an empty `checks` list as a NO-OP — carried rows are untouched. Use " +
-                  "rowsMode:'replace' with checks:[] to clear them.",
+                  "rowsMode:'replace' with checks:[] and retireIds naming each row ID to close them.",
               }
             : {}),
         };

@@ -15,6 +15,12 @@
  *        lib/release/watchdog-health.integration.test.ts
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+// Metadata SQL remains real; observation delivery belongs to the isolated
+// caller/condition coverage suite, not the operator DB outside this fixture.
+vi.mock('../degradation/fallback-observations', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../degradation/fallback-observations')>()),
+  observeFallback: vi.fn(() => true),
+}));
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import {
@@ -70,6 +76,24 @@ async function readPass(id: string, pass: string): Promise<WatchdogPassHealth | 
 }
 
 describe('recordWatchdogPassOutcome (real PG)', () => {
+  it('retains a fixer-silence failure across healthy outer passes until the subpass recovers', async () => {
+    await seedRoutine({ id: 'rt-fixer-silence', installSlug: 'papercusp', name: 'green-checkpoint' });
+    const scope = { routineName: 'green-checkpoint' as const, installSlug: 'papercusp' };
+
+    await recordWatchdogPassOutcome(sql, 'stranded-repair-fixer-silence', scope, new Error('activity read failed'));
+    await recordWatchdogPassOutcome(sql, 'stranded-repair-queue', scope);
+    expect(await readPass('rt-fixer-silence', 'stranded-repair-fixer-silence')).toMatchObject({
+      lastError: 'activity read failed', consecutiveFailures: 1,
+    });
+
+    await recordWatchdogPassOutcome(sql, 'stranded-repair-fixer-silence', scope, new Error('activity read failed'));
+    await recordWatchdogPassOutcome(sql, 'stranded-repair-queue', scope);
+    expect((await readPass('rt-fixer-silence', 'stranded-repair-fixer-silence'))?.consecutiveFailures).toBe(2);
+
+    await recordWatchdogPassOutcome(sql, 'stranded-repair-fixer-silence', scope);
+    expect(await readPass('rt-fixer-silence', 'stranded-repair-fixer-silence')).toBeUndefined();
+  });
+
   it('creates the marker on the FIRST failure, when the parent key does not exist yet', async () => {
     // The regression this pins: `jsonb_set(metadata, '{watchdog_health,green-stall}', …)` returns
     // the row UNCHANGED when `watchdog_health` is absent. That would silently drop the first

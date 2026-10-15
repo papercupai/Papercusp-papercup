@@ -6,6 +6,8 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('../../degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
+
 const { sqlMock, readLinesMock, fastPathState } = vi.hoisted(() => ({
   sqlMock: vi.fn(),
   readLinesMock: vi.fn(async () => [] as unknown[]),
@@ -37,7 +39,7 @@ function env(p: Partial<CoordEnvelope> = {}): CoordEnvelope {
  * The conditional SQL fragments are evaluated before the outer tagged query,
  * so return a fragment-shaped value for them and rows only for SELECTs.
  */
-function primeSql(rows: { body: unknown }[]) {
+function primeSql(rows: { body: unknown; ts?: unknown; msg_id?: string; id?: number }[]) {
   const seen: { text: string; values: unknown[] }[] = [];
   sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = Array.isArray(strings) ? strings.join('?') : String(strings);
@@ -90,5 +92,30 @@ describe('readInbox recipient predicate remains GIN-indexable', () => {
     const text = renderedQuery(seen[0]!);
     expect(text).toContain("(body->'to') ?");
     expect(text).not.toContain('jsonb_exists');
+  });
+
+  it('returns the indexed id for a legacy row whose body carries a conflicting id', async () => {
+    primeSql([{
+      body: env({ msg_id: 'legacy-stale-body-id' }),
+      ts: '2026-09-08T20:00:00.000Z',
+      msg_id: 'row-canonical-id',
+    }]);
+
+    const entries = await readInbox('alice');
+
+    expect(entries.map((entry) => entry.msg_id)).toContain('row-canonical-id');
+  });
+
+  it('keeps the indexed id in the keyset-paged inbox path too', async () => {
+    primeSql([{
+      id: 1,
+      body: env({ msg_id: 'legacy-stale-body-id' }),
+      ts: '2026-09-08T20:00:00.000Z',
+      msg_id: 'row-canonical-id',
+    }]);
+
+    const page = await readInboxWindow('alice');
+
+    expect(page.entries.map((entry) => entry.msg_id)).toContain('row-canonical-id');
   });
 });

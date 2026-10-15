@@ -5,10 +5,11 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { readThread, resolveMessageRef } from '../messages';
+import { readThreadFromRef } from '../messages';
 import { projectAuthoredFields } from '../message-fields';
 import { COORD_ROLES } from '../roles';
 import { boundInboxEntries } from './inbox';
+import { trimToByteBudget } from '../../_bound-output';
 
 // A thread is a forensic read, but it is still an agent-facing result. Keep the
 // normal response small enough to survive the ptool/MCP result door: retain the
@@ -17,6 +18,9 @@ import { boundInboxEntries } from './inbox';
 const THREAD_DEFAULT_ENTRY_LIMIT = 20;
 const THREAD_CONTENT_BUDGET = 8_000;
 const THREAD_CONTENT_CAP = 600;
+// The MCP result door cuts near 6,000 chars and appends its own disclosure.
+// Leave headroom so coord:thread returns complete JSON before it reaches that door.
+export const THREAD_RESPONSE_BUDGET_CHARS = 4_800;
 
 /**
  * `CoordEnvelope` is intentionally open-ended (`[key: string]: unknown`) so
@@ -111,12 +115,140 @@ function selectThreadWindow<T extends { msg_id?: string }>(
   return entries.filter((entry) => selected.has(entry));
 }
 
+/** Keep core sender/message details if one entry alone exceeds the result budget. */
+function minimalThreadEntryForBudget(entry: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const field of ['ts', 'msg_id', 'from', 'kind', 'related_msg_id'] as const) {
+    const value = entry[field];
+    if (typeof value === 'string') out[field] = value;
+  }
+
+  if (Array.isArray(entry.to)) {
+    out.to = entry.to.slice(0, 8).map((recipient) =>
+      typeof recipient === 'string' && recipient.length > 160
+        ? `${recipient.slice(0, 159)}…`
+        : recipient,
+    );
+    if (entry.to.length > 8) {
+      out.to_truncated = true;
+      out.to_total = entry.to.length;
+    }
+  }
+
+  for (const field of ['summary', 'body'] as const) {
+    const value = entry[field];
+    if (typeof value !== 'string') continue;
+    const maxChars = 160;
+    out[field] = value.length > maxChars ? `${value.slice(0, maxChars - 1)}…` : value;
+    if (value.length > maxChars) {
+      out[`${field}_truncated`] = true;
+      const fullChars = entry[`${field}_full_chars`];
+      out[`${field}_full_chars`] = typeof fullChars === 'number' ? fullChars : value.length;
+    }
+  }
+
+  out.thread_entry_truncated = true;
+  out.thread_entry_full_chars = JSON.stringify(entry).length;
+  out.thread_entry_detail = 'Use coord:read with this msg_id to retrieve the complete envelope.';
+  return out;
+}
+
+/** Fit a thread to the agent result door, prioritizing its root and newest entries. */
+function fitThreadResponse(
+  entries: Array<Record<string, unknown>>,
+  rootMsgId: string,
+  entriesTotal: number,
+  prefix?: { requestedRoot: string; detail: string },
+  pageOffset?: number,
+): Record<string, unknown> {
+  const indexed = entries.map((entry, index) => ({ entry, index }));
+  const root = indexed.find(({ entry }) => entry.msg_id === rootMsgId);
+  const priority = pageOffset === undefined
+    ? root
+      ? [root, ...indexed.filter(({ entry }) => entry !== root.entry).reverse()]
+      : [...indexed].reverse()
+    : indexed;
+  const indexByEntry = new Map(indexed.map(({ entry, index }) => [entry, index]));
+  let selected = trimToByteBudget(
+    priority.map(({ entry }) => entry),
+    THREAD_RESPONSE_BUDGET_CHARS,
+  ).kept.map((entry) => ({ entry, index: indexByEntry.get(entry) ?? 0 }));
+  let contentTruncated = false;
+
+  const build = (): Record<string, unknown> => {
+    const shown = [...selected]
+      .sort((a, b) => a.index - b.index)
+      .map(({ entry }) => entry);
+    const nextPageOffset = pageOffset === undefined
+      ? (shown.length < entriesTotal ? 0 : null)
+      : (pageOffset + shown.length < entriesTotal ? pageOffset + shown.length : null);
+    const entriesTruncated = nextPageOffset !== null;
+    const details = [
+      ...(entriesTruncated
+        ? [pageOffset === undefined
+            ? 'Showing the root and newest entries that fit the result budget or default window. To retrieve every entry in chronological pages, call coord:thread again with this root_msg_id and page_offset: 0, then pass each returned next_page_offset until null.'
+            : 'Showing a chronological thread page. Continue by passing the returned next_page_offset as page_offset until it is null.']
+        : []),
+      ...(contentTruncated
+        ? ['An entry was shortened to fit the response. Use coord:read with its msg_id to retrieve the complete envelope.']
+        : []),
+      ...(prefix ? [prefix.detail] : []),
+    ];
+    return {
+      root: rootMsgId,
+      ...(pageOffset === undefined ? {} : { page_offset: pageOffset }),
+      entries: shown,
+      entries_shown: shown.length,
+      entries_total: entriesTotal,
+      ...(entriesTruncated ? { entries_truncated: true } : {}),
+      next_page_offset: nextPageOffset,
+      ...(contentTruncated ? { content_truncated: true } : {}),
+      ...(prefix
+        ? { requested_root: prefix.requestedRoot, resolved_from: 'prefix' as const }
+        : {}),
+      ...(details.length ? { detail: details.join(' ') } : {}),
+    };
+  };
+
+  let data = build();
+  while (JSON.stringify(data).length > THREAD_RESPONSE_BUDGET_CHARS && selected.length > 1) {
+    selected = selected.slice(0, -1);
+    data = build();
+  }
+
+  if (JSON.stringify(data).length > THREAD_RESPONSE_BUDGET_CHARS && selected.length === 1) {
+    const only = selected[0]!;
+    selected = [{ ...only, entry: minimalThreadEntryForBudget(only.entry) }];
+    contentTruncated = true;
+    data = build();
+  }
+
+  // The minimal row is deliberately small; this final identity-only fallback
+  // protects the result contract if an unexpected core field is itself huge.
+  if (JSON.stringify(data).length > THREAD_RESPONSE_BUDGET_CHARS && selected.length === 1) {
+    const only = selected[0]!;
+    selected = [
+      {
+        ...only,
+        entry: {
+          ...(typeof only.entry.msg_id === 'string' ? { msg_id: only.entry.msg_id } : {}),
+          ...(typeof only.entry.kind === 'string' ? { kind: only.entry.kind } : {}),
+          thread_entry_truncated: true,
+        },
+      },
+    ];
+    data = build();
+  }
+
+  return data;
+}
+
 export default defineTool({
   name: 'coord:thread',
   description:
-    'Reconstruct a coord thread rooted at `root_msg_id`; pass the inbox entry\'s `msg_id` value as `root_msg_id` (there is no `msg_id` argument). Entries connected via `related_msg_id` are sorted by ts ascending.',
+    'Reconstruct a coord thread rooted at `root_msg_id`; pass the inbox entry\'s `msg_id` value as `root_msg_id` (there is no `msg_id` argument). Entries connected via `related_msg_id` are sorted by ts ascending. When entries are truncated, pass page_offset: 0 and follow each next_page_offset to retrieve every entry.',
   guidance: {
-    when: 'You want the full conversation around a coord message (replies, acks, resolutions). Use the exact `msg_id` from coord:inbox or coord:read as the `root_msg_id` argument.',
+    when: 'You want the conversation around a coord message (replies, acks, resolutions). Use the exact `msg_id` from coord:inbox or coord:read as root_msg_id; when entries_truncated is true, page with page_offset and next_page_offset.',
     notWhen: 'For a fresh inbox sweep — use coord:inbox.',
   },
   capability: 'coord:read',
@@ -128,12 +260,13 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z.object({
     root_msg_id: z.string().min(1),
+    page_offset: z.number().int().min(0).optional().describe('Fetch a chronological page starting at this zero-based entry offset; pass back next_page_offset until it is null.'),
   }),
   async handler(args) {
     // WI-6725: a truncated root_msg_id used to walk a chain rooted at an id
     // that matches nothing and return `entries: []` — indistinguishable from a
     // thread that does not exist. Resolve the ref first (see resolveMessageRef).
-    const resolution = await resolveMessageRef(args.root_msg_id);
+    const { resolution, entries } = await readThreadFromRef(args.root_msg_id);
     if (resolution.status === 'ambiguous') {
       return {
         data: {
@@ -153,14 +286,29 @@ export default defineTool({
           found: false,
           ...(resolution.looksTruncated
             ? {
-                detail: `No message id starts with '${args.root_msg_id}'. Note this is NOT a full msg_id (expected '<short>-0000-<32 hex>') — if you copied it out of prose it may have been truncated at the source.`,
+                detail: `No message id starts with '${args.root_msg_id}'. Note this is NOT a recognized full msg_id (expected '<short>-0000-<32 hex>' or 'coord-send-<64 hex>') — if you copied it out of prose it may have been truncated at the source.`,
               }
             : {}),
         },
       };
     }
-    const entries = await readThread(resolution.msgId);
-    const window = selectThreadWindow(entries, resolution.msgId);
+    if (args.page_offset !== undefined && args.page_offset > entries.length) {
+      return {
+        data: {
+          root: resolution.msgId,
+          entries: [],
+          entries_shown: 0,
+          entries_total: entries.length,
+          page_offset: args.page_offset,
+          next_page_offset: null,
+          error: 'page_offset_out_of_range' as const,
+          detail: `page_offset ${args.page_offset} exceeds this thread's ${entries.length} entries. Start at page_offset: 0 and follow next_page_offset.`,
+        },
+      };
+    }
+    const window = args.page_offset === undefined
+      ? selectThreadWindow(entries, resolution.msgId)
+      : entries.slice(args.page_offset, args.page_offset + THREAD_DEFAULT_ENTRY_LIMIT);
     const contentCap = Math.min(
       THREAD_CONTENT_CAP,
       Math.floor(THREAD_CONTENT_BUDGET / Math.max(1, window.length)),
@@ -181,28 +329,18 @@ export default defineTool({
       else delete out.authored;
       return compactThreadEntry(out);
     });
-    return {
-      data: {
-        root: resolution.msgId,
-        entries: withAuthored,
-        entries_shown: withAuthored.length,
-        entries_total: entries.length,
-        ...(withAuthored.length < entries.length
-          ? {
-              entries_truncated: true,
-              detail:
-                `Showing the root and newest ${THREAD_DEFAULT_ENTRY_LIMIT - 1} thread entries. ` +
-                'Use coord:read for a complete individual message.',
-            }
-          : {}),
-        ...(resolution.resolvedFrom === 'prefix'
-          ? {
-              requested_root: args.root_msg_id,
-              resolved_from: 'prefix' as const,
-              detail: `'${args.root_msg_id}' is a TRUNCATED msg_id — resolved by unique prefix to '${resolution.msgId}'.`,
-            }
-          : {}),
-      },
-    };
+    const fitted = fitThreadResponse(
+      withAuthored,
+      resolution.msgId,
+      entries.length,
+      resolution.resolvedFrom === 'prefix'
+        ? {
+            requestedRoot: args.root_msg_id,
+            detail: `'${args.root_msg_id}' is a TRUNCATED msg_id — resolved by unique prefix to '${resolution.msgId}'.`,
+          }
+        : undefined,
+      args.page_offset,
+    );
+    return { data: fitted };
   },
 });

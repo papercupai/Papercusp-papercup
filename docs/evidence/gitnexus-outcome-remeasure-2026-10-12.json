@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "plan": "gitnexus-deterministic-integration-2026-10-05",
+  "workItem": "WI-10006295",
+  "decision": "D-029",
+  "decisionStatus": "provisional KEEP; final measurement and decision owed by follow-up",
+  "baselineRef": "docs/evidence/gitnexus-replay-baseline-2026-10-06.json",
+  "behaviourBaselineRef": "gitnexus-deterministic-integration-2026-10-05#D-009",
+  "historicalWindow": {
+    "fromInclusive": "2026-10-06T05:25:00Z",
+    "toExclusive": "2026-10-11T09:43:00Z",
+    "scope": "Recorded papercusp-workspace / papercusp historical ledger evidence; not a complete incident census"
+  },
+  "metrics": {
+    "strandCausedRedsPerWeek": {
+      "status": "unavailable",
+      "value": null,
+      "reason": "Historical root-cause population is incomplete. Baseline-equivalent lexical qualification and independently attributed repair records provide a lower-bound sample, not a comparable complete weekly incident rate.",
+      "observed": {
+        "lexicalLeadsReadInFull": 32,
+        "lexicalLeadsEstablishingChangedCodeCrossPackageStrand": 0,
+        "additionalQualifiedRepairLead": "WI-6554700010008340",
+        "qualification": "Desktop release-script change stranded three superproject guards. This is one qualified recorded cross-package incident, not three incidents. It was absent from the lexical population."
+      },
+      "baseline": "Baseline weekly rate is itself a lower bound: cross-workspace 0.23/week and all qualified strands 0.7/week. Do not infer improvement from the different incomplete samples.",
+      "sourceRefs": ["work-item:WI-10006295", "work-item:WI-6554700010008340", "docs/evidence/gitnexus-replay-baseline-2026-10-06.json#metrics.strandCausedRedsPerWeek"]
+    },
+    "gateTimeToFirstRedMs": {
+      "status": "unavailable",
+      "value": null,
+      "reason": "Historical scoped green_checkpoint events in this window carry no timed roundPhases entries. Event statuses and counts are not incident counts or elapsed-time measurements. Baseline roundPhases.totalMs measures gate-start to red verdict, not necessarily first failing-test observation.",
+      "baseline": "10 of 76 baseline not-green runs carried timings; p50 1659102ms. Sparse timing coverage and differing event populations prevent a comparable speedup claim.",
+      "queryScope": "pipeline_events at_ms in [1791264300000,1791711780000), workspace papercusp-workspace, install papercusp, kind green_checkpoint; inspect detail.roundPhases",
+      "sourceRefs": ["work-item:WI-10006295", "docs/evidence/gitnexus-replay-baseline-2026-10-06.json#metrics.gateTimeToFirstRedMs"]
+    },
+    "graphAddedWorkspacesFailedVersusNeverMattered": {
+      "status": "unavailable",
+      "value": null,
+      "reason": "Historical selector child receipts and graph snapshot are unrecovered. Wrapper-log absence is missing measurement, not zero graph additions or zero useful catches. The full changed-path set, executed-map state and repo-wide guard admission for the qualified repair incident are also unrecovered.",
+      "historicalReplay": {
+        "candidate": "94b7ad2a",
+        "workspaceManifests": 111,
+        "missingManifests": [],
+        "baselineGraph": "explicitly unavailable",
+        "changedPathAlternatives": ["papercusp-desktop", "papercusp-desktop/bin/build-desktop-sidecar.sh"],
+        "baselineWorkspaceAdmission": ["@papercusp/desktop"],
+        "currentSelectorOnHistoricalSource": "Operator-core and apps/operator select their full suites with no changed paths in scope, covering all three guards only if those workspaces are admitted.",
+        "limitation": "Current selector over historical source is not a reconstruction of the deployed historical selector, actual complete change set, graph snapshot or executed-map state. No graph catch/miss is credited.",
+        "retraction": "The sparse three-test repo-root probe cannot establish a deployed selector miss; real selector roots are per workspace."
+      },
+      "sourceRefs": ["work-item:WI-10006295", "work-item:WI-6554700010008340", "gitnexus-deterministic-integration-2026-10-05#D-029"]
+    },
+    "retractedCodeCallerAbsenceClaims": {
+      "status": "unavailable",
+      "value": null,
+      "reason": "None of the 32 fully read lexical lead bodies establishes a retracted code-caller absence claim. This bounded qualification is not a complete retraction census and must not be reported as zero true incidents.",
+      "excludedDifferentKinds": ["WI-10007001 and EI-252695: graph coverage/corroboration defects without incident catch", "WI-10007069 and EI-252882: rubric-path absence retraction", "EI-252216: event-registration retraction", "EI-254927: guest CPU absence retraction"],
+      "baseline": "One baseline recorded code-caller absence lead, EI-25195842698428342, with symbol/commit unrecovered.",
+      "sourceRefs": ["work-item:WI-10006295", "docs/evidence/gitnexus-replay-baseline-2026-10-06.json#metrics.retractedAbsenceClaimIncidents"]
+    },
+    "s37W01PostChangePassRate": {
+      "status": "unavailable",
+      "value": null,
+      "reason": "No correctly attributed post-change S37/W01 battery evidence has been recovered or run for this remeasurement. Assertion-suite success is not LLM behaviour evidence. P-010/P-014 were dropped; do not attribute benefit to unshipped integrations.",
+      "baseline": {"scenariosPassed": 0, "scenarios": 6, "runsPassed": 0, "runs": 18},
+      "baselineLedgerWarning": "D-009 says su baseline rows20818919/20819555/20820211 have wrong source attribution and worker runs lack rows. Do not bind those rows as post-change evidence.",
+      "nextMeasurement": "Run the existing S37a-c and W01a-c scenario battery through its registered runner and retain correctly attributed run receipts, then update this artifact and Decision.",
+      "sourceRefs": ["gitnexus-deterministic-integration-2026-10-05#D-009", "work-item:WI-10006295"]
+    }
+  },
+  "sourceRecovery": {
+    "lexicalPopulation": "~/.papercusp/su-codex-homes/session-40297/sessions/2026/10/11/rollout-2026-10-11T05-39-57-01a12a55-51b1-7361-8724-2d0c653d5d1b.jsonl ordinal138",
+    "qualificationAndHistoricalQueries": "WI-10006295 checkpoint fire95 through fire98; fixed historical ledger window and full-body qualification references",
+    "repairWriter": "recordFrozenRepairEdit records individual idempotent hunks, not incidents",
+    "outcomeDecisionReport": "rpt_3edee845-5877-46a6-8ef3-269ccff699ab"
+  },
+  "followup": {
+    "id": "WI-6554700010008509",
+    "assignee": "su-72f78fbb-7e47-41ae-a842-35c83b8fcdd2",
+    "provisionalDue": "2026-10-25T08:35:34.568Z",
+    "dueRule": "Adjust to actual shipment plus14days if shipment is later than the provisional anchor.",
+    "owed": "Repeat baseline-equivalent outcome measurements and record the final keep/narrow/scale-back Decision."
+  },
+  "interpretation": {
+    "noCallCountCredit": true,
+    "noOperationalGraphCatchCredit": true,
+    "missingMeasurementsAreNotZero": true,
+    "doesNotVerify": ["48-hour deployed snapshot continuity", "deployed caller paths support", "gate green", "final acceptance", "shipment"],
+    "provisionalRationale": "Preserve the existing reversible snapshot integration while outcome evidence is incomplete; preserve D-026 first-party backend and D-028 observe/routing hold. This does not establish that third-party indexing pays its cost."
+  }
+}

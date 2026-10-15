@@ -6,7 +6,10 @@
  * config.toml = [mcp_servers.papercusp] url = "<signed>", auth.json
  * symlinked to the real ~/.codex/auth.json (never copied).
  */
+import { spawn, spawnSync } from 'node:child_process';
 import {
+  chmodSync,
+  copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -17,8 +20,10 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parse as parseToml } from '@iarna/toml';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -30,14 +35,37 @@ vi.mock('node:os', async (importActual) => {
   const actual = await importActual<typeof import('node:os')>();
   return { ...actual, homedir: () => homeHolder.home };
 });
+const ownerSidSyncCalls = vi.hoisted(() => [] as string[]);
+vi.mock('node:fs', async (importActual) => {
+  const actual = await importActual<typeof import('node:fs')>();
+  const isOwnerSid = (path: unknown) => String(path).endsWith('.owner-sid');
+  return {
+    ...actual,
+    existsSync: (...args: Parameters<typeof actual.existsSync>) => {
+      if (isOwnerSid(args[0])) ownerSidSyncCalls.push('existsSync');
+      return actual.existsSync(...args);
+    },
+    readFileSync: (...args: Parameters<typeof actual.readFileSync>) => {
+      if (isOwnerSid(args[0])) ownerSidSyncCalls.push('readFileSync');
+      return actual.readFileSync(...args);
+    },
+    writeFileSync: (...args: Parameters<typeof actual.writeFileSync>) => {
+      if (isOwnerSid(args[0])) ownerSidSyncCalls.push('writeFileSync');
+      return actual.writeFileSync(...args);
+    },
+  };
+});
 
 let fakeHome = '';
 const RESOLVED_CODEX_DEFAULT = 'gpt-5.6-sol:xhigh';
 const savedCodexSqliteHomes = process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR;
+const savedSuCodexHomes = process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
 
 beforeEach(() => {
+  ownerSidSyncCalls.length = 0;
   fakeHome = mkdtempSync(join(tmpdir(), 'role-codex-home-test-'));
   homeHolder.home = fakeHome;
+  process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = join(fakeHome, '.papercusp', 'su-codex-homes');
   process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = join(fakeHome, 'codex-sqlite-homes');
   vi.resetModules();
 });
@@ -46,6 +74,8 @@ afterEach(() => {
   if (fakeHome) rmSync(fakeHome, { recursive: true, force: true });
   if (savedCodexSqliteHomes === undefined) delete process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR;
   else process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = savedCodexSqliteHomes;
+  if (savedSuCodexHomes === undefined) delete process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
+  else process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = savedSuCodexHomes;
 });
 
 function withResolvedDefault<T extends (opts: any) => any>(fn: T): T {
@@ -65,7 +95,9 @@ async function loadMod() {
     ...mod,
     writeRoleCodexHome: withResolvedDefault(mod.writeRoleCodexHome),
     writeSuCodexHome: withResolvedDefault(mod.writeSuCodexHome),
+    writeSuCodexHomeAsync: withResolvedDefault(mod.writeSuCodexHomeAsync),
     ensureSuCodexHomeConfig: withResolvedDefault(mod.ensureSuCodexHomeConfig),
+    ensureSuCodexHomeConfigAsync: withResolvedDefault(mod.ensureSuCodexHomeConfigAsync),
   };
 }
 
@@ -91,7 +123,7 @@ function installStaleExtendedWindowRecord(model: string) {
 
 /** Drop stub CC lock-hook scripts under the fake home so writeCodexLockHooks
  *  has something to point at (it no-ops when they're absent). */
-async function installFakeHooks() {
+async function installFakeHooks(options: { turnJournal?: boolean } = {}) {
   const { mkdirSync } = await import('node:fs');
   const dir = join(fakeHome, '.papercusp', 'hooks', 'cc');
   mkdirSync(dir, { recursive: true });
@@ -99,12 +131,15 @@ async function installFakeHooks() {
   writeFileSync(join(dir, 'posttooluse-locks-release.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'posttooluse-activity-report.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'lifecycle-report.sh'), '#!/bin/sh\n');
+  if (options.turnJournal) writeFileSync(join(dir, 'stop-turn-journal.sh'), '#!/usr/bin/env bash\n');
   writeFileSync(join(dir, 'precompact-managed-carry.mjs'), '#!/usr/bin/env node\n');
   writeFileSync(join(dir, 'posttooluse-objective-title.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'posttooluse-write-byte-integrity-guard.mjs'), '#!/usr/bin/env node\n');
   writeFileSync(join(dir, 'pretooluse-control-bytes-content-guard.mjs'), '#!/usr/bin/env node\n');
   writeFileSync(join(dir, 'pretooluse-generated-file-edit-guard.mjs'), '#!/usr/bin/env node\n');
+  writeFileSync(join(dir, 'pretooluse-unreserved-migration-guard.mjs'), '#!/usr/bin/env node\n');
   writeFileSync(join(dir, 'pretooluse-bash-resource-gate.sh'), '#!/bin/sh\n');
+  writeFileSync(join(dir, 'userpromptsubmit-provenance.sh'), '#!/usr/bin/env bash\n');
   return dir;
 }
 
@@ -119,7 +154,100 @@ function installOwnerRuntimeProof(owner: string) {
   writeFileSync(join(dir, `owner-${safe}-last-success.json`), JSON.stringify({ ts: new Date().toISOString(), owner }));
 }
 
+describe('fresh Codex home transcript custody', () => {
+  it.each(['writeRoleCodexHome', 'writeSuCodexHome', 'writeSuCodexHomeAsync'] as const)(
+    '%s retains original native transcripts while rebuilding generated launch files',
+    async (writerName) => {
+      const mod = await loadMod();
+      const writer = mod[writerName];
+      const opts = { sessionKey: 'native-custody', sid: 'su-native-custody', mcpUrl: 'http://x/?sig=old', promptText: 'OLD PROMPT' };
+      const first = await writer(opts);
+      const bytes = Buffer.from('{"type":"response_item","text":"original receipt — $literal"}\n');
+      const transcripts = [
+        join(first.codexHome, 'sessions', '2026', '10', '09', 'rollout-2026-10-09T00-00-00-01a12212-c9fe-7921-bc00-6644cf505bab.jsonl'),
+        join(first.codexHome, 'archived_sessions', 'rollout-earlier.jsonl'),
+      ];
+      for (const transcript of transcripts) {
+        mkdirSync(join(transcript, '..'), { recursive: true });
+        writeFileSync(transcript, bytes);
+      }
+      writeFileSync(join(first.codexHome, 'STALE.txt'), 'disposable launch state');
+      const second = await writer({ ...opts, promptText: 'CURRENT PROMPT', mcpUrl: 'http://x/?sig=current' });
+      for (const transcript of transcripts) expect(readFileSync(transcript)).toEqual(bytes);
+      expect(second.codexHome).toBe(first.codexHome);
+      expect(readFileSync(second.agentsPath, 'utf8')).toContain('CURRENT PROMPT');
+      expect(readFileSync(second.configPath, 'utf8')).toContain('sig=current');
+      expect(existsSync(join(second.codexHome, 'STALE.txt'))).toBe(false);
+      // Keeping the original rollout also keeps the existing archive guard
+      // effective: a later retention pass cannot mistake this for an empty home.
+      const { findUnarchivedSessionDirs, planSessionDirGc } = await import('./session-dir-gc');
+      const candidates = [{ path: second.codexHome, keyKind: 'session' as const, key: 'native-custody', mtimeMs: 0 }];
+      const readStamp = vi.fn(async () => null);
+      const unarchivedPaths = await findUnarchivedSessionDirs(candidates, { store: { readStamp } });
+      expect(readStamp).toHaveBeenCalledWith('codex', '01a12212-c9fe-7921-bc00-6644cf505bab');
+      const plan = planSessionDirGc({ candidates, protectedIdentity: { ownerIds: new Set(), sessionKeys: new Set() },
+        nowMs: 2 * 86400_000, retentionMs: 86400_000, unarchivedPaths });
+      expect(plan.remove).toEqual([]);
+      expect(plan.keptUnarchived).toEqual(candidates);
+    },
+  );
+
+  it.each(['sessions', 'archived_sessions'])(
+    'refuses a symlinked %s transcript root before deleting generated launch files',
+    async (name) => {
+      const writer = await load();
+      const opts = { sessionKey: 'linked-custody', mcpUrl: 'http://x/?sig=original', promptText: 'ORIGINAL PROMPT' };
+      const first = writer(opts);
+      const elsewhere = join(fakeHome, 'other-native-history');
+      mkdirSync(elsewhere);
+      const transcript = join(elsewhere, 'original.jsonl');
+      writeFileSync(transcript, 'original receipt');
+      symlinkSync(elsewhere, join(first.codexHome, name), 'dir');
+      expect(() => writer({ ...opts, promptText: 'REPLACEMENT' })).toThrow(/transcript root.*real directory/);
+      expect(readFileSync(first.agentsPath, 'utf8')).toContain('ORIGINAL PROMPT');
+      expect(lstatSync(join(first.codexHome, name)).isSymbolicLink()).toBe(true);
+      expect(readFileSync(transcript, 'utf8')).toBe('original receipt');
+    },
+  );
+});
+
 describe('writeRoleCodexHome', () => {
+  it('repairs a role home in place while preserving its exact native transcript and SQLite data', async () => {
+    const writer = await load();
+    const input = { sessionKey: 4242, mcpUrl: 'http://x/?role=researcher&sig=1', promptText: 'RESEARCH ROLE' };
+    const first = writer(input);
+    mkdirSync(join(first.codexHome, 'sessions'), { recursive: true });
+    const transcript = join(first.codexHome, 'sessions', 'native.jsonl');
+    const database = join(first.sqliteHome, 'state.sqlite');
+    writeFileSync(transcript, 'native history');
+    writeFileSync(database, 'native state');
+    const replacementRoot = join(fakeHome, 'different-serving-tmp-root');
+    process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = replacementRoot;
+    const repaired = writer({ ...input, preserveExisting: true, promptText: 'CURRENT RESEARCH ROLE' });
+    expect(readFileSync(transcript, 'utf8')).toBe('native history');
+    expect(readFileSync(database, 'utf8')).toBe('native state');
+    expect(repaired.sqliteHome).toBe(first.sqliteHome);
+    expect(parseToml(readFileSync(repaired.configPath, 'utf8')).sqlite_home).toBe(first.sqliteHome);
+    expect(existsSync(replacementRoot)).toBe(false);
+    expect(readFileSync(repaired.agentsPath, 'utf8')).toContain('CURRENT RESEARCH ROLE');
+    expect(readFileSync(repaired.configPath, 'utf8')).toContain('[mcp_servers.papercusp]');
+    expect(readFileSync(repaired.configPath, 'utf8')).not.toContain('[mcp_servers.papercusp-su]');
+  });
+
+  it('preserves an escaped absolute SQLite path and refuses a relative recorded path', async () => {
+    process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = join(fakeHome, 'state with "quotes"');
+    const writer = await load();
+    const input = { sessionKey: 'escaped-state', mcpUrl: 'http://x/?role=researcher&sig=1', promptText: 'ROLE' };
+    const first = writer(input);
+    process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = join(fakeHome, 'new-state');
+    expect(writer({ ...input, preserveExisting: true }).sqliteHome).toBe(first.sqliteHome);
+    const invalid = readFileSync(first.configPath, 'utf8').replace(/^sqlite_home\s*=.*$/m,
+      'sqlite_home = "relative-state"');
+    writeFileSync(first.configPath, invalid);
+    expect(() => writer({ ...input, preserveExisting: true })).toThrow(/recorded sqlite_home must be an absolute path/);
+    expect(readFileSync(first.configPath, 'utf8')).toBe(invalid);
+  });
+
   it('prepends the exact 1M/900k root keys for an extended-window role model', async () => {
     installStaleExtendedWindowRecord('gpt-5.6-sol');
     const writeRoleCodexHome = await load();
@@ -167,6 +295,7 @@ describe('writeRoleCodexHome', () => {
     const toml = readFileSync(out.configPath, 'utf8');
     expect(toml).toContain('[mcp_servers.papercusp]');
     expect(toml).toContain(`url = "${url}"`);
+    expect(toml).toContain(`[mcp_servers.papercusp]\nurl = "${url}"\ntool_timeout_sec = 1090`);
     const logDir = join(out.codexHome, 'log');
     expect(out.sqliteHome).toBe(join(fakeHome, 'codex-sqlite-homes', 'session-42'));
     expect(toml).toContain(`sqlite_home = "${out.sqliteHome}"`);
@@ -209,6 +338,36 @@ describe('writeRoleCodexHome', () => {
   // three cases pin the routing contract on the INTERACTIVE path, which previously had NO
   // gateway assertions at all (which is exactly how its local copy drifted pin-required while
   // the spawned copy learned auto).
+  it('managed role and SU homes disable startup update dialogs, including resume repair', async () => {
+    const mod = await import('./role-codex-home');
+    const role = mod.writeRoleCodexHome({
+      sessionKey: 'no-update-role',
+      model: RESOLVED_CODEX_DEFAULT,
+      mcpUrl: 'http://x/api/mcp?role=worker&sig=z',
+      promptText: 'P',
+    });
+    expect(parseToml(readFileSync(role.configPath, 'utf8')).check_for_update_on_startup).toBe(false);
+    const opts = {
+      sessionKey: 'no-update-su',
+      model: RESOLVED_CODEX_DEFAULT,
+      sid: 'su-no-update',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      token: 'fixture-token',
+      promptText: 'P',
+    };
+    const su = mod.writeSuCodexHome(opts);
+    expect(parseToml(readFileSync(su.configPath, 'utf8')).check_for_update_on_startup).toBe(false);
+    const history = join(su.codexHome, 'sessions', 'retained.jsonl');
+    mkdirSync(join(su.codexHome, 'sessions'), { recursive: true });
+    writeFileSync(history, 'retained transcript');
+    writeFileSync(su.configPath,
+      readFileSync(su.configPath, 'utf8').replace('check_for_update_on_startup = false', 'check_for_update_on_startup = true'));
+    const repaired = mod.ensureSuCodexHomeConfig(opts);
+    expect(repaired.repaired).toBe(true);
+    expect(parseToml(readFileSync(repaired.configPath, 'utf8')).check_for_update_on_startup).toBe(false);
+    expect(readFileSync(history, 'utf8')).toBe('retained transcript');
+  });
+
   it('codexGatewayAccountId → gateway provider block WITH the x-papercusp-account pin header', async () => {
     const writeRoleCodexHome = await load();
     const out = writeRoleCodexHome({
@@ -331,6 +490,14 @@ describe('writeRoleCodexHome', () => {
     expect(generatedFiles.matcher).toBe(
       '^(?:apply_patch|Edit|Write|MultiEdit|mcp__.*__capability_(?:edit|write|multi_?edit))$',
     );
+    const migrationReservation = hooks.hooks.PreToolUse.find((e: { hooks: { command: string }[] }) =>
+      e.hooks[0].command.includes('pretooluse-unreserved-migration-guard.mjs'),
+    );
+    expect(migrationReservation).toBeTruthy();
+    expect(migrationReservation.matcher).toBe(
+      '^(?:apply_patch|Edit|Write|MultiEdit|mcp__.*__capability_(?:edit|write|multi_?edit))$',
+    );
+    expect(migrationReservation.hooks[0].command).toContain('PAPERCUSP_WORKSPACE_ROOT=');
     expect(hooks.hooks.PostToolUse[0].hooks[0].command).toContain('posttooluse-locks-release.sh');
     expect(hooks.hooks.PostToolUse[0].matcher).toBe(
       '^(?:apply_patch|Edit|Write|exec|functions\\.exec|functions__exec)$',
@@ -346,6 +513,80 @@ describe('writeRoleCodexHome', () => {
     expect(JSON.stringify(hooks)).not.toContain('posttooluse-activity-report.sh');
     // No sid → no objective-title hook either (it keys the glance read off the sid).
     expect(JSON.stringify(hooks)).not.toContain('posttooluse-objective-title.sh');
+  });
+
+  it('uses the declared canonical workspace for hooks instead of a serving candidate (EI-25920487778813638)', async () => {
+    await installFakeHooks();
+    const workspace = join(fakeHome, 'workspace');
+    vi.stubEnv('PAPERCUSP_CANONICAL_TREE', join(workspace, 'papercusp'));
+    vi.stubEnv('PAPERCUSP_WORKSPACE_ROOT', join(workspace, 'papercusp-staging.generations', '.candidate-test'));
+    try {
+      const writeRoleCodexHome = await load();
+      const out = writeRoleCodexHome({ sessionKey: 'canonical-hook-scope', mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P' });
+      const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+      for (const event of ['PreToolUse', 'PostToolUse']) {
+        expect(hooks.hooks[event][0].hooks[0].command).toContain(`PAPERCUSP_WORKSPACE_ROOT='${workspace}'`);
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('uses the hook home default when no workspace is declared (EI-25920487778813638)', async () => {
+    await installFakeHooks();
+    vi.stubEnv('PAPERCUSP_CANONICAL_TREE', '');
+    vi.stubEnv('PAPERCUSP_WORKSPACE_ROOT', '');
+    try {
+      const writeRoleCodexHome = await load();
+      const out = writeRoleCodexHome({ sessionKey: 'default-hook-scope', mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P' });
+      const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+      expect(hooks.hooks.PreToolUse[0].hooks[0].command).toContain(`PAPERCUSP_WORKSPACE_ROOT='${join(fakeHome, 'papercupai-workspace')}'`);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('repairs a same-owner candidate hook scope once while preserving native history (EI-25920487778813638)', async () => {
+    await installFakeHooks();
+    const workspace = join(fakeHome, 'workspace');
+    vi.stubEnv('PAPERCUSP_CANONICAL_TREE', join(workspace, 'papercusp'));
+    try {
+      const { writeSuCodexHome, ensureSuCodexHomeConfig } = await loadMod();
+      const opts = { sessionKey: 'repair-hook-scope', sid: 'su-scope-repair', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'PRESERVE' };
+      const home = writeSuCodexHome(opts);
+      const hooksPath = join(home.codexHome, 'hooks.json');
+      const stale = readFileSync(hooksPath, 'utf8').replaceAll(
+        `PAPERCUSP_WORKSPACE_ROOT='${workspace}'`,
+        `PAPERCUSP_WORKSPACE_ROOT='${join(workspace, 'papercusp-staging.generations', '.candidate-test')}'`,
+      );
+      writeFileSync(hooksPath, stale);
+      mkdirSync(join(home.codexHome, 'sessions'));
+      const transcript = join(home.codexHome, 'sessions', 'original.jsonl');
+      writeFileSync(transcript, 'native history');
+      expect(ensureSuCodexHomeConfig(opts)).toMatchObject({ identityRepaired: true });
+      expect(readFileSync(transcript, 'utf8')).toBe('native history');
+      expect(readFileSync(home.agentsPath, 'utf8')).toContain('PRESERVE');
+      expect(readFileSync(hooksPath, 'utf8')).not.toContain('.candidate-test');
+      const repaired = readFileSync(hooksPath, 'utf8');
+      expect(ensureSuCodexHomeConfig(opts)).toMatchObject({ identityRepaired: false });
+      expect(readFileSync(hooksPath, 'utf8')).toBe(repaired);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('matches canonical code-mode parent calls for lock release (EI-25920487778813638)', async () => {
+    await installFakeHooks();
+    const writeRoleCodexHome = await load();
+    const out = writeRoleCodexHome({ sessionKey: 'parent-lock-matcher', mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P' });
+    const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+    const matcher = new RegExp(hooks.hooks.PostToolUse[0].matcher);
+    for (const name of ['apply_patch', 'Edit', 'Write', 'exec', 'functions.exec', 'functions__exec']) {
+      expect(matcher.test(name), name).toBe(true);
+    }
+    for (const name of ['functionsXexec', 'functions\\exec', 'unrelated']) {
+      expect(matcher.test(name), name).toBe(false);
+    }
   });
 
   it('a role session WITH a sid gets the activity-bridge hook (worker activity → fleet view) with the coord fold OFF', async () => {
@@ -408,6 +649,13 @@ describe('writeRoleCodexHome', () => {
     expect(hooks.hooks.SessionStart[0].hooks[0].command).toContain("PAPERCUSP_SID='role-abc-9'");
     expect(hooks.hooks.SessionStart[0].hooks[0].command).toContain("PAPERCUSP_ADV_SESSION_ID='71'");
     expect(hooks.hooks.SessionEnd[0].hooks[0].command).toContain('PAPERCUSP_ACTIVITY_SYNC=1');
+    const lifecycleStop = hooks.hooks.Stop.find((e: { hooks: { command: string }[] }) =>
+      e.hooks.some((hook) => hook.command.includes('lifecycle-report.sh')),
+    );
+    expect(lifecycleStop).toBeTruthy();
+    expect(lifecycleStop.matcher).toBe('.*');
+    expect(lifecycleStop.hooks[0].command).toContain("PAPERCUSP_SID='role-abc-9'");
+    expect(lifecycleStop.hooks[0].command).toContain('PAPERCUSP_ACTIVITY_SYNC=1');
     expect(hooks.hooks.PreCompact).toHaveLength(1);
     expect(hooks.hooks.PreCompact[0].matcher).toBe('^auto$');
     expect(hooks.hooks.PreCompact[0].hooks[0].timeout).toBe(600);
@@ -451,6 +699,76 @@ describe('writeRoleCodexHome', () => {
 });
 
 describe('writeSuCodexHome', () => {
+  it('keeps a frozen native home free of user capabilities and preserves that boundary during config repair', async () => {
+    const user = join(fakeHome, '.codex');
+    for (const dir of ['skills', 'plugins', 'prompts']) {
+      mkdirSync(join(user, dir), { recursive: true });
+      writeFileSync(join(user, dir, 'ambient.md'), `AMBIENT ${dir}`);
+    }
+    writeFileSync(join(user, 'auth.json'), '{"user":"AMBIENT AUTH"}');
+    writeFileSync(join(user, 'config.toml'), '[projects."/ambient-project"]\ntrust_level = "trusted"\n');
+    writeFileSync(join(fakeHome, '.claude.json'), JSON.stringify({ projects: {
+      '/frozen-assignment': { mcpServers: { ambient: { type: 'http', url: 'http://example.invalid' } } },
+    } }));
+    const { writeSuCodexHome, ensureSuCodexHomeConfig } = await loadMod();
+    const input = { sessionKey: 'frozen-native-home', sid: 'su-frozen-home',
+      mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'FROZEN ROLE',
+      trustDir: '/frozen-assignment', denyAmbientContext: true as const };
+    const out = writeSuCodexHome(input);
+    expect(existsSync(join(out.codexHome, 'auth.json'))).toBe(false);
+    expect(existsSync(join(out.codexHome, 'plugins'))).toBe(false);
+    expect(existsSync(join(out.codexHome, 'prompts'))).toBe(false);
+    expect(lstatSync(join(out.codexHome, 'skills')).isDirectory()).toBe(true);
+    expect(existsSync(join(out.codexHome, 'skills', 'ambient.md'))).toBe(false);
+    const config = readFileSync(out.configPath, 'utf8');
+    const suMcpRoute = '[mcp_servers.papercusp-su]\nurl = "http://x/api/mcp?superuser=1&client=su-frozen-home"\ntool_timeout_sec = 610';
+    expect(config).toContain(suMcpRoute);
+    expect(config).toContain('[projects."/frozen-assignment"]');
+    expect(config).not.toContain('/ambient-project');
+    expect(config).not.toContain('example.invalid');
+    // Recovery often has only the recorded model and owner, not the original
+    // launch options. The existing home diagnostics must retain this policy.
+    rmSync(out.configPath);
+    ensureSuCodexHomeConfig({ sessionKey: input.sessionKey, sid: input.sid,
+      mcpUrl: input.mcpUrl, projectDir: input.trustDir });
+    expect(readFileSync(out.configPath, 'utf8')).not.toContain('example.invalid');
+    expect(readFileSync(out.configPath, 'utf8')).toContain(suMcpRoute);
+    expect(existsSync(join(out.codexHome, 'auth.json'))).toBe(false);
+  });
+
+  it('recovers a missing frozen home without ambient inheritance and preserves policy on a second repair', async () => {
+    const user = join(fakeHome, '.codex');
+    mkdirSync(join(user, 'prompts'), { recursive: true });
+    writeFileSync(join(user, 'prompts', 'ambient.md'), 'AMBIENT PROMPT');
+    writeFileSync(join(user, 'auth.json'), '{"user":"AMBIENT AUTH"}');
+    writeFileSync(join(fakeHome, '.claude.json'), JSON.stringify({ projects: {
+      '/frozen-assignment': { mcpServers: { ambient: { type: 'http', url: 'http://example.invalid' } } },
+    } }));
+    const { ensureSuCodexHomeConfig } = await loadMod();
+    const input = { sessionKey: 'missing-frozen-home', sid: 'su-missing-frozen-home',
+      mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'FROZEN ROLE',
+      projectDir: '/frozen-assignment', trustDir: null, recoverMissingHome: true };
+    const out = ensureSuCodexHomeConfig({ ...input, denyAmbientContext: true });
+    expect(out).toMatchObject({ repaired: true, promptRepaired: true });
+    expect(existsSync(join(out.codexHome, 'auth.json'))).toBe(false);
+    expect(existsSync(join(out.codexHome, 'prompts', 'ambient.md'))).toBe(false);
+    expect(readFileSync(out.configPath, 'utf8')).not.toContain('example.invalid');
+    expect(readFileSync(join(out.codexHome, 'AGENTS.md'), 'utf8')).toContain('FROZEN ROLE');
+    rmSync(out.configPath);
+    ensureSuCodexHomeConfig(input);
+    expect(readFileSync(out.configPath, 'utf8')).not.toContain('example.invalid');
+    expect(JSON.parse(readFileSync(join(out.codexHome, 'papercusp-diagnostics.json'), 'utf8')))
+      .toMatchObject({ denyAmbientContext: true });
+    // A stale config can still include an ambient server even when the
+    // expected frozen project-MCP block is empty. An empty substring check
+    // must not leave that server readable on a later repair.
+    writeFileSync(out.configPath, readFileSync(out.configPath, 'utf8') +
+      '\n[mcp_servers.ambient]\nurl = "http://example.invalid"\n');
+    expect(ensureSuCodexHomeConfig(input).repaired).toBe(true);
+    expect(readFileSync(out.configPath, 'utf8')).not.toContain('example.invalid');
+    expect(ensureSuCodexHomeConfig(input).repaired).toBe(false);
+  });
+
   it('sends the live native Codex session and repairs older configs without it', async () => {
     const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
     const opts = {
@@ -604,6 +922,37 @@ describe('writeSuCodexHome', () => {
     expect(repaired.repaired).toBe(true);
     expect(readFileSync(repaired.configPath, 'utf8')).toContain(
       'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "xhigh"\n',
+    );
+  });
+
+  it('applies the per-session compaction ceiling to fresh and repaired SU homes without changing the 1M model window', async () => {
+    installStaleExtendedWindowRecord('gpt-5.6-sol');
+    const { writeSuCodexHome, ensureSuCodexHomeConfig } = await import('./role-codex-home');
+    const opts = {
+      sessionKey: 'per-session-compaction-limit',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'P',
+      sid: 'su-per-session-compaction-limit',
+      model: 'gpt-5.6-sol',
+      compactionLimit: 250_000,
+    };
+
+    const fresh = writeSuCodexHome(opts);
+    const freshToml = readFileSync(fresh.configPath, 'utf8');
+    expect(freshToml).toMatch(
+      /^model_context_window = 1000000\nmodel_auto_compact_token_limit = 200000\n/,
+    );
+    expect(freshToml).not.toContain('model_auto_compact_token_limit = 900000');
+
+    writeFileSync(
+      fresh.configPath,
+      freshToml.replace('model_auto_compact_token_limit = 200000', 'model_auto_compact_token_limit = 900000'),
+    );
+    const repaired = ensureSuCodexHomeConfig(opts);
+    const repairedToml = readFileSync(repaired.configPath, 'utf8');
+    expect(repaired.repaired).toBe(true);
+    expect(repairedToml).toMatch(
+      /^model_context_window = 1000000\nmodel_auto_compact_token_limit = 200000\n/,
     );
   });
 
@@ -889,6 +1238,42 @@ describe('writeSuCodexHome', () => {
     expect(readFileSync(repaired.configPath, 'utf8')).toContain('client=su-gc-removed-home');
   });
 
+  it('recovers a role config from its recorded SQLite binding without replacing native state', async () => {
+    const { writeRoleCodexHome } = await loadMod();
+    const input = { sessionKey: 'archived-role-state', mcpUrl: 'http://x/api/mcp?role=judge',
+      sid: 'su-archived-role-state', promptText: 'RESTRICTED JUDGE' };
+    const first = writeRoleCodexHome(input);
+    const database = join(first.sqliteHome, 'state_5.sqlite');
+    writeFileSync(database, 'original native state');
+    rmSync(first.configPath);
+    const replacementRoot = join(fakeHome, 'different-archive-serving-root');
+    process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = replacementRoot;
+    const repaired = writeRoleCodexHome({ ...input, preserveExisting: true, recordedSqliteHome: first.sqliteHome });
+    expect(parseToml(readFileSync(repaired.configPath, 'utf8')).sqlite_home).toBe(first.sqliteHome);
+    expect(readFileSync(database, 'utf8')).toBe('original native state');
+    expect(existsSync(replacementRoot)).toBe(false);
+    const before = readFileSync(repaired.configPath, 'utf8');
+    expect(() => writeRoleCodexHome({ ...input, preserveExisting: true,
+      recordedSqliteHome: replacementRoot })).toThrow('launch receipt and configured sqlite_home disagree');
+    expect(readFileSync(repaired.configPath, 'utf8')).toBe(before);
+  });
+
+  it('keeps an SU session on its native SQLite companion after the serving root changes', async () => {
+    const { writeSuCodexHome, ensureSuCodexHomeConfig } = await loadMod();
+    const input = { sessionKey: 'stable-sqlite', mcpUrl: 'http://x/api/mcp?superuser=1',
+      sid: 'su-stable-sqlite', promptText: 'CURRENT SU RULES' };
+    const first = writeSuCodexHome(input);
+    const database = join(first.sqliteHome, 'state_5.sqlite');
+    writeFileSync(database, 'native conversation state');
+    const replacementRoot = join(fakeHome, 'different-serving-root');
+    process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = replacementRoot;
+    const repaired = ensureSuCodexHomeConfig(input);
+    expect(repaired.sqliteHome).toBe(first.sqliteHome);
+    expect(parseToml(readFileSync(repaired.configPath, 'utf8')).sqlite_home).toBe(first.sqliteHome);
+    expect(readFileSync(database, 'utf8')).toBe('native conversation state');
+    expect(existsSync(replacementRoot)).toBe(false);
+  });
+
   it('rekeys a prepared home to the durable adv-session id without rebuilding or overwriting', async () => {
     const { rekeyCodexHome, writeSuCodexHome } = await loadMod();
     const prepared = writeSuCodexHome({
@@ -1029,6 +1414,47 @@ describe('writeSuCodexHome', () => {
   });
 
   describe('EI-11366 identity-split collision guard', () => {
+    it('async bootstrap preflight refuses a live prior owner before the synchronous home writer runs', async () => {
+      const { assertSuCodexHomeNotOwnedByLiveSession, writeSuCodexHome } = await loadMod();
+      const original = writeSuCodexHome({
+        sessionKey: 'k-async-live',
+        mcpUrl: 'http://x/api/mcp?superuser=1',
+        promptText: 'FIRST',
+        sid: 'prior-live-owner',
+      });
+      const isOwnerLive = vi.fn(async (sid: string) => sid === 'prior-live-owner');
+
+      await expect(
+        assertSuCodexHomeNotOwnedByLiveSession('k-async-live', 'next-owner', isOwnerLive),
+      ).rejects.toThrow(/refusing to rebuild/);
+      expect(isOwnerLive).toHaveBeenCalledWith('prior-live-owner');
+      expect(readFileSync(original.agentsPath, 'utf8')).toContain('FIRST');
+    });
+
+    it('async bootstrap preflight allows a dead prior owner and skips missing or same-owner sentinels', async () => {
+      const { assertSuCodexHomeNotOwnedByLiveSession, writeSuCodexHome } = await loadMod();
+      writeSuCodexHome({
+        sessionKey: 'k-async-dead',
+        mcpUrl: 'http://x/api/mcp?superuser=1',
+        promptText: 'FIRST',
+        sid: 'prior-dead-owner',
+      });
+      const isOwnerLive = vi.fn(async () => false);
+      await expect(
+        assertSuCodexHomeNotOwnedByLiveSession('k-async-dead', 'next-owner', isOwnerLive),
+      ).resolves.toBeUndefined();
+      expect(isOwnerLive).toHaveBeenCalledWith('prior-dead-owner');
+
+      const sameOwnerCheck = vi.fn(async () => true);
+      await expect(
+        assertSuCodexHomeNotOwnedByLiveSession('k-async-dead', 'prior-dead-owner', sameOwnerCheck),
+      ).resolves.toBeUndefined();
+      await expect(
+        assertSuCodexHomeNotOwnedByLiveSession('k-async-missing', 'next-owner', sameOwnerCheck),
+      ).resolves.toBeUndefined();
+      expect(sameOwnerCheck).not.toHaveBeenCalled();
+    });
+
     it('with no isOwnerLive wired, a same-sessionKey rebuild under a different sid stays byte-identical to today (no default liveness check)', async () => {
       const { writeSuCodexHome } = await loadMod();
       writeSuCodexHome({ sessionKey: 'k2', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'OLD', sid: 's1' });
@@ -1318,7 +1744,7 @@ describe('writeSuCodexHome', () => {
     mkdirSync(rolloutDir, { recursive: true });
     writeFileSync(join(rolloutDir, 'rollout-2026-06-21T13-12-06-019eeb2b-0742-72a0-85a4-5dc505cfe62d.jsonl'), '{}\n');
 
-    const diag = readCodexHomeDiagnostics('diag');
+    const diag = await readCodexHomeDiagnostics('diag');
     expect(diag.exists).toBe(true);
     expect(diag.agentsExists).toBe(true);
     expect(diag.configExists).toBe(true);
@@ -1415,6 +1841,13 @@ describe('writeSuCodexHome', () => {
       expect(hooks.hooks[event][0].hooks[0].command).toContain("PAPERCUSP_ADV_SESSION_ID='12'");
     }
     expect(hooks.hooks.SessionEnd[0].hooks[0].command).toContain('PAPERCUSP_ACTIVITY_SYNC=1');
+    const lifecycleStop = hooks.hooks.Stop.find((e: { hooks: { command: string }[] }) =>
+      e.hooks.some((hook) => hook.command.includes('lifecycle-report.sh')),
+    );
+    expect(lifecycleStop).toBeTruthy();
+    expect(lifecycleStop.hooks[0].command).toContain("PAPERCUSP_SID='su-abc-123'");
+    expect(lifecycleStop.hooks[0].command).toContain("PAPERCUSP_ADV_SESSION_ID='12'");
+    expect(lifecycleStop.hooks[0].command).toContain('PAPERCUSP_ACTIVITY_SYNC=1');
   });
 
   it('repairs a same-owner managed home whose hooks omit lifecycle or managed PreCompact events', async () => {
@@ -1448,6 +1881,75 @@ describe('writeSuCodexHome', () => {
     expect(readFileSync(join(home.codexHome, 'AGENTS.md'), 'utf8')).toContain('PRESERVE');
   });
 
+  it('repairs a same-owner home missing only the Stop lifecycle lock cleanup hook', async () => {
+    await installFakeHooks();
+    const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
+    const home = writeSuCodexHome({
+      sessionKey: 'stop-lifecycle-upgrade',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'PRESERVE',
+      sid: 'su-stop-lifecycle-upgrade',
+    });
+    const hooksPath = join(home.codexHome, 'hooks.json');
+    const oldHooks = JSON.parse(readFileSync(hooksPath, 'utf8'));
+    oldHooks.hooks.Stop = oldHooks.hooks.Stop
+      .map((group: any) => ({
+        ...group,
+        hooks: group.hooks.filter((hook: any) => !hook.command.includes('lifecycle-report.sh')),
+      }))
+      .filter((group: any) => group.hooks.length > 0);
+    writeFileSync(hooksPath, JSON.stringify(oldHooks, null, 2));
+
+    const repaired = ensureSuCodexHomeConfig({
+      sessionKey: 'stop-lifecycle-upgrade',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      sid: 'su-stop-lifecycle-upgrade',
+    });
+
+    expect(repaired).toMatchObject({ repaired: true, identityRepaired: true });
+    const nextHooks = JSON.parse(readFileSync(hooksPath, 'utf8'));
+    expect(nextHooks.hooks.Stop.some((group: any) =>
+      group.hooks.some((hook: any) => hook.command.includes('lifecycle-report.sh')),
+    )).toBe(true);
+    expect(readFileSync(join(home.codexHome, 'AGENTS.md'), 'utf8')).toContain('PRESERVE');
+  });
+
+  it.each(['missing', 'wrong-client'] as const)('repairs %s prompt provenance in a same-owner home once while preserving native history', async (damage) => {
+    await installFakeHooks();
+    const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
+    const opts = { sessionKey: 'provenance-upgrade', mcpUrl: 'http://x/api/mcp?superuser=1', sid: 'su-provenance-upgrade' };
+    const home = writeSuCodexHome({ ...opts, promptText: 'PRESERVE OWNER INSTRUCTIONS' });
+    const hooksPath = join(home.codexHome, 'hooks.json');
+    const nativeDir = join(home.codexHome, 'sessions');
+    mkdirSync(nativeDir, { recursive: true });
+    const nativePath = join(nativeDir, 'rollout-original.jsonl');
+    const nativeBytes = '{"type":"response_item","payload":{"role":"user","content":"original owner turn"}}\n';
+    writeFileSync(nativePath, nativeBytes);
+    const agentsPath = join(home.codexHome, 'AGENTS.md');
+    const agentsBytes = readFileSync(agentsPath, 'utf8');
+    const oldHooks = JSON.parse(readFileSync(hooksPath, 'utf8'));
+    if (damage === 'missing') {
+      oldHooks.hooks.UserPromptSubmit = oldHooks.hooks.UserPromptSubmit.filter((group: any) =>
+        !group.hooks.some((hook: any) => hook.command.includes('userpromptsubmit-provenance.sh')));
+    } else {
+      for (const group of oldHooks.hooks.UserPromptSubmit) for (const hook of group.hooks) {
+        if (hook.command.includes('userpromptsubmit-provenance.sh')) hook.command = hook.command.replace('PAPERCUSP_AGENT=codex', 'PAPERCUSP_AGENT=claude');
+      }
+    }
+    writeFileSync(hooksPath, JSON.stringify(oldHooks));
+    expect(ensureSuCodexHomeConfig(opts)).toMatchObject({ repaired: true, identityRepaired: true });
+    const repairedBytes = readFileSync(hooksPath, 'utf8');
+    const repaired = JSON.parse(repairedBytes);
+    const commands = repaired.hooks.UserPromptSubmit.flatMap((group: any) => group.hooks.map((hook: any) => hook.command));
+    expect(commands).toContainEqual(expect.stringContaining('userpromptsubmit-provenance.sh'));
+    expect(commands.find((command: string) => command.includes('userpromptsubmit-provenance.sh')))
+      .toContain('PAPERCUSP_AGENT=codex');
+    expect(readFileSync(nativePath, 'utf8')).toBe(nativeBytes);
+    expect(readFileSync(agentsPath, 'utf8')).toBe(agentsBytes);
+    expect(ensureSuCodexHomeConfig(opts)).toMatchObject({ repaired: false, identityRepaired: false });
+    expect(readFileSync(hooksPath, 'utf8')).toBe(repairedBytes);
+  });
+
   it('no coord/activity hooks when only the lock scripts are installed', async () => {
     const { mkdirSync } = await import('node:fs');
     const dir = join(fakeHome, '.papercusp', 'hooks', 'cc');
@@ -1459,6 +1961,78 @@ describe('writeSuCodexHome', () => {
     const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
     expect(hooks.hooks.PostToolUse).toHaveLength(1); // lock-release only
     expect(JSON.stringify(hooks)).not.toContain('posttooluse-activity-report.sh');
+  });
+
+  it('uses async filesystem access for owner-sid reads and stamps during fresh creation', async () => {
+    await installFakeHooks();
+    const { readFile } = await import('node:fs/promises');
+    const { writeSuCodexHomeAsync } = await loadMod();
+    const input = {
+      sessionKey: 'async-owner-sid-create',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'ASYNC OWNER SID',
+    };
+    const first = await writeSuCodexHomeAsync({ ...input, sid: 'su-first' });
+    const ownerSidPath = join(first.codexHome, '.owner-sid');
+    expect(await readFile(ownerSidPath, 'utf8')).toBe('su-first');
+
+    const isOwnerLive = vi.fn(async (sid: string) => sid === 'su-first');
+    await expect(writeSuCodexHomeAsync({
+      ...input,
+      sid: 'su-second',
+      isOwnerLive,
+    })).rejects.toThrow(/LIVE Codex home/);
+    expect(isOwnerLive).toHaveBeenCalledWith('su-first');
+    expect(await readFile(ownerSidPath, 'utf8')).toBe('su-first');
+    expect(ownerSidSyncCalls).toEqual([]);
+  });
+
+  it('uses async filesystem access for owner-sid reads and stamps during repair', async () => {
+    await installFakeHooks({ turnJournal: true });
+    const { readFile, writeFile } = await import('node:fs/promises');
+    const { writeSuCodexHome } = await loadMod();
+    const opts = {
+      sessionKey: 'async-owner-sid-repair',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'ASYNC OWNER SID REPAIR',
+      sid: 'su-repair',
+    };
+    const home = writeSuCodexHome(opts);
+    const ownerSidPath = join(home.codexHome, '.owner-sid');
+    ownerSidSyncCalls.length = 0;
+    const { ensureSuCodexHomeConfigAsync } = await loadMod();
+    const unchanged = await ensureSuCodexHomeConfigAsync(opts);
+    expect(unchanged).toMatchObject({ repaired: false, identityRepaired: false });
+
+    await writeFile(ownerSidPath, 'su-stale');
+    const repaired = await ensureSuCodexHomeConfigAsync(opts);
+    expect(repaired).toMatchObject({ repaired: true, identityRepaired: true });
+    expect(await readFile(ownerSidPath, 'utf8')).toBe('su-repair');
+    expect(ownerSidSyncCalls).toEqual([]);
+
+    // WI-6554700010009552: that repair ran in a worker thread, where the node:os
+    // mock does not apply. Its hook paths must come from the CALLER's home (the
+    // fake home), never the worker's own os.homedir() (the real host home).
+    const hooks = JSON.parse(await readFile(join(home.codexHome, 'hooks.json'), 'utf8')) as {
+      hooks: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
+    };
+    const scriptCommands = Object.values(hooks.hooks)
+      .flat()
+      .flatMap((group) => (group.hooks ?? []).map((hook) => hook.command ?? ''))
+      .filter((command) => command.includes('/.papercusp/hooks/'));
+    expect(scriptCommands.length).toBeGreaterThan(0);
+    expect(scriptCommands.filter((command) => !command.includes(fakeHome))).toEqual([]);
+  });
+
+  it('keeps production SU creation and repair paths on the async owner-sid APIs', () => {
+    const bootstrap = readFileSync(new URL('./endpoint-route/routes/agent-mcp/bootstrap-su.ts', import.meta.url), 'utf8');
+    const wakeExecutor = readFileSync(new URL('./events/await/wake-executor.ts', import.meta.url), 'utf8');
+    const advSessions = readFileSync(new URL('./endpoint-route/routes/adv/sessions.ts', import.meta.url), 'utf8');
+
+    expect(bootstrap).toMatch(/await writeSuCodexHomeAsync\s*\(/);
+    expect(wakeExecutor).toMatch(/await ensureSuCodexHomeConfigAsync\s*\(/);
+    expect(advSessions).toMatch(/ensureConfig\s*=\s*\([^)]*\)\s*=>\s*ensureSuCodexHomeConfigAsync\s*\(/);
+    expect(advSessions.match(/await ensureConfig\s*\(/g) ?? []).toHaveLength(2);
   });
 });
 
@@ -1486,6 +2060,12 @@ describe('writeCodexLockHooks — context-injection hooks (P-004)', () => {
     );
   }
 
+  function provenanceEntries(hooks: any) {
+    return (hooks.hooks.UserPromptSubmit ?? []).filter((e: { hooks: { command: string }[] }) =>
+      e.hooks.some((hook) => hook.command.includes('userpromptsubmit-provenance.sh')),
+    );
+  }
+
   it('registers BOTH ports through the ONE shared dispatcher, with the right --client/--event', async () => {
     await installFakeHooks();
     installFakeDispatcher();
@@ -1503,6 +2083,12 @@ describe('writeCodexLockHooks — context-injection hooks (P-004)', () => {
     expect(turnStart).toHaveLength(1);
     expect(turnStart[0].hooks[0].command).toContain('--client=codex');
     expect(turnStart[0].hooks[0].command).toContain('--event=UserPromptSubmit');
+
+    const provenance = provenanceEntries(hooks);
+    expect(provenance).toHaveLength(1);
+    expect(provenance[0].matcher).toBe('.*');
+    expect(provenance[0].hooks[0].command).toContain("PAPERCUSP_SID='role-inject-40'");
+    expect(provenance[0].hooks[0].command).toContain('PAPERCUSP_AGENT=codex');
 
     // mid-turn ← PostToolUse. PER CALL on codex (it has no batch event, D-002 §5).
     const midTurn = injectEntries(hooks, 'PostToolUse');
@@ -1538,8 +2124,8 @@ describe('writeCodexLockHooks — context-injection hooks (P-004)', () => {
     }
   });
 
-  it('registers NOTHING when the dispatcher is not installed — never a hook pointing at a missing file', async () => {
-    await installFakeHooks(); // cc hooks present, dispatcher deliberately absent
+  it('omits the dispatcher when it is absent while keeping installed owner-provenance capture', async () => {
+    await installFakeHooks(); // provenance hook present; dispatcher deliberately absent
     const writeRoleCodexHome = await load();
     const out = writeRoleCodexHome({
       sessionKey: 42,
@@ -1548,10 +2134,11 @@ describe('writeCodexLockHooks — context-injection hooks (P-004)', () => {
       sid: 'role-inject-42',
     });
     const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
-    // The key is OMITTED entirely, not present-but-empty: "is turn-start
-    // registered on this home?" must be answerable by reading hooks.json.
-    expect(hooks.hooks.UserPromptSubmit).toBeUndefined();
+    // The dispatcher is omitted rather than pointing to a missing path, while
+    // the separately installed owner-provenance hook remains registered.
     expect(injectEntries(hooks, 'PostToolUse')).toHaveLength(0);
+    expect(injectEntries(hooks, 'UserPromptSubmit')).toHaveLength(0);
+    expect(provenanceEntries(hooks)).toHaveLength(1);
     // ...and the pre-existing lock/activity hooks are UNAFFECTED.
     expect(JSON.stringify(hooks)).toContain('pretooluse-locks-acquire.sh');
   });
@@ -1599,14 +2186,230 @@ describe('writeCodexLockHooks — context-injection hooks (P-004)', () => {
     expect(JSON.stringify(hooks.hooks.SessionStart)).toContain('lifecycle-report.sh');
   });
 
-  it('omits the Stop key entirely, and every identity port, without the dispatcher', async () => {
+  it('keeps lifecycle Stop cleanup but omits identity ports without the dispatcher', async () => {
     await installFakeHooks();
     const writeRoleCodexHome = await load();
     const out = writeRoleCodexHome({ sessionKey: 46, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P', sid: 'role-inject-46' });
     const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
-    expect(hooks.hooks.Stop).toBeUndefined();
+    expect(hooks.hooks.Stop.some((group: any) =>
+      group.hooks.some((hook: any) => hook.command.includes('lifecycle-report.sh')),
+    )).toBe(true);
     expect(injectEntries(hooks, 'PreToolUse')).toHaveLength(0);
+    expect(injectEntries(hooks, 'Stop')).toHaveLength(0);
     expect(injectEntries(hooks, 'SessionStart')).toHaveLength(0);
+  });
+});
+
+/**
+ * WI-10006795 — the codex turn-end JOURNAL hook.
+ *
+ * Measured before the fix: journal:record-turn had 1 codex call in 7 days against
+ * ~13k Claude calls, because only Claude's settings.json enrolled
+ * stop-turn-journal.sh. A codex GOAL holder therefore produced no
+ * goalPlacementTurnEnd rows. These pin the enrollment, the resume self-repair of a
+ * pre-fix home, and (end to end) that the composed command really reaches the
+ * operator as a codex turn under the minimal env codex hands its hooks.
+ */
+describe('writeCodexLockHooks — turn-end journal (WI-10006795)', () => {
+  const REAL_CC_HOOKS = fileURLToPath(new URL('../../../apps/operator/scripts/hooks/cc/', import.meta.url));
+
+  function journalEntries(hooks: any) {
+    return (hooks.hooks.Stop ?? []).filter((e: { hooks: { command: string }[] }) =>
+      e.hooks[0].command.includes('stop-turn-journal.sh'),
+    );
+  }
+
+  /** The real script plus the two python helpers it imports, so the e2e case runs
+   *  the shipped hook rather than a stub. Returns the fake cc hooks dir. */
+  async function installRealJournalHook() {
+    const dir = await installFakeHooks();
+    for (const name of ['stop-turn-journal.sh', 'pc_nested_cli.py', 'mcp_response.py']) {
+      copyFileSync(join(REAL_CC_HOOKS, name), join(dir, name));
+      chmodSync(join(dir, name), 0o755);
+    }
+    return dir;
+  }
+
+  it('enrolls the journal on the Stop event of SU and role homes, sid and agent baked', async () => {
+    await installRealJournalHook();
+    const { writeSuCodexHome, writeRoleCodexHome } = await loadMod();
+    const su = writeSuCodexHome({ sessionKey: 61, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 'su-journal-61' });
+    const role = writeRoleCodexHome({ sessionKey: 62, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P', sid: 'role-journal-62' });
+    for (const [out, sid] of [[su, 'su-journal-61'], [role, 'role-journal-62']] as const) {
+      const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+      const entries = journalEntries(hooks);
+      expect(entries, `${sid} journal entry`).toHaveLength(1);
+      expect(entries[0].matcher).toBe('.*');
+      expect(entries[0].hooks[0].command).toContain(`PAPERCUSP_SID='${sid}'`);
+      expect(entries[0].hooks[0].command).toContain('PAPERCUSP_AGENT=codex');
+    }
+  });
+
+  it('calibration: no journal entry when the script is not installed', async () => {
+    await installFakeHooks();
+    const { writeSuCodexHome } = await loadMod();
+    const out = writeSuCodexHome({ sessionKey: 63, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 'su-journal-63' });
+    const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+    expect(journalEntries(hooks)).toHaveLength(0);
+  });
+
+  it('a resumed pre-fix home is repaired once, then left byte-identical', async () => {
+    await installFakeHooks();
+    const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
+    // Written while the script was absent: the shape every codex home had before the fix.
+    const home = writeSuCodexHome({
+      sessionKey: 'journal-upgrade',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'PRESERVE',
+      sid: 'su-journal-upgrade',
+    });
+    const hooksPath = join(home.codexHome, 'hooks.json');
+    expect(journalEntries(JSON.parse(readFileSync(hooksPath, 'utf8')))).toHaveLength(0);
+
+    await installRealJournalHook();
+    const resume = () =>
+      ensureSuCodexHomeConfig({
+        sessionKey: 'journal-upgrade',
+        mcpUrl: 'http://x/api/mcp?superuser=1',
+        sid: 'su-journal-upgrade',
+      });
+    expect(resume()).toMatchObject({ identityRepaired: true });
+    const repairedText = readFileSync(hooksPath, 'utf8');
+    expect(journalEntries(JSON.parse(repairedText))).toHaveLength(1);
+    expect(readFileSync(join(home.codexHome, 'AGENTS.md'), 'utf8')).toContain('PRESERVE');
+
+    // No repair loop: a current home is not rewritten on the next resume.
+    expect(resume()).toMatchObject({ identityRepaired: false });
+    expect(readFileSync(hooksPath, 'utf8')).toBe(repairedText);
+  });
+
+  it.each([
+    { delivery: 'synchronous success', synchronous: true, outcome: 'success' },
+    { delivery: 'detached success', synchronous: false, outcome: 'success' },
+    { delivery: 'detached blocked response', synchronous: false, outcome: 'blocked' },
+    { delivery: 'detached HTTP failure', synchronous: false, outcome: 'failure' },
+    { delivery: 'detached connection refusal', synchronous: false, outcome: 'refused' },
+  ])('end to end: the composed Stop command preserves a codex turn with $delivery', async ({ synchronous, outcome }) => {
+    await installRealJournalHook();
+    writeFileSync(join(fakeHome, '.papercusp', 'superuser-token'), 'test-token\n');
+    const { writeSuCodexHome } = await loadMod();
+    const out = writeSuCodexHome({ sessionKey: 64, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 'su-journal-e2e' });
+    const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+    const [entry] = journalEntries(hooks);
+    expect(entry, 'journal entry composed').toBeTruthy();
+
+    const bodies: string[] = [];
+    let releaseResponse: (() => void) | undefined;
+    let responseReleased = false;
+    const server = createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => (body += chunk));
+      req.on('end', () => {
+        bodies.push(body);
+        res.setHeader('content-type', 'application/json');
+        const reply = () => {
+          responseReleased = true;
+          res.statusCode = outcome === 'failure' ? 503 : 200;
+          res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [] } }));
+        };
+        if (outcome === 'blocked') releaseResponse = reply;
+        else reply();
+      });
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('fixture server did not bind');
+    if (outcome === 'refused') await new Promise<void>((done) => server.close(() => done()));
+
+    // A deterministic process shape: hook → fake `codex` → fake psu-launcher.mjs,
+    // which pc_nested_cli.py classifies as the managed incarnation whatever runs
+    // this test (CI, a psu claude, an operator-spawned runner).
+    const fixtures = join(fakeHome, 'journal-e2e');
+    mkdirSync(fixtures, { recursive: true });
+    const codexBody = join(fixtures, 'fake-codex-body.sh');
+    writeFileSync(codexBody, 'eval "$HOOK_CMD"\nexit $?\n');
+    const launcher = join(fixtures, 'psu-launcher.mjs');
+    writeFileSync(launcher, '( exec -a codex bash "$FAKE_CODEX_BODY" )\nexit $?\n');
+
+    // Codex hands hooks a minimal env: the identity must come from the COMMAND.
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: fakeHome,
+      PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${address.port}`,
+      HOOK_CMD: entry.hooks[0].command,
+      FAKE_CODEX_BODY: codexBody,
+    };
+    delete env.PAPERCUSP_SID;
+    delete env.PAPERCUSP_AGENT;
+    if (synchronous) env.PAPERCUSP_JOURNAL_SYNC = '1';
+    else delete env.PAPERCUSP_JOURNAL_SYNC;
+    const transcript = join(fixtures, 'rollout.jsonl');
+    writeFileSync(transcript, '{}\n');
+    // The codex-cli 0.160 `stop.command.input` shape (required fields).
+    const payload = {
+      hook_event_name: 'Stop',
+      session_id: 'codex-native-64',
+      transcript_path: transcript,
+      turn_id: 'turn-1',
+      stop_hook_active: false,
+      cwd: fixtures,
+      model: 'gpt-5.6-sol',
+      permission_mode: 'default',
+      last_assistant_message: null,
+    };
+    const child = spawn('bash', ['-c', 'exec -a node bash "$0"', launcher], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    let closed: { code: number | null; stdout: string; stderr: string } | undefined;
+    const completion = new Promise<NonNullable<typeof closed>>((done, fail) => {
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (c) => (stdout += c));
+      child.stderr.on('data', (c) => (stderr += c));
+      child.on('error', fail);
+      child.on('close', (code) => {
+        closed = { code, stdout, stderr };
+        done(closed);
+      });
+      child.stdin.end(JSON.stringify(payload));
+    });
+    try {
+      if (outcome === 'blocked') {
+        await vi.waitFor(() => expect(bodies).toHaveLength(1), { timeout: 3_000 });
+        // The request actually reached the server, but its response stays held.
+        // A synchronous POST or an inherited output pipe cannot satisfy this.
+        await vi.waitFor(() => expect(closed).toBeDefined(), { timeout: 2_000 });
+        expect(responseReleased).toBe(false);
+        releaseResponse!();
+      }
+      const result = await completion;
+      expect(result.code).toBe(0);
+      // Codex parses Stop stdout as a decision; the journal must never emit one.
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toBe('');
+      if (outcome === 'refused') {
+        expect(bodies).toHaveLength(0);
+        return;
+      }
+      // Detached success/error delivery may arrive after the hook has exited.
+      await vi.waitFor(() => expect(bodies).toHaveLength(1), { timeout: 3_000 });
+      expect(bodies).toHaveLength(1);
+      const rpc = JSON.parse(bodies[0]);
+      expect(rpc.params.name).toBe('journal:record-turn');
+      expect(rpc.params.arguments).toEqual({
+        owner: 'su-journal-e2e',
+        agent: 'codex',
+        session_id: 'codex-native-64',
+        source_kind: 'codex',
+        transcript_path: transcript,
+      });
+    } finally {
+      if (!responseReleased) releaseResponse?.();
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      await completion;
+      if (server.listening) {
+        server.closeAllConnections();
+        await new Promise<void>((done) => server.close(() => done()));
+      }
+    }
   });
 });
 
@@ -1654,6 +2457,32 @@ describe('makeCodingAssistantCodexHome (pui-chat-first-ux P-016)', () => {
     rmSync(join(fakeHome, '.codex', 'AGENTS.md'));
     makeCodingAssistantCodexHome(out.codexHome, fakeHome);
     expect(readFileSync(out.configPath, 'utf8')).toBe(after);
+    expect(existsSync(out.agentsPath)).toBe(false);
+  });
+
+  it('does not reintroduce the installer-managed SU playbook through personal instructions', async () => {
+    const { makeCodingAssistantCodexHome } = await import('./role-codex-home');
+    const out = await suHome();
+    mkdirSync(join(fakeHome, '.codex'), { recursive: true });
+    const managed = [
+      '<!-- BEGIN papercusp-su playbook (managed by install-standalone-mcp.sh) -->',
+      'Before editing any file, claim it with Papercusp locks:acquire.',
+      '<!-- END papercusp-su playbook -->',
+      '',
+    ].join('\n');
+    const personal = 'Use concise explanations.\n';
+    const source = join(fakeHome, '.codex', 'AGENTS.md');
+    writeFileSync(source, managed + personal);
+
+    makeCodingAssistantCodexHome(out.codexHome, fakeHome);
+
+    expect(readFileSync(out.agentsPath, 'utf8')).toBe(personal);
+    expect(readFileSync(source, 'utf8')).toBe(managed + personal);
+    expect(readFileSync(out.configPath, 'utf8')).not.toContain('papercusp-su');
+    expect(existsSync(join(out.codexHome, 'hooks.json'))).toBe(false);
+
+    writeFileSync(source, managed);
+    makeCodingAssistantCodexHome(out.codexHome, fakeHome);
     expect(existsSync(out.agentsPath)).toBe(false);
   });
 
@@ -1722,5 +2551,145 @@ describe('ensureCodexSkillWatchRoots', () => {
     expect(diag.codexSkillWatchRoots.codexHomeSkillsReady).toBe(true);
     expect(diag.codexSkillWatchRoots.systemSkillsDir).toBe('/etc/codex/skills');
     expect(typeof diag.codexSkillWatchRoots.systemSkillsReady).toBe('boolean');
+  });
+});
+
+/**
+ * WI-6554700010009447 (owner #1759/#1764) — RTK output compression for Codex's
+ * native shell. Owner #1764 asked that RTK not be silently un-integrated again,
+ * so these fail if the registration, its matcher, or its resume repair is dropped,
+ * and the end-to-end case runs the SHIPPED script through the composed command.
+ */
+describe('writeCodexLockHooks — launch-prose edit-time signal', () => {
+  it('registers the installed nudge on managed Codex edit and shell calls', async () => {
+    const dir = await installFakeHooks();
+    writeFileSync(join(dir, 'posttooluse-launch-prose-budget-nudge.mjs'), '#!/usr/bin/env node\n');
+    const { writeSuCodexHome } = await loadMod();
+    const out = writeSuCodexHome({ sessionKey: 'launch-prose', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 'su-prose' });
+    const config = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+    const entries = config.hooks.PostToolUse.filter((entry: any) => entry.hooks.some((h: any) => h.command.includes('posttooluse-launch-prose-budget-nudge.mjs')));
+    expect(entries).toHaveLength(1);
+    for (const tool of ['apply_patch', 'Edit', 'Write', 'MultiEdit', 'write_file', 'edit_file', 'Bash', 'exec_command', 'shell_command', 'capability:edit', 'capability:patch', 'capability:bash', 'tools:invoke', 'mcp__papercusp_su__capability_bash', 'mcp__papercusp_su__capability_patch', 'mcp__papercusp_su__tools_invoke']) {
+      expect(new RegExp(entries[0].matcher).test(tool), tool).toBe(true);
+    }
+    expect(new RegExp(entries[0].matcher).test('Read')).toBe(false);
+  });
+});
+
+describe('writeCodexLockHooks — Codex RTK rewrite (WI-6554700010009447)', () => {
+  const REAL_HOOKS = fileURLToPath(new URL('../../../apps/operator/scripts/hooks/', import.meta.url));
+  const SCRIPT = 'pretooluse-codex-rtk-rewrite.mjs';
+
+  function rtkEntries(hooks: any) {
+    return (hooks.hooks.PreToolUse ?? []).filter((e: { hooks: { command: string }[] }) =>
+      e.hooks.some((h) => h.command.includes(SCRIPT)),
+    );
+  }
+
+  /** The real rewrite hook, the egress guard it imports rtkRewriteSync from, and
+   *  that guard's own inject/ imports, laid out as the installers lay them out. */
+  async function installRealRtkHook() {
+    const dir = await installFakeHooks();
+    for (const name of [SCRIPT, 'pretooluse-restricted-egress-guard.mjs']) {
+      copyFileSync(join(REAL_HOOKS, 'cc', name), join(dir, name));
+      chmodSync(join(dir, name), 0o755);
+    }
+    const inject = join(fakeHome, '.papercusp', 'hooks', 'inject');
+    mkdirSync(inject, { recursive: true });
+    for (const name of ['core.mjs', 'ports.mjs']) copyFileSync(join(REAL_HOOKS, 'inject', name), join(inject, name));
+    return dir;
+  }
+
+  it('registers exactly one ^Bash$ rewrite on SU and role homes', async () => {
+    await installRealRtkHook();
+    const { writeSuCodexHome, writeRoleCodexHome, CODEX_RTK_REWRITE_HOOK } = await loadMod();
+    expect(CODEX_RTK_REWRITE_HOOK).toBe(SCRIPT);
+    const su = writeSuCodexHome({ sessionKey: 71, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 'su-rtk-71' });
+    const role = writeRoleCodexHome({ sessionKey: 72, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P', sid: 'role-rtk-72' });
+    for (const out of [su, role]) {
+      const entries = rtkEntries(JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8')));
+      expect(entries).toHaveLength(1);
+      // codex reports every shell handler (exec_command, unified exec, shell) as "Bash".
+      expect(entries[0].matcher).toBe('^Bash$');
+      expect(new RegExp(entries[0].matcher).test('Bash')).toBe(true);
+      expect(new RegExp(entries[0].matcher).test('apply_patch')).toBe(false);
+    }
+  });
+
+  it('calibration: no RTK entry when the script is not installed', async () => {
+    await installFakeHooks();
+    const { writeSuCodexHome } = await loadMod();
+    const out = writeSuCodexHome({ sessionKey: 73, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 'su-rtk-73' });
+    expect(rtkEntries(JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8')))).toHaveLength(0);
+  });
+
+  it('a resumed home written before the hook existed is repaired once, then left byte-identical', async () => {
+    await installFakeHooks();
+    const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
+    const home = writeSuCodexHome({
+      sessionKey: 'rtk-upgrade',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'PRESERVE',
+      sid: 'su-rtk-upgrade',
+    });
+    const hooksPath = join(home.codexHome, 'hooks.json');
+    expect(rtkEntries(JSON.parse(readFileSync(hooksPath, 'utf8')))).toHaveLength(0);
+
+    await installRealRtkHook();
+    const resume = () =>
+      ensureSuCodexHomeConfig({ sessionKey: 'rtk-upgrade', mcpUrl: 'http://x/api/mcp?superuser=1', sid: 'su-rtk-upgrade' });
+    expect(resume()).toMatchObject({ identityRepaired: true });
+    const repairedText = readFileSync(hooksPath, 'utf8');
+    expect(rtkEntries(JSON.parse(repairedText))).toHaveLength(1);
+    expect(readFileSync(join(home.codexHome, 'AGENTS.md'), 'utf8')).toContain('PRESERVE');
+    expect(resume()).toMatchObject({ identityRepaired: false });
+    expect(readFileSync(hooksPath, 'utf8')).toBe(repairedText);
+  });
+
+  it('end to end: the composed command rewrites a direct codex shell call through ~/.local/bin/rtk, and leaves a code-mode call alone', async () => {
+    await installRealRtkHook();
+    const bin = join(fakeHome, '.local', 'bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      join(bin, 'rtk'),
+      '#!/bin/sh\n[ "$1" = rewrite ] || exit 64\n[ "$2" = "git status" ] && { echo "rtk git status"; exit 0; }\nexit 1\n',
+    );
+    chmodSync(join(bin, 'rtk'), 0o755);
+    const { writeSuCodexHome } = await loadMod();
+    const out = writeSuCodexHome({ sessionKey: 74, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 'su-rtk-e2e' });
+    const [entry] = rtkEntries(JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8')));
+    expect(entry, 'rtk entry composed').toBeTruthy();
+
+    // codex hands hook commands a minimal env: no VITEST, no PAPERCUSP_RTK_BIN.
+    const fire = (toolUseId: string) =>
+      spawnSync('/bin/sh', ['-c', entry.hooks[0].command], {
+        input: JSON.stringify({
+          cwd: fakeHome,
+          hook_event_name: 'PreToolUse',
+          model: 'gpt-test',
+          permission_mode: 'bypassPermissions',
+          session_id: 's',
+          tool_input: { command: 'git status' },
+          tool_name: 'Bash',
+          tool_use_id: toolUseId,
+          transcript_path: null,
+          turn_id: 't',
+        }),
+        env: { PATH: `${process.env.PATH ?? ''}`, HOME: fakeHome },
+        encoding: 'utf8',
+        timeout: 20_000,
+      });
+    const direct = fire('call_e2e');
+    expect(direct.status, direct.stderr).toBe(0);
+    expect(JSON.parse(direct.stdout)).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'allow',
+        updatedInput: { command: 'rtk git status' },
+      },
+    });
+    const nested = fire('exec-0b5e2c7a-1d3f-4b6a-9c8d-7e6f5a4b3c2d');
+    expect(nested.status, nested.stderr).toBe(0);
+    expect(nested.stdout).toBe('');
   });
 });

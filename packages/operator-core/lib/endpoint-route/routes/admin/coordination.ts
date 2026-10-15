@@ -15,19 +15,12 @@
  *   POST /api/admin/coordination/topics/feed       { topic: 'zero-cache' }
  *   POST /api/admin/coordination/conversations/list {}
  */
-import {
-  handleHttpToolRequest,
-  defineTool,
-  type RouteContext,
-} from '@papercusp/agent-mcp';
-// Side-effect: register the operator-side first-party tools (issues:* / topics:* /
-// conversations:* included). Same import admin/coord + admin/plans use.
-import '../../../agent-tools/index';
-import { ADMIN_COORD_UI_OWNER } from '../../../agent-tools/coordination/identity';
+import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
 import { requireAllowedOriginOr403 } from '../../cors';
-// WI-5364: shared extras carry the runScoped seam so proxied handlers that use
-// ctx.tx (sessions:list was the first) get a real DB handle instead of 500ing.
-import { ADMIN_PROXY_HOST_EXTRAS as HOST_EXTRAS } from './proxy-host-extras';
+// The in-process re-dispatch as the admin UI owner (superuser ctx,
+// ADMIN_COORD_UI_OWNER client, the WI-5364 runScoped host extras) — and the
+// side-effect registration of the operator-side tools it dispatches into.
+import { dispatchToolAsAdminUi } from '../../../owner-sessions/actions';
 
 // The coordination tool surface the admin UI may proxy. Allowlisted so the admin
 // mount can't be used to reach arbitrary tools.
@@ -76,13 +69,6 @@ function collectHeaders(req: Request): Record<string, string | undefined> {
   return m;
 }
 
-function adminSearchParams(inbound: URLSearchParams): URLSearchParams {
-  const sp = new URLSearchParams(inbound);
-  sp.set('superuser', '1');
-  if (!sp.has('client')) sp.set('client', ADMIN_COORD_UI_OWNER);
-  return sp;
-}
-
 async function dispatch(req: Request, ctx: RouteContext): Promise<Response> {
   // The 'unverified-loopback' admission on the route below relies on this CSRF
   // backstop, exactly as /admin/coord's write dispatch does (auth-posture.test.ts):
@@ -109,16 +95,16 @@ async function dispatch(req: Request, ctx: RouteContext): Promise<Response> {
     return Response.json({ error: { code: 'invalid_json', message: 'request body must be JSON' } }, { status: 400 });
   }
   const url = new URL(req.url);
-  const result = await handleHttpToolRequest(
-    {
-      method: 'POST',
-      pathname: `/api/agent-tools/${group}/${verb}`,
-      searchParams: adminSearchParams(url.searchParams),
-      headers: collectHeaders(req),
-      body,
-    },
-    HOST_EXTRAS,
-  );
+  // Re-dispatched as the admin UI owner through the shared helper, which is
+  // also what the device session end route uses for fleet:kill
+  // (owner-sessions/actions.ts, mobile-agent-sessions-2026-10-12 D-008).
+  const result = await dispatchToolAsAdminUi({
+    group,
+    verb,
+    body,
+    headers: collectHeaders(req),
+    searchParams: url.searchParams,
+  });
   return unwrap(result);
 }
 

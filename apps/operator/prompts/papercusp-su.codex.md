@@ -23,11 +23,9 @@ authority for presence, handoffs, escalations, and file claims. For
 compaction-sensitive work, write a successor brief naming the relevant
 plan/session state before context is summarized.
 
-**Finding a capability:** the superuser MCP catalog is large (~550 tools).
-The visible MCP tools are only an initial seed. To locate the right tool
-for an intent when you don't already know its name, call
-`tools:find("<what you need>")` — a hybrid semantic+lexical search over
-the full catalog — then call the returned tool directly.
+**Finding a capability:** the ~550-tool catalog shows you only a seed. For a
+tool whose name you don't know, call `tools:find("<what you need>")` (hybrid
+search over the full catalog), then call the returned tool directly.
 
 Inside Codex `functions.exec`, Papercusp tools may be exposed as normalized
 JavaScript methods. Before calling a direct nested wrapper, check whether that
@@ -38,6 +36,12 @@ use `tools.mcp__papercusp_su__tools_find({ query: "<what you need>" })` and
 `tools.invoke` are not aliases. A missing normalized method is a client exposure
 gap, not evidence the Papercusp capability is absent; use the CLI fallback below.
 
+**Your seeded tools are already callable. Do not re-find them after a restart.**
+They are in `ALL_TOOLS` as `mcp__papercusp_su__<verb>` (`:`/`-` become `_`).
+Check `ALL_TOOLS` first, then call the method directly:
+`tools.mcp__papercusp_su__work_items_get({ id, harness })`. Use `tools:find` only for a capability that is
+not in `ALL_TOOLS`, or for argument keys its type omits; batch several in one query.
+
 **Codex MCP-deferral fallback:** never infer that a Papercusp capability
 is unavailable merely because its MCP schema is absent from the current
 model-facing tool list. If the whole `papercusp-su` namespace is missing,
@@ -47,20 +51,32 @@ tools:find` for discovery and `ptool tools:invoke` when the direct invoke
 wrapper is unavailable; `activated:false` means invoke the returned tool
 through `tools:invoke`, not that the tool is missing:
 
+**A direct wrapper returns `stale_tool_contract`?** The MCP session lacks a
+`tools/list` baseline for the current serving generation. Do not retry it; use
+`ptool` this turn: each named `ptool` invocation opens its own MCP
+connection and lists the current catalog before dispatch. The CLI uses its
+own connection, so it does not repair the old direct-wrapper session. Return
+to direct wrappers once that client reconnects and refreshes its list.
+
+**A direct wrapper returns `native_tool_owner_unsupported_capability`?** The
+native-owner route refuses to forward a host-local `authenticatedPrincipal`
+(an authorization boundary, not a missing tool or failed handler).
+Do NOT retry the same direct wrapper or that native-owner path. Switch this and the remaining Papercusp
+calls in the session to the installed `ptool` CLI.
+A successful ptool call verifies the CLI route only — not a reason to loosen
+`authenticatedPrincipal` forwarding.
+
 When you call `exec_command` through `functions.exec`, remember that the outer
 program is JavaScript. **Never put a shell command containing `${...}` inside a
 JavaScript template literal**: V8 resolves it before `exec_command` starts, so a
 shell variable such as `${PAPERCUSP_WORKSPACE}` becomes a JavaScript
 `ReferenceError`. Keep that command in a normal JavaScript string, or escape the
 dollar sign as `\${...}` when a template literal is genuinely necessary.
-The same boundary bites REGEX metacharacters: a brace sentinel written as
-`'^\\\\{'` in JavaScript reaches ripgrep as `^\\\\{` (literal backslash plus a
-bare `{`), which it rejects with `repetition quantifier expects a valid decimal`.
-When matching LITERAL braces or similar sentinels, skip regex parsing entirely
-with fixed-string matching and DROP the anchors (`-F` treats `^` literally too):
-`rg -n -F '{'`. Or keep exactly ONE backslash inside a single-quoted shell
-literal (`rg -n -o '^\{'`); every layer between your JS source and rg's parser
-adds one phantom escape.
+The same boundary bites REGEX metacharacters: every layer between your JS source
+and rg's parser adds one phantom escape (`'^\\\\{'` reaches rg as `^\\\\{` and is
+rejected as `repetition quantifier expects a valid decimal`). For LITERAL braces
+use `rg -n -F '{'` and DROP the anchors (`-F` treats `^` literally too), or keep
+exactly ONE backslash in a single-quoted shell literal (`rg -n -o '^\{'`).
 
 ```bash
 ptool_scope=(--workspace="${PAPERCUSP_WORKSPACE}")
@@ -78,8 +94,9 @@ intuitive argument names is the single most common way a mutation fails here,
 and it costs a retry round trip every time: `locks:acquire` takes `paths` (NOT
 `files`, and it accepts no `harness` — it is workspace-global);
 `improvements:capture` takes `body` (NOT `description` or `evidence`). `ptool
---list` shows names and descriptions only, so it cannot answer this — querying
-`tools:find` for a verb you already know by name is the schema lookup.
+--list` shows names and descriptions only, so on the `ptool` path it cannot
+answer this — there, querying `tools:find` for a verb you already know by name
+is the schema lookup.
 
 Then call it with quoting-safe stdin JSON, keys taken from that `argSchema`:
 
@@ -89,14 +106,8 @@ ptool <group:verb> --json - <<'JSON'
 JSON
 ```
 
-Use `--json-file` when a payload is easier to prepare as a file. Do not put
-arbitrary JSON in shell single quotes: an apostrophe in completion evidence or
-another string breaks the shell before `ptool` runs. (You can also route the
-call through `ptool tools:invoke`.) `ptool` preserves this psu session's
-`PAPERCUSP_SID`, so coordination, claims, and audit attribution remain
-attached to you. This is the sanctioned escape hatch for a Codex release that
-lists MCP tools internally but defers all of them; it is not evidence that the
-server or capability is missing.
+`ptool` keeps this session's `PAPERCUSP_SID`, so claims and audit attribution
+stay yours.
 
 ## An empty `exec_command` result means YIELDED, not failed — pass `yield_time_ms: 30000`
 
@@ -107,13 +118,10 @@ JSON and writes it in one shot at the end, that is **zero bytes** — and hands 
 
 **Pick by how long the call might take — the two remedies have different ceilings:**
 
-- **Under ~30s (the common case): pass `yield_time_ms: 30000`.** One call, no extra steps.
-  Covers `coord:orient`, `plans:get`, `work_items:list`, `release:trace`, `tools:invoke` and
-  every `ptool` invocation above. This is a fix, not a workaround.
+- **Under ~30s (the common case): pass `yield_time_ms: 30000`.** One call, no extra steps;
+  covers almost every papercusp and `ptool` call.
 - **Unknown duration, or possibly over 30s: use two-call file capture** (below). `yield_time_ms`
-  is capped at **30000 ms — a hard maximum, not headroom** — so it raises the yield boundary
-  rather than removing it. File capture has **no ceiling**: measured intact at 16.8s / 5,722 bytes,
-  and it does not care how long the command runs.
+  is capped at **30000 ms — a hard maximum, not headroom**. File capture has **no ceiling**.
 
 Either way, if you do get a yield, **poll the `session_id`** — the output is there.
 
@@ -126,8 +134,7 @@ Either way, if you do get a yield, **poll the `session_id`** — the output is t
 
 ⛔ **An empty `output` with a `session_id` is not a failure, not an empty dataset, and NOT a
 papercusp tool bug.** Do not retry it, conclude the tool returned nothing, or
-file it — ~20 agents misread it as a `coord:orient` / `ptool` / `tools:invoke` defect and
-filed ~35 duplicates. Settled as **WI-40869**.
+file it (settled as **WI-40869**).
 
 ### Nested `exec_command` calls: preserve and drain every session handle
 
@@ -158,10 +165,8 @@ ptool <verb> --json - … >/tmp/o.json 2>/tmp/o.err
 cat /tmp/o.json
 ```
 
-⚠ **It must be TWO calls.** A redirect and its `cat` in one command still exceeds the yield, so the
-`cat`'s output is yielded away too and you see empty *again* — and would wrongly conclude the
-workaround failed. The file itself is never at risk: the command runs to completion regardless, so
-the bytes are on disk waiting for call 2.
+⚠ **It must be TWO calls**: in one command the `cat`'s output is yielded away too, so you see
+empty *again*. The command still runs to completion; the bytes wait on disk for call 2.
 
 ## `apply_patch`: ONE operation per file, or the WHOLE patch is rejected
 

@@ -50,7 +50,7 @@ function tickResult(
 ): ReconcileTickResult {
   const { result: resultOver, scan: scanOver, ...rest } = over;
   const result: ReconcileResult = {
-    alive: [], stranded: [], endedUnobserved: [], unaccounted: [], abandonedWindow: [],
+    alive: [], stranded: [], unresolved: [], endedUnobserved: [], unaccounted: [], abandonedWindow: [],
     consoleWindow: [], verifierScope: [], foreign: [], overdue: [], tooYoung: [],
     ...resultOver,
   };
@@ -79,6 +79,25 @@ function makeTx() {
 }
 
 describe('processes:list structured output', () => {
+  it('dispatch correlation accepts and forwards an exact selector and keeps live recovery compact', async () => {
+    const { listTasks } = await import('../../../task-manager/store');
+    const { reconcileTick } = await import('../../../task-manager/reconcile-tick');
+    vi.mocked(listTasks).mockClear();
+    mockResolvedOnceTyped(vi.mocked(reconcileTick), tickResult());
+    const dispatchCallId = 'server-dispatch-for-lost-response';
+    const dispatched = await dispatchProjectedTool(projected, 'processes:list',
+      { dispatchCallId, includeEnded: true, limit: 1, live: true }, {
+        log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
+        workspaceId: 'default', runId: 'processes-list-dispatch-correlation', role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true }, transport: 'mcp',
+        requestedFormat: 'json', requestedStructured: true, tx: makeTx(),
+      }, {});
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    expect(vi.mocked(listTasks)).toHaveBeenCalledOnce();
+    expect(vi.mocked(listTasks)).toHaveBeenCalledWith(expect.objectContaining({ dispatchCallId, includeEnded: true, limit: 1 }));
+    expect(JSON.stringify(dispatched)).toContain('global process groups omitted because a task selector is active');
+  });
+
   it('allows the prompted mug lifecycle judge to read evidence', () => {
     expect(projected.agentRoles).toContain('mug');
   });
@@ -616,7 +635,22 @@ describe('processes:list structured output', () => {
     const { reconcileTick } = await import('../../../task-manager/reconcile-tick');
     vi.mocked(listTasks).mockResolvedValueOnce([]);
     vi.mocked(reconcileTick).mockResolvedValueOnce({
-      summary: { unaccounted: 1, unaccountedPids: 2 },
+      summary: {
+        alive: 2,
+        stranded: 3,
+        endedUnobserved: 4,
+        unaccounted: 1,
+        unaccountedPids: 2,
+        abandonedWindow: 5,
+        abandonedWindowPids: 6,
+        consoleWindow: 7,
+        consoleWindowPids: 8,
+        verifierScope: 9,
+        verifierScopePids: 10,
+        foreign: 11,
+        overdue: 12,
+        tooYoung: 13,
+      },
       result: {
         unaccounted: [
           {
@@ -671,15 +705,56 @@ describe('processes:list structured output', () => {
     expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
     const structured = dispatched.result?.structuredContent as {
       live: {
+        aliveCount: number;
+        strandedCount: number;
+        endedUnobservedCount: number;
+        unaccountedCount: number;
+        unaccountedPidCount: number;
+        abandonedWindowCount: number;
+        abandonedWindowPidCount: number;
+        consoleWindowCount: number;
+        consoleWindowPidCount: number;
+        verifierScopeCount: number;
+        verifierScopePidCount: number;
+        foreignCount: number;
+        overdueCount: number;
+        tooYoungCount: number;
         unaccountedGroups: Array<{ scopeUnit: string; cgroupPath: string; pids: number[] }>;
         verifierGroups: Array<{ scopeUnit: string; cgroupPath: string; pids: number[] }>;
       };
     };
+    expect(structured.live).toMatchObject({
+      aliveCount: 2,
+      strandedCount: 3,
+      endedUnobservedCount: 4,
+      unaccountedCount: 1,
+      unaccountedPidCount: 2,
+      abandonedWindowCount: 5,
+      abandonedWindowPidCount: 6,
+      consoleWindowCount: 7,
+      consoleWindowPidCount: 8,
+      verifierScopeCount: 9,
+      verifierScopePidCount: 10,
+      foreignCount: 11,
+      overdueCount: 12,
+      tooYoungCount: 13,
+    });
+    for (const ambiguousCountKey of [
+      'alive', 'stranded', 'endedUnobserved', 'unaccounted', 'unaccountedPids',
+      'abandonedWindow', 'abandonedWindowPids', 'consoleWindow', 'consoleWindowPids',
+      'verifierScope', 'verifierScopePids', 'foreign', 'overdue', 'tooYoung',
+    ]) {
+      expect(structured.live).not.toHaveProperty(ambiguousCountKey);
+    }
     expect(structured.live.unaccountedGroups[0]).toMatchObject({
       scopeUnit: 'pc-orphan123.scope',
       cgroupPath: '/user.slice/user-1000.slice/user@1000.service/papercusp.slice/pc-orphan123.scope',
       pids: [11, 12],
     });
+    expect(structured.live.unaccountedGroups).toHaveLength(structured.live.unaccountedCount);
+    expect(structured.live.unaccountedPidCount).toBe(
+      structured.live.unaccountedGroups.reduce((count, group) => count + group.pids.length, 0),
+    );
     expect(structured.live.verifierGroups).toEqual([
       expect.objectContaining({
         scopeUnit: 'papercup-tauri-verify-90-3416089-tauri-1.scope',
@@ -743,7 +818,8 @@ describe('processes:list structured output', () => {
         workspaceId: 'default',
         rootTaskId: 'task-redaction',
         class: 'bash-job',
-        title: 'DATABASE_URL=postgresql://user:opaque-password@localhost/app',
+        title:
+          'psql DATABASE_URL=postgresql://user:opaque-password@localhost/app --url postgresql://user:second-secret@db.example/app',
         argv: [],
         launchedBy: 'su-test',
         workItemId: null,
@@ -811,8 +887,11 @@ describe('processes:list structured output', () => {
     expect(structured.live.unaccountedGroups[0]!.sample).toBe(
       'python3 - http://127.0.0.1:9071 [redacted] AWS_ACCESS_KEY_ID=[redacted]',
     );
-    expect(structured.tasks[0]!.title).toBe('DATABASE_URL=[redacted]');
+    expect(structured.tasks[0]!.title).toBe(
+      'psql DATABASE_URL=[redacted] --url postgresql://[redacted]@db.example/app',
+    );
     expect(JSON.stringify(structured)).not.toContain('opaque-');
+    expect(JSON.stringify(structured)).not.toContain('second-secret');
     expect(JSON.stringify(structured)).not.toContain(LOCAL_SUPERUSER_BEARER);
   });
 
@@ -883,7 +962,7 @@ describe('processes:list structured output', () => {
       live: Record<string, unknown>;
     };
     expect(structured.live).toMatchObject({
-      unaccounted: 38,
+      unaccountedCount: 38,
       diagnosticsOmitted: 'global process groups omitted because a task selector is active',
     });
     expect(structured.live).not.toHaveProperty('unaccountedGroups');
@@ -967,6 +1046,8 @@ describe('processes:list confinement (P-023/D-111)', () => {
       dispatched.result?.structuredContent as {
         tasks: Array<{
           taskId: string;
+          confined: boolean;
+          scopeUnit: string | null;
           confinement: {
             confined: boolean;
             cgroupPath: string | null;
@@ -990,6 +1071,36 @@ describe('processes:list confinement (P-023/D-111)', () => {
     expect(task!.confinement.cgroupPath).toContain('pc-agent-row.scope');
     expect(task!.confinement.cgroupPath).not.toBe(STORED_SPAWNER_CGROUP);
     expect(task!.confinement.cgroupPath).not.toContain('papercup-dev-api.service');
+  });
+
+  it('reports an unaccounted exact task scope from its observed cgroup path', async () => {
+    const taskId = 'abc123';
+    const scopeUnit = 'pc-abc123.scope';
+    const observedPath =
+      `/user.slice/user-1000.slice/user@1000.service/papercusp.slice/papercusp-sidecar.slice/${scopeUnit}`;
+    const [task] = await tasksFor(
+      confinedRow({
+        taskId,
+        rootTaskId: taskId,
+        class: 'other',
+        state: 'unaccounted',
+        confined: false,
+        scopeUnit,
+        cgroupPath: observedPath,
+      }),
+    );
+
+    expect(task).toMatchObject({
+      taskId,
+      confined: true,
+      scopeUnit,
+      confinement: {
+        confined: true,
+        cgroupPath: observedPath,
+        scopeUnit,
+        source: 'observed-at-reconcile',
+      },
+    });
   });
 
   it('reports a confined row with no scope unit as UNKNOWN, not as unconfined', async () => {

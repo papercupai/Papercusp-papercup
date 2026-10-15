@@ -1,0 +1,476 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "Automatic Android CI retained boot rejection after owned-filesystem correction",
+  "command": [
+    "existing enabled papercusp-android-ci.timer scheduled invocation"
+  ],
+  "startedAt": "2026-10-09T17:40:17.773316+00:00",
+  "finishedAt": "2026-10-09T17:57:40.973438+00:00",
+  "exitCode": 1,
+  "assertions": [
+    {"id":"full-native-qualification","passed":false,"evidence":"Automatic174017Z-f1bcf805 passed five preflight/host phases then owned boot exited1 after181 probes with empty sys.boot_completed; connected and paired phases never ran."},
+    {"id":"exact-clean-source-and-automatic-trigger","passed":true,"evidence":"Retained result pins clean9440a78/fingerprint9467301a and preparedoperatorad00; timer trigger17:40:17Z matches recorded servicePID3630884. No manual service start."},
+    {"id":"retained-artifact-integrity","passed":true,"evidence":"All86 retained artifact SHA256 values were recomputed without mismatch; original receipt digestb10456b0 is retained in execution.receiptSha256."},
+    {"id":"failure-closed-admission-and-cleanup","passed":true,"evidence":"Owned emulator cleanup witness true, ownedAVDresidue0, success/currentCIadmission absent, and sharedexecutor successfully acquired nonblocking and released after failure."},
+    {"id":"guest-root-cause-remains-unmeasured","passed":true,"evidence":"Historical160856Z PASS contains the same5660 port warning, so that warning does not distinguish this failure. Early-failure guest diagnostics were absent; bounded collection was added and guarded for future attempts."}
+  ],
+  "summary": "The existing timer automatically qualified corrected clean mobile source9440a78 against operatorad00. Operator/Rust/emulator/owned-AVD-space preflight and host passed; owned emulator boot failed before connected or paired execution. Admission remained absent, owned cleanup and free executor were verified. This retains the rejection and does not claim full native acceptance.",
+  "sourceCommit": "9440a78e155163d0adcc41b50453150cc3bbca45",
+  "sourceDirty": false,
+  "sourceFingerprint": "9467301a34a02769249968e8a39f73c598a6161520df323831188c2f1d9cf059",
+  "operatorCommit": "ad00f10153495e74a963f05f8ca70a058552f1fe",
+  "execution": {
+    "attemptId": "20261009T174017Z-f1bcf805",
+    "trigger": "automatic-systemd-timer",
+    "triggeredAt": "2026-10-09T17:40:17Z",
+    "servicePid": 3630884,
+    "manualServiceStart": false,
+    "status": "failed",
+    "retainedReceipt": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T174017Z-f1bcf805/result.json",
+    "receiptSha256": "b10456b00bb360be414f5b8e07ad7541f257dfb734b2705f0916fc3687c1dd72"
+  },
+  "phases": [
+    {
+      "name": "operator-freshness",
+      "exitCode": 0,
+      "sha256": "d3b21a28b2847e0be3d24a75cdb81af41d84295467515dd377fafd2d0395b8b8"
+    },
+    {
+      "name": "rust-preflight",
+      "exitCode": 0,
+      "sha256": "71898dff3c6432efdb734448f5be423843b12dd8075283501aad41600c41899c"
+    },
+    {
+      "name": "emulator-preflight",
+      "exitCode": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "avd-space-preflight",
+      "exitCode": 0,
+      "sha256": "5d12fd66ce54021facb87e44d056b6d3610ccd3f5bcd2b875d9c88c4ea4d34e5"
+    },
+    {
+      "name": "host",
+      "exitCode": 0,
+      "sha256": "103e866bf21bba1e02bb335ff2686f9b1d5f8aa098c34683f28d17820d687a65"
+    },
+    {
+      "name": "boot",
+      "exitCode": 1,
+      "sha256": "1c594691a79764b831bb2ca3b242710157a830a66a03974db4bbed98a4c92afd"
+    }
+  ],
+  "boot": {
+    "serial": "emulator-5660",
+    "bootCompleted": false,
+    "checks": 181,
+    "property": "",
+    "adbError": "",
+    "transportEvidence": "boot-transports.txt",
+    "frameworkReady": false,
+    "frameworkSamples": [],
+    "frameworkErrors": []
+  },
+  "avdSpace": {
+    "avdRoot": "$HOME/.local/state/papercusp/android-ci",
+    "configuredPartitionBytes": 6442450944,
+    "partitionBytes": 6442450944,
+    "availableBytes": 28384280576,
+    "requiredBytes": 8804682957,
+    "sufficient": true
+  },
+  "retainedArtifacts": [
+    {
+      "path": "artifacts/outputs/androidTest-results/connected/debug/TEST-papercusp-ci-54cb696a22ea(AVD) - 16-_app-.xml",
+      "sha256": "d1e2c1c5fdae94dca6957c7440718192c404b975d09009c9074d42252fc361cb"
+    },
+    {
+      "path": "artifacts/outputs/androidTest-results/connected/debug/papercusp-ci-54cb696a22ea(AVD) - 16/cpuinfo",
+      "sha256": "10585b7f03807fbc1ebbdb3a37986dab7a8957117b94e08680f497751f2da774"
+    },
+    {
+      "path": "artifacts/outputs/androidTest-results/connected/debug/papercusp-ci-54cb696a22ea(AVD) - 16/device-info.pb",
+      "sha256": "84005d7823dbed65afb8949183a411b2299ba7eae91a508563fd173b0d9dc597"
+    },
+    {
+      "path": "artifacts/outputs/androidTest-results/connected/debug/papercusp-ci-54cb696a22ea(AVD) - 16/logcat-com.papercuspai.operator.mobile.PapercupAppSmokeTest-sixFeatureJourneysMatchOwnedOperatorState.txt",
+      "sha256": "df90cabf39bf4e4827d4662f337b31ba31113589d321ea6cdc48d85b31811301"
+    },
+    {
+      "path": "artifacts/outputs/androidTest-results/connected/debug/papercusp-ci-54cb696a22ea(AVD) - 16/meminfo",
+      "sha256": "edc81857c7f625d6a87b0d24805d308fe1e50ecac4142e0ba9d4ce81f3f6fb83"
+    },
+    {
+      "path": "artifacts/outputs/androidTest-results/connected/debug/papercusp-ci-54cb696a22ea(AVD) - 16/profiling/emulator-5660_profile.pb",
+      "sha256": "b16c6547a53b45d1f9471669e6811ab5931657bf695e4e6eb690574ea6b66a57"
+    },
+    {
+      "path": "artifacts/outputs/androidTest-results/connected/debug/papercusp-ci-54cb696a22ea(AVD) - 16/test-result.pb",
+      "sha256": "22e0e288221b15d9111bb3917397c59a59fab88688991db31166ecd8883520ce"
+    },
+    {
+      "path": "artifacts/outputs/androidTest-results/connected/debug/papercusp-ci-54cb696a22ea(AVD) - 16/test-result.textproto",
+      "sha256": "568bd06599d83bbc2496ebeef93f57e6f58654b6665b6da31d5ef20bb73fc368"
+    },
+    {
+      "path": "artifacts/outputs/androidTest-results/connected/debug/papercusp-ci-54cb696a22ea(AVD) - 16/testlog/test-results.log",
+      "sha256": "1d5868dfcf47c99779720e6be7734c9387cdb2d32fd9a1135aab4c07c4cba7e0"
+    },
+    {
+      "path": "artifacts/outputs/androidTest-results/connected/debug/papercusp-ci-54cb696a22ea(AVD) - 16/utp.0.log",
+      "sha256": "adddbcb59ec875b18dbf3a8f6becb4b8adefdf9d9db92dcc9b351dd58889b8fc"
+    },
+    {
+      "path": "artifacts/outputs/androidTest-results/connected/debug/papercusp-ci-54cb696a22ea(AVD) - 16/utp.0.log.lck",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "artifacts/outputs/androidTest-results/connected/debug/test-result.pb",
+      "sha256": "d2204c398dbb6c54cb02a442b748693407dada5ae3539e5273ca351951a13a78"
+    },
+    {
+      "path": "artifacts/outputs/apk/androidTest/debug/app-debug-androidTest.apk",
+      "sha256": "d275227b97e18180a97f4b63dbf0297e0345d6b3825cb6430d36acb5a4748d1c"
+    },
+    {
+      "path": "artifacts/outputs/apk/debug/app-debug.apk",
+      "sha256": "894e5fd35ad7bbaa5c8c0d90c2d5fcde0b56aa07c7d4b8bb253fd9684578038d"
+    },
+    {
+      "path": "artifacts/reports/androidTests/connected/debug/com.papercuspai.operator.mobile.PapercupAppSmokeTest.html",
+      "sha256": "bae8fad5e86f48b6176e29ad7070ffb1fe546b09ffc20c23c6dad2f255e25ef8"
+    },
+    {
+      "path": "artifacts/reports/androidTests/connected/debug/com.papercuspai.operator.mobile.html",
+      "sha256": "1a8316e394606d8a62e6bbd14adbd478c61052290ade8848cf32c633114b984b"
+    },
+    {
+      "path": "artifacts/reports/androidTests/connected/debug/css/base-style.css",
+      "sha256": "2851d0b2f14f4ff1b75f0d01438887911eb474e235be93e561709227cefb18db"
+    },
+    {
+      "path": "artifacts/reports/androidTests/connected/debug/css/style.css",
+      "sha256": "f1b366319836f8726d0939654d0eeddfc5b20f67d9e5954b9a1632c60f2f31bf"
+    },
+    {
+      "path": "artifacts/reports/androidTests/connected/debug/index.html",
+      "sha256": "87d8cc272b49e0220c712dd563746a397a547120f87ab11da0aca5d54922696d"
+    },
+    {
+      "path": "artifacts/reports/androidTests/connected/debug/js/report.js",
+      "sha256": "0aa306f94805890682c639b2d5c06108801d64b859a171a3c6eea66c8bab4c6a"
+    },
+    {
+      "path": "artifacts/reports/lint-results-release.html",
+      "sha256": "1249f0f636e282268f52776f626b20b462fe0b96851ed3028785fed153ae577b"
+    },
+    {
+      "path": "artifacts/reports/lint-results-release.txt",
+      "sha256": "5009cb50629b3a34d2d040228cfdbd6e18643e64fcabb825810cffa4baad3981"
+    },
+    {
+      "path": "artifacts/reports/lint-results-release.xml",
+      "sha256": "1882a10fbff99155272adbb31faf9bf4611ea0ce38cd35e415e02c631e38c72e"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/classes/com.papercuspai.operator.mobile.CompanionFeedTest.html",
+      "sha256": "0573201e878b2aa4e34ed704b94139e5c5f50718fc49faf86463dec09aea12f2"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/classes/com.papercuspai.operator.mobile.EndpointSecurityTest.html",
+      "sha256": "1d2e950d2ba320fee3d092b10bb4a67e70c6912f6bbdd7f8f0317dd984dc483b"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/classes/com.papercuspai.operator.mobile.HumanErrorTest.html",
+      "sha256": "063dffbec27fa11ec4f78f358f2c4fdade0f60b0768cdf2fce133208641e9aa5"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/classes/com.papercuspai.operator.mobile.LibraryNoticesTest.html",
+      "sha256": "953c61ad6c80635a030619628e19e66abecd1c6cc10236f7542b82586bbea96f"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/classes/com.papercuspai.operator.mobile.PlanItemsContractTest.html",
+      "sha256": "1d218df82f05201f8420b6b53b447008584b5c7d06c99386ca6f24877649a2aa"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/classes/com.papercuspai.operator.mobile.VoiceMicDenialTest.html",
+      "sha256": "47c0078432d45b81568fd89fea62afb15c1c3d9283abd69554bf93a798b082ac"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/classes/com.papercuspai.operator.mobile.VoicePrivacyConsentTest.html",
+      "sha256": "acaf84ab6470d0e39efa0ae9e3abc6d6b2c50090f4b9900d97019e13b33deb14"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/classes/com.papercuspai.operator.mobile.WorkspaceSwitchTest.html",
+      "sha256": "c1ef97a14c37e861e6e4d2082565d8e433ad093aa4f988df1723e6773bbcfb0d"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/css/base-style.css",
+      "sha256": "e80e92985c9e56c3b3ecb437faf360042a7ff45fde849bf4e9f80fd4e0878743"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/css/style.css",
+      "sha256": "61866908fd7eb09c79e96239f69db2e8cc5c6526cdb308eba0535ed2a0f6a263"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/index.html",
+      "sha256": "dfe67aaf221b12c7ace20e6e289e1851b7876accb882dae7b2d2cbde86de9f8a"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/js/report.js",
+      "sha256": "3365e26776dbfa97b975163b467cc913ca5790b58027473758c8f8dad02e3a31"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/packages/com.papercuspai.operator.mobile.html",
+      "sha256": "38a3cd77d68129df402984d173a9191c4788ca328012f5cdab108a59636d9191"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/classes/com.papercuspai.operator.mobile.CompanionFeedTest.html",
+      "sha256": "7ba654a101824ac6f20902ce36ca7a346c08398f8ed57a48c881c85df5601dda"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/classes/com.papercuspai.operator.mobile.EndpointSecurityTest.html",
+      "sha256": "0824bf30c3d88bc84fc6532fb017a6701605ff46d35a72e80bd6c86d05cfcf18"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/classes/com.papercuspai.operator.mobile.HumanErrorTest.html",
+      "sha256": "0271b76c27fe90592857b79c56a9ed93b7ccb835767486475c865878bf29bf40"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/classes/com.papercuspai.operator.mobile.LibraryNoticesTest.html",
+      "sha256": "041b755b89f230f9a06f8fb556ad8ba82de40287da0e1882794523069a653f16"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/classes/com.papercuspai.operator.mobile.PlanItemsContractTest.html",
+      "sha256": "f3a78cc3554492cd7ef08326a8b097dddeb4cfc4cb7257cec03ae7999e161016"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/classes/com.papercuspai.operator.mobile.VoiceMicDenialTest.html",
+      "sha256": "3531ac01eed2e1c71ef70616f1222c2723c08739c3102ceba7487c3acc99e973"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/classes/com.papercuspai.operator.mobile.VoicePrivacyConsentTest.html",
+      "sha256": "8e7d44e3f90baa4dd7f2b8d7f861a4feed8932dd30b419083b2a26e188dbb579"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/classes/com.papercuspai.operator.mobile.WorkspaceSwitchTest.html",
+      "sha256": "f88b411eae2f5600c60ff9f50f9ee1102b6d47ffb1696a63d65bf59709c7de14"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/css/base-style.css",
+      "sha256": "e80e92985c9e56c3b3ecb437faf360042a7ff45fde849bf4e9f80fd4e0878743"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/css/style.css",
+      "sha256": "61866908fd7eb09c79e96239f69db2e8cc5c6526cdb308eba0535ed2a0f6a263"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/index.html",
+      "sha256": "d8f35462d1a255dd271dc24bc100c9bfb759bf6f18062fc5cf0d8f8a8afdde11"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/js/report.js",
+      "sha256": "3365e26776dbfa97b975163b467cc913ca5790b58027473758c8f8dad02e3a31"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/packages/com.papercuspai.operator.mobile.html",
+      "sha256": "ae65bee281831249b78b8b063d449055a72d0f11f86d687ba45a765eb8dbd343"
+    },
+    {
+      "path": "artifacts/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml",
+      "sha256": "4114363a661d8d5d092f3a19c8d37a33519293eef35115ce2477c4529e33984c"
+    },
+    {
+      "path": "artifacts/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.EndpointSecurityTest.xml",
+      "sha256": "73731ee837ca0b0acfec88135544ed5a55a3b2c741881309b566c67aab6c8e60"
+    },
+    {
+      "path": "artifacts/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml",
+      "sha256": "5a8825fc6f0a16a355c8cdf6ef4eb6dba9b951d115223e251a8ce0335dce56de"
+    },
+    {
+      "path": "artifacts/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.LibraryNoticesTest.xml",
+      "sha256": "c487bbfa9c48c5bbc177bda2d2a87009a960a3ecad6ac67448acb1a3ce79ae29"
+    },
+    {
+      "path": "artifacts/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.PlanItemsContractTest.xml",
+      "sha256": "128d81fbeaf68bcd5ea7407f6eeab75c436a1d522eb894065a8d58795fdc2d1f"
+    },
+    {
+      "path": "artifacts/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.VoiceMicDenialTest.xml",
+      "sha256": "0b465267857b49b0700bd3e2593d11978ba09a50f00e42e88cd41f5af4ac2e14"
+    },
+    {
+      "path": "artifacts/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.VoicePrivacyConsentTest.xml",
+      "sha256": "ee2ac25162eadfbc3b1625bdd27e522bc7655597c43677976bc05b1b9d68c7d4"
+    },
+    {
+      "path": "artifacts/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml",
+      "sha256": "eb9ae71dcbe4f750e2adf8be93f5bd25f2a55b09e83b7252c0facaa1cb16c863"
+    },
+    {
+      "path": "artifacts/test-results/testDebugUnitTest/binary/output.bin",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "artifacts/test-results/testDebugUnitTest/binary/output.bin.idx",
+      "sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"
+    },
+    {
+      "path": "artifacts/test-results/testDebugUnitTest/binary/results.bin",
+      "sha256": "fd0fb872f063dfc127fc3d8bcd6d03947abb53d8ef76597b6e0c75774c20c744"
+    },
+    {
+      "path": "artifacts/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml",
+      "sha256": "596df84fd350a6d6e063bfc66bd26394267c02636de4f2d5c9b62813a87b0085"
+    },
+    {
+      "path": "artifacts/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.EndpointSecurityTest.xml",
+      "sha256": "062f2dae2edb9e776212691a16404edad11836a88d5c33ce3981763a69b4b35b"
+    },
+    {
+      "path": "artifacts/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml",
+      "sha256": "0a0d71e1ad7419a0e8554c03c93fed7406d059191ca77656e5c4f0f8c59e7159"
+    },
+    {
+      "path": "artifacts/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.LibraryNoticesTest.xml",
+      "sha256": "a31cc2fb6b468906d8d014fcd788c74e180dbe66b9785bf459c9060a20ebc265"
+    },
+    {
+      "path": "artifacts/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.PlanItemsContractTest.xml",
+      "sha256": "9d79f0d98a4baff4693a431ec2aa6df6ec27005f91fac7d39f4cedb04426631c"
+    },
+    {
+      "path": "artifacts/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.VoiceMicDenialTest.xml",
+      "sha256": "5c1f2e5e7ac805d24d96e76ef275065e0c036665c62a3ed51f3411680b3b6c24"
+    },
+    {
+      "path": "artifacts/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.VoicePrivacyConsentTest.xml",
+      "sha256": "f9f269a4b3bd525dcbc37907c71635d7f6c32c29c5d60c65507a0d9287a57a3b"
+    },
+    {
+      "path": "artifacts/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml",
+      "sha256": "46f20b8c80f8ac88bafe48fee754e397e42c66b3425838da3b508213945ebb89"
+    },
+    {
+      "path": "artifacts/test-results/testReleaseUnitTest/binary/output.bin",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "artifacts/test-results/testReleaseUnitTest/binary/output.bin.idx",
+      "sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"
+    },
+    {
+      "path": "artifacts/test-results/testReleaseUnitTest/binary/results.bin",
+      "sha256": "6ed2969d3aef82593dc67c5824cb850f10470aefc4d4ec8c0f811fc6c4ae7661"
+    },
+    {
+      "path": "avd-create.log",
+      "sha256": "452123b796ad584b00b4bd98ffbb34ed14c391d8171c6140e8089e5078d58dc5"
+    },
+    {
+      "path": "avd-space-preflight.log",
+      "sha256": "5d12fd66ce54021facb87e44d056b6d3610ccd3f5bcd2b875d9c88c4ea4d34e5"
+    },
+    {
+      "path": "avd-space.txt",
+      "sha256": "5d12fd66ce54021facb87e44d056b6d3610ccd3f5bcd2b875d9c88c4ea4d34e5"
+    },
+    {
+      "path": "boot/boot-adb-error.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "boot/boot-property.txt",
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "path": "boot/boot-transports.txt",
+      "sha256": "c6ea6195c0681032a08c6be3876adb0f2a46d0d49a0cf3ad537a4ecdd582c956"
+    },
+    {
+      "path": "boot/emulator-boot.json",
+      "sha256": "85abaf7322661e8114fcf35261fb79f0eac32039241a279ffce3304010398e81"
+    },
+    {
+      "path": "boot.log",
+      "sha256": "1c594691a79764b831bb2ca3b242710157a830a66a03974db4bbed98a4c92afd"
+    },
+    {
+      "path": "emulator-libraries.txt",
+      "sha256": "ae43b4ef212d1e55448fe7f5ae2f46fe76b83d009e4c73b9ba23133127acb5bc"
+    },
+    {
+      "path": "emulator-preflight.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "emulator-version.txt",
+      "sha256": "5ede8f2a4c3d8000197bd40dd27bba42f1210c915ec1884c90dc27b674ff8454"
+    },
+    {
+      "path": "emulator.log",
+      "sha256": "cd4c3b4f442994d4f077ddcb53237e38e9f9140d43fb3d32bb2a49eef7247bf3"
+    },
+    {
+      "path": "host.log",
+      "sha256": "103e866bf21bba1e02bb335ff2686f9b1d5f8aa098c34683f28d17820d687a65"
+    },
+    {
+      "path": "operator-freshness.log",
+      "sha256": "d3b21a28b2847e0be3d24a75cdb81af41d84295467515dd377fafd2d0395b8b8"
+    },
+    {
+      "path": "rust-preflight.log",
+      "sha256": "71898dff3c6432efdb734448f5be423843b12dd8075283501aad41600c41899c"
+    }
+  ],
+  "retainedArtifactBase": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T174017Z-f1bcf805",
+  "verification": {
+    "observedAt": "2026-10-09T18:14:51.700000+00:00",
+    "retainedHashesVerified": true,
+    "emulatorCleanupVerified": true,
+    "ownedAvdResidue": [],
+    "executorFreeAfterCleanup": true,
+    "successRecordAbsent": true,
+    "ciAdmissionAbsent": true
+  },
+  "rootCause": {
+    "guestBootFailure": "unknown: transport was device but boot property remained empty through181 probes; pre-cleanup guest diagnostics were not collected",
+    "diagnosticGap": {
+      "workItem": "WI-10007859",
+      "layer": "maintained verify-emulator-boot failure evidence writer",
+      "cause": "Framework diagnostics were gated on bootCompleted; an early boot failure was cleaned up without guest properties/system/crash evidence.",
+      "durableChange": "Capture bounded failure diagnostics before returning; retain unavailable command/timeout errors and keep failed readiness fail-closed.",
+      "guards": "Conventional boot suite: late property cannot restore admission, failed diagnostic commands and8sec timeout preserve rejection, arbitrary guest properties excluded."
+    },
+    "spaceCorrection": {
+      "workItem": "WI-10007839",
+      "commit": "9440a78e155163d0adcc41b50453150cc3bbca45",
+      "currentAutomaticPreflightPassed": true
+    },
+    "warningDistinction": "Historical160856Z successful boot uses same5660 port and warning; warning is not a distinguishing cause."
+  },
+  "acceptanceBoundary": {
+    "fullNativePass": false,
+    "migrationComplete": false,
+    "signedCandidate": false,
+    "physicalPhone": false,
+    "googlePlay": false,
+    "c9CustodyGranted": false
+  },
+  "historicalEvidence": {
+    "automaticFullPass": "docs/evidence/android-independent-ci-automatic-full-2026-10-09.json",
+    "ledgerRunId": 20960550,
+    "mustNotRerun": true
+  },
+  "migrationRefs": [
+    "WI-10007209",
+    "WI-10007839",
+    "WI-10007859",
+    "android-public-release-2026-10-01#P-016"
+  ]
+}

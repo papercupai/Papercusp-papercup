@@ -19,6 +19,7 @@ import {
   closeSync,
   rmSync,
   readdirSync,
+  symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -30,6 +31,7 @@ import {
   analyzeEnv,
   analyzeLogPath,
   pruneAnalyzeLogs,
+  pruneStrandedParseCaches,
   readAnalyzeLogTail,
   selectiveSourceLimitKb,
   GITNEXUS_KNOWN_SOURCE_PATH,
@@ -86,6 +88,7 @@ import {
   type OpenHandleProbe,
   judgeCanary,
   analyzeTickSucceeded,
+  analyzeResultFromClose,
   GITNEXUS_HEALTH_DEFAULT,
   GITNEXUS_FAILURE_ALERT_THRESHOLD,
   decideGitnexusHealthUpdate,
@@ -103,6 +106,97 @@ import {
   readIndexStatsForHealth,
 } from './gitnexus-reindex-action';
 import { SELECTIVE_SOURCE_BLOBS } from '../../code-intelligence/selective-corpus';
+import { classifyAnalyzeFailure } from '../../code-intelligence/gitnexus-analyze-failure';
+
+describe('failed-run parse-cache retention (EI-25559197862756318)', () => {
+  let root: string;
+  const current = 'a'.repeat(64);
+  const sibling = 'b'.repeat(64);
+  const old = 'c'.repeat(64);
+  const recent = 'd'.repeat(64);
+  const now = Date.now();
+  const options = { nowMs: now, writerLiveness: () => 'orphaned' as const };
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'gitnexus-cache-retention-'));
+    const storage = join(root, '.gitnexus');
+    for (const store of ['parse-cache', 'parsedfile-cache']) {
+      mkdirSync(join(storage, store), { recursive: true });
+      writeFileSync(join(storage, store, 'index.json'), JSON.stringify({ keys: [current] }));
+      for (const key of [current, sibling, old, recent]) {
+        const file = store === 'parse-cache' ? join(storage, store, `${key}.json`) : join(storage, store, key, 'shard.json');
+        mkdirSync(dirname(file), { recursive: true });
+        writeFileSync(file, '{}');
+        if (key !== recent) {
+          utimesSync(file, new Date(now - 48 * 3600000), new Date(now - 48 * 3600000));
+          if (store === 'parsedfile-cache') utimesSync(dirname(file), new Date(now - 48 * 3600000), new Date(now - 48 * 3600000));
+        }
+      }
+    }
+    writeFileSync(join(storage, 'meta.json'), JSON.stringify({ cacheKeys: [current] }));
+    mkdirSync(join(storage, 'branches', 'sibling'), { recursive: true });
+    writeFileSync(join(storage, 'branches', 'sibling', 'gitnexus.json'), JSON.stringify({ cacheKeys: [sibling] }));
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it('previews and removes only old unreferenced shards, retaining indexed, sibling, and recent chunks', async () => {
+    const preview = await pruneStrandedParseCaches(root, { ...options, dryRun: true });
+    expect(preview).toMatchObject({ status: 'complete', removed: [] });
+    expect(preview.candidates).toHaveLength(2);
+    expect(preview.candidateBytes).toBeGreaterThan(0);
+    const removed = await pruneStrandedParseCaches(root, options);
+    expect(removed.removed).toEqual(preview.candidates);
+    for (const key of [current, sibling, recent]) {
+      expect(existsSync(join(root, '.gitnexus', 'parse-cache', `${key}.json`))).toBe(true);
+      expect(existsSync(join(root, '.gitnexus', 'parsedfile-cache', key))).toBe(true);
+    }
+  });
+
+  it('fails closed on corrupt branch authority and live or unknown writers', async () => {
+    for (const state of ['live', 'unknown'] as const) {
+      expect(await pruneStrandedParseCaches(root, { writerLiveness: () => state })).toMatchObject({ status: 'spared', removed: [] });
+    }
+    writeFileSync(join(root, '.gitnexus', 'branches', 'sibling', 'gitnexus.json'), 'invalid');
+    expect(await pruneStrandedParseCaches(root, options)).toMatchObject({ status: 'not-measured', removed: [] });
+  });
+
+  it('spares a writer arriving during the census and never follows a cache symlink', async () => {
+    const outside = join(root, 'outside.json');
+    writeFileSync(outside, '{}');
+    symlinkSync(outside, join(root, '.gitnexus', 'parse-cache', `${'e'.repeat(64)}.json`));
+    const probe = vi.fn().mockReturnValueOnce('orphaned').mockReturnValue('live');
+    expect(await pruneStrandedParseCaches(root, { ...options, writerLiveness: probe })).toMatchObject({ status: 'spared', removed: [] });
+    await pruneStrandedParseCaches(root, options);
+    expect(existsSync(outside)).toBe(true);
+  });
+
+  it('retains fresh deep writes even when the containing chunk directory is old', async () => {
+    const dir = join(root, '.gitnexus', 'parsedfile-cache', old);
+    writeFileSync(join(dir, 'shard.json'), '{"fresh":true}');
+    utimesSync(dir, new Date(now - 48 * 3600000), new Date(now - 48 * 3600000));
+    const result = await pruneStrandedParseCaches(root, options);
+    expect(result.removed).toEqual([join(root, '.gitnexus', 'parse-cache', `${old}.json`)]);
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  it('spares an authority change during census and a missing cache index', async () => {
+    let calls = 0;
+    const writerLiveness = (): 'orphaned' => {
+      if (++calls === 2) writeFileSync(join(root, '.gitnexus', 'meta.json'), JSON.stringify({ cacheKeys: [current, old] }));
+      return 'orphaned';
+    };
+    expect(await pruneStrandedParseCaches(root, { ...options, writerLiveness })).toMatchObject({ status: 'spared', removed: [] });
+    rmSync(join(root, '.gitnexus', 'parse-cache', 'index.json'));
+    expect(await pruneStrandedParseCaches(root, options)).toMatchObject({ status: 'not-measured', removed: [] });
+  });
+
+  it('keeps the maintenance hook before admission and on failed spawned or adopted runs', () => {
+    const src = readFileSync(fileURLToPath(new URL('./gitnexus-reindex-action.ts', import.meta.url)), 'utf8');
+    expect(src).toContain('if (!ranClean) await cleanStrandedParseCaches(root)');
+    expect(src.indexOf('await cleanStrandedParseCaches(root);', src.indexOf('const residue = cleanCrashResidue(root)')))
+      .toBeLessThan(src.indexOf('const requiredFree = requiredFreeDiskBytes('));
+  });
+});
 
 const taskManager = vi.hoisted(() => ({
   managedSpawn: vi.fn(),
@@ -2491,10 +2585,12 @@ describe('canary edge queries target the REAL graph schema', () => {
 
     it('no execFile in the source builds a bare [cypher, query] argv any more', () => {
       expect(CODE).not.toMatch(/\[\s*'cypher',\s*query\s*\]/);
-      // Both cypher helpers route through the builder (positive control: the builder is
-      // referenced at least twice — once per helper — outside its own definition).
-      const uses = CODE.match(/canaryCypherArgv\(repoName, query\)/g) ?? [];
-      expect(uses.length).toBeGreaterThanOrEqual(2);
+      // Both cypher helpers route through ONE sidecar-routed runner (WI-10004975), and that
+      // runner builds its argv with the builder. Positive controls: the runner's exec names
+      // the builder, and each helper (scalar + first-string) calls the runner.
+      expect(CODE).toMatch(/execFileViaSidecar\(bin, canaryCypherArgv\(repoName, query\)/);
+      const viaRunner = CODE.match(/await runCanaryCypher\(bin, root, repoName, query, timeoutMs\)/g) ?? [];
+      expect(viaRunner.length).toBeGreaterThanOrEqual(2);
     });
 
     it('the tick passes the routine repoName into runCanary (not the module default)', () => {
@@ -2746,5 +2842,47 @@ describe('WI-2146015 — a routine-launched analyze is ADOPTED across a bg-host 
     expect(manualSkip).toBeLessThan(residue);
     // ONE finish path for the same-host completion and the adopted one — they cannot diverge.
     expect(src.split('await finishAnalyzeTick(').length - 1).toBe(2);
+  });
+});
+
+/**
+ * WI-10005680 — a vendor SIGSEGV used to reach the alert as a bare `exited 1`: Node reports a signal
+ * death as `close(null, 'SIGSEGV')` and `code ?? 1` erased it. `analyzeResultFromClose` is the one
+ * place that mapping happens (the spawn's `close` handler calls it), so pinning it here pins the
+ * production path without spawning an analyzer.
+ */
+describe('analyzeResultFromClose keeps the terminating signal (WI-10005680)', () => {
+  const out = { stdout: '', stderr: '', timedOut: false };
+
+  it('a signal death (code null) collapses the code to 1 but CARRIES the signal', () => {
+    const r = analyzeResultFromClose(null, 'SIGSEGV', out);
+    expect(r.code).toBe(1);
+    expect(r.signal).toBe('SIGSEGV');
+  });
+
+  it('a signalled run with no vendor text is still classified as a native crash end to end (and exit-code-only is not)', () => {
+    const r = analyzeResultFromClose(null, 'SIGSEGV', out);
+    expect(classifyAnalyzeFailure(r)?.kind).toBe('native-crash');
+    // The control the guard is measured against: the SAME run with the signal erased (the pre-fix
+    // behaviour) is unrecognised, so this test fails if the signal is ever dropped again.
+    expect(classifyAnalyzeFailure({ code: r.code, stdout: r.stdout, stderr: r.stderr })).toBeNull();
+  });
+
+  it('a clean exit keeps code 0 and a null signal, and an ordinary non-zero exit keeps its code', () => {
+    expect(analyzeResultFromClose(0, null, out)).toMatchObject({ code: 0, signal: null });
+    expect(analyzeResultFromClose(2, null, out)).toMatchObject({ code: 2, signal: null });
+  });
+
+  it('the vendor ceiling line wins over the generic crash class when both are present', () => {
+    const r = analyzeResultFromClose(null, 'SIGSEGV', {
+      ...out,
+      stderr: 'Buffer manager exception: Maximum database size of 17179869184 bytes has been reached',
+    });
+    expect(classifyAnalyzeFailure(r)?.kind).toBe('lbug-max-db-size');
+  });
+
+  it('the spawn close handler routes through it (a re-inlined `code ?? 1` would drop the signal again)', () => {
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'gitnexus-reindex-action.ts'), 'utf8');
+    expect(src).toContain("child.on('close', (code, signal) => finish(analyzeResultFromClose(code, signal,");
   });
 });

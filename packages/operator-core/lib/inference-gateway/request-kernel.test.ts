@@ -483,6 +483,53 @@ describe.each(laneCases)('$id shared request lifecycle', ({ lane }) => {
     expect(f.counts()).toMatchObject({ releaseCount: 1, unregisterCount: 1, failoverCalls: 0 });
   });
 
+  // gateway-admission-congestion-only-2026-10-13 R-5 / P-004: one request cannot burn every account.
+  function everyAccountStallsFixture(policy: Partial<GatewayKernelPolicy>) {
+    const f = fixture(lane, {
+      policy: { maxAttempts: 6, ttfbTimeoutMs: 5, ...policy },
+      executeAttempt: async () => new Promise<KernelResponse>(() => undefined),
+    });
+    // A fresh account on every failover, so only the bound under test can stop the walk.
+    let failovers = 0;
+    f.options.adapter.selectFailover = async () => {
+      failovers += 1;
+      return {
+        ...f.routeB,
+        key: `${f.routeB.key}:${failovers}`,
+        accountId: f.routeB.accountId === null ? null : `account-${failovers}`,
+      };
+    };
+    return f;
+  }
+  const executed = (events: string[]) => events.filter((event) => event.startsWith('execute:')).length;
+
+  it('stops failing over once maxTtfbTimeouts attempts have timed out on first byte (R-5)', async () => {
+    const f = everyAccountStallsFixture({ maxTtfbTimeouts: 2 });
+    const error = await caughtKernelError(executeGatewayRequestKernel(f.options));
+
+    expect(error).toMatchObject({ code: 'ttfb-timeout', outcome: 'upstream-error', status: 504, retryable: false });
+    expect(error.cause).toMatchObject({ code: 'ttfb-timeout', retryable: true });
+    expect(executed(f.events)).toBe(2);
+    expect(f.counts()).toMatchObject({ releaseCount: 1, unregisterCount: 1 });
+  });
+
+  it('CONTROL: without maxTtfbTimeouts a first-byte timeout fails over until maxAttempts', async () => {
+    const f = everyAccountStallsFixture({});
+    const error = await caughtKernelError(executeGatewayRequestKernel(f.options));
+
+    expect(error).toMatchObject({ code: 'ttfb-timeout', retryable: true });
+    expect(executed(f.events)).toBe(6);
+  });
+
+  it('rejects a maxTtfbTimeouts that is not a positive integer', async () => {
+    for (const maxTtfbTimeouts of [0, -1, 1.5]) {
+      const f = everyAccountStallsFixture({ maxTtfbTimeouts });
+      const error = await caughtKernelError(executeGatewayRequestKernel(f.options));
+      expect(error, `maxTtfbTimeouts=${maxTtfbTimeouts}`).toMatchObject({ code: 'invalid-policy' });
+      expect(executed(f.events)).toBe(0);
+    }
+  });
+
   it('closes a failed TTFB stage before selecting the failover route', async () => {
     const f = fixture(lane, {
       executeAttempt: async (_prepared, context) => {
@@ -611,6 +658,60 @@ describe.each(laneCases)('$id shared request lifecycle', ({ lane }) => {
     expect(result).toMatchObject({ status: 503, outcome: 'upstream-error', attempts: 1, failovers: 0 });
     expect(f.counts()).toMatchObject({ failoverCalls: 0, discardCount: 0, releaseCount: 1 });
     assertCompleteGatewayRequestTimeline(result.timeline);
+  });
+});
+
+// WI-6554700010011504: a D-014 wedge-prevention budget that is already SPENT when an
+// attempt would start used to be clamped to a 1ms TTFB — the prompt was uploaded,
+// aborted at once, and the lane's own deadline surfaced as an "upstream stall" 502.
+// A spent budget is a SHED: no attempt is dispatched, and the error carries the status
+// the retry was trying to rescue (429 when nothing was rescued yet).
+describe('gateway request kernel spent retry budget (D-014 ttfbCapMs)', () => {
+  const overloaded = (context: GatewayKernelAttemptContext<RouteValue>): KernelResponse => ({
+    status: 529,
+    streaming: false,
+    transport: context.route.transport,
+    metadata: { contentType: 'application/json' },
+    body: null,
+    retryable: true,
+    discard: () => undefined,
+  });
+
+  it('sheds before the FIRST attempt with a non-retryable 429 and never dispatches upstream', async () => {
+    const executeAttempt = vi.fn(async (_prepared: PreparedAttempt, context: GatewayKernelAttemptContext<RouteValue>) =>
+      overloaded(context),
+    );
+    const f = fixture(laneRegistry.anthropicMessages, { policy: { ttfbCapMs: () => 0 }, executeAttempt });
+
+    const error = await caughtKernelError(executeGatewayRequestKernel(f.options));
+
+    expect(error).toMatchObject({ code: 'retry-budget-exhausted', outcome: 'shed', status: 429, retryable: false });
+    expect(executeAttempt).not.toHaveBeenCalled();
+    expect(f.counts()).toMatchObject({ releaseCount: 1, unregisterCount: 1 });
+  });
+
+  it('carries the upstream status the retry was rescuing when the budget runs out between attempts', async () => {
+    let capCalls = 0;
+    // A positive budget for attempt 1, spent by the time attempt 2 would start.
+    const ttfbCapMs = () => (++capCalls === 1 ? 1_000 : -5);
+    const executeAttempt = vi.fn(async (_prepared: PreparedAttempt, context: GatewayKernelAttemptContext<RouteValue>) =>
+      overloaded(context),
+    );
+    const f = fixture(laneRegistry.anthropicMessages, { policy: { ttfbCapMs, maxAttempts: 3 }, executeAttempt });
+
+    const error = await caughtKernelError(executeGatewayRequestKernel(f.options));
+
+    expect(error).toMatchObject({ code: 'retry-budget-exhausted', outcome: 'shed', status: 529, retryable: false });
+    expect(executeAttempt).toHaveBeenCalledTimes(1);
+    expect(f.counts()).toMatchObject({ failoverCalls: 1, releaseCount: 1, unregisterCount: 1 });
+  });
+
+  it('CONTROL: a budget that is still positive lets the failover attempt run and serve', async () => {
+    const f = fixture(laneRegistry.anthropicMessages, { policy: { ttfbCapMs: () => 1_000 }, streaming: false });
+
+    const result = await executeGatewayRequestKernel(f.options);
+
+    expect(result).toMatchObject({ status: 200, outcome: 'ok', attempts: 2 });
   });
 });
 
@@ -1054,5 +1155,177 @@ describe('gateway request kernel caller-supplied span adoption', () => {
     // …and the additive half of D-018: the fixture's own routes declare no pace at
     // all, which is why adding this waited nowhere for the already-migrated lanes.
     expect(f.routeB.delayMs).toBeUndefined();
+  });
+});
+
+/**
+ * gateway-admission-congestion-only-2026-10-13 R-3 / P-003 — pace uploads, not open streams.
+ *
+ * Each case runs the REAL kernel against a REAL one-slot PriorityAdmissionQueue, so "the
+ * slot is free" is the queue's own `running` counter and a second request actually being
+ * admitted — not a fake's bookkeeping. The CONTROL arm is the same fixture without the
+ * hook, which is what makes the release assertion a discriminator rather than a vacuous truth.
+ */
+describe('gateway request kernel releases the admission slot while a response streams (R-3)', () => {
+  const lane = laneRegistry.openaiResponses;
+
+  /** A stream that yields one chunk, then waits for `open()` before its last chunk. */
+  function gatedStream() {
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    async function* body(): AsyncIterable<Uint8Array> {
+      yield Buffer.from('first');
+      await gate;
+      yield Buffer.from('second');
+    }
+    return { body: body(), open };
+  }
+
+  function streamingFixture(
+    body: AsyncIterable<Uint8Array>,
+    queue: PriorityAdmissionQueue,
+    opts: { releaseForStream: boolean; policy?: Partial<GatewayKernelPolicy> },
+  ) {
+    let attemptSignal: AbortSignal | undefined;
+    const f = fixture(lane, {
+      policy: opts.policy,
+      executeAttempt: async (_prepared, context) => {
+        attemptSignal = context.signal;
+        return {
+          status: 200,
+          streaming: true,
+          transport: context.route.transport,
+          metadata: { contentType: 'text/event-stream' },
+          body,
+          discard: () => {
+            f.events.push('discard');
+          },
+        };
+      },
+    });
+    f.options.admission.run = (_context, task) => queue.run(0, task, { tier: 1 });
+    if (opts.releaseForStream) {
+      f.options.admission.releaseForStream = () => {
+        f.events.push(`release-for-stream:running=${queue.snapshot().running}`);
+      };
+    }
+    return { ...f, attemptSignal: () => attemptSignal };
+  }
+
+  const text = (written: Uint8Array[]) => written.map((chunk) => Buffer.from(chunk).toString());
+
+  it('frees the slot once the response streams, so a second request is admitted while the first is still open', async () => {
+    const queue = new PriorityAdmissionQueue({ maxConcurrent: 1, maxQueued: 4 });
+    const first = gatedStream();
+    const second = gatedStream();
+    const a = streamingFixture(first.body, queue, { releaseForStream: true });
+    const b = streamingFixture(second.body, queue, { releaseForStream: true });
+
+    const pendingA = executeGatewayRequestKernel(a.options);
+    await vi.waitFor(() => expect(a.events).toContain('downstream:write:first'));
+    // A's stream is open (gated before its last chunk) and no longer holds the only slot.
+    expect(queue.snapshot()).toMatchObject({ running: 0, queued: 0 });
+
+    const pendingB = executeGatewayRequestKernel(b.options);
+    await vi.waitFor(() => expect(b.events).toContain('downstream:write:first'));
+    expect(a.events, 'B was admitted while A was still streaming').not.toContain('downstream:end');
+
+    first.open();
+    second.open();
+    await expect(pendingA).resolves.toMatchObject({ status: 200, outcome: 'ok' });
+    await expect(pendingB).resolves.toMatchObject({ status: 200, outcome: 'ok' });
+
+    // The hook ran INSIDE the slot, before a single byte was relayed.
+    expect(a.events).toContain('release-for-stream:running=1');
+    expect(a.events.indexOf('release-for-stream:running=1')).toBeLessThan(a.events.indexOf('downstream:start:200'));
+    // The relay outside the slot is complete and its in-flight handle is released once, last.
+    expect(text(a.written)).toEqual(['first', 'second']);
+    expect(a.counts()).toMatchObject({ unregisterCount: 1, discardCount: 0 });
+    expect(a.events.indexOf('inflight:unregister:ok:200')).toBeGreaterThan(a.events.indexOf('downstream:end'));
+    expect(queue.snapshot()).toMatchObject({ running: 0, queued: 0 });
+  });
+
+  it('CONTROL: without the hook the stream keeps its slot, so the second request waits for it', async () => {
+    const queue = new PriorityAdmissionQueue({ maxConcurrent: 1, maxQueued: 4 });
+    const first = gatedStream();
+    const second = gatedStream();
+    const a = streamingFixture(first.body, queue, { releaseForStream: false });
+    const b = streamingFixture(second.body, queue, { releaseForStream: false });
+
+    const pendingA = executeGatewayRequestKernel(a.options);
+    await vi.waitFor(() => expect(a.events).toContain('downstream:write:first'));
+    expect(queue.snapshot()).toMatchObject({ running: 1 });
+
+    const pendingB = executeGatewayRequestKernel(b.options);
+    await vi.waitFor(() => expect(queue.snapshot().queued).toBe(1));
+    expect(b.events, 'B must not be admitted while A streams in the slot').not.toContain('inflight:register');
+
+    first.open();
+    await expect(pendingA).resolves.toMatchObject({ status: 200, outcome: 'ok' });
+    second.open();
+    await expect(pendingB).resolves.toMatchObject({ status: 200, outcome: 'ok' });
+    expect(b.events.indexOf('inflight:register')).toBeGreaterThan(-1);
+  });
+
+  it('keeps every relay guard outside the slot: a stalled released stream still aborts upstream and releases its handle', async () => {
+    const queue = new PriorityAdmissionQueue({ maxConcurrent: 1, maxQueued: 1 });
+    // Models a real fetch body: after one chunk it stops producing, and the ONLY thing
+    // that ends the wait is the attempt's transport being torn down (abortUpstream).
+    // A native async generator cannot be cancelled by `return()` while it is suspended
+    // on an await, so if the out-of-slot relay ever stopped aborting upstream this
+    // case would hang rather than pass.
+    let fixtureRef: { attemptSignal: () => AbortSignal | undefined } | undefined;
+    async function* stallsAfterFirst(): AsyncIterable<Uint8Array> {
+      yield Buffer.from('first');
+      await new Promise<void>((_resolve, reject) => {
+        const signal = fixtureRef?.attemptSignal();
+        if (!signal) return reject(new Error('attempt signal was never captured'));
+        if (signal.aborted) return reject(signal.reason);
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    }
+    const f = streamingFixture(stallsAfterFirst(), queue, {
+      releaseForStream: true,
+      policy: { bodyIdleTimeoutMs: 5 },
+    });
+    fixtureRef = f;
+
+    const error = await caughtKernelError(executeGatewayRequestKernel(f.options));
+
+    expect(error).toMatchObject({ code: 'upstream-body-idle', outcome: 'upstream-error', status: 504 });
+    expect(f.attemptSignal()?.aborted).toBe(true);
+    expect(f.counts()).toMatchObject({ unregisterCount: 1 });
+    expect(f.events).toContain('inflight:unregister:upstream-error:504');
+    expect(queue.snapshot()).toMatchObject({ running: 0, queued: 0 });
+  });
+
+  it('a failing release hook discards the response and fails the request inside the slot', async () => {
+    const queue = new PriorityAdmissionQueue({ maxConcurrent: 1, maxQueued: 1 });
+    const f = streamingFixture(chunks('first'), queue, { releaseForStream: true });
+    f.options.admission.releaseForStream = () => {
+      throw new Error('bookkeeping failed');
+    };
+
+    await expect(executeGatewayRequestKernel(f.options)).rejects.toBeInstanceOf(GatewayRequestKernelError);
+
+    expect(f.events).toContain('discard');
+    expect(f.written).toEqual([]);
+    expect(f.counts()).toMatchObject({ unregisterCount: 1 });
+    expect(queue.snapshot()).toMatchObject({ running: 0, queued: 0 });
+  });
+
+  it('a non-streaming response never calls the hook and is relayed inside the slot', async () => {
+    const queue = new PriorityAdmissionQueue({ maxConcurrent: 1, maxQueued: 1 });
+    const f = fixture(lane, { streaming: false });
+    f.options.admission.run = (_context, task) => queue.run(0, task, { tier: 1 });
+    const hook = vi.fn();
+    f.options.admission.releaseForStream = hook;
+
+    await expect(executeGatewayRequestKernel(f.options)).resolves.toMatchObject({ status: 200, outcome: 'ok' });
+
+    expect(hook).not.toHaveBeenCalled();
+    expect(f.counts()).toMatchObject({ unregisterCount: 1 });
   });
 });

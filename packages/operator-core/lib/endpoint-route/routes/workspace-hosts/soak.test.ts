@@ -41,8 +41,8 @@ vi.mock('../../../dbos/workspace-host-soak-workflow', () => ({
   startWorkspaceHostSoakWorkflow: h.start,
   WorkspaceHostSoakConflictError: h.WorkspaceHostSoakConflictError,
 }));
-vi.mock('../../../workspace-host/soak-gcp', () => ({
-  resolveGcpWorkspaceHostSoakSeams: async () => ({ readInstance: h.reading }),
+vi.mock('../../../workspace-host/soak-seams', () => ({
+  resolveWorkspaceHostSoakSeams: async () => ({ readInstance: h.reading }),
 }));
 vi.mock('../../../workspace-host/release-stage-receipt', () => ({
   resolveWorkspaceHostReleaseBinding: h.bind,

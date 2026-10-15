@@ -7,6 +7,7 @@ const review = {
   rationale: 'The existing plan covers the remaining outcome.',
   evidenceRefs: ['plan:papercusp/checkout'],
   planRefs: ['plan:papercusp/checkout'],
+  coverage: [{ need: 'checkout recovery', itemRefs: ['WI-1', 'WI-2', 'WI-3'], planRef: 'plan:papercusp/checkout' }],
 };
 const portfolio = {
   goal: { id: 'goal-1', title: 'Checkout', status: 'active', body: 'Recover failed checkouts', killCriterion: null, standing: true, parentId: null },

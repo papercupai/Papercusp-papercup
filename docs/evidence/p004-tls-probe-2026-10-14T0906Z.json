@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "plan": "cloud-portal-public-release-2026-10-13",
+  "planItem": "P-004",
+  "workItem": "WI-6554700010011217",
+  "supersedes": "docs/evidence/p004-tls-probe-2026-10-14T0811Z.json",
+  "whyRerun": "The saved probe measured settingsVersion 15; the current instance reads settingsVersion 16. This new probe ran after the last observed settings change and after fixing terminal-formatted gcloud help parsing (EI-25944851128024249).",
+  "spec": {
+    "id": "SPEC-P-004",
+    "revision": 1,
+    "behavior": "The production Postgres instance refuses a client connection that does not use TLS.",
+    "falsifier": "A psql connection with sslmode=disable to the production instance authenticates and runs a query."
+  },
+  "target": {
+    "project": "papercusp-cloud-prod",
+    "instance": "pc-cloud-prod-pg",
+    "runtimeUnit": "gcp-cloudsql:papercusp-cloud-prod/pc-cloud-prod-pg",
+    "databaseVersion": "POSTGRES_18",
+    "maintenanceVersion": "POSTGRES_18_6.R20260712.01_33",
+    "createTime": "2026-10-14T03:25:36.604Z",
+    "settingsVersion": "16",
+    "privateIp": "10.120.64.2",
+    "configuredSslMode": "ENCRYPTED_ONLY",
+    "dataApiAccess": "DISALLOW_DATA_API"
+  },
+  "instrument": {
+    "command": "npx tsx scripts/cloud-prod/provision-cloud-sql.ts probe-tls",
+    "source": "scripts/cloud-prod/provision-cloud-sql.ts",
+    "sourceSha256": "1afc204984509689a721537751db0cc5735b3387708faa1a734d305b4d228f23",
+    "test": "scripts/cloud-prod/provision-cloud-sql.test.ts",
+    "testSha256": "539bd70afcfc9e216f88ec4ef1a3f80ed38ba3c9527361db5baac9365c834d3c",
+    "headAtRun": "8bf981b25bab0c0c9bc6955dccc8591608b35b86",
+    "sourceUncommittedAtRun": true,
+    "method": "A throwaway e2-micro VM on the production subnet, with no service account or API scopes, connects to the private instance twice as portal_owner with the same deliberately wrong password. TLS is the only changed connection parameter. Pass requires plaintext refusal before authentication and the TLS control reaching password authentication."
+  },
+  "observedAt": "2026-10-14T09:07:07.254Z",
+  "observationTimestampBasis": "Completion log mtime; the command exited 0. Instance identity and VM deletion were checked again after completion.",
+  "log": ".papercusp/scratch/cpr/p004-probe-tls-v16.log",
+  "probeVm": {
+    "name": "pc-cloud-prod-tls-probe",
+    "sourceIp": "10.60.0.4",
+    "deleted": true,
+    "deletionCheck": "gcloud compute instances list --project=papercusp-cloud-prod --filter=name=pc-cloud-prod-tls-probe returned []"
+  },
+  "attempts": [
+    {
+      "sslmode": "disable",
+      "exitCode": 2,
+      "message": "psql: error: connection to server at \"10.120.64.2\", port 5432 failed: FATAL:  pg_hba.conf rejects connection for host \"10.60.0.4\", user \"portal_owner\", database \"portal\", no encryption"
+    },
+    {
+      "sslmode": "require",
+      "exitCode": 2,
+      "message": "psql: error: connection to server at \"10.120.64.2\", port 5432 failed: FATAL:  password authentication failed for user \"portal_owner\""
+    }
+  ],
+  "verdict": "pass",
+  "verdictLine": "OK papercusp-cloud-prod/pc-cloud-prod-pg refuses non-TLS connections before authentication"
+}

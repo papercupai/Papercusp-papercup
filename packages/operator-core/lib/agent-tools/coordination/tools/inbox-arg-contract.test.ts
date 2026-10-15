@@ -39,6 +39,16 @@ function declaredKeys(): string[] {
 }
 
 describe("coord:inbox argument contract (P-001)", () => {
+  it("documents that the limit uses priority ranking rather than newest-first overall", () => {
+    const shape = inboxTool.args as unknown as {
+      shape: Record<string, { description?: string }>;
+    };
+    const description = shape.shape.limit.description ?? "";
+    expect(description).toMatch(/priority-ranked/i);
+    expect(description).toMatch(/newest-first overall is not guaranteed/i);
+    expect(description).not.toMatch(/most-recent kept/i);
+  });
+
   // The alias half. `unanswered` is a genuine, unambiguous synonym for
   // `unanswered_only` — the plan's ALIAS rule — so it is ACCEPTED rather than
   // redirected, and the caller's first call succeeds instead of round-tripping.
@@ -129,26 +139,28 @@ describe("coord:inbox argument contract (P-001)", () => {
 });
 
 describe("isDirectedDelivery (P-001)", () => {
-  it("treats an all-'*' broadcast as NOT directed", () => {
-    expect(isDirectedDelivery({ to: ["*"] })).toBe(false);
-    expect(isDirectedDelivery({ to: ["*", "*"] })).toBe(false);
+  it("treats wildcard-only and mixed broadcasts for other recipients as NOT directed", () => {
+    expect(isDirectedDelivery({ to: ["*"] }, "su-me")).toBe(false);
+    expect(isDirectedDelivery({ to: ["*", "*"] }, "su-me")).toBe(false);
+    expect(isDirectedDelivery({ to: ["human", "*"] }, "su-me")).toBe(false);
+    expect(isDirectedDelivery({ to: ["su-other", "*"] }, "su-me")).toBe(false);
   });
 
-  it("treats a specifically addressed entry as directed", () => {
-    expect(isDirectedDelivery({ to: ["su-me"] })).toBe(true);
+  it("treats an entry naming this reader as directed", () => {
+    expect(isDirectedDelivery({ to: ["su-me"] }, "su-me")).toBe(true);
+    expect(isDirectedDelivery({ to: ["su-other"] }, "su-me")).toBe(false);
   });
 
-  it("treats MIXED ['*', owner] delivery as directed", () => {
-    // Deliberately the same rule isAmbientBroadcast applies, so the ambient filter
-    // and the directed filter cannot drift into disagreeing about what directed means.
-    expect(isDirectedDelivery({ to: ["*", "su-me"] })).toBe(true);
+  it("treats MIXED ['*', owner] delivery as directed only for the named owner", () => {
+    expect(isDirectedDelivery({ to: ["*", "su-me"] }, "su-me")).toBe(true);
+    expect(isDirectedDelivery({ to: ["*", "su-other"] }, "su-me")).toBe(false);
   });
 
   it("fails OPEN for an unusable `to`, never hiding a delivered message", () => {
     // An inbox filter may under-filter; it must not silently drop a message that
     // genuinely reached this reader.
-    expect(isDirectedDelivery({})).toBe(true);
-    expect(isDirectedDelivery({ to: [] })).toBe(true);
-    expect(isDirectedDelivery({ to: "su-me" })).toBe(true);
+    expect(isDirectedDelivery({}, "su-me")).toBe(true);
+    expect(isDirectedDelivery({ to: [] }, "su-me")).toBe(true);
+    expect(isDirectedDelivery({ to: "su-me" }, "su-me")).toBe(true);
   });
 });

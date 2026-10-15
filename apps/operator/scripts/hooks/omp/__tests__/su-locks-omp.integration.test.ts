@@ -66,6 +66,9 @@ describe('su-locks OMP two-agent coordination', () => {
     wsRoot = await realpath(await mkdtemp(join(tmpdir(), 'omp-smoke-ws-')));
     repoRoot = join(wsRoot, 'papercusp');
     await mkdir(join(repoRoot, '.git'), { recursive: true });
+    // validGitEntry() only recognizes a `.git` DIRECTORY that holds HEAD (an empty
+    // `.git` must not change lock scope), so the fixture needs a real HEAD (WI-10004763).
+    await writeFile(join(repoRoot, '.git', 'HEAD'), 'ref: refs/heads/staging\n');
     await mkdir(join(repoRoot, 'apps'), { recursive: true });
     await writeFile(join(repoRoot, 'apps', 'target.ts'), '// smoke\n');
     process.env.PAPERCUSP_WORKSPACE_ROOT = wsRoot;

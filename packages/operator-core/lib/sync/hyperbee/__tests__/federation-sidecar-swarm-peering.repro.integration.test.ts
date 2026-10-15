@@ -68,6 +68,10 @@ import { type HyperswarmLike } from '../swarm';
 import type { OpEnvelope } from '../op-envelope-types';
 import { listBootHistory, _resetBootHistoryForTests } from '../boot-history';
 import { _resetCacheForTests, closeHarnessStore } from '../corestore';
+import { stubHivePolicyReadsForSuite } from './_hive-policy-read-stubs';
+
+// Before this file's own afterEach, so the stub outlives substrate teardown (WI-6554700010008561).
+stubHivePolicyReadsForSuite();
 
 // ── Async resource teardown (newest-first, mirrors two-peer-swarm-bidi.test.ts). ──
 const cleanups: Array<() => void | Promise<void>> = [];
@@ -206,6 +210,7 @@ async function bootPeerViaSidecarHost(args: {
         swarmJoinRetryMs: 0, // join is one-shot here (testnet discovery is instant)
         loadRevokedOverride: async () => new Set(), // avoid real PG
         announceIdentityOverride: args.identity.override,
+        rekeyDepsOverride: null, // no re-key build through the live org-admin pool (WI-6554700010008561)
       });
       captured = handle;
       return handle;
@@ -268,6 +273,7 @@ async function bootPeerInProcess(args: {
     swarmJoinRetryMs: 0,
     loadRevokedOverride: async () => new Set(),
     announceIdentityOverride: args.identity.override,
+    rekeyDepsOverride: null, // see the sidecar-hosted boot above (WI-6554700010008561)
   });
   cleanups.push(async () => {
     await handle.close();

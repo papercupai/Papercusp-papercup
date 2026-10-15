@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "SPEC-P-012: the tutorial's final release item is blocked by the voice plan's P-010 (and P-011)",
+  "framework": "operational",
+  "testLayer": "integration",
+  "command": ["bash", "docs/evidence/voice-two-tier-elevenlabs-agent-2026-10-06/p012-cross-plan-hold-probe.sh"],
+  "commandCwd": ".",
+  "exitCode": 0,
+  "startedAt": "2026-10-06T20:53:30Z",
+  "finishedAt": "2026-10-06T20:53:30Z",
+  "summary": "The probe queried harness_shared.work_item_deps (the table work_items:link writes blocking edges to) and found one 'blocks' edge papercusp#WI-10006883 -> papercusp#WI-10004839. WI-10006883 implements voice-two-tier-elevenlabs-agent-2026-10-06#P-010; WI-10004839 implements cloud-app-live-tutorial-2026-10-01#P-012, the tutorial's final end-to-end acceptance and production release. The same probe run on P-011's item also found its edge, and the negative control exited 1.",
+  "scope": "Read-only query of the operator database on the dev host, run in host context (sudo -n -u postgres psql). Nothing was linked, unlinked or changed.",
+  "repository": "papercusp",
+  "headAtExecution": "781edde2d8c6d34695f6750e0cc89debad7d9ed7",
+  "workItems": ["WI-10006885", "WI-10006883", "WI-10006884", "WI-10004839"],
+  "spec": {
+    "planSlug": "voice-two-tier-elevenlabs-agent-2026-10-06",
+    "specId": "SPEC-P-012",
+    "specRevision": 1,
+    "evidencePlane": "tree"
+  },
+  "oracle": "Independent of the code under test: the persisted dependency row itself, read straight from Postgres rather than through work_items:get, which did not surface blocking edges on build d740fc3802. The expected edge comes from the plan text (P-012: the tutorial release waits for this plan's P-010), not from the probe.",
+  "sourceFiles": [
+    {
+      "path": "docs/evidence/voice-two-tier-elevenlabs-agent-2026-10-06/p012-cross-plan-hold-probe.sh",
+      "sha256": "6f7c1aaa77a152448070ba727419ec09feec6ce54362230acf55456ef5c4281b"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "p010-blocks-tutorial-release",
+      "passed": true,
+      "evidence": "p012-probe blocker=papercusp#WI-10006883 blocked=papercusp#WI-10004839 edges=1 (exit 0)"
+    },
+    {
+      "id": "p011-blocks-tutorial-release",
+      "passed": true,
+      "evidence": "p012-probe blocker=papercusp#WI-10006884 blocked=papercusp#WI-10004839 edges=1 (exit 0)"
+    },
+    {
+      "id": "negative-control-exits-1",
+      "passed": true,
+      "evidence": "p012-probe blocker=papercusp#WI-10006876 blocked=papercusp#WI-10004839 edges=0 (exit 1). WI-10006876 is this plan's P-003, which blocks other plan items but not the tutorial release, so a pass is not vacuous."
+    },
+    {
+      "id": "bad-input-refused",
+      "passed": true,
+      "evidence": "argument 'bad' -> 'bad work-item id: bad' (exit 2); input is validated before it reaches SQL"
+    }
+  ]
+}

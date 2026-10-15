@@ -45,6 +45,8 @@ describe('wallLapseSweep — orchestration (injected deps, no PG)', () => {
     recentWatchdogFires: vi.fn(async () => 0),
     recordFire: vi.fn(async () => undefined),
     openEscalation: vi.fn(async () => ({}) as never),
+    readOpenConditionKeys: async () => [],
+    rail: { broadcast: vi.fn(async () => true), resolve: vi.fn(async () => true) },
     now: NOW,
     ...over,
   });
@@ -143,5 +145,78 @@ describe('wallLapseSweep — orchestration (injected deps, no PG)', () => {
     expect(results).toEqual([]);
     expect(d.recordFire).not.toHaveBeenCalled();
     expect(d.openEscalation).not.toHaveBeenCalled();
+  });
+
+  it('opens before legacy debounce, isolates identities and resolves measured recovery across restarts', async () => {
+    const a = fact({ key: 'wall:shared', scopeRef: 'a' });
+    const b = fact({ key: 'wall:shared', scopeRef: 'b' });
+    const foreign = fact({ key: 'wall:shared', scopeRef: 'a', sourceHive: 'peer' });
+    let lapsed = [a, b, foreign], recovered: LapsedWallFact[] = [];
+    const open = new Set<string>();
+    const broadcast = vi.fn(async (event: { conditionKey?: string }) => { open.add(event.conditionKey!); return true; });
+    const resolve = vi.fn(async (event: { conditionKey: string }) => open.delete(event.conditionKey));
+    let fail = false;
+    const read = vi.fn(async (opts?: { recoveryFor?: unknown[] }) => {
+      if (opts?.recoveryFor) { if (fail) throw new Error('read unavailable'); return recovered; }
+      return lapsed;
+    });
+    const d = deps({ listLapsedWallFacts: read, rail: { broadcast, resolve },
+      recentWatchdogFires: async () => 1, readOpenConditionKeys: async () => [...open] });
+    expect((await wallLapseSweep(d)).map(row => row.outcome)).toEqual(['debounced', 'debounced', 'debounced']);
+    expect(open.size).toBe(3);
+    expect(broadcast).toHaveBeenCalledWith(expect.objectContaining({ oneShot: true }));
+    expect(d.openEscalation).not.toHaveBeenCalled();
+    lapsed = [];
+    await wallLapseSweep({ ...d }); // fresh invocation with only durable open keys
+    expect(open.size).toBe(3);
+    recovered = [{ ...a, recovered: true }]; fail = true;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await wallLapseSweep(d); expect(open.size).toBe(3);
+    expect(warn).toHaveBeenCalled(); warn.mockRestore();
+    fail = false; await wallLapseSweep(d);
+    expect(open.size).toBe(2); expect(resolve).toHaveBeenCalledOnce();
+    recovered = [{ ...b, recovered: false }, { ...foreign, recovered: true }];
+    await wallLapseSweep(d); expect(open.size).toBe(1);
+    recovered = [{ ...b, recovered: true }]; await wallLapseSweep(d); expect(open.size).toBe(0);
+  });
+
+  // WI-6554700010008923: the broadcast goes to EVERY agent (`to:['*']`) and is declared oneShot, so
+  // re-sending it on every routines tick is pure noise. Measured 2026-10-12 14:00–14:25Z before this
+  // gate: 836 broadcasts for 76 walls, re-injected into every live agent's next tool result.
+  it('broadcasts ONCE per episode — an already-open condition is not re-broadcast on later ticks', async () => {
+    const open = new Set<string>();
+    const broadcast = vi.fn(async (event: { conditionKey?: string }) => { open.add(event.conditionKey!); return true; });
+    const d = deps({ rail: { broadcast, resolve: vi.fn(async () => true) },
+      recentWatchdogFires: async () => 1, readOpenConditionKeys: async () => [...open] });
+    for (let tick = 0; tick < 5; tick++) {
+      expect((await wallLapseSweep(d))[0].outcome).toBe('debounced');
+    }
+    expect(broadcast).toHaveBeenCalledOnce();
+    expect(open.size).toBe(1);
+  });
+
+  it('still broadcasts every lapsed wall when the open-condition read FAILS (fail loud, not silent)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const broadcast = vi.fn(async () => true);
+    const d = deps({ rail: { broadcast, resolve: vi.fn(async () => true) },
+      listLapsedWallFacts: vi.fn(async () => [fact({ key: 'wall:a' }), fact({ key: 'wall:b' })]),
+      readOpenConditionKeys: async () => { throw new Error('fold unavailable'); } });
+    await wallLapseSweep(d);
+    expect(broadcast).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+  });
+
+  it('attempts each delivery leg when the other fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const broadcast = vi.fn(async () => { throw new Error('rail unavailable'); });
+    const d = deps({ rail: { broadcast, resolve: async () => false } });
+    expect((await wallLapseSweep(d))[0].outcome).toBe('alerted');
+    expect(d.openEscalation).toHaveBeenCalledOnce();
+    const successfulBroadcast = vi.fn(async () => true);
+    const legacyFailed = deps({ rail: { broadcast: successfulBroadcast },
+      recentWatchdogFires: async () => { throw new Error('legacy ledger unavailable'); } });
+    expect((await wallLapseSweep(legacyFailed))[0].outcome).toBe('error');
+    expect(successfulBroadcast).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalled(); warn.mockRestore();
   });
 });

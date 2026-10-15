@@ -1,0 +1,138 @@
+---
+rel_path: "reports/durable-parks/ubp-p028-exact-condition-EI-24732816653944961-20261008-proof.json"
+updated_at: 1791486375906
+_body: "content"
+---
+
+{
+  "schemaVersion": "p028-exact-condition-proof-v1",
+  "id": "EI-24732816653944961",
+  "rootId": "EI-24732297217951452",
+  "verifiedAt": "2026-10-08T19:06:15.906Z",
+  "positive": {
+    "database": "papercusp",
+    "port": 5432,
+    "owned": 1
+  },
+  "declaredReleaseContract": {
+    "owner": "su-c6ebfcdb-4118-495d-bbfa-d83998682668",
+    "trigger": "work-item:done:EI-24732297217951452",
+    "evidence": "a live resolver or producer registration can still satisfy the condition",
+    "condition": "The shared MCP-dark detector correction under EI-24732297217951452 has completed; re-evaluate this corroborating report against the corrected behavior.",
+    "reachability": "reachable"
+  },
+  "expectedParkFingerprint": "8b0bdf8415a4d7dc50fdb4a8fb66d647cc8c4616692a936aa5e9d5adb563ed8a",
+  "rootRead": {
+    "id": "EI-24732297217951452",
+    "state": "done",
+    "authority": "committed",
+    "payloadSha256": "85cf5ca706f691d10ad9546dd258a356c014eca87cdd2d47ad577323fea9410b",
+    "shareLockedDuringReconciliation": true
+  },
+  "verification": {
+    "declaredCondition": "The shared MCP-dark detector correction under EI-24732297217951452 has completed; re-evaluate this corroborating report against the corrected behavior.",
+    "observation": "The declared hold awaits completion of this software dependency. Canonical root is DONE/committed and remains share-locked during the CAS. Subsequent re-evaluation of the subject stays pending.",
+    "boundary": "This releases the dependency park only; it does not close or verify the subject bug."
+  },
+  "cohortRef": "reports/durable-parks/ubp-p028-operational-20261008183436Z-dispositions.json",
+  "sourceCommit": "58227b6dc24fe2b8a7b5bcc6079ac19a9d743cd9",
+  "sourceBefore": [
+    {
+      "path": "packages/operator-core/lib/work-items-durable-park-audit.ts",
+      "sha256": "858ee0479b2577e6f64a5ecbafe0f58ebbc9c5c314707055656597fd4ad798e7"
+    },
+    {
+      "path": "packages/operator-core/lib/durable-park-release-contract.ts",
+      "sha256": "6c9f88f3f60e46f0827bb1fd2df6a72d822e231ac88748a9a5c6cd69cb856c2d"
+    },
+    {
+      "path": "packages/operator-core/lib/external-condition-reachability.ts",
+      "sha256": "cbafbb90889e436f5c08f9ed656d88fcb8bcd8270e1d52024ce7ede54727e460"
+    },
+    {
+      "path": "packages/operator-core/lib/work-items.ts",
+      "sha256": "faeb77ca0a537b725e960cf9adb071b72da6f46f3364401c345b4d02ad2bdfba"
+    }
+  ],
+  "sourcePayload": {
+    "_ei": {
+      "scope": "harness:papercusp",
+      "source": "engineer",
+      "severity": "major",
+      "created_by": "system:judge/su-9a7bde91-c3f8-4f21-a892-c25d8e00da75",
+      "signal_origin": "organic"
+    },
+    "_claimHold": true,
+    "filedByRole": "principal",
+    "claim_hold_at": "2026-10-01T03:32:09.323Z",
+    "claim_hold_by": "su-63e8ea7d-ab8b-4c66-915b-b3d28a45add2",
+    "dedupCoverage": {
+      "lexical": "ok",
+      "degraded": true,
+      "semantic": "unavailable"
+    },
+    "ideaLifecycle": {
+      "state": "triaged",
+      "ideaType": "code-bug",
+      "triagedAt": "2026-10-02T16:01:06.422Z",
+      "triageReason": "code-bug, policy tier=auto (no protected path/keyword → AUTO-eligible (still gated by blueprint + tests + release-manager)) — auto-implement lane (D-003: one verdict chain)",
+      "stateUpdatedAt": "2026-10-02T16:01:06.422Z",
+      "triageDecision": "place"
+    },
+    "admissionReview": {
+      "alert": {
+        "key": "work-item-admission-review-debt",
+        "state": "open",
+        "reason": "pending fail-open admission requires re-review",
+        "emittedAt": "2026-09-30T21:16:02.947-04:00"
+      },
+      "state": "pending",
+      "enteredAt": "2026-09-30T21:16:02.947-04:00",
+      "retryOwner": "system:work-item-admission-promoter",
+      "reviewedAt": null,
+      "reviewedBy": null,
+      "terminalAt": null,
+      "lastRetryAt": null,
+      "reviewDueAt": "2026-09-30T22:16:02.947-04:00",
+      "retryAttempts": 0,
+      "terminalOutcome": null
+    },
+    "admissionFailOpen": {
+      "at": "2026-09-30T21:16:02.947-04:00",
+      "actor": "system:work-item-admission-fail-open",
+      "scope": "workspace",
+      "reason": "pending-age-exceeded-two-promoter-ticks"
+    },
+    "admissionIdentity": {
+      "titleKey": "title:90m alarm calls false fires judge mcp not orientation registered session tool tools whose work",
+      "schemaVersion": "admission-identity-v1"
+    },
+    "claim_hold_reason": "Avoid duplicate detector implementation while the live peer owns the shared correction; re-evaluate this report when that work item completes.",
+    "freshnessEnvelope": {
+      "observedAt": "2026-09-30T23:57:32.012Z",
+      "linkedFixRefs": [],
+      "reporterSession": "system:judge/su-9a7bde91-c3f8-4f21-a892-c25d8e00da75",
+      "observedSourceSha": "29bf735091",
+      "toolSchemaVersion": null,
+      "observedRuntimeSha": "29bf735091",
+      "deployBuildIdentity": "29bf735091@0.0.0",
+      "reporterRuntimeVersion": "0.0.0",
+      "lastSuccessfulReproductionAt": null
+    },
+    "claim_hold_release": {
+      "owner": "su-c6ebfcdb-4118-495d-bbfa-d83998682668",
+      "trigger": "work-item:done:EI-24732297217951452",
+      "evidence": "a live resolver or producer registration can still satisfy the condition",
+      "condition": "The shared MCP-dark detector correction under EI-24732297217951452 has completed; re-evaluate this corroborating report against the corrected behavior.",
+      "reachability": "reachable"
+    },
+    "claim_history_post_id": 9001788375295,
+    "implementationReadiness": {
+      "reason": "existing-immediate-capture-policy",
+      "source": "capture-policy",
+      "status": "ready",
+      "updatedAt": "2026-09-30T23:57:32.012Z",
+      "schemaVersion": "implementation-readiness-v1"
+    }
+  }
+}

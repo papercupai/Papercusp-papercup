@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R2 setup-zero planner profile and literal-recall counterexamples on committed source",
+  "framework": "shell",
+  "command": [
+    "scripts/mutation-probe.sh",
+    "--file",
+    "packages/operator-core/lib/agent-tools/search/sources.ts",
+    "--mutate",
+    "s/SET LOCAL parallel_setup_cost = 0/SET LOCAL parallel_setup_cost = 100/",
+    "--test",
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_SOURCES_SUBJECT={} npm run test:file -- packages/operator-core/lib/agent-tools/search/sources.integration.test.ts -- --testNamePattern=EI-24045346484356708"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-02T00:37:16.720Z",
+  "finishedAt": "2026-10-02T00:59:48.388527+00:00",
+  "summary": "For each of two mutations, seven selected assertions passed against committed production and its unmodified relocated copy. Reverting setup cost0 to100 while retaining tuple0.01 and worker cap2 caused one PostgreSQL profile assertion failure with six guards passing. Disabling literal-token recall caused three assertion failures with four guards passing. Both copy-out overlays caught executable mutants and preserved the committed source. These are current source guards; fresh HTTP acceptance remains separate.",
+  "assertions": [
+    {
+      "id": "production-and-relocated-baselines-pass",
+      "passed": true,
+      "evidence": "Production7pass/0fail/55unselected, relocated7pass/0fail/55unselected in maintained kept committed55d9snapshot. These are7uniqueassertions, not14."
+    },
+    {
+      "id": "restored-serial-profile-is-caught",
+      "passed": true,
+      "evidence": "Mutant1fail/6pass/55unselected: real PostgreSQL BEGIN inspection returned setup100 while guardexpected0; worker2/tuple0.01 retained. Failure is the R2 private-profile/no-leak assertion, not loader or admission failure."
+    },
+    {
+      "id": "overlay-preserves-production-and-executes-mutant",
+      "passed": true,
+      "evidence": "MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evidence=test-file-assertion-failure relocation=overlay; production source/test SHA unchanged. Six passing assertions and the specific PostgreSQL-setting failure establish executable mutant behavior; parser checking remains unchecked."
+    },
+    {
+      "id": "disabled-literal-recall-is-caught-on-current-source",
+      "passed": true,
+      "evidence": "Current c56/e333 committed snapshot: production7pass, relocated7pass, mutant3fail/4pass/55unselected. Failures name compactLiteralToken furnishedfinder, the one-windowed-fill positive control, and codex:sess-compact-token:1 recall. Overlay/caught/assertion-failure evidence; tree integrity verified and native process exit0."
+    }
+  ],
+  "additionalCommands": [
+    [
+      "scripts/mutation-probe.sh",
+      "--file",
+      "packages/operator-core/lib/agent-tools/search/sources.ts",
+      "--mutate",
+      "s/return token;/return null;/",
+      "--test",
+      "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_SOURCES_SUBJECT={} npm run test:file -- packages/operator-core/lib/agent-tools/search/sources.integration.test.ts -- --testNamePattern=EI-24045346484356708"
+    ]
+  ],
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "workItem": "WI-10004474",
+  "specId": "AUTO-BAR-R-2-P-002",
+  "specRevision": 5,
+  "evidencePlane": "source",
+  "snapshotCommit": "55d9ce4bb022c7ae3fa6aef5a48e96c9250fd2b2",
+  "measurement": {
+    "sourcePath": "packages/operator-core/lib/agent-tools/search/sources.ts",
+    "sourceSha256": "c56f91d66e9c21ea2e2b8f5c0113494044aa357cb584d3e2a9154e6076aa0687",
+    "testPath": "packages/operator-core/lib/agent-tools/search/sources.integration.test.ts",
+    "testSha256": "e33303a5ce6875fe46c50e636325d9d219ff44a0a38fcbcbc6294097615c1663",
+    "retainedSnapshot": "/tmp/papercusp-lint-as-committed-55d9ce4bb0-cF3hFg",
+    "log": "/tmp/r2-profile0-counterexample-20261002.log",
+    "logSha256": "1290904b30a75bfccab3269d1234b0b902fdbf7478ca795275f3e2fc4ad30685",
+    "productionStartedAt": "2026-10-02T00:37:16.720Z",
+    "relocatedStartedAt": "2026-10-02T00:38:36.159Z",
+    "mutantStartedAt": "2026-10-02T00:39:51.022Z",
+    "literalProbe": {
+      "log": "/tmp/r2-profile0-literal-counterexample-20261002.log",
+      "logSha256": "2c4c2b34278799554b51477fe31e25bd698a91b2b71eff303a5fc5e7d87ffd0b",
+      "productionStartedAt": "2026-10-02T00:57:04.414Z",
+      "relocatedStartedAt": "2026-10-02T00:57:48.709Z",
+      "mutantStartedAt": "2026-10-02T00:59:03.914Z",
+      "finishedAt": "2026-10-02T00:59:48.388527+00:00",
+      "finishedAtBasis": "Final captured log mtime after fully drained native process exit0."
+    }
+  },
+  "residualUnknowns": [
+    "Staging adoption of the corrected source and fresh twenty-query HTTP acceptance remain open.",
+    "The unrelated initial pinModuleState incident remains owned and unconfirmed under EI-24811036735173410."
+  ]
+}

@@ -14,7 +14,7 @@ import {
   type FreshPgDb,
 } from '../test/_pg-helpers';
 import {
-  HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL,
+  HARNESS_FEATURES_CONSOLIDATED_DDL, applyClaimPathReadDeps, WORK_ITEM_DEPS_DDL,
   COORD_REF_HOLDERS_DDL,
 } from '../test/_work-items-schema';
 
@@ -46,7 +46,7 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
 vi.mock('./harness/routines/system-actions', () => ({ registerSystemAction: vi.fn() }));
 vi.mock('./agent-tools/coordination/presence', async (orig) => ({
   ...await orig<typeof import('./agent-tools/coordination/presence')>(),
-  getPresence: async (actor: string) => ({ workspaceId: 'default', revoked: actor === 'reviewer' && h.revoked }),
+  getPresence: async (actor: string) => ({ workspaceId: 'default', revoked: actor === 'reviewer-session' && h.revoked }),
 }));
 vi.mock('./modes/store', async (orig) => ({
   ...await orig<typeof import('./modes/store')>(), getModes: async () => [],
@@ -87,7 +87,7 @@ vi.mock('./work-scope-policy', async (orig) => ({
 vi.mock('./scheduler/fleet-scope-admission', async (orig) => ({
   ...await orig<typeof import('./scheduler/fleet-scope-admission')>(),
   admitWorkItemForFleetTarget: async ({ target }: { target: string }) =>
-    h.denied && target === 'reviewer'
+    h.denied && target === 'reviewer-session'
       ? { allowed: false, reason: 'restrictive reviewer override' } : { allowed: true },
 }));
 // Peripheral lifecycle subscriptions/events must not escape into live agent queues.
@@ -98,6 +98,14 @@ vi.mock('./work-items-events', async (orig) => ({
 vi.mock('./interest-auto-arm', async (orig) => ({
   ...await orig<typeof import('./interest-auto-arm')>(),
   reconcileInterestEventAwaits: async () => undefined, retireInterestEventAwaits: async () => undefined,
+}));
+// The canonical claim handler adds an advisory source-citation hint by grepping
+// the live repository. Keep this fresh-PG recovery test independent of that
+// mutable-tree read and its spawner-sidecar process; source-citation behavior is
+// covered by source-citation-claim-port.test.ts with an injected searcher.
+vi.mock('./source-citation-claim-port', () => ({
+  getClaimTimeSourceCitation: vi.fn(async () => null),
+  sourceCitationWarning: vi.fn(() => null),
 }));
 
 const wi = await import('./work-items');
@@ -111,6 +119,7 @@ await import('./agent-tools/work_items/claim');
 await import('./agent-tools/work_items/pickup');
 const { inProcessCall } = await import('./agent-tools/_compound-dispatch');
 const { synthesizeDispatchPrincipal } = await import('./endpoint-route/routes/transport/role-principal-caps');
+const { resolveAgentIdentity } = await import('./agent-tools/coordination/identity');
 const { admissionCredentialDigest, admissionReplayContext } = await import('./work-item-admission-authority');
 const originalContext = {
   workspaceId: 'default', harnessSlug: 'original-harness', profile: 'engineer' as const,
@@ -118,6 +127,11 @@ const originalContext = {
   chunkId: 'original-chunk', featureId: 'original-feature', planRunSessionId: null,
   transport: 'mcp' as const,
 };
+// A trusted signed-spawn principal preserves its accepted uiClientId session owner.
+// Ordinary bearer clients remain namespaced under `system:reviewer`.
+// Recovery dispatch, durable assignment, and target-owned pickup must use that same
+// session id rather than assigning the principal's ordinary bearer identity.
+const reviewerOwnerId = 'reviewer-session';
 const { runAdmissionPromoterWithRecovery } = await import('./harness/routines/work-item-admission-promoter-action');
 
 let db: FreshPgDb;
@@ -127,7 +141,6 @@ beforeAll(async () => {
   db = await createFreshPgDb('admission-recovery-chain');
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
-  await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(COORD_REF_HOLDERS_DDL);
   await applyMigrationForTest(db.sql, resolve(import.meta.dirname,
@@ -176,6 +189,9 @@ beforeAll(async () => {
       },
     ],
   });
+  // WI-10005130: shared claim-path read deps go LAST (all IF NOT EXISTS), after the
+  // hand-built adv_sessions and the migration-built event substrate above.
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   await db.sql`INSERT INTO harness_shared.operator_secrets VALUES
     ('spawn-signing-key', ${Buffer.alloc(32, 42).toString('base64')})`;
 }, 60_000);
@@ -204,12 +220,12 @@ beforeEach(async () => {
 async function create(title = 'Original independent review') {
   return wi.createWorkItem({
     kind: 'feature', title, harness: scope.harnessSlug, workspaceId: scope.workspaceId,
-    assignee: 'reviewer', admission: 'pending', payload: { keep: 'original instructions' },
+    assignee: reviewerOwnerId, admission: 'pending', payload: { keep: 'original instructions' },
   });
 }
 function request(id: string) {
   return requestAdmissionRecovery({
-    ...scope, workItemId: id, caller: 'requester', target: 'reviewer',
+    ...scope, workItemId: id, caller: 'requester', target: reviewerOwnerId,
     note: 'Review original work', body: 'Report findings; do not implement.',
     authority: {
       kind: 'signed-spawn', role: 'reviewer', expiresAtSec: 0,
@@ -257,7 +273,7 @@ function dispatch(args: Parameters<typeof assignAndWakeActionableWorkItems>[0]) 
     explainClaimFloors: wi.explainIssueClaimFloors, blockers: wi.readUnresolvedDepBlockers,
     planBlock: planItemLaneBlockReason, planClaim: planItemLiveClaimReason,
     resolveTarget: async () => ({
-      requested: 'reviewer', ownerId: 'reviewer-session', present: true, sessionState: 'parked', wakeable: true,
+      requested: reviewerOwnerId, ownerId: reviewerOwnerId, present: true, sessionState: 'parked', wakeable: true,
     }),
     wake: h.wake,
   });
@@ -284,9 +300,10 @@ async function pickup(id: string, role: UnifiedToolContext['role'] = 'reviewer')
   });
   const ctx: UnifiedToolContext = {
     role, principal, workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug,
-    uiClientId: 'reviewer', sigVerifiedSpawn: true, spawnId: 'reviewer-turn', tx: db.sql,
+    uiClientId: reviewerOwnerId, sigVerifiedSpawn: true, spawnId: 'reviewer-turn', tx: db.sql,
     log: () => {}, signal: new AbortController().signal, progress: () => {}, emit: () => {},
   };
+  expect(resolveAgentIdentity(ctx).ownerId).toBe(reviewerOwnerId);
   return inProcessCall(ctx)('work_items:pickup', { id, harness: scope.harnessSlug, detail: false });
 }
 
@@ -294,7 +311,7 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
   it('requires authenticated binding instead of synthesizing a role from presence', async () => {
     const original = await create();
     await expect(requestAdmissionRecovery({
-      ...scope, workItemId: original.id, caller: 'requester', target: 'reviewer',
+      ...scope, workItemId: original.id, caller: 'requester', target: reviewerOwnerId,
     })).rejects.toThrow('authenticated recovery binding missing');
     expect((await row(original.id)).payload).not.toHaveProperty('_admissionRecovery');
     expect(h.claim).not.toHaveBeenCalled();
@@ -337,7 +354,7 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
   it('holds an expired proof and a payload-spoofed role without a handler invocation', async () => {
     const original = await create();
     await expect(requestAdmissionRecovery({
-      ...scope, workItemId: original.id, caller: 'requester', target: 'reviewer',
+      ...scope, workItemId: original.id, caller: 'requester', target: reviewerOwnerId,
       authority: { kind: 'signed-spawn', role: 'reviewer', expiresAtSec: 1, context: originalContext,
         credentialSha256: admissionCredentialDigest(Buffer.alloc(32, 42)) },
     })).rejects.toThrow('expired');
@@ -356,7 +373,7 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
     const original = await create();
     await db.sql`TRUNCATE harness_shared.system_principals`;
     await requestAdmissionRecovery({
-      ...scope, workItemId: original.id, caller: 'requester', target: 'reviewer',
+      ...scope, workItemId: original.id, caller: 'requester', target: reviewerOwnerId,
       authority: { kind: 'superuser', role: 'operator', context: originalContext,
         credentialSha256: admissionCredentialDigest(h.suToken) },
     });
@@ -375,7 +392,7 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
     const original = await create();
     const unrelated = await create('Unrelated pending work');
     expect((await row(original.id)).taken_by).toBeNull();
-    expect(await wi.claimWorkItem(original.id, 'reviewer', { harness: scope.harnessSlug })).toBeNull();
+    expect(await wi.claimWorkItem(original.id, reviewerOwnerId, { harness: scope.harnessSlug })).toBeNull();
     h.denied = true;
     await expect(request(original.id)).rejects.toThrow('restrictive reviewer override');
     expect((await row(original.id)).payload).not.toHaveProperty('_admissionRecovery');
@@ -384,19 +401,20 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
     expect((await row(original.id)).admission).toBe('pending');
     const result = await tick();
     expect(result).toMatchObject({ promoted: 1, writerCoverageGap: [] });
-    expect(h.claim).toHaveBeenCalledWith(original.id, 'reviewer', { harness: 'papercusp' });
-    expect(h.wake).toHaveBeenCalledWith(['reviewer-session'], expect.objectContaining({
+    expect(h.claim).toHaveBeenCalledWith(original.id, reviewerOwnerId, { harness: 'papercusp' });
+    expect(h.wake).toHaveBeenCalledWith([reviewerOwnerId], expect.objectContaining({
       payload: { kind: 'actionable-work-item-dispatch', workItemIds: [original.id],
         instructions: 'Report findings; do not implement.' },
     }));
     expect(await row(original.id)).toMatchObject({
-      title: original.title, admission: 'admitted', taken_by: 'reviewer',
+      title: original.title, admission: 'admitted', taken_by: reviewerOwnerId,
       payload: { keep: 'original instructions', _admissionRecovery: {
         requestId: queued.request.requestId, state: 'delivered', stage: 'await-pickup', pickupConfirmed: false,
       } },
     });
     expect(await row(unrelated.id)).toMatchObject({ admission: 'pending', taken_by: null });
-    expect(await pickup(original.id)).toMatchObject({ ok: true, claimed: true, item: { id: original.id, assignee: 'reviewer' } });
+    const picked = await pickup(original.id);
+    expect(picked, JSON.stringify(picked)).toMatchObject({ ok: true, claimed: true, item: { id: original.id, assignee: reviewerOwnerId } });
     expect(h.dispatches.mock.calls.map(([name]) => name)).toEqual([
       'work_items:pickup', 'work_items:get', 'work_items:claim',
     ]);
@@ -449,7 +467,7 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
     h.wake.mockRejectedValueOnce(new Error('transport crash after committed claim'));
     await expect(tick()).rejects.toThrow('transport crash after committed claim');
     expect(await row(original.id)).toMatchObject({
-      admission: 'admitted', taken_by: 'reviewer',
+      admission: 'admitted', taken_by: reviewerOwnerId,
       payload: { _admissionRecovery: { state: 'queued', requestId: queued.request.requestId } },
     });
     await tick();
@@ -499,7 +517,7 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
     h.wake.mockResolvedValueOnce({ queued: 0, woken: 1, staged: 1, timedOutTargets: [] });
     await tick();
     expect(await row(original.id)).toMatchObject({
-      admission: 'admitted', taken_by: 'reviewer', payload: { _admissionRecovery: {
+      admission: 'admitted', taken_by: reviewerOwnerId, payload: { _admissionRecovery: {
         requestId: first.request.requestId, state: 'held', stage: 'wake', pickupConfirmed: false,
         reason: expect.stringContaining('not required-wakeable'),
       } },
@@ -548,6 +566,22 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
         admission: 'pending', taken_by: null,
         payload: { _admissionRecovery: { state: 'held', stage: 'screen', pickupConfirmed: false } },
       });
+      if (outcome === 'distinct') {
+        const refusal = result.guardRefusals!.find(({ itemId }) => itemId === original.id)!;
+        const recovery = (await row(original.id)).payload._admissionRecovery;
+        expect(recovery.reason).toContain('outside-mutation-scope');
+        expect(recovery.reason).toContain(refusal.detail);
+        expect(recovery.reason).toContain(`${result.runId}:recovery:${original.id}`);
+        expect(recovery.reason).toContain('ordinary component screening/review');
+        expect(recovery.reason).not.toContain('no hold reason');
+        expect((await row(original.id)).payload).not.toHaveProperty('admissionHold');
+        expect((await row(twin.id)).payload).not.toHaveProperty('_admissionRecovery');
+      } else if (outcome === 'hold') {
+        const recovery = (await row(original.id)).payload._admissionRecovery;
+        expect(recovery.reason).toContain('Controlled screening response');
+        expect(recovery.reason).toContain('admission hold');
+        expect(recovery.reason).not.toContain('outside-mutation-scope');
+      }
       expect(h.claim).not.toHaveBeenCalled();
       expect(h.wake).not.toHaveBeenCalled();
     },

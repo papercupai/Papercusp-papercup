@@ -1,0 +1,678 @@
+{
+  "manifestRevision": "problem-focused-2026-09-27-v1",
+  "scope": {
+    "workspaceId": "papercusp-workspace",
+    "potSlug": "papercusp",
+    "repositoryId": "papercusp"
+  },
+  "sourceSnapshot": "b3b4bfc47eeec70823379149b8a5f50bb4c5d721af7370c2fcf493309d0ab656",
+  "entries": [
+    {
+      "id": "capability:code.secret-scanned-pack",
+      "contentVersion": "0847afc6005cd3068ea97b04c98106d91670beb1dfbe1835175acd3c9953a1fc",
+      "sources": [
+        {
+          "id": "pack-code",
+          "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+          "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+        },
+        {
+          "id": "pack-policy",
+          "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+          "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+        },
+        {
+          "id": "pack-tests",
+          "path": "packages/operator-core/lib/code-intelligence/packer-facade.test.ts",
+          "sourceHash": "833644e3172dec9ff5d59d7e43f7d61b95564abe50c754697f2b9567a1556394"
+        }
+      ],
+      "graph": {
+        "status": "measured",
+        "repositoryId": "papercusp",
+        "sourceFingerprint": "2515881b687f2874fb01e17e318f6cb663eedc2c3c1107c00cccef67f663154f",
+        "candidates": [
+          {
+            "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+            "line1": 961,
+            "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e",
+            "evidenceId": "pack-code",
+            "symbol": "packerFacade",
+            "capabilityStatus": "candidate-only"
+          },
+          {
+            "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+            "line1": 393,
+            "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e",
+            "evidenceId": "pack-policy",
+            "symbol": "buildRepomixArgs",
+            "capabilityStatus": "candidate-only"
+          }
+        ],
+        "relationships": [
+          {
+            "kind": "callees",
+            "source": {
+              "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+              "line1": 972,
+              "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+            },
+            "target": {
+              "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+              "line1": 914,
+              "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+            },
+            "origin": "compiler",
+            "runtimeExecution": "unknown"
+          },
+          {
+            "kind": "callees",
+            "source": {
+              "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+              "line1": 975,
+              "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+            },
+            "target": {
+              "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+              "line1": 914,
+              "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+            },
+            "origin": "compiler",
+            "runtimeExecution": "unknown"
+          },
+          {
+            "kind": "callees",
+            "source": {
+              "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+              "line1": 984,
+              "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+            },
+            "target": {
+              "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+              "line1": 187,
+              "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+            },
+            "origin": "compiler",
+            "runtimeExecution": "unknown"
+          },
+          {
+            "kind": "callees",
+            "source": {
+              "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+              "line1": 985,
+              "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+            },
+            "target": {
+              "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+              "line1": 914,
+              "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+            },
+            "origin": "compiler",
+            "runtimeExecution": "unknown"
+          },
+          {
+            "kind": "callees",
+            "source": {
+              "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+              "line1": 989,
+              "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+            },
+            "target": {
+              "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+              "line1": 393,
+              "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+            },
+            "origin": "compiler",
+            "runtimeExecution": "unknown"
+          },
+          {
+            "kind": "callees",
+            "source": {
+              "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+              "line1": 989,
+              "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+            },
+            "target": {
+              "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+              "line1": 424,
+              "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+            },
+            "origin": "compiler",
+            "runtimeExecution": "unknown"
+          },
+          {
+            "kind": "callees",
+            "source": {
+              "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+              "line1": 991,
+              "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+            },
+            "target": {
+              "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+              "line1": 914,
+              "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+            },
+            "origin": "compiler",
+            "runtimeExecution": "unknown"
+          },
+          {
+            "kind": "callees",
+            "source": {
+              "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+              "line1": 1005,
+              "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+            },
+            "target": {
+              "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+              "line1": 914,
+              "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+            },
+            "origin": "compiler",
+            "runtimeExecution": "unknown"
+          },
+          {
+            "kind": "callees",
+            "source": {
+              "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+              "line1": 1009,
+              "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+            },
+            "target": {
+              "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+              "line1": 305,
+              "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+            },
+            "origin": "compiler",
+            "runtimeExecution": "unknown"
+          },
+          {
+            "kind": "callees",
+            "source": {
+              "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+              "line1": 1010,
+              "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+            },
+            "target": {
+              "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+              "line1": 467,
+              "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+            },
+            "origin": "compiler",
+            "runtimeExecution": "unknown"
+          },
+          {
+            "kind": "callees",
+            "source": {
+              "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+              "line1": 1011,
+              "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+            },
+            "target": {
+              "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+              "line1": 933,
+              "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+            },
+            "origin": "compiler",
+            "runtimeExecution": "unknown"
+          },
+          {
+            "kind": "callees",
+            "source": {
+              "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+              "line1": 400,
+              "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+            },
+            "target": {
+              "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+              "line1": 357,
+              "sourceHash": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+            },
+            "origin": "compiler",
+            "runtimeExecution": "unknown"
+          }
+        ],
+        "unmapped": [
+          "Context is restricted to the explicitly cited source files; dependency bodies and relationships outside those files are not inspected.",
+          "Searched only under: packages/operator-core/lib/code-intelligence/packer-facade.ts, packages/operator-core/lib/code-intelligence/packer-facade.test.ts.",
+          "Only candidate files are full compiler inputs; other reached files are re-export stubs.",
+          "Compiler or syntactic relationships do not establish runtime execution; unresolved target bindings remain unknown.",
+          "Compiler discovery was bounded for pack-code; no absence claim is valid.",
+          "Additional relationships omitted by the twelve-edge budget."
+        ],
+        "claimValidation": "manifest-evidence-only"
+      }
+    },
+    {
+      "id": "capability:dream.source-freshness",
+      "contentVersion": "a3bcc3520ceef6d8c53e976ef77f5b524df13edacb14abb1b4b494c4265520ed",
+      "sources": [
+        {
+          "id": "freshness-code",
+          "path": "packages/operator-core/lib/dream/capability-packets.ts",
+          "sourceHash": "99d7f4dcd4709d10ab674855e0e10b55aee006150b20ff3db7652d5a5c216e16"
+        },
+        {
+          "id": "freshness-bytes",
+          "path": "packages/operator-core/lib/dream/capability-packets.ts",
+          "sourceHash": "99d7f4dcd4709d10ab674855e0e10b55aee006150b20ff3db7652d5a5c216e16"
+        },
+        {
+          "id": "freshness-tests",
+          "path": "packages/operator-core/lib/dream/capability-packets.test.ts",
+          "sourceHash": "aa0f7ceba97f54ea5c33872b535dcad3ddf6c03fd42394ecca9c3129977b9457"
+        }
+      ],
+      "graph": {
+        "status": "measured",
+        "repositoryId": "papercusp",
+        "sourceFingerprint": "67fd44a5a914f90cfd87a3ba94dc7cba5c4a28b0f74848a5a9a9e2bd46daeae7",
+        "candidates": [
+          {
+            "path": "packages/operator-core/lib/dream/capability-packets.ts",
+            "line1": 151,
+            "sourceHash": "99d7f4dcd4709d10ab674855e0e10b55aee006150b20ff3db7652d5a5c216e16",
+            "evidenceId": "freshness-code",
+            "symbol": "verifyCapabilityPacket",
+            "capabilityStatus": "candidate-only"
+          }
+        ],
+        "relationships": [
+          {
+            "kind": "callees",
+            "source": {
+              "path": "packages/operator-core/lib/dream/capability-packets.ts",
+              "line1": 190,
+              "sourceHash": "99d7f4dcd4709d10ab674855e0e10b55aee006150b20ff3db7652d5a5c216e16"
+            },
+            "target": {
+              "path": "packages/operator-core/lib/dream/capability-packets.ts",
+              "line1": 120,
+              "sourceHash": "99d7f4dcd4709d10ab674855e0e10b55aee006150b20ff3db7652d5a5c216e16"
+            },
+            "origin": "compiler",
+            "runtimeExecution": "unknown"
+          },
+          {
+            "kind": "callees",
+            "source": {
+              "path": "packages/operator-core/lib/dream/capability-packets.ts",
+              "line1": 228,
+              "sourceHash": "99d7f4dcd4709d10ab674855e0e10b55aee006150b20ff3db7652d5a5c216e16"
+            },
+            "target": {
+              "path": "packages/operator-core/lib/dream/capability-packets.ts",
+              "line1": 242,
+              "sourceHash": "99d7f4dcd4709d10ab674855e0e10b55aee006150b20ff3db7652d5a5c216e16"
+            },
+            "origin": "compiler",
+            "runtimeExecution": "unknown"
+          }
+        ],
+        "unmapped": [
+          "Context is restricted to the explicitly cited source files; dependency bodies and relationships outside those files are not inspected.",
+          "Searched only under: packages/operator-core/lib/dream/capability-packets.ts, packages/operator-core/lib/dream/capability-packets.test.ts.",
+          "Only candidate files are full compiler inputs; other reached files are re-export stubs.",
+          "Compiler or syntactic relationships do not establish runtime execution; unresolved target bindings remain unknown.",
+          "No declared symbol at implementation anchor freshness-bytes"
+        ],
+        "claimValidation": "manifest-evidence-only"
+      }
+    },
+    {
+      "id": "capability:plans.spec-revisions",
+      "contentVersion": "31d795440e733147d0b877c5647083d097c0f9a92a5669942dce254885454ef0",
+      "sources": [
+        {
+          "id": "revision-code",
+          "path": "packages/operator-core/lib/agent-tools/plans/spec-clauses-store.ts",
+          "sourceHash": "c65de349bee4ce0e89bd8e09a25ddfa22bb40e1667f3f14089d88b981f5ae0de"
+        },
+        {
+          "id": "revision-tests",
+          "path": "packages/operator-core/lib/agent-tools/plans/spec-clauses-store.integration.test.ts",
+          "sourceHash": "16a50d283830b1b1f218d1e2ab6930fc09af0b24af392bce3ab3c8790457416c"
+        }
+      ],
+      "graph": {
+        "status": "unknown",
+        "repositoryId": "papercusp",
+        "sourceFingerprint": "44ce916bc012d83d379bda0f9bb582ffa0e8d181743f34e47521aea30078f734",
+        "candidates": [],
+        "relationships": [],
+        "unmapped": [
+          "No declared symbol at implementation anchor revision-code"
+        ],
+        "claimValidation": "manifest-evidence-only"
+      }
+    },
+    {
+      "id": "mechanism:coord.event-fire-receipt",
+      "contentVersion": "08f6777796f8bfa16001df5da7866d8917b8b85e79f735aa28ce3805dbdca9c3",
+      "sources": [
+        {
+          "id": "fire-code",
+          "path": "packages/operator-core/lib/events/await/store.ts",
+          "sourceHash": "b1bc78dc27d39fd5a4b1950e006fc39d1f0ef9b334a92ddb713e6edc5510b6e2"
+        },
+        {
+          "id": "fire-read",
+          "path": "packages/operator-core/lib/events/await/store.ts",
+          "sourceHash": "b1bc78dc27d39fd5a4b1950e006fc39d1f0ef9b334a92ddb713e6edc5510b6e2"
+        },
+        {
+          "id": "fire-tests",
+          "path": "packages/operator-core/lib/events/await/store.integration.test.ts",
+          "sourceHash": "9e55e8bf5a0f9c32d3246cc390a1fcfc22729d1a516cfed04b3a51b6b07872c7"
+        }
+      ],
+      "graph": {
+        "status": "measured",
+        "repositoryId": "papercusp",
+        "sourceFingerprint": "1d6c51ddf4c16ddb816e915c811e4c300585f479f75dbad3d9092ebb8588f8d7",
+        "candidates": [
+          {
+            "path": "packages/operator-core/lib/events/await/store.ts",
+            "line1": 3657,
+            "sourceHash": "b1bc78dc27d39fd5a4b1950e006fc39d1f0ef9b334a92ddb713e6edc5510b6e2",
+            "evidenceId": "fire-code",
+            "symbol": "recordKeyFire",
+            "capabilityStatus": "candidate-only"
+          },
+          {
+            "path": "packages/operator-core/lib/events/await/store.ts",
+            "line1": 3746,
+            "sourceHash": "b1bc78dc27d39fd5a4b1950e006fc39d1f0ef9b334a92ddb713e6edc5510b6e2",
+            "evidenceId": "fire-read",
+            "symbol": "getKeyFireLatch",
+            "capabilityStatus": "candidate-only"
+          }
+        ],
+        "relationships": [
+          {
+            "kind": "callees",
+            "source": {
+              "path": "packages/operator-core/lib/events/await/store.ts",
+              "line1": 3671,
+              "sourceHash": "b1bc78dc27d39fd5a4b1950e006fc39d1f0ef9b334a92ddb713e6edc5510b6e2"
+            },
+            "target": {
+              "path": "packages/operator-core/lib/events/await/store.ts",
+              "line1": 89,
+              "sourceHash": "b1bc78dc27d39fd5a4b1950e006fc39d1f0ef9b334a92ddb713e6edc5510b6e2"
+            },
+            "origin": "compiler",
+            "runtimeExecution": "unknown"
+          },
+          {
+            "kind": "callees",
+            "source": {
+              "path": "packages/operator-core/lib/events/await/store.ts",
+              "line1": 3748,
+              "sourceHash": "b1bc78dc27d39fd5a4b1950e006fc39d1f0ef9b334a92ddb713e6edc5510b6e2"
+            },
+            "target": {
+              "path": "packages/operator-core/lib/events/await/store.ts",
+              "line1": 89,
+              "sourceHash": "b1bc78dc27d39fd5a4b1950e006fc39d1f0ef9b334a92ddb713e6edc5510b6e2"
+            },
+            "origin": "compiler",
+            "runtimeExecution": "unknown"
+          },
+          {
+            "kind": "callees",
+            "source": {
+              "path": "packages/operator-core/lib/events/await/store.ts",
+              "line1": 3754,
+              "sourceHash": "b1bc78dc27d39fd5a4b1950e006fc39d1f0ef9b334a92ddb713e6edc5510b6e2"
+            },
+            "target": {
+              "path": "packages/operator-core/lib/events/await/store.ts",
+              "line1": 3619,
+              "sourceHash": "b1bc78dc27d39fd5a4b1950e006fc39d1f0ef9b334a92ddb713e6edc5510b6e2"
+            },
+            "origin": "compiler",
+            "runtimeExecution": "unknown"
+          }
+        ],
+        "unmapped": [
+          "Context is restricted to the explicitly cited source files; dependency bodies and relationships outside those files are not inspected.",
+          "Searched only under: packages/operator-core/lib/events/await/store.ts, packages/operator-core/lib/events/await/store.integration.test.ts.",
+          "Only candidate files are full compiler inputs; other reached files are re-export stubs.",
+          "Compiler or syntactic relationships do not establish runtime execution; unresolved target bindings remain unknown."
+        ],
+        "claimValidation": "manifest-evidence-only"
+      }
+    },
+    {
+      "id": "mechanism:dream.cost-admission",
+      "contentVersion": "823dd2ebc55f9ddd40aaf46663a9ee426b32543aca8d94aa4810a6adcad3e83c",
+      "sources": [
+        {
+          "id": "budget-code",
+          "path": "packages/operator-core/lib/dream/dream-governor.ts",
+          "sourceHash": "409d6e20cd3a1e3fe9305b5d2d657b512d967e51d5734d14b695fbf6604d8d7b"
+        },
+        {
+          "id": "budget-tests",
+          "path": "packages/operator-core/lib/dream/dream-governor.test.ts",
+          "sourceHash": "bf6d84a15db79ead212b3cf6ecbbf6f203507afd04249bbbe1d7b30fff6ecac3"
+        }
+      ],
+      "graph": {
+        "status": "measured",
+        "repositoryId": "papercusp",
+        "sourceFingerprint": "974eb54ab02f68165064411feacd7decbcc9fd29f9ac5a1b020ea2fe0f8b135a",
+        "candidates": [
+          {
+            "path": "packages/operator-core/lib/dream/dream-governor.ts",
+            "line1": 158,
+            "sourceHash": "409d6e20cd3a1e3fe9305b5d2d657b512d967e51d5734d14b695fbf6604d8d7b",
+            "evidenceId": "budget-code",
+            "symbol": "preflightDreamCycle",
+            "capabilityStatus": "candidate-only"
+          }
+        ],
+        "relationships": [
+          {
+            "kind": "callees",
+            "source": {
+              "path": "packages/operator-core/lib/dream/dream-governor.ts",
+              "line1": 164,
+              "sourceHash": "409d6e20cd3a1e3fe9305b5d2d657b512d967e51d5734d14b695fbf6604d8d7b"
+            },
+            "target": {
+              "path": "packages/operator-core/lib/dream/dream-governor.ts",
+              "line1": 27,
+              "sourceHash": "409d6e20cd3a1e3fe9305b5d2d657b512d967e51d5734d14b695fbf6604d8d7b"
+            },
+            "origin": "compiler",
+            "runtimeExecution": "unknown"
+          },
+          {
+            "kind": "callees",
+            "source": {
+              "path": "packages/operator-core/lib/dream/dream-governor.ts",
+              "line1": 177,
+              "sourceHash": "409d6e20cd3a1e3fe9305b5d2d657b512d967e51d5734d14b695fbf6604d8d7b"
+            },
+            "target": {
+              "path": "packages/operator-core/lib/dream/dream-governor.ts",
+              "line1": 33,
+              "sourceHash": "409d6e20cd3a1e3fe9305b5d2d657b512d967e51d5734d14b695fbf6604d8d7b"
+            },
+            "origin": "compiler",
+            "runtimeExecution": "unknown"
+          }
+        ],
+        "unmapped": [
+          "Context is restricted to the explicitly cited source files; dependency bodies and relationships outside those files are not inspected.",
+          "Searched only under: packages/operator-core/lib/dream/dream-governor.ts, packages/operator-core/lib/dream/dream-governor.test.ts.",
+          "Only candidate files are full compiler inputs; other reached files are re-export stubs.",
+          "Compiler or syntactic relationships do not establish runtime execution; unresolved target bindings remain unknown."
+        ],
+        "claimValidation": "manifest-evidence-only"
+      }
+    },
+    {
+      "id": "mechanism:memory.hive-scope",
+      "contentVersion": "6427a7457898ae7a6a126df480125f62bfbae315b7296846e21497d68a06ed16",
+      "sources": [
+        {
+          "id": "scope-code",
+          "path": "packages/operator-core/lib/memory/hive-scope.ts",
+          "sourceHash": "044e2cab3a913040546cd200bafde43c31d0cf88edeff4e37314c15c4ba9d521"
+        },
+        {
+          "id": "scope-tests",
+          "path": "packages/operator-core/lib/memory/hive-scope.test.ts",
+          "sourceHash": "8206bc1f384cdab76d76333a76b021be5747c4f6f8559c4107ef5eeb67461790"
+        }
+      ],
+      "graph": {
+        "status": "measured",
+        "repositoryId": "papercusp",
+        "sourceFingerprint": "011534172c8cf2002b4307809dbd829a60092ea80bcc1eeb84fddbd8fe830f34",
+        "candidates": [
+          {
+            "path": "packages/operator-core/lib/memory/hive-scope.ts",
+            "line1": 87,
+            "sourceHash": "044e2cab3a913040546cd200bafde43c31d0cf88edeff4e37314c15c4ba9d521",
+            "evidenceId": "scope-code",
+            "symbol": "narrowHarnessSlugsToSessionHive",
+            "capabilityStatus": "candidate-only"
+          }
+        ],
+        "relationships": [
+          {
+            "kind": "callees",
+            "source": {
+              "path": "packages/operator-core/lib/memory/hive-scope.ts",
+              "line1": 93,
+              "sourceHash": "044e2cab3a913040546cd200bafde43c31d0cf88edeff4e37314c15c4ba9d521"
+            },
+            "target": {
+              "path": "packages/operator-core/lib/memory/hive-scope.ts",
+              "line1": 40,
+              "sourceHash": "044e2cab3a913040546cd200bafde43c31d0cf88edeff4e37314c15c4ba9d521"
+            },
+            "origin": "compiler",
+            "runtimeExecution": "unknown"
+          }
+        ],
+        "unmapped": [
+          "Context is restricted to the explicitly cited source files; dependency bodies and relationships outside those files are not inspected.",
+          "Searched only under: packages/operator-core/lib/memory/hive-scope.ts, packages/operator-core/lib/memory/hive-scope.test.ts.",
+          "Only candidate files are full compiler inputs; other reached files are re-export stubs.",
+          "Compiler or syntactic relationships do not establish runtime execution; unresolved target bindings remain unknown."
+        ],
+        "claimValidation": "manifest-evidence-only"
+      }
+    },
+    {
+      "id": "mechanism:scout.phase-deadline",
+      "contentVersion": "ee070d5a1035ec1d123c5232423b1529682f25475978e7838d348c6f480df8bb",
+      "sources": [
+        {
+          "id": "deadline-code",
+          "path": "packages/operator-core/lib/scout/llm-deadline.ts",
+          "sourceHash": "6f332fb16904bbb1fc0f941378e528e0eb5171a45fb4c8059f3ff17c271cbbd3"
+        },
+        {
+          "id": "deadline-cancel",
+          "path": "packages/operator-core/lib/scout/llm-deadline.ts",
+          "sourceHash": "6f332fb16904bbb1fc0f941378e528e0eb5171a45fb4c8059f3ff17c271cbbd3"
+        },
+        {
+          "id": "deadline-tests",
+          "path": "packages/operator-core/lib/scout/critics.test.ts",
+          "sourceHash": "f0e95752233aefaac1c95824cd9d71f01e38d2c4085d8f95d932ef68dbb34030"
+        }
+      ],
+      "graph": {
+        "status": "measured",
+        "repositoryId": "papercusp",
+        "sourceFingerprint": "96231e92d23fe8193ba19221b5e1c916bd2650c9167668cf9a4ae5c352619336",
+        "candidates": [
+          {
+            "path": "packages/operator-core/lib/scout/llm-deadline.ts",
+            "line1": 46,
+            "sourceHash": "6f332fb16904bbb1fc0f941378e528e0eb5171a45fb4c8059f3ff17c271cbbd3",
+            "evidenceId": "deadline-code",
+            "symbol": "callScoutPhaseLlm",
+            "capabilityStatus": "candidate-only"
+          }
+        ],
+        "relationships": [
+          {
+            "kind": "callees",
+            "source": {
+              "path": "packages/operator-core/lib/scout/llm-deadline.ts",
+              "line1": 87,
+              "sourceHash": "6f332fb16904bbb1fc0f941378e528e0eb5171a45fb4c8059f3ff17c271cbbd3"
+            },
+            "target": {
+              "path": "packages/operator-core/lib/scout/llm-deadline.ts",
+              "line1": 80,
+              "sourceHash": "6f332fb16904bbb1fc0f941378e528e0eb5171a45fb4c8059f3ff17c271cbbd3"
+            },
+            "origin": "compiler",
+            "runtimeExecution": "unknown"
+          },
+          {
+            "kind": "callees",
+            "source": {
+              "path": "packages/operator-core/lib/scout/llm-deadline.ts",
+              "line1": 90,
+              "sourceHash": "6f332fb16904bbb1fc0f941378e528e0eb5171a45fb4c8059f3ff17c271cbbd3"
+            },
+            "target": {
+              "path": "packages/operator-core/lib/scout/llm-deadline.ts",
+              "line1": 80,
+              "sourceHash": "6f332fb16904bbb1fc0f941378e528e0eb5171a45fb4c8059f3ff17c271cbbd3"
+            },
+            "origin": "compiler",
+            "runtimeExecution": "unknown"
+          },
+          {
+            "kind": "callees",
+            "source": {
+              "path": "packages/operator-core/lib/scout/llm-deadline.ts",
+              "line1": 121,
+              "sourceHash": "6f332fb16904bbb1fc0f941378e528e0eb5171a45fb4c8059f3ff17c271cbbd3"
+            },
+            "target": {
+              "path": "packages/operator-core/lib/scout/llm-deadline.ts",
+              "line1": 94,
+              "sourceHash": "6f332fb16904bbb1fc0f941378e528e0eb5171a45fb4c8059f3ff17c271cbbd3"
+            },
+            "origin": "compiler",
+            "runtimeExecution": "unknown"
+          },
+          {
+            "kind": "callees",
+            "source": {
+              "path": "packages/operator-core/lib/scout/llm-deadline.ts",
+              "line1": 127,
+              "sourceHash": "6f332fb16904bbb1fc0f941378e528e0eb5171a45fb4c8059f3ff17c271cbbd3"
+            },
+            "target": {
+              "path": "packages/operator-core/lib/scout/llm-deadline.ts",
+              "line1": 94,
+              "sourceHash": "6f332fb16904bbb1fc0f941378e528e0eb5171a45fb4c8059f3ff17c271cbbd3"
+            },
+            "origin": "compiler",
+            "runtimeExecution": "unknown"
+          }
+        ],
+        "unmapped": [
+          "Context is restricted to the explicitly cited source files; dependency bodies and relationships outside those files are not inspected.",
+          "Searched only under: packages/operator-core/lib/scout/llm-deadline.ts, packages/operator-core/lib/scout/critics.test.ts.",
+          "Only candidate files are full compiler inputs; other reached files are re-export stubs.",
+          "Compiler or syntactic relationships do not establish runtime execution; unresolved target bindings remain unknown.",
+          "No declared symbol at implementation anchor deadline-cancel"
+        ],
+        "claimValidation": "manifest-evidence-only"
+      }
+    }
+  ]
+}

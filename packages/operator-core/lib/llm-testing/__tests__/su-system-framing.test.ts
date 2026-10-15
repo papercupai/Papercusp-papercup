@@ -12,6 +12,10 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { composeSuStackSource, extractSuPart, suSessionBinding } from '@papercusp/orchestrator/blueprint';
+import { renderSuPlaybook } from '../../desktop-install/papercusp-files';
 
 import {
   CLAUDE_CODE_IDENTIFIER,
@@ -30,6 +34,49 @@ import {
 import { buildCatalog } from '../targets/su-catalog';
 
 const PLAYBOOK = '# Papercusp engineer-collaborator playbook\n...body...';
+
+describe('Reports owner-deliverable persona rule', () => {
+  const baseSource = resolvePlaybookPath();
+  const harnessDir = resolve(dirname(baseSource), '../../..');
+  const overlayDir = resolve(harnessDir, '../../../../apps/operator/prompts');
+  const source = readFileSync(baseSource, 'utf8');
+  const practice = extractSuPart(source, 'su.practice');
+  const rule = practice.slice(practice.indexOf('**Publish finished owner-facing prose.**'), practice.indexOf('\n\nAUTO authorizes'));
+
+  it('authors the complete Reports delivery rule in the canonical practice tile', () => {
+    expect(rule).toContain('through `reports:publish` before your final reply');
+    expect(rule).toContain('`reports:get { id: report_id }`');
+    expect(rule).toContain('complete Markdown and intended\nvisibility');
+    expect(rule).toContain('Claim\nsaved or delivered only after the readback succeeds');
+    expect(rule).toContain('Pass the complete Markdown as\n`body_md`.');
+    expect(rule).toContain('stable `request_key`');
+    expect(rule).toContain('request key and content unchanged across retries');
+    expect(rule).toContain('A correction uses `supersedes`');
+    expect(rule).toContain('descriptive Markdown link to the report page in the GUI');
+    expect(rule).toContain('valid same-origin route; use it directly as the Markdown');
+    expect(rule).toContain('absolute HTTP(S) URL only when a verified');
+    expect(rule).toContain('never guess or ask the owner for an origin');
+    expect(rule).toContain('/reports?sel=<report_id>');
+    expect(rule).toContain('Verify that the link opens the intended report');
+    expect(practice).toBe(readFileSync(join(dirname(baseSource), 'su.practice.md'), 'utf8'));
+  });
+
+  it('carries the authored rule into a fresh Codex AUTO launch render', async () => {
+    const render = async (suText: string) => {
+      const composed = composeSuStackSource({ harnessDir, suText, binding: suSessionBinding({ modes: ['auto'] }) });
+      return renderSuPlaybook({ agent: 'codex', baseSource, baseText: composed.text, overlayDir, projectGuideSource: '' });
+    };
+    const rendered = await render(source);
+    expect(rendered.overlaySource).toBe(join(overlayDir, 'papercusp-su.codex.md'));
+    expect(rendered.text).toContain(rule);
+    expect(rendered.text).toContain('You are running under Codex CLI');
+    expect(rendered.text).toContain('absolute HTTP(S) URL only when a verified');
+    expect(rendered.text.replace(/\s+/g, ' ')).toContain('Never give a bare report id');
+    // The derived practice file must not mask a missing authored rule.
+    const withoutRule = await render(source.replace(rule, ''));
+    expect(withoutRule.text).not.toContain('**Publish finished owner-facing prose.**');
+  });
+});
 
 describe('su SUT inference-gateway attribution', () => {
   const gateway = 'http://127.0.0.1:8788';

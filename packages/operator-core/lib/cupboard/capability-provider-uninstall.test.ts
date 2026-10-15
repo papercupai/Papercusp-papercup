@@ -61,6 +61,18 @@ describe('capability provider uninstall review', () => {
       optionalFor: ['calendar-agent@1.0.0'],
       routes: ['operator-notify', 'suggest-provider', 'needs_human'],
     });
+    // WI-10005197: the unsatisfied record names what would LIFT it, who can do that, and what it compared.
+    expect(review.capabilityUnsatisfied[0]?.refusal).toMatchObject({
+      observed: {
+        potSlug: 'sales-hive',
+        classRef: 'crm.email@1.0.0',
+        provider: 'mail-pro@2.1.0',
+        requiredBy: '1',
+        optionalFor: '1',
+      },
+      whoCanMakeItTrue: ['owner'],
+    });
+    expect(review.capabilityUnsatisfied[0]?.refusal.liftsWhen).toContain('crm.email@1.0.0');
     expect(review.reviewToken).toMatch(/^[0-9a-f]{64}$/);
     expect((await reviewCapabilityProviderUninstall('mail-pro', deps())).reviewToken).toBe(review.reviewToken);
   });

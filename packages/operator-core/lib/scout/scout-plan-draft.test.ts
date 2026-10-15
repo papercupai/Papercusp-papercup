@@ -68,7 +68,7 @@ describe('createScoutPlanDraft', () => {
       }) as NonNullable<ScoutPlanDraftDeps['stampPlanGoalProvenance']>,
       withPlanLock: (async (_ctx, opts, mutator) => {
         if (over.busy) return { kind: 'busy', busy: [] };
-        const { newBody, value } = await mutator(over.current ?? null, null);
+        const { newBody, value } = await mutator(over.current ?? null, null, { workspaceId: 'ws-test', harnessSlug: 'papercup' });
         captured.body = newBody;
         if (newBody !== null && opts.afterWrite) {
           await opts.afterWrite(newBody, { workspaceId: 'ws-test', harnessSlug: 'papercup' }, null);

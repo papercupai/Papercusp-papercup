@@ -8,20 +8,52 @@
  * checkout HEAD after the process had already been running.
  *
  * The wall-clock boot instant comes from `process.uptime()` rather than module
- * evaluation time. The commit lookup starts at module evaluation and is
- * memoized for the process lifetime, preserving the earliest stable bootstrap
- * seam while remaining fail-soft when the host is not a git checkout.
+ * evaluation time. The loaded-code pin is captured at module evaluation; its
+ * Git expansion starts on first consumption and is memoized. Importing the
+ * packaged boot graph therefore does not fork, and a delayed watchdog cannot
+ * borrow a newer checkout HEAD as the identity of the already-loaded code.
  */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { execFileViaSidecar } from '../fleet/git-via-sidecar';
+import { getBuildInfo } from '../build-info';
+
+/** One short `git` read in this process's checkout: resolves stdout, rejects on a non-zero exit. */
+export type GitRead = (args: string[]) => Promise<string>;
 
 let pexec: ((...args: any[]) => Promise<any>) | undefined;
-const runExecFile = (...args: any[]) => (pexec ??= promisify(execFile) as any)(...args);
+
+/**
+ * Local fork, used ONLY to expand the captured boot pin on first consumption.
+ * A spawner sidecar may not exist at that bootstrap seam, and starting one just
+ * to resolve the pin would introduce a second startup dependency.
+ */
+const gitReadLocal: GitRead = async (args) => {
+  const { stdout } = await (pexec ??= promisify(execFile) as any)('git', args, { timeout: 5_000 });
+  return String(stdout);
+};
+
+/**
+ * Refresh reads, made by watchdog sweeps on a long-running host (WI-10005424).
+ * Measured 2026-10-02 09:26Z: on an 11.7 GB bg-host each main-thread fork took
+ * 256-512 ms, and `staleRoutineExecutorSweep` and `hostCodeStalenessFromLedgerSweep`
+ * each paid one here for `git rev-parse HEAD`. The sidecar forks cheaply; a sick
+ * sidecar falls back to a counted local fork. `cwd` is explicit because the
+ * sidecar's own working directory is not this process's checkout.
+ */
+export const gitReadViaSidecar: GitRead = async (args) => {
+  const { stdout } = await execFileViaSidecar('git', args, {
+    timeoutMs: 5_000,
+    subsystem: 'process-boot-identity',
+    cwd: process.cwd(),
+  });
+  return stdout;
+};
 
 /** Best-effort current checkout HEAD resolver shared by boot and refresh reads. */
-export async function resolveCurrentHeadCommit(): Promise<string | null> {
+export async function resolveCurrentHeadCommit(read: GitRead = gitReadViaSidecar): Promise<string | null> {
   try {
-    const { stdout } = await runExecFile('git', ['rev-parse', 'HEAD'], { timeout: 5_000 });
+    const stdout = await read(['rev-parse', 'HEAD']);
     const sha = stdout.trim();
     return /^[0-9a-f]{40}$/i.test(sha) ? sha : null;
   } catch {
@@ -63,9 +95,7 @@ export async function resolveCommitsBehind(
   if (!bootCommit || !currentCommit || !sha.test(bootCommit) || !sha.test(currentCommit)) return null;
   if (bootCommit === currentCommit) return 0;
   try {
-    const { stdout } = await runExecFile('git', ['rev-list', '--count', `${bootCommit}..${currentCommit}`], {
-      timeout: 5_000,
-    });
+    const stdout = await gitReadViaSidecar(['rev-list', '--count', `${bootCommit}..${currentCommit}`]);
     const n = Number(stdout.trim());
     return Number.isInteger(n) && n >= 0 ? n : null;
   } catch {
@@ -113,19 +143,59 @@ export async function resolveRoutineCodeDrift(
   bootCommit: string | null,
   currentCommit: string | null,
 ): Promise<RoutineCodeDrift | null> {
+  return resolveSourceDrift(bootCommit, currentCommit, [ROUTINE_SOURCE_PREFIX]);
+}
+
+/**
+ * WI-10007644 (P-014): the GATE code a routines executor runs IN-PROCESS.
+ *
+ * Measured against the bundle bg-host actually executes (apps/operator/dist-host/
+ * hono-host.mjs, module markers): it inlines 75 `packages/operator-core/lib/release/*`
+ * modules and `harness/routines/release-actions.ts`, but NOT
+ * `apps/operator/lib/release/green-checkpoint.ts` — release-actions spawns that as a
+ * fresh `tsx` per run, so it always loads the tree's current copy and is deliberately
+ * absent here. A change under these pathspecs is a change to the gate's instrument that
+ * the running executor will not see until it restarts.
+ */
+export const GATE_SOURCE_PATHSPECS: readonly string[] = [
+  'packages/operator-core/lib/release/',
+  'packages/operator-core/lib/harness/routines/release-actions.ts',
+];
+
+/** Gate-code drift between boot and HEAD — same contract as `resolveRoutineCodeDrift`. */
+export async function resolveGateCodeDrift(
+  bootCommit: string | null,
+  currentCommit: string | null,
+): Promise<RoutineCodeDrift | null> {
+  return resolveSourceDrift(bootCommit, currentCommit, GATE_SOURCE_PATHSPECS);
+}
+
+/**
+ * Non-test source drift under `pathspecs` between two commits. null = unanswerable
+ * (bad shas, no checkout, git failed); empty arrays = probed and found nothing.
+ */
+export async function resolveSourceDrift(
+  bootCommit: string | null,
+  currentCommit: string | null,
+  pathspecs: readonly string[],
+): Promise<RoutineCodeDrift | null> {
   const sha = /^[0-9a-f]{40}$/i;
   // Same argv-injection guard as resolveCommitsBehind: these become a revision range.
   if (!bootCommit || !currentCommit || !sha.test(bootCommit) || !sha.test(currentCommit)) return null;
+  if (pathspecs.length === 0) return null;
   if (bootCommit === currentCommit) return { changed: [], addedSinceBoot: [] };
   try {
     // --no-renames on purpose: a moved file must report as D+A, because under its
     // NEW path it is genuinely absent from the booted module graph. A rename status
     // would hide that behind a similarity score and lose the severe case.
-    const { stdout } = await runExecFile(
-      'git',
-      ['diff', '--name-status', '--no-renames', `${bootCommit}..${currentCommit}`, '--', ROUTINE_SOURCE_PREFIX],
-      { timeout: 5_000 },
-    );
+    const stdout = await gitReadViaSidecar([
+      'diff',
+      '--name-status',
+      '--no-renames',
+      `${bootCommit}..${currentCommit}`,
+      '--',
+      ...pathspecs,
+    ]);
     const changed: string[] = [];
     const addedSinceBoot: string[] = [];
     for (const line of String(stdout).split('\n')) {
@@ -154,22 +224,40 @@ export interface ProcessBootIdentity {
   bootCommit: Promise<string | null>;
 }
 
-/** Capture the two process-identity values together at one eager seam. */
+/** Capture the boot instant and loaded pin eagerly; resolve the pin on consumption. */
 export function captureProcessBootIdentity(opts: {
   nowMs?: number;
   uptimeSec?: number;
   resolveCommit?: () => Promise<string | null>;
+  loadedSha?: string | null;
+  readGit?: GitRead;
 } = {}): ProcessBootIdentity {
   const nowMs = opts.nowMs ?? Date.now();
   const uptimeSec = opts.uptimeSec ?? process.uptime();
+  // Capture this before deferring any work. Reading getBuildInfo() on first
+  // consumption could sample a different identity after the checkout advances.
+  const loadedSha = opts.resolveCommit
+    ? null
+    : opts.loadedSha !== undefined ? opts.loadedSha : getBuildInfo().sha;
+  // An explicitly supplied resolver keeps its existing eager contract. The
+  // default module singleton must not start a subprocess during import.
+  let bootCommit = opts.resolveCommit?.();
   return {
     bootTimeMs: nowMs - Math.floor(uptimeSec * 1000),
-    bootCommit: (opts.resolveCommit ?? resolveCurrentHeadCommit)(),
+    // Reuse the identity /api/health reports. A fresh process can load an older
+    // last-known-good bundle; sampling checkout HEAD would label it as current.
+    // Expand the loaded pin to the full Git identity without borrowing HEAD.
+    get bootCommit() {
+      return bootCommit ??= resolveCurrentHeadCommit(async () => {
+        if (!loadedSha || !/^[a-f0-9]{7,40}$/i.test(loadedSha)) return '';
+        return (opts.readGit ?? gitReadLocal)(['rev-parse', '--verify', `${loadedSha}^{commit}`]);
+      });
+    },
   };
 }
 
-// Start this read as soon as the DBOS bootstrap module graph evaluates. Do not
-// move it behind the lazy watchdog import: that recreates EI-20338401938272036.
+// Capture the loaded pin at the DBOS bootstrap seam, before the lazy watchdog
+// imports. Only Git expansion is deferred; neither the pin nor boot time drifts.
 const PROCESS_BOOT_IDENTITY = captureProcessBootIdentity();
 
 export function processBootTimeMs(): number {

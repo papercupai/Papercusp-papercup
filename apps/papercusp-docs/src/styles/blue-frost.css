@@ -53,7 +53,8 @@
 
 html {
   background: var(--docs-bg);
-  scroll-behavior: smooth;
+  /* Keep native fragment jumps immediate. Reloading during a smooth jump can
+     restore its starting position and leave a bookmarked answer offscreen. */
 }
 
 body {

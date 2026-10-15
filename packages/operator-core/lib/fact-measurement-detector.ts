@@ -23,6 +23,12 @@ const NUMBER = /(?<![A-Za-z0-9_:#-])(?:\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?%?|\+\d+(
 const MOVING_CONTEXT =
   /\b(?:measur(?:e|ed|ement|ing)|as\s+of|currently|right\s+now|today|latest|so\s+far|observ(?:e|ed|ation)|count(?:s|ed|ing)?|current|remaining|unchecked|adjudicated|candidate[s]?|status|open|closed|pending|supported|not[-\s]checked|working\s+tree|uncommitted)\b/i;
 
+// A stable identifier can sit near unrelated current-state prose. Treat the
+// number as a reference when a common label directly precedes it, rather than
+// letting the broad moving-context window turn it into a measurement.
+const STABLE_REFERENCE_LABEL =
+  /\b(?:HN|Hacker\s+News|work[ -]item|item|issue|ticket|record|post|story|release|migration|commit|PR)\s*(?:(?:item|id|number|no\.?)\s*)?(?:#|:)?\s*$/i;
+
 export interface FactMeasurementSignal {
   /** The numeric value or delta that triggered the advisory. */
   value: string;
@@ -53,6 +59,8 @@ export function detectFactMeasurements(text: unknown): FactMeasurementSignal[] {
       numbers.lastIndex += 1;
       continue;
     }
+    const labelStart = Math.max(0, match.index - 48);
+    if (STABLE_REFERENCE_LABEL.test(haystack.slice(labelStart, match.index))) continue;
     const start = Math.max(0, match.index - MEASUREMENT_CONTEXT_WINDOW);
     const end = Math.min(haystack.length, match.index + match[0].length + MEASUREMENT_CONTEXT_WINDOW);
     const window = haystack.slice(start, end);
@@ -129,11 +137,21 @@ const ABSENCE_ANCHOR =
 const EXISTENCE_CONTEXT =
   /\b(?:exists?|existed|existence|found|present|remain(?:s|ed|ing)?|match(?:es|ed|ing)?|return(?:s|ed)?|fired?|emit(?:s|ted|ter|ters)?|touch(?:es|ed)?|appear(?:s|ed)?|surfaced?|occur(?:s|red)?|register(?:ed|s)?|record(?:ed|s)?|configured?|implement(?:ed|s)?|wired|reachable|referenc(?:e|es|ed)|cit(?:e|es|ed)|membership|rows?|results?|callers?|instances?|entr(?:y|ies)|hits?)\b/i;
 
+/** A deontic prohibition describes a rule, not an observed absence. */
+const NORMATIVE_NEGATION_PREFIX = /\b(?:must|should|shall|ought\s+to)\s+$/i;
+
 export interface FactAbsenceSignal {
   /** The negation token that triggered the advisory. */
   token: string;
   /** The existence-claim phrase found near it. */
   context: string;
+}
+
+function isAbsenceClauseBoundary(text: string, index: number): boolean {
+  const char = text[index];
+  if (char === '\n' || char === ';') return true;
+  if (char !== '.' && char !== '!' && char !== '?') return false;
+  return index + 1 >= text.length || /\s/.test(text[index + 1]);
 }
 
 /**
@@ -156,9 +174,27 @@ export function detectFactAbsenceClaims(text: unknown): FactAbsenceSignal[] {
       anchors.lastIndex += 1;
       continue;
     }
-    const start = Math.max(0, match.index - ABSENCE_CONTEXT_WINDOW);
-    const end = Math.min(haystack.length, match.index + match[0].length + ABSENCE_CONTEXT_WINDOW);
-    const contextMatch = EXISTENCE_CONTEXT.exec(haystack.slice(start, end));
+    const windowStart = Math.max(0, match.index - ABSENCE_CONTEXT_WINDOW);
+    const windowEnd = Math.min(haystack.length, match.index + match[0].length + ABSENCE_CONTEXT_WINDOW);
+    let clauseStart = windowStart;
+    for (let index = match.index - 1; index >= windowStart; index -= 1) {
+      if (isAbsenceClauseBoundary(haystack, index)) {
+        clauseStart = index + 1;
+        break;
+      }
+    }
+    let clauseEnd = windowEnd;
+    for (let index = match.index + match[0].length; index < windowEnd; index += 1) {
+      if (isAbsenceClauseBoundary(haystack, index)) {
+        clauseEnd = index;
+        break;
+      }
+    }
+    if (
+      match[0].toLowerCase() === 'not' &&
+      NORMATIVE_NEGATION_PREFIX.test(haystack.slice(clauseStart, match.index))
+    ) continue;
+    const contextMatch = EXISTENCE_CONTEXT.exec(haystack.slice(clauseStart, clauseEnd));
     if (!contextMatch) continue;
 
     const signal: FactAbsenceSignal = {

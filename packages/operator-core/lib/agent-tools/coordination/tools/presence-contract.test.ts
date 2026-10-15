@@ -77,6 +77,7 @@ describe('coord:presence argument discoverability (EI-20231966513487176)', () =>
     // declared — pinning the alias so it cannot be dropped silently either.
     expect(keys).toContain('owners');
     expect(keys).toContain('ownerIds');
+    expect(keys).toContain('probe_coupling_reader');
     for (const removed of ['harness', 'plan', 'includeStale', 'include_stale']) {
       expect(keys, `${removed} must remain removed`).not.toContain(removed);
     }
@@ -95,5 +96,11 @@ describe('coord:presence argument discoverability (EI-20231966513487176)', () =>
     // Order-independent: the compression flipped this clause to "workspace-wide browsing
     // needs an unscoped/admin session", which an ordered `.*` chain reported as missing.
     expect(guidance).toMatch(/workspace-wide browsing needs an unscoped\/admin session/i);
+  });
+
+  it('documents the private, superuser-only relation-reader probe', () => {
+    expect(callerVisibleSurface()).toMatch(/probe_coupling_reader[^\n]*SUPERUSER-only/i);
+    expect(callerVisibleSurface()).toMatch(/per-stage timings in private invocation metadata/i);
+    expect(callerVisibleSurface()).toMatch(/Returns no peer data/i);
   });
 });

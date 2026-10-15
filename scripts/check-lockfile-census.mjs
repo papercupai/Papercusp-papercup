@@ -79,6 +79,7 @@ import { readFileSync, readdirSync, existsSync, writeFileSync, mkdirSync } from 
 import { execFileSync } from 'node:child_process';
 import { join, dirname, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { STANDALONE_PACKAGE_DIRS } from './lib/test-runner-classes.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const ROOT = join(HERE, '..');
@@ -128,6 +129,10 @@ export const COVERED_LOCKFILES = new Map([
  * list shrinks with the tree instead of accumulating.
  */
 export const NOT_SHIPPED_LOCKFILES = new Map([
+  [
+    'scripts/heap-retainers-native/Cargo.lock',
+    'local heap-snapshot diagnostic adapter: built explicitly with the cargo build --locked command documented in scripts/analyze-heap-snapshots.mjs and invoked only when a caller supplies nativeExecutable; neither the operator host bundle nor the desktop sidecar script/resource copy includes this Cargo project or its target binary',
+  ],
   [
     'apps/tui/Cargo.lock',
     'apps/tui is a developer terminal UI built from source on a dev box; it is not bundled into any desktop installer target',
@@ -302,9 +307,9 @@ export function walkLockfiles(root, { pruned = PRUNED_DIRS, names = LOCKFILE_ECO
  * whose presence is structurally guaranteed.
  *
  * @param {string} root
- * @param {{ pruned?: Set<string>, names?: Map<string,string> }} [options] forwarded to walkLockfiles
+ * @param {{ pruned?: Set<string>, names?: Map<string,string>, standaloneDirs?: string[] }} [options]
  */
-export function censusOrThrow(root, options) {
+export function censusOrThrow(root, { standaloneDirs = STANDALONE_PACKAGE_DIRS, ...options } = {}) {
   const rows = walkLockfiles(root, options);
   if (rows.length === 0) {
     throw new Error(
@@ -317,6 +322,26 @@ export function censusOrThrow(root, options) {
       `lockfile census did not find the repo root package-lock.json (found ${rows.length} other ` +
         'lockfile(s)). That file is the census positive control; without it the walk cannot be ' +
         'trusted to have covered the tree.',
+    );
+  }
+  // A lockfile walker cannot find a graph whose lock was never written. Reuse the
+  // gate's standalone-package registry to check that independent npm installs
+  // have an input identity, including packages with only dev dependencies.
+  // Root workspaces remain covered by the root lock's own packages map.
+  let workspaceDirs;
+  for (const dir of standaloneDirs) {
+    const manifestPath = join(root, dir, 'package.json');
+    if (!existsSync(manifestPath) || rows.includes(`${dir}/package-lock.json`)) continue;
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    const hasDependencies = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']
+      .some((section) => Object.keys(manifest[section] ?? {}).length > 0);
+    if (!hasDependencies) continue;
+    workspaceDirs ??= rootWorkspaceDirs(JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8')));
+    if (workspaceDirs.has(dir)) continue;
+    throw new Error(
+      `registered standalone npm package ${dir} has dependencies but no package-lock.json — ` +
+      'its graph is not covered by the root workspace lock. Resolve and track its own lockfile; ' +
+      'an absent lock is not a clean census.',
     );
   }
   return rows;

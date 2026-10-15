@@ -1,13 +1,32 @@
 # P-401 GO/NO-GO — PRE-DRAFT (UNSIGNED)
 
+> **Current audit pin — 2026-10-13, WI-10004684 (su-3ecaf532).**
+> D-223/D-224 nominate the PRIVATE candidate at superproject
+> `faa5abc1730ded04d2dfe5fcf829edec6b7b93bb`, build identity `2018b667`.
+> Manifest SHA256: `b613a6186c18fa89c16a72b15fc7a51436ebed3df85b68d455be883bbc2e10af`.
+> Evidence bank: `/mnt/data/offload/papercusp-private-release-evidence/su-07164/wi10007067-d223-20261013T0241Z`.
+> This pin supersedes the 0.0.28-alpha pin below for the current independent
+> P-401 audit. The older rows remain historical evidence, requiring individual
+> reconciliation before signing; their GO-eligible label is not a current verdict.
+> D-179 separates this audit from publication; D-224 excludes ARM and requires
+> P-521 on these exact bytes. Publication, tagging, seed-census and managed-release
+> checks remain in the publication lane. P-521 completion and independent review
+> are pending. **UNSIGNED: no GO or publication approval is asserted here.**
+
 > **STATUS: DRAFT. NOT A SIGNATURE. NOT A VERDICT.** Pre-synthesized under endgame
 > `p2p-public-release-endgame-2026-09-01#D-117` lane L4 (WI-2039882) by su-84e43fbb, 2026-10-01.
 > The governing signed verdict is still the head block of `RELEASE-READINESS.md`
 > (2026-08-27, NO-GO). Do not quote this file as a GO.
 >
+> **Revision 2026-10-02 23:4xZ (su-84e43fbb, leader order g:8c90c376).** Retargeted from 0.0.27 to
+> **0.0.28-alpha** (`#D-126`: the 0.0.27 tag is burned, so 0.0.28-alpha is cut with full history).
+> Folds in `#D-132` (no soak holds publication), `#D-136`/`#D-138` (no doc-vector seed in 0.0.28),
+> `#D-139` (P-521 accepts on the Linux two-host rig only) and `#D-140`…`#D-148` (seed credential
+> rulings). Only §3 (the P-521 row) and the §0 verdict/GO-signature line stay open.
+>
 > **How this becomes a signature.** Per `#D-009`, P-401 signs the CURRENT
 > `RELEASE-READINESS.md` and names the evidence pin separately. When (1) P-521 is done on the
-> final 0.0.27-alpha candidate, (2) the independent GO (L3, WI-10004684) is signed, and (3) the
+> final 0.0.28-alpha candidate, (2) the independent GO (L3, WI-10004684) is signed, and (3) the
 > endgame leader confirms, this block is filled in at the `⟦P-521⟧` and `⟦PIN⟧` markers,
 > re-verified row by row against live state, and prepended to `RELEASE-READINESS.md` as its new
 > head verdict. This file is then deleted.
@@ -21,15 +40,21 @@
 
 **VERDICT — ⟦pending⟧ (P-401, WI-2039882, per `p2p-public-release-endgame-2026-09-01#D-017`/`#D-117`).**
 
-- Evidence pin: ⟦PIN: 0.0.27-alpha artifact identity — version, source sha on green main,
-  artifact digests, manifest id from P-519⟧. Before P-521 the frozen witness candidate was
-  build #6 / superproject `5be66dc6905c` (remaining-lanes `#D-159`, P-102); later pins
-  (531fcc2863, e5516b47f81e, 0.0.22–0.0.26) are superseded (`#D-009` §0, `#D-065`…`#D-074`,
-  `#D-080`, `#D-114`). 0.0.26 is retired (`#D-114`).
+- Evidence pin: ⟦PIN: 0.0.28-alpha artifact identity — version, source sha (the contained
+  promoted source satisfying `#D-122`), artifact digests, manifest id from P-519; taken from the
+  `release:candidate-artifact:desktop-v0.0.28-alpha` payload⟧. Before P-521 the frozen witness
+  candidate was build #6 / superproject `5be66dc6905c` (remaining-lanes `#D-159`, P-102); later
+  pins (531fcc2863, e5516b47f81e, 0.0.22–0.0.26) are superseded (`#D-009` §0, `#D-065`…`#D-074`,
+  `#D-080`, `#D-114`). 0.0.26 is retired (`#D-114`). The 0.0.27 tag is burned and can never be
+  signed (`#D-126`).
 - Document version signed: the `RELEASE-READINESS.md` blob at signing time (record
   `git rev-parse staging:shared-pot-release-testing/RELEASE-READINESS.md`), per `#D-008` §3 / `#D-009`.
 - What a GO means here (P-401 text, `remaining-lanes#D-158`): witness green, blockers settled,
-  soak/chaos SCHEDULED post-GO. The 72h canary (P-501) and Leg-G chaos (P-502) do NOT gate GO.
+  soak/chaos SCHEDULED post-GO. The canary soak (P-501) and Leg-G chaos (P-502) do NOT gate GO.
+  For 0.0.28-alpha, `#D-132` (owner directive) goes further: no 24h or 72h soak, and no P-501
+  completion, may hold PUBLICATION either. That supersedes `#D-128`'s 24h soak. The route is:
+  contained promoted source (`#D-122`) → cut/build/bundle audits → exact-artifact
+  install/drill/journeys (P-521) → independent GO → publish under standing approval.
 
 **Provisional reading on every row except P-521: GO-eligible.** No row below is a standing
 blocker. The verdict therefore turns on P-521 and the independent GO.
@@ -91,21 +116,29 @@ Legend: 🟢 evidenced · 🟡 shipped with a named limitation · ⏩ post-GO by
 | P-523 | Installer + signing preflight | 🟢 preflight | WI-2147009: adequacy card EI-24010665109374029 9/9. |
 | P-524 | Canary/chaos execution readiness | 🟢 preflight | WI-2147010. |
 
-### Post-GO (do not gate GO; `remaining-lanes#D-158` (3), `#D-117`)
-| P-501 | 72h canary soak, hive-canary (`#D-041`) | ⏩ | The clock starts when 0.0.27 runs on the canary (`#D-117`); cannot be marked done before P-401. |
-| P-502 | Leg-G owner-freeze chaos drill | ⏩ | After the soak; needs P-517. |
-| P-503 | Default hiveGit.mode decision | ⏩ | After P-501. |
+### 0.0.28-alpha content rulings (settled; the L3 GO audits them on the artifact)
+| Ruling | Row | Status | Evidence |
+|---|---|---|---|
+| `#D-136` / `#D-138` | Doc-vector seed | 🟡 named limitation | Not admitted to the frozen lineage. 0.0.28-alpha ships the 0.0.27 first-boot embed behaviour; the seed rides the next gate cycle. |
+| `#D-140`…`#D-144` | Seed credential findings | 🟢 ruled · L3 verifies | Exceptions bind exact match content plus decrypted-plaintext evidence (`#D-140`). Plaintext clearance is approved (`#D-141`). The Kasm fixture credential is sanitized and the seed regenerated; the 62 sealed epoch-key envelopes are accepted under a structural, fail-closed exemption (`#D-142`/`#D-143`). Case-insensitive matching is allowed with a post-hoc exact-case equality check (`#D-144`). |
+| `#D-145`…`#D-148` | Seed cut safety + legacy aliases | 🟢 ruled · L3 verifies | The seed-cut retry runs under a shared bg-host fence with a read-only probe (`#D-145`). Legacy bare-key aliases that still carry the Kasm literal get one audited, guarded outbox PUT each (`#D-146`, widened to the whole class by `#D-148`). The validator's admissible provisional classes and their fail-closed proofs are set out in `#D-147` (a preparatory L3 ruling, not a GO). |
+| `#D-139` | Platform scope of P-521 | 🟢 ruled | P-521 accepts on the Linux two-host rig (Server .deb on the VM + tower). Mac and Windows rows are out of scope; the Mac baseline and Windows SSH findings are warn-only on WI-10004688. |
+
+### Post-GO (do not gate GO or 0.0.28 publication; `remaining-lanes#D-158` (3), `#D-117`, `#D-132`)
+| P-501 | Canary soak, hive-canary (`#D-041`) | ⏩ non-blocking | `#D-132`: no soak duration and no P-501 completion holds 0.0.28-alpha publication (supersedes `#D-128`). Observation may still run once 0.0.28 is on the canary. |
+| P-502 | Leg-G owner-freeze chaos drill | ⏩ | `#D-155`: typed deps moved from [P-501, P-517] to [P-401, P-517]. Never a 0.0.28 publication dependency (`#D-132`/`#D-153`). A current-build rehearsal is staged on WI-10004688 (rehearsal only, never evidence, per `#D-152`). |
+| P-503 | Default hiveGit.mode decision | ⏩ | `#D-155`: blockedBy moved from [P-501] to [P-401]. Its "72h canary evidence" wording now reads "P-501 observation evidence exists, no minimum duration". |
 
 ## 3. The P-521 row — ⟦to be filled at signing⟧
 
-| P-521 | Integrated hardened-artifact acceptance on ⟦PIN⟧ | ⟦pending⟧ | ⟦WI-2144482 completion: journeys F1–F8 + discovery/join + Git + serving identity + outage/replay + seat boot/work/receipts/stop + P-202/P-203/P-204 re-proof on the exact artifact; manifest id; independent component acceptance⟧ |
+| P-521 | Integrated hardened-artifact acceptance on ⟦PIN⟧ (0.0.28-alpha, Linux two-host rig per `#D-139`) | ⟦pending⟧ | ⟦WI-2144482 completion: journeys F1–F8 + discovery/join + Git + serving identity + outage/replay + seat boot/work/receipts/stop + P-202/P-203/P-204 re-proof on the exact artifact; drill 3 (WI-10004688) + journeys (WI-10004750); manifest id; independent component acceptance⟧ |
 
-Independent GO (L3, WI-10004684, su-2fa09): ⟦GO/NO-GO, timestamp, what it verified: artifact, manifest, D-112 identity gate, seed contents⟧.
+Independent GO (L3, WI-10004684; current holder ⟦re-check at signing⟧, last seen su-respawn-d08b654c): ⟦GO/NO-GO, timestamp, what it verified: artifact, manifest, D-112 identity gate, seed contents per `#D-140`…`#D-148`⟧.
 
 ## 4. Discrepancies to resolve before signing (found during this pre-draft)
 
-1. **Work-item ↔ plan drift.** Plan items P-202, P-203 and P-204 are `done` (`#D-072`/`#D-073`/`#D-078`),
-   but their mirror work-items WI-2039872, WI-2039873 and WI-2039874 still read `blocked`. Hand to L7
+1. **Work-item ↔ plan drift.** Plan items P-202, P-203 and P-204 are `done` (`#D-072`/`#D-073`/`#D-078`).
+   As of 2026-10-02 23:4xZ WI-2039872 reads `done`, but WI-2039873 and WI-2039874 still read `blocked`. Hand to L7
    (code-truth audit) / P-404; the signature should not cite a `blocked` WI as its evidence.
 2. **WI-2039881 (P-305) completion summary is only its title.** The real evidence is `#D-008` and post 81357.
    Cite those, not the WI summary.

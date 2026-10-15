@@ -10,6 +10,7 @@ import {
   fmtCompactAge,
   groupByFleet,
   hasThinking,
+  isAgentThinking,
   isRunningAgent,
   isSessionGone,
   isTranscriptFresh,
@@ -140,6 +141,23 @@ describe('hasThinking', () => {
     // would open an empty pane.
     expect(hasThinking({ sessionId: 's1', thinkingResolvable: false })).toBe(false);
   });
+});
+
+describe('isAgentThinking', () => {
+  it('counts silent ongoing turns independently of transcript output or stream availability', () => {
+    const live = agent({ sessionState: 'live', transcriptFresh: false, thinking: false,
+      thinkingResolvable: false, liveness: 'stale' });
+    expect(isTranscriptFresh(live)).toBe(false);
+    expect(hasThinking(live)).toBe(false);
+    expect(isAgentThinking(live)).toBe(true);
+  });
+
+  it.each(['parked', 'draining', 'suspect', 'ended', 'recorded', null, undefined])(
+    'does not label %s as thinking even with fresh output and an armed loop', (sessionState) => {
+      expect(isAgentThinking(agent({ sessionState, transcriptFresh: true, thinking: true,
+        loopArmed: true, liveness: 'live' }))).toBe(false);
+    },
+  );
 });
 
 describe('thinkingStreamUrl', () => {
@@ -273,6 +291,14 @@ describe('agentGlyph', () => {
 });
 
 describe('isRunningAgent / isTranscriptFresh', () => {
+  it.each(['live', 'parked', 'recorded'])('counts living %s sessions independently of heartbeat and loops', (sessionState) => {
+    expect(isRunningAgent({ sessionState, liveness: 'stale', loopArmed: false })).toBe(true);
+  });
+
+  it.each(['draining', 'suspect', 'ended', 'unknown', null])('does not count %s verdicts as living sessions', (sessionState) => {
+    expect(isRunningAgent({ sessionState, liveness: 'live', loopArmed: true })).toBe(false);
+  });
+
   it('retains a loop-armed agent whose presence heartbeat went stale', () => {
     expect(isRunningAgent({ liveness: 'stale', loopArmed: true })).toBe(true);
     expect(isRunningAgent({ liveness: 'stale', loopArmed: false })).toBe(false);

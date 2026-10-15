@@ -33,6 +33,13 @@ beforeEach(() => {
 });
 
 describe('config:tiers-set', () => {
+  it('exposes versioned launch aliases through the existing catalog read', async () => {
+    const out = (await getTool.handler({}, {} as never)) as ToolOut;
+    expect(out.data.launchAliases).toContainEqual(expect.objectContaining({
+      agent: 'codex', model: 'gpt-6.1-sol', aliases: expect.arrayContaining(['sol 6.1']),
+    }));
+  });
+
   it('persists a valid menu with clamped compaction limits; drops invalid rows loudly', async () => {
     const out = (await setTool.handler(
       {
@@ -87,8 +94,8 @@ describe('config:tiers-set', () => {
       modelWindow: 1_048_576,
       effectiveCompactionLimit: 400_000,
       loopCapability: {
-        executable: false,
-        reason: expect.stringContaining('unsupported loop provider "openrouter"'),
+        executable: true,
+        provider: 'openrouter',
       },
     });
   });
@@ -127,8 +134,8 @@ describe('config:tiers-get', () => {
     const out = (await getTool.handler({}, {} as never)) as ToolOut;
     expect(out.data.tiers[0]).toMatchObject({ modelWindow: 1_048_576, effectiveCompactionLimit: 400_000 });
     expect(out.data.tiers[0].loopCapability).toMatchObject({
-      executable: false,
-      reason: expect.stringContaining('unsupported loop provider "openrouter"'),
+      executable: true,
+      provider: 'openrouter',
     });
   });
 });

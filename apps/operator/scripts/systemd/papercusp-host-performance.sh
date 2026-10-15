@@ -4,6 +4,7 @@
 set -euo pipefail
 
 SYSFS_ROOT="${PAPERCUSP_CPU_SYSFS_ROOT:-/sys/devices/system/cpu/cpufreq}"
+BLOCK_SYSFS_ROOT="${PAPERCUSP_BLOCK_SYSFS_ROOT:-/sys/block}"
 NR_HUGEPAGES_REQUEST_PATH="${PAPERCUSP_NR_HUGEPAGES_REQUEST_PATH:-/proc/sys/vm/nr_hugepages}"
 NR_HUGEPAGES_STATUS_PATH="${PAPERCUSP_NR_HUGEPAGES_STATUS_PATH:-$NR_HUGEPAGES_REQUEST_PATH}"
 NR_HUGEPAGES_TARGET="${PAPERCUSP_NR_HUGEPAGES_TARGET:-18000}"
@@ -19,6 +20,50 @@ write_policy() {
     return 1
   }
   changed=$((changed + 1))
+}
+
+configure_root_disk_scheduler() {
+  local root_source disk_rows root_disks disk scheduler_file schedulers available selected
+
+  if ! root_source="$(findmnt -nro SOURCE /)"; then
+    printf '[papercusp-host-performance] failed to identify the root filesystem source\n' >&2
+    return 1
+  fi
+  root_source="$(cut -d '[' -f 1 <<<"$root_source")"
+  if ! disk_rows="$(lsblk --inverse --noheadings --raw --output KNAME,TYPE "$root_source")"; then
+    printf '[papercusp-host-performance] failed to resolve root backing disks from %s\n' "$root_source" >&2
+    return 1
+  fi
+  root_disks="$(awk '$2 == "disk" { print $1 }' <<<"$disk_rows" | sort -u)"
+  [[ -n "$root_disks" ]] || {
+    printf '[papercusp-host-performance] no backing disks found for root source %s\n' "$root_source" >&2
+    return 1
+  }
+
+  while IFS= read -r disk; do
+    [[ -n "$disk" ]] || continue
+    scheduler_file="$BLOCK_SYSFS_ROOT/$disk/queue/scheduler"
+    [[ -r "$scheduler_file" && -w "$scheduler_file" ]] || {
+      printf '[papercusp-host-performance] root scheduler control is unavailable: %s\n' "$scheduler_file" >&2
+      return 1
+    }
+    schedulers="$(<"$scheduler_file")"
+    available="$(tr -d '[]' <<<"$schedulers")"
+    [[ " $available " == *" mq-deadline "* ]] || {
+      printf '[papercusp-host-performance] mq-deadline is unavailable for root disk %s (offered: %s)\n' "$disk" "$schedulers" >&2
+      return 1
+    }
+
+    if [[ "$schedulers" != *"[mq-deadline]"* ]]; then
+      printf '%s\n' mq-deadline >"$scheduler_file"
+    fi
+    selected="$(<"$scheduler_file")"
+    [[ "$selected" == *"[mq-deadline]"* || "$selected" == mq-deadline ]] || {
+      printf '[papercusp-host-performance] failed to select mq-deadline for root disk %s (read-back: %s)\n' "$disk" "$selected" >&2
+      return 1
+    }
+    printf '[papercusp-host-performance] root I/O scheduler verified: %s via %s => %s\n' "$disk" "$root_source" "$selected"
+  done <<<"$root_disks"
 }
 
 shopt -s nullglob
@@ -38,6 +83,8 @@ done
 
 printf '[papercusp-host-performance] performance policy verified on %d CPU policies (%d writes)\n' \
   "$seen" "$changed"
+
+configure_root_disk_scheduler
 
 # A 32 GiB shared_buffers allocation needs 16,384 x 2 MiB pages before
 # PostgreSQL's other shared structures. Reserve 18,000 pages to leave explicit

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { dispatchWrite, startExistingGoal, type StartExistingGoalDeps } from './goals';
 import type { StartGoalByIdResult } from '../../../goals/start-goal-by-id';
+import type { handleHttpToolRequest } from '@papercusp/agent-mcp';
 
 function toolResult(payload: unknown, status = 200) {
   return {
@@ -29,6 +30,24 @@ function deps(overrides: Partial<StartExistingGoalDeps> = {}): StartExistingGoal
 }
 
 describe('admin goals start-existing — status plus canonical holder activation', () => {
+  it('forwards collection policy CAS writes as the owner and preserves canonical refusals', async () => {
+    const dispatch = vi.fn(async (_request: Parameters<typeof handleHttpToolRequest>[0],
+      _extras: Parameters<typeof handleHttpToolRequest>[1]) => toolResult({ error: 'stale', actualVersion: 8 }));
+    const payload = { goalId: 'G-1', property: 'tea_policy', expectedVersion: 4,
+      value: { order: ['mint'], excluded: ['rooibos'] } };
+    const req = new Request('http://127.0.0.1/api/admin/goals/set-property', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
+    });
+    const res = await dispatchWrite(req, { params: { verb: 'set-property' } } as never, dispatch);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    const forwarded = dispatch.mock.calls[0][0];
+    expect(forwarded.pathname).toBe('/api/agent-tools/goals/set-property');
+    expect(forwarded.searchParams.get('client')).toBe('pc-admin-coord-ui');
+    expect(forwarded.body).toEqual(payload);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ error: 'stale', actualVersion: 8 });
+  });
+
   it('is mounted as a real admin verb (missing id is its own 400, not unknown-verb 404)', async () => {
     const req = new Request('http://127.0.0.1/api/admin/goals/start-existing', {
       method: 'POST',

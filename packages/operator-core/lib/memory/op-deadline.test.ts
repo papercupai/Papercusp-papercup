@@ -103,13 +103,29 @@ describe('withMemoryTimeout — deadline race', () => {
     try {
       const sharedFailure = shared.run(() => new Promise(() => {}), 'shared search')
         .catch((error: unknown) => error);
-      const cappedFailure = capped.run(() => new Promise(() => {}), 'capped search', 20)
+      const cappedFailure = capped.run(() => new Promise(() => {}), 'search', 20)
         .catch((error: unknown) => error);
       await vi.advanceTimersByTimeAsync(20);
-      expect(await cappedFailure).toMatchObject({ scope: 'backend-operation' });
+      expect(await cappedFailure).toMatchObject({
+        scope: 'backend-operation', phase: 'memory-search', elapsedMs: 20,
+      });
       await vi.advanceTimersByTimeAsync(80);
-      expect(await sharedFailure).toMatchObject({ scope: 'request-budget' });
+      expect(await sharedFailure).toMatchObject({
+        scope: 'request-budget', phase: 'shared-budget', elapsedMs: 100,
+      });
     } finally { shared.close(); capped.close(); vi.useRealTimers(); }
+  });
+
+  it('uses the closed phase vocabulary instead of persisting arbitrary timeout labels', async () => {
+    vi.useFakeTimers();
+    try {
+      const failed = withMemoryTimeout(new Promise(() => {}), 'raw request label', 12)
+        .catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(12);
+      expect(await failed).toMatchObject({
+        scope: 'backend-operation', phase: 'other', elapsedMs: 12,
+      });
+    } finally { vi.useRealTimers(); }
   });
 
   it('preserves an explicitly disabled local bound while honoring parent cancellation', async () => {

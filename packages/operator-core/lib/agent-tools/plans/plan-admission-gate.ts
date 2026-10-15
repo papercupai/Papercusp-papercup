@@ -54,6 +54,8 @@ export interface PlanAdmissionSubject {
    */
   readonly planRevisionHash?: string;
   readonly nowMs?: number;
+  /** Preflight only: compute the same verdict without emitting shadow telemetry. */
+  readonly readOnly?: boolean;
 }
 
 /** Resolves the pot's ratification policy, or null when this pot has not opted in. */
@@ -358,7 +360,7 @@ export async function checkPlanAdmission(subject: PlanAdmissionSubject): Promise
       ...(result.ok ? {} : { code: result.code }),
       detail: result.ok ? 'would admit' : result.detail,
     };
-    await emitShadowObservation(observation);
+    if (!subject.readOnly) await emitShadowObservation(observation);
     return { admitted: true, skipped: 'shadow-mode', shadow: observation };
   }
 

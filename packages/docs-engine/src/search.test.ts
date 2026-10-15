@@ -257,4 +257,26 @@ describe('searchDocs', () => {
     // kept, so this asserts no slug-bonus inflation, not zero-score).
     expect(res.hits[0]?.score).toBeLessThan(1000);
   });
+
+  it('returns promptly on abort while a source content read is still pending', async () => {
+    const controller = new AbortController();
+    const page: DocPage = { slug: 'slow', slugs: ['slow'], url: '/slow', title: 'Slow', toc: [] };
+    let receivedSignal: AbortSignal | undefined;
+    const source: DocSource = {
+      name: 'slow-source',
+      listPages: async () => [page],
+      getPage: async () => page,
+      getContent: async (_page, options) => {
+        receivedSignal = options?.signal;
+        return await new Promise<string>(() => undefined);
+      },
+    };
+
+    const result = searchDocs(source, { query: 'needle' }, { signal: controller.signal });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(receivedSignal).toBe(controller.signal);
+
+    controller.abort();
+    await expect(result).rejects.toThrow('cancelled');
+  });
 });

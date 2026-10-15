@@ -9,6 +9,8 @@ import { configureCoordLog, resetCoordLog, coordLog } from './log';
 import {
   detectOwnerAuthorshipClaim,
   expireStaleAdvisoryEscalations,
+  foldEscalationResolution,
+  getEscalation,
   listEscalations,
   listEscalationsPaginated,
   openEscalation,
@@ -885,5 +887,41 @@ describe('resolveEscalationsBatch — concurrent sweeps collapse onto ONE row (W
 
     const rows = (await log.readEvents('escalations')).filter((r) => r.kind === 'escalation_resolved');
     expect(rows).toHaveLength(1);
+  });
+});
+
+/**
+ * WI-10005375 — an escalation is resolved by a SIBLING event (`escalation_resolved`, keyed
+ * `related_msg_id`), so the stored open record says `resolved:null` forever. coord:read
+ * returned that raw record, so a withdrawn ask read as still open. `foldEscalationResolution`
+ * is the single-record fold coord:read now applies. InMemoryCoordLog has no `getSql`, so this
+ * drives the replay fallback; the PG targeted read is pinned in
+ * resolve-message-ref.integration.test.ts.
+ */
+describe('foldEscalationResolution — single-record fold (WI-10005375)', () => {
+  const identity = { ownerId: 'su-test' } as AgentIdentity;
+
+  it('folds ONLY the target escalation, and follows a reopen back to open', async () => {
+    configureCoordLog(new InMemoryCoordLog());
+    const target = await openEscalation(identity, { severity: 'question', summary: 'withdrawn ask' });
+    const other = await openEscalation(identity, { severity: 'question', summary: 'still open ask' });
+    expect(target.msg_id).not.toBe(other.msg_id);
+    await resolveEscalation({ msg_id: target.msg_id, choice: 'superseded', resolver: 'su-test' });
+
+    // The raw stored record is what coord:read used to return: unresolved by construction.
+    const rawTarget = await coordLog.getEvent('escalations', target.msg_id);
+    expect(rawTarget?.resolved).toBeNull();
+
+    const folded = await foldEscalationResolution(rawTarget as never);
+    expect(folded.resolved?.choice).toBe('superseded');
+    expect(folded.resolved?.by).toBe('su-test');
+    expect((await getEscalation(target.msg_id))?.resolved?.choice).toBe('superseded');
+
+    // A resolution of ONE escalation must not leak onto another.
+    const rawOther = await coordLog.getEvent('escalations', other.msg_id);
+    expect((await foldEscalationResolution(rawOther as never)).resolved).toBeNull();
+
+    await reopenEscalation({ msg_id: target.msg_id, by: 'owner', note: 'not withdrawn after all' });
+    expect((await foldEscalationResolution(rawTarget as never)).resolved).toBeNull();
   });
 });

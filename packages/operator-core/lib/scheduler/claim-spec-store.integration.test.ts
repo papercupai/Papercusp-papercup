@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { applyClaimPathReadDeps } from '../../test/_work-items-schema';
 
 // Keep the import chain (claim-spec-store → get-next → work-items) safe at module load.
 const h = vi.hoisted(() => ({
@@ -37,6 +38,7 @@ const {
   resolveClaimSpecWorkspace,
   fleetSpecBeeKey,
   countActiveClaimsForBee,
+  readClaimConcurrency,
   readClaimConcurrencyBatch,
   resolveFleetClaimSpec,
   listFleetClaimSpecCandidates,
@@ -44,6 +46,7 @@ const {
   SCHEDULER_CLAIM_SETUP_BUDGET_MS,
 } = await import('./claim-spec-store');
 const { DEFAULT_CLAIM_SPEC } = await import('./claim-spec');
+const { updateExternalBlockerHistory } = await import('../external-blockers');
 const { buildBeeClaimSpecProjection } = await import('../sync/hyperbee/projections/bee-claim-spec');
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -108,6 +111,12 @@ beforeAll(async () => {
     redundancy integer,
     expected_cost_cents bigint,
     workspace_id text NOT NULL,
+    -- WI-10005209: work_item_claim_floors (migration 1101, LANGUAGE sql, created by
+    -- applyClaimPathReadDeps) resolves blockers via 'work_items bf ... bf.harness_slug',
+    -- and a sql function body is validated at CREATE time, so every bf./bi. column it
+    -- names must exist here: harness_slug and authority (both text, as live).
+    harness_slug text,
+    authority text,
     feature_id text PRIMARY KEY,
     admission text, admitted_at timestamptz, admitted_by text,
     taken_by text,
@@ -115,6 +124,10 @@ beforeAll(async () => {
     item_kind text NOT NULL DEFAULT 'change',
     payload jsonb
   )`);
+  // WI-10005130: getNextForBee reaches the claim path, so apply the shared claim-path
+  // read deps LAST (all IF NOT EXISTS) over the hand-built tables above. The recovery
+  // database in the 389 test only replays claim-spec migrations and calls no claim door.
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
 }, 180_000);
 afterAll(async () => {
   await db?.cleanup?.();
@@ -165,6 +178,84 @@ describe('migration 389 restored after the migration 555 table rename', () => {
 });
 
 describe('cup_claim_specs store (mig 372)', () => {
+  it('appendIds preserves incumbent cohort ids and policy in exactly one revision', async () => {
+    const cupId = fleetSpecBeeKey('append-preserves-policy');
+    const incumbent = {
+      ...DEFAULT_CLAIM_SPEC, specId: 'append-preserves-policy', revision: 7,
+      states: ['open'], limits: { maxConcurrentClaims: 2 },
+      view: { filter: { all: [
+        { field: 'id', op: 'in', value: ['WI-old', 'WI-retained'] },
+        { field: 'goal', op: '=', value: 'goal-owned' },
+        { not: { field: 'title', op: 'word', value: 'p2p' } },
+      ] } },
+    };
+    expect((await setClaimSpec({ cupId, workspaceId: 'append-ws', spec: incumbent, potSlug: 'papercusp' }, db.sql)).ok).toBe(true);
+    const result = await setClaimSpec({ cupId, workspaceId: 'append-ws', appendIds: ['WI-new', 'WI-old'], potSlug: 'wrong-scope' }, db.sql);
+    expect(result).toMatchObject({ ok: true, revision: 8 });
+    const [stored] = await db.sql`SELECT spec, revision, harness_slug FROM harness_shared.cup_claim_specs
+      WHERE workspace_id = 'append-ws' AND bee_id = ${cupId}`;
+    expect(stored.spec).toEqual({ ...incumbent, revision: 8, view: { filter: { all: [
+      { field: 'id', op: 'in', value: ['WI-old', 'WI-retained', 'WI-new'] },
+      ...incumbent.view.filter.all.slice(1),
+    ] } } });
+    expect(stored).toMatchObject({ revision: 8, harness_slug: 'papercusp' });
+    expect(result.spec).toEqual(stored.spec);
+  });
+
+  it('concurrent appendIds calls preserve the union of requested cohort ids', async () => {
+    const cupId = fleetSpecBeeKey('append-concurrent');
+    await setClaimSpec({ cupId, spec: { ...DEFAULT_CLAIM_SPEC, revision: 10,
+      view: { filter: { field: 'id', op: 'in', value: ['WI-incumbent'] } },
+    } }, db.sql);
+    const ids = Array.from({ length: 8 }, (_, index) => `WI-concurrent-${index}`);
+    const results = await Promise.all(ids.map((id) => setClaimSpec({ cupId, appendIds: [id] }, db.sql)));
+    expect(results.every((result) => result.ok)).toBe(true);
+    expect(results.map((result) => result.revision).sort((a, b) => a! - b!)).toEqual([11, 12, 13, 14, 15, 16, 17, 18]);
+    const [stored] = await db.sql`SELECT spec, revision FROM harness_shared.cup_claim_specs
+      WHERE workspace_id = 'default' AND bee_id = ${cupId}`;
+    expect(stored.spec.view.filter.value).toHaveLength(9);
+    expect(new Set(stored.spec.view.filter.value)).toEqual(new Set(['WI-incumbent', ...ids]));
+    expect(stored.spec.revision).toBe(18);
+    expect(stored.revision).toBe(18);
+  });
+
+  it('concurrent first appendIds calls bootstrap only the requested id union', async () => {
+    const cupId = fleetSpecBeeKey('append-bootstrap');
+    const ids = ['WI-first-a', 'WI-first-b', 'WI-first-c'];
+    const results = await Promise.all(ids.map((id) => setClaimSpec({ cupId, appendIds: [id] }, db.sql)));
+    expect(results.every((result) => result.ok)).toBe(true);
+    const [stored] = await db.sql`SELECT spec, revision, id_only FROM harness_shared.cup_claim_specs
+      WHERE workspace_id = 'default' AND bee_id = ${cupId}`;
+    expect(stored.revision).toBe(3);
+    expect(stored.spec.revision).toBe(3);
+    expect(stored.id_only).toBe(true);
+    expect(new Set(stored.spec.view.filter.value)).toEqual(new Set(ids));
+    expect(stored.spec.view.filter.value).toHaveLength(3);
+  });
+
+  it('appendIds refuses dynamic lanes and admission failures without changing storage', async () => {
+    const cupId = fleetSpecBeeKey('append-guarded');
+    await setClaimSpec({ cupId, spec: DEFAULT_CLAIM_SPEC }, db.sql);
+    expect(await setClaimSpec({ cupId, appendIds: ['WI-refused'] }, db.sql)).toMatchObject({ ok: false });
+    const cohort = { ...DEFAULT_CLAIM_SPEC, revision: 5,
+      view: { filter: { field: 'id', op: 'in', value: ['WI-old'] } },
+    };
+    await setClaimSpec({ cupId, spec: cohort }, db.sql);
+    const validateAppend = vi.fn(async () => ({ errors: ['owner-action floor'] }));
+    expect(await setClaimSpec({ cupId, appendIds: ['WI-refused'], validateAppend }, db.sql)).toMatchObject({
+      ok: false, errors: ['owner-action floor'],
+    });
+    expect(validateAppend).toHaveBeenCalledWith({ ...cohort, revision: 6,
+      view: { filter: { field: 'id', op: 'in', value: ['WI-old', 'WI-refused'] } },
+    }, null);
+    const [stored] = await db.sql`SELECT spec, revision FROM harness_shared.cup_claim_specs
+      WHERE workspace_id = 'default' AND bee_id = ${cupId}`;
+    expect(stored).toMatchObject({ spec: cohort, revision: 5 });
+    const absent = fleetSpecBeeKey('append-guarded-absent');
+    expect(await setClaimSpec({ cupId: absent, appendIds: ['WI-refused'], validateAppend }, db.sql)).toMatchObject({ ok: false });
+    expect(await db.sql`SELECT 1 FROM harness_shared.cup_claim_specs WHERE workspace_id = 'default' AND bee_id = ${absent}`).toHaveLength(0);
+  });
+
   it('bounds dedicated setup acquisition and recovers without running an expired setup', async () => {
     const cupId = 'su-scheduler-setup-starved';
     await setClaimSpec({ cupId, spec: DEFAULT_CLAIM_SPEC }, db.sql);
@@ -175,6 +266,15 @@ describe('cup_claim_specs store (mig 372)', () => {
     `;
     const dedicated = postgres(db.url, { max: 1, prepare: false });
     h.claimSql = dedicated;
+    // Prime the dedicated pool so the held-connection case below specifically
+    // protects the warm 5s fail-fast path; cold first-use has its own bounded test.
+    expect(
+      await getNextForBee({
+        cupId,
+        harness: 'papercusp',
+        useDedicatedClaimPool: true,
+      }),
+    ).toBeNull();
     const reserved = await dedicated.reserve();
     let released = false;
     const steps: string[] = [];
@@ -326,6 +426,69 @@ describe('cup_claim_specs store (mig 372)', () => {
       const verdicts = await readClaimConcurrencyBatch({ cupIds: ['su-bee-batch-never-claimed'] }, db.sql);
       expect(verdicts.has('su-bee-batch-never-claimed')).toBe(true);
       expect(verdicts.get('su-bee-batch-never-claimed')).toMatchObject({ blocked: false, activeClaims: 0 });
+    });
+  });
+
+  // P-010 (parked-agent-census-resumption-and-root-cause-2026-10-09 D-010): a held row that is
+  // blocked/needs-human WITH an active typed external blocker stops consuming a concurrent-claim
+  // slot; it is reported as blockerParkedIds instead. Everything EI-11796 protects still counts:
+  // a wip row carrying a blocker, a plain blocked park, and a blocked row whose blocker cleared.
+  // The blocker records come from the canonical writer, so the fixture cannot drift from the
+  // shape work_items:set_blocker persists.
+  describe('P-010 (D-010): a hold parked on a typed external blocker frees its concurrency slot', () => {
+    const cupId = 'su-bee-p010-blocker-parked';
+    const actor = 'su-p010-test';
+    const ref = 'event:p010-test-upstream';
+    const active = updateExternalBlockerHistory(
+      {},
+      { kind: 'event', ref, summary: 'waiting on an upstream event' },
+      actor,
+    ).blockers;
+    const cleared = updateExternalBlockerHistory({ externalBlockers: active }, { kind: 'event', ref, clear: true }, actor)
+      .blockers;
+    const withBlockers = (blockers: unknown) => JSON.stringify({ externalBlockers: blockers });
+
+    beforeAll(async () => {
+      expect(active.map((b) => b.status)).toEqual(['active']);
+      expect(cleared.map((b) => b.status)).toEqual(['cleared']);
+      await db.sql`
+        INSERT INTO harness_shared.work_items (workspace_id, feature_id, taken_by, status, payload)
+        VALUES ('default', 'P010-blocked-ext', ${cupId}, 'blocked', ${withBlockers(active)}::text::jsonb),
+               ('default', 'P010-needs-human-ext', ${cupId}, 'needs-human', ${withBlockers(active)}::text::jsonb),
+               ('default', 'P010-wip-ext', ${cupId}, 'wip', ${withBlockers(active)}::text::jsonb),
+               ('default', 'P010-blocked-plain', ${cupId}, 'blocked', NULL),
+               ('default', 'P010-blocked-cleared', ${cupId}, 'blocked', ${withBlockers(cleared)}::text::jsonb)`;
+      // Bound via ::text::jsonb (as work-item-blocker-reaper.ts does): this test client would
+      // otherwise JSON-encode the string a second time and store a jsonb STRING scalar
+      // (EI-20633798408131012), which no reader can see as an externalBlockers array.
+      const [shape] = await db.sql<{ t: string }[]>`
+        SELECT jsonb_typeof(payload->'externalBlockers') AS t
+          FROM harness_shared.work_items WHERE feature_id = 'P010-blocked-ext'`;
+      expect(shape?.t).toBe('array');
+    });
+
+    it('counts only the rows its holder is not parked on externally', async () => {
+      expect(await countActiveClaimsForBee({ cupId }, db.sql)).toBe(3);
+    });
+
+    it('readClaimConcurrency names the parked rows and leaves them out of activeClaims', async () => {
+      const verdict = await readClaimConcurrency({ cupId, maxConcurrentClaims: 3 }, db.sql);
+      expect(verdict).toMatchObject({ blocked: true, activeClaims: 3, maxConcurrentClaims: 3 });
+      expect([...verdict.heldIds].sort()).toEqual(['P010-blocked-cleared', 'P010-blocked-plain', 'P010-wip-ext']);
+      expect([...verdict.blockerParkedIds].sort()).toEqual(['P010-blocked-ext', 'P010-needs-human-ext']);
+      // The two parked rows would have pinned this bee at a cap of 4 before P-010; now it has room.
+      expect(await readClaimConcurrency({ cupId, maxConcurrentClaims: 4 }, db.sql)).toMatchObject({
+        blocked: false,
+        activeClaims: 3,
+      });
+    });
+
+    it('readClaimConcurrencyBatch returns the same verdict as the single-bee reader', async () => {
+      const single = await readClaimConcurrency({ cupId, maxConcurrentClaims: 3 }, db.sql);
+      const batch = (await readClaimConcurrencyBatch({ cupIds: [cupId], maxConcurrentClaims: 3 }, db.sql)).get(cupId);
+      expect(batch).toBeDefined();
+      expect({ ...batch!, heldIds: [...batch!.heldIds].sort(), blockerParkedIds: [...batch!.blockerParkedIds].sort() })
+        .toEqual({ ...single, heldIds: [...single.heldIds].sort(), blockerParkedIds: [...single.blockerParkedIds].sort() });
     });
   });
 

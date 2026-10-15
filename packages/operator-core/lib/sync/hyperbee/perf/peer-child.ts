@@ -30,6 +30,7 @@
 import { bootHarnessSubstrate, type BootedHarnessHandle } from '../boot';
 import { closeHarnessStore } from '../corestore';
 import { findLatestSnapshotIndex } from '../read-merge';
+import { listBootHistory } from '../boot-history';
 import type { OpEnvelope } from '../op-envelope-types';
 import type { PeerLogOp } from '../peer-log';
 import type { SwarmBinding } from '../derive-swarm-topic';
@@ -310,7 +311,15 @@ async function main(): Promise<void> {
       // buildHiveRekeyBootDeps path reaches the stub, fail-opens, and records
       // epoch_gate_skipped on an otherwise usable-looking artifact. Hive-bound
       // peers retain the production composition because they exercise re-key.
-      ...(cfg.hivePubkey ? {} : { rekeyDepsOverride: null }),
+      ...(cfg.hivePubkey
+        ? {}
+        : {
+            rekeyDepsOverride: null,
+            // The local measurement corpus has no PG-backed governor receipts.
+            // Keep the strict no-PG loader and the real snapshot fold/worker;
+            // provide its empty census through the maintained boot seam.
+            loadOwnCompactionGovernorReceiptKeys: async () => [],
+          }),
       mergePollMs: cfg.mergePollMs ?? 1000,
       pendingRetryMs: 1000,
       reverifyIntervalMs: 0,
@@ -388,15 +397,30 @@ async function main(): Promise<void> {
         // gets a real happens-before edge instead of a fixed sleep.
         const deadline = Date.now() + (cfg.snapshotWaitMs ?? 120_000);
         let index: number | null = null;
+        let error: string | undefined;
         for (;;) {
           // Small lookback ON PURPOSE: the producer appends its snapshot set at
           // the tail, so a short window finds it — while a full-history scan on
           // every poll would burn CPU and slow the very merge pass being awaited.
-          index = await findLatestSnapshotIndex(handle.ownLog, SNAPSHOT_TAIL_LOOKBACK).catch(() => null);
-          if (index !== null || Date.now() >= deadline) break;
+          try {
+            index = await findLatestSnapshotIndex(handle.ownLog, SNAPSHOT_TAIL_LOOKBACK);
+          } catch (e) {
+            error = `snapshot scan failed: ${e instanceof Error ? e.message : String(e)}`;
+          }
+          if (index !== null || error) break;
+          // Reuse the producer's existing cause instead of spending the entire
+          // barrier budget after a compaction that already failed (WI-10007125).
+          error = listBootHistory({
+            workspaceId: cfg.workspaceId,
+            harnessSlug: cfg.harnessSlug,
+            kinds: ['own_log_compaction'],
+            limit: 1,
+          })[0]?.message;
+          if (!error?.startsWith('log compaction failed')) error = undefined;
+          if (error || Date.now() >= deadline) break;
           await new Promise((r) => setTimeout(r, 100));
         }
-        out({ evt: 'snapshot-ready', index, ownLength: handle.ownLog.length });
+        out({ evt: 'snapshot-ready', index, ownLength: handle.ownLog.length, ...(error ? { error } : {}) });
         continue;
       }
       if (line === 'go' && cfg.role === 'writer') {

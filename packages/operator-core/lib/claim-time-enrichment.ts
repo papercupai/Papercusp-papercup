@@ -85,6 +85,7 @@ export const CLAIM_TIME_ENRICHMENT_LEGS = [
   // the implementer never CLAIMED the row. That row is byte-indistinguishable from
   // never-started, so every other leg is structurally silent for it.
   'sourceCitation',
+  'taskBrief',
 ] as const;
 
 export type ClaimTimeEnrichmentLeg = (typeof CLAIM_TIME_ENRICHMENT_LEGS)[number];
@@ -170,6 +171,8 @@ export interface ClaimTimeEnrichment {
    */
   sourceCitation?: unknown;
   sourceCitationWarning?: string;
+  /** P-012: fresh source context from the registered repository and stored task paths. */
+  taskBrief?: import('./code-intelligence/task-brief').TaskBrief;
   /**
    * P-013 — what this claim's context actually contained, and what it did not.
    *
@@ -336,6 +339,7 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
     planItemLandedEntry,
     siblingPathOverlapEntry,
     sourceCitationEntry,
+    taskBriefEntry,
   ] = await Promise.all([
       // What OTHERS ruled that governs this item. Available from either a
       // work-item payload stamp or an explicit plan pointer.
@@ -503,6 +507,10 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
         const warning = m.sourceCitationWarning(hint, workItemId);
         return hint && warning ? { sourceCitation: hint, sourceCitationWarning: warning } : null;
       }),
+      runLeg('taskBrief', wi, async workItem => {
+        const m = await import('./code-intelligence/task-brief');
+        return m.getClaimTimeTaskBrief({ workItem, harness, workspaceId });
+      }),
     ]);
 
   const context = {
@@ -517,6 +525,7 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
     ...(planItemLandedEntry ?? {}),
     ...(siblingPathOverlapEntry ?? {}),
     ...(sourceCitationEntry ?? {}),
+    ...(taskBriefEntry ?? {}),
   };
 
   return { ...context, enrichmentDelivery: summarizeDelivery(outcomes, context) };

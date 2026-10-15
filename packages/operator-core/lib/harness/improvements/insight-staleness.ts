@@ -406,15 +406,33 @@ const MAX_IGNORE_PROBES = 200;
  * other than 0 is treated as NOT ignored, so the collector degrades to the
  * previous tracked-or-on-disk behaviour rather than suppressing a real signal.
  */
-async function listIgnoredPaths(root: string, candidates: readonly string[]): Promise<Set<string>> {
+type SidecarExecFile = typeof import('../../fleet/git-via-sidecar').execFileViaSidecar;
+
+/** Which candidates match a gitignore rule, keeping the submodule-safe one-path invocation. */
+export async function listIgnoredPaths(
+  root: string,
+  candidates: readonly string[],
+  runExecFile?: SidecarExecFile,
+): Promise<Set<string>> {
   const ignored = new Set<string>();
   if (candidates.length === 0) return ignored;
   try {
-    const { execFile } = await import('node:child_process');
-    const isIgnored = (p: string) =>
-      new Promise<boolean>((resolve) => {
-        execFile('git', ['-C', root, 'check-ignore', '-q', '--', p], (err) => resolve(!err));
-      });
+    const execFileViaSidecar =
+      runExecFile ?? (await import('../../fleet/git-via-sidecar')).execFileViaSidecar;
+    const isIgnored = async (p: string): Promise<boolean> => {
+      try {
+        await execFileViaSidecar('git', ['-C', root, 'check-ignore', '-q', '--', p], {
+          subsystem: 'insight-staleness',
+          timeoutMs: 2_000,
+          rpcTimeoutMs: 7_000,
+        });
+        return true;
+      } catch {
+        // Exit 1 means not ignored; submodule pathspec errors and transport
+        // failures also preserve the existing fail-open behavior.
+        return false;
+      }
+    };
     for (const p of candidates.slice(0, MAX_IGNORE_PROBES)) {
       if (await isIgnored(p)) ignored.add(p);
     }
@@ -425,7 +443,7 @@ async function listIgnoredPaths(root: string, candidates: readonly string[]): Pr
 }
 
 /** Thin fs glue — reads the agent-insights dir + checks cited paths against the repo tree. */
-export async function collectInsightStalenessSignals(): Promise<WatchdogSignal[]> {
+export async function collectInsightStalenessSignals(runExecFile?: SidecarExecFile): Promise<WatchdogSignal[]> {
   // Lazy-import so the pure scan stays import-cheap for tests.
   const { DOCS_CONTENT_ROOT, REPO_ROOT } = await import('../../agent-tools/docs/_repo-paths');
   const dir = path.join(DOCS_CONTENT_ROOT, 'agent-insights');
@@ -468,7 +486,7 @@ export async function collectInsightStalenessSignals(): Promise<WatchdogSignal[]
   const cheapResolver = makeCitationResolver({ trackedFiles: tracked, existsOnDisk });
   const cited = [...new Set(insights.flatMap((i) => extractCitedPaths(i.raw)))];
   const unresolved = cited.filter((p) => !cheapResolver(p));
-  const ignoredPaths = [...(await listIgnoredPaths(REPO_ROOT, unresolved))];
+  const ignoredPaths = [...(await listIgnoredPaths(REPO_ROOT, unresolved, runExecFile))];
   const existsFn = makeCitationResolver({
     trackedFiles: tracked,
     ignoredPaths,

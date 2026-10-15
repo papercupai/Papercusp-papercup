@@ -13,6 +13,12 @@ import { resolveBindHost } from './resolve-bind-host';
 export const REMOTE_ORIGINS_ENV = 'PAPERCUSP_REMOTE_ORIGINS';
 export const REMOTE_OPERATOR_CAPABILITY = 'operator:remote';
 
+/** Pure profile identity: request guards must not load hosted composition. */
+export const HOSTED_CONTROL_PLANE_DISTRIBUTION_PROFILE = 'hosted-control-plane';
+export function isHostedControlPlaneDistributionProfile(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.PAPERCUSP_DISTRIBUTION_PROFILE === HOSTED_CONTROL_PLANE_DISTRIBUTION_PROFILE;
+}
+
 export interface RemoteAuthPolicy {
   remote: boolean;
   origins: readonly string[];

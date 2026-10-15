@@ -57,9 +57,9 @@ export function hiveMemberProfileOverlay(hiveBp: {
 export default defineTool({
   name: 'harness:create',
   description:
-    'Create a harness and instantiate a Blueprint into it. Provide an existing repo `path` OR `parentDir`+`folderName` to make a new dir; choose the blueprint via `blueprintId` (resolved local → installed → built-in, e.g. "coding"/"research" or a Cupboard-installed id) OR an inline `blueprint` object. The blueprint\'s knobs.requiresRepo decides git-init: coding → a git repo, research → a repo-less state dir. Registers the harness, provisions its PG schema, writes the git-canonical .papercusp/blueprint.yaml. Returns {ok, slug, path, blueprint}.',
+    'Create a harness and instantiate a Blueprint into it. Provide an existing repo `path` OR `parentDir`+`folderName` to make a new dir; choose the blueprint via `blueprintId` (resolved local → installed → built-in, e.g. "coding"/"research" or a Cupboard-installed id) OR an inline `blueprint` object. The blueprint\'s knobs.requiresRepo decides git-init: coding → a git repo, research → a repo-less state dir. In a hive-scoped session, pass `pot` equal to that hive; omitting it requests a standalone harness and is refused at the hive boundary. Registers the harness, provisions its PG schema, writes the git-canonical .papercusp/blueprint.yaml. Returns {ok, slug, path, blueprint}.',
   guidance: {
-    when: 'Spinning up a new managed harness (coding from a repo, or a repo-less research harness) configured by a blueprint. The agent-authorable path to a new harness.',
+    when: 'Spinning up a new managed harness (coding from a repo, or a repo-less research harness) configured by a blueprint. The agent-authorable path to a new harness. In a hive-scoped session, include `pot` equal to the current hive.',
     notWhen: 'Running an existing harness (orchestrator). Authoring a blueprint without creating a harness — blueprint:create/extend.',
     chaining: 'blueprint:extend/validate → harness:create { slug, path|parentDir+folderName, blueprintId|blueprint }.',
     seeAlso: [
@@ -109,7 +109,7 @@ export default defineTool({
         .min(1)
         .regex(/^[a-z0-9][a-z0-9-]*$/, 'pot must be a harness slug')
         .optional()
-        .describe('Create this harness directly INTO a Hive: the home slug of a kind:\'hive\' harness. Stamps the new harness\'s hive_slug so its substrate federates over the Hive topic (shared-hive-federation D-010 create-time membership producer). Omit ⇒ a standalone harness. The complement of pot:add-member (which adds an EXISTING harness).'),
+        .describe('Create this harness directly INTO a Hive: the home slug of a kind:\'hive\' harness. Stamps the new harness\'s hive_slug so its substrate federates over the Hive topic (shared-hive-federation D-010 create-time membership producer). Optional for an unscoped/operator session creating a standalone harness; REQUIRED in a hive-scoped session and must equal that hive, because a hive-less harness is outside the session\'s boundary. The complement of pot:add-member (which adds an EXISTING harness).'),
     })
     // WI-3646 class fix (finding #7, instance #3 of "missing-slug → silent
     // zero-federation"): a caller sending `hive` instead of the real `pot`

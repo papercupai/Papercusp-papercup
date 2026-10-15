@@ -30,6 +30,7 @@ import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { emitPlanAuthored } from '../../harness/usage-emitters';
 import { resolveGoalContext, stampPlanGoalProvenance } from '../../modes/goal-context';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { productShapingScaffold, productShapingWriteAdvisory, PRODUCT_SHAPING_GUIDANCE } from './product-shaping';
 import {
   parseBarMappings,
   parseRequirementBars,
@@ -198,6 +199,8 @@ export function buildTemplate(args: {
 ## Background
 
 (Why this plan exists; what problem it addresses.)
+
+${productShapingScaffold()}
 
 ## Phase 1 — TODO
 
@@ -401,11 +404,11 @@ export default defineTool({
   description:
     'Create a plan in the plan STORE; never write a plan file. Pass `content` for the body or omit it for an empty starter. Slug uniqueness is lock-enforced. See /internal/docs/spec/plan-format.',
   guidance: {
-    when: 'Starting a plan: plans:new { slug, title, content }. Pass markdown with ## Requirements and ## Design; Requirements need canonical R-N rows plus a Design ### Bar-to-work map for this plan mapping each to P-NNN and evidence plane tree, deployed, or live. The tool validates this before writing. See /internal/docs/spec/plan-format.',
+    when: 'Starting a plan: plans:new { slug, title, content }. ' + PRODUCT_SHAPING_GUIDANCE + ' Requirements need R-N records with executable requirement JSON (METHOD, check, requiredTestLayers) and Design "### Bar-to-work map for this plan". See /internal/docs/spec/plan-format.',
     notWhen:
-      'Editing an existing plan? Use plans:set-content / set-now / add-decision / add-item. Never create one by writing docs/plans/*.md; use this tool.',
+      'Editing an existing plan: plans:set-content / set-now / add-decision / add-item. Never hand-write docs/plans/*.md.',
     chaining:
-      'One-shot: plans:new { slug, title, content } writes the body. Include ### Bar-to-work map for this plan with | bar | implementing plan items | evidence plane | and canonical P-NNN item lines. A startable plan needs Requirements + complete BAR map + items, then plans:start. Incremental: plans:new → plans:set-now/add-item → plans:set-content → plans:start.',
+      'Shape the product → requirement JSON + Bar-to-work map for this plan + P-NNN items → activation audit/spec quality → plans:start. Incremental edits use plans:set-content or structured item/decision verbs.',
     seeAlso: [
       'plans:add-item (populate the plan with work items)',
       'plans:set-frontmatter (fill/adjust the templated frontmatter)',
@@ -777,6 +780,7 @@ export default defineTool({
       })
       .catch(() => {});
 
+    const shapingAdvisory = body != null && body.trim().length > 0 ? productShapingWriteAdvisory(body) : null;
     return {
       content: [
         {
@@ -788,6 +792,10 @@ export default defineTool({
             revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
             ...(semanticallyCleared.length > 0 ? { semanticallyCleared } : {}),
             ...parseSummary,
+            // R-9: a supplied body without product shaping still lands; the
+            // response carries the advisory preview + scaffold. The default
+            // template already embeds the scaffold, so it never triggers this.
+            ...(shapingAdvisory ? { productShaping: shapingAdvisory } : {}),
           }),
         },
       ],

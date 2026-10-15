@@ -20,7 +20,7 @@ export type ScheduledWatchdogId = (typeof SCHEDULED_WATCHDOG_IDS)[number];
 
 export interface WatchdogSchedulerStatus {
   kind: 'dbos-operation';
-  parentWorkflow: 'routinesTick';
+  parentWorkflow: 'routinesSweepTick';
   operation: 'su-ideate-ungraded-sweep';
   lastExecutionAt: string | null;
   lastWorkflowStatus: string | null;
@@ -49,8 +49,10 @@ export type WatchdogEffectiveState =
   | 'scheduler-unobserved'
   | 'scheduler-error'
   | 'eligible-awaiting-sweep'
+  | 'eligibility-window-unknown'
   | 'eligible-sweep-empty'
   | 'eligible-no-fire'
+  | 'eligible-after-fire'
   | 'healthy-fired'
   | 'healthy-idle';
 
@@ -116,7 +118,17 @@ export function classifyScheduledWatchdogStatus(
       .filter(([, value]) => value.eligibleCount > 0)
       .map(([origin, value]) => `${origin}: ${value.eligibleCount}`)
       .join(', ');
-    const sweptAfterEligibility = executionMs != null && firstEligibleMs != null && executionMs >= firstEligibleMs;
+    if (executionMs == null || firstEligibleMs == null) {
+      return {
+        ok: false,
+        effectiveState: 'eligibility-window-unknown',
+        summary:
+          `${eligibility.total.eligibleCount} filing(s) (${origins}) are eligible, but the sweep and eligibility ` +
+          'timestamps cannot be compared.',
+        nextVerb: null,
+      };
+    }
+    const sweptAfterEligibility = executionMs >= firstEligibleMs;
     const firedAfterEligibility = fireMs != null && firstEligibleMs != null && fireMs >= firstEligibleMs;
     if (sweptAfterEligibility && scheduler.lastResultCount === 0) {
       return {
@@ -151,6 +163,25 @@ export function classifyScheduledWatchdogStatus(
           },
           reason:
             'The Mug grading path is retired. Enter SU GRADE mode and process the eligible filings with blender:grade-idea.',
+        },
+      };
+    }
+    if (sweptAfterEligibility && firedAfterEligibility) {
+      return {
+        ok: false,
+        effectiveState: 'eligible-after-fire',
+        summary:
+          `${eligibility.total.eligibleCount} eligible filing(s) (${origins}) remain; a watchdog fire was recorded ` +
+          'after the earliest eligibility time, but aggregate fire data is not attributed to each origin.',
+        nextVerb: {
+          name: 'mode:set',
+          args: {
+            mode: 'grade',
+            enabled: true,
+            reason: 'watchdog:status found eligible ungraded filings remaining after a recorded fire; process them through the SU GRADE path.',
+          },
+          reason:
+            'Eligible filings remain after a recorded watchdog fire. Enter SU GRADE mode and process the eligible filings with blender:grade-idea.',
         },
       };
     }
@@ -374,7 +405,7 @@ export async function readScheduledWatchdogStatus(args: {
     config,
     scheduler: {
       kind: 'dbos-operation' as const,
-      parentWorkflow: 'routinesTick' as const,
+      parentWorkflow: 'routinesSweepTick' as const,
       operation: 'su-ideate-ungraded-sweep' as const,
       lastExecutionAt: executionMs == null ? null : new Date(executionMs).toISOString(),
       lastWorkflowStatus: schedulerRow?.workflow_status ?? null,

@@ -19,6 +19,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   TEST_FILE_EXIT_FAILED,
+  TEST_FILE_EXIT_FINALIZATION_ERROR,
   TEST_FILE_EXIT_NOT_MEASURED,
   TEST_FILE_EXIT_PASSED,
   TEST_FILE_EXIT_TEMPFAIL,
@@ -38,6 +39,7 @@ import {
 const CONTRACT = [
   TEST_FILE_EXIT_PASSED,
   TEST_FILE_EXIT_FAILED,
+  TEST_FILE_EXIT_FINALIZATION_ERROR,
   TEST_FILE_EXIT_NOT_MEASURED,
   TEST_FILE_EXIT_TEMPFAIL,
 ] as number[];
@@ -105,30 +107,39 @@ async function runMain(argv: string[]): Promise<{ code: number; out: string; err
 }
 
 describe('test:file exit-code contract', () => {
-  it('reserves four distinct codes, and exactly ONE of them blames the code under test', () => {
+  it('reserves distinct codes, and exactly ONE of them blames the code under test', () => {
     expect(new Set(CONTRACT).size).toBe(CONTRACT.length);
 
     const blaming = CONTRACT.filter((code) => describeTestFileExit(code).blamesCodeUnderTest);
     expect(blaming).toEqual([TEST_FILE_EXIT_FAILED]);
 
-    // The asymmetry that matters: a measured pass and a measured red are the only
-    // codes that carry a verdict at all.
+    // Finalization failure retains a measured outcome without blaming tests.
     expect(CONTRACT.filter((code) => testFileRunWasMeasured(code))).toEqual([
       TEST_FILE_EXIT_PASSED,
       TEST_FILE_EXIT_FAILED,
+      TEST_FILE_EXIT_FINALIZATION_ERROR,
     ]);
   });
 
   it('treats an UNRECOGNISED code as not-measured rather than folding it into failure', () => {
     // A crash, a signal kill (null), or a code some future path adds must never
     // read as "the tests failed" — the default has to fail toward "I do not know".
-    for (const code of [null, undefined, 3, 137, -1]) {
+    for (const code of [null, undefined, 4, 137, -1]) {
       const verdict = describeTestFileExit(code as unknown as number);
       expect(verdict.status).toBe('unknown');
       expect(verdict.measured).toBe(false);
       expect(verdict.blamesCodeUnderTest).toBe(false);
       expect(testFileRunWasMeasured(code as unknown as number)).toBe(false);
     }
+  });
+
+  it('keeps a finalization failure unsuccessful, measured and unsafe to rerun automatically', () => {
+    expect(describeTestFileExit(TEST_FILE_EXIT_FINALIZATION_ERROR)).toMatchObject({
+      status: 'finalization-error',
+      measured: true,
+      blamesCodeUnderTest: false,
+      retryable: false,
+    });
   });
 
   it('marks EX_TEMPFAIL as the retryable not-measured code and nothing else as retryable', () => {

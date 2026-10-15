@@ -56,13 +56,35 @@ function route(
   };
 }
 
-function mount(def: RouteDefinition, resolve: HostedPrincipalResolver): Hono {
+function mount(def: RouteDefinition, resolve: HostedPrincipalResolver, sessionRoutes: ReadonlyArray<RouteDefinition> = []): Hono {
   const app = new Hono().basePath('/api');
-  registerRoute(app, def, createHostedRouteStack(resolve));
+  registerRoute(app, def, createHostedRouteStack(resolve, sessionRoutes));
   return app;
 }
 
 describe('hosted route stack', () => {
+  it('admits only the reviewed session route without granting any workspace authority', async () => {
+    const def = route({ capabilities: [], kind: ['user'], trust: ['verified'] });
+    const user = createHostedPrincipal({
+      workspaceId: CONTROL_PLANE_WORKSPACE, userId: 'user-1', activeOrganizationId: 'org-1',
+      sessionId: SESSION_ID, sessionVersion: 7, permissions: [],
+    });
+    const resolve: HostedPrincipalResolver = async () => ({
+      ok: true, principal: user, session: { id: SESSION_ID } as never,
+      membership: { organizationId: 'org-1' } as never,
+    });
+    const response = await mount(def, resolve, [def]).request('/api/hosted/probe');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ principalKind: 'user', capabilities: [] });
+    expect((await mount(def, resolve).request('/api/hosted/probe')).status).toBe(403);
+    expect((await mount({ ...def }, resolve, [def]).request('/api/hosted/probe')).status).toBe(403);
+    expect((await mount(def, deny('session_cookie_missing'), [def]).request('/api/hosted/probe')).status).toBe(401);
+    expect((await mount(def, deny('membership_not_active'), [def]).request('/api/hosted/probe')).status).toBe(403);
+    expect((await mount(route({ capabilities: ['workspace:view'] }), resolve, [def]).request('/api/hosted/probe')).status).toBe(403);
+    const drifted = route({ capabilities: ['*'], kind: ['user'], trust: ['verified'] });
+    expect((await mount(drifted, resolve, [drifted]).request('/api/hosted/probe')).status).toBe(403);
+  });
+
   it('replaces exactly the auth step and inherits input and invoke', () => {
     const stack = createHostedRouteStack(allow());
     expect(stack.map((step) => step.name)).toEqual(['auth', 'input', 'invoke']);
@@ -84,6 +106,35 @@ describe('hosted route stack', () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ principalKind: null, capabilities: null });
+  });
+
+  it('never reflects a hosted handler exception into its HTTP error body', async () => {
+    const privateValue = 'hosted-private-sql-customer@example.test';
+    const app = mount({
+      ...route('public', '/hosted/fault'),
+      handler: () => { throw new Error(`SQL failed for ${privateValue}`); },
+    }, allow());
+    const res = await app.request('/api/hosted/fault');
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body).toEqual({
+      error: { code: 'handler_error', message: 'The hosted service could not complete the request.' },
+    });
+    expect(JSON.stringify(body)).not.toContain(privateValue);
+  });
+
+  it('never reflects a hosted auth-resolver exception into its HTTP error body', async () => {
+    const privateValue = 'hosted-private-provider-token';
+    const app = mount(route({ capabilities: ['workspace:view'] }), async () => {
+      throw new Error(`provider payload ${privateValue}`);
+    });
+    const res = await app.request('/api/hosted/probe');
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body).toEqual({
+      error: { code: 'handler_error', message: 'The hosted service could not complete the request.' },
+    });
+    expect(JSON.stringify(body)).not.toContain(privateValue);
   });
 
   it('admits an authenticated route and hands the handler the hosted principal', async () => {

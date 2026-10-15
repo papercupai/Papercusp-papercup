@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
+import { WORK_ITEM_PRESENTATION_LABELS } from '../../work-item-presentation-contract';
 
 import {
   acceptanceSourceRevision,
   agentReviewEligibility,
   createImplementationReadiness,
   deriveWorkItemIntakeStage,
+  deriveWorkItemPresentationStage,
+  countWorkItemPresentationStages,
   evaluateImplementationAcceptance,
   hasStrictOwnerAction,
   IMPLEMENTATION_ACCEPTANCE_CONTRACT_VERSION,
@@ -14,14 +17,24 @@ import {
   LEGACY_AGENT_REVIEW_SUBMITTER,
   isStrictOwnerActionCapability,
   readAgentReviewState,
+  agentReviewIsReproductionValidation,
   readImplementationReadiness,
   readStructuredOwnerAsk,
   sealImplementationAcceptance,
+  createVerificationTask,
+  matchesAgentReviewClaimAdmission,
+  mintAgentReviewClaimAdmission,
+  readVerificationTask,
+  VERIFICATION_TASK_SCHEMA_VERSION,
+  verificationConflict,
+  verificationParties,
+  verificationTaskConflict,
   type ImplementationAcceptanceAuthority,
   type ImplementationAcceptanceContract,
   type ImplementationAcceptanceSource,
   type ImplementationReadinessState,
   WORK_ITEM_INTAKE_PRIMARY_STAGES,
+  WORK_ITEM_PRESENTATION_STAGES,
 } from './agent-review-policy';
 
 // Copy-out mutation-probe seam: the regular suite imports the real policy, while
@@ -53,6 +66,9 @@ const REVIEW_AUTHORITY: ImplementationAcceptanceAuthority = {
   round: 1,
 };
 
+/** P-006: the D-023 receipt a bug's acceptance must carry. */
+const REPRODUCTION = { kind: 'failing-test', ref: 'packages/operator-core/lib/example.test.ts', buildSha: 'abcdef1' } as const;
+
 function sealedContract(
   source: ImplementationAcceptanceSource = BUG_SOURCE,
   authority: ImplementationAcceptanceAuthority = REVIEW_AUTHORITY,
@@ -63,6 +79,7 @@ function sealedContract(
     reason: 'agent-review-approved (grade 5/5)',
     source,
     acceptedAt: '2026-09-05T00:00:00.000Z',
+    reproduction: source.kind === 'bug' ? REPRODUCTION : undefined,
   });
   if (!sealed.ok) throw new Error(`fixture contract must seal: ${JSON.stringify(sealed)}`);
   return sealed.contract;
@@ -77,12 +94,69 @@ const readinessWith = (
   createImplementationReadiness({
     status,
     source: 'agent-review',
-    reason: status === 'ready' ? 'agent-review-approved' : 'awaiting-review',
+    reason: status === 'ready' ? 'agent-review-approved' : 'awaiting-agent-review',
     updatedAt: '2026-09-05T00:00:00.000Z',
     ...(acceptance ? { evidence: { acceptance: acceptance as Record<string, unknown> } } : {}),
   });
 
 const acceptedReadiness = (source: ImplementationAcceptanceSource = BUG_SOURCE) => readinessWith(sealedContract(source));
+
+describe('P-010 shared intake presentation', () => {
+  const accepted = () => ({ ...BUG_SOURCE, status: 'open', payload: { implementationReadiness: acceptedReadiness() } });
+
+  it('R-10: assignment cannot convert intake to active accepted work, and a hold outranks assignment', () => {
+    expect(deriveWorkItemPresentationStage({ ...accepted(), payload: {}, assignee: 'su-worker' }).stage).toBe('unknown');
+    expect(deriveWorkItemPresentationStage({ ...accepted(), payload: { implementationReadiness: readinessWith(undefined) },
+      status: 'wip', assignee: 'su-worker' }).stage).toBe('candidate');
+    expect(deriveWorkItemPresentationStage(accepted()).stage).toBe('accepted-ready');
+    expect(deriveWorkItemPresentationStage({ ...accepted(), assignee: 'su-worker' }).stage).toBe('accepted-active');
+    expect(deriveWorkItemPresentationStage({ ...accepted(), assignee: 'su-worker' }).reason).toBe('accepted-work-reserved');
+    expect(WORK_ITEM_PRESENTATION_LABELS['accepted-active']).toBe('Reserved accepted work');
+    expect(deriveWorkItemPresentationStage({ ...accepted(), status: 'wip' }).stage).toBe('accepted-ready');
+    expect(deriveWorkItemPresentationStage({ ...accepted(), assignee: 'su-worker', blocked: true }).stage).toBe('accepted-blocked');
+    expect(deriveWorkItemPresentationStage({ ...accepted(), payload: { ...accepted().payload, _claimHold: true } }).stage)
+      .toBe('accepted-blocked');
+    expect(deriveWorkItemPresentationStage({ ...accepted(), title: 'changed after acceptance' }).stage).toBe('candidate');
+  });
+
+  it('R-33: a verified successful accepted close is delivery; a duplicate, invalid or legacy close is not', () => {
+    for (const status of ['done', 'passed', 'resolved']) {
+      expect(deriveWorkItemPresentationStage({ ...accepted(), status, completionAuthority: 'committed' }).stage)
+        .toBe('verified-completion');
+    }
+    for (const status of ['closed', 'dropped', 'deprecated']) {
+      expect(deriveWorkItemPresentationStage({ ...accepted(), status, completionAuthority: 'committed' }).stage)
+        .toBe('terminal-other');
+    }
+    // `failed` is retryable in the canonical lifecycle; it is held, not delivered.
+    expect(deriveWorkItemPresentationStage({ ...accepted(), status: 'failed', completionAuthority: 'committed' }).stage)
+      .toBe('accepted-blocked');
+    for (const completionAuthority of [null, 'proposed', 'invalid', 'pending_human']) {
+      expect(deriveWorkItemPresentationStage({ ...accepted(), status: 'done', completionAuthority }).stage)
+        .toBe('terminal-other');
+    }
+    expect(deriveWorkItemPresentationStage({ ...accepted(), status: 'done', payload: {}, completionAuthority: 'committed' }).stage)
+      .toBe('terminal-other');
+  });
+
+  it('R-33: the population partitions once and intake processing cannot inflate remaining bugs or delivered fixes', () => {
+    const rows = [
+      { ...accepted(), payload: { lane: 'observation', digestConsumed: true }, status: 'done', completionAuthority: 'committed' },
+      { ...accepted(), payload: { implementationReadiness: readinessWith(undefined), pairComparisons: 2000 }, assignee: 'su-worker' },
+      accepted(), { ...accepted(), assignee: 'su-worker' }, { ...accepted(), blocked: true },
+      { ...accepted(), status: 'done', completionAuthority: 'validated' },
+      { ...accepted(), status: 'closed', completionAuthority: 'committed' },
+      { ...accepted(), payload: {} },
+    ];
+    const census = countWorkItemPresentationStages(rows);
+    expect(census.population).toBe(8);
+    expect(WORK_ITEM_PRESENTATION_STAGES.map(stage => census.counts[stage])).toEqual([1, 1, 1, 1, 1, 1, 1, 1]);
+    expect(Object.values(census.counts).reduce((a, b) => a + b, 0)).toBe(census.population);
+    expect(census.remainingBugs).toBe(3);
+    expect(census.verifiedCompletions).toBe(1);
+    expect(census).toMatchObject({ unit: 'work-item rows', mutuallyExclusive: true, writer: 'deriveWorkItemPresentationStage' });
+  });
+});
 
 describe('implementation readiness payload', () => {
   it('round-trips a current three-valued verdict with a stable schema version', () => {
@@ -130,7 +204,7 @@ describe('versioned work-item intake stage', () => {
           implementationReadiness: createImplementationReadiness({
             status: 'unknown',
             source: 'agent-review',
-            reason: 'awaiting-review',
+            reason: 'awaiting-agent-review',
             updatedAt: '2026-09-05T00:00:00.000Z',
           }),
         },
@@ -146,7 +220,7 @@ describe('versioned work-item intake stage', () => {
           implementationReadiness: createImplementationReadiness({
             status: 'not-ready',
             source: 'agent-review',
-            reason: 'revision-requested',
+            reason: 'agent-review-revision-requested',
             updatedAt: '2026-09-05T00:00:00.000Z',
           }),
         },
@@ -382,6 +456,77 @@ describe('versioned work-item intake stage', () => {
   });
 });
 
+describe('one verification stage, kind-specific checks (P-006 / D-019)', () => {
+  const CHANGE_SOURCE: ImplementationAcceptanceSource = { ...BUG_SOURCE, kind: 'change' };
+  const POLICY_AUTHORITY: ImplementationAcceptanceAuthority = {
+    kind: 'policy',
+    policy: 'trusted-tool-failure-promotion',
+    actor: 'system:test',
+  };
+  const seal = (
+    source: ImplementationAcceptanceSource,
+    authority: ImplementationAcceptanceAuthority,
+    reproduction?: unknown,
+  ) =>
+    sealImplementationAcceptance({ proposal: PROPOSAL, authority, reason: 'approved', source, reproduction });
+  const evaluate = (contract: object, source: ImplementationAcceptanceSource) =>
+    evaluateImplementationAcceptance({ implementationReadiness: readinessWith(contract) }, source);
+
+  it('refuses a bug with no reproduction receipt, or one that does not parse, at the seal', () => {
+    expect(seal(BUG_SOURCE, REVIEW_AUTHORITY)).toEqual({ ok: false, refusal: 'reproduction-missing' });
+    expect(seal(BUG_SOURCE, REVIEW_AUTHORITY, { ...REPRODUCTION, buildSha: 'not-a-sha' })).toEqual({
+      ok: false,
+      refusal: 'reproduction-missing',
+    });
+    expect(seal(BUG_SOURCE, REVIEW_AUTHORITY, { ...REPRODUCTION, kind: 'hunch' })).toEqual({
+      ok: false,
+      refusal: 'reproduction-missing',
+    });
+  });
+
+  it('accepts a bug with a receipt under either authority, recording the receipt as its verification', () => {
+    for (const authority of [REVIEW_AUTHORITY, POLICY_AUTHORITY]) {
+      const sealed = seal(BUG_SOURCE, authority, REPRODUCTION);
+      expect(sealed.ok).toBe(true);
+      if (!sealed.ok) continue;
+      expect(sealed.contract.verification).toEqual({ check: 'reproduction', receipt: REPRODUCTION });
+      expect(evaluate(sealed.contract, BUG_SOURCE)).toMatchObject({ state: 'qualifying' });
+    }
+  });
+
+  it.each(['change', 'feature'] as const)('accepts a %s only through proposal review (agent-review authority)', (kind) => {
+    const source: ImplementationAcceptanceSource = { ...CHANGE_SOURCE, kind };
+    expect(seal(source, POLICY_AUTHORITY, REPRODUCTION)).toEqual({ ok: false, refusal: 'proposal-review-missing' });
+    const sealed = seal(source, REVIEW_AUTHORITY);
+    expect(sealed.ok).toBe(true);
+    if (!sealed.ok) return;
+    expect(sealed.contract.verification).toEqual({ check: 'proposal-review' });
+    expect(evaluate(sealed.contract, source)).toMatchObject({ state: 'qualifying' });
+  });
+
+  it('reads a bug contract without its reproduction verification as incomplete', () => {
+    const { verification: _dropped, ...withoutVerification } = sealedContract();
+    expect(evaluate(withoutVerification, BUG_SOURCE)).toMatchObject({ state: 'incomplete', missing: ['verification'] });
+    expect(evaluate({ ...sealedContract(), verification: { check: 'proposal-review' } }, BUG_SOURCE)).toMatchObject({
+      state: 'incomplete',
+      missing: ['verification'],
+    });
+    expect(
+      evaluate({ ...sealedContract(), verification: { check: 'reproduction', receipt: { kind: 'failing-test' } } }, BUG_SOURCE),
+    ).toMatchObject({ state: 'incomplete', missing: ['verification'] });
+  });
+
+  it('keeps a pre-P-006 change contract (agent-review authority, no verification marker) qualifying', () => {
+    const { verification: _dropped, ...legacy } = sealedContract(CHANGE_SOURCE);
+    expect(evaluate(legacy, CHANGE_SOURCE)).toMatchObject({ state: 'qualifying' });
+    // …but a change sealed under policy authority is not proposal review.
+    expect(evaluate({ ...legacy, authority: POLICY_AUTHORITY }, CHANGE_SOURCE)).toMatchObject({
+      state: 'incomplete',
+      missing: ['verification'],
+    });
+  });
+});
+
 describe('implementation acceptance contract (R-4 / R-20 / R-21)', () => {
   it('seals a complete proposal bound to the judged source revision', () => {
     const contract = sealedContract();
@@ -392,6 +537,7 @@ describe('implementation acceptance contract (R-4 / R-20 / R-21)', () => {
       reason: 'agent-review-approved (grade 5/5)',
       sourceRevision: acceptanceSourceRevision(BUG_SOURCE),
       acceptedAt: '2026-09-05T00:00:00.000Z',
+      verification: { check: 'reproduction', receipt: REPRODUCTION },
     });
     expect(evaluateImplementationAcceptance({ implementationReadiness: readinessWith(contract) }, BUG_SOURCE)).toMatchObject({
       state: 'qualifying',
@@ -522,6 +668,21 @@ describe('readAgentReviewState', () => {
       readAgentReviewState({ agentReview: { status: 'approved', submittedBy: 'su', ledgerIdeaId: 'WI-7', round: 0 } }),
     ).toBeNull();
   });
+
+  it('keeps revisionKind only on a revision-requested round and only for a known kind (D-006 / D-007)', () => {
+    const base = { submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 1 };
+    expect(readAgentReviewState({ agentReview: { ...base, status: 'revision-requested', revisionKind: 'reproduction' } }))
+      .toEqual({ ...base, status: 'revision-requested', revisionKind: 'reproduction' });
+    expect(readAgentReviewState({ agentReview: { ...base, status: 'revision-requested', revisionKind: 'content' } }))
+      .toEqual({ ...base, status: 'revision-requested', revisionKind: 'content' });
+    // A stale kind on any other status, or an unknown kind, is dropped rather than trusted.
+    expect(readAgentReviewState({ agentReview: { ...base, status: 'pending', revisionKind: 'reproduction' } }))
+      .toEqual({ ...base, status: 'pending' });
+    expect(readAgentReviewState({ agentReview: { ...base, status: 'revision-requested', revisionKind: 'whatever' } }))
+      .toEqual({ ...base, status: 'revision-requested' });
+    expect(agentReviewIsReproductionValidation({ agentReview: { ...base, status: 'pending', revisionKind: 'reproduction' } }))
+      .toBe(false);
+  });
 });
 
 describe('agentReviewEligibility (abolish-human-review D-003)', () => {
@@ -616,5 +777,89 @@ describe('agentReviewEligibility (abolish-human-review D-003)', () => {
       }),
     ).toEqual({ eligible: true });
     expect(hasStrictOwnerAction({ humanCapability: 'product-decision' })).toBe(false);
+  });
+});
+
+describe('verifier lane: the verifier-conflict rule (P-007 / D-021)', () => {
+  const REVIEW = { status: 'pending', submittedBy: 'su-submitter', ledgerIdeaId: 'WI-7', round: 1 } as const;
+  const subject = {
+    id: 'EI-1',
+    harness: 'papercusp',
+    createdBy: 'su-filer',
+    terminalOwner: 'su-closer',
+    payload: {
+      _ei: { created_by: 'improvement-triage' },
+      agentReview: REVIEW,
+      verification: {
+        schemaVersion: VERIFICATION_TASK_SCHEMA_VERSION,
+        subject: 'EI-0',
+        check: 'reproduction',
+        reporters: ['su-task-reporter', ' su-task-reporter '],
+        implementers: ['su-task-implementer'],
+      },
+    },
+  };
+
+  it('collects every reporter and implementer recorded on the row', () => {
+    const parties = verificationParties(subject);
+    expect([...parties.reporters].sort()).toEqual(
+      ['improvement-triage', 'su-filer', 'su-submitter', 'su-task-reporter'].sort(),
+    );
+    expect([...parties.implementers].sort()).toEqual(['su-closer', 'su-task-implementer'].sort());
+  });
+
+  // SPEC-P-007: verification work is refused to its reporter and to its implementer.
+  it('refuses the reporter and the implementer', () => {
+    const parties = verificationParties(subject);
+    expect(verificationConflict(parties, 'su-filer')).toBe('reporter');
+    expect(verificationConflict(parties, 'improvement-triage')).toBe('reporter');
+    expect(verificationConflict(parties, ' su-submitter ')).toBe('reporter');
+    expect(verificationConflict(parties, 'su-closer')).toBe('implementer');
+    expect(verificationConflict(parties, 'su-task-implementer')).toBe('implementer');
+  });
+
+  // SPEC-P-007-B: an independent verifier may take it.
+  it('lets an independent verifier through', () => {
+    expect(verificationConflict(verificationParties(subject), 'su-verifier')).toBeNull();
+    expect(verificationConflict(verificationParties(subject), '   ')).toBeNull();
+  });
+
+  it('gates a claim on the TASK parties only, so the reviewer who filed the task may run it', () => {
+    expect(verificationTaskConflict(subject.payload, 'su-task-reporter')).toBe('reporter');
+    expect(verificationTaskConflict(subject.payload, 'su-task-implementer')).toBe('implementer');
+    // The row's own filer/closer are not task parties: the task filer is the deciding reviewer.
+    expect(verificationTaskConflict(subject.payload, 'su-filer')).toBeNull();
+    expect(verificationTaskConflict(subject.payload, 'su-verifier')).toBeNull();
+    expect(verificationTaskConflict({}, 'su-task-reporter')).toBeNull();
+  });
+
+  it('ignores a verification block that is not a current, complete one', () => {
+    const base = subject.payload.verification;
+    expect(readVerificationTask({ verification: { ...base, schemaVersion: 'verification-task-v0' } })).toBeNull();
+    expect(readVerificationTask({ verification: { ...base, subject: '  ' } })).toBeNull();
+    expect(readVerificationTask({ verification: { ...base, check: 'vibes' } })).toBeNull();
+    expect(readVerificationTask({ verification: { ...base, reporters: 'su-task-reporter' } })).toEqual(
+      createVerificationTask({ subject: 'EI-0', check: 'reproduction', reporters: [], implementers: ['su-task-implementer'] }),
+    );
+  });
+
+  it('mints and matches a review admission only for an independent reviewer', () => {
+    const mint = (reviewer: string) =>
+      mintAgentReviewClaimAdmission({
+        itemId: subject.id,
+        reviewer,
+        harnessSlug: 'papercusp',
+        review: REVIEW,
+        parties: verificationParties(subject),
+      });
+    expect(mint('su-filer')).toBeNull();
+    expect(mint('su-closer')).toBeNull();
+    const admission = mint('su-verifier');
+    expect(admission).not.toBeNull();
+    expect(matchesAgentReviewClaimAdmission(admission, subject, 'su-verifier')).toBe(true);
+    // Re-derived from the row at the writer: a row whose closer is now the reviewer refuses.
+    expect(
+      matchesAgentReviewClaimAdmission(admission, { ...subject, terminalOwner: 'su-verifier' }, 'su-verifier'),
+    ).toBe(false);
   });
 });

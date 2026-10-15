@@ -143,6 +143,30 @@ const fakeBackend = (entries: object[]) => ({
 
 afterEach(() => vi.clearAllMocks());
 
+describe('memory delete input validation before backend access', () => {
+  it('rejects a missing target even when the memory store is unavailable', async () => {
+    const { getMemoryBackend } = await import('../../memory/backend');
+    const backend = fakeBackend([]);
+    backend.available.mockResolvedValue({ ok: false });
+    vi.mocked(getMemoryBackend).mockReturnValue(backend as any);
+    const res = await appWith(userMemory as AnyRoute[]).request('/user/memory', { method: 'DELETE' });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('id_or_all_required');
+    expect(backend.available).not.toHaveBeenCalled();
+    expect(backend.forget).not.toHaveBeenCalled();
+  });
+  it('still reports an unavailable store for a valid deletion target', async () => {
+    const { getMemoryBackend } = await import('../../memory/backend');
+    const backend = fakeBackend([]);
+    backend.available.mockResolvedValue({ ok: false, reason: 'offline' } as never);
+    vi.mocked(getMemoryBackend).mockReturnValue(backend as any);
+    const res = await appWith(userMemory as AnyRoute[]).request('/user/memory?id=existing', { method: 'DELETE' });
+    expect(res.status).toBe(503);
+    expect((await res.json()).error).toBe('offline');
+    expect(backend.forget).not.toHaveBeenCalled();
+  });
+});
+
 describe('user family ports — default-user fallback when no session', () => {
   it('GET /user/preferences serves the default user without a session', async () => {
     const res = await appWith(userPreferences as AnyRoute[]).request('/user/preferences');
@@ -196,7 +220,7 @@ describe('user family ports — default-user fallback when no session', () => {
 
 describe('POST /user/memory/audit — full-flag pathway', () => {
   it('returns full-audit estimate when full=true', async () => {
-    vi.mocked(getSessionUserOrDefault).mockResolvedValueOnce({ ...DEFAULT_USER, id: 'u1' } as never);
+    vi.mocked(getSessionUserOrDefault).mockResolvedValueOnce({ ...DEFAULT_USER, id: 'u1' });
     const res = await appWith(userMemoryAudit as AnyRoute).request(
       '/user/memory/audit',
       post({ full: true }),
@@ -213,7 +237,7 @@ describe('POST /user/memory/audit — full-flag pathway', () => {
 
 describe('user family ports — happy path / validation', () => {
   it('GET /user/preferences returns the session user payload when authenticated', async () => {
-    vi.mocked(getSessionUserOrDefault).mockResolvedValueOnce({ ...DEFAULT_USER, id: 'u1' } as never);
+    vi.mocked(getSessionUserOrDefault).mockResolvedValueOnce({ ...DEFAULT_USER, id: 'u1' });
     const res = await appWith(userPreferences as AnyRoute[]).request('/user/preferences');
     expect(res.status).toBe(200);
     expect((await res.json()).payload).toEqual({});
@@ -221,7 +245,7 @@ describe('user family ports — happy path / validation', () => {
     expect(vi.mocked(loadUserPreferences)).toHaveBeenCalledWith('u1');
   });
   it('DELETE /user/preferences without key returns 400', async () => {
-    vi.mocked(getSessionUserOrDefault).mockResolvedValueOnce({ ...DEFAULT_USER, id: 'u1' } as never);
+    vi.mocked(getSessionUserOrDefault).mockResolvedValueOnce({ ...DEFAULT_USER, id: 'u1' });
     const res = await appWith(userPreferences as AnyRoute[]).request('/user/preferences', {
       method: 'DELETE',
     });

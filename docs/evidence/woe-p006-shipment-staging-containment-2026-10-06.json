@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "P-006 R-6 staging-operator served-build containment against the completion audit",
+  "plan": "work-on-everything-stewardship-remediation-2026-08-30",
+  "acceptanceBar": "R-6",
+  "specClause": "WOE-P006-SHIPMENT@4",
+  "workItem": "WI-1074216",
+  "evidencePlane": "live",
+  "runtime": "staging-operator",
+  "startedAt": "2026-10-06T23:20:52Z",
+  "finishedAt": "2026-10-06T23:20:55Z",
+  "exitCode": 0,
+  "command": [
+    "curl -s 127.0.0.1:3170/api/health  (served runtime identity)",
+    "curl -s 127.0.0.1:3070/api/health  (release runtime, negative identity control)",
+    ".papercusp/scratch/woe-r6-containment.sh <served sha>  (per-path blob identity vs latest completion audit citations)",
+    ".papercusp/scratch/woe-r6-containment.sh <negative-control ref>",
+    "git merge-base --is-ancestor da36b814 <served sha>; git merge-base --is-ancestor <auditedSha> <served sha>; git merge-base --is-ancestor da36b814 <negative-control ref>",
+    ".papercusp/scratch/woe-r6-shipment-evidence.sh <negative-control ref>  (generator; measured every field below)"
+  ],
+  "subject": {
+    "servedSha": "93cafaab219db95fd997a15e0b782e1f6c0bd8c5",
+    "servedHealthSha": "93cafaab21",
+    "healthEndpoint": "http://127.0.0.1:3170/api/health",
+    "auditSeq": 21,
+    "auditedSha": "93cafaab219db95fd997a15e0b782e1f6c0bd8c5",
+    "fixCommit": "da36b814",
+    "negativeControlRef": "47f855988c574c1cf04ba95057999e648fb6c94e",
+    "releaseRuntimeHealthSha": "d740fc3802"
+  },
+  "summary": "Served :3170 sha 93cafaab21 vs completion audit seq 21: REF 93cafaab219db95fd997a15e0b782e1f6c0bd8c5 = 93cafaab219d audit_seq=21 audited_sha=93cafaab219d contained=38 drift=0 missing=0 total=38 -> CONTAINED | negative control: REF 47f855988c574c1cf04ba95057999e648fb6c94e = 47f855988c57 audit_seq=21 audited_sha=93cafaab219d contained=27 drift=11 missing=0 total=38 -> NOT-CONTAINED",
+  "comparisonLimit": "Containment is path-level blob identity for every completion-audit citation at the served sha; it establishes what the served build contains, not behaviour beyond the cited focused controls (bound separately as integration test runs). The :3070 release comparison is an owned follow-up (WI-10006952), not asserted here.",
+  "assertions": [
+    {
+      "id": "served-build-contains-audited-repaired",
+      "passed": true,
+      "evidence": "REF 93cafaab219db95fd997a15e0b782e1f6c0bd8c5 = 93cafaab219d audit_seq=21 audited_sha=93cafaab219d contained=38 drift=0 missing=0 total=38 -> CONTAINED"
+    },
+    {
+      "id": "served-build-contains-audited-negative",
+      "passed": true,
+      "evidence": "Pre-fix ref 47f855988c57 rejected by the same instrument (11 drift/missing paths): REF 47f855988c574c1cf04ba95057999e648fb6c94e = 47f855988c57 audit_seq=21 audited_sha=93cafaab219d contained=27 drift=11 missing=0 total=38 -> NOT-CONTAINED"
+    },
+    {
+      "id": "served-descends-audited-fixes-repaired",
+      "passed": true,
+      "evidence": "merge-base --is-ancestor da36b814 93cafaab219d -> rc 0; auditedSha 93cafaab219d -> rc 0"
+    },
+    {
+      "id": "served-descends-audited-fixes-negative",
+      "passed": true,
+      "evidence": "merge-base --is-ancestor da36b814 47f855988c57 -> rc 1 (1 = not an ancestor, correctly refused)"
+    },
+    {
+      "id": "runtime-identity-repaired",
+      "passed": true,
+      "evidence": ":3170 /api/health sha 93cafaab21 resolves to 93cafaab219db95fd997a15e0b782e1f6c0bd8c5 which equals auditedSha 93cafaab219db95fd997a15e0b782e1f6c0bd8c5"
+    },
+    {
+      "id": "runtime-identity-negative",
+      "passed": true,
+      "evidence": ":3070 /api/health sha d740fc3802 does not equal auditedSha 93cafaab219d; a runtime whose identity differs from the audit pin is refused"
+    }
+  ]
+}

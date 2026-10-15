@@ -761,9 +761,49 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     // Pot APPEARS offline (self-admit ran) even though the git/code half stayed deferred.
     expect(res).toMatchObject({ state: 'cloned-and-created', slug: PAPERCUSP_HIVE_SLUG });
     expect(selfAdmitCanonical).toHaveBeenCalledOnce();
-    expect(scheduleGitSeedRetry).toHaveBeenCalledOnce(); // code checkout back-fills in the background
+    // The git restore now runs in the BACKGROUND after self-admit (WI-6554700010011908), so
+    // its still-deferred hand-off to the bounded retry lands a microtask after the return.
+    await vi.waitFor(() => expect(scheduleGitSeedRetry).toHaveBeenCalledOnce()); // code checkout back-fills in the background
     expect(deps.setHomeWorkspace).toHaveBeenCalledWith(PAPERCUSP_WORKSPACE_ID);
     expect(deps.bootActiveWorkspace).toHaveBeenCalledOnce(); // pot booted LIVE via the full startup boot-all (WI-3232 first-boot ordering fix, replaces the no-op single rekeyHarness)
+    warn.mockRestore();
+  });
+
+  it('WI-6554700010011908: a git restore that NEVER finishes does not hold back the offline self-admit (P-521 J8)', async () => {
+    // Measured on the D-238 candidate: serve.log went silent right after
+    // `seed restore: restored=[corestore] deferred=[git]` because self-admit awaited the
+    // multi-GB git decrypt + clone, and the pot never appeared inside J8's window.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const order: string[] = [];
+    const restoreDeferredGitSeed = vi.fn(() => {
+      order.push('git-restore-started');
+      return new Promise<{ ran: boolean; restored: string[]; stillDeferred: string[] }>(() => {});
+    });
+    const selfAdmitCanonical = vi.fn(async () => {
+      order.push('self-admit');
+      return { state: 'admitted' as const, slug: PAPERCUSP_HIVE_SLUG, path: '/clones/papercusp' };
+    });
+    const deps = spyDeps({
+      canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
+      findJoinedCanonical: vi.fn(async () => null),
+      joinCanonical: vi.fn(async () => ({ state: 'skipped' as const, slug: null, reason: 'join awaiting GitHub sign-in' })),
+      restoreSeed: vi.fn(async () => ({ ran: true, outcomes: [{ kind: 'corestore', ok: true }], deferred: ['git'] })),
+      restoreDeferredGitSeed,
+      scheduleGitSeedRetry: vi.fn(),
+      selfAdmitCanonical,
+    });
+
+    const outcome = await Promise.race([
+      bootstrapPapercuspHive(deps),
+      new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 2_000)),
+    ]);
+
+    expect(outcome).not.toBe('hung');
+    expect(outcome).toMatchObject({ state: 'cloned-and-created', slug: PAPERCUSP_HIVE_SLUG });
+    expect(deps.bootActiveWorkspace).toHaveBeenCalledOnce();
+    // The code half still starts — after the pot is admitted, never before it.
+    expect(restoreDeferredGitSeed).toHaveBeenCalledOnce();
+    expect(order).toEqual(['self-admit', 'git-restore-started']);
     warn.mockRestore();
   });
 

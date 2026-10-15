@@ -170,3 +170,45 @@ describe('su.mode-drain — DRAIN defect-filing exception (WI-38401)', () => {
     expect(drain).toMatch(/does not directly\s+block the drain.*does not become a new queue row/s);
   });
 });
+
+/**
+ * enterprise-data-sources-2026-10-01 P-011 / AUTO-BAR-R-5: the drain definition and the
+ * four-natures agent-insights doc both exist and both name the work predicate (D-022,
+ * migration 1325) as the drain's only backlog source.
+ */
+describe('su.mode-drain + work-natures doc — the work predicate is the only drain backlog (P-011)', () => {
+  const insight = readFileSync(
+    new URL('../../../apps/operator-docs/src/content/docs/agent-insights/work-natures-and-the-work-predicate.mdx', import.meta.url),
+    'utf8',
+  );
+  const PREDICATE = /work_item_is_agent_work\(nature, audience, lane,\s+needs_owner_action\)/;
+  // Overridable subject path (defaults to the real su.mode-drain objective) so
+  // scripts/mutation-probe.sh can prove this guard falsifiable against a COPY of the
+  // drain definition, never by mutating the shared tree.
+  const drainDoc = process.env.P011_DRAIN_DOC_PATH
+    ? readFileSync(process.env.P011_DRAIN_DOC_PATH, 'utf8')
+    : drain;
+
+  it('the drain definition takes its backlog from the work predicate and nowhere else', () => {
+    expect(drainDoc).toMatch(PREDICATE);
+    expect(drainDoc).toContain("That predicate is the drain's only backlog source.");
+    expect(drainDoc).toMatch(/`work_items:claimable`[\s\S]*`scheduler:get_next`/);
+    expect(drainDoc).toMatch(/Never size or feed a\s+drain from a raw `harness_shared\.work_items` query/);
+    // The pre-P-011 SCOPE default selected by status alone; it must not come back.
+    expect(drainDoc).not.toMatch(/non-terminal, unclaimed, not in-progress/);
+    expect(drainDoc).toMatch(/\*\*audience human\*\*[\s\S]*never drains, claims or closes it/);
+    expect(drainDoc).toContain('`work-natures-and-the-work-predicate`');
+  });
+
+  it('the four-natures doc defines every nature, gives the four examples, and names the same predicate', () => {
+    for (const nature of ['work', 'record', 'document', 'event']) {
+      expect(insight).toContain(`- **${nature}**:`);
+    }
+    expect(insight).toMatch(PREDICATE);
+    expect(insight).toContain("The work predicate is the drain's only backlog source");
+    expect(insight).toMatch(/An Asana ticket that nobody has handed to Papercusp \| record \|/);
+    expect(insight).toMatch(/A Slack thread \| document \|/);
+    expect(insight).toMatch(/A CRM deal [^|]*\| record \|/);
+    expect(insight).toMatch(/An email draft awaiting the owner's approval [^|]*\| work \| human \| No\./);
+  });
+});

@@ -82,53 +82,19 @@ describe('<HarnessTestsView>', () => {
   // harness" — not in HarnessTestsView, which is always given a slug.)
 });
 
-describe('<AcceptancePanel> (P-062/P-063)', () => {
-  const ASSERTIONS = [
-    { val_id: 'VAL-demo-001', plan_slug: 'demo', item_id: 'P-001', verify_text: 'GET /x returns 200', status: 'passed', requires_test: true },
-    { val_id: 'VAL-demo-002', plan_slug: 'demo', item_id: 'P-001', verify_text: 'button copy reads Download', status: 'todo', requires_test: false },
-  ];
-
-  it('lists VAL rows with status + a requires_test toggle', async () => {
-    syncQueryResult = { data: ASSERTIONS, loading: false, error: null };
+describe('<AcceptancePanel> (VAL-* retired — verification-system-improvements-2026-10-10 P-003)', () => {
+  // Inline VAL-* assertions are retired: the panel renders a static notice and
+  // never reads the removed `testing.assertionsByHarness` query, even when the
+  // sync layer would hand it rows.
+  it('renders the retirement notice instead of a VAL list, whatever the sync layer holds', () => {
+    syncQueryResult = {
+      data: [{ val_id: 'VAL-demo-001', plan_slug: 'demo', item_id: 'P-001', verify_text: 'GET /x returns 200', status: 'passed', requires_test: true }],
+      loading: false,
+      error: null,
+    };
     render(<AcceptancePanel slug="demo" />);
-    await waitFor(() => expect(screen.getAllByText('VAL-demo-001').length).toBeGreaterThan(0));
-    expect(screen.getAllByText('GET /x returns 200').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('VAL-demo-002').length).toBeGreaterThan(0);
-    // Two requires_test checkboxes — VAL-001 checked, VAL-002 unchecked.
-    const boxes = screen.getAllByRole('checkbox');
-    expect(boxes).toHaveLength(2);
-    expect(boxes[0].getAttribute('aria-checked')).toBe('true');
-    expect(boxes[1].getAttribute('aria-checked')).toBe('false');
-  });
-
-  it('PATCHes requires_test when a toggle is flipped', async () => {
-    syncQueryResult = { data: ASSERTIONS, loading: false, error: null };
-    const fetchMock = vi.fn(async (_url: string, init?: { method?: string; body?: string }) => {
-      if (init?.method === 'POST') return { ok: true, json: async () => ({ ok: true }) };
-      return { ok: true, json: async () => ({ assertions: ASSERTIONS }) };
-    });
-    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
-    const { default: userEvent } = await import('@testing-library/user-event');
-    const user = userEvent.setup();
-    render(<AcceptancePanel slug="demo" />);
-    await waitFor(() => expect(screen.getAllByText('VAL-demo-001').length).toBeGreaterThan(0));
-    const boxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
-    await user.click(boxes[0]); // flip VAL-001 required → exempt
-    await waitFor(() =>
-      expect(
-        fetchMock.mock.calls.some(
-          ([u, init]) =>
-            String(u).includes('/assertions/VAL-demo-001') &&
-            (init as { method?: string } | undefined)?.method === 'POST' &&
-            String((init as { body?: string } | undefined)?.body).includes('"requires_test":false'),
-        ),
-      ).toBe(true),
-    );
-  });
-
-  it('shows an empty state when there are no assertions', async () => {
-    syncQueryResult = { data: [], loading: false, error: null };
-    render(<AcceptancePanel slug="demo" />);
-    await waitFor(() => screen.getByText(/No VAL assertions yet/));
+    expect(screen.getByTestId('acceptance-retired').textContent).toMatch(/assertions are retired/);
+    expect(screen.queryByText('VAL-demo-001')).toBeNull();
+    expect(screen.queryAllByRole('checkbox')).toHaveLength(0);
   });
 });

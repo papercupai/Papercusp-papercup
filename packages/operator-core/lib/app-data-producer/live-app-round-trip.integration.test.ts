@@ -1,12 +1,13 @@
 /**
- * P-008 — the producer→app round trip, asserted on the RECEIVING END.
+ * The producer→app round trip, asserted on the RECEIVING END (P-008, made
+ * provider-neutral by P-006 / D-023).
  *
  * Every other test in this directory stops at the sending abstraction: it
  * checks that the producer builds the right batch, resolves the right owner, or
- * mints the right token. None of them can answer the question P-008 actually
- * asks — does a real row arrive in the app's own store, and can the app itself
- * serve it back? That needs a live app, so it lives here rather than in a unit
- * test, and it SKIPS rather than fails when one is not configured.
+ * mints the right token. None of them can answer the question this one asks —
+ * does a real row arrive in the app's own store, and can the app itself serve
+ * it back? That needs a live app, so it lives here rather than in a unit test,
+ * and it SKIPS rather than fails when one is not configured.
  *
  * WHAT MAKES THIS EVIDENCE RATHER THAN A MOCK:
  *  - the token is minted by the production `appServiceAuthHeader` and verified
@@ -14,44 +15,71 @@
  *    unauthenticated call is REFUSED first, which is what proves the app is not
  *    running in LOCAL_MODE (where any caller is accepted as a fixed owner and
  *    this whole suite would pass vacuously);
- *  - the batch is built by `buildAppSyncBatch` from a record shaped by
+ *  - the batch is built by `buildAppSyncBatch` from records shaped by
  *    `appRowFromSourceRecord` — the same mapper the live push sink and the
  *    reconcile sweep both use, so a divergence between them would surface here;
  *  - the assertion is a GET against the app's own read endpoint, not a database
  *    peek, so it exercises the app's store AND its read path.
  *
- * It uses a per-run synthetic ownerId and provider id so it neither depends on
- * nor disturbs whatever real data the app holds.
+ * WHAT MAKES IT PROVIDER-NEUTRAL (D-023): every case sends records from TWO
+ * providers in ONE batch — a Google kind and a non-Google kind — that reuse the
+ * SAME native id. The app must keep them as two rows keyed `<sourceId>:<native>`
+ * and serve each back under its own source. The batch names the producer's sync
+ * stream (`APP_SYNC_SOURCE_REF`), never a provider, and the apps' trigger doors
+ * are the provider-neutral `/api/triggers/email` and `/api/triggers/calendar`.
+ *
+ * It uses a per-run synthetic ownerId, source ids and native id so it neither
+ * depends on nor disturbs whatever real data the app holds.
  *
  * To run it, point it at a live sidecar (see the calendar/email TESTING.md):
  *   EMAIL_APP_URL, EMAIL_AUTH_SECRET  (and/or CALENDAR_*)
  */
 import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
-import { afterAll, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { getHarnessAdminUrl } from '../embedded-pg-discovery';
 import { appServiceAuthHeader } from './app-auth';
-import { appRowFromSourceRecord, buildAppSyncBatch, sourceRefForApp } from './app-rows';
+import {
+  APP_SYNC_SOURCE_REF,
+  appRowFromSourceRecord,
+  appRowId,
+  buildAppSyncBatch,
+  DATATYPE_FOR_APP,
+} from './app-rows';
 import type { ProducerSourceRecord } from './app-rows';
 import { deliverAppSyncBatch } from './live-sink';
 import type { ProducerApp } from './owner-mapping';
 
 const PROBE_TIMEOUT_MS = 3_000;
 
+interface ProviderUnderTest {
+  /** Provider kind — the `<kind>` in `ext:<kind>:<event>`. */
+  kind: string;
+  /** The canonical `documents.source` category this provider writes. */
+  source: string;
+}
+
 interface AppCase {
   app: ProducerApp;
-  /** The canonical `personal_documents.source` that maps to this app. */
-  source: string;
+  /** One Google kind and one non-Google kind, both routed by datatype (D-010). */
+  providers: readonly [ProviderUnderTest, ProviderUnderTest];
   baseUrl: string;
   secret: string;
 }
 
+const PROVIDERS: Record<ProducerApp, readonly [ProviderUnderTest, ProviderUnderTest]> = {
+  email: [{ kind: 'gmail', source: 'gmail' }, { kind: 'outlook', source: 'outlook' }],
+  calendar: [{ kind: 'gcal', source: 'calendar' }, { kind: 'outlook-calendar', source: 'calendar' }],
+};
+
 function configuredCases(): AppCase[] {
   const cases: AppCase[] = [];
-  for (const [app, source] of [['email', 'gmail'], ['calendar', 'calendar']] as const) {
+  for (const app of ['email', 'calendar'] as const) {
     const baseUrl = process.env[`${app.toUpperCase()}_APP_URL`]?.trim() ?? '';
     const secret = process.env[`${app.toUpperCase()}_AUTH_SECRET`]?.trim() ?? '';
-    if (baseUrl && secret) cases.push({ app, source, baseUrl: baseUrl.replace(/\/+$/, ''), secret });
+    if (baseUrl && secret) {
+      cases.push({ app, providers: PROVIDERS[app], baseUrl: baseUrl.replace(/\/+$/, ''), secret });
+    }
   }
   return cases;
 }
@@ -69,104 +97,167 @@ const CASES = configuredCases();
 const live = new Map<ProducerApp, boolean>();
 await Promise.all(CASES.map(async (c) => live.set(c.app, await reachable(c.baseUrl))));
 
-/** Owners this run created, so the run cleans up after itself. */
-const created: { c: AppCase; ownerId: string; externalId: string }[] = [];
+/** A record from one provider, shaped exactly as the producer shapes one. */
+function recordFor(
+  app: ProducerApp,
+  provider: ProviderUnderTest,
+  sourceId: string,
+  externalId: string,
+  occurredAt: string,
+): ProducerSourceRecord {
+  return {
+    source: provider.source,
+    datatypeId: DATATYPE_FOR_APP[app],
+    kind: app === 'email' ? 'message' : 'event',
+    externalId,
+    sourceId,
+    occurredAt,
+    title: `round trip via ${provider.kind}`,
+    text: 'Delivered by the platform→app data producer.',
+    // Provider-shaped fields ride through `metadata` untouched, exactly as a
+    // real normalized payload does.
+    metadata: app === 'email'
+      ? { from: `${provider.kind}@example.com`, to: ['owner@example.com'] }
+      : { calendarId: 'primary', start: { dateTime: occurredAt }, end: { dateTime: occurredAt } },
+  };
+}
 
-afterAll(async () => {
-  // Best-effort: the apps expose no delete-by-owner, and the rows are scoped to
-  // a throwaway ownerId no reader will ever authenticate as, so leaving them is
-  // inert. Recorded here so the absence of cleanup is a decision, not a gap.
-  created.length = 0;
-});
+function readPath(app: ProducerApp, rowId: string): string {
+  const id = encodeURIComponent(rowId);
+  return app === 'email' ? `/api/threads/${id}` : `/api/events/${id}`;
+}
 
-describe.skipIf(CASES.length === 0)('P-008 producer → app round trip (live app required)', () => {
+async function servedRow(c: AppCase, authorization: string, rowId: string): Promise<{ status: number; row?: Record<string, unknown> }> {
+  const res = await fetch(`${c.baseUrl}${readPath(c.app, rowId)}`, {
+    headers: { authorization },
+    signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+  });
+  if (res.status !== 200) return { status: res.status };
+  const body = (await res.json()) as { messages?: Record<string, unknown>[]; event?: Record<string, unknown> };
+  const row = c.app === 'email' ? body.messages?.find((m) => m.id === rowId) : body.event;
+  return { status: res.status, row };
+}
+
+describe.skipIf(CASES.length === 0)('producer → app round trip, two providers (live app required)', () => {
   for (const c of CASES) {
     describe.skipIf(!live.get(c.app))(`${c.app}`, () => {
-      const ownerId = `p008-live-test-${randomUUID()}`;
-      const externalId = `p008-${randomUUID()}`;
+      const ownerId = `p006-live-test-${randomUUID()}`;
+      // ONE native id shared by both providers: only per-source row ids keep
+      // the two records apart in the app.
+      const nativeId = `p006-${randomUUID()}`;
+      const sourceIds = [randomUUID(), randomUUID()] as const;
 
       it('refuses an unauthenticated read (proves LOCAL_MODE is off, so the auth leg is real)', async () => {
-        const res = await fetch(`${c.baseUrl}/api/sync/cursor`, {
+        const res = await fetch(`${c.baseUrl}/api/sync/cursor?sourceRef=${encodeURIComponent(APP_SYNC_SOURCE_REF)}`, {
           signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
         });
         expect(res.status).toBe(401);
       });
 
-      it('delivers a canonical row and the app serves it back under the minted token', async () => {
+      it('delivers one batch from two providers and the app serves each row back under its own source', async () => {
         const occurredAt = new Date().toISOString();
-        const mapped = appRowFromSourceRecord({
-          source: c.source,
-          kind: c.app === 'email' ? 'message' : 'event',
-          externalId,
-          occurredAt,
-          title: 'P-008 live round trip',
-          text: 'Delivered by the platform→app data producer.',
-          // Provider-shaped fields ride through `metadata` untouched, exactly as
-          // a real normalized payload does.
-          metadata: c.app === 'email'
-            ? { from: 'p008@example.com', to: ['owner@example.com'] }
-            : { calendarId: 'primary', start: { dateTime: occurredAt }, end: { dateTime: occurredAt } },
+        const rows = c.providers.map((provider, i) => {
+          const mapped = appRowFromSourceRecord(recordFor(c.app, provider, sourceIds[i], nativeId, occurredAt));
+          expect(mapped, `the ${c.app} datatype must map to an app for ${provider.kind}`).not.toBeNull();
+          expect(mapped!.app).toBe(c.app);
+          return mapped!.row;
         });
-        expect(mapped, `appForSource must map '${c.source}' to an app`).not.toBeNull();
-        expect(mapped!.app).toBe(c.app);
+        const rowIds = sourceIds.map((sid) => appRowId(nativeId, sid));
+        expect(rows.map((r) => r.id)).toEqual(rowIds);
+        expect(new Set(rowIds).size).toBe(2);
 
-        const batch = buildAppSyncBatch(c.app, [mapped!.row], { cursor: null });
-        const result = await deliverAppSyncBatch(batch, ownerId, {
-          baseUrl: c.baseUrl,
-          secret: c.secret,
-        });
+        const batch = buildAppSyncBatch(c.app, rows, { cursor: null });
+        // The batch names the producer's stream, never a provider (D-023 §2).
+        expect(batch.body.sourceRef).toBe(APP_SYNC_SOURCE_REF);
+        const result = await deliverAppSyncBatch(batch, ownerId, { baseUrl: c.baseUrl, secret: c.secret });
         expect(result.status).toBe(200);
-        expect(result.rowCount).toBe(1);
-        created.push({ c, ownerId, externalId });
+        expect(result.rowCount).toBe(2);
 
         // RECEIVING END: ask the APP, through the APP's own read path, under a
         // token minted the way the producer mints one.
         const authorization = await appServiceAuthHeader(c.app, ownerId, { secret: c.secret });
-        const path = c.app === 'email' ? `/api/threads/${externalId}` : `/api/events/${externalId}`;
-        const res = await fetch(`${c.baseUrl}${path}`, {
+        for (const [i, rowId] of rowIds.entries()) {
+          const served = await servedRow(c, authorization, rowId);
+          expect(served.status, `${c.providers[i].kind}: read ${rowId}`).toBe(200);
+          expect(served.row?.id, `the ${c.app} app must serve back the ${c.providers[i].kind} row`).toBe(rowId);
+          // The record's own provenance survives the trip: that is what the
+          // app writes back through (D-023 §2), never a default source.
+          const servedSource = c.app === 'email'
+            ? (served.row?.mailbox as { sourceId?: string } | undefined)?.sourceId
+            : served.row?.sourceId;
+          expect(servedSource, `${c.providers[i].kind}: served source id`).toBe(sourceIds[i]);
+        }
+      });
+
+      it('reports a cursor for the producer stream and requires the stream to be named', async () => {
+        const authorization = await appServiceAuthHeader(c.app, ownerId, { secret: c.secret });
+        const named = await fetch(
+          `${c.baseUrl}/api/sync/cursor?sourceRef=${encodeURIComponent(APP_SYNC_SOURCE_REF)}`,
+          { headers: { authorization }, signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) },
+        );
+        expect(named.status).toBe(200);
+        expect((await named.json()) as { ok: boolean }).toMatchObject({ ok: true });
+
+        // No default stream any more: a provider name used to be implied here.
+        const unnamed = await fetch(`${c.baseUrl}/api/sync/cursor`, {
           headers: { authorization },
           signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
         });
-        expect(res.status).toBe(200);
-        const body = (await res.json()) as { messages?: { id: string }[]; event?: { id: string } };
-
-        const servedId = c.app === 'email'
-          ? body.messages?.find((m) => m.id === externalId)?.id
-          : body.event?.id;
-        expect(servedId, `the ${c.app} app must serve back the row it was sent`).toBe(externalId);
+        expect(unnamed.status).toBe(400);
       });
 
-      // ── P-012: the app's judgment door is de-conflated, proven on the LIVE app ──
-      // `handleGmailTrigger` keeps `ingestCanonicalMessage` and no longer calls
-      // `seam.enqueueWorkItems`, so platform binding b7976842 stays the single
-      // judgment path. Its observable contract is exactly two facts: the content
-      // still lands, and `workItemIds` comes back EMPTY. The Email app repo's own
-      // unit test asserts that in-process; this asserts it against the DEPLOYED
-      // sidecar, which is the half that can rot without anyone noticing — and it
-      // is the only evidence for P-012 that resolves inside this repository.
-      if (c.app === 'email') {
-        const triggerExternalId = `p012-${randomUUID()}`;
+      it('serves the provider-neutral trigger door and no Google-named one (D-023 §4)', async () => {
+        const authorization = await appServiceAuthHeader(c.app, ownerId, { secret: c.secret });
+        const retired = c.app === 'email' ? '/api/triggers/gmail' : '/api/triggers/google-calendar';
+        const gone = await fetch(`${c.baseUrl}${retired}`, {
+          method: 'POST',
+          headers: { authorization, 'content-type': 'application/json' },
+          body: JSON.stringify({}),
+          signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+        });
+        expect(gone.status, `${retired} must be gone, not aliased`).toBe(404);
 
-        it('ingests a Gmail trigger and mints ZERO work items (P-012 de-conflation)', async () => {
-          const occurredAt = new Date().toISOString();
-          const mapped = appRowFromSourceRecord({
-            source: c.source,
-            kind: 'message',
-            externalId: triggerExternalId,
-            occurredAt,
-            title: 'P-012 judgment-door de-conflation',
-            text: 'Posted straight at the app trigger door; must mint no work item.',
-            metadata: { from: 'p012@example.com', to: ['owner@example.com'] },
-          });
-          expect(mapped, `appForSource must map '${c.source}' to an app`).not.toBeNull();
+        // A key of the WRONG datatype is refused by the generic door before any
+        // dedupe claim or launch, which proves the route exists and validates
+        // `ext:<kind>:<event>` without side effects.
+        const wrongKey = c.app === 'email' ? 'ext:outlook-calendar:event-upcoming' : 'ext:outlook:message.received';
+        const refused = await fetch(`${c.baseUrl}/api/triggers/${c.app}`, {
+          method: 'POST',
+          headers: { authorization, 'content-type': 'application/json' },
+          body: JSON.stringify({ eventKey: wrongKey, dedupeKey: `p006-refused-${randomUUID()}`, payload: {} }),
+          signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+        });
+        expect(refused.status).toBe(400);
+        expect(((await refused.json()) as { error?: string }).error).toBe(`${c.app}_trigger_event_unsupported`);
+      });
+
+      // ── P-012: the email judgment door is de-conflated, proven on the LIVE app ──
+      // The trigger door stores content and mints NO work item; platform
+      // bindings stay the single judgment path. Its observable contract is two
+      // facts: the content lands, and `workItemIds` comes back EMPTY. Driven
+      // here by a NON-Google provider, so the door's provider neutrality and the
+      // de-conflation are proven by the same request against the deployed app.
+      // (Calendar's door launches a meeting-prep plan run on the platform, so
+      // the live suite deliberately does not fire a valid calendar trigger.)
+      if (c.app === 'email') {
+        it('ingests an Outlook trigger through /api/triggers/email and mints ZERO work items', async () => {
+          const triggerNativeId = `p012-${randomUUID()}`;
+          const sourceId = randomUUID();
+          const outlook = c.providers[1];
+          const mapped = appRowFromSourceRecord(
+            recordFor(c.app, outlook, sourceId, triggerNativeId, new Date().toISOString()),
+          );
+          expect(mapped, `the ${c.app} datatype must map to an app`).not.toBeNull();
+          const rowId = appRowId(triggerNativeId, sourceId);
 
           const authorization = await appServiceAuthHeader(c.app, ownerId, { secret: c.secret });
-          const res = await fetch(`${c.baseUrl}/api/triggers/gmail`, {
+          const res = await fetch(`${c.baseUrl}/api/triggers/email`, {
             method: 'POST',
             headers: { authorization, 'content-type': 'application/json' },
             body: JSON.stringify({
-              eventKey: 'ext:gmail:message.received',
-              dedupeKey: triggerExternalId,
+              eventKey: `ext:${outlook.kind}:message.received`,
+              dedupeKey: rowId,
+              datatype: DATATYPE_FOR_APP.email,
               payload: mapped!.row,
             }),
             signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
@@ -182,62 +273,46 @@ describe.skipIf(CASES.length === 0)('P-008 producer → app round trip (live app
           expect(body.deduplicated).toBe(false);
           // THE ASSERTION THIS TEST EXISTS FOR.
           expect(body.workItemIds).toEqual([]);
-          // …and the content half still landed, so an empty list means the judgment
-          // half was REMOVED rather than the whole handler having been switched off.
-          // Without this second assertion a fully broken endpoint would also pass.
-          expect(body.messageId).toBe(triggerExternalId);
+          // …and the content half still landed, so an empty list means the
+          // judgment half was REMOVED rather than the whole handler having been
+          // switched off. Without this a fully broken endpoint would also pass.
+          expect(body.messageId).toBe(rowId);
 
-          const served = await fetch(`${c.baseUrl}/api/threads/${triggerExternalId}`, {
-            headers: { authorization },
-            signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
-          });
+          const served = await servedRow(c, authorization, rowId);
           expect(served.status).toBe(200);
-          const thread = (await served.json()) as { messages?: { id: string }[] };
-          expect(
-            thread.messages?.some((m) => m.id === triggerExternalId),
-            'the app must serve back the message its trigger door ingested',
-          ).toBe(true);
+          expect(served.row?.id, 'the app must serve back the message its trigger door ingested').toBe(rowId);
         });
       }
-
-      it('reports a cursor for this app’s source ref', async () => {
-        const authorization = await appServiceAuthHeader(c.app, ownerId, { secret: c.secret });
-        const res = await fetch(
-          `${c.baseUrl}/api/sync/cursor?sourceRef=${encodeURIComponent(sourceRefForApp(c.app))}`,
-          { headers: { authorization }, signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) },
-        );
-        expect(res.status).toBe(200);
-        expect((await res.json()) as { ok: boolean }).toMatchObject({ ok: true });
-      });
     });
   }
 });
 
-// ── WI-933686 — the same round trip, on REAL GOOGLE DATA ────────────────────
+// ── WI-933686 — the same round trip, on REAL PROVIDER DATA ──────────────────
 //
 // WHY THIS EXISTS SEPARATELY FROM THE BLOCK ABOVE.
-// That block is deliberately non-disturbing: its header says it uses "a per-run
-// synthetic ownerId and provider id". That makes the AUTH leg, the DELIVERY leg
-// and the APP real — but the DATA fake, and the fake data is precisely the gap
-// WI-933686 was filed for. Acceptance scorecard EI-21832584701743975 rated
+// That block is deliberately non-disturbing: it uses a per-run synthetic
+// ownerId and source ids. That makes the AUTH leg, the DELIVERY leg and the APP
+// real — but the DATA fake, and the fake data is precisely the gap WI-933686
+// was filed for. Acceptance scorecard EI-21832584701743975 rated
 // `web-apps-real-data` only partially-met because both apps' real-data claim
 // rested on the platform delivery ledger and on manual driving, rather than on
 // an executing assertion. This block is that assertion.
 //
 // It changes exactly ONE variable: the record is READ FROM the live
-// `personal_documents` vault (`source='gmail'` / `'calendar'` — the same rows
-// the production producer reads) instead of being synthesized. The converter,
-// the batch builder, the delivery sink, the minted token and the app's own read
-// endpoint are all the identical production path already exercised above.
+// `documents` vault (the newest row of the app's datatype, whichever provider
+// wrote it — the same rows the production producer reads) instead of being
+// synthesized. The converter, the batch builder, the delivery sink, the minted
+// token and the app's own read endpoint are the identical production path
+// already exercised above.
 //
 // SAFETY — why this is not "writing real things into the owner's app":
 //  • REAL DATA, THROWAWAY OWNER. The gap was that the data was fake, never that
-//    the owner was, so the synthetic ownerId is KEPT. Real Google content proves
-//    the path; the throwaway owner keeps the owner's own store untouched.
-//  • READ-ONLY with respect to Google. It re-delivers content the platform
-//    already holds. It never reaches the draft gateway (Email stays draft-only
-//    by never invoking `mail:reply` at all) and never proposes/updates/deletes a
-//    calendar event, so CALENDAR_TEST_EVENT_LABEL confinement is never engaged.
+//    the owner was, so the synthetic ownerId is KEPT. Real provider content
+//    proves the path; the throwaway owner keeps the owner's own store untouched.
+//  • READ-ONLY with respect to the provider. It re-delivers content the
+//    platform already holds. It never reaches the draft gateway (Email stays
+//    draft-only by never invoking `mail:reply` at all) and never proposes,
+//    updates or deletes a calendar event.
 //  • OFF BY DEFAULT even when an app IS configured, so an ordinary
 //    `test:affected` run never touches the owner's mail.
 //
@@ -246,32 +321,33 @@ describe.skipIf(CASES.length === 0)('P-008 producer → app round trip (live app
 // skipping. A test that silently passes when it read nothing would recreate the
 // very defect this item is about — a claim resting on something unexecuted.
 
-const REAL_GOOGLE_ENABLED = process.env.APP_LIVE_REAL_GOOGLE_E2E === '1';
+const REAL_DATA_ENABLED = process.env.APP_LIVE_REAL_DATA_E2E === '1';
 
 /**
- * Newest real vault record for a platform source, shaped as the exact
+ * Newest real vault record for an app datatype, shaped as the exact
  * `ProducerSourceRecord` the production producer builds. Returns null when the
  * vault holds none, so the caller can fail with a specific reason.
  */
-async function readRealSourceRecord(source: string): Promise<ProducerSourceRecord | null> {
+async function readRealSourceRecord(datatypeId: string): Promise<ProducerSourceRecord | null> {
   const client = new Client({ connectionString: getHarnessAdminUrl() });
   await client.connect();
   try {
     const { rows } = await client.query(
-      `SELECT source, kind, external_id, occurred_at, title, text, metadata,
+      `SELECT source, datatype_id, kind, external_id, occurred_at, title, text, metadata,
               source_id, provider_account_id
-         FROM harness_shared.personal_documents
-        WHERE source = $1
+         FROM harness_shared.documents
+        WHERE datatype_id = $1
           AND external_id IS NOT NULL
           AND btrim(external_id) <> ''
         ORDER BY occurred_at DESC NULLS LAST
         LIMIT 1`,
-      [source],
+      [datatypeId],
     );
     const row = rows[0];
     if (!row) return null;
     return {
       source: row.source,
+      datatypeId: row.datatype_id,
       kind: row.kind,
       externalId: row.external_id,
       occurredAt: row.occurred_at,
@@ -286,28 +362,28 @@ async function readRealSourceRecord(source: string): Promise<ProducerSourceRecor
   }
 }
 
-describe.skipIf(!REAL_GOOGLE_ENABLED || CASES.length === 0)(
-  'WI-933686 real Google data → app round trip (opt-in: APP_LIVE_REAL_GOOGLE_E2E=1)',
+describe.skipIf(!REAL_DATA_ENABLED || CASES.length === 0)(
+  'WI-933686 real provider data → app round trip (opt-in: APP_LIVE_REAL_DATA_E2E=1)',
   () => {
     for (const c of CASES) {
       describe.skipIf(!live.get(c.app))(`${c.app}`, () => {
         const ownerId = `wi933686-live-test-${randomUUID()}`;
 
         it('delivers a REAL vault record through the production path and the app serves it back', async () => {
-          const record = await readRealSourceRecord(c.source);
+          const record = await readRealSourceRecord(DATATYPE_FOR_APP[c.app]);
 
           // Loud rather than vacuous: opting in asserts real data IS present.
           expect(
             record,
-            `no real '${c.source}' row in harness_shared.personal_documents — ` +
-              'this test cannot prove the real-data path without one. Connect the ' +
-              'provider and let a sync land, or unset APP_LIVE_REAL_GOOGLE_E2E.',
+            `no real '${DATATYPE_FOR_APP[c.app]}' row in harness_shared.documents — ` +
+              'this test cannot prove the real-data path without one. Connect a ' +
+              'provider and let a sync land, or unset APP_LIVE_REAL_DATA_E2E.',
           ).not.toBeNull();
 
           // Provenance assertions, on identifiers only — never on message content,
           // which must not reach a failure message or a CI log.
           const externalId = String(record!.externalId);
-          expect(record!.source).toBe(c.source);
+          expect(record!.datatypeId).toBe(DATATYPE_FOR_APP[c.app]);
           expect(externalId.length).toBeGreaterThan(0);
           expect(
             record!.metadata,
@@ -315,10 +391,12 @@ describe.skipIf(!REAL_GOOGLE_ENABLED || CASES.length === 0)(
           ).toBeTruthy();
 
           const mapped = appRowFromSourceRecord(record!);
-          expect(mapped, `appForSource must map '${c.source}' to an app`).not.toBeNull();
+          expect(mapped, `the ${c.app} datatype must map to an app`).not.toBeNull();
           expect(mapped!.app).toBe(c.app);
-          // The mapper keys the app row by the REAL provider id.
-          expect(mapped!.row.id).toBe(externalId);
+          // The mapper keys the app row by source id + REAL provider id (D-010).
+          const rowId = appRowId(externalId, record!.sourceId);
+          expect(mapped!.row.id).toBe(rowId);
+          expect(mapped!.row.nativeId).toBe(externalId);
 
           const batch = buildAppSyncBatch(c.app, [mapped!.row], { cursor: null });
           const result = await deliverAppSyncBatch(batch, ownerId, {
@@ -330,26 +408,14 @@ describe.skipIf(!REAL_GOOGLE_ENABLED || CASES.length === 0)(
 
           // RECEIVING END: the app's own read path, under a production-minted token.
           const authorization = await appServiceAuthHeader(c.app, ownerId, { secret: c.secret });
-          const path = c.app === 'email' ? `/api/threads/${externalId}` : `/api/events/${externalId}`;
-          const res = await fetch(`${c.baseUrl}${path}`, {
-            headers: { authorization },
-            signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
-          });
-          expect(res.status).toBe(200);
-          const body = (await res.json()) as {
-            messages?: { id: string }[];
-            event?: { id: string };
-          };
-
-          const servedId = c.app === 'email'
-            ? body.messages?.find((m) => m.id === externalId)?.id
-            : body.event?.id;
-          // THE ASSERTION THIS BLOCK EXISTS FOR: data that actually came from
-          // Google traversed the app's own run path, and the app served it back.
+          const served = await servedRow(c, authorization, rowId);
+          expect(served.status).toBe(200);
+          // THE ASSERTION THIS BLOCK EXISTS FOR: data that actually came from a
+          // provider traversed the app's own run path, and the app served it back.
           expect(
-            servedId,
-            `the ${c.app} app must serve back the REAL ${c.source} record it was sent`,
-          ).toBe(externalId);
+            served.row?.id,
+            `the ${c.app} app must serve back the REAL ${String(record!.source)} record it was sent`,
+          ).toBe(rowId);
         });
       });
     }

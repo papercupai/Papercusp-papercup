@@ -20,6 +20,9 @@
 /** The separator between a template slug and its run token. */
 export const PLAN_RUN_INSTANCE_SEPARATOR = '@run-';
 
+/** Authored and generated plan keys share this grammar on every read/write surface. */
+export const VALID_PLAN_SLUG = /^(?:[A-Za-z0-9._-]+|[A-Za-z0-9._-]+@run-\d+)$/;
+
 /** Build the instance slug for one run of `templateSlug` at `token`. */
 export function planRunInstanceSlug(templateSlug: string, token: number | string): string {
   return `${templateSlug}${PLAN_RUN_INSTANCE_SEPARATOR}${token}`;

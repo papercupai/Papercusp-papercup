@@ -1,0 +1,219 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-16 supplementary census: submodule trees at the deployed hosted sha reference neither the hosted entitlement resolver nor its module",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "R-16",
+  "workItemId": "WI-10003960",
+  "measuredAt": "2026-10-06T06:26:23.365698Z",
+  "deployedSha": "2041f3e9c74f84e3b5316f3f4492e4a357fe3acc",
+  "pattern": "\\b(checkHostedEntitlement|resolveHostedEntitlements)\\b|hosted-entitlements",
+  "command": "for each gitlink in git ls-tree -r <deployedSha> (type commit): git -C <path> grep -l -E <pattern> <pinnedCommit>",
+  "whyNeeded": "git grep at a superproject commit does not descend into submodule gitlinks, so the probe's packages/apps/libs caller census (docs/evidence/osr-r16-live-v2-probe-2026-10-06.py) cannot see submodule code.",
+  "superprojectSameSearch": [
+    "2041f3e9c74f84e3b5316f3f4492e4a357fe3acc:packages/operator-core/lib/auth/hosted-entitlements.test.ts:10",
+    "2041f3e9c74f84e3b5316f3f4492e4a357fe3acc:packages/operator-core/lib/auth/hosted-entitlements.ts:2"
+  ],
+  "submodulesSearched": 38,
+  "submodulesWithMatches": [],
+  "unreadableSubmodules": [],
+  "positiveControl": {
+    "repo": "libs/papercusp",
+    "pinnedCommit": "5bad551378d659ca5ee5283ecba4b03f964a0f06",
+    "search": "git grep -l 'CREATE TABLE' -- libs/db/sql",
+    "files": 408
+  },
+  "status": "pass",
+  "submodules": [
+    {
+      "path": "libs/agent-chat",
+      "pinnedCommit": "6f1c643a8d8739d77694cc812f23f59d449edb6c",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/cache",
+      "pinnedCommit": "298f64046967195530aeb37d71e8b6abcf3498e4",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/card-stack",
+      "pinnedCommit": "66fe6981418eefd3283877f088a81459de77fc5c",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/chat-protocol",
+      "pinnedCommit": "b2fc63914c09dd98940751b822c56665003c1901",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/control-mutation",
+      "pinnedCommit": "99eb2720e47f8cc2728a2f85848a4c6d8ac860de",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/debounce-coalesce",
+      "pinnedCommit": "af2b759574e528dc95a1ab827b6c551a7d8c3fe8",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/desktop-ipc",
+      "pinnedCommit": "1f73520aee8a247a2971d039475c452e92cfa2c0",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/dock-workbench",
+      "pinnedCommit": "a0a29e6dfa00a9d17db53881cd6578f37075da99",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/embedded-pg-discovery",
+      "pinnedCommit": "7507623ec33be15c22c7760801d83abb61fe8aed",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/failure-detector",
+      "pinnedCommit": "b18000f367fc512cd22e81763b7b1f01ef454e35",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/git-graph",
+      "pinnedCommit": "44a92ccb8955ee9c759d5f1c993307182d5938e4",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/ipc-endpoint-server",
+      "pinnedCommit": "0b9c8cdbde032f4ddc8d79f0d5bc4df0ca3be697",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/ipc-framing",
+      "pinnedCommit": "a61ae06e479fda913857e16dadcab153f665002d",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/memory",
+      "pinnedCommit": "bf898f485a0f04e80f0ac311cb7ef2b937ca7cb1",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/model-pricing",
+      "pinnedCommit": "280fe2b34345913d5632379278ae8fd5c01b5d96",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/papergrid",
+      "pinnedCommit": "6d87fa95bd785ecc909cafa08aece3cf3d95135f",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/plan-parser",
+      "pinnedCommit": "11bfcfe95003443df8ad127be49b80835a82fc51",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/prospect-contract",
+      "pinnedCommit": "714fb22d3345ee6638e67badae2ad691d19cc940",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/rate-limit",
+      "pinnedCommit": "7ab0f6f3ac7b528dbebca8e00188ac346f2dcc44",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/rerank",
+      "pinnedCommit": "2b524c6823c8f3421c0145fba2ba237e40d0edb3",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/resumable-download",
+      "pinnedCommit": "1eaf7b7311497bea41c1fe69942b404ad59db740",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/rrf",
+      "pinnedCommit": "b503d82c6718c4d10f1ea71ab8602b707b3c5bf8",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/rules",
+      "pinnedCommit": "208319fc1d5649d022558d7ffb85a86ed9134e7b",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/search",
+      "pinnedCommit": "b1b81f63554fe58fa5e0729c7d88808040201895",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/search-core",
+      "pinnedCommit": "8ad5eea53e35981d2cf39dbe15bbe592ba959831",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/sse",
+      "pinnedCommit": "09207052a16452aaceb8e82014612acc62c6d47f",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/sync",
+      "pinnedCommit": "ceaade8012b0def980f526fdb63cd3eff12cd046",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/tauri-release-kit",
+      "pinnedCommit": "81db900755c85057e750652c9a7a07c74a6738ad",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/token-kit",
+      "pinnedCommit": "0a2c7214d928c8b330a7ae9584876089e2781634",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/tooldef",
+      "pinnedCommit": "78e87521e238ddab18cdf186c65a226ca8f8e252",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/tooldef-http",
+      "pinnedCommit": "1e776922513bfcf341abe01d10b95d4822d96062",
+      "matches": []
+    },
+    {
+      "path": "libs/generic/ui-primitives",
+      "pinnedCommit": "2f703d5fbaaebbe70768b4227a4d41894c811896",
+      "matches": []
+    },
+    {
+      "path": "libs/papercusp",
+      "pinnedCommit": "5bad551378d659ca5ee5283ecba4b03f964a0f06",
+      "matches": []
+    },
+    {
+      "path": "libs/papercusp-db",
+      "pinnedCommit": "dab68e968d3bfac730a233555574235452f58a2f",
+      "matches": []
+    },
+    {
+      "path": "libs/papercusp-shared",
+      "pinnedCommit": "33e87c27189635c795fece0dbe0832efcb09a6ca",
+      "matches": []
+    },
+    {
+      "path": "libs/test-config",
+      "pinnedCommit": "3683ab921586bbc39e49e292181ce9b16b504128",
+      "matches": []
+    },
+    {
+      "path": "libs/testing-shell",
+      "pinnedCommit": "ae4a222548daf6826a7f5624a0fa502424de8979",
+      "matches": []
+    },
+    {
+      "path": "papercusp-desktop",
+      "pinnedCommit": "4c1f7ba4cd0dd8e1e854a5da675ed8e563056f16",
+      "matches": []
+    }
+  ]
+}

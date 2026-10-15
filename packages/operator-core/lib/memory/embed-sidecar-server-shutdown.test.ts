@@ -21,6 +21,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const shutdownLocalEmbedder = vi.fn(async () => {});
 const shutdownLocalReranker = vi.fn(async () => {});
+const flushFallbackObservations = vi.hoisted(() => vi.fn(async () => ({
+  written: 0, failed: 0, dropped: 0, rejected: 0,
+})));
+
+vi.mock('../degradation/fallback-observations', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../degradation/fallback-observations')>()),
+  flushFallbackObservations,
+}));
 
 vi.mock('@papercusp/memory', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/memory')>();
@@ -72,16 +80,28 @@ describe('runEmbedSidecarServer graceful shutdown', () => {
     shutdownLocalReranker.mockClear();
   });
 
-  it('awaits shutdownLocalEmbedder + shutdownLocalReranker before process.exit(0) on SIGTERM', async () => {
+  it('awaits model shutdown and fallback-observation flush before process.exit(0) on SIGTERM', async () => {
     const { runEmbedSidecarServer } = await import('./embed-sidecar-server');
     runEmbedSidecarServer();
+
+    let releaseFlush: (() => void) | undefined;
+    flushFallbackObservations.mockImplementation(() => new Promise((resolve) => {
+      releaseFlush = () => resolve({ written: 0, failed: 0, dropped: 0, rejected: 0 });
+    }));
 
     const sigterm = signalListeners.get('SIGTERM');
     expect(sigterm).toBeTypeOf('function');
     sigterm!();
 
-    // The shutdown chain is async (server.close → Promise.allSettled → exit);
-    // give the microtask/close-callback queue a turn.
+    // Hold the durable telemetry write open: the process must remain alive
+    // until fallback observations have been drained.
+    await vi.waitFor(() => {
+      expect(flushFallbackObservations).toHaveBeenCalledTimes(1);
+    });
+    expect(exitSpy).not.toHaveBeenCalled();
+    releaseFlush!();
+
+    // The shutdown chain is async (server.close → worker teardown → flush → exit).
     await vi.waitFor(() => {
       expect(exitSpy).toHaveBeenCalledWith(0);
     });
@@ -93,8 +113,10 @@ describe('runEmbedSidecarServer graceful shutdown', () => {
     // never the reverse (that would mean the exit skipped past them again).
     const embedderCallOrder = shutdownLocalEmbedder.mock.invocationCallOrder[0];
     const rerankerCallOrder = shutdownLocalReranker.mock.invocationCallOrder[0];
+    const flushCallOrder = flushFallbackObservations.mock.invocationCallOrder[0];
     const exitCallOrder = exitSpy.mock.invocationCallOrder[0];
     expect(embedderCallOrder).toBeLessThan(exitCallOrder);
     expect(rerankerCallOrder).toBeLessThan(exitCallOrder);
+    expect(flushCallOrder).toBeLessThan(exitCallOrder);
   });
 });

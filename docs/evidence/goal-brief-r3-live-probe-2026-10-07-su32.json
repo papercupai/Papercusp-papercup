@@ -1,0 +1,176 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "goal-brief R-3 live chain probe",
+  "framework": "operational",
+  "command": [
+    "npx",
+    "tsx",
+    "docs/evidence/goal-brief-r3-live-probe-2026-09-29.mts"
+  ],
+  "exitCode": 1,
+  "startedAt": "2026-10-07T02:20:58.752Z",
+  "finishedAt": "2026-10-07T02:21:00.033Z",
+  "summary": "2/3 assertions passed; 1 of 2 sessions resolved by the transcript witness alone",
+  "assertions": [
+    {
+      "id": "r3-no-omitted-or-foreign-counted-as-delivered",
+      "passed": true,
+      "evidence": "3 delivered rows, none not-applicable/foreign/unordered"
+    },
+    {
+      "id": "r3-generation-to-effect-chain-exists",
+      "passed": true,
+      "evidence": "3 confirmed delivery->same-turn turn-end->effect chains: activity:6400376, activity:6512596, activity:6512617"
+    },
+    {
+      "id": "r3-chain-survives-session-boundary",
+      "passed": false,
+      "evidence": "no owner+goal has complete chains in two native sessions (2 owner+goal groups)"
+    }
+  ],
+  "plan": {
+    "slug": "goal-brief-to-claimed-plan-work-2026-09-23",
+    "specIds": [
+      "AUTO-BAR-R-3-P-004",
+      "AUTO-BAR-R-3-P-007"
+    ],
+    "specRevision": 4
+  },
+  "residualUnknowns": [
+    "Non-omission of the delivered line is attested by the writer (the receipt is staged only when the rendered block contains the action line); injected briefs are not ingested into session_turn_parts, so it is not independently re-observable here.",
+    "Compaction vs cold restart is not distinguished: both start a new native session under the same owner; memory_session_epochs keeps only the latest epoch per session.",
+    "Fleet-leader side: fleet:leader-brief tool_invocations carry no generation/receipt, so the leader half of the shared engine is covered by unit/integration layers (bindings 15943/15944), not by this live probe.",
+    "The span and transcript witnesses both derive from the launch-time identity (PAPERCUSP_SID names the per-owner session-claude dir and the activation span), so neither can catch a launcher that assigned the wrong identity. Transcript-only rows rest on the host transcript file or its ingested copy (D-040; session_turn_parts keeps 14 days); a session pruned from both falls back to foreign."
+  ],
+  "observations": {
+    "population": {
+      "confirmedReceipts": 3,
+      "turnEndObservations": 401,
+      "turnEndStatuses": {
+        "not-applicable/0": 36,
+        "unknown/1": 7,
+        "blocked/2": 6,
+        "in-progress/1": 4,
+        "in-progress/2": 7,
+        "unknown/0": 94,
+        "blocked/1": 8,
+        "due/1": 24,
+        "due/2": 7,
+        "unknown/2": 2,
+        "in-progress/3": 4,
+        "in-progress/4": 3,
+        "blocked/3": 8,
+        "blocked/4": 19,
+        "blocked/5": 97,
+        "due/5": 8,
+        "in-progress/5": 46,
+        "blocked/6": 7,
+        "in-progress/6": 2,
+        "due/6": 1,
+        "unknown/4": 1,
+        "unknown/7": 2,
+        "in-progress/7": 1,
+        "due/7": 1,
+        "blocked/7": 4,
+        "unknown/5": 2
+      }
+    },
+    "identityWitnesses": {
+      "64436191-e2c2-49c8-ac48-257a365ae6ef": {
+        "spans": [
+          "su-2e6fb313-137d-4b96-9412-9e7656f49b2c@papercusp-workspace"
+        ],
+        "transcript": [
+          "su-2e6fb313-137d-4b96-9412-9e7656f49b2c"
+        ],
+        "transcriptDisk": [],
+        "transcriptIngested": [
+          "su-2e6fb313-137d-4b96-9412-9e7656f49b2c"
+        ],
+        "owner": "su-2e6fb313-137d-4b96-9412-9e7656f49b2c",
+        "workspace": "papercusp-workspace"
+      },
+      "59ad5d69-3227-4b4c-81cd-9bc53bda187b": {
+        "spans": [],
+        "transcript": [
+          "su-ce50c06d-20e3-4945-86b7-a0d3b72b8550"
+        ],
+        "transcriptDisk": [],
+        "transcriptIngested": [
+          "su-ce50c06d-20e3-4945-86b7-a0d3b72b8550"
+        ],
+        "owner": "su-ce50c06d-20e3-4945-86b7-a0d3b72b8550",
+        "workspace": "papercusp-workspace"
+      }
+    },
+    "chains": [
+      {
+        "source": "activity:6400376",
+        "owner": "su-2e6fb313-137d-4b96-9412-9e7656f49b2c",
+        "session": "64436191-e2c2-49c8-ac48-257a365ae6ef",
+        "goalId": "work-on-everything-fresh-grading-and-improvement-60d3a8",
+        "planSlug": "session-transcript-exact-fuzzy-search-2026-09-14",
+        "obligation": "obl:goal-plan-placement:d6b91a89a7d16a6123ff@91cbb1db0c4d4961e83f",
+        "turnEnd": "activity:6399863",
+        "effects": [
+          {
+            "feature_id": "WI-10001396",
+            "owner": "su-6992335d-3e58-47f3-abf3-9137b5cdf71b",
+            "at": "2026-09-30T16:57:00.347618-04:00"
+          },
+          {
+            "feature_id": "papercusp-session-transcript-exact-fuzzy-search-2026-09-14-p",
+            "owner": "su-b96d9ec7-fc10-46cd-b6c3-d48879793d32",
+            "at": "2026-09-30 16:56:05.435-04"
+          }
+        ],
+        "foreignWorkNotCounted": []
+      },
+      {
+        "source": "activity:6512596",
+        "owner": "su-ce50c06d-20e3-4945-86b7-a0d3b72b8550",
+        "session": "59ad5d69-3227-4b4c-81cd-9bc53bda187b",
+        "goalId": "work-on-everything-fresh-grading-and-improvement-60d3a8",
+        "planSlug": "cache-efficiency-and-accounting-2026-09-23",
+        "obligation": "obl:goal-plan-placement:1cd0e1a2443abd373d44@f29d24722214f95eea2f",
+        "turnEnd": "activity:6512595",
+        "effects": [
+          {
+            "feature_id": "WI-10002840",
+            "owner": "su-3f26104f-d1dc-4f47-8ae4-4f1e279912c3",
+            "at": "2026-10-01T11:15:18.78817-04:00"
+          },
+          {
+            "feature_id": "cache-efficiency-accounting-fleet",
+            "owner": "su-8d81e077-49e4-46b9-ab20-7858c1644270",
+            "at": "2026-10-01 11:14:29.298-04"
+          }
+        ],
+        "foreignWorkNotCounted": []
+      },
+      {
+        "source": "activity:6512617",
+        "owner": "su-ce50c06d-20e3-4945-86b7-a0d3b72b8550",
+        "session": "59ad5d69-3227-4b4c-81cd-9bc53bda187b",
+        "goalId": "work-on-everything-fresh-grading-and-improvement-60d3a8",
+        "planSlug": "cache-efficiency-and-accounting-2026-09-23",
+        "obligation": "obl:goal-plan-placement:1cd0e1a2443abd373d44@f29d24722214f95eea2f",
+        "turnEnd": "activity:6512595",
+        "effects": [
+          {
+            "feature_id": "WI-10002840",
+            "owner": "su-3f26104f-d1dc-4f47-8ae4-4f1e279912c3",
+            "at": "2026-10-01T11:15:18.78817-04:00"
+          },
+          {
+            "feature_id": "cache-efficiency-accounting-fleet",
+            "owner": "su-8d81e077-49e4-46b9-ab20-7858c1644270",
+            "at": "2026-10-01 11:14:29.298-04"
+          }
+        ],
+        "foreignWorkNotCounted": []
+      }
+    ]
+  }
+}

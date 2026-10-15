@@ -182,7 +182,7 @@ index a3392d2..c83809b 100755
 +  } else { outputError(e.message); }
  }
 diff --git a/node_modules/verdict-cli/src/server.mjs b/node_modules/verdict-cli/src/server.mjs
-index 249847c..97f0329 100644
+index 249847c..e29ee48 100644
 --- a/node_modules/verdict-cli/src/server.mjs
 +++ b/node_modules/verdict-cli/src/server.mjs
 @@ -8,8 +8,15 @@ import { createServer } from 'node:http';
@@ -201,7 +201,8 @@ index 249847c..97f0329 100644
 +  scryptSync,
 +} from 'node:crypto';
  import { mkdirSync } from 'node:fs';
- import { hostname, userInfo } from 'node:os';
+-import { hostname, userInfo } from 'node:os';
++import { hostname, tmpdir, userInfo } from 'node:os';
  
 @@ -54,6 +61,23 @@ function profilePath(name) {
  const { chromium } = await import('playwright');
@@ -374,7 +375,7 @@ index 249847c..97f0329 100644
 +      : resolve(process.env.HOME, process.platform === 'darwin' ? 'Library/Application Support/Google/Chrome/Default/Cookies' : '.config/google-chrome/Default/Cookies');
      if (!existsSync(cookieDb)) return `Chrome cookie DB not found at ${cookieDb}`;
 -    const tmp = '/tmp/verdict-cookies-copy';
-+    const tmp = resolve('/tmp', `verdict-cookies-copy-${process.pid}`);
++    const tmp = resolve(tmpdir(), `verdict-cookies-copy-${process.pid}`);
      copyFileSync(cookieDb, tmp);
      try {
 -      const raw = execSync(`sqlite3 -json "${tmp}" "SELECT name, value, host_key, path, is_secure, is_httponly FROM cookies WHERE host_key LIKE '%${domain}%'"`, { encoding: 'utf8', timeout: 5000 });

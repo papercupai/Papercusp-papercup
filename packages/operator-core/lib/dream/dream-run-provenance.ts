@@ -6,6 +6,8 @@ import { validateCapabilityDreamSelection } from './capability-pass';
 import { CAPABILITY_SAMPLING_VERSION, type CapabilitySamplingResult } from './capability-sampler';
 
 export const DREAM_CAPABILITY_RUN_VERSION = 'dream-capability-run-v1';
+// Sampling logs are persisted indefinitely; readers must recognize explicitly supported history.
+const HISTORICAL_CAPABILITY_SAMPLING_VERSIONS = new Set(['domain-structural-v1']);
 const name = z.string().trim().min(1).max(200);
 const usd = z.number().finite().nonnegative();
 export const DreamCallUsageSchema = z
@@ -56,6 +58,7 @@ const HeaderSchema = z
         arm: z.enum(['uniform-pair', 'structured-pair', 'structured-triple']),
         matchedPairIndex: z.number().int().min(0).max(49).optional(),
         inputHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+        graphTreatment: z.enum(['graph', 'control']).optional(),
       })
       .strict()
       .optional(),
@@ -94,17 +97,24 @@ export function newDreamCapabilityRun(input: BeginCapabilityRunInput): DreamCapa
     manifestHash: capabilityHash(JSON.stringify(parsed)),
     manifestRevision: parsed.revision,
   });
-  if (header.dreamerModel.toLowerCase() === header.reviewerModel.toLowerCase())
-    throw new Error('Dream reviewer must use a different model');
+  // The workspace background-model policy permits generation and review to
+  // share a model identity. Their prompt versions and phase-tagged call records
+  // remain separate evidence in the capability run.
   return { ...header, schemaVersion: DREAM_CAPABILITY_RUN_VERSION, sampling: null, calls: [], artifactId: null };
 }
 
-export function validateDreamSampling(value: CapabilitySamplingResult): void {
+export function validateDreamSampling(
+  value: CapabilitySamplingResult,
+  options: { allowHistorical?: boolean } = {},
+): void {
   if (!value || !['selected', 'no-pair'].includes(value.status)) throw new Error('Invalid persisted sampling result');
   const log = value.log;
+  const supportedVersion =
+    log?.version === CAPABILITY_SAMPLING_VERSION ||
+    (options.allowHistorical === true && HISTORICAL_CAPABILITY_SAMPLING_VERSIONS.has(log?.version));
   if (
     !log ||
-    log.version !== CAPABILITY_SAMPLING_VERSION ||
+    !supportedVersion ||
     !log.seed?.trim() ||
     !log.promptVersion?.trim() ||
     !/^[a-f0-9]{64}$/.test(log.snapshotFingerprint) ||
@@ -143,7 +153,7 @@ export function dreamCapabilityRun(run: { outcome: Record<string, unknown> | nul
   const value = EnvelopeSchema.parse(run.outcome.capabilityRun);
   if (new Set(value.calls.map((c) => c.callId)).size !== value.calls.length)
     throw new Error('Duplicate paid call identity');
-  if (value.sampling !== null) validateDreamSampling(value.sampling as CapabilitySamplingResult);
+  if (value.sampling !== null) validateDreamSampling(value.sampling as CapabilitySamplingResult, { allowHistorical: true });
   return value as DreamCapabilityRun;
 }
 

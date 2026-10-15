@@ -5,7 +5,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import postgres from 'postgres';
-import { getTestPg, teardownTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, teardownTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { applyGymSchema } from '../schema';
 import { insertVariant, insertTask, insertRun, finishRun, insertScore, insertRunParams, compareVariants } from '../store';
 import type { GymScore } from '../judge';
@@ -23,7 +23,7 @@ const score = (composite: number, rubricHash = 'rh1'): GymScore => ({
 beforeAll(async () => {
   containerUri = await getTestPg();
   const maint = postgres(containerUri, { max: 1, onnotice: () => {} });
-  try { await maint.unsafe(`CREATE DATABASE "${dbName}"`); } finally { await maint.end({ timeout: 5 }); }
+  try { await maint.unsafe(`CREATE DATABASE "${dbName}"`); await markManagedTestDatabase(maint, dbName); } finally { await maint.end({ timeout: 5 }); }
   const u = new URL(containerUri);
   u.pathname = `/${dbName}`;
   sql = postgres(u.toString(), { max: 1, onnotice: () => {}, prepare: false });
@@ -78,5 +78,47 @@ describe('gym store', () => {
     const byTask = Object.fromEntries(cmp.map((r) => [r.taskId, r]));
     expect(byTask['ct-1'].delta).toBeCloseTo(1, 5); // 7 - 6
     expect(byTask['ct-2'].delta).toBeCloseTo(-1, 5); // 5 - 6
+  });
+
+  it('upgrades the legacy run key while retaining independent evaluations and idempotent retries', async () => {
+    // Recreate an already-provisioned gym DB: migration 001 is recorded, its
+    // tuple constraint remains, and the additive run-identity migration is pending.
+    await sql`ALTER TABLE harness_gym.gym_runs
+      ADD CONSTRAINT gym_runs_variant_id_task_id_cycle_repeat_key UNIQUE (variant_id, task_id, cycle, repeat)`;
+    await sql`DELETE FROM harness_shared.schema_migrations WHERE filename = '002-gym-run-identity.sql'`;
+    await insertVariant(sql, { variantId: 'retained-baseline', label: 'baseline', overlay: { promptOverrides: {} } });
+    await insertTask(sql, { taskId: 'retained-task', pool: 'train', repoUrl: '/r', repoCommit: 'abc1234', spec: 's', intent: 'i' });
+    const first = { runId: 'loop-first::baseline', variantId: 'retained-baseline', taskId: 'retained-task', cycle: 0, repeat: 0, harnessSlug: 'first' };
+    const second = { ...first, runId: 'loop-second::baseline', harnessSlug: 'second' };
+    await insertRun(sql, first);
+    await finishRun(sql, first.runId, { terminalState: 'passed', deterministicSignals: { snapshot: 'first' } });
+    await insertScore(sql, first.runId, score(6));
+    await insertRunParams(sql, first.runId, { harnessCommit: 'first-commit', substrateCommit: 'abc1234' });
+
+    // Isolate the old schema as the cause, independently of loop orchestration.
+    await expect(insertRun(sql, second)).rejects.toMatchObject({
+      code: '23505', constraint_name: 'gym_runs_variant_id_task_id_cycle_repeat_key',
+    });
+    await applyGymSchema(sql);
+    await insertRun(sql, second);
+    await finishRun(sql, second.runId, { terminalState: 'passed', deterministicSignals: { snapshot: 'second' } });
+    await insertScore(sql, second.runId, score(7));
+    await insertRunParams(sql, second.runId, { harnessCommit: 'second-commit', substrateCommit: 'abc1234' });
+    // A retry of the same run identity must preserve the original run row.
+    await insertRun(sql, { ...first, harnessSlug: 'retry-must-not-replace' });
+    await applyGymSchema(sql);
+
+    const rows = await sql`
+      SELECT r.run_id, r.harness_slug, r.deterministic_signals->>'snapshot' AS snapshot,
+             s.composite, p.harness_commit
+        FROM harness_gym.gym_runs r
+        JOIN harness_gym.gym_scores s USING (run_id)
+        JOIN harness_gym.gym_runs_params p USING (run_id)
+       WHERE r.task_id = 'retained-task'
+       ORDER BY r.run_id`;
+    expect(rows.map((r) => ({ ...r, composite: Number(r.composite) }))).toEqual([
+      { run_id: first.runId, harness_slug: 'first', snapshot: 'first', composite: 6, harness_commit: 'first-commit' },
+      { run_id: second.runId, harness_slug: 'second', snapshot: 'second', composite: 7, harness_commit: 'second-commit' },
+    ]);
   });
 });

@@ -13,7 +13,7 @@ import type { ChildProcess, spawn as nodeSpawn } from 'node:child_process';
 const M = vi.hoisted(() => ({
   registerTask: vi.fn(async (..._args: unknown[]) => ({})),
   markSpawned: vi.fn(async (..._args: unknown[]) => {}),
-  closeTask: vi.fn(async (..._args: unknown[]) => {}),
+  closeTask: vi.fn(async (..._args: unknown[]) => true),
   inspectTaskUnitTerminals: vi.fn(async (..._args: unknown[]) => new Map()),
   resetFailedTaskUnit: vi.fn(async (..._args: unknown[]) => false),
 }));
@@ -104,12 +104,13 @@ function scannedProcess(taskId: string): ScannedProcess {
   };
 }
 
-async function launch(taskId: string, procs: number[] | null) {
+async function launch(taskId: string, procs: number[] | null, stage?: (name: string) => void) {
   const emitter = new EventEmitter();
   Object.assign(emitter, { pid: PID, kill: () => true });
   const spawnFn = (() => emitter as unknown as ChildProcess) as unknown as typeof nodeSpawn;
   const result = await managedSpawn('node', ['local-whisper-service.js'], SPEC, {
     taskId,
+    stage,
     scopeAvailable: true,
     spawnFn,
     fs: makeFs(taskId, procs),
@@ -131,7 +132,7 @@ beforeEach(() => {
       registeredRow = { ...registeredRow, ...facts, state: 'running' };
     }
   });
-  M.closeTask.mockReset();
+  M.closeTask.mockReset().mockResolvedValue(true);
   M.inspectTaskUnitTerminals.mockReset().mockResolvedValue(new Map());
   M.resetFailedTaskUnit.mockReset().mockResolvedValue(false);
   vi.useFakeTimers();
@@ -143,6 +144,31 @@ afterEach(() => {
 });
 
 describe('managedSpawn ledger registration recovery', () => {
+  it('does not fork a metered execution if required durable enrollment fails', async () => {
+    M.registerTask.mockRejectedValueOnce(new Error('fixture ledger offline'));
+    const spawnFn = vi.fn();
+    await expect(managedSpawn('codex', [], { ...SPEC, class: 'agent-session' }, {
+      taskId: 'requiredenroll1', requireRegistration: true, scopeAvailable: false, spawnFn: spawnFn as never,
+    })).rejects.toThrow(/Required task enrollment failed; no process started/);
+    expect(spawnFn).not.toHaveBeenCalled(); expect(M.markSpawned).not.toHaveBeenCalled();
+  });
+  it('identifies a pending ledger registration before the native fork', async () => {
+    const stages: string[] = [];
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    M.registerTask.mockImplementation(async () => {
+      await pending;
+      return makeTaskRow('traceregister1', SPEC);
+    });
+    const result = launch('traceregister1', null, (name) => stages.push(name));
+    await flushMicrotasks();
+    expect(stages.at(-1)).toBe('spawn-register-task');
+    expect(stages).not.toContain('spawn-fork');
+    release();
+    await result;
+    expect(stages).toContain('spawn-fork');
+    expect(stages.at(-1)).toBe('spawn-mark-running');
+  });
   it('retries the same task id and scope, then reconciliation matches the recovered row', async () => {
     const taskId = 'recover1234';
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -205,7 +231,7 @@ describe('managedSpawn ledger registration recovery', () => {
       return registeredRow;
     });
 
-    const { emitter } = await launch(taskId, null);
+    const { emitter, result } = await launch(taskId, null);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('spawning UNLEDGERED'));
     await vi.advanceTimersByTimeAsync(1_000);
     expect(attempts).toBe(2);
@@ -224,5 +250,18 @@ describe('managedSpawn ledger registration recovery', () => {
     });
     expect(M.markSpawned).toHaveBeenCalledWith(taskId, expect.objectContaining({ scopeUnit: scopeUnitForTask(taskId) }));
     expect(M.closeTask).toHaveBeenCalledWith(taskId, expect.objectContaining({ state: 'exited', exitCode: 0 }));
+    await expect(result.waitForCompletion()).resolves.toEqual({ status: 'recorded' });
+  });
+
+  it('does not claim a queued terminal write was recorded when registration still fails', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    M.registerTask.mockRejectedValue(new Error('fixture ledger offline'));
+    const { emitter, result } = await launch('pendingclose1', null);
+    const completion = result.waitForCompletion();
+    emitter.emit('exit', 0, null);
+    await vi.advanceTimersByTimeAsync(SCOPE_HANDOFF_GRACE_MS + SCOPE_HANDOFF_RECHECK_MS + 1);
+    await expect(completion).resolves.toEqual({ status: 'unavailable', reason: 'ledger registration pending' });
+    expect(M.closeTask).not.toHaveBeenCalled();
+    vi.clearAllTimers();
   });
 });

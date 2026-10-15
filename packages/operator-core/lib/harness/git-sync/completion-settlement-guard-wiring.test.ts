@@ -43,6 +43,7 @@ describe('standing-guard wiring in reconcileProposedCompletionsAtCommit', () => 
       residual: 0,
       unreadable: 0,
       floorRejected: 0,
+      lookupUnavailable: 0,
       neverAttemptedRemaining: 4,
     });
   });
@@ -200,5 +201,55 @@ describe('never-attempted cutoff wiring (EI-24758680272435881)', () => {
     expect(cutoff).toBeGreaterThanOrEqual(before);
     expect(cutoff).toBeLessThanOrEqual(Date.now());
     expect(recordHealth.mock.calls[0]![0]).toMatchObject({ outcome: 'budget-exceeded', neverAttemptedRemaining: 1 });
+  });
+});
+
+describe('WI-10005560: history memo persistence wiring', () => {
+  const emptyStore = () => ({
+    load: vi.fn(async (_limit: number) => []),
+    save: vi.fn(async () => {}),
+  });
+
+  it('loads the stored verdicts before the candidate SELECT, once per pass', async () => {
+    const { sql, queries } = fakeSql();
+    const store = emptyStore();
+    const queriesAtLoad: number[] = [];
+    store.load.mockImplementation(async () => {
+      queriesAtLoad.push(queries.length);
+      return [];
+    });
+    const recordHealth = vi.fn(async (_o: SettlementFireObservation) => {});
+    await reconcileProposedCompletionsAtCommit(SHA, scope, { sql, recordHealth, historyMemoStore: store });
+    await reconcileProposedCompletionsAtCommit(SHA, scope, { sql, recordHealth, historyMemoStore: store });
+    // An injected store stands for a fresh process per pass, so each pass hydrates.
+    expect(queriesAtLoad).toEqual([0, queries.length / 2]);
+    // Nothing was learned (no candidates), so nothing is written.
+    expect(store.save).not.toHaveBeenCalled();
+  });
+
+  it('a store that cannot load never fails the pass', async () => {
+    const { sql } = fakeSql();
+    const store = emptyStore();
+    store.load.mockRejectedValue(new Error('memo table missing'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const recordHealth = vi.fn(async (_o: SettlementFireObservation) => {});
+    await expect(
+      reconcileProposedCompletionsAtCommit(SHA, scope, { sql, recordHealth, historyMemoStore: store }),
+    ).resolves.toMatchObject({ inspected: 0 });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not load the history search memo: memo table missing'));
+    expect(recordHealth.mock.calls[0]![0]).toMatchObject({ outcome: 'completed' });
+  });
+
+  it('a lookup seam runs no history reader, so the store is never touched', async () => {
+    const { sql } = fakeSql();
+    const store = emptyStore();
+    const recordHealth = vi.fn(async (_o: SettlementFireObservation) => {});
+    await reconcileProposedCompletionsAtCommit(SHA, scope, {
+      sql,
+      recordHealth,
+      historyMemoStore: store,
+      lookup: async () => new Map(),
+    });
+    expect(store.load).not.toHaveBeenCalled();
   });
 });

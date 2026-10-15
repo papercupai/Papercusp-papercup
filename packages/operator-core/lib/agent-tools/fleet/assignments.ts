@@ -10,13 +10,14 @@
  * is for messages addressed to you — not for deriving fleet state (D-001).
  */
 import { z } from 'zod';
+import { trackPhase } from '@papercusp/tooldef';
 import { defineTool, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { fleetSlugFromName, getFleet } from '../../agent-fleets-store';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveSelfRef, markSelfRows } from '../coordination/self-marker';
 import { selectFleetPopulation, withShownCount, withLivenessComposition } from './fleet-population';
-import { COORD_ROLES } from '../coordination/roles';
+import { COORD_READ_ROLES } from '../coordination/roles';
 import {
   fetchWakeability,
   type SessionState,
@@ -29,12 +30,14 @@ import {
   type SelfWakeSignals,
   type SelfWakeSource,
 } from '../coordination/presence-selfwake';
-import { deriveVerdict } from '../coordination/liveness-oracle';
-import { findLiveHost } from '../../events/await/psu-pty-discovery';
+import { applyHostConditionLeg, deriveVerdict, type LivenessVerdict } from '../coordination/liveness-oracle';
+import type { HostTailEvent, PickupRecoverable } from '../../events/await/turn-proof';
+import { findLiveHostAsync } from '../../events/await/psu-pty-discovery';
 import { endedRecordedOwnerIds, recordedLiveOwnerIds } from '../../adv-sessions';
 import {
   groupByAgent,
   deriveClaimHealth,
+  isBroadClaimableParkMaskingStalledClaim,
   lastProductiveToolCallAtByOwner,
   lastToolCallAtByOwner,
   listFleetAssignments,
@@ -51,8 +54,8 @@ import {
   type HolderActivity,
 } from '../../fleet/assignments';
 import {
-  getAllWakeModeOverrides,
   getDefaultWakeMode,
+  getWakeModeOverridesFor,
   resolveWakeModeFrom,
   type WakeMode,
 } from '../coordination/wake-mode';
@@ -92,6 +95,10 @@ import { getLoopStatuses, type LoopStatus, type LifecycleBackoffInfo } from '../
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { getWorkItem, type WorkItem } from '../../work-items';
 import {
+  readClaimConcurrencyBatch,
+  type ClaimConcurrencyVerdict,
+} from '../../scheduler/claim-spec-store';
+import {
   extractWorkItemIds,
   TERMINAL_WORK_ITEM_STATES,
 } from '../work_items/mirror-guard';
@@ -120,8 +127,13 @@ export const COVERAGE_ACTIVE_WINDOW_MS = 7 * 24 * 3600 * 1000;
  */
 export const FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS = 8_000;
 
+/** Leave transport/serialization headroom below the MCP read-only deadline. */
+export const FLEET_ASSIGNMENTS_HANDLER_BUDGET_MS = 40_000;
+
 const FLEET_ASSIGNMENTS_DEGRADED_LEG_ORDER = [
+  'fleetLookup',
   'assignments',
+  'schedulerClaimState',
   'intentWorkItems',
   'coverage',
   'harnessPlans',
@@ -134,12 +146,49 @@ const FLEET_ASSIGNMENTS_DEGRADED_LEG_ORDER = [
   'unanswered',
   'loop',
   'lastToolCalls',
+  'productiveToolCalls',
   'wakeModeOverrides',
   'defaultWakeMode',
   'verdicts',
   'residue',
   'dag',
 ] as const;
+
+export type SchedulerClaimState = Pick<ClaimConcurrencyVerdict, 'activeClaims' | 'heldIds' | 'blockerParkedIds'>;
+
+/**
+ * Keep scheduler-capacity claims visible beside the actionable assignment list.
+ * The scheduler counts every non-terminal taken_by row, including blocked and
+ * needs-human items that the fleet_assignment view intentionally hides from its
+ * work-list to avoid calling correctly parked work stalled or reclaimable — except
+ * a blocked/needs-human hold with an active external blocker, which P-010 (plan
+ * D-010) does not count; those are listed in blockerParkedIds so they stay visible.
+ */
+export function projectSchedulerClaimState<T extends AgentAssignment>(
+  agents: readonly T[],
+  states: ReadonlyMap<string, ClaimConcurrencyVerdict> | null,
+): Array<T & { schedulerClaimState: SchedulerClaimState | null }> {
+  return agents.map((agent) => {
+    const state = states?.get(agent.agentId);
+    return {
+      ...agent,
+      schedulerClaimState: state
+        ? {
+            activeClaims: state.activeClaims,
+            heldIds: [...state.heldIds],
+            blockerParkedIds: [...state.blockerParkedIds],
+          }
+        : null,
+    };
+  });
+}
+
+type FleetAssignmentsReadTiming = {
+  phase: string;
+  startOffsetMs: number;
+  elapsedMs: number;
+  outcome: 'ok' | 'timeout' | 'aborted' | 'error';
+};
 
 /** Bound the extra intent-reference lookup independently of roster size. */
 export const ABANDONED_INTENT_REF_CAP = 40;
@@ -288,8 +337,12 @@ export interface ReconcileWakeabilityOptions {
   psuHostPositiveAuthority?: boolean;
   /** Injectable batch presence read for PG-free tests and bounded callers. */
   fetchPresenceFn?: (ownerIds: string[]) => Promise<Map<string, ReconcilePresence>>;
-  /** Injectable local psu-host lookup for PG-free tests. */
+  /** Injectable synchronous psu-host lookup for existing PG-free tests. */
   findHostFn?: (ownerId: string) => unknown | null;
+  /** Injectable async lookup; production request paths use this to keep filesystem waits off the event loop. */
+  findHostAsyncFn?: (ownerId: string) => Promise<unknown | null>;
+  /** P-011(a): injectable host lifecycle-tail read for the host-condition leg (PG/fs-free tests). */
+  readHostTailFn?: (ownerId: string) => Promise<readonly HostTailEvent[]>;
 }
 
 /** Production roster readers all need the same presence-backed psu-host leg. */
@@ -315,7 +368,7 @@ const fetchReconcilePresence: NonNullable<ReconcileWakeabilityOptions['fetchPres
   );
 };
 
-export async function reconcileWakeability<T extends AgentAssignment & { sessionState?: SessionState | null; confirmLiveness?: boolean | null; wakeable?: boolean | null; loopArmed?: boolean; selfWake?: SelfWakeSource }>(
+export async function reconcileWakeability<T extends AgentAssignment & { sessionState?: SessionState | null; confirmLiveness?: boolean | null; wakeable?: boolean | null; loopArmed?: boolean; selfWake?: SelfWakeSource; wedged?: PickupRecoverable | null }>(
   agents: T[],
   fetchWakeabilityFn: (ownerIds: string[]) => Promise<Map<string, WakeabilitySignals>> = fetchWakeability,
   fetchRecordedLiveFn: (ownerIds: string[]) => Promise<Set<string>> = recordedLiveOwnerIds,
@@ -340,7 +393,23 @@ export async function reconcileWakeability<T extends AgentAssignment & { session
     fetchSelfWakeFn(ownerIds).catch(() => new Map<string, SelfWakeSignals>()),
     fetchEndedRecordedFn(ownerIds).catch(() => new Set<string>()),
   ]);
+  const liveHostsByOwner = new Map<string, unknown | null>();
+  if (options.psuHostPositiveAuthority && !options.findHostFn) {
+    const findHostAsync = options.findHostAsyncFn ?? findLiveHostAsync;
+    const hostOwnerIds = ownerIds.filter((ownerId) => wakeability.has(ownerId));
+    // Keep the request event loop free even if a metadata lookup is held behind
+    // a slow psu-pty directory operation. Bound in-flight filesystem work so a
+    // large roster does not flood libuv's worker pool.
+    for (let i = 0; i < hostOwnerIds.length; i += 16) {
+      await Promise.all(hostOwnerIds.slice(i, i + 16).map(async (ownerId) => {
+        liveHostsByOwner.set(ownerId, await findHostAsync(ownerId).catch(() => null));
+      }));
+    }
+  }
+  const findHostForVerdict = options.findHostFn ?? ((ownerId: string) => liveHostsByOwner.get(ownerId) ?? null);
   const nowMs = Date.now();
+  const verdicts = new Map<string, LivenessVerdict>();
+  const subjects: { ownerId: string; agentRole?: string | null }[] = [];
   for (const a of agents) {
     const w = wakeability.get(a.agentId);
     if (!w) continue; // no signal (e.g. a federated peer) — leave heartbeat-only alive, sessionState unset.
@@ -368,11 +437,36 @@ export async function reconcileWakeability<T extends AgentAssignment & { session
         enabled: options.psuHostPositiveAuthority === true,
         negative: false,
         positive: options.psuHostPositiveAuthority === true,
-        findHostFn: options.findHostFn ?? findLiveHost,
+        findHostFn: findHostForVerdict,
       },
       selfWake.get(a.agentId),
       recordedEnded,
     );
+    if (!verdicts.has(a.agentId)) subjects.push({ ownerId: a.agentId, agentRole: p?.agentRole ?? null });
+    verdicts.set(a.agentId, v);
+  }
+  // P-011(a) / D-011: positive psu-host authority rescues a row to parked/recorded,
+  // so this surface must also ask whether that host can take a turn. Same shared
+  // leg as resolveSessionStates and coord:presence: a dead-auth / quota-walled /
+  // unbound / stuck-pending host reads `suspect` with its class in `wedged`.
+  // Hosts were already looked up above (or injected), so no fallback lookup.
+  // Fail-soft: an unjudged row keeps its plain derivation.
+  if (options.psuHostPositiveAuthority === true) {
+    try {
+      await applyHostConditionLeg(verdicts, subjects, {
+        nowMs,
+        findHostFn: findHostForVerdict,
+        findHostAsyncFn: null,
+        ...(options.readHostTailFn ? { readHostTailFn: options.readHostTailFn } : {}),
+      });
+    } catch {
+      /* fail-soft */
+    }
+  }
+  for (const a of agents) {
+    const v = verdicts.get(a.agentId);
+    if (!v) continue;
+    if (v.wedged != null) a.wedged = v.wedged;
     a.sessionState = v.sessionState;
     // EI-21125380796386851: `suspect` is recoverable when the coordinator can
     // still deliver a wake. Keep the oracle's wakeability axis alongside the
@@ -389,7 +483,9 @@ export async function reconcileWakeability<T extends AgentAssignment & { session
     // WI-4400: the read is stale-ish when draining/suspect; expose the explicit
     // confirmation nudge through fleet:assignments (and coord:orient's me fold).
     a.confirmLiveness = v.confirmLiveness;
-    if (v.sessionState === 'recorded') a.alive = true;
+    // Positive oracle evidence supersedes the roster's stale heartbeat flag;
+    // otherwise downstream member verdicts can call a rescued parked owner dead.
+    if (v.sessionState === 'live' || v.sessionState === 'parked' || v.sessionState === 'recorded') a.alive = true;
     if (v.sessionState === 'ended' || v.sessionState === 'suspect' || v.sessionState === 'draining') a.alive = false;
   }
   return agents;
@@ -644,7 +740,7 @@ export async function decorateMemberVerdicts<
 >(
   agents: T[],
   fetchLastToolCalls: (ownerIds: string[]) => Promise<Map<string, string>> = lastToolCallAtByOwner,
-  fetchWakeModeOverrides: () => Promise<Map<string, WakeMode>> = getAllWakeModeOverrides,
+  fetchWakeModeOverrides: (ownerIds: string[]) => Promise<Map<string, WakeMode>> = getWakeModeOverridesFor,
   fetchDefaultWakeMode: () => Promise<WakeMode> = getDefaultWakeMode,
   nowMs: number = Date.now(),
   // WI-42457: appended AFTER `nowMs` on purpose — inserting it earlier would
@@ -656,7 +752,8 @@ export async function decorateMemberVerdicts<
   if (agents.length === 0) return agents;
   const [lastCalls, overrides, defaultMode, productiveCallsOrUnknown] = await Promise.all([
     fetchLastToolCalls(agents.map((a) => a.agentId)),
-    fetchWakeModeOverrides(),
+    // WI-10005228: only the members being decorated, never every override ever written.
+    fetchWakeModeOverrides(agents.map((a) => a.agentId)),
     fetchDefaultWakeMode(),
     // A THROWN fetch is "unknown", not "nobody worked": resolving it to null for
     // every member would flip a whole healthy fleet to `joined`. Unknown feeds
@@ -924,9 +1021,9 @@ export default defineTool({
   name: 'fleet:assignments',
   profile: 'engineer',
   description:
-    'The canonical "who\'s on what" query: per-agent presence + plan-item + work-item claims unified. `self`=your ownerId (your row is `isSelf:true`). Each live agent carries its ordered work-list — `doing`/`queued`/`load` — the placement read. Surfaces `orphaned`/`stalled` claims with a derived `verdict`+`action`: `orphan`/`reclaim` (holder gone) · `held-by-live-agent`/`ask` (live, uncheckpointed — never release) · `residue`/`close` (linked plan item already done/dropped — close, never release). Act on `summary.reclaimable_claims`/`residue_claims`, not raw counts. `progress` distinguishes `never-checkpointed` vs `stale-since`; each row also carries a lifecycle `verdict`, `wakeMode` (auto|manual), and `unanswered` message state. Read this, not a stale coord broadcast. Full field reference: /internal/docs/agent-insights/fleet-assignments-field-reference.',
+    'The canonical "who\'s on what" query: per-agent presence + plan-item + work-item claims unified. `self`=your ownerId (your row is `isSelf:true`). Each live agent carries its ordered work-list — `doing`/`queued`/`load` — the placement read. Surfaces `orphaned`/`stalled` claims with a derived `verdict`+`action`: `orphan`/`reclaim` (holder gone) · `held-by-live-agent`/`ask` (live, uncheckpointed — never release) · `residue`/`close` (linked plan item already done/dropped — close, never release). Act on `summary.reclaimable_claims`/`residue_claims`, not raw counts. `progress` distinguishes `never-checkpointed` vs `stale-since`; each row also carries a lifecycle `verdict`, `wakeMode` (auto|manual), and `unanswered` message state. Full field reference: /internal/docs/agent-insights/fleet-assignments-field-reference.',
   guidance: {
-    when: 'Answering "who\'s running / what X is doing / X\'s work-list / how loaded X is / who\'s on plan P" — the state + placement-decision read, not coord:inbox scanning.',
+    when: 'Reading who is active, what work an agent carries, or who owns a plan. schedulerClaimState shows the scheduler-held work-item count and ids, including blocked or needs-human items omitted from the actionable work-list.',
     notWhen:
       'You want future-change notifications (subscribe the fleet_assignment change-feed) or full message history (coord:inbox).',
     chaining:
@@ -986,13 +1083,13 @@ export default defineTool({
   // the model-facing reader can follow the payload's truncation hints instead
   // of receiving a JSON prefix plus a prose result-door footer.
   skipResultDoor: 'oversize-by-design',
-  agentRoles: [...COORD_ROLES],
+  agentRoles: [...COORD_READ_ROLES],
   args: z.object({
     agent: z
       .string()
       .max(120)
       .optional()
-      .describe('Filter to one agent (ownerId or adopted agent-name) — "what is X doing".'),
+      .describe('Filter to one agent (ownerId or adopted agent-name) — "what is X doing". Evidence-only judges must pass "self"; unfiltered and named-agent reads are refused.'),
     plan: z.string().max(200).optional().describe('Filter to one plan slug — "who\'s on P".'),
     fleet: z
       .string()
@@ -1003,6 +1100,12 @@ export default defineTool({
       ),
     harness: z.string().max(80).optional(),
     workspace: z.string().max(120).optional(),
+    detail: z
+      .enum(['full', 'snapshot'])
+      .optional()
+      .describe(
+        "Read detail. 'full' (default) includes lifecycle, claim-recovery, coverage, and member diagnostics. 'snapshot' returns the full scoped roster and active claims without those expensive diagnostics; omitted metrics are null and listed in unmeasuredMetrics. Use for recovery/bootstrap reads that need accurate membership and claims but must not infer reclaimability.",
+      ),
     include_stale: z
       .boolean()
       .optional()
@@ -1025,6 +1128,12 @@ export default defineTool({
       .describe(
         "Also return the plan's DAG-filter frontier (EI-6949): every item the fleet's dependency DAG selects, with per-item status (ready|blocked|claimed|wip|done|dropped) + blockedBy/unresolvedBlockers/claimedBy/files + counts. Reuses the SAME plan-item DAG state the spawner admits from, so `ready` = what would be placed next. Requires `plan`; off by default (the frontier is fleet-level, kept off the per-agent presence path). Opt-in so the default read stays lean.",
       ),
+    includeTimings: z
+      .boolean()
+      .optional()
+      .describe(
+        'Include end-to-end handler time plus each bounded subread phase duration and outcome. Diagnostic timing covers the helper call (including acquire/queue time); it does not claim to isolate PostgreSQL execution time.',
+      ),
   }),
   // context-trimming-tiers P-022: trimmed/standard sessions get the placement
   // decision core (summary + reclaimables + compact agent rows — see
@@ -1044,6 +1153,21 @@ export default defineTool({
     contract: { rows: 'agents', preserve: ['ok', 'summary'] },
   },
   async handler(args, ctx) {
+    const handlerStartedAt = Date.now();
+    const handlerDeadlineAt = handlerStartedAt + FLEET_ASSIGNMENTS_HANDLER_BUDGET_MS;
+    const snapshotRead = args.detail === 'snapshot';
+    // Judge is an evidence-only reader. Unlike broad fleet observers, it can
+    // inspect only its own assignment row; requiring the explicit `self`
+    // selector prevents an omitted filter from widening to the whole fleet.
+    if (ctx.role === 'judge' && args.agent !== 'self') {
+      return {
+        data: {
+          ok: false,
+          error: 'judge_assignment_scope_only',
+          message: "The evidence-only judge may read fleet assignments only with agent:'self'.",
+        },
+      };
+    }
     // A READ — identity is used only to default the optional workspace filter
     // (null = all workspaces). Resolve it SOFTLY so a bare loopback caller (the
     // pui bee-dossier pane, the IPC sys:http bridge) can read the state without
@@ -1084,8 +1208,66 @@ export default defineTool({
     // reject unknown names explicitly so an invalid fleet never looks measured-empty.
     const requestedFleetSlug = args.fleet === undefined ? undefined : fleetSlugFromName(args.fleet);
     let fleetFilter = requestedFleetSlug;
+    const degradedLegs = new Set<string>();
+    const readTimings: FleetAssignmentsReadTiming[] = [];
+    const boundedRead = async <T>(
+      label: string,
+      work: () => Promise<T>,
+      fallback: T,
+    ): Promise<T> => {
+      const startedAt = Date.now();
+      const remainingBudgetMs = Math.max(0, handlerDeadlineAt - startedAt);
+      if (remainingBudgetMs === 0) {
+        degradedLegs.add(label);
+        readTimings.push({
+          phase: label,
+          startOffsetMs: startedAt - handlerStartedAt,
+          elapsedMs: 0,
+          outcome: 'timeout',
+        });
+        return fallback;
+      }
+      const result = await withBoundedTimeout(work, {
+        fallback,
+        timeoutMs: Math.min(FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS, remainingBudgetMs),
+        label: 'fleet:assignments:' + label,
+      });
+      readTimings.push({
+        phase: label,
+        startOffsetMs: startedAt - handlerStartedAt,
+        elapsedMs: result.elapsedMs,
+        outcome: result.degraded ? result.reason ?? 'error' : 'ok',
+      });
+      if (result.degraded) degradedLegs.add(label);
+      return result.value;
+    };
+
     if (requestedFleetSlug !== undefined) {
-      const fleet = await getFleet(workspaceId, requestedFleetSlug);
+      const fleet = await boundedRead(
+        'fleetLookup',
+        () => getFleet(workspaceId, requestedFleetSlug),
+        null,
+      );
+      if (degradedLegs.has('fleetLookup')) {
+        return {
+          data: {
+            ok: false,
+            error: 'fleet_lookup_timeout',
+            fleet: args.fleet,
+            normalizedFleetSlug: requestedFleetSlug,
+            workspaceSearched: workspaceId,
+            degraded: true,
+            degradedLegs: FLEET_ASSIGNMENTS_DEGRADED_LEG_ORDER.filter((leg) =>
+              degradedLegs.has(leg),
+            ),
+            message:
+              'Could not validate the requested fleet within the fleet:assignments read budget; no broader read was attempted.',
+            ...(args.includeTimings
+              ? { readTimings, handlerElapsedMs: Date.now() - handlerStartedAt }
+              : {}),
+          },
+        };
+      }
       if (!fleet) {
         return {
           data: {
@@ -1094,26 +1276,17 @@ export default defineTool({
             fleet: args.fleet,
             normalizedFleetSlug: requestedFleetSlug,
             workspaceSearched: workspaceId,
-            message: `No fleet '${args.fleet}' (resolved as '${requestedFleetSlug}') in this workspace — see fleet:list.`,
+            message:
+              "No fleet '" +
+              args.fleet +
+              "' (resolved as '" +
+              requestedFleetSlug +
+              "') in this workspace — see fleet:list.",
           },
         };
       }
       fleetFilter = fleet.fleetSlug;
     }
-    const degradedLegs = new Set<string>();
-    const boundedRead = async <T>(
-      label: string,
-      work: () => Promise<T>,
-      fallback: T,
-    ): Promise<T> => {
-      const result = await withBoundedTimeout(work, {
-        fallback,
-        timeoutMs: FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS,
-        label: `fleet:assignments:${label}`,
-      });
-      if (result.degraded) degradedLegs.add(label);
-      return result.value;
-    };
 
     // Start the independent top-level reads together. In particular, a stalled
     // assignment query must not prevent the coverage read from making progress,
@@ -1131,24 +1304,28 @@ export default defineTool({
         }),
       [] as FleetAssignmentRow[],
     );
-    const coveragePromise = boundedRead(
-      'coverage',
-      () => getAllPlanItemCoverage(),
-      new Map<string, PlanItemCoverage>(),
-    );
+    const coveragePromise = snapshotRead
+      ? Promise.resolve(null)
+      : boundedRead(
+          'coverage',
+          () => getAllPlanItemCoverage(args.plan ? { planSlug: args.plan } : {}),
+          new Map<string, PlanItemCoverage>(),
+        );
     const harnessPlansPromise =
-      args.harness && !args.plan
+      !snapshotRead && args.harness && !args.plan
         ? boundedRead(
             'harnessPlans',
             () => planSlugsForHarness(workspaceId, args.harness as string),
             new Set<string>(),
           )
         : Promise.resolve<Set<string> | null>(null);
-    const [rows, coverageRead, harnessPlans] = await Promise.all([
+    // Phases (handler-phases-v1): assignments:rows, one assignments:decorate:<leg> per
+    // decoration leg, assignments:schedulerClaims.
+    const [rows, coverageRead, harnessPlans] = await trackPhase(ctx.phases, 'assignments:rows', () => Promise.all([
       rowsPromise,
       coveragePromise,
       harnessPlansPromise,
-    ]);
+    ]));
     // P-010 (fleet-lead-instrumentation-audit-2026-08-09): the filter and the
     // number that describes it are derived together, so this response can say
     // WHICH population its `agents` count counted. Same fleet, same minutes:
@@ -1175,12 +1352,20 @@ export default defineTool({
       nextFireAt?: string | null;
       loopMode?: 'work' | 'monitor' | null;
       verdict?: MemberVerdict;
+      schedulerClaimState?: SchedulerClaimState | null;
     })[] = groupedAgents.filter(
       (g) => basePopulationPredicate(g) || hasIntentWorkItemReference(g.intent),
     );
+    const schedulerClaimStatePromise = snapshotRead
+      ? Promise.resolve(null)
+      : boundedRead(
+          'schedulerClaimState',
+          () => readClaimConcurrencyBatch({ cupIds: agents.map((agent) => agent.agentId), workspaceId }),
+          null as Map<string, ClaimConcurrencyVerdict> | null,
+        );
     const runDecoration = async (label: string, work: () => Promise<unknown>): Promise<void> => {
       try {
-        await work();
+        await trackPhase(ctx.phases, `assignments:decorate:${label}`, work);
       } catch {
         // Preserve the pre-existing best-effort contract, but make the omitted
         // leg visible to the caller instead of silently returning a partial read.
@@ -1191,7 +1376,7 @@ export default defineTool({
     // EI-6077 / P-001 / P-007: these reads are independent once the agent rows
     // exist. Start them together, with each underlying fetch bounded separately
     // so one slow PG leg cannot consume the whole handler's request budget.
-    await Promise.all([
+    await Promise.all(snapshotRead ? [] : [
       runDecoration('wakeability', () =>
         reconcileWakeability(
           agents,
@@ -1256,61 +1441,76 @@ export default defineTool({
 
     // P-010: loop state depends on parkedOn (parked event keys change the
     // lifecycle verdict), so it starts after the independent first wave settles.
-    await runDecoration('loop', () =>
-      decorateLoopMonitorStates(agents, (ids) =>
-        boundedRead(
-          'loop',
-          () => getLoopStatuses(ids),
-          new Map<string, LoopStatus>(),
+    if (!snapshotRead) {
+      await runDecoration('loop', () =>
+        decorateLoopMonitorStates(agents, (ids) =>
+          boundedRead(
+            'loop',
+            () => getLoopStatuses(ids),
+            new Map<string, LoopStatus>(),
+          ),
         ),
-      ),
-    );
+      );
 
-    // EI-8995: verdicts depend on wakeability, parked events, and loop state;
-    // their three source reads are independent and bounded in the helper call.
-    await runDecoration('verdicts', () =>
-      decorateMemberVerdicts(
-        agents,
-        (ids) =>
-          boundedRead(
-            'lastToolCalls',
-            () => lastToolCallAtByOwner(ids),
-            new Map<string, string>(),
+      // EI-8995: verdicts depend on wakeability, parked events, and loop state;
+      // their three source reads are independent and bounded in the helper call.
+      await runDecoration('verdicts', () =>
+        decorateMemberVerdicts(
+          agents,
+          (ids) =>
+            boundedRead(
+              'lastToolCalls',
+              () => lastToolCallAtByOwner(ids),
+              new Map<string, string>(),
+            ),
+          (ids) =>
+            boundedRead(
+              'wakeModeOverrides',
+              () => getWakeModeOverridesFor(ids),
+              new Map<string, WakeMode>(),
+            ),
+          () =>
+            boundedRead(
+              'defaultWakeMode',
+              () => getDefaultWakeMode(),
+              'auto' as WakeMode,
+            ),
+          // Preserve decorateMemberVerdicts' default timestamp while binding
+          // its productive-call dependency to the handler's shared deadline.
+          undefined,
+          (ids) =>
+            boundedRead(
+              'productiveToolCalls',
+              () => lastProductiveToolCallAtByOwner(ids),
+              new Map<string, string>(),
+            ),
+        ),
+      );
+    }
+    const deadIntentWorkItemIds = snapshotRead
+      ? []
+      : [
+          ...new Set(
+            agents
+              .filter((a) => a.verdict === 'dead')
+              .flatMap((a) => extractWorkItemIds(a.intent)),
           ),
-        () =>
-          boundedRead(
-            'wakeModeOverrides',
-            () => getAllWakeModeOverrides(),
-            new Map<string, WakeMode>(),
-          ),
-        () =>
-          boundedRead(
-            'defaultWakeMode',
-            () => getDefaultWakeMode(),
-            'auto' as WakeMode,
-          ),
-      ),
-    );
-    const deadIntentWorkItemIds = [
-      ...new Set(
-        agents
-          .filter((a) => a.verdict === 'dead')
-          .flatMap((a) => extractWorkItemIds(a.intent)),
-      ),
-    ].slice(0, ABANDONED_INTENT_REF_CAP);
-    const intentWorkItems = await boundedRead(
-      'intentWorkItems',
-      async () => {
-        const resolved = await Promise.all(
-          deadIntentWorkItemIds.map(async (id) => [id, await getWorkItem(id, args.harness)] as const),
+        ].slice(0, ABANDONED_INTENT_REF_CAP);
+    const intentWorkItems = snapshotRead
+      ? new Map<string, WorkItem>()
+      : await boundedRead(
+          'intentWorkItems',
+          async () => {
+            const resolved = await Promise.all(
+              deadIntentWorkItemIds.map(async (id) => [id, await getWorkItem(id, args.harness)] as const),
+            );
+            return new Map(
+              resolved.filter((entry): entry is readonly [string, WorkItem] => entry[1] != null),
+            );
+          },
+          new Map<string, WorkItem>(),
         );
-        return new Map(
-          resolved.filter((entry): entry is readonly [string, WorkItem] => entry[1] != null),
-        );
-      },
-      new Map<string, WorkItem>(),
-    );
-    const abandonedIntents = findAbandonedIntentWorkItems(agents, intentWorkItems);
+    const abandonedIntents = snapshotRead ? [] : findAbandonedIntentWorkItems(agents, intentWorkItems);
     const abandonedIntentOwners = new Set(abandonedIntents.map((row) => row.agentId));
     const agentPopulation = selectFleetPopulation(
       groupedAgents,
@@ -1327,6 +1527,10 @@ export default defineTool({
       },
     );
     agents = agentPopulation.rows;
+    const schedulerClaimStates = await trackPhase(ctx.phases, 'assignments:schedulerClaims', () => schedulerClaimStatePromise);
+    const schedulerClaimStateComplete =
+      schedulerClaimStates !== null && agents.every((agent) => schedulerClaimStates.has(agent.agentId));
+    agents = projectSchedulerClaimState(agents, schedulerClaimStates);
     // EI-18698865231464142: `orphaned`/`stalled` below read straight off `rows`,
     // whose `.orphaned` was set by the DATA layer's endedRecordedOwnerIds-keyed
     // downgrade — which has no key for a non-session (role-string) holder like
@@ -1339,12 +1543,25 @@ export default defineTool({
       agents.filter((a) => a.sessionState === 'ended').map((a) => a.agentId),
     );
     const reconciledRows = reconcileOrphanedWithVerdicts(rows, oracleEndedOwners);
-    const orphans = orphanedClaims(reconciledRows);
+    const orphans = snapshotRead ? [] : orphanedClaims(reconciledRows);
     // agent-activity-liveness-truth P-002/P-005: a live-but-not-progressing holder
     // is NOT "covered" — surface stalled claims as reclaimable alongside orphans, so
     // no reader concludes "someone's on it" from a claim that isn't advancing.
     const healthyLoopOwners = new Set(
-      agents.filter((a) => a.monitorState != null).map((a) => a.agentId),
+      agents
+        .filter((a) => {
+          if (a.monitorState == null) return false;
+          // The standing queue wake is deliberately broad: it fires when any
+          // item becomes claimable, including items this member does not hold.
+          // If the member still has a stalled claim, that watch cannot explain
+          // the claim's inactivity and must not suppress stalled/recovery output.
+          return !isBroadClaimableParkMaskingStalledClaim(
+            a.monitorState,
+            a.parkedOn,
+            a.claims.some((claim) => claim.stalled === true),
+          );
+        })
+        .map((a) => a.agentId),
     );
     // WI-5975: the holder-liveness map every reclaim-candidate row is summarized
     // against. `agents` is already decorated (reconcileWakeability →
@@ -1371,7 +1588,7 @@ export default defineTool({
     // the richer writer evidence says the holder is healthy, deliberately waiting,
     // recoverable by wake, or internally contested. Only genuinely suspect progress
     // remains in the stalled/reclaimable bucket.
-    const stalled = stalledClaims(reconciledRows).filter((row) => {
+    const stalled = snapshotRead ? [] : stalledClaims(reconciledRows).filter((row) => {
       if (row.agentId && healthyLoopOwners.has(row.agentId)) return false;
       const health = deriveClaimHealth(row, row.agentId ? (holderActivity.get(row.agentId) ?? null) : null);
       return shouldRecoverClaimFromHealth(health);
@@ -1384,11 +1601,13 @@ export default defineTool({
       if (!id) continue;
       rowByAgentAndId.set(`${row.agentId}\0${id}`, row);
     }
-    for (const agent of agents) {
-      const holder = holderActivity.get(agent.agentId) ?? null;
-      for (const claim of agent.claims) {
-        const row = claim.id ? rowByAgentAndId.get(`${agent.agentId}\0${claim.id}`) : null;
-        if (row) claim.claimHealth = deriveClaimHealth(row, holder);
+    if (!snapshotRead) {
+      for (const agent of agents) {
+        const holder = holderActivity.get(agent.agentId) ?? null;
+        for (const claim of agent.claims) {
+          const row = claim.id ? rowByAgentAndId.get(`${agent.agentId}\0${claim.id}`) : null;
+          if (row) claim.claimHealth = deriveClaimHealth(row, holder);
+        }
       }
     }
     // EI-18763117665515043: a claim's liveness verdict is meaningless when the
@@ -1402,11 +1621,13 @@ export default defineTool({
     // that interface gained `reason` (TS2345 at the summarizeFor call below, +1 over
     // baseline — a fleet-wide gate red, since test:affected is type-blind and cannot see
     // it). Deriving it means the next field added there cannot reopen this.
-    const residueMap = await boundedRead(
-      'residue',
-      () => resolveTerminalPlanItemResidue([...orphans, ...stalled]),
-      new Map() as Awaited<ReturnType<typeof resolveTerminalPlanItemResidue>>,
-    );
+    const residueMap = snapshotRead
+      ? (new Map() as Awaited<ReturnType<typeof resolveTerminalPlanItemResidue>>)
+      : await boundedRead(
+          'residue',
+          () => resolveTerminalPlanItemResidue([...orphans, ...stalled]),
+          new Map() as Awaited<ReturnType<typeof resolveTerminalPlanItemResidue>>,
+        );
     const summarizeFor = (row: FleetAssignmentRow) =>
       summarizeOrphan(
         row,
@@ -1458,6 +1679,7 @@ export default defineTool({
     // harness scoping failed, omit this section rather than widening an
     // uncertain scope to another harness.
     let covMap: Awaited<ReturnType<typeof getAllPlanItemCoverage>> | null =
+      snapshotRead ||
       degradedLegs.has('coverage') ||
       (args.harness != null && !args.plan && degradedLegs.has('harnessPlans'))
         ? null
@@ -1556,7 +1778,7 @@ export default defineTool({
     // coverage map for claims, so `ready` is exactly what would be placed next.
     // Requires a plan; non-fatal (a read hiccup just omits the section).
     let dagView: DagFrontierView | null = null;
-    if (args.includeDag && args.plan) {
+    if (!snapshotRead && args.includeDag && args.plan) {
       try {
         const row = await boundedRead(
           'dag',
@@ -1595,33 +1817,45 @@ export default defineTool({
       population: censusWithLiveness,
       alive: agents.filter((a) => a.alive).length,
       claims: rows.filter((r) => r.source !== 'presence').length,
-      orphaned_claims: orphans.length,
-      stalled_claims: stalled.length,
+      // This uses the scheduler's exact held-work-item predicate. It can exceed
+      // claims/load because blocked and needs-human holds consume scheduler capacity
+      // while remaining absent from the actionable fleet_assignment work-list —
+      // EXCEPT a blocked/needs-human hold carrying an active external blocker
+      // (work_items:set_blocker), which P-010 (plan D-010) stops counting; those ids
+      // are on each agent's schedulerClaimState.blockerParkedIds instead.
+      scheduler_claim_state_status: !snapshotRead && schedulerClaimStateComplete ? 'measured' : 'unknown',
+      scheduler_active_work_item_claims: !snapshotRead && schedulerClaimStateComplete
+        ? agents.reduce((count, agent) => count + (agent.schedulerClaimState?.activeClaims ?? 0), 0)
+        : null,
+      orphaned_claims: snapshotRead ? null : orphans.length,
+      stalled_claims: snapshotRead ? null : stalled.length,
       // WI-5975: the two numbers a leader should actually act on. `reclaimable`
       // counts ONLY claims whose holder the oracle says is gone; `held_by_live_agent`
       // counts the quiet-but-alive ones, whose sanctioned action is ASK. The raw
       // orphaned/stalled counts above conflated them, which is how a reassign got
       // aimed at an agent that was working.
-      reclaimable_claims: reclaimableRows.length,
-      held_by_live_agent: liveHeldRows.length,
+      reclaimable_claims: snapshotRead ? null : reclaimableRows.length,
+      held_by_live_agent: snapshotRead ? null : liveHeldRows.length,
       // EI-18763117665515043: claims whose LINKED plan item is already terminal —
       // stale residue, not abandoned/quiet-but-live work. Close these (evidence
       // citing the plan item), never `work_items:release` them.
-      residue_claims: residueRows.length,
+      residue_claims: snapshotRead ? null : residueRows.length,
       // EI-6074: distinct plan-item deliverables held by >1 principal via the
       // work-item↔plan-item coverage edge — the silent cross-table duplicate.
-      coverage_collisions: collisions.length,
+      coverage_collisions: snapshotRead ? null : collisions.length,
       // EI-21188799646985672: distinct non-terminal linked work-items held by
       // one principal for the same plan-item deliverable — the same-principal
       // duplicate that the cross-principal collision detector cannot see.
-      coverage_duplicates: duplicates.length,
+      coverage_duplicates: snapshotRead ? null : duplicates.length,
       // No claim exists to orphan, so this is a separate detector beside the
       // claim counters rather than another spelling of orphaned_claims.
-      abandoned_intents: abandonedIntents.length,
+      abandoned_intents: snapshotRead ? null : abandonedIntents.length,
       declared_unclaimed: agents.filter((a) => a.declaredUnclaimed).length,
       // P-001 (fleet-member-dx): members deliberately parked on an events:await —
       // idle-by-design, not stalled/abandoned.
-      parked: agents.filter((a) => ((a as { parkedOn?: string[] }).parkedOn?.length ?? 0) > 0).length,
+      parked: snapshotRead
+        ? null
+        : agents.filter((a) => ((a as { parkedOn?: string[] }).parkedOn?.length ?? 0) > 0).length,
       // EI-19407725333778711: members that will NEVER act again unprompted —
       // `selfWake:'none'` while still reading as alive. Sits next to `parked`
       // on purpose: `parked` is the healthy idle state and this is the one that
@@ -1629,15 +1863,15 @@ export default defineTool({
       // re-arm their loops (`loop:arm`) or relaunch them; a leader reading
       // `agents:11, alive:11, parked:0` learned nothing about it before this.
       // Excludes rows where the leg did not resolve — unknown never counts.
-      no_self_wake: agents.filter((a) =>
+      no_self_wake: snapshotRead ? null : agents.filter((a) =>
         isStrandedMember({
           sessionState: (a as { sessionState?: SessionState | null }).sessionState,
           selfWake: (a as { selfWake?: SelfWakeSource }).selfWake,
         }),
       ).length,
-      monitoring: agents.filter((a) => a.monitorState === 'monitoring').length,
-      waiting: agents.filter((a) => a.monitorState === 'waiting').length,
-      parked_awaiting_capability: agents.filter(
+      monitoring: snapshotRead ? null : agents.filter((a) => a.monitorState === 'monitoring').length,
+      waiting: snapshotRead ? null : agents.filter((a) => a.monitorState === 'waiting').length,
+      parked_awaiting_capability: snapshotRead ? null : agents.filter(
         (a) => a.monitorState === 'parked-awaiting-capability',
       ).length,
       // P-021: total work-item load across live agents (the warm-inject signal).
@@ -1645,12 +1879,12 @@ export default defineTool({
       // P-007: fleet-health headline — members whose context-pressure bucket is
       // high/critical right now (silent when 0, mirroring the ambient gauge's
       // quiet-below-LOUD philosophy).
-      high_context: agents.filter((a) => a.contextPressure === 'high').length,
-      critical_context: agents.filter((a) => a.contextPressure === 'critical').length,
+      high_context: snapshotRead ? null : agents.filter((a) => a.contextPressure === 'high').length,
+      critical_context: snapshotRead ? null : agents.filter((a) => a.contextPressure === 'critical').length,
       // P-007 (fleet-reliability-verification-2026-07-10): members with >=1
       // unanswered directed message right now — the mechanical "who hasn't
       // answered me" read a leader otherwise hand-tracks across wakes.
-      unanswered_directed: agents.filter((a) => (a.unanswered?.count ?? 0) > 0).length,
+      unanswered_directed: snapshotRead ? null : agents.filter((a) => (a.unanswered?.count ?? 0) > 0).length,
     };
     // EI-1597: bound the agent-facing output so a large fleet (esp. include_stale)
     // can't overflow the agent result cap. `agents` is already sorted live-first, so
@@ -1703,11 +1937,48 @@ export default defineTool({
     return {
       data: {
         ok: true,
+        ...(snapshotRead
+          ? {
+              detail: 'snapshot',
+              unmeasuredMetrics: [
+                'scheduler_active_work_item_claims',
+                'orphaned_claims',
+                'stalled_claims',
+                'reclaimable_claims',
+                'held_by_live_agent',
+                'residue_claims',
+                'abandoned_intents',
+                'coverage_collisions',
+                'coverage_duplicates',
+                'parked',
+                'no_self_wake',
+                'monitoring',
+                'waiting',
+                'parked_awaiting_capability',
+                'high_context',
+                'critical_context',
+                'unanswered_directed',
+                'member.sessionState',
+                'member.wakeability',
+                'member.selfWake',
+                'member.verdict',
+                'member.loopState',
+                'member.lastToolCallAt',
+                'population.liveness',
+              ],
+            }
+          : {}),
         // A degraded read remains useful, but its counts/rows can be incomplete.
         // Name the exact bounded leg(s) so supervisors can distinguish that state
         // from a genuine empty fleet.
         ...(degradedLegsOut.length > 0
           ? { degraded: true, degradedLegs: degradedLegsOut }
+          : {}),
+        ...(args.includeTimings
+          ? {
+              readTimings,
+              handlerElapsedMs: Date.now() - handlerStartedAt,
+            }
           : {}),
         ...(self ? { self } : {}),
         summary: summaryOut,

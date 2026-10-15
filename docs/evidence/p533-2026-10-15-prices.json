@@ -1,0 +1,103 @@
+{
+  "asOf": "2026-10-15T06:29:47.529667+00:00",
+  "AWSofficialCompute": [
+    {
+      "sku": "99TZRNZAZSFRSS24",
+      "attributes": {
+        "enhancedNetworkingSupported": "Yes",
+        "intelTurboAvailable": "Yes",
+        "memory": "32 GiB",
+        "dedicatedEbsThroughput": "Up to 10000 Mbps",
+        "vcpu": "8",
+        "classicnetworkingsupport": "false",
+        "capacitystatus": "Used",
+        "locationType": "AWS Region",
+        "storage": "EBS only",
+        "instanceFamily": "General purpose",
+        "operatingSystem": "Linux",
+        "intelAvx2Available": "Yes",
+        "instanceFamilyCategory": "General Purpose",
+        "regionCode": "us-east-1",
+        "physicalProcessor": "Intel Xeon Scalable (Sapphire Rapids)",
+        "clockSpeed": "3.2 GHz",
+        "ecu": "NA",
+        "networkPerformance": "Up to 12500 Megabit",
+        "servicename": "Amazon Elastic Compute Cloud",
+        "gpuMemory": "NA",
+        "dedicatedEbsThroughputDescription": "2500 Mbps",
+        "vpcnetworkingsupport": "true",
+        "instanceType": "m7i.2xlarge",
+        "tenancy": "Shared",
+        "usagetype": "BoxUsage:m7i.2xlarge",
+        "normalizationSizeFactor": "16",
+        "intelAvxAvailable": "Yes",
+        "processorFeatures": "Intel AVX; Intel AVX2; Intel AVX512; Intel Turbo; Intel AMX",
+        "servicecode": "AmazonEC2",
+        "licenseModel": "No License required",
+        "currentGeneration": "Yes",
+        "preInstalledSw": "NA",
+        "location": "US East (N. Virginia)",
+        "processorArchitecture": "64-bit",
+        "marketoption": "OnDemand",
+        "operation": "RunInstances",
+        "availabilityzone": "NA"
+      },
+      "rate": {
+        "unit": "Hrs",
+        "endRange": "Inf",
+        "description": "$0.4032 per On Demand Linux m7i.2xlarge Instance Hour",
+        "appliesTo": [],
+        "rateCode": "99TZRNZAZSFRSS24.JRTCKXETXF.6YS6EN2CT7",
+        "beginRange": "0",
+        "pricePerUnit": {
+          "USD": "0.4032000000"
+        }
+      }
+    }
+  ],
+  "AWSio2OfficialApiPriorRead": "2026-10-15T05:42Z SKU6V576P37PS7K7KYU capacity0.125USD/GBmonth; X9AGQNCQXFA9Q8XZ0.065USD/IOPSmonthfirst32k; KDKG2R3W4NMV7CHP0.0455tier2; AX8G343U7JZBRKJB0.03185tier3",
+  "GCPcatalogMaintainedSource": "scripts/agent-capacity/gcp-rails.ts us-central1 Catalog reads2026-10-15: CPU0.03465USD/vCPUhour RAM0.003938USD/GiBhour HBcapacity0.08USD/GiBmonth IOPS0.005above3000 throughput0.04above140MiBps",
+  "sources": [
+    "https://cloud.google.com/compute/disks-image-pricing",
+    "https://cloud.google.com/compute/docs/disks/hd-types/hyperdisk-balanced",
+    "https://aws.amazon.com/ebs/pricing/",
+    "https://docs.aws.amazon.com/ebs/latest/userguide/provisioned-iops.html",
+    "https://docs.aws.amazon.com/ebs/latest/userguide/general-purpose.html"
+  ],
+  "monthlyConventionHours": 730,
+  "excludes": [
+    "inference",
+    "egress",
+    "snapshots",
+    "taxes",
+    "workspace artifacts",
+    "temporary comparison disk"
+  ],
+  "workedUSDMonthly": {
+    "GCP256DBcapacity": 20.48,
+    "GCP256DBat16000iops400MiBps": 95.88,
+    "GCP32boot": 3.88,
+    "GCPc4standard8": 288.5982,
+    "GCPtrialBaselineDataDiskPerformance": 333.4382,
+    "GCPtrialTestedDataDiskPerformance": 484.2382,
+    "AWS256DBcapacity": 32,
+    "AWS256DBat6000iops": 422,
+    "AWS32gp3boot": 2.56,
+    "AWSm7i2xlarge": 294.336,
+    "AWStrialTestedDataDiskPerformance": 1140.896,
+    "GCP256extraRAMComponent": 735.93344,
+    "GCP64x4GiBHyperdiskCapacity": 20.48,
+    "AWSgp3256x1GiBCapacity": 20.48,
+    "AWSio2_64x4GiB_100IopsEach": 448.0,
+    "AWSio2_1x256GiB_100Iops": 38.5
+  },
+  "distributedVolumeNotes": {
+    "GCPHyperdiskBalancedMinimumGiB": 4,
+    "AWSio2MinimumGiB": 4,
+    "AWSgp3MinimumGiB": 1,
+    "GCP64x4NominalIops": 128000,
+    "AWSgp3_256x1NominalIops": 768000,
+    "hostLimitsMatter": true,
+    "priceExcludes": ["VM", "volume attachment limits", "snapshots", "data transfer"]
+  }
+}

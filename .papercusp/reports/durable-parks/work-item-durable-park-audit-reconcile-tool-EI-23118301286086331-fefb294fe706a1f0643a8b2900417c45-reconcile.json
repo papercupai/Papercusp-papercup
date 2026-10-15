@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:EI-23118301286086331:fefb294fe706a1f0643a8b2900417c45",
+  "inputSha256": "fefb294fe706a1f0643a8b2900417c45b560629772621e230c1a13a1e669dc3c",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-10-10T22:07:25.175Z",
+  "actor": "su-6baa8b9a-8d72-4223-b6d2-bf9f687dcfcb",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "EI-23118301286086331",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "21a39d8d404b35506f19a588b58053d699c9be0d82ee8d83dde1fd44113e24fa",
+      "observedParkFingerprint": "21a39d8d404b35506f19a588b58053d699c9be0d82ee8d83dde1fd44113e24fa",
+      "reasonCode": "condition-satisfied",
+      "evidence": "Park release trigger is work-item:done:WI-10000288 (condition: 'WI-10000288 reaches a terminal state after the registered gate owner evaluates and ships the first eligible candidate containing staging b95853141c'). Re-read 2026-10-10 ~22:08Z (su-6baa8, dev:pg_query on harness_shared.work_items, workspace papercusp-workspace, harness papercusp): WI-10000288 status=done, taken_by null. The trigger's stated condition is met. The condition's trailing clause ('the next claimant must still rerun the default-endpoint v2 validateOnly probe') is an instruction to the next claimant, not a release precondition, and travels with the row.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-EI-23118301286086331-fefb294fe706a1f0643a8b2900417c45-reconcile.json"
+}

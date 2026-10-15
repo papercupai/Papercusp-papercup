@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { captureStudyTiming } from '../../../../scratchpad/dream-study-2026-09-09/timing.mts';
+import { captureStudyTiming } from './study/timing.mts';
 import { dreamCallOwnerId } from './dream-cycle';
 
 const scope = { workspaceId: 'timing-test', potSlug: 'test' };

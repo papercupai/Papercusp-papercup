@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-5 counterexample: the same branch-protection check run against UNPROTECTED Papercusp repos fails (HTTP 404 'Branch not protected'); a protected mirror passes in the same call",
+  "framework": "operational",
+  "command": [
+    "gh",
+    "api",
+    "repos/Papercusp/<test-config|tooldef|sync|recipes>/branches/main/protection",
+    "--jq",
+    "{allow_deletions,allow_force_pushes,enforce_admins,linear,required_status_checks}"
+  ],
+  "startedAt": "2026-10-01T15:26:44.000Z",
+  "finishedAt": "2026-10-01T15:26:46.000Z",
+  "exitCode": 1,
+  "summary": "Falsifiability control for R-5 (not a pass): the exact instrument used for the four Cupboard mirrors was run on three Papercusp repos that are NOT mirrors and have no protection on main. Each returned HTTP 404 'Branch not protected' and gh exited 1, which is R-5 BROKEN-if marker (1) 'main has no branch protection'. The positive control Papercusp/recipes in the same call returned the full protection object and exit 0. So the R-5 check separates protected from unprotected. This artifact is expected to be a FAILING run: exitCode 1 is the check catching the bad input. Measured 2026-10-01T15:26:44Z-15:26:46Z by su-dd32ef9d (fleet leader, WI-10004858).",
+  "assertions": [
+    { "id": "r5-ctrl-test-config-unprotected-detected", "passed": false, "evidence": "gh api repos/Papercusp/test-config/branches/main/protection -> HTTP 404 {\"message\":\"Branch not protected\"}, gh_exit=1. R-5 marker (1) holds on this repo, so an R-5 reading of it would be BROKEN." },
+    { "id": "r5-ctrl-tooldef-unprotected-detected", "passed": false, "evidence": "gh api repos/Papercusp/tooldef/branches/main/protection -> HTTP 404 {\"message\":\"Branch not protected\"}, gh_exit=1." },
+    { "id": "r5-ctrl-sync-unprotected-detected", "passed": false, "evidence": "gh api repos/Papercusp/sync/branches/main/protection -> HTTP 404 {\"message\":\"Branch not protected\"}, gh_exit=1." },
+    { "id": "r5-ctrl-positive-control-protected-mirror", "passed": true, "evidence": "gh api repos/Papercusp/recipes/branches/main/protection in the same call -> {allow_deletions:false, allow_force_pushes:false, enforce_admins:true, linear:true, required_status_checks:[cupboard-verify]}, gh_exit=0. The instrument was working, not broken." }
+  ],
+  "plan": "cupboard-release-pipeline-content-trust-2026-09-16",
+  "bar": "R-5",
+  "evidencePlane": "live",
+  "limits": "Three non-mirror repos is a sample, not a census of the Papercusp org. It shows the check CAN fail; it does not show every unprotected repo is detected (a 403 or a missing token would read as unknown, which R-5 treats as not healthy)."
+}

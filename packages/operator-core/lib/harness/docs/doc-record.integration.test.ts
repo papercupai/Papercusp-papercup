@@ -1,6 +1,6 @@
 /**
  * doc-record.integration.test.ts — the harness_docs record helpers against REAL
- * Postgres (migrations 172 + 386 applied to a throwaway DB), per
+ * Postgres (current migrated schema in a throwaway DB), per
  * harness-docs-integration-2026-06-05 (P-002).
  *
  * Proves: upsert insert+conflict; subject_ref jsonb + anchor_paths text[] round-trip;
@@ -9,20 +9,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const SQL_DIR = resolve(__dirname, '../../../../../libs/papercusp/libs/db/sql');
-// Strip only psql metacommands (\set) + explicit txn markers (the pooled client
-// rejects a bare BEGIN/COMMIT). GRANTs stay — we pre-create the roles below.
-const readMigration = (f: string) =>
-  readFileSync(resolve(SQL_DIR, f), 'utf8')
-    .split('\n')
-    .filter((line) => !/^\s*\\/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line))
-    .join('\n');
+import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -33,21 +20,14 @@ vi.mock('@papercusp/db-org', async (orig) => {
 const rec = await import('./doc-record');
 const WS = 'ws-docs';
 const HARNESS = 'demo';
-let db: FreshPgDb;
+let db: OrgTestDb;
 
 beforeAll(async () => {
-  db = await createFreshPgDb('harness-docs');
-  // Roles are cluster-wide on the reused testcontainer — create idempotently so
-  // the migration's GRANTs apply (incl. the DO-block harness_zero grant).
-  await db.sql.unsafe(`
-    DO $$ BEGIN CREATE ROLE harness_app; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-    DO $$ BEGIN CREATE ROLE harness_zero; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-  `);
-  await db.sql.unsafe(readMigration('172-harness-docs.sql')).simple();
-  // 386 adds regen_attempts/reverify_attempts (doc-steward retry counters) that
-  // verifyDoc/setDocStatus/markRegenEnqueued/markReverifyFlagged now write.
-  await db.sql.unsafe(readMigration('386-harness-docs-steward-retry-attempts.sql')).simple();
-  h.sql = db.sql;
+  // EI-25192006009017108: the historical two-migration list omitted canonical
+  // content fields required even by metadata-only upserts. The shared template
+  // follows the current migration set instead of maintaining another stale list.
+  db = await createOrgTestDb();
+  h.sql = db.adminSql;
 }, 60_000);
 
 afterAll(async () => {
@@ -55,7 +35,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`DELETE FROM harness_shared.harness_docs`;
+  await db.adminSql`DELETE FROM harness_shared.harness_docs`;
 });
 
 describe('upsert + read round-trip', () => {
@@ -93,6 +73,27 @@ describe('upsert + read round-trip', () => {
     const got = await rec.getDocRecord(HARNESS, 'features/F-1.md', WS);
     expect(got!.source).toBe('generated');
     expect(got!.generatedFromSha).toBe('b'.repeat(40));
+  });
+
+  it('canonical authored content survives a metadata-only upsert', async () => {
+    const docId = 'guides/canonical.md';
+    const content = '---\ntitle: Canonical prose\n---\n\n# Durable body\n';
+    await rec.upsertDocRecord({
+      harnessSlug: HARNESS, docId, workspaceId: WS, source: 'manual',
+      subjectRef: [], anchorPaths: [], status: 'fresh', title: 'Original title', content,
+    });
+    expect(await rec.getAuthoredDocContent(HARNESS, docId, WS)).toBe(content);
+
+    await rec.upsertDocRecord({
+      harnessSlug: HARNESS, docId, workspaceId: WS, source: 'manual',
+      subjectRef: [{ kind: 'path', globs: ['src/**'] }], anchorPaths: ['src/**'],
+      status: 'review', title: 'Reviewed title',
+    });
+    const updated = await rec.getDocRecord(HARNESS, docId, WS);
+    expect(updated!.title).toBe('Reviewed title');
+    expect(updated!.status).toBe('review');
+    expect(updated!.anchorPaths).toEqual(['src/**']);
+    expect(await rec.getAuthoredDocContent(HARNESS, docId, WS)).toBe(content);
   });
 });
 

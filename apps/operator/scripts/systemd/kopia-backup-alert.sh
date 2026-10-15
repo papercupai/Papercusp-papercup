@@ -33,7 +33,7 @@ set -uo pipefail
 # the variable, so it must be the answer that is right rather than the historical
 # one. papercusp-db-backup-alert.service sets it explicitly (asserted by
 # apps/operator/scripts/__tests__/backup-dump-dir-env-contract.test.ts).
-DUMP="${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/backup/db-dumps}"
+DUMP="${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/cold-a/Backup/db-dumps}"
 MARKER="$DUMP/ALERT-BACKUP-FAILING"
 REASON="${1:-papercusp-db-backup.service failed}"
 
@@ -84,7 +84,7 @@ if [ -n "$REPO" ] && [ -f "$REPO/scripts/mcp-call.mjs" ]; then
   # was swallowed by `>/dev/null 2>&1 || true`: the fleet was never told. That is
   # EI-10733's own failure shape (an alarm ringing in an empty room) wearing a new
   # costume — which is why the suppression below is deliberately NOT restored.
-  BODY=$(printf '{"to":["*"],"expects":"none","summary":"BACKUP FAILING: %s","body":[{"text":"papercusp-db-backup is not producing usable dumps. See %s and %s/db-backup.log. EI-10733 is the last time this rotted silently — for 30 days."}]}' \
+  BODY=$(printf '{"to":["*"],"expects":"none","conditionKey":"papercusp-db-backup-failing","summary":"BACKUP FAILING: %s","body":[{"text":"papercusp-db-backup is not producing usable dumps. See %s and %s/db-backup.log. EI-10733 is the last time this rotted silently — for 30 days."}]}' \
            "$REASON" "$MARKER" "$DUMP")
   # Non-fatal (the operator may itself be down — exactly when backups matter most),
   # but NEVER silent: stderr goes to the journal so a broken leg is visible.

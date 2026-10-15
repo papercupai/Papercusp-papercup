@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-006 real-holder scorecard readback comparison controls",
+  "framework": "operational",
+  "plan": "work-on-everything-stewardship-remediation-2026-08-30",
+  "acceptanceBar": "R-5",
+  "specClause": "WOE-P006-REAL-CARD@3",
+  "workItem": "WI-1074216",
+  "evidencePlane": "live",
+  "startedAt": "2026-10-03T00:33:09Z",
+  "finishedAt": "2026-10-03T00:33:10Z",
+  "exitCode": 0,
+  "command": [
+    "scorecards:get { issueId: 'EI-24713330305263301' }",
+    "scorecards:get { issueId: 'EI-24713330305263301', criterionKey: 'plan-fleet-materialization', evidenceOffset: 0 }",
+    "scorecards:list { rubricRef: 'work-on-everything-stewardship-health', subjectRef: 'su-af7cfbba-1a21-4530-84c4-5c064614d4bc', limit: 100 }",
+    "work_items:get { id: 'EI-24713725963525495', harness: 'papercusp' }",
+    "work_items:get { ids: ['WI-10004329','EI-24556293106348130','WI-10004358','WI-10003903','WI-10004612'], harness: 'papercusp' }",
+    "Compare the returned fields with the four deliberately false expectations and the four exact readback expectations in assertions below."
+  ],
+  "summary": "The live comparison rejected four deliberately false reports and accepted four exact readbacks of the existing real-holder card. The historical card remains FAIL. Its earlier provisional card is not a second terminal grade. Historical residue has current terminal dispositions and a separately owned blocked successor. This comparison does not independently vet the revised rubric, repair the historical holder window, prove L3, or establish shipment.",
+  "subject": {
+    "cardId": "EI-24713330305263301",
+    "holder": "su-af7cfbba-1a21-4530-84c4-5c064614d4bc",
+    "windowStart": "2026-09-30T16:54:04Z",
+    "windowEnd": "2026-09-30T18:29:52Z",
+    "grader": "su-4f968faa-adbb-4de7-97e7-b3314e842678",
+    "auditor": "su-778c7ed9-32a1-473d-9f3d-449e7cf8250f"
+  },
+  "comparisonLimit": "These are live readback comparison controls. Negative controls change the expected report, not the historical scorecard or operator state. They establish detection of the named false readbacks; they do not establish a new real-world holder outcome.",
+  "assertions": [
+    {
+      "id": "actual-fail-retained-negative",
+      "passed": true,
+      "evidence": "Deliberately false PASS expectation was rejected: scorecards:get EI-24713330305263301 returned rollup.verdict=fail; the complete plan-fleet-materialization criterion read returned rating=fail and 0 of 1 eligible plan fleets materialized."
+    },
+    {
+      "id": "actual-fail-retained-repaired",
+      "passed": true,
+      "evidence": "Exact readback accepted: rollup.verdict=fail, criticalFailures=[plan-fleet-materialization], criticalUnknowns=[goal-mode-foundation], criterion rating=fail, and selected criterion evidenceRead.complete=true."
+    },
+    {
+      "id": "existing-card-and-audit-negative",
+      "passed": true,
+      "evidence": "Deliberately false fixture-card/pending-audit expectation was rejected: card id is EI-24713330305263301, synthesized=false, gradingAudit.state=passed, auditIssueId=EI-24713725963525495."
+    },
+    {
+      "id": "existing-card-and-audit-repaired",
+      "passed": true,
+      "evidence": "Exact existing-card readback accepted: audit item EI-24713725963525495 is done; auditor su-778c7ed9 differs from grader su-4f968faa. This is the historical rev7 audit; current revised rubric vetting remains separate."
+    },
+    {
+      "id": "no-fixture-or-duplicate-negative",
+      "passed": true,
+      "evidence": "Deliberately false fixture-subject/two-terminal-cards expectation was rejected: subject.kind=agent-run, and scorecards:list for this holder returned one terminal card EI-24713330305263301 plus one provisional card EI-24713260630186958 for the exact same window; hasMore=false."
+    },
+    {
+      "id": "no-fixture-or-duplicate-repaired",
+      "passed": true,
+      "evidence": "Exact subject and history readback accepted: real holder su-af7cfbba during 16:54:04Z–18:29:52Z; one terminal independent card; earlier same-window card is explicitly provisional. No new card or fixture goal was created by this check."
+    },
+    {
+      "id": "owned-residue-negative",
+      "passed": true,
+      "evidence": "Deliberately false all-done/unowned-successor report was rejected: WI-10003903 is dropped (not done) with terminalOwner su-f6e01d34; successor WI-10004612 is blocked and assigned to su-32d1b8df."
+    },
+    {
+      "id": "owned-residue-repaired",
+      "passed": true,
+      "evidence": "Exact current residue readback accepted: WI-10004329, EI-24556293106348130, WI-10004358 are done with terminalOwner su-4f968faa; WI-10003903 is dropped with terminalOwner su-f6e01d34; separately owned successor WI-10004612 remains blocked with assignee su-32d1b8df. Historical FAIL is unchanged."
+    }
+  ]
+}

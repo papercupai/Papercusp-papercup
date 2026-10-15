@@ -13,18 +13,63 @@
  * verdict. If that control ever passes trivially, the guard is measuring
  * nothing.
  */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import {
   DEFAULT_RESOURCE_BUDGET,
+  GITNEXUS_START_LINE_BASE_BY_VERSION,
   KNOWN_INDEX_DISK_EXCEEDANCES,
+  LINE_INDEX_BASE,
   classifyIndexDisk,
+  gitnexusStartLineBase,
+  toOneIndexed,
+  versionedSymbolIdentity,
+  sourceIdentityContinuity,
+  unmeasuredSourceEvidence,
   type KnownIndexDiskExceedance,
 } from './contracts';
 
 const ALLOWANCE: readonly KnownIndexDiskExceedance[] = [
   { backend: 'testbed', observedMb: 3_000, observedCeilingMb: 4_000, why: 'fixture' },
 ];
+
+describe('source-version identity', () => {
+  const site = { path: 'src/caller.ts', line1: 7, kind: 'function', name: 'caller' };
+  const source = { path: site.path, contentHash: 'a'.repeat(64), language: 'typescript', representation: 'full-source' as const };
+  it('preserves exact content/repository identity and requires resolution after edits, moves or scope changes', () => {
+    const original = versionedSymbolIdentity('repo-a', site, source);
+    expect(JSON.parse(original!)).toEqual(['symbol-site-v1', 'repo-a', 'src/caller.ts', 'a'.repeat(64), 7, 'caller', 'function']);
+    expect(sourceIdentityContinuity(original, versionedSymbolIdentity('repo-a', site, source))).toBe('unchanged');
+    for (const changed of [versionedSymbolIdentity('repo-b', site, source),
+      versionedSymbolIdentity('repo-a', { ...site, line1: 8 }, source),
+      versionedSymbolIdentity('repo-a', site, { ...source, contentHash: 'b'.repeat(64) })])
+      expect(sourceIdentityContinuity(original, changed)).toBe('needs-resolution');
+  });
+  it('refuses missing hashes, stub evidence and unsafe/unlocated sites instead of inventing identity', () => {
+    expect(versionedSymbolIdentity(null, site, source)).toBeNull();
+    expect(versionedSymbolIdentity('repo-a', site, undefined)).toBeNull();
+    expect(versionedSymbolIdentity('repo-a', site, { ...source, contentHash: '' })).toBeNull();
+    expect(versionedSymbolIdentity('repo-a', site, { ...source, representation: 'reexport-stub' })).toBeNull();
+    expect(versionedSymbolIdentity('repo-a', { ...site, path: '../caller.ts' }, { ...source, path: '../caller.ts' })).toBeNull();
+    expect(versionedSymbolIdentity('repo-a', { ...site, line1: null }, source)).toBeNull();
+    expect(sourceIdentityContinuity(null, null)).toBe('needs-resolution');
+  });
+  it('keeps unknown indexed source versions explicit for populated and empty answers', () => {
+    for (const sites of [[site], []]) {
+      const evidence = unmeasuredSourceEvidence({ intent: 'references', sites }, {
+        repositoryId: 'repo-a', identityKind: 'registry', paths: ['src'], basis: 'indexed-code',
+      }, ['Index has no measured per-file snapshot.']);
+      expect(evidence.sourceScope).toEqual({ repositoryId: 'repo-a', identityKind: 'registry',
+        paths: ['src'], sourceFingerprint: null, supportingFiles: [] });
+      expect(evidence.siteIdentities).toEqual(sites.map((_site, siteIndex) => ({ siteIndex,
+        sourcePath: site.path, versionedSymbolId: null, contentHash: null })));
+      expect(evidence.relationships.every(edge => edge.knowledge === 'unknown' && edge.runtimeExecution === 'unknown')).toBe(true);
+      expect(evidence.graphScope.sourceCompleteness).toBe('unverified');
+    }
+  });
+});
 
 describe('classifyIndexDisk', () => {
   it('grades a footprint inside the budget as within-budget', () => {
@@ -124,5 +169,60 @@ describe('KNOWN_INDEX_DISK_EXCEEDANCES', () => {
     expect(gitnexus).toBeDefined();
     const v = classifyIndexDisk('gitnexus', (gitnexus as KnownIndexDiskExceedance).observedMb);
     expect(v.status).toBe('accepted-exceedance');
+  });
+});
+
+/**
+ * WI-10005091 (residue of gitnexus-selective-hardening-and-comparison D-002): GitNexus 1.6.9
+ * reports a 0-based `startLine`, 1.6.12 a 1-based one, and the production facade's
+ * `toOneIndexed('gitnexus', …)` adds +1 unconditionally. These guard that a GitNexus upgrade
+ * cannot ship without the line base being re-measured.
+ */
+describe('GitNexus startLine base is version-aware', () => {
+  // Measured on one source tree: getLongLivedAdminPool is declared on 1-based line 145.
+  const TRUE_LINE1 = 145;
+
+  it('maps the two measured versions to their measured raw base, and refuses anything else', () => {
+    expect(gitnexusStartLineBase('1.6.9')).toBe(0);
+    expect(gitnexusStartLineBase('1.6.12')).toBe(1);
+    // A banner line (`gitnexus analyze` prints one) parses; the first x.y.z wins.
+    expect(gitnexusStartLineBase('GitNexus Analyzer (1.6.12)')).toBe(1);
+    // UNMEASURED / unparseable is null — never a default that would silently be off by one.
+    expect(gitnexusStartLineBase('1.6.10')).toBeNull();
+    expect(gitnexusStartLineBase('2.0.0')).toBeNull();
+    expect(gitnexusStartLineBase('unknown (exit 1)')).toBeNull();
+    expect(gitnexusStartLineBase(undefined)).toBeNull();
+    expect(gitnexusStartLineBase(null)).toBeNull();
+  });
+
+  it('the measured raw lines normalise to the SAME grep -n line only through their own base', () => {
+    // 1.6.9 raw 144 (0-based) and 1.6.12 raw 145 (1-based) are the same declaration.
+    // The facade's +1 is right for the first and one late for the second — the failure this pins.
+    expect(toOneIndexed('gitnexus', 144)).toBe(TRUE_LINE1);
+    expect(toOneIndexed('gitnexus', 145)).toBe(TRUE_LINE1 + 1);
+    expect((145 + 1) - (gitnexusStartLineBase('1.6.12') as number)).toBe(TRUE_LINE1);
+  });
+
+  it('LINE_INDEX_BASE.gitnexus equals the measured base of the PINNED GitNexus version', () => {
+    // The pin lives in a submodule operator-core does not import, so read the literal. A pin bump
+    // (e.g. 1.6.9 -> 1.6.12) must either find the version already measured AND update
+    // LINE_INDEX_BASE.gitnexus (making toOneIndexed version-aware for the new pin), or fail here.
+    const bridge = fileURLToPath(
+      new URL('../../../../libs/papercusp/plugins/gitnexus-bridge/index.ts', import.meta.url),
+    );
+    const m = /PINNED_GITNEXUS_VERSION\s*=\s*'(\d+\.\d+\.\d+)'/.exec(readFileSync(bridge, 'utf8'));
+    expect(m, 'PINNED_GITNEXUS_VERSION literal not found in gitnexus-bridge/index.ts').not.toBeNull();
+    const pinned = m![1]!;
+    const measured = gitnexusStartLineBase(pinned);
+    expect(
+      measured,
+      `PINNED_GITNEXUS_VERSION ${pinned} has no entry in GITNEXUS_START_LINE_BASE_BY_VERSION — ` +
+        'measure its raw startLine on getLongLivedAdminPool (declared on 1-based line 145) first',
+    ).not.toBeNull();
+    expect(LINE_INDEX_BASE.gitnexus).toBe(measured);
+  });
+
+  it('the table is frozen so a caller cannot mutate a measurement', () => {
+    expect(Object.isFrozen(GITNEXUS_START_LINE_BASE_BY_VERSION)).toBe(true);
   });
 });

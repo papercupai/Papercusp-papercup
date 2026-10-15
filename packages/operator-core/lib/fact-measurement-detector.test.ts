@@ -54,6 +54,12 @@ describe('fact measurement detector — moving numbers get an advisory', () => {
     for (const body of fixed) expect(detectFactMeasurements(body), body).toEqual([]);
   });
 
+  it('does not treat a labelled HN item ID as a measurement when current wording is nearby', () => {
+    const body = 'Kredit Financial historical HN item 39921317 and current first-party role verification remains open.';
+    expect(detectFactMeasurements(body)).toEqual([]);
+    expect(factMeasurementHint('currently 4 unchecked rows')).toMatch(/measurement-like|Advisory only/);
+  });
+
   it('keeps distant state language from making an unrelated number look measured', () => {
     const body = `12345 ${'x'.repeat(MEASUREMENT_CONTEXT_WINDOW * 3)} current status is stable`;
     expect(detectFactMeasurements(body)).toEqual([]);
@@ -124,6 +130,19 @@ describe('fact absence detector — a worded absence gets its own advisory (EI-2
   it('does not fire on ordinary prose negation with no existence claim near it', () => {
     expect(detectFactAbsenceClaims('This is not the preferred approach for new plans.')).toEqual([]);
     expect(detectFactAbsenceClaims('Prefer a library over rolling your own; none of that is urgent work.')).toEqual([]);
+  });
+
+  it('does not mistake a normative must-not rule for an observed absence', () => {
+    const rule = 'Oversized metadata overflow must not refuse the result.';
+    expect(detectFactAbsenceClaims(rule), rule).toEqual([]);
+    expect(detectFactAbsenceClaims('The result was not emitted.')).not.toEqual([]);
+  });
+
+  it('keeps a literal scheduler sentinel separate from an unrelated nearby match', () => {
+    const body = 'Scheduler read-back: none [mq-deadline]; installed script matches the source SHA-256.';
+    expect(detectFactAbsenceClaims(body)).toEqual([]);
+    expect(factAbsenceHint(body)).toBeNull();
+    expect(detectFactAbsenceClaims('none of the active scheduler entries matched the policy')).not.toEqual([]);
   });
 
   it('is fail-soft on non-string and empty input, like the measurement scan', () => {

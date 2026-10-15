@@ -714,7 +714,30 @@ function dispatchRepair(episode: ReplicationStallEpisode): void {
   }
 }
 
+/** Preserve positive transitions in the existing bounded forensic store. */
+function recordEpisodeTransition(
+  episode: ReplicationStallEpisode,
+  kind: 'replication_episode_started' | 'replication_condition_ended',
+): void {
+  try {
+    recordBootEvent(
+      episode.workspaceId,
+      episode.harnessSlug,
+      kind,
+      JSON.stringify({
+        logKeyHex: episode.logKeyHex,
+        detectorKind: episode.kind,
+        stalledForMs: episode.stalledForMs,
+        detail: episode.detail,
+      }),
+    );
+  } catch {
+    /* diagnostic-only — a history failure must never block detection/repair */
+  }
+}
+
 function defaultEpisodeReporter(episode: ReplicationStallEpisode): void {
+  recordEpisodeTransition(episode, 'replication_episode_started');
   // Leg 0 — a LOUD process-log line carrying the grep-able event token. The b8
   // matrix scenario's detector-assert (and any live witness) greps serve.log
   // for `replication_stalled` / `replication_frozen`; the boot-history ring and
@@ -778,6 +801,9 @@ function reportEpisode(episode: ReplicationStallEpisode): void {
 // the completion. The returned promise NEVER rejects (every internal failure is
 // swallowed) so an unawaited call is exactly as safe as the old void-returning one.
 function defaultRecoveryReporter(recovery: ReplicationStallEpisode): Promise<void> {
+  // "Ended" is deliberately narrower than "healthy": frozen ends on detach,
+  // and intentional log removal also resolves concerns. Preserve that detail.
+  recordEpisodeTransition(recovery, 'replication_condition_ended');
   try {
     console.error(
       `[replication-liveness] recovered (${recovery.kind}) harness=${recovery.harnessSlug} ${recovery.detail}`,

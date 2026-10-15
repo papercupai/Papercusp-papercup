@@ -10,8 +10,9 @@
  *   issue-family    kinds {bug, change}                   → engineer_issues
  *
  * Reads MERGE across both tables; writes DISPATCH by kind. New ids are the
- * kind-independent WI-NNN scheme (D-008, allocated from harness_shared.work_item_seq
- * via next_work_item_id()); existing F-NNN / EI-NNN rows keep their ids (the bulk
+ * kind-independent WI-NNN scheme (D-008, allocated by next_work_item_id(), which since
+ * scope-unique-identifiers-2026-07-26 D-005/D-006 prefixes a federated database's node
+ * slot); existing F-NNN / EI-NNN rows keep their ids (the bulk
  * in-place re-id is a supervised, pipeline-drained follow-on — see the plan Risks).
  *
  * Capabilities (D-003) ride the same coord substrate stores issues use — but keyed
@@ -28,10 +29,12 @@
  * trigger (already wired) — so neither path needs an extra fan-out call here.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { observeFallback } from './degradation/fallback-observations';
+import { lockGoalPlanClaimSelections, goalPlanClaimFragments, assertGoalPlanClaimSelection } from './typed-properties-db';
 import type { GoalSqlTag } from '@papercusp/agent-mcp/goals';
 import { healOrphanedRemoteOriginIfAuthorEnded } from './work-items-orphan-author';
 import { selfHealTerminalOwnerOriginIfStranded } from './work-items-terminal-owner-origin-heal';
-import type { Fragment, TransactionSql } from 'postgres';
+import type { Fragment, Sql, TransactionSql } from 'postgres';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { systemDistinctId } from './flag-distinct-id';
@@ -61,7 +64,10 @@ import { featureRef, FEATURE_KIND, isQualifiedFeatureRef, implementsLinkScopes }
 import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { normalizeTakenBy } from './sync/hyperbee/projections/harness-features';
-import { boundedOrgTxn } from './pg-bounded-txn';
+import { boundedOrgTxn, withOrgTxnTimeoutPhase } from './pg-bounded-txn';
+import { boundedPgReadTxn } from './pg-read-query';
+import type { ActiveOperationWorkerClaimRead } from './blueprint/operation-worker-binding';
+import { sealSharedTextInTxOrRefuse } from './personal-vault/shared-store-seal';
 import {
   admittedWhereSql,
   admittedWhereSqlWi,
@@ -78,14 +84,24 @@ import {
   isAutoPickable,
   isIssueLocallyClaimable,
   isIssueLocallyClaimableWhereSql,
+  isOwnNodeAuthoredRemoteRow,
   liveGateOpsSelfSelectExclusionSql,
   liveGateOpsSelfSelectExplanation,
   loadTrustedGithubUserIds,
+  selfHealOwnNodeOriginIfStranded,
   STOP_THE_LINE_RED_HOURS,
   stopTheLineExclusionSql,
+  redInflowRepairItemSql,
 } from './work-items-admission';
+import {
+  WorkItemIdAmbiguousError,
+  choosePhysicalSlug,
+  resolveIssuePhysicalSlug,
+  stripTwinCensus,
+  type TwinCensus,
+} from './work-items-physical-row';
 import { frontierPlacementKindClause } from './datatype-frontier-placement';
-import { hasGenericKind } from './datatype-registry-store';
+import { hasGenericKind, type DatatypeNature } from './datatype-registry-store';
 import {
   ANY_FAMILY_TERMINAL_STATES,
   FEATURE_NON_REQUEUE_STATES,
@@ -116,19 +132,29 @@ import { isWorkItemCompletionAuthority, type WorkItemCompletionAuthority } from 
 // NOT re-exported — the leaf is the import site for anyone who needs the decision itself.
 import { classifySettledCompletionEvidence } from './work-item-settled-completion-evidence';
 import { liveDriveTerminalRefusal } from './turn-provenance/owner-visible-surface-acceptance';
-import { readExternalBlockers, updateExternalBlockerHistory, type ExternalBlockerRecord } from './external-blockers';
+import {
+  activeExternalBlockers,
+  readExternalBlockers,
+  updateExternalBlockerHistory,
+  type ExternalBlockerKind,
+  type ExternalBlockerRecord,
+} from './external-blockers';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
 import { clearGoalClaimedIfMatches, noteGoalClaimed, readAgentStateStamp } from './agent-state-stamp';
 import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
 import { AUTO_CLOSE_DEFAULT_MIN_TICKS, AUTO_CLOSE_ELIGIBLE_SOURCES } from './harness/improvements/auto-close-sources';
 import {
   agentReviewPendingAdmissionSql,
-  agentReviewNormalExclusionSql,
+  intakeStageClaimFloorSql,
   matchesAgentReviewClaimAdmission,
+  matchesAgentReviewRevisionAdoptionAdmission,
   readAgentReviewState,
-  readStructuredOwnerAsk,
+  verificationTaskConflict,
+  verificationTaskConflictSql,
   type AgentReviewClaimAdmission,
+  type AgentReviewRevisionAdoptionAdmission,
 } from './harness/improvements/agent-review-policy';
+import { hasActiveStrictHumanAsk } from './hold-registry';
 import { hasResourceGovernorReceiptPayload, ResourceGovernorReleaseRequiredError } from './resource-governor/queue';
 import { projectWorkItemColumns, type WorkItemReadOptions } from './work-item-read-projection';
 import type { LegacyFleetScopeDowngradeAdmission } from './work-item-fleet-scope-recovery';
@@ -222,6 +248,13 @@ import {
   type AppliedDefaults,
 } from '@papercusp/search';
 import { WORK_ITEMS_CHUNK_SURFACE } from './search/chunks/registry';
+import {
+  boundedExactTopK,
+  EXACT_LIST_MAX_AND_ROWS,
+  lexicalLeg,
+  mergeExactAndBm25,
+  usesWebsearchOperators,
+} from './search/lexical/rank';
 // Installs papercusp's engine-level ranking policy (P-017) on import — the
 // same side-effect import every other engine caller uses. Without it this
 // surface would call the engine and inherit NO floor, which is the exact
@@ -268,7 +301,8 @@ export function isDeprecatedWorkItemKind(kind: string): kind is 'chunk' {
 // `task` (collapse-delegate D-001) is an issue-family work_item kind — the operator's
 // delegated-work record. It lives in engineer_issues alongside bug|change but is
 // excluded from the issues:* surface (listIssues default).
-export const ISSUE_FAMILY_KINDS: readonly IssueStoreKind[] = ['bug', 'change', 'task'];
+// P-009 / D-022: the single routing list lives in work-nature/agent-work-predicate.ts.
+export const ISSUE_FAMILY_KINDS: readonly IssueStoreKind[] = ISSUE_FAMILY_ROUTE_KINDS;
 
 /**
  * Hard ceiling for a single work-items LIST read (both families). Local desktop
@@ -992,15 +1026,32 @@ export async function guardPlanItemSiblingClaim(
 // ── Reads ─────────────────────────────────────────────────────────────────────────
 export interface ListWorkItemsFilter {
   harness?: string;
+  /** Exact identities, or an internal one-column SQL selection kept server-side.
+   * An empty set matches nothing across both families. */
+  ids?: ListIssuesFilter['issueIds'];
   /**
    * Restrict to any of these exact harness slugs. `harness` wins when both are
    * present; an explicitly empty array matches nothing. This is the set-valued
    * sibling used by the /adv inherited pot scope (selected pot + descendants).
    */
   harnesses?: readonly string[];
-  /** Case-insensitive literal substring matched against title + body/summary. */
+  /** Case-insensitive literal substring matched against title + body/summary and retained capture occurrence title/body. */
   q?: string;
   kind?: WorkItemKind;
+  /**
+   * P-010 / D-011: restrict to rows of these natures (work | record | document | event).
+   * Unset or empty means nature 'work' only, UNLESS `kind` names one kind: naming a kind is
+   * an explicit ask, so `kind: 'pipeline-deal'` still returns its record rows. The issue
+   * family is bug/change/task, all nature 'work' (D-013), so a set without 'work' drops it.
+   */
+  natures?: readonly DatatypeNature[];
+  /**
+   * D-041 (WI-10005358): 'agent' keeps only rows the write doors accept (the shared
+   * agentWorkCategoryWhereSql predicate); 'human' keeps human-audience rows; unset or 'any'
+   * applies no audience filter. Applied in BOTH family shape fragments, so list and both
+   * counts agree (WI-5512 parity). The work_items:list TOOL chooses the agent default.
+   */
+  audience?: WorkAudienceFilter;
   state?: string;
   /**
    * WI-38339 — `state` as a SET, for the question a single value cannot ask. Measured
@@ -1126,12 +1177,16 @@ export interface ListWorkItemsFilter {
    * for backwards-compatible internal/detail reads (WI-42508).
    */
   includePayload?: boolean;
+  /** Internal source policy; fleetMetrics retains controls but excludes archival envelopes. */
+  payloadProjection?: WorkItemReadOptions['payloadProjection'];
   /**
    * Omit the issue-family body/summary from returned rows.  Feature summaries are
    * unaffected by this flag.  The agent-facing list sets both body and payload
    * false before the post-handler tier shaper runs (WI-42508).
    */
   includeBody?: boolean;
+  /** Internal metric-census policy: return issue bodies only for readiness-enrolled rows. */
+  bodyProjection?: 'fleetMetricsCensus';
 }
 
 /**
@@ -1251,6 +1306,28 @@ function likeContainsPattern(query: string): string {
  *
  * Returns `TRUE` when nothing is set, so a call site can AND it unconditionally.
  */
+/**
+ * P-010 / D-011 — the default-read nature boundary, ONE definition for list, both counts
+ * and search. Non-empty `natures` → that set. Otherwise an explicit `kind` → no nature
+ * filter (the caller named the kind). Otherwise only nature 'work', so a record-, document-
+ * or event-nature row never surfaces in a default work read. `nature` is stamped on every
+ * work_items row by the 1322 trigger from datatype_registry (D-018).
+ */
+export function natureWhereSql(
+  sql: OrgSql,
+  natures: readonly DatatypeNature[] | undefined,
+  kind: string | undefined,
+) {
+  if (natures && natures.length > 0) return sql`nature = ANY(${natures as string[]}::text[])`;
+  if (kind) return sql`TRUE`;
+  return sql`nature = 'work'`;
+}
+
+/** Whether a `natures` filter admits the issue family (bug/change/task are nature 'work'). */
+export function naturesAdmitWork(natures: readonly DatatypeNature[] | undefined): boolean {
+  return !natures || natures.length === 0 || natures.includes('work');
+}
+
 function featureShapeWhereSql(sql: OrgSql, filter: ListWorkItemsFilter) {
   // An EMPTY `states` array is NO filter, never "match nothing": `= ANY('{}')` is false
   // for every row, so an empty list would return zero rows — indistinguishable from a
@@ -1258,6 +1335,11 @@ function featureShapeWhereSql(sql: OrgSql, filter: ListWorkItemsFilter) {
   const states = filter.states && filter.states.length > 0 ? filter.states : null;
   return sql`
     ${states ? sql`status = ANY(${states as string[]}::text[])` : sql`TRUE`}
+    AND ${filter.ids
+      ? Array.isArray(filter.ids)
+        ? sql`feature_id = ANY(${filter.ids as string[]}::text[])`
+        : sql`feature_id IN (${filter.ids as ReturnType<OrgSql>})`
+      : sql`TRUE`}
     AND ${filter.notTerminal ? sql`NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))` : sql`TRUE`}
     AND ${
       filter.createdSince
@@ -1276,7 +1358,9 @@ function featureShapeWhereSql(sql: OrgSql, filter: ListWorkItemsFilter) {
             OR payload -> 'plan_item' ->> 'plan_slug' = ${filter.sourcePlanSlug}
           )`
         : sql`TRUE`
-    }`;
+    }
+    AND ${natureWhereSql(sql, filter.natures, filter.kind)}
+    AND ${audienceWhereSql(sql, filter.audience)}`;
 }
 
 /**
@@ -1287,11 +1371,13 @@ function featureShapeWhereSql(sql: OrgSql, filter: ListWorkItemsFilter) {
  */
 function issueShapeFilterArgs(filter: ListWorkItemsFilter) {
   return {
+    issueIds: filter.ids,
     states: filter.states,
     notTerminal: filter.notTerminal,
     createdSince: filter.createdSince,
     updatedSince: filter.updatedSince,
     sourcePlanSlug: filter.sourcePlanSlug,
+    audience: filter.audience,
   };
 }
 
@@ -1318,13 +1404,14 @@ async function listWorkItemsWithLimit(filter: ListWorkItemsFilter, rowLimit: num
   const q = filter.q?.trim();
   // assignedBy is an issue-family-only concept, so it excludes all feature rows.
   const wantFeature = (!filter.kind || familyOf(filter.kind) === 'feature') && !filter.assignedBy;
-  const wantIssue = !filter.kind || familyOf(filter.kind) === 'issue';
+  const wantIssue = (!filter.kind || familyOf(filter.kind) === 'issue') && naturesAdmitWork(filter.natures);
   const out: WorkItem[] = [];
 
   if (wantFeature) {
     const ws = activeWorkspaceId();
     const rows = await sql<FeatureRowDb[]>`
-      SELECT ${sql.unsafe(filter.includePayload === false ? FEATURE_COLS_PAYLOADLESS : FEATURE_COLS)}
+      SELECT ${sql.unsafe(projectWorkItemColumns(FEATURE_COLS,
+        filter.includePayload === false ? 'none' : filter.payloadProjection))}
         FROM harness_shared.harness_features_consolidated
          WHERE ${featureFamilyKindClause(sql, ws, {
            includeDeprecatedChunk: filter.kind === 'chunk' || Boolean(filter.parent) || filter.includeChildren === true,
@@ -1362,7 +1449,7 @@ async function listWorkItemsWithLimit(filter: ListWorkItemsFilter, rowLimit: num
                  -- assignee) — mirrors issueAdmissibleWhereSql's own list-context shape.
                  AND ${claimHoldExclusionSql(sql, 'payload')}
                  AND ${reservedPlanLaneExclusionSql(sql, '', 'payload')}
-                 AND ${agentReviewNormalExclusionSql(sql, 'payload')}
+                 AND ${intakeStageClaimFloorSql(sql, 'payload')}
                )`
              : sql`TRUE`
          }
@@ -1418,7 +1505,9 @@ async function listWorkItemsWithLimit(filter: ListWorkItemsFilter, rowLimit: num
       // shaping a placement row. Keep the flags explicit so direct/internal
       // callers retain the full projection by default.
       includeBody: filter.includeBody,
+      bodyProjection: filter.bodyProjection,
       includePayload: filter.includePayload,
+      payloadProjection: filter.payloadProjection,
       audit: filter.audit,
       completionAuthority: filter.completionAuthority,
     };
@@ -1457,7 +1546,7 @@ export async function listAllWorkItemsForFileExport(filter: ListWorkItemsFilter 
 export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<number> {
   const { sql } = getOrgPg();
   const wantFeature = (!filter.kind || familyOf(filter.kind) === 'feature') && !filter.assignedBy;
-  const wantIssue = !filter.kind || familyOf(filter.kind) === 'issue';
+  const wantIssue = (!filter.kind || familyOf(filter.kind) === 'issue') && naturesAdmitWork(filter.natures);
   let total = 0;
 
   if (wantFeature) {
@@ -1498,7 +1587,7 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
                  -- denominator not).
                  AND ${claimHoldExclusionSql(sql, 'payload')}
                  AND ${reservedPlanLaneExclusionSql(sql, '', 'payload')}
-                 AND ${agentReviewNormalExclusionSql(sql, 'payload')}
+                 AND ${intakeStageClaimFloorSql(sql, 'payload')}
                )`
              : sql`TRUE`
          }
@@ -1583,7 +1672,7 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
 export async function countWorkItemsByState(filter: ListWorkItemsFilter = {}): Promise<Record<string, number>> {
   const { sql } = getOrgPg();
   const wantFeature = (!filter.kind || familyOf(filter.kind) === 'feature') && !filter.assignedBy;
-  const wantIssue = !filter.kind || familyOf(filter.kind) === 'issue';
+  const wantIssue = (!filter.kind || familyOf(filter.kind) === 'issue') && naturesAdmitWork(filter.natures);
   const byState: Record<string, number> = {};
   const add = (state: string | null | undefined, n: number) => {
     const k = state ?? 'unknown';
@@ -1624,7 +1713,7 @@ export async function countWorkItemsByState(filter: ListWorkItemsFilter = {}): P
                  AND ${admittedWhereSql(sql)}
                  AND ${claimHoldExclusionSql(sql, 'payload')}
                  AND ${reservedPlanLaneExclusionSql(sql, '', 'payload')}
-                 AND ${agentReviewNormalExclusionSql(sql, 'payload')}
+                 AND ${intakeStageClaimFloorSql(sql, 'payload')}
                )`
              : sql`TRUE`
          }
@@ -1659,22 +1748,40 @@ export async function getWorkItem(
   id: string,
   harness?: string,
   opts: WorkItemReadOptions = {},
+  client?: ReturnType<typeof getOrgPg>['sql'],
 ): Promise<WorkItem | null> {
   // ⚠ `harness` is NOT applied to the issue-family branch — see harnessScopeMismatch()
   // below for why that is deliberate, and for the guard that covers what it leaves open.
   //
   // This used to read "Issue-family ids (EI-* or a WI-* that lives in engineer_issues)
   // are globally unique", which justified the unscoped read. That premise is TRUE for
-  // `EI-<snowflake>` ids and FALSE for `WI-<n>` ids: D-008 (migration
+  // `EI-<snowflake>` ids and FALSE for `WI-<n>` ids across databases: D-008 (migration
   // 142-work-items-unify.sql) started minting WI ids into this same table from
-  // `harness_shared.work_item_seq`, a PER-DATABASE sequence that STARTs at 1. So
-  // WI-1/WI-2/WI-3 exist in every long-lived store and a fresh one mints exactly those.
+  // `harness_shared.work_item_seq`, a PER-DATABASE sequence that STARTs at 1, and a
+  // database that has never federated still does (scope-unique-identifiers-2026-07-26
+  // D-005/D-006 slot a federated one). Within one workspace an id names one row, and
+  // getIssue refuses a same-workspace twin the harness does not pick (P-013).
   // `getFeatureWorkItemOnly` 12 lines below already states the correct rule (F-B3: "a
   // bare WI/F id is unique only within a (workspace, harness), not globally") — the two
   // halves of one id space disagreed, and the issue half was the one being trusted.
-  const issue = await getIssue(id, opts);
-  if (issue) return issueToWorkItem(issue);
-  return getFeatureWorkItemOnly(id, harness, opts);
+  // WI-10006010: `harness` is a PREFERENCE among same-id slug twins, never a filter.
+  const issue = await getIssue(id, opts, client, harness);
+  if (issue) {
+    const issueItem = issueToWorkItem(issue);
+    // WI-10006534: the preference must also hold ACROSS families. When the caller named a
+    // harness, the issue row that came back belongs to a DIFFERENT harness, and that named
+    // harness owns a FEATURE-family row with the same id, the caller's row is the feature
+    // row. Returning the issue row made the feature row unreachable by any tool (measured
+    // 2026-10-06: email's WI-10000680 could not be dropped; set_state wrote papercusp's
+    // WI-10000680 instead). Still a preference, not a filter: with no exact-harness
+    // feature row, the issue row is returned exactly as before (harnessScopeMismatch warns).
+    if (harness && harnessScopeMismatchLeaf(issueItem, harness)) {
+      const exact = await getFeatureWorkItemOnly(id, harness, opts, client);
+      if (exact) return exact;
+    }
+    return issueItem;
+  }
+  return getFeatureWorkItemOnly(id, harness, opts, client);
 }
 
 /**
@@ -1687,6 +1794,7 @@ export async function getWorkItem(
  * `undefined` at precisely the call sites it exists to protect.
  */
 export { harnessScopeMismatch, type HarnessScopeMismatch } from './work-items-harness-scope';
+import { harnessScopeMismatch as harnessScopeMismatchLeaf } from './work-items-harness-scope';
 // EI-21919769900781478: kept in a LEAF module (the write verbs mock this file wholesale
 // in their unit tests), re-exported here so it stays discoverable beside
 // `selfHealAuthorOriginIfStranded`, which handles the sibling stranding.
@@ -1705,6 +1813,13 @@ export {
   type TerminalOwnerOriginHealReason,
 } from './work-items-terminal-owner-origin-heal';
 import { trackDetached } from './detached-imports';
+import {
+  ISSUE_FAMILY_ROUTE_KINDS,
+  agentWorkCategoryWhereSql,
+  audienceWhereSql,
+  issueFamilyRouteSql,
+  type WorkAudienceFilter,
+} from './work-nature/agent-work-predicate';
 
 /**
  * The FEATURE-family half of {@link getWorkItem} (its issue-family half is a bare
@@ -1716,20 +1831,27 @@ async function getFeatureWorkItemOnly(
   id: string,
   harness?: string,
   opts: WorkItemReadOptions = {},
+  client?: ReturnType<typeof getOrgPg>['sql'],
 ): Promise<WorkItem | null> {
-  const { sql } = getOrgPg();
+  const sql = client ?? getOrgPg().sql;
   // F-B3 (workspace-data-isolation-leaks): a bare WI/F id is unique only within a
   // (workspace, harness), not globally — scope to the active workspace so an id
   // collision across workspaces can't return the wrong row (getOrgPg bypasses RLS).
-  const rows = await sql<FeatureRowDb[]>`
-    SELECT ${sql.unsafe(projectWorkItemColumns(FEATURE_COLS, opts.payloadProjection))}
+  const workspaceId = activeWorkspaceId();
+  // P-013 (R-5): with no harness, several rows for the id are refused rather than resolved by
+  // recency; `__slugs` is computed before LIMIT, so detecting them costs no extra round trip.
+  // A named harness filters to the one physical row (harness_slug, feature_id).
+  const rows = await sql<(FeatureRowDb & TwinCensus)[]>`
+    SELECT ${sql.unsafe(projectWorkItemColumns(FEATURE_COLS, opts.payloadProjection))},
+           workspace_id AS __ws,
+           array_agg(harness_slug) OVER () AS __ws_slugs
       FROM harness_shared.harness_features_consolidated
      WHERE feature_id = ${id}
-       AND workspace_id = ${activeWorkspaceId()}
+       AND workspace_id = ${workspaceId}
        AND ${harness ? sql`harness_slug = ${harness}` : sql`TRUE`}
      ORDER BY updated_ts DESC NULLS LAST
      LIMIT 1`;
-  return rows[0] ? featureRowToWorkItem(rows[0]) : null;
+  return rows[0] ? featureRowToWorkItem(stripTwinCensus(id, rows[0], harness)) : null;
 }
 
 export interface WorkItemDetail extends WorkItem {
@@ -1786,13 +1908,18 @@ export async function getWorkItemThreadWindow(
   // Issue-family: the correctly-scoped store lives in issues-engineer.
   if (wi.family === 'issue') return (deps.getIssueThreadWindow ?? getIssueThreadWindow)(id, limit);
   const ref = workItemObjectRef(wi);
-  const [thread, topics] = await Promise.all([threads.getThreadByParent(ref), tags.listTags(ref)]);
-  // No thread row at all is the DEFAULT for an item nobody has commented on
-  // (threads are created on first post), not a failure — a real, measured zero.
-  const window = thread
-    ? await threads.listRecentPosts(thread.thread_id, limit)
-    : { posts: [] as ThreadPostRow[], total: 0 };
-  return { posts: window.posts, total: window.total, topics, createdAt: wi.createdAt };
+  return boundedPgReadTxn(async (tx) => {
+    const scopedThreads = new PgThreadStore({ ...coordOpts, getSql: () => tx });
+    const scopedTags = new PgTaggableStore({ ...coordOpts, getSql: () => tx });
+    const thread = await scopedThreads.getThreadByParent(ref);
+    const topics = await scopedTags.listTags(ref);
+    // No thread row at all is the DEFAULT for an item nobody has commented on
+    // (threads are created on first post), not a failure — a real, measured zero.
+    const window = thread
+      ? await scopedThreads.listRecentPosts(thread.thread_id, limit)
+      : { posts: [] as ThreadPostRow[], total: 0 };
+    return { posts: window.posts, total: window.total, topics, createdAt: wi.createdAt };
+  });
 }
 
 /** A work-item plus its coord-substrate detail (topics, thread posts, outgoing links). */
@@ -1918,6 +2045,8 @@ interface WorkItemSearchFilters {
   /** Already narrowed to the source's own family by the caller (see `searchWorkItems`). */
   kind?: WorkItemKind;
   includeObservations?: boolean;
+  /** P-010: see {@link ListWorkItemsFilter.natures}; same default (work only unless `kind`). */
+  natures?: readonly DatatypeNature[];
 }
 
 /** Ranker/source labels. Stable — they appear in `legs.failures[].source`. */
@@ -1986,6 +2115,44 @@ async function workItemChunkLeg(
   });
 }
 
+type WorkItemLexicalRow = { id: string; title: string; body: string | null; score: number };
+
+/**
+ * D-016: preserve the exact AND list beside BM25 for the direct work-item search families.
+ * The same family scope is applied inside the bounded candidate query so exact matches cannot
+ * escape workspace, harness, kind, observation-lane, or nature filters.
+ */
+async function mergeExactWorkItemBm25(
+  sql: OrgSql,
+  opts: {
+    table: 'harness_shared.work_items' | 'harness_shared.harness_features_consolidated';
+    scope: (sql: OrgSql) => Fragment;
+    query: string;
+    limit: number;
+    bm25Rows: WorkItemLexicalRow[];
+  },
+): Promise<WorkItemLexicalRow[]> {
+  const exactTop = boundedExactTopK(sql as unknown as Sql, {
+    columns: sql`feature_id AS id, title, summary AS body`,
+    from: sql.unsafe(opts.table),
+    where: opts.scope(sql),
+    tsv: sql`_search`,
+    query: opts.query,
+    limit: opts.limit,
+    maxMatches: EXACT_LIST_MAX_AND_ROWS,
+  });
+  const exactRows = await sql<Array<{ id: string; title: string; body: string | null; rank: number }>>`
+    SELECT id, title, body, exact_rank AS rank
+      FROM (${exactTop}) exact
+  ORDER BY exact_rank DESC`;
+  if (exactRows.length === 0) return opts.bm25Rows;
+
+  const exact = exactRows.map(({ rank, ...row }) => ({ ...row, rank: Number(rank) }));
+  const bm25 = opts.bm25Rows.map(({ score, ...row }) => ({ ...row, rank: Number(score) }));
+  return mergeExactAndBm25(exact, bm25, (row) => row.id, opts.limit)
+    .map(({ rank, ...row }) => ({ ...row, score: rank }));
+}
+
 /**
  * The issue-family `SearchSource` — ranked over the BASE table
  * `harness_shared.work_items`, not the `engineer_issues` view: the view is a
@@ -2006,7 +2173,8 @@ function issueSearchSource(f: WorkItemSearchFilters, selection: ProseProfileSele
       AND item_kind IN ('bug', 'change', 'task')
       AND ${f.kind ? sql`item_kind = ${f.kind}` : sql`TRUE`}
       AND ${f.harness ? issueHarnessClause(sql, f.harness) : sql`TRUE`}
-      AND ${f.includeObservations ? sql`TRUE` : sql`lane IS DISTINCT FROM 'observation'`}`;
+      AND ${f.includeObservations ? sql`TRUE` : sql`lane IS DISTINCT FROM 'observation'`}
+      AND ${naturesAdmitWork(f.natures) ? sql`TRUE` : sql`FALSE`}`;
   const toListing = (
     rows: Array<{ id: string; title: string; body: string | null; score: number }>,
     ranker: string,
@@ -2027,18 +2195,32 @@ function issueSearchSource(f: WorkItemSearchFilters, selection: ProseProfileSele
     name: SOURCE_ISSUES,
     async lexical({ sql: pg, query, limit }: SearchSourceParams): Promise<Listing> {
       const sql = pg as OrgSql;
-      // `ts_rank` (not `ts_rank_cd`) preserves the pre-migration ordering
-      // exactly; no lexical floor is registered, so nothing downstream depends
-      // on which of the two this is (see search/prose-min-score.ts).
+      // BM25 through the lexical seam (plan bm25-lexical-search-evoke-adoption-2026-10-10
+      // P-005); the legacy `ts_rank` (not `ts_rank_cd`) preserves the pre-migration
+      // ordering exactly. No lexical floor is registered, so nothing downstream depends on
+      // the score's scale (see search/prose-min-score.ts); the hybrid engine fuses by RRF.
+      const leg = await lexicalLeg(pg, {
+        table: 'work_items',
+        query,
+        querySyntax: 'websearch',
+        legacy: {
+          score: sql`ts_rank(_search, websearch_to_tsquery('english', ${query}))`,
+          match: sql`_search @@ websearch_to_tsquery('english', ${query})`,
+        },
+      });
       const rows = await sql<Array<{ id: string; title: string; body: string | null; score: number }>>`
-        SELECT feature_id AS id, title, summary AS body,
-               ts_rank(_search, websearch_to_tsquery('english', ${query})) AS score
+        SELECT feature_id AS id, title, summary AS body, ${leg.score} AS score
           FROM harness_shared.work_items
          WHERE ${scoped(sql)}
-           AND _search @@ websearch_to_tsquery('english', ${query})
-      ORDER BY score DESC
+           AND ${leg.match}
+      ORDER BY ${leg.order}
          LIMIT ${limit}`;
-      return toListing(rows, 'lexical');
+      const rankedRows = leg.engine === 'bm25' && !usesWebsearchOperators(query)
+        ? await mergeExactWorkItemBm25(sql, {
+            table: 'harness_shared.work_items', scope: scoped, query, limit, bm25Rows: rows,
+          })
+        : rows;
+      return toListing(rankedRows, 'lexical');
     },
     ...(selection
       ? {
@@ -2068,7 +2250,8 @@ function featureSearchSource(f: WorkItemSearchFilters, selection: ProseProfileSe
           ${featureFamilyKindClause(sql, ws, { includeDeprecatedChunk: f.kind === 'chunk' })}
       AND workspace_id = ${ws}
       AND ${f.kind ? sql`item_kind = ${f.kind}` : sql`TRUE`}
-      AND ${f.harness ? sql`harness_slug = ${f.harness}` : sql`TRUE`}`;
+      AND ${f.harness ? sql`harness_slug = ${f.harness}` : sql`TRUE`}
+      AND ${natureWhereSql(sql, f.natures, f.kind)}`;
   const toListing = (
     rows: Array<{ id: string; title: string; body: string | null; score: number }>,
     ranker: string,
@@ -2089,15 +2272,30 @@ function featureSearchSource(f: WorkItemSearchFilters, selection: ProseProfileSe
     name: SOURCE_FEATURES,
     async lexical({ sql: pg, query, limit }: SearchSourceParams): Promise<Listing> {
       const sql = pg as OrgSql;
+      // The view is a straight projection of work_items, so the work_items BM25 index
+      // ranks it (the expression's columns keep their names through the view).
+      const leg = await lexicalLeg(pg, {
+        table: 'work_items',
+        query,
+        querySyntax: 'websearch',
+        legacy: {
+          score: sql`ts_rank(_search, websearch_to_tsquery('english', ${query}))`,
+          match: sql`_search @@ websearch_to_tsquery('english', ${query})`,
+        },
+      });
       const rows = await sql<Array<{ id: string; title: string; body: string | null; score: number }>>`
-        SELECT feature_id AS id, title, summary AS body,
-               ts_rank(_search, websearch_to_tsquery('english', ${query})) AS score
+        SELECT feature_id AS id, title, summary AS body, ${leg.score} AS score
           FROM harness_shared.harness_features_consolidated
          WHERE ${scoped(sql)}
-           AND _search @@ websearch_to_tsquery('english', ${query})
-      ORDER BY score DESC
+           AND ${leg.match}
+      ORDER BY ${leg.order}
          LIMIT ${limit}`;
-      return toListing(rows, 'lexical');
+      const rankedRows = leg.engine === 'bm25' && !usesWebsearchOperators(query)
+        ? await mergeExactWorkItemBm25(sql, {
+            table: 'harness_shared.harness_features_consolidated', scope: scoped, query, limit, bm25Rows: rows,
+          })
+        : rows;
+      return toListing(rankedRows, 'lexical');
     },
     ...(selection
       ? {
@@ -2157,14 +2355,54 @@ export async function getWorkItemsByIds(
   ids: string[],
   harness?: string,
   opts: WorkItemReadOptions = {},
+  /**
+   * P-013 (R-5): where to report ids held by several rows that `harness` does not narrow to
+   * one. Those ids are omitted from the result and recorded here. Without a sink the first
+   * ambiguity throws, so no caller ever receives a twin chosen by row order.
+   */
+  report?: { ambiguous: WorkItemIdAmbiguousError[] },
 ): Promise<WorkItem[]> {
   if (ids.length === 0) return [];
   const uniqueIds = [...new Set(ids)];
+  const byId = new Map<string, WorkItem>();
+  const ambiguous = new Set<string>();
+  const refuse = (err: unknown, id: string) => {
+    if (!(err instanceof WorkItemIdAmbiguousError) || !report) throw err;
+    report.ambiguous.push(err);
+    ambiguous.add(id);
+  };
+
   const issues = await issuesByIds(uniqueIds, opts);
-  const byId = new Map<string, WorkItem>(issues.map((issue) => [issue.id, issueToWorkItem(issue)]));
-  const featureIds = uniqueIds.filter((id) => !byId.has(id));
+  const issueRows = new Map<string, EngineerIssue[]>();
+  for (const issue of issues) issueRows.set(issue.id, [...(issueRows.get(issue.id) ?? []), issue]);
+  for (const [id, rows] of issueRows) {
+    if (rows.length === 1) {
+      byId.set(id, issueToWorkItem(rows[0]!));
+      continue;
+    }
+    // Twins: the single-id read resolves the named row or refuses (one extra query, twins only).
+    try {
+      const issue = await getIssue(id, opts, undefined, harness);
+      if (issue) byId.set(id, issueToWorkItem(issue));
+    } catch (err) {
+      refuse(err, id);
+    }
+  }
+
+  const featureIds = uniqueIds.filter((id) => !byId.has(id) && !ambiguous.has(id) && !issueRows.has(id));
   const features = await featuresByIds(featureIds, harness, opts);
-  for (const feature of features) byId.set(feature.id, feature);
+  const featureRows = new Map<string, WorkItem[]>();
+  for (const feature of features) featureRows.set(feature.id, [...(featureRows.get(feature.id) ?? []), feature]);
+  for (const [id, rows] of featureRows) {
+    // featuresByIds filters to `harness` when one is named, so several rows means no harness.
+    const choice = choosePhysicalSlug(rows.map((row) => row.harness ?? ''), harness);
+    if (choice.kind === 'ambiguous') {
+      refuse(new WorkItemIdAmbiguousError(id, activeWorkspaceId(), choice.candidates, harness ?? null), id);
+      continue;
+    }
+    const chosen = choice.kind === 'none' ? rows[0] : rows.find((row) => (row.harness ?? '') === choice.slug);
+    if (chosen) byId.set(id, chosen);
+  }
   return ids.flatMap((id) => {
     const item = byId.get(id);
     return item ? [item] : [];
@@ -2307,6 +2545,8 @@ export async function searchWorkItems(
      * include raw observations in search results.
      */
     includeObservations?: boolean;
+    /** P-010 / D-011: nature set to match; unset → nature 'work' only unless `kind` is named. */
+    natures?: readonly DatatypeNature[];
     /**
      * Test seam for the WI-9393 coverage assessment, mirroring `embedderResolver`.
      * Injecting it also OPTS IN under vitest, where the assessment is otherwise
@@ -2330,6 +2570,7 @@ export async function searchWorkItems(
     // always one that source can match.
     ...(opts.kind ? { kind: opts.kind } : {}),
     ...(opts.includeObservations ? { includeObservations: true } : {}),
+    ...(opts.natures && opts.natures.length > 0 ? { natures: opts.natures } : {}),
   };
 
   // Resolve the query embedder BEFORE building the sources: its mode is the
@@ -2385,6 +2626,10 @@ export async function searchWorkItems(
     limit,
     mode: 'hybrid',
     embedder,
+    // These family sources implement only the historical AND lexical query;
+    // neither consumes lexicalMode. The engine's second coverage-graded pass
+    // would therefore repeat the same SQL whenever a source under-fills.
+    lexicalCascade: false,
     // Bound the per-query embed the way every other interactive surface does:
     // a dedup-before-filing search must not be able to turn a ~20ms lexical
     // read into a multi-second wait on a cold or degraded embedder.
@@ -2689,6 +2934,10 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
       payload: input.payload,
       sourcePlanSlug: input.sourcePlanSlug,
       sourcePlanItemIds: input.sourcePlanItemIds,
+      // WI-10006622: owner-directive provenance. The feature-family INSERT below has
+      // always written it; this branch dropped it, so every bug/change/task filed with
+      // work_items:create { directiveRef } left its directive reading open-unworked.
+      directiveRef: input.directiveRef,
       // P-002: the born-admission rides in createIssue's own INSERT (which reaches the
       // base columns through the engineer_issues INSTEAD OF trigger as of migration
       // 946) — never a post-create UPDATE from here, which would leave the row
@@ -2924,7 +3173,16 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
   let inserted: Array<{ feature_id: string }> = [];
   for (let attempt = 1; ; attempt += 1) {
     params[1] = id;
-    inserted = await sql.unsafe<Array<{ feature_id: string }>>(insertSql, params);
+    const payload = input.payload as Record<string, unknown> | null | undefined;
+    const stamp = payload?.plan_item as Record<string, unknown> | undefined;
+    const selectionPlan = typeof stamp?.plan_slug === 'string' ? stamp.plan_slug : input.sourcePlanSlug;
+    inserted = selectionPlan && (assignTo || payload?.fleet_slug)
+      ? await boundedOrgTxn(async (tx) => {
+          const selections = await lockGoalPlanClaimSelections(tx, resolvedWs, assignTo ?? input.createdBy);
+          assertGoalPlanClaimSelection(selections, { harness: featureHarness, planSlug: selectionPlan });
+          return tx.unsafe<Array<{ feature_id: string }>>(insertSql, params);
+        }, { client: sql })
+      : await sql.unsafe<Array<{ feature_id: string }>>(insertSql, params);
     if (inserted.length > 0) {
       id = inserted[0].feature_id;
       break;
@@ -3102,17 +3360,8 @@ export const ISSUE_STATE_ALIASES: Record<string, string> = {
   'need-human': 'needs-human',
 };
 
-/**
- * The work-item id shapes admitted by the positional claim guard (D-008): every
- * NEW work-item mints a kind-independent `WI-NNN` id; pre-D-008 rows keep their
- * legacy `F-NNN` (feature) / `EI-NNN` (issue) ids; promoted issue-fix features
- * use `F-FIX-NNN`; scheduled plan-run frontier rows use `PR-<run>-P-<item>`
- * (the parser's plan-item ids are `P-NNN`). This exact allowlist is used by the
- * positional-write misalignment guard (EI-7927) to catch a swapped-row id
- * column carrying an obviously-wrong value (e.g. a state string in id's slot)
- * without rejecting a real scheduled-run item.
- */
-export const WORK_ITEM_ID_PATTERN = '^(?:(?:WI|F|EI)-\\d+|F-FIX-\\d+|PR-\\d+-P-\\d+)$';
+// Preserve the facade export while metadata-only consumers import the leaf.
+export { WORK_ITEM_ID_PATTERN } from './work-item-id';
 
 /**
  * Normalize a requested lifecycle state onto the UNIFIED work-item enum
@@ -3192,6 +3441,8 @@ async function isStaleHoldOpenAndCleared(
   id: string,
   heldOpen: { by: string; reason: string | null; at: string | null },
   harness?: string,
+  /** The row's `origin` — a peer-written ('remote') row's holder is never judged here (WI-10005916). */
+  origin?: string | null,
 ): Promise<boolean> {
   try {
     const [{ isHoldOpenExpired }, { readCoordLivenessConfig }] = await Promise.all([
@@ -3204,6 +3455,7 @@ async function isStaleHoldOpenAndCleared(
       graceMs: cfg.reclaimGraceMs,
       parkedGraceMs: cfg.reclaimParkedGraceMs,
       holdOpenGraceMs: cfg.holdOpenGraceMs,
+      origin,
     });
     if (!expired) return false;
     // Lift it for real — not just "ignore it this once". Leaving the stamp in place would keep
@@ -3218,7 +3470,13 @@ async function isStaleHoldOpenAndCleared(
         `Reason was: ${heldOpen.reason ?? '(none)'}`,
     );
     return true;
-  } catch {
+  } catch (e: unknown) {
+    // Still fails closed, but never silently: a liveness check that cannot run looks
+    // exactly like a LIVE holder, so say why the dead-hold lift was skipped.
+    console.warn(
+      `[hold-open] liveness check for ${id} (holder ${heldOpen.by}) could not run; hold stays enforced: ` +
+        (e instanceof Error ? e.message : String(e)),
+    );
     return false;
   }
 }
@@ -3246,6 +3504,26 @@ export interface TerminalCompletionConflict {
   note: string;
 }
 
+interface WorkItemPhysicalRow {
+  workspaceId: string;
+  harnessSlug: string;
+}
+
+/** Pin a follow-up write to the physical row returned by getWorkItem. */
+async function resolveWorkItemPhysicalRow(
+  wi: WorkItem,
+  preferredHarness?: string | null,
+): Promise<WorkItemPhysicalRow> {
+  const workspaceId = wi.family === 'issue' ? await resolveIssueWorkspace(wi.id) : activeWorkspaceId();
+  const harnessSlug = wi.family === 'issue'
+    ? await resolveIssuePhysicalSlug(getOrgPg().sql, workspaceId, wi.id, preferredHarness ?? wi.harness)
+    : wi.harness;
+  if (harnessSlug === null) {
+    throw new Error(`work_item '${wi.id}' has no harness_slug for a row-scoped write`);
+  }
+  return { workspaceId, harnessSlug };
+}
+
 /**
  * Record a non-authoritative terminal close beside the authoritative one.
  *
@@ -3260,6 +3538,7 @@ async function appendCompletionAttestation(
   id: string,
   priorPayload: unknown,
   entry: CompletionAttestation,
+  physicalRow: WorkItemPhysicalRow,
 ): Promise<void> {
   const existing = (priorPayload as Record<string, unknown> | null)?.[COMPLETION_ATTESTATIONS_KEY];
   const prior = Array.isArray(existing) ? existing : [];
@@ -3270,7 +3549,8 @@ async function appendCompletionAttestation(
        SET payload = COALESCE(payload, '{}'::jsonb) || ${merged}::text::jsonb,
            updated_ts = ${Date.now()}
      WHERE feature_id = ${id}
-       AND workspace_id IN (${issuesScopeWorkspace()}, ${activeWorkspaceId()})`;
+       AND workspace_id = ${physicalRow.workspaceId}
+       AND harness_slug = ${physicalRow.harnessSlug}`;
 }
 
 /**
@@ -3357,6 +3637,7 @@ export async function attachCompletionEvidenceToSettledItem(
   // The caller decides WHEN this applies; this is the backstop that keeps a non-terminal
   // row from being stamped with a terminal record by a path that writes no state.
   if (!isSettledWorkItemState(wi.state)) return { outcome: 'not-terminal', workItem: wi };
+  const physicalRow = await resolveWorkItemPhysicalRow(wi, opts.harness);
 
   const evidencePayloadJson = terminalPayloadMergeJson(opts.completionEvidence, opts.assumptions);
   // Nothing to record ⇒ nothing to write. Without this, a bare call would reassign
@@ -3387,8 +3668,9 @@ export async function attachCompletionEvidenceToSettledItem(
                             ELSE COALESCE(payload, '{}'::jsonb) || ${evidencePayloadJson}::text::jsonb
                        END,
              updated_ts = ${Date.now()}
-       WHERE feature_id = ${id}
-         AND workspace_id IN (${issuesScopeWorkspace()}, ${activeWorkspaceId()})`;
+       WHERE workspace_id = ${physicalRow.workspaceId}
+         AND harness_slug = ${physicalRow.harnessSlug}
+         AND feature_id = ${id}`;
     return (await getWorkItem(id, opts.harness)) ?? wi;
   };
 
@@ -3414,7 +3696,7 @@ export async function attachCompletionEvidenceToSettledItem(
   // same tolerance as the state-write reshape. The order is what matters: if the install
   // failed after a successful archive the loser is merely stored twice, whereas installing
   // first and failing to archive would destroy the record this function exists to keep.
-  await appendCompletionAttestation(id, wi.payload, attestation).catch(() => {});
+  await appendCompletionAttestation(id, wi.payload, attestation, physicalRow).catch(() => {});
   if (!upgrade) {
     opts.onTerminalConflict?.({
       outcome: 'attested',
@@ -3483,13 +3765,20 @@ export async function attachCompletionEvidenceToSettledItem(
  * Returns true iff a row was actually healed (false: not remote, not this caller's row, or
  * the id doesn't resolve to an issue-family row in the base table).
  */
-export async function selfHealAuthorOriginIfStranded(id: string, callerOwnerId: string): Promise<boolean> {
-  if (!id || !callerOwnerId) return false;
+export async function selfHealAuthorOriginIfStranded(
+  id: string,
+  callerOwnerId: string,
+  /** WI-10006010: only this resolved physical row may be healed. */
+  physicalRow: { workspaceId: string; harnessSlug: string },
+): Promise<boolean> {
+  if (!id || !callerOwnerId || !physicalRow.workspaceId || !physicalRow.harnessSlug) return false;
   const { sql } = getOrgPg();
   const rows = await sql<{ feature_id: string }[]>`
     UPDATE harness_shared.work_items
        SET origin = 'local'
-     WHERE feature_id = ${id}
+     WHERE workspace_id = ${physicalRow.workspaceId}
+       AND harness_slug = ${physicalRow.harnessSlug}
+       AND feature_id = ${id}
        AND origin = 'remote'
        AND payload #>> '{_ei,created_by}' = ${callerOwnerId}
     RETURNING feature_id`;
@@ -3534,6 +3823,8 @@ export async function setWorkItemState(
     /** Trusted DBOS program-root close. The immutable receipt and admission
      * epoch are checked again in the terminal UPDATE; never exposed as a tool arg. */
     acceptedProgramAttempt?: import('./blueprint/operation-worker-binding').AcceptedProgramRootAttempt;
+    /** Trusted non-CLI host adapter. Never a public tool argument. */
+    externalRuntimeAttempt?: import('./blueprint/operation-worker-binding').ExternalRuntimeCompletionAttempt;
     /**
      * P-008 (d) / D-050 / D-079 — the RESOLVED assumption declaration this close
      * rests on, stored under {@link TERMINAL_ASSUMPTIONS_KEY}.
@@ -3596,6 +3887,27 @@ export async function setWorkItemState(
     ? await getFeatureWorkItemOnly(id, opts.harness)
     : await getWorkItem(id, opts.harness);
   if (!wi) return null;
+  const runtimePayload = wi.payload && typeof wi.payload === 'object' && !Array.isArray(wi.payload)
+    ? wi.payload as Record<string, unknown> : {};
+  const hasExternalRuntimeProducer = Object.prototype.hasOwnProperty.call(runtimePayload, 'externalRuntimeProducer');
+  let externalRuntimeCompletion: import('./blueprint/operation-worker-binding').VerifiedExternalRuntimeCompletion | undefined;
+  if (opts.externalRuntimeAttempt || (hasExternalRuntimeProducer && isSettledWorkItemState(state))) {
+    if (!opts.externalRuntimeAttempt || opts.skipCompletionGate || opts.force || opts.acceptedProgramAttempt ||
+        opts.completionAuthority !== undefined || !isSettledWorkItemState(state)) {
+      throw new Error('external runtime producer requires a governed attributed terminal attempt');
+    }
+    const { verifyExternalRuntimeCompletionAttempt } = await import('./blueprint/operation-worker-binding');
+    externalRuntimeCompletion = await verifyExternalRuntimeCompletionAttempt({
+      attempt: opts.externalRuntimeAttempt, workspaceId: activeWorkspaceId(), by: opts.by ?? '', item: wi,
+    });
+    if (derivedTerminalCompletionAuthority({ isTerminal: true, by: opts.by,
+      evidence: opts.completionEvidence }) === null) {
+      throw new Error('external runtime producer cannot use a legacy or system completion identity');
+    }
+    opts = { ...opts, completionEvidence: { ...opts.completionEvidence,
+      externalRuntimeVerification: { binding: externalRuntimeCompletion.binding,
+        transcript: externalRuntimeCompletion.transcript } } };
+  }
   // The feature writer below uses this same receipt inside its UPDATE. Check
   // before any completion attestation or other pre-write side effect as well.
   // Trusted recovery paths with skipCompletionGate keep their existing reaper
@@ -3653,12 +3965,15 @@ export async function setWorkItemState(
       opts.outputPayload === undefined ? priorOutput : opts.outputPayload,
     );
   }
-  if (state === 'needs-human' && !readStructuredOwnerAsk(wi.payload)) {
+  // D-029: the ONE needs-human precondition every writer applies — a structured owner ask that is
+  // also answerable (defaultIfUnanswered says what happens if the owner never replies).
+  if (state === 'needs-human' && !hasActiveStrictHumanAsk(wi.payload)) {
     throw new Error(
-      `work_item '${id}' → 'needs-human' rejected — the item carries no structured owner ask. ` +
+      `work_item '${id}' → 'needs-human' rejected — the item carries no answerable owner ask. ` +
         `Record the ask first with work_items:set_blocker { id: '${id}', kind: 'human', ` +
-        `capability: 'credential' | 'physical-device' | 'external-service-action', ref, summary, nextVerb }. ` +
-        `That typed blocker records the question, asker/time, responsible owner capability, and what unblocks the item.`,
+        `capability: 'credential' | 'physical-device' | 'external-service-action', ref, summary, nextVerb, ` +
+        `defaultIfUnanswered }. That typed blocker records the question, asker/time, responsible owner ` +
+        `capability, what unblocks the item, and what happens if the owner never answers.`,
     );
   }
   if (state === 'needs-human') {
@@ -3801,7 +4116,12 @@ export async function setWorkItemState(
     // Best-effort, and deliberately so on the ATTESTED path: failing to file the second
     // record must not turn a harmless duplicate close into a hard error for the caller. The
     // authoritative record is untouched either way, which is the property that matters.
-    await appendCompletionAttestation(id, wi.payload, attestation).catch(() => {});
+    await appendCompletionAttestation(
+      id,
+      wi.payload,
+      attestation,
+      await resolveWorkItemPhysicalRow(wi, opts.harness),
+    ).catch(() => {});
     if (!upgrade) {
       opts.onTerminalConflict?.({
         outcome: 'attested',
@@ -3863,7 +4183,7 @@ export async function setWorkItemState(
     // leader force-clear. Enforcing here (not only in the sweep) means the guard still holds
     // when the sweep is wedged or has not ticked — which is exactly the failure this fixes.
     // Only reached on the rare refusal path, so the extra round-trip costs nothing hot.
-    !(await isStaleHoldOpenAndCleared(id, heldOpen, wi.harness ?? undefined))
+    !(await isStaleHoldOpenAndCleared(id, heldOpen, wi.harness ?? undefined, wi.origin))
   ) {
     // WI-4530: name the REAL verbs. This message used to say "or { force: true }", which is
     // true for work_items:set_state but NOT for work_items:complete (it has no `force` arg) —
@@ -3918,7 +4238,22 @@ export async function setWorkItemState(
   if (!opts.force && (isUnblockingTransition || isCompletingTransition)) {
     const { planItemLaneBlockReason } = await import('./scheduler/plan-item-lane-guard');
     const block = await planItemLaneBlockReason(wi).catch(() => null);
-    if (block && block.effectiveStatus !== 'done' && block.effectiveStatus !== 'dropped') {
+    // The plan item can be blocked solely because its latest note mirrors this
+    // work-item's own external blocker. Clearing that blocker transitions the
+    // work-item before the post-transition plan reflection runs, so refusing here
+    // would make the two safe writes circular. Open that one edge only when the
+    // guard proves the plan-side block is attributed to this same item and no
+    // active typed external blocker remains on the work-item.
+    const attributedBlockCanClear =
+      block?.effectiveStatus === 'blocked' &&
+      block.blockAttributedToWorkItemId === id &&
+      activeExternalBlockers(wi.payload).length === 0;
+    if (
+      block &&
+      block.effectiveStatus !== 'done' &&
+      block.effectiveStatus !== 'dropped' &&
+      !attributedBlockCanClear
+    ) {
       const verb = isUnblockingTransition ? 'unblocking' : 'completing';
       const stateDesc = isUnblockingTransition ? `is blocked, and its` : `is not settled, and its`;
       throw new Error(
@@ -3965,6 +4300,17 @@ export async function setWorkItemState(
   // must continue to report the truthful, unclaimed terminal state.
   const priorAssignee = wi.assignee;
   if (wi.family === 'issue') {
+    // WI-10006010: pin the ONE physical row (workspace_id, harness_slug, feature_id) this write
+    // may touch — the same row `wi` was read from — and scope every origin heal AND the state
+    // write to it. Keyed on feature_id alone, closing one slug twin rewrote all of them.
+    const issueWorkspaceId = await resolveIssueWorkspace(id);
+    const issueSlug = await resolveIssuePhysicalSlug(
+      getOrgPg().sql,
+      issueWorkspaceId,
+      id,
+      opts.harness,
+    );
+    if (issueSlug === null) return null;
     // EI-19313515375179600 (WI-6822 follow-up): `origin` can flip local→remote well after
     // creation (an unresolved federation/replay-provenance defect, still under investigation —
     // see the work-item's own body). Trusting `origin` ALONE here strands the true author: they
@@ -3982,7 +4328,10 @@ export async function setWorkItemState(
     // never a row genuinely owned by a different peer) — this un-blocks the trigger for the
     // write that follows.
     if (wi.origin === 'remote' && opts.by && wi.createdBy && opts.by === wi.createdBy) {
-      const healed = await selfHealAuthorOriginIfStranded(id, opts.by);
+      const healed = await selfHealAuthorOriginIfStranded(id, opts.by, {
+        workspaceId: issueWorkspaceId,
+        harnessSlug: issueSlug,
+      });
       if (healed) wi.origin = 'local';
     }
     // EI-22189521072988065: a THIRD stranding, sibling to the two below — the caller
@@ -3998,6 +4347,7 @@ export async function setWorkItemState(
         origin: wi.origin,
         wasAlreadySettled: isSettledWorkItemState(wi.state),
         terminalOwner: wi.terminalOwner,
+        harnessSlug: issueSlug,
       });
       if (healed) wi.origin = 'local';
     }
@@ -4013,8 +4363,17 @@ export async function setWorkItemState(
       const orphan = await healOrphanedRemoteOriginIfAuthorEnded(id, {
         isCompletingTransition,
         by: opts.by ?? null,
+        harnessSlug: issueSlug,
       });
       if (orphan.healed) wi.origin = 'local';
+    }
+    // WI-10003565: the row's author key is one THIS workspace has written locally, so this
+    // node IS the authoring peer the refusal below would send the caller to — the same own-node
+    // rule the claim gate applies (issueOwnAuthorWhereSql). Without this a system-filed row
+    // (createdBy="system:*", matching none of the caller-identity hatches above) whose origin
+    // flipped could be claimed but never closed. The UPDATE's WHERE clause is the identity check.
+    if (wi.origin === 'remote' && (await selfHealOwnNodeOriginIfStranded(issueWorkspaceId, id, issueSlug))) {
+      wi.origin = 'local';
     }
     if (wi.origin === 'remote') {
       throw new Error(
@@ -4027,6 +4386,7 @@ export async function setWorkItemState(
       completionEvidence: opts.completionEvidence,
       blueprintResult,
       acceptedProgramAttempt: opts.acceptedProgramAttempt,
+      externalRuntimeCompletion,
       // P-008 (d): forwarded, or the issue family would silently drop every
       // assumption declaration while the feature family persisted it — a
       // half-verification across FAMILIES, the same defect D-050 forbids across
@@ -4041,6 +4401,7 @@ export async function setWorkItemState(
       // second time; direct setIssueState callers omit the bit and stay guarded.
       secondTerminalCloseHandledByUnified: isSecondTerminalClose,
       terminalReason: requestedTerminalReason,
+      harnessSlug: issueSlug,
     });
     result = updated ? issueToWorkItem(updated) : null;
   } else {
@@ -4197,6 +4558,11 @@ export async function setWorkItemState(
                                  )
                        END
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
+         AND ${externalRuntimeCompletion
+           ? (await import('./blueprint/operation-worker-binding')).externalRuntimeCompletionEffectWhereSql(tx, externalRuntimeCompletion, {
+               payload: 'payload', id: 'feature_id', harness: 'harness_slug', holder: 'taken_by',
+               status: 'status', updated: 'updated_ts',
+             }) : tx`TRUE`}
          AND ${opts.acceptedProgramAttempt && operationClaims
            ? operationClaims.programRootEffectWhereSql(tx, opts.acceptedProgramAttempt, {
                payload: 'payload', id: 'feature_id', harness: 'harness_slug',
@@ -4507,6 +4873,8 @@ export interface LifecycleAliasInfo {
   aliased: boolean;
   /** Exactly what the caller passed, before any normalization. */
   requestedState: string;
+  /** The requested state after the item's family-specific normalization. */
+  expectedState: string;
   /** The state actually persisted (workItem.state read back after the write), or null
    *  when the item was not found (setWorkItemState returned null — a separate failure
    *  mode from aliasing, surfaced by the caller's own `ok:false` path). */
@@ -4531,9 +4899,9 @@ export interface LifecycleAliasInfo {
  *   - needs-human → the stored status itself excludes the row; strict owner capabilities also
  *     carry `payload.needsOwnerAction:true` ({@link needsOwnerActionExclusionSql}) and report as
  *     fully DRAINED in {@link diagnoseClaimNextMiss}.
- *   - blocked → the WI-2797 self-select claim hold ({@link claimHoldExclusionSql} /
- *     {@link setWorkItemClaimHold}), which also carries the `release{claimHold:false}` un-park
- *     affordance. Reports as pending-BUT-gated (drained:false).
+ *   - blocked → stored status and the canonical live blocker floors exclude the row.
+ *     Do not duplicate those floors with a generic claim-hold lease. Historical blocked
+ *     leases are still removed on reopening without disturbing deliberate durable parks.
  * Applied by APPLIED state (not the old alias-to-'open' event, which no longer fires). Still
  * directly claimable BY ID. Best-effort — never fails/blocks the primary lifecycle write.
  */
@@ -4562,19 +4930,30 @@ export async function setWorkItemStateWithAliasInfo(
   // setWorkItemState is already post-transition, so it cannot tell us whether the
   // blocked auto-gate lease was the state that this call just left.
   const priorWorkItem = await getWorkItem(id, opts.harness);
+  const normalizedRequest = priorWorkItem
+    ? normalizeWorkItemState(priorWorkItem.family, requestedState)
+    : null;
+  const expectedState = normalizedRequest?.ok ? normalizedRequest.state : requestedState;
   let stateToApply = requestedState;
   if (requestedLower === 'needs-human') {
     const current = priorWorkItem;
     if (current?.family === 'issue') {
       const review = readAgentReviewState(current.payload);
-      if (current.origin === 'remote' || review?.status === 'pending' || review?.status === 'revision-requested') {
+      // WI-10006515: `origin` records how a row ARRIVED, not who wrote it. An own-node row
+      // stranded at origin='remote' is ours; the canonical writer below heals it, so it must
+      // not be short-circuited here as "remote-owned".
+      const remoteOwned =
+        current.origin === 'remote' &&
+        !(await isOwnNodeAuthoredRemoteRow(await resolveIssueWorkspace(id), id));
+      if (remoteOwned || review?.status === 'pending' || review?.status === 'revision-requested') {
         return {
           workItem: current,
           aliased: current.state !== requestedState,
           requestedState,
+          expectedState,
           appliedState: current.state,
           aliasNote:
-            current.origin === 'remote'
+            remoteOwned
               ? "requested state 'needs-human' was ignored because this item is remote-owned and must reconcile on its authoring peer."
               : "requested state 'needs-human' was ignored because this item is already in agent review.",
         };
@@ -4603,7 +4982,10 @@ export async function setWorkItemStateWithAliasInfo(
   if (workItem && workItem.family === 'issue') {
     try {
       if (appliedLower === 'needs-human') {
-        await mergeIssuePayload(id, { needsOwnerAction: true }, { unset: ['needsHuman'] });
+        await mergeIssuePayload(id, { needsOwnerAction: true }, {
+          unset: ['needsHuman'],
+          harnessSlug: opts.harness ?? workItem.harness,
+        });
         autoGateNote =
           " Its stored status='needs-human' is reserved for a strict typed owner capability; payload.needsOwnerAction is the admission floor and legacy payload.needsHuman was removed.";
         // WI-5689: mergeIssuePayload durably persists payload.needsHuman, but the
@@ -4614,12 +4996,6 @@ export async function setWorkItemStateWithAliasInfo(
         // caller's response reflects what was actually persisted.
         const refreshed = await getWorkItem(id, opts.harness);
         if (refreshed) workItem = refreshed;
-      } else if (appliedLower === 'blocked') {
-        const held = await setWorkItemClaimHold(id, true, { harness: opts.harness, by: opts.by, reason: 'blocked' });
-        if (held?.applicable) {
-          autoGateNote =
-            ' It has been auto-parked (claim hold) out of claim_next/scheduler:get_next self-selection until released — see work_items:release{claimHold:false}.';
-        }
       } else if (
         // The blocked auto-gate is a temporary lease, not a durable park. Once the
         // applied state leaves blocked, remove only that lease so an intentional
@@ -4640,14 +5016,10 @@ export async function setWorkItemStateWithAliasInfo(
     } catch {
       /* best-effort — never fail the primary lifecycle write over the auto-gate */
     }
-  } else if (workItem && appliedLower === 'blocked') {
-    // EI-19397599078921465: a FEATURE-family item moving to `blocked` recorded NOTHING — no audit
-    // row, no payload provenance — so 59 of them sat blocked with no trace of who moved them or
-    // when. This is chained as `else if` off the issue branch DELIBERATELY: an issue's blocked
-    // transition already audits via the auto-park above (`work_items:claim_hold:set`
-    // reason='blocked'), and double-writing would make ONE transition read as TWO in the unified
-    // history — worse than the gap it closes. Fire-and-forget, exactly like that auto-park's own
-    // audit write; a lifecycle write must never fail over its own bookkeeping.
+  }
+  if (workItem && appliedLower === 'blocked' && priorWorkItem?.state !== 'blocked') {
+    // P-004: all families retain transition history without creating a second hold.
+    // Reasserting blocked is not another transition and must not double-count it.
     const { sql } = getOrgPg();
     void recordWorkItemBlockedAudit(sql, id, {
       to: appliedState ?? 'blocked',
@@ -4670,6 +5042,7 @@ export async function setWorkItemStateWithAliasInfo(
     workItem,
     aliased: effectiveAliased,
     requestedState,
+    expectedState: onAliasInfo?.resolved ?? expectedState,
     appliedState,
     ...(note ? { aliasNote: note } : {}),
   };
@@ -5080,7 +5453,7 @@ export async function mergeWorkItemOutputPayload(
     const wi = await getWorkItem(id, opts.harness);
     if (!wi) return;
     if (wi.family === 'issue') {
-      await mergeIssuePayload(id, { out: outputPayload });
+      await mergeIssuePayload(id, { out: outputPayload }, { harnessSlug: opts.harness ?? wi.harness });
       return;
     }
     const { sql } = getOrgPg();
@@ -5112,11 +5485,22 @@ export async function mergeWorkItemOutputPayload(
  * strictly worse than the wrong stamp it meant to remove. (EI-20578964155166663)
  *
  * Unset is applied AFTER the merge in the same statement, so a key named in both
- * ends up removed, and merge+unset stay atomic (no read-modify-write race). */
+ * ends up removed, and merge+unset stay atomic (no read-modify-write race).
+ *
+ * A history computed from a prior read must supply `expectedExternalBlockers`.
+ * The SQL compares the RAW JSON (including unknown legacy fields); a mismatch
+ * returns null without writing any patch/unset key. Missing history is an empty
+ * array. `requireNonTerminal` fences adding a blocker against a concurrent close,
+ * while clear/migration callers can still retain history on terminal items. */
 export async function mergeWorkItemPayload(
   id: string,
   patchValue: Record<string, unknown>,
-  opts: { harness?: string; unset?: readonly string[] } = {},
+  opts: {
+    harness?: string;
+    unset?: readonly string[];
+    expectedExternalBlockers?: unknown;
+    requireNonTerminal?: boolean;
+  } = {},
 ): Promise<WorkItem | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
@@ -5124,7 +5508,10 @@ export async function mergeWorkItemPayload(
   const clearingPlanItem = unset.includes('plan_item');
   const settingPlanItem = clearingPlanItem ? null : planItemSourceFromPayloadPatch(patchValue);
   if (wi.family === 'issue') {
-    await mergeIssuePayload(id, patchValue, { unset });
+    const updated = await mergeIssuePayload(id, patchValue, {
+      ...opts, unset, harnessSlug: opts.harness ?? wi.harness,
+    });
+    if (!updated) return null;
   } else {
     const featureHarness = wi.harness?.trim();
     if (!featureHarness) {
@@ -5133,6 +5520,9 @@ export async function mergeWorkItemPayload(
     const { sql } = getOrgPg();
     const patch = JSON.stringify(patchValue);
     const workspaceId = activeWorkspaceId();
+    const fenceBlockers = Object.hasOwn(opts, 'expectedExternalBlockers');
+    const expectedBlockers = JSON.stringify(opts.expectedExternalBlockers === undefined ? [] : opts.expectedExternalBlockers);
+    let wrote = false;
     const updatePayload = (db: OrgSql) => db<{ ok: number }[]>`
       UPDATE harness_shared.harness_features_consolidated
          SET payload = (COALESCE(payload, '{}'::jsonb) || ${patch}::text::jsonb) - ${unset}::text[],
@@ -5154,6 +5544,8 @@ export async function mergeWorkItemPayload(
        WHERE workspace_id = ${workspaceId}
          AND harness_slug = ${featureHarness}
          AND feature_id = ${id}
+         AND (${!fenceBlockers} OR COALESCE(payload->'externalBlockers', '[]'::jsonb) = ${expectedBlockers}::text::jsonb)
+         AND (${!opts.requireNonTerminal} OR NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])))
       RETURNING 1 AS ok`;
 
     if (clearingPlanItem) {
@@ -5183,6 +5575,7 @@ export async function mergeWorkItemPayload(
 
         const updated = await updatePayload(tx);
         if (!updated[0]) return;
+        wrote = true;
 
         const refs = new Set<string>();
         const before = prior[0];
@@ -5206,8 +5599,9 @@ export async function mergeWorkItemPayload(
         }
       });
     } else {
-      await updatePayload(sql as OrgSql);
+      wrote = (await updatePayload(sql as OrgSql)).length > 0;
     }
+    if (!wrote) return null;
   }
   return getWorkItem(id, opts.harness);
 }
@@ -5236,7 +5630,13 @@ export async function rebindOrphanedPlanFleetReservation(input: {
   const fleetSlug = input.fleetSlug.trim();
   if (!fleetSlug) throw new Error('rebindOrphanedPlanFleetReservation: empty fleetSlug');
   const { sql } = getOrgPg();
-  const rows = await sql<{ feature_id: string }[]>`
+  const rows = await boundedOrgTxn(async (tx) => {
+    const sql = tx;
+    const selection = goalPlanClaimFragments(sql, await lockGoalPlanClaimSelections(sql, input.workspaceId), {
+      harness: 'feature.harness_slug', goal: 'feature.goal_id', payload: 'feature.payload',
+      sourcePlan: 'feature.source_plan_slug',
+    });
+    return sql<{ feature_id: string }[]>`
     UPDATE harness_shared.harness_features_consolidated AS feature
        SET payload = jsonb_set(
              COALESCE(feature.payload, '{}'::jsonb),
@@ -5246,6 +5646,7 @@ export async function rebindOrphanedPlanFleetReservation(input: {
            ),
            updated_ts = ${Date.now()}
      WHERE feature.workspace_id = ${input.workspaceId}
+       AND ${selection.where}
        AND feature.harness_slug = ${input.harness}
        AND feature.feature_id = ${input.id}
        AND (CASE WHEN feature.status = 'todo' THEN 'open' ELSE feature.status END) = 'open'
@@ -5260,6 +5661,7 @@ export async function rebindOrphanedPlanFleetReservation(input: {
             AND registered.fleet_slug = feature.payload ->> 'fleet_slug'
        )
     RETURNING feature.feature_id`;
+  }, { client: sql });
   return rows.length > 0;
 }
 
@@ -5275,6 +5677,8 @@ export async function claimWorkItem(
   assignee: string,
   opts: {
     harness?: string;
+    /** Authenticated assigning actor, supplied by a dispatch after admission checks. */
+    assignedBy?: string;
     /**
      * EI-20731607691070897 — ATOMIC SELF-HELD TRANSFER. The compare-and-claim below
      * only matches an UNHELD row, so a holder handing their own item to a named peer
@@ -5310,6 +5714,11 @@ export async function claimWorkItem(
     legacyFleetScopeDowngradeAdmission?: LegacyFleetScopeDowngradeAdmission;
     /** Agent-review-only exception for the exact pending review snapshot being picked up. */
     agentReviewAdmission?: AgentReviewClaimAdmission;
+    /**
+     * BQL D-008 revision adoption: exception to the issue intake floor for one exact content
+     * revision. Feature-family rows have no intake floor, so the feature branch ignores it.
+     */
+    revisionAdoptionAdmission?: AgentReviewRevisionAdoptionAdmission;
   } = {},
 ): Promise<WorkItem | null> {
   // EI-23701433507513915: the WRITE backstop — a truncated su- owner id is never persisted as
@@ -5346,11 +5755,23 @@ export async function claimWorkItem(
   const issueWs = resolveIssuesScopeWorkspace();
   const issue = await getIssueInWorkspace(issueWs, id);
   let claimed: WorkItem | null;
+  let claimWorkspaceId = issueWs;
   let prior: WorkItem | null = null;
   if (issue) {
     prior = issueToWorkItem(issue);
+    // P-007 / D-021: a verification task (payload.verification) is never claimable by
+    // its own reporter or implementer. This is the by-id writer every assign path
+    // funnels through, so the refusal holds for claim, assign and dispatch alike.
+    if (verificationTaskConflict(prior.payload, assignee)) return null;
     const agentReviewAdmission = matchesAgentReviewClaimAdmission(opts.agentReviewAdmission, prior, assignee)
       ? opts.agentReviewAdmission
+      : null;
+    const revisionAdoptionAdmission = matchesAgentReviewRevisionAdoptionAdmission(
+      opts.revisionAdoptionAdmission,
+      prior,
+      assignee,
+    )
+      ? opts.revisionAdoptionAdmission
       : null;
     // EI-217141: thread only the server-derived current-leader dispatch
     // capability into the issue mutation. Feature-family rows have no
@@ -5381,6 +5802,7 @@ export async function claimWorkItem(
         : null;
     const updated = await claimIssue(id, assignee, {
       workspaceId: issueWs,
+      ...(opts.assignedBy ? { assignedBy: opts.assignedBy } : {}),
       fromHolder: opts.fromHolder,
       expectedAssignee: opts.expectedAssignee,
       forceTakeoverAdmission: opts.forceTakeoverAdmission,
@@ -5390,12 +5812,14 @@ export async function claimWorkItem(
         ? { legacyFleetScopeDowngradeAdmission: opts.legacyFleetScopeDowngradeAdmission }
         : {}),
       ...(agentReviewAdmission ? { agentReviewAdmission } : {}),
+      ...(revisionAdoptionAdmission ? { revisionAdoptionAdmission } : {}),
     });
     claimed = updated ? issueToWorkItem(updated) : null;
   } else {
     const wi = await getFeatureWorkItemOnly(id, opts.harness);
     if (!wi) return null;
     prior = wi;
+    if (verificationTaskConflict(prior.payload, assignee)) return null;
     const operationClaims = await import('./blueprint/operation-worker-binding');
     const operationClaimRead = await operationClaims.readActiveOperationWorkerClaimBinding(activeWorkspaceId(), assignee);
     if (!operationClaims.matchOperationWorkerClaim(operationClaimRead, wi).allowed) return null;
@@ -5407,6 +5831,7 @@ export async function claimWorkItem(
     // ws scopes the P-010 trust subquery in autoPickableWhereSql (D-004 — explicit,
     // never RLS-reliant). The UPDATE itself keys on (harness_slug, feature_id) (the PK).
     const ws = activeWorkspaceId();
+    claimWorkspaceId = ws;
     const admissionFloor = agentReviewAdmission
       ? sql`(
           ${admittedWhereSql(sql)}
@@ -5416,7 +5841,13 @@ export async function claimWorkItem(
           })}
         )`
       : admittedWhereSql(sql);
-    const rows = await withPgContentionRetry(() => sql<FeatureRowDb[]>`
+    const rows = await withPgContentionRetry(() => boundedOrgTxn(async (tx) => {
+      const sql = tx as OrgSql;
+      const selection = goalPlanClaimFragments(sql, await lockGoalPlanClaimSelections(sql, ws, assignee), {
+        harness: 'target.harness_slug', goal: 'target.goal_id', payload: 'target.payload',
+        sourcePlan: 'target.source_plan_slug', holder: 'target.taken_by',
+      }, assignee);
+      return sql<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated AS target
          SET payload = CASE
                WHEN target.taken_by = ${assignee}
@@ -5444,6 +5875,7 @@ export async function claimWorkItem(
                THEN last_progress_at ELSE NULL END,
              updated_ts = ${Date.now()}
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
+         AND ${selection.where}
          AND ${operationClaims.operationWorkerClaimWhereSql(sql, operationClaimRead, {
            payload: 'target.payload', id: 'target.feature_id', harness: 'target.harness_slug',
          })}
@@ -5470,6 +5902,10 @@ export async function claimWorkItem(
          -- can't bypass the auditor either — remote, un-admitted stays unclaimable
          -- (unless its verified author is trusted — P-010 trust leg, ws-scoped).
          AND ${autoPickableWhereSql(sql, ws)}
+         -- P-009 / D-022 pt 4 / D-024: a named claim cannot take a row that is not agent
+         -- work at all (a record, document or event, or human-audience work such as
+         -- email-draft-proposal). Category half only: readiness floors stay off this path.
+         AND ${agentWorkCategoryWhereSql(sql, 'target')}
          -- P-002 born-pending: duplicate screening is a second, orthogonal gate.
          AND ${(() => {
            const forceAdmission =
@@ -5487,7 +5923,8 @@ export async function claimWorkItem(
                 )`
              : admissionFloor;
          })()}
-      RETURNING ${sql.unsafe(FEATURE_COLS)}`);
+      RETURNING ${sql.unsafe(FEATURE_COLS)}`;
+    }, { client: sql }));
     claimed = rows[0] ? featureRowToWorkItem(rows[0]) : null;
   }
   // plugin-system-hive-port P-004: a successful claim fires `work-item:claimed:<id>`
@@ -5514,12 +5951,16 @@ export async function claimWorkItem(
           paths: readWorkItemPaths(prior?.payload),
           goalRef: won.id,
         });
+        observeFallback('work-item-lock-reclaim', { eligible: 1, applied: lockRelease.failures === 0 ? 1 : 0,
+          reason: lockRelease.failures === 0 ? 'applied' : 'targeted-release-failed', scope: 'claim-transfer' }, { workspaceId: claimWorkspaceId });
         if (lockRelease.failures > 0) {
           console.warn(
             `[claim] ${won.id}: targeted lock release had ${lockRelease.failures} failure(s); transfer continues with lock TTL fallback`,
           );
         }
       } catch (error) {
+        observeFallback('work-item-lock-reclaim', { eligible: 1, applied: 0,
+          reason: 'cleanup-unavailable', scope: 'claim-transfer' }, { workspaceId: claimWorkspaceId });
         console.warn(
           `[claim] ${won.id}: targeted lock cleanup unavailable; transfer continues with lock TTL fallback (${error instanceof Error ? error.message : String(error)})`,
         );
@@ -5600,6 +6041,31 @@ export type ClaimFailure =
   | { reason: 'not_found'; holder: null }
   | { reason: 'conflict'; holder: string }
   | { reason: 'gated'; holder: null };
+
+/**
+ * P-009 / D-024 — explain a by-id claim refused by the CATEGORY half of the work predicate.
+ * Returns the row's nature/audience when the resolved row exists and is NOT agent work
+ * by category (nature 'work' AND audience 'agent'); null when it is agent work or absent.
+ * The test is the same SQL function the claim UPDATE applies (agentWorkCategoryWhereSql), so
+ * the explanation cannot disagree with the refusal. Read-only and diagnostic: it never
+ * changes a claim verdict, it only names one.
+ */
+export async function readNonAgentWorkCategory(
+  id: string,
+  harness: string | null,
+  workspaceId: string = activeWorkspaceId(),
+): Promise<{ nature: string; audience: string | null } | null> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ nature: string; audience: string | null }[]>`
+    SELECT nature, audience FROM harness_shared.work_items
+     WHERE workspace_id = ${workspaceId} AND feature_id = ${id}
+       AND ${harness === null
+         ? sql`(harness_slug = '' OR harness_slug LIKE 'operator:%')`
+         : sql`harness_slug = ${harness}`}
+       AND NOT ${agentWorkCategoryWhereSql(sql, null)}
+     LIMIT 1`;
+  return rows[0] ?? null;
+}
 
 export function classifyClaimFailure(current: { assignee?: string | null } | null, claimer: string): ClaimFailure {
   if (!current) return { reason: 'not_found', holder: null };
@@ -5721,6 +6187,22 @@ export function releaseCooldownSec(): number {
   return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 300;
 }
 
+/** WI-6554700010008444 — release DAMPING: how many DISTINCT agents may release one item with
+ *  no new evidence before self-selection stops offering it to the next one. Env-overridable;
+ *  0 disables the leg. Governing parameters: bug-queue-legitimacy-and-actionable-validation-
+ *  2026-10-10#D-020. */
+export function releaseDampingReleasers(): number {
+  const v = Number(process.env.PAPERCUSP_RELEASE_DAMPING_RELEASERS ?? 3);
+  return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 3;
+}
+
+/** WI-6554700010008444 — release DAMPING window (seconds): only releases this recent count, so
+ *  a damped item is re-offered once its releases age out. Env-overridable; 0 disables. */
+export function releaseDampingWindowSec(): number {
+  const v = Number(process.env.PAPERCUSP_RELEASE_DAMPING_WINDOW_SEC ?? 14400);
+  return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 14400;
+}
+
 /** WI-5939 — FILING-GRACE window (seconds): how long a newly-filed issue-family row is held
  *  back from EVERY agent EXCEPT its filer. Env-overridable; 0 disables the leg entirely.
  *
@@ -5751,8 +6233,19 @@ export function filingGraceSec(): number {
  * migration 759's function or the `work_items_claimable` view: that view answers "claimable by
  * SOMEONE", and a claimant-relative floor there would be wrong for every reader.
  *
+ *   (c) RELEASE DAMPING (WI-6554700010008444, BQL#D-012/#D-020) — the ONE item-level leg:
+ *       when `dampingReleasers` DISTINCT agents released the row within `dampingWindowSec`
+ *       and after its last new evidence (`payload.evidenceAdvancedAt`, stamped by capture-core
+ *       when a tool-failure row gains a reporter it never had), self-selection stops handing it
+ *       to the next member. Measured churn it stops: ~16 members took and released one row in
+ *       31 minutes, each finding nothing new. It counts the per-agent release sidecar (one row
+ *       per agent, so count = distinct releasers). Bounded twice: new evidence re-admits at
+ *       once, and the window ages the releases out. By-id claims never read this fragment.
+ *
  * FAIL-OPEN in every unknown: no assignee, no filer recorded, or no `created_ts` all ADMIT the
- * row. The failure mode being avoided is a permanently unclaimable item nobody can diagnose.
+ * row; an absent or unparsable `evidenceAdvancedAt` counts every in-window release (the epoch
+ * is -infinity), never throws. The failure mode being avoided is a permanently unclaimable
+ * item nobody can diagnose.
  * The filer's id lives at `payload->'_ei'->>'created_by'` — the base table has no `created_by`
  * column at all; the `engineer_issues` VIEW derives it from that same `_ei` fold (mig 374).
  */
@@ -5761,6 +6254,8 @@ export function issueCooldownExclusionSql(
   assignee: string | undefined,
   cooldownSec: number = releaseCooldownSec(),
   graceSec: number = filingGraceSec(),
+  dampingReleasers: number = releaseDampingReleasers(),
+  dampingWindowSec: number = releaseDampingWindowSec(),
 ) {
   const legacyReleaseLeg =
     assignee && cooldownSec > 0
@@ -5792,7 +6287,22 @@ export function issueCooldownExclusionSql(
              OR wi.created_ts IS NULL
              OR to_timestamp(wi.created_ts / 1000.0) < now() - make_interval(secs => ${graceSec}))`
       : sql`TRUE`;
-  return sql`(${releaseLeg} AND ${filingGraceLeg})`;
+  // (c) Item-level, so it applies with or without an assignee.
+  const dampingLeg =
+    dampingReleasers > 0 && dampingWindowSec > 0
+      ? sql`(SELECT count(*)
+               FROM harness_shared.work_item_release_cooldowns rd
+              WHERE rd.workspace_id = wi.workspace_id
+                AND rd.harness_slug = wi.harness_slug
+                AND rd.feature_id = wi.feature_id
+                AND rd.released_at >= now() - make_interval(secs => ${dampingWindowSec})
+                AND rd.released_at > COALESCE(
+                      CASE WHEN pg_input_is_valid(wi.payload ->> 'evidenceAdvancedAt', 'timestamp with time zone')
+                           THEN (wi.payload ->> 'evidenceAdvancedAt')::timestamptz END,
+                      '-infinity'::timestamptz)
+            ) < ${dampingReleasers}`
+      : sql`TRUE`;
+  return sql`(${releaseLeg} AND ${filingGraceLeg} AND ${dampingLeg})`;
 }
 
 /**
@@ -5841,7 +6351,7 @@ export function watchdogRecoveryWindowExclusionSql(sql: OrgSql) {
   )`;
 }
 
-export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
+export function featureClaimFloorPredicatesSql(sql: OrgSql, opts: ClaimFloorsOpts) {
   // work-item-status-full-unify (2026-07-19) P-004/P-005: the claimable-floor DEFAULT is the
   // single unified token ['open'] — `open` is the claimable status for BOTH families now
   // (feature `todo`→`open` applied by migration 638; the create-path + reaper write 'open';
@@ -5884,106 +6394,34 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
           )
         )`
       : sql`TRUE`;
-  return sql`
-    harness_slug = ${opts.harness}
-    AND workspace_id = ${opts.workspaceId}
-    -- Release-cooldown floor (mig 485 / EI-6956 + migration 1055): retain the
-    -- legacy single-stamp fallback and AND the keyed per-agent sidecar anti-join.
-    -- Rows released by another agent remain eligible for this caller; a peer can
-    -- no longer overwrite this caller's cooldown in the shared row stamp.
-    AND ${releaseCooldownFloor}
-    -- Built-in placeable kinds + any generic-kind datatype that opted into placement
-    -- (the 'hive-placement' tag — frontierPlacementKindClause). DARK until a datatype opts in.
-    AND ${frontierPlacementKindClause(sql, opts.workspaceId)}
-    -- G2 admission (shared-hive-trust-admission P-002): never self-select a remote,
-    -- un-admitted item — the same gate the feature frontier enforces (P-010 trust leg,
-    -- ws-scoped via the same ws this query filters on).
-    AND ${autoPickableWhereSql(sql, opts.workspaceId)}
-    -- P-002 born-pending: pending items stay out of every feature self-select path.
-    AND ${admittedWhereSql(sql)}
-    -- P-013/D-012 stop-the-line: while this harness's gate-red-streak condition item has
-    -- been open >24h, feature-family self-select on the harness pauses entirely (the
-    -- consolidated view has no condition_key column and placement kinds carry no repair
-    -- lane — repair flows through the issue family's exempt classes). By-id claims and
-    -- other harnesses are unaffected. Same shared fragment as the issue family's
-    -- ok_stop_line, composed for this relation's unaliased context.
-    AND ${stopTheLineExclusionSql(sql, 'feature-consolidated')}
-    AND (taken_by IS NULL OR taken_by = '')
-    AND (CASE WHEN status = 'todo' THEN 'open' ELSE status END) = ANY(${states}::text[])
-    -- P-006 (fleet-deltas-leader-primitives): the claim-hold floor, extended to the
-    -- FEATURE family. The issue-family claim already honors payload._claimHold
-    -- (claimHoldExclusionSql, WI-2797) — but the incident class that motivated
-    -- held_open_by (EI-8993: a leader-held FEATURE like WI-3548 getting claim_next'd
-    -- off the leader the moment its claim lapsed) lived on THIS path, which never
-    -- read the tag. Same COALESCE-for-NULL-safety shape, unaliased (this fragment
-    -- runs in harness_features_consolidated context).
-    AND COALESCE(payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'
-    -- D-003/P-004: work awaiting peer review, or returned to its submitter for revision,
-    -- belongs exclusively to the agent-review lifecycle. Approval re-admits the row.
-    AND ${agentReviewNormalExclusionSql(sql, 'payload')}
-    -- EI-19441925633833456: the HIVE-CANARY floor. A canary (payload.canary=true) is a
-    -- MEASUREMENT INSTRUMENT for "does the autonomous loop carry queued work end-to-end?",
-    -- so an agent self-selecting it and completing it does not answer that question — it
-    -- fabricates a pass. Observed: scheduler:get_next served F-CANARY-20260803 to an su on
-    -- 2026-08-03, and F-CANARY-20260802 was su-completed 58s after creation while the Hive
-    -- was owner-paused and no cup could possibly have run.
-    --
-    -- ⚠ This floor belongs HERE (self-select) and NOWHERE ELSE. Do NOT add it to
-    -- fetchFrontierRows (pot/survey.ts) and do NOT express it via payload._claimHold: that tag is
-    -- honored by BOTH this path and the Mug's placement frontier, so using it would make the
-    -- canary un-placeable and the detector would report a loop failure every day, forever —
-    -- breaking the instrument in the exact way it exists to detect. The requirement is
-    -- deliberately asymmetric: agents NO, cups YES.
-    --
-    -- NULL-safe via COALESCE, and scoped to a key only canary rows carry, so every ordinary
-    -- item passes unchanged. A canary remains claimable by explicit id for maintenance.
-    AND COALESCE(payload, '{}'::jsonb) ->> 'canary' IS DISTINCT FROM 'true'
-    -- WI-5343: the reserved-plan-lane floor, extended to the FEATURE family. The issue-family
-    -- claim has honored a plan-active / live-plan_item_claims-lease reservation since WI-2118 —
-    -- but this path (getNextWorkItem tiers 1/2 + claimNextWorkItem) never read the payload.plan_item
-    -- back-pointer, so a feature-family item promoted onto a live plan lane (e.g. WI-5137, bound to
-    -- an active plan) was self-selectable out from under the lane's own driving agent. Same
-    -- predicate as the issue family (reservedPlanLaneExclusionSql), unaliased (runs in
-    -- harness_features_consolidated context). opts.cooldownAssignee already carries the claiming
-    -- agent's ownerId (see its own doc comment) so it doubles for free as the owner-exemption arg —
-    -- a lease THIS agent itself holds must not block its own re-claim.
-    AND ${reservedPlanLaneExclusionSql(sql, opts.cooldownAssignee ?? '', 'payload', {
+
+  // The claim path and its diagnostics compose the same named predicates.
+  // Caller-relative cooldown/verification and fleet/goal reservations retain
+  // their existing options; this registry never widens eligibility.
+  return {
+    scope: sql`harness_slug = ${opts.harness} AND workspace_id = ${opts.workspaceId}`,
+    releaseCooldown: releaseCooldownFloor,
+    frontierKind: frontierPlacementKindClause(sql, opts.workspaceId),
+    trust: autoPickableWhereSql(sql, opts.workspaceId),
+    admission: admittedWhereSql(sql),
+    stopTheLine: stopTheLineExclusionSql(sql, 'feature-consolidated'),
+    taken: sql`(taken_by IS NULL OR taken_by = '')`,
+    claimState: sql`(CASE WHEN status = 'todo' THEN 'open' ELSE status END) = ANY(${states}::text[])`,
+    claimHold: sql`COALESCE(payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'`,
+    intakeStage: intakeStageClaimFloorSql(sql, 'payload'),
+    // Canary instruments remain excluded only at self-select, not placement.
+    canary: sql`COALESCE(payload, '{}'::jsonb) ->> 'canary' IS DISTINCT FROM 'true'`,
+    reservedPlanLane: reservedPlanLaneExclusionSql(sql, opts.cooldownAssignee ?? '', 'payload', {
       claimantFleetSlug: opts.claimantFleetSlug,
       claimSpecReferencesFleet: opts.claimSpecReferencesFleet,
       claimSpecReferencesGoal: opts.claimSpecReferencesGoal,
-    })}
-    -- EI-14806: the cross-machine-rig floor, extended to the FEATURE family. The issue-family
-    -- claim has honored payload.needs_2_machine_rig since WI-2796, but a FEATURE-family item can
-    -- ALSO carry the tag (WI-3487, a p2p rig-readiness feature) and this path — getNextWorkItem
-    -- tiers 1/2 + claimNextWorkItem — never read it, so a no-rig caller (DEFAULT_CLAIM_SPEC or any
-    -- feature-view spec) self-selected un-runnable rig work. Same predicate as the issue family,
-    -- unaliased (runs in harness_features_consolidated context). Omitted rigAvailable ⇒ excluded.
-    AND ${crossMachineRigExclusionSql(sql, opts.rigAvailable, 'payload')}
-    AND ${opts.swarmId ? sql`(swarm_affinity IS NULL OR swarm_affinity = ${opts.swarmId})` : sql`TRUE`}
-    -- P-014: under the redundancy flag, high-stakes (redundancy > 1) items fan out via
-    -- claim_replica to N Swarms, so an exactly-once claim must NOT grab them. Flag OFF ⇒
-    -- clause omitted, the claim never reads the redundancy column, byte-identical to before.
-    AND ${opts.excludeRedundant ? sql`(redundancy IS NULL OR redundancy <= 1)` : sql`TRUE`}
-    -- P-005 (F1 fix): RESPECT blocking — never self-select a row that has a PRESENT,
-    -- NON-TERMINAL blocker, the SAME readiness the orchestrator frontier enforces
-    -- (frontier-readiness.ts / work-item-blocking.ts). The block edges live in the
-    -- dedicated work_item_deps table (dep_type='blocks'), keyed by harness-qualified refs
-    -- ('<harness>#<feature_id>' for features, bare 'EI-<n>' for issues — featureRef /
-    -- issues:link), in the single coordination workspace ('default'). A blocker is
-    -- SATISFIED iff TERMINAL or ABSENT; we exclude the row only when a present blocker is
-    -- non-terminal — feature terminal = status IN ('passed','deprecated','done','dropped');
-    -- issue terminal = state IN ('resolved','closed','done','dropped') (the cross-family set,
-    -- transitional legacy∪unified per work-item-status-full-unify — narrow to done/dropped at
-    -- cleanup). An
-    -- absent blocker ref (no matching feature/issue row) never blocks.
-    --
-    -- P-005 maintained-readiness cutover (SCHEDULER_MAINTAINED_READY): when ON, the SAME predicate
-    -- is read from the maintained work_item_blocked sidecar (an indexed anti-join, presence = not
-    -- ready) the wir_ triggers keep exact, instead of recomputing the correlated subquery per claim.
-    -- The two forms are equivalent (the sidecar is materialized from this exact predicate + a
-    -- reconciliation oracle); OFF is the byte-identical inline form.
-    AND ${
-      opts.useMaintainedReady
+    }),
+    verificationConflict: sql`NOT ${verificationTaskConflictSql(sql, opts.cooldownAssignee ?? '', 'payload')}`,
+    rig: crossMachineRigExclusionSql(sql, opts.rigAvailable, 'payload'),
+    swarm: opts.swarmId ? sql`(swarm_affinity IS NULL OR swarm_affinity = ${opts.swarmId})` : sql`TRUE`,
+    redundancy: opts.excludeRedundant ? sql`(redundancy IS NULL OR redundancy <= 1)` : sql`TRUE`,
+    // Keep inline and maintained readiness identical, including blocker authority.
+    dependencies: opts.useMaintainedReady
         ? sql`NOT EXISTS (
       SELECT 1
         FROM harness_shared.work_item_blocked wb
@@ -6035,8 +6473,13 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
                 )
            )
          )
-    )`
-    }`;
+    )`,
+  };
+}
+
+export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
+  return Object.values(featureClaimFloorPredicatesSql(sql, opts))
+    .reduce((all, floor) => sql`${all} AND (${floor})`, sql`TRUE`);
 }
 
 /**
@@ -6115,6 +6558,24 @@ export function lastIssuesClaimableFlagReadError(): string | null {
   if (Date.now() - _lastIssuesClaimableFlagError.atMs > 30_000) return null;
   return _lastIssuesClaimableFlagError.message;
 }
+
+/**
+ * WI-6554700010009932: index prefilters for the two execution-route decision legs of
+ * {@link reservedPlanLaneExclusionSql}. Each is an exact superset of its leg's regex, and each
+ * MUST match its GIN index expression byte-for-byte, or the planner silently falls back to
+ * regex-scanning every decision body (measured: 1,034 ms for the master leg, 516-587 ms for
+ * Route A). Exported so the integration suite can prove each one is index-usable.
+ *
+ * - Master leg: the regex needs the whitespace-delimited words "owns" and "execution";
+ *   index `plan_decisions_execution_tokens_idx` (migration 1364).
+ * - Route A leg: every word of the sentence is a token of LOWER(body); index
+ *   `plan_decisions_lower_execution_tokens_idx` (migration 1490).
+ */
+export const MASTER_DECISION_TOKEN_PREFILTER =
+  "regexp_split_to_array(d.body, '[^A-Za-z0-9_-]+') @> ARRAY['owns', 'execution']::text[]";
+export const ROUTE_A_DECISION_TOKEN_PREFILTER =
+  "regexp_split_to_array(lower(d.body), '[^a-z0-9_-]+')" +
+  " @> ARRAY['route', 'a', 'this', 'session', 'implements', 'the', 'plan']::text[]";
 
 /**
  * WI-2118 (the P-009 leak): the "reserved plan-lane" self-select EXCLUSION floor for issue-family
@@ -6199,6 +6660,8 @@ export function reservedPlanLaneExclusionSql(
      * branch. Authorization here is spec-derived only.
      */
     claimSpecReferencesGoal?: boolean;
+    /** Fixed read cohort only: the caller restricts every candidate to these identities. */
+    decisionCandidates?: { workspaceId: string; ids: readonly string[] };
   } = {},
 ) {
   // COALESCE the payload so a NULL-payload row (no plan_item back-pointer) reads as
@@ -6233,6 +6696,20 @@ export function reservedPlanLaneExclusionSql(
   const idCol = sql.unsafe(
     payloadCol === 'wi.payload' ? 'wi.feature_id' : 'harness_shared.harness_features_consolidated.feature_id',
   );
+  const affirmativeDirectRoute = sql`(
+    LOWER(d.title) LIKE '%self-only execution route%'
+    OR (
+      LOWER(BTRIM(d.title)) = 'direct execution route'
+      AND (
+        LOWER(d.body) LIKE '%implements the plan directly%'
+        OR LOWER(d.body) LIKE '%implement it itself%'
+        OR LOWER(d.body) LIKE '%no fleet%'
+        OR LOWER(d.body) LIKE '%no subagents%'
+      )
+    )
+    OR LOWER(d.body) ~ '(^|[^a-z0-9_-])su-[a-f0-9-]{8,36} is the (single|sole) implementer([[:space:].;]|$)'
+    OR LOWER(d.body) ~ '(^|[^a-z0-9_-])route is this session implementing directly, without (a new )?fleet([[:space:].;]|$)'
+  )`;
   const claimantFleetSlug = authorization.claimantFleetSlug?.trim();
   const authorized = authorization.claimSpecReferencesFleet
     ? sql`TRUE`
@@ -6251,6 +6728,57 @@ export function reservedPlanLaneExclusionSql(
   // goal. A spec may reference `goal` with a negative operator (e.g. `{op:'!='}`), and a bare
   // TRUE would then authorize goal-LESS rows the spec never meant to adopt.
   const goalAuthorized = authorization.claimSpecReferencesGoal ? sql`(${goalCol} IS NOT NULL)` : sql`FALSE`;
+  const decisionCandidates = authorization.decisionCandidates;
+  // Keep decision reads as one-time sets. A large overlap array can make PG
+  // ignore the token index and split every decision body; OFFSET barriers also
+  // turn the Route A read into a correlated scan for every candidate. Filter
+  // extracted master identities instead, and let plan predicates flatten.
+  const masterDecisions = decisionCandidates ? sql`(
+    SELECT * FROM harness_shared.plan_decisions
+     WHERE workspace_id = ${decisionCandidates.workspaceId}
+  )` : sql`harness_shared.plan_decisions`;
+  const candidatePlanDecisions = decisionCandidates ? sql`(
+    SELECT * FROM harness_shared.plan_decisions
+     WHERE workspace_id = ${decisionCandidates.workspaceId}
+       AND plan_slug = ANY(ARRAY(
+         SELECT candidate.payload->'plan_item'->>'plan_slug'
+           FROM harness_shared.work_items candidate
+          WHERE candidate.workspace_id = ${decisionCandidates.workspaceId}
+            AND candidate.feature_id = ANY(${[...decisionCandidates.ids]}::text[])
+       ))
+  )` : sql`harness_shared.plan_decisions`;
+  // WI-6554700010009932: every lane held by a live taken work-item, one row per (holder, lane),
+  // in the exact identity form guardPlanItemSiblingClaim uses. The canonical source columns win
+  // when the holder has a non-blank source_plan_slug and at least one non-blank item id; only
+  // otherwise does its legacy payload.plan_item identity count. Item ids are compared raw, as
+  // the `= ANY(source_plan_item_ids)` form always did. Uncorrelated, so Postgres evaluates it
+  // once per statement (as a hashed subplan) instead of once per candidate row.
+  const holderHasCanonicalLane = sql`(
+    NULLIF(btrim(holder.source_plan_slug), '') IS NOT NULL
+    AND EXISTS (
+      SELECT 1
+        FROM unnest(COALESCE(holder.source_plan_item_ids, ARRAY[]::text[])) AS holder_any(item_id)
+       WHERE btrim(holder_any.item_id) <> ''
+    )
+  )`;
+  const heldLanes = sql`(
+    SELECT holder.workspace_id, holder.feature_id, lane.plan_slug, lane.item_id
+      FROM harness_shared.work_items holder
+      CROSS JOIN LATERAL (
+        SELECT btrim(holder.source_plan_slug) AS plan_slug, holder_item.item_id
+          FROM unnest(COALESCE(holder.source_plan_item_ids, ARRAY[]::text[])) AS holder_item(item_id)
+         WHERE ${holderHasCanonicalLane}
+        UNION ALL
+        SELECT holder.payload->'plan_item'->>'plan_slug', holder.payload->'plan_item'->>'item_id'
+         WHERE NOT ${holderHasCanonicalLane}
+      ) lane
+     WHERE holder.taken_by IS NOT NULL
+       AND btrim(holder.taken_by) <> ''
+       AND lower(btrim(holder.taken_by)) <> 'unassigned'
+       AND holder.status NOT IN ('passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped')
+       AND lane.plan_slug IS NOT NULL
+       AND lane.item_id IS NOT NULL
+  )`;
   return sql`NOT (
     COALESCE(${col}, '{}'::jsonb) ? 'plan_item' AND (
       -- EI-13524: a fleet stamp is a reservation in its own right, independently of
@@ -6335,41 +6863,6 @@ export function reservedPlanLaneExclusionSql(
            AND c.expires_ts > now()
            AND c.owner <> ${assignee}
       ))
-      -- WI-41737: a recorded SELF-ONLY / DIRECT execution-route decision is durable
-      -- plan ownership even when the plan is lifecycle-ready and its implementing
-      -- session is between item leases/assignments. Before this leg, generic
-      -- scheduler:get_next could claim the linked work-item, discover the D-NNN ruling
-      -- only after pickup, release it, and immediately serve it again.
-      --
-      -- Keep the marker deliberately narrow and STRUCTURED around the decision title:
-      --   * "... self-only execution route ..." is explicit by itself;
-      --   * the exact conventional title "Direct execution route" additionally needs
-      --     affirmative direct/no-fleet language in its body.
-      -- A title such as "Direct execution route rejected" therefore does not reserve.
-      -- Scope the reservation to item_refs when the decision names them; an empty ref
-      -- set is plan-wide. Generic self-select is denied, while claim-by-id remains the
-      -- deliberate escape hatch for the named route owner.
-      OR EXISTS (
-        SELECT 1 FROM harness_shared.plan_decisions d
-         WHERE d.workspace_id = ${wsCol}
-           AND d.plan_slug = ${col}->'plan_item'->>'plan_slug'
-           AND (
-             cardinality(COALESCE(d.item_refs, ARRAY[]::text[])) = 0
-             OR ${col}->'plan_item'->>'item_id' = ANY(COALESCE(d.item_refs, ARRAY[]::text[]))
-           )
-           AND (
-             LOWER(d.title) LIKE '%self-only execution route%'
-             OR (
-               LOWER(BTRIM(d.title)) = 'direct execution route'
-               AND (
-                 LOWER(d.body) LIKE '%implements the plan directly%'
-                 OR LOWER(d.body) LIKE '%implement it itself%'
-                 OR LOWER(d.body) LIKE '%no fleet%'
-                 OR LOWER(d.body) LIKE '%no subagents%'
-               )
-             )
-           )
-      )
       -- EI-22040912157347872: ASSIGNMENT is the durable ownership intent underneath the
       -- leased claim. A route-owning plan session can legitimately be between claims while
       -- its assignment remains active; without this leg a generic kind-drain claims the
@@ -6412,44 +6905,31 @@ export function reservedPlanLaneExclusionSql(
       -- because that is this floor's established contract at every caller. The
       -- transaction guard remains mandatory for concurrent races and source-only
       -- candidates: this predicate is the churn/diagnosis floor, not the mutex.
-      OR EXISTS (
-        SELECT 1
-          FROM harness_shared.work_items sibling
-         WHERE sibling.workspace_id = ${wsCol}
-           AND sibling.feature_id <> ${idCol}
-           AND sibling.taken_by IS NOT NULL
-           AND btrim(sibling.taken_by) <> ''
-           AND lower(btrim(sibling.taken_by)) <> 'unassigned'
-           AND sibling.status NOT IN ('passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped')
-           AND (
-             (
-               NULLIF(btrim(sibling.source_plan_slug), '') IS NOT NULL
-               AND EXISTS (
-                 SELECT 1
-                   FROM unnest(COALESCE(sibling.source_plan_item_ids, ARRAY[]::text[])) AS sibling_item(item_id)
-                  WHERE btrim(sibling_item.item_id) <> ''
-               )
-               AND btrim(sibling.source_plan_slug) = ${col}->'plan_item'->>'plan_slug'
-               AND ${col}->'plan_item'->>'item_id' = ANY(
-                 COALESCE(sibling.source_plan_item_ids, ARRAY[]::text[])
-               )
-             )
-             OR (
-               NOT (
-                 NULLIF(btrim(sibling.source_plan_slug), '') IS NOT NULL
-                 AND EXISTS (
-                   SELECT 1
-                     FROM unnest(COALESCE(sibling.source_plan_item_ids, ARRAY[]::text[])) AS sibling_item(item_id)
-                    WHERE btrim(sibling_item.item_id) <> ''
-                 )
-               )
-               AND COALESCE(sibling.payload, '{}'::jsonb)->'plan_item'->>'plan_slug'
-                     = ${col}->'plan_item'->>'plan_slug'
-               AND COALESCE(sibling.payload, '{}'::jsonb)->'plan_item'->>'item_id'
-                     = ${col}->'plan_item'->>'item_id'
-             )
-           )
-      )
+      --
+      --
+      -- "Another live taken work-item holds this candidate's lane" is evaluated with two
+      -- uncorrelated sets over heldLanes (one row per holder and lane, defined above), so
+      -- Postgres hashes each once per statement. A lane excludes the candidate when it is
+      -- held at all AND it is not held by exactly one item that is the candidate itself:
+      -- two or more holders always include someone else, and a single holder is someone
+      -- else exactly when its id differs. This is the precise sibling rule (same workspace,
+      -- different feature_id) without a per-candidate scan.
+      -- WI-6554700010009927 first guarded the correlated sibling EXISTS with a hashed lane
+      -- prefilter (9,344 -> 2,819 ms on a logged 9.6 s listWorkItems statement); the EXISTS
+      -- still ran for every candidate whose lane was held at all (44 x 26 ms = 1.13 s of a
+      -- 2.7 s statement, 2026-10-13). WI-6554700010009932 removed it.
+      -- COALESCE keeps a NULL row-IN (a NULL candidate slug or item id) from turning the
+      -- caller's NOT (... OR ...) into NULL; such a candidate has no lane to collide on.
+      OR COALESCE(
+        (${wsCol}, ${col}->'plan_item'->>'plan_slug', ${col}->'plan_item'->>'item_id') IN (
+          SELECT held.workspace_id, held.plan_slug, held.item_id FROM ${heldLanes} held
+        )
+        AND (${wsCol}, ${col}->'plan_item'->>'plan_slug', ${col}->'plan_item'->>'item_id', ${idCol}) NOT IN (
+          SELECT held.workspace_id, held.plan_slug, held.item_id, min(held.feature_id)
+            FROM ${heldLanes} held
+           GROUP BY held.workspace_id, held.plan_slug, held.item_id
+          HAVING count(DISTINCT held.feature_id) = 1
+        ), false)
       -- EI-20467873456529090: a completed plan-item is terminal residue, not generic backlog.
       -- planItemLaneBlockReason already rejects this after a claim, but that is too late for
       -- claimable previews, aggregate diagnostics, and fleet:bench. The normalized index is the
@@ -6527,6 +7007,45 @@ export function reservedPlanLaneExclusionSql(
            AND COALESCE(dep_it->>'status', '') NOT IN ('done', 'dropped')
       )
     )
+    -- WI-10006159 extends WI-41737 at the existing decision writer/read seam.
+    -- A direct execution master may be ad-hoc, and a solo authorization may have
+    -- an ordinary title. Keep this OUTSIDE the plan_item gate. Require affirmative
+    -- route language; extract only explicit "WI-N owns execution" clauses, never
+    -- every WI mentioned in the body. Extract the master set once rather than
+    -- probing the decision token index separately for every candidate. The pair
+    -- includes the workspace so foreign-tenant decisions cannot reserve a row.
+    -- Item refs and deliberate by-id pickup remain unchanged.
+    -- The real-PG SSOT agreement suite binds this to migration 1364.
+    OR EXISTS (
+      SELECT 1 FROM harness_shared.plan_decisions d
+      WHERE d.workspace_id = ${wsCol}
+        AND d.plan_slug = ${col}->'plan_item'->>'plan_slug'
+        AND (
+          cardinality(COALESCE(d.item_refs, ARRAY[]::text[])) = 0
+          OR ${col}->'plan_item'->>'item_id' = ANY(COALESCE(d.item_refs, ARRAY[]::text[]))
+        )
+        AND ${affirmativeDirectRoute}
+    )
+    OR COALESCE((${wsCol}, ${idCol}) IN (
+      SELECT d.workspace_id, master.ref[2]
+        FROM ${masterDecisions} d,
+             LATERAL regexp_matches(d.body,
+               '(^|[^A-Za-z0-9_-])(WI-[0-9]+)[[:space:]]+owns execution([[:space:]]+and([[:space:]]|$)|[.;]|$)', 'g') AS master(ref)
+       -- WI-6554700010009932: token prefilter on migration 1364's index (see the constant).
+       WHERE ${sql.unsafe(MASTER_DECISION_TOKEN_PREFILTER)}
+         AND ${affirmativeDirectRoute}
+         AND ${decisionCandidates ? sql`master.ref[2] = ANY(${[...decisionCandidates.ids]}::text[])` : sql`TRUE`}
+    ), FALSE)
+    -- WI-10006417: an explicit Route A sentence names one session as the plan's
+    -- implementer, so it reserves the whole plan even when the decision's itemRefs
+    -- describe only its other clauses (D-006's refs omit P-002). The durable
+    -- plan_item_assignments surface is per-item and is not populated by this ruling.
+    OR COALESCE((${wsCol}, ${col}->'plan_item'->>'plan_slug') IN (
+      SELECT d.workspace_id, d.plan_slug FROM ${candidatePlanDecisions} d
+       -- WI-6554700010009932: token prefilter on migration 1490's index (see the constant).
+       WHERE ${sql.unsafe(ROUTE_A_DECISION_TOKEN_PREFILTER)}
+         AND LOWER(d.body) ~ '(^|[^a-z0-9_-])route[[:space:]]+a:[[:space:]]+this session[[:space:]]+[(]su-[a-f0-9-]{8,36}[)][[:space:]]+implements the plan([[:space:].;]|$)'
+    ), FALSE)
   )`;
 }
 
@@ -6729,20 +7248,14 @@ export async function reconcileEventExternalBlockers(
   if (!ref) return { cleared: 0, restored: 0 };
 
   const settledBy = actor?.trim() || 'system:event-settlement';
-  const parsedNow = Date.parse(now);
-  const updatedTs = Number.isFinite(parsedNow) ? parsedNow : Date.now();
-  const rows = await tx<
-    {
-      workspace_id: string;
-      feature_id: string;
-      item_kind: string | null;
-      status: string | null;
-      payload: unknown;
-    }[]
-  >`
+  // `payload ? 'externalBlockers'` is the predicate of the partial index
+  // work_items_external_blockers_ws_idx (migration 1475); the containment test
+  // alone cannot prove it, so without this line the lookup reads the whole table.
+  const rows = await tx<LockedExternalBlockerRow[]>`
     SELECT workspace_id, feature_id, item_kind, status, payload
       FROM harness_shared.work_items
-     WHERE COALESCE(payload, '{}'::jsonb) @> jsonb_build_object(
+     WHERE payload ? 'externalBlockers'
+       AND COALESCE(payload, '{}'::jsonb) @> jsonb_build_object(
        'externalBlockers',
        jsonb_build_array(jsonb_build_object('kind', 'event', 'ref', ${ref}::text, 'status', 'active'))
      )
@@ -6752,47 +7265,101 @@ export async function reconcileEventExternalBlockers(
   let cleared = 0;
   let restored = 0;
   for (const row of rows) {
-    const payload =
-      row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
-        ? (row.payload as Record<string, unknown>)
-        : {};
-    const history = updateExternalBlockerHistory(payload, { kind: 'event', ref, clear: true }, settledBy, now);
-    if (!history.changed) continue;
-
-    const activeBlockers = history.blockers.some((blocker) => blocker.status === 'active');
-    const issueFamily = ['bug', 'change', 'task'].includes(String(row.item_kind));
-    const autoBlockedIssue =
-      issueFamily && String(row.status ?? '').toLowerCase() === 'blocked' && payload.held_open_reason === 'blocked';
-    const restoreIssue = autoBlockedIssue && !activeBlockers;
-    const nextPayload: Record<string, unknown> = {
-      ...payload,
-      externalBlockers: history.blockers,
-    };
-
-    if (restoreIssue) {
-      delete nextPayload.held_open_by;
-      delete nextPayload.held_open_at;
-      delete nextPayload.held_open_reason;
-      // A durable claim park may coexist with the temporary blocked lease.
-      // Match setWorkItemClaimHold(..., { leaseOnly:true }) and retain it.
-      if (typeof payload.claim_hold_by !== 'string' || payload.claim_hold_by.trim() === '') {
-        delete nextPayload._claimHold;
-      }
-      restored += 1;
-    }
-
-    await tx`
-      UPDATE harness_shared.work_items
-         SET payload = ${JSON.stringify(nextPayload)}::text::jsonb,
-             status = CASE WHEN ${restoreIssue} THEN 'open' ELSE status END,
-             updated_ts = ${updatedTs}
-       WHERE workspace_id = ${row.workspace_id}
-         AND feature_id = ${row.feature_id}
-    `;
+    const outcome = await clearExternalBlockersOnLockedRow(tx, row, [{ kind: 'event', ref }], settledBy, now);
+    if (!outcome.changed) continue;
     cleared += 1;
+    if (outcome.restored) restored += 1;
   }
 
   return { cleared, restored };
+}
+
+/** A work-item row read `FOR UPDATE` by a caller that is about to clear blockers on it. */
+export interface LockedExternalBlockerRow {
+  workspace_id: string;
+  feature_id: string;
+  item_kind: string | null;
+  status: string | null;
+  payload: unknown;
+}
+
+/**
+ * The per-row core shared by every system path that clears typed external
+ * blockers inside the caller's transaction: event settlement
+ * ({@link reconcileEventExternalBlockers}) and the work-item-ref auto-clear
+ * (work-item-ref-blocker-auto-clear.ts, plan derived-status-not-hand-written-2026-10-12#P-011).
+ *
+ * Each target clears the latest ACTIVE record with the same kind and ref. A
+ * cleared record stays in the payload history with `clearedAt`/`clearedBy`
+ * (and `evidence` when supplied); nothing is deleted. An issue-family row that
+ * `work_items:set_blocker` auto-parked is restored to `open` only once no
+ * active blocker remains, and a durable claim park survives that restore.
+ * Feature-family lifecycle state is untouched here; a caller that wants the
+ * set_blocker un-park does it after commit. The row must already be locked.
+ */
+export async function clearExternalBlockersOnLockedRow(
+  tx: OrgSql | TransactionSql,
+  row: LockedExternalBlockerRow,
+  targets: ReadonlyArray<{ kind: ExternalBlockerKind; ref: string; evidence?: string }>,
+  actor: string,
+  now: string,
+): Promise<{
+  changed: boolean;
+  restored: boolean;
+  cleared: Array<{ kind: ExternalBlockerKind; ref: string }>;
+  activeRemaining: number;
+}> {
+  const payload =
+    row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
+      ? (row.payload as Record<string, unknown>)
+      : {};
+  let blockers = readExternalBlockers(payload);
+  const cleared: Array<{ kind: ExternalBlockerKind; ref: string }> = [];
+  for (const target of targets) {
+    const history = updateExternalBlockerHistory(
+      { ...payload, externalBlockers: blockers },
+      { kind: target.kind, ref: target.ref, clear: true, ...(target.evidence ? { evidence: target.evidence } : {}) },
+      actor,
+      now,
+    );
+    if (!history.changed) continue;
+    blockers = history.blockers;
+    cleared.push({ kind: target.kind, ref: target.ref });
+  }
+  const activeRemaining = blockers.filter((blocker) => blocker.status === 'active').length;
+  if (cleared.length === 0) return { changed: false, restored: false, cleared, activeRemaining };
+
+  const issueFamily = ['bug', 'change', 'task'].includes(String(row.item_kind));
+  const autoBlockedIssue =
+    issueFamily && String(row.status ?? '').toLowerCase() === 'blocked' && payload.held_open_reason === 'blocked';
+  const restoreIssue = autoBlockedIssue && activeRemaining === 0;
+  const nextPayload: Record<string, unknown> = {
+    ...payload,
+    externalBlockers: blockers,
+  };
+
+  if (restoreIssue) {
+    delete nextPayload.held_open_by;
+    delete nextPayload.held_open_at;
+    delete nextPayload.held_open_reason;
+    // A durable claim park may coexist with the temporary blocked lease.
+    // Match setWorkItemClaimHold(..., { leaseOnly:true }) and retain it.
+    if (typeof payload.claim_hold_by !== 'string' || payload.claim_hold_by.trim() === '') {
+      delete nextPayload._claimHold;
+    }
+  }
+
+  const parsedNow = Date.parse(now);
+  const updatedTs = Number.isFinite(parsedNow) ? parsedNow : Date.now();
+  await tx`
+    UPDATE harness_shared.work_items
+       SET payload = ${JSON.stringify(nextPayload)}::text::jsonb,
+           status = CASE WHEN ${restoreIssue} THEN 'open' ELSE status END,
+           updated_ts = ${updatedTs}
+     WHERE workspace_id = ${row.workspace_id}
+       AND feature_id = ${row.feature_id}
+  `;
+  return { changed: true, restored: restoreIssue, cleared, activeRemaining };
 }
 
 /**
@@ -6959,7 +7526,7 @@ export async function readUnresolvedDepBlockers(id: string, harness?: string): P
         ON d.workspace_id = 'default'
        AND d.dep_type = 'blocks'
        AND d.blocked_ref = CASE
-             WHEN wi.item_kind IN ('bug', 'change', 'task') THEN wi.feature_id
+             WHEN ${issueFamilyRouteSql(sql, 'wi')} THEN wi.feature_id
              ELSE wi.harness_slug || '#' || wi.feature_id
            END
      WHERE wi.feature_id = ${id}
@@ -6969,6 +7536,60 @@ export async function readUnresolvedDepBlockers(id: string, harness?: string): P
      ORDER BY d.blocker_ref
      LIMIT 25`;
   return rows.map((r) => ({ ref: r.blocker_ref, kind: r.blocker_kind, satisfaction: r.satisfaction }));
+}
+
+/** One unresolved `blocks` edge on an item the reader holds — see `readHeldUnresolvedDepBlockers`. */
+export interface HeldUnresolvedDepBlocker {
+  /** The held (blocked) item's feature_id. */
+  featureId: string;
+  /** The edge's blocker ref, in the blocker family's own form (bare issue id, or `<harness>#<id>`). */
+  blockerRef: string;
+  blockerKind: string;
+  /** When the edge was written, so a reader can age the wait. */
+  since: string | null;
+}
+
+/**
+ * Every unresolved `blocks` edge on the work items `ownerId` currently holds — the EDGE-side
+ * twin of the held-item `externalBlockers` read in `derive-awaiting.ts` (WI-10005020, plan
+ * feature-drain-delivery-readiness-and-outcome-accounting-2026-10-01 D-008 §4a). R-15 moves
+ * work-item-ref external blockers onto `work_item_deps` edges; without this read a migrated item
+ * silently drops out of the sender's `awaiting` stamp.
+ *
+ * It uses the same per-family blocked-ref form and the same `unsatisfiedBlockerSql` predicate as
+ * the claim floor, so it names exactly the edges that gate the queue: a `settled` edge whose
+ * blocker is done OR dropped is satisfied and is not listed. Bounded; throws like any read — the
+ * caller owns fail-soft.
+ */
+export async function readHeldUnresolvedDepBlockers(args: {
+  ownerId: string;
+  workspaceId: string;
+  limit: number;
+}): Promise<HeldUnresolvedDepBlocker[]> {
+  if (!args.ownerId || !args.workspaceId || args.limit <= 0) return [];
+  const { sql } = getOrgPg();
+  const rows = await sql<{ feature_id: string; blocker_ref: string; blocker_kind: string; created_at: Date | string | null }[]>`
+    SELECT wi.feature_id, d.blocker_ref, d.blocker_kind, d.created_at
+      FROM harness_shared.work_items wi
+      JOIN harness_shared.work_item_deps d
+        ON d.workspace_id = 'default'
+       AND d.dep_type = 'blocks'
+       AND d.blocked_ref = CASE
+             WHEN wi.item_kind IN ('bug', 'change', 'task') THEN wi.feature_id
+             ELSE wi.harness_slug || '#' || wi.feature_id
+           END
+     WHERE wi.workspace_id = ${args.workspaceId}
+       AND wi.taken_by = ${args.ownerId}
+       AND wi.status NOT IN ('done', 'resolved', 'deprecated', 'dropped')
+       AND ${unsatisfiedBlockerSql(sql)}
+     ORDER BY d.created_at DESC NULLS LAST, wi.feature_id, d.blocker_ref
+     LIMIT ${args.limit}`;
+  return rows.map((r) => ({
+    featureId: r.feature_id,
+    blockerRef: r.blocker_ref,
+    blockerKind: r.blocker_kind,
+    since: r.created_at == null ? null : new Date(r.created_at).toISOString(),
+  }));
 }
 
 /**
@@ -7204,6 +7825,10 @@ export async function setWorkItemClaimHold(
     expectedLeaseHolder?: string;
   } = {},
 ): Promise<{ id: string; harness: string | null; hold: boolean; applicable: boolean } | null> {
+  if (hold && (opts.parkedBy !== undefined || opts.parkedReason !== undefined || opts.releaseContract !== undefined)) {
+    const { assertDurableParkReleaseContract } = await import('./durable-park-release-contract');
+    assertDurableParkReleaseContract(opts.releaseContract);
+  }
   const { sql } = getOrgPg();
   // EI-15345: resolve the item's ACTUAL workspace by id, AMBIENT-INDEPENDENT. The old path
   // derived the write scope from a bare `activeWorkspaceId()` / `issuesScopeWorkspace()` and a
@@ -7265,7 +7890,7 @@ export async function setWorkItemClaimHold(
   void sql
     .unsafe(
       `INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+       VALUES ($1, $2, $3, $4, $5, $6::text::jsonb, $7)`,
       [
         `wi-claim-hold-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
         Date.now(),
@@ -7355,7 +7980,7 @@ export async function recordWorkItemBlockedAudit(
     if (!ws) return;
     await sql.unsafe(
       `INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+       VALUES ($1, $2, $3, $4, $5, $6::text::jsonb, $7)`,
       [
         `wi-state-blocked-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
         Date.now(),
@@ -7399,7 +8024,7 @@ export async function recordBulkHoldClearAudit(
       sql
         .unsafe(
           `INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
-           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+           VALUES ($1, $2, $3, $4, $5, $6::text::jsonb, $7)`,
           [
             `wi-claim-hold-${opts.sweepName}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
             Date.now(),
@@ -7616,7 +8241,13 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
     // only under the per-Hive claim lease, default OFF). Skip work affined to ANOTHER Swarm
     // and prefer work affined to THIS one over unaffined work. Omitted ⇒ affinity-blind,
     // byte-identical to the pre-P-002 claim.
-    const rows = await sql<FeatureRowDb[]>`
+    const rows = await boundedOrgTxn(async (tx) => {
+      const sql = tx as OrgSql;
+      const selections = await lockGoalPlanClaimSelections(sql, ws, filter.assignee);
+      const selection = goalPlanClaimFragments(sql, selections, {
+        harness: 'harness_slug', goal: 'goal_id', payload: 'payload', sourcePlan: 'source_plan_slug',
+      });
+      return sql<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated AS target
          -- P-001: self-select only ever grabs an UNCLAIMED row (the inner WHERE pins
          -- taken_by IS NULL/''), so a fresh holder always starts with a clean progress slate.
@@ -7648,6 +8279,7 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
             claimSpecReferencesFleet: filter.claimSpecReferencesFleet,
             claimSpecReferencesGoal: filter.claimSpecReferencesGoal,
           })}
+            AND ${selection.where}
             AND ${operationClaims.operationWorkerClaimWhereSql(sql, operationClaimRead, {
               payload: 'payload', id: 'feature_id', harness: 'harness_slug',
             })}
@@ -7657,11 +8289,12 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
           -- RESPECTS the Mug's priority — affinity match first, then lower feature_order (the
           -- per-harness wave/plan order the Mug steers, D-003/D-009), then oldest-first
           -- (anti-starvation). Flag OFF ⇒ plain oldest-first, byte-identical to before.
-          ORDER BY ${filter.swarmId ? sql`(swarm_affinity = ${filter.swarmId}) DESC NULLS LAST, feature_order ASC NULLS LAST,` : sql``} created_ts ASC
+          ORDER BY ${selection.order} ${filter.swarmId ? sql`(swarm_affinity = ${filter.swarmId}) DESC NULLS LAST, feature_order ASC NULLS LAST,` : sql``} created_ts ASC
           LIMIT 1
           FOR UPDATE SKIP LOCKED
        )
       RETURNING ${sql.unsafe(FEATURE_COLS)}`;
+    }, { client: sql });
     return rows[0] ? featureRowToWorkItem(rows[0]) : null;
   };
 
@@ -7824,7 +8457,7 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          AND ${needsOwnerActionExclusionSql(sql)}
          -- D-003/P-004: pending/revision-requested rows are owned by the reviewer/revision
          -- lifecycle, not the normal implementation pool. Approval re-admits them.
-         AND ${agentReviewNormalExclusionSql(sql)}
+         AND ${intakeStageClaimFloorSql(sql)}
          AND ${externalBlockersExclusionSql(sql)}
          -- WI-2633: an auto-filed replication-liveness detector EI is gated to the p2p fleet and
          -- unactionable by a generic self-selector — pool-exclude it too (like observation/
@@ -7888,7 +8521,8 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          -- D-005: an observation-lane row is not work-queue material — same floor the claim applies.
          AND ${observationLaneExclusionSql(sql)}
          AND ${needsOwnerActionExclusionSql(sql)}
-         AND ${agentReviewNormalExclusionSql(sql)}
+         AND ${intakeStageClaimFloorSql(sql)}
+         AND NOT ${verificationTaskConflictSql(sql, filter.assignee, 'wi.payload')}
          AND ${externalBlockersExclusionSql(sql)}
          -- WI-2633: a replication-liveness detector EI is gated to the p2p fleet — same floor the
          -- claim applies (below), so the miss diagnosis never disagrees with what it serves.
@@ -7921,6 +8555,8 @@ export interface ClaimFloorAttribution {
   admissible: boolean;
   /** The FIRST floor that refuses it, in the order the claim path applies them. */
   refusedBy: string | null;
+  /** Simultaneous failures from the same claim predicates, when includeAllFloors is requested. */
+  failedFloors?: string[];
   /** Operator-facing explanation of that floor. */
   detail: string | null;
   /**
@@ -8064,6 +8700,8 @@ export function issueClaimBarFloorColumnsSql(
     claimantFleetSlug?: string;
     claimSpecReferencesFleet?: boolean;
     claimSpecReferencesGoal?: boolean;
+    /** Complete identity set selected by the enclosing read, never a display cap. */
+    candidateIds?: readonly string[];
   },
 ) {
   const {
@@ -8082,13 +8720,14 @@ export function issueClaimBarFloorColumnsSql(
     (${liveGateOpsSelfSelectExclusionSql(sql)})                            AS ok_live_gate_ops,
     (${observationLaneExclusionSql(sql)})                                  AS ok_observation,
     (${needsOwnerActionExclusionSql(sql)})                                 AS ok_needs_owner_action,
-    (${agentReviewNormalExclusionSql(sql)})                                AS ok_agent_review,
+    (${intakeStageClaimFloorSql(sql)})                                AS ok_agent_review,
     (${externalBlockersExclusionSql(sql)})                                 AS ok_external_blocker,
     (${claimHoldExclusionSql(sql)})                                        AS ok_claim_hold,
     (${reservedPlanLaneExclusionSql(sql, assignee, 'wi.payload', {
       claimantFleetSlug,
       claimSpecReferencesFleet,
       claimSpecReferencesGoal,
+      decisionCandidates: opts.candidateIds ? { workspaceId: issueWs, ids: opts.candidateIds } : undefined,
     })})                                                                  AS ok_plan_lane,
     (${federationDetectorExclusionSql(sql)})                               AS ok_federation,
     (${loopIterationNoiseExclusionSql(sql)})                               AS ok_loop_noise,
@@ -8128,10 +8767,20 @@ export async function explainIssueClaimFloors(
     claimantFleetSlug?: string;
     claimSpecReferencesFleet?: boolean;
     claimSpecReferencesGoal?: boolean;
+    /** Read-only consumers with their own precedence need failures beyond the first refusal. */
+    includeAllFloors?: boolean;
+    /**
+     * Scope-authoring preview ONLY: evaluate the remaining shared floors for rows
+     * already held by these verified target-fleet members. Never used by a claim
+     * acquisition door; omitting it preserves the ordinary already-taken floor.
+     */
+    scopeHeldBy?: readonly string[];
   } = {},
+  /** Caller-owned read context, including transaction-local planner policy and snapshot. */
+  sqlOverride?: OrgSql,
 ): Promise<ClaimFloorAttribution[]> {
   if (ids.length === 0) return [];
-  const { sql } = getOrgPg();
+  const sql = sqlOverride ?? getOrgPg().sql;
   const issueWs = issuesScopeWorkspace();
   const operatorScopeSlug = `operator:${issueWs}`;
   const assignee = opts.assignee ?? '';
@@ -8174,6 +8823,7 @@ export async function explainIssueClaimFloors(
              claimantFleetSlug: opts.claimantFleetSlug,
              claimSpecReferencesFleet: opts.claimSpecReferencesFleet,
              claimSpecReferencesGoal: opts.claimSpecReferencesGoal,
+             candidateIds: ids,
            })}
       FROM harness_shared.work_items wi
      WHERE wi.workspace_id = ${issueWs}
@@ -8187,56 +8837,40 @@ export async function explainIssueClaimFloors(
   // leader diagnosing a mix of floors) never touches it.
   const anyAdmissionPending = rows.some((r) => !r.ok_admission);
   const promoterStall = anyAdmissionPending
-    ? await admissionPromoterStall(issueWs)
+    ? await admissionPromoterStall(issueWs, sql)
     : ({ stalled: false } as const);
   return ids.map((id) => {
     const r = byId.get(id);
-    const refusedBy = !r
-      ? 'not-found'
-      : // Order MATTERS: report the floor a human would act on first.
-        !r.ok_status
-        ? 'not-claimable-status'
-        : !r.ok_untaken
-          ? 'already-taken'
-          : !r.ok_origin
-            ? 'origin'
-            : !r.ok_admission
-              ? 'admission-pending'
-              : !r.ok_live_gate_ops
-                ? 'live-gate-ops'
-                : !r.ok_observation
-                  ? 'observation-lane'
-                  : !r.ok_needs_owner_action
-                    ? 'needs-owner-action'
-                    : !r.ok_agent_review
-                      ? 'agent-review'
-                      : !r.ok_external_blocker
-                        ? 'external-blocker'
-                        : !r.ok_claim_hold
-                          ? 'claim-hold'
-                          : !r.ok_plan_lane
-                            ? 'plan-lane-reserved'
-                            : !r.ok_federation
-                              ? 'federation-detector'
-                              : !r.ok_loop_noise
-                                ? 'loop-noise'
-                                : !r.ok_completed
-                                  ? 'already-completed'
-                                  : !r.ok_watchdog_recovery
-                                    ? 'watchdog-recovery-window'
-                                    : !r.ok_rig
-                                      ? 'cross-machine-rig'
-                                      : !r.ok_no_blocker
-                                        ? 'blocked-dep'
-                                        : !r.ok_cooldown
-                                          ? 'cooldown'
-                                          : !r.ok_stop_line
-                                            ? 'stop-line'
-                                            : null;
+    // Preserve the claim path's first-refusal order while allowing reports to
+    // see independent floors hidden behind it. One inventory drives both views.
+    const floorChecks: readonly (readonly [string, boolean])[] = r ? [
+      ['not-claimable-status', r.ok_status],
+      ['already-taken', r.ok_untaken || !!(r.taken_by && opts.scopeHeldBy?.includes(r.taken_by))],
+      ['origin', r.ok_origin],
+      ['admission-pending', r.ok_admission],
+      ['live-gate-ops', r.ok_live_gate_ops],
+      ['observation-lane', r.ok_observation],
+      ['needs-owner-action', r.ok_needs_owner_action],
+      ['agent-review', r.ok_agent_review],
+      ['external-blocker', r.ok_external_blocker],
+      ['claim-hold', r.ok_claim_hold],
+      ['plan-lane-reserved', r.ok_plan_lane],
+      ['federation-detector', r.ok_federation],
+      ['loop-noise', r.ok_loop_noise],
+      ['already-completed', r.ok_completed],
+      ['watchdog-recovery-window', r.ok_watchdog_recovery],
+      ['cross-machine-rig', r.ok_rig],
+      ['blocked-dep', r.ok_no_blocker],
+      ['cooldown', r.ok_cooldown],
+      ['stop-line', r.ok_stop_line],
+    ] : [['not-found', false]];
+    const failedFloors = floorChecks.filter(([, passed]) => !passed).map(([label]) => label);
+    const refusedBy = failedFloors[0] ?? null;
     return {
       id,
       admissible: refusedBy === null,
       refusedBy,
+      ...(opts.includeAllFloors ? { failedFloors } : {}),
       detail: refusedBy ? (ISSUE_FLOOR_EXPLANATIONS[refusedBy] ?? null) : null,
       // Only the already-taken floor has a holder to name (P-027). Every other
       // refusal is a property of the ROW, so `heldBy` stays absent rather than
@@ -8305,6 +8939,10 @@ export async function claimNextIssueWorkItem(
   opts: {
     /** Optional caller-owned client; scheduler:get_next uses its isolated claim pool. */
     client?: OrgSql;
+    /** Pool attribution for bounded acquisition when the caller injects client. */
+    acquirePool?: string;
+    /** Reuse the scheduler's bounded authority read across candidate families. */
+    operationClaimRead?: ActiveOperationWorkerClaimRead;
     issueKinds?: readonly IssueStoreKind[];
     ids?: readonly string[];
     /** WI-5258: ids the caller's spec NEGATIVELY excludes (e.g. `not:{id in [...]}` —
@@ -8379,11 +9017,42 @@ export async function claimNextIssueWorkItem(
       /** The feature-family readiness implementation selected by the caller. */
       useMaintainedReady?: boolean;
     };
+    /**
+     * green-main-cycle-time-2026-10-08 P-017 / D-032: restrict this claim to REPAIR items
+     * (frozen-repair-leg: / sync-delta-red: conditions) on a harness red for 8h+, via the
+     * issue-only {@link redInflowRepairItemSql}. scheduler:get_next sets it for its
+     * red-inflow preclaim; every other floor below still applies unchanged.
+     */
+    repairFirstOnly?: boolean;
     /** Abort the active claim transaction when the scheduler caller's deadline fires. */
     signal?: AbortSignal;
+    /** Diagnostic only: separate issue claim SQL from its post-claim reread. */
+    onResolutionStep?: (
+      step: string,
+      event: { phase: 'start'; startedAtMs: number } | { phase: 'end'; elapsedMs: number },
+    ) => void;
   } = {},
 ): Promise<WorkItem | null> {
   const sql = opts.client ?? getOrgPg().sql;
+  const reportResolutionStep = (
+    step: string,
+    event: { phase: 'start'; startedAtMs: number } | { phase: 'end'; elapsedMs: number },
+  ): void => {
+    try {
+      opts.onResolutionStep?.(step, event);
+    } catch {
+      // Diagnostic observers must not affect claim admission or transaction outcome.
+    }
+  };
+  const measureResolutionStep = async <T>(step: string, run: () => Promise<T>): Promise<T> => {
+    const startedAtMs = performance.now();
+    reportResolutionStep(step, { phase: 'start', startedAtMs });
+    try {
+      return await run();
+    } finally {
+      reportResolutionStep(step, { phase: 'end', elapsedMs: Math.max(0, performance.now() - startedAtMs) });
+    }
+  };
   // Scope the issue-claim to the canonical ISSUE workspace (resolveIssuesScopeWorkspace —
   // honors the ISSUES_PER_WORKSPACE flag), NOT the feature activeWorkspaceId(), so the
   // UPDATE and the getIssue() re-read below agree on the same partition (they'd diverge
@@ -8401,7 +9070,7 @@ export async function claimNextIssueWorkItem(
   // live 2026-07-17, WI-5261).
   const issueWs = resolveIssuesScopeWorkspace(explicitActiveWorkspaceId || undefined);
   const operationClaims = await import('./blueprint/operation-worker-binding');
-  const operationClaimRead = await operationClaims.readActiveOperationWorkerClaimBinding(
+  const operationClaimRead = opts.operationClaimRead ?? await operationClaims.readActiveOperationWorkerClaimBinding(
     explicitActiveWorkspaceId, filter.assignee,
   );
   if (operationClaimRead.status === 'unavailable') {
@@ -8482,13 +9151,17 @@ export async function claimNextIssueWorkItem(
   // postgres-js cannot cancel an in-flight query from JS once it stalls. Every SQL
   // fragment below is compiled against the TRANSACTION client `tx` — not the outer
   // `sql` — so it belongs to the same connection that carries the SET LOCAL timeouts.
-  const rows = await boundedOrgTxn(
+  const claimed = await measureResolutionStep('candidate-issue-claim-transaction', () => boundedOrgTxn(
     async (tx) => {
       // Cross-family priority comparison (EI-21288979130080074): an issue may jump ahead of
       // the feature-family ladder only when it has an explicit priority and no eligible
       // feature with an equal-or-better (lower) feature_order exists. Build the feature side
       // from the SAME claimFloorsWhereSql fragment used by the real feature claim path, and
       // evaluate it inside this UPDATE so the comparison and issue claim share one snapshot.
+      const selections = await lockGoalPlanClaimSelections(tx as OrgSql, explicitActiveWorkspaceId, filter.assignee);
+      const selection = goalPlanClaimFragments(tx as OrgSql, selections, {
+        harness: 'wi.harness_slug', goal: 'wi.goal_id', payload: 'wi.payload', sourcePlan: 'wi.source_plan_slug',
+      });
       const priorityBeforeFeature = opts.priorityBeforeFeature
         ? claimFloorsWhereSql(tx, {
             harness: filter.harness,
@@ -8504,7 +9177,7 @@ export async function claimNextIssueWorkItem(
             claimSpecReferencesGoal: filter.claimSpecReferencesGoal,
           })
         : tx`TRUE`;
-      const rows = await tx<FeatureRowDb[]>`
+      const rows = await measureResolutionStep('candidate-issue-claim-update', () => tx<FeatureRowDb[]>`
     UPDATE harness_shared.work_items AS target
        SET payload = jsonb_set(
              COALESCE(target.payload, '{}'::jsonb),
@@ -8522,6 +9195,7 @@ export async function claimNextIssueWorkItem(
          FROM harness_shared.work_items wi
         WHERE wi.item_kind = ANY(${issueKinds}::text[])
           AND wi.workspace_id = ${issueWs}
+          AND ${selection.where}
           AND ${operationClaims.operationWorkerClaimWhereSql(tx, operationClaimRead, {
             payload: 'wi.payload', id: 'wi.feature_id', harness: 'wi.harness_slug',
           })}
@@ -8577,6 +9251,8 @@ export async function claimNextIssueWorkItem(
           -- owner-directed escape). SAME shared fragment as the claimability preview's
           -- ok_stop_line (issueClaimCandidateSubquery), so read and claim cannot diverge.
           AND ${stopTheLineExclusionSql(tx, 'issue-wi')}
+          -- P-017/D-032 red-inflow preclaim: repair items on an 8h+ red harness only.
+          AND ${opts.repairFirstOnly ? redInflowRepairItemSql(tx) : tx`TRUE`}
           -- swarm affinity (P-002): under the per-Hive lease, honor the issue's affinity too.
           AND ${filter.swarmId ? tx`(wi.swarm_affinity IS NULL OR wi.swarm_affinity = ${filter.swarmId})` : tx`TRUE`}
           -- P-014: skip high-stakes (redundancy>1) items under the redundancy flag.
@@ -8613,7 +9289,9 @@ export async function claimNextIssueWorkItem(
           -- D-003/P-004: normal self-selection cannot take pending review work or the
           -- submitter-owned revision interval. The dedicated reviewer tool is the only
           -- selector for pending; approved rows pass this floor again.
-          AND ${agentReviewNormalExclusionSql(tx)}
+          AND ${intakeStageClaimFloorSql(tx)}
+          -- P-007 / D-021: never self-select a verification task to its reporter or implementer.
+          AND NOT ${verificationTaskConflictSql(tx, filter.assignee, 'wi.payload')}
           AND ${externalBlockersExclusionSql(tx)}
           -- WI-2633: never self-select an auto-filed replication-liveness detector EI
           -- (payload._ei.created_by='system:replication-liveness'). A generic backlog-drain
@@ -8656,55 +9334,52 @@ export async function claimNextIssueWorkItem(
         -- AUTHORITATIVE here (see opts.specOrderSql) — this ORDER BY used to be hardcoded, so
         -- the whole issue family honored a spec's FILTER while silently discarding its RANK.
         -- Undefined ⇒ the legacy ordering below, byte-identical for the no-spec caller.
-        ORDER BY ${filter.swarmId ? tx`(wi.swarm_affinity = ${filter.swarmId}) DESC NULLS LAST,` : tx``} ${specOrderSql ?? tx`wi.feature_order ASC NULLS LAST, wi.created_ts ASC`}
+        ORDER BY ${selection.order} ${filter.swarmId ? tx`(wi.swarm_affinity = ${filter.swarmId}) DESC NULLS LAST,` : tx``} ${specOrderSql ?? tx`wi.feature_order ASC NULLS LAST, wi.created_ts ASC`}
         LIMIT 1
         FOR UPDATE SKIP LOCKED
      )
-    RETURNING ${tx.unsafe(FEATURE_COLS)}`;
-      if (!rows[0]) return rows;
-      return (await guardPlanItemSiblingClaim(tx, rows[0], {
+    RETURNING ${tx.unsafe(FEATURE_COLS)}`);
+      if (!rows[0]) return null;
+      const { isAcceptedReproductionStatus, CurrentBugReproductionRefusal } =
+        await import('./attention/bug-reproduction');
+      const { verifyAcceptedWorkItemBugReproduction } = await import('./attention/intake-promotion');
+      const reproduction = await verifyAcceptedWorkItemBugReproduction({
+        kind: rows[0].item_kind ?? '', harness: rows[0].harness_slug, payload: rows[0].payload,
+      });
+      if (reproduction && !isAcceptedReproductionStatus(reproduction.status)) {
+        throw new CurrentBugReproductionRefusal(reproduction.detail);
+      }
+      if (!(await guardPlanItemSiblingClaim(tx, rows[0], {
         workspaceId: issueWs,
         assignee: filter.assignee,
         family: 'issue',
-      }))
-        ? rows
-        : [];
+      }))) return null;
+
+      // Keep the issue facade read in the SAME bounded transaction as the claim. A raw
+      // post-commit getIssueInWorkspace read used the unbounded admin pool and could keep
+      // scheduler:get_next open after its caller deadline, leaving a late-settling claim.
+      const issue = await measureResolutionStep('candidate-issue-post-claim-reread', () =>
+        getIssueInWorkspace(issueWs, rows[0].feature_id, {
+          baseHarnessSlug: rows[0].harness_slug,
+          client: tx,
+        }),
+      );
+      if (!issue) {
+        throw new Error(
+          `claimNextIssueWorkItem: claimed issue ${rows[0].feature_id} in workspace '${issueWs}' ` +
+            `but could not re-read it inside the claim transaction; the claim was rolled back.`,
+        );
+      }
+      return { issue };
     },
-    { client: sql, signal: opts.signal },
-  );
-  // RETURNING the base row uses the feature column shape; the row IS an issue-family row, so
-  // map it through the issue facade (state dialect, no claim-time columns) for a consistent
-  // WorkItem. featureRowToWorkItem would mislabel family/state, so re-read via the issue path.
-  if (!rows[0]) return null;
-  // EI-6480: the UPDATE above has ALREADY committed the claim (taken_by is set) on a row in
-  // `issueWs`. Re-read in that SAME captured workspace — NOT via bare getIssue(), which
-  // re-derives issuesScopeWorkspace() and can drift (its flag cache self-heals on a TTL), so a
-  // mid-call flip would make the re-read miss the just-claimed row. A null there historically
-  // returned null: the claim LEAKED (row stayed taken_by-set, out of the pool) and the caller
-  // saw a spurious "ready but a peer raced you (retry)" miss even though the claim succeeded —
-  // the reported EI-6480 symptom (a self-consistent miss with readyUnclaimed>0). Reading in the
-  // exact claimed workspace makes that null impossible for a live claim.
-  const issue = await getIssueInWorkspace(issueWs, rows[0].feature_id, { baseHarnessSlug: rows[0].harness_slug });
-  if (issue) return issueToWorkItem(issue);
-  // Defense in depth: the row we just claimed is, by construction, present in `issueWs` (the
-  // UPDATE filtered on it and committed the mutation), so a null here is a genuine anomaly, NOT
-  // a race. Do not leak the claim or misreport it as a retryable miss: RELEASE it (return the
-  // row to the pool) and surface an honest error so the fault is visible, not disguised. Clear
-  // the claim with a workspace-EXACT UPDATE (not releaseWorkItem, which re-derives the scope via
-  // getIssue and would hit the same drift) so the undo can't itself leak. Bounded for the same
-  // reason as the claim UPDATE above — a write on this pool must never hang unboundedly.
-  await boundedOrgTxn(
-    (tx) => tx`
-    UPDATE harness_shared.work_items
-       SET taken_by = NULL, taken_at = NULL, last_progress_at = NULL, updated_ts = ${Date.now()}
-     WHERE workspace_id = ${issueWs} AND harness_slug = ${rows[0].harness_slug} AND feature_id = ${rows[0].feature_id}`,
-    { client: sql },
-  );
-  throw new Error(
-    `claimNextIssueWorkItem: claimed issue ${rows[0].feature_id} in workspace '${issueWs}' but could ` +
-      `not re-read it (getIssueInWorkspace returned null); released the claim. This is an anomaly, ` +
-      `not a peer race.`,
-  );
+    { client: sql, signal: opts.signal, acquirePool: opts.acquirePool },
+  )).catch(async (error) => {
+    const { CurrentBugReproductionRefusal } = await import('./attention/bug-reproduction');
+    if (error instanceof CurrentBugReproductionRefusal) return null;
+    throw error;
+  });
+  if (!claimed) return null;
+  return issueToWorkItem(claimed.issue);
 }
 
 export interface WorkItemObservation {
@@ -8713,8 +9388,12 @@ export interface WorkItemObservation {
    *  actually succeed. False for both "someone holds it" and "unclaimed but gated". */
   available: boolean;
   claimedBy: string | null;
+  /** The named claim's category predicate refuses this nature/audience. */
+  notAgentWork?: { nature: string; audience: string | null };
   /** Current applied operation receipt prevents this target from claiming. */
   operationClaimDenied?: string;
+  /** Accepted bug proof no longer authorizes fixing on the registered target. */
+  reproductionRefused?: { status: string; detail: string; checkedAt: string };
   /**
    * EI-7841: true when the item is UNCLAIMED (or revalidateHeld was requested)
    * yet still not-`available` because
@@ -8781,6 +9460,16 @@ export interface WorkItemObservation {
     claimedBy: string;
     claimedByLabel: string | null;
   };
+  /**
+   * WI-6554700010008465: unresolved `blocks` edges on an UNCLAIMED item — the same read
+   * (`readUnresolvedDepBlockers`) behind work_items:claim's `blockedClaimWarning`. INFORMATIONAL:
+   * it never changes `available`, because the dependency floor gates SELF-SELECT only (D-008 of
+   * the deps/readiness work) and a by-id claim still succeeds. What it adds is the signal a
+   * reader of `available:true` otherwise lacks: `scheduler:get_next` / `claim_next` will skip
+   * this row until the listed blockers settle. Omitted when there are none, when the item is
+   * held, or when the read fails (an absent field asserts nothing).
+   */
+  unresolvedDepBlockers?: UnresolvedDepBlocker[];
 }
 
 /**
@@ -8812,6 +9501,17 @@ export async function observeWorkItem(
   // Dispatch replay preserves ownership but must re-read admission/trust/origin.
   // Ordinary rd callers retain the historical holder-only observation contract.
   const checkAdmission = unclaimed || opts.revalidateHeld === true;
+  if (checkAdmission) {
+    // EI-25818014870381372: named claims reject non-agent categories even though they
+    // deliberately override readiness/status. Use the claim's own SQL predicate, scoped
+    // to the row actually resolved above (the requested harness is only a preference).
+    const category = await readNonAgentWorkCategory(
+      id, wi.harness, wi.family === 'issue' ? issuesScopeWorkspace() : activeWorkspaceId(),
+    );
+    if (category) return {
+      item: wi, available: false, claimedBy: wi.assignee, gated: true, notAgentWork: category,
+    };
+  }
   if (checkAdmission) {
     const payload = wi.payload && typeof wi.payload === 'object' && !Array.isArray(wi.payload)
       ? wi.payload as Record<string, unknown> : null;
@@ -8931,6 +9631,23 @@ export async function observeWorkItem(
       };
     }
   }
+  if (checkAdmission) {
+    const { isAcceptedReproductionStatus } = await import('./attention/bug-reproduction');
+    const { verifyAcceptedWorkItemBugReproduction } = await import('./attention/intake-promotion');
+    const reproduction = await verifyAcceptedWorkItemBugReproduction(wi);
+    if (reproduction && !isAcceptedReproductionStatus(reproduction.status)) return {
+      item: wi, available: false, claimedBy: wi.assignee, gated: true, reproductionRefused: reproduction,
+    };
+  }
+  // WI-6554700010008465: by-id claim succeeds on a dependency-blocked row (it warns), so
+  // `available` stays true; self-select does not. Name the blockers so `available:true`
+  // is not read as "the scheduler will hand this out". Fail-soft, like claim.ts.
+  if (unclaimed) {
+    const blockers = await readUnresolvedDepBlockers(id, opts.harness ?? wi.harness ?? undefined).catch(() => null);
+    if (blockers && blockers.length > 0) {
+      return { item: wi, available: true, claimedBy: wi.assignee, unresolvedDepBlockers: blockers };
+    }
+  }
   return { item: wi, available: unclaimed, claimedBy: wi.assignee };
 }
 
@@ -9021,7 +9738,10 @@ export async function releaseWorkItem(
     releasingOwnerId?: string;
   } = {},
 ): Promise<WorkItem | null> {
-  const wi = await getWorkItem(id, opts.harness);
+  const wi = await boundedOrgTxn((tx) => getWorkItem(id, opts.harness, {}, tx), {
+    readOnly: true,
+    phase: 'work_items:release:read-preflight',
+  });
   if (!wi) return null;
   if (hasResourceGovernorReceiptPayload(wi.payload)) {
     throw new ResourceGovernorReleaseRequiredError(id);
@@ -9036,18 +9756,22 @@ export async function releaseWorkItem(
       /* a caller's delta bookkeeping must never fail the release itself */
     }
   }
-  // EI-6832: this item is about to RETURN to the unclaimed pool — clear any lease a
-  // prior claim_next left on it under the WORKITEM_CLAIM_LEASE flag, so it doesn't sit
-  // visibly-unclaimed-yet-lease-poisoned for up to the lease TTL. Await the
-  // already-fail-soft cleanup so the release promise's contract is honest: when
-  // it resolves, both the work-item row and its coordination claim ledger have
-  // settled (see releaseWorkItemLease's doc comment for the bounded no-throw path).
-  if (wi.harness) await releaseWorkItemLease({ harness: wi.harness, workItemId: id, owner: wi.assignee });
+  // A known foreign caller must not release the holder's linked plan lane.
+  // The UPDATE below still performs the atomic check if ownership changes
+  // after this read; this preflight does not replace that CAS.
+  if (opts.expectedAssignee !== undefined && wi.assignee && wi.assignee !== opts.expectedAssignee) return null;
   // P-105: claim:released:<id> — wake anyone awaiting this item's claim to free, the
   // moment it returns to the pool (both the voluntary work_items:release tool AND the
   // stale-claim reaper route through here). Fire-and-forget + lazy import (work-items-
   // events imports THIS module statically — the lazy import breaks the cycle).
   const emitReleased = async (released: WorkItem | null): Promise<void> => {
+    // EI-25792454845221765: only a successful canonical release may clear
+    // the coordination lease. Doing this before the guarded UPDATE deleted
+    // a foreign holder's lease even when that UPDATE refused the release.
+    // Await cleanup before notifying waiters or resolving the release.
+    if (released && wi.harness) {
+      await releaseWorkItemLease({ harness: wi.harness, workItemId: id, owner: wi.assignee });
+    }
     if (released && wasClaimed) {
       await retireVoluntaryReleaseClaimWatch(wi, opts.releasingOwnerId);
       // P-009: the agent has put this work DOWN — clear its goal stamp so later
@@ -9122,7 +9846,12 @@ export async function releaseWorkItem(
     const updated = await releaseIssue(id, { expectedAssignee: opts.expectedAssignee });
     const released = updated ? issueToWorkItem(updated) : null;
     await emitReleased(released);
-    if (released) await retireLifecycleBindingsForWorkItem(released);
+    if (released) {
+      await withOrgTxnTimeoutPhase(
+        'work_items:release:retire-lifecycle-bindings',
+        () => retireLifecycleBindingsForWorkItem(released),
+      );
+    }
     return released;
   }
   const { sql } = getOrgPg();
@@ -9725,14 +10454,26 @@ export async function commentWorkItem(
   id: string,
   body: string,
   authorId?: string,
-  opts: { workspaceId?: string; harness?: string } = {},
+  opts: {
+    workspaceId?: string;
+    harness?: string;
+    /**
+     * personal-data-reader-set-labels P-012 / D-006: the agent that authored
+     * `body`. While it holds a restricted Personal Vault disclosure the post is a
+     * sealed stub (personal:open-sealed opens it). Pass it wherever an agent's own
+     * text is posted; omit for system-templated comments.
+     */
+    writerOwnerId?: string | null;
+  } = {},
 ): Promise<ThreadPostRow | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
   const workspaceId = opts.workspaceId?.trim() && opts.workspaceId.trim() !== '*' ? opts.workspaceId.trim() : undefined;
   const harness = opts.harness ?? wi.harness;
   // issue-family: commentIssue already creates the thread + fires the issue_commented fan-out.
-  if (wi.family === 'issue') return commentIssue(id, body, authorId, { workspaceId, harness });
+  if (wi.family === 'issue') {
+    return commentIssue(id, body, authorId, { workspaceId, harness, writerOwnerId: opts.writerOwnerId });
+  }
   // feature-family: thread on the feature ObjectRef + fan out to the work-item's subscribers.
   const ref = workItemObjectRef(wi);
   // Durable write (get-or-create thread + add post) in ONE bounded txn: ATOMIC
@@ -9745,6 +10486,17 @@ export async function commentWorkItem(
       getSql: () => tx,
       getWorkspaceId: () => workspaceId ?? activeWorkspaceId(),
     });
+    // P-012 / D-006: seal in THIS transaction, so the sealed row and its stub post
+    // commit together and the authored text never reaches coord_thread_posts.
+    const stored = opts.writerOwnerId?.trim()
+      ? await sealSharedTextInTxOrRefuse(tx, {
+          workspaceId: workspaceId ?? activeWorkspaceId(),
+          writerOwnerId: opts.writerOwnerId,
+          store: 'work-item-comment',
+          text: body,
+          context: { workItemId: id },
+        })
+      : null;
     const thread = await txThreads.getOrCreateThread(ref, {
       thread_id: `work-item-thread-${id}`,
       title: wi.title,
@@ -9752,7 +10504,7 @@ export async function commentWorkItem(
       created_ts: wi.createdAt,
       harness_slug: harness ?? undefined,
     });
-    return txThreads.addPost({ thread_id: thread.thread_id, author_id: authorId, body, created_ts: nowIso() });
+    return txThreads.addPost({ thread_id: thread.thread_id, author_id: authorId, body: stored?.text ?? body, created_ts: nowIso() });
   });
   const ev: InjectEvent = {
     from: authorId ?? 'substrate',
@@ -9924,6 +10676,14 @@ export async function updateWorkItem(
     const updated = await updateWorkItemGoal(id, wi, patch.goal);
     return updated ? { ok: true, item: updated } : { ok: false, reason: 'not_found' };
   }
+  const issueWorkspaceId = await resolveIssueWorkspace(id);
+  const issueSlug = await resolveIssuePhysicalSlug(
+    getOrgPg().sql,
+    issueWorkspaceId,
+    id,
+    opts.harness ?? wi.harness,
+  );
+  if (issueSlug === null) return { ok: false, reason: 'not_found' };
   // EI-14948: a federated (origin='remote') issue-family row is owned by its authoring
   // peer's core — the engineer_issues view's INSTEAD OF trigger (516/521) deliberately
   // no-ops a local UPDATE against it and reports 0 rows affected (RETURN NULL) so the
@@ -9939,8 +10699,18 @@ export async function updateWorkItem(
   // back to 'local' first (see selfHealAuthorOriginIfStranded's docblock) so the write
   // that follows isn't ALSO silently blocked by the same trigger.
   if (wi.origin === 'remote' && by && wi.createdBy && by === wi.createdBy) {
-    const healed = await selfHealAuthorOriginIfStranded(id, by);
+    const healed = await selfHealAuthorOriginIfStranded(id, by, {
+      workspaceId: issueWorkspaceId,
+      harnessSlug: issueSlug,
+    });
     if (healed) wi.origin = 'local';
+  }
+  // WI-10006515: the same own-node rule setWorkItemState applies (WI-10003565). A row whose
+  // author key THIS workspace has written locally is ours however it last arrived, so a
+  // system-filed row (createdBy="system:*", which no caller can match) is healed, not refused.
+  // The UPDATE's WHERE clause is the identity check; a true peer row is left untouched.
+  if (wi.origin === 'remote' && (await selfHealOwnNodeOriginIfStranded(issueWorkspaceId, id, issueSlug))) {
+    wi.origin = 'local';
   }
   if (wi.origin === 'remote') return { ok: false, reason: 'remote_origin_not_editable' };
   // `goal` is written against the base table after the issue-family metadata update:
@@ -9948,7 +10718,10 @@ export async function updateWorkItem(
   // in the view patch would be a silent no-op. Destructuring also keeps the issue writer's
   // patch contract honest and makes this separation compile-time visible.
   const { goal, ...issuePatch } = patch;
-  const issue = await updateIssue(id, { ...issuePatch, by });
+  const issue = await updateIssue(id, { ...issuePatch, by }, {
+    workspaceId: issueWorkspaceId,
+    harnessSlug: issueSlug,
+  });
   if (issue === null) return { ok: false, reason: 'not_found' };
   if ('shrinkGuardTripped' in issue) {
     return { ok: false, reason: 'body_shrink_guard', existingLength: issue.existingLength, newLength: issue.newLength };

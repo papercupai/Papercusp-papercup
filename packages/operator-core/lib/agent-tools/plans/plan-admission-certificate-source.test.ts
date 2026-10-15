@@ -1,4 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
+import { canonicalJson } from '../../authority/authority-rpc-envelope';
+import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
+import { canonicalizeHivePolicy, hivePolicySignedBytes } from '../../hive-policy-schema';
+import type { ResolvedHivePolicy } from '../../hive-policy-store';
+import { governanceAuthorityHash, governanceEventSigningBytes, governanceVoteSigningBytes,
+  type GovernanceSigningAuthority } from './governance-authentication';
 import type { HiveSettingRecord } from '../../hive-settings-store';
 import {
   appendGovernanceVote,
@@ -20,6 +27,7 @@ import {
   appendPlanAdmissionGovernanceEvent,
   planAdmissionGovernanceEventSettingKey,
   readPlanAdmissionGovernanceSnapshot,
+  resolvePlanAdmissionGovernanceAuthority,
   type PlanAdmissionGovernanceSnapshot,
   type PlanAdmissionGovernanceStoreDeps,
 } from './plan-admission-governance-store';
@@ -54,6 +62,16 @@ const POLICY: PlanAdmissionPolicy = Object.freeze({
 });
 
 const rowWith = (contentHash: string) => ({ contentHash }) as unknown as PlanRow;
+const KEYS = MEMBERS.map(() => generateEd25519KeypairDer());
+const AUTHORITY: GovernanceSigningAuthority = { potId: POT_ID, policy: POLICY,
+  members: MEMBERS.map((memberId, i) => ({ memberId, publicKey: KEYS[i]!.pubkeyBase64,
+    keyEpoch: 1, originPeerIds: ['peer-1'], roles: ['round-open', 'vote', 'finalize', 'pause', 'resume', 'revoke'] })) };
+
+function signEvent(event: Omit<FederatedGovernanceEvent, 'signature'>): FederatedGovernanceEvent {
+  const member = event.authorization?.memberId ?? MEMBERS[0];
+  return { ...event, signature: signWithPrivateKeyDer(KEYS[MEMBERS.indexOf(member as typeof MEMBERS[number])]!.privateKeyDer,
+    governanceEventSigningBytes(event)).toString('base64') };
+}
 
 function federated(
   eventId: string,
@@ -62,16 +80,16 @@ function federated(
   occurredAtMs: number,
   over: Partial<FederatedGovernanceEvent> = {},
 ): FederatedGovernanceEvent {
-  return {
+  return signEvent({
     eventId,
     potId: POT_ID,
     roundId,
     originPeerId: 'peer-1',
     occurredAtMs,
     body,
-    signature: `sig-${eventId}`,
+    authorization: { memberId: body.kind === 'vote' ? body.vote.memberId : MEMBERS[0], keyEpoch: 1 },
     ...over,
-  };
+  });
 }
 
 function ratifiedRound(input: {
@@ -80,6 +98,7 @@ function ratifiedRound(input: {
   policyVersion?: number;
   createdAtMs?: number;
   finalizedAtMs?: number;
+  authority?: GovernanceSigningAuthority;
 } = {}): {
   round: GovernanceRound;
   votes: readonly GovernanceVoteEvent[];
@@ -89,25 +108,30 @@ function ratifiedRound(input: {
   const roundId = input.roundId ?? 'round-1';
   const createdAtMs = input.createdAtMs ?? NOW - 10_000;
   const finalizedAtMs = input.finalizedAtMs ?? NOW;
+  const authority = input.authority ?? AUTHORITY;
   const created = createGovernanceRound({
     roundId,
     planRevisionHash: input.planRevisionHash ?? PLAN_REVISION,
-    policyVersion: input.policyVersion ?? POLICY.policyVersion,
+    policyVersion: input.policyVersion ?? authority.policy.policyVersion,
     eligibleMemberIds: [...MEMBERS],
     createdAtMs,
+    authorityHash: governanceAuthorityHash(authority),
   });
   if (!created.ok) throw new Error(`fixture round refused: ${created.code} ${created.detail}`);
 
   let votes: GovernanceVoteEvent[] = [];
   MEMBERS.forEach((memberId, index) => {
-    const appended = appendGovernanceVote(created.value, votes, {
+    const ballot = {
       eventId: `${roundId}-vote-${index + 1}`,
       roundId,
       memberId,
-      choice: 'approve',
+      choice: 'approve' as const,
       sequence: index + 1,
-      signature: `sig-${roundId}-vote-${index + 1}`,
-    });
+      keyEpoch: authority.members.find(m => m.memberId === memberId)!.keyEpoch,
+    };
+    const appended = appendGovernanceVote(created.value, votes, { ...ballot,
+      signature: signWithPrivateKeyDer(KEYS[index]!.privateKeyDer,
+        governanceVoteSigningBytes(authority, created.value, ballot)).toString('base64') });
     if (!appended.ok) throw new Error(`fixture vote refused: ${appended.code} ${appended.detail}`);
     votes = appended.value;
   });
@@ -115,7 +139,8 @@ function ratifiedRound(input: {
   const finalized = finalizeGovernanceRound({
     round: created.value,
     events: votes,
-    policy: POLICY,
+    policy: authority.policy,
+    members: authority.members,
     nowMs: finalizedAtMs,
   });
   if (!finalized.ok) {
@@ -127,13 +152,15 @@ function ratifiedRound(input: {
     votes,
     certificate: finalized.value,
     events: [
-      federated(`${roundId}-open`, roundId, { kind: 'round-open', round: created.value }, createdAtMs),
+      federated(`${roundId}-open`, roundId, { kind: 'round-open', round: created.value }, createdAtMs,
+        { authorization: { memberId: MEMBERS[0], keyEpoch: authority.members[0]!.keyEpoch } }),
       ...votes.map((vote, index) =>
         federated(
           `${roundId}-vote-event-${index + 1}`,
           roundId,
           { kind: 'vote', vote },
           createdAtMs + index + 1,
+          { authorization: { memberId: vote.memberId, keyEpoch: vote.keyEpoch! } },
         ),
       ),
       federated(
@@ -141,6 +168,7 @@ function ratifiedRound(input: {
         roundId,
         { kind: 'finalize', certificate: finalized.value },
         finalizedAtMs,
+        { authorization: { memberId: MEMBERS[0], keyEpoch: authority.members[0]!.keyEpoch } },
       ),
     ],
   };
@@ -171,6 +199,8 @@ async function snapshotFrom(
     {
       resolvePotScope: async () => POT_ID,
       listSettings: async () => [...events.map((event) => settingFor(event)), ...extraRows],
+      resolveAuthority: async () => AUTHORITY,
+      nowMs: () => NOW + 1,
     },
   );
 }
@@ -183,9 +213,10 @@ function sourceFor(snapshot: PlanAdmissionGovernanceSnapshot) {
       return POT_HOME_SLUG;
     },
     readSnapshot: async (input) => {
-      expect(input).toEqual({ workspaceId: WORKSPACE_ID, potHomeSlug: POT_HOME_SLUG });
+      expect(input).toMatchObject({ workspaceId: WORKSPACE_ID, potHomeSlug: POT_HOME_SLUG });
       return snapshot;
     },
+    resolveAuthority: async () => AUTHORITY,
   });
 }
 
@@ -206,6 +237,8 @@ describe('plan-admission governance event store', () => {
     let writes = 0;
     const ledgerChain = memoryLedgerChainLinkStore();
     const deps: PlanAdmissionGovernanceStoreDeps = {
+      resolveAuthority: async () => AUTHORITY,
+      nowMs: () => NOW + 1,
       ledgerChain,
       resolvePotScope: async () => POT_ID,
       listSettings: async () => [...rows],
@@ -263,7 +296,8 @@ describe('plan-admission governance event store', () => {
   it('marks divergent event ids as conflicted and reports malformed, key-mismatched, and foreign-pot rows', async () => {
     const { events } = ratifiedRound();
     const original = events[0];
-    const divergent = { ...original, occurredAtMs: original.occurredAtMs + 1 };
+    const { signature: _sig, ...unsigned } = original;
+    const divergent = signEvent({ ...unsigned, occurredAtMs: original.occurredAtMs + 1 });
     const foreign = { ...events[1], eventId: 'foreign', potId: 'other-pot' };
     const malformed: HiveSettingRecord = {
       workspaceId: WORKSPACE_ID,
@@ -284,10 +318,9 @@ describe('plan-admission governance event store', () => {
 
     expect(snapshot.events.map((event) => event.eventId)).toEqual([
       original.eventId,
-      divergent.eventId,
     ]);
     expect(snapshot.conflictedRoundIds).toEqual(new Set([original.roundId]));
-    expect(snapshot.integrityErrors).toHaveLength(3);
+    expect(snapshot.integrityErrors).toHaveLength(4);
     expect(snapshot.integrityErrors.join('\n')).toContain('invalid governance event');
     expect(snapshot.integrityErrors.join('\n')).toContain('content digest does not match key');
     expect(snapshot.integrityErrors.join('\n')).toContain("event belongs to pot 'other-pot'");
@@ -295,6 +328,134 @@ describe('plan-admission governance event store', () => {
 });
 
 describe('production plan-admission certificate source', () => {
+  const resolve = (source: ReturnType<typeof sourceFor>, policy = POLICY) => source.resolve({
+    slug: 'plan-1', door: 'start', planRevisionHash: PLAN_REVISION, policy, nowMs: NOW + 1,
+    opts: { workspaceId: WORKSPACE_ID, harnessSlug: HARNESS_SLUG },
+  });
+
+  it('exposes the same authenticated full certificate to governed execution', async () => {
+    const ratified = ratifiedRound();
+    const source = sourceFor(await snapshotFrom(ratified.events));
+    const full = await source.resolveFinalization({ slug: 'plan-1', door: 'start',
+      planRevisionHash: PLAN_REVISION, policy: POLICY, nowMs: NOW + 1,
+      opts: { workspaceId: WORKSPACE_ID, harnessSlug: HARNESS_SLUG } });
+    expect(full.certificate).toEqual(ratified.certificate);
+    expect(full.governance?.status).toBe('finalized');
+    expect((await resolve(source)).certificate?.certificateHash).toBe(full.certificate?.certificateHash);
+  });
+
+  it('reconstructs real signed replacements and rejects a same-sequence replay', async () => {
+    const ratified = ratifiedRound();
+    const original = ratified.votes[0]!;
+    const signedVote = (sequence: number, choice: GovernanceVoteEvent['choice']) => {
+      const { signature: _signature, ...unsigned } = original;
+      const body = { ...unsigned, sequence, choice, eventId: `replacement-${sequence}` };
+      return { ...body, signature: signWithPrivateKeyDer(KEYS[0]!.privateKeyDer,
+        governanceVoteSigningBytes(AUTHORITY, ratified.round, body)).toString('base64') };
+    };
+    const reject = signedVote(4, 'reject');
+    const approve = signedVote(5, 'approve');
+    const ballots = [...ratified.votes, reject, approve];
+    const finalized = finalizeGovernanceRound({ round: ratified.round, events: ballots,
+      policy: POLICY, members: AUTHORITY.members, nowMs: NOW });
+    if (!finalized.ok) throw new Error(finalized.detail);
+    expect(finalized.value.tally.replacements).toBe(2);
+    const events = [...ratified.events.filter(e => e.body.kind !== 'finalize'),
+      federated('replacement-reject', ratified.round.roundId, { kind: 'vote', vote: reject }, NOW - 2),
+      federated('replacement-approve', ratified.round.roundId, { kind: 'vote', vote: approve }, NOW - 1),
+      federated('revised-finalization', ratified.round.roundId, { kind: 'finalize', certificate: finalized.value }, NOW)];
+    expect((await resolve(sourceFor(await snapshotFrom(events)))).certificate).toMatchObject({ admitted: true });
+    const replay = signedVote(5, 'reject');
+    const replayed = [...events, federated('sequence-replay', ratified.round.roundId, { kind: 'vote', vote: replay }, NOW)];
+    expect((await resolve(sourceFor(await snapshotFrom(replayed)))).certificate).toBeNull();
+  });
+
+  it('refuses forged stored ballot and control signatures even when a custom snapshot claims integrity', async () => {
+    const ratified = ratifiedRound();
+    for (const kind of ['vote', 'finalize'] as const) {
+      const events = ratified.events.map(e => e.body.kind === kind ? { ...e, signature: 'forged' } : e);
+      const stored = await snapshotFrom(events);
+      expect(stored.integrityErrors.join(';')).toContain('unverified-signature');
+      expect((await resolve(sourceFor({ potId: POT_ID, events,
+        integrityErrors: [], conflictedRoundIds: new Set() }))).certificate).toBeNull();
+    }
+  });
+
+  it('refuses a governor-signed forged inner ballot and never writes a forged append', async () => {
+    const ratified = ratifiedRound();
+    const vote = ratified.votes[0]!;
+    const forged = federated('forged-inner', ratified.round.roundId,
+      { kind: 'vote', vote: { ...vote, signature: 'forged' } }, NOW);
+    const snapshot = await snapshotFrom([ratified.events[0]!, forged]);
+    expect(snapshot.integrityErrors.join(';')).toContain('unverified-ballot');
+    let writes = 0;
+    await expect(appendPlanAdmissionGovernanceEvent({ workspaceId: WORKSPACE_ID,
+      potHomeSlug: POT_HOME_SLUG, event: forged }, undefined, {
+      resolvePotScope: async () => POT_ID, resolveAuthority: async () => AUTHORITY,
+      nowMs: () => NOW, ledgerChain: null, listSettings: async () => [settingFor(ratified.events[0]!)],
+      setSetting: async () => { writes++; throw new Error('unexpected write'); },
+    })).rejects.toThrow('unverified-ballot');
+    expect(writes).toBe(0);
+  });
+
+  it('refuses stale authority epochs and changed policy thresholds at the production consumer', async () => {
+    const ratified = ratifiedRound();
+    const raw: PlanAdmissionGovernanceSnapshot = { potId: POT_ID, events: ratified.events,
+      integrityErrors: [], conflictedRoundIds: new Set() };
+    const stale = createPlanAdmissionCertificateSource({ resolvePotHomeSlug: async () => POT_HOME_SLUG,
+      readSnapshot: async () => raw, resolveAuthority: async () => ({ ...AUTHORITY,
+        members: AUTHORITY.members.map(m => ({ ...m, keyEpoch: 2 })) }) });
+    expect((await resolve(stale)).certificate).toBeNull();
+    expect((await resolve(sourceFor(raw), { ...POLICY, quorumBps: 1 })).certificate).toBeNull();
+    const absent = createPlanAdmissionCertificateSource({ resolvePotHomeSlug: async () => POT_HOME_SLUG,
+      readSnapshot: async () => raw, resolveAuthority: async () => null });
+    expect((await resolve(absent)).certificate).toBeNull();
+  });
+
+  it('reconstructs certificates from authenticated ballots rather than trusting a signed self-computable hash', async () => {
+    const ratified = ratifiedRound();
+    const { certificateHash: _hash, ...base } = ratified.certificate;
+    const altered = { ...base, tally: { ...base.tally, approveWeight: 100 } };
+    const certificate = { ...altered, certificateHash: createHash('sha256').update(canonicalJson(altered)).digest('hex') };
+    const wrong = federated('false-finalize', ratified.round.roundId, { kind: 'finalize', certificate }, NOW);
+    const resolved = await resolve(sourceFor(await snapshotFrom([
+      ...ratified.events.filter(e => e.body.kind !== 'finalize'), wrong,
+    ])));
+    expect(resolved.certificate).toBeNull();
+    expect(resolved.governance?.status).toBe('quarantined');
+    const missingBallots = await resolve(sourceFor(await snapshotFrom(
+      ratified.events.filter(e => e.body.kind !== 'vote'))));
+    expect(missingBallots.certificate).toBeNull();
+    expect(missingBallots.governance?.status).toBe('quarantined');
+  });
+
+  it('authenticates out-of-order snapshots and makes exact replay idempotent', async () => {
+    const ratified = ratifiedRound();
+    const events = [...ratified.events].reverse();
+    const resolved = await resolve(sourceFor(await snapshotFrom([...events, ...events])));
+    expect(resolved.certificate?.certificateHash).toBe(ratified.certificate.certificateHash);
+  });
+
+  it('permits fresh re-ratification after policy and signer epochs change while retaining immutable history', async () => {
+    const old = ratifiedRound({ roundId: 'old-round', createdAtMs: NOW - 20_000, finalizedAtMs: NOW - 15_000 });
+    for (const changed of [
+      { ...AUTHORITY, policy: { ...POLICY, policyVersion: POLICY.policyVersion + 1 } },
+      { ...AUTHORITY, members: AUTHORITY.members.map(m => ({ ...m, keyEpoch: 2 })) },
+    ]) {
+      const fresh = ratifiedRound({ roundId: 'fresh-round', authority: changed });
+      const rows = [...old.events, ...fresh.events].map(e => settingFor(e));
+      const source = createPlanAdmissionCertificateSource({
+        resolvePotHomeSlug: async () => POT_HOME_SLUG, resolveAuthority: async () => changed,
+        readSnapshot: input => readPlanAdmissionGovernanceSnapshot(input, undefined, {
+          resolvePotScope: async () => POT_ID, resolveAuthority: async () => changed,
+          nowMs: () => NOW + 1, listSettings: async () => rows,
+        }),
+      });
+      const result = await resolve(source, changed.policy);
+      expect(result.certificate?.certificateHash).toBe(fresh.certificate.certificateHash);
+      expect(rows).toHaveLength(old.events.length + fresh.events.length);
+    }
+  });
   it('bridges a verified finalization for the exact revision and returns controls from the same round', async () => {
     const ratified = ratifiedRound();
     const source = sourceFor(await snapshotFrom(ratified.events));
@@ -334,6 +495,7 @@ describe('production plan-admission certificate source', () => {
       policyVersion: POLICY.policyVersion,
       eligibleMemberIds: [...MEMBERS],
       createdAtMs: NOW - 1_000,
+      authorityHash: governanceAuthorityHash(AUTHORITY),
     });
     if (!newer.ok) throw new Error(`fixture newer round refused: ${newer.code} ${newer.detail}`);
     const newerOpen = federated(
@@ -360,6 +522,45 @@ describe('production plan-admission certificate source', () => {
       quarantineReason: null,
       revokedReason: null,
     });
+  });
+});
+
+describe('owner-signed governance authority resolution', () => {
+  function signedPolicy() {
+    const owner = generateEd25519KeypairDer();
+    const policy = { governance: { planAdmission: POLICY,
+      signingAuthority: { members: AUTHORITY.members } } };
+    const policyJson = canonicalizeHivePolicy(policy);
+    const row: ResolvedHivePolicy = { workspaceId: WORKSPACE_ID, potHomeSlug: POT_ID,
+      policy, policyJson, policyVersion: 10, ownerPubkey: owner.pubkeyBase64,
+      signature: signWithPrivateKeyDer(owner.privateKeyDer, hivePolicySignedBytes({
+        workspaceId: WORKSPACE_ID, potHomeSlug: POT_ID, policyVersion: 10, canonicalPolicyJson: policyJson,
+      })).toString('base64'), fedHlc: null, updatedAt: NOW };
+    return { owner, row };
+  }
+
+  it('reads policy at federated scope and verifies it against the independently registered local owner', async () => {
+    const { owner, row } = signedPolicy();
+    const result = await resolvePlanAdmissionGovernanceAuthority({ workspaceId: WORKSPACE_ID,
+      potHomeSlug: POT_HOME_SLUG, potId: POT_ID }, undefined, {
+      getPolicy: async (ws, scope) => { expect([ws, scope]).toEqual([WORKSPACE_ID, POT_ID]); return row; },
+      getOwner: async (ws, handle) => { expect([ws, handle]).toEqual([WORKSPACE_ID, POT_HOME_SLUG]);
+        return { pubkeyBase64: owner.pubkeyBase64 }; },
+    });
+    expect(result).toEqual({ ...AUTHORITY, delegations: undefined });
+  });
+
+  it('refuses forged signatures, edited signed policy, self-appointed keys and foreign scope', async () => {
+    const { owner, row } = signedPolicy();
+    const attacker = generateEd25519KeypairDer();
+    for (const bad of [{ ...row, signature: 'forged' }, { ...row, potHomeSlug: 'other' },
+      { ...row, policy: { governance: { ...row.policy.governance, planAdmission: { ...POLICY, quorumBps: 0 } } } },
+      { ...row, ownerPubkey: attacker.pubkeyBase64 }]) {
+      expect(await resolvePlanAdmissionGovernanceAuthority({ workspaceId: WORKSPACE_ID,
+        potHomeSlug: POT_HOME_SLUG, potId: POT_ID }, undefined, {
+        getPolicy: async () => bad, getOwner: async () => ({ pubkeyBase64: owner.pubkeyBase64 }),
+      })).toBeNull();
+    }
   });
 });
 

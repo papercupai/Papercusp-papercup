@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { makeComposedResolveExtends } from '@papercusp/blueprint-distribution';
@@ -109,6 +109,31 @@ const getOwnerSteering = vi.fn(async (_ws?: string, _slug?: string) => ({
 vi.mock('../owner-steering', () => ({ getOwnerSteering: (...a: unknown[]) => getOwnerSteering(...(a as [string, string])) }));
 const readAgentConfig = vi.fn(async () => ({ models: {}, tiers: [] as unknown[], tierCeilings: {} as Record<string, string> }));
 vi.mock('../agent-config', () => ({ readAgentConfig: () => readAgentConfig() }));
+const routingFixture = vi.hoisted(() => ({ enabled: false,
+  accounts: [{ id: 'pool-a', provider: 'codex' }, { id: 'pool-b', provider: 'codex' },
+    { id: 'claude-a', provider: 'claude' }],
+  status: vi.fn(async (): Promise<import('../deployment/account-pool-store').AccountStatusRow[]> => []),
+  excluded: ['pool-b'], forced: [] as string[],
+  notice: vi.fn(async () => ({})), observation: vi.fn(),
+}));
+vi.mock('../agent-tools/coordination/messages', async original => ({
+  ...(await original<typeof import('../agent-tools/coordination/messages')>()), sendMessage: routingFixture.notice,
+}));
+vi.mock('../degradation/fallback-observations', async original => ({
+  ...(await original<typeof import('../degradation/fallback-observations')>()), observeFallback: routingFixture.observation,
+}));
+vi.mock('@papercusp/flags/server', async original => ({
+  ...(await original<typeof import('@papercusp/flags/server')>()), getFlag: async () => routingFixture.enabled,
+}));
+vi.mock('../deployment/account-pool-store', async original => ({
+  ...(await original<typeof import('../deployment/account-pool-store')>()),
+  loadAccountPool: async () => ({ accounts: routingFixture.accounts }),
+  accountStatus: routingFixture.status,
+}));
+vi.mock('../deployment/account-session-override', async original => ({
+  ...(await original<typeof import('../deployment/account-session-override')>()),
+  getAccountOverride: async () => ({ excludeAccounts: routingFixture.excluded, forcedAccounts: routingFixture.forced }),
+}));
 
 // WI-269 (durable-spawn workspace-pin): resolveLaunchTarget must resolve a `*`
 // workspace to a concrete one and never bake `ws=*` into the /invoke URL (a persisted
@@ -129,6 +154,12 @@ vi.mock('../workspace-registry', async (orig) => ({
 }));
 
 afterEach(() => {
+  routingFixture.enabled = false;
+  routingFixture.status.mockReset().mockResolvedValue([]);
+  routingFixture.excluded = ['pool-b'];
+  routingFixture.forced = [];
+  routingFixture.notice.mockClear();
+  routingFixture.observation.mockClear();
   setLaunchBlueprintFire(null);
   setLaunchBlueprintResolver(null);
   resetLaunchBlueprintTriggerMap();
@@ -143,6 +174,157 @@ afterEach(() => {
 });
 
 const opts = { installSlug: 'papercup', workspaceId: 'ws_test' };
+
+describe('blueprint ordered capacity failover (P-004 R-4)', () => {
+  function status(id: string, provider: 'codex' | 'claude', state: 'headroom' | 'wall' | 'unknown'): import('../deployment/account-pool-store').AccountStatusRow {
+    return { id, provider, available: state !== 'wall', usageWalled: state === 'wall',
+      credentialRef: `token:${id}`, boundTo: [], sustainedlyLimited: false,
+      edgeThrottleKnown: false, edgeThrottled: false, edgeThrottleCooledIps: 0,
+      edgeThrottleBare429Streak: 0, liveBuckets: [],
+      readingStatus: state === 'unknown' ? 'stale' : 'fresh',
+      rate: { pausedUntil: 0, penaltyCount: 0, lastPenaltyAt: 0, windowStartedAt: 0 },
+      burn: { disposition: 'no-verdict', burnRatePerHr: null, headroomFraction: null,
+        projectedExhaustionAt: null, exhaustsBeforeReset: false, action: 'none',
+        utilization7d: null, reason: 'fixture' } };
+  }
+  function configure(backups: import('@papercusp/orchestrator/blueprint').BlueprintLaunchBackup[] = [
+    { backend: 'claude-code' as const, model: 'sonnet', effort: 'high' as const },
+    { backend: 'claude-code' as const, model: 'opus', effort: 'xhigh' as const },
+  ]) {
+    setLaunchBlueprintResolver(() => {
+      const bp = loadBuiltinBlueprint('release-fix').blueprint;
+      return { ...bp, roles: bp.roles.map(role => role.id === 'release-fixer'
+        ? { ...role, backend: 'codex' as const, model: 'gpt-5.4', effort: 'high' as const, account: 'auto', backups } : role) };
+    });
+  }
+  beforeEach(() => {
+    configure();
+    routingFixture.status.mockResolvedValue([status('pool-a', 'codex', 'wall'), status('claude-a', 'claude', 'headroom')]);
+  });
+
+  it('issues the first usable declared backup on both direct and durable paths, preserving effort and primary evidence', async () => {
+    const fire = vi.fn();
+    setLaunchBlueprintFire(fire);
+    await fireLaunchBlueprint('release-fix', opts);
+    expect(fire.mock.calls[0]![0].bodyExtra).toMatchObject({ spawnBackend: 'claude-code', spawnModel: 'sonnet:high',
+      requestedSpawnBackend: 'codex', requestedSpawnModel: 'gpt-5.4:high', spawnFallbackReason: 'capacity', account: 'auto' });
+    const request = await buildLaunchSpawnRequest('release-fix', opts, 'capacity:first');
+    expect(request.spawnRecord?.accountRoute).toMatchObject({ requestedBackend: 'codex', requestedModel: 'gpt-5.4',
+      requestedEffort: 'high', launchedBackend: 'claude-code', launchedModel: 'sonnet', launchedEffort: 'high', reason: 'capacity' });
+    expect(routingFixture.observation).toHaveBeenCalledWith('blueprint-launch',
+      expect.objectContaining({ reason: 'capacity', applied: 0 }), expect.objectContaining({ workspaceId: opts.workspaceId }));
+    expect(routingFixture.notice).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: opts.workspaceId }),
+      expect.objectContaining({ summary: expect.stringContaining('sonnet:high'), extra: { expects: 'none', reason: 'capacity' } }));
+  });
+
+  it('skips a walled first backup and selects the second without reordering', async () => {
+    configure([{ backend: 'codex', model: 'gpt-5.4', effort: 'high' },
+      { backend: 'claude-code', model: 'opus', effort: 'xhigh' }]);
+    const request = await buildLaunchSpawnRequest('release-fix', opts, 'capacity:second');
+    expect(request.body).toMatchObject({ spawnBackend: 'claude-code', spawnModel: 'opus:xhigh' });
+  });
+
+  it('keeps a primary with headroom and does not record a substitution', async () => {
+    routingFixture.status.mockResolvedValue([status('pool-a', 'codex', 'headroom'), status('claude-a', 'claude', 'headroom')]);
+    const request = await buildLaunchSpawnRequest('release-fix', opts, 'capacity:primary');
+    expect(request.body).toMatchObject({ spawnBackend: 'codex', spawnModel: 'gpt-5.4:high' });
+    expect(request.body.spawnFallbackReason).toBeUndefined();
+    expect(routingFixture.notice).not.toHaveBeenCalled();
+  });
+
+  it('withholds when every declared pool is measurably walled', async () => {
+    routingFixture.status.mockResolvedValue([status('pool-a', 'codex', 'wall'), status('claude-a', 'claude', 'wall')]);
+    const fire = vi.fn(); setLaunchBlueprintFire(fire);
+    await expect(fireLaunchBlueprint('release-fix', opts)).rejects.toThrow(/Launch withheld.*every declared route.*codex.*claude/s);
+    expect(fire).not.toHaveBeenCalled();
+    expect(routingFixture.notice).not.toHaveBeenCalled();
+  });
+
+  it('fails open on unknown backup capacity instead of skipping it', async () => {
+    routingFixture.status.mockResolvedValue([status('pool-a', 'codex', 'wall'), status('claude-a', 'claude', 'unknown')]);
+    const request = await buildLaunchSpawnRequest('release-fix', opts, 'capacity:unknown');
+    expect(request.body.spawnModel).toBe('sonnet:high');
+  });
+
+  it('keeps an unknown primary, including a failed status read, without claiming a capacity substitution', async () => {
+    routingFixture.status.mockResolvedValue([status('pool-a', 'codex', 'unknown'), status('claude-a', 'claude', 'headroom')]);
+    expect((await buildLaunchSpawnRequest('release-fix', opts, 'capacity:unknown-primary')).body.spawnBackend).toBe('codex');
+    routingFixture.status.mockRejectedValue(new Error('status unavailable'));
+    expect((await buildLaunchSpawnRequest('release-fix', opts, 'capacity:read-failed')).body.spawnBackend).toBe('codex');
+    expect(routingFixture.notice).not.toHaveBeenCalled();
+  });
+
+  it('preserves explicit direct and pinned overrides instead of switching their provider', async () => {
+    const direct = await buildLaunchSpawnRequest('release-fix', { ...opts, bodyExtra: { account: 'default' } }, 'capacity:direct');
+    expect(direct.body).toMatchObject({ account: 'default', spawnBackend: 'codex' });
+    await expect(buildLaunchSpawnRequest('release-fix', { ...opts, bodyExtra: { account: 'pool-a' } }, 'capacity:pin'))
+      .rejects.toThrow(/Launch withheld/);
+    expect(routingFixture.notice).not.toHaveBeenCalled();
+  });
+
+  it('honors the same account allow-list as the invoke env and ignores unrelated headroom', async () => {
+    routingFixture.status.mockResolvedValue([status('pool-a', 'codex', 'wall'), status('pool-b', 'codex', 'headroom'),
+      status('claude-a', 'claude', 'headroom')]);
+    const request = await buildLaunchSpawnRequest('release-fix', opts, 'capacity:filtered');
+    expect(request.body.spawnBackend).toBe('claude-code');
+    routingFixture.forced = ['pool-b']; routingFixture.excluded = [];
+    const allowed = await buildLaunchSpawnRequest('release-fix', opts, 'capacity:allow');
+    expect(allowed.body.spawnBackend).toBe('codex');
+  });
+
+  it('uses a backup account declaration while preserving an explicit caller route override', async () => {
+    configure([{ backend: 'claude-code', model: 'opus', effort: 'max', account: 'claude-a' }]);
+    const declared = await buildLaunchSpawnRequest('release-fix', opts, 'capacity:backup-account');
+    expect(declared.body).toMatchObject({ spawnBackend: 'claude-code', spawnModel: 'opus:max', account: 'claude-a' });
+    const override = await buildLaunchSpawnRequest('release-fix', { ...opts, bodyExtra: { account: 'auto' } }, 'capacity:caller-route');
+    expect(override.body.account).toBe('auto');
+  });
+
+  it('carries the backup through the actual invoke parser, metadata writer, and Claude gateway env', async () => {
+    routingFixture.enabled = true;
+    vi.stubEnv('PAPERCUSP_ACCOUNT_ID', 'ambient-pin');
+    const request = await buildLaunchSpawnRequest('release-fix', opts, 'capacity:bridge');
+    const { parseBlueprintInvokeRequest, recordBlueprintInvokeAccountRoute } = await import('../endpoint-route/routes/harness/spawn');
+    const parsed = parseBlueprintInvokeRequest(JSON.parse(JSON.stringify(request.body)));
+    const { resolveSpawnBackendModel } = await import('../harness-invoke-once');
+    const backend = resolveSpawnBackendModel('release-fixer', parsed.spawnModelPin, parsed.spawnBackendPin);
+    expect(backend).toMatchObject({ model: 'sonnet[1m]', effort: 'high' });
+    const { resolveSpawnGatewayEnv, applyExplicitSpawnAccountRoute } = await import('../inference-gateway/spawn-env');
+    let resolvedAccountIds: string[] = [];
+    const env = await resolveSpawnGatewayEnv({ workspaceId: opts.workspaceId, slug: opts.installSlug, ownerId: 's-backup',
+      backend: parsed.spawnBackendPin, model: parsed.spawnModelPin, account: parsed.account,
+      onResolvedAccounts: ids => { resolvedAccountIds = ids; } });
+    applyExplicitSpawnAccountRoute(env, parsed.account);
+    expect(env.ANTHROPIC_BASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:/);
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).toContain('s-backup');
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).not.toContain('ambient-pin');
+    expect(env.PAPERCUSP_ACCOUNT_ID).toBe('');
+    expect(resolvedAccountIds).toEqual(['claude-a']);
+    let written: unknown;
+    const sql = Object.assign(vi.fn(async () => [{ spawn_id: 's-backup' }]), { json: (value: unknown) => { written = value; return value; } });
+    await recordBlueprintInvokeAccountRoute(sql as never, { spawnId: 's-backup', ownerId: 's-backup', parsed,
+      backend: 'claude-code', model: backend.model!, effort: backend.effort, resolvedAccountIds });
+    expect(written).toMatchObject({ ownerId: 's-backup', requestedBackend: 'codex', requestedModel: 'gpt-5.4',
+      launchedBackend: 'claude-code', launchedModel: 'sonnet[1m]', launchedEffort: 'high', reason: 'capacity', resolvedAccountIds: ['claude-a'] });
+    const pinned = await resolveSpawnGatewayEnv({ workspaceId: opts.workspaceId, slug: opts.installSlug, ownerId: 's-pin',
+      backend: 'claude-code', account: 'claude-a' });
+    applyExplicitSpawnAccountRoute(pinned, 'claude-a');
+    expect(pinned.PAPERCUSP_ACCOUNT_ID).toBe('claude-a');
+    expect(pinned.ANTHROPIC_CUSTOM_HEADERS).toContain('claude-a');
+    expect(() => parseBlueprintInvokeRequest({ ...request.body, requestedSpawnModel: undefined })).toThrow(/requires requested/);
+  });
+
+  it('preserves primary effort when invoke normalizes model and effort into separate command flags', async () => {
+    const { parseBlueprintInvokeRequest, recordBlueprintInvokeAccountRoute } = await import('../endpoint-route/routes/harness/spawn');
+    const parsed = parseBlueprintInvokeRequest({ account: 'auto', spawnBackend: 'codex', spawnModel: 'gpt-5.4:high' });
+    let written: unknown;
+    const sql = Object.assign(vi.fn(async () => [{ spawn_id: 's-primary' }]), { json: (value: unknown) => { written = value; return value; } });
+    await recordBlueprintInvokeAccountRoute(sql as never, { spawnId: 's-primary', ownerId: 's-primary', parsed,
+      backend: 'codex', model: 'gpt-5.4', effort: 'high', resolvedAccountIds: ['pool-a'] });
+    expect(written).toMatchObject({ requestedModel: 'gpt-5.4', requestedEffort: 'high',
+      launchedModel: 'gpt-5.4', launchedEffort: 'high' });
+  });
+});
 
 // Most tests in this file exercise launch mechanics (model routing, body shaping,
 // lineage), not the retired Queen/cup blueprints themselves. Make that distinction
@@ -254,6 +436,105 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
       parentRole: 'operator', // parentless system launch
       itemId: 'EI-9',
     });
+  });
+
+  it('declared account route reaches direct and durable requests', async () => {
+    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+    setLaunchBlueprintFire((input) => { fired.push(input); });
+    await fireLaunchBlueprint('release-fix', opts);
+    expect(fired[0]!.bodyExtra?.account).toBe('auto');
+    const request = await buildLaunchSpawnRequest('release-fix', opts, 'route:primary');
+    expect(request.body.account).toBe('auto');
+  });
+
+  it('primary spawn persists resolved route and stable owner correlation', async () => {
+    const request = await buildLaunchSpawnRequest('release-fix', {
+      ...opts, bodyExtra: { account: 'auto', spawnBackend: 'codex', spawnModel: 'gpt-5.4:high' },
+    }, 'route:primary-exact');
+    expect(request.spawnRecord?.accountRoute).toEqual({
+      ownerId: 'durable-spawn:route:primary-exact', accountRoute: 'auto',
+      requestedBackend: 'codex', requestedModel: 'gpt-5.4', requestedEffort: 'high',
+      launchedBackend: 'codex', launchedModel: 'gpt-5.4', launchedEffort: 'high', resolvedAccountIds: [],
+    });
+    const { assertSpawnAccountRoute } = await import('../fleet/spawn-tree');
+    expect(() => assertSpawnAccountRoute('foreign-owner', request.spawnRecord!.accountRoute!)).toThrow(/owner/);
+    expect(() => assertSpawnAccountRoute('durable-spawn:route:primary-exact', {
+      ...request.spawnRecord!.accountRoute!, requestedBackend: '',
+    })).toThrow(/backend\/model/);
+  });
+
+  it.each(['auto', 'default'])('operator request and backend parser bridge writes actual %s config', async account => {
+    routingFixture.enabled = true;
+    vi.stubEnv('PAPERCUSP_CODEX_GATEWAY', undefined as unknown as string);
+    vi.stubEnv('PAPERCUSP_ACCOUNT_ID', 'ambient-pin');
+    const request = await buildLaunchSpawnRequest('release-fix', {
+      ...opts, bodyExtra: { account, spawnBackend: 'codex', spawnModel: 'gpt-5.4:high' },
+    }, `bridge:${account}`);
+    const { parseBlueprintInvokeRequest } = await import('../endpoint-route/routes/harness/spawn');
+    const parsed = parseBlueprintInvokeRequest(JSON.parse(JSON.stringify(request.body)));
+    const { resolveSpawnGatewayEnv, applyExplicitSpawnAccountRoute } = await import('../inference-gateway/spawn-env');
+    let resolvedAccounts: string[] | null = null;
+    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws_test', slug: 'papercup', ownerId: 's-bridge',
+      backend: parsed.spawnBackendPin, model: parsed.spawnModelPin, account: parsed.account,
+      onResolvedAccounts: ids => { resolvedAccounts = ids; } });
+    applyExplicitSpawnAccountRoute(env, parsed.account);
+    const { buildInvokeOnce } = await import('../harness-invoke-once');
+    const invocation = buildInvokeOnce({ projectDir: '/fixture/project', stateDir: '/fixture/state',
+      harnessDir: '/fixture/harness', role: 'release-fixer', extras: parsed.extra,
+      extraEnv: { ...env, PAPERCUSP_SPAWN_MODEL: parsed.spawnModelPin, PAPERCUSP_SPAWN_BACKEND: parsed.spawnBackendPin! } });
+    vi.stubEnv('PAPERCUSP_SPAWN_MODEL', invocation.env.PAPERCUSP_SPAWN_MODEL);
+    vi.stubEnv('AGENT_BACKEND', invocation.env.AGENT_BACKEND);
+    const { resolveModel } = await import('../../../../libs/papercusp/packages/orchestrator/src/invoke');
+    const { resolveAgentBackend, normalizeModelForBackend } = await import('../../../../libs/papercusp/packages/orchestrator/src/env');
+    const backend = resolveAgentBackend(invocation.env.AGENT_CMD!);
+    const model = resolveModel({}, 'release-fixer');
+    expect(backend).toBe('codex');
+    expect(model).toBe('gpt-5.4:high');
+    expect(normalizeModelForBackend(model, backend)).toBe('gpt-5.4');
+    const { writeSignedSpawnCodexHome } = await import('../../../../libs/papercusp/packages/orchestrator/src/spawn-mcp');
+    const handle = await writeSignedSpawnCodexHome({ harnessSlug: 'papercup', workspaceId: 'ws_test', role: 'release-fixer',
+      runId: 'bridge', spawnId: 's-bridge', clientId: 's-bridge', operatorUrl: 'http://127.0.0.1:3070' }, {
+      model, gatewayEnv: invocation.env, probe: async () => true,
+      pg: (async () => [{ value_b64: Buffer.alloc(32, 7).toString('base64'), rotated_at: new Date('2026-08-25') }]) as never,
+    });
+    try {
+      const config = readFileSync(join(handle.codexHome, 'config.toml'), 'utf8');
+      expect(config).toContain('model = "gpt-5.4"');
+      expect(config).toContain('model_reasoning_effort = "high"');
+      expect(config).not.toContain('ambient-pin');
+      if (account === 'auto') {
+        expect(config).toContain('model_provider = "papercusp-codex-gateway"');
+        expect(config).not.toContain('x-papercusp-account');
+        expect(resolvedAccounts).toEqual(['pool-a']);
+      } else {
+        expect(config).not.toContain('papercusp-codex-gateway');
+        expect(resolvedAccounts).toEqual([]);
+      }
+    } finally { handle.cleanup(); }
+    expect(() => parseBlueprintInvokeRequest({ ...request.body, account: 42 })).toThrow(/route/);
+  });
+
+  it('caller account override precedes role route on direct and durable requests', async () => {
+    // Assert the resolver's decision as well as the final body: the body keeps
+    // an explicit caller field, which otherwise masks an inverted resolver.
+    const { resolveRoleLaunch } = await import('../fleet/role-launch');
+    const blueprintRole = loadBuiltinBlueprint('release-fix').blueprint.roles.find(role => role.id === 'release-fixer')!;
+    expect(resolveRoleLaunch('release-fixer', {
+      blueprintRole, cfg: { roleAccounts: { 'release-fixer': 'role-pin' } }, account: 'default',
+    }).account).toBe('default');
+    expect(resolveRoleLaunch('release-fixer', { blueprintRole, account: 'default' }).account).toBe('default');
+    expect(resolveRoleLaunch('release-fixer', {
+      blueprintRole, cfg: { roleAccounts: { 'release-fixer': 'role-pin' } },
+    }).account).toBe('role-pin');
+    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+    setLaunchBlueprintFire((input) => { fired.push(input); });
+    const input = { ...opts, bodyExtra: { account: 'default', spawnModel: 'gpt-5.4:high', spawnBackend: 'codex' } };
+    await fireLaunchBlueprint('release-fix', input);
+    expect(fired[0]!.bodyExtra?.account).toBe('default');
+    const request = await buildLaunchSpawnRequest('release-fix', input, 'route:override');
+    expect(request.body).toMatchObject(input.bodyExtra);
+    await expect(buildLaunchSpawnRequest('release-fix', { ...opts, bodyExtra: { account: 42 } }, 'route:invalid'))
+      .rejects.toThrow('launch account route must be a string or null');
   });
 
   it('buildLaunchSpawnRequest stamps a bounded timeout on Queen durable requests by default', async () => {

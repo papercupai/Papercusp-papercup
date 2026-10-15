@@ -7,7 +7,7 @@
  * Kept out of PlanDashboard.tsx so the collapse/grouping rules are unit-testable
  * without the component's heavy import graph (launchAgent, css, modals).
  */
-import type { PlanDecision, PlanItem } from '@/app/admin/plans/plans-api';
+import type { PlanDecision, PlanGetResult, PlanItem } from '@/app/admin/plans/plans-api';
 
 /** One planActivity.list wire row (P-004 — PlanActivityRow). Declared here so
  *  both the component and these derivations share one shape. */
@@ -195,4 +195,122 @@ export function collapsePlanActivity(
   }
   flush();
   return out;
+}
+
+// ── derived-status-not-hand-written-2026-10-12 P-005 ────────────────────────
+// The dashboard renders the plan's status DERIVED from its item graph
+// (`plans:get` → `derivedStatus`, P-001/P-002) and the Now note with its age
+// (`now.staleness`, P-003), instead of only the hand-written prose.
+
+/** `PlanGetResult['derivedStatus']`, non-null. */
+export type DashboardDerivedStatus = NonNullable<PlanGetResult['derivedStatus']>;
+/** `now.staleness`, non-null. */
+export type DashboardNoteStaleness = NonNullable<NonNullable<PlanGetResult['now']>['staleness']>;
+
+/**
+ * `current`: no status change since the note was written. `moved-past`: at least
+ * one item or plan status change landed after it. `unknown`: the count is not
+ * known (the note was not written through plans:set-now, or the read failed) —
+ * never rendered as current.
+ */
+export type NoteAgeState = 'current' | 'moved-past' | 'unknown';
+
+export interface NoteAgeView {
+  state: NoteAgeState;
+  /** The server's one-line age text, verbatim. */
+  text: string | null;
+  writtenAt: string | null;
+  transitionsSinceNote: number | null;
+}
+
+/** The Now note's age. Null when the read carried no staleness (no note, or a read that skips the step). */
+export function noteAgeOf(staleness: DashboardNoteStaleness | null | undefined): NoteAgeView | null {
+  if (!staleness) return null;
+  const n = staleness.transitionsSinceNote;
+  const state: NoteAgeState = n === null ? 'unknown' : n > 0 ? 'moved-past' : 'current';
+  return {
+    state,
+    text: staleness.text?.trim() || null,
+    writtenAt: staleness.noteWrittenAt,
+    transitionsSinceNote: n,
+  };
+}
+
+export type DerivedStatusRowKind = 'in-flight' | 'actionable' | 'blocked' | 'awaiting-human';
+
+export interface DerivedStatusRow {
+  kind: DerivedStatusRowKind;
+  id: string;
+  /** Holders of the item's claimed linked work items (owner ids). */
+  holders: string[];
+  /** In-plan blockers; only set on `blocked` rows. */
+  blockedOn: string[];
+  /** A `blocked` row with no in-plan cause (stored `blocked`, blocker outside the plan). */
+  external: boolean;
+}
+
+export interface DerivedShipGateView {
+  satisfied: boolean;
+  /** Set ⇒ the gate did not apply (nothing was checked) — never a pass. */
+  skipped: boolean;
+  text: string;
+  /** The verb that repairs the refusal, when the gate names one. */
+  repairVerb: string | null;
+}
+
+export interface DerivedStatusView {
+  text: string;
+  rows: DerivedStatusRow[];
+  /** Rows past `DERIVED_STATUS_ROW_CAP`, plus any the server's own list cap cut. */
+  hiddenRows: number;
+  /** True when the server cut a list: `hiddenRows` is then a floor. */
+  listTruncated: boolean;
+  holdersMeasured: boolean;
+  shipGate: DerivedShipGateView | null;
+}
+
+/** Rows the status card shows before collapsing the rest into "+N more". */
+export const DERIVED_STATUS_ROW_CAP = 8;
+
+/**
+ * The status card's rows, in reading order: who is working (in flight), what can
+ * be picked up (actionable, with any holder of a linked work item), what is stuck
+ * (blocked, with its blockers), and what waits on a human.
+ */
+export function derivedStatusViewOf(
+  status: DashboardDerivedStatus | null | undefined,
+  cap = DERIVED_STATUS_ROW_CAP,
+): DerivedStatusView | null {
+  if (!status) return null;
+  const all: DerivedStatusRow[] = [
+    ...(status.inFlight ?? []).map((i) => ({ kind: 'in-flight' as const, id: i.id, holders: [...i.heldBy], blockedOn: [], external: false })),
+    ...(status.actionable ?? []).map((i) => ({ kind: 'actionable' as const, id: i.id, holders: [...i.heldBy], blockedOn: [], external: false })),
+    ...(status.blocked ?? []).map((i) => ({
+      kind: 'blocked' as const,
+      id: i.id,
+      holders: [...i.heldBy],
+      blockedOn: [...i.blockedOn],
+      external: i.external,
+    })),
+    ...(status.awaitingHuman ?? []).map((i) => ({ kind: 'awaiting-human' as const, id: i.id, holders: [...i.heldBy], blockedOn: [], external: false })),
+  ];
+  const limit = Math.max(0, cap);
+  const t = status.truncated;
+  const listTruncated = Boolean(t && (t.actionable || t.inFlight || t.blocked || t.awaitingHuman));
+  const gate = status.shipGate;
+  return {
+    text: status.text,
+    rows: all.slice(0, limit),
+    hiddenRows: Math.max(0, all.length - limit),
+    listTruncated,
+    holdersMeasured: status.holdersMeasured,
+    shipGate: gate
+      ? {
+          satisfied: gate.satisfied,
+          skipped: gate.skipped !== null,
+          text: gate.text,
+          repairVerb: gate.nextRepair?.verb ?? null,
+        }
+      : null,
+  };
 }

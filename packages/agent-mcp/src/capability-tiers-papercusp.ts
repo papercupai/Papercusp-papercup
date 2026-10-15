@@ -105,6 +105,7 @@ const EXACT: Record<string, CapabilityTier> = {
   // guardrails (D-009), NOT by tier gating.
   'turn:interrupt': 'medium',
   'search:read': 'medium',
+  'sessions:read': 'medium',
   // High — secrets, outbound network, cross-plugin reads, audit, dispatch wildcards
   'audit:read': 'high',
   // Intel panel reads from harness_shared.tool_invocations(_spawn_tree|_artifacts).

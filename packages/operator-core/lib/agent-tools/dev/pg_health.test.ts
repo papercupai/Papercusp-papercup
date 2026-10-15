@@ -31,7 +31,7 @@ const IMPOSTOR = { systemIdentifier: '7111222333444555666', database: 'papercusp
 
 // Via `unknown`: the tool's declared arg/event generics do not overlap this narrowed shape,
 // and TS2352 correctly refuses the direct assertion.
-const run = (args: { localOnly?: boolean } = {}) =>
+const run = (args: { localOnly?: boolean; resultLimitPerPool?: number } = {}) =>
   (pgHealthTool as unknown as {
     handler: (a: unknown) => Promise<{ data: Record<string, any> }>;
   }).handler(args);
@@ -64,6 +64,41 @@ beforeEach(() => {
 });
 
 describe('dev:pg_health completed-result delivery', () => {
+  it('delivers pending acquisition separately from completed results without a database query', async () => {
+    beginAcquire('org-admin');
+    const { data } = await run({ localOnly: true });
+    expect(pgHealth).not.toHaveBeenCalled();
+    expect(data.acquisitionDiagnostics).toMatchObject({
+      source: 'current-process',
+      pid: process.pid,
+      coverage: 'registered-acquisition-tickets-in-selected-pools-only',
+    });
+    expect(data.acquisitionDiagnostics.pools[1]).toMatchObject({
+      counters: { pool: 'org-admin', waiting: 1, held: 0 },
+      tickets: { pool: 'org-admin', active: 1, tickets: [{ state: 'waiting' }] },
+    });
+    expect(data.processDiagnostics.pools[1].results).toEqual([]);
+  });
+  it.each([
+    { label: 'is explicitly configured', value: '24', expected: '24' },
+    { label: 'is unset', value: undefined, expected: null },
+  ])('reports the raw PAPERCUSP_DB_POOL_MAX override when it $label', async ({ value, expected }) => {
+    const previous = process.env.PAPERCUSP_DB_POOL_MAX;
+    if (value === undefined) delete process.env.PAPERCUSP_DB_POOL_MAX;
+    else process.env.PAPERCUSP_DB_POOL_MAX = value;
+
+    try {
+      const { data } = await run({ localOnly: true });
+      expect(data.acquisitionDiagnostics).toMatchObject({
+        source: 'current-process',
+        pid: process.pid,
+        poolConfiguration: { PAPERCUSP_DB_POOL_MAX: expected },
+      });
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCUSP_DB_POOL_MAX;
+      else process.env.PAPERCUSP_DB_POOL_MAX = previous;
+    }
+  });
   it('delivers safe current-process records through the public production reader', async () => {
     recordResult();
 
@@ -75,7 +110,7 @@ describe('dev:pg_health completed-result delivery', () => {
     expect(diagnostic).toMatchObject({
       source: 'current-process',
       pid: process.pid,
-      coverage: 'completed-results-in-selected-pools-only',
+      coverage: 'completed-results-and-recent-failures-in-selected-pools-only',
       resultLimitPerPool: 4,
     });
     expect(Number.isFinite(Date.parse(diagnostic.capturedAt))).toBe(true);
@@ -128,6 +163,43 @@ describe('dev:pg_health completed-result delivery', () => {
     expect(pool.results.map((result: { queryId: number }) => result.queryId)).toEqual([37, 38, 39, 40]);
   });
 
+  it('can expose the complete retained ring without confusing eviction with omission', async () => {
+    for (let queryId = 1; queryId <= 40; queryId += 1) recordResult('org-admin', queryId);
+
+    const { data } = await run({ localOnly: true, resultLimitPerPool: 32 });
+    const diagnostic = data.processDiagnostics;
+    const pool = diagnostic.pools[1];
+
+    expect(pgHealth).not.toHaveBeenCalled();
+    expect(diagnostic.resultLimitPerPool).toBe(32);
+    expect(pool).toMatchObject({ totalRecorded: 40, dropped: 8, retained: 32, omittedRetained: 0 });
+    expect(pool.results.map((result: { queryId: number }) => result.queryId)).toEqual(
+      Array.from({ length: 32 }, (_, i) => i + 9),
+    );
+    expect(JSON.stringify(diagnostic)).not.toMatch(/never-retain-secret|SELECT id|WHERE token/);
+  });
+
+  it('returns the requested bounded window across pools', async () => {
+    for (const pool of ['org-app', 'org-admin', 'org-admin-lossless-bigint']) {
+      for (let queryId = 1; queryId <= 6; queryId += 1) recordResult(pool, queryId);
+    }
+
+    const { data } = await run({ localOnly: true, resultLimitPerPool: 2 });
+
+    expect(data.processDiagnostics.resultLimitPerPool).toBe(2);
+    for (const pool of data.processDiagnostics.pools) {
+      expect(pool).toMatchObject({ retained: 6, omittedRetained: 4 });
+      expect(pool.results.map((result: { queryId: number }) => result.queryId)).toEqual([5, 6]);
+    }
+  });
+
+  it('rejects invalid presentation limits at the public argument boundary', () => {
+    for (const resultLimitPerPool of [0, 33, 1.5, NaN]) {
+      expect(pgHealthTool.args.safeParse({ localOnly: true, resultLimitPerPool }).success).toBe(false);
+    }
+    expect(pgHealthTool.args.safeParse({ localOnly: true, resultLimitPerPool: 32 }).success).toBe(true);
+  });
+
   it('labels empty and partial coverage without implying idleness or connectivity', async () => {
     recordResult('org-admin-dedicated-worker');
 
@@ -167,6 +239,50 @@ describe('dev:pg_health completed-result delivery', () => {
       expect(pool.results).toHaveLength(4);
       expect(pool.results[3]).toMatchObject({ queryId: 6, status: 'error', errorCode: '42p01' });
     }
+  });
+
+  it('surfaces a classified failure after successful-query churn through the local-only reader', async () => {
+    const correlation = {
+      processInstanceId: '11111111-1111-4111-8111-111111111111',
+      buildSha: null,
+      rowId: null,
+      attemptId: '22222222-2222-4222-8222-222222222222',
+      hopId: null,
+      stage: null,
+      boundary: null,
+      requestId: '33333333-3333-4333-8333-333333333333',
+      operation: 'activity.report',
+    };
+    recordPgResult('org-admin', {
+      connectionId: 2,
+      queryId: 1,
+      backendPid: 8123,
+      query: "INSERT INTO harness_shared.agent_activity (summary) VALUES ('never-retain-failure-secret')",
+      command: 'INSERT',
+      rowCount: 0,
+      wireBytes: 0,
+      elapsedMs: 25,
+      status: 'error',
+      errorCode: 'XX000',
+      context: { state: 'linked', correlation },
+    });
+    for (let queryId = 2; queryId <= 40; queryId += 1) recordResult('org-admin', queryId);
+
+    const { data } = await run({ localOnly: true, resultLimitPerPool: 2 });
+    const pool = data.processDiagnostics.pools[1];
+
+    expect(pgHealth).not.toHaveBeenCalled();
+    expect(pool).toMatchObject({ failureCapacity: 16, totalFailures: 1, droppedFailures: 0 });
+    expect(pool.failures[0]).toMatchObject({
+      queryId: 1,
+      status: 'error',
+      errorCode: 'xx000',
+      failurePhase: 'statement',
+      queryFamily: 'insert:harness_shared.agent_activity',
+      correlation: { requestId: correlation.requestId, operation: 'activity.report' },
+    });
+    expect(pool.results.map((result: { queryId: number }) => result.queryId)).toEqual([39, 40]);
+    expect(JSON.stringify(pool)).not.toContain('never-retain-failure-secret');
   });
 
   it('does not treat an acquired connection as a completed-query observation', async () => {

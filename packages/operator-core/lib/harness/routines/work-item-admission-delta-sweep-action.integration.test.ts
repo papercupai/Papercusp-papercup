@@ -61,7 +61,7 @@ beforeEach(async () => {
 });
 
 describe('work-item admission delta-sweep production linker (real PostgreSQL)', () => {
-  it('persists caused-by issue edges in the active coord workspace', async () => {
+  it('persists neutral related issue edges in the active coord workspace', async () => {
     const written = await productionLinkUmbrella({
       runId: 'delta-action-run',
       workspaceId: h.workspace,
@@ -93,7 +93,7 @@ describe('work-item admission delta-sweep production linker (real PostgreSQL)', 
         src_ref: sourceId,
         dst_kind: 'issue',
         dst_ref: UMBRELLA_ID,
-        rel: 'caused-by',
+        rel: 'relates',
         created_by: 'system:work-item-admission-delta-sweep',
       })),
     );

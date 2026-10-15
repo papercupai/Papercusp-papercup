@@ -64,6 +64,7 @@ const RADIO_CARD = {
 describe('OperatorTarget — WI-5023 text-mode card observe + auto-resolve', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it('observes a chat:ask_choice card via /operator/state-snapshot and auto-resolves it — the turn only finishes AFTER the resolve, not a timeout', async () => {
@@ -176,6 +177,75 @@ describe('OperatorTarget — WI-5023 text-mode card observe + auto-resolve', () 
 
     expect(result.finishReason).toBe('done');
     expect(fetchMock).toHaveBeenCalledTimes(1); // converse only — no state-snapshot watcher opened
+    await session.close();
+  });
+
+  it('public Papercup forwards its boundary and reads cards only from its own text stream', async () => {
+    const conv = controllableSseStream();
+    conv.push('run-meta', { runId: 'public-run' });
+    conv.push('state-snapshot', { snapshot: { openCards: [RADIO_CARD] } });
+    conv.push('done', { costUsd: 0 });
+    conv.end();
+    const fetchMock = vi.fn(async (_url: string | URL, _init?: RequestInit) => new Response(conv.stream, { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubEnv('PAPERCUSP_LLM_TEST_WORKSPACE', 'owner-default');
+    const target = new OperatorTarget({
+      baseUrl: 'http://127.0.0.1:9999', role: 'papercup', hostTrust: 'public',
+      principalToken: 'public-boundary-test-token', workspaceId: 'public-test-workspace',
+      conversationId: 'existing-public-conversation',
+    });
+    const session = await target.open({ runId: 'public-test', workspaceMode: 'real', transport: 'http-sse' });
+    const result = await session.send({ messages: [{ role: 'user', content: 'Where does work run?' }], trigger: 'user_message' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:9999/api/agent-mcp/operator-converse');
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      role: 'papercup', hostTrust: 'public', principalToken: 'public-boundary-test-token',
+      conversationId: 'existing-public-conversation', modality: 'text',
+    });
+    expect(init.headers).toMatchObject({ 'x-papercusp-workspace': 'public-test-workspace' });
+    expect(result.cards).toHaveLength(1);
+    expect(result.finishReason).toBe('done');
+    await session.close();
+  });
+
+  it.each(['public', 'owner'] as const)('does not substitute a credential when %s has no public bearer', async (hostTrust) => {
+    const conv = controllableSseStream();
+    conv.push('done', { costUsd: 0 });
+    conv.end();
+    const fetchMock = vi.fn(async (_url: string | URL, _init?: RequestInit) => new Response(conv.stream, { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const target = new OperatorTarget({
+      baseUrl: 'http://127.0.0.1:9999', role: 'papercup', hostTrust,
+      // Even an accidentally supplied public token must not enter owner turns.
+      ...(hostTrust === 'owner' ? { principalToken: 'irrelevant-public-token' } : {}),
+    });
+    const session = await target.open({ runId: 'boundary-test', workspaceMode: 'real', transport: 'http-sse' });
+    await session.send({ messages: [{ role: 'user', content: 'Help me' }], trigger: 'user_message' });
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.hostTrust).toBe(hostTrust);
+    expect(body).not.toHaveProperty('principalToken');
+    if (hostTrust === 'public') expect(body).not.toHaveProperty('conversationId');
+    else expect(body.conversationId).toBe('boundary-test');
+    await session.close();
+  });
+
+  it('keeps the existing desktop request free of public boundary fields', async () => {
+    const conv = controllableSseStream();
+    conv.push('done', { costUsd: 0 });
+    conv.end();
+    const fetchMock = vi.fn(async (_url: string | URL, _init?: RequestInit) => new Response(conv.stream, { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const session = await new OperatorTarget({ baseUrl: 'http://127.0.0.1:9999' }).open({
+      runId: 'desktop-test', workspaceMode: 'real', transport: 'http-sse',
+    });
+    await session.send({ messages: [{ role: 'user', content: 'Hello' }], trigger: 'user_message' });
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body).not.toHaveProperty('hostTrust');
+    expect(body).not.toHaveProperty('principalToken');
+    expect(body).not.toHaveProperty('role');
+    expect(body.conversationId).toBe('desktop-test');
     await session.close();
   });
 });

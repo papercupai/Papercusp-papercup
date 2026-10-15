@@ -694,6 +694,24 @@ describe('release:deploy — trigger', () => {
     expect(b.note).not.toMatch(/likely/i);
     expect(b.note).toMatch(/deployInFlight/);
   });
+
+  // WI-10005763: the launcher's restricted-write fence refuses before spawning deploy-cli. The
+  // reply must name the fence and carry its refusal, never tell the caller a deploy is running.
+  it('a restricted-hold refusal is reported as the fence, not as a deploy in flight', async () => {
+    statusM.mockResolvedValue(
+      mkStatus({ state: 'green-deployable', canTriggerGreen: true, nothingToDeploy: false }),
+    );
+    const restrictedHold = { error: 'restricted_write_held' as const, hint: '1 held restricted write(s) in /repo (a.ts)' };
+    launchM.mockResolvedValue({
+      launched: false, unit: 'papercup-auto-deploy', mode: 'trigger', argv: [], logPath: '/tmp/x.log',
+      reason: 'restricted_write_held', restrictedHold,
+    });
+    const b = body(await tool.handler({ op: 'trigger', confirm: true } as never, { role: 'operator' } as never));
+    expect(b).toMatchObject({ ok: false, launched: false, reason: 'restricted_write_held', restricted_hold: restrictedHold });
+    expect(b.note).toMatch(/restricted-write fence/);
+    expect(b.note).toContain(restrictedHold.hint);
+    expect(b.note).not.toMatch(/a deploy is already in flight/i);
+  });
 });
 
 describe('release:deploy — force (owner-gated)', () => {
@@ -775,6 +793,22 @@ describe('release:deploy — force (owner-gated)', () => {
     expect(b).toMatchObject({ ok: true, launched: true, op: 'force', commit: 'bb694a6af028' });
     expect(fireGitSyncM).not.toHaveBeenCalled();
     expect(launchM).toHaveBeenCalledWith({ force: true, commit: 'bb694a6af028' });
+  });
+
+  // WI-10005763: force does not bypass the restricted-write fence, and the owner is not told a
+  // force deploy fired when nothing was started.
+  it('a restricted-hold refusal on force names the fence and does not notify the owner', async () => {
+    statusM.mockResolvedValue(mkStatus({ state: 'gate-red', deploy: { ...mkStatus().deploy, stagingHeadSha: 'feedface' } }));
+    const restrictedHold = { error: 'restricted_hold_state_unknown' as const, hint: 'could not verify (census down)' };
+    launchM.mockResolvedValue({
+      launched: false, unit: 'papercup-auto-deploy', mode: 'force', commit: 'feedface', argv: [], logPath: '/tmp/x.log',
+      reason: 'restricted_hold_state_unknown', restrictedHold,
+    });
+    const b = body(await tool.handler(forceArgs as never, { role: 'operator' } as never));
+    expect(b).toMatchObject({ ok: false, launched: false, op: 'force', restricted_hold: restrictedHold });
+    expect(b.note).toMatch(/restricted-write fence/);
+    expect(b.note).not.toMatch(/likely a deploy is already in flight/i);
+    expect(notifyM).not.toHaveBeenCalled();
   });
 });
 

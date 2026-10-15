@@ -107,8 +107,26 @@ describe('renderToolsCatalog', () => {
     const { renderToolsCatalog } = await import('./prompt-assembly');
     const out = renderToolsCatalog('operator', ['work_items:update']);
     expect(out).toContain('Executable contract: projected-tool-registry');
+    expect(out).toContain('Serving generation: unknown (not sampled)');
     expect(out).toContain('Correction for rejected `tags`');
     expect(out).toContain('`work_items:tag {"id":"<work-item-id>","topic":"<topic>"}`');
+  });
+
+  it('renders the shared serving generation when supplied by an async prompt boundary', async () => {
+    mockTools.push({
+      expose: { mcp: { name: 'work_items:list' } },
+      description: 'List work items.',
+      capabilities: [],
+    });
+    const { renderToolsCatalog } = await import('./prompt-assembly');
+    const out = renderToolsCatalog('operator', ['work_items:list'], 'text', undefined, {
+      state: 'known',
+      revision: 'serving-generation-v1:abc123',
+      buildSha: 'build-sha',
+      appliedMigrationDigest: 'migration-sha',
+      toolRegistryRevision: 'tool-sha',
+    });
+    expect(out).toContain('Serving generation: serving-generation-v1:abc123');
   });
 
   it('renders a "Bundled by" back-pointer on a primitive a rendered composite replaces (P-010)', async () => {

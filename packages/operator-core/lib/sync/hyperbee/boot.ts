@@ -33,6 +33,7 @@
  *     through PG-direct.
  */
 
+import { observeFallback } from '../../degradation/fallback-observations';
 import {
   getHarnessStore,
   closeHarnessStore,
@@ -69,6 +70,7 @@ import {
   createMergeCursor,
   createMergeProgressProbe,
   createPgMergeCursorSeedCache,
+  pinUnknownDurableState,
   describeMergeProgress,
   mergeAdmittedLogsIncremental,
   seedCursorFromSnapshots,
@@ -128,7 +130,12 @@ import { acceptOpVersion, CURRENT_SCHEMA_VERSION, type SchemaVersionAlert } from
 import { schemaVersionEvents } from './schema-version';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
-import { loadRevokedPubkeys } from './load-revoked-pubkeys';
+import {
+  formatMemoryFederationDegradedWarn,
+  readMemoryFederationFlagOnce,
+  type MemoryFederationFlagRead,
+} from './memory-federation-flag-read';
+import { loadRevokedPubkeysCached } from './load-revoked-pubkeys';
 import {
   registerAllHarnessProjections,
   buildHarnessProjectionApply,
@@ -558,6 +565,8 @@ export interface BootHarnessOpts {
   swarmRefreshMs?: number;
   swarmFastWindowMs?: number;
   swarmSlowRefreshMs?: number;
+  /** WI-10005270: cap on the stalled-log refresh backoff (swarm.ts `stalledMaxRefreshMs`). */
+  swarmStalledMaxRefreshMs?: number;
   /**
    * WI-752 / FED-2 join-retry base interval (ms). When the boot-time swarm join
    * FAILS (→ local-only), retry it on a bounded exponential backoff starting at
@@ -609,8 +618,13 @@ export interface BootHarnessOpts {
    * which routes ops to THIS harness's own projection set) is used. Tests
    * inject a capturing apply to assert which ops merge, without the real PG
    * projections or the (collision-prone) global registry.
+   *
+   * `ctx.ownLogKeyHex` is THIS peer's own-log key, known before the first merge pass.
+   * Use it instead of reaching through the returned handle: a merge pass can run while
+   * `bootHarnessSubstrate` is still pending (a rejoining peer already holds admitted
+   * logs), when that handle is not assigned yet (WI-6554700010008561).
    */
-  applyOverride?: (op: OpEnvelope) => Promise<boolean>;
+  applyOverride?: (op: OpEnvelope, ctx: { readonly ownLogKeyHex: string }) => Promise<boolean>;
   /**
    * Test seam — override how THIS peer's signed announce identity is resolved
    * and signed. Production leaves this undefined: the announce identity is
@@ -800,9 +814,10 @@ export interface BootHarnessOpts {
    * that never settles) or fail, without touching the real scoped corestore.
    * The scoped init is best-effort and runs OFF the join critical path — this
    * seam exists to prove that property (a stalled scoped dep must never block
-   * `swarm.join`).
+   * `swarm.join`). Receives the same store opts the default would open with, so an
+   * override can vary by them (WI-6554700010009519).
    */
-  scopedStoreOverride?: () => Promise<unknown>;
+  scopedStoreOverride?: (storeOpts: HarnessStoreOpts) => Promise<unknown>;
   /**
    * Bound (ms) on the post-join wait for the P-006 scoped-log init to settle
    * before `joinForBinding` returns (default 10s). Normally the init settles
@@ -1094,13 +1109,20 @@ export function classifySameHiveMember(input: {
  *
  * So: report stalled for either (a) an admitted remote log with zero
  * replicator peers (the original WI-1534 axis, unchanged), or (b) zero
- * admitted remotes AT ALL while `liveConnectionCount` is nonzero — i.e. we
+ * admitted remotes AT ALL while `topicConnectionCount` is nonzero — i.e. we
  * have live swarm sockets on this topic and nothing has been admitted yet.
  * The live-connection leg is required (not "admitted is empty" alone) so a
  * genuinely solo/offline node still gets the slow cadence — the same
  * false-positive discipline rung (c)'s never-paired escalation already
  * applies (WI-5686: an axis with no live-peer guard fires for a peer that
  * simply isn't there).
+ *
+ * WI-10005287: `topicConnectionCount` MUST be topic-scoped
+ * (`SwarmHandle.topicStallCandidateCount`). The swarm-wide
+ * `liveConnectionCount` this used to receive counts the one shared socket per
+ * peer for every local topic, so a peer serving only OTHER harnesses held leg
+ * (b) true forever on every topic it does not share (measured on bg-host
+ * 2026-10-02: 48 of 89 joins).
  */
 export function computeHasStalledLogs(
   // `unknown` values (not `Partial<{ peersCount... }>>` directly) so a caller
@@ -1109,7 +1131,7 @@ export function computeHasStalledLogs(
   // `peersCount()` read site (e.g. the `maybePeersCount` casts above).
   admitted: ReadonlyMap<string, unknown>,
   ownLogKeyHex: string,
-  liveConnectionCount: number,
+  topicConnectionCount: number,
 ): boolean {
   let sawRemoteAdmitted = false;
   for (const [keyHex, rawLog] of admitted) {
@@ -1124,7 +1146,7 @@ export function computeHasStalledLogs(
     }
   }
   if (sawRemoteAdmitted) return false;
-  return liveConnectionCount > 0;
+  return topicConnectionCount > 0;
 }
 
 export async function bootHarnessSubstrate(opts: BootHarnessOpts): Promise<BootedHarnessHandle> {
@@ -1320,6 +1342,24 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   };
   const admittedIdentities = new Map<string, AdmittedIdentity>();
 
+  type MemberReader = NonNullable<import('./hive-member-identity-set').MemberDeviceSetDeps['loadMembers']>;
+  async function resolveAdmittedUserIdentity(
+    identity: AdmittedIdentity,
+    loadMembers?: MemberReader,
+  ): Promise<import('./hive-member-identity-set').GithubMemberIdentity | null> {
+    if (revoked.has(identity.devicePubkey)) return null;
+    // Channel-2 verified these exact user claims. Offline admission verified
+    // only the device; its user authority comes from the receiver's roster.
+    if (identity.channel2Verified) {
+      return { githubUserId: identity.githubUserId, githubUsername: identity.githubLogin };
+    }
+    const hiveHome = hiveHomeProjectionSlug ?? resolvedPotHomeSlug;
+    if (!hiveHome) return null;
+    const { resolveGithubIdentityForDevicePubkey } = await loadHiveMemberIdentitySetModule();
+    return resolveGithubIdentityForDevicePubkey(opts.workspaceId, hiveHome, identity.devicePubkey,
+      undefined, loadMembers ? { loadMembers } : {});
+  }
+
   // WI-259 P-002 (membership-aware cross-member content apply): map an op's source-log
   // core key → the admission-VERIFIED device pubkey that vouched for that log (its
   // announce sig was checked against it AND it was a hive member — STEP 1 / P-001). The
@@ -1458,17 +1498,44 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // merge cursor was persisted outside that decision. An OFF-gated memory op
   // therefore advanced the cursor and became indistinguishable from an applied
   // op. Keep the projection and apply-binding on one boot-owned snapshot.
-  const readMemoryFederationFlag = async (): Promise<boolean> => {
-    try {
-      if (opts.memoryFederationFlagOn) {
-        return (await opts.memoryFederationFlagOn()) === true;
-      }
-      return (await getFlag(FLAGS.MEM0_FEDERATION_EGRESS, 'system')) === true;
-    } catch {
-      return false;
-    }
+  //
+  // WI-10005919 — a read can DEGRADE (override store unreachable with nothing cached,
+  // or a throw), and a degraded value is not the owner's setting. It is never allowed
+  // to pass silently as OFF: every degraded read is logged with a running count, a
+  // mid-run degraded read holds the last authoritative value, and a degraded boot
+  // value that no pass consumed is not treated as an OFF state (see mergeOnePass).
+  const readMemoryFederationFlag = () => readMemoryFederationFlagOnce(opts.memoryFederationFlagOn);
+  let memoryFederationDegradedReads = 0;
+  const warnMemoryFederationReadDegraded = (
+    read: MemoryFederationFlagRead,
+    when: 'boot' | 'pass',
+    outcome: string,
+  ): void => {
+    memoryFederationDegradedReads += 1;
+    console.warn(
+      formatMemoryFederationDegradedWarn({
+        workspaceId: opts.workspaceId,
+        harnessSlug: opts.harnessSlug,
+        when,
+        read,
+        degradedReadsThisBoot: memoryFederationDegradedReads,
+        outcome,
+      }),
+    );
   };
-  let memoryFederationEnabledForPass = await readMemoryFederationFlag();
+  const bootMemoryFederationRead = await readMemoryFederationFlag();
+  let memoryFederationEnabledForPass = bootMemoryFederationRead.value;
+  // Whether memoryFederationEnabledForPass came from an authoritative read.
+  let memoryFederationFlagAuthoritative = bootMemoryFederationRead.degraded === null;
+  // Whether any merge pass has applied under a snapshot yet.
+  let memoryFederationSnapshotConsumed = false;
+  if (bootMemoryFederationRead.degraded !== null) {
+    warnMemoryFederationReadDegraded(
+      bootMemoryFederationRead,
+      'boot',
+      `provisional ${bootMemoryFederationRead.value ? 'ON' : 'OFF'} until the first pass re-reads`,
+    );
+  }
   const memoryFederationFlagSnapshot = async (): Promise<boolean> => memoryFederationEnabledForPass;
 
   // WI-2142064: one instance for this harness's whole boot lifetime (survives a
@@ -1622,7 +1689,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // A-003: `let` (not `const`) so `rekey` can rebind the two hive projections when a
   // first-join re-keys this member onto the Hive topic (mergeOnePass reads the
   // CURRENT scopedApply each pass). An `applyOverride` (the rigs) is never rebuilt.
-  let scopedApply = opts.applyOverride ?? buildScopedApply(hiveHomeProjectionSlug);
+  const applyOverride = opts.applyOverride;
+  const applyOverrideCtx = { ownLogKeyHex: ownLog.keyHex } as const;
+  let scopedApply = applyOverride
+    ? (op: OpEnvelope) => applyOverride(op, applyOverrideCtx)
+    : buildScopedApply(hiveHomeProjectionSlug);
 
   // ── Owner-enforcement rate limiter (EN-2) ── STATEFUL across merge passes (its
   // per-(author,class) tumbling windows persist), so it is created ONCE here and
@@ -1911,11 +1982,20 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // and a live PG, so this is safe.
   //
   // Fail-open: a load failure records a boot event and continues.
+  //
+  // WI-10005183: both reads go through the NOTIFY-invalidated process cache
+  // (revoked-set-cache.ts). This loader runs at the top of EVERY merge pass for
+  // EVERY harness (~once a second each), and the published sets change a few times
+  // a day — measured 162 identical queries/s on bg-host before the cache. The cache
+  // serves nothing until it is attached to the live sync_invalidate LISTEN, and
+  // every contributors / pot_members row write drops it, so a refresh here still
+  // sees every committed revocation this process has heard about. The G7 ordering
+  // and the WI-193 un-revoke reconciliation below are unchanged.
   const loadRevoked =
     opts.loadRevokedOverride ??
     (async () => {
       // Harness-scope revocations (the base set).
-      const base = await loadRevokedPubkeys({
+      const base = await loadRevokedPubkeysCached({
         workspaceId: opts.workspaceId,
         harnessSlug: opts.harnessSlug,
       });
@@ -1933,8 +2013,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           // handle on a joiner seeded an EMPTY revoked set — i.e. THIS seed, whose whole job
           // is refusing an already-revoked peer on first contact, refused nobody. Resolve
           // the federated scope first (a no-op on an owner).
-          const { loadRevokedHivePubkeysForLocalPot } = await loadFederatedPotScopeModule();
-          for (const pk of await loadRevokedHivePubkeysForLocalPot(opts.workspaceId, hiveHome)) {
+          const { loadRevokedHivePubkeysForLocalPotCached } = await loadFederatedPotScopeModule();
+          for (const pk of await loadRevokedHivePubkeysForLocalPotCached(opts.workspaceId, hiveHome)) {
             base.add(pk);
           }
         }
@@ -2330,7 +2410,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // in-memory cursor only, so this function stays PG-free and every merge
   // test is hermetic unless it opts in.
   const pgMergeCursorStore: MergeCursorStore | null = opts.mergeCursorStore ?? null;
-  const pgCursorSeedCache = pgMergeCursorStore ? createPgMergeCursorSeedCache() : null;
+  const pgCursorSeedCache = pgMergeCursorStore
+    ? createPgMergeCursorSeedCache({ label: `${opts.workspaceId}/${opts.harnessSlug}` })
+    : null;
 
   // EI-18773697830188393 — the COLD-BOOT counterpart of the rekey's `forceReFold`.
   // A persisted cursor position claims "every op below this index was APPLIED", but
@@ -2360,6 +2442,19 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     return memoryFederationEnabledForPass
       ? `${projectionBinding ?? '<none>'}::mem0-federation-egress=on`
       : projectionBinding;
+  };
+  // WI-10005575: the same projection scope under the OTHER memory-federation state.
+  // A fresh boot whose flag read degrades (an empty override cache plus a timed-out
+  // store read serves the dark default) resolves the other stamp, finds no rows under
+  // its own, and used to re-fold every log from 0 for hours. Progress stamped ON is a
+  // superset of an OFF fold, so an OFF pass may resume from it outright; progress
+  // stamped OFF skipped memory applies, so an ON pass resumes from it and owes a
+  // memory-only replay (the same remedy as the live OFF→ON edge).
+  const memoryToggledApplyBinding = (): string | null => {
+    const projectionBinding = currentProjectionBinding();
+    return memoryFederationEnabledForPass
+      ? projectionBinding
+      : `${projectionBinding ?? '<none>'}::mem0-federation-egress=on`;
   };
 
   // Keep lifecycle transitions in event order even when a caller deliberately
@@ -3194,13 +3289,19 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           void (async () => {
             try {
               const { admitAnnouncedPeerAsOwner } = await loadHiveMembershipAdmissionModule();
+              const admittedIdentity = admittedIdentities.get(frame.log_core_key);
+              if (admittedIdentity?.devicePubkey !== frame.device_pubkey) return;
+              const peerIdentity = admittedIdentity
+                ? await resolveAdmittedUserIdentity(admittedIdentity)
+                : null;
+              if (!peerIdentity || revoked.has(frame.device_pubkey)) return;
               const res = await admitAnnouncedPeerAsOwner(
                 {
                   workspaceId: opts.workspaceId,
                   harnessSlug: opts.harnessSlug,
                   peer: {
-                    githubUserId: frame.github_user_id,
-                    githubLogin: frame.github_login,
+                    githubUserId: peerIdentity.githubUserId,
+                    githubLogin: peerIdentity.githubUsername,
                     devicePubkey: frame.device_pubkey,
                     attestationGistId: frame.attestation_gist_id,
                   },
@@ -3949,13 +4050,41 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // binding, seeding, or projection apply for this pass. A live OFF→ON edge
       // starts one memory-only replay; OFF cancels an incomplete replay.
       markMergeStage('memory-federation-flag');
-      const memoryFederationEnabledNow = await readMemoryFederationFlag();
+      const memoryFederationRead = await readMemoryFederationFlag();
+      let memoryFederationEnabledNow = memoryFederationRead.value;
+      if (memoryFederationRead.degraded !== null) {
+        if (memoryFederationFlagAuthoritative) {
+          // WI-10005919: hold the last authoritative value. Adopting the degraded OFF
+          // would cancel an in-flight memory replay and flip the apply binding, and the
+          // next good read would then start a full memory-only replay from 0.
+          memoryFederationEnabledNow = memoryFederationEnabledForPass;
+          warnMemoryFederationReadDegraded(
+            memoryFederationRead,
+            'pass',
+            `holding ${memoryFederationEnabledNow ? 'ON' : 'OFF'} (last authoritative value)`,
+          );
+        } else {
+          warnMemoryFederationReadDegraded(
+            memoryFederationRead,
+            'pass',
+            `no authoritative value yet, running this pass ${memoryFederationEnabledNow ? 'ON' : 'OFF'}`,
+          );
+        }
+      }
       if (!memoryFederationEnabledNow) {
         memoryReplayCursor = null;
-      } else if (!memoryFederationEnabledForPass) {
+      } else if (
+        !memoryFederationEnabledForPass &&
+        (memoryFederationFlagAuthoritative || memoryFederationSnapshotConsumed)
+      ) {
+        // A live OFF→ON edge. WI-10005919: a degraded boot value that no pass ever
+        // applied under is not an OFF state, so it owes no replay; the cursor seed
+        // below decides from persisted progress whether memory was missed.
         memoryReplayCursor = createMergeCursor();
       }
       memoryFederationEnabledForPass = memoryFederationEnabledNow;
+      if (memoryFederationRead.degraded === null) memoryFederationFlagAuthoritative = true;
+      memoryFederationSnapshotConsumed = true;
 
       // WI-3852 (F2 of WI-898): a bucket EVICTED from either content-deferral buffer (epoch-
       // key-not-yet-local / member-not-yet-federated) since the last pass has NO recovery path
@@ -4181,18 +4310,51 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // live cursor (where the log-removal invariant would mistake them for a
       // removal and reset the fold). Runs BEFORE snapshot seeding so a durable PG
       // resume position takes precedence; snapshot seeding fills only the rest.
-      // Isolated (WI-1544): a load failure means "start at 0" (slower, correct) —
-      // never aborts the pass via the outer catch.
+      // Isolated (WI-1544): a load failure never aborts the pass via the outer catch.
+      // WI-6554700010008523: nor does it fold from 0 any more. The cache holds the
+      // unpositioned logs out of this pass's fold and retries the load next pass
+      // (PgMergeCursorSeedHeldError); only after PG_CURSOR_SEED_HOLD_MAX_MS of
+      // failures does it pin them at 0, the old "slower but correct" fallback.
       if (pgMergeCursorStore && pgCursorSeedCache) {
         markMergeStage('pg-cursor-seed');
+        // Positioned logs reuse their cursor and make no new seeding decision.
+        const eligibleSeeds = pgCursorSeedCache.invalidated ? 0
+          : [...logKeys].filter((key) => !mergeCursor.positions.has(key)).length;
         try {
-          await pgCursorSeedCache.seed(mergeCursor, pgMergeCursorStore, currentApplyBinding(), logKeys);
-        } catch (e) {
-          // F4: an unreadable durable cursor may be holding an unapplied entry
-          // at zero. Snapshot skipping is unsafe until that state is known.
-          for (const key of logKeys) {
-            if (!mergeCursor.positions.has(key)) mergeCursor.positions.set(key, 0);
+          const applyBinding = currentApplyBinding();
+          const fallbackBinding = memoryToggledApplyBinding();
+          const seededFromFallback = await pgCursorSeedCache.seed(
+            mergeCursor,
+            pgMergeCursorStore,
+            applyBinding,
+            logKeys,
+            fallbackBinding,
+          );
+          if (eligibleSeeds > 0) observeFallback('merge-cursor-seed', {
+            eligible: eligibleSeeds,
+            applied: Math.max(0, eligibleSeeds - seededFromFallback.size),
+            reason: seededFromFallback.size > 0 ? 'alternate-binding' : 'applied',
+            scope: opts.harnessSlug,
+          });
+          if (seededFromFallback.size > 0) {
+            const owesMemoryReplay = memoryFederationEnabledForPass;
+            if (owesMemoryReplay && !memoryReplayCursor) memoryReplayCursor = createMergeCursor();
+            console.warn(
+              `[read-merge] [${opts.workspaceId}/${opts.harnessSlug}] WI-10005575: seeded ` +
+                `${seededFromFallback.size} log(s) from cursor progress stamped '${fallbackBinding}' ` +
+                `(this pass binds '${applyBinding}'), instead of re-folding them from 0` +
+                (owesMemoryReplay ? '; started a memory-only replay for the memory ops that stamp skipped.' : '.'),
+            );
           }
+        } catch (e) {
+          if (eligibleSeeds > 0) observeFallback('merge-cursor-seed', {
+            eligible: eligibleSeeds, applied: 0, reason: 'cursor-read-failed', scope: opts.harnessSlug,
+          });
+          // F4: an unreadable durable cursor may be holding an unapplied entry
+          // at zero. Snapshot skipping is unsafe until that state is known. The
+          // cache has already applied this (hold or pin); the helper re-asserts it
+          // for any other failure and never pins a held log (pgSeedPending).
+          pinUnknownDurableState(mergeCursor, logKeys);
           recordBootEvent(
             opts.workspaceId,
             opts.harnessSlug,
@@ -4367,8 +4529,24 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // own slug (today's fallback, preserved for the non-hive-peered case).
       const policyScopeSlug = hiveHomeProjectionSlug ?? resolvedPotHomeSlug ?? opts.harnessSlug;
       markMergeStage('hive-policy');
+      // Policy-read failure must leave the pass unapplied and retryable. The
+      // outer merge_error handler records it; the next pass reads the policy
+      // again before any cursor advances. Only a successful null is permissive.
       const ownerPolicy: HivePolicy | null =
-        (await getHivePolicyCached(opts.workspaceId, policyScopeSlug).catch(() => null))?.policy ?? null;
+        (await getHivePolicyCached(opts.workspaceId, policyScopeSlug))?.policy ?? null;
+      // One fresh, coherent roster read per policy pass, shared across all
+      // offline peers. Read failures abort the pass before any cursor advances.
+      const policyAuthors = new Map<string, import('./hive-member-identity-set').GithubMemberIdentity | null>();
+      if (ownerPolicy) {
+        let memberRead: ReturnType<MemberReader> | undefined;
+        const loadMembers: MemberReader = (ws, home, sql) => {
+          memberRead ??= loadFederatedPotScopeModule().then((m) => m.listHiveMembersForLocalPot(ws, home, sql));
+          return memberRead;
+        };
+        await Promise.all([...admittedIdentities].map(async ([key, identity]) => {
+          policyAuthors.set(key, await resolveAdmittedUserIdentity(identity, loadMembers));
+        }));
+      }
       // Compose the single enforcement decorator EXACTLY as policy-admission.ts documents:
       // EN-2 rate (inner) wrapped by EN-4 ban → allowlist → takedown → content (outer),
       // over the CURRENT scopedApply (which `rekey` may have rebound). With no policy this
@@ -4382,8 +4560,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         ? makePolicyEnforcedApply({
             currentPolicy: () => ownerPolicy,
             resolveAuthor: (k) => {
-              const id = admittedIdentities.get(k);
-              return id ? { githubUserId: id.githubUserId, githubUsername: id.githubLogin } : null;
+              return policyAuthors.get(k) ?? null;
             },
             ownLogKeyHex: ownLog.keyHex,
             isContentTakenDown: (policy, op) => isContentTakenDown(policy, op.hbKey ?? ''),
@@ -4396,7 +4573,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
               const id = admittedIdentities.get(k);
               if (!id) return false;
               if (joinedHiveOwnerDevice && id.devicePubkey === joinedHiveOwnerDevice) return true;
-              return localAnnounceGithubUserId != null && id.githubUserId === localAnnounceGithubUserId;
+              return localAnnounceGithubUserId != null &&
+                policyAuthors.get(k)?.githubUserId === localAnnounceGithubUserId;
             },
             // A policy drop is a visible witness, never a silent cursor advance: one
             // boot-history event + one refused-op counter bump per (reason, author,
@@ -4425,7 +4603,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
               limiter: rateLimiter,
               nicheLimiter: eliteNicheLimiter,
               ownLogKeyHex: ownLog.keyHex,
-              resolveAuthorId: (k) => admittedIdentities.get(k)?.githubUserId ?? null,
+              resolveAuthorId: (k) => policyAuthors.get(k)?.githubUserId ?? null,
               currentCaps: () => ownerPolicy.rate ?? null,
               apply: scopedApply,
             }),
@@ -5701,6 +5879,22 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   ): Promise<AdmissionResult> {
     const decision = await onAnnounce(frame);
     if (decision.admit && ctx && scopeFederation) {
+      const identity = admittedIdentities.get(frame.log_core_key);
+      if (!identity?.channel2Verified) {
+        // A rostered DEVICE may replicate its base log without live GitHub
+        // I/O. That does not authenticate the USER it names in the announce.
+        // Private scope authority requires the receiver's uncached binding.
+        const hiveHome = hiveHomeProjectionSlug ?? resolvedPotHomeSlug;
+        const { resolveGithubUserIdForDevicePubkey } = await loadHiveMemberIdentitySetModule();
+        const receiverUserId = hiveHome
+          ? await resolveGithubUserIdForDevicePubkey(opts.workspaceId, hiveHome, frame.device_pubkey)
+            .catch(() => null)
+          : null;
+        if (receiverUserId == null || receiverUserId !== frame.github_user_id) {
+          recordBootEvent(opts.workspaceId, opts.harnessSlug, 'announce_rejected', 'scoped-user-binding-unverified');
+          return decision;
+        }
+      }
       void scopeFederation.onPeerAnnounce(frame, ctx).catch(() => {});
     }
     return decision;
@@ -5868,7 +6062,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       const scopedInitDone = (async () => {
         try {
           const scopedStore = opts.scopedStoreOverride
-            ? await opts.scopedStoreOverride()
+            ? await opts.scopedStoreOverride(storeOpts)
             : await getHarnessScopedStore(storeOpts);
           if (!scopeRegistry) {
             // Narrowed at the boundary (scope-cores.ts convention): Corestore
@@ -6048,8 +6242,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         refreshMs: opts.swarmRefreshMs,
         fastWindowMs: opts.swarmFastWindowMs,
         slowRefreshMs: opts.swarmSlowRefreshMs,
-        // WI-1534 anti-entropy: keep the self-heal loop in its FAST cadence
-        // whenever an admitted remote log has zero live replicator peers —
+        stalledMaxRefreshMs: opts.swarmStalledMaxRefreshMs,
+        // WI-1534 anti-entropy: re-arm the self-heal loop's FAST cadence
+        // (WI-10005270: for one fast window, then an exponential backoff to
+        // stalledMaxRefreshMs) whenever an admitted remote log has zero live replicator peers —
         // on a quiescent hive (no connection churn) this is the ONLY thing
         // that re-arms it; otherwise it settles into the 60s slow keepalive
         // and a genuinely stalled/zombie peer can go unresynced for as long
@@ -6068,7 +6264,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // `escalateToForcedRejoin`'s `swarmHandle?.forceRejoin()` above.
         hasStalledLogs: () => {
           try {
-            return computeHasStalledLogs(admitted, ownLog.keyHex, swarmHandle?.liveConnectionCount ?? 0);
+            // WI-10005287: the TOPIC-scoped socket count, never the swarm-wide
+            // liveConnectionCount (see topicStallCandidateCount's doc).
+            return computeHasStalledLogs(admitted, ownLog.keyHex, swarmHandle?.topicStallCandidateCount ?? 0);
           } catch {
             return false;
           }

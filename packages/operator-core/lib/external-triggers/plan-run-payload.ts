@@ -21,10 +21,10 @@
  *
  * The agent still needs the message it is supposed to respond to, so the payload
  * moves from PUSH to PULL: {@link readTriggerPlanRunPayload} resolves it
- * server-side from the local table by `planRunId`. That mirrors the write side,
- * which has always worked this way — `gmail:create-draft` takes only
- * `{ planRunId, text }` and resolves recipient, thread, reply headers and the
- * OAuth credential server-side. The read side was the asymmetry; this removes it.
+ * server-side from the local table by `planRunId`. That mirrors the write side:
+ * `mail:reply { planRunId }` takes only the run id plus the reply body and resolves
+ * recipient, thread, reply headers and the provider credential server-side. The
+ * read side was the asymmetry; this removes it.
  */
 
 import type postgres from 'postgres';
@@ -105,13 +105,16 @@ function string(value: unknown): string {
  *
  * Deliberately NOT filtered by source kind — the envelope is source-agnostic, so
  * one reader serves gmail, slack, gcal and every future adapter. The trust
- * boundary is the same one `gmail:create-draft` already relies on: a caller must
+ * boundary is the same one `mail:reply { planRunId }` relies on: a caller must
  * name a `planRunId` that resolves inside its OWN workspace.
  *
- * `status = 'succeeded'` is the correct predicate even though the agent reads
- * this at the START of its work: the binding engine marks the trigger run
- * succeeded as soon as the plan LAUNCHES (it records `plan_run_ref` in the same
- * write), not when the agent finishes.
+ * `plan_run_ref` alone is the predicate, NOT the receipt's status. The binding
+ * engine writes the ref only from a path that launched that run: on success, on a
+ * no-consumer skip, and on a dispatch that failed AFTER the launch. In the last
+ * case the receipt is `failed` (or `running` mid-retry) while the run's work-item
+ * is still queued and can be executed. Requiring `succeeded` refused exactly that
+ * executor (trigger_payload_run_not_found, WI-6554700010010446). The mail, chat
+ * and ticket reply verbs resolve their receipt the same way.
  */
 export async function readTriggerPlanRunPayload(
   sql: Db,
@@ -125,11 +128,56 @@ export async function readTriggerPlanRunPayload(
       FROM harness_shared.trigger_runs tr
      WHERE tr.workspace_id = ${workspaceId}
        AND tr.plan_run_ref = ${String(planRunId)}
-       AND tr.status = 'succeeded'
      ORDER BY tr.completed_at DESC NULLS LAST, tr.id
      LIMIT 1`;
   const row = rows[0];
   if (!row) throw new Error(`trigger_payload_run_not_found:${planRunId}`);
+  return payloadFromRow(row);
+}
+
+/**
+ * Resolve the private ingest for the work item a trigger-fired blueprint
+ * OPERATION created (app-agent-tasks-durable-execution-2026-10-06 D-006).
+ *
+ * An operation-dispatched trigger run has no plan run, so `planRunId` cannot
+ * name it. The binding engine submits it with `callerId =
+ * trigger-binding:<bindingId>` and `requestKey = trigger-run:<triggerRunId>`
+ * (binding-engine.ts, the `blueprint-operation` branch), and the invocation row
+ * records the work item it created as its target. Joining on BOTH halves is
+ * the trust boundary: only an invocation the binding engine minted for THAT
+ * trigger run resolves, inside the caller's own workspace, so a caller cannot
+ * name an arbitrary trigger run by guessing a request key.
+ *
+ * No status predicate: the invocation row is written in the submit transaction,
+ * BEFORE the engine marks the trigger run succeeded, so a worker that claims the
+ * item at once must still resolve it.
+ */
+export async function readTriggerOperationPayload(
+  sql: Db,
+  workspaceId: string,
+  workItemId: string,
+): Promise<TriggerPlanRunPayload> {
+  const id = workItemId.trim();
+  if (!id) throw new Error('trigger_payload_work_item_id_invalid');
+  const rows = await sql<TriggerPayloadRow[]>`
+    SELECT tr.id::text AS "triggerRunId",
+           tr.args
+      FROM harness_shared.blueprint_operation_invocations i
+      JOIN harness_shared.trigger_runs tr
+        ON tr.workspace_id = i.workspace_id
+       AND i.request_key = 'trigger-run:' || tr.id::text
+       AND i.caller_id = 'trigger-binding:' || tr.binding_id::text
+     WHERE i.workspace_id = ${workspaceId}
+       AND i.target_kind = 'work-item'
+       AND i.target_ref = ${id}
+     ORDER BY i.id DESC
+     LIMIT 1`;
+  const row = rows[0];
+  if (!row) throw new Error(`trigger_payload_operation_not_found:${id}`);
+  return payloadFromRow(row);
+}
+
+function payloadFromRow(row: TriggerPayloadRow): TriggerPlanRunPayload {
   const trigger = object(object(row.args).trigger);
   return {
     triggerRunId: row.triggerRunId,

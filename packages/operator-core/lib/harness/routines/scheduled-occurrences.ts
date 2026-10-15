@@ -10,6 +10,7 @@
  * excluded — only templates carry a schedule.
  */
 import type { Sql } from 'postgres';
+import { pgDateOrNull, type PgTimestamp } from '../../connected-apps/pg-dates';
 import { expandOccurrences, type ScheduleTrigger } from './schedule-next';
 
 export interface ScheduledOccurrence {
@@ -33,8 +34,8 @@ interface PlanScheduleRow {
   title: string | null;
   schedule: ScheduleTrigger | null; // jsonb — round-trips as an object
   schedule_active: boolean | null;
-  scheduled_at: Date | null;
-  expires_at: Date | null;
+  scheduled_at: PgTimestamp | null;
+  expires_at: PgTimestamp | null;
 }
 
 /**
@@ -75,8 +76,8 @@ export async function listPlanSchedules(
     harnessSlug: r.harness_slug,
     title: r.title,
     schedule: r.schedule ?? null,
-    scheduledAt: r.scheduled_at ? r.scheduled_at.toISOString() : null,
-    expiresAt: r.expires_at ? r.expires_at.toISOString() : null,
+    scheduledAt: pgDateOrNull(r.scheduled_at, 'harness_plans.scheduled_at')?.toISOString() ?? null,
+    expiresAt: pgDateOrNull(r.expires_at, 'harness_plans.expires_at')?.toISOString() ?? null,
     tzid: r.tzid ?? null,
     scheduleActive: r.schedule_active ?? false,
   }));
@@ -127,8 +128,12 @@ export async function gatherScheduledOccurrences(
   for (const r of rows) {
     const scheduleActive = r.schedule_active ?? false;
     const lastOutcome = outcomeBySlug.get(r.plan_slug) ?? null;
+    // A shared pool's raw timestamp parser changes to text after Drizzle wraps
+    // it. Normalize at this read boundary for both occurrence consumers.
+    const expiresAt = pgDateOrNull(r.expires_at, 'harness_plans.expires_at');
+    const scheduledAt = pgDateOrNull(r.scheduled_at, 'harness_plans.scheduled_at');
     // expiry clamps the window end (the schedule deactivates on expiry — D-004)
-    const effEnd = r.expires_at && r.expires_at.getTime() < rangeEndMs ? r.expires_at : rangeEnd;
+    const effEnd = expiresAt && expiresAt.getTime() < rangeEndMs ? expiresAt : rangeEnd;
 
     if (r.schedule) {
       for (const d of expandOccurrences(r.schedule, rangeStart, effEnd, limitPerPlan)) {
@@ -143,8 +148,8 @@ export async function gatherScheduledOccurrences(
         });
       }
     }
-    if (r.scheduled_at) {
-      const t = r.scheduled_at.getTime();
+    if (scheduledAt) {
+      const t = scheduledAt.getTime();
       if (t >= rangeStartMs && t <= effEnd.getTime()) {
         out.push({
           templateSlug: r.plan_slug,

@@ -3,14 +3,29 @@ const hostedDb = vi.hoisted(() => ({
   run: null as null | ((strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>),
   calls: [] as Array<{ query: string; values: unknown[] }>,
 }));
-
-vi.mock('@papercusp/db-org', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
-  withHostedServiceContext: async (callback: (sql: unknown) => Promise<unknown>) => {
-    if (!hostedDb.run) throw new Error('hosted service SQL test double was not initialized');
-    return callback(hostedDb.run as never);
-  },
+const workspaceDb = vi.hoisted(() => ({
+  run: null as null | ((strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>),
+  calls: [] as Array<{ workspaceId: string; query: string; values: unknown[] }>,
 }));
+
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/db-org')>();
+  return {
+    ...actual,
+    withHostedServiceContext: async (callback: (sql: unknown) => Promise<unknown>) => {
+      if (!hostedDb.run) throw new Error('hosted service SQL test double was not initialized');
+      return callback(hostedDb.run as never);
+    },
+    withWorkspace: async (workspaceId: string, callback: (query: unknown) => Promise<unknown>) => {
+      const run = workspaceDb.run;
+      if (!run) throw new Error('workspace SQL test double was not initialized');
+      return callback(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        workspaceDb.calls.push({ workspaceId, query: strings.join(' '), values });
+        return run(strings, ...values);
+      });
+    },
+  };
+});
 
 import {
   assertWorkspaceHostSecretIsolation,
@@ -21,8 +36,11 @@ import {
 import {
   enrollHostedWorkspaceConnector,
   hostedBringUpInitialization,
+  hostedBringUpSupportsHost,
+  hostedBringUpSupportsProvider,
   hostedConnectorRouteLabel,
   PAPERCUSP_HOSTED_BRING_UP_AGENTS,
+  readHostedBringUpBinding,
   revokeHostedWorkspaceConnectorsForDestroyedHost,
   workspaceHostBringUpOperationIds,
   type HostedConnectorEnrollmentDependencies,
@@ -40,7 +58,7 @@ const HOSTED: WorkspaceHostDesiredSpec = {
   image: { id: 'projects/ubuntu-os-cloud/global/images/ubuntu-2404-noble-amd64-v20260918' },
   data: { encrypted: true, volumeGiB: 100 },
   credentials: { cloudCredentialRef: { kind: 'cloud', ref: 'delegation://ws-3b44/conn-3b44' } },
-  provider: { projectId: 'papercusp-hosted-workspaces', network: { mode: 'managed' } },
+  provider: { projectId: 'papercusp-hosted-workspaces', network: { mode: 'managed' }, provisioningModel: 'spot' },
 } as WorkspaceHostDesiredSpec;
 
 function request(desired: WorkspaceHostDesiredSpec = HOSTED) {
@@ -95,10 +113,61 @@ describe('hosted bring-up (D-401)', () => {
     expect(PAPERCUSP_HOSTED_BRING_UP_AGENTS).toEqual(['omp']);
   });
 
-  it('refuses a host that is not a GCP project host', () => {
+  it('refuses a host that is neither a GCP project host nor an AWS account host', () => {
     expect(() => request({ ...HOSTED, scope: { kind: 'organization', id: 'org-1' } } as never)).toThrow(
-      /GCP project hosts only/,
+      /GCP project and AWS account hosts only/,
     );
+    expect(() => request({ ...HOSTED, target: 'aws', scope: { kind: 'project', id: 'p' } } as never)).toThrow(
+      /GCP project and AWS account hosts only/,
+    );
+    expect(() => request({ ...HOSTED, target: 'azure', scope: { kind: 'subscription', id: 's' } } as never)).toThrow(
+      /GCP project and AWS account hosts only/,
+    );
+  });
+
+  // aws-byoc-gcp-parity D-015 rule 3 (WI-10005354): an EC2 instance's instance profile is its
+  // provider identity, exactly as a GCP VM's service account is.
+  const AWS_HOST = {
+    ...HOSTED,
+    hostId: 'host-aws-0f9b1ba8db30d143',
+    target: 'aws',
+    scope: { kind: 'account', id: '123456789012' },
+    region: 'us-east-2',
+    zone: 'us-east-2a',
+    size: 't3.large',
+    image: { id: 'ami-0123456789abcdef0' },
+    provider: { network: { mode: 'managed' } },
+  } as unknown as WorkspaceHostDesiredSpec;
+
+  it("builds an AWS account host's request from its instance profile identity", () => {
+    expect(request(AWS_HOST)).toMatchObject({
+      hostId: AWS_HOST.hostId,
+      source: { kind: 'empty' },
+      requestedAgents: ['omp'],
+      credentialRefs: {
+        cloudCredentialRef: { kind: 'cloud', ref: 'pc-cloud-workload://aws/123456789012/host-aws-0f9b1ba8db30d143' },
+      },
+      credentialDelivery: {
+        cloud: {
+          kind: 'provider-identity',
+          generation: 1,
+          audience: AWS_HOST.hostId,
+          revocationRef: 'pc-cloud-workload-revocation://aws/123456789012/host-aws-0f9b1ba8db30d143/g1',
+        },
+      },
+    });
+    const admitted = { ...request(AWS_HOST), deliveryCapabilities: resolveWorkspaceHostDeliveryCapabilities(AWS_HOST) };
+    expect(planWorkspaceHostInitialization(admitted).steps.map((step) => step.kind)).toContain('bind-credential');
+    expect(() => assertWorkspaceHostSecretIsolation(admitted, 'hosted-bring-up.test.aws')).not.toThrow();
+  });
+
+  it('answers both doors from one table: GCP and AWS have a bring-up, nothing else does', () => {
+    expect(hostedBringUpSupportsProvider('gcp')).toBe(true);
+    expect(hostedBringUpSupportsProvider('aws')).toBe(true);
+    for (const other of ['azure', 'toString', '__proto__', '']) expect(hostedBringUpSupportsProvider(other)).toBe(false);
+    expect(hostedBringUpSupportsHost(HOSTED)).toBe(true);
+    expect(hostedBringUpSupportsHost(AWS_HOST)).toBe(true);
+    expect(hostedBringUpSupportsHost({ ...AWS_HOST, scope: { kind: 'project', id: 'p' } } as never)).toBe(false);
   });
 
   it('derives one stable, routable operation per stage from the provision', () => {
@@ -110,6 +179,95 @@ describe('hosted bring-up (D-401)', () => {
     });
     // The initialize/desktop-pack admission guard for operation ids.
     for (const id of Object.values(ids)) expect(id).toMatch(/^[a-z0-9][a-z0-9._:-]{0,159}$/i);
+  });
+});
+
+describe('hosted bring-up binding (D-407, aws-byoc-gcp-parity D-016 rule c)', () => {
+  const HOST = 'host-0f9b1ba8db30d143becc130a';
+  const read = () => readHostedBringUpBinding({ controlPlaneWorkspaceId: 'papercusp-workspace', hostId: HOST });
+
+  function connectors(rows: Array<{ customer_workspace_id: string }>) {
+    hostedDb.calls = [];
+    hostedDb.run = async (strings, ...values) => {
+      const query = strings.join(' ');
+      hostedDb.calls.push({ query, values });
+      if (query.includes('FROM papercusp_auth.hosted_workspace_connectors')) return rows;
+      throw new Error(`unexpected hosted connector SQL: ${query}`);
+    };
+  }
+
+  /** A customer_workspaces double that applies the reader's own predicates to the rows it holds. */
+  function customerWorkspaces(rows: Array<{ id: string; kind: string; state: string; workspace_host_id: string }>) {
+    workspaceDb.calls = [];
+    workspaceDb.run = async (strings) => {
+      const query = strings.join(' ');
+      if (!query.includes('FROM harness_shared.customer_workspaces')) {
+        throw new Error(`unexpected workspace SQL: ${query}`);
+      }
+      // The predicates the fallback must carry; a reader that drops one would match these rows.
+      const requiresHosted = /kind = 'hosted'/.test(query);
+      const requiresProvisioning = /state = 'provisioning'/.test(query);
+      return rows
+        .filter((row) => row.workspace_host_id === HOST)
+        .filter((row) => !requiresHosted || row.kind === 'hosted')
+        .filter((row) => !requiresProvisioning || row.state === 'provisioning')
+        .map((row) => ({ id: row.id }));
+    };
+  }
+
+  it('reads the connector enrollment first and never consults the workspace binding', async () => {
+    connectors([{ customer_workspace_id: 'ws-enrolled' }]);
+    customerWorkspaces([{ id: 'ws-other', kind: 'hosted', state: 'provisioning', workspace_host_id: HOST }]);
+    await expect(read()).resolves.toEqual({ customerWorkspaceId: 'ws-enrolled' });
+    expect(workspaceDb.calls).toHaveLength(0);
+  });
+
+  it('still refuses a host with live connectors for more than one customer workspace', async () => {
+    connectors([{ customer_workspace_id: 'ws-a' }, { customer_workspace_id: 'ws-b' }]);
+    customerWorkspaces([]);
+    await expect(read()).rejects.toThrow(/live connectors for 2 customer workspaces/);
+  });
+
+  it('falls back to a portal workspace that is still provisioning (the canary state)', async () => {
+    connectors([]);
+    customerWorkspaces([
+      { id: 'ws-0f9b1ba8db30d143becc130a', kind: 'hosted', state: 'provisioning', workspace_host_id: HOST },
+    ]);
+    await expect(read()).resolves.toEqual({ customerWorkspaceId: 'ws-0f9b1ba8db30d143becc130a' });
+    expect(workspaceDb.calls[0]).toMatchObject({
+      workspaceId: 'papercusp-workspace',
+      values: expect.arrayContaining(['papercusp-workspace', HOST]),
+    });
+  });
+
+  it.each(['active', 'suspended', 'offboarded', 'deleted'])(
+    'does not bind a portal workspace that is %s: an empty-source initialize must never run against it',
+    async (state) => {
+      connectors([]);
+      customerWorkspaces([{ id: 'ws-served', kind: 'hosted', state, workspace_host_id: HOST }]);
+      await expect(read()).resolves.toBeNull();
+    },
+  );
+
+  it('does not bind a customer workspace that is not a portal (hosted) workspace', async () => {
+    connectors([]);
+    customerWorkspaces([{ id: 'ws-local', kind: 'byoc', state: 'provisioning', workspace_host_id: HOST }]);
+    await expect(read()).resolves.toBeNull();
+  });
+
+  it('returns null for a desktop/local host with neither binding', async () => {
+    connectors([]);
+    customerWorkspaces([]);
+    await expect(read()).resolves.toBeNull();
+  });
+
+  it('refuses a host bound to more than one provisioning portal workspace', async () => {
+    connectors([]);
+    customerWorkspaces([
+      { id: 'ws-a', kind: 'hosted', state: 'provisioning', workspace_host_id: HOST },
+      { id: 'ws-b', kind: 'hosted', state: 'provisioning', workspace_host_id: HOST },
+    ]);
+    await expect(read()).rejects.toThrow(/bound to 2 provisioning customer workspaces/);
   });
 });
 

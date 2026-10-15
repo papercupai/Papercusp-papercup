@@ -99,6 +99,13 @@ export interface PlanCleanupRunState {
   isRunning: boolean;
   isReview: boolean;
   loading: boolean;
+  reviewInventory: PlanCleanupReviewInventory;
+}
+
+export interface PlanCleanupReviewInventory {
+  runs: Array<{ runId: string; createdAt: string | null; unresolved: number }>;
+  total: number;
+  error?: string;
 }
 
 export interface PlanCleanupStartResult {
@@ -114,8 +121,42 @@ export interface PlanCleanupStartResult {
     failed: number;
   };
   launchError?: string;
+  /** P-005: how many shown plans the run actually carries. `truncated > 0`
+   *  means the server kept the least-recently-scanned `accepted` of
+   *  `requested`; the strip says "first N of M" instead of cutting silently. */
+  coverage?: PlanCleanupCoverage;
   preservedOutcomes?: number;
   error?: string;
+}
+
+export interface PlanCleanupCoverage {
+  requested: number;
+  accepted: number;
+  truncated: number;
+}
+
+/** Parse the start response's coverage triple; absent/malformed → undefined. */
+export function parsePlanCleanupCoverage(
+  json: Record<string, unknown>,
+): PlanCleanupCoverage | undefined {
+  const requested = Number(json.requested);
+  const accepted = Number(json.accepted);
+  const truncated = Number(json.truncated);
+  if (![requested, accepted, truncated].every((n) => Number.isFinite(n) && n >= 0)) {
+    return undefined;
+  }
+  return { requested, accepted, truncated };
+}
+
+/** The strip's "first N of M" line, or null when the run carries every shown plan. */
+export function planCleanupCoverageNotice(
+  coverage: PlanCleanupCoverage | undefined,
+): string | null {
+  if (!coverage || coverage.truncated <= 0) return null;
+  return (
+    `Scanning the first ${coverage.accepted} of ${coverage.requested} shown plans ` +
+    `(least recently scanned first) — run Clean-up again to cover the other ${coverage.truncated}.`
+  );
 }
 
 export interface PlanCleanupCounts {
@@ -274,6 +315,7 @@ export function usePlanCleanupRun(
   const { data, loading } = useSyncQuery<{
     run: PlanCleanupRun | null;
     findings: PlanCleanupFinding[];
+    reviewInventory?: PlanCleanupReviewInventory;
   }>({
     queryName: "plans.cleanupRun",
     args: runId ? { runId } : {},
@@ -283,7 +325,7 @@ export function usePlanCleanupRun(
   const row = Array.isArray(data)
     ? data[0]
     : (data as
-        | { run?: PlanCleanupRun | null; findings?: PlanCleanupFinding[] }
+        | { run?: PlanCleanupRun | null; findings?: PlanCleanupFinding[]; reviewInventory?: PlanCleanupReviewInventory }
         | undefined);
   const run = row?.run ?? null;
   const findings = useMemo(() => row?.findings ?? [], [row]);
@@ -299,8 +341,9 @@ export function usePlanCleanupRun(
       isRunning: run?.phase === "pending" || run?.phase === "running",
       isReview: run?.phase === "review",
       loading: Boolean(loading),
+      reviewInventory: row?.reviewInventory ?? { runs: [], total: 0 },
     }),
-    [run, findings, loading],
+    [run, findings, loading, row?.reviewInventory],
   );
 }
 
@@ -394,6 +437,7 @@ export function usePlanCleanupOps(): {
               : undefined,
           launchError:
             typeof json.launchError === "string" ? json.launchError : undefined,
+          coverage: parsePlanCleanupCoverage(json),
         };
       } catch (error) {
         return {

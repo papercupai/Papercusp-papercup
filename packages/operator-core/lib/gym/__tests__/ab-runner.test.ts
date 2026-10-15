@@ -8,7 +8,10 @@ import { LlmCallError } from '@papercusp/testing-shell/llm';
 import type { TurnError } from '../../agent-chat-stream';
 
 const rateLimited = (resetAt?: number): LlmCallError =>
-  new LlmCallError({ class: 'rate_limited', message: '429 rate limited', provider: 'anthropic', retryable: true, ...(resetAt !== undefined ? { resetAt } : {}) } as TurnError);
+  Object.assign(
+    new LlmCallError({ class: 'rate_limited', message: '429 rate limited', provider: 'anthropic', retryable: true, ...(resetAt !== undefined ? { resetAt } : {}) } as TurnError),
+    { costUsd: 0 }, // Explicit measured-zero evidence is required before retrying a rate-limited call.
+  );
 
 /**
  * P-014 bounded A/B harness: for each (variant × task × repeat) it runs the pipeline →
@@ -97,6 +100,55 @@ function makeDeps(opts: { store: AbStore; composites: number[]; pipelineUsd?: nu
 }
 
 describe('runAbEvaluation', () => {
+  it.each([false, true])('retains canonical pipeline receipts without calling estimated/incomplete cost measured (complete=%s)', async (complete) => {
+    const { store } = makeStore();
+    const { deps } = makeDeps({ store, composites: [8], pipelineUsd: 0.4 });
+    const run = deps.runPipeline;
+    const receipt = { knownUsd: 0.4, providerUsd: 0, estimatedUsd: 0.4,
+      complete, measured: false, coverageBasis: 'retained-run-output-and-usage-samples' as const,
+      missingRunIds: complete ? [] : ['validator'], samples: [] };
+    deps.runPipeline = async (input) => ({ ...await run(input), pipelineSpend: receipt });
+    const result = await runAbEvaluation(oneVariant({ repeats: 1 }), deps);
+    expect(result.outcomes[0].pipelineSpend).toEqual(receipt);
+    expect(result.cost.costMeasured).toBe(false);
+    expect(result.cost.totalUsd).toBeCloseTo(2.9);
+    expect(result.comparison).toEqual([]);
+  });
+
+  it('stops the next paid run and withholds comparison when a repair charge is unknown', async () => {
+    const { store, scores } = makeStore();
+    const { deps, calls } = makeDeps({ store, composites: [8], pipelineUsd: 0.4 });
+    let judgeCalls = 0;
+    deps.llmCall = async () => {
+      if (++judgeCalls === 2) throw new Error('charge unavailable');
+      return { text: 'invalid judge output', costUsd: 0.02, inputTokens: 10, outputTokens: 5 };
+    };
+    const result = await runAbEvaluation(oneVariant({ repeats: 2 }), deps);
+    expect(result.outcomes).toHaveLength(1);
+    expect(result.outcomes[0]).toMatchObject({ judgeUsd: 0.02, judgeCostMeasured: false, status: 'errored' });
+    expect(result.cost.costMeasured).toBe(false);
+    expect(result.cost.totalUsd).toBeCloseTo(0.42);
+    expect(result.comparison).toEqual([]);
+    expect(calls.pipeline).toBe(1);
+    expect(scores.size).toBe(0);
+  });
+
+  it('includes paid failed-judge repairs in the run, variant and total cost', async () => {
+    const { store, scores } = makeStore();
+    const { deps } = makeDeps({ store, composites: [8], pipelineUsd: 0.4 });
+    let calls = 0;
+    deps.llmCall = async () => ({
+      text: ++calls <= 2 ? 'invalid judge output' : JSON.stringify({ d1: 8, d2: 8, d3: 8, rationale: 'ok' }),
+      costUsd: calls <= 2 ? 0.02 : 0.03, inputTokens: 10, outputTokens: 5,
+    });
+    const result = await runAbEvaluation(oneVariant({ repeats: 2 }), deps);
+    expect(result.outcomes.map((o) => o.status)).toEqual(['errored', 'scored']);
+    expect(result.outcomes[0].judgeUsd).toBeCloseTo(0.04);
+    expect(result.cost.totalUsd).toBeCloseTo(0.87);
+    expect(result.cost.perVariant.baseline).toBeCloseTo(0.87);
+    expect(scores.size).toBe(1);
+  });
+
   it('runs pipeline+judge once per (variant × task × repeat) and stores each', async () => {
     const { store, runs, finished, scores, variants, tasks } = makeStore();
     const { deps, calls } = makeDeps({ store, composites: [6, 7, 8, 9] }); // baseline:6,7  cand-1:8,9
@@ -178,7 +230,7 @@ function makeFailingDeps(opts: {
     llmCall: async () => {
       calls.judge++;
       const err = opts.throwOnCall?.(calls.judge);
-      if (err) throw err;
+      if (err) throw Object.assign(err, { costUsd: 0 }); // this fixture models a known, uncharged failure
       return { text: JSON.stringify({ d1: composite, d2: composite, d3: composite, rationale: 'ok' }), costUsd: 2.5, inputTokens: 100, outputTokens: 200 };
     },
     newRunId: (v, t, r) => `${v}:${t}:r${r}`,

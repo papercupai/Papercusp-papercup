@@ -2,12 +2,12 @@
  * GENERATED FILE — do not edit by hand.
  *
  * Source: apps/operator-public/migrations/*.sql applied in filename order
- * Migration digest: f7e1682e643a177c8d32c7fcb826138c4e51449005f664113a69ac2a49777a59
+ * Migration digest: e160c0d21deb5551eba65bb6fb6eb2e307d7cb66eaa33172487080ae0e08fd38
  * Regenerate with: npm run db:types:generate --workspace @papercusp/cupboard-worker
  */
 
 export const GENERATED_MIGRATION_DIGEST =
-  "f7e1682e643a177c8d32c7fcb826138c4e51449005f664113a69ac2a49777a59";
+  "e160c0d21deb5551eba65bb6fb6eb2e307d7cb66eaa33172487080ae0e08fd38";
 export const GENERATED_TABLES = [
   "audit",
   "banned_publisher_pubkeys",
@@ -32,6 +32,7 @@ export const GENERATED_TABLES = [
   "reports",
   "settlement_batch_vouchers",
   "settlement_batches",
+  "transparency_attestations",
   "transparency_live",
   "transparency_statements",
   "treasury_safe_deployment_records",
@@ -103,6 +104,8 @@ export interface CommerceOffersRow {
   meter_unit: string | null;
   price_version: string | null;
   split_manifest_hash: string | null;
+  seller_pubkey_base64: string | null;
+  seller_key_proof: string | null;
 }
 
 export interface CommerceOrdersRow {
@@ -310,6 +313,8 @@ export interface PaymentChannelsRow {
   created_at_ms: number;
   updated_at_ms: number;
   closed_at_ms: number | null;
+  payer_pubkey_base64: string | null;
+  payer_key_proof: string | null;
 }
 
 export interface PrepaidCreditBalancesRow {
@@ -402,6 +407,17 @@ export interface SettlementBatchesRow {
   finalized_at_ms: number | null;
 }
 
+export interface TransparencyAttestationsRow {
+  workspace_id: string;
+  month: string;
+  document_sha256: string;
+  statement_digest: string;
+  record_json: string;
+  proof_json: string | null;
+  recorded_at_ms: number;
+  proof_at_ms: number | null;
+}
+
 export interface TransparencyLiveRow {
   workspace_id: string;
   month: string;
@@ -483,6 +499,8 @@ export interface TreasuryTransfersRow {
   block_number: string;
   proof_event_id: string | null;
   created_at_ms: number;
+  payee_id: string;
+  submission_state: string;
 }
 
 export interface UsageReceiptsRow {
@@ -508,6 +526,12 @@ export interface UsageReceiptsRow {
   state: string;
   reserved_at_ms: number;
   settled_at_ms: number | null;
+  identity_ceiling_micros: number | null;
+  billed_inference_micros: number | null;
+  prior_markup_remainder: number | null;
+  markup_remainder: number | null;
+  settled_meter_quantity: number | null;
+  seller_pubkey_base64: string | null;
 }
 
 export interface WalletBindingChallengesRow {

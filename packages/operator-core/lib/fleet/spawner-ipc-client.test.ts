@@ -85,6 +85,7 @@ afterEach(async () => {
   client.close();
   await new Promise<void>((resolve) => server.close(() => resolve()));
   if (fs.existsSync(sock)) { try { fs.unlinkSync(sock); } catch { /* removed by server.close */ } }
+  vi.restoreAllMocks();
 });
 
 describe('SpawnerIpcClient — id-correlated request/response', () => {
@@ -109,6 +110,96 @@ describe('SpawnerIpcClient — id-correlated request/response', () => {
 
   it('rejects on an error response', async () => {
     await expect(client.call('boom')).rejects.toThrow(/RPC error -32001: kaboom/);
+  });
+
+  it('logs socket-error correlation without RPC params', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const accepted: net.Socket[] = [];
+    const captureConnection = (socket: net.Socket): void => { accepted.push(socket); };
+    server.on('connection', captureConnection);
+    let requestIdentity: { requestId: number; clientConnectionId: string } | undefined;
+    const request = client.call('hang', {
+      command: 'private-command', args: ['private-argument'], env: { TOKEN: 'private-value' },
+    }, {
+      timeoutMs: 5000,
+      onRequestId: (requestId, clientConnectionId) => { requestIdentity = { requestId, clientConnectionId }; },
+    });
+    const rejected = expect(request).rejects.toThrow('synthetic ECONNRESET');
+    try {
+      await vi.waitFor(() => expect(requestIdentity).toBeDefined());
+      const socket = (client as unknown as { socket: net.Socket | null }).socket;
+      if (!socket) throw new Error('client socket missing before synthetic error');
+      socket.emit('error', Object.assign(new Error('synthetic ECONNRESET'), { code: 'ECONNRESET' }));
+      socket.destroy();
+      await rejected;
+
+      const fault = warning.mock.calls.find(([tag, details]) =>
+        tag === '[spawner-ipc-client-fault]' &&
+        typeof details === 'object' && details !== null &&
+        (details as { event?: string }).event === 'socket-error',
+      )?.[1] as Record<string, unknown> | undefined;
+      expect(fault).toMatchObject({
+        event: 'socket-error',
+        clientConnectionId: requestIdentity?.clientConnectionId,
+        errorCode: 'ECONNRESET',
+        errorName: 'Error',
+        activeRequests: [{ requestId: requestIdentity?.requestId, method: 'hang' }],
+      });
+      expect(JSON.stringify(fault)).not.toMatch(/private-command|private-argument|private-value|TOKEN|synthetic ECONNRESET/);
+    } finally {
+      server.off('connection', captureConnection);
+      for (const socket of accepted) socket.destroy();
+    }
+  });
+
+  it('logs timeout correlation without copying command, args, or env', async () => {
+    const p = socketPath();
+    let received: { id: number; clientConnectionId: string } | undefined;
+    const stalledServer = net.createServer((socket) => {
+      let buffer = '';
+      socket.setEncoding('utf8');
+      socket.on('error', () => {});
+      socket.on('data', (chunk: string) => {
+        buffer += chunk;
+        const newline = buffer.indexOf('\n');
+        if (newline < 0) return;
+        received = JSON.parse(buffer.slice(0, newline)) as { id: number; clientConnectionId: string };
+      });
+    });
+    await new Promise<void>((resolve) => stalledServer.listen(p, resolve));
+    const stalledClient = new SpawnerIpcClient(p);
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(stalledClient.call('process:exec', {
+        command: 'private-command', args: ['private-argument'], env: { TOKEN: 'private-value' },
+        callerLabel: 'git-via-sidecar.runCommandViaSpawnerSidecar',
+      }, { timeoutMs: 50 })).rejects.toThrow('RPC request timeout: process:exec');
+      expect(received).toBeDefined();
+      const fault = warning.mock.calls.find(([tag, details]) =>
+        tag === '[spawner-ipc-client-fault]' &&
+        typeof details === 'object' && details !== null &&
+        (details as { event?: string }).event === 'rpc-timeout',
+      )?.[1] as Record<string, unknown> | undefined;
+      expect(fault).toMatchObject({
+        event: 'rpc-timeout', method: 'process:exec', requestId: received?.id,
+        clientConnectionId: received?.clientConnectionId,
+        activeRequests: [{
+          requestId: received?.id, method: 'process:exec',
+          callerLabel: 'git-via-sidecar.runCommandViaSpawnerSidecar',
+        }],
+        rpcTimeoutMs: 50,
+      });
+      expect(fault?.elapsedMs).toEqual(expect.any(Number));
+      expect(fault?.elapsedMs).toBeGreaterThanOrEqual(0);
+      expect(fault).not.toHaveProperty('command');
+      expect(fault).not.toHaveProperty('args');
+      expect(fault).not.toHaveProperty('env');
+      expect(JSON.stringify(fault)).not.toMatch(/private-command|private-argument|private-value|TOKEN/);
+    } finally {
+      stalledClient.close();
+      await new Promise<void>((resolve) => stalledServer.close(() => resolve()));
+      if (fs.existsSync(p)) { try { fs.unlinkSync(p); } catch { /* removed by close */ } }
+    }
   });
 });
 
@@ -260,6 +351,7 @@ describe('SpawnerIpcClient — re-dials a replacement sidecar (WI-2141693)', () 
   }
 
   it('reconnects after the sidecar dies and a replacement listens on the same path', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     const p = socketPath();
     let live = await startTrackedServer(p);
     const c = new SpawnerIpcClient(p);
@@ -300,6 +392,7 @@ describe('SpawnerIpcClient — re-dials a replacement sidecar (WI-2141693)', () 
   });
 
   it('recovers on the NEXT call when one call is lost to the death→EOF race', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     // The production symptom was not "one call failed" — a call issued between
     // the sidecar's death and the kernel delivering EOF cannot succeed, and no
     // client can prevent that. It was that ALL 333 subsequent calls failed for
@@ -335,7 +428,64 @@ describe('SpawnerIpcClient — re-dials a replacement sidecar (WI-2141693)', () 
     }
   });
 
+  it('re-dials after the peer ends a socket before the local close event', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const p = socketPath();
+    let connectionCount = 0;
+    const clientConnectionIds: string[] = [];
+    const sockets = new Set<net.Socket>();
+    const srv = net.createServer((socket) => {
+      sockets.add(socket);
+      socket.on('close', () => sockets.delete(socket));
+      socket.on('error', () => {});
+      const generation = ++connectionCount;
+      const decoder = new StringDecoder('utf8');
+      let buffer = '';
+      socket.on('data', (chunk) => {
+        buffer += decoder.write(chunk);
+        let newlineIndex: number;
+        while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, newlineIndex).trim();
+          buffer = buffer.slice(newlineIndex + 1);
+          if (!line) continue;
+          const req = JSON.parse(line) as { id: number; clientConnectionId?: string; params?: { value?: string } };
+          if (req.clientConnectionId) clientConnectionIds.push(req.clientConnectionId);
+          const response = JSON.stringify({
+            jsonrpc: '2.0', result: { value: req.params?.value }, id: req.id,
+          }) + '\n';
+          if (generation === 1) socket.end(response);
+          else socket.write(response);
+        }
+      });
+    });
+    await new Promise<void>((resolve) => srv.listen(p, resolve));
+    const c = new SpawnerIpcClient(p);
+    try {
+      await c.ensureConnected();
+      const firstSocket = (c as unknown as { socket: net.Socket | null }).socket;
+      if (!firstSocket) throw new Error('client did not retain its connected socket');
+      // Attach before the first RPC: the reply and peer FIN can arrive in one
+      // read cycle, before the awaiting test continuation runs.
+      const peerEnded = new Promise<void>((resolve) => firstSocket.once('end', resolve));
+      await expect(c.call<{ value: string }>('echo', { value: 'before' }, { timeoutMs: 1000 }))
+        .resolves.toEqual({ value: 'before' });
+      await peerEnded;
+
+      await expect(c.call<{ value: string }>('echo', { value: 'after' }, { timeoutMs: 100 }))
+        .resolves.toEqual({ value: 'after' });
+      expect(connectionCount).toBe(2);
+      expect(clientConnectionIds).toHaveLength(2);
+      expect(new Set(clientConnectionIds).size).toBe(2);
+    } finally {
+      c.close();
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => srv.close(() => resolve()));
+      if (fs.existsSync(p)) { try { fs.unlinkSync(p); } catch { /* removed by server.close */ } }
+    }
+  });
+
   it('does not latch on a FAILED first dial — connects once the sidecar comes up', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     const p = socketPath();
     const c = new SpawnerIpcClient(p);
     let live: { server: net.Server; killConnections: () => void } | null = null;

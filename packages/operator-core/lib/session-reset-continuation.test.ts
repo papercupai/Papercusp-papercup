@@ -11,9 +11,70 @@
  * reads the reset's SessionEnd as a death, and force-releases every work-item
  * lease the owner holds.
  */
-import { describe, expect, it } from 'vitest';
-import { CONTEXT_RESET_WAKE_CHANNELS, RESET_CONTINUATION_WINDOW_MS } from './session-reset-continuation';
+import { describe, expect, it, vi } from 'vitest';
+import type { Sql } from 'postgres';
+import {
+  CONTEXT_RESET_WAKE_CHANNELS,
+  RESET_CONTINUATION_WINDOW_MS,
+  WAKE_RESUME_TURN_CHANNELS,
+  isWakeResumeTurn,
+} from './session-reset-continuation';
 import { WAKE_TURN_CHANNELS } from './events/await/types';
+
+/** A tagged-template stand-in for postgres.js: records each query's text + values. */
+function fakeSql(rows: unknown[]) {
+  const calls: Array<{ text: string; values: unknown[] }> = [];
+  const tag = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    calls.push({ text: strings.join('?'), values });
+    return rows;
+  });
+  return { sql: tag as unknown as Sql, calls, tag };
+}
+
+// WI-10005679: a one-turn wake resume's SessionEnd must not retire the standing
+// inbox-wake. The id arrives from a child's env, so only a ledger row for THIS
+// owner on a one-turn resume channel may count.
+describe('isWakeResumeTurn (WI-10005679)', () => {
+  it('confirms a delivery to this owner on a one-turn resume channel', async () => {
+    const f = fakeSql([{ one: 1 }]);
+    await expect(isWakeResumeTurn('su-judge', 413379, { sql: f.sql })).resolves.toBe(true);
+    expect(f.calls).toHaveLength(1);
+    expect(f.calls[0].text).toContain('harness_shared.event_wake_deliveries');
+    expect(f.calls[0].values).toEqual([413379, 'su-judge', [...WAKE_RESUME_TURN_CHANNELS]]);
+  });
+
+  it('a delivery the ledger does not hold for this owner is not a resume turn', async () => {
+    const f = fakeSql([]);
+    await expect(isWakeResumeTurn('su-judge', 413379, { sql: f.sql })).resolves.toBe(false);
+  });
+
+  it('never queries for a missing, non-positive or unsafe id, or a blank owner', async () => {
+    const f = fakeSql([{ one: 1 }]);
+    for (const id of [undefined, null, 0, -4, 1.5, Number.MAX_SAFE_INTEGER + 2]) {
+      await expect(isWakeResumeTurn('su-judge', id, { sql: f.sql })).resolves.toBe(false);
+    }
+    await expect(isWakeResumeTurn('  ', 413379, { sql: f.sql })).resolves.toBe(false);
+    expect(f.tag).not.toHaveBeenCalled();
+  });
+
+  it('propagates a PG failure so the caller can fall back to the cancel', async () => {
+    const sql = vi.fn(async () => {
+      throw new Error('pg down');
+    }) as unknown as Sql;
+    await expect(isWakeResumeTurn('su-judge', 1, { sql })).rejects.toThrow('pg down');
+  });
+
+  it('the channel set is exactly the executor\'s one-turn resumes: turn-burning, never a reset or inject', () => {
+    const channels: readonly string[] = WAKE_RESUME_TURN_CHANNELS;
+    expect([...channels].sort()).toEqual(['resume', 'resume-headless']);
+    for (const c of channels) expect(WAKE_TURN_CHANNELS).toContain(c);
+    // CONTROL: a warm inject or a context reset continues the live session; those
+    // are handled (or deliberately not) by the continuation guards, not by this set.
+    for (const other of ['psu-socket-inject', 'pty-inject', ...CONTEXT_RESET_WAKE_CHANNELS]) {
+      expect(channels).not.toContain(other);
+    }
+  });
+});
 
 describe('CONTEXT_RESET_WAKE_CHANNELS (WI-6756 continuation guard)', () => {
   // The recurrence guard for the whole class, not just for WI-6862's two channels.

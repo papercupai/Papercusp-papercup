@@ -30,6 +30,72 @@ dependency_generation_log() {
   fi
 }
 
+# WI-10005159: ONE generation store per integration root. bg-host sets
+# PAPERCUSP_DEPENDENCY_GENERATION_ROOT for the scheduled gate, but a manual
+# `systemd-run --unit` gate run, install:safe and an agent's hand prewarm do not
+# inherit that env, so each fell back to the tree-local store the gate never
+# reads (exit 74 "no prewarmed dependency generation" while the generation sat in
+# the other store). The env-named root is therefore recorded under the
+# integration root, and every env-less caller on that root follows the record.
+# Precedence: explicit CLI root > env > record > tree-local default.
+dependency_generation_root_record() {
+  printf '%s\n' "$1/.papercusp/dependency-generation-root"
+}
+
+# Keep the current root on line one for existing readers. Later absolute lines
+# name former stores which still need native pin/lease retention. Serialize
+# cross-store record changes with the existing portable publisher lock; the
+# command-substitution/subshell keeps its lock state separate from a publisher.
+dependency_generation_write_root_record() (
+  local integration_root="$1" configured="$2" previous="${3:-}" record state tmp
+  record="$(dependency_generation_root_record "$integration_root")"
+  state="$record.state"
+  case "$configured" in /*) ;; *) return 2 ;; esac
+  [[ "$configured" != *$'\n'* ]] || return 2
+  dependency_generation_ensure_store_root "$state" || return $?
+  DEPENDENCY_GENERATION_PUBLISH_LOCK_TIMEOUT_SEC=5 \
+    dependency_generation_acquire_publish_lock "$state" || return $?
+  tmp="$record.tmp.$$"
+  trap 'rm -f -- "$tmp"; dependency_generation_release_publish_lock' EXIT
+  {
+    printf '%s\n' "$configured"
+    { [ ! -f "$record" ] || cat "$record"; printf '%s\n' "$previous"; } \
+      | awk -v current="$configured" '/^\// && $0 != current && !seen[$0]++ { print }'
+  } > "$tmp" && mv -f -- "$tmp" "$record"
+)
+
+dependency_generation_resolve_root() {
+  local integration_root="$1" explicit="${2:-}" read_only="${3:-0}" record recorded='' configured
+  if [ -n "$explicit" ]; then
+    printf '%s\n' "$explicit"
+    return 0
+  fi
+  record="$(dependency_generation_root_record "$integration_root")"
+  if [ -f "$record" ]; then
+    IFS= read -r recorded < "$record" || true
+  fi
+  case "$recorded" in
+    /*) ;;
+    *) recorded='' ;;
+  esac
+  configured="${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-}"
+  if [ -n "$configured" ]; then
+    if [ "$recorded" != "$configured" ] && [ "$read_only" != '1' ]; then
+      [ -z "$recorded" ] || dependency_generation_log \
+        "generation root record $record named $recorded; PAPERCUSP_DEPENDENCY_GENERATION_ROOT=$configured replaces it"
+      dependency_generation_write_root_record "$integration_root" "$configured" \
+        || dependency_generation_log "WARNING: could not record generation root $configured at $record"
+    fi
+    printf '%s\n' "$configured"
+    return 0
+  fi
+  if [ -n "$recorded" ]; then
+    printf '%s\n' "$recorded"
+    return 0
+  fi
+  printf '%s\n' "$integration_root/.papercusp/dependency-generations"
+}
+
 # Writer-owned monotonic-enough wall clock for phase telemetry. GNU date gives
 # millisecond resolution; BSD date prints the unsupported %N literally, so fall
 # back to whole seconds expressed as milliseconds. Durations are diagnostic and
@@ -61,7 +127,7 @@ dependency_generation_emit_summary() {
   duration_ms=$((now_ms - started_ms))
   [ "$duration_ms" -ge 0 ] || duration_ms=0
   dependency_generation_log \
-    "SUMMARY schema=1 result=$result source=${source:-unresolved} identity=${identity:-unresolved} predecessor=${predecessor:-none} trees_total=$trees_total trees_reused=$trees_reused trees_copied=$trees_copied trees_removed=$trees_removed total_ms=$duration_ms"
+    "SUMMARY schema=1 result=$result source=${source:-unresolved} identity=${identity:-unresolved} predecessor=${predecessor:-none} trees_total=$trees_total trees_reused=$trees_reused trees_copied=$trees_copied trees_removed=$trees_removed trees_incremental=${DEPENDENCY_GENERATION_TREES_INCREMENTAL:-0} total_ms=$duration_ms"
 }
 
 dependency_generation_sha256() {
@@ -79,6 +145,27 @@ dependency_generation_host() {
   hostname 2>/dev/null || uname -n 2>/dev/null || printf 'unknown-host\n'
 }
 
+# A nested checkout is a separate source tree unless each repository boundary
+# is a tracked submodule gitlink. Pruning only .git's contents still admitted
+# unrelated checkout lockfiles and dependency trees into the live generation.
+dependency_generation_is_foreign_checkout() {
+  local root="$1" path="$2" source_root repo_root parent_root rel
+  source_root="$(cd "$root" && pwd -P)" || return 1
+  # Filesystem-only fixtures and source exports retain their existing walk.
+  [ -e "$source_root/.git" ] || return 1
+  repo_root="$(git -C "$(dirname "$path")" rev-parse --show-toplevel 2>/dev/null)" || return 1
+  while [ "$repo_root" != "$source_root" ]; do
+    case "$repo_root/" in "$source_root/"*) ;; *) return 0 ;; esac
+    parent_root="$(git -C "$(dirname "$repo_root")" rev-parse --show-toplevel 2>/dev/null)" || return 0
+    [ "$parent_root" != "$repo_root" ] || return 0
+    rel="${repo_root#"$parent_root"/}"
+    git -C "$parent_root" ls-files --stage -- "$rel" \
+      | awk '$1 == "160000" { found=1 } END { exit !found }' || return 0
+    repo_root="$parent_root"
+  done
+  return 1
+}
+
 # A small, source-controlled description of the install inputs. The immutable
 # generation itself is keyed from the much larger node_modules metadata walk;
 # this fingerprint is the cheap lookup key a later checkpoint can derive from
@@ -88,13 +175,18 @@ dependency_generation_input_manifest() {
   (
     cd "$root" || exit 1
     while IFS= read -r file; do
+      dependency_generation_is_foreign_checkout . "$file" && continue
       rel="${file#./}"
       digest="$(dependency_generation_sha256 < "$file")" || exit 1
       printf '%s\t%s\n' "$rel" "$digest"
     done < <(
       find . \
-        \( -type d \( -name .papercusp -o -name .git -o -name node_modules \
-          -o -name 'node_modules.deploy-tmp.*' -o -name 'node_modules.deploy-old.*' \) -prune \) -o \
+        \( -type d \( -name .papercusp -o -name .papercusp-smoke-snapshots -o -name .git -o -name .next -o -name node_modules \
+          -o -name 'node_modules.deploy-tmp.*' -o -name 'node_modules.deploy-old.*' \
+          -o -name '*.tmp.[0-9]*' -o -name '*.old.[0-9]*' \
+          -o -path './papercusp-desktop/src-tauri/sidecar' \
+          -o -path './papercusp-desktop/src-tauri/env-sidecars' \
+          -o -path './papercusp-desktop/src-tauri/resources' \) -prune \) -o \
         \( -type f \( -name package-lock.json -o -name npm-shrinkwrap.json \
           -o \( -name '*.patch' -a -path '*/patches/*' \) \) -print \) \
         | LC_ALL=C sort
@@ -139,7 +231,7 @@ dependency_generation_input_manifest_ref() {
       *) continue ;;
     esac
     case "$rel" in
-      .papercusp/*|*/.papercusp/*|node_modules/*|*/node_modules/*) continue ;;
+      .papercusp/*|*/.papercusp/*|.papercusp-smoke-snapshots/*|*/.papercusp-smoke-snapshots/*|node_modules/*|*/node_modules/*) continue ;;
     esac
     if [ -n "$extract_root" ]; then
       mkdir -p "$extract_root/$(dirname "${prefix}${rel}")" || return 1
@@ -200,6 +292,40 @@ dependency_generation_device() {
   stat -c '%d' "$path" 2>/dev/null || stat -f '%d' "$path"
 }
 
+# WI-10004825: every swap-by-rename in this script and setup-release-checkout.sh
+# names its scratch sibling with the creating shell's $$ (`<dest>.deploy-tmp.<pid>`,
+# `<dest>.generation-tmp.<pid>`, `...-old.<pid>`) and only ever clears its OWN pid's
+# leftovers. A run killed mid-copy (gate timeout, SIGTERM, operator restart) therefore
+# strands a partial multi-GB copy that no later run removes: four such trees from dead
+# pids were found in the admission-precheck checkout, the oldest a week old. Reap a
+# sibling only when its creating pid is gone AND it has not been touched for the grace
+# window; a live pid (including one we cannot signal) or a recent mtime is skipped, so
+# a concurrent run's in-flight copy is never deleted.
+dependency_generation_reap_dead_siblings() {
+  local dest="$1" grace="${DEPENDENCY_GENERATION_REAP_GRACE_SEC:-1800}"
+  local candidate base rest pid now mtime
+  case "$grace" in ''|*[!0-9]*) grace=1800 ;; esac
+  now="$(date +%s)"
+  for candidate in "$dest".deploy-tmp.* "$dest".deploy-old.* \
+    "$dest".generation-tmp.* "$dest".generation-old.*; do
+    [ -e "$candidate" ] || [ -L "$candidate" ] || continue
+    base="${candidate##*/}"
+    rest="${base#"${dest##*/}".}"
+    rest="${rest#*.}"
+    pid="${rest%%.*}"
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    [ "$pid" = "$$" ] && continue
+    if kill -0 "$pid" 2>/dev/null || [ -d "/proc/$pid" ]; then
+      continue
+    fi
+    mtime="$(stat -c '%Y' "$candidate" 2>/dev/null || stat -f '%m' "$candidate" 2>/dev/null || echo "$now")"
+    [ $((now - mtime)) -ge "$grace" ] || continue
+    dependency_generation_log "reaping orphaned scratch tree from dead pid $pid: $candidate"
+    find "$candidate" -type d -exec chmod u+rwx {} + 2>/dev/null || true
+    rm -rf -- "$candidate"
+  done
+}
+
 # Empty means the historical full-product generation. A selected generation is
 # configured by repeated --workspace-dir arguments and always retains the root
 # node_modules tree in addition to these package-local trees.
@@ -250,50 +376,90 @@ dependency_generation_configure_workspace_dirs() {
 }
 
 # Product dependency trees only. Coordination worktrees and Git metadata are
-# runtime infrastructure, never dependency-generation inputs.
+# runtime infrastructure, never dependency-generation inputs. Neither are
+# short-lived repositories under .papercusp-smoke-snapshots: their install trees
+# and lockfiles can disappear while a product generation is being copied.
+# swap-by-rename scratch siblings: node_modules.deploy-{tmp,old}.* (WI-2144371)
+# and any whole DIRECTORY staged as <dir>.tmp.<pid> / <dir>.old.<pid>, e.g.
+# build-desktop-sidecar.sh's sidecar.tmp.$$ (WI-10005953). Such a sibling carries
+# its own node_modules and package-lock.json, so a concurrent build used to add a
+# transient tree mid-snapshot and tear the gate's generation (exit 75).
+# Next's .next/standalone dependency copies are emitted build output too;
+# their writers do not hold the source-install reader/writer lock.
 dependency_generation_enumerate_node_modules() {
   local root="$1" dir
+  # WI-10006855: emitted desktop payloads copy dependencies from source trees;
+  # those copies have no committed lock at the emitted path. Source generations
+  # include the desktop's own node_modules and ordinary source dirs named sidecar.
   if [ "${DEPENDENCY_GENERATION_SCOPE_MODE:-full}" = 'selected' ]; then
-    [ -d "$root/node_modules" ] && printf '%s\n' "$root/node_modules"
+    { [ -d "$root/node_modules" ] || [ -L "$root/node_modules" ]; } && printf '%s\n' "$root/node_modules"
     for dir in "${DEPENDENCY_GENERATION_WORKSPACE_DIRS[@]}"; do
-      [ -d "$root/$dir/node_modules" ] && printf '%s\n' "$root/$dir/node_modules"
+      case "$dir" in .next|.next/*|*/.next|*/.next/*) continue ;; esac
+      if { [ -d "$root/$dir/node_modules" ] || [ -L "$root/$dir/node_modules" ]; } \
+        && ! dependency_generation_is_foreign_checkout "$root" "$root/$dir/node_modules"; then
+        printf '%s\n' "$root/$dir/node_modules"
+      fi
     done
     return 0
   fi
-  find "$root" \
-    \( -type d \( -name .papercusp -o -name .git \
-      -o -name 'node_modules.deploy-tmp.*' -o -name 'node_modules.deploy-old.*' \) -prune \) -o \
-    \( -type d -name node_modules -prune -print \)
+  # -mindepth 1: the name patterns below must never prune the starting root
+  # itself, whatever its basename (a caller may pass a generated scratch root).
+  find "$root" -mindepth 1 \
+    \( -type d \( -name .papercusp -o -name .papercusp-smoke-snapshots -o -name .git -o -name .next \
+      -o -name 'node_modules.deploy-tmp.*' -o -name 'node_modules.deploy-old.*' \
+      -o -name '*.tmp.[0-9]*' -o -name '*.old.[0-9]*' \
+      -o -path "$root/papercusp-desktop/src-tauri/sidecar" \
+      -o -path "$root/papercusp-desktop/src-tauri/env-sidecars" \
+      -o -path "$root/papercusp-desktop/src-tauri/resources" \) -prune \) -o \
+    \( \( -type d -o -type l \) -name node_modules -prune -print \) \
+    | while IFS= read -r dir; do
+        dependency_generation_is_foreign_checkout "$root" "$dir" && continue
+        printf '%s\n' "$dir"
+      done
 }
 
 # Metadata identity deliberately avoids reading ~13 GiB of file contents. The
 # aggregate is sampled before and after publication, so a concurrent install or
 # test mutation cannot authorize a mixed generation.
+# Directory size/mtime reflect creation of pruned runtime caches, not dependency
+# contents. Keep their path, permissions, ownership and inode; file metadata
+# remains unchanged so real dependency rewrites still refuse publication.
 dependency_generation_tree_fingerprint() {
   local root="$1" local_path stat_record link_target
   [ -d "$root" ] || return 1
+  # A duplicate dependency-root alias is not a package link. Preserving it
+  # freezes a pointer to another checkout, rather than independent inputs, and
+  # later ships that checkout's path in source.tar (EI-25905977348768077).
+  if [ -L "$root/node_modules" ]; then
+    dependency_generation_log "FATAL: nested dependency-root symlink: $root/node_modules"
+    return 1
+  fi
   (
     cd "$root" || exit 1
     if [ "${DEPENDENCY_GENERATION_FORCE_PORTABLE_STAT:-0}" != '1' ] \
       && find . -xdev -mindepth 1 -maxdepth 1 -printf '' >/dev/null 2>&1; then
       LC_ALL=C find . -xdev -mindepth 1 \
-        \( -type d \( -path './.cache' -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) -prune \) -o \
+        \( -type d \( -name .cache -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) -prune \) -o \
         \( ! -path './.papercusp-isolated-snapshot' \
         ! -path './.papercusp-dependency-generation' \
         ! -path './.package-lock.json' \
-        -printf '%P\0%y\0%m\0%u\0%g\0%s\0%T@\0%i\0%l\0' \) \
+        \( -type d -printf '%P\0%y\0%m\0%u\0%g\0directory\0directory\0%i\0%l\0' \
+          -o -printf '%P\0%y\0%m\0%u\0%g\0%s\0%T@\0%i\0%l\0' \) \) \
         | dependency_generation_sha256
     else
       # BSD/macOS find has no -printf. Keep the same identity classes with a
       # portable stat record per path. It is slower, but correctness-preserving.
       LC_ALL=C find . -xdev -mindepth 1 \
-        \( -type d \( -path './.cache' -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) -prune \) -o \
+        \( -type d \( -name .cache -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) -prune \) -o \
         \( ! -path './.papercusp-isolated-snapshot' \
         ! -path './.papercusp-dependency-generation' \
         ! -path './.package-lock.json' -print0 \) \
         | while IFS= read -r -d '' path; do
             local_path="${path#./}"
-            if stat_record="$(stat -c '%F|%a|%U|%G|%s|%Y|%i' "$path" 2>/dev/null)"; then
+            if [ -d "$path" ] && [ ! -L "$path" ]; then
+              stat_record="$(stat -c '%F|%a|%U|%G|directory|directory|%i' "$path" 2>/dev/null \
+                || stat -f '%HT|%Lp|%Su|%Sg|directory|directory|%i' "$path")" || exit 1
+            elif stat_record="$(stat -c '%F|%a|%U|%G|%s|%Y|%i' "$path" 2>/dev/null)"; then
               :
             else
               stat_record="$(stat -f '%HT|%Lp|%Su|%Sg|%z|%m|%i' "$path")" || exit 1
@@ -483,6 +649,9 @@ dependency_generation_manifest_records_are_reusable() {
       return 1
     fi
     [ -d "$tree_root/$rel" ] || return 1
+    # Cache selection skips the deep fingerprint walk. Check the same invariant
+    # here so an older, otherwise correctly signed generation cannot bypass it.
+    [ ! -L "$tree_root/$rel/node_modules" ] || return 1
     previous="$rel"
   done < "$manifest"
 }
@@ -576,6 +745,29 @@ dependency_generation_stat_token() {
   stat -f '%d:%i:%m:%z' "$path"
 }
 
+# Device-free variants for the DURABLE publication token (schema 3). st_dev is
+# not a stable identity across reboots: block-extended nvme minors are assigned
+# at boot, so a reboot that renumbers the device invalidated every schema-2
+# token and wedged the gate with exit 74 (WI-10005569). The generation root path
+# already pins the filesystem; inode + mtime + size + content digests remain.
+# The in-run selector token (generation_token) keeps %d: it is compared within
+# one boot.
+dependency_generation_durable_stat_token() {
+  local path="$1"
+  if stat -c '%i:%Y:%s' "$path" 2>/dev/null; then
+    return 0
+  fi
+  stat -f '%i:%m:%z' "$path"
+}
+
+dependency_generation_durable_inode_token() {
+  local path="$1"
+  if stat -c '%i' "$path" 2>/dev/null; then
+    return 0
+  fi
+  stat -f '%i' "$path"
+}
+
 dependency_generation_inode_token() {
   local path="$1"
   if stat -c '%d:%i' "$path" 2>/dev/null; then
@@ -596,31 +788,41 @@ dependency_generation_marker_payload_digest() {
 # per-tree manifest, plus stat identities for the four immutable objects. The
 # 13-GiB tree is never walked here. Deep content verification remains available
 # through dependency_generation_deep_audit and is used for legacy/recovery.
+# Schema 3 (the default, written by every new publication) is device-free; the
+# legacy schema 2 binds st_dev and is still verified for markers that carry it.
 dependency_generation_publication_token() {
-  local generation="$1" marker manifest tree
+  local generation="$1" schema="${2:-3}" marker manifest tree
   local generation_inode tree_token marker_inode manifest_token
   local marker_digest manifest_digest recorded_manifest_digest digest
+  local inode_fn stat_fn
+  case "$schema" in
+    3) inode_fn=dependency_generation_durable_inode_token
+       stat_fn=dependency_generation_durable_stat_token ;;
+    2) inode_fn=dependency_generation_inode_token
+       stat_fn=dependency_generation_stat_token ;;
+    *) return 1 ;;
+  esac
   marker="$generation/.papercusp-dependency-generation"
   manifest="$generation/.tree-manifest"
   tree="$generation/tree"
   [ -d "$generation" ] && [ -d "$tree" ] && [ -f "$marker" ] && [ -f "$manifest" ] \
     || return 1
-  generation_inode="$(dependency_generation_inode_token "$generation")" || return 1
-  tree_token="$(dependency_generation_stat_token "$tree")" || return 1
-  marker_inode="$(dependency_generation_inode_token "$marker")" || return 1
-  manifest_token="$(dependency_generation_stat_token "$manifest")" || return 1
+  generation_inode="$("$inode_fn" "$generation")" || return 1
+  tree_token="$("$stat_fn" "$tree")" || return 1
+  marker_inode="$("$inode_fn" "$marker")" || return 1
+  manifest_token="$("$stat_fn" "$manifest")" || return 1
   marker_digest="$(dependency_generation_marker_payload_digest "$marker")" || return 1
   manifest_digest="$(dependency_generation_manifest_fingerprint "$manifest")" || return 1
   recorded_manifest_digest="$(dependency_generation_read_field "$marker" tree_manifest_sha256)"
   [ "$manifest_digest" = "$recorded_manifest_digest" ] || return 1
   digest="$({
-    printf 'schema\t2\n'
+    printf 'schema\t%s\n' "$schema"
     printf 'generation\t%s\n' "$generation_inode"
     printf 'tree\t%s\n' "$tree_token"
     printf 'marker\t%s\t%s\n' "$marker_inode" "$marker_digest"
     printf 'manifest\t%s\t%s\n' "$manifest_token" "$manifest_digest"
   } | dependency_generation_sha256)" || return 1
-  printf 'v2:%s\n' "$digest"
+  printf 'v%s:%s\n' "$schema" "$digest"
 }
 
 dependency_generation_has_publication_contract() {
@@ -651,10 +853,11 @@ dependency_generation_publication_is_valid() {
   schema="$(dependency_generation_read_field "$marker" publication_schema)"
   recorded_token="$(dependency_generation_read_field "$marker" publication_token)"
   token_count="$(grep -c '^publication_token=' "$marker" 2>/dev/null || true)"
-  [ "$schema" = '2' ] && [ "$token_count" = '1' ] \
-    && [[ "$recorded_token" =~ ^v2:[0-9a-f]{64}$ ]] || return 1
+  case "$schema" in 2|3) ;; *) return 1 ;; esac
+  [ "$token_count" = '1' ] \
+    && [[ "$recorded_token" =~ ^v${schema}:[0-9a-f]{64}$ ]] || return 1
   dependency_generation_reuse_manifest_is_valid "$generation" || return 1
-  current_token="$(dependency_generation_publication_token "$generation" 2>/dev/null || true)"
+  current_token="$(dependency_generation_publication_token "$generation" "$schema" 2>/dev/null || true)"
   [ -n "$current_token" ] && [ "$current_token" = "$recorded_token" ]
 }
 
@@ -672,9 +875,14 @@ dependency_generation_generation_token() {
 }
 
 dependency_generation_selector_token() {
-  local generation="$1"
+  local generation="$1" schema
   if dependency_generation_has_publication_contract "$generation"; then
-    dependency_generation_publication_token "$generation"
+    # Compute under the marker's OWN schema: a v2 marker hashed under the v3
+    # default never matches its recorded token, so every lease reads
+    # "replaced" and the gate exits 74 (WI-10005617).
+    schema="$(dependency_generation_read_field \
+      "$generation/.papercusp-dependency-generation" publication_schema)"
+    dependency_generation_publication_token "$generation" "${schema:-3}"
   else
     dependency_generation_generation_token "$generation"
   fi
@@ -698,7 +906,7 @@ dependency_generation_select_prevalidated() {
   }
   generation="$generation_root/$identity"
   case "$expected_token" in
-    v2:*)
+    v2:*|v3:*)
       if ! dependency_generation_publication_is_valid "$generation" "$identity" '' 'full'; then
         dependency_generation_log \
           "FATAL: prewarmed dependency generation $identity has an invalid publication token"
@@ -778,7 +986,7 @@ dependency_generation_select_input_fingerprint() {
   selector="$generation_root/.inputs/$input_fingerprint"
   if [ ! -f "$selector" ]; then
     dependency_generation_log \
-      "FATAL: no prewarmed dependency generation for input fingerprint $input_fingerprint"
+      "FATAL: no prewarmed dependency generation for input fingerprint $input_fingerprint (generation_root=$generation_root)"
     return 74
   fi
   schema="$(dependency_generation_read_field "$selector" schema)"
@@ -1019,10 +1227,17 @@ dependency_generation_acquire_selector_lease() {
     dependency_generation_log "FATAL: dependency-generation lease owner pid is not live: $owner_pid"
     return 74
   fi
+  # A selector only consumes a published store. If its root is absent, mkdir
+  # "$generation_root/.publish-lock" can never succeed; retrying that ENOENT
+  # spent the whole publish-lock budget before reporting the missing input.
+  if [ ! -d "$generation_root" ]; then
+    dependency_generation_log "FATAL: dependency generation $identity disappeared before it could be leased (generation_root=$generation_root)"
+    return 74
+  fi
   dependency_generation_acquire_publish_lock "$generation_root" || return $?
   if ! dependency_generation_marker_matches "$generation_root/$identity" "$identity"; then
     dependency_generation_release_publish_lock
-    dependency_generation_log "FATAL: dependency generation $identity disappeared before it could be leased"
+    dependency_generation_log "FATAL: dependency generation $identity disappeared before it could be leased (generation_root=$generation_root)"
     return 74
   fi
   if [ -n "$expected_token" ]; then
@@ -1116,6 +1331,7 @@ dependency_generation_try_inflight() {
 # before the caller's own no-output watchdog kills this process blind.
 dependency_generation_wait_inflight() {
   local generation_root="$1" identity="$2" lock host stall_sec progress seen='' last_change now
+  local holder_pid='' copy_io='' last_copy_io='' sample_sec next_sample
   lock="$generation_root/.inflight-$identity"
   host="$(dependency_generation_host)"
   stall_sec="${DEPENDENCY_GENERATION_INFLIGHT_STALL_SEC:-1500}"
@@ -1123,6 +1339,13 @@ dependency_generation_wait_inflight() {
   dependency_generation_log \
     "joining in-flight build of $identity ($(dependency_generation_publish_lock_holder "$lock")) instead of copying the same trees in parallel"
   last_change="$(date +%s)"
+  sample_sec="${DEPENDENCY_GENERATION_COPY_PROGRESS_SEC:-60}"
+  case "$sample_sec" in ''|*[!0-9]*|0) sample_sec=60 ;; esac
+  if [ "$(sed -n 's/^host=//p' "$lock/writer" 2>/dev/null)" = "$host" ]; then
+    holder_pid="$(sed -n 's/^pid=//p' "$lock/writer" 2>/dev/null)"
+    last_copy_io="$(dependency_generation_subtree_io "$holder_pid" cp-written)"
+  fi
+  next_sample=$((last_change + sample_sec))
   while [ -d "$lock" ]; do
     dependency_generation_inflight_is_abandoned "$lock" "$host" && break
     progress="$(cat "$lock/progress" 2>/dev/null || true)"
@@ -1131,6 +1354,18 @@ dependency_generation_wait_inflight() {
       seen="$progress"
       last_change="$now"
       dependency_generation_log "in-flight build of $identity: ${progress#* }"
+    fi
+    # WI-10006561: a builder's copied script may not emit its copy progress.
+    # Observe actual cp writes independently; the builder's polling reads and
+    # log writes must never manufacture progress for an idle copy.
+    if [ "$now" -ge "$next_sample" ]; then
+      next_sample=$((now + sample_sec))
+      copy_io="$(dependency_generation_subtree_io "$holder_pid" cp-written)"
+      if [ -n "$copy_io" ] && [ "$copy_io" -gt "${last_copy_io:-0}" ]; then
+        last_change="$now"
+        dependency_generation_log "in-flight build of $identity: copy writes advanced to ${copy_io} bytes"
+      fi
+      last_copy_io="$copy_io"
     fi
     if [ $((now - last_change)) -ge "$stall_sec" ]; then
       dependency_generation_log \
@@ -1162,9 +1397,32 @@ DEPENDENCY_GENERATION_PREDECESSOR_MANIFEST=''
 # object token proves that the exact immutable predecessor we inspected is still
 # the one we copy. Legacy generations deliberately miss this path and retain the
 # historical full-copy fallback.
+#
+# D-019 (WI-10004927): one generation root is shared by every repository whose
+# gate runs this script, and the closure fingerprint of a full-scope build is
+# the same for all of them. Ranking by created time alone therefore picked a
+# 7-tree generation from another repository as papercusp's predecessor, so 0 of
+# 207,877 files could be reused. When the caller passes its live manifest,
+# candidates are ranked by how much of THIS layout they cover: identical trees
+# first, then shared tree paths, then age. A candidate sharing no tree path with
+# the live layout can contribute nothing and is never selected.
+dependency_generation_manifest_overlap() {
+  local current="$1" candidate="$2"
+  if [ ! -s "$current" ] || [ ! -f "$candidate" ]; then
+    printf '0 0\n'
+    return 0
+  fi
+  LC_ALL=C awk -F'\t' '
+    NR == FNR { fingerprint[$1] = $2; next }
+    ($1 in fingerprint) { shared++; if (fingerprint[$1] == $2) exact++ }
+    END { printf "%d %d\n", exact, shared }
+  ' "$current" "$candidate"
+}
+
 dependency_generation_find_reusable_predecessor() {
-  local generation_root="$1" target_identity="$2"
+  local generation_root="$1" target_identity="$2" current_manifest="${3:-}"
   local generation identity marker created record token_before token_after
+  local exact shared
   local ranked=()
   DEPENDENCY_GENERATION_PREDECESSOR_ID=''
   DEPENDENCY_GENERATION_PREDECESSOR_PATH=''
@@ -1183,12 +1441,21 @@ dependency_generation_find_reusable_predecessor() {
       [ "$(dependency_generation_read_field "$marker" scope)" \
           = "$DEPENDENCY_GENERATION_SCOPE_MODE" ] || continue
       created="$(dependency_generation_created_order_ns "$marker")"
-      printf '%020d %s\n' "$created" "$identity"
-    done | sort -k1,1nr -k2,2r
+      exact=0
+      shared=0
+      if [ -n "$current_manifest" ]; then
+        read -r exact shared < <(
+          dependency_generation_manifest_overlap \
+            "$current_manifest" "$generation/.tree-manifest"
+        )
+        [ "${shared:-0}" -gt 0 ] || continue
+      fi
+      printf '%010d %010d %020d %s\n' "${exact:-0}" "${shared:-0}" "$created" "$identity"
+    done | sort -k1,1nr -k2,2nr -k3,3nr -k4,4r
   )
 
   for record in "${ranked[@]}"; do
-    identity="${record#* }"
+    identity="${record##* }"
     generation="$generation_root/$identity"
     [ -f "$generation/.tree-manifest" ] || continue
     if ! dependency_generation_acquire_selector_lease "$generation_root" "$identity"; then
@@ -1204,7 +1471,9 @@ dependency_generation_find_reusable_predecessor() {
         DEPENDENCY_GENERATION_PREDECESSOR_PATH="$generation"
         DEPENDENCY_GENERATION_PREDECESSOR_TREE="$generation/tree"
         DEPENDENCY_GENERATION_PREDECESSOR_MANIFEST="$generation/.tree-manifest"
-        dependency_generation_log "selected reusable immutable predecessor $identity"
+        read -r exact shared _ <<< "$record"
+        dependency_generation_log \
+          "selected reusable immutable predecessor $identity (identical_trees=$((10#$exact)) shared_trees=$((10#$shared)))"
         return 0
       fi
     fi
@@ -1246,6 +1515,54 @@ dependency_generation_register_pin() {
   return "$rc"
 }
 
+# WI-6554700010008481: a REF pin keeps alive the generation a gate is about to
+# judge, from its `--ensure-ref` until its later selection, with no checkout
+# marker involved. Recency retention alone (DEPENDENCY_GENERATION_RETAIN_COUNT,
+# default 2) let two staging prebuilds evict an open frozen repair queue's
+# repairHead generation within minutes, and its input selector with it, so the
+# next verify ended `dependency-prewarm-missing` with no verdict. One pin per
+# (integration root, label) bounds the extra retention to one generation per
+# gate. It expires DEPENDENCY_GENERATION_REF_PIN_TTL_SEC (default 24h) after its
+# last refresh, and every gate run re-ensures and so refreshes it.
+dependency_generation_ref_pin_path() {
+  local generation_root="$1" integration_root="$2" label="$3" key
+  key="$(printf '%s\n%s' "$integration_root" "$label" | dependency_generation_sha256)" || return 1
+  printf '%s/.pins/ref-%s\n' "$generation_root" "$key"
+}
+
+dependency_generation_write_ref_pin_locked() {
+  local generation_root="$1" integration_root="$2" label="$3" identity="$4" ref="$5"
+  local ttl="${DEPENDENCY_GENERATION_REF_PIN_TTL_SEC:-86400}" pin tmp now
+  [[ "$identity" =~ ^v1-[0-9a-f]{64}$ ]] || return 2
+  [[ "$label" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || return 2
+  [[ "$ttl" =~ ^[0-9]+$ ]] || return 2
+  case "$integration_root$ref" in *$'\n'*) return 2 ;; esac
+  dependency_generation_marker_matches "$generation_root/$identity" "$identity" || return 1
+  dependency_generation_ensure_store_root "$generation_root" "$generation_root/.pins"
+  pin="$(dependency_generation_ref_pin_path "$generation_root" "$integration_root" "$label")" || return 1
+  tmp="$pin.tmp.$$"
+  now="$(date +%s)"
+  printf 'schema=1\nkind=ref\nhost=%s\nidentity=%s\nlabel=%s\nintegration=%s\nref=%s\nupdated=%s\nexpires=%s\n' \
+    "$(dependency_generation_host)" "$identity" "$label" "$integration_root" "$ref" \
+    "$now" "$((now + ttl))" > "$tmp"
+  mv "$tmp" "$pin"
+}
+
+# No-op without a label, so every existing `--ensure-ref` caller is unchanged.
+dependency_generation_retain_ensured_ref() {
+  local generation_root="$1" integration_root="$2" label="$3" identity="$4" ref="$5" rc=0
+  [ -n "$label" ] || return 0
+  dependency_generation_acquire_publish_lock "$generation_root" || return $?
+  dependency_generation_write_ref_pin_locked \
+    "$generation_root" "$integration_root" "$label" "$identity" "$ref" || rc=$?
+  dependency_generation_release_publish_lock
+  if [ "$rc" -ne 0 ]; then
+    dependency_generation_log "FATAL: could not register ref pin '$label' for $identity at $ref"
+    return "$rc"
+  fi
+  dependency_generation_log "retained $identity as ref pin '$label' for $ref"
+}
+
 # Refresh same-host pin/lease truth and import direct sibling checkout markers.
 # This runs only while .publish-lock is held, so pruning cannot race a pin that
 # is being registered or a selector that is being leased.
@@ -1278,9 +1595,93 @@ dependency_generation_ensure_store_root() {
   return 0
 }
 
+# WI-10003695: a checkout on ANOTHER filesystem than the store cannot share the
+# store's inodes, so its pin only spares a rebuild if that checkout is ever
+# materialized again. The root-offload convention moves a retired checkout to
+# /mnt/data and leaves a symlink, and its pin then kept a ~20 GB generation on the
+# root disk forever (five of them, ~95 GiB, on 2026-10-01). A LIVE cross-filesystem
+# checkout re-materializes, which rewrites its node_modules marker
+# (setup-release-checkout.sh record_node_modules_copy_metadata), so only a marker
+# older than DEPENDENCY_GENERATION_CROSS_FS_PIN_MAX_AGE_DAYS (default 3) counts as
+# retired. Same-filesystem pins are never affected. Any measurement failure keeps
+# the pin: an unreadable checkout is not proof that it is retired.
+dependency_generation_path_dev() {
+  # GNU `stat -f` means FILESYSTEM status (%d = free inodes), so the BSD form is
+  # used only where stat is not GNU.
+  if stat --version >/dev/null 2>&1; then
+    stat -L -c '%d' "$1" 2>/dev/null
+  else
+    stat -L -f '%d' "$1" 2>/dev/null
+  fi
+}
+
+dependency_generation_cross_fs_pin_is_retired() {
+  local generation_root="$1" checkout="$2" marker="$3"
+  local max_age_days="${DEPENDENCY_GENERATION_CROSS_FS_PIN_MAX_AGE_DAYS:-3}"
+  local store_dev checkout_dev
+  [[ "$max_age_days" =~ ^[0-9]+$ ]] || max_age_days=3
+  store_dev="$(dependency_generation_path_dev "$generation_root")" || return 1
+  checkout_dev="$(dependency_generation_path_dev "$checkout")" || return 1
+  [ -n "$store_dev" ] && [ -n "$checkout_dev" ] || return 1
+  [ "$store_dev" != "$checkout_dev" ] || return 1
+  dependency_generation_path_is_old "$marker" $((max_age_days * 86400))
+}
+
+# EI-25299577060523251: after the store moves, an old same-filesystem
+# checkout can be an independent COPY too. Its marker otherwise keeps the
+# obsolete store forever even though readers select from the persistent store.
+# Only the legacy sweep uses this extension. Fresh/foreign pins and selector
+# leases retain their existing protection; an external hardlink or escaping symlink makes
+# independence unproven and keeps the generation. Measurement failures retain.
+dependency_generation_independent_legacy_pin_is_retired() {
+  local generation_root="$1" checkout="$2" marker="$3"
+  local identity generation store_dev checkout_dev checkout_real
+  local max_age_days="${DEPENDENCY_GENERATION_CROSS_FS_PIN_MAX_AGE_DAYS:-3}"
+  [[ "$max_age_days" =~ ^[0-9]+$ ]] || max_age_days=3
+  dependency_generation_path_is_old "$marker" $((max_age_days * 86400)) || return 1
+  store_dev="$(dependency_generation_path_dev "$generation_root")" || return 1
+  checkout_dev="$(dependency_generation_path_dev "$checkout")" || return 1
+  [ -n "$store_dev" ] && [ "$store_dev" = "$checkout_dev" ] || return 1
+  identity="$(dependency_generation_read_field "$marker" identity)"
+  [[ "$identity" =~ ^v1-[0-9a-f]{64}$ ]] || return 1
+  generation="$generation_root/$identity"
+  checkout_real="$(cd "$checkout" 2>/dev/null && pwd -P)" || return 1
+  case "$checkout_real" in "$generation_root"|"$generation_root"/*) return 1 ;; esac
+  [ -d "$generation" ] && [ ! -L "$generation" ] || return 1
+  # Native addons may have multiple links WITHIN one generation. Count its
+  # complete regular-inode population: only links beyond those paths imply an
+  # external reader/copy. An incomplete/unsupported find must retain the pin.
+  (
+    set -o pipefail
+    find "$generation" -type f -printf '%D %i %n\n' 2>/dev/null |
+      LC_ALL=C awk '
+        NF != 3 || $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[1-9][0-9]*$/ { bad=1; exit 1 }
+        { key=$1 ":" $2; count[key]++; links[key]=$3 }
+        END {
+          if (bad) exit 1
+          for (key in count) if (links[key] != count[key]) exit 1
+        }
+      '
+  ) || return 1
+  # Resolve symlinks in batches, preserving NUL delimiters throughout instead
+  # of starting one realpath process per package link. Newline-delimited paths
+  # could hide an escaping symlink.
+  # -m normalizes a missing terminal component without rejecting a broken
+  # INTERNAL package link. Unsupported tools or any read failure retain.
+  (
+    set -o pipefail
+    find "$checkout_real" -name .git -prune -o -type l -print0 2>/dev/null |
+      xargs -0 -r realpath -z -m -- 2>/dev/null |
+      while IFS= read -r -d '' target; do
+        case "$target" in "$checkout_real"|"$checkout_real"/*) ;; *) exit 1 ;; esac
+      done
+  ) || return 1
+  return 0
+}
+
 dependency_generation_refresh_retention_state_locked() {
-  local generation_root="$1" integration_root="$2"
-  local host pin pin_host identity checkout marker lease lease_host lease_pid lease_start current_start parent sibling
+  local generation_root="$1" integration_root="$2" retire_independent_legacy="${3:-0}"
+  local host pin pin_host pin_expires identity checkout marker lease lease_host lease_pid lease_start current_start parent sibling
   host="$(dependency_generation_host)"
   dependency_generation_ensure_store_root "$generation_root" "$generation_root/.pins" "$generation_root/.leases"
 
@@ -1289,6 +1690,18 @@ dependency_generation_refresh_retention_state_locked() {
     pin_host="$(dependency_generation_read_field "$pin" host)"
     identity="$(dependency_generation_read_field "$pin" identity)"
     checkout="$(dependency_generation_read_field "$pin" checkout)"
+    # WI-6554700010008481: a ref pin has no checkout marker to re-verify. It
+    # lives, on any host, until it expires or its generation is gone.
+    if [ "$(dependency_generation_read_field "$pin" kind)" = 'ref' ]; then
+      pin_expires="$(dependency_generation_read_field "$pin" expires)"
+      if [[ ! "$identity" =~ ^v1-[0-9a-f]{64}$ ]] || [[ ! "$pin_expires" =~ ^[0-9]+$ ]] \
+        || [ "$pin_expires" -le "$(date +%s)" ] \
+        || ! dependency_generation_marker_matches "$generation_root/$identity" "$identity"; then
+        dependency_generation_log "removing expired or stale ref pin $(basename "$pin") ($identity)"
+        rm -f -- "$pin"
+      fi
+      continue
+    fi
     # A foreign-host pin is intentionally retained: this host cannot prove the
     # other checkout disappeared. Same-host state must still match the checkout
     # marker and an extant published generation.
@@ -1307,6 +1720,15 @@ dependency_generation_refresh_retention_state_locked() {
       || [ "$(dependency_generation_read_field "$marker" identity)" != "$identity" ] \
       || ! dependency_generation_marker_matches "$generation_root/$identity" "$identity"; then
       dependency_generation_log "removing stale checkout pin $(basename "$pin")"
+      rm -f -- "$pin"
+    elif dependency_generation_cross_fs_pin_is_retired "$generation_root" "$checkout" "$marker"; then
+      dependency_generation_log \
+        "removing retired cross-filesystem checkout pin $(basename "$pin") ($checkout, $identity)"
+      rm -f -- "$pin"
+    elif [ "$retire_independent_legacy" = 1 ] && [ "$checkout" != "$integration_root" ] \
+      && dependency_generation_independent_legacy_pin_is_retired "$generation_root" "$checkout" "$marker"; then
+      dependency_generation_log \
+        "removing retired independent legacy checkout pin $(basename "$pin") ($checkout, $identity)"
       rm -f -- "$pin"
     fi
   done
@@ -1346,6 +1768,13 @@ dependency_generation_refresh_retention_state_locked() {
     identity="$(dependency_generation_read_field "$marker" identity)"
     [[ "$identity" =~ ^v1-[0-9a-f]{64}$ ]] || continue
     dependency_generation_marker_matches "$generation_root/$identity" "$identity" || continue
+    # A symlinked sibling resolves to its offload target above; without this
+    # check the pin removed in the loop before would be re-written every refresh.
+    dependency_generation_cross_fs_pin_is_retired "$generation_root" "$sibling" "$marker" && continue
+    if [ "$retire_independent_legacy" = 1 ] \
+      && dependency_generation_independent_legacy_pin_is_retired "$generation_root" "$sibling" "$marker"; then
+      continue
+    fi
     dependency_generation_write_pin_locked "$generation_root" "$sibling" "$identity" || true
   done
 }
@@ -1375,10 +1804,14 @@ dependency_generation_remove_input_selectors_for_identity_locked() {
 }
 
 dependency_generation_quarantine_unretained_locked() {
-  local generation_root="$1" retain_count="${DEPENDENCY_GENERATION_RETAIN_COUNT:-2}"
+  # An explicit second argument may retain ZERO by recency (the legacy-store
+  # sweep below: nothing reads that store, so only pins and leases protect).
+  local generation_root="$1" retain_count="${2:-${DEPENDENCY_GENERATION_RETAIN_COUNT:-2}}"
+  local min_retain=1
+  [ -z "${2:-}" ] || min_retain=0
   local protected=' ' generation identity created pin lease kept=0 quarantine
   local ranked=()
-  if [[ ! "$retain_count" =~ ^[0-9]+$ ]] || [ "$retain_count" -lt 1 ]; then
+  if [[ ! "$retain_count" =~ ^[0-9]+$ ]] || [ "$retain_count" -lt "$min_retain" ]; then
     dependency_generation_log "FATAL: DEPENDENCY_GENERATION_RETAIN_COUNT must be an integer >= 1"
     return 2
   fi
@@ -1459,59 +1892,601 @@ dependency_generation_quarantine_unretained_locked() {
 }
 
 dependency_generation_delete_prune_quarantines() {
-  local quarantine
+  local quarantine rc=0 delete_rc
   for quarantine in "${DEPENDENCY_GENERATION_PRUNE_QUARANTINES[@]:-}"; do
     [ -d "$quarantine" ] || continue
     # Checkouts may hardlink generation FILES. Changing their modes here would
     # mutate the retained checkout inode too; directory write permission alone
     # is sufficient for unlinking.
     find "$quarantine" -type d -exec chmod u+rwx {} + 2>/dev/null || true
-    rm -rf -- "$quarantine"
+    if rm -rf -- "$quarantine"; then
+      dependency_generation_log "deleted prune quarantine $quarantine"
+    else
+      delete_rc=$?
+      [ "$rc" -ne 0 ] || rc="$delete_rc"
+      dependency_generation_log "failed prune quarantine deletion $quarantine (rc=$delete_rc)"
+    fi
   done
   DEPENDENCY_GENERATION_PRUNE_QUARANTINES=()
-}
-
-dependency_generation_apply_retention() {
-  local generation_root="$1" integration_root="$2" rc=0
-  dependency_generation_acquire_publish_lock "$generation_root" || return $?
-  dependency_generation_refresh_retention_state_locked "$generation_root" "$integration_root" || rc=$?
-  if [ "$rc" -eq 0 ]; then
-    dependency_generation_quarantine_unretained_locked "$generation_root" || rc=$?
-  fi
-  dependency_generation_release_publish_lock
-  dependency_generation_delete_prune_quarantines
   return "$rc"
 }
 
-dependency_generation_copy_independent() {
-  local src="$1" dest="$2"
-  mkdir -p "$(dirname "$dest")"
-  # GNU cp uses a CoW clone where available and a regular independent copy
-  # otherwise. BSD/BusyBox cp reject --reflink; retry with portable `cp -a`.
-  if dependency_generation_copy_with_progress "$src" "$dest" --reflink=auto; then
+dependency_generation_apply_retention() {
+  local generation_root="$1" integration_root="$2" retain_count="${3:-}" skip_recorded_stores="${4:-}" rc=0 delete_rc=0
+  dependency_generation_acquire_publish_lock "$generation_root" || return $?
+  dependency_generation_refresh_retention_state_locked "$generation_root" "$integration_root" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    dependency_generation_quarantine_unretained_locked "$generation_root" "$retain_count" || rc=$?
+  fi
+  dependency_generation_release_publish_lock
+  dependency_generation_delete_prune_quarantines || delete_rc=$?
+  [ "$rc" -ne 0 ] || rc="$delete_rc"
+  if [ "$rc" -eq 0 ]; then
+    dependency_generation_sweep_legacy_store "$generation_root" "$integration_root" || rc=$?
+    if [ "$rc" -eq 0 ] && [ -z "$retain_count$skip_recorded_stores" ]; then
+      dependency_generation_sweep_recorded_stores "$generation_root" "$integration_root" || rc=$?
+    fi
+  fi
+  return "$rc"
+}
+
+dependency_generation_store_is_published() {
+  local root="$1" generation
+  for generation in "$root"/v1-*; do
+    [[ "${generation##*/}" =~ ^v1-[0-9a-f]{64}$ ]] || continue
+    dependency_generation_marker_matches "$generation" "${generation##*/}" && return 0
+  done
+  return 1
+}
+
+# The existing hourly actor can keep invoking just the current-store CLI. Its
+# freshly loaded Bash helper visits recorded former stores too, so discovery
+# does not depend on restarting a background host after a store migration.
+dependency_generation_sweep_recorded_stores() {
+  local generation_root="$1" integration_root="$2" persistent current_real root_real record line former seen=' '
+  persistent="$(dependency_generation_persistent_root "$integration_root")"
+  [ -d "$persistent" ] || return 0
+  current_real="$(cd "$persistent" && pwd -P)" || return 0
+  root_real="$(cd "$generation_root" && pwd -P)" || return 0
+  [ "$root_real" = "$current_real" ] || return 0
+  # Existence alone is insufficient during a failed/unfinished migration.
+  dependency_generation_store_is_published "$current_real" || return 0
+  record="$(dependency_generation_root_record "$integration_root")"
+  [ -f "$record" ] || return 0
+  while IFS= read -r line; do
+    case "$line" in /*) ;; *) continue ;; esac
+    [ -d "$line" ] || continue
+    former="$(cd "$line" && pwd -P)" || continue
+    [ "$former" != "$current_real" ] || continue
+    case "$seen" in *" $former "*) continue ;; esac
+    seen="$seen$former "
+    dependency_generation_log "sweeping recorded former generation store $former"
+    ( DEPENDENCY_GENERATION_PUBLISH_LOCK_TIMEOUT_SEC=5 \
+        dependency_generation_apply_retention "$former" "$integration_root" 0 ) \
+      || dependency_generation_log "WARNING: former store $former retention deferred"
+  done < "$record"
+}
+
+# WI-10006081: the persistent generation root for an integration root (env, then
+# the WI-10005159 record), WITHOUT writing the record. Empty when neither names
+# an absolute root, i.e. the tree-local store is still the real one.
+dependency_generation_persistent_root() {
+  local integration_root="$1" record recorded=''
+  if [ -n "${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-}" ]; then
+    printf '%s\n' "$PAPERCUSP_DEPENDENCY_GENERATION_ROOT"
     return 0
   fi
-  rm -rf -- "$dest"
-  dependency_generation_copy_with_progress "$src" "$dest"
+  record="$(dependency_generation_root_record "$integration_root")"
+  if [ -f "$record" ]; then
+    IFS= read -r recorded < "$record" || true
+  fi
+  case "$recorded" in
+    /*) printf '%s\n' "$recorded" ;;
+  esac
+  return 0
+}
+
+# WI-10006081: once the root moves (env or record), every caller follows it and
+# NOTHING reads or retains the tree-local store again. Its generations were never
+# swept: on 2026-10-05 six of them (~80 GB, single-link) sat on the root disk
+# beside a store on /mnt/data, put / at 99% and stopped git-sync fleet-wide and
+# cargo admission. So each retention pass also sweeps that legacy store, keeping
+# only generations a live pin or lease still names (recency keeps nothing, since
+# no reader selects from it). Best-effort: a busy or unreadable legacy store must
+# never fail a publish, so every failure is logged and swallowed.
+dependency_generation_sweep_legacy_store() {
+  local generation_root="$1" integration_root="$2"
+  local legacy persistent legacy_real persistent_real generation_real residue rc=0
+  legacy="$integration_root/.papercusp/dependency-generations"
+  [ -d "$legacy" ] || return 0
+  persistent="$(dependency_generation_persistent_root "$integration_root")"
+  [ -n "$persistent" ] || return 0
+  legacy_real="$(cd "$legacy" 2>/dev/null && pwd -P)" || return 0
+  # The persistent store must exist: a record naming a missing directory proves
+  # nothing about where generations live, so the legacy store stays untouched.
+  persistent_real="$(cd "$persistent" 2>/dev/null && pwd -P)" || return 0
+  [ "$legacy_real" != "$persistent_real" ] || return 0
+  # An explicit --generation-root may be pointed at the legacy store on purpose.
+  generation_real="$(cd "$generation_root" 2>/dev/null && pwd -P)" || generation_real=''
+  [ "$legacy_real" != "$generation_real" ] || return 0
+  residue=''
+  for residue in "$legacy_real"/v1-* "$legacy_real"/.prune-* "$legacy_real"/.invalid-*; do
+    [ -d "$residue" ] && break
+    residue=''
+  done
+  [ -n "$residue" ] || return 0
+  dependency_generation_log \
+    "sweeping legacy tree-local generation store $legacy_real (generation root is $persistent_real)"
+  # A short lock budget: a live holder on a store nobody should be using is
+  # reason to retry on the next pass, not to stall this publish for 15 minutes.
+  DEPENDENCY_GENERATION_PUBLISH_LOCK_TIMEOUT_SEC="${DEPENDENCY_GENERATION_LEGACY_SWEEP_LOCK_TIMEOUT_SEC:-5}" \
+    dependency_generation_acquire_publish_lock "$legacy_real" || {
+      dependency_generation_log "WARNING: legacy generation store $legacy_real is locked; sweep deferred"
+      return 0
+    }
+  dependency_generation_refresh_retention_state_locked "$legacy_real" "$integration_root" 1 || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    dependency_generation_quarantine_unretained_locked "$legacy_real" 0 || rc=$?
+  fi
+  dependency_generation_release_publish_lock
+  dependency_generation_delete_prune_quarantines || rc=$?
+  [ "$rc" -eq 0 ] \
+    || dependency_generation_log "WARNING: legacy generation store sweep of $legacy_real failed (rc=$rc); retained"
+  return "$rc"
+}
+
+# WI-10004849: a changed root tree is one ~16-18 GB physical copy (ext4 has no
+# reflink), and the old and new trees coexist until the swap. Several of these
+# running at once (gate, deploy, repair precheck) drove root free space under
+# git-sync's 2% fetch reserve. So every physical copy on this host runs under
+# one host-wide flock, and refuses to start without headroom for the copy plus
+# the reserve plus a margin. Both refusals are typed infra exits:
+#   76 = DEPENDENCY_GENERATION_LOCK_TIMEOUT (another copy held the lock too long)
+#   77 = DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT (not enough free space)
+DEPENDENCY_GENERATION_COPY_LOCK_DEPTH=0
+DEPENDENCY_GENERATION_COPY_LOCK_FD=''
+
+dependency_generation_copy_lock_file() {
+  printf '%s\n' \
+    "${DEPENDENCY_GENERATION_COPY_LOCK_FILE:-${TMPDIR:-/tmp}/papercusp-dependency-generation-copy.lock}"
+}
+
+# WI-10004928 part 6: total I/O (rchar+wchar) of a pid and all its live
+# descendants, or empty when it cannot be measured (pid gone, /proc unreadable,
+# another pid namespace). The copy-lock waiter treats any CHANGE in this number
+# as the holder making progress; a child exiting also changes it, which is
+# still activity. Reads only /proc, so a sample costs milliseconds.
+dependency_generation_subtree_io() {
+  local root="$1" mode="${2:-all}" pids p total='' r w
+  case "$root" in ''|*[!0-9]*) return 0 ;; esac
+  kill -0 "$root" 2>/dev/null || return 0
+  pids="$( { ps -e -o pid=,ppid= 2>/dev/null || true; } | awk -v root="$root" '
+    { kids[$2] = kids[$2] " " $1 }
+    END {
+      queue[1] = root; n = 1; i = 1
+      while (i <= n) {
+        p = queue[i++]; print p
+        m = split(kids[p], c, " ")
+        for (j = 1; j <= m; j++) queue[++n] = c[j]
+      }
+    }')"
+  for p in $pids; do
+    [ -r "/proc/$p/io" ] || continue
+    if [ "$mode" = cp-written ] || [ "$mode" = copy-written ] || [ "$mode" = copy-read ]; then
+      if [ "$mode" = cp-written ]; then
+        [ "$(cat "/proc/$p/comm" 2>/dev/null)" = cp ] || continue
+      elif [ "$p" != "$root" ]; then
+        case "$(cat "/proc/$p/comm" 2>/dev/null)" in cp|rsync) ;; *) continue ;; esac
+      fi
+      # copy_file_range grows write_bytes; userspace/tmpfs copies grow wchar.
+      if [ "$mode" = copy-read ]; then
+        r="$(awk '/^(rchar|read_bytes):/ { if ($2 > m) m = $2 } END { if (NR) printf "%.0f\n", m }' \
+          "/proc/$p/io" 2>/dev/null || true)"
+      else
+        r="$(awk '/^(wchar|write_bytes):/ { if ($2 > m) m = $2 } END { if (NR) printf "%.0f\n", m }' \
+          "/proc/$p/io" 2>/dev/null || true)"
+      fi
+      case "$r" in ''|*[!0-9]*) continue ;; esac
+      total=$(( ${total:-0} + r ))
+      continue
+    fi
+    r="$(awk '$1 == "rchar:" { print $2 }' "/proc/$p/io" 2>/dev/null || true)"
+    w="$(awk '$1 == "wchar:" { print $2 }' "/proc/$p/io" 2>/dev/null || true)"
+    [ -n "$r$w" ] || continue
+    total=$(( ${total:-0} + ${r:-0} + ${w:-0} ))
+  done
+  [ -n "$total" ] && printf '%s\n' "$total"
+  return 0
+}
+
+# The copy lock's timeout is a STALL budget, not a wall-clock one (WI-10004928
+# part 6). A full tree copy takes ~20 min, so a wall-clock 600s budget made every
+# waiter behind a healthy copy fail with exit 76 and lose a whole gate round.
+# The waiter keeps waiting while the holder's subtree I/O keeps changing, fails
+# after DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC (default 600) without
+# progress, and never waits past DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC
+# (default 5400). An unmeasurable holder gets no credit for progress, which
+# keeps the old wall-clock behaviour for that case.
+dependency_generation_acquire_copy_lock() {
+  local op="$1" lock fd timeout_sec max_sec started now waited next_notice holder
+  local holder_pid io last_io last_progress next_sample idle reason
+  if [ "$DEPENDENCY_GENERATION_COPY_LOCK_DEPTH" -gt 0 ]; then
+    DEPENDENCY_GENERATION_COPY_LOCK_DEPTH=$((DEPENDENCY_GENERATION_COPY_LOCK_DEPTH + 1))
+    return 0
+  fi
+  if ! command -v flock >/dev/null 2>&1; then
+    dependency_generation_log 'flock unavailable; physical dependency copies are not serialized on this host'
+    return 0
+  fi
+  timeout_sec="${DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC:-600}"
+  case "$timeout_sec" in ''|*[!0-9]*) timeout_sec=600 ;; esac
+  max_sec="${DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC:-5400}"
+  case "$max_sec" in ''|*[!0-9]*) max_sec=5400 ;; esac
+  [ "$max_sec" -ge "$timeout_sec" ] || max_sec="$timeout_sec"
+  lock="$(dependency_generation_copy_lock_file)"
+  mkdir -p "$(dirname "$lock")" 2>/dev/null || true
+  exec {fd}>>"$lock" || {
+    dependency_generation_log "DEPENDENCY_GENERATION_LOCK_TIMEOUT waited=0s timeout=${timeout_sec}s holder=unknown op=$op reason=cannot-open-lock lock=$lock"
+    return 76
+  }
+  started="$(date +%s)"
+  next_notice=30
+  last_io=''
+  last_progress="$started"
+  next_sample="$started"
+  while ! flock -n "$fd"; do
+    now="$(date +%s)"
+    waited=$((now - started))
+    holder="$(tr '\n' ' ' < "$lock.holder" 2>/dev/null || true)"
+    if [ "$now" -ge "$next_sample" ]; then
+      holder_pid="$( { sed -n 's/^pid=\([0-9][0-9]*\).*/\1/p' "$lock.holder" 2>/dev/null || true; } | head -n 1)"
+      io="$(dependency_generation_subtree_io "$holder_pid" || true)"
+      if [ -n "$io" ] && [ -n "$last_io" ] && [ "$io" != "$last_io" ]; then
+        last_progress="$now"
+      fi
+      last_io="$io"
+      next_sample=$((now + ${DEPENDENCY_GENERATION_COPY_LOCK_SAMPLE_SEC:-5}))
+    fi
+    idle=$((now - last_progress))
+    reason=''
+    if [ "$waited" -ge "$max_sec" ]; then
+      reason=cap
+    elif [ "$idle" -ge "$timeout_sec" ]; then
+      if [ -n "$last_io" ]; then reason=stalled; else reason=unmeasurable; fi
+    fi
+    if [ -n "$reason" ]; then
+      # Sampling can span the holder's exit. Recheck the lock before rejecting
+      # an unmeasurable/stalled sample or an elapsed cap: a free lock is ready
+      # to acquire even when the last measurement describes its former holder.
+      if flock -n "$fd"; then
+        break
+      fi
+      dependency_generation_log "DEPENDENCY_GENERATION_LOCK_TIMEOUT waited=${waited}s idle=${idle}s timeout=${timeout_sec}s max=${max_sec}s reason=$reason holder=${holder:-unknown} op=$op lock=$lock"
+      exec {fd}>&-
+      return 76
+    fi
+    if [ "$waited" -ge "$next_notice" ]; then
+      dependency_generation_log "still waiting for the host dependency-copy lock after ${waited}s (idle ${idle}s of ${timeout_sec}s, cap ${max_sec}s; holder ${holder:-unknown})"
+      next_notice=$((waited + 30))
+    fi
+    sleep 0.2
+  done
+  printf 'pid=%s op=%s since=%s\n' "${BASHPID:-$$}" "$op" "$(date +%s)" > "$lock.holder" 2>/dev/null || true
+  DEPENDENCY_GENERATION_COPY_LOCK_FD="$fd"
+  DEPENDENCY_GENERATION_COPY_LOCK_DEPTH=1
+}
+
+dependency_generation_release_copy_lock() {
+  local fd
+  [ "$DEPENDENCY_GENERATION_COPY_LOCK_DEPTH" -gt 0 ] || return 0
+  DEPENDENCY_GENERATION_COPY_LOCK_DEPTH=$((DEPENDENCY_GENERATION_COPY_LOCK_DEPTH - 1))
+  [ "$DEPENDENCY_GENERATION_COPY_LOCK_DEPTH" -eq 0 ] || return 0
+  fd="$DEPENDENCY_GENERATION_COPY_LOCK_FD"
+  DEPENDENCY_GENERATION_COPY_LOCK_FD=''
+  [ -n "$fd" ] || return 0
+  flock -u "$fd" 2>/dev/null || true
+  exec {fd}>&-
+}
+
+# green-main-cycle-time P-022: the gate's up-front preflight (--check-headroom)
+# also asks whether the host dependency-copy lock could be taken now, so a run
+# that can only fail on it refuses BEFORE setup instead of minutes into it.
+#   - free  -> reported, ok.
+#   - busy behind a LIVE holder younger than the waiter's own cap -> reported,
+#     ok. NOT a refusal: the copy path waits behind a healthy copy on its stall
+#     budget and then proceeds, so refusing would turn a wait that succeeds into
+#     a lost round. The line exists so a later mid-setup exit 77 can be
+#     attributed to a concurrent copy from evidence instead of inferred.
+#   - busy behind a live holder that has ALREADY held it for at least
+#     DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC -> wedged: exit 76 now.
+# Release never clears the .holder record, so a record whose pid is gone says
+# nothing about who holds the lock now; that case is reported as busy, never
+# wedged. The probe never writes the holder record and drops a lock it takes.
+dependency_generation_probe_copy_lock() {
+  local lock fd holder holder_pid since now held max_sec
+  if ! command -v flock >/dev/null 2>&1; then
+    dependency_generation_log 'DEPENDENCY_GENERATION_COPY_LOCK state=unserialized reason=flock-unavailable'
+    return 0
+  fi
+  lock="$(dependency_generation_copy_lock_file)"
+  if [ ! -e "$lock" ]; then
+    dependency_generation_log "DEPENDENCY_GENERATION_COPY_LOCK state=free lock=$lock"
+    return 0
+  fi
+  # flock(2) needs no write access, so a read-only descriptor never creates or
+  # truncates the shared lock file.
+  if ! exec {fd}<"$lock"; then
+    dependency_generation_log "DEPENDENCY_GENERATION_COPY_LOCK state=unknown reason=cannot-open-lock lock=$lock"
+    return 0
+  fi
+  if flock -n "$fd"; then
+    exec {fd}<&-
+    dependency_generation_log "DEPENDENCY_GENERATION_COPY_LOCK state=free lock=$lock"
+    return 0
+  fi
+  exec {fd}<&-
+  max_sec="${DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC:-5400}"
+  case "$max_sec" in ''|*[!0-9]*) max_sec=5400 ;; esac
+  holder="$(tr '\n' ' ' < "$lock.holder" 2>/dev/null || true)"
+  holder_pid="$( { sed -n 's/^pid=\([0-9][0-9]*\).*/\1/p' "$lock.holder" 2>/dev/null || true; } | head -n 1)"
+  since="$( { sed -n 's/.*since=\([0-9][0-9]*\).*/\1/p' "$lock.holder" 2>/dev/null || true; } | head -n 1)"
+  if [ -z "$since" ] || [ -z "$holder_pid" ] || [ ! -d "/proc/$holder_pid" ]; then
+    dependency_generation_log "DEPENDENCY_GENERATION_COPY_LOCK state=busy held=unknown max=${max_sec}s holder=${holder:-unknown} lock=$lock"
+    return 0
+  fi
+  now="$(date +%s)"
+  held=$((now - since))
+  if [ "$held" -ge "$max_sec" ]; then
+    dependency_generation_log "DEPENDENCY_GENERATION_LOCK_BUSY state=wedged held=${held}s max=${max_sec}s holder=${holder:-unknown} lock=$lock"
+    return 76
+  fi
+  dependency_generation_log "DEPENDENCY_GENERATION_COPY_LOCK state=busy held=${held}s max=${max_sec}s holder=${holder:-unknown} lock=$lock"
+  return 0
+}
+
+# Pure: the free bytes a copy needs before it may start.
+dependency_generation_headroom_required() {
+  printf '%s\n' "$(( $1 + $2 + $3 ))"
+}
+
+# Prints a statfs quantity in bytes: field %a = available, %b = total.
+dependency_generation_fs_bytes() {
+  local path="$1" field="$2" out blocks size
+  case "$field" in
+    %a) [ -n "${DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES:-}" ] \
+      && { printf '%s\n' "$DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES"; return 0; } ;;
+    %b) [ -n "${DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES:-}" ] \
+      && { printf '%s\n' "$DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES"; return 0; } ;;
+  esac
+  out="$(stat -f -c "$field %S" "$path" 2>/dev/null)" || return 1
+  blocks="${out%% *}"
+  size="${out##* }"
+  case "$blocks$size" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$((blocks * size))"
+}
+
+# WI-10005931: the reserve-protected filesystem. The percentage reserve exists
+# so concurrent copies cannot push the filesystem git-sync fetches into under
+# its 2% fetch reserve; that is the filesystem holding the integration root.
+# main records it here. A sourced caller that never sets it keeps the full
+# reserve everywhere (fail-closed).
+DEPENDENCY_GENERATION_RESERVE_FS_PATH="${DEPENDENCY_GENERATION_RESERVE_FS_PATH:-}"
+
+# Records `integration_root` as the reserve-protected filesystem unless a
+# caller already chose one. WI-10006767: sourced callers (setup-release-checkout
+# -> dependency_generation_ensure) never pass through main, so every entry that
+# receives an integration root records it here. An unresolvable root leaves the
+# path empty, which keeps the fail-closed full reserve.
+dependency_generation_record_reserve_fs() {
+  local integration_root="$1" physical
+  [ -z "${DEPENDENCY_GENERATION_RESERVE_FS_PATH:-}" ] || return 0
+  [ -n "$integration_root" ] || return 0
+  physical="$(cd "$integration_root" 2>/dev/null && pwd -P)" || return 0
+  DEPENDENCY_GENERATION_RESERVE_FS_PATH="$physical"
+}
+
+# Succeeds when `dir` is on the reserve-protected filesystem, or when that
+# cannot be established (unset path, stat failure) — unknown means protected.
+# DEPENDENCY_GENERATION_HEADROOM_SAME_FS=0|1 overrides the device comparison
+# (test seam, like the AVAIL/TOTAL byte overrides above).
+dependency_generation_on_reserve_fs() {
+  local dir="$1" protected="${DEPENDENCY_GENERATION_RESERVE_FS_PATH:-}" a b
+  case "${DEPENDENCY_GENERATION_HEADROOM_SAME_FS:-}" in
+    0) return 1 ;;
+    1) return 0 ;;
+  esac
+  [ -n "$protected" ] || return 0
+  a="$(stat -c %d "$dir" 2>/dev/null)" || return 0
+  b="$(stat -c %d "$protected" 2>/dev/null)" || return 0
+  [ -n "$a" ] && [ -n "$b" ] || return 0
+  [ "$a" = "$b" ]
+}
+
+# Looks up a published tree's recorded size from its generation's .tree-bytes
+# sidecar (`rel<TAB>bytes`). The source path is `<generation>/tree/<rel>`.
+# Never walks the tree (WI-474827: materialization must stay walk-free).
+dependency_generation_tree_bytes_lookup() {
+  local src="$1" generation rel
+  case "$src" in */tree/*) ;; *) return 1 ;; esac
+  generation="${src%%/tree/*}"
+  rel="${src#*/tree/}"
+  [ -f "$generation/.tree-bytes" ] || return 1
+  awk -F '\t' -v rel="$rel" \
+    '$1 == rel && $2 ~ /^[0-9]+$/ { print $2; found = 1; exit } END { exit !found }' \
+    "$generation/.tree-bytes"
+}
+
+# Appends `rel<TAB>bytes` for a tree in a generation being built. A reused tree
+# carries the size its predecessor recorded; anything else is measured once,
+# at publish, while the just-copied tree is still in the page cache.
+dependency_generation_record_tree_bytes() {
+  local build="$1" rel="$2" known_src="${3:-}" bytes=''
+  if [ -n "$known_src" ]; then
+    bytes="$(dependency_generation_tree_bytes_lookup "$known_src" 2>/dev/null || true)"
+  fi
+  if [ -z "$bytes" ]; then
+    bytes="$(du -s -B1 -- "$build/tree/$rel" 2>/dev/null | awk '{ print $1; exit }' || true)"
+  fi
+  case "$bytes" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s\t%s\n' "$rel" "$bytes" >> "$build/.tree-bytes"
+}
+
+# Fail-closed headroom check, run under the copy lock. `size_ref` is the path
+# whose recorded size to use; an unknown size checks only reserve + margin.
+# A caller copying an ordinary donor may supply its measured size as argument 3.
+dependency_generation_check_headroom() {
+  local size_ref="$1" dest="$2" measured_need="${3:-}" dir parent pct margin need size_note total reserve required avail base
+  local cap reserve_scope
+  dir="$(dirname "$dest")"
+  while [ ! -d "$dir" ]; do
+    parent="$(dirname "$dir")"
+    [ "$parent" != "$dir" ] || break
+    dir="$parent"
+  done
+  pct="${DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT:-2}"
+  case "$pct" in ''|*[!0-9]*) pct=2 ;; esac
+  margin="${DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES:-10737418240}"
+  case "$margin" in ''|*[!0-9]*) margin=10737418240 ;; esac
+  cap="${DEPENDENCY_GENERATION_HEADROOM_OTHER_FS_RESERVE_CAP_BYTES:-21474836480}"
+  case "$cap" in ''|*[!0-9]*) cap=21474836480 ;; esac
+  if [ -n "$measured_need" ]; then
+    case "$measured_need" in *[!0-9]*)
+      dependency_generation_log "DEPENDENCY_GENERATION_HEADROOM_UNMEASURED invalid copy size path=$dest"
+      return 77 ;;
+    esac
+    need="$measured_need"
+    size_note="size=measured"
+  elif need="$(dependency_generation_tree_bytes_lookup "$size_ref" 2>/dev/null)"; then
+    size_note="size=recorded"
+  else
+    need=0
+    size_note="size=unknown"
+  fi
+  if ! total="$(dependency_generation_fs_bytes "$dir" %b)" \
+    || ! avail="$(dependency_generation_fs_bytes "$dir" %a)"; then
+    dependency_generation_log "DEPENDENCY_GENERATION_HEADROOM_UNMEASURED cannot statfs $dir"
+    return 77
+  fi
+  reserve=$((total * pct / 100))
+  # WI-10005931: 2% of an 8 TB data disk is 160 GB, which refused a 9 GB copy
+  # with 165 GB free. Off the protected filesystem the percentage only guards
+  # against filling the disk, so it is capped; the margin still applies.
+  if dependency_generation_on_reserve_fs "$dir"; then
+    reserve_scope='protected-fs'
+  else
+    reserve_scope='other-fs'
+    [ "$reserve" -le "$cap" ] || reserve="$cap"
+  fi
+  required="$(dependency_generation_headroom_required "$need" "$reserve" "$margin")"
+  # --check-headroom is a pure measurement: it names no copy, so it has no
+  # siblings of its own to reap and must not delete anything on the gate's behalf.
+  if [ -n "${DEPENDENCY_GENERATION_HEADROOM_CHECK_ONLY:-}" ]; then
+    if [ "$avail" -lt "$required" ]; then
+      dependency_generation_log "DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT need=$need avail=$avail reserve=$reserve reserve_scope=$reserve_scope margin=$margin required=$required $size_note path=$dest"
+      return 77
+    fi
+    dependency_generation_log "DEPENDENCY_GENERATION_HEADROOM_OK need=$need avail=$avail reserve=$reserve reserve_scope=$reserve_scope margin=$margin required=$required $size_note path=$dest"
+    return 0
+  fi
+  if [ "$avail" -lt "$required" ]; then
+    base="${dest%.generation-tmp.*}"
+    base="${base%.copy-up.*}"
+    base="${base%.deploy-tmp.*}"
+    dependency_generation_reap_dead_siblings "$base"
+    avail="$(dependency_generation_fs_bytes "$dir" %a)" || avail=0
+  fi
+  if [ "$avail" -lt "$required" ]; then
+    dependency_generation_log "DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT need=$need avail=$avail reserve=$reserve reserve_scope=$reserve_scope margin=$margin required=$required $size_note path=$dest"
+    return 77
+  fi
+  return 0
+}
+
+# Publish callers return 1 for any copy failure, except the typed infra exits,
+# which pass through so the gate can classify them.
+dependency_generation_copy_failure_rc() {
+  case "$1" in 73|76|77|130|143) printf '%s\n' "$1" ;; *) printf '1\n' ;; esac
+}
+
+dependency_generation_copy_independent() {
+  local src="$1" dest="$2" size_ref="${3:-$1}" rc=0
+  mkdir -p "$(dirname "$dest")"
+  dependency_generation_acquire_copy_lock "copy ${dest##*/tree/}" || return $?
+  dependency_generation_check_headroom "$size_ref" "$dest" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    # GNU cp uses a CoW clone where available and a regular independent copy
+    # otherwise. BSD/BusyBox cp reject --reflink; retry with portable `cp -a`.
+    dependency_generation_copy_with_progress "$src" "$dest" --reflink=auto || rc=$?
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 73 ] && [ "$rc" -ne 130 ] && [ "$rc" -ne 143 ]; then
+      rm -rf -- "$dest"
+      rc=0
+      dependency_generation_copy_with_progress "$src" "$dest" || rc=$?
+    fi
+  fi
+  dependency_generation_release_copy_lock
+  return "$rc"
 }
 
 # WI-10004094: a changed root tree is one ~16 GB `cp -a` on ext4 (no reflink),
 # and it prints nothing. Callers judge liveness by output (green-checkpoint's
 # 30m no-output budget), so a copy starved to ~1 MB/s was killed as a hang.
-# Report the bytes the copy has written, but only when they have grown since the
-# last report: a copy that stops writing stays silent, so it still reads as wedged.
-dependency_generation_copy_with_progress() {
-  local src="$1" dest="$2" reflink="${3:-}" pid rc=0 interval started now next
-  local written='' reported='' nap=0.05
+# WI-41095: own the inactivity budget here, where actual copy I/O is visible.
+# Elapsed copy time is not a failure; neither polling nor log output earns
+# progress. Reuse the in-flight stall policy and include rsync checksum readers.
+# A subshell confines cancellation traps to this copy, preserving caller traps.
+dependency_generation_copy_with_progress() (
+  local src="$1" dest="$2" reflink="${3:-}" pid='' rc=0 interval started now next stall_sec last_change
+  local written='' reported='' read_bytes='' read_reported=0 last_written='' last_read='' nap=0.05
+  local copy_epoch='' record fields
+  # Only our unreaped child and its observed descendants are targets. Check
+  # starttime at each signal so an exited/recycled descendant cannot be killed.
+  dependency_generation_stop_copy_child() {
+    local node="$1" expected="$2" record children child epoch
+    local -a fields
+    [ -r "/proc/$node/stat" ] || return 0
+    read -r record < "/proc/$node/stat" || return 0
+    read -ra fields <<< "${record##*) }"
+    [ "${fields[19]:-}" = "$expected" ] || return 0
+    children="$(cat "/proc/$node/task/$node/children" 2>/dev/null || true)"
+    for child in $children; do
+      [ -r "/proc/$child/stat" ] || continue
+      read -r record < "/proc/$child/stat" || continue
+      read -ra fields <<< "${record##*) }"
+      epoch="${fields[19]:-}"
+      [ -n "$epoch" ] && dependency_generation_stop_copy_child "$child" "$epoch"
+    done
+    [ -r "/proc/$node/stat" ] || return 0
+    read -r record < "/proc/$node/stat" || return 0
+    read -ra fields <<< "${record##*) }"
+    [ "${fields[19]:-}" != "$expected" ] || kill -KILL "$node" 2>/dev/null || true
+  }
+  trap 'if [ -n "$pid" ]; then dependency_generation_stop_copy_child "$pid" "$copy_epoch"; wait "$pid" 2>/dev/null || true; fi' EXIT
+  trap 'dependency_generation_log "COPY_CANCELLED signal=TERM path=$dest pid=$pid"; exit 143' TERM
+  trap 'dependency_generation_log "COPY_CANCELLED signal=INT path=$dest pid=$pid"; exit 130' INT
   interval="${DEPENDENCY_GENERATION_COPY_PROGRESS_SEC:-60}"
   case "$interval" in ''|*[!0-9]*|0) interval=60 ;; esac
-  if [ -n "$reflink" ]; then
+  stall_sec="${DEPENDENCY_GENERATION_INFLIGHT_STALL_SEC:-1500}"
+  case "$stall_sec" in ''|*[!0-9]*|0) stall_sec=1500 ;; esac
+  [ "$interval" -le "$stall_sec" ] || interval="$stall_sec"
+  if [ "$reflink" = --rsync-checksum ]; then
+    # Pinned independent snapshots keep their staging tree across interruption.
+    # Checksums, rather than size/mtime, authorize reuse of a completed file.
+    # Optional filters exclude live caches before traversing them, preserving
+    # this helper's existing progress and cancellation contract.
+    rsync -aH --checksum --delete --partial --stats "${@:4}" "$src/" "$dest/" &
+  elif [ -n "$reflink" ]; then
     cp -a "$reflink" "$src" "$dest" 2>/dev/null &
   else
     cp -a "$src" "$dest" &
   fi
   pid=$!
+  if [ -r "/proc/$pid/stat" ]; then
+    read -r record < "/proc/$pid/stat" || true
+    read -ra fields <<< "${record##*) }"
+    copy_epoch="${fields[19]:-}"
+  fi
   started="$(date +%s)"
+  last_change="$started"
   next=$((started + interval))
   while kill -0 "$pid" 2>/dev/null; do
     # Short first naps keep the many small copies fast; long copies poll at 1s.
@@ -1520,18 +2495,355 @@ dependency_generation_copy_with_progress() {
     now="$(date +%s)"
     [ "$now" -ge "$next" ] || continue
     next=$((now + interval))
-    # write_bytes misses tmpfs and wchar misses copy_file_range; either grows
-    # while the copy makes progress, so report the larger.
-    written="$(awk '/^(wchar|write_bytes):/ { if ($2 > m) m = $2 } END { if (NR) print m + 0 }' \
-      "/proc/$pid/io" 2>/dev/null || true)"
-    case "$written" in ''|*[!0-9]*) continue ;; esac
-    if [ "$written" -gt "${reported:-0}" ]; then
+    written="$(dependency_generation_subtree_io "$pid" copy-written)"
+    read_bytes=0
+    if [ "$reflink" = --rsync-checksum ]; then
+      read_bytes="$(dependency_generation_subtree_io "$pid" copy-read)"
+    fi
+    # A disappearing rsync worker changes the measured live population too.
+    # Missing counters never authorize indefinite waiting or fabricate progress.
+    if { [ -n "$written" ] && [ "$written" != "$last_written" ] && [ "$written" != 0 ]; } ||
+       { [ -n "$read_bytes" ] && [ "$read_bytes" != "$last_read" ] && [ "$read_bytes" != 0 ]; }; then
+      last_change="$now"
+    fi
+    last_written="$written"
+    last_read="$read_bytes"
+    kill -0 "$pid" 2>/dev/null || break
+    if [ $((now - last_change)) -ge "$stall_sec" ]; then
+      dependency_generation_log "COPY_STALLED idle=$((now - last_change))s budget=${stall_sec}s elapsed=$((now - started))s pid=$pid written=${written:-unmeasured} read=${read_bytes:-unmeasured} path=$dest"
+      return 73
+    fi
+    case "$written" in ''|*[!0-9]*) written=0 ;; esac
+    case "$read_bytes" in ''|*[!0-9]*) read_bytes=0 ;; esac
+    if [ "$written" -gt "${reported:-0}" ] || [ "$read_bytes" -gt "$read_reported" ]; then
       reported="$written"
+      read_reported="$read_bytes"
       dependency_generation_log \
         "copy progress: ${dest##*/tree/} written=$((written / 1048576))MiB elapsed=$((now - started))s"
+      if [ "$reflink" = --rsync-checksum ]; then
+        dependency_generation_log "checksum read progress: ${dest##*/tree/} read=$((read_bytes / 1048576))MiB"
+      fi
     fi
   done
   wait "$pid" || rc=$?
+  pid=''
+  return "$rc"
+)
+
+# P-012 (WI-10004927): incremental copy of a CHANGED dependency tree.
+#
+# A changed tree used to be one full `cp -a` from the live checkout into the
+# store. The live tree (ext4) and the store (XFS) are different filesystems, so
+# no reflink is possible and a papercusp root change cost ~21 GiB of IO to carry
+# a few MB of real change. Measured 2026-10-01: 555 of 301,040 files differed
+# between the 06:39 and 12:19 papercusp generations.
+#
+# Instead, reflink-clone the predecessor's copy of the same tree (same store
+# filesystem, metadata only), then replace only the paths whose live source
+# record changed since the predecessor captured it.
+#
+# Soundness. Each generation stores, per tree, the source records it was built
+# from: path, type, mode, uid, gid, size, mtime, inode, ctime and link target,
+# captured BEFORE its copy started. A file is reused only when its live record
+# is byte-identical to the stored one. ctime cannot be set from userspace and
+# moves on every content or metadata change, so an equal (inode, ctime) proves
+# the file is unchanged since that capture, so the predecessor holds its bytes.
+# Size and mtime alone (rsync's quick check) would be unsound: npm extracts
+# package files with a fixed 1985 mtime. Records whose ctime falls within
+# DEPENDENCY_GENERATION_RACY_WINDOW_SEC of their capture are never trusted,
+# because a rewrite in the same clock tick could keep the timestamp. The result
+# is then verified path by path against the live records (type, mode, size,
+# mtime, link target); any difference falls back to the full copy.
+DEPENDENCY_GENERATION_RACY_WINDOW_SEC="${DEPENDENCY_GENERATION_RACY_WINDOW_SEC:-2}"
+DEPENDENCY_GENERATION_TREES_INCREMENTAL=0
+
+dependency_generation_incremental_supported() {
+  [ "${DEPENDENCY_GENERATION_INCREMENTAL_COPY:-1}" = '1' ] || return 1
+  [ "${DEPENDENCY_GENERATION_FORCE_PORTABLE_STAT:-0}" != '1' ] || return 1
+  find . -maxdepth 0 -printf '' >/dev/null 2>&1 || return 1
+  case "$(tar --version 2>/dev/null)" in *'GNU tar'*) ;; *) return 1 ;; esac
+  command -v gzip >/dev/null 2>&1 && command -v comm >/dev/null 2>&1 \
+    && printf '' | sha256sum -z >/dev/null 2>&1
+}
+
+# Write the C-sorted source records of one dependency tree to $2, pruned exactly
+# like dependency_generation_prune_ephemeral. Exit 2: a path or link target holds
+# a control character, which the line-oriented records cannot carry.
+dependency_generation_source_records() {
+  local root="$1" out="$2" rc=0
+  [ -d "$root" ] || return 1
+  (
+    cd "$root" || exit 1
+    LC_ALL=C find . -xdev -mindepth 1 \
+      \( \( -path ./.cache -o -path ./.package-lock.json \
+        -o -path ./.papercusp-isolated-snapshot \
+        -o \( -type d \( -name .cache -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) \) \) \
+        -prune \) -o \
+      \( \( -name '*[[:cntrl:]]*' -o -lname '*[[:cntrl:]]*' \) -printf '\001\n' \) -o \
+      -printf '%P\t%y\t%m\t%U\t%G\t%s\t%T@\t%i\t%C@\t%l\n'
+  ) > "$out.unsorted" || rc=1
+  if [ "$rc" -eq 0 ] && LC_ALL=C grep -q $'^\001' "$out.unsorted"; then
+    rc=2
+  fi
+  if [ "$rc" -eq 0 ]; then
+    LC_ALL=C sort -o "$out" "$out.unsorted" || rc=1
+  fi
+  rm -f -- "$out.unsorted"
+  return "$rc"
+}
+
+# The verified view of a record: what a full `cp -a` plus the freeze reproduces.
+# Inode and ctime belong to each copy. Directory size and mtime depend on the
+# filesystem and on pruning. The freeze strips file write bits.
+dependency_generation_records_projection() {
+  LC_ALL=C awk -F '\t' -v OFS='\t' '
+    function frozen(mode,   n, i, d, out) {
+      n = length(mode); out = ""
+      for (i = 1; i <= n; i++) {
+        d = substr(mode, i, 1) + 0
+        if (i > n - 3 && int(d / 2) % 2 == 1) d -= 2
+        out = out d
+      }
+      return out
+    }
+    NF != 10 { bad = 1; exit }
+    $2 == "d" { print $1, $2, $3; next }
+    $2 == "l" { print $1, $2, $10; next }
+    $2 == "f" { print $1, $2, frozen($3), $6, $7; next }
+    { print $1, $2, $3, $6, $7 }
+    END { if (bad) exit 3 }
+  ' "$1"
+}
+
+dependency_generation_records_key() {
+  printf '%s' "$1" | dependency_generation_sha256
+}
+
+# Index line: rel, capture time (ns), key (sha256 of rel), sha256 of the gzip.
+dependency_generation_records_index_line() {
+  local rel="$1" captured_ns="$2" key="$3" gz="$4" digest
+  digest="$(dependency_generation_sha256 < "$gz")" || return 1
+  printf '%s\t%s\t%s\t%s\n' "$rel" "$captured_ns" "$key" "$digest"
+}
+
+dependency_generation_records_store() {
+  local build="$1" rel="$2" records="$3" captured_ns="$4" dir key line
+  dir="$build/.source-records"
+  [[ "$captured_ns" =~ ^[0-9]+$ ]] || return 1
+  mkdir -p "$dir" || return 1
+  key="$(dependency_generation_records_key "$rel")" || return 1
+  gzip -1 -n -c -- "$records" > "$dir/$key.gz" || return 1
+  line="$(dependency_generation_records_index_line "$rel" "$captured_ns" "$key" "$dir/$key.gz")" \
+    || return 1
+  chmod a-w "$dir/$key.gz" 2>/dev/null || true
+  printf '%s\n' "$line" >> "$dir/index"
+}
+
+# Print "<capture ns><TAB><gzip path>" for a tree's stored, intact source records.
+dependency_generation_records_lookup() {
+  local generation="$1" rel="$2" dir line ignored captured_ns key digest
+  dir="$generation/.source-records"
+  [ -f "$dir/index" ] || return 1
+  line="$(awk -F '\t' -v rel="$rel" \
+    '$1 == rel { line = $0 } END { if (line == "") exit 1; print line }' "$dir/index")" \
+    || return 1
+  IFS=$'\t' read -r ignored captured_ns key digest <<< "$line"
+  [[ "$captured_ns" =~ ^[0-9]+$ ]] && [[ "$key" =~ ^[0-9a-f]{64}$ ]] \
+    && [[ "$digest" =~ ^[0-9a-f]{64}$ ]] && [ -f "$dir/$key.gz" ] || return 1
+  [ "$(dependency_generation_records_key "$rel")" = "$key" ] || return 1
+  [ "$(dependency_generation_sha256 < "$dir/$key.gz")" = "$digest" ] || return 1
+  printf '%s\t%s\n' "$captured_ns" "$dir/$key.gz"
+}
+
+# A reused tree is a clone of the predecessor's copy, so the predecessor's
+# records describe it exactly. Carry them forward unchanged.
+dependency_generation_records_carry() {
+  local predecessor="$1" build="$2" rel="$3" found captured_ns gz dir key line
+  found="$(dependency_generation_records_lookup "$predecessor" "$rel" 2>/dev/null)" || return 0
+  captured_ns="${found%%$'\t'*}"
+  gz="${found#*$'\t'}"
+  dir="$build/.source-records"
+  key="${gz##*/}"
+  key="${key%.gz}"
+  mkdir -p "$dir" && cp -- "$gz" "$dir/$key.gz" || return 0
+  line="$(dependency_generation_records_index_line "$rel" "$captured_ns" "$key" "$dir/$key.gz")" \
+    || return 0
+  chmod a-w "$dir/$key.gz" 2>/dev/null || true
+  printf '%s\n' "$line" >> "$dir/index"
+}
+
+# Write to $3/verified the unmatched regular files whose bytes equal the seed's.
+# A candidate matches a predecessor record on path, type, mode, owner, size and
+# mtime, and differs only in ctime or inode. Neither difference proves new bytes:
+# a hard-linked sibling checkout changes the link count of every source inode on
+# each refresh, which bumps every ctime, and a record inside the racy window is
+# not trusted. An in-place rewrite that keeps size and mtime fails the byte
+# comparison, so it is still copied (plan papercusp-log-performance-remediation
+# D-018). Any hashing failure only shrinks the verified set: those files are
+# copied, so a failure can never keep a wrong file.
+dependency_generation_incremental_verify() {
+  local src="$1" seed="$2" work="$3" live_pid live_rc=0 seed_rc=0
+  : > "$work/verified" || return 1
+  LC_ALL=C awk -F '\t' '
+    FILENAME == ARGV[1] { if ($2 == "f") id[$1 FS $3 FS $4 FS $5 FS $6 FS $7] = 1; next }
+    $2 == "f" && (($1 FS $3 FS $4 FS $5 FS $6 FS $7) in id) { print $1 }
+  ' "$work/predecessor" "$work/unmatched" > "$work/candidates" || return 1
+  [ -s "$work/candidates" ] || return 0
+  tr '\n' '\0' < "$work/candidates" > "$work/candidates0" || return 1
+  ( cd "$src" && xargs -0 -r sha256sum -z -- < "$work/candidates0" 2>/dev/null ) \
+    > "$work/live.sums" &
+  live_pid=$!
+  ( cd "$seed" && xargs -0 -r sha256sum -z -- < "$work/candidates0" 2>/dev/null ) \
+    > "$work/seed.sums" || seed_rc=$?
+  wait "$live_pid" || live_rc=$?
+  # 123: some file vanished or was unreadable, and sha256sum still printed a
+  # complete line for every file it hashed. Higher: xargs or sha256sum itself
+  # failed, so verify nothing and let every candidate be copied.
+  [ "$live_rc" -le 123 ] && [ "$seed_rc" -le 123 ] || return 0
+  tr '\0' '\n' < "$work/live.sums" | LC_ALL=C sort > "$work/live.sorted" || return 1
+  tr '\0' '\n' < "$work/seed.sums" | LC_ALL=C sort > "$work/seed.sorted" || return 1
+  # Each line is the 64-hex digest, two spaces, then the path.
+  LC_ALL=C comm -12 "$work/live.sorted" "$work/seed.sorted" | cut -c67- > "$work/verified"
+}
+
+# Build $dest as $src from $seed, the predecessor's copy of the same tree.
+# Exit 0: $dest is verified against $live_records. 76/77: the typed copy-lock
+# and headroom exits, which a full copy would hit too. Anything else: $dest is
+# removed and the caller copies the tree in full.
+dependency_generation_copy_incremental() {
+  local src="$1" dest="$2" seed="$3" pred_records="$4" pred_captured_ns="$5"
+  local live_records="$6" work="$7" rc=0 floor kept copied removed copied_bytes verified
+  rm -rf -- "$work"
+  mkdir -p "$work" || return 1
+  gzip -dc -- "$pred_records" > "$work/predecessor" || return 1
+  floor="$(awk -v ns="$pred_captured_ns" -v w="$DEPENDENCY_GENERATION_RACY_WINDOW_SEC" \
+    'BEGIN { printf "%.6f", ns / 1e9 - w }')" || return 1
+  LC_ALL=C awk -F '\t' -v floor="$floor" '
+    NF != 10 { bad = 1; exit }
+    ($9 + 0) < (floor + 0) { print }
+    END { if (bad) exit 3 }
+  ' "$work/predecessor" > "$work/trusted" || return 1
+  LC_ALL=C comm -12 "$live_records" "$work/trusted" > "$work/exact" || return 1
+  LC_ALL=C comm -23 "$live_records" "$work/trusted" > "$work/unmatched" || return 1
+  dependency_generation_incremental_verify "$src" "$seed" "$work" || return 1
+  LC_ALL=C awk -F '\t' -v verified="$work/kept-verified" -v changed="$work/changed" '
+    FILENAME == ARGV[1] { same[$0] = 1; next }
+    ($1 in same) { print > verified; next }
+    { print > changed }
+  ' "$work/verified" "$work/unmatched" || return 1
+  touch "$work/kept-verified" "$work/changed" || return 1
+  # Both are subsequences of the C-sorted live records, so a merge keeps the order.
+  LC_ALL=C sort -m -o "$work/kept" "$work/exact" "$work/kept-verified" || return 1
+  cut -f1 "$work/changed" | tr '\n' '\0' > "$work/copy0" || return 1
+  # A seed path survives only as a reused file, or as a directory that still
+  # exists live; tar then resets the metadata of every changed directory.
+  LC_ALL=C awk -F '\t' -v live="$live_records" -v kept="$work/kept" '
+    FILENAME == live { if ($2 == "d") dir[$1] = 1; next }
+    FILENAME == kept { keep[$1] = 1; next }
+    $2 == "d" { if (!($1 in dir)) print $1; next }
+    !($1 in keep) { print $1 }
+  ' "$live_records" "$work/kept" "$work/predecessor" > "$work/remove" || return 1
+  tr '\n' '\0' < "$work/remove" > "$work/remove0" || return 1
+  kept="$(awk -F '\t' '$2 != "d" { n++ } END { print n + 0 }' "$work/kept")"
+  copied="$(awk -F '\t' '$2 != "d" { n++ } END { print n + 0 }' "$work/changed")"
+  copied_bytes="$(awk -F '\t' '$2 == "f" { s += $6 } END { printf "%.0f\n", s }' "$work/changed")"
+  removed="$(awk 'END { print NR + 0 }' "$work/remove")"
+  verified="$(awk 'END { print NR + 0 }' "$work/kept-verified")"
+
+  dependency_generation_acquire_copy_lock "incremental ${dest##*/tree/}" || return $?
+  # The destination's parent is part of the filesystem headroom probe. Unlike
+  # the full-copy path, incremental copy previously created it only after that
+  # probe, so a new nested workspace tree failed with statfs/exit 77.
+  mkdir -p "$(dirname "$dest")" || {
+    dependency_generation_release_copy_lock
+    return 1
+  }
+  dependency_generation_check_headroom "$seed" "$dest" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    rm -rf -- "$dest"
+    dependency_generation_copy_with_progress "$seed" "$dest" \
+      "--reflink=${DEPENDENCY_GENERATION_INCREMENTAL_SEED_REFLINK:-always}" || rc=1
+  fi
+  if [ "$rc" -eq 0 ]; then
+    ( cd "$dest" && xargs -0 -r rm -rf -- < "$work/remove0" ) || rc=1
+  fi
+  if [ "$rc" -eq 0 ] && [ -s "$work/copy0" ]; then
+    (
+      set -o pipefail
+      tar -C "$src" --format=posix --no-recursion --null --verbatim-files-from \
+        -T "$work/copy0" -cf - | tar -C "$dest" -xpf -
+    ) || rc=1
+  fi
+  dependency_generation_release_copy_lock
+  if [ "$rc" -eq 0 ]; then
+    if ! dependency_generation_source_records "$dest" "$work/result" \
+      || ! dependency_generation_records_projection "$live_records" > "$work/expected" \
+      || ! dependency_generation_records_projection "$work/result" > "$work/actual" \
+      || ! cmp -s "$work/expected" "$work/actual"; then
+      dependency_generation_log \
+        "incremental copy of ${dest##*/tree/} did not reproduce the live tree"
+      rc=1
+    fi
+  fi
+  if [ "$rc" -ne 0 ]; then
+    [ ! -e "$dest" ] || chmod -R u+w "$dest" 2>/dev/null || true
+    rm -rf -- "$dest"
+    case "$rc" in 76|77) return "$rc" ;; *) return 1 ;; esac
+  fi
+  dependency_generation_log \
+    "INCREMENTAL schema=1 tree=${dest##*/tree/} kept=$kept copied=$copied removed=$removed copied_bytes=$copied_bytes verified=$verified"
+}
+
+# Copy one changed or new tree into the build and store its source records.
+# With a predecessor that recorded the same tree, try the incremental copy
+# first. Otherwise, or after any non-typed incremental failure, copy in full.
+dependency_generation_copy_changed_tree() {
+  local src="$1" dest="$2" build="$3" rel="$4" predecessor="${5:-}"
+  local work="$build/.incremental-work" live="$build/.incremental-live"
+  local captured_ns='' records_rc=1 found='' rc=1 size_ref=''
+  if dependency_generation_incremental_supported; then
+    captured_ns="$(dependency_generation_now_ns)"
+    records_rc=0
+    dependency_generation_source_records "$src" "$live" || records_rc=$?
+  fi
+  if [ -n "$predecessor" ] && [ -d "$predecessor/tree/$rel" ]; then
+    size_ref="$predecessor/tree/$rel"
+    if [ "$records_rc" -eq 0 ]; then
+      found="$(dependency_generation_records_lookup "$predecessor" "$rel" 2>/dev/null || true)"
+    fi
+  fi
+  if [ -n "$found" ]; then
+    rc=0
+    dependency_generation_copy_incremental "$src" "$dest" "$predecessor/tree/$rel" \
+      "${found#*$'\t'}" "${found%%$'\t'*}" "$live" "$work" || rc=$?
+    rm -rf -- "$work"
+    case "$rc" in
+      0) DEPENDENCY_GENERATION_TREES_INCREMENTAL=$((DEPENDENCY_GENERATION_TREES_INCREMENTAL + 1)) ;;
+      76|77) rm -f -- "$live"; return "$rc" ;;
+      *)
+        dependency_generation_log "incremental copy unavailable for $rel; copying it in full"
+        rc=1
+        ;;
+    esac
+  fi
+  if [ "$rc" -ne 0 ]; then
+    rc=0
+    # `cp -a src dest` nests into an existing dest; the full copy needs none.
+    if [ -e "$dest" ]; then
+      chmod -R u+w "$dest" 2>/dev/null || true
+      rm -rf -- "$dest"
+    fi
+    if [ -n "$size_ref" ]; then
+      dependency_generation_copy_independent "$src" "$dest" "$size_ref" || rc=$?
+    else
+      dependency_generation_copy_independent "$src" "$dest" || rc=$?
+    fi
+  fi
+  if [ "$rc" -eq 0 ] && [ "$records_rc" -eq 0 ]; then
+    dependency_generation_records_store "$build" "$rel" "$live" "$captured_ns" \
+      || dependency_generation_log "could not store source records for $rel"
+  fi
+  rm -f -- "$live"
   return "$rc"
 }
 
@@ -1542,7 +2854,8 @@ dependency_generation_prune_ephemeral() {
   # is internal metadata, not a runtime dependency, and older hardlink-based
   # release trees can share its inode with the integration tree. Astro, Vitest,
   # and Storybook likewise mutate .astro/.vite/.vite-temp or the conventional
-  # node_modules/.cache root while a dependency generation is being copied.
+  # .cache directories while a dependency generation is being copied. Packages
+  # such as Hugging Face transformers download models inside their own .cache.
   # None belong in an immutable generation: retaining or fingerprinting them can
   # false-fail rc75 on unrelated churn.
   #
@@ -1563,7 +2876,7 @@ dependency_generation_prune_ephemeral() {
   rm -f -- "$root/.package-lock.json" "$root/.papercusp-isolated-snapshot"
   rm -rf -- "$root/.cache"
   find "$root" -type d \
-    \( -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) \
+    \( -name .cache -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) \
     -exec rm -rf -- {} +
 }
 
@@ -1580,6 +2893,7 @@ dependency_generation_materialize_tree() {
   old="${dest}.generation-old.$$"
   rm -rf -- "$tmp" "$old"
   mkdir -p "$(dirname "$dest")"
+  dependency_generation_reap_dead_siblings "$dest"
   source_device="$(dependency_generation_device "$src")" || return 1
   dest_device="$(dependency_generation_device "$(dirname "$dest")")" || return 1
   if [ "${DEPENDENCY_GENERATION_ALLOW_HARDLINK:-0}" = '1' ] \
@@ -1592,7 +2906,9 @@ dependency_generation_materialize_tree() {
     fi
   fi
   if [ ! -d "$tmp" ]; then
-    dependency_generation_copy_independent "$src" "$tmp"
+    # Propagate the typed lock/headroom exits (76/77) instead of letting the
+    # missing tmp tree fail later as a generic mv error.
+    dependency_generation_copy_independent "$src" "$tmp" || return $?
   fi
   if [ -e "$dest" ]; then
     mv "$dest" "$old"
@@ -1638,9 +2954,53 @@ dependency_generation_ensure() {
   done
 }
 
+# Copy the input lockfiles of `root` into `dest` (same relative paths) BEFORE the trees are
+# copied. The audit below must judge the copied trees against the lockfiles they were
+# copied under: the generation is indexed under its PRE-build inputs, and a peer may
+# rewrite a live lockfile mid-copy (an ordinary tracked file the install mutex does not
+# cover). Auditing the live lockfiles after the copy refused a correct build on that drift.
+dependency_generation_snapshot_lockfiles() {
+  local root="$1" dest="$2" manifest rel digest
+  manifest="$(dependency_generation_input_manifest "$root")" || return 1
+  mkdir -p -- "$dest" || return 1
+  while IFS=$'\t' read -r rel digest; do
+    [ -n "$rel" ] || continue
+    case "${rel##*/}" in
+      package-lock.json|npm-shrinkwrap.json) ;;
+      *) continue ;;
+    esac
+    mkdir -p -- "$dest/$(dirname -- "$rel")" || return 1
+    cp -- "$root/$rel" "$dest/$rel" || return 1
+  done <<< "$manifest"
+}
+
+# Lock-vs-tree completeness audit (WI-6554700010008514): every installed lock entry of
+# every input lockfile must be present in `tree` at its locked version. Lockfiles are read
+# from `lock_root` — the pre-copy snapshot taken by dependency_generation_snapshot_lockfiles,
+# whose inputs key the generation. Logs the helper's summary + defect lines; returns 0
+# complete, non-zero otherwise.
+dependency_generation_audit_lock_tree() {
+  local tree="$1" lock_root="$2" manifest_file rc=0 output line
+  local helper="${DEPENDENCY_GENERATION_LOCK_TREE_AUDIT:-$(dirname "${BASH_SOURCE[0]}")/dependency-lock-tree-audit.mjs}"
+  manifest_file="$(mktemp)" || return 1
+  dependency_generation_input_manifest "$lock_root" > "$manifest_file" || {
+    rm -f -- "$manifest_file"
+    return 1
+  }
+  output="$("${DEPENDENCY_GENERATION_NODE:-node}" "$helper" \
+    --tree-root "$tree" --lock-root "$lock_root" --manifest "$manifest_file")" || rc=$?
+  rm -f -- "$manifest_file"
+  while IFS= read -r line; do
+    case "$line" in
+      LOCK_TREE_AUDIT*|LOCK_TREE_DEFECT*) dependency_generation_log "$line" ;;
+    esac
+  done <<< "$output"
+  return "$rc"
+}
+
 dependency_generation_ensure_once() {
   local integration_root="$1"
-  local generation_root="${2:-$integration_root/.papercusp/dependency-generations}"
+  local generation_root="${2:-$(dependency_generation_resolve_root "$integration_root")}"
   local source_before='' source_after='' identity generation build tree nm rel snapshot marker
   local quarantine before_manifest='' after_manifest='' tree_manifest='' tree_manifest_digest=''
   local publication_token='' created_ns=''
@@ -1651,6 +3011,8 @@ dependency_generation_ensure_once() {
   local predecessor_fingerprint record_fingerprint extra reuse_manifest_eligible='false'
   local existing_generation_valid='false' cache_validation_outcome='miss' inflight_rc
   total_started_ms="$(dependency_generation_now_ms)"
+  DEPENDENCY_GENERATION_TREES_INCREMENTAL=0
+  dependency_generation_record_reserve_fs "$integration_root"
   if [ -z "${DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT:-}" ]; then
     dependency_generation_configure_workspace_dirs "$integration_root" || return $?
   fi
@@ -1663,6 +3025,13 @@ dependency_generation_ensure_once() {
   after_manifest="$build/.source-after"
   mkdir -p "$tree"
   dependency_generation_write_owner "$build/.papercusp-generation-writer"
+  if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = 'full' ]; then
+    dependency_generation_snapshot_lockfiles "$integration_root" "$build/.lock-inputs" || {
+      dependency_generation_log 'FATAL: could not snapshot the input lockfiles before copy'
+      dependency_generation_remove_build "$build"
+      return 1
+    }
+  fi
   dependency_generation_log 'capturing live dependency manifest (before copy)'
   phase_started_ms="$(dependency_generation_now_ms)"
   dependency_generation_set_manifest "$integration_root" > "$before_manifest" || {
@@ -1713,6 +3082,23 @@ dependency_generation_ensure_once() {
   dependency_generation_emit_phase \
     cache-validation "$phase_started_ms" "$cache_validation_outcome"
   if [ "$existing_generation_valid" = 'true' ]; then
+    # The tree identity can stay unchanged while a new input selector carries
+    # different lockfiles. Audit that binding just as we audit a copied build
+    # (WI-6554700010008526), using the pre-copy snapshot rather than live inputs.
+    if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = 'full' ]; then
+      phase_started_ms="$(dependency_generation_now_ms)"
+      if ! dependency_generation_audit_lock_tree "$generation/tree" "$build/.lock-inputs"; then
+        dependency_generation_emit_phase lock-tree-audit "$phase_started_ms" failed
+        dependency_generation_emit_summary \
+          lock-tree-incomplete "$total_started_ms" "$source_before" "$identity" \
+          "$predecessor_identity" "$tree_total" "$tree_total" 0 0
+        dependency_generation_log \
+          'FATAL: cached dependency trees do not realise their lockfiles; refusing to publish a selector (repair the source install, e.g. npm run install:safe)'
+        dependency_generation_remove_build "$build"
+        return 75
+      fi
+      dependency_generation_emit_phase lock-tree-audit "$phase_started_ms" ok
+    fi
     dependency_generation_log "validated existing generation $identity; confirming live source stability"
     dependency_generation_log 'capturing live dependency manifest (after existing-generation validation)'
     phase_started_ms="$(dependency_generation_now_ms)"
@@ -1781,7 +3167,8 @@ dependency_generation_ensure_once() {
   fi
 
   if [ "$reuse_manifest_eligible" = 'true' ] \
-    && dependency_generation_find_reusable_predecessor "$generation_root" "$identity"; then
+    && dependency_generation_find_reusable_predecessor \
+      "$generation_root" "$identity" "$before_manifest"; then
     predecessor_identity="$DEPENDENCY_GENERATION_PREDECESSOR_ID"
   fi
 
@@ -1797,28 +3184,38 @@ dependency_generation_ensure_once() {
       if [ -n "$predecessor_fingerprint" ] \
         && [ "$predecessor_fingerprint" = "$record_fingerprint" ]; then
         dependency_generation_log "reusing dependency tree from $predecessor_identity: $rel"
-        if ! dependency_generation_materialize_tree \
-          "$DEPENDENCY_GENERATION_PREDECESSOR_TREE/$rel" "$tree/$rel"; then
+        copy_rc=0
+        dependency_generation_materialize_tree \
+          "$DEPENDENCY_GENERATION_PREDECESSOR_TREE/$rel" "$tree/$rel" || copy_rc=$?
+        if [ "$copy_rc" -ne 0 ]; then
           dependency_generation_release_selector_lease
           dependency_generation_emit_phase tree-copy "$phase_started_ms" failed \
             "trees_reused=$tree_reused trees_copied=$tree_copied trees_removed=$tree_removed predecessor=$predecessor_identity"
           dependency_generation_remove_build "$build"
-          return 1
+          return "$(dependency_generation_copy_failure_rc "$copy_rc")"
         fi
         dependency_generation_prune_ephemeral "$tree/$rel"
+        dependency_generation_record_tree_bytes "$build" "$rel" \
+          "$DEPENDENCY_GENERATION_PREDECESSOR_TREE/$rel"
+        dependency_generation_records_carry \
+          "$DEPENDENCY_GENERATION_PREDECESSOR_PATH" "$build" "$rel"
         tree_reused=$((tree_reused + 1))
         dependency_generation_log \
           "reused dependency tree from $predecessor_identity: $rel mode=$DEPENDENCY_GENERATION_MATERIALIZE_MODE"
       else
         dependency_generation_log "copying changed dependency tree: $rel"
-        if ! dependency_generation_copy_independent "$nm" "$tree/$rel"; then
+        copy_rc=0
+        dependency_generation_copy_changed_tree "$nm" "$tree/$rel" "$build" "$rel" \
+          "$DEPENDENCY_GENERATION_PREDECESSOR_PATH" || copy_rc=$?
+        if [ "$copy_rc" -ne 0 ]; then
           dependency_generation_release_selector_lease
           dependency_generation_emit_phase tree-copy "$phase_started_ms" failed \
             "trees_reused=$tree_reused trees_copied=$tree_copied trees_removed=$tree_removed predecessor=$predecessor_identity"
           dependency_generation_remove_build "$build"
-          return 1
+          return "$(dependency_generation_copy_failure_rc "$copy_rc")"
         fi
         dependency_generation_prune_ephemeral "$tree/$rel"
+        dependency_generation_record_tree_bytes "$build" "$rel"
         tree_copied=$((tree_copied + 1))
         dependency_generation_log "copied changed dependency tree: $rel"
       fi
@@ -1833,13 +3230,16 @@ dependency_generation_ensure_once() {
     while IFS= read -r nm; do
       rel="${nm#"$integration_root"/}"
       dependency_generation_log "copying dependency tree: $rel"
-      if ! dependency_generation_copy_independent "$nm" "$tree/$rel"; then
+      copy_rc=0
+      dependency_generation_copy_changed_tree "$nm" "$tree/$rel" "$build" "$rel" || copy_rc=$?
+      if [ "$copy_rc" -ne 0 ]; then
         dependency_generation_emit_phase tree-copy "$phase_started_ms" failed \
           "trees_reused=$tree_reused trees_copied=$tree_copied trees_removed=$tree_removed predecessor=$predecessor_identity"
         dependency_generation_remove_build "$build"
-        return 1
+        return "$(dependency_generation_copy_failure_rc "$copy_rc")"
       fi
       dependency_generation_prune_ephemeral "$tree/$rel"
+      dependency_generation_record_tree_bytes "$build" "$rel"
       tree_copied=$((tree_copied + 1))
       dependency_generation_log "copied dependency tree: $rel"
     done < <(dependency_generation_enumerate_node_modules "$integration_root")
@@ -1898,6 +3298,27 @@ dependency_generation_ensure_once() {
       return 1
     }
   fi
+  # A generation is indexed under its INPUT key (lockfile + patch digests), so its trees
+  # must realise those lockfiles. Nothing used to check that: a hand-built root missing
+  # node_modules/sharp/node_modules/semver was published as v1-7c590a4e under input
+  # 8f48c4a6 and every gate verify sharing the key failed `npm ls` (WI-6554700010008514).
+  # Exit 75 = infra-inconclusive: an incompletely installed source tree is an install-state
+  # fault, not a verdict on the candidate under test.
+  if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = 'full' ]; then
+    phase_started_ms="$(dependency_generation_now_ms)"
+    if ! dependency_generation_audit_lock_tree "$tree" "$build/.lock-inputs"; then
+      dependency_generation_emit_phase lock-tree-audit "$phase_started_ms" failed
+      dependency_generation_emit_summary \
+        lock-tree-incomplete "$total_started_ms" "$source_after" "$identity" \
+        "$predecessor_identity" "$tree_total" "$tree_reused" "$tree_copied" "$tree_removed"
+      dependency_generation_log \
+        'FATAL: copied dependency trees do not realise their lockfiles; refusing to publish (repair the source install, e.g. npm run install:safe)'
+      dependency_generation_remove_build "$build"
+      return 75
+    fi
+    dependency_generation_emit_phase lock-tree-audit "$phase_started_ms" ok
+    rm -rf -- "$build/.lock-inputs"
+  fi
   # Freeze file contents before recording the snapshot identity because mode is
   # part of the metadata fingerprint. Recording first would make every freshly
   # published generation invalidate itself on its next read.
@@ -1921,7 +3342,7 @@ dependency_generation_ensure_once() {
       "$identity" "$source_after" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" \
       "$snapshot" "${created_ns%?????????}" "$created_ns"
     if [ -n "$tree_manifest_digest" ]; then
-      printf 'tree_manifest_schema=1\ntree_manifest_sha256=%s\npublication_schema=2\npredecessor=%s\ntrees_reused=%s\ntrees_copied=%s\ntrees_removed=%s\n' \
+      printf 'tree_manifest_schema=1\ntree_manifest_sha256=%s\npublication_schema=3\npredecessor=%s\ntrees_reused=%s\ntrees_copied=%s\ntrees_removed=%s\n' \
         "$tree_manifest_digest" "$predecessor_identity" \
         "$tree_reused" "$tree_copied" "$tree_removed"
     fi
@@ -2075,12 +3496,57 @@ dependency_generation_sweep_exact_scratch() {
 # Shared by the exact-ref builder and `--predict-ref`, so the admit-time prediction and
 # the gate's build can never disagree about what is buildable.
 DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT=''
+DEPENDENCY_GENERATION_EXACT_SOURCE_ROOT=''
+DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT=''
+
+# A frozen repair can retain an older installed graph after staging moves on.
+# Compare against published ancestors as well as live inputs, using the same
+# equivalence proof and immutable selector validation. Never infer a donor from
+# directory names or publish a selector merely because a generation exists.
+dependency_generation_find_equivalent_prewarm() {
+  local integration_root="$1" ref="$2" scratch="$3" generation_root="$4" helper="$5"
+  local revision source_ref source_input source_manifest verdict rc basis
+  local -a history_paths=(':(glob)**/package-lock.json' ':(glob)**/npm-shrinkwrap.json' ':(glob)**/patches/*.patch' '.gitmodules')
+  while IFS= read -r revision; do
+    [ -n "$revision" ] && history_paths+=("$revision")
+  done < <(git -C "$integration_root" config --blob "$ref:.gitmodules" --get-regexp '\.path$' 2>/dev/null | awk '{ print $2 }' || true)
+  basis="$scratch/.papercusp/prewarm-inputs"
+  while IFS= read -r revision; do
+    source_ref="$(git -C "$integration_root" rev-parse --verify "$revision^" 2>/dev/null)" || continue
+    mkdir -p "$basis" || return 1
+    source_manifest="$(dependency_generation_input_manifest_ref "$integration_root" "$source_ref" '' "$basis" 2>/dev/null | LC_ALL=C sort)" || { rm -rf -- "$basis"; continue; }
+    source_input="$(dependency_generation_input_fingerprint "$basis")" || return 1
+    if [ ! -f "$generation_root/.inputs/$source_input" ]; then
+      rm -rf -- "$basis"
+      continue
+    fi
+    printf '%s\n' "$source_manifest" > "$scratch/.basis-inputs" || return 1
+    rc=0
+    verdict="$("${DEPENDENCY_GENERATION_NODE:-node}" "$helper" \
+      --ref-root "$scratch" --ref-manifest "$scratch/.ref-inputs" \
+      --live-root "$basis" --live-manifest "$scratch/.basis-inputs")" || rc=$?
+    rm -rf -- "$basis"
+    rm -f -- "$scratch/.basis-inputs"
+    [ "$rc" -eq 3 ] && continue
+    [ "$rc" -eq 0 ] || return 1
+    dependency_generation_select_input_fingerprint "$source_input" "$generation_root" || return $?
+    DEPENDENCY_GENERATION_EXACT_SOURCE_ROOT="$DEPENDENCY_GENERATION_TREE"
+    DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT="$source_input"
+    DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT="$verdict"
+    dependency_generation_log "exact-ref build: install-equivalent prewarmed generation $DEPENDENCY_GENERATION_ID from ancestor $source_ref"
+    return 0
+  done < <(git -C "$integration_root" log --first-parent --format=%H --max-count=32 "$ref" -- "${history_paths[@]}")
+  return 74
+}
 
 dependency_generation_stage_exact_ref_inputs() {
   local integration_root="$1" ref="$2" exact_input="$3"
+  local generation_root="${4:-$(dependency_generation_resolve_root "$integration_root")}"
   local parent scratch have ref_manifest live_manifest verdict rc
   local helper="${DEPENDENCY_GENERATION_LOCK_EQUIVALENCE:-$(dirname "${BASH_SOURCE[0]}")/dependency-lock-equivalence.mjs}"
   DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT=''
+  DEPENDENCY_GENERATION_EXACT_SOURCE_ROOT="$integration_root"
+  DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT=''
   parent="$(dependency_generation_exact_scratch_parent "$integration_root")"
   mkdir -p "$parent" || return 1
   dependency_generation_sweep_exact_scratch "$parent"
@@ -2112,8 +3578,16 @@ dependency_generation_stage_exact_ref_inputs() {
       --ref-root "$scratch" --ref-manifest "$scratch/.ref-inputs" \
       --live-root "$integration_root" --live-manifest "$scratch/.live-inputs"
   )" || rc=$?
-  rm -f -- "$scratch/.ref-inputs" "$scratch/.live-inputs"
   DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT="$verdict"
+  if [ "$rc" -eq 3 ]; then
+    local cached_rc=0
+    dependency_generation_find_equivalent_prewarm "$integration_root" "$ref" "$scratch" "$generation_root" "$helper" || cached_rc=$?
+    rm -f -- "$scratch/.ref-inputs" "$scratch/.live-inputs"
+    [ "$cached_rc" -eq 0 ] && return 0
+    [ "$cached_rc" -eq 74 ] || return "$cached_rc"
+  else
+    rm -f -- "$scratch/.ref-inputs" "$scratch/.live-inputs"
+  fi
   [ "$rc" -eq 3 ] && return 74
   [ "$rc" -eq 0 ] || {
     dependency_generation_log "FATAL: dependency-lock-equivalence failed rc=$rc for ref $ref"
@@ -2126,10 +3600,11 @@ dependency_generation_stage_exact_ref_inputs() {
 # trees (a typed miss that names why); any other non-zero = the build itself failed.
 dependency_generation_prepare_exact_ref_root() {
   local integration_root="$1" ref="$2" exact_input="$3"
+  local generation_root="${4:-$(dependency_generation_resolve_root "$integration_root")}"
   local scratch verdict rc line drop trees=0
   rc=0
   dependency_generation_stage_exact_ref_inputs \
-    "$integration_root" "$ref" "$exact_input" || rc=$?
+    "$integration_root" "$ref" "$exact_input" "$generation_root" || rc=$?
   scratch="$DEPENDENCY_GENERATION_EXACT_SCRATCH"
   verdict="$DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT"
   if [ "$rc" -eq 74 ]; then
@@ -2142,17 +3617,37 @@ dependency_generation_prepare_exact_ref_root() {
   fi
   [ "$rc" -eq 0 ] || return "$rc"
 
-  # 4. Hardlink the live trees (metadata only; the ordinary ensure copies from here).
+  # Identical installed content needs only another exact-input selector. Keep
+  # the existing immutable generation rather than copying its trees again.
+  if [ -n "$DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT" ] && [ -z "$verdict" ]; then
+    printf '%s\n' "$scratch"
+    return 0
+  fi
+
+  # Retention may remove a cached donor while we walk it. Revalidate its
+  # selected token under the publication lock and lease it until every file
+  # has its own scratch hardlink; the scratch then owns those bytes itself.
+  if [ -n "$DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT" ]; then
+    dependency_generation_acquire_selector_lease \
+      "$generation_root" "$DEPENDENCY_GENERATION_ID" "$$" "$DEPENDENCY_GENERATION_TOKEN" || return $?
+  fi
+
+  # 4. Hardlink the installed trees (metadata only; ensure copies from here).
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    drop="${line#"$integration_root"/}"
-    mkdir -p "$scratch/$(dirname "$drop")" || return 1
+    drop="${line#"$DEPENDENCY_GENERATION_EXACT_SOURCE_ROOT"/}"
+    mkdir -p "$scratch/$(dirname "$drop")" || {
+      dependency_generation_release_selector_lease
+      return 1
+    }
     cp -al -- "$line" "$scratch/$drop" || {
+      dependency_generation_release_selector_lease
       dependency_generation_log "FATAL: cannot hardlink $drop into the exact-ref scratch root (same filesystem required)"
       return 1
     }
     trees=$((trees + 1))
-  done < <(dependency_generation_enumerate_node_modules "$integration_root")
+  done < <(dependency_generation_enumerate_node_modules "$DEPENDENCY_GENERATION_EXACT_SOURCE_ROOT")
+  dependency_generation_release_selector_lease
 
   # 5. Drop the live-only workspace links the ref's lock does not have.
   while IFS=$'\t' read -r line drop; do
@@ -2172,9 +3667,10 @@ dependency_generation_prepare_exact_ref_root() {
 }
 
 dependency_generation_main() {
-  local integration_root='' generation_root='' select_inputs_from='' ensure_ref='' fingerprint_ref='' retention_rc=0 prune_only=''
+  local integration_root='' generation_root='' select_inputs_from='' ensure_ref='' fingerprint_ref='' retention_rc=0 prune_only='' check_headroom=''
+  local remember_store='' retired_store='' skip_recorded_stores='' current_root='' old_root='' record line registered=''
   local input_before='' input_after='' exact_input='' selector='' lease_owner_pid='' live_input='' build_root=''
-  local predict_ref='' predict_verdict='' predict_rc=0 line
+  local predict_ref='' predict_verdict='' predict_rc=0 line retain_as=''
   local workspace_dirs=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -2184,16 +3680,31 @@ dependency_generation_main() {
       --select-inputs-from) select_inputs_from="$2"; shift 2 ;;
       --lease-owner-pid) lease_owner_pid="$2"; shift 2 ;;
       --ensure-ref) ensure_ref="$2"; shift 2 ;;
+      --retain-as) retain_as="$2"; shift 2 ;;
       --fingerprint-ref) fingerprint_ref="$2"; shift 2 ;;
       --predict-ref) predict_ref="$2"; shift 2 ;;
       --prune-only) prune_only='1'; shift ;;
+      --retired-store) retired_store='1'; shift ;;
+      --no-recorded-store-cascade) skip_recorded_stores='1'; shift ;;
+      --remember-store) remember_store="$2"; shift 2 ;;
+      --check-headroom) check_headroom='1'; shift ;;
       *) dependency_generation_log "unknown arg: $1"; return 2 ;;
     esac
   done
   [ -z "$predict_ref" ] || {
-    [ -z "$select_inputs_from$ensure_ref$fingerprint_ref$lease_owner_pid$prune_only" ] \
+    [ -z "$select_inputs_from$ensure_ref$fingerprint_ref$lease_owner_pid$prune_only$check_headroom" ] \
       && [ "${#workspace_dirs[@]}" -eq 0 ] || {
       dependency_generation_log '--predict-ref cannot be combined with another mode or --workspace-dir'
+      return 2
+    }
+  }
+  [ -z "$retain_as" ] || {
+    [ -n "$ensure_ref" ] || {
+      dependency_generation_log '--retain-as requires --ensure-ref'
+      return 2
+    }
+    [[ "$retain_as" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || {
+      dependency_generation_log "--retain-as label must match ^[a-z0-9][a-z0-9-]{0,63}\$: $retain_as"
       return 2
     }
   }
@@ -2203,9 +3714,56 @@ dependency_generation_main() {
   }
   integration_root="$(cd "$integration_root" && pwd -P)"
   build_root="$integration_root"
-  # Preserve an explicit CLI root, then honor the service-level override before
-  # falling back to the integration checkout's local generation store.
-  generation_root="${generation_root:-${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-$integration_root/.papercusp/dependency-generations}}"
+  if [ -n "$remember_store" ]; then
+    [ -z "$generation_root$select_inputs_from$ensure_ref$fingerprint_ref$lease_owner_pid$prune_only$check_headroom$retired_store$skip_recorded_stores$predict_ref" ] \
+      && [ "${#workspace_dirs[@]}" -eq 0 ] || return 2
+    current_root="$(dependency_generation_resolve_root "$integration_root")" || return $?
+    [ -d "$current_root" ] && [ -d "$remember_store" ] || return 2
+    old_root="$(cd "$remember_store" && pwd -P)" || return $?
+    [ "$old_root" != "$(cd "$current_root" && pwd -P)" ] || return 2
+    # Only adopt a creator-marked published store; an arbitrary directory must
+    # never gain disposal authority by being added to a record.
+    registered=''
+    for line in "$old_root"/v1-*; do
+      [[ "${line##*/}" =~ ^v1-[0-9a-f]{64}$ ]] || continue
+      if dependency_generation_marker_matches "$line" "${line##*/}"; then registered=1; break; fi
+    done
+    [ -n "$registered" ] || return 2
+    dependency_generation_write_root_record "$integration_root" "$current_root" "$old_root"
+    return $?
+  fi
+  [ -z "$retired_store" ] || [ -n "$prune_only" ] || return 2
+  [ -z "$skip_recorded_stores" ] || [ -n "$prune_only" ] || return 2
+  # WI-10005931: git-sync fetches into the integration checkout, so its
+  # filesystem is the one the percentage headroom reserve protects.
+  dependency_generation_record_reserve_fs "$integration_root"
+  # WI-10007424 (green-main-cycle-time P-003): the gate's up-front preflight asks
+  # THIS script whether a dependency copy in the resolved generation store could
+  # start now, so a run refuses before setup with the same typed exit 77 instead of
+  # failing mid-materialization. It applies the copy path's own reserve + margin
+  # (size unknown: no tree is named), reaps nothing, and never creates a store.
+  # P-022: it first probes the host copy lock (exit 76 only for a wedged holder;
+  # see dependency_generation_probe_copy_lock), so both typed setup refusals are
+  # answered before setup starts.
+  if [ -n "$check_headroom" ]; then
+    [ -z "$select_inputs_from$ensure_ref$fingerprint_ref$lease_owner_pid$prune_only" ] \
+      && [ "${#workspace_dirs[@]}" -eq 0 ] || {
+      dependency_generation_log '--check-headroom cannot be combined with another mode or --workspace-dir'
+      return 2
+    }
+    # Resolve the same destination as an ensure-ref run, without writing a
+    # changed environment override back to the integration root record. This is
+    # a pure measurement and must stay safe before setup creates the store.
+    generation_root="$(dependency_generation_resolve_root "$integration_root" "$generation_root" 1)" || return $?
+    dependency_generation_probe_copy_lock || return $?
+    DEPENDENCY_GENERATION_HEADROOM_CHECK_ONLY=1 \
+      dependency_generation_check_headroom '' "$generation_root/.dependency-generation-headroom-check"
+    return $?
+  fi
+  # Preserve an explicit CLI root, then honor the service-level override, then
+  # the root that override recorded for this integration root (WI-10005159),
+  # before falling back to the integration checkout's local generation store.
+  generation_root="$(dependency_generation_resolve_root "$integration_root" "$generation_root")"
   if [ -n "$prune_only" ]; then
     [ -z "$select_inputs_from$ensure_ref$fingerprint_ref$lease_owner_pid" ] \
       && [ "${#workspace_dirs[@]}" -eq 0 ] || {
@@ -2216,7 +3774,37 @@ dependency_generation_main() {
     # sweep it; the same publish lock protects live selectors and generation
     # publication when a checkout happens concurrently.
     [ -d "$generation_root" ] || return 0
-    dependency_generation_apply_retention "$generation_root" "$integration_root"
+    if [ -n "$retired_store" ]; then
+      current_root="$(dependency_generation_persistent_root "$integration_root")"
+      [ -d "$current_root" ] || return 2
+      current_root="$(cd "$current_root" && pwd -P)" || return $?
+      old_root="$(cd "$generation_root" && pwd -P)" || return $?
+      [ "$old_root" != "$current_root" ] || {
+        dependency_generation_log 'FATAL: cannot retire the current dependency store'
+        return 2
+      }
+      dependency_generation_store_is_published "$current_root" || {
+        dependency_generation_log 'FATAL: replacement dependency store is not published'
+        return 2
+      }
+      record="$(dependency_generation_root_record "$integration_root")"
+      registered=''
+      while IFS= read -r line; do
+        case "$line" in /*) ;; *) continue ;; esac
+        [ -d "$line" ] || continue
+        [ "$(cd "$line" && pwd -P)" != "$old_root" ] || registered=1
+      done < "$record"
+      [ -n "$registered" ] || {
+        dependency_generation_log 'FATAL: former dependency store is not recorded'
+        return 2
+      }
+      # A retired store keeps actual pins and selector leases, without recency
+      # copies which otherwise accumulate on every store migration.
+      dependency_generation_apply_retention "$generation_root" "$integration_root" 0 "$skip_recorded_stores"
+    else
+      # The TS actor enumerates history itself; older callers keep the cascade.
+      dependency_generation_apply_retention "$generation_root" "$integration_root" '' "$skip_recorded_stores"
+    fi
     return $?
   fi
   if [ -n "$select_inputs_from" ] && { [ -n "$ensure_ref" ] || [ -n "$fingerprint_ref" ]; }; then
@@ -2269,7 +3857,7 @@ dependency_generation_main() {
       predict_verdict='live-match'
     else
       dependency_generation_stage_exact_ref_inputs \
-        "$integration_root" "$predict_ref" "$exact_input" || predict_rc=$?
+        "$integration_root" "$predict_ref" "$exact_input" "$generation_root" || predict_rc=$?
       dependency_generation_cleanup_exact_scratch
       case "$predict_rc" in
         0) predict_verdict='buildable' ;;
@@ -2329,6 +3917,8 @@ dependency_generation_main() {
       # not a cache miss to hide by republishing a replacement.
       dependency_generation_select_input_fingerprint \
         "$exact_input" "$generation_root" || return $?
+      dependency_generation_retain_ensured_ref "$generation_root" "$integration_root" \
+        "$retain_as" "$DEPENDENCY_GENERATION_ID" "$ensure_ref" || return $?
       printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s input=%s scope=full reused=true token=%s path=%s\n' \
         "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_SOURCE_FINGERPRINT" \
         "$DEPENDENCY_GENERATION_INPUT_FINGERPRINT" "$DEPENDENCY_GENERATION_TOKEN" \
@@ -2343,8 +3933,27 @@ dependency_generation_main() {
       dependency_generation_log \
         "exact ref $ensure_ref inputs $exact_input differ from the live tree's $live_input; building from the ref's own lockfiles"
       dependency_generation_prepare_exact_ref_root \
-        "$integration_root" "$ensure_ref" "$exact_input" || return $?
+        "$integration_root" "$ensure_ref" "$exact_input" "$generation_root" || return $?
       build_root="$DEPENDENCY_GENERATION_EXACT_SCRATCH"
+      if [ -n "$DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT" ] && [ -z "$DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT" ]; then
+        dependency_generation_select_input_fingerprint "$DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT" "$generation_root" || return $?
+        DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT="$(dependency_generation_read_field "$DEPENDENCY_GENERATION_PATH/.papercusp-dependency-generation" closure)"
+        dependency_generation_acquire_selector_lease \
+          "$generation_root" "$DEPENDENCY_GENERATION_ID" "$$" "$DEPENDENCY_GENERATION_TOKEN" || return $?
+        dependency_generation_publish_input_selector "$generation_root" "$exact_input" || {
+          rc=$?
+          dependency_generation_release_selector_lease
+          return "$rc"
+        }
+        dependency_generation_release_selector_lease
+        dependency_generation_cleanup_exact_scratch
+        dependency_generation_retain_ensured_ref "$generation_root" "$integration_root" \
+          "$retain_as" "$DEPENDENCY_GENERATION_ID" "$ensure_ref" || return $?
+        printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s input=%s scope=full reused=true token=%s path=%s\n' \
+          "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_SOURCE_FINGERPRINT" \
+          "$DEPENDENCY_GENERATION_INPUT_FINGERPRINT" "$DEPENDENCY_GENERATION_TOKEN" "$DEPENDENCY_GENERATION_PATH"
+        return 0
+      fi
     fi
   fi
   dependency_generation_configure_workspace_dirs \
@@ -2403,6 +4012,8 @@ dependency_generation_main() {
     # candidate key so incompatible live/candidate inputs remain a typed miss.
     dependency_generation_select_input_fingerprint \
       "$exact_input" "$generation_root" || return $?
+    dependency_generation_retain_ensured_ref "$generation_root" "$integration_root" \
+      "$retain_as" "$DEPENDENCY_GENERATION_ID" "$ensure_ref" || return $?
   fi
   dependency_generation_cleanup_exact_scratch
   printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s input=%s closure=%s scope=%s reused=%s token=%s path=%s\n' \

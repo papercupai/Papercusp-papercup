@@ -757,6 +757,38 @@ function defaultScheduleGitSeedRetry(
   })();
 }
 
+/**
+ * WI-6554700010011908: start the deferred git-seed restore WITHOUT awaiting it, then hand a
+ * still-deferred result to the WI-3070 bounded retry. Used by the offline self-admit path,
+ * which must never hold the pot's appearance behind the multi-GB code-half decrypt + clone.
+ * Logs a start line so a slow restore is visible in serve.log instead of reading as silence.
+ * Never throws; a failure leaves the online fetch / next boot to back-fill the checkout.
+ */
+function startDeferredGitSeedRestoreInBackground(
+  deps: Pick<BootstrapPapercuspHiveDeps, 'restoreDeferredGitSeed' | 'scheduleGitSeedRetry'>,
+  record: BootstrapPapercuspHiveDeps['recordProgress'] | undefined,
+): void {
+  const restoreDeferred = deps.restoreDeferredGitSeed ?? defaultRestoreDeferredGitSeed;
+  const scheduleRetry = deps.scheduleGitSeedRetry ?? defaultScheduleGitSeedRetry;
+  console.warn('[papercusp-hive] offline seed git restore: started in the background');
+  void (async () => {
+    try {
+      const gitRes = await restoreDeferred(record);
+      console.warn(
+        `[papercusp-hive] offline seed git restore: restored=[${gitRes.restored.join(',')}] stillDeferred=[${gitRes.stillDeferred.join(',')}]`,
+      );
+      if (gitRes.stillDeferred.includes('git')) {
+        console.warn('[papercusp-hive] offline git seed still deferred — git code back-fills via retry/online');
+        scheduleRetry(record, () => restoreDeferred(record));
+      }
+    } catch (e) {
+      console.warn(
+        `[papercusp-hive] offline seed git restore failed (non-fatal; retry/online back-fills): ${(e as Error)?.message ?? e}`,
+      );
+    }
+  })();
+}
+
 /** Count top-level submodules from `.gitmodules` (best-effort) — the progress
  *  total. `--recursive` can exceed this (nested submodules), so callers clamp. */
 function countSubmodules(repoPath: string): Promise<number> {
@@ -1161,29 +1193,25 @@ export async function bootstrapPapercuspHive(
         record('submodules', 'done');
         return { state: 'already-present', slug: PAPERCUSP_HIVE_SLUG, path: ownEntry.path };
       }
+      // WI-6554700010011908 (P-521 J8, D-238 candidate 2026-10-14): the offline self-admit
+      // must NEVER wait on the git (CODE) half. The pot's DATA lives in the ALREADY-restored
+      // corestore; the deferred git restore decrypts + clones a multi-GB bundle (minutes on a
+      // release VM) and logs nothing until it finishes. Awaiting it here held self-admit past
+      // J8's whole offline-restore window: serve.log went silent right after `seed restore:
+      // restored=[corestore] deferred=[git]` and the pot never appeared. So self-admit FIRST,
+      // boot the pot, and only then start the git restore in the background (same seam + the
+      // WI-3070 bounded retry the online path uses). WI-3232's rule — do not GATE self-admit
+      // on the git half — is now also true of its latency, not just its outcome.
+      let offlineGitRestorePending = gitDeferred;
+      const startOfflineGitRestore = () => {
+        if (!offlineGitRestorePending) return;
+        offlineGitRestorePending = false;
+        startDeferredGitSeedRestoreInBackground(deps, record);
+      };
+      console.warn(
+        `[papercusp-hive] offline seed self-admit: canonical join skipped (${joinRes.reason ?? 'no reason'}) — admitting the restored pot DATA-only${gitDeferred ? '; git code restores in the background' : ''}`,
+      );
       try {
-        if (gitDeferred) {
-          const restoreDeferred = deps.restoreDeferredGitSeed ?? defaultRestoreDeferredGitSeed;
-          const gitRes = await restoreDeferred(record);
-          if (gitRes.restored.length || gitRes.stillDeferred.length) {
-            console.warn(
-              `[papercusp-hive] offline seed git restore: restored=[${gitRes.restored.join(',')}] stillDeferred=[${gitRes.stillDeferred.join(',')}]`,
-            );
-          }
-          // WI-3232 (bf97d offline verify 2026-07-06): the git (CODE) half may still be
-          // undecryptable offline, but the pot's DATA lives in the ALREADY-restored corestore.
-          // Do NOT gate self-admit on the git half — self-admit ANYWAY so the pot APPEARS offline
-          // with its plans/work-items; the code checkout back-fills via a bounded background retry
-          // (and the ordinary fetch once online). This block previously `return`ed 'skipped' here,
-          // so a fresh OFFLINE install showed NO pot at all (boot fell through to the gh-gated join).
-          if (gitRes.stillDeferred.includes('git')) {
-            console.warn(
-              '[papercusp-hive] offline git seed still deferred — self-admitting DATA-only; git code back-fills via retry/online',
-            );
-            const scheduleRetry = deps.scheduleGitSeedRetry ?? defaultScheduleGitSeedRetry;
-            scheduleRetry(record, () => restoreDeferred(record));
-          }
-        }
         const selfAdmit = deps.selfAdmitCanonical ?? defaultSelfAdmitCanonical;
         const selfRes = await selfAdmit(canonicalInvite, record);
         if (selfRes.state === 'admitted') {
@@ -1212,13 +1240,21 @@ export async function bootstrapPapercuspHive(
           await bestEffortBootActiveWorkspace(deps, 'self-admit');
           record('clone', 'done', { detail: 'offline seed self-admit' });
           record('submodules', 'skipped', { detail: 'seed restore' });
+          console.warn('[papercusp-hive] offline seed self-admit: pot registered and booted');
+          startOfflineGitRestore();
           return { state: 'cloned-and-created', slug: selfRes.slug, path: selfRes.path };
         }
+        console.warn(
+          `[papercusp-hive] offline seed self-admit did not admit (state=${(selfRes as { state?: string }).state ?? 'unknown'}) — retry join next boot`,
+        );
       } catch (e) {
         console.warn(
           `[papercusp-hive] offline seed self-admit failed (non-fatal; retry join): ${(e as Error)?.message ?? e}`,
         );
       }
+      // Self-admit did not land: still pre-position the code half in the background so the
+      // next boot's join (or self-admit) finds the checkout instead of cold-cloning it.
+      startOfflineGitRestore();
     }
 
     // P-010 live-wire 2: POST-ADMISSION git-restore. The join above admitted this

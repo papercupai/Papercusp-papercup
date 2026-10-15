@@ -22,3 +22,4 @@ import './operator';
 import './agents';
 import './agent-dispatch';
 import './recent-activity';
+import './help';

@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-6: current AppImage GPL guard baseline",
+  "framework": "node",
+  "command": ["node --test papercusp-desktop/test/appimage-gpl-guard.test.js"],
+  "exitCode": 0,
+  "startedAt": "2026-10-03T04:52:22.637720+00:00",
+  "finishedAt": "2026-10-03T04:52:23.031607+00:00",
+  "summary": "The existing project test suite executes the real GPL plugin removal, non-media removal, and GPL library guard snippets extracted from current build-appimage.sh. Seven tests passed; zero failed, cancelled, or skipped.",
+  "assertions": [
+    {
+      "id": "real-project-guard-tests-pass",
+      "passed": true,
+      "evidence": "node:test reported tests=7, pass=7, fail=0, cancelled=0, skipped=0."
+    },
+    {
+      "id": "guard-rejects-codec-and-non-media-gpl-libraries",
+      "passed": true,
+      "evidence": "Both the GPL codec-library rejection case and D-013 rejection of each newly covered GPL library passed."
+    },
+    {
+      "id": "source-not-mutated",
+      "passed": true,
+      "evidence": "The baseline runs the canonical suite. The paired counterexample edits only a temporary copy of build-appimage.sh and runs an unchanged copy of the same suite."
+    }
+  ],
+  "evidencePlane": "tree",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "AUTO-BAR-R-6-P-020",
+  "workItemId": "WI-10004075"
+}

@@ -7,6 +7,7 @@
  */
 import { Hono } from 'hono';
 import { createPaymentChannel } from '@papercusp/operator-core/lib/p2p/payment-channel.ts';
+import { verifyPaymentChannelPayerBinding } from '@papercusp/operator-core/lib/p2p/channel-funding.ts';
 import type {
   PaymentChannelFundingAdapter,
   PaymentChannelFundingSource,
@@ -68,6 +69,8 @@ function validId(value: unknown): value is string {
 function channelJson(channel: StoredPaymentChannel) {
   return {
     channelId: channel.channelId,
+    principalId: channel.principalId,
+    payerPubkeyBase64: channel.payerPubkeyBase64,
     rail: channel.rail,
     chainId: channel.chainId,
     stablecoinAddress: channel.stablecoinAddress,
@@ -200,9 +203,20 @@ export function paymentChannelsRoute(
       };
     }
 
+    if (typeof body.payerPubkeyBase64 !== 'string' || typeof body.payerKeyProof !== 'string' ||
+        !verifyPaymentChannelPayerBinding({ channelId, payer: auth.principalId,
+          payerPubkeyBase64: body.payerPubkeyBase64, chainId: adapter.chainId,
+          stablecoinAddress: adapter.stablecoinAddress,
+          settlementContractAddress: adapter.settlementContractAddress,
+          escrowMicros: String(escrowMicros), fundingSource }, body.payerKeyProof)) {
+      return c.json({ error: 'invalid_payer_key', detail: 'a payer key and proof binding this authenticated channel opening are required' }, 422);
+    }
+
     const opening = await createPaymentChannelOpening(c.env.DB, {
       channelId,
       principalId: auth.principalId,
+      payerPubkeyBase64: body.payerPubkeyBase64,
+      payerKeyProof: body.payerKeyProof,
       adapter,
       fundingSource,
       escrowMicros,

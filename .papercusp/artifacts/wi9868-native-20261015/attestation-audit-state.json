@@ -1,0 +1,30 @@
+{
+  "ok": true,
+  "scorecard": {
+    "issueId": "EI-26065615015866689",
+    "gradingAudit": {
+      "state": "passed",
+      "metaRubricRef": "grading-integrity",
+      "stampedAt": "2026-10-15T17:01:46.409Z",
+      "rubricRevision": 14,
+      "criteriaHash": "795ad5a5aa77061bf0aeb54bd7c412307036cf576777ac42932b8afa8d6b4da9",
+      "auditIssueId": "EI-26066267848286331",
+      "auditor": "su-465db107-9ed1-429c-94fb-759961d302ae",
+      "auditedAt": "2026-10-15T17:12:16.894Z"
+    },
+    "auditTarget": {
+      "current": true,
+      "superseded": false,
+      "supersededBy": null,
+      "retracted": false,
+      "subjectRubricCurrentness": {
+        "state": "current",
+        "reason": "current",
+        "recordedRevision": 4,
+        "currentRevision": 4,
+        "recordedCriteriaHash": "1c3a34bccfe4db6b7a01b3105407383a3dece3245630bdda2c8fa5ed4cdcf2dc",
+        "currentCriteriaHash": "1c3a34bccfe4db6b7a01b3105407383a3dece3245630bdda2c8fa5ed4cdcf2dc"
+      }
+    }
+  }
+}

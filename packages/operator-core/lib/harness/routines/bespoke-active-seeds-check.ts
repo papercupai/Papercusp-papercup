@@ -76,9 +76,10 @@ export interface BespokeActiveSeed {
   /**
    * Which harness receives the row. Most bespoke maintenance routines belong to the
    * operator home; the canary seeders intentionally target their separate canary harness;
-   * the oddsmith cron migrations target the fixed external `oddsmith` harness.
+   * the oddsmith cron migrations target the fixed external `oddsmith` harness; and
+   * project-history-refresh targets `sidestage`, whose API consumes the generated snapshot.
    */
-  scope?: 'operator-home' | 'hive-canary' | 'oddsmith';
+  scope?: 'operator-home' | 'hive-canary' | 'oddsmith' | 'sidestage';
 }
 
 export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
@@ -89,6 +90,10 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   // cannot see" omission the bulk-run-watchdog entry below records.
   { name: 'acceptance-drain-sweep', seedScript: 'seed-acceptance-drain-sweep-routine.ts' },
   { name: 'acceptance-grading-sweep', seedScript: 'seed-acceptance-grading-sweep-routine.ts' },
+  // spec-driven-tooling-integration-2026-10-05 P-031 (R-23).
+  { name: 'spec-conformance-sweep', seedScript: 'seed-spec-conformance-sweep-routine.ts' },
+  // WI-6554700010012443 U5: the DEK-rotation re-seal sweep for sealed organization documents.
+  { name: 'organization-content-reseal', seedScript: 'seed-organization-content-reseal-routine.ts' },
   // EI-21921833535413808: the scheduled walled-account re-probe — landed defaulting ACTIVE
   // (a false wall silently loses real capacity, and the fix is a bounded, self-correcting
   // read+narrow-write), added here in the SAME change so the "seed script nobody ever ran"
@@ -100,6 +105,11 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   // guard cannot see" omission the dead-citation-sweep entry below records one instance of.
   { name: 'bulk-run-watchdog', seedScript: 'seed-bulk-run-watchdog-routine.ts' },
   { name: 'cargo-test', seedScript: 'seed-cargo-test-routine.ts' },
+  // WI-10006805: registered in the SAME change as the action and its seed script, so the
+  // "seed script nobody ever ran" guard covers the nightly operator e2e run from day one.
+  { name: 'operator-e2e-isolated', seedScript: 'seed-operator-e2e-isolated-routine.ts' },
+  // WI-10006806: the red filer is seeded by the same script, one more row.
+  { name: 'operator-e2e-red-filer', seedScript: 'seed-operator-e2e-isolated-routine.ts' },
   { name: 'claim-discipline-watch', seedScript: 'seed-claim-discipline-routine.ts' },
   { name: 'consult-expiry-sweep', seedScript: 'seed-consult-expiry-routine.ts' },
   { name: 'corpus-term-df', seedScript: 'seed-corpus-term-df-routine.ts' },
@@ -137,6 +147,9 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
     seedScript: 'seed-episode-scoped-operational-reconcile-routine.ts',
   },
   { name: 'inbox-bulk-resolve', seedScript: 'seed-inbox-bulk-resolve-routine.ts' },
+  // observation-candidate-acceptance-promotion-2026-09-30 P-008: added with the action.
+  { name: 'intake-triage-drain', seedScript: 'seed-intake-triage-drain-routine.ts' },
+  { name: 'plan-cleanup-sweep',seedScript: 'seed-plan-cleanup-sweep-routine.ts' },
   {
     name: 'frozen-candidate-drift-sweep',
     seedScript: 'seed-frozen-candidate-drift-sweep-routine.ts',
@@ -156,6 +169,10 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   // workspace-host recovery state machine was dead code), which makes "landed a seed script the
   // guard cannot see" the one omission it must not reproduce one level up.
   { name: 'hosted-lifecycle-reconcile', seedScript: 'seed-hosted-lifecycle-reconcile-routine.ts' },
+  // WI-10004437. Added with the action, its import, its spend entry and its seed script, for the
+  // reason the hosted-lifecycle-reconcile entry above records: a tripwire nothing arms is the same
+  // silent nothing as the ingress gaps it exists to catch.
+  { name: 'hosted-public-ingress-probe', seedScript: 'seed-hosted-public-ingress-probe-routine.ts' },
   { name: 'idle-backend-reaper', seedScript: 'seed-idle-backend-reaper-routine.ts' },
   { name: 'improvement-human-digest', seedScript: 'seed-human-digest-routine.ts' },
   { name: 'plan-drain-sweep', seedScript: 'seed-plan-drain-sweep-routine.ts' },
@@ -165,7 +182,9 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
     seedScript: 'seed-plan-item-reflect-orphan-reconcile-routine.ts',
   },
   { name: 'precompute-derived-reads', seedScript: 'seed-precompute-derived-reads-routine.ts' },
-  { name: 'project-history-refresh', seedScript: 'seed-project-history-refresh-routine.ts' },
+  // The seed writer defaults to SideStage, and SideStage's BuildHistoryService imports the
+  // generated snapshot. Papercusp's own project-history route reads Postgres directly.
+  { name: 'project-history-refresh', seedScript: 'seed-project-history-refresh-routine.ts', scope: 'sidestage' },
   // Found missing by this registry's own guard test, red on the frozen green-checkpoint
   // candidate e8ff0cf8 (gate held as WI-10002394): the psu-pty host-events ingest landed as
   // an active-by-default seed script without this row, so the derived set held 58 scripts
@@ -197,6 +216,9 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   // spend entry and the seed script — the registry cross-checks red the fleet gate on a
   // half-landed pair, and this registry exists to catch "the seed script nobody ever ran".
   { name: 'sync-batch-delta-check', seedScript: 'seed-sync-batch-delta-check-routine.ts' },
+  // green-main-cycle-time-2026-10-08 P-028. Same-change rule: action, import, spend entry,
+  // seed script and this row land together.
+  { name: 'sync-batch-lint-guards', seedScript: 'seed-sync-batch-lint-guards-routine.ts' },
   // gate-verdict-liveness P-016. Same-change rule as P-012 above: action, import, seed
   // script and this registry row land together so the cross-check never sees a half pair.
   { name: 'gate-fire-drill', seedScript: 'seed-gate-fire-drill-routine.ts' },
@@ -225,6 +247,12 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   {
     name: 'work-item-durable-park-audit',
     seedScript: 'seed-work-item-durable-park-audit-routine.ts',
+  },
+  // WI-10004722: the bulk dedup only ran on demand and went unrun for weeks; this
+  // driver is the recurring half, so its row going missing must be loud.
+  {
+    name: 'work-item-admission-bulk-dedup-driver',
+    seedScript: 'seed-work-item-admission-bulk-dedup-driver-routine.ts',
   },
   // WI-2141683: found while fixing EI-22136759189899545 below. Both p2p-perf-tier1 and
   // p2p-perf-tier2 default active per their own doc comment (owner-ratified cadence) but
@@ -537,6 +565,7 @@ function resolveInstallSlug(scope: BespokeActiveSeed['scope'], operatorHomeInsta
   // Reuse the seed writer's own constant rather than re-deriving the env var name here —
   // seed-oddsmith-cron-routines.ts and this check must never disagree about the target.
   if (scope === 'oddsmith') return ODDSMITH_HARNESS_SLUG;
+  if (scope === 'sidestage') return 'sidestage';
   return operatorHomeInstallSlug;
 }
 

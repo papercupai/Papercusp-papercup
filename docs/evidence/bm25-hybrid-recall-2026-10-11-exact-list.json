@@ -1,0 +1,2515 @@
+{
+  "kind": "bm25-hybrid-recall",
+  "plan": "bm25-lexical-search-evoke-adoption-2026-10-10",
+  "requirement": "R-13",
+  "decisions": [
+    "D-004",
+    "D-006"
+  ],
+  "generatedAt": "2026-10-11T12:27:17.618Z",
+  "startedAt": "2026-10-11T12:25:34.501Z",
+  "commit": "ec2cca21317db465fa47c9fc49b103e729bc97a7",
+  "workspaceId": "papercusp-workspace",
+  "database": {
+    "db": "papercusp",
+    "port": 5432,
+    "libver": "1.5.1"
+  },
+  "flagEnvVar": "PAPERCUSP_FLAG_PAPERCUSP_BM25_LEXICAL_RANKING",
+  "arms": [
+    "legacy",
+    "bm25"
+  ],
+  "recallK": 10,
+  "seed": "r13-20261011",
+  "pairsPerSource": 60,
+  "sampleFingerprint": "ffe5c12af7351fc07543d1498afcb7f47e923df2ab65aeb1d86f338fcc921284",
+  "sameProcess": true,
+  "sources": [
+    {
+      "source": "work_item",
+      "scored": 60,
+      "arms": {
+        "legacy": {
+          "scored": 60,
+          "hitsAtK": 59,
+          "recallAtK": 0.9833333333333333,
+          "mrrAtK": 0.9051851851851853,
+          "zeroHit": 0,
+          "latencyP50Ms": 177.9,
+          "latencyP95Ms": 675.2,
+          "engines": [
+            "legacy"
+          ]
+        },
+        "bm25": {
+          "scored": 60,
+          "hitsAtK": 59,
+          "recallAtK": 0.9833333333333333,
+          "mrrAtK": 0.8604828042328043,
+          "zeroHit": 0,
+          "latencyP50Ms": 66.7,
+          "latencyP95Ms": 151.6,
+          "engines": [
+            "bm25"
+          ]
+        }
+      },
+      "paired": {
+        "bm25Only": 0,
+        "legacyOnly": 0,
+        "both": 59,
+        "neither": 1
+      },
+      "verdict": "pass",
+      "reasons": [
+        "BM25 recall@10 59/60 >= legacy 59/60"
+      ]
+    },
+    {
+      "source": "session_turn",
+      "scored": 60,
+      "arms": {
+        "legacy": {
+          "scored": 60,
+          "hitsAtK": 50,
+          "recallAtK": 0.8333333333333334,
+          "mrrAtK": 0.7902777777777777,
+          "zeroHit": 0,
+          "latencyP50Ms": 560.6,
+          "latencyP95Ms": 3226.7,
+          "engines": [
+            "legacy"
+          ]
+        },
+        "bm25": {
+          "scored": 60,
+          "hitsAtK": 50,
+          "recallAtK": 0.8333333333333334,
+          "mrrAtK": 0.7833333333333333,
+          "zeroHit": 0,
+          "latencyP50Ms": 126.7,
+          "latencyP95Ms": 324.1,
+          "engines": [
+            "bm25"
+          ]
+        }
+      },
+      "paired": {
+        "bm25Only": 0,
+        "legacyOnly": 0,
+        "both": 50,
+        "neither": 10
+      },
+      "verdict": "pass",
+      "reasons": [
+        "BM25 recall@10 50/60 >= legacy 50/60"
+      ]
+    }
+  ],
+  "verdict": "pass",
+  "redactedQueries": 1,
+  "redactedAfterRun": "queries scrubbed post-run with redactPairsForArtifact; sampleFingerprint is of the raw sample",
+  "pairs": [
+    {
+      "source": "work_item",
+      "targetId": "WI-969",
+      "style": "fragment",
+      "query": "seed-release-routines.ts: stop being a single RELEASE ROUTINE SLUG singleton. Seed",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 11424.3,
+          "engine": "legacy",
+          "hits": 2
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 100,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20504248813243787",
+      "style": "keyword",
+      "query": "best-effort read-back; state-cell explicitly inferred/non-authoritative custom-key",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 127,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 200.6,
+          "engine": "legacy",
+          "hits": 1
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-23708613767283586",
+      "style": "fragment",
+      "query": "build 91a5dba579, started 1.3h ago. If this CONSTRAINT was relaxed",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 124,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 86.5,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25317309503824424",
+      "style": "keyword",
+      "query": "projection.cursor.reason='spill-write-failed' notifications:recent, projection.cursor.reason='spill-write-failed', cursor.kind='unavailable' packages/operator-core/lib/agent-tools/tools/invoke.ts 'packages/operator-core/lib/agent-tools/tools/invoke.ts'",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 142.8,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 183.8,
+          "engine": "legacy",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21646076765956839",
+      "style": "fragment",
+      "query": "treat… Existing status=degraded prevents a clean health freshness reading, but",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 671.3,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 80.8,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20219229004174909",
+      "style": "keyword",
+      "query": "build:typecheck packages/operator-core scopeToFiles:true, respawn-member.ts respawn-member.test.ts, incremental:false,",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 65.2,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 97.8,
+          "engine": "legacy",
+          "hits": 3
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25387687366791546",
+      "style": "fragment",
+      "query": "failures from work items:get, improvements:capture returned HTTP 429 mcp proxy",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 54.5,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 3,
+          "latencyMs": 92.2,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-22761328643469573",
+      "style": "keyword",
+      "query": "attachment capability:bash task0mtto0fz4v5to4z12rq tools/call after300s; considering",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 49.6,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 47.7,
+          "engine": "legacy",
+          "hits": 2
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20730623327442323",
+      "style": "fragment",
+      "query": "await between its staleness gate and actions.apply. It needed no",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 115.6,
+          "engine": "legacy",
+          "hits": 1
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 62.6,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21477845413875462",
+      "style": "keyword",
+      "query": "green-stall-watchdog auto-actuation: 530-times-reproduced /tmp/p006-r3.log status=preempted, test:lane-stateful",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 166.3,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 187.8,
+          "engine": "legacy",
+          "hits": 1
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21373085131465822",
+      "style": "fragment",
+      "query": "claims/cooldowns change… The exact oracle and leader brief are fresh,",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 119,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 52.6,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25537463235699012",
+      "style": "keyword",
+      "query": "family/key projection comment/receipt-change work-item:status:<id self-owned announcements",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 68.6,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 177.9,
+          "engine": "legacy",
+          "hits": 2
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "WI-327505",
+      "style": "fragment",
+      "query": "( papercusp su session host registry ), and the Tauri",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 675.2,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 63,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-19364576912252060",
+      "style": "keyword",
+      "query": "push-floor-guard.test.ts) .tsc-baseline.json packages/operator-core/lib/testing/typed-mock.ts packages/operator-core/lib/memory/bench/push-floor-guard.test.ts EI-19341572300046923). (EI-19340233074452707)",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 55.2,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 72,
+          "engine": "legacy",
+          "hits": 1
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25606835486728027",
+      "style": "fragment",
+      "query": "readback exists, so… The wake's missing-checkpoint statement was true only",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 170.9,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 62.9,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21129755026162022",
+      "style": "keyword",
+      "query": "1787376103442 owned-live/covered=true. release:trace immediately classification serializer.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 80.8,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 208.7,
+          "engine": "legacy",
+          "hits": 2
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25384899284467342",
+      "style": "fragment",
+      "query": "not the watch's older generic repull note. Recorded routing discrepancy",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 212.6,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 143.9,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20499710108167565",
+      "style": "keyword",
+      "query": "harnessSlug=papercusp, workspace/harness --workspace=papercusp-workspace --harness=papercusp harnessSlug=sb-devboard-hive. Papercusp-specific,",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 151.6,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 246.4,
+          "engine": "legacy",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-23462856932023198",
+      "style": "fragment",
+      "query": "LOST. It is not — the counters step 1→2→3→4→5 known",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 342.8,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 142.8,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-24839692990854553",
+      "style": "keyword",
+      "query": "Disclosure: (gitignored .papercusp/scratch), test-suite Third-party (disclosed",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 108.7,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 96.4,
+          "engine": "legacy",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-22524842122274623",
+      "style": "fragment",
+      "query": "vetting consult conv-mtpb9rs9 (critique F-1..F-5 folded into rev 3) and",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 161.2,
+          "engine": "legacy",
+          "hits": 5
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 125.7,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21892850240452749",
+      "style": "keyword",
+      "query": "improvements:capture observation.scope=workspace. structural-error error/timeout/refused (EI-21905244571119790: positive-control",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 128.1,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 214.6,
+          "engine": "legacy",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-18889340944536453",
+      "style": "fragment",
+      "query": "call. This is the third consecutive wake where the carry-note's",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 2896.9,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 6,
+          "latencyMs": 101.5,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20236716982213925",
+      "style": "keyword",
+      "query": "coord:send couldNotDetermine EI-20236471904767650 notification, valid-looking {what,note?}",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 70.1,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 165,
+          "engine": "legacy",
+          "hits": 1
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21339269394434922",
+      "style": "fragment",
+      "query": "wake handle, th… The explicit events:await handler retires prior same-owner/exact-key",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 198.3,
+          "engine": "legacy",
+          "hits": 2
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 75.2,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25424629548651104",
+      "style": "keyword",
+      "query": "tool-call Suspected improvements:capture toolFailure shorthand. timeoutSec=150",
+      "arms": {
+        "bm25": {
+          "rank": 6,
+          "latencyMs": 159.4,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 5,
+          "latencyMs": 309.5,
+          "engine": "legacy",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-22540592199917100",
+      "style": "fragment",
+      "query": "so anti-babysitting and provider serialization… The child is demonstrably progressing",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 125.9,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 59.7,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21204358095082028",
+      "style": "keyword",
+      "query": "coord:presence advertises scope:'workspace', workspace:'papercusp-workspace' hive-scoped. authorization",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 113.5,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 313.3,
+          "engine": "legacy",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25525583808843394",
+      "style": "fragment",
+      "query": "when their blobs differ. Neither… A dry-run did not fire",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 202.6,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 59,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-24726478570399094",
+      "style": "keyword",
+      "query": "improvements:capture toolFailure shorthand. dryRun-only budgetUsd, server-contract-mismatch",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 65.6,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 167.9,
+          "engine": "legacy",
+          "hits": 5
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-23755915994199376",
+      "style": "fragment",
+      "query": "conclusion — 'your fix does not work' — the most",
+      "arms": {
+        "legacy": {
+          "rank": 2,
+          "latencyMs": 48.4,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 7,
+          "latencyMs": 88.9,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-23090081427112619",
+      "style": "keyword",
+      "query": "coord:inbox scripts/mcp-call.mjs. pretty-printed, transports. inbox-spill-encoding-varies json.load(...)",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 63.8,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 135.5,
+          "engine": "legacy",
+          "hits": 1
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-24182491194799782",
+      "style": "fragment",
+      "query": "awaiting membership (announce accepted, admission not granted). On a MEMBER",
+      "arms": {
+        "legacy": {
+          "rank": null,
+          "latencyMs": 33.6,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": null,
+          "latencyMs": 85.9,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-23126231217982858",
+      "style": "keyword",
+      "query": "improvements:capture duplicate-key tool-failure argument-contract dedup/identity observation;",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 77.6,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 271.5,
+          "engine": "legacy",
+          "hits": 2
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-19325409132155167",
+      "style": "fragment",
+      "query": "a 7030-char checkpoint EXISTS and was written 8ms after the",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 110.2,
+          "engine": "legacy",
+          "hits": 3
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 44.4,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-7107",
+      "style": "keyword",
+      "query": "Replication-liveness workspace=papercusp-workspace key=e06b8704509b3bfe3bea7a0f105b10468a50ec5aa70a50570788dec8d56f44d4 getReplicationLiveness() dogfood-substrate-status) agent-insights/shared-hive-federation-diagnosis-toolkit",
+      "arms": {
+        "bm25": {
+          "rank": 9,
+          "latencyMs": 110.8,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 9,
+          "latencyMs": 350.9,
+          "engine": "legacy",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-19317242751258158",
+      "style": "fragment",
+      "query": "runs The only difference between (2) and (3) is the",
+      "arms": {
+        "legacy": {
+          "rank": 2,
+          "latencyMs": 69,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 8,
+          "latencyMs": 112.5,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21561040776748157",
+      "style": "keyword",
+      "query": "fleet:launch-on-plan heartbeatFresh, pickupConfirmed:false. verifiedMemberIds. presence/wakeability structural-error",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 67.9,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 280.4,
+          "engine": "legacy",
+          "hits": 2
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20238739857878559",
+      "style": "fragment",
+      "query": "recovered, ptool recipes:search returned exit 1 with 'operator reply was",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 2808.8,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 67.5,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25550525470354176",
+      "style": "keyword",
+      "query": "BASE=http://127.0.0.1:3271 trace4bf0a0df-12de-48fd-a217-508bb7735924 request-only-host/firedfalse. notclaimedservercontractmismatch. Existingrouteconsistency effectiveoverridewhenotherambientconfiguration",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 64.2,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 88,
+          "engine": "legacy",
+          "hits": 1
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20249067589381804",
+      "style": "fragment",
+      "query": "compatibility field preserves… The rejection was strict schema validation before",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 252.2,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 66.7,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20354215441714565",
+      "style": "keyword",
+      "query": "improvements:capture toolFailure-only instructions toolFailure:{...} improvement title/kind/body",
+      "arms": {
+        "bm25": {
+          "rank": 2,
+          "latencyMs": 49.7,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 2,
+          "latencyMs": 140.2,
+          "engine": "legacy",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-23777463839153209",
+      "style": "fragment",
+      "query": "3490s. Look at the MERGE/apply stage, NOT the replicator or",
+      "arms": {
+        "legacy": {
+          "rank": 4,
+          "latencyMs": 75.8,
+          "engine": "legacy",
+          "hits": 4
+        },
+        "bm25": {
+          "rank": 4,
+          "latencyMs": 51.3,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-22805387052342833",
+      "style": "keyword",
+      "query": "ended/orphan authoritatively… authoritatively red-owned-remediating 2026-09-09T17:33:31.265Z 2026-09-09T16:42:12.861Z",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 645.1,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 297.3,
+          "engine": "legacy",
+          "hits": 1
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-18679089652707560",
+      "style": "fragment",
+      "query": "it is that a native background task shares your process",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 227.4,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 2,
+          "latencyMs": 44.6,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-22088230905420009",
+      "style": "keyword",
+      "query": "risk/confidence: both-in-corpus exact-title-only independently-filed (near-all-distinct bodies/lane/source",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 75.9,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 156.2,
+          "engine": "legacy",
+          "hits": 1
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-24771933109440087",
+      "style": "fragment",
+      "query": "use A vi.mock'd module reached through a lazy await import()",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 179,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 60.6,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21696096259458297",
+      "style": "keyword",
+      "query": "transcript work-item authoritative. harness-scope loop:checkpoint loop:status.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 63.5,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 427.8,
+          "engine": "legacy",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21547099166357580",
+      "style": "fragment",
+      "query": "oracle claimable=29 admitted bugs, 7/29 non-empty paths below the 0.5",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 146.4,
+          "engine": "legacy",
+          "hits": 3
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 51,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25287123861307395",
+      "style": "keyword",
+      "query": "no-launch-record establish authorized-session reproduction approving oversized",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 52.5,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 139.5,
+          "engine": "legacy",
+          "hits": 1
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21928965888623914",
+      "style": "fragment",
+      "query": "Third re-emit of the same completion, now citing the literal",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 170.1,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 41.9,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25452876894394508",
+      "style": "keyword",
+      "query": "unsupported capability) improvements:capture toolFailure coord:whoami valid-input-reproduction",
+      "arms": {
+        "bm25": {
+          "rank": 3,
+          "latencyMs": 56.4,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 4,
+          "latencyMs": 232.7,
+          "engine": "legacy",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21031732406752457",
+      "style": "fragment",
+      "query": "probe The compact release status named embedded-pg-declarations.test.ts but did not",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 124.8,
+          "engine": "legacy",
+          "hits": 2
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 41.8,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21390902906404164",
+      "style": "keyword",
+      "query": "Workspace-wide packages/apps/current nonexistent Workaround: directories, generated-directory",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 42.5,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 99.4,
+          "engine": "legacy",
+          "hits": 1
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-24121379797634043",
+      "style": "fragment",
+      "query": "workspace=papercusp-workspace harness=papercusp/libs/generic/debounce-coalesce log core key=cb54460d98d85b66d59ffac3bc2d907d8d0fc307b745c5bfce519b39aef880d5 kind=no replicator stalledForMs=180759 Meaning: the",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 233.2,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 60.5,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-22770943741410982",
+      "style": "keyword",
+      "query": "capability:bash diagnostic extraction /home/builduser/papercupai-workspace/papercusp papercupai); /home/builduser/papercupai-workspace/papercusp.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 36.4,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 99.9,
+          "engine": "legacy",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-15676",
+      "style": "fragment",
+      "query": "lin… Lane map: P-002=su-2a328(fleet) P-003=abe51(ext) P-004=su-32944ed5(ext) P-008/WI-5356=su-965d0(fleet). Plan-item WI linkage",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 400,
+          "engine": "legacy",
+          "hits": 2
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 74.3,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20362614176961306",
+      "style": "keyword",
+      "query": "authority. blocker pressure, scheduler evaluating ignoreContextPressure",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 40.8,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 85.3,
+          "engine": "legacy",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25652504679532609",
+      "style": "fragment",
+      "query": "c01282b50776f127704d412d147c6355516bdcffd9c3bc131b49fe849926e0e7; work item evidence refs: packages/operator-core/lib/harness/improvements/agent-review-adoption-claim.integration.test.ts, packages/operator-core/lib/harness/improvements/agent-review-plan-route.integration.test.ts, packages/operator-core/lib/harness/improvements/agent-review.test.ts, test-run 21025406",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 208.3,
+          "engine": "legacy",
+          "hits": 1
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 47.3,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21023380328805969",
+      "style": "keyword",
+      "query": "operator-scope workspace-scoped harness:'papercusp', documented harness:'all' workspace-scoped.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 39.5,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 226.7,
+          "engine": "legacy",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a11e6b-5e21-7c41-992d-0eedcf40d821:3",
+      "style": "fragment",
+      "query": "member , so the continuation applies. The loop is currently",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 523.7,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 126.7,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:8fb992a9-db8b-4fe9-aee1-bf1f3c0df138:13",
+      "style": "keyword",
+      "query": "contribution libs/papercusp/packages/orchestrator/src/blueprint/schema.ts composition-compiler.ts injection-points.test.ts su-4cdad80d's (EI-24628710409772041)",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 58.8,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 308.4,
+          "engine": "legacy",
+          "hits": 1
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a09790-b0fa-7df0-9012-97166984ec2d:5",
+      "style": "fragment",
+      "query": "dispatch accepted the request but pickup is not yet confirmed.",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 98.6,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 106.3,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a07a60-b957-75c0-9910-2a88af5d6aa2:11",
+      "style": "keyword",
+      "query": "terminally disposed, Coordination completed compaction threshold.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 155.3,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 651.4,
+          "engine": "legacy",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:d5f83dbb-c916-45e1-a684-2f132d0b5576:71",
+      "style": "fragment",
+      "query": "plainly: this body is JSON, so pipe is all-or-nothing and",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 474.9,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 55.3,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a05be2-d25a-7733-939e-c0e863746063:0",
+      "style": "keyword",
+      "query": "engineer-collaborator domain-generic-agent-personas-2026-06-17 scope:'workspace' compaction-sensitive scope=(--workspace=\"${PAPERCUSP scope+=(--harness=\"${PAPERCUSP",
+      "arms": {
+        "bm25": {
+          "rank": null,
+          "latencyMs": 550.6,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": null,
+          "latencyMs": 2695.2,
+          "engine": "legacy",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:ec950725-590c-45f0-b920-510cba51d5ad:4",
+      "style": "fragment",
+      "query": "the holder started itself, which doesn't count. - Holder state:",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 151.7,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 2,
+          "latencyMs": 140.3,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a0538d-6b01-7812-9858-5e196ee1966c:1",
+      "style": "keyword",
+      "query": "⟦turn-origin:self-compaction nonce:f22a0da169fc6df2⟧ EI-21840718595021627. staleOwner/no-live-successor null/unavailable absent/mismatched.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 112.1,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 1299.7,
+          "engine": "legacy",
+          "hits": 1
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:03a97b3a-c297-41cb-86ab-60db951815f6:27",
+      "style": "fragment",
+      "query": "back negative — staging still 065f1af9b9 , 88 dirty paths,",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 666.3,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 79.6,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:fc4964f0-5b3a-4e57-a326-085fd3401b48:44",
+      "style": "keyword",
+      "query": "conv-muxqot0k… acceptance-unified-bug-pipeline-and-honest-queue-2026-10-05 (Report-a-problem fold-to-one-item staffing/blocking ~/.papercusp/scratch/vet-mdg-su-ad2a0ea0/",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 182.5,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 1223.5,
+          "engine": "legacy",
+          "hits": 2
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a04b6a-55dc-7640-8a1d-daadf545e8f3:36",
+      "style": "fragment",
+      "query": "status has memberCount/headcount/members without canonical lifecycle metadata, leader-brief has memberCensus/headcount/summary",
+      "arms": {
+        "legacy": {
+          "rank": null,
+          "latencyMs": 81.2,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": null,
+          "latencyMs": 178.5,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a11524-dbb8-76b3-b6bb-4cb0adb321cc:16",
+      "style": "keyword",
+      "query": "⟦turn-origin:wake-pump nonce:509844ebcbda648b⟧ work-item:claimable {\"id\":\"WI-10004770\",\"goal\":null,\"kind\":\"feature\",\"plan\":\"android-public-release-2026-10-01\",\"tags\": ,\"state\":\"open\",\"title\":\"Reconcile current…\",\"reason\":\"requeued\",\"harness\":\"papercusp\",\"assignee\":null,\"severity\":nul",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 372.8,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 4004.8,
+          "engine": "legacy",
+          "hits": 1
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a0494d-274c-76e1-afc0-337474b966a6:2",
+      "style": "fragment",
+      "query": "claim is work that just became re-placeable; folding it into",
+      "arms": {
+        "legacy": {
+          "rank": null,
+          "latencyMs": 215.8,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": null,
+          "latencyMs": 123.2,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a11356-cb51-7583-a70f-f293521f6778:6",
+      "style": "keyword",
+      "query": "committed substituted previous implementation. changes. baseline-only",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 78.6,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 401.9,
+          "engine": "legacy",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a073e1-36eb-7583-b147-e6ff2f98dcf3:43",
+      "style": "fragment",
+      "query": "loop, and 10 critical workflows before latency rose—far beyond a",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 498.5,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 92.9,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a0f857-a88e-7f91-83e4-b3e3c49c2696:8",
+      "style": "keyword",
+      "query": "confirms instruction confirmed inherited investigation restoring",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 116.5,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 6865.4,
+          "engine": "legacy",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a1224d-a6ea-71d1-af8e-b008b44c6837:0",
+      "style": "fragment",
+      "query": "is a client exposure gap, not evidence the Papercusp capability",
+      "arms": {
+        "legacy": {
+          "rank": null,
+          "latencyMs": 560.6,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": null,
+          "latencyMs": 79.4,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a0ff37-d805-7eb2-9e26-6369513fb4f0:119",
+      "style": "keyword",
+      "query": "⟦turn-origin:wake-pump nonce:429482a62b918249⟧ ids/grants/cursors/armed {\"id\":\"WI-10006075\",\"goal\":null,\"kind\":\"feature\",\"plan\":\"generalized-integrations-google-migration-cupboard-workflows-2026-10-05\",\"tags\": ,\"state\":\"open\",\"title\":\"Google controls.\",\"reason\":\"requeued\",\"harness\":\"papercusp\",\"assignee\":null,",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 229.6,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 2744.8,
+          "engine": "legacy",
+          "hits": 1
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a04551-2f32-7321-8892-8535cd657853:6",
+      "style": "fragment",
+      "query": "collision operation in flight). payload: {\"id\":\"EI-21645973436165033\",\"kind\":\"bug\",\"plan\":null,\"tags\": ,\"state\":\"open\",\"title\":\"dev:restart tool-call failure (git",
+      "arms": {
+        "legacy": {
+          "rank": 4,
+          "latencyMs": 2412.4,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 3,
+          "latencyMs": 247.3,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a0857b-e359-74c1-b21d-52134727585c:22",
+      "style": "keyword",
+      "query": "committed requested correctly selectors; regression fix-forward",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 153.9,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 715.7,
+          "engine": "legacy",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a042e8-92b6-7293-b68b-4ff1c17143a9:169",
+      "style": "fragment",
+      "query": "Next action Edit presence-transition-sweep with an injectable current-state seam, add",
+      "arms": {
+        "legacy": {
+          "rank": null,
+          "latencyMs": 200.7,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": null,
+          "latencyMs": 273,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:cb17a2aa-3ec8-4705-9299-b168c94c95a8:0",
+      "style": "keyword",
+      "query": "⟦turn-origin:self-compaction nonce:9325ca45879aae50⟧ su-c8f54c4f-a33c-4d6a-93cb-06ae480c1986 ⟦post-compaction-recovery⟧ coord:declare-intent EI-24119934848909921",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 178.6,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 2068.8,
+          "engine": "legacy",
+          "hits": 1
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a11b4c-260c-7521-a687-dac1fd4389fd:6",
+      "style": "fragment",
+      "query": "and the refused invocation’s process identity. The authority guard still",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 276.4,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 236.3,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a118aa-f6a2-7153-b0dc-1d265eaf71a4:6",
+      "style": "keyword",
+      "query": "⟦turn-origin:wake-pump nonce:87b440c2765134e5⟧ work-item:claimable {\"id\":\"WI-10007080\",\"goal\":null,\"kind\":\"feature\",\"plan\":\"codex-hot-failover-and-startup-routing-2026-10-07\",\"tags\": ,\"state\":\"open\",\"title\":\"Reproduce measurements…\",\"reason\":\"released\",\"harness\":\"papercusp\",\"assignee\":nul",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 324.1,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 3521.4,
+          "engine": "legacy",
+          "hits": 1
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a05450-9994-7d73-ae2c-3fc6c33d7326:1",
+      "style": "fragment",
+      "query": "source/contract evidence and four surfaces. After recovery, inspect narrowed definitions/tests",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 616.3,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 84.8,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:f9afa7c2-e5df-44a4-a48a-2c9c9160e1f3:20",
+      "style": "keyword",
+      "query": "(su-97b5f675) independently acceptance conv-muj1gsga. relaunch, transport",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 132.5,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 517.2,
+          "engine": "legacy",
+          "hits": 4
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a05a9b-53cb-7242-803d-56d5839a4d08:6",
+      "style": "fragment",
+      "query": "is queued; the next successor will resume with lock d9d97ac9",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 789.3,
+          "engine": "legacy",
+          "hits": 1
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 93.2,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a05854-db6f-7d42-9ff4-a7da491a1e4b:35",
+      "style": "keyword",
+      "query": "EI-21977856051718176 unassigned, scheduler hand-claiming two-receipt reproduction.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 129.6,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 799,
+          "engine": "legacy",
+          "hits": 1
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a04fba-af9a-7ad3-94c2-4bdd0c5e9c76:1",
+      "style": "fragment",
+      "query": "state (your held work-items via work items:get, your latest loop:checkpoint)",
+      "arms": {
+        "legacy": {
+          "rank": null,
+          "latencyMs": 1757.4,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": null,
+          "latencyMs": 299.2,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:3daba413-7ca1-41ae-9871-68c3953d0bdd:8",
+      "style": "keyword",
+      "query": "finished EI-24727259708763663, scorecard EI-24726748364334386 emitting work-items",
+      "arms": {
+        "bm25": {
+          "rank": 2,
+          "latencyMs": 97.3,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 2,
+          "latencyMs": 1216.2,
+          "engine": "legacy",
+          "hits": 3
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a114b2-9bab-7c73-9afe-e322ce27b466:0",
+      "style": "fragment",
+      "query": "not evidence the Papercusp capability is absent; use the CLI",
+      "arms": {
+        "legacy": {
+          "rank": null,
+          "latencyMs": 1956.2,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": null,
+          "latencyMs": 247.9,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a122f2-73e7-7f82-a427-58d23f4d06bd:44",
+      "style": "keyword",
+      "query": "⟦turn-origin:wake-pump nonce:19e7a27d7569c821⟧ coord:inbox-wake:su-ce4c4481-9aa5-4fc0-bfac-6446e16bd98f (nonp2p-bug-drain-luna-max-0930)) id\":\"coord-send-1374361b87c7e19f940f2aee7d85b12b2e027aeee4cef65b003f3b3aa7abe5ab\"} (inbox-wake):",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 211.1,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 2475.3,
+          "engine": "legacy",
+          "hits": 1
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a0dffd-5d18-7653-b783-bf682a5b3a41:5",
+      "style": "fragment",
+      "query": "work items reject active checkpoint writes, and the original item",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 313.8,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 184.5,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:f1e6f90f-7981-4a52-9ac1-a670dc355270:8",
+      "style": "keyword",
+      "query": "WI-10001736 terminalOwner: su-4163e120 EI-23515019075433151 re-confirmed deliberately",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 95.6,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 741.8,
+          "engine": "legacy",
+          "hits": 7
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a12011-cffc-7bc2-9a16-ea822abac4db:9",
+      "style": "fragment",
+      "query": "this is a statement about that instant, NOT about the",
+      "arms": {
+        "legacy": {
+          "rank": null,
+          "latencyMs": 79.2,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": null,
+          "latencyMs": 132.8,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a09b18-cf3f-7071-8804-bef47f22ddc2:4",
+      "style": "keyword",
+      "query": "⟦turn-origin:wake-pump nonce:30e27b4ab476f678⟧ coord:inbox-wake:su-3014d448-96d1-4acd-b4f7-597d39f3241e (loop-su-3014d448-96d1-4acd-b4f7-597d39f3241e)) id\":\"mtzwc1zm-0000-b0ec2255414d404f96ebfc2659f52e3d\"} (inbox-wake):",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 130,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 2129,
+          "engine": "legacy",
+          "hits": 1
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a081d1-1728-7302-ac5d-854cdf5e4001:19",
+      "style": "fragment",
+      "query": "with a live session handle. The spill is now locally",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 127.5,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 131.4,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a0777c-393f-7863-9625-ac6d7565ae19:4",
+      "style": "keyword",
+      "query": "30-second boundary; duplicate repository’s definition identifiers",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 127.2,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 1520.4,
+          "engine": "legacy",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a07458-a453-7792-9092-9627258dc280:6",
+      "style": "fragment",
+      "query": "the shared Plans reader. I also added a test for",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 77.4,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 123.5,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:3146cc0f-fcc9-4d24-89fa-b3f58eff9ec2:3",
+      "style": "keyword",
+      "query": "it('retains activation integration createFreshPgDb concluding D-075/D-077:",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 79.7,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 365.3,
+          "engine": "legacy",
+          "hits": 9
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:799db734-3793-42a1-a499-5e7529c47fe1:53",
+      "style": "fragment",
+      "query": "a byte-identical, tautological falsifier (\"falsified when the required outcome is",
+      "arms": {
+        "legacy": {
+          "rank": null,
+          "latencyMs": 72.1,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": null,
+          "latencyMs": 105.5,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:fcbd9233-197d-4a52-920a-94e19fe2db4b:5",
+      "style": "keyword",
+      "query": "premise ANDROID linux-x86 manifest collection receipts",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 46,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 131.7,
+          "engine": "legacy",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a04950-3922-7803-bd22-6e5aa6f03837:5",
+      "style": "fragment",
+      "query": "also fired, so I’m checking the target’s current assignment and",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 180,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 188.7,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a045bd-e30d-7bb0-8e35-1d3d8b24cd68:4",
+      "style": "keyword",
+      "query": "post-note revalidated refreshed checkpoints; implementation. re-reading",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 221.5,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 1283,
+          "engine": "legacy",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a09da9-d069-7443-a3fd-b254b8c9125a:78",
+      "style": "fragment",
+      "query": "every original requirement to it, and mark the originals superseded.",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 128.6,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 147.6,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:7daa5a57-93d4-41c5-9945-e7bcf5133993:18",
+      "style": "keyword",
+      "query": "(llm-test.ts) operator-core status=clean baseline-suppressed demonstrates Confirming",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 71.5,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 598.5,
+          "engine": "legacy",
+          "hits": 3
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a11e08-1eed-7420-b86b-191273ba1537:4",
+      "style": "fragment",
+      "query": "and its checkpoint is stale. Its latest checkpoint points to",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 111.9,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 123.9,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a11708-0819-7e83-bd5c-438e80c6341a:1",
+      "style": "keyword",
+      "query": "docs/evidence/goal-brief-r4-behavioral-probe-2026-09-29.mts docs/evidence/goal-brief-r3-live-probe-2026-09-29.mts id='work-on-everything-fresh-grading-and-improvement-60d3a8' {slug:'goal-brief-to-claimed-plan-work-2026-09-23',harness:'papercusp',status:'shipped',expectedCurrent:'awaiting-acceptance'} {slug:'goal-brief-to-claimed-plan-work-2026-09-23',harness:'papercusp',classRef:'plan-class-feature-ship',specIds: {slug:'goal-brief-to-claimed-plan-work-2026-09-23',harness:'papercusp',classRef:'plan-class-feature-ship'}",
+      "arms": {
+        "bm25": {
+          "rank": null,
+          "latencyMs": 493.4,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": null,
+          "latencyMs": 123.2,
+          "engine": "legacy",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a097ec-d6eb-78c1-b76c-4c24ac989978:10",
+      "style": "fragment",
+      "query": "in place. I’m running the focused unit/integration set that proves",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 625.4,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 75.2,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a116f7-63c8-7a03-8f00-25bdc524ca0a:13",
+      "style": "keyword",
+      "query": "checkpoint ebec444c0f8c contained boundaries preserved, guaranteed.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 45.4,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 499.2,
+          "engine": "legacy",
+          "hits": 1
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:73fe70b6-ebd1-445f-aa3f-fc97a4ae0314:0",
+      "style": "fragment",
+      "query": "as a lead, not the truth. Did Wake 10: added",
+      "arms": {
+        "legacy": {
+          "rank": 2,
+          "latencyMs": 160.5,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 2,
+          "latencyMs": 189.2,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a1238d-b65a-7433-8df4-51b3eedf1f56:65",
+      "style": "keyword",
+      "query": "requested responsible work-item. investigation request-correlated unfinished",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 94.5,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 871.3,
+          "engine": "legacy",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a078fe-833f-7311-bf49-2af3de4b8aa1:7",
+      "style": "fragment",
+      "query": "state is checkpointed. The plan’s activation audit, BAR/spec gates, and",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 861.2,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 91.6,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a07acd-aad3-70e3-ac7c-f60a2dbe2360:3",
+      "style": "keyword",
+      "query": "checkpoint. transcript preserving diagnostic authoritative timeline/work-item",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 49.6,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 422.4,
+          "engine": "legacy",
+          "hits": 2
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a1258c-0ffa-7783-88fc-936ba4b7b2e1:3",
+      "style": "fragment",
+      "query": "Kopia guard released the shared lock, and the DB backup",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 488.1,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 106.3,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a04668-3c03-7142-83b4-ce7c672424f8:17",
+      "style": "keyword",
+      "query": "nonce:10e290096bab1c0d⟧ fleet:admission-blocked:pui-remediation-ship-2026-08-28 pui-remediation-ship-2026-08-28: (fleet:admission-blocked:pui-remediation-ship-2026-08-28): to\":{\"ref\":\"pui-remediation-ship-2026-08-28\",\"kind\":\"fleet-leadership\"},\"fleetSlug\":\"pui-remediation-ship-2026-08-28\",\"transition\":\"admission-blocked\",\"armed fleet-leadership:pui-remediation-ship-2026-08-28\"}",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 195.6,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 3226.7,
+          "engine": "legacy",
+          "hits": 1
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a12296-b13b-7733-9bc9-489a04f961fc:5",
+      "style": "fragment",
+      "query": "test identity/data route is supplied. Fresh / availability is 4,414,504,960",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 405.4,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 69.9,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a0a0ed-c6f6-7220-b64b-27ad6313cc7a:18",
+      "style": "keyword",
+      "query": "verification. intentionally deploy-cloud-portal.sh health-checks P-002/P-003 independent",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 113.3,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 610.4,
+          "engine": "legacy",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a12a09-136c-7691-8b84-2c7ed906f5ba:5",
+      "style": "fragment",
+      "query": "1–2 experiments and placement, not October 7 approval. Historical revision",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 480.5,
+          "engine": "legacy",
+          "hits": 10
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 99,
+          "engine": "bm25",
+          "hits": 10
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:04930b61-56a2-485e-a9f0-b3318d991087:14",
+      "style": "keyword",
+      "query": "su-e8071b9d-b6aa-4d2b-ba3f-05de514f9d7b, writtenAt=2026-09-06T17:29:44.449Z; acceptance-bar-contract-snapshot.ts (/tmp/e8071-u7-amend-dryrun.json/.out: rubricRef:'meta-acceptance-rubric' /tmp/e8071-u6-portal-tests-final.log",
+      "arms": {
+        "bm25": {
+          "rank": 6,
+          "latencyMs": 137.9,
+          "engine": "bm25",
+          "hits": 10
+        },
+        "legacy": {
+          "rank": 6,
+          "latencyMs": 684.1,
+          "engine": "legacy",
+          "hits": 6
+        }
+      }
+    }
+  ]
+}

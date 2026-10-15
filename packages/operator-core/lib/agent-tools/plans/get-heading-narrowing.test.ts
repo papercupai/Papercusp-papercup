@@ -40,6 +40,10 @@ function makeBase() {
       level: 2,
       chars: 900,
     })),
+    lifecycle: {
+      liveItems: [{ id: "P-001", effectiveStatus: "wip" }],
+      liveItemsTruncated: true,
+    },
     counts: { items: 12, decisions: 4, sections: 10 },
   };
 }
@@ -85,6 +89,20 @@ describe("plans:get { heading } narrowing (EI-19478970139996135)", () => {
     expect(miss.section).toBeNull();
     expect(Array.isArray(miss.sectionIndex)).toBe(true);
     expect((miss.sectionIndex as unknown[]).length).toBe(10);
+  });
+
+  it("drops unrelated lifecycle truncation markers while preserving a large requested body", () => {
+    const body = "requirement record ".repeat(400);
+    const out = narrowHeadingPayload(makeBase(), "Requirements", {
+      heading: "Requirements",
+      level: 2,
+      chars: body.length,
+      body,
+    });
+
+    expect(out).not.toHaveProperty("lifecycle");
+    expect(JSON.stringify(out)).not.toContain("liveItemsTruncated");
+    expect((out.section as Record<string, unknown>).body).toBe(body);
   });
 
   it("makes the requested body the DOMINANT term, not a minority of the payload", () => {

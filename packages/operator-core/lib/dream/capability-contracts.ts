@@ -170,6 +170,33 @@ export const CapabilitySourceSchema = CapabilityEvidenceRefSchema.extend({
   });
 export type CapabilitySource = z.infer<typeof CapabilitySourceSchema>;
 
+/** Graph boundaries suggest where to inspect; manifest claims still require their own evidence. */
+const packetGraphSite = z.object({
+  path: CapabilityPathSchema,
+  line1: z.number().int().positive(),
+  sourceHash: sha,
+}).strict();
+export const CapabilityPacketGraphSchema = z.object({
+  status: z.enum(['measured', 'unknown']),
+  repositoryId: id,
+  sourceFingerprint: sha,
+  candidates: z.array(packetGraphSite.extend({
+    evidenceId: id,
+    symbol: z.string().min(1).max(200),
+    capabilityStatus: z.literal('candidate-only'),
+  }).strict()).max(4),
+  relationships: z.array(z.object({
+    kind: z.enum(['callers', 'callees', 'imports', 'impact']),
+    source: packetGraphSite,
+    target: packetGraphSite,
+    origin: z.literal('compiler'),
+    runtimeExecution: z.literal('unknown'),
+  }).strict()).max(12),
+  unmapped: z.array(text).max(24),
+  claimValidation: z.literal('manifest-evidence-only'),
+}).strict();
+export type CapabilityPacketGraph = z.infer<typeof CapabilityPacketGraphSchema>;
+
 export const CapabilityPacketSchema = z
   .object({
     schemaVersion: z.literal('dream-capability-packet-v1'),
@@ -178,6 +205,7 @@ export const CapabilityPacketSchema = z
     unitHash: sha,
     manifestRevision: z.string().trim().min(1).max(160),
     sources: z.array(CapabilitySourceSchema).min(2).max(24),
+    graph: CapabilityPacketGraphSchema.optional(),
     extraction: z
       .object({
         recipeVersion: id,
@@ -233,6 +261,21 @@ export const CapabilityPacketSchema = z
       if (source && !source.excerpt.includes(ref.anchor)) fail('Evidence anchor is absent from its excerpt: ' + ref.id);
     }
     if (sources.size !== packet.unit.evidence.length) fail('Packet includes undeclared evidence');
+    if (packet.graph) {
+      if (packet.graph.repositoryId !== packet.scope.repositoryId) fail('Graph repository differs from packet scope');
+      const siteIsCited = (site: z.infer<typeof packetGraphSite>) => packet.sources.some(source =>
+        source.path === site.path && source.sourceHash === site.sourceHash);
+      for (const candidate of packet.graph.candidates) {
+        const source = sources.get(candidate.evidenceId);
+        if (!source || source.kind !== 'implementation' || source.path !== candidate.path
+          || source.sourceHash !== candidate.sourceHash) fail('Graph boundary lacks cited implementation evidence');
+      }
+      for (const edge of packet.graph.relationships) {
+        if (!siteIsCited(edge.source) || !siteIsCited(edge.target)) fail('Graph relationship escapes cited packet source');
+      }
+      if (packet.graph.status === 'unknown' && (packet.graph.candidates.length || packet.graph.relationships.length))
+        fail('Unknown graph cannot present measured boundaries');
+    }
     const paths = new Set(packet.sources.map((source) => source.path));
     if (
       packet.coverage.includedPaths.length !== paths.size ||

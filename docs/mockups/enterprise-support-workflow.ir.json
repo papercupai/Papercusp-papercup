@@ -1,0 +1,422 @@
+{
+  "irVersion": "0.1",
+  "surface": "workflows-support-to-engineering",
+  "ecosystem": "react-tailwind",
+  "layout": {
+    "kind": "stack",
+    "direction": "vertical",
+    "gap": {
+      "token": "space.md"
+    },
+    "children": [
+      {
+        "kind": "heading",
+        "copy": {
+          "default": "Support to engineering",
+          "key": "workflow.support.screen.layout.children.0.copy"
+        }
+      },
+      {
+        "kind": "banner",
+        "copy": {
+          "default": "Internal simulation · Assumed support workflow",
+          "key": "workflow.support.screen.layout.children.1.copy"
+        },
+        "a11y": {
+          "role": "status",
+          "ariaLive": "polite"
+        }
+      },
+      {
+        "kind": "card",
+        "title": {
+          "default": "Approved workflow",
+          "key": "workflow.support.screen.layout.children.2.title"
+        },
+        "children": [
+          {
+            "kind": "text",
+            "copy": {
+              "default": "Accountable owner, allowed sources/actions, remaining finite allocation and evaluation criteria",
+              "key": "workflow.support.screen.layout.children.2.children.0.copy"
+            },
+            "binding": {
+              "slot": "approvedWorkflow.authority",
+              "shape": "ApprovedWorkflowAuthority"
+            }
+          },
+          {
+            "kind": "form",
+            "children": [
+              {
+                "kind": "component",
+                "ref": "support-case",
+                "a11y": {
+                  "ariaLabel": {
+                    "default": "Allowed support case",
+                    "key": "workflow.support.screen.layout.children.2.children.1.children.0.a11y.ariaLabel"
+                  }
+                },
+                "binding": {
+                  "slot": "supportCaseId"
+                }
+              },
+              {
+                "kind": "component",
+                "ref": "approved-revision",
+                "a11y": {
+                  "ariaLabel": {
+                    "default": "Approved workflow revision",
+                    "key": "workflow.support.screen.layout.children.2.children.1.children.1.a11y.ariaLabel"
+                  }
+                },
+                "binding": {
+                  "slot": "approvedRevision"
+                }
+              },
+              {
+                "kind": "component",
+                "ref": "run",
+                "interactions": [
+                  "submit-approved-revision-with-request-key"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "card",
+        "title": {
+          "default": "Run",
+          "key": "workflow.support.screen.layout.children.3.title"
+        },
+        "binding": {
+          "slot": "selectedOperation",
+          "shape": "BlueprintOperationHandle"
+        },
+        "children": [
+          {
+            "kind": "text",
+            "copy": {
+              "default": "Preparation is running. Submission is not a business outcome.",
+              "key": "workflow.support.screen.layout.children.3.children.0.copy"
+            },
+            "a11y": {
+              "role": "status",
+              "ariaLive": "polite"
+            }
+          },
+          {
+            "kind": "component",
+            "ref": "stop",
+            "interactions": [
+              "cancel-canonical-operation"
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "card",
+        "title": {
+          "default": "Prepared result",
+          "key": "workflow.support.screen.layout.children.4.title"
+        },
+        "binding": {
+          "slot": "validatedResult",
+          "shape": "SupportToEngineeringResult"
+        },
+        "children": [
+          {
+            "kind": "text",
+            "copy": {
+              "default": "Cited summary, reproduction steps or checklist, and suggested responsible role",
+              "key": "workflow.support.screen.layout.children.4.children.0.copy"
+            }
+          },
+          {
+            "kind": "list",
+            "binding": {
+              "slot": "validatedResult.citations",
+              "repeats": true
+            },
+            "item": {
+              "kind": "link",
+              "copy": {
+                "default": "Open source",
+                "key": "workflow.support.screen.layout.children.4.children.1.item.copy"
+              },
+              "a11y": {
+                "role": "link",
+                "ariaLabel": {
+                  "key": "workflow.support.source",
+                  "default": "Open cited support source"
+                }
+              }
+            }
+          },
+          {
+            "kind": "text",
+            "copy": {
+              "default": "Awaiting a distinct authorized reviewer",
+              "key": "workflow.support.screen.layout.children.4.children.2.copy"
+            }
+          },
+          {
+            "kind": "component",
+            "ref": "review-reason",
+            "a11y": {
+              "ariaLabel": {
+                "default": "Review reason",
+                "key": "workflow.support.screen.layout.children.4.children.3.a11y.ariaLabel"
+              }
+            },
+            "binding": {
+              "slot": "reviewDraft.reason"
+            }
+          },
+          {
+            "kind": "component",
+            "ref": "accept",
+            "interactions": [
+              "record-distinct-principal-acceptance-for-exact-output"
+            ]
+          },
+          {
+            "kind": "component",
+            "ref": "reject",
+            "interactions": [
+              "record-distinct-principal-rejection-for-exact-output"
+            ]
+          },
+          {
+            "kind": "component",
+            "ref": "rework",
+            "interactions": [
+              "record-rework-for-exact-output"
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "card",
+        "title": {
+          "default": "Business outcome",
+          "key": "workflow.support.screen.layout.children.5.title"
+        },
+        "binding": {
+          "slot": "operationBusinessReview",
+          "shape": "PinnedBusinessReview"
+        },
+        "children": [
+          {
+            "kind": "text",
+            "copy": {
+              "default": "Decision, reviewer, reason, exact output evidence and approved revision remain in durable history",
+              "key": "workflow.support.screen.layout.children.5.children.0.copy"
+            }
+          }
+        ]
+      },
+      {
+        "kind": "card",
+        "title": {
+          "default": "Administrator controls",
+          "key": "workflow.support.screen.layout.children.6.title"
+        },
+        "children": [
+          {
+            "kind": "text",
+            "copy": {
+              "default": "Promote or roll back an authorized canonical revision; existing runs keep their pinned revision.",
+              "key": "workflow.support.screen.layout.children.6.children.0.copy"
+            }
+          },
+          {
+            "kind": "component",
+            "ref": "promote",
+            "interactions": [
+              "promote-approved-canonical-revision"
+            ]
+          },
+          {
+            "kind": "component",
+            "ref": "rollback",
+            "interactions": [
+              "restore-previous-approved-canonical-revision"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "support-case",
+      "registry": "control.select",
+      "props": {
+        "value": "",
+        "options": [],
+        "placeholder": "Choose an allowed support case"
+      }
+    },
+    {
+      "id": "approved-revision",
+      "registry": "control.select",
+      "props": {
+        "value": "",
+        "options": [],
+        "placeholder": "Choose an approved revision"
+      }
+    },
+    {
+      "id": "review-reason",
+      "registry": "control.text",
+      "props": {
+        "value": "",
+        "placeholder": "Explain your decision"
+      }
+    },
+    {
+      "id": "run",
+      "registry": "action.primary",
+      "props": {
+        "label": "Prepare engineering handoff"
+      }
+    },
+    {
+      "id": "stop",
+      "registry": "action.secondary",
+      "props": {
+        "label": "Stop run"
+      }
+    },
+    {
+      "id": "accept",
+      "registry": "action.primary",
+      "props": {
+        "label": "Accept result"
+      }
+    },
+    {
+      "id": "reject",
+      "registry": "action.secondary",
+      "props": {
+        "label": "Reject result"
+      }
+    },
+    {
+      "id": "rework",
+      "registry": "action.secondary",
+      "props": {
+        "label": "Request rework"
+      }
+    },
+    {
+      "id": "promote",
+      "registry": "action.secondary",
+      "props": {
+        "label": "Promote revision"
+      }
+    },
+    {
+      "id": "rollback",
+      "registry": "action.secondary",
+      "props": {
+        "label": "Roll back revision"
+      }
+    }
+  ],
+  "tokens": {
+    "uses": [
+      "space.md"
+    ]
+  },
+  "states": {
+    "empty": {
+      "kind": "empty-state",
+      "copy": {
+        "default": "No approved support workflow is available.",
+        "key": "workflow.support.screen.states.empty.copy"
+      }
+    },
+    "denied": {
+      "kind": "banner",
+      "copy": {
+        "default": "You no longer have access to this case or action.",
+        "key": "workflow.support.screen.states.denied.copy"
+      },
+      "a11y": {
+        "role": "alert",
+        "ariaLive": "assertive"
+      }
+    },
+    "exhausted": {
+      "kind": "banner",
+      "copy": {
+        "default": "The workflow allocation is exhausted. Ask the administrator to review its allowance.",
+        "key": "workflow.support.screen.states.exhausted.copy"
+      },
+      "a11y": {
+        "role": "alert",
+        "ariaLive": "assertive"
+      }
+    },
+    "pending": {
+      "kind": "spinner",
+      "copy": {
+        "default": "Loading workflow",
+        "key": "workflow.support.screen.states.pending.copy"
+      },
+      "a11y": {
+        "role": "status",
+        "ariaLive": "polite"
+      }
+    },
+    "selfReview": {
+      "kind": "banner",
+      "copy": {
+        "default": "A distinct authorized reviewer must decide on this result.",
+        "key": "workflow.support.screen.states.selfReview.copy"
+      },
+      "a11y": {
+        "role": "alert",
+        "ariaLive": "assertive"
+      }
+    },
+    "error": {
+      "kind": "banner",
+      "copy": {
+        "default": "The operation could not be completed. Your last saved result remains available.",
+        "key": "workflow.support.screen.states.error.copy"
+      },
+      "a11y": {
+        "role": "alert",
+        "ariaLive": "assertive"
+      },
+      "children": [
+        {
+          "kind": "button",
+          "label": {
+            "key": "workflow.support.retry",
+            "default": "Retry"
+          },
+          "interactions": [
+            "reload-canonical-operation"
+          ],
+          "a11y": {
+            "role": "button",
+            "ariaLabel": {
+              "key": "workflow.support.retry.label",
+              "default": "Retry loading workflow"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "a11y": {
+    "landmark": "region",
+    "headingLevel": 2
+  }
+}

@@ -193,8 +193,8 @@ const ALLOW = [
   // ── postgres.js RESULT-ARRAY `.count`, not a row column ────────────────────────────────
   // Every one of these is `<result>.count` on the object postgres.js returns from a
   // DELETE/UPDATE — the driver's affected-row count, which it populates on every command.
-  // The analyzer sees `x.count ?? 0` on a variable assigned from a sql`` template and cannot
-  // tell that apart from `rows[0].count` (a real, NULLable column read). The `?? 0` here is
+  // These historical entries predate the analyzer's result-metadata distinction.
+  // `rows[0].count` is a real, NULLable column; `rows.count` is driver metadata. The `?? 0` here is
   // a no-op, and the zero it would produce is the honest "nothing matched".
   {
     at: "packages/operator-core/lib/blueprint/commit-reproject-real.ts:110",
@@ -568,6 +568,12 @@ export function analyzeForExplicitPresence({ path, text }) {
         continue;
       }
       if (sqlAt !== undefined && i - sqlAt <= LOOKBACK_LINES) {
+        // Awaited postgres.js query results are arrays with CommandComplete
+        // metadata. `.count` on that array is the affected-row count, populated
+        // by the driver even for zero-row UPDATE/DELETE (connection.js), not a
+        // nullable database column. Preserve indexed `rows[0].count` detection
+        // and every JSON/IPC count read; only this exact metadata access is safe.
+        if (/^\w+\s*\.\s*count\s*(?:\?\?|\|\|)/.test(m[0])) continue;
         hits.push({
           line: i + 1,
           snippet: (rawLines[i] ?? line).trim().slice(0, 160),

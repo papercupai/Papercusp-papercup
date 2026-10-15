@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-058 bounded packaged boot stderr file drain",
+  "framework": "shell",
+  "cwd": ".",
+  "parentWorkItemId": "WI-10007352",
+  "workItemId": "EI-25629008665505233",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "evidencePlane": "saved-conventional-node-test-wrapper",
+  "candidateAccepted": false,
+  "command": [
+    "bash",
+    "-c",
+    "node --test --test-name-pattern='packaged import|Linux import probe' papercusp-desktop/test/verify-sidecar-bundle-spa-layout.test.js\nbash -n papercusp-desktop/bin/verify-sidecar-bundle.sh"
+  ],
+  "startedAt": "2026-10-10T21:26:36.820Z",
+  "finishedAt": "2026-10-10T21:26:41.377Z",
+  "timestampEvidence": "Start is the saved native tool-call timestamp including the immediately preceding atomic patch; finish is the durable runner JOB END. No new execution was made during evidence recovery.",
+  "exitCode": 0,
+  "summary": "Seven selected conventional node:test cases pass with zero failures or skips; bash syntax check completed in the same successful wrapper. Two cases emit 2 MiB stderr through the actual verifier: successful receipt is accepted, and a real status-2 child failure remains visible with a bounded diagnostic tail. Timeout remains 60000 ms and captured stdout maxBuffer remains 1048576. This records the saved run without replay.",
+  "rawLog": {
+    "path": ".papercusp/scratch/bash-9be6879a-bd0.log",
+    "sha256": "424343ac7e5686ea2d45b92e26883f944a3e2163a413beb9947a876cf2ebbd5a"
+  },
+  "sourceSettlementCommit": "77631692d95b5765160c27cd89b5055a99bd5be9",
+  "sourceSettlementRepository": "papercusp-desktop",
+  "sourceHashes": {
+    "papercusp-desktop/bin/verify-sidecar-bundle.sh": "f6e8e9f9e52b5ed80d2f02eb838f2b6c6c51936a4ab3e9a29ecad084a4ef476d",
+    "papercusp-desktop/test/verify-sidecar-bundle-spa-layout.test.js": "6727ff2d21cbc434581ee810f01c60b0153c230285b8ec58896e85337257804a"
+  },
+  "regression": {
+    "framework": "node:test",
+    "testPath": "papercusp-desktop/test/verify-sidecar-bundle-spa-layout.test.js",
+    "passed": 7,
+    "failed": 0,
+    "skipped": 0,
+    "tests": [
+      "packaged import closure qualifies isolated final-image imports, not build-host assets",
+      "packaged import closure accepts a receipt after stderr exceeds the pipe buffer",
+      "packaged import failure keeps a bounded tail after oversized stderr",
+      "Linux import probe launches with the host allocator contract and preserves explicit settings",
+      "packaged import timeout preserves partial output and launch diagnostics",
+      "packaged import failure retains both child output streams",
+      "packaged import closure refuses pruned eager persona reads and missing probe receipts"
+    ]
+  },
+  "assertions": [
+    {
+      "id": "oversized-stderr-success",
+      "passed": true,
+      "evidence": "packaged import closure accepts a receipt after stderr exceeds the pipe buffer"
+    },
+    {
+      "id": "oversized-stderr-real-failure",
+      "passed": true,
+      "evidence": "packaged import failure keeps a bounded tail after oversized stderr"
+    },
+    {
+      "id": "deadline-and-stdout-bound-preserved",
+      "passed": true,
+      "evidence": "The conventional timeout case asserts options.timeout===60000 and options.maxBuffer===1048576; partial timeout receipts are refused."
+    },
+    {
+      "id": "source-bytes-committed",
+      "passed": true,
+      "evidence": "Both exact tested hashes match working tree and desktop HEAD."
+    },
+    {
+      "id": "owned-file-and-home-cleanup",
+      "passed": true,
+      "evidence": "The maintained helper closes the stderr descriptor in finally and removes its isolated HOME in the outer finally."
+    }
+  ],
+  "limitations": [
+    "This does not qualify the corrected ARM profiler or explain the original 60-second startup timeout.",
+    "This does not establish native installer, trusted release, migration journey or final plan acceptance."
+  ]
+}

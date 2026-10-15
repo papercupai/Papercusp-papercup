@@ -26,6 +26,11 @@ vi.mock('../../scheduler/claim-spec-store', () => ({
 vi.mock('../../scheduler/fleet-scope-admission', () => ({
   readFleetPauseState: vi.fn(),
 }));
+// EI-23772523186892689: the caller-vs-fleet spec comparison reads the caller's latest fleet
+// membership (dynamic import inside the handler's per-agent-spec branch only).
+vi.mock('../../fleet-membership-store', () => ({
+  latestFleetMembership: vi.fn(),
+}));
 // EI-21834285144372521: the handler now runs the SAME post-claim plan-lane guard
 // scheduler:get_next uses, read-only, over plan-linked rows in the returned page. Mocked so
 // existing fixtures (WI-B carries plan:'p') keep their pre-fix "claimable" behaviour by
@@ -40,13 +45,14 @@ vi.mock('../coordination/identity', () => ({
 }));
 
 import { readIssueClaimability } from '../../scheduler/get-next';
-import { DEFAULT_CLAIM_SPEC } from '../../scheduler/claim-spec';
+import { DEFAULT_CLAIM_SPEC, type ClaimSpec } from '../../scheduler/claim-spec';
 import {
   getClaimSpecRecord,
   resolveFleetClaimSpec,
   listFleetClaimSpecCandidates,
 } from '../../scheduler/claim-spec-store';
 import { readFleetPauseState } from '../../scheduler/fleet-scope-admission';
+import { latestFleetMembership } from '../../fleet-membership-store';
 import { planItemLaneBlockReason } from '../../scheduler/plan-item-lane-guard';
 import { mockResolvedTyped } from '../../testing/typed-mock';
 import { materializeCountEvidence } from '../../count-evidence-contract';
@@ -57,6 +63,8 @@ const recM = vi.mocked(resolveFleetClaimSpec);
 const candM = vi.mocked(listFleetClaimSpecCandidates);
 const pauseM = vi.mocked(readFleetPauseState);
 const laneM = vi.mocked(planItemLaneBlockReason);
+const membershipM = vi.mocked(latestFleetMembership);
+const logM = vi.fn();
 
 const tool = (await import('./claimable')).default;
 
@@ -92,6 +100,9 @@ const BREAKDOWN = {
     unattributedClaimHolds: 0,
     pendingAgentReview: 1,
     revisionRequestedAgentReview: 0,
+    revisionReproductionValidation: 0,
+    revisionContentAdoptionCandidates: 0,
+    revisionLegacyException: 0,
   },
 };
 const ROWS = [
@@ -101,7 +112,7 @@ const ROWS = [
 ];
 
 const run = async (args: unknown) => {
-  const res = (await tool.handler(args as never, { ownerId: 'probe', workspaceId: 'ws-1' } as never)) as {
+  const res = (await tool.handler(args as never, { ownerId: 'probe', workspaceId: 'ws-1', log: logM } as never)) as {
     content: { text: string }[];
   };
   return JSON.parse(res.content[0]!.text);
@@ -161,6 +172,7 @@ let admittedValue: Record<string, unknown> = HEALTHY_ADMITTED;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  logM.mockClear();
   hiveMocks.potHomeSlugForHarness.mockResolvedValue(null);
   sampleValue = EMPTY_SAMPLE;
   admittedValue = HEALTHY_ADMITTED;
@@ -168,12 +180,20 @@ beforeEach(() => {
   breakdownValue = BREAKDOWN;
   // Stands in for the ONE snapshot read: honours breakdownOnly/sampleLimit exactly as the
   // real readIssueClaimability does, so the handler's payload assembly is what's under test.
-  readM.mockImplementation((async (_filter: unknown, _opts: unknown, readOpts: { breakdownOnly?: boolean; sampleLimit?: number }) => ({
-    breakdown: breakdownValue,
-    rows: readOpts.breakdownOnly ? [] : rowsValue,
-    admitted: admittedValue,
-    ...(readOpts.sampleLimit ? { sample: sampleValue } : {}),
-  })) as never);
+  readM.mockImplementation((async (_filter: unknown, _opts: unknown, readOpts: {
+    breakdownOnly?: boolean;
+    sampleLimit?: number;
+    onStageTiming?: (stage: string, elapsedMs: number) => void;
+  }) => {
+    readOpts.onStageTiming?.('candidate-materialization', 12);
+    readOpts.onStageTiming?.('claimable-rows', 3);
+    return {
+      breakdown: breakdownValue,
+      rows: readOpts.breakdownOnly ? [] : rowsValue,
+      admitted: admittedValue,
+      ...(readOpts.sampleLimit ? { sample: sampleValue } : {}),
+    };
+  }) as never);
   recordM.mockResolvedValue({
     source: 'default',
     spec: {
@@ -193,6 +213,35 @@ beforeEach(() => {
 });
 
 describe('work_items:claimable handler', () => {
+  it('logs SQL read stages and bounded plan-lane guard timings without changing the result', async () => {
+    laneM.mockResolvedValue(null);
+
+    const out = await run({ harness: 'papercup' });
+
+    expect(out.claimable.map((row: { id: string }) => row.id)).toEqual(['WI-A', 'WI-B', 'WI-C']);
+    expect(logM).toHaveBeenCalledTimes(1);
+    const timingMessage = logM.mock.calls[0]![0] as string;
+    const timingMarker = '[work_items:claimable:timing] ';
+    expect(timingMessage.startsWith(timingMarker)).toBe(true);
+    const timing = JSON.parse(timingMessage.slice(timingMarker.length)) as {
+      planLaneGuard: { elapsedMs: number };
+    };
+    expect(timing).toMatchObject({
+      level: 'info',
+      outcome: 'ok',
+      readStageMs: expect.objectContaining({
+        'candidate-materialization': 12,
+        'claimable-rows': 3,
+      }),
+      planLaneGuard: expect.objectContaining({
+        rowsScanned: ROWS.length,
+        planLinkedRowsChecked: 1,
+        blockedPlanRows: 0,
+      }),
+    });
+    expect(timing.planLaneGuard.elapsedMs).toBeGreaterThanOrEqual(0);
+  });
+
   it('resolves member harnesses to their Hive home and discloses both scopes', async () => {
     hiveMocks.potHomeSlugForHarness.mockResolvedValue('oddsmith-hive');
 
@@ -321,6 +370,130 @@ describe('work_items:claimable handler', () => {
     expect(out.rows).toEqual([]);
     expect(out.note).toContain('FLEET WINDING DOWN');
     expect(out.note).toContain('matchedByFilter is diagnostic only');
+  });
+
+  describe('EI-23772523186892689: a per-agent spec that overrides the caller\'s fleet spec is named in-band', () => {
+    const FLEET = 'goal-drain-work-on-everything-60d3a8';
+    const specWith = (specId: string, revision: number): ClaimSpec => ({
+      ...DEFAULT_CLAIM_SPEC,
+      specId,
+      revision,
+      view: { filter: { field: 'goal', op: '=', value: 'g' } },
+      states: ['open'],
+    });
+    const cupRecord = (specId: string) => ({
+      source: 'cup' as const,
+      spec: specWith(specId, 3),
+      revision: 3,
+      updatedBy: null,
+      updatedAt: null,
+      harnessSlug: null,
+    });
+    const fleetResolved = (specId: string, matchedBy: 'fleet-slug' | 'spec-id' = 'fleet-slug') => ({
+      record: {
+        source: 'fleet' as const,
+        spec: specWith(specId, 3),
+        revision: 3,
+        updatedBy: null,
+        updatedAt: null,
+        harnessSlug: null,
+        fleetSlug: FLEET,
+      },
+      fleetSlug: FLEET,
+      matchedBy,
+    });
+
+    it('different spec ids: names BOTH lanes, says diverges, and the note refuses the "fleet has no work" reading', async () => {
+      recordM.mockResolvedValue(cupRecord('plans-start-dry-run-lane'));
+      membershipM.mockResolvedValueOnce({ fleetSlug: FLEET, fleetRole: 'leader' });
+      recM.mockResolvedValueOnce(fleetResolved('goal-fleet-lane'));
+
+      const out = await run({ harness: 'papercup' });
+
+      expect(recM).toHaveBeenCalledWith({ spec: FLEET, workspaceId: 'ws-1' });
+      expect(out.spec).toMatchObject({ specId: 'plans-start-dry-run-lane', source: 'cup', matchedBy: 'caller-effective' });
+      expect(out.claimableCallerScope.fleetSpecComparison).toEqual({
+        fleetSlug: FLEET,
+        callerSpecId: 'plans-start-dry-run-lane',
+        fleetSpecId: 'goal-fleet-lane',
+        fleetSpecRevision: 3,
+        diverges: true,
+      });
+      expect(out.note).toContain("CALLER SPEC ≠ YOUR FLEET'S SPEC");
+      expect(out.note).toContain("'plans-start-dry-run-lane'");
+      expect(out.note).toContain("'goal-fleet-lane' rev 3");
+      expect(out.note).toContain('a 0 here does not mean the fleet has no work');
+      expect(out.note).toContain(`spec:'${FLEET}'`);
+    });
+
+    it('same spec id: reports diverges:false and adds NO warning', async () => {
+      recordM.mockResolvedValue(cupRecord('shared-lane'));
+      membershipM.mockResolvedValueOnce({ fleetSlug: FLEET, fleetRole: 'member' });
+      recM.mockResolvedValueOnce(fleetResolved('shared-lane'));
+
+      const out = await run({ harness: 'papercup' });
+
+      expect(out.claimableCallerScope.fleetSpecComparison.diverges).toBe(false);
+      expect(out.note).not.toContain('CALLER SPEC');
+    });
+
+    it("fleet spec unreadable: diverges is null (not false) and the note says it MAY differ", async () => {
+      recordM.mockResolvedValue(cupRecord('plans-start-dry-run-lane'));
+      membershipM.mockResolvedValueOnce({ fleetSlug: FLEET, fleetRole: 'leader' });
+      recM.mockResolvedValueOnce(null);
+
+      const out = await run({ harness: 'papercup' });
+
+      expect(out.claimableCallerScope.fleetSpecComparison).toEqual({
+        fleetSlug: FLEET,
+        callerSpecId: 'plans-start-dry-run-lane',
+        fleetSpecId: null,
+        fleetSpecRevision: null,
+        diverges: null,
+      });
+      expect(out.note).toContain("CALLER SPEC MAY DIFFER FROM YOUR FLEET'S");
+    });
+
+    it('a match in the specId namespace is NOT this fleet\'s spec (some other row wearing a coincident name)', async () => {
+      recordM.mockResolvedValue(cupRecord('plans-start-dry-run-lane'));
+      membershipM.mockResolvedValueOnce({ fleetSlug: FLEET, fleetRole: 'leader' });
+      recM.mockResolvedValueOnce(fleetResolved('someone-elses-lane', 'spec-id'));
+
+      const out = await run({ harness: 'papercup' });
+
+      expect(out.claimableCallerScope.fleetSpecComparison.fleetSpecId).toBeNull();
+      expect(out.claimableCallerScope.fleetSpecComparison.diverges).toBeNull();
+    });
+
+    it('per-agent spec but no fleet membership (or an explicit leave): no comparison, no fleet lookup', async () => {
+      recordM.mockResolvedValue(cupRecord('solo-lane'));
+      membershipM.mockResolvedValueOnce({ fleetSlug: null, fleetRole: null });
+
+      const out = await run({ harness: 'papercup' });
+
+      expect(out.claimableCallerScope).not.toHaveProperty('fleetSpecComparison');
+      expect(recM).not.toHaveBeenCalled();
+      expect(out.note).not.toContain('CALLER SPEC');
+    });
+
+    it('a failed membership read never fails the claimability read — the comparison is simply absent', async () => {
+      recordM.mockResolvedValue(cupRecord('plans-start-dry-run-lane'));
+      membershipM.mockRejectedValueOnce(new Error('pg down'));
+
+      const out = await run({ harness: 'papercup' });
+
+      expect(out.ok).toBe(true);
+      expect(out.claimableCallerScope).not.toHaveProperty('fleetSpecComparison');
+    });
+
+    it('a fleet-inherited caller spec (source:fleet) never triggers the comparison', async () => {
+      recordM.mockResolvedValue({ ...cupRecord('goal-fleet-lane'), source: 'fleet' as const, fleetSlug: FLEET });
+
+      const out = await run({ harness: 'papercup' });
+
+      expect(membershipM).not.toHaveBeenCalled();
+      expect(out.claimableCallerScope).not.toHaveProperty('fleetSpecComparison');
+    });
   });
 
   it('emits self-identifying count evidence with an explicit no-cutoff contract', async () => {
@@ -777,6 +950,26 @@ describe('work_items:claimable handler', () => {
     expect(out.excludedSample).toBeUndefined();
   });
 
+  it('documents the sampleExcluded limit that its schema enforces', () => {
+    const argsSchema = tool.args as unknown as {
+      shape: { sampleExcluded: { description?: string } };
+      safeParse: (value: unknown) => { success: boolean };
+    };
+    expect(argsSchema.shape.sampleExcluded.description).toContain(
+      'Valid values are 1 through 10 (maximum 10 ids per floor).',
+    );
+    expect(argsSchema.safeParse({ harness: 'papercup', sampleExcluded: 10 }).success).toBe(true);
+    expect(argsSchema.safeParse({ harness: 'papercup', sampleExcluded: 11 }).success).toBe(false);
+  });
+
+  it('distinguishes ordinary-claim review exclusions from pending reviewer candidates', () => {
+    const description = String(tool.description ?? '');
+    expect(description).toContain('`excludedSample.agentReview`');
+    expect(description).toContain('can include `revision-requested` reviews');
+    expect(description).toContain('`excludedSample.queueControl.agentReview`');
+    expect(description).toContain('pending reviewer candidates only');
+  });
+
   it('sampleExcluded rides through as sampleLimit on the SAME snapshot read + surfaces excludedSample', async () => {
     sampleValue = {
       ...EMPTY_SAMPLE,
@@ -809,6 +1002,55 @@ describe('work_items:claimable handler', () => {
       age: { status: 'missing', bucket: 'unknown' },
       unparkCondition: { status: 'stated' },
     });
+  });
+
+  it('EI-25283593910350444: breakdownOnly still returns the requested excluded sample', async () => {
+    const reviewRow = {
+      id: 'WI-4',
+      status: 'pending',
+      submittedBy: 'su-submitter',
+      ledgerIdeaId: 'idea-4',
+      round: 1,
+    };
+    sampleValue = {
+      ...EMPTY_SAMPLE,
+      queueControl: {
+        ...EMPTY_QUEUE_CONTROL_SAMPLE,
+        agentReview: [reviewRow],
+      },
+    };
+
+    const out = await run({ harness: 'papercup', kind: 'bug', breakdownOnly: true, sampleExcluded: 5 });
+
+    expect(readM).toHaveBeenCalledWith(
+      { field: 'kind', op: '=', value: 'bug' },
+      expect.objectContaining({ harness: 'papercup', assignee: 'probe' }),
+      expect.objectContaining({ breakdownOnly: true, sampleLimit: 5 }),
+    );
+    expect(out.claimable).toEqual([]);
+    expect(out.excludedSample.queueControl.agentReview).toEqual([reviewRow]);
+  });
+
+  it('keeps revision-requested review rows in the excluded sample, not the claimable rows', async () => {
+    const reviewRow = {
+      id: 'EI-review-revision-requested',
+      status: 'revision-requested',
+      submittedBy: 'su-author',
+      ledgerIdeaId: 'idea-revision-requested',
+      round: 1,
+    };
+    sampleValue = {
+      ...EMPTY_SAMPLE,
+      queueControl: {
+        ...EMPTY_QUEUE_CONTROL_SAMPLE,
+        agentReview: [reviewRow],
+      },
+    };
+
+    const out = await run({ harness: 'papercup', kind: 'bug', sampleExcluded: 5 });
+
+    expect(out.claimable.map((row: { id: string }) => row.id)).not.toContain(reviewRow.id);
+    expect(out.excludedSample.queueControl.agentReview).toEqual([reviewRow]);
   });
 
   it('WI-5947: the counts, the rows and the sample come from ONE read — the handler never issues them separately', async () => {

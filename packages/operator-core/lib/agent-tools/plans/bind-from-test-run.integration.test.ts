@@ -29,7 +29,8 @@ beforeAll(async () => {
   await db.sql.unsafe(`CREATE TABLE harness_shared.test_runs (
     id bigserial PRIMARY KEY, file_path text, status text, source text,
     harness_slug text, workspace_id text, commit_sha text,
-    worktree_dirty boolean, execution_details jsonb, finished_at timestamptz
+    worktree_dirty boolean, execution_details jsonb,
+    started_at timestamptz NOT NULL DEFAULT now(), finished_at timestamptz
   )`);
   h.repoRoot = await mkdtemp(path.join(tmpdir(), 'bind-recorded-root-'));
   const dir = path.join(h.repoRoot, 'libs/child/src');

@@ -18,6 +18,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { decideWake } from '@papercusp/debounce-coalesce';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { withPgRetry } from '../../pg-transient-retry';
@@ -27,6 +28,7 @@ import { eventKeySubscriberScope, listEventKeySubscribers } from '../../agent-to
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { admitSpawn } from '../../fleet/governor';
 import { activeWorkspaceId, backgroundWorkspaceIds } from '../../workspace-registry';
+import { admitWakeFanout, readWakeFanoutPacing } from '../../agent-tools/coordination/wake-fanout-pacing';
 import { runWithWorkspace } from '../../workspace-als';
 import {
   cancelAwaitsByIds,
@@ -61,13 +63,21 @@ import {
   reconcileComposedRoot,
   reconcileComposedRoots,
 } from './compose-store';
-import { executeWake, degradeToInboxOrDrop, type ExecuteWakeDeps } from './wake-executor';
+import type { ExecuteWakeDeps } from './wake-executor';
 import { classifyResumeTurnExit, type ResumeTurnContext, type ResumeTurnExitRaw } from './resume-turn-outcome';
 import { lastInboxReadAtBatch } from '../../agent-tools/coordination/inbox-read-freshness';
 import { repliedMsgIdsBatch } from '../../agent-tools/coordination/messages';
+import { readWatermark } from '../../agent-tools/coordination/watermarks';
 import { getLineEnvelopeById } from '../../agent-tools/coordination/line-event-by-id';
+import { getSettledInboxMessageIds } from '../../attention/bulk-run-store';
 import { withBoundedTimeout } from '../../bounded-timeout';
-import { classifyInboxWakeGroup } from './inbox-wake-actionability';
+import { readColdLoopMarker } from '../../su-cold-loop';
+import {
+  classifyInboxWakeMessage,
+  classifyInboxWakeGroup,
+  inboxWakeGroupHandled,
+  inboxWakeMessageComponents,
+} from './inbox-wake-actionability';
 import { wakeChannelInvokesTurn, type AwaitRow, type DeliveryWork, type WakeChannel } from './types';
 import {
   payloadIsTimeout,
@@ -88,6 +98,7 @@ import {
   wakeProgressLeaseOwner,
 } from './progress-lease';
 import { appendFleetEventActivity } from '../../fleet-event-activity';
+import { pumpHealth } from './pump-health';
 
 function log(msg: string): void {
   console.warn(`[await-event] ${msg}`);
@@ -227,6 +238,8 @@ export interface EmitResult {
   key: string;
   /** Wake awaits fired by this emit (deliveries queued). */
   woken: number;
+  /** Scheduled bulk deliveries excluded from the immediate woken count. */
+  deferred?: number;
   /** Notify recipients the inbox message went to (post-expansion happens in sendMessage). */
   notified: string[];
   msgId: string | null;
@@ -392,6 +405,7 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
     }
   }
 
+  let deferred = 0;
   // 2. Queue durable wake deliveries + kick the pump off the hot path.
   if (wakes.length > 0) {
     await insertDeliveries({
@@ -402,6 +416,8 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
       // P0a: persist the emit attribution on the delivery so a later turn-death is
       // attributable to its source (e.g. a loop fire's `loop:<routineId>`).
       source: opts.source ?? null,
+      onDeferred: () => { deferred++; },
+      pacingWorkspaceId: ws,
     });
     if (autoPumpEnabled) {
       setImmediate(() => {
@@ -508,7 +524,8 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
   return {
     ok: true,
     key: opts.key,
-    woken: wakes.length,
+    woken: wakes.length - deferred,
+    deferred,
     notified: notifyTo,
     msgId,
     waiters: fired.length,
@@ -726,8 +743,19 @@ function deliveryMsgId(payload: unknown): string | null {
   return null;
 }
 
+function deliveryContainsLoopMarker(payload: unknown): boolean {
+  if (readColdLoopMarker(payload) !== null) return true;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  const events = (payload as { events?: unknown }).events;
+  return Array.isArray(events) && events.some((entry) =>
+    entry != null && typeof entry === 'object' &&
+    readColdLoopMarker((entry as { payload?: unknown }).payload) !== null,
+  );
+}
+
 /** Upper bound for the delivery-time envelope reads behind the actionability gate. */
 const INBOX_WAKE_ENVELOPE_LOOKUP_TIMEOUT_MS = 3_000;
+const SETTLED_INBOX_RUN_RECEIPT_LOOKUP_TIMEOUT_MS = 3_000;
 
 /**
  * P-024 clauses B/C: resolve the coord envelopes an inbox-wake group points at,
@@ -754,6 +782,26 @@ export async function resolveInboxWakeEnvelopes(msgIds: readonly string[]): Prom
     { fallback: [], timeoutMs: INBOX_WAKE_ENVELOPE_LOOKUP_TIMEOUT_MS, label: 'inbox-wake actionability envelopes' },
   );
   return out;
+}
+
+/** Settled bulk-run receipts discharge only exact thread replies, and a read
+ * failure or timeout leaves the receipt set empty so the wake gate fails open. */
+async function settledInboxWakeThreadReplyMsgIds(
+  msgIds: readonly string[],
+  envelopes: ReadonlyMap<string, unknown>,
+  workspaceId: string,
+): Promise<Set<string>> {
+  const replyMsgIds = msgIds.filter((msgId) => classifyInboxWakeMessage(envelopes.get(msgId)).class === 'reply');
+  if (replyMsgIds.length === 0) return new Set<string>();
+  const result = await withBoundedTimeout(
+    getSettledInboxMessageIds(replyMsgIds, workspaceId).catch(() => new Set<string>()),
+    {
+      fallback: new Set<string>(),
+      timeoutMs: SETTLED_INBOX_RUN_RECEIPT_LOOKUP_TIMEOUT_MS,
+      label: 'inbox-wake settled bulk-run receipt lookup',
+    },
+  );
+  return result.value;
 }
 
 /**
@@ -797,6 +845,9 @@ export function isInboxWakeGroupRedundant(
   const hasReadSignal = !Number.isNaN(readMs);
   if (!hasReadSignal && (!repliedMsgIds || repliedMsgIds.size === 0)) return false;
   return group.every((d) => {
+    // Loop fires use the inbox-wake subscription as transport, but an inbox read
+    // cannot execute their iteration or cold recovery. Preserve that delivery.
+    if (readColdLoopMarker(d.payload) !== null) return false;
     if (d.urgent) return false;
     if (!d.eventKey.startsWith(COORD_INBOX_WAKE_PREFIX)) return false;
     if (hasReadSignal) {
@@ -855,6 +906,7 @@ export function coalesceDeliveries(group: DeliveryWork[]): DeliveryWork {
         event: d.eventKey,
         summary: d.summary,
         payload: d.payload,
+        urgent: d.urgent,
         delivery_id: d.id,
         createdAt: d.createdAt,
       })),
@@ -892,6 +944,11 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
     return stats;
   }
   pumpsInFlight.add(ws);
+  // WI-10008194: report every run's outcome so a pump that fails on every kick pages
+  // instead of only logging (2026-10-10 20:28-20:44Z: bg-host's pump failed on every kick and
+  // stranded ~390 deliveries while another host's pump kept delivering; WI-10008205).
+  let pumpThrew = false;
+  let pumpError: unknown;
   try {
     const claimed = await claimDueDeliveries({ limit: 25 });
     stats.claimed = claimed.length;
@@ -953,63 +1010,160 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
 
       const headline = group[group.length - 1];
       const siblings = group.slice(0, -1);
+      // A loop fire must either reach a loop-origin turn or remain visible to the
+      // loop reconciler as a dropped wake. Degrading an exhausted loop delivery to
+      // an ordinary inbox notice marks it delivered without starting the iteration;
+      // the loop then parks indefinitely because its origin marker is gone. Check
+      // every component, since coalescing can put an older loop marker in a sibling.
+      const loopDeliveryGroup = group.some((d) => deliveryContainsLoopMarker(d.payload));
+
+      // Source reservations survive restart; execution admission prevents an overdue
+      // backlog from becoming a catch-up herd on many hosts or repeated pump kicks.
+      // An unpaced/urgent directed wake coalesced with a bulk row stays immediate.
+      const paced = group.map((d) => readWakeFanoutPacing(d.payload));
+      if (!group.some((d) => d.urgent || d.source?.startsWith('loop:')) && paced.every((p) => p !== null)) {
+        let delayMs: number;
+        try {
+          delayMs = await admitWakeFanout(paced[0]!);
+        } catch (e) {
+          log(`bulk wake admission unavailable for ${subscriberId}: ${e instanceof Error ? e.message : e}`);
+          delayMs = 6_000;
+        }
+        if (delayMs > 0) {
+          for (const d of group) { await markDeliveryDeferred(d.id, delayMs); stats.deferred++; }
+          continue;
+        }
+      }
 
       // EI-18673058981655804: before spending resume-cap/governor budget or a whole
       // turn on this group, check whether it is PROVABLY redundant — every delivery
       // an inbox-wake for mail the subscriber's own coord:inbox/coord:orient polling
       // already surfaced. Cheap pre-check (no DB read) gates the actual watermark
       // lookup to just the common always-armed-standing-wake case.
-      const allInboxWakeNoUrgent = group.every(
-        (d) => !d.urgent && d.eventKey.startsWith(COORD_INBOX_WAKE_PREFIX),
+      // A psu-host acceptance is not turn-start proof. While that accepted payload
+      // waits behind the host's final busy gate, the recipient can read the inbox;
+      // suppressing the parked retry then would leave the host's old pre-rendered
+      // text queued indefinitely. Retry the same delivery so the host can refresh
+      // its pending payload from this delivery-time render and report commitment.
+      const hasUnconfirmedPsuHostAcceptance = group.some(
+        (d) =>
+          d.lastError?.startsWith('psu-host accepted:') ||
+          d.lastError?.startsWith('psu-host pending-delivery-id:'),
       );
+      const allInboxWakeNoUrgent = group.every(
+        (d) =>
+          !deliveryContainsLoopMarker(d.payload) &&
+          !d.urgent &&
+          d.eventKey.startsWith(COORD_INBOX_WAKE_PREFIX),
+      );
+      let hostCancellation: DeliveryWork['hostCancellation'];
       if (allInboxWakeNoUrgent) {
-        const lastRead = await lastInboxReadAtBatch([subscriberId]);
-        const lastReadAt = lastRead.get(subscriberId) ?? null;
-        // EI-18676763837940562: the read-cursor's own blind spot (read-then-reply within
-        // the same turn a queued delivery lands after) — a bounded, msg_id-scoped query,
-        // only when some delivery in the group actually carries one (the common
-        // coord:send-directed-wake shape; see deliveryMsgId's doc).
-        const candidateMsgIds = group.map((d) => deliveryMsgId(d.payload)).filter((id): id is string => id != null);
-        const repliedMsgIds =
-          candidateMsgIds.length > 0
-            ? await repliedMsgIdsBatch(subscriberId, candidateMsgIds).catch(() => new Set<string>())
-            : undefined;
-        if (isInboxWakeGroupRedundant(group, lastReadAt, repliedMsgIds)) {
-          await markDeliveryDelivered(headline.id, 'suppressed-redundant', group.length);
-          recordSettledDeliveryStats(stats, 'suppressed-redundant');
-          if (siblings.length > 0) {
-            await markDeliveriesCoalesced(siblings.map((d) => d.id), headline.id);
-            stats.coalesced += siblings.length;
-          }
-          log(
-            `wake for ${subscriberId} SUPPRESSED (${group.length} inbox-wake event(s) already ` +
-              `covered by its own coord:inbox read at ${lastReadAt})`,
-          );
-          continue;
-        }
-
-        // P-024 clauses B/C (review-system-rework-reduction-2026-09-23): the rule above
-        // asks "was it seen?"; this one asks "is there anything to act on?". When every
-        // delivery points at a message already durable in the inbox that carries no ask
-        // (an FYI with no reply linkage, an ack receipt, a plan event with no state
-        // change), settle without a turn. Directed asks, owner directives, required
-        // wakes, replies, msg_id-less wakes and unreadable envelopes keep the turn
-        // (classifyInboxWakeGroup fails open on all of them).
-        if (candidateMsgIds.length === group.length) {
-          const envelopes = await resolveInboxWakeEnvelopes(candidateMsgIds);
-          const actionability = classifyInboxWakeGroup(group, envelopes);
-          if (actionability.nonActionable) {
-            await markDeliveryDelivered(headline.id, 'suppressed-redundant', group.length);
-            recordSettledDeliveryStats(stats, 'suppressed-redundant');
-            if (siblings.length > 0) {
-              await markDeliveriesCoalesced(siblings.map((d) => d.id), headline.id);
-              stats.coalesced += siblings.length;
+        if (hasUnconfirmedPsuHostAcceptance) {
+          // A host's early accepted ACK is not turn-start proof. Revalidate each
+          // exact component msg_id against the shown watermark, recipient reply
+          // linkage, or a settled resolver receipt for a thread reply before
+          // asking the host to cancel the still-pending delivery.
+          const components = inboxWakeMessageComponents(group);
+          if (components) {
+            const msgIds = components.map((component) => component.msgId);
+            const [watermark, repliedMsgIds, envelopes] = await Promise.all([
+              readWatermark(subscriberId).catch(() => null),
+              repliedMsgIdsBatch(subscriberId, msgIds).catch(() => new Set<string>()),
+              resolveInboxWakeEnvelopes(msgIds).catch(() => new Map<string, unknown>()),
+            ]);
+            const settledInboxRunMsgIds = await settledInboxWakeThreadReplyMsgIds(msgIds, envelopes, ws);
+            if (inboxWakeGroupHandled(
+              group,
+              envelopes,
+              watermark?.messages_shown_ts,
+              repliedMsgIds,
+              settledInboxRunMsgIds,
+            )) {
+              hostCancellation = {
+                deliveryIds: group
+                  .filter((d) =>
+                    d.lastError?.startsWith('psu-host accepted:') ||
+                    d.lastError?.startsWith('psu-host pending-delivery-id:'),
+                  )
+                  .map((d) => String(d.id)),
+                handledMsgIds: [...new Set(msgIds)],
+              };
             }
-            log(
-              `wake for ${subscriberId} SUPPRESSED (${group.length} inbox-wake event(s) with nothing to act on: ` +
-                `${actionability.classes.join(', ')}; the messages remain in its coord inbox)`,
-            );
-            continue;
+          }
+        } else {
+          const components = inboxWakeMessageComponents(group);
+          if (components) {
+            // A read cursor proves that the inbox was opened, not that an ask or
+            // thread reply was handled. Resolve each exact message and use the
+            // same handled-state proof as host-accepted cancellation: recipient
+            // reply, shown non-actionable message, or a settled resolver receipt
+            // for an exact thread reply.
+            const msgIds = components.map((component) => component.msgId);
+            const [watermark, repliedMsgIds, envelopes] = await Promise.all([
+              readWatermark(subscriberId).catch(() => null),
+              repliedMsgIdsBatch(subscriberId, msgIds).catch(() => new Set<string>()),
+              resolveInboxWakeEnvelopes(msgIds).catch(() => new Map<string, unknown>()),
+            ]);
+            const settledInboxRunMsgIds = await settledInboxWakeThreadReplyMsgIds(msgIds, envelopes, ws);
+            if (inboxWakeGroupHandled(
+              group,
+              envelopes,
+              watermark?.messages_shown_ts,
+              repliedMsgIds,
+              settledInboxRunMsgIds,
+            )) {
+              await markDeliveryDelivered(headline.id, 'suppressed-redundant', group.length);
+              recordSettledDeliveryStats(stats, 'suppressed-redundant');
+              if (siblings.length > 0) {
+                await markDeliveriesCoalesced(siblings.map((d) => d.id), headline.id);
+                stats.coalesced += siblings.length;
+              }
+              log(
+                `wake for ${subscriberId} SUPPRESSED (${group.length} inbox-wake event(s) have exact handled-state proof)`,
+              );
+              continue;
+            }
+
+            // P-024 clauses B/C: a non-actionable FYI/receipt/no-state-change group
+            // needs no turn even before it was read. Unresolved envelopes fail open.
+            const candidateMsgIds = group.map((d) => deliveryMsgId(d.payload)).filter((id): id is string => id != null);
+            if (candidateMsgIds.length === group.length) {
+              const actionability = classifyInboxWakeGroup(group, envelopes);
+              if (actionability.nonActionable) {
+                await markDeliveryDelivered(headline.id, 'suppressed-redundant', group.length);
+                recordSettledDeliveryStats(stats, 'suppressed-redundant');
+                if (siblings.length > 0) {
+                  await markDeliveriesCoalesced(siblings.map((d) => d.id), headline.id);
+                  stats.coalesced += siblings.length;
+                }
+                log(
+                  `wake for ${subscriberId} SUPPRESSED (${group.length} inbox-wake event(s) with nothing to act on: ` +
+                    `${actionability.classes.join(', ')}; the messages remain in its coord inbox)`,
+                );
+                continue;
+              }
+            }
+          } else if (group.every((d) => d.payload == null)) {
+            // Keep the cursor shortcut for message-less inbox notifications only.
+            // Once a delivery references a message, malformed or unresolved
+            // payloads fail open and must not be retired by an unrelated read.
+            // foldedOnly: a lifecycle/pre-tool activity:report reads no mail, so it must
+            // never retire a wake (WI-6554700010009285).
+            const lastRead = await lastInboxReadAtBatch([subscriberId], { foldedOnly: true });
+            const lastReadAt = lastRead.get(subscriberId) ?? null;
+            if (isInboxWakeGroupRedundant(group, lastReadAt)) {
+              await markDeliveryDelivered(headline.id, 'suppressed-redundant', group.length);
+              recordSettledDeliveryStats(stats, 'suppressed-redundant');
+              if (siblings.length > 0) {
+                await markDeliveriesCoalesced(siblings.map((d) => d.id), headline.id);
+                stats.coalesced += siblings.length;
+              }
+              log(
+                `wake for ${subscriberId} SUPPRESSED (${group.length} message-less inbox-wake event(s) already ` +
+                  `covered by its own coord:inbox read at ${lastReadAt})`,
+              );
+              continue;
+            }
           }
         }
       }
@@ -1045,6 +1199,7 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
       }
 
       const coalesced = coalesceDeliveries(group);
+      const wake = hostCancellation ? { ...coalesced, hostCancellation } : coalesced;
       const downstreamOutcomeHandler = deps.onResumeTurnExit ?? resumeTurnOutcomeHandler ?? undefined;
       let deliveryRowsSettled = false;
       let earlyResumeExit: { d: DeliveryWork; exit: ResumeTurnExitRaw; context?: ResumeTurnContext } | null = null;
@@ -1059,7 +1214,9 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
         void handleSettledResumeTurnExit(group, d, exit, downstreamOutcomeHandler, context);
       };
 
-      const outcome = await executeWake(coalesced, {
+      // Read-only event consumers must not initialize agent/account launchers.
+      const { executeWake, degradeToInboxOrDrop } = await import('./wake-executor');
+      const outcome = await executeWake(wake, {
         ...deps,
         // Capture every detached resume outcome. Loop wakes keep their
         // registered circuit handler; ordinary event wakes re-open on death.
@@ -1088,7 +1245,11 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
         ) {
           resumes++;
         }
-        await markDeliveryDelivered(headline.id, outcome.channel, group.length);
+        // P-006/D-004: forward the executor's turn-start attestation only when it has one, so an
+        // unattested delivery is booked exactly as before (awaiting the pump's pickup sweep).
+        await (outcome.turnProof
+          ? markDeliveryDelivered(headline.id, outcome.channel, group.length, outcome.turnProof)
+          : markDeliveryDelivered(headline.id, outcome.channel, group.length));
         recordSettledDeliveryStats(stats, outcome.channel);
         if (siblings.length > 0) {
           await markDeliveriesCoalesced(siblings.map((d) => d.id), headline.id);
@@ -1107,7 +1268,23 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
         // a busy psu host that never proves a turn start). Park retries consume the
         // same delivery-attempt budget as errors, so honor the ceiling here too and
         // use the contract's inbox fallback instead of re-parking without end.
-        if (headline.attempts >= MAX_ATTEMPTS) {
+        // An accepted psu-host delivery remains owned by its detached host
+        // pipeline until a later retry observes completion or a terminal miss.
+        // Inbox fallback here would race that still-live commit and deliver the
+        // same wake twice, so the normal park recheck continues past the generic
+        // attempt ceiling for this explicitly tagged outcome.
+        if (headline.attempts >= MAX_ATTEMPTS && !outcome.hostCommitPending) {
+          if (loopDeliveryGroup) {
+            const reason = `loop turn delivery remained parked and exhausted ${MAX_ATTEMPTS} attempts: ${outcome.reason}`;
+            await markDeliveryDropped(headline.id, reason);
+            stats.dropped++;
+            for (const d of siblings) {
+              await markDeliveryDropped(d.id, `loop turn delivery dropped (coalesced with #${headline.id})`);
+              stats.dropped++;
+            }
+            log(`wake #${headline.id} DROPPED after ${MAX_ATTEMPTS} parked loop attempts → ${subscriberId}: ${outcome.reason}`);
+            continue;
+          }
           const degraded = await degradeToInboxOrDrop(
             coalesced,
             `delivery remained parked and exhausted ${MAX_ATTEMPTS} attempts: ${outcome.reason}`,
@@ -1138,10 +1315,11 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
           );
           continue;
         }
-        // One-time inbox nudge on the first park: the awake-but-uninjectable agent sees it
-        // mid-turn (PostToolUse hook) or on its next turn; the parked row converts to a
-        // resume when its process exits. Siblings re-coalesce with the headline next tick.
-        if (headline.attempts <= 1) {
+        // One-time inbox nudge for parks without an accepted host-side commit: the
+        // awake-but-uninjectable agent sees it mid-turn (PostToolUse hook) or on its next
+        // turn. A host-owned pending delivery must not get a parallel inbox wake that can
+        // race its later pty commit. Siblings re-coalesce with the headline next tick.
+        if (headline.attempts <= 1 && !outcome.hostCommitPending) {
           try {
             await sendMessage(emitterIdentity('await-event', headline.workspaceId), {
               to: [subscriberId],
@@ -1182,6 +1360,17 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
       // claimDueDeliveries before executeWake ran), so `>= MAX_ATTEMPTS` here means
       // markDeliveryFailed below would otherwise mark it dead.
       if (headline.attempts >= MAX_ATTEMPTS) {
+        if (loopDeliveryGroup) {
+          const reason = `loop turn delivery kept failing and exhausted ${MAX_ATTEMPTS} attempts: ${outcome.error}`;
+          await markDeliveryDropped(headline.id, reason);
+          stats.dropped++;
+          for (const d of siblings) {
+            await markDeliveryDropped(d.id, `loop turn delivery dropped (coalesced with #${headline.id})`);
+            stats.dropped++;
+          }
+          log(`wake #${headline.id} DROPPED after ${MAX_ATTEMPTS} failing loop attempts → ${subscriberId}: ${outcome.error}`);
+          continue;
+        }
         const degraded = await degradeToInboxOrDrop(
           coalesced,
           `delivery kept failing and exhausted ${MAX_ATTEMPTS} attempts: ${outcome.error}`,
@@ -1215,7 +1404,13 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
       if (verdict === 'dead') log(`wake #${headline.id} DEAD after ${headline.attempts} attempts → ${subscriberId}: ${outcome.error}`);
     }
     return stats;
+  } catch (e) {
+    pumpThrew = true;
+    pumpError = e;
+    throw e;
   } finally {
+    if (pumpThrew) pumpHealth().recordFailure(ws, 'pump', pumpError);
+    else pumpHealth().recordSuccess(ws, 'pump');
     pumpsInFlight.delete(ws);
     const rerunDeps = pumpRerunRequested.get(ws);
     if (rerunDeps) {
@@ -1329,11 +1524,17 @@ async function notifyPoisonedResumeSession(
   try {
     await sendMessage(emitterIdentity('await-event', first.workspaceId), {
       to,
-      summary: `Claude session #${context.advSessionId} quarantined after repeated unavailable tool references`,
+      summary: context.agent === 'codex'
+        ? `Codex session #${context.advSessionId} quarantined: its thread exceeds the model context window`
+        : `Claude session #${context.advSessionId} quarantined after repeated unavailable tool references`,
       body:
-        `The Claude transcript recorded repeated assistant turns rejected because a Papercusp ` +
-        `tool_reference was absent from the resumed tool list. Wake retries for this incarnation ` +
-        `have stopped; the existing session-end lease cleanup was scheduled to release its work-item claims.\n\n` +
+        (context.agent === 'codex'
+          ? `${context.poisonReason ?? 'Consecutive Codex turns exceeded the model context window'}. No resume or ` +
+            `native compaction can fit this thread (WI-6554700010008894). Wake retries for this incarnation ` +
+            `have stopped; the existing session-end lease cleanup was scheduled to release its work-item claims.\n\n`
+          : `The Claude transcript recorded repeated assistant turns rejected because a Papercusp ` +
+            `tool_reference was absent from the resumed tool list. Wake retries for this incarnation ` +
+            `have stopped; the existing session-end lease cleanup was scheduled to release its work-item claims.\n\n`) +
         `Event keys: ${group.map((delivery) => delivery.eventKey).join(', ')}\n` +
         `Last provider evidence: ${error}`,
       category: 'event',
@@ -1424,11 +1625,11 @@ type Globals = typeof globalThis & { __papercuspAwaitSweeperStarted?: boolean };
  * (timeout_behavior 'wake' → a TIMEOUT wake delivery; 'expire' → visible
  * lapse), then pump anything due (incl. parked rows whose process died).
  *
- * A background reader has no request to scope it, so each tick sweeps every
- * workspace `backgroundWorkspaceIds()` names (per-window-workspace-context
- * P-020) — under the shared-operator model that is EVERY registered
- * workspace, so an await registered in a non-global workspace still times
- * out / resumes. Each sweep runs inside that workspace's ALS scope so nested
+ * Await rows live in DEFAULT_COORD_WORKSPACE, while source reconcilers can
+ * depend on each background workspace (per-window-workspace-context P-020).
+ * Sweep both contexts: default rows get a pump running under their storage
+ * context, and each registered workspace still gets its own reconciliation
+ * pass. Each sweep runs inside that workspace's ALS scope so nested
  * `activeWorkspaceId()` reads (reconcilers, wake delivery) resolve it.
  */
 export function startAwaitSweeper(): void {
@@ -1440,16 +1641,21 @@ export function startAwaitSweeper(): void {
   }, { category: 'global-sweep' });
 }
 
-/** One tick of the sweeper: sweepOnce per background workspace (P-020). */
+/** One tick of the sweeper: sweep the coordination workspace and each background workspace. */
 export async function sweepAllWorkspaces(): Promise<void> {
-  for (const ws of backgroundWorkspaceIds()) {
+  const workspaces = new Set([DEFAULT_COORD_WORKSPACE, ...backgroundWorkspaceIds()]);
+  for (const ws of workspaces) {
     // Bounded retry on a transient CONNECT_TIMEOUT (WI-2776). The sweeper is documented
     // restart-safe (all state is PG, every op state-guarded), so re-running it is
     // equivalent to the next tick — and a CONNECT_TIMEOUT fires in the connect phase, so
     // little-to-no work happened before the throw. Absorbs the self-healing pooler blip;
     // a sustained outage still exhausts retries and logs `sweep failed` below.
-    await withPgRetry(() => runWithWorkspace(ws, () => sweepOnce(ws)), { label: `await-sweep:${ws}` }).catch(
-      (e: unknown) => log(`sweep failed (ws=${ws}): ${e instanceof Error ? e.message : e}`),
+    await withPgRetry(() => runWithWorkspace(ws, () => sweepOnce(ws)), { label: `await-sweep:${ws}` }).then(
+      () => pumpHealth().recordSuccess(ws, 'sweep'),
+      (e: unknown) => {
+        pumpHealth().recordFailure(ws, 'sweep', e);
+        log(`sweep failed (ws=${ws}): ${e instanceof Error ? e.message : e}`);
+      },
     );
   }
 }
@@ -1661,6 +1867,24 @@ export async function sweepOnce(workspaceId?: string): Promise<void> {
   // same atomic path used by live emits. The pump below delivers queued wakes.
   const composed = await reconcileComposedRoots();
   if (composed.deliveries > 0) log(`composed: queued ${composed.deliveries} recovered or timed-out root wake(s)`);
+
+  // P-006/D-004: resolve awaiting turn proofs before the pump drains, so a delivery re-queued
+  // for host recovery is pumped on this same tick. Fail-soft: proof bookkeeping must never
+  // stop the pump from delivering.
+  try {
+    const { runPickupSweep } = await import('./pickup-sweep');
+    const pickup = await runPickupSweep({ emit: (o) => emitAwaitedEvent({ ...o, workspaceId: ws }), log });
+    if (pickup.observed + pickup.observedByHost + pickup.notPickedUp > 0) {
+      log(
+        `pickup: observed ${pickup.observed}+${pickup.observedByHost} (host), not-picked-up ${pickup.notPickedUp}, ` +
+          `re-queued ${pickup.escalated}, reported ${pickup.emitted} subscriber(s)`,
+      );
+    }
+    pumpHealth().recordSuccess(ws, 'pickup-sweep');
+  } catch (e) {
+    pumpHealth().recordFailure(ws, 'pickup-sweep', e);
+    log(`pickup sweep failed: ${e instanceof Error ? e.message : e}`);
+  }
 
   await pumpWakeDeliveries(ws);
 }

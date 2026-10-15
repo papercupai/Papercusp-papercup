@@ -33,6 +33,8 @@ const mocks = vi.hoisted(() => ({
   getNextForBee: vi.fn(),
   getClaimTimePremises: vi.fn(),
   getClaimTimePriorAttemptBrief: vi.fn(),
+  getClaimTimePlanDecisions: vi.fn(),
+  renderPlanDecisionsNote: vi.fn(),
   resolveAgentIdentity: vi.fn(),
   resolveClaimSpecWorkspace: vi.fn(),
 }));
@@ -61,6 +63,9 @@ vi.mock('../../work-item-claim-lease-wiring', () => ({
 // before the envelope assertion runs (EI-20308567859934395).
 vi.mock('../coordination/context-pressure', () => ({
   fetchContextPressure: vi.fn(async () => new Map()),
+  // get_next's preflight has read per-owner readings since c7ef831c06; without this
+  // stub preflight throws, degrades, and no committed-claim envelope is formed.
+  fetchContextPressureReadings: vi.fn(async () => new Map()),
 }));
 vi.mock('../locks/live-lock-paths', () => ({
   liveLockedPaths: vi.fn(async () => []),
@@ -70,7 +75,7 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   readFleetPauseState: vi.fn(async () => ({ windingDown: false, reason: null })),
   diagnoseFleetScopeCooldownMiss: vi.fn(async () => null),
   diagnoseFleetScopeIssueFloorMiss: vi.fn(async () => null),
-  diagnoseFleetScopeFeatureFamilyMatch: vi.fn(async () => null),
+  diagnoseFleetScopeFeatureFamilyExclusions: vi.fn(async () => null),
   diagnoseFleetScopeTerminalExhaustion: vi.fn(async () => null),
   diagnoseFleetScopePlanTerminality: vi.fn(async () => null),
   diagnoseFleetScopeLeaderLiveness: vi.fn(async () => null),
@@ -95,8 +100,8 @@ vi.mock('../../work-item-prior-work', () => ({
   priorWorkWarning: vi.fn(() => null),
 }));
 vi.mock('../../plan-decisions-claim-port', () => ({
-  getClaimTimePlanDecisions: vi.fn(async () => null),
-  renderPlanDecisionsNote: vi.fn(() => null),
+  getClaimTimePlanDecisions: mocks.getClaimTimePlanDecisions,
+  renderPlanDecisionsNote: mocks.renderPlanDecisionsNote,
 }));
 vi.mock('../../prior-attempt-context', () => ({
   getClaimTimePriorAttemptBrief: mocks.getClaimTimePriorAttemptBrief,
@@ -108,7 +113,7 @@ vi.mock('../work_items/retraction-advisory', () => ({
   getClaimTimeRetractionAdvisory: vi.fn(async () => null),
 }));
 
-import getNextTool, { schedulerDispositionMetadata } from './get_next';
+import getNextTool, { observeLateSchedulerClaim, schedulerDispositionMetadata } from './get_next';
 
 type ToolDef = {
   handler: (
@@ -141,6 +146,8 @@ describe('scheduler:get_next result envelope (WI-38199)', () => {
     mocks.getNextForBee.mockReset();
     mocks.getClaimTimePremises.mockReset().mockResolvedValue(null);
     mocks.getClaimTimePriorAttemptBrief.mockReset().mockResolvedValue(null);
+    mocks.getClaimTimePlanDecisions.mockReset().mockResolvedValue(null);
+    mocks.renderPlanDecisionsNote.mockReset().mockReturnValue(null);
   });
 
   it('returns a COMMITTED claim as structured `data`, not as a door-truncatable text block', async () => {
@@ -278,6 +285,48 @@ describe('scheduler:get_next result envelope (WI-38199)', () => {
     }));
   });
 
+  it('delivers governing plan decisions and their warning in the committed claim payload', async () => {
+    const workItem = {
+      id: 'WI-decisions',
+      state: 'open',
+      payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-1' } },
+      harness: 'papercusp',
+    };
+    const brief = {
+      planSlug: 'a-plan',
+      decisions: [{ id: 'D-1', title: 'Keep the guard live', ref: 'a-plan#D-1' }],
+      totalDecisions: 1,
+      totalLocalDecisions: 1,
+      totalAffectedDecisions: 0,
+      affectedDecisions: 0,
+      authorityReadFailed: false,
+    };
+    const warning = '⚠ GOVERNING PLAN DECISION: a-plan#D-1';
+    mocks.getNextForBee.mockResolvedValue({
+      workItem,
+      claimedUnder: { specId: 'envelope-spec', revision: 3 },
+      specSource: 'fleet',
+    });
+    mocks.getClaimTimePlanDecisions.mockResolvedValue(brief);
+    mocks.renderPlanDecisionsNote.mockReturnValue(warning);
+
+    const out = await callGetNext();
+
+    expectCommittedClaimEnvelope(out);
+    expect(out.data).toMatchObject({
+      workItem: { id: 'WI-decisions' },
+      planDecisions: brief.decisions,
+      planDecisionsNote: warning,
+    });
+    expect(Object.keys(out.data!).indexOf('planDecisionsNote')).toBeLessThan(Object.keys(out.data!).indexOf('workItem'));
+    expect(mocks.getClaimTimePlanDecisions).toHaveBeenCalledWith({
+      workItem: { payload: workItem.payload },
+      harness: 'papercusp',
+      workspaceId: 'ws-test',
+    });
+    expect(mocks.renderPlanDecisionsNote).toHaveBeenCalledWith(brief);
+  });
+
   it('CONTROL: the predicate rejects the LEGACY text envelope this guard exists to catch', () => {
     // The exact shape the handler returned before 722551ecc2. If this ever stops
     // throwing, the assertion above has gone vacuous and would pass on a
@@ -297,5 +346,54 @@ describe('scheduler:get_next result envelope (WI-38199)', () => {
     // The whole reason the success arm bypasses the door: the caller must be able
     // to see WHICH item it now holds, from the response alone.
     expect(JSON.stringify(out.data)).toContain('WI-38199');
+  });
+
+  it('records a late claimed result only after the deadline aborts the resolver', async () => {
+    const controller = new AbortController();
+    let resolve!: (value: unknown) => void;
+    const operation = new Promise<unknown>((r) => { resolve = r; });
+    const settlements: unknown[] = [];
+    const observed = observeLateSchedulerClaim(
+      operation,
+      controller.signal,
+      (settlement) => settlements.push(settlement),
+      () => '2026-10-07T16:00:00.000Z',
+    );
+
+    controller.abort();
+    resolve({ workItem: { id: 'EI-late' } });
+    await observed;
+
+    expect(settlements).toEqual([
+      { kind: 'claimed', workItemId: 'EI-late', settledAt: '2026-10-07T16:00:00.000Z' },
+    ]);
+  });
+
+  it('keeps late no-claim distinct from a missing disposition', async () => {
+    const controller = new AbortController();
+    let resolve!: (value: unknown) => void;
+    const operation = new Promise<unknown>((r) => { resolve = r; });
+    const settlements: unknown[] = [];
+    const observed = observeLateSchedulerClaim(operation, controller.signal, (s) => settlements.push(s), () => 'settled');
+
+    controller.abort();
+    resolve(null);
+    await observed;
+
+    expect(settlements).toEqual([{ kind: 'no-claim', settledAt: 'settled' }]);
+  });
+
+  it('records a rejected late resolver as unknown rather than no-claim', async () => {
+    const controller = new AbortController();
+    let reject!: (error: Error) => void;
+    const operation = new Promise<unknown>((_resolve, r) => { reject = r; });
+    const settlements: unknown[] = [];
+    const observed = observeLateSchedulerClaim(operation, controller.signal, (s) => settlements.push(s), () => 'settled');
+
+    controller.abort();
+    reject(new Error('settlement failed'));
+    await observed;
+
+    expect(settlements).toEqual([{ kind: 'rejected-unknown', settledAt: 'settled' }]);
   });
 });

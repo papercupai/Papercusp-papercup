@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Exported Gradle project-relative init path regression and preflight ordering",
+  "framework": "shell",
+  "command": ["make", "test-android-release-provenance"],
+  "workingDirectory": "papercup-rust-mobile",
+  "startedAt": "2026-10-03T02:26:15Z",
+  "finishedAt": "2026-10-03T02:26:44.077407Z",
+  "timestampBasis": "Invocation printed UTC start before the maintained make target; retained log final-write time records completion. The exec session returned exit0.",
+  "exitCode": 0,
+  "sourceCommit": "68bc889325937c16c7b299146beb093858dd51d4",
+  "summary": "The maintained provenance suite passes after placing the generated Gradle init script under the Android project and adding real Gradle plugin/dependency preflight before native compilation. A private helper mutant recreating the original misplaced path is rejected by the project-relative controlled executor before any Rust build. Controlled APK executors do not establish actual Android compilation; the operational run is separate.",
+  "sourceFiles": [
+    {"path": "papercup-rust-mobile/tools/build-scripts/android-release-provenance.sh", "sha256": "d25e4ae7bf2f3acfe4dbb0f65aa87b44d83471a8fc9d2f2581ae1be93d993cdf"},
+    {"path": "papercup-rust-mobile/tools/tests/android-release-provenance-test.sh", "sha256": "32b03f6375a7169d301b3f8299d5e67d35ce063889a764fae0acac2f5873d505"},
+    {"path": "papercup-rust-mobile/store/APP-STORE-REVIEW.md", "sha256": "ff3783f01b011bc5805ca94b1db7f8a9d6a7b2745a94182def8f72c14493700a"}
+  ],
+  "testFiles": [
+    {"path": "papercup-rust-mobile/tools/tests/android-release-provenance-test.sh", "sha256": "32b03f6375a7169d301b3f8299d5e67d35ce063889a764fae0acac2f5873d505"}
+  ],
+  "assertions": [
+    {"id": "project-relative-init-script-guard", "passed": true, "evidence": "Controlled executor resolves --init-script relative to the -p project directory and asserts the file exists. Corrected source writes android/source-build-inputs.gradle."},
+    {"id": "original-path-mutant-rejected-before-compilation", "passed": true, "evidence": "Private helper copy moves the write back to exported root. The receipt has nonzero exit and no artifacts; the retained log contains AssertionError and no Compiling line. The unmodified helper then passes."},
+    {"id": "preflight-before-native", "passed": true, "evidence": "Successful receipt contains five commands, with init/plugin/dependency preflight first, then cargo-ndk. Final Gradle assembly uses the same init/offline/user-home route."},
+    {"id": "existing-provenance-and-negative-controls-preserved", "passed": true, "evidence": "Real miniature vendored Rust compilation, eight source-build controls, ten APK guards, retained config/output hashes, isolated personal configuration and source/version/hash/submodule controls passed in the maintained make target."}
+  ],
+  "evidenceFiles": [
+    {"path": "papercup-rust-mobile/android/app/build/outputs/exported-apk-verifier-path-mutant-20261003.log", "sha256": "a52f25007c379b8593c260e35d1bcbbb22ecc5a0f5f8a8e3f83e60c8f28242b7"},
+    {"path": "papercup-rust-mobile/android/app/build/outputs/papercusp-source-build-failed-602e10999527554d.json", "sha256": "602e10999527554da0654136a135aaa3596f5149291c6d8d6612de3bd1ce1525"},
+    {"path": "papercup-rust-mobile/android/app/build/outputs/papercusp-source-build-0e5a1f8aef9c4655b5788f6533795e8b.log", "sha256": "ffd721cf2e618b01aa74cf1393bf0c57777b814cd8e7bd4d337130b15aa393cf"}
+  ],
+  "relatedWorkItem": "EI-24923096025042354",
+  "scope": "Maintained regression evidence and retained historical operational failure. Full Android build, signed candidate, licensing, recipient retrieval, native journeys, current paired hosted CI, physical-phone and Play/public installation evidence remain separate."
+}

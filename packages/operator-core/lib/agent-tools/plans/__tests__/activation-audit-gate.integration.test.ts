@@ -161,7 +161,7 @@ describe('conversation activation audit gate', () => {
     );
 
     expect(result).toMatchObject({
-      kind: 'applied',
+      kind: 'refused',
       value: { ok: false, code: 'conversation_audit_required', message: expect.stringContaining("plans:audit { phase:'activation'") },
     });
     const rows = await fx.admin<Array<{ content: string }>>`
@@ -193,7 +193,7 @@ describe('conversation activation audit gate', () => {
       { slug: SLUG, harnessSlug: HARNESS, workspaceId: fx.workspaceId, intent: 'test direct ready' },
       async () => ({ newBody: flipReady(DRAFT), value: { ok: true } }),
     );
-    expect(direct).toMatchObject({ kind: 'applied', value: { code: 'conversation_audit_required' } });
+    expect(direct).toMatchObject({ kind: 'refused', value: { code: 'conversation_audit_required' } });
 
     await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, flipReady(DRAFT));
     const cosmetic = await withPlanLock<{ ok: true }>(
@@ -233,6 +233,69 @@ describe('conversation activation audit gate', () => {
     expect(rows[0]?.content).toContain('status: active');
   });
 
+  // D-038 (verification-system-improvements-2026-10-10): the child-seed template exempts
+  // a spawn_child seed plan from the audit, and only spawn_child may introduce it.
+  const CHILD_SEED_ACTIVE = activate(RUBRIC_DRAFT)
+    .replace('template: rubric', 'template: child-seed')
+    .replaceAll('rubric-activation', 'child-seed-activation');
+
+  it('refuses a write that self-serves the child-seed template and leaves no row', async () => {
+    const result = await withPlanLock<{ ok: true }>(
+      {} as never,
+      { slug: 'child-seed-activation', harnessSlug: HARNESS, workspaceId: fx.workspaceId, intent: 'test self-serve child-seed' },
+      async () => ({ newBody: CHILD_SEED_ACTIVE, value: { ok: true } }),
+    );
+
+    expect(result).toMatchObject({
+      kind: 'refused',
+      value: { ok: false, code: 'child_seed_template_reserved' },
+    });
+    const rows = await fx.admin`
+      SELECT 1 FROM harness_shared.harness_plans
+       WHERE workspace_id = ${fx.workspaceId} AND harness_slug = ${HARNESS} AND plan_slug = 'child-seed-activation'`;
+    expect(rows).toHaveLength(0);
+  });
+
+  it('refuses adding the child-seed template to an existing ordinary plan', async () => {
+    await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, DRAFT);
+    const result = await withPlanLock<{ ok: true }>(
+      {} as never,
+      { slug: SLUG, harnessSlug: HARNESS, workspaceId: fx.workspaceId, intent: 'test template swap' },
+      async (current) => ({
+        newBody: flipReady(current!).replace('status: ready', 'status: ready\ntemplate: child-seed'),
+        value: { ok: true },
+      }),
+    );
+    expect(result).toMatchObject({ kind: 'refused', value: { code: 'child_seed_template_reserved' } });
+  });
+
+  it('exempts the spawn_child writer, and a later edit that keeps the template passes', async () => {
+    const created = await withPlanLock<{ ok: true }>(
+      {} as never,
+      {
+        slug: 'child-seed-activation',
+        harnessSlug: HARNESS,
+        workspaceId: fx.workspaceId,
+        intent: 'test spawn_child seed',
+        allowChildSeedTemplate: true,
+      },
+      async () => ({ newBody: CHILD_SEED_ACTIVE, value: { ok: true } }),
+    );
+    expect(created).toMatchObject({ kind: 'applied', value: { ok: true } });
+
+    const edited = await withPlanLock<{ ok: true }>(
+      {} as never,
+      { slug: 'child-seed-activation', harnessSlug: HARNESS, workspaceId: fx.workspaceId, intent: 'test later edit' },
+      async (current) => ({ newBody: current!.replace('# Rubric activation', '# Child seed'), value: { ok: true } }),
+    );
+    expect(edited).toMatchObject({ kind: 'applied', value: { ok: true } });
+    const rows = await fx.admin<Array<{ content: string }>>`
+      SELECT content FROM harness_shared.harness_plans
+       WHERE workspace_id = ${fx.workspaceId} AND harness_slug = ${HARNESS} AND plan_slug = 'child-seed-activation'`;
+    expect(rows[0]?.content).toContain('status: active');
+    expect(rows[0]?.content).toContain('# Child seed');
+  });
+
   it('keeps the activation audit requirement for ordinary plans', async () => {
     await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, DRAFT);
     const result = await withPlanLock<{ ok: true }>(
@@ -242,7 +305,7 @@ describe('conversation activation audit gate', () => {
     );
 
     expect(result).toMatchObject({
-      kind: 'applied',
+      kind: 'refused',
       value: { ok: false, code: 'conversation_audit_required' },
     });
   });

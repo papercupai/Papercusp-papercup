@@ -18,11 +18,12 @@
  * test cannot observe a call site that never calls the module under test; that
  * is the gap this guard closes and this test verifies.
  */
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicate only. Kept on ONE line: @ts-ignore suppresses the NEXT LINE only, and tsc reports TS7016 on the `from` clause, so a wrapped import silently escapes the suppression.
 // prettier-ignore
-import { readsRawGoalHolder, ALLOWLIST, BASELINE, isExcluded } from '../../../../scripts/check-no-raw-goal-holder-read.mjs';
+import { readsRawGoalHolder, readsGoalStarterAsHolder, ALLOWLIST, STARTER_READ_ALLOWLIST, BASELINE, isExcluded } from '../../../../scripts/check-no-raw-goal-holder-read.mjs';
 
 describe('no-raw-goal-holder-read guard predicate (P-001 / D-003)', () => {
   describe('FLAGS a bypassing read — the direction the guard exists for', () => {
@@ -221,6 +222,97 @@ describe('no-raw-goal-holder-read guard predicate (P-001 / D-003)', () => {
       expect(isExcluded('node_modules/x/index.ts')).toBe(true);
       expect(isExcluded('papercusp-desktop/src-tauri/sidecar/db-sql/500-agent-modes.sql')).toBe(true);
       expect(isExcluded('packages/operator-core/lib/goals/holder.ts')).toBe(false);
+    });
+  });
+});
+
+/**
+ * The second tell (plan goal-holder-plans-ideation-truthful-reports-2026-10-03 P-006,
+ * D-003). `goals.metadata.agentOwnerId` names the agent that STARTED a goal; lease
+ * succession never updates it. Measured 2026-10-03 02:50Z it named su-6aab097a while
+ * su-9e72a11f held lease epoch 18, so any reader treating it as the holder is wrong.
+ */
+describe('no-raw-goal-holder-read guard: goal STARTER read as holder (P-006 / D-003)', () => {
+  describe('FLAGS a starter read', () => {
+    it('flags the exact shape findGoal shipped with: metadata ->> agentOwnerId = holder', () => {
+      expect(
+        readsGoalStarterAsHolder(
+          'await sql`SELECT id FROM harness_shared.goals WHERE workspace_id = ${ws} ' +
+            "AND metadata ->> 'agentOwnerId' = ${holder}`;",
+        ),
+      ).toBe(true);
+    });
+
+    it('flags the unspaced, single-arrow, path and alias forms', () => {
+      for (const read of [
+        "metadata->>'agentOwnerId'",
+        "metadata -> 'agentOwnerId'",
+        "g.metadata #>> '{agentOwnerId}'",
+        "g.metadata->>'agentOwnerId' AS holder",
+      ]) {
+        expect(readsGoalStarterAsHolder(`await sql\`SELECT ${read} FROM harness_shared.goals g\`;`)).toBe(true);
+      }
+    });
+
+    it('flags a JSON containment test on the key', () => {
+      expect(
+        readsGoalStarterAsHolder(
+          'await sql`SELECT id FROM harness_shared.goals ' +
+            'WHERE metadata @> ${JSON.stringify({ agentOwnerId: holder })}::jsonb`;',
+        ),
+      ).toBe(true);
+    });
+  });
+
+  describe('does NOT flag', () => {
+    it('does not flag a WRITER of the key (goals/start.ts stamps it once)', () => {
+      expect(
+        readsGoalStarterAsHolder(
+          "await sql`UPDATE harness_shared.goals SET metadata = jsonb_set(metadata, '{agentOwnerId}', ${owner}) WHERE id = ${id}`;",
+        ),
+      ).toBe(false);
+      expect(
+        readsGoalStarterAsHolder(
+          'await sql`UPDATE harness_shared.goals SET metadata = metadata || ${JSON.stringify({ agentOwnerId: owner })}::jsonb`;',
+        ),
+      ).toBe(false);
+    });
+
+    it('does not flag the key on a table other than goals', () => {
+      expect(
+        readsGoalStarterAsHolder("await sql`SELECT metadata ->> 'agentOwnerId' FROM harness_shared.goals_archive`;"),
+      ).toBe(false);
+      expect(readsGoalStarterAsHolder("const owner = mailbox.metadata?.agentOwnerId ?? null;")).toBe(false);
+    });
+
+    it('does not flag PROSE — comments are stripped first', () => {
+      expect(
+        readsGoalStarterAsHolder(
+          "// harness_shared.goals metadata ->> 'agentOwnerId' names the starter, not the holder.\nconst x = 1;",
+        ),
+      ).toBe(false);
+    });
+  });
+
+  describe('scan configuration', () => {
+    it('STARTER_READ_ALLOWLIST holds only the two "who started it" readers', () => {
+      expect([...STARTER_READ_ALLOWLIST].sort()).toEqual(
+        [
+          'packages/operator-core/lib/agent-tools/scorecards/agent-run-evidence-record.ts',
+          'packages/operator-core/lib/system-health/goal-liveness-watchdog.ts',
+        ].sort(),
+      );
+    });
+
+    /**
+     * An allowlist entry that no longer matches is a silent exemption for whatever
+     * that file reads next. Each entry must still be load-bearing on the real tree.
+     */
+    it('every STARTER_READ_ALLOWLIST entry still triggers the predicate on the live file', () => {
+      for (const f of STARTER_READ_ALLOWLIST as Set<string>) {
+        const text = readFileSync(new URL(`../../../../${f}`, import.meta.url), 'utf8');
+        expect(readsGoalStarterAsHolder(text), f).toBe(true);
+      }
     });
   });
 });

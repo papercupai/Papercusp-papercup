@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "AUTO-BAR-R-4-P-018 live drill: whole-tree park, presence while parked, keystroke + coord-wake resume on one conversation (psu process-free parking)",
+  "framework": "operational",
+  "command": ["node", ".papercusp/scratch/park-r4-orphan-driver.mjs"],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T10:14:35Z",
+  "finishedAt": "2026-10-06T10:19:54Z",
+  "summary": "Live drill on a real psu Claude session (su-3e39777f, idle threshold 60 s): two parks each stopped the whole CLI tree with no survivors and no sid holders; presence stayed live and wakeable while parked; a keystroke resume and a coord-wake resume both reused the same native conversation id with one transcript; no session-end lifecycle row was written at either park.",
+  "assertions": [
+    { "id": "park-stops-whole-cli-tree", "passed": true, "evidence": "park 1 10:15:51.915Z childPid 3582251 exited:true, park-scan pre-park tree [3582251 claude], survivors [], sid holders []; park 2 10:17:36.919Z childPid 3679070 exited:true, survivors [], sid holders []. Baseline positive control 10:15:03Z found the CLI (pid 3582251) as the only PAPERCUSP_SID holder." },
+    { "id": "presence-live-and-wakeable-while-parked", "passed": true, "evidence": "coord:presence at 10:17:53Z while parked (after park 2): state live, wakeable true." },
+    { "id": "keystroke-resume-same-conversation", "passed": true, "evidence": "child-unparked trigger owner-input 10:15:59.084Z, latency 1508 ms, same nativeId 7f4446a0-f79d-4a09-beff-4c6579bd585d; text typed while parked (token KEYOK-5180) reached the resumed child and is in the transcript." },
+    { "id": "coord-wake-resume-same-conversation", "passed": true, "evidence": "coord:send wake:required 10:18:02Z -> child-unparked trigger control:turn 10:18:03.574Z, latency 1510 ms, same nativeId; reply WAKEOK-6612 received 10:19:24Z." },
+    { "id": "single-transcript", "passed": true, "evidence": "The session's Claude projects folder for the canonical tree holds exactly one transcript (7f4446a0-....jsonl)." },
+    { "id": "no-session-end-at-park", "passed": true, "evidence": "tool_invocations activity:report kind=lifecycle rows for su-3e39777f: three '▶ session started' rows (10:14:38 launch, 10:15:59 keystroke resume, 10:18:17 wake resume); no session-end row at either park." }
+  ],
+  "drillKind": "live-drill",
+  "plan": "psu-process-free-parking-2026-10-06",
+  "rubricRef": "acceptance-psu-process-free-parking-2026-10-06",
+  "bar": "R-4",
+  "specId": "AUTO-BAR-R-4-P-018",
+  "evidencePlane": "live",
+  "window": { "start": "2026-10-06T10:14:35Z", "end": "2026-10-06T10:19:54Z" },
+  "session": {
+    "ownerId": "su-3e39777f-adff-474e-80a3-959efed00d34",
+    "label": "park-r4-verify",
+    "agent": "claude",
+    "account": "auto",
+    "tree": "staging tree via PAPERCUSP_CANONICAL_TREE",
+    "env": { "PAPERCUSP_PSU_PARK_IDLE_MS": "60000" },
+    "nativeId": "7f4446a0-f79d-4a09-beff-4c6579bd585d"
+  },
+  "driver": ".papercusp/scratch/park-r4-orphan-driver.mjs",
+  "rawCopies": [
+    ".papercusp/scratch/park-r4/status.jsonl",
+    ".papercusp/scratch/park-r4/su-3e39777f-adff-474e-80a3-959efed00d34.events.jsonl"
+  ],
+  "workItemPost": "WI-10006516 thread-post:1159604",
+  "observations": [
+    {
+      "step": "baseline positive control (unparked)",
+      "at": "2026-10-06T10:15:03Z",
+      "result": "Only live process whose /proc/<pid>/environ carries PAPERCUSP_SID=su-3e39777f... is the CLI (pid 3582251, comm claude, ppid = host 3580927). CLI tree = that single process (http MCP, no stdio children). The host does not carry the sid in its environ."
+    },
+    {
+      "step": "park 1",
+      "at": "2026-10-06T10:15:51.915Z",
+      "result": "child-parked, idle 60966 ms, childPid 3582251, exited:true. park-scan 2 s later: pre-park tree [3582251 claude], survivors [], sid holders []."
+    },
+    {
+      "step": "keystroke resume",
+      "at": "2026-10-06T10:15:59.084Z",
+      "result": "child-unparked trigger owner-input, latency 1508 ms, same nativeId. Text typed while parked ('Reply with only the token KEYOK-5180.') reached the resumed child; the token is in the transcript."
+    },
+    {
+      "step": "park 2",
+      "at": "2026-10-06T10:17:36.919Z",
+      "result": "child-parked, idle 67548 ms, childPid 3679070, exited:true. park-scan: pre-park tree [3679070 claude], survivors [], sid holders []. coord:presence at 10:17:53Z while parked: state live, wakeable true."
+    },
+    {
+      "step": "coord wake resume",
+      "at": "2026-10-06T10:18:03.574Z",
+      "result": "coord:send wake:required at 10:18:02Z -> child-unparked trigger control:turn, latency 1510 ms, same nativeId. Reply WAKEOK-6612 received at 10:19:24Z."
+    },
+    {
+      "step": "single conversation",
+      "result": "The session's Claude projects directory under ~/.papercusp/session-claude/su-3e39777f.../projects/ (the canonical tree's project folder) holds exactly one transcript (7f4446a0-....jsonl)."
+    },
+    {
+      "step": "no session end while parked",
+      "result": "harness_shared.tool_invocations activity:report rows with args_json kind=lifecycle for coord_owner_id su-3e39777f...: three rows, all '▶ session started' (10:14:38 launch, 10:15:59 keystroke resume, 10:18:17 wake resume). No session-end row at either park."
+    },
+    {
+      "step": "exit",
+      "at": "2026-10-06T10:19:54Z",
+      "result": "Driver typed /exit on request at 10:19:50Z; outer exit code 0."
+    }
+  ],
+  "verdict": "pass",
+  "verdictBasis": "Both parks stopped the whole CLI tree (no survivors, no sid holders); presence stayed live and wakeable while parked; keystroke and coord-wake resumes kept the same native conversation id with one transcript; no session-end lifecycle row was written at either park."
+}

@@ -314,7 +314,7 @@ describe('installDatatypeFromCupboard', () => {
 });
 
 describe('registryInputFromPackage', () => {
-  it('omits absent optional fields rather than writing nulls over an existing row', () => {
+  it('derives legacy nature while omitting absent optional fields', () => {
     const pkg = {
       installed: true,
       packageRef: 'ref',
@@ -343,6 +343,8 @@ describe('registryInputFromPackage', () => {
       title: 'Incident Report',
       description: 'desc',
       tier: 'generic-kind',
+      nature: 'work',
+      audience: 'agent',
       tags: [],
     });
     expect('workItemKind' in input).toBe(false);
@@ -353,6 +355,8 @@ describe('registryInputFromPackage', () => {
     const full = registryInputFromPackage(
       {
         ...pkg,
+        nature: 'work',
+        audience: 'human',
         workItemKind: 'incident-report',
         display: { widget: 'text', summary: '{{title}}' },
       } as unknown as InstalledDatatype,
@@ -362,6 +366,15 @@ describe('registryInputFromPackage', () => {
     expect(full.workItemKind).toBe('incident-report');
     expect(full.display).toEqual({ widget: 'text', summary: '{{title}}' });
     expect(full.createdBy).toBe('agent-7');
+    expect(full.nature).toBe('work');
+    expect(full.audience).toBe('human');
+    // An explicitly declared record must survive even on a legacy work tier.
+    const record = registryInputFromPackage(
+      { ...pkg, nature: 'record', audience: null } as unknown as InstalledDatatype,
+      'ws-1',
+    );
+    expect(record.nature).toBe('record');
+    expect(record.audience).toBeNull();
   });
 
   it('refuses a package whose display is not a valid DatatypeDisplaySpec', () => {

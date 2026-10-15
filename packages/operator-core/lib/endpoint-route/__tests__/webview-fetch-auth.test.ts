@@ -52,7 +52,9 @@ const BASELINE: ReadonlySet<string> = new Set([
   // Fixed 2026-08-01 (EI-18834967602055309): commands.ts, tables.ts, tables-by-name.ts,
   // dev/table-schema.ts, dbos-status.ts, schedules-inventory.ts widened to admit
   // 'unverified-loopback' (+ CSRF guard on the mutating tables-by-name verbs).
-  'apps/operator/app/admin/plans/plans-api.ts :: /api/admin/inbox/triage',
+  // plans-api.ts :: /api/admin/inbox/triage — fixed 2026-10-13 (WI-6554700010009809):
+  // admin/inbox.ts widened to admit 'unverified-loopback' + requireAllowedOriginOr403,
+  // which also fixed settings/autonomy/page.tsx's automation-policy POST.
   // The two /api/admin/coordination entries were removed 2026-07-27 (WI-6501): the
   // shrink-only check flagged them stale because WI-6486 had already widened that
   // proxy to VTL for the HUD conversation pane. Fixing the route fixed its callers.

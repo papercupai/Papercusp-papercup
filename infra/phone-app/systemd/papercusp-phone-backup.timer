@@ -1,0 +1,12 @@
+[Unit]
+Description=Back up the Phone database daily (the ops-alert check flags it stale after PHONE_BACKUP_MAX_AGE_HOURS)
+
+[Timer]
+OnBootSec=10min
+OnCalendar=daily
+RandomizedDelaySec=30min
+Persistent=true
+Unit=papercusp-phone-backup.service
+
+[Install]
+WantedBy=timers.target

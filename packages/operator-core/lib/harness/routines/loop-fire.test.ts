@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   fireLoopWake,
   defaultLoopKickoff,
@@ -11,6 +12,7 @@ import {
   loopCheckpointStaleMs,
   decideLoopAwaitSuppression,
   rescheduleLoopAfterAwaitSuppression,
+  rebaseLoopAfterAwaitCancellation,
   LOOP_WAKE_FULL_TEMPLATE_EVERY,
   LOOP_WAKE_CHECKPOINT_MAX_CHARS,
   LOOP_WAKE_EXPANDED_VERIFIED_CHECKS,
@@ -19,9 +21,12 @@ import {
   LOOP_AWAIT_HEARTBEAT_MS,
   LOOP_NON_PARKING_AWAIT_BINDING_KINDS,
   LOOP_AWAIT_SUPPRESSION_MAX_ACTIONABLE_HELD,
+  defaultOwnerStewardsActiveGoal,
   type LoopFireDeps,
+  type OwnerStewardshipDeps,
 } from './loop-fire';
 import { AGENT_OBLIGATION_REMINDER_BINDING_KIND } from '../../agent-obligation-reminders';
+import { renderCheckLine, splitCarryNoteChecks, splitCarryNoteWalls, type CheckEntry } from '../../carry-note';
 
 /** A fresh set of injected deps with sensible "allow + woke 1" defaults; override per test. */
 function mkDeps(
@@ -42,10 +47,12 @@ function mkDeps(
     | 'renderOwnerDirectives'
     | 'listBlockingAwaits'
     | 'countActionableHeldItems'
+    | 'ownerStewardsActiveGoal'
+    | 'readGoalHolderWakeState'
     | 'readLastDeliveredAt'
     | 'rescheduleSuppressedWake'
     | 'ensureWakeArmed'
-    | 'armWakeForColdRespawn'
+    | 'armWakeForResume'
     | 'readBlockerLiveness'
   >
 > {
@@ -76,13 +83,18 @@ function mkDeps(
     // WI-10004466: hermetic default — an UNKNOWN count keeps the pre-fix decision, so
     // every existing suppression test is unaffected and no test reaches real PG.
     countActionableHeldItems: vi.fn(async () => null) as never,
+    // WI-10005778: hermetic default — UNKNOWN stewardship keeps the decision above, and no
+    // test reaches real PG.
+    ownerStewardsActiveGoal: vi.fn(async () => null) as never,
+    // P-007: hermetic default — no goal-holder state block, and no test reaches the real agenda read.
+    readGoalHolderWakeState: vi.fn(async () => null) as never,
     // P-024: hermetic default — "never delivered" keeps the pre-heartbeat ceiling.
     readLastDeliveredAt: vi.fn(async () => null) as never,
     rescheduleSuppressedWake: vi.fn(async () => true) as never,
     ensureWakeArmed: vi.fn(async () => false) as never,
     // EI-21417550055038906: mirrors the production default (armInboxWake succeeds);
     // hermetic so a cold-path unit test can never reach the real PG-backed arm.
-    armWakeForColdRespawn: vi.fn(async () => ({
+    armWakeForResume: vi.fn(async () => ({
       awaitId: 1,
       eventKey: 'coord:inbox-wake:su-pinned',
       handleNote: 'resumable',
@@ -157,6 +169,77 @@ describe('rescheduleLoopAfterAwaitSuppression — parked-loop CAS (EI-2135060992
   });
 });
 
+describe('rebaseLoopAfterAwaitCancellation — clear a deferred deadline (EI-24186993763548105)', () => {
+  it('moves a finite delayed pure-loop wake back to one configured interval after cancellation', async () => {
+    const statements: string[] = [];
+    const values: unknown[][] = [];
+    const sql = ((strings: TemplateStringsArray, ...args: unknown[]) => {
+      statements.push(strings.join(' ? '));
+      values.push(args);
+      if (statements.length === 1) {
+        return Promise.resolve([{
+          id: 'rt-delayed',
+          workspace_id: 'papercusp-workspace',
+          install_slug: 'papercusp',
+          name: 'loop-su-pinned',
+          target_owner_id: 'su-pinned',
+          reschedule_interval_sec: 60,
+          next_fire_at: '2026-10-01T14:05:00.000Z',
+        }]);
+      }
+      return Promise.resolve([]);
+    }) as never;
+
+    await expect(rebaseLoopAfterAwaitCancellation({
+      sql,
+      workspaceId: 'papercusp-workspace',
+      targetOwnerId: 'su-pinned',
+      eventKey: 'session:compacted:su-pinned',
+    })).resolves.toBe(1);
+
+    expect(statements[0]).toContain("SET next_fire_at = now() + (reschedule_interval_sec * interval '1 second')");
+    expect(statements[0]).toContain("next_fire_at <> 'infinity'::timestamptz");
+    expect(statements[0]).toContain("next_fire_at > now() + (reschedule_interval_sec * interval '1 second')");
+    expect(statements[0]).toContain("NOT jsonb_exists(trigger_config, 'cron')");
+    expect(statements[0]).toContain("NOT jsonb_exists(trigger_config, 'rrule')");
+    expect(values[0]).toEqual(expect.arrayContaining(['papercusp-workspace', 'su-pinned']));
+
+    await new Promise((resolve) => setImmediate(resolve));
+    const insertIndex = statements.findIndex((statement) =>
+      statement.includes('INSERT INTO harness_shared.routine_loop_transitions'),
+    );
+    expect(insertIndex).toBeGreaterThan(0);
+    expect(values[insertIndex]).toEqual(expect.arrayContaining([
+      'papercusp-workspace',
+      'papercusp',
+      'rt-delayed',
+      'loop-su-pinned',
+      'su-pinned',
+      'rearmed',
+      'await-cancel-recheck',
+      '2026-10-01T14:05:00.000Z',
+      60,
+      JSON.stringify({ via: 'await-cancel-recheck', canceledEventKey: 'session:compacted:su-pinned' }),
+    ]));
+  });
+
+  it('does not record a re-arm when no loop schedule is moved', async () => {
+    const statements: string[] = [];
+    const sql = ((strings: TemplateStringsArray) => {
+      statements.push(strings.join(' ? '));
+      return Promise.resolve([]);
+    }) as never;
+
+    await expect(rebaseLoopAfterAwaitCancellation({
+      sql,
+      workspaceId: 'papercusp-workspace',
+      targetOwnerId: 'su-pinned',
+      eventKey: 'work-item:claimable',
+    })).resolves.toBe(0);
+    expect(statements).toHaveLength(1);
+  });
+});
+
 describe('renderLoopChecksBlock — contested verification is explicit on wake', () => {
   it('labels contested evidence ⚠ so a successor is told to re-check it', () => {
     const out = renderLoopChecksBlock([
@@ -197,6 +280,85 @@ describe('renderLoopChecksBlock — contested verification is explicit on wake',
     expect(out).not.toContain('older verified check(s)');
     expect(out).toContain('unaddressed 0');
     expect(out).toContain('unaddressed 3');
+  });
+});
+
+describe('R-004 matched production check-renderer inputs', () => {
+  const snapshot = JSON.parse(readFileSync(new URL(
+    '../../../../../docs/evidence/byoc-p009-r004-matched-input-2026-10-13.json', import.meta.url,
+  ), 'utf8')) as { snapshots: Array<{ kind: string; note: string }>;
+    injectedBaseline: { summary: string; checksBlock: string; utf8_bytes: number } };
+  // Exact pre-compactor algorithm at 61b1c090369cd89cd7445ec4ba7d06b744a08b18,
+  // sharing the current parser/line renderer so only history compaction differs.
+  const baseline = (checks: ReadonlyArray<CheckEntry>): string | null => checks.length ? (
+    '🧪 CARRIED CHECKS — claims + probes (✓ verified w/ evidence · ⚠ CONTESTED: evidence contradicts verification; ' +
+    '? PREDICTED: run the re-check before ' +
+    'relying on it; update/clear via loop:checkpoint { checks }):\n' +
+    checks.map((c) => `  ${renderCheckLine(c).replace(/^-\s*/, '• ')}`).join('\n')
+  ) : null;
+  const bytes = (text: string | null) => Buffer.byteLength(text ?? '', 'utf8');
+
+  it('reduces the frozen historical check block by at least half without changing its source rows', () => {
+    const note = snapshot.snapshots.find(row => row.kind === 'historical-production-note')!.note;
+    const { body, walls } = splitCarryNoteWalls(note);
+    const { checks } = splitCarryNoteChecks(body);
+    const original = JSON.stringify({ note, checks, walls });
+    expect(checks).toHaveLength(12);
+    const candidate = renderLoopChecksBlock(checks)!;
+    expect(bytes(candidate)).toBeLessThanOrEqual(bytes(baseline(checks)) / 2);
+    expect(bytes(candidate)).toBeGreaterThan(candidate.length); // Unicode is measured as UTF-8.
+    for (const check of checks) expect(candidate).toContain(`#${check.id}`);
+    for (const check of checks.filter(c => !c.verified || c.contested || !c.id)) {
+      expect(candidate).toContain(renderCheckLine(check).replace(/^-\s*/, '• '));
+    }
+    expect(candidate).toContain(renderCheckLine(checks.at(-1)!).replace(/^-\s*/, '• '));
+    expect(JSON.stringify({ note, checks, walls })).toBe(original);
+  });
+
+  it('reduces the complete original injected wake using exactly its original check rows', () => {
+    const { summary, checksBlock, utf8_bytes } = snapshot.injectedBaseline;
+    expect(summary.split(checksBlock)).toHaveLength(2);
+    const note = '## Checks\n' + checksBlock.split('\n').slice(1)
+      .map(line => line.replace(/^  • /, '- ')).join('\n');
+    const { checks } = splitCarryNoteChecks(note);
+    expect(checks).toHaveLength(12);
+    const original = JSON.stringify(checks);
+    const candidateBlock = renderLoopChecksBlock(checks)!;
+    const candidate = summary.replace(checksBlock, candidateBlock);
+    expect(bytes(summary)).toBe(utf8_bytes);
+    expect(bytes(candidate)).toBeLessThanOrEqual(utf8_bytes / 2);
+    const [prefix, suffix] = summary.split(checksBlock);
+    expect(candidate).toBe(prefix + candidateBlock + suffix); // Every non-check byte survives.
+    for (const check of checks) expect(candidate).toContain(`#${check.id}`);
+    expect(candidateBlock).toContain(renderCheckLine(checks.at(-1)!).replace(/^-\s*/, '• '));
+    expect(JSON.stringify(checks)).toBe(original);
+  });
+
+  it('reports no check-block savings for the active production note with no check history', () => {
+    const note = snapshot.snapshots.find(row => row.kind === 'active-production-note')!.note;
+    const { body, walls } = splitCarryNoteWalls(note);
+    const { body: narrative, checks } = splitCarryNoteChecks(body);
+    expect(checks).toHaveLength(0);
+    expect(walls).toHaveLength(1);
+    expect(renderLoopChecksBlock(checks)).toBe(baseline(checks));
+    const wake = renderLoopWakeText({ kickoff: 'P-009 matched input control', fireNumber: 145,
+      checkpoint: narrative, checks, walls, nowMs: 1791912360000 });
+    expect(wake).toContain(narrative);
+    expect(wake).toContain(walls[0].claim);
+    expect(wake).toContain(walls[0].recheck);
+  });
+
+  it('keeps Unicode authorizations, retractions and spent IDs expanded when evidence is unsettled', () => {
+    const checks: CheckEntry[] = [
+      { id: 'authorization', claim: '授权仅限 P-009', recheck: 'read current scope' },
+      { id: 'retracted', claim: 'R-004 ≥50% was retracted', verified: 'old pass', contested: 'no pickup proof' },
+      { id: 'spent', claim: 'Spent request ID 🔒 remains consumed', verified: 'receipt persisted' },
+      { claim: 'Evidence without a stable ID cannot disappear ✅', verified: 'saved receipt' },
+    ];
+    const candidate = renderLoopChecksBlock(checks)!;
+    expect(bytes(candidate)).toBeGreaterThan(candidate.length);
+    for (const check of checks) expect(candidate).toContain(renderCheckLine(check).replace(/^-\s*/, '• '));
+    expect(candidate).not.toContain('older verified check(s)');
   });
 });
 
@@ -531,7 +693,7 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
       warn.mockRestore();
     });
 
-    it('an active blocking await → fire WITHHELD, no wake, nothing recorded (silent, benign skip)', async () => {
+    it('an active blocking await → fire WITHHELD, no wake, no fire recorded, withhold stamped', async () => {
       const deps = mkDeps({
         listBlockingAwaits: vi.fn(async () => [
           { eventKey: 'work-item:claimable', expiresTs: new Date(Date.now() + 5 * 60_000).toISOString(), createdAt: new Date().toISOString() },
@@ -544,6 +706,32 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
       expect(deps.wake).not.toHaveBeenCalled();
       // Matches the fire-gate pattern: a deliberate, expected skip is not fire-history noise.
       expect(deps.recordFire).not.toHaveBeenCalled();
+      // WI-10005352: …but it IS stamped to last_withheld_*, so the stalled-loops guard's
+      // withheld-fire veto sees it. Without this stamp the guard read every suppressed fire
+      // as turnless and disarmed a session correctly parked on its await.
+      expect(deps.recordWithheld).toHaveBeenCalledTimes(1);
+      expect(deps.recordWithheld).toHaveBeenCalledWith(
+        'papercusp',
+        'loop-su-pinned',
+        'await-blocking',
+        expect.stringContaining('work-item:claimable'),
+      );
+    });
+
+    it('a failed re-arm that fails open delivers the wake and stamps NO withhold (WI-10005352)', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const deps = mkDeps({
+        listBlockingAwaits: vi.fn(async () => [
+          { eventKey: 'work-item:claimable', expiresTs: new Date(Date.now() + 5 * 60_000).toISOString(), createdAt: new Date().toISOString() },
+        ]) as never,
+        rescheduleSuppressedWake: vi.fn(async () => false) as never,
+      });
+      const res = await fireLoopWake(baseInput, deps);
+
+      expect(res).toMatchObject({ fired: true, woken: 1 });
+      // The wake was delivered, so a withhold stamp would wrongly veto a genuinely stalled loop.
+      expect(deps.recordWithheld).not.toHaveBeenCalled();
+      warn.mockRestore();
     });
 
     it('no blocking awaits → fires normally (today’s behavior, unchanged)', async () => {
@@ -625,6 +813,118 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
       const deps = mkDeps({ listBlockingAwaits: vi.fn(async () => []) as never, countActionableHeldItems: count as never });
       await fireLoopWake(baseInput, deps);
       expect(count).not.toHaveBeenCalled();
+    });
+
+    /** WI-10005778: the await coord:ask-owner auto-arms for its requester. */
+    const ownerQuestionAwait = () => [{
+      eventKey: 'conversation:answered:conv-owner-question',
+      expiresTs: new Date(Date.now() + 2 * 60 * 60_000).toISOString(),
+      createdAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+      boundTo: { kind: 'conversation-question', ref: 'conv-owner-question' },
+    }];
+
+    it('WI-10005778: a goal holder with an open owner question still gets its stewardship wake', async () => {
+      const stewardship = vi.fn(async () => true);
+      const deps = mkDeps({
+        listBlockingAwaits: vi.fn(async () => ownerQuestionAwait()) as never,
+        countActionableHeldItems: vi.fn(async () => 0) as never,
+        ownerStewardsActiveGoal: stewardship as never,
+      });
+      const res = await fireLoopWake(baseInput, deps);
+      expect(res).toMatchObject({ fired: true, woken: 1 });
+      expect(deps.wake).toHaveBeenCalledTimes(1);
+      expect(deps.rescheduleSuppressedWake).not.toHaveBeenCalled();
+      expect(stewardship).toHaveBeenCalledWith(expect.objectContaining({ ownerId: baseInput.targetOwnerId }));
+    });
+
+    it('WI-10005778: a non-holder parked on an owner question stays parked (RSR-P-024-A)', async () => {
+      const deps = mkDeps({
+        listBlockingAwaits: vi.fn(async () => ownerQuestionAwait()) as never,
+        countActionableHeldItems: vi.fn(async () => 1) as never,
+        ownerStewardsActiveGoal: vi.fn(async () => false) as never,
+      });
+      const res = await fireLoopWake(baseInput, deps);
+      expect(res).toMatchObject({ fired: false, reason: 'await-blocking' });
+      expect(deps.wake).not.toHaveBeenCalled();
+    });
+
+    it('WI-10005778: a failed goal-lease read keeps the suppression decision', async () => {
+      const deps = mkDeps({
+        listBlockingAwaits: vi.fn(async () => ownerQuestionAwait()) as never,
+        ownerStewardsActiveGoal: vi.fn(async () => {
+          throw new Error('goals read timed out');
+        }) as never,
+      });
+      const res = await fireLoopWake(baseInput, deps);
+      expect(res).toMatchObject({ fired: false, reason: 'await-blocking' });
+    });
+
+    // P-007 superseded "read only when an await would suppress": the goal-holder state block
+    // needs the same verdict on every fire, so the lease is read exactly ONCE per fire and
+    // shared by the suppression guard and the wake block — never twice.
+    it('P-007: the goal lease is read once per fire, shared by suppression and the wake block', async () => {
+      const quiet = vi.fn(async () => true);
+      await fireLoopWake(baseInput, mkDeps({ listBlockingAwaits: vi.fn(async () => []) as never, ownerStewardsActiveGoal: quiet as never }));
+      expect(quiet).toHaveBeenCalledTimes(1);
+
+      const suppressing = vi.fn(async () => true);
+      await fireLoopWake(
+        baseInput,
+        mkDeps({
+          listBlockingAwaits: vi.fn(async () => ownerQuestionAwait()) as never,
+          countActionableHeldItems: vi.fn(async () => 0) as never,
+          ownerStewardsActiveGoal: suppressing as never,
+        }),
+      );
+      expect(suppressing).toHaveBeenCalledTimes(1);
+    });
+
+    it('P-007: a goal holder wake carries the goal-holder state block beneath the priority stack', async () => {
+      const block = 'GOAL-HOLDER STATE — goal g-1, read at fire time 2026-10-08T00:00:00.000Z.';
+      const readGoalHolderWakeState = vi.fn(async () => block);
+      const deps = mkDeps({
+        listBlockingAwaits: vi.fn(async () => []) as never,
+        ownerStewardsActiveGoal: vi.fn(async () => true) as never,
+        readGoalHolderWakeState: readGoalHolderWakeState as never,
+      });
+      await fireLoopWake({ ...baseInput, intervalSec: 900 } as never, deps);
+      expect(readGoalHolderWakeState).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ownerId: baseInput.targetOwnerId,
+          loop: expect.objectContaining({ intervalSec: 900 }),
+        }),
+      );
+      const summary = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].summary as string;
+      expect(summary).toContain(block);
+    });
+
+    it('P-007: a non-holder wake never reads or renders the goal-holder state block', async () => {
+      for (const stewards of [false, null]) {
+        const readGoalHolderWakeState = vi.fn(async () => 'GOAL-HOLDER STATE — must not render');
+        const deps = mkDeps({
+          listBlockingAwaits: vi.fn(async () => []) as never,
+          ownerStewardsActiveGoal: vi.fn(async () => stewards) as never,
+          readGoalHolderWakeState: readGoalHolderWakeState as never,
+        });
+        await fireLoopWake(baseInput, deps);
+        expect(readGoalHolderWakeState).not.toHaveBeenCalled();
+        const summary = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].summary as string;
+        expect(summary).not.toContain('GOAL-HOLDER STATE');
+      }
+    });
+
+    it('P-007: a failed goal-holder state read ships the wake without the block', async () => {
+      const deps = mkDeps({
+        listBlockingAwaits: vi.fn(async () => []) as never,
+        ownerStewardsActiveGoal: vi.fn(async () => true) as never,
+        readGoalHolderWakeState: vi.fn(async () => {
+          throw new Error('agenda read failed');
+        }) as never,
+      });
+      const res = await fireLoopWake(baseInput, deps);
+      expect(res).toMatchObject({ fired: true });
+      const summary = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].summary as string;
+      expect(summary).not.toContain('GOAL-HOLDER STATE');
     });
 
     it('a monitor loop keeps its heartbeat despite an active blocking await', async () => {
@@ -709,9 +1009,10 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
     // only that ladder's reachability-vetoed terminal guard may eventually auto-pause it,
     // and it does so LOUDLY (escalateDeadLoop), unlike this fast path.
     expect(deps.recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-pinned', 'no-session-now', 'error');
-    // No self-heal was possible (default mkDeps ensureWakeArmed returns false — no live
-    // session found), so exactly one wake attempt was made, no retry.
-    expect(deps.wake).toHaveBeenCalledTimes(1);
+    // The direct arm fallback retries once. Since this fixture's retry still misses,
+    // the failure is recorded without auto-ending the loop.
+    expect(deps.armWakeForResume).toHaveBeenCalledTimes(1);
+    expect(deps.wake).toHaveBeenCalledTimes(2);
   });
 
   describe('WI-5862: self-heal a missed wake when a live session has no active standing await', () => {
@@ -746,19 +1047,23 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
       expect(deps.recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-pinned', 'no-session-now', 'error');
     });
 
-    it('ensureWakeArmed reports false (no live session to heal, or already armed) → no retry, unchanged no-session-now behavior', async () => {
+    it('ensureWakeArmed reports false → direct arm retries once before no-session-now', async () => {
       const wake = vi.fn(async () => ({ targets: ['su-pinned'], keys: [], woken: 0, staged: 0 }));
       const ensureWakeArmed = vi.fn(async () => false);
       const deps = mkDeps({ wake: wake as never, ensureWakeArmed: ensureWakeArmed as never });
 
       const res = await fireLoopWake(baseInput, deps);
 
-      expect(wake).toHaveBeenCalledTimes(1); // no retry attempted
+      expect(deps.armWakeForResume).toHaveBeenCalledTimes(1);
+      expect(wake).toHaveBeenCalledTimes(2); // direct arm + exactly one retry
       expect(res).toMatchObject({ fired: false, reason: 'no-session-now' });
     });
 
-    it('ensureWakeArmed THROWING degrades to the plain no-session-now path (fail-soft, never breaks the fire)', async () => {
-      const wake = vi.fn(async () => ({ targets: ['su-pinned'], keys: [], woken: 0, staged: 0 }));
+    it('ensureWakeArmed throwing still falls through to direct arm and retry (fail-soft)', async () => {
+      const wake = vi
+        .fn()
+        .mockResolvedValueOnce({ targets: ['su-pinned'], keys: [], woken: 0, staged: 0 })
+        .mockResolvedValueOnce({ targets: ['su-pinned'], keys: [], woken: 1, staged: 0 });
       const ensureWakeArmed = vi.fn(async () => {
         throw new Error('pg unreachable');
       });
@@ -766,8 +1071,9 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
 
       const res = await fireLoopWake(baseInput, deps);
 
-      expect(wake).toHaveBeenCalledTimes(1);
-      expect(res).toMatchObject({ fired: false, reason: 'no-session-now' });
+      expect(deps.armWakeForResume).toHaveBeenCalledTimes(1);
+      expect(wake).toHaveBeenCalledTimes(2);
+      expect(res).toMatchObject({ fired: true, woken: 1 });
     });
 
     it('a normally-reached wake never consults ensureWakeArmed at all (no self-heal cost on the healthy path)', async () => {
@@ -792,7 +1098,7 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
         .mockResolvedValueOnce({ targets: ['su-pinned'], keys: [], woken: 0, staged: 0 })
         .mockResolvedValueOnce({ targets: ['su-pinned'], keys: [], woken: 1, staged: 0 });
       const ensureWakeArmed = vi.fn(async () => false);
-      const armWakeForColdRespawn = vi.fn(async (_req: { ownerId: string; note?: string }) => ({
+      const armWakeForResume = vi.fn(async (_req: { ownerId: string; note?: string }) => ({
         awaitId: 42,
         eventKey: 'coord:inbox-wake:su-pinned',
         handleNote: 'resumable',
@@ -801,41 +1107,51 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
       const deps = mkDeps({
         wake: wake as never,
         ensureWakeArmed: ensureWakeArmed as never,
-        armWakeForColdRespawn: armWakeForColdRespawn as never,
+        armWakeForResume: armWakeForResume as never,
       });
 
       const res = await fireLoopWake(coldInput, deps);
 
       expect(res).toMatchObject({ fired: true, woken: 1 });
-      expect(armWakeForColdRespawn).toHaveBeenCalledTimes(1);
-      expect(armWakeForColdRespawn.mock.calls[0][0]).toMatchObject({ ownerId: 'su-pinned' });
+      expect(armWakeForResume).toHaveBeenCalledTimes(1);
+      expect(armWakeForResume.mock.calls[0][0]).toMatchObject({ ownerId: 'su-pinned' });
       expect(wake).toHaveBeenCalledTimes(2); // original miss + the post-arm retry
       expect(deps.recordFire).not.toHaveBeenCalledWith('papercusp', 'loop-su-pinned', 'no-session-now', 'error');
     });
 
-    it('a WARM loop never takes the direct-arm fallback (unchanged no-session-now behavior)', async () => {
-      const wake = vi.fn(async () => ({ targets: ['su-pinned'], keys: [], woken: 0, staged: 0 }));
-      const armWakeForColdRespawn = vi.fn(async () => ({
+    it('a WARM loop with a no-watcher miss directly arms and retries through the resume channel', async () => {
+      const wake = vi
+        .fn()
+        .mockResolvedValueOnce({ targets: ['su-pinned'], keys: [], woken: 0, staged: 0 })
+        .mockResolvedValueOnce({ targets: ['su-pinned'], keys: [], woken: 1, staged: 0 });
+      const ensureWakeArmed = vi.fn(async () => false);
+      const armWakeForResume = vi.fn(async (_req: { ownerId: string; note?: string }) => ({
         awaitId: 1,
-        eventKey: 'k',
-        handleNote: '',
+        eventKey: 'coord:inbox-wake:su-pinned',
+        handleNote: 'resumable',
         minSleepSec: 60,
       }));
-      const deps = mkDeps({ wake: wake as never, armWakeForColdRespawn: armWakeForColdRespawn as never });
+      const deps = mkDeps({
+        wake: wake as never,
+        ensureWakeArmed: ensureWakeArmed as never,
+        armWakeForResume: armWakeForResume as never,
+      });
 
       const res = await fireLoopWake(baseInput, deps); // warm (no carry)
 
-      expect(armWakeForColdRespawn).not.toHaveBeenCalled();
-      expect(wake).toHaveBeenCalledTimes(1);
-      expect(res).toMatchObject({ fired: false, reason: 'no-session-now' });
+      expect(armWakeForResume).toHaveBeenCalledTimes(1);
+      expect(armWakeForResume.mock.calls[0][0]).toMatchObject({ ownerId: 'su-pinned' });
+      expect(wake).toHaveBeenCalledTimes(2);
+      expect(res).toMatchObject({ fired: true, woken: 1 });
+      expect(deps.recordFire).not.toHaveBeenCalledWith('papercup', 'loop-su-pinned', 'no-session-now', 'error');
     });
 
     it('the direct arm THROWING degrades fail-soft to no-session-now (never breaks the fire)', async () => {
       const wake = vi.fn(async () => ({ targets: ['su-pinned'], keys: [], woken: 0, staged: 0 }));
-      const armWakeForColdRespawn = vi.fn(async () => {
+      const armWakeForResume = vi.fn(async () => {
         throw new Error('pg unreachable');
       });
-      const deps = mkDeps({ wake: wake as never, armWakeForColdRespawn: armWakeForColdRespawn as never });
+      const deps = mkDeps({ wake: wake as never, armWakeForResume: armWakeForResume as never });
 
       const res = await fireLoopWake(coldInput, deps);
 
@@ -849,7 +1165,7 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
         .mockResolvedValueOnce({ targets: ['su-pinned'], keys: [], woken: 0, staged: 0 })
         .mockResolvedValueOnce({ targets: ['su-pinned'], keys: [], woken: 1, staged: 0 });
       const ensureWakeArmed = vi.fn(async () => true);
-      const armWakeForColdRespawn = vi.fn(async () => ({
+      const armWakeForResume = vi.fn(async () => ({
         awaitId: 1,
         eventKey: 'k',
         handleNote: '',
@@ -858,13 +1174,13 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
       const deps = mkDeps({
         wake: wake as never,
         ensureWakeArmed: ensureWakeArmed as never,
-        armWakeForColdRespawn: armWakeForColdRespawn as never,
+        armWakeForResume: armWakeForResume as never,
       });
 
       const res = await fireLoopWake(coldInput, deps);
 
       expect(res).toMatchObject({ fired: true });
-      expect(armWakeForColdRespawn).not.toHaveBeenCalled();
+      expect(armWakeForResume).not.toHaveBeenCalled();
     });
   });
 
@@ -1337,6 +1653,33 @@ describe('decideLoopAwaitSuppression — the pure suppression decision (EI-10901
     expect(LOOP_NON_PARKING_AWAIT_BINDING_KINDS.has('work-item-blocked')).toBe(true);
   });
 
+  it('WI-10005778: holding an active goal lease lifts suppression and says why', () => {
+    const question = {
+      eventKey: 'conversation:answered:conv-q', createdAt: new Date(now).toISOString(),
+      expiresTs: new Date(now + 2 * 60 * 60_000).toISOString(),
+      boundTo: { kind: 'conversation-question', ref: 'conv-q' },
+    };
+    expect(decideLoopAwaitSuppression({
+      awaits: [question], nowMs: now, actionableHeldItemCount: 0, ownerStewardsActiveGoal: true,
+    })).toEqual({
+      suppress: false,
+      resumeAtMs: null,
+      drivingEventKey: 'conversation:answered:conv-q',
+      overriddenByGoalStewardship: true,
+    });
+  });
+
+  it('WI-10005778: unknown or false goal stewardship keeps the owner-answer park', () => {
+    const question = {
+      eventKey: 'conversation:answered:conv-q', createdAt: new Date(now).toISOString(),
+      expiresTs: new Date(now + 2 * 60 * 60_000).toISOString(),
+      boundTo: { kind: 'conversation-question', ref: 'conv-q' },
+    };
+    for (const ownerStewardsActiveGoal of [false, null, undefined]) {
+      expect(decideLoopAwaitSuppression({ awaits: [question], nowMs: now, ownerStewardsActiveGoal }).suppress).toBe(true);
+    }
+  });
+
   it('WI-10004466: more actionable held items than the bound lifts suppression and says why', () => {
     const awaitRow = {
       eventKey: 'plan-item:done:x:P-008', createdAt: new Date(now).toISOString(),
@@ -1728,5 +2071,44 @@ describe('P-008: wake-template scaffold byte budgets', () => {
     expect(bytes(rendered)).toBeLessThanOrEqual(
       LOOP_WAKE_SCAFFOLD_BYTE_BUDGETS.shortForm + LOOP_WAKE_CHECKPOINT_MAX_CHARS + 60,
     );
+  });
+});
+
+describe('defaultOwnerStewardsActiveGoal — only the ELECTED holder of an active goal is exempt (WI-10005778)', () => {
+  const OWNER = 'su-holder';
+  const PREDECESSOR = 'su-predecessor';
+  const row = (ownerId: string, goalId = 'goal-1') => ({ goalId, workspaceId: 'ws', ownerId, setAtMs: 1 });
+  const mk = (over: Partial<OwnerStewardshipDeps>): OwnerStewardshipDeps => ({
+    readRows: vi.fn(async () => [row(OWNER), row(PREDECESSOR)]),
+    readActiveGoals: vi.fn<OwnerStewardshipDeps['readActiveGoals']>(async (_sql, ids) =>
+      ids.map((goalId) => ({ goalId, workspaceId: 'ws' })),
+    ),
+    resolveBatch: vi.fn<OwnerStewardshipDeps['resolveBatch']>(async (_sql, goals) =>
+      new Map(goals.map((g) => [g.goalId, { elected: { ...row(OWNER, g.goalId) } as never }] as const)),
+    ),
+    ...over,
+  });
+
+  it('is true for the elected lease holder of an active goal, resolved from the same row read', async () => {
+    const deps = mk({});
+    expect(await defaultOwnerStewardsActiveGoal({ ownerId: OWNER, sql: {} as never }, deps)).toBe(true);
+    const [, , opts] = (deps.resolveBatch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(opts.rows).toHaveLength(2);
+  });
+
+  it('is false for a predecessor whose goal-mode row outlived the election', async () => {
+    expect(await defaultOwnerStewardsActiveGoal({ ownerId: PREDECESSOR, sql: {} as never }, mk({}))).toBe(false);
+  });
+
+  it('is false when the only goal the owner has a row for is not active', async () => {
+    const deps = mk({ readActiveGoals: vi.fn(async () => []) });
+    expect(await defaultOwnerStewardsActiveGoal({ ownerId: OWNER, sql: {} as never }, deps)).toBe(false);
+    expect(deps.resolveBatch).not.toHaveBeenCalled();
+  });
+
+  it('is false without reading goals when the owner has no goal-mode row', async () => {
+    const deps = mk({});
+    expect(await defaultOwnerStewardsActiveGoal({ ownerId: 'su-stranger', sql: {} as never }, deps)).toBe(false);
+    expect(deps.readActiveGoals).not.toHaveBeenCalled();
   });
 });

@@ -7,7 +7,7 @@
  * become an admission threshold merely by appearing here.
  */
 
-export const LIVE_HEALTH_SCHEMA_VERSION = 'resource-governor-live-health-v1' as const;
+export const LIVE_HEALTH_SCHEMA_VERSION = 'resource-governor-live-health-v2' as const;
 export const LIVE_HEALTH_FRAGMENT_SCHEMA_VERSION = 'resource-governor-live-health-fragment-v1' as const;
 
 export type LiveHealthPlatform = NodeJS.Platform;
@@ -120,6 +120,38 @@ export const LIVE_HEALTH_SIGNAL_SPECS = {
     freshForMs: 90_000,
     platforms: ['linux'],
     description: 'Linux PSI CPU some avg60: time at least one runnable task waited for CPU.',
+  },
+  'io.psiSomePct': {
+    unit: 'percent',
+    writerKind: 'monitor',
+    windowKind: 'rolling',
+    freshForMs: 90_000,
+    platforms: ['linux'],
+    description: 'Linux PSI I/O some avg60: time at least one task stalled on I/O.',
+  },
+  'io.psiFullPct': {
+    unit: 'percent',
+    writerKind: 'monitor',
+    windowKind: 'rolling',
+    freshForMs: 90_000,
+    platforms: ['linux'],
+    description: 'Linux PSI I/O full avg60: time all non-idle tasks stalled on I/O.',
+  },
+  'io.processReadBytesPerSec': {
+    unit: 'bytes-per-second',
+    writerKind: 'operator',
+    windowKind: 'delta',
+    freshForMs: 15_000,
+    platforms: ['linux'],
+    description: 'Process /proc/<pid>/io read_bytes delta per second; process-scoped storage reads.',
+  },
+  'io.processWriteBytesPerSec': {
+    unit: 'bytes-per-second',
+    writerKind: 'operator',
+    windowKind: 'delta',
+    freshForMs: 15_000,
+    platforms: ['linux'],
+    description: 'Process /proc/<pid>/io write_bytes delta per second; process-scoped storage writes.',
   },
   'scheduler.runnableCount': {
     unit: 'count',
@@ -426,6 +458,38 @@ export interface LiveHealthSnapshot {
   readonly observations: Readonly<Record<LiveHealthSignalKey, Readonly<Record<string, LiveHealthReading>>>>;
   /** Newest reading per key for bounded orientation/state summaries. Not a verdict. */
   readonly signals: Readonly<Record<LiveHealthSignalKey, LiveHealthReading>>;
+  /** Optional only for legacy snapshots. Discrete observations never imply capacity between samples. */
+  readonly storage?: LiveHealthStorageSample;
+  /** Missing/null is unknown; this witnesses only the recorded sample's source. */
+  readonly sourceCustody?: LiveHealthSourceCustody | null;
+}
+
+export interface LiveHealthSourceCustody {
+  readonly kind: 'node-entry-sha256';
+  readonly nativePid: number;
+  readonly processIdentity: string;
+  readonly sha256: string;
+  readonly sampleStartedAtMs: number;
+  readonly sampleCompletedAtMs: number;
+  readonly stableDuringSample: boolean;
+}
+
+export interface LiveHealthStorageSample {
+  readonly startedAtMs: number;
+  readonly collectedAtMs: number;
+  readonly policy: import('../storage/disk-space-policy').DiskAlarmPolicy;
+  readonly snapshots: readonly {
+    readonly path: string;
+    readonly state: 'measured' | 'unknown';
+    readonly dev: number | null;
+    readonly totalBytes: number | null;
+    readonly availableBytes: number | null;
+    readonly totalInodes: number | null;
+    readonly freeInodes: number | null;
+    readonly reservationState: 'measured' | 'unknown';
+    readonly reservedBytes: number | null;
+    readonly issues: readonly string[];
+  }[];
 }
 
 export interface LiveHealthFragment {
@@ -433,6 +497,39 @@ export interface LiveHealthFragment {
   readonly publishedAtMs: number;
   readonly writer: LiveHealthWriter;
   readonly signals: Partial<Record<LiveHealthSignalKey, LiveHealthReading>>;
+}
+
+export function isLiveHealthStorage(value: unknown): value is LiveHealthStorageSample {
+  if (!isRecord(value) || !finite(value.startedAtMs) || !finite(value.collectedAtMs) || value.collectedAtMs < value.startedAtMs ||
+    !isRecord(value.policy) || !Array.isArray(value.snapshots) || value.snapshots.length === 0) return false;
+  for (const key of ['freePctMin', 'freeBytesMin', 'freeInodesPctMin', 'criticalFreePctMin', 'criticalFreeBytesMin', 'criticalFreeBytesCap']) {
+    if (!finite(value.policy[key]) || value.policy[key] < 0) return false;
+  }
+  const paths = new Set<string>();
+  const devices = new Map<number, Record<string, unknown>>();
+  for (const row of value.snapshots) {
+    if (!isRecord(row) || typeof row.path !== 'string' || !row.path || paths.has(row.path) ||
+      !Array.isArray(row.issues) || !row.issues.every((issue) => typeof issue === 'string')) return false;
+    paths.add(row.path);
+    if (row.state === 'unknown') {
+      if (row.reservationState !== 'unknown' || row.reservedBytes !== null ||
+        !['dev', 'totalBytes', 'availableBytes', 'totalInodes', 'freeInodes'].every((key) => row[key] === null)) return false;
+      continue;
+    }
+    if (row.state !== 'measured' || !['dev', 'totalBytes', 'availableBytes', 'totalInodes', 'freeInodes'].every(
+      (key) => finite(row[key]) && Number.isSafeInteger(row[key]) && row[key] >= 0)) return false;
+    if ((row.totalBytes as number) <= 0 || (row.availableBytes as number) > (row.totalBytes as number) ||
+      (row.freeInodes as number) > (row.totalInodes as number)) return false;
+    if (row.reservationState === 'unknown') {
+      if (row.reservedBytes !== null) return false;
+    } else if (row.reservationState !== 'measured' || !finite(row.reservedBytes) || !Number.isSafeInteger(row.reservedBytes) || row.reservedBytes < 0) {
+      return false;
+    }
+    const prior = devices.get(row.dev as number);
+    if (prior && ['totalBytes', 'reservedBytes', 'reservationState'].some((key) => row[key] !== prior[key])) return false;
+    devices.set(row.dev as number, row);
+  }
+  return true;
 }
 
 export function clampLiveHealthConfidence(value: number): number {
@@ -577,7 +674,7 @@ function finite(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
-function isLiveHealthWriter(value: unknown): value is LiveHealthWriter {
+export function isLiveHealthWriter(value: unknown): value is LiveHealthWriter {
   if (!isRecord(value)) return false;
   return (
     typeof value.id === 'string' &&
@@ -591,6 +688,15 @@ function isLiveHealthWriter(value: unknown): value is LiveHealthWriter {
     LIVE_HEALTH_PLATFORMS.has(value.platform as NodeJS.Platform) &&
     finite(value.startedAtMs)
   );
+}
+
+export function isLiveHealthSourceCustody(value: unknown): value is LiveHealthSourceCustody {
+  return isRecord(value) && value.kind === 'node-entry-sha256' &&
+    finite(value.nativePid) && Number.isSafeInteger(value.nativePid) && value.nativePid > 0 &&
+    typeof value.processIdentity === 'string' && value.processIdentity.length > 0 &&
+    typeof value.sha256 === 'string' && /^[a-f0-9]{64}$/.test(value.sha256) &&
+    finite(value.sampleStartedAtMs) && finite(value.sampleCompletedAtMs) &&
+    value.sampleCompletedAtMs >= value.sampleStartedAtMs && typeof value.stableDuringSample === 'boolean';
 }
 
 function isLiveHealthWindowForKey(key: LiveHealthSignalKey, value: unknown): value is LiveHealthWindow {
@@ -660,6 +766,8 @@ function isSyntheticUnknownWriter(key: LiveHealthSignalKey, reading: LiveHealthR
 export function isLiveHealthSnapshot(value: unknown): value is LiveHealthSnapshot {
   if (!isRecord(value)) return false;
   if (value.schemaVersion !== LIVE_HEALTH_SCHEMA_VERSION) return false;
+  if (value.storage !== undefined && !isLiveHealthStorage(value.storage)) return false;
+  if (value.sourceCustody !== undefined && value.sourceCustody !== null && !isLiveHealthSourceCustody(value.sourceCustody)) return false;
   if (!finite(value.sequence) || !Number.isInteger(value.sequence) || value.sequence < 1) return false;
   if (!finite(value.sampledAtMs) || !finite(value.monitorStartedAtMs) || value.monitorStartedAtMs > value.sampledAtMs) {
     return false;
@@ -691,6 +799,12 @@ export function isLiveHealthSnapshot(value: unknown): value is LiveHealthSnapsho
 
   for (const [writerId, rawWriter] of Object.entries(value.writers)) {
     if (!isLiveHealthWriter(rawWriter) || rawWriter.id !== writerId) return false;
+  }
+  if (value.sourceCustody) {
+    const source = value.sourceCustody as LiveHealthSourceCustody;
+    const monitor = value.writers[`monitor.host:${source.nativePid}`];
+    if (!isLiveHealthWriter(monitor) || monitor.kind !== 'monitor' || monitor.pid !== source.nativePid || monitor.startedAtMs !== value.monitorStartedAtMs ||
+      source.sampleStartedAtMs !== value.sampledAtMs) return false;
   }
   for (const key of LIVE_HEALTH_SIGNAL_KEYS) {
     const compact = value.signals[key];

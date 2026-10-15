@@ -60,6 +60,27 @@ describe('dispatchProjectedToolToMcp', () => {
     expect((r.content[0] as { text: string }).text).toMatch(/^role_not_allowed: /);
   });
 
+  it('preserves a dispatcher late-write receipt on the MCP error result', async () => {
+    const receipt = {
+      status: 'recorded',
+      msg_id: 'm-late',
+      diagnostics: { coordSendPhaseTimingsMs: [{ itemIndex: 0, prePersistMs: 8, persistMs: 12, postPersistMs: 5 }] },
+    };
+    const error = Object.assign(new Error('tool timed out after its handler returned'), {
+      dispatchMetadata: { abortCompletionReceipt: receipt },
+    });
+    const r = await dispatchProjectedToolToMcp(
+      tool({ fn: async () => { throw error; } }),
+      'fix.tool',
+      {},
+      ctx(),
+      {},
+    );
+
+    expect(r.isError).toBe(true);
+    expect(r._meta).toEqual({ abortCompletionReceipt: receipt });
+  });
+
   // EI-21903050648079438: a code:run script's unwrapToolResult prefers
   // structuredContent over the text body, so a dispatch-level failure with no
   // structuredContent handed the script a raw STRING while a success handed it

@@ -38,7 +38,8 @@ function parsePayload(result: { content: Array<{ text: string }> }): Record<stri
 /**
  * Mock the pack catalog with injected registry snapshots, routed through the
  * REAL `assemblePackCatalog` + `depHostSetsFromCatalog`. `legacyCatalogNames`
- * defaults to the live in-process catalog so built-in tool deps stay truthful.
+ * includes the resolved parent's providers: dependency declarations union across
+ * extends, while these isolated tests do not bootstrap every operator tool.
  */
 function mockPackCatalog(opts: {
   installed?: Array<{ name: string; version?: string; kind?: string; tools?: Array<{ name: string }> }>;
@@ -54,13 +55,17 @@ function mockPackCatalog(opts: {
   vi.doMock('../../../cupboard/pack-catalog', async (importOriginal) => {
     const actual = await importOriginal<typeof import('../../../cupboard/pack-catalog')>();
     const { getCatalog } = await import('@papercusp/agent-mcp');
+    const { operatorResolveExtends } = await import('../../../blueprint/installed-blueprints');
+    const { loadBlueprintFromFile } = await import('@papercusp/orchestrator/blueprint');
+    const resolve = operatorResolveExtends();
+    const { blueprint } = loadBlueprintFromFile(resolve('coding')!, resolve);
     return {
       ...actual,
       derivePackCatalog: async (deriveOpts: { includeCupboard?: boolean } = {}) =>
         actual.assemblePackCatalog({
           installed: opts.installed ?? [],
           projectedTools: opts.projectedTools ?? [],
-          legacyCatalogNames: getCatalog().map((t) => t.name),
+          legacyCatalogNames: [...getCatalog().map((t) => t.name), ...(blueprint.dependencies?.tools ?? [])],
           cupboardUnits: deriveOpts.includeCupboard === false ? [] : opts.cupboardUnits ?? [],
           cupboardReachable: deriveOpts.includeCupboard === false ? true : opts.cupboardReachable ?? true,
         }),
@@ -105,7 +110,7 @@ describe('harness:create — E2b-ii dependency gate (pack model)', () => {
     const payload = parsePayload(res);
     expect(payload.ok).toBe(false);
     expect(payload.error).toMatch(/tool dependencies unmet/);
-    expect(payload.missing.tools).toContain('definitely-not-a-real-tool-xyz');
+    expect(payload.missing.tools).toEqual(['definitely-not-a-real-tool-xyz']);
   });
 
   it('passes when a declared tool is PROVIDED BY AN INSTALLED PLUGIN (projected registry, not getCatalog)', async () => {
@@ -276,12 +281,12 @@ describe('harness:create — E2b-ii dependency gate (pack model)', () => {
     }
   });
 
-  it('short-circuits (no-op) for a blueprint with explicitly empty deps — gate passes through', async () => {
-    // All three dep arrays empty → the gate short-circuits (no catalog
-    // derivation, no Cupboard) and execution reaches step 2 (dir resolution),
-    // which rejects because the destination already exists. That proves the
-    // gate did NOT block creation. (Explicit empties also REPLACE any deps a
-    // parent built-in declares — arrays merge wholesale.)
+  it('empty child dependency arrays retain parent tools and validate the ready catalog', async () => {
+    // Empty child arrays do not erase the parent's declaration sets. The real
+    // gate derives the ready local catalog, then reaches destination validation.
+    mockPackCatalog({});
+    const catalog = await import('../../../cupboard/pack-catalog');
+    const derive = vi.spyOn(catalog, 'derivePackCatalog');
     const dir = await fs.mkdtemp(join(tmpdir(), 'create-noop-'));
     try {
       await fs.mkdir(join(dir, 'already'));
@@ -298,6 +303,7 @@ describe('harness:create — E2b-ii dependency gate (pack model)', () => {
       const payload = parsePayload(res);
       expect(payload.ok).toBe(false);
       expect(payload.error).toMatch(/destination already exists/);
+      expect(derive).toHaveBeenCalledExactlyOnceWith({ includeCupboard: false });
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }

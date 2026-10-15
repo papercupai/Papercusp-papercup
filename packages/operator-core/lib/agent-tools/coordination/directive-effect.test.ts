@@ -209,20 +209,21 @@ describe('resolveDirectiveEffect — terminal', () => {
     expect(a.verdict).toBe('satisfied');
   });
 
-  it('falls back to updated_ts when closed_ts is absent', () => {
+  it('does not credit a later row update when the terminal transition is undated', () => {
     const a = resolveDirectiveEffect(
       { kind: 'terminal', itemId: 'WI-100' },
       row({ status: 'resolved', closed_ts: null, updated_ts: String(AFTER) }),
       SENT,
     );
-    expect(a.verdict).toBe('satisfied');
-    expect(a.observedAtMs).toBe(AFTER);
+    expect(a.verdict).toBe('unknown');
+    expect(a.observedAtMs).toBeNull();
+    expect(a.evidence).toContain('no close timestamp');
   });
 
   it('PRE-EXISTING when it was already terminal before the directive', () => {
     const a = resolveDirectiveEffect(
       { kind: 'terminal', itemId: 'WI-100' },
-      row({ status: 'done', closed_ts: String(BEFORE) }),
+      row({ status: 'done', closed_ts: String(BEFORE), updated_ts: String(AFTER) }),
       SENT,
     );
     expect(a.verdict).toBe('pre-existing');

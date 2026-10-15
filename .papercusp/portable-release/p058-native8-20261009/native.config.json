@@ -1,0 +1,31 @@
+{
+  "imageId": "sha256:db4fe47b038ae72b37cdc2abf1dd072d0f0253941b38a7d85db3889d78c24ea3",
+  "platform": "linux/arm64",
+  "args": [
+    "--user", "1001:1001", "--workdir", "/product",
+    "--cpus", "4", "--memory", "12g", "--pids-limit", "512",
+    "--volume", "/home/marsh-office/p058-armbuild8/sources/product:/product",
+    "--volume", "/home/marsh-office/p058-armbuild8/tooling-epoch2/producer:/producer:ro",
+    "--volume", "/home/marsh-office/p058-armbuild8/build-home:/build-home",
+    "--volume", "/home/marsh-office/p058-armbuild8/output:/output",
+    "--volume", "/home/marsh-office/p058-armbuild8/models:/models:ro",
+    "--env", "HOME=/build-home",
+    "--env", "XDG_STATE_HOME=/build-home/.local/state",
+    "--env", "CARGO_HOME=/build-home/.cargo",
+    "--env", "REPO_ROOT=/product",
+    "--env", "PAPERCUSP_ROOT=/product/libs/papercusp",
+    "--env", "PAPERCUSP_DESKTOP_TARGET_ROOT=/product/papercusp-desktop",
+    "--env", "PAPERCUSP_PINNED_DEPS_SNAPSHOT_ROOT=/product",
+    "--env", "PAPERCUSP_SIDECAR_OUT=/output/native-arm64-release",
+    "--env", "PAPERCUSP_TRANSFORMERS_MODEL_CACHE=/models",
+    "--env", "PAPERCUSP_BUILD_SHA=58d5a1c744632d7bf72772a0f97e4c338ef0d04b",
+    "--env", "PAPERCUSP_DESKTOP_VERSION=0.0.26",
+    "--env", "PAPERCUSP_SPA_SNAPSHOT_FROM=/output/vite-cli-diagnostic3-snapshot",
+    "--env", "PAPERCUSP_RELEASE_AUDIT=1",
+    "--env", "PAPERCUSP_DISTRIBUTION_PROFILE=dogfood",
+    "--env", "NODE_OPTIONS=--max-old-space-size=8192"
+  ],
+  "command": ["bash", "/producer/papercusp-desktop/bin/build-desktop-sidecar.sh"],
+  "out": "/home/marsh-office/p058-armbuild8/output/native8-owner",
+  "timeoutMs": 5400000
+}

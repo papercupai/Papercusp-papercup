@@ -24,9 +24,19 @@ describe('P008 goal planning intent proof', () => {
     goalId: 'goal-proof', disposition: 'existing-plans-sufficient',
     rationale: 'The linked plan covers the remaining outcome.',
     evidenceRefs: ['plan:papercusp/covered'], planRefs: ['plan:papercusp/covered'],
+    coverage: [{ need: 'Checkout recovery', itemRefs: ['WI-1', 'WI-2', 'WI-3'], planRef: 'plan:papercusp/covered' }],
   };
   it('represents the supported no-new-plan disposition without a positive idea count', () => {
     expect(review.goalPlanningReviewInputSchema.safeParse(supported).success).toBe(true);
+  });
+  it('rejects a no-new-plan review that carries no coverage map (goal-holder-plans P-003)', () => {
+    const { coverage: _omitted, ...bare } = supported;
+    expect(review.goalPlanningReviewInputSchema.safeParse(bare).success,
+      'existing-plans-sufficient without a coverage map is an uncheckable assertion').toBe(false);
+  });
+  it('rejects a coverage map whose 3+ item cluster names no covering plan (D-002)', () => {
+    const coverage = [{ need: 'Checkout recovery', itemRefs: ['WI-1', 'WI-2', 'WI-3'], justification: 'handled one by one' }];
+    expect(review.goalPlanningReviewInputSchema.safeParse({ ...supported, coverage }).success).toBe(false);
   });
   it('rejects an unsupported sufficient-plan assertion with no evidence references', () => {
     expect(review.goalPlanningReviewInputSchema.safeParse({ ...supported, evidenceRefs: [] }).success,

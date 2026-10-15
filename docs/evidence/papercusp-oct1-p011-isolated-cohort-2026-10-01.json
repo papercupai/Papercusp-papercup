@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "plane": "isolated-current-build-operator-api",
+  "incomplete": true,
+  "buildSha": "d181473c10a6eabc7e0b23530a3961525439b5d6",
+  "bundleHash": "da1dba6cf8073af013e85c2d12d453e5a13b386d275a8cf440ce1da243f6b3fb",
+  "startedAt": "2026-10-01T19:17:42.073Z",
+  "workload": {
+    "population": 1024,
+    "pageLimit": 128,
+    "windows": 3,
+    "requestsPerWindow": 8,
+    "concurrency": 8
+  },
+  "samples": [],
+  "windows": [],
+  "limitations": [
+    "One owned request-only process; background, production workers and fleet workloads are not measured.",
+    "Sampling selfSize is live sampled allocation, not total heap or a retained-state owner.",
+    "Completed-result diagnostic bytes are PostgreSQL wire bytes, not HTTP, payload storage or retained heap.",
+    "Inspector sampling and forced GC are labeled diagnostic interventions, not ordinary production operation."
+  ],
+  "error": "PostgresError: column \"hash\" does not exist",
+  "hostErrorTail": "",
+  "finishedAt": "2026-10-01T19:17:42.102Z",
+  "home": "/tmp/pcv/papercusp-test-runtime-dzkuvh/home",
+  "hostReaped": true
+}

@@ -179,7 +179,7 @@ describe('carryProvenClassForOwner — the shared P-026 read (WI-5001)', () => {
   it('returns the class when the owner’s live host classifies into a proven class', async () => {
     await expect(
       carryProvenClassForOwner('su-x', {
-        findHostFn: () => ({ bridgeTty: false, lastInputAt: null }),
+        findHostFn: async () => ({ bridgeTty: false, lastInputAt: null }),
         reportFn: async () => ({ sufficientClasses: ['claude-headless'] }),
       }),
     ).resolves.toBe('claude-headless');
@@ -188,7 +188,7 @@ describe('carryProvenClassForOwner — the shared P-026 read (WI-5001)', () => {
   it('null when the class is not proven / nothing is proven', async () => {
     await expect(
       carryProvenClassForOwner('su-x', {
-        findHostFn: () => ({ bridgeTty: true, lastInputAt: null }),
+        findHostFn: async () => ({ bridgeTty: true, lastInputAt: null }),
         reportFn: async () => ({ sufficientClasses: ['claude-headless'] }),
       }),
     ).resolves.toBe(null);
@@ -197,7 +197,7 @@ describe('carryProvenClassForOwner — the shared P-026 read (WI-5001)', () => {
   it('null when the owner has NO live host (cannot classify ⇒ keep the enrichment)', async () => {
     await expect(
       carryProvenClassForOwner('su-x', {
-        findHostFn: () => null,
+        findHostFn: async () => null,
         reportFn: async () => ({ sufficientClasses: ['claude-headless', 'claude-interactive'] }),
       }),
     ).resolves.toBe(null);
@@ -206,7 +206,7 @@ describe('carryProvenClassForOwner — the shared P-026 read (WI-5001)', () => {
   it('deliberately does NOT apply the active-exchange guard (a compaction already happened)', async () => {
     await expect(
       carryProvenClassForOwner('su-x', {
-        findHostFn: () => ({ bridgeTty: true, lastInputAt: Date.now() }),
+        findHostFn: async () => ({ bridgeTty: true, lastInputAt: Date.now() }),
         reportFn: async () => ({ sufficientClasses: ['claude-interactive'] }),
       }),
     ).resolves.toBe('claude-interactive');
@@ -215,7 +215,7 @@ describe('carryProvenClassForOwner — the shared P-026 read (WI-5001)', () => {
   it('FAIL-SOFT null on any resolution failure', async () => {
     await expect(
       carryProvenClassForOwner('su-x', {
-        findHostFn: () => {
+        findHostFn: async () => {
           throw new Error('discovery dir gone');
         },
       }),

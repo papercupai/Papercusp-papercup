@@ -32,37 +32,45 @@ import { hardText, LIMITS } from '../limits';
 // The two "default N" figures in the arg descriptions below are RENDERED from the
 // registry, never typed: a tool description is prose that describes code, and P-006
 // found five hand-maintained copies of this same bound already stale in the tree.
-import { DEFAULT_MIN_RESPONDERS, DEFAULT_MAX_RESPONDERS } from '../../consult/selection-policies';
+import { DEFAULT_MIN_RESPONDERS, DEFAULT_MAX_RESPONDERS, RUBRIC_VETTING_POLICY } from '../../consult/selection-policies';
+import { AGENT_LAUNCH_HANDLER_TIMEOUT_SEC } from '../../agent-kickoff/launch-budgets.mjs';
 import { reconcileInterestEventAwaits } from '../../interest-auto-arm';
+import { consultFeedbackAbortCompletionReceipt } from './abort-completion';
 
 const ok = (payload: Record<string, unknown>) => ({ data: payload });
 
 export default defineTool({
   name: 'consult:get_feedback',
   description:
-    'Open a new feedback consult for one unresolved question — a request/creation verb, not a reader for an existing conversation; use conversations:get { id } to read one. It checks the closed-consult archive first, then selects expertise from cross-agent transcripts; a fresh consult dispatches an isolated answer session and does not wake the expert’s live session. Below the relevance floor it reports the honest routing outcome instead of inventing expertise.',
+    'Accept a recoverable consult request and return its conversation identity before routing/launch completes. Read conversations:get { id } for current routing and replies. Reuse request_key and the same payload after a timeout; a new key asks for a fresh consult. Transcript expertise routes to an isolated answer session and does not wake the expert’s live session.',
   guidance: {
     when:
-      'A concrete technical question survives a first-pass check of local code, docs, or search, and a peer may already have solved it. Ask once before a long re-derivation; say what you tried, what you observed, and the decision it informs.',
+      'After a first-pass check of local code, docs, or search, Ask once with a concrete question before long re-derivation; include what you tried, observed, and the decision it informs.',
     notWhen:
-      'Reading an existing conversation or consult thread (conversations:get { id }); live state (query it); owner decisions (coord:ask-owner); a known agent (coord:send); or anything code, docs or search already answer. Do not open duplicate consults or repeat an unchanged question after no_available_responder — a consult is advice, never a handoff.',
+      'Reading an existing conversation? use conversations:get { id }. Query live state; coord:ask-owner for owner decisions, coord:send for known agents. Do not consult to meet a quota or when code, docs, or search answer it. Do not open duplicate consults or repeat unchanged questions after no_available_responder; advice is not a handoff. Parking a reversible judgment call? work_items:set_blocker kind:\'product-decision\' + defaultIfUnanswered + decideBy opens the review for you.',
     chaining:
-      "For a known id, use conversations:get { id } to read the existing conversation; this tool does not read an existing conversation. An archive match may answer without launching a session; otherwise the dispatcher already walks allowed model ranks and skips walled backends, so never retry manually. Use latency_contract:'hard-blocked' only when you cannot proceed without the answer. Declines and expiries advance the existing cascade.",
+      "This tool does not read an existing conversation; use conversations:get { id }. The dispatcher already walks allowed model ranks; do not retry. Set latency_contract:'hard-blocked' only if blocked on the answer; declines/expiries advance the cascade. After advice arrives, read the reply and apply relevant findings to your project decision. Receipt or silence does not prove usefulness. With allow_dispatch:false, retrieval-only returns candidates but no answer session.",
     returns:
-      '{ verdict, conversation_id, thread_id, responder, responder_via, remaining_candidates, latency_contract, expires_at, archive?, hint }',
+      "{ verdict:'accepted', conversation_id, thread_id, request_key, state, pending, latency_contract, park_key, hint }; conversations:get reads routing and replies",
   },
   capability: 'coord:write',
   requirePrincipal: false,
+  // Dispatch can wait through the shared kickoff and first-turn proof budget;
+  // keep the caller deadline beyond those synchronous launch steps.
+  timeoutSec: AGENT_LAUNCH_HANDLER_TIMEOUT_SEC,
+  abortCompletionReceipt: consultFeedbackAbortCompletionReceipt,
   agentRoles: [...COORD_ROLES],
   args: z.object({
+    request_key: z.string().trim().min(1).max(200).optional().describe('Stable retry identity scoped to your workspace and requester. Reuse with the same question/options after a timeout. A different payload under the same key refuses; use a new key for a fresh consult. Omitted keys deduplicate identical requests.'),
     question: hardText(LIMITS.ANNOTATION).describe('The new question to route. This tool opens a new consult; to read an existing conversation, use conversations:get { id }. Name concrete files/symbols where relevant — authorship of the code in question is a routing signal.'),
+    subject_refs: z.array(z.string().trim().min(1)).optional().describe('Source refs whose transcript evidence must each support floor qualification. Public manual document paths expand through their documents: frontmatter anchors; unresolved or unmeasured anchors stay below the floor. There is no per-array count cap.'),
     tried: hardText(LIMITS.ANNOTATION).optional().describe('What you already tried (grounds the responder; avoids re-suggesting it).'),
     observed: hardText(LIMITS.ANNOTATION).optional().describe('What you observed (evidence, not interpretation).'),
     decision_at_stake: hardText(LIMITS.ANNOTATION).optional().describe('The decision this consult informs — the requester owns it (advice, not consensus).'),
     latency_contract: z
       .enum(['proceed', 'hard-blocked'])
       .optional()
-      .describe("'proceed' (default): continue on your own judgment, reconcile when the reply lands. 'hard-blocked': you will park on the returned park_key event."),
+      .describe("'proceed' (default): continue on your own judgment and use relevant advice when it arrives. 'hard-blocked': you will park on the returned park_key event."),
     origin_task_ref: z
       .string()
       .min(1)
@@ -99,6 +107,13 @@ export default defineTool({
       .describe(
         "Named selection policy to take min/max from ('rubric-vetting' for the meta-rubric vetting consult). Prefer this over typing max_agents at a governed call site — the bound then lives in code, not in your instructions. Unknown key refuses.",
       ),
+    reviewerModel: z.object({
+      agent: z.enum(['claude', 'codex', 'omp']),
+      model: z.string().trim().min(1).max(80).regex(/^[A-Za-z0-9._-]+$/),
+      effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+    }).strict().optional().describe(
+      "For policy:'rubric-vetting': preserve this allowed backend/model/effort through every reviewer dispatch; unavailable choices refuse without substitution. Provider accounts use auto routing.",
+    ),
     archive_floor: z
       .number()
       .min(0)
@@ -137,19 +152,26 @@ export default defineTool({
     })
     .passthrough(),
   async handler(args, ctx) {
+    if (args.reviewerModel && args.policy !== RUBRIC_VETTING_POLICY) {
+      return ok({ error: 'reviewer_model_requires_rubric_vetting',
+        hint: "Pass policy:'rubric-vetting' with reviewerModel." });
+    }
     const identity = resolveAgentIdentity(ctx);
 
-    const [{ getFeedbackProd }, conversations] = await Promise.all([
+    const [{ acceptFeedbackRequestProd }, conversations] = await Promise.all([
       import('../../consult/get-feedback-prod'),
       import('../coordination/conversations'),
     ]);
     const workspaceId = conversations.withConversationsIdentityScope(identity, undefined, () =>
       conversations.conversationsScopeWorkspace(),
     );
-    const result = await getFeedbackProd({
+    let interestWatch;
+    const result = await acceptFeedbackRequestProd({
       workspaceId,
       requesterId: identity.ownerId,
+      requestKey: args.request_key,
       question: args.question,
+      subjectRefs: args.subject_refs,
       tried: args.tried,
       observed: args.observed,
       decisionAtStake: args.decision_at_stake,
@@ -160,31 +182,27 @@ export default defineTool({
       ...(args.min_agents !== undefined ? { minResponders: args.min_agents } : {}),
       ...(args.max_agents !== undefined ? { maxResponders: args.max_agents } : {}),
       ...(args.policy !== undefined ? { policy: args.policy } : {}),
+      ...(args.reviewerModel !== undefined ? { reviewerModel: args.reviewerModel } : {}),
       ...(args.archive_floor !== undefined ? { archiveFloor: args.archive_floor } : {}),
       topics: args.topics,
       harnessSlug: args.harness,
     }, identity, {
       harnessSlug: ctx.harnessSlug !== '*' ? ctx.harnessSlug : null,
       allowDispatch: args.allow_dispatch,
+      onAccepted: async (accepted) => {
+        if (accepted.latency_contract !== 'hard-blocked' || !accepted.park_key) return;
+        try {
+          interestWatch = await reconcileInterestEventAwaits({
+            ownerId: identity.ownerId,
+            eventKeys: [accepted.park_key],
+            boundTo: { kind: 'consult-request', ref: accepted.conversation_id },
+            note: 'hard-blocked consult requester auto-arm for ' + accepted.conversation_id,
+          });
+        } catch {
+          /* consult routing remains authoritative; interest arming is fail-soft */
+        }
+      },
     });
-    let interestWatch;
-    if (
-      'verdict' in result &&
-      result.verdict === 'routed' &&
-      result.latency_contract === 'hard-blocked' &&
-      result.park_key
-    ) {
-      try {
-        interestWatch = await reconcileInterestEventAwaits({
-          ownerId: identity.ownerId,
-          eventKeys: [result.park_key],
-          boundTo: { kind: 'consult-request', ref: result.conversation_id },
-          note: `hard-blocked consult requester auto-arm for ${result.conversation_id}`,
-        });
-      } catch {
-        /* consult routing remains authoritative; interest arming is fail-soft */
-      }
-    }
 
     return ok({
       ...(result as unknown as Record<string, unknown>),

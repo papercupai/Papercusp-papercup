@@ -1,7 +1,7 @@
-# The three console-error surfaces — query ALL three for "is the console clean?"
+# The three console-error surfaces — query ALL three for \"is the console clean?\"
 URL: /internal/docs/agent-insights/console-error-surfaces
 
-User-facing errors live in three separate, non-overlapping stores — toastLog (server PG, user toasts), __papercuspPerfRecorder (localStorage, /admin/testing-only JS errors), and the console-monitor bridge (WebKit's whole devtools feed). Each catches what the others miss; a single surface is never a valid "console is clean" signal. Includes the WebKitGTK "Fetch API cannot load … access control checks" = a TIMEOUT (not CORS) gotcha.
+User-facing errors live in three separate, non-overlapping stores — toastLog (server PG, user toasts), __papercuspPerfRecorder (localStorage, /admin/testing-only JS errors), and the console-monitor bridge (WebKit's whole devtools feed). Each catches what the others miss; a single surface is never a valid \"console is clean\" signal. Includes the WebKitGTK \"Fetch API cannot load … access control checks\" = a TIMEOUT (not CORS) gotcha.
 
 When chasing "is the console clean?" or "what error did the user see?", three
 durable, NON-overlapping surfaces exist. Query ALL THREE and reconcile — any one
@@ -26,38 +26,33 @@ the persistent toastLog has all of it. Query patterns: last N errors
 `.rows[].message | sed 's/[0-9]\+/N/g' | sort | uniq -c | sort -rn`; since-ts filter
 on `createdAt > <ms>`.
 
-## 2. `window.__papercuspPerfRecorder.events` (client-side, localStorage) — JS errors
+## 2. `window.__papercuspPerfRecorder.events` (client-side, IndexedDB) — JS errors
 
-`apps/operator/app/admin/testing/_lib/vitals-recorder.ts` patches `console.error` +
-`window.error` + `unhandledrejection` → `localStorage['papercusp.testing.perf-events.v1']`.
+`apps/operator/app/admin/testing/_lib/vitals-recorder.ts` patches `console.error`, `window.error` and `unhandledrejection`. The bounded 250-event buffer uses the maintained `@papercusp/kv-persist-indexeddb` backend (`papercusp-perf-recorder`, store `buffers`). It saves changed buffers only. Legacy `papercusp.testing.perf-events.v1` localStorage is read for migration and is never rewritten or removed by the new recorder. Small localStorage values do not bound the physical WebKit SQLite WAL: periodic rewrites grew the live desktop journal past 18 GB (EI-25607959410127384).
 
-**Scope caveat:** `PerfObserverProvider` (which calls `startRecorder()`) only mounts on
-`/admin/testing` pages. On every other route `window.__papercuspPerfRecorder` is
-`undefined` and `events.length` returns 0 vacuously — **NOT a valid "clean" signal for
-`/setup`, `/harness`, `/marketplace`, etc.** For those routes use
-`tauri-agent-tools capture -o <dir>` and read `<dir>/console-errors.json` (taps WebKit's
-devtools console directly). It catches what never writes a toast:
+The recorder starts on `/admin/testing` and survives client-side navigation. If the global recorder is absent, zero events means missing instrumentation, not a clean console. For errors outside its captured lifetime, use `tauri-agent-tools capture -o <dir>` and inspect `console-errors.json`, alongside toastLog and the live bridge.
 
-* React errors ("Rendered more hooks…", hydration errors)
-* `ChunkLoadError`, module/compile errors (Turbopack/SWC parse failures)
-* Unhandled promise rejections
-
-Query via `tauri-agent-tools eval`:
+After initialization, query its events through the native bridge:
 
 ```js
-JSON.parse(localStorage.getItem('papercusp.testing.perf-events.v1') || '[]')
-  .filter(e => e.kind === 'console-error' || e.kind === 'unhandled-error')
+(async () => {
+  const recorder = window.__papercuspPerfRecorder;
+  if (!recorder) return { measured: false, reason: "recorder not initialized" };
+  await recorder.ready;
+  return recorder.events.filter(e => e.kind === "console-error" || e.kind === "unhandled-error");
+})()
 ```
 
-Group by `e.detail.slice(0, 80)` to collapse repeats. **Clearing it:** the recorder keeps
-an in-memory `events` array AND flushes to localStorage, so `localStorage.removeItem`
-alone is undone by the next flush — reset both:
+Group by `e.detail.slice(0, 80)` to collapse repeats. An old loaded recorder may still use localStorage; source changes alone do not prove activation. Verify the current runtime before claiming the WAL writer stopped.
+
+For an intentional clear, call the recorder's canonical method. It clears memory, cancels a pending restore, notifies listeners, and persists an empty buffer so old events do not return. Do not delete legacy localStorage as a substitute.
 
 ```js
-if (window.__papercuspPerfRecorder) window.__papercuspPerfRecorder.events = [];
-localStorage.removeItem('papercusp.testing.perf-events.v1');
-location.reload();
+const recorder = window.__papercuspPerfRecorder;
+if (typeof recorder?.clear === "function") recorder.clear();
 ```
+
+A busy WebKit reader can prevent SQLite from truncating an existing WAL even after the writer is fixed. Use native SQLite checkpointing and verify physical bytes. A desktop restart can interrupt embedded terminals or unsaved drafts and requires separate approval; never unlink the WAL manually.
 
 ## 3. `tauri-agent-tools console-monitor` (live bridge stream) — WebKit's direct logs
 

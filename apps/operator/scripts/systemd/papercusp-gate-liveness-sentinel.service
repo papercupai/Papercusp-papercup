@@ -1,0 +1,28 @@
+[Unit]
+Description=Out-of-operator red-gate liveness alarm (green-main-cycle-time-2026-10-08 P-023)
+Documentation=file://%h/papercupai-workspace/papercusp/scripts/gate-liveness-sentinel.mts
+
+# Deliberately independent of the operator units: this alarm exists to report a gate that
+# stopped because the operator (or its scheduler) is down, so it must not need them.
+#
+# INSTALL also needs a drop-in pinning the harness database, exactly as the operator's own
+# 35-wi7180-harness-db-pin.conf does. Without it the script resolver can land on a stale
+# embedded-PG discovery file; the CLI then exits 1 ("wrong database"), so the unit shows
+# failed rather than silently reporting nothing:
+#   ~/.config/systemd/user/papercusp-gate-liveness-sentinel.service.d/10-harness-db-pin.conf
+#     [Service]
+#     Environment=HARNESS_ADMIN_DATABASE_URL=<same value as the operator's pin>
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/papercupai-workspace/papercusp
+Environment=GATE_LIVENESS_INSTALL_SLUG=papercusp
+Environment=PAPERCUSP_WORKSPACE=papercusp-workspace
+Environment=GATE_LIVENESS_STATE_DIR=%t/papercusp-gate-liveness-sentinel
+RuntimeDirectory=papercusp-gate-liveness-sentinel
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+ExecStart=%h/papercupai-workspace/papercusp/node_modules/.bin/tsx %h/papercupai-workspace/papercusp/scripts/gate-liveness-sentinel.mts
+TimeoutStartSec=180
+UMask=0077
+NoNewPrivileges=yes

@@ -1,10 +1,11 @@
 /**
  * reports:search — full-text search across the Reports library (P-003; R-7).
  *
- * Ranking rides the STORED generated `search_tsv` column (migration 1166), which
- * weights title > summary/subject_label > body, so a report titled for your query
- * outranks one that merely mentions it in passing. Gated by the same `visibleTo`
- * fragment every other read path composes.
+ * Ranking goes through searchReports' lexical seam: BM25 over title, summary, subject
+ * label and body when the report_library BM25 index is live, else ts_rank over the
+ * STORED `search_tsv` column (migration 1166, weighted title > summary > body). The
+ * websearch syntax (phrases, OR, -negation) filters under both (plan bm25 D-007).
+ * Gated by the same `visibleTo` fragment every other read path composes.
  *
  * This is the LEXICAL half. P-005 registers `report` as a source in the unified
  * search stack (semantic chunk embedding); this verb stays the direct, dependency-
@@ -16,13 +17,13 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { searchReports } from '../../report-library';
-import { resolveViewer, resolveWorkspaceId, toReportSummary, zReportKind, zReportWire } from './_shared';
+import { reportsLibraryDisabled, resolveViewer, resolveWorkspaceId, toReportSummary, zReportKind, zReportWire } from './_shared';
 
 export default defineTool({
   name: 'reports:search',
   description:
-    'Full-text search the Reports library and get matches ranked by relevance — title matches outrank ' +
-    'summary matches, which outrank body matches. Supports quoted "exact phrases", OR, and -negation. ' +
+    'Full-text search the Reports library and get matches ranked by relevance (BM25 over title, ' +
+    'summary and body). Supports quoted "exact phrases", OR, and -negation. ' +
     'Returns the newest version per lineage, so a hit is never a superseded body. Bodies are omitted; use ' +
     'reports:get for one. Read-only, and gated by the same visibility rule as the rest of the library.',
   guidance: {
@@ -38,13 +39,13 @@ export default defineTool({
       'Search BEFORE publishing a new audit on a subject that may already have one.',
     returns:
       '{ ok, count, query, hits:[{ rank, ...record }] } ranked best-first. Each hit is the record MINUS ' +
-      '`bodyMd`, plus `path` and `bodyBytes`; `rank` is the ts_rank score (higher is better) — use it to ' +
+      '`bodyMd`, plus `path` and `bodyBytes`; `rank` is the relevance score (higher is better, one search only) — use it to ' +
       'tell a strong match from a passing mention. Zero hits means nothing VISIBLE TO YOU matched the ' +
       'parsed query; it is not evidence the report does not exist. A query of only stopwords parses to an ' +
       'empty tsquery and legitimately matches nothing — retry with a distinctive term before concluding.',
     seeAlso: ['reports:list (exact filters)', 'reports:get (read one)', 'search:semantic (across all corpora)'],
   },
-  // A hit is the wire record with the ts_rank score spread on top; `query` echoes the
+  // A hit is the wire record with the relevance score spread on top; `query` echoes the
   // parsed input so a zero-hit result is distinguishable from a mis-sent one.
   result: z.object({
     ok: z.literal(true),
@@ -66,6 +67,8 @@ export default defineTool({
     limit: z.number().int().min(1).max(200).optional().describe('default 50, max 200'),
   }),
   async handler(args, ctx) {
+    const disabled = await reportsLibraryDisabled();
+    if (disabled) return { data: disabled };
     const sql = getOrgPg().sql;
     const hits = await searchReports(sql, {
       workspaceId: resolveWorkspaceId(ctx),

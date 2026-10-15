@@ -1,6 +1,9 @@
 [submodule "libs/agent-chat"]
 	path = libs/agent-chat
 	url = git@github.com:Papercusp/agent-chat.git
+[submodule "apps/slack-asana-bug-drill"]
+	path = apps/slack-asana-bug-drill
+	url = https://github.com/papercupai/slack-asana-bug-drill-20261009.git
 [submodule "libs/git-graph"]
 	path = libs/generic/git-graph
 	url = git@github.com:Papercusp/git-graph.git

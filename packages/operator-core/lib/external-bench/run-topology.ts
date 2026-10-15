@@ -30,7 +30,10 @@
  * exclusion. The skipped ids are reported on {@link TopologyRunResult.skippedTaskIds} for the C6
  * coverage table; the report's task UNIVERSE is the full backlog.
  */
-import type { BenchSuite, GenerationStatus, GraderStatus, TaskRunResult } from '@papercusp/bench-metrics';
+import {
+  mergeCapabilityEvidence, readCapabilityEvidence, withCapabilityEvidence,
+  type BenchSuite, type CapabilityExerciseEvidence, type GenerationStatus, type GraderStatus, type TaskRunResult,
+} from '@papercusp/bench-metrics';
 import type { CloneGradeSeam, CoordinationSpec, IsoBudget } from './coordination-topology';
 import { coordinationSpawnPlans, leadDirective, teamTopic, type TeamSpawnPlan } from './coordination-runtime';
 import type { BenchTask } from './types';
@@ -65,6 +68,9 @@ export interface AgentRunUsage {
   modelCalls: number;
   tokensIn: number;
   tokensOut: number;
+  /** When present, these are separate from tokensIn (which is uncached input). */
+  tokensCacheRead?: number;
+  tokensCacheWrite?: number;
   costUsd: number;
   /** Agent steps / turns (→ TaskRunResult.turns). */
   turns: number;
@@ -89,7 +95,79 @@ export interface AgentRunOutput extends AgentRunUsage {
    * tau2 +memory "lift": a discretionary capability the agent simply never invoked). A `worker` in a
    * central/no-coord arm legitimately reports 0. */
   coordCalls?: number;
+  /** Native driver identity, accounting and context evidence, retained on the result row. */
+  armMeta?: Record<string, unknown>;
   error?: string | null;
+  /**
+   * P-022 / D-010: pointer to THIS agent run's transcript (e.g. its session JSONL path), reported by the live
+   * runAgent. The driver collects every contributing run's pointer onto `TaskRunResult.traceRefs` (graded agent
+   * first) so a campaign bundle holds each task's trace. Absent = not captured: the bundle shows the gap, never
+   * an invented pointer.
+   */
+  traceRef?: string | null;
+  /**
+   * BM-P-004-exercise-evidence: this agent's observed capability availability / delivery / use, from its
+   * telemetry. The driver merges every contributing agent's list per task onto `armMeta.capabilityEvidence`
+   * (mergeCapabilityEvidence: an unreported contributor makes that count unknown). Absent = unmeasured,
+   * never zero.
+   */
+  capabilityEvidence?: CapabilityExerciseEvidence[] | null;
+  /**
+   * benchmark-coverage-frontierswe-v2 D-033: the execution path that ran this agent (the live FrontierSWE
+   * Papercusp arm reports 'modernization-launch-adapter'). The driver stamps the distinct reported values on
+   * `armMeta.executionPath` via {@link withExecutionPath}. Absent = unreported, never inferred.
+   */
+  executionPath?: string | null;
+}
+
+/**
+ * D-033: stamp the execution paths that contributing agents reported onto a row's armMeta, merged with any the
+ * row already carries. One distinct value is stamped as a string, several as an array. When at least one agent
+ * reported, `executionPathUnreported` counts the contributors that did not, so a partial report never reads as a
+ * uniform one. When none reported, armMeta is returned without either key.
+ */
+export function withExecutionPath(
+  armMeta: Record<string, unknown>,
+  outputs: ReadonlyArray<Pick<AgentRunOutput, 'executionPath'>>,
+): Record<string, unknown> {
+  const { executionPath: prior, executionPathUnreported: priorUnreported, ...rest } = armMeta;
+  const isPath = (p: unknown): p is string => typeof p === 'string' && p.length > 0;
+  const reported = [
+    ...(isPath(prior) ? [prior] : Array.isArray(prior) ? prior.filter(isPath) : []),
+    ...outputs.map((o) => o.executionPath).filter(isPath),
+  ];
+  const unreported = (typeof priorUnreported === 'number' ? priorUnreported : 0)
+    + outputs.filter((o) => !isPath(o.executionPath)).length;
+  const distinct = [...new Set(reported)];
+  if (distinct.length === 0) return armMeta;
+  return {
+    ...rest,
+    executionPath: distinct.length === 1 ? distinct[0] : distinct,
+    ...(unreported > 0 ? { executionPathUnreported: unreported } : {}),
+  };
+}
+
+/** The declared ensemble selector (frozen in the protocol as `control.ensemble.selector`). */
+export interface EnsembleSelector {
+  id: string;
+  kind: 'judge-agent' | 'visible-test-verifier';
+}
+
+/**
+ * How the graded ensemble candidate was chosen, stamped on `armMeta.selector`. `declared-fallback` is the
+ * frozen `onUnavailable: 'first-candidate'` policy, used when the selector could not run or returned no
+ * valid candidate; `reason` says which.
+ */
+export interface EnsembleSelectorReceipt extends EnsembleSelector {
+  via: 'judge' | 'sole-candidate' | 'declared-fallback';
+  pickIndex: number;
+  candidateIndices: number[];
+  reason?: string;
+}
+
+/** Keep only real trace pointers, in order (a run that captured none contributes nothing). */
+function traceList(refs: ReadonlyArray<string | null | undefined>): string[] {
+  return refs.filter((r): r is string => typeof r === 'string' && r.trim().length > 0);
 }
 
 /** The fixed, run-level row fields the driver stamps onto EVERY {@link TaskRunResult} (not per-task). */
@@ -123,6 +201,8 @@ export interface TopologyRunDeps<H = unknown> {
   cap?: number;
   /** N independent solvers per ensemble task (aggregate:'judge-best'); default 3. */
   ensembleSize?: number;
+  /** REQUIRED when `spec.aggregate` is 'judge-best': there is no implicit, unreceipted candidate pick. */
+  ensembleSelector?: EnsembleSelector;
   /** Fired the instant each row settles → durability (a partial/killed run still banks its rows). */
   onResult?: (r: TaskRunResult) => void | Promise<void>;
 }
@@ -144,20 +224,28 @@ export interface TopologyRunResult {
   skippedTaskIds: string[];
 }
 
-const GRADER_STATUSES: readonly GraderStatus[] = ['passed', 'failed', 'error', 'timeout'];
+// `satisfies Record<GraderStatus, true>` forces this list to grow with the union: a canonical status
+// missing here would coerce to 'error' and lose its meaning (e.g. 'invalid' — D-008 of plan
+// benchmark-coverage-frontierswe-v2-2026-10-10 — would persist indistinguishable from a grader fault).
+const GRADER_STATUS_SET = { passed: true, failed: true, error: true, timeout: true, invalid: true } satisfies Record<GraderStatus, true>;
+const GRADER_STATUSES = Object.keys(GRADER_STATUS_SET) as readonly GraderStatus[];
 function coerceGraderStatus(s: string): GraderStatus {
   return (GRADER_STATUSES as readonly string[]).includes(s) ? (s as GraderStatus) : 'error';
 }
 
 /**
  * Run a coordination topology over a backlog under one iso-budget; emit one {@link TaskRunResult} per
- * attempted task. Never throws (a per-task failure lands an infra-error row; the seam teardown always
- * runs). The iso-budget is a HARD ceiling checked before each task-unit dispatches — with concurrency
+ * attempted task. Once running it never throws (a per-task failure lands an infra-error row; the seam
+ * teardown always runs); the only throw is a configuration refusal before any spend. The iso-budget is a
+ * HARD ceiling checked before each task-unit dispatches — with concurrency
  * `cap`, at most `cap` units may be in flight when the budget is hit (a bounded ≤cap overshoot, since a
  * unit's model-call cost is only known after it runs).
  */
 export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promise<TopologyRunResult> {
   const { spec, seam, budget, rowMeta, now } = deps;
+  if (spec.aggregate === 'judge-best' && !deps.ensembleSelector) {
+    throw new Error(`runTopology: ensemble arm ${spec.arm} requires a declared ensembleSelector; refusing before any spend.`);
+  }
   const cap = Math.max(1, deps.cap ?? 2);
   const ensembleSize = Math.max(1, deps.ensembleSize ?? 3);
   const startedAtMs = now();
@@ -165,7 +253,7 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
   const spent = { calls: 0, tokens: 0, costUsd: 0 };
   const addUsage = (u: AgentRunUsage): void => {
     spent.calls += u.modelCalls;
-    spent.tokens += u.tokensIn + u.tokensOut;
+    spent.tokens += u.tokensIn + u.tokensOut + (u.tokensCacheRead ?? 0) + (u.tokensCacheWrite ?? 0);
     spent.costUsd += u.costUsd;
   };
   const exhausted = (): boolean => {
@@ -186,12 +274,14 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
   const buildRow = (args: {
     task: BenchTask;
     usage: AgentRunUsage;
-    grade: { resolved: boolean | null; score?: number | null; graderStatus: string };
+    grade: { resolved: boolean | null; score?: number | null; graderStatus: string; detail?: unknown };
     status: GenerationStatus;
     capped: boolean;
     generationError?: string | null;
     wallClockMs: number;
     armMeta?: Record<string, unknown> | null;
+    /** Contributing agent runs' trace pointers, graded agent first (P-022 / D-010). */
+    traceRefs?: ReadonlyArray<string | null | undefined>;
   }): TaskRunResult => ({
     runId: deps.runId,
     suite: rowMeta.suite,
@@ -204,9 +294,14 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
     graderFamily: rowMeta.graderFamily,
     graderVersion: rowMeta.graderVersion,
     score: args.grade.score ?? null,
+    // P-022 / D-009: keep the seam's scorer output (e.g. the D-008 integrity verdict) for campaign bundles.
+    ...(args.grade.detail !== undefined ? { graderDetail: args.grade.detail } : {}),
+    ...(traceList(args.traceRefs ?? []).length > 0 ? { traceRefs: traceList(args.traceRefs ?? []) } : {}),
     tokensIn: args.usage.tokensIn,
     tokensOut: args.usage.tokensOut,
-    tokensTotal: args.usage.tokensIn + args.usage.tokensOut,
+    tokensTotal: args.usage.tokensIn + args.usage.tokensOut + (args.usage.tokensCacheRead ?? 0) + (args.usage.tokensCacheWrite ?? 0),
+    ...(args.usage.tokensCacheRead !== undefined ? { tokensCacheRead: args.usage.tokensCacheRead } : {}),
+    ...(args.usage.tokensCacheWrite !== undefined ? { tokensCacheWrite: args.usage.tokensCacheWrite } : {}),
     costUsd: args.usage.costUsd,
     priceTableVersion: rowMeta.priceTableVersion,
     wallClockMs: args.wallClockMs,
@@ -229,9 +324,20 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
     modelCalls: a.modelCalls + b.modelCalls,
     tokensIn: a.tokensIn + b.tokensIn,
     tokensOut: a.tokensOut + b.tokensOut,
+    ...(a.tokensCacheRead !== undefined || b.tokensCacheRead !== undefined
+      ? { tokensCacheRead: (a.tokensCacheRead ?? 0) + (b.tokensCacheRead ?? 0) } : {}),
+    ...(a.tokensCacheWrite !== undefined || b.tokensCacheWrite !== undefined
+      ? { tokensCacheWrite: (a.tokensCacheWrite ?? 0) + (b.tokensCacheWrite ?? 0) } : {}),
     costUsd: a.costUsd + b.costUsd,
     turns: a.turns + b.turns,
   });
+  /** Attach the merged capability evidence of every agent that ran for this task unit. */
+  const withEvidence = (armMeta: Record<string, unknown>, outputs: ReadonlyArray<AgentRunOutput>) =>
+    withExecutionPath(withCapabilityEvidence({
+      ...(outputs.length === 1 ? outputs[0].armMeta :
+        outputs.some(output => output.armMeta) ? { agentExecutions: outputs.map(output => output.armMeta ?? null) } : {}),
+      ...armMeta,
+    }, mergeCapabilityEvidence(outputs.map((o) => o.capabilityEvidence))) ?? armMeta, outputs);
 
   // ── per-topology task execution ──────────────────────────────────────────────
   /** distributed / huddle / central: ONE worker per task carrying its team's coordination directive. */
@@ -250,7 +356,7 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
       });
       addUsage(out);
       const grade = out.status === 'completed' ? await seam.grade(task, handle) : infraGrade;
-      return buildRow({ task, usage: out, grade, status: out.status, capped: !!out.capped, generationError: out.error, wallClockMs: now() - unitStart, armMeta: { coordCalls: out.coordCalls ?? 0 } });
+      return buildRow({ task, usage: out, grade, status: out.status, capped: !!out.capped, generationError: out.error, wallClockMs: now() - unitStart, traceRefs: [out.traceRef], armMeta: withEvidence({ coordCalls: out.coordCalls ?? 0 }, [out]) });
     } finally {
       await safeTeardown(handle);
     }
@@ -260,6 +366,11 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
   async function runEnsemble(task: BenchTask, plan: TeamSpawnPlan, unitStart: number): Promise<TaskRunResult> {
     const handles: H[] = [];
     const candidates: Array<{ index: number; submission: unknown }> = [];
+    /** Solver trace pointers, indexed like `handles` (P-022 / D-010). */
+    const solverTraces: Array<string | null | undefined> = [];
+    /** Every agent that ran for this task (solvers, then the selector) — the evidence contributors. */
+    const outputs: AgentRunOutput[] = [];
+    const selector = deps.ensembleSelector!;
     let usage = ZERO;
     let coordCalls = 0;
     try {
@@ -278,25 +389,43 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
           attemptBudget: remaining(),
         });
         addUsage(out); usage = sumUsage(usage, out); coordCalls += out.coordCalls ?? 0;
+        outputs.push(out);
+        solverTraces[handles.length - 1] = out.traceRef;
         if (out.status === 'completed') candidates.push({ index: handles.length - 1, submission: out.submission });
       }
 
       if (candidates.length === 0) {
-        return buildRow({ task, usage, grade: infraGrade, status: 'error', capped: false, generationError: 'ensemble: no solver produced a submission', wallClockMs: now() - unitStart, armMeta: { ensembleSize, solvers: handles.length, coordCalls } });
+        return buildRow({ task, usage, grade: infraGrade, status: 'error', capped: false, generationError: 'ensemble: no solver produced a submission', wallClockMs: now() - unitStart, traceRefs: solverTraces, armMeta: withEvidence({ ensembleSize, solvers: handles.length, coordCalls }, outputs) });
       }
 
-      let pickIndex = candidates[0].index;
-      if (candidates.length > 1 && !exhausted()) {
+      const candidateIndices = candidates.map((c) => c.index);
+      const fallback = (reason: string): EnsembleSelectorReceipt =>
+        ({ ...selector, via: 'declared-fallback', pickIndex: candidateIndices[0], candidateIndices, reason });
+      let receipt: EnsembleSelectorReceipt;
+      let judgeTrace: string | null | undefined;
+      if (candidates.length === 1) {
+        receipt = { ...selector, via: 'sole-candidate', pickIndex: candidateIndices[0], candidateIndices };
+      } else if (exhausted()) {
+        receipt = fallback('budget exhausted before selection');
+      } else {
         const judge = await deps.runAgent({
-          task, handle: handles[pickIndex], role: 'judge', arm: spec.arm, teamKey: plan.teamKey,
+          task, handle: handles[candidateIndices[0]], role: 'judge', arm: spec.arm, teamKey: plan.teamKey,
           topic: teamTopic(spec, plan.teamKey), directive: plan.directive, forbidTools: plan.forbidTools,
           attemptBudget: remaining(), candidates,
         });
         addUsage(judge); usage = sumUsage(usage, judge); coordCalls += judge.coordCalls ?? 0;
-        if (judge.pickIndex != null && handles[judge.pickIndex] != null) pickIndex = judge.pickIndex;
+        outputs.push(judge);
+        judgeTrace = judge.traceRef;
+        receipt = judge.status !== 'completed' ? fallback(`selector ${judge.status}`)
+          : judge.pickIndex == null ? fallback('selector returned no pick')
+          : !candidateIndices.includes(judge.pickIndex) ? fallback(`selector picked non-candidate ${judge.pickIndex}`)
+          : { ...selector, via: 'judge', pickIndex: judge.pickIndex, candidateIndices };
       }
+      const pickIndex = receipt.pickIndex;
       const grade = await seam.grade(task, handles[pickIndex]);
-      return buildRow({ task, usage, grade, status: 'completed', capped: exhausted(), wallClockMs: now() - unitStart, armMeta: { ensembleSize, solvers: handles.length, candidates: candidates.length, pickIndex, coordCalls } });
+      // Graded solver first, then the other solvers in order, then the judge.
+      const traceRefs = [solverTraces[pickIndex], ...solverTraces.filter((_, i) => i !== pickIndex), judgeTrace];
+      return buildRow({ task, usage, grade, status: 'completed', capped: exhausted(), wallClockMs: now() - unitStart, traceRefs, armMeta: withEvidence({ ensembleSize, solvers: handles.length, candidates: candidates.length, pickIndex, coordCalls, selector: receipt }, outputs) });
     } finally {
       for (const h of handles) await safeTeardown(h);
     }
@@ -319,6 +448,8 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
       addUsage(drv);
       let usage = drv as AgentRunUsage;
       let coordCalls = drv.coordCalls ?? 0;
+      let navTrace: string | null | undefined;
+      const outputs: AgentRunOutput[] = [drv];
       if (drv.status === 'completed' && !exhausted()) {
         const nav = await deps.runAgent({
           task, handle, role: 'navigator', arm: spec.arm, teamKey: plan.teamKey,
@@ -326,9 +457,11 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
           attemptBudget: remaining(), candidates: [{ index: 0, submission: drv.submission }],
         });
         addUsage(nav); usage = sumUsage(usage, nav); coordCalls += nav.coordCalls ?? 0;
+        outputs.push(nav);
+        navTrace = nav.traceRef;
       }
       const grade = drv.status === 'completed' ? await seam.grade(task, handle) : infraGrade;
-      return buildRow({ task, usage, grade, status: drv.status, capped: !!drv.capped || exhausted(), generationError: drv.error, wallClockMs: now() - unitStart, armMeta: { pair: true, coordCalls } });
+      return buildRow({ task, usage, grade, status: drv.status, capped: !!drv.capped || exhausted(), generationError: drv.error, wallClockMs: now() - unitStart, traceRefs: [drv.traceRef, navTrace], armMeta: withEvidence({ pair: true, coordCalls }, outputs) });
     } finally {
       await safeTeardown(handle);
     }
@@ -384,6 +517,8 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
     // (the C4 evidence that the in-team coordinator actually coordinated).
     for (const plan of coordinationSpawnPlans(spec, deps.backlog)) {
       let leadCoordCalls = 0;
+      let leadTrace: string | null | undefined;
+      let leadOutput: AgentRunOutput | undefined;
       if (!exhausted() && plan.tasks.length > 0) {
         let leadHandle: H | undefined;
         try { leadHandle = await seam.clone(plan.tasks[0]); } catch { leadHandle = undefined; }
@@ -396,15 +531,30 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
               candidates: plan.tasks.map((t, i) => ({ index: i, submission: t.instanceId })),
             });
             addUsage(lead);
+            leadOutput = lead;
             leadCoordCalls = lead.coordCalls ?? 0;
+            leadTrace = lead.traceRef;
           } finally {
             await safeTeardown(leadHandle);
           }
         }
       }
+      // The team lead's trace belongs to every row of its team, after the row's own agents (P-022 / D-010).
+      const leadRefs = traceList([leadTrace]);
+      // The lead is a contributor to every row of its team: merge its evidence with the row's own.
+      const leadEvidence = (r: TaskRunResult, armMeta: Record<string, unknown>) => leadOutput === undefined
+        ? armMeta
+        : withExecutionPath(
+          withCapabilityEvidence(armMeta, mergeCapabilityEvidence([readCapabilityEvidence(r), leadOutput.capabilityEvidence])) ?? armMeta,
+          [leadOutput],
+        );
       await drainUnits(
         plan.tasks.map((task) => ({ task, plan })),
-        (r) => ({ ...r, armMeta: { ...(r.armMeta ?? {}), leadCoordCalls } }),
+        (r) => ({
+          ...r,
+          armMeta: leadEvidence(r, { ...(r.armMeta ?? {}), leadCoordCalls }),
+          ...(leadRefs.length > 0 ? { traceRefs: [...(r.traceRefs ?? []), ...leadRefs] } : {}),
+        }),
       );
     }
   } else {

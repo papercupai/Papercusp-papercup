@@ -257,3 +257,43 @@ export function summarizeComparison(scored: readonly ScoredObservation[]): Appro
     };
   });
 }
+
+/** How far the two arms of a paired candidate-pool comparison actually diverged. */
+export interface PairedArmDivergence {
+  filingsCompared: number;
+  /** Filings whose two arms saw a different number of pool items. */
+  poolsDiffer: number;
+  /** Filings whose two arms ranked a different top-k (ids or order). */
+  topKDiffers: number;
+  /**
+   * True when every filing saw the SAME pool in both arms: the comparison
+   * compared nothing, and any delta it reports (always zero) is meaningless.
+   */
+  vacuous: boolean;
+}
+
+/**
+ * Measure whether a paired before/after pool comparison compared anything.
+ * WI-10005217: a filter applied to the shared pool CTE made the "previous" arm
+ * identical to the "current" one, and the run reported a delta of 0/0 that
+ * looked like "no regression". An A/B whose arms never differ is a broken
+ * instrument, so callers refuse a vacuous result instead of publishing it. Pure.
+ */
+export function pairedArmDivergence(
+  pairs: ReadonlyArray<{ current: FilingObservation; previous: FilingObservation }>,
+): PairedArmDivergence {
+  let poolsDiffer = 0;
+  let topKDiffers = 0;
+  for (const { current, previous } of pairs) {
+    if (current.poolSize !== previous.poolSize) poolsDiffer += 1;
+    const a = current.top.map((n) => n.id).join('\u0000');
+    const b = previous.top.map((n) => n.id).join('\u0000');
+    if (a !== b) topKDiffers += 1;
+  }
+  return {
+    filingsCompared: pairs.length,
+    poolsDiffer,
+    topKDiffers,
+    vacuous: pairs.length > 0 && poolsDiffer === 0 && topKDiffers === 0,
+  };
+}

@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "P-008 native controlled cloud-mode recovery and Settings label",
+  "command": [
+    "python3",
+    "tools/ios-ci.py",
+    "--mode",
+    "simulator",
+    "--force"
+  ],
+  "startedAt": "2026-10-14T11:43:35.850507+00:00",
+  "finishedAt": "2026-10-14T11:48:54.670398+00:00",
+  "exitCode": 0,
+  "summary": "Previously executed maintained native simulator run passed 60 unit tests and 5 selected UI tests with zero failures or skips. Native cloud relay offline/transport recovery, authorization-refusal guidance, fresh-launch pairing choices and Cloud workspace Settings label are scoped controlled-loopback results. All 230 declared retained artifact hashes and sizes were rechecked in the successor; no native test was rerun. Named cloud-mode source/test files remain unchanged at current mobile b264f57c, while the complete source fingerprint differs.",
+  "assertions": [
+    {
+      "id": "PapercupTests",
+      "passed": true,
+      "evidence": "unit-1-summary.json: 60 passed, 0 failed, 0 skipped; SHA256 a1712784b601e6fb614edc01ef59de9d84433e09260762e0deab09c40dea187e"
+    },
+    {
+      "id": "PapercupUITests/CloudWorkspaceOfflineUITests/testAuthorizationRefusalOffersPairAgainAndClearsKeychain",
+      "passed": true,
+      "evidence": "Retained ui-smoke.log and summary: selected case passed; controlled relay authorization refusal."
+    },
+    {
+      "id": "PapercupUITests/CloudWorkspaceOfflineUITests/testCloudWorkspaceOfflineThenRecoversWithoutRepairing",
+      "passed": true,
+      "evidence": "Retained ui-smoke.log and summary: selected case passed; controlled workspace_offline then online."
+    },
+    {
+      "id": "PapercupUITests/CloudWorkspaceOfflineUITests/testCloudWorkspaceShowsRelayLabelInSettings",
+      "passed": true,
+      "evidence": "Retained ui-smoke.log and actual Settings screenshot 5C7B00C9 show Cloud workspace."
+    },
+    {
+      "id": "PapercupUITests/CloudWorkspaceOfflineUITests/testTransportFailureRecoversWithoutRepairing",
+      "passed": true,
+      "evidence": "Retained ui-smoke.log and summary: selected case passed; controlled transport closure then online."
+    },
+    {
+      "id": "PapercupUITests/PairFlowUITests/testFreshLaunchShowsPairChoices",
+      "passed": true,
+      "evidence": "Retained ui-smoke.log and summary: selected case passed with wiped credentials; no actual uninstall/reinstall claim."
+    }
+  ],
+  "workItemId": "WI-10004735",
+  "sourceWorkItemId": "EI-25954106572418712",
+  "planSlug": "iphone-public-release-2026-08-11",
+  "spec": "AUTO-BAR-R-2-P-008@2",
+  "sourceCommitAtExecution": "3325f7872aea0b4e4a508877c31ae3d5625d54ba",
+  "sourceDirtyAtExecution": true,
+  "sourceFingerprint": "a1461312f610358aaca978e0e23ab684d9e49c859ec5b01481aa69afeff064a2",
+  "matchingLaterCommittedSource": "0d96db6cd7c1d671dddbf39904b778c1235f9848",
+  "testPath": "ios/PapercupUITests/CloudWorkspaceOfflineUITests.swift",
+  "testSha256": "12010f53f31aeec6fdfbce33923ea454d58cc82ca925d97083fa0d48c41a11d5",
+  "toolchain": {
+    "xcode": "Xcode 16.4 Build 16F6",
+    "simulatorSDK": "18.5",
+    "simulatorRuntime": "iOS 18.6",
+    "simulatorUDID": "D80BA4DF-0C1D-40C2-A6D1-F681B98B8DCB"
+  },
+  "retainedEvidence": {
+    "root": ".papercusp/evidence/EI-25954106572418712-native-20261014T114335Z-54577784",
+    "pathBase": "Operating account home directory",
+    "nativeJobId": "0mv81k6r19sd6h51u4z",
+    "resultSha256": "46c56b996047085ea747c186fb95c416dc4f03d59d292247fd8031b91832cab8",
+    "unitSummarySha256": "a1712784b601e6fb614edc01ef59de9d84433e09260762e0deab09c40dea187e",
+    "uiSummarySha256": "04f5646cde41e84a39a124354dc4027216309e43b9fb7faef4edba127aab5bac",
+    "verifiedArtifactCount": 230,
+    "integrityProcedure": "Read each result.json artifact from the retained root and compare declared size and SHA256; no test execution."
+  },
+  "screenshots": [
+    {
+      "path": "ui-smoke-attachments/5C7B00C9-665A-472F-B497-7E2902FA419C.png",
+      "sha256": "39bb3e96be032fed41712cf0a6702aee3f15d43a172c755fd01f0fde4029ce1e",
+      "review": "Verified predecessor review recorded in EI-25954106572418712; current file hash rechecked."
+    }
+  ],
+  "disclosedGaps": [
+    "Controlled NWListener loopback relay; no live hosted/BYOC cloud acceptance",
+    "Execution source was dirty; this is development evidence, not a clean release candidate",
+    "No actual uninstall/reinstall, public HTTPS chat, signing, SDK 26 or shipment claim",
+    "Complete current mobile fingerprint differs, although the named cloud source/test files equal the verified later commit",
+    "Broader P-008 and P-016 remain open"
+  ]
+}

@@ -52,9 +52,30 @@ beforeEach(() => {
 });
 
 describe('inbox:automation-policy', () => {
+  it('persists and verifies an explicit grant for all three risk levels', async () => {
+    const riskLevels = { low: 'automatic', medium: 'automatic', high: 'automatic' } as const;
+    writeM.mockResolvedValue({ level: 'L0', minConfidence: 'high', riskLevels });
+    const result = body(await tool.handler({ op: 'set', riskLevels } as never, { role: 'operator' } as never));
+    expect(writeM).toHaveBeenCalledWith({ riskLevels });
+    expect(result).toMatchObject({ applied: true, verify: { ok: true }, next: { riskLevels } });
+  });
+
+  it('rejects incomplete risk maps at the tool boundary', () => {
+    expect(tool.args.safeParse({ op: 'set', riskLevels: { low: 'automatic' } }).success).toBe(false);
+  });
   it('get returns the standing policy', async () => {
     const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never));
     expect(result).toEqual({ policy: { level: 'L0', minConfidence: 'high' } });
+    expect(readM).toHaveBeenCalledWith(undefined, { strict: true });
+  });
+
+  it('surfaces an unreadable saved policy and does not allow a write using synthetic defaults', async () => {
+    readM.mockRejectedValue(new Error('policy storage unavailable'));
+    await expect(tool.handler({ op: 'get' } as never, { role: 'operator' } as never))
+      .rejects.toThrow('policy storage unavailable');
+    await expect(tool.handler({ op: 'set', minConfidence: 'medium' } as never, { role: 'operator' } as never))
+      .rejects.toThrow('policy storage unavailable');
+    expect(writeM).not.toHaveBeenCalled();
   });
 
   it('set rejects a role without operator-config write authority', async () => {

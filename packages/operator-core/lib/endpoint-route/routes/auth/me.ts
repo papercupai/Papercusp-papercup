@@ -21,6 +21,7 @@ import { serializeSetCookie } from '../../cookies';
 import { requireAllowedOriginOr403 } from '../../cors';
 import { isRemoteRequest, requestNeedsSecureCookie } from '../../../remote-auth-policy';
 import { currentLoopbackPeerIsForeign } from '../../../auth/loopback-peer-trust';
+import { safeCloudError } from '../../../cloud-telemetry';
 
 const get = defineTool({
   method: 'GET',
@@ -34,7 +35,7 @@ const get = defineTool({
     try {
       sessionUser = await getSessionUser(req.headers);
     } catch (err) {
-      console.error('[auth/me] getSessionUser threw — will fall through to default user:', err);
+      console.error('[auth/me] getSessionUser threw — will fall through to default user:', safeCloudError('request_failure', err));
     }
 
     if (sessionUser) {
@@ -42,7 +43,7 @@ const get = defineTool({
       try {
         available = await listUsers();
       } catch (err) {
-        console.error('[auth/me] listUsers threw (non-fatal):', err);
+        console.error('[auth/me] listUsers threw (non-fatal):', safeCloudError('request_failure', err));
       }
       return Response.json({ user: sessionUser, autoLogin: false, available });
     }
@@ -64,7 +65,7 @@ const get = defineTool({
       try {
         available = await listUsers();
       } catch (err) {
-        console.error('[auth/me] listUsers threw (non-fatal):', err);
+        console.error('[auth/me] listUsers threw (non-fatal):', safeCloudError('request_failure', err));
       }
       // Auto-establish a real session for passwordless users so endpoints
       // that strictly require a session cookie don't 401 on first paint —
@@ -89,15 +90,15 @@ const get = defineTool({
             secure: requestNeedsSecureCookie(req),
           });
         } catch (err) {
-          console.error('[auth/me] auto-session establish failed (non-fatal):', err);
+          console.error('[auth/me] auto-session establish failed (non-fatal):', safeCloudError('request_failure', err));
         }
       }
       return Response.json({ user, autoLogin: true, available }, { headers });
     } catch (err) {
       // Fall back to a synthetic default user so the chrome UI still
       // renders. Surface what actually broke in the operator log.
-      const reason = err instanceof Error ? err.message : String(err);
-      console.error('[auth/me] getSessionUserOrDefault failed — returning synthetic default with reason:', reason, err);
+      const reason = 'authentication_unavailable';
+      console.error('[auth/me] getSessionUserOrDefault failed — returning synthetic default:', safeCloudError('request_failure', err));
       return Response.json({
         user: {
           id: '00000000-0000-0000-0000-000000000001',

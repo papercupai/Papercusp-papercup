@@ -159,6 +159,27 @@ describe('offloaded own compaction is byte-identical to the inline fold (real wo
     expect(await rawRange(b, 0, b.length)).toEqual(await rawRange(a, 0, a.length));
   });
 
+  it('WI-10005425: a filtered own-log set carries ownPrefix on every chunk on both paths, byte-identically', async () => {
+    const ops = history(SNAPSHOT_READ_CONCURRENCY * 2 + 5);
+    const a = await freshLog();
+    const b = await freshLog();
+    await a.appendBatch(ops);
+    await b.appendBatch(ops);
+    const excludeTables = ['wi10002855_a'];
+
+    const inline = await produceLogSnapshot(a, { ...inlineOpts, excludeTables });
+    const offloaded = await produceLogSnapshot(b, { ...offloadOpts, excludeTables });
+
+    expect(heldResult(offloaded)).toEqual(heldResult(inline));
+    expect(inline.chunkCount).toBeGreaterThan(1);
+    expect(await rawRange(b, 0, b.length)).toEqual(await rawRange(a, 0, a.length));
+    for (let i = 0; i < offloaded.chunkCount; i++) {
+      const v = (await b.get(offloaded.coversUpTo + i))?.value as SnapshotPayload;
+      expect(v.excludeTables).toEqual(excludeTables);
+      expect(v.ownPrefix).toBe(true);
+    }
+  });
+
   it('applies the P-530 live-receipt census identically inline and in the worker', async () => {
     const receipt = (hbKey: string): PeerLogOp => ({
       type: 'put',

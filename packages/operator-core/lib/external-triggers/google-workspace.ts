@@ -1,7 +1,6 @@
 /** Shared Google Workspace OAuth → owned trigger-source connection seam. */
 import type postgres from 'postgres';
 import { type ExternalTriggerSourceRow, upsertOwnedExternalTriggerSource } from './source-store';
-import { ensureExternalTriggerBinding } from './admin';
 import {
   GOOGLE_CONTACTS_CONNECTIONS_ENDPOINT,
   getProvider,
@@ -15,9 +14,6 @@ import type { gmail_v1 } from '@googleapis/gmail';
 export const GOOGLE_WORKSPACE_OAUTH_PLUGIN = 'google-workspace';
 export const GOOGLE_WORKSPACE_SOURCE_KINDS = ['gmail', 'gcal', 'contacts'] as const;
 export const GOOGLE_GMAIL_PROFILE_ENDPOINT = 'https://gmail.googleapis.com/gmail/v1/users/me/profile';
-export const GOOGLE_CALENDAR_MEETING_PREP_HARNESS = 'papercusp';
-export const GOOGLE_CALENDAR_MEETING_PREP_PLAN = 'meeting-prep-brief-2026-08-22';
-export const GOOGLE_CALENDAR_MEETING_PREP_EVENT = 'ext:gcal:event-upcoming';
 const OAUTH_FIELD = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -207,6 +203,14 @@ export async function withGoogleWorkspaceAccessTokenRetry<T>(
  * rows because canonical event keys, replay cursors, and enablement are
  * source-kind scoped, while every row points at the same opaque OAuth
  * credential reference. The rows are adapter state, not additional consents.
+ *
+ * Connecting creates NO trigger binding on any of these sources. Gmail draft
+ * replies are opt-in through the email-draft-responder trigger pack
+ * (generalized-integrations-google-migration-cupboard-workflows-2026-10-05
+ * D-019.3). Calendar meeting prep is submitted by the Calendar app itself as a
+ * blueprint operation (app-agent-tasks-durable-execution-2026-10-06 D-011), so
+ * the built-in launch-plan binding this used to ensure is retired; re-creating
+ * it here would resurrect a retired binding on every reconnect.
  */
 export async function provisionOwnedGoogleWorkspaceSources(
   sql: postgres.Sql,
@@ -235,15 +239,5 @@ export async function provisionOwnedGoogleWorkspaceSources(
       }),
     );
   }
-  const calendar = rows.find((row) => row.kind === 'gcal');
-  if (!calendar) throw new Error('google_workspace_calendar_source_missing');
-  await ensureExternalTriggerBinding(sql, input.workspaceId, {
-    sourceId: calendar.id,
-    planHarnessSlug: GOOGLE_CALENDAR_MEETING_PREP_HARNESS,
-    planSlug: GOOGLE_CALENDAR_MEETING_PREP_PLAN,
-    eventPattern: GOOGLE_CALENDAR_MEETING_PREP_EVENT,
-    eventFilter: { 'attendees.0': { exists: true } },
-    createdBy: input.createdBy ?? `owner:${ownerUserId}`,
-  });
   return rows;
 }

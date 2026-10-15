@@ -561,7 +561,6 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
                     promotedFeatures.length > 0 ? promotedFeatures : undefined
                   }
                   linkedFeatures={data.linkedFeatures}
-                  planItemTests={data.planItemTests}
                   // P-205: while another shell holds the lock, the editor is
                   // forced read-only even in edit mode — the draft is preserved
                   // (value still resolves to `draft ?? raw`), so editing resumes

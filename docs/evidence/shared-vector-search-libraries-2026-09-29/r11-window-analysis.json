@@ -1,0 +1,139 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "shared-vector-search-libraries-2026-09-29 R-11 (AUTO-BAR-R-11-P-008@3) 24h bg-host embed-backfill window after the extracted engine went live: FAIL (condition met, falsifier clause 2 fired)",
+  "framework": "operational",
+  "command": [
+    "journalctl --user -u papercusp-bg-host.service --since @1790723780 --until @1790896580 --grep '\\[embed-backfill\\]' -o short-iso-precise > docs/evidence/shared-vector-search-libraries-2026-09-29/r11-bg-host-embed-backfill-journal.txt (3 header lines prepended)",
+    "node .papercusp/scratch/rag-carry/r11-analyze.mjs <journal> <out.json> (parse, bucket, normalize as described in method below)",
+    "dev:pg_query: SELECT count(*) FROM harness_shared.session_turns WHERE ingested_at < '2026-09-30 23:16:20Z' AND text_embedding IS NULL AND (length(text) >= 80 OR (speaker='user' AND length(text) >= 20))",
+    "journalctl --user -u papercup-embed-sidecar.service --since '2026-10-01 00:30:00' --until '2026-10-01 13:10:00' (local -04:00)"
+  ],
+  "exitCode": 1,
+  "startedAt": "2026-10-01T23:57:00.000Z",
+  "finishedAt": "2026-10-02T00:11:08.000Z",
+  "summary": "FAIL, 1 of 2 assertions. Condition met: all 10 targets that had rows missing vectors in the window embedded rows (session_turns 49,922, session_turn_chunks 34,620, work_items 8,467, doc_sections 6,637, text_chunks 5,676, operator_turns 541, harness_plans 44, consult_state 18, code_recipes 12, harness_escalations 2); 4 targets had nothing missing all window; 0 eligible session_turns ingested before the window start still lack a vector. Falsifier clause 2 fired: the window log has 10 error messages absent from the 24h before, including one 'periodic sweep embedded NOTHING' (04:43:58Z), during embed-sidecar restart cycles 04:36-04:44Z. Both message templates predate the extraction; the bar does not exempt environment faults, so the result is a failure.",
+  "plan": "shared-vector-search-libraries-2026-09-29",
+  "planItem": "P-008",
+  "workItem": "WI-10004277",
+  "spec": {
+    "id": "AUTO-BAR-R-11-P-008",
+    "revision": 3,
+    "fingerprint": "3a0ad582b7335c9feb85e2622e5b94e4ad87dcfe5a81ff432e7b4108306f787e",
+    "evidencePlane": "deployed",
+    "behavior": "In the 24 hours after bg-host first serves the extracted backfill engine, each target that had rows missing vectors at the start of the window embeds at least one of them.",
+    "falsifier": "A target that had rows missing vectors at the start of the window embeds none of them in the window, or the embed-backfill log in the window shows an error message absent from the 24 hours before."
+  },
+  "verdict": "fail",
+  "verdictSummary": "Condition met (10 of 10 targets with missing rows embedded rows in the window). Falsifier clause 2 fires literally: the window log contains error messages absent from the 24 hours before, including 'periodic sweep embedded NOTHING', which never appeared pre-window. The new messages coincide with embed-sidecar restarts, and the same message strings existed in the pre-extraction engine, but the bar as written does not exempt environment faults, so this is recorded as a failure.",
+  "assertions": [
+    {
+      "id": "r11-condition-every-missing-target-embeds",
+      "statement": "Every target that had rows missing vectors at the start of the window embeds at least one of them in the window.",
+      "passed": true,
+      "evidence": "10 targets scanned missing rows in the window and all 10 embedded at least one (counts in condition.targetsWithMissingRowsInWindow); datatype_registry, harness_brainstorm, harness_decisions and interest_watches scanned 0 all window. Database cross-check: 0 eligible session_turns ingested before 2026-09-30T23:16:20Z lack a vector."
+    },
+    {
+      "id": "r11-falsifier-no-new-error-message",
+      "statement": "The embed-backfill log in the window shows no error message absent from the 24 hours before.",
+      "passed": false,
+      "evidence": "10 normalized error messages in the window are absent from the pre-window (falsifier.clause2.newInWindow), including 'periodic sweep embedded NOTHING (scanned=200 errors=200)' at 2026-10-01T04:43:58Z, which never appears pre-window under any normalization."
+    }
+  ],
+  "assertionsPassed": 1,
+  "assertionsTotal": 2,
+  "window": {
+    "start": "2026-09-30T23:16:20Z",
+    "end": "2026-10-01T23:16:20Z",
+    "startBasis": "bg-host first served the extracted backfill engine at 2026-09-30T23:16:20Z (P-008 deployment record on WI-10004277)."
+  },
+  "preWindow": {
+    "start": "2026-09-29T23:16:20Z",
+    "end": "2026-09-30T23:16:20Z"
+  },
+  "sources": {
+    "journal": {
+      "path": "docs/evidence/shared-vector-search-libraries-2026-09-29/r11-bg-host-embed-backfill-journal.txt",
+      "sha256": "29d933c901e58c44754f4d698e1b6ea8ecd041af8f5fd2b1ae0581bf2fd9626a",
+      "lines": 3023,
+      "headerLines": 3,
+      "capture": "journalctl --user -u papercusp-bg-host.service --since @1790723780 --until @1790896580 --grep '\\[embed-backfill\\]' -o short-iso-precise"
+    },
+    "sidecarJournal": "journalctl --user -u papercup-embed-sidecar.service (checked 2026-10-02T00:09Z)",
+    "database": "harness_shared.session_turns on the operator database, queried 2026-10-02T00:08Z"
+  },
+  "method": {
+    "parse": "Each journal line matching /^(\\S+) \\S+ [^:]+: \\[embed-backfill\\] (.*)$/ is bucketed by timestamp into pre-window or window. 'sweep complete: tab=e/s ...' and 'sweep embedded NOTHING (scanned=N errors=N) — tab=e/s(errN) ...' lines give per-target embedded/scanned counts.",
+    "errorClass": "A message is error-like when it matches /(fail|error|err\\d|NOTHING|timed? ?out|refus|reject|abort|skipp|expired|exception|cannot|could not|unavailable|invalid|denied|crash|killed)/i and is not a 'sweep complete' line.",
+    "normalization": "uuids -> <uuid>, hex runs of 10+ -> <hex>, every number -> #, then truncated to 240 chars. A window message is 'new' when its normalized form never occurs pre-window.",
+    "unparsedLines": 0
+  },
+  "condition": {
+    "sweeps": { "preWindow": 257, "window": 200, "windowEmbeddedNothing": 1, "preWindowEmbeddedNothing": 0 },
+    "firstWindowSweep": {
+      "at": "2026-09-30T23:20:45.981Z",
+      "targetsWithMissing": { "session_turns": "20/20", "doc_sections": "10/10" }
+    },
+    "targetsWithMissingRowsInWindow": {
+      "session_turns": { "embedded": 49922, "scanned": 50010, "errors": 64, "firstEmbedAt": "2026-09-30T23:20:45.981Z" },
+      "session_turn_chunks": { "embedded": 34620, "scanned": 34748, "errors": 64, "firstEmbedAt": "2026-09-30T23:30:16.150Z" },
+      "work_items": { "embedded": 8467, "scanned": 8560, "errors": 30, "firstEmbedAt": "2026-09-30T23:53:28.767Z" },
+      "doc_sections": { "embedded": 6637, "scanned": 6646, "errors": 0, "firstEmbedAt": "2026-09-30T23:20:45.981Z" },
+      "text_chunks": { "embedded": 5676, "scanned": 5780, "errors": 34, "firstEmbedAt": "2026-09-30T23:40:16.565Z" },
+      "operator_turns": { "embedded": 541, "scanned": 549, "errors": 4, "firstEmbedAt": "2026-09-30T23:25:14.944Z" },
+      "harness_plans": { "embedded": 44, "scanned": 44, "errors": 0, "firstEmbedAt": "2026-10-01T00:44:44.014Z" },
+      "consult_state": { "embedded": 18, "scanned": 18, "errors": 0, "firstEmbedAt": "2026-09-30T23:53:28.767Z" },
+      "code_recipes": { "embedded": 12, "scanned": 16, "errors": 4, "firstEmbedAt": "2026-10-01T04:49:52.586Z" },
+      "harness_escalations": { "embedded": 2, "scanned": 2, "errors": 0, "firstEmbedAt": "2026-10-01T03:20:01.701Z" }
+    },
+    "targetsWithNoMissingRowsAllWindow": ["datatype_registry", "harness_brainstorm", "harness_decisions", "interest_watches"],
+    "result": "pass",
+    "databaseCrossCheck": {
+      "query": "SELECT count(*) FROM harness_shared.session_turns WHERE ingested_at < '2026-09-30 23:16:20Z' AND text_embedding IS NULL AND (length(text) >= 80 OR (speaker='user' AND length(text) >= 20))",
+      "result": 0,
+      "note": "No eligible session_turns row ingested before the window start lacks a vector now. The 6022 eligible rows still without vectors were all ingested inside the window (17:16Z-22:22Z), so the freshest-first order did not reach them before the window closed; that backlog is tracked on WI-10004895."
+    },
+    "limitation": "No row-level snapshot was taken at the window start, so for mutable targets the scanned rows cannot be proven to be the same rows that were missing at 23:16:20Z. The pass rests on every target with scanned rows embedding some, plus the session_turns database check."
+  },
+  "falsifier": {
+    "clause1": { "statement": "A target with missing rows at the start embeds none of them in the window.", "fired": false },
+    "clause2": {
+      "statement": "The embed-backfill log in the window shows an error message absent from the 24 hours before.",
+      "fired": true,
+      "preWindowDistinctErrorMessages": [
+        { "n": 1, "first": "2026-09-29T23:40:58Z", "message": "harness_shared.carry_notes failed: column \"note_embedding\" does not exist" },
+        { "n": 9, "first": "2026-09-30T00:05:03Z", "message": "skipped: a sweep has held the latch for #s (stale at #s)" },
+        { "n": 9, "first": "2026-09-30T00:05:03Z", "message": "periodic sweep skipped: already_running" },
+        { "n": 53, "first": "2026-09-30T00:05:37Z", "message": "drain: # round(s) in #s (budget #s) · drained #/# target(s) · budget expired with work remaining" },
+        { "n": 1, "first": "2026-09-30T15:46:42Z", "message": "periodic sweep failed: embedder_resolve_timeout_after_#ms" },
+        { "n": 1, "first": "2026-09-30T15:59:19Z", "message": "batch embed FAILED for harness_shared.operator_turns, using the per-row path (slower). First error: This operation was aborted" }
+      ],
+      "windowDistinctErrorMessages": 14,
+      "newInWindow": [
+        { "n": 2, "first": "2026-10-01T04:37:32.402Z", "message": "batch embed FAILED for harness_shared.session_turn_chunks, using the per-row path (slower). First error: fetch failed" },
+        { "n": 3, "first": "2026-10-01T04:38:29.942Z", "message": "batch embed FAILED for harness_shared.text_chunks, using the per-row path (slower). First error: fetch failed" },
+        { "n": 3, "first": "2026-10-01T04:42:28.178Z", "message": "batch embed FAILED for harness_shared.work_items, using the per-row path (slower). First error: fetch failed" },
+        { "n": 1, "first": "2026-10-01T04:42:52.227Z", "message": "batch embed FAILED for harness_shared.code_recipes, using the per-row path (slower). First error: fetch failed" },
+        { "n": 3, "first": "2026-10-01T04:42:57.202Z", "message": "batch embed FAILED for harness_shared.operator_turns, using the per-row path (slower). First error: fetch failed" },
+        { "n": 3, "first": "2026-10-01T04:43:22.742Z", "message": "batch embed FAILED for harness_shared.session_turns, using the per-row path (slower). First error: fetch failed" },
+        { "n": 1, "first": "2026-10-01T04:43:58.096Z", "message": "periodic sweep embedded NOTHING (scanned=200 errors=200) — operator_turns=0/4(err4) session_turns=0/64(err64) session_turn_chunks=0/64(err64) text_chunks=0/34(err34) work_items=0/30(err30) code_recipes=0/4(err4)" },
+        { "n": 1, "first": "2026-10-01T14:22:16.706Z", "message": "batch embed FAILED for harness_shared.text_chunks, using the per-row path (slower). First error: embed_batch_timeout_after_50000ms" },
+        { "n": 1, "first": "2026-10-01T16:23:44.302Z", "message": "batch embed FAILED for harness_shared.doc_sections, using the per-row path (slower). First error: fetch failed" },
+        { "n": 3, "first": "2026-10-01T17:03:43.539Z", "message": "batch embed FAILED for harness_shared.session_turns, using the per-row path (slower). First error: sidecar_embed_500: {\"error\":\"embed_failed: operator write exceeded its time budget (pg 57014 statement_timeout) — the database stalled; retry shortly\"}" }
+      ],
+      "readingSensitivity": "Under the exact normalized reading all 10 are new. Under a coarser reading that ignores the table name and first-error text, 'batch embed FAILED ...' had one pre-window instance (operator_turns, aborted), but 'periodic sweep embedded NOTHING' is new under every reading. The clause fires either way."
+    }
+  },
+  "attribution": {
+    "observed": [
+      "papercup-embed-sidecar.service (:3384) went through repeated Stopping/Stopped/Starting/Started cycles from 2026-10-01T04:36:25Z to at least 04:43:27Z (systemd user journal). The 'fetch failed' burst on 7 targets and the single 'embedded NOTHING' sweep fall inside 04:37:32Z-04:43:58Z.",
+      "The sidecar restarted again at 2026-10-01T16:23:15Z-16:23:50Z; the doc_sections 'fetch failed' is at 16:23:44Z.",
+      "The 17:03Z failures carry the sidecar's own report of a Postgres statement_timeout (57014).",
+      "Both message templates existed in the pre-extraction engine: at 9a9473af95, packages/operator-core/lib/search/embed-backfill.ts contains 'batch embed FAILED' once and the '${label} sweep embedded NOTHING (scanned=... errors=...)' template at line 1778; the current file carries the same NOTHING template at line 1091 (checked 2026-10-02T00:10Z)."
+    ],
+    "inference": "The new messages are environment faults (embedding sidecar unavailable, database stall) that the pre-extraction engine would have logged the same way. This is an inference from the timing and the unchanged message sources; it does not change the verdict, because the bar does not exempt environment faults.",
+    "followUp": "The falsifier cannot tell an environment fault from a regression. Any change to its wording is a rubric revision that needs rubric-vetting with the post-evidence timing disclosed (tracked on EI-24823955272728864); it must not be applied silently to turn this result into a pass."
+  },
+  "recordedBy": "su-e8708a1c-a5a4-4a8b-9acb-8bcceab2a91c",
+  "recordedAt": "2026-10-02T00:14:00Z"
+}

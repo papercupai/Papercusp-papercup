@@ -15,10 +15,61 @@ vi.mock('../../rubrics', async (importOriginal) => {
     // The real identity helper closes over the real getRubric, bypassing this suite's mock.
     getRubricEvidenceIdentity: async (rubricId: string) => ({
       revision: await getRubricPlanRevision(rubricId),
-      criteriaHash: null,
+      criteriaHash: (await getRubric(rubricId))?.criteriaHash ?? null,
       meaningRevision: null,
     }),
   };
+});
+
+describe('scorecards:emit preserved grading baseline', () => {
+  const hash = 'a'.repeat(64);
+  const subject = { kind: 'pot' as const, ref: 'target' };
+  const baseline = () => ({ issueId: 'EI-baseline', rubricRef: RUBRIC.rubricId, rubricRevision: 33,
+    criteriaHash: hash, subject, createdBy: 'baseline-grader', createdAt: '2026-10-09T10:00:00Z',
+    rubricResolved: true, missingKeys: [], extraKeys: [], synthesized: false,
+    rubricCurrentness: { state: 'current' }, gradingAudit: { state: 'passed' },
+    gradingAuditCurrentness: { state: 'current' }, ratings: {
+      ...RATINGS, 'never-implements': { rating: 'broken', evidence: 'Confirmed baseline failure', remediation: 'WI-12' },
+    } });
+  const args = () => ({ rubricRef: RUBRIC.rubricId, ratings: RATINGS, subject,
+    baselineRef: 'EI-baseline', terminal: true });
+  beforeEach(() => {
+    getRubric.mockResolvedValue({ ...RUBRIC, criteriaHash: hash });
+    listScorecards.mockImplementation(async (filter: { issueIds?: string[] }) =>
+      filter.issueIds ? [baseline()] : []);
+  });
+  it('persists the explicit baseline while preserving its independent scorecard', async () => {
+    // The same-subject baseline is deliberately present in the duplicate query:
+    // naming the preserved baseline is sufficient; unrelated peer cards remain guarded.
+    listScorecards.mockResolvedValue([baseline()]);
+    expect(await emitScorecard(args(), EMIT_INPUT)).toMatchObject({ ok: true, created: true });
+    expect(captureImprovement.mock.calls[0][0].payloadExtra.observation).toMatchObject({ baselineRef: 'EI-baseline' });
+    expect(captureImprovement.mock.calls[0][0].payloadExtra.observation.supersedes).toBeUndefined();
+  });
+  it('refuses to replace the baseline as a correction in the same filing', async () => {
+    expect(await emitScorecard({ ...args(), supersedes: 'EI-baseline' }, EMIT_INPUT))
+      .toMatchObject({ ok: false, code: 'baseline_correction_conflict' });
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+  it.each([
+    { subject: undefined },
+    { subject: { kind: 'pot', ref: 'foreign' } }, { rubricRevision: 32 }, { criteriaHash: 'b'.repeat(64) },
+    { gradingAuditCurrentness: { state: 'stale' } },
+    { missingKeys: ['missing'] }, { retracted: { at: '2026-10-09T11:00:00Z' } },
+  ])('refuses missing, changed or unsettled baseline evidence: %j', change => {
+    listScorecards.mockResolvedValue([{ ...baseline(), ...change }]);
+    return expect(emitScorecard(args(), EMIT_INPUT)).resolves.toMatchObject({ ok: false, code: 'baseline_not_comparable' });
+  });
+  it('requires the existing grading audit before comparing a pending baseline', async () => {
+    listScorecards.mockResolvedValue([{ ...baseline(), gradingAudit: { state: 'pending' } }]);
+    expect(await emitScorecard(args(), EMIT_INPUT)).toMatchObject({ ok: false, code: 'grading_audit_required' });
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+  it('refuses an absent baseline instead of filing ungrounded comparison evidence', async () => {
+    listScorecards.mockResolvedValue([]);
+    expect(await emitScorecard(args(), EMIT_INPUT)).toMatchObject({ ok: false, code: 'baseline_not_comparable' });
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
 });
 vi.mock('../../scorecards', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../scorecards')>();

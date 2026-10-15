@@ -28,6 +28,7 @@ registerSystemAction('coverage-census', async (_ctx: SystemActionCtx) => {
     { censusProviders },
     { resolveCensusScope },
     { notifySyncInvalidate },
+    { loadHarnessRegistry, resolveHarnessContentPath },
   ] = await Promise.all([
     import('@papercusp/db-org'),
     import('@papercusp/testing-shell/census'),
@@ -35,6 +36,7 @@ registerSystemAction('coverage-census', async (_ctx: SystemActionCtx) => {
     import('../../coverage-census/provider-registry'),
     import('../../coverage-census/scope'),
     import('../../sync-sse'),
+    import('../../harness-registry'),
   ]);
 
   const providers = censusProviders();
@@ -43,6 +45,13 @@ registerSystemAction('coverage-census', async (_ctx: SystemActionCtx) => {
   // is what let attribution drift onto an env-only derivation that resolved to (NULL,
   // NULL) in every real run — see coverage-census/scope.ts.
   const scope = resolveCensusScope();
+  // bg-host runs from apps/operator. Providers resolve repository-relative source paths,
+  // so the process working directory would silently erase the reverse source map.
+  // Reuse the harness content resolver, including its repo-less hive/member semantics.
+  const repoRoot = resolveHarnessContentPath(await loadHarnessRegistry(), scope.harnessSlug);
+  if (!repoRoot) {
+    throw new Error(`[coverage-census] no registered content root for ${scope.harnessSlug}`);
+  }
 
   const store = createPgCensusStore({ getSql: () => getOrgPg().sql });
 
@@ -50,7 +59,7 @@ registerSystemAction('coverage-census', async (_ctx: SystemActionCtx) => {
     scope,
     store,
     providers,
-    repoRoot: process.cwd(),
+    repoRoot,
   });
 
   // The breaker refusing a write is the one outcome that must never be quiet: it means the

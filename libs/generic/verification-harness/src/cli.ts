@@ -11,6 +11,8 @@
  *     runs the guard rails matching contract.json's scopeTags (source: VH_GUARD_RAIL_SOURCE),
  *     writes <dir>/guard-rails.json, prints a VH_GUARD_RAIL line per probe; exit 0 when every
  *     rail holds, 1 otherwise (with a final VH_GUARD_RAILS_FAILED reason=… detail=… line)
+ *   cli.ts retain --evidence-root <root> --dry-run
+ *     prints a zero-effect JSON plan; pressure candidates are advisory, not reclaimed space.
  */
 import { realpathSync } from 'node:fs';
 import { appendFile, readFile, writeFile } from 'node:fs/promises';
@@ -21,9 +23,12 @@ import type { GuardRailReport } from './guard-rails.js';
 import {
   checkGuardRails,
   deriveVerdict,
+  formatRunRetentionLine,
   formatSummaryLine,
+  formatForeignPruneLine,
   linkLatest,
-  pruneRuns,
+  pruneEvidenceRoot,
+  pruneRunsWithReport,
   loadRunResult,
   PREFLIGHT_PHASE_ID,
   writeRunResult,
@@ -115,8 +120,17 @@ export async function finalizeCommand(argv: string[]): Promise<{ line: string; r
   Object.assign(result, deriveVerdict(result));
   await writeRunResult(result);
   await linkLatest(evidenceRoot, runDir);
-  await pruneRuns(evidenceRoot);
+  const pruned = await pruneEvidenceRoot(evidenceRoot);
+  const runRetentionLine = formatRunRetentionLine(pruned.runRetention);
+  if (runRetentionLine) process.stderr.write(runRetentionLine + '\n');
+  const prunedLine = formatForeignPruneLine(pruned.foreign);
+  if (prunedLine) process.stderr.write(`${prunedLine}\n`);
   return { line: formatSummaryLine(result), result };
+}
+
+export async function retainRunsCommand(argv: string[]) {
+  const evidenceRoot = flag(argv, '--evidence-root');
+  return pruneRunsWithReport(evidenceRoot, undefined, undefined, { dryRun: argv.includes('--dry-run') });
 }
 
 const GUARD_RAIL_REPORT = 'guard-rails.json';
@@ -153,6 +167,18 @@ export async function guardRailsCommand(argv: string[]): Promise<{ out: string; 
 
 async function main(): Promise<number> {
   const [cmd, ...argv] = process.argv.slice(2);
+  if (cmd === 'retain') {
+    const report = await retainRunsCommand(argv);
+    if (report.preview) {
+      process.stdout.write(JSON.stringify(report) + '\n');
+      return 0;
+    }
+    const line = formatRunRetentionLine(report);
+    if (line) process.stderr.write(line + '\n');
+    // 28 is ENOSPC: a measured reserve breach that safe retention could not clear
+    // must stop an expensive shell harness before it begins writing more evidence.
+    return report.disk.status === 'unresolved' ? 28 : 0;
+  }
   if (cmd === 'guard-rails') {
     const { out, ok } = await guardRailsCommand(argv);
     process.stdout.write(`${out}\n`);
@@ -167,7 +193,7 @@ async function main(): Promise<number> {
     process.stdout.write(`${line}\n`);
     return result.verdict === 'pass' ? 0 : 1;
   }
-  process.stderr.write('usage: cli.ts plan|finalize|guard-rails --run-dir <dir> [...]\n');
+  process.stderr.write('usage: cli.ts plan|finalize|guard-rails --run-dir <dir> [...] | retain --evidence-root <dir>\n');
   return 2;
 }
 

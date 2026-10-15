@@ -109,7 +109,7 @@ export default function PluginToolsPage(): React.JSX.Element {
               {pluginTools.length} {pluginTools.length === 1 ? 'tool' : 'tools'}
             </span>
           </h2>
-          <div style={{ display: 'grid', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12 }}>
             {pluginTools.map((t) => (
               <ToolCard key={t.name} tool={t} />
             ))}
@@ -126,8 +126,8 @@ function ToolCard({ tool: t }: { tool: ToolRow }): React.JSX.Element {
       border: '1px solid var(--border)', borderRadius: 6, padding: 12,
       background: 'var(--bg-2)',
     }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 }}>
-        <code style={{ fontSize: 14, fontWeight: 600 }}>{t.name}</code>
+      <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 }}>
+        <code style={{ fontSize: 14, fontWeight: 600, minWidth: 0, overflowWrap: 'anywhere' }}>{t.name}</code>
         {(t.recentInvocations !== undefined || t.recentErrors !== undefined) && (
           <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>
             {t.recentInvocations ?? 0} ok
@@ -138,7 +138,7 @@ function ToolCard({ tool: t }: { tool: ToolRow }): React.JSX.Element {
       <div style={{ marginTop: 4, fontSize: 12, color: 'var(--fg-dim)' }}>
         {t.description}
       </div>
-      <div style={{ marginTop: 8, display: 'grid', gap: 4, fontSize: 11, color: 'var(--fg-mute)' }}>
+      <div style={{ marginTop: 8, display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 4, fontSize: 11, color: 'var(--fg-mute)' }}>
         {t.expose.http && (
           <Row label="HTTP">
             <code>{(t.expose.http.methods ?? ['POST']).join(', ')} {t.expose.http.path}</code>

@@ -74,7 +74,7 @@ export async function ensureFork(opts: EnsureForkOpts): Promise<EnsureForkResult
 
   // Short-circuit: the authed user already owns the upstream repo (owner /
   // collaborator-with-write case). No fork is needed; use the upstream directly.
-  if (forkOwner === upstreamOwner) {
+  if (forkOwner.toLowerCase() === upstreamOwner.toLowerCase()) {
     return {
       forkOwner,
       forkFullName: `${upstreamOwner}/${upstreamRepo}`,
@@ -82,26 +82,40 @@ export async function ensureFork(opts: EnsureForkOpts): Promise<EnsureForkResult
     };
   }
 
-  // Idempotency precheck: does the fork already exist?
-  const existing = await tryGetRepo(oc, forkOwner, upstreamRepo);
+  // GitHub keeps redirects after a repository transfer. A 200 at the old user
+  // name can resolve to the upstream itself, or to an unrelated same-name repo.
+  // Reuse only the actual requested fork in this upstream's network.
+  const upstreamFullName = `${upstreamOwner}/${upstreamRepo}`;
+  let forkRepo = upstreamRepo;
+  let existing = await tryGetRepo(oc, forkOwner, forkRepo);
+  if (existing && !isMatchingFork(existing, `${forkOwner}/${forkRepo}`, upstreamFullName)) {
+    // Keep the occupied/redirected name intact. This stable alternate is shared
+    // by subsequent calls, including the submodule working-copy setup.
+    forkRepo = `${upstreamOwner}-${upstreamRepo}`.slice(0, 100);
+    existing = await tryGetRepo(oc, forkOwner, forkRepo);
+    if (existing && !isMatchingFork(existing, `${forkOwner}/${forkRepo}`, upstreamFullName)) {
+      throw new Error(`ensureFork: ${forkOwner}/${forkRepo} already resolves to an incompatible repository`);
+    }
+  }
   if (existing) {
     return { forkOwner, forkFullName: existing.full_name, created: false };
   }
 
   // Create the fork (async on GitHub's side — 202).
-  await oc.rest.repos.createFork({ owner: upstreamOwner, repo: upstreamRepo });
+  await oc.rest.repos.createFork({ owner: upstreamOwner, repo: upstreamRepo,
+    ...(forkRepo !== upstreamRepo ? { name: forkRepo } : {}) });
 
   // Poll until the fork repo is queryable (ready) or the deadline elapses.
   const deadline = Date.now() + maxWaitMs;
   // First check immediately, then sleep between subsequent checks.
   for (;;) {
-    const ready = await tryGetRepo(oc, forkOwner, upstreamRepo);
-    if (ready) {
+    const ready = await tryGetRepo(oc, forkOwner, forkRepo);
+    if (ready && isMatchingFork(ready, `${forkOwner}/${forkRepo}`, upstreamFullName)) {
       return { forkOwner, forkFullName: ready.full_name, created: true };
     }
     if (Date.now() + pollIntervalMs > deadline) {
       throw new Error(
-        `ensureFork: fork ${forkOwner}/${upstreamRepo} not ready within ${maxWaitMs}ms`,
+        `ensureFork: fork ${forkOwner}/${forkRepo} not ready within ${maxWaitMs}ms`,
       );
     }
     await sleep(pollIntervalMs);
@@ -112,14 +126,27 @@ export async function ensureFork(opts: EnsureForkOpts): Promise<EnsureForkResult
  * `repos.get` that returns the repo data on 200 or `null` on 404; rethrows any
  * other error (auth, rate-limit, 5xx) so the caller surfaces it.
  */
+interface ForkRepository {
+  full_name: string;
+  fork: boolean;
+  parent?: { full_name: string };
+  source?: { full_name: string };
+}
+
+function isMatchingFork(repo: ForkRepository, expectedFullName: string, upstreamFullName: string): boolean {
+  const upstream = upstreamFullName.toLowerCase();
+  return repo.full_name.toLowerCase() === expectedFullName.toLowerCase() && repo.fork === true
+    && [repo.parent?.full_name, repo.source?.full_name].some(name => name?.toLowerCase() === upstream);
+}
+
 async function tryGetRepo(
   oc: Octokit,
   owner: string,
   repo: string,
-): Promise<{ full_name: string } | null> {
+): Promise<ForkRepository | null> {
   try {
     const { data } = await oc.rest.repos.get({ owner, repo });
-    return { full_name: (data as { full_name: string }).full_name };
+    return { full_name: data.full_name, fork: data.fork, parent: data.parent, source: data.source };
   } catch (err: unknown) {
     if ((err as { status?: number }).status === 404) return null;
     throw err;

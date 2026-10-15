@@ -45,10 +45,13 @@ import {
   type BulkRecommendation,
   type BulkRecommendationKind,
   type BulkResponsibility,
+  type BulkIntakeDecision,
   isBulkDispositionKind,
   normalizeBulkAutomationPolicy,
+  readIntakeDecision,
 } from './bulk-dispositions';
-import { readStandingBulkAutomationPolicy } from './automation-policy';
+import { readStandingBulkAutomationPolicy, standingAutomationEligibility } from './automation-policy';
+import type { StandingBulkAutomationPolicy } from './bulk-dispositions';
 import { deliverUnattendedRunOwnerDigest, UNATTENDED_BULK_REQUESTER } from './bulk-run-owner-digest';
 
 /** Lifecycle of a run. `review` means the agent is done and the owner has
@@ -63,10 +66,21 @@ export type BulkRunPhase = 'pending' | 'running' | 'review' | 'complete' | 'fail
  * in plan_cleanup_run_findings (plan-cleanup/run-store.ts) instead of the items
  * table. Single-flight is per (workspace, kind): one of EACH may run at once,
  * never two of a kind.
+ *
+ * 'intake-triage' (migration 1305, observation-candidate plan P-008 / D-020) is
+ * the registered drain for awaiting observations and unverified candidates. Its
+ * membership and outcomes use the same items snapshot as 'inbox-resolve'; it is
+ * a separate kind only so it never contends with the Inbox run's single-flight
+ * slot and its reports can be read apart from accepted-work delivery.
  */
-export type BulkRunKind = 'inbox-resolve' | 'plan-cleanup';
+export type BulkRunKind = 'inbox-resolve' | 'plan-cleanup' | 'intake-triage';
 
-export const BULK_RUN_KINDS: readonly BulkRunKind[] = ['inbox-resolve', 'plan-cleanup'] as const;
+export const BULK_RUN_KINDS: readonly BulkRunKind[] = ['inbox-resolve', 'plan-cleanup', 'intake-triage'] as const;
+
+/** Kinds whose membership is the attention_bulk_run_items snapshot. */
+export function isItemSnapshotRunKind(kind: BulkRunKind): boolean {
+  return kind !== 'plan-cleanup';
+}
 
 /** The pre-937 rows' kind, and the default everywhere a caller does not say —
  *  which is what keeps every existing inbox call site's behavior unchanged. */
@@ -164,6 +178,8 @@ function isSingleFlightViolation(e: unknown): boolean {
 /** The filters in force when the owner clicked — provenance for the record and
  *  the review header, never the source of membership. */
 export interface BulkRunFilterSnapshot {
+  /** Durable scheduled-fire identity; binds cleanup replay to its own run. */
+  routineWorkflowId?: string;
   /** The tier chip (`opci`): needs | alerts | all. */
   tier?: string | null;
   /** Selected kind facets (`opck`). */
@@ -290,6 +306,8 @@ export interface BulkRunItemRow {
   responsibility?: BulkResponsibility | null;
   confidenceLevel?: BulkConfidence | null;
   retryCondition?: string | null;
+  /** Typed intake decision for an intake input (P-004); null until decided. */
+  intakeDecision?: BulkIntakeDecision | null;
 }
 
 /** What the resolver reports back for one item. */
@@ -313,6 +331,8 @@ export interface BulkOutcomeReport {
   /** Canonical typed disposition. Required for new non-terminal reports; old
    *  callers may omit it and retain legacy outcome semantics. */
   disposition?: BulkDispositionKind | null;
+  /** Validated intake decision (bulk-dispositions parseIntakeDecision). */
+  intakeDecision?: BulkIntakeDecision | null;
 }
 
 function dispositionForReport(report: BulkOutcomeReport): BulkDispositionKind {
@@ -459,6 +479,7 @@ interface RawItemRow {
   responsibility: BulkResponsibility | null;
   confidence_level: BulkConfidence | null;
   retry_condition: string | null;
+  intake_decision?: unknown;
 }
 
 function mapItem(r: RawItemRow): BulkRunItemRow {
@@ -523,6 +544,7 @@ function mapItem(r: RawItemRow): BulkRunItemRow {
     responsibility: r.responsibility ?? recommendation?.responsibility ?? null,
     confidenceLevel: r.confidence_level ?? recommendation?.confidence ?? null,
     retryCondition: r.retry_condition ?? recommendation?.retryCondition ?? null,
+    intakeDecision: readIntakeDecision(r.intake_decision),
   };
 }
 
@@ -537,7 +559,7 @@ const ITEM_COLUMNS = `run_id, item_id, position, item_kind, item_title, item_ref
                       consult_reply, error, decided_at, revert_handle, reversal_window_until,
                       reverted_at, revert_note, disposition, recommendation_kind,
                       recommendation_label, recommendation_rationale, evidence_basis,
-                      responsibility, confidence_level, retry_condition`;
+                      responsibility, confidence_level, retry_condition, intake_decision`;
 
 type BulkSql = Sql | TransactionSql;
 
@@ -766,7 +788,7 @@ export async function createRun(input: {
   const seedRefs = [...new Set((input.seedRefs ?? []).filter((s) => typeof s === 'string' && s !== ''))];
   // Same "a run over nothing is a caller bug" rule, per kind: an inbox run needs
   // its item snapshot; a plan-cleanup run needs its plan-slug snapshot.
-  if (runKind === 'inbox-resolve' && items.length === 0) {
+  if (isItemSnapshotRunKind(runKind) && items.length === 0) {
     throw new Error('createRun: refusing to create a bulk run with zero items');
   }
   if (runKind === 'plan-cleanup' && seedRefs.length === 0) {
@@ -805,7 +827,7 @@ export async function createRun(input: {
     seen.add(i.itemId);
     return true;
   });
-  if (runKind === 'inbox-resolve' && unique.length === 0) {
+  if (isItemSnapshotRunKind(runKind) && unique.length === 0) {
     throw new Error('createRun: no valid item ids in the snapshot');
   }
   // total_items: the run's unit count for the strip — items for inbox runs,
@@ -883,6 +905,40 @@ export async function getRunItems(runId: string, workspaceId?: string): Promise<
      ORDER BY position ASC
   `;
   return rows.map(mapItem);
+}
+
+/**
+ * Exact coord-message refs accounted for by a finished Inbox resolver pass.
+ * A review run has finished scanning even when recommendations still await
+ * the owner, so both review and complete are settled receipt phases. Failed
+ * runs, other run kinds, and items still pending are deliberately excluded.
+ */
+export async function getSettledInboxMessageIds(
+  msgIds: readonly string[],
+  workspaceId?: string,
+): Promise<Set<string>> {
+  const requested = [...new Set(msgIds.filter((msgId) => msgId.length > 0))];
+  if (requested.length === 0) return new Set<string>();
+
+  const { sql } = getOrgPg();
+  const ws = workspaceId ?? activeWorkspaceId();
+  const rows = await sql<Array<{ msg_id: string | null }>>`
+    SELECT DISTINCT i.item_ref->>'msgId' AS msg_id
+      FROM harness_shared.attention_bulk_run_items AS i
+      JOIN harness_shared.attention_bulk_runs AS r
+        ON r.workspace_id = i.workspace_id AND r.run_id = i.run_id
+     WHERE i.workspace_id = ${ws}
+       AND COALESCE(r.run_kind, ${DEFAULT_RUN_KIND}) = 'inbox-resolve'
+       AND r.phase IN ('review', 'complete')
+       AND i.outcome <> 'pending'
+       AND i.item_ref->>'kind' = 'coord-message'
+       AND i.item_ref->>'msgId' = ANY(${requested})
+  `;
+  return new Set(
+    rows
+      .map((row) => row.msg_id)
+      .filter((msgId): msgId is string => typeof msgId === 'string' && msgId.length > 0),
+  );
 }
 
 export type BulkRunItemReversalRefusal =
@@ -1009,6 +1065,148 @@ export async function getRunningRun(
      LIMIT 1
   `;
   return rows[0] ? mapRun(rows[0]) : null;
+}
+
+/**
+ * Item ids that already sit in a run of `kind` still waiting on the OWNER
+ * (phase `review`), excluding rows the resolver fully auto-resolved — the same
+ * "still owner work" predicate as getPendingReviewItems, widened from one run
+ * to the workspace. A dismissed row in a still-open review counts as held too:
+ * the owner just declined that recommendation, and regenerating it minutes
+ * later is the churn this exists to stop.
+ *
+ * Why: once a `review` run stopped gating the scheduled backstop
+ * (getRunningRun, WI-10004720), every fire re-seeded the SAME top-200 feed
+ * items — 13 runs in 3h on 2026-10-01, 194–200 of each run's 200 items already
+ * in an earlier run, each costing a resolver pass and adding 200 duplicate
+ * recommendations to the owner's review queue. The seeder skips these ids so a
+ * fire moves on to items nobody has looked at yet.
+ */
+export async function getItemIdsAwaitingOwnerReview(
+  workspaceId?: string,
+  kind: BulkRunKind | null = DEFAULT_RUN_KIND,
+  automaticPolicy?: StandingBulkAutomationPolicy,
+): Promise<Set<string>> {
+  const { sql } = getOrgPg();
+  const ws = workspaceId ?? activeWorkspaceId();
+  const rows = await sql<{ item_id: string; outcome: BulkItemOutcome; item_kind: string | null; ref_kind: string | null; confidence_level: BulkConfidence | null; confidence: 'low' | 'high' | null; run_policy: unknown }[]>`
+    SELECT DISTINCT i.item_id, i.outcome, i.item_kind, i.item_ref->>'kind' AS ref_kind, i.confidence_level, i.confidence,
+           r.automation_policy AS run_policy
+      FROM harness_shared.attention_bulk_run_items i
+      JOIN harness_shared.attention_bulk_runs r
+        ON r.workspace_id = i.workspace_id AND r.run_id = i.run_id
+     WHERE r.workspace_id = ${ws} AND r.phase = 'review'
+       AND (${kind ?? null}::text IS NULL OR r.run_kind = ${kind ?? null})
+       AND i.outcome <> 'auto_resolved'
+  `;
+  return new Set(rows.filter((row) => !automaticPolicy || !releasedForAutonomousReadjudication({
+    outcome: row.outcome,
+    kind: row.ref_kind ?? row.item_kind ?? '',
+    confidence: row.confidence_level ?? (row.confidence === 'high' ? 'high' : row.confidence === 'low' ? 'low' : null),
+    runPolicy: runStandingPolicy(row.run_policy),
+  }, automaticPolicy)).map((row) => row.item_id));
+}
+
+/**
+ * The standing-policy view of a run's immutable automation receipt, or null when
+ * the run carries none. A legacy receipt has only `mode`; it is read the same
+ * way normalizeBulkAutomationPolicy reads it, so `review-all` means L0.
+ */
+export function runStandingPolicy(raw: unknown): StandingBulkAutomationPolicy | null {
+  const obj = asObject(raw);
+  if (Object.keys(obj).length === 0) return null;
+  const policy = normalizeBulkAutomationPolicy(obj as Partial<BulkAutomationPolicy>);
+  return {
+    level: policy.level ?? (policy.mode === 'review-all' ? 'L0' : 'L1'),
+    minConfidence: policy.minConfidence,
+    ...(policy.riskLevels ? { riskLevels: { ...policy.riskLevels } } : {}),
+  };
+}
+
+/**
+ * PURE: should a held review row be released so the scheduled seeder puts it in
+ * front of a resolver again?
+ *
+ * The release exists for one transition: the owner grants automatic autonomy,
+ * and recommendations that were held for review under the old policy get one
+ * fresh live adjudication so report auto-accept can perform them. It must be
+ * one-shot. If the run that produced the recommendation was already launched
+ * under a policy that permitted automatic action on it, auto-accept already had
+ * its chance and declined. That happens because the recommendation carried no
+ * terminal action, or because the action was refused. Re-asking about an
+ * unchanged item gets the same answer.
+ *
+ * Without this check the release had no memory. With every risk level set to
+ * automatic, each 15-minute fire re-seeded every high-confidence routed or
+ * investigate recommendation, and each resolver re-consulted the same assignee.
+ * WI-10007929 was consulted about 40 times between 2026-10-09 and 2026-10-11 and
+ * got the same "retain" answer each time (EI-25573324094056113).
+ */
+export function releasedForAutonomousReadjudication(
+  row: {
+    outcome: BulkItemOutcome;
+    kind: string;
+    confidence: BulkConfidence | null;
+    /** The producing run's automation receipt (runStandingPolicy), or null. */
+    runPolicy: StandingBulkAutomationPolicy | null;
+  },
+  automaticPolicy: StandingBulkAutomationPolicy,
+): boolean {
+  if (row.outcome !== 'recommended') return false;
+  if (!standingAutomationEligibility(automaticPolicy, row.kind, row.confidence).allowed) return false;
+  if (row.runPolicy && standingAutomationEligibility(row.runPolicy, row.kind, row.confidence).allowed) return false;
+  return true;
+}
+
+/**
+ * The newest runs a given requester started, read newest-first until the first
+ * one whose resolver DID report: how many consecutive runs failed without a
+ * single heartbeat, and when the newest of those was created.
+ *
+ * A run that failed with `heartbeat_at IS NULL` never got a working resolver at
+ * all (a refused launch, a walled account, a crash before the first tool call).
+ * Measured 2026-10-01: four scheduled runs in a row died that way while the
+ * launch account sat at its session limit, one every 15 minutes, each costing a
+ * resolver launch and re-seeding the same items (WI-10004887). The scheduled
+ * launcher reads this to back off instead of repeating a launch that cannot work.
+ */
+export async function readConsecutiveNeverBeatRuns(input: {
+  workspaceId?: string;
+  kind?: BulkRunKind | null;
+  requestedBy: string;
+  /** How many recent runs to inspect. Default 10. */
+  window?: number;
+}): Promise<{ consecutive: number; newestCreatedAt: string | null }> {
+  const { sql } = getOrgPg();
+  const ws = input.workspaceId ?? activeWorkspaceId();
+  const kind = input.kind === undefined ? DEFAULT_RUN_KIND : input.kind;
+  const window = Math.max(1, Math.min(50, input.window ?? 10));
+  const rows = await sql<{ phase: BulkRunPhase; heartbeat_at: Date | string | null; created_at: Date | string }[]>`
+    SELECT phase, heartbeat_at, created_at
+      FROM harness_shared.attention_bulk_runs
+     WHERE workspace_id = ${ws}
+       AND requested_by = ${input.requestedBy}
+       AND (${kind ?? null}::text IS NULL OR run_kind = ${kind ?? null})
+     ORDER BY created_at DESC
+     LIMIT ${window}
+  `;
+  return countConsecutiveNeverBeat(
+    rows.map((r) => ({ phase: r.phase, heartbeatAt: iso(r.heartbeat_at), createdAt: iso(r.created_at) })),
+  );
+}
+
+/** PURE half of {@link readConsecutiveNeverBeatRuns}; rows newest-first. */
+export function countConsecutiveNeverBeat(
+  rows: ReadonlyArray<{ phase: BulkRunPhase; heartbeatAt: string | null; createdAt: string | null }>,
+): { consecutive: number; newestCreatedAt: string | null } {
+  let consecutive = 0;
+  for (const row of rows) {
+    // An executing run has not failed yet, and a run whose resolver ever beat
+    // proves the launch route worked; either ends the streak.
+    if (row.phase !== 'failed' || row.heartbeatAt) break;
+    consecutive += 1;
+  }
+  return { consecutive, newestCreatedAt: consecutive > 0 ? (rows[0]?.createdAt ?? null) : null };
 }
 
 export async function getActiveRun(
@@ -1163,6 +1361,14 @@ export async function failRunIfExecuting(input: {
  */
 export const RUN_HEARTBEAT_STALE_MS = 5 * 60_000;
 
+/**
+ * The longest a run may go without a RUN heartbeat while its resolver's other
+ * activity keeps it alive (WI-10004887). Run tools beat on every manifest and
+ * report, so a resolver that is busy for this long without touching one is not
+ * advancing the run, however many other tool calls it makes.
+ */
+export const RESOLVER_ACTIVITY_MAX_SILENCE_MS = 30 * 60_000;
+
 export type RunLiveness =
   /** Terminal, or `review` — the run is not executing, so liveness is not a question. */
   | { state: 'not-executing'; phase: BulkRunPhase }
@@ -1313,6 +1519,7 @@ export async function resumeReviewRun(input: {
                recommendation_label = NULL, recommendation_rationale = NULL,
                evidence_basis = '[]'::jsonb, responsibility = NULL,
                confidence_level = NULL, retry_condition = NULL,
+               intake_decision = NULL,
                updated_at = now()
          WHERE workspace_id = ${ws} AND run_id = ${input.runId}
            AND item_id = ANY(${ids})
@@ -1329,7 +1536,7 @@ export async function resumeReviewRun(input: {
     const resumedRows = await tx<RawRunRow[]>`
       UPDATE harness_shared.attention_bulk_runs
          SET phase = 'pending', resolver_owner = ${input.resolverOwner}, error = NULL,
-             finished_at = NULL, heartbeat_at = NULL, updated_at = now()
+             finished_at = NULL, heartbeat_at = NULL, started_at = now(), updated_at = now()
        WHERE workspace_id = ${ws} AND run_id = ${input.runId}
       RETURNING ${tx.unsafe(RUN_COLUMNS)}
     `;
@@ -1380,6 +1587,8 @@ export async function resumeReviewRun(input: {
  * The launch settings are NOT re-derived from current defaults: `launch_snapshot` stays
  * on the row untouched (D-003), so the restarted run relaunches with the owner's
  * click-time configuration rather than whatever the defaults happen to be now.
+ * `started_at` marks the new attempt, giving it a fresh grace period before the
+ * first heartbeat; the original `created_at` remains unchanged.
  */
 export async function restartRun(input: {
   runId: string;
@@ -1398,6 +1607,7 @@ export async function restartRun(input: {
            error = NULL,
            finished_at = NULL,
            heartbeat_at = NULL,
+           started_at = now(),
            updated_at = now()
      WHERE workspace_id = ${ws}
        AND run_id = ${input.runId}
@@ -1427,11 +1637,16 @@ export async function restartRun(input: {
   // outcomes and re-states them correctly on the restarted run.
   await reportCountersOnly(input.runId, ws);
   const refreshed = (await getRun(input.runId, ws)) ?? mapRun(rows[0]);
-  const items = await getRunItems(input.runId, ws);
+  const preservedOutcomes = refreshed.runKind === 'plan-cleanup'
+    ? Number((await sql<Array<{ count: number }>>`
+        SELECT COUNT(*)::int AS count FROM harness_shared.plan_cleanup_run_findings
+         WHERE workspace_id = ${ws} AND run_id = ${input.runId} AND outcome <> 'pending'
+      `)[0]?.count ?? 0)
+    : (await getRunItems(input.runId, ws)).filter((i) => i.outcome !== 'pending').length;
   return {
     ok: true,
     run: refreshed,
-    preservedOutcomes: items.filter((i) => i.outcome !== 'pending').length,
+    preservedOutcomes,
   };
 }
 
@@ -1456,6 +1671,8 @@ export async function reportOutcomes(input: {
 }): Promise<{
   updated: string[];
   unknown: string[];
+  /** Existing terminal rows that won a race with this stale report. */
+  preserved: BulkRunItemRow[];
   run: BulkRunRow | null;
   refused:
     | { reason: 'run_not_accepting_reports'; phase: BulkRunPhase | null }
@@ -1479,6 +1696,28 @@ export async function reportOutcomes(input: {
   return await sql.begin(async (tx) => {
     const updated: string[] = [];
     const unknown: string[] = [];
+    const preservedById = new Map<string, BulkRunItemRow>();
+    const preserveTerminalOutcome = async (itemId: string): Promise<BulkRunItemRow | null> => {
+      const rows = await tx<RawItemRow[]>`
+        SELECT ${tx.unsafe(ITEM_COLUMNS)}
+          FROM harness_shared.attention_bulk_run_items
+         WHERE workspace_id = ${ws}
+           AND run_id = ${input.runId}
+           AND item_id = ${itemId}
+           AND outcome IN ('auto_resolved', 'dismissed')
+         FOR UPDATE
+      `;
+      const row = rows[0] ? mapItem(rows[0]) : null;
+      if (row) preservedById.set(itemId, row);
+      return row;
+    };
+    const preserveTerminalOutcomes = async (): Promise<void> => {
+      for (const outcome of input.outcomes ?? []) {
+        if (outcome?.itemId && !preservedById.has(outcome.itemId)) {
+          await preserveTerminalOutcome(outcome.itemId);
+        }
+      }
+    };
     const runRows = await tx<RawRunRow[]>`
       SELECT ${tx.unsafe(RUN_COLUMNS)}
         FROM harness_shared.attention_bulk_runs
@@ -1490,14 +1729,17 @@ export async function reportOutcomes(input: {
       return {
         updated: [],
         unknown: (input.outcomes ?? []).map((o) => o?.itemId).filter((id): id is string => !!id),
+        preserved: [],
         run: before,
         refused: { reason: 'resolver_owner_mismatch' as const, phase: before.phase },
       };
     }
     if (before && !ACCEPTING_REPORTS.includes(before.phase)) {
+      await preserveTerminalOutcomes();
       return {
         updated: [],
         unknown: (input.outcomes ?? []).map((o) => o?.itemId).filter((id): id is string => !!id),
+        preserved: [...preservedById.values()],
         run: before,
         refused: { reason: 'run_not_accepting_reports' as const, phase: before.phase },
       };
@@ -1530,6 +1772,7 @@ export async function reportOutcomes(input: {
              responsibility = ${o.responsibility ?? null},
              confidence_level = ${o.confidenceLevel ?? (o.confidence === 'high' ? 'high' : o.confidence === 'low' ? 'low' : null)},
              retry_condition = ${o.retryCondition ?? null},
+             intake_decision = ${o.intakeDecision ? JSON.stringify(o.intakeDecision) : null}::jsonb,
              error = ${o.error ?? null},
              decided_at = now(),
              revert_handle = CASE
@@ -1545,10 +1788,11 @@ export async function reportOutcomes(input: {
              revert_note = CASE WHEN ${o.outcome} = 'auto_resolved' THEN NULL ELSE revert_note END,
              updated_at = now()
        WHERE workspace_id = ${ws} AND run_id = ${input.runId} AND item_id = ${o.itemId}
+         AND outcome NOT IN ('auto_resolved', 'dismissed')
       RETURNING item_id
     `;
       if (rows[0]) updated.push(rows[0].item_id);
-      else unknown.push(o.itemId);
+      else if (!(await preserveTerminalOutcome(o.itemId))) unknown.push(o.itemId);
     }
 
     await recomputeCounters(tx, input.runId, ws);
@@ -1557,7 +1801,13 @@ export async function reportOutcomes(input: {
         FROM harness_shared.attention_bulk_runs
        WHERE workspace_id = ${ws} AND run_id = ${input.runId}
     `;
-    return { updated, unknown, run: afterRows[0] ? mapRun(afterRows[0]) : null, refused: null };
+    return {
+      updated,
+      unknown,
+      preserved: [...preservedById.values()],
+      run: afterRows[0] ? mapRun(afterRows[0]) : null,
+      refused: null,
+    };
   });
 }
 
@@ -1753,7 +2003,14 @@ export async function markItemDismissed(input: {
 export async function reportCountersOnly(runId: string, workspaceId?: string): Promise<void> {
   const { sql } = getOrgPg();
   const ws = workspaceId ?? activeWorkspaceId();
-  await recomputeCounters(sql, runId, ws);
+  await sql.begin(async (tx) => {
+    const rows = await tx<Array<{ run_kind: BulkRunKind }>>`
+      SELECT run_kind FROM harness_shared.attention_bulk_runs
+       WHERE workspace_id = ${ws} AND run_id = ${runId} FOR UPDATE
+    `;
+    if (rows[0]?.run_kind === 'plan-cleanup') await recomputeCleanupCounters(tx, runId, ws);
+    else if (rows[0]) await recomputeCounters(tx, runId, ws);
+  });
 }
 
 /**
@@ -1797,6 +2054,10 @@ export function deriveSettleOutcome(input: {
   runKind: BulkRunKind;
   /** Every state row for the run — item outcomes, or plan-cleanup findings. */
   outcomes: readonly string[];
+  /** Matched row dispositions: only a proven no-action skip is settled. */
+  dispositions?: readonly (string | null | undefined)[];
+  /** Positive fresh-scan transfer receipts; a routed disposition alone is not proof. */
+  reconciled?: readonly boolean[];
   /** Has the resolver ever reported life for this run? */
   everReportedLife: boolean;
   /**
@@ -1814,7 +2075,8 @@ export function deriveSettleOutcome(input: {
   const everReportedLife = input.everReportedLife || (runKind === 'plan-cleanup' && input.scanCompleted === true);
   const terminal =
     runKind === 'plan-cleanup' ? ['auto_applied', 'accepted', 'dismissed'] : ['auto_resolved', 'dismissed'];
-  const awaitingOwner = outcomes.some((o) => !terminal.includes(o));
+  const awaitingOwner = outcomes.some((o, index) => !terminal.includes(o) &&
+    !(runKind === 'plan-cleanup' && o === 'skipped' && input.dispositions?.[index] === 'routed' && input.reconciled?.[index] === true));
   const recordedNothing = outcomes.length === 0;
 
   if (recordedNothing && runKind !== 'plan-cleanup') {
@@ -1870,13 +2132,13 @@ export async function settleRunPhase(input: {
     const runKind = locked[0].run_kind ?? DEFAULT_RUN_KIND;
     const states =
       runKind === 'plan-cleanup'
-        ? await tx<{ outcome: string }[]>`
-            SELECT outcome
+        ? await tx<{ outcome: string; disposition: string | null; evidence_basis?: unknown }[]>`
+            SELECT outcome, disposition, evidence_basis
               FROM harness_shared.plan_cleanup_run_findings
              WHERE workspace_id = ${ws} AND run_id = ${input.runId}
           `
-        : await tx<{ outcome: string }[]>`
-            SELECT outcome
+        : await tx<{ outcome: string; disposition: string | null; evidence_basis?: unknown }[]>`
+            SELECT outcome, disposition
               FROM harness_shared.attention_bulk_run_items
              WHERE workspace_id = ${ws} AND run_id = ${input.runId}
           `;
@@ -1886,6 +2148,9 @@ export async function settleRunPhase(input: {
     const { phase, refusedReason } = deriveSettleOutcome({
       runKind,
       outcomes: states.map((i) => i.outcome),
+      dispositions: states.map((i) => i.disposition),
+      reconciled: states.map((i) => Array.isArray(i.evidence_basis) &&
+        i.evidence_basis.some((basis: unknown) => typeof basis === 'string' && basis.startsWith('cleanup-reconciled:'))),
       everReportedLife: locked[0].heartbeat_at != null,
       scanCompleted: input.scanCompleted,
     });
@@ -1926,6 +2191,8 @@ export interface WatchdogRunRow {
   heartbeatAt: string | null;
   startedAt: string | null;
   createdAt: string | null;
+  /** The resolver's coord ownerId, whose own activity is a second witness of life. */
+  resolverOwner: string | null;
   undecided: number;
   stored: { autoResolved: number; recommended: number; skipped: number; failed: number };
   derived: { autoResolved: number; recommended: number; skipped: number; failed: number };
@@ -1956,6 +2223,7 @@ export async function readWatchdogRunRows(input?: {
       heartbeat_at: Date | string | null;
       started_at: Date | string | null;
       created_at: Date | string | null;
+      resolver_owner: string | null;
       auto_resolved: number;
       recommended: number;
       skipped: number;
@@ -1968,6 +2236,7 @@ export async function readWatchdogRunRows(input?: {
     }>
   >`
     SELECT r.run_id, r.run_kind, r.phase, r.heartbeat_at, r.started_at, r.created_at,
+           r.resolver_owner,
            r.auto_resolved, r.recommended, r.skipped, r.failed,
            COALESCE(i.undecided, f.undecided, 0)::int      AS d_undecided,
            COALESCE(i.auto_resolved, f.auto_resolved, 0)::int AS d_auto,
@@ -2012,6 +2281,7 @@ export async function readWatchdogRunRows(input?: {
     heartbeatAt: iso(r.heartbeat_at),
     startedAt: iso(r.started_at),
     createdAt: iso(r.created_at),
+    resolverOwner: r.resolver_owner ?? null,
     undecided: Number(r.d_undecided ?? 0),
     stored: {
       autoResolved: Number(r.auto_resolved ?? 0),
@@ -2061,26 +2331,61 @@ export async function strandStaleRun(input: {
   reason: string;
   workspaceId?: string;
   staleAfterMs?: number;
+  /** Ceiling on the resolver-activity rescue; default RESOLVER_ACTIVITY_MAX_SILENCE_MS. */
+  resolverMaxSilenceMs?: number;
 }): Promise<{ marked: number; phase: BulkRunPhase | null }> {
   const { sql } = getOrgPg();
   const ws = input.workspaceId ?? activeWorkspaceId();
   const staleSecs = Math.max(0, input.staleAfterMs ?? RUN_HEARTBEAT_STALE_MS) / 1000;
+  const maxSilenceSecs =
+    Math.max(0, input.resolverMaxSilenceMs ?? RESOLVER_ACTIVITY_MAX_SILENCE_MS) / 1000;
 
   return await sql.begin(async (tx) => {
     const claimed = await tx<Array<{ run_id: string; run_kind: BulkRunKind; phase: BulkRunPhase }>>`
-      UPDATE harness_shared.attention_bulk_runs
+      UPDATE harness_shared.attention_bulk_runs AS r
          SET phase = 'failed',
              error = ${input.reason},
              finished_at = now(),
              updated_at = now()
-       WHERE workspace_id = ${ws}
-         AND run_id = ${input.runId}
-         AND phase IN ('pending', 'running')
+       WHERE r.workspace_id = ${ws}
+         AND r.run_id = ${input.runId}
+         AND r.phase IN ('pending', 'running')
          -- Same COALESCE as classifyRunLiveness and restartRun; these three must
          -- stay in step or a run reads stale to one and live to another.
-         AND COALESCE(heartbeat_at, started_at, created_at)
+         AND COALESCE(r.heartbeat_at, r.started_at, r.created_at)
                < now() - make_interval(secs => ${staleSecs})
-      RETURNING run_id, run_kind, phase
+         -- WI-10004887: the resolver's own activity is a second witness of life.
+         -- It is re-checked HERE, not only in the watchdog's read, so a resolver
+         -- that acts between that read and this write wins the race exactly as a
+         -- heartbeat does. Mirrors resolverKeepsRunAlive (bulk-run-watchdog.ts):
+         -- activity within the heartbeat threshold, and the run's own last beat
+         -- within the silence ceiling, so a resolver busy on unrelated work cannot
+         -- hold a run open forever. Both activity sources are the ones
+         -- fetchWakeability reads for coord:presence.
+         AND NOT (
+               r.resolver_owner IS NOT NULL
+               AND COALESCE(r.heartbeat_at, r.started_at, r.created_at)
+                     >= now() - make_interval(secs => ${maxSilenceSecs})
+               AND (
+                     EXISTS (
+                       SELECT 1 FROM harness_shared.tool_invocations ti
+                        WHERE ti.coord_owner_id = r.resolver_owner
+                          AND ti.invoked_at >= now() - make_interval(secs => ${staleSecs})
+                     )
+                     -- COALESCE is load-bearing: with no agent_activity row the
+                     -- scalar subquery is NULL, so (false OR NULL) is NULL, NOT(NULL)
+                     -- fails the WHERE, and a resolver that NEVER acted protected its
+                     -- run for the whole silence ceiling (measured 2026-10-01 on
+                     -- bulk-e6dc3abf: refused every sweep with zero activity rows).
+                     OR COALESCE((
+                       SELECT aa.created_at FROM harness_shared.agent_activity aa
+                        WHERE aa.owner_id = r.resolver_owner
+                        ORDER BY aa.id DESC
+                        LIMIT 1
+                     ), '-infinity'::timestamptz) >= now() - make_interval(secs => ${staleSecs})
+                   )
+             )
+      RETURNING r.run_id, r.run_kind, r.phase
     `;
     if (!claimed[0]) return { marked: 0, phase: null };
 

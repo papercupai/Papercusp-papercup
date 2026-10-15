@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createTextCollector } from './child-output';
+import { pcHeavyFixtureOptions } from './testing/pc-heavy-fixture';
 
 /**
  * EI-21894520557549786 — a bounded pc-heavy wait loop went SILENT for its
@@ -89,7 +90,8 @@ describe('pc-heavy wait loops read the clock without forking (EI-218945205575497
     },
     {
       label: 'ordinary heavy-slot queue (per-tick read)',
-      anchor: 'break 2; fi',
+      // The sweep body became _try_acquire_slot (WI-10005334); this is the loop's acquire line.
+      anchor: 'if _try_acquire_slot; then break; fi',
       read: '_now="${EPOCHSECONDS:-$(date +%s)}"',
     },
     {
@@ -364,19 +366,20 @@ describe('live: a contended waiter still heartbeats and honors its timeout with 
 
   it('emits periodic "still queued" heartbeats AND honors PC_HEAVY_TIMEOUT_SEC, with `date` unusable throughout', async () => {
     const holder = spawn('bash', [PC_HEAVY, 'sleep', '30'], {
-      env: baseEnv({ PC_HEAVY_SLOTS: '1' }),
-      cwd: dir,
+      ...pcHeavyFixtureOptions(dir, baseEnv({ PC_HEAVY_SLOTS: '1' })),
       detached: true,
     });
     await waitFor('holder grabs the only slot', () => heldSlotCount(dir, 1) === 1);
     try {
       const waiter = spawn('bash', [PC_HEAVY, 'bash', '-c', 'echo got-it'], {
-        env: baseEnv({
-          PC_HEAVY_SLOTS: '1',
-          PC_HEAVY_TIMEOUT_SEC: '20',
-          PC_HEAVY_HEARTBEAT_SEC: '1',
-        }),
-        cwd: dir,
+        ...pcHeavyFixtureOptions(
+          dir,
+          baseEnv({
+            PC_HEAVY_SLOTS: '1',
+            PC_HEAVY_TIMEOUT_SEC: '20',
+            PC_HEAVY_HEARTBEAT_SEC: '1',
+          }),
+        ),
       });
       // Boundary-safe accumulation (WI-6728): `+= String(chunk)` decodes each
       // chunk independently, so a multi-byte character split across two 'data'

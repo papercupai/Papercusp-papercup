@@ -166,6 +166,23 @@ describe('goal-package bundle integrity — the bundled floor a release ships', 
     expect(woe.requiresRubrics.some((r) => r.rubricRef === 'goal-mode-e2e')).toBe(true);
   });
 
+  it('ships rubric stewardship with bounded, comparable grading and delegated repair', () => {
+    const body = workOnEverything().body ?? '';
+    expect(body).toContain('Maintain rubric coverage');
+    expect(body).toContain('Improve rubric quality');
+    expect(body).toContain('Drive grading through verified improvement');
+    expect(body).toContain('Launch bounded GRADE-mode agents through capability:launch-agent');
+    expect(body).toContain('exact target, pinned rubric revision, scope, budget, cadence and exit criterion');
+    expect(body).toContain('baseline before repair');
+    expect(body).toContain('baselineRef pointing to the preserved baseline');
+    expect(body).toContain('supersedes only corrects a reading');
+    expect(body).toContain('tracked launch, actual claim and progress separately');
+    expect(body).toContain('same target under the same rubric revision');
+    expect(body).toContain('place every implementation with an implementer');
+    expect(body).toContain('independent grader');
+    expect(body).toContain('existing audit/strategy-change duty');
+  });
+
   it('declares the worklist typed property (plan-ref-list, default [], editable_by both) — P-025', () => {
     const woe = workOnEverything();
     const decl = (woe.propertySchema ?? {}) as Record<string, Record<string, unknown>>;
@@ -175,6 +192,13 @@ describe('goal-package bundle integrity — the bundled floor a release ships', 
     ).toBeDefined();
     expect(decl.worklist).toMatchObject({ datatype: PLAN_REF_LIST_DATATYPE, editable_by: 'both' });
     expect(decl.worklist.default).toEqual([]);
+    // woe-progress-table-2026-10-08 D-002 / R-2(4): the worklist is "only plans
+    // I pick". A package that flips this back to true makes every active plan a
+    // worklist member by default again (migration 1430 fixed the live row).
+    expect(
+      (decl.worklist.collection as Record<string, unknown> | undefined)?.defaultSelected,
+      'the worklist collection must declare defaultSelected:false — the owner picks plans in (D-002)',
+    ).toBe(false);
     // The declared default must satisfy the datatype's own payload schema —
     // the exact check validatePropertySchemaDeclaration runs at seed time.
     expect(checkAgainstJsonSchema(planRefListPayloadSchema(), decl.worklist.default).ok).toBe(true);

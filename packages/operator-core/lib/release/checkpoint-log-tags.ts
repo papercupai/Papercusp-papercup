@@ -19,6 +19,26 @@
 /** The wire marker immediately preceding every terminal green-checkpoint result JSON object. */
 export const GREEN_CHECKPOINT_RESULT_MARKER = '__GREEN_CHECKPOINT_RESULT__';
 
+/** Typed dependency-copy failures carry no code verdict, even through a wrapping script. */
+export const DEPENDENCY_GENERATION_INFRA_EXITS = Object.freeze({
+  76: 'DEPENDENCY_GENERATION_LOCK_TIMEOUT',
+  77: 'DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT',
+} as const);
+
+export type DependencyGenerationInfraCode =
+  (typeof DEPENDENCY_GENERATION_INFRA_EXITS)[keyof typeof DEPENDENCY_GENERATION_INFRA_EXITS];
+
+export function dependencyGenerationInfraCode(
+  exitCode: number | null | undefined,
+  output: string,
+): DependencyGenerationInfraCode | null {
+  if (exitCode === 76 || exitCode === 77) return DEPENDENCY_GENERATION_INFRA_EXITS[exitCode];
+  for (const code of Object.values(DEPENDENCY_GENERATION_INFRA_EXITS)) {
+    if (output.includes(code)) return code;
+  }
+  return null;
+}
+
 /** The tag every orchestrator narration line carries on stdout. */
 export const ORCHESTRATOR_STDOUT_TAG = '[green-checkpoint]';
 

@@ -42,11 +42,14 @@ function fixture(n = 20) {
     claimable: Array.from({ length: n }, (_, i) => row(i)),
     inbox: {
       summary: { total: 3327, returned: 10 },
-      recent: Array.from({ length: 10 }, (_, i) => ({
+      entries: Array.from({ length: 10 }, (_, i) => ({
         ts: `t${i}`,
         kind: 'message',
         from: 'su-x',
-        summary: 'm'.repeat(400),
+        // Distinct per entry, so the "rows travel ONCE" count below measures duplication
+        // of a single row rather than five rows that happen to share identical text.
+        // Still exactly 400 chars: fold #2 below pins the source summary length.
+        summary: `msg ${i} `.padEnd(400, 'm'),
         body: 'b'.repeat(800),
       })),
     },
@@ -115,14 +118,18 @@ describe('shapeOrient trimmed', () => {
   });
 
   it('caps inbox/memory/planEvents with pointers; keeps identity + summary fields', () => {
-    const inbox = out.inbox as { recent: unknown[]; entries?: unknown[]; recentTruncated?: unknown; summary?: unknown };
-    expect(inbox.recent).toHaveLength(5);
+    const inbox = out.inbox as { entries: unknown[]; recent?: unknown; recentTruncated?: unknown; summary?: unknown };
+    expect(inbox.entries).toHaveLength(5);
     expect(inbox.summary).toEqual({ total: 3327, returned: 10 });
     expect(inbox.recentTruncated).toBeDefined();
-    // EI-18667514339699744: `entries` must survive tier-shaping aliased to the SAME
-    // (already-projected/capped) rows as `recent` — a caller reading coord:inbox's
-    // key name off a trimmed/standard orient must not see a silently-dropped [].
-    expect(inbox.entries).toEqual(inbox.recent);
+    // EI-18667514339699744 root fix (P-006): the rows travel ONCE, under coord:inbox's key.
+    // `recent` is a loud pointer — it reports the real count and is NOT iterable, so a
+    // reader on the old key can never see a silent empty inbox — and the serialized
+    // orient carries the rows a single time.
+    expect(inbox.recent).toEqual({ movedTo: 'inbox.entries', length: 5 });
+    expect(() => [...(inbox.recent as Iterable<unknown>)]).toThrow(TypeError);
+    const firstSummary = (inbox.entries[0] as { summary: string }).summary;
+    expect(JSON.stringify(out.inbox).split(JSON.stringify(firstSummary)).length - 1).toBe(1);
     const memory = out.memory as { hits: Array<{ memory: string }>; hitsTruncated?: unknown };
     expect(memory.hits).toHaveLength(3);
     expect(memory.hits[0].memory.length).toBeLessThanOrEqual(220);
@@ -417,7 +424,7 @@ describe('shapeOrient standard', () => {
   });
 
   it('passes through small results without truncation markers', () => {
-    const small = { ok: true, me: 'short', claimable: [row(1)], inbox: { summary: {}, recent: [] } };
+    const small = { ok: true, me: 'short', claimable: [row(1)], inbox: { summary: {}, entries: [] } };
     const out = shapeOrient(small, 'trimmed') as Record<string, unknown>;
     expect(out.claimableTruncated).toBeUndefined();
     expect((out.claimable as unknown[]).length).toBe(1);
@@ -435,21 +442,21 @@ describe('shapeOrient — compaction folds (compaction-fold-audit-2026-07-06)', 
     const base = fixture(); // 10 inbox entries, summaries 400 chars
     // baseline: NO recovery ⇒ the standard trimmed cap (5 entries, 140-char summaries) applies
     const capped = shapeOrient(base, 'trimmed') as {
-      inbox: { recent: Array<{ summary: string }>; recentTruncated?: unknown };
+      inbox: { entries: Array<{ summary: string }>; recentTruncated?: unknown };
     };
-    expect(capped.inbox.recent).toHaveLength(5);
+    expect(capped.inbox.entries).toHaveLength(5);
     expect(capped.inbox.recentTruncated).toBeDefined();
-    expect(capped.inbox.recent[0].summary.length).toBeLessThanOrEqual(140);
+    expect(capped.inbox.entries[0].summary.length).toBeLessThanOrEqual(140);
     // recovery present (⇒ afterCompaction) starts with all 10 entries and fuller bodies,
     // then the client-safe budget may walk back the beef to keep the orientation bounded.
     const recovered = shapeOrient({ ...base, recovery: { selfRecall: 'x' } }, 'trimmed') as {
-      inbox: { recent: Array<{ summary: string }>; recentTruncated?: unknown };
+      inbox: { entries: Array<{ summary: string }>; recentTruncated?: unknown };
     };
-    expect(recovered.inbox.recent.length).toBeGreaterThan(0);
-    expect(recovered.inbox.recent.length).toBeLessThanOrEqual(10);
+    expect(recovered.inbox.entries.length).toBeGreaterThan(0);
+    expect(recovered.inbox.entries.length).toBeLessThanOrEqual(10);
     expect(JSON.stringify(recovered).length).toBeLessThanOrEqual(SHAPER_BUDGET_CHARS);
-    expect(recovered.inbox.recent[0].summary.length).toBeLessThanOrEqual(400);
-    if (recovered.inbox.recent.length < 10) expect(recovered.inbox.recentTruncated).toBeDefined();
+    expect(recovered.inbox.entries[0].summary.length).toBeLessThanOrEqual(400);
+    if (recovered.inbox.entries.length < 10) expect(recovered.inbox.recentTruncated).toBeDefined();
   });
 
   it('EI-9031: carries the memory `degraded` marker through tier-shaping (a trimmed fleet-member session must still see it)', () => {
@@ -724,9 +731,11 @@ describe('EI-203907 fleetSummaries shaping', () => {
  * The overshoot was self-inflicted: the post-compaction fold BEEFS the inbox (cap 5 -> 20,
  * summaries 140 -> 700) precisely because a just-compacted agent lost its message context,
  * so `afterCompaction` is both the call that most needs a complete picture and the one most
- * likely to overshoot. Note the doubling that makes it so easy to overshoot: `entries` is
- * aliased to the SAME projected array as `recent`, so every inbox entry is serialized
- * TWICE — 20 beefed entries alone can approach the whole ceiling.
+ * likely to overshoot. Until P-006 (oversized-tool-results-reduction-2026-10-12) `entries`
+ * was also aliased to the SAME projected array as `recent`, so every inbox entry was
+ * serialized TWICE. The rows now travel once, so 20 beefed entries (~16.5KB) sit just under
+ * the 17KB budget, and a real overshoot needs other passthrough bulk beside them. The
+ * fixture below supplies that bulk through `control`.
  */
 describe('shapeOrient — in-shaper budget ladder (EI-19408488769901676)', () => {
   const bigInbox = (n: number) =>
@@ -742,8 +751,10 @@ describe('shapeOrient — in-shaper budget ladder (EI-19408488769901676)', () =>
   const overflowing = () => ({
     self: { ownerId: 'su-7854d874', ownerLabel: 'su · su-7854d' },
     recovery: { selfRecall: 'sessions:search { session: "self" }', loop: { active: true, intervalSec: 900 } },
-    control: { state: { modes: ['auto'], carry: 'warm' } },
-    inbox: { summary: { total: 517, returned: 25 }, recent: bigInbox(40) },
+    // ~4KB of passthrough bulk (survives every rung unchanged): beef + bulk overshoots the
+    // 17KB budget, while plain-trimmed inbox + bulk fits comfortably.
+    control: { state: { modes: ['auto'], carry: 'warm' }, stack: Array.from({ length: 40 }, (_, i) => `layer-${i}:${'c'.repeat(90)}`) },
+    inbox: { summary: { total: 517, returned: 25 }, entries: bigInbox(40) },
   });
 
   it('TEETH: a post-compaction orient that overshoots is tightened IN-SHAPER, not handed to the generic projector', () => {
@@ -771,8 +782,8 @@ describe('shapeOrient — in-shaper budget ladder (EI-19408488769901676)', () =>
     expect(out.self.ownerId).toBe('su-7854d874');
 
     // The inbox is TRIMMED, never emptied — an empty list reads as "no messages".
-    expect(out.inbox.recent.length).toBeGreaterThan(0);
-    expect(out.inbox.entries.length).toBe(out.inbox.recent.length);
+    expect(out.inbox.entries.length).toBeGreaterThan(0);
+    expect(out.inbox.recent).toEqual({ movedTo: 'inbox.entries', length: out.inbox.entries.length });
     // D-004: no silent caps — the truncation still leaves a count + a fetch-pointer.
     expect(out.inbox.recentTruncated.total).toBe(40);
     expect(out.inbox.recentTruncated.more).toBe('coord:inbox');
@@ -782,15 +793,15 @@ describe('shapeOrient — in-shaper budget ladder (EI-19408488769901676)', () =>
     const small = {
       self: { ownerId: 'su-1' },
       recovery: { selfRecall: 'x' },
-      inbox: { summary: { total: 2 }, recent: bigInbox(2) },
+      inbox: { summary: { total: 2 }, entries: bigInbox(2) },
     };
     const out = shapeOrient(small, 'trimmed') as Record<string, any>;
 
     // Rung 0 (the beefed post-compaction shape) fit, so no step-down and no marker.
     expect(out.shaperTightened).toBeUndefined();
     // ...and the beef genuinely applied: both entries kept, summaries at the relaxed cap.
-    expect(out.inbox.recent.length).toBe(2);
-    expect(out.inbox.recent[0].summary.length).toBeGreaterThan(200);
+    expect(out.inbox.entries.length).toBe(2);
+    expect(out.inbox.entries[0].summary.length).toBeGreaterThan(200);
   });
 
   it('a payload too big even at floor caps is flagged overBudget rather than silently looking normal', () => {
@@ -811,14 +822,14 @@ describe('shapeOrient — in-shaper budget ladder (EI-19408488769901676)', () =>
     // WI-20183757506064439: WI-37843 intentionally resolves orient's normal call to full,
     // so the tool's own ceiling must have a domain-aware fallback for ordinary calls too.
     // Otherwise the result-door exemption turns a large inbox into a hard client rejection.
-    const huge = { self: { ownerId: 'su-1' }, inbox: { summary: { total: 40 }, recent: bigInbox(40) } };
+    const huge = { self: { ownerId: 'su-1' }, inbox: { summary: { total: 40 }, entries: bigInbox(40) } };
     const out = shapeOrient(huge, 'trimmed') as Record<string, any>;
 
     expect(out.recovery).toBeUndefined(); // precondition: this is NOT a post-compaction orient
     expect(JSON.stringify(out).length).toBeLessThanOrEqual(SHAPER_BUDGET_CHARS);
     // Keep the orientation's highest-value fold and its recovery pointer rather than
     // falling through to the generic projector, which drops fields by declaration order.
-    expect(out.inbox.recent.length).toBe(5);
+    expect(out.inbox.entries.length).toBe(5);
     expect(out.inbox.recentTruncated.more).toBe('coord:inbox');
   });
 
@@ -964,7 +975,7 @@ describe('EI-20213176698128052: `recovery` is ladder-aware (the last uncapped pa
     self: { ownerId: 'su-3a93abaa' },
     control: { state: { modes: ['auto'] } },
     taskToolSchemaPack: 'x'.repeat(6_000),
-    inbox: { summary: { total: 500, returned: 25 }, recent: fatInbox(40) },
+    inbox: { summary: { total: 500, returned: 25 }, entries: fatInbox(40) },
     recovery: { selfRecall: 'sessions:search { session: "self" }', loop: { active: true }, checkpoints },
   });
 
@@ -1059,7 +1070,7 @@ describe('EI-20213176698128052: floor-only disclosed optional-leg eviction', () 
     ok: true,
     me: { agents: [{ agentId: 'su-e3259c03', isSelf: true }] },
     claimable: [],
-    inbox: { summary: { total: 0 }, recent: [] },
+    inbox: { summary: { total: 0 }, entries: [] },
     leaderBrief: { summary: { members: 1, dead: 0 } },
     laneClaim: { requested: ['P-001'], claimed: ['P-001'] },
     // Tier 3: expensive but transition-re-delivered. It must survive while a
@@ -1074,8 +1085,7 @@ describe('EI-20213176698128052: floor-only disclosed optional-leg eviction', () 
     const out = shapeOrient(source, 'trimmed') as Record<string, any>;
     const omitted = out.optionalLegsOmitted.omitted as Array<{
       leg: string;
-      tier: number;
-      fields: string[];
+      fields?: string[];
       recoverVia: string;
     }>;
     const presentOrder = ORIENT_OPTIONAL_EVICTION_PRIORITY.filter((leg) =>
@@ -1084,12 +1094,35 @@ describe('EI-20213176698128052: floor-only disclosed optional-leg eviction', () 
 
     expect(JSON.stringify(out).length).toBeLessThanOrEqual(SHAPER_BUDGET_CHARS);
     expect(omitted.map((entry) => entry.leg)).toEqual(presentOrder.slice(0, omitted.length));
-    expect(omitted[0]).toMatchObject({ leg: 'ownerPresent', tier: 4, fields: ['ownerPresent'] });
+    expect(omitted[0]).toMatchObject({ leg: 'ownerPresent' });
+    expect(omitted[0]).not.toHaveProperty('tier');
+    expect(omitted[0]).not.toHaveProperty('fields');
     expect(omitted[0].recoverVia).toContain('coord:orient');
+    const verbose = omitted.map((entry) => ({
+      ...entry,
+      tier: ORIENT_OPTIONAL_EVICTION_PRIORITY.find((leg) => leg.name === entry.leg)!.tier,
+      fields: entry.fields ?? [entry.leg],
+    }));
+    expect(JSON.stringify(omitted).length).toBeLessThan(JSON.stringify(verbose).length);
     expect(out.ownerPresent).toBeUndefined();
     expect(out.taskToolSchemaPack).toBeDefined();
     expect(out.shaperTightened).toMatchObject({ rung: 'floor-optional-eviction' });
     expect(out.shaperTightened.overBudget).toBeUndefined();
+  });
+
+  it('retains exact omitted field groups and recovery hints for every evicted leg', () => {
+    const source: Record<string, any> = { ...payload(), recovery: { blob: 'x'.repeat(40_000) } };
+    for (const leg of ORIENT_OPTIONAL_EVICTION_PRIORITY) {
+      for (const field of leg.fields) source[field] = { blob: 'x'.repeat(8_000) };
+    }
+    const out = shapeOrient(source, 'trimmed') as Record<string, any>;
+    for (const entry of out.optionalLegsOmitted.omitted) {
+      const leg = ORIENT_OPTIONAL_EVICTION_PRIORITY.find((leg) => leg.name === entry.leg)!;
+      expect(entry.fields ?? [entry.leg]).toEqual(leg.fields);
+      expect(entry.recoverVia).toBe(leg.recoverVia);
+      for (const field of leg.fields) expect(out).not.toHaveProperty(field);
+    }
+    expect(out.optionalLegsOmitted.more).toContain("payloadTier:'full'");
   });
 
   it('never evicts core, recovery, leaderBrief, or laneClaim', () => {

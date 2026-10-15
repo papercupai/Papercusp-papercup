@@ -30,6 +30,35 @@ describe('regressionsFromTests', () => {
     const pre: TestResult[] = [{ name: 't1', passed: true }];
     expect(regressionsFromTests(pre, pre)).toBe(false);
   });
+
+  it('withholds a no-regression claim when a prior test disappeared', () => {
+    expect(regressionsFromTests(
+      [{ name: 'kept', passed: true }, { name: 'missing', passed: true }],
+      [{ name: 'kept', passed: true }],
+    )).toBeUndefined();
+  });
+
+  it('distinguishes an unexecuted assertion from an observed failure', () => {
+    expect(regressionsFromTests(
+      [{ name: 't', passed: true }],
+      [{ name: 't', passed: false, executed: false }],
+    )).toBeUndefined();
+  });
+
+  it('withholds empty and ambiguous evidence, but preserves an observed regression alongside a gap', () => {
+    expect(regressionsFromTests([], [])).toBeUndefined();
+    expect(regressionsFromTests([{ name: 't', passed: true }],
+      [{ name: 't', passed: false }, { name: 't', passed: true }])).toBeUndefined();
+    expect(regressionsFromTests([{ name: 't', passed: true }, { name: 'missing', passed: true }],
+      [{ name: 't', passed: false }])).toBe(true);
+  });
+
+  it('keeps same-named assertions in different files separate', () => {
+    expect(regressionsFromTests(
+      [{ name: 't', file: 'a.test.ts', passed: true }, { name: 't', file: 'b.test.ts', passed: true }],
+      [{ name: 't', file: 'a.test.ts', passed: false }, { name: 't', file: 'b.test.ts', passed: true }],
+    )).toBe(true);
+  });
 });
 
 describe('plantedBugCaught', () => {

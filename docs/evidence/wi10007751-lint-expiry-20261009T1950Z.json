@@ -1,0 +1,41 @@
+{
+  "workItem": "WI-10007751",
+  "at": "2026-10-09T19:50:23.009Z",
+  "mechanism": "scripts/lint-as-committed.mjs sweepStaleWorkRoots",
+  "taskId": "0mv1dqrql41iq3s1r1y",
+  "logPath": "/tmp/papercusp-capability/scratch/bash-526a7a99-cce.log",
+  "target": "/tmp/papercusp-lint-as-committed-b7937697dc-AapKpQ",
+  "marker": {
+    "pid": 1341872,
+    "keep": true,
+    "createdAtMs": 1791553072237,
+    "sha": "b7937697dcc64bd80dfd3e73af26cc7fc416dcc3"
+  },
+  "allocatedBytes": 2071773184,
+  "processCensus": { "complete": true, "holders": [] },
+  "eligibleTargets": [
+    { "name": "papercusp-lint-as-committed-b7937697dc-AapKpQ", "reason": "keep-expired" }
+  ],
+  "before": [
+    { "path": "/", "availableBytes": 5861851136 },
+    { "path": "/tmp", "availableBytes": 3976499200 }
+  ],
+  "after": [
+    { "path": "/", "availableBytes": 5997109248 },
+    { "path": "/tmp", "availableBytes": 6048714752 }
+  ],
+  "removed": [
+    { "name": "papercusp-lint-as-committed-b7937697dc-AapKpQ", "reason": "keep-expired" }
+  ],
+  "preserved": [
+    { "name": "papercusp-lint-as-committed-1a2b71f9de-YVPQsa", "reason": "dependent-artifact", "exists": true },
+    { "name": "papercusp-lint-as-committed-3b34a9e160-rLxuL0", "reason": "dependent-artifact", "exists": true },
+    { "name": "papercusp-lint-as-committed-7055a080d9-zW5l4Y", "reason": "dependent-artifact", "exists": true },
+    { "name": "papercusp-lint-as-committed-723d78419d-XeLJcX", "reason": "dependent-artifact", "exists": true },
+    { "name": "papercusp-lint-as-committed-d4c6d7d80d-z4fnNq", "reason": "dependent-artifact", "exists": true },
+    { "name": "papercusp-lint-as-committed-7980f3e22d-zcvoTx", "reason": "keep-young", "exists": true }
+  ],
+  "readback": { "targetExists": false },
+  "result": { "status": "completed", "exitCode": 0 },
+  "scope": "Temporary headroom recovery through existing retention. No durable producer-fix or release verdict is claimed."
+}

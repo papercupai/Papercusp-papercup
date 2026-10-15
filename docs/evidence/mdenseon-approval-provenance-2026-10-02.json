@@ -1,0 +1,50 @@
+{
+  "formatVersion": 1,
+  "plan": "mdenseon-adoption-measurements-2026-10-01",
+  "workItem": "WI-10004543",
+  "issue": "EI-24834688087696999",
+  "status": "candidate-source ingest repair verified; historical approval provenance unresolved",
+  "rootCause": "insertTurns selected authenticated prompt-origin stamps only for source_kind='claude', although the first-party hook and matcher support the actual Codex source kind",
+  "repair": {
+    "source": "packages/operator-core/lib/search/session-ingest.ts",
+    "sourceSha256": "83884d3931d290006a861c572296d43a4361469d043ab7188fc5059fa19a5f86",
+    "behavior": "The existing SQL query selects the source kinds present in candidate rows; the exact source/session/hash/time matcher and expiry guard remain in effect",
+    "reuse": "Extended the existing prompt-origin stamp reader and exported its existing insertTurns seam for a migrated Postgres recurrence test; no new table, tool, stamp writer or authentication bypass"
+  },
+  "verification": {
+    "integrationTest": "packages/operator-core/lib/search/session-ingest-prompt-origin.integration.test.ts",
+    "testSha256": "46f2e1244743ddb2cd4b9efee70fcd71c0f158c11c887a1ca7449350797fbc8d",
+    "existingUnitTest": "packages/operator-core/lib/search/session-ingest-provenance.test.ts",
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/search/session-ingest-prompt-origin.integration.test.ts packages/operator-core/lib/search/session-ingest-provenance.test.ts",
+    "before": {
+      "sourceSha256": "f33211a138e3cf5f85bf9c0b5dc4d9d80e78f0dd2a678b5a3e7ca41b58a8439c",
+      "result": "Canonical integration test failed at the Codex owner-typed assertion; actual migrated SQL persisted Claude owner-typed and Codex/OMP unenrolled-origin"
+    },
+    "after": {
+      "testsPassed": 27,
+      "testsFailed": 0,
+      "testsSkipped": 0,
+      "testedHead": "177c10485b",
+      "namedTestProvenance": "stamped local state; new integration test was untracked during verification",
+      "runtimeSourceIdentity": "Private production Node probe asserted the source SHA256 before and after execution",
+      "positiveControls": ["exact Claude stamp", "exact Codex stamp", "exact OMP stamp"],
+      "negativeControls": ["wrong source", "wrong session", "wrong hash", "outside two-minute match window", "expired stamp", "machine-injected turn"],
+      "fixtureCleanup": "Private Postgres and home removed by the maintained isolated-runtime wrapper"
+    }
+  },
+  "historicalApproval": {
+    "ref": "session_turn:codex:01a0f507-51f4-7cb3-8317-b155b35138fa:37",
+    "promptHash": "5d4c6c16e3788b0cc8266268d4d2f8458dd83d023c13f1cc20c9e03bdbb1309d",
+    "timestamp": "2026-10-01T02:56:29.786Z",
+    "observedStoredVerdict": "unenrolled-origin",
+    "retainedExactStamp": false,
+    "readScope": "One exact Codex session/turn in the current transcript ledger and matching retained workspace/source/session/hash/two-minute stamp window",
+    "limitation": "The current absence of a retained stamp cannot establish who authored the historical turn; fixing the future reader cannot restore missing historical authentication",
+    "owner": "WI-10004543, claimed by this session",
+    "activationAudit": "D-004 re-audit remains refused item_provenance_missing; no replacement audit recorded"
+  },
+  "historicalOriginColumnsChanged": false,
+  "hookWriterImpersonated": false,
+  "modelAdoptionAuthorized": false,
+  "planShipped": false
+}

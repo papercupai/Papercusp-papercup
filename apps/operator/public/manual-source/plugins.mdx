@@ -1,0 +1,83 @@
+---
+title: Plugins
+description: Discover integrations, review their permissions and share supported plugins through the Cupboard.
+documents:
+  - packages/operator-core/lib/endpoint-route/routes/plugins/list.ts
+  - packages/operator-core/lib/cupboard/plugin-listings.ts
+---
+
+Use this guide to add an integration and check that it works on the intended
+account and workspace. The result should be an authorized connection with
+only the access you need, a small successful action, and a known way to
+disconnect it.
+
+A plugin adds capabilities to Papercusp. A runtime-less **code-tool pack**
+provides tools without the same plugin runtime. What a unit contributes is
+declared by its manifest, not by a promise that every plugin has every feature.
+
+## Discover and install
+
+Open **Cupboard** or the installation's plugin-management surface to inspect
+available units. Before installing:
+
+- Check the publisher and source repository.
+- Read the capability/permission requirements and dependency information.
+- Confirm compatibility with your installation.
+- Identify which workspace or project will use it.
+
+An integration that connects an external account may need a separate
+connection or authorization step. Installing code is not the same as
+authorizing that code to access your account.
+
+## Verify and maintain the connection
+
+After installation, perform one small action on the intended account and
+workspace and inspect the result. A loaded manifest is not proof that an
+external service authorized the integration or that its actions succeeded.
+
+When updating, review changed permissions and compatibility before accepting
+the new version. If an action fails, preserve the unit version, connection
+status and provider error. Repeated reinstalling will not repair revoked
+provider access. Reauthorize through the supported connection flow when
+appropriate, rather than pasting a token into chat.
+
+## Permissions and secrets
+
+Give an integration only the access it needs. Use the supported credential or
+connection setup; never put tokens in public source, plugin manifests,
+screenshots or support reports.
+
+If you disconnect or remove an integration, check whether its provider-side
+authorization also needs to be revoked. Do not assume deleting local code
+cancels an external account's access grant.
+
+## Authoring a plugin
+
+Start from the current plugin conventions and manifest schema in the
+installation you target. Have your agent inspect existing maintained examples,
+declare the contributed tools/events and permissions, and use the project's
+normal test framework.
+
+Verify both the successful workflow and permission/connection failures. A
+plugin that loads is not yet proof that its actions work or that it respects
+the workspace boundary.
+
+## Publishing to the Cupboard
+
+The maintained `cupboard:publish-plugin` workflow can list a plugin or
+code-tool pack using its manifest and GitHub repository. The code must be
+available at the intended repository before a listing can point to it.
+Installability and publication policy are checked by the platform.
+
+Reviewed listings can be **pending** until moderation approves them.
+Publication submitted is not publication publicly visible. Inspect the
+returned listing and review status.
+
+Before sharing, review the repository's license, secrets, private data and
+provided capabilities. Publishing a template, blueprint, knowledge pack or
+whole app uses its own supported workflow; do not substitute plugin publishing
+for those operations or assume one generic CLI command handles them all.
+
+For a supported installation problem, use **Support** with the unit name,
+version and exact error. See [Troubleshooting](/docs/troubleshooting) and
+[Remote access](/docs/remote-access).

@@ -45,6 +45,21 @@ beforeEach(() => { captured = null; closeSpy.mockClear(); desktopAuthority.allow
 afterEach(cleanup);
 
 describe('AgentInspectorModal (pinned full inspector)', () => {
+  it('opens the selected read-only history conversation without offering a native relaunch', () => {
+    const onOpenInGui = vi.fn();
+    renderModal({ conversationOwnerId: 'selected-history-owner', onOpenInGui });
+    const button = screen.getByTestId('agent-history-open-conversation');
+    expect(screen.getByRole('button', { name: 'Open conversation' })).toBe(button);
+    expect(screen.queryByTestId('resume-terminal-btn')).toBeNull();
+    fireEvent.click(button);
+    expect(onOpenInGui).toHaveBeenCalledExactlyOnceWith('selected-history-owner');
+  });
+
+  it('hides the read-only conversation action when its host cannot open it', () => {
+    renderModal({ conversationOwnerId: 'selected-history-owner' });
+    expect(screen.queryByTestId('agent-history-open-conversation')).toBeNull();
+  });
+
   it('opens a stream and shows the run header + connecting empty state', () => {
     renderModal();
     expect(captured).not.toBeNull();

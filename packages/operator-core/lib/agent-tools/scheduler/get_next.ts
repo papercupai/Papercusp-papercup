@@ -12,6 +12,7 @@
  * bee's (self-selection, the blackboard result).
  */
 import { z } from 'zod';
+import { trackPhase } from '@papercusp/tooldef';
 import { defineTool } from '@papercusp/agent-mcp';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
@@ -32,6 +33,8 @@ import { CURRENT_SPEC_VERSION } from '../../scheduler/claim-spec';
 // which the `../../work-items` re-export cannot serve inside that module's import cycle.
 import { CLAIM_STATES_ALLOWLIST } from '../../scheduler/claim-states';
 import { familyOf, releaseWorkItem } from '../../work-items';
+import { reproductionValidationBrief } from '../../harness/improvements/agent-review-policy';
+import { ISSUE_FAMILY_ROUTE_KINDS } from '../../work-nature/agent-work-predicate';
 import { workItemClaimLeaseEnabled, leaseClaimedWorkItem } from '../../work-item-claim-lease-wiring';
 import { getBuildInfo } from '../../build-info';
 import {
@@ -53,7 +56,8 @@ import { planHarnessesForSlugs } from '../plans/source';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { cancelClaimableAwaits } from '../../events/await/store';
 import { withBoundedTimeout } from '../../bounded-timeout';
-import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
+import { backfillToolInvocationMetadataByCallId } from '../../projected-tool-deps';
+import { OrgTxnTimeoutError, type CandidateWaitSnapshot } from '../../pg-bounded-txn';
 import { liveLockedPaths } from '../locks/live-lock-paths';
 
 /** The claimable-state subset diagnoseClaimNextMiss accepts (mirrors CLAIM_STATES_ALLOWLIST). */
@@ -66,15 +70,16 @@ import {
   readFleetPauseState,
   diagnoseFleetScopeCooldownMiss,
   diagnoseFleetScopeIssueFloorMiss,
-  diagnoseFleetScopeFeatureFamilyMatch,
+  diagnoseFleetScopeFeatureFamilyExclusions,
   diagnoseFleetScopeTerminalExhaustion,
   diagnoseFleetScopePlanTerminality,
   diagnoseFleetScopeLeaderLiveness,
+  reconcileFleetScopeLeaderSuccession,
   fleetLeaderUnavailableRefusal,
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeRetractionAdvisory } from '../work_items/retraction-advisory';
 import {
-  fetchContextPressure,
+  fetchContextPressureReadings,
   resolveContextPressureRecoveryPath,
   resolveContextPressureHeadroom,
 } from '../coordination/context-pressure';
@@ -88,6 +93,7 @@ import { captureWakeHandleForOwner as captureWakeHandleForOwnerStore } from '../
 import { decideGoalStewardGate, goalStewardRefusalResult } from '../../scheduler/goal-steward-claim-gate';
 import { readGoalHolderAuthority } from '../../goals/holder-authority';
 import { getOrgPg } from '@papercusp/db-org';
+import { shapeGetNextResult } from './get-next-shape';
 
 /**
  * EI-20099413453852234 — declare the caller's intent for the item it just claimed.
@@ -229,6 +235,7 @@ export function getNextTimeoutResult(
   budgetMs = GET_NEXT_BUDGET_MS,
   reconciliation: ClaimTimeoutReconciliation = { status: 'unknown', heldIds: [] },
   lastClaimStep?: string,
+  lastClaimStepElapsedMs?: number,
 ): {
   ok: false;
   error: 'timeout';
@@ -238,6 +245,7 @@ export function getNextTimeoutResult(
   heldIds: string[];
   claimReconciliation: ClaimTimeoutReconciliationStatus;
   lastClaimStep?: string;
+  lastClaimStepElapsedMs?: number;
   message: string;
 } {
   const reconciliationNote =
@@ -256,15 +264,62 @@ export function getNextTimeoutResult(
     heldIds: reconciliation.heldIds,
     claimReconciliation: reconciliation.status,
     ...(lastClaimStep ? { lastClaimStep } : {}),
+    ...(lastClaimStepElapsedMs !== undefined ? { lastClaimStepElapsedMs } : {}),
     message:
       `scheduler:get_next exceeded its ${budgetMs}ms internal budget` +
-      (lastClaimStep ? ` at claim step "${lastClaimStep}"` : '') +
+      (lastClaimStep
+        ? ` at claim step "${lastClaimStep}"` +
+          (lastClaimStepElapsedMs !== undefined ? ` after ${lastClaimStepElapsedMs.toFixed(1)}ms in that phase` : '')
+        : '') +
       ` and returned a fast error instead of hanging until the MCP client's 300s ` +
       `idle-timeout abort (EI-18167154191955470). The claim promise may still commit after this ` +
       `response, so possiblyClaimed is true. ${reconciliationNote} Reconcile the held ids before ` +
       `retrying. The last entered step identifies the unresolved phase, not its cause; ` +
       `measure that phase before attributing the timeout to database or pool contention.`,
   };
+}
+
+export type SchedulerLateSettlement =
+  | { kind: 'claimed'; workItemId: string; settledAt: string }
+  | { kind: 'no-claim' | 'rejected-unknown'; settledAt: string };
+
+/**
+ * Observe the resolver promise that outlives scheduler:get_next's deadline. A rejection or an
+ * unexpected fulfilled shape remains unknown; only `null` is a terminal no-claim result.
+ */
+export function observeLateSchedulerClaim(
+  operation: Promise<unknown>,
+  signal: AbortSignal,
+  onLateSettlement: (settlement: SchedulerLateSettlement) => void,
+  now: () => string = () => new Date().toISOString(),
+): Promise<void> {
+  const deliver = (settlement: SchedulerLateSettlement): void => {
+    try {
+      onLateSettlement(settlement);
+    } catch (err) {
+      console.warn(`[scheduler:get_next] late settlement callback failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  return operation.then(
+    (value) => {
+      if (!signal.aborted) return;
+      const settledAt = now();
+      if (value === null) {
+        deliver({ kind: 'no-claim', settledAt });
+        return;
+      }
+      const record = value && typeof value === 'object' ? (value as { workItem?: unknown }) : null;
+      const workItem = record?.workItem && typeof record.workItem === 'object'
+        ? (record.workItem as { id?: unknown })
+        : null;
+      const workItemId = typeof workItem?.id === 'string' ? workItem.id.trim() : '';
+      if (workItemId) deliver({ kind: 'claimed', workItemId, settledAt });
+      else deliver({ kind: 'rejected-unknown', settledAt });
+    },
+    () => {
+      if (signal.aborted) deliver({ kind: 'rejected-unknown', settledAt: now() });
+    },
+  );
 }
 
 /**
@@ -278,6 +333,11 @@ export function getNextPreflightTimeoutResult(
   reason: 'timeout' | 'aborted' | 'error' = 'timeout',
   errorMessage?: string,
   lastPreflightStep?: string,
+  preflightTiming?: {
+    totalElapsedMs: number;
+    completedSteps: Array<{ step: string; elapsedMs: number }>;
+    activeStep: { step: string; elapsedMs: number };
+  },
 ): {
   ok: false;
   error: 'timeout';
@@ -285,6 +345,11 @@ export function getNextPreflightTimeoutResult(
   phase: 'preflight';
   budgetMs: number;
   lastPreflightStep?: string;
+  preflightTiming?: {
+    totalElapsedMs: number;
+    completedSteps: Array<{ step: string; elapsedMs: number }>;
+    activeStep: { step: string; elapsedMs: number };
+  };
   message: string;
 } {
   const detail =
@@ -300,6 +365,7 @@ export function getNextPreflightTimeoutResult(
     phase: 'preflight',
     budgetMs,
     ...(lastPreflightStep ? { lastPreflightStep } : {}),
+    ...(preflightTiming ? { preflightTiming } : {}),
     message:
       `scheduler:get_next pre-claim setup${detail}` +
       (lastPreflightStep ? ` at preflight step "${lastPreflightStep}"` : '') +
@@ -312,17 +378,20 @@ export function getNextPreflightTimeoutResult(
 /**
  * Return a structured retryable result for a bounded admin-pool transaction that hit a
  * PostgreSQL statement/lock timeout. This is distinct from the JS watchdog result above:
- * the database has already rejected the transaction, so preserving its typed message (and
- * blocker hint, when available) gives the caller the actual contention diagnosis instead of
- * converting it into a generic MCP `handler_error`.
+ * PostgreSQL rejected the transaction, so preserving the SQLSTATE and the safely labeled
+ * diagnostic snapshot gives the caller the actual timeout without converting it into a
+ * generic MCP `handler_error`. A PostgreSQL-origin timeout alone does not establish that
+ * the query was waiting on a lock; it may have exceeded its statement budget for another
+ * reason.
  */
-export function getNextContentionResult(error: OrgTxnTimeoutError): {
+export function getNextContentionResult(error: OrgTxnTimeoutError, lastClaimStep?: string): {
   ok: false;
   error: 'timeout';
   retryable: true;
   pgCode: string;
   timeoutSource: 'pg' | 'caller-budget';
   message: string;
+  candidateWaitSnapshot?: CandidateWaitSnapshot;
 } {
   // EI-21831306274538775: `pgCode: '57014'` here does NOT prove PostgreSQL timed out. The
   // claim ladder SYNTHESIZES the same typed error when its own wall-clock budget expires,
@@ -332,16 +401,26 @@ export function getNextContentionResult(error: OrgTxnTimeoutError): {
   // at the connection pool for a budget that ran out inside the scheduler. Both remain
   // retryable and keep the same code; they no longer claim the same cause.
   const callerBudget = error.timeoutSource === 'caller-budget';
+  const callerBudgetAdvice =
+    lastClaimStep === 'claim-setup-acquisition'
+      ? 'This happened before the claim ladder while the dedicated pool was acquired and initialized; no claim was attempted. The phase does not isolate connection-establishment latency or prove pool saturation.'
+      : lastClaimStep
+        ? 'The last entered step was "' +
+          lastClaimStep +
+          '". It locates the phase, not the cause; measure that phase before attributing the timeout to claim-ladder cost, backlog shape, or pool contention.'
+        : 'The result does not identify a phase or prove PG pool saturation; inspect lastClaimStep before assigning a cause.';
   return {
     ok: false,
     error: 'timeout',
     retryable: true,
     pgCode: error.pgCode,
     timeoutSource: error.timeoutSource,
+    ...(error.candidateWaitSnapshot ? { candidateWaitSnapshot: error.candidateWaitSnapshot } : {}),
     message: callerBudget
-      ? `scheduler:get_next abandoned its claim after exhausting the scheduler's OWN budget (reported as ${error.pgCode}; PostgreSQL did not time out): ${error.message}. ` +
-        'Retry now; no claim was returned. Repeated occurrences point at claim-ladder cost or backlog shape — NOT at PG pool saturation.'
-      : `scheduler:get_next claim hit transient PostgreSQL contention (${error.pgCode}): ${error.message}. ` +
+      ? `scheduler:get_next abandoned its claim after exhausting the scheduler's OWN budget (reported as ${error.pgCode}; PostgreSQL did not time out): ${error.messageWithoutBlockerHint}. ` +
+        'Retry now; no claim was returned. ' +
+        callerBudgetAdvice
+      : `scheduler:get_next claim hit a PostgreSQL timeout (${error.pgCode}): ${error.messageWithoutBlockerHint}. ` +
         'Retry now; the failed transaction was rolled back and no claim was returned.',
   };
 }
@@ -364,7 +443,9 @@ export function specNamedIds(spec: unknown): string[] {
  *  all imported below) — mirrors buildFleetKindClaimSpec's ISSUE_FAMILY_CLAIM_KINDS
  *  in fleet_registry/launch-on-plan.ts (not re-exported from there to avoid a
  *  fleet_registry → agent-tools/scheduler import edge for one literal set). */
-const ISSUE_FAMILY_KINDS = new Set(['bug', 'change', 'task']);
+// The shared family route list (P-009, D-022): never a local copy. The R-3 work-predicate
+// lint (work-nature/work-predicate-lint.test.ts) fails a hardcoded kind list here.
+const ISSUE_FAMILY_KINDS: ReadonlySet<string> = new Set<string>(ISSUE_FAMILY_ROUTE_KINDS);
 
 /**
  * EI-18741395910746959: pull the `kind in [...]` leaf's value out of a claim spec's
@@ -456,11 +537,16 @@ export function shadowedFleetSpecNote(args: {
  * which is why the false verdict reads as rigorously confirmed. Hence the check below runs BEFORE
  * the re-check, not merely before the verdict.
  */
-function concurrencyBlockedRefusal(concurrency: {
-  activeClaims: number;
-  maxConcurrentClaims: number;
-  heldIds: string[];
-}): { error: string; diagnosis: Record<string, unknown> } {
+function concurrencyBlockedRefusal(
+  concurrency: {
+    activeClaims: number;
+    maxConcurrentClaims: number;
+    heldIds: string[];
+    blockerParkedIds?: string[];
+  },
+  ownerId: string,
+): { error: string; diagnosis: Record<string, unknown> } {
+  const blockerParkedIds = concurrency.blockerParkedIds ?? [];
   return {
     // EI-19931420102632438: lead with the CAP, never with a lane-contents claim. A caller refused
     // on its own cap had the lane never consulted at all.
@@ -468,12 +554,25 @@ function concurrencyBlockedRefusal(concurrency: {
       `claim cap reached: you already hold ${concurrency.activeClaims}/${concurrency.maxConcurrentClaims} ` +
       `concurrent claim(s) — release or complete one before claiming another; ` +
       `held: ${concurrency.heldIds.join(', ')}. (The claim lane itself was NOT evaluated — this is ` +
-      `not a statement about lane contents.)`,
+      `not a statement about lane contents.) A plainly parked claim STILL counts (EI-11796). A held ` +
+      `item that is blocked/needs-human with an active external blocker does NOT count (P-010): if one ` +
+      `of the held items above is waiting on an event, gate, runtime or human decision, record it with ` +
+      `work_items:set_blocker — that frees its slot while you keep it. ` +
+      (blockerParkedIds.length > 0
+        ? `Already parked on a recorded blocker (held, not counted): ${blockerParkedIds.join(', ')}. `
+        : '') +
+      `To hold more than one lane at once the ` +
+      `LEADER raises your cap by reading scheduler:get_claim_spec { cupId: '${ownerId}' } and ` +
+      `replacing it with scheduler:set_claim_spec { cupId: '${ownerId}', spec: { ...current.spec, ` +
+      `limits: { ...current.spec.limits, maxConcurrentClaims: N } } }. The write requires exactly one ` +
+      `target selector (cupId or fleet) and a full replacement spec — ` +
+      `do not work around it, and do not release a parked item you still own just to pull other work.`,
     diagnosis: {
       concurrencyBlocked: true,
       activeClaims: concurrency.activeClaims,
       maxConcurrentClaims: concurrency.maxConcurrentClaims,
       heldIds: concurrency.heldIds,
+      blockerParkedIds,
     },
   };
 }
@@ -718,7 +817,7 @@ async function buildMissDiagnosis(args: {
     if (concurrency?.blocked) {
       // WI-6409: the message + diagnosis now live in `concurrencyBlockedRefusal` so the
       // fleet-scoped branch returns the IDENTICAL verdict instead of a false divergence.
-      return concurrencyBlockedRefusal(concurrency);
+      return concurrencyBlockedRefusal(concurrency, args.ownerId);
     }
 
     // D-002 (drain-claim-spec-hardening-2026-07-13, fixes EI-11300): mirror getNextWorkItem's
@@ -972,6 +1071,7 @@ export function assembleSchedulerClaimResult(legs: {
    */
   sourceCitation?: unknown;
   sourceCitationWarning?: unknown;
+  taskBrief?: unknown;
   planDecisions?: readonly unknown[] | null;
   planDecisionsNote?: string | null;
   priorAttemptBrief?: unknown;
@@ -1004,6 +1104,11 @@ export function assembleSchedulerClaimResult(legs: {
     ...(typeof claimSpecRecord?.specId === 'string' ? { specId: claimSpecRecord.specId } : {}),
     ...(typeof claimSpecRecord?.revision === 'number' ? { revision: claimSpecRecord.revision } : {}),
   };
+  // bug-queue-legitimacy D-006: a bug the intake floor admitted ONLY as reproduction
+  // validation is labelled here, derived from the claimed row itself so no caller can
+  // forget to pass it. It joins the prefix block: a claimant that loses the response
+  // tail must still know this claim is not a licence to start a fix.
+  const reproductionValidation = reproductionValidationBrief(legs.workItem);
 
   return {
     ok: true,
@@ -1011,6 +1116,7 @@ export function assembleSchedulerClaimResult(legs: {
     // prefix-preserving, while the claim has already committed before this
     // response is rendered.
     claimReceipt,
+    ...(reproductionValidation ? { reproductionValidation } : {}),
     ...(legs.retractionWarning ? { retractionWarning: legs.retractionWarning } : {}),
     // Keep this before workItem: result-door truncation is prefix-preserving, and
     // governing decisions are safety-critical while the work-item echo is bulky.
@@ -1081,6 +1187,7 @@ export function assembleSchedulerClaimResult(legs: {
         }
       : {}),
     ...(legs.premises ? { premises: legs.premises, premisesNote: legs.premisesNote } : {}),
+    ...(legs.taskBrief ? { taskBrief: legs.taskBrief } : {}),
   };
 }
 
@@ -1151,6 +1258,9 @@ export function schedulerDispositionMetadata(
 export default defineTool({
   name: 'scheduler:get_next',
   profile: 'engineer',
+  // WI-6554700010008923: agent tiers drop payload bookkeeping and de-dupe the
+  // no-claim exclusion counters; payloadTier:'full' returns the complete object.
+  shape: { standard: shapeGetNextResult, trimmed: shapeGetNextResult },
   description:
     "Atomically claim the next eligible item under global floors plus the stored claim-spec filter/rank (SKIP LOCKED). A fleet member without an inherited spec fails closed (windDown:true); a non-fleet caller without a declared plan and without a spec uses warned default ordering, while a plan-bound caller fails closed. Returns the claimed item or a diagnosed miss. A successful claim also declares the caller's WI-/EI- intent; specId and revision are result provenance, not request arguments.",
   guidance: {
@@ -1215,6 +1325,18 @@ export default defineTool({
       ),
   }),
   async handler(rawArgs, ctx) {
+    // Definite refusals can return before the final disposition writer. Record
+    // their existing response through the same vocabulary, without another DB
+    // read. Claim watchdog exits stay separate: a timed-out claim can still
+    // commit, so those responses must not be certified as no-claim.
+    const recordNoClaim = <T extends { content: Array<{ text: string }> }>(
+      response: T,
+      specHead?: SchedulerDispositionSpecHead,
+    ): T => {
+      const payload = JSON.parse(response.content[0]!.text) as Record<string, unknown>;
+      ctx.metadata?.({ schedulerDisposition: schedulerDispositionMetadata(null, payload, specHead) });
+      return response;
+    };
     const handlerStartedAt = Date.now();
     const remainingBudgetMs = (phaseCapMs = GET_NEXT_BUDGET_MS): number =>
       Math.max(1, Math.min(phaseCapMs, GET_NEXT_TOTAL_BUDGET_MS - (Date.now() - handlerStartedAt)));
@@ -1234,7 +1356,9 @@ export default defineTool({
     // widens behaviour without removing any.
     const ident = resolveAgentIdentity(ctx);
     const ctxHarness = (ctx as { harnessSlug?: string | null }).harnessSlug;
-    const inheritedHarness = await resolveInheritedHarnessScope(
+    // Phases (handler-phases-v1): get_next:harnessScope, get_next:preflight,
+    // get_next:claim, get_next:arbitrate.
+    const inheritedHarness = await trackPhase(ctx.phases, 'get_next:harnessScope', () => resolveInheritedHarnessScope(
       {
         explicitHarness: rawArgs.harness,
         ownerId: ident.ownerId,
@@ -1248,13 +1372,13 @@ export default defineTool({
         fleet: (input) => readFleetHarnessBinding(input, getClaimSpecRecord),
         brief: (input) => readBriefHarnessBinding(input, (ownerId) => getSessionBrief({ ownerId })),
       },
-    );
+    ));
     if (inheritedHarness.kind !== 'harness') {
       // Reachable from an unscoped operator/cross-workspace session with no durable
       // binding, an explicit wildcard, or a stale/ambiguous durable binding. Preserve
       // the canonical resolver's candidates so the caller can correct the binding
       // instead of guessing a harness and crossing an isolation boundary.
-      return {
+      return recordNoClaim({
         content: [
           {
             type: 'text' as const,
@@ -1277,25 +1401,12 @@ export default defineTool({
           },
         ],
         isError: true,
-      };
+      });
     }
     // Re-bind so every downstream `args.harness` stays a definite string — the
     // alternative (renaming ~15 call sites) would also have caught the unrelated
     // `args.harness` inside buildMissDiagnosis, which has its own `args` param.
     const args = { ...rawArgs, harness: inheritedHarness.slug };
-    // workspace-work-scope-policy-2026-09-04 P-006: a pull from a harness the workspace
-    // policy excludes is refused at the door — the work stays filed, never deleted.
-    {
-      const { gateWorkScope, workScopeRefusal } = await import('../../work-scope-policy');
-      const scope = await gateWorkScope('scheduler:get_next', { harness: args.harness, actor: ident.ownerId });
-      if (!scope.allowed) {
-        return {
-          content: [
-            { type: 'text' as const, text: JSON.stringify(workScopeRefusal(scope, { tool: 'scheduler:get_next' })) },
-          ],
-        };
-      }
-    }
     // P-016: reconcile ALL incompatible pre-existing claims before the next
     // pickup. The sweep is batch-shaped (one pass, one leader alert), so a dead
     // lane cannot drip one stale claim per wake. Only fleet MEMBERS are scoped;
@@ -1307,6 +1418,10 @@ export default defineTool({
     // caller's failure window to 120s. The timeout fallback is deliberately fail-closed: without
     // a resolved fleet scope it is unsafe to continue into the generic claim path.
     type PreflightState =
+      | {
+          kind: 'work-scope-refusal';
+          text: string;
+        }
       | {
           /** WI-5940: caller is at CRITICAL context pressure — serve a compact-first verdict. */
           kind: 'context-critical';
@@ -1349,10 +1464,45 @@ export default defineTool({
           specOn: boolean;
           contendedPaths: string[];
         };
-    let currentPreflightStep = 'context-pressure-flag';
+    const preflightStartedAtMs = Date.now();
+    let currentPreflightStep = 'work-scope-policy';
+    let currentPreflightStepStartedAtMs = preflightStartedAtMs;
+    const completedPreflightSteps: Array<{ step: string; elapsedMs: number }> = [];
+    const beginPreflightStep = (step: string): void => {
+      const nowMs = Date.now();
+      completedPreflightSteps.push({
+        step: currentPreflightStep,
+        elapsedMs: Math.max(0, nowMs - currentPreflightStepStartedAtMs),
+      });
+      currentPreflightStep = step;
+      currentPreflightStepStartedAtMs = nowMs;
+    };
+    const preflightTimingSnapshot = () => {
+      const nowMs = Date.now();
+      return {
+        totalElapsedMs: Math.max(0, nowMs - preflightStartedAtMs),
+        completedSteps: [...completedPreflightSteps],
+        activeStep: {
+          step: currentPreflightStep,
+          elapsedMs: Math.max(0, nowMs - currentPreflightStepStartedAtMs),
+        },
+      };
+    };
     const preflightBudgetMs = remainingBudgetMs();
-    const preflight = await withBoundedTimeout<PreflightState | null>(
+    const preflight = await trackPhase(ctx.phases, 'get_next:preflight', () => withBoundedTimeout<PreflightState | null>(
       async () => {
+        // P-006: keep the harness-scope gate inside the same deadline as every other
+        // pre-claim read. Its first-use policy prime reads operator state and can wait
+        // on PG connection acquisition; outside this budget it could consume the MCP
+        // 300s idle timeout without ever reaching the scheduler's watchdog.
+        const { gateWorkScope, workScopeRefusal } = await import('../../work-scope-policy');
+        const scope = await gateWorkScope('scheduler:get_next', { harness: args.harness, actor: ident.ownerId });
+        if (!scope.allowed) {
+          return {
+            kind: 'work-scope-refusal',
+            text: JSON.stringify(workScopeRefusal(scope, { tool: 'scheduler:get_next' })) ?? '{}',
+          };
+        }
         // WI-5940: refuse to SERVE a critical-context caller, with a compact-first verdict.
         //
         // FIRST inside the preflight, so it runs before any claim — the acceptance is "and no
@@ -1373,14 +1523,15 @@ export default defineTool({
         // Fails OPEN: an unreadable flag or presence row leaves the bucket unknown and the pull
         // proceeds exactly as today. Withholding work on an unproven reading would manufacture the
         // false drain this gate exists to prevent (see the gate module's hazard note).
-        currentPreflightStep = 'context-pressure-flag';
+        beginPreflightStep('context-pressure-flag');
         const gateEnabled = await getFlag(FLAGS.SCHEDULER_CONTEXT_PRESSURE_GATE, ident.ownerId).catch(() => true);
-        currentPreflightStep = 'context-pressure-read';
-        const contextBucket = gateEnabled
-          ? await fetchContextPressure([ident.ownerId])
+        beginPreflightStep('context-pressure-read');
+        const contextReading = gateEnabled
+          ? await fetchContextPressureReadings([ident.ownerId])
               .then((m) => m.get(ident.ownerId) ?? null)
               .catch(() => null)
           : null;
+        const contextBucket = contextReading?.bucket ?? null;
         // EI-23744538757758407: headroom answers what `recovery` cannot — whether this caller's
         // soft limit is SATISFIABLE at all. A session whose fixed per-turn baseline already
         // exceeds it can never clear the band by compacting (a fresh context boots at the same
@@ -1389,7 +1540,7 @@ export default defineTool({
         // PARALLEL, and still inside the ONE shared budget this closure owns: the block comment
         // above forbids both hoisting these awaits out and giving them a second budget, so this
         // adds a concurrent leg rather than a sequential hop. Both fire only when already refusing.
-        currentPreflightStep = 'context-recovery-headroom';
+        beginPreflightStep('context-recovery-headroom');
         const [contextRecovery, contextHeadroom] =
           contextBucket === 'critical' && rawArgs.ignoreContextPressure !== true
             ? await Promise.all([
@@ -1399,6 +1550,7 @@ export default defineTool({
             : [null, null];
         const contextGate = decideContextPressureGate({
           bucket: contextBucket,
+          reading: contextReading,
           override: rawArgs.ignoreContextPressure === true,
           enabled: gateEnabled,
           overrideArg: 'ignoreContextPressure',
@@ -1425,13 +1577,13 @@ export default defineTool({
         // `work_items:claim_next` cannot drift apart. Fails OPEN: an unreadable flag or authority
         // leaves the verdict unknown and the pull proceeds — withholding work on an unproven
         // reading would manufacture a false drain (see the gate module's hazard note).
-        currentPreflightStep = 'goal-steward-flag';
+        beginPreflightStep('goal-steward-flag');
         const stewardGateEnabled = await getFlag(FLAGS.SCHEDULER_GOAL_STEWARD_GATE, ident.ownerId).catch(() => true);
         // try/catch rather than .catch(): a synchronous getOrgPg() throw (no org pool in a
         // unit-test harness) must fail open too, not escape past the promise chain.
         let stewardAuthority = null as Awaited<ReturnType<typeof readGoalHolderAuthority>> | null;
         if (stewardGateEnabled && ident.workspaceId) {
-          currentPreflightStep = 'goal-holder-authority';
+          beginPreflightStep('goal-holder-authority');
           try {
             stewardAuthority = await readGoalHolderAuthority(getOrgPg().sql, ident.workspaceId, ident.ownerId);
           } catch {
@@ -1445,7 +1597,7 @@ export default defineTool({
         if (stewardGate.refuse) {
           return { kind: 'goal-steward', refusal: goalStewardRefusalResult(stewardGate) };
         }
-        currentPreflightStep = 'fleet-scope-reconciliation';
+        beginPreflightStep('fleet-scope-reconciliation');
         const reconciliation = await reconcileFleetScopeClaims({
           ownerId: ident.ownerId,
           workspaceId: ident.workspaceId,
@@ -1459,14 +1611,14 @@ export default defineTool({
         // its spec matches). The by-id claim path is gated at admission; this closes the
         // self-select sibling seam with the same durable-control-state read.
         if (reconciliation.scope) {
-          currentPreflightStep = 'fleet-pause-state';
+          beginPreflightStep('fleet-pause-state');
           const pause = await readFleetPauseState(reconciliation.scope, ident.workspaceId);
           if (pause.windingDown) return { kind: 'paused', reconciliation, pause };
           // EI-22422975002985083: terminal plan work is already a successful
           // wind-down, even when the registered leader is no longer live. Check
           // this before routing the caller into fleet:take-leadership; a terminal
           // lane has nothing left for a replacement leader to drive.
-          currentPreflightStep = 'fleet-plan-terminality';
+          beginPreflightStep('fleet-plan-terminality');
           const planTerminality = await diagnoseFleetScopePlanTerminality({ scope: reconciliation.scope });
           if (planTerminality?.allTerminal) {
             return { kind: 'plan-complete', reconciliation, planTerminality };
@@ -1476,19 +1628,19 @@ export default defineTool({
           // atomic claim instead of allowing members to continue into a lane whose
           // terminal acceptance and wind-down have no live driver. A null reading is
           // deliberately fail-open; only a successful negative blocks new work.
-          currentPreflightStep = 'fleet-leader-liveness';
-          const leaderLiveness = await diagnoseFleetScopeLeaderLiveness({
+          beginPreflightStep('fleet-leader-liveness');
+          const leaderSuccession = await reconcileFleetScopeLeaderSuccession({
             scope: reconciliation.scope,
-            ...(reconciliation.fleetAssignmentRows ? { fleetAssignmentRows: reconciliation.fleetAssignmentRows } : {}),
+            identity: ident,
           });
-          if (leaderLiveness === false) return { kind: 'leader-unavailable', reconciliation };
+          if (leaderSuccession === 'unavailable') return { kind: 'leader-unavailable', reconciliation };
         }
         // SCHEDULER_SPEC_CLAIM kill-switch (default ON; fail-open): OFF ⇒ ignore the bee's stored
         // spec and claim by the DEFAULT ordering (a no-breakage degrade to claim_next behavior).
         // A fleet member is the exception: scope is a correctness boundary, not a feature
         // preference, so the kill-switch may disable scheduler steering but cannot widen a
         // member into the generic backlog.
-        currentPreflightStep = 'scheduler-spec-flag';
+        beginPreflightStep('scheduler-spec-flag');
         const specOn = await getFlag(FLAGS.SCHEDULER_SPEC_CLAIM, ident.ownerId).catch(() => true);
         // EI-21238986333755666: coord:declare-intent persists currentPlanSlug even for a
         // non-fleet caller, but the old default-spec path ignored it and let DEFAULT_CLAIM_SPEC
@@ -1498,18 +1650,18 @@ export default defineTool({
         // positive evidence of a declared plan or a disabled spec path, do not invent a false
         // control-plane block for an otherwise valid solo pull.
         if (!reconciliation.scope) {
-          currentPreflightStep = 'declared-plan-presence';
+          beginPreflightStep('declared-plan-presence');
           const presence = await getPresence(ident.ownerId).catch(() => null);
           const declaredPlanSlug = presence?.currentPlanSlug?.trim() || null;
           if (declaredPlanSlug) {
-            currentPreflightStep = 'declared-plan-claim-spec';
+            beginPreflightStep('declared-plan-claim-spec');
             const record = await getClaimSpecRecord({
               cupId: ident.ownerId,
               workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
             }).catch(() => null);
             const effectiveDefault = !specOn || record?.source === 'default';
             if (effectiveDefault) {
-              currentPreflightStep = 'clear-stale-plan-declaration';
+              beginPreflightStep('clear-stale-plan-declaration');
               const stalePlanCleared = await clearStaleTerminalPlanDeclaration({
                 identity: ident,
                 presence: { intent: presence?.intent },
@@ -1523,14 +1675,14 @@ export default defineTool({
         // P-015: authoritative lock-plane snapshot, holders only and excluding this
         // caller. Fail-soft is implemented by liveLockedPaths; cap the SQL parameter so
         // a pathological lock storm cannot inflate a claim request without bound.
-        currentPreflightStep = 'live-lock-paths';
+        beginPreflightStep('live-lock-paths');
         const contendedPaths = (await liveLockedPaths({ excludeOwner: ident.ownerId })).slice(0, 500);
         return { kind: 'ready', reconciliation, specOn, contendedPaths };
       },
       { fallback: null, timeoutMs: preflightBudgetMs, label: 'scheduler:get_next:preflight' },
-    );
+    ));
     if (preflight.degraded || !preflight.value) {
-      return {
+      return recordNoClaim({
         content: [
           {
             type: 'text' as const,
@@ -1540,13 +1692,25 @@ export default defineTool({
                 preflight.reason,
                 preflight.errorMessage,
                 currentPreflightStep,
+                preflightTimingSnapshot(),
               ),
             ),
           },
         ],
-      };
+      });
     }
     const preflightState = preflight.value;
+    const preflightSpecHead = 'reconciliation' in preflightState && preflightState.reconciliation.scope
+      ? specHeadFrom({
+          specId: preflightState.reconciliation.scope.record.spec?.specId,
+          revision: preflightState.reconciliation.scope.record.revision,
+        })
+      : undefined;
+    if (preflightState.kind === 'work-scope-refusal') {
+      return recordNoClaim({
+        content: [{ type: 'text' as const, text: preflightState.text }],
+      });
+    }
     // WI-5940: the compact-first verdict. Returned BEFORE every claim path below, so the
     // filing's "and no item is claimed" holds by construction rather than by inspection.
     if (preflightState.kind === 'context-critical') {
@@ -1575,25 +1739,25 @@ export default defineTool({
           registerAwait: registerAwaitStore,
         },
       );
-      return {
+      return recordNoClaim({
         content: [
           {
             type: 'text' as const,
             text: JSON.stringify({ ...preflightState.refusal, ...(benchOutcome ? { bench: benchOutcome } : {}) }),
           },
         ],
-      };
+      });
     }
     // WI-2092233: the route-it-instead verdict for an active GOAL steward. Returned BEFORE every
     // claim path below, so "and no item is claimed" holds by construction.
     if (preflightState.kind === 'goal-steward') {
-      return {
+      return recordNoClaim({
         content: [{ type: 'text' as const, text: JSON.stringify(preflightState.refusal) }],
-      };
+      });
     }
     if (preflightState.kind === 'scoped-miss') {
       const { reconciliation } = preflightState;
-      return {
+      return recordNoClaim({
         content: [
           {
             type: 'text' as const,
@@ -1602,7 +1766,7 @@ export default defineTool({
             ),
           },
         ],
-      };
+      }, preflightSpecHead);
     }
     if (preflightState.kind === 'paused') {
       const { reconciliation, pause } = preflightState;
@@ -1614,8 +1778,8 @@ export default defineTool({
       // claimable await(s) right here so no future release re-wakes them for a
       // pull they're forbidden to make anyway. Self/subscriber-scoped + best-effort,
       // same posture as the successful-claim cancel below.
-      const claimableAwaitsCancelled = await cancelClaimableAwaits(ident.ownerId).catch(() => 0);
-      return {
+      const claimableAwaitsCancelled = await cancelClaimableAwaits(ident.ownerId, { includeStanding: true }).catch(() => 0);
+      return recordNoClaim({
         content: [
           {
             type: 'text' as const,
@@ -1628,21 +1792,21 @@ export default defineTool({
             ),
           },
         ],
-      };
+      }, preflightSpecHead);
     }
     if (preflightState.kind === 'leader-unavailable') {
-      return {
+      return recordNoClaim({
         content: [
           {
             type: 'text' as const,
             text: JSON.stringify(fleetLeaderUnavailableRefusal(preflightState.reconciliation.scope!)),
           },
         ],
-      };
+      }, preflightSpecHead);
     }
     if (preflightState.kind === 'plan-complete') {
       const { reconciliation, planTerminality } = preflightState;
-      return {
+      return recordNoClaim({
         content: [
           {
             type: 'text' as const,
@@ -1654,17 +1818,17 @@ export default defineTool({
             ),
           },
         ],
-      };
+      }, preflightSpecHead);
     }
     if (preflightState.kind === 'plan-scope-missing') {
-      return {
+      return recordNoClaim({
         content: [
           {
             type: 'text' as const,
             text: JSON.stringify(planScopeMissingRefusal(preflightState.planSlug, ident.ownerId, args.harness)),
           },
         ],
-      };
+      });
     }
     const { reconciliation, specOn, contendedPaths } = preflightState;
     // P-004 / D-002 (D-007 hybrid): scheduler:get_next is the primary self-pull surface,
@@ -1735,12 +1899,39 @@ export default defineTool({
     };
     const claimBudgetMs = remainingBudgetMs();
     let lastClaimStep = 'claim-start';
-    const onClaimStep = (step: string): void => {
+    let lastClaimStepStartedAtMs = performance.now();
+    let lastClaimStepElapsedMs: number | undefined;
+    const onClaimStep = (
+      step: string,
+      event?: { phase: 'start'; startedAtMs: number } | { phase: 'end'; elapsedMs: number },
+    ): void => {
+      if (event?.phase === 'end') {
+        if (step === lastClaimStep) lastClaimStepElapsedMs = event.elapsedMs;
+        return;
+      }
       lastClaimStep = step;
+      lastClaimStepStartedAtMs = event?.startedAtMs ?? performance.now();
+      lastClaimStepElapsedMs = undefined;
     };
-    const claim = await withBoundedTimeout(
-      (signal) =>
-        getNextForBee({
+    let timeoutMetadataForLateSettlement: {
+      phase: 'claim';
+      lastClaimStep: string;
+      lastClaimStepElapsedMs: number;
+      dispatchCallId?: string;
+    } | null = null;
+    let lateClaimSettlement: SchedulerLateSettlement | null = null;
+    const claim = await trackPhase(ctx.phases, 'get_next:claim', () => withBoundedTimeout(
+      (signal) => {
+        signal.addEventListener('abort', () => {
+          const elapsedMs = lastClaimStepElapsedMs ?? Math.max(0, performance.now() - lastClaimStepStartedAtMs);
+          timeoutMetadataForLateSettlement = {
+            phase: 'claim',
+            lastClaimStep,
+            lastClaimStepElapsedMs: elapsedMs,
+            ...(ctx.dispatchCallId ? { dispatchCallId: ctx.dispatchCallId } : {}),
+          };
+        }, { once: true });
+        const operation = getNextForBee({
           cupId: ident.ownerId,
           onPlanLaneBlocked,
           onClaimStep,
@@ -1764,26 +1955,59 @@ export default defineTool({
           // THE live fleet-member self-pull surface — a miss here is the real "claim-spec
           // view is empty" signal a fleet leader wants pushed, so opt in.
           checkIdleDrainOnMiss: true,
+          captureCandidateWait: true,
           signal,
-        }),
+        });
+        void observeLateSchedulerClaim(operation, signal, (settlement) => {
+          lateClaimSettlement = settlement;
+          const timeoutMetadata = timeoutMetadataForLateSettlement;
+          if (timeoutMetadata) {
+            // The handler metadata writer is last-write-wins, so preserve the timeout
+            // evidence when recording the later terminal observation.
+            ctx.metadata?.({ schedulerTimeout: timeoutMetadata, schedulerLateSettlement: settlement });
+            if (timeoutMetadata.dispatchCallId) {
+              void backfillToolInvocationMetadataByCallId({
+                workspaceId: ident.workspaceId,
+                toolName: 'scheduler:get_next',
+                dispatchCallId: timeoutMetadata.dispatchCallId,
+                metadataJson: { schedulerLateSettlement: settlement },
+              });
+            }
+          }
+        });
+        return operation;
+      },
       // fallback:null is a type-correct member of getNextForBee's return (`... | null`) and is
       // NEVER read — we branch on `claim.degraded` before ever touching `claim.value`.
       { fallback: null, timeoutMs: claimBudgetMs, label: 'scheduler:get_next:claim', signal: ctx.signal },
-    );
+    ));
     // A genuine underlying error surfaces loudly (preserving today's behavior where a thrown
     // getNextForBee propagates), never degraded into a false "no claimable work" miss. Typed
     // PostgreSQL contention is the exception: it is a bounded, retryable condition and must
     // not become a generic `handler_error` that strands the fleet pull loop (EI-20224136729541724).
     if (claim.degraded && claim.reason === 'error') {
       if (claim.error instanceof OrgTxnTimeoutError) {
-        ctx.metadata?.({ schedulerTimeout: { phase: 'claim', lastClaimStep } });
+        const elapsedMs = lastClaimStepElapsedMs ?? Math.max(0, performance.now() - lastClaimStepStartedAtMs);
+        ctx.metadata?.({
+          schedulerTimeout: {
+            phase: 'claim',
+            lastClaimStep,
+            lastClaimStepElapsedMs: elapsedMs,
+            pgCode: claim.error.pgCode,
+            timeoutSource: claim.error.timeoutSource,
+            ...(claim.error.candidateWaitSnapshot
+              ? { candidateWaitSnapshot: claim.error.candidateWaitSnapshot }
+              : {}),
+          },
+        });
         return {
           content: [
             {
               type: 'text' as const,
               text: JSON.stringify({
-                ...getNextContentionResult(claim.error),
+                ...getNextContentionResult(claim.error, lastClaimStep),
                 lastClaimStep,
+                lastClaimStepElapsedMs: elapsedMs,
               }),
             },
           ],
@@ -1796,7 +2020,18 @@ export default defineTool({
       // Snapshot before reconciliation: its reads are a separate phase and an abandoned
       // resolver may make late progress while they run. Preserve the timeout's own evidence.
       const timedOutClaimStep = lastClaimStep;
-      ctx.metadata?.({ schedulerTimeout: { phase: 'claim', lastClaimStep: timedOutClaimStep } });
+      const timedOutClaimStepElapsedMs =
+        lastClaimStepElapsedMs ?? Math.max(0, performance.now() - lastClaimStepStartedAtMs);
+      const schedulerTimeout = timeoutMetadataForLateSettlement ?? {
+        phase: 'claim' as const,
+        lastClaimStep: timedOutClaimStep,
+        lastClaimStepElapsedMs: timedOutClaimStepElapsedMs,
+        ...(ctx.dispatchCallId ? { dispatchCallId: ctx.dispatchCallId } : {}),
+      };
+      ctx.metadata?.({
+        schedulerTimeout,
+        ...(lateClaimSettlement ? { schedulerLateSettlement: lateClaimSettlement } : {}),
+      });
       // EI-22737570207805341: withBoundedTimeout is a Promise.race and does not cancel the
       // abandoned claim. The resolver can therefore commit after this watchdog fires. Read the
       // caller's held rows before responding, but preserve UNKNOWN when that read fails or also
@@ -1824,12 +2059,14 @@ export default defineTool({
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify(getNextTimeoutResult(claimBudgetMs, timeoutReconciliation, timedOutClaimStep)),
+            text: JSON.stringify(
+              getNextTimeoutResult(claimBudgetMs, timeoutReconciliation, timedOutClaimStep, timedOutClaimStepElapsedMs),
+            ),
           },
         ],
       };
     }
-    let res = await arbitrateSchedulerClaim(claim.value);
+    let res = await trackPhase(ctx.phases, 'get_next:arbitrate', () => arbitrateSchedulerClaim(claim.value));
     let retiredSoloPlanSpec: { planSlug: string; specId: string; revision: number; cleared: boolean } | undefined;
     // WI-6409: a caller at its CONCURRENCY CAP never had the lane evaluated — getNextForBee
     // short-circuits before the claim query (EI-12095) — so this miss says NOTHING about pool
@@ -1852,25 +2089,34 @@ export default defineTool({
     //     on the path a saturated fleet hits most often.
     // Fails SOFT (a read error leaves `res` null and the ordinary miss reporting stands): a
     // diagnosis must never become a new way for the claim path to fail.
+    // WI-6554700010011595: every await from here to the payload runs inside a NAMED phase.
+    // Before this, phases ended at get_next:arbitrate and the tail (miss diagnosis, post-claim
+    // enrichment, declare-intent) was unattributed — ~35% of get_next wall time on :3170,
+    // 11-13 s on slow calls — so a slow get_next could not be traced to a phase (plan
+    // papercusp-performance-audit-2026-10-12 R-1). A new await below needs its own phase.
     if (!res) {
-      const capRec = await getClaimSpecRecord({
-        cupId: ident.ownerId,
-        workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
-      }).catch(() => null);
-      const capped = await readClaimConcurrency({
-        cupId: ident.ownerId,
-        workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
-        maxConcurrentClaims: capRec?.spec.limits?.maxConcurrentClaims,
-      }).catch(() => null);
+      const capRec = await trackPhase(ctx.phases, 'get_next:capacityCheck', () =>
+        getClaimSpecRecord({
+          cupId: ident.ownerId,
+          workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+        }).catch(() => null),
+      );
+      const capped = await trackPhase(ctx.phases, 'get_next:capacityCheck', () =>
+        readClaimConcurrency({
+          cupId: ident.ownerId,
+          workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+          maxConcurrentClaims: capRec?.spec.limits?.maxConcurrentClaims,
+        }).catch(() => null),
+      );
       if (capped?.blocked) {
-        return {
+        return recordNoClaim({
           content: [
             {
               type: 'text' as const,
-              text: JSON.stringify({ ok: false, ...concurrencyBlockedRefusal(capped) }),
+              text: JSON.stringify({ ok: false, ...concurrencyBlockedRefusal(capped, ident.ownerId) }),
             },
           ],
-        };
+        }, specHeadFrom({ specId: capRec?.spec.specId, revision: capRec?.revision }) ?? preflightSpecHead);
       }
 
       // EI-22773843177950284: plans:start binds a SOLO starter to one exact plan,
@@ -1882,20 +2128,27 @@ export default defineTool({
       const boundPlan =
         specOn && !reconciliation.scope && capRec?.source === 'cup' ? plansStartExactPlanBinding(capRec.spec) : null;
       if (boundPlan && capRec?.revision !== null && capRec?.revision !== undefined) {
-        const terminality = await import('../plans/source')
-          .then((m) =>
-            m.planTerminalityInWorkspace(
-              resolveClaimSpecWorkspace(ident.workspaceId) ?? DEFAULT_COORD_WORKSPACE,
-              boundPlan,
-            ),
-          )
-          .catch(() => null);
+        const terminality = await trackPhase(ctx.phases, 'get_next:retiredPlanSpec', () =>
+          import('../plans/source')
+            .then((m) =>
+              m.planTerminalityInWorkspace(
+                resolveClaimSpecWorkspace(ident.workspaceId) ?? DEFAULT_COORD_WORKSPACE,
+                boundPlan,
+              ),
+            )
+            .catch(() => null),
+        );
         if (terminality?.status === 'shipped' || terminality?.status === 'superseded') {
-          const cleared = await clearClaimSpec({
-            cupId: ident.ownerId,
-            workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
-            expectedHead: { specId: capRec.spec.specId, revision: capRec.revision },
-          }).catch(() => null);
+          // Built outside the phase closure: the revision null-check above does not narrow
+          // capRec.revision inside a callback.
+          const expectedHead = { specId: capRec.spec.specId, revision: capRec.revision };
+          const cleared = await trackPhase(ctx.phases, 'get_next:retiredPlanSpec', () =>
+            clearClaimSpec({
+              cupId: ident.ownerId,
+              workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+              expectedHead,
+            }).catch(() => null),
+          );
           if (cleared) {
             retiredSoloPlanSpec = {
               planSlug: boundPlan,
@@ -1908,29 +2161,34 @@ export default defineTool({
             // we inspected is no longer authoritative, and the new/default spec may
             // have work immediately available.
             const retryBudgetMs = remainingBudgetMs();
-            const retry = await withBoundedTimeout(
-              (signal) =>
-                getNextForBee({
-                  cupId: ident.ownerId,
-                  onPlanLaneBlocked,
-                  useDedicatedClaimPool: true,
-                  workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
-                  harness: args.harness,
-                  heldPaths: args.heldPaths,
-                  contendedPaths,
-                  states: args.states,
-                  rigAvailable: args.rigAvailable,
-                  checkIdleDrainOnMiss: true,
-                  signal,
-                }),
-              {
-                fallback: null,
-                timeoutMs: retryBudgetMs,
-                label: 'scheduler:get_next:retiredSoloPlanRetry',
-                signal: ctx.signal,
-              },
+            const retry = await trackPhase(ctx.phases, 'get_next:retiredPlanRetry', () =>
+              withBoundedTimeout(
+                (signal) =>
+                  getNextForBee({
+                    cupId: ident.ownerId,
+                    onPlanLaneBlocked,
+                    useDedicatedClaimPool: true,
+                    workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+                    harness: args.harness,
+                    heldPaths: args.heldPaths,
+                    contendedPaths,
+                    states: args.states,
+                    rigAvailable: args.rigAvailable,
+                    checkIdleDrainOnMiss: true,
+                    signal,
+                  }),
+                {
+                  fallback: null,
+                  timeoutMs: retryBudgetMs,
+                  label: 'scheduler:get_next:retiredSoloPlanRetry',
+                  signal: ctx.signal,
+                },
+              ),
             );
-            if (!retry.degraded && retry.value) res = await arbitrateSchedulerClaim(retry.value);
+            if (!retry.degraded && retry.value) {
+              const retried = retry.value;
+              res = await trackPhase(ctx.phases, 'get_next:arbitrate', () => arbitrateSchedulerClaim(retried));
+            }
           }
         }
       }
@@ -1962,30 +2220,32 @@ export default defineTool({
     // === 0, the overwhelmingly common shape) never enters this block and pays nothing.
     let issueBreakdown: import('../../scheduler/get-next').IssueClaimExclusionBreakdown | null = null;
     let divergenceRecheck: 'resolved-by-retry' | 'confirmed-twice' | undefined;
-    // WI-7151 (EI-19318364531323846): the tier-1 (feature-family) match count, computed ONLY
+    // WI-7151 (EI-19318364531323846): the tier-1 (feature-family) breakdown, computed ONLY
     // when the issue-family breakdown would otherwise certify a false `spec_matches_nothing` —
-    // see diagnoseFleetScopeFeatureFamilyMatch's doc comment. Left null for every other miss
+    // Keep pre-floor matches as well as survivors; held features do not make the spec empty.
     // shape (zero extra cost on the common paths).
-    let featureFamilyMatched: number | null = null;
+    let featureBreakdown: import('../../scheduler/fleet-scope-admission').FeatureFamilyClaimExclusionBreakdown | null = null;
     let terminalExhaustion: import('../../scheduler/fleet-scope-admission').FleetScopeTerminalExhaustion | null = null;
     let planTerminality: import('../../scheduler/fleet-scope-admission').FleetScopePlanTerminality | null = null;
     let leaderLiveness: boolean | null = null;
     const diagnoseIssueFloorMissWithinBudget = async () => {
       const budgetMs = remainingBudgetMs(GET_NEXT_ISSUE_DIAG_BUDGET_MS);
-      const diagnosis = await withBoundedTimeout(
-        diagnoseFleetScopeIssueFloorMiss({
-          scope: reconciliation.scope!,
-          harness: args.harness,
-          workspaceId: ident.workspaceId,
-          states: args.states,
-          rigAvailable: args.rigAvailable,
-          totalBudgetMs: budgetMs,
-        }),
-        {
-          fallback: null,
-          timeoutMs: budgetMs,
-          label: 'scheduler:get_next:issueFloorMiss',
-        },
+      const diagnosis = await trackPhase(ctx.phases, 'get_next:missIssueBreakdown', () =>
+        withBoundedTimeout(
+          diagnoseFleetScopeIssueFloorMiss({
+            scope: reconciliation.scope!,
+            harness: args.harness,
+            workspaceId: ident.workspaceId,
+            states: args.states,
+            rigAvailable: args.rigAvailable,
+            totalBudgetMs: budgetMs,
+          }),
+          {
+            fallback: null,
+            timeoutMs: budgetMs,
+            label: 'scheduler:get_next:issueFloorMiss',
+          },
+        ),
       );
       return diagnosis.value;
     };
@@ -1993,80 +2253,15 @@ export default defineTool({
       issueBreakdown = await diagnoseIssueFloorMissWithinBudget();
       if (issueBreakdown && issueBreakdown.claimable > 0) {
         const divergenceBudgetMs = remainingBudgetMs();
-        const retry = await withBoundedTimeout(
-          (signal) =>
-            getNextForBee({
-              cupId: ident.ownerId,
-              onPlanLaneBlocked,
-              // EI-22708243422971631: retries are still claim-path work. Keep them on the
-              // scheduler-only pool too; otherwise miss diagnosis can move the second claim
-              // onto the contended process-wide pool and consume the remaining handler budget.
-              useDedicatedClaimPool: true,
-              workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
-              harness: args.harness,
-              heldPaths: args.heldPaths,
-              contendedPaths,
-              states: args.states,
-              rigAvailable: args.rigAvailable,
-              ignoreStoredSpec: !specOn && !reconciliation.scope,
-              checkIdleDrainOnMiss: true,
-              signal,
-            }),
-          {
-            fallback: null,
-            timeoutMs: divergenceBudgetMs,
-            label: 'scheduler:get_next:divergenceRecheck',
-            signal: ctx.signal,
-          },
-        );
-        // A degraded retry (timeout/error) proves nothing either way — leave the original
-        // breakdown in place and let the miss report itself exactly as it would have.
-        if (!retry.degraded && retry.value) {
-          res = await arbitrateSchedulerClaim(retry.value);
-          divergenceRecheck = 'resolved-by-retry';
-        } else if (!retry.degraded) {
-          // Still nothing claimable to the claim path. Take a FRESH reading: if the pool moved
-          // on (the racing row is now taken), this collapses to an ordinary floor-gated miss.
-          const recheck = await diagnoseIssueFloorMissWithinBudget();
-          if (recheck) issueBreakdown = recheck;
-          if (recheck && recheck.claimable > 0) divergenceRecheck = 'confirmed-twice';
-        }
-      } else if (issueBreakdown && issueBreakdown.matchedByFilter === 0) {
-        // WI-7151: the issue-family breakdown reports a confident zero — but it is
-        // STRUCTURALLY blind to the feature family (bug/change/task only). Check tier-1
-        // before letting this certify a false `spec_matches_nothing` (e.g. a plan-scoped
-        // spec whose promoted items are feature-family, per D-009).
-        [featureFamilyMatched, terminalExhaustion, planTerminality, leaderLiveness] = await Promise.all([
-          diagnoseFleetScopeFeatureFamilyMatch({
-            scope: reconciliation.scope,
-            harness: args.harness,
-            workspaceId: ident.workspaceId,
-            states: args.states,
-            rigAvailable: args.rigAvailable,
-          }),
-          diagnoseFleetScopeTerminalExhaustion({
-            scope: reconciliation.scope,
-            harness: args.harness,
-            workspaceId: ident.workspaceId,
-          }),
-          diagnoseFleetScopePlanTerminality({ scope: reconciliation.scope }),
-          diagnoseFleetScopeLeaderLiveness({
-            scope: reconciliation.scope,
-            ...(reconciliation.fleetAssignmentRows ? { fleetAssignmentRows: reconciliation.fleetAssignmentRows } : {}),
-          }),
-        ]);
-        if (featureFamilyMatched && featureFamilyMatched > 0) {
-          // A genuine tier-1 candidate exists even though the claim (which just queried
-          // this exact table) missed moments ago — retry once, same shape as the
-          // claimable>0 divergence recheck above.
-          const featureRecheckBudgetMs = remainingBudgetMs();
-          const retry = await withBoundedTimeout(
+        const retry = await trackPhase(ctx.phases, 'get_next:divergenceRecheck', () =>
+          withBoundedTimeout(
             (signal) =>
               getNextForBee({
                 cupId: ident.ownerId,
                 onPlanLaneBlocked,
-                // EI-22708243422971631: the feature-family retry has the same claim-path
-                // contention risk as the divergence retry above.
+                // EI-22708243422971631: retries are still claim-path work. Keep them on the
+                // scheduler-only pool too; otherwise miss diagnosis can move the second claim
+                // onto the contended process-wide pool and consume the remaining handler budget.
                 useDedicatedClaimPool: true,
                 workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
                 harness: args.harness,
@@ -2080,14 +2275,86 @@ export default defineTool({
               }),
             {
               fallback: null,
-              timeoutMs: featureRecheckBudgetMs,
-              label: 'scheduler:get_next:featureFamilyRecheck',
+              timeoutMs: divergenceBudgetMs,
+              label: 'scheduler:get_next:divergenceRecheck',
               signal: ctx.signal,
             },
+          ),
+        );
+        // A degraded retry (timeout/error) proves nothing either way — leave the original
+        // breakdown in place and let the miss report itself exactly as it would have.
+        if (!retry.degraded && retry.value) {
+          const retried = retry.value;
+          res = await trackPhase(ctx.phases, 'get_next:arbitrate', () => arbitrateSchedulerClaim(retried));
+          divergenceRecheck = 'resolved-by-retry';
+        } else if (!retry.degraded) {
+          // Still nothing claimable to the claim path. Take a FRESH reading: if the pool moved
+          // on (the racing row is now taken), this collapses to an ordinary floor-gated miss.
+          const recheck = await diagnoseIssueFloorMissWithinBudget();
+          if (recheck) issueBreakdown = recheck;
+          if (recheck && recheck.claimable > 0) divergenceRecheck = 'confirmed-twice';
+        }
+      } else if (issueBreakdown && issueBreakdown.matchedByFilter === 0) {
+        // WI-7151: the issue-family breakdown reports a confident zero — but it is
+        // STRUCTURALLY blind to the feature family (bug/change/task only). Check tier-1
+        // before letting this certify a false `spec_matches_nothing` (e.g. a plan-scoped
+        // spec whose promoted items are feature-family, per D-009).
+        const scope = reconciliation.scope;
+        [featureBreakdown, terminalExhaustion, planTerminality, leaderLiveness] = await trackPhase(ctx.phases, 'get_next:missFeatureDiagnosis', () => Promise.all([
+          diagnoseFleetScopeFeatureFamilyExclusions({
+            scope,
+            harness: args.harness,
+            workspaceId: ident.workspaceId,
+            states: args.states,
+            rigAvailable: args.rigAvailable,
+          }),
+          diagnoseFleetScopeTerminalExhaustion({
+            scope,
+            harness: args.harness,
+            workspaceId: ident.workspaceId,
+          }),
+          diagnoseFleetScopePlanTerminality({ scope }),
+          diagnoseFleetScopeLeaderLiveness({
+            scope,
+            ...(reconciliation.fleetAssignmentRows ? { fleetAssignmentRows: reconciliation.fleetAssignmentRows } : {}),
+          }),
+        ]));
+        if (featureBreakdown && featureBreakdown.claimable > 0) {
+          // A genuine tier-1 candidate exists even though the claim (which just queried
+          // this exact table) missed moments ago — retry once, same shape as the
+          // claimable>0 divergence recheck above.
+          const featureRecheckBudgetMs = remainingBudgetMs();
+          const retry = await trackPhase(ctx.phases, 'get_next:featureFamilyRecheck', () =>
+            withBoundedTimeout(
+              (signal) =>
+                getNextForBee({
+                  cupId: ident.ownerId,
+                  onPlanLaneBlocked,
+                  // EI-22708243422971631: the feature-family retry has the same claim-path
+                  // contention risk as the divergence retry above.
+                  useDedicatedClaimPool: true,
+                  workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+                  harness: args.harness,
+                  heldPaths: args.heldPaths,
+                  contendedPaths,
+                  states: args.states,
+                  rigAvailable: args.rigAvailable,
+                  ignoreStoredSpec: !specOn && !reconciliation.scope,
+                  checkIdleDrainOnMiss: true,
+                  signal,
+                }),
+              {
+                fallback: null,
+                timeoutMs: featureRecheckBudgetMs,
+                label: 'scheduler:get_next:featureFamilyRecheck',
+                signal: ctx.signal,
+              },
+            ),
           );
           if (!retry.degraded && retry.value) {
-            res = await arbitrateSchedulerClaim(retry.value);
-            featureFamilyMatched = null; // claimed on retry — nothing left to explain
+            const retried = retry.value;
+            res = await trackPhase(ctx.phases, 'get_next:arbitrate', () => arbitrateSchedulerClaim(retried));
+            featureBreakdown = null; // claimed on retry — nothing left to explain
           }
         }
       } else if (!issueBreakdown) {
@@ -2106,7 +2373,10 @@ export default defineTool({
         // other diagnosis in this block, so a caller with no plan predicate (or a
         // further-degraded read) pays one cheap extra query for nothing worse than today's
         // behavior.
-        planTerminality = await diagnoseFleetScopePlanTerminality({ scope: reconciliation.scope });
+        const scope = reconciliation.scope;
+        planTerminality = await trackPhase(ctx.phases, 'get_next:missPlanTerminality', () =>
+          diagnoseFleetScopePlanTerminality({ scope }),
+        );
       }
     }
     // EI-8579: a self-puller with NEITHER a per-bee NOR an inherited fleet spec resolves to
@@ -2227,6 +2497,7 @@ export default defineTool({
       sourceCitation: unknown;
       sourceCitationWarning: string;
     } | null;
+    let taskBriefHint = null as { taskBrief: unknown } | null;
     // EI-22344661292350991: explicit, report-only independence enrichment. The claim is
     // already committed; this advisory must never reject/release it or make the self-pull
     // path depend on a successful lineage lookup.
@@ -2244,11 +2515,13 @@ export default defineTool({
       // matters most. Dynamic import keeps the memory chain off the static graph.
       if (res?.workItem) {
         const wi = res.workItem as { id?: string; title?: string; summary?: string; harness?: string | null };
-        memory = await import('../../memory/claim-port')
-          .then((m) =>
-            m.buildClaimRecallBlock({ sessionId: ident.ownerId, workspaceId: ident.workspaceId, items: [wi] }),
-          )
-          .catch(() => null);
+        memory = await trackPhase(ctx.phases, 'get_next:enrich:memory', () =>
+          import('../../memory/claim-port')
+            .then((m) =>
+              m.buildClaimRecallBlock({ sessionId: ident.ownerId, workspaceId: ident.workspaceId, items: [wi] }),
+            )
+            .catch(() => null),
+        );
       }
       // EI-529: this is the primary self-pull surface (every fleet member / cup claims
       // through it) — surface a prior holder's checkpoint AT CLAIM TIME so a re-dispatch
@@ -2256,18 +2529,20 @@ export default defineTool({
       // Omitted entirely when null (the common case: no prior holder ever checkpointed).
       if (res?.workItem) {
         const wi = res.workItem as { id: string; harness?: string | null };
-        checkpointHint = await import('../../work-item-checkpoint')
-          .then((m) =>
-            m.getClaimTimeCheckpointHint({
-              harness: wi.harness ?? null,
-              workItemId: wi.id,
-              workspaceId: ident.workspaceId ?? undefined,
+        checkpointHint = await trackPhase(ctx.phases, 'get_next:enrich:checkpoint', () =>
+          import('../../work-item-checkpoint')
+            .then((m) =>
+              m.getClaimTimeCheckpointHint({
+                harness: wi.harness ?? null,
+                workItemId: wi.id,
+                workspaceId: ident.workspaceId ?? undefined,
+              }),
+            )
+            .catch(() => {
+              checkpointReadFailed = true;
+              return null;
             }),
-          )
-          .catch(() => {
-            checkpointReadFailed = true;
-            return null;
-          });
+        );
       }
       // P-001/P-004 (fleet-leadership-continuity-and-actuation-2026-08-01): the prior-work banner,
       // wired here too. P-001 named THREE surfaces — work_items:claim, work_items:get and THIS one —
@@ -2280,7 +2555,7 @@ export default defineTool({
       // can catch. Fail-soft + omitted entirely when null, exactly like the checkpoint hint above.
       if (res?.workItem) {
         const wi = res.workItem as { id: string; harness?: string | null };
-        priorWorkHint = await import('../../work-item-prior-work')
+        priorWorkHint = await trackPhase(ctx.phases, 'get_next:enrich:priorWork', () => import('../../work-item-prior-work')
           .then(async (m) => {
             const raw = await m.getClaimTimePriorWorkHint({
               harness: wi.harness ?? null,
@@ -2297,7 +2572,7 @@ export default defineTool({
             const warning = m.priorWorkWarning(priorWork);
             return warning ? { priorWork, priorWorkWarning: warning } : null;
           })
-          .catch(() => null);
+          .catch(() => null));
       }
       // EI-18654296679612119: a SEPARATE, CONDITIONAL warning — only when the checkpoint text
       // itself cites a background job/task as evidence — rather than growing the EI-529
@@ -2307,9 +2582,11 @@ export default defineTool({
       if (checkpointHint) {
         Object.assign(
           bgJobWarning,
-          await import('../../checkpoint-bg-job-claim')
-            .then((m) => m.detectBgJobCheckpointClaim(checkpointHint!.checkpoint))
-            .catch(() => ({ detected: false as const })),
+          await trackPhase(ctx.phases, 'get_next:enrich:bgJob', () =>
+            import('../../checkpoint-bg-job-claim')
+              .then((m) => m.detectBgJobCheckpointClaim(checkpointHint!.checkpoint))
+              .catch(() => ({ detected: false as const })),
+          ),
         );
       }
       // agent-trap-guards-2026-07-26 P-003b: this is the primary self-pull surface, so
@@ -2342,10 +2619,13 @@ export default defineTool({
           planItemLandedHint,
           siblingPathOverlapHint,
           sourceCitationHint,
+          taskBriefHint,
           independenceHint,
           sourceGenerationSignal,
         ] = await Promise.all([
-          import('../../plan-decisions-claim-port')
+          // Each claim-time hint is its own phase (concurrent intervals; attribution is their
+          // union), so a slow hint is named in tool_invocations rather than lumped together.
+          trackPhase(ctx.phases, 'get_next:hint:planDecisions', () => import('../../plan-decisions-claim-port')
             .then(async (m) => {
               const brief = await m.getClaimTimePlanDecisions({
                 workItem: { payload: wi.payload },
@@ -2354,8 +2634,8 @@ export default defineTool({
               });
               return [brief, brief ? m.renderPlanDecisionsNote(brief) : null] as const;
             })
-            .catch(() => [null, null] as const),
-          import('../../prior-attempt-context')
+            .catch(() => [null, null] as const)),
+          trackPhase(ctx.phases, 'get_next:hint:priorAttempt', () => import('../../prior-attempt-context')
             .then((m) =>
               m.getClaimTimePriorAttemptBrief({
                 workItem: {
@@ -2368,8 +2648,8 @@ export default defineTool({
                 harness: wi.harness ?? args.harness,
               }),
             )
-            .catch(() => null),
-          import('../../premises-claim-port')
+            .catch(() => null)),
+          trackPhase(ctx.phases, 'get_next:hint:premises', () => import('../../premises-claim-port')
             .then((m) =>
               m.getClaimTimePremises({
                 workItem: { id: wi.id, payload: wi.payload, title: wi.title, summary: wi.summary },
@@ -2377,11 +2657,11 @@ export default defineTool({
                 workspaceId: ident.workspaceId,
               }),
             )
-            .catch(() => null),
-          getClaimTimeRetractionAdvisory(wi, wi.harness ?? args.harness)
+            .catch(() => null)),
+          trackPhase(ctx.phases, 'get_next:hint:retraction', () => getClaimTimeRetractionAdvisory(wi, wi.harness ?? args.harness)
             .then((advisory) => advisory?.retractionWarning ?? null)
-            .catch(() => null),
-          import('../../work-item-prior-work')
+            .catch(() => null)),
+          trackPhase(ctx.phases, 'get_next:hint:authorshipRevalidation', () => import('../../work-item-prior-work')
             .then(async (m) => {
               const authorshipRevalidation = await m.getClaimTimeAuthorshipRevalidationHint({
                 harness: wi.harness ?? args.harness,
@@ -2393,8 +2673,8 @@ export default defineTool({
                 ? { authorshipRevalidation, authorshipRevalidationWarning }
                 : null;
             })
-            .catch(() => null),
-          import('../../work-item-plan-contradiction')
+            .catch(() => null)),
+          trackPhase(ctx.phases, 'get_next:hint:planContradiction', () => import('../../work-item-plan-contradiction')
             .then(async (m) => {
               const hint = await m.getClaimTimePlanItemContradiction({
                 workItemId: wi.id ?? '',
@@ -2403,9 +2683,9 @@ export default defineTool({
               const warning = m.planItemContradictionWarning(hint, wi.id ?? '');
               return hint && warning ? { planItemContradiction: hint, planItemContradictionWarning: warning } : null;
             })
-            .catch(() => null),
+            .catch(() => null)),
           wi.id
-            ? import('../../behavior-contract-claim-port')
+            ? trackPhase(ctx.phases, 'get_next:hint:behaviorContract', () => import('../../behavior-contract-claim-port')
                 .then((m) =>
                   m.getClaimTimeBehaviorContract(
                     {
@@ -2418,17 +2698,17 @@ export default defineTool({
                     wi.harness ?? args.harness,
                   ),
                 )
-                .catch(() => null)
+                .catch(() => null))
             : Promise.resolve(null),
           wi.payload || wi.title || wi.summary
-            ? import('../../stale-path-hints-claim-port')
+            ? trackPhase(ctx.phases, 'get_next:hint:stalePaths', () => import('../../stale-path-hints-claim-port')
                 .then(async (m) => {
                   return m.getClaimTimeStalePathAdvisory({ workItem: wi });
                 })
-                .catch(() => null)
+                .catch(() => null))
             : Promise.resolve(null),
           wi.id
-            ? import('../../work-item-plan-item-landed')
+            ? trackPhase(ctx.phases, 'get_next:hint:planItemLanded', () => import('../../work-item-plan-item-landed')
                 .then(async (m) => {
                   const hint = await m.getClaimTimePlanItemLanded({
                     workItemId: wi.id as string,
@@ -2440,7 +2720,7 @@ export default defineTool({
                   const warning = m.planItemLandedWarning(hint, wi.id as string);
                   return hint && warning ? { planItemLanded: hint, planItemLandedWarning: warning } : null;
                 })
-                .catch(() => null)
+                .catch(() => null))
             : Promise.resolve(null),
           // EI-19329513980117751: a DIFFERENT work-item shares this one's stored paths
           // and has already landed. Reaches the sibling WITHOUT a plan, unlike every
@@ -2448,7 +2728,7 @@ export default defineTool({
           // are all plan-less, so those legs are structurally silent for exactly the
           // population that suffers this. Same fail-soft seam as every leg above.
           wi?.id
-            ? import('../../sibling-path-overlap-claim-port')
+            ? trackPhase(ctx.phases, 'get_next:hint:siblingPathOverlap', () => import('../../sibling-path-overlap-claim-port')
                 .then(async (m) => {
                   const hint = await m.getClaimTimeSiblingPathOverlap({
                     workItemId: wi.id as string,
@@ -2458,13 +2738,13 @@ export default defineTool({
                   const warning = m.siblingPathOverlapWarning(hint, wi.id as string);
                   return hint && warning ? { siblingPathOverlap: hint, siblingPathOverlapWarning: warning } : null;
                 })
-                .catch(() => null)
+                .catch(() => null))
             : Promise.resolve(null),
           // EI-19418245218824265: the only leg that reads the TREE. Needs nothing but
           // the id, so it still fires for an item implemented by an agent who never
           // claimed the row — the shape all ten row-based legs are silent for.
           wi?.id
-            ? import('../../source-citation-claim-port')
+            ? trackPhase(ctx.phases, 'get_next:hint:sourceCitation', () => import('../../source-citation-claim-port')
                 .then(async (m) => {
                   const hint = await m.getClaimTimeSourceCitation({
                     workItemId: wi.id as string,
@@ -2475,15 +2755,18 @@ export default defineTool({
                   const warning = m.sourceCitationWarning(hint, wi.id as string);
                   return hint && warning ? { sourceCitation: hint, sourceCitationWarning: warning } : null;
                 })
-                .catch(() => null)
+                .catch(() => null))
             : Promise.resolve(null),
+          trackPhase(ctx.phases, 'get_next:hint:taskBrief', () => import('../../code-intelligence/task-brief').then(m => m.getClaimTimeTaskBrief({
+            workItem: wi, harness: wi?.harness ?? args.harness, workspaceId: ident.workspaceId,
+          })).catch(() => null)),
           // EI-22344661292350991: preserve an explicit independence marker on the
           // successful claim response and add a warning only when the claimant is
           // actually in the recorded contributor lineage (including descendants /
           // predecessors). This is intentionally the last row-based advisory leg:
           // it is fully fail-soft and never participates in claim eligibility.
           wi?.id
-            ? import('../../independence-claim-port')
+            ? trackPhase(ctx.phases, 'get_next:hint:independence', () => import('../../independence-claim-port')
                 .then((m) =>
                   m.getClaimTimeIndependenceAdvisory({
                     workItem: {
@@ -2497,7 +2780,7 @@ export default defineTool({
                     workspaceId: ident.workspaceId ?? undefined,
                   }),
                 )
-                .catch(() => null)
+                .catch(() => null))
             : Promise.resolve(null),
           // EI-22283949842250645: measure the freshness verdict's source axis —
           // "do this item's own paths carry commits newer than the generation it
@@ -2523,24 +2806,26 @@ export default defineTool({
           // is stated above and applies to `bug` identically, so it was never a
           // kind distinction.
           isFreshnessTrackedKind(wi?.kind)
-            ? import('../../source-generation-claim-port')
+            ? trackPhase(ctx.phases, 'get_next:hint:sourceGeneration', () => import('../../source-generation-claim-port')
                 .then((m) => m.getClaimTimeSourceGenerationSignal({ workItem: wi }))
-                .catch(() => null)
+                .catch(() => null))
             : Promise.resolve(null),
         ]);
       }
-      // EI-10541: a successful self-pull means this agent is transitioning idle -> working, so
-      // cancel its standing `work-item:claimable` idle-park await(s) — holding a claim and waiting
-      // for claimable work are mutually exclusive, and a pre-claim await left armed (e.g. this claim
-      // came from a leader-fed spec bump, not the await firing) otherwise keeps firing spurious ~30-min
-      // timeout wakes while the agent is busy. Best-effort + subscriber-scoped: a cancel failure must
-      // never break the claim path (fails soft, like the recall port above).
-      await cancelClaimableAwaits(ident.ownerId).catch(() => 0);
+      // EI-10541: a successful self-pull moves this agent from idle to working. Retire only a
+      // pending one-shot claimable wake (e.g. left by a leader-fed spec bump); reusable standing
+      // watches remain armed for the next claimable transition. Best-effort + subscriber-scoped:
+      // a cancel failure must never break the already-committed claim path.
+      await trackPhase(ctx.phases, 'get_next:enrich:cancelAwaits', () =>
+        cancelClaimableAwaits(ident.ownerId).catch(() => 0),
+      );
       // EI-20099413453852234: the same idle -> working transition also makes the caller's
       // DECLARED INTENT stale, which peers read as "this holder isn't really working it".
       // Declared here rather than left to the agent, for the reasons on the helper. Same
       // fail-soft posture as the cancel above — the claim is already committed.
-      await declareIntentForClaim(ident, res?.workItem, args.harness).catch(() => {});
+      await trackPhase(ctx.phases, 'get_next:enrich:declareIntent', () =>
+        declareIntentForClaim(ident, res?.workItem, args.harness).catch(() => {}),
+      );
     };
     if (res?.workItem) {
       await withBoundedTimeout(enrichSuccessfulClaim, {
@@ -2575,13 +2860,15 @@ export default defineTool({
     // extra read. Cached (loadHarnessRegistry); a read hiccup fails OPEN — "can't
     // verify" must never block/mis-report a claim path it's only annotating.
     const invalidHarnessKnownSlugs = !res
-      ? await loadHarnessRegistry(ident.workspaceId && ident.workspaceId !== '*' ? ident.workspaceId : undefined)
-          .then((registry) =>
-            registry.projects.some((p) => p.slug === args.harness)
-              ? null
-              : registry.projects.map((p) => p.slug).slice(0, 30),
-          )
-          .catch(() => null)
+      ? await trackPhase(ctx.phases, 'get_next:missHarnessRegistry', () =>
+          loadHarnessRegistry(ident.workspaceId && ident.workspaceId !== '*' ? ident.workspaceId : undefined)
+            .then((registry) =>
+              registry.projects.some((p) => p.slug === args.harness)
+                ? null
+                : registry.projects.map((p) => p.slug).slice(0, 30),
+            )
+            .catch(() => null),
+        )
       : null;
     // WI-4413: a MISS must explain itself. `work_items:claim_next` has run diagnoseClaimNextMiss
     // on a miss since EI-5803 — but THIS path (the one every fleet member self-pulls through, and
@@ -2600,23 +2887,25 @@ export default defineTool({
           // too so a pool stall HERE can't reproduce the 300s hang. buildMissDiagnosis already
           // fails soft to the STATIC message, so the timeout fallback is exactly that static miss.
           (
-            await withBoundedTimeout(
-              buildMissDiagnosis({
-                ownerId: ident.ownerId,
-                workspaceId: ident.workspaceId,
-                harness: args.harness,
-                states: args.states,
-                rigAvailable: args.rigAvailable,
-              }),
-              {
-                fallback: {
-                  error: 'no claimable work-item matched your spec within the floors',
-                  diagnosis: undefined,
-                  floors: undefined,
+            await trackPhase(ctx.phases, 'get_next:missDiagnosis', () =>
+              withBoundedTimeout(
+                buildMissDiagnosis({
+                  ownerId: ident.ownerId,
+                  workspaceId: ident.workspaceId,
+                  harness: args.harness,
+                  states: args.states,
+                  rigAvailable: args.rigAvailable,
+                }),
+                {
+                  fallback: {
+                    error: 'no claimable work-item matched your spec within the floors',
+                    diagnosis: undefined,
+                    floors: undefined,
+                  },
+                  timeoutMs: remainingBudgetMs(15_000),
+                  label: 'scheduler:get_next:missDiagnosis',
                 },
-                timeoutMs: remainingBudgetMs(15_000),
-                label: 'scheduler:get_next:missDiagnosis',
-              },
+              ),
             )
           ).value;
     // EI-13520: a genuine (non-paused) scoped miss may be a release-cooldown artifact,
@@ -2624,14 +2913,17 @@ export default defineTool({
     // the caller (and the leader they'd otherwise flag a false spec bug to) gets the
     // true cause. Only reached when reconciliation.scope is set AND res is null AND we
     // did not already return early on the paused/default-source branches above.
+    const cooldownScope = reconciliation.scope;
     const cooldownDiag =
-      !res && reconciliation.scope && !invalidHarnessKnownSlugs
-        ? await diagnoseFleetScopeCooldownMiss({
-            scope: reconciliation.scope,
-            harness: args.harness,
-            workspaceId: ident.workspaceId,
-            states: args.states,
-          })
+      !res && cooldownScope && !invalidHarnessKnownSlugs
+        ? await trackPhase(ctx.phases, 'get_next:missCooldown', () =>
+            diagnoseFleetScopeCooldownMiss({
+              scope: cooldownScope,
+              harness: args.harness,
+              workspaceId: ident.workspaceId,
+              states: args.states,
+            }),
+          )
         : null;
     // WI-5561: the issue-family floor-breakdown sibling of cooldownDiag above — surfaces WHY a
     // fleet-scoped miss happened (federation-detector / owner-action / claim-hold / … floors)
@@ -2646,8 +2938,8 @@ export default defineTool({
     const issueBreakdownForMiss = !res && reconciliation.scope && !invalidHarnessKnownSlugs ? issueBreakdown : null;
     // WI-7151: same suppression as issueBreakdownForMiss — irrelevant once res is set (claimed
     // on a retry) or when the miss isn't fleet-scoped/is an invalid-harness miss.
-    const featureFamilyMatchedForMiss =
-      !res && reconciliation.scope && !invalidHarnessKnownSlugs ? featureFamilyMatched : null;
+    const featureBreakdownForMiss =
+      !res && reconciliation.scope && !invalidHarnessKnownSlugs ? featureBreakdown : null;
     // EI-20186990913643457: same suppression as the other miss annotations — terminal
     // exhaustion only describes an actual fleet-scoped miss under a valid harness.
     const terminalExhaustionForMiss =
@@ -2686,6 +2978,7 @@ export default defineTool({
           siblingPathOverlapWarning: siblingPathOverlapHint?.siblingPathOverlapWarning,
           sourceCitation: sourceCitationHint?.sourceCitation,
           sourceCitationWarning: sourceCitationHint?.sourceCitationWarning,
+          taskBrief: taskBriefHint?.taskBrief,
           behaviorContract: behaviorContractHint?.behaviorContract,
           behaviorContractNote: behaviorContractHint?.behaviorContractNote,
           pathHints: pathHintsHint?.pathHints,
@@ -2719,7 +3012,7 @@ export default defineTool({
           ? fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, {
               cooldownDiag,
               issueBreakdown: issueBreakdownForMiss,
-              featureFamilyMatched: featureFamilyMatchedForMiss,
+              featureBreakdown: featureBreakdownForMiss,
               terminalExhaustion: terminalExhaustionForMiss,
               planTerminality: planTerminalityForMiss,
               leaderLiveness: leaderLivenessForMiss,
@@ -2750,7 +3043,28 @@ export default defineTool({
               // moment happens, instead of leaving the caller to a 60s re-poll.
               advice: IDLE_PULL_MISS_ADVICE,
             };
-    const payload = retiredSoloPlanSpec ? { ...basePayload, retiredSoloPlanSpec } : basePayload;
+    // P-007 Phase B (D-027): a verifier-lane pull names the work it served and the next call.
+    const verification = res?.verificationKind
+      ? {
+          lane: 'verification' as const,
+          kind: res.verificationKind,
+          next:
+            res.verificationKind === 'agent-review'
+              ? "Review it, then grade it with blender:grade-idea { ideaId: payload.agentReview.ledgerIdeaId, grade, feedback? }."
+              : "Run the task's payload.verification.check against payload.verification.subject, then complete the task with the result.",
+        }
+      : null;
+    // D-011 B: an adopted content revision is REPORT revision, not implementation — say so in
+    // the response the member acts on, with the brief's own next steps (D-008 ruling 5).
+    const lanePayload = verification
+      ? { ...basePayload, verification }
+      : res?.revisionAdoption
+        ? { ...basePayload, revisionAdoption: res.revisionAdoption }
+        : basePayload;
+    // P-017 / D-032: say when red-gate inflow control shaped this claim, so a member that
+    // got a repair item (or fell back to backlog) can see why.
+    const inflowPayload = res?.redInflow ? { ...lanePayload, redInflow: res.redInflow } : lanePayload;
+    const payload = retiredSoloPlanSpec ? { ...inflowPayload, retiredSoloPlanSpec } : inflowPayload;
     // P-003: `tool_invocations` has no inline result JSON. Stamp the one fact a
     // later launch verifier needs — claimed vs diagnosed no-claim — onto the
     // invocation's existing metadata writer. This is intentionally the only

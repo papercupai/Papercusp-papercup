@@ -95,7 +95,7 @@ function validInput(): PostGoReleaseCanaryInput {
     schemaVersion: POST_GO_RELEASE_CANARY_SCHEMA,
     candidateSha: CANDIDATE,
     // A release with no owner ruling: the 72h default applies.
-    releaseVersion: '0.0.29-alpha',
+    releaseVersion: '0.0.30-alpha',
     independentGo: {
       decision: 'GO',
       candidateSha: CANDIDATE,
@@ -272,7 +272,7 @@ describe('post-GO public-release canary readiness', () => {
     );
   });
 
-  describe('release-scoped soak minimum (endgame D-132)', () => {
+  describe('release-scoped soak minimum (endgame D-132 / D-163)', () => {
     /** Shift the whole post-canary sequence so the soak is exactly `hours` long. */
     function soakOf(hours: number, releaseVersion: string): PostGoReleaseCanaryInput {
       const input = validInput();
@@ -286,12 +286,19 @@ describe('post-GO public-release canary readiness', () => {
       return input;
     }
 
-    it('removes the 0.0.28-alpha timer without falling back to the 72h default', () => {
-      expect(postGoReleaseCanaryMinimum('0.0.28-alpha')).toEqual({
-        minimumDurationMs: 0,
-        decisionRef: 'p2p-public-release-endgame-2026-09-01#D-132',
-      });
-      for (const other of ['0.0.29-alpha', '0.0.28', '0.0.28-alpha.1', '', 'toString', undefined]) {
+    const noSoakReleases = [
+      ['0.0.28-alpha', 'p2p-public-release-endgame-2026-09-01#D-132'],
+      ['0.0.29-alpha', 'p2p-public-release-endgame-2026-09-01#D-163'],
+    ] as const;
+
+    it('keeps the timer removal scoped to the release and its replacement', () => {
+      for (const [releaseVersion, decisionRef] of noSoakReleases) {
+        expect(postGoReleaseCanaryMinimum(releaseVersion)).toEqual({
+          minimumDurationMs: 0,
+          decisionRef,
+        });
+      }
+      for (const other of ['0.0.30-alpha', '0.0.28', '0.0.29', '0.0.28-alpha.1', '0.0.29-alpha.1', '', 'toString', undefined]) {
         expect(postGoReleaseCanaryMinimum(other)).toEqual({
           minimumDurationMs: POST_GO_RELEASE_CANARY_MIN_DURATION_MS,
           decisionRef: null,
@@ -301,13 +308,13 @@ describe('post-GO public-release canary readiness', () => {
     });
 
     it('rejects a 24h soak for a release without an owner ruling', () => {
-      const verdict = validatePostGoReleaseCanary(soakOf(24, '0.0.29-alpha'));
+      const verdict = validatePostGoReleaseCanary(soakOf(24, '0.0.30-alpha'));
       expect(verdict.errors).toContain('canary must run for an actual minimum of 72 hours');
     });
 
-    it('accepts immediate 0.0.28-alpha evidence after independent GO without a timed soak', () => {
+    it.each(noSoakReleases)('accepts immediate %s evidence after independent GO without a timed soak', (releaseVersion, decisionRef) => {
       const input = validInput();
-      input.releaseVersion = '0.0.28-alpha';
+      input.releaseVersion = releaseVersion;
       input.canary.finishedAt = input.canary.startedAt;
       input.canary.observations = input.canary.observations.slice(0, 1);
       input.canary.alarmRail.deliveredPageAt = input.canary.startedAt;
@@ -317,13 +324,13 @@ describe('post-GO public-release canary readiness', () => {
       expect(verdict.result).toMatchObject({
         canaryDurationMs: 0,
         minimumDurationMs: 0,
-        minimumDurationDecisionRef: 'p2p-public-release-endgame-2026-09-01#D-132',
+        minimumDurationDecisionRef: decisionRef,
       });
     });
 
-    it('still requires independent approval when the 0.0.28-alpha timer is removed', () => {
+    it.each(noSoakReleases)('still requires independent approval when the %s timer is removed', (releaseVersion) => {
       const input = validInput();
-      input.releaseVersion = '0.0.28-alpha';
+      input.releaseVersion = releaseVersion;
       input.independentGo.reviewerOwnerId = input.independentGo.implementationOwnerId;
       expect(validatePostGoReleaseCanary(input).errors).toContain(
         'independent GO reviewer must differ from the implementation owner',

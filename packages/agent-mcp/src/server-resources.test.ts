@@ -25,7 +25,8 @@ vi.mock('@papercusp/tooldef', () => ({
 }));
 
 import { writeScratchReference } from '@papercusp/operator-core/lib/scratch-reference';
-import { readResource } from './server';
+import { getPrompt, listPrompts, listResources, readResource } from './server';
+import { lookupPrompt } from '@papercusp/tooldef';
 
 const WORKSPACE = 'resource-reader-ws';
 const OWNER = 'pi:resource-reader';
@@ -131,6 +132,29 @@ describe('readResource scratch references', () => {
       },
     });
     expect(resolveBearerMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps an exact-tool PI bearer out of MCP resource reads', async () => {
+    resolveBearerMock.mockResolvedValue({
+      ...principal(),
+      allowedTools: new Set(['tasks:list']),
+    });
+
+    expect(await listResources({ bearer: 'scoped-bearer' })).toEqual({ ok: true, resources: [] });
+    expect(await readResource({ uri: scratchUri('not-created.spill'), bearer: 'scoped-bearer' }))
+      .toMatchObject({ ok: false, error: { code: 'tool_scope_only' } });
+  });
+
+  it('keeps an exact-tool PI bearer out of MCP prompt reads', async () => {
+    resolveBearerMock.mockResolvedValue({
+      ...principal(),
+      allowedTools: new Set(['tasks:list']),
+    });
+    vi.mocked(lookupPrompt).mockReturnValue({ name: 'agent:role', description: 'role', tier: 'low', render: vi.fn() });
+
+    expect(await listPrompts('scoped-bearer')).toEqual({ ok: true, prompts: [] });
+    expect(await getPrompt({ name: 'agent:role', args: {}, bearer: 'scoped-bearer' }))
+      .toMatchObject({ ok: false, error: { code: 'tool_scope_only' } });
   });
 
   it('lets an explicitly unscoped superuser follow the URI workspace', async () => {

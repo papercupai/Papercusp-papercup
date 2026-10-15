@@ -153,6 +153,45 @@ export type PhaseITarget =
       };
     };
 
+/** Run configuration, before the outage's three observations exist. */
+export type PhaseICanaryTargetConfig = Omit<Extract<PhaseITarget, { kind: 'canary-owner' }>, 'realTargets'>;
+
+export function parsePhaseICanaryTarget(value: unknown): PhaseICanaryTargetConfig {
+  const target = value as Partial<PhaseICanaryTargetConfig> | null;
+  if (target?.kind !== 'canary-owner' ||
+      ![target.workspaceId, target.potHomeSlug, target.repoKey].every((v) => typeof v === 'string' && v.trim().length > 0) ||
+      !validDeviceKey(target.hiveId)) {
+    throw new Error('physical Phase I canary target requires kind:canary-owner, workspaceId, potHomeSlug, hiveId and real repoKey');
+  }
+  return { kind: 'canary-owner', workspaceId: target.workspaceId!, potHomeSlug: target.potHomeSlug!, hiveId: target.hiveId!, repoKey: target.repoKey! };
+}
+
+/** Existing-key lookup only: a missing or foreign key must never mint a replacement. */
+export async function phaseICanaryOwnerSigner(target: PhaseICanaryTargetConfig, deps: {
+  loadKeyStatus: (workspace: string, slug: string) => Promise<{ kind: 'ok'; pubkeyBase64: string } | { kind: 'not_found' } | { kind: 'error'; reason: string }>;
+  sign: (workspace: string, slug: string, bytes: Buffer) => Promise<Buffer>;
+}): Promise<PhaseIHostKeychainSigner> {
+  const config = parsePhaseICanaryTarget(target);
+  const key = await deps.loadKeyStatus(config.workspaceId, config.potHomeSlug);
+  if (key.kind !== 'ok' || key.pubkeyBase64 !== config.hiveId) {
+    throw new Error(`physical Phase I canary owning key unavailable or foreign: ${key.kind}`);
+  }
+  return { hiveId: config.hiveId, sign: (bytes) => deps.sign(config.workspaceId, config.potHomeSlug, bytes) };
+}
+
+export function validatePhaseIRealTargetSnapshot(value: unknown): string[] {
+  const snapshot = value as Partial<PhaseIRealTargetSnapshot> | null;
+  const errors: string[] = [];
+  if (!Number.isFinite(Date.parse(snapshot?.observedAt ?? ''))) errors.push('real-target observedAt must be ISO-8601');
+  if (!OID.test(snapshot?.stagingRef ?? '')) errors.push('real-target stagingRef must be observed');
+  for (const name of ['releaseRef', 'githubMain'] as const) {
+    if (snapshot?.[name] !== null && !OID.test(snapshot?.[name] ?? '')) errors.push(`real-target ${name} must be an OID or null`);
+  }
+  if (!Array.isArray(snapshot?.forkRefs) || !snapshot.forkRefs.every((row) => row && typeof row.ref === 'string' && row.ref.startsWith('refs/') && OID.test(row.sha))) errors.push('real-target forkRefs must contain observed ref/OID pairs');
+  if (!Array.isArray(snapshot?.pullRequests) || !snapshot.pullRequests.every((row) => row && Number.isInteger(row.number) && row.number > 0 && typeof row.headRef === 'string' && row.headRef.length > 0)) errors.push('real-target pullRequests must contain observed PR numbers and head refs');
+  return errors;
+}
+
 export type PhaseITargetSnapshot = {
   /** Protected targets: a refused attempt must leave every one unchanged. */
   protected: {
@@ -203,6 +242,8 @@ export type PhysicalPhaseIAttempt = {
   attemptPid: number;
   hiveId: string;
   repoKey: string;
+  /** Read-only observation retained for assembling the real canary target. */
+  realTargetSnapshot?: PhaseIRealTargetSnapshot;
   advisory: {
     provenance: 'drill-supplied-roster-inputs';
     rosterEpoch: number;
@@ -618,8 +659,8 @@ async function exerciseEffect(
   const t = ctx.targets;
   const pushArgs: string[][] = [];
   let forkPushed = false;
-  const runGit: RunGit = async (args, cwd) => {
-    const result = await ctx.runGit(args, cwd);
+  const runGit: RunGit = async (args, cwd, opts) => {
+    const result = await ctx.runGit(args, cwd, opts);
     if (args.includes('push') && !args.includes('--dry-run')) {
       pushArgs.push([...args]);
       if (effect === 'fork-pr' && result.code === 0 && !forkPushed && hooks.afterForkPush) {
@@ -761,6 +802,7 @@ export async function attemptPhysicalPhaseI(input: {
    * (with `hiveId` = its real hive key). Absent = the run-bound drill key.
    */
   repoKey?: string;
+  realTargetSnapshot?: PhaseIRealTargetSnapshot;
 }, deps: PhaseIAttemptDeps): Promise<PhysicalPhaseIAttempt> {
   if (!(PHASE_I_STEPS as readonly string[]).includes(input.step)) throw new Error(`physical Phase I step is invalid: ${input.step}`);
   if (input.host !== 'tower' && input.host !== 'vm') throw new Error(`physical Phase I host is invalid: ${input.host}`);
@@ -776,6 +818,10 @@ export async function attemptPhysicalPhaseI(input: {
     throw new Error('physical Phase I canary repoKey must be the canary hive\'s real repo_key, not the run-bound drill key');
   }
   const repoKey = input.repoKey ?? phaseIRepoKey(input.runId);
+  if (input.realTargetSnapshot !== undefined) {
+    const errors = validatePhaseIRealTargetSnapshot(input.realTargetSnapshot);
+    if (!input.repoKey || errors.length) throw new Error(`physical Phase I real-target snapshot requires a real repoKey and complete observation: ${errors.join('; ')}`);
+  }
   const targets = await ensureTargets(input.dir, input.runId, input.deviceKey, runGit);
   const captured = input.vmLive?.capturedOwnerProof ?? null;
   let capturedOwnerProof: PhysicalPhaseIAttempt['capturedOwnerProof'] = null;
@@ -846,6 +892,7 @@ export async function attemptPhysicalPhaseI(input: {
     attemptPid: process.pid,
     hiveId: input.hiveId,
     repoKey,
+    ...(input.realTargetSnapshot ? { realTargetSnapshot: structuredClone(input.realTargetSnapshot) } : {}),
     advisory: {
       provenance: 'drill-supplied-roster-inputs',
       rosterEpoch: election.rosterEpoch,

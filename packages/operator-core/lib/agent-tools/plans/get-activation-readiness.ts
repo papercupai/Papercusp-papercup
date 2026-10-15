@@ -1,3 +1,8 @@
+import { getBuildInfo } from '../../build-info';
+import { recordExpertiseRoutingInvocation } from '../../endpoint-route/telemetry';
+import { CONSULT_DEFAULT_POLICY } from '../../consult/selection-policies';
+import { previewProductShaping } from './product-shaping';
+
 /**
  * Side-effect-free activation-readiness consult preview.
  *
@@ -9,13 +14,13 @@
  */
 import type { PlanStartConsultOutcome } from '../../consult/plan-start-consult';
 
-export type PlanActivationConsultPreview =
+export type PlanActivationConsultPreview = (
   | PlanStartConsultOutcome
   | {
       outcome: 'unavailable';
       error: 'consult_preview_unavailable';
       message: string;
-    };
+    }) & { productShaping?: ReturnType<typeof previewProductShaping> };
 
 export async function previewPlanStartConsult(params: {
   workspaceId: string;
@@ -43,11 +48,14 @@ export async function previewPlanStartConsult(params: {
     const embeddingProfile = resolved
       ? resolveProseProfileSelection(resolved.mode, resolved.profile)
       : null;
-    return await consult.planStartConsult(
+    const outcome = await consult.planStartConsult(
       params,
       {
         route: (routeParams) =>
-          routeConsult(routeParams, {
+          routeConsult({ ...routeParams, telemetry: {
+            caller: 'plans:activation-preview', policy: CONSULT_DEFAULT_POLICY, buildSha: getBuildInfo().sha,
+          } }, {
+            recordTelemetry: receipt => recordExpertiseRoutingInvocation(receipt, getOrgPg().sql),
             getSql: () => getOrgPg().sql,
             embed: resolved?.embed ?? null,
             embeddingProfile,
@@ -63,6 +71,7 @@ export async function previewPlanStartConsult(params: {
         getExcerpts: (refs) => consult.fetchTurnExcerpts(getOrgPg().sql, params.workspaceId, refs),
       },
     );
+    return { ...outcome, productShaping: previewProductShaping(params.planContent) };
   } catch (error) {
     // A preview is advisory. Preserve the distinction between an honest empty
     // route and an instrument failure, while never making activation depend on
@@ -71,6 +80,7 @@ export async function previewPlanStartConsult(params: {
       outcome: 'unavailable',
       error: 'consult_preview_unavailable',
       message: `Consult candidate preview could not be evaluated (${error instanceof Error ? error.message : String(error)}).`,
+      productShaping: previewProductShaping(params.planContent),
     };
   }
 }

@@ -109,6 +109,23 @@ describe('allocateProportional', () => {
 });
 
 describe('SQL', () => {
+  it('includes one/two-term queries and freezes census and draw to the same window', () => {
+    const window = { since: '2026-10-01T00:00:00Z', until: '2026-10-09T00:00:00Z', maxTerms: 2 };
+    expect(MIN_QUERY_TERMS).toBe(1);
+    for (const sql of [queryCensusSql('ws', SEARCH_STACK_TOOLS, 1, window), querySampleSql('ws', 'docs:search', 5, 's', 1, window)]) {
+      expect(sql).toContain('>= 1');
+      expect(sql).toContain('<= 2');
+      expect(sql).toContain("created_at >= '2026-10-01T00:00:00.000Z'");
+      expect(sql).toContain("created_at < '2026-10-09T00:00:00.000Z'");
+      expect(sql).toContain('"usageCount"');
+    }
+  });
+
+  it('rejects malformed or reversed windows before building SQL', () => {
+    const sample = (since: string, until: string) => querySampleSql('ws', 'docs:search', 5, 's', 1, { since, until });
+    expect(() => sample("2026-10-01'; DROP TABLE x--", '2026-10-09T00:00:00Z')).toThrow(/UTC ISO/);
+    expect(() => sample('2026-10-09T00:00:00Z', '2026-10-01T00:00:00Z')).toThrow(/precede/);
+  });
   it('reads the query with the DIRECT accessor, never the nested path', () => {
     // The nested `args_json->'tool_input'->'args'->>'query'` returns 0 rows on
     // this table — an empty result that reads as "no telemetry" rather than as

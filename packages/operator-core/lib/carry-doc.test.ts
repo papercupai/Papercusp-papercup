@@ -229,6 +229,98 @@ describe('buildCarryDoc (seam-driven assembly)', () => {
     expect(judgeDoc.identity.role).toBe('judge');
   });
 
+  it('reuses the brief-resolved workspace for every follow-on read when the caller omits it (EI-25752506657737963)', async () => {
+    const seen: Record<string, string[]> = {
+      recovery: [], witness: [], modes: [], planItems: [], asks: [], backgroundTasks: [],
+    };
+    const build = async (workspaceId?: string) => {
+      const resolvedWorkspace = workspaceId ?? 'ws-resolved-by-brief';
+      return buildCarryDoc('su-1', {
+        ...(workspaceId ? { workspaceId } : {}),
+        harness: 'papercusp',
+        buildCarryBriefFn: async () => brief({ workspaceId: resolvedWorkspace }),
+        buildAutomaticRecoveryFn: async (_ownerId, recoveryWorkspace) => {
+          seen.recovery.push(recoveryWorkspace);
+          const recovery = automaticRecovery();
+          if (recovery.recovery.control) {
+            recovery.recovery.control.state.scope.workspace = recoveryWorkspace;
+          }
+          return recovery;
+        },
+        // Carry assembly can re-arm a control witness. Keep this preview-like test read-only.
+        armControlWitnessFn: async (_ownerId, witnessWorkspace) => {
+          seen.witness.push(witnessWorkspace);
+          return null;
+        },
+        getModesFn: async (modeWorkspace) => {
+          seen.modes.push(modeWorkspace);
+          return [];
+        },
+        getPlanItemsFn: async (_ownerId, planWorkspace) => {
+          seen.planItems.push(planWorkspace);
+          return [];
+        },
+        getAsksFn: async (_ownerId, askWorkspace) => {
+          seen.asks.push(askWorkspace);
+          return [];
+        },
+        getBackgroundTasksFn: async (_ownerId, taskWorkspace) => {
+          seen.backgroundTasks.push(taskWorkspace);
+          return [];
+        },
+        getTailFn: async () => [],
+      });
+    };
+
+    const inferred = await build();
+    expect(inferred.identity.workspaceId).toBe('ws-resolved-by-brief');
+    expect(inferred.automaticRecovery?.marker.complete).toBe(true);
+    expect(seen).toEqual({
+      recovery: ['ws-resolved-by-brief'],
+      witness: ['ws-resolved-by-brief'],
+      modes: ['ws-resolved-by-brief'],
+      planItems: ['ws-resolved-by-brief'],
+      asks: ['ws-resolved-by-brief'],
+      backgroundTasks: ['ws-resolved-by-brief'],
+    });
+
+    // An explicit caller scope remains authoritative and is passed through every leg.
+    const explicit = await build('ws-explicit');
+    expect(explicit.identity.workspaceId).toBe('ws-explicit');
+    expect(seen.recovery.at(-1)).toBe('ws-explicit');
+    expect(seen.modes.at(-1)).toBe('ws-explicit');
+    expect(seen.planItems.at(-1)).toBe('ws-explicit');
+    expect(seen.asks.at(-1)).toBe('ws-explicit');
+    expect(seen.backgroundTasks.at(-1)).toBe('ws-explicit');
+  });
+
+  it('downgrades a complete recovery marker from another workspace and does not re-arm its witness', async () => {
+    const witness = vi.fn(async () => null);
+    const recovery = automaticRecovery();
+    if (!recovery.recovery.control) throw new Error('fixture control anchor is required');
+    recovery.recovery.control.state.scope.workspace = 'ws-other';
+
+    const doc = await buildCarryDoc('su-1', {
+      ...base,
+      workspaceId: 'ws-1',
+      buildCarryBriefFn: async () => brief({ workspaceId: 'ws-1' }),
+      buildAutomaticRecoveryFn: async () => recovery,
+      armControlWitnessFn: witness,
+    });
+
+    expect(doc.identity.workspaceId).toBe('ws-1');
+    expect(doc.automaticRecovery?.marker.complete).toBe(false);
+    expect(doc.automaticRecovery?.marker).toMatchObject({ controlGeneration: null, controlStateHash: null });
+    expect(doc.automaticRecovery?.recovery).toMatchObject({
+      loop: null,
+      control: null,
+      planAuthority: null,
+      coverage: { control: false, planAuthority: false },
+    });
+    expect(doc.automaticRecovery?.recovery.coverage.control).toBe(false);
+    expect(witness).not.toHaveBeenCalled();
+  });
+
   // WI-10002058. Every caller of buildCarryDoc is a context-wipe producer, and the
   // ⟦CTRL:…⟧ block that would correct a stale marker only fires when the control
   // generation exceeds an owner-scoped, advance-only delivery watermark. The wipe
@@ -1170,6 +1262,73 @@ describe('P-005-request-settlement-regressions: deriveContinuation (pure, P-010)
       { requestId: 'request-1', text: 'first', ts: null },
     ]);
     expect(gateOpenOwnerQuestion(cont).crossesOpenOwnerMessage).toBe(true);
+  });
+
+  // EI-25227743201307257 — a dialog answer acted on before the agent raised the
+  // next dialog never meets a delivered response of its own id.
+  describe('dialog-answer chains (parentRequestId)', () => {
+    const chained = (text: string, requestId: string, parentRequestId: string): CarryDocTailTurn => ({
+      ...ownerDialog(text, requestId),
+      parentRequestId,
+    });
+    const chainTail = (final: CarryDocTailTurn): CarryDocTailTurn[] => [
+      ownerTurn('start the session', 'request-1'),
+      model('asking', 'request-1'),
+      chained('re-plugged', 'dialog-1', 'request-1'),
+      model('acting on it, asking again', 'dialog-1'),
+      chained('not at the machine', 'dialog-2', 'dialog-1'),
+      final,
+    ];
+
+    it('a delivered answer to the last dialog settles every link of the chain', () => {
+      const cont = deriveContinuation(chainTail(model('understood', 'dialog-2', 'delivered')), true);
+      expect(cont.answered).toBe(true);
+      expect(cont.pendingOwnerMessages).toBeUndefined();
+      expect(gateOpenOwnerQuestion(cont).crossesOpenOwnerMessage).toBe(false);
+    });
+
+    it('the in-flight final turn settles the chain the same way', () => {
+      const tail = chainTail(model('flushing, then compacting', 'dialog-2', 'progress'));
+      const cont = deriveContinuation(tail, true, true, { finalTurnInFlight: true });
+      expect(cont.answered).toBe(true);
+      expect(cont.pendingOwnerMessages).toBeUndefined();
+    });
+
+    it('an undelivered final answer leaves every link open', () => {
+      const cont = deriveContinuation(chainTail(model('noted', 'dialog-2', 'progress')), true);
+      expect(cont.answered).toBe(false);
+      expect(cont.pendingOwnerMessages?.map((r) => r.text)).toEqual(['start the session', 're-plugged', 'not at the machine']);
+    });
+
+    it('without the structural link nothing chains (unknown is never guessed from position)', () => {
+      const tail = [
+        ownerTurn('start the session', 'request-1'),
+        model('asking', 'request-1'),
+        ownerDialog('re-plugged', 'dialog-1'),
+        model('asking again', 'dialog-1'),
+        ownerDialog('not at the machine', 'dialog-2'),
+        model('understood', 'dialog-2', 'delivered'),
+      ];
+      expect(deriveContinuation(tail, true).pendingOwnerMessages?.map((r) => r.text)).toEqual(['start the session', 're-plugged']);
+    });
+
+    it('an owner-TYPED message never chains, even when it carries a parent link', () => {
+      const cont = deriveContinuation([
+        ownerTurn('first request', 'request-1'),
+        model('working', 'request-1'),
+        { ...ownerTurn('separate request', 'request-2'), parentRequestId: 'request-1' },
+        model('answered the separate one', 'request-2', 'delivered'),
+      ], true);
+      expect(cont.pendingOwnerMessages?.map((r) => r.text)).toEqual(['first request']);
+    });
+
+    it('supersession of the last dialog does not cascade to its ancestors', () => {
+      const cont = deriveContinuation([
+        ...chainTail(model('noted', 'dialog-2', 'progress')),
+        lifecycle('dialog-2', 'superseded'),
+      ], true);
+      expect(cont.pendingOwnerMessages?.map((r) => r.text)).toEqual(['start the session', 're-plugged']);
+    });
   });
 
   it('accepts typed cancellation and supersession but never scans prose for those words', () => {

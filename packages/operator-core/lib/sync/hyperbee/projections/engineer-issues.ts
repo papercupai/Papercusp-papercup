@@ -37,10 +37,13 @@ import type { PendingMembershipContent } from '../pending-membership-content';
 import { composeEngineerIssueKey, parseEngineerIssueKey } from '../feature-issue-op-keys';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../../work-item-dispatch-states';
 import {
+  INTAKE_PROMOTION_IDENTITY_INDEX,
   KEYLESS_TITLE_IDENTITY_INDEX,
   RESOURCE_GOVERNOR_IDENTITY_INDEX,
   WATCHDOG_IDENTITY_INDEX,
 } from './work-items-replay-identity-indexes';
+import { isDistinctEntityCollision } from './distinct-entity-collision';
+import { bumpFederationRefusedOp } from '../federation-refused-op-counter';
 
 /** Wire-shape of an engineer_issues row in Hyperbee — the federated subset plus the
  *  capture-stamped `harness_slug` (the demux key). Defensive on every field. */
@@ -222,30 +225,10 @@ export function isEngineerIssueRow(input: unknown): input is EngineerIssueRow {
 // on the P-302 rig it refused ops for 10,070 distinct issue_ids, so no issue update
 // could ever land on a peer that already held the row. A missing `created_ts` (every
 // pre-688 op) now fails OPEN rather than being judged against an invented value.
-const COLLISION_CREATED_AT_TOLERANCE_MS = 5_000;
+// The check itself (isDistinctEntityCollision + its 5s tolerance) lives in
+// ./distinct-entity-collision.ts, shared with the harness-features projection
+// (scope-unique-identifiers-2026-07-26 P-015).
 const FEDERATED_TERMINAL_STATES = [...ANY_FAMILY_TERMINAL_STATES];
-
-/**
- * Does an incoming op carrying `incomingCreatedTs` name a DIFFERENT issue than the stored
- * row created at `existingCreatedTs`? The caller reads the stored row
- * ({@link distinctEntityCollisions}) and passes an op only when it carries a creation instant.
- *
- * WI-6327: an op WITHOUT an authoritative creation instant fails OPEN and is never judged.
- * Every op appended before mig 688 has a `created_at` fabricated at drain time (the capture
- * trigger never emitted one) which is indistinguishable from a genuine value — judging
- * those dropped 10,070 distinct ids on the P-302 rig. Only a carried `created_ts` is
- * trustworthy enough to refuse a write over.
- */
-function isDistinctEntityCollision(
-  incomingCreatedTs: number,
-  existingCreatedTs: number,
-): { collided: boolean; existingCreatedAtIso?: string } {
-  const incomingMs = Number(incomingCreatedTs);
-  const existingMs = Number(existingCreatedTs);
-  if (!Number.isFinite(incomingMs) || !Number.isFinite(existingMs)) return { collided: false };
-  if (Math.abs(incomingMs - existingMs) <= COLLISION_CREATED_AT_TOLERANCE_MS) return { collided: false };
-  return { collided: true, existingCreatedAtIso: new Date(existingMs).toISOString() };
-}
 
 /**
  * Migration 826 retired a bounded set of same-ID source rows by either merging
@@ -477,6 +460,28 @@ async function resolveIdentityConflict(
   incomingIssueId: string,
   payload: unknown,
 ): Promise<string | null> {
+  if (isNamedIdentityConflict(error, INTAKE_PROMOTION_IDENTITY_INDEX)) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+    const receipt = (payload as Record<string, unknown>).intakePromotion;
+    if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) return null;
+    const key = (receipt as Record<string, unknown>).key;
+    if (typeof key !== 'string' || !key.startsWith('intake-exec:') || key.trim() !== key) return null;
+    // Migration 1298 has no terminal or harness predicate: settled winners still
+    // fence duplicates. Stay inside the projection's workspace and exclude its
+    // exact physical row; never acknowledge an unmeasured/foreign winner.
+    const rows = await sql<{ feature_id: string }[]>`
+      SELECT feature_id FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId}
+         AND NOT (feature_id = ${incomingIssueId} AND harness_slug = ${harnessSlug})
+         AND payload ? 'intakePromotion'
+         AND payload -> 'intakePromotion' ->> 'key' = ${key}
+       ORDER BY feature_id LIMIT 2`.catch(() => null);
+    if (!rows || rows.length !== 1) return null;
+    return (
+      `[engineer-issues projection] coalesced duplicate intake promotion issue_id=${incomingIssueId} ` +
+      `onto existing winner=${rows[0]!.feature_id} (key=${key}); remote PUT treated as no-op`
+    );
+  }
   if (isNamedIdentityConflict(error, WATCHDOG_IDENTITY_INDEX)) {
     const identity = watchdogIdentityFromPayload(payload);
     if (!identity) return null;
@@ -526,6 +531,7 @@ async function resolveIdentityConflict(
 
 /** Index names resolveIdentityConflict can coalesce; the replay-policy guard compares this set. */
 export const COALESCED_REPLAY_IDENTITY_INDEXES: readonly string[] = [
+  INTAKE_PROMOTION_IDENTITY_INDEX,
   WATCHDOG_IDENTITY_INDEX,
   KEYLESS_TITLE_IDENTITY_INDEX,
   RESOURCE_GOVERNOR_IDENTITY_INDEX,
@@ -629,6 +635,10 @@ interface IssueUpsertInput {
  */
 interface IssueWrite {
   input: IssueUpsertInput;
+  /** Authenticated receiver attribution, never supplied by the wire document. */
+  receiverAdmitted: boolean;
+  /** Keep receiver attribution through snapshot grouping and resident-row landing. */
+  sourceHive: string | null;
   /** WI-6327: the wire's creation instant, the only one the EI-13285 guard trusts. Null fails open. */
   createdTs: number | null;
   /** The wire payload as received, which the identity-conflict coalesce reads. */
@@ -700,6 +710,9 @@ function issueWrite(
     },
     createdTs: row.created_ts ?? null,
     payload: row.payload,
+    sourceHive: provenance.sourceLogKeyHex ?? provenance.authorPubkey ?? null,
+    receiverAdmitted: provenance.origin === 'remote' && !!provenance.authorPubkey
+      && provenance.sourceLogKeyHex === provenance.authorPubkey,
   };
 }
 
@@ -800,7 +813,7 @@ async function writeToPg(
  * whole set. It must run BEFORE the upsert, which would otherwise blindly clobber a
  * distinct local record sharing this issue_id.
  */
-async function distinctEntityCollisions(sql: postgres.Sql, writes: readonly IssueWrite[]): Promise<Set<IssueWrite>> {
+async function distinctEntityCollisions(sql: postgres.Sql, harnessSlug: string, writes: readonly IssueWrite[]): Promise<Set<IssueWrite>> {
   const refused = new Set<IssueWrite>();
   // WI-6327: a write without a carried creation instant fails open, unread.
   const judged = writes.filter((w): w is IssueWrite & { createdTs: number } => w.createdTs !== null);
@@ -824,14 +837,87 @@ async function distinctEntityCollisions(sql: postgres.Sql, writes: readonly Issu
         `These are two distinct issues that were allocated the same id; the incoming op is DROPPED ` +
         `(not applied) to avoid destroying the local record. The authoring peer's own copy is unaffected.`,
     );
+    if (w.input.origin === 'remote') await bumpFederationRefusedOp({
+      workspaceId: w.input.workspace_id,
+      harnessSlug,
+      sourceHive: w.sourceHive,
+      tableTag: 'engineer-issues',
+      reason: 'distinct-entity-collision',
+    }, sql, projectionStatementFailed);
     refused.add(w);
   }
   return refused;
 }
 
+const ISSUE_FAMILY_KINDS: ReadonlySet<string> = new Set(['bug', 'change', 'task']);
+
+/**
+ * scope-unique-identifiers-2026-07-26 P-009 (D-004 writer #1): a work-item id names ONE row
+ * per workspace. A remote op whose scope-derived harness differs from where this workspace
+ * already keeps the id (typically the `operator:<ws>` fallback for an issue that lives under a
+ * concrete harness here) is applied to that RESIDENT row in place instead of inserting a
+ * second physical row. The resident row keeps its harness, so the `operator:<ws>` fallback
+ * never overwrites a concrete harness. A write with no resident row, or whose own harness
+ * already holds the id, passes through unchanged.
+ *
+ * Refused (logged, not applied) rather than guessed at: a resident that is not an
+ * issue-family row, and an id already held by two or more OTHER harnesses (pre-P-011 twin
+ * residue). One index-served read for the whole set (PG 18 skip scan on work_items_pkey).
+ * The landed write then goes through the EI-13285 distinct-entity check against the
+ * resident row, so a different issue that merely shares the id is still refused.
+ */
+async function landOnResidentRows(
+  sql: postgres.Sql,
+  workspaceId: string,
+  harnessSlug: string,
+  writes: readonly IssueWrite[],
+): Promise<IssueWrite[]> {
+  if (writes.length === 0) return [];
+  const ids = [...new Set(writes.map((w) => w.input.feature_id))];
+  const rows = await sql<{ feature_id: string; harness_slug: string; item_kind: string }[]>`
+    SELECT feature_id, harness_slug, item_kind
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${workspaceId}
+       AND feature_id = ANY(${ids}::text[])`;
+  const residents = new Map<string, { harness_slug: string; item_kind: string }[]>();
+  for (const r of rows) {
+    const list = residents.get(r.feature_id);
+    if (list) list.push(r);
+    else residents.set(r.feature_id, [r]);
+  }
+  const landed: IssueWrite[] = [];
+  for (const w of writes) {
+    const here = residents.get(w.input.feature_id) ?? [];
+    if (here.length === 0 || here.some((r) => r.harness_slug === w.input.harness_slug)) {
+      landed.push(w);
+      continue;
+    }
+    const resident = here.length === 1 ? here[0] : null;
+    if (!resident || !ISSUE_FAMILY_KINDS.has(resident.item_kind)) {
+      console.warn(
+        `[engineer-issues projection] P-009 resident-row refusal: issue_id=${w.input.feature_id} ` +
+          `(scope harness_slug=${w.input.harness_slug}) is already held in workspace ${workspaceId} by ` +
+          `${here.map((r) => `${r.harness_slug}[${r.item_kind}]`).join(', ')}; refusing the op instead of minting a twin`,
+      );
+      if (w.input.origin === 'remote') await bumpFederationRefusedOp({
+        workspaceId,
+        harnessSlug,
+        sourceHive: w.sourceHive,
+        tableTag: 'engineer-issues',
+        reason: 'resident-row-collision',
+      }, sql, projectionStatementFailed);
+      continue;
+    }
+    landed.push({ ...w, input: { ...w.input, harness_slug: resident.harness_slug } });
+  }
+  return landed;
+}
+
 /** One issue write on its own: the per-op path, and what a failed group write replays. */
-async function writeIssue(sql: postgres.Sql, opts: EngineerIssuesProjectionOpts, write: IssueWrite): Promise<void | false> {
-  if ((await distinctEntityCollisions(sql, [write])).size > 0) return false;
+async function writeIssue(sql: postgres.Sql, opts: EngineerIssuesProjectionOpts, incoming: IssueWrite): Promise<void | false> {
+  const [write] = await landOnResidentRows(sql, opts.workspaceId, opts.harnessSlug, [incoming]);
+  if (!write) return false;
+  if ((await distinctEntityCollisions(sql, opts.harnessSlug, [write])).size > 0) return false;
   try {
     await upsertIssues(sql, [write]);
   } catch (error) {
@@ -880,8 +966,11 @@ async function writeIssue(sql: postgres.Sql, opts: EngineerIssuesProjectionOpts,
  * check sees what it would have seen alone. Any failure (an identity-index 23505 among
  * them) rolls the group back and the lane replays each write through {@link writeIssue}.
  */
-async function writeIssueGroup(sql: postgres.Sql, writes: readonly IssueWrite[]): Promise<void> {
-  const refused = await distinctEntityCollisions(sql, writes);
+async function writeIssueGroup(sql: postgres.Sql, opts: EngineerIssuesProjectionOpts, incoming: readonly IssueWrite[]): Promise<void> {
+  // P-009: two writes that land on the same resident row make the one-statement upsert
+  // conflict with itself; that fails the group, which then replays each write alone.
+  const writes = await landOnResidentRows(sql, opts.workspaceId, opts.harnessSlug, incoming);
+  const refused = await distinctEntityCollisions(sql, opts.harnessSlug, writes);
   const kept = refused.size === 0 ? writes : writes.filter((w) => !refused.has(w));
   if (kept.length > 0) await upsertIssues(sql, kept);
 }
@@ -890,7 +979,7 @@ function issueGroupWriter(opts: EngineerIssuesProjectionOpts): ProjectionGroupWr
   return {
     name: 'engineer-issues',
     rowOf: (w) => `${w.input.harness_slug}\u0000${w.input.feature_id}`,
-    writeMany: writeIssueGroup,
+    writeMany: (sql, writes) => writeIssueGroup(sql, opts, writes),
     writeOne: async (w) => writeIssue(await projectionSql(opts.sql ?? getOrgPg().sql), opts, w),
   };
 }
@@ -902,6 +991,7 @@ function issueGroupWriter(opts: EngineerIssuesProjectionOpts): ProjectionGroupWr
  */
 async function upsertIssues(sql: postgres.Sql, writes: readonly IssueWrite[]): Promise<void> {
   const rowsJson = JSON.stringify(writes.map((w) => w.input));
+  const receivers = writes.filter((w) => w.receiverAdmitted);
   await sql`
       INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, item_kind, title, summary, status,
@@ -940,9 +1030,26 @@ async function upsertIssues(sql: postgres.Sql, writes: readonly IssueWrite[]): P
       status        = EXCLUDED.status,
       taken_by      = EXCLUDED.taken_by,
       taken_at      = EXCLUDED.taken_at,
-      payload       = EXCLUDED.payload,
+      -- Learning provenance is receiver-local, like claim ordering. The wire's
+      -- sparse _ei envelope omits it; replacing payload must not turn a locally
+      -- marked drill/replay/shadow into the compat view's organic default.
+      payload       = CASE
+        WHEN work_items.payload #>> '{_ei,signal_origin}' IS NOT NULL THEN
+          jsonb_set(EXCLUDED.payload, '{_ei,signal_origin}',
+                    to_jsonb(work_items.payload #>> '{_ei,signal_origin}'))
+        ELSE EXCLUDED.payload
+      END,
       author_pubkey = EXCLUDED.author_pubkey,
-      origin        = EXCLUDED.origin,
+      -- WI-6554700010008773 / forward draft 1467: stamp the issue-only token
+      -- here, after LWW/reopen admission. INSERT and EXCLUDED retain ordinary
+      -- remote provenance so the reopen predicate below cannot be bypassed.
+      -- The paired identities also preserve attribution in mixed snapshot groups.
+      origin        = CASE WHEN EXCLUDED.origin = 'remote' AND EXISTS (
+        SELECT 1 FROM unnest(${receivers.map((w) => w.input.harness_slug)}::text[],
+                             ${receivers.map((w) => w.input.feature_id)}::text[]) AS receiver(harness_slug, feature_id)
+        WHERE receiver.harness_slug = EXCLUDED.harness_slug
+          AND receiver.feature_id = EXCLUDED.feature_id
+      ) THEN 'remote:engineer-issues' ELSE EXCLUDED.origin END,
       fed_ts        = EXCLUDED.fed_ts,
       fed_hlc       = EXCLUDED.fed_hlc,
       updated_ts    = EXCLUDED.updated_ts,
@@ -1125,10 +1232,26 @@ async function deleteFromPg(
   // the authorization boundary fail-closed.
   if (!provenance) return;
   const authorPubkey = provenance.authorPubkey;
+  // P-009: a qualified put whose id was resident under another harness landed on that row
+  // (landOnResidentRows), so its tombstone must follow it there. Only when nothing sits at
+  // the qualified key itself, and still author-guarded below. A bare legacy key never
+  // widens: its physical row depends on the op value, which a tombstone does not carry.
+  const followResident = parsed !== null;
   await sql`
     DELETE FROM harness_shared.work_items
     WHERE workspace_id = ${opts.workspaceId}
-      AND harness_slug = ${storageHarnessSlug}
+      AND (
+        harness_slug = ${storageHarnessSlug}
+        OR (
+          ${followResident}::boolean
+          AND NOT EXISTS (
+            SELECT 1 FROM harness_shared.work_items held
+             WHERE held.workspace_id = ${opts.workspaceId}
+               AND held.harness_slug = ${storageHarnessSlug}
+               AND held.feature_id = ${issueId}
+          )
+        )
+      )
       AND feature_id = ${issueId}
       AND item_kind IN ('bug', 'change', 'task')
       -- Remote tombstones may delete only the row materialised from that same

@@ -1,0 +1,170 @@
+{
+  "schemaVersion": 1,
+  "workItemId": "WI-10007521",
+  "planSlug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "scope": "Correction of author meta-review evidence only; independent audit and implementation acceptance remain required.",
+  "supersededScorecard": "EI-25774297254898354",
+  "independentAudit": "EI-25775010850077020",
+  "subjectRubricRevision": 9,
+  "subjectCriteriaHash": "b0211d5c2bf482567ab58562547d30e6004aafeec01c6493a7be9346a2182ba4",
+  "corrections": {
+    "r4": {
+      "commitSha": "a27723ae80ab407d49ef357107d432708469f7be",
+      "path": "packages/operator-core/lib/agent-tools/consult/get-feedback.interest.test.ts",
+      "positiveSelectors": [
+        "252-254",
+        "267-269"
+      ],
+      "negativeSelector": "260-263",
+      "verifiedHow": "Read the exact immutable file and line numbers; both positive selectors assert projected consult:get_feedback exists."
+    },
+    "r9OriginalCommit": "64e6e8cf1403d218eff6f3a406ab1dd41287e2c6",
+    "r9Population": "Replaced the unprobed serialization-hash claim with the complete immutable original/helper fixture diff and content/file-hash readers. HELD_OUT_SUBJECT_CASES has no diff; only helper metrics change.",
+    "fixtureHashes": {
+      "original": "be1a33dd4851058db156cf1cb67e5aca7daa2237c92a58792ee836f950642686",
+      "helperEdition": "ddc1c6c8a84ef5f206a316f240681ceb52c188dd35a402297dbd7f55431b9585"
+    }
+  },
+  "request": {
+    "rubricRef": "meta-acceptance-rubric",
+    "sourceHive": "papercusp",
+    "targetHive": "papercusp",
+    "subject": {
+      "kind": "rubric",
+      "ref": "acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03"
+    },
+    "title": "Corrected author meta review of revision 9 with runnable immutable evidence",
+    "body": "Corrects EI-25774297254898354 after independent grading-integrity audit EI-25775010850077020 identified three re-runnable-evidence defects: the R4 positive-control selector, a short original commit ID, and an unprobed population-hash assertion. The independent audit re-ran all six meta criteria and upheld their directions; this correction repairs only the evidence. Acceptance rubric revision9/hashb0211d5c2bf482567ab58562547d30e6004aafeec01c6493a7be9346a2182ba4, barSetHash and meaning revision7 are unchanged. Original critique1165890 and label/disjointness posts1165983/1166036 remain historical controls. No implementation/native/R6/shipment verdict. A new independent grade-the-grader audit must settle this card; the failed card and audit remain historical.",
+    "ratings": {
+      "outcomes-not-diff-restatements": {
+        "rating": "pass",
+        "evidence": "Re-run rubrics:get {\"rubricRef\":\"acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03\",\"revision\":9,\"detail\":\"full\"}; expected criteriaHash b0211d5c2bf482567ab58562547d30e6004aafeec01c6493a7be9346a2182ba4, ten keys r-1..r-10, barSetHash e639411e9d5992a3812a25b5057ccc3cc378b6c8ae16e9b60939b7b7c8293f15. Follow a result-door full-detail/scratch cursor rather than grading clipped text. Inspect each criteria[].model/bar (r-1..r-10), not file changes: native kickoff proof; exact isolated expertise; honest request cohorts; no reporting chores/history retention; focused consult guidance; native/usefulness population; exact shipped artifact; attributed shared-router calls; problem-specific precision; durable retry identity. Each describes observable behavior requiring evidence. Revision9 adds only a separately pinned helper edition to r-9.method; it does not assert implementation acceptance."
+      },
+      "traces-to-goal-or-decision": {
+        "rating": "pass",
+        "evidence": "Re-run rubrics:get {\"rubricRef\":\"acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03\",\"revision\":9,\"detail\":\"full\"}; expected criteriaHash b0211d5c2bf482567ab58562547d30e6004aafeec01c6493a7be9346a2182ba4, ten keys r-1..r-10, barSetHash e639411e9d5992a3812a25b5057ccc3cc378b6c8ae16e9b60939b7b7c8293f15. Follow a result-door full-detail/scratch cursor rather than grading clipped text. Re-run plans:get {\"slug\":\"get-feedback-reliability-usefulness-adoption-2026-10-03\",\"harness\":\"papercusp\",\"heading\":\"Goal\",\"includeEnrichments\":false} and plans:get {\"slug\":\"get-feedback-reliability-usefulness-adoption-2026-10-03\",\"harness\":\"papercusp\",\"decisions\":[\"D-001\",\"D-002\",\"D-008\",\"D-009\",\"D-010\",\"D-011\",\"D-012\",\"D-013\",\"D-014\",\"D-015\",\"D-016\",\"D-017\",\"D-018\",\"D-019\",\"D-020\"],\"includeEnrichments\":false}; The earlier audited read observed plan43/contentHash a457dd5094a34b6218862652d436bab6dfc93d6d80f2e43227c299d53c4cada9; the current recovery and decision reads establish plan49/contentHash 05ae18fecc9deeea274b29ba08783a5ed1535550fdac260e995829dd74e5136f. The live reader checks the named Goal/decision content, not equality to the historical plan version. Mapping: R1/R2 Goal/D001/D017/D020 exact-source isolation; R3/R6 Goal/D001 honest delivery/usefulness and preserved capacity/shortfalls; R4/R5 D008/D009 retirement/history and no quotas; R7 D014 exact artifact; R8 D010/D011 telemetry; R9 D010/D012/D013/D016/D018/D019 precision, failed calibration, action contrasts and unmeasured equality; R10 D010/D020 recoverable key and preflight. D002 changes execution route only. D015 adds existing detector bindings. No new owner outcome is inferred from the helper metrics."
+      },
+      "falsifiable-with-evidence": {
+        "rating": "pass",
+        "evidence": "Re-run rubrics:get {\"rubricRef\":\"acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03\",\"revision\":9,\"detail\":\"full\"}; expected criteriaHash b0211d5c2bf482567ab58562547d30e6004aafeec01c6493a7be9346a2182ba4, ten keys r-1..r-10, barSetHash e639411e9d5992a3812a25b5057ccc3cc378b6c8ae16e9b60939b7b7c8293f15. Follow a result-door full-detail/scratch cursor rather than grading clipped text. Inspect criteria[].method/driftMarkers. Criterion-specific falsifiers: R1 negative/unanswered kickoff accepted; R2 source mutation or wrong transcript/answer identity; R3 failed dispatch hidden or attempt denominator substituted; R4 callable retirement reversed/history removed or agenda reporting reintroduced; R5 quota or creation/read advice confusion; R6 omitted failure/cell/requester decision; R7 different deployed blob/unreadable runtime accepted; R8 untagged caller or swallowed thrown/degraded outcome; R9 false friend, omitted case, unavailable score, changed label population or pending real scorer evidence treated healthy; R10 key conflict ignored/duplicate dispatch or missing served request_key. R9 revision9 explicitly keeps missing/fresh-population validation unknown and preserves threshold0.5, precision/recall>=2/3, no-expert0/unavailable0. Detector contents are immutable selectors listed in prefer-structured-check. This is rubric-quality grading, not a claim that these implementation checks currently pass."
+      },
+      "failure-mode-coverage": {
+        "rating": "pass",
+        "evidence": "Re-run rubrics:get {\"rubricRef\":\"acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03\",\"revision\":9,\"detail\":\"full\"}; expected criteriaHash b0211d5c2bf482567ab58562547d30e6004aafeec01c6493a7be9346a2182ba4, ten keys r-1..r-10, barSetHash e639411e9d5992a3812a25b5057ccc3cc378b6c8ae16e9b60939b7b7c8293f15. Follow a result-door full-detail/scratch cursor rather than grading clipped text. Re-run plans:get {\"slug\":\"get-feedback-reliability-usefulness-adoption-2026-10-03\",\"harness\":\"papercusp\",\"heading\":\"Goal\",\"includeEnrichments\":false} and plans:get {\"slug\":\"get-feedback-reliability-usefulness-adoption-2026-10-03\",\"harness\":\"papercusp\",\"decisions\":[\"D-001\",\"D-002\",\"D-008\",\"D-009\",\"D-010\",\"D-011\",\"D-012\",\"D-013\",\"D-014\",\"D-015\",\"D-016\",\"D-017\",\"D-018\",\"D-019\",\"D-020\"],\"includeEnrichments\":false}; The earlier audited read observed plan43/contentHash a457dd5094a34b6218862652d436bab6dfc93d6d80f2e43227c299d53c4cada9; the current recovery and decision reads establish plan49/contentHash 05ae18fecc9deeea274b29ba08783a5ed1535550fdac260e995829dd74e5136f. The live reader checks the named Goal/decision content, not equality to the historical plan version. Inspect all ten method/driftMarkers plus r-6/r-7 replication text: they cover pre-row throws/degraded evidence, account-walled and silent first turns, bounded pickup/cascade recovery, exact live-source preservation, request-vs-attempt partitions, CAS/concurrency/restart/key conflict, historical records/negative-removal positives, no-expert/unavailable/full-population semantics, D013 failed calibration, D018 retained-menu false alternatives, and unreadable or different release artifact. R9 helper edition preserves the frozen labels and original failure; no fresh generalization is claimed. Native delivery and the R6 eight-thread shortfall remain open observations. Re-read outside critique/label controls via conversations:get {\"ids\":[\"thread-post:1165890\",\"thread-post:1165983\",\"thread-post:1166036\"]}; those posts include independent criticism, ten label verdicts and a bounded textual disjointness conclusion."
+      },
+      "non-overlapping": {
+        "rating": "pass",
+        "evidence": "Re-run rubrics:get {\"rubricRef\":\"acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03\",\"revision\":9,\"detail\":\"full\"}; expected criteriaHash b0211d5c2bf482567ab58562547d30e6004aafeec01c6493a7be9346a2182ba4, ten keys r-1..r-10, barSetHash e639411e9d5992a3812a25b5057ccc3cc378b6c8ae16e9b60939b7b7c8293f15. Follow a result-door full-detail/scratch cursor rather than grading clipped text. Pairwise discriminator families, inspect the named model/bar fields: R1 successful parent receipt can coexist with R2 wrong expert source; R2 correct exact source can coexist with R3 incorrect cohort classification; R3 correct cohorts can coexist with R8 missing caller tags; R4 retired reporting/retained history can coexist with R5 stale creation/read guidance; R5 focused guidance can coexist with R6 absent usefulness sample; R6 complete current-build cohort can coexist with R7 wrong final deployed artifact; R8 complete telemetry can coexist with R9 false expertise; R9 precise responder menu can coexist with R10 retry identity conflict/duplicate launch. R1-R5/R8-R10 individual tree guarantees, R6 bounded live matrix/sample, and R7 exact deployed evidence are distinct acceptance observations."
+      },
+      "prefer-structured-check": {
+        "rating": "pass",
+        "evidence": "Re-run rubrics:get {\"rubricRef\":\"acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03\",\"revision\":9,\"detail\":\"full\"}; expected criteriaHash b0211d5c2bf482567ab58562547d30e6004aafeec01c6493a7be9346a2182ba4, ten keys r-1..r-10, barSetHash e639411e9d5992a3812a25b5057ccc3cc378b6c8ae16e9b60939b7b7c8293f15. Follow a result-door full-detail/scratch cursor rather than grading clipped text. Inspect each criteria[].check: tree/test bindings for R1-R5/R8-R10; R6/R7 explicitly use instrumentKey:none with named manual provenance/replication, not fabricated automated instruments. Every bound test path resolves in immutable a27723ae80ab407d49ef357107d432708469f7be (git cat-file -e a27723ae80ab407d49ef357107d432708469f7be:<each check.files path>). Re-run detector reads with git show a27723ae80ab407d49ef357107d432708469f7be:<path> | nl -ba; the following file+line selectors name assertions, not pass counts. R1 apps/operator/lib/psu-pty-host.test.ts:327-366 checks parent-proof replacement, unavailable native proof and symlink refusal; R2 packages/operator-core/lib/consult/consult-dispatch.test.ts:263-313 supported/live-source adapters and :622-675 failed-rank persistence/cleanup; R3 consult/consult-routing-health.test.ts:217 onward partitions explicit intent and terminal outcomes. R4 agent-tools/consult/get-feedback.interest.test.ts:252-254 and :267-269 positively require lookupByMcpName('consult:get_feedback') to be defined; :260-263 negatively forbid reconcile registration/source; :292-299 asserts useful advice plus quota/retired-call guidance. agent-obligation-reader.test.ts:960-971 requires legacy reader not called/agenda not recreated; :144-164 is the same bound file’s surviving goal-agenda positive control. R5 get-feedback.interest.test.ts:273-299 checks creation vs reading, isolated advice and no quotas. R8 consult/relevance-router.test.ts:187-237 derives import aliases/call sites and asserts the positive get-feedback-prod caller and empty attribution gaps; historical baseline/mutant receipts are reproducible with testing:runs {\"testRunIds\":[20939097,20939270],\"latestPerFile\":false}, also corroborated by scorecards:get {\"issueId\":\"EI-25765308504994480\",\"criterionKey\":\"instrument-split\"}; these are historical, not current-runtime proof. R9 consult/subject-evidence.test.ts:8-15 separates positive/no-expert denominators; :18-27 catches irrelevant retained alternatives despite perfect top-choice; :30-37 rejects omitted/duplicate/undeclared population; :40-51 preserves null/invalid/shape failures. subject-evidence.integration.test.ts:96-110 checks actual registry/scorer preflight and :200-219 scores the complete frozen population and asserts unavailable0, precision/recall>=2/3, falseExpertSelections0/empty no-expert selections. Fixture selector a27723ae80ab407d49ef357107d432708469f7be:packages/operator-core/lib/consult/subject-evidence.fixtures.ts (blob efadc3de1d2ff3a2ea17a125e815dab34fff81ec, SHA256 ddc1c6c8a84ef5f206a316f240681ceb52c188dd35a402297dbd7f55431b9585). Original 64e6e8cf1403d218eff6f3a406ab1dd41287e2c6 blob f80f59f1b8dde158cf73a4ea7fb9fb17b6acf47e SHA be1a33dd4851058db156cf1cb67e5aca7daa2237c92a58792ee836f950642686 preserves the independent posts1165983/1166036. Re-run git diff 64e6e8cf1403d218eff6f3a406ab1dd41287e2c6 a27723ae80ab407d49ef357107d432708469f7be -- packages/operator-core/lib/consult/subject-evidence.fixtures.ts. The complete diff changes only evaluateSubjectCases helper metrics and does not modify HELD_OUT_SUBJECT_CASES; read both immutable blobs to check all declared labels and passages against posts1165983/1166036. Re-run git show <each full commit>:packages/operator-core/lib/consult/subject-evidence.fixtures.ts | sha256sum to recover the two file hashes above. These exact reads/diff/hash commands were executed in this correction. The calculated population-serialization hash is not used as evidence on this card. D018 helper-only change is recorded in EI-25773062042831705. R10 agent-tools/consult/get-feedback.interest.test.ts:194-249 checks200/201/empty keys, exact forwarding, durable pending and refusal without route/watch; consult/get-feedback-core.integration.test.ts:1124-1149 checks concurrent identity/CAS/conflict partition; :1151-1229 restart/lease/stale-worker/response-loss controls. All shortened paths above are under packages/operator-core/lib/. This attests the bound detector contents and their falsifiers; it does not claim a new test run, full dynamic source graph, native delivery, R6 completion or shipment."
+      }
+    },
+    "vettingConsult": "conv-muzytplr-0000-12c48f3b23b242a686661be7369d2137",
+    "supersedes": "EI-25774297254898354",
+    "acknowledgeExisting": true,
+    "terminal": true
+  },
+  "receipt": {
+    "status": "recorded",
+    "firstAttempt": {
+      "code": "existing_independent_scorecards",
+      "status": "not-recorded",
+      "existingIndependentScorecardIds": [
+        "EI-25171788938691287"
+      ]
+    },
+    "acknowledgedAttempt": {
+      "acknowledgeExisting": true,
+      "force": false,
+      "status": "outcome_unknown",
+      "traceId": "a5077c53-924d-4b17-b6b3-cceb2386c036",
+      "errorCode": "mcp_proxy_upstream_error",
+      "detail": "read ECONNRESET after connecting"
+    },
+    "authoritativeRecovery": {
+      "tool": "scorecards:list",
+      "args": {
+        "rubricRef": "meta-acceptance-rubric",
+        "subjectRef": "acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03",
+        "since": "2026-10-12T21:59:00Z",
+        "includeSuperseded": true,
+        "limit": 10
+      },
+      "observedAt": "2026-10-12T22:03:19Z",
+      "count": 0,
+      "hasMore": false,
+      "truncatedByLimit": false,
+      "limit": "No matching card was returned by this read. The unknown acknowledged write has not been confirmed recorded or conclusively unrecorded; do not blindly retry."
+    },
+    "frictionRef": "EI-25812774343766342",
+    "independentAuditStatus": "passed-for-correction",
+    "reconciledRecovery": {
+      "scorecardAbsence": {
+        "instrument": "dev:pg_query over harness_shared.engineer_issues",
+        "scope": "papercusp-workspace; exact corrected title or exact meta-rubric and subject; created_at >= 2026-10-12T21:59:00Z",
+        "rowCount": 0,
+        "positiveControl": "EI-25774297254898354 returned with the same rubric and subject",
+        "absenceStatus": "verified: positive-control-passed"
+      },
+      "invocationRecovery": {
+        "instrument": "dev:pg_query over harness_shared.tool_invocations",
+        "scope": "exact e16e0 owner; 21:59-22:10Z; scorecards:emit and tools:invoke naming scorecards:emit",
+        "invocationIds": [37154004, 37154005],
+        "observation": "Only the first unacknowledged refusal and its wrapper were recorded. This log alone does not establish absence of an effect; the separately controlled scorecard read does.",
+        "acknowledgedWrite": "No corresponding invocation returned in the bounded window."
+      },
+      "retryReceipt": {
+        "method": "ptool scorecards:emit using the unchanged request above",
+        "ok": true,
+        "created": true,
+        "issueId": "EI-25814119302252123",
+        "evidenceFingerprint": "9ecc5d36574dd0a4d51cd19b7775e3d5df13d1b924a811324b5c008074de6c82",
+        "completionReceipt": {
+          "status": "recorded",
+          "effectRef": "EI-25814119302252123"
+        }
+      },
+      "readback": {
+        "instrument": "scorecards:get",
+        "issueId": "EI-25814119302252123",
+        "evidenceFingerprint": "9ecc5d36574dd0a4d51cd19b7775e3d5df13d1b924a811324b5c008074de6c82",
+        "gradingAuditState": "pending",
+        "gradingAuditStampedAt": "2026-10-12T22:24:18.866Z",
+        "reservationKey": "grading-audit:EI-25814119302252123",
+        "reservedAt": "2026-10-12T22:24:24.055Z",
+        "scope": "Identity, subject, evidence fingerprint and audit state read back. Criterion index is not a new independent evidence audit."
+      },
+      "limits": [
+        "The interrupted acknowledged attempt remains historical; no invented completion receipt was assigned to it.",
+        "The new card's non-author grading-integrity audit is recorded separately below; the earlier pending readback is preserved as history.",
+        "No native, R6, implementation or shipment acceptance is asserted."
+      ]
+    },
+    "independentAuditReadback": {
+      "instrument": "scorecards:get",
+      "scorecardIssueId": "EI-25814119302252123",
+      "state": "passed",
+      "auditIssueId": "EI-25814715218855994",
+      "auditor": "system:judge/su-cedabe16-522b-4017-a4b3-6a02d9381135",
+      "auditedAt": "2026-10-12T22:33:51.000Z",
+      "criterionRead": "re-runnable-evidence, offset 0, complete=true, totalChars=3848",
+      "auditorLimit": "The auditor re-read rubric, Goal/decisions, posts, historical test receipts and named scorecard/work-item records. Immutable Git blob/diff/hash legs were NOT EXECUTED: the judge lacked capability:git, shell was forbidden, and working-tree substitution was forbidden. The audit method treated this capability denial as distinct from evidence quality and classified the fully specified probes as re-runnable by a Git-capable reader.",
+      "frictionRef": "EI-25814626176602313",
+      "scope": "Stored independent audit verdict and its disclosed execution limit. This readback does not claim a second independent execution of the immutable Git legs."
+    },
+    "rubricVettingReadback": {
+      "instrument": "rubrics:get detail=summary",
+      "rubricRef": "acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03",
+      "currentRevision": 9,
+      "currentCriteriaHash": "b0211d5c2bf482567ab58562547d30e6004aafeec01c6493a7be9346a2182ba4",
+      "barSetHash": "e639411e9d5992a3812a25b5057ccc3cc378b6c8ae16e9b60939b7b7c8293f15",
+      "satisfied": true,
+      "state": "vetted",
+      "reason": "current",
+      "attestationIssueId": "EI-25814119302252123",
+      "scope": "Current rubric vetting is settled; implementation, native matrix, original R6 and final R7 acceptance are separate and remain open."
+    }
+  }
+}

@@ -64,8 +64,19 @@ function mockSql(options: { failImpliedMode?: string } = {}) {
     const text = (first as string[]).join('¤').replace(/\s+/g, ' ');
     if (text.includes('pg_advisory_xact_lock')) return Promise.resolve([]);
     if (text.includes('INSERT INTO harness_shared.agent_mode_changes')) {
-      const [ws, owner, axis, oldMode, newMode, reason, setBy, ownerDirected] = vals;
-      changes.push({ ws, owner, axis, oldMode, newMode, reason, setBy, ownerDirected });
+      const [ws, owner, axis, oldMode, newMode, reason, setBy, ownerDirected, subject, goalLeaseEpoch] = vals;
+      changes.push({
+        ws,
+        owner,
+        axis,
+        oldMode,
+        newMode,
+        reason,
+        setBy,
+        ownerDirected,
+        subject: subject ?? null,
+        goalLeaseEpoch: goalLeaseEpoch ?? null,
+      });
       return Promise.resolve([]);
     }
     if (text.includes('INSERT INTO harness_shared.agent_modes')) {
@@ -127,12 +138,16 @@ function mockSql(options: { failImpliedMode?: string } = {}) {
                 a.owner_id.localeCompare(b.owner_id),
             )[0] ?? null
         : null;
+      // WI-10005240: live rows AND election history, as the real next_epoch CTE.
       const nextEpoch = isGoalElection
         ? Math.max(
             0,
             ...[...modes.values()]
             .filter((r) => r.workspace_id === wsText && r.mode === 'goal' && r.subject === subject)
               .map((r) => r.goal_lease_epoch ?? 0),
+            ...changes
+              .filter((c) => c.ws === wsText && c.subject === subject && c.goalLeaseEpoch != null)
+              .map((c) => Number(c.goalLeaseEpoch)),
           ) + 1
         : null;
       const authorized =
@@ -784,6 +799,14 @@ describe('implication cascade (D-003)', () => {
     expect(reasserted.goalElection).toBeUndefined();
     const predecessor = (await getModes(WS, ME, m.sql)).find((row) => row.mode === 'goal')!;
     expect(predecessor.goalLeaseEpoch).toBe(1);
+  });
+
+  it('WI-10005240: records the minted epoch on the election audit row (the durable lease high-water)', async () => {
+    await enterGoal();
+    const electionAudit = m.changes.find((c) => c.newMode === 'goal' && c.owner === ME);
+    expect(electionAudit).toMatchObject({ subject: 'g-1', goalLeaseEpoch: 1 });
+    // The implied AUTO/IDEATE rows elect nothing, so they carry no epoch.
+    expect(m.changes.filter((c) => c.goalLeaseEpoch != null)).toHaveLength(1);
   });
 
   it('recovery CAS refuses a stale elected lease and never allocates another epoch', async () => {

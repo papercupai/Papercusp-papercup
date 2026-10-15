@@ -23,6 +23,16 @@ const baseURL =
 // auth-gated/sparse for an unauthenticated e2e browser → nothing to search.)
 const ROUTE = process.env.OPERATOR_E2E_FIND_ROUTE ?? '/support';
 
+// `/support` is the one route that deliberately boots the Chatwoot support widget
+// (ChatwootWidget.tsx: shouldEnableSupportWidget → pathname starts with /support), which
+// loads `<base>/packs/js/sdk.js` from our own chat host. That egress is the product working
+// as designed on this route, not a vendoring bug, so declare it rather than fail every run
+// (WI-10006845: the standing isolated run went red on exactly these 2 requests). Keep the
+// default in step with ChatwootWidget's DEFAULT_BASE_URL; a drift fails loudly here with the
+// egress report naming the new origin.
+const CHATWOOT_ORIGIN = new URL(process.env.NEXT_PUBLIC_CHATWOOT_BASE_URL ?? 'https://chat.papercupai.com').origin;
+test.use({ egressAllowedOrigins: ROUTE.startsWith('/support') ? [CHATWOOT_ORIGIN] : [] });
+
 /** A word (≥4 letters) that is actually present in <main>, so a match exists. */
 async function pickSearchTerm(page: Page): Promise<string> {
   const term = await page.evaluate(() => {
@@ -99,6 +109,11 @@ test.describe('find-in-page (Ctrl+F)', () => {
     await expect(input).toBeHidden();
     expect(await highlightSize(page, 'papercup-find')).toBe(0);
     expect(await highlightSize(page, 'papercup-find-active')).toBe(0);
-    expect(new URL(page.url()).searchParams.get('find')).toBeFalsy();
+    // nuqs applies the bar's state immediately but flushes the URL write on its own
+    // throttled queue, so the hidden bar can be observed before `?find` is removed.
+    // Poll the URL: a synchronous page.url() read here raced that flush and failed
+    // with the stale "true" (WI-10006845, run group operator-e2e-nightly:ac3738ad-…).
+    // A param that is never cleared still fails, at the poll timeout.
+    await expect.poll(() => new URL(page.url()).searchParams.get('find')).toBeFalsy();
   });
 });

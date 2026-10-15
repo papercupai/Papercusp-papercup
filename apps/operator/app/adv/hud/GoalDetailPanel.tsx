@@ -98,7 +98,11 @@ import SubGoalsSection from './SubGoalsSection';
 // section above — it owns a WRITE (goals:update) and the form model behind it.
 import GoalSettingsSection from './GoalSettingsSection';
 import GoalEndsSection from './GoalEndsSection';
+import OngoingWorkOverview from './OngoingWorkOverview';
 import GoalModeStateSection from './GoalModeStateSection';
+import GoalDataSection from './GoalDataSection';
+import WorkOnEverythingPanel from './WorkOnEverythingPanel';
+import { isWorkOnEverything } from './ongoing-work-draft';
 /* D-011: the goal popup hosts the SAME conversation the sessions popup does —
    the same renderer, fed by the same extracted wiring. Not a second chat. */
 import { LiveSessionChat } from '@/app/_components/chat/SessionChatModal';
@@ -464,12 +468,26 @@ function useIsNarrowViewport(query: string): boolean {
   return narrow;
 }
 
-export default function GoalDetailPanel({
+/** Same URL and sync query; package identity selects the dedicated interface. */
+export default function GoalDetailPanel(props: Parameters<typeof StandardGoalDetailPanel>[0]) {
+  const detail = useSyncQuery<GoalDetailInput>({ queryName: 'goals.detail',
+    args: { workspaceId: props.workspaceId, goalId: props.goalId ?? '' }, enabled: props.goalId !== null });
+  const data = detail.data?.[0] ?? null;
+  if (isWorkOnEverything(data) && data?.goal?.id === props.goalId) {
+    return <WorkOnEverythingPanel key={data.goal.id} data={data} nowMs={props.nowMs} onClose={props.onClose}
+      onOpenPlan={props.onOpenPlan} onOpenWorkItem={props.onOpenWorkItem} onOpenAgent={props.onOpenAgent}
+      refresh={() => { void detail.invalidate(); }} />;
+  }
+  return <StandardGoalDetailPanel {...props} />;
+}
+
+function StandardGoalDetailPanel({
   goalId,
   workspaceId,
   nowMs,
   onClose,
   onOpenWorkItem,
+  onOpenPlan,
   onOpenAgent,
   onOpenGoal,
 }: {
@@ -482,6 +500,7 @@ export default function GoalDetailPanel({
   /** Opens a work item in the HUD's existing popup, so the waiting-on-you and
    *  activity rows are destinations rather than dead text. */
   onOpenWorkItem?: (id: string) => void;
+  onOpenPlan?: (harnessSlug: string, planSlug: string) => void;
   /** P-018/D-011: opens the conversation of the agent RUNNING this goal, via
    *  the HUD's existing `hudsession` route. Optional — a host that cannot
    *  re-target the session popup passes nothing and the control is not
@@ -536,8 +555,11 @@ export default function GoalDetailPanel({
      user-meaningful goes in the URL where `ui:get_state`/`ui:dispatch` can see
      it. Defaulted OPEN — the rail is the answer to "what is under this goal",
      which is the question the popup exists to answer. */
-  const [railOpen, setRailOpen] = useQueryState('hudgoalrail', parseAsBoolean.withDefault(true));
+  const [railPreference, setRailOpen] = useQueryState('hudgoalrail', parseAsBoolean);
   const isRailNarrow = useIsNarrowViewport(RAIL_NARROW_MEDIA_QUERY);
+  // A default right drawer covers the left brief on phones. Standing goals
+  // lead with that brief's ongoing overview; an explicit URL choice still wins.
+  const railOpen = railPreference ?? !(goal?.standing && isRailNarrow);
   /* P-022: the brief's own open-state, in the URL like every other
      user-meaningful toggle here (`hudgoalrail` set the precedent). */
   const [briefOpen, setBriefOpen] = useQueryState('hudgoalbrief', parseAsBoolean.withDefault(true));
@@ -1098,6 +1120,10 @@ export default function GoalDetailPanel({
 
         {goal ? (
           <>
+            <GoalDataSection goalId={goal.id} data={data?.goalData} />
+            {goal.standing ? <OngoingWorkOverview goal={goal} detail={data} title={goal.title}
+              description={goal.body ?? undefined} variant="detail" nowMs={nowMs}
+              onOpenWorkItem={onOpenWorkItem} onOpenPlan={onOpenPlan} /> : null}
             {/* ── 1. THIS GOAL ENDS WHEN ──────────────────────────────────
                 First, and first for a reason: it is the only section that says
                 when the goal STOPS. Everything below it describes activity,

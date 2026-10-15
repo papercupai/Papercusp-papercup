@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "status": "PASS",
+  "scope": "measured pre-build artifact/input pairing only; no release request, Packer build, bootstrap run, image publication or shipment",
+  "observedAt": "2026-10-10T05:42:59.150720+00:00",
+  "workItemId": "WI-10008067",
+  "parentWorkItemId": "WI-10007610",
+  "connectionId": "gcp:byoc-canary-gcp",
+  "credentialRef": "gcloud://active-user",
+  "image": {
+    "id": "projects/active-alcove-504205-q3/global/images/papercusp-workspace-host-cloud-e2e-20261010r5",
+    "version": "0.0.21-cloud-e2e-20261010r5"
+  },
+  "bundleSha256": "e41d9a609acd73cab9c22db0f21772e34431d9beb351a0c537a43d468e686382",
+  "baseImage": {
+    "reference": "projects/ubuntu-os-cloud/global/images/ubuntu-2404-noble-amd64-v20260826",
+    "architecture": "x86_64",
+    "sha256": "aa2eb6177eb4ef67d4ea714773caebbf16cfe4c5a2b6bd415fde00c33db2fcb5"
+  },
+  "builder": {
+    "strategy": "shared",
+    "kind": "hashicorp-packer",
+    "version": "0.0.21-cloud-e2e-20261010r5",
+    "templatePath": "infra/images/workspace-host.pkr.hcl",
+    "templateSha256": "5aafbbb6366517b3a3c53e6a508607c2a433fb197eff9e2be671935050464237"
+  },
+  "source": {
+    "repository": "https://github.com/Papercusp/papercusp.git",
+    "revision": "727f6f06323a74cf447f396af74597e1d799950f"
+  },
+  "pairedArtifactEqual": true,
+  "publicReleaseEqual": true,
+  "canonicalTests": {
+    "runId": "48bd3392-2225-42cb-9ba7-0e14f026de9b",
+    "testRunIds": [
+      20968220,
+      20968221
+    ],
+    "passed": 56,
+    "failed": 0,
+    "skipped": 0,
+    "wholeTreeDirty": true
+  },
+  "files": {
+    "gcp-image-release-input.json": {
+      "sha256": "ac41e53f54f5cc5d50781932d714606d4bf4647de291bec74b6ee1d0b6ad09f7",
+      "bytes": 4002
+    },
+    "image-artifact.json": {
+      "sha256": "4fdfb9aca054ed30cc17555b10463da5c1d707ffb98bd655e43f52c668622245",
+      "bytes": 8064
+    },
+    "clean-room-input.json": {
+      "sha256": "e7387a1317ad7e3188b98769a9950eb223b98badfbb0b137534c20dd3a6044da",
+      "bytes": 8651
+    }
+  },
+  "loadedSource": {
+    "apps/operator/lib/release/gcp-image-release-request-cli.ts": "5f8e571f0c7ec07e14202ee15761494eec36623b8f344bab34b3369054876d62",
+    "apps/operator/lib/release/gcp-image-release-request-cli.test.ts": "64f96c13572bb904c5ff37ae7b8673903fc3315b090146f4eeb77ca44492bccd"
+  },
+  "openAcceptanceGaps": [
+    "current Git/agent readiness bindings and source HEAD for request composition",
+    "new image-scoped pre-build bootstrap report",
+    "actual image lifecycle and post-build canary",
+    "real agent task/reconnect/cancel/tenant/billing/AWS",
+    "full R2/R3/R5/R6 and final shipment"
+  ]
+}

@@ -1,0 +1,157 @@
+{
+  "schemaVersion": "p011-resource-cache-diagnostics-evidence-v1",
+  "workItem": "EI-25181611831349662",
+  "status": "current-source-diagnostic-delivery-verified",
+  "rootCause": "resourceDomainKindsHealth existed but no production diagnostic consumed it, so an agent could not observe the handler process's cold or failed resource declaration cache through the existing cache diagnostic.",
+  "reuse": "Extended dev:cache_stats and its existing Vitest suite; reuses the pinned resourceDomainKindsHealth and declaredResourceDomainKind readers. No parallel tool, datastore, configuration or refresh loop.",
+  "change": {
+    "tool": "dev:cache_stats",
+    "optionalArgument": "resource",
+    "outputField": "resourceDomainKinds",
+    "sideEffects": "Synchronous snapshot only; never calls ensureResourceDomainKindsFresh."
+  },
+  "verification": {
+    "command": "npm run test:file -- packages/operator-core/lib/agent-tools/dev/cache_stats.test.ts",
+    "exitCode": 0,
+    "passed": 14,
+    "skipped": 0,
+    "ledger": {
+      "id": 20801416,
+      "status": "pass",
+      "harnessSlug": "papercusp",
+      "source": "local",
+      "commitSha": "a87989f0d0b0541bade46daf2e08fe7addfa0eb2",
+      "worktreeDirty": true
+    },
+    "newGuards": [
+      "Cold cache stays cold and loader is never called.",
+      "Real loaded named declaration is delivered; returned snapshots cannot mutate the pinned cache.",
+      "Failed initial load remains unloaded and error is delivered without retry.",
+      "Failed later refresh retains the last declaration and its timestamp while surfacing the error, without another load."
+    ],
+    "sourceScope": "Named source receipts below; full imported-source graph was not frozen."
+  },
+  "typecheck": {
+    "command": "npm run lint:tsc -- --files=packages/operator-core/lib/agent-tools/dev/cache_stats.ts,packages/operator-core/lib/agent-tools/dev/cache_stats.test.ts",
+    "exitCode": 0,
+    "namedFiles": 2,
+    "namedFilesStatus": "clean",
+    "serviceReportedErrors": 2,
+    "qualification": "The runner labels two diagnostics unattributed and outside the changed-file result. No claim of zero project-wide errors or root-cause attribution is made."
+  },
+  "nativePgDiagnosticRead": {
+    "tool": "dev:pg_health",
+    "args": {
+      "localOnly": true,
+      "resultLimitPerPool": 1
+    },
+    "receipt": {
+      "pid": 1518148,
+      "capturedAt": "2026-10-06T01:07:13.104Z",
+      "source": "current-process",
+      "pools": [
+        {
+          "pool": "org-app",
+          "results": [
+            {
+              "source": {
+                "processInstanceId": "323c0a1d-8ea8-4dbd-8116-dbb43ec67f3d",
+                "buildSha": "ae71fe3f73",
+                "poolInstanceId": "821f9b7e-35b9-4283-922e-1399882fa61c"
+              }
+            }
+          ]
+        },
+        {
+          "pool": "org-admin",
+          "results": [
+            {
+              "source": {
+                "processInstanceId": "323c0a1d-8ea8-4dbd-8116-dbb43ec67f3d",
+                "buildSha": "ae71fe3f73",
+                "poolInstanceId": "8e6f95e9-46af-40c7-a527-35a94e4eb06b"
+              }
+            }
+          ]
+        },
+        {
+          "pool": "org-admin-lossless-bigint"
+        }
+      ]
+    },
+    "qualification": "Exact handler PID and per-pool process/build identities from the native pg_health response. This identifies that sampled diagnostic's emitting process; it does not attest a locks/restart handler, the new cache diagnostic being loaded, or wholefleet exclusion."
+  },
+  "nativeCacheDiagnosticRead": {
+    "tool": "dev:cache_stats",
+    "args": {
+      "tool": "locks:acquire_resource"
+    },
+    "receipt": {
+      "pid": 1518148,
+      "uptimeSec": 1833,
+      "telemetryVersion": 2
+    },
+    "resourceDomainKindsPresent": false,
+    "qualification": "The native cache diagnostic directly reports the same PID as the pg_health sample, but the new resourceDomainKinds field is absent. This confirms the sampled native diagnostic has not loaded the extension; no cached declaration value is inferred."
+  },
+  "priorHandlerEvidence": {
+    "path": "docs/evidence/papercusp-oct6-p011-staging-restart-handler-r1-2026-10-06.json",
+    "matchedReceiptLinks": 10,
+    "totalReceiptLinks": 10,
+    "qualification": "Preserved eight-case private-PG handler/publication/reader proof; not replayed."
+  },
+  "limitations": [
+    "The sampled native cache_stats response from PID1518148 has no resourceDomainKinds field; the diagnostic extension is not yet loaded by that sampled native handler.",
+    "Exact native restart-handler/cache attribution, live distinct-owner refusal and wholefleet exclusion remain open.",
+    "Atomic old-call migration fence and pending-review alias cleanup remain open.",
+    "Original R3 unknown joins and R4 failed preflight are preserved; full P011/D021/native physical acceptance and shipment are not established.",
+    "No shared service restart, native agent launch, profiler, GC, historical cohort replay or LIVE_GATE_OPS was performed."
+  ],
+  "receipts": [
+    {
+      "path": "packages/operator-core/lib/agent-tools/dev/cache_stats.ts",
+      "bytes": 8849,
+      "sha256": "2c3939811168e8bdbb902f20dd316b6ec80244db25a587b5f6b98292c7426a35"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/dev/cache_stats.test.ts",
+      "bytes": 13688,
+      "sha256": "c7e24c79ddc74eab3b9d5f74bc497e1cf58d8822af36f36c812a848b0b7772df"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/resource-domain-kinds.ts",
+      "bytes": 7792,
+      "sha256": "9dea128f3476f9ee8c7006ec01358c3b12a41f4ae25e3278897d2443bdfbb3b5"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/dev/pg_health.ts",
+      "bytes": 5899,
+      "sha256": "3d4dfe8bd1208e3cfbf4122240d6c01e1e40cc81f111437945ac81e53f0f2e33"
+    },
+    {
+      "path": "libs/papercusp/libs/db/src/acquire-registry.ts",
+      "bytes": 29673,
+      "sha256": "2566bd434b4ac2b720e5ea24727136ddd82e55fa063a4442fd06b5f4380e51c7"
+    },
+    {
+      "path": "libs/papercusp/libs/db/src/build-stamp.ts",
+      "bytes": 5163,
+      "sha256": "e42d482bb3deb905f2b4a226942675639bdab23c7cef21d19722330fc69b9f4e"
+    },
+    {
+      "path": "/tmp/su-7db4f-resource-cache-diagnostic-r1.log",
+      "bytes": 6058,
+      "sha256": "8206396c6fdceee3c0a0e8d167f1ef482a640bccd46248514c87ca21691beab1"
+    },
+    {
+      "path": "/tmp/su-7db4f-resource-cache-diagnostic-types-r1.log",
+      "bytes": 1548,
+      "sha256": "e8d2d3452ef92b68263875852a9830978c5c3dd5ad89eda40b73b2f6bc6184f6"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct6-p011-staging-restart-handler-r1-2026-10-06.json",
+      "bytes": 6652,
+      "sha256": "b947f90e7a6aa9ea2419801f46a0e1596158137473f255adbace96f043c4a4f4"
+    }
+  ]
+}

@@ -5,12 +5,14 @@
 // `health.snapshot` (useSyncQuery mocked, the pinned-sibling pattern — see
 // LearningInfraHealthChip.test.tsx) and pins the empty states (loading / error /
 // flag-off), the populated overall bar (label + crit/warn counts + checkedAgo),
-// per-card tone + metrics, and the drill-down link behaviour (an /adv?tab=…
-// link is intercepted into a nuqs setTab; any other href navigates normally).
+// per-card tone + metrics, and drill-down links in both hosts: /adv?tab=…
+// writes the configured destination key/mapping; other hrefs navigate normally.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { PANEL_ORDER, type HealthPanel, type PanelKey, type PanelStatus, type SystemHealth } from '@papercusp/operator-core/lib/system-health/types';
 import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
+import { configureOperatorUi } from '@papercusp/operator-ui/seam';
+import { ADV_TAB_SURFACE_KINDS } from '@papercusp/operator-ui/adv-navigation';
 
 // ── @papercusp/sync: reassign a single result object per test (sibling pattern). ──
 let syncResult: Record<string, unknown> = { data: undefined, loading: true, fetching: true, error: null, invalidate: vi.fn() };
@@ -22,10 +24,10 @@ vi.mock('@papercusp/sync', () => ({
 // ── nuqs: useQueryState('tab', …) → [null, setTabSpy]; capture the spy via a hoisted ref.
 // Parsers from the shared complete mock (EI-8821) so a new parseAsX call
 // elsewhere can't silently red this suite. ──
-const nuqs = vi.hoisted(() => ({ setTab: vi.fn() }));
+const nuqs = vi.hoisted(() => ({ setTab: vi.fn(), setApp: vi.fn() }));
 vi.mock('nuqs', () => ({
   ...nuqsParsers,
-  useQueryState: () => [null, nuqs.setTab],
+  useQueryState: (key: string) => [null, key === 'app' ? nuqs.setApp : nuqs.setTab],
 }));
 
 import HealthTab from './HealthTab';
@@ -48,6 +50,8 @@ function snapshot(overall: PanelStatus, overrides: Partial<Record<PanelKey, Heal
 afterEach(() => {
   cleanup();
   nuqs.setTab.mockClear();
+  nuqs.setApp.mockClear();
+  configureOperatorUi({ advNavigation: undefined });
 });
 
 describe('HealthTab — empty/placeholder states', () => {
@@ -179,6 +183,19 @@ describe('HealthTab — cards', () => {
 });
 
 describe('HealthTab — drill-down links', () => {
+  it.each([['harnesses', 'work'], ['plans', 'create'], ['calendar', 'scheduled']])(
+    'Portal drill-down to %s selects the mapped %s app', (tab, app) => {
+      configureOperatorUi({ advNavigation: { param: 'app', targets: ADV_TAB_SURFACE_KINDS } });
+      setResult([snapshot('ok', { queen: panel('queen', 'ok', { link: { label: 'Detail', href: `/adv?tab=${tab}` } }) })]);
+      render(<HealthTab />);
+      const ev = new MouseEvent('click', { bubbles: true, cancelable: true });
+      screen.getByLabelText('Open Detail').dispatchEvent(ev);
+      expect(nuqs.setApp).toHaveBeenCalledWith(app);
+      expect(nuqs.setTab).not.toHaveBeenCalled();
+      expect(ev.defaultPrevented).toBe(true);
+    },
+  );
+
   it('intercepts an /adv?tab=… link: preventDefault + nuqs setTab(tab)', () => {
     setResult([snapshot('ok', { queen: panel('queen', 'ok', { link: { label: 'Queen detail', href: '/adv?tab=overview' } }) })]);
     render(<HealthTab />);

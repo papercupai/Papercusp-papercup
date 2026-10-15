@@ -13,6 +13,12 @@ import { loadSodium, openOpCiphertext } from '../hive-epoch-aead';
 const receipt = (state = 'completed') => ({
   payload: { resource_governor: { schemaVersion: 1, state } },
 });
+const scopedReceipt = (issueId: string, scope: string, storageHarnessSlug?: string) => ({
+  ...receipt(),
+  issue_id: issueId,
+  scope,
+  ...(storageHarnessSlug === undefined ? {} : { storage_harness_slug: storageHarnessSlug }),
+});
 const filter: GovernorReceiptSnapshotFilter = {
   maxSourceIndexExclusive: 100,
   liveQualifiedKeys: ['papercusp/WI-LIVE'],
@@ -64,6 +70,42 @@ describe('P-530 governor receipt snapshot filter', () => {
     expect(isLegacyGovernorReceiptSnapshotValue({ payload: { resource_governor: null } })).toBe(false);
     expect(isLegacyGovernorReceiptSnapshotValue({ payload: { resource_governor: 'x' } })).toBe(false);
   });
+
+  it('resolves bare identities by exact issue id and physical scope', () => {
+    const ctx = { table: 'engineer-issues', hbKey: 'WI-CROSS', sourceIndex: 1 };
+    const liveOtherHarness = { ...filter, liveQualifiedKeys: ['other/WI-CROSS'] };
+    expect(
+      shouldDropGovernorReceiptSnapshotRow(scopedReceipt('WI-CROSS', 'harness:papercusp'), ctx, liveOtherHarness),
+    ).toBe(true);
+    expect(
+      shouldDropGovernorReceiptSnapshotRow(
+        scopedReceipt('WI-CROSS', 'harness:other', 'other'),
+        ctx,
+        liveOtherHarness,
+      ),
+    ).toBe(false);
+    expect(
+      shouldDropGovernorReceiptSnapshotRow(
+        scopedReceipt('WI-CROSS', 'harness:papercusp', 'papercusp'),
+        ctx,
+        { ...filter, liveQualifiedKeys: ['papercusp/WI-CROSS'] },
+      ),
+    ).toBe(false);
+    expect(
+      shouldDropGovernorReceiptSnapshotRow(
+        scopedReceipt('WI-OTHER', 'harness:papercusp'),
+        ctx,
+        { ...filter, liveQualifiedKeys: [] },
+      ),
+    ).toBe(false);
+    expect(
+      shouldDropGovernorReceiptSnapshotRow(
+        scopedReceipt('WI-CROSS', 'operator'),
+        ctx,
+        { ...filter, liveQualifiedKeys: [] },
+      ),
+    ).toBe(false);
+  });
 });
 
 describe('D-024 encrypted own-log rows', () => {
@@ -113,5 +155,16 @@ describe('D-024 encrypted own-log rows', () => {
     const dead = await seal('papercusp/WI-DEAD', receipt());
     expect(shouldDropGovernorReceiptSnapshotRow(dead, context('papercusp/WI-DEAD'), filter, undefined, noKeys)).toBe(false);
     expect(keyless).toBe(1);
+  });
+
+  it('authenticates a bare-key envelope with its original key before reading physical scope', async () => {
+    const sodium = await loadSodium();
+    const opener = governorReceiptEnvelopeOpener(keys, (ct, key, ad) => openOpCiphertext(sodium, ct, key, ad));
+    const value = scopedReceipt('WI-BARE', 'harness:papercup');
+    const correct = await seal('WI-BARE', value);
+    const wrongAuthor = await seal('WI-BARE', value, 'another-author');
+    const noneLive = { ...filter, liveQualifiedKeys: [] };
+    expect(shouldDropGovernorReceiptSnapshotRow(correct, context('WI-BARE'), noneLive, undefined, opener)).toBe(true);
+    expect(shouldDropGovernorReceiptSnapshotRow(wrongAuthor, context('WI-BARE'), noneLive, undefined, opener)).toBe(false);
   });
 });

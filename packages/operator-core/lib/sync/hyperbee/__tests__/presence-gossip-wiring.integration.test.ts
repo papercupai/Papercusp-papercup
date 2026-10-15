@@ -21,6 +21,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { generateKeyPairSync, sign as nodeSign, type KeyObject } from 'node:crypto';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
+import { startDedicatedNativePg, type DedicatedNativePg } from '@papercusp/test-config/pg';
+import type { SignedPresenceFrame } from '../presence-gossip';
 
 // ── Protomux fake (the directory-swarm.test.ts harness, trimmed) ──
 interface FakeChannel {
@@ -28,6 +30,7 @@ interface FakeChannel {
   id: Buffer | null;
   onopen?: () => void;
   sent: unknown[];
+  throwOnSend: boolean;
   inbound?: (frame: unknown) => void;
   open(): void;
   pairRemote(): void;
@@ -51,6 +54,7 @@ function makeMux(): FakeMux {
         id: spec.id ?? null,
         onopen: spec.onopen,
         sent: [],
+        throwOnSend: false,
         open() {},
         pairRemote() {
           this.onopen?.();
@@ -58,7 +62,12 @@ function makeMux(): FakeMux {
       };
       (ch as unknown as { addMessage: (m: { onmessage?: (f: unknown) => void }) => { send: (v: unknown) => void } }).addMessage = (m) => {
         ch.inbound = m.onmessage;
-        return { send: (v: unknown) => ch.sent.push(v) };
+        return {
+          send: (v: unknown) => {
+            if (ch.throwOnSend) throw new Error('simulated send failure');
+            ch.sent.push(v);
+          },
+        };
       };
       mux.channels.push(ch);
       allChannels.push(ch);
@@ -77,6 +86,8 @@ vi.mock('protomux', () => ({
 const {
   registerPresenceGossipTopic,
   broadcastPresencePut,
+  broadcastSessions,
+  broadcastPresenceDel,
   invalidatePresenceGossipMemberCache,
   __setPresenceGossipWiringDeps,
   __resetPresenceGossipWiring,
@@ -91,6 +102,7 @@ const stripMeta = (s: string) =>
   s.split('\n').filter((l) => !/^(begin|commit);$/i.test(l.trim()) && !l.trim().startsWith('\\')).join('\n');
 
 const WS = 'ws_pgw';
+const HELLO_WS = 'ws_pgw_hello';
 const HIVE = 'hive-home';
 const TOPIC = Buffer.alloc(32, 5);
 const TOPIC_HEX = TOPIC.toString('hex');
@@ -131,6 +143,8 @@ async function settle(check: () => Promise<boolean>, ms = 2000): Promise<void> {
 
 describe('presence-gossip wiring (real PG, fake swarm)', () => {
   let db: FreshPgDb;
+  let dedicatedPg: DedicatedNativePg | undefined;
+  const priorAdminUrl = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
   let channel: FakeChannel;
   const admittedDevices = new Map<string, number>([
     [member.pubB64, 42],
@@ -138,6 +152,8 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
   ]);
 
   beforeAll(async () => {
+    dedicatedPg = await startDedicatedNativePg({ baseDir: '/dev/shm/pcv' });
+    process.env.PAPERCUSP_TEST_PG_ADMIN_URL = dedicatedPg.getConnectionUri();
     db = await createFreshPgDb('presence_gossip_wiring');
     await db.sql.unsafe(`CREATE SCHEMA IF NOT EXISTS harness_shared`);
     // shared_presence (baseline shape + the pot_slug hive-scope key (mig 187 →
@@ -205,9 +221,7 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
       loadRevokedHivePubkeys: (async () => []) as never,
     });
 
-    expect(
-      await registerPresenceGossipTopic({ topicHex: TOPIC_HEX, workspaceId: WS, potHomeSlug: HIVE }),
-    ).toBe(true);
+    expect(await registerPresenceGossipTopic({ topicHex: TOPIC_HEX, workspaceId: WS, potHomeSlug: HIVE })).toBe(true);
     // A peer connects; the gossip opens + pairs the topic channel.
     const socket: { userData?: FakeMux } = {};
     swarm.connections.add(socket);
@@ -218,8 +232,65 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
   }, 60_000);
 
   afterAll(async () => {
-    await __resetPresenceGossipWiring();
-    await db?.cleanup();
+    try {
+      await __resetPresenceGossipWiring();
+    } finally {
+      try {
+        await db?.cleanup();
+      } finally {
+        try {
+          await dedicatedPg?.stop();
+        } finally {
+          if (priorAdminUrl === undefined) delete process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
+          else process.env.PAPERCUSP_TEST_PG_ADMIN_URL = priorAdminUrl;
+        }
+      }
+    }
+  });
+
+  it('pair-time hello sends a signed session snapshot over a short-lived channel', async () => {
+    const helloTopic = Buffer.alloc(32, 6);
+    const helloTopicHex = helloTopic.toString('hex');
+    expect(
+      await registerPresenceGossipTopic({
+        topicHex: helloTopicHex,
+        workspaceId: HELLO_WS,
+        potHomeSlug: HIVE,
+        writer: {
+          devicePubkey: member.pubB64,
+          sign: member.sign,
+          githubUserId: 42,
+          machineLabel: 'hello-laptop',
+          potSlug: HIVE,
+          getOwnRow: async () => row({ machine_label: 'hello-laptop' }),
+          getOwnSessions: async () => [
+            {
+              owner_id: 'su-pair-hello',
+              kind: 'su',
+              intent: 'pair hello',
+              plan_slug: null,
+              harness_slug: HIVE,
+              last_active_ms: T0,
+            },
+          ],
+        },
+      }),
+    ).toBe(true);
+    const helloChannel = allChannels.find((candidate) => candidate.id?.equals(helloTopic));
+    expect(helloChannel).toBeDefined();
+    helloChannel!.pairRemote();
+    await settle(async () => Promise.resolve(helloChannel!.sent.length >= 2));
+    const helloFrames = helloChannel!.sent.slice(0, 2) as SignedPresenceFrame[];
+    expect(helloFrames.map((frame) => frame.kind)).toEqual(['put', 'sessions']);
+    expect(helloFrames.every((frame) => verifyPresenceFrame(frame, { nowMs: Date.now() }))).toBe(true);
+
+    helloChannel!.inbound!(helloFrames[1]);
+    await settle(async () =>
+      (await db.sql`SELECT 1 FROM harness_shared.shared_session_presence WHERE workspace_id=${HELLO_WS} AND owner_id='su-pair-hello'`).length === 1,
+    );
+    const sessions = await db.sql<{ owner_id: string; pot_slug: string }[]>`
+      SELECT owner_id, pot_slug FROM harness_shared.shared_session_presence WHERE workspace_id=${HELLO_WS} AND owner_id='su-pair-hello'`;
+    expect(sessions).toEqual([{ owner_id: 'su-pair-hello', pot_slug: HIVE }]);
   });
 
   it('a member device\'s signed put frame lands in shared_presence', async () => {
@@ -412,7 +483,7 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
     ).toHaveLength(0);
   });
 
-  it('the writer leg broadcasts a verifiable signed frame; hello serves the current row', async () => {
+  it('writer helpers report actual channel send outcomes; hello serves the current row', async () => {
     expect(
       await registerPresenceGossipTopic({
         topicHex: TOPIC_HEX,
@@ -425,13 +496,33 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
           machineLabel: 'laptop',
           potSlug: HIVE,
           getOwnRow: async () => row({ intent: 'writer beat' }),
+          getOwnSessions: async () => [],
         },
       }),
     ).toBe(true);
     const before = channel.sent.length;
     expect(await broadcastPresencePut(TOPIC_HEX, row({ intent: 'writer beat' }))).toBe(true);
-    expect(channel.sent.length).toBe(before + 1);
-    const frame = channel.sent[channel.sent.length - 1] as never;
+    expect(await broadcastSessions(TOPIC_HEX, [])).toBe(true);
+    expect(
+      await broadcastPresenceDel(TOPIC_HEX, {
+        github_user_id: 42,
+        machine_label: 'laptop',
+        harness_slug: HIVE,
+      }),
+    ).toBe(true);
+    expect(channel.sent.length).toBe(before + 3);
+    const frame = channel.sent[before] as never;
     expect(verifyPresenceFrame(frame, { nowMs: Date.now() })).toBe(true);
+
+    channel.throwOnSend = true;
+    expect(await broadcastPresencePut(TOPIC_HEX, row({ intent: 'missed writer beat' }))).toBe(false);
+    expect(await broadcastSessions(TOPIC_HEX, [])).toBe(false);
+    expect(
+      await broadcastPresenceDel(TOPIC_HEX, {
+        github_user_id: 42,
+        machine_label: 'laptop',
+        harness_slug: HIVE,
+      }),
+    ).toBe(false);
   });
 });

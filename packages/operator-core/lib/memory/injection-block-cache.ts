@@ -60,6 +60,8 @@ export interface MemoryBlockBuildContext {
 }
 
 export interface MemoryBlockBoundedOpts {
+  /** Launch identity for the authoritative gate BEFORE a stale cache read. */
+  sessionId?: string;
   /** Override the cold-miss wait cap (sentinel_scan turns have no human waiting). */
   deadlineMs?: number;
   /** Cache instance override (tests). Default: the operator singleton. */
@@ -86,6 +88,11 @@ export async function getMemoryBlockBoundedResult(
   build: (deadline: MemoryWorkDeadline, ctx: MemoryBlockBuildContext) => Promise<string | null>,
   opts: MemoryBlockBoundedOpts = {},
 ): Promise<MemoryBlockBoundedResult> {
+  if (opts.sessionId) {
+    const { sessionAllowsAmbientContext } = await import('../capability-envelope/session-confinement-port');
+    if (!await sessionAllowsAmbientContext({ ownerId: opts.sessionId, workspaceId }))
+      return { status: 'ready', block: null };
+  }
   const cache = opts.cache ?? getOperatorCache();
   const deadlineMs = opts.deadlineMs ?? MEMORY_BLOCK_COLD_DEADLINE_MS;
   // Flips once this call has returned: after a stale serve (the build is then a

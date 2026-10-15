@@ -35,6 +35,9 @@ STAGE_ROOT="${PC_BACKUP_STAGE:-/srv/backups/staging}"
 STAGE="${STAGE_ROOT}/${TS}"
 DEST="${BUCKET}/daily/${DAY}/${HOST}/${TS}"
 KEEP_LOCAL="${PC_BACKUP_KEEP_LOCAL:-0}"
+# Seconds ClickHouse waits on an unwritable result socket before aborting an
+# export (server default 300). See the ClickHouse section (WI-10006330).
+CH_SEND_TIMEOUT="${PC_BACKUP_CH_SEND_TIMEOUT:-1800}"
 
 # --- DECLARED INVENTORY (rule 4) -------------------------------------------
 # Anything running that looks stateful and is in NEITHER list aborts the run.
@@ -194,12 +197,33 @@ for c in ${CH_CONTAINERS[@]+"${CH_CONTAINERS[@]}"}; do
       "SELECT name FROM system.tables WHERE database='${db}' AND engine LIKE '%MergeTree' ORDER BY name")
     for t in "${DTBLS[@]}"; do
       df="${STAGE}/ch/${db}/data/${t}.native.gz"
-      if docker exec "$c" clickhouse-client --max_block_size=100000 -q \
-           "SELECT * FROM \`${db}\`.\`${t}\` FORMAT Native" 2>/dev/null | gzip -6 > "$df"; then
+      # Keep clickhouse-client/docker stderr (outside $STAGE, which is uploaded wholesale)
+      # so a failure names its cause, not a bare "export failed" (WI-10006330).
+      #
+      # send_timeout + one retry (WI-10006330): the server aborts a query whose result
+      # socket stays unwritable for send_timeout seconds (default 300). On 2026-10-05
+      # posthog.sharded_query_log_archive (1.17 GiB, 4M rows) died exactly that way --
+      # "DB::NetException: Timeout exceeded while writing to socket (..., 300000 ms)
+      # (SOCKET_TIMEOUT)" -- when the docker-exec -> gzip consumer stopped reading for
+      # 5 minutes; 10-04 and 10-06 exported the same table cleanly. One transient
+      # consumer stall silently dropped a table from that day's backup. The wider window
+      # absorbs such a stall, and the retry covers any other transient fault; a second
+      # failure is still a FAIL that quotes its cause.
+      exported=0
+      for attempt in 1 2; do
+        if docker exec "$c" clickhouse-client --max_block_size=100000 \
+             --send_timeout="$CH_SEND_TIMEOUT" -q \
+             "SELECT * FROM \`${db}\`.\`${t}\` FORMAT Native" 2>"/tmp/pcch.$$" | gzip -6 > "$df"; then
+          exported=1; break
+        fi
+        [ "$attempt" -lt 2 ] && log "  retry clickhouse ${db}.${t}: attempt ${attempt} failed: $(tr '\n' ' ' < "/tmp/pcch.$$" 2>/dev/null | cut -c1-300)"
+      done
+      if [ "$exported" = 1 ]; then
         [ -s "$df" ] && emit "$df" "${db}.${t}" "clickhouse_native" || rm -f "$df"
       else
-        fail "clickhouse ${db}.${t}: Native export failed"; rm -f "$df"
+        fail "clickhouse ${db}.${t}: Native export failed after 2 attempts: $(tr '\n' ' ' < "/tmp/pcch.$$" 2>/dev/null | cut -c1-400)"; rm -f "$df"
       fi
+      rm -f "/tmp/pcch.$$"
     done
   done
 done

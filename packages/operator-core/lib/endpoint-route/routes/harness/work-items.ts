@@ -35,6 +35,8 @@ import { activeWorkspaceId } from '../../../workspace-registry';
 import { humanAssignee, publicHumanMarketOffer, readHumanMarketJob } from '../../../work-items-human-market';
 import { actOnHumanMarketItem, getHumanMarketItem, reviewHumanMarketItem, type HumanMarketItem } from '../../../work-items-human-market-store';
 import { requireAllowedOriginOr403 } from '../../cors';
+import { readReporterStatus } from '../../../harness/improvements/reporter-status';
+import { traceNamedQueryStage } from '../../../agent-tools/db-diagnostic-correlation-wiring';
 
 export interface WorkItemDimensions {
   /** Source plan this feature was imported from (hfc.source_plan_slug); null for issues / unplanned. */
@@ -46,7 +48,7 @@ export interface WorkItemDimensions {
   /** That spawn's status (running|done|failed|cancelled|reaped). */
   spineStatus: string | null;
 }
-export type EnrichedWorkItem = WorkItem & WorkItemDimensions;
+export type EnrichedWorkItem = WorkItem & WorkItemDimensions & { reporterStatus?: Awaited<ReturnType<typeof readReporterStatus>> };
 
 /**
  * Pure merge: overlay the plan-link + spine-position maps onto the items by id.
@@ -144,6 +146,10 @@ export async function listEnrichedWorkItems(opts: {
     harness: opts.harness,
     harnesses: opts.harness ? undefined : opts.harnesses,
     kind: opts.kind,
+    // This reader backs the Work Items queue. Keep record/document/event rows out
+    // even when a kind filter is supplied; listWorkItems otherwise treats an
+    // explicit kind as an intentional request for that kind's nature.
+    natures: ['work'],
     state: opts.state,
     limit,
   });
@@ -167,13 +173,21 @@ export async function listEnrichedWorkItems(opts: {
  */
 export async function getEnrichedWorkItem(harness: string, id: string): Promise<EnrichedWorkItem | null> {
   const { getWorkItem } = await import('../../../work-items');
-  const wi = await getWorkItem(id, harness);
+  const wi = await traceNamedQueryStage('work-item-detail-row', () => getWorkItem(id, harness));
   if (!wi) return null;
   const featureIds = wi.family === 'feature' ? [wi.id] : [];
-  const { planMap, spineMap } = await fetchDimensionMaps([harness], featureIds);
+  const { planMap, spineMap } = await traceNamedQueryStage('work-item-detail-dimensions',
+    () => fetchDimensionMaps([harness], featureIds));
   // NO slimListRow: the detail view is exactly the on-demand consumer of the full
   // summary + payload + completion refs the list strips.
-  return mergeWorkItemDimensions([wi], planMap, spineMap)[0] ?? null;
+  const enriched = mergeWorkItemDimensions([wi], planMap, spineMap)[0];
+  if (!enriched) return null;
+  const reporter = wi.payload && typeof wi.payload === 'object' ? (wi.payload as Record<string, unknown>).reporter : null;
+  if (reporter && typeof reporter === 'object' && (reporter as Record<string, unknown>).kind === 'end-user') {
+    enriched.reporterStatus = await traceNamedQueryStage('work-item-detail-reporter',
+      () => readReporterStatus({ id, harness }));
+  }
+  return enriched;
 }
 
 const getWorkItems = defineTool({
@@ -190,7 +204,7 @@ const getWorkItems = defineTool({
     try {
       const [enriched, total] = await Promise.all([
         listEnrichedWorkItems({ harness: slug, kind, state, limit }),
-        countWorkItems({ harness: slug, kind, state }),
+        countWorkItems({ harness: slug, kind, state, natures: ['work'] }),
       ]);
       // `count` = rows returned (may be capped); `total` = the true count in the
       // store for this filter, so a consumer never reads the downloaded length

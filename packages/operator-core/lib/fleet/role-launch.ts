@@ -55,9 +55,20 @@ import {
   DEFAULT_MODEL_TIERS,
   type AgentBackend,
   type ModelTier,
+  composeLaunchModelSpec,
 } from '../agent-config-constants';
 import { effectiveTierConfig, resolveRoleOwnModelSpec } from './model-tiers';
 import { roleModelDefault } from '@papercusp/orchestrator/role-models';
+import { loadBuiltinBlueprint, type Blueprint, type BlueprintLaunchBackup } from '@papercusp/orchestrator/blueprint';
+
+export type RoleLaunchDeclaration = Blueprint['roles'][number];
+
+/** Reuse the existing launch blueprint as the committed route authority. */
+function committedLaunchDeclaration(role: string): RoleLaunchDeclaration | undefined {
+  if (!['release-fixer', 'merge-resolver', 'content-fixer', 'doc-steward'].includes(role)) return undefined;
+  const id = role === 'release-fixer' ? 'release-fix' : role === 'merge-resolver' ? 'merge-resolution' : role === 'content-fixer' ? 'content-fix' : role;
+  return loadBuiltinBlueprint(id).blueprint.roles.find((entry) => entry.id === role);
+}
 
 /** Which rule decided the MODEL. */
 export type RoleLaunchModelSource = 'per-role' | 'tier-menu' | 'committed-default';
@@ -102,6 +113,10 @@ export interface RoleLaunch {
       computation instead of re-deriving a second copy of it. */
   why: string;
   conflict: RoleLaunchConflict | null;
+  /** Caller override > workspace role route > blueprint declaration > host inheritance. */
+  account: string | null;
+  /** Priority order; runtime preflight chooses a candidate. */
+  backups: BlueprintLaunchBackup[];
 }
 
 /** The config slice this resolver reads — a structural subset of `AgentConfig`
@@ -109,6 +124,8 @@ export interface RoleLaunch {
 export interface RoleLaunchConfig {
   models?: Record<string, string> | null;
   roleBackends?: Record<string, AgentBackend> | null;
+  roleAccounts?: Record<string, string | null> | null;
+  roleBackups?: Record<string, BlueprintLaunchBackup[]> | null;
   tiers?: readonly ModelTier[] | null;
   tierCeilings?: Record<string, string> | null;
 }
@@ -133,14 +150,15 @@ function tierRowForSpec(spec: string, tiers: readonly ModelTier[] | undefined): 
  */
 export function resolveRoleLaunch(
   role: string,
-  input: { cfg?: RoleLaunchConfig | null; steering?: RoleLaunchSteering | null } = {},
+  input: { cfg?: RoleLaunchConfig | null; steering?: RoleLaunchSteering | null; blueprintRole?: RoleLaunchDeclaration; account?: string | null } = {},
 ): RoleLaunch {
   const cfg = input.cfg ?? null;
+  const declaration = input.blueprintRole ?? committedLaunchDeclaration(role);
   const committed = roleModelDefault(role) ?? '';
-  const configuredBackend = cfg?.roleBackends?.[role] ?? null;
+  const configuredBackend = cfg?.roleBackends?.[role] ?? declaration?.backend ?? null;
 
   // ── MODEL ────────────────────────────────────────────────────────────────
-  const explicit = cfg?.models?.[role]?.trim();
+  const explicit = cfg?.models?.[role]?.trim() || composeLaunchModelSpec(declaration?.model, declaration?.effort);
   const eff = effectiveTierConfig(
     { tiers: cfg?.tiers ?? undefined, tierCeilings: cfg?.tierCeilings ?? undefined },
     input.steering ?? null,
@@ -237,6 +255,8 @@ export function resolveRoleLaunch(
     backendSource,
     why: `${modelWhy}; ${backendWhy}`,
     conflict,
+    account: input.account !== undefined ? input.account : cfg?.roleAccounts?.[role] !== undefined ? cfg.roleAccounts[role] : declaration?.account ?? null,
+    backups: (cfg?.roleBackups?.[role] ?? declaration?.backups ?? []).map((entry) => ({ ...entry })),
   };
 }
 
@@ -258,7 +278,7 @@ function isForcedCodex(fromModel: ReturnType<typeof backendForModelSpec>): boole
  */
 export async function resolveRoleLaunchLive(
   role: string,
-  opts: { workspaceId?: string; installSlug?: string } = {},
+  opts: { workspaceId?: string; installSlug?: string; blueprintRole?: RoleLaunchDeclaration; account?: string | null } = {},
 ): Promise<RoleLaunch> {
   let cfg: RoleLaunchConfig | null = null;
   let steering: RoleLaunchSteering | null = null;
@@ -276,5 +296,5 @@ export async function resolveRoleLaunchLive(
   } catch {
     /* fail-soft: resolve against the committed default */
   }
-  return resolveRoleLaunch(role, { cfg, steering });
+  return resolveRoleLaunch(role, { cfg, steering, blueprintRole: opts.blueprintRole, account: opts.account });
 }

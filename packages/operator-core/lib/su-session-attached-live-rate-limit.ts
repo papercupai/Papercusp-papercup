@@ -25,3 +25,27 @@ export function confirmedProviderRateLimit(
   const prose = systemTranscriptMatches(events);
   return { confirmed: structured.length > 0 || prose.length >= 2, signals: [...structured, ...prose] };
 }
+
+/** Abort a live acceptance wait when the provider has already refused the turn. */
+export function throwIfProviderRateLimited(events: readonly SuSessionEvent[], stage: string): void {
+  const limit = confirmedProviderRateLimit(events);
+  if (limit.confirmed) {
+    throw new Error(`${stage} cannot run: confirmed provider rate limit (${limit.signals.join('; ')})`);
+  }
+}
+
+/** A rejected native model cannot produce the reply or approval being awaited.
+ * Read only structured runtime evidence; assistant prose is not a refusal. */
+export function throwIfProviderRefused(events: readonly SuSessionEvent[], stage: string): void {
+  throwIfProviderRateLimited(events, stage);
+  const rejection = events.find((event) => {
+    const message = event.type === 'error' ? event.message
+      : event.type === 'lifecycle' && event.state === 'waiting-for-owner' ? event.reason : undefined;
+    return message && /The '[^']+' model is not supported when using Codex with a ChatGPT account\./.test(message);
+  });
+  if (rejection) {
+    const reason = rejection.type === 'error' ? rejection.message
+      : rejection.type === 'lifecycle' ? rejection.reason : undefined;
+    throw new Error(`${stage} cannot run: confirmed provider model rejection (${reason})`);
+  }
+}

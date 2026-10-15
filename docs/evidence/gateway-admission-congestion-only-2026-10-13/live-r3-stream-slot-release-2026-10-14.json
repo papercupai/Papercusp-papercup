@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "gateway-admission-congestion-only R-3 live: a streaming response does not hold a provider admission slot",
+  "framework": "operational",
+  "command": [
+    "sh",
+    "-c",
+    "curl -s --max-time 10 http://127.0.0.1:8788/admin/stats | node -e '<distiller in distilled.distiller>'"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-14T04:50:56.453Z",
+  "finishedAt": "2026-10-14T04:50:57.310Z",
+  "summary": "Live sample of papercup-inference-gateway.service /admin/stats at 2026-10-14T04:50:57Z (process up 165 min). The test separates the two cases: each retained request records the provider admission 'running' count at the moment it was admitted. If a streaming response held its slot, every other request still mid-stream at that moment would be counted in 'running', so otherRequestsMidStream <= running - 1 always. Observed: for Codex, 167 of 196 admissions had more requests mid-stream than slots held (worst case 22 mid-stream vs 3 held). For Claude, 43 of 60 (worst case 9 mid-stream vs 1 held). Mid-stream counts only include retained requests, so they are lower bounds; the excess can only be larger. Account identities omitted.",
+  "assertions": [
+    {
+      "id": "R-3 codex: requests mid-stream exceed provider slots held at admission",
+      "passed": true,
+      "evidence": "Codex: 167 of 196 admissions saw otherRequestsMidStream > runningAtAdmit - 1. Max: request 24438 admitted 2026-10-14T04:48:27.321Z with runningAtAdmit 3 while 22 other Codex requests were mid-stream (excess 20). The alternative (a stream holds its slot) predicts excess <= 0 for every admission."
+    },
+    {
+      "id": "R-3 claude: requests mid-stream exceed provider slots held at admission",
+      "passed": true,
+      "evidence": "Claude: 43 of 60 admissions saw otherRequestsMidStream > runningAtAdmit - 1. Max: request 24483 admitted 2026-10-14T04:48:46.468Z with runningAtAdmit 1 while 9 other Claude requests were mid-stream (excess 9). Per D-004 the per-account governor slot still bounds Claude concurrency; this measures only the provider-lane admission slot."
+    }
+  ],
+  "plan": "gateway-admission-congestion-only-2026-10-13",
+  "clauses": [
+    "AUTO-BAR-R-3-P-003@3",
+    "GW-R-3-ATOMIC@1"
+  ],
+  "distilled": {
+    "method": "For each retained request R in requestStages.recent with admission.provider.admitted: T = R.startedAt + admitted.offsetMs; held = admitted.running - 1 (running includes R itself). For each other streaming request S of the same provider: streamStart = S.startedAt + (S.durationsMs.total - S.durationsMs.stream), streamEnd = S.finalizedAt; S is mid-stream at T when streamStart < T < streamEnd. excess = midStream - held.",
+    "distiller": "const j=JSON.parse(require(\"fs\").readFileSync(0,\"utf8\"));const rec=j.requestStages.recent.filter(r=>r.admission&&r.admission.provider&&r.admission.provider.admitted&&r.durationsMs);const out={};for(const prov of [\"codex\",\"claude\"]){const P=rec.filter(r=>r.provider===prov);const iv=P.filter(r=>r.streaming).map(r=>({id:r.requestId,a:r.startedAt+(r.durationsMs.total-r.durationsMs.stream),b:r.finalizedAt}));let n=0,exceed=0,maxEx=null;for(const r of P){const run=r.admission.provider.admitted.running;if(run==null)continue;n++;const T=r.startedAt+r.admission.provider.admitted.offsetMs;const mid=iv.filter(s=>s.id!==r.requestId&&s.a<T&&T<s.b).length;const ex=mid-(run-1);if(ex>0)exceed++;if(!maxEx||ex>maxEx.excess)maxEx={requestId:r.requestId,admittedAt:new Date(T).toISOString(),runningAtAdmit:run,otherRequestsMidStream:mid,excess:ex};}out[prov]={retainedRequests:P.length,admissionsMeasured:n,admissionsWhereMidStreamExceedsHeldSlots:exceed,maxExcess:maxEx};}out.sampledAt=new Date().toISOString();out.processUptimeMs=j.processUptimeMs;console.log(JSON.stringify(out));",
+    "output": {
+      "codex": {
+        "retainedRequests": 196,
+        "admissionsMeasured": 196,
+        "admissionsWhereMidStreamExceedsHeldSlots": 167,
+        "maxExcess": {
+          "requestId": 24438,
+          "admittedAt": "2026-10-14T04:48:27.321Z",
+          "runningAtAdmit": 3,
+          "otherRequestsMidStream": 22,
+          "excess": 20
+        }
+      },
+      "claude": {
+        "retainedRequests": 60,
+        "admissionsMeasured": 60,
+        "admissionsWhereMidStreamExceedsHeldSlots": 43,
+        "maxExcess": {
+          "requestId": 24483,
+          "admittedAt": "2026-10-14T04:48:46.468Z",
+          "runningAtAdmit": 1,
+          "otherRequestsMidStream": 9,
+          "excess": 9
+        }
+      },
+      "sampledAt": "2026-10-14T04:50:57.189Z",
+      "processUptimeMs": 9947137
+    }
+  }
+}

@@ -1,0 +1,133 @@
+{
+  "schemaVersion": "p028-exact-condition-proof-v1",
+  "id": "EI-24135275786510268",
+  "rootId": "WI-10002823",
+  "verifiedAt": "2026-10-08T19:06:15.729Z",
+  "positive": {
+    "database": "papercusp",
+    "port": 5432,
+    "owned": 1
+  },
+  "declaredReleaseContract": {
+    "owner": "su-e7e09464-ab82-49e6-aa65-c02b2594724f",
+    "trigger": "work-item:done:WI-10002823",
+    "evidence": "a live resolver or producer registration can still satisfy the condition",
+    "condition": "The existing P-001 repair WI-10002823 is terminal; then re-check whether EI-24135275786510268 is fully covered and close as a duplicate if it is.",
+    "reachability": "reachable"
+  },
+  "expectedParkFingerprint": "ee075917a8fb8ca0bc94dc3151ef8007683be7762fdd910abab4334d679ae3eb",
+  "rootRead": {
+    "id": "WI-10002823",
+    "state": "done",
+    "authority": "committed",
+    "payloadSha256": "7f5254b04ab20545549787006f464c522c160f666f915ff0a10bcad7d695ec2f",
+    "shareLockedDuringReconciliation": true
+  },
+  "verification": {
+    "declaredCondition": "The existing P-001 repair WI-10002823 is terminal; then re-check whether EI-24135275786510268 is fully covered and close as a duplicate if it is.",
+    "observation": "The declared hold awaits completion of this software dependency. Canonical root is DONE/committed and remains share-locked during the CAS. Subsequent re-evaluation of the subject stays pending.",
+    "boundary": "This releases the dependency park only; it does not close or verify the subject bug."
+  },
+  "cohortRef": "reports/durable-parks/ubp-p028-operational-20261008183436Z-dispositions.json",
+  "sourceCommit": "58227b6dc24fe2b8a7b5bcc6079ac19a9d743cd9",
+  "sourceBefore": [
+    {
+      "path": "packages/operator-core/lib/work-items-durable-park-audit.ts",
+      "sha256": "858ee0479b2577e6f64a5ecbafe0f58ebbc9c5c314707055656597fd4ad798e7"
+    },
+    {
+      "path": "packages/operator-core/lib/durable-park-release-contract.ts",
+      "sha256": "6c9f88f3f60e46f0827bb1fd2df6a72d822e231ac88748a9a5c6cd69cb856c2d"
+    },
+    {
+      "path": "packages/operator-core/lib/external-condition-reachability.ts",
+      "sha256": "cbafbb90889e436f5c08f9ed656d88fcb8bcd8270e1d52024ce7ede54727e460"
+    },
+    {
+      "path": "packages/operator-core/lib/work-items.ts",
+      "sha256": "faeb77ca0a537b725e960cf9adb071b72da6f46f3364401c345b4d02ad2bdfba"
+    }
+  ],
+  "sourcePayload": {
+    "_ei": {
+      "scope": "harness:papercusp",
+      "source": "su",
+      "severity": "major",
+      "created_by": "su-e7e09464-ab82-49e6-aa65-c02b2594724f",
+      "found_during": "WI-10002823",
+      "signal_origin": "organic"
+    },
+    "_claimHold": true,
+    "filedByRole": "su",
+    "claim_hold_at": "2026-09-24T16:35:32.661Z",
+    "claim_hold_by": "su-00c0dfe5-ceb2-447e-a963-a68ab5ff95a9",
+    "dedupCoverage": {
+      "lexical": "ok",
+      "degraded": true,
+      "semantic": "unavailable"
+    },
+    "ideaLifecycle": {
+      "state": "triaged",
+      "ideaType": "code-bug",
+      "triagedAt": "2026-09-29T07:23:34.939Z",
+      "triageReason": "code-bug, policy tier=auto (no protected path/keyword → AUTO-eligible (still gated by blueprint + tests + release-manager)) — auto-implement lane (D-003: one verdict chain)",
+      "stateUpdatedAt": "2026-09-29T07:23:34.939Z",
+      "triageDecision": "place"
+    },
+    "admissionReview": {
+      "alert": {
+        "key": "work-item-admission-review-debt",
+        "state": "open",
+        "reason": "pending fail-open admission requires re-review",
+        "emittedAt": "2026-09-24T06:45:03.588-04:00"
+      },
+      "state": "pending",
+      "enteredAt": "2026-09-24T06:45:03.588-04:00",
+      "retryOwner": "system:work-item-admission-promoter",
+      "reviewedAt": null,
+      "reviewedBy": null,
+      "terminalAt": null,
+      "lastRetryAt": null,
+      "reviewDueAt": "2026-09-24T07:45:03.588-04:00",
+      "retryAttempts": 0,
+      "terminalOutcome": null
+    },
+    "admissionFailOpen": {
+      "at": "2026-09-24T06:45:03.588-04:00",
+      "actor": "system:work-item-admission-fail-open",
+      "scope": "workspace",
+      "reason": "pending-age-exceeded-two-promoter-ticks"
+    },
+    "admissionIdentity": {
+      "titleKey": "title:001 adequacy evidence fingerprints include mutable plan report source whole",
+      "schemaVersion": "admission-identity-v1"
+    },
+    "claim_hold_reason": "The report explicitly routes its durable P-001 adequacy repair through existing WI-10002823; park this duplicate report until that root item settles.",
+    "freshnessEnvelope": {
+      "observedAt": "2026-09-24T09:39:52.312Z",
+      "linkedFixRefs": [],
+      "reporterSession": "su-e7e09464-ab82-49e6-aa65-c02b2594724f",
+      "observedSourceSha": "bb78d46e51",
+      "toolSchemaVersion": null,
+      "observedRuntimeSha": "bb78d46e51",
+      "deployBuildIdentity": "bb78d46e51@0.0.0",
+      "reporterRuntimeVersion": "0.0.0",
+      "lastSuccessfulReproductionAt": null
+    },
+    "claim_hold_release": {
+      "owner": "su-e7e09464-ab82-49e6-aa65-c02b2594724f",
+      "trigger": "work-item:done:WI-10002823",
+      "evidence": "a live resolver or producer registration can still satisfy the condition",
+      "condition": "The existing P-001 repair WI-10002823 is terminal; then re-check whether EI-24135275786510268 is fully covered and close as a duplicate if it is.",
+      "reachability": "reachable"
+    },
+    "claim_history_post_id": 9001788375295,
+    "implementationReadiness": {
+      "reason": "existing-immediate-capture-policy",
+      "source": "capture-policy",
+      "status": "ready",
+      "updatedAt": "2026-09-24T09:39:52.312Z",
+      "schemaVersion": "implementation-readiness-v1"
+    }
+  }
+}

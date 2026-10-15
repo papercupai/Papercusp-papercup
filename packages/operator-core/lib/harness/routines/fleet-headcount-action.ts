@@ -9,6 +9,8 @@ import {
   claimFleetHeadcountAttempt,
   claimFleetLaunchSlot,
   getFleet,
+  lapseFleetTopUpRule,
+  listExpiredFleetTopUpRules,
   listFleetHeadcountTargets,
   measureFleetProductiveHeadcount,
   mergeFleetLaunchWorkerAttestations,
@@ -16,7 +18,6 @@ import {
   releaseFleetLaunchSlot,
   setFleetHeadcountTarget,
   setFleetLaunchTransaction,
-  FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
   type FleetHeadcountConfig,
   type FleetHeadcountTarget,
   type FleetHeadcountBasis,
@@ -26,9 +27,9 @@ import {
   type FleetLaunchGovernorVerdict,
   type FleetLaunchTransaction,
 } from '../../agent-fleets-store';
+import type { FleetTopUpRule } from '../../fleet/top-up-rule';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
-import { executingOwnersSince } from '../../fleet/assignments';
 import { liveFleetMemberIds } from '../../fleet/fleet-roster';
 import { isWorkspaceWideLoopStanddownActive } from './release-pause-ttl';
 import {
@@ -41,6 +42,7 @@ import {
   type FreshLaunchExpectedAttestation,
 } from '../../agent-launch-core';
 import killTool from '../../agent-tools/fleet/kill';
+import { countedMemberSet, readFleetMemberSilence } from '../../agent-tools/fleet_registry/silent-member';
 import { resolveGoalLaunch } from '../../goal-launch-settings';
 import {
   goalFleetFamily,
@@ -867,6 +869,24 @@ export function supersedeLegacyHeadcountTransaction(args: {
   };
 }
 
+/**
+ * WI-10008195: the governor top-up's launch profile. The goal profile wins over
+ * the fleet config field by field, and the AGENT follows the same precedence as
+ * the MODEL so the pair stays coherent (a codex model never ships with the
+ * fleet config's default `--agent=claude`, which psu refuses at boot).
+ */
+export function resolveGovernorMemberLaunchProfile(
+  goalEffective: { agent?: FleetHeadcountConfig['agent']; model?: string; effort?: string; account?: string },
+  config: Pick<FleetHeadcountConfig, 'agent' | 'model' | 'effort' | 'account'>,
+): { agent: FleetHeadcountConfig['agent']; model: string | undefined; effort: string | undefined; account: string } {
+  return {
+    agent: goalEffective.agent ?? config.agent,
+    model: goalEffective.model ?? config.model,
+    effort: goalEffective.effort ?? config.effort,
+    account: goalEffective.account ?? config.account ?? 'default',
+  };
+}
+
 function governorLaunchTransaction(args: {
   prior: FleetLaunchTransaction | null;
   liveMemberIds: readonly string[];
@@ -874,6 +894,8 @@ function governorLaunchTransaction(args: {
   launcherOwnerId: string;
   now: number;
   config: FleetHeadcountConfig & { headless: boolean };
+  /** WI-10008195: the RESOLVED agent (goal profile > fleet config), never config.agent alone. */
+  agent: FleetHeadcountConfig['agent'];
   model: string | null;
   account: string;
   action: 'spawn' | 'respawn';
@@ -931,7 +953,7 @@ function governorLaunchTransaction(args: {
     requestedMembers: args.newMemberIds.map((ownerId, index) => ({
       index,
       ownerId,
-      agent: args.config.agent,
+      agent: args.agent,
       model: args.model,
       account: args.account,
       carry: args.config.carry ?? 'warm',
@@ -1019,9 +1041,11 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
     const now = Date.now();
     liveMemberIds = (await liveFleetMemberIds(fleetSlug, workspaceId, 'launch'))
       .filter((id) => id !== fleet.leaderOwnerId);
-    executingMemberIds = await executingOwnersSince(
-      liveMemberIds,
-      FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
+    // P-007 / R-17: a member silent past FLEET_MEMBER_SILENCE_THRESHOLD_MS (heartbeats
+    // only) does not count, so its seat is refilled. The governor only reaches this
+    // point for a fleet that is not winding down, hence fleetPaused:false.
+    executingMemberIds = countedMemberSet(
+      await readFleetMemberSilence(liveMemberIds, { fleetPaused: false }),
     );
 
     // Legacy launch records have no truthful --launched-by correlation. Adopt
@@ -1277,14 +1301,21 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
         'utf8',
       );
     }
-    const effectiveModel = goalLaunch.effective.model ?? config.model;
-    const effectiveEffort = goalLaunch.effective.effort ?? config.effort;
-    const effectiveAccount = goalLaunch.effective.account ?? config.account ?? 'default';
+    // WI-10008195: the agent backend MUST come from the same precedence as the
+    // model. A goal profile pinning a codex model (gpt-6.1-sol) on a fleet whose
+    // config.agent defaulted to claude produced `--agent=claude` + a codex model,
+    // which psu refuses at boot, so every governor top-up died silently.
+    const {
+      agent: effectiveAgent,
+      model: effectiveModel,
+      effort: effectiveEffort,
+      account: effectiveAccount,
+    } = resolveGovernorMemberLaunchProfile(goalLaunch.effective, config);
     const modelSpec = composeModelSpec(effectiveModel, effectiveEffort) ?? null;
     const newMemberIds = Array.from({ length: waveCount }, () => `su-${randomUUID()}`);
     const commands = newMemberIds.map((ownerId) => injectLaunchedByArg(memberLaunchCommand({
       fleetSlug,
-      agent: config.agent,
+      agent: effectiveAgent,
       harness: config.harness,
       headless: config.headless,
       ownerId,
@@ -1304,7 +1335,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
     }), launcherOwnerId).command);
     const expectedAttestations: FreshLaunchExpectedAttestation[] = newMemberIds.map((ownerId) => ({
       ownerId,
-      agent: config.agent,
+      agent: effectiveAgent,
       workspaceId,
       harnessSlug: config.harness,
       // Governor members pull from the fleet claim spec. The persisted plan is
@@ -1312,7 +1343,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       // transiently claims the parent plan item before scheduler:get_next runs.
       planSlug: null,
       model: modelSpec,
-      modelSource: config.agent === 'codex' ? (modelSpec ? 'explicit' : 'configured-default') : null,
+      modelSource: effectiveAgent === 'codex' ? (modelSpec ? 'explicit' : 'configured-default') : null,
       effort: modelEffortFromSpec(modelSpec),
       account: effectiveAccount,
       carry: config.carry ?? 'warm',
@@ -1426,6 +1457,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       launcherOwnerId,
       now,
       config,
+      agent: effectiveAgent,
       model: modelSpec,
       account: effectiveAccount,
       action,
@@ -1450,7 +1482,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
         config.headless
           ? spawnHeadless({
               envelope: { ...envelope, greetingCmd: commands[i], cwd: envelope.cwd },
-              label: `${fleetSlug} · governor member ${i + 1}/${waveCount} (${config.plan})`,
+              label: `${fleetSlug} · governor member ${i + 1}/${waveCount} (${config.plan ?? 'claim-spec'})`,
               logDir: logDir!,
               launchedBy: launcherOwnerId,
               fleetSlug,
@@ -1458,7 +1490,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
             })
           : spawnConsole({
               envelope: { ...envelope, greetingCmd: commands[i], cwd: envelope.cwd },
-              label: `${fleetSlug} · governor member ${i + 1}/${waveCount} (${config.plan})`,
+              label: `${fleetSlug} · governor member ${i + 1}/${waveCount} (${config.plan ?? 'claim-spec'})`,
               writeMcpJson: false,
               allowDesktopBridge: true,
             }),
@@ -1509,9 +1541,8 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
         .filter((id) => id !== launcherOwnerId);
       // Re-attest over the post-launch roster: the members just opened are the
       // ones whose execution the next deficit must account for.
-      executingMemberIds = await executingOwnersSince(
-        liveMemberIds,
-        FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
+      executingMemberIds = countedMemberSet(
+        await readFleetMemberSilence(liveMemberIds, { fleetPaused: false }),
       );
     } catch (error) {
       rosterError = `post-launch live roster read failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -1653,6 +1684,41 @@ export function grantingHeadcountTargets(
   return targets.filter((target) => target.config?.supervise === true);
 }
 
+/**
+ * P-005 / D-030: a no-top-up rule SUSPENDS holding; when its `until` passes
+ * without re-ratification the suspension ends and the governor restores what
+ * the rule suspended (target and/or supervise grant). A fleet whose plan is
+ * terminal only has the rule cleared, mirroring the terminal-plan disarm below,
+ * so an expiry can never re-arm finished work. Returns the lapses performed.
+ */
+export async function lapseExpiredTopUpRules(
+  workspaceId: string,
+  now: number = Date.now(),
+): Promise<Array<{ fleetSlug: string; restored: boolean; rule: FleetTopUpRule }>> {
+  const done: Array<{ fleetSlug: string; restored: boolean; rule: FleetTopUpRule }> = [];
+  for (const expired of (await listExpiredFleetTopUpRules(workspaceId, now)).slice(0, 8)) {
+    const terminalStatus = await terminalPlanStatusForFleet(workspaceId, expired.config);
+    const restored = !terminalStatus;
+    const lapsed = await lapseFleetTopUpRule({
+      workspaceId,
+      fleetSlug: expired.fleetSlug,
+      expectedUntil: expired.rule.until,
+      restore: restored,
+      now,
+    });
+    if (!lapsed) continue; // re-ratified or wound down concurrently
+    done.push({ fleetSlug: expired.fleetSlug, restored, rule: expired.rule });
+    console.warn(
+      `[${FLEET_HEADCOUNT_EVENT_PREFIX}] no-top-up rule on ${expired.fleetSlug} expired ` +
+        `(ratified by ${expired.rule.ratifiedBy}: ${expired.rule.reason.slice(0, 120)}); ` +
+        (restored
+          ? `restored target=${expired.rule.suspendedTarget ?? '(unchanged)'} supervise=${expired.rule.suspendedSupervise ?? '(unchanged)'}`
+          : `plan is ${terminalStatus}; rule cleared without restoring`),
+    );
+  }
+  return done;
+}
+
 export async function runFleetHeadcountGovernor(ctx: SystemActionCtx): Promise<void> {
   if (!(await getFlag(FLEET_HEADCOUNT_FLAG, 'system').catch(() => false))) return;
   // EI-23259368987233359, half 1 of 2 — a workspace-wide `loop:standdown-all`
@@ -1675,6 +1741,14 @@ export async function runFleetHeadcountGovernor(ctx: SystemActionCtx): Promise<v
     );
     return;
   }
+  // P-005 / D-030: end expired no-top-up rules BEFORE listing granting targets, so
+  // a fleet whose rule lapsed is held again on this same tick. Never fatal: a
+  // failed lapse leaves the rule expired-and-alarming on every read surface.
+  await lapseExpiredTopUpRules(ctx.workspaceId).catch((e) => {
+    console.warn(
+      `[${FLEET_HEADCOUNT_EVENT_PREFIX}] top-up rule lapse sweep failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  });
   // R5: the flag above is the MASTER gate; the per-fleet grant scopes it. The
   // filter runs BEFORE the wave cap so ungranted rows neither consume the
   // per-tick budget nor receive any action (top-up OR the terminal-plan

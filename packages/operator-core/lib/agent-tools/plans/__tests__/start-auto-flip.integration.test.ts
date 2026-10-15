@@ -68,10 +68,12 @@ const START_GATES = vi.hoisted(() => ({
   prediction: vi.fn(),
   listCards: vi.fn(),
   afterQuality: vi.fn(),
+  barCritique: vi.fn(),
 }));
 const REVISION_MOCK = vi.hoisted(() => ({ failInTransaction: false }));
 // Keep the real clause/class readers and quality evaluator. Only the unrelated
 // scorecard ledger is supplied; the hook models a policy change after preflight.
+// P-007 critique enforcement is a separate start contract, so keep it out of this race fixture.
 vi.mock('../plan-spec-quality-gate', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../plan-spec-quality-gate')>();
   return {
@@ -81,6 +83,14 @@ vi.mock('../plan-spec-quality-gate', async (importOriginal) => {
       await START_GATES.afterQuality(result);
       return result;
     },
+  };
+});
+vi.mock('../plan-start-critique-gate', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../plan-start-critique-gate')>();
+  return {
+    ...actual,
+    evaluatePlanStartBarCritique: (...args: Parameters<typeof actual.evaluatePlanStartBarCritique>) =>
+      START_GATES.barCritique(...args),
   };
 });
 vi.mock('../revisions', async (importOriginal) => {
@@ -303,6 +313,8 @@ beforeEach(async () => {
   START_GATES.listCards.mockResolvedValue([]);
   START_GATES.afterQuality.mockReset();
   START_GATES.afterQuality.mockResolvedValue(undefined);
+  START_GATES.barCritique.mockReset();
+  START_GATES.barCritique.mockResolvedValue(null);
   REVISION_MOCK.failInTransaction = false;
 });
 
@@ -544,5 +556,145 @@ describe('plans:start — draft auto-approve survives the retired op_status axis
        WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
     `;
     expect(rows[0]?.op_status ?? null).toBeNull();
+  });
+});
+
+/**
+ * WI-10005177 (EI-23764501791910357 slice 3b): the plan-start consult override takes
+ * an optional structured `consult_id`, resolved against a consult_state row the CALLER
+ * requested. Real PG, real resolver — "the override names a real consult of yours" is a
+ * claim about harness_shared.consult_state that no mocked lookup can make.
+ */
+describe('plans:start — consult_id links the override to a requested consult (WI-10005177)', () => {
+  // makeCtx's principal slug IS the caller's coord owner id (operationCallerId with no
+  // uiClientId), so it is the requester id a seeded consult must carry.
+  const CALLER = 'agent-start-flip-test';
+  const FULL_ID = 'conv-cid1-0000-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const OTHER_ID = 'conv-cid2-0000-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const BLOCKING_ID = 'conv-cid3-0000-cccccccccccccccccccccccccccccccc';
+
+  async function seedConsultRow(opts: {
+    id: string;
+    requester: string;
+    latency?: 'proceed' | 'hard-blocked';
+    outcome?: Record<string, unknown> | null;
+  }) {
+    // consult_state has no FK to coord_conversations, and the resolver reads
+    // consult_state only — seeding a conversation row would be fixture noise.
+    await admin`
+      INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, responder_id, state, question,
+         latency_contract, max_exchanges, exchanges_used, wakes_used, routing, outcome)
+      VALUES
+        (${WS}, ${opts.id}, ${opts.requester}, 'resp-1', 'awaiting_responder', 'q',
+         ${opts.latency ?? 'proceed'}, 4, 0, 0, ${admin.json({} as never)},
+         ${opts.outcome === undefined || opts.outcome === null ? null : admin.json(opts.outcome as never)})
+    `;
+  }
+
+  async function runWithConsultId(consultId: string): Promise<{ data: Record<string, unknown>; isError: boolean }> {
+    const res = (await runWithWorkspace(WS, () => startTool.handler({
+      harness: HARNESS,
+      slug: SLUG,
+      consulted: true,
+      consult_reason: 'consult concluded the plan assumptions hold',
+      consult_id: consultId,
+    } as never, makeCtx()))) as {
+      data: { results: Record<string, unknown>[]; counts?: { failed?: number } };
+    };
+    return { data: res.data.results[0], isError: (res.data.counts?.failed ?? 0) > 0 };
+  }
+
+  beforeEach(async () => {
+    await admin`DELETE FROM harness_shared.consult_state WHERE workspace_id = ${WS} AND conversation_id LIKE 'conv-cid%'`;
+  });
+  afterAll(async () => {
+    await admin`DELETE FROM harness_shared.consult_state WHERE workspace_id = ${WS} AND conversation_id LIKE 'conv-cid%'`;
+  });
+
+  it('records the resolved consult on the start result and says a proceed consult still owes reconciliation', async () => {
+    await seedLegacyPlan('draft');
+    await seedConsultRow({ id: FULL_ID, requester: CALLER });
+
+    const { data, isError } = await runWithConsultId(FULL_ID);
+    expect(isError, JSON.stringify(data)).toBe(false);
+    expect(data).toMatchObject({ status: 'started', autoApproved: true });
+    expect(data.checkpointConsult).toMatchObject({
+      overridden: true,
+      consulted: true,
+      reason: 'consult concluded the plan assumptions hold',
+      consultId: FULL_ID,
+      latencyContract: 'proceed',
+    });
+    expect(await frontmatterStatus()).toBe('ready');
+  });
+
+  it('resolves a unique PREFIX to the full id (the truncated-id shape consult verbs also accept)', async () => {
+    await seedLegacyPlan('draft');
+    await seedConsultRow({ id: FULL_ID, requester: CALLER });
+
+    const { data, isError } = await runWithConsultId('conv-cid1');
+    expect(isError, JSON.stringify(data)).toBe(false);
+    expect(data.checkpointConsult).toMatchObject({ consultId: FULL_ID });
+  });
+
+  it('links historical and blocking consultations without requiring a reporting action', async () => {
+    await seedConsultRow({
+      id: FULL_ID,
+      requester: CALLER,
+      outcome: { reconciliation: { disposition: 'confirmed', note: 'n', by: CALLER, at: '2026-10-02T00:00:00Z', consult_state: 'answered' } },
+    });
+    await seedConsultRow({ id: BLOCKING_ID, requester: CALLER, latency: 'hard-blocked' });
+
+    await seedLegacyPlan('draft');
+    const reconciled = await runWithConsultId(FULL_ID);
+    expect(reconciled.isError, JSON.stringify(reconciled.data)).toBe(false);
+    expect(reconciled.data.checkpointConsult).toMatchObject({ consultId: FULL_ID });
+    expect(reconciled.data.checkpointConsult).not.toHaveProperty('reconciliationOwed');
+    expect(reconciled.data.checkpointConsult).not.toHaveProperty('reconcileWith');
+
+    const blocking = await runWithConsultId(BLOCKING_ID);
+    expect(blocking.isError, JSON.stringify(blocking.data)).toBe(false);
+    expect(blocking.data.checkpointConsult).toMatchObject({
+      consultId: BLOCKING_ID,
+      latencyContract: 'hard-blocked',
+    });
+    expect(blocking.data.checkpointConsult).not.toHaveProperty('reconciliationOwed');
+    expect(blocking.data.checkpointConsult).not.toHaveProperty('reconcileWith');
+  });
+
+  it("refuses a consult the caller did NOT request, and refuses BEFORE any approval write (plan stays draft)", async () => {
+    await seedLegacyPlan('draft');
+    await seedConsultRow({ id: OTHER_ID, requester: 'someone-else' });
+
+    const { data, isError } = await runWithConsultId(OTHER_ID);
+    expect(isError).toBe(true);
+    expect(data).toMatchObject({ error: 'invalid_consult_id', consultError: { error: 'not_the_requester' } });
+    // The refusal is a read-only pre-check: no half-started plan.
+    expect(await frontmatterStatus()).toBe('draft');
+    expect(await revisionRows()).toEqual([]);
+  });
+
+  it('refuses an unknown consult id with not_a_consult and leaves the plan draft', async () => {
+    await seedLegacyPlan('draft');
+
+    const { data, isError } = await runWithConsultId('conv-nope-0000-dddddddddddddddddddddddddddddddd');
+    expect(isError).toBe(true);
+    expect(data).toMatchObject({ error: 'invalid_consult_id', consultError: { error: 'not_a_consult' } });
+    expect(await frontmatterStatus()).toBe('draft');
+  });
+
+  it('the schema refuses consult_id WITHOUT consulted (it names the consult behind an override)', () => {
+    const parsed = (startTool.args as { safeParse: (v: unknown) => { success: boolean } }).safeParse({
+      slug: SLUG,
+      consult_id: FULL_ID,
+    });
+    expect(parsed.success).toBe(false);
+    const withConsulted = (startTool.args as { safeParse: (v: unknown) => { success: boolean } }).safeParse({
+      slug: SLUG,
+      consulted: true,
+      consult_id: FULL_ID,
+    });
+    expect(withConsulted.success).toBe(true);
   });
 });

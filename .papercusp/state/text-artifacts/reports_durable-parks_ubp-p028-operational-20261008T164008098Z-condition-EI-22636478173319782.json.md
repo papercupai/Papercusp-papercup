@@ -1,0 +1,98 @@
+---
+rel_path: "reports/durable-parks/ubp-p028-operational-20261008T164008098Z-condition-EI-22636478173319782.json"
+updated_at: 1791478150917
+_body: "content"
+---
+
+{
+  "schemaVersion": "p028-condition-authority-v1",
+  "workspaceId": "papercusp-workspace",
+  "harness": "papercusp",
+  "checkedAt": "2026-10-08T16:49:10.917Z",
+  "sourceRunId": "ubp-p028-operational-20261008T164008098Z",
+  "matrixSha256": "f56259029f65fb99c7aa26e88ff2300ff9f7b5f52f83a9465ca070688df6a692",
+  "subject": {
+    "id": "EI-22636478173319782",
+    "condition": "Sibling EI-22636613539857225 completes the shared plans:new acceptance-BAR validation fix and this duplicate item can be verified/closed.",
+    "trigger": "work-item:done:EI-22636613539857225",
+    "owner": "su-04436973-b490-4123-9cd9-bca7ac89189c",
+    "currentState": "open",
+    "currentAssignee": null,
+    "expectedParkFingerprint": "bb00d5f942d461e84208803a9d223a771055f526a592c23a6f4b51f1ce59c8bc"
+  },
+  "blocker": {
+    "id": "EI-22636613539857225",
+    "state": "done",
+    "completionAuthority": "committed",
+    "completionEvidence": {
+      "summary": "Fixed plans:new so authored Requirements are checked against the post-epoch acceptance-BAR contract before persistence. It now reuses the shared requirement/bar-map parsers, refuses missing or malformed Design map rows with structured guidance, and preserves valid explicit mappings.",
+      "testsRun": "testing:run b83324ad-d983-4726-83a1-c34d6863e71b",
+      "treeStamp": {
+        "headSha": "321440802cd9e07684c0e206c38dac3a6f83e8d6",
+        "repositoryRoot": "/home/marsh-office/papercupai-workspace/papercusp",
+        "contentIdentity": [
+          {
+            "path": "packages/operator-core/lib/agent-tools/plans/new-parse-admission.test.ts",
+            "headBlobSha": "3751c24a780db02c58fa5a5c59cf5161db468b3f",
+            "workingTreeBlobSha": "3751c24a780db02c58fa5a5c59cf5161db468b3f"
+          },
+          {
+            "path": "packages/operator-core/lib/agent-tools/plans/new.ts",
+            "headBlobSha": "de405e07c88908fba4dbcbe2eaf36d69ff60e108",
+            "workingTreeBlobSha": "de405e07c88908fba4dbcbe2eaf36d69ff60e108"
+          }
+        ]
+      },
+      "addedTests": true,
+      "testResult": "PASS — 10/10 tests passed, 0 failed, 0 skipped across packages/operator-core/lib/agent-tools/plans/new-parse-admission.test.ts (5/5) and packages/operator-core/lib/agent-tools/plans/__tests__/new-body.test.ts (5/5), duration 68ms.",
+      "verifiedHow": "Re-ran both focused Vitest files through the testing router at settled local HEAD 6eba96abde622d8844d7740e234c89e77d4e9d9a after confirming the work-item checkpoint was stale; inspected the resulting source/test diff and confirmed no active locks remained.",
+      "filesChanged": [
+        "packages/operator-core/lib/agent-tools/plans/new.ts",
+        "packages/operator-core/lib/agent-tools/plans/new-parse-admission.test.ts"
+      ],
+      "settlementManifest": {
+        "headSha": "6eba96abde622d8844d7740e234c89e77d4e9d9a",
+        "version": 1,
+        "generation": 1,
+        "evidenceHash": "7eff570945b3dec2a0515105b12d571a6b504f5235d09e6bbe80f076418a1700",
+        "residualPaths": [],
+        "repositoryRoot": "/home/marsh-office/papercupai-workspace/papercusp",
+        "contentIdentity": [
+          {
+            "path": "packages/operator-core/lib/agent-tools/plans/new-parse-admission.test.ts",
+            "headBlobSha": "80f6392d07a95f0a89cab269406dd3c2033f2ed5",
+            "workingTreeBlobSha": "3751c24a780db02c58fa5a5c59cf5161db468b3f"
+          },
+          {
+            "path": "packages/operator-core/lib/agent-tools/plans/new.ts",
+            "headBlobSha": "bff4ff1077edaf33dfbfcb3ef83651b0b6731763",
+            "workingTreeBlobSha": "de405e07c88908fba4dbcbe2eaf36d69ff60e108"
+          }
+        ],
+        "normalizedPaths": [
+          "packages/operator-core/lib/agent-tools/plans/new-parse-admission.test.ts",
+          "packages/operator-core/lib/agent-tools/plans/new.ts"
+        ]
+      },
+      "rootCauseVerification": {
+        "hypothesis": "plans:new persisted Requirements without validating the explicit Design BAR map required later by plans:audit activation seeding, allowing a creation-time success to become a later bar_mapping_missing failure.",
+        "testResult": "PASS — the new regression rejects missing maps before persistence, accepts a complete explicit map, and the full focused pair passes 10/10.",
+        "distinguishingTest": "if H1 then a Requirements body without the exact BAR map is rejected before withPlanLock persistence while a complete explicit R-N to P-NNN map succeeds; if H2 then those focused admission tests would not distinguish pre-persistence refusal from successful persistence.",
+        "alternativeHypothesis": "The shared BAR parser or plans:audit activation seeding is incorrect, and plans:new only needs an unrelated formatting change."
+      },
+      "checkpointChecksCarried": [
+        {
+          "claim": "Focused plans:new regression and existing body tests pass",
+          "verified": "2026-09-08T10:54:41Z; 10/10 passed at local HEAD 78845d41be"
+        }
+      ]
+    }
+  },
+  "decision": {
+    "id": "EI-22636478173319782",
+    "expectedParkFingerprint": "bb00d5f942d461e84208803a9d223a771055f526a592c23a6f4b51f1ce59c8bc",
+    "reasonCode": "condition-satisfied",
+    "evidence": "Current getWorkItemsByIds root EI-22636613539857225 is done with committed authority; persisted completion documents plans:new shared BAR validation fix and 10 passing maintained tests. Exact park condition waits for this sibling completion before duplicate re-verification. Clearing releases only this wait; item remains open for verification."
+  },
+  "actualParkClears": 0
+}

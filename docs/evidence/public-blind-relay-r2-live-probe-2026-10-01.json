@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "public-blind-relay R-2: the deployed relay key b1015b56 is live on the public DHT (tower probe)",
+  "framework": "shell",
+  "command": ["npx", "tsx", "scripts/relay/probe-relay-key.ts"],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T18:12:24.556Z",
+  "finishedAt": "2026-10-01T18:12:31.578Z",
+  "summary": "Probe run on the tower against the public DHT with no relay configuration: it ran runRelayLivenessCheck (the boot check's own function) for the shipped default key and reported it live, exit 0. Plan public-blind-relay-2026-10-01 clause AUTO-BAR-R-2-P-002; D-003 records why the tower bg-host (isolated DHT) cannot log this line itself.",
+  "assertions": [
+    {
+      "id": "auto-bar-r-2-p-002",
+      "passed": true,
+      "evidence": "stdout: '[swarm] relay b1015b56 is live on the DHT' and '[swarm] relay fallback: 1 of 1 relay key(s) live on the DHT'; JSON {\"key\":\"b1015b569f617f58d68a41542a3f42ba0765909ffee43379a96d4c7c9cf49f4c\",\"status\":\"live\"}"
+    },
+    {
+      "id": "r2-exit-code-live",
+      "passed": true,
+      "evidence": "exit 0 (the probe exits 0 only when every key is live; 1 not-found; 2 unknown), captured as EXIT=0 in the capability:bash log for task 0mupuq6g18qplatlx3s"
+    },
+    {
+      "id": "r2-independent-earlier-run",
+      "passed": true,
+      "evidence": "an earlier independent run at 2026-10-01T16:57:59Z printed the same live line with exit 0 (recorded in plan decision D-003)"
+    }
+  ]
+}

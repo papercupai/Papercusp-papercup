@@ -1,8 +1,7 @@
 // P-005 resolver GATES (whole-app-sync-payload-audit phase2): learning.observations
-// (default view → precomputed snapshot; every predicate/cursor → live keyset read)
-// and learning.releaseReadiness (no args → unconditional snapshot SELECT). Both
-// are filled by the `system:precompute-derived-reads` routine (see
-// derived-reads/producers.ts). Mirrors the dev.* / coord-history gate tests.
+// (default and filtered views → live partition-aware keyset read) and
+// learning.releaseReadiness (no args → retained snapshot SELECT). The observations
+// rows must use the same live partition as their companion summary.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { knownQueryNamesV2 } from './index';
@@ -50,14 +49,18 @@ describe('P-005 resolver gates', () => {
     });
     afterEach(() => vi.resetModules());
 
-    it('learning.observations DEFAULT view (limit 200) reads the snapshot — never the inline compute', async () => {
+    it('learning.observations DEFAULT view (limit 200) reads the live partition rather than retained stock', async () => {
       const snap = [{ id: 'EI-1', title: 'snapshot', body: 'x', refs: [], createdAt: '2026-08-21T00:00:00.000Z' }];
       readDerivedSnapshotRowsMock.mockImplementation(async () => snap);
       const { resolveNamedQueryV2: r } = await import('./index');
       const rows = (await r('learning.observations', { limit: 200 })) as unknown[];
-      expect(rows).toMatchObject(snap);
-      expect(readDerivedSnapshotRowsMock).toHaveBeenCalledWith('learning.observations');
-      expect(readPageMock).not.toHaveBeenCalled();
+      expect(rows).toMatchObject([{ id: 'EI-9', title: 'live' }]);
+      expect(readDerivedSnapshotRowsMock).not.toHaveBeenCalled();
+      expect(readPageMock).toHaveBeenCalledWith(
+        expect.anything(),
+        'ws-test',
+        expect.objectContaining({ args: expect.objectContaining({ limit: 200 }) }),
+      );
     });
 
     it('learning.observations with a state filter falls through to the live keyset reader', async () => {

@@ -14,13 +14,16 @@ import {
   formatExecutedMapAlarmLines,
   formatExecutedMapLine,
   formatExecutedMapResultLines,
+  formatTestReuseAuditResultLines,
   formatExecutedMapTotalLine,
   gitChangedBetween,
   loadExecutedSourceMap,
   loadPassDurations,
+  loadReuseProofFiles,
   loadReuseProofs,
   resolveExecutedMapPgUrl,
   resolveTaskReportExpectation,
+  readExecutedMapResults,
   rowsToExecutedMap,
   rowsToReuseProofs,
   scriptCommandWords,
@@ -36,6 +39,85 @@ import {
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const ROOT = '/repo';
+
+describe('named first-attempt audit results', () => {
+  const file = 'packages/operator-core/lib/example.test.ts';
+  const sha = 'a'.repeat(40);
+  const payload = (verdict = 'pass') => ({
+    workspaceName: 'core', outcome: 'written', rows: 1, retired: 0, skipped: 0, dirty: false, sha, error: null,
+    fileResults: { version: 1, runnerIdentity: 'vitest:core', runContext: 'green-checkpoint',
+      runGroupId: 'initial-group', files: [{ testFile: file, verdict }] },
+  });
+  const read = (value: unknown) => readExecutedMapResults('/unused', { readFile: () => JSON.stringify(value) });
+  const emitted = (result: ReturnType<typeof readExecutedMapResults> | undefined) =>
+    JSON.parse(formatTestReuseAuditResultLines('core::test', result,
+      { watch: new Map([[file, 'audit'], ['expired.test.ts', 'expired-clean']]) })[0]!
+      .slice('TEST_PASS_REUSE_AUDIT_RESULT '.length));
+
+  it('retains actual named results/runtime and emits only selected audit files', () => {
+    const result = read(payload());
+    expect(result.results[0]?.fileResults).toEqual(payload().fileResults);
+    expect(emitted(result)).toMatchObject({ file, verdict: 'pass', judgedSha: sha,
+      runnerIdentity: 'vitest:core', runContext: 'green-checkpoint', runGroupId: 'initial-group' });
+  });
+  it('preserves an initial failure after the same result file reports a later retry pass', () => {
+    let bytes = JSON.stringify(payload('fail'));
+    const initial = readExecutedMapResults('/unused', { readFile: () => bytes });
+    bytes = JSON.stringify(payload('pass'));
+    expect(emitted(readExecutedMapResults('/unused', { readFile: () => bytes })).verdict).toBe('pass');
+    expect(emitted(initial).verdict).toBe('fail');
+  });
+  it.each(['unknown', 'pass', 'fail'])('retains the reporter verdict %s', (verdict) => {
+    expect(emitted(read(payload(verdict))).verdict).toBe(verdict);
+  });
+  it.each([
+    ['historical', { ...payload(), fileResults: undefined }],
+    ['foreign workspace', { ...payload(), workspaceName: 'other' }],
+    ['missing workspace', { ...payload(), workspaceName: undefined }],
+    ['wrong version', { ...payload(), fileResults: { ...payload().fileResults, version: 2 } }],
+    ['missing context', { ...payload(), fileResults: { ...payload().fileResults, runContext: '' } }],
+    ['missing group measurement', { ...payload(), fileResults: { ...payload().fileResults, runGroupId: undefined } }],
+    ['duplicate file', { ...payload(), fileResults: { ...payload().fileResults, files: [...payload().fileResults.files, ...payload().fileResults.files] } }],
+    ['invalid path', { ...payload(), fileResults: { ...payload().fileResults, files: [{ testFile: '../escape', verdict: 'pass' }] } }],
+    ['dirty', { ...payload(), dirty: true }],
+    ['missing dirty measurement', { ...payload(), dirty: undefined }],
+    ['abbreviated source', { ...payload(), sha: 'abcdef123456' }],
+  ])('does not certify %s evidence', (_label, value) => {
+    expect(emitted(read(value)).verdict).toBe('unknown');
+  });
+  it('keeps missing, malformed, unrelated and repeated flush evidence unknown', () => {
+    expect(emitted(undefined).verdict).toBe('unknown');
+    const repeated = readExecutedMapResults('/unused', {
+      readFile: () => `${JSON.stringify(payload())}\n${JSON.stringify(payload())}`,
+    });
+    expect(emitted(repeated).verdict).toBe('unknown');
+    expect(emitted({ ...read(payload()), malformed: 1 }).verdict).toBe('unknown');
+    expect(emitted(read({ ...payload(), fileResults: { ...payload().fileResults, files: [] } })).verdict).toBe('unknown');
+  });
+  it('snapshots at initial settlement and never re-reads after the retry pool', () => {
+    const source = readFileSync(join(REPO_ROOT, 'scripts/affected-tests.mjs'), 'utf8');
+    const initial = source.slice(source.indexOf('initialPool = await'), source.indexOf('// ── Reporting'));
+    expect(initial).toContain('initialExecutedMapReads.set(initialKey');
+    const reporting = source.slice(source.indexOf('// ── Reporting'));
+    expect(reporting).toContain('initialExecutedMapReads.get(taskKey(t))');
+    expect(reporting).not.toContain('readExecutedMapResults(executedMapResultFile)');
+  });
+
+  it('builds the static index before the scoped map read and reuses it for pruning', () => {
+    const source = readFileSync(join(REPO_ROOT, 'scripts/affected-tests.mjs'), 'utf8');
+    const selection = source.slice(source.indexOf('if (relatedOnly)'));
+    const buildAt = selection.indexOf('prepareRelatedTestSelection(');
+    const candidatesAt = selection.indexOf('prepared.selection.selected');
+    const queryAt = selection.indexOf('executedMapFor(');
+    const pruneAt = selection.indexOf('selectRelatedTests(');
+    expect(buildAt).toBeGreaterThanOrEqual(0);
+    expect(candidatesAt).toBeGreaterThan(buildAt);
+    expect(queryAt).toBeGreaterThan(candidatesAt);
+    expect(pruneAt).toBeGreaterThan(queryAt);
+    expect(selection.slice(queryAt, pruneAt)).toContain('candidates.map((file) => relative(ROOT, file))');
+    expect(selection.slice(pruneAt, pruneAt + 500)).toContain('prepared,');
+  });
+});
 
 describe('rowsToExecutedMap', () => {
   it('re-anchors repo-relative rows to absolute paths and keeps the first (newest) row per file', () => {
@@ -89,6 +171,42 @@ describe('loadExecutedSourceMap', () => {
     expect(calls[0]!.text).toMatch(/harness_shared\.test_executed_sources/);
     expect(calls[0]!.text).toMatch(/ORDER BY test_file, recorded_at DESC/);
   });
+
+  it('scopes the newest-row query to static test candidates', async () => {
+    const files = ['w/a.test.ts', 'w/b.test.ts'];
+    const calls: Array<{ text: string; values: unknown[] }> = [];
+    const client = {
+      query: async (text: string, values?: unknown[]) => {
+        calls.push({ text, values: values ?? [] });
+        return { rows: [{ test_file: files[0]!, recorded_sha: 'abc', executed_modules: [files[0]!] }] };
+      },
+    };
+    const { map, rows } = await loadExecutedSourceMap({
+      client,
+      workspaceName: '@x/w',
+      repoRoot: ROOT,
+      files,
+    });
+    expect(rows).toBe(1);
+    expect(map.has('/repo/w/a.test.ts')).toBe(true);
+    expect(map.has('/repo/w/b.test.ts')).toBe(false);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.values).toEqual(['@x/w', files]);
+    expect(calls[0]!.text).toMatch(/test_file = ANY\(\$2::text\[\]\)/);
+  });
+
+  it('skips the executed-source query when static selection has no candidates', async () => {
+    let calls = 0;
+    const client = { query: async () => { calls += 1; return { rows: [] }; } };
+    const result = await loadExecutedSourceMap({
+      client,
+      workspaceName: '@x/w',
+      repoRoot: ROOT,
+      files: [],
+    });
+    expect(result).toEqual({ map: new Map(), rows: 0 });
+    expect(calls).toBe(0);
+  });
 });
 
 describe('gitChangedBetween', () => {
@@ -125,6 +243,7 @@ describe('gitChangedBetween', () => {
       repoRoot: ROOT,
       exec: (_file, args, opts) => {
         const cwd = (opts as { cwd: string }).cwd;
+        if (args[0] === 'rev-parse') return cwd;
         calls.push(`${cwd} ${args.slice(-2).join('..')}`);
         if (cwd === ROOT) return rawEntry('160000', '160000', O1, O2, 'M', 'libs/sub');
         if (cwd === '/repo/libs/sub') return rawEntry('100644', '100644', O1, O2, 'M', 'src/x.ts');
@@ -135,16 +254,76 @@ describe('gitChangedBetween', () => {
     expect(calls).toEqual([`${ROOT} aaa..bbb`, `/repo/libs/sub ${O1}..${O2}`]);
   });
 
-  it('answers null (cannot tell) for an added submodule or an undiffable pinned commit', () => {
+  it('diffs added and removed gitlinks against the empty tree', () => {
+    const addedCalls: string[] = [];
+    const addedHashCwds: string[] = [];
     const added = gitChangedBetween({
       repoRoot: ROOT,
-      exec: () => rawEntry('000000', '160000', Z, O2, 'A', 'libs/new-sub'),
+      exec: (_file, args, opts) => {
+        const cwd = (opts as { cwd: string }).cwd;
+        if (args[0] === 'rev-parse') return cwd;
+        if (args[0] === 'hash-object') {
+          addedHashCwds.push(cwd);
+          return '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+        }
+        addedCalls.push(`${cwd} ${args.slice(-2).join('..')}`);
+        if (cwd === ROOT) return rawEntry('000000', '160000', Z, O2, 'A', 'libs/new-sub');
+        if (cwd === '/repo/libs/new-sub') return rawEntry('000000', '100644', Z, O2, 'A', 'src/new.ts');
+        throw new Error(`unexpected cwd ${cwd}`);
+      },
     });
-    expect(added('aaa', 'bbb')).toBeNull();
+    expect(added('aaa', 'bbb')).toEqual(new Set([
+      '/repo/libs/new-sub',
+      '/repo/libs/new-sub/src/new.ts',
+    ]));
+    expect(addedCalls).toEqual([
+      `${ROOT} aaa..bbb`,
+      `/repo/libs/new-sub 4b825dc642cb6eb9a060e54bf8d69288fbee4904..${O2}`,
+    ]);
+    expect(addedHashCwds).toEqual(['/repo/libs/new-sub']);
+
+    const removedCalls: string[] = [];
+    const removedHashCwds: string[] = [];
+    const removed = gitChangedBetween({
+      repoRoot: ROOT,
+      exec: (_file, args, opts) => {
+        const cwd = (opts as { cwd: string }).cwd;
+        if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') throw new Error('removed worktree');
+        if (args[0] === 'rev-parse' && args[1] === '--path-format=absolute') return '/repo/.git/modules/libs/old-sub';
+        if (args[0] === 'hash-object') {
+          removedHashCwds.push(cwd);
+          return '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+        }
+        removedCalls.push(`${cwd} ${args.slice(-2).join('..')}`);
+        if (cwd === ROOT) return rawEntry('160000', '000000', O1, Z, 'D', 'libs/old-sub');
+        if (cwd === '/repo/.git/modules/libs/old-sub') return rawEntry('100644', '000000', O1, Z, 'D', 'src/old.ts');
+        throw new Error(`unexpected cwd ${cwd}`);
+      },
+    });
+    expect(removed('aaa', 'bbb')).toEqual(new Set([
+      '/repo/libs/old-sub',
+      '/repo/libs/old-sub/src/old.ts',
+    ]));
+    expect(removedCalls).toEqual([
+      `${ROOT} aaa..bbb`,
+      `/repo/.git/modules/libs/old-sub ${O1}..4b825dc642cb6eb9a060e54bf8d69288fbee4904`,
+    ]);
+    expect(removedHashCwds).toEqual(['/repo/.git/modules/libs/old-sub']);
+  });
+
+  it('keeps type changes and missing pinned commits fail-open as unknown drift', () => {
+    const typeChanged = gitChangedBetween({
+      repoRoot: ROOT,
+      exec: () => rawEntry('160000', '100644', O1, O2, 'T', 'libs/sub'),
+    });
+    expect(typeChanged('aaa', 'bbb')).toBeNull();
     const missingPin = gitChangedBetween({
       repoRoot: ROOT,
-      exec: (_file, _args, opts) => {
-        if ((opts as { cwd: string }).cwd === ROOT) return rawEntry('160000', '160000', O1, O2, 'M', 'libs/sub');
+      exec: (_file, args, opts) => {
+        const cwd = (opts as { cwd: string }).cwd;
+        if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') throw new Error('worktree absent');
+        if (args[0] === 'rev-parse' && args[1] === '--path-format=absolute') return '/repo/.git/modules/libs/sub';
+        if (cwd === ROOT) return rawEntry('160000', '160000', O1, O2, 'M', 'libs/sub');
         throw new Error('fatal: bad object');
       },
     });
@@ -178,19 +357,38 @@ describe('env toggles + database precedence', () => {
   });
 
   it('reads the map from the SAME database the recording reporter writes to', () => {
+    // WI-10006736: the dedicated ledger variable wins, so an isolated verifier that points
+    // HARNESS_ADMIN_DATABASE_URL at a throwaway database still records into the shared ledger.
     expect(resolveExecutedMapPgUrl({ HARNESS_ADMIN_DATABASE_URL: 'postgresql://a', PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://b' })).toEqual({
-      url: 'postgresql://a',
-      source: 'HARNESS_ADMIN_DATABASE_URL',
-    });
-    expect(resolveExecutedMapPgUrl({ PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://b' })).toEqual({
       url: 'postgresql://b',
       source: 'PAPERCUSP_TEST_RUNS_DB_URL',
+    });
+    expect(resolveExecutedMapPgUrl({ HARNESS_ADMIN_DATABASE_URL: 'postgresql://a' })).toEqual({
+      url: 'postgresql://a',
+      source: 'HARNESS_ADMIN_DATABASE_URL',
     });
     const dflt = resolveExecutedMapPgUrl({});
     expect(dflt.source).toBe('default');
     // Pinned against the reporter's own fallback so the two sides cannot drift apart silently.
     const reporter = readFileSync(join(REPO_ROOT, 'libs/test-config/src/admin-test-runs-reporter.ts'), 'utf8');
     expect(reporter).toContain(`'${dflt.url}'`);
+  });
+
+  it('every live test-ledger writer resolves the dedicated ledger URL before the app admin URL', () => {
+    // Pin the ORDER whether a writer uses process.env directly or delegates to a small env
+    // resolver. A writer that reverts to HARNESS_ADMIN_DATABASE_URL-first silently sends an
+    // isolated run's rows into the throwaway database (WI-10006736).
+    const writers = [
+      'libs/test-config/src/admin-test-runs-reporter.ts',
+      'packages/operator-core/lib/testing-playwright-reporter.ts',
+      'apps/operator/scripts/prune-test-runs.ts',
+    ];
+    const chain = /(?:process\.env|env)\.(PAPERCUSP_TEST_RUNS_DB_URL|HARNESS_ADMIN_DATABASE_URL)(?:\?\.trim\(\))?\s*(?:\?\?|\|\|)\s*(?:process\.env|env)\.(PAPERCUSP_TEST_RUNS_DB_URL|HARNESS_ADMIN_DATABASE_URL)(?:\?\.trim\(\))?\s*(?:\?\?|\|\|)/g;
+    for (const rel of writers) {
+      const src = readFileSync(join(REPO_ROOT, rel), 'utf8');
+      const chains = [...src.matchAll(chain)].map((m) => `${m[1]}>${m[2]}`);
+      expect(chains, rel).toEqual(['PAPERCUSP_TEST_RUNS_DB_URL>HARNESS_ADMIN_DATABASE_URL']);
+    }
   });
 });
 
@@ -224,9 +422,26 @@ describe('scripts/affected-tests.mjs wiring (source pins)', () => {
     expect(source).toMatch(/selectRelatedTests\(\{[\s\S]*?executedMap: executedMap\.map,[\s\S]*?judgedSha: executedMapContext\.judgedSha,[\s\S]*?changedBetween: executedMapContext\.changedBetween,/);
   });
 
-  it('stamps the reporter arming env on unit vitest tasks only, and prints one line per workspace', () => {
+  it('classifies lane candidates before fetching wide proof rows', () => {
+    const scopeStart = source.indexOf('const requestedFiles =');
+    const laneRead = source.indexOf('const loadedProofs = await loadReuseProofs', scopeStart);
+    const scope = source.slice(scopeStart, laneRead);
+    const laneFilter = scope.indexOf('const scoped = laneScopedCandidates');
+    const laneClassify = scope.indexOf('await laneClassifier');
+    expect(scope).toContain('loadReuseProofFiles');
+    expect(laneFilter).toBeGreaterThanOrEqual(0);
+    expect(laneClassify).toBeGreaterThanOrEqual(0);
+    expect(laneRead).toBeGreaterThan(scopeStart);
+    expect(laneClassify).toBeLessThan(laneFilter);
+    expect(scopeStart + laneFilter).toBeLessThan(laneRead);
+    expect(source.slice(laneRead, source.indexOf('const label =', laneRead))).toContain(
+      '...(files == null ? {} : { files })',
+    );
+  });
+
+  it('stamps the reporter arming env on unit and integration vitest tasks, and prints one line per workspace', () => {
     expect(source).toMatch(
-      /const recordsExecutedMap =\s*executedMapRecordingEnabled\(\) &&\s*\(spawnTask\.script === "test" \|\| LANE_SCRIPTS\.includes\(spawnTask\.script\)\);/,
+      /const recordsExecutedMap =\s*executedMapRecordingEnabled\(\) &&\s*\(spawnTask\.script === "test" \|\| LANE_SCRIPTS\.includes\(spawnTask\.script\) \|\|\s*spawnTask\.script === "test:integration"\);/,
     );
     expect(source).toMatch(/\.\.\.\(recordsExecutedMap \? \{ \[EXECUTED_MAP_WORKSPACE_ENV\]: spawnTask\.ws\.name \} : \{\}\)/);
     // WI-10003603: the result channel — same env name on both sides, and the runner reads it back,
@@ -316,6 +531,60 @@ describe('reuse proofs loader', () => {
     expect(calls[0]?.text).toMatch(/DISTINCT ON \(test_file\)/);
     expect(calls[0]?.text).toMatch(/run_context = \$2/);
     expect(calls[0]?.text).toMatch(/ORDER BY test_file, recorded_at DESC/);
+  });
+
+  it('loads only the requested proof files when a targeted task supplies a scope', async () => {
+    const calls: Array<{ text: string; values?: unknown[] }> = [];
+    const client = {
+      query: async (text: string, values?: unknown[]) => {
+        calls.push({ text, values });
+        return { rows: [row()] };
+      },
+    };
+    const out = await loadReuseProofs({
+      client,
+      workspaceName: '@papercusp/x',
+      runContext: 'green-checkpoint',
+      files: ['pkg/a.test.ts', 'pkg/a.test.ts', ''],
+    });
+    expect(out.rows).toBe(1);
+    expect(out.proofs.has('pkg/a.test.ts')).toBe(true);
+    expect(calls[0]?.values).toEqual(['@papercusp/x', 'green-checkpoint', ['pkg/a.test.ts']]);
+    expect(calls[0]?.text).toMatch(/test_file = ANY\(\$3::text\[\]\)/);
+    expect(calls[0]?.text).toMatch(/DISTINCT ON \(test_file\)/);
+  });
+
+  it('does not query wide proof rows for an empty lane scope', async () => {
+    let queried = false;
+    const client = {
+      query: async () => {
+        queried = true;
+        return { rows: [] };
+      },
+    };
+    const out = await loadReuseProofs({
+      client,
+      workspaceName: '@papercusp/x',
+      runContext: 'green-checkpoint',
+      files: [],
+    });
+    expect(out).toEqual({ proofs: new Map(), rows: 0 });
+    expect(queried).toBe(false);
+  });
+
+  it('lists lane candidate keys without fetching wide proof arrays', async () => {
+    const calls: Array<{ text: string; values?: unknown[] }> = [];
+    const client = {
+      query: async (text: string, values?: unknown[]) => {
+        calls.push({ text, values });
+        return { rows: [{ test_file: 'pkg/a.test.ts' }, { test_file: 'pkg/b.test.ts' }] };
+      },
+    };
+    const out = await loadReuseProofFiles({ client, workspaceName: '@papercusp/x', runContext: 'green-checkpoint' });
+    expect(out).toEqual({ files: ['pkg/a.test.ts', 'pkg/b.test.ts'], rows: 2 });
+    expect(calls[0]?.values).toEqual(['@papercusp/x', 'green-checkpoint']);
+    expect(calls[0]?.text).toMatch(/SELECT DISTINCT test_file/);
+    expect(calls[0]?.text).not.toMatch(/executed_modules|read_paths/);
   });
 
   it('loadPassDurations reads the newest CI PASS per file, and drops unusable durations (P-013)', async () => {

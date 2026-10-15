@@ -21,6 +21,8 @@
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import type { TelemetryKind } from './telemetry-kinds';
 
+export { readCloudTelemetryConsent, writeCloudTelemetryConsent, cloudProvisioningObservation, cloudProductTutorialReviewEvents, prepareCloudTelemetryDelivery, deliverCloudTelemetry, safeCloudError, type CloudTelemetryContext, type CloudTelemetryEnvelope, type CloudTelemetryPreparation } from './cloud-telemetry';
+
 const REPORTS_KEY = 'telemetry_reports';
 
 /** Shared ring-buffer cap for both HTTP and server-side telemetry ingress. */

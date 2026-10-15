@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Counterexample: the woe.* holder-behavior instruments fail a live window whose measures were missed (goal 60d3a8, W1)",
+  "framework": "operational",
+  "plan": "goal-holder-plans-ideation-truthful-reports-2026-10-03",
+  "clauses": ["AUTO-BAR-R-7-P-007", "AUTO-BAR-R-7-P-008", "AUTO-BAR-R-7-P-011"],
+  "workItem": "WI-10005915",
+  "command": [
+    "npx tsx .papercusp/scratch/p008/grade.mts 2026-10-03T07:49:40Z 2026-10-03T09:49:40Z"
+  ],
+  "commandNote": "Same live grading instrument as goal-holder-woe-live-windows-2026-10-03.json (collectGoalHolderBehaviorMetrics + rateGoalHolderBehavior over the live Postgres ledger). This record exists to show the instrument is falsifiable on live data: on a window where measures were genuinely missed, it rates them fail.",
+  "workingDirectory": "papercusp",
+  "startedAt": "2026-10-03T09:49:50Z",
+  "finishedAt": "2026-10-03T09:49:56Z",
+  "exitCode": 1,
+  "summary": "W1 (07:49:40Z-09:49:40Z, holder su-a70547cc, card EI-24951369356377001) is a live counterexample: two of the five holder-behavior measures were genuinely missed in the ledger, and the instruments rated both fail. nudge-efficacy failed on 22 obligation-reminder watches cancelled with NULL cancel_reason (root cause filed as WI-10005938). holder-plan-authorship failed on one overdue unplanned cluster (anchor EI-23772322660353682, 4 items) that was neither planned nor dismissed in the window (root cause filed as WI-10005942: the signal-5 detector was absent from the holder's serving build until 09:20:41Z). The instrument therefore distinguishes a missed window from a passing one (W2, card EI-24961458823340256, 5 of 5 pass).",
+  "scope": "Live ledger read for one 2h window. Falsifiability evidence for the R-7 live-window clauses; it does not grade the holder's behavior on its own.",
+  "assertions": [
+    { "id": "holder-plan-authorship-measure-met", "passed": false, "evidence": "Instrument verdict fail: 1 overdue unplanned cluster at window end, not planned, not dismissed, no plan staffed for it." },
+    { "id": "nudge-efficacy-measure-met", "passed": false, "evidence": "Instrument verdict fail: 22 holder-scoped obligation watches cancelled with NULL cancel_reason (watchChurnWithoutReason 22)." },
+    { "id": "ideation-yield-measure-met", "passed": true, "evidence": "Instrument verdict pass: at least one evaluated candidate in the goal-day." },
+    { "id": "owner-report-truthfulness-measure-met", "passed": true, "evidence": "Instrument verdict pass: measured COST and an owner action on every walled entry; hand check found no false line." },
+    { "id": "stewardship-loop-liveness-measure-met", "passed": true, "evidence": "Instrument verdict pass: 19 delivered, 0 suppressed loop fires." }
+  ]
+}

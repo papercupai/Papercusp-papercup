@@ -16,58 +16,57 @@
  * `PgPresenceStore` (coord_presence) — over a real testcontainer Postgres. So the
  * isolation is proven where it actually has to hold, not just in the double.
  *
- * Wiring creates the coord tables idempotently (`ensureCoordEventLogTable` +
- * `ensureCoordPresenceTable`), connects with `prepare: false` (the jsonb
- * round-trip posture the prod handle uses), and fails closed if the bounded
- * `getTestPg()` readiness/re-resolution path cannot supply a writable database.
+ * Wiring provisions a fully-MIGRATED per-file database (`createOrgTestDb`), so every
+ * table the production send path touches comes from the real migrations rather than
+ * per-file DDL, and connects with `prepare: false` (the jsonb round-trip posture the
+ * prod handle uses). It fails closed if the bounded provisioning path cannot supply a
+ * writable database.
  * This file is release-qualification evidence: turning a final substrate failure
  * into ten skips would make a green exit indistinguishable from verified
  * isolation. Every case uses a UNIQUE workspace_id + unique ownerIds so the
  * shared table never leaks rows between cases.
  */
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
-import postgres, { type Sql } from 'postgres';
+import type { Sql } from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { PgCoordLog, ensureCoordEventLogTable } from '@papercusp/coordination/event-log';
-import { PgPresenceStore, ensureCoordPresenceTable } from '@papercusp/coordination/presence';
+import { PgCoordLog } from '@papercusp/coordination/event-log';
+import { PgPresenceStore } from '@papercusp/coordination/presence';
 import { PRESENCE_STALE_MS } from '@papercusp/pubsub-substrate/presence';
 import {
   InMemoryEntitySubscriptionStore,
   type ResolvedSubscriber,
   type DeliveryMode,
 } from '@papercusp/coordination/capabilities';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { createOrgTestDb, type OrgTestDb } from '../../../../test/_org-test-db';
 import { configureCoordLog, resetCoordLog } from '../log';
 import { readAckedMsgIds, readInbox, sendMessage } from '../messages';
 import { deliverInject, type InjectEvent } from '../fanout-delivery';
 import type { AgentIdentity } from '../identity';
 
-// Connect + create the coord tables at MODULE TOP-LEVEL (not in beforeAll) so a
-// final readiness/bootstrap failure aborts collection and makes the test command
-// nonzero. `getTestPg()` already owns the bounded retry + candidate re-resolution;
-// this layer must not reinterpret exhaustion as a release-green skip.
+// Provision the database at MODULE TOP-LEVEL (not in beforeAll) so a final
+// readiness/bootstrap failure aborts collection and makes the test command
+// nonzero. createOrgTestDb() owns the bounded retry + template clone; this layer
+// must not reinterpret exhaustion as a release-green skip.
+//
+// Real migrations, not the coord packages' ensure*() DDL: sendMessage seals at
+// the write seam (personal-data-reader-set-labels-2026-10-01 D-006, P-006) and
+// fails closed when harness_shared.personal_disclosures is absent. A database
+// holding only the coord tables refused every send with
+// disclosure_ledger_unavailable, so the fixture must carry the whole schema the
+// production send path reads.
+let org: OrgTestDb | null = null;
 let sql: Sql | null = null;
 
 try {
-  const url = await getTestPg();
-  // Mirror the prod org handle (and the two conformance tests): prepare:false
-  // governs how jsonb params round-trip; search_path so the unqualified table
-  // refs in PgPresenceStore's roster JOIN resolve.
-  sql = postgres(url, {
-    onnotice: () => {},
-    connection: { search_path: 'harness_shared, public' },
-    prepare: false,
-    max: 4,
-  });
+  org = await createOrgTestDb({ adminPoolMax: 4 });
+  // adminSql mirrors the prod org handle: prepare:false governs how jsonb params
+  // round-trip, and search_path 'harness_shared, public' resolves the unqualified
+  // table refs in PgPresenceStore's roster JOIN.
+  sql = org.adminSql;
   await sql`SELECT 1`;
-  // coord_event_log via the package's own canonical DDL (idempotent).
-  await ensureCoordEventLogTable(sql);
-  // coord_presence via the package's own canonical DDL (idempotent + self-healing
-  // ALTERs), so the store's schema (incl. the presence-v2 columns agent_role /
-  // hive_slug / last_active_at) never drifts from hand-rolled per-test DDL.
-  await ensureCoordPresenceTable(sql);
 } catch (e) {
-  if (sql) await sql.end({ timeout: 5 }).catch(() => {});
+  if (org) await org.cleanup().catch(() => {});
+  org = null;
   sql = null;
   throw new Error(
     `[cross-agent-isolation] real-Postgres qualification failed after bounded readiness; ` +
@@ -77,7 +76,7 @@ try {
 }
 
 afterAll(async () => {
-  if (sql) await sql.end({ timeout: 5 });
+  if (org) await org.cleanup();
 });
 
 /** Unique-per-test ids so the shared coord tables never bleed across cases. */

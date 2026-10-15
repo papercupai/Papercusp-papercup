@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   promises as fs,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -15,6 +16,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { findNativeTranscriptMarker } from '../../../../scripts/psu-pty-host.mjs';
 
 import { ompSessionsLinkArgsSchema } from '@papercusp/operator-core/lib/agent-tools/omp/sessions';
 import {
@@ -46,6 +48,8 @@ import {
   reportActivityResult,
   reportLifecycle,
   stageActivityReport,
+  launchProseBudgetForResult,
+  runLaunchProseBudgetHook,
   extractPathsFromToolInput,
   formatBusyRefusal,
   formatInboxDelta,
@@ -132,6 +136,7 @@ import {
   _stallWatchdogArmed,
   hookOwnerId,
   linkAdvSessionFromContext,
+  ensureNativeSessionOnDisk,
   onSessionShutdown,
   onSessionStart,
   withDeadline,
@@ -153,6 +158,7 @@ import {
   setDeclarationRegeneratorForTests,
   _resetDegradedNotifiedForTests,
   _resetActivityReportDedupeForTests,
+  _resetNativeSessionIdForTests,
   extractOmpMessageText,
   readLastOmpAssistantText,
   looksLikeUnstructuredOwnerAsk,
@@ -177,6 +183,12 @@ import {
   resourceBlockReason,
   stageSubstitutionAdvisory,
   drainSubstitutionAdvisory,
+  OMP_BASH_TOOL,
+  RTK_GUARD_MODULE,
+  importRtkRewriter,
+  ompBashRtkResult,
+  rtkGuardModuleCandidates,
+  type RtkRewriteSync,
   type InboxEntry,
 } from '../coord-hook';
 // The audited shell pairs, so the pre-filter guard below can read each pair's VERDICT
@@ -2915,6 +2927,46 @@ describe('formatTurnStartReminder', () => {
 });
 
 describe('register (OMP adapter)', () => {
+  it('makes a managed seed natively readable before any assistant response', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'omp-seed-persistence-'));
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn(async () => ({ ok: false })) as unknown as typeof fetch;
+    const marker = '⟦turn-origin:session-port nonce:13710410db2a0c23⟧';
+    const sinceMs = Date.now() - 1000;
+    const userRow = { type: 'message', timestamp: new Date().toISOString(),
+      message: { role: 'user', content: [{ type: 'text', text: `${marker}\nseed` }] } };
+    // OMP's fresh SessionManager buffers entries until an assistant exists,
+    // unless ensureOnDisk has enabled persistence. Exercise that boundary
+    // with the production host reader, including a negative lazy control.
+    const lazySession = (name: string) => {
+      const agentDir = join(root, name);
+      const sessionDir = join(agentDir, 'sessions');
+      mkdirSync(sessionDir, { recursive: true });
+      const file = join(sessionDir, 'native.jsonl');
+      const entries: unknown[] = [];
+      let eager = false;
+      const write = () => writeFileSync(file, entries.map(row => JSON.stringify(row)).join('\n') + '\n');
+      return {
+        file, env: { PI_CODING_AGENT_DIR: agentDir },
+        appendUser() { entries.push(userRow); if (eager) write(); },
+        async ensureOnDisk() { eager = true; write(); },
+      };
+    };
+    try {
+      const control = lazySession('lazy-control');
+      control.appendUser();
+      expect(findNativeTranscriptMarker({ agent: 'omp', env: control.env, marker, sinceMs })).toBeNull();
+      const session = lazySession('managed-target');
+      await onSessionStart({ sessionManager: session });
+      session.appendUser();
+      expect(findNativeTranscriptMarker({ agent: 'omp', env: session.env, marker, sinceMs })).toBe(session.file);
+      await expect(ensureNativeSessionOnDisk({ sessionManager: {} })).resolves.toBe(false);
+    } finally {
+      global.fetch = originalFetch;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   /**
    * Smoke test for the corrected OMP HookAPI contract (verified
    * 2026-05-20 against @oh-my-pi/pi-coding-agent installed version):
@@ -3729,6 +3781,52 @@ describe('onToolCall / onToolResult (file-locking #2)', () => {
     expect(called).toBe(false);
   });
 
+  it('retains disconnected lock observations until the existing activity heartbeat accepts them', async () => {
+    _resetActivityReportDedupeForTests();
+    const priorDir = process.env.PAPERCUSP_LOCKS_CACHE_DIR;
+    process.env.PAPERCUSP_LOCKS_CACHE_DIR = join(fx.workspace, 'hook-markers');
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    let offline = true;
+    global.fetch = (async (_url: unknown, init: { body: string }) => {
+      const request = JSON.parse(init.body).params;
+      calls.push({ name: request.name, args: request.arguments });
+      if (offline) throw new Error('ECONNREFUSED');
+      const payload = request.name === 'locks:acquire'
+        ? { ok: true, lock_id: 'observed-lock' }
+        : { ok: true, hook_fallbacks_accepted: request.arguments.hook_fallbacks?.length ?? 0 };
+      return { ok: true, text: async () => JSON.stringify({ result: { content: [{ type: 'text', text: JSON.stringify(payload) }] } }) };
+    }) as unknown as typeof fetch;
+    const edit = (id: string) => ({ type: 'tool_call' as const, toolName: 'write', toolCallId: id,
+      input: { path: join(repo, 'a.ts'), content: 'x' } });
+    try {
+      const first = edit('disconnected');
+      expect(await onToolCall(first)).toEqual({});
+      expect(calls.map(call => call.name)).toEqual(['locks:acquire']); // no reporting RPC on the edit path
+      stageActivityReport(first);
+      expect(await reportActivityResult({ type: 'tool_result', toolCallId: first.toolCallId })).toBeNull();
+      const missed = calls.at(-1)!.args.hook_fallbacks as Array<Record<string, unknown>>;
+      expect(missed).toHaveLength(1);
+      expect(missed[0]).toMatchObject({ eligible: 1, applied: 0, reason: 'lock-transport-unavailable' });
+      offline = false;
+      const second = edit('recovered');
+      expect(await onToolCall(second)).toEqual({});
+      stageActivityReport(second);
+      await reportActivityResult({ type: 'tool_result', toolCallId: second.toolCallId });
+      const delivered = calls.at(-1)!.args.hook_fallbacks as Array<Record<string, unknown>>;
+      expect(delivered).toHaveLength(2);
+      expect(delivered[0]).toEqual(missed[0]); // original outage time survives retry
+      expect(delivered[1]).toMatchObject({ eligible: 1, applied: 1, reason: 'applied' });
+      await reportActivity({ type: 'tool_call', toolName: 'read', toolCallId: 'drained', input: {} });
+      expect(calls.at(-1)!.args).not.toHaveProperty('hook_fallbacks');
+    } finally {
+      errors.mockRestore();
+      _resetActivityReportDedupeForTests();
+      if (priorDir === undefined) delete process.env.PAPERCUSP_LOCKS_CACHE_DIR;
+      else process.env.PAPERCUSP_LOCKS_CACHE_DIR = priorDir;
+    }
+  });
+
   it('forwards positive native edit proof with exact acquired paths', async () => {
     const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
     global.fetch = (async (_url: unknown, init: { body: string }) => {
@@ -3950,6 +4048,42 @@ describe('onToolCall worktree guard (single-tree discipline)', () => {
       input: { path: join(fx.repo, 'x.ts'), content: 'x' },
     });
     expect(r.block).toBeUndefined(); // guard passes → lock granted → {}
+  });
+
+  it.each([
+    { name: 'no-remotes', config: '[core]\nrepositoryformatversion = 0\n', blocked: false },
+    { name: 'other-origin', config: '[remote "origin"]\nurl = https://example.test/independent.git\n', blocked: false },
+    { name: 'same-origin', config: '[remote "origin"]\nurl = https://example.test/canonical.git\n', blocked: true },
+    { name: 'non-origin-remote', config: '[remote "upstream"]\nurl = https://example.test/independent.git\n', blocked: true },
+    { name: 'unreadable-config', config: null, blocked: true },
+  ])('coordinates independent-root edits conservatively: $name', async ({ name, config, blocked }) => {
+    await fs.writeFile(join(fx.repo, '.git', 'config'), '[remote "origin"]\nurl = https://example.test/canonical.git\n');
+    const sibling = join(fx.workspace, name);
+    await fs.mkdir(join(sibling, '.git'), { recursive: true });
+    await fs.writeFile(join(sibling, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    if (config !== null) await fs.writeFile(join(sibling, '.git', 'config'), config);
+    const r = await onToolCall({
+      type: 'tool_call', toolName: 'write', toolCallId: `root-${name}`,
+      input: { path: join(sibling, 'x.ts'), content: 'x' },
+    });
+    expect(r.block === true).toBe(blocked);
+    if (blocked) expect(r.reason).toContain('worktree guard');
+  });
+
+  it('still refuses a canonical linked worktree when the common repository has no remotes', async () => {
+    await fs.writeFile(join(fx.repo, '.git', 'config'), '[core]\nrepositoryformatversion = 0\n');
+    const sibling = join(fx.workspace, 'linked-no-remotes');
+    const metadata = join(fx.repo, '.git', 'worktrees', 'linked-no-remotes');
+    await fs.mkdir(sibling, { recursive: true });
+    await fs.mkdir(metadata, { recursive: true });
+    await fs.writeFile(join(metadata, 'commondir'), '../..\n');
+    await fs.writeFile(join(sibling, '.git'), `gitdir: ${metadata}\n`);
+    const r = await onToolCall({
+      type: 'tool_call', toolName: 'write', toolCallId: 'linked-no-remotes',
+      input: { path: join(sibling, 'x.ts'), content: 'x' },
+    });
+    expect(r.block).toBe(true);
+    expect(r.reason).toContain('LINKED WORKTREE');
   });
 
   it('allows an edit in a .papercusp/worktrees isolation tree', async () => {
@@ -4974,6 +5108,42 @@ describe('mid-turn coord delivery uses followUp, not steer (ornith-coord-inbox-f
         'ORIGINAL\n\n<system-reminder type="coord">\n[coord+1]\n- peerX ambient broadcast\n</system-reminder>',
     });
   });
+
+  it('uses the staged edit input for the budget advisory and skips failed edits', async () => {
+    const call = { type: 'tool_call' as const, toolName: 'edit', toolCallId: 'budget-edit', input: { path: 'apps/operator/prompts/example.md' } };
+    stageActivityReport(call);
+    const run = vi.fn(async () => 'overlay over by 4 B');
+    expect(await launchProseBudgetForResult({ type: 'tool_result', toolCallId: call.toolCallId, content: { ok: false } }, run)).toBe('');
+    expect(run).not.toHaveBeenCalled();
+    expect(await launchProseBudgetForResult({ type: 'tool_result', toolCallId: call.toolCallId, content: 'Successfully edited' }, run)).toContain('over by 4 B');
+    expect(run).toHaveBeenCalledWith(call);
+    expect(await launchProseBudgetForResult({ type: 'tool_result', toolCallId: 'not-staged', content: 'ok' }, run)).toBe('');
+  });
+
+  it('delivers shared hook output from the registered OMP result handler', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'omp-budget-hook-'));
+    const hook = join(root, '.papercusp/hooks/cc/posttooluse-launch-prose-budget-nudge.mjs');
+    const previousHome = process.env.HOME;
+    try {
+      mkdirSync(dirname(hook), { recursive: true });
+      writeFileSync(hook, 'export function shouldCheck(){return true;} if(process.argv[1]?.endsWith("posttooluse-launch-prose-budget-nudge.mjs")){process.stdin.resume(); process.stdin.on("end",()=>console.log(JSON.stringify({hookSpecificOutput:{additionalContext:"budget breach: overlay over by 4 B"}})));}');
+      process.env.HOME = root;
+      const subs = new Map<string, (e: unknown, ctx?: unknown) => unknown>();
+      const sendMessage = vi.fn();
+      const { default: register } = await import('../coord-hook');
+      register({ on: (name: string, handler: (e: unknown, ctx?: unknown) => unknown) => subs.set(name, handler), sendMessage } as never);
+      const call = { type: 'tool_call' as const, toolName: 'edit', toolCallId: 'budget-wire', input: { path: 'apps/operator/prompts/example.md' } };
+      stageActivityReport(call);
+      global.fetch = mockMcp({ ok: true });
+      const result = await subs.get('tool_result')!({ type: 'tool_result', toolCallId: call.toolCallId, content: 'EDIT SUCCEEDED' }, {});
+      expect(result).toEqual({ content: expect.stringContaining('EDIT SUCCEEDED\n\nbudget breach: overlay over by 4 B') });
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(await runLaunchProseBudgetHook({ ...call, toolName: 'read' })).toBe('');
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('collapseDigestNotifies (coordination-substrate Phase 2, D-006)', () => {
@@ -5257,6 +5427,99 @@ describe('reportLifecycle (OMP session lifecycle → activity bridge)', () => {
   it('reports a "■ session ended" lifecycle row on shutdown', async () => {
     const p = await capture('shutdown');
     expect(p?.arguments).toMatchObject({ kind: 'lifecycle', summary: '■ session ended' });
+  });
+});
+
+describe('activity:report verified native session query context (EI-24818103845663728)', () => {
+  const originalFetch = global.fetch;
+  const envKeys = [
+    'PAPERCUSP_BUNDLE_URL',
+    'PAPERCUSP_BUNDLE_ACCESS_TOKEN',
+    'PAPERCUSP_NATIVE_SESSION_ID',
+    'PAPERCUSP_ADV_SESSION_ID',
+  ] as const;
+  const previousEnv = new Map<string, string | undefined>();
+
+  beforeEach(() => {
+    previousEnv.clear();
+    for (const key of envKeys) previousEnv.set(key, process.env[key]);
+    _resetHookOwnerIdForTests();
+    _resetActivityReportDedupeForTests();
+    _resetNativeSessionIdForTests();
+    process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
+    process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN = 't';
+    delete process.env.PAPERCUSP_NATIVE_SESSION_ID;
+    delete process.env.PAPERCUSP_ADV_SESSION_ID;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    for (const key of envKeys) {
+      const value = previousEnv.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    _resetActivityReportDedupeForTests();
+    _resetNativeSessionIdForTests();
+    _resetHookOwnerIdForTests();
+  });
+
+  it('binds pre, post, and lifecycle report requests to the session_start native id', async () => {
+    const nativeSessionId = 'native session/+1';
+    const calls: Array<{
+      url: string;
+      params: { name: string; arguments: Record<string, unknown> };
+    }> = [];
+    global.fetch = (async (input: unknown, init?: { body?: string }) => {
+      if (!init?.body) return { ok: true };
+      const request = JSON.parse(init.body) as {
+        params: { name: string; arguments: Record<string, unknown> };
+      };
+      calls.push({ url: String(input), params: request.params });
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            result: { content: [{ type: 'text', text: '{"ok":true}' }] },
+          }),
+      };
+    }) as unknown as typeof fetch;
+
+    await onSessionStart({ sessionManager: { getSessionId: () => nativeSessionId } });
+    await reportActivity({
+      type: 'tool_call',
+      toolName: 'read',
+      toolCallId: 'pre-1',
+      input: { path: 'a.ts' },
+    });
+    stageActivityReport({
+      type: 'tool_call',
+      toolName: 'read',
+      toolCallId: 'post-1',
+      input: { path: 'b.ts' },
+    });
+    await reportActivityResult({ type: 'tool_result', toolCallId: 'post-1' });
+    await reportLifecycle('shutdown');
+
+    const reports = calls.filter((call) => call.params.name === 'activity:report');
+    expect(reports).toHaveLength(4); // session start, pre-tool, post-tool, and shutdown
+    expect(reports.map((call) => call.params.arguments.tool_use_id)).toContain('pre-1');
+    expect(reports.map((call) => call.params.arguments.tool_use_id)).toContain('post-1');
+    expect(reports.map((call) => call.params.arguments.summary)).toContain('▶ session started');
+    expect(reports.map((call) => call.params.arguments.summary)).toContain('■ session ended');
+    for (const call of reports) {
+      const url = new URL(call.url);
+      expect(url.searchParams.getAll('native_session')).toEqual([nativeSessionId]);
+      expect(url.searchParams.get('origin')).toBe('hook');
+      expect(url.searchParams.get('client')).toMatch(/^omp-/);
+      expect(call.params.arguments).not.toHaveProperty('native_session');
+    }
+
+    const declaration = calls.find((call) => call.params.name === 'coord:declare-intent');
+    expect(declaration).toBeDefined();
+    expect(new URL(declaration!.url).searchParams.has('native_session')).toBe(false);
   });
 });
 
@@ -6731,5 +6994,122 @@ describe('onToolCall registry verdict — resource holds + substitutions (P-017)
     });
     expect(r.block).toBeUndefined();
     expect(checkCalls()).toBe(0);
+  });
+});
+
+// WI-6554700010010472 (owner #1798): OMP's native bash goes through the same RTK rewriter
+// as Claude's Bash, Codex's direct shell calls and capability:bash.
+describe('RTK output compression for OMP native bash', () => {
+  const rtkFake = (): { rewrite: RtkRewriteSync; calls: Array<{ command: string; cwd?: string }> } => {
+    const calls: Array<{ command: string; cwd?: string }> = [];
+    const rewrite: RtkRewriteSync = (command, opts) => {
+      calls.push({ command, cwd: opts?.cwd });
+      return `rtk ${command}`;
+    };
+    return { rewrite, calls };
+  };
+
+  it('replaces only the command of a bash call and keeps every other parameter', () => {
+    const { rewrite, calls } = rtkFake();
+    const input = { command: 'git status', env: { FOO: '1' }, timeout: 30, cwd: '/w', async: true };
+    const out = ompBashRtkResult({ toolName: OMP_BASH_TOOL, input }, {}, rewrite);
+    expect(out).toEqual({ input: { command: 'rtk git status', env: { FOO: '1' }, timeout: 30, cwd: '/w', async: true } });
+    expect(calls).toEqual([{ command: 'git status', cwd: '/w' }]);
+    // The event's own input is not mutated: activity reports and gates saw the original.
+    expect(input.command).toBe('git status');
+  });
+
+  it('keeps fields of a non-blocking gate result alongside the rewrite', () => {
+    const { rewrite } = rtkFake();
+    const gate: { block?: boolean; reason?: string } = { reason: 'advisory' };
+    const out = ompBashRtkResult({ toolName: 'bash', input: { command: 'ls' } }, gate, rewrite);
+    expect(out).toEqual({ reason: 'advisory', input: { command: 'rtk ls' } });
+  });
+
+  it('never rewrites a blocked call, and never asks RTK about one', () => {
+    const { rewrite, calls } = rtkFake();
+    const blocked = { block: true, reason: 'held by a peer' };
+    expect(ompBashRtkResult({ toolName: 'bash', input: { command: 'git status' } }, blocked, rewrite)).toBe(blocked);
+    expect(calls).toEqual([]);
+  });
+
+  it.each([
+    ['python', { command: 'git status' }],
+    ['read', { path: 'x' }],
+    ['Bash', { command: 'git status' }],
+  ])('leaves a %s call untouched', (toolName, input) => {
+    const { rewrite, calls } = rtkFake();
+    const result = {};
+    expect(ompBashRtkResult({ toolName, input }, result, rewrite)).toBe(result);
+    expect(calls).toEqual([]);
+  });
+
+  it.each([
+    ['no input', undefined],
+    ['a missing command', { cwd: '/w' }],
+    ['a blank command', { command: '   ' }],
+    ['a non-string command', { command: ['git', 'status'] }],
+    ['a PTY (interactive) run', { command: 'git status', pty: true }],
+    ['RTK_DISABLED=1 in the call env', { command: 'git status', env: { RTK_DISABLED: '1' } }],
+  ])('leaves a bash call with %s untouched', (_label, input) => {
+    const { rewrite, calls } = rtkFake();
+    const result = {};
+    expect(ompBashRtkResult({ toolName: 'bash', input }, result, rewrite)).toBe(result);
+    expect(calls).toEqual([]);
+  });
+
+  it('fails open: no rewriter, a null or identical rewrite, or a throwing rewriter', () => {
+    const result = {};
+    const event = { toolName: 'bash', input: { command: 'git status' } };
+    expect(ompBashRtkResult(event, result, null)).toBe(result);
+    expect(ompBashRtkResult(event, result, () => null)).toBe(result);
+    expect(ompBashRtkResult(event, result, (c) => c)).toBe(result);
+    expect(
+      ompBashRtkResult(event, result, () => {
+        throw new Error('rtk crashed');
+      }),
+    ).toBe(result);
+  });
+
+  it('looks for the rewriter where both installers put hooks/cc', () => {
+    expect(rtkGuardModuleCandidates('/h')).toEqual([`/h/.papercusp/hooks/cc/${RTK_GUARD_MODULE}`]);
+  });
+
+  it('imports rtkRewriteSync from the first loadable candidate, skipping missing and broken ones', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omp-rtk-'));
+    try {
+      const broken = join(dir, 'broken.mjs');
+      const wrongShape = join(dir, 'wrong-shape.mjs');
+      const good = join(dir, 'good.mjs');
+      writeFileSync(broken, 'throw new Error("load failure");\n');
+      writeFileSync(wrongShape, 'export const rtkRewriteSync = "not a function";\n');
+      writeFileSync(good, 'export function rtkRewriteSync(c) { return "rtk " + c; }\n');
+      const rewrite = await importRtkRewriter([join(dir, 'missing.mjs'), broken, wrongShape, good]);
+      expect(rewrite?.('git status')).toBe('rtk git status');
+      expect(await importRtkRewriter([join(dir, 'missing.mjs'), broken, wrongShape])).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('loads the real shared rewriter from the hooks/cc module the installers copy', async () => {
+    const guard = resolve(dirname(fileURLToPath(import.meta.url)), '../../cc', RTK_GUARD_MODULE);
+    const rewrite = await importRtkRewriter([guard]);
+    expect(typeof rewrite).toBe('function');
+    // The shared policy applies: an explicit opt-out is never rewritten.
+    expect(rewrite?.('RTK_DISABLED=1 git status')).toBeNull();
+  });
+
+  it('wires the rewrite into the registered tool_call handler, after the block check', () => {
+    const source = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../coord-hook.ts'), 'utf8');
+    const start = source.indexOf("pi.on('tool_call'");
+    const end = source.indexOf("pi.on('tool_result'", start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const handler = source.slice(start, end);
+    const blockCheck = handler.indexOf('if (result.block) return result;');
+    const rewrite = handler.indexOf('return ompBashRtkResult(event, result, await safe(() => loadRtkRewriter(), null));');
+    expect(blockCheck).toBeGreaterThan(-1);
+    expect(rewrite).toBeGreaterThan(blockCheck);
   });
 });

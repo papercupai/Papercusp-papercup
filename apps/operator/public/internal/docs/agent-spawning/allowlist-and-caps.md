@@ -1,7 +1,7 @@
 # Admission & the concurrency ceiling
 URL: /internal/docs/agent-spawning/allowlist-and-caps
 
->-
+Who may spawn, how a spawn is admitted (brain judgment, not a rules budget), the one fleet-wide cap, and how a rejected spawn fails. NOTE: the admission MECHANISM is live and unchanged, but the roster it is illustrated with is not — `mug`/`kettle`/`cup` are retired roles as of 2026-08-09 and `cup:spawn` refuses.
 
 :::caution\[The role gate below still runs — but `mug` / `cup` / `kettle` are retired roles]
 The Mug · Kettle · Cup/nursery **role tier** was **retired 2026-08-09** (owner-directed).

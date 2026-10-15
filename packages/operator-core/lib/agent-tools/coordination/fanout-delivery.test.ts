@@ -24,6 +24,8 @@ import {
   type InjectEvent,
   type InjectSink,
 } from './fanout-delivery';
+import { refilledTokens } from '@papercusp/structured-concurrency';
+import { reserveWakeTimes, withWakeFanoutPacing, readWakeFanoutPacing } from './wake-fanout-pacing';
 
 function sub(id: string, mode: DeliveryMode = 'full', via = 'object'): ResolvedSubscriber {
   return { subscriber_id: id, delivery_mode: mode, via };
@@ -163,5 +165,33 @@ describe('deliverInjectMany', () => {
     const n = await deliverInjectMany([sub('a', 'mention'), sub('b', 'full')], ev({ isResolution: true }), sink);
     expect(n).toBe(2);
     expect(inbox.a).toHaveLength(1);
+  });
+});
+
+describe('bulk wake schedule (WI-6554700010009434)', () => {
+  it('delivers a 200-recipient reservation over 19.5 minutes, with five immediate wakes', () => {
+    const { times, tokens } = reserveWakeTimes(5, 200, 10_000);
+    expect(times.slice(0, 5)).toEqual(Array(5).fill(10_000));
+    expect(times[5]).toBe(16_000);
+    expect(times[199]).toBe(1_180_000);
+    expect(tokens).toBe(-195);
+    expect(new Set(times.slice(5)).size).toBe(195);
+  });
+
+  it('a second producer inherits the first reservation debt instead of creating a new burst', () => {
+    const first = reserveWakeTimes(5, 200, 0);
+    const refilled = refilledTokens({ tokens: first.tokens, capacity: 5, refillPerSec: 1 / 6, updatedAtMs: 0 }, 6_000);
+    const next = reserveWakeTimes(refilled, 10, 6_000);
+    expect(next.times[0]).toBe(1_176_000);
+    expect(next.times.at(-1)).toBe(1_230_000);
+  });
+
+  it('pacing metadata survives durable JSON serialization without losing the original message', () => {
+    const payload = withWakeFanoutPacing({ msg_id: 'directive-1', relayProvenance: { origin: 'owner' } }, { workspaceId: 'ws-a', notBeforeMs: 60_000 });
+    const restored = JSON.parse(JSON.stringify(payload));
+    expect(readWakeFanoutPacing(restored)).toEqual({ workspaceId: 'ws-a', notBeforeMs: 60_000 });
+    expect(restored.msg_id).toBe('directive-1');
+    expect(restored.relayProvenance.origin).toBe('owner');
+    expect(readWakeFanoutPacing({ __papercuspWakeFanout: { workspaceId: '', notBeforeMs: 'bad' } })).toBeNull();
   });
 });

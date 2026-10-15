@@ -15,6 +15,12 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import { parseWorkedByHistory } from './work-item-prior-work';
+import { boundedPgReadTxn } from './pg-read-query';
+
+// Admin pools also serve migrations and deliberately have no statement timeout.
+// Interactive lineage readers must not leave a backend running after its caller
+// or host disappears. An injected SQL client belongs to its caller's transaction.
+const LINEAGE_READ_TIMEOUT_MS = 5_000;
 
 export interface AcceptanceAuthorIdentityOpts {
   sql?: Sql;
@@ -32,6 +38,36 @@ export interface AcceptanceAuthorIdentityOpts {
  */
 function identityEdges(sql: Sql, workspaceId: string) {
   return sql`
+        -- Both launch suppression and lineage consume the SAME routed mapping.
+        -- Materialize it once: a correlated scan of every prompt-bearing consult
+        -- routing document for every launched session is quadratic in the two
+        -- populations, even when the reachability walk itself is deduplicated.
+        WITH consult_dispatch(from_id, to_id) AS MATERIALIZED (
+          SELECT sel->>'ownerId', sel->>'answeringOwnerId'
+            FROM harness_shared.consult_state cs
+            CROSS JOIN LATERAL jsonb_array_elements(
+                   CASE jsonb_typeof(cs.routing -> 'selection' -> 'selected')
+                     WHEN 'array' THEN cs.routing -> 'selection' -> 'selected'
+                     ELSE '[]'::jsonb
+                   END
+                 ) AS sel
+           WHERE cs.workspace_id = ${workspaceId}
+             AND NULLIF(sel->>'ownerId', '') IS NOT NULL
+             AND NULLIF(sel->>'answeringOwnerId', '') IS NOT NULL
+             AND sel->>'ownerId' IS DISTINCT FROM sel->>'answeringOwnerId'
+          UNION
+          -- The task row is the durable fallback when the selection stamp is
+          -- absent. It is written before dispatch and survives state cleanup.
+          SELECT ledger_answer.detail #>> '{consultAnswer,sourceOwnerId}',
+                 ledger_answer.detail #>> '{consultAnswer,answeringOwnerId}'
+            FROM harness_shared.task_ledger AS ledger_answer
+           WHERE ledger_answer.workspace_id = ${workspaceId}
+             AND ledger_answer.detail ? 'consultAnswer'
+             AND NULLIF(ledger_answer.detail #>> '{consultAnswer,sourceOwnerId}', '') IS NOT NULL
+             AND NULLIF(ledger_answer.detail #>> '{consultAnswer,answeringOwnerId}', '') IS NOT NULL
+             AND ledger_answer.detail #>> '{consultAnswer,sourceOwnerId}'
+                 IS DISTINCT FROM ledger_answer.detail #>> '{consultAnswer,answeringOwnerId}'
+        )
         SELECT args_json->>'from',
                COALESCE(NULLIF(args_json->>'to', ''), coord_owner_id)
           FROM harness_shared.tool_invocations
@@ -62,18 +98,8 @@ function identityEdges(sql: Sql, workspaceId: string) {
            AND launch_parent_owner IS NOT NULL
            AND NULLIF(coord_owner_id, '') IS NOT NULL
            AND NOT EXISTS (
-                 SELECT 1
-                   FROM harness_shared.consult_state routed
-                   CROSS JOIN LATERAL jsonb_array_elements(
-                          CASE jsonb_typeof(routed.routing -> 'selection' -> 'selected')
-                            WHEN 'array' THEN routed.routing -> 'selection' -> 'selected'
-                            ELSE '[]'::jsonb
-                          END
-                        ) AS routed_sel
-                  WHERE routed.workspace_id = ${workspaceId}
-                    AND routed_sel->>'answeringOwnerId' = adv_sessions.coord_owner_id
-                    AND NULLIF(routed_sel->>'ownerId', '') IS NOT NULL
-                    AND routed_sel->>'ownerId' IS DISTINCT FROM routed_sel->>'answeringOwnerId'
+                 SELECT 1 FROM consult_dispatch routed
+                  WHERE routed.to_id = adv_sessions.coord_owner_id
                )
         UNION
         SELECT parent_spawn_id, spawn_id
@@ -106,22 +132,7 @@ function identityEdges(sql: Sql, workspaceId: string) {
         -- transcript's lineage — is not evaluated at all. Exclusion must follow
         -- the KNOWLEDGE, not the process that started the session.
         --
-        -- Derived, never a second hand-maintained field: this is the same
-        -- answeringOwnerId the consult participant gate is already keyed on, so
-        -- an identity that can post on a consult is exactly one this covers.
-        SELECT sel->>'ownerId',
-               sel->>'answeringOwnerId'
-          FROM harness_shared.consult_state cs
-          CROSS JOIN LATERAL jsonb_array_elements(
-                 CASE jsonb_typeof(cs.routing -> 'selection' -> 'selected')
-                   WHEN 'array' THEN cs.routing -> 'selection' -> 'selected'
-                   ELSE '[]'::jsonb
-                 END
-               ) AS sel
-         WHERE cs.workspace_id = ${workspaceId}
-           AND NULLIF(sel->>'ownerId', '') IS NOT NULL
-           AND NULLIF(sel->>'answeringOwnerId', '') IS NOT NULL
-           AND sel->>'ownerId' IS DISTINCT FROM sel->>'answeringOwnerId'
+        SELECT from_id, to_id FROM consult_dispatch
   `;
 }
 
@@ -136,7 +147,9 @@ function identityEdges(sql: Sql, workspaceId: string) {
  * like a descendant grader, while siblings remain eligible (sharing a parent is
  * not lineage).
  * Spawn ids and session owners are aliases in the spawned-agent table; both
- * representations are bridged. The recursive walk is bounded and cycle-safe.
+ * representations are bridged. UNION deduplicates (node, depth) states, rather
+ * than enumerating every path through a converging graph. The hop bound keeps
+ * cycles finite without changing reachability or sibling independence.
  */
 export async function areAcceptanceLineageRelated(
   firstId: string | null | undefined,
@@ -147,30 +160,32 @@ export async function areAcceptanceLineageRelated(
   const second = secondId?.trim() ?? '';
   if (!first || !second) return false;
   if (first === second) return true;
+  if (!opts.sql) {
+    return boundedPgReadTxn((sql) => areAcceptanceLineageRelated(first, second, { ...opts, sql }),
+      { timeoutMs: LINEAGE_READ_TIMEOUT_MS });
+  }
 
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const sql = opts.sql ?? getOrgPg().sql;
   const rows = await sql<Array<{ matches: boolean }>>`
-      WITH RECURSIVE identity_edges(from_id, to_id) AS (
+      WITH RECURSIVE identity_edges(from_id, to_id) AS MATERIALIZED (
         ${identityEdges(sql, workspaceId)}
       ),
-      walk(node, path, depth) AS (
-        SELECT ${first}::text, ARRAY[${first}::text], 0
-        UNION ALL
-        SELECT edge.to_id, walk.path || edge.to_id, walk.depth + 1
+      walk(node, depth) AS (
+        SELECT ${first}::text, 0
+        UNION
+        SELECT edge.to_id, walk.depth + 1
           FROM walk
           JOIN identity_edges AS edge ON edge.from_id = walk.node
          WHERE walk.depth < 64
-           AND NOT edge.to_id = ANY(walk.path)
       ),
-      reverse_walk(node, path, depth) AS (
-        SELECT ${second}::text, ARRAY[${second}::text], 0
-        UNION ALL
-        SELECT edge.to_id, reverse_walk.path || edge.to_id, reverse_walk.depth + 1
+      reverse_walk(node, depth) AS (
+        SELECT ${second}::text, 0
+        UNION
+        SELECT edge.to_id, reverse_walk.depth + 1
           FROM reverse_walk
           JOIN identity_edges AS edge ON edge.from_id = reverse_walk.node
          WHERE reverse_walk.depth < 64
-           AND NOT edge.to_id = ANY(reverse_walk.path)
       )
       SELECT EXISTS (SELECT 1 FROM walk WHERE node = ${second})
           OR EXISTS (SELECT 1 FROM reverse_walk WHERE node = ${first}) AS matches
@@ -193,32 +208,75 @@ export async function acceptanceLineageClosure(
 ): Promise<Set<string>> {
   const self = id?.trim() ?? '';
   if (!self) return new Set();
+  if (!opts.sql) {
+    return boundedPgReadTxn((sql) => acceptanceLineageClosure(self, { ...opts, sql }),
+      { timeoutMs: LINEAGE_READ_TIMEOUT_MS });
+  }
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const sql = opts.sql ?? getOrgPg().sql;
   const rows = await sql<Array<{ node: string }>>`
-      WITH RECURSIVE identity_edges(from_id, to_id) AS (
+      WITH RECURSIVE identity_edges(from_id, to_id) AS MATERIALIZED (
         ${identityEdges(sql, workspaceId)}
       ),
-      descendants(node, path, depth) AS (
-        SELECT ${self}::text, ARRAY[${self}::text], 0
-        UNION ALL
-        SELECT edge.to_id, descendants.path || edge.to_id, descendants.depth + 1
+      descendants(node, depth) AS (
+        SELECT ${self}::text, 0
+        UNION
+        SELECT edge.to_id, descendants.depth + 1
           FROM descendants
           JOIN identity_edges AS edge ON edge.from_id = descendants.node
          WHERE descendants.depth < 64
-           AND NOT edge.to_id = ANY(descendants.path)
       ),
-      ancestors(node, path, depth) AS (
-        SELECT ${self}::text, ARRAY[${self}::text], 0
-        UNION ALL
-        SELECT edge.from_id, ancestors.path || edge.from_id, ancestors.depth + 1
+      ancestors(node, depth) AS (
+        SELECT ${self}::text, 0
+        UNION
+        SELECT edge.from_id, ancestors.depth + 1
           FROM ancestors
           JOIN identity_edges AS edge ON edge.to_id = ancestors.node
          WHERE ancestors.depth < 64
-           AND NOT edge.from_id = ANY(ancestors.path)
       )
       SELECT node FROM descendants
       UNION
+      SELECT node FROM ancestors
+  `;
+  return new Set(rows.map((row) => row.node).filter((node): node is string => Boolean(node)));
+}
+
+/**
+ * `id` plus every identity it descends from (launch and rebind edges, same
+ * 64-hop bound as {@link acceptanceLineageClosure}), WITHOUT its descendants.
+ *
+ * This is the set that a NEW edge `id → x` would make lineage-related to `x`:
+ * x becomes a descendant of `id` and of all of `id`'s ancestors, while `id`'s
+ * existing descendants become x's siblings (sharing a parent is not lineage).
+ * The reviewer-relaunch guard (EI-25876555362728602) uses it to ask "would this
+ * launch put the reviewer under one of the plan's implementers?" without
+ * refusing a leader whose OTHER children are implementers.
+ * Query failures propagate.
+ */
+export async function acceptanceLineageAncestors(
+  id: string | null | undefined,
+  opts: AcceptanceAuthorIdentityOpts = {},
+): Promise<Set<string>> {
+  const self = id?.trim() ?? '';
+  if (!self) return new Set();
+  if (!opts.sql) {
+    return boundedPgReadTxn((sql) => acceptanceLineageAncestors(self, { ...opts, sql }),
+      { timeoutMs: LINEAGE_READ_TIMEOUT_MS });
+  }
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
+  const sql = opts.sql ?? getOrgPg().sql;
+  const rows = await sql<Array<{ node: string }>>`
+      WITH RECURSIVE identity_edges(from_id, to_id) AS MATERIALIZED (
+        ${identityEdges(sql, workspaceId)}
+      ),
+      ancestors(node, depth) AS (
+        SELECT ${self}::text, 0
+        UNION
+        SELECT edge.from_id, ancestors.depth + 1
+          FROM ancestors
+          JOIN identity_edges AS edge ON edge.to_id = ancestors.node
+         WHERE ancestors.depth < 64
+      )
       SELECT node FROM ancestors
   `;
   return new Set(rows.map((row) => row.node).filter((node): node is string => Boolean(node)));
@@ -243,12 +301,20 @@ export async function isAcceptanceAuthorIdentity(
   const candidate = candidateId?.trim() ?? '';
   if (!author || !candidate) return false;
   if (author === candidate) return true;
+  if (!opts.sql) {
+    try {
+      return await boundedPgReadTxn((sql) => isAcceptanceAuthorIdentity(author, candidate, { ...opts, sql }),
+        { timeoutMs: LINEAGE_READ_TIMEOUT_MS });
+    } catch {
+      return false;
+    }
+  }
 
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   try {
     const sql = opts.sql ?? getOrgPg().sql;
     const rows = await sql<Array<{ matches: boolean }>>`
-      WITH RECURSIVE rebind_edges AS (
+      WITH RECURSIVE rebind_edges AS MATERIALIZED (
         SELECT args_json->>'from' AS from_id,
                COALESCE(NULLIF(args_json->>'to', ''), coord_owner_id) AS to_id
           FROM harness_shared.tool_invocations
@@ -257,14 +323,13 @@ export async function isAcceptanceAuthorIdentity(
            AND status = 'ok'
            AND args_json->>'from' IS NOT NULL
            AND COALESCE(NULLIF(args_json->>'to', ''), coord_owner_id) IS NOT NULL
-      ), author_lineage(owner_id, path, depth) AS (
-        SELECT ${author}::text, ARRAY[${author}::text], 0
-        UNION ALL
-        SELECT edge.to_id, lineage.path || edge.to_id, lineage.depth + 1
+      ), author_lineage(owner_id, depth) AS (
+        SELECT ${author}::text, 0
+        UNION
+        SELECT edge.to_id, lineage.depth + 1
           FROM author_lineage AS lineage
           JOIN rebind_edges AS edge ON edge.from_id = lineage.owner_id
          WHERE lineage.depth < 32
-           AND NOT edge.to_id = ANY(lineage.path)
       )
       SELECT EXISTS(
         SELECT 1 FROM author_lineage WHERE owner_id = ${candidate}
@@ -400,22 +465,25 @@ export async function lineagePartyKeys(
   }
   const keys = new Map<string, string>(ordered.map((id) => [id, id]));
   if (ordered.length < 2) return keys;
+  if (!opts.sql) {
+    return boundedPgReadTxn((sql) => lineagePartyKeys(ordered, { ...opts, sql }),
+      { timeoutMs: LINEAGE_READ_TIMEOUT_MS });
+  }
 
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const sql = opts.sql ?? getOrgPg().sql;
   const pairs = await sql<Array<{ a: string; b: string }>>`
-      WITH RECURSIVE identity_edges(from_id, to_id) AS (
+      WITH RECURSIVE identity_edges(from_id, to_id) AS MATERIALIZED (
         ${identityEdges(sql, workspaceId)}
       ),
-      walk(src, node, path, depth) AS (
-        SELECT s.seed, s.seed, ARRAY[s.seed], 0
+      walk(src, node, depth) AS (
+        SELECT s.seed, s.seed, 0
           FROM unnest(${ordered}::text[]) AS s(seed)
-        UNION ALL
-        SELECT walk.src, edge.to_id, walk.path || edge.to_id, walk.depth + 1
+        UNION
+        SELECT walk.src, edge.to_id, walk.depth + 1
           FROM walk
           JOIN identity_edges AS edge ON edge.from_id = walk.node
          WHERE walk.depth < 64
-           AND NOT edge.to_id = ANY(walk.path)
       )
       SELECT DISTINCT walk.src AS a, walk.node AS b
         FROM walk

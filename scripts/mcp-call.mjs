@@ -11,7 +11,7 @@
  * writes attribute correctly.
  *
  * Usage:
- *   node scripts/mcp-call.mjs <tool> [jsonArgs] [--json -|--json-file <path>] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--all-workspaces] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--idempotency-key <key>|--idempotency-key=<key>] [--raw]
+ *   node scripts/mcp-call.mjs <tool> [jsonArgs] [--json -|--json-file <path>] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--all-workspaces] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--idempotency-key <key>|--idempotency-key=<key>] [--raw] [--allow-partial]
  * Examples:
  *   node scripts/mcp-call.mjs coord:whoami
  *   node scripts/mcp-call.mjs work_items:get '{"id":"EI-1750"}' --harness papercup
@@ -36,6 +36,9 @@
  * ok:false (top-level, or any `results[]` entry). The result is still printed
  * in full on stdout, so a caller that judges the answer itself can accept 5.
  * `--raw` prints the transport body unjudged and never exits 5.
+ * A door-projected PARTIAL result (root `_partial`, or a value that is an
+ * '[omitted: … see _projection.cursor]' placeholder) exits 6 after printing, unless
+ * `--allow-partial` is given (EI-24678010189721217).
  */
 import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -77,6 +80,59 @@ export function toolResultNotOkReason(result) {
     .find((v) => typeof v === 'string' && v.trim()) ?? 'no reason given';
   const reason = failed.length > 0 ? `${failed.length} of ${results.length} result(s) ok:false; first: ${detail}` : detail;
   return reason.length > 300 ? `${reason.slice(0, 297)}...` : reason;
+}
+
+/**
+ * Exit status when the server's output door PROJECTED the result (EI-24678010189721217).
+ * A forced projection replaces deep or long values with placeholder strings such as
+ * '[omitted: depth limit — recover: see _projection.cursor]'. Those survive JSON.parse
+ * and JSON.stringify, so a caller that copies a field (e.g. rubrics:amend dry-run
+ * preview.approval into an approval comment) posts the placeholder as if it were data.
+ * Measured twice: posts 1151113 (2026-09-30) and 1153517 (2026-10-01), two agents.
+ */
+export const MCP_CALL_PROJECTED_RESULT_EXIT = 6;
+
+// Anchored on purpose: a value that IS a placeholder, or a string the door cut with a
+// trailing TRUNCATED marker. Prose that merely QUOTES a placeholder mid-sentence (an
+// issue body describing this trap) is ordinary data and must not trip the guard.
+const OMITTED_PLACEHOLDER = /^\[omitted: [^\]]*see _projection\.cursor\]$/;
+const TRUNCATED_SUFFIX = /\[TRUNCATED \+[^\]]*see _projection\.cursor\]$/;
+
+/**
+ * Why a parsed tool result is a door-projected PARTIAL body, or null when it is
+ * complete: a root `_partial: true` / `_projection.truncated: true`, or any value
+ * that is a projection placeholder. Names up to five JSON paths so the caller can
+ * pick them explicitly.
+ * @param {unknown} result
+ * @returns {string | null}
+ */
+export function projectedResultReason(result) {
+  if (!result || typeof result !== 'object') return null;
+  const rootMarked = !Array.isArray(result)
+    && (result._partial === true || (result._projection && result._projection.truncated === true));
+  const paths = [];
+  const stack = [[result, '$', 0]];
+  let visited = 0;
+  while (stack.length > 0 && paths.length < 5 && visited < 100_000) {
+    const [value, path, depth] = stack.pop();
+    visited += 1;
+    if (typeof value === 'string') {
+      if (OMITTED_PLACEHOLDER.test(value) || TRUNCATED_SUFFIX.test(value)) paths.push(path);
+      continue;
+    }
+    if (!value || typeof value !== 'object' || depth > 64) continue;
+    if (Array.isArray(value)) {
+      for (let i = value.length - 1; i >= 0; i -= 1) stack.push([value[i], `${path}[${i}]`, depth + 1]);
+    } else {
+      for (const key of Object.keys(value).reverse()) {
+        if (key === '_projection') continue; // the door's own recovery metadata
+        stack.push([value[key], `${path}.${key}`, depth + 1]);
+      }
+    }
+  }
+  if (!rootMarked && paths.length === 0) return null;
+  const where = paths.length > 0 ? `placeholder value(s) at ${paths.join(', ')}` : 'root _partial marker';
+  return `door-projected partial result: ${where}`;
 }
 
 /**
@@ -167,6 +223,11 @@ export function stampRequestSent(env = process.env, write = writeFileSync, now =
   }
 }
 
+/**
+ * @param {string | URL | Request} url
+ * @param {RequestInit} init
+ * @param {{fetchImpl?: typeof fetch, retryWindowMs?: number, retryDelayMs?: number, sleepImpl?: (ms: number) => Promise<unknown>, now?: () => number, onRetry?: (event: {attempt: number, delayMs: number, remainingMs: number}) => void}} [options]
+ */
 export async function fetchWithConnectionRecovery(
   url,
   init,
@@ -216,7 +277,7 @@ export async function fetchWithConnectionRecovery(
  * explicitly selects the unscoped superuser session (`workspace=*`), which is
  * required for cross-workspace tools when the scoped-superuser clamp is ON.
  */
-export const BOOLEAN_FLAGS = new Set(['raw', 'allWorkspaces', 'help']);
+export const BOOLEAN_FLAGS = new Set(['raw', 'allWorkspaces', 'help', 'allowPartial']);
 export const VALUE_FLAGS = new Set(['json', 'jsonFile', 'client', 'workspace', 'harness', 'port', 'idempotencyKey']);
 
 /** `json-file` -> `jsonFile`. Leaves an already-camelCase key untouched. */
@@ -224,7 +285,13 @@ export function toCamelCaseFlag(key) {
   return key.replace(/-+([a-z0-9])/gi, (_match, char) => char.toUpperCase());
 }
 
+/**
+ * @typedef {{raw?: boolean, allWorkspaces?: boolean, help?: boolean, allowPartial?: boolean, json?: string, jsonFile?: string, client?: string, workspace?: string, harness?: string, port?: string, idempotencyKey?: string}} McpCallFlags
+ * @param {string[]} argv
+ * @returns {{tool: string | undefined, jsonArgs: string | undefined, flags: McpCallFlags}}
+ */
 export function parseArgs(argv) {
+  /** @type {McpCallFlags} */
   const flags = {};
   const pos = [];
   for (let i = 0; i < argv.length; i++) {
@@ -257,6 +324,7 @@ export function parseArgs(argv) {
  * matching the ptool contract; the legacy positional form remains supported.
  * The source selection is pure so every quoting-safe path is testable without
  * spawning a shell or contacting the operator.
+ * @param {{jsonArgs?: string, flags?: McpCallFlags}} [input]
  */
 export function jsonSourceKind({ jsonArgs, flags = {} } = {}) {
   if (flags.jsonFile) return 'file';
@@ -269,6 +337,8 @@ export function jsonSourceKind({ jsonArgs, flags = {} } = {}) {
 /**
  * Read and parse the selected JSON args source. `readFile` is injectable for
  * tests; descriptor 0 is used for the `--json -` stdin sentinel.
+ * @param {{jsonArgs?: string, flags?: McpCallFlags}} [input]
+ * @param {{readFile?: (path: string | number, encoding: 'utf8') => string}} [options]
  */
 export function readJsonArgs(
   { jsonArgs, flags = {} } = {},
@@ -365,6 +435,58 @@ export function parseSse(raw, requestId = 1) {
   };
 }
 
+/**
+ * Resolve implicit bearer files in the same order as ptool. An explicit
+ * PAPERCUSP_MCP_TOKEN_FILE is authoritative; otherwise an isolated
+ * PAPERCUSP_HOME token precedes the shared per-home token.
+ */
+export function superuserTokenPaths(env = process.env, home = homedir()) {
+  const explicit = typeof env?.PAPERCUSP_MCP_TOKEN_FILE === 'string'
+    ? env.PAPERCUSP_MCP_TOKEN_FILE.trim()
+    : '';
+  if (explicit) return [explicit];
+
+  const isolatedHome = typeof env?.PAPERCUSP_HOME === 'string' ? env.PAPERCUSP_HOME.trim() : '';
+  const isolated = isolatedHome ? join(isolatedHome, 'superuser-token') : null;
+  const shared = join(home, '.papercusp', 'superuser-token');
+  return isolated && isolated !== shared ? [isolated, shared] : [shared];
+}
+
+/** The first candidate is used in diagnostics and for legacy callers. */
+export function superuserTokenPath(env = process.env, home = homedir()) {
+  return superuserTokenPaths(env, home)[0];
+}
+
+/** Resolve the local operator port from the configured bare base URL. */
+export function resolveOperatorUrlPort(env = process.env) {
+  const configuredUrl = typeof env.PAPERCUSP_OPERATOR_URL === 'string'
+    ? env.PAPERCUSP_OPERATOR_URL.trim()
+    : '';
+  if (!configuredUrl) return null;
+
+  let parsed;
+  try {
+    // The VM-rig deploy copies this CLI by itself to /tmp. Keep the endpoint
+    // normalization local so that a repo-relative import cannot break that
+    // standalone copy before argument handling starts.
+    const base = configuredUrl.replace(/\/api\/mcp\/?$/, '').replace(/\/$/, '');
+    parsed = new URL(base);
+  } catch {
+    throw new Error('PAPERCUSP_OPERATOR_URL must be a valid local operator base URL.');
+  }
+
+  const loopbackHosts = new Set(['127.0.0.1', 'localhost', '[::1]', '::1']);
+  if (parsed.protocol !== 'http:' || !loopbackHosts.has(parsed.hostname) ||
+      (parsed.pathname !== '' && parsed.pathname !== '/') || parsed.search || parsed.hash) {
+    throw new Error(
+      'mcp-call only sends the local superuser bearer to a loopback HTTP operator; ' +
+      'PAPERCUSP_OPERATOR_URL must be a bare local base URL.',
+    );
+  }
+
+  return parsed.port || '80';
+}
+
 /** Resolve the local resilient MCP proxy port using the same default as ptool. */
 export function resolveMcpProxyPort(env = process.env) {
   const DEFAULT_MCP_PROXY_PORT = '9071';
@@ -385,7 +507,8 @@ export function resolveCandidatePorts(flags = {}, env = process.env) {
     }
     return { configuredPort: pinned, candidatePorts: [pinned], pinned: true };
   }
-  const configuredPort = env.PAPERCUSP_HONO_PORT ?? CANONICAL_PORT;
+  const operatorUrlPort = env.PAPERCUSP_HONO_PORT == null ? resolveOperatorUrlPort(env) : null;
+  const configuredPort = env.PAPERCUSP_HONO_PORT ?? operatorUrlPort ?? CANONICAL_PORT;
   const proxyPort = resolveMcpProxyPort(env);
   return {
     configuredPort: String(configuredPort),
@@ -394,6 +517,22 @@ export function resolveCandidatePorts(flags = {}, env = process.env) {
     candidatePorts: [...new Set([String(configuredPort), CANONICAL_PORT, proxyPort])],
     pinned: false,
   };
+}
+
+export function buildSuperuserBearerDiagnostic({ tokenPath, port, tokenFallbackAttempted = false }) {
+  return 'mcp-call: the operator on port ' + port + ' rejected the bearer read from ' + tokenPath +
+    ' (superuser_invalid_bearer). Set PAPERCUSP_OPERATOR_URL or PAPERCUSP_HONO_PORT to the ' +
+    'matching local operator; ' + (tokenFallbackAttempted
+      ? 'mcp-call exhausted its ordered implicit token candidates.'
+      : 'mcp-call did not substitute another token.');
+}
+
+/** Match ptool's exact pre-dispatch auth refusal; other tool errors are terminal. */
+export function isInvalidSuperuserBearerResult(result) {
+  return result?.isError === true &&
+    Array.isArray(result.content) &&
+    result.content.some((block) =>
+      block?.type === 'text' && block.text === 'request_rejected: superuser_invalid_bearer');
 }
 
 /**
@@ -408,6 +547,45 @@ export function isRecoverableAuthorityDenial(raw) {
 }
 
 /**
+ * Describe an exhausted endpoint search without turning every transport error
+ * into a claim that the port had no listener. Only ECONNREFUSED proves the
+ * request could not have reached the MCP handler; resets such as UND_ERR_SOCKET
+ * leave the tool outcome unknown.
+ */
+export function buildUnreachableDiagnostic({ attempts, configuredPort, pinned }) {
+  const renderedAttempts = attempts.map(({ port, error }) => {
+    const reason = error?.cause?.code ?? error?.code ?? error?.message ?? 'unknown error';
+    return `${port} (${reason})`;
+  }).join(', ');
+  const allRefused = attempts.length > 0 && attempts.every(({ error }) => isConnectionRefusedError(error));
+  const outcome = allRefused
+    ? 'Every connection attempt was refused before an MCP request could be sent; this request did not invoke the tool.'
+    : 'At least one failure was not a connection refusal. This does not establish that no listener was present or whether the MCP tool ran; check a write outcome before retrying it.';
+
+  return `mcp-call: could not reach the operator MCP endpoint. Tried port(s): ${renderedAttempts}.\n` +
+    (pinned ? `  Port ${configuredPort} was explicitly pinned with --port, so no fallback was attempted.\n` : '') +
+    `  ${outcome}\n` +
+    `  These results describe this mcp-call process's attempts to the listed ports; a refusal does not identify why a connection was refused or whether another runtime can reach the operator.\n` +
+    `  Run endpoint probes from the same execution environment that ran mcp-call; loopback reachability can differ across environments.\n` +
+    `  A healthy operator on a different port may still be serving. Find the live port:\n` +
+    `    ss -ltn | grep -E ':(3070|3170|9071)'   # then: PAPERCUSP_HONO_PORT=<live port> re-run\n` +
+    `  The local MCP proxy may listen on :9071; that is a separate route from the direct operator ports.\n` +
+    `  Confirm the canonical operator is healthy with:\n` +
+    `    curl -s -o /dev/null -w '%{http_code}\\n' http://127.0.0.1:3070/api/health\n` +
+    `  See EI-20182275617587040 / agent-insights/mcp-client-drop-curl-recovery.`;
+}
+
+/**
+ * Explain a retry after ECONNREFUSED without attributing the refusal to an
+ * operator restart. The result is scoped to this helper's caller and endpoint.
+ */
+export function buildConnectionRetryDiagnostic({ port, attempt, delayMs, remainingMs }) {
+  return `mcp-call: connection to port ${port} was refused from this mcp-call process; ` +
+    `retry ${attempt} in ${delayMs}ms (${Math.ceil(remainingMs / 1000)}s left). ` +
+    'A refusal alone does not identify the cause or imply that other callers cannot reach the operator.';
+}
+
+/**
  * Build the scoped-superuser query for the recovery transport.
  *
  * `mcp-call` promises JSON on stdout (and vmcall.sh validates that contract),
@@ -417,8 +595,12 @@ export function isRecoverableAuthorityDenial(raw) {
  * maintained VM-rig driver correctly rejects.
  * Forward the launched role as an admission hint for bounded judge calls;
  * signed principal verification remains the authorization boundary.
+ * @param {{client: string, workspace: string, harness?: string, role?: string, origin?: string, allWorkspaces?: boolean, nativeSessionOverride?: string | null, env?: NodeJS.ProcessEnv}} options
  */
-export function buildMcpSessionQuery({ client, workspace, harness, role, allWorkspaces = false }) {
+export function buildMcpSessionQuery({
+  client, workspace, harness, role, origin, allWorkspaces = false,
+  nativeSessionOverride, env = process.env,
+}) {
   const qs = new URLSearchParams({
     superuser: '1',
     client,
@@ -427,7 +609,43 @@ export function buildMcpSessionQuery({ client, workspace, harness, role, allWork
   });
   if (harness) qs.set('harness', harness);
   if (role) qs.set('role', role);
+  if (origin) qs.set('origin', origin);
+  // Prefer the native session UUID recorded by the launcher and bound by the
+  // operator. `/clear` can rotate CLAUDE_CODE_SESSION_ID while that binding
+  // remains attached to the launch UUID, so forwarding the changing value is
+  // rejected as superuser_foreign_native_session. Fall back to the active
+  // client's session variable for older or externally launched sessions. A
+  // Claude psu session can also inherit a stale CODEX_SESSION_ID from its shell.
+  const nativeSession = String(nativeSessionOverride !== undefined
+    ? nativeSessionOverride ?? ''
+    : env.PAPERCUSP_NATIVE_SESSION_ID ||
+      (String(env.PAPERCUSP_AGENT ?? '').trim() === 'claude'
+        ? env.CLAUDE_CODE_SESSION_ID
+        : env.CODEX_SESSION_ID) || '').trim();
+  if (nativeSession && client === String(env.PAPERCUSP_SID ?? '').trim()) {
+    qs.set('native_session', nativeSession);
+  }
   return qs;
+}
+
+/** A foreign native-session refusal is emitted before the tool dispatcher runs. */
+export function isForeignNativeSessionRejection(result) {
+  return result?.isError === true &&
+    Array.isArray(result.content) &&
+    result.content.some((block) =>
+      block?.type === 'text' && block.text === 'request_rejected: superuser_foreign_native_session');
+}
+
+/** Retry only an inherited Codex claim; an explicit launcher binding stays authoritative.
+ * @param {unknown} result
+ * @param {{client?: string, query?: URLSearchParams, env?: NodeJS.ProcessEnv}} [options]
+ */
+export function shouldRetryWithoutNativeSession(result, { client, query, env = process.env } = {}) {
+  return isForeignNativeSessionRejection(result) &&
+    Boolean(String(env.CODEX_SESSION_ID ?? '').trim()) &&
+    !String(env.PAPERCUSP_NATIVE_SESSION_ID ?? '').trim() &&
+    Boolean(client) && client === String(env.PAPERCUSP_SID ?? '').trim() &&
+    query instanceof URLSearchParams && query.has('native_session');
 }
 
 /**
@@ -437,6 +655,9 @@ export function buildMcpSessionQuery({ client, workspace, harness, role, allWork
  * `arguments` would send it to the target tool schema, where it is either
  * ignored or rejected as an unrecognized tool argument instead of enabling
  * result replay after an unknown outcome.
+ * @param {string} tool
+ * @param {unknown} args
+ * @param {{idempotencyKey?: string, outputGroupId?: string}} [options]
  */
 export function buildMcpCallParams(tool, args, { idempotencyKey, outputGroupId } = {}) {
   return {
@@ -453,6 +674,8 @@ export function buildMcpCallParams(tool, args, { idempotencyKey, outputGroupId }
  * first-party tenant tools keep their workspace transaction. The explicit
  * `--all-workspaces` escape is the only CLI path that selects the unscoped
  * superuser session required by cross-workspace tools.
+ * @param {McpCallFlags} [flags]
+ * @param {NodeJS.ProcessEnv} [env]
  */
 export function resolveMcpWorkspace(flags = {}, env = process.env) {
   if (flags.allWorkspaces && flags.workspace !== undefined) {
@@ -470,6 +693,9 @@ export function resolveMcpWorkspace(flags = {}, env = process.env) {
  * not; using only the PID strands work-item ownership between calls. Preserve
  * an explicit client or full session identity first, then reuse the launch id
  * before falling back to the legacy per-process identity for ordinary shells.
+ * @param {McpCallFlags} [flags]
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {number} [pid]
  */
 export function resolveMcpClientId(
   flags = {},
@@ -487,6 +713,25 @@ export function resolveMcpClientId(
   return `mcp-call-${pid}`;
 }
 
+/**
+ * The recovery helper uses a node user-agent and a one-shot URL, so the
+ * telemetry classifier cannot recognize model calls from transport shape.
+ * Declare agent only when the client is a managed Papercusp session/spawn
+ * identity; generic and system-script clients remain unclassified.
+ */
+export function resolveMcpCallOrigin(clientId, env = process.env) {
+  const client = String(clientId ?? '').trim();
+  if (!client || client.toLowerCase().startsWith('system-') || client === 'su-loopback') {
+    return undefined;
+  }
+  const sessionIds = [env.PAPERCUSP_SID, env.PAPERCUSP_SPAWN_ID]
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean);
+  return sessionIds.includes(client) || /^(?:su|s|pus)-[a-z0-9][a-z0-9._-]*$/i.test(client)
+    ? 'agent'
+    : undefined;
+}
+
 /** Role is an admission routing hint; signed principal checks still run downstream. */
 export function resolveMcpRole(env = process.env) {
   return [env.PAPERCUSP_ROLE, env.PAPERCUSP_AGENT_ROLE]
@@ -500,6 +745,9 @@ export function resolveMcpRole(env = process.env) {
  * deploy invokes `/tmp/mcp-call.mjs`, while `import.meta.url` canonicalizes to
  * `/private/tmp/mcp-call.mjs`. Comparing their raw URLs suppresses main() and
  * produces a false-success, zero-byte result.
+ * @param {string | undefined} argv1
+ * @param {string | URL} moduleUrl
+ * @param {(path: string) => string} [resolveRealpath]
  */
 export function isInvokedDirectly(
   argv1,
@@ -517,14 +765,20 @@ export function isInvokedDirectly(
 async function main() {
   const { tool, jsonArgs, flags } = parseArgs(process.argv.slice(2));
   if (flags.help || !tool) {
-    console.error('usage: node scripts/mcp-call.mjs <ns:verb> [jsonArgs] [--json -|--json-file <path>] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--all-workspaces] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--idempotency-key <key>|--idempotency-key=<key>] [--raw]');
+    console.error('usage: node scripts/mcp-call.mjs <ns:verb> [jsonArgs] [--json -|--json-file <path>] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--all-workspaces] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--idempotency-key <key>|--idempotency-key=<key>] [--raw] [--allow-partial]');
     process.exit(flags.help ? 0 : 2);
   }
-  let tok;
-  try {
-    tok = readFileSync(join(homedir(), '.papercusp', 'superuser-token'), 'utf8').trim();
-  } catch {
-    console.error('mcp-call: no ~/.papercusp/superuser-token — run on a host that has it.');
+  const tokenPaths = superuserTokenPaths();
+  const tokenCandidates = tokenPaths.flatMap((tokenPath) => {
+    try {
+      const token = readFileSync(tokenPath, 'utf8').trim();
+      return token ? [{ path: tokenPath, token }] : [];
+    } catch {
+      return [];
+    }
+  });
+  if (tokenCandidates.length === 0) {
+    console.error('mcp-call: no superuser token at ' + tokenPaths.join(' or ') + ' — run on a host that has it.');
     process.exit(3);
   }
   let args;
@@ -548,13 +802,15 @@ async function main() {
     console.error(`mcp-call: ${error?.message ?? error}`);
     process.exit(2);
   }
-  const qs = buildMcpSessionQuery({
+  const queryArgs = {
     client,
     workspace,
     harness: flags.harness,
     role: resolveMcpRole(),
+    origin: resolveMcpCallOrigin(client),
     allWorkspaces: flags.allWorkspaces,
-  });
+  };
+  const qs = buildMcpSessionQuery(queryArgs);
   // EI-20182275617587040: PAPERCUSP_HONO_PORT can OUTLIVE the process it described
   // (e.g. a per-session operator that has since died), and a bare fetch at a port with
   // no listener dies as an unactionable `fetch failed`. That is worst precisely HERE:
@@ -570,7 +826,6 @@ async function main() {
     headers: {
       'content-type': 'application/json',
       accept: 'application/json, text/event-stream',
-      authorization: `Bearer ${tok}`,
     },
     body: JSON.stringify({
       jsonrpc: '2.0',
@@ -585,70 +840,135 @@ async function main() {
       }),
     }),
   };
+  const initForToken = (token) => ({
+    ...init,
+    headers: { ...init.headers, authorization: 'Bearer ' + token },
+  });
 
   let res;
   let raw;
+  let responsePort = null;
+  let responseTokenPath = tokenCandidates[0].path;
+  let tokenFallbackAttempted = false;
   let authorityFallback = false;
   let configuredPortError = null;
   const attempts = [];
+  let tokenIndex = 0;
+  let stopEndpointSearch = false;
   for (let index = 0; index < candidatePorts.length; index += 1) {
     const port = candidatePorts[index];
-    try {
-      stampRequestSent();
-      const candidateRes = await fetchWithConnectionRecovery(`http://localhost:${port}/api/mcp?${qs}`, init, {
-        // An explicit pin means the caller deliberately chose this operator
-        // and must not be silently routed to another port while it restarts.
-        retryWindowMs: pinned ? MCP_CALL_CONNECTION_RETRY_WINDOW_MS : 0,
-        onRetry: ({ attempt, delayMs, remainingMs }) => {
-          // Keep a long restart quiet without hiding that recovery is active.
-          if (attempt === 1 || attempt % 10 === 0) {
-            console.error(
-              `mcp-call: ${port} refused the connection; operator may be restarting — ` +
-                `retry ${attempt} in ${delayMs}ms (${Math.ceil(remainingMs / 1000)}s left)`,
-            );
-          }
-        },
-      });
-      const candidateRaw = await candidateRes.text();
-      const hasFallback = index < candidatePorts.length - 1;
-      if (!pinned && hasFallback && isRecoverableAuthorityDenial(candidateRaw)) {
-        authorityFallback = true;
-        continue;
+    const hasEndpointFallback = !pinned && index < candidatePorts.length - 1;
+    let tryNextEndpoint = false;
+    for (; tokenIndex < tokenCandidates.length; tokenIndex += 1) {
+      const tokenCandidate = tokenCandidates[tokenIndex];
+      responseTokenPath = tokenCandidate.path;
+      try {
+        stampRequestSent();
+        let candidateRes = await fetchWithConnectionRecovery(
+          'http://localhost:' + port + '/api/mcp?' + qs,
+          initForToken(tokenCandidate.token),
+          {
+            // An explicit pin means the caller deliberately chose this operator
+            // and must not be silently routed to another port while it restarts.
+            retryWindowMs: pinned ? MCP_CALL_CONNECTION_RETRY_WINDOW_MS : 0,
+            onRetry: ({ attempt, delayMs, remainingMs }) => {
+              // Keep a long retry loop quiet without hiding that retries are active.
+              if (attempt === 1 || attempt % 10 === 0) {
+                console.error(buildConnectionRetryDiagnostic({ port, attempt, delayMs, remainingMs }));
+              }
+            },
+          },
+        );
+        let candidateRaw = await candidateRes.text();
+        let candidateOut = parseSse(candidateRaw, REQUEST_ID);
+        if (shouldRetryWithoutNativeSession(candidateOut.error, { client, query: qs })) {
+          console.error(
+            'mcp-call: operator rejected the inherited Codex native-session claim before dispatch; ' +
+              'retrying once with the same client identity and no native-session claim.',
+          );
+          const queryWithoutNativeSession = buildMcpSessionQuery({
+            ...queryArgs,
+            nativeSessionOverride: null,
+          });
+          stampRequestSent();
+          candidateRes = await fetchWithConnectionRecovery(
+            'http://localhost:' + port + '/api/mcp?' + queryWithoutNativeSession,
+            initForToken(tokenCandidate.token),
+            {
+              retryWindowMs: pinned ? MCP_CALL_CONNECTION_RETRY_WINDOW_MS : 0,
+              onRetry: ({ attempt, delayMs, remainingMs }) => {
+                if (attempt === 1 || attempt % 10 === 0) {
+                  console.error(buildConnectionRetryDiagnostic({ port, attempt, delayMs, remainingMs }));
+                }
+              },
+            },
+          );
+          candidateRaw = await candidateRes.text();
+          candidateOut = parseSse(candidateRaw, REQUEST_ID);
+        }
+        if (hasEndpointFallback && isRecoverableAuthorityDenial(candidateRaw)) {
+          authorityFallback = true;
+          tryNextEndpoint = true;
+          break;
+        }
+        if (
+          isInvalidSuperuserBearerResult(candidateOut.error) &&
+          tokenIndex + 1 < tokenCandidates.length
+        ) {
+          tokenFallbackAttempted = true;
+          continue;
+        }
+        res = candidateRes;
+        raw = candidateRaw;
+        responsePort = port;
+        if (!pinned && port !== String(configuredPort)) {
+          console.error(buildFallbackWarning({
+            configuredPort,
+            port,
+            proxyPort,
+            configuredPortError,
+            authorityFallback,
+          }));
+        }
+        break;
+      } catch (err) {
+        if (index === 0) configuredPortError = err;
+        attempts.push({ port, error: err });
+        // ECONNREFUSED proves no MCP handler could have received this request.
+        // Other transport errors leave a mutation outcome unknown: stop without
+        // trying another endpoint or bearer.
+        if (hasEndpointFallback && isConnectionRefusedError(err)) {
+          tryNextEndpoint = true;
+        } else {
+          stopEndpointSearch = true;
+        }
+        break;
       }
-      res = candidateRes;
-      raw = candidateRaw;
-      if (!pinned && port !== String(configuredPort)) {
-        console.error(buildFallbackWarning({
-          configuredPort,
-          port,
-          proxyPort,
-          configuredPortError,
-          authorityFallback,
-        }));
-      }
-      break;
-    } catch (err) {
-      if (index === 0) configuredPortError = err;
-      attempts.push(`${port} (${err?.cause?.code ?? err?.code ?? err?.message ?? 'unknown error'})`);
     }
+    if (res) break;
+    if (tryNextEndpoint) continue;
+    if (stopEndpointSearch) break;
   }
 
   if (!res) {
-    console.error(
-      `mcp-call: could not reach the operator MCP endpoint. Tried port(s): ${attempts.join(', ')}.\n` +
-        (pinned ? `  Port ${configuredPort} was explicitly pinned with --port, so no fallback was attempted.\n` : '') +
-        `  Nothing is listening there — but a HEALTHY operator on a DIFFERENT port is the common\n` +
-        `  case, so do not read this as a dead server. Find the live port:\n` +
-        `    ss -ltn | grep -E ':(3070|3170|9071)'   # then: PAPERCUSP_HONO_PORT=<live port> re-run\n` +
-        `  The resilient MCP proxy usually listens on :9071 and can bridge an operator restart.\n` +
-        `  Confirm the canonical operator is healthy with:\n` +
-        `    curl -s -o /dev/null -w '%{http_code}\\n' http://127.0.0.1:3070/api/health\n` +
-        `  See EI-20182275617587040 / agent-insights/mcp-client-drop-curl-recovery.`,
-    );
+    console.error(buildUnreachableDiagnostic({ attempts, configuredPort, pinned }));
     process.exit(4);
   }
   if (flags.raw) { process.stdout.write(raw); return; }
   const out = parseSse(raw, REQUEST_ID);
+  const failedPayload = out.error ?? (
+    out.result && typeof out.result === 'object' &&
+    (out.result.isError === true || toolResultNotOkReason(out.result) !== null)
+      ? out.result
+      : null
+  );
+  if (isInvalidSuperuserBearerResult(failedPayload)) {
+    console.error(buildSuperuserBearerDiagnostic({
+      tokenPath: responseTokenPath,
+      port: responsePort ?? configuredPort,
+      tokenFallbackAttempted,
+    }));
+  }
   if (out.error) {
     console.error('MCP_ERROR:', JSON.stringify(out.error));
     process.exit(1);
@@ -662,6 +982,13 @@ async function main() {
     // exitCode, never process.exit(): exiting here can cut off a large stdout
     // result that is still draining into a pipe.
     process.exitCode = MCP_CALL_TOOL_NOT_OK_EXIT;
+  }
+  const partial = projectedResultReason(out.result);
+  if (partial !== null) {
+    console.error(
+      `mcp-call: the result above is INCOMPLETE (${partial}). A field copied from it can be a placeholder string, not data. Re-run with a narrower \`projection: { pick: [...] }\` in the args, or read the spill named at _projection.cursor. ${flags.allowPartial ? '--allow-partial given: exit status unchanged.' : `Exiting ${MCP_CALL_PROJECTED_RESULT_EXIT}; pass --allow-partial to accept a partial read.`} (EI-24678010189721217)`,
+    );
+    if (!flags.allowPartial && process.exitCode == null) process.exitCode = MCP_CALL_PROJECTED_RESULT_EXIT;
   }
 }
 

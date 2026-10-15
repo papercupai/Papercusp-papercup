@@ -77,6 +77,23 @@ function instance(label: string, now = () => 10_000) {
 }
 
 describe('PgWorkItemAdmissionQueueStore', () => {
+  it('keeps the original goal observation on durable replay after a new population measurement', async () => {
+    const input = { idempotencyKey: 'observed-agent', admissionClass: 'agent',
+      metadata: { goalId: 'goal', fleetSlug: 'fleet', targetOwnerId: 'target', goalReservation: true,
+        goalAdmission: JSON.stringify({ measuredAt: 'first', headcount: 1 }) } };
+    const first = await instance('first').governor.admit(input);
+    const retry = await instance('retry').governor.admit({ ...input, metadata: { ...input.metadata,
+      goalAdmission: JSON.stringify({ measuredAt: 'retry', headcount: 2 }) } });
+    expect(retry).toEqual(first);
+    const rows = await db.sql<Array<{ payload: any }>>`SELECT payload FROM harness_shared.work_items`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].payload.resource_governor.metadata.goalAdmission).toBe(input.metadata.goalAdmission);
+    expect(retry.context.metadata?.goalAdmission).toBe(input.metadata.goalAdmission);
+    await expect(instance('changed-target').governor.admit({ ...input,
+      metadata: { ...input.metadata, targetOwnerId: 'other-target' } }))
+      .rejects.toBeInstanceOf(AdmissionIdempotencyConflictError);
+  });
+
   it('concurrent process instances converge on one durable receipt and reject conflicting replay', async () => {
     const a = instance('a');
     const b = instance('b');

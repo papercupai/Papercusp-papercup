@@ -2,6 +2,8 @@
 import type { Sql } from 'postgres';
 import type { TaskReleaseJournal, TaskReleaseReceipt, TaskReleaseReceiptState } from './task-manager/store';
 import { taskReleaseJournalFromDetail } from './task-manager/store';
+import { evaluateWorkspaceHostSoak, resolveWorkspaceHostSoakPolicy, type WorkspaceHostSoakPolicy } from './workspace-host/soak';
+import type { WorkspaceHostSoakRecord } from './workspace-host/soak-store';
 
 export const BYOC_RELEASE_CARRY_SCHEMA_VERSION = 'byoc-release-carry-v1' as const;
 export const BYOC_RELEASE_CARRY_MAX = 3;
@@ -74,8 +76,61 @@ function receiptMatchesMilestone(
  * failed or absent prerequisite: the public phase advances only across the
  * contiguous verified prefix and the impossible chain is reported explicitly.
  */
+export interface ByocReleaseMilestoneOptions {
+  /** An explicit acceptance bar; omitted keeps the ordinary receipt-only carry view. */
+  minimumSoakDurationMs?: number;
+}
+
+function oneEvidenceValue(receipt: TaskReleaseReceipt, prefix: string): string | null {
+  const refs = receipt.evidenceRefs.filter((ref) => ref.startsWith(prefix));
+  return refs.length === 1 && refs[0]!.length > prefix.length ? refs[0]!.slice(prefix.length) : null;
+}
+
+function receiptSoakPolicy(receipt: TaskReleaseReceipt): WorkspaceHostSoakPolicy | null {
+  const policy = objectOrNull(objectOrNull(objectOrNull(receipt.inputIdentity)?.stageIdentity)?.policy);
+  if (!policy) return null;
+  try {
+    const resolved = resolveWorkspaceHostSoakPolicy({
+      durationMs: policy.durationMs as number, intervalMs: policy.intervalMs as number,
+    });
+    return Object.entries(resolved).every(([key, value]) => policy[key] === value) ? resolved : null;
+  } catch {
+    return null;
+  }
+}
+
+function soakReceiptProblems(receipt: TaskReleaseReceipt | null, minimum: number): string[] {
+  if (!Number.isSafeInteger(minimum) || minimum <= 0) return ['soak minimum duration must be a positive integer'];
+  if (!receipt || receipt.state !== 'committed') return [];
+  const problems: string[] = [];
+  const policy = receiptSoakPolicy(receipt);
+  if (!policy || policy.durationMs < minimum) problems.push('soak policy does not cover the required duration');
+  if (oneEvidenceValue(receipt, 'soak-verdict:') !== 'pass') problems.push('soak receipt lacks one unambiguous passing evaluator verdict');
+  const window = oneEvidenceValue(receipt, 'soak-window:')?.split('/');
+  const times = window?.map((value) => Date.parse(value));
+  if (!window || window.length !== 2 || !times?.every(Number.isFinite) ||
+      window.some((value, index) => new Date(times[index]!).toISOString() !== value) ||
+      times[1]! - times[0]! < Math.max(minimum, policy?.durationMs ?? minimum)) {
+    problems.push('soak receipt lacks one valid window covering its policy and required duration');
+  }
+  return problems;
+}
+
+/**
+ * Receipt projection only. An explicit duration bar rejects short or contradictory soak receipts;
+ * deployed acceptance also needs readByocReleaseAcceptance to join the canonical persisted outcome.
+ */
 export function projectByocReleaseMilestones(
   journal: TaskReleaseJournal,
+  options: ByocReleaseMilestoneOptions = {},
+): ByocReleaseMilestoneProjection {
+  return projectMilestones(journal, options);
+}
+
+function projectMilestones(
+  journal: TaskReleaseJournal,
+  options: ByocReleaseMilestoneOptions,
+  persistedSoakProblems: readonly string[] = [],
 ): ByocReleaseMilestoneProjection {
   let prefixVerified = true;
   let current: ByocReleaseMilestoneKey | null = null;
@@ -84,7 +139,12 @@ export function projectByocReleaseMilestones(
     const receipt = [...journal.receipts].reverse().find((candidate) =>
       receiptMatchesMilestone(candidate, definition),
     ) ?? null;
-    const receiptVerified = receipt?.state === 'committed';
+    const soakProblems = definition.key === 'soak' ? [
+      ...(options.minimumSoakDurationMs === undefined ? [] : soakReceiptProblems(receipt, options.minimumSoakDurationMs)),
+      ...persistedSoakProblems,
+    ] : [];
+    contradictions.push(...soakProblems);
+    const receiptVerified = receipt?.state === 'committed' && soakProblems.length === 0;
     let status: ByocReleaseMilestoneStatus;
     if (receiptVerified && prefixVerified) {
       status = 'verified';
@@ -94,7 +154,7 @@ export function projectByocReleaseMilestones(
       contradictions.push(
         `${definition.label} has a committed receipt but an earlier prerequisite is not verified`,
       );
-    } else if (receipt?.state === 'refused') {
+    } else if (receipt?.state === 'refused' || soakProblems.length > 0) {
       status = 'failed';
     } else {
       status = 'pending';
@@ -114,6 +174,62 @@ export function projectByocReleaseMilestones(
     .every((milestone) => milestone.status === 'verified');
   const shipped = milestones.every((milestone) => milestone.status === 'verified');
   return { current, customerReady, shipped, milestones, contradictions };
+}
+
+/**
+ * Re-read an explicitly selected release task, then judge the exact soak named by its receipt from
+ * the maintained persisted-sample reader and evaluator. This is an acceptance detector, not a soak
+ * producer or proof that this candidate was promoted/deployed green.
+ */
+export async function readByocReleaseAcceptance(
+  input: { taskId: string; workspaceId: string; minimumSoakDurationMs: number },
+  sql: Sql,
+  readSoak?: (workspaceId: string, hostId: string, soakId: string) => Promise<WorkspaceHostSoakRecord>,
+): Promise<ByocReleaseMilestoneProjection | null> {
+  const rows = await sql<Array<{ detail: Record<string, unknown> | null }>>`
+    SELECT detail FROM harness_shared.task_ledger
+     WHERE workspace_id = ${input.workspaceId} AND task_id = ${input.taskId} AND class = 'deploy'
+  `;
+  const journal = taskReleaseJournalFromDetail(rows[0]?.detail);
+  if (!journal) return null;
+  const options = { minimumSoakDurationMs: input.minimumSoakDurationMs };
+  const projection = projectByocReleaseMilestones(journal, options);
+  if (projection.milestones.find(({ key }) => key === 'soak')?.status !== 'verified') return projection;
+  const receipt = [...journal.receipts].reverse().find((candidate) =>
+    receiptMatchesMilestone(candidate, BYOC_RELEASE_MILESTONES.find(({ key }) => key === 'soak')!),
+  )!;
+  const problems: string[] = [];
+  const soakId = oneEvidenceValue(receipt, 'soak:');
+  const host = oneEvidenceValue(receipt, 'soak-host:')?.split('/');
+  const incarnation = oneEvidenceValue(receipt, 'soak-incarnation:');
+  const image = oneEvidenceValue(receipt, 'soak-image:');
+  if (!soakId || !host || host.length !== 2 || host[0] !== input.workspaceId || !host[1] || !incarnation || !image) {
+    problems.push('soak receipt lacks an unambiguous subject in the selected workspace');
+  } else {
+    const read = readSoak ?? (await import('./workspace-host/soak-store')).readWorkspaceHostSoak;
+    const record = await read(input.workspaceId, host[1], soakId);
+    const policy = receiptSoakPolicy(receipt)!;
+    const stage = objectOrNull(objectOrNull(receipt.inputIdentity)?.stageIdentity);
+    const { releaseJournalBundleDigests } = await import('./workspace-host/release-stage-receipt');
+    const digests = releaseJournalBundleDigests(journal);
+    if (digests.length !== 1 || stage?.bundleSha256 !== digests[0]) {
+      problems.push('soak receipt bundle does not match one unambiguous release candidate');
+    }
+    if (record.soakId !== soakId || record.envelope?.releaseTaskId !== input.taskId ||
+        !Object.entries(policy).every(([key, value]) =>
+          objectOrNull(record.envelope?.policy)?.[key] === value) ||
+        record.malformedRows !== 0 ||
+        record.samples.some((sample) => sample.soakId !== soakId ||
+          sample.pinned.instanceId !== incarnation || sample.pinned.image !== image)) {
+      problems.push('persisted soak identity, policy or sample integrity disagrees with the release receipt');
+    }
+    const evaluation = evaluateWorkspaceHostSoak({ samples: record.samples, policy, ended: true });
+    if (evaluation.verdict !== 'pass' || evaluation.soakId !== soakId ||
+        oneEvidenceValue(receipt, 'soak-window:') !== `${evaluation.window.first}/${evaluation.window.last}`) {
+      problems.push('persisted soak evaluator does not confirm the committed passing window');
+    }
+  }
+  return projectMilestones(journal, options, problems);
 }
 
 function objectOrNull(value: unknown): Record<string, unknown> | null {

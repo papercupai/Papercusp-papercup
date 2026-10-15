@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { restrictedTurnSql } from '../../personal-vault/transcript-exclusion';
 import { isSessionShapedOwnerId } from '../coordination/dead-session-recipient-guidance';
 import {
   knownOwnerIdSet,
@@ -76,7 +77,9 @@ async function resolveTimelineOwner(
       ok: false,
       error: 'owner_not_found',
       owner,
-      message: `Owner '${owner}' matches no known ownerId; pass the full ownerId or check coord:presence.`,
+      message:
+        `Owner '${owner}' does not resolve to a current live ownerId; short handles resolve only against the current roster. ` +
+        'Pass the full ownerId for historical or ended sessions, or check coord:presence.',
     };
   }
 
@@ -113,7 +116,9 @@ async function resolveTimelineOwner(
       ok: false,
       error: 'owner_not_found',
       owner,
-      message: `Owner '${owner}' matches no known ownerId; pass the full ownerId or check coord:presence.`,
+      message:
+        `Owner '${owner}' does not resolve to a current live ownerId; short handles resolve only against the current roster. ` +
+        'Pass the full ownerId for historical or ended sessions, or check coord:presence.',
     };
   }
   return { ok: true, ownerId: strict.resolved[0]! };
@@ -190,6 +195,7 @@ import {
   AUTOMATIC_TOOL_NAMES,
   agentToolInvocationPredicate,
   automaticToolInvocationPredicate,
+  toolInvocationOwnerPredicate,
 } from './automatic-tool-names';
 import { isWorkspaceContended } from '../locks/contention-retry';
 
@@ -611,7 +617,7 @@ export default defineTool({
   crossWorkspace: true,
   capability: 'search:read',
   description:
-    "Merged activity timeline for ONE agent: transcript turns + tool calls + coord messages, newest-first. owner:'self' = the caller. Audit filters can select kind/tool/status/goalRef, hide automatic hook traffic (default), group repeats, continue with nextCursor, and report automatic-versus-agent tool-call counts. Tool rows carry the goal and assumptions that were live when each call was made.",
+    "Merged activity timeline for ONE agent: transcript turns + tool calls + coord messages, newest-first. owner:'self' = the caller. Audit filters can select kind/tool/status/goalRef, hide automatic hook traffic (default), group repeats, continue by passing the returned `nextCursor` value in the `cursor` argument, and report automatic-versus-agent tool-call counts. Tool rows carry the goal and assumptions that were live when each call was made.",
   guidance: {
     when: '"What did agent X actually do yesterday" — a postmortem / handoff-archaeology read joining speech + tool calls + coord traffic by owner and time. Also "what did they do while holding goal X, and under which assumptions": pass goalRef.',
     notWhen:
@@ -635,13 +641,14 @@ export default defineTool({
     owner: z
       .string({
         error:
-          "owner is required — sessions:timeline reads ONE agent's timeline; pass 'self' for yourself, " +
-          'or an ownerId / short handle. A `cursor` does NOT carry it: the cursor is a position only, ' +
+          "owner is required — sessions:timeline reads ONE agent's timeline; pass 'self', a full ownerId, " +
+          'or a short handle that uniquely matches a current live owner. Use a full ownerId for historical or ended sessions. ' +
+          'A `cursor` does NOT carry it: the cursor is a position only, ' +
           'so a continuation must re-send the SAME owner and filters alongside it.',
       })
       .min(1)
       .max(120)
-      .describe("Agent ownerId, short handle, or 'self'."),
+      .describe("Agent ownerId, a short handle that uniquely matches a current live owner, or 'self'. Use the full ownerId for historical or ended sessions."),
     since: z.string().max(40).optional().describe('ISO lower bound (default: 24h ago).'),
     until: z.string().max(40).optional().describe('ISO upper bound (default: now).'),
     limit: z
@@ -689,7 +696,7 @@ export default defineTool({
       .max(512)
       .optional()
       .describe(
-        'Opaque nextCursor from a prior sessions:timeline call. It is a POSITION only — re-send the same `owner` and filters with it; `{ cursor }` alone is refused, and different filters page a different result set.',
+        'Opaque nextCursor value from a prior sessions:timeline call. Pass it under this `cursor` argument; `nextCursor` is the response field name, not an accepted argument key. It is a POSITION only — re-send the same `owner` and filters with it; `{ cursor }` alone is refused, and different filters page a different result set.',
       ),
   }),
   result: timelineResultSchema,
@@ -765,6 +772,8 @@ export default defineTool({
            AND COALESCE(ts, ingested_at) >= ${since}::timestamptz
            AND COALESCE(ts, ingested_at) < ${until}::timestamptz
            AND (${kinds}::text[] IS NULL OR 'turn' = ANY(${kinds}::text[]))
+           -- D-006 reader rule (WI-10005570): another agent's disclosure-window turns never reach a timeline.
+           AND NOT ${restrictedTurnSql(tx as unknown as Parameters<typeof restrictedTurnSql>[0], 'session_turns', [identity.ownerId]) as never}
            AND ${args.tool ?? null}::text IS NULL
            AND ${args.status ?? null}::text IS NULL
            AND ${args.goalRef ?? null}::text IS NULL
@@ -772,8 +781,13 @@ export default defineTool({
       )
       UNION ALL
       (
+        -- Pre-alias telemetry may retain a system:<role>/<session> principal as its owner.
+        -- Roll it into the session only when the trusted spawn-url provenance and
+        -- exact signed request client agree; this mirrors verifiedSpawnSessionAlias.
         SELECT 'tool' AS kind, invoked_at::text AS ts, id::text AS ref,
-               tool_name || ' (' || COALESCE(NULLIF(metadata_json->>'effectiveStatus', ''), status, '?') || COALESCE(', ' || duration_ms || 'ms', '') || ')' AS text,
+               (CASE WHEN coord_owner_id = ${owner} THEN ''
+                     ELSE '[' || role || ' verified session alias] ' END) ||
+                 tool_name || ' (' || COALESCE(NULLIF(metadata_json->>'effectiveStatus', ''), status, '?') || COALESCE(', ' || duration_ms || 'ms', '') || ')' AS text,
                tool_name, COALESCE(NULLIF(metadata_json->>'effectiveStatus', ''), status) AS status,
                ${automaticToolPredicate} AS auto,
                call_origin, call_origin_source,
@@ -782,7 +796,7 @@ export default defineTool({
                -- so there is no join and nothing to hydrate.
                goal_ref, assumption_set_id
           FROM harness_shared.tool_invocations
-         WHERE coord_owner_id = ${owner}
+         WHERE ${toolInvocationOwnerPredicate(tx, owner)}
            AND invoked_at >= ${since}::timestamptz AND invoked_at < ${until}::timestamptz
            AND (${kinds}::text[] IS NULL OR 'tool' = ANY(${kinds}::text[]))
            AND (${args.tool ?? null}::text IS NULL OR tool_name = ${args.tool ?? null})
@@ -822,7 +836,7 @@ export default defineTool({
       // the whole point: eager resolution would turn the ordinary "what did agent
       // X do yesterday" read into an N+1 over agent_facts.
       //
-      // The watermark→set expansion mirrors isAssumptionFact (D-087 R2): `kind`
+      // The watermark→set expansion mirrors isAssumptionFact (D-087 R2): \`kind\`
       // when declared WINS, else the pre-migration-690 legacy form
       // confidence='suspected'. A kind-only count here would silently read 0 for
       // every legacy assumption while passing every fixture that sets the new field
@@ -889,7 +903,7 @@ export default defineTool({
              count(*) FILTER (WHERE ${automaticToolPredicate})::int AS automatic_calls,
              count(*) FILTER (WHERE ${agentToolPredicate})::int AS agent_calls
         FROM harness_shared.tool_invocations
-       WHERE coord_owner_id = ${owner}
+       WHERE ${toolInvocationOwnerPredicate(tx, owner)}
          AND invoked_at >= ${since}::timestamptz AND invoked_at < ${until}::timestamptz
          AND (${args.tool ?? null}::text IS NULL OR tool_name = ${args.tool ?? null})
          AND (${args.status ?? null}::text IS NULL OR COALESCE(NULLIF(metadata_json->>'effectiveStatus', ''), status) = ${args.status ?? null})
@@ -899,7 +913,7 @@ export default defineTool({
       // that gets cut, not this projection. Reporting the resolution here
       // makes an empty goal-scoped read self-describing: goal_scoped tells
       // you the filter ran, assumption_sets_resolved tells you whether any
-      // watermark was actually expanded — so `count: 0` can never be read as
+      // watermark was actually expanded — so \`count: 0\` can never be read as
       // "this agent did nothing under that goal" when it really means "no
       // call ever carried that goal_ref".
       const baseResponse = {

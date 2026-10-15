@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 // @ts-expect-error -- side-effect-free .mjs sibling of the CLI binary; no type declarations.
 import { buildCleanRoomInstanceCreateArgs } from '../../bin/gcp-clean-room-args.mjs';
@@ -29,6 +30,28 @@ const baseInput = {
 };
 
 describe('buildCleanRoomInstanceCreateArgs', () => {
+  it('sizes the stock bootstrap disk to the maintained workspace-host image disk contract', () => {
+    const template = readFileSync(new URL('../../../../infra/images/workspace-host.pkr.hcl', import.meta.url), 'utf8');
+    const diskVariable = /variable "disk_size_gb"\s*\{([^}]+)\}/.exec(template)?.[1];
+    const size = /default\s*=\s*(\d+)/.exec(diskVariable ?? '')?.[1];
+    expect(size).toBeDefined();
+
+    const args = buildCleanRoomInstanceCreateArgs({ ...baseInput, role: 'bootstrap-acceptance' });
+    expect(args).toContain(`--boot-disk-size=${size}GB`);
+    expect(args.filter((arg: string) => arg.startsWith('--boot-disk-size='))).toHaveLength(1);
+    expect(args).toContain('--no-address');
+    expect(args).toContain('--no-service-account');
+    expect(args).toContain('--no-scopes');
+  });
+
+  it('lets post-build clean rooms inherit the candidate image disk size', () => {
+    for (const role of [undefined, 'clean-room']) {
+      const args = buildCleanRoomInstanceCreateArgs({ ...baseInput, ...(role ? { role } : {}) });
+      expect(args.some((arg: string) => arg.startsWith('--boot-disk-size='))).toBe(false);
+      expect(args).toContain(`--image=${baseInput.imageName}`);
+    }
+  });
+
   it('passes the caller-supplied subnetwork through as --subnet', () => {
     const args = buildCleanRoomInstanceCreateArgs(baseInput);
     expect(args).toContain('--subnet=pc-p046-canary-02-a810e759-subnet');

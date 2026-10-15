@@ -1,5 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, loadCorpus, summarizeToolCalls, summarizeToolOutcomes } from './record-session';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, CORPUS_FILE, corpusFileFromArgv, loadCorpus, sessionDiff, summarizeToolCalls, summarizeToolOutcomes } from './record-session';
+
+describe('corpusFileFromArgv', () => {
+  it('defaults to the shipped corpus and resolves --tasks-file when given', () => {
+    expect(corpusFileFromArgv(['node', 'record-session.ts', '--cli', 'claude'])).toBe(CORPUS_FILE);
+    expect(corpusFileFromArgv(['node', 'x', '--tasks-file', 'p019/tasks.json', '--cli', 'codex'])).toBe(path.resolve('p019/tasks.json'));
+  });
+  it('does not read load-driver --corpus (the recordings dir) as the task file', () => {
+    expect(corpusFileFromArgv(['node', 'load-driver.ts', '--corpus', '/tmp/recordings'])).toBe(CORPUS_FILE);
+  });
+  it('refuses --tasks-file with no path instead of silently using the shipped corpus', () => {
+    expect(() => corpusFileFromArgv(['node', 'x', '--tasks-file'])).toThrow(/needs a path/);
+    expect(() => corpusFileFromArgv(['node', 'x', '--tasks-file', '--cli'])).toThrow(/needs a path/);
+  });
+});
 
 describe('corpus manifest', () => {
   const corpus = loadCorpus();
@@ -92,5 +110,45 @@ describe('tool-outcome summary', () => {
       { type: 'item.completed', item: { type: 'agent_message' } },
     ].map((l) => JSON.stringify(l));
     expect(summarizeToolOutcomes('codex', lines.join('\n'))).toEqual({ results: 3, errors: 1 });
+  });
+});
+
+describe('sessionDiff', () => {
+  const git = (dir: string, ...args: string[]) =>
+    execFileSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { encoding: 'utf8' }).trim();
+
+  it('captures committed, uncommitted and untracked changes against the pinned sha', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'session-diff-'));
+    try {
+      git(dir, 'init', '-q');
+      writeFileSync(path.join(dir, 'committed.txt'), 'base\n');
+      writeFileSync(path.join(dir, 'edited.txt'), 'base\n');
+      git(dir, 'add', '-A');
+      git(dir, 'commit', '-qm', 'base');
+      const base = git(dir, 'rev-parse', 'HEAD');
+      writeFileSync(path.join(dir, 'committed.txt'), 'agent commit\n');
+      git(dir, 'commit', '-qam', 'agent fix');
+      writeFileSync(path.join(dir, 'edited.txt'), 'agent edit\n');
+      writeFileSync(path.join(dir, 'new.test.ts'), 'agent test\n');
+
+      // The old diff.patch (worktree vs index) loses the committed fix and the new file.
+      expect(git(dir, 'diff')).not.toContain('agent commit');
+
+      const patch = await sessionDiff(dir, base);
+      expect(patch).toContain('+agent commit');
+      expect(patch).toContain('+agent edit');
+      expect(patch).toContain('+agent test');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns an empty patch instead of throwing when the directory is not a git checkout', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'session-diff-'));
+    try {
+      expect(await sessionDiff(dir, '0'.repeat(40))).toBe('');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

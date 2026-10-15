@@ -98,6 +98,11 @@ describe('buildWorkScopeStatusPayload', () => {
 });
 
 describe('workspace:work_scope_status — the read-only resolver the cell dispatcher may call', () => {
+  it('admits the evidence-scoped roles already allowed through state:read', () => {
+    expect(statusTool.agentRoles).toContain('release-fixer');
+    expect(statusTool.agentRoles).toContain('judge');
+  });
+
   it('is the cell’s declared poll tool, read-only, and projects the payload unchanged', async () => {
     expect(WORK_SCOPE_CELL.changeSignal).toEqual({ kind: 'poll', tool: 'workspace:work_scope_status', path: 'mode' });
     expect(statusTool.name).toBe('workspace:work_scope_status');

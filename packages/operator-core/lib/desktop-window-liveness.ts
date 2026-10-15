@@ -58,11 +58,10 @@
  * pre-Windows-support behavior, never over-kill.
  */
 
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { readFile } from 'node:fs/promises';
 import { getOrgPg } from '@papercusp/db-org';
-import { listLiveHostsAsync } from './events/await/psu-pty-discovery';
+import { execFileViaSidecar } from './fleet/git-via-sidecar';
+import { findLiveHostAsync, listLiveHostsAsync } from './events/await/psu-pty-discovery';
 import {
   listWindowsByTitle,
   parseSessionIdFromWindowTitle,
@@ -70,8 +69,8 @@ import {
   getOnDesktopWindowsCache,
   type WindowsDesktopWindow,
 } from './windows-desktop-windows';
+import { mapWithConcurrency } from './gym/concurrency';
 
-const execFileAsync = promisify(execFile);
 
 /** One currently-open window (only the fields we match sessions on). */
 export interface OpenWindow {
@@ -124,20 +123,51 @@ export interface ListOpenWindowsDeps {
   ttlMs?: number;
 }
 
-/** ASYNC + non-blocking by design: this runs on the single :3070 operator event
- *  loop (the D-007 chokepoint) via the presence read path, so it must NEVER use a
- *  blocking spawnSync — a hung X server would freeze the whole operator. execFile
- *  kills the child at WMCTRL_TIMEOUT_MS and rejects → caught → null. */
-async function defaultRunWmctrl(): Promise<string | null> {
+/** Per-site override for the X11 probes' sidecar route (`0` forces a local fork). */
+export const X11_PROBE_SIDECAR_VAR = 'PAPERCUSP_X11_PROBE_SPAWN_SIDECAR';
+
+/**
+ * Run one short X11 probe (`wmctrl` / `xprop`) and return stdout, or null on any
+ * failure (no binary, no DISPLAY, non-zero exit, timeout).
+ *
+ * Forked by the spawner sidecar wherever this host has one (EI-24748208098755918).
+ * An async `execFile` does not block on the CHILD, but the fork itself is still
+ * synchronous on the caller's event loop, and its cost scales with the parent's
+ * RSS. A :3070 cluster worker (pid 2330483, 22:51Z, 2026-10-01) spent 49.7 ms of
+ * main thread in `defaultRunWmctrl` in one saturation profile; these probes sit
+ * on the presence read path every few seconds. The caller's display env is passed
+ * explicitly so the sidecar queries the SAME X display the operator would.
+ */
+async function runX11Probe(
+  command: string,
+  args: string[],
+  timeoutMs: number,
+  subsystem: string,
+): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync('wmctrl', ['-lp'], {
-      timeout: WMCTRL_TIMEOUT_MS,
-      encoding: 'utf8',
+    const env: NodeJS.ProcessEnv = {};
+    for (const key of ['DISPLAY', 'XAUTHORITY', 'WAYLAND_DISPLAY'] as const) {
+      if (process.env[key]) env[key] = process.env[key];
+    }
+    const { stdout } = await execFileViaSidecar(command, args, {
+      timeoutMs,
+      subsystem,
+      sidecarVar: X11_PROBE_SIDECAR_VAR,
+      ...(Object.keys(env).length > 0 ? { env } : {}),
     });
     return typeof stdout === 'string' ? stdout : null;
   } catch {
-    return null; // no wmctrl / no DISPLAY / spawn error / timeout → no windows
+    return null;
   }
+}
+
+/** ASYNC + non-blocking by design: this runs on the single :3070 operator event
+ *  loop (the D-007 chokepoint) via the presence read path, so it must NEVER use a
+ *  blocking spawnSync — a hung X server would freeze the whole operator. The probe
+ *  is killed at WMCTRL_TIMEOUT_MS → null. */
+async function defaultRunWmctrl(): Promise<string | null> {
+  // no wmctrl / no DISPLAY / spawn error / timeout → null → no windows
+  return runX11Probe('wmctrl', ['-lp'], WMCTRL_TIMEOUT_MS, 'desktop-window-liveness:wmctrl');
 }
 
 /** Windows leg (P-019): enumerate via the Lane 1 shared helper instead of
@@ -295,6 +325,9 @@ export function parsePpidFromStat(stat: string): number | null {
 /** Ancestry depth cap — a real desktop chain is ~3 (host ← shell ← emulator);
  *  32 is a loop/corruption guard, not a tuning knob. */
 const ANCESTRY_MAX_DEPTH = 32;
+/** Bound independent live-host ancestry walks so a large roster does not serialize /proc reads. */
+const DESKTOP_ANCESTRY_CONCURRENCY = 8;
+const DESKTOP_HOST_LOOKUP_CONCURRENCY = 8;
 
 async function defaultReadStat(pid: number): Promise<string | null> {
   try {
@@ -366,6 +399,10 @@ export interface GatherOnDesktopDeps {
   listWindows?: () => Promise<OpenWindow[]>;
   /** Live interactive psu hosts (ownerId + host pid). Default: listLiveHostsAsync() (WI-10004587). */
   listHosts?: () => Array<{ ownerId: string; pid: number }> | Promise<Array<{ ownerId: string; pid: number }>>;
+  /** Targeted counterpart to listHosts. Default: findLiveHostAsync(ownerId). */
+  findHost?: (ownerId: string) => Promise<{ ownerId: string; pid: number } | null>;
+  /** Recent launch candidates. A supplied owner list filters the PG read to those owners. */
+  listCandidates?: (maxAgeSec: number, ownerIds?: readonly string[]) => Promise<DesktopCandidateRow[]>;
   /** /proc stat reader for the ancestry walk. Default: real /proc. */
   readStat?: (pid: number) => Promise<string | null>;
   /** Is this the Windows desktop host? Default: isWindowsDesktopHost(). Injected
@@ -374,6 +411,33 @@ export interface GatherOnDesktopDeps {
   /** The renderer-pushed Windows window cache (null ⇒ unknown). Default:
    *  getOnDesktopWindowsCache(). Injected alongside isWindowsHost for tests. */
   readWindowsCache?: () => WindowsDesktopWindow[] | null;
+}
+
+type DesktopCandidateRow = {
+  id: number;
+  coord_owner_id: string | null;
+  session_id: string | null;
+  window_id: string | null;
+  pid: number | null;
+};
+
+async function listRecentDesktopCandidateRows(
+  maxAgeSec: number,
+  ownerIds?: readonly string[],
+): Promise<DesktopCandidateRow[]> {
+  const { sql } = getOrgPg();
+  return ownerIds === undefined
+    ? sql<DesktopCandidateRow[]>`
+        SELECT id, coord_owner_id, session_id, window_id, pid
+          FROM harness_shared.adv_sessions
+         WHERE started_at > now() - make_interval(secs => ${maxAgeSec})
+           AND (window_id IS NOT NULL OR pid IS NOT NULL OR coord_owner_id IS NOT NULL)`
+    : sql<DesktopCandidateRow[]>`
+        SELECT id, coord_owner_id, session_id, window_id, pid
+          FROM harness_shared.adv_sessions
+         WHERE started_at > now() - make_interval(secs => ${maxAgeSec})
+           AND coord_owner_id = ANY(${ownerIds})
+           AND (window_id IS NOT NULL OR pid IS NOT NULL OR coord_owner_id IS NOT NULL)`;
 }
 
 /**
@@ -391,11 +455,22 @@ export interface GatherOnDesktopDeps {
  * over-killing).
  */
 export async function gatherOnDesktopSessions(
-  opts: { maxAgeMs?: number; nowMs?: number; ttlMs?: number; deps?: GatherOnDesktopDeps } = {},
+  opts: {
+    maxAgeMs?: number;
+    nowMs?: number;
+    ttlMs?: number;
+    ownerIds?: readonly string[];
+    deps?: GatherOnDesktopDeps;
+    /** Optional per-await timing seam. Best-effort and intentionally excludes owner ids. */
+    onDiagnostic?: (diagnostic: { name: string; elapsedMs: number; status: 'ok' | 'error' }) => void;
+  } = {},
 ): Promise<OnDesktopSets> {
   const ttl = opts.ttlMs ?? ON_DESKTOP_TTL_MS;
   const now = opts.nowMs ?? Date.now();
-  if (onDesktopCache && now - onDesktopCache.at < ttl) return onDesktopCache.sets;
+  const targetedOwnerIds =
+    opts.ownerIds === undefined ? undefined : [...new Set(opts.ownerIds.filter((id) => id.trim().length > 0))];
+  const targeted = targetedOwnerIds !== undefined;
+  if (!targeted && onDesktopCache && now - onDesktopCache.at < ttl) return onDesktopCache.sets;
 
   let sets = emptyOnDesktopSets();
   // WI-1967 — Windows "unknown window signal" detection, computed up front (a pure
@@ -409,21 +484,34 @@ export async function gatherOnDesktopSessions(
   const windowSignalUnknown =
     (opts.deps?.isWindowsHost ?? isWindowsDesktopHost)() &&
     (opts.deps?.readWindowsCache ?? getOnDesktopWindowsCache)() === null;
+  const timeStep = async <T>(name: string, action: () => Promise<T>): Promise<T> => {
+    if (!opts.onDiagnostic) return action();
+    const startedAt = performance.now();
+    const report = (status: 'ok' | 'error') => {
+      try {
+        opts.onDiagnostic?.({ name, elapsedMs: Math.max(0, performance.now() - startedAt), status });
+      } catch {
+        /* A diagnostic observer must never change the best-effort presence result. */
+      }
+    };
+    try {
+      const value = await action();
+      report('ok');
+      return value;
+    } catch (error) {
+      report('error');
+      throw error;
+    }
+  };
   try {
-    const windows = await (opts.deps?.listWindows ?? listOpenWindows)();
+    const windows = await timeStep('listOpenWindows', () => (opts.deps?.listWindows ?? listOpenWindows)());
     // No open windows (headless box / no DISPLAY) → nobody is on the desktop.
-    if (windows.length > 0) {
+    if (windows.length > 0 && targetedOwnerIds?.length !== 0) {
       const maxAgeSec = Math.max(1, Math.round((opts.maxAgeMs ?? DESKTOP_CANDIDATE_MAX_AGE_MS) / 1000));
-      const { sql } = getOrgPg();
       // Recent rows with ANY join key — a launch handle (leg 1) OR a coord owner
       // (leg 2's join back from the live-host ownerId to sessionIds/advIds).
-      const rows = await sql<
-        Array<{ id: number; coord_owner_id: string | null; session_id: string | null; window_id: string | null; pid: number | null }>
-      >`
-        SELECT id, coord_owner_id, session_id, window_id, pid
-          FROM harness_shared.adv_sessions
-         WHERE started_at > now() - make_interval(secs => ${maxAgeSec})
-           AND (window_id IS NOT NULL OR pid IS NOT NULL OR coord_owner_id IS NOT NULL)`;
+      const rows = await timeStep('listCandidates', () =>
+        (opts.deps?.listCandidates ?? listRecentDesktopCandidateRows)(maxAgeSec, targetedOwnerIds));
       sets = selectOnDesktopSessions(
         rows.map((r) => ({
           advSessionId: r.id,
@@ -443,23 +531,56 @@ export async function gatherOnDesktopSessions(
       const winPids = windowOwningPids(windows);
       if (winPids.size > 0) {
         let hosts: Array<{ ownerId: string; pid: number }> = [];
-        try {
-          hosts = await (opts.deps?.listHosts ?? listLiveHostsAsync)();
-        } catch {
-          hosts = [];
+        if (targetedOwnerIds !== undefined) {
+          const ownersToResolve = targetedOwnerIds.filter((ownerId) => !sets.owners.has(ownerId));
+          const findHost = opts.deps?.findHost ?? findLiveHostAsync;
+          hosts = (await mapWithConcurrency(
+            ownersToResolve,
+            DESKTOP_HOST_LOOKUP_CONCURRENCY,
+            async (ownerId) => {
+              try {
+                return await timeStep('findLiveHost', () => findHost(ownerId));
+              } catch {
+                return null;
+              }
+            },
+          )).filter((host): host is { ownerId: string; pid: number } => host !== null);
+        } else {
+          try {
+            hosts = await timeStep('listLiveHosts', async () =>
+              (opts.deps?.listHosts ?? listLiveHostsAsync)());
+          } catch {
+            hosts = [];
+          }
         }
-        for (const h of hosts) {
-          if (!h.ownerId || !h.pid) continue;
-          if (sets.owners.has(h.ownerId)) continue; // already matched by handle
-          if (await pidHasWindowAncestor(h.pid, winPids, opts.deps?.readStat ?? defaultReadStat)) {
-            sets.owners.add(h.ownerId);
+        await timeStep('pidAncestry', async () => {
+          const matchedOwners = await mapWithConcurrency(
+            hosts,
+            DESKTOP_ANCESTRY_CONCURRENCY,
+            async (h) => {
+              if (!h.ownerId || !h.pid || sets.owners.has(h.ownerId)) return null;
+              try {
+                return await pidHasWindowAncestor(
+                  h.pid,
+                  winPids,
+                  opts.deps?.readStat ?? defaultReadStat,
+                ) ? h.ownerId : null;
+              } catch {
+                // One host's transient proc-read failure must not erase other matches.
+                return null;
+              }
+            },
+          );
+          for (const ownerId of matchedOwners) {
+            if (!ownerId) continue;
+            sets.owners.add(ownerId);
             for (const r of rows) {
-              if (r.coord_owner_id !== h.ownerId) continue;
+              if (r.coord_owner_id !== ownerId) continue;
               if (r.session_id) sets.sessionIds.add(r.session_id);
               sets.advSessionIds.add(r.id);
             }
           }
-        }
+        });
       }
     }
   } catch (e) {
@@ -471,7 +592,7 @@ export async function gatherOnDesktopSessions(
   // catch-reset empty sets (a Windows host with a null cache should read
   // "unknown" even if the PG join threw).
   sets.windowSignalUnknown = windowSignalUnknown;
-  onDesktopCache = { at: now, sets };
+  if (!targeted) onDesktopCache = { at: now, sets };
   return sets;
 }
 
@@ -506,15 +627,13 @@ export interface ActiveWindowDeps {
 }
 
 async function defaultRunXprop(): Promise<string | null> {
-  try {
-    const { stdout } = await execFileAsync('xprop', ['-root', '_NET_ACTIVE_WINDOW'], {
-      timeout: XPROP_TIMEOUT_MS,
-      encoding: 'utf8',
-    });
-    return typeof stdout === 'string' ? stdout : null;
-  } catch {
-    return null; // no xprop / no DISPLAY / timeout → focus unknown
-  }
+  // no xprop / no DISPLAY / timeout → null → focus unknown
+  return runX11Probe(
+    'xprop',
+    ['-root', '_NET_ACTIVE_WINDOW'],
+    XPROP_TIMEOUT_MS,
+    'desktop-window-liveness:xprop',
+  );
 }
 
 /** The currently-FOCUSED window id (numeric), or null when unknown. Short-TTL cached. */

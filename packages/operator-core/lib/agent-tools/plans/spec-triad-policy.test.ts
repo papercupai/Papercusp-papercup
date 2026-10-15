@@ -6,7 +6,10 @@ import {
   specTriadEpoch,
   SPEC_TRIAD_EPOCH_DEFAULT,
   SPEC_TRIAD_EPOCH_ENV,
+  SPEC_TRIAD_EXCLUDED_TEMPLATES,
+  isSpecTriadExcludedTemplate,
 } from './spec-triad-policy';
+import { SPEC_TRIAD_EXCLUDED_TEMPLATES as SWEEP_EXCLUDED_TEMPLATES } from './spec-triad-sweep';
 
 const EPOCH = new Date('2026-08-09T00:00:00.000Z');
 const ON = { flagEnabled: true, epoch: EPOCH };
@@ -106,7 +109,43 @@ describe('planInSpecTriadScope', () => {
   });
 });
 
+describe('excluded templates (WI-10005441)', () => {
+  // The promotion runner reaches specTriadGate too. Until WI-10005441 only the sweep knew a
+  // rubric row was out of scope, so promotion kept filing triad items against rubric rows.
+  it('puts an acceptance rubric row out of scope even when it would otherwise owe the triad', () => {
+    const rubric = { planSlug: 'acceptance-x', content: planContent(), created: '2026-10-01', template: 'rubric' };
+    expect(planInSpecTriadScope(rubric, ON)).toEqual({ inScope: false, reason: 'template-excluded' });
+    const v = specTriadGate(rubric, ON);
+    expect(v.gated).toBe(false);
+    expect(v.missing).toEqual([]);
+    // Calibration: the same row without the template IS gated, so the template is what decides.
+    expect(specTriadGate({ ...rubric, planSlug: 'ordinary-x', template: null }, ON).gated).toBe(true);
+  });
+
+  it('outranks an explicit specTriad: required declaration', () => {
+    const v = planInSpecTriadScope(
+      { content: planContent({ declare: 'required' }), created: '2026-10-01', template: 'rubric' },
+      ON,
+    );
+    expect(v).toEqual({ inScope: false, reason: 'template-excluded' });
+  });
+
+  it('is one list shared with the sweep, and only excludes the listed templates', () => {
+    expect(SWEEP_EXCLUDED_TEMPLATES).toBe(SPEC_TRIAD_EXCLUDED_TEMPLATES);
+    expect(isSpecTriadExcludedTemplate('rubric')).toBe(true);
+    expect(isSpecTriadExcludedTemplate('initiative')).toBe(false);
+    expect(isSpecTriadExcludedTemplate(null)).toBe(false);
+    expect(isSpecTriadExcludedTemplate(undefined)).toBe(false);
+  });
+});
+
 describe('specTriadGate', () => {
+  it('exempts acceptance companions without template metadata, even with an explicit required declaration', () => {
+    expect(specTriadGate({ planSlug: 'acceptance-x', content: planContent({ declare: 'required' }), created: '2026-10-01' }, ON))
+      .toMatchObject({ gated: false, triad: null, scope: { reason: 'companion-excluded' } });
+    expect(specTriadGate({ planSlug: 'acceptance-runtime-plane', content: planContent(), created: '2026-10-01' }, ON).gated).toBe(false);
+    expect(specTriadGate({ planSlug: 'ordinary-acceptance-x', content: planContent(), created: '2026-10-01' }, ON).gated).toBe(true);
+  });
   it('gates an in-scope plan that owes a leg, and names what it owes', () => {
     const v = specTriadGate({ planSlug: 'p', content: planContent(), created: '2026-08-10' }, ON);
     expect(v.gated).toBe(true);

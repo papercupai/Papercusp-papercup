@@ -88,6 +88,9 @@ export { resolveBackend };
 // re-exported through this shim like everything else operator-core consumes.
 export {
   resolveStatelessTransport,
+  createStatelessDiagnosticFetch,
+  type StatelessRequestAttempt,
+  type StatelessRequestAuthorizer,
   priorityTierHeaders,
   headersToRecord,
   ownerHeaders,

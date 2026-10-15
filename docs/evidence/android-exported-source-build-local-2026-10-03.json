@@ -1,0 +1,256 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Current exported mobile Rust source: offline host and Android four-ABI release compilation",
+  "framework": "shell",
+  "command": [
+    "tools/build-scripts/android-release-provenance.sh",
+    "source-verify-build",
+    "host"
+  ],
+  "commands": [
+    [
+      "tools/build-scripts/android-release-provenance.sh",
+      "source-archive"
+    ],
+    [
+      "tools/build-scripts/android-release-provenance.sh",
+      "source-verify-build",
+      "host"
+    ],
+    [
+      "tools/build-scripts/android-release-provenance.sh",
+      "source-verify-build",
+      "android"
+    ]
+  ],
+  "workingDirectory": "papercup-rust-mobile",
+  "startedAt": "2026-10-03T01:32:04.861215+00:00",
+  "finishedAt": "2026-10-03T01:44:12.202108+00:00",
+  "exitCode": 0,
+  "summary": "Actual current exported papercup-bindings Rust release compilation passed offline for the Linux host and all four Android ABIs. Both invocations verified the root archive against committed source, 249 locked registry packages and 12,321 vendored source-file hashes, resolved exclusively from the delivered supplement, and compiled in separate temporary directories with empty targets. This proves the complete mobile Rust library builds from the recorded source archives; Android Gradle app packaging and release acceptance are separate.",
+  "sourceCommit": "a6fe99c4b6de8f3a05192c01d2cc198ed68e7dd4",
+  "sourceFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/build-scripts/android-release-provenance.sh",
+      "sha256": "28b7ced143e7e38ae45d9ac2775fd57649e3fa9f7889a65d5ec12971fcf47c4a"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-release-provenance-test.sh",
+      "sha256": "2b07f85a31e8e07d2cfa20525010fb5a94dc3a3861687bc9617064c4a6c2b6be"
+    },
+    {
+      "path": "papercup-rust-mobile/Cargo.lock",
+      "sha256": "389f43b2d8d5fec43b35c2dc71246e0fd395a598ec9517516b54c8e8c6746c81"
+    },
+    {
+      "path": "papercup-rust-mobile/Cargo.toml",
+      "sha256": "665012b764bacfaa1587413645e560a69cd12f82c6eb2815974d952be57b46ad"
+    },
+    {
+      "path": "papercup-rust-mobile/store/APP-STORE-REVIEW.md",
+      "sha256": "ecad3dceb1839847d0fbd74177c653bb294cecaa6f5f0461dd7a673a9c8f6b56"
+    }
+  ],
+  "testFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-release-provenance-test.sh",
+      "sha256": "2b07f85a31e8e07d2cfa20525010fb5a94dc3a3861687bc9617064c4a6c2b6be"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "current-source-archive-verified",
+      "passed": true,
+      "evidence": "The maintained producer exported source at a6fe99c4b6de8f3a05192c01d2cc198ed68e7dd4 and verified it before both real builds; archive SHA-256 657372f48f79dd66cc2351849e5f99f33a13e6404abfc11521a1631244e828b7. Clean HEAD and both input archive hashes were rechecked after compilation."
+    },
+    {
+      "id": "locked-vendor-population-verified",
+      "passed": true,
+      "evidence": "Each invocation verified all 249 registry packages from Cargo.lock and all 12,321 files in the supplied Cargo checksum inventory; metadata resolved registry manifest paths only under the extracted vendor directory."
+    },
+    {
+      "id": "offline-host-release-compiled",
+      "passed": true,
+      "evidence": "cargo build --frozen --release --lib -p papercup-bindings --target x86_64-unknown-linux-gnu exited 0 and produced a 4,143,424-byte library with SHA-256 e8c663e72558717ec9a3cd5c6d5f23123006bc4363663880d0a17f92f749cce6."
+    },
+    {
+      "id": "offline-four-android-abis-compiled",
+      "passed": true,
+      "evidence": "cargo-ndk built aarch64-linux-android, armv7-linux-androideabi, i686-linux-android and x86_64-linux-android with --frozen --release; exit 0 and four nonempty library outputs with recorded hashes."
+    },
+    {
+      "id": "retained-proof-and-cleanup",
+      "passed": true,
+      "evidence": "Both raw receipts and uniquely named compiler logs were retained with verified hashes; the source archive was preserved separately before a later export can overwrite it. No temporary .source-build-* extraction remained after completion."
+    }
+  ],
+  "inputSha256": {
+    "android/app/build/outputs/papercusp-mobile-source.tar.gz": "657372f48f79dd66cc2351849e5f99f33a13e6404abfc11521a1631244e828b7",
+    "android/app/build/outputs/papercusp-rust-dependencies.tar.gz": "c3e3ef5c280b270deb739ba1341443d47cbd3fe3afb7693b14c74df0ee570f8d"
+  },
+  "cargoLockSha256": "389f43b2d8d5fec43b35c2dc71246e0fd395a598ec9517516b54c8e8c6746c81",
+  "toolchain": {
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+    "cargoNdk": "cargo-ndk 4.1.2",
+    "ndkRevision": "27.0.12077973"
+  },
+  "environment": {
+    "cargoNetOffline": true,
+    "targetDirectory": "Separate empty target inside each temporary extracted source tree",
+    "androidNdk": "Installed Android SDK NDK 27.0.12077973",
+    "registryResolution": "Delivered vendor directory only"
+  },
+  "runs": [
+    {
+      "schemaVersion": 1,
+      "sourceCommit": "a6fe99c4b6de8f3a05192c01d2cc198ed68e7dd4",
+      "mode": "host",
+      "startedAt": "2026-10-03T01:32:04.861215+00:00",
+      "finishedAt": "2026-10-03T01:34:23.781080+00:00",
+      "inputSha256": {
+        "android/app/build/outputs/papercusp-mobile-source.tar.gz": "657372f48f79dd66cc2351849e5f99f33a13e6404abfc11521a1631244e828b7",
+        "android/app/build/outputs/papercusp-rust-dependencies.tar.gz": "c3e3ef5c280b270deb739ba1341443d47cbd3fe3afb7693b14c74df0ee570f8d"
+      },
+      "cargoLockSha256": "389f43b2d8d5fec43b35c2dc71246e0fd395a598ec9517516b54c8e8c6746c81",
+      "verifiedRegistryPackages": 249,
+      "verifiedVendorFiles": 12321,
+      "commands": [
+        [
+          "cargo",
+          "build",
+          "--frozen",
+          "--release",
+          "--lib",
+          "-p",
+          "papercup-bindings",
+          "--target",
+          "x86_64-unknown-linux-gnu"
+        ]
+      ],
+      "exitCode": 0,
+      "compiledArtifacts": [
+        {
+          "target": "x86_64-unknown-linux-gnu",
+          "sha256": "e8c663e72558717ec9a3cd5c6d5f23123006bc4363663880d0a17f92f749cce6",
+          "size": 4143424
+        }
+      ],
+      "log": {
+        "path": "android/app/build/outputs/papercusp-source-build-e2b37c17445341cba8a5358312c1de43.log",
+        "sha256": "7e4633a757cfeb6784e6fca5c65e479ab55e4f6c6b12f4264cdb2a608cefd6d1"
+      },
+      "scope": "Offline exported-source compilation only; native app, signed candidate, license clearance and recipient retrieval remain separate."
+    },
+    {
+      "schemaVersion": 1,
+      "sourceCommit": "a6fe99c4b6de8f3a05192c01d2cc198ed68e7dd4",
+      "mode": "android",
+      "startedAt": "2026-10-03T01:35:03.478794+00:00",
+      "finishedAt": "2026-10-03T01:44:12.202108+00:00",
+      "inputSha256": {
+        "android/app/build/outputs/papercusp-mobile-source.tar.gz": "657372f48f79dd66cc2351849e5f99f33a13e6404abfc11521a1631244e828b7",
+        "android/app/build/outputs/papercusp-rust-dependencies.tar.gz": "c3e3ef5c280b270deb739ba1341443d47cbd3fe3afb7693b14c74df0ee570f8d"
+      },
+      "cargoLockSha256": "389f43b2d8d5fec43b35c2dc71246e0fd395a598ec9517516b54c8e8c6746c81",
+      "verifiedRegistryPackages": 249,
+      "verifiedVendorFiles": 12321,
+      "commands": [
+        [
+          "cargo",
+          "ndk",
+          "-t",
+          "arm64-v8a",
+          "-t",
+          "armeabi-v7a",
+          "-t",
+          "x86",
+          "-t",
+          "x86_64",
+          "build",
+          "--frozen",
+          "--release",
+          "--lib",
+          "-p",
+          "papercup-bindings"
+        ]
+      ],
+      "exitCode": 0,
+      "compiledArtifacts": [
+        {
+          "target": "aarch64-linux-android",
+          "sha256": "aa946aa0425efc7c4bdc9c866007b493779ce5f215a90d898b1afc9422b0c8ab",
+          "size": 3735744
+        },
+        {
+          "target": "armv7-linux-androideabi",
+          "sha256": "bb8a8620cb28fa6f8873e565536eb0a21d768c126f7e21b9dcbdbd437fd1f3c3",
+          "size": 2501140
+        },
+        {
+          "target": "i686-linux-android",
+          "sha256": "a8d4b79ce1ce4c7db98f686108eec26fd62a38da2c6fa573c70c447575f496fd",
+          "size": 4104608
+        },
+        {
+          "target": "x86_64-linux-android",
+          "sha256": "ae28d20eaf825e58e3118482035f438fb68135e445373bc16b56f966a4f7351c",
+          "size": 4147480
+        }
+      ],
+      "log": {
+        "path": "android/app/build/outputs/papercusp-source-build-35c9d14b7c9c4092bd96b47cf5a4c9a5.log",
+        "sha256": "05c7374c7fac0f8f870c92f4ea6e2b30152614f453f91d78d88396765b9d3fdb"
+      },
+      "scope": "Offline exported-source compilation only; native app, signed candidate, license clearance and recipient retrieval remain separate."
+    }
+  ],
+  "evidenceFiles": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-exported-source-host-result-20261003.json",
+      "sha256": "1cc2b3e97c59231840f64c70548b2ab0d2cc4ec5bfb388c2e91b2d3ad17f9fb3"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-exported-source-android-result-20261003.json",
+      "sha256": "9e6a0ef88df33b267e5f24b57d8c82b8c5592f47ac39570cdb4039b223817cd4",
+      "size": 1968
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-exported-source-a6fe99c4-20261003.tar.gz",
+      "sha256": "657372f48f79dd66cc2351849e5f99f33a13e6404abfc11521a1631244e828b7",
+      "size": 1373734
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-exported-source-host-20261003.log",
+      "sha256": "8dd6bab0ece77dab7293e6f98650762a3807d1c17b57c6810ee67c6663cfd7a2",
+      "size": 1258
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-exported-source-android-20261003.log",
+      "sha256": "c2b927eeb705fb71af62ff46e09bf907e109eeb781b26488f35cd93cca8d29cd",
+      "size": 1688
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-source-build-e2b37c17445341cba8a5358312c1de43.log",
+      "sha256": "7e4633a757cfeb6784e6fca5c65e479ab55e4f6c6b12f4264cdb2a608cefd6d1"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-source-build-35c9d14b7c9c4092bd96b47cf5a4c9a5.log",
+      "sha256": "05c7374c7fac0f8f870c92f4ea6e2b30152614f453f91d78d88396765b9d3fdb"
+    }
+  ],
+  "fixtureRegressionEvidence": {
+    "evidenceFile": "docs/evidence/android-source-build-verifier-local-2026-10-03.json",
+    "sha256": "7b67e1fbcaaaa3f905020c3c62b19368a15648dd79cfd641deeefe3b60163bc3",
+    "testRunId": 20606786,
+    "scope": "Previously executed maintained verifier regression suite; not rerun during these actual library builds."
+  },
+  "temporaryExtractionRemoved": true,
+  "limitations": [
+    "No Android Gradle APK/AAB compilation from these extracted archives was executed.",
+    "The compiled libraries were hashed before temporary extraction cleanup; they are not retained candidate binaries.",
+    "No final signed-candidate equivalence, complete third-party native/model notices or license clearance, actual recipient retrieval, physical-phone, paired automatic hosted-CI, or Google Play acceptance.",
+    "Historical source and prior native/auth/notice evidence remain in their original scopes; four existing Avi questions remain unanswered."
+  ]
+}

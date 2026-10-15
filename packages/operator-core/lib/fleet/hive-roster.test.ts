@@ -188,6 +188,29 @@ describe('foldHiveRoster', () => {
     expect(e.machineLabel).toBeNull();
   });
 
+  // derived-status-not-hand-written-2026-10-12#D-006 (WI-6554700010009431): the
+  // hive roster reports a held work item as the intent exactly as coord:presence does.
+  it('derives intent from a held work item when the declaration is stale, and strips the input', () => {
+    const p = pres({ ownerId: 'su-held', intent: 'old plan', intentDeclaredAt: new Date(NOW - 6 * 3600_000).toISOString() });
+    const [e] = foldHiveRoster(
+      [p],
+      [],
+      tier1({ 'su-held': { heldWorkIntent: { workItemId: 'WI-77', title: 'Fix the roster' } } }),
+      NOW,
+    );
+    expect(e.intent).toBe('Fix the roster (WI-77)');
+    expect(e.intentSource).toBe('derived');
+    expect(e.intentDerivedFrom).toEqual({ workItemId: 'WI-77' });
+    expect(e).not.toHaveProperty('heldWorkIntent');
+  });
+
+  it('keeps the declared intent when nothing is held, with no intentDerivedFrom', () => {
+    const [e] = foldHiveRoster([pres({ ownerId: 'su-decl', intent: 'reviewing PRs' })], [], tier1({}), NOW);
+    expect(e.intent).toBe('reviewing PRs');
+    expect(e.intentSource).toBe('declared');
+    expect(e).not.toHaveProperty('intentDerivedFrom');
+  });
+
   it('defaults machineLabel to null when no local label is injected (pre-WI-1495 callers unchanged)', () => {
     const [e] = foldHiveRoster([pres({ ownerId: 'su-x' })], [], tier1({}), NOW);
     expect(e.machineLabel).toBeNull();

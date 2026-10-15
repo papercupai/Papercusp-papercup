@@ -6,6 +6,7 @@ import {
   WORKSPACE_HOST_AGENT_HOME_MUTABLE_CACHE_BUNDLE_VERSION,
   buildWorkspaceHostCredentialReference,
   encodeWorkspaceHostAgentHomeBundle,
+  workspaceHostAgentAllowedVerificationKinds,
   workspaceHostAgentHomePaths,
   workspaceHostCredentialReferenceDigest,
   type WorkspaceHostAgentProbeFailureReason,
@@ -21,6 +22,7 @@ import {
   WorkspaceHostAgentCredentialAdmissionError,
   assertWorkspaceHostAgentCredentialAdmissionEvidence,
   verifyWorkspaceHostAgentCredentialAdmission,
+  workspaceHostAgentAdmissionProbeSpecs,
 } from './agent-credential-admission';
 import type {
   WorkspaceHostCredentialMaterialRequest,
@@ -39,22 +41,32 @@ const DELIVERY = {
 };
 const NOW = () => new Date('2026-09-07T06:00:00.000Z');
 
-function probe(agent: 'claude' | 'codex' | 'omp'): WorkspaceHostAgentVerificationProbeSpec {
+function probe(
+  agent: 'claude' | 'codex' | 'omp',
+  verificationKind: WorkspaceHostAgentVerificationProbeSpec['verificationKind'],
+  overrides: Partial<WorkspaceHostAgentVerificationProbeSpec> = {},
+): WorkspaceHostAgentVerificationProbeSpec {
   return {
     agent,
-    verificationKind: 'authenticated-account',
+    verificationKind,
     command: `probe-${agent}`,
     args: [],
     endpoint: `https://probe.invalid/${agent}`,
     proofPattern: /^(READY)$/m,
     subjectDisclosure: 'digest',
+    ...overrides,
   };
 }
 
+/**
+ * The SHIPPED kinds (WI-10005806): admission runs claude and codex on live inference, and a present
+ * OMP credential on its authenticated-account probe. A fixture that labels every agent
+ * authenticated-account produces receipts the shipped validator correctly refuses.
+ */
 const PROBES = {
-  claude: [probe('claude')],
-  codex: [probe('codex')],
-  omp: [probe('omp')],
+  claude: [probe('claude', 'live-inference')],
+  codex: [probe('codex', 'live-inference')],
+  omp: [probe('omp', 'authenticated-account')],
 } satisfies Record<'claude' | 'codex' | 'omp', readonly WorkspaceHostAgentVerificationProbeSpec[]>;
 
 type CodexProbeStatus = 'healthy' | 'revoked' | 'unfunded' | 'malformed' | 'unauthorized';
@@ -545,5 +557,86 @@ describe('workspace-host exact-generation agent credential admission', () => {
     expect(evidence.verification.agents.omp).toBeUndefined();
     expect(runner.observed).toEqual({ claude: 'healthy', codex: 'healthy' });
     expect(() => assertWorkspaceHostAgentCredentialAdmissionEvidence(evidence)).not.toThrow();
+  });
+});
+
+describe('admission verification kinds are derived from the probe table (WI-10005806)', () => {
+  /** Relabel one agent's verification kind on an otherwise valid, shipped-shape receipt. */
+  function relabel(
+    evidence: Awaited<ReturnType<typeof healthyEvidence>>,
+    agent: 'claude' | 'codex' | 'omp',
+    verificationKind: string,
+  ) {
+    return {
+      ...evidence,
+      verification: {
+        ...evidence.verification,
+        agents: { ...evidence.verification.agents, [agent]: { ...evidence.verification.agents[agent], verificationKind } },
+      },
+    };
+  }
+
+  it('the shipped kinds are exactly the readiness-bearing probes admission runs', () => {
+    const kinds = (agent: 'claude' | 'codex' | 'omp') =>
+      workspaceHostAgentAdmissionProbeSpecs(agent).map((spec) => spec.verificationKind);
+    expect(kinds('claude')).toEqual(['live-inference']);
+    // codex's `codex login status` probe is satisfiesReadiness:false (WI-10001694): never run here.
+    expect(kinds('codex')).toEqual(['live-inference']);
+    // A present OMP credential authenticates its bytes; local inference would prove the runtime.
+    expect(kinds('omp')).toEqual(['authenticated-account']);
+    // Calibration: the readiness derivation itself still offers OMP local inference, so the OMP
+    // restriction above is admission's own and not an accident of the table.
+    expect([...workspaceHostAgentAllowedVerificationKinds('omp')]).toContain('local-inference');
+  });
+
+  it('refuses a persisted claude receipt claiming the retired, forgeable authenticated-account kind', async () => {
+    const evidence = await healthyEvidence();
+    expect(() => assertWorkspaceHostAgentCredentialAdmissionEvidence(evidence)).not.toThrow();
+    expect(() => assertWorkspaceHostAgentCredentialAdmissionEvidence(relabel(evidence, 'claude', 'authenticated-account'))).toThrow(
+      /invalid 'claude' verification/,
+    );
+    expect(() => assertWorkspaceHostAgentCredentialAdmissionEvidence(relabel(evidence, 'omp', 'local-inference'))).toThrow(
+      /invalid 'omp' verification/,
+    );
+  });
+
+  it('moves with the probe table: a table that offers a kind makes admission accept it', async () => {
+    const evidence = await healthyEvidence();
+    const forged = relabel(evidence, 'claude', 'authenticated-account');
+    const table = { ...PROBES, claude: [probe('claude', 'authenticated-account')] };
+    expect(() => assertWorkspaceHostAgentCredentialAdmissionEvidence(forged, undefined, table)).not.toThrow();
+  });
+
+  it('never runs a satisfiesReadiness:false probe, so it cannot decide admission', async () => {
+    const commands: string[] = [];
+    const runner: WorkspaceHostAgentProbeRunner = {
+      async run(invocation) {
+        commands.push(invocation.command);
+        // The forgeable status probe would pass; only the readiness probe may decide.
+        if (invocation.command === 'codex-login-status') return { exitCode: 0, stdout: 'READY\n' };
+        return new BundleAwareRunner().run(invocation);
+      },
+    };
+    const probes = {
+      ...PROBES,
+      codex: [
+        probe('codex', 'authenticated-account', { command: 'codex-login-status', satisfiesReadiness: false }),
+        probe('codex', 'live-inference'),
+      ],
+    };
+    const evidence = await verifyWorkspaceHostAgentCredentialAdmission(
+      {
+        credentialRef: { kind: 'agent', ref: AGENT_REF },
+        delivery: DELIVERY,
+        materialSource: source(bundle('revoked'), []),
+      },
+      { runner, probes, now: NOW, environment: { PATH: '/usr/bin:/bin' } },
+    ).catch((error: unknown) => error);
+
+    expect(commands).not.toContain('codex-login-status');
+    // The revoked codex credential is refused by the readiness probe the status line used to bypass.
+    expect(evidence).toBeInstanceOf(WorkspaceHostAgentCredentialAdmissionError);
+    const refused = (evidence as WorkspaceHostAgentCredentialAdmissionError).evidence;
+    expect(refused.verification.agents.codex).toMatchObject({ verificationKind: 'live-inference', ready: false });
   });
 });

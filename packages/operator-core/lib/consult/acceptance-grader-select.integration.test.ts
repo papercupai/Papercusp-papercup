@@ -78,13 +78,21 @@ async function seedWorkItem(
 
 async function seedConsult(
   conversationId: string,
-  opts: { requester: string; responder?: string | null; state?: string; originTaskRef?: string; ws?: string },
+  opts: {
+    requester: string;
+    responder?: string | null;
+    state?: string;
+    originTaskRef?: string;
+    ws?: string;
+    routing?: Record<string, unknown> | null;
+  },
 ) {
   await db.sql`
     INSERT INTO harness_shared.consult_state
-      (workspace_id, conversation_id, requester_id, responder_id, state, origin_task_ref)
+      (workspace_id, conversation_id, requester_id, responder_id, state, origin_task_ref, routing)
     VALUES (${opts.ws ?? WS}, ${conversationId}, ${opts.requester}, ${opts.responder ?? null},
-            ${opts.state ?? 'closed_answered'}, ${opts.originTaskRef ?? PLAN})`;
+            ${opts.state ?? 'closed_answered'}, ${opts.originTaskRef ?? PLAN},
+            ${opts.routing == null ? null : db.sql.json(opts.routing as never)})`;
 }
 
 beforeAll(async () => {
@@ -156,6 +164,37 @@ describe('the exclusion query runs against the REAL schema (P-005 / D-001)', () 
 
     expect(out).toContain('su-asked');
     expect(out).not.toContain('su-declined');
+  });
+
+  it('GRADE-ELIGIBLE (P-007 / D-004) — a bar-critique responder stays eligible; its requester does not', async () => {
+    await seedConsult('conv-crit', {
+      requester: 'su-author',
+      responder: 'su-critic',
+      state: 'closed_answered',
+      routing: { policy: 'bar-critique' },
+    });
+
+    const out = await computeGraderExclusions(db.sql, WS, PLAN);
+
+    expect(out).not.toContain('su-critic');
+    expect(out).toContain('su-author');
+  });
+
+  it('CONTROL — the same answered thread under any other policy DOES exclude its responder', async () => {
+    // Without this pair, the assertion above would also pass if the responder
+    // leg had stopped matching anything at all.
+    await seedConsult('conv-other', {
+      requester: 'su-author',
+      responder: 'su-critic',
+      state: 'closed_answered',
+      routing: { policy: 'rubric-vetting' },
+    });
+    await seedConsult('conv-null', { requester: 'su-r3', responder: 'su-unrouted', state: 'closed_answered' });
+
+    const out = await computeGraderExclusions(db.sql, WS, PLAN);
+
+    expect(out).toContain('su-critic');
+    expect(out).toContain('su-unrouted');
   });
 });
 

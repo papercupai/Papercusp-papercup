@@ -3,6 +3,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import type { Principal } from '@papercusp/agent-mcp';
 import { SUPERUSER_FALLBACK_CLIENT_ID } from '../../../agent-tools/coordination/identity';
+import { ROLE_ENVELOPES } from '../../../capability-envelope/policy';
 
 /**
  * Capabilities granted to **blueprint-declared roles** — agents a blueprint spawns
@@ -25,6 +26,16 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   voter: ['coord:read', 'coord:write', 'docs:read', 'search:read'],
   advocate: ['coord:read', 'coord:write', 'docs:read', 'search:read'],
   scanner: ['coord:read', 'coord:write', 'docs:read', 'search:read', 'harness:read', 'plans:read'],
+  // The research blueprint stores findings in the existing work-item ledger.
+  // Its morning AI operation fetches/reads sources, publishes a report and
+  // sends an in-app result. Match that workflow without granting source writes,
+  // shell, placement or plan mutation. Concrete tool roles, the accepted receipt
+  // and the existing role/pot ceilings remain independent dispatch gates.
+  researcher: [
+    'work_items:read', 'work_items:write', 'plans:read',
+    'reports:read', 'reports:write', 'coord:write',
+    'capability:fs-read', 'capability:net',
+  ],
   // The pipeline reviewer has no provisioned system_principals row. Its grading-
   // integrity workflow reads scorecards, rubrics and facts, declares coordination
   // intent, and captures defects; it also inspects/claims adequacy-gate work. Keep
@@ -69,13 +80,31 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   // COORD_ROLES/tool allowlists remain the other dispatch gate. In particular,
   // do not grant filesystem, shell, docs, locks, release, or operator caps.
   'content-fixer': ['coord:read', 'coord:write', 'work_items:read', 'work_items:write'],
+  // The git-sync merge-resolver is a launch-blueprint role with no provisioned
+  // system_principals row. Its documented conflict protocol reads work-item and
+  // feature intent, coordinates semantic questions/escalations, and holds the
+  // shared git-sync resource lock. Keep the direct MCP grant to those seams;
+  // COORD_ROLES and each tool's own allowlist remain the separate role gate.
+  'merge-resolver': [
+    'coord:read',
+    'coord:write',
+    'work_items:read',
+    'work_items:write',
+    'features:read',
+    'locks:read',
+    'locks:write',
+  ],
   // Dedicated plan-acceptance judges are evidence-scoped: they may read the
   // rubric, prior scorecards, test-run ledger, and work-item completion evidence;
   // emit the verdict; run the rubric's named checks; read the files those checks
   // cite; capture a defect they encounter; and persist their own lifecycle
-  // annotation/checkpoint/close. The lifecycle tools independently allowlist
-  // `judge`, so this write cap does not admit the role to broader work-item or
-  // coordination surfaces, and judge remains outside COORD_ROLES.
+  // annotation/checkpoint/close. They also need bounded, read-only SQL and code
+  // intelligence when a public evidence surface omits an authoritative field.
+  // `intel:read` only opens tools whose independent role allowlist includes
+  // `judge`; it does not grant `intel:write`, shell, or filesystem write.
+  // The lifecycle tools independently allowlist `judge`, so these capabilities
+  // do not admit the role to broader work-item or coordination surfaces, and
+  // judge remains outside COORD_ROLES.
   judge: [
     'coord:read',
     'coord:write',
@@ -83,8 +112,33 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     'work_items:write',
     'operator:read',
     'plans:read',
+    // Re-run the named release-readiness autoloop probe. The sole consumer of
+    // this capability also pins judge reads to the dispatched harness.
+    'autoloop:read',
+    // EI-25692833751908142: the ship gate's independent_verification_missing is cleared by
+    // an independent-verification binding, and the recruiter hands that job to the judge.
+    // This opens ONLY plans:bind-independent-verification (that one evidence kind); judge
+    // still lacks plans:write, so it cannot author implementer evidence, specs or status.
+    'plans:independent-verification:write',
     'testing:run',
     'capability:fs-read',
+    // EI-25277095047945170: judge gets the narrow structured Git evidence
+    // reader, never capability:git's arbitrary argv/scratchClone surface.
+    'capability:git-evidence:read',
+    // Search is harness-only in the handler; do not grant memory:read (which
+    // also opens list/get and the personal memory pool).
+    'memory:search:read',
+    // EI-25286431862833439: transcript navigation is a separate capability from
+    // generic search, and sessions:read narrows this role to session:'self'.
+    'sessions:read',
+    // EI-24903256825782248: a rubric method can mandate a grading-runbook
+    // read; docs:get is the only reader (allowlists `judge`). Read-only.
+    'docs:read',
+    // EI-25410096224440228: graders re-run report-cited evidence through
+    // reports:get. The report store's R-7 visibility matrix still applies,
+    // so this does not expose owner-only reports authored by another agent.
+    'reports:read',
+    'intel:read',
   ],
   // The SENTINEL — the fleet WATCHER (unify-launch-mechanics-2026-06-09 D-004,
   // split out of the overloaded "operator"). READ-MOSTLY: it observes fleet
@@ -124,6 +178,8 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   // un-allowlisted (capability-only) so curation:read alone resolves them.
   // pot-rename SLICE-2 CONTRACT: `papercup` is the canonical id (was `sentinel`).
   papercup: [
+    // docs:get/search default these roles to the isolated public manual.
+    'docs:read',
     'coord:read',
     'coord:write',
     'work_items:read',
@@ -140,6 +196,7 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     'memory:read',
     'intel:read',
   ],
+  'papercup-deep': ['docs:read'],
   // The OVERWATCH — the autonomous system-health SUPERVISOR (overwatch-role-2026-06-15
   // C-2 / B-01; a sibling to the Queen, the sense→decide→act actuator the watchdog lacks).
   // READ-EVERYTHING + NUDGE/OBSERVE/ESCALATE ONLY. Like the sentinel its only world-writes
@@ -388,6 +445,8 @@ export async function loadRoleCapabilities(
   tx: Sql,
   workspaceId: string,
   roleName: string,
+  /** The caller's harness; lets an APP-declared worker role resolve its pot blueprint grant. */
+  harnessSlug?: string,
 ): Promise<Set<string>> {
   const rows = await tx<Array<{ capabilities: unknown }>>`
     SELECT capabilities
@@ -402,6 +461,17 @@ export async function loadRoleCapabilities(
   // tools their blueprint role uses (e.g. coord:thread-post / improvements:capture →
   // coord:write).
   for (const c of BLUEPRINT_ROLE_CAPS[roleName] ?? []) caps.add(c);
+  // WI-10007010: an APP harness declares its own worker roles (e.g. calendar's
+  // calendar-prep-worker) in its pot blueprint's fleet.workerRoles. They have no
+  // system_principals row and no static entry above, so without this their
+  // principal lacks every capability their own blueprint grants (memory:read,
+  // work_items:write, ...). This is the SAME declared list the identity kernel
+  // reads as the role ceiling. Only a role the platform does not know contributes,
+  // so a harness blueprint can never widen a provisioned or platform role.
+  if (harnessSlug && harnessSlug !== '*' && raw === undefined &&
+      !BLUEPRINT_ROLE_CAPS[roleName] && !Object.hasOwn(ROLE_ENVELOPES, roleName)) {
+    for (const c of await declaredPotWorkerRoleCapabilities(workspaceId, harnessSlug, roleName)) caps.add(c);
+  }
   // B-18 cutover parity: these roles can have Bash/Edit/Write/WebFetch removed
   // from their native CLI surface. Give their signed MCP principal the exact
   // replacement capability grants so the cutover never strands them. This is
@@ -438,6 +508,21 @@ export async function loadRoleCapabilities(
   } catch {
     /* additive grants only — never block capability resolution on a flag/read error */
   }
+  // The judge's role ceiling excludes the broad memory family even if an old
+  // provisioned row or runtime grant still carries memory:read.
+  if (roleName === 'judge') {
+    caps.delete('memory:read');
+    // Keep a stale or runtime-added broad search grant from unlocking generic
+    // corpus/session search for the evidence-only judge.
+    caps.delete('search:read');
+  }
+  // Preserve sessions:read for existing transcript readers while separating it
+  // from the other tools that share the broader search:read capability.
+  if (caps.has('search:read')) caps.add('sessions:read');
+  // Preserve existing readers' memory:search access while separating that
+  // one read route from the broader memory:read family. Judges receive the
+  // narrow capability explicitly above and therefore do not inherit memory:read.
+  if (caps.has('memory:read')) caps.add('memory:search:read');
   return caps;
 }
 
@@ -542,11 +627,35 @@ export function effectiveDispatchWorkspace(
  * capabilities (least-privilege) and the capability gate enforces normally.
  * `tx` must already be workspace-scoped.
  */
+/**
+ * WI-10007010: the capabilities the caller harness's POT blueprint declares for an
+ * app worker role. Additive only: any resolution failure yields none rather than
+ * blocking capability resolution.
+ */
+async function declaredPotWorkerRoleCapabilities(
+  workspaceId: string,
+  harnessSlug: string,
+  roleName: string,
+): Promise<readonly string[]> {
+  try {
+    const { potHomeSlugForHarness } = await import('../../../hive-federation');
+    const { resolveHarnessPaths } = await import('../../../resolve-harness-paths');
+    const { blueprintWorkerRoleCapabilities } = await import('../../../capability-envelope/blueprint-envelopes');
+    const potSlug = (await potHomeSlugForHarness(workspaceId, harnessSlug)) ?? harnessSlug;
+    const { stateDir } = await resolveHarnessPaths(potSlug, workspaceId);
+    return blueprintWorkerRoleCapabilities(stateDir, roleName) ?? [];
+  } catch {
+    return [];
+  }
+}
+
 export async function synthesizeDispatchPrincipal(
   tx: Sql,
   spawnCtx: {
     workspaceId: string;
     role: string;
+    /** The caller's harness (BuiltSpawnContext carries it); see loadRoleCapabilities. */
+    harnessSlug?: string;
     isSuperuser?: boolean;
     authenticatedPrincipal?: Principal;
     /** Explicitly false only for an accepted unsigned legacy spawn URL. */
@@ -556,7 +665,7 @@ export async function synthesizeDispatchPrincipal(
   if (spawnCtx.authenticatedPrincipal) return spawnCtx.authenticatedPrincipal;
   const capabilities = spawnCtx.isSuperuser
     ? new Set<string>()
-    : await loadRoleCapabilities(tx, spawnCtx.workspaceId, spawnCtx.role);
+    : await loadRoleCapabilities(tx, spawnCtx.workspaceId, spawnCtx.role, spawnCtx.harnessSlug);
   // Keep the legacy capability/role behavior above, but carry the transport's
   // resolved provenance into telemetry. `sigVerifiedSpawn` is supplied by the
   // MCP adapter for URL calls; omitted by older nested-dispatch callers, which

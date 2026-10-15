@@ -17,7 +17,9 @@ vi.mock('./task-sets', () => ({
   ],
 }));
 
-import { estimateBenchLaunch } from './estimate';
+import { estimateBenchLaunch, estimateCurrentBenchLaunch } from './estimate';
+import { currentProtocolFixture } from './reproducibility/_protocol-test-fixture';
+import { currentBenchCodexSubscriptionContract, currentBenchOpenAiInputContract } from './current-su';
 
 const PER_TASK_USD = 3.5;
 const PER_TASK_WALL_MIN = 18;
@@ -73,5 +75,85 @@ describe('estimateBenchLaunch', () => {
   it('cap of 1 yields one wave per task', () => {
     const e = estimateBenchLaunch({ taskSetId: 'stratified-30', cap: 1 });
     expect(e.estWallMin).toBe(30 * PER_TASK_WALL_MIN);
+  });
+});
+
+describe('committed current protocol launch preflight', () => {
+  const setup = () => {
+    const config = currentProtocolFixture('current-study');
+    config.priceSchedule.rates[0].inputTokenCeiling = 1000;
+    config.priceSchedule.rates[0].inputTokenCeilingSourceSha256 = currentBenchOpenAiInputContract('configured-alias', 1000);
+    const ports = {
+      readPrereg: vi.fn(async () => ({ preregHash: 'a'.repeat(64), config })),
+      verify: vi.fn(async () => ({ preregHash: 'a'.repeat(64) })),
+      readAccounts: vi.fn(async () => ({ accounts: [{ id: 'api', provider: 'codex', credentialRef: 'token:/private/key' }] })),
+      supportsBearer: vi.fn(async () => true),
+      readRuntimes: vi.fn(async () => [{ pid: 123, treeSha: config.arms[0].runtime.sourceRevision, unit: 'staging-api' }]),
+      measure: vi.fn(() => config.arms[0].runtime.runtimeRevision), runtimeWorkspaceId: 'host-workspace', pid: 123,
+      enabled: vi.fn(async () => true),
+    };
+    const run = (changed = {}) => estimateCurrentBenchLaunch({ workspaceId: 'benchmarks', protocolRunId: config.runId,
+      arm: 'papercusp', seed: 1, ...changed }, {}, ports as never);
+    return { run, ports, config };
+  };
+  it('derives controls and boot observation from verified frozen data without inference', async () => {
+    const { run, ports } = setup();
+    expect(await run()).toMatchObject({ ready: true, arm: 'papercusp', model: 'configured-alias', perTaskUsd: 3,
+      aggregateBudgetUsd: 60, current: { workspaceId: 'benchmarks', protocolRunId: 'current-study', seed: 1,
+        observation: { runtimeWorkspaceId: 'host-workspace', workerUnit: 'staging-api', gatewayUnit: 'staging-api' } } });
+    expect(ports.readAccounts).toHaveBeenCalledWith('benchmarks');
+    expect(ports.verify).toHaveBeenCalledWith('current-study', expect.any(Object), { workspaceId: 'benchmarks' });
+  });
+  it('refuses uncommitted protocols, missing API accounts and loaded runtime drift', async () => {
+    const a = setup(); a.ports.verify.mockRejectedValue(new Error('uncommitted'));
+    expect(await a.run()).toEqual({ ready: false, error: 'uncommitted' });
+    expect(a.ports.readAccounts).not.toHaveBeenCalled();
+    const b = setup(); b.ports.supportsBearer.mockResolvedValue(false);
+    expect(await b.run()).toMatchObject({ ready: false, error: expect.stringContaining('API bearer') });
+    const c = setup(); c.ports.measure.mockReturnValue('different-runtime');
+    expect(await c.run()).toMatchObject({ ready: false, error: expect.stringContaining('loaded execution host') });
+    const d = setup(); d.ports.enabled.mockResolvedValue(false);
+    expect(await d.run()).toMatchObject({ ready: false, error: expect.stringContaining('execution is disabled') });
+    expect(d.ports.readAccounts).not.toHaveBeenCalled();
+    const e = setup(); e.config.priceSchedule.rates[0].inputTokenCeilingSourceSha256 = 'f'.repeat(64);
+    expect(await e.run()).toMatchObject({ ready: false, error: expect.stringContaining('input-count contract') });
+  });
+  // benchmark-coverage-frontierswe-v2-2026-10-10#D-023: a subscription arm needs its own
+  // frozen contract and a codex-cli account, and its caps are list prices, not spend.
+  const subscription = () => {
+    const s = setup();
+    for (const arm of s.config.arms) arm.payer = 'subscription';
+    s.config.priceSchedule.rates[0].outputTokenCeiling = 128;
+    s.config.priceSchedule.rates[0].inputTokenCeilingSourceSha256 = currentBenchCodexSubscriptionContract('configured-alias', 1000, 128);
+    s.ports.readAccounts.mockResolvedValue({ accounts: [{ id: 'sub', provider: 'codex', credentialRef: 'codex-cli:/private/home' }] });
+    const supportsSubscription = vi.fn(async (ref: string) => ref.startsWith('codex-cli:'));
+    Object.assign(s.ports, { supportsSubscription });
+    return { ...s, supportsSubscription };
+  };
+  it('labels an API-key arm metered and a subscription arm list-price-equivalent', async () => {
+    expect(await setup().run()).toMatchObject({ ready: true, payer: 'api-key', costBasis: 'metered' });
+    const s = subscription();
+    expect(await s.run()).toMatchObject({ ready: true, payer: 'subscription', costBasis: 'list-price-equivalent',
+      basis: expect.stringContaining('not money spent') });
+    expect(s.supportsSubscription).toHaveBeenCalledWith('codex-cli:/private/home');
+    expect(s.ports.supportsBearer).not.toHaveBeenCalled();
+  });
+  it.each(['no-port', 'api-account', 'api-contract', 'missing-output-ceiling'] as const)(
+    'refuses a subscription arm with %s', async defect => {
+      const s = subscription();
+      if (defect === 'no-port') delete (s.ports as { supportsSubscription?: unknown }).supportsSubscription;
+      if (defect === 'api-account') s.ports.readAccounts.mockResolvedValue({ accounts: [{ id: 'api', provider: 'codex', credentialRef: 'token:/private/key' }] });
+      if (defect === 'api-contract') s.config.priceSchedule.rates[0].inputTokenCeilingSourceSha256 = currentBenchOpenAiInputContract('configured-alias', 1000);
+      if (defect === 'missing-output-ceiling') delete s.config.priceSchedule.rates[0].outputTokenCeiling;
+      // The frozen-protocol schema refuses a missing output ceiling before the contract check.
+      expect(await s.run()).toMatchObject({ ready: false, error: expect.stringContaining(
+        defect === 'missing-output-ceiling' ? 'frozen provider input and output ceilings'
+          : defect === 'api-contract' ? 'subscription provider-limit contract' : 'Codex subscription account') });
+    });
+  it('rejects retired arms, unregistered seeds and production scope before launch', async () => {
+    const { run } = setup();
+    expect((await run({ arm: 'hive-realqueen' })).ready).toBe(false);
+    expect((await run({ seed: 2 })).ready).toBe(false);
+    expect((await run({ workspaceId: 'papercusp-workspace' })).ready).toBe(false);
   });
 });

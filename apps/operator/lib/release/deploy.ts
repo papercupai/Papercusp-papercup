@@ -541,7 +541,8 @@ export async function executeDeploy(
         await deps
           .recordEvent({
             status: 'ok',
-            detail: { targetSha: plan.targetSha.slice(0, 12), commits: plan.commits.length, migrations: plan.migrations.length },
+            detail: { targetSha: plan.targetSha.slice(0, 12), fullTargetSha: plan.targetSha,
+              commits: plan.commits.length, migrations: plan.migrations.length },
           })
           .catch(() => {});
       }

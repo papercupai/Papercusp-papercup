@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "Retained immutable Portal central control route proof and unpromoted candidate build",
+  "workItemId": "WI-10007589",
+  "planSlug": "cloud-app-live-tutorial-2026-10-01",
+  "command": [
+    "PAPERCUSP_LINT_AS_COMMITTED_CLONE=1",
+    "PORTAL_PROMOTE=0",
+    "npm",
+    "run",
+    "build"
+  ],
+  "startedAt": "2026-10-08T21:22:19.809Z",
+  "finishedAt": "2026-10-08T21:26:50.874122+00:00",
+  "exitCode": 0,
+  "summary": "Archive of completed immutable Portal7ab8d41d/source-rootc19484fc proof: four maintained suites55PASS/0skip, complete typecheck clean, corrected standalone candidate built and published with PORTAL_PROMOTE=0. Recorder assertions describe saved observations, not additional test executions. Genuine hosted causal acceptance and production remain separate.",
+  "assertions": [
+    {
+      "id": "four-complete-maintained-suites",
+      "passed": true,
+      "evidence": "Original local runs20938386/87/88/89: playwright-layer-contract5, operator-relay19, operator-passthrough24, operator-proxy-budget7; 55 passed zero skipped at clean7ab8d41d."
+    },
+    {
+      "id": "complete-typecheck",
+      "passed": true,
+      "evidence": "Immutable typecheck clean0/errors,3031files; build complete typecheck clean0/errors,3036files."
+    },
+    {
+      "id": "standalone-candidate-not-promoted",
+      "passed": true,
+      "evidence": "Next compilation/build tracing and maintained standalone publication completed; staged_without_promote/nothing deployed."
+    }
+  ],
+  "provenance": {
+    "portalCommit": "7ab8d41d6376984836b250246792a360e2cf8f5b",
+    "operatorCommit": "c19484fc98aa929a8596441a0ff1e52b0fe7315e",
+    "portalRoot": "/dev/shm/pcv/papercusp-lint-as-committed-7ab8d41d63-T1lANC",
+    "operatorRoot": "/tmp/pcv/papercusp-lint-as-committed-c19484fc98-dZs3my",
+    "sourcePaths": [
+      {
+        "path": "apps/host/src/api.ts",
+        "sha256": "bcdb175c8aeaa2435db1e667f69c02dc65f8036d09ce3ffd3c661107e15a98fd"
+      },
+      {
+        "path": "apps/host/src/operator-origin.ts",
+        "sha256": "7657fc5e96bef39b0ee63149e0656ebbb293a065f3310a2dd241ea0387a06a15"
+      },
+      {
+        "path": "apps/host/src/operator-sync.ts",
+        "sha256": "ffccb8ff18c9c94c65693f353867b8dd7608a80370b653ae0d4dd74e167fe406"
+      },
+      {
+        "path": "tests/operator-passthrough.test.ts",
+        "sha256": "76dc8cb327d93c8ac82c40578d5fa634a82a4f79d66d86ac1929fddf12a8d241"
+      },
+      {
+        "path": "tests/operator-proxy-budget.test.ts",
+        "sha256": "7cbd8aed16d8fcec685fbe84b170c55fae0565fa5c8c0534c2902e32b56a1fbe"
+      },
+      {
+        "path": "tests/operator-relay.test.ts",
+        "sha256": "aea1faba716b1bf11f692ca69f0702f71129bd5844762dbdbd152e7d7939cca2"
+      },
+      {
+        "path": "tests/playwright-layer-contract.test.ts",
+        "sha256": "80abdd051a00ee83c9689433bb6ce2d2196c0273f8473c7e3869560b72de8cc2"
+      }
+    ],
+    "originalTestRunIds": [
+      20938386,
+      20938387,
+      20938388,
+      20938389
+    ],
+    "originalTestCount": 55,
+    "originalSkippedTestCount": 0,
+    "originalScope": {
+      "source": "local",
+      "workspace": "papercusp-workspace",
+      "harness": "papercusp",
+      "worktreeDirty": false
+    },
+    "logs": [
+      {
+        "path": "/tmp/tutorial-control-route-clean55-7ab8d41d-20261008T2123.log",
+        "sha256": "f0faa4923ec377cba73ddbb1e8d8676743cb8c82453da93c308e771005bf4bad",
+        "lastWrittenAt": "2026-10-08T21:19:23.449653+00:00"
+      },
+      {
+        "path": "/tmp/tutorial-control-route-committed-types-7ab8d41d-20261008T2125.log",
+        "sha256": "146f2dbf08de0c543b7c74962ff6fb8b13fadc024f2ce83096aea2edec0f7482",
+        "lastWrittenAt": "2026-10-08T21:21:00.193708+00:00"
+      },
+      {
+        "path": "/tmp/tutorial-control-candidate-build-7ab8d41d-c19484fc-20261008T2128.log",
+        "sha256": "c157dd9ff5cd6df381478ae2eb7b4a58e5b1efa17ae2b166541676fecf165a61",
+        "lastWrittenAt": "2026-10-08T21:26:50.874122+00:00"
+      }
+    ],
+    "noReplay": true
+  },
+  "candidate": {
+    "schemaVersion": 2,
+    "buildId": "6Avr3UKWpC7WkTO1D8XcA",
+    "release": "6Avr3UKWpC7WkTO1D8XcA-20261008212650600-1656908-0cbc61a1",
+    "sourceRoot": "/dev/shm/pcv/papercusp-lint-as-committed-7ab8d41d63-T1lANC",
+    "publishedAt": "2026-10-08T21:26:50.600Z",
+    "sourceRootDigest": "cbb7c257839f1110502775201f964e4f6f80355d332d2e21dee8d741deac1feb",
+    "releasePath": "/dev/shm/pcv/.portal-runtime/papercusp-lint-as-committed-7ab8d41d63-T1lANC/releases/6Avr3UKWpC7WkTO1D8XcA-20261008212650600-1656908-0cbc61a1",
+    "manifestSha256": "d613496b64d9216c608d15f14901e29138d55d6d23fcef1c070682cbfc296157",
+    "promoted": false
+  },
+  "limitations": [
+    "Saved proof only; no new test executions during archive creation.",
+    "Hosted genuine TEST-cookie causal API acceptance is owned by EI-25441313743672037 and still pending.",
+    "No public hosted rollout, existing-account public enrollment, protected voice or production acceptance claimed."
+  ]
+}

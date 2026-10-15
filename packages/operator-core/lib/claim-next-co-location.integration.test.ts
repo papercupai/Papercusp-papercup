@@ -19,7 +19,7 @@
  *      engages in the real tool path), and is affinity-blind when the flag is off.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL, ENGINEER_ISSUES_MIN_DDL } from '../test/_work-items-schema';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, applyClaimPathReadDeps, ENGINEER_ISSUES_MIN_DDL } from '../test/_work-items-schema';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { FLAGS } from '@papercusp/flags';
@@ -42,7 +42,7 @@ vi.mock('./workspace-registry', async () => {
   return { ...actual, activeWorkspaceId: () => 'default' };
 });
 // localSwarmId is mutable per simulated Swarm — the handler reads it under the flag.
-const whoami = vi.hoisted(() => ({ swarm: 'local' as string }));
+const whoami = vi.hoisted(() => ({ swarm: 'local' as string, owner: 'agent' as string }));
 vi.mock('./fleet/swarm-identity', () => ({
   LOCAL_SWARM: 'local',
   localSwarmId: () => whoami.swarm,
@@ -56,7 +56,7 @@ vi.mock('./work-item-claim-lease-wiring', async () => {
 });
 vi.mock('./agent-tools/coordination/identity', async () => {
   const actual = await vi.importActual<typeof import('./agent-tools/coordination/identity')>('./agent-tools/coordination/identity');
-  return { ...actual, resolveAgentIdentity: () => ({ ownerId: 'agent', ownerLabel: 'agent', source: 'omp-hook-session', workspaceId: 'default', userId: null }) };
+  return { ...actual, resolveAgentIdentity: () => ({ ownerId: whoami.owner, ownerLabel: whoami.owner, source: 'omp-hook-session', workspaceId: 'default', userId: null }) };
 });
 
 const wi = await import('./work-items');
@@ -81,16 +81,22 @@ async function seed(id: string, opts: { affinity?: string | null; createdTs?: nu
     VALUES (${H}, ${id}, 'feature', 'open', ${opts.affinity ?? null}, 'default', ${opts.createdTs ?? 0}, 0)`;
 }
 
-/** Drive the real claim_next HANDLER as a given Swarm. */
-async function handlerClaim(swarm: string, owner: string): Promise<string | null> {
+/** Drive the real claim_next HANDLER as a given Swarm and caller. */
+async function handlerResult(swarm: string, owner: string, assignee = owner) {
   whoami.swarm = swarm;
+  whoami.owner = owner;
   const res = await (
     claimNextTool as unknown as {
       handler: (a: unknown, c: unknown) => Promise<{ content: { text: string }[] }>;
     }
-  ).handler({ harness: H, assignee: owner }, { log() {}, workspaceId: 'default', role: 'worker' });
-  const parsed = JSON.parse(res.content[0].text);
-  return parsed.ok ? parsed.workItem.id : null;
+  ).handler({ harness: H, assignee }, { log() {}, workspaceId: 'default', role: 'worker' });
+  return JSON.parse(res.content[0].text);
+}
+
+async function handlerClaim(swarm: string, owner: string): Promise<string> {
+  const parsed = await handlerResult(swarm, owner);
+  expect(parsed, `claim_next refused the fixture actor: ${JSON.stringify(parsed)}`).toMatchObject({ ok: true });
+  return parsed.workItem.id;
 }
 
 beforeAll(async () => {
@@ -102,7 +108,7 @@ beforeAll(async () => {
     `CREATE TABLE IF NOT EXISTS harness_shared.user_trust_list (workspace_id text NOT NULL, trusted_github_user_id bigint NOT NULL, note text, created_ts bigint NOT NULL, PRIMARY KEY (workspace_id, trusted_github_user_id))`,
   );
   // claim path's P-005 readiness clause reads work_item_deps + engineer_issues (this test creates neither otherwise).
-  await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   await db.sql.unsafe(ENGINEER_ISSUES_MIN_DDL);
   // WI-2971 (SCHEDULER_SPEC_CLAIM, default-ON): the claim_next HANDLER now routes through
   // getNextForBee (claim-spec-store.ts), which SELECTs/UPSERTs harness_shared.cup_claim_specs
@@ -125,7 +131,7 @@ beforeAll(async () => {
 });
 afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => { await db.sql`DELETE FROM harness_shared.harness_features_consolidated`; });
-afterEach(async () => { await setLeaseFlag(false); whoami.swarm = 'local'; });
+afterEach(async () => { await setLeaseFlag(false); whoami.swarm = 'local'; whoami.owner = 'agent'; });
 afterAll(() => setFlagOverridesForTest(null));
 
 describe('two Swarms partition one backlog by co-location affinity (claimNextWorkItem)', () => {
@@ -168,6 +174,15 @@ describe('two Swarms partition one backlog by co-location affinity (claimNextWor
 });
 
 describe('work_items:claim_next handler — flag gates the co-location affinity', () => {
+  it('persists claim recall telemetry through the real writer', async () => {
+    const { recordRecallStats } = await import('./memory/recall-stats');
+    await recordRecallStats(db.sql, { surface: 'claim', entries: [] });
+    const [row] = await db.sql`
+      SELECT surface, hit_count FROM harness_shared.memory_recall_stats
+      ORDER BY id DESC LIMIT 1`;
+    expect(row).toMatchObject({ surface: 'claim', hit_count: 0 });
+  });
+
   it('with the lease ON, the handler threads localSwarmId so affinity engages', async () => {
     await setLeaseFlag(true);
     await seed('F-B1', { affinity: SWARM_B, createdTs: 10 }); // older, but B's
@@ -181,5 +196,18 @@ describe('work_items:claim_next handler — flag gates the co-location affinity'
     await seed('F-A1', { affinity: SWARM_A, createdTs: 20 });
     // No flag ⇒ swarmId not threaded ⇒ affinity ignored ⇒ oldest wins even though it's B's.
     expect(await handlerClaim(SWARM_A, 'a')).toBe('F-B1');
+  });
+
+  it('rejects an unknown explicit assignee without claiming the affined item', async () => {
+    await setLeaseFlag(true);
+    await seed('F-A1', { affinity: SWARM_A, createdTs: 10 });
+
+    const rejected = await handlerResult(SWARM_A, 'a', 'colocation-fixture-owner-that-does-not-exist');
+    expect(rejected).toMatchObject({ ok: false, error: 'assignee_unknown' });
+    const [row] = await db.sql`
+      SELECT status, taken_by FROM harness_shared.harness_features_consolidated
+      WHERE harness_slug = ${H} AND feature_id = 'F-A1'`;
+    expect(row).toMatchObject({ status: 'open', taken_by: null });
+    expect(await handlerClaim(SWARM_A, 'a')).toBe('F-A1');
   });
 });

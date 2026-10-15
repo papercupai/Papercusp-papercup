@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
 import { callWithRetry, isAuthFailure } from '../targets/su';
 
@@ -55,5 +55,47 @@ describe('su target callWithRetry — rotated-token (EI-281) handling', () => {
     expect(isAuthFailure(new Error('Invalid authentication credentials'))).toBe(true);
     expect(isAuthFailure(err(429))).toBe(false);
     expect(isAuthFailure(new Error('rate_limit_error'))).toBe(false);
+  });
+
+  it.each([429, 529, 503])('preserves terminal %s instead of undoing gateway retry suppression', async (status) => {
+    const failure = Object.assign(err(status), { headers: new Headers({ 'x-should-retry': 'false', 'retry-after': '120' }) });
+    const create = vi.fn(async () => { throw failure; });
+    const sleep = vi.fn(noSleep);
+    await expect(callWithRetry(() => ({ messages: { create } }), {}, new AbortController().signal, sleep)).rejects.toBe(failure);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('honors retry suppression from plain header records regardless of casing', async () => {
+    const failure = Object.assign(err(429), { headers: { 'X-Should-Retry': 'false' } });
+    const create = vi.fn(async () => { throw failure; });
+    await expect(callWithRetry(() => ({ messages: { create } }), {}, new AbortController().signal, noSleep)).rejects.toBe(failure);
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it('still recovers an explicitly retryable throttle', async () => {
+    const failure = Object.assign(err(429), { headers: new Headers({ 'x-should-retry': 'true', 'retry-after': '1' }) });
+    const create = vi.fn().mockRejectedValueOnce(failure).mockResolvedValueOnce(OK);
+    const sleep = vi.fn(noSleep);
+    await expect(callWithRetry(() => ({ messages: { create } }), {}, new AbortController().signal, sleep)).resolves.toBe(OK);
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(1000);
+  });
+
+  it('cancels retry-after sleep when the existing turn deadline aborts', async () => {
+    vi.useFakeTimers();
+    try {
+      const failure = Object.assign(err(429), { headers: new Headers({ 'retry-after': '120' }) });
+      const create = vi.fn(async () => { throw failure; });
+      const ctrl = new AbortController();
+      const pending = callWithRetry(() => ({ messages: { create } }), {}, ctrl.signal);
+      const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      await Promise.resolve();
+      ctrl.abort();
+      await rejected;
+      expect(create).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

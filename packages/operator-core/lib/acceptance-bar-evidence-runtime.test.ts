@@ -6,6 +6,7 @@
  * it to :3070 (green main) and waited on a deploy the code under test never needed.
  */
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import {
   evidenceRecordsAbsent,
   evidenceRuntimeOf,
@@ -30,9 +31,15 @@ vi.mock('./acceptance-bar-contract-snapshot', async (importOriginal) => ({
 
 const BG_PATH = 'packages/operator-core/lib/harness/routines/psu-pty-host-events-ingest.ts';
 const OPERATOR_PATH = 'packages/operator-core/lib/agent-tools/plans/get.ts';
+const PORTAL_RUNTIME = 'runtime-vintage:papercusp-workspace/portal-web@builder' as const;
 
 describe('schema', () => {
-  it('accepts a catalog runtime and refuses anything else', () => {
+  it('exports the runtime declaration as JSON Schema for the complete tool catalog', () => {
+    const schema = z.toJSONSchema(requirementAcceptanceSchema);
+    expect(JSON.stringify(schema)).toContain('runtime-vintage:');
+    expect(JSON.stringify(schema)).toContain('pattern');
+  });
+  it('accepts a catalog runtime and refuses aliases in a declaration', () => {
     expect(acceptanceEvidenceRuntimeSchema.parse('bg-host')).toBe('bg-host');
     expect(() => acceptanceEvidenceRuntimeSchema.parse(':3070')).toThrow();
     const parsed = requirementAcceptanceSchema.parse({
@@ -42,6 +49,23 @@ describe('schema', () => {
       evidenceRuntime: 'staging-operator',
     });
     expect(parsed.evidenceRuntime).toBe('staging-operator');
+  });
+
+  it('accepts an exact external registry identity through the requirement schema', () => {
+    expect(acceptanceEvidenceRuntimeSchema.parse(PORTAL_RUNTIME)).toBe(PORTAL_RUNTIME);
+    expect(requirementAcceptanceSchema.parse({
+      condition: 'Hosted voice works', falsifier: 'Hosted voice fails',
+      evidencePlane: 'live', evidenceRuntime: PORTAL_RUNTIME,
+    }).evidenceRuntime).toBe(PORTAL_RUNTIME);
+  });
+
+  it('refuses external names and incomplete or malformed registry identities', () => {
+    for (const value of [
+      'portal', 'runtime-vintage:portal-web', 'runtime-vintage:portal-web@builder',
+      'runtime-vintage:/portal-web@builder', 'runtime-vintage:workspace/@builder',
+      'runtime-vintage:workspace/portal-web@', `${PORTAL_RUNTIME}/extra`,
+      `${PORTAL_RUNTIME} trailing`, { unit: 'portal-web', host: 'builder' },
+    ]) expect(acceptanceEvidenceRuntimeSchema.safeParse(value).success).toBe(false);
   });
 });
 
@@ -80,6 +104,21 @@ describe('barHash', () => {
       verification: { method: 'census' },
     } as never);
     expect(normalized.evidenceRuntime).toBe('bg-host');
+  });
+
+  it('preserves and hashes the full external workspace/unit/host identity', () => {
+    const normalized = normalizeAcceptanceBarCriterion({
+      key: 'r-1', title: 'Hosted voice', barKey: 'R-1',
+      acceptance: { ...base, condition: base.model, falsifier: base.driftMarkers, evidenceRuntime: PORTAL_RUNTIME },
+      verification: { method: 'Read the exact vintage row and hosted artifact' },
+    } as never);
+    expect(normalized.evidenceRuntime).toBe(PORTAL_RUNTIME);
+    const hash = computeAcceptanceBarHash({ ...base, evidenceRuntime: PORTAL_RUNTIME });
+    for (const runtime of [
+      'runtime-vintage:other-workspace/portal-web@builder',
+      'runtime-vintage:papercusp-workspace/other-unit@builder',
+      'runtime-vintage:papercusp-workspace/portal-web@other-host',
+    ] as const) expect(computeAcceptanceBarHash({ ...base, evidenceRuntime: runtime })).not.toBe(hash);
   });
 });
 
@@ -123,6 +162,11 @@ describe('rollout safety — an older reader must not lose a rubric that carries
 });
 
 describe('resolveBarEvidenceRuntime', () => {
+  it('keeps an external live declaration exact without substituting an operator', () => {
+    expect(resolveBarEvidenceRuntime({ evidencePlane: 'live', evidenceRuntime: PORTAL_RUNTIME })).toEqual({
+      runtime: PORTAL_RUNTIME, source: 'declared', reviewFlag: false, inferredFrom: [],
+    });
+  });
   it('tree BARs need no runtime', () => {
     expect(resolveBarEvidenceRuntime({ evidencePlane: 'tree' })).toMatchObject({ source: 'not-applicable', reviewFlag: false });
   });
@@ -151,6 +195,14 @@ describe('resolveBarEvidenceRuntime', () => {
     expect(r.source).toBe('inferred');
   });
 
+  it('honors an explicit deployed :3070 requirement over an operator source-path inference', () => {
+    const r = resolveBarEvidenceRuntime({
+      evidencePlane: 'deployed',
+      method: `Compare bytes in the deployed :3070 release checkout for ${OPERATOR_PATH}`,
+    });
+    expect(r).toMatchObject({ runtime: 'release-operator', source: 'inferred', reviewFlag: true });
+  });
+
   it('with nothing to infer from it is unresolved + flagged, never silently :3070', () => {
     expect(resolveBarEvidenceRuntime({ evidencePlane: 'live', method: 'Check the dashboard looks right.' })).toEqual({
       runtime: null,
@@ -169,6 +221,13 @@ describe('resolveBarEvidenceRuntime', () => {
 });
 
 describe('evidence rows and the ship-door verdict', () => {
+  it('reads case-sensitive external identities and refuses incomplete declarations', () => {
+    expect(evidenceRuntimeOf({ runtime: PORTAL_RUNTIME })).toBe(PORTAL_RUNTIME);
+    const mixed = 'runtime-vintage:Workspace/Portal-Web@Host';
+    expect(evidenceRuntimeOf({ evidenceRuntime: mixed })).toBe(mixed);
+    expect(evidenceRuntimeOf({ runtime: 'portal-web' })).toBeNull();
+    expect(evidenceRuntimeOf({ runtime: 'runtime-vintage:workspace/bg-host@' })).toBeNull();
+  });
   it('reads the runtime from details by id or alias', () => {
     expect(evidenceRuntimeOf({ runtime: 'bg-host' })).toBe('bg-host');
     expect(evidenceRuntimeOf({ evidenceRuntime: ':3170' })).toBe('staging-operator');
@@ -194,6 +253,17 @@ describe('evidence rows and the ship-door verdict', () => {
     expect(evidenceRuntimeUnmet({ resolution: inferred, evidenceRuntimes: [], runtimeAbsent: [] })).toBe(false);
     const unresolved = resolveBarEvidenceRuntime({ evidencePlane: 'live' });
     expect(evidenceRuntimeUnmet({ resolution: unresolved, evidenceRuntimes: [], runtimeAbsent: [] })).toBe(false);
+  });
+
+  it('requires the exact external identity and does not accept absent or operator evidence', () => {
+    const resolution = resolveBarEvidenceRuntime({ evidencePlane: 'live', evidenceRuntime: PORTAL_RUNTIME });
+    expect(evidenceRuntimeUnmet({ resolution, evidenceRuntimes: [PORTAL_RUNTIME], runtimeAbsent: [] })).toBe(false);
+    for (const runtimes of [[], ['release-operator'], ['staging-operator'],
+      ['runtime-vintage:other-workspace/portal-web@builder'],
+      ['runtime-vintage:papercusp-workspace/other-unit@builder'],
+      ['runtime-vintage:papercusp-workspace/portal-web@other-host'],
+    ]) expect(evidenceRuntimeUnmet({ resolution, evidenceRuntimes: runtimes, runtimeAbsent: [] })).toBe(true);
+    expect(evidenceRuntimeUnmet({ resolution, evidenceRuntimes: [PORTAL_RUNTIME], runtimeAbsent: [PORTAL_RUNTIME] })).toBe(true);
   });
 });
 
@@ -297,6 +367,18 @@ function snapshotWith(bar: AcceptanceBarTrace): AcceptanceBarContractSnapshot {
 
 describe('ship door (evaluateAcceptanceBarLifecycle)', () => {
   const codesFor = (bar: AcceptanceBarTrace) => evaluateAcceptanceBarLifecycle(snapshotWith(bar), 'ship').codes;
+
+  it('blocks external live bars with operator or missing proof and accepts exact current proof', () => {
+    const evidenceRuntime = resolveBarEvidenceRuntime({ evidencePlane: 'live', evidenceRuntime: PORTAL_RUNTIME });
+    for (const evidenceRuntimes of [[], ['staging-operator'], ['release-operator']]) {
+      expect(codesFor(liveBar({ evidenceRuntime, proof: { ...liveBar({}).proof, evidenceRuntimes } })))
+        .toContain('bar_snapshot_evidence_runtime_unmet');
+    }
+    expect(codesFor(liveBar({ evidenceRuntime, proof: { ...liveBar({}).proof, evidenceRuntimes: [PORTAL_RUNTIME] } })))
+      .not.toContain('bar_snapshot_evidence_runtime_unmet');
+    expect(codesFor(liveBar({ evidenceRuntime, proof: { ...liveBar({}).proof, evidenceRuntimes: [PORTAL_RUNTIME], runtimeAbsent: [PORTAL_RUNTIME] } })))
+      .toContain('bar_snapshot_evidence_runtime_unmet');
+  });
 
   it('declared runtime with evidence measured there: no runtime code', () => {
     const bar = liveBar({

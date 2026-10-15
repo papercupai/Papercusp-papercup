@@ -1,3 +1,7 @@
+import { getBuildInfo } from '../build-info';
+import { recordExpertiseRoutingInvocation } from '../endpoint-route/telemetry';
+import { CONSULT_DEFAULT_POLICY } from '../consult/selection-policies';
+
 /**
  * goal-consult.ts — D-010's independent-review seam for the Blender goal rail.
  *
@@ -209,7 +213,10 @@ async function runGoalFeedbackProd(
   return getFeedbackCore(request, {
     getSql: () => getOrgPg().sql,
     route: (params) =>
-      routeConsult(params, {
+      routeConsult({ ...params, telemetry: {
+        caller: 'scout:goal-consult', policy: request.policy ?? CONSULT_DEFAULT_POLICY, buildSha: getBuildInfo().sha,
+      } }, {
+        recordTelemetry: receipt => recordExpertiseRoutingInvocation(receipt, getOrgPg().sql),
         getSql: () => getOrgPg().sql,
         embed: resolved?.embed ?? null,
         embeddingProfile,
@@ -338,6 +345,7 @@ export function selectPendingGoalConsults(rows: readonly GoalConsultArtifactRow[
 
 const TERMINAL_UNAVAILABLE_STATES = new Set([
   'no_qualified_responder',
+  'no_launchable_responder',
   'closed_cant_help',
   'declined',
   'graduated',

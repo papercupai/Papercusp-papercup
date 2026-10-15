@@ -14,7 +14,11 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { serializeStoredMcpResult, type StoredMcpResult } from '../_mcp-result-replay';
+import {
+  normalizeStructuredReplayResult,
+  serializeStoredMcpResult,
+  type StoredMcpResult,
+} from '../_mcp-result-replay';
 
 function roundTrip(result: StoredMcpResult): unknown {
   return JSON.parse(serializeStoredMcpResult(result));
@@ -117,5 +121,60 @@ describe('serializeStoredMcpResult', () => {
     // stored schema where absence means no error).
     expect(parsed.isError).toBeUndefined();
     expect(parsed._meta?.requestId).toBe('r-123');
+  });
+});
+
+describe('normalizeStructuredReplayResult', () => {
+  it('rehydrates one unambiguous JSON object for a structured retry', () => {
+    const original: StoredMcpResult = {
+      content: [{ type: 'text', text: '{"ok":true,"claimReceipt":{"workItemId":"EI-1"}}' }],
+      _meta: { replayed: true },
+    };
+
+    expect(normalizeStructuredReplayResult(original, true)).toEqual({
+      ...original,
+      structuredContent: { ok: true, claimReceipt: { workItemId: 'EI-1' } },
+      _meta: { replayed: true, structured: true },
+    });
+  });
+
+  it('returns a result-door envelope as an explicit error when it cannot satisfy a structured retry', () => {
+    const original: StoredMcpResult = {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ schemaVersion: 'papercusp.output-envelope/v1', content: [] }),
+      }],
+      _meta: { replayed: true },
+    };
+
+    expect(normalizeStructuredReplayResult(original, true)).toEqual({
+      ...original,
+      isError: true,
+      _meta: {
+        replayed: true,
+        structuredUnavailable: { reason: 'result-door-envelope-is-not-tool-data' },
+      },
+    });
+  });
+
+  it('leaves a stored result unchanged when structured output was not requested', () => {
+    const original: StoredMcpResult = {
+      content: [{ type: 'text', text: '{"ok":true}' }],
+      _meta: { replayed: true },
+    };
+
+    expect(normalizeStructuredReplayResult(original, false)).toBe(original);
+  });
+
+  it('marks other non-rehydratable stored results as explicit errors', () => {
+    const original: StoredMcpResult = {
+      content: [{ type: 'text', text: 'not JSON' }],
+    };
+
+    expect(normalizeStructuredReplayResult(original, true)).toEqual({
+      ...original,
+      isError: true,
+      _meta: { structuredUnavailable: { reason: 'stored-result-not-rehydratable' } },
+    });
   });
 });

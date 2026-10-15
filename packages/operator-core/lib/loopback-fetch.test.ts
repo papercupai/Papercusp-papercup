@@ -113,6 +113,36 @@ describe('isConnRefused (deprecated)', () => {
 });
 
 describe('loopbackFetch', () => {
+  it('retains the prepared launch dispatcher when a guard sends an immutable Request', async () => {
+    const send = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('guarded'));
+    let preparedDispatcher: unknown;
+    const wrapFetch = vi.fn((nativeSend: typeof fetch): typeof fetch => async (input, init) => {
+      preparedDispatcher = (init as RequestInit & { dispatcher?: unknown }).dispatcher;
+      return nativeSend(new Request(input, init));
+    });
+    await expect(loopbackFetch('http://127.0.0.1:3070/x', { method: 'POST', body: 'fixture' },
+      { launch: true, backoffsMs: [], wrapFetch })).resolves.toMatchObject({ status: 200 });
+    expect(wrapFetch).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]![0]).toBeInstanceOf(Request);
+    expect(preparedDispatcher).toBeDefined();
+    expect((send.mock.calls[0]![1] as RequestInit & { dispatcher?: unknown }).dispatcher).toBe(preparedDispatcher);
+    expect(await (send.mock.calls[0]![0] as Request).text()).toBe('fixture');
+  });
+
+  it('passes every retry through the guard and stops when the next send is refused', async () => {
+    const send = vi.spyOn(globalThis, 'fetch').mockRejectedValue(refused());
+    const refusal = Object.assign(new Error('authorization refused'), { costUsdMeasurementMissing: true });
+    let attempts = 0;
+    const wrapFetch = vi.fn((nativeSend: typeof fetch): typeof fetch => (input, init) => {
+      if (++attempts > 1) throw refusal;
+      return nativeSend(input, init);
+    });
+    await expect(loopbackFetch('http://127.0.0.1:3070/x', undefined, { ...FAST, wrapFetch })).rejects.toBe(refusal);
+    expect(attempts).toBe(2);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(wrapFetch).toHaveBeenCalledTimes(1);
+  });
+
   it('retries connection-refused then succeeds (rides over a restart)', async () => {
     const ok = new Response('ok', { status: 200 });
     const fetchMock = vi.spyOn(globalThis, 'fetch')

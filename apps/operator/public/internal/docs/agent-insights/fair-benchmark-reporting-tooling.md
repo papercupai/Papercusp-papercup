@@ -1,7 +1,7 @@
-# Fair cross-arm benchmark reporting — use the bench-metrics tooling, mind the same-denominator trap
+# Fair cross-arm benchmark reporting and current acceptance procedure
 URL: /internal/docs/agent-insights/fair-benchmark-reporting-tooling
 
-Before reporting any benchmark arm comparison, use buildCapabilityAttribution + buildFairnessAudit (@papercusp/bench-metrics) — they encode the binding fairness criteria so you don't hand-roll them and hit the C1 denominator trap.
+Use frozen assigned denominators, paired repository-aware uncertainty, measured native identity and a bounded official pilot; retain independent current-build and exact green-release proof.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -9,7 +9,7 @@ When you compare benchmark arms (capability injection, coordination topology, or
 
 ## The two helpers
 
-* **`buildCapabilityAttribution(rows, opts)`** — fixed-control per-arm lift (pass\@1 for boolean suites, `metric:'meanScore'` for continuous suites like SwarmBench/AgentsNet/rubric), cost-normalized (`costRatio` + `paretoDominates`, D-008/C3), CI-non-overlap significance, and per-task unlocked/regressed buckets. `buildCrossSuiteAttribution` rolls many suites into the headline matrix. `formatRunAttributionMarkdown` (operator-core) renders the owner-facing artifact; `report-cli <runId> --attribution` writes it.
+* **`buildCapabilityAttribution(rows, opts)`** — fixed-control per-arm lift (pass\@1 for boolean suites, `metric:'meanScore'` for continuous suites like SwarmBench/AgentsNet/rubric), cost-normalized (`costRatio` + `paretoDominates`, D-008/C3), a historical CI-non-overlap diagnostic (not the current paired significance method), and per-task unlocked/regressed buckets. `buildCrossSuiteAttribution` rolls many suites into the headline matrix. `formatRunAttributionMarkdown` (operator-core) renders the owner-facing artifact; `report-cli <runId> --attribution` writes it.
 * **`buildFairnessAudit(rows, {referenceArm?})`** — auto-fills the mandatory **C1–C10 pre-claim audit table** from the run's `TaskRunResult` rows: C1 same task-set + same-denominator, C3 iso-budget-or-disclosed (with `$/task` + `calls/task`), C6 per-arm coverage parity (flags ASYMMETRIC infra), C8 N + seeds; C2/C5 are config-consistency → `NEEDS-EVIDENCE` (telemetry/env are manual); C4/C7/C9 are manual. `allClear` is true only when every criterion is PASS/N-A. `formatFairnessAuditMarkdown` renders the table.
 
 Both consume any arm's stored `TaskRunResult` rows, so topology arms and capability-injection arms report through the same path. Plug in your suite; don't re-derive the statistics.
@@ -18,9 +18,9 @@ Both consume any arm's stored `TaskRunResult` rows, so topology arms and capabil
 
 The single most common way to fake a benchmark win is to score each arm only on the tasks **it** produced output for. If arm A infra-fails 8 of 30 tasks and you score it `resolved/22` while arm B is scored `resolved/30`, A's denominator silently shrank — an unfair comparison (the 2026-06-17 su-vs-mini-swe run did exactly this and over-claimed).
 
-`buildCapabilityAttribution` **defaults to `sameDenominator: true`**: both arms scored over the **union-N**, where a task an arm did not resolve (empty output, infra-failed, or absent) counts as `false`. The familiar exclude-infra view (what `aggregateArm`/`buildSuiteReport` compute — the METR "an infra error is not a capability failure" discipline) is correct for **one** arm's capability headline but is only the **labelled secondary** view here (`sameDenominator: false`); it flatters the weaker-coverage arm in a cross-arm comparison. The per-arm `ArmCoverage` (produced / infraOnly / absent) is the C6 audit evidence.
+`buildCapabilityAttribution` keeps its historical `sameDenominator: true` union-of-observed-tasks behavior. That helper alone cannot establish a current frozen population: tasks absent from both arms are absent from the observed union. Current product reports use the committed preregistration's full task × seed × arm roster, including tasks never attempted by either arm. Generation errors, timeouts and budget refusals remain assigned outcomes. A generated submission with missing official grading makes primary performance inconclusive until repaired; it is not a measured failure. Conditional quality remains a separately labeled view with its graded denominator.
 
-So: a clean run with no infra failures reads identically under both modes; the modes only diverge when coverage is asymmetric — exactly when fairness matters.
+The archive and ordinary report readers must expose the same assigned, attempted, absent, generation-failure and missing-grade counts. `aggregateArm` and `buildSuiteReport` now accept the frozen roster; do not infer it from completed rows or describe their primary score as an exclude-infra headline.
 
 ## The other trap (C4) — was the capability actually EXERCISED?
 
@@ -41,9 +41,31 @@ If your `CloneGradeSeam.grade` returns a non-canonical `graderStatus` (anything 
 Map every grade outcome to a CANONICAL status, and keep the nuance in `detail`:
 
 * **genuine capability-fail** (empty/invalid output, wrong answer) → `graderStatus: 'failed'`, `resolved: false` — scored, counts under BOTH denominators. SWE-bench scores an empty patch as a fail, not infra.
-* **genuine infra** (clone / extract / grader crash, timeout) → `graderStatus: 'error'` / `'timeout'`, `resolved: null` — reconciled `false` in the C1 headline, excluded from the exclude-infra view (correct: it carries no capability signal).
+* **genuine infra** (clone / extract / grader crash, timeout) → `graderStatus: 'error'` / `'timeout'`, `resolved: null` — missing grading measurement for a generated submission; repair/regrade or mark the primary outcome inconclusive. An agent generation timeout remains an assigned unsuccessful outcome even when no grading can run.
 
 Caught live: the SWE-Pro seam (the P-003 reference the other suites copy) returned `'empty-diff'`, which coerced to infra and would have dropped empty-patch fails from the valid denominator — fixed to canonical `'failed'` + `detail.reason:'empty-diff'` (plan `benchmark-capability-injection-redesign-2026-06-17` D-023).
+
+## Current benchmark acceptance procedure
+
+The current procedure is maintained in `benchmarks/README.md`, under **Current launch prerequisites and verification**. Use that source for the exact authenticated launch body, preregistration seams, official grading and export commands. Plan `current-benchmark-modernization-2026-10-09` D-002 preserves history; D-003 defines assigned outcomes and grader uncertainty; D-004 bounds the pilot and retains a power-planned withheld confirmation; D-005 separates current-build verification from exact green-release shipment. D-006/D-007 preserve all eighteen outcomes and disjoint responsibility.
+
+Before running a study, select the operator-api current-build route with `dev:pipeline_position { path:"packages/operator-core/lib/external-bench/current-su.ts", testClass:"operator-api" }` and verify its loaded source. Register a Codex account in the isolated benchmark workspace that matches each arm's frozen payer basis (`arm.payer`, omitted = `api-key`). Per `benchmark-coverage-frontierswe-v2-2026-10-10#D-023` this workspace runs Codex arms on ChatGPT subscriptions: `payer: "subscription"` with `credentialRef: "codex-cli:<CODEX_HOME>"`, sent `oauth-http` to the ChatGPT Codex backend. That backend rejects `max_output_tokens` and has no input-count endpoint, so each frozen rate carries `inputTokenCeiling` (model context window), `outputTokenCeiling` (model maximum output) and `inputTokenCeilingSourceSha256 = currentBenchCodexSubscriptionContract(model, input, output)`; every request reserves both, and budgets and reports are list-price-equivalent USD (`costBasis: "list-price-equivalent"`), not money spent. An `api-key` arm still needs an OpenAI API bearer account and reports metered spend. A credential that does not match the arm's payer is refused at the estimate and at send time. Calibrate both actual native arms on non-study work, preserving provider response, served model, client version, request/template/tool hashes, host process identity and measured usage. A configured alias or refusal fixture cannot supply this evidence.
+
+Use the existing `preregister()` and `requireCommittedPreregistration()` seams. Freeze tasks, seeds, arms, equal generation caps, aggregate exposure, actual runtime pins, official grader, corpus/memory snapshots, pricing, exclusions, stopping rules, and a disjoint withheld confirmation roster and power-design assumptions. Git-sync owns committing the protocol. No study generation is admitted before its exact introducing commit is verified. Confirmation execution requires separate spend authorization.
+
+The approved pilot is three tasks × three seeds × two arms, equal $3 generation caps and a $60 aggregate inference ceiling including calibration, retries and recovery. Read actual attempt, participant, reservation, provider-billing and official-grading artifacts for all eighteen cells. Cap/refusal/failure outcomes remain records. Grader outages require repair or inconclusive measurement. Keep actual billing distinct from frozen normalized prices. Build the reproducible export through the maintained report/export seam and preserve protocol/task/source/runtime/grader fingerprints, raw submissions and traces.
+
+For regression reproduction, call `testing:run` with exact repository-relative files and `harness:"papercusp"`; use its persisted outcomes, failures and test ledger IDs. Each acceptance criterion carries its own file list and named assertions. For example:
+
+```json
+{"harness":"papercusp","files":["packages/operator-core/lib/external-bench/current-su.test.ts","packages/operator-core/lib/external-bench/reproducibility/context.test.ts","packages/operator-core/lib/external-bench/reproducibility/prereg.integration.test.ts"],"timeoutMs":300000,"maxFailures":10}
+```
+
+Inspect assertion bodies: identity tests join provider/native/runtime evidence and reject configured or incomplete measurements; context tests compare both arms' restored bytes, mutate one arm's memory, and re-read the other receipt unchanged; preregistration tests reject mutable/retargeted registrations and verify introducing git blobs before outcomes. A title census alone does not establish absence or completeness.
+
+Current reports collapse repeated assigned seeds within each task and resample aligned task outcomes in whole repository blocks. Freeze `sampling.unit: "repository"`, `sampling.taskRepositories` (exactly the pilot and withheld task rosters), `ci`, `bootstrapSeed` and `bootstrapIterations` before launch. The existing `pairedBootstrapCI` accepts index-aligned `clusterIds`, preserves task weighting for unequal repository sizes and refuses fewer than two independent clusters. `buildRunReports` binds this policy from the immutable protocol, retaining absent task pairs. Read `sampling` and `deltas[].uncertainty` for task/seed populations, independent repositories, observed/absent attempts and missing measurements; read `deltas[].accuracyDeltaCi` for the paired difference. Missing grades, insufficient repositories or an older unregistered current policy withhold primary intervals. Older protocols remain readable but new current launches require the policy. Missing usage or wholly absent arms retain accuracy differences without measured cost efficiency. Conventional intervals/aggregate/report/reproducibility tests falsify task-as-repository sampling, seed-as-task precision and drifted roster policies. Independent review must evaluate the actual assertions and source/spec/test fingerprints; this source implementation is not live study or shipped-artifact proof. Independent-arm CI overlap is a negative control, never the study significance test. A small pilot validates measurement and cannot establish superiority; preserve the withheld, power-planned confirmation design.
+
+R-8 requires the actual live pilot record and confirmation-design artifact; green fixture tests cannot satisfy it. R-18 requires a lineage-independent current-build implementation grade bound to exact source/spec/test revisions. R-9 alone requires the accepted artifact observed on the deployed green release and the successful shipped-transition receipt. These are separate evidence records. Tests, typechecks, a dirty source edit, a deployment request or an archive import alone cannot satisfy them.
 
 ## Pointers
 

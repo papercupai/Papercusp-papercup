@@ -1,5 +1,77 @@
 import { describe, expect, it, vi } from 'vitest';
-import { notifyGoalHolderHandoff, type GoalHolderHandoffDeps } from './holder-handoff';
+import {
+  notifyGoalHolderHandoff,
+  releaseFormerGoalHolderClaimDefault,
+  type GoalHolderHandoffDeps,
+} from './holder-handoff';
+
+// WI-10006948: the production former-holder release is lazy-imported, so these mocks
+// are what it resolves. Each records into one ordered log.
+const releaseLog = vi.hoisted(() => ({
+  order: [] as string[],
+  prior: { assignee: 'su-old' as string | null, wasClaimed: true },
+  released: { id: 'WI-x', assignee: null as string | null } as { id: string; assignee: string | null } | null,
+  releaseArgs: [] as unknown[],
+}));
+vi.mock('../work-item-flight-record', () => ({
+  captureWorkItemFlightRecordsForItems: vi.fn(async () => {
+    releaseLog.order.push('flight-record');
+    return { capturedIds: ['WI-x'] };
+  }),
+}));
+vi.mock('../work-item-claims', () => ({
+  releaseClaimForItemByOwnerLocal: vi.fn(async () => {
+    releaseLog.order.push('claim-ledger');
+    return true;
+  }),
+}));
+vi.mock('../work-items', () => ({
+  releaseWorkItem: vi.fn(async (id: string, opts: { onPriorState?: (p: unknown) => void }) => {
+    releaseLog.order.push('release');
+    releaseLog.releaseArgs.push({ id, opts });
+    opts.onPriorState?.(releaseLog.prior);
+    return releaseLog.released;
+  }),
+}));
+
+describe('releaseFormerGoalHolderClaimDefault (WI-10006948)', () => {
+  const claim = {
+    workspaceId: 'ws',
+    goalId: 'goal-a',
+    id: 'WI-x',
+    harness: 'papercusp',
+    ownerId: 'su-old',
+    exitedAt: new Date('2026-10-06T19:16:13Z'),
+  };
+  function reset(prior: { assignee: string | null; wasClaimed: boolean }, released: { id: string; assignee: string | null } | null) {
+    releaseLog.order = [];
+    releaseLog.releaseArgs = [];
+    releaseLog.prior = prior;
+    releaseLog.released = released;
+  }
+
+  it('snapshots evidence, clears the claim row, then compare-and-releases the lease as the former holder', async () => {
+    reset({ assignee: 'su-old', wasClaimed: true }, { id: 'WI-x', assignee: null });
+    await expect(releaseFormerGoalHolderClaimDefault(claim)).resolves.toBe(true);
+    // Same order as the session-death sweep: evidence while the link is intact, then ledgers.
+    expect(releaseLog.order).toEqual(['flight-record', 'claim-ledger', 'release']);
+    expect(releaseLog.releaseArgs).toEqual([
+      { id: 'WI-x', opts: expect.objectContaining({ harness: 'papercusp', expectedAssignee: 'su-old' }) },
+    ]);
+  });
+
+  it('reports false when the lease had already moved to someone else (compare-and-release no-op)', async () => {
+    reset({ assignee: 'su-live-peer', wasClaimed: true }, { id: 'WI-x', assignee: 'su-live-peer' });
+    await expect(releaseFormerGoalHolderClaimDefault(claim)).resolves.toBe(false);
+  });
+
+  it('reports false when the item was already free or is gone', async () => {
+    reset({ assignee: null, wasClaimed: false }, { id: 'WI-x', assignee: null });
+    await expect(releaseFormerGoalHolderClaimDefault(claim)).resolves.toBe(false);
+    reset({ assignee: 'su-old', wasClaimed: true }, null);
+    await expect(releaseFormerGoalHolderClaimDefault(claim)).resolves.toBe(false);
+  });
+});
 
 describe('notifyGoalHolderHandoff', () => {
   it('disarms, messages, and wakes exactly the named predecessor', async () => {

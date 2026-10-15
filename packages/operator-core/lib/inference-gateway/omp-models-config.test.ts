@@ -97,10 +97,16 @@ describe('ompGatewayModelsConfig', () => {
   });
 
   it('routes the openai wire through the /v1 path with the responses api', () => {
-    const cfg = ompGatewayModelsConfig({ provider: 'openai', accountId: 'oa-1', port: 8788 })!;
+    const cfg = ompGatewayModelsConfig({ provider: 'openai', accountId: 'oa-1', models: ['gpt-6.1-sol'], port: 8788 })!;
     expect(cfg.baseUrl).toBe('http://127.0.0.1:8788/v1');
     expect(cfg.content).toContain('api: openai-responses');
     expect(cfg.content).toContain('auth: apiKey');
+  });
+
+  it('refuses an absent or blank OpenAI model instead of substituting an obsolete default', () => {
+    expect(() => ompGatewayModelsConfig({ provider: 'openai', gatewayOn: true })).toThrow('explicit supported model');
+    expect(() => ompGatewayModelsConfig({ provider: 'openai', gatewayOn: true, models: ['   '] })).toThrow('explicit supported model');
+    expect(ompGatewayModelsConfig({ provider: 'openai' })).toBeNull();
   });
 
   it('exposes caller-supplied models and selects the first', () => {

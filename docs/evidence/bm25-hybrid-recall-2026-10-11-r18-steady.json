@@ -1,0 +1,6160 @@
+{
+  "kind": "bm25-hybrid-recall",
+  "plan": "bm25-lexical-search-evoke-adoption-2026-10-10",
+  "requirement": "R-13",
+  "decisions": [
+    "D-004",
+    "D-006"
+  ],
+  "generatedAt": "2026-10-11T16:05:16.942Z",
+  "startedAt": "2026-10-11T16:01:44.684Z",
+  "commit": "0bc680d68a382f0e7f58ae1b6f949b40852f96a9",
+  "workspaceId": "papercusp-workspace",
+  "database": {
+    "db": "papercusp",
+    "port": 5432,
+    "serverVersion": "18.4 (Ubuntu 18.4-1.pgdg24.04+1)",
+    "libver": "1.5.1"
+  },
+  "flagEnvVar": "PAPERCUSP_FLAG_PAPERCUSP_BM25_LEXICAL_RANKING",
+  "arms": [
+    "legacy",
+    "bm25"
+  ],
+  "recallK": 10,
+  "seed": "r18-steady-20261011",
+  "pairsPerSource": 60,
+  "sampleFingerprint": "86395b8923abe4e8a286a2761a385e78942fb7790598304797911306e2b9d804",
+  "sameProcess": true,
+  "sources": [
+    {
+      "source": "work_item",
+      "scored": 60,
+      "arms": {
+        "legacy": {
+          "scored": 60,
+          "hitsAtK": 54,
+          "recallAtK": 0.9,
+          "mrrAtK": 0.8287698412698412,
+          "zeroHit": 1,
+          "latencyP50Ms": 203.7,
+          "latencyP95Ms": 2508.2,
+          "engines": [
+            "legacy"
+          ],
+          "legP95Ms": {
+            "lexical:lexical": 2488,
+            "semantic:embeddings": 11
+          }
+        },
+        "bm25": {
+          "scored": 60,
+          "hitsAtK": 54,
+          "recallAtK": 0.9,
+          "mrrAtK": 0.8625,
+          "zeroHit": 0,
+          "latencyP50Ms": 77.6,
+          "latencyP95Ms": 222.6,
+          "engines": [
+            "bm25"
+          ],
+          "legP95Ms": {
+            "lexical:lexical": 216,
+            "semantic:embeddings": 19
+          }
+        }
+      },
+      "paired": {
+        "bm25Only": 2,
+        "legacyOnly": 2,
+        "both": 52,
+        "neither": 4
+      },
+      "verdict": "pass",
+      "reasons": [
+        "BM25 recall@10 54/60 >= legacy 54/60"
+      ],
+      "steady": {
+        "scored": 60,
+        "hitsAtK": 60,
+        "recallAtK": 1,
+        "mrrAtK": 0.9465277777777779,
+        "zeroHit": 0,
+        "latencyP50Ms": 46.4,
+        "latencyP95Ms": 68.5,
+        "engines": [
+          "bm25"
+        ],
+        "legP95Ms": {
+          "lexical:lexical": 58,
+          "semantic:embeddings": 7
+        }
+      },
+      "latency": {
+        "verdict": "pass",
+        "reason": "paired BM25-arm p95 222.6 ms <= legacy p95 2508.2 ms; steady-pass BM25 p95 68.5 ms (60 novel queries, warm index) <= the 200 ms ceiling"
+      }
+    },
+    {
+      "source": "session_turn",
+      "scored": 60,
+      "arms": {
+        "legacy": {
+          "scored": 60,
+          "hitsAtK": 45,
+          "recallAtK": 0.75,
+          "mrrAtK": 0.7079365079365079,
+          "zeroHit": 4,
+          "latencyP50Ms": 860.9,
+          "latencyP95Ms": 8054.3,
+          "engines": [
+            "legacy"
+          ],
+          "legP95Ms": {
+            "lexical:lexical": 5024,
+            "semantic:embeddings": 15
+          }
+        },
+        "bm25": {
+          "scored": 60,
+          "hitsAtK": 48,
+          "recallAtK": 0.8,
+          "mrrAtK": 0.7770833333333333,
+          "zeroHit": 0,
+          "latencyP50Ms": 183.1,
+          "latencyP95Ms": 675.7,
+          "engines": [
+            "bm25"
+          ],
+          "legP95Ms": {
+            "lexical:lexical": 647,
+            "semantic:embeddings": 25
+          }
+        }
+      },
+      "paired": {
+        "bm25Only": 4,
+        "legacyOnly": 1,
+        "both": 44,
+        "neither": 11
+      },
+      "verdict": "pass",
+      "reasons": [
+        "BM25 recall@10 48/60 >= legacy 45/60"
+      ],
+      "steady": {
+        "scored": 60,
+        "hitsAtK": 50,
+        "recallAtK": 0.8333333333333334,
+        "mrrAtK": 0.7844444444444445,
+        "zeroHit": 0,
+        "latencyP50Ms": 187.4,
+        "latencyP95Ms": 1820.6,
+        "engines": [
+          "bm25"
+        ],
+        "legP95Ms": {
+          "lexical:lexical": 1071,
+          "semantic:embeddings": 54
+        }
+      },
+      "latency": {
+        "verdict": "fail",
+        "reason": "steady-pass BM25 p95 1820.6 ms exceeds the 400 ms ceiling"
+      }
+    }
+  ],
+  "verdict": "pass",
+  "latencyRequirement": "R-18",
+  "latencyDecisions": [
+    "D-019",
+    "D-020",
+    "D-021",
+    "D-024",
+    "D-025"
+  ],
+  "latencyCeilingsMs": {
+    "work_item": 200,
+    "session_turn": 400
+  },
+  "steadyPass": {
+    "order": [
+      "paired over P",
+      "per source: untimed warm-up over W, then timed BM25-only over S"
+    ],
+    "pairedPerSource": {
+      "work_item": 60,
+      "session_turn": 60
+    },
+    "warmupPerSource": {
+      "work_item": 60,
+      "session_turn": 60
+    },
+    "steadyPerSource": {
+      "work_item": 60,
+      "session_turn": 60
+    },
+    "warmupCalls": 120,
+    "warmupSampleFingerprint": "ef7895b998249ce81998b825a5b313dbf22cec081e57e407c73a5cc166850496",
+    "steadySampleFingerprint": "9a8fc087ff97bf50b3edf9b2b8e96b337182f07ffdd8b84e7b99c35d526c689e",
+    "host": {
+      "work_item": {
+        "beforeWarmup": {
+          "at": "2026-10-11T16:04:28.166Z",
+          "loadavg": "185.82 220.68 202.80 67/81355 4093440",
+          "psiIoSome": "some avg10=26.88 avg60=24.85 avg300=25.31 total=120070831122",
+          "psiCpuSome": "some avg10=1.36 avg60=3.06 avg300=4.29 total=12966038719",
+          "activeBackends": 16
+        },
+        "afterSteady": {
+          "at": "2026-10-11T16:04:35.838Z",
+          "loadavg": "182.23 219.35 202.46 84/81978 4102813",
+          "psiIoSome": "some avg10=21.40 avg60=23.98 avg300=25.11 total=120072251612",
+          "psiCpuSome": "some avg10=1.16 avg60=2.80 avg300=4.20 total=12966148090",
+          "activeBackends": 17
+        }
+      },
+      "session_turn": {
+        "beforeWarmup": {
+          "at": "2026-10-11T16:04:35.840Z",
+          "loadavg": "182.23 219.35 202.46 84/81979 4102815",
+          "psiIoSome": "some avg10=21.40 avg60=23.98 avg300=25.11 total=120072251890",
+          "psiCpuSome": "some avg10=1.16 avg60=2.80 avg300=4.20 total=12966148129",
+          "activeBackends": 16
+        },
+        "afterSteady": {
+          "at": "2026-10-11T16:05:12.015Z",
+          "loadavg": "226.98 225.61 205.25 25/82591 4129600",
+          "psiIoSome": "some avg10=47.85 avg60=33.64 avg300=27.35 total=120087986884",
+          "psiCpuSome": "some avg10=1.13 avg60=2.10 avg300=3.86 total=12966741345",
+          "activeBackends": 17
+        }
+      }
+    }
+  },
+  "statementStats": {
+    "note": "pg_stat_statements is cluster-wide: a delta also counts concurrent calls of the same normalized statement by other sessions; compare calls with the bench calls.",
+    "paired": [
+      {
+        "queryid": "4409466328441544147",
+        "calls": 35,
+        "totalExecMs": 60068.2,
+        "sharedBlksHit": 6009954,
+        "sharedBlksRead": 13897,
+        "sharedBlkReadMs": 8855.8,
+        "query": "WITH q AS (\n        SELECT replace(plainto_t query($1, $2)::text, $3, $4)::t query       AS orq,\n                tring_to_array(replace(plainto_t query($5, $6)::text, $7, $8), $9) AS lexeme \n         ",
+        "meanExecMs": 1716.2,
+        "readTimeShare": 0.147
+      },
+      {
+        "queryid": "-3381764550232685681",
+        "calls": 147,
+        "totalExecMs": 33720.3,
+        "sharedBlksHit": 8892532,
+        "sharedBlksRead": 122237,
+        "sharedBlkReadMs": 49840.7,
+        "query": "WITH q AS (\n        SELECT plainto_t query($1, $2) AS andq\n               \n      )\n      SELECT  ource_kind,  e ion_id, turn_idx,  peaker, owner, harne _ lug, t , text,\n             $3 AS coverage,\n  ",
+        "meanExecMs": 229.4,
+        "readTimeShare": 1.478
+      },
+      {
+        "queryid": "2849258127946461939",
+        "calls": 78,
+        "totalExecMs": 27252.7,
+        "sharedBlksHit": 2300270,
+        "sharedBlksRead": 9286,
+        "sharedBlkReadMs": 7533.5,
+        "query": "WITH q AS (\n        SELECT replace(plainto_t query($1, $2)::text, $3, $4)::t query       AS orq,\n                tring_to_array(replace(plainto_t query($5, $6)::text, $7, $8), $9) AS lexeme \n         ",
+        "meanExecMs": 349.4,
+        "readTimeShare": 0.276
+      },
+      {
+        "queryid": "-8041625530348281707",
+        "calls": 139,
+        "totalExecMs": 17369.5,
+        "sharedBlksHit": 2070891,
+        "sharedBlksRead": 6710,
+        "sharedBlkReadMs": 4046.7,
+        "query": "WITH q AS (\n        SELECT plainto_t query($1, $2) AS andq\n               \n      )\n      SELECT  ource_kind,  e ion_id, turn_idx,  peaker, owner, harne _ lug, t , text,\n             $3 AS coverage,\n  ",
+        "meanExecMs": 125,
+        "readTimeShare": 0.233
+      },
+      {
+        "queryid": "-6597898615406818427",
+        "calls": 60,
+        "totalExecMs": 6537.7,
+        "sharedBlksHit": 892895,
+        "sharedBlksRead": 21268,
+        "sharedBlkReadMs": 3852,
+        "query": "WITH q AS (SELECT replace(plainto_t query($1, $2)::text, $3, $4)::t query AS orq)\n      SELECT  . ource_kind,  . e ion_id,  .turn_idx,  . peaker,  .owner,  .harne _ lug,  .t ,  .text,\n             $5 ",
+        "meanExecMs": 109,
+        "readTimeShare": 0.589
+      },
+      {
+        "queryid": "-422065292158475709",
+        "calls": 94,
+        "totalExecMs": 4861.1,
+        "sharedBlksHit": 361910,
+        "sharedBlksRead": 3897,
+        "sharedBlkReadMs": 2798.9,
+        "query": "SELECT count(*)::int AS n FROM (\n            SELECT $1 FROM harne _ hared. e ion_turn \n             WHERE \n          (work pace_id = $2 OR work pace_id = $3)\n      AND ($4::text IS NULL OR harne _ lug",
+        "meanExecMs": 51.7,
+        "readTimeShare": 0.576
+      },
+      {
+        "queryid": "4945522081381265384",
+        "calls": 60,
+        "totalExecMs": 3791.9,
+        "sharedBlksHit": 529188,
+        "sharedBlksRead": 4979,
+        "sharedBlkReadMs": 2384.1,
+        "query": "WITH q AS (SELECT replace(plainto_t query($7, $1)::text, $8, $9)::t query AS orq)\n      SELECT  .i ue_id,  . cope,  .title,  .body,  .kind,  . tate,  . everity,  .lane,  .updated_at,\n             $10 ",
+        "meanExecMs": 63.2,
+        "readTimeShare": 0.629
+      },
+      {
+        "queryid": "-3485883991774842882",
+        "calls": 1,
+        "totalExecMs": 1962.1,
+        "sharedBlksHit": 74721,
+        "sharedBlksRead": 0,
+        "sharedBlkReadMs": 0,
+        "query": "WITH \n    late t_ pine AS MATERIALIZED (\n      SELECT DISTINCT ON ( a.work pace_id,  a.harne _ lug,  a.feature_id)\n              a.work pace_id,\n              a.harne _ lug,\n              a.feature_id",
+        "meanExecMs": 1962.1,
+        "readTimeShare": 0
+      },
+      {
+        "queryid": "-3508584786053726615",
+        "calls": 34,
+        "totalExecMs": 1443.1,
+        "sharedBlksHit": 97163,
+        "sharedBlksRead": 1089,
+        "sharedBlkReadMs": 672.2,
+        "query": "WITH q AS (SELECT replace(plainto_t query($1, $2)::text, $3, $4)::t query AS orq)\n      SELECT  . ource_kind,  . e ion_id,  .turn_idx,  . peaker,  .owner,  .harne _ lug,  .t ,  .text,\n             $5 ",
+        "meanExecMs": 42.4,
+        "readTimeShare": 0.466
+      },
+      {
+        "queryid": "4841253495065570523",
+        "calls": 34,
+        "totalExecMs": 1183.8,
+        "sharedBlksHit": 135028,
+        "sharedBlksRead": 82,
+        "sharedBlkReadMs": 671.9,
+        "query": "WITH q AS (SELECT replace(plainto_t query($7, $1)::text, $8, $9)::t query AS orq)\n      SELECT  .i ue_id,  . cope,  .title,  .body,  .kind,  . tate,  . everity,  .lane,  .updated_at,\n             $10 ",
+        "meanExecMs": 34.8,
+        "readTimeShare": 0.568
+      },
+      {
+        "queryid": "3934808163184267843",
+        "calls": 9,
+        "totalExecMs": 426,
+        "sharedBlksHit": 22492,
+        "sharedBlksRead": 289,
+        "sharedBlkReadMs": 115.1,
+        "query": "SELECT (-((coale ce(title, $4) || $5 || coale ce( ummary, $6) || $7 || coale ce(note , $8)) <@> to_bm25query($1::text, $9)))::float8 AS  core FROM harne _ hared.work_item  WHERE ((coale ce(title, $10)",
+        "meanExecMs": 47.3,
+        "readTimeShare": 0.27
+      },
+      {
+        "queryid": "-3328055482215016133",
+        "calls": 9,
+        "totalExecMs": 405.1,
+        "sharedBlksHit": 120439,
+        "sharedBlksRead": 367,
+        "sharedBlkReadMs": 146,
+        "query": "WITH ranked AS (\n      SELECT w.work pace_id AS ranked_w , w.feature_id AS ranked_id, (-((coale ce(w.title, $1) || $2 || coale ce(w. ummary, $3) || $4 || coale ce(w.note , $5)) <@> to_bm25query($6::te",
+        "meanExecMs": 45,
+        "readTimeShare": 0.36
+      },
+      {
+        "queryid": "4188477937487494520",
+        "calls": 5,
+        "totalExecMs": 104.5,
+        "sharedBlksHit": 59288,
+        "sharedBlksRead": 0,
+        "sharedBlkReadMs": 0,
+        "query": "SELECT * FROM (\n      SELECT $1 AS one, (left(coale ce(text, $2), $3)) <@> to_bm25query($4::text, $5) AS bm25_d\n        FROM harne _ hared. e ion_turn \n       WHERE \n          (work pace_id = $6 OR wo",
+        "meanExecMs": 20.9,
+        "readTimeShare": 0
+      },
+      {
+        "queryid": "-8411748792032009935",
+        "calls": 2,
+        "totalExecMs": 17.3,
+        "sharedBlksHit": 6827,
+        "sharedBlksRead": 0,
+        "sharedBlkReadMs": 0,
+        "query": "SELECT count(*)::int AS n\n      FROM harne _ hared.work_item \n     WHERE taken_by = $1\n       AND work pace_id = $2\n       AND lane IS DISTINCT FROM $4\n       AND NOT j onb_exi t (COALESCE(payload, $5",
+        "meanExecMs": 8.7,
+        "readTimeShare": 0
+      },
+      {
+        "queryid": "7362527578596960733",
+        "calls": 1,
+        "totalExecMs": 4.4,
+        "sharedBlksHit": 5912,
+        "sharedBlksRead": 0,
+        "sharedBlkReadMs": 0,
+        "query": "SELECT * FROM (\n      SELECT $6 AS one, (coale ce(w.title, $7) || $8 || coale ce(w. ummary, $9) || $10 || coale ce(w.note , $11)) <@> to_bm25query($1::text, $12) AS bm25_d\n        FROM harne _ hared.e",
+        "meanExecMs": 4.4,
+        "readTimeShare": 0
+      },
+      {
+        "queryid": "-5382584474920240673",
+        "calls": 1,
+        "totalExecMs": 1.6,
+        "sharedBlksHit": 1171,
+        "sharedBlksRead": 0,
+        "sharedBlkReadMs": 0,
+        "query": "WITH q AS (\n        SELECT plainto_t query($1, $2) AS andq\n               \n      )\n      SELECT  ource_kind,  e ion_id, turn_idx,  peaker, owner, harne _ lug, t , text,\n             $3 AS coverage,\n  ",
+        "meanExecMs": 1.6,
+        "readTimeShare": 0
+      },
+      {
+        "queryid": "8805579725819580413",
+        "calls": 5,
+        "totalExecMs": 0.2,
+        "sharedBlksHit": 20,
+        "sharedBlksRead": 0,
+        "sharedBlkReadMs": 0,
+        "query": "WITH live AS (\n        SELECT i.work pace_id, count(*)::int AS n\n          FROM harne _ hared.blueprint_operation_invocation  i\n         WHERE i.target_kind = $1\n           AND i.agent_placement_retir",
+        "meanExecMs": 0,
+        "readTimeShare": 0
+      }
+    ],
+    "steady": {
+      "work_item": [
+        {
+          "queryid": "4945522081381265384",
+          "calls": 60,
+          "totalExecMs": 1108.6,
+          "sharedBlksHit": 498831,
+          "sharedBlksRead": 1284,
+          "sharedBlkReadMs": 422.7,
+          "query": "WITH q AS (SELECT replace(plainto_t query($7, $1)::text, $8, $9)::t query AS orq)\n      SELECT  .i ue_id,  . cope,  .title,  .body,  .kind,  . tate,  . everity,  .lane,  .updated_at,\n             $10 ",
+          "meanExecMs": 18.5,
+          "readTimeShare": 0.381
+        },
+        {
+          "queryid": "-3381764550232685681",
+          "calls": 2,
+          "totalExecMs": 499.2,
+          "sharedBlksHit": 401577,
+          "sharedBlksRead": 1667,
+          "sharedBlkReadMs": 1006,
+          "query": "WITH q AS (\n        SELECT plainto_t query($1, $2) AS andq\n               \n      )\n      SELECT  ource_kind,  e ion_id, turn_idx,  peaker, owner, harne _ lug, t , text,\n             $3 AS coverage,\n  ",
+          "meanExecMs": 249.6,
+          "readTimeShare": 2.015
+        },
+        {
+          "queryid": "-8041625530348281707",
+          "calls": 2,
+          "totalExecMs": 88.4,
+          "sharedBlksHit": 49878,
+          "sharedBlksRead": 0,
+          "sharedBlkReadMs": 0,
+          "query": "WITH q AS (\n        SELECT plainto_t query($1, $2) AS andq\n               \n      )\n      SELECT  ource_kind,  e ion_id, turn_idx,  peaker, owner, harne _ lug, t , text,\n             $3 AS coverage,\n  ",
+          "meanExecMs": 44.2,
+          "readTimeShare": 0
+        },
+        {
+          "queryid": "-3508584786053726615",
+          "calls": 2,
+          "totalExecMs": 28.9,
+          "sharedBlksHit": 4189,
+          "sharedBlksRead": 0,
+          "sharedBlkReadMs": 0,
+          "query": "WITH q AS (SELECT replace(plainto_t query($1, $2)::text, $3, $4)::t query AS orq)\n      SELECT  . ource_kind,  . e ion_id,  .turn_idx,  . peaker,  .owner,  .harne _ lug,  .t ,  .text,\n             $5 ",
+          "meanExecMs": 14.5,
+          "readTimeShare": 0
+        },
+        {
+          "queryid": "2849258127946461939",
+          "calls": 1,
+          "totalExecMs": 26.1,
+          "sharedBlksHit": 1356,
+          "sharedBlksRead": 0,
+          "sharedBlkReadMs": 0,
+          "query": "WITH q AS (\n        SELECT replace(plainto_t query($1, $2)::text, $3, $4)::t query       AS orq,\n                tring_to_array(replace(plainto_t query($5, $6)::text, $7, $8), $9) AS lexeme \n         ",
+          "meanExecMs": 26.1,
+          "readTimeShare": 0
+        },
+        {
+          "queryid": "4841253495065570523",
+          "calls": 2,
+          "totalExecMs": 25.5,
+          "sharedBlksHit": 7126,
+          "sharedBlksRead": 0,
+          "sharedBlkReadMs": 0,
+          "query": "WITH q AS (SELECT replace(plainto_t query($7, $1)::text, $8, $9)::t query AS orq)\n      SELECT  .i ue_id,  . cope,  .title,  .body,  .kind,  . tate,  . everity,  .lane,  .updated_at,\n             $10 ",
+          "meanExecMs": 12.8,
+          "readTimeShare": 0
+        },
+        {
+          "queryid": "-422065292158475709",
+          "calls": 2,
+          "totalExecMs": 21.8,
+          "sharedBlksHit": 18762,
+          "sharedBlksRead": 0,
+          "sharedBlkReadMs": 0,
+          "query": "SELECT count(*)::int AS n FROM (\n            SELECT $1 FROM harne _ hared. e ion_turn \n             WHERE \n          (work pace_id = $2 OR work pace_id = $3)\n      AND ($4::text IS NULL OR harne _ lug",
+          "meanExecMs": 10.9,
+          "readTimeShare": 0
+        }
+      ],
+      "session_turn": [
+        {
+          "queryid": "-422065292158475709",
+          "calls": 63,
+          "totalExecMs": 4557.3,
+          "sharedBlksHit": 192715,
+          "sharedBlksRead": 3363,
+          "sharedBlkReadMs": 3281.6,
+          "query": "SELECT count(*)::int AS n FROM (\n            SELECT $1 FROM harne _ hared. e ion_turn \n             WHERE \n          (work pace_id = $2 OR work pace_id = $3)\n      AND ($4::text IS NULL OR harne _ lug",
+          "meanExecMs": 72.3,
+          "readTimeShare": 0.72
+        },
+        {
+          "queryid": "-6597898615406818427",
+          "calls": 60,
+          "totalExecMs": 3753.6,
+          "sharedBlksHit": 930076,
+          "sharedBlksRead": 4156,
+          "sharedBlkReadMs": 1381.4,
+          "query": "WITH q AS (SELECT replace(plainto_t query($1, $2)::text, $3, $4)::t query AS orq)\n      SELECT  . ource_kind,  . e ion_id,  .turn_idx,  . peaker,  .owner,  .harne _ lug,  .t ,  .text,\n             $5 ",
+          "meanExecMs": 62.6,
+          "readTimeShare": 0.368
+        },
+        {
+          "queryid": "8048863058407877532",
+          "calls": 1,
+          "totalExecMs": 1529.1,
+          "sharedBlksHit": 74721,
+          "sharedBlksRead": 0,
+          "sharedBlkReadMs": 0,
+          "query": "WITH \n    late t_ pine AS MATERIALIZED (\n      SELECT DISTINCT ON ( a.work pace_id,  a.harne _ lug,  a.feature_id)\n              a.work pace_id,\n              a.harne _ lug,\n              a.feature_id",
+          "meanExecMs": 1529.1,
+          "readTimeShare": 0
+        },
+        {
+          "queryid": "2849258127946461939",
+          "calls": 7,
+          "totalExecMs": 1188.6,
+          "sharedBlksHit": 73334,
+          "sharedBlksRead": 150,
+          "sharedBlkReadMs": 172.1,
+          "query": "WITH q AS (\n        SELECT replace(plainto_t query($1, $2)::text, $3, $4)::t query       AS orq,\n                tring_to_array(replace(plainto_t query($5, $6)::text, $7, $8), $9) AS lexeme \n         ",
+          "meanExecMs": 169.8,
+          "readTimeShare": 0.145
+        },
+        {
+          "queryid": "-8041625530348281707",
+          "calls": 55,
+          "totalExecMs": 986.6,
+          "sharedBlksHit": 141428,
+          "sharedBlksRead": 67,
+          "sharedBlkReadMs": 65.8,
+          "query": "WITH q AS (\n        SELECT plainto_t query($1, $2) AS andq\n               \n      )\n      SELECT  ource_kind,  e ion_id, turn_idx,  peaker, owner, harne _ lug, t , text,\n             $3 AS coverage,\n  ",
+          "meanExecMs": 17.9,
+          "readTimeShare": 0.067
+        },
+        {
+          "queryid": "-3381764550232685681",
+          "calls": 13,
+          "totalExecMs": 304.9,
+          "sharedBlksHit": 63905,
+          "sharedBlksRead": 95,
+          "sharedBlkReadMs": 131.3,
+          "query": "WITH q AS (\n        SELECT plainto_t query($1, $2) AS andq\n               \n      )\n      SELECT  ource_kind,  e ion_id, turn_idx,  peaker, owner, harne _ lug, t , text,\n             $3 AS coverage,\n  ",
+          "meanExecMs": 23.5,
+          "readTimeShare": 0.431
+        },
+        {
+          "queryid": "-3508584786053726615",
+          "calls": 3,
+          "totalExecMs": 78.7,
+          "sharedBlksHit": 10712,
+          "sharedBlksRead": 4,
+          "sharedBlkReadMs": 3.9,
+          "query": "WITH q AS (SELECT replace(plainto_t query($1, $2)::text, $3, $4)::t query AS orq)\n      SELECT  . ource_kind,  . e ion_id,  .turn_idx,  . peaker,  .owner,  .harne _ lug,  .t ,  .text,\n             $5 ",
+          "meanExecMs": 26.2,
+          "readTimeShare": 0.05
+        },
+        {
+          "queryid": "4841253495065570523",
+          "calls": 3,
+          "totalExecMs": 41.2,
+          "sharedBlksHit": 13545,
+          "sharedBlksRead": 0,
+          "sharedBlkReadMs": 0,
+          "query": "WITH q AS (SELECT replace(plainto_t query($7, $1)::text, $8, $9)::t query AS orq)\n      SELECT  .i ue_id,  . cope,  .title,  .body,  .kind,  . tate,  . everity,  .lane,  .updated_at,\n             $10 ",
+          "meanExecMs": 13.7,
+          "readTimeShare": 0
+        },
+        {
+          "queryid": "4188477937487494520",
+          "calls": 1,
+          "totalExecMs": 10.2,
+          "sharedBlksHit": 8572,
+          "sharedBlksRead": 0,
+          "sharedBlkReadMs": 0,
+          "query": "SELECT * FROM (\n      SELECT $1 AS one, (left(coale ce(text, $2), $3)) <@> to_bm25query($4::text, $5) AS bm25_d\n        FROM harne _ hared. e ion_turn \n       WHERE \n          (work pace_id = $6 OR wo",
+          "meanExecMs": 10.2,
+          "readTimeShare": 0
+        },
+        {
+          "queryid": "-5382584474920240673",
+          "calls": 1,
+          "totalExecMs": 1.7,
+          "sharedBlksHit": 842,
+          "sharedBlksRead": 0,
+          "sharedBlkReadMs": 0,
+          "query": "WITH q AS (\n        SELECT plainto_t query($1, $2) AS andq\n               \n      )\n      SELECT  ource_kind,  e ion_id, turn_idx,  peaker, owner, harne _ lug, t , text,\n             $3 AS coverage,\n  ",
+          "meanExecMs": 1.7,
+          "readTimeShare": 0
+        }
+      ]
+    }
+  },
+  "embeddingsPrecomputed": true,
+  "embeddedQueries": 240,
+  "host": {
+    "atStart": {
+      "at": "2026-10-11T16:01:44.687Z",
+      "loadavg": "274.42 237.39 202.93 59/81370 3923762",
+      "psiIoSome": "some avg10=32.61 avg60=33.75 avg300=25.17 total=120027771184",
+      "psiCpuSome": "some avg10=1.33 avg60=3.33 avg300=4.96 total=12959524479",
+      "activeBackends": 17
+    },
+    "atEnd": {
+      "at": "2026-10-11T16:04:28.164Z",
+      "loadavg": "185.82 220.68 202.80 59/81355 4093440",
+      "psiIoSome": "some avg10=26.88 avg60=24.85 avg300=25.31 total=120070830476",
+      "psiCpuSome": "some avg10=1.36 avg60=3.06 avg300=4.29 total=12966038669",
+      "activeBackends": 14
+    }
+  },
+  "latencyVerdict": "fail",
+  "redactedQueries": 0,
+  "pairs": [
+    {
+      "source": "work_item",
+      "targetId": "EI-14937",
+      "style": "fragment",
+      "query": "process, CPU/load starvation) — the connection itself looks alive while",
+      "arms": {
+        "legacy": {
+          "rank": null,
+          "latencyMs": 269.3,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 253,
+            "semantic:embeddings": 7
+          }
+        },
+        "bm25": {
+          "rank": null,
+          "latencyMs": 489.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 479,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21094596146131636",
+      "style": "keyword",
+      "query": "release:trace serializer path-scoped JSON-aware projection constraints,",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 222.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 216,
+            "semantic:embeddings": 4
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 379.5,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 372,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-22013401135887377",
+      "style": "fragment",
+      "query": "loop:checkpoint rejected a valid-looking checks payload because each probe requires",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 275.3,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 266,
+            "semantic:embeddings": 5
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 126.3,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 120,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25617115471136790",
+      "style": "keyword",
+      "query": "improvements:capture items:complete WI-6554700010008324 everydeclaredsource/test immutablefull210PASS, deployedruntime",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 116.5,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 105,
+            "semantic:embeddings": 7
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 149.8,
+          "engine": "legacy",
+          "hits": 1,
+          "legMs": {
+            "lexical:lexical": 139,
+            "semantic:embeddings": 8
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20978590790529340",
+      "style": "fragment",
+      "query": "rejected a body section with premises: . The validation error",
+      "arms": {
+        "legacy": {
+          "rank": 3,
+          "latencyMs": 47,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 39,
+            "semantic:embeddings": 5
+          }
+        },
+        "bm25": {
+          "rank": 4,
+          "latencyMs": 77.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 65,
+            "semantic:embeddings": 9
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21507047369324473",
+      "style": "keyword",
+      "query": "verdict='owner-typed' unsatisfiable\") turn-ref.ts:146-167 unenrolled-origin GENERALIZABLE verified-live",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 135.2,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 123,
+            "semantic:embeddings": 7
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 212.7,
+          "engine": "legacy",
+          "hits": 1,
+          "legMs": {
+            "lexical:lexical": 205,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25339474039279070",
+      "style": "fragment",
+      "query": "was refused checkpoint retire ids requires replace with NOTHING written.",
+      "arms": {
+        "legacy": {
+          "rank": 4,
+          "latencyMs": 58.1,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 50,
+            "semantic:embeddings": 5
+          }
+        },
+        "bm25": {
+          "rank": null,
+          "latencyMs": 96.1,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 85,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25533956106122399",
+      "style": "keyword",
+      "query": "authority/source-route… authority/source-route {\"pattern\":\"work-item:claimable\",\"wake\":true,\"once\":false,\"min sec\":60,\"payload }},{\"not\":{\"plan\":{\"matches\":{\"source\":\"^coordination-metadata-friction-reduction-2026-09-07$\",\"flags\":\"i\"}}}},{\"not\":{\"plan\":{\"matches\":{\"source\":\"^backend-audit-diagnosis-before-repair-2026-09-13$\",\"flags\":\"i\"}}}},{\"not\":{\"plan\":{\"matches\":{\"source\":\"^cupboard-release-pipeline-content-trust-2026-09-16$\",\"flags\":\"i\"}}}},{\"not\":{\"plan\":{\"matches\":{\"source\":\"^portable-identity-packages-2026-09-26$\",\"flags\":\"i\"}}}},{\"not\":{\"plan\":{\"matches\":{\"source\":\"^hud-orders-instant-load-2026-09-13$\",\"flags\":\"i\"}}}},{\"not\":{\"plan\":{\"matches\":{\"source\":\"^pui-first-party-public-release-2026-09-07$\",\"flags\":\"i\"}}}},{\"not\":{\"plan\":{\"matches\":{\"source\":\"^gitnexus-selective-hardening-and-comparison-2026-09-13$\",\"flags\":\"i\"}}}},{\"not\":{\"id\":{\"in\": }}},{\"not\":{\"plan\":{\"matches\":{\"source\":\"^goal-brief-to-claimed-plan-work-2026-09-23$\",\"flags\":\"i\"}}}},{\"not\":{\"plan\":{\"matches\":{\"source\":\"^review-verification-efficiency-2026-09-09$\",\"flags\":\"i\"}}}},{\"not\":{\"plan\":{\"matches\":{\"source\":\"^rem-dream-recombination-2026-08-17$\",\"flags\":\"i\"}}}}]}]}}.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 872.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 844,
+            "semantic:embeddings": 7
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 2100.5,
+          "engine": "legacy",
+          "hits": 2,
+          "legMs": {
+            "lexical:lexical": 2093,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-24357739890595607",
+      "style": "fragment",
+      "query": "tool-active vs missed-wake, system-health/goal-holder-respawn.integration.test.ts true-miss controls; R1/R8 add new.workspace-id.test.ts+ tests",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 322.8,
+          "engine": "legacy",
+          "hits": 1,
+          "legMs": {
+            "lexical:lexical": 316,
+            "semantic:embeddings": 5
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 167.1,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 148,
+            "semantic:embeddings": 14
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25445542770643229",
+      "style": "keyword",
+      "query": "2026-10-08T20:42:52Z, status:unknown, degraded:true, degradedReason:aggregate partial:true. fleet:assignments",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 162.5,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 155,
+            "semantic:embeddings": 5
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 282,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 273,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25440203768868458",
+      "style": "fragment",
+      "query": "toolFailure shorthand. Tool: tools:invoke (work items:get) Error code: output spill",
+      "arms": {
+        "legacy": {
+          "rank": 3,
+          "latencyMs": 95.9,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 85,
+            "semantic:embeddings": 5
+          }
+        },
+        "bm25": {
+          "rank": 2,
+          "latencyMs": 146.1,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 138,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25402145929721085",
+      "style": "keyword",
+      "query": "mcpRequestTraceId RequestOriginMetadata; persistence invocations unverified. 22:58–23:08Z",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 122.1,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 116,
+            "semantic:embeddings": 4
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 93.1,
+          "engine": "legacy",
+          "hits": 5,
+          "legMs": {
+            "lexical:lexical": 85,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20504518909229746",
+      "style": "fragment",
+      "query": "its dedicated… The only authoritative SideStage gate read is the",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 556.9,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 545,
+            "semantic:embeddings": 5
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 79.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 71,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25305189320815493",
+      "style": "keyword",
+      "query": "improvements:capture owner-bounded hard-internal state:error, error.code=output accounting.totalBytes=0.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 138.3,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 128,
+            "semantic:embeddings": 6
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 230.3,
+          "engine": "legacy",
+          "hits": 5,
+          "legMs": {
+            "lexical:lexical": 224,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20367548708955631",
+      "style": "fragment",
+      "query": "carrying id/state/completion was rejected because assumptions is required-with-explicit-none. The active",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 203.7,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 193,
+            "semantic:embeddings": 7
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 86.1,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 76,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-24827709648600377",
+      "style": "keyword",
+      "query": "items:search functions.exec (TypeError: tools.invoke immediately. tools.invoke;",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 72.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 60,
+            "semantic:embeddings": 6
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 281,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 272,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-24158821413232709",
+      "style": "fragment",
+      "query": "fingerprint e8a6ecac24c91a011ed6996a4b7a9bbdadce0db6e43b2c22591c46b6df350dba; work item evidence refs: packages/operator-core/lib/release/checkpoint-qualification-lifecycle.integration.test.ts, packages/operator-core/lib/release/checkpoint-qualification-transaction.test.ts, packages/operator-core/lib/release/checkpoint-qualification-transaction.test.ts creates",
+      "arms": {
+        "legacy": {
+          "rank": 2,
+          "latencyMs": 183.9,
+          "engine": "legacy",
+          "hits": 3,
+          "legMs": {
+            "lexical:lexical": 173,
+            "semantic:embeddings": 7
+          }
+        },
+        "bm25": {
+          "rank": 2,
+          "latencyMs": 111,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 84,
+            "semantic:embeddings": 19
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25488336071501921",
+      "style": "keyword",
+      "query": "git-fetch-headroom.ts freeBytes criticalWriteHeadroomBytes; trimmable storage:usage responses",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 93.7,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 74,
+            "semantic:embeddings": 13
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 104.5,
+          "engine": "legacy",
+          "hits": 4,
+          "legMs": {
+            "lexical:lexical": 71,
+            "semantic:embeddings": 28
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21392289588208124",
+      "style": "fragment",
+      "query": "embedding memory:remember returned memory timeout while storing the WI-40086 checkpoint-reading",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 294.7,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 267,
+            "semantic:embeddings": 18
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 76.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 68,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20463400952801824",
+      "style": "keyword",
+      "query": "--localstorage-file @papercusp/sidestage-web configuration local-storage Vitest/jsdom observational",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 53.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 45,
+            "semantic:embeddings": 5
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 139,
+          "engine": "legacy",
+          "hits": 1,
+          "legMs": {
+            "lexical:lexical": 128,
+            "semantic:embeddings": 9
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21657565980241063",
+      "style": "fragment",
+      "query": "current source and git history… The prior worker's checkpoint is",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 3452.3,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 3433,
+            "semantic:embeddings": 8
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 110.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 81,
+            "semantic:embeddings": 22
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-22317642206740146",
+      "style": "keyword",
+      "query": "papercusp-workspace::papercusp workspace=papercusp-workspace key=5b00878b7df0637b4f758129d02bc797d6c1928e18bc3751cb27b9ca0d541bac getReplicationLiveness() dogfood-substrate-status) agent-insights/shared-hive-federation-diagnosis-toolkit",
+      "arms": {
+        "bm25": {
+          "rank": null,
+          "latencyMs": 179.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 158,
+            "semantic:embeddings": 15
+          }
+        },
+        "legacy": {
+          "rank": null,
+          "latencyMs": 45.9,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 28,
+            "semantic:embeddings": 11
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25294438740485681",
+      "style": "fragment",
+      "query": "actual worker pickup are execution progress, not bug resolution. Existing",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 2508.2,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 2488,
+            "semantic:embeddings": 9
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 133.5,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 113,
+            "semantic:embeddings": 12
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-22090211421546892",
+      "style": "keyword",
+      "query": "summary/repeatCount/lastSeenTs mti1eeki-0000-ed9bf29894094d70b6ddf9f21eeac31d papercusp-workspace:work-on-everything-070565:portfolio-idle goal-mode-drift-guards-2026-08-31 (agent-tools/coordination/escalations.ts tryBumpProjectionDuplicate",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 106.2,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 94,
+            "semantic:embeddings": 6
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 352.9,
+          "engine": "legacy",
+          "hits": 1,
+          "legMs": {
+            "lexical:lexical": 335,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25329033513081616",
+      "style": "fragment",
+      "query": "through the canonical improvements:capture toolFailure shorthand. Tool: coord:thread Error code:",
+      "arms": {
+        "legacy": {
+          "rank": 7,
+          "latencyMs": 87.1,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 34,
+            "semantic:embeddings": 27
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 113.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 104,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-23936296565978520",
+      "style": "keyword",
+      "query": "fleet:context-critical turn-start-memory, 2026-09-22T03:5x-04:55Z. sessionState='live', lastActiveSecAgo=4, (AUTO-BAR-R-10-P-007@2",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 319.5,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 267,
+            "semantic:embeddings": 45
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 423,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 403,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-22142589455577749",
+      "style": "fragment",
+      "query": "workspace=papercusp-workspace harness=papercusp/libs/testing-shell log core key=cb54460d98d85b66d59ffac3bc2d907d8d0fc307b745c5bfce519b39aef880d5 kind=no replicator stalledForMs=180973 Meaning: the",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 293.7,
+          "engine": "legacy",
+          "hits": 4,
+          "legMs": {
+            "lexical:lexical": 284,
+            "semantic:embeddings": 5
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 62.5,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 52,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21558300236722186",
+      "style": "keyword",
+      "query": "JSON.stringify caller-encoding high-priority auto-resolved structural-error tools:invoke(coord:send)",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 83.3,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 74,
+            "semantic:embeddings": 5
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 294.6,
+          "engine": "legacy",
+          "hits": 1,
+          "legMs": {
+            "lexical:lexical": 285,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25260429988599746",
+      "style": "fragment",
+      "query": "workspace=papercusp-workspace harness=papercusp log core key=30c56b0f556cb616790b138a4710dd5f63a66cfe0ae29fc804930ed7f545e4f7 kind=no replicator stalledForMs=180717 Meaning: the",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 255.6,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 245,
+            "semantic:embeddings": 6
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 45.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 33,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20503125180892674",
+      "style": "keyword",
+      "query": "release:trace elapsedSec/asOfAgeMs counters. Process-tree matched-PID independent",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 71.5,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 62,
+            "semantic:embeddings": 6
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 171.5,
+          "engine": "legacy",
+          "hits": 2,
+          "legMs": {
+            "lexical:lexical": 163,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-24419896344220812",
+      "style": "fragment",
+      "query": "is running build 9a4319b70a, started 7min ago. If this CONSTRAINT",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 148.3,
+          "engine": "legacy",
+          "hits": 3,
+          "legMs": {
+            "lexical:lexical": 128,
+            "semantic:embeddings": 8
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 72.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 62,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21215629278604932",
+      "style": "keyword",
+      "query": "publication stranded. undeclared 60-second liveness fallback.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 69.1,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 58,
+            "semantic:embeddings": 7
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 321.4,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 307,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-22534075222755073",
+      "style": "fragment",
+      "query": "SILENTLY rejects that whole item while still returning ok:true with",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 5243.8,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 5231,
+            "semantic:embeddings": 7
+          }
+        },
+        "bm25": {
+          "rank": 2,
+          "latencyMs": 98,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 82,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21257301169617259",
+      "style": "keyword",
+      "query": "three-minute coord:presence npm-install-safe.mjs --exec-under-lock tools:invoke reader/writer",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 144.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 135,
+            "semantic:embeddings": 6
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 160.4,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 142,
+            "semantic:embeddings": 11
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21325997897094575",
+      "style": "fragment",
+      "query": "fleet stand-down; its stale… Scheduler can re-admit a previously worked",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 249.7,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 232,
+            "semantic:embeddings": 7
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 60.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 52,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25504661149111845",
+      "style": "keyword",
+      "query": "requested32GiBunder40GiB by25%reserve… fromdownstreamallocationclamp. beforeacceptance; beforeadmission. No8workercohortexistsyet.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 41.1,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 30,
+            "semantic:embeddings": 6
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 23,
+          "engine": "legacy",
+          "hits": 1,
+          "legMs": {
+            "lexical:lexical": 16,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25344938992496490",
+      "style": "fragment",
+      "query": "toolFailure shorthand. Tool: state:subscribe Error code: no materiality Status: handler",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 296.8,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 287,
+            "semantic:embeddings": 6
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 48,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 38,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21532815314783959",
+      "style": "keyword",
+      "query": "continuation probe-backed… probe-backed cold-retuning authoritative leader-brief",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 53.2,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 45,
+            "semantic:embeddings": 5
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 172.7,
+          "engine": "legacy",
+          "hits": 4,
+          "legMs": {
+            "lexical:lexical": 165,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-23251844354745939",
+      "style": "fragment",
+      "query": "sent; it does not guarantee the call validates, since a",
+      "arms": {
+        "legacy": {
+          "rank": null,
+          "latencyMs": 73.2,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 60,
+            "semantic:embeddings": 7
+          }
+        },
+        "bm25": {
+          "rank": null,
+          "latencyMs": 88.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 78,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20383208595118010",
+      "style": "keyword",
+      "query": "WI-38666/WI-38449 packages/operator-core/tsconfig.json, scopeToFiles:true, incremental:false, timeoutMs:180000 transport/dispatch",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 48.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 35,
+            "semantic:embeddings": 10
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 91.1,
+          "engine": "legacy",
+          "hits": 1,
+          "legMs": {
+            "lexical:lexical": 80,
+            "semantic:embeddings": 8
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "WI-10001564",
+      "style": "fragment",
+      "query": "requirementVerificationSchema — packages/operator-core/lib/agent-tools/plans/rubric-template.ts:456 ; reached via requirementAmendmentSchema 's verification: requirementVerificationSchema.partial().optional()",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 91.6,
+          "engine": "legacy",
+          "hits": 1,
+          "legMs": {
+            "lexical:lexical": 78,
+            "semantic:embeddings": 10
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 59.7,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 42,
+            "semantic:embeddings": 12
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21506624459580385",
+      "style": "keyword",
+      "query": "items:claimable authoritative issue-family claims/orphans/stalls; scheduler:running workspace-wide",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 57.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 43,
+            "semantic:embeddings": 8
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 249.5,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 234,
+            "semantic:embeddings": 10
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "WI-7321",
+      "style": "fragment",
+      "query": "condition bridge (P-003, gate-ownership-condition-singleton-2026-08-03). This item is the SINGLETON for",
+      "arms": {
+        "legacy": {
+          "rank": null,
+          "latencyMs": 57.3,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 35,
+            "semantic:embeddings": 11
+          }
+        },
+        "bm25": {
+          "rank": null,
+          "latencyMs": 98,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 77,
+            "semantic:embeddings": 13
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25673492752076980",
+      "style": "keyword",
+      "query": "consult:reply Invocation 2026-10-11T09:09:08.467Z. dcadea9a23, --url=http://127.0.0.1:3170 explicitly).",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 87.5,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 64,
+            "semantic:embeddings": 18
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 241.5,
+          "engine": "legacy",
+          "hits": 1,
+          "legMs": {
+            "lexical:lexical": 229,
+            "semantic:embeddings": 9
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25335727044317872",
+      "style": "fragment",
+      "query": "payloadFilter preserved… No-claim is a floor-gated pool, not an empty",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 541.3,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 532,
+            "semantic:embeddings": 5
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 62.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 54,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-24877898408518401",
+      "style": "keyword",
+      "query": "goalPlacementTurn (portfolio persisted. goal-placement-delivery-baseline id=default speaker/part",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 65.5,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 57,
+            "semantic:embeddings": 5
+          }
+        },
+        "legacy": {
+          "rank": null,
+          "latencyMs": 131.6,
+          "engine": "legacy",
+          "hits": 0,
+          "legMs": {
+            "lexical:lexical": 123,
+            "semantic:embeddings": 8
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21955587477490695",
+      "style": "fragment",
+      "query": "the stale timeout… The authoritative events:status row is the source",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 872,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 857,
+            "semantic:embeddings": 8
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 59.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 45,
+            "semantic:embeddings": 10
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20320252129150889",
+      "style": "keyword",
+      "query": "home-directory verification insufficient; ~/.papercusp/papercusp-coord.ts lint:tsc:operator --files=comma,list.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 62.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 53,
+            "semantic:embeddings": 6
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 147.6,
+          "engine": "legacy",
+          "hits": 7,
+          "legMs": {
+            "lexical:lexical": 133,
+            "semantic:embeddings": 9
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20271952458534496",
+      "style": "fragment",
+      "query": "path was mistyped A verification command was initially run with",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 156.5,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 142,
+            "semantic:embeddings": 9
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 35.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 28,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20228685757340390",
+      "style": "keyword",
+      "query": "harness-scoped loop:end({harness:'papercusp'}) acknowledgeOpenDirectives. papercusp, parameter; loop:end({ownerId:'su-ad2d5e0c-8ba2-4ddc-b7ee-be6662c453cc'}).",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 55.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 47,
+            "semantic:embeddings": 5
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 248,
+          "engine": "legacy",
+          "hits": 1,
+          "legMs": {
+            "lexical:lexical": 237,
+            "semantic:embeddings": 8
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20255653957302720",
+      "style": "fragment",
+      "query": "valid ptool nested p… mcp-handler.ts dispatchTool already strips, validates, and",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 137.4,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 128,
+            "semantic:embeddings": 6
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 60.1,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 36,
+            "semantic:embeddings": 12
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25454164457006323",
+      "style": "keyword",
+      "query": "su-837b9692-d1b1-4de3-853c-79e2267c2571 ecac44b3-16ab-4d89-9e80-9b6e279fcaa3. fleet:assignments boundedPgReadTxn:acquire(admin) Reconcile/replay EI-25453502534920815",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 65,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 54,
+            "semantic:embeddings": 7
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 145.5,
+          "engine": "legacy",
+          "hits": 2,
+          "legMs": {
+            "lexical:lexical": 134,
+            "semantic:embeddings": 9
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25617794836339825",
+      "style": "fragment",
+      "query": "canonical improvements:capture toolFailure shorthand. Tool: capability:read Error code: scratch line",
+      "arms": {
+        "legacy": {
+          "rank": 6,
+          "latencyMs": 36.2,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 27,
+            "semantic:embeddings": 6
+          }
+        },
+        "bm25": {
+          "rank": null,
+          "latencyMs": 70,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 61,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-24833606853730057",
+      "style": "keyword",
+      "query": "EI-24772290869366154, consult:get responder/no unreachable, retrieval-only implementation.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 35.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 25,
+            "semantic:embeddings": 6
+          }
+        },
+        "legacy": {
+          "rank": null,
+          "latencyMs": 105.6,
+          "engine": "legacy",
+          "hits": 2,
+          "legMs": {
+            "lexical:lexical": 100,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-23177607962821207",
+      "style": "fragment",
+      "query": "... set reuseExistingServer:true . In the shared workspace, an existing",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 132.8,
+          "engine": "legacy",
+          "hits": 8,
+          "legMs": {
+            "lexical:lexical": 125,
+            "semantic:embeddings": 5
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 40.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 34,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20207791402270890",
+      "style": "keyword",
+      "query": "(EI-19325151590626958) gate-red-streak:papercusp 'scorecard:goal-mode-e2e:su-38b44e43:run4' payload.observation.conditionKey accepted-then-discarded conditionKey:'anything',",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 103.7,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 92,
+            "semantic:embeddings": 6
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 268.5,
+          "engine": "legacy",
+          "hits": 1,
+          "legMs": {
+            "lexical:lexical": 256,
+            "semantic:embeddings": 9
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-22158172264483353",
+      "style": "fragment",
+      "query": "bugs were structurally INVISIBLE — non-terminal but excluded from claim",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 198.1,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 185,
+            "semantic:embeddings": 5
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 90.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 69,
+            "semantic:embeddings": 19
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25205239630553485",
+      "style": "keyword",
+      "query": "WI-10005128 print('\\n'.join(...)) SyntaxError: unterminated serializing sep=chr(10)).",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 38.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 31,
+            "semantic:embeddings": 4
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 87.8,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 77,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20383672170110589",
+      "style": "fragment",
+      "query": "a projection object placed in the direct tool JSON payload",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 2894.1,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 2879,
+            "semantic:embeddings": 6
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 64,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 53,
+            "semantic:embeddings": 8
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21949889517707293",
+      "style": "keyword",
+      "query": "EI-21161560103211079, EI-21202220137741294, EI-21163778208018361, EI-21179183899846679, EI-21215324768301232, EI-21233423169585475,",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 45.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 32,
+            "semantic:embeddings": 7
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 234.9,
+          "engine": "legacy",
+          "hits": 1,
+          "legMs": {
+            "lexical:lexical": 224,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a0504a-33a1-70b1-9e8a-eade5d245221:0",
+      "style": "fragment",
+      "query": "— use Codex's native plan tool ( update plan ,",
+      "arms": {
+        "legacy": {
+          "rank": null,
+          "latencyMs": 3182.4,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 3165,
+            "semantic:embeddings": 6
+          }
+        },
+        "bm25": {
+          "rank": null,
+          "latencyMs": 266.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 249,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a124e2-61fe-7302-9063-fcf54a7840f6:23",
+      "style": "keyword",
+      "query": "⟦turn-origin:wake-pump nonce:fc7399b534dc9d33⟧ coord:inbox-wake:su-f5f2a08a-dbd2-4033-80a2-68008fece661 (turn-lifecycle-control)) id\":\"coord-send-88c0193a0a1f8330fd4a25a578e844a82c38a5162c6db32ceffbdd2f62651ac6\",\"relayProvenance\":{\"tier\":\"coord-origin\",\"chain\": ,\"quote\":\"Complete",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 465.2,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 455,
+            "semantic:embeddings": 6
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 4313.1,
+          "engine": "legacy",
+          "hits": 1,
+          "legMs": {
+            "lexical:lexical": 4305,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a08289-aa26-71c0-ac38-44d08dcbb1e5:8",
+      "style": "fragment",
+      "query": "point to passing run 17713887 ; live :3170 still reports",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 2596,
+          "engine": "legacy",
+          "hits": 4,
+          "legMs": {
+            "lexical:lexical": 2577,
+            "semantic:embeddings": 15
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 325.7,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 297,
+            "semantic:embeddings": 18
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a125a2-4b0b-7d92-8d66-0d4058da9c79:30",
+      "style": "keyword",
+      "query": "⟦turn-origin:wake-pump nonce:91ce4f859d625525⟧ coord:inbox-wake:su-50df534b-5bd7-45f2-9446-c650c3dd6b88 (turn-lifecycle-control)) id\":\"coord-send-bf384ae48deebbd56cecd76cc3a430d97638e4a15bd31e1f597c3bf9790dd7b2\"} (inbox-wake):",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 178.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 150,
+            "semantic:embeddings": 17
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 2756.6,
+          "engine": "legacy",
+          "hits": 1,
+          "legMs": {
+            "lexical:lexical": 2734,
+            "semantic:embeddings": 18
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a116ea-0752-71c2-a0be-8592353dd63d:733",
+      "style": "fragment",
+      "query": "are denied and the engine loop is inactive. I left",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 179.3,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 157,
+            "semantic:embeddings": 8
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 60.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 53,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a12063-f73e-76b3-a1d2-445079796f0e:0",
+      "style": "keyword",
+      "query": "compaction-sensitive authenticatedPrincipal scope=(--workspace=\"${PAPERCUSP scope+=(--harness=\"${PAPERCUSP workspace-global); improvements:capture",
+      "arms": {
+        "bm25": {
+          "rank": null,
+          "latencyMs": 675.7,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 647,
+            "semantic:embeddings": 12
+          }
+        },
+        "legacy": {
+          "rank": null,
+          "latencyMs": 363.1,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 337,
+            "semantic:embeddings": 8
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a08038-aeeb-7a20-9bc4-b6725e603bc2:10",
+      "style": "fragment",
+      "query": "attestedCount=2, remainingAttestations=1. No LIVE GATE OPS read/action, repository edit/lock, or",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 985.4,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 847,
+            "semantic:embeddings": 10
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 147.1,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 132,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:4b80fe29-770d-4cef-b8ef-508975c82ae0:33",
+      "style": "keyword",
+      "query": "01:24:30Z, evidence, host-receipt WI-10004055. su-3ee17ad9 builders.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 162.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 148,
+            "semantic:embeddings": 4
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 860.9,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 843,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a0d6a1-1f56-7f02-ba58-3f87a2611d58:27",
+      "style": "fragment",
+      "query": "as role-launch-spec.ts. That is a new source change, so I’m",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 1207.3,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 1186,
+            "semantic:embeddings": 7
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 174.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 154,
+            "semantic:embeddings": 8
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:46d94ee8-fe71-4be7-b1c4-258be8303791:0",
+      "style": "keyword",
+      "query": "⟦turn-origin:self-compaction nonce:94875a80ca5b19c4⟧ su-30689caf-6ed7-424b-85cb-afce60504d37 EI-24652968017556710, ⟦post-compaction-recovery⟧ coord:declare-intent",
+      "arms": {
+        "bm25": {
+          "rank": 2,
+          "latencyMs": 392.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 361,
+            "semantic:embeddings": 7
+          }
+        },
+        "legacy": {
+          "rank": 2,
+          "latencyMs": 2146.1,
+          "engine": "legacy",
+          "hits": 7,
+          "legMs": {
+            "lexical:lexical": 2125,
+            "semantic:embeddings": 12
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a128dd-8e2f-7352-9287-7b5b52973c0e:5",
+      "style": "fragment",
+      "query": "and the :3170 tree already contains the diagnostic change. I",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 2243.2,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 2209,
+            "semantic:embeddings": 19
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 153.5,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 130,
+            "semantic:embeddings": 9
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:df966436-f893-40e8-9ef5-2a329608fd24:72",
+      "style": "keyword",
+      "query": "conv-muoo010v-0000-8bea1bf7307e42ef8787071880e15d33. 'acceptance-anthropic-credits-gateway-2026-09-30' rubricRef:'acceptance-anthropic-credits-gateway-2026-09-30' conv-muoo010v-0000-8bea1bf7307e42ef8787071880e15d33): 'conv-muoo010v-0000-8bea1bf7307e42ef8787071880e15d33' conv-muoo010v-0000-8bea1bf7307e42ef8787071880e15d33",
+      "arms": {
+        "bm25": {
+          "rank": null,
+          "latencyMs": 208.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 176,
+            "semantic:embeddings": 6
+          }
+        },
+        "legacy": {
+          "rank": null,
+          "latencyMs": 71.6,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 53,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:fcd05bd8-5449-413e-ac36-7b4885a6f45f:36",
+      "style": "fragment",
+      "query": "are peers' uncommitted work — already recorded, not mine to",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 275.8,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 252,
+            "semantic:embeddings": 5
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 1153.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 1029,
+            "semantic:embeddings": 111
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a12831-c7db-7913-b801-1e0ce3f48050:4",
+      "style": "keyword",
+      "query": "decisions instruction recovered authorized generation continuation",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 464.3,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 448,
+            "semantic:embeddings": 6
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 128.6,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 113,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a06d5c-5975-7073-b0f7-fe5d268432e6:32",
+      "style": "fragment",
+      "query": "settled to done; no duplicate completion needed. - su-8aad457f received",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 1141.5,
+          "engine": "legacy",
+          "hits": 3,
+          "legMs": {
+            "lexical:lexical": 1127,
+            "semantic:embeddings": 9
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 136.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 118,
+            "semantic:embeddings": 8
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a12202-07f3-7e32-bfab-46fd0fd0a3e8:1",
+      "style": "keyword",
+      "query": "{\"schemaVersion\":\"post-compaction-recovery-v1\",\"complete\":true,\"memoryEpoch\":300,\"controlGeneration\":16,\"controlStateHash\":\"bd351d2dcd23e89ffb19edf096823156ddab002ce51927a49b0e71cf86fbd257\",\"fallback\":{\"verb\":\"coord:orient\",\"args\":{\"afterCompaction\":true},\"when\": ,\"activation\":{\"schemaVersion\":1,\"attribution\":{\"actorId\":\"su-7a94555d-4fbb-42b8-a39d-ff28fade9e0f\",\"principalId\":\"system:superuser\",\"sessionId\":\"su-7a94555d-4fbb-42b8-a39d-ff28fade9e0f\"},\"desired\":{\"specificationRevision\":\"7cf2ae9168b0a42dd8a56112d3e50e764d281f5c72c31f77734168ef988dbd78\",\"stateRevision\":\"6d031da47dd39792a88f48637eea526c61d72bc60e1aed220260b074ae15a25f\"},\"prepared\":null,\"applied\":{\"specificationRevision\":\"7cf2ae9168b0a42dd8a56112d3e50e764d281f5c72c31f77734168ef988dbd78\",\"stateRevision\":\"6d031da47dd39792a88f48637eea526c61d72bc60e1aed220260b074ae15a25f\"},\"status\":\"applied\"},\"stack\": ,\"loop\":{\"active\":true,\"intervalSec\":600},\"wakeSource\":\"loop\",\"carry\":\"warm\",\"route\":{\"kind\":\"self\"},\"scope\":{\"workspace\":\"papercusp-workspace\",\"harness\":\"papercusp\",\"plan\":\"cloud-app-live-tutorial-2026-10-01\",\"items\": contentHash=bbe86c4db9412a3357ab5002efca05c7f393c52eaca2b1b0535af00df8d97201 /tmp/tutorial-control-replacement-build-7ab8d41d-c19484fc-20261009T0301.log (/tmp/tutorial-control-replacement-build-7ab8d41d-afac7b32-20261009T0345.log).",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 910.2,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 879,
+            "semantic:embeddings": 6
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 7268.8,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 7256,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a0f57b-c584-7452-a77d-f46dec8c9448:3",
+      "style": "fragment",
+      "query": "It records 42/42 canonical focused tests, and the reporter’s server-side",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 949.8,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 931,
+            "semantic:embeddings": 11
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 159,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 138,
+            "semantic:embeddings": 8
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a0454f-46a3-7651-b29c-99bf024ef62d:13",
+      "style": "keyword",
+      "query": "correction floor-gated claimable), implementation acknowledging checkpointing",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 774.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 756,
+            "semantic:embeddings": 7
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 2817.1,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 2801,
+            "semantic:embeddings": 10
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a1001f-c225-7541-a9f9-ccd25d6bd527:3",
+      "style": "fragment",
+      "query": "The release await remains registered, but the current release status",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 481,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 453,
+            "semantic:embeddings": 8
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 580.2,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 556,
+            "semantic:embeddings": 9
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a0524f-e296-7311-bb83-a235144a2b0a:0",
+      "style": "keyword",
+      "query": "engineer-collaborator domain-generic-agent-personas-2026-06-17 scope:'workspace' compaction-sensitive scope=(--workspace=\"${PAPERCUSP scope+=(--harness=\"${PAPERCUSP",
+      "arms": {
+        "bm25": {
+          "rank": null,
+          "latencyMs": 620.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 581,
+            "semantic:embeddings": 10
+          }
+        },
+        "legacy": {
+          "rank": null,
+          "latencyMs": 3149,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 3121,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:df9c832f-8893-4481-a4d9-05daa6159f43:87",
+      "style": "fragment",
+      "query": "was NOT notified. Do not claim work-items, do not arm",
+      "arms": {
+        "legacy": {
+          "rank": null,
+          "latencyMs": 531,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 504,
+            "semantic:embeddings": 12
+          }
+        },
+        "bm25": {
+          "rank": null,
+          "latencyMs": 198.5,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 153,
+            "semantic:embeddings": 30
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a1007e-80fd-7150-89df-d923a3551e94:176",
+      "style": "keyword",
+      "query": "⟦turn-origin:wake-pump nonce:abdf6e82637395da⟧ {\"id\":\"WI-10007222\",\"goal\":null,\"kind\":\"feature\",\"plan\":\"morning-ai-intelligence-2026-10-07\",\"tags\": ,\"state\":\"open\",\"title\":\"Bind first.\",\"reason\":\"released\",\"harness\":\"papercusp\",\"assignee\":null,\"severity\":null 2026-10-07T21:06:40.496Z)",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 429.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 408,
+            "semantic:embeddings": 10
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 5032.1,
+          "engine": "legacy",
+          "hits": 1,
+          "legMs": {
+            "lexical:lexical": 5024,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a098b5-7d6e-7152-b3fb-e576c00429ea:3",
+      "style": "fragment",
+      "query": "one not-applicable , so the rubric’s all-pass override requires re-running",
+      "arms": {
+        "legacy": {
+          "rank": 7,
+          "latencyMs": 1177.2,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 1149,
+            "semantic:embeddings": 6
+          }
+        },
+        "bm25": {
+          "rank": 8,
+          "latencyMs": 239.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 215,
+            "semantic:embeddings": 13
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a10e0b-ccac-73c2-931e-258a73acb026:13",
+      "style": "keyword",
+      "query": "⟦turn-origin:wake-pump nonce:48a9967ead0530f6⟧ work-item:claimable work-item:claimable, {\"coalesced\":true,\"count\":2,\"eventCount\":2,\"timeoutCount\":0,\"events\": background-Bash",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 345.1,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 299,
+            "semantic:embeddings": 25
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 3362.1,
+          "engine": "legacy",
+          "hits": 1,
+          "legMs": {
+            "lexical:lexical": 3355,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a1212b-c7bd-7690-98ec-248d4e000e61:4",
+      "style": "fragment",
+      "query": "dispatch handling. The stored 66/66 test result is from an",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 502.9,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 492,
+            "semantic:embeddings": 6
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 93.3,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 82,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a05085-9d9f-7e83-b0c7-30fd2c2f90bc:53",
+      "style": "keyword",
+      "query": "confirmed duplicate EI-21845183650822826 evidence, preserving occurrence",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 88.3,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 67,
+            "semantic:embeddings": 12
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 830.2,
+          "engine": "legacy",
+          "hits": 3,
+          "legMs": {
+            "lexical:lexical": 822,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:f2ba67ad-9239-45e8-9bd6-8d75c88b7922:10",
+      "style": "fragment",
+      "query": "floor → 2 of 3 agents idle. And its owner's",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 178.6,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 154,
+            "semantic:embeddings": 5
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 106,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 92,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a0f554-02d8-75d3-9154-dcaa04c7d981:3",
+      "style": "keyword",
+      "query": "assigned session, checkpoint requested compaction successor",
+      "arms": {
+        "bm25": {
+          "rank": null,
+          "latencyMs": 652.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 605,
+            "semantic:embeddings": 18
+          }
+        },
+        "legacy": {
+          "rank": null,
+          "latencyMs": 177.8,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 159,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a0f8c8-8b76-75a1-afd4-4c3264528076:5",
+      "style": "fragment",
+      "query": "and verified the obsolete health-confirmation question and notified the Inbox",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 899.1,
+          "engine": "legacy",
+          "hits": 4,
+          "legMs": {
+            "lexical:lexical": 886,
+            "semantic:embeddings": 8
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 96.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 80,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:22cc4701-3b16-42b7-989a-e1d0ec0f0aa2:7",
+      "style": "keyword",
+      "query": "ManagedCapabilityGap owningPlanItems predecessor's cutoverReady: structurally unrepresentable",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 90.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 61,
+            "semantic:embeddings": 18
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 153.4,
+          "engine": "legacy",
+          "hits": 2,
+          "legMs": {
+            "lexical:lexical": 140,
+            "semantic:embeddings": 10
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:6b55a61e-bc1c-48a1-ab9a-526c491fd6c3:23",
+      "style": "fragment",
+      "query": "that existed. If what you deferred is a QUESTION, asking",
+      "arms": {
+        "legacy": {
+          "rank": null,
+          "latencyMs": 314.9,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 287,
+            "semantic:embeddings": 11
+          }
+        },
+        "bm25": {
+          "rank": null,
+          "latencyMs": 174.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 160,
+            "semantic:embeddings": 9
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:accae34d-a752-445f-83b4-190779a1a446:3",
+      "style": "keyword",
+      "query": "EI-24142706861433138: gradingAudit.state=pending spec-test-adequacy degenerate-distribution grading-integrity counterexample,",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 104,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 85,
+            "semantic:embeddings": 8
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 776.3,
+          "engine": "legacy",
+          "hits": 4,
+          "legMs": {
+            "lexical:lexical": 769,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a0f4d5-83df-77e1-b2c3-d9f27b6571ef:15",
+      "style": "fragment",
+      "query": "is not yet wired into the CLI or MCP output.",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 6076.2,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 6033,
+            "semantic:embeddings": 24
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 200.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 153,
+            "semantic:embeddings": 29
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:96d090fb-b758-4871-966f-3fdfdfdc992b:43",
+      "style": "keyword",
+      "query": "acceptance-jev-decision-model-integration-2026-09-29 libs/flags/src/types.ts injection.test.ts no-key/timeout/malformed jev-memory-gate.test.ts keep-current-system",
+      "arms": {
+        "bm25": {
+          "rank": null,
+          "latencyMs": 282.1,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 256,
+            "semantic:embeddings": 5
+          }
+        },
+        "legacy": {
+          "rank": null,
+          "latencyMs": 57.1,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 36,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a1161f-1378-7821-891e-f07c1d93cec8:3",
+      "style": "fragment",
+      "query": "orientation once because the injected agenda was partial; the held",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 137.7,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 95,
+            "semantic:embeddings": 7
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 105.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 90,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a03b6d-090c-7161-977b-3c763be7de5f:637",
+      "style": "keyword",
+      "query": "su-58bdd3bf-9af7-472c-a8fa-7c8da84e8050, coord:inbox-wake:su-58bdd3bf-9af7-472c-a8fa-7c8da84e8050 byoc-cloud-workspaces-gcp-aws-azure-2026-08-22 byoc-cloud-workspaces-2026-08-22 to:su-58bdd3bf-9af7-472c-a8fa-7c8da84e8050. {\"harness\":\"papercusp\",\"routineId\":\"rt",
+      "arms": {
+        "bm25": {
+          "rank": null,
+          "latencyMs": 326.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 307,
+            "semantic:embeddings": 6
+          }
+        },
+        "legacy": {
+          "rank": null,
+          "latencyMs": 77.8,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 51,
+            "semantic:embeddings": 11
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a10fe8-9bff-7a60-b335-d4477a91156a:3",
+      "style": "fragment",
+      "query": "here, and its saved instruction is to stop at this",
+      "arms": {
+        "legacy": {
+          "rank": 3,
+          "latencyMs": 249.9,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 227,
+            "semantic:embeddings": 5
+          }
+        },
+        "bm25": {
+          "rank": null,
+          "latencyMs": 102.5,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 85,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a072d9-cdf8-7800-b0f2-9995d1499156:10",
+      "style": "keyword",
+      "query": "completion correctly unstamped closure—nothing already-passed fingerprints",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 199.1,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 181,
+            "semantic:embeddings": 7
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 929.2,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 907,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:907544aa-8936-48ce-a91b-2408d2dace4f:54",
+      "style": "fragment",
+      "query": "vi.mocked(realFn) — so it carries no real signature and the",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 536.9,
+          "engine": "legacy",
+          "hits": 1,
+          "legMs": {
+            "lexical:lexical": 526,
+            "semantic:embeddings": 6
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 84.2,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 59,
+            "semantic:embeddings": 14
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a10ed7-ac41-7320-8239-45ecd6e468f7:0",
+      "style": "keyword",
+      "query": "compaction-sensitive tools:find(\"<what scope=(--workspace=\"${PAPERCUSP scope+=(--harness=\"${PAPERCUSP workspace-global); improvements:capture",
+      "arms": {
+        "bm25": {
+          "rank": null,
+          "latencyMs": 263.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 242,
+            "semantic:embeddings": 5
+          }
+        },
+        "legacy": {
+          "rank": null,
+          "latencyMs": 2547,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 2527,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a04bc5-6f68-7db2-8ac7-cd01001e1fdb:1",
+      "style": "fragment",
+      "query": "— read the code/work-item it names and check whether the",
+      "arms": {
+        "legacy": {
+          "rank": null,
+          "latencyMs": 677.8,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 646,
+            "semantic:embeddings": 10
+          }
+        },
+        "bm25": {
+          "rank": null,
+          "latencyMs": 130.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 115,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a04fc3-340c-7ff1-934e-f7199dddb3cd:11",
+      "style": "keyword",
+      "query": "checkpoint summarized discriminator workspace’s schema-discovery human-readable",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 183.1,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 170,
+            "semantic:embeddings": 6
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 526.2,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 518,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a09737-01ac-7752-a83b-dc24540d20f1:1",
+      "style": "fragment",
+      "query": "as done with committed v2 causal evidence; release trace preserves",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 1165.6,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 1151,
+            "semantic:embeddings": 5
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 130.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 112,
+            "semantic:embeddings": 8
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a1181b-d309-7560-b4b6-b51e44d158bd:9",
+      "style": "keyword",
+      "query": "activation readiness notification scheduled dependencies independently",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 212.1,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 197,
+            "semantic:embeddings": 4
+          }
+        },
+        "legacy": {
+          "rank": null,
+          "latencyMs": 8089.5,
+          "engine": "legacy",
+          "hits": 0,
+          "legMs": {
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a059af-e6b5-7e80-9eb0-cf53ea63a8e9:246",
+      "style": "fragment",
+      "query": "replying with the exact durable blocker ( EI-22026318885195355 ) and",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 768.1,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 736,
+            "semantic:embeddings": 10
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 164.1,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 141,
+            "semantic:embeddings": 11
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a05bb9-e9d6-7220-a457-9b7a92782cce:7",
+      "style": "keyword",
+      "query": "present-state candidate/disk conditional authorization, permission clarification",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 119.3,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 100,
+            "semantic:embeddings": 11
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 716.9,
+          "engine": "legacy",
+          "hits": 1,
+          "legMs": {
+            "lexical:lexical": 704,
+            "semantic:embeddings": 11
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a07411-ff88-7922-ab0f-1e489ae36d16:4",
+      "style": "fragment",
+      "query": "whether the respawn released either claim and reading the current",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 262.5,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 230,
+            "semantic:embeddings": 6
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 288.3,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 269,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:c88fc11f-5021-4bbc-8158-3cab3338f747:18",
+      "style": "keyword",
+      "query": "converged attention (acquired 18:14Z), directives. directive",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 177.2,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 161,
+            "semantic:embeddings": 6
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 855.2,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 834,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a06f4b-4e6a-7df0-b3af-0c1b9c88b4cc:6",
+      "style": "fragment",
+      "query": "another checkpoint. The live operation itself is healthy; the current",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 165.5,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 136,
+            "semantic:embeddings": 8
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 189.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 167,
+            "semantic:embeddings": 11
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a09703-0356-7573-b77b-fda0fed743be:7",
+      "style": "keyword",
+      "query": "Reconciled checkpointed WI-10001033. released. identified, selected-schema",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 136.2,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 112,
+            "semantic:embeddings": 9
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 920.4,
+          "engine": "legacy",
+          "hits": 5,
+          "legMs": {
+            "lexical:lexical": 910,
+            "semantic:embeddings": 8
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a114ff-b430-7953-854e-03fadc80e6c0:7",
+      "style": "fragment",
+      "query": "I’m waiting on the nested job result rather than retrying",
+      "arms": {
+        "legacy": {
+          "rank": null,
+          "latencyMs": 8278,
+          "engine": "legacy",
+          "hits": 0,
+          "legMs": {
+            "semantic:embeddings": 5
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 209.7,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 191,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a06d5a-7795-74a1-b76d-738464973642:31",
+      "style": "keyword",
+      "query": "reclaimable, high-context, critical-context 1,200-second intervention 7789513fc9cf",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 189.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 167,
+            "semantic:embeddings": 7
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 1192.9,
+          "engine": "legacy",
+          "hits": 1,
+          "legMs": {
+            "lexical:lexical": 1183,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a0fc89-6b3d-7fc1-b93b-24a08abe6c24:21",
+      "style": "fragment",
+      "query": "bug as the latest payload. I’ll refresh the fleet orientation,",
+      "arms": {
+        "legacy": {
+          "rank": null,
+          "latencyMs": 8481.1,
+          "engine": "legacy",
+          "hits": 0,
+          "legMs": {
+            "semantic:embeddings": 5
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 219.5,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 205,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a121f9-de86-7dc3-a506-0d03c401e8d2:1",
+      "style": "keyword",
+      "query": "{\"schemaVersion\":\"post-compaction-recovery-v1\",\"complete\":true,\"memoryEpoch\":2,\"controlGeneration\":5,\"controlStateHash\":\"deb69ddfe50d7e39a7cbd2ece077daf08278f241129d061a260599b7a3be53b9\",\"fallback\":{\"verb\":\"coord:orient\",\"args\":{\"afterCompaction\":true},\"when\": deb69ddfe50d7e39a7cbd2ece077daf08278f241129d061a260599b7a3be53b9). ,\"activation\":{\"schemaVersion\":1,\"attribution\":{\"actorId\":\"su-2245b010-6ebe-4f99-815a-7e84e66fdf8b\",\"principalId\":\"system:superuser\",\"sessionId\":\"su-2245b010-6ebe-4f99-815a-7e84e66fdf8b\"},\"desired\":{\"specificationRevision\":\"6d155bb6a27bf27f0b142510dc901b4f0e313646178c7fe8877aa4597abdf327\",\"stateRevision\":\"6d031da47dd39792a88f48637eea526c61d72bc60e1aed220260b074ae15a25f\"},\"prepared\":null,\"applied\":{\"specificationRevision\":\"6d155bb6a27bf27f0b142510dc901b4f0e313646178c7fe8877aa4597abdf327\",\"stateRevision\":\"6d031da47dd39792a88f48637eea526c61d72bc60e1aed220260b074ae15a25f\"},\"status\":\"applied\"},\"stack\": ,\"loop\":{\"active\":true,\"intervalSec\":60},\"wakeSource\":\"loop\",\"carry\":\"warm\",\"route\":{\"kind\":\"self\"},\"scope\":{\"workspace\":\"papercusp-workspace\",\"harness\":\"papercusp\",\"plan\":\"native-code-intelligence-ecosystem-and-dream-2026-10-09\",\"items\": contentHash=6b530429d230a0ea3061a81d32f7477989c81b86a0837155cb807d5f22ca98f4 06e40a0e63fcf03bc6b0a6f45a08b56f5b339faf5aa13d54a36ae48c1ff34c91,",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 377.7,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 360,
+            "semantic:embeddings": 5
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 4825.3,
+          "engine": "legacy",
+          "hits": 1,
+          "legMs": {
+            "lexical:lexical": 4812,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:6231aee8-87af-44d4-80af-68ce55c77995:16",
+      "style": "fragment",
+      "query": "'convention' (so NULL-kind rows are in the population), plus two",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 524.4,
+          "engine": "legacy",
+          "hits": 3,
+          "legMs": {
+            "lexical:lexical": 489,
+            "semantic:embeddings": 5
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 87.3,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 75,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a1169f-30dc-70b1-a5b1-8188b0cbe308:15",
+      "style": "keyword",
+      "query": "duplicate generation superseded. registered checkpoints. considering",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 474.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 355,
+            "semantic:embeddings": 4
+          }
+        },
+        "legacy": {
+          "rank": null,
+          "latencyMs": 8054.3,
+          "engine": "legacy",
+          "hits": 0,
+          "legMs": {
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a115cc-5fd8-7e73-89ef-9762e7866f8b:1414",
+      "style": "fragment",
+      "query": "on loop MCP calls\",\"reason (event-wake delivery 607243 — a delivery-log",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 1691.2,
+          "engine": "legacy",
+          "hits": 1,
+          "legMs": {
+            "lexical:lexical": 1685,
+            "semantic:embeddings": 4
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 154.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 143,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a12555-eda6-7900-8c56-17d895177cad:16",
+      "style": "keyword",
+      "query": "WI-10001428. /run/lock/papercusp/kopia-global.lock minutes—past 3,600-second self-compaction. investigation.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 119.7,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 106,
+            "semantic:embeddings": 5
+          }
+        },
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 759.2,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 749,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:b95f2387-ce20-402e-8aa7-91fc1dc1c563:78",
+      "style": "fragment",
+      "query": "exists — emitted by su-dd13ad54 at 01:29:21Z, ~90s after the",
+      "arms": {
+        "legacy": {
+          "rank": 1,
+          "latencyMs": 569.9,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 558,
+            "semantic:embeddings": 4
+          }
+        },
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 76,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 67,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a0f963-6807-79a1-8d35-cc8c838ae4d0:7",
+      "style": "keyword",
+      "query": "recorded completion response evidence accurately; completion.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 113.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 98,
+            "semantic:embeddings": 6
+          }
+        },
+        "legacy": {
+          "rank": 2,
+          "latencyMs": 921.7,
+          "engine": "legacy",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 908,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    }
+  ],
+  "steadyPairs": [
+    {
+      "source": "work_item",
+      "targetId": "EI-20496716869815598",
+      "style": "fragment",
+      "query": "and candidate… The apparent rollout blocker splits into two planes:",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 46.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 38,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25537616495888267",
+      "style": "keyword",
+      "query": "facts:assert 2026-10-09T21:09:26.325Z. \"conclusion\" \"assumption\" \"undecidable\" --url=http://127.0.0.1:3170",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 49.7,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 38,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-15704",
+      "style": "fragment",
+      "query": "failure tail: design primitive lint blocks new native <table layouts",
+      "arms": {
+        "bm25": {
+          "rank": 3,
+          "latencyMs": 181.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 172,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21218468058955174",
+      "style": "keyword",
+      "query": "plans:get-item intuitive item/item spellings single-read item=P-022.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 37.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 30,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-22146119732887943",
+      "style": "fragment",
+      "query": "marker string as a… grep for a marker string can",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 38.2,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 27,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25553268085173137",
+      "style": "fragment",
+      "query": "snapshot was read before the actual checkpoint write; latest loop:status",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 57.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 50,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25484896641786404",
+      "style": "keyword",
+      "query": "declared-singleton validation deliberately execute:false operator-deleted --reconcile",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 40.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 31,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25668490721470263",
+      "style": "fragment",
+      "query": "persisted after fresh continuation; no root cause asserted. Avoid recovery-only",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 38.2,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 30,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21023034016044397",
+      "style": "keyword",
+      "query": "operator-core baseline-aware IssueClaimExclusionBreakdown/FleetDrainStamp excluded.agentReview, literals/builders fixtures/builders",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 27.7,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 18,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-24825929425831041",
+      "style": "fragment",
+      "query": "06d2fe376ef384d5e529dbf920b637edb414bb83f55de083b4a1ff8cae145a01; work item evidence refs: packages/operator-core/lib/endpoint-route/routes/workspace-hosts/provision.test.ts, packages/operator-core/lib/workspace-host/aws-provider.test.ts, packages/operator-core/lib/workspace-host/instance-cap.test.ts, packages/operator-core/lib/workspace-host/provisioning-runner.destroy.test.ts, test-run",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 50.1,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 42,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-22780296649711184",
+      "style": "keyword",
+      "query": "items:complete schema-visible EI-22780045863686926 universal-coverage wording-sensitive completion.verification.coverage",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 49.1,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 40,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21551686208895352",
+      "style": "fragment",
+      "query": "fleet-scoped rev47 claimable oracle and fleet:leader-brief are non-atomic: this wake",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 48.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 40,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25308138486107722",
+      "style": "keyword",
+      "query": "other-fsreserve21474836480+margin10737418240. nestedselectorsupdated0.35.5; scripts/npm-install-safe.mjs fce506df65dfd97fec4704f5c58f87da34306d18 apps/operator/bin/release/dependency-generation.sh c88700aafe0928a3b202e7a2979dea25b25a194d",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 46.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 40,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20507392731031051",
+      "style": "fragment",
+      "query": "The required locks:queue read for the exact release script/test paths",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 36.2,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 31,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-18803497769946984",
+      "style": "keyword",
+      "query": "build:typecheck 'apps/operator' indistinguishable deployInFlight.active connection-lifetime transaction-mode",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 58.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 47,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21731092671455085",
+      "style": "fragment",
+      "query": "reconciliation, coord:presence rejected the documented-looking hive argument (invalid args; accepted",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 61.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 53,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25476373442687507",
+      "style": "keyword",
+      "query": "AUTO-BAR-R-13-P-003@2 generic-content-read-aloud-and-summarization-2026-10-07/AUTO-BAR-R-13-P-003@2; 76bae9bba2f809621a4dd63b47e4625dcd6cbceed2bb4df7912dab1d91fbd46c; packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-voice-io.test.ts, packages/operator-core/lib/endpoint-route/routes/agent-mcp/tts-synth.test.ts, packages/operator-core/lib/endpoint-route/routes/agent-mcp/tts-synth.test.ts",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 58.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 51,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25350206035367446",
+      "style": "fragment",
+      "query": "with commit status unknown and direct work items:list also timed",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 65.3,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 57,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20997862276290844",
+      "style": "keyword",
+      "query": "items:checkpoint evidence checkpoint Supplying rejection; claim/recheck",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 33.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 27,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25534880422271641",
+      "style": "fragment",
+      "query": "idea-to-spec-product-shaping-2026-10-09/AUTO-BAR-R-1-P-001@2; fingerprint 9214cf96f3d736d57095a12f110f7a6370952518e0d00bc82ccb83f1b8e7a814; work item evidence refs: packages/operator-core/lib/agent-tools/plans/product-shaping-wiring.test.ts, test-run 20962468",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 58.2,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 52,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25231056316066366",
+      "style": "keyword",
+      "query": "steering, older07:10 explicitly established coord:inbox global3170",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 42.7,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 34,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-22766542455447903",
+      "style": "fragment",
+      "query": "refused with append body overflow. The response reported carried check",
+      "arms": {
+        "bm25": {
+          "rank": 2,
+          "latencyMs": 58.7,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 51,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-19409840792445272",
+      "style": "keyword",
+      "query": "embed-backfill.ts:858 backfillCanonicalMemoryVectors(); backfillCanonicalMemoryVectors 'embedder-disabled' embedder-disabled memory-vec-gemma-zero-is-correct-not-a-failure",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 47.5,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 34,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20392399639391024",
+      "style": "fragment",
+      "query": "is stale. Same invocation… checkpointRunInFlight is authoritative and forbids a",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 43.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 34,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21993953596483924",
+      "style": "keyword",
+      "query": "delivered Deployment events:status exact-key… staging-only gate-wedged.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 59.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 52,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20381490137239223",
+      "style": "fragment",
+      "query": "failure, the second improvements:capture returned created:true for EI-20381451688362733 even though",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 51.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 44,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20889252925008356",
+      "style": "keyword",
+      "query": "packages/operator-core/lib/agent-tools/config/reset-overrides.test.ts 2026-08-19T13:00:13.335Z config:reset-overrides postgresql://<redacted @localhost:5432/papercusp). .integration.test.ts",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 48.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 36,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21260322197347226",
+      "style": "fragment",
+      "query": "the stretch is not the typo — it is WHERE",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 21.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 14,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-18826738875841161",
+      "style": "keyword",
+      "query": "su-11b56bc6 EI-18815668439722436 live/correct) deliberately auto-tagging EI-18826354392040658",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 45.3,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 36,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-23963392895679463",
+      "style": "fragment",
+      "query": "false does NOT waive it. My earlier assumption that it",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 29,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 21,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-24795118343487726",
+      "style": "keyword",
+      "query": "sync-staging-checkout.sh setup-release-checkout.sh existing… WorkingDirectory PAPERCUSP INTEGRATION",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 37,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 27,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-22005286857203713",
+      "style": "fragment",
+      "query": "heading returned a truncated payload with a scratch cursor, but",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 38.2,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 28,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25423232768780347",
+      "style": "keyword",
+      "query": "checkpointed EI-25370058683732162 scheduler:get workItems.checkpoint content/text undispatched",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 36.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 28,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-24401966316103012",
+      "style": "fragment",
+      "query": "the client could not send an HTTP request to 127.0.0.1:3170/api/mcp.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 33.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 26,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-24820916809979007",
+      "style": "keyword",
+      "query": "mutation-probe.sh unmutated-copy code-run-batch-nudge.ts behaviourally independent falsifier).",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 35.5,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 27,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-23094517447574111",
+      "style": "fragment",
+      "query": "codex session and tail:20,text limit:4000 exceeded the 60s handler timeout;",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 68.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 60,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21149704233229261",
+      "style": "keyword",
+      "query": "items:checkpoint preserves dependency baseline… metadata-only body/checks.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 37.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 27,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-349",
+      "style": "fragment",
+      "query": "then the :3070 operator restarted at 19:15 (auto-deploy). Every deferred",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 59.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 47,
+            "semantic:embeddings": 8
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25491822686384994",
+      "style": "keyword",
+      "query": "facts:assert recheck.exec.scope repeatable repository characters. recheck.probe",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 37.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 31,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25183626021007890",
+      "style": "fragment",
+      "query": "completion.addedTests as a string array returned 'invalid args: to CLOSE",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 35.3,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 25,
+            "semantic:embeddings": 8
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-23196830613748434",
+      "style": "keyword",
+      "query": "git-sync:run outcome=unknown aefad3c4-4993-4a86-8582-94270d33a7e4. idempotently reconciled. timeout/observability",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 60.2,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 51,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21499030407226527",
+      "style": "fragment",
+      "query": "The bound plan Now is an older snapshot (187/188); the",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 38.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 28,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-19318161906303548",
+      "style": "keyword",
+      "query": "machine-enforced design-primitives (packages/operator-core/lib/tauri-bindings.ts) tauri-bindings.ts schema-dependent, scout-idea-first-principles-0-0.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 50.2,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 40,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-3505",
+      "style": "fragment",
+      "query": "slot(s) are busy while 30 ready item(s) wait for placement.",
+      "arms": {
+        "bm25": {
+          "rank": 3,
+          "latencyMs": 55.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 47,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25616567666206728",
+      "style": "keyword",
+      "query": "AUTO-BAR-R-4-P-004@2 parked-agent-census-resumption-and-root-cause-2026-10-09/AUTO-BAR-R-4-P-004@2; 80c4217a8315be0d2b1ad24519f6fd322edf9741dfc01376bdeabd80bfc6a4db; packages/operator-core/lib/events/await/wake-executor.test.ts, packages/operator-core/lib/events/await/wake-executor.test.ts @6b37d65cfd84+dirty.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 68.5,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 58,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25229394462350422",
+      "style": "fragment",
+      "query": "flagged an unanchored action when the note cited a coord-send",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 41.3,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 33,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-22567961529969774",
+      "style": "keyword",
+      "query": "cross-harness Post-compaction EI-22547630371995201 harness:'portal' papercusp-scoped workspace-wide",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 49.7,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 43,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-18811580653623534",
+      "style": "fragment",
+      "query": "over a datum whose first two are dead. Rejected on",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 48.5,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 37,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-19324527823454208",
+      "style": "keyword",
+      "query": "resolver-backing-table-coverage backingTables VERIFY-BEFORE-CLAIMING already-fixed operatorTurns.byConversation\", invalidation",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 55.2,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 45,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-24728247650527884",
+      "style": "fragment",
+      "query": "connections and :3070 health returning… Direct Codex MCP calls to",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 40.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 31,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-21086234310301567",
+      "style": "keyword",
+      "query": "TypeScript progressing warranted. explicitly insufficient: content-bearing",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 39.7,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 32,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20830083915034869",
+      "style": "fragment",
+      "query": "layer up: refreshDerivedReads (packages/operator-core/lib/derived-reads/registry.ts, the for (const producer of producers)",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 36.1,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 27,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-24620181406030771",
+      "style": "keyword",
+      "query": "Replication-liveness workspace=papercusp-workspace key=f89879623b3799fa51abc930b5aafaf01e3daf13025335a91912617b9003a502 getReplicationLiveness() dogfood-substrate-status) agent-insights/shared-hive-federation-diagnosis-toolkit",
+      "arms": {
+        "bm25": {
+          "rank": 8,
+          "latencyMs": 131.7,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 122,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25491983483202253",
+      "style": "fragment",
+      "query": "size; neither… The whole-root scan only emitted completed subtrees, and",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 55.3,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 49,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-19338061157047195",
+      "style": "keyword",
+      "query": "(13-day-old) checkpoint live-verify\" infra/perf (journalctl production.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 46.7,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 38,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-14058",
+      "style": "fragment",
+      "query": "ago — supervisor loop gone, no wake armed\" at 08:52:17Z,",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 38.3,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 28,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-7888",
+      "style": "keyword",
+      "query": "Replication-liveness workspace=papercusp-workspace key=37e0291208166af605c5e25d39635b81f571a445eb1f8086cf3362b6a8e53cea getReplicationLiveness() dogfood-substrate-status) agent-insights/shared-hive-federation-diagnosis-toolkit",
+      "arms": {
+        "bm25": {
+          "rank": 2,
+          "latencyMs": 37.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 29,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-25203063082416391",
+      "style": "fragment",
+      "query": "toolFailure shorthand. Tool: plans:get Error code: projection no match Message:",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 51,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 43,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-20256012666549878",
+      "style": "keyword",
+      "query": "reproduces session:request-compaction respawn:true; autoContinue, continueNote. couldNotDetermine;",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 35.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 29,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "work_item",
+      "targetId": "EI-18698525902590535",
+      "style": "fragment",
+      "query": "context climbed to 73% without a cold-loop reset because this",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 42.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 30,
+            "semantic:embeddings": 8
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a11bce-83e6-7842-bc0d-e57870c5a071:7",
+      "style": "fragment",
+      "query": "{\"msg id\":\"coord-send-eed6fc0384de1a34e436b0aa51665dea06e1dc900c0d74b2cc4f30c04651097d\"} (event-wake delivery 525307 — a delivery-log id, not",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 63.2,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 53,
+            "semantic:embeddings": 3
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:b7d8c9f2-47a8-40e8-afdb-14a7df1c49a2:12",
+      "style": "keyword",
+      "query": "⟦turn-origin:wake-pump nonce:b5c8e33a214307d0⟧ coord:inbox-wake:su-4cdad80d-c8b1-4295-a745-6bbddf139fe3 EI-24552862644257153. (turn-lifecycle-control)) (inbox-wake):",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 1152.2,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 1071,
+            "semantic:embeddings": 54
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a124a7-03fa-7322-8122-6a9377243c03:3",
+      "style": "fragment",
+      "query": "still assigned to this session. I’ll reuse the private API",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 510.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 491,
+            "semantic:embeddings": 15
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:1534b4e2-b9cc-4b8f-92a4-d722c119593e:49",
+      "style": "keyword",
+      "query": "floor-gated spec-broken: claimHold=1, agentReview=1) self-clears. compacting",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 120.5,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 100,
+            "semantic:embeddings": 9
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a11ee5-6323-7a22-ad3a-8d06e5803f5e:1",
+      "style": "fragment",
+      "query": "Confirmed the cold reset and reconciled the carry note against",
+      "arms": {
+        "bm25": {
+          "rank": null,
+          "latencyMs": 213.3,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 200,
+            "semantic:embeddings": 8
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:f7baef5e-67b5-48f3-ab5f-5e5820c39f6d:33",
+      "style": "keyword",
+      "query": "forcedPastStamped: acceptance auto-retired. Verifying independently retraction",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 110.5,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 95,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a044b6-f2b7-7610-98f9-a0f8721a2772:26",
+      "style": "fragment",
+      "query": "the interactive scope was WI-240169 only, and the assignment was",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 46.3,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 38,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a07d63-0996-7381-807f-f6e09e7d1153:8",
+      "style": "keyword",
+      "query": "Correction: human-named substitute conclusion succession correcting",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 43.7,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 34,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a0803f-b36f-7023-ab85-534d820447f0:12",
+      "style": "fragment",
+      "query": "found no lane item, and WI-10000713 is now held by",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 73.3,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 64,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a1007a-ed7f-7df0-9ea4-da06d29c218e:20",
+      "style": "keyword",
+      "query": "⟦turn-origin:wake-pump nonce:ee948c66edd9dc4f⟧ work-item:claimable {\"id\":\"WI-10006040\",\"goal\":null,\"kind\":\"feature\",\"plan\":\"inbox-resolve-recurring-sweep-2026-09-01\",\"tags\": ,\"state\":\"open\",\"title\":\"When the…\",\"reason\":\"created\",\"harness\":\"papercusp\",\"assignee\":null,\"severit",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 317.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 296,
+            "semantic:embeddings": 8
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a0f2fd-c137-7fb2-a302-6ae945ebfc6e:4",
+      "style": "fragment",
+      "query": "during a release cut, and current source still has that",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 293,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 277,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a04bdf-8acd-7bb1-82a8-cb44e8472e0c:84",
+      "style": "keyword",
+      "query": "su-4c2b3833-64d4-4360-97cb-f0aba77a2c06, coord:inbox-wake:su-4c2b3833-64d4-4360-97cb-f0aba77a2c06 fleet-spec-scoped-metrics-2026-08-21 acknowledgeWakeLessAutonomy:true to:su-4c2b3833-64d4-4360-97cb-f0aba77a2c06. {\"harness\":\"papercusp\",\"routineId\":\"rt",
+      "arms": {
+        "bm25": {
+          "rank": null,
+          "latencyMs": 2683.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 191,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a080bf-cf18-7d53-aefa-60a4c2e5ede8:7",
+      "style": "fragment",
+      "query": "no checkpoint. The current scorecards:list call now returns matching rows",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 605.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 587,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:f43d490a-4c45-4ff1-bae2-6b21424b110d:11",
+      "style": "keyword",
+      "query": "Checkpoint WI-10001781 bouncing redundant spending essential",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 71.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 54,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a11cf4-cec7-7550-8826-c96cd2052a4d:265",
+      "style": "fragment",
+      "query": "(part 2/2). (your note: fleet leader control (nonp2p-bug-drain-luna-max-0930)) payload: {\"coalesced\":true,\"count\":3,\"eventCount\":3,\"timeoutCount\":0,\"events\":[{\"event\":\"fleet:context-critical:nonp2p-bug-drain-luna-max-0930\",\"summary\":\"fleet",
+      "arms": {
+        "bm25": {
+          "rank": 5,
+          "latencyMs": 374.7,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 344,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a100b2-d022-7c90-9d24-b27b3300061a:28",
+      "style": "keyword",
+      "query": "EI-24939800552621466 EI-24940627413895028 EI-24941022272800930 EI-24932449171527804 EI-24940162932433128 EI-24934041801291292",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 56.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 33,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a0f72d-fa81-7541-ac6f-61add7e586f2:9",
+      "style": "fragment",
+      "query": "waiting on the staging-sync lock. That explains the present listener",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 241.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 225,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a05abc-4ace-7173-9084-b2456552e6b2:8",
+      "style": "keyword",
+      "query": "checkpoint threadLimit workspace’s workaround recording tool-contract",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 223.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 198,
+            "semantic:embeddings": 11
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a0e089-7caf-7fc1-9805-76fe2ec0da8b:17",
+      "style": "fragment",
+      "query": "fixes are complete; New Session child WI-10003274 remains open. I",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 217.7,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 192,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a12732-1639-7fd2-bddf-c6f3f56a7b29:3",
+      "style": "keyword",
+      "query": "Identity work-item exclusive git-sync:papercusp inspection read-only",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 816.2,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 803,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a07af3-1ea2-7f60-beed-f4bec51154f0:3",
+      "style": "fragment",
+      "query": "is an implementation-lane transport-reset report with no source path, so",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 104.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 94,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a042dd-21f4-7f42-99a8-8b069c018ba3:255",
+      "style": "keyword",
+      "query": "su-3fdd1085-f30e-42ff-84be-f6e33ff42e31, 98333464df2d8b5f9da37eab3e6637ee49d013d2. packages/operator-core/lib/harness/routines/fleet-headcount-action.test.ts packages/operator-core/lib/agent-tools/fleet packages/operator-core/lib/harness/routines/fleet-headcount-action.integration.test.ts coord:inbox-wake:su-3fdd1085-f30e-42ff-84be-f6e33ff42e31",
+      "arms": {
+        "bm25": {
+          "rank": null,
+          "latencyMs": 107.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 72,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:19e08292-2ad7-4576-ab73-76fd67bb7848:17",
+      "style": "fragment",
+      "query": "artifact. Every candidate was being discarded. The clause now.statsSinceMs =",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 147.7,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 124,
+            "semantic:embeddings": 15
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:189524ba-2e5d-4b7e-a6ca-0e0c0c083fb3:16",
+      "style": "keyword",
+      "query": "scorecard terminal: unchanged-evidence refuses. mismatch, refusal.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 285.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 256,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a08764-50fd-7380-8278-a88ecca13c2a:11",
+      "style": "fragment",
+      "query": "already read in full and checkpointed, so I will not",
+      "arms": {
+        "bm25": {
+          "rank": null,
+          "latencyMs": 675.2,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 630,
+            "semantic:embeddings": 25
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a05d5c-09b3-7d61-b676-38eee007d293:2",
+      "style": "keyword",
+      "query": "coord:orient(afterCompaction:true) acceptance: value-bearing assessment, test:affected non-pass/undetermined",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 221.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 202,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:71675d59-0b97-40a2-9a96-2e748b6e8c0c:4",
+      "style": "fragment",
+      "query": "no reclaim pressure) — and the detector gap that blocked",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 309.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 279,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a1107f-ca88-7f60-a9c6-0b51ce854739:31",
+      "style": "keyword",
+      "query": "EI-25231851216237441 unconditional blocker-clearing Reproduction, pending. checkpointed",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 74.1,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 60,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a0cc1f-6ccc-7791-b1b3-ed65dc7baa8a:0",
+      "style": "fragment",
+      "query": ", remember that the outer program is JavaScript. Never put",
+      "arms": {
+        "bm25": {
+          "rank": null,
+          "latencyMs": 444.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 432,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:4e1598d9-3524-4c24-a0fb-df48fa425838:0",
+      "style": "keyword",
+      "query": "{\"ref\":\"full-text-knowledge-retrieval-2026-10-08 AUTO-BAR-R-10-P-003@4\",\"kind\":\"plan\"}; 644953c51a4be6f06a29c1463951408df959e007a48b3e16091fb61a45cedae9. 'grading-audit:EI-25492303469023829', '644953c51a4be6f06a29c1463951408df959e007a48b3e16091fb61a45cedae9', /tmp/grading-integrity-EI-25492303469023829.XXXXXX",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 147.7,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 134,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:b0070363-84be-4f70-93b5-e270557743a5:24",
+      "style": "fragment",
+      "query": "correction worth catching now: the rating scale is healthy degraded",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 99.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 87,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a09672-fb67-7b52-b866-1ab1dfbfa875:11",
+      "style": "keyword",
+      "query": "six-task supplied idempotency recording still-live transport",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 74.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 64,
+            "semantic:embeddings": 3
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:c9deea57-323a-4788-9d17-03efae55d6be:46",
+      "style": "fragment",
+      "query": "inbox-wake (turn-lifecycle-control)) payload: {\"msg id\":\"coord-send-81a4fbc5dd479134df3109aa827aaebe3b2cff3f2a95e5200a925787a9d9d5c5\"} (event-wake delivery 362466 — a",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 64.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 58,
+            "semantic:embeddings": 3
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a0fd01-ba2e-7bb3-a607-6e37a2370ebb:311",
+      "style": "keyword",
+      "query": "⟦turn-origin:wake-pump nonce:c6903392029fa1f8⟧ work-item:claimable, EI-25218002792796067 {\"coalesced\":true,\"count\":16,\"eventCount\":16,\"timeoutCount\":0,\"events\": ,\"state\":\"open\",\"title\":\"Mutating",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 2357.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 2304,
+            "semantic:embeddings": 35
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a11d29-3f44-7f80-a948-a6998c5690d8:9",
+      "style": "fragment",
+      "query": "at commit c19484fc98 . The native run is now preparing",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 64,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 54,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a10058-b5da-7161-8ea0-967958419f76:3",
+      "style": "keyword",
+      "query": "continuation WI-10005109 completed checkpoint comparison read/lease",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 114.5,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 84,
+            "semantic:embeddings": 17
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a12b80-e5fa-7b82-a19c-cfb12ec0937f:9",
+      "style": "fragment",
+      "query": "(your note: always-armed inbox-wake (turn-lifecycle-control)) payload: {\"msg id\":\"coord-send-1351c56a6ebc54e192d669d04ecec37b75f0e1c8ae497844346b5d3b314c0cff\"} (event-wake delivery",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 141.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 125,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a08553-6665-7353-af20-17a9a08dd2fd:2",
+      "style": "keyword",
+      "query": "contains document, transcript. reconciling post-note held-item",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 190,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 160,
+            "semantic:embeddings": 8
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:8ad0afff-280e-48e3-88f2-2c0ed0690ea8:18",
+      "style": "fragment",
+      "query": "already has an emitted exclude ( /.vite , /junit.xml ,",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 93.1,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 74,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:16bbcd03-2cdd-4c01-83ba-b141aaaa17a2:69",
+      "style": "keyword",
+      "query": "⟦turn-origin:wake-pump nonce:1434807f64fc09b8⟧ coord:inbox-wake:su-3b0568df-134d-4f16-89d9-c8158ddd0b05 prompt-weight (loop-su-3b0568df-134d-4f16-89d9-c8158ddd0b05)) id\":\"coord-send-4297a2022de642cfffe376d2c5d507c8a8a7319fb68542d5c2a43d3df58e1e4d\"}",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 314.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 234,
+            "semantic:embeddings": 61
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a1101b-9a9b-7c31-b2d5-949933cb0795:3",
+      "style": "fragment",
+      "query": "session leading the existing fleet. The batched work-item read returned",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 385.7,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 355,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:46421bd7-0328-4a3d-a1fb-6412b8afb3e8:5",
+      "style": "fragment",
+      "query": "stated plans:evaluate-spec-quality call exactly as written. It returned the same",
+      "arms": {
+        "bm25": {
+          "rank": 5,
+          "latencyMs": 238.3,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 211,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:a9aed3fc-1c66-42eb-983b-f4e58800d5cb:0",
+      "style": "keyword",
+      "query": "⟦turn-origin:self-compaction nonce:98c911a5c5799188⟧ su-a973d2b0-0677-4a5b-b483-93676730c9e9 ⟦post-compaction-recovery⟧ coord:declare-intent EI-25204701017440213,",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 176.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 161,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a123b0-05d3-7dd2-8802-7c46183d338b:0",
+      "style": "fragment",
+      "query": "evidence the Papercusp capability is absent; use the CLI fallback",
+      "arms": {
+        "bm25": {
+          "rank": null,
+          "latencyMs": 4570.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 4495,
+            "semantic:embeddings": 60
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a09b0b-50d3-7bd0-b9b5-bb8688be8a63:20",
+      "style": "keyword",
+      "query": "withheld—this green-checkpoint background-host separately independently mission-dead,",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 469,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 119,
+            "semantic:embeddings": 320
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a0ce4c-06e1-76c0-8221-11d62b183273:1",
+      "style": "fragment",
+      "query": "shell commands, recruit peers, emit an ordinary same-rubric scorecard, or",
+      "arms": {
+        "bm25": {
+          "rank": null,
+          "latencyMs": 159.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 143,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:4c3c5b34-8c80-4a54-8d70-ac33e3d87d1b:42",
+      "style": "keyword",
+      "query": "refusal: git-sync bg-host's supported override uncommitted",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 185.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 171,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a11cf4-cec7-7550-8826-c96cd2052a4d:1481",
+      "style": "fragment",
+      "query": "A released claim is a TRANSITION, not an instruction: read",
+      "arms": {
+        "bm25": {
+          "rank": null,
+          "latencyMs": 869.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 853,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:a57e9c6c-fc1e-483e-9260-cecb1cb8344e:6",
+      "style": "keyword",
+      "query": "DOCUMENTED deliberate exclusion canonical runbooks artifact.",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 147.7,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 121,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a12b6f-4f6c-7863-8786-2756a8a28aea:14",
+      "style": "fragment",
+      "query": "seconds; its upstream reader failure remains unproven. The source currently",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 286.9,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 271,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a12ad3-eca7-7dc2-8e72-0a53aa988063:6",
+      "style": "keyword",
+      "query": "papercusp-dependency-generations requirements; reproduction. coord:orient Self-compaction scheduler-admitted",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 1820.6,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 1804,
+            "semantic:embeddings": 9
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a07abd-5a68-7500-963e-ef0153ba563b:11",
+      "style": "fragment",
+      "query": "the completion declared deferred work without a requirement-by-requirement disposition. I’ve",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 146.3,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 136,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:a943a74c-d561-4748-8d8b-f63c1437d75e:14",
+      "style": "keyword",
+      "query": "Verified gitignored (working code-truth work-item regardless",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 128.3,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 117,
+            "semantic:embeddings": 3
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:bcd738b6-ef82-4d80-a870-3652b0867f82:29",
+      "style": "fragment",
+      "query": "— a delivery-log id, not your wake count; you registered",
+      "arms": {
+        "bm25": {
+          "rank": null,
+          "latencyMs": 609.5,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 592,
+            "semantic:embeddings": 12
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a04b6a-55dc-7640-8a1d-daadf545e8f3:173",
+      "style": "keyword",
+      "query": "su-e6f9176d-b465-4c57-8db9-5bee82f53102, writtenAt=2026-08-29T02:46:59.666Z): memberCensus/headcount/summary coord:inbox-wake:su-e6f9176d-b465-4c57-8db9-5bee82f53102 fleet-spec-scoped-metrics-2026-08-21 plan-fleet-spec-scoped-metrics",
+      "arms": {
+        "bm25": {
+          "rank": null,
+          "latencyMs": 239.3,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 211,
+            "semantic:embeddings": 7
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a05104-0317-72e3-a2ce-2e2e0b3c9531:2",
+      "style": "fragment",
+      "query": "skipped coord:orient and re-declared the lane. The carried work items",
+      "arms": {
+        "bm25": {
+          "rank": 2,
+          "latencyMs": 264.2,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 252,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a080a2-04a1-70a0-a936-e70f86f7f89e:7",
+      "style": "keyword",
+      "query": "⟦turn-origin:wake-pump nonce:a8d48d8ca0310041⟧ dependency/toolchain/profile {\"id\":\"WI-10000404\",\"goal\":null,\"kind\":\"feature\",\"plan\":\"byoc-delivery-acceleration-2026-09-06\",\"tags\": ,\"state\":\"open\",\"title\":\"Add fr…\",\"reason\":\"requeued\",\"harness\":\"papercusp\",\"assignee\":null,\"severity\"",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 187.4,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 168,
+            "semantic:embeddings": 6
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "claude:a16bb1fe-f27b-4ccb-874b-12bfdf658cab:4",
+      "style": "fragment",
+      "query": "of R-1 through R-5, the method text, test files, scope,",
+      "arms": {
+        "bm25": {
+          "rank": 6,
+          "latencyMs": 164,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 150,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a07446-0d56-7c91-8790-0818b3c5c6f9:39",
+      "style": "keyword",
+      "query": "materially serviceable, soft-affinity oddsmith’s utilization owner-level",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 50.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 42,
+            "semantic:embeddings": 4
+          }
+        }
+      }
+    },
+    {
+      "source": "session_turn",
+      "targetId": "codex:01a04524-4b0b-7cd2-89ad-66fde5258ace:8",
+      "style": "fragment",
+      "query": "command session (no output means it is still executing, not",
+      "arms": {
+        "bm25": {
+          "rank": 1,
+          "latencyMs": 170.8,
+          "engine": "bm25",
+          "hits": 10,
+          "legMs": {
+            "lexical:lexical": 156,
+            "semantic:embeddings": 5
+          }
+        }
+      }
+    }
+  ]
+}

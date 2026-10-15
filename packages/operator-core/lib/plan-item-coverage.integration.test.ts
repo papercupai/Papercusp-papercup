@@ -24,7 +24,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import postgres from 'postgres';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { PLAN_ITEM_KIND, planItemRef } from './issue-blocks-merge';
 import { listFleetAssignments } from './fleet/assignments';
@@ -34,6 +34,7 @@ const WS = DEFAULT_COORD_WORKSPACE;
 type TestSessionState = 'live' | 'parked' | 'draining' | 'suspect' | 'ended' | 'recorded';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const queries = vi.hoisted(() => [] as string[]);
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
@@ -71,8 +72,11 @@ vi.mock('./agent-tools/coordination/liveness-oracle', async () => {
   };
 });
 
-const { getAllPlanItemCoverage } = await import('./plan-item-coverage');
-const { STAMP_ONLY_REL } = await import('./plan-item-coverage');
+// The maintained mutation runner supplies an isolated source copy. Every normal
+// suite run uses the production module; no tracked source is mutated for proof.
+const { getAllPlanItemCoverage, STAMP_ONLY_REL } = (await import(
+  process.env.PAPERCUSP_COVERAGE_TEST_SUBJECT ?? './plan-item-coverage'
+)) as typeof import('./plan-item-coverage');
 
 let rootSql: postgres.Sql;
 
@@ -82,12 +86,13 @@ beforeAll(async () => {
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
   } finally {
     await admin.end({ timeout: 5 });
   }
   const u = new URL(adminUri);
   u.pathname = `/${dbName}`;
-  rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
+  rootSql = postgres(u.toString(), { max: 1, onnotice: () => {}, debug: (_connection, query) => { queries.push(query); } });
   await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.coord_links (
@@ -100,6 +105,15 @@ beforeAll(async () => {
     )`);
   // P-010 unification: work_items base + hfc/ei compat views.
   await rootSql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  // The production partial expression index (migration 725), with normal
+  // planner settings: a forced enable_seqscan=off would prove nothing here.
+  await rootSql.unsafe(`CREATE INDEX work_items_plan_item_stamp_idx
+    ON harness_shared.work_items ((payload->'plan_item'->>'plan_slug'), (payload->'plan_item'->>'item_id'))
+    WHERE payload->'plan_item' IS NOT NULL`);
+  await rootSql.unsafe(`CREATE TABLE harness_shared.fleet_assignment (
+    source text, plan_slug text, item_id text, work_item_id text,
+    claim_active boolean, holder_heartbeat_at timestamptz
+  )`);
   h.sql = rootSql;
 }, 90_000);
 
@@ -108,7 +122,8 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await rootSql`TRUNCATE harness_shared.coord_links, harness_shared.work_items`;
+  await rootSql`TRUNCATE harness_shared.coord_links, harness_shared.work_items, harness_shared.fleet_assignment`;
+  queries.length = 0;
   h2.rows = [];
   vi.mocked(listFleetAssignments).mockClear();
   h3.states.clear();
@@ -319,6 +334,155 @@ describe('getAllPlanItemCoverage — stamp-based coverage (PG, EI-13721)', () =>
       planItemRefs: [planItemRef('p1', 'P-008')],
       workItemIds: ['WI-live'],
     });
+  });
+
+  it('a plan-scoped read preserves full coverage for linked and stamp-only items without leaking a similarly named plan', async () => {
+    await insertIssue({ id: 'WI-linked', state: 'open', plan: 'p1', item: 'P-101' });
+    await edge({ plan: 'p1', item: 'P-101', srcRef: 'WI-linked' });
+    await insertFeature({ id: 'F-done', status: 'passed', plan: 'p1', item: 'P-102' });
+    await insertIssue({ id: 'WI-unrelated', state: 'open', plan: 'p11', item: 'P-101' });
+    await edge({ plan: 'p11', item: 'P-101', srcRef: 'WI-unrelated' });
+
+    const full = await getAllPlanItemCoverage();
+    const scoped = await getAllPlanItemCoverage({ planSlug: 'p1' });
+    expect([...scoped]).toEqual([...full].filter(([ref]) => ref.startsWith('p1#')));
+    expect(scoped.size).toBe(2);
+    expect(scoped.get('p1#P-101')?.links).toHaveLength(1);
+    expect(scoped.get('p1#P-102')?.level).toBe('complete');
+    expect(scoped.has('p11#P-101')).toBe(false);
+    // Assert the inputs to liveness hydration, not just the filtered output:
+    // a widened stamp or edge query can otherwise pass every assertion above.
+    expect(listFleetAssignments).toHaveBeenLastCalledWith({
+      workspaceId: null, activeOnly: true, planItemPlan: 'p1',
+      workItemIds: ['WI-linked', 'F-done'],
+    });
+  });
+
+  it('the assignment SQL keeps direct plan claims and linked work claims without hydrating unrelated plans', async () => {
+    await rootSql`INSERT INTO harness_shared.fleet_assignment (source, plan_slug, item_id, work_item_id) VALUES
+      ('plan_item_claim', 'p1', 'P-claim-only', null),
+      ('plan_item_claim', 'p11', 'P-other', null),
+      ('work_item_claim', null, null, 'WI-edge-only'),
+      ('work_item_claim', 'p11', 'P-other', 'WI-other')`;
+    const actual = await vi.importActual<typeof import('./fleet/assignments')>('./fleet/assignments');
+    const rows = await actual.listFleetAssignments({
+      workspaceId: null, activeOnly: true, planItemPlan: 'p1', workItemIds: ['WI-edge-only'],
+    });
+    expect(rows.map((row) => [row.source, row.planSlug, row.workItemId])).toEqual([
+      ['plan_item_claim', 'p1', null], ['work_item_claim', null, 'WI-edge-only'],
+    ]);
+  });
+
+  it('the actual global stamp query uses the partial index without scanning unrelated work-items', async () => {
+    await rootSql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, status, payload, updated_ts)
+      SELECT ${WS}, 'web', 'WI-padding-' || n, 'bug', 'open',
+        jsonb_build_object('padding', repeat(md5(n::text), 16)), 100
+      FROM generate_series(1, 32768) n`;
+    for (let n = 0; n < 24; n++) {
+      await insertIssue({ id: `WI-stamp-${n}`, state: 'open', plan: 'p1', item: `P-${n}` });
+    }
+    await rootSql`ANALYZE harness_shared.work_items`;
+    queries.length = 0;
+    const coverage = await getAllPlanItemCoverage();
+    expect(coverage.size).toBe(24);
+    const stampQuery = queries.find((query) =>
+      query.includes('SELECT feature_id AS work_item_id') && query.includes('FROM harness_shared.work_items'));
+    expect(stampQuery).toBeDefined();
+    const explained = await rootSql.unsafe(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${stampQuery}`);
+    const plan = explained[0]['QUERY PLAN'][0].Plan;
+    const scans: { 'Node Type': string; 'Index Name'?: string; 'Actual Rows'?: number }[] = [];
+    const visit = (node: typeof plan) => {
+      if (node['Relation Name'] === 'work_items') scans.push(node);
+      for (const child of node.Plans ?? []) visit(child);
+    };
+    visit(plan);
+    // Small tables legitimately choose a cheap sequential scan. The measured
+    // 32k-row fixture crosses the normal planner's index crossover; preserve
+    // that population and compare work, not a load-sensitive timing threshold.
+    expect(scans, JSON.stringify(plan)).toEqual([expect.objectContaining({
+      'Node Type': 'Index Scan', 'Index Name': 'work_items_plan_item_stamp_idx', 'Actual Rows': 24,
+    })]);
+    const baselineQuery = stampQuery!.replace(/ORDER BY[\s\S]*$/, '');
+    const baseline = (await rootSql.unsafe(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${baselineQuery}`))[0]['QUERY PLAN'][0].Plan;
+    expect(baseline).toMatchObject({ 'Node Type': 'Seq Scan', 'Actual Rows': 24, 'Rows Removed by Filter': 32768 });
+    expect(plan['Shared Hit Blocks'] + plan['Shared Read Blocks']).toBeLessThan(
+      baseline['Shared Hit Blocks'] + baseline['Shared Read Blocks'],
+    );
+  });
+
+  it('intersects a plan scope with requested item refs and treats an empty plan as an empty read', async () => {
+    await insertIssue({ id: 'WI-target', state: 'open', plan: 'p1', item: 'P-101' });
+    await insertIssue({ id: 'WI-other-item', state: 'open', plan: 'p1', item: 'P-102' });
+    await insertIssue({ id: 'WI-other-plan', state: 'open', plan: 'p2', item: 'P-101' });
+    const scoped = await getAllPlanItemCoverage({ planSlug: 'p1', planItemRefs: ['p1#P-101', 'p2#P-101'] });
+    expect([...scoped.keys()]).toEqual(['p1#P-101']);
+    vi.mocked(listFleetAssignments).mockClear();
+    expect(await getAllPlanItemCoverage({ planSlug: '' })).toEqual(new Map());
+    expect(listFleetAssignments).not.toHaveBeenCalled();
+  });
+
+  it('scoped coverage keeps cross-workspace edges, terminal items and claim holds equivalent to the full read', async () => {
+    await insertIssue({ id: 'WI-foreign', state: 'open', plan: 'p1', item: 'P-201' });
+    await rootSql`UPDATE harness_shared.work_items SET workspace_id = 'foreign-workspace'
+      WHERE feature_id = 'WI-foreign'`;
+    await rootSql`INSERT INTO harness_shared.coord_links
+      (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel)
+      VALUES ('foreign-workspace', 'issue', 'WI-foreign', ${PLAN_ITEM_KIND}, 'p1#P-201', 'fixes')`;
+    await insertIssue({ id: 'WI-terminal', state: 'done', plan: 'p1', item: 'P-202' });
+    await insertIssue({ id: 'WI-held', state: 'open', plan: 'p1', item: 'P-203' });
+    await rootSql`UPDATE harness_shared.work_items SET payload = payload || '{"_claimHold":true}'::jsonb
+      WHERE feature_id = 'WI-held'`;
+    await insertIssue({ id: 'WI-other', state: 'open', plan: 'p11', item: 'P-201' });
+
+    const full = await getAllPlanItemCoverage();
+    const [byPlan, byItems] = await Promise.all([
+      getAllPlanItemCoverage({ planSlug: 'p1' }),
+      getAllPlanItemCoverage({ planItemRefs: ['p1#P-201', 'p1#P-202', 'p1#P-203'] }),
+    ]);
+    const expected = [...full].filter(([ref]) => ref.startsWith('p1#'));
+    expect([...byPlan]).toEqual(expected);
+    expect([...byItems]).toEqual(expected);
+    expect(byPlan.get('p1#P-201')?.links).toEqual([
+      { workItemId: 'WI-foreign', rel: 'fixes', terminal: false, activity: 'free', holder: null },
+    ]);
+    expect(byPlan.get('p1#P-202')?.level).toBe('complete');
+    expect(byPlan.get('p1#P-203')?.links[0]).toMatchObject({ blocked: true, terminal: false });
+    expect(byPlan.has('p11#P-201')).toBe(false);
+  });
+
+  it('concurrent scoped readers observe claims, releases, holds and terminal transitions on their next read', async () => {
+    await insertIssue({ id: 'WI-transition', state: 'open', plan: 'p1', item: 'P-301' });
+    const readBoth = () => Promise.all([
+      getAllPlanItemCoverage({ planSlug: 'p1' }),
+      getAllPlanItemCoverage({ planItemRefs: ['p1#P-301'] }),
+    ]);
+    for (const coverage of await readBoth()) {
+      expect(coverage.get('p1#P-301')?.level).toBe('unclaimed');
+    }
+    h2.rows = [{ source: 'work_item_claim', workItemId: 'WI-transition', agentId: 'su-worker',
+      orphaned: false, stalled: false, holderAlive: true, lastProgressAt: new Date().toISOString() }];
+    h3.states.set('su-worker', 'live');
+    for (const coverage of await readBoth()) {
+      expect(coverage.get('p1#P-301')?.level).toBe('full');
+      expect(coverage.get('p1#P-301')?.links[0]).toMatchObject({ activity: 'progressing', holder: 'su-worker' });
+    }
+    h2.rows = [];
+    for (const coverage of await readBoth()) {
+      expect(coverage.get('p1#P-301')?.level).toBe('unclaimed');
+      expect(coverage.get('p1#P-301')?.workers).toEqual([]);
+    }
+    await rootSql`UPDATE harness_shared.work_items SET payload = payload || '{"_claimHold":true}'::jsonb
+      WHERE feature_id = 'WI-transition'`;
+    for (const coverage of await readBoth()) {
+      expect(coverage.get('p1#P-301')?.links[0]).toMatchObject({ blocked: true, terminal: false });
+    }
+    await rootSql`UPDATE harness_shared.work_items SET status = 'done', payload = payload - '_claimHold'
+      WHERE feature_id = 'WI-transition'`;
+    for (const coverage of await readBoth()) {
+      expect(coverage.get('p1#P-301')?.level).toBe('complete');
+      expect(coverage.get('p1#P-301')?.links[0]).toMatchObject({ terminal: true, holder: null });
+    }
   });
 
   it('keeps a live holder with stale progress out of held-not-live (EI-20125544311539993)', async () => {

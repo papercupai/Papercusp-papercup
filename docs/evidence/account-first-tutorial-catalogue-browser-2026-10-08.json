@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Committed full-product tutorial catalogue contracts and mounted browser acceptance",
+  "framework": "playwright",
+  "command": ["npm test -- tests/contracts.test.ts", "npm run test:e2e:browser -- e2e/portal-product-tutorial.spec.ts --reporter=line"],
+  "startedAt": "2026-10-08T07:28:28.496Z",
+  "finishedAt": "2026-10-08T07:29:18.731Z",
+  "timestampBasis": "Creation and final modification times of the fresh redirected command logs",
+  "exitCode": 0,
+  "summary": "Complete committed Portal contracts suite: 19 passed. Complete maintained mounted tutorial browser suite: 14 passed, zero skipped. Three new browser cases cover the catalogue and acknowledged navigation boundary. These are mounted browser and registry-contract proofs, not hosted destination authorization, native manual review, spoken questions or production shipment.",
+  "source": {
+    "portalCommit": "e962ffaf2061fb5264ff761b19d7f9b1ee86ead5",
+    "rootCommit": "32da80c9fa17f1ce687cb50caed904c889414f8e",
+    "portalTrackedStatus": "clean",
+    "dependencyPreparation": "Maintained linkNodeModulesShadow with Portal internal packages remapped to the committed Portal clone; 31 root packages remapped to the retained committed root. Shared installed third-party packages remain in use. Curriculum and guide bytes matched current HEAD before execution.",
+    "tests": [
+      {"path": "tests/contracts.test.ts", "sha256": "783e02cadec0cd7e01816a683305e55eb870bb7509397e70d0fbeffa6f7cebf5", "passed": 19},
+      {"path": "e2e/portal-product-tutorial.spec.ts", "sha256": "eb2544ea082fbbe8eb5fa33992b774eb7fd2c0110b08494654af7eff373ffb6b", "passed": 14}
+    ]
+  },
+  "assertions": [
+    {"id": "registry-curriculum-parity", "passed": true, "evidence": "The actual PORTAL_APP_KINDS exactly matches curriculum app-route targets. Each target has a lesson, introduction, Help and teaching text. An added new-capability remains detected as missing."},
+    {"id": "all-lessons-both-workspace-states", "passed": true, "evidence": "The actual guide renders every current lesson introduction and Help with null and preassigned workspace, retaining heading focus and canonical destination parameters."},
+    {"id": "unavailable-is-explained", "passed": true, "evidence": "Workspace-only targets expose no Open link without selection and explain authorized workspace recovery. The spoken-question pseudo-target exposes no navigation link and describes separate consent."},
+    {"id": "acknowledged-pause-before-navigation", "passed": true, "evidence": "Each permitted current catalogue link receives an acknowledged paused progress response before the browser reaches its canonical URL. Reviewed lesson ids remain empty and requests remain within tutorial progress."}
+  ],
+  "logs": [
+    {"path": "/tmp/tutorial-catalogue-contracts-clean-e962-20261008.log", "sha256": "0d42c040b992090dd1833a76d5f23c78732bfc68ac008546975026ce7d9f3c04"},
+    {"path": "/tmp/tutorial-catalogue-browser-clean-e962-20261008.log", "sha256": "ef829e2ec5da5ebfb1cd4db8b818c982b8bbeb7ee8cbfe68310cc0f593443d1f"}
+  ],
+  "limitations": ["Mounted fixtures use intercepted API responses", "Destination composition and hosted authorization require separate served-artifact evidence", "No native manual or voice acceptance", "No full linked-dependency graph or production shipment claim"]
+}

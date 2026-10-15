@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { AccountStatusRow } from '../deployment/account-pool-store';
 import {
   assessGoalHolderLaunchCapacity,
   assessGoalHolderLaunchCapacityForGoal,
   formatCapacityUntil,
+  holderLaunchAccountUnhonored,
   holderLaunchTarget,
   holderLaunchTargetForSettings,
 } from './holder-launch-capacity';
@@ -148,6 +149,116 @@ describe('assessGoalHolderLaunchCapacity', () => {
       { readAccountStatus: async (ws) => (ws === 'papercusp-workspace' ? [walledCodex, healthyClaude] : []), now: () => NOW },
     );
     expect(v).toMatchObject({ kind: 'deferred', binding: 'usage-wall', target: { provider: 'codex' } });
+  });
+});
+
+// WI-10005904: measured 2026-10-03 04:57Z..05:30Z. The workspace account session
+// override was forced to the codex account `aviynw_codex`; the goal holder runs
+// claude on `auto`. The launch door refused every replacement at boot ("--account
+// auto could not be honored"), while this capacity read ignored the override and
+// said 2 of 9 claude accounts could serve. Six relaunches died; the goal paused.
+describe('assessGoalHolderLaunchCapacity — the account session override (WI-10005904)', () => {
+  const claudeAuto = holderLaunchTarget({ agent: 'claude', account: 'auto' });
+  const claudeRows = [row({ id: 'aviynw', provider: 'claude' }), row({ id: 'aviynw2', provider: 'claude' })];
+  const codexOnly = { forcedAccounts: ['aviynw_codex'], excludeAccounts: [] };
+
+  it('DEFERS a claude holder as session-override when the override allows only a codex account — the measured case', () => {
+    const rows = [...claudeRows, row({ id: 'aviynw_codex' })];
+    // Without the override the same rows clear, which is the wrong answer the respawner acted on.
+    expect(assessGoalHolderLaunchCapacity(rows, claudeAuto, NOW).kind).toBe('clear');
+    const v = assessGoalHolderLaunchCapacity(rows, claudeAuto, NOW, codexOnly);
+    expect(v.kind).toBe('deferred');
+    if (v.kind !== 'deferred') return;
+    expect(v.binding).toBe('session-override');
+    expect(v.untilMs).toBeNull();
+    expect(v.accountIds).toEqual(['aviynw', 'aviynw2']);
+    expect(v.reason).toContain('forced: aviynw_codex');
+    expect(v.reason).toContain('--account auto could not be honored');
+    expect(v.pool).toMatchObject({ provider: 'claude' });
+  });
+
+  it('DEFERS a pinned account the override excludes, naming only the pin', () => {
+    const pinned = holderLaunchTarget({ agent: 'claude', account: 'aviynw' });
+    const v = assessGoalHolderLaunchCapacity(claudeRows, pinned, NOW, { forcedAccounts: [], excludeAccounts: ['aviynw'] });
+    expect(v).toMatchObject({ kind: 'deferred', binding: 'session-override', accountIds: ['aviynw'] });
+    expect(v.reason).toContain("pinned account 'aviynw'");
+    expect(v.reason).toContain('--account aviynw could not be honored');
+  });
+
+  it('judges only the accounts a partial override allows: an allowed wall defers even beside a healthy disallowed sibling', () => {
+    const walledClaude = row({ ...walledCodex, id: 'aviynw', provider: 'claude' });
+    const rows = [walledClaude, row({ id: 'aviynw2', provider: 'claude' })];
+    expect(assessGoalHolderLaunchCapacity(rows, claudeAuto, NOW).kind).toBe('clear');
+    expect(assessGoalHolderLaunchCapacity(rows, claudeAuto, NOW, { forcedAccounts: ['aviynw'], excludeAccounts: [] })).toMatchObject({
+      kind: 'deferred',
+      binding: 'usage-wall',
+      accountIds: ['aviynw'],
+    });
+    expect(
+      assessGoalHolderLaunchCapacity(rows, claudeAuto, NOW, { forcedAccounts: [], excludeAccounts: ['aviynw'] }).kind,
+    ).toBe('clear');
+  });
+
+  it('treats an empty override as no restriction', () => {
+    expect(assessGoalHolderLaunchCapacity(claudeRows, claudeAuto, NOW, { forcedAccounts: [], excludeAccounts: [] }).kind).toBe(
+      'clear',
+    );
+  });
+
+  it('reads the override through the I/O door, and judges without it when that read fails', async () => {
+    const goal: Parameters<typeof assessGoalHolderLaunchCapacityForGoal>[0] = {
+      workspaceId: 'papercusp-workspace',
+      launchSettings: { roles: { goal: { agent: 'claude', account: 'auto' } } },
+    };
+    const readAccountStatus = async () => claudeRows;
+    const withOverride = await assessGoalHolderLaunchCapacityForGoal(goal, {
+      readAccountStatus,
+      readAccountOverride: async (ws) => (ws === 'papercusp-workspace' ? codexOnly : { forcedAccounts: [], excludeAccounts: [] }),
+      now: () => NOW,
+    });
+    expect(withOverride).toMatchObject({ kind: 'deferred', binding: 'session-override' });
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const failedRead = await assessGoalHolderLaunchCapacityForGoal(goal, {
+        readAccountStatus,
+        readAccountOverride: async () => {
+          throw new Error('pg down');
+        },
+        now: () => NOW,
+      });
+      expect(failedRead.kind).toBe('clear');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('pg down'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('holderLaunchAccountUnhonored — recognising a boot death caused by the account route (WI-10005904)', () => {
+  it('extracts the refusal line from a multi-line launch error with terminal escape codes', () => {
+    const error = new Error(
+      'psu exited (code 1) before the session registered presence\n' +
+        '\x1b[2K\x1b[1G\x1b[31m[psu] --account auto could not be honored: claude requires a claude account pool.   ' +
+        'Refusing to fall back to the default system login.\x1b[0m\r\n' +
+        'stderr tail: (none)',
+    );
+    expect(holderLaunchAccountUnhonored(error)).toBe(
+      '--account auto could not be honored: claude requires a claude account pool. Refusing to fall back to the default system login.',
+    );
+  });
+
+  it('accepts a bare string and a pinned account id', () => {
+    expect(holderLaunchAccountUnhonored("--account aviynw could not be honored: not an allowed pool account.")).toBe(
+      '--account aviynw could not be honored: not an allowed pool account.',
+    );
+  });
+
+  it('returns null for every other launch failure', () => {
+    expect(holderLaunchAccountUnhonored(new Error('spawn psu ENOENT'))).toBeNull();
+    expect(holderLaunchAccountUnhonored(new Error("You've hit your usage limit"))).toBeNull();
+    expect(holderLaunchAccountUnhonored(undefined)).toBeNull();
+    expect(holderLaunchAccountUnhonored({ message: '--account auto could not be honored' })).toBeNull();
   });
 });
 

@@ -16,6 +16,7 @@ import {
   MEMBER_BASELINE_RULES,
   buildAgentLaunchCommand,
   claimAgentLaunch,
+  recordAgentLaunchResult,
   composeMemberLaunchContext,
   composeModelSpec,
   defaultLaunchAccountFor,
@@ -35,8 +36,16 @@ import {
   type FleetMemberDefaults,
 } from './agent-launch-core';
 import { CODEX_SAFE_DEFAULT_MODEL } from './model-context-budget.mjs';
+import type { AdvSessionRow } from './adv-sessions';
+import type { SessionPortRow } from './session-port/store';
+import type { PsuPtyHost } from './events/await/psu-pty-discovery';
 
 const OWNER = 'su-b0fbfa98-0594-4a46-909f-3ca16622101d';
+
+function ptyHostFixture(over: Partial<PsuPtyHost> = {}): PsuPtyHost {
+  return { ownerId: OWNER, advSessionId: null, pid: 42, ptyPid: 43,
+    sock: `/run/psu-pty/${OWNER}.sock`, command: 'codex', startedAt: 0, ...over };
+}
 
 describe('typed verifier launch modes', () => {
   it('accepts GRADE and TEST while refusing an unregistered mode', () => {
@@ -57,6 +66,21 @@ describe('GOAL allocation in every member brief (P-020)', () => {
     expect(context).toContain('intended concurrent plan fleets = 2; this fleet member target = 3');
     expect(context.indexOf('GOAL parallel allocation')).toBeGreaterThan(context.indexOf('Work P-001'));
     expect(context).toContain('ceilings, not targets to fill');
+  });
+});
+
+// parked-agent-census-resumption-and-root-cause-2026-10-09 P-008: this rule used to say
+// "loop:end … only when no claimable work remains or you are blocked", teaching a claim
+// holder to stop on a blocker. A blocked holder records it and keeps a bounded wake instead.
+describe('member baseline stay-alive rule (P-008)', () => {
+  it('never teaches loop:end while blocked on a held item', () => {
+    const rule = MEMBER_BASELINE_RULES.find((r) => r.head.startsWith('STAY ALIVE across turns'));
+    expect(rule?.body).toBeDefined();
+    expect(rule?.body).not.toContain('or you are blocked');
+    expect(rule?.body).toContain('you hold no claims');
+    expect(rule?.body).toContain('Blocked? `work_items:set_blocker` + bounded `events:await`, end the turn.');
+    // The stop line comes AFTER the blocked recipe, and is scoped to a claimless session.
+    expect(rule!.body.indexOf('Blocked?')).toBeLessThan(rule!.body.indexOf('`loop:end {'));
   });
 });
 
@@ -81,7 +105,83 @@ beforeEach(() => {
   launchCoreSql.mockResolvedValue([] as unknown[]);
 });
 
+describe('recordAgentLaunchResult durable completion evidence', () => {
+  it('confirms the idempotency row was updated before reporting a durable receipt', async () => {
+    launchCoreSql.mockResolvedValueOnce([{ idempotency_key: 'cached-launch' }]);
+
+    const recorded = await recordAgentLaunchResult({
+      workspaceId: 'ws-test',
+      idempotencyKey: ' cached-launch ',
+      summary: { opened: 2, failed: 0 },
+    });
+
+    expect(recorded).toBe(true);
+    const [query, ...values] = launchCoreSql.mock.calls[0] ?? [];
+    expect(String(query?.join(' '))).toContain('RETURNING idempotency_key');
+    expect(values).toContain('cached-launch');
+  });
+
+  it('does not claim a durable receipt when the update matched no idempotency row', async () => {
+    launchCoreSql.mockResolvedValueOnce([]);
+
+    await expect(recordAgentLaunchResult({
+      workspaceId: 'ws-test',
+      idempotencyKey: 'missing-launch',
+      summary: { opened: 1, failed: 0 },
+    })).resolves.toBe(false);
+  });
+
+  it('does not claim a durable receipt when no idempotency key was supplied', async () => {
+    await expect(recordAgentLaunchResult({
+      workspaceId: 'ws-test',
+      idempotencyKey: null,
+      summary: { opened: 1, failed: 0 },
+    })).resolves.toBe(false);
+    expect(launchCoreSql).not.toHaveBeenCalled();
+  });
+});
+
 describe('claimAgentLaunch crash recovery', () => {
+  it('stores a caller-supplied replay identity atomically with the claim', async () => {
+    const initialSummary = {
+      requestKind: 'goals:start',
+      requestFingerprint: 'fingerprint-1',
+      phase: 'claimed',
+    };
+    launchCoreSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ idempotency_key: 'goal-start:req-1' }]);
+
+    const claim = await claimAgentLaunch({
+      workspaceId: 'ws-test',
+      idempotencyKey: 'goal-start:req-1',
+      launchedBy: 'su-first',
+      initialSummary,
+      failClosed: true,
+    });
+
+    expect(claim.won).toBe(true);
+    const insert = launchCoreSql.mock.calls[1];
+    expect(String(insert?.[0]?.join(' '))).toContain('INSERT INTO harness_shared.agent_launch_idempotency');
+    expect(insert?.slice(1)).toContain(JSON.stringify(initialSummary));
+  });
+
+  it('can fail closed when a caller requires a durable idempotency claim', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    launchCoreSql.mockRejectedValueOnce(new Error('ledger unavailable'));
+    try {
+      await expect(claimAgentLaunch({
+        workspaceId: 'ws-test',
+        idempotencyKey: 'goal-start:req-2',
+        initialSummary: { requestKind: 'goals:start' },
+        failClosed: true,
+      })).rejects.toThrow('ledger unavailable');
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('atomically lets an honest retry win after an empty in-progress claim outlives its lease', async () => {
     const firstNow = 1_800_000_000_000;
     const retryNow = firstNow + AGENT_LAUNCH_EMPTY_CLAIM_LEASE_MS + 1;
@@ -397,6 +497,15 @@ describe('buildAgentLaunchCommand', () => {
       expect(() =>
         buildAgentLaunchCommand({ mode: 'fresh', agent: 'claude', targetAgent: 'codex' }),
       ).toThrow(/targetAgent/);
+    });
+
+    it('pre-pins an explicitly isolated same-backend port while ordinary native resume stays protected', () => {
+      expect(buildAgentLaunchCommand({
+        mode: 'resume', agent: 'codex', targetAgent: 'codex', resumeId: '42', model: 'sol', ownerId: 'su-answer-owner',
+      })).toContain('--owner-id=su-answer-owner');
+      expect(() => buildAgentLaunchCommand({
+        mode: 'resume', agent: 'codex', resumeId: '42', model: 'sol', ownerId: 'su-answer-owner',
+      })).toThrow(/same-backend resume/);
     });
   });
 
@@ -789,10 +898,64 @@ describe('composeModelSpec (D-001: effort rides the model spec)', () => {
 });
 
 describe('resolveResumeTarget', () => {
+  it.each([true, false])('retains recorded headless placement (%s)', async (headless) => {
+    launchCoreSql.mockResolvedValue([{
+      id: 22664, workspace_id: 'ws-test', coord_owner_id: OWNER, session_id: 'original-native',
+      agent: 'codex', role: 'judge', cwd: '/repo', started_at: '2026-10-07T00:00:00.000Z',
+      ended_at: '2026-10-07T00:01:00.000Z', ended_by: 'self',
+      launch_argv: ['psu', '--account=auto', ...(headless ? ['--headless'] : [])],
+    }] as unknown[]);
+    await expect(resolveResumeTarget({ agentId: OWNER })).resolves.toMatchObject({ ok: true, headless });
+  });
+
+  it('resolves a tracked OMP thread-only row and keeps the raw session binding distinct', async () => {
+    launchCoreSql.mockResolvedValue([{
+      id: 22663, workspace_id: 'ws-omp', coord_owner_id: OWNER, session_id: null, omp_thread_id: 'omp-native-thread',
+      agent: 'omp', cwd: '/repo', started_at: '2026-09-05T23:16:36.945Z',
+      binding_started_at: '2026-09-05 23:16:36.945123+00', ended_at: null, ended_by: null,
+    }] as unknown[]);
+    await expect(resolveResumeTarget({ agentId: OWNER })).resolves.toMatchObject({
+      ok: true, sessionId: 'omp-native-thread', ompThreadId: 'omp-native-thread', resumeId: 'omp-native-thread',
+      binding: { coordOwnerId: OWNER, sessionId: null, ompThreadId: 'omp-native-thread' },
+    });
+  });
+
   it('rejects a ref with neither agentId nor sessionId (no DB round-trip)', async () => {
     const r = await resolveResumeTarget({});
     expect(r.ok).toBe(false);
     expect(r).toMatchObject({ error: 'not_found' });
+  });
+
+  it('returns the recorded source role and feature for identity-preserving recovery', async () => {
+    launchCoreSql.mockResolvedValue([{
+      id: 22664,
+      workspace_id: 'ws-test',
+      plan_slug: null,
+      agent: 'claude',
+      role: 'crm-agent',
+      feature: 'WI-10007049',
+      mode: 'console',
+      terminal_bin: null,
+      pid: null,
+      window_id: null,
+      omp_thread_id: null,
+      label: null,
+      cwd: '/repo',
+      coord_owner_id: OWNER,
+      session_id: 'source-session',
+      started_at: '2026-10-07T00:00:00.000Z',
+      binding_started_at: '2026-10-07 00:00:00.000123+00',
+      ended_at: '2026-10-07T00:01:00.000Z',
+      exit_code: 0,
+      ended_by: 'self',
+      launch_argv: ['psu', '--agent=claude'],
+    }] as unknown[]);
+
+    await expect(resolveResumeTarget({ agentId: OWNER })).resolves.toMatchObject({
+      ok: true,
+      role: 'crm-agent',
+      feature: 'WI-10007049',
+    });
   });
 
   it('uses session_turns only to recover the owner; an exact native UUID never rewinds to the owner row UUID', () => {
@@ -1114,15 +1277,23 @@ describe('probeFreshLaunchSessions', () => {
 describe('injectKickoffAfterResume (D-008: the pty-socket is the only path to a resumed session)', () => {
   it('injects the kickoff as a turn once the pty host appears', async () => {
     const inject = vi.fn().mockResolvedValue(true);
+    const tagTurn = vi.fn(async (input: { sid: string; origin: string; text: string }) => ({
+      taggedText: `⟦turn-origin:${input.origin} nonce:0123456789abcdef⟧\n${input.text}`,
+      envelope: `⟦turn-origin:${input.origin} nonce:0123456789abcdef⟧`,
+      nonce: '0123456789abcdef',
+      origin: 'wake-pump',
+      ledgerWritten: true,
+    }));
     const findHost = vi
       .fn()
       .mockReturnValueOnce(null)
-      .mockReturnValue({ ownerId: OWNER, pid: 42, sock: `/run/psu-pty/${OWNER}.sock` } as never);
+      .mockReturnValue(ptyHostFixture());
     const sleep = vi.fn().mockResolvedValue(undefined);
 
     const r = await injectKickoffAfterResume(OWNER, 'pick up where you left off', {
       findHost,
       inject,
+      tagTurn,
       sleep,
       pollMs: 10,
       timeoutMs: 1000,
@@ -1136,8 +1307,13 @@ describe('injectKickoffAfterResume (D-008: the pty-socket is the only path to a 
     // field here is what keeps this path from regressing back to unaddressed.
     expect(inject).toHaveBeenCalledWith(`/run/psu-pty/${OWNER}.sock`, {
       mode: 'turn',
-      data: 'pick up where you left off',
+      data: '⟦turn-origin:wake-pump nonce:0123456789abcdef⟧\npick up where you left off',
       ownerId: OWNER,
+    });
+    expect(tagTurn).toHaveBeenCalledWith({
+      sid: OWNER,
+      origin: 'wake-pump',
+      text: 'pick up where you left off',
     });
     expect(sleep).toHaveBeenCalledTimes(1);
   });
@@ -1158,9 +1334,17 @@ describe('injectKickoffAfterResume (D-008: the pty-socket is the only path to a 
   });
 
   it('reports a failed socket write instead of claiming delivery', async () => {
+    const tagTurn = vi.fn(async (input: { sid: string; origin: string; text: string }) => ({
+      taggedText: `⟦turn-origin:${input.origin} nonce:0123456789abcdef⟧\n${input.text}`,
+      envelope: `⟦turn-origin:${input.origin} nonce:0123456789abcdef⟧`,
+      nonce: '0123456789abcdef',
+      origin: 'wake-pump',
+      ledgerWritten: true,
+    }));
     const r = await injectKickoffAfterResume(OWNER, 'hi', {
       findHost: () => ({ ownerId: OWNER, pid: 7, sock: '/run/x.sock' }) as never,
       inject: vi.fn().mockResolvedValue(false),
+      tagTurn,
       sleep: vi.fn().mockResolvedValue(undefined),
       pollMs: 10,
       timeoutMs: 1000,
@@ -1172,11 +1356,53 @@ describe('injectKickoffAfterResume (D-008: the pty-socket is the only path to a 
 });
 
 describe('verifyResumeStarted (resume liveness is three-state)', () => {
+  it('refuses an observed Codex successor even when launch argv requests the original UUID', async () => {
+    const result = await verifyResumeStarted(OWNER, {
+      expectedSessionId: 'original-native',
+      findHost: () => ptyHostFixture({
+        args: ['resume', 'original-native'],
+        nativeSessionId: 'carry-successor',
+      } as never),
+      timeoutMs: 0,
+    });
+
+    expect(result).toMatchObject({ started: false, mismatch: true,
+      expectedSessionId: 'original-native', actualSessionId: 'carry-successor' });
+  });
+
+  it.each([undefined, null])('keeps Codex argv-only identity unconfirmed (%s)', async (nativeSessionId) => {
+    const result = await verifyResumeStarted(OWNER, {
+      expectedSessionId: 'original-native',
+      findHost: () => ptyHostFixture({
+        args: ['resume', 'original-native'], nativeSessionId,
+      } as never),
+      timeoutMs: 0,
+    });
+
+    expect(result).toMatchObject({ started: null, mismatch: false,
+      expectedSessionId: 'original-native', actualSessionId: null });
+  });
+
+  it('waits for the current Codex child observation before confirming an exact resume', async () => {
+    const findHost = vi.fn()
+      .mockReturnValueOnce(ptyHostFixture({ args: ['resume', 'original-native'] }))
+      .mockReturnValue(ptyHostFixture({ args: ['resume', 'original-native'],
+        nativeSessionId: 'original-native' } as never));
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    const result = await verifyResumeStarted(OWNER, {
+      expectedSessionId: 'original-native', findHost, sleep, timeoutMs: 1000, pollMs: 1,
+    });
+
+    expect(result).toMatchObject({ started: true, mismatch: false,
+      actualSessionId: 'original-native' });
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
+
   it('confirms started once a live psu-pty host appears for the resumed identity', async () => {
     const findHost = vi
       .fn()
       .mockReturnValueOnce(null)
-      .mockReturnValue({ ownerId: OWNER, pid: 42, sock: `/run/psu-pty/${OWNER}.sock` } as never);
+      .mockReturnValue(ptyHostFixture());
     const sleep = vi.fn().mockResolvedValue(undefined);
 
     const r = await verifyResumeStarted(OWNER, { findHost, sleep, pollMs: 10, timeoutMs: 1000 });
@@ -1196,6 +1422,7 @@ describe('verifyResumeStarted (resume liveness is three-state)', () => {
         sock: `/run/psu-pty/${OWNER}.sock`,
         command: 'codex',
         args: ['--model', 'gpt-5.6-sol', 'resume', 'older-root-uuid'],
+        nativeSessionId: 'older-root-uuid',
       }) as never,
     });
 
@@ -1224,11 +1451,160 @@ describe('verifyResumeStarted (resume liveness is three-state)', () => {
   });
 });
 
+describe('verifyResumeStarted prepared cross-backend continuation', () => {
+  function fixture(sourceBackend: 'claude' | 'codex' | 'omp' = 'codex') {
+    const source = { id: 11, workspaceId: 'ws-test', coordOwnerId: OWNER, agent: sourceBackend,
+      sessionId: 'source-native' } as AdvSessionRow;
+    const target = { id: 12, workspaceId: 'ws-test', coordOwnerId: OWNER, agent: 'claude',
+      sessionId: 'target-native', portId: 'port-1', portSourceAdvSessionId: 11,
+      portStatus: 'delivered' } as AdvSessionRow;
+    const port = { id: 'port-1', workspaceId: 'ws-test', sourceAdvSessionId: 11, targetAdvSessionId: 12,
+      sourceBackend, targetBackend: 'claude', status: 'delivered', renderedHash: 'rendered-hash',
+      metadata: {
+        sourceCoordOwnerId: OWNER, targetCoordOwnerId: OWNER, targetNativeSessionId: 'target-native',
+        bootstrapRequestHash: 'bootstrap-hash', bootstrapReceiptCommitted: true,
+        bootstrapReceiptTargetAdvSessionId: 12,
+        summary: { source: { advSessionId: 11, nativeSessionId: 'source-native', backend: sourceBackend,
+          workspaceId: 'ws-test' }, target: { backend: 'claude' }, hashes: { rendered: 'rendered-hash' } },
+        persistenceProof: { persisted: true, nativeRef: '/native/target-native.jsonl', renderedHash: 'rendered-hash' },
+      } } as unknown as SessionPortRow;
+    const host = { ownerId: OWNER, advSessionId: '12', command: 'claude', args: ['--session-id', 'target-native'] };
+    const readAdvSession = vi.fn(async (id: number) => id === 11 ? source : id === 12 ? target : null);
+    const readPort = vi.fn(async (_id: string, _workspace: string) => port);
+    const options = { expectedSessionId: 'source-native',
+      expectedPort: { sourceAdvSessionId: 11, targetBackend: 'claude' as const },
+      findHost: () => host as never, readAdvSession, readPort, timeoutMs: 0 };
+    return { source, target, port, host, options };
+  }
+
+  it.each(['codex', 'omp'] as const)('accepts %s→Claude only after exact source/target and persistence receipts', async (backend) => {
+    const { options } = fixture(backend);
+    const result = await verifyResumeStarted(OWNER, options);
+    expect(result).toMatchObject({ started: true, mismatch: false,
+      expectedSessionId: 'target-native', actualSessionId: 'target-native' });
+    expect(options.readPort).toHaveBeenCalledWith('port-1', 'ws-test');
+  });
+
+  it.each([
+    ['source owner', (f: ReturnType<typeof fixture>) => { f.source.coordOwnerId = 'su-other'; }],
+    ['target owner', (f: ReturnType<typeof fixture>) => { f.target.coordOwnerId = 'su-other'; }],
+    ['host owner', (f: ReturnType<typeof fixture>) => { f.host.ownerId = 'su-other'; }],
+    ['target workspace', (f: ReturnType<typeof fixture>) => { f.target.workspaceId = 'other'; }],
+    ['target backend', (f: ReturnType<typeof fixture>) => { f.target.agent = 'codex'; }],
+    ['target lineage', (f: ReturnType<typeof fixture>) => { f.target.portSourceAdvSessionId = 99; }],
+    ['port source', (f: ReturnType<typeof fixture>) => { f.port.sourceAdvSessionId = 99; }],
+    ['port target', (f: ReturnType<typeof fixture>) => { f.port.targetAdvSessionId = 99; }],
+    ['prepared owner', (f: ReturnType<typeof fixture>) => { f.port.metadata.targetCoordOwnerId = 'su-other'; }],
+    ['prepared native', (f: ReturnType<typeof fixture>) => { f.port.metadata.targetNativeSessionId = 'other-native'; }],
+    ['bootstrap target', (f: ReturnType<typeof fixture>) => { f.port.metadata.bootstrapReceiptTargetAdvSessionId = 99; }],
+    ['source native', (f: ReturnType<typeof fixture>) => { f.options.expectedSessionId = 'other-source'; }],
+    ['payload hash', (f: ReturnType<typeof fixture>) => {
+      (f.port.metadata.persistenceProof as Record<string, unknown>).renderedHash = 'wrong-hash';
+    }],
+    ['native proof', (f: ReturnType<typeof fixture>) => {
+      (f.port.metadata.persistenceProof as Record<string, unknown>).nativeRef = '/native/other-native.jsonl';
+    }],
+    ['host native', (f: ReturnType<typeof fixture>) => { f.host.args = ['--session-id', 'other-native']; }],
+    ['terminal port', (f: ReturnType<typeof fixture>) => { f.port.status = 'failed'; }],
+  ])('refuses a substituted %s', async (_label, change) => {
+    const f = fixture();
+    change(f);
+    expect(await verifyResumeStarted(OWNER, f.options)).toMatchObject({ started: false, mismatch: true });
+  });
+
+  it.each([
+    ['pending delivery', (f: ReturnType<typeof fixture>) => { f.port.status = 'pending'; f.target.portStatus = 'pending'; }],
+    ['bootstrap receipt', (f: ReturnType<typeof fixture>) => { delete f.port.metadata.bootstrapReceiptCommitted; }],
+    ['bootstrap target', (f: ReturnType<typeof fixture>) => { delete f.port.metadata.bootstrapReceiptTargetAdvSessionId; }],
+    ['bootstrap hash', (f: ReturnType<typeof fixture>) => { delete f.port.metadata.bootstrapRequestHash; }],
+    ['source summary', (f: ReturnType<typeof fixture>) => { delete f.port.metadata.summary; }],
+    ['persistence proof', (f: ReturnType<typeof fixture>) => { delete f.port.metadata.persistenceProof; }],
+    ['port row', (f: ReturnType<typeof fixture>) => { f.options.readPort.mockResolvedValue(null as never); }],
+    ['probe unavailable', (f: ReturnType<typeof fixture>) => { f.options.readPort.mockRejectedValue(new Error('probe unavailable')); }],
+  ])('keeps missing %s unconfirmed without rolling back a healthy process', async (_label, change) => {
+    const f = fixture();
+    change(f);
+    expect(await verifyResumeStarted(OWNER, f.options)).toMatchObject({ started: null, mismatch: false });
+  });
+
+  it('waits for pending native persistence to become delivered', async () => {
+    const f = fixture();
+    f.port.status = 'pending';
+    f.target.portStatus = 'pending';
+    const sleep = vi.fn(async () => { f.port.status = 'delivered'; f.target.portStatus = 'delivered'; });
+    const result = await verifyResumeStarted(OWNER, { ...f.options, sleep, timeoutMs: 1000, pollMs: 1 });
+    expect(result.started).toBe(true);
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
+
+  function codexTargetFixture() {
+    const f = fixture('claude');
+    f.target.agent = 'codex';
+    f.port.targetBackend = 'codex';
+    (f.port.metadata.summary as { target: { backend: string } }).target.backend = 'codex';
+    const host = { ...f.host, command: 'codex', args: ['resume', 'target-native'],
+      nativeSessionId: null as string | null | undefined };
+    return { ...f, host, options: { ...f.options,
+      expectedPort: { sourceAdvSessionId: 11, targetBackend: 'codex' as const },
+      findHost: () => host as never } };
+  }
+
+  it.each([undefined, null])('accepts an unassigned bootstrap native UUID only after the Codex child identity is observed (%s)', async (bootstrapNative) => {
+    const f = codexTargetFixture();
+    f.port.metadata.targetNativeSessionId = bootstrapNative;
+    f.host.nativeSessionId = 'target-native';
+    expect(await verifyResumeStarted(OWNER, f.options)).toMatchObject({
+      started: true, mismatch: false, expectedSessionId: 'target-native', actualSessionId: 'target-native',
+    });
+    f.host.nativeSessionId = null;
+    expect(await verifyResumeStarted(OWNER, f.options)).toMatchObject({
+      started: null, mismatch: false, expectedSessionId: 'target-native', actualSessionId: null,
+    });
+    f.host.nativeSessionId = 'unrelated-child';
+    expect(await verifyResumeStarted(OWNER, f.options)).toMatchObject({
+      started: false, mismatch: true, actualSessionId: 'unrelated-child',
+    });
+  });
+
+  it.each([undefined, null])('keeps a delivered Codex conversion without observed identity unconfirmed (%s)', async (nativeSessionId) => {
+    const f = codexTargetFixture();
+    f.host.nativeSessionId = nativeSessionId;
+    expect(await verifyResumeStarted(OWNER, f.options)).toMatchObject({
+      started: null, mismatch: false, expectedSessionId: 'target-native', actualSessionId: null,
+    });
+  });
+
+  it('waits for observed Codex conversion identity and rejects a contradictory child UUID', async () => {
+    const f = codexTargetFixture();
+    const sleep = vi.fn(async () => { f.host.nativeSessionId = 'target-native'; });
+    f.host.args = ['resume', 'requested-predecessor'];
+    expect(await verifyResumeStarted(OWNER, { ...f.options, sleep, timeoutMs: 1000, pollMs: 1 }))
+      .toMatchObject({ started: true, mismatch: false, actualSessionId: 'target-native' });
+    expect(sleep).toHaveBeenCalledTimes(1);
+    f.host.nativeSessionId = 'unrelated-child';
+    expect(await verifyResumeStarted(OWNER, f.options)).toMatchObject({
+      started: false, mismatch: true, actualSessionId: 'unrelated-child',
+    });
+  });
+
+  it('does not use a port receipt to override an ordinary same-backend UUID mismatch', async () => {
+    const f = fixture();
+    const { expectedPort: _port, ...ordinary } = f.options;
+    expect(await verifyResumeStarted(OWNER, ordinary)).toMatchObject({ started: false,
+      expectedSessionId: 'source-native', actualSessionId: 'target-native', mismatch: true });
+    expect(f.options.readPort).not.toHaveBeenCalled();
+  });
+});
+
 describe('nativeSessionIdFromHost', () => {
-  it('reads Codex positional resume and Claude/OMP resume flags', () => {
-    expect(nativeSessionIdFromHost({ command: 'codex', args: ['-m', 'gpt-5.6-sol', 'resume', 'codex-uuid'] })).toBe('codex-uuid');
+  it('reads the physical Codex observation and Claude/OMP resume flags', () => {
+    expect(nativeSessionIdFromHost({ command: 'codex', nativeSessionId: 'codex-uuid',
+      args: ['-m', 'gpt-5.6-sol', 'resume', 'predecessor-uuid'] })).toBe('codex-uuid');
+    expect(nativeSessionIdFromHost({ command: '/usr/bin/codex', args: ['resume', 'requested-uuid'] })).toBeNull();
     expect(nativeSessionIdFromHost({ command: 'claude', args: ['--resume', 'claude-uuid'] })).toBe('claude-uuid');
     expect(nativeSessionIdFromHost({ command: 'omp', args: ['--resume-session=omp-uuid'] })).toBe('omp-uuid');
+    expect(nativeSessionIdFromHost({ command: 'claude', args: ['--session-id', 'new-claude-uuid'] })).toBe('new-claude-uuid');
+    expect(nativeSessionIdFromHost({ command: 'claude', args: ['--session-id=new-claude-uuid'] })).toBe('new-claude-uuid');
   });
 
   it('returns null when the host does not attest a native resume id', () => {

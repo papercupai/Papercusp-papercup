@@ -13,9 +13,12 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   scorecardEmittedKey,
+  scorecardGradingAuditKey,
   emitScorecardEmitted,
   type ScorecardEmittedPayload,
+  type ScorecardGradingAuditSettledPayload,
 } from './scorecard-emitted-events';
+import { EVENT_CATALOG } from './events/await/catalog';
 
 const basePayload = (over: Partial<ScorecardEmittedPayload> = {}): ScorecardEmittedPayload => ({
   issueId: 'EI-1',
@@ -112,6 +115,70 @@ describe('emitScorecardEmitted', () => {
 
     // Warning on these would make every rig that tears down its pool flake.
     expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});
+
+describe('grading-audit settlement key (EI-24852356444105284)', () => {
+  const settled = (over: Partial<ScorecardGradingAuditSettledPayload> = {}): ScorecardGradingAuditSettledPayload => ({
+    issueId: 'EI-AUDITED',
+    state: 'passed',
+    auditIssueId: 'EI-AUDIT-CARD',
+    auditor: 'su-auditor',
+    auditedAt: '2026-10-02T08:10:17.712Z',
+    rubricRevision: 10,
+    ...over,
+  });
+
+  it('matches the keyTemplate registered in the await catalog, keyed by the AUDITED card', () => {
+    const entry = EVENT_CATALOG.find((e) => e.family === 'scorecard-grading-audit');
+    expect(entry?.keyTemplate).toBe('scorecard:grading-audit:<id>');
+    expect(scorecardGradingAuditKey('EI-AUDITED')).toBe(entry!.keyTemplate.replace('<id>', 'EI-AUDITED'));
+  });
+
+  it('fires the settled key with the verdict when settledAudit is passed', async () => {
+    const emit = vi.fn().mockResolvedValue({ ok: true, key: 'k' });
+    // An audit card's subject is a scorecard, not a plan: no plan:acceptance key.
+    await emitScorecardEmitted(basePayload({ subjectKind: 'scorecard', subjectRef: 'EI-AUDITED' }), {
+      emit: emit as never,
+      workspaceId: 'ws-1',
+      settledAudit: settled({ state: 'failed' }),
+    });
+
+    const keys = emit.mock.calls.map((call) => (call[0] as { key: string }).key);
+    expect(keys).toEqual(['scorecard:emitted:acceptance-my-plan-2026-08-25', 'scorecard:grading-audit:EI-AUDITED']);
+    const fired = emit.mock.calls[1]![0] as {
+      payload: ScorecardGradingAuditSettledPayload;
+      workspaceId?: string;
+      summary: string;
+    };
+    expect(fired.payload).toMatchObject({ issueId: 'EI-AUDITED', state: 'failed', auditIssueId: 'EI-AUDIT-CARD' });
+    expect(fired.workspaceId).toBe('ws-1');
+    expect(fired.summary).toContain('failed');
+  });
+
+  it('fires NO settled key for an ordinary card (no settledAudit)', async () => {
+    const emit = vi.fn().mockResolvedValue({ ok: true, key: 'k' });
+    await emitScorecardEmitted(basePayload(), { emit: emit as never });
+    const keys = emit.mock.calls.map((call) => (call[0] as { key: string }).key);
+    expect(keys.some((k) => k.startsWith('scorecard:grading-audit:'))).toBe(false);
+  });
+
+  it('a recovered settlement wakes its target without announcing another card filing', async () => {
+    const emit = vi.fn().mockResolvedValue({ ok: true, key: 'k' });
+    await emitScorecardEmitted(basePayload(), { emit: emit as never, filed: false, settledAudit: settled() });
+    expect(emit).toHaveBeenCalledOnce();
+    expect(emit.mock.calls[0][0]).toMatchObject({ key: 'scorecard:grading-audit:EI-AUDITED', payload: settled() });
+  });
+
+  it('a failed rubric-key emit does not suppress the settled key', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const emit = vi.fn().mockRejectedValueOnce(new Error('bus down')).mockResolvedValue({ ok: true, key: 'k' });
+    await emitScorecardEmitted(basePayload({ subjectKind: 'scorecard', subjectRef: 'EI-AUDITED' }), {
+      emit: emit as never,
+      settledAudit: settled(),
+    });
+    expect((emit.mock.calls[1]![0] as { key: string }).key).toBe('scorecard:grading-audit:EI-AUDITED');
     warn.mockRestore();
   });
 });

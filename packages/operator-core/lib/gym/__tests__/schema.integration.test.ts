@@ -7,7 +7,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import postgres from 'postgres';
-import { getTestPg, teardownTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, teardownTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { applyGymSchema } from '../schema';
 
 let sql: postgres.Sql;
@@ -19,6 +19,7 @@ beforeAll(async () => {
   const maint = postgres(containerUri, { max: 1, onnotice: () => {} });
   try {
     await maint.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(maint, dbName);
   } finally {
     await maint.end({ timeout: 5 });
   }

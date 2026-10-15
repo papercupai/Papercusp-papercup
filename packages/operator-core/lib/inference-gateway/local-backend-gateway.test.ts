@@ -8,6 +8,8 @@
 import { test, beforeEach, afterEach } from 'vitest';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { readContent } from '../content-intake';
+import { summarizeContent, runLocalSummary, type SummaryDeps } from '../content-summary';
 import { createInferenceGateway, OWNER_HEADER, type GatewayDeps } from './gateway';
 import {
   createLocalBackendPool,
@@ -40,7 +42,11 @@ async function startFakeBackend(
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
   const addr = server.address() as { port: number };
-  return { id, server, baseUrl: `http://127.0.0.1:${addr.port}`, requests, close: () => new Promise((r) => server.close(() => r())) };
+  return { id, server, baseUrl: `http://127.0.0.1:${addr.port}`, requests, close: () => new Promise((r) => {
+    server.close(() => r());
+    // Failed cancellation assertions must preserve their evidence, not strand teardown.
+    server.closeAllConnections();
+  }) };
 }
 
 const okJsonReply = (payload: unknown) => (_req: http.IncomingMessage, res: http.ServerResponse) => {
@@ -138,10 +144,155 @@ test('an unregistered model 502s with no reachable backend, not a hang or a cras
   assert.match(json.error.message, /no reachable local backend/);
 });
 
+test.each([false, true])('local chat namespace never reaches cloud when the pool is missing (missing=%s)', async (missing) => {
+  const cloud = await startFakeBackend('cloud', okJsonReply({ id: 'should-never-be-used' }));
+  backends = [cloud];
+  await boot([], { upstreamBase: cloud.baseUrl, ...(missing ? { localBackends: undefined } : {}) });
+  for (const path of ['/v1/chat/completions', '/v1/completions']) {
+    const res = await fetch(`http://127.0.0.1:${port}${path}`, { method: 'POST',
+      headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'removed-local-model', messages: [{ role: 'user', content: 'PRIVATE FIXTURE' }] }) });
+    assert.equal(res.status, missing ? 404 : 502);
+  }
+  assert.equal(cloud.requests.length, 0, 'pool absence never grants cloud forwarding');
+});
+
+test('summary uses the real SDK and local gateway, then fails closed after a registry reload', async () => {
+  const local = await startFakeBackend('local', (_req, res, body) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const chunk = { id: 'chatcmpl-local', object: 'chat.completion.chunk', created: 0, model: 'fixture-local' };
+    // Reproduce the measured engine default: reasoning consumes the output
+    // budget without a visible summary unless its chat template disables it.
+    if (JSON.parse(body).chat_template_kwargs?.enable_thinking !== false) {
+      res.write(`data: ${JSON.stringify({ ...chunk, choices: [{ index: 0, delta: { reasoning_content: 'Analyze the source.' }, finish_reason: null }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ ...chunk, choices: [{ index: 0, delta: {}, finish_reason: 'length' }], usage: { prompt_tokens: 18, completion_tokens: 128, total_tokens: 146 } })}\n\n`);
+      res.end('data: [DONE]\n\n');
+      return;
+    }
+    res.write(`data: ${JSON.stringify({ ...chunk, choices: [{ index: 0, delta: { role: 'assistant', content: 'Alpha: 12. Final tail: 56.' }, finish_reason: null }] })}\n\n`);
+    res.write(`data: ${JSON.stringify({ ...chunk, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 18, completion_tokens: 8, total_tokens: 26 } })}\n\n`);
+    res.end('data: [DONE]\n\n');
+  });
+  const cloud = await startFakeBackend('cloud', okJsonReply({ id: 'should-never-be-used' }));
+  backends = [local, cloud];
+  await boot([{ id: 'local', kind: 'llama-server', baseUrl: local.baseUrl, models: ['fixture-local'], maxConcurrent: 4, enabled: true }], { upstreamBase: cloud.baseUrl });
+  const previousPort = process.env.PAPERCUSP_GATEWAY_PORT;
+  process.env.PAPERCUSP_GATEWAY_PORT = String(port);
+  let cloudCalls = 0;
+  const deps: SummaryDeps = {
+    async *run() { cloudCalls++; throw new Error('cloud runner must never be called'); },
+    runLocal: runLocalSummary,
+    // Classification deliberately remains stale after reload; transport must still refuse.
+    isLocalModel: async () => true, checkBudget: async () => ({ exceeded: false }), recordSpend: async () => {},
+    reuse: async (_ws, _key, factory) => factory(),
+  };
+  try {
+    const source = await readContent({ kind: 'text', text: 'Alpha 12. Final tail 56.', ref: 'private:fixture' },
+      { workspaceId: 'ws-test', readerId: 'reader-test' }, { authorize: async () => true });
+    const result = await summarizeContent(source, { model: 'fixture-local', cache: false, maxOutputTokens: 128 }, undefined, deps);
+    assert.equal(result.summary, 'Alpha: 12. Final tail: 56.');
+    assert.equal(result.usage.costUsd, 0);
+    assert.equal(result.usage.tokensIn, 18); assert.equal(result.usage.tokensOut, 8);
+    assert.equal(local.requests.length, 1); assert.equal(local.requests[0].url, '/v1/chat/completions');
+    const body = JSON.parse(local.requests[0].body);
+    assert.equal(body.model, 'fixture-local'); assert.equal(body.max_tokens, 128);
+    assert.equal(JSON.parse(body.messages[1].content).quotedSource, source.text);
+    assert.equal(body.tools, undefined);
+    pool.reload([]);
+    await assert.rejects(summarizeContent(source, { model: 'fixture-local', cache: false, allowCloud: true }, undefined, deps),
+      (error: unknown) => (error as { code?: string }).code === 'model-failed');
+    assert.equal(local.requests.length, 1); assert.equal(cloud.requests.length, 0); assert.equal(cloudCalls, 0);
+  } finally {
+    if (previousPort === undefined) delete process.env.PAPERCUSP_GATEWAY_PORT;
+    else process.env.PAPERCUSP_GATEWAY_PORT = previousPort;
+  }
+});
+
+test.each([false, true])('summary distinguishes withheld HTTP headers from a stalled response body (headers=%s)', async headers => {
+  // Warm only fixture modules before the short transport deadline so this
+  // comparison measures HTTP progress rather than cold module loading.
+  await Promise.all([import('@ai-sdk/openai'), import('../agent-loop/ai-sdk-port'), import('../agent-chat-stream')]);
+  const backend = await startFakeBackend('stalled-summary', (_req, res) => {
+    if (headers) {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.flushHeaders();
+    }
+  });
+  backends = [backend];
+  const previousPort = process.env.PAPERCUSP_GATEWAY_PORT;
+  process.env.PAPERCUSP_GATEWAY_PORT = new URL(backend.baseUrl).port;
+  const phases: string[] = [];
+  const deps: SummaryDeps = {
+    async *run() { throw new Error('cloud runner forbidden'); },
+    async *runLocal(options) {
+      yield* runLocalSummary({ ...options, onSummaryPhase: stage => {
+        phases.push(stage);
+        options.onSummaryPhase?.(stage);
+      } });
+    },
+    isLocalModel: async () => true, checkBudget: async () => ({ exceeded: false }),
+    recordSpend: async () => {}, reuse: async (_workspace, _key, factory) => factory(),
+  };
+  try {
+    const source = await readContent({ kind: 'text', text: 'Public transport fixture.' },
+      { workspaceId: 'ws-test', readerId: 'reader-test' }, { authorize: async () => true });
+    await assert.rejects(summarizeContent(source, { model: 'fixture-local', cache: false, timeoutMs: 500 }, undefined, deps),
+      (error: unknown) => {
+        const failure = error as { code: string; diagnostics: { stage: string } };
+        assert.equal(failure.code, 'budget-exceeded');
+        assert.equal(failure.diagnostics.stage, headers ? 'http-body-wait' : 'http-wait');
+        return true;
+      });
+    assert.equal(backend.requests.length, 1);
+    assert.equal(phases.includes('http-body-wait'), headers);
+  } finally {
+    if (previousPort === undefined) delete process.env.PAPERCUSP_GATEWAY_PORT;
+    else process.env.PAPERCUSP_GATEWAY_PORT = previousPort;
+  }
+});
+
 test('a non-JSON / model-less body 400s', async () => {
   await boot([]);
   const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: 'not json' });
   assert.equal(res.status, 400);
+});
+
+test('local summary rejects truncated/oversized output and aborts the backend on cancellation', async () => {
+  let mode: 'truncated' | 'oversized' | 'stalled' = 'truncated';
+  let started!: () => void; let closed!: () => void;
+  const ready = new Promise<void>(resolve => { started = resolve; });
+  const cancelled = new Promise<void>(resolve => { closed = resolve; });
+  const local = await startFakeBackend('local', (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const chunk = { id: 'chatcmpl-local', object: 'chat.completion.chunk', created: 0, model: 'fixture-local' };
+    res.write(`data: ${JSON.stringify({ ...chunk, choices: [{ index: 0, delta: { content: mode === 'oversized' ? '😀'.repeat(1025) : 'Incomplete.' }, finish_reason: null }] })}\n\n`);
+    if (mode === 'stalled') { res.once('close', closed); started(); return; }
+    res.write(`data: ${JSON.stringify({ ...chunk, choices: [{ index: 0, delta: {}, finish_reason: mode === 'truncated' ? 'length' : 'stop' }] })}\n\n`);
+    res.end('data: [DONE]\n\n');
+  });
+  backends = [local];
+  await boot([{ id: 'local', kind: 'llama-server', baseUrl: local.baseUrl, models: ['fixture-local'], maxConcurrent: 4, enabled: true }]);
+  const previousPort = process.env.PAPERCUSP_GATEWAY_PORT; process.env.PAPERCUSP_GATEWAY_PORT = String(port);
+  const deps: SummaryDeps = { async *run() { throw new Error('cloud forbidden'); }, runLocal: runLocalSummary,
+    isLocalModel: async () => true, checkBudget: async () => ({ exceeded: false }), recordSpend: async () => {}, reuse: async (_w, _k, factory) => factory() };
+  try {
+    const source = await readContent({ kind: 'text', text: 'Public cancellation fixture.' },
+      { workspaceId: 'ws-test', readerId: 'reader-test' }, { authorize: async () => true });
+    for (const next of ['truncated', 'oversized'] as const) {
+      mode = next;
+      await assert.rejects(summarizeContent(source, { model: 'fixture-local', cache: false, maxOutputTokens: 64 }, undefined, deps),
+        (error: unknown) => (error as { code?: string }).code === 'output-incomplete');
+    }
+    mode = 'stalled'; const ac = new AbortController();
+    const pending = summarizeContent(source, { model: 'fixture-local', cache: false }, ac.signal, deps);
+    await ready; ac.abort();
+    await assert.rejects(pending, (error: unknown) => (error as { code?: string }).code === 'cancelled');
+    await Promise.race([cancelled, new Promise<never>((_, reject) => {
+      const timeout = setTimeout(() => reject(new Error('backend was not cancelled')), 2000);
+      cancelled.then(() => clearTimeout(timeout));
+    })]);
+  } finally {
+    if (previousPort === undefined) delete process.env.PAPERCUSP_GATEWAY_PORT; else process.env.PAPERCUSP_GATEWAY_PORT = previousPort;
+  }
 });
 
 test('a local-backend body stream that ERRORS mid-pipe does NOT crash the gateway (W2.2 crash-proofing guard)', async () => {

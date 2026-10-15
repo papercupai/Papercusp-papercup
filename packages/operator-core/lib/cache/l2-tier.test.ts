@@ -14,7 +14,11 @@
  *   - CACHE_L2 is SUBORDINATE to CACHE_LAYER, so the panic switch really does mean
  *     "no cache" and not "no L1".
  */
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import * as recorder from '../degradation/fallback-observations';
+
+beforeEach(() => { vi.spyOn(recorder, 'observeFallback').mockReturnValue(true); });
+afterEach(() => { vi.restoreAllMocks(); });
 import { setFlagOverridesForTest } from "@papercusp/flags/test";
 
 import { _refreshCacheLayerForTests } from "./instance";

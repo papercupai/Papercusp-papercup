@@ -83,6 +83,8 @@ function buildFixture(): string {
   git(sub, 'init', '-q');
   git(sub, 'add', '.');
   git(sub, 'commit', '-qm', 'sub');
+  git(root, 'add', 'libs/fixture-sub');
+  git(root, 'commit', '-qm', 'pin fixture submodule');
 
   // The failure this fix removes: an uncommitted edit in the shared tree.
   write(join(root, PRODUCER_REL), '// UNCOMMITTED-PEER-EDIT\n');
@@ -98,6 +100,7 @@ describe('hive-git-physical-probe.sh — the tower producer runs a pinned commit
     const harness = [
       'set -euo pipefail',
       `REPO_ROOT='${root}'`,
+      'local_source_out=""',
       'fail() { printf "FAIL: %s\\n" "$*" >&2; exit 1; }',
       pinnedSourceBlock(),
       'printf "PRODUCER=%s\\n" "$PRODUCER"',
@@ -114,7 +117,7 @@ describe('hive-git-physical-probe.sh — the tower producer runs a pinned commit
     ].join('\n');
     const run = spawnSync('bash', ['-c', harness], { encoding: 'utf8', env: { ...process.env, TMPDIR: tmp } });
     expect(run.stderr).not.toContain('FAIL:');
-    expect(run.status).toBe(0);
+    expect(run.status, `${run.stdout}\n${run.stderr}`).toBe(0);
     const out = Object.fromEntries(
       run.stdout.trim().split('\n').map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]),
     );

@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   codexHomeForAdvSession,
+  codexWakeGatewayInputs,
   executeWake,
   findCodexRolloutSessionId,
   injectOmpWakeTurnWhenReady,
@@ -19,11 +20,18 @@ import {
   rehydrateLoopWakeText,
   applyInjectionDoor,
   defaultSpawnDetached,
-  decideQuotaWakeRecovery,
   quotaRecoveryPickupConfirmed,
   quotaRecoveryReceiptForDelivery,
+  withClaudeResumeEffortClamp,
   type ExecuteWakeDeps,
 } from './wake-executor';
+import {
+  decideQuotaWakeRecovery,
+  recentAuthRecoveryCount,
+  AUTH_RECOVERY_MAX_PER_WINDOW,
+  AUTH_RECOVERY_WINDOW_MS,
+} from './host-recovery-eligibility';
+import { readClaudeLaunchSettings as realReadClaudeLaunchSettings } from '../../model-context-budget.mjs';
 import { CRASH_RESUME_ADVISORY_MARKER } from './crash-resume-advisory';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { getDoorConstantsSync } from '../../context-doors-config';
@@ -57,9 +65,60 @@ beforeAll(() => {
   process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = CODEX_HOMES_DIR;
 });
 
+describe('bounded codex auth recovery (parked-agent-census P-004)', () => {
+  const host: Parameters<typeof decideQuotaWakeRecovery>[0]['host'] = {
+    ownerId: 'su-auth',
+    bridgeTty: false,
+    authBlocked: true,
+    launchedBy: 'su-leader',
+    caps: ['quota-recovery', 'auth-recovery'],
+  };
+  const decide = (h: typeof host, extra: { accountMode?: string; priorAuthRecoveries?: number } = {}) =>
+    decideQuotaWakeRecovery({ host: h, subscriberId: 'su-auth', deliveryId: '77', ...extra });
+
+  it('recycles a dead codex login on ANY account route, tagged cause auth', () => {
+    for (const accountMode of ['auto', 'pin', 'default', undefined]) {
+      expect(decide(host, { accountMode })).toEqual({
+        eligible: true, reason: 'eligible', cause: 'auth', operationId: '77',
+      });
+    }
+  });
+
+  it('fails closed on every other gate, and auth outranks a stale quota reading', () => {
+    expect(decide({ ...host, bridgeTty: true })).toMatchObject({ eligible: false, reason: 'not-headless', cause: 'auth' });
+    expect(decide({ ...host, launchedBy: null })).toMatchObject({ eligible: false, reason: 'not-agent-launched' });
+    // An old host advertises quota-recovery only: it would not reset authBlocked.
+    expect(decide({ ...host, caps: ['quota-recovery'] })).toMatchObject({ eligible: false, reason: 'host-capability-missing' });
+    expect(decide({ ...host, ownerId: 'su-other' })).toMatchObject({ eligible: false, reason: 'wrong-owner' });
+    expect(decide({ ...host, quotaBlocked: true }, { accountMode: 'pin' })).toMatchObject({ eligible: true, cause: 'auth' });
+    expect(decide({ ...host, authBlocked: false }, { accountMode: 'pin' })).toMatchObject({ eligible: false, reason: 'not-quota-blocked' });
+  });
+
+  it('stops recycling once the per-owner bound is reached', () => {
+    expect(decide(host, { priorAuthRecoveries: AUTH_RECOVERY_MAX_PER_WINDOW - 1 })).toMatchObject({ eligible: true });
+    expect(decide(host, { priorAuthRecoveries: AUTH_RECOVERY_MAX_PER_WINDOW })).toMatchObject({
+      eligible: false, reason: 'auth-recovery-exhausted', cause: 'auth',
+    });
+  });
+
+  it('counts only this owner\'s auth recoveries inside the window', () => {
+    const now = 10 * AUTH_RECOVERY_WINDOW_MS;
+    const events = [
+      { kind: 'quota-recovery-started', recoveryOwnerId: 'su-auth', cause: 'auth', startedAtMs: now - 1000 },
+      { kind: 'quota-recovery-started', recoveryOwnerId: 'su-auth', cause: 'auth', startedAtMs: now - AUTH_RECOVERY_WINDOW_MS + 1 },
+      { kind: 'quota-recovery-started', recoveryOwnerId: 'su-auth', cause: 'auth', startedAtMs: now - AUTH_RECOVERY_WINDOW_MS - 1 },
+      { kind: 'quota-recovery-started', recoveryOwnerId: 'su-auth', cause: 'quota', startedAtMs: now - 1000 },
+      { kind: 'quota-recovery-started', recoveryOwnerId: 'su-auth', startedAtMs: now - 1000 },
+      { kind: 'quota-recovery-started', recoveryOwnerId: 'su-other', cause: 'auth', startedAtMs: now - 1000 },
+      { kind: 'quota-recovery-ready', recoveryOwnerId: 'su-auth', cause: 'auth', startedAtMs: now - 1000 },
+    ] as unknown as Parameters<typeof recentAuthRecoveryCount>[0];
+    expect(recentAuthRecoveryCount(events, 'su-auth', now)).toBe(2);
+    expect(recentAuthRecoveryCount([], 'su-auth', now)).toBe(0);
+  });
+});
+
 describe('bounded quota recovery contract (measured-agent-productivity P-004)', () => {
   const host: Parameters<typeof decideQuotaWakeRecovery>[0]['host'] = {
-    sock: '/tmp/quota.sock',
     ownerId: 'su-quota',
     bridgeTty: false,
     quotaBlocked: true,
@@ -67,13 +126,27 @@ describe('bounded quota recovery contract (measured-agent-productivity P-004)', 
     caps: ['quota-recovery'],
   };
 
+  it('admits a guarded conversation-preserving interactive auto host, including a human launch', () => {
+    const interactive = { ...host, bridgeTty: true, launchedBy: null,
+      caps: ['quota-recovery', 'quota-recovery-resume'] };
+    expect(decideQuotaWakeRecovery({ host: interactive, subscriberId: 'su-quota',
+      deliveryId: '901', accountMode: 'auto' })).toMatchObject({ eligible: true });
+    for (const accountMode of ['default', 'pin']) {
+      expect(decideQuotaWakeRecovery({ host: interactive, subscriberId: 'su-quota',
+        deliveryId: '901', accountMode })).toMatchObject({ eligible: false, reason: 'route-not-auto' });
+    }
+    expect(decideQuotaWakeRecovery({ host: { ...interactive, caps: ['quota-recovery'] },
+      subscriberId: 'su-quota', deliveryId: '901', accountMode: 'auto' }))
+      .toMatchObject({ eligible: false, reason: 'not-headless' });
+  });
+
   it('admits only the same-owner, headless, agent-launched auto route on a capable blocked host', () => {
     expect(decideQuotaWakeRecovery({
       host,
       subscriberId: 'su-quota',
       deliveryId: '901',
       accountMode: 'auto',
-    })).toEqual({ eligible: true, reason: 'eligible', operationId: '901' });
+    })).toEqual({ eligible: true, reason: 'eligible', cause: 'quota', operationId: '901' });
 
     const mutations: Array<[typeof host, ReturnType<typeof decideQuotaWakeRecovery>['reason']]> = [
       [{ ...host, ownerId: 'su-other' }, 'wrong-owner'],
@@ -176,11 +249,95 @@ describe('bounded quota recovery contract (measured-agent-productivity P-004)', 
     });
 
     latest.mockResolvedValueOnce(new Map([[ownerId, new Date(2_001).toISOString()]]));
+    // The productive same-owner call IS the pickup proof, so the delivery is booked
+    // host-attested rather than left awaiting the pump's sweep (P-006/D-004).
     expect(await executeWake(delivery, common)).toEqual({
       kind: 'delivered',
       channel: 'psu-socket-recycle',
+      turnProof: 'host-attested',
     });
     expect(latest).toHaveBeenLastCalledWith([ownerId]);
+  });
+});
+
+describe('live Codex quota gateway repair', () => {
+  const ownerId = 'su-quota-gateway';
+  const sessionId = 9901;
+  const fixture = (account = 'auto', launchedBy: string | null = 'su-leader') => {
+    const order: string[] = [];
+    const record = session({
+      id: sessionId, agent: 'codex', coordOwnerId: ownerId,
+      launchArgv: ['psu', '--agent=codex', `--account=${account}`, '--headless'],
+    });
+    const repair = vi.fn<NonNullable<ExecuteWakeDeps['ensureCodexHomeForWake']>>(async () => {
+      order.push('repair');
+      return { ok: true, repaired: true };
+    });
+    const inject = vi.fn<NonNullable<ExecuteWakeDeps['injectPsuHostWithConfirmation']>>(async () => {
+      order.push('inject');
+      return { ok: true, confirmation: 'acked', reason: 'delivered' };
+    });
+    const common = deps({
+      getSession: vi.fn(async () => record) as never,
+      findPsuHost: vi.fn(() => ({
+        sock: '/tmp/quota-gateway.sock', ownerId, bridgeTty: false,
+        quotaBlocked: true, launchedBy, caps: ['quota-recovery'],
+      })) as never,
+      ensureCodexHomeForWake: repair,
+      injectPsuHostWithConfirmation: inject,
+    });
+    const delivery = work({
+      id: sessionId, subscriberId: ownerId,
+      wakeHandle: advHandle({ advSessionId: sessionId, agent: 'codex', pid: 1234 }),
+    });
+    return { order, record, repair, inject, common, delivery };
+  };
+
+  it('repairs the persisted auto gateway route before recycling the live quota-blocked native session', async () => {
+    const f = fixture();
+    expect(await executeWake(f.delivery, f.common)).toEqual({ kind: 'delivered', channel: 'psu-socket-recycle' });
+    expect(f.order).toEqual(['repair', 'inject']);
+    expect(f.repair).toHaveBeenCalledWith({
+      advSessionId: sessionId, owner: ownerId, codexHome: codexHomeForAdvSession(sessionId),
+      headless: true, sessionRow: f.record, requireGatewayProvider: true, codexGatewayAccountId: null,
+    });
+  });
+
+  it.each([
+    { ok: false, reason: 'home-unreadable' },
+    { ok: true, repaired: false, reason: 'no-launch-spec' },
+  ])('parks rather than recycling into an unverified gateway route: $reason', async (result) => {
+    const f = fixture();
+    f.repair.mockResolvedValueOnce(result);
+    expect(await executeWake(f.delivery, f.common)).toMatchObject({
+      kind: 'park', reason: expect.stringContaining('Codex quota gateway repair'),
+    });
+    expect(f.inject).not.toHaveBeenCalled();
+  });
+
+  it('redacts rejected Codex home repair diagnostics before parking quota recovery', async () => {
+    const f = fixture();
+    const bearer = 'opaque-test-bearer-value-for-quota-repair';
+    f.repair.mockRejectedValueOnce(new Error(`Invalid character at row 102\nAuthorization = "Bearer ${bearer}"`));
+    const out = await executeWake(f.delivery, f.common);
+    expect(out).toMatchObject({ kind: 'park', reason: expect.stringContaining('Invalid character at row 102') });
+    expect(out).toMatchObject({ reason: expect.stringContaining('Authorization = "Bearer [redacted]"') });
+    expect(JSON.stringify(out)).not.toContain(bearer);
+    expect(f.inject).not.toHaveBeenCalled();
+  });
+
+  it('leaves an explicitly default account route unchanged', async () => {
+    const f = fixture('default');
+    await executeWake(f.delivery, f.common);
+    expect(f.repair).not.toHaveBeenCalled();
+    expect(f.inject.mock.calls[0]?.[1]).toMatchObject({ mode: 'turn' });
+  });
+
+  it('restores auto routing without weakening the missing-launch-provenance recycle fence', async () => {
+    const f = fixture('auto', null);
+    await executeWake(f.delivery, f.common);
+    expect(f.order).toEqual(['repair', 'inject']);
+    expect(f.inject.mock.calls[0]?.[1]).toMatchObject({ mode: 'turn' });
   });
 });
 
@@ -255,6 +412,17 @@ const session = (over: Record<string, unknown> = {}) => ({
 
 const livePresence = { stale: false, revoked: false };
 const stalePresence = { stale: true, revoked: false };
+const parkedMemberLiveness = (ownerId = 'su-abc') =>
+  vi.fn(async () => new Map([
+    [ownerId, {
+      ownerId,
+      sessionState: 'parked',
+      wakeable: false,
+      liveTurn: false,
+      confirmLiveness: null,
+      heartbeatFresh: true,
+    } as never],
+  ]));
 const testPtyAccessScope = {
   tenantId: 'ws',
   workspaceId: 'ws',
@@ -276,13 +444,24 @@ function fakeOmpPty(id = 'pty-omp') {
 }
 
 function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
+  const getSessionFn: NonNullable<ExecuteWakeDeps['getSession']> =
+    over.getSession ?? (vi.fn(async () => session()) as never);
   return {
-    getSession: vi.fn(async () => session()) as never,
+    getSession: getSessionFn,
+    getLatestSessionForOwner: vi.fn(async () => getSessionFn(42)) as never,
     findPty: vi.fn(() => null) as never,
     write: vi.fn(() => true) as never,
     spawnManagedPty: vi.fn(() => ({ id: 'pty-1' })) as never,
     spawnDetached: vi.fn(() => 1234),
+    // WI-10005900: hermetic by default — the production reader opens the
+    // settings.json the resumed claude would read, which falls back to the
+    // runner's real ~/.claude. No settings ⇒ the resume argv is unchanged.
+    readClaudeLaunchSettings: vi.fn(() => null),
     presence: vi.fn(async () => livePresence) as never,
+    // EI-24940177665447430: keep the delivery-time effective-mode read hermetic;
+    // only the dedicated fence cases below override this auto-mode default.
+    resolveWakeModeFn: vi.fn(async () => 'auto') as never,
+    stageManualWakeFn: vi.fn(async () => undefined) as never,
     getSessionLifecycle: vi.fn(async () => null),
     // EI-22449230917085417: keep ordinary wake tests hermetic; the production
     // default reads the live SU-lock table at the delivery boundary.
@@ -309,6 +488,8 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     countAgentToolCallsFn: vi.fn(async () => null) as never,
     forceResume: vi.fn(async () => false),
     claimResume: vi.fn(async () => true),
+    // Hermetic by default: a real re-arm reads/writes coordination PG state.
+    ensureInboxWakeArmedForActiveSession: vi.fn(async () => false),
     // WI-10002854 — hermetic by default. The real accountant writes a task-ledger
     // row and the adv-session pid to PG, and the real oracle reads the host's
     // /proc. Tests of the fence inject their own.
@@ -328,7 +509,7 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     rehomeWakeOnBackend: vi.fn(async () => ({ ok: false, detail: 'test default' })),
     resumePlanRun: vi.fn(async () => ({ ok: true as const })),
     // Hermetic by default: no live psu-pty host (don't read the real ~/.papercusp).
-    findPsuHost: vi.fn(() => null) as never,
+    findPsuHost: vi.fn(async () => null) as never,
     injectPsuHost: vi.fn(async () => true) as never,
     // Hermetic by default: the hive-fresh-wake fire is stubbed so a hive-labelled
     // session never reaches the real default (which lazy-imports + touches PG).
@@ -361,6 +542,308 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     ...over,
   };
 }
+
+describe('executeWake — delivery-time current wake-mode fence (EI-24940177665447430)', () => {
+  const ownerId = 'su-paused-at-delivery';
+  const inboxKey = `coord:inbox-wake:${ownerId}`;
+  const ownerRelayPayload = (quote: string) => ({
+    messageId: `owner-msg-${quote.length}`,
+    relayProvenance: {
+      tier: 'owner-verified-turn',
+      quote,
+      origin: 'owner',
+    },
+  });
+  const planHandle = { kind: 'plan-run' as const, runId: 92 };
+
+  it('stages an ordinary queued delivery when the recipient is manual before any continuation runs', async () => {
+    const resolveWakeModeFn = vi.fn(async () => 'manual' as const);
+    const stageManualWakeFn = vi.fn(async () => undefined);
+    const resumePlanRun = vi.fn(async () => ({ ok: true as const }));
+    const d = deps({ resolveWakeModeFn: resolveWakeModeFn as never, stageManualWakeFn: stageManualWakeFn as never, resumePlanRun });
+    const delivery = work({
+      subscriberId: ownerId,
+      eventKey: 'work-item:claimable',
+      payload: { workItemId: 'WI-42' },
+      source: 'su-peer',
+      wakeHandle: planHandle,
+    });
+
+    await expect(executeWake(delivery, d)).resolves.toEqual({
+      kind: 'drop',
+      reason: 'effective wake mode is manual at delivery time; queued wake staged for owner review',
+    });
+    expect(resolveWakeModeFn).toHaveBeenCalledWith(ownerId);
+    expect(stageManualWakeFn).toHaveBeenCalledWith({
+      ownerId,
+      summary: delivery.summary,
+      payload: delivery.payload,
+      source: delivery.source,
+      workspaceId: delivery.workspaceId,
+    });
+    expect(resumePlanRun).not.toHaveBeenCalled();
+    expect(d.findPsuHost).not.toHaveBeenCalled();
+    expect(d.spawnDetached).not.toHaveBeenCalled();
+    expect(d.write).not.toHaveBeenCalled();
+  });
+
+  it('keeps an explicit wake-queue release deliverable while manual mode is active', async () => {
+    const stageManualWakeFn = vi.fn(async () => undefined);
+    const resumePlanRun = vi.fn(async () => ({ ok: true as const }));
+    const d = deps({
+      resolveWakeModeFn: vi.fn(async () => 'manual') as never,
+      stageManualWakeFn: stageManualWakeFn as never,
+      resumePlanRun,
+    });
+    const delivery = work({
+      subscriberId: ownerId,
+      eventKey: inboxKey,
+      payload: { value: 'owner-reviewed release' },
+      source: 'coord:wake-queue-release:su-peer',
+      wakeHandle: planHandle,
+    });
+
+    await expect(executeWake(delivery, d)).resolves.toEqual({
+      kind: 'delivered',
+      channel: 'plan-run-resume',
+    });
+    expect(stageManualWakeFn).not.toHaveBeenCalled();
+    expect(resumePlanRun).toHaveBeenCalledWith(expect.objectContaining({ runId: planHandle.runId }));
+  });
+
+  it('keeps an owner-verified relay on the recipient inbox-wake deliverable in manual mode', async () => {
+    const stageManualWakeFn = vi.fn(async () => undefined);
+    const resumePlanRun = vi.fn(async () => ({ ok: true as const }));
+    const d = deps({
+      resolveWakeModeFn: vi.fn(async () => 'manual') as never,
+      stageManualWakeFn: stageManualWakeFn as never,
+      resumePlanRun,
+    });
+    const delivery = work({
+      subscriberId: ownerId,
+      eventKey: inboxKey,
+      payload: ownerRelayPayload('resume this agent'),
+      source: 'su-relaying-agent',
+      wakeHandle: planHandle,
+    });
+
+    await expect(executeWake(delivery, d)).resolves.toEqual({
+      kind: 'delivered',
+      channel: 'plan-run-resume',
+    });
+    expect(stageManualWakeFn).not.toHaveBeenCalled();
+    expect(resumePlanRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts coalesced owner relays only when every component is an owner-verified inbox wake', async () => {
+    const { coalesceDeliveries } = await import('./engine');
+    const stageManualWakeFn = vi.fn(async () => undefined);
+    const resumePlanRun = vi.fn(async () => ({ ok: true as const }));
+    const d = deps({
+      resolveWakeModeFn: vi.fn(async () => 'manual') as never,
+      stageManualWakeFn: stageManualWakeFn as never,
+      resumePlanRun,
+    });
+    const first = work({
+      id: 93,
+      subscriberId: ownerId,
+      eventKey: inboxKey,
+      payload: ownerRelayPayload('resume agent one'),
+      source: 'su-relaying-agent',
+      createdAt: new Date(1_000).toISOString(),
+    });
+    const second = work({
+      id: 94,
+      subscriberId: ownerId,
+      eventKey: inboxKey,
+      payload: ownerRelayPayload('resume agent two'),
+      source: 'su-relaying-agent',
+      createdAt: new Date(2_000).toISOString(),
+    });
+    const delivery = { ...coalesceDeliveries([first, second]), wakeHandle: planHandle };
+
+    await expect(executeWake(delivery, d)).resolves.toEqual({
+      kind: 'delivered',
+      channel: 'plan-run-resume',
+    });
+    expect(stageManualWakeFn).not.toHaveBeenCalled();
+    expect(resumePlanRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let a verified relay authorize an unrelated coalesced sibling or another event key', async () => {
+    const { coalesceDeliveries } = await import('./engine');
+    const stageManualWakeFn = vi.fn(async () => undefined);
+    const resumePlanRun = vi.fn(async () => ({ ok: true as const }));
+    const d = deps({
+      resolveWakeModeFn: vi.fn(async () => 'manual') as never,
+      stageManualWakeFn: stageManualWakeFn as never,
+      resumePlanRun,
+    });
+    const ordinary = work({
+      id: 95,
+      subscriberId: ownerId,
+      eventKey: 'work-item:claimable',
+      payload: { workItemId: 'WI-43' },
+      source: 'su-peer',
+      createdAt: new Date(1_000).toISOString(),
+    });
+    const ownerRelay = work({
+      id: 96,
+      subscriberId: ownerId,
+      eventKey: inboxKey,
+      payload: ownerRelayPayload('resume this agent'),
+      source: 'su-relaying-agent',
+      createdAt: new Date(2_000).toISOString(),
+    });
+    const mixedDelivery = { ...coalesceDeliveries([ordinary, ownerRelay]), wakeHandle: planHandle };
+
+    await expect(executeWake(mixedDelivery, d)).resolves.toMatchObject({ kind: 'drop' });
+    expect(stageManualWakeFn).toHaveBeenCalledTimes(1);
+    expect(resumePlanRun).not.toHaveBeenCalled();
+
+    const forgedKeyDelivery = work({
+      subscriberId: ownerId,
+      eventKey: 'work-item:claimable',
+      payload: ownerRelayPayload('resume this agent'),
+      source: 'su-relaying-agent',
+      wakeHandle: planHandle,
+    });
+    await expect(executeWake(forgedKeyDelivery, d)).resolves.toMatchObject({ kind: 'drop' });
+    expect(stageManualWakeFn).toHaveBeenCalledTimes(2);
+    expect(resumePlanRun).not.toHaveBeenCalled();
+  });
+});
+
+describe('executeWake — managed shutdown replay fence (EI-25270078901082313)', () => {
+  // The archived receipt proves one delivery, two attempts, and a hostless
+  // resume after accepted shutdown. Its intermediate retry state is UNKNOWN.
+  // This distinguishing fixture shows accepted-host retry is sufficient even
+  // when no detached turn or failed-turn exit/reopen callback ever occurred.
+  const ownerId = 'su-7afe5ac1-8a88-4476-bff8-104ca4a195dd';
+  const nativeId = '01a1132f-8539-7d42-be10-9a3fee60765f';
+  const shutdown = { at: '2026-10-06T22:07:55.842Z', by: ownerId };
+  const replay = (over: Partial<DeliveryWork> = {}) => work({
+    id: 460479,
+    subscriberId: ownerId,
+    eventKey: `coord:inbox-wake:${ownerId}`,
+    payload: { msg_id: 'coord-send-041fbf6037af2ab2888028dc35d009ad271e6eb8ce9caa589a0c95ab44b2c94d' },
+    createdAt: '2026-10-06T22:07:15.733Z',
+    wakeHandle: advHandle({ sessionId: nativeId }),
+    ...over,
+  });
+  const endedSession = () => session({
+    coordOwnerId: ownerId,
+    sessionId: nativeId,
+    startedAt: '2026-10-06T22:00:00.000Z',
+    endedAt: '2026-10-06T22:07:56.001Z',
+  });
+
+  it('settles the same accepted-host delivery after shutdown without a failed-turn callback or hostless resume', async () => {
+    let stopped = false;
+    const onResumeTurnExit = vi.fn();
+    const d = deps({
+      getSession: vi.fn(async () => stopped ? endedSession() : { ...endedSession(), endedAt: null }) as never,
+      getSessionLifecycle: vi.fn(async () => stopped ? { shutdown } : null) as never,
+      findPsuHost: vi.fn(() => stopped ? null : { sock: '/tmp/managed-shutdown.sock' }) as never,
+      injectPsuHost: undefined,
+      injectPsuHostWithConfirmation: vi.fn(async () => ({ ok: true, confirmation: 'acked', reason: 'accepted' })) as never,
+      recoverToolReferenceDeath: vi.fn(async () => 'not-dead' as const),
+      onResumeTurnExit,
+    });
+    expect(await executeWake(replay(), d)).toMatchObject({ kind: 'park', hostCommitPending: true });
+    expect(d.spawnDetached).not.toHaveBeenCalled();
+    expect(onResumeTurnExit).not.toHaveBeenCalled();
+
+    stopped = true;
+    const outcome = await executeWake(replay({
+      attempts: 2,
+      lastError: 'psu-host accepted: delivery accepted before turn-start proof; retry remains durable',
+    }), d);
+    expect(outcome).toMatchObject({ kind: 'drop', reason: expect.stringContaining('managed shutdown') });
+    expect(d.spawnDetached).not.toHaveBeenCalled();
+    expect(d.claimResume).not.toHaveBeenCalled();
+    expect(onResumeTurnExit).not.toHaveBeenCalled();
+  });
+
+  it.each([null, 'resume-turn-death:process-exit'])('also fences an old delivery with retry history %s', async (lastError) => {
+    const d = deps({
+      getSession: vi.fn(async () => endedSession()) as never,
+      getSessionLifecycle: vi.fn(async () => ({ shutdown })) as never,
+      alive: vi.fn(() => false),
+      recoverToolReferenceDeath: vi.fn(async () => 'not-dead' as const),
+    });
+    expect(await executeWake(replay({ attempts: 2, lastError }), d)).toMatchObject({ kind: 'drop' });
+    expect(d.spawnDetached).not.toHaveBeenCalled();
+    expect(d.claimResume).not.toHaveBeenCalled();
+  });
+
+  it('keeps a genuinely newer wake durable until a managed host is available, then injects once', async () => {
+    let hostAvailable = false;
+    const d = deps({
+      getSession: vi.fn(async () => endedSession()) as never,
+      getSessionLifecycle: vi.fn(async () => ({ shutdown })) as never,
+      findPsuHost: vi.fn(() => hostAvailable ? { sock: '/tmp/restored-managed-host.sock' } : null) as never,
+      alive: vi.fn(() => false),
+      recoverToolReferenceDeath: vi.fn(async () => 'not-dead' as const),
+    });
+    const freshWake = replay({ id: 460480, createdAt: '2026-10-06T22:08:07.000Z', attempts: 1 });
+    expect(await executeWake(freshWake, d)).toMatchObject({
+      kind: 'park', reason: expect.stringContaining('managed psu host'),
+    });
+    expect(d.spawnDetached).not.toHaveBeenCalled();
+    expect(d.claimResume).not.toHaveBeenCalled();
+    hostAvailable = true;
+    expect(await executeWake(freshWake, d)).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    expect(d.injectPsuHost).toHaveBeenCalledTimes(1);
+    expect(d.injectPsuHost).toHaveBeenCalledWith('/tmp/restored-managed-host.sock', expect.objectContaining({ deliveryId: '460480' }));
+    expect(d.spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it('does not replay pre-shutdown wakes even after a managed successor becomes available', async () => {
+    const d = deps({
+      getSessionLifecycle: vi.fn(async () => ({ shutdown })) as never,
+      findPsuHost: vi.fn(() => ({ sock: '/tmp/new-managed-host.sock' })) as never,
+    });
+    for (const wakeHandle of [null, advHandle({ sessionId: nativeId }), { kind: 'plan-run' as const, runId: 12 }]) {
+      expect(await executeWake(replay({ wakeHandle }), d)).toMatchObject({ kind: 'drop' });
+    }
+    expect(d.findPsuHost).not.toHaveBeenCalled();
+    expect(d.injectPsuHost).not.toHaveBeenCalled();
+    expect(d.resumePlanRun).not.toHaveBeenCalled();
+  });
+
+  it('does not spawn headlessly if the restored host disappears during injection', async () => {
+    const d = deps({
+      getSession: vi.fn(async () => endedSession()) as never,
+      getSessionLifecycle: vi.fn(async () => ({ shutdown })) as never,
+      findPsuHost: vi.fn().mockReturnValueOnce({ sock: '/tmp/disappearing-host.sock' }).mockReturnValue(null),
+      injectPsuHost: vi.fn(async () => false),
+      alive: vi.fn(() => false),
+      recoverToolReferenceDeath: vi.fn(async () => 'not-dead' as const),
+    });
+    const outcome = await executeWake(replay({ id: 460480, createdAt: '2026-10-06T22:08:07.000Z' }), d);
+    expect(outcome).toMatchObject({ kind: 'park' });
+    expect(d.spawnDetached).not.toHaveBeenCalled();
+    expect(d.claimResume).not.toHaveBeenCalled();
+  });
+
+  it('removes a pre-shutdown replay folded behind a genuinely newer headline', async () => {
+    const d = deps({
+      getSessionLifecycle: vi.fn(async () => ({ shutdown })) as never,
+      findPsuHost: vi.fn(() => ({ sock: '/tmp/reattached-host.sock' })) as never,
+    });
+    const fresh = replay({ id: 460480, wakeHandle: null, createdAt: '2026-10-06T22:08:07.000Z', summary: 'NEW-MANAGED-WORK' });
+    const events = [replay({ summary: 'OLD-HANDLED-WORK' }), fresh].map((event) => ({
+      event: event.eventKey, summary: event.summary, payload: event.payload, delivery_id: event.id, createdAt: event.createdAt,
+    }));
+    const outcome = await executeWake({ ...fresh, payload: { coalesced: true, events, latest: events[1] } }, d);
+    expect(outcome).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    const text = vi.mocked(d.injectPsuHost!).mock.calls[0][1].data;
+    expect(text).toContain('NEW-MANAGED-WORK');
+    expect(text).not.toContain('OLD-HANDLED-WORK');
+    expect(text).not.toContain('460479');
+  });
+});
 
 describe('executeWake — durable fleet release latch (EI-203843)', () => {
   it('drops every wake shape before any injection or resume side effect', async () => {
@@ -721,6 +1204,102 @@ describe('executeWake — delivery-time canonical claimable freshness (EI-215842
     expect(write).not.toHaveBeenCalled();
   });
 
+  it('cancels an accepted native delivery before downgrading its now-stale claimable retry', async () => {
+    const ownerId = 'su-stale-claimable';
+    const sock = '/tmp/stale-claimable.sock';
+    const pendingHostWrites = new Map<string, string>();
+    let itemState = 'open';
+    let cancellationAttempts = 0;
+    const injectPsuHostWithConfirmation = vi.fn<NonNullable<ExecuteWakeDeps['injectPsuHostWithConfirmation']>>(
+      async (_sock, message) => {
+        const deliveryId = String(message.deliveryId ?? '');
+        if (message.mode === 'delivery-cancel') {
+          cancellationAttempts += 1;
+          if (cancellationAttempts === 1) {
+            return { ok: true, confirmation: 'acked' as const, reason: 'cancel-requested' };
+          }
+          if (cancellationAttempts === 2) {
+            return { ok: false, confirmation: 'acked' as const, reason: 'delivery-already-writing' };
+          }
+          const cancelled = pendingHostWrites.delete(deliveryId);
+          return {
+            ok: true,
+            confirmation: 'acked' as const,
+            reason: cancelled ? 'cancelled-before-write' : 'delivery-unknown',
+          };
+        }
+        if (message.mode === 'turn') {
+          if (!pendingHostWrites.has(deliveryId)) pendingHostWrites.set(deliveryId, message.data);
+          return {
+            ok: true,
+            confirmation: 'acked' as const,
+            reason: pendingHostWrites.size === 1 ? 'accepted' : 'pending-delivery-id',
+          };
+        }
+        return { ok: false, confirmation: 'acked' as const, reason: 'unexpected-mode' };
+      },
+    );
+    const getCurrentWorkItem = vi.fn(async () => ({
+      id: 'WI-42419', state: itemState, assignee: null, payload: null,
+    })) as never;
+    const sendCoordMessage = vi.fn(async () => ({}) as never);
+    const delivery = claimableWork({ id: 782698, subscriberId: ownerId, wakeHandle: null });
+    const d = deps({
+      findPsuHost: vi.fn(() => ({ sock, ownerId, caps: ['delivery-cancel'] })) as never,
+      injectPsuHost: undefined,
+      injectPsuHostWithConfirmation: injectPsuHostWithConfirmation as never,
+      getCurrentWorkItem,
+      sendCoordMessage: sendCoordMessage as never,
+    });
+
+    await expect(executeWake(delivery, d)).resolves.toMatchObject({
+      kind: 'park', hostCommitPending: true, reason: expect.stringContaining('accepted'),
+    });
+    expect(pendingHostWrites.has('782698')).toBe(true);
+
+    itemState = 'done';
+    const staleRetry = {
+      ...delivery,
+      attempts: 2,
+      lastError: 'psu-host accepted: delivery accepted before turn-start proof; retry remains durable',
+    };
+    const requestOnly = await executeWake(staleRetry, d);
+    expect(requestOnly).toMatchObject({
+      kind: 'park', hostCommitPending: true, reason: expect.stringContaining('cancel-requested'),
+    });
+    expect(pendingHostWrites.has('782698')).toBe(true);
+    expect(sendCoordMessage).not.toHaveBeenCalled();
+
+    const writingRetry = {
+      ...staleRetry,
+      lastError: requestOnly.kind === 'park' ? requestOnly.reason : staleRetry.lastError,
+    };
+    const writing = await executeWake(writingRetry, d);
+    expect(writing).toMatchObject({
+      kind: 'park', hostCommitPending: true, reason: expect.stringContaining('delivery-already-writing'),
+    });
+    expect(pendingHostWrites.has('782698')).toBe(true);
+    expect(sendCoordMessage).not.toHaveBeenCalled();
+
+    const receiptRetry = {
+      ...writingRetry,
+      lastError: writing.kind === 'park' ? writing.reason : writingRetry.lastError,
+    };
+    await expect(executeWake(receiptRetry, d)).resolves.toEqual({ kind: 'delivered', channel: 'inbox' });
+
+    expect(injectPsuHostWithConfirmation.mock.calls.map((call) => call[1].mode)).toEqual([
+      'turn', 'delivery-cancel', 'delivery-cancel', 'delivery-cancel',
+    ]);
+    expect(injectPsuHostWithConfirmation.mock.calls[1]?.[1]).toMatchObject({
+      mode: 'delivery-cancel', ownerId, deliveryId: '782698',
+    });
+    expect(injectPsuHostWithConfirmation.mock.calls[2]?.[1]).toMatchObject({
+      mode: 'delivery-cancel', ownerId, deliveryId: '782698',
+    });
+    expect(pendingHostWrites.has('782698')).toBe(false);
+    expect(sendCoordMessage).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps a current unclaimed claimable item on the normal wake ladder', async () => {
     const findPty = vi.fn(() => ({ id: 'pty-current' }));
     const write = vi.fn(() => true);
@@ -773,7 +1352,7 @@ describe('executeWake — delivery-time canonical claimable freshness (EI-215842
       wakeHandle: advHandle(),
     });
     const findPty = vi.fn(() => ({ id: 'pty-coalesced' }));
-    const write = vi.fn(() => true);
+    const write = vi.fn<NonNullable<ExecuteWakeDeps['write']>>(() => true);
     const getCurrentWorkItem = vi.fn(async () => ({ id: 'WI-42419', state: 'done', assignee: null, payload: null })) as never;
     const d = deps({ findPty: findPty as never, write: write as never, getCurrentWorkItem });
 
@@ -787,6 +1366,96 @@ describe('executeWake — delivery-time canonical claimable freshness (EI-215842
     expect(injected).toContain('the lock is still actionable');
     expect(injected).not.toContain('WI-42419');
     expect(injected).not.toContain('requeued');
+  });
+});
+
+describe('executeWake — terminal blocked-item lifecycle binding freshness (EI-24119981583160918)', () => {
+  const blockedHolderWork = (overrides: Partial<DeliveryWork> = {}): DeliveryWork =>
+    work({
+      eventKey: 'work-item:done:WI-10002513',
+      payload: {
+        id: 'WI-10002513',
+        bound_to: { kind: 'work-item-blocked', ref: 'WI-10002520' },
+        armed_because: 'blocked-item-holder auto-arm for WI-10002520',
+      },
+      wakeHandle: advHandle(),
+      ...overrides,
+    });
+
+  it('drops a queued blocked-holder wake when its bound item is already terminal', async () => {
+    const findPty = vi.fn();
+    const write = vi.fn();
+    const sendCoordMessage = vi.fn(async () => ({}) as never);
+    const getCurrentWorkItem = vi.fn(async (id: string) => ({ id, state: 'done' })) as never;
+    const d = deps({
+      findPty: findPty as never,
+      write: write as never,
+      sendCoordMessage: sendCoordMessage as never,
+      getCurrentWorkItem,
+    });
+
+    await expect(executeWake(blockedHolderWork(), d)).resolves.toEqual({
+      kind: 'drop',
+      reason: expect.stringContaining('WI-10002520 are terminal'),
+    });
+    expect(getCurrentWorkItem).toHaveBeenCalledWith('WI-10002520');
+    expect(findPty).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    expect(sendCoordMessage).not.toHaveBeenCalled();
+  });
+
+  it('keeps a live bound item on the normal wake ladder', async () => {
+    const findPty = vi.fn(() => ({ id: 'pty-live-bound' }));
+    const write = vi.fn(() => true);
+    const getCurrentWorkItem = vi.fn(async (id: string) => ({ id, state: 'open' })) as never;
+    const d = deps({ findPty: findPty as never, write: write as never, getCurrentWorkItem });
+
+    await expect(executeWake(blockedHolderWork(), d)).resolves.toEqual({
+      kind: 'delivered',
+      channel: 'pty-inject',
+    });
+    expect(getCurrentWorkItem).toHaveBeenCalledWith('WI-10002520');
+    expect(write).toHaveBeenCalled();
+  });
+
+  it('removes only terminal-bound components from a coalesced wake', async () => {
+    const { coalesceDeliveries } = await import('./engine');
+    const stale = blockedHolderWork({ id: 70, createdAt: new Date(1000).toISOString() });
+    const live = work({
+      id: 71,
+      eventKey: 'lock:grant:t-1',
+      summary: 'the lock is still actionable',
+      payload: { ok: true },
+      createdAt: new Date(2000).toISOString(),
+      wakeHandle: advHandle(),
+    });
+    const findPty = vi.fn(() => ({ id: 'pty-coalesced-bound' }));
+    const write = vi.fn<NonNullable<ExecuteWakeDeps['write']>>(() => true);
+    const getCurrentWorkItem = vi.fn(async (id: string) => ({ id, state: 'done' })) as never;
+    const d = deps({ findPty: findPty as never, write: write as never, getCurrentWorkItem });
+
+    const out = await executeWake({ ...coalesceDeliveries([stale, live]), wakeHandle: advHandle() }, d);
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'pty-inject' });
+    expect(getCurrentWorkItem).toHaveBeenCalledWith('WI-10002520');
+    const injected = String((write.mock.calls[0]?.[1] as Buffer | undefined)?.toString('utf8') ?? '');
+    expect(injected).toContain('lock:grant:t-1');
+    expect(injected).toContain('the lock is still actionable');
+    expect(injected).not.toContain('WI-10002520');
+  });
+
+  it('fails open when the bound target cannot be read', async () => {
+    const findPty = vi.fn(() => ({ id: 'pty-fail-open' }));
+    const write = vi.fn(() => true);
+    const getCurrentWorkItem = vi.fn(async () => null) as never;
+    const d = deps({ findPty: findPty as never, write: write as never, getCurrentWorkItem });
+
+    await expect(executeWake(blockedHolderWork(), d)).resolves.toEqual({
+      kind: 'delivered',
+      channel: 'pty-inject',
+    });
+    expect(findPty).toHaveBeenCalled();
+    expect(write).toHaveBeenCalled();
   });
 });
 
@@ -1001,6 +1670,79 @@ describe('wakeTurnText', () => {
 
       await degradeToInboxOrDrop(work({ eventKey: DONE_KEY, payload: null }), 'no live pty', send);
       expect(sent[0].summary).toBe(`[await-event] ${DONE_KEY} fired — delivered to your coord inbox (no live pty)`);
+    });
+
+    it('does not report a loop fire as delivered when only an inbox notice was written', async () => {
+      const sent: { summary?: string; body?: string }[] = [];
+      const send = (async (_identity: unknown, opts: { summary?: string; body?: string }) => {
+        sent.push(opts);
+        return {} as never;
+      }) as unknown as Parameters<typeof degradeToInboxOrDrop>[2];
+
+      const outcome = await degradeToInboxOrDrop(
+        work({
+          eventKey: 'coord:inbox-wake:su-loop',
+          source: 'loop:rt-loop',
+          payload: { carry: 'warm', wakeCount: 6, harness: 'papercusp', routineId: 'rt-loop' },
+        }),
+        'no live pty',
+        send,
+      );
+
+      expect(outcome).toMatchObject({
+        kind: 'drop',
+        reason: expect.stringContaining('loop turn delivery cannot fall back to inbox'),
+      });
+      expect(sent).toHaveLength(0);
+    });
+
+    it('allows a mixed wake to use inbox after its stale loop component is stripped', async () => {
+      const sent: { summary?: string; body?: string }[] = [];
+      const send = (async (_identity: unknown, opts: { summary?: string; body?: string }) => {
+        sent.push(opts);
+        return {} as never;
+      }) as unknown as Parameters<typeof degradeToInboxOrDrop>[2];
+
+      const outcome = await degradeToInboxOrDrop(
+        work({
+          eventKey: DONE_KEY,
+          payload: {
+            coalesced: true,
+            events: [{ event: DONE_KEY, payload: { msg_id: 'm-1' } }],
+            latest: { event: DONE_KEY, payload: { msg_id: 'm-1' } },
+          },
+        }),
+        'stale loop component stripped',
+        send,
+      );
+
+      expect(outcome).toEqual({ kind: 'delivered', channel: 'inbox' });
+      expect(sent).toHaveLength(1);
+    });
+
+    it('labels a positive lock grant as a snapshot when it is deferred to the inbox', async () => {
+      const sent: { summary?: string; body?: string }[] = [];
+      const send = (async (_identity: unknown, opts: { summary?: string; body?: string }) => {
+        sent.push(opts);
+        return {} as never;
+      }) as unknown as Parameters<typeof degradeToInboxOrDrop>[2];
+      const original = 'file lock GRANTED — you now hold src/example.ts';
+
+      await degradeToInboxOrDrop(
+        work({
+          eventKey: 'lock:grant:ticket-1',
+          payload: { granted: true, lock_id: 'lock-1', ticket_id: 'ticket-1' },
+          summary: original,
+        }),
+        'no live pty',
+        send,
+      );
+
+      expect(sent).toHaveLength(1);
+      expect(sent[0].body).toContain('INBOX SNAPSHOT');
+      expect(sent[0].body).toContain('Re-check current ownership with locks:queue before acting');
+      expect(sent[0].body).toContain('Original grant notification (snapshot only)');
+      expect(sent[0].body!.indexOf('INBOX SNAPSHOT')).toBeLessThan(sent[0].body!.indexOf(original));
     });
   });
 
@@ -1516,6 +2258,145 @@ describe('rehydrateLoopWakeText (EI-10935: delivery-time carry-note re-check)', 
       if (m) rmSync(m[1], { force: true });
     }
   });
+
+  // P-001 (carry-recheck-and-governed-memory-2026-10-14, R-1): the LIVE RE-CHECK block RUNS the
+  // carried probes it prints, instead of only printing them.
+  it('runs the delivery-time carried probes and places their result inside the live re-check block', async () => {
+    const { renderCarryNote } = await import('../../carry-note');
+    const probe = {
+      kind: 'state-cell',
+      cell: 'gate.greenCheckpoint.verdict',
+      schemaRevision: 'rev-test',
+      expect: { path: '$.value', op: 'eq', value: 'green' },
+    } as const;
+    const note = renderCarryNote({
+      did: 'Shipped the fix.',
+      checks: [
+        { claim: 'gate is green', recheck: 'state:read gate', probe: probe as never },
+        { claim: 'prose-only claim', recheck: 'look at it' },
+      ],
+    });
+    const carriedProbeBlockFn = vi.fn(async (_input: unknown) => '🧪 CARRIED PROBES re-run at delivery — 0 hold · 1 changed · 0 could not run:\n  ✗ CHANGED — gate is green [loop check 1]: observed "red"');
+    const d = work({ payload: { harness: 'papercusp', wakeCount: 3 }, subscriberId: 'su-probe' });
+    const out = await rehydrateLoopWakeText(d, STALE_TEXT, {
+      getLoopCarryNoteWithMetaFn: vi.fn(async () => ({ note, updatedAtMs: Date.now() - 1_000 })),
+      carriedProbeBlockFn,
+    });
+    expect(carriedProbeBlockFn).toHaveBeenCalledTimes(1);
+    const arg = carriedProbeBlockFn.mock.calls[0]![0] as { ownerId: string; harness: string; readAtIso: string; checks: Array<{ claim: string }> };
+    expect(arg.ownerId).toBe('su-probe');
+    expect(arg.harness).toBe('papercusp');
+    expect(arg.readAtIso).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    // every carried check reaches the runner; it skips the probe-less one itself
+    expect(arg.checks.map((c) => c.claim)).toEqual(['gate is green', 'prose-only claim']);
+    expect(out).toContain('✗ CHANGED — gate is green [loop check 1]: observed "red"');
+    const block = out.slice(0, out.indexOf(STALE_TEXT));
+    expect(block.indexOf('CARRIED PROBES')).toBeGreaterThan(block.indexOf('LIVE RE-CHECK'));
+    expect(block.indexOf('CARRIED PROBES')).toBeLessThan(block.indexOf('TRUST THIS BLOCK'));
+  });
+
+  // P-002 (carry-recheck-and-governed-memory-2026-10-14, R-2 / R-12 / R-21): the LIVE RE-CHECK block
+  // carries the delivered note's moved references, and nothing when none moved.
+  it('places the delivery-time carried-reference changes inside the live re-check block', async () => {
+    const note = 'Did: shipped WI-1234 and decided plan-x#D-002.';
+    const carryRefBlockFn = vi.fn(async (_input: unknown) =>
+      '🔗 CARRIED REFERENCES re-checked at wake delivery — 1 reference has moved since the checkpoint was written:\n  ✗ GONE — work-item:WI-1234 [loop note]: stamped open@1',
+    );
+    const d = work({ payload: { harness: 'papercusp', wakeCount: 3 }, subscriberId: 'su-refs', workspaceId: 'ws-refs' });
+    const out = await rehydrateLoopWakeText(d, STALE_TEXT, {
+      getLoopCarryNoteWithMetaFn: vi.fn(async () => ({ note, updatedAtMs: Date.now() - 1_000 })),
+      carryRefBlockFn,
+    });
+    expect(carryRefBlockFn).toHaveBeenCalledTimes(1);
+    const arg = carryRefBlockFn.mock.calls[0]![0] as {
+      ownerId: string;
+      harness: string;
+      workspaceId: string;
+      deliveredNote: string;
+      readAtIso: string;
+    };
+    expect(arg).toMatchObject({ ownerId: 'su-refs', harness: 'papercusp', workspaceId: 'ws-refs', deliveredNote: note });
+    expect(arg.readAtIso).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    const block = out.slice(0, out.indexOf(STALE_TEXT));
+    expect(block).toContain('✗ GONE — work-item:WI-1234 [loop note]');
+    expect(block.indexOf('CARRIED REFERENCES')).toBeGreaterThan(block.indexOf('LIVE RE-CHECK'));
+    expect(block.indexOf('CARRIED REFERENCES')).toBeLessThan(block.indexOf('TRUST THIS BLOCK'));
+  });
+
+  it('prints no carried-reference line when nothing moved, and skips the re-check on a failed note read', async () => {
+    const carryRefBlockFn = vi.fn(async () => null);
+    const d = work({ payload: { harness: 'papercusp', wakeCount: 3 }, subscriberId: 'su-refs' });
+    const unchanged = await rehydrateLoopWakeText(d, STALE_TEXT, {
+      getLoopCarryNoteWithMetaFn: vi.fn(async () => ({ note: 'Did: WI-1234', updatedAtMs: Date.now() - 1_000 })),
+      carryRefBlockFn,
+    });
+    expect(carryRefBlockFn).toHaveBeenCalledTimes(1);
+    expect(unchanged).not.toContain('CARRIED REFERENCES');
+    const failedRead = vi.fn(async () => 'SHOULD NOT APPEAR');
+    const out = await rehydrateLoopWakeText(d, STALE_TEXT, {
+      getLoopCarryNoteWithMetaFn: vi.fn(async () => ({ note: 'Did: WI-1234', updatedAtMs: null, readFailed: true })),
+      carryRefBlockFn: failedRead,
+    });
+    expect(failedRead).not.toHaveBeenCalled();
+    expect(out).not.toContain('SHOULD NOT APPEAR');
+  });
+
+  it('keeps carried probe and reference deltas visible when a long checkpoint fills the injection door', async () => {
+    const { renderCarryNote } = await import('../../carry-note');
+    const note = renderCarryNote({
+      did: 'Verified WI-1234. ' + 'Earlier verification detail. '.repeat(180),
+      insight: 'Historical context. '.repeat(140),
+      checks: [{ claim: 'status is green', recheck: 'read status', probe: {
+        kind: 'state-cell', cell: 'gate.greenCheckpoint.verdict', schemaRevision: 'rev-test',
+        expect: { path: '$.value', op: 'eq', value: 'green' },
+      } as never }],
+    });
+    const probeDelta = '  ✗ CHANGED — status is green [loop #status]: observed "red"';
+    const refDelta = '  ↻ CHANGED — work-item:WI-1234 [loop note]: open → done';
+    const d = work({ payload: { harness: 'papercusp', wakeCount: 3 }, subscriberId: 'su-carry-budget' });
+    const composed = await rehydrateLoopWakeText(d, STALE_TEXT.repeat(100), {
+      getLoopCarryNoteWithMetaFn: async () => ({ note, updatedAtMs: Date.now() - 1_000 }),
+      getLoopStatusFn: async () => null,
+      carriedProbeBlockFn: async () => `🧪 CARRIED PROBES — 1 changed:\n${probeDelta}`,
+      carryRefBlockFn: async () => `🔗 CARRIED REFERENCES — 1 changed:\n${refDelta}`,
+    });
+    const delivered = applyInjectionDoor(d, composed);
+    try {
+      expect(composed.indexOf(probeDelta)).toBeLessThan(composed.indexOf('Current verified loop:checkpoint'));
+      expect(delivered).toContain(probeDelta);
+      expect(delivered).toContain(refDelta);
+      expect(delivered).toContain('[injection-door:');
+    } finally {
+      const spill = delivered.match(/in full at (\S+) \(see its section index\)/);
+      if (spill) rmSync(spill[1], { force: true });
+    }
+  });
+
+  it('does not run the probe runner when no carried check has a probe', async () => {
+    const { renderCarryNote } = await import('../../carry-note');
+    const note = renderCarryNote({ did: 'x', checks: [{ claim: 'prose-only claim', recheck: 'look' }] });
+    const carriedProbeBlockFn = vi.fn(async () => 'SHOULD NOT APPEAR');
+    const d = work({ payload: { harness: 'papercusp', wakeCount: 3 }, subscriberId: 'su-probe' });
+    const out = await rehydrateLoopWakeText(d, STALE_TEXT, {
+      getLoopCarryNoteWithMetaFn: vi.fn(async () => ({ note, updatedAtMs: Date.now() - 1_000 })),
+      carriedProbeBlockFn,
+    });
+    expect(carriedProbeBlockFn).not.toHaveBeenCalled();
+    expect(out).not.toContain('SHOULD NOT APPEAR');
+    expect(out).not.toContain('CARRIED PROBES');
+  });
+
+  it('the default probe block renders nothing when there is nothing to run', async () => {
+    const { defaultCarriedProbeBlock } = await import('./wake-executor');
+    const out = await defaultCarriedProbeBlock({
+      ownerId: 'su-probe',
+      checks: [],
+      harness: 'papercusp',
+      readAtIso: '2026-10-14T09:00:00.000Z',
+    });
+    // no checks → nothing to run → no block at all (never a false "all hold")
+    expect(out).toBeNull();
+  });
 });
 
 // EI-21971731335245747: the wake reader selects the carry-note by the wake MARKER's
@@ -1969,7 +2850,7 @@ describe('dead-session wake re-home on a walled account (P-013 part A)', () => {
     expect(resolveWakeRehome).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: 'ws', route: expect.objectContaining({ mode: 'pin', accountId: 'acct-walled' }) }),
     );
-    expect(claimResume).toHaveBeenCalledWith(42);
+    expect(claimResume).toHaveBeenCalledWith(42, null, undefined, 'su-abc');
     const [, args, opts] = spawnDetached.mock.calls[0]!;
     expect(opts.env.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('auto');
     expect(opts.env.PAPERCUSP_ACCOUNT_ID).toBeUndefined();
@@ -2047,6 +2928,59 @@ describe('dead-session wake re-home on a walled account (P-013 part A)', () => {
       }),
     );
     expect(resolveWakeRehome).not.toHaveBeenCalled();
+  });
+});
+
+describe('withClaudeResumeEffortClamp (WI-10005900)', () => {
+  const base = ['--settings', '{}', '--resume', 'sid-1', '-p', '--dangerously-skip-permissions', 'WAKE'];
+
+  it('inserts the clamped --effort before --resume when the inherited Opus 5 effort is xhigh', () => {
+    const out = withClaudeResumeEffortClamp(base, { model: 'opus[1m]', effortLevel: 'xhigh' });
+    expect(out).toEqual(['--settings', '{}', '--effort', 'max', '--resume', 'sid-1', '-p', '--dangerously-skip-permissions', 'WAKE']);
+    expect(base).not.toContain('--effort'); // input untouched
+  });
+
+  it('clamps a full Opus 5 model id too', () => {
+    expect(withClaudeResumeEffortClamp(base, { model: 'claude-opus-5-5', effortLevel: 'XHIGH' })).toContain('max');
+  });
+
+  it('returns the SAME array when there is nothing to clamp', () => {
+    for (const settings of [
+      null,
+      { model: 'opus[1m]', effortLevel: 'high' },
+      { model: 'opus', effortLevel: 'max' },
+      { model: 'claude-sonnet-4-5', effortLevel: 'xhigh' },
+      // Known limitation: no model anywhere ⇒ the CLI default is unknown ⇒ no clamp.
+      { effortLevel: 'xhigh' },
+      { model: 'opus', effortLevel: 7 },
+    ]) {
+      expect(withClaudeResumeEffortClamp(base, settings)).toBe(base);
+    }
+  });
+
+  it('leaves an argv that already names an effort, or has no --resume, alone', () => {
+    const settings = { model: 'opus', effortLevel: 'xhigh' };
+    const named = ['--effort', 'high', '--resume', 'sid', 'WAKE'];
+    expect(withClaudeResumeEffortClamp(named, settings)).toBe(named);
+    const namedEq = ['--effort=high', '--resume', 'sid', 'WAKE'];
+    expect(withClaudeResumeEffortClamp(namedEq, settings)).toBe(namedEq);
+    const fresh = ['-p', 'WAKE'];
+    expect(withClaudeResumeEffortClamp(fresh, settings)).toBe(fresh);
+  });
+
+  it('judges the argv --model over the settings model', () => {
+    const opusArgv = ['--model', 'opus', '--resume', 'sid', 'WAKE'];
+    expect(withClaudeResumeEffortClamp(opusArgv, { model: 'claude-sonnet-4-5', effortLevel: 'xhigh' })).toEqual([
+      '--model',
+      'opus',
+      '--effort',
+      'max',
+      '--resume',
+      'sid',
+      'WAKE',
+    ]);
+    const sonnetArgv = ['--model', 'claude-sonnet-4-5', '--resume', 'sid', 'WAKE'];
+    expect(withClaudeResumeEffortClamp(sonnetArgv, { model: 'opus', effortLevel: 'xhigh' })).toBe(sonnetArgv);
   });
 });
 
@@ -2246,6 +3180,23 @@ describe('executeWake — the liveness ladder', () => {
     expect(sendCoordMessage).not.toHaveBeenCalled();
   });
 
+  it('parks behind an already-running headless resume without authorizing inbox fallback', async () => {
+    const isHeadlessResumeTurn = vi.fn(() => true);
+    const d = deps({ isHeadlessResumeTurn: isHeadlessResumeTurn as never });
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), pid: 9999 }),
+      d,
+    );
+
+    expect(out).toEqual({
+      kind: 'park',
+      reason: 'headless resume turn pid 9999 is still running for this session; parked until it exits',
+      hostCommitPending: true,
+    });
+    expect(isHeadlessResumeTurn).toHaveBeenCalledWith(9999, '11111111-2222-3333-4444-555555555555');
+    expect(d.sendCoordMessage).not.toHaveBeenCalled();
+  });
+
   it('delivers a cross-harness work-item completion wake instead of treating its harness as loop lineage', async () => {
     const write = vi.fn(() => true);
     const getLoopStatusFn = vi.fn(async () => ({
@@ -2350,11 +3301,203 @@ describe('executeWake — the liveness ladder', () => {
         injectPsuHostWithConfirmation: injectPsuHostWithConfirmation as never,
       }),
     );
-    expect(out).toEqual({ kind: 'park', reason: expect.stringContaining('accepted') });
+    expect(out).toEqual({ kind: 'park', reason: expect.stringContaining('accepted'), hostCommitPending: true });
     expect(injectPsuHostWithConfirmation).toHaveBeenCalledWith(
       '/tmp/x.sock',
       expect.objectContaining({ mode: 'turn', deliveryId: String(work({ wakeHandle: null }).id) }),
     );
+  });
+
+  it('releases only the exact current-host accepted delivery after a host-ending terminal drop', async () => {
+    const ownerId = 'su-host-ending-drop';
+    const deliveryId = '782698';
+    const startedAt = Date.parse('2026-10-15T10:00:00.000Z');
+    const terminal = (id: string, ts: string) => ({
+      kind: 'wake-rearm-dropped',
+      mode: 'turn',
+      reason: 'host-ending',
+      deliveryIds: [id],
+      ts,
+    });
+    const ledgerReads = [
+      [terminal('another-delivery', '2026-10-15T10:01:00.000Z')],
+      [terminal(deliveryId, '2026-10-15T09:59:59.999Z')],
+      [terminal(deliveryId, '2026-10-15T10:01:00.000Z')],
+    ];
+    const readPsuHostEventTailAsync = vi.fn(async () => ledgerReads.shift() ?? []);
+    const injectPsuHostWithConfirmation = vi.fn(async () => ({
+      ok: true,
+      confirmation: 'acked' as const,
+      reason: 'accepted',
+    }));
+    const d = deps({
+      findPsuHost: vi.fn(async () => ({ sock: '/tmp/host-ending-drop.sock', ownerId, startedAt })) as never,
+      injectPsuHost: undefined,
+      injectPsuHostWithConfirmation: injectPsuHostWithConfirmation as never,
+      readPsuHostEventTailAsync,
+    });
+    const delivery = work({ id: Number(deliveryId), subscriberId: ownerId, wakeHandle: null });
+
+    const first = await executeWake(delivery, d);
+    expect(first).toMatchObject({ kind: 'park', hostCommitPending: true });
+
+    const wrongId = await executeWake({ ...delivery, attempts: 8, lastError: first.kind === 'park' ? first.reason : null }, d);
+    expect(wrongId).toMatchObject({ kind: 'park', hostCommitPending: true });
+
+    const oldHost = await executeWake({ ...delivery, attempts: 8, lastError: wrongId.kind === 'park' ? wrongId.reason : null }, d);
+    expect(oldHost).toMatchObject({ kind: 'park', hostCommitPending: true });
+
+    const ended = await executeWake({ ...delivery, attempts: 8, lastError: oldHost.kind === 'park' ? oldHost.reason : null }, d);
+    expect(ended).toMatchObject({
+      kind: 'park',
+      reason: expect.stringContaining('terminal host-ending drop confirmed'),
+    });
+    expect(ended.kind === 'park' && ended.hostCommitPending).toBeFalsy();
+    expect(injectPsuHostWithConfirmation).toHaveBeenCalledTimes(3);
+    expect(readPsuHostEventTailAsync).toHaveBeenCalledTimes(3);
+  });
+
+  describe('turn-start proof on the confirming psu path (P-006/D-004)', () => {
+    const confirmingDeps = (caps: string[] | undefined, reason: string) => {
+      const injectPsuHostWithConfirmation = vi.fn(async () => ({ ok: true, confirmation: 'acked' as const, reason }));
+      return {
+        injectPsuHostWithConfirmation,
+        deps: deps({
+          findPsuHost: vi.fn(() => ({ sock: '/tmp/x.sock', ...(caps ? { caps } : {}) })) as never,
+          injectPsuHost: undefined,
+          injectPsuHostWithConfirmation: injectPsuHostWithConfirmation as never,
+        }),
+      };
+    };
+
+    it('books host-attested when the host confirmed a native turn start it was asked to prove', async () => {
+      const { injectPsuHostWithConfirmation, deps: d } = confirmingDeps(['native-turn-start'], 'delivered');
+      const out = await executeWake(work({ wakeHandle: null }), d);
+      expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject', turnProof: 'host-attested' });
+      expect(injectPsuHostWithConfirmation).toHaveBeenCalledWith(
+        '/tmp/x.sock',
+        expect.objectContaining({ requireNativeTurnStart: true }),
+      );
+    });
+
+    it('does not attest a turn on a host that was never asked to prove one', async () => {
+      // An older host (no native-turn-start capability) replies 'delivered' once the bytes are
+      // written; that is persistence, not a turn start, so the pump must still observe it.
+      const { injectPsuHostWithConfirmation, deps: d } = confirmingDeps(undefined, 'delivered');
+      const out = await executeWake(work({ wakeHandle: null }), d);
+      expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+      expect(injectPsuHostWithConfirmation).toHaveBeenCalledWith(
+        '/tmp/x.sock',
+        expect.not.objectContaining({ requireNativeTurnStart: true }),
+      );
+    });
+
+    it('does not attest a turn on a duplicate-delivery-id reply', async () => {
+      const { deps: d } = confirmingDeps(['native-turn-start'], 'duplicate-delivery-id');
+      const out = await executeWake(work({ wakeHandle: null }), d);
+      expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    });
+  });
+
+  it('sends the exact handled-message cancellation to the pending PTY delivery and waits for host confirmation', async () => {
+    const ownerId = 'su-inbox-cancel';
+    const sock = '/tmp/inbox-cancel.sock';
+    const injectPsuHostWithConfirmation = vi.fn(async () => ({
+      ok: true,
+      confirmation: 'acked' as const,
+      reason: 'cancel-requested',
+    }));
+    const delivery = work({
+      id: 903,
+      subscriberId: ownerId,
+      eventKey: `coord:inbox-wake:${ownerId}`,
+      wakeHandle: null,
+      hostCancellation: { deliveryIds: ['901', '902'], handledMsgIds: ['m-a', 'm-b'] },
+    });
+
+    await expect(executeWake(delivery, deps({
+      findPsuHost: vi.fn(() => ({ sock, ownerId })) as never,
+      injectPsuHostWithConfirmation: injectPsuHostWithConfirmation as never,
+    }))).resolves.toMatchObject({
+      kind: 'park',
+      hostCommitPending: true,
+      reason: expect.stringContaining('cancellation request'),
+    });
+    expect(injectPsuHostWithConfirmation).toHaveBeenCalledTimes(1);
+    expect(injectPsuHostWithConfirmation).toHaveBeenCalledWith(sock, expect.objectContaining({
+      mode: 'turn',
+      ownerId,
+      deliveryId: '901',
+      cancelDeliveryIds: ['901', '902'],
+      handledMsgIds: ['m-a', 'm-b'],
+    }));
+  });
+
+  it('settles a handled inbox wake only after the host confirms cancellation before any write', async () => {
+    const ownerId = 'su-inbox-cancel';
+    const injectPsuHostWithConfirmation = vi.fn(async () => ({
+      ok: true,
+      confirmation: 'acked' as const,
+      reason: 'cancelled-before-write',
+    }));
+    const delivery = work({
+      id: 904,
+      subscriberId: ownerId,
+      eventKey: `coord:inbox-wake:${ownerId}`,
+      wakeHandle: null,
+      hostCancellation: { deliveryIds: ['904'], handledMsgIds: ['m-fyi'] },
+    });
+
+    await expect(executeWake(delivery, deps({
+      findPsuHost: vi.fn(() => ({ sock: '/tmp/inbox-cancel.sock', ownerId })) as never,
+      injectPsuHostWithConfirmation: injectPsuHostWithConfirmation as never,
+    }))).resolves.toEqual({ kind: 'delivered', channel: 'suppressed-redundant' });
+    expect(injectPsuHostWithConfirmation).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an accepted host delivery nonterminal while pending, then recognizes its late completion', async () => {
+    const results = [
+      { ok: true, confirmation: 'acked' as const, reason: 'accepted' },
+      { ok: true, confirmation: 'acked' as const, reason: 'pending-delivery-id' },
+      { ok: true, confirmation: 'acked' as const, reason: 'coalesced-into-pending-turn' },
+      { ok: true, confirmation: 'acked' as const, reason: 'duplicate-delivery-id' },
+    ];
+    const injectPsuHostWithConfirmation = vi.fn<NonNullable<ExecuteWakeDeps['injectPsuHostWithConfirmation']>>(
+      async () => results.shift()!,
+    );
+    const delivery = work({ wakeHandle: null, id: 901 });
+    const wakeDeps = deps({
+      findPsuHost: vi.fn(() => ({ sock: '/tmp/pending-host.sock' })) as never,
+      injectPsuHost: undefined,
+      injectPsuHostWithConfirmation: injectPsuHostWithConfirmation as never,
+    });
+
+    expect(await executeWake(delivery, wakeDeps)).toMatchObject({
+      kind: 'park',
+      hostCommitPending: true,
+      reason: expect.stringContaining('accepted'),
+    });
+    expect(await executeWake(delivery, wakeDeps)).toMatchObject({
+      kind: 'park',
+      hostCommitPending: true,
+      reason: expect.stringContaining('pending-delivery-id'),
+    });
+    expect(await executeWake(delivery, wakeDeps)).toMatchObject({
+      kind: 'park',
+      hostCommitPending: true,
+      reason: expect.stringContaining('coalesced-into-pending-turn'),
+    });
+    expect(await executeWake(delivery, wakeDeps)).toEqual({
+      kind: 'delivered',
+      channel: 'psu-socket-inject',
+    });
+    expect(injectPsuHostWithConfirmation).toHaveBeenCalledTimes(4);
+    expect(injectPsuHostWithConfirmation.mock.calls.map((call) => call[1].deliveryId)).toEqual([
+      '901',
+      '901',
+      '901',
+      '901',
+    ]);
   });
 
   it("threads this delivery's own id onto the envelope as deliveryId (EI-19311270129974785 — host-side retry dedup)", async () => {
@@ -2450,8 +3593,43 @@ describe('executeWake — the liveness ladder', () => {
     );
     expect(out).toMatchObject({ kind: 'park' });
     expect((out as { reason: string }).reason).toContain('resume claim');
-    expect(claimResume).toHaveBeenCalledWith(42);
+    expect(claimResume).toHaveBeenCalledWith(42, null, undefined, 'su-abc');
     expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it('rechecks the standing inbox-wake after the successful claim and before the headless resume spawn', async () => {
+    const order: string[] = [];
+    const claimResume = vi.fn(async () => {
+      order.push('claim');
+      return true;
+    });
+    const ensureInboxWakeArmedForActiveSession = vi.fn(async (input: {
+      ownerId: string;
+      forceRecheck?: boolean;
+    }) => {
+      order.push('rearm');
+      // false can mean the owner explicitly opted out during this incarnation;
+      // it must not prevent delivery of the already-claimed wake.
+      expect(input).toEqual({ ownerId: 'su-abc', forceRecheck: true });
+      return false;
+    });
+    const spawnDetached = vi.fn(() => {
+      order.push('spawn');
+      return 4321;
+    });
+
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({
+        alive: vi.fn(() => false),
+        claimResume,
+        ensureInboxWakeArmedForActiveSession,
+        spawnDetached,
+      }),
+    );
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+    expect(order).toEqual(['claim', 'rearm', 'spawn']);
   });
 
   it('WI-666: force-resume timeout keeps the alive loop owner safely parked', async () => {
@@ -2584,6 +3762,8 @@ describe('executeWake — the liveness ladder', () => {
       deps({
         getSession: vi.fn(async () => session({ harnessSlug: null })) as never,
         alive: vi.fn(() => false),
+        isLoopArmed: vi.fn(async () => true),
+        resolveMemberLiveness: parkedMemberLiveness() as never,
         spawnDetached,
       }),
     );
@@ -2600,6 +3780,8 @@ describe('executeWake — the liveness ladder', () => {
         getSession: vi.fn(async () => session({ harnessSlug: null })) as never,
         getLoopStatusFn: vi.fn(async () => ({ harnessSlug: 'current-loop-harness' })) as never,
         alive: vi.fn(() => false),
+        isLoopArmed: vi.fn(async () => true),
+        resolveMemberLiveness: parkedMemberLiveness() as never,
         spawnDetached,
       }),
     );
@@ -2654,13 +3836,17 @@ describe('executeWake — the liveness ladder', () => {
       stdoutTail: '{"type":"turn.completed","usage":{}}',
       stderrTail: '',
     });
-    expect(observedExit).toEqual({
-      exitCode: 0,
-      signal: null,
-      stdoutTail: '{"type":"turn.completed","usage":{}}',
-      stderrTail: '',
-      outputProtocol: 'codex-jsonl',
-    });
+    // Every Codex exit now awaits the rollout overflow analyzer before reporting
+    // (WI-6554700010008894), so the outcome handler fires asynchronously.
+    await vi.waitFor(() =>
+      expect(observedExit).toEqual({
+        exitCode: 0,
+        signal: null,
+        stdoutTail: '{"type":"turn.completed","usage":{}}',
+        stderrTail: '',
+        outputProtocol: 'codex-jsonl',
+      }),
+    );
   });
 
   it('exited codex with NO recoverable home → park, never a bare --last (P-009)', async () => {
@@ -2757,7 +3943,7 @@ describe('executeWake — the liveness ladder', () => {
     rmSync(home, { recursive: true, force: true });
     try {
       const out = await executeWake(
-        work({ wakeHandle: advHandle({ agent: 'codex', sessionId: null, advSessionId }) }),
+        work({ subscriberId: 'su-archive-repair', wakeHandle: advHandle({ agent: 'codex', sessionId: null, advSessionId }) }),
         deps({
           alive: vi.fn(() => false),
           getSession: vi.fn(async () =>
@@ -2799,6 +3985,167 @@ describe('executeWake — the liveness ladder', () => {
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
+  });
+
+  // WI-10006825: every Channel-2 codex wake rewrote config.toml WITHOUT the
+  // gateway provider because the repair seam was never told the persisted
+  // `--account` route, so `--account=auto` fleet members resumed on the shared
+  // ChatGPT login, hit its usage wall, and died ~60s later (respawn churn).
+  it.each([
+    {
+      argv: ['psu', '--no-picker', '--agent=codex', '--headless', '--account=auto'],
+      expected: { requireGatewayProvider: true, codexGatewayAccountId: null },
+      expectedEnv: { PAPERCUSP_CODEX_GATEWAY: '1' },
+    },
+    {
+      argv: ['psu', '--no-picker', '--agent=codex', '--headless', '--account=acct-codex-pin'],
+      expected: { requireGatewayProvider: false, codexGatewayAccountId: 'acct-codex-pin' },
+      expectedEnv: { PAPERCUSP_CODEX_GATEWAY: '1', PAPERCUSP_ACCOUNT_ID: 'acct-codex-pin' },
+    },
+    {
+      argv: ['psu', '--no-picker', '--agent=codex', '--headless', '--account=default'],
+      expected: { requireGatewayProvider: false, codexGatewayAccountId: null },
+      expectedEnv: {},
+    },
+    {
+      argv: null,
+      expected: { requireGatewayProvider: false, codexGatewayAccountId: null },
+      expectedEnv: {},
+    },
+  ])('codex wake repair and child env carry the persisted route (argv $argv)', async ({ argv, expected, expectedEnv }) => {
+    const advSessionId = 1002;
+    const home = codexHomeForAdvSession(advSessionId);
+    const nativeId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const spawnDetached = vi.fn(() => 4321);
+    const repair = vi.fn(async () => ({ ok: true, repaired: true }));
+    rmSync(home, { recursive: true, force: true });
+    const sessionsDir = join(home, 'sessions', '2026', '10', '06');
+    mkdirSync(sessionsDir, { recursive: true });
+    writeFileSync(join(sessionsDir, `rollout-2026-10-06T18-00-00-${nativeId}.jsonl`), '{}');
+    try {
+      const out = await executeWake(
+        work({ subscriberId: 'su-codex-route', wakeHandle: advHandle({ agent: 'codex', sessionId: nativeId, advSessionId }) }),
+        deps({
+          alive: vi.fn(() => false),
+          getSession: vi.fn(async () =>
+            session({
+              id: advSessionId,
+              agent: 'codex',
+              sessionId: nativeId,
+              coordOwnerId: 'su-codex-route',
+              launchArgv: argv,
+            }),
+          ) as never,
+          ensureCodexHomeForWake: repair as never,
+          spawnDetached,
+        }),
+      );
+      expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+      expect(repair).toHaveBeenCalledTimes(1);
+      const [, , spawnOptions] = spawnDetached.mock.calls[0] as unknown as [
+        string,
+        string[],
+        { env: Record<string, string> },
+      ];
+      expect(spawnOptions.env.PAPERCUSP_SID).toBe('su-codex-route');
+      expect(spawnOptions.env.PAPERCUSP_CODEX_GATEWAY).toBe(expectedEnv.PAPERCUSP_CODEX_GATEWAY);
+      expect(spawnOptions.env.PAPERCUSP_ACCOUNT_ID).toBe(expectedEnv.PAPERCUSP_ACCOUNT_ID);
+      expect(spawnOptions.env).not.toHaveProperty('ANTHROPIC_BASE_URL');
+      expect(repair).toHaveBeenCalledWith(
+        expect.objectContaining({ advSessionId, owner: 'su-codex-route', codexHome: home, ...expected }),
+      );
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { repairResult: { ok: false, reason: 'repair-failed' }, reason: 'repair-failed', error: null },
+    { repairResult: { ok: true, repaired: false, reason: 'no-launch-spec' }, reason: 'no-launch-spec', error: null },
+    { repairResult: { ok: false, reason: 'unused' },
+      error: 'Invalid character at row 102\nAuthorization = "Bearer opaque-test-bearer-value-for-resume-repair"',
+      reason: 'Invalid character at row 102\nAuthorization = "Bearer [redacted]"' },
+  ])(
+    'parks a Codex auto-route resume when home repair cannot restore the gateway ($reason)',
+    async ({ repairResult, reason, error }) => {
+      const advSessionId = 1002;
+      const home = codexHomeForAdvSession(advSessionId);
+      const nativeId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+      const spawnDetached = vi.fn(() => 4321);
+      const claimResume = vi.fn(async () => true);
+      const repair = vi.fn(async () => {
+        if (error) throw new Error(error);
+        return repairResult;
+      });
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      rmSync(home, { recursive: true, force: true });
+      const sessionsDir = join(home, 'sessions', '2026', '10', '06');
+      mkdirSync(sessionsDir, { recursive: true });
+      writeFileSync(join(sessionsDir, `rollout-2026-10-06T18-00-00-${nativeId}.jsonl`), '{}');
+      try {
+        const out = await executeWake(
+          work({
+            subscriberId: 'su-codex-route',
+            wakeHandle: advHandle({ agent: 'codex', sessionId: nativeId, advSessionId }),
+          }),
+          deps({
+            alive: vi.fn(() => false),
+            getSession: vi.fn(async () =>
+              session({
+                id: advSessionId,
+                agent: 'codex',
+                sessionId: nativeId,
+                coordOwnerId: 'su-codex-route',
+                launchArgv: ['psu', '--no-picker', '--agent=codex', '--headless', '--account=auto'],
+              }),
+            ) as never,
+            claimResume,
+            ensureCodexHomeForWake: repair as never,
+            spawnDetached,
+          }),
+        );
+
+        expect(out).toEqual({
+          kind: 'park',
+          reason: expect.stringContaining(`Codex auto gateway route repair did not complete (${reason})`),
+        });
+        expect(repair).toHaveBeenCalledWith(
+          expect.objectContaining({
+            advSessionId,
+            owner: 'su-codex-route',
+            codexHome: home,
+            headless: true,
+            requireGatewayProvider: true,
+            codexGatewayAccountId: null,
+          }),
+        );
+        expect(claimResume).not.toHaveBeenCalled();
+        expect(spawnDetached).not.toHaveBeenCalled();
+      } finally {
+        warning.mockRestore();
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('codexWakeGatewayInputs maps every account mode like the psu launcher route', () => {
+    expect(codexWakeGatewayInputs(wakeAccountRouteFromArgv(['--account=auto'], 'su-x'))).toEqual({
+      requireGatewayProvider: true,
+      codexGatewayAccountId: null,
+    });
+    expect(codexWakeGatewayInputs(wakeAccountRouteFromArgv(['--account=gateway'], 'su-x'))).toEqual({
+      requireGatewayProvider: true,
+      codexGatewayAccountId: null,
+    });
+    expect(codexWakeGatewayInputs(wakeAccountRouteFromArgv(['--account=acct-1'], 'su-x'))).toEqual({
+      requireGatewayProvider: false,
+      codexGatewayAccountId: 'acct-1',
+    });
+    expect(codexWakeGatewayInputs(wakeAccountRouteFromArgv(['--account=system'], 'su-x'))).toEqual({
+      requireGatewayProvider: false,
+      codexGatewayAccountId: null,
+    });
+    expect(codexWakeGatewayInputs(null)).toEqual({ requireGatewayProvider: false, codexGatewayAccountId: null });
   });
 
   it('a session row marked ended is exited even if the recorded pid is reused-alive', async () => {
@@ -3070,15 +4417,182 @@ describe('executeWake — the liveness ladder', () => {
 
   it('NO recorded pid + fresh presence → park (never concurrent-resume a live session)', async () => {
     const spawnManagedPty = vi.fn(() => ({ id: 'x' }));
+    const resolveMemberLiveness = vi.fn();
     const out = await executeWake(
       work({ wakeHandle: advHandle({ pid: null }) }),
       deps({
         getSession: vi.fn(async () => session({ pid: null })) as never,
         spawnManagedPty: spawnManagedPty as never,
+        resolveMemberLiveness: resolveMemberLiveness as never,
       }),
     );
     expect(out).toMatchObject({ kind: 'park' });
     expect(spawnManagedPty).not.toHaveBeenCalled();
+    expect(resolveMemberLiveness).not.toHaveBeenCalled();
+  });
+
+  it('NO recorded pid + fresh presence + armed loop + parked verdict → resume', async () => {
+    const spawnDetached = vi.fn(() => 4321);
+    const resolveMemberLiveness = parkedMemberLiveness();
+    const isLoopArmed = vi.fn(async () => true);
+    const out = await executeWake(
+      work({
+        wakeHandle: advHandle({ pid: null }),
+        payload: { carry: 'warm', wakeCount: 1, harness: 'papercusp' },
+      }),
+      deps({
+        getSession: vi.fn(async () => session({ pid: null })) as never,
+        spawnDetached,
+        isLoopArmed,
+        resolveMemberLiveness: resolveMemberLiveness as never,
+      }),
+    );
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+    expect(spawnDetached).toHaveBeenCalled();
+    expect(isLoopArmed).toHaveBeenCalledWith('su-abc');
+    expect(resolveMemberLiveness).toHaveBeenCalledWith(
+      [{ ownerId: 'su-abc' }],
+      { hydratePerId: true },
+    );
+  });
+
+  it('NO recorded pid + fresh presence + inactive loop → park without resolving liveness', async () => {
+    const spawnDetached = vi.fn(() => 4321);
+    const resolveMemberLiveness = vi.fn();
+    const isLoopArmed = vi.fn(async () => false);
+    const out = await executeWake(
+      work({
+        wakeHandle: advHandle({ pid: null }),
+        payload: { carry: 'warm', wakeCount: 1, harness: 'papercusp' },
+      }),
+      deps({
+        getSession: vi.fn(async () => session({ pid: null })) as never,
+        spawnDetached,
+        isLoopArmed,
+        resolveMemberLiveness: resolveMemberLiveness as never,
+      }),
+    );
+
+    expect(out).toMatchObject({ kind: 'park' });
+    expect(spawnDetached).not.toHaveBeenCalled();
+    expect(resolveMemberLiveness).not.toHaveBeenCalled();
+  });
+
+  it.each(['live', 'suspect', 'draining', 'ended', 'unknown', null])(
+    'NO recorded pid + fresh presence + armed loop + %s verdict → park',
+    async (sessionState) => {
+      const spawnDetached = vi.fn(() => 4321);
+      const resolveMemberLiveness = vi.fn(async () => new Map([
+        ['su-abc', {
+          ownerId: 'su-abc',
+          sessionState,
+          wakeable: false,
+          liveTurn: false,
+          confirmLiveness: null,
+          heartbeatFresh: true,
+        } as never],
+      ]));
+      const out = await executeWake(
+        work({
+          wakeHandle: advHandle({ pid: null }),
+          payload: { carry: 'warm', wakeCount: 1, harness: 'papercusp' },
+        }),
+        deps({
+          getSession: vi.fn(async () => session({ pid: null })) as never,
+          spawnDetached,
+          isLoopArmed: vi.fn(async () => true),
+          resolveMemberLiveness: resolveMemberLiveness as never,
+        }),
+      );
+
+      expect(out).toMatchObject({ kind: 'park' });
+      expect(spawnDetached).not.toHaveBeenCalled();
+      expect(resolveMemberLiveness).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('NO recorded pid + fresh presence + liveness resolver error → park', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const spawnDetached = vi.fn(() => 4321);
+    try {
+      const out = await executeWake(
+        work({
+          wakeHandle: advHandle({ pid: null }),
+          payload: { carry: 'warm', wakeCount: 1, harness: 'papercusp' },
+        }),
+        deps({
+          getSession: vi.fn(async () => session({ pid: null })) as never,
+          spawnDetached,
+          isLoopArmed: vi.fn(async () => true),
+          resolveMemberLiveness: vi.fn(async () => { throw new Error('resolver unavailable'); }) as never,
+        }),
+      );
+
+      expect(out).toMatchObject({ kind: 'park' });
+      expect(spawnDetached).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('session liveness/su-abc failed'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('loop wake with ended liveness stays parked at the Channel 2 boundary', async () => {
+    const spawnDetached = vi.fn(() => 4321);
+    const resolveMemberLiveness = vi.fn(async () => new Map([
+      ['su-abc', {
+        ownerId: 'su-abc',
+        sessionState: 'ended',
+        wakeable: false,
+        liveTurn: false,
+        confirmLiveness: null,
+        heartbeatFresh: false,
+      } as never],
+    ]));
+    const out = await executeWake(
+      work({
+        wakeHandle: advHandle(),
+        payload: { carry: 'warm', wakeCount: 1, harness: 'papercusp' },
+      }),
+      deps({
+        alive: vi.fn(() => false),
+        spawnDetached,
+        isLoopArmed: vi.fn(async () => true),
+        resolveMemberLiveness: resolveMemberLiveness as never,
+      }),
+    );
+
+    expect(out).toMatchObject({ kind: 'park' });
+    expect(spawnDetached).not.toHaveBeenCalled();
+    expect(resolveMemberLiveness).toHaveBeenCalledTimes(1);
+  });
+
+  it('NO recorded pid + fresh presence + liveness resolver timeout → park', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const spawnDetached = vi.fn(() => 4321);
+    try {
+      const pending = executeWake(
+        work({
+          wakeHandle: advHandle({ pid: null }),
+          payload: { carry: 'warm', wakeCount: 1, harness: 'papercusp' },
+        }),
+        deps({
+          getSession: vi.fn(async () => session({ pid: null })) as never,
+          spawnDetached,
+          isLoopArmed: vi.fn(async () => true),
+          resolveMemberLiveness: vi.fn(() => new Promise(() => undefined)) as never,
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      await expect(pending).resolves.toMatchObject({ kind: 'park' });
+      expect(spawnDetached).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('session liveness/su-abc timed out'));
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it('NO recorded pid + stale presence → resume (the session is gone)', async () => {
@@ -3092,6 +4606,44 @@ describe('executeWake — the liveness ladder', () => {
       }),
     );
     expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+  });
+
+  it('rebinds a dead captured wake handle to the latest owner session instead of resuming its predecessor', async () => {
+    const predecessor = session({
+      id: 42,
+      endedAt: '2026-10-08T21:09:00.000Z',
+      pid: 9999,
+      startedAt: '2026-10-08T20:00:00.000Z',
+    });
+    const successor = session({
+      id: 43,
+      pid: 8888,
+      sessionId: 'successor-native-session',
+      startedAt: '2026-10-08T21:10:00.000Z',
+    });
+    const getSession = vi.fn(async (id: number) => (id === 42 ? predecessor : successor));
+    const getLatestSessionForOwner = vi.fn(async () => successor);
+    const claimResume = vi.fn(async () => true);
+    const spawnDetached = vi.fn(() => 4321);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle({ advSessionId: predecessor.id }) }),
+      deps({
+        getSession: getSession as never,
+        getLatestSessionForOwner: getLatestSessionForOwner as never,
+        alive: vi.fn((pid: number | null) => pid === successor.pid),
+        findPsuHost: vi.fn(() => null) as never,
+        findPty: vi.fn(() => null) as never,
+        claimResume,
+        spawnDetached,
+      }),
+    );
+
+    expect(getLatestSessionForOwner).toHaveBeenCalledWith('su-abc');
+    expect(getSession).toHaveBeenNthCalledWith(1, predecessor.id);
+    expect(getSession).toHaveBeenNthCalledWith(2, successor.id);
+    expect(out).toMatchObject({ kind: 'park' });
+    expect(claimResume).not.toHaveBeenCalled();
+    expect(spawnDetached).not.toHaveBeenCalled();
   });
 
   it('claude resume spawn failure (detached returns no pid) → error outcome (the pump retries with backoff)', async () => {
@@ -3128,7 +4680,7 @@ describe('GAP 3: wake resume env-assembly matrix (wake-executor.ts:441-474)', ()
 
       const spawnDetached = vi.fn(() => 4321);
       const out = await executeWake(
-        work({ wakeHandle: advHandle() }),
+        work({ subscriberId: 'su-owner-9', wakeHandle: advHandle() }),
         deps({
           alive: vi.fn(() => false), // exited → resume
           getSession: vi.fn(async () => session({ agent: 'claude', coordOwnerId: 'su-owner-9' })) as never,
@@ -3138,7 +4690,7 @@ describe('GAP 3: wake resume env-assembly matrix (wake-executor.ts:441-474)', ()
       expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
       const [, , o] = spawnDetached.mock.calls[0] as unknown as [string, string[], { env: Record<string, string> }];
       // Base wake env (always present on a resume).
-      expect(o.env.PAPERCUSP_SID).toBe('su-abc');
+      expect(o.env.PAPERCUSP_SID).toBe('su-owner-9');
       expect(o.env.PAPERCUSP_AGENT_SESSION).toBe('1');
       expect(o.env.MCP_TIMEOUT).toBeTruthy();
       expect(o.env.PAPERCUSP_WAKE_DELIVERY_ID).toBe('7');
@@ -3154,6 +4706,144 @@ describe('GAP 3: wake resume env-assembly matrix (wake-executor.ts:441-474)', ()
       else process.env.PAPERCUSP_CLAUDE_TOKEN_PATH = prevTok;
       rmSync(claudeRoot, { recursive: true, force: true });
       rmSync(tokenDir, { recursive: true, force: true });
+    }
+  });
+
+  it('EI-24890753013901545 removes missing native references before replay and restores Papercusp refs in the resume seed', async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join: pjoin } = await import('node:path');
+    const claudeRoot = mkdtempSync(pjoin(tmpdir(), 'wake-claude-native-reference-'));
+    const ownerId = 'su-native-reference';
+    const sessionId = '11111111-2222-3333-4444-555555555555';
+    const transcriptPath = pjoin(claudeRoot, ownerId, 'projects', '-repo', `${sessionId}.jsonl`);
+    const prevCfg = process.env.PAPERCUSP_SESSION_CLAUDE_DIR;
+    const prevTools = process.env.PAPERCUSP_TOOLS;
+    const prevToken = process.env.PAPERCUSP_CLAUDE_TOKEN_PATH;
+    process.env.PAPERCUSP_SESSION_CLAUDE_DIR = claudeRoot;
+    process.env.PAPERCUSP_TOOLS = 'tools:find,coord:orient';
+    process.env.PAPERCUSP_CLAUDE_TOKEN_PATH = pjoin(claudeRoot, 'missing-token');
+    mkdirSync(pjoin(claudeRoot, ownerId, 'projects', '-repo'), { recursive: true });
+    writeFileSync(transcriptPath, JSON.stringify({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{
+          type: 'tool_search_tool_result',
+          tool_use_id: 'search-1',
+          content: {
+            type: 'tool_search_tool_search_result',
+            tool_references: [
+              { type: 'tool_reference', tool_name: 'ExitPlanMode' },
+              { type: 'tool_reference', tool_name: 'mcp__papercusp-su__plans_audit' },
+            ],
+          },
+        }],
+      },
+    }));
+    let transcriptAtSpawn = '';
+    const spawnDetached = vi.fn(() => {
+      transcriptAtSpawn = readFileSync(transcriptPath, 'utf8');
+      return 4321;
+    });
+    try {
+      const out = await executeWake(
+        work({ subscriberId: ownerId, wakeHandle: advHandle({ sessionId }) }),
+        deps({
+          alive: vi.fn(() => false),
+          getSession: vi.fn(async () => session({ agent: 'claude', coordOwnerId: ownerId, sessionId })) as never,
+          collectSessionFiles: vi.fn(async () => [{
+            rel: `projects/-repo/${sessionId}.jsonl`,
+            abs: transcriptPath,
+            bytes: 1,
+            mtimeMs: 1,
+          }]) as never,
+          spawnDetached,
+        }),
+      );
+
+      expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+      expect(spawnDetached).toHaveBeenCalledTimes(1);
+      expect(transcriptAtSpawn).not.toContain('ExitPlanMode');
+      expect(transcriptAtSpawn).toContain('mcp__papercusp-su__plans_audit');
+      expect(transcriptAtSpawn).toContain('"tool_reference"');
+      const [, , opts] = spawnDetached.mock.calls[0] as unknown as [string, string[], { env: Record<string, string> }];
+      expect(opts.env.PAPERCUSP_TOOLS).toContain('mcp__papercusp-su__plans_audit');
+    } finally {
+      if (prevCfg === undefined) delete process.env.PAPERCUSP_SESSION_CLAUDE_DIR;
+      else process.env.PAPERCUSP_SESSION_CLAUDE_DIR = prevCfg;
+      if (prevTools === undefined) delete process.env.PAPERCUSP_TOOLS;
+      else process.env.PAPERCUSP_TOOLS = prevTools;
+      if (prevToken === undefined) delete process.env.PAPERCUSP_CLAUDE_TOKEN_PATH;
+      else process.env.PAPERCUSP_CLAUDE_TOKEN_PATH = prevToken;
+      rmSync(claudeRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('WI-10005900: claude resume clamps the effort inherited from the isolated settings.json the CHILD will read', async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join: pjoin } = await import('node:path');
+    const claudeRoot = mkdtempSync(pjoin(tmpdir(), 'wake-claude-effort-'));
+    const prevCfg = process.env.PAPERCUSP_SESSION_CLAUDE_DIR;
+    const prevModel = process.env.ANTHROPIC_MODEL;
+    process.env.PAPERCUSP_SESSION_CLAUDE_DIR = claudeRoot;
+    // The child would honour ANTHROPIC_MODEL over settings.model; keep the
+    // runner's own value out of this fixture.
+    delete process.env.ANTHROPIC_MODEL;
+    try {
+      // The per-session settings Claude Code wrote while Opus 5 offered xhigh.
+      const cfgDir = pjoin(claudeRoot, 'su-owner-9');
+      mkdirSync(cfgDir, { recursive: true });
+      writeFileSync(pjoin(cfgDir, 'settings.json'), JSON.stringify({ model: 'opus[1m]', effortLevel: 'xhigh' }));
+
+      const read = vi.fn((env: Record<string, string | undefined>) => realReadClaudeLaunchSettings(env));
+      const spawnDetached = vi.fn(() => 4321);
+      const out = await executeWake(
+        work({ subscriberId: 'su-owner-9', wakeHandle: advHandle() }),
+        deps({
+          alive: vi.fn(() => false), // exited → resume
+          getSession: vi.fn(async () => session({ agent: 'claude', coordOwnerId: 'su-owner-9' })) as never,
+          readClaudeLaunchSettings: read,
+          spawnDetached,
+        }),
+      );
+      expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+      // Read with the child's env (its isolated config dir), not the operator's.
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(read.mock.calls[0][0].CLAUDE_CONFIG_DIR).toBe(cfgDir);
+      const [bin, args] = spawnDetached.mock.calls[0] as unknown as [string, string[]];
+      expect(bin).toBe('claude');
+      const at = args.indexOf('--effort');
+      expect(at).toBeGreaterThan(-1);
+      expect(args[at + 1]).toBe('max');
+      expect(at).toBeLessThan(args.indexOf('--resume'));
+      // The wake text stays the positional last arg.
+      expect(args[args.length - 1]).not.toBe('max');
+      expect(args.filter((a) => a === '--effort')).toHaveLength(1);
+    } finally {
+      if (prevCfg === undefined) delete process.env.PAPERCUSP_SESSION_CLAUDE_DIR;
+      else process.env.PAPERCUSP_SESSION_CLAUDE_DIR = prevCfg;
+      if (prevModel !== undefined) process.env.ANTHROPIC_MODEL = prevModel;
+      rmSync(claudeRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('WI-10005900: claude resume argv is unchanged when the inherited effort is supported or absent', async () => {
+    for (const settings of [null, { model: 'opus[1m]', effortLevel: 'high' }, { model: 'opus', effortLevel: 'max' }]) {
+      const spawnDetached = vi.fn(() => 4321);
+      const out = await executeWake(
+        work({ wakeHandle: advHandle() }),
+        deps({
+          alive: vi.fn(() => false),
+          getSession: vi.fn(async () => session({ agent: 'claude' })) as never,
+          readClaudeLaunchSettings: vi.fn(() => settings),
+          spawnDetached,
+        }),
+      );
+      expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+      const [, args] = spawnDetached.mock.calls[0] as unknown as [string, string[]];
+      expect(args.some((a) => a === '--effort' || a.startsWith('--effort='))).toBe(false);
     }
   });
 
@@ -3177,7 +4867,7 @@ describe('GAP 3: wake resume env-assembly matrix (wake-executor.ts:441-474)', ()
       const spawnDetached = vi.fn(() => 5555);
       const out = await executeWake(
         // adv-session 42 has a codex home on disk (the suite fixture) → uuid recovered.
-        work({ wakeHandle: advHandle({ agent: 'codex', sessionId: null }) }),
+        work({ subscriberId: 'su-owner-9', wakeHandle: advHandle({ agent: 'codex', sessionId: null }) }),
         deps({
           alive: vi.fn(() => false),
           // coordOwnerId set to prove it does NOT pull a claude config dir for codex.
@@ -3323,10 +5013,10 @@ describe('codex home + rollout recovery (P-009/P-010)', () => {
 describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agent-2026-07-11 P-002)', () => {
   // A spy tagger with the REAL TaggedTurn shape — marks the text so each
   // delivery channel's assertion can see exactly what was tagged, and captures
-  // {sid, origin} so the origin-derivation rule is verifiable.
+  // {sid, origin, nowMs} so the origin and ledger timestamp are verifiable.
   function spyTagger() {
-    const calls: { sid: string; origin: string; text: string }[] = [];
-    const tag = ((args: { sid: string; origin: string; text: string }) => {
+    const calls: { sid: string; origin: string; text: string; nowMs?: number }[] = [];
+    const tag = ((args: { sid: string; origin: string; text: string; nowMs?: number }) => {
       calls.push(args);
       return {
         taggedText: `⟦tagged:${args.origin}⟧\n${args.text}`,
@@ -3351,9 +5041,13 @@ describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agen
       }),
     );
     expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
-    const [, msg] = injectPsuHost.mock.calls[0] as unknown as [string, { data: string }];
+    const [, msg] = injectPsuHost.mock.calls[0] as unknown as [
+      string,
+      { data: string; provenanceIssuedAtMs: number },
+    ];
     expect(msg.data).toMatch(/^⟦tagged:wake-pump⟧\n\[await-event\]/);
     expect(calls).toEqual([expect.objectContaining({ sid: 'su-abc', origin: 'wake-pump' })]);
+    expect(msg.provenanceIssuedAtMs).toBe(calls[0]?.nowMs);
   });
 
   it('a loop wake (cold-loop marker on the payload) tags origin loop-fire — even on the warm path', async () => {
@@ -3423,7 +5117,7 @@ describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agen
 
   it('the COLD injection is tagged too (origin loop-fire wraps renderColdWakeInjection)', async () => {
     const injectPsuHost = vi.fn(async () => true);
-    const { tag } = spyTagger();
+    const { calls, tag } = spyTagger();
     await executeWake(
       work({ wakeHandle: advHandle(), payload: { carry: 'cold', wakeCount: 1, harness: 'papercusp' } }),
       deps({
@@ -3434,10 +5128,16 @@ describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agen
         tagTurn: tag,
       }),
     );
-    const [, msg] = injectPsuHost.mock.calls[0] as unknown as [string, { mode: string; data: string }];
+    const [, msg] = injectPsuHost.mock.calls[0] as unknown as [
+      string,
+      { mode: string; data: string; provenanceIssuedAtMs: number },
+    ];
     expect(msg.mode).toBe('reset');
     expect(msg.data).toMatch(/^⟦tagged:loop-fire⟧\n/);
     expect(msg.data).toContain('## Next action\nresume');
+    const coldTagCall = calls.find((call) => call.text.includes('## Next action\nresume'));
+    expect(coldTagCall).toBeDefined();
+    expect(msg.provenanceIssuedAtMs).toBe(coldTagCall?.nowMs);
   });
 
   /**
@@ -3530,6 +5230,58 @@ describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agen
         injectPsuHost: injectPsuHost as never,
         tagTurn: (() => {
           throw new Error('ledger disk full');
+        }) as never,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    const [, msg] = injectPsuHost.mock.calls[0] as unknown as [string, { data: string }];
+    expect(msg.data).toMatch(/^⟦turn-origin:wake-pump nonce:[a-f0-9]{16}⟧\n\[await-event\]/);
+  });
+
+  // WI-10005327: the real tagger is async (its ledger write runs off the event
+  // loop). The ledger row must land BEFORE the turn is typed, because the hook
+  // classifies at prompt-submit. A tagger that resolves on a later tick proves
+  // the executor waits for it rather than racing ahead.
+  it('awaits an ASYNC tagger: the inject happens only after its ledger write resolves', async () => {
+    const order: string[] = [];
+    const injectPsuHost = vi.fn(async () => {
+      order.push('inject');
+      return true;
+    });
+    const tagTurn = (async (args: { origin: string; text: string }) => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      order.push('ledger-written');
+      return {
+        taggedText: `⟦tagged:${args.origin}⟧\n${args.text}`,
+        envelope: `⟦tagged:${args.origin}⟧`,
+        nonce: 'later-tick',
+        origin: args.origin,
+        ledgerWritten: true,
+      };
+    }) as never;
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        injectPsuHost: injectPsuHost as never,
+        tagTurn,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    const [, msg] = injectPsuHost.mock.calls[0] as unknown as [string, { data: string }];
+    expect(msg.data).toMatch(/^⟦tagged:wake-pump⟧\n\[await-event\]/);
+    expect(order).toEqual(['ledger-written', 'inject']);
+  });
+
+  it('an async tagger that REJECTS still delivers an unverified envelope', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        injectPsuHost: injectPsuHost as never,
+        tagTurn: (async () => {
+          throw new Error('EIO on the ledger dir');
         }) as never,
       }),
     );
@@ -3644,27 +5396,55 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
   });
 
   describe('cold no-host fresh successor', () => {
-    it('replaces an exited cold owner with a fresh same-owner context and burns one turn', async () => {
+    it('re-tags the prompt at launch when earlier delivery gates outlive the provenance TTL', async () => {
       const launchColdFreshSuccessor = vi.fn(async () => true);
       const recordColdNoHostPark = vi.fn(async () => ({ action: 'tracked' as const, streak: 1 }));
       const spawnDetached = vi.fn(() => 4321);
-      const out = await executeWake(
-        work({ wakeHandle: advHandle(), payload: coldPayload({ routineId: 'loop-su-abc', wakeCount: 7 }) }),
-        coldDeps({
-          findPsuHost: vi.fn(() => null) as never,
-          alive: vi.fn(() => false),
-          launchColdFreshSuccessor,
-          recordColdNoHostPark,
-          spawnDetached,
-        }),
-      );
+      const nowMs = 1_700_000_000_000;
+      const staleDelayMs = 10 * 60_000 + 1;
+      let clockMs = nowMs;
+      const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clockMs);
+      const tagCalls: Array<{ sid: string; origin: string; text: string; nowMs?: number }> = [];
+      const tagTurn = ((args: { sid: string; origin: string; text: string; nowMs?: number }) => {
+        tagCalls.push(args);
+        if (tagCalls.length === 1) clockMs += staleDelayMs;
+        return {
+          taggedText: `⟦tagged:${args.origin}:${tagCalls.length}⟧\n${args.text}`,
+          envelope: `⟦tagged:${args.origin}:${tagCalls.length}⟧`,
+          nonce: `nonce-${tagCalls.length}`,
+          origin: args.origin,
+          ledgerWritten: true,
+        };
+      }) as never;
 
-      expect(out).toEqual({ kind: 'delivered', channel: 'cold-fresh-successor' });
-      expect(launchColdFreshSuccessor).toHaveBeenCalledWith(expect.objectContaining({
-        subscriberId: 'su-abc', workspaceId: 'ws', harness: 'papercusp', deliveryId: expect.any(Number),
-      }));
-      expect(recordColdNoHostPark).not.toHaveBeenCalled();
-      expect(spawnDetached).not.toHaveBeenCalled();
+      try {
+        const out = await executeWake(
+          work({ wakeHandle: advHandle(), payload: coldPayload({ routineId: 'loop-su-abc', wakeCount: 7 }) }),
+          coldDeps({
+            findPsuHost: vi.fn(() => null) as never,
+            alive: vi.fn(() => false),
+            launchColdFreshSuccessor,
+            recordColdNoHostPark,
+            spawnDetached,
+            tagTurn,
+          }),
+        );
+
+        expect(out).toEqual({ kind: 'delivered', channel: 'cold-fresh-successor' });
+        expect(launchColdFreshSuccessor).toHaveBeenCalledWith(expect.objectContaining({
+          subscriberId: 'su-abc', workspaceId: 'ws', harness: 'papercusp', deliveryId: expect.any(Number),
+          wakeText: `⟦tagged:loop-fire:2⟧\n${tagCalls[1]?.text}`,
+          turnOrigin: 'loop-fire',
+        }));
+        expect(tagCalls).toHaveLength(2);
+        expect(tagCalls[1]?.nowMs).toBe(nowMs + staleDelayMs);
+        expect(tagCalls[1]?.text).toBe(tagCalls[0]?.text);
+        expect(tagCalls[1]?.text).not.toContain('⟦tagged:loop-fire:1⟧');
+        expect(recordColdNoHostPark).not.toHaveBeenCalled();
+        expect(spawnDetached).not.toHaveBeenCalled();
+      } finally {
+        nowSpy.mockRestore();
+      }
     });
 
     it('failed successor parks and streaks without falling through to transcript resume', async () => {
@@ -3729,6 +5509,8 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
         findPsuHost: vi.fn(() => null) as never,
         coldAutoEnabled: vi.fn(async () => false),
         alive: vi.fn(() => false),
+        isLoopArmed: vi.fn(async () => true),
+        resolveMemberLiveness: parkedMemberLiveness() as never,
         spawnDetached,
       }),
     );
@@ -4457,12 +6239,36 @@ describe('applyInjectionDoor (deterministic-context-carry P-006 leg (b))', () =>
     const m = out.match(/in full at (\S+) \(see its section index\)/);
     expect(m).not.toBeNull();
     const spillPath = m![1];
-    expect(spillPath).toContain(join('.papercusp', 'wake-spills', 'su-door-test', 'delivery-990001.md'));
+    expect(spillPath).toContain(join('.papercusp', 'wake-spills', 'su-door-test', 'delivery-990001-'));
     const spilled = readFileSync(spillPath, 'utf8');
     expect(spilled).toContain(text); // the WHOLE original, not just the overflow
     expect(spilled).toContain('## Section index');
     expect(spilled).toMatch(/LEFT OUT — "carry-note paragraph \d+/);
     rmSync(spillPath, { force: true });
+  });
+
+  it('preserves each retry snapshot when delivery-time evidence changes', () => {
+    const d = work({ id: 990_003, subscriberId: 'su-door-retry-test' });
+    const narrative = Array.from({ length: 400 }, (_, i) => `Historical paragraph ${i}: ${'detail '.repeat(30)}`).join('\n\n');
+    const first = `HEADLINE first delivery read\n\n${narrative}`;
+    const second = `HEADLINE later delivery read\n\n${narrative}`;
+    const pointer = (out: string) => out.match(/in full at (\S+) \(see its section index\)/)?.[1];
+    const firstPath = pointer(applyInjectionDoor(d, first));
+    const secondPath = pointer(applyInjectionDoor(d, second));
+    try {
+      expect(firstPath).toBeTruthy();
+      expect(secondPath).toBeTruthy();
+      expect(secondPath).not.toBe(firstPath);
+      expect(readFileSync(firstPath!, 'utf8')).toContain(first);
+      expect(readFileSync(firstPath!, 'utf8')).not.toContain('HEADLINE later delivery read');
+      expect(readFileSync(secondPath!, 'utf8')).toContain(second);
+      const original = readFileSync(secondPath!, 'utf8');
+      expect(pointer(applyInjectionDoor(d, second))).toBe(secondPath);
+      expect(readFileSync(secondPath!, 'utf8')).toBe(original);
+    } finally {
+      if (firstPath) rmSync(firstPath, { force: true });
+      if (secondPath) rmSync(secondPath, { force: true });
+    }
   });
 
   it('kill-switch PAPERCUSP_INJECTION_DOOR_OFF=1 bypasses the door entirely', () => {

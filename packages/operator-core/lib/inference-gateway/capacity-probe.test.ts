@@ -11,6 +11,8 @@ import {
   CAPACITY_PROBE_ACCOUNT_TIMEOUT_MS,
   CAPACITY_PROBE_NOT_STARTED_ERROR,
   CAPACITY_PROBE_TIMEOUT_ERROR,
+  CAPACITY_PROBE_REFUSAL_MAX_BYTES,
+  CAPACITY_PROBE_REFUSAL_TIMEOUT_MS,
   parseCapacityHeaders,
   provesUnwall,
   storedWindows,
@@ -137,6 +139,108 @@ describe('storedWindows', () => {
 });
 
 describe('probeAccountCapacity', () => {
+  const refusalDeps = (response: Response, token = 'test-presented-credential-123456') => ({
+    fetchImpl: vi.fn(async () => response) as unknown as typeof fetch,
+    resolveToken: async () => token,
+    buildDispatcher: async () => undefined,
+  });
+
+  it('retains a structured HTTP refusal without inventing capacity or exposing credentials', async () => {
+    const token = 'test-presented-credential-123456';
+    const response = new Response(JSON.stringify({
+      error: { type: 'invalid_request_error', code: 'invalid_model', message: `Rejected ${token}\nmodel request` },
+      request_id: 'req_body', ignored: token,
+    }), { status: 400, headers: { 'request-id': 'req_header' } });
+    const deps = refusalDeps(response, token);
+    const result = await probeAccountCapacity(acct('refused', { utilization7d: 1 }, { credentialRef: 'apikey:env:TEST_API_KEY' }), deps, FULL);
+    expect(result).toMatchObject({
+      ok: false, status: 400, windows: {}, unwalls: false,
+      httpRefusal: { status: 400, bodyState: 'parsed', errorType: 'invalid_request_error', errorCode: 'invalid_model', requestId: 'req_header' },
+    });
+    expect(result.httpRefusal?.message).toContain('[redacted]');
+    expect(result.httpRefusal?.message).not.toContain('\n');
+    expect(JSON.stringify(result)).not.toContain(token);
+    expect(response.bodyUsed).toBe(true);
+    const [, init] = vi.mocked(deps.fetchImpl).mock.calls[0];
+    expect(new Headers(init?.headers).get('x-api-key')).toBe(token);
+    expect(new Headers(init?.headers).get('authorization')).toBeNull();
+  });
+
+  it('bounds and sanitizes a complete malformed refusal body', async () => {
+    const token = 'test-presented-credential-123456';
+    const result = await probeAccountCapacity(acct('malformed'), refusalDeps(new Response(
+      `bad payload ${token}\u001b${'x'.repeat(700)}`, { status: 502 },
+    ), token), FULL);
+    expect(result.httpRefusal?.bodyState).toBe('unstructured');
+    expect(result.httpRefusal?.message?.length).toBe(512);
+    expect(JSON.stringify(result)).not.toContain(token);
+    expect(result.httpRefusal?.message).not.toContain('\u001b');
+  });
+
+  it('cancels an oversized refusal without retaining a partial secret or body', async () => {
+    const cancel = vi.fn();
+    const response = new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode('x'.repeat(CAPACITY_PROBE_REFUSAL_MAX_BYTES + 1))); },
+      cancel,
+    }), { status: 400 });
+    const result = await probeAccountCapacity(acct('oversized'), refusalDeps(response), FULL);
+    expect(result.httpRefusal).toEqual({ status: 400, bodyState: 'truncated' });
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it('times out and cancels a never-ending refusal body within the diagnostic budget', async () => {
+    vi.useFakeTimers();
+    const cancel = vi.fn();
+    const response = new Response(new ReadableStream({ cancel }), { status: 400 });
+    const pending = probeAccountCapacity(acct('hung-body'), refusalDeps(response), FULL);
+    await vi.advanceTimersByTimeAsync(CAPACITY_PROBE_REFUSAL_TIMEOUT_MS);
+    const result = await pending;
+    expect(result).toMatchObject({ ok: false, status: 400, unwalls: false, httpRefusal: { bodyState: 'timed-out' } });
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it('retains HTTP status when a refusal body cannot be read', async () => {
+    const response = new Response(new ReadableStream({ start(controller) { controller.error(new Error('body failed')); } }), { status: 401 });
+    const result = await probeAccountCapacity(acct('unreadable'), refusalDeps(response), FULL);
+    expect(result).toMatchObject({ ok: false, status: 401, httpRefusal: { bodyState: 'unavailable' } });
+  });
+
+  it('limits refusal reading to the remaining account deadline', async () => {
+    vi.useFakeTimers();
+    const cancel = vi.fn();
+    const response = new Response(new ReadableStream({ cancel }), { status: 400 });
+    const pending = probeAccountCapacity(acct('short-deadline'), {
+      ...refusalDeps(response), deadlineAt: Date.now() + 25,
+    }, FULL);
+    await vi.advanceTimersByTimeAsync(25);
+    expect(await pending).toMatchObject({ ok: false, status: 400, httpRefusal: { bodyState: 'timed-out' } });
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it('accepts authoritative headers without waiting for a hanging HTTP error body', async () => {
+    const cancel = vi.fn();
+    const response = new Response(new ReadableStream({ cancel }), {
+      status: 429, headers: { 'anthropic-ratelimit-unified-7d-utilization': '1' },
+    });
+    const result = await probeAccountCapacity(acct('quota'), refusalDeps(response), FULL);
+    expect(result).toMatchObject({ ok: true, status: 429, windows: { utilization7d: 1 }, unwalls: false });
+    expect(result.httpRefusal).toBeUndefined();
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it('continues to sibling egress after a bounded refusal and discards it on success', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { type: 'invalid_request_error', message: 'route refused' } }), { status: 400 }))
+      .mockResolvedValueOnce(new Response('{}', { headers: { 'anthropic-ratelimit-unified-7d-utilization': '0.1' } }));
+    const result = await probeAccountCapacity(acct('sibling', { utilization7d: 1 }, { egressPool: [{}, {}] }), {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      resolveToken: async () => 'test-credential-12345', buildDispatcher: async () => undefined,
+    }, FULL);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ ok: true, status: 200, unwalls: true });
+    expect(result.httpRefusal).toBeUndefined();
+  });
+
   it('bounds a hanging credential resolution to the account deadline', async () => {
     vi.useFakeTimers();
     const pending = probeAccountCapacity(

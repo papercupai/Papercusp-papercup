@@ -15,14 +15,107 @@
  * install root). Anything else — a fake operator, a cargo build, a skipped or
  * failed test — is lower-level coverage, never release evidence.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import type { SuSessionEvent } from '@papercusp/chat-protocol';
+import { moduleRepoRoot } from '../module-repo-root';
 
-// ESM package: the release CLI runs this under tsx, where `__dirname` is undefined.
-export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+// Walk to the checkout, not a fixed `..` climb: that climb is wrong inside the esbuild host
+// bundle, where import.meta.url is the bundle's URL (P-016). See module-repo-root.ts.
+export const REPO_ROOT = moduleRepoRoot(import.meta.url);
 export const UX_CONTRACT = path.join(REPO_ROOT, 'apps/tui/PUBLIC_RELEASE_UX.md');
 export const ACCEPTANCE_MATRIX = path.join(REPO_ROOT, 'apps/tui/release/acceptance-matrix.json');
+
+/** Classify the SU prerequisite approvals the fixture already answers. OMP
+ * mounts MCP calls as native Write devices; remembering that approval would
+ * grant all native Write calls, including the later effect under test. */
+export function suToolApproval(title: string): { tool: string; remember: boolean } | undefined {
+  const direct = /^(papercusp-su · .+) \(MCP\)$/.exec(title);
+  if (direct) return { tool: direct[1]!, remember: true };
+  const mounted = /^Write\(xd:\/\/mcp(?:__|_)papercusp(?:-|_)su_{1,2}([A-Za-z0-9_]+)\)$/.exec(title);
+  if (mounted) return { tool: `papercusp-su · ${mounted[1]!.replace(/_/g, ' ')}`, remember: false };
+  return undefined;
+}
+
+/** Keep the native interruption probe within one ordinary model response. */
+export function nativeInterruptRequest(listId: string, count = 1000): string {
+  if (!Number.isInteger(count) || count < 1 || count > 1000) {
+    throw new Error('Native interruption probe requires 1..1000 numeric lines within a 4096-byte reply budget');
+  }
+  const expectedReply = Array.from({ length: count }, (_, index) => `${index + 1}\n`).join('');
+  if (Buffer.byteLength(expectedReply, 'utf8') > 4096) {
+    throw new Error('Native interruption probe exceeds its 4096-byte reply budget');
+  }
+  return `Reply directly in this chat with the numbers from 1 through ${count}, one per line, starting with 1, 2, 3 on separate lines. Continue the sequence in the same reply, with no other text or summary. Do not create or edit files, run commands, or use any tools. (List id: ${listId})`;
+}
+
+/** Bare native clients do not expose Papercusp's framework MCP tool set. */
+export function nativeApprovalRequest(input: {
+  backend: string; workItem: string; ownerId: string; notePath: string; noteText: string;
+}): string {
+  const frameworkTask = input.backend === 'omp'
+    ? `Task ${input.workItem} is assigned to your session ${input.ownerId}. Please verify it with work_items:get. `
+    : '';
+  return frameworkTask + `I want a temporary plain-text note at '${input.notePath}' containing exactly '${input.noteText}' followed by a newline. Create it using Bash.`;
+}
+
+/** Stop a card wait when this turn has actually settled without a pending
+ * card. The caller supplies only events received after submitting the turn. */
+export function nativeApprovalTurnSettled(
+  events: readonly SuSessionEvent[], turnId: string, hasPendingCard: boolean,
+): boolean {
+  if (hasPendingCard) return false;
+  const lifecycle = findLastSessionEvent(events, (event) => event.type === 'lifecycle');
+  if (lifecycle?.type !== 'lifecycle') return false;
+  if (lifecycle.state === 'failed' || lifecycle.state === 'ended') return true;
+  const reply = findLastSessionEvent(events, (event) => event.type === 'transcript'
+    && event.phase === 'completed' && event.role === 'assistant'
+    && event.channel === 'text' && event.turnId === turnId);
+  return lifecycle.state === 'waiting-for-owner' && reply !== undefined
+    && lifecycle.sequence > reply.sequence;
+}
+
+/** After the requested file effect is verified, decline optional native
+ * follow-up work once, without granting another command or wider permission.
+ * A different turn, file, prerequisite, or question is not ours to answer. */
+export function nativeApprovalFollowupDecline(
+  event: SuSessionEvent,
+  input: { turnId: string; afterSequence: number; notePath: string },
+): { question: string; label: string; key: string } | undefined {
+  if (event.type !== 'card' || event.phase !== 'opened'
+    || event.turnId !== input.turnId || event.sequence <= input.afterSequence) return undefined;
+  const card = event.card;
+  if (!card.approval || suToolApproval(card.approval.title)
+    || card.presentation?.kind !== 'radio' || !card.allowDecline) return undefined;
+  const body = `${card.prompt}\n${card.approval.body.join('\n')}`;
+  const pathAt = body.indexOf(input.notePath);
+  if (!input.notePath || pathAt < 0 || /[\w./-]/.test(body[pathAt - 1] ?? '')
+    || /[\w./-]/.test(body[pathAt + input.notePath.length] ?? '')) return undefined;
+  const index = card.presentation.options?.findIndex((option) =>
+    option.id === 'no' && /^No(?:,|$)/.test(option.label)) ?? -1;
+  const option = card.presentation.options?.[index];
+  return option ? { question: card.approval.question, label: option.label, key: String(index + 1) } : undefined;
+}
+
+// Array.prototype.findLast is ES2023 and outside this program's lib, so walk backwards.
+function findLastSessionEvent(
+  events: readonly SuSessionEvent[], predicate: (event: SuSessionEvent) => boolean,
+): SuSessionEvent | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event !== undefined && predicate(event)) return event;
+  }
+  return undefined;
+}
+
+/** Reject an incomplete installed-product invocation before starting its database or PTY. */
+export function assertInstalledPuiStore(binary: string, store: string | undefined): void {
+  if (!store) throw new Error('PUI_BIN needs PUI_RELEASE_STORE; run it through apps/tui/scripts/release-acceptance.sh');
+  let current: string;
+  try { current = realpathSync(path.join(store, 'current', 'bin', 'pui')); }
+  catch (cause) { throw new Error('PUI_RELEASE_STORE has no installed current/bin/pui', { cause }); }
+  if (current !== realpathSync(binary)) throw new Error('PUI_BIN does not match PUI_RELEASE_STORE/current/bin/pui');
+}
 
 /** Printed once per suite by the code that started its operator. */
 export const HARNESS_TAG = 'PUI_ACCEPTANCE_HARNESS';

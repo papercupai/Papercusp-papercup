@@ -9,6 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   judgeRequirementRealization,
+  deriveNonCodeExemptionProofs,
   describeUnrealized,
   describeExemptMapping,
   describeDroppedTarget,
@@ -20,6 +21,7 @@ import type {
   EffectiveItemAudit,
   PlanItemStatus,
 } from './plan-audits';
+import type { SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
 
 const mapping = (over: Partial<ActivationAuditMapping> = {}): ActivationAuditMapping => ({
   id: 'M-001',
@@ -41,6 +43,63 @@ const DOC: AuditCitation = { kind: 'doc', ref: 'internal/docs/x', reason: 'desig
 const NONE: AuditCitation = { kind: 'none', reason: 'investigation only' };
 
 const judge = (i: RequirementRealizationInput) => judgeRequirementRealization(i);
+
+const inventoryClause = (over: Partial<SpecClauseRevision> = {}): SpecClauseRevision => ({
+  planSlug: 'inventory-plan', specId: 'P-001-consolidation-exempt', planItemId: 'P-001',
+  sourceValId: null, sourceBar: null, currentRevision: 1, revision: 1,
+  behavior: 'Each legacy request is disposed or assigned to a named owner.',
+  behaviorClass: 'non-automated', lifecycleStatus: 'exempt',
+  requiredEvidence: [], requiredTestLayers: [], mutationRequired: false, falsifier: null,
+  exemption: { justification: 'Ledger bookkeeping changes no product behavior.', provenance: 'owner directive 1691' },
+  supersedes: null, contentHash: 'a'.repeat(64), createdBy: 'author', createdAt: '2026-10-11T00:00:00Z',
+  acceptedBy: null, acceptedAt: null, acceptanceRef: null, ...over,
+});
+
+describe('explicit non-code exemption realization', () => {
+  const items = [{ itemId: 'P-001', status: 'done', itemText: 'Consolidate legacy requests' }];
+  const prove = (clauses: SpecClauseRevision[], planItems = items) => deriveNonCodeExemptionProofs({
+    planSlug: 'inventory-plan', clauses, planItems,
+  });
+  const audit = () => ({ auditSeq: 1, entry: {
+    itemId: 'P-001', verdict: 'not-code' as const, citations: [NONE],
+    note: 'Completed census: every request is disposed or assigned; completion record names the population.',
+  } });
+  it('realizes a completed, audited inventory using its explicit exemption without an invented BAR', () => {
+    const proofs = prove([inventoryClause()]);
+    expect(proofs).toEqual([{ planItemId: 'P-001', barKeys: [], evidenceRefs: [],
+      exemptionRefs: [`inventory-plan#P-001-consolidation-exempt@1:${'a'.repeat(64)}`] }]);
+    expect(judge({ mappings: [mapping()], itemAudits: [audit()], planItems: items,
+      nonCodeItemProofs: proofs }).ok).toBe(true);
+    expect(judge({ mappings: [mapping()], itemAudits: [audit()], planItems: items }).ok).toBe(false);
+  });
+  it.each([
+    ['no clause', []],
+    ['wrong plan', [inventoryClause({ planSlug: 'other-plan' })]],
+    ['wrong item', [inventoryClause({ planItemId: 'P-002' })]],
+    ['stale revision', [inventoryClause({ currentRevision: 2 })]],
+    ['missing provenance', [inventoryClause({ exemption: { justification: 'Ledger work' } })]],
+    ['blank justification', [inventoryClause({ exemption: { justification: ' ', provenance: 'owner' } })]],
+    ['behavioral class', [inventoryClause({ behaviorClass: 'happy-path' })]],
+    ['draft', [inventoryClause({ lifecycleStatus: 'draft' })]],
+    ['requires tests', [inventoryClause({ requiredTestLayers: ['unit'] })]],
+    ['requires evidence', [inventoryClause({ requiredEvidence: ['test'] })]],
+    ['requires mutation', [inventoryClause({ mutationRequired: true })]],
+    ['declared falsifier', [inventoryClause({ falsifier: { observation: 'Product behavior failed' } })]],
+    ['active sibling', [inventoryClause(), inventoryClause({ specId: 'behavior', lifecycleStatus: 'active' })]],
+    ['draft sibling', [inventoryClause(), inventoryClause({ specId: 'behavior', lifecycleStatus: 'draft' })]],
+  ] as const)('does not exempt %s', (_label, clauses) => {
+    expect(prove([...clauses])).toEqual([]);
+  });
+  it.each(['wip', 'dropped'])('does not realize an item whose status is %s', (status) => {
+    expect(prove([inventoryClause()], [{ ...items[0], status }])).toEqual([]);
+  });
+  it('still requires a reasoned not-code completion audit', () => {
+    const proofs = prove([inventoryClause()]);
+    for (const itemAudits of [[], [itemAudit('P-001', [DOC])], [{ ...audit(), entry: { ...audit().entry, note: '' } }]]) {
+      expect(judge({ mappings: [mapping()], itemAudits, planItems: items, nonCodeItemProofs: proofs }).ok).toBe(false);
+    }
+  });
+});
 
 describe('judgeRequirementRealization', () => {
   it('realizes a completed, reasoned non-code outcome with exact current BAR proof', () => {
@@ -431,6 +490,20 @@ describe('judgeRequirementRealization', () => {
       const line = describeUnrealized(v.unrealized[0]!);
       expect(line).toContain('P-001');
       expect(line).toContain('the plan no longer contains this item');
+    });
+
+    it('names a dropped unrealized target without exempting it from evidence', () => {
+      const v = judge({
+        mappings: [mapping({ planTargets: ['P-001'] })],
+        itemAudits: [itemAudit('P-001', [DOC])],
+        planItems: [planItem('P-001', 'dropped')],
+      });
+      const line = describeUnrealized(v.unrealized[0]!);
+
+      expect(v.ok).toBe(false);
+      expect(v.droppedTargets).toHaveLength(1);
+      expect(line).toContain('P-001 (dropped; still subject to the evidence rule)');
+      expect(line).toContain('no verifying');
     });
 
     it('describeDroppedTarget names the target and whether a stale citation still vouches', () => {

@@ -301,7 +301,8 @@ describe('testing:run discloses its requested/effective timeout pair', () => {
 
   it('keeps the caller budget separate and wires the shared disclosure onto timeout hints', () => {
     expect(runSrc).toContain('const requestedTimeoutMs = args.timeoutMs;');
-    expect(runSrc).toContain('clampForegroundTimeoutMs(requestedTimeoutMs ?? DEFAULT_TIMEOUT_MS)');
+    expect(runSrc).toContain('clampTestingRunForegroundTimeoutMs(requestedTimeoutMs ?? DEFAULT_TIMEOUT_MS)');
+    expect(runSrc).toMatch(/clampForegroundTimeoutMs\(requestedTimeoutMs\)/);
     expect(runSrc).toMatch(/testingRunTimeoutClampDisclosure\(requestedTimeoutMs, timeoutMs\)/);
     expect(runSrc).toMatch(/foregroundClampDisclosure\(requestedTimeoutMs, effectiveTimeoutMs\)/);
   });

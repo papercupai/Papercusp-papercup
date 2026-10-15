@@ -19,7 +19,7 @@
  * Fail-soft throughout: an alert failure must never break the observation write that carries
  * it (the write is the durable half).
  */
-import type { AccountPool, BurnTransition } from '../deployment/account-pool';
+import type { AccountPool, BurnTransition, AccountCreditBalance } from '../deployment/account-pool';
 import type { BurnVerdict } from './burn-governor';
 
 const FACT_TTL_SEC = 6 * 3600;
@@ -102,7 +102,7 @@ export function renderBurnAggregateBody(agg: BurnAggregate): string {
  */
 export async function recordAccountWindowWithBurnAlert(
   accountId: string,
-  w: { utilization?: number; windowResetAt?: number; utilization7d?: number; windowResetAt7d?: number },
+  w: { utilization?: number; windowResetAt?: number; utilization7d?: number; windowResetAt7d?: number; usageCreditsAvailable?: boolean; creditBalance?: AccountCreditBalance },
   now: number,
   ws?: string,
 ): Promise<{ pool: AccountPool; transition: BurnTransition | null }> {

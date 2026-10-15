@@ -1,10 +1,13 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
+import { createHostedPrincipal } from '../auth/hosted-principal';
+import type { HostedPrincipalResolution } from '../auth/hosted-principal-resolver';
 import {
   HostedWorkspaceSessionBroker,
   type HostedWorkspaceRelaySocket,
 } from './hosted-workspace-session';
 import type { HostedConnectorBinding, HostedConnectorTicketBinding } from './hosted-workspace-connector';
+import { DEFAULT_CLOUD_TELEMETRY_CONSENT } from '../telemetry-kinds';
 
 class FakeSocket extends EventEmitter implements HostedWorkspaceRelaySocket {
   readonly OPEN = 1;
@@ -31,6 +34,156 @@ const ticket = (session = 'hosted-session-1'): HostedConnectorTicketBinding => (
 });
 
 describe('HostedWorkspaceSessionBroker', () => {
+  it('returns fresh diagnostic consent only to an authenticated customer-host authority request', async () => {
+    const principal = createHostedPrincipal({ workspaceId: 'control', activeOrganizationId: 'org-1',
+      selectedWorkspaceId: 'workspace-1', userId: 'user-1', sessionId: 'hosted-session-1',
+      sessionVersion: 3, permissions: ['workspace:operate'] });
+    const consent = vi.fn(async () => DEFAULT_CLOUD_TELEMETRY_CONSENT);
+    const broker = new HostedWorkspaceSessionBroker({ pingIntervalMs: 0,
+      resolveChannelPrincipal: async () => ({ ok: true, principal } as HostedPrincipalResolution), readMonitoringConsent: consent });
+    const host = new FakeSocket(), browser = new FakeSocket();
+    try {
+      broker.attachConnector(connector, host); broker.attachBrowser(ticket(), browser, { kind: 'operator-http' });
+      const open = host.sent.find(m => (m as { type: string }).type === 'relay.open') as { channelId: string };
+      const requestId = '11111111-1111-4111-8111-111111111111';
+      browser.message({ type: 'session.authorize', channelId: open.channelId, requestId, diagnostics: true });
+      expect(consent).not.toHaveBeenCalled();
+      host.message({ type: 'session.authorize', channelId: open.channelId, requestId });
+      await vi.waitFor(() => expect(host.sent).toContainEqual(expect.objectContaining({ type: 'session.authorized', requestId })));
+      expect(consent).not.toHaveBeenCalled();
+      host.sent = [];
+      host.message({ type: 'session.authorize', channelId: open.channelId, requestId, diagnostics: true });
+      await vi.waitFor(() => expect(host.sent).toContainEqual(expect.objectContaining({ type: 'session.authorized',
+        authority: expect.objectContaining({ monitoringConsent: DEFAULT_CLOUD_TELEMETRY_CONSENT }) })));
+      expect(consent).toHaveBeenCalledWith(principal);
+      expect(browser.sent).not.toContainEqual(expect.objectContaining({ type: 'session.authorized' }));
+      host.sent = []; consent.mockRejectedValue(new Error('PRIVATE_DATABASE_CONNECTION'));
+      host.message({ type: 'session.authorize', channelId: open.channelId, requestId, diagnostics: true });
+      await vi.waitFor(() => expect(host.sent).toContainEqual(expect.objectContaining({ authority: expect.objectContaining({ monitoringConsent: null }) })));
+      expect(JSON.stringify(host.sent)).not.toContain('PRIVATE_DATABASE_CONNECTION');
+    } finally { browser.close(); host.close(); broker.dispose(); }
+  });
+  it('rechecks ticket-bound authority over the connector without trusting frame labels', async () => {
+    const principal = createHostedPrincipal({ workspaceId: 'control', activeOrganizationId: 'org-1',
+      selectedWorkspaceId: 'workspace-1', userId: 'user-1', sessionId: 'hosted-session-1',
+      sessionVersion: 3, permissions: ['workspace:operate'] });
+    const resolve = vi.fn(async (): Promise<HostedPrincipalResolution> => ({ ok: true, principal } as HostedPrincipalResolution));
+    const broker = new HostedWorkspaceSessionBroker({ pingIntervalMs: 0, resolveChannelPrincipal: resolve });
+    const host = new FakeSocket(); const browser = new FakeSocket();
+    broker.attachConnector(connector, host); broker.attachBrowser(ticket(), browser, { kind: 'operator-http' });
+    const open = host.sent.find(m => (m as { type: string }).type === 'relay.open') as { channelId: string };
+    const requestId = '11111111-1111-4111-8111-111111111111';
+    host.message({ type: 'session.authorize', channelId: open.channelId, requestId,
+      userId: 'forged', hostedSessionId: 'forged', permissions: ['*'] });
+    await vi.waitFor(() => expect(host.sent).toContainEqual(expect.objectContaining({
+      type: 'session.authorized', requestId, authority: expect.objectContaining({ userId: 'user-1',
+        sessionVersion: 3, permissions: ['workspace:operate'] }) })));
+    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ userId: 'user-1', hostedSessionId: 'hosted-session-1' }));
+    expect(browser.sent).not.toContainEqual(expect.objectContaining({ type: 'session.authorized' }));
+    resolve.mockResolvedValue({ ok: false, reason: 'membership_not_active' });
+    host.message({ type: 'session.authorize', channelId: open.channelId, requestId });
+    await vi.waitFor(() => expect(host.sent).toContainEqual({ type: 'session.authorized',
+      channelId: open.channelId, requestId, authority: null }));
+    browser.close(); host.close(); broker.dispose();
+  });
+
+  it('never returns stale authority after a channel closes during the read', async () => {
+    let finish!: (v: HostedPrincipalResolution) => void;
+    const resolve = vi.fn(() => new Promise<HostedPrincipalResolution>(r => { finish = r; }));
+    const broker = new HostedWorkspaceSessionBroker({ pingIntervalMs: 0, resolveChannelPrincipal: resolve });
+    const host = new FakeSocket(); const browser = new FakeSocket();
+    broker.attachConnector(connector, host); broker.attachBrowser(ticket(), browser, { kind: 'operator-http' });
+    const open = host.sent.find(m => (m as { type: string }).type === 'relay.open') as { channelId: string };
+    host.message({ type: 'session.authorize', channelId: open.channelId,
+      requestId: '11111111-1111-4111-8111-111111111111' });
+    expect(resolve).toHaveBeenCalledTimes(1); browser.close();
+    finish({ ok: false, reason: 'session_not_found' }); await Promise.resolve(); await Promise.resolve();
+    expect(host.sent).not.toContainEqual(expect.objectContaining({ type: 'session.authorized' }));
+    host.close(); broker.dispose();
+  });
+  it.each(['unconfigured', 'fault', 'foreign', 'view-only'])(
+    'denies %s authority without exposing internal details', async mode => {
+      const principal = createHostedPrincipal({ workspaceId: 'control', activeOrganizationId: 'org-1',
+        selectedWorkspaceId: 'workspace-1', userId: mode === 'foreign' ? 'different' : 'user-1',
+        sessionId: 'hosted-session-1', sessionVersion: 3,
+        permissions: [mode === 'view-only' ? 'workspace:view' : 'workspace:operate'] });
+      const broker = new HostedWorkspaceSessionBroker({ pingIntervalMs: 0,
+        ...(mode === 'unconfigured' ? {} : { resolveChannelPrincipal: async () => {
+          if (mode === 'fault') throw new Error('PRIVATE_AUTHORITY_FAILURE');
+          return { ok: true, principal } as HostedPrincipalResolution;
+        } }) });
+      const host = new FakeSocket(); const browser = new FakeSocket();
+      broker.attachConnector(connector, host); broker.attachBrowser(ticket(), browser, { kind: 'operator-http' });
+      const open = host.sent.find(m => (m as { type: string }).type === 'relay.open') as { channelId: string };
+      const requestId = '11111111-1111-4111-8111-111111111111';
+      host.message({ type: 'session.authorize', channelId: open.channelId, requestId });
+      await vi.waitFor(() => expect(host.sent).toContainEqual({ type: 'session.authorized',
+        channelId: open.channelId, requestId, authority: null }));
+      expect(JSON.stringify(host.sent)).not.toContain('PRIVATE_AUTHORITY_FAILURE');
+      browser.close(); host.close(); broker.dispose();
+    });
+
+  it('refuses browser-authored and stale-connector authority requests', async () => {
+    const resolve = vi.fn(async (): Promise<HostedPrincipalResolution> => ({ ok: false, reason: 'session_not_found' }));
+    const broker = new HostedWorkspaceSessionBroker({ pingIntervalMs: 0, resolveChannelPrincipal: resolve });
+    const host = new FakeSocket(); const browser = new FakeSocket();
+    broker.attachConnector(connector, host); broker.attachBrowser(ticket(), browser, { kind: 'operator-http' });
+    const open = host.sent.find(m => (m as { type: string }).type === 'relay.open') as { channelId: string };
+    const req = { type: 'session.authorize', channelId: open.channelId,
+      requestId: '11111111-1111-4111-8111-111111111111' };
+    browser.message(req); expect(resolve).not.toHaveBeenCalled();
+    const replacement = new FakeSocket(); broker.attachConnector(connector, replacement);
+    host.message(req); expect(resolve).not.toHaveBeenCalled();
+    replacement.close(); broker.dispose();
+  });
+  it('drops non-allowlisted BYOC connector control frames and audits type only', () => {
+    const audit = vi.fn();
+    const broker = new HostedWorkspaceSessionBroker({ pingIntervalMs: 0, onAudit: audit });
+    const host = new FakeSocket();
+    broker.attachConnector({ ...connector, hosting: 'byoc' }, host);
+    host.message({ type: 'session.claim-control', payload: { secret: 'BYOC_SECRET' } });
+    host.message({ type: 'BYOC_SECRET', payload: { secret: 'BYOC_SECRET' } });
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'byoc_control_frame_dropped', detail: 'session.claim-control',
+    }));
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'byoc_control_frame_dropped', detail: 'unknown',
+    }));
+    expect(JSON.stringify(audit.mock.calls)).not.toContain('BYOC_SECRET');
+    expect(host.sent).not.toContainEqual(expect.objectContaining({ type: 'relay.open' }));
+    broker.dispose();
+  });
+
+  it.each(['pty', 'psu', 'operator-http', 'desktop'] as const)(
+    'refuses a BYOC %s plaintext channel before opening it', (kind) => {
+      const broker = new HostedWorkspaceSessionBroker({ randomId: () => 'forbidden' });
+      const host = new FakeSocket();
+      const browser = new FakeSocket();
+      broker.attachConnector({ ...connector, hosting: 'byoc' }, host);
+      broker.attachBrowser(ticket(), browser, { kind, ...(kind === 'desktop' ? { desktopSessionId: 'desktop-1' } : {}) });
+      expect(browser.sent).toContainEqual({
+        type: 'session.denied', reason: 'byoc_plaintext_relay_refused',
+        alternatives: ['customer_controlled_ingress', 'sealed_channel'],
+      });
+      expect(browser.closed).toEqual([[4403, 'byoc_plaintext_relay_refused']]);
+      expect(host.sent).not.toContainEqual(expect.objectContaining({ type: 'relay.open' }));
+      broker.dispose();
+    },
+  );
+
+  it('refuses both portal app channel kinds for BYOC', () => {
+    const broker = new HostedWorkspaceSessionBroker({ pingIntervalMs: 0 });
+    const host = new FakeSocket();
+    const byoc = { ...connector, hosting: 'byoc' as const };
+    broker.attachConnector(byoc, host);
+    const app = broker.appConnector(byoc.customerWorkspaceId)!;
+    for (const kind of ['app-http', 'app-key-mint'] as const) {
+      expect(broker.openAppChannel(app, { onFrame: () => {}, onClose: () => {} }, kind)).toBeNull();
+    }
+    expect(host.sent).not.toContainEqual(expect.objectContaining({ type: 'relay.open' }));
+    broker.dispose();
+  });
+
   it('relays only through the exact generation-bound outbound connector', () => {
     const broker = new HostedWorkspaceSessionBroker({ randomId: () => 'channel-1' });
     const host = new FakeSocket();
@@ -484,5 +637,97 @@ describe('HostedWorkspaceSessionBroker — relay liveness (P-001)', () => {
       expect(first.closed).toContainEqual([4002, 'connector_replaced']);
       expect(liveness).toEqual([[7, true], [7, true]]);
     });
+  });
+});
+
+describe('HostedWorkspaceSessionBroker membership reports (WI-10004257)', () => {
+  const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+  const report = (removedEmails: string[]) => ({ type: 'membership.report', organizationId: 'org-1', removedEmails });
+  const reports = (socket: FakeSocket) =>
+    socket.sent.filter((frame) => (frame as { type?: string }).type === 'membership.report');
+
+  it("sends the connector's organization report right after bound, and nothing without a loader", async () => {
+    const reads: string[] = [];
+    const broker = new HostedWorkspaceSessionBroker({
+      pingIntervalMs: 0,
+      membershipReport: async (binding) => {
+        reads.push(binding.organizationId);
+        return report(['gone@example.test']);
+      },
+    });
+    const host = new FakeSocket();
+    broker.attachConnector(connector, host);
+    await tick();
+    expect(host.sent[0]).toMatchObject({ type: 'bound', role: 'connector' });
+    expect(host.sent[1]).toEqual(report(['gone@example.test']));
+    expect(reads).toEqual(['org-1']);
+
+    const plain = new HostedWorkspaceSessionBroker({ pingIntervalMs: 0 });
+    const other = new FakeSocket();
+    plain.attachConnector(connector, other);
+    await tick();
+    expect(other.sent.map((frame) => (frame as { type: string }).type)).toEqual(['bound']);
+  });
+
+  it('re-reads on its cadence, once per organization, and re-sends only a changed report', async () => {
+    let clock = 0;
+    let removed = ['gone@example.test'];
+    const reads: string[] = [];
+    const broker = new HostedWorkspaceSessionBroker({
+      pingIntervalMs: 0,
+      now: () => clock,
+      membershipRefreshMs: 1_000,
+      membershipReport: async (binding) => {
+        reads.push(binding.organizationId);
+        return report(removed);
+      },
+    });
+    const a = new FakeSocket();
+    const b = new FakeSocket();
+    broker.attachConnector(connector, a);
+    broker.attachConnector({ ...connector, customerWorkspaceId: 'workspace-2', hostId: 'host-2' }, b);
+    await tick();
+    reads.length = 0;
+
+    clock = 999;
+    broker.sweepLiveness();
+    await tick();
+    expect(reads).toEqual([]);
+
+    clock = 1_000;
+    broker.sweepLiveness();
+    await tick();
+    expect(reads).toEqual(['org-1']);
+    expect(reports(a)).toHaveLength(1);
+    expect(reports(b)).toHaveLength(1);
+
+    removed = ['gone@example.test', 'left@example.test'];
+    clock = 2_000;
+    broker.sweepLiveness();
+    await tick();
+    expect(reports(a)).toEqual([report(['gone@example.test']), report(['gone@example.test', 'left@example.test'])]);
+    expect(reports(b)).toHaveLength(2);
+  });
+
+  it('keeps the connector and sends nothing when the report cannot be read', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const broker = new HostedWorkspaceSessionBroker({
+        pingIntervalMs: 0,
+        membershipReport: async () => { throw new Error('database unavailable: member-log-canary@example.test'); },
+      });
+      const host = new FakeSocket();
+      broker.attachConnector(connector, host);
+      await tick();
+      await broker.refreshMembership();
+      expect(host.sent.map((frame) => (frame as { type: string }).type)).toEqual(['bound']);
+      expect(host.closed).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('membership report'), {
+        code: 'connector_unavailable', fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('member-log-canary@example.test');
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

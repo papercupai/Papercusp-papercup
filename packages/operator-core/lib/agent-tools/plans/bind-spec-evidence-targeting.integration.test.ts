@@ -293,3 +293,92 @@ describe('plans:bind-spec-evidence targeting refusal against the real clause sto
     expect(own).toMatchObject({ ok: true, specId: SPEC_ID, specRevision: 2 });
   });
 });
+
+describe('adequacy attestation advisories against the real store (EI-24903278232142036)', () => {
+  type Advisory = Record<string, unknown> & { code?: string; clauses?: unknown };
+  type Envelope = { data: { results: BindResult[]; advisories?: Advisory[] } };
+  const ATTESTATION = /^adequacy_attestation_/;
+  const attestationAdvisories = (out: Envelope) => (out.data.advisories ?? []).filter((a) => ATTESTATION.test(String(a.code)));
+
+  async function bind(ref: string, attestations: Record<string, unknown>): Promise<Envelope> {
+    const testRunId = await seedTestRun();
+    return (await bindTool.handler(
+      {
+        harness: HARNESS,
+        slug: PLAN,
+        binding: {
+          workItemId: 'WI-143',
+          specId: SPEC_ID,
+          sourceFingerprint: 'git:abc123',
+          evidenceKind: 'mutation',
+          evidenceRef: ref,
+          testRunId,
+          details: { adequacy: { ...KILLED, targeted: SPEC_ID.toLowerCase(), ...attestations } },
+        },
+      } as never,
+      CTX,
+    )) as Envelope;
+  }
+
+  async function retract(bindingId: number): Promise<Envelope> {
+    return (await bindTool.handler(
+      { harness: HARNESS, slug: PLAN, retract: [{ bindingId, reason: 'superseded by the fresh re-bind in this test' }] } as never,
+      CTX,
+    )) as Envelope;
+  }
+
+  it('names the attestations a fresh re-bind lacks, then the ones retracting their last carrier removes', async () => {
+    const attested = await bind('mutation-probe:attest#1', { falsifiable: true, pathReachable: true });
+    expect(attested.data.results[0]).toMatchObject({ ok: true, status: 'created' });
+    expect(attestationAdvisories(attested)).toEqual([]);
+    const olderId = Number(attested.data.results[0]!.id);
+
+    const fresh = await bind('mutation-probe:attest#2', {});
+    expect(fresh.data.results[0]).toMatchObject({ ok: true, status: 'created' });
+    const freshId = Number(fresh.data.results[0]!.id);
+    expect(attestationAdvisories(fresh)).toEqual([
+      expect.objectContaining({
+        code: 'adequacy_attestation_gap',
+        clauses: [
+          {
+            bindingId: freshId,
+            specId: SPEC_ID,
+            specRevision: 1,
+            missing: [
+              { key: 'falsifiable', carriedBy: [olderId] },
+              { key: 'pathReachable', carriedBy: [olderId] },
+            ],
+          },
+        ],
+      }),
+    ]);
+
+    const retracted = await retract(olderId);
+    expect(retracted.data.results[0]).toMatchObject({ ok: true, status: 'retracted' });
+    expect(attestationAdvisories(retracted)).toEqual([
+      expect.objectContaining({
+        code: 'adequacy_attestation_lost',
+        clauses: [
+          {
+            specId: SPEC_ID,
+            specRevision: 1,
+            lost: [
+              { key: 'falsifiable', lostFrom: [olderId] },
+              { key: 'pathReachable', lostFrom: [olderId] },
+            ],
+          },
+        ],
+      }),
+    ]);
+  });
+
+  it('stays silent when the re-bind re-attests, and when a retraction leaves another carrier live', async () => {
+    const older = await bind('mutation-probe:attest#1', { falsifiable: true, pathReachable: true });
+    const fresh = await bind('mutation-probe:attest#2', { falsifiable: true, pathReachable: true });
+    expect(fresh.data.results[0]).toMatchObject({ ok: true, status: 'created' });
+    expect(attestationAdvisories(fresh)).toEqual([]);
+    const retracted = await retract(Number(older.data.results[0]!.id));
+    expect(retracted.data.results[0]).toMatchObject({ ok: true, status: 'retracted' });
+    expect(attestationAdvisories(retracted)).toEqual([]);
+  });
+});

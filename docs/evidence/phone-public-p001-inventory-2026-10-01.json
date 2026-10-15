@@ -1,0 +1,163 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Phone P001 canonical source and runtime inventory",
+  "framework": "operational",
+  "command": [
+    "coord:whoami",
+    "pot:get {slug:phone-app,workspace:papercusp-workspace}",
+    "systemctl --user show Phone/Portal units --property=ActiveState,SubState,WorkingDirectory,ExecMainStartTimestamp,FragmentPath",
+    "GET http://127.0.0.1:8793/api/health",
+    "GET http://127.0.0.1:7890/",
+    "git -C managed-app-root rev-parse --show-toplevel and HEAD",
+    "operator:credentials_status {integration_name:TELNYX_API_KEY}",
+    "Read PROTOCOL.md, GUIDE.md, template.yaml, manifests and source contracts; read credential names only"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T18:56:07Z",
+  "finishedAt": "2026-10-01T19:06:53Z",
+  "summary": "Existing template-materialized Phone app, Portal mount and four local services have explicit source/runtime owners. Local health is measured; public PSTN and exact shipment acceptance remain unmeasured. Approved AUTO/self implementation authority is recorded; dependent carrier/spend/legal inputs remain pending.",
+  "assertions": [
+    {
+      "id": "session-authority",
+      "passed": true,
+      "evidence": "coord:whoami matched su-e6db372d-b1df-498d-9873-2b2bee8968e9. Owner turn11 approved carrying plan to shipped status; D003 records US/English AI-assisted-number implementation defaults without emergency/primary-phone claims."
+    },
+    {
+      "id": "canonical-app-root",
+      "passed": true,
+      "evidence": "pot:get and git --show-toplevel agree on managed .papercusp/apps/phone-app independent repo. PROTOCOL identifies templates:new-app root papercusp-app; composition retained."
+    },
+    {
+      "id": "component-source-runtime-map",
+      "passed": true,
+      "evidence": "Each of six listed component rows has existing source and a named runtime owner; systemd WorkingDirectory matches managed sidecar, worker and Portal roots. Media/SIP source is canonical infra/phone-app templates."
+    },
+    {
+      "id": "local-runtime-health",
+      "passed": true,
+      "evidence": "Four Phone units active/running. Sidecar8793 api/health returned200/papercusp-phone; media7890 returned200/OK. These checks do not measure a call."
+    },
+    {
+      "id": "external-facts-not-fabricated",
+      "passed": true,
+      "evidence": "TELNYX_API_KEY reference metadata reports missing. Config key names omit PHONE_LIVEKIT_PUBLIC_URL. P004/P010/P014 comments1153948/9/50 record dependent account/spend/provider/privacy/emergency requirements; independent software remains actionable."
+    },
+    {
+      "id": "prior-evidence-and-shared-lanes",
+      "passed": true,
+      "evidence": "Focused source prerequisites closed committed WI10004966/WI10004939. Exact87-outcome preview1153837 independentlyapproved1153920; current specqualityEI24804204935719796 independentlypassedEI24804298755372814. Shared publicvoice release WI10004758 is blocked/unassigned/no checkpoint; no live-gate monitoring undertaken."
+    }
+  ],
+  "components": [
+    {
+      "id": "portal-shell",
+      "sourceRoot": ".papercusp/apps/portal",
+      "source": "packages/ui/src/shell.tsx",
+      "runtimeOwner": "papercusp-cloud-portal.service",
+      "runtimeRole": "Next.js suite host; Phone mount",
+      "runtimeWorkingDirectory": ".papercusp/apps/portal",
+      "publicAcceptance": "not yet exercised"
+    },
+    {
+      "id": "phone-ui",
+      "sourceRoot": ".papercusp/apps/phone-app",
+      "source": "packages/ui/src/index.tsx",
+      "runtimeOwner": "papercusp-cloud-portal.service",
+      "runtimeRole": "Phone UI imported by Portal shell; styles imported by app/layout.tsx",
+      "runtimeWorkingDirectory": ".papercusp/apps/portal",
+      "publicAcceptance": "not yet exercised"
+    },
+    {
+      "id": "phone-sidecar",
+      "sourceRoot": ".papercusp/apps/phone-app",
+      "source": "apps/sidecar/src/index.ts",
+      "runtimeOwner": "papercusp-phone-sidecar.service",
+      "runtimeWorkingDirectory": ".papercusp/apps/phone-app/apps/sidecar",
+      "active": true,
+      "health": {
+        "url": "http://127.0.0.1:8793/api/health",
+        "status": 200,
+        "service": "papercusp-phone"
+      }
+    },
+    {
+      "id": "phone-worker",
+      "sourceRoot": ".papercusp/apps/phone-app",
+      "source": "worker/src/agent.ts",
+      "runtimeOwner": "papercusp-phone-worker.service",
+      "runtimeWorkingDirectory": ".papercusp/apps/phone-app/worker",
+      "active": true,
+      "health": "process running; conversation not measured"
+    },
+    {
+      "id": "livekit-media",
+      "sourceRoot": "papercusp",
+      "source": "infra/phone-app/livekit-server.yaml.tmpl",
+      "runtimeOwner": "papercusp-phone-livekit.service",
+      "active": true,
+      "health": {
+        "url": "http://127.0.0.1:7890/",
+        "status": 200,
+        "body": "OK"
+      },
+      "ports": [
+        "7890/http-ws",
+        "7891/rtc-tcp",
+        "7892/udp-rtc",
+        "7893/udp-turn"
+      ]
+    },
+    {
+      "id": "livekit-sip",
+      "sourceRoot": "papercusp",
+      "source": "infra/phone-app/livekit-sip.yaml.tmpl",
+      "runtimeOwner": "papercusp-phone-sip.service",
+      "active": true,
+      "ports": [
+        "5070/sip-udp-tcp",
+        "40000-40200/udp-rtp"
+      ],
+      "carrierAcceptance": "not measured"
+    }
+  ],
+  "sourceIdentity": {
+    "phoneAppHead": "dafa57019267b7b70d6f249ae12bfc0c48e87bc4",
+    "portalHead": "f0933e1f0f1770f2df96008689e188325a0514eb",
+    "operatorCurrentBuild": "7b51e44017",
+    "note": "Observed source/build identities; final exact shipped artifact remains P015 work."
+  },
+  "secretReferences": {
+    "file": "~/.config/papercusp-phone/livekit.env",
+    "names": [
+      "PHONE_LIVEKIT_API_KEY",
+      "PHONE_LIVEKIT_API_SECRET",
+      "PHONE_LIVEKIT_URL",
+      "GOOGLE_APPLICATION_CREDENTIALS",
+      "GOOGLE_CLOUD_PROJECT",
+      "DEEPGRAM_API_KEY",
+      "ELEVEN_API_KEY",
+      "PHONE_WORKER_SECRET"
+    ],
+    "carrierReference": {
+      "name": "TELNYX_API_KEY",
+      "status": "missing"
+    },
+    "publicMediaUrlConfigured": false
+  },
+  "acceptanceBoundary": {
+    "publicPstn": "not measured",
+    "capacity": "not measured",
+    "pilot": "not started",
+    "generalSignup": "must wait for seven-day 100-consenting-call pilot across two originating networks and approved spend envelope",
+    "emergencyPrimaryPhoneClaims": "not authorized or verified"
+  },
+  "sourceRefs": [
+    "phone-public-telephone-service-2026-10-01#D-003",
+    "session_turn:codex:01a0f7b1-b53e-71f2-b1d3-01818dcd94c3:11",
+    "WI-10004983",
+    "WI-10004986",
+    "WI-10004988",
+    "WI-10004996"
+  ]
+}

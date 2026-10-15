@@ -16,7 +16,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { cleanPartText } from './search/session-ingest';
-import { capEntryText, THINKING_ENTRY_TEXT_CAP } from './endpoint-route/routes/harness/streams';
+import { capEntryText, THINKING_ENTRY_TEXT_CAP } from './owner-sessions/transcript';
 import {
   TRANSCRIPT_RENDER_TEXT_CAP,
   TRUNCATION_MARKER_POSIX_RE,

@@ -465,38 +465,49 @@ require_fresh_current_release() {
 }
 
 managed_unit_runs_current_artifact() {
-  local main_pid arg current_real saw_launcher=0
+  local main_pid arg current_real
   main_pid="$(systemctl_user show "$UNIT_NAME" --property=MainPID --value 2>/dev/null || true)"
   [[ "$main_pid" =~ ^[0-9]+$ && "$main_pid" != 0 && -r "$PROC_ROOT/$main_pid/cmdline" ]] || return 1
-  while IFS= read -r -d '' arg; do
-    [[ "$arg" == "$START_WEB" ]] && saw_launcher=1
-  done < "$PROC_ROOT/$main_pid/cmdline"
-  ((saw_launcher)) || return 1
 
   current_real="$("$READLINK_BIN" -f "$CURRENT_RELEASE_LINK" 2>/dev/null || true)"
   [[ -n "$current_real" ]] || return 1
 
-  # start-web -> standalone-entry -> Next server is a short process chain.
-  # Walk descendants rather than assuming the launcher is MainPID's direct
-  # child; systemd and Node can insert one wrapper on different Node releases.
+  # The hosted launcher can be MainPID, with start-web below it. Track the
+  # start-web proof separately for each lineage: a current-release sibling
+  # outside that lineage cannot validate the serving artifact.
   local -a frontier=("$main_pid")
+  local -a frontier_launchers=(0)
   local -a next_frontier=()
-  local depth pid child cwd
-  for depth in 1 2 3 4 5 6; do
+  local -a next_launchers=() children=()
+  local depth index pid child cwd saw_launcher
+  for depth in 0 1 2 3 4 5 6; do
     next_frontier=()
-    for pid in "${frontier[@]}"; do
+    next_launchers=()
+    for index in "${!frontier[@]}"; do
+      pid=${frontier[$index]}
+      saw_launcher=${frontier_launchers[$index]}
+      if [[ -r "$PROC_ROOT/$pid/cmdline" ]]; then
+        while IFS= read -r -d '' arg; do
+          [[ "$arg" == "$START_WEB" ]] && saw_launcher=1
+        done < "$PROC_ROOT/$pid/cmdline"
+      fi
+      if ((saw_launcher)); then
+        cwd="$("$READLINK_BIN" -f "$PROC_ROOT/$pid/cwd" 2>/dev/null || true)"
+        [[ "$cwd" == "$current_real" || "$cwd" == "$current_real/"* ]] && return 0
+      fi
       [[ -r "$PROC_ROOT/$pid/task/$pid/children" ]] || continue
       # Linux procfs exposes `children` as a space-separated record with no
-      # trailing newline. Plain `while read` drops that final record, which
-      # made a healthy immutable service look stale and triggered rollback.
-      while read -r child || [[ -n "$child" ]]; do
-        [[ "$child" =~ ^[0-9]+$ ]] || continue
-        cwd="$("$READLINK_BIN" -f "$PROC_ROOT/$child/cwd" 2>/dev/null || true)"
-        [[ "$cwd" == "$current_real" || "$cwd" == "$current_real/"* ]] && return 0
-        next_frontier+=("$child")
+      # trailing newline. Tokenize every PID and retain the final EOF record.
+      while IFS=$' \t' read -r -a children || ((${#children[@]})); do
+        for child in "${children[@]}"; do
+          [[ "$child" =~ ^[0-9]+$ && "$child" != 0 ]] || continue
+          next_frontier+=("$child")
+          next_launchers+=("$saw_launcher")
+        done
       done < "$PROC_ROOT/$pid/task/$pid/children"
     done
     frontier=("${next_frontier[@]}")
+    frontier_launchers=("${next_launchers[@]}")
     ((${#frontier[@]})) || break
   done
   return 1
@@ -508,6 +519,21 @@ listener_pid() {
   if [[ "$output" =~ pid=([0-9]+) ]]; then
     printf '%s\n' "${BASH_REMATCH[1]}"
   fi
+}
+
+listener_belongs_to_managed_unit() {
+  local pid=$1 unit_cgroup hierarchy controllers process_cgroup
+  [[ "$pid" =~ ^[0-9]+$ && "$pid" != 0 ]] || return 1
+  unit_cgroup="$(systemctl_user show "$UNIT_NAME" --property=ControlGroup --value 2>/dev/null || true)"
+  [[ "$unit_cgroup" == /* && "$unit_cgroup" != "/" ]] || return 1
+  [[ -r "$PROC_ROOT/$pid/cgroup" ]] || return 1
+
+  while IFS=: read -r hierarchy controllers process_cgroup; do
+    if [[ "$process_cgroup" == "$unit_cgroup" || "$process_cgroup" == "$unit_cgroup/"* ]]; then
+      return 0
+    fi
+  done < "$PROC_ROOT/$pid/cgroup"
+  return 1
 }
 
 process_lineage_is_next_dev() {
@@ -542,15 +568,25 @@ validate_legacy_listener() {
   printf '%s\n' "$pgid"
 }
 
-stop_legacy_listener() {
-  local pgid=$1 attempts=$((PORT_RELEASE_WAIT_SEC + 1))
-  "$KILL_BIN" -TERM -- "-$pgid"
+wait_for_listener_release() {
+  local attempts=$((PORT_RELEASE_WAIT_SEC + 1))
   while ((attempts > 0)); do
     [[ -z "$(listener_pid)" ]] && return 0
     attempts=$((attempts - 1))
     ((attempts > 0)) && sleep 1
   done
   return 1
+}
+
+stop_legacy_listener() {
+  local pgid=$1
+  "$KILL_BIN" -TERM -- "-$pgid"
+  wait_for_listener_release
+}
+
+stop_managed_listener() {
+  systemctl_user stop "$UNIT_NAME" || return 1
+  wait_for_listener_release
 }
 
 restore_legacy_listener() {
@@ -607,6 +643,19 @@ handoff() {
   old_pid="$(listener_pid || true)"
   if [[ -z "$old_pid" ]]; then
     start_managed || die "managed portal unit did not become healthy on :$PORTAL_PORT"
+    log "started $UNIT_NAME and verified http://127.0.0.1:$PORTAL_PORT${HEALTH_PATH}"
+    return 0
+  fi
+
+  # A unit can be activating/restarting while its listener PID still owns the
+  # port. Confirm cgroup membership before entering the terminal-scoped legacy
+  # path; stop managed processes only through systemd, never by signaling PID.
+  if listener_belongs_to_managed_unit "$old_pid"; then
+    log "$UNIT_NAME is not active but listener PID $old_pid belongs to its ControlGroup; stopping it through systemd"
+    if ! stop_managed_listener; then
+      die "$UNIT_NAME managed listener did not release :$PORTAL_PORT; refusing to signal it"
+    fi
+    start_managed || die "managed portal unit did not become healthy on :$PORTAL_PORT after stopping its prior listener"
     log "started $UNIT_NAME and verified http://127.0.0.1:$PORTAL_PORT${HEALTH_PATH}"
     return 0
   fi

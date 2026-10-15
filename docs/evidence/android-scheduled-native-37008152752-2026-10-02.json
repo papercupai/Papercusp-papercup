@@ -1,0 +1,171 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Automatic hosted Android API36/16KB run37008152752 on 50a00bc",
+  "framework": "operational",
+  "command": [
+    "GitHub Actions",
+    "ci.yml",
+    "event=schedule",
+    "run=37008152752",
+    "attempt=1",
+    "job=110841227767"
+  ],
+  "startedAt": "2026-10-02T12:40:59Z",
+  "finishedAt": "2026-10-02T13:17:00Z",
+  "exitCode": 0,
+  "assertions": [
+    {
+      "id": "actual-scheduled-trigger-and-executed-phases",
+      "passed": true,
+      "evidence": "Run37008152752 attempt1 event=schedule source50a00bc; job110841227767 executed host and native phases successfully. Archive attempt/proof source stamps both match the run source."
+    },
+    {
+      "id": "retained-archive-digest",
+      "passed": true,
+      "evidence": "Downloaded11228042084 ZIP SHA2946dec82bdfdf4051831e29168a15f6f6f18004a937cfb9bd133bee30d06deb equals GitHub's reported digest."
+    },
+    {
+      "id": "executed-junit-verdicts",
+      "passed": true,
+      "evidence": "Retained XML contains 3 fixture-free native tests, 33 debug unit tests and 33 release unit tests, each with zero suite/testcase failures, errors or skips."
+    },
+    {
+      "id": "tested-apk-copy-identity",
+      "passed": true,
+      "evidence": "App SHA184fd133b3f22fff1d9e4cd87af12f925d13c0257481922c9d591e969beaf147 and instrumentation SHA28786b24d66f46dd51ee8bde823e50ccdb34d9742c431edd89aa2f4919691047 match their cached and direct archive copies."
+    },
+    {
+      "id": "scope-remains-historical-unpaired-debug",
+      "passed": true,
+      "evidence": "Exact source workflow invokes connected without nativePairingFixture. Historical50a00bc proof is retained as debug/automatic contribution; current5b30, paired JNI, signed candidate, physical-phone and Play acceptance are not claimed."
+    }
+  ],
+  "summary": "Historical scheduled Android verification passed: 3 fixture-free native tests and 66 debug/release unit tests, no failures/errors/skips. Full paired Inbox JNI journey was not selected by this workflow. Source50a00bc predates current5b30; no current-source, signed-candidate, physical-phone or Play acceptance. Earlier schedule-gap origin remains unconfirmed.",
+  "repository": "papercup-rust-mobile",
+  "sourceCommit": "50a00bc2bce67e59da826a311792fd3d7712baab",
+  "runUrl": "https://github.com/Papercusp/papercup-rust-mobile/actions/runs/37008152752",
+  "event": "schedule",
+  "artifactId": 11228042084,
+  "archiveSha256": "2946dec82bdfdf4051831e29168a15f6f6f18004a937cfb9bd133bee30d06deb",
+  "archiveBytes": 140010179,
+  "rawEvidence": {
+    "path": "papercup-rust-mobile/android/app/build/ci-evidence/github-37008152752-attempt1/job.log",
+    "sha256": "8288855c0d7bf58e35850b0ade796d373da5d20d296b502c6bb89ae217d03473",
+    "archivePath": "papercup-rust-mobile/android/app/build/ci-evidence/github-37008152752-attempt1/artifact.zip"
+  },
+  "sourceFingerprints": {
+    ".github/workflows/ci.yml": "e3962158104c6e61fcfc99409c73e346897521fa5804d564faa25275fd340bc7",
+    "tools/run-android-checks.sh": "f78ed4396c6cafaa68ad9c87c1c8193a51efaf7e7b5c6de56e9eb1c5a8c0083b"
+  },
+  "testCounts": {
+    "native": {
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "debugUnit": {
+      "tests": 33,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "releaseUnit": {
+      "tests": 33,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  "apks": [
+    {
+      "archivePath": "android-ci-proof/apks/app-debug.apk",
+      "directArchivePath": "android/app/build/outputs/apk/debug/app-debug.apk",
+      "bytes": 114135093,
+      "sha256": "184fd133b3f22fff1d9e4cd87af12f925d13c0257481922c9d591e969beaf147"
+    },
+    {
+      "archivePath": "android-ci-proof/apks/app-debug-androidTest.apk",
+      "directArchivePath": "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk",
+      "bytes": 1003170,
+      "sha256": "28786b24d66f46dd51ee8bde823e50ccdb34d9742c431edd89aa2f4919691047"
+    }
+  ],
+  "uniqueXmlResults": [
+    {
+      "path": "android-ci-proof/native-results/connected/debug/TEST-emulator-5554 - 16-_app-.xml",
+      "sha256": "1ed5ba961dfe40880cdefb76436248567c5cca845313655ce5703a8b43723169",
+      "tests": 3
+    },
+    {
+      "path": "android-ci-proof/unit-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml",
+      "sha256": "7eeb9736b86e23eb5bb72f9deb82203957b8b8f12ca443cc73be8dfc1da68b30",
+      "tests": 10
+    },
+    {
+      "path": "android-ci-proof/unit-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.EndpointSecurityTest.xml",
+      "sha256": "a56b2f514c8b0d77a2bd5581338df8449b2cf05e3d9b1a5bcef8197a218c2dd5",
+      "tests": 3
+    },
+    {
+      "path": "android-ci-proof/unit-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml",
+      "sha256": "cd1ef434b330371b937cf3cd3fba3f82dc51bb48c9cb8e498459e950cce9171c",
+      "tests": 7
+    },
+    {
+      "path": "android-ci-proof/unit-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.VoiceMicDenialTest.xml",
+      "sha256": "2aca9603e64fb83ea6c91bde9d498c35d0984f1ca46f44c0559219b2ce762e23",
+      "tests": 3
+    },
+    {
+      "path": "android-ci-proof/unit-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.VoicePrivacyConsentTest.xml",
+      "sha256": "000e5d9b6c062f941e997ffbf6b4de551a8f09c4bf43ea5a2504f65315981b80",
+      "tests": 4
+    },
+    {
+      "path": "android-ci-proof/unit-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml",
+      "sha256": "1a14153f5f453ce21598741a92997bc377bc25e000456c4f6286b02acf66f612",
+      "tests": 6
+    },
+    {
+      "path": "android-ci-proof/unit-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml",
+      "sha256": "505b5b9d3cce834a7be6d73a138f37064f4e9d55bc61960a2d93d4408933e275",
+      "tests": 10
+    },
+    {
+      "path": "android-ci-proof/unit-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.EndpointSecurityTest.xml",
+      "sha256": "1c6ac5a386a40dc0ea65be357a4ee79decc6ec5ec3917c6cbb823ecf280b426b",
+      "tests": 3
+    },
+    {
+      "path": "android-ci-proof/unit-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml",
+      "sha256": "b7545b1b8c37aae498d9a82561e50d932fbd997d706a27f440b75379002465db",
+      "tests": 7
+    },
+    {
+      "path": "android-ci-proof/unit-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.VoiceMicDenialTest.xml",
+      "sha256": "62d13f0c8d52f6d9854e059c088e7858935bb39bef652afd0f9b4225d36c39a2",
+      "tests": 3
+    },
+    {
+      "path": "android-ci-proof/unit-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.VoicePrivacyConsentTest.xml",
+      "sha256": "dcb114152651195d3e999a73c6f6d820f3a365859460e7d0da6873ba9709a898",
+      "tests": 4
+    },
+    {
+      "path": "android-ci-proof/unit-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml",
+      "sha256": "21b04752e84435ffc3fa2eff17ff8add513b3d5435f42b732f02f13412cee9d4",
+      "tests": 6
+    }
+  ],
+  "nativeTestCases": [
+    "com.papercuspai.operator.mobile.PapercupAppSmokeTest#invalidPastedPayloadStaysUnpairedAndReturnsToChoice",
+    "com.papercuspai.operator.mobile.PapercupAppSmokeTest#launcherActivityStarts",
+    "com.papercuspai.operator.mobile.PapercupAppSmokeTest#insecureNonLoopbackPayloadIsRejectedWithoutPersistingCredentials"
+  ],
+  "workflowNativeCommand": "bash tools/run-android-checks.sh connected",
+  "pairedNativeFixtureSelected": false,
+  "executionStarted": true,
+  "scope": "Historical automatic debug/native preparation; candidate acceptance remains open."
+}

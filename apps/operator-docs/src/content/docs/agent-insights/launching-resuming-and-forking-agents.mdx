@@ -6,25 +6,18 @@
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "Launching, resuming and forking agents — capability:launch-agent"
 description: "The one tool for putting an agent on work that is NOT a plan-fleet: an ad-hoc brief, bringing a DEAD agent back mid-thread (resume), or branching a LIVE one (fork). Covers the account-pin login trap, why a live source must be forked, and how the first turn actually gets delivered."
+type: Insight
 discovered: 2026-07-12
 tags: ["fleet", "launch-agent", "resume", "fork", "psu", "spawn", "coordination"]
 status: active
 documents:
-  - "packages/operator-core/lib/agent-launch-core.ts"
   - "packages/operator-core/lib/agent-tools/capability/launch-agent.ts"
-  - "packages/operator-core/lib/agent-tools/capability/terminal.ts"
-  - "packages/operator-core/lib/agent-tools/fleet_registry/status.ts"
+  - "packages/operator-core/lib/agent-kickoff/launch-budgets.mjs"
+  - "packages/operator-core/lib/agent-kickoff/prompt-transport.mjs"
+  - "apps/operator/scripts/ptool.mjs"
   - "apps/operator/scripts/psu-launcher.mjs"
-  - "apps/operator/scripts/psu-pty-host.mjs"
-  - "packages/operator-core/lib/session-port/service.ts"
-  - "packages/operator-core/lib/session-port/store.ts"
-  - "packages/operator-core/lib/session-port/security.ts"
-  - "libs/papercusp/libs/db/sql/586-agent-launch-idempotency.sql"
-  - "libs/papercusp/libs/db/sql/611-session-ports.sql"
 plans:
-  - "agent-launch-resume-primitives-2026-07-12"
-  - "psu-cross-backend-session-port-2026-07-14"
-type: Insight
+  - "session-recovery-followups-2026-10-07"
 generated:
   by: agent
   at: 2026-07-12
@@ -35,11 +28,11 @@ generated:
 `capability:launch-agent` puts an agent on work in the three cases a **plan-fleet
 launch cannot express**:
 
-| You want | Call |
-|---|---|
-| An agent on an **ad-hoc brief** (no plan, no fleet ceremony) | `capability:launch-agent { brief }` |
-| A **dead** agent back, mid-thread, with its context intact | `capability:launch-agent { resume: { agentId }, brief }` |
-| To **branch** a live agent's thread without disturbing it | `capability:launch-agent { resume: { agentId }, fork: true, brief }` |
+| You want                                                     | Call                                                                 |
+| ------------------------------------------------------------ | -------------------------------------------------------------------- |
+| An agent on an **ad-hoc brief** (no plan, no fleet ceremony) | `capability:launch-agent { brief }`                                  |
+| A **dead** agent back, mid-thread, with its context intact   | `capability:launch-agent { resume: { agentId }, brief }`             |
+| To **branch** a live agent's thread without disturbing it    | `capability:launch-agent { resume: { agentId }, fork: true, brief }` |
 
 It is NOT a replacement for `fleet:launch-on-plan` — that stays the right tool for
 "open N members and work this plan". The routing rule:
@@ -49,7 +42,7 @@ It is NOT a replacement for `fleet:launch-on-plan` — that stays the right tool
 > `fleet:launch-on-plan { headless: true }` (see
 > [desktop-fleet-vs-loop-cup](/internal/docs/agent-insights/desktop-fleet-vs-loop-cup)).
 
-:::note[This row used to say `cup:spawn` — it no longer works]
+:::note\[This row used to say `cup:spawn` — it no longer works]
 The "headless background grinder on ranked work" route was `cup:spawn` (a Mug-supervised
 nursery cup). The Mug · Kettle · Cup tier was **retired 2026-08-09** and `cup:spawn` /
 `fleet:place_batch` **refuse**. A headless FLEET is not a cup: it is leader-led su members
@@ -60,6 +53,32 @@ See [the Mug · Kettle · Cup tier is retired](/internal/docs/agent-insights/mug
 All three sit on ONE shared core (`agent-launch-core.ts`) — command construction,
 fleet/launched-by/account injection, resume resolution. There is deliberately no
 second spawn path to drift out of sync.
+
+## Keep in-place resume and successor settings separate
+
+Use an in-place `resume` to continue the same session and transcript:
+
+```js
+{ resume: { agentId: 'su-…' }, brief: 'Continue the recovery.' }
+```
+
+The target's saved launch profile and loop carry are kept. Leave `carry` out because
+the schema rejects it for in-place resume/fork. Usually omit `account` and `model` as
+well; an intentional account/model override is supported only when it fits any saved
+fleet launch profile.
+
+Use `successor` to start a fresh context while retaining the predecessor's coord
+identity and durable carry/claims, especially when recovery needs new runtime settings:
+
+```js
+{
+  successor: { agentId: 'su-…' },
+  brief: 'Continue from the saved recovery state.',
+  account: 'auto',
+  model: 'sonnet',
+  carry: 'cold'
+}
+```
 
 ## Trap 1: a scripted resume that does not pin an account stops on the login picker
 
@@ -101,12 +120,12 @@ That is exactly why the brief matters (below).
 A launched agent that opens IDLE is useless — someone has to give it its first
 turn, and the seam differs by mode:
 
-- **Fresh launch** → the brief rides the spawn-safe env var
+* **Fresh launch** → the brief rides the spawn-safe env var
   `PAPERCUSP_KICKOFF_PROMPT`, and `psu-launcher` turns it into the CLI's positional
   prompt (`kickoffPositionalArgs`, gated on `--no-picker`, suppressed by
   `--no-kickoff`). Free-form text must NOT be passed as `--kickoff=<text>` inside a
   console greeting one-liner — it gets double-quoted and breaks the shell.
-- **Resume / fork** → there is no CLI seam at all (`claude --resume <id> "<prompt>"`
+* **Resume / fork** → there is no CLI seam at all (`claude --resume <id> "<prompt>"`
   is not a supported form, and a fork's fresh ownerId is unaddressable from
   outside). Instead **psu's own managed pty host injects the first turn**: it waits
   for the agent to settle at its prompt, writes the turn, and *verifies submission*
@@ -122,8 +141,8 @@ warns you, but a warning is not a turn.
 `psu --resume=<tracked Claude row> --agent=codex|omp` uses the session-port
 protocol. The distinction matters:
 
-- A same-backend resume reopens the original backend's native transcript.
-- A cross-backend port snapshots the source, creates a **new** target session,
+* A same-backend resume reopens the original backend's native transcript.
+* A cross-backend port snapshots the source, creates a **new** target session,
   carries history as a managed seed, waits for native persistence, and then lets
   every later resume use the target backend normally.
 
@@ -137,18 +156,18 @@ lineage and targets that cannot resume natively later.
 
 What the port deliberately copies from OMP's strategy:
 
-- a versioned, provider-independent conversation contract;
-- explicit model/provider selection separate from history;
-- deterministic history fitting before the target request;
-- preserving tool-call/result relationships while normalizing backend syntax.
+* a versioned, provider-independent conversation contract;
+* explicit model/provider selection separate from history;
+* deterministic history fitting before the target request;
+* preserving tool-call/result relationships while normalizing backend syntax.
 
 What it deliberately does not copy:
 
-- relabeling a provider switch as the same native session;
-- replaying unbounded history and hoping the target truncates it safely;
-- persisting full normalized transcript text in coordination/audit metadata;
-- importing source control state, permissions, claims, or prompt authority;
-- treating terminal output as proof that the target recorded the seed.
+* relabeling a provider switch as the same native session;
+* replaying unbounded history and hoping the target truncates it safely;
+* persisting full normalized transcript text in coordination/audit metadata;
+* importing source control state, permissions, claims, or prompt authority;
+* treating terminal output as proof that the target recorded the seed.
 
 The extra ceremony is the value: inspect is read-only, prepare occurs only after
 an egress preview/confirmation, delivery is idempotent, the artifact is one-use,
@@ -185,7 +204,7 @@ without `--harness` boots a *plain* claude: psu skips the su bootstrap, the
 per-session config dir is never seeded, and you get (a) as a side effect. The
 tool now always harness-scopes a fresh launch. Symptom to recognise: the
 session's config dir holds a small *real* `.claude.json` that claude wrote
-itself, instead of the ~87-key symlink farm every healthy session has.
+itself, instead of the \~87-key symlink farm every healthy session has.
 
 ## Trap 4: `psu` may not be running the launcher you just edited
 
@@ -221,23 +240,35 @@ not the one you killed on purpose yesterday?) and every guess is wrong for someo
 
 Instead `fleet:status` hands the leader the **facts**, per ended member:
 
-- `endedAt` — when it died
-- `resumable` / `resumableSessionId` — whether a native session actually exists
-- `resumeHint` — when it does not (an omp thread, or a row predating native-id
+* `endedAt` — when it died
+* `resumable` / `resumableSessionId` — whether a native session actually exists
+* `resumeHint` — when it does not (an omp thread, or a row predating native-id
   tracking → launch that lane fresh instead)
 
 The leader then composes the revival *per member* — resume, fork, or fresh.
 
+## Bounded recovery caller and lifecycle preflight
+
+For a recovery cohort, keep the saved census and process one exact owner/session at a time. A census is historical evidence; re-resolve the source immediately before launch. A source that became live is a changed precondition, not permission to start a second retained identity or kill it. Use the existing fleet respawn route for a saved fleet-profile mismatch, and preserve specialized source role and accepted-operation feature bindings.
+
+Use quoted JSON stdin (`ptool <verb> --json -` with a quoted heredoc) or a JSON file. Decode JSON as data, for example `json.loads`, rather than embedding JSON booleans as language source. Keep the common brief once and per-target metadata compact; repeated briefs in shell arguments can exceed the operating-system argv/environment limit. The maintained large-kickoff transport uses a private prompt file when necessary.
+
+Keep in-place resume and fresh successor settings separate: omit carry on resume/fork, preserve the saved profile, and allow recorded native model/effort inheritance unless an intentional compatible override is required. A no-hive operator scope must remain no-hive for an installed routine hop; adding a concrete harness can correctly turn a cross-hive operation into a refusal. Do not widen work-scope policy, roles or account routing to hide a caller mismatch.
+
+Preserve every asynchronous command envelope. A session_id with no exit_code means the command is still running; drain that exact handle. For a timed-out mutation, read authoritative state and the original receipt before deciding whether a retry is safe. Preserve both transport idempotency and launch idempotency keys. A matching live host proves runtime registration, while kickoff/native transcript evidence proves the requested first turn. Never convert missing proof or an unknown transport outcome into success, no-process, or permission for a second launch.
+
+The maintained launch timing contract now keeps the server and CLI outside the child boot, kickoff-proof and verifier windows. Canonical guards cover model-less unattended resume, exact UUID verification, unknown proof, live-source refusal, role/profile preservation and client/server deadline alignment. The original bulk-recovery observations are recorded on EI-25283925724708239; no bulk migration was replayed to verify these lessons.
+
 ## Odds and ends
 
-- **Idempotency.** Pass `idempotencyKey` and a retry/duplicate call returns
+* **Idempotency.** Pass `idempotencyKey` and a retry/duplicate call returns
   "Already launched (deduped)" instead of spawning a second agent
   (`agent_launch_idempotency`, migration 586). A PG failure never blocks a launch —
   it warns and launches unguarded.
-- **Shell safety.** `buildAgentLaunchCommand` *validates* rather than quotes: every
+* **Shell safety.** `buildAgentLaunchCommand` *validates* rather than quotes: every
   value must match `/^[A-Za-z0-9._:=@/,+-]+$/` or it throws. Free-form text (the
   brief) never goes on the command line at all — it rides the env.
-- **Headless.** `headless: true` launches with no window. Note EI-9748: headless
+* **Headless.** `headless: true` launches with no window. Note EI-9748: headless
   children are reaped by the service cgroup on a `:3170` restart.
-- **Fleet.** An explicit `fleet` wins; otherwise the launch inherits the *caller's*
+* **Fleet.** An explicit `fleet` wins; otherwise the launch inherits the *caller's*
   fleet (WI-4234), so a leader's ad-hoc launches join its own fleet by default.

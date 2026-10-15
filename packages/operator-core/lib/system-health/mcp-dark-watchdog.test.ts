@@ -16,6 +16,9 @@ import {
   markHealSent,
   healedWakeText,
   taggedHealedWakeText,
+  headlessMcpRecoveryWakeText,
+  taggedHeadlessMcpRecoveryWakeText,
+  interactiveDarkRecoveryInstructions,
   checkInteractiveMcpDark,
   type McpDarkSnapshot,
   type InteractiveDarkSnapshot,
@@ -24,16 +27,40 @@ import { parseEnvelope } from '../turn-provenance/turn-provenance';
 
 // checkInteractiveMcpDark lazily `await import()`s this module — mock it so the
 // recovery-sweep tests below never touch the real FS/pty layer.
-const listLiveHostsMock = vi.fn<() => Array<{ ownerId: string; startedAt: number; lastActivityAt?: number | null }>>(
-  () => [],
-);
+type MockLiveHost = {
+  ownerId: string;
+  startedAt: number;
+  lastActivityAt?: number | null;
+  bridgeTty?: boolean | null;
+  caps?: string[] | null;
+  sock?: string;
+};
+const listLiveHostsMock = vi.fn<() => MockLiveHost[]>(() => []);
 const mcpReconnectViaPtyMock = vi.fn(async () => 'sent' as const);
+const injectIntoHostMock = vi.fn(async (_sock: string, _message: { mode: string; data: string; ownerId: string }) => true);
 vi.mock('../events/await/psu-pty-discovery', () => ({
   listLiveHosts: (...args: unknown[]) => listLiveHostsMock(...(args as [])),
   listLiveHostsAsync: async (...args: unknown[]) => listLiveHostsMock(...(args as [])),
   mcpReconnectViaPty: (...args: unknown[]) => mcpReconnectViaPtyMock(...(args as [])),
+  sessionClassForHost: (host: MockLiveHost | null | undefined) =>
+    host?.bridgeTty === false ? 'claude-headless' : 'claude-interactive',
+  hostSupports: (host: MockLiveHost | null | undefined, cap: string) =>
+    Array.isArray(host?.caps) && host.caps.includes(cap),
   findLiveHost: () => null,
-  injectIntoHost: async () => true,
+  injectIntoHost: (...args: unknown[]) =>
+    injectIntoHostMock(...(args as [string, { mode: string; data: string; ownerId: string }])),
+}));
+
+// The interactive heal step repairs the session's CLAUDE_CONFIG_DIR first
+// (EI-13020). The real repair writes under ~/.papercusp/session-claude/<sid>, so
+// unmocked it (a) wrote real config dirs for these test sids into the owner's
+// HOME on every run, and (b) let real async fs I/O run inside the fake-timer
+// jitter test, where each await on real I/O lets virtual time drift past the
+// asserted send offsets (WI-10005327: [101,450,487] vs [89,427,446]). Keep the
+// heal path in-memory: the repair resolves immediately and reports no repair.
+const ensureInteractiveClaudeConfigMock = vi.fn(async () => ({ repaired: false }));
+vi.mock('../interactive-claude-config', () => ({
+  ensureInteractiveClaudeConfig: (...args: unknown[]) => ensureInteractiveClaudeConfigMock(...(args as [])),
 }));
 
 const RESTART = 1_000_000_000_000; // fixed operator-boot epoch ms
@@ -112,7 +139,6 @@ function interactiveDark(over: Partial<InteractiveDarkSnapshot> = {}): Interacti
     hostStartedMs: INOW - 6 * 60 * M,
     hostLastActivityMs: INOW - 1 * M,
     presenceHeartbeatMs: INOW - 45 * M,
-    toolSurface: null,
     loopActive: true,
     loopIntervalSec: 600,
     ...over,
@@ -175,13 +201,12 @@ describe('evaluateInteractiveMcpDark (P-005 — NOT pinned to operator restart)'
     expect(evaluateInteractiveMcpDark(interactiveDark({ presenceHeartbeatMs: null }), INOW).dark).toBe(false);
   });
 
-  it('a hook/agent activity gap with null presence does not prove a dark transport', () => {
+  it('null presence does not prove a dark transport', () => {
     const v = evaluateInteractiveMcpDark(
       interactiveDark({
         loopActive: false,
         loopIntervalSec: null,
         presenceHeartbeatMs: null,
-        toolSurface: { hookCalls: 20, windowMinutes: 3 },
       }),
       INOW,
     );
@@ -341,6 +366,47 @@ describe('healedWakeText', () => {
   });
 });
 
+describe('headlessMcpRecoveryWakeText', () => {
+  it('gives a resumed headless conversation its recovery context and avoids a second CLI', () => {
+    const text = headlessMcpRecoveryWakeText('su-headless', 45);
+    expect(text).toContain('P-005');
+    expect(text).toContain('headless session su-headless');
+    expect(text).toContain('~45m');
+    expect(text).toContain('Re-read the active work-item and loop checkpoints');
+    expect(text).toContain('Do not start a second CLI');
+  });
+
+  it('writes watchdog provenance before returning the carry text', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mcp-dark-watchdog-headless-provenance-'));
+    try {
+      const tagged = await taggedHeadlessMcpRecoveryWakeText('su-headless', 45, { dir, nowMs: INOW });
+      const parsed = parseEnvelope(tagged);
+      expect(parsed?.origin).toBe('watchdog');
+      expect(parsed?.payload.trimStart()).toBe(headlessMcpRecoveryWakeText('su-headless', 45));
+
+      const ledger = readFileSync(join(dir, 'su-headless.jsonl'), 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { sid: string; nonce: string; origin: string; ts: number });
+      expect(ledger).toHaveLength(1);
+      expect(ledger[0]).toMatchObject({ sid: 'su-headless', nonce: parsed?.nonce, origin: 'watchdog', ts: INOW });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('gives headless owners psu-resume guidance and headed owners the in-place /mcp action', () => {
+    const headless = interactiveDarkRecoveryInstructions('headless', 'no-cap');
+    expect(headless).toContain('no interactive /mcp dialog');
+    expect(headless).toContain('psu --resume <session-id>');
+    expect(headless).toContain('Do not start a second CLI');
+
+    const headed = interactiveDarkRecoveryInstructions('headed', 'no-cap');
+    expect(headed).toContain('type /mcp in that session\'s terminal');
+    expect(headed).not.toContain('carry-respawn');
+  });
+});
+
 describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12059 / su-39f079d3)', () => {
   // EI-12059 root cause: the per-owner heal ladder only ever visits owners in
   // `hosts` (currently-live psu-pty sessions). Once an interactive session
@@ -353,12 +419,12 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
   // including, critically, when there are ZERO live hosts at all.
 
   /** Fake postgres tag routing on query text: escalation read/write,
-   *  coord_presence, armed loops, and the shared call-origin tool-surface query.
+   *  coord_presence, armed loops, and recent agent-origin invocations.
    *  `openPhases` seeds the standing (still-open) escalation rows. */
   function fakeSql(opts: {
     openPhases: string[];
     presenceByOwner?: Record<string, number | null>;
-    toolSurfaceByOwner?: Record<string, { hookCalls: number; windowMinutes: number }>;
+    agentInvocationByOwner?: Record<string, boolean>;
   }) {
     const updatedPhases: string[] = [];
     type FakeSqlTag = ((strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>) & {
@@ -376,13 +442,11 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
         if (arr) updatedPhases.push(...arr);
         return Promise.resolve([]);
       }
-      if (q.includes('harness_shared.memory_session_epochs')) {
+      if (q.includes('FROM harness_shared.tool_invocations t')) {
         return Promise.resolve(
-          Object.entries(opts.toolSurfaceByOwner ?? {}).map(([owner_id, surface]) => ({
-            owner_id,
-            hook_calls: surface.hookCalls,
-            window_minutes: surface.windowMinutes,
-          })),
+          Object.entries(opts.agentInvocationByOwner ?? {})
+            .filter(([, recent]) => recent)
+            .map(([owner_id]) => ({ owner_id })),
         );
       }
       if (q.includes('coord_presence')) {
@@ -411,7 +475,72 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
   beforeEach(() => {
     listLiveHostsMock.mockReset().mockReturnValue([]);
     mcpReconnectViaPtyMock.mockReset().mockResolvedValue('sent');
+    injectIntoHostMock.mockReset().mockResolvedValue(true);
     vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  it('uses carry-respawn only for headless hosts and keeps headed sessions on /mcp', async () => {
+    const headedOwner = 'su-headed-dark';
+    const headlessOwner = 'su-headless-dark';
+    const dir = mkdtempSync(join(tmpdir(), 'mcp-dark-watchdog-headless-dispatch-'));
+    const previousProvenanceDir = process.env.PAPERCUSP_TURN_PROVENANCE_DIR;
+    process.env.PAPERCUSP_TURN_PROVENANCE_DIR = dir;
+    const { tag } = fakeSql({
+      openPhases: [],
+      presenceByOwner: {
+        [headedOwner]: INOW - 45 * M,
+        [headlessOwner]: INOW - 45 * M,
+      },
+    });
+    listLiveHostsMock.mockReturnValue([
+      {
+        ownerId: headedOwner,
+        startedAt: INOW - 60 * M,
+        lastActivityAt: INOW - 1 * M,
+        bridgeTty: true,
+        caps: ['mcp-reconnect', 'carry-respawn'],
+        sock: '/tmp/headed-dark.sock',
+      },
+      {
+        ownerId: headlessOwner,
+        startedAt: INOW - 60 * M,
+        lastActivityAt: INOW - 1 * M,
+        bridgeTty: false,
+        caps: ['carry-respawn'],
+        sock: '/tmp/headless-dark.sock',
+      },
+    ]);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(INOW);
+    try {
+      const out = await checkInteractiveMcpDark(tag, {
+        jitterMaxMs: 0,
+        sharedBudget: { attemptsMs: [], maxAttempts: 4, windowMs: 10 * M },
+      });
+
+      expect(out.healSent).toEqual(expect.arrayContaining([headedOwner, headlessOwner]));
+      expect(mcpReconnectViaPtyMock).toHaveBeenCalledTimes(1);
+      expect(mcpReconnectViaPtyMock).toHaveBeenCalledWith(headedOwner);
+      expect(injectIntoHostMock).toHaveBeenCalledTimes(1);
+      const [sock, message] = injectIntoHostMock.mock.calls[0];
+      expect(sock).toBe('/tmp/headless-dark.sock');
+      expect(message).toMatchObject({ mode: 'carry-respawn', ownerId: headlessOwner });
+      const parsed = parseEnvelope(message.data);
+      expect(parsed?.origin).toBe('watchdog');
+      expect(parsed?.payload).toContain(`headless session ${headlessOwner}`);
+
+      const ledger = readFileSync(join(dir, `${headlessOwner}.jsonl`), 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { sid: string; nonce: string; origin: string });
+      expect(ledger).toHaveLength(1);
+      expect(ledger[0]).toMatchObject({ sid: headlessOwner, nonce: parsed?.nonce, origin: 'watchdog' });
+    } finally {
+      vi.useRealTimers();
+      if (previousProvenanceDir == null) delete process.env.PAPERCUSP_TURN_PROVENANCE_DIR;
+      else process.env.PAPERCUSP_TURN_PROVENANCE_DIR = previousProvenanceDir;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('ZERO live hosts still clears a stale escalation for an ENDED session (the exact EI-12059 shape)', async () => {
@@ -471,14 +600,15 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
     vi.useRealTimers();
   });
 
-  it('fresh hook-origin presence is neither a dark verdict nor positive recovery evidence', async () => {
+  it('fresh non-agent presence does not clear a live alert', async () => {
     const owner = 'su-dark-from-birth-hook-beat';
-    const { tag } = fakeSql({
-      openPhases: [],
-      // maybeBeatPresenceOnDispatch runs for hook-origin calls, so presence is
-      // fresh even though no agent-origin MCP call has completed.
+    const phase = 'mcp-dark-int:' + owner;
+    const { tag, updatedPhases } = fakeSql({
+      openPhases: [phase],
+      // A hook, supervisor, or inbox writer may refresh this shared beat without
+      // any recent agent-origin tool invocation.
       presenceByOwner: { [owner]: INOW - 1 * M },
-      toolSurfaceByOwner: { [owner]: { hookCalls: 23, windowMinutes: 4 } },
+      agentInvocationByOwner: { [owner]: false },
     });
     listLiveHostsMock.mockReturnValue([{ ownerId: owner, startedAt: INOW - 60 * M, lastActivityAt: INOW - 1 * M }]);
     vi.useFakeTimers({ toFake: ['Date'] });
@@ -492,6 +622,27 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
     expect(out.darkOwners).not.toContain(owner);
     expect(out.healSent).not.toContain(owner);
     expect(out.recovered).not.toContain(owner);
+    expect(updatedPhases).not.toContain(phase);
+    expect(mcpReconnectViaPtyMock).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('a recent agent-origin invocation clears a live alert even without a presence beat', async () => {
+    const owner = 'su-agent-origin-recovered';
+    const phase = 'mcp-dark-int:' + owner;
+    const { tag, updatedPhases } = fakeSql({
+      openPhases: [phase],
+      agentInvocationByOwner: { [owner]: true },
+    });
+    listLiveHostsMock.mockReturnValue([{ ownerId: owner, startedAt: INOW - 60 * M, lastActivityAt: INOW - 1 * M }]);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(INOW);
+
+    const out = await checkInteractiveMcpDark(tag, { jitterMaxMs: 0 });
+
+    expect(out.darkOwners).not.toContain(owner);
+    expect(out.recovered).toContain(owner);
+    expect(updatedPhases).toContain(phase);
     expect(mcpReconnectViaPtyMock).not.toHaveBeenCalled();
     vi.useRealTimers();
   });
@@ -621,6 +772,9 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
         expect(j).toBeLessThanOrEqual(JITTER_MAX);
       }
       expect(out.healSent).toEqual(owners);
+      // The config repair ran through the in-memory mock, not the real HOME writer:
+      // if the module path drifts, vi.mock silently stops intercepting and this fails.
+      for (const owner of owners) expect(ensureInteractiveClaudeConfigMock).toHaveBeenCalledWith({ sid: owner });
       // Nothing fired immediately, and the three sends are strictly staggered.
       expect(callAtMs).toEqual([jitters[0], jitters[0] + jitters[1], jitters[0] + jitters[1] + jitters[2]]);
     } finally {

@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { getChat } from './agent-chats-data';
 import { getAdvSession, markAdvSessionEnded, setAdvSessionPid } from './adv-sessions';
@@ -9,7 +10,20 @@ import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootst
 import type { PuiSuSessionBinding } from './launch-agent';
 import { nativeSessionHandleForAdvSession } from './native-session-handles';
 import { _dropSuSessionHostForTest, getRegisteredSuSessionHost, rehydrateRegisteredSuSessionHost, type SuSessionHost } from './su-session-host';
-import { bindSuSessionToAdvSession, persistSuSessionDescriptor, readDurableSuSession } from './su-session-persistence';
+import {
+  bindSuSessionToAdvSession,
+  persistSuSessionDescriptor,
+  readDurableSuSession,
+  readSuSessionHostOwner,
+  recordSuSessionHostOwner,
+} from './su-session-persistence';
+import { callOwnerProcess, registerOwnerRpcHandler } from './cluster-owner-rpc';
+import {
+  SU_SESSION_SERVED_BY_HEADER,
+  isForwardableOwner,
+  isLocalSuSessionOwner,
+  localSuSessionHostOwner,
+} from './su-session-owner-routing';
 import { startClaudeSuEngine, type ClaudeEngineIdentity, type ClaudeSuEngine } from './su-session-claude-engine';
 import { loadHarnessRegistry } from './harness-registry';
 import type { ClaudeSuRuntimeBinding } from './su-session-claude-adapter';
@@ -28,6 +42,18 @@ const state = pinModuleState('@papercusp/operator-core.su-attached-launch', () =
   // cleared only when this settles.
   exits: new Map<string, Promise<void>>(),
 }));
+
+/**
+ * A launch awaits durable writes (the WI-10003879 host owner, the descriptor)
+ * between starting an engine and the bookkeeping that awaits `ready`. An
+ * engine that fails at once rejects `ready` inside that gap, and Node reports
+ * it as UNHANDLED even though the bookkeeping handles it a moment later
+ * (agent-chat-pty P-003's startup-exit engine, 2026-10-05). Observe it the
+ * moment the engine exists; every later `await engine.ready` still sees the error.
+ */
+export function observeReadiness(engine: Pick<ClaudeSuEngine | SuRpcEngine, 'ready'>): void {
+  engine.ready.catch(() => undefined);
+}
 
 function trackExit(key: string, exit: Promise<void>): void {
   state.exits.set(key, exit);
@@ -153,6 +179,8 @@ export interface AttachedSuLaunchInput {
 export const LAUNCH_STALL_REPORT_MS = 15_000;
 /** A finished step at least this slow is reported with its duration. */
 export const SLOW_LAUNCH_STAGE_MS = 5_000;
+/** A stall report running at least this late says the event loop was delayed. */
+export const LATE_STALL_REPORT_MS = 1_000;
 
 export interface LaunchStageTracer {
   /** Enter the next named step, reporting the previous one if it was slow. */
@@ -186,29 +214,108 @@ export function logLaunchTrace(line: string, level: LaunchTraceLevel): void {
 export function launchStageTracer(
   key: string,
   log: (line: string, level: LaunchTraceLevel) => void = logLaunchTrace,
-  now: () => number = Date.now,
+  now: () => number = () => performance.now(),
 ): LaunchStageTracer {
   const startedAt = now();
   let stage = 'read-chat';
   let stageAt = startedAt;
   const stall = setTimeout(() => {
-    log(`[su-launch] ${key} not finished after ${now() - startedAt}ms; stalled in stage=${stage} for ${now() - stageAt}ms`, 'warn');
+    const at = now();
+    // A report that runs late measures time in which this process ran no
+    // timers at all (synchronous work, GC, or the process not being
+    // scheduled), which a slow asynchronous wait cannot cause. Naming it tells
+    // the two apart from the line alone (WI-10006559: a 15s report ran at 24s).
+    const elapsed = at - startedAt;
+    const late = elapsed - LAUNCH_STALL_REPORT_MS;
+    const elapsedMs = Math.round(elapsed);
+    const stageElapsedMs = Math.round(at - stageAt);
+    log(`[su-launch] ${key} not finished after ${elapsedMs}ms; stalled in stage=${stage} for ${stageElapsedMs}ms`
+      + (late >= LATE_STALL_REPORT_MS ? `; this report ran ${Math.round(late)}ms late (event loop delayed)` : ''), 'warn');
   }, LAUNCH_STALL_REPORT_MS);
   stall.unref?.();
   const close = (next: string | null) => {
     const at = now();
-    if (at - stageAt >= SLOW_LAUNCH_STAGE_MS) log(`[su-launch] ${key} stage=${stage} took ${at - stageAt}ms`, 'info');
+    const elapsedMs = at - stageAt;
+    if (elapsedMs >= SLOW_LAUNCH_STAGE_MS) log(`[su-launch] ${key} stage=${stage} took ${Math.round(elapsedMs)}ms`, 'info');
     if (next !== null) { stage = next; stageAt = at; }
   };
   return { stage: (next) => close(next), end: () => { close(null); clearTimeout(stall); } };
 }
 
-export async function launchAttachedSuSession(request: Request, input: AttachedSuLaunchInput): Promise<Response> {
+/** cluster-owner-rpc kind: a re-attach for a session whose engine lives in another worker. */
+export const SU_SESSION_ATTACH_RPC_KIND = 'su-session-attach';
+
+type ForwardedAttachReply =
+  | { status: 'ok'; httpStatus: number; body: unknown }
+  | { status: 'not_owner' };
+
+/**
+ * WI-10003879: a re-attach (PUI's startup adoption, a /resume pick, a reconnect)
+ * that lands on a worker which does not hold the engine must not start a second
+ * engine there. When another live worker of this service recorded itself as the
+ * owner, the attach runs THERE. Returns null to proceed locally: no owner, the
+ * owner is gone (its engine went with it), or it no longer claims the session.
+ */
+async function forwardAttachToOwner(input: AttachedSuLaunchInput): Promise<Response | null> {
+  const owner = await readSuSessionHostOwner({ agentChatId: input.agent_chat_id, workspaceId: activeWorkspaceId() });
+  if (!isForwardableOwner(owner)) return null;
+  const outcome = await callOwnerProcess({
+    targetPid: owner.pid,
+    kind: SU_SESSION_ATTACH_RPC_KIND,
+    payload: { input, hostId: owner.hostId, nonce: owner.nonce },
+    timeoutMs: 60_000,
+  });
+  if (outcome.ok) {
+    const reply = outcome.result as ForwardedAttachReply | null;
+    if (reply?.status !== 'ok') return null;
+    return Response.json(reply.body, {
+      status: reply.httpStatus,
+      headers: { [SU_SESSION_SERVED_BY_HEADER]: `forwarded:${owner.pid}` },
+    });
+  }
+  if (outcome.code === 'owner_gone' || outcome.code === 'no_handler' || outcome.code === 'not_clustered') return null;
+  return Response.json({
+    status: 'error',
+    code: 'su_session_owner_unreachable',
+    error: `The worker holding this session (pid ${owner.pid}) did not answer: ${outcome.message}. Nothing was started; retry.`,
+    retryable: true,
+  }, { status: 503 });
+}
+
+/** OWNER side of a forwarded re-attach. Never forwards again; never bootstraps. */
+export async function serveForwardedSuAttach(payload: unknown): Promise<ForwardedAttachReply> {
+  const p = payload as { input?: AttachedSuLaunchInput; hostId?: unknown; nonce?: unknown } | null;
+  const input = p?.input;
+  if (!input || typeof input.agent_chat_id !== 'string' || typeof input.harness_slug !== 'string' || typeof input.agent !== 'string') {
+    throw new Error('malformed su-session attach request');
+  }
+  if (typeof p.hostId !== 'string' || typeof p.nonce !== 'string' || !isLocalSuSessionOwner(p.hostId, p.nonce)) {
+    return { status: 'not_owner' };
+  }
+  // A fresh launch must run where the caller's authenticated request is; only
+  // an existing durable session is ever re-attached on the caller's behalf.
+  const durable = await readDurableSuSession({ workspaceId: activeWorkspaceId(), agentChatId: input.agent_chat_id });
+  if (!durable) return { status: 'not_owner' };
+  const response = await launchAttachedSuSession(null, input, { forwarded: true });
+  return { status: 'ok', httpStatus: response.status, body: await response.json() };
+}
+
+registerOwnerRpcHandler(SU_SESSION_ATTACH_RPC_KIND, serveForwardedSuAttach);
+
+export async function launchAttachedSuSession(
+  request: Request | null,
+  input: AttachedSuLaunchInput,
+  options: { forwarded?: boolean } = {},
+): Promise<Response> {
   if (!['claude', 'codex', 'omp'].includes(input.agent)) {
     return Response.json({ status: 'error', code: 'attached_engine_unavailable', error: `The ${input.agent} engine does not support PUI's structured connection.` }, { status: 409 });
   }
   const workspaceId = activeWorkspaceId();
   const key = `${workspaceId}:${input.harness_slug}:${input.agent_chat_id}`;
+  if (!options.forwarded && !state.engines.has(key) && !state.starting.has(key)) {
+    const forwarded = await forwardAttachToOwner(input);
+    if (forwarded) return forwarded;
+  }
   let start = state.starting.get(key);
   let trace: LaunchStageTracer | null = null;
   if (!start) {
@@ -252,7 +359,12 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
           harnessSlug: input.harness_slug, agentChatId: input.agent_chat_id });
         if (!restored) throw new Error('Reconnect requires the saved session descriptor');
         const startResumedEngine = async (record: typeof previous) => {
-          const resume = await prepareStructuredSuResume(record);
+          trace?.stage('resume-resolve-identity');
+          const identity = await engineIdentityForLaunch(workspaceId, record.cwd);
+          const resume = await prepareStructuredSuResume(record, {
+            identity, stage: (name) => trace?.stage(name),
+          });
+          trace?.stage('resume-start-engine');
           let active: ClaudeSuEngine | SuRpcEngine | undefined;
           try {
             const options = { ...resume.options, host: restored, beforeReady: resume.beforeReady,
@@ -261,11 +373,16 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
               ? startClaudeSuEngine(resume.boot, resume.binding as PuiSuSessionBinding & { backend: 'claude' },
                 { nativeSession: resume.nativeSession as ClaudeSuRuntimeBinding['nativeSession'], transcriptPath: null },
                 { ...options, host: restored as SuSessionHost<'claude'>, resume: resume.exact,
-                  identity: await engineIdentityForLaunch(workspaceId, resume.boot.cwd) })
+                  identity })
               : startSuRpcEngine(resume.boot, resume.binding as PuiSuSessionBinding & { backend: 'codex' | 'omp' },
                 { ...options, nativeSession: resume.nativeSession as Extract<NativeSessionHandle, { backend: 'codex' | 'omp' }>,
-                  identity: await engineIdentityForLaunch(workspaceId, resume.boot.cwd) });
+                  identity, stage: (name) => trace?.stage(name) });
             state.engines.set(key, active);
+            observeReadiness(active);
+            // WI-10003879: sibling workers route this session's requests here.
+            trace?.stage('resume-record-host-owner');
+            await recordSuSessionHostOwner(record.advSessionId, localSuSessionHostOwner(), workspaceId);
+            trace?.stage('resume-persist-host-descriptor');
             await persistSuSessionDescriptor(record.advSessionId, active.adapter.host.descriptor());
           } catch (error) { await active?.close(); await resume.release(); throw error; }
           return { engine: active, resume };
@@ -326,6 +443,9 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
           : row ? nativeSessionHandleForAdvSession(row) : null };
     }
     trace?.stage('bootstrap');
+    // A forwarded re-attach carries no caller request; bootstrap needs its
+    // authenticated principal, so it never runs on the caller's behalf.
+    if (!request) throw new Error('A new session must be launched by the worker that received the request');
     const { bootstrapSu } = await import('./endpoint-route/routes/agent-mcp/bootstrap-su');
     // PUI owns the visible model picker. Its "server default" choice has the
     // same authority as the PSU picker, even though the native engine has no
@@ -396,6 +516,10 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
         : startSuRpcEngine(result, binding as PuiSuSessionBinding & { backend: 'codex' | 'omp' },
           { ...options, identity: await engineIdentityForLaunch(workspaceId, result.cwd) });
       state.engines.set(key, engine);
+      observeReadiness(engine);
+      // WI-10003879: recorded before the launch returns, so PUI's very first
+      // snapshot poll on a sibling worker is already routed here.
+      await recordSuSessionHostOwner(result.sessionId, localSuSessionHostOwner(), workspaceId);
       const unsupervise = superviseAttendance(result.sessionId, engine);
       trace?.stage('persist-descriptor');
       await persistSuSessionDescriptor(result.sessionId, engine.adapter.host.descriptor());

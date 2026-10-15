@@ -925,6 +925,20 @@ describe('recall gate-2 corpus normalization — CONTROL set (EI-208789268034361
     expect(starved!.body).toContain('injection/harness');
   });
 
+  it('describes a near-total small-corpus miss as a signal, not a scope-key diagnosis', () => {
+    const starved = starvedOf([
+      pool({
+        surface: 'injection', pool: 'harness', scopes: ['harness:sidestage'],
+        recalls: 287, zeroHit: 287, zeroHitRate: 1, hitsP50: 0, corpusActive: 10,
+      }),
+    ]);
+    expect(starved).toBeDefined();
+    expect(starved!.body).toContain('corpus=10 active (bar 97%)');
+    expect(starved!.body).toContain('not proof of a scope-key mismatch');
+    expect(starved!.body).toContain('narrow queries against a small corpus');
+    expect(starved!.body).not.toContain('unmigrated-scope signature');
+  });
+
   it('CALIBRATION: CONTROL B is a genuine near-miss — the SAME row fires once its corpus is unknown', () => {
     // Proves CONTROL B does not pass vacuously. Its 0.858 rate is above the
     // flat 0.85 bar, so under the pre-fix gate (and for any caller with no

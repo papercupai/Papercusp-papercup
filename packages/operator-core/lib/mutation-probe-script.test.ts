@@ -23,9 +23,9 @@
  *     SIGKILL — so a deferred handler is frequently never a handler at all.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn as spawnProcess, spawnSync as spawnProcessSync, type SpawnOptions, type SpawnSyncOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createTextCollector } from './child-output';
@@ -44,24 +44,52 @@ const ORIGINAL = 'alpha\nbeta\ngamma\n';
 
 let dir: string;
 let subject: string;
+let admissionBase: string;
+let previousAdmissionBase: string | undefined;
+
+/**
+ * These children execute disposable fixture code, including uncommitted CJS
+ * guards and intentionally mutated ES modules. Inheriting the launcher's
+ * committed-source loader either refuses those guards or substitutes HEAD for
+ * the mutant before the probe can judge it. Reuse the loader suite's cleanEnv
+ * boundary: copy the child environment, leaving the parent runner's enforcement
+ * and environment intact. Explicit argv loaders remain explicit.
+ */
+function fixtureChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const child = { ...env };
+  delete child.NODE_OPTIONS;
+  return child;
+}
+
+// Keep one environment boundary for synchronous and asynchronous fixture
+// children, including the fake ptool and the overlay's guard descendants.
+const spawn = ((command: string, args: string[], options: SpawnOptions = {}) =>
+  spawnProcess(command, args, { ...options, env: fixtureChildEnv(options.env) })) as typeof spawnProcess;
+const spawnSync = ((command: string, args: string[], options: SpawnSyncOptions = {}) =>
+  spawnProcessSync(command, args, { ...options, env: fixtureChildEnv(options.env) })) as typeof spawnProcessSync;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'mutation-probe-test-'));
   subject = join(dir, 'subject.txt');
   writeFileSync(subject, ORIGINAL);
+  previousAdmissionBase = process.env.PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT;
+  admissionBase = mkdtempSync(join(tmpdir(), 'mutation-probe-admission-test-'));
+  process.env.PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT = admissionBase;
 });
 
 afterEach(() => {
-  // In-tree refusal cases intentionally leave their admission manifest in
-  // place. Each fixture has a unique temporary checkout root, so remove only
-  // that fixture's external admission directory after the child has exited.
-  if (dir && existsSync(dir)) {
-    const root = realpathSync(dir);
-    const admissionDir = join('/tmp', `papercusp-mutation-probe-${process.getuid!()}-${createHash('sha256').update(root).digest('hex')}`);
-    rmSync(admissionDir, { recursive: true, force: true });
-  }
+  // In-tree refusal cases intentionally leave their manifest in place. Each test
+  // has an isolated external admission base, removed after the child has exited.
+  if (admissionBase) rmSync(admissionBase, { recursive: true, force: true });
   rmSync(dir, { recursive: true, force: true });
+  if (previousAdmissionBase === undefined) delete process.env.PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT;
+  else process.env.PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT = previousAdmissionBase;
 });
+
+function admissionDirFor(root: string): string {
+  const key = createHash('sha256').update(root).digest('hex');
+  return join(admissionBase, 'papercusp-mutation-probe-' + process.getuid!() + '-' + key);
+}
 
 /** Run the probe to completion and return its exit code. */
 function runProbe(args: string[]): number {
@@ -70,8 +98,8 @@ function runProbe(args: string[]): number {
 }
 
 /** Run the probe and return its exit code AND combined output (for asserting guidance text). */
-function runProbeIO(args: string[], env: NodeJS.ProcessEnv = process.env): { code: number; out: string } {
-  const r = spawnSync('bash', [SCRIPT, ...args], { encoding: 'utf8', timeout: 60_000, env });
+function runProbeIO(args: string[], env: NodeJS.ProcessEnv = process.env, cwd?: string): { code: number; out: string } {
+  const r = spawnSync('bash', [SCRIPT, ...args], { encoding: 'utf8', timeout: 60_000, env, cwd });
   return { code: r.status ?? -1, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
 }
 
@@ -134,6 +162,175 @@ function makeHistoricalTsRepo(): { repo: string; file: string; oldSha: string } 
 }
 
 describe('mutation-probe.sh — copy-out mode (the default)', () => {
+  it('refuses a CommonJS npm guard that propagates the committed loader before starting its baseline', () => {
+    const repo = join(dir, 'cjs-npm-guard');
+    mkdirSync(repo);
+    const modulePath = join(repo, 'subject.cjs');
+    const marker = join(repo, 'guard-started');
+    writeFileSync(modulePath, 'module.exports = 1;\n');
+    writeFileSync(join(repo, 'package.json'), JSON.stringify({ scripts: {
+      'test:file': `NODE_OPTIONS="--import=./scripts/lib/committed-source-loader.mjs" node -e "require('node:fs').writeFileSync('${marker}', 'started')"`,
+    } }));
+    const { code, out } = runProbeIO([
+      '--file', modulePath, '--mutate', 's/module.exports = 1;/module.exports = 2;/',
+      '--test', 'test -f {} && npm run test:file -- provider.test.ts',
+    ], process.env, repo);
+    expect(code, out).toBe(2);
+    expect(out).toContain('reason=commonjs-committed-loader');
+    expect(out).toContain('node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs');
+    expect(out).not.toContain('running baseline guard');
+    expect(existsSync(marker)).toBe(false);
+    expect(readFileSync(modulePath, 'utf8')).toBe('module.exports = 1;\n');
+  });
+
+  it('runs the CommonJS mutant in a child while keeping an explicit loader on its committed launcher', () => {
+    const repo = join(dir, 'cjs-launcher-only');
+    mkdirSync(repo);
+    git(repo, ['init', '-q']);
+    git(repo, ['config', 'user.email', 'mutation-probe-test@example.invalid']);
+    git(repo, ['config', 'user.name', 'mutation-probe-test']);
+    const modulePath = join(repo, 'subject.cjs');
+    writeFileSync(modulePath, 'module.exports = 1;\n');
+    const launcher = join(repo, 'launcher.mjs');
+    writeFileSync(launcher, [
+      "import { spawnSync } from 'node:child_process';",
+      'const child = spawnSync(process.execPath, [\'-e\', "require(\'node:assert/strict\').equal(require(process.argv[1]), 1)", process.argv[2]], { stdio: \'inherit\' });',
+      'process.exit(child.status ?? 2);',
+    ].join('\n'));
+    git(repo, ['add', 'subject.cjs', 'launcher.mjs']);
+    git(repo, ['commit', '-qm', 'committed guarded launcher']);
+    const loader = resolve(__dirname, '../../../scripts/lib/committed-source-loader.mjs');
+    const { code, out } = runProbeIO([
+      '--file', modulePath, '--mutate', 's/module.exports = 1;/module.exports = 2;/',
+      '--test', `node --import ${JSON.stringify(loader)} ${JSON.stringify(launcher)} {}`,
+    ], process.env, repo);
+    expect(code, out).toBe(0);
+    expect(out).toContain('verdict=caught');
+    expect(out).toContain('AssertionError');
+    expect(out).not.toContain('COMMITTED_SOURCE refused');
+    expect(readFileSync(modulePath, 'utf8')).toBe('module.exports = 1;\n');
+  });
+
+  it('runs disposable CJS guards without substituting source or changing parent loader custody', () => {
+    const repo = join(dir, 'loader-custody-repo');
+    mkdirSync(repo);
+    git(repo, ['init', '-q']);
+    const modulePath = join(repo, 'subject.cjs');
+    writeFileSync(modulePath, 'module.exports = 1;\n');
+    const loader = resolve(__dirname, '../../../scripts/lib/committed-source-loader.mjs');
+    const parentOptions = process.env.NODE_OPTIONS;
+    const inherited = { ...process.env, NODE_OPTIONS: `--import=${loader}` };
+    const { code, out } = runProbeIO([
+      '--file', modulePath, '--mutate', 's/module.exports = 1;/module.exports = 2;/',
+      '--test', 'node -e "if (require(process.argv[1]) !== 1) process.exit(1)" {}',
+    ], inherited);
+    expect(code, out).toBe(0);
+    expect(out).toMatch(/verdict=caught/);
+    expect(out).not.toContain('COMMITTED_SOURCE refused');
+    expect(out).not.toContain('COMMITTED_SOURCE substituted');
+    expect(readFileSync(modulePath, 'utf8')).toBe('module.exports = 1;\n');
+    expect(inherited.NODE_OPTIONS).toBe(`--import=${loader}`);
+    expect(process.env.NODE_OPTIONS).toBe(parentOptions);
+  });
+
+  it.each([
+    ['invalid syntax', 's/beta/'],
+    ['undeclared replacement state', 's/beta/$undefined_thing/'],
+    ['no match', 's/nosuchtext/x/'],
+    ['whitespace only', 's/beta/ beta /'],
+  ])('refuses %s before launching any baseline guard', (_label, mutation) => {
+    const marker = join(dir, 'guard-launched');
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', mutation,
+      '--test', `printf '%s\\n' "$PAPERCUSP_MUTATION_PHASE" >> ${JSON.stringify(marker)}; grep -q '^beta$' {}`,
+    ]);
+    expect(code, out).toBe(2);
+    expect(existsSync(marker)).toBe(false);
+    expect(out).not.toContain('running baseline guard');
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('runs both baselines and the mutant guard after a valid preflight', () => {
+    const marker = join(dir, 'guard-phases');
+    const args = [
+      '--file', subject, '--mutate', 's/beta/BETA/',
+      '--test', `printf '%s\\n' "$PAPERCUSP_MUTATION_PHASE" >> ${JSON.stringify(marker)}; grep -q '^beta$' {}`,
+    ];
+    const { code, out } = runProbeIO(args);
+    expect(code, out).toBe(0);
+    expect(readFileSync(marker, 'utf8').trim().split('\n')).toEqual(['baseline', 'copy-baseline', 'mutant']);
+    expect(read()).toBe(ORIGINAL);
+
+    const evidenceLine = out.match(/^MUTATION_PROBE_EVIDENCE_JSON=(.+)$/m)?.[1];
+    expect(evidenceLine).toBeTruthy();
+    expect(JSON.parse(evidenceLine!)).toMatchObject({
+      schemaVersion: 1,
+      runnerPath: 'scripts/mutation-probe.sh',
+      runnerSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      runnerCommit: expect.stringMatching(/^[a-f0-9]{40}$/),
+      cwd: 'packages/operator-core',
+      argv: args,
+      result: {
+        verdict: 'caught',
+        expected: 'caught',
+        target: 'copy-out',
+        baselineExit: 0,
+        guardExit: 1,
+      },
+    });
+  });
+
+  it('replays descriptor export settings even when the next caller disables export', () => {
+    const args = ['--file', subject, '--mutate', 's/beta/BETA/', '--test', "grep -q '^beta$' {}"];
+    const env = { ...process.env,
+      PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'always',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: 'http://127.0.0.1:3170/api/health',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO: join(dir, 'reader-é-東京'),
+      PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
+      UNRELATED_REPLAY_SECRET: 'must-not-enter-the-receipt',
+    };
+    const first = runProbeIO(args, env);
+    expect(first.code, first.out).toBe(0);
+    const record = JSON.parse(first.out.match(/^MUTATION_PROBE_EVIDENCE_JSON=(.+)$/m)![1]!);
+    expect(record.environment).toEqual({
+      PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'always',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: env.PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO: env.PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO,
+      PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
+    });
+    const replay = runProbeIO(record.argv, { ...env, PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'never',
+      ...record.environment });
+    expect(replay.code, replay.out).toBe(0);
+    expect(replay.out).toContain('mutation descriptor forced on');
+    expect(replay.out).not.toContain('must-not-enter-the-receipt');
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('records effective automatic export when the caller leaves it unset', () => {
+    const result = runProbeIO(['--file', subject, '--mutate', 's/beta/BETA/', '--test', "grep -q '^beta$' {}"],
+      { ...process.env, PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: undefined,
+        PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: 'http://127.0.0.1:1/api/health' });
+    expect(result.code, result.out).toBe(0);
+    const record = JSON.parse(result.out.match(/^MUTATION_PROBE_EVIDENCE_JSON=(.+)$/m)![1]!);
+    expect(record.environment.PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT).toBe('auto');
+    expect(record.environment.PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO).toBe(resolve(__dirname, '../../..'));
+  });
+
+  it('preserves UTF-8 guard arguments in the exact replay receipt', () => {
+    const unicodeSubject = join(dir, 'subject-é-東京-🧪.txt');
+    writeFileSync(unicodeSubject, ORIGINAL);
+    const args = [
+      '--file', unicodeSubject, '--mutate', 's/beta/BETA/',
+      '--test', "printf '%s\\n' 'codex → codex / café / 東京 / 🧪' >/dev/null; grep -q '^beta$' {}",
+    ];
+    const { code, out } = runProbeIO(args);
+    expect(code, out).toBe(0);
+    const evidenceLine = out.match(/^MUTATION_PROBE_EVIDENCE_JSON=(.+)$/m)?.[1];
+    expect(evidenceLine).toBeTruthy();
+    expect(JSON.parse(evidenceLine!).argv).toEqual(args);
+    expect(readFileSync(unicodeSubject, 'utf8')).toBe(ORIGINAL);
+  });
+
   it('runs from a frozen source when the launched script is rewritten during baseline', async () => {
     const launched = join(dir, 'mutable-probe.sh');
     const marker = join(dir, 'baseline-started');
@@ -187,6 +384,132 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     expect(read()).toBe(ORIGINAL);
   });
 
+  describe('mutant_ledger: whether the mutant test_runs row exists (WI-10006245)', () => {
+    /** A guard that plays the ledger reporter: append receipt lines per phase, then judge the subject. */
+    const guardWritingReceipts = (byPhase: Record<string, readonly object[]>) => {
+      const writes = Object.entries(byPhase)
+        .map(([phase, lines]) => {
+          // printf reuses its format for every argument: one JSON line per argument.
+          const args = lines.map((line) => `'${JSON.stringify(line).replace(/'/g, "'\\''")}'`).join(' ');
+          return `if [ "$PAPERCUSP_MUTATION_PHASE" = ${phase} ]; then printf '%s\\n' ${args} >> "$PAPERCUSP_TEST_RUN_RECEIPT_FILE"; fi`;
+        })
+        .join('; ');
+      return `test -n "$PAPERCUSP_TEST_RUN_RECEIPT_FILE" || exit 3; ${writes}${writes ? '; ' : ''}grep -q '^beta$' {}`;
+    };
+    const resultOf = (out: string) => {
+      const line = out.match(/^MUTATION_PROBE_RESULT .+$/m)?.[0] ?? '';
+      const evidence = out.match(/^MUTATION_PROBE_EVIDENCE_JSON=(.+)$/m)?.[1];
+      const result = evidence ? JSON.parse(evidence).result : undefined;
+      return { line, ledger: result?.mutantLedger, result };
+    };
+
+    it('reports a caught mutant whose row never landed as missing, with the reason', () => {
+      const { code, out } = runProbeIO([
+        '--file', subject, '--mutate', 's/beta/BETA/',
+        '--test', guardWritingReceipts({
+          mutant: [{ filePath: 'a.test.ts', status: 'fail', outcome: 'failed', reason: 'pg_unavailable' }],
+        }),
+      ]);
+      expect(code, out).toBe(0);
+      const { line, ledger } = resultOf(out);
+      expect(line).toMatch(/verdict=caught .* mutant_ledger=missing:failed_pg_unavailable$/);
+      expect(ledger).toBe('missing:failed_pg_unavailable');
+      expect(out).toMatch(/mutant ledger: missing:failed_pg_unavailable/);
+      expect(read()).toBe(ORIGINAL);
+    });
+
+    it('preserves a lost baseline receipt while preferring the mutant late insert over its earlier timeout', () => {
+      const { code, out } = runProbeIO([
+        '--file', subject, '--mutate', 's/beta/BETA/',
+        '--test', guardWritingReceipts({
+          baseline: [{ filePath: 'a.test.ts', status: 'pass', outcome: 'failed', reason: 'pg_unavailable' }],
+          mutant: [
+            { filePath: 'a.test.ts', status: 'fail', outcome: 'timeout', reason: 'flush_budget_30000ms' },
+            { filePath: 'a.test.ts', status: 'fail', outcome: 'inserted', id: '4242' },
+          ],
+        }),
+      ]);
+      expect(code, out).toBe(0);
+      expect(resultOf(out).line).toMatch(/ mutant_ledger=test_runs:4242$/);
+      expect(resultOf(out).ledger).toBe('test_runs:4242');
+      expect(resultOf(out).line).toContain('baseline_ledger=missing:failed_pg_unavailable');
+      expect(resultOf(out).result.baselineLedger).toBe('missing:failed_pg_unavailable');
+      expect(out).toContain('baseline ledger: missing:failed_pg_unavailable');
+      expect(out).not.toMatch(/mutant ledger: /);
+    });
+
+    it('preserves an unresolved copy baseline separately from the landed original and mutant receipts', () => {
+      const { code, out } = runProbeIO([
+        '--file', subject, '--mutate', 's/beta/BETA/',
+        '--test', guardWritingReceipts({
+          baseline: [{ filePath: 'a.test.ts', status: 'pass', outcome: 'inserted', id: '11' }],
+          'copy-baseline': [{ filePath: 'a.test.ts', status: 'pass', outcome: 'timeout', reason: 'pg_insert_timeout_15000ms' }],
+          mutant: [{ filePath: 'a.test.ts', status: 'fail', outcome: 'inserted', id: '42' }],
+        }),
+      ]);
+      expect(code, out).toBe(0);
+      expect(resultOf(out).line).toContain('baseline_ledger=test_runs:11 copy_baseline_ledger=unconfirmed:timeout_pg_insert_timeout_15000ms mutant_ledger=test_runs:42');
+      expect(resultOf(out).result).toMatchObject({
+        baselineLedger: 'test_runs:11',
+        copyBaselineLedger: 'unconfirmed:timeout_pg_insert_timeout_15000ms',
+        mutantLedger: 'test_runs:42',
+      });
+      expect(out).toContain('copy-baseline ledger: unconfirmed:timeout_pg_insert_timeout_15000ms');
+      expect(read()).toBe(ORIGINAL);
+    });
+
+    it('reports partial when only some mutant rows landed', () => {
+      const { out } = runProbeIO([
+        '--file', subject, '--mutate', 's/beta/BETA/',
+        '--test', guardWritingReceipts({
+          mutant: [
+            { filePath: 'a.test.ts', status: 'fail', outcome: 'inserted', id: '7' },
+            { filePath: 'b.test.ts', status: 'fail', outcome: 'timeout', reason: 'pg_insert_timeout_15000ms' },
+          ],
+        }),
+      ]);
+      expect(resultOf(out).ledger).toBe('partial:7;unconfirmed:1:timeout_pg_insert_timeout_15000ms');
+    });
+
+    it('reports a timed-out mutant INSERT as unconfirmed and asks for reconciliation before replay', () => {
+      const { code, out } = runProbeIO([
+        '--file', subject, '--mutate', 's/beta/BETA/',
+        '--test', guardWritingReceipts({
+          mutant: [{ filePath: 'a.test.ts', status: 'fail', outcome: 'timeout', reason: 'pg_insert_timeout_15000ms' }],
+        }),
+      ]);
+      expect(code, out).toBe(0);
+      expect(resultOf(out).ledger).toBe('unconfirmed:timeout_pg_insert_timeout_15000ms');
+      expect(out).toContain('A timed-out INSERT may still have landed');
+      expect(out).toContain('reconcile the exact run group in the ledger before replaying');
+      expect(out).not.toContain('There is no mutant FAIL row');
+      expect(read()).toBe(ORIGINAL);
+    });
+
+    it('prefers a late rejected INSERT over its earlier timeout', () => {
+      const { code, out } = runProbeIO([
+        '--file', subject, '--mutate', 's/beta/BETA/',
+        '--test', guardWritingReceipts({
+          mutant: [
+            { filePath: 'a.test.ts', status: 'fail', outcome: 'timeout', reason: 'pg_insert_timeout_15000ms' },
+            { filePath: 'a.test.ts', status: 'fail', outcome: 'failed', reason: 'connection_closed' },
+          ],
+        }),
+      ]);
+      expect(code, out).toBe(0);
+      expect(resultOf(out).ledger).toBe('missing:failed_connection_closed');
+      expect(read()).toBe(ORIGINAL);
+    });
+
+    it('says none when no ledger writer ran in the guard', () => {
+      const { code, out } = runProbeIO([
+        '--file', subject, '--mutate', 's/beta/BETA/', '--test', guardWritingReceipts({}),
+      ]);
+      expect(code, out).toBe(0);
+      expect(resultOf(out).line).toMatch(/ mutant_ledger=none$/);
+    });
+  });
+
   it('does not invent scope for an explicitly unscoped caller', () => {
     const env = { ...process.env };
     for (const key of [
@@ -214,6 +537,61 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     expect(read()).toBe(ORIGINAL);
   });
 
+  describe('scratch failure classification (EI-25433151376112553)', () => {
+    it.skipIf(!existsSync('/dev/full'))('reports an unmeasured digest as a harness error when its scratch write gets ENOSPC', () => {
+      const scratchRoot = join(dir, 'scratch');
+      mkdirSync(scratchRoot);
+      const { code, out } = runProbeIO([
+        '--file', subject, '--mutate', 's/beta/BETA/', '--relocation', 'mirror',
+        '--test', 'for probe in "$PROBE_TEST_SCRATCH_ROOT"/mutation-probe.*; do ln -sf /dev/full "$probe/current.sha"; done; grep -q "^beta$" {}',
+      ], { ...process.env, TMPDIR: scratchRoot, PROBE_TEST_SCRATCH_ROOT: scratchRoot });
+      expect(code, out).toBe(2);
+      expect(out).toContain('status=integrity-unverified');
+      expect(out).not.toContain('external-change-preserved');
+      expect(out).not.toContain('current_sha=MISSING');
+      expect(out.lastIndexOf('verdict=harness-error')).toBeGreaterThan(out.lastIndexOf('verdict=caught'));
+      expect(read()).toBe(ORIGINAL);
+    });
+
+    it('reports a failed hash command without inventing an external source change', () => {
+      const bin = join(dir, 'bin');
+      const marker = join(dir, 'guard-ran');
+      const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+      mkdirSync(bin);
+      writeFileSync(join(bin, 'git'), `#!/usr/bin/env bash
+if [ "$1" = hash-object ] && [ -f "$PROBE_TEST_GUARD_MARKER" ]; then
+  printf 'fatal: source digest unavailable\\n' >&2
+  exit 128
+fi
+exec "$PROBE_TEST_REAL_GIT" "$@"
+`, { mode: 0o755 });
+      const { code, out } = runProbeIO([
+        '--file', subject, '--mutate', 's/beta/BETA/', '--relocation', 'mirror',
+        '--test', 'touch "$PROBE_TEST_GUARD_MARKER"; grep -q "^beta$" {}',
+      ], { ...process.env, PATH: `${bin}:${process.env.PATH}`, PROBE_TEST_REAL_GIT: realGit, PROBE_TEST_GUARD_MARKER: marker });
+      expect(code, out).toBe(2);
+      expect(out).toContain('status=integrity-unverified');
+      expect(out).not.toContain('external-change-preserved');
+      expect(read()).toBe(ORIGINAL);
+    });
+
+    it('checks the independent fs-mutex root before starting a managed guard', () => {
+      const bin = join(dir, 'bin');
+      const marker = join(dir, 'guard-ran');
+      const badLockRoot = join(dir, 'not-a-directory');
+      mkdirSync(bin);
+      writeFileSync(badLockRoot, 'occupied');
+      writeFileSync(join(bin, 'npm'), '#!/usr/bin/env bash\ntouch "$PROBE_TEST_GUARD_MARKER"\ngrep -q "^beta$" "$1"\n', { mode: 0o755 });
+      const { code, out } = runProbeIO([
+        '--file', subject, '--mutate', 's/beta/BETA/', '--relocation', 'mirror', '--test', 'npm {}',
+      ], { ...process.env, PATH: `${bin}:${process.env.PATH}`, PAPERCUSP_FS_MUTEX_LOCK_DIR: badLockRoot, PAPERCUSP_DISABLE_FS_MUTEX: '0', PROBE_TEST_GUARD_MARKER: marker });
+      expect(code, out).toBe(2);
+      expect(out).toContain('phase=preflight reason=scratch-unavailable root=fs-mutex');
+      expect(existsSync(marker)).toBe(false);
+      expect(read()).toBe(ORIGINAL);
+    });
+  });
+
   it('leaves the subject file byte-identical while still exercising the guard', () => {
     const code = runProbe(['--file', subject, '--mutate', 's/beta/BETA/', '--test', 'grep -q "^beta$" {}']);
     // The guard fails on the mutant => the mutant was CAUGHT => probe exits 0.
@@ -222,10 +600,32 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
   });
 
   it('preserves a source edit made during copy-out and reports the measured snapshot', () => {
+    // The edit comes from a real OUT-OF-PROCESS peer, never from the guard command. Under the
+    // overlay relocation (EI-24799401310241778) the guard runs in a private mount namespace in
+    // which the subject's own path IS the scratch mutant, so a write from inside the guard lands
+    // in the mutant and never reaches the tree (pinned by the overlay containment test below).
+    // A peer outside the probe writes the host file, which is the edit that must be preserved
+    // under every relocation. The guard holds the mutant phase open until the peer has written.
     const sourceSha = spawnSync('git', ['hash-object', subject], { encoding: 'utf8' }).stdout?.trim();
-    const testCommand = `if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then printf 'peer-edit\\n' > ${JSON.stringify(subject)}; fi; grep -q "^beta$" {}`;
+    const started = join(dir, 'mutant-phase-started');
+    const edited = join(dir, 'peer-edit-written');
+    const peer = spawn(
+      'bash',
+      [
+        '-c',
+        'for i in $(seq 1 200); do [ -f "$1" ] && break; sleep 0.05; done; [ -f "$1" ] && printf "peer-edit\\n" > "$2"; touch "$3"',
+        '_', started, subject, edited,
+      ],
+      { stdio: 'ignore' },
+    );
+    const testCommand = `if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then touch ${JSON.stringify(started)}; for i in $(seq 1 200); do [ -f ${JSON.stringify(edited)} ] && break; sleep 0.05; done; fi; grep -q "^beta$" {}`;
 
-    const result = runProbeIO(['--file', subject, '--mutate', 's/beta/BETA/', '--test', testCommand]);
+    let result: { code: number; out: string };
+    try {
+      result = runProbeIO(['--file', subject, '--mutate', 's/beta/BETA/', '--test', testCommand]);
+    } finally {
+      peer.kill('SIGKILL');
+    }
     const currentSha = spawnSync('git', ['hash-object', subject], { encoding: 'utf8' }).stdout?.trim();
 
     expect(result.code).toBe(0);
@@ -281,8 +681,11 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     writeFileSync(join(repo, 'guard.cjs'), "if (require('./subject.cjs') !== 1) process.exit(1);\n");
     // The mirror symlinks guard.cjs to the real tree. Node (like Vite) resolves
     // that symlink before loading its relative import, bypassing the mutant.
+    // Pinned to the mirror: that is the relocation this control guards. The
+    // overlay has no such route (see the EI-24799401310241778 block below).
     const { code, out } = runProbeIO([
       '--file', modulePath,
+      '--relocation', 'mirror',
       '--mutate', 's/module.exports = 1;/module.exports = 2;/',
       '--test', 'node "$(dirname {})/guard.cjs"',
     ]);
@@ -399,7 +802,7 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     expect(read()).toBe(ORIGINAL);
   });
 
-  it('REFUSES a mutation that changes only whitespace and does not run the mutant guard', () => {
+  it('REFUSES a whitespace-only mutation before any guard runs', () => {
     const phases = join(dir, 'phases.log');
     const { code, out } = runProbeIO([
       '--file',
@@ -412,12 +815,10 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
       `printf '%s\\n' "$PAPERCUSP_MUTATION_PHASE" >> "${phases}"; grep -q beta {}`,
     ]);
     expect(code).toBe(2);
-    expect(out).toMatch(/mutation diff/i);
+    expect(out).not.toContain('running baseline guard');
     expect(out).toMatch(/ONLY WHITESPACE/i);
-    // The baseline establishes the harness, and copy-baseline proves the
-    // relocation is sound; the semantic-no-op refusal must happen before the
-    // mutant guard is launched (mutation is applied only after both).
-    expect(readFileSync(phases, 'utf8')).toBe('baseline\ncopy-baseline\n');
+    // Semantic-no-op validation needs no guard or relocation evidence.
+    expect(existsSync(phases)).toBe(false);
     expect(read()).toBe(ORIGINAL);
   });
 
@@ -472,6 +873,31 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
   });
 
   /**
+   * EI-25654051948437355 — a Playwright CLI --reporter replaces the configured
+   * reporters, including the test_runs ledger reporter, so the probe printed a
+   * verdict but `mutant_ledger=none` and left no row to bind. Refuse up front.
+   */
+  it.each([
+    ['equals form', 'npx playwright test --reporter=list {}'],
+    ['space form', 'npx playwright test {} --reporter list'],
+  ])('refuses a Playwright --test that overrides reporters (%s) before any guard runs', (_label, cmd) => {
+    const { code, out } = runProbeIO(['--file', subject, '--mutate', 's/beta/BETA/', '--test', cmd]);
+    expect(code, out).toBe(2);
+    expect(out).toContain('test_runs ledger reporter');
+    expect(out).not.toContain('running baseline guard');
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('lets an explicit MUTATION_PROBE_ALLOW_REPORTER_OVERRIDE=1 through to a genuine verdict (calibration)', () => {
+    const { code, out } = runProbeIO(
+      ['--file', subject, '--mutate', 's/beta/BETA/', '--test', 'true playwright --reporter=list; grep -q "^beta$" {}'],
+      { ...process.env, MUTATION_PROBE_ALLOW_REPORTER_OVERRIDE: '1' },
+    );
+    expect(code, out).toBe(0);
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  /**
    * EI-21882388979504012 — a test runner that cannot COLLECT its subject exits
    * nonzero for MISUSE (vitest's "No test files found, exiting with code 1" is
    * the reproduced case: copy-out mode moves the mutant under a scratch dir a
@@ -500,6 +926,28 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     // The MUTATION_PROBE_RESULT line joins multi-token hits with commas
     // (spaces would break its key=value parsing).
     expect(out).toMatch(/runner_misuse=No,test,files,found/);
+    expect(out).not.toMatch(/MUTANT CAUGHT/);
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  // WI-10006604 — `npm run test:file` blocks on npm-install-safe's fs-mutex while a peer
+  // installs; on timeout it exits 1 having run ZERO tests. That exit was scored as a catch.
+  it('reports an npm-install-safe mutex timeout in the mutant phase as harness-error, never as a caught mutant', () => {
+    // Built from parts so the contiguous marker never appears in THIS source: vitest's failure
+    // code-frame prints these lines, and a probe of mutation-probe.sh would otherwise read its
+    // own guard's code-frame as runner misuse (a self-match that hides a real catch).
+    const marker = ['NPM_INSTALL_SAFE', 'ERROR'].join('_');
+    const { code, out } = runProbeIO([
+      '--file',
+      subject,
+      '--mutate',
+      's/beta/BETA/',
+      '--test',
+      `if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then echo "${marker} Timed out after 180000ms waiting for fs-mutex writer"; exit 1; fi; grep -q "^beta$" {}`,
+    ]);
+    expect(code).toBe(2);
+    expect(out).toMatch(/verdict=harness-error/);
+    expect(out).toContain(`runner_misuse=${marker}`);
     expect(out).not.toMatch(/MUTANT CAUGHT/);
     expect(read()).toBe(ORIGINAL);
   });
@@ -546,6 +994,8 @@ describe('mutation-probe.sh — copy-out relocation is proven sound before scori
     const { code, out } = runProbeIO([
       '--file',
       relocSubject,
+      // Flat relocation is the subject here; the overlay never relocates.
+      '--relocation', 'mirror',
       // Any non-no-op mutation: copy-baseline runs BEFORE this is applied, so
       // the exact mutation text is irrelevant to what this test proves — the
       // refusal must fire before the mutant guard, let alone the mutation
@@ -602,6 +1052,8 @@ describe('mutation-probe.sh — copy-out relocation is proven sound before scori
     const code = runProbe([
       '--file',
       relocSubject,
+      // Flat relocation is the subject here; the overlay never relocates.
+      '--relocation', 'mirror',
       '--mutate',
       's/helperValue;/helperValue + 1;/',
       '--test',
@@ -684,6 +1136,7 @@ describe('mutation-probe.sh — copy-out relocates into a mirror of the subject 
       .toBe(superproject);
     const { code, out } = runProbeIO([
       '--file', file,
+      '--relocation', 'mirror',
       '--mutate', "s/const VERDICT = 'OK'/const VERDICT = 'MUTATED'/",
       '--test', "node {} | grep -qx 'OK sib=SIB root=ROOT-MARKER'",
     ]);
@@ -698,6 +1151,7 @@ describe('mutation-probe.sh — copy-out relocates into a mirror of the subject 
     const { code, out } = runProbeIO([
       '--file',
       subject,
+      '--relocation', 'mirror',
       '--mutate',
       "s/const VERDICT = 'OK'/const VERDICT = 'MUTATED'/",
       '--test',
@@ -711,6 +1165,29 @@ describe('mutation-probe.sh — copy-out relocates into a mirror of the subject 
     expect(out).not.toMatch(/COPY-BASELINE FAILED/);
     expect(out).toMatch(/verdict=caught/);
     expect(code).toBe(0);
+  });
+
+  it('WI-10004898: names the ORIGIN checkout to every copy-out guard so its test_runs rows can be measured against it', () => {
+    // The mirror has no .git, so the test_runs reporter cannot prove a mirror run
+    // clean from the mirror. It snapshots PAPERCUSP_MUTATION_PROBE_ORIGIN_ROOT
+    // instead; every phase, mutant included, must receive the origin's git root.
+    const { repo, subject } = makeLocationalRepo();
+    const log = join(dir, 'origin-root.log');
+    const { code, out } = runProbeIO([
+      '--file',
+      subject,
+      '--relocation', 'mirror',
+      '--mutate',
+      "s/const VERDICT = 'OK'/const VERDICT = 'MUTATED'/",
+      '--test',
+      `printf '%s=%s\\n' "$PAPERCUSP_MUTATION_PHASE" "\${PAPERCUSP_MUTATION_PROBE_ORIGIN_ROOT:-unset}" >> ${JSON.stringify(log)}; node {} | grep -qx 'OK sib=SIB root=ROOT-MARKER'`,
+    ]);
+    expect(out).toMatch(/verdict=caught/);
+    expect(code).toBe(0);
+    const lines = readFileSync(log, 'utf8').trim().split('\n');
+    const phases = new Map(lines.map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
+    expect(phases.get('mutant')).toBe(realpathSync(repo));
+    for (const line of lines) expect(line.endsWith('=unset')).toBe(false);
   });
 
   it('mirrors the worktree WITHOUT .git, so a git-consulting subject fails loudly instead of reading a wholly dirty tree', () => {
@@ -737,6 +1214,7 @@ describe('mutation-probe.sh — copy-out relocates into a mirror of the subject 
     const { code, out } = runProbeIO([
       '--file',
       gitSubject,
+      '--relocation', 'mirror',
       '--mutate',
       's/echo MARK/echo MUTATED/',
       '--test',
@@ -763,6 +1241,7 @@ describe('mutation-probe.sh — copy-out relocates into a mirror of the subject 
     const { code, out } = runProbeIO([
       '--file',
       orphan,
+      '--relocation', 'mirror',
       '--mutate',
       's/export const value = v;/export const value = v + 1;/',
       '--test',
@@ -771,6 +1250,207 @@ describe('mutation-probe.sh — copy-out relocates into a mirror of the subject 
     expect(out).not.toMatch(/relocating into a repo mirror/);
     expect(out).toMatch(/COPY-BASELINE FAILED/);
     expect(code).toBe(2);
+  });
+});
+
+/**
+ * EI-24799401310241778 (measured 2026-10-01): the mirror symlinks every sibling
+ * back to the origin, and Node/Vite REALPATH a module before resolving its
+ * relative imports. A test that imports {} directly (so the module-load control
+ * passes) but asserts through a SIBLING that imports `./subject` therefore
+ * exercises the ORIGINAL: a false SURVIVED. Measured on credential-store.ts via
+ * request-kernel.ts: copy-out SURVIVED, in-tree CAUGHT.
+ *
+ * The overlay binds the mutant over the subject's own path inside a private
+ * mount namespace, so every route reaches it. The mirror runs below are the
+ * calibration: they prove this fixture really exercises the defect, so the
+ * overlay's CAUGHT is the fix and not a fixture that could never survive.
+ */
+const overlayWorks = (() => {
+  const probeDir = mkdtempSync(join(tmpdir(), 'mutation-probe-overlay-check-'));
+  try {
+    const src = join(probeDir, 'src');
+    const dst = join(probeDir, 'dst');
+    writeFileSync(src, 'overlay\n');
+    writeFileSync(dst, 'original\n');
+    const r = spawnSync('bwrap', ['--dev-bind', '/', '/', '--bind', src, dst, '--', 'cat', dst], {
+      encoding: 'utf8',
+      timeout: 15_000,
+    });
+    return r.status === 0 && r.stdout === 'overlay\n';
+  } finally {
+    rmSync(probeDir, { recursive: true, force: true });
+  }
+})();
+
+function makeSiblingRouteRepo(): { repo: string; subject: string } {
+  const repo = join(dir, 'sibling-route-repo');
+  mkdirSync(repo);
+  git(repo, ['init', '-q']);
+  const subjectPath = join(repo, 'subject.cjs');
+  writeFileSync(subjectPath, 'module.exports = 1;\n');
+  // The sibling reaches the subject by a RELATIVE import — the route the mirror loses.
+  writeFileSync(join(repo, 'sib.cjs'), "module.exports = () => require('./subject.cjs');\n");
+  return { repo, subject: subjectPath };
+}
+
+/** Loads {} directly (module-load control passes) but ASSERTS only through the sibling. */
+const SIBLING_ROUTE_GUARD =
+  'node -e "const p = process.argv[1]; require(p); if (require(require(\'path\').dirname(p) + \'/sib.cjs\')() !== 1) process.exit(1)" {}';
+
+describe('mutation-probe.sh — copy-out overlay reaches the mutant through every route (EI-24799401310241778)', () => {
+  it('calibration: the MIRROR false-SURVIVES when the test reaches the subject only through a sibling', () => {
+    const { subject: s } = makeSiblingRouteRepo();
+    const { code, out } = runProbeIO([
+      '--file', s,
+      '--relocation', 'mirror',
+      '--mutate', 's/module.exports = 1;/module.exports = 2;/',
+      '--test', SIBLING_ROUTE_GUARD,
+    ]);
+    expect(out).toMatch(/verdict=survived/);
+    expect(out).toMatch(/relocation=mirror/);
+    // A mirror survival now carries its own caveat instead of reading as a weak guard.
+    expect(out).toMatch(/SIBLING module.*ORIGINAL file/);
+    expect(code).toBe(1);
+    expect(readFileSync(s, 'utf8')).toBe('module.exports = 1;\n');
+  });
+
+  it.skipIf(!overlayWorks)('CATCHES the same mutant under the overlay, without touching the tracked file', () => {
+    const { subject: s } = makeSiblingRouteRepo();
+    const { code, out } = runProbeIO([
+      '--file', s,
+      '--mutate', 's/module.exports = 1;/module.exports = 2;/',
+      '--test', SIBLING_ROUTE_GUARD,
+    ]);
+    expect(out).toMatch(/overlay relocation/);
+    expect(out).toMatch(/verdict=caught/);
+    expect(out).toMatch(/relocation=overlay/);
+    expect(code).toBe(0);
+    expect(readFileSync(s, 'utf8')).toBe('module.exports = 1;\n');
+  });
+
+  it.skipIf(!overlayWorks)('a symlinked-path test that the mirror could not load reaches the mutant under the overlay', () => {
+    // The mirror's module-load control refuses this fixture (see the copy-out
+    // block above). Under the overlay the realpath IS the mutant, so it scores.
+    const repo = join(dir, 'overlay-symlink-test-repo');
+    mkdirSync(repo);
+    git(repo, ['init', '-q']);
+    const modulePath = join(repo, 'subject.cjs');
+    writeFileSync(modulePath, 'module.exports = 1;\n');
+    writeFileSync(join(repo, 'guard.cjs'), "if (require('./subject.cjs') !== 1) process.exit(1);\n");
+    const { code, out } = runProbeIO([
+      '--file', modulePath,
+      '--mutate', 's/module.exports = 1;/module.exports = 2;/',
+      '--test', 'node "$(dirname {})/guard.cjs"',
+    ]);
+    expect(out).toMatch(/verdict=caught/);
+    expect(out).toMatch(/relocation=overlay/);
+    expect(code).toBe(0);
+    expect(readFileSync(modulePath, 'utf8')).toBe('module.exports = 1;\n');
+  });
+
+  it.skipIf(!overlayWorks)('keeps the baseline OUTSIDE the overlay and exempts the subject for the reporter only inside it', () => {
+    const { subject: s } = makeSiblingRouteRepo();
+    const log = join(dir, 'overlay-env.log');
+    const { code } = runProbeIO([
+      '--file', s,
+      '--mutate', 's/module.exports = 1;/module.exports = 2;/',
+      '--test', `printf '%s=%s\\n' "$PAPERCUSP_MUTATION_PHASE" "\${PAPERCUSP_MUTATION_PROBE_SUBJECT:-unset}" >> ${JSON.stringify(log)}; ${SIBLING_ROUTE_GUARD}`,
+    ]);
+    expect(code).toBe(0);
+    const lines = readFileSync(log, 'utf8').trim().split('\n');
+    expect(lines).toContain('baseline=unset');
+    expect(lines).toContain(`copy-baseline=${s}`);
+    expect(lines).toContain(`mutant=${s}`);
+  });
+
+  it.skipIf(!overlayWorks)("contains a guard's own write to the subject path inside the overlay", () => {
+    // The flip side of binding the mutant over the subject's path: inside the namespace that
+    // path IS the scratch copy, so even a guard that writes to it cannot dirty the tracked file.
+    // Without the overlay the same write would land on the real file, which is why the copy-out
+    // "preserves a source edit" test simulates its peer from OUTSIDE the probe.
+    const { code, out } = runProbeIO([
+      '--file', subject,
+      '--mutate', 's/beta/BETA/',
+      '--test', `if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then printf 'guard-write\\n' > ${JSON.stringify(subject)}; fi; grep -q "^beta$" {}`,
+    ]);
+    expect(out).toMatch(/relocation=overlay/);
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(code).toBe(0);
+    expect(read()).toBe(ORIGINAL);
+    expect(out).not.toContain('external-change-preserved');
+  });
+
+  /**
+   * WI-10005682 — the THIRD arm of the `{}` asymmetry pinned by "accepts a --test with no {}
+   * placeholder, which copy-out mode must still refuse".
+   *
+   * Copy-out demands `{}` because `auto` may fall back to the repo mirror, where `{}` is the
+   * only thing naming the mutant. An EXPLICIT `--relocation overlay` has no such fallback: it
+   * binds the mutant over the subject's OWN path and hard-dies rather than silently
+   * downgrading, so the subject's real path already names the mutant and `{}` is the same no-op
+   * it is in-tree. Demanding it anyway forced a fixed-path suite to thread a dummy `{}` that
+   * nothing reads — the very friction the in-tree relaxation exists to remove.
+   *
+   * Deliberately split in two: the refusal is a PARSE-time check reached long before bwrap is
+   * attempted, so the "does not fire" half is provable on EVERY host; only the verdict half
+   * needs a working overlay.
+   */
+  it('does NOT demand {} under an EXPLICIT --relocation overlay, while auto and mirror still do', () => {
+    const { subject: s } = makeSiblingRouteRepo();
+    // No {} anywhere: the guard names the subject's own real path — the shape a suite that
+    // imports its subject by a FIXED path is stuck with.
+    const fixedPathGuard = `node -e "if (require('${s}') !== 1) process.exit(1)"`;
+    const base = [
+      '--file', s,
+      '--mutate', 's/module.exports = 1;/module.exports = 2;/',
+      '--test', fixedPathGuard,
+    ];
+
+    // Non-vacuousness, for BOTH fallback-capable relocations: the SAME command is still
+    // refused, so this is a mode-specific relaxation and not a removed check.
+    for (const reloc of ['auto', 'mirror']) {
+      const refused = runProbeIO([...base, '--relocation', reloc]);
+      expect(refused.code).toBe(2);
+      expect(refused.out).toMatch(/--test must contain \{\}/);
+    }
+
+    // Explicit overlay: the {}-refusal does not fire. Asserted on the MESSAGE rather than the
+    // exit code so it still holds on a host without bwrap — there overlay dies for THAT reason
+    // instead, a different refusal which must never be conflated with this one.
+    const overlay = runProbeIO([...base, '--relocation', 'overlay']);
+    expect(overlay.out).not.toMatch(/--test must contain \{\}/);
+    expect(readFileSync(s, 'utf8')).toBe('module.exports = 1;\n');
+  });
+
+  it.skipIf(!overlayWorks)('SCORES a fixed-path {}-less test under the explicit overlay', () => {
+    // The behavioural half: not merely "not refused" but actually reaching a real verdict. The
+    // overlay binds the mutant over the subject's own path, so a fixed-path guard the mirror
+    // could never reach fails on the mutant and is scored CAUGHT.
+    const { subject: s } = makeSiblingRouteRepo();
+    const { code, out } = runProbeIO([
+      '--file', s,
+      '--relocation', 'overlay',
+      '--mutate', 's/module.exports = 1;/module.exports = 2;/',
+      '--test', `node -e "if (require('${s}') !== 1) process.exit(1)"`,
+    ]);
+    expect(out).toMatch(/relocation=overlay/);
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(code).toBe(0);
+    expect(readFileSync(s, 'utf8')).toBe('module.exports = 1;\n');
+  });
+
+  it('refuses --relocation under --in-tree, and an unknown relocation value', () => {
+    const inTree = runProbeIO([
+      '--file', subject, '--in-tree', '--accept-sweep-race', '--relocation', 'overlay',
+      '--mutate', 's/gamma/GAMMA/', '--test', 'grep -q "^gamma$" {}',
+    ]);
+    expect(inTree.code).toBe(2);
+    expect(inTree.out).toMatch(/--relocation only applies to copy-out/);
+    const bogus = runProbeIO(['--file', subject, '--relocation', 'sideways', '--mutate', 's/gamma/GAMMA/', '--test', 'grep -q "^gamma$" {}']);
+    expect(bogus.code).toBe(2);
+    expect(bogus.out).toMatch(/--relocation must be/);
+    expect(read()).toBe(ORIGINAL);
   });
 });
 
@@ -825,6 +1505,74 @@ describe('mutation-probe.sh — historical source mode', () => {
     expect(out).toMatch(/absence_control=NEW_GUARD/);
     expect(out).toMatch(/positive_controls=1/);
     expect(out).toMatch(new RegExp(`against_commit=${history.oldSha}`));
+  });
+
+  /** One explicit-commit historical run whose guard is caught on the before-fix side. */
+  const explicitHistoricalArgs = (file: string, oldSha: string): string[] => [
+    '--file', file,
+    '--against-commit', oldSha,
+    '--must-be-absent', 'NEW_GUARD',
+    '--positive-control', 'stable-control',
+    '--calibration', 'grep -q "^stable-control$" {}',
+    '--test', 'grep -q "^NEW_GUARD$" {}',
+  ];
+
+  /**
+   * WI-10004910 — the tracked-file precondition used to read the INDEX
+   * (`git ls-files --error-unmatch`). git-sync rewrites .git/index on every
+   * sweep, and a half-written index makes ls-files exit 1 with "did not match"
+   * for a tracked path, identical to a genuinely untracked one (a zero-byte
+   * index exits 128). The probe then refused a tracked file with "Git has no
+   * path". Trackedness now comes from HEAD's tree in the object store.
+   */
+  it('takes trackedness from HEAD, so a half-written or empty index cannot make a tracked --file look untracked (WI-10004910)', () => {
+    const history = makeHistoricalRepo();
+    const full = readFileSync(join(history.repo, '.git', 'index'));
+    const broken: Record<string, Buffer> = {
+      half: full.subarray(0, Math.floor(full.length / 2)),
+      empty: Buffer.alloc(0),
+    };
+    for (const [shape, bytes] of Object.entries(broken)) {
+      const index = join(dir, `${shape}.index`);
+      writeFileSync(index, bytes);
+      const env = { ...process.env, GIT_INDEX_FILE: index };
+      // Calibration: this index really does defeat an index-based check, so the
+      // pass below proves the probe ignores the index, not a harmless fixture.
+      const lsFiles = spawnSync('git', ['-C', history.repo, 'ls-files', '--error-unmatch', '--', 'subject.txt'], {
+        encoding: 'utf8',
+        env,
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+      });
+      expect(lsFiles.status, `${shape} index must defeat ls-files`).not.toBe(0);
+
+      const { code, out } = runProbeIO(explicitHistoricalArgs(history.file, history.oldSha), env);
+      expect(out, `${shape} index`).not.toMatch(/has no path 'subject\.txt'/);
+      expect(code, `${shape} index: ${out}`).toBe(0);
+      expect(out).toMatch(/HISTORICAL SOURCE CAUGHT/);
+    }
+  });
+
+  it('refuses a staged-but-never-committed --file by naming HEAD, not the index', () => {
+    const history = makeHistoricalRepo();
+    const fresh = join(history.repo, 'fresh.txt');
+    writeFileSync(fresh, 'stable-control\nNEW_GUARD\n');
+    git(history.repo, ['add', 'fresh.txt']);
+    const { code, out } = runProbeIO(explicitHistoricalArgs(fresh, history.oldSha));
+    expect(code).toBe(2);
+    expect(out).toMatch(/requires a --file committed at HEAD; HEAD's tree has no path 'fresh\.txt'/);
+  });
+
+  it('reports an unreadable HEAD tree as a git read failure, never as an untracked file', () => {
+    const history = makeHistoricalRepo();
+    const tree = git(history.repo, ['rev-parse', 'HEAD^{tree}']);
+    const looseTree = join(history.repo, '.git', 'objects', tree.slice(0, 2), tree.slice(2));
+    expect(existsSync(looseTree), 'fixture: HEAD tree must be a loose object').toBe(true);
+    rmSync(looseTree, { force: true });
+    const { code, out } = runProbeIO(explicitHistoricalArgs(history.file, history.oldSha));
+    expect(code).toBe(2);
+    expect(out).toMatch(/git could not read HEAD's tree .* is UNKNOWN \(a git read failure, not an untracked file\): fatal:/);
+    expect(out).not.toMatch(/requires a --file committed at HEAD/);
   });
 
   /**
@@ -1021,13 +1769,120 @@ const ACCEPT_SWEEP = '--accept-sweep-race';
 describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
   beforeEach(() => { git(dir, ['init', '-q']); });
 
+  it("uses the host token and fails an invalid in-tree auth preflight before baseline", () => {
+    const home = join(dir, "test-home");
+    const hostToken = join(home, ".papercusp", "superuser-token");
+    const isolatedHome = join(dir, "isolated", ".papercusp");
+    const bin = join(dir, "bin");
+    const ptoolLog = join(dir, "ptool-calls");
+    const baselineMarker = join(dir, "baseline-started");
+    mkdirSync(join(home, ".papercusp"), { recursive: true });
+    mkdirSync(isolatedHome, { recursive: true });
+    mkdirSync(bin);
+    writeFileSync(hostToken, "host-token");
+    writeFileSync(join(isolatedHome, "superuser-token"), "workspace-token");
+    writeFileSync(join(bin, "ptool"), [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'tool=""',
+      "for arg in \"$@\"; do",
+      "  case \"$arg\" in coord:presence|locks:queue|locks:heartbeat) tool=\"$arg\" ;; esac",
+      "done",
+      "echo \"$tool|${PAPERCUSP_SID:-}|${PAPERCUSP_MCP_TOKEN_FILE:-}\" >> \"${PROBE_PTOOL_LOG}\"",
+      "echo \"mcp_auth_failed: superuser_invalid_bearer\" >&2",
+      "exit 1",
+    ].join("\n"), { mode: 0o700 });
+
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    env.PATH = bin + ":" + (process.env.PATH ?? "");
+    env.HOME = home;
+    env.PAPERCUSP_HOME = isolatedHome;
+    env.PAPERCUSP_SID = "probe-session";
+    env.PAPERCUSP_WORKSPACE = "probe-workspace";
+    env.PAPERCUSP_TEST_RUN_HARNESS = "probe-harness";
+    env.MUTATION_PROBE_WINDOW_MAX_SEC = "60";
+    env.PROBE_PTOOL_LOG = ptoolLog;
+    delete env.PAPERCUSP_MCP_TOKEN_FILE;
+
+    const guard = 'if [ "$PAPERCUSP_MUTATION_PHASE" = baseline ]; then : > "' + baselineMarker
+      + '"; fi; grep -q "^beta$" {}';
+    const { code, out } = runProbeIO([
+      "--in-tree",
+      "--sweep-lock-held",
+      "--file",
+      subject,
+      "--mutate",
+      "s/beta/BETA/",
+      "--test",
+      guard,
+    ], env);
+
+    expect(code).toBe(2);
+    expect(out).toContain("mcp_auth_failed: superuser_invalid_bearer");
+    expect(out).toContain("could not read this session's Papercusp owner identity");
+    expect(existsSync(baselineMarker)).toBe(false);
+    expect(read()).toBe(ORIGINAL);
+    expect(readFileSync(ptoolLog, "utf8").trim()).toBe("coord:presence|probe-session|" + hostToken);
+  });
+
+  it("prints a bounded heartbeat reply when ownership is not confirmed", () => {
+    const bin = join(dir, "bin");
+    const baselineMarker = join(dir, "baseline-started");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "ptool"), [
+      '#!/usr/bin/env node',
+      'const args = process.argv.slice(2);',
+      'const tool = args.find((arg) => ["coord:presence", "locks:queue", "locks:heartbeat"].includes(arg));',
+      'let input = "";',
+      'process.stdin.setEncoding("utf8");',
+      'process.stdin.on("data", (chunk) => { input += chunk; });',
+      'process.stdin.on("end", () => {',
+      '  if (tool === "coord:presence") { process.stdout.write(JSON.stringify({ self: { ownerId: "probe-owner" } })); return; }',
+      '  if (tool === "locks:queue") {',
+      '    const { paths } = JSON.parse(input);',
+      '    process.stdout.write(JSON.stringify({ active_locks: [{ path: paths[0], owner: "probe-owner", intent: "mutation probe", lock_id: "probe-lock" }] }));',
+      '    return;',
+      '  }',
+      '  if (tool === "locks:heartbeat") { process.stdout.write(JSON.stringify({ results: [{ lock_id: "probe-lock", extended: false }], trace: "x".repeat(600) + "-TAIL-SENTINEL" })); return; }',
+      '  process.exitCode = 2;',
+      '});',
+    ].join("\n"), { mode: 0o700 });
+
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    env.PATH = bin + ":" + (process.env.PATH ?? "");
+    env.PAPERCUSP_SID = "probe-session";
+    env.PAPERCUSP_WORKSPACE = "probe-workspace";
+    env.PAPERCUSP_TEST_RUN_HARNESS = "probe-harness";
+    env.MUTATION_PROBE_WINDOW_MAX_SEC = "60";
+
+    const guard = 'if [ "$PAPERCUSP_MUTATION_PHASE" = baseline ]; then : > "' + baselineMarker
+      + '"; fi; grep -q "^beta$" {}';
+    const { code, out } = runProbeIO([
+      "--in-tree",
+      "--sweep-lock-held",
+      "--file",
+      subject,
+      "--mutate",
+      "s/beta/BETA/",
+      "--test",
+      guard,
+    ], env);
+
+    expect(code).toBe(2);
+    expect(out).toContain("the file-lock heartbeat did not confirm ownership");
+    expect(out).toContain('"trace":"');
+    expect(out).not.toContain("-TAIL-SENTINEL");
+    expect(existsSync(baselineMarker)).toBe(false);
+    expect(read()).toBe(ORIGINAL);
+  });
+
   /**
    * EI-24720263797874266: the verified-restore record the testing:run fence reads, so a
    * 'mutation probe' lock that outlives the dirty window stops fencing unrelated tests.
    */
   function restoredRecord(): string[] | null {
     const root = realpathSync(dir);
-    const admissionDir = join('/tmp', `papercusp-mutation-probe-${process.getuid!()}-${createHash('sha256').update(root).digest('hex')}`);
+    const admissionDir = admissionDirFor(root);
     const record = join(admissionDir, 'restored', createHash('sha256').update(join(root, 'subject.txt')).digest('hex'));
     return existsSync(record) ? readFileSync(record, 'utf8').split('\0') : null;
   }
@@ -1036,7 +1891,7 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
 
   it('pins admitted original bytes if the snapshot pathname is unlinked before bwrap mounts it', () => {
     const root = realpathSync(dir);
-    const admissionDir = join('/tmp', `papercusp-mutation-probe-${process.getuid!()}-${createHash('sha256').update(root).digest('hex')}`);
+    const admissionDir = admissionDirFor(root);
     const scratch = mkdtempSync(join(tmpdir(), 'mutation-probe.'));
     const snapshot = join(scratch, 'subject.txt.orig');
     const bin = join(dir, 'bin');
@@ -1092,6 +1947,90 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
     }
   }, 20_000);
+  it('holds producer cleanup until an admitted child finishes its snapshot handoff', async () => {
+    const root = realpathSync(dir);
+    const admissionDir = admissionDirFor(root);
+    const manifest = join(admissionDir, 'original.manifest');
+    const mutantReady = join(dir, 'mutant-ready');
+    const finishProducer = join(dir, 'finish-producer');
+    const handoffReady = join(dir, 'handoff-ready');
+    const finishHandoff = join(dir, 'finish-handoff');
+    const cleanupAttempt = join(dir, 'cleanup-attempt');
+    const bin = join(dir, 'handoff-bin');
+    mkdirSync(bin);
+    const realFlock = spawnSync('bash', ['-c', 'command -v flock'], { encoding: 'utf8' });
+    const realBwrap = spawnSync('bash', ['-c', 'command -v bwrap'], { encoding: 'utf8' });
+    expect(realFlock.status).toBe(0);
+    expect(realBwrap.status).toBe(0);
+    writeFileSync(join(bin, 'flock'), '#!/usr/bin/env bash\nset -euo pipefail\n'
+      + 'if [ "$1" = -x ] && [ -e "$PROBE_TEST_FINISH_PRODUCER" ]; then : > "$PROBE_TEST_CLEANUP_ATTEMPT"; fi\n'
+      + 'exec "$PROBE_TEST_FLOCK" "$@"\n', { mode: 0o700 });
+    writeFileSync(join(bin, 'bwrap'), '#!/usr/bin/env bash\nset -euo pipefail\n'
+      + ': > "$PROBE_TEST_HANDOFF_READY"\n'
+      + 'for ((n=0; n<1000; n++)); do [ ! -e "$PROBE_TEST_FINISH_HANDOFF" ] || break; sleep 0.01; done\n'
+      + '[ -e "$PROBE_TEST_FINISH_HANDOFF" ] || exit 99\n'
+      + 'exec "$PROBE_TEST_BWRAP" "$@"\n', { mode: 0o700 });
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`,
+      PROBE_TEST_FLOCK: realFlock.stdout.trim(), PROBE_TEST_BWRAP: realBwrap.stdout.trim(),
+      PROBE_TEST_MUTANT_READY: mutantReady, PROBE_TEST_FINISH_PRODUCER: finishProducer,
+      PROBE_TEST_HANDOFF_READY: handoffReady, PROBE_TEST_FINISH_HANDOFF: finishHandoff,
+      PROBE_TEST_CLEANUP_ATTEMPT: cleanupAttempt };
+    const guard = 'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then '
+      + ': > "$PROBE_TEST_MUTANT_READY"; '
+      + 'for ((n=0; n<1000; n++)); do [ ! -e "$PROBE_TEST_FINISH_PRODUCER" ] || break; sleep 0.01; done; '
+      + '[ -e "$PROBE_TEST_FINISH_PRODUCER" ] || exit 99; fi; grep -q "^beta$" {}';
+    const producer = spawn('bash', [SCRIPT, '--in-tree', ACCEPT_SWEEP, '--file', subject,
+      '--mutate', 's/beta/BETA/', '--test', guard], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const producerOutput = createTextCollector();
+    producerOutput.attach(producer.stdout);
+    producerOutput.attach(producer.stderr);
+    const producerClosed = new Promise<number | null>((resolveExit) => producer.once('close', resolveExit));
+    let admitted: ReturnType<typeof spawn> | undefined;
+    let admittedClosed: Promise<number | null> | undefined;
+    const admittedOutput = createTextCollector();
+    const awaitMarker = async (path: string) => {
+      const deadline = Date.now() + 10_000;
+      while (!existsSync(path) && Date.now() < deadline) await sleep(25);
+      expect(existsSync(path), producerOutput.peek() + admittedOutput.peek()).toBe(true);
+    };
+    try {
+      await awaitMarker(mutantReady);
+      const snapshot = readFileSync(manifest, 'utf8').split('\0')[2]!;
+      expect(read()).toContain('BETA');
+      admitted = spawn('bash', [OVERLAY, root, '--', 'cat', subject],
+        { env, stdio: ['ignore', 'pipe', 'pipe'] });
+      admittedOutput.attach(admitted.stdout);
+      admittedOutput.attach(admitted.stderr);
+      admittedClosed = new Promise<number | null>((resolveExit) => admitted!.once('close', resolveExit));
+      await awaitMarker(handoffReady);
+      writeFileSync(finishProducer, '');
+      await awaitMarker(cleanupAttempt);
+      expect(read()).toBe(ORIGINAL);
+      expect(producer.exitCode).toBeNull();
+      expect(existsSync(manifest)).toBe(true);
+      expect(readFileSync(snapshot, 'utf8')).toBe(ORIGINAL);
+      // A non-blocking exclusive acquisition proves the admitted process tree
+      // still owns the shared lock while the real producer is trying to finish.
+      const exclusive = spawnSync(realFlock.stdout.trim(), ['-n', '-x', join(admissionDir, 'admission.lock'), 'true']);
+      expect(exclusive.status).toBe(1);
+      writeFileSync(finishHandoff, '');
+      expect(await admittedClosed, admittedOutput.peek()).toBe(0);
+      expect(admittedOutput.text()).toBe(ORIGINAL);
+      expect(await producerClosed, producerOutput.peek()).toBe(0);
+      expect(existsSync(manifest)).toBe(false);
+      expect(existsSync(dirname(snapshot))).toBe(false);
+      expect(read()).toBe(ORIGINAL);
+      expect(restoredRecord()).toEqual(verifiedOriginal());
+    } finally {
+      writeFileSync(finishProducer, '');
+      writeFileSync(finishHandoff, '');
+      if (admitted && admitted.exitCode === null && admitted.signalCode === null) admitted.kill('SIGTERM');
+      if (producer.exitCode === null && producer.signalCode === null) producer.kill('SIGTERM');
+      if (admittedClosed) await admittedClosed;
+      await producerClosed;
+    }
+  }, 35_000);
+
   it('restores after a normal exit', () => {
     // Assert the exit code, not just the restore: without this the probe REFUSING outright
     // (exit 2, tracked file never touched) also leaves the file byte-identical, so the restore
@@ -1109,6 +2048,21 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
       ]),
     ).toBe(0);
     expect(read()).toBe(ORIGINAL);
+    expect(restoredRecord()).toEqual(verifiedOriginal());
+  });
+
+  it('clears its admission snapshot when an in-tree no-op is refused before baseline', () => {
+    const root = realpathSync(dir);
+    const admissionDir = admissionDirFor(root);
+    const manifest = join(admissionDir, 'original.manifest');
+    const baselineStarted = join(dir, 'baseline-started');
+    const { code, out } = runProbeIO(['--in-tree', ACCEPT_SWEEP, '--file', subject,
+      '--mutate', 's/nosuchtext/x/', '--test', `touch ${JSON.stringify(baselineStarted)}; grep -q '^beta$' {}`]);
+    expect(code, out).toBe(2);
+    expect(out).toMatch(/changed NOTHING/i);
+    expect(existsSync(baselineStarted)).toBe(false);
+    expect(read()).toBe(ORIGINAL);
+    expect(existsSync(manifest)).toBe(false);
     expect(restoredRecord()).toEqual(verifiedOriginal());
   });
 
@@ -1167,8 +2121,7 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
       try { process.kill(guardPid, 'SIGKILL'); } catch { /* the probe may have reaped it first */ }
 
       const root = realpathSync(dir);
-      const key = createHash('sha256').update(root).digest('hex');
-      const admissionDir = join('/tmp', 'papercusp-mutation-probe-' + process.getuid!() + '-' + key);
+      const admissionDir = admissionDirFor(root);
       const manifest = join(admissionDir, 'original.manifest');
       expect(existsSync(manifest)).toBe(true);
       const fields = readFileSync(manifest, 'utf8').split('\0');
@@ -1441,6 +2394,29 @@ describe('mutation-probe.sh — destructive subjects are never executed unprotec
     expect(out).toMatch(/--fake-destructive/);
   });
 
+  it('explains an unlink comment match and safely probes it through fake-destructive', () => {
+    const commentOnlySubject = '# unlink appears only in this comment\nalpha\nbeta\ngamma\n';
+    writeFileSync(subject, commentOnlySubject);
+    const args = [
+      '--file', subject,
+      '--mutate', 's/beta/BETA/',
+      '--test', 'grep -q "^beta$" {}',
+    ];
+
+    const refused = runProbeIO(args);
+    expect(refused.code).toBe(2);
+    expect(refused.out).toMatch(/this is a false positive/i);
+    expect(refused.out).toMatch(/--fake-destructive is the cheap correct answer/i);
+    expect(refused.out).toMatch(/\d+:# unlink appears only in this comment/);
+    expect(read()).toBe(commentOnlySubject);
+
+    const safe = runProbeIO(['--fake-destructive', ...args]);
+    expect(safe.code).toBe(0);
+    expect(safe.out).toMatch(/fake-destructive: shims installed/);
+    expect(safe.out).toMatch(/MUTATION_PROBE_RESULT verdict=caught/);
+    expect(read()).toBe(commentOnlySubject);
+  });
+
   it('warns but allows an unmutated historical source containing rm', () => {
     const repo = join(dir, 'historical-destructive-repo');
     mkdirSync(repo);
@@ -1545,6 +2521,133 @@ describe('mutation-probe.sh — destructive subjects are never executed unprotec
     },
   );
 
+  it.skipIf(!bwrapWorks)(
+    'EI-25217198562906119: a sandboxed guard that WRITES outside the sandbox gets the read-only cause + direct-router route, not a bare BASELINE FAILED',
+    () => {
+      writeFileSync(subject, '#!/usr/bin/env bash\nrm -f "$1" 2>/dev/null\necho ok\n');
+      const sb = join(dir, 'sb');
+      mkdirSync(sb);
+      // Stands in for pc-heavy's /run/user/$UID/pc-heavy-slots and npm-install-safe's
+      // /tmp/pcv/fs-mutex-locks: host state outside both writable binds.
+      const hostState = join(dir, 'host-state');
+      mkdirSync(hostState);
+      const { code, out } = runProbeIO([
+        '--i-know-this-deletes', '--sandbox-root', sb,
+        '--file', subject,
+        '--mutate', 's/ok/OK/',
+        '--test', `touch "${hostState}/slot.pid" && [ "$(bash {} /nonexistent | tail -1)" = ok ]`,
+      ]);
+      expect(code, out).toBe(2);
+      expect(out).toMatch(/BASELINE FAILED/);
+      expect(out).toMatch(/verdict=harness-error/);
+      expect(out).toMatch(/SANDBOX READ-ONLY WRITE/);
+      expect(out).toMatch(/Read-only file system/); // the refused write is quoted, not paraphrased
+      expect(out).toMatch(/scripts\/test-files\.mjs/);
+      expect(out).toMatch(/reader lease outside bwrap/);
+      expect(existsSync(join(hostState, 'slot.pid'))).toBe(false);
+    },
+  );
+
+  it.skipIf(!bwrapWorks)(
+    'EI-25768400647222256: the direct test router reuses the host-held install lease inside the read-only sandbox',
+    () => {
+      writeFileSync(subject, ['#!/usr/bin/env bash', 'echo ok', ''].join('\n'));
+      const sb = join(dir, 'sb');
+      mkdirSync(sb);
+      // Do not let this test's own test:file lease satisfy the sandboxed child.
+      // The only valid marker must come from mutation-probe acquiring the lease
+      // outside bwrap for the exact router repository.
+      const env = { ...process.env };
+      delete env.PAPERCUSP_INSTALL_MUTEX_HELD;
+      const routerLeaseProbe = [
+        "node --import ./scripts/lib/committed-source-loader.mjs --input-type=module -e '",
+        'import { REPO_ROOT, runTestFilesCli } from "./scripts/test-files.mjs"; ',
+        'import { installLockNameForRoot, installMutexIsHeld } from "./scripts/lib/install-lock-name.mjs"; ',
+        'const lock = installLockNameForRoot(REPO_ROOT); ',
+        'const status = await runTestFilesCli([], { env: process.env, ',
+        'acquireReadLease: async () => { throw new Error("nested lease acquisition"); }, ',
+        'run: async () => installMutexIsHeld(lock, process.env) ? 0 : 71 }); ',
+        'process.exitCode = status;',
+        "'",
+      ].join('');
+      const { code, out } = runProbeIO([
+        '--expect', 'survived',
+        '--i-know-this-deletes', '--sandbox-root', sb,
+        '--file', subject,
+        '--mutate', 's/echo ok/echo OK/',
+        '--test', routerLeaseProbe + ' && test -f {}',
+      ], env);
+      expect(code, out).toBe(0);
+      expect(out).toMatch(/NPM_INSTALL_SAFE (?:guarding reader|mutex already held)/);
+      expect(out).toMatch(/verdict=survived/);
+      expect(out).not.toMatch(/SANDBOX READ-ONLY WRITE/);
+    },
+  );
+
+  it.skipIf(!bwrapWorks)(
+    'EI-25217198562906119: a sandboxed guard can write its vite config temp dir (private tmpfs) and still reach a genuine verdict',
+    () => {
+      // vitest bundles <config> into <nearest node_modules>/.vite-temp before collecting
+      // any test; under the read-only / that write died with EROFS in every baseline.
+      const repo = join(dir, 'vite-repo');
+      mkdirSync(join(repo, 'node_modules'), { recursive: true });
+      git(repo, ['init', '-q']);
+      writeFileSync(join(repo, 'vitest.config.ts'), 'export default {};\n');
+      git(repo, ['add', 'vitest.config.ts']);
+      const sub = join(repo, 'subject.sh');
+      writeFileSync(sub, '#!/usr/bin/env bash\nrm -f "$1" 2>/dev/null\necho ok\n');
+      const sb = join(dir, 'sb');
+      mkdirSync(sb);
+      const viteTemp = join(repo, 'node_modules', '.vite-temp');
+      const { code, out } = runProbeIO([
+        '--i-know-this-deletes', '--sandbox-root', sb,
+        '--file', sub,
+        '--mutate', 's/ok/OK/',
+        '--test', `echo bundled > "${viteTemp}/vitest.config.ts.timestamp-1.mjs" && [ "$(bash {} /nonexistent | tail -1)" = ok ]`,
+      ]);
+      expect(out).toMatch(/private tmpfs over \d+ vite config temp dir/);
+      expect(out).not.toMatch(/SANDBOX READ-ONLY WRITE/);
+      expect(code, out).toBe(0); // the mutant was CAUGHT: both baselines ran and passed
+      // Private: the bundler's write never reached the host directory.
+      expect(readdirSync(viteTemp)).toEqual([]);
+    },
+  );
+
+  it.skipIf(!bwrapWorks)(
+    'WI-10007344: aliases of an external node_modules share one physical private Vite temp mount',
+    () => {
+      const repo = join(dir, 'vite-alias-repo');
+      const modules = join(dir, 'external-node-modules');
+      mkdirSync(modules);
+      mkdirSync(join(repo, 'apps', 'a'), { recursive: true });
+      mkdirSync(join(repo, 'apps', 'b'), { recursive: true });
+      // Use real filesystem aliases, as the maintained committed-source clones do.
+      for (const relative of ['', 'apps/a', 'apps/b']) {
+        const link = join(repo, relative, 'node_modules');
+        const result = spawnSync('ln', ['-s', modules, link], { encoding: 'utf8' });
+        expect(result.status, result.stderr).toBe(0);
+        writeFileSync(join(repo, relative, 'vitest.config.ts'), 'export default {};\n');
+      }
+      git(repo, ['init', '-q']);
+      const sub = join(repo, 'subject.sh');
+      writeFileSync(sub, '#!/usr/bin/env bash\nrm -f "$1" 2>/dev/null\necho ok\n');
+      git(repo, ['add', 'subject.sh', 'vitest.config.ts', 'apps/a/vitest.config.ts', 'apps/b/vitest.config.ts']);
+      const sb = join(dir, 'sb');
+      mkdirSync(sb);
+      const aliasedTemp = join(repo, 'apps', 'a', 'node_modules', '.vite-temp');
+      const { code, out } = runProbeIO([
+        '--i-know-this-deletes', '--sandbox-root', sb,
+        '--file', sub, '--mutate', 's/ok/OK/',
+        '--test', `echo bundled > "${aliasedTemp}/config.mjs" && [ "$(bash {} /nonexistent | tail -1)" = ok ]`,
+      ], process.env, repo);
+      expect(code, out).toBe(0);
+      expect(out).toContain('private tmpfs over 1 vite config temp dir');
+      expect(out).not.toMatch(/Can't mount tmpfs|SANDBOX READ-ONLY WRITE/);
+      expect(readdirSync(join(modules, '.vite-temp'))).toEqual([]);
+      expect(readFileSync(sub, 'utf8')).toContain('echo ok');
+    },
+  );
+
   it('a replacement referencing an UNDECLARED perl variable is a hard refusal, never a silent empty', () => {
     // The incident's exact trap shape: match side escaped (shell literal),
     // replacement side bare => an undefined perl var => silently "" pre-fix.
@@ -1593,6 +2696,170 @@ describe('mutation-probe.sh — destructive subjects are never executed unprotec
  * mutant also prints no "passed" (`Tests  2 failed (2)`, measured), so reusing
  * this detector on the mutant log would false-flag every real catch.
  */
+describe('mutation-probe.sh — child source substitutions invalidate guard evidence', () => {
+  it.each([
+    ['baseline', 0, 'TEST_FILE_RESULT requested=1 status=passed childSubstituted=1 skippedTests=0'],
+    ['copy-baseline', 0, 'TEST_FILE_CHILD_SUBSTITUTED count=1'],
+    ['mutant', 0, 'TEST_FILE_RESULT requested=1 status=passed childSubstituted=12 skippedTests=0'],
+    ['mutant', 1, 'TEST_FILE_RESULT requested=1 status=failed childSubstituted=1 skippedTests=0'],
+  ])('refuses %s substitution even when its guard exits %s', (phase, exitCode, notice) => {
+    const guard = join(dir, 'substituted-router.sh');
+    writeFileSync(guard, `#!/usr/bin/env bash
+if [ "$PAPERCUSP_MUTATION_PHASE" = "${phase}" ]; then
+  printf '%s\\n' '${notice}'
+  exit ${exitCode}
+fi
+printf 'TEST_FILE_RESULT requested=1 status=passed childSubstituted=0\\n'
+`);
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/', '--test', `bash ${guard} {}`,
+    ]);
+    expect(code, out).toBe(2);
+    expect(out).toContain('verdict=harness-error');
+    expect(out).toContain(`child_source_substituted=yes phase=${phase}`);
+    expect(out).not.toContain('VERDICT: MUTANT CAUGHT');
+    expect(out).not.toContain('VERDICT: MUTANT SURVIVED');
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('still catches a behavior change with unchanged child source', () => {
+    const guard = join(dir, 'unchanged-router.sh');
+    writeFileSync(guard, `#!/usr/bin/env bash
+printf 'TEST_FILE_RESULT requested=1 childSubstituted=0 skippedTests=0\\n'
+if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then
+  printf 'TEST_FILE_ASSERTION_FAILURE file="fixture.test.ts" name="behavior" message="AssertionError"\\n'
+  exit 1
+fi
+`);
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/', '--test', `bash ${guard} {}`,
+    ]);
+    expect(code, out).toBe(0);
+    expect(out).toContain('verdict=caught');
+    expect(out).not.toContain('child_source_substituted=yes');
+    expect(read()).toBe(ORIGINAL);
+  });
+});
+
+describe('mutation-probe.sh — aborted test routers cannot certify a catch', () => {
+  it.each([
+    'TEST_FILE_ROUTE requested=1 groups=1',
+    'TEST_FILE_PROGRESS state=started cwd="packages/operator-core"',
+    'TEST_FILE_PROVENANCE head=fixture testedPaths=1',
+  ])('refuses a router abort after %s without assertion evidence', (marker) => {
+    const guard = join(dir, 'aborted-router.sh');
+    writeFileSync(guard, `#!/usr/bin/env bash
+if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then
+  printf '%s\\n' '${marker}' 'Error: connect ECONNREFUSED 127.0.0.1:24680'
+  exit 1
+fi
+printf 'TEST_FILE_RESULT requested=1 executed=1 status=passed\\n'
+`);
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/', '--test', `bash ${guard} {}`,
+    ]);
+    expect(code).toBe(2);
+    expect(out).toContain('verdict=inconclusive');
+    expect(out).toContain('assertion_evidence=test-runner-aborted-before-result');
+    expect(out).not.toContain('VERDICT: MUTANT CAUGHT');
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('keeps a measured router assertion failure certifiable', () => {
+    const guard = join(dir, 'assertion-router.sh');
+    writeFileSync(guard, `#!/usr/bin/env bash
+printf 'TEST_FILE_ROUTE requested=1 groups=1\\n'
+if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then
+  printf 'TEST_FILE_ASSERTION_FAILURE file="fixture.test.ts" name="behavior" message="AssertionError"\\n'
+  exit 1
+fi
+printf 'TEST_FILE_RESULT requested=1 executed=1 status=passed\\n'
+`);
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/', '--test', `bash ${guard} {}`,
+    ]);
+    expect(code).toBe(0);
+    expect(out).toContain('verdict=caught');
+    expect(out).toContain('assertion_evidence=test-file-assertion-failure');
+    expect(read()).toBe(ORIGINAL);
+  });
+});
+
+/**
+ * WI-6554700010010581 — the runner-misuse markers are matched anywhere in the
+ * captured output, and a failing Vitest toContain prints the WHOLE subject
+ * string. A subject whose comment reads `cargo: command not found` therefore
+ * turned a measured catch into harness-error. Measured assertion evidence proves
+ * the runner executed assertions, so it outranks a quoted marker; an ECHOED copy
+ * of the reporter record (not at column 0) must not unlock that override.
+ * Markers are built from parts so this file's own code-frame never contains them.
+ */
+describe('mutation-probe.sh — a quoted runner-misuse marker cannot void a measured catch', () => {
+  const misuse = [': command', 'not found'].join(' ');
+  const record = ['TEST_FILE', 'ASSERTION_FAILURE'].join('_');
+  function quotingGuard(name: string, mutantLines: string[]): string {
+    const guard = join(dir, name);
+    // A quoted heredoc prints each line verbatim (no shell quoting or expansion).
+    writeFileSync(guard, `#!/usr/bin/env bash
+if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then
+  cat <<'GUARD_OUTPUT'
+${mutantLines.join('\n')}
+GUARD_OUTPUT
+  exit 1
+fi
+printf 'TEST_FILE_RESULT requested=1 executed=1 status=passed\\n'
+`);
+    return `bash ${guard} {}`;
+  }
+
+  it('scores a reporter-measured failure CAUGHT even when its diff quotes a misuse marker', () => {
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/', '--test',
+      quotingGuard('quoted-marker-router.sh', [
+        `AssertionError: expected '#!/usr/bin/env bash' to contain 'node build.mjs'`,
+        `+ # build calls with cargo${misuse}. Resolve the Rust entry point.`,
+        `${record} file="fixture.test.ts" name="wiring" message="AssertionError"`,
+      ]),
+    ]);
+    expect(code, out).toBe(0);
+    expect(out).toContain('verdict=caught');
+    expect(out).toContain('assertion_evidence=test-file-assertion-failure');
+    expect(out).not.toMatch(/RUNNER-MISUSE/i);
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('still reports harness-error when the only reporter record is an ECHOED copy, not a real one', () => {
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/', '--test',
+      quotingGuard('echoed-record-router.sh', [
+        `bash: line 1: vitest${misuse}`,
+        `+   ${record} file="fixture.test.ts" name="quoted" message="x"`,
+      ]),
+    ]);
+    expect(code, out).toBe(2);
+    expect(out).toContain('verdict=harness-error');
+    expect(out).toMatch(/runner_misuse=:,command,not,found/);
+    expect(out).not.toContain('verdict=caught');
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('scores a direct Vitest failed-test count CAUGHT even when its output quotes a misuse marker', () => {
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/', '--test',
+      quotingGuard('quoted-marker-vitest.sh', [
+        `- Expected: "No test files found"`,
+        `+ Received: "vitest${misuse}"`,
+        ' Test Files  1 failed (1)',
+        '      Tests  1 failed (1)',
+      ]),
+    ]);
+    expect(code, out).toBe(0);
+    expect(out).toContain('verdict=caught');
+    expect(out).toContain('assertion_evidence=vitest-failed-tests');
+    expect(read()).toBe(ORIGINAL);
+  });
+});
+
 describe('mutation-probe.sh — a baseline that ran zero tests is never scored', () => {
   /** Write a guard whose output/exit may differ by phase; returns the --test command. */
   function phaseGuard(body: string): string {

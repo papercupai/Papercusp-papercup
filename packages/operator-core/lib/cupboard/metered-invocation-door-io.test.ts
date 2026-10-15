@@ -1,3 +1,4 @@
+import { signPaymentTestBytes, paymentTestVerifier } from '../p2p/_payment-voucher-fixture';
 /**
  * P-031 — metering interception THROUGH THE DOORS.
  *
@@ -7,11 +8,13 @@
  * That is the property under test — the door refuses independently — and a
  * mock that simply returned 201 would assert the opposite of it.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { generateKeyPairSync, sign } from 'node:crypto';
 import {
   acceptMeteredVoucher,
   closeMeteredInvocation,
   declareMeter,
+  sellerReceiptAuthoritySigningBytes,
   type BillableUnit,
 } from '../p2p/metered-invocation';
 import {
@@ -25,8 +28,16 @@ import {
   channelFromUsage,
   reserveMeteredUnit,
   settleMeteredUnit,
+  readHostedPerUseOffers,
+  bindInstalledPerUseOffer,
+  readHostedToolEntitlements,
+  readHostedToolEntitlement,
+  readHostedToolChannel,
+  readPrincipalUsagePage,
+  type HostedPerUseOffer,
   type UsageReceiptWire,
 } from './metered-invocation-door-io';
+import type { InstalledPluginProvenance } from './install-plugin-core';
 
 const TERMS = {
   unitPriceMicros: 2_500,
@@ -40,6 +51,196 @@ const SELLER = 'gh:2002';
 const RELEASE = 'release/agent-pack@1.2.3';
 const CHANNEL = 'ch_test';
 const NOW = 1_700_000_000_000;
+
+describe('P-018 authenticated statement page transport', () => {
+  const page = () => ({ receipts: [], identityStatement: { basis: 'hosted-settled-usage', currency: 'USD',
+    chainFinality: 'not-measured', allocationBasis: 'per-receipt-quote', lines: [], markupMicros: '0',
+    reservedReceipts: 0, complete: true, issues: [], costPerAcceptedOutcomeMicros: null, outcomeEvidence: 'unavailable' },
+    nextCursor: null, coverage: { scope: 'authenticated-principal', population: 'live-page', totals: 'page', hasMore: false } });
+  const transport = (payload: unknown, status = 200) => {
+    const fetchImpl = vi.fn(async () => Response.json(payload, { status }));
+    return { fetchImpl, authToken: 'private-token', baseUrl: 'https://cupboard.test/' };
+  };
+  it('uses the existing authenticated path and encodes the exact cursor without a principal override', async () => {
+    const deps = transport(page());
+    const cursor = JSON.stringify(['channel/&?', 'nonce/"x']);
+    expect(await readPrincipalUsagePage({ limit: 7, cursor }, deps)).toEqual({ ok: true, page: page() });
+    const [url, init] = deps.fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(new URL(url).pathname).toBe('/commerce/metered-invocations');
+    expect(new URL(url).searchParams.get('cursor')).toBe(cursor);
+    expect([...new URL(url).searchParams.keys()]).toEqual(['limit', 'cursor']);
+    expect(init).toMatchObject({ method: 'GET', headers: { Authorization: 'Bearer private-token' } });
+  });
+  it.each([0, 201, 1.5, NaN, Infinity])('refuses invalid limit %s before sending a request', async limit => {
+    const deps = transport(page());
+    expect(await readPrincipalUsagePage({ limit }, deps)).toMatchObject({ ok: false, code: 'invalid_request', status: 0 });
+    expect(deps.fetchImpl).not.toHaveBeenCalled();
+  });
+  it.each(['', '{}', '["one"]', '["", "two"]', '[" padded", "two"]'])('refuses malformed cursor %s locally', async cursor => {
+    const deps = transport(page());
+    expect(await readPrincipalUsagePage({ cursor }, deps)).toMatchObject({ ok: false, code: 'invalid_request' });
+    expect(deps.fetchImpl).not.toHaveBeenCalled();
+  });
+  it.each([null, {}, { ...page(), receipts: null },
+    { ...page(), identityStatement: { ...page().identityStatement, markupMicros: 0 } },
+    { ...page(), identityStatement: { ...page().identityStatement, markupMicros: '1' } },
+    { ...page(), identityStatement: { ...page().identityStatement, complete: false } },
+    { ...page(), coverage: { ...page().coverage, hasMore: true } },
+    { ...page(), coverage: { ...page().coverage, totals: 'account' } },
+  ])('does not turn unreadable or misleading responses into an empty account (%j)', async payload => {
+    expect(await readPrincipalUsagePage({}, transport(payload))).toMatchObject({ ok: false, code: 'invalid_usage_page' });
+  });
+  it('propagates hosted authorization failure and preserves transport errors', async () => {
+    expect(await readPrincipalUsagePage({}, transport({ error: 'forbidden', detail: 'not permitted' }, 403)))
+      .toMatchObject({ ok: false, code: 'forbidden', status: 403, refusedBy: 'hosted-door' });
+    expect(await readPrincipalUsagePage({}, { authToken: 'x', fetchImpl: (async () => { throw new Error('offline'); }) as typeof fetch }))
+      .toMatchObject({ ok: false, code: 'transport_error', status: 0 });
+  });
+  it('refuses a non-advancing continuation cursor', async () => {
+    const cursor = JSON.stringify(['a', 'b']);
+    expect(await readPrincipalUsagePage({ cursor }, transport({ ...page(), nextCursor: cursor,
+      coverage: { ...page().coverage, hasMore: true } }))).toMatchObject({ ok: false, code: 'invalid_usage_page' });
+  });
+  it('preserves micros beyond Number precision and refuses lines detached from their receipt or split', async () => {
+    const amount = '9007199254740993';
+    const receipt: UsageReceiptWire = { channelId: CHANNEL, usageNonce: 'huge', offerId: 'offer', payer: PAYER,
+      seller: SELLER, releaseRef: 'identity-release:exact@1', meterUnit: 'inference-call', meterQuantity: '1',
+      unitPriceMicros: '1', priceVersion: 'v1', splitManifestHash: TERMS.splitManifestHash, reservedMicros: amount,
+      amountMicros: amount, cumulativeClaimMicros: amount, expiresAtMs: NOW + 1000, voucherDigest: 'digest',
+      voucherSignature: 'voucher', receiptSignature: 'receipt', state: 'settled', reservedAtMs: NOW, settledAtMs: NOW + 1,
+      identityInference: { ceilingMicros: amount, billedInferenceMicros: amount, priorRemainderNumerator: '0', remainderNumerator: '0' } };
+    const line = { channelId: CHANNEL, usageNonce: 'huge', offerId: 'offer', payer: PAYER, seller: SELLER,
+      releaseRef: receipt.releaseRef, priceVersion: 'v1', splitManifestHash: TERMS.splitManifestHash,
+      billedInferenceMicros: amount, markupMicros: amount,
+      allocationQuote: { creatorMicros: '9007199254740991', daoMicros: '1', componentMicros: '1',
+        componentAuthorsMicros: { author: '1' } } };
+    const populated = { ...page(), receipts: [receipt], identityStatement: { ...page().identityStatement,
+      lines: [line], markupMicros: amount } };
+    expect(await readPrincipalUsagePage({}, transport(populated))).toEqual({ ok: true, page: populated });
+    for (const changed of [{ ...line, seller: 'foreign' }, { ...line, billedInferenceMicros: '0' },
+      { ...line, allocationQuote: { ...line.allocationQuote, daoMicros: '2' } },
+      { ...line, allocationQuote: { ...line.allocationQuote, componentAuthorsMicros: { author: '2' } } }]) {
+      expect(await readPrincipalUsagePage({}, transport({ ...populated,
+        identityStatement: { ...populated.identityStatement, lines: [changed] } })))
+        .toMatchObject({ ok: false, code: 'invalid_usage_page' });
+    }
+    expect(await readPrincipalUsagePage({}, transport({ ...populated, receipts: [] })))
+      .toMatchObject({ ok: false, code: 'invalid_usage_page' });
+  });
+});
+
+describe('P-007 exact hosted paid-tool binding', () => {
+  const wireOffer = { offerId: 'offer-exact', productId: 'product-exact', skuRef: RELEASE, creatorId: SELLER,
+    pricingModel: 'per-use', active: true, productActive: true, perUse: TERMS };
+  const offer: HostedPerUseOffer = { offerId: wireOffer.offerId, productId: wireOffer.productId,
+    skuRef: wireOffer.skuRef, creatorId: wireOffer.creatorId, active: true, productActive: true, terms: TERMS };
+  const provenance: InstalledPluginProvenance = { schema: 'papercusp.plugin-installation/v1',
+    name: 'plugin-name-is-not-a-sku', version: '1.2.3', contentSource: 'r2', contentFingerprint: 'b'.repeat(64),
+    hadListing: false, listing: { listingId: 'listing-exact', githubUrl: 'https://github.com/seller/repo',
+      ref: 'plugin', publisherId: SELLER, skuRef: RELEASE, releaseVersion: '1.2.3', priceModel: 'per-use' } };
+  const channel = { channelId: CHANNEL, principalId: PAYER, state: 'open', escrowMicros: 10_000, committedMicros: 2_500 };
+  function transport(body: unknown, status = 200) {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    return { requests, deps: { authToken: 'test-token', baseUrl: 'https://cupboard.test',
+      fetchImpl: (async (url, init) => { requests.push({ url: String(url), init });
+        return Response.json(body, { status }); }) as typeof fetch } };
+  }
+  it('retains the server creator, opaque SKU, product and exact meter terms', async () => {
+    const t = transport({ offers: [wireOffer] });
+    const read = await readHostedPerUseOffers(t.deps);
+    expect(read).toEqual({ ok: true, offers: [offer] });
+    if (!read.ok) throw new Error(read.detail);
+    expect(bindInstalledPerUseOffer(provenance, read.offers)).toEqual({ ok: true, offer });
+    expect(t.requests[0]?.url).toBe('https://cupboard.test/commerce/offers?pricing=per-use');
+    expect(t.requests[0]?.init?.headers).toMatchObject({ Authorization: 'Bearer test-token' });
+    expect(t.requests[0]?.init?.signal).toBeInstanceOf(AbortSignal);
+  });
+  it('retains the verified publisher receipt authority through installation binding', async () => {
+    const pair = generateKeyPairSync('ed25519');
+    const pubkeyBase64 = pair.publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64');
+    const receiptAuthority = { pubkeyBase64, proof: sign(null, sellerReceiptAuthoritySigningBytes({
+      seller: SELLER, offerId: offer.offerId, productId: offer.productId, skuRef: RELEASE, pubkeyBase64 }),
+      pair.privateKey).toString('base64') };
+    const read = await readHostedPerUseOffers(transport({ offers: [{ ...wireOffer, receiptAuthority }] }).deps);
+    expect(read).toEqual({ ok: true, offers: [{ ...offer, receiptAuthority }] });
+    if (!read.ok) throw new Error(read.detail);
+    expect(bindInstalledPerUseOffer(provenance, read.offers)).toEqual({ ok: true, offer: { ...offer, receiptAuthority } });
+    for (const change of [{ creatorId: 'gh:other' }, { offerId: 'other' }, { productId: 'other' }, { skuRef: 'other' },
+      { receiptAuthority: null }, { receiptAuthority: {} }, { receiptAuthority: { ...receiptAuthority, proof: 'nonempty' } }]) {
+      expect(await readHostedPerUseOffers(transport({ offers: [{ ...wireOffer, receiptAuthority, ...change }] }).deps))
+        .toMatchObject({ ok: false, code: 'invalid_catalog' });
+    }
+  });
+  it.each([
+    { creatorId: 'gh:someone-else' }, { skuRef: provenance.name }, { active: false }, { productActive: false },
+  ])('refuses a different or inactive offer without guessing a SKU (%j)', (change) => {
+    expect(bindInstalledPerUseOffer(provenance, [{ ...offer, ...change }])).toMatchObject({ ok: false, code: 'unknown_offer' });
+  });
+  it('refuses ambiguous exact offers and incomplete retained identity', () => {
+    expect(bindInstalledPerUseOffer(provenance, [offer, { ...offer, offerId: 'duplicate-offer' }]))
+      .toMatchObject({ ok: false, code: 'ambiguous_offer' });
+    expect(bindInstalledPerUseOffer({ ...provenance, listing: { ...provenance.listing, publisherId: undefined } }, [offer]))
+      .toMatchObject({ ok: false, code: 'installation_binding_required' });
+  });
+  it.each([
+    null, {}, { ...wireOffer, creatorId: undefined }, { ...wireOffer, pricingModel: 'free' },
+    { ...wireOffer, perUse: { ...TERMS, meterUnit: 123 } },
+    { ...wireOffer, perUse: { ...TERMS, unitPriceMicros: 0 } },
+    { ...wireOffer, perUse: { ...TERMS, splitManifestHash: 'wrong' } },
+  ])('malformed catalog records fail closed rather than being silently discarded (%j)', async (bad) => {
+    expect(await readHostedPerUseOffers(transport({ offers: [wireOffer, bad] }).deps))
+      .toMatchObject({ ok: false, code: 'invalid_catalog' });
+  });
+  it('derives the default payer only from the authenticated hosted self read', async () => {
+    const t = transport({ buyer: PAYER, entitlements: [{ buyer_id: PAYER, product_id: offer.productId,
+      state: 'active', revoked_at_ms: null }] });
+    expect(await readHostedToolEntitlements(undefined, t.deps)).toEqual({ ok: true, payer: PAYER, productIds: [offer.productId] });
+    expect(t.requests[0]?.url).toBe('https://cupboard.test/commerce/entitlements');
+    expect(t.requests[0]?.init?.headers).toMatchObject({ Authorization: 'Bearer test-token' });
+    expect(await readHostedToolEntitlements(undefined, transport({ buyer: PAYER, entitlements: [] }).deps))
+      .toEqual({ ok: true, payer: PAYER, productIds: [] });
+    expect(await readHostedToolEntitlements(undefined, transport({ error: 'unauthorized' }, 401).deps))
+      .toMatchObject({ ok: false, code: 'unauthorized', status: 401 });
+  });
+
+  it.each([
+    { buyer: 'local-agent', entitlements: [] }, { buyer: PAYER, entitlements: null },
+    { buyer: PAYER, entitlements: [{ buyer_id: SELLER, product_id: 'product', state: 'active', revoked_at_ms: null }] },
+    { buyer: PAYER, entitlements: [{ buyer_id: PAYER, product_id: 'product', state: 'revoked', revoked_at_ms: 100 }] },
+    { buyer: PAYER, entitlements: [{ buyer_id: PAYER, product_id: '', state: 'active', revoked_at_ms: null }] },
+  ])('refuses an unverifiable self principal or entitlement population (%j)', async body => {
+    expect(await readHostedToolEntitlements(undefined, transport(body).deps)).toMatchObject({ ok: false, code: 'invalid_entitlements' });
+  });
+
+  it('reads only the target buyer entitlement and distinguishes missing access from unreadable authority', async () => {
+    const entitlement = { buyer_id: PAYER, product_id: offer.productId, state: 'active', revoked_at_ms: null };
+    const t = transport({ buyer: PAYER, entitlements: [entitlement] });
+    expect(await readHostedToolEntitlement(PAYER, offer.productId, t.deps)).toEqual({ ok: true, entitled: true });
+    expect(t.requests[0]?.url).toContain(`buyer=${encodeURIComponent(PAYER)}`);
+    expect(await readHostedToolEntitlement(PAYER, offer.productId, transport({ buyer: PAYER, entitlements: [] }).deps))
+      .toEqual({ ok: true, entitled: false });
+    for (const body of [{ buyer: SELLER, entitlements: [entitlement] },
+      { buyer: PAYER, entitlements: [{ ...entitlement, buyer_id: SELLER }] },
+      { buyer: PAYER, entitlements: [{ ...entitlement, revoked_at_ms: NOW }] },
+      { buyer: PAYER, entitlements: null }]) {
+      expect(await readHostedToolEntitlement(PAYER, offer.productId, transport(body).deps))
+        .toMatchObject({ ok: false, code: 'invalid_entitlements' });
+    }
+    expect(await readHostedToolEntitlement(PAYER, offer.productId, transport({ error: 'forbidden' }, 403).deps))
+      .toMatchObject({ ok: false, code: 'forbidden', status: 403 });
+  });
+  it('confirms the channel is open, safe-valued and funded by the target principal', async () => {
+    expect(await readHostedToolChannel(CHANNEL, PAYER, transport({ channel }).deps))
+      .toEqual({ ok: true, escrowMicros: 10_000n, committedMicros: 2_500n });
+    for (const change of [{ channelId: 'different' }, { principalId: SELLER }, { state: 'closed' },
+      { escrowMicros: Number.MAX_SAFE_INTEGER + 1 }, { committedMicros: -1 }, { committedMicros: 10_001 }]) {
+      expect(await readHostedToolChannel(CHANNEL, PAYER, transport({ channel: { ...channel, ...change } }).deps))
+        .toMatchObject({ ok: false, code: 'channel_binding_mismatch' });
+    }
+    expect(await readHostedToolChannel(CHANNEL, PAYER, transport({ error: 'unknown_channel' }, 404).deps))
+      .toMatchObject({ ok: false, code: 'unknown_channel', status: 404 });
+  });
+});
 
 /** A hosted door that actually decides, backed by the same pure core. */
 function fakeDoor(options: { escrowMicros: bigint; failNextReserveWith?: { status: number; error: string } }) {
@@ -97,7 +298,7 @@ function fakeDoor(options: { escrowMicros: bigint; failNextReserveWith?: { statu
         quantity: voucher.meterQuantity,
         expiresAtMs: voucher.expiresAtMs,
       };
-      const accepted = acceptMeteredVoucher({ channel, meter: declared.meter, unit, voucher, nowMs: NOW });
+      const accepted = acceptMeteredVoucher({ channel, meter: declared.meter, unit, voucher, nowMs: NOW, verifySignature: paymentTestVerifier(CHANNEL, PAYER) });
       if (!accepted.ok) return json({ error: accepted.code, detail: accepted.detail }, 409);
       channel = accepted.channel;
       const row: UsageReceiptWire = {
@@ -193,7 +394,7 @@ const reserveArgs = (nonce: string, quantity: bigint) => ({
   quantity,
   expiresAtMs: NOW + 60_000,
   nowMs: NOW,
-  signVoucher: signer('payer'),
+  signVoucher: signPaymentTestBytes,
 });
 
 describe('metering interception through the hosted doors', () => {
@@ -233,6 +434,20 @@ describe('metering interception through the hosted doors', () => {
     // The other 17_500 went back to the channel rather than being stranded.
     expect(door.channel().committedMicros).toBe(7_500n);
     expect(door.channel().reservations).toEqual({});
+  });
+
+  it('sends a signed zero-served closure and releases the funded hold', async () => {
+    const door = fakeDoor({ escrowMicros: 100_000n });
+    await reserveMeteredUnit(reserveArgs('unused-turn', 10n), door.deps);
+    const settled = await settleMeteredUnit({ channelId: CHANNEL, usageNonce: 'unused-turn',
+      actualQuantity: 0n, occurredAtMs: NOW, signReceipt: signer('seller') }, door.deps);
+    expect(settled).toMatchObject({ ok: true, amountMicros: 0n,
+      receipt: { state: 'settled', meterQuantity: '0', amountMicros: '0' } });
+    expect(door.channel().reservations).toEqual({});
+    expect(door.channel().committedMicros).toBe(0n);
+    expect(await settleMeteredUnit({ channelId: CHANNEL, usageNonce: 'unused-turn',
+      actualQuantity: 0n, occurredAtMs: NOW, signReceipt: signer('seller') }, door.deps))
+      .toMatchObject({ ok: false, code: 'already-settled' });
   });
 
   it('binds the settled receipt to the voucher the payer actually signed', async () => {

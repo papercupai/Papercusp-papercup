@@ -84,7 +84,42 @@ export type OwnerRpcOutcome =
   | { ok: true; result: unknown }
   | { ok: false; code: OwnerRpcFailureCode; message: string };
 
-export type OwnerRpcHandler = (payload: unknown) => Promise<unknown> | unknown;
+export type OwnerRpcHandler = (payload: unknown, source: { fromPid: number }) => Promise<unknown> | unknown;
+
+// Extend the existing relay with placement for opaque process-local handles.
+// This is lifetime metadata, not persisted VM state. A primary restart also
+// ends its workers; an unknown scoped handle never causes a replacement launch.
+const RESOURCE_KIND = 'owner-rpc-resource';
+const RESOURCE_TTL_MS = 10 * 60_000;
+const localResources = new Map<string, number>();
+function resourceKey(kind: string, id: string, scope: string): string {
+  return JSON.stringify([kind, id, scope]);
+}
+
+export async function bindOwnerRpcResource(kind: string, id: string, scope: string): Promise<void> {
+  if (!kind || !id || !scope) throw new Error('owner_resource_scope_required');
+  if (!ownerRpcAvailable()) {
+    localResources.set(resourceKey(kind, id, scope), Date.now());
+    return;
+  }
+  const out = await callOwnerProcess({ targetPid: 0, kind: RESOURCE_KIND, payload: { op: 'bind', kind, id, scope } });
+  if (!out.ok) throw new Error(`owner_resource_bind_failed:${out.code}`);
+}
+
+export async function locateOwnerRpcResource(kind: string, id: string, scope: string): Promise<OwnerRpcOutcome> {
+  if (!ownerRpcAvailable()) {
+    const key = resourceKey(kind, id, scope);
+    const at = localResources.get(key);
+    if (at !== undefined && Date.now() - at < RESOURCE_TTL_MS) {
+      localResources.set(key, Date.now());
+      return { ok: true, result: { ownerPid: process.pid } };
+    }
+    localResources.delete(key);
+    return { ok: false, code: 'owner_gone',
+      message: 'owner mapping unavailable (unknown, foreign, expired, or lost on process restart); process-local state cannot be recovered' };
+  }
+  return callOwnerProcess({ targetPid: 0, kind: RESOURCE_KIND, payload: { op: 'locate', kind, id, scope } });
+}
 
 export function isOwnerRpcRequest(message: unknown): message is OwnerRpcRequestMessage {
   const m = message as Partial<OwnerRpcRequestMessage> | null;
@@ -224,7 +259,7 @@ async function serve(request: OwnerRpcRequestMessage, send: Send): Promise<void>
     return;
   }
   try {
-    reply({ ok: true, result: await handler(request.payload) });
+    reply({ ok: true, result: await handler(request.payload, { fromPid: request.fromPid }) });
   } catch (error) {
     reply({
       ok: false,
@@ -311,8 +346,38 @@ function findLiveWorker(cluster: OwnerRpcClusterLike, pid: number): OwnerRpcWork
  */
 export function startPrimaryOwnerRpcRelay(opts: { cluster: OwnerRpcClusterLike }): OwnerRpcHandle {
   const { cluster } = opts;
+  const resources = new Map<string, { pid: number; at: number }>();
   const listener = (_worker: unknown, message: unknown): void => {
     if (isOwnerRpcRequest(message)) {
+      // IPC peer identity is authoritative, not a pid asserted in a payload.
+      if ((_worker as OwnerRpcWorkerLike)?.process?.pid !== message.fromPid) return;
+      if (message.targetPid === 0 && message.kind === RESOURCE_KIND) {
+        const p = message.payload as { op?: string; kind?: string; id?: string; scope?: string } | null;
+        let result: OwnerRpcOutcome = { ok: false, code: 'handler_error', message: 'invalid resource request' };
+        if (p && typeof p.kind === 'string' && p.kind && typeof p.id === 'string' && p.id && typeof p.scope === 'string' && p.scope) {
+          for (const [key, row] of resources) if (Date.now() - row.at >= RESOURCE_TTL_MS) resources.delete(key);
+          const key = resourceKey(p.kind, p.id, p.scope);
+          const row = resources.get(key);
+          if (p.op === 'bind') {
+            // A live existing owner cannot be displaced by a sibling worker.
+            if (row && row.pid !== message.fromPid) result = { ok: false, code: 'handler_error', message: 'resource already bound' };
+            else { resources.set(key, { pid: message.fromPid, at: Date.now() }); result = { ok: true, result: { ownerPid: message.fromPid } }; }
+          } else if (p.op === 'locate') {
+            if (!row) {
+              result = { ok: false, code: 'owner_gone',
+                message: 'owner mapping unavailable (unknown, foreign, expired, or lost on primary restart); process-local state cannot be recovered' };
+            } else if (findLiveWorker(cluster, row.pid)) {
+              row.at = Date.now(); result = { ok: true, result: { ownerPid: row.pid } };
+            } else {
+              result = { ok: false, code: 'owner_gone',
+                message: `owner worker pid ${row.pid} is no longer live; process-local state cannot be recovered` };
+            }
+          }
+        }
+        try { findLiveWorker(cluster, message.fromPid)?.send({ type: OWNER_RPC_RESPONSE_TYPE, id: message.id, toPid: message.fromPid, ...result }); }
+        catch { /* requester times out */ }
+        return;
+      }
       const target = findLiveWorker(cluster, message.targetPid);
       if (target) {
         try {
@@ -362,4 +427,5 @@ export function __resetOwnerRpcForTests(): void {
   state.send = null;
   state.pid = process.pid;
   state.seq = 0;
+  localResources.clear();
 }

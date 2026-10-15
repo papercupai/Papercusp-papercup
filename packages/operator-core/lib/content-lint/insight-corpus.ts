@@ -41,3 +41,21 @@ export function isInsightDoc(file: string): boolean {
   if (!file.endsWith('.mdx') && !file.endsWith('.md')) return false;
   return !isExcluded(file);
 }
+
+/** Repo-relative prefix of the WHOLE operator-docs corpus (every section, agent-insights included). */
+export const OPERATOR_DOCS_PREFIX = 'apps/operator-docs/src/content/docs/';
+
+/**
+ * True for a repo-relative path that is ANY operator-docs page, whatever its section.
+ *
+ * `documents:` frontmatter is a corpus-wide drift anchor: reference/, agent-spawning/,
+ * privacy/, spec/ … cite repo paths exactly as agent-insights/ does. So the CITATION lint
+ * scopes to this, not to `isInsightDoc` (WI-6554700010008908: 11 stale citations in 8
+ * non-insight docs accumulated unflagged while that lint scanned agent-insights/ only).
+ * Insight-only concepts (the normative classification) keep `isInsightDoc`.
+ */
+export function isOperatorDoc(file: string): boolean {
+  if (!file.startsWith(OPERATOR_DOCS_PREFIX)) return false;
+  if (!file.endsWith('.mdx') && !file.endsWith('.md')) return false;
+  return !isExcluded(file);
+}

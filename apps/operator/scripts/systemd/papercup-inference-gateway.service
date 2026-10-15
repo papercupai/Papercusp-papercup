@@ -15,6 +15,7 @@ WorkingDirectory=%h/papercupai-workspace/papercusp
 Environment="PATH=/home/linuxbrew/.linuxbrew/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="PAPERCUSP_INTEGRATION_ROOT=%h/papercupai-workspace/papercusp"
 Environment="PAPERCUSP_GATEWAY_PORT=8788"
+Environment="HARNESS_ADMIN_DATABASE_URL=postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp"
 # EXTENDED POST-ADMISSION ABSORPTION: on a slot-hold-deadline shed, release the admission slot (no slot held
 # during the wait → cannot wedge) + re-acquire, holding the caller through a TRANSIENT throttle up to this many
 # ms instead of 429ing. 0 = OFF (code default). 120000 (2 min) keeps worst-case hold (pre-admission 4 min + this)

@@ -128,6 +128,20 @@ describe('extractReturnObjectLiterals — brace matching, not first-brace', () =
     expect(audit.offenders).toHaveLength(1);
   });
 
+  it('excludes a REFUSAL envelope that spreads the lock result (EI-25743754504297634)', () => {
+    // A lock refusal spreads `result.value` too, but that value carries a code,
+    // never a decisionId, so it owes no `ref`. The success-shaped control above
+    // (no `error:` / `ok: false`) is still flagged.
+    const src = `
+      function f() {
+        if (result.kind === 'refused') return { slug: it.slug, error: result.value.code, ...result.value };
+        return { ...result.value, ref: decisionRef };
+      }`;
+    const audit = auditDecisionEmitterSource(src);
+    expect(audit.returnsCarryingDecisionId).toBe(1);
+    expect(audit.offenders).toEqual([]);
+  });
+
   it('CONTROL: prose ABOUT decisionId in a comment is not mistaken for code', () => {
     // Without comment-stripping, the real file's own explanatory comment would
     // satisfy the match and mask a genuinely offending return.

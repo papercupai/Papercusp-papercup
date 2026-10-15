@@ -14,8 +14,10 @@ import {
   humanize,
   okfFromObject,
   parseFrontmatterBlock,
+  raceWithAbort,
   renderMdxToMarkdown,
   starlightContentAdapter,
+  throwIfAborted,
   type DocPage,
   type DocSource,
 } from '@papercusp/docs-engine';
@@ -31,6 +33,8 @@ interface CanonicalDoc {
   raw: string;
   rendered?: string;
   renderedPromise?: Promise<string>;
+  renderController?: AbortController;
+  renderWaiters?: number;
 }
 
 const FRONTMATTER_RE = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
@@ -44,6 +48,10 @@ function docIdsForSlugs(slugs: readonly string[]): string[] {
   for (const raw of slugs) {
     const slug = slugFromDocId(raw.trim());
     if (!slug) continue;
+    // Search accepts legacy authored rows whose doc_id is already a slug, while
+    // current filesystem docs use an extension. Query both identities so a
+    // search hit remains readable through this targeted adapter.
+    docIds.add(slug);
     docIds.add(`${slug}.mdx`);
     docIds.add(`${slug}.md`);
   }
@@ -94,6 +102,70 @@ function canonicalDoc(docId: string, raw: string, fallback: DocPage | undefined)
   return { docId, page, body, raw };
 }
 
+async function getCanonicalContent(entry: CanonicalDoc, signal?: AbortSignal): Promise<string> {
+  throwIfAborted(signal);
+  if (entry.rendered !== undefined) return entry.rendered;
+
+  if (entry.renderedPromise && entry.renderController?.signal.aborted) {
+    const cancelled = entry.renderedPromise;
+    try {
+      return await raceWithAbort(cancelled, signal);
+    } catch {
+      throwIfAborted(signal);
+      if (entry.rendered !== undefined) return entry.rendered;
+      // The previous shared render was cancelled after its final reader left.
+      // Let it settle, then create a fresh render for this live caller.
+      return await getCanonicalContent(entry, signal);
+    }
+  }
+
+  if (!entry.renderedPromise) {
+    const controller = new AbortController();
+    entry.renderController = controller;
+    entry.renderWaiters = 0;
+    const pending = (async () => {
+      throwIfAborted(controller.signal);
+      return /\.mdx$/i.test(entry.docId)
+        ? await renderMdxToMarkdown(entry.body, `${DOCS_CONTENT_ROOT}/${entry.docId}`, controller.signal)
+        : entry.body;
+    })();
+    let shared: Promise<string>;
+    shared = pending
+      .then((rendered) => {
+        entry.rendered = rendered;
+        return rendered;
+      })
+      .catch((error) => {
+        if (entry.renderedPromise === shared) {
+          entry.renderedPromise = undefined;
+          entry.renderController = undefined;
+          entry.renderWaiters = 0;
+        }
+        throw error;
+      });
+    entry.renderedPromise = shared;
+    // Keep a rejection observed if every caller stops waiting before a queued
+    // render reaches the front of the shared FIFO.
+    void shared.catch(() => undefined);
+  }
+
+  const shared = entry.renderedPromise;
+  if (!shared) throw new Error(`overlayCanonicalDocs: render promise missing for ${entry.docId}`);
+  const controller = entry.renderController;
+  entry.renderWaiters = (entry.renderWaiters ?? 0) + 1;
+  try {
+    return await raceWithAbort(shared, signal);
+  } finally {
+    if (entry.renderedPromise === shared) {
+      entry.renderWaiters = Math.max(0, (entry.renderWaiters ?? 1) - 1);
+      if (entry.renderWaiters === 0) {
+        if (entry.rendered === undefined) controller?.abort();
+        else entry.renderController = undefined;
+      }
+    }
+  }
+}
+
 /**
  * Overlay populated harness_docs.content on a filesystem DocSource.
  *
@@ -141,22 +213,13 @@ export function overlayCanonicalDocs(
       const page = canonical.get(slug)?.page;
       return page ?? base.getPage(slug);
     },
-    async getContent(page: DocPage): Promise<string> {
-      const canonical = await loadCanonical();
+    async getContent(page: DocPage, options?: { signal?: AbortSignal }): Promise<string> {
+      const signal = options?.signal;
+      throwIfAborted(signal);
+      const canonical = await raceWithAbort(loadCanonical(), signal);
       const entry = canonical.get(page.slug);
-      if (!entry) return base.getContent(page);
-      if (entry.rendered === undefined) {
-        entry.renderedPromise ??= /\.mdx$/i.test(entry.docId)
-          ? renderMdxToMarkdown(entry.body, `${DOCS_CONTENT_ROOT}/${entry.docId}`)
-          : Promise.resolve(entry.body);
-        try {
-          entry.rendered = await entry.renderedPromise;
-        } catch (error) {
-          entry.renderedPromise = undefined;
-          throw error;
-        }
-      }
-      return entry.rendered;
+      if (!entry) return base.getContent(page, signal ? { signal } : undefined);
+      return await getCanonicalContent(entry, signal);
     },
     /**
      * WI-1511581 — the CANONICAL source, which for an authored doc is the

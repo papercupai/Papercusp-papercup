@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "generic-rag-chunking-2026-09-29 R-34 live coverage gate (P-016 re-measure): after the embed sweep drained, zero unembedded rows in text_chunks, session_turn_chunks and doc_sections",
+  "framework": "operational",
+  "command": [
+    ".papercusp/scratch/rag-carry/p016-r34-capture.sh (systemd user unit p016-r34-capture): on an all-zero direct read, npx tsx .papercusp/scratch/rag-carry/p016-r34-gate.mts (runEmbedCoverageAlarmOnce -> persisted embed_coverage_samples; loadCoverageSnapshot read) then .papercusp/scratch/rag-carry/p016-r34-build.sh"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T14:31:23.000Z",
+  "finishedAt": "2026-10-01T14:32:43.000Z",
+  "summary": "Zero read of direct embedding IS NULL counts at 14:31:23Z (session_turn_chunks 0, text_chunks 0, doc_sections 0). The coverage gate then measured live and persisted samples at 14:32:41.893Z: session_turn_chunks 1205390/1205390, text_chunks 83850/83850, doc_sections 18902/18902 embedded/eligible, 0 unembedded each; direct counts read at 14:32:42Z after the gate were also 0 for every table and text_chunks surface. The sweep had been behind all day (a 09:00Z session_turn_chunks tail waited ~5.5h under load, WI-10004895); this is the first drained moment.",
+  "assertions": [
+    {
+      "id": "r34-gate-zero-unembedded",
+      "passed": true,
+      "evidence": "harness_shared.doc_sections.embedding eligible 18902 embedded 18902 unembedded 0 @ 2026-10-01T14:32:41.893+00:00; harness_shared.session_turn_chunks.embedding eligible 1205390 embedded 1205390 unembedded 0 @ 2026-10-01T14:32:41.893+00:00; harness_shared.text_chunks.embedding eligible 83850 embedded 83850 unembedded 0 @ 2026-10-01T14:32:41.893+00:00"
+    },
+    {
+      "id": "r34-direct-zero-after-drain",
+      "passed": true,
+      "evidence": "harness_shared.text_chunks[plans] rows 22801 unembedded 0; harness_shared.text_chunks[operator_turns] rows 25815 unembedded 0; harness_shared.text_chunks[consult_questions] rows 2685 unembedded 0; harness_shared.text_chunks[work_items] rows 32549 unembedded 0; harness_shared.session_turn_chunks rows 1205390 unembedded 0; harness_shared.doc_sections rows 18902 unembedded 0"
+    },
+    {
+      "id": "r34-gate-live-measurement",
+      "passed": true,
+      "evidence": "harness_shared.session_turn_chunks.embedding 1205390/1205390; harness_shared.text_chunks.embedding 83850/83850; harness_shared.doc_sections.embedding 18902/18902 (runEmbedCoverageAlarmOnce at 2026-10-01T14:32:42.052Z)"
+    }
+  ],
+  "plan": "generic-rag-chunking-2026-09-29",
+  "bar": "R-34",
+  "planItem": "P-015 (re-measured live under P-016)",
+  "measuredBy": "su-e8708a1c-a5a4-4a8b-9acb-8bcceab2a91c",
+  "supersedes": "docs/evidence/generic-rag-chunking-2026-09-29/p015-r34-coverage.json (2026-09-30T09:53Z; staled when shared-vector-search-libraries moved packages/operator-core/lib/search/coverage-gate.ts)",
+  "measurement": {
+    "coverageGate": {
+      "source": "harness_shared.embed_coverage_samples (latest row per surface; the table packages/operator-core/lib/search/coverage-gate.ts loadCoverageSnapshot reads)",
+      "workspace": "papercusp-workspace",
+      "surfaces": [
+        { "surface": "harness_shared.doc_sections.embedding", "observedAt": "2026-10-01T14:32:41.893+00:00", "eligibleRows": 18902, "embeddedRows": 18902, "unembedded": 0 },
+        { "surface": "harness_shared.session_turn_chunks.embedding", "observedAt": "2026-10-01T14:32:41.893+00:00", "eligibleRows": 1205390, "embeddedRows": 1205390, "unembedded": 0 },
+        { "surface": "harness_shared.text_chunks.embedding", "observedAt": "2026-10-01T14:32:41.893+00:00", "eligibleRows": 83850, "embeddedRows": 83850, "unembedded": 0 }
+      ]
+    },
+    "sweepDrained": {
+      "method": "direct count of rows with embedding IS NULL, read in the same transaction as the samples above",
+      "tables": [
+        { "table": "harness_shared.text_chunks", "surface": "plans", "rows": 22801, "unembedded": 0 },
+        { "table": "harness_shared.text_chunks", "surface": "operator_turns", "rows": 25815, "unembedded": 0 },
+        { "table": "harness_shared.text_chunks", "surface": "consult_questions", "rows": 2685, "unembedded": 0 },
+        { "table": "harness_shared.text_chunks", "surface": "work_items", "rows": 32549, "unembedded": 0 },
+        { "table": "harness_shared.session_turn_chunks", "rows": 1205390, "unembedded": 0 },
+        { "table": "harness_shared.doc_sections", "rows": 18902, "unembedded": 0 }
+      ]
+    },
+    "gateRun": {
+      "observedAt": "2026-10-01T14:32:42.052Z",
+      "measured": [
+        { "surface": "harness_shared.session_turn_chunks.embedding", "eligibleRows": 1205390, "embeddedRows": 1205390, "unembedded": 0 },
+        { "surface": "harness_shared.text_chunks.embedding", "eligibleRows": 83850, "embeddedRows": 83850, "unembedded": 0 },
+        { "surface": "harness_shared.doc_sections.embedding", "eligibleRows": 18902, "embeddedRows": 18902, "unembedded": 0 }
+      ]
+    },
+    "rawEvidence": "docs/evidence/generic-rag-chunking-2026-09-29/p016-r34-coverage.json"
+  }
+}

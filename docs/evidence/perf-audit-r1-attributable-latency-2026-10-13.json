@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "papercusp-performance-audit-2026-10-12 R-1 attributable latency (live, staging-operator)",
+  "plan": "papercusp-performance-audit-2026-10-12",
+  "bar": "R-1",
+  "runtime": "staging-operator",
+  "builds": { "current": "2b89155f4b (:3170)", "release": "d740fc3802 (:3070)" },
+  "instrument": "dev:pg_query (packages/operator-core/lib/agent-tools/dev/pg_query.ts)",
+  "command": [
+    "dev:pg_query: SELECT serving_host, tool_name, status, count(*), count(*) FILTER (WHERE metadata_json ? 'handlerPhases'), sum(attributedMs)/sum(elapsedMs) for coord:orient FROM harness_shared.tool_invocations WHERE workspace_id='papercusp-workspace' AND invoked_at > now() - interval '3 hours' AND tool_name IN (coord:orient, scheduler:get_next, fleet:assignments, work_items:list) GROUP BY serving_host, tool_name, status",
+    "dev:pg_query: SELECT sampled_at, cpu_some_stall_us, cgroup_cpu_usage_us, count in last hour FROM harness_shared.host_kernel_memory_samples ORDER BY sampled_at DESC LIMIT 1",
+    "dev:pg_query via :3170 and via :3070: SELECT 1 AS perf_audit_probe_<a|b><epoch>; then count pg_stat_statements rows whose query contains each alias",
+    "SELECT (SELECT count(*) FROM pg_stat_statements), current_setting('pg_stat_statements.max'); SELECT stats_reset, dealloc FROM pg_stat_statements_info",
+    "testing:run libs/generic/tooldef/src/phase-tracker.test.ts packages/operator-core/lib/system-health/kernel-leak-watchdog.test.ts"
+  ],
+  "startedAt": "2026-10-13T13:28:38Z",
+  "finishedAt": "2026-10-13T13:38:41Z",
+  "exitCode": 0,
+  "summary": "On the current build every status-ok wake-path call carries handlerPhases and orient phases attribute 99.7% of its wall time; PSI and per-cgroup CPU are sampled every minute; ad-hoc dev:pg_query SQL is untracked on the current build and tracked on the release build; host-wide pg_stat_statements occupancy is 76%, owned by WI-6554700010010387.",
+  "assertions": [
+    {
+      "id": "handler-phases-on-status-ok-calls",
+      "passed": true,
+      "evidence": "port-3170, 3 h to 13:28Z: status ok 149 calls, 149 with handlerPhases (coord:orient 31/31, scheduler:get_next 49/49, fleet:assignments 31/31, work_items:list 38/38). The 3 calls without phases were refused before any handler ran: tool_invocations 37509904 (fleet:assignments, role-not-allowed, authorization_denied, 3 ms), 37509905 (work_items:list, role-not-allowed, 15 ms), 37555958 (work_items:list, error mcp_auth_failed, 3 ms). Contrast port-3070 (release d740fc3802, predates the change): 0 of 1532 carry handlerPhases."
+    },
+    {
+      "id": "orient-phase-attribution-at-least-90pct",
+      "passed": true,
+      "evidence": "port-3170 coord:orient: sum(attributedMs)/sum(elapsedMs) = 0.9971; 10th-percentile per-call ratio = 0.9933."
+    },
+    {
+      "id": "psi-and-cgroup-cpu-sampled-every-minute",
+      "passed": true,
+      "evidence": "Newest harness_shared.host_kernel_memory_samples row sampled_at 2026-10-13 13:36:24.704Z (2.5 min old at read); 57 samples in the preceding hour; cpu_some_stall_us 23525675640, io_some_stall_us 161166743569, memory_some_stall_us 26231231700; cgroup_cpu_usage_us present."
+    },
+    {
+      "id": "adhoc-sql-untracked-on-current-build",
+      "passed": true,
+      "evidence": "A/B probe 13:30Z: SELECT 1 AS perf_audit_probe_a<epoch> through dev:pg_query on :3170 left 0 pg_stat_statements entries; the identical probe (alias b) through :3070 left 1 entry."
+    },
+    {
+      "id": "occupancy-reported-and-owned",
+      "passed": true,
+      "evidence": "pg_stat_statements 15,266 of max 20,000 entries (76.3%) at 13:28:38Z; stats_reset 2026-10-09 13:43:24Z, dealloc 8. Above the 60% target; owned by open follow-up WI-6554700010010387 (assignee su-982534a7)."
+    },
+    {
+      "id": "unit-tests-pass",
+      "passed": true,
+      "evidence": "test_runs 21207969 (libs/generic/tooldef/src/phase-tracker.test.ts, pass) and 21207972 (packages/operator-core/lib/system-health/kernel-leak-watchdog.test.ts, pass), commit 094d57643b."
+    }
+  ]
+}

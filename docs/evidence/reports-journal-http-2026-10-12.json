@@ -1,0 +1,870 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Reports journal HTTP detector — original integration execution custody",
+  "framework": "operational",
+  "command": [
+    "node",
+    "scripts/with-test-pg.mjs",
+    "--",
+    "npm",
+    "run",
+    "test:file",
+    "--",
+    "packages/operator-core/lib/report-journal-http.integration.test.ts"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-12T06:47:24.631Z",
+  "finishedAt": "2026-10-12T06:49:31.873Z",
+  "summary": "Real isolated current-build HTTP dispatch persists an unpublished report-shaped turn, files its exact terminal observation, deduplicates replay, and suppresses observations after same-author publication and progress-only text. This records the original canonical integration test, not a separate test execution or whole Reports acceptance.",
+  "assertions": [
+    {
+      "id": "journal-and-terminal-observation",
+      "passed": true,
+      "evidence": "Unpublished fixture produced one journal row and one done observation with canonical HTTP actor identity and exact turnRef."
+    },
+    {
+      "id": "duplicate-ingestion",
+      "passed": true,
+      "evidence": "Second journal ingestion returned recorded=false and deduped=true; original observation stayed singular."
+    },
+    {
+      "id": "publication-suppression",
+      "passed": true,
+      "evidence": "Public publication origin matched the actor from coord:whoami, stored body matched the fixture, and post-publication ingestion produced no observation."
+    },
+    {
+      "id": "progress-suppression",
+      "passed": true,
+      "evidence": "Progress-only ingestion persisted its journal row and produced no observation."
+    },
+    {
+      "id": "runtime-cleanup",
+      "passed": true,
+      "evidence": "HTTP host stopped; owned runtime and private PG data were removed; outer parent wrapper exited 0."
+    }
+  ],
+  "provenance": {
+    "recordingOnly": true,
+    "originalTestRunId": 21137858,
+    "originalTestLayer": "integration",
+    "priorPassingTestRunId": 21137662,
+    "runGroup": "reports-w91-http-private-parent-f146",
+    "sourceCommit": "e1770c7a5d716eecf5ad4cd6022e6f1511ddd0ac",
+    "workItem": "WI-6554700010008823",
+    "drivingWorkItem": "WI-10007208",
+    "plan": "reports-library-2026-09-15",
+    "spec": "AUTO-BAR-R-8-P-012@8",
+    "wholeSpecAcceptance": "open",
+    "runtimeEnvironmentBeforeCaptureStatus": "not-configured",
+    "runtimeEnvironmentAfterCaptureStatus": "not-configured",
+    "note": "The real disposable runtime health and lifecycle below establish this child journey; they do not substitute for the full R8 live/LLM adequacy contract."
+  },
+  "replay": {
+    "materialize": [
+      "node",
+      "scripts/lint-as-committed.mjs",
+      "--ref=e1770c7a5d716eecf5ad4cd6022e6f1511ddd0ac",
+      "--materialize-only",
+      "--keep"
+    ],
+    "cwd": "Use the materializer returned clean committed root",
+    "environment": {
+      "PAPERCUSP_TEST_RUN_HARNESS": "papercusp",
+      "PAPERCUSP_TEST_RUN_WORKSPACE": "papercusp-workspace",
+      "PAPERCUSP_HARNESS_SLUG": "papercusp",
+      "PAPERCUSP_WORKSPACE_ID": "papercusp-workspace",
+      "PAPERCUSP_TEST_RUN_SOURCE": "local",
+      "PAPERCUSP_TEST_RUN_GROUP": "Unique caller-supplied run group",
+      "PAPERCUSP_TEST_RUNS_DB_URL": "Inject the existing durable canonical ledger URL; verify it exposes test_run 21137858. Never point it at the disposable product DB.",
+      "PAPERCUSP_TEST_RUN_RECEIPT_FILE": "Unique caller-supplied absolute receipt path",
+      "PC_EXECUTED_SOURCE_MAP_WORKSPACE": "papercusp-workspace",
+      "PC_EXECUTED_SOURCE_MAP_OUT": "Unique caller-supplied absolute JSON path",
+      "PC_EXECUTED_SOURCE_MAP_RESULT": "Unique caller-supplied absolute JSONL path"
+    }
+  },
+  "canonicalTestRun": {
+    "id": "21137858",
+    "status": "pass",
+    "workspace_id": "papercusp-workspace",
+    "harness_slug": "papercusp",
+    "commit_sha": "e1770c7a5d716eecf5ad4cd6022e6f1511ddd0ac",
+    "worktree_dirty": false,
+    "execution_details": {
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-e1770c7a5d-Ln3q41",
+      "failed": 0,
+      "passed": 1,
+      "skipped": 0,
+      "filePath": "packages/operator-core/lib/report-journal-http.integration.test.ts",
+      "commitSha": "e1770c7a5d716eecf5ad4cd6022e6f1511ddd0ac",
+      "testLayer": "integration",
+      "runGroupId": "reports-w91-http-private-parent-f146",
+      "harnessSlug": "papercusp",
+      "workspaceId": "papercusp-workspace",
+      "mutationPhase": null,
+      "schemaVersion": 1,
+      "worktreeDirty": false,
+      "testNamePattern": null,
+      "collectionFailed": false,
+      "passedCaseTitles": [
+        "files an unpublished Reports observation through real isolated HTTP journal ingestion and preserves its controls"
+      ],
+      "isolatedRuntimeReceipts": [
+        {
+          "runId": "20261012T064724Z-3852738",
+          "resultSha256": "8abaf47ddeb3b625ac8b3657092b49e2f295c91372a6b8dbaa3e017ad6bbab5a",
+          "sourceSha256": "ecbe8ec1c2f4ca71a13cce8a0666839a01399b7562f5a126701ff0c82d73955d",
+          "lifecycleSha256": "91d640b442b0114aabbfbc41822411d622e5a5e09f47cb966f0b27cf8dfd7380"
+        }
+      ],
+      "runtimeEnvironmentAfterCaptureStatus": "not-configured",
+      "runtimeEnvironmentBeforeCaptureStatus": "not-configured"
+    }
+  },
+  "harnessResult": {
+    "schemaVersion": 1,
+    "harness": "isolated-integration",
+    "runId": "20261012T064724Z-3852738",
+    "evidenceDir": "/home/builduser/.local/state/verification-harness/isolated-integration/20261012T064724Z-3852738",
+    "selection": {
+      "only": null,
+      "from": null
+    },
+    "reuseFromRunId": null,
+    "preflight": null,
+    "phases": [
+      {
+        "phase": "prepare",
+        "evidenceDir": "/home/builduser/.local/state/verification-harness/isolated-integration/20261012T064724Z-3852738/phases/prepare",
+        "startedAt": "2026-10-12T06:47:24.633Z",
+        "endedAt": "2026-10-12T06:47:26.380Z",
+        "elapsedMs": 1747,
+        "status": "passed",
+        "step": null,
+        "reasonCode": null
+      },
+      {
+        "phase": "execute",
+        "evidenceDir": "/home/builduser/.local/state/verification-harness/isolated-integration/20261012T064724Z-3852738/phases/execute",
+        "startedAt": "2026-10-12T06:47:26.382Z",
+        "endedAt": "2026-10-12T06:49:31.795Z",
+        "elapsedMs": 125413,
+        "status": "passed",
+        "step": null,
+        "reasonCode": null
+      },
+      {
+        "phase": "teardown",
+        "evidenceDir": "/home/builduser/.local/state/verification-harness/isolated-integration/20261012T064724Z-3852738/phases/teardown",
+        "startedAt": "2026-10-12T06:49:31.828Z",
+        "endedAt": "2026-10-12T06:49:31.828Z",
+        "elapsedMs": 0,
+        "status": "passed",
+        "step": null,
+        "reasonCode": null
+      }
+    ],
+    "verdict": "pass",
+    "firstFailure": null,
+    "startedAt": "2026-10-12T06:47:24.631Z",
+    "endedAt": "2026-10-12T06:49:31.873Z"
+  },
+  "sourceReceipt": {
+    "schemaVersion": 1,
+    "runId": "20261012T064724Z-3852738",
+    "sourceCommit": "e1770c7a5d716eecf5ad4cd6022e6f1511ddd0ac",
+    "repoRoot": "/dev/shm/pcv/papercusp-lint-as-committed-e1770c7a5d-Ln3q41",
+    "filePath": "packages/operator-core/lib/report-journal-http.integration.test.ts",
+    "runGroupId": "reports-w91-http-private-parent-f146",
+    "workspaceId": "papercusp-workspace",
+    "harnessSlug": "papercusp",
+    "files": [
+      {
+        "path": "apps/operator/bin/bundle-host-common.sh",
+        "sha256": "38780f2799fba82a14d3f6975a464858b385297fd937c368046766cf41378240",
+        "gitSha256": "38780f2799fba82a14d3f6975a464858b385297fd937c368046766cf41378240"
+      },
+      {
+        "path": "apps/operator/bin/bundle-host.sh",
+        "sha256": "a7e7650b7887b691d890a32d3f7d406b333c9e139cd13c1b5deef9678156844a",
+        "gitSha256": "a7e7650b7887b691d890a32d3f7d406b333c9e139cd13c1b5deef9678156844a"
+      },
+      {
+        "path": "apps/operator/bin/hono-host.ts",
+        "sha256": "611708b9bd17e8464a84168251b918f8991f4bb270bf34e67921f8bea4efd98d",
+        "gitSha256": "611708b9bd17e8464a84168251b918f8991f4bb270bf34e67921f8bea4efd98d"
+      },
+      {
+        "path": "apps/operator/bin/host-handler.ts",
+        "sha256": "a061e03351351de1668eaa36ded125109de0d4a8959a69030ce9777a3b3f45b0",
+        "gitSha256": "a061e03351351de1668eaa36ded125109de0d4a8959a69030ce9777a3b3f45b0"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/coordination/identity.ts",
+        "sha256": "912eb40f13d791f2d53b15eb730f939b83e806a7a3b30d5e100a427e10e549c2",
+        "gitSha256": "912eb40f13d791f2d53b15eb730f939b83e806a7a3b30d5e100a427e10e549c2"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/coordination/tools/whoami.ts",
+        "sha256": "3784b1bba2556edf54c9adac93d39bd706e5e400b6aa41a4a4f365210886dc56",
+        "gitSha256": "3784b1bba2556edf54c9adac93d39bd706e5e400b6aa41a4a4f365210886dc56"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/journal/record-turn.ts",
+        "sha256": "8f7da14e85670e7fc90803a3d9c502ccd041101661d31260f379508b91c7554a",
+        "gitSha256": "8f7da14e85670e7fc90803a3d9c502ccd041101661d31260f379508b91c7554a"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/reports/publish.ts",
+        "sha256": "74774c3a2904ca2af1ce9b030793c45ec8dd866618324753c2ba375d13487c99",
+        "gitSha256": "74774c3a2904ca2af1ce9b030793c45ec8dd866618324753c2ba375d13487c99"
+      },
+      {
+        "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts",
+        "sha256": "8f0a9b2e44a550dcc4fda414f22f25bcbb8511089084c4b404a3e420a83133b2",
+        "gitSha256": "8f0a9b2e44a550dcc4fda414f22f25bcbb8511089084c4b404a3e420a83133b2"
+      },
+      {
+        "path": "packages/operator-core/lib/report-journal-http.integration.test.ts",
+        "sha256": "dc498a3437637478ef913a041919dbdca531b624e37307dc9fd340b8666cbd80",
+        "gitSha256": "dc498a3437637478ef913a041919dbdca531b624e37307dc9fd340b8666cbd80"
+      },
+      {
+        "path": "packages/operator-core/lib/report-library.ts",
+        "sha256": "14aa08ac59ff3e4eca1f8b81fe3621c5bf6160ca1c784a35943961722233f5e0",
+        "gitSha256": "14aa08ac59ff3e4eca1f8b81fe3621c5bf6160ca1c784a35943961722233f5e0"
+      },
+      {
+        "path": "packages/operator-core/lib/search/session-ingest.ts",
+        "sha256": "c45bf97114ed745a9eef5f3af6a8813bfe62f053a196d3ac9f0286fb2cc47558",
+        "gitSha256": "c45bf97114ed745a9eef5f3af6a8813bfe62f053a196d3ac9f0286fb2cc47558"
+      },
+      {
+        "path": "packages/operator-core/lib/turn-end-tracking-io.ts",
+        "sha256": "a1f93a9911eb907e997f8901407d5c5c62689244545c50c4e43fa2465b310862",
+        "gitSha256": "a1f93a9911eb907e997f8901407d5c5c62689244545c50c4e43fa2465b310862"
+      },
+      {
+        "path": "packages/operator-core/lib/turn-end-tracking.ts",
+        "sha256": "7d8cb644e1651927022aa61f2691d9170c56a9ec42c3eff5099349c9f29fc807",
+        "gitSha256": "7d8cb644e1651927022aa61f2691d9170c56a9ec42c3eff5099349c9f29fc807"
+      },
+      {
+        "path": "packages/operator-core/lib/turn-journal-store.ts",
+        "sha256": "9bc14ec279b14870ce462a33a12452dbdb308658ac43d029448a3a49d95392ec",
+        "gitSha256": "9bc14ec279b14870ce462a33a12452dbdb308658ac43d029448a3a49d95392ec"
+      },
+      {
+        "path": "packages/operator-core/lib/turn-journal.ts",
+        "sha256": "479fd075e8f0429b067210679a5da83764554330470f8a8c37df719e21c46db5",
+        "gitSha256": "479fd075e8f0429b067210679a5da83764554330470f8a8c37df719e21c46db5"
+      },
+      {
+        "path": "packages/operator-core/test/isolated-integration-proof.ts",
+        "sha256": "f83062e0b241b972db751ea5fddcb64e6b4f52db001f7fbfaab1c400cd140dba",
+        "gitSha256": "f83062e0b241b972db751ea5fddcb64e6b4f52db001f7fbfaab1c400cd140dba"
+      },
+      {
+        "path": "packages/operator-core/test/private-http-workspace-preflight.ts",
+        "sha256": "f55c3faf3390366a6ec69718512787d550d56ad5a4979206c6af60c669828023",
+        "gitSha256": "f55c3faf3390366a6ec69718512787d550d56ad5a4979206c6af60c669828023"
+      },
+      {
+        "path": "packages/operator-core/test/report-journal-http-scenario.ts",
+        "sha256": "a7d84b1d4d8b352c883a45ced673ec431f37be770f6797aa3e0cdb945dcaf84e",
+        "gitSha256": "a7d84b1d4d8b352c883a45ced673ec431f37be770f6797aa3e0cdb945dcaf84e"
+      },
+      {
+        "path": "packages/operator-core/test/staging-first-http-fixture.ts",
+        "sha256": "ac908530b9f946525f5c9cf8d7ee55eca510dfb9a0b2eead19638ed7e0a33f2a",
+        "gitSha256": "ac908530b9f946525f5c9cf8d7ee55eca510dfb9a0b2eead19638ed7e0a33f2a"
+      },
+      {
+        "path": "scripts/lib/isolated-runtime-start.mjs",
+        "sha256": "f604dc115a6f22e3d84a1b9ad332d89f615d418f751ef20d3bcbc021ea32033d",
+        "gitSha256": "f604dc115a6f22e3d84a1b9ad332d89f615d418f751ef20d3bcbc021ea32033d"
+      },
+      {
+        "path": "scripts/with-test-pg.mjs",
+        "sha256": "c84ced151ef7634b3045a509e21b843467e621c09fc752fc0be477bb532e2196",
+        "gitSha256": "c84ced151ef7634b3045a509e21b843467e621c09fc752fc0be477bb532e2196"
+      }
+    ],
+    "parentObserver": {
+      "database": "org_9431b8e56593",
+      "flush": {
+        "written": 0,
+        "failed": 0,
+        "dropped": 0,
+        "rejected": 0
+      }
+    }
+  },
+  "inputQualification": {
+    "commit": "e1770c7a5d716eecf5ad4cd6022e6f1511ddd0ac",
+    "root": "/dev/shm/pcv/papercusp-lint-as-committed-e1770c7a5d-Ln3q41",
+    "status": "",
+    "allEqual": true,
+    "inputs": [
+      {
+        "path": "packages/operator-core/lib/report-journal-http.integration.test.ts",
+        "equal": true
+      },
+      {
+        "path": "scripts/lib/isolated-runtime-start.mjs",
+        "equal": true
+      },
+      {
+        "path": "scripts/with-test-pg.mjs",
+        "equal": true
+      },
+      {
+        "path": "packages/operator-core/test/staging-first-http-fixture.ts",
+        "equal": true
+      },
+      {
+        "path": "packages/operator-core/test/report-journal-http-scenario.ts",
+        "equal": true
+      },
+      {
+        "path": "packages/operator-core/test/private-http-workspace-preflight.ts",
+        "equal": true
+      },
+      {
+        "path": "packages/operator-core/test/isolated-integration-proof.ts",
+        "equal": true
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/journal/record-turn.ts",
+        "equal": true
+      },
+      {
+        "path": "packages/operator-core/lib/turn-end-tracking.ts",
+        "equal": true
+      },
+      {
+        "path": "packages/operator-core/lib/turn-end-tracking-io.ts",
+        "equal": true
+      },
+      {
+        "path": "packages/operator-core/lib/turn-journal.ts",
+        "equal": true
+      },
+      {
+        "path": "packages/operator-core/lib/turn-journal-store.ts",
+        "equal": true
+      },
+      {
+        "path": "packages/operator-core/lib/search/session-ingest.ts",
+        "equal": true
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/reports/publish.ts",
+        "equal": true
+      },
+      {
+        "path": "packages/operator-core/lib/report-library.ts",
+        "equal": true
+      },
+      {
+        "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts",
+        "equal": true
+      },
+      {
+        "path": "apps/operator/bin/bundle-host.sh",
+        "equal": true
+      },
+      {
+        "path": "apps/operator/bin/bundle-host-common.sh",
+        "equal": true
+      },
+      {
+        "path": "apps/operator/bin/hono-host.ts",
+        "equal": true
+      },
+      {
+        "path": "apps/operator/bin/host-handler.ts",
+        "equal": true
+      },
+      {
+        "path": "scripts/lib/playwright-cache-path.mjs",
+        "equal": true
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/coordination/tools/whoami.ts",
+        "equal": true
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/coordination/identity.ts",
+        "equal": true
+      }
+    ]
+  },
+  "lifecycleReceipt": {
+    "schemaVersion": 1,
+    "runId": "20261012T064724Z-3852738",
+    "host": "buildhost",
+    "observedAt": "2026-10-12T06:47:42.454Z",
+    "observer": {
+      "pid": 3852738,
+      "identity": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:57658815",
+      "parentPid": 3844619
+    },
+    "supervisor": {
+      "pid": 3870902,
+      "identity": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:57661987",
+      "parentPid": 3852738
+    },
+    "worker": {
+      "pid": 3888519,
+      "identity": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:57663589",
+      "parentPid": 3870902
+    },
+    "database": {
+      "pid": 3872234,
+      "identity": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:57662113",
+      "parentPid": 3870902
+    },
+    "argv": [
+      "/home/builduser/.local/node25/bin/node",
+      "--import",
+      "/dev/shm/pcv/papercusp-lint-as-committed-e1770c7a5d-Ln3q41/scripts/lib/isolated-runtime-start.mjs",
+      "--import",
+      "tsx",
+      "/dev/shm/pcv/papercusp-lint-as-committed-e1770c7a5d-Ln3q41/packages/operator-core/test/staging-first-http-fixture.ts"
+    ],
+    "cwd": "/dev/shm/pcv/papercusp-lint-as-committed-e1770c7a5d-Ln3q41",
+    "workspace": "test-runtime-d1b8c282-e60",
+    "runtimeRoot": "/dev/shm/pcv/papercusp-test-runtime-xHhgOR",
+    "dataDir": "/dev/shm/pcv/papercusp-test-pg-ehXS2O",
+    "pgPort": 40789,
+    "ended": {
+      "kind": "isolated-runtime-end",
+      "childPid": 3888519,
+      "exitCode": 0,
+      "signal": null,
+      "runtimeRemoved": true,
+      "pgDataRemoved": true,
+      "observedAt": "2026-10-12T06:49:31.029Z"
+    }
+  },
+  "scenarioReceipt": {
+    "workspace": "test-runtime-d1b8c282-e60",
+    "harness": "test-runtime-d1b8c282-e60-guard",
+    "unpublished": {
+      "session": "224a3933-45f2-43c5-b773-15687d5bf29f",
+      "owner": "loopback/private-reports-journal-224a3933-45f2-43c5-b773-15687d5bf29f",
+      "turnRef": "224a3933-45f2-43c5-b773-15687d5bf29f:2026-10-12T06:49:18.388Z",
+      "observationId": "EI-25755289880422423",
+      "journalRows": 1,
+      "observationRows": 1
+    },
+    "deduped": true,
+    "publishedSuppressed": true,
+    "progressSuppressed": true,
+    "requests": [
+      {
+        "name": "coord:whoami",
+        "status": 200
+      },
+      {
+        "name": "journal:record-turn",
+        "status": 200
+      },
+      {
+        "name": "journal:record-turn",
+        "status": 200
+      },
+      {
+        "name": "coord:whoami",
+        "status": 200
+      },
+      {
+        "name": "reports:publish",
+        "status": 200
+      },
+      {
+        "name": "journal:record-turn",
+        "status": 200
+      },
+      {
+        "name": "coord:whoami",
+        "status": 200
+      },
+      {
+        "name": "journal:record-turn",
+        "status": 200
+      }
+    ],
+    "scope": "Real public HTTP dispatch and detector on a disposable current-build operator; private transcript fixtures."
+  },
+  "requests": [
+    {
+      "name": "coord:whoami",
+      "args": {},
+      "callerSid": "private-reports-journal-224a3933-45f2-43c5-b773-15687d5bf29f",
+      "status": 200,
+      "envelope": {
+        "ok": true,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"ownerId\":\"loopback/private-reports-journal-224a3933-45f2-43c5-b773-15687d5bf29f\",\"ownerLabel\":\"system · loopback\",\"source\":\"principal\",\"workspaceId\":\"test-runtime-d1b8c282-e60\",\"userId\":null,\"fleetSlug\":null,\"fleetRole\":null,\"inbox_wake_key\":\"coord:inbox-wake:loopback/private-reports-journal-224a3933-45f2-43c5-b773-15687d5bf29f\"}"
+            },
+            {
+              "type": "text",
+              "text": "ℹ served by build e1770c7a5d (up 0m) — this host runs the code it booted with; source you read at HEAD/staging may be NEWER than the build that executed this call, so a defect still reproducing is not evidence its fix is broken until dev:pipeline_position confirms this build contains it."
+            }
+          ],
+          "_meta": {
+            "_buildStamp": {
+              "buildId": "e1770c7a5d",
+              "bootedAgoMs": 6543
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "journal:record-turn",
+      "args": {
+        "owner": "loopback/private-reports-journal-224a3933-45f2-43c5-b773-15687d5bf29f",
+        "agent": "codex",
+        "session_id": "224a3933-45f2-43c5-b773-15687d5bf29f",
+        "source_kind": "codex",
+        "transcript_path": "/dev/shm/pcv/papercusp-test-runtime-xHhgOR/home/.codex/sessions/2026/10/12/rollout-224a3933-45f2-43c5-b773-15687d5bf29f.jsonl",
+        "harness": "test-runtime-d1b8c282-e60-guard"
+      },
+      "callerSid": "private-reports-journal-224a3933-45f2-43c5-b773-15687d5bf29f",
+      "status": 200,
+      "envelope": {
+        "ok": true,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"ok\":true,\"recorded\":true,\"deduped\":false,\"id\":\"1\",\"source\":\"mechanical\",\"flagged\":true,\"tripwire\":null,\"turn_ts\":\"2026-10-12T06:49:18.388Z\",\"goalPlacementTurnEnd\":{\"recorded\":false,\"reason\":\"no-canonical-goal\"},\"unpublishedReportObservationScheduled\":true}"
+            },
+            {
+              "type": "text",
+              "text": "See also: journal:recent (read the journal stream); activity:report (the tool ledger the tripwire diffs against)"
+            }
+          ],
+          "_meta": {
+            "format": "json",
+            "_seeAlso": [
+              {
+                "tool": "journal:recent (read the journal stream)"
+              },
+              {
+                "tool": "activity:report (the tool ledger the tripwire diffs against)"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "journal:record-turn",
+      "args": {
+        "owner": "loopback/private-reports-journal-224a3933-45f2-43c5-b773-15687d5bf29f",
+        "agent": "codex",
+        "session_id": "224a3933-45f2-43c5-b773-15687d5bf29f",
+        "source_kind": "codex",
+        "transcript_path": "/dev/shm/pcv/papercusp-test-runtime-xHhgOR/home/.codex/sessions/2026/10/12/rollout-224a3933-45f2-43c5-b773-15687d5bf29f.jsonl",
+        "harness": "test-runtime-d1b8c282-e60-guard"
+      },
+      "callerSid": "private-reports-journal-224a3933-45f2-43c5-b773-15687d5bf29f",
+      "status": 200,
+      "envelope": {
+        "ok": true,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"ok\":true,\"recorded\":false,\"deduped\":true,\"id\":null,\"source\":\"mechanical\",\"flagged\":true,\"tripwire\":null,\"turn_ts\":\"2026-10-12T06:49:18.388Z\",\"goalPlacementTurnEnd\":{\"recorded\":false,\"reason\":\"no-canonical-goal\"}}"
+            },
+            {
+              "type": "text",
+              "text": "See also: journal:recent (read the journal stream); activity:report (the tool ledger the tripwire diffs against)"
+            }
+          ],
+          "_meta": {
+            "format": "json",
+            "_seeAlso": [
+              {
+                "tool": "journal:recent (read the journal stream)"
+              },
+              {
+                "tool": "activity:report (the tool ledger the tripwire diffs against)"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "coord:whoami",
+      "args": {},
+      "callerSid": "private-reports-journal-c475a8a7-82bf-4144-b340-c58a6dbfbe4d",
+      "status": 200,
+      "envelope": {
+        "ok": true,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"ownerId\":\"loopback/private-reports-journal-c475a8a7-82bf-4144-b340-c58a6dbfbe4d\",\"ownerLabel\":\"system · loopback\",\"source\":\"principal\",\"workspaceId\":\"test-runtime-d1b8c282-e60\",\"userId\":null,\"fleetSlug\":null,\"fleetRole\":null,\"inbox_wake_key\":\"coord:inbox-wake:loopback/private-reports-journal-c475a8a7-82bf-4144-b340-c58a6dbfbe4d\"}"
+            },
+            {
+              "type": "text",
+              "text": "ℹ served by build e1770c7a5d (up 0m) — this host runs the code it booted with; source you read at HEAD/staging may be NEWER than the build that executed this call, so a defect still reproducing is not evidence its fix is broken until dev:pipeline_position confirms this build contains it."
+            }
+          ],
+          "_meta": {
+            "_buildStamp": {
+              "buildId": "e1770c7a5d",
+              "bootedAgoMs": 6820
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "reports:publish",
+      "args": {
+        "title": "Private journal publication control",
+        "body_md": "# Private detector assessment\n\n## Findings\nThe disposable HTTP fixture measures journal persistence and observation filing. The disposable HTTP fixture measures journal persistence and observation filing. The disposable HTTP fixture measures journal persistence and observation filing. The disposable HTTP fixture measures journal persistence and observation filing. The disposable HTTP fixture measures journal persistence and observation filing. The disposable HTTP fixture measures journal persistence and observation filing. The disposable HTTP fixture measures journal persistence and observation filing. The disposable HTTP fixture measures journal persistence and observation filing. The disposable HTTP fixture measures journal persistence and observation filing. The disposable HTTP fixture measures journal persistence and observation filing. The disposable HTTP fixture measures journal persistence and observation filing. The disposable HTTP fixture measures journal persistence and observation filing. \n\n## Verdict\nThis is private fixture data, not an owner deliverable.",
+        "visibility": "owner"
+      },
+      "callerSid": "private-reports-journal-c475a8a7-82bf-4144-b340-c58a6dbfbe4d",
+      "status": 200,
+      "envelope": {
+        "ok": true,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"ok\":true,\"report_id\":\"rpt_8aa4febe-e5d5-4c7d-8c1f-4ebdbb318126\",\"request_key\":null,\"workspace_id\":\"test-runtime-d1b8c282-e60\",\"title\":\"Private journal publication control\",\"summary\":\"\",\"kind\":\"audit\",\"subject\":{\"kind\":\"none\",\"ref\":null,\"label\":null},\"origin\":{\"harness_slug\":\"test-runtime-d1b8c282-e60-guard\",\"author_owner_id\":\"loopback/private-reports-journal-c475a8a7-82bf-4144-b340-c58a6dbfbe4d\",\"author_session_ref\":\"13da2125-caeb-4bed-b480-3c5f176bbcc4\"},\"visibility\":\"owner\",\"supersedes_report_id\":null,\"lineage_id\":\"rpt_8aa4febe-e5d5-4c7d-8c1f-4ebdbb318126\",\"source\":\"agent\",\"tags\":[],\"published_at\":\"2026-10-12T06:49:18.628Z\",\"updated_at\":\"2026-10-12T06:49:18.628Z\",\"retired_at\":null,\"path\":\"/reports?sel=rpt_8aa4febe-e5d5-4c7d-8c1f-4ebdbb318126\",\"body_bytes\":1083,\"body_sha256\":\"070d16ce56571c9f789a018a2762b34bea800da350966153cc1ef67adf510d7d\",\"goal_owner_report\":null,\"event_emitted\":true}"
+            },
+            {
+              "type": "text",
+              "text": "See also: reports:list (browse the library); reports:get (read one back, with its lineage); reports:retire (soft-retire one you authored)"
+            }
+          ],
+          "_meta": {
+            "format": "json",
+            "_seeAlso": [
+              {
+                "tool": "reports:list (browse the library)"
+              },
+              {
+                "tool": "reports:get (read one back, with its lineage)"
+              },
+              {
+                "tool": "reports:retire (soft-retire one you authored)"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "journal:record-turn",
+      "args": {
+        "owner": "loopback/private-reports-journal-c475a8a7-82bf-4144-b340-c58a6dbfbe4d",
+        "agent": "codex",
+        "session_id": "c475a8a7-82bf-4144-b340-c58a6dbfbe4d",
+        "source_kind": "codex",
+        "transcript_path": "/dev/shm/pcv/papercusp-test-runtime-xHhgOR/home/.codex/sessions/2026/10/12/rollout-c475a8a7-82bf-4144-b340-c58a6dbfbe4d.jsonl",
+        "harness": "test-runtime-d1b8c282-e60-guard"
+      },
+      "callerSid": "private-reports-journal-c475a8a7-82bf-4144-b340-c58a6dbfbe4d",
+      "status": 200,
+      "envelope": {
+        "ok": true,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"ok\":true,\"recorded\":true,\"deduped\":false,\"id\":\"3\",\"source\":\"mechanical\",\"flagged\":true,\"tripwire\":null,\"turn_ts\":\"2026-10-12T06:49:18.620Z\",\"goalPlacementTurnEnd\":{\"recorded\":false,\"reason\":\"no-canonical-goal\"},\"unpublishedReportObservationScheduled\":true}"
+            },
+            {
+              "type": "text",
+              "text": "See also: journal:recent (read the journal stream); activity:report (the tool ledger the tripwire diffs against)"
+            }
+          ],
+          "_meta": {
+            "format": "json",
+            "_seeAlso": [
+              {
+                "tool": "journal:recent (read the journal stream)"
+              },
+              {
+                "tool": "activity:report (the tool ledger the tripwire diffs against)"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "coord:whoami",
+      "args": {},
+      "callerSid": "private-reports-journal-d48ab8ce-de8f-4312-b5b4-32ce6bf8b127",
+      "status": 200,
+      "envelope": {
+        "ok": true,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"ownerId\":\"loopback/private-reports-journal-d48ab8ce-de8f-4312-b5b4-32ce6bf8b127\",\"ownerLabel\":\"system · loopback\",\"source\":\"principal\",\"workspaceId\":\"test-runtime-d1b8c282-e60\",\"userId\":null,\"fleetSlug\":null,\"fleetRole\":null,\"inbox_wake_key\":\"coord:inbox-wake:loopback/private-reports-journal-d48ab8ce-de8f-4312-b5b4-32ce6bf8b127\"}"
+            },
+            {
+              "type": "text",
+              "text": "ℹ served by build e1770c7a5d (up 0m) — this host runs the code it booted with; source you read at HEAD/staging may be NEWER than the build that executed this call, so a defect still reproducing is not evidence its fix is broken until dev:pipeline_position confirms this build contains it."
+            }
+          ],
+          "_meta": {
+            "_buildStamp": {
+              "buildId": "e1770c7a5d",
+              "bootedAgoMs": 6901
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "journal:record-turn",
+      "args": {
+        "owner": "loopback/private-reports-journal-d48ab8ce-de8f-4312-b5b4-32ce6bf8b127",
+        "agent": "codex",
+        "session_id": "d48ab8ce-de8f-4312-b5b4-32ce6bf8b127",
+        "source_kind": "codex",
+        "transcript_path": "/dev/shm/pcv/papercusp-test-runtime-xHhgOR/home/.codex/sessions/2026/10/12/rollout-d48ab8ce-de8f-4312-b5b4-32ce6bf8b127.jsonl",
+        "harness": "test-runtime-d1b8c282-e60-guard"
+      },
+      "callerSid": "private-reports-journal-d48ab8ce-de8f-4312-b5b4-32ce6bf8b127",
+      "status": 200,
+      "envelope": {
+        "ok": true,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"ok\":true,\"recorded\":true,\"deduped\":false,\"id\":\"4\",\"source\":\"mechanical\",\"flagged\":true,\"tripwire\":null,\"turn_ts\":\"2026-10-12T06:49:18.702Z\",\"goalPlacementTurnEnd\":{\"recorded\":false,\"reason\":\"no-canonical-goal\"},\"unpublishedReportObservationScheduled\":true}"
+            },
+            {
+              "type": "text",
+              "text": "See also: journal:recent (read the journal stream); activity:report (the tool ledger the tripwire diffs against)"
+            }
+          ],
+          "_meta": {
+            "format": "json",
+            "_seeAlso": [
+              {
+                "tool": "journal:recent (read the journal stream)"
+              },
+              {
+                "tool": "activity:report (the tool ledger the tripwire diffs against)"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "artifactHashes": {
+    "result.json": "8abaf47ddeb3b625ac8b3657092b49e2f295c91372a6b8dbaa3e017ad6bbab5a",
+    "phases/prepare/source.json": "ecbe8ec1c2f4ca71a13cce8a0666839a01399b7562f5a126701ff0c82d73955d",
+    "phases/execute/lifecycle.json": "91d640b442b0114aabbfbc41822411d622e5a5e09f47cb966f0b27cf8dfd7380",
+    "phases/execute/report-journal-receipt.json": "c8566762887ac2ba254b99132ca252d8823a215c93f6b448f20f92e73d156afe"
+  },
+  "verifiedHostReceipt": {
+    "workspace": "test-runtime-d1b8c282-e60",
+    "harness": "test-runtime-d1b8c282-e60-guard",
+    "unpublished": {
+      "session": "224a3933-45f2-43c5-b773-15687d5bf29f",
+      "owner": "loopback/private-reports-journal-224a3933-45f2-43c5-b773-15687d5bf29f",
+      "turnRef": "224a3933-45f2-43c5-b773-15687d5bf29f:2026-10-12T06:49:18.388Z",
+      "observationId": "EI-25755289880422423",
+      "journalRows": 1,
+      "observationRows": 1
+    },
+    "deduped": true,
+    "publishedSuppressed": true,
+    "progressSuppressed": true,
+    "requests": [
+      {
+        "name": "coord:whoami",
+        "status": 200
+      },
+      {
+        "name": "journal:record-turn",
+        "status": 200
+      },
+      {
+        "name": "journal:record-turn",
+        "status": 200
+      },
+      {
+        "name": "coord:whoami",
+        "status": 200
+      },
+      {
+        "name": "reports:publish",
+        "status": 200
+      },
+      {
+        "name": "journal:record-turn",
+        "status": 200
+      },
+      {
+        "name": "coord:whoami",
+        "status": 200
+      },
+      {
+        "name": "journal:record-turn",
+        "status": 200
+      }
+    ],
+    "scope": "Real public HTTP dispatch and detector on a disposable current-build operator; private transcript fixtures.",
+    "hostPid": 3972137,
+    "hostStopped": true,
+    "bundleSha256": "bf5143b0dd890913afcfcb87097670f778442a87c06b4fc1699206998d6733ee",
+    "health": {
+      "ok": true,
+      "service": "papercusp-operator",
+      "sha": "e1770c7a5d",
+      "version": "0.0.1",
+      "ts": "2026-10-12T06:49:18.194Z"
+    }
+  },
+  "outerWrapper": {
+    "exit": {
+      "code": 0,
+      "signal": null
+    },
+    "cleanup": "Original log records stopping postgres and server shutdown; outer parent data directory removed.",
+    "dataDir": "/dev/shm/pcv/papercusp-test-pg-1JRHq6",
+    "dataDirExistsAfterExit": false
+  },
+  "retention": {
+    "originalEvidenceDir": "/home/builduser/.local/state/verification-harness/isolated-integration/20261012T064724Z-3852738",
+    "retainedProofDir": "/home/builduser/.local/state/verification-harness/isolated-integration/retained/20261012T064724Z-3852738",
+    "note": "Maintained completion retention preserves result/source/lifecycle. This committed artifact also preserves the original private HTTP request envelopes and scenario receipt after automatic run-directory pruning.",
+    "publicExport": {
+      "serializer": "scripts/lib/identity-leak-patterns.mjs --serialize-json",
+      "originalArchiveSha256": "7426639c4ad670867b501d8af2b1e7a081796cdad055e611d2ef8cc6afaa4a39",
+      "redaction": "Public copy replaces machine home paths and host identity. Original receipt hashes, canonical execution fields, assertions, counters and source identities are unchanged.",
+      "originalCustody": "Original private receipts and archive retained under WI-10007208; originalArchiveSha256 is the private archive hash, not this exported file hash."
+    }
+  },
+  "limitations": [
+    "Private synthetic transcripts and actors; no production transcript was created.",
+    "Current-build integration proof only; no persona LLM claim, native retirement/citation claim, independent acceptance or final shipment claim.",
+    "Original failing run directories can be automatically pruned; retained canonical FAIL rows and full caller logs are not rewritten."
+  ]
+}

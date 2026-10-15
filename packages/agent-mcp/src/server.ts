@@ -169,20 +169,18 @@ function valueAtPath(input: unknown, segs: PropertyKey[]): unknown {
 
 /**
  * Render validation issues into one agent-facing `path: message; …` string —
- * but for a string `too_big` issue, tell the agent HOW FAR over the cap it is and
+ * for a string `too_big` issue, tell the agent HOW FAR over the cap it is and
  * the exact target length (agent-tooling-token-efficiency-2026-06-25 P-003). Derived
  * from the issue's `maximum` + the actual input length at that path, e.g.
  * `goal: too long — 412 chars over the 500-char limit; trim to 500.` so the agent
  * trims deterministically in ONE retry instead of blind-retrying the same value. A
  * telemetry audit traced ~1,000+ tool calls/14d failing purely on too-long args.
  *
- * A `number` `too_big` issue gets the same treatment (EI-21864057724720621):
- * Zod's raw message for a numeric ceiling — `Too big: expected number to be
- * <=10` — names the ceiling but not the caller's actual value or how far past
- * it they landed, so a caller retries blind instead of clamping in one step
- * (measured recurring independently across 6+ sessions against
- * `work_items:get`'s `threadLimit`, capped at 10). e.g.
- * `threadLimit: too big — 40 over the 10 limit; use 10.`
+ * A `number` `too_big` issue reports the caller's requested value and the usable
+ * ceiling (EI-21864057724720621). Reporting only the excess makes the leading
+ * number ambiguous when it happens to equal the limit, as with byte_limit=8192
+ * against a 4096 maximum. e.g. `byte_limit: too big — 8192 over the 4096 limit;
+ * use ≤4096.`
  *
  * Generic over any field/tool; non-too_big issues keep their original
  * `path: message`.
@@ -222,11 +220,11 @@ export function formatInvalidArgs(issues: ReadonlyArray<ValidationIssue>, input:
     if (issue.code === 'too_big' && issue.origin === 'number' && typeof issue.maximum === 'number') {
       const max = issue.maximum;
       const actual = valueAtPath(input, segs);
-      const over = typeof actual === 'number' ? actual - max : null;
+      const exceeds = typeof actual === 'number' && actual > max;
       const detail =
-        over !== null && over > 0
-          ? `too big — ${over} over the ${max} limit; use ${max}.`
-          : `too big — over the ${max} limit; use ${max}.`;
+        exceeds
+          ? `too big — ${actual} over the ${max} limit; use ≤${max}.`
+          : `too big — over the ${max} limit; use ≤${max}.`;
       return [path ? `${path}: ${detail}` : detail];
     }
     return [path ? `${path}: ${issue.message}` : issue.message];
@@ -283,7 +281,13 @@ export async function dispatch(opts: DispatchOptions): Promise<DispatchResult> {
   if (!principal) {
     return { ok: false, error: { code: 'invalid_bearer', message: 'Bearer token did not resolve to a principal' } };
   }
-  if (!principal.capabilities.has(tool.capability)) {
+  if (principal.allowedTools !== undefined && !principal.allowedTools.has(tool.name)) {
+    return {
+      ok: false,
+      error: { code: 'authorization_denied', message: `Principal ${principal.slug} is not allowed to call tool "${tool.name}"` },
+    };
+  }
+  if (!principal.capabilities.has(tool.capability) && !principal.capabilities.has('*')) {
     return {
       ok: false,
       error: {
@@ -511,6 +515,7 @@ export async function listResources(auth: ResourceAuth): Promise<ListResourcesRe
   if (!principal) {
     return { ok: false, error: { code: 'invalid_bearer', message: 'Bearer did not resolve to a principal' } };
   }
+  if (principal.allowedTools !== undefined) return { ok: true, resources: [] };
 
   const visible = getResourceCatalog().filter((r) =>
     principal.capabilities.has('*') || principal.capabilities.has(r.capability),
@@ -576,6 +581,12 @@ export async function readResource(opts: ReadResourceOptions): Promise<ReadResou
     if (!principal) {
       return { ok: false, error: { code: 'invalid_bearer', message: 'Bearer did not resolve to a principal' } };
     }
+    if (principal.allowedTools !== undefined) {
+      return {
+        ok: false,
+        error: { code: 'tool_scope_only', message: 'This principal is scoped to its exact MCP tool allowlist' },
+      };
+    }
     return readScratchResource(opts.uri, principal);
   }
 
@@ -588,6 +599,12 @@ export async function readResource(opts: ReadResourceOptions): Promise<ReadResou
   );
   if (!principal) {
     return { ok: false, error: { code: 'invalid_bearer', message: 'Bearer did not resolve to a principal' } };
+  }
+  if (principal.allowedTools !== undefined) {
+    return {
+      ok: false,
+      error: { code: 'tool_scope_only', message: 'This principal is scoped to its exact MCP tool allowlist' },
+    };
   }
   if (!principal.capabilities.has('*') && !principal.capabilities.has(matched.def.capability)) {
     return {
@@ -655,8 +672,9 @@ export async function listPrompts(bearer: string): Promise<ListPromptsResult> {
   if (!principal) {
     return { ok: false, error: { code: 'invalid_bearer', message: 'Bearer did not resolve to a principal' } };
   }
+  if (principal.allowedTools !== undefined) return { ok: true, prompts: [] };
   const visible = getPromptCatalog().filter(
-    (p) => !p.capability || principal.capabilities.has(p.capability),
+    (p) => !p.capability || principal.capabilities.has(p.capability) || principal.capabilities.has('*'),
   );
   return {
     ok: true,
@@ -678,7 +696,13 @@ export async function getPrompt(opts: GetPromptOptions): Promise<GetPromptResult
   if (!principal) {
     return { ok: false, error: { code: 'invalid_bearer', message: 'Bearer did not resolve to a principal' } };
   }
-  if (def.capability && !principal.capabilities.has(def.capability)) {
+  if (principal.allowedTools !== undefined) {
+    return {
+      ok: false,
+      error: { code: 'tool_scope_only', message: 'This principal is scoped to its exact MCP tool allowlist' },
+    };
+  }
+  if (def.capability && !principal.capabilities.has(def.capability) && !principal.capabilities.has('*')) {
     return {
       ok: false,
       error: {
@@ -746,7 +770,11 @@ export async function startServer(opts: StartServerOptions = {}): Promise<void> 
     const catalog = getCatalog();
     const tools = await Promise.all(
       catalog
-      .filter((t) => !principal || principal.capabilities.has(t.capability))
+      .filter((t) =>
+        !principal ||
+        ((principal.allowedTools === undefined || principal.allowedTools.has(t.name)) &&
+          (principal.capabilities.has(t.capability) || principal.capabilities.has('*'))),
+      )
       .map(async (t) => {
         // GUARDED conversion, never a raw z.toJSONSchema (EI-10996 / WI-4596).
         // This runs inside the tools/list map, so an unrepresentable args schema

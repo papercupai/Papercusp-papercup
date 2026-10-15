@@ -92,8 +92,7 @@ function ThemePreview({ themeId }: { themeId: string }) {
   );
 }
 
-export default function PersonalizationSettingsPage() {
-  const [visualEffectsMode, setVisualEffectsMode] = useState<VisualEffectsMode>('system');
+function NativeThemeSettings() {
   const activeTheme = useActiveTheme();
   const { themes: customThemes, invalidate: invalidateThemes } = useThemeCatalog();
   // Editor open-state in the URL (repo nuqs rule): null = closed, 'new' = create
@@ -101,25 +100,7 @@ export default function PersonalizationSettingsPage() {
   const [themeEdit, setThemeEdit] = useQueryState('themeEdit', parseAsString);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
-  useEffect(() => {
-    const syncVisualEffects = () => {
-      const mode = readVisualEffectsMode();
-      setVisualEffectsMode(mode);
-      applyVisualEffectsMode(mode);
-    };
-    syncVisualEffects();
-    return subscribeVisualEffects(() => setVisualEffectsMode(readVisualEffectsMode()));
-  }, []);
-
-  const setVisualEffectsPreference = useCallback((value: string) => {
-    const mode = (VISUAL_EFFECTS_OPTIONS.some((opt) => opt.value === value) ? value : 'system') as VisualEffectsMode;
-    setVisualEffectsMode(mode);
-    writeVisualEffectsMode(mode);
-    toast.success('Visual effects preference saved');
-  }, []);
-
   const themes = themeList(customThemes);
-  const selectedVisualEffects = VISUAL_EFFECTS_OPTIONS.find((opt) => opt.value === visualEffectsMode) ?? VISUAL_EFFECTS_OPTIONS[0];
 
   const selectTheme = useCallback(
     (id: string) => {
@@ -169,19 +150,7 @@ export default function PersonalizationSettingsPage() {
     (findCustomTheme(activeTheme, customThemes) ? 'Your custom theme.' : 'Custom theme.');
 
   return (
-    <div>
-      <h1>Personalization</h1>
-      <p className="pc-settings-intro">
-        Tune browser-local presentation preferences for this Papercup interface.
-      </p>
-
-      {/* A host may own an additional presentation preference while this page
-          still owns where that preference belongs. The desktop supplies no
-          slot; the web portal supplies its light/system/dark preference here
-          instead of rendering a second Settings card above the whole page. */}
-      <OperatorSettingsSlot name="personalization" />
-
-      <section className="pc-settings-section">
+    <section className="pc-settings-section">
         <h2>Theme</h2>
         <p className="pc-settings-hint" style={{ margin: '0 0 12px' }}>
           Recolors the entire interface on this device. A theme changes only the high-level color
@@ -316,6 +285,46 @@ export default function PersonalizationSettingsPage() {
           />
         )}
       </section>
+  );
+}
+
+export default function PersonalizationSettingsPage() {
+  const [visualEffectsMode, setVisualEffectsMode] = useState<VisualEffectsMode>('system');
+  useEffect(() => {
+    const syncVisualEffects = () => {
+      const mode = readVisualEffectsMode();
+      setVisualEffectsMode(mode);
+      applyVisualEffectsMode(mode);
+    };
+    syncVisualEffects();
+    return subscribeVisualEffects(() => setVisualEffectsMode(readVisualEffectsMode()));
+  }, []);
+
+  const setVisualEffectsPreference = useCallback((value: string) => {
+    const mode = (VISUAL_EFFECTS_OPTIONS.some((opt) => opt.value === value) ? value : 'system') as VisualEffectsMode;
+    setVisualEffectsMode(mode);
+    writeVisualEffectsMode(mode);
+    toast.success('Visual effects preference saved');
+  }, []);
+
+  const selectedVisualEffects = VISUAL_EFFECTS_OPTIONS.find((opt) => opt.value === visualEffectsMode) ?? VISUAL_EFFECTS_OPTIONS[0];
+
+  return (
+    <div>
+      <h1>Personalization</h1>
+      <p className="pc-settings-intro">
+        Tune browser-local presentation preferences for this Papercup interface.
+      </p>
+
+      {/* A host may own an additional presentation preference while this page
+          still owns where that preference belongs. The desktop supplies no
+          slot; the web portal supplies its light/system/dark preference here
+          instead of rendering a second Settings card above the whole page. */}
+      <OperatorSettingsSlot name="personalization" />
+
+      {/* A replacement owns the document theme, so the native hooks must
+          remain unmounted; constructing the fallback element is inert. */}
+      <OperatorSettingsSlot name="theme" fallback={<NativeThemeSettings />} />
 
       <section className="pc-settings-section">
         <h2>Visual effects</h2>
@@ -340,7 +349,10 @@ export default function PersonalizationSettingsPage() {
       </section>
 
       <section className="pc-settings-section">
-        <SavedPromptsSection scope={{ kind: 'workspace' }} />
+        <OperatorSettingsSlot
+          name="saved-prompts"
+          fallback={<SavedPromptsSection scope={{ kind: 'workspace' }} />}
+        />
       </section>
     </div>
   );

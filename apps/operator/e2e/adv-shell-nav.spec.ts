@@ -382,7 +382,12 @@ test.describe('/adv shell tab navigation (P-011)', () => {
     // from cmdk's internal keyboard-navigation selection state).
     await expect(moreTrigger(page)).toHaveClass(/pc-advshell__more-trigger--active/);
     await moreTrigger(page).click();
-    await expect(page.locator('.pc-advshell__more-item[data-active]', { hasText: 'Git' })).toHaveCount(1);
+    // The More menu lists a visited section twice, once under 'Recent' and once
+    // in its own group, and both rows carry data-active (AdvMoreMenu, D-001).
+    // So assert the intent, not a count: Git is active and no OTHER section is
+    // (WI-10006792).
+    await expect(page.locator('.pc-advshell__more-item[data-active]', { hasText: 'Git' }).first()).toBeVisible();
+    await expect(page.locator('.pc-advshell__more-item[data-active]', { hasNotText: 'Git' })).toHaveCount(0);
   });
 
   test('the packaged 1280x720 header keeps every visible control in the viewport', async ({ page }) => {
@@ -414,10 +419,40 @@ test.describe('/adv shell tab navigation (P-011)', () => {
       }),
     );
 
+    // Self-diagnosing failure (WI-10006979): the header's box, its right lane,
+    // the docked-rail CSS vars and the body reservation are what decide where
+    // the right-side controls land, so a red names its cause, not just a pixel.
+    const geometry = await page.evaluate(() => {
+      const box = (el: Element | null) => {
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { left: Math.round(r.left), right: Math.round(r.right), width: Math.round(r.width) };
+      };
+      const header = document.querySelector('.pc-header');
+      const rootStyle = getComputedStyle(document.documentElement);
+      const bodyStyle = getComputedStyle(document.body);
+      const headerStyle = header ? getComputedStyle(header) : null;
+      return {
+        innerWidth: window.innerWidth,
+        clientWidth: document.documentElement.clientWidth,
+        bodyClass: document.body.className,
+        bodyPadding: `${bodyStyle.paddingLeft} / ${bodyStyle.paddingRight}`,
+        vars: ['--op-chat-w', '--left-sidebar-w', '--dev-rail-w'].map((v) => `${v}=${rootStyle.getPropertyValue(v).trim() || 'unset'}`).join(' '),
+        header: box(header),
+        headerWidthStyle: headerStyle?.width,
+        headerColumns: headerStyle?.gridTemplateColumns,
+        headerClass: header?.className,
+        left: box(document.querySelector('.pc-header-left')),
+        center: box(document.querySelector('.pc-header-center')),
+        right: box(document.querySelector('.pc-header-right')),
+      };
+    });
+    const geometryNote = `header geometry: ${JSON.stringify(geometry)}`;
+
     expect(controls.length).toBeGreaterThan(0);
     for (const control of controls) {
-      expect(control.left, `${control.name} starts outside the viewport`).toBeGreaterThanOrEqual(0);
-      expect(control.right, `${control.name} ends outside the viewport`).toBeLessThanOrEqual(1280);
+      expect(control.left, `${control.name} starts outside the viewport; ${geometryNote}`).toBeGreaterThanOrEqual(0);
+      expect(control.right, `${control.name} ends outside the viewport; ${geometryNote}`).toBeLessThanOrEqual(1280);
       expect(control.top, `${control.name} is above the viewport`).toBeGreaterThanOrEqual(0);
       expect(control.bottom, `${control.name} is below the viewport`).toBeLessThanOrEqual(720);
     }
@@ -428,4 +463,152 @@ test.describe('/adv shell tab navigation (P-011)', () => {
     await expect(workspaceTrigger).toBeFocused();
     await workspaceTrigger.click({ trial: true });
   });
+});
+
+type ViteCssFailureObservation = {
+  message: string;
+  failedUrl: string | null;
+  appOrigin: string;
+  pageUrl: string;
+  timeOrigin: number;
+  eventResourceTiming: Array<{
+    name: string;
+    startTime: number;
+    duration: number;
+    transferSize: number;
+    encodedBodySize: number;
+    decodedBodySize: number;
+    responseStatus: number | null;
+  }>;
+  resourceTiming: Array<{
+    name: string;
+    startTime: number;
+    duration: number;
+    transferSize: number;
+    encodedBodySize: number;
+    decodedBodySize: number;
+    responseStatus: number | null;
+  }>;
+};
+
+type ViteCssFailureWindow = Window & {
+  __viteCssFailureProbe?: { events: ViteCssFailureObservation[] };
+};
+
+test('first lazy HUD CSS preload failure captures response and timing before reload', async ({ page }, testInfo) => {
+  // Switching from Overview to the HUD lazy subtree causes Vite's production
+  // import-preload helper to add an extracted CSS link.
+  // The probe is installed before the app entry runs and snapshots timing in the
+  // event handler itself, before any later navigation could clear it.
+  await page.addInitScript(() => {
+    const probe: { events: ViteCssFailureObservation[] } = { events: [] };
+    (window as ViteCssFailureWindow).__viteCssFailureProbe = probe;
+    window.addEventListener('vite:preloadError', (event) => {
+      const payload = (event as Event & { payload?: unknown }).payload;
+      const message = String((payload as { message?: unknown } | null)?.message ?? payload ?? '');
+      const prefix = 'Unable to preload CSS for ';
+      const failedUrl = message.startsWith(prefix)
+        ? new URL(message.slice(prefix.length), location.origin).href
+        : null;
+      const resourceTiming = performance.getEntriesByType('resource')
+        .filter((entry) => entry.name === failedUrl)
+        .map((entry) => {
+          const timing = entry as PerformanceResourceTiming & { responseStatus?: number };
+          return {
+            name: timing.name,
+            startTime: timing.startTime,
+            duration: timing.duration,
+            transferSize: timing.transferSize,
+            encodedBodySize: timing.encodedBodySize,
+            decodedBodySize: timing.decodedBodySize,
+            responseStatus: timing.responseStatus ?? null,
+          };
+        });
+      probe.events.push({
+        message,
+        failedUrl,
+        appOrigin: location.origin,
+        pageUrl: location.href,
+        timeOrigin: performance.timeOrigin,
+        eventResourceTiming: resourceTiming,
+        resourceTiming: [],
+      });
+    });
+  });
+
+  await stubShellApis(page);
+  const initialResponse = await page.goto('/adv?tab=overview&slug=e2e-nav-pot&scope=expanded', {
+    waitUntil: 'domcontentloaded',
+  });
+  expect([200, 304]).toContain(initialResponse?.status() ?? 0);
+  await expect(page.getByRole('tablist', { name: 'Adv sections' })).toBeVisible();
+
+  const initialTimeOrigin = await page.evaluate(() => performance.timeOrigin);
+  const failedStyleResponsePromise = page.waitForResponse((response) =>
+    response.request().resourceType() === 'stylesheet' && response.status() === 503,
+  );
+  let failedUrl: string | undefined;
+  const armStatus = await page.evaluate(async () => {
+    const response = await fetch('/__e2e/arm-first-css-failure', { method: 'POST' });
+    return response.status;
+  });
+  expect(armStatus).toBe(204);
+  await page.getByRole('tab', { name: 'hud', exact: true }).click();
+  await expect.poll(async () => page.evaluate(
+    () => (window as ViteCssFailureWindow).__viteCssFailureProbe?.events.length ?? 0,
+  )).toBe(1);
+  const failedStyleResponse = await failedStyleResponsePromise;
+  failedUrl = failedStyleResponse.url();
+  const playwrightRequestTiming = failedStyleResponse.request().timing();
+
+  const observation = await page.evaluate(
+    () => {
+      const recorded = (window as ViteCssFailureWindow).__viteCssFailureProbe!.events[0]!;
+      const resourceTiming = performance.getEntriesByName(recorded.failedUrl!, 'resource').map((entry) => {
+        const timing = entry as PerformanceResourceTiming & { responseStatus?: number };
+        return {
+          name: timing.name,
+          startTime: timing.startTime,
+          duration: timing.duration,
+          transferSize: timing.transferSize,
+          encodedBodySize: timing.encodedBodySize,
+          decodedBodySize: timing.decodedBodySize,
+          responseStatus: timing.responseStatus ?? null,
+        };
+      });
+      return { ...recorded, resourceTiming };
+    },
+  );
+  expect(failedUrl).toBeDefined();
+  expect(observation.message).toContain('Unable to preload CSS for');
+  expect(observation.failedUrl).toBe(failedUrl);
+  expect(new URL(failedUrl!).origin).toBe(observation.appOrigin);
+  expect(failedStyleResponse.status()).toBe(503);
+  expect(new URL(failedStyleResponse.url()).origin).toBe(observation.appOrigin);
+  expect(observation.eventResourceTiming).toEqual([]);
+  expect(observation.resourceTiming.length).toBeLessThanOrEqual(1);
+  if (observation.resourceTiming.length === 1) {
+    expect(observation.resourceTiming[0]!.name).toBe(failedUrl);
+    expect(observation.resourceTiming[0]!.startTime).toBeGreaterThanOrEqual(0);
+  }
+  expect(playwrightRequestTiming.startTime).toBeGreaterThan(0);
+  expect(playwrightRequestTiming.responseStart).toBeGreaterThanOrEqual(0);
+  if (playwrightRequestTiming.responseEnd >= 0) {
+    expect(playwrightRequestTiming.responseEnd).toBeGreaterThanOrEqual(playwrightRequestTiming.responseStart);
+  }
+  await testInfo.attach('first-css-preload-observation.json', {
+    body: JSON.stringify({
+      observation,
+      response: {
+        url: failedStyleResponse.url(),
+        status: failedStyleResponse.status(),
+        origin: new URL(failedStyleResponse.url()).origin,
+        playwrightRequestTiming,
+      },
+    }, null, 2),
+    contentType: 'application/json',
+  });
+  expect(observation.pageUrl).toContain('/adv');
+  expect(observation.timeOrigin).toBe(initialTimeOrigin);
+  expect(await page.evaluate(() => performance.timeOrigin)).toBe(initialTimeOrigin);
 });

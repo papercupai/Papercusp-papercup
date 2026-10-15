@@ -23,7 +23,7 @@ const DAY_MS = 86_400_000;
  * Minimal stand-in for the postgres.js client. It must be BOTH callable as `sql(rows, ...cols)`
  * and usable as a tagged template, because the ingester uses both forms in one statement.
  */
-function makeFakeSql(opts: { failInsert?: boolean } = {}) {
+function makeFakeSql(opts: { failInsert?: boolean; insertReceipt?: { count?: unknown } } = {}) {
   const statements: string[] = [];
   const inserts: Array<{ text: string; values: unknown[] }> = [];
   let inserted = 0;
@@ -40,7 +40,7 @@ function makeFakeSql(opts: { failInsert?: boolean } = {}) {
         const firstArray = rest.find((v) => Array.isArray(v)) as unknown[] | undefined;
         const n = firstArray ? firstArray.length : 0;
         inserted += n;
-        return Promise.resolve(Object.assign([], { count: n }));
+        return Promise.resolve(Object.assign([], opts.insertReceipt ?? { count: n }));
       }
       return Promise.resolve(Object.assign([], { count: 0 }));
     }
@@ -61,6 +61,33 @@ function row(kind: string, ts: string, extra: Record<string, unknown> = {}): str
 }
 
 describe('hostEventDigest', () => {
+  it('routes only confirmed named Claude auth faults, and retains failed reactions for retry', async () => {
+    const dir = await makeDir();
+    const ts = '2026-10-11T06:35:00.000Z';
+    const filename = join(dir, 'su-failed.events.jsonl');
+    await writeFile(filename, [
+      row('auth-block-detected', ts, { agent: 'claude', accountId: 'bad', confirmedProviderFailure: true }),
+      row('auth-block-detected', ts, { agent: 'claude', accountId: 'echo', confirmedProviderFailure: false }),
+      row('auth-block-detected', ts, { agent: 'codex', accountId: 'stale-memory', confirmedProviderFailure: true }),
+    ].join('\n'));
+    const onCredentialFailure = vi.fn(async (): Promise<void> => { throw new Error('health write unavailable'); });
+    const { sql } = makeFakeSql();
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let failed;
+    try {
+      failed = await ingestPsuPtyHostEvents({ sql, workspaceId: 'ws', dir, onCredentialFailure });
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('health write unavailable'));
+    } finally { error.mockRestore(); }
+    expect(failed.ingestErrors).toBe(1);
+    expect(failed.rowsInserted).toBe(0);
+    expect(await readdir(dir)).toContain('su-failed.events.jsonl');
+    onCredentialFailure.mockResolvedValue(undefined);
+    const succeeded = await ingestPsuPtyHostEvents({ sql, workspaceId: 'ws', dir, onCredentialFailure });
+    expect(succeeded.rowsInserted).toBe(3);
+    expect(onCredentialFailure).toHaveBeenCalledTimes(2);
+    expect(onCredentialFailure).toHaveBeenLastCalledWith({ accountId: 'bad', ownerId: 'su-failed', observedAt: Date.parse(ts), workspaceId: 'ws' });
+  });
+
   it('is stable regardless of payload key insertion order', () => {
     const a = hostEventDigest('su-1', '2026-09-22T00:00:00.000Z', 'turn-delivered', {
       label: 'x',
@@ -229,6 +256,54 @@ describe('ingestPsuPtyHostEvents', () => {
     const res = await ingestPsuPtyHostEvents({ sql, workspaceId: 'ws', dir });
 
     expect(res.rowsInserted).toBe(1);
+    expect(res.filesDeleted).toBe(1);
+    expect(await readdir(dir)).not.toContain('su-old.events.jsonl');
+  });
+
+  it.each([
+    { label: 'missing', receipt: {} },
+    { label: 'null', receipt: { count: null } },
+    { label: 'negative', receipt: { count: -1 } },
+    { label: 'fractional', receipt: { count: 0.5 } },
+    { label: 'greater than the batch', receipt: { count: 2 } },
+    { label: 'NaN', receipt: { count: Number.NaN } },
+  ])('retains the file and reports a $label INSERT row count', async ({ receipt }) => {
+    const dir = await makeDir();
+    const path = join(dir, 'su-old.events.jsonl');
+    await writeFile(path, row('busy-gate-expired', '2026-07-01T00:00:00.000Z'));
+    const old = (Date.now() - 60 * DAY_MS) / 1000;
+    await utimes(path, old, old);
+    const { sql } = makeFakeSql({ insertReceipt: receipt });
+    const errors: unknown[][] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args) => errors.push(args));
+    let res;
+    try {
+      res = await ingestPsuPtyHostEvents({ sql, workspaceId: 'ws', dir });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(res.rowsInserted).toBe(0);
+    expect(res.filesIngested).toBe(0);
+    expect(res.filesRetainedUningested).toBe(1);
+    expect(res.filesDeleted).toBe(0);
+    expect(res.ingestErrors).toBe(1);
+    expect(res.firstIngestError).toMatch(/INSERT row count/);
+    expect(errors).toHaveLength(1);
+    expect(String(errors[0]?.[0])).toMatch(/INSERT failed for su-old/);
+    expect(await readdir(dir)).toContain('su-old.events.jsonl');
+  });
+
+  it('accepts a measured zero INSERT count when all rows already exist', async () => {
+    const dir = await makeDir();
+    const path = join(dir, 'su-old.events.jsonl');
+    await writeFile(path, row('busy-gate-expired', '2026-07-01T00:00:00.000Z'));
+    const old = (Date.now() - 60 * DAY_MS) / 1000;
+    await utimes(path, old, old);
+    const { sql } = makeFakeSql({ insertReceipt: { count: 0 } });
+    const res = await ingestPsuPtyHostEvents({ sql, workspaceId: 'ws', dir });
+    expect(res.rowsInserted).toBe(0);
+    expect(res.filesIngested).toBe(1);
+    expect(res.ingestErrors).toBe(0);
     expect(res.filesDeleted).toBe(1);
     expect(await readdir(dir)).not.toContain('su-old.events.jsonl');
   });

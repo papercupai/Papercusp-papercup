@@ -1,0 +1,190 @@
+{
+  "schemaVersion": "p011-current-standalone-memory-qualification-v1",
+  "workItem": "WI-10005737",
+  "parent": "WI-10004890",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "spec": {
+    "id": "PERF-OCT1-P011-MEMORY",
+    "revision": 2,
+    "fingerprint": "6059e251ea51a61458afd5075a8190a60e1f1139d28c55784b4ff12d2c624010"
+  },
+  "scope": "Final guarded standalone candidate private resource comparison plus separately bounded actual staging standalone counter observation.",
+  "measurements": {
+    "artifacts": [
+      {
+        "path": "docs/evidence/papercusp-oct1-p011-spawner-safe-boot-pair-r3-2026-10-02.json",
+        "bytes": 277233,
+        "sha256": "a4650f459bd06d407650144d52d3716dce98e31a35cae7c5e7eb042b3a5981e9"
+      },
+      {
+        "path": "docs/evidence/papercusp-oct1-p011-live-standalone-r1-2026-10-02.json",
+        "bytes": 90360,
+        "sha256": "6d6acbec35a4d1851809dc64de151025d8d0540acfc88b4b83736f7f1853a90e"
+      }
+    ],
+    "pairs": [
+      {
+        "baselineArm": 0,
+        "candidateArm": 1,
+        "finalPssReductionBytes": 419844096,
+        "finalCumulativeV8AllocationReductionBytes": 1031421856
+      },
+      {
+        "baselineArm": 3,
+        "candidateArm": 2,
+        "finalPssReductionBytes": 433133568,
+        "finalCumulativeV8AllocationReductionBytes": 1061171864
+      }
+    ],
+    "logs": [
+      {
+        "path": "/tmp/su-7db4f-p011-spawner-safe-pair-r3.log",
+        "bytes": 14855,
+        "sha256": "04d637e7e3d2b0509328aa405f6a9e8fd1e7335a81698250e00d246503628c4c",
+        "resultLines": [
+          "      Tests  1 passed | 18 skipped (19)",
+          "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=10a4c0cbf3 uncommittedPaths=0/1 provenance=unknown startedAt=2026-10-02T23:41:04.724Z skippedTests=18"
+        ]
+      },
+      {
+        "path": "/tmp/su-7db4f-p011-live-sibling-guards-r1.log",
+        "bytes": 5647,
+        "sha256": "5e00ea3d8dabb45cf673d0e30709743cc335009f44668bfb83c3a8255631b745",
+        "resultLines": [
+          "      Tests  11 passed | 1 skipped (12)",
+          "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=0af8deae9c uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-02T23:43:56.688Z skippedTests=1"
+        ]
+      },
+      {
+        "path": "/tmp/su-7db4f-p011-live-standalone-r1.log",
+        "bytes": 5609,
+        "sha256": "9dbdda2682bb6728db0ecb0eeb600abc79569834db2b72506325b9b5994996fe",
+        "resultLines": [
+          "      Tests  12 passed (12)",
+          "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=0af8deae9c uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-02T23:45:42.962Z skippedTests=0"
+        ]
+      },
+      {
+        "path": "/tmp/su-7db4f-p011-live-standalone-types-r1.log",
+        "bytes": 1065,
+        "sha256": "40beb2a8985b85f972880bbe83b65ba36fea08a97d67c3952c09951b1ed0b8d3",
+        "resultLines": [
+          "TSC_SERVICE used=1 checked=1 named=1 typeReferencing=0 importers=0 errors=0 queuedMs=766 checkMs=578 snapshotAgeMs=578",
+          "LINT_TSC_RESULT label=operator-core scope=files exit=0 status=clean at=2026-10-02T23:45:42.176Z head=0af8deae9c"
+        ]
+      }
+    ],
+    "detectors": [
+      {
+        "path": "docs/evidence/papercusp-oct1-p011-spawner-safe-boot-pair-r3-2026-10-02.json",
+        "owner": 0,
+        "box": 0,
+        "literals": 0
+      },
+      {
+        "path": "docs/evidence/papercusp-oct1-p011-live-standalone-r1-2026-10-02.json",
+        "owner": 0,
+        "box": 0,
+        "literals": 0
+      },
+      {
+        "path": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+        "owner": 0,
+        "box": 0,
+        "literals": 0
+      }
+    ],
+    "source": {
+      "path": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+      "bytes": 40980,
+      "sha256": "7e0b745132572cb8131675bbb3e0a5ad7fe683c8cd5fb3bbb03e694dc0433dc7"
+    },
+    "pairSourcesStable": true,
+    "live": {
+      "buildSha": "80fbc954da",
+      "startedAt": "2026-10-02T23:45:58.797Z",
+      "endedAt": "2026-10-02T23:46:08.718Z",
+      "samples": 9,
+      "requests": 24,
+      "windows": 3,
+      "operations": [],
+      "cleanup": {
+        "inspector": {
+          "closed": true
+        },
+        "processIdentityPreserved": true,
+        "counterIdentityPreserved": true
+      },
+      "counterBundle": {
+        "path": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+        "argvEntry": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+        "diskSha256": "91d3eef33cdbbc8110c597bc287b4f1ff7937b6da93115e550f655058a5b6b4d",
+        "loadedBuild": "unknown",
+        "role": "maintained-spawner-descendant"
+      },
+      "observedCounterPssBytes": {
+        "min": 339117056,
+        "max": 339121152
+      },
+      "observerMs": {
+        "max": 92.33648499999981
+      }
+    }
+  },
+  "testRuns": [
+    {
+      "id": 20584302,
+      "layer": "integration",
+      "passed": 1,
+      "failed": 0,
+      "skipped": 18,
+      "scope": "New final-safe private full/standalone/standalone/full comparison",
+      "testProvenance": "router HEAD moved; full source graph unknown; ten named sources stable"
+    },
+    {
+      "id": 20584369,
+      "layer": "integration",
+      "passed": 11,
+      "failed": 0,
+      "skipped": 1,
+      "scope": "Exact sibling/executable/ancestry/configured-role guards; live test disabled",
+      "testProvenance": "local dirty named test"
+    },
+    {
+      "id": 20584857,
+      "layer": "integration",
+      "passed": 12,
+      "failed": 0,
+      "skipped": 0,
+      "scope": "Same guards plus actual current staging standalone counter and ordinary HTTP windows",
+      "testProvenance": "local dirty named test"
+    }
+  ],
+  "definitions": {
+    "pssBytes": "Kernel smaps_rollup Pss kB multiplied by 1024, one PID at a time.",
+    "allocatedBytes": "V8 cumulative total_allocated_bytes, not retained memory or native allocation.",
+    "privatePair": "Two opposite-order pairs from the final maintained boot-safety entries, same server and harmless process:exec workload.",
+    "live": "Selected actual standalone descendant under current :3170 main; three 2-second no-probe idle windows and 24 bounded read-only HTTP requests at concurrency two. Ambient workload uncontrolled; HTTP work is not assigned to the sidecar.",
+    "observer": "Bounded inspector counter reads and serial proc census; no allocation profiler, forced GC, snapshot or trim; observer time is recorded.",
+    "identity": "PID, start ticks, Node executable digest, exact maintained sibling directory, verified ancestry and configured spawner flag. Health identifies main build; sibling's loaded build remains unknown separately from disk SHA."
+  },
+  "verification": {
+    "pairSamples": 48,
+    "pairWindows": 12,
+    "pairHarmlessCommands": 52,
+    "pairForcedCleanup": 0,
+    "pairUnreaped": 0,
+    "liveInspectorClosed": true,
+    "livePidsPreserved": true,
+    "focusedTypeErrors": 0,
+    "identityDetectors": "owner/box/literals all zero for source and both raw artifacts"
+  },
+  "limitations": [
+    "Private paired reduction is not matched live or production recovery.",
+    "Actual live baseline has no counterfactual and does not estimate unique native/retained ownership.",
+    "The independently advertised loaded sibling build and full transitive source/test graph remain unknown.",
+    "Original R2 raw1367a39d/qualification19235b3d and every saved cohort remain unchanged; new R3 is acceptance of the modified final boot-safety candidate, not recovery replay.",
+    "Native agent/model behavior, full desktop distribution, R-8/R-9 independent acceptance and final shipment remain open under the parent."
+  ],
+  "reuse": "Extend the existing live baseline and its production sibling path contract; preserve the existing counter reader, proc census, configured-role reader and inspector cleanup. No new service, launcher, flag or measurement system."
+}

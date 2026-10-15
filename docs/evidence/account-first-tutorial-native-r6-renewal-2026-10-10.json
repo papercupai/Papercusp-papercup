@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "kind": "manual-accessibility-evidence",
+  "name": "Current committed product guide native keyboard and output control renewal",
+  "workItemId": "WI-10007744",
+  "implementationWorkItemId": "WI-10007170",
+  "planSlug": "cloud-app-live-tutorial-2026-10-01",
+  "specId": "AUTO-BAR-R-12-P-010",
+  "specRevision": 7,
+  "observedAt": "2026-10-10T13:34:09.207Z",
+  "sourceManifest": "docs/evidence/account-first-tutorial-native-source-r6-2026-10-10.json",
+  "rootCommit": "dd07170622dbe1000a0e97a38c940af1a9da7403",
+  "portalCommit": "501a33d40324abefde337479b154c1da18f363e0",
+  "procedure": "Maintained product-guide Playwright pause seam in private Xvfb/DBus/AT-SPI, native Chrome and Orca. Sources and all five consumed imports verified before and after. Native Ctrl+plus set 200% zoom. First partial session traversed all twelve lesson buttons plus Help, Reviewed, Pause and Skip with Tab; a subsequent mislabeled Tab count activated Open billing and left the programmatically mounted fixture, so that session stopped143 without a completion claim. Fresh identical committed session verified control labels before Return. AT-SPI seeded focus before keyboard phases. Return selected billing and focused its heading; Return expanded Help; typed public question and Tab/Return invoked the scoped fixture Help. Screenshot shows advisory response. Pause focused Resume; Return restored billing heading. Reopened Help after remount, then label-focused Return exercised Speak, Stop, Replay and Mute. Skip focused Resume; Resume restored billing; repeated label-focused output controls confirmed statuses. Final Skip focused Resume. Deliberate stop143; native children verified gone.",
+  "result": "Scoped manual controls review passed; this deliberately stopped mounted fixture is not an automated test PASS.",
+  "observations": {
+    "nativeZoomPercent": 200,
+    "twelveLessonButtonsAndHelpExitReachedByTabInPartialSession": true,
+    "billingSelectionFocusedHeading": true,
+    "helpExpanded": true,
+    "askAiHelpReachedByTab": true,
+    "fixtureAdvisoryAnswerVisible": true,
+    "pauseFocusedResume": true,
+    "resumeFocusedBillingHeading": true,
+    "speakStatus": "Speaking the lesson.",
+    "stopStatus": "Speech is ready.",
+    "replayStatus": "Speaking the lesson.",
+    "muteStatus": "Guide speech is muted.",
+    "skipFocusedResume": true,
+    "sourceCustodyBeforeAndAfter": "verified"
+  },
+  "speechExcerpts": [
+    "09:32:24.613702 - notification Zoom: 200%",
+    "09:32:53.930749 - Help with this lesson toggle button expanded.",
+    "09:32:29.551755 - Ask AI Help push button.",
+    "09:34:03.640532 - Speech is ready.",
+    "09:34:05.545495 - Speaking the lesson.",
+    "09:34:07.271131 - Guide speech is muted.",
+    "09:34:09.207608 - Resume product guide push button."
+  ],
+  "refs": [
+    { "path": "/dev/shm/tutorial-product-native-r6-20261010T1334.json", "sha256": "77ad5df342864cd8140b9c8c7f6ec7fce3c3abc6bb144787e5c3a28e96a0377e" },
+    { "path": "/dev/shm/tutorial-product-native-r6-20261010T1334-speech.log", "sha256": "19e1fb661b0034b4a4f130cff9c22d5b49e26022116e40eaf40c6bdd506343b9" },
+    { "path": "/dev/shm/tutorial-native-r6-renewed-help200-20261010.png", "sha256": "0d6c4ee4c0e54572334e457dc8d4706cfa85bb452fc800cff9d22677e81dfc61" },
+    { "path": "/dev/shm/tutorial-native-r6-renewed-skip-20261010.png", "sha256": "29bc3115db3519c4210fae482829dfd4906e786412176945730927a5f8219bd2" },
+    { "path": "/dev/shm/tutorial-product-native-r6-20261010T1334-runner.log", "sha256": "e2e06be4c4c5276b40bafca0b131c36a45d411d9285ec861997d93c55636b4f1" }
+  ],
+  "teardown": { "execExitCode": 143, "orcaProcessGone": true, "windowManagerGone": true, "nativeSessionDrained": true },
+  "limitations": [
+    "Manual mounted-guide review; no automated native PASS.",
+    "AT-SPI seeds focus; this is not whole-app pure-Tab evidence. Final output controls were verified by label-focused keyboard Return; incorrect initial Tab-count labels are not evidence of Stop or Replay.",
+    "No native reload, authenticated signup, real highlighted destination task, Tauri bridge, protected native voice input, human-heard provider audio, novice-human review, or production acceptance.",
+    "Help and speech responses are maintained route fixtures. Native output status and Orca announcements do not establish real provider or human hearing.",
+    "R6 screenreader/signup/resumed/catalogue/non-Cloud/billing task-completion method remains wider than this review. Exact R6 tree evaluator still has fixture-calibration, falsifiability, correct-layer, plan-class-risk-floor and disclosed-gap blocks."
+  ]
+}

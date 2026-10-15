@@ -46,6 +46,7 @@ import {
   type GitSyncStepRunner,
   type RunGit,
 } from './run-git-sync';
+import { markSpawnOffloadHost, resetSpawnOffloadHostForTest } from '../../fleet/git-via-sidecar';
 
 /** Run git synchronously for test setup; throws on failure. */
 function git(cwd: string, ...args: string[]): string {
@@ -363,14 +364,24 @@ describe('WI-1416 git subprocess hang guard', () => {
       // the gap rather than the whole of it — and 5 iterations instead of 10 halves the number
       // of forks that can each go slow. Absolute headroom (1000ms), which is the real lever,
       // is 4x the old budget's while the nominal runtime stays ~2.5s.
-      const GAP_MS = 500;
-      const ITERATIONS = 5;
+      //
+      // BEATEN A FOURTH TIME (WI-6554700010008342): the 500ms gap / 1500ms deadline went red in
+      // green-checkpoint run 3ff293fb (2026-10-11, repair head e526f5d4) with `code -1`, while the
+      // file passed alone at the same sha. The ratio is no longer the problem; the absolute
+      // headroom (deadline minus gap) is, because a loaded gate can lose more than 1s between two
+      // writes. Since the ratio fix, run-git-sync defers the idle verdict to setImmediate, so a
+      // stalled PARENT loop already reads pending bytes first; what remains is a slow CHILD (the
+      // shell or the next `sleep` descheduled). So this widens only the headroom, from 1000ms to
+      // 4000ms, and keeps the four-way chain: without the refresh the child is still killed 2000ms
+      // before it would finish.
+      const GAP_MS = 1_000;
+      const ITERATIONS = 7;
       const NOMINAL_TOTAL_MS = GAP_MS * ITERATIONS;
-      const IDLE_DEADLINE_MS = 1_500;
+      const IDLE_DEADLINE_MS = 5_000;
       // Only has to be high enough never to fire on a HEALTHY child; the ceiling is
       // `Math.max(idleTimeoutMs, env)` (run-git-sync.ts:143-146), so it can never sit below the
       // idle deadline no matter what is set here.
-      const HARD_CEILING_MS = 15_000;
+      const HARD_CEILING_MS = 30_000;
       // Recurrence guard: makes the four-way chain EXECUTABLE, so a future re-tighten fails
       // loudly and deterministically here instead of flaking on the shared gate hours later.
       expect(GAP_MS).toBeLessThan(IDLE_DEADLINE_MS);
@@ -388,7 +399,7 @@ describe('WI-1416 git subprocess hang guard', () => {
       const started = Date.now();
       const r = await runGitBounded(['fetch', 'origin', 'main'], cwd, IDLE_DEADLINE_MS);
       // Outliving the deadline IS the property under test: without the refresh the child is
-      // killed at 1500ms, a full 1000ms short of finishing, so `code` is -1 and the last
+      // killed at 5000ms, a full 2000ms short of finishing, so `code` is -1 and the last
       // progress line never arrives. Both assertions below fail on a real regression.
       expect(Date.now() - started).toBeGreaterThanOrEqual(IDLE_DEADLINE_MS);
       expect(r.code).toBe(0);
@@ -406,7 +417,8 @@ describe('WI-1416 git subprocess hang guard', () => {
     // WI-38338: vitest's 5000ms default was itself a live flake vector here, independent of the
     // timing budget. WI-38329 raised the nominal runtime to ~2.5s, so the explicit deadline is
     // raised with it to keep the same generous multiple; this changes no timing semantics.
-  }, 30_000);
+    // WI-6554700010008342 raised the nominal runtime to ~7s, so the deadline is 60s.
+  }, 60_000);
 
   it('still kills an endlessly-chatty network child at the independent hard ceiling', async () => {
     // WI-38338 — TIMING BUDGET, do not re-tighten. This is the SIBLING of the WI-38223 fix above
@@ -474,19 +486,26 @@ describe('WI-1416 git subprocess hang guard', () => {
   }, 20_000);
 
   it('routes git through the sidecar only on the bg-host opt-in, never inside the sidecar itself', () => {
-    expect(gitSyncSidecarEnabled({ PAPERCUSP_SPAWNER_SIDECAR: '1' } as NodeJS.ProcessEnv)).toBe(true);
-    expect(
-      gitSyncSidecarEnabled({
-        PAPERCUSP_SPAWNER_SIDECAR: '1',
-        PAPERCUSP_SPAWNER_SIDECAR_MODE: '1',
-      } as NodeJS.ProcessEnv),
-    ).toBe(false);
-    expect(
-      gitSyncSidecarEnabled({
-        PAPERCUSP_SPAWNER_SIDECAR: '1',
-        PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR: '0',
-      } as NodeJS.ProcessEnv),
-    ).toBe(false);
-    expect(gitSyncSidecarEnabled({ PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR: 'true' } as NodeJS.ProcessEnv)).toBe(true);
+    try {
+      const hostEnv = { PAPERCUSP_SPAWNER_SIDECAR: '1' } as NodeJS.ProcessEnv;
+      expect(gitSyncSidecarEnabled(hostEnv)).toBe(false);
+      markSpawnOffloadHost();
+      expect(gitSyncSidecarEnabled(hostEnv)).toBe(true);
+      expect(
+        gitSyncSidecarEnabled({
+          PAPERCUSP_SPAWNER_SIDECAR: '1',
+          PAPERCUSP_SPAWNER_SIDECAR_MODE: '1',
+        } as NodeJS.ProcessEnv),
+      ).toBe(false);
+      expect(
+        gitSyncSidecarEnabled({
+          PAPERCUSP_SPAWNER_SIDECAR: '1',
+          PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR: '0',
+        } as NodeJS.ProcessEnv),
+      ).toBe(false);
+      expect(gitSyncSidecarEnabled({ PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR: 'true' } as NodeJS.ProcessEnv)).toBe(true);
+    } finally {
+      resetSpawnOffloadHostForTest();
+    }
   });
 });

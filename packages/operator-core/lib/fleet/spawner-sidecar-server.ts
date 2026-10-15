@@ -55,15 +55,27 @@ import '../flag-override-store-boot-effect';
 import { spawnInvokeOnce, type SpawnInvokeOnceResult } from '../dbos/orchestrator-runner';
 import { installFlagOverrideStore } from '../flag-override-store';
 import { ensureFlagChangeListener } from '../flag-change-listener';
-import { managedSetInterval } from '@papercusp/scheduled-registry';
 import {
   resolveSpawnerSocketPath,
-  ownerPidFromSocketPath,
   reapOrphanedSpawnerSockets,
 } from './spawner-socket-path';
-import { execProcess, type ExecParams, type ExecResult } from './sidecar-exec-process';
+import {
+  execProcess,
+  PROCESS_EXEC_CALLER_LABELS,
+  type ExecParams,
+  type ExecResult,
+  type ExecProcessStage,
+  type ProcessExecCallerLabel,
+} from './sidecar-exec-process';
 import { listenUnixSocketExclusive, SIDECAR_EXIT_SOCKET_IN_USE } from '../sidecar-socket/pid-keyed-socket';
 import { captureSidecarContainment, SPAWNER_SCOPE_ENV } from './sidecar-exec-lifetime';
+import { armSpawnerSidecarOrphanWatchdog } from './spawner-sidecar-orphan-watchdog';
+import { createAdmissionWedgeBreaker, createAdmissionWedgeExitHandler } from './sidecar-admission-wedge';
+import { getBuildInfo } from '../build-info';
+
+const SAFE_PROCESS_EXEC_CALLER_LABELS = new Set<ProcessExecCallerLabel>(
+  Object.values(PROCESS_EXEC_CALLER_LABELS),
+);
 
 // JSON-RPC 2.0 response builders
 function rpcResult(result: unknown, id: number | string): object {
@@ -95,7 +107,11 @@ interface InvokeOnceParams {
  * process lifecycle (SIGTERM/SIGINT → close). Prints PAPERCUSP_SPAWNER_READY once
  * listening so the parent spawnSpawnerSidecar() handshake completes.
  */
-export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProcess } = {}): net.Server {
+export function runSpawnerSidecarServer(deps: {
+  executeProcess?: typeof execProcess;
+  /** Test seam; production emits stages only after a request outlives five seconds. */
+  slowExecMs?: number;
+} = {}): net.Server {
   // Runtime flag overrides (EI-8867 / WI-3628, corrected WI-6822). `getFlag()` consults the
   // PG override store ONLY in a process that installed it. This is a STANDALONE process (dev:
   // `tsx bin/spawner-sidecar.ts`; packaged: serve.mjs re-exec'd with
@@ -119,6 +135,9 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
   void ensureFlagChangeListener();
   const socketPath = resolveSpawnerSocketPath();
   const socketDir = path.dirname(socketPath);
+  // Resolve inside this loaded server, once at boot. A diagnostic reader must
+  // never import the checkout's current build-info to label an older process.
+  const processExecIdentity = { pid: process.pid, buildInfo: getBuildInfo() };
 
   if (!fs.existsSync(socketDir)) fs.mkdirSync(socketDir, { recursive: true });
   // No unconditional unlink of our own path here: `listenUnixSocketExclusive` below
@@ -157,17 +176,35 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
     socket: net.Socket;
     requests: Map<number | string, AbortController>;
     executions: Map<number | string, Promise<ExecResult>>;
+    requestMethods: Map<number | string, string>;
+    clientConnectionId: string | null;
   }>();
   let shuttingDown = false;
   let socketsClosed = false;
   let exitRequested = false;
+  let drainExitCode = 0;
   const exitWhenDrained = (): void => {
     if (!shuttingDown || !socketsClosed || controllers.size > 0 || exitRequested) return;
     exitRequested = true;
     process.off('SIGTERM', onTerm);
     process.off('SIGINT', onInterrupt);
-    process.exit(0);
+    process.exit(drainExitCode);
   };
+  // WI-6554700010008488: a pool that can no longer begin a transaction makes
+  // every admission fail until this process is replaced. Measured 2026-10-11, a
+  // graceful SIGTERM could not finish because settlement needed that same pool,
+  // so the drain is capped and the exit code names the cause.
+  // The trip only fires from a request handler, after `shutdown` below exists.
+  const admissionWedge = createAdmissionWedgeBreaker({
+    onTrip: createAdmissionWedgeExitHandler({
+      pid: process.pid,
+      requestShutdown: (reason) => shutdown(reason),
+      setDrainExitCode: (code) => {
+        drainExitCode = code;
+      },
+      exit: (code) => process.exit(code),
+    }),
+  });
   // Keep the client sockets so shutdown can destroy a persistent IPC connection
   // before `server.close()`. Without this, net.Server waits forever for the
   // parent-side client to close and the sidecar/socket survive the host exit.
@@ -192,8 +229,19 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
     // neither may cancel the other's child or leave it orphaned on disconnect.
     const requests = new Map<number | string, AbortController>();
     const executions = new Map<number | string, Promise<ExecResult>>();
+    const requestMethods = new Map<number | string, string>();
+    const requestCallerLabels = new Map<number | string, ProcessExecCallerLabel>();
+    const activeRequestSnapshot = (): Array<{
+      requestId: number | string;
+      method: string;
+      callerLabel?: ProcessExecCallerLabel;
+    }> => Array.from(requestMethods, ([requestId, method]) => {
+      const callerLabel = requestCallerLabels.get(requestId);
+      return { requestId, method, ...(callerLabel ? { callerLabel } : {}) };
+    });
     const connectionId = randomUUID();
-    connections.set(connectionId, { socket, requests, executions });
+    const connection = { socket, requests, executions, requestMethods, clientConnectionId: null as string | null };
+    connections.set(connectionId, connection);
     const forgetDrainedConnection = (): void => {
       if (socket.destroyed && requests.size === 0) connections.delete(connectionId);
     };
@@ -211,7 +259,7 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
       // A recovery connection can revoke this socket while already-buffered
       // frames remain. None may create work after the drain barrier.
       if (socket.destroyed) return;
-      let req: { jsonrpc?: string; method?: string; params?: unknown; id?: number | string | null };
+      let req: { jsonrpc?: string; method?: string; params?: unknown; id?: number | string | null; clientConnectionId?: string };
       try {
         req = JSON.parse(line);
       } catch {
@@ -223,6 +271,13 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
         write(rpcError(-32600, 'Invalid Request', id));
         return;
       }
+      if (
+        connection.clientConnectionId === null &&
+        typeof req.clientConnectionId === 'string' &&
+        /^[0-9a-f-]{36}$/i.test(req.clientConnectionId)
+      ) {
+        connection.clientConnectionId = req.clientConnectionId;
+      }
 
       if (req.method === 'spawn:invokeOnce') {
         if (id === null) {
@@ -233,6 +288,7 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
         const controller = new AbortController();
         controllers.add(controller);
         requests.set(id, controller);
+        requestMethods.set(id, req.method);
         try {
           const result: SpawnInvokeOnceResult = await spawnInvokeOnce(
             p.projectDir,
@@ -256,6 +312,8 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
         } finally {
           controllers.delete(controller);
           requests.delete(id);
+          requestMethods.delete(id);
+          requestCallerLabels.delete(id);
           forgetDrainedConnection();
           exitWhenDrained();
         }
@@ -281,11 +339,50 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
         const controller = new AbortController();
         controllers.add(controller);
         requests.set(id, controller);
+        requestMethods.set(id, req.method);
+        const callerLabel = params.callerLabel;
+        if (callerLabel && SAFE_PROCESS_EXEC_CALLER_LABELS.has(callerLabel)) {
+          requestCallerLabels.set(id, callerLabel);
+        }
+        // WI-6554700010010703: PID notification alone cannot distinguish a child
+        // stall from admission/settlement IO. Reuse the request's exact RPC identity
+        // and emit bounded static milestones only for slow executions. Fast reads
+        // produce no logs; there is no periodic timer or durable per-read write.
+        const startedAt = performance.now();
+        let stage: ExecProcessStage | 'dispatch' = 'dispatch';
+        let childPid: number | null = null;
+        let slow = false;
+        const stageMs: Partial<Record<ExecProcessStage, number>> = {};
+        const elapsedMs = (): number => Math.max(0, Math.round(performance.now() - startedAt));
+        const report = (event: 'slow' | 'progress' | 'request-settled'): void => {
+          try {
+            console.info('[spawner-process-exec-stage]', {
+              event, serverGeneration, connectionId,
+              clientConnectionId: connection.clientConnectionId,
+              requestId: id, method: 'process:exec', sidecarPid: processExecIdentity.pid,
+              ...(requestCallerLabels.has(id) ? { callerLabel: requestCallerLabels.get(id) } : {}),
+              childPid, stage, elapsedMs: elapsedMs(), stageMs: { ...stageMs },
+            });
+          } catch { /* diagnostics must not interrupt the execution/drain fence */ }
+        };
+        const slowTimer = setTimeout(() => { slow = true; report('slow'); }, deps.slowExecMs ?? 5_000);
+        slowTimer.unref?.();
         try {
-          const execution = (deps.executeProcess ?? execProcess)(params, {
+          const executionParams = { ...params };
+          delete executionParams.callerLabel;
+          const execution = (deps.executeProcess ?? execProcess)(executionParams, {
             signal: controller.signal,
-            onPid: (pid) => write(rpcNotification('spawn:pid', { requestId: id, pid })),
+            onStage: (nextStage) => {
+              stage = nextStage;
+              stageMs[nextStage] ??= elapsedMs();
+              if (slow) report('progress');
+            },
+            onPid: (pid) => {
+              childPid = pid;
+              write(rpcNotification('spawn:pid', { requestId: id, pid }));
+            },
             onOutputActivity: () => write(rpcNotification('spawn:outputActivity', { requestId: id })),
+            admissionHealth: admissionWedge,
           });
           executions.set(id, execution);
           const result = await execution;
@@ -294,8 +391,12 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
           const err = e as { message?: string };
           write(rpcError(-32603, err.message ?? 'Internal error', id));
         } finally {
+          clearTimeout(slowTimer);
+          if (slow) report('request-settled');
           controllers.delete(controller);
           requests.delete(id);
+          requestMethods.delete(id);
+          requestCallerLabels.delete(id);
           executions.delete(id);
           forgetDrainedConnection();
           exitWhenDrained();
@@ -320,6 +421,17 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
         }
         const original = connections.get(p.connectionId);
         const execution = original?.executions.get(p.requestId);
+        console.info('[spawner-process-drain]', {
+          serverGeneration,
+          recoveryConnectionId: connectionId,
+          recoveryClientConnectionId: connection.clientConnectionId,
+          targetServerGeneration: p.serverGeneration,
+          targetConnectionId: p.connectionId,
+          targetClientConnectionId: original?.clientConnectionId ?? null,
+          targetRequestId: p.requestId,
+          targetMethod: original?.requestMethods.get(p.requestId) ?? null,
+          targetExecutionPresent: execution !== undefined,
+        });
         // Close FIRST, before awaiting admission or exit: even an absent
         // request is now fenced against later delivery on the old connection.
         original?.socket.destroy();
@@ -344,6 +456,7 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
         if (id !== null) write(rpcResult({
           cancelled: !!controller, processExecCancellation: true,
           processExecFence: { serverGeneration, connectionId },
+          processExecIdentity,
           processExecContainment: captureSidecarContainment(process.env[SPAWNER_SCOPE_ENV]),
         }, id));
         return;
@@ -368,9 +481,26 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
         if (line) void handleLine(line);
       }
     });
-    socket.on('error', (err) => console.error('[spawner-socket-error]', err.message));
+    socket.on('error', (err) => {
+      const errno = err as NodeJS.ErrnoException;
+      console.error('[spawner-socket-error]', {
+        serverGeneration,
+        connectionId,
+        clientConnectionId: connection.clientConnectionId,
+        errorCode: errno.code ?? null,
+        errorName: err.name,
+        activeRequests: activeRequestSnapshot(),
+      });
+    });
     socket.on('end', () => {
-      // Control socket closed.
+      const activeRequests = activeRequestSnapshot();
+      if (activeRequests.length === 0) return;
+      console.warn('[spawner-socket-peer-eof]', {
+        serverGeneration,
+        connectionId,
+        clientConnectionId: connection.clientConnectionId,
+        activeRequests,
+      });
     });
   });
 
@@ -391,6 +521,7 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
       });
       console.log(`[spawner-sidecar] listening on ${socketPath}`);
       console.log(`PAPERCUSP_SPAWNER_READY socket=${socketPath}`);
+      console.log(`PAPERCUSP_SPAWNER_IDENTITY ${JSON.stringify({ ...processExecIdentity, serverGeneration })}`);
     },
     (err: Error) => {
       console.error('[spawner-server-error]', err.message);
@@ -426,73 +557,6 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
     unlinkSocket();
   });
 
-  armOrphanWatchdog(socketPath, shutdown);
+  armSpawnerSidecarOrphanWatchdog(socketPath, shutdown);
   return server;
-}
-
-/** How often to ask whether the host we serve is still alive. */
-export const ORPHAN_CHECK_INTERVAL_MS = 30_000;
-
-/**
- * Exit when the host this sidecar serves is gone (P-005, mechanism proved in D-011).
- *
- * A sidecar CANNOT rely on its spawner to stop it. Registration of the parent-side
- * shutdown hooks is per-call-site — `host-bootstrap` does it, `git-via-sidecar` and
- * the orchestrator runner do not — so every agent process that touched the sidecar
- * through those paths left one running forever. Measured: 49 of 50 live sidecars had
- * a dead owner, 37 of them stranded in closed terminal windows. And because the
- * socket is pid-keyed, an orphan is not a redundant spare — nothing can ever address
- * it again. It is a corpse holding RAM.
- *
- * So the guarantee is moved INTO the sidecar, where it holds for every caller —
- * including ones that never registered a hook, and including a host killed with
- * SIGKILL, which no parent-side handler can catch.
- *
- * ── why it asks about the OWNER pid, not its own parent ─────────────────────
- *
- * The obvious test — "did my ppid change?" — does not work here. The sidecar is the
- * tail of a `host → npm exec → sh -c → node` chain, so when the HOST dies the pid
- * that gets reparented is `npm`, several links up; this process keeps its `sh`
- * parent and notices nothing. (Measured on the 50 live instances: the `npm` links
- * carry ppid 1/systemd, the node processes do not.) The socket name is the only
- * durable record of the actual owner, which is why it is read here.
- *
- * Pid reuse can only make this MISS an orphan (a recycled pid reads as alive), never
- * kill a live sidecar — the safe direction, and the same fail-toward-not-acting rule
- * the scope classifier follows.
- */
-function armOrphanWatchdog(socketPath: string, shutdown: (reason: string) => void): void {
-  const ownerPid = ownerPidFromSocketPath(socketPath);
-  if (ownerPid === null) {
-    // An explicitly-configured socket path carries no owner — UNKNOWN, so do not
-    // arm. Guessing here would let a misconfigured path shut down a healthy sidecar.
-    console.log('[spawner-sidecar] orphan watchdog not armed (socket path names no owner pid)');
-    return;
-  }
-
-  managedSetInterval(
-    'spawner-sidecar-orphan-watchdog',
-    ORPHAN_CHECK_INTERVAL_MS,
-    () => {
-      if (pidAlive(ownerPid)) return;
-      console.warn(
-        `[spawner-sidecar] owner pid ${ownerPid} is gone — nothing can reach ${socketPath} again; exiting rather than leaking`,
-      );
-      shutdown('owner-gone');
-    },
-    // D-004: 'must-sample'. `pidAlive` is D-004's own worked example of a source with
-    // no publisher — the kernel emits no event when a NON-CHILD pid dies, so the only
-    // way to learn the owner is gone is to look.
-    { category: 'watchdog', classification: 'must-sample' },
-  );
-}
-
-/** `kill -0`: EPERM means it exists but is not ours, which is still ALIVE. */
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException)?.code === 'EPERM';
-  }
 }

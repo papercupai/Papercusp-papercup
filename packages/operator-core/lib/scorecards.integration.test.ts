@@ -14,6 +14,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import type { OrgTestDb } from '../test/_org-test-db';
+import type { OrgSql } from './work-items';
 import { composeCompanionSummary } from '@papercusp/facets';
 import type { StructuredObservation } from './harness/improvements/observation-types';
 
@@ -61,6 +62,7 @@ const { readHumanMarketJob } = await import('./work-items-human-market');
 const { OBSERVATION_TOPIC } = await import('./harness/improvements/read-items');
 const { resolveLocalRubric } = await import('./cupboard/rubric-store');
 const { createOrgTestDb } = await import('../test/_org-test-db');
+const { confirmPendingGradingAuditReservation } = await import('./grading-integrity');
 const {
   buildScorecardHistoryPredicate,
   normalizeScorecardHistoryArgs,
@@ -446,6 +448,10 @@ describe('listScorecards (P-013) — real PG', () => {
         issueId: roundtripScorecardId,
         rubricRevision: 17,
         criteriaHash: 'criteria-hash-roundtrip',
+        rubricCurrentness: expect.objectContaining({
+          state: 'stale', reason: 'criteria-hash-mismatch',
+          recordedCriteriaHash: 'criteria-hash-roundtrip',
+        }),
         evidenceFingerprint: 'evidence-fingerprint-roundtrip',
         rollup: { verdict: 'fail' },
         criteria: expect.arrayContaining([expect.objectContaining({
@@ -453,6 +459,9 @@ describe('listScorecards (P-013) — real PG', () => {
         })]),
       },
     });
+
+    const [listed] = await listScorecards({ issueIds: [roundtripScorecardId], includeSuperseded: true });
+    expect(listed?.rubricCurrentness).toMatchObject({ state: 'stale', reason: 'criteria-hash-mismatch' });
   });
 
   it('filters by sourceHive — same rubric, different hive is a separate result', async () => {
@@ -943,6 +952,62 @@ describe('scorecard history P-009 — real PG large-corpus contract', () => {
   });
 });
 
+describe('grading-audit reservation identity — real PG', () => {
+  let db: OrgTestDb;
+
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    h.sql = db.adminSql;
+  });
+
+  afterAll(async () => {
+    await db?.cleanup();
+  });
+
+  it('confirms the canonical author while refusing a changed author, fingerprint or lease', async () => {
+    const workspaceId = issuesScopeWorkspace();
+    const issueId = 'EI-reservation-identity';
+    const reservationKey = `grading-audit:${issueId}`;
+    const reservedAt = '2026-10-07T07:22:44.515Z';
+    const expectedCard = {
+      createdBy: 'su-reservation-author',
+      evidenceFingerprint: 'reservation-fingerprint',
+      rubricRef: 'test-reservation-rubric',
+    };
+    const payload = {
+      _ei: { created_by: expectedCard.createdBy },
+      observation: {
+        evidenceFingerprint: expectedCard.evidenceFingerprint,
+        rubricRef: expectedCard.rubricRef,
+        gradingAudit: {
+          state: 'pending',
+          dispatchReservation: { key: reservationKey, reservedAt },
+        },
+      },
+    };
+    await db.adminSql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, admission, title, summary, payload)
+      VALUES (${workspaceId}, 'papercusp', ${issueId}, 'change', 'done', 'admitted',
+        'Reservation identity fixture', '', ${JSON.stringify(payload)}::text::jsonb)`;
+
+    await db.adminSql.begin(async (tx) => {
+      const confirm = (card = expectedCard, epoch = reservedAt) =>
+        confirmPendingGradingAuditReservation(issueId, reservationKey, {
+          workspaceId,
+          reservedAt: epoch,
+          tx: tx as unknown as OrgSql,
+          expectedCard: card,
+        });
+      await expect(confirm()).resolves.toBe(true);
+      await expect(confirm({ ...expectedCard, createdBy: 'su-other-author' })).resolves.toBe(false);
+      await expect(confirm({ ...expectedCard, evidenceFingerprint: 'changed' })).resolves.toBe(false);
+      await expect(confirm({ ...expectedCard, rubricRef: 'other-rubric' })).resolves.toBe(false);
+      await expect(confirm(expectedCard, 'different-epoch')).resolves.toBe(false);
+    });
+  });
+});
+
 describe('readScorecardEvidence audit-target status (EI-24583166035391772) — real PG', () => {
   let db: OrgTestDb;
 
@@ -977,6 +1042,33 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
         )`;
     };
     const ratings = { honesty: { rating: 'pass', evidence: 'ran the probe' } };
+    const replayRecipe = {
+      schemaVersion: 1,
+      evaluator: 'plans:evaluate-spec-test-adequacy',
+      classRef: 'plan-class-risk-floor',
+      args: {
+        harness: 'papercusp',
+        slug: 'test-rerun-recipe-plan',
+        classRef: 'plan-class-risk-floor',
+        specIds: ['SPEC-001'],
+        specRevision: 1,
+        specFingerprint: 'a'.repeat(64),
+        includeDraft: true,
+      },
+      selection: {
+        planSlug: 'test-rerun-recipe-plan',
+        specId: 'SPEC-001',
+        specRevision: 1,
+        specFingerprint: 'a'.repeat(64),
+        evidence: [{ evidenceKind: 'test-run', evidenceRef: 'run:recipe-reader' }],
+      },
+      current: { supplied: false, fingerprints: [] },
+      derivation: {
+        kind: 'listSpecEvidence.currentness',
+        classifier: 'classifySpecEvidenceCurrentness',
+        unknownWhenMissing: true,
+      },
+    };
     await insert('EI-audit-target-plain', { ratings }, '2026-06-21T10:00:00Z');
     await insert('EI-audit-target-old', { ratings }, '2026-06-21T10:01:00Z');
     await insert('EI-audit-target-new', { ratings, supersedes: 'EI-audit-target-old' }, '2026-06-21T10:02:00Z');
@@ -988,6 +1080,88 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
       ratings,
       subject: { kind: 'rubric', ref: 'no-such-rubric-for-audit-target' },
     }, '2026-06-21T10:04:00Z');
+    await insert('EI-audit-target-rerun-recipe', { ratings, rerunRecipe: replayRecipe }, '2026-06-21T10:04:30Z');
+
+    const bindingWorkItemId = 'WI-audit-target-binding';
+    const bindingPlanSlug = 'test-audit-target-binding';
+    const bindingSpecId = 'SPEC-1';
+    const bindingSpecFingerprint = 'a'.repeat(64);
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug)
+      VALUES (${issuesScopeWorkspace()}, 'papercusp', ${bindingPlanSlug})`;
+    await db.adminSql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, admission, title, summary, payload)
+      VALUES (${issuesScopeWorkspace()}, 'papercusp', ${bindingWorkItemId}, 'bug', 'open', 'admitted',
+        'Audit target binding fixture', '', '{}'::jsonb)`;
+    const bindingId = await db.adminSql.begin(async (tx) => {
+      // The identity → immutable revision → pointer update is one transaction
+      // because the current-revision FK is deferred until commit.
+      await tx`
+        INSERT INTO harness_shared.plan_spec_clauses
+          (workspace_id, harness_slug, plan_slug, spec_id, current_revision, created_by)
+        VALUES (${issuesScopeWorkspace()}, 'papercusp', ${bindingPlanSlug}, ${bindingSpecId}, 0, 'su-test')`;
+      await tx`
+        INSERT INTO harness_shared.plan_spec_clause_revisions
+          (workspace_id, harness_slug, plan_slug, spec_id, revision, plan_item_id, behavior,
+           behavior_class, lifecycle_status, content_hash, created_by)
+        VALUES (${issuesScopeWorkspace()}, 'papercusp', ${bindingPlanSlug}, ${bindingSpecId}, 1,
+          'P-001', 'A cited binding becomes stale after retraction.', 'lifecycle', 'draft',
+          ${bindingSpecFingerprint}, 'su-test')`;
+      await tx`
+        UPDATE harness_shared.plan_spec_clauses SET current_revision = 1
+         WHERE workspace_id = ${issuesScopeWorkspace()} AND harness_slug = 'papercusp'
+           AND plan_slug = ${bindingPlanSlug} AND spec_id = ${bindingSpecId}`;
+      await tx`
+        INSERT INTO harness_shared.work_item_spec_revision_edges
+          (workspace_id, harness_slug, work_item_id, plan_slug, spec_id, spec_revision, spec_fingerprint, created_by)
+        VALUES (${issuesScopeWorkspace()}, 'papercusp', ${bindingWorkItemId}, ${bindingPlanSlug},
+          ${bindingSpecId}, 1, ${bindingSpecFingerprint}, 'su-test')`;
+      const [row] = await tx<Array<{ id: number }>>`
+        INSERT INTO harness_shared.spec_evidence_bindings
+          (workspace_id, harness_slug, work_item_id, plan_slug, spec_id, spec_revision, spec_fingerprint,
+           evidence_kind, evidence_ref, source_fingerprint, binding_fingerprint, created_by)
+        VALUES (${issuesScopeWorkspace()}, 'papercusp', ${bindingWorkItemId}, ${bindingPlanSlug},
+          ${bindingSpecId}, 1, ${bindingSpecFingerprint}, 'mutation', 'test-run:scorecard-binding',
+          'source-fingerprint', ${'b'.repeat(64)}, 'su-test')
+        RETURNING id`;
+      return Number(row.id);
+    });
+    await insert('EI-audit-target-binding', {
+      ratings,
+      rerunRecipe: { args: { harness: 'papercusp' }, selection: { bindingIds: [bindingId] } },
+    }, '2026-06-21T10:05:00Z');
+    await insert('EI-audit-target-binding-legacy', {
+      ratings,
+      // Legacy evaluator recipes retained the exact structured evidence tuple
+      // but predated selection.bindingIds. The reader must still resolve that
+      // tuple to the immutable row and fail closed after its retraction.
+      rerunRecipe: {
+        args: {
+          harness: 'papercusp',
+          current: [{
+            planSlug: bindingPlanSlug,
+            specId: bindingSpecId,
+            specRevision: 1,
+            specFingerprint: bindingSpecFingerprint,
+            evidenceKind: 'mutation',
+            evidenceRef: 'test-run:scorecard-binding',
+            sourceFingerprint: 'source-fingerprint',
+            testFingerprint: null,
+            fixtureFingerprint: null,
+            rubricFingerprint: null,
+            environmentFingerprint: null,
+          }],
+        },
+      },
+    }, '2026-06-21T10:05:30Z');
+    await insert('EI-audit-target-binding-unavailable', {
+      ratings,
+      rerunRecipe: {
+        args: { harness: 'papercusp' },
+        selection: { bindingIds: [Number.MAX_SAFE_INTEGER] },
+      },
+    }, '2026-06-21T10:05:45Z');
 
     const read = async (id: string) => {
       const result = await readScorecardEvidence(id);
@@ -999,6 +1173,10 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
     expect((await read('EI-audit-target-plain')).auditTarget).toEqual({
       current: true, superseded: false, supersededBy: null, retracted: false, subjectRubricCurrentness: null,
     });
+    expect((await read('EI-audit-target-plain')).rubricCurrentness).toMatchObject({
+      state: 'unknown', reason: 'recorded-identity-missing',
+    });
+    expect((await read('EI-audit-target-rerun-recipe')).rerunRecipe).toEqual(replayRecipe);
 
     const old = await read('EI-audit-target-old');
     expect(old.supersededBy).toBe('EI-audit-target-new');
@@ -1009,12 +1187,58 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
     const retracted = await read('EI-audit-target-retracted');
     expect(retracted.auditTarget).toMatchObject({ current: false, retracted: true, superseded: false });
 
-    // A rubric subject whose live identity cannot be resolved is NOT current.
+    // An unresolved subject identity is unknown, not a known stale result.
     const rubricSubject = await read('EI-audit-target-rubric-subject');
     expect(rubricSubject.subjectRubricCurrentness).toMatchObject({ state: 'unknown', reason: 'live-identity-missing' });
     expect(rubricSubject.auditTarget).toMatchObject({
-      current: false,
+      current: null,
       subjectRubricCurrentness: expect.objectContaining({ state: 'unknown' }),
+    });
+
+    // An exact rerun recipe is only current while every cited immutable proof row
+    // remains active. Retraction removes the row from evaluator reads, so the
+    // audit-target reader must invalidate the original pass at read time.
+    const bindingCard = await read('EI-audit-target-binding');
+    expect(bindingCard.auditTarget).toMatchObject({
+      current: true,
+      evidenceBindingCurrentness: {
+        state: 'current', reason: 'current', citedBindingCount: 1,
+        retractedBindingIds: [], unavailableBindingIds: [],
+      },
+    });
+    expect((await read('EI-audit-target-binding-legacy')).auditTarget).toMatchObject({
+      current: true,
+      evidenceBindingCurrentness: {
+        state: 'current', reason: 'current', citedBindingCount: 1,
+        retractedBindingIds: [], unavailableBindingIds: [],
+      },
+    });
+    const bindingUnavailable = await read('EI-audit-target-binding-unavailable');
+    expect(bindingUnavailable.auditTarget).toMatchObject({
+      current: null,
+      evidenceBindingCurrentness: {
+        state: 'unknown', reason: 'cited-binding-unavailable', citedBindingCount: 1,
+        retractedBindingIds: [], unavailableBindingIds: [String(Number.MAX_SAFE_INTEGER)],
+      },
+    });
+    await db.adminSql`
+      UPDATE harness_shared.spec_evidence_bindings
+         SET retracted_at = now(), retracted_by = 'su-test', retraction_reason = 'fixture withdrawal'
+       WHERE workspace_id = ${issuesScopeWorkspace()} AND id = ${bindingId}`;
+    const bindingRetractedCard = await read('EI-audit-target-binding');
+    expect(bindingRetractedCard.auditTarget).toMatchObject({
+      current: false,
+      evidenceBindingCurrentness: {
+        state: 'stale', reason: 'cited-binding-retracted', citedBindingCount: 1,
+        retractedBindingIds: [String(bindingId)], unavailableBindingIds: [],
+      },
+    });
+    expect((await read('EI-audit-target-binding-legacy')).auditTarget).toMatchObject({
+      current: false,
+      evidenceBindingCurrentness: {
+        state: 'stale', reason: 'cited-binding-retracted', citedBindingCount: 1,
+        retractedBindingIds: [String(bindingId)], unavailableBindingIds: [],
+      },
     });
   });
 });
@@ -1086,5 +1310,55 @@ describe('human market canonical review readers — real PG', () => {
       receiptRef: 'test-only-manual-receipt' });
     expect(readHumanMarketJob(paid)!.payment).toMatchObject({ paidBy: owner, amountCents: 500, currency: 'USD' });
     // This fixture attests persistence only; it never transfers money or accepts E3.
+  });
+});
+
+describe('listScorecardPage provisionalOnly (WI-6554700010009935) — real PG', () => {
+  let db: OrgTestDb;
+
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    h.sql = db.adminSql;
+  });
+
+  afterAll(async () => {
+    await db?.cleanup();
+  });
+
+  // The grading-integrity terminal-re-rate drill needs only the interim (provisional)
+  // cards for one subject. Without a server-side filter judges paged 200-500 terminal
+  // cards (1.6-4MB per read) to find them.
+  it('returns only cards whose observation.provisional is an object, newest-first, composed with subjectRef', async () => {
+    const RUBRIC = 'test-provisional-only';
+    const insert = async (issueId: string, observation: Record<string, unknown>, at: string) => {
+      await db.adminSql`
+        INSERT INTO harness_shared.engineer_issues
+          (workspace_id, issue_id, kind, scope, title, body, severity, source,
+           state, payload, created_by, signal_origin, created_at, updated_at)
+        VALUES (
+          ${issuesScopeWorkspace()}, ${issueId}, 'change',
+          'harness:papercusp', ${`scorecard ${issueId}`}, '', 'minor', 'test',
+          'done',
+          ${JSON.stringify({ observation: { rubricRef: RUBRIC, sourceHive: 'papercusp', ...observation } })}::text::jsonb,
+          'su-test', 'organic',
+          ${at}::timestamptz, ${at}::timestamptz
+        )`;
+    };
+    const ratings = { honesty: { rating: 'pass', evidence: 'ran the probe' } };
+    const provisional = { violatableKeys: ['honesty'], stampedAt: '2026-10-13T01:00:00.000Z' };
+    await insert('EI-PROV-A1', { ratings, subject: { kind: 'agent-run', ref: 'run-a' }, provisional }, '2026-10-13T01:00:00.000Z');
+    await insert('EI-PROV-A2', { ratings, subject: { kind: 'agent-run', ref: 'run-a' }, provisional }, '2026-10-13T02:00:00.000Z');
+    await insert('EI-TERM-A', { ratings, subject: { kind: 'agent-run', ref: 'run-a' } }, '2026-10-13T03:00:00.000Z');
+    await insert('EI-PROV-B', { ratings, subject: { kind: 'agent-run', ref: 'run-b' }, provisional }, '2026-10-13T04:00:00.000Z');
+    // A JSON null stamp is not a provisional card.
+    await insert('EI-NULL-B', { ratings, subject: { kind: 'agent-run', ref: 'run-b' }, provisional: null }, '2026-10-13T05:00:00.000Z');
+
+    const ids = async (filter: Parameters<typeof listScorecardPage>[0]) =>
+      (await listScorecardPage({ rubricRef: RUBRIC, ...filter })).rows.map((row) => row.issueId);
+
+    expect(await ids({})).toEqual(['EI-NULL-B', 'EI-PROV-B', 'EI-TERM-A', 'EI-PROV-A2', 'EI-PROV-A1']);
+    expect(await ids({ provisionalOnly: true })).toEqual(['EI-PROV-B', 'EI-PROV-A2', 'EI-PROV-A1']);
+    expect(await ids({ provisionalOnly: true, subjectRef: 'run-a' })).toEqual(['EI-PROV-A2', 'EI-PROV-A1']);
+    expect(await ids({ provisionalOnly: false, subjectRef: 'run-a' })).toEqual(['EI-TERM-A', 'EI-PROV-A2', 'EI-PROV-A1']);
   });
 });

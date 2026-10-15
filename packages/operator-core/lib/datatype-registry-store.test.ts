@@ -6,12 +6,24 @@
  */
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   slugifyDatatype,
   isDatatypeTier,
   DATATYPE_TIERS,
+  DATATYPE_NATURES,
+  BUILTIN_WORK_ITEM_KIND_NATURES,
   canonicalDatatypeKey,
+  checkNatureSpec,
+  isBuiltinWorkItemKind,
+  legacyNatureForTier,
 } from './datatype-registry-store';
+import { WORK_ITEM_KINDS } from './work-items';
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+const MIGRATION_1318 = join(REPO_ROOT, 'libs/papercusp/libs/db/sql/1318-datatype-nature.sql');
 
 test('slugifyDatatype — lowercases, collapses non-alphanumerics to single dashes, trims', () => {
   assert.equal(slugifyDatatype('bet'), 'bet');
@@ -117,4 +129,79 @@ test('canonicalDatatypeKey — total: empty / punctuation-only / mixed input nev
   assert.equal(canonicalDatatypeKey(''), '');
   assert.equal(canonicalDatatypeKey('---'), '');
   assert.equal(canonicalDatatypeKey('Order #1 // fill'), 'order-1-fill');
+});
+
+// ---------------------------------------------------------------------------
+// enterprise-data-sources-2026-10-01 P-008 — every datatype states its NATURE (D-001), and
+// work also states its AUDIENCE. checkNatureSpec mirrors the table CHECK in migration 1318:
+// audience is set exactly when nature = work.
+// ---------------------------------------------------------------------------
+
+test('DATATYPE_NATURES is the D-001 four-nature set', () => {
+  assert.deepEqual([...DATATYPE_NATURES], ['work', 'record', 'document', 'event']);
+});
+
+test('checkNatureSpec — work needs an audience; it is refused, never defaulted to agent', () => {
+  assert.deepEqual(checkNatureSpec('work', 'agent'), { ok: true, value: { nature: 'work', audience: 'agent' } });
+  assert.deepEqual(checkNatureSpec('work', 'human'), { ok: true, value: { nature: 'work', audience: 'human' } });
+  for (const missing of [null, undefined, '', 'robot']) {
+    const r = checkNatureSpec('work', missing);
+    assert.equal(r.ok, false, `work with audience ${JSON.stringify(missing)} must be refused`);
+    assert.equal(!r.ok && r.reason, 'audience_required');
+  }
+});
+
+test('checkNatureSpec — data natures carry no audience', () => {
+  for (const nature of ['record', 'document', 'event'] as const) {
+    assert.deepEqual(checkNatureSpec(nature, null), { ok: true, value: { nature, audience: null } });
+    assert.deepEqual(checkNatureSpec(nature, undefined), { ok: true, value: { nature, audience: null } });
+    const r = checkNatureSpec(nature, 'agent');
+    assert.equal(r.ok, false, `${nature} with an audience must be refused`);
+    assert.equal(!r.ok && r.reason, 'audience_not_allowed');
+  }
+});
+
+test('checkNatureSpec — an unknown nature is refused (case-sensitive, no coercion)', () => {
+  for (const bad of ['Work', 'data', '', null, undefined, 3]) {
+    const r = checkNatureSpec(bad, null);
+    assert.equal(r.ok, false, `nature ${JSON.stringify(bad)} must be refused`);
+    assert.equal(!r.ok && r.reason, 'invalid_nature');
+  }
+});
+
+test('legacyNatureForTier — D-013 §5: generic-kind keeps today\'s claim behaviour, other tiers become records', () => {
+  assert.deepEqual(legacyNatureForTier('generic-kind'), { nature: 'work', audience: 'agent' });
+  assert.deepEqual(legacyNatureForTier('first-class'), { nature: 'record', audience: null });
+  assert.deepEqual(legacyNatureForTier('projection'), { nature: 'record', audience: null });
+});
+
+test('BUILTIN_WORK_ITEM_KIND_NATURES covers exactly WORK_ITEM_KINDS, all agent work', () => {
+  assert.deepEqual(Object.keys(BUILTIN_WORK_ITEM_KIND_NATURES).sort(), [...WORK_ITEM_KINDS].sort());
+  for (const kind of WORK_ITEM_KINDS) {
+    assert.equal(isBuiltinWorkItemKind(kind), true, kind);
+    assert.deepEqual(BUILTIN_WORK_ITEM_KIND_NATURES[kind as keyof typeof BUILTIN_WORK_ITEM_KIND_NATURES], {
+      nature: 'work',
+      audience: 'agent',
+    });
+  }
+  assert.equal(isBuiltinWorkItemKind('email-draft-proposal'), false);
+  assert.equal(isBuiltinWorkItemKind('toString'), false); // own-property check, not the prototype
+});
+
+test('migration 1318 seeds the same built-in kinds as BUILTIN_WORK_ITEM_KIND_NATURES, and the same legacy rule', () => {
+  const sql = readFileSync(MIGRATION_1318, 'utf8');
+  const seed = new Map<string, { kind: string; nature: string; audience: string }>();
+  const row = /\('([a-z-]+)', 'papercusp-workspace', NULL,[\s\S]*?'first-class', '([a-z-]+)',[\s\S]*?'(work|record|document|event)', '(agent|human)', now\(\)\)/g;
+  for (const m of sql.matchAll(row)) seed.set(m[1], { kind: m[2], nature: m[3], audience: m[4] });
+  assert.ok(seed.size > 0, 'parser matched no seed rows — the migration format changed, fix the test parser');
+  assert.deepEqual([...seed.keys()].sort(), Object.keys(BUILTIN_WORK_ITEM_KIND_NATURES).sort());
+  for (const [id, s] of seed) {
+    const want = BUILTIN_WORK_ITEM_KIND_NATURES[id as keyof typeof BUILTIN_WORK_ITEM_KIND_NATURES];
+    assert.equal(s.kind, id, `${id}: work_item_kind must equal the id`);
+    assert.equal(s.nature, want.nature, `${id}: nature`);
+    assert.equal(s.audience, want.audience, `${id}: audience`);
+  }
+  // The backfill and the expand-phase fill trigger both apply legacyNatureForTier's rule.
+  const legacyRule = /CASE WHEN (?:NEW\.)?tier = 'generic-kind' THEN 'work' ELSE 'record' END/g;
+  assert.equal([...sql.matchAll(legacyRule)].length, 2, 'backfill + fill trigger must both use the legacy rule');
 });

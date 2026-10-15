@@ -53,7 +53,7 @@
  */
 import { existsSync, readdirSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, dirname, delimiter, isAbsolute } from 'node:path';
+import { join, dirname, delimiter, isAbsolute, basename } from 'node:path';
 
 /** The agent CLIs psu can launch. Adding one means adding it here, once. */
 export const BACKEND_AGENTS = /** @type {const} */ (['claude', 'codex', 'omp']);
@@ -77,6 +77,21 @@ function safeIsDir(p) {
     return statSync(p).isDirectory();
   } catch {
     return false;
+  }
+}
+
+function isBackendLauncher(bin, candidate) {
+  if (!BACKEND_AGENTS.includes(basename(bin).replace(/\.(?:cmd|bat|exe)$/i, ''))) return false;
+  let fd;
+  try {
+    fd = openSync(candidate, 'r');
+    const head = Buffer.alloc(4096);
+    const n = readSync(fd, head, 0, head.length, 0);
+    return /\b(?:psu-launcher|psu)\.mjs\b|\bexec[^\r\n]*\bpsu(?:\s|["'])/.test(head.subarray(0, n).toString('utf8'));
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 }
 
@@ -196,14 +211,14 @@ export function resolveOnPath(bin, { env = process.env, platform = process.platf
   if (!bin) return null;
   // An interpreter given as an absolute path is already resolved.
   if (isAbsolute(bin) || bin.includes('/') || (platform === 'win32' && bin.includes('\\'))) {
-    return safeExists(bin) ? bin : null;
+    return safeExists(bin) && !isBackendLauncher(bin, bin) ? bin : null;
   }
   const parts = String(env.PATH ?? env.Path ?? '').split(delimiter).filter(Boolean);
   const names = executableNames(bin, { env, platform });
   for (const dir of parts) {
     for (const name of names) {
       const p = join(dir, name);
-      if (safeExists(p)) return p;
+      if (safeExists(p) && !isBackendLauncher(bin, p)) return p;
     }
   }
   return null;
@@ -218,7 +233,7 @@ export function resolveInWellKnownDirs(bin, opts = {}) {
   for (const dir of backendSearchDirs(opts)) {
     for (const name of names) {
       const p = join(dir, name);
-      if (safeExists(p)) return p;
+      if (safeExists(p) && !isBackendLauncher(bin, p)) return p;
     }
   }
   return null;
@@ -300,8 +315,15 @@ export function readShebangInterpreter(binPath, { platform = process.platform, r
  */
 export function resolveBackendLaunch(agent, opts = {}) {
   const { env = process.env, platform = process.platform } = opts;
-  const onPathBin = resolveOnPath(agent, { env, platform });
-  const bin = onPathBin ?? resolveInWellKnownDirs(agent, opts);
+  const override = readBackendBinOverride(agent, env, platform);
+  // A SET override is authoritative. When it does not name a usable executable we
+  // return null (the launch fails with "no native executable") instead of falling
+  // back to PATH: the override exists to run the CLI somewhere specific (a bench
+  // task container, D-026), and silently running the host CLI would produce a
+  // result from the wrong arm.
+  if (override.set && !override.bin) return null;
+  const onPathBin = override.bin ? null : resolveOnPath(agent, { env, platform });
+  const bin = override.bin ?? onPathBin ?? resolveInWellKnownDirs(agent, opts);
   if (!bin) return null;
   const interpreter = readShebangInterpreter(bin, { platform, readHead: opts.readHead });
   const interpreterBin = interpreter
@@ -311,11 +333,40 @@ export function resolveBackendLaunch(agent, opts = {}) {
     agent,
     bin,
     onPath: Boolean(onPathBin),
+    /** The bin came from the per-launch override env (backendBinOverrideEnvKey), not discovery. */
+    override: Boolean(override.bin),
     interpreter: interpreter ?? null,
     interpreterBin,
     /** The shebang named an interpreter we could NOT resolve — the window will fail. */
     interpreterMissing: Boolean(interpreter && !interpreterBin),
   };
+}
+
+/**
+ * The env key that pins ONE launch's backend binary to an exact path, e.g.
+ * `PAPERCUSP_BACKEND_BIN_CODEX`. Set by capability:launch-agent's internal
+ * `__backendBinOverride` seam (never by a public caller) so a benchmark arm can run
+ * the agent CLI through a container-exec wrapper (benchmark-coverage-frontierswe-v2
+ * D-026). Discovery (PATH, well-known dirs) is skipped entirely while it is set.
+ */
+export function backendBinOverrideEnvKey(agent) {
+  return `PAPERCUSP_BACKEND_BIN_${String(agent).toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
+}
+
+/** `{ set, bin }`: `set` = the key holds a non-empty value; `bin` = that value when it is a usable executable. */
+function readBackendBinOverride(agent, env, platform) {
+  const raw = env?.[backendBinOverrideEnvKey(agent)];
+  if (typeof raw !== 'string' || raw.trim() === '') return { set: false, bin: null };
+  const p = raw.trim();
+  if (!isAbsolute(p)) return { set: true, bin: null };
+  try {
+    const st = statSync(p);
+    if (!st.isFile()) return { set: true, bin: null };
+    if (platform !== 'win32' && (st.mode & 0o111) === 0) return { set: true, bin: null };
+  } catch {
+    return { set: true, bin: null };
+  }
+  return { set: true, bin: p };
 }
 
 /**

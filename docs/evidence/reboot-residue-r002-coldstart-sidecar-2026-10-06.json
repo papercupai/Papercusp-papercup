@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "reboot-residue R-002 live: Ornith cold start through the gateway leaves the embed sidecar and kokoro running (after the EI-25222670171204378 watchdog fix)",
+  "framework": "operational",
+  "command": ["bash", "docs/evidence/reboot-residue-live-probes-2026-10-06/r002-coldstart-sidecar-probe.sh", "/tmp/r002-coldstart-1"],
+  "commandCwd": ".",
+  "exitCode": 0,
+  "startedAt": "2026-10-06T10:01:13Z",
+  "finishedAt": "2026-10-06T10:10:38Z",
+  "summary": "llama-ornith.service was stopped (the clause's cold precondition), then a POST to the gateway :8788/v1/chat/completions for maxwell1500/ornith-35b:IQ3_M started it on demand and answered HTTP 200 after 305s with that model. A sampler sent a cache-bypassing /embed request every 2s throughout and for 240s after the answer. papercup-embed-sidecar.service kept MainPID 2121735, NRestarts 1 and ExecMainStartTimestamp 05:47:41 EDT from before the stop to after the tail; voicemode-kokoro.service kept ExecMainStartTimestamp 00:30:47 EDT. The watchdog's only failed probe (10:05:15Z, a 15s timeout) was logged as 1/2 consecutive and did not restart the sidecar.",
+  "scope": "Live host plane. The probe stops llama-ornith.service once (precondition) and issues one completion; it does not restart any other unit. The first grading run (EI-25223052791034587) saw the old watchdog restart the sidecar at this point and loop it down for 11+ minutes; the watchdog now has a 180s startup grace, a non-blocking restart and a 2-consecutive-failure threshold (apps/operator/scripts/systemd/papercup-embed-sidecar-watchdog.sh). Latency disclosure: of 193 /embed samples the median was 0.053s, 3 exceeded 15s (30.0s client timeout at 10:04:56Z during the load, then 22.0s at 10:07:08Z and 21.8s at 10:08:26Z after ornith had answered), so the stalls are not confined to the load window and are not attributed to ornith here.",
+  "repository": "papercusp",
+  "headAtExecution": "cb0ef99c603c9dc1b7265c89b5e688945fec8d30",
+  "workItems": ["EI-25222670171204378", "WI-10006401"],
+  "spec": {
+    "planSlug": "reboot-residue-service-repairs-2026-10-03",
+    "specId": "AUTO-BAR-R-002-P-002",
+    "specRevision": 5,
+    "evidencePlane": "live"
+  },
+  "oracle": "Independent of the fix under test: systemd unit properties read before and after, the gateway's HTTP answer and journal, nvidia-smi, and an external /embed sampler.",
+  "redaction": "In the retained log the operator's home directory is rendered as ~ and the box hostname as <host> (redacted by hand at 10:31Z after git-sync quarantined the raw capture for an identity leak); no other byte changed.",
+  "sourceFiles": [
+    {
+      "path": "docs/evidence/reboot-residue-live-probes-2026-10-06/r002-coldstart-sidecar-probe.sh",
+      "sha256": "2a54e6595ec9a020f0b1cc03fceb45c7e03ea8002d727f5b16c2afcb2074192b"
+    }
+  ],
+  "rawEvidence": [
+    {
+      "path": "docs/evidence/reboot-residue-live-probes-2026-10-06/r002-coldstart-sidecar-probe.txt",
+      "sha256": "0ee5253cfdf1709824da5c2d6f86d1c5d5109f66fd67d2d9cbb96b388116efab"
+    },
+    {
+      "path": "docs/evidence/reboot-residue-live-probes-2026-10-06/r002-coldstart-embed-samples.tsv",
+      "sha256": "2affb7c3d9be5338d8c8c936ccfd75879fa62dea42a4e2fa82f39373863cac55"
+    }
+  ],
+  "assertions": [
+    { "id": "cold-precondition", "passed": true, "evidence": "llama-ornith.service is-active = inactive after the stop, before the request." },
+    { "id": "on-demand-serve-200", "passed": true, "evidence": "COMPLETION_HTTP=200 after 305s; response model maxwell1500/ornith-35b:IQ3_M; gateway journal: unit audit clean for 'ornith-llamaserver' (10:01:36Z) and 'started on demand and is answering' (10:06:31Z)." },
+    { "id": "embed-sidecar-not-restarted", "passed": true, "evidence": "PRE and POST papercup-embed-sidecar.service = MainPID 2121735, NRestarts 1, ExecMainStartTimestamp Tue 2026-10-06 05:47:41 EDT, active/running." },
+    { "id": "kokoro-not-restarted", "passed": true, "evidence": "PRE and POST voicemode-kokoro.service ExecMainStartTimestamp Tue 2026-10-06 00:30:47 EDT." },
+    { "id": "watchdog-held-fire", "passed": true, "evidence": "Watchdog journal since START: one line 'embed worker probe failed (1/2 consecutive) — not restarting yet' at 10:05:15Z; no restart line." },
+    { "id": "embed-latency-disclosure", "passed": true, "evidence": "Disclosure, not a pass condition: 193 samples, 1 non-200 (client 30s timeout), 0 bad accounting, 3 over 15s, max 30.0s, median 0.053s." }
+  ]
+}

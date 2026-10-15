@@ -266,8 +266,8 @@ export async function getAuthoredDocContent(
  * Canonical authored prose for a bounded set of exact doc ids.
  *
  * `docs:get` uses this targeted form for read-after-write correctness across
- * operator workers. Each request asks for at most ten slugs (twenty `.md` /
- * `.mdx` candidates), so refreshing those rows is both cheaper and more precise
+ * operator workers. Each request asks for at most ten slugs (thirty raw-slug,
+ * `.mdx`, and `.md` candidates), so refreshing those rows is both cheaper and more precise
  * than discarding the process-wide adapter and re-reading the whole corpus.
  */
 export async function getAuthoredDocContentsByIds(

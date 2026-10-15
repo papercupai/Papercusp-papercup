@@ -19,6 +19,7 @@ const h = vi.hoisted(() => ({
   release: vi.fn(),
   releaseLocks: vi.fn(),
   resetWake: vi.fn(),
+  wakeResumeTurn: vi.fn(),
   loopOwners: vi.fn(),
   /** In-memory stand-in for the marker's PG table (see the mock below). */
   marks: new Map<string, number>(),
@@ -36,7 +37,10 @@ vi.mock('../locks/release-all-owned', () => ({ releaseAllOwnedLocks: h.releaseLo
 // WI-6756: this seam READS PG. Leaving it un-stubbed would not merely touch the DB —
 // the read never settles, so it hangs PAST the handler's try/catch (which only catches
 // throws) until the suite timeout. Stub it in every test in this file.
-vi.mock('../../session-reset-continuation', () => ({ recentContextResetWake: h.resetWake }));
+vi.mock('../../session-reset-continuation', () => ({
+  recentContextResetWake: h.resetWake,
+  isWakeResumeTurn: h.wakeResumeTurn,
+}));
 vi.mock('../../adv-roster', () => ({ activeLoopOwners: h.loopOwners }));
 // The carry-respawn marker is PG-backed too (migration 716 — the operator is clustered,
 // so an in-memory Map was invisible to the sibling worker that handles the SessionEnd).
@@ -80,6 +84,8 @@ beforeEach(() => {
   });
   // Default: no context-reset wake in the window ⇒ an ordinary death, release runs.
   h.resetWake.mockReset().mockResolvedValue(null);
+  // Default: not the end of a one-turn wake resume ⇒ the standing watch is retired.
+  h.wakeResumeTurn.mockReset().mockResolvedValue(false);
   // Default: the owner has no armed loop ⇒ an ordinary terminal SessionEnd.
   h.loopOwners.mockReset().mockResolvedValue(new Set<string>());
   void __resetRespawnExpectedMarkers();
@@ -96,6 +102,54 @@ describe('activity:report SessionEnd → work-item lease release (P-002 fast pat
     // The existing inbox-wake cancel still fires too — this is additive, not a replacement.
     expect(h.cancel).toHaveBeenCalledTimes(1);
     expect(responseBody(res).session_end_disposition).toBe('terminal');
+  });
+
+  // WI-10005679: the wake executor resumes an exited session as a one-turn
+  // `--resume <id> -p` child. Its SessionEnd is how `-p` ends, so retiring the
+  // standing watch there made a recruited judge unwakeable after one follow-up.
+  it('a terminal SessionEnd that closes a verified wake-resume turn KEEPS the inbox-wake, still releases', async () => {
+    h.wakeResumeTurn.mockResolvedValueOnce(true);
+    const res = await run({
+      owner: 'su-judge',
+      kind: 'lifecycle',
+      summary: '■ session ended',
+      wake_delivery_id: 413379,
+    });
+    expect(h.wakeResumeTurn).toHaveBeenCalledWith('su-judge', 413379);
+    expect(h.cancel).not.toHaveBeenCalled();
+    expect(h.release).toHaveBeenCalledWith('su-judge');
+    expect(h.releaseLocks).toHaveBeenCalledTimes(1);
+    const body = responseBody(res);
+    expect(body.session_end_disposition).toBe('terminal');
+    expect(body.inbox_wake_retained).toBe('wake-resume-turn');
+  });
+
+  it('a delivery id the ledger does not confirm still retires the inbox-wake', async () => {
+    const res = await run({
+      owner: 'su-judge',
+      kind: 'lifecycle',
+      summary: '■ session ended',
+      wake_delivery_id: 999,
+    });
+    expect(h.wakeResumeTurn).toHaveBeenCalledWith('su-judge', 999);
+    expect(h.cancel).toHaveBeenCalledWith('su-judge', '*');
+    expect(responseBody(res)).not.toHaveProperty('inbox_wake_retained');
+  });
+
+  it('a failed wake-resume ledger read keeps today\'s cancel', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    h.wakeResumeTurn.mockRejectedValueOnce(new Error('pg down'));
+    await run({ owner: 'su-judge', kind: 'lifecycle', summary: '■ session ended', wake_delivery_id: 7 });
+    expect(h.cancel).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('wake-resume check'))).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('a continuation SessionEnd never consults the wake-resume ledger', async () => {
+    h.resetWake.mockResolvedValueOnce({ channel: 'psu-socket-reset', at: new Date(), ageMs: 10 });
+    await run({ owner: 'su-abc', kind: 'lifecycle', summary: '■ session ended', wake_delivery_id: 5 });
+    expect(h.wakeResumeTurn).not.toHaveBeenCalled();
+    expect(h.cancel).not.toHaveBeenCalled();
   });
 
   it('SessionStart (▶ session started) does NOT trigger a release — only the end transition', async () => {
@@ -139,21 +193,22 @@ describe('activity:report SessionEnd → work-item lease release (P-002 fast pat
 /**
  * EI-18676518990229124: a carry-respawn (session:request-compaction) ends this
  * process under the SAME ownerId and relaunches it seconds later. That
- * SessionEnd must NOT force-release the owner's claims — the successor is the
- * same logical agent and would resume holding claims that had just silently
+ * SessionEnd must NOT force-release the owner's claims or cancel its standing
+ * inbox-wake watch — the successor is the same logical agent and would resume
+ * holding claims that had just silently
  * evaporated (the exact 4x-in-45-minutes symptom reported live). The marker
  * `session:request-compaction` sets right after a successful `injectIntoHost`
  * is what tells this branch to skip the release for that one transition.
  */
 describe('activity:report SessionEnd → carry-respawn marker suppresses the P-002 release', () => {
-  it('a marked owner (carry-respawn expected) → releaseAllWorkItemLeasesForOwner is SKIPPED, inbox-wake cancel still fires', async () => {
+  it('a marked owner (carry-respawn expected) → claims and the inbox-wake watch are preserved', async () => {
     await markRespawnExpected('su-resuming');
     const res = await run({ owner: 'su-resuming', kind: 'lifecycle', summary: '■ session ended' });
     expect(h.release).not.toHaveBeenCalled();
     expect(h.releaseLocks).not.toHaveBeenCalled();
     // The marker short-circuits: no wake-ledger round-trip is spent when it already answers.
     expect(h.resetWake).not.toHaveBeenCalled();
-    expect(h.cancel).toHaveBeenCalledTimes(1);
+    expect(h.cancel).not.toHaveBeenCalled();
     expect(responseBody(res)).toMatchObject({ ok: true, session_end_disposition: 'continuation' });
   });
 
@@ -190,12 +245,12 @@ describe('activity:report SessionEnd → carry-respawn marker suppresses the P-0
  * force-released the leader's claims ~412ms after the wake landed.
  */
 describe('activity:report SessionEnd → a recent context-reset wake suppresses the P-002 release (WI-6756)', () => {
-  it('a psu-socket-reset wake in the window → release SKIPPED, inbox-wake cancel still fires', async () => {
+  it('a psu-socket-reset wake in the window → claims and the inbox-wake watch are preserved', async () => {
     h.resetWake.mockResolvedValueOnce({ channel: 'psu-socket-reset', at: new Date(), ageMs: 412 });
     const res = await run({ owner: 'su-cold-loop', kind: 'lifecycle', summary: '■ session ended' });
     expect(h.release).not.toHaveBeenCalled();
     expect(h.releaseLocks).not.toHaveBeenCalled();
-    expect(h.cancel).toHaveBeenCalledTimes(1);
+    expect(h.cancel).not.toHaveBeenCalled();
     expect(responseBody(res)).toMatchObject({ ok: true, session_end_disposition: 'continuation' });
   });
 
@@ -203,6 +258,7 @@ describe('activity:report SessionEnd → a recent context-reset wake suppresses 
     h.resetWake.mockResolvedValueOnce({ channel: 'psu-socket-recycle', at: new Date(), ageMs: 900 });
     await run({ owner: 'su-cold-loop', kind: 'lifecycle', summary: '■ session ended' });
     expect(h.release).not.toHaveBeenCalled();
+    expect(h.cancel).not.toHaveBeenCalled();
   });
 
   it('NO reset wake in the window → the normal force-release still runs (a real death is unaffected)', async () => {
@@ -246,7 +302,7 @@ describe('activity:report SessionEnd → an armed engine loop preserves the same
     expect(h.loopOwners).toHaveBeenCalledTimes(1);
     expect(h.release).not.toHaveBeenCalled();
     expect(h.releaseLocks).not.toHaveBeenCalled();
-    expect(h.cancel).toHaveBeenCalledTimes(1);
+    expect(h.cancel).not.toHaveBeenCalled();
     expect(responseBody(res)).toMatchObject({ ok: true, session_end_disposition: 'continuation' });
   });
 

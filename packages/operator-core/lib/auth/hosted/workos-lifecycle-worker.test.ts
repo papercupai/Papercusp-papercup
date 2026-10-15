@@ -3,6 +3,8 @@ import {
   WORKOS_REVOCATION_PROPAGATION_MS,
   WorkosLifecycleWorker,
   compareWorkosLifecycleCursor,
+  projectWorkosLifecycleMutation,
+  workosDirectoryIdentitySubject,
   type WorkosAccessClosureSignal,
   type WorkosLifecycleCursor,
   type WorkosLifecycleEvent,
@@ -59,6 +61,40 @@ function base(eventId: string, version: string | number = 1) {
 }
 
 describe('WorkosLifecycleWorker', () => {
+  it('orders directory changes independently from login identity and rejects stale replay', async () => {
+    const store = new ReferenceStore();
+    const worker = new WorkosLifecycleWorker(store, { closeAffectedAccess: vi.fn() });
+    const directory: WorkosLifecycleEvent = {
+      ...base('directory-off', 10), kind: 'directory.user.changed', state: 'inactive',
+      userSubject: 'directory-user', directorySubject: 'directory', organizationSubject: 'organization',
+    };
+    expect((await worker.apply(directory)).disposition).toBe('applied');
+    expect((await worker.apply(directory)).disposition).toBe('duplicate');
+    expect((await worker.apply({ ...directory, ...base('directory-old', 1), state: 'active' })).disposition).toBe('stale');
+    expect((await worker.apply({ ...base('login-user', 1), kind: 'user.upsert', userSubject: 'directory-user' })).disposition).toBe('applied');
+    expect(store.mutations).toHaveLength(2);
+    expect(store.mutations[0]).toMatchObject({ kind: 'reduce-directory-access', directorySubject: 'directory' });
+    expect(store.mutations[1]).toMatchObject({ kind: 'upsert-user' });
+    expect(workosDirectoryIdentitySubject('a:b', 'c', 'd')).not.toBe(workosDirectoryIdentitySubject('a', 'b:c', 'd'));
+  });
+
+  it('turns active directory users and added groups into observations, never local grants', () => {
+    const identity = { userSubject: 'user', directorySubject: 'directory', organizationSubject: 'organization' };
+    const active = projectWorkosLifecycleMutation({ ...base('active'), ...identity, kind: 'directory.user.changed', state: 'active' });
+    expect(active).toEqual({
+      kind: 'observe-directory-membership', provider: 'workos', userSubject: 'user',
+      externalOrganizationId: 'organization', directorySubject: 'directory',
+    });
+    expect(projectWorkosLifecycleMutation({ ...base('added'), ...identity, kind: 'directory.group.membership', groupSubject: 'group', direction: 'added' }))
+      .toEqual({
+        kind: 'observe-directory-membership', provider: 'workos', userSubject: 'user',
+        externalOrganizationId: 'organization', directorySubject: 'directory', groupSubject: 'group',
+      });
+    // An observation carries no role, grant, or membership material.
+    expect(Object.keys(active)).not.toContain('role');
+    expect(projectWorkosLifecycleMutation({ ...base('removed'), ...identity, kind: 'directory.group.membership', groupSubject: 'group', direction: 'removed' }))
+      .toMatchObject({ kind: 'reduce-directory-access', groupSubject: 'group' });
+  });
   it('projects identity, organization, and invitation existence without authority material', async () => {
     const store = new ReferenceStore();
     const closeAffectedAccess = vi.fn(async (_signal: WorkosAccessClosureSignal) => {});

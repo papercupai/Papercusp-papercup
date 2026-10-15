@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-002 live brief launch: an organic consult whose ranked experts cannot be forked or converted launches a fresh answering session briefed with the Codex expert's cited turns",
+  "framework": "operational",
+  "command": [
+    "node scripts/mcp-call.mjs consult:get_feedback --json-file .papercusp/scratch/cbp-p002-probe8/args.json --client su-f4fac2af-02ef-438c-bec8-241ddf82e83b --port 3170",
+    "conversations:get { id: 'conv-request-bd69650929668beb1a6eb0dd58111705b192129aef1a2ace0cf67abdcaa6f6a7' } -> consult.dispatch.recent"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-13T06:27:15.201Z",
+  "finishedAt": "2026-10-13T06:30:08.769Z",
+  "summary": "On staging :3170 (build 62493910da), an organic consult:get_feedback question (no responder named) matched a Codex judge expert su-a514c51d (adv 42055, agent codex, role judge). The dispatch walk skipped all four ranks with conversion-unavailable (claude/fable, claude/opus, codex/sol, codex/gpt-6-astra), then dispatched operation 'brief' for rank 1. A fresh Claude answering session su-6b774762 (adv 42201) launched; its kickoff states it is a FRESH session briefed with turns CITED from su-a514c51d's transcript and quotes that expert's assistant turn 4 verbatim.",
+  "assertions": [
+    {
+      "id": "organic-routing-no-named-responder",
+      "passed": true,
+      "evidence": "probe args.json carries only { question }; the router chose the experts (conv-request-bd69650929668beb1a6eb0dd58111705b192129aef1a2ace0cf67abdcaa6f6a7, verdict accepted, state routing at 06:27:16.675Z)."
+    },
+    {
+      "id": "every-rank-unforkable-or-unconvertible",
+      "passed": true,
+      "evidence": "consult.dispatch.recent[0].attempts at 06:27:53.990Z: ranks 1-4 (claude/fable, claude/opus, codex/sol, codex/gpt-6-astra) each outcome skipped, reason conversion-unavailable, operation null."
+    },
+    {
+      "id": "brief-launch-dispatched",
+      "passed": true,
+      "evidence": "consult.dispatch.recent[0].attempts[4]: rank 1 claude/fable operation 'brief' outcome dispatched; dispatched true; answering_owner_id su-6b774762-f97a-4c33-9415-1c6e58b90391."
+    },
+    {
+      "id": "answering-session-launched-live",
+      "passed": true,
+      "evidence": "coord:presence 06:28:26Z: su-6b774762 sessionState live, startedAt 2026-10-13 02:27:26-04, host [build-host]; adv_sessions 42201 agent claude, launch_parent_owner su-f4fac2af (the asker)."
+    },
+    {
+      "id": "kickoff-cites-expert-turns",
+      "passed": true,
+      "evidence": "session_turns ea7a46fc-d334-4c36-8b12-8142be7d2081 turn 0 (agent-injected, 3747 chars): 'You are a FRESH answering session, briefed with turns CITED from su-a514c51d-c4aa-4c8a-bc22-e0407cb33452's transcript. You did NOT inherit or continue their session'. It contains the first 60 chars of expert Codex session 01a13347-8dac-7dd0-a81c-e0a2fc2a3bb8 assistant turn 4 ('The exact replay reproduced the stored distribution and immutable clause identity...')."
+    },
+    {
+      "id": "expert-is-codex-role-session",
+      "passed": true,
+      "evidence": "adv_sessions 42055: coord_owner_id su-a514c51d-c4aa-4c8a-bc22-e0407cb33452, agent codex, role judge; its native session 01a13347-8dac-7dd0-a81c-e0a2fc2a3bb8 is source_kind codex."
+    }
+  ],
+  "provenance": {
+    "evidencePlane": "live",
+    "operator": "staging :3170 build 62493910da",
+    "launcher": "consult router dispatchConsultResponder (packages/operator-core/lib/consult/consult-dispatch.ts)",
+    "plan": "consult-backed-parking-2026-10-12",
+    "items": ["P-002"],
+    "workItem": "WI-6554700010009490",
+    "specs": ["SPEC-P-002@1", "AUTO-BAR-R-1-P-002@3"],
+    "detail": "Probe 8 per consult-backed-parking-2026-10-12#D-019/D-020: organic routing, no forced responder. Probes 6 and 7 forked a Claude source; after WI-6554700010009707 the walk now reaches brief.",
+    "recordedBy": "su-f4fac2af-02ef-438c-bec8-241ddf82e83b"
+  },
+  "disclosures": [
+    "The brief answering session ran on rank 1's model (claude/fable); the cited turns come from the Codex expert su-a514c51d, which is the property R-1 asks for.",
+    "Whether the answering session posts an accepted answer is P-002-adjacent but not asserted here; R-1 asks for the briefed launch.",
+    "Ranks 1-2 are Claude sources that also skipped as conversion-unavailable; this receipt does not diagnose why each Claude rank could not fork."
+  ]
+}

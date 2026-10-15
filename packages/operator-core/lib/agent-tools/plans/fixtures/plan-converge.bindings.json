@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "properties": {
+    "planSlug": { "type": "string", "required": true, "lifetime": { "kind": "stable" } },
+    "harness": { "type": "string", "required": true, "lifetime": { "kind": "stable" } },
+    "classRef": { "type": "string", "required": true, "lifetime": { "kind": "stable" } },
+    "auditItems": { "type": "json", "required": true, "description": "Reviewed plans:audit completion items with resolving code/test citations; never inferred from test verdicts.", "lifetime": { "kind": "stable" } },
+    "dryRun": { "type": "boolean", "description": "Defaults to true inside the recipe. Keep outer code:run dryRun false so audit/certifier previews actually execute.", "lifetime": { "kind": "stable" } },
+    "acknowledgeExisting": { "type": "boolean", "description": "Explicitly acknowledge previously reviewed independent certification cards. Defaults to false; preserves the certifier's existing-card refusal unless true.", "lifetime": { "kind": "stable" } },
+    "gapOwner": { "type": "string", "description": "Concrete accountable owner; defaults to the invoking identity.", "lifetime": { "kind": "stable" } }
+  },
+  "additionalProperties": false
+}

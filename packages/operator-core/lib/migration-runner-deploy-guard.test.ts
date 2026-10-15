@@ -1,10 +1,11 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { applyPendingMigrations } from '../../../libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js';
+import { applyPendingMigrations, migrationTransactionChunks } from '../../../libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js';
 
 const dirs: string[] = [];
+const projectionSql = readFileSync(new URL('../../../libs/papercusp/libs/db/sql/1422-adv-sessions-launch-harness-projection.sql', import.meta.url), 'utf8');
 
 function fixtureDir(sql = 'SELECT 1;') {
   const dir = mkdtempSync(join(tmpdir(), 'migration-runner-guard-'));
@@ -26,6 +27,28 @@ afterEach(() => {
 });
 
 describe('migration runner beforeApply guard', () => {
+  it('bounds the exact immutable projection backfill and gates its final ledger', async () => {
+    const chunks = migrationTransactionChunks(projectionSql);
+    expect(chunks.filter((chunk) => chunk.includes('LIMIT 64'))).toHaveLength(1024);
+    expect(chunks[0]).toContain('CREATE TRIGGER adv_sessions_project_launch_harness');
+    expect(chunks.slice(1).every((chunk) => chunk.includes('SET LOCAL synchronous_commit = on;'))).toBe(true);
+    expect(chunks.at(-1)).toContain('WHERE launch_harness_projection IS NULL');
+    expect(chunks.at(-1)).toContain('RAISE EXCEPTION');
+
+    const client = fakeClient();
+    await applyPendingMigrations({ client, sqlDir: fixtureDir(projectionSql) });
+    const transactions = client.unsafe.mock.calls.map(([sql]) => sql).filter((sql) => sql.includes('BEGIN;'));
+    expect(transactions).toHaveLength(1026);
+    expect(transactions.slice(0, -1).every((sql) => !sql.includes('INSERT INTO harness_shared.schema_migrations'))).toBe(true);
+    expect(transactions.at(-1)).toContain('projection_backfill_done');
+    expect(transactions.at(-1)).toContain('INSERT INTO harness_shared.schema_migrations');
+  });
+
+  it('does not rewrite a changed fingerprint or ordinary breakpoint migration', () => {
+    expect(migrationTransactionChunks(`${projectionSql}\n`)).toHaveLength(2);
+    expect(migrationTransactionChunks('SELECT 1;\n--> statement-breakpoint\nSELECT 2;')).toEqual(['SELECT 1;', 'SELECT 2;']);
+  });
+
   it('runs before SQL and leaves a blocked file unrecorded', async () => {
     const client = fakeClient();
     const result = await applyPendingMigrations({

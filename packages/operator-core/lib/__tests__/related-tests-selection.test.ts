@@ -1,4 +1,6 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,9 +16,12 @@ import {
   playwrightOwnedTest,
   pruneWithExecutedMap,
   resolveRelatedWidenThreshold,
+  prepareRelatedTestSelection,
   selectRelatedTests,
+  staticImportClosure,
   transitiveDeps,
   writeRelatedFilterList,
+  enumerateAffectedTaskSelection,
 } from '../../../../scripts/lib/related-tests.mjs';
 
 /**
@@ -33,6 +38,453 @@ import {
  */
 
 const ROOT = '/repo/lib';
+
+describe('original gate selection preparation', () => {
+  const task = (script = 'test', command = 'vitest run', relatedFiles?: string[]) => ({
+    ws: { name: '@probe/core', dir: 'packages/core', scripts: { [script]: command } }, script, relatedFiles,
+  });
+  const options = (results: unknown[]) => ({ root: '/repo', filterDir: tmpdir(), runResolver: () => results });
+  const resolved = (files: string[]) => ({ ok: true, enumerated: true, files, config: { include: files, exclude: [] } });
+
+  it('keeps wide lanes unknown until their real config enumerates files', () => {
+    const result = enumerateAffectedTaskSelection([task()], options([resolved(['a.test.ts', 'b.test.ts'])]));
+    expect(result.files).toEqual(['packages/core/a.test.ts', 'packages/core/b.test.ts']);
+    expect(result.coverage).toBe('complete');
+    expect(result.executed).toBe(false);
+    expect(result.runtimeClosure).toBe('unmeasured');
+    expect(result.operationalAcceptance).toBe(false);
+  });
+
+  it('retains unsupported composite/guard tasks even if they supplied a file list', () => {
+    const result = enumerateAffectedTaskSelection([
+      task(), task('lint:guard', 'node guard.mjs', ['guard.test.ts']),
+      task('test:compound', 'vitest run && node more.mjs'),
+    ], options([resolved(['a.test.ts'])]));
+    expect(result.coverage).toBe('partial');
+    expect(result.unenumerated.map(row => row.task)).toEqual(['@probe/core :: lint:guard', '@probe/core :: test:compound']);
+  });
+
+  it('does not shrink to relatedFiles when config resolution or the batch fails', () => {
+    expect(enumerateAffectedTaskSelection([task('test', 'vitest run', ['a.test.ts'])],
+      options([{ ok: false, error: 'config unavailable' }])).unenumerated[0].reason).toBe('config unavailable');
+    expect(enumerateAffectedTaskSelection([task()], options([])).coverage).toBe('partial');
+  });
+
+  it('follows local aliases, preserves lifecycle commands and refuses missing or cyclic aliases', () => {
+    const base = task();
+    base.ws.scripts = { test: 'npm run test:unit', 'test:unit': 'vitest run', pretest: 'node build.mjs' };
+    const result = enumerateAffectedTaskSelection([base], options([resolved(['a.test.ts'])]));
+    expect(result.tasks[0].command).toBe('npm run test:unit');
+    expect(result.tasks[0].resolvedCommand).toBe('vitest run');
+    expect(result.tasks[0].lifecycleCommands).toEqual([{ script: 'pretest', command: 'node build.mjs' }]);
+    for (const scripts of [{ test: 'npm run missing' }, { test: 'npm run again', again: 'npm run test' }]) {
+      expect(enumerateAffectedTaskSelection([{ ...base, ws: { ...base.ws, scripts } }], options([])).coverage).toBe('partial');
+    }
+  });
+
+  it('retains template config environment without admitting arbitrary shell assignments', () => {
+    const requests: Array<{ env: Record<string, string> }> = [];
+    const result = enumerateAffectedTaskSelection([task('test', 'TEMPLATE_CHECKS_CONFIG=template-checks.json vitest run')],
+      { root: '/repo', runResolver: (batch: Array<{ env: Record<string, string> }>) => {
+        requests.push(...batch); return [resolved(['a.test.ts'])];
+      } });
+    expect(result.coverage).toBe('complete');
+    expect(requests[0].env).toEqual({ TEMPLATE_CHECKS_CONFIG: 'template-checks.json' });
+    expect(enumerateAffectedTaskSelection([task('test', 'UNKNOWN=value vitest run')], options([])).coverage).toBe('partial');
+  });
+
+  it('measures the original fixture build lifecycle inputs without building or resolving installed dependencies', () => {
+    const repo = join(dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url))))), '..');
+    const parent = join(repo, '.papercusp/scratch');
+    mkdirSync(parent, { recursive: true });
+    const dir = mkdtempSync(join(parent, 'fixture-build-selection-'));
+    try {
+      for (const sub of ['scripts', 'app', 'public', 'packages/data/src', '.next']) mkdirSync(join(dir, sub), { recursive: true });
+      for (const file of ['build.mjs', 'source-identity.mjs', 'dependency-preflight.mjs'])
+        writeFileSync(join(dir, 'scripts', file), readFileSync(join(repo, 'apps/slack-asana-bug-drill/scripts', file)));
+      writeFileSync(join(dir, 'package.json'), '{"type":"module","dependencies":{"never-installed":"0.0.0"}}');
+      writeFileSync(join(dir, 'app/page.tsx'), 'throw new Error("discovery compiled the app");');
+      writeFileSync(join(dir, 'packages/data/src/index.ts'), 'throw new Error("discovery bundled data");');
+      writeFileSync(join(dir, 'public/logo.svg'), '<svg/>');
+      writeFileSync(join(dir, 'next-env.d.ts'), 'declare const input: true;');
+      writeFileSync(join(dir, '.next/fixture-build.json'), 'unchanged build sentinel');
+      const relativeDir = dir.slice(repo.length + 1).replaceAll('\\', '/');
+      const ws = { name: '@bug-drill/fixture', dir: relativeDir,
+        scripts: { test: 'vitest run', pretest: 'node scripts/build.mjs' } };
+      const discover = () => enumerateAffectedTaskSelection([{ ws, script: 'test' }],
+        { root: repo, runResolver: () => [resolved(['a.test.ts'])] });
+      const result = discover();
+      expect(result.files).toEqual([`${relativeDir}/a.test.ts`]);
+      expect(result.unenumerated).toMatchObject([{ reason: 'unexecuted-lifecycle-command' }]);
+      const obligation = result.commandObligations[0];
+      expect(obligation).toMatchObject({ kind: 'npm-lifecycle', script: 'pretest',
+        command: 'node scripts/build.mjs', executed: false,
+        discovery: { check: 'fixture-build', files: [], dependencyClosure: 'unmeasured', runtimeClosure: 'unmeasured' } });
+      const paths = obligation.inputs.map((input: { path: string }) => input.path);
+      expect(paths).toEqual(expect.arrayContaining(['scripts/build.mjs', 'scripts/source-identity.mjs',
+        'scripts/dependency-preflight.mjs', 'app/page.tsx', 'packages/data/src/index.ts',
+        'public/logo.svg', 'next-env.d.ts', 'package.json'].map(path => `${relativeDir}/${path}`)));
+      expect(paths.some((path: string) => path.includes('/.next/'))).toBe(false);
+      for (const input of obligation.inputs) expect(input.sha256)
+        .toBe(createHash('sha256').update(readFileSync(join(repo, input.path))).digest('hex'));
+      const before = obligation.inputs.find((input: { path: string }) => input.path.endsWith('/public/logo.svg'))!.sha256;
+      writeFileSync(join(dir, 'public/logo.svg'), '<svg>changed asset</svg>');
+      expect(discover().commandObligations[0].inputs.find((input: { path: string }) => input.path.endsWith('/public/logo.svg'))!.sha256)
+        .not.toBe(before);
+      expect(readFileSync(join(dir, '.next/fixture-build.json'), 'utf8')).toBe('unchanged build sentinel');
+      expect(existsSync(join(dir, 'node_modules'))).toBe(false);
+      expect(result.coverage).toBe('partial');
+      expect(result.executed).toBe(false);
+      expect(result.operationalAcceptance).toBe(false);
+      const chained = enumerateAffectedTaskSelection([{ ws: { ...ws,
+        scripts: { ...ws.scripts, test: 'npm run first && npm run second', first: 'vitest run', second: 'vitest run' } }, script: 'test' }],
+        { root: repo, runResolver: () => [resolved(['a.test.ts'])] });
+      expect(chained.commandObligations[0]).toMatchObject({ step: 0, script: 'pretest',
+        discovery: { check: 'fixture-build' }, executed: false });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('keeps a failed or forged fixture lifecycle discovery as explicit residue with the original command', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fixture-build-selection-refusal-'));
+    try {
+      const wsRoot = join(dir, 'fixture');
+      mkdirSync(join(wsRoot, 'scripts'), { recursive: true });
+      writeFileSync(join(wsRoot, 'package.json'), '{"type":"module"}');
+      const ws = { name: '@bug-drill/fixture', dir: 'fixture', scripts: { test: 'vitest run', pretest: 'node scripts/build.mjs' } };
+      const base = { schemaVersion: 1, kind: 'command-check-inputs', check: 'fixture-build', files: [],
+        inputs: [{ path: 'fixture/package.json', sha256: createHash('sha256').update(readFileSync(join(wsRoot, 'package.json'))).digest('hex') }],
+        executed: false, dependencyClosure: 'unmeasured', runtimeClosure: 'unmeasured', operationalAcceptance: false };
+      for (const receipt of [{ ...base, executed: true }, { ...base, operationalAcceptance: true },
+        { ...base, inputs: [{ ...base.inputs[0], sha256: 'a'.repeat(64) }] },
+        { ...base, inputs: [...base.inputs, ...base.inputs] }, { ...base, inputs: [] },
+        { ...base, dependencyClosure: 'complete' }, { ...base, files: ['fixture/package.json'] }]) {
+        writeFileSync(join(wsRoot, 'scripts/build.mjs'), `console.log('COMMAND_CHECK_SELECTION='+${JSON.stringify(JSON.stringify(receipt))});`);
+        const result = enumerateAffectedTaskSelection([{ ws, script: 'test' }],
+          { root: dir, runResolver: () => [resolved(['a.test.ts'])] });
+        expect(result.commandObligations[0]).toMatchObject({ command: 'node scripts/build.mjs', inputs: null, executed: false });
+        expect(result.coverage).toBe('partial');
+        expect(result.unenumerated).toHaveLength(2);
+      }
+      rmSync(join(wsRoot, 'scripts/build.mjs'));
+      expect(enumerateAffectedTaskSelection([{ ws, script: 'test' }],
+        { root: dir, runResolver: () => [resolved(['a.test.ts'])] }).commandObligations[0].inputs).toBe(null);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('enumerates npm shell expansion before native Node globs without importing a test', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'node-selection-'));
+    try {
+      const ws = join(dir, 'packages/core');
+      mkdirSync(join(ws, 'src/one/deep'), { recursive: true });
+      for (const file of ['src/one/a.node-test.ts', 'src/one/deep/b.node-test.ts'])
+        writeFileSync(join(ws, file), 'throw new Error("selection executed a test");');
+      const result = enumerateAffectedTaskSelection([task('test', 'node --test --test-global-setup=preflight.mjs src/**/*.node-test.ts')], { root: dir });
+      expect(result.unenumerated).toEqual([]);
+      // The unquoted npm shell glob already matched one level, so Node receives
+      // that literal path, not the original recursive pattern.
+      expect(result.files).toEqual(['packages/core/src/one/a.node-test.ts']);
+      if (!('shellPatterns' in result.tasks[0])) throw new Error('Node selection metadata missing');
+      expect(result.tasks[0].shellPatterns).toEqual(['src/one/a.node-test.ts']);
+      expect(result.executed).toBe(false);
+      for (const command of ['node --test --test-name-pattern=foo src/*.ts', 'node --test src/*.ts && node more.mjs',
+        'node --test ../outside.ts', 'node --test'])
+        expect(enumerateAffectedTaskSelection([task('test', command)], { root: dir }).coverage).toBe('partial');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('uses native Vitest project inheritance and in-source/typecheck discovery without collection', () => {
+    const repo = join(dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url))))), '..');
+    const dir = mkdtempSync(join(tmpdir(), 'project-selection-'));
+    try {
+      const ws = join(dir, 'packages/core');
+      mkdirSync(ws, { recursive: true });
+      writeFileSync(join(ws, 'vitest.config.mts'), `export default {test:{projects:[
+        {test:{name:'unit',include:['a.test.ts']}},
+        {test:{name:'source',include:[],includeSource:['inside.ts']}},
+        {test:{name:'types',typecheck:{enabled:true,only:true,include:['a.test-d.ts']}}}
+      ]}};`);
+      writeFileSync(join(ws, 'a.test.ts'), 'throw new Error("selection executed a test");');
+      writeFileSync(join(ws, 'inside.ts'), 'if (import.meta.vitest) throw new Error("selection executed source");');
+      writeFileSync(join(ws, 'a.test-d.ts'), 'throw new Error("selection executed typecheck");');
+      const result = enumerateAffectedTaskSelection([task()], { root: dir, runResolver: (requests: unknown[]) => {
+        const output = execFileSync(process.execPath, [join(repo, 'scripts/resolve-vitest-config-contracts.mjs')],
+          { cwd: repo, input: JSON.stringify({ requests }), encoding: 'utf8', timeout: 30_000 });
+        return JSON.parse(output.split('\n').reverse().find(line => line.startsWith('PC_VITEST_CONFIG_CONTRACTS='))!
+          .slice('PC_VITEST_CONFIG_CONTRACTS='.length)).results;
+      } });
+      expect(result.unenumerated).toEqual([]);
+      expect(result.files).toEqual(['packages/core/a.test-d.ts', 'packages/core/a.test.ts', 'packages/core/inside.ts']);
+      if (!('projects' in result.tasks[0])) throw new Error('Vitest project metadata missing');
+      expect(result.tasks[0].projects.map((project: { name: string }) => project.name).sort()).toEqual(['source', 'types', 'unit']);
+      expect(result.executed).toBe(false);
+      expect(result.runtimeClosure).toBe('unmeasured');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 40_000);
+
+  it('refuses duplicate, escaping, or unqualified file populations', () => {
+    for (const result of [resolved(['../outside.test.ts']), resolved(['a.test.ts', 'a.test.ts']),
+      { ok: true, files: ['a.test.ts'] }]) {
+      expect(enumerateAffectedTaskSelection([task()], options([result])).unenumerated).toHaveLength(1);
+    }
+  });
+
+  it('records overlapping task populations instead of accepting a false partition', () => {
+    const result = enumerateAffectedTaskSelection([task(), task('test:integration')],
+      options([resolved(['a.test.ts']), resolved(['a.test.ts'])]));
+    expect(result.coverage).toBe('partial');
+    expect(result.overlaps).toEqual(['packages/core/a.test.ts']);
+    expect(result.fileOccurrences).toEqual([
+      { task: '@probe/core :: test', step: null, command: 'vitest run', file: 'packages/core/a.test.ts', kind: 'test-file' },
+      { task: '@probe/core :: test:integration', step: null, command: 'vitest run', file: 'packages/core/a.test.ts', kind: 'test-file' },
+    ]);
+  });
+
+  it('retains ordered local npm chains, lifecycle checks and unknown Astro steps without inventing files', () => {
+    const base = task();
+    base.ws.scripts = { test: 'npm run docs && npm run unit', docs: 'astro check',
+      unit: 'vitest run', preunit: 'node setup.mjs', postunit: 'node cleanup.mjs' };
+    const result = enumerateAffectedTaskSelection([base], options([resolved(['a.test.ts'])]));
+    expect(result.files).toEqual(['packages/core/a.test.ts']);
+    expect(result.coverage).toBe('partial');
+    expect(result.unenumerated.map(row => row.reason)).toEqual([
+      'astro-sync-not-requested', 'unexecuted-lifecycle-command', 'unexecuted-lifecycle-command',
+    ]);
+    const entry = result.tasks[0];
+    if (!('steps' in entry)) throw new Error('Original chain missing');
+    expect(entry.command).toBe(base.ws.scripts.test);
+    expect(entry.steps.map((step: { command: string }) => step.command)).toEqual([
+      'astro check', 'node setup.mjs', 'vitest run', 'node cleanup.mjs',
+    ]);
+    expect(result.commandObligations.map(row => row.command)).toEqual(['astro check', 'node setup.mjs', 'node cleanup.mjs']);
+    expect(result.executed).toBe(false);
+    for (const scripts of [{ test: 'npm run again && vitest run', again: 'npm run test' },
+      { test: 'npm run absent && vitest run' }]) {
+      expect(enumerateAffectedTaskSelection([{ ...base, ws: { ...base.ws, scripts } }], options([]))
+        .unenumerated[0].reason).toBe('invalid-local-script-chain');
+    }
+  });
+
+  it('requires explicit Astro sync and refuses pre-sync or tampered populations without dropping the check', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'astro-selection-qualification-'));
+    try {
+      const file = 'packages/core/checked.ts';
+      mkdirSync(join(dir, 'packages/core'), { recursive: true });
+      writeFileSync(join(dir, file), 'export const checked = true;');
+      const hash = createHash('sha256').update(readFileSync(join(dir, file))).digest('hex');
+      const receipt = { ok: true, enumerated: true, repositoryFiles: [file],
+        inputs: [{ path: file, sha256: hash }], sync: { status: 'completed', beforePopulation: true },
+        executed: false, runtimeClosure: 'unmeasured', operationalAcceptance: false };
+      const request = task('test', 'astro check');
+      let called = false;
+      const blocked = enumerateAffectedTaskSelection([request], { root: dir,
+        runResolver: () => { called = true; return [receipt]; } });
+      expect(called).toBe(false);
+      expect(blocked.unenumerated[0].reason).toBe('astro-sync-not-requested');
+      expect(blocked.commandObligations).toMatchObject([{ command: 'astro check', executed: false }]);
+      for (const bad of [{ ...receipt, sync: undefined }, { ...receipt, executed: true },
+        { ...receipt, inputs: [{ path: file, sha256: 'f'.repeat(64) }] },
+        { ...receipt, repositoryFiles: [] }, { ...receipt, operationalAcceptance: true }]) {
+        const result = enumerateAffectedTaskSelection([request], { root: dir, syncAstro: true,
+          runResolver: () => [bad] });
+        expect(result.coverage).toBe('partial');
+        expect(result.files).toEqual([]);
+        expect(result.commandObligations).toMatchObject([{ command: 'astro check', executed: false }]);
+      }
+      const accepted = enumerateAffectedTaskSelection([request], { root: dir, syncAstro: true,
+        runResolver: (requests: unknown[]) => {
+          expect(requests).toMatchObject([{ runner: 'astro-check', syncBeforeCheck: true }]);
+          return [receipt];
+        } });
+      expect(accepted.files).toEqual([file]);
+      expect(accepted.coverage).toBe('partial');
+      expect(accepted.unenumerated[0].reason).toBe('unexecuted-command-obligations');
+      expect(accepted.commandObligations[0].inputs).toEqual(receipt.inputs);
+      const failedReceipt = { ok: false, error: 'sync fixture failed',
+        diagnostics: { currentPhase: 'sync', elapsedMs: 21, phases: {} } };
+      const failed = enumerateAffectedTaskSelection([request], { root: dir, syncAstro: true,
+        runResolver: () => [failedReceipt] });
+      expect(failed.unenumerated[0].reason).toBe('sync fixture failed');
+      expect(failed.commandObligations[0]).toMatchObject({ executed: false, inputs: null,
+        discovery: failedReceipt });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('uses the native Astro checker population after sync while keeping diagnostics unexecuted', () => {
+    const repo = join(dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url))))), '..');
+    // Astro excludes node_modules from its project population, so keep the
+    // isolated fixture in the repo's ignored scratch area, with inherited deps.
+    const parent = join(repo, '.papercusp/scratch');
+    mkdirSync(parent, { recursive: true });
+    const dir = mkdtempSync(join(parent, 'astro-selection-fixture-'));
+    try {
+      mkdirSync(join(dir, 'src'), { recursive: true });
+      writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
+      writeFileSync(join(dir, 'astro.config.mjs'), `export default { integrations: [{ name: 'selection-fixture', hooks: {
+        'astro:config:done': ({injectTypes}) => injectTypes({filename: 'selection-generated.d.ts', content: 'declare const syncedValue: string;'})
+      }}] };`);
+      writeFileSync(join(dir, 'tsconfig.json'), '{"extends":"astro/tsconfigs/strict","include":[".astro/types.d.ts","src/**/*"],"exclude":["dist"]}');
+      writeFileSync(join(dir, 'src/checked.ts'), 'export const broken: string = 123;');
+      writeFileSync(join(dir, 'src/page.astro'), '<p>Hello</p>');
+      writeFileSync(join(dir, 'src/skipped.vue'), '<template>hello</template>');
+      writeFileSync(join(dir, 'src/skipped.svelte'), '<p>hello</p>');
+      const relativeDir = dir.slice(repo.length + 1).replaceAll('\\', '/');
+      const result = enumerateAffectedTaskSelection([{ ws: { name: '@probe/astro', dir: relativeDir,
+        scripts: { test: 'astro check' } }, script: 'test' }], { root: repo, syncAstro: true });
+      expect(result.unenumerated).toMatchObject([{ reason: 'unexecuted-command-obligations' }]);
+      expect(result.files).toEqual(expect.arrayContaining([
+        `${relativeDir}/.astro/types.d.ts`, `${relativeDir}/src/checked.ts`, `${relativeDir}/src/page.astro`,
+      ]));
+      expect(result.files.some(file => /\.(vue|svelte)$/.test(file))).toBe(false);
+      expect(readFileSync(join(dir, '.astro/types.d.ts'), 'utf8')).toContain('selection-generated.d.ts');
+      expect(result.commandObligations[0]).toMatchObject({ check: 'astro-check', executed: false,
+        discovery: { sync: { status: 'completed', beforePopulation: true }, executed: false } });
+      const diagnostics = result.commandObligations[0].discovery.diagnostics;
+      expect(diagnostics.currentPhase).toBe('completed');
+      for (const name of ['syncMs', 'checkerMs', 'populationMs'])
+        expect(diagnostics.phases[name]).toBeGreaterThanOrEqual(0);
+      expect(diagnostics.elapsedMs).toBeGreaterThanOrEqual(diagnostics.phases.syncMs);
+      expect(result.runtimeClosure).toBe('unmeasured');
+      expect(result.operationalAcceptance).toBe(false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 40_000);
+
+  it('retains the voice guard native input census as an unexecuted command obligation', () => {
+    const repo = join(dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url))))), '..');
+    const ws = { name: '@probe/operator', dir: 'apps/operator', scripts: { 'lint:el-tools': 'node scripts/el-tools-check.mjs' } };
+    const result = enumerateAffectedTaskSelection([{ ws, script: 'lint:el-tools' }], { root: repo });
+    expect(result.files).toEqual([]);
+    expect(result.coverage).toBe('partial');
+    expect(result.unenumerated[0].reason).toBe('unexecuted-command-obligations');
+    expect(result.commandObligations).toHaveLength(1);
+    const obligation = result.commandObligations[0];
+    expect(obligation).toMatchObject({ check: 'el-tools-drift', executed: false });
+    expect(obligation.inputs.map((input: { path: string }) => input.path)).toEqual(expect.arrayContaining([
+      'apps/operator/scripts/el-tools-check.mjs', 'apps/operator/scripts/el-agent-sync.mjs',
+    ]));
+    const defs = readdirSync(join(repo, 'packages/operator-core/lib/commands/defs'))
+      .filter(file => file.endsWith('.ts') && !file.endsWith('.test.ts') && file !== 'index.ts');
+    expect(obligation.inputs.filter((input: { path: string }) => input.path.startsWith('packages/operator-core/lib/commands/defs/')))
+      .toHaveLength(defs.length);
+    for (const input of obligation.inputs) expect(input.sha256)
+      .toBe(createHash('sha256').update(readFileSync(join(repo, input.path))).digest('hex'));
+    expect(result.runtimeClosure).toBe('unmeasured');
+    expect(result.operationalAcceptance).toBe(false);
+  });
+
+  it('refuses a repeated test-file population within an ordered chain', () => {
+    const base = task();
+    base.ws.scripts = { test: 'npm run one && npm run two', one: 'vitest run', two: 'vitest run' };
+    const result = enumerateAffectedTaskSelection([base], options([resolved(['a.test.ts'])]));
+    expect(result.files).toEqual(['packages/core/a.test.ts']);
+    expect(result.coverage).toBe('partial');
+    expect(result.unenumerated[0].reason).toBe('overlapping-chain-file-population');
+    expect(result.fileOccurrences).toEqual([
+      { task: '@probe/core :: test', step: 0, command: 'vitest run', file: 'packages/core/a.test.ts', kind: 'test-file' },
+      { task: '@probe/core :: test', step: 1, command: 'vitest run', file: 'packages/core/a.test.ts', kind: 'test-file' },
+    ]);
+  });
+
+  it('retains both the Astro check input and Vitest execution occurrence of one source path', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'astro-vitest-occurrences-'));
+    try {
+      const file = 'packages/core/a.test.ts';
+      mkdirSync(join(dir, 'packages/core'), { recursive: true });
+      writeFileSync(join(dir, file), 'export const checked = true;');
+      const astro = { ok: true, enumerated: true, repositoryFiles: [file],
+        inputs: [{ path: file, sha256: createHash('sha256').update(readFileSync(join(dir, file))).digest('hex') }],
+        sync: { status: 'completed', beforePopulation: true }, executed: false,
+        runtimeClosure: 'unmeasured', operationalAcceptance: false };
+      const result = enumerateAffectedTaskSelection([task('test', 'astro check && vitest run')], {
+        root: dir, syncAstro: true,
+        runResolver: (requests: Array<{ runner?: string }>) => requests.map(request =>
+          request.runner === 'astro-check' ? astro : resolved(['a.test.ts'])),
+      });
+      expect(result.files).toEqual([file]);
+      expect(result.fileOccurrences).toEqual([
+        { task: '@probe/core :: test', step: 0, command: 'astro check', file, kind: 'check-input' },
+        { task: '@probe/core :: test', step: 1, command: 'vitest run', file, kind: 'test-file' },
+      ]);
+      expect(result.commandObligations[0]).toMatchObject({ command: 'astro check', executed: false });
+      expect(result.coverage).toBe('partial');
+      expect(result.operationalAcceptance).toBe(false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('discovers actual aggregate array and guard inputs without executing any selftest or hiding disk drift', () => {
+    const repo = join(dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url))))), '..');
+    const dir = mkdtempSync(join(tmpdir(), 'aggregate-selection-'));
+    try {
+      const lib = join(dir, 'desktop/bin/lib');
+      mkdirSync(lib, { recursive: true });
+      const source = readFileSync(join(repo, 'papercusp-desktop/bin/lib/run-selftests.sh'), 'utf8')
+        .replace(/TESTS=\([\s\S]*?\n\)/, 'TESTS=(\n  listed.selftest.sh\n)');
+      writeFileSync(join(lib, 'run-selftests.sh'), source);
+      writeFileSync(join(lib, 'pipefail-predicate.baseline.txt'), '');
+      for (const name of ['listed', 'unlisted']) writeFileSync(join(lib, `${name}.selftest.sh`),
+        `touch ${join(dir, 'executed')}\nexit 91\n`);
+      const result = enumerateAffectedTaskSelection([{ ws: { name: '@probe/desktop', dir: 'desktop',
+        scripts: { test: 'bash bin/lib/run-selftests.sh' } }, script: 'test' }], { root: dir });
+      expect(result.files).toEqual(['desktop/bin/lib/listed.selftest.sh']);
+      const obligation = result.commandObligations[0];
+      expect(obligation.discovery).toMatchObject({ listed: ['listed.selftest.sh'],
+        disk: ['listed.selftest.sh', 'unlisted.selftest.sh'],
+        guards: ['array-disk-completeness', 'pipefail-predicate-baseline'], executed: false });
+      expect(obligation.inputs.map((input: { path: string }) => input.path)).toContain('desktop/bin/lib/unlisted.selftest.sh');
+      expect(result.coverage).toBe('partial');
+      expect(existsSync(join(dir, 'executed'))).toBe(false);
+      rmSync(join(lib, 'listed.selftest.sh'));
+      expect(enumerateAffectedTaskSelection([{ ws: { name: '@probe/desktop', dir: 'desktop',
+        scripts: { test: 'bash bin/lib/run-selftests.sh' } }, script: 'test' }], { root: dir }).commandObligations).toEqual([]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('reuses the workspace launcher full-suite and integration configuration decisions', () => {
+    const requests: Array<{ config: string | false }> = [];
+    const result = enumerateAffectedTaskSelection([
+      task('test', 'node ../../scripts/workspace-test.mjs --passWithNoTests'),
+      task('test:integration', 'node ../../scripts/workspace-test.mjs --workspace-integration --passWithNoTests'),
+    ], { root: '/repo', filterDir: tmpdir(), runResolver: (batch: Array<{ config: string | false }>) => {
+      requests.push(...batch); return [resolved(['a.test.ts']), resolved(['a.integration.test.ts'])];
+    } });
+    expect(result.unenumerated).toEqual([]);
+    expect(requests[1].config).toBe('vitest.integration.config.ts');
+  });
+
+  it('uses the actual lane cwd, native include/exclude and related filter in one resolver batch', () => {
+    const repo = join(dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url))))), '..');
+    const dir = mkdtempSync(join(tmpdir(), 'selection-native-'));
+    try {
+      mkdirSync(join(dir, 'packages/core'), { recursive: true });
+      const ws = join(dir, 'packages/core');
+      const shared = join(repo, 'libs/test-config/src/vitest-config.ts');
+      writeFileSync(join(ws, 'vitest.config.mts'), `import { defineVitestConfig } from ${JSON.stringify(shared)};\nexport default defineVitestConfig({layer:'unit',laneSplit:true,exclude:['**/excluded.test.ts']});`);
+      for (const file of ['pure.test.ts', 'other.test.ts', 'excluded.test.ts']) writeFileSync(join(ws, file), '// pure fixture');
+      writeFileSync(join(ws, 'stateful.test.ts'), 'vi.mock("fixture")');
+      mkdirSync(join(dir, 'packages/shared'));
+      writeFileSync(join(dir, 'packages/shared/outside.test.ts'), '// owned outside the workspace');
+      writeFileSync(join(ws, 'cross.config.mts'), `import { defineVitestConfig } from ${JSON.stringify(shared)};\nexport default defineVitestConfig({layer:'unit',include:['../shared/*.test.ts']});`);
+      const requests: unknown[] = [];
+      const runResolver = (batch: unknown[]) => {
+        requests.push(...batch);
+        const output = execFileSync(process.execPath, [join(repo, 'scripts/resolve-vitest-config-contracts.mjs')],
+          { cwd: repo, input: JSON.stringify({ requests: batch }), encoding: 'utf8', timeout: 30_000 });
+        return JSON.parse(output.split('\n').reverse().find(line => line.startsWith('PC_VITEST_CONFIG_CONTRACTS='))!
+          .slice('PC_VITEST_CONFIG_CONTRACTS='.length)).results;
+      };
+      const result = enumerateAffectedTaskSelection([
+        task('test:lane-pure', `PC_TEST_LANE=pure node ${join(repo, 'scripts/run-vitest-pure-lane.mjs')}`, ['pure.test.ts', 'stateful.test.ts', 'excluded.test.ts']),
+        task('test:lane-stateful', 'PC_TEST_LANE=stateful vitest run'),
+        task('test:cross', 'vitest run --config cross.config.mts'),
+      ], { root: dir, filterDir: dir, runResolver });
+      expect(requests).toHaveLength(3);
+      expect(result.unenumerated).toEqual([]);
+      expect(result.files).toEqual(['packages/core/pure.test.ts', 'packages/core/stateful.test.ts', 'packages/shared/outside.test.ts']);
+      expect(result.tasks[0].files).toEqual(['packages/core/pure.test.ts']);
+      expect(result.tasks[1].files).toEqual(['packages/core/stateful.test.ts']);
+      expect(result.tasks[2].files).toEqual(['packages/shared/outside.test.ts']);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 40_000);
+});
 const BLUEPRINT_STEPS_DIR = join(dirname(dirname(fileURLToPath(import.meta.url))), 'blueprint-steps');
 
 /** Build a fake fs from a { path: contents } map. */
@@ -127,7 +579,7 @@ describe('selectRelatedTests — narrowing', () => {
     const r = selectRelatedTests({
       rootDir: ROOT,
       changedPaths: [`${ROOT}/app/target.ts`],
-      aliases: { '@/': `${ROOT}/` },
+      aliases: [{ prefix: '@/', target: `${ROOT}/`, wildcard: true }],
       fs,
     });
 
@@ -174,6 +626,48 @@ describe('selectRelatedTests — every rail fails toward running MORE tests', ()
 
     expect(r.mode).toBe('full');
     expect(r.reason).toBe('no-changed-paths-in-scope');
+  });
+
+  it('runs everything for mixed external source and local test changes', () => {
+    const external = '/repo/scripts/shared.ts';
+    const fs = vfs({
+      [external]: 'export const shared = 1;',
+      [`${ROOT}/changed.test.ts`]: 'expect(1).toBe(1);',
+      [`${ROOT}/uses-shared.test.ts`]: `import '../scripts/shared';`,
+      [`${ROOT}/unrelated.test.ts`]: 'expect(1).toBe(1);',
+    });
+    // The external import resolves: omission cannot be blamed on a graph hole.
+    const index = buildIndex({ rootDir: ROOT, fs });
+    expect(index.unresolved.size).toBe(0);
+    const localOnly = selectRelatedTests({
+      rootDir: ROOT, changedPaths: [`${ROOT}/changed.test.ts`], fs, index,
+    });
+    expect(localOnly.selected).toEqual([`${ROOT}/changed.test.ts`]);
+
+    const mixed = selectRelatedTests({
+      rootDir: ROOT, changedPaths: [external, `${ROOT}/changed.test.ts`], fs, index,
+    });
+    expect(mixed.mode).toBe('full');
+    expect(mixed.reason).toBe('changed-paths-outside-scope');
+    expect(mixed.total).toBe(3);
+    expect(mixed.executedMap.applied).toBe(false);
+  });
+
+  it('does not narrow mixed workspace changes through unindexed package imports', () => {
+    const fs = vfs({
+      [`${ROOT}/local.ts`]: 'export const local = 1;',
+      [`${ROOT}/uses-local.test.ts`]: `import './local';`,
+      [`${ROOT}/uses-package.test.ts`]: `import '@papercusp/shared';`,
+      [`${ROOT}/unrelated.test.ts`]: 'expect(1).toBe(1);',
+    });
+    const mixed = selectRelatedTests({
+      rootDir: ROOT,
+      changedPaths: [`${ROOT}/local.ts`, '/repo/shared/source.ts'],
+      fs,
+    });
+    expect(mixed.mode).toBe('full');
+    expect(mixed.reason).toBe('changed-paths-outside-scope');
+    expect(mixed.total).toBe(3);
   });
 
   it('runs everything when an in-scope change reaches NO test (a graph gap, not proof of no coverage)', () => {
@@ -325,6 +819,48 @@ describe('writeRelatedFilterList (P-001)', () => {
 });
 
 describe('buildIndex', () => {
+  it('keeps new source and tests while excluding ignored generated modules', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'related-source-census-'));
+    try {
+      execFileSync('git', ['init', '--quiet', dir]);
+      writeFileSync(join(dir, '.gitignore'), 'generated/\n');
+      mkdirSync(join(dir, 'generated'));
+      writeFileSync(join(dir, 'generated', 'bundle.test.ts'), "import '../source';");
+      writeFileSync(join(dir, 'source.ts'), 'export const value = 1;');
+      writeFileSync(join(dir, 'source.test.ts'), "import './source';");
+      writeFileSync(join(dir, 'other.test.ts'), 'export {};');
+
+      const index = buildIndex({ rootDir: dir });
+      expect(index.files.sort()).toEqual([
+        join(dir, 'other.test.ts'), join(dir, 'source.test.ts'), join(dir, 'source.ts'),
+      ].sort());
+      const result = selectRelatedTests({
+        rootDir: dir, changedPaths: [join(dir, 'source.ts')], index,
+      });
+      expect(result.mode).toBe('related');
+      expect(result.selected).toEqual([join(dir, 'source.test.ts')]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('indexes archive sources without Git and excludes generated host output', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'related-archive-census-'));
+    try {
+      mkdirSync(join(dir, 'dist-host'));
+      writeFileSync(join(dir, 'dist-host', 'bundle.test.ts'), "import '../source';");
+      writeFileSync(join(dir, 'source.ts'), 'export const value = 1;');
+      writeFileSync(join(dir, 'source.test.ts'), "import './source';");
+      const index = buildIndex({ rootDir: dir });
+      expect(index.files.sort()).toEqual([
+        join(dir, 'source.test.ts'), join(dir, 'source.ts'),
+      ].sort());
+      expect(index.deps.get(join(dir, 'source.test.ts'))?.has(join(dir, 'source.ts'))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('does not follow bare specifiers into the graph', () => {
     const fs = vfs({
       [`${ROOT}/a.ts`]: `import 'node:fs'; import 'vitest'; import '@papercusp/operator-core';`,
@@ -349,6 +885,136 @@ describe('buildIndex', () => {
     const r = selectRelatedTests({ rootDir: ROOT, changedPaths: [`${ROOT}/b.ts`], fs });
     expect(r.mode).toBe('related');
     expect(r.selected).toEqual([`${ROOT}/a.test.ts`]);
+  });
+});
+
+describe('dependency edges distinguish executable code from child-program text', () => {
+  const source = [
+    `const child = "import ghost from './missing-child.ts'; require('./missing-require.ts');";`,
+    "const template = `export { ghost } from './missing-template.ts';`;",
+    `export const words = "export { ghost } from './missing-export.ts';";`,
+    `// import './missing-comment.ts';`,
+    `import { real } from './real.ts';`,
+    `export { exported } from './exported.ts';`,
+    `const required = require('./required.ts');`,
+    "const output = `text ${import('./dynamic.ts')}`;",
+    `const runtime = new URL('./runtime.ts', import.meta.url);`,
+  ].join('\n');
+  const dependencies = ['real', 'exported', 'required', 'dynamic', 'runtime']
+    .map(name => `${ROOT}/${name}.ts`).sort();
+  const files = Object.fromEntries([
+    [`${ROOT}/entry.ts`, source],
+    ...dependencies.map(file => [file, 'export const value = 1;']),
+  ]);
+
+  it('keeps real imports and template expressions without phantom closure edges', () => {
+    const result = staticImportClosure({ rootDir: ROOT, entryFiles: [`${ROOT}/entry.ts`], fs: vfs(files) });
+    expect(result.unresolved).toEqual([]);
+    expect(result.ok).toBe(true);
+    expect(result.files).toEqual([`${ROOT}/entry.ts`, ...dependencies].sort());
+  });
+
+  it('uses the same executable edges in related-test selection', () => {
+    const result = buildIndex({ rootDir: ROOT, fs: vfs(files) });
+    expect([...result.unresolved]).toEqual([]);
+    expect([...result.deps.get(`${ROOT}/entry.ts`)!].sort()).toEqual(dependencies);
+  });
+
+  it('still fails closed on a real missing dependency beside quoted imports', () => {
+    const missing = vfs({ ...files, [`${ROOT}/entry.ts`]: source + "\nimport './genuinely-missing.ts';" });
+    const closure = staticImportClosure({ rootDir: ROOT, entryFiles: [`${ROOT}/entry.ts`], fs: missing });
+    expect(closure.ok).toBe(false);
+    expect(closure.unresolved).toEqual([`${ROOT}/entry.ts:./genuinely-missing.ts`]);
+    expect(buildIndex({ rootDir: ROOT, fs: missing }).unresolved.has(`${ROOT}/entry.ts`)).toBe(true);
+  });
+});
+
+/**
+ * WI-10007002: tsconfig `paths` resolve the way TypeScript resolves them — an EXACT key by
+ * equality only, otherwise the LONGEST wildcard prefix — independent of declaration order. The
+ * retired resolver flattened every key into a prefix map and took the FIRST prefix that matched,
+ * so an exact key could capture a longer specifier and a short wildcard could shadow a longer
+ * one, depending purely on the order the tsconfig happened to declare them.
+ */
+describe('tsconfig paths resolution — exact key first, then the longest wildcard (WI-10007002)', () => {
+  const FILES = {
+    [`${ROOT}/cfg/index.ts`]: 'export const cfg = 1;', // exact `#cfg`
+    [`${ROOT}/cfg/util.ts`]: 'export const util = 1;', // wildcard `#cfg/*`
+    [`${ROOT}/env.real.ts`]: 'export const env = 1;', // exact `@/env`
+    [`${ROOT}/env.ts`]: 'export const decoy = 1;', // what `@/*` alone would give `@/env`
+    [`${ROOT}/other/deep/a.ts`]: 'export const a = 1;', // longest wildcard `@/deep/*`
+    [`${ROOT}/deep/a.ts`]: 'export const decoy = 1;', // what `@/*` alone would give `@/deep/a`
+    [`${ROOT}/importer.ts`]: `import '#cfg/util'; import '#cfg'; import '@/env'; import '@/deep/a';`,
+  };
+  const ENTRIES = [
+    { prefix: '#cfg', target: `${ROOT}/cfg/index.ts`, wildcard: false },
+    { prefix: '#cfg/', target: `${ROOT}/cfg/`, wildcard: true },
+    { prefix: '@/', target: `${ROOT}/`, wildcard: true },
+    { prefix: '@/env', target: `${ROOT}/env.real.ts`, wildcard: false },
+    { prefix: '@/deep/', target: `${ROOT}/other/deep/`, wildcard: true },
+  ];
+  const ORDERS = [
+    ['declared order', ENTRIES],
+    ['reversed order', [...ENTRIES].reverse()],
+  ] as const;
+  const EXPECTED = [`${ROOT}/cfg/index.ts`, `${ROOT}/cfg/util.ts`, `${ROOT}/env.real.ts`, `${ROOT}/other/deep/a.ts`];
+
+  for (const [label, aliases] of ORDERS) {
+    it(`buildIndex resolves every key to its TypeScript target (${label})`, () => {
+      const index = buildIndex({ rootDir: ROOT, aliases: [...aliases], fs: vfs(FILES) });
+      expect([...(index.deps.get(`${ROOT}/importer.ts`) ?? [])].sort()).toEqual(EXPECTED);
+      expect(index.unresolved.has(`${ROOT}/importer.ts`)).toBe(false);
+    });
+
+    it(`staticImportClosure reaches exactly the TypeScript targets (${label})`, () => {
+      const r = staticImportClosure({
+        rootDir: ROOT,
+        entryFiles: [`${ROOT}/importer.ts`],
+        aliases: [...aliases],
+        fs: vfs(FILES),
+      });
+      expect(r.unresolved).toEqual([]);
+      expect(r.ok).toBe(true);
+      expect(r.files).toEqual([...EXPECTED, `${ROOT}/importer.ts`].sort());
+    });
+
+    it(`selectRelatedTests selects the test importing an exact key's target (${label})`, () => {
+      const fs = vfs({
+        ...FILES,
+        [`${ROOT}/env.test.ts`]: `import '@/env';`,
+        [`${ROOT}/decoy.test.ts`]: `import './env';`,
+      });
+      const r = selectRelatedTests({
+        rootDir: ROOT,
+        changedPaths: [`${ROOT}/env.real.ts`],
+        aliases: [...aliases],
+        fs,
+      });
+      expect(r.mode).toBe('related');
+      expect(r.selected).toEqual([`${ROOT}/env.test.ts`]);
+    });
+  }
+
+  it('CONTROL: the retired flattened first-match resolver misresolves this fixture, so the cases above can fail', () => {
+    // A faithful copy of the pre-fix resolver: every key flattened to `prefix → dir/`, first match wins.
+    const flattened = Object.fromEntries(
+      ENTRIES.map(({ prefix, target }) => [prefix, target.endsWith('/') ? target : `${target}/`]),
+    );
+    const firstMatch = (spec: string) => {
+      const p = Object.keys(flattened).find((k) => spec === k || spec.startsWith(k));
+      return p === undefined ? null : join(flattened[p], spec.slice(p.length));
+    };
+    expect(firstMatch('#cfg/util')).toBe(`${ROOT}/cfg/index.ts/util`); // exact key captured by prefix
+    expect(firstMatch('@/env')).toBe(`${ROOT}/env`); // short wildcard shadows the exact key → env.ts decoy
+    expect(firstMatch('@/deep/a')).toBe(`${ROOT}/deep/a`); // short wildcard shadows the longer one → decoy
+  });
+
+  it('refuses the retired prefix-map shape loudly instead of resolving nothing', () => {
+    const legacy = { '@/': `${ROOT}/` } as unknown as never;
+    expect(() => buildIndex({ rootDir: ROOT, aliases: legacy, fs: vfs(FILES) })).toThrow(TypeError);
+    expect(() =>
+      staticImportClosure({ rootDir: ROOT, entryFiles: [`${ROOT}/importer.ts`], aliases: legacy, fs: vfs(FILES) }),
+    ).toThrow(/tsconfigPathEntriesFor/);
   });
 });
 
@@ -472,6 +1138,15 @@ describe('playwrightOwnedTest — ownership by runner, not by extension', () => 
     );
   });
 
+  it('reads the ESM config before a compatibility TypeScript entry', () => {
+    const isOwned = owned({
+      '/ws/playwright.config.ts': "export { default } from './playwright.config.mts';",
+      '/ws/playwright.config.mts': PW_CONFIG,
+    });
+    expect(isOwned('/ws/e2e/docs-routes.spec.ts')).toBe(true);
+    expect(isOwned('/ws/lib/thing.test.ts')).toBe(false);
+  });
+
   it('leaves a vitest .test.ts in the same workspace alone', () => {
     const isOwned = owned({ '/ws/playwright.config.ts': PW_CONFIG });
     expect(isOwned('/ws/lib/thing.test.ts')).toBe(false);
@@ -572,6 +1247,33 @@ describe('selectRelatedTests — executed-source pruning (P-002)', () => {
     executed: new Set([self, ...executed]),
   });
   const fresh = () => () => [] as string[];
+
+  it('exposes static candidates from one prebuilt index for a scoped map read', () => {
+    const baseFs = hubFs();
+    let listCalls = 0;
+    const fs = {
+      ...baseFs,
+      list(root: string) {
+        listCalls += 1;
+        return baseFs.list(root);
+      },
+    };
+    const prepared = prepareRelatedTestSelection({ rootDir: ROOT, changedPaths: [leaf], fs });
+    const candidates = [...prepared.selection.selected].sort();
+    expect(candidates).toEqual(tests);
+    expect(listCalls).toBe(1);
+
+    const result = selectRelatedTests({
+      rootDir: ROOT,
+      changedPaths: [leaf],
+      prepared,
+      executedMap: new Map([[a, entry(a, [hub, other])]]),
+      judgedSha: JUDGED,
+      changedBetween: fresh(),
+    });
+    expect(result.selected).toEqual([b, c, d, e]);
+    expect(listCalls).toBe(1);
+  });
 
   it('prunes a test whose current map never executed the change and keeps one whose map did', () => {
     const executedMap = new Map([

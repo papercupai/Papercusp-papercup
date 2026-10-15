@@ -48,7 +48,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
-  findLiveHost,
+  findLiveHostAsync,
   sessionClassForHost,
   type PsuPtyHost,
 } from '../../events/await/psu-pty-discovery';
@@ -56,14 +56,17 @@ import { clearPresence, getPresence, PRESENCE_STALE_MS } from '../coordination/p
 import { mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 import { softText, clampText } from '../limits';
 import { readProcessIdentity } from '../../process-identity';
+import { waitForPtyHostGone } from '../../agent-launch-core';
 import {
   hasAdvSessionTerminalEvidence,
   latestAdvSessionByCoordOwner,
   markAdvSessionEnded,
+  retireAdvSessionsByOwner,
   repairStaleAdvSessionTerminalMarkers,
 } from '../../adv-sessions';
 import { deactivateLoop } from '../../harness/routines/loop';
 import { resolveSessionStates } from '../coordination/liveness-oracle';
+import type { RefusalContract } from '../../capability-envelope/identity-refusal-contract';
 import type { SessionState } from '../coordination/presence-wakeability';
 
 /** Console-marker substring stamped into every fleet/desktop launch command
@@ -73,7 +76,18 @@ const CONSOLE_MARKER = '.papercup-console-active';
 
 const CONSOLE_IDENTITY_ENV = 'PAPERCUSP_CONSOLE_IDENTITY';
 
-const KILL_WAIT_POLLS = 6;
+/**
+ * Grace between SIGTERM and SIGKILL for a session host: KILL_WAIT_POLLS × KILL_WAIT_MS = 5 s,
+ * the same escalation window every other killTask caller uses.
+ *
+ * WI-10006628: the native SessionEnd hook (lifecycle-report.sh) reaps the managed PTY host
+ * through this path on every genuine `/exit`. The host's SIGTERM teardown SIGHUPs the CLI so
+ * it can flush its transcript, which measured 0.86 s for a live `/exit`. With a 1.5 s grace
+ * (6 polls), a freshly resumed (unparked) CLI pushed the teardown past it: the host was
+ * SIGKILLed mid-cleanup, the owner's deliberate exit was recorded as ended_signal SIGKILL,
+ * and the outer psu process exited 137. A genuinely stuck host still escalates, just later.
+ */
+const KILL_WAIT_POLLS = 20;
 const KILL_WAIT_MS = 250;
 
 // ── injectable process primitives (the DI seam, mirrors turn/interrupt) ──
@@ -87,8 +101,10 @@ export interface ProcInfo {
 }
 
 export interface KillDeps {
+  /** Persist deliberate retirement before any kill leg can race a wake. */
+  retireOwner?: (ownerId: string, actor: string, reason: string) => Promise<void>;
   /** Live psu-pty host for a coord ownerId (null = no live interactive session). */
-  findHost?: (ownerId: string) => PsuPtyHost | null;
+  findHost?: (ownerId: string) => PsuPtyHost | null | Promise<PsuPtyHost | null>;
   /** Fresh presence for a session that is alive but has no operator-managed
    *  host handle (currently OMP hook sessions). */
   findLiveUnmanaged?: (
@@ -120,6 +136,8 @@ export interface KillDeps {
   audit?: (action: string, subject: string, details: Record<string, unknown>) => Promise<void>;
   /** Atomically stamp the terminal tuple after this endpoint confirms the host died. */
   markSessionEnded?: (id: string, signal: 'SIGTERM' | 'SIGKILL') => Promise<void>;
+  /** Test seam for the shared managed-host disappearance postcondition. */
+  waitForHostGone?: (ownerId: string) => Promise<boolean>;
   /** Repair an observer-written terminal marker before unmanaged liveness is read. */
   repairStaleAdvSessionTerminalMarkers?: (ownerId: string) => Promise<number>;
   sleep?: (ms: number) => Promise<void>;
@@ -165,6 +183,8 @@ export interface KillOneResult {
   processes_aborted?: number;
   code?: 'self_kill_refused' | 'not_found' | 'live_unmanaged' | 'cleanup_failed';
   error?: string;
+  /** WI-10005197: what would LIFT a refusal. Present on `self_kill_refused` (the authority refusal). */
+  refusal?: RefusalContract;
 }
 
 const defaultReadProc = (pid: number): ProcInfo | null => {
@@ -317,10 +337,24 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
       target: input.target,
       code: 'self_kill_refused',
       error: 'refusing to kill your own session — end your turn / loop:end instead',
+      refusal: {
+        observed: { target: input.target, actor: input.actor },
+        liftsWhen:
+          'the target is a session other than the caller (target !== actor). To stop yourself, end your turn or call ' +
+          'loop:end (an armed loop is what keeps a session waking) — fleet:kill cannot tear down the session that is ' +
+          'issuing it; another agent or the owner can kill this session if it must be force-stopped',
+        whoCanMakeItTrue: ['another-agent', 'owner'],
+      },
     };
   }
 
   // ── leg 1: nursery (headless) — the existing cancel machinery, reused ──
+  try {
+    await deps.retireOwner?.(input.target, input.actor, input.reason);
+  } catch (error) {
+    return { ok: false, target: input.target, code: 'cleanup_failed',
+      error: `could not persist deliberate retirement; no signal sent: ${String(error)}` };
+  }
   const nursery = await (deps.cancelNursery?.(input.target, input.reason).catch(() => null) ?? Promise.resolve(null));
   if (nursery) {
     await audit('fleet.kill_nursery', input.target, {
@@ -340,7 +374,7 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
   }
 
   // ── leg 2: desktop interactive psu session ──
-  const host = deps.findHost?.(input.target) ?? null;
+  const host = (await deps.findHost?.(input.target)) ?? null;
   if (!host) {
     // `ended_by` is terminal evidence even when a crash/reconciler left
     // `ended_at` unset. Heal that split-brain tuple before presence can classify
@@ -373,7 +407,8 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
         error:
           `live ${unmanaged.source} session has no managed psu-pty host; no signal was sent and ` +
           'its presence was preserved. Safe stop for its current turn: `turn:interrupt` ' +
-          '`{ owner, mode: "force", reason }` (the session remains resumable).',
+          '`{ owner, mode: "force", reason }`. Routine wakes are fenced; an explicit ' +
+          '`capability:launch-agent` resume may relaunch this identity.',
       };
     }
 
@@ -424,6 +459,40 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
   const signal = (await stopPid(host.pid, prims)) ?? 'SIGTERM';
   if (host.ptyPid && host.ptyPid !== host.pid && prims.alive(host.ptyPid)) {
     prims.kill(host.ptyPid, 'SIGTERM');
+  }
+
+  // A successful SIGKILL call only means the signal was delivered. The OS may
+  // still be tearing the old host down, so do not stamp its session ended or
+  // clear its presence until the same discovery predicate used by exact-resume
+  // confirms the host is gone.
+  if (signal === 'SIGKILL') {
+    const hostGone = deps.waitForHostGone
+      ? await deps.waitForHostGone(input.target)
+      : await waitForPtyHostGone(input.target, {
+          findHost: deps.findHost ?? findLiveHostAsync,
+          sleep: prims.sleep,
+        });
+    if (!hostGone) {
+      const error =
+        'the managed psu-pty host remained discoverable after SIGKILL; session-end and presence cleanup were withheld';
+      await audit('fleet.kill_cleanup_failed', input.target, {
+        reason: input.reason,
+        stage: 'post-sigkill-host-gone',
+        host_pid: host.pid,
+        signal,
+        error,
+      });
+      return {
+        ok: false,
+        target: input.target,
+        kind,
+        killed: false,
+        signal,
+        terminal: headless ? 'none' : 'left-open',
+        code: 'cleanup_failed',
+        error,
+      };
+    }
   }
 
   // The launcher normally reports its own exit, but killing its host can sever that
@@ -705,7 +774,8 @@ export default defineTool({
     const reason = clampText(args.reason, 4000) ?? 'fleet:kill';
     const closeTerminal = args.close_terminal !== false;
     const deps: KillDeps = {
-      findHost: (ownerId) => findLiveHost(ownerId),
+      retireOwner: retireAdvSessionsByOwner,
+      findHost: (ownerId) => findLiveHostAsync(ownerId),
       findLiveUnmanaged: (ownerId) => findLiveUnmanagedSession(ownerId, workspaceId),
       cancelNursery: (target, why) => cancelNurseryTarget(target, why, workspaceId, actor),
       deactivateLoop: (ownerId, why) =>

@@ -259,15 +259,17 @@ export interface AdmissionCutoverCensus {
  */
 export class PgAdmissionCutoverQueueStore implements DurableAdmissionQueueStore {
   private readonly sql: SqlClient;
+  private readonly acquirePool: string | undefined;
   private readonly workspaceId: string;
   private readonly ledger: PgAdmissionLedgerQueueStore;
   private readonly legacy: PgWorkItemAdmissionQueueStore;
 
   constructor(options: PgAdmissionCutoverQueueStoreOptions = {}) {
     this.sql = options.sql ?? getOrgPg().sql;
+    this.acquirePool = options.sql ? undefined : 'org-admin';
     this.workspaceId = options.workspaceId?.trim() || activeWorkspaceId();
     const shared = {
-      sql: this.sql,
+      ...(options.sql ? { sql: options.sql } : {}),
       workspaceId: this.workspaceId,
       ...(options.abandonAfterMs ? { abandonAfterMs: options.abandonAfterMs } : {}),
       ...(options.resolveSessionStatesFn ? { resolveSessionStatesFn: options.resolveSessionStatesFn } : {}),
@@ -475,7 +477,7 @@ export class PgAdmissionCutoverQueueStore implements DurableAdmissionQueueStore 
             updated_at = EXCLUDED.updated_at,
             workspace_id = EXCLUDED.workspace_id`;
       },
-      { client: this.sql },
+      { client: this.sql, acquirePool: this.acquirePool },
     );
     const census = await this.readCutoverCensus();
     if (!census.legacyWritersRetired || census.legacyWritersRetiredAtMs !== retiredAtMs) {

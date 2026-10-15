@@ -1,13 +1,28 @@
 import { describe, it, expect } from 'vitest';
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { isMainThread, Worker } from 'node:worker_threads';
 import {
   resolveSentinelConfig,
   startEventLoopSentinel,
   SENTINEL_DEFAULTS,
 } from './event-loop-sentinel-host';
+import { SENTINEL_SAB_INT32_LEN } from './event-loop-sentinel';
+import { summarizeHotStacks, type CpuProfileLike } from './event-loop-stall-profile';
+import type { SentinelWorkerData } from './event-loop-sentinel.worker';
+
+/** Burns the CALLING thread for `ms`. Named so a profile can point at it. */
+function sentinelTestSpinHotPath(ms: number): number {
+  const end = Date.now() + ms;
+  let x = 0;
+  while (Date.now() < end) {
+    for (let i = 0; i < 1_000; i++) x += Math.sqrt(x + i);
+  }
+  return x;
+}
 
 /**
  * esbuild the real worker to a standalone `.mjs` — the SAME artifact
@@ -99,6 +114,99 @@ describe('resolveSentinelConfig', () => {
 });
 
 describe('startEventLoopSentinel', () => {
+  it.each([
+    { name: 'inline module', startupArgs: ['--input-type=module'] },
+    { name: 'split inline module', startupArgs: ['--input-type', 'module'] },
+    { name: 'diagnostic report directory', startupArgs: [`--report-directory=${tmpdir()}`] },
+    { name: 'split diagnostic report directory', startupArgs: ['--report-directory', tmpdir()] },
+    { name: 'diagnostic report filename', startupArgs: ['--report-filename=sentinel-test.json'] },
+    { name: 'split diagnostic report filename', startupArgs: ['--report-filename', 'sentinel-test.json'] },
+    { name: 'fatal error diagnostic report', startupArgs: ['--report-on-fatalerror'] },
+    { name: 'disabled fatal error diagnostic report', startupArgs: ['--no-report-on-fatalerror'] },
+    { name: 'inline module with diagnostic reports', startupArgs: [
+      '--input-type=module', `--report-directory=${tmpdir()}`,
+      '--report-filename=sentinel-test.json', '--report-on-fatalerror',
+    ] },
+  ])('keeps the real watcher alive with $name startup flags', ({ startupArgs }) => {
+    // Exercise the host constructor, not a Worker with test-only execArgv: [].
+    // EI-25465494437288816: inherited --input-type rejects a file-backed worker.
+    // EI-25526230785366035: process-wide report flags reject explicit worker argv.
+    const hostUrl = pathToFileURL(resolve(__dirname, 'event-loop-sentinel-host.ts')).href;
+    const script = `
+      import { startEventLoopSentinel } from ${JSON.stringify(hostUrl)};
+      const logs = [];
+      const h = startEventLoopSentinel({
+        env: { PAPERCUSP_EVENT_LOOP_SENTINEL: 'observe' },
+        allowHeartbeatInTest: true,
+        log: (line, detail) => logs.push({ line, detail }),
+      });
+      try {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        console.log(JSON.stringify({ active: h.active(), alive: h.workerAlive(),
+          beats: h.beats(), logs }));
+      } finally {
+        await h.stop();
+      }
+    `;
+    const result = spawnSync(process.execPath, [
+      '--import=tsx', '--no-warnings', ...startupArgs, '--eval', script,
+    ], {
+      cwd: resolve(__dirname, '../../..'),
+      encoding: 'utf8', timeout: 20_000, maxBuffer: 1024 * 1024,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    const state = JSON.parse(result.stdout.trim().split('\n').at(-1)!);
+    expect(state.active, JSON.stringify(state.logs)).toBe(true);
+    expect(state.alive, JSON.stringify(state.logs)).toBe(true);
+    expect(state.beats).toBeGreaterThan(0);
+    expect(state.logs.some((entry: { line: string }) => /disabled|EXITED/.test(entry.line))).toBe(false);
+  }, 30_000);
+
+  it('preserves inherited loaders and runtime flags in a bundled watcher', () => {
+    const built = buildWorkerMjs(`parentPort.postMessage({
+      kind: 'sync-spawn-stall', producer: JSON.stringify(process.execArgv),
+      producerFn: 'sentinel-launch-test', stack: '', pct: 100
+    });`);
+    expect(built, 'the bundled-worker fixture must build').not.toBeNull();
+    const hostUrl = pathToFileURL(resolve(__dirname, 'event-loop-sentinel-host.ts')).href;
+    const script = `
+      import { startEventLoopSentinel } from ${JSON.stringify(hostUrl)};
+      let workerArgs;
+      const h = startEventLoopSentinel({
+        env: { PAPERCUSP_EVENT_LOOP_SENTINEL: 'observe' },
+        workerPath: ${JSON.stringify(built)}, log: () => {},
+        onSyncSpawnStall: message => { workerArgs = JSON.parse(message.producer); },
+      });
+      try {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        console.log(JSON.stringify({ alive: h.workerAlive(), workerArgs }));
+      } finally { await h.stop(); }
+    `;
+    const result = spawnSync(process.execPath, [
+      '--import=tsx', '--no-warnings', '--input-type=module',
+      `--report-directory=${tmpdir()}`, '--report-filename=sentinel-test.json',
+      '--report-on-fatalerror', '--report-on-signal', '--report-signal=SIGUSR2',
+      '--report-uncaught-exception', '--eval', script,
+    ], {
+      cwd: resolve(__dirname, '../../..'),
+      encoding: 'utf8', timeout: 20_000, maxBuffer: 1024 * 1024,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    const state = JSON.parse(result.stdout.trim().split('\n').at(-1)!);
+    expect(state.alive).toBe(true);
+    expect(state.workerArgs).toContain('--import=tsx');
+    expect(state.workerArgs).toContain('--no-warnings');
+    expect(state.workerArgs).not.toContain('--input-type=module');
+    expect(state.workerArgs).not.toContain(`--report-directory=${tmpdir()}`);
+    expect(state.workerArgs).not.toContain('--report-filename=sentinel-test.json');
+    expect(state.workerArgs).not.toContain('--report-on-fatalerror');
+    expect(state.workerArgs).toContain('--report-on-signal');
+    expect(state.workerArgs).toContain('--report-signal=SIGUSR2');
+    expect(state.workerArgs).toContain('--report-uncaught-exception');
+  }, 30_000);
+
   it('wires blocked-directory attribution into the real worker kill diagnostic', () => {
     // EI-22803283447097859: the worker knew the main thread was in
     // `iterate_dir`, but its last log did not name the directory and ptrace was
@@ -184,6 +292,173 @@ describe('startEventLoopSentinel', () => {
     } finally {
       await h.stop();
     }
+  }, 30_000);
+
+  /**
+   * WI-10004766 / WI-10003454: the in-stall profile, end to end — the REAL
+   * worker, a really blocked main thread, a real `.cpuprofile`.
+   *
+   * Both `connectToMainThread()` and `/proc/<pid>/task/<pid>` describe the
+   * PROCESS main thread, so this only means something when the test itself runs
+   * there (vitest's forks pool). Under a threads pool it would profile an idle
+   * thread and prove nothing, so it skips instead.
+   */
+  async function runStallTrial(block: () => void): Promise<{ dir: string; files: string[] }> {
+    const built = buildWorkerMjs();
+    if (!built) throw new Error('esbuild unavailable');
+    const dir = mkdtempSync(join(tmpdir(), 'sentinel-stall-'));
+    const sab = new SharedArrayBuffer(SENTINEL_SAB_INT32_LEN * Int32Array.BYTES_PER_ELEMENT);
+    const view = new Int32Array(sab);
+    const data: SentinelWorkerData = {
+      sab,
+      // Observe mode, no grace, a wedge threshold the trial never reaches.
+      thresholds: { wedgeAfterMs: 60_000, observationsToAct: 3, startupGraceMs: 0 },
+      observeIntervalMs: 100,
+      mode: 'observe',
+      pid: process.pid,
+      stallProfile: { dir, afterMs: 400, captureMs: 500, cooldownMs: 60_000, maxProfiles: 5 },
+    };
+    const worker = new Worker(built, { workerData: data });
+    try {
+      await new Promise<void>((r) => worker.once('message', () => r()));
+      // A moving heartbeat first, so the worker has a live counter and a CPU baseline.
+      for (let i = 0; i < 6; i++) {
+        Atomics.add(view, 0, 1);
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      block();
+      // The worker writes the file on ITS thread during the block; allow a
+      // short tail for a capture that straddled the block's end. The heartbeat
+      // RESUMES here, as on a real host: without it the "stall" would continue
+      // through this polling loop, where a 100 ms observe window turns one
+      // 10 ms clock tick of runner noise into 0.1 cores ('partial') and
+      // captures something that is not the block under test.
+      const deadline = Date.now() + 3_000;
+      let files: string[] = [];
+      while (Date.now() < deadline) {
+        Atomics.add(view, 0, 1);
+        files = readdirSync(dir).filter((f) => f.startsWith('stall-') && f.endsWith('.cpuprofile'));
+        if (files.length) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return { dir, files };
+    } finally {
+      await worker.terminate();
+    }
+  }
+
+  it('WI-10004766: profiles a SPINNING main thread mid-stall and points at the spinning code', async () => {
+    if (process.platform !== 'linux' || !isMainThread || !buildWorkerMjs()) return;
+    const { dir, files } = await runStallTrial(() => sentinelTestSpinHotPath(2_500));
+    expect(files).toHaveLength(1);
+    const profile = JSON.parse(readFileSync(join(dir, files[0]), 'utf8')) as CpuProfileLike;
+    const summary = summarizeHotStacks(profile, { depth: 6 });
+    // ~500 samples at V8's 1 ms default; a much lower count means the capture
+    // ran mostly after the block, i.e. it did not see the stall.
+    expect(summary.samples).toBeGreaterThan(200);
+    // The FILE, not the function name: V8 may inline the spin into its caller
+    // (measured in the probe), which removes the name but never the url.
+    expect(summary.hot[0].stack).toContain('event-loop-sentinel-host.test');
+    expect(summary.hot[0].pct).toBeGreaterThan(50);
+  }, 60_000);
+
+  it('CONTROL: a PARKED main thread recovering from a futex wait is not profiled', async () => {
+    if (process.platform !== 'linux' || !isMainThread || !buildWorkerMjs()) return;
+    const { files } = await runStallTrial(() => {
+      // The inspector reply is queued behind this native wait. Resuming the
+      // heartbeat must discard that late reply rather than profile recovery.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_500);
+    });
+    expect(files).toEqual([]);
+  }, 60_000);
+
+  /** Run the real sentinel against a child main thread, retaining its fd-2 evidence. */
+  function runParkedDiagnosticTrial(kind: 'idle' | 'blocked' | 'recovered', mode = 'observe') {
+    const built = buildWorkerMjs();
+    if (!built) throw new Error('esbuild unavailable');
+    const dir = mkdtempSync(join(tmpdir(), 'sentinel-parked-'));
+    const script = `
+      import { Worker } from 'node:worker_threads';
+      const sab = new SharedArrayBuffer(${SENTINEL_SAB_INT32_LEN} * 4);
+      const view = new Int32Array(sab);
+      const worker = new Worker(${JSON.stringify(built)}, { execArgv: [], workerData: {
+        sab, pid: process.pid, mode: ${JSON.stringify(mode)}, observeIntervalMs: 100,
+        thresholds: { wedgeAfterMs: 1500, observationsToAct: 2, startupGraceMs: 0 },
+        stallProfile: { dir: ${JSON.stringify(dir)}, afterMs: 400, captureMs: 500,
+          cooldownMs: 60000, maxProfiles: 5 }
+      }});
+      await new Promise((resolve, reject) => {
+        worker.once('message', resolve);
+        worker.once('error', reject);
+      });
+      for (let i = 0; i < 6; i++) {
+        Atomics.add(view, 0, 1);
+        await new Promise(r => setTimeout(r, 100));
+      }
+      if (${JSON.stringify(kind)} === 'idle') {
+        // Timers still run; only the sentinel heartbeat is missing.
+        await new Promise(r => setTimeout(r, 2000));
+      } else {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0,
+          ${kind === 'blocked' ? 4500 : 1500});
+      }
+      Atomics.add(view, 0, 1);
+      const heartbeat = setInterval(() => Atomics.add(view, 0, 1), 100);
+      await new Promise(r => setTimeout(r, 600));
+      clearInterval(heartbeat);
+      await worker.terminate();
+    `;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      encoding: 'utf8', timeout: 20_000, maxBuffer: 1024 * 1024,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status === 0 || result.signal === 'SIGKILL', result.stderr).toBe(true);
+    return {
+      status: result.status,
+      signal: result.signal,
+      stderr: result.stderr,
+      files: readdirSync(dir).filter(f => f.startsWith('stall-') && f.endsWith('.cpuprofile')),
+    };
+  }
+
+  it.skipIf(process.platform !== 'linux')('WI-10005529: identifies a responsive parked main with a missing heartbeat', () => {
+    const result = runParkedDiagnosticTrial('idle');
+    expect(result.status).toBe(0);
+    expect(result.files, result.stderr).toHaveLength(1);
+    expect(result.stderr).toContain('mainThreadInspectorResponse: responsive');
+    expect(result.stderr).toContain('mainThreadEventLoopResponse: responsive');
+    expect(result.stderr).toContain('mainThreadActivity: parked');
+    expect(result.stderr).toContain('STALL profiled');
+  }, 30_000);
+
+  it.skipIf(process.platform !== 'linux')('WI-10005529: bounds an unanswered parked probe while observations continue', () => {
+    const result = runParkedDiagnosticTrial('blocked');
+    expect(result.status).toBe(0);
+    expect(result.files, result.stderr).toEqual([]);
+    expect(result.stderr).toContain('mainThreadEventLoopResponse: not-answered');
+    expect(result.stderr).toContain('Runtime.evaluate not answered within 3000ms');
+    expect(result.stderr).toContain('WEDGED — observe mode, NOT killing');
+    // WI-10006344: an unanswered probe names where the main thread is blocked
+    // (here Atomics.wait = an interruptible futex sleep), on the failure line itself.
+    const failed = result.stderr.split('\n').find(l => l.includes('STALL profile capture failed'));
+    expect(failed, result.stderr).toBeDefined();
+    expect(failed).toContain('mainThreadState: S');
+  }, 30_000);
+
+  it.skipIf(process.platform !== 'linux')('WI-10005529: discards a probe answered only after heartbeat recovery', () => {
+    const result = runParkedDiagnosticTrial('recovered');
+    expect(result.status).toBe(0);
+    expect(result.files, result.stderr).toEqual([]);
+    expect(result.stderr).toContain('STALL profile discarded — heartbeat recovered before profiler start');
+    expect(result.stderr).not.toContain('STALL profiled');
+  }, 30_000);
+
+  it.skipIf(process.platform !== 'linux')('WI-10005529: inspector responsiveness does not suppress the existing kill policy', () => {
+    const result = runParkedDiagnosticTrial('idle', 'kill');
+    expect(result.signal).toBe('SIGKILL');
+    expect(result.stderr).toContain('mainThreadInspectorResponse: responsive');
+    expect(result.stderr).toContain('mainThreadEventLoopResponse: responsive');
+    expect(result.stderr).toContain('WEDGED — SIGKILLing the host');
   }, 30_000);
 
   it('CONTROL: re-introducing the unref bug DOES trip the regression test above', async () => {

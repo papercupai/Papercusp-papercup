@@ -41,6 +41,15 @@
  * for the fleet-health-flavored condition classes below.
  */
 const CONDITION_OWNER_REGISTRY: ReadonlyArray<{ prefix: string; ownerSelector: string; reason: string }> = [
+  { prefix: 'hosted-reverse-connector-lost', ownerSelector: '@role:mug',
+    reason: 'the operational responder drives the existing workspace-host connector recovery' },
+  { prefix: 'platform-lifecycle-budget-exceeded', ownerSelector: '@role:mug',
+    reason: 'the operational responder routes Papercusp-funded budget breaches to the billing operator; no customer billing is inferred' },
+  {
+    prefix: 'hosted-control-plane-degraded',
+    ownerSelector: '@role:mug',
+    reason: 'hosted workspace availability is an operational dependency; the Mug drives the owning workspace-host controller recovery from its existing health and lifecycle timeline',
+  },
   {
     prefix: 'health-tick-stale',
     ownerSelector: '@role:mug',

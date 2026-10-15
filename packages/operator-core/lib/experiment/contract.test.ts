@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { validateLearningContract, type LearningContract } from './types';
+import { validateLearningContract, type LearningContract, type LearningEvidenceKind } from './types';
+
+const requiredKinds: LearningEvidenceKind[] = ['objective', 'judgment', 'regression', 'probe', 'cost', 'rollback'];
 
 const baseContract = (overrides: Partial<LearningContract> = {}): LearningContract => ({
   contractVersion: '1',
@@ -26,22 +28,17 @@ const baseContract = (overrides: Partial<LearningContract> = {}): LearningContra
     startedAt: '2026-09-04T00:01:00.000Z',
     completedAt: '2026-09-04T00:02:00.000Z',
   },
-  evidence: [
-    {
-      id: 'quality',
-      kind: 'objective',
-      status: 'pass',
-      coverage: { required: 10, measured: 10 },
-      artifactRefs: ['experiment:battery-1'],
-      recordedAt: '2026-09-04T00:03:00.000Z',
-    },
-  ],
-  spend: { requestedUsd: 2, reservedUsd: 2, usedUsd: 1.5, unsettledUsd: 0.5 },
+  evidence: requiredKinds.map((kind) => ({
+    id: kind, kind, status: 'pass', coverage: { required: 10, measured: 10 },
+    artifactRefs: [`experiment:battery-1:${kind}`], recordedAt: '2026-09-04T00:03:00.000Z',
+  })),
+  spend: { requestedUsd: 2, reservedUsd: 2, usedUsd: 1.5, unsettledUsd: 0,
+    settledAt: '2026-09-04T00:03:00.000Z' },
   decision: {
     verdict: 'accepted',
     authority: { kind: 'system', id: 'gym-verdict' },
     reason: 'All required gates passed on the pinned battery.',
-    evidenceIds: ['quality'],
+    evidenceIds: [...requiredKinds],
     decidedAt: '2026-09-04T00:04:00.000Z',
   },
   activation: {
@@ -58,6 +55,60 @@ const baseContract = (overrides: Partial<LearningContract> = {}): LearningContra
 describe('validateLearningContract', () => {
   it('accepts a complete evidence-backed candidate lifecycle', () => {
     expect(validateLearningContract(baseContract())).toEqual({ ok: true, errors: [] });
+  });
+
+  it.each(requiredKinds)('refuses acceptance when the %s gate is omitted entirely', (kind) => {
+    const original = baseContract();
+    const contract = baseContract({ evidence: original.evidence.filter((e) => e.kind !== kind),
+      decision: { ...original.decision, evidenceIds: original.decision.evidenceIds.filter((id) => id !== kind) } });
+    expect(validateLearningContract(contract).errors).toContain(`accepted decision is missing required evidence: ${kind}`);
+  });
+
+  it.each(requiredKinds)('refuses a vacuous pass for the %s gate', (kind) => {
+    const original = baseContract();
+    const contract = baseContract({ evidence: original.evidence.map((e) => e.kind === kind
+      ? { ...e, coverage: { required: 0, measured: 0 } } : e) });
+    expect(validateLearningContract(contract).errors).toContain(`accepted decision has no required coverage: ${kind}`);
+  });
+
+  it.each(['', '  ', '\n'])('refuses an unusable artifact reference %j', (ref) => {
+    const original = baseContract();
+    const contract = baseContract({ evidence: original.evidence.map((e) => e.kind === 'probe'
+      ? { ...e, artifactRefs: [ref] } : e) });
+    expect(validateLearningContract(contract).errors).toContain('evidence.artifactRef must be non-empty');
+  });
+
+  it.each(['unsettled', 'missing-settlement', 'invalid-settlement'] as const)(
+    'refuses accepted decisions with %s spend', (state) => {
+      const spend = { ...baseContract().spend };
+      if (state === 'unsettled') spend.unsettledUsd = 0.5;
+      if (state === 'missing-settlement') delete spend.settledAt;
+      if (state === 'invalid-settlement') spend.settledAt = 'not-a-date';
+      expect(validateLearningContract(baseContract({ spend })).ok).toBe(false);
+    });
+
+  it.each(['omitted', 'duplicate'] as const)('refuses %s decision evidence citations', (state) => {
+    const original = baseContract();
+    const evidenceIds = state === 'omitted' ? original.decision.evidenceIds.slice(1)
+      : [...original.decision.evidenceIds, original.decision.evidenceIds[0]!];
+    expect(validateLearningContract(baseContract({ decision: { ...original.decision, evidenceIds } })).ok).toBe(false);
+  });
+
+  it('retains an explicit partial, unsettled inconclusive observation without allowing activation', () => {
+    const original = baseContract();
+    const contract = baseContract({ activation: undefined, evidence: [],
+      spend: { requestedUsd: 2, reservedUsd: 2, usedUsd: 1.5, unsettledUsd: 0.5 },
+      decision: { ...original.decision, verdict: 'inconclusive', evidenceIds: [] } });
+    expect(validateLearningContract(contract)).toEqual({ ok: true, errors: [] });
+  });
+
+  it('retains unknown execution pins while refusing their acceptance and activation', () => {
+    const contract = baseContract({ experiment: { ...baseContract().experiment,
+      modelHash: null, promptHash: null, codeHash: null } });
+    expect(validateLearningContract(contract)).toMatchObject({ ok: false, errors: expect.arrayContaining([
+      'experiment.modelHash must be non-empty', 'experiment.promptHash must be non-empty',
+      'experiment.codeHash must be non-empty',
+    ]) });
   });
 
   it('fails closed when an accepted candidate has incomplete or unmeasured evidence', () => {

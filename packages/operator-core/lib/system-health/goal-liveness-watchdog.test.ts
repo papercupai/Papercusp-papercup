@@ -5,12 +5,23 @@ import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracl
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 import { GOAL_HOLDER_PRODUCTIVITY_GRACE_MS } from '../goals/activity';
 import type { GoalPortfolioThroughputRead } from '../goals/portfolio-throughput';
+import {
+  findUnplannedClusters,
+  type UnplannedClusterAlert,
+  type UnplannedClusterRead,
+} from '../goals/unplanned-clusters';
 import type { GoalHolderLaunchCapacityVerdict } from '../goals/holder-launch-capacity';
 import {
   GOAL_HOLDER_CAPACITY_DEFER_ESCALATE_MS,
   GOAL_HOLDER_CAPACITY_DEFER_LOG_INTERVAL_MS,
+  GOAL_HOLDER_LOSS_CONFIRM_MS,
   GOAL_HOLDER_REKICK_INTERVAL_MS,
   GOAL_HOLDER_REKICK_MAX,
+  GOAL_HOLDER_UNHONORED_LAUNCH_HOLD_MAX_MS,
+  GOAL_HOLDER_UNHONORED_LAUNCH_HOLD_MS,
+  unhonoredLaunchHoldMs,
+  type GoalHolderCapacityDeferral,
+  type GoalHolderUnhonoredLaunchState,
   GOAL_LIVENESS_GRACE_MS,
   classifyGoalLiveness,
   classifyGoalPortfolioIdle,
@@ -35,6 +46,18 @@ import {
 } from './goal-liveness-watchdog';
 import type { GoalReadiness } from '@papercusp/agent-mcp/goal-deps';
 import { GoalHolderLaunchPolicyRefusedError } from '../harness/routines/goal-holder-launch-action';
+
+// This suite exercises the existing liveness/readiness/respawn behavior with
+// every delivery dependency isolated. The canonical condition-rail producer
+// case separately verifies the real keyed open and measured-recovery lifecycle.
+vi.mock('../severe-event-broadcast', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../severe-event-broadcast')>()),
+  broadcastSevereEvent: vi.fn(async () => undefined),
+}));
+vi.mock('../alarm-attention', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../alarm-attention')>()),
+  resolveAlarm: vi.fn(async () => undefined),
+}));
 
 const NOW = Date.parse('2026-08-16T04:00:00Z');
 const LONG_AGO = NOW - 5 * 24 * 60 * 60_000; // 5 days — the measured sidestage case
@@ -365,6 +388,8 @@ describe('runGoalLivenessSweepOnce', () => {
     // leg's default measurement is the only other PG dep in the sweep.
     readPortfolioThroughput: async () => new Map<string, GoalPortfolioThroughputRead>(),
     escalatePortfolioIdle: async () => {},
+    readUnplannedClusters: async () => new Map(),
+    fileUnplannedCluster: async () => null,
     flagEnabled: async () => true,
     now: () => NOW,
     graceMs: GOAL_LIVENESS_GRACE_MS,
@@ -389,6 +414,7 @@ describe('runGoalLivenessSweepOnce', () => {
       // P-002: a DARK goal is `lost`, not `held`, so the portfolio leg does not
       // judge it — placing nothing is only a finding about a steward who is there.
       portfolioIdleEscalated: 0,
+      unplannedClustersFiled: 0,
       skipped: false,
     });
     expect(seen[0]?.reason).toBe('abandoned');
@@ -413,6 +439,7 @@ describe('runGoalLivenessSweepOnce', () => {
       autoStarted: 0,
       portfolioIdleEscalated: 0,
       wedgeEscalated: 0,
+      unplannedClustersFiled: 0,
       skipped: true,
     });
     expect(called).toBe(false); // the kill-switch stops it BEFORE reading the DB
@@ -797,6 +824,9 @@ function respawnDeps(overrides: Partial<GoalHolderRespawnDeps> = {}): GoalHolder
     // EI-23821882158913073 block at the bottom), so without a stub it issues a real
     // query against that stub and warns on every unrelated test in this file.
     reconcileStrandedLatch: async () => ({ kind: 'noop' }),
+    // WI-10005573: same reason — the superseded-holder reaper runs for every
+    // swept goal and would otherwise query the bare `{}` SQL stub.
+    retireSuperseded: async () => ({ retired: [], leftArmed: [], awaitsCancelled: 0, claimsReleased: [] }),
     pauseNeedsHuman: async () => true,
     escalateGiveUp: async () => {},
     // Existing holder-recovery cases model a completed first turn. Without an
@@ -824,6 +854,10 @@ function respawnDeps(overrides: Partial<GoalHolderRespawnDeps> = {}): GoalHolder
     }),
     escalateCapacityDeferral: async () => {},
     capacityDeferrals: new Map(),
+    // WI-10005559: these fixtures exercise recovery itself, so a first lost
+    // tick acts. The loss-confirmation window has its own tests below.
+    lossConfirmMs: 0,
+    lossObservations: new Map(),
     now: () => NOW,
     states: new Map(),
     ...overrides,
@@ -901,6 +935,21 @@ describe('goal respawn causal contracts (WI-1074216)', () => {
       expectedLease: live ? null : { ownerId: 'elected', epoch: 2 },
     });
   });
+
+  it.each(respawnContractScenarios)('detects permanent wrong-seam control: %s', async (scenario) => {
+    const live = scenario === 'live-holder-no-double-spawn';
+    const takeover = scenario === 'concurrent-takeover-refusal';
+    const expected = {
+      launches: live ? 0 : 1,
+      respawned: live || takeover ? 0 : 1,
+      attachFailed: takeover ? 1 : 0,
+      neutralized: takeover ? 1 : 0,
+      expectedLease: live ? null : { ownerId: 'elected', epoch: 2 },
+    };
+    // Calibrate the same fixture before observing the deliberate wrong seam.
+    expect(await observeRespawnContract(scenario)).toEqual(expected);
+    expect(await observeRespawnContract(scenario, true)).not.toEqual(expected);
+  });
 });
 
 describe('goal holder respawn eligibility (P-009)', () => {
@@ -976,6 +1025,7 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
       respawned: 1,
       launchFailed: 0,
       launchRefused: 0,
+      launchUnhonored: 0,
       attachFailed: 0,
       attachUnresolved: 0,
       neutralizeFailed: 0,
@@ -983,6 +1033,7 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
       rekicked: 0,
       partialFirstTurn: 0,
       deferredCapacity: 0,
+      lossUnconfirmed: 0,
       skipped: false,
     });
   });
@@ -1554,6 +1605,8 @@ describe('the wedge leg inside runGoalLivenessSweepOnce', () => {
     // default measurement would run real SQL against the `{}` sql stub.
     readPortfolioThroughput: async () => new Map<string, GoalPortfolioThroughputRead>(),
     escalatePortfolioIdle: async () => {},
+    readUnplannedClusters: async () => new Map(),
+    fileUnplannedCluster: async () => null,
     flagEnabled: async () => true,
     now: () => NOW,
     graceMs: GOAL_LIVENESS_GRACE_MS,
@@ -1832,6 +1885,8 @@ describe('runGoalLivenessSweepOnce — the portfolio-idle leg', () => {
     escalateReadiness: async () => {},
     readHolderProductivity: async () => new Map<string, number>([[KEY, 99]]),
     escalateWedge: async () => {},
+    readUnplannedClusters: async () => new Map(),
+    fileUnplannedCluster: async () => null,
     flagEnabled: async () => true,
     now: () => NOW,
     graceMs: GOAL_LIVENESS_GRACE_MS,
@@ -2382,6 +2437,183 @@ describe('runGoalHolderRespawnOnce — defers recovery while the launch target i
  * These pin the reconcile to the HEALTHY path. Move the call back below the `held`
  * early-return and the integration tests all still pass — these are what go red.
  */
+// WI-10005904: measured 2026-10-03 04:57Z..05:30Z on goal 60d3a8. The account
+// session override allowed only a codex account; the claude holder's launches
+// all died at boot with "--account auto could not be honored". Each one was
+// counted as a holder death: it spent an hourly rate-cap slot and a damping
+// restart, and after six the respawner paused the goal as needs-human.
+describe('runGoalHolderRespawnOnce — boot deaths on the account route never spend the holder-death cap (WI-10005904)', () => {
+  const sql = {} as never;
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warn.mockRestore();
+  });
+  const UNHONORED =
+    'psu exited (code 1) before the session registered presence\n' +
+    '--account auto could not be honored: claude requires a claude account pool. ' +
+    'Refusing to fall back to the default system login.';
+  /** A durable 6-per-hour ledger, so a slot that is not returned would eventually cap. */
+  function rateLedger() {
+    const slots: number[] = [];
+    const reserveRateSlot = vi.fn(async (_goal: GoalRowLike, at: number) => {
+      const inWindow = slots.filter((t) => at - t < 3_600_000).length;
+      if (inWindow >= 6) return { kind: 'capped' as const, attemptsInWindow: inWindow };
+      slots.push(at);
+      return { kind: 'reserved' as const, attemptsInWindow: inWindow + 1 };
+    });
+    const releaseRateSlot = vi.fn(async (_goal: GoalRowLike, at: number) => {
+      const i = slots.indexOf(at);
+      if (i >= 0) slots.splice(i, 1);
+      return i >= 0;
+    });
+    return { slots, reserveRateSlot, releaseRateSlot };
+  }
+
+  it('six consecutive unhonored launches return every slot, leave damping untouched, never pause, and hold recovery with a doubling hold', async () => {
+    let clock = NOW;
+    const { slots, reserveRateSlot, releaseRateSlot } = rateLedger();
+    const launch = vi.fn(async (): Promise<{ ownerId: string; warnings: string[] }> => {
+      throw new Error(UNHONORED);
+    });
+    const pauseNeedsHuman = vi.fn(async () => true);
+    const escalateGiveUp = vi.fn(async () => {});
+    const escalateUnhonoredLaunch = vi.fn(
+      async (_goal: GoalRowLike, _info: { refusal: string; count: number; holdMs: number }) => {},
+    );
+    const states = new Map();
+    const capacityDeferrals = new Map<string, GoalHolderCapacityDeferral>();
+    const unhonoredLaunches = new Map<string, GoalHolderUnhonoredLaunchState>();
+    const deps = respawnDeps({
+      reserveRateSlot,
+      releaseRateSlot,
+      launch,
+      pauseNeedsHuman,
+      escalateGiveUp,
+      escalateUnhonoredLaunch,
+      states,
+      capacityDeferrals,
+      unhonoredLaunches,
+      now: () => clock,
+    });
+
+    const holds: number[] = [];
+    for (let i = 1; i <= 6; i += 1) {
+      const result = await runGoalHolderRespawnOnce(sql, deps);
+      expect(result).toMatchObject({ attempted: 1, launchUnhonored: 1, launchFailed: 0, gaveUp: 0, respawned: 0 });
+      expect(launch).toHaveBeenCalledTimes(i);
+      // Damping is untouched and the slot is back in the ledger.
+      expect(states.size).toBe(0);
+      expect(slots).toEqual([]);
+      const episode = [...capacityDeferrals.values()][0];
+      const holdMs = unhonoredLaunchHoldMs(i);
+      expect(episode?.holdUntilMs).toBe(clock + holdMs);
+      holds.push(holdMs);
+      // A clear capacity reading does not launch while the hold runs: that reading
+      // is what failed to foresee the death.
+      clock += holdMs - 1;
+      expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 0, deferredCapacity: 1 });
+      expect(launch).toHaveBeenCalledTimes(i);
+      clock += 1;
+    }
+
+    expect(holds[0]).toBe(GOAL_HOLDER_UNHONORED_LAUNCH_HOLD_MS);
+    expect(holds).toEqual([10, 20, 40, 80, 120, 120].map((m) => m * 60_000));
+    expect(holds[5]).toBe(GOAL_HOLDER_UNHONORED_LAUNCH_HOLD_MAX_MS);
+    expect(reserveRateSlot).toHaveBeenCalledTimes(6);
+    expect(releaseRateSlot).toHaveBeenCalledTimes(6);
+    expect(pauseNeedsHuman).not.toHaveBeenCalled();
+    expect(escalateGiveUp).not.toHaveBeenCalled();
+    expect(escalateUnhonoredLaunch.mock.calls.map((c) => c[1].count)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(escalateUnhonoredLaunch.mock.calls[0]?.[1].refusal).toMatch(/^--account auto could not be honored: /);
+  });
+
+  it('a successful launch resets the doubling', async () => {
+    let clock = NOW;
+    const { reserveRateSlot, releaseRateSlot } = rateLedger();
+    let fail = true;
+    const launch = vi.fn(async (g: GoalRowLike) => {
+      if (fail) throw new Error(UNHONORED);
+      return { ownerId: `replacement-${g.goalId}`, warnings: [] };
+    });
+    const unhonoredLaunches = new Map<string, GoalHolderUnhonoredLaunchState>();
+    const deps = respawnDeps({
+      reserveRateSlot,
+      releaseRateSlot,
+      launch,
+      unhonoredLaunches,
+      capacityDeferrals: new Map(),
+      states: new Map(),
+      now: () => clock,
+    });
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ launchUnhonored: 1 });
+    expect([...unhonoredLaunches.values()].map((s) => s.count)).toEqual([1]);
+    clock += GOAL_HOLDER_UNHONORED_LAUNCH_HOLD_MS;
+    fail = false;
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 1, respawned: 1, launchUnhonored: 0 });
+    expect(unhonoredLaunches.size).toBe(0);
+  });
+
+  it('an ordinary launch failure is still damped and keeps its slot (the control)', async () => {
+    const { slots, reserveRateSlot, releaseRateSlot } = rateLedger();
+    const states = new Map();
+    const deps = respawnDeps({
+      reserveRateSlot,
+      releaseRateSlot,
+      launch: async () => {
+        throw new Error('spawn psu ENOENT');
+      },
+      states,
+      capacityDeferrals: new Map(),
+      unhonoredLaunches: new Map(),
+    });
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 1, launchFailed: 1, launchUnhonored: 0 });
+    expect(states.size).toBe(1);
+    expect(slots).toHaveLength(1);
+    expect(releaseRateSlot).not.toHaveBeenCalled();
+  });
+
+  it('escalates a session-override deferral on the first tick instead of waiting out the rate-pause grace', async () => {
+    const target = { provider: 'claude' as const, accountId: null, agent: 'claude' };
+    const overrideDeferred: GoalHolderLaunchCapacityVerdict = {
+      kind: 'deferred',
+      target,
+      binding: 'session-override',
+      untilMs: null,
+      accountIds: ['aviynw', 'aviynw2'],
+      reason: 'the account session override (forced: aviynw_codex; excluded: none) disallows every claude account',
+      pool: {
+        provider: 'claude',
+        total: 2,
+        serviceable: 2,
+        walledFresh: 0,
+        paused: 0,
+        pacing: 0,
+        unknown: 0,
+        atCapacity: false,
+        binding: 'none',
+        reason: '2 of 2 can serve',
+      },
+    };
+    const escalateCapacityDeferral = vi.fn(async () => {});
+    const launch = vi.fn(async (g: GoalRowLike) => ({ ownerId: `replacement-${g.goalId}`, warnings: [] }));
+    const deps = respawnDeps({
+      assessLaunchCapacity: async () => overrideDeferred,
+      escalateCapacityDeferral,
+      launch,
+      capacityDeferrals: new Map(),
+    });
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 0, deferredCapacity: 1 });
+    expect(escalateCapacityDeferral).toHaveBeenCalledTimes(1);
+    expect(escalateCapacityDeferral).toHaveBeenCalledWith(expect.anything(), overrideDeferred, 0);
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 0, deferredCapacity: 1 });
+    expect(escalateCapacityDeferral).toHaveBeenCalledTimes(1);
+    expect(launch).not.toHaveBeenCalled();
+  });
+});
+
 describe('stranded needs-human latch is reconciled on the HEALTHY path (EI-23821882158913073)', () => {
   const sql = {} as never;
 
@@ -2471,5 +2703,240 @@ describe('stranded needs-human latch is reconciled on the HEALTHY path (EI-23821
       }),
     );
     expect(result).toMatchObject({ attempted: 0 });
+  });
+});
+
+// WI-10005559 (measured 2026-10-02): a holder's carry-respawn, cold-boot drill
+// cut or resume stamps adv_sessions.ended_at, and the oracle reads the owner
+// `ended` until its successor registers about two minutes later. Acting on the
+// first such tick re-elected goal 60d3a8 six times in 23 minutes and spent its
+// hourly cap. A loss must persist for GOAL_HOLDER_LOSS_CONFIRM_MS first.
+describe('runGoalHolderRespawnOnce — loss confirmation window (WI-10005559)', () => {
+  const sql = {} as never;
+  let info: { mock: { calls: unknown[][] }; mockRestore(): void };
+  beforeEach(() => {
+    info = vi.spyOn(console, 'info').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    info.mockRestore();
+  });
+
+  it('rides out a same-owner restart gap and acts only on a loss that persists', async () => {
+    let nowMs = NOW;
+    let state: SessionState = 'ended';
+    const launch = vi.fn(async () => ({ ownerId: 'replacement', warnings: [] }));
+    const lossObservations: NonNullable<GoalHolderRespawnDeps['lossObservations']> = new Map();
+    const deps = respawnDeps({
+      lossConfirmMs: GOAL_HOLDER_LOSS_CONFIRM_MS,
+      lossObservations,
+      now: () => nowMs,
+      launch,
+      resolveLiveness: async () => vmap(verdict('su-2c130be1', state)),
+    });
+
+    // The restart gap: two `ended` ticks, then the successor registers.
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 0, lossUnconfirmed: 1 });
+    nowMs += 60_000;
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 0, lossUnconfirmed: 1 });
+    state = 'live';
+    nowMs += 60_000;
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 0, lossUnconfirmed: 0 });
+    expect(lossObservations.size).toBe(0);
+    expect(launch).not.toHaveBeenCalled();
+
+    // A genuine loss: the window restarts from this tick and recovery acts
+    // only once it has fully elapsed.
+    state = 'ended';
+    nowMs += 60_000;
+    const lostAt = nowMs;
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 0, lossUnconfirmed: 1 });
+    nowMs = lostAt + GOAL_HOLDER_LOSS_CONFIRM_MS - 1;
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 0, lossUnconfirmed: 1 });
+    nowMs = lostAt + GOAL_HOLDER_LOSS_CONFIRM_MS;
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 1, lossUnconfirmed: 0 });
+    expect(launch).toHaveBeenCalledOnce();
+    // The reason trail: each loss episode is logged once, when it starts.
+    const lostLines = info.mock.calls
+      .map((c: unknown[]) => String(c[0]))
+      .filter((line: string) => line.includes('judged lost'));
+    expect(lostLines).toHaveLength(2);
+    // WI-10005579: each line names the verdict inputs, so a relaunch gap
+    // (`ended`) reads differently from a parked holder with no wake source.
+    expect(lostLines[lostLines.length - 1]).toContain('sessionState=ended');
+    expect(lostLines[lostLines.length - 1]).toMatch(/selfWake=\S+/);
+  });
+
+  it('restarts the window when a different holder is elected', async () => {
+    let nowMs = NOW;
+    let elected = 'su-2c130be1';
+    const launch = vi.fn(async () => ({ ownerId: 'replacement', warnings: [] }));
+    const target = respawnGoal();
+    const deps = respawnDeps({
+      lossConfirmMs: GOAL_HOLDER_LOSS_CONFIRM_MS,
+      lossObservations: new Map(),
+      now: () => nowMs,
+      launch,
+      readGoals: async () => ({ goals: [target], holders: [holder({ ownerId: elected })] }),
+      resolveLiveness: async () => vmap(verdict(elected, 'ended')),
+    });
+
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 0, lossUnconfirmed: 1 });
+    elected = 'su-successor';
+    nowMs += GOAL_HOLDER_LOSS_CONFIRM_MS;
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 0, lossUnconfirmed: 1 });
+    expect(launch).not.toHaveBeenCalled();
+    nowMs += GOAL_HOLDER_LOSS_CONFIRM_MS;
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 1 });
+  });
+
+  it('applies the production window to a caller that does not set one', async () => {
+    const launch = vi.fn(async () => ({ ownerId: 'replacement', warnings: [] }));
+    const { lossConfirmMs: _unset, ...rest } = respawnDeps({ launch, lossObservations: new Map() });
+    expect(await runGoalHolderRespawnOnce(sql, rest)).toMatchObject({ attempted: 0, lossUnconfirmed: 1 });
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('keeps the window above the measured carry-respawn gap', () => {
+    // 2026-10-02: drill cut 16:49:10Z, successor's first tool call 16:51:00Z.
+    expect(GOAL_HOLDER_LOSS_CONFIRM_MS).toBeGreaterThanOrEqual(3 * 60_000);
+  });
+});
+
+describe('runGoalLivenessSweepOnce — the unplanned-cluster leg (goal-holder-plans P-002)', () => {
+  const sql = {} as never;
+  const KEY = goalReadinessKey(goal());
+  /** A 3-item cluster that formed `formedAgoMs` before NOW. */
+  const read = (formedAgoMs: number): UnplannedClusterRead => ({
+    clusters: findUnplannedClusters(
+      KEY,
+      ['WI-1', 'WI-2', 'WI-3'].map((id) => ({
+        id,
+        title: `[Reminder delivery] ${id}`,
+        createdAtMs: NOW - formedAgoMs,
+        harness: 'papercusp',
+      })),
+      [],
+    ),
+    itemCount: 3,
+    truncatedByLimit: false,
+  });
+
+  const base = (over: Record<string, unknown> = {}) => ({
+    readGoals: async () => ({ goals: [goal()], holders: [holder({ setAtMs: JUST_NOW })] }),
+    resolveLiveness: async () => vmap(verdict('su-2c130be1', 'live')),
+    escalate: async () => {},
+    readReadiness: async () => new Map<string, GoalReadiness>(),
+    escalateReadiness: async () => {},
+    readHolderProductivity: async () => new Map<string, number>([[KEY, 99]]),
+    escalateWedge: async () => {},
+    readPortfolioThroughput: async () => new Map<string, GoalPortfolioThroughputRead>(),
+    escalatePortfolioIdle: async () => {},
+    flagEnabled: async () => true,
+    now: () => NOW,
+    graceMs: GOAL_LIVENESS_GRACE_MS,
+    ...over,
+  });
+
+  it('files ONE holder-assigned nudge for a cluster older than 2 ordinary (4h) cycles', async () => {
+    const filed: UnplannedClusterAlert[] = [];
+    const r = await runGoalLivenessSweepOnce(
+      sql,
+      base({
+        readUnplannedClusters: async () => new Map([[KEY, read(8 * 3600_000 + 60_000)]]),
+        fileUnplannedCluster: async (a: UnplannedClusterAlert) => {
+          filed.push(a);
+          return 'WI-NUDGE';
+        },
+      }),
+    );
+    expect(r.unplannedClustersFiled).toBe(1);
+    expect(filed).toHaveLength(1);
+    expect(filed[0]).toMatchObject({
+      goalId: goal().goalId,
+      workspaceId: 'papercusp-workspace',
+      holderOwnerId: 'su-2c130be1',
+      reportCycleMs: 4 * 3600_000,
+    });
+    expect(filed[0].cluster.memberIds).toEqual(['WI-1', 'WI-2', 'WI-3']);
+  });
+
+  it('gives an ordinary goal its two cycles: a 3h-old cluster is not yet reportable', async () => {
+    let calls = 0;
+    const r = await runGoalLivenessSweepOnce(
+      sql,
+      base({
+        readUnplannedClusters: async () => new Map([[KEY, read(3 * 3600_000)]]),
+        fileUnplannedCluster: async () => {
+          calls += 1;
+          return 'WI-NUDGE';
+        },
+      }),
+    );
+    expect(calls).toBe(0);
+    expect(r.unplannedClustersFiled).toBe(0);
+  });
+
+  it('holds a STANDING goal to its hourly cadence: the same 3h-old cluster is reportable', async () => {
+    const filed: UnplannedClusterAlert[] = [];
+    const r = await runGoalLivenessSweepOnce(
+      sql,
+      base({
+        readGoals: async () => ({ goals: [goal({ standing: true })], holders: [holder({ setAtMs: JUST_NOW })] }),
+        readUnplannedClusters: async () => new Map([[KEY, read(3 * 3600_000)]]),
+        fileUnplannedCluster: async (a: UnplannedClusterAlert) => {
+          filed.push(a);
+          return 'WI-NUDGE';
+        },
+      }),
+    );
+    expect(r.unplannedClustersFiled).toBe(1);
+    expect(filed[0].reportCycleMs).toBe(3600_000);
+  });
+
+  it('does not count a cluster whose nudge already exists (the filer returns null)', async () => {
+    const r = await runGoalLivenessSweepOnce(
+      sql,
+      base({
+        readUnplannedClusters: async () => new Map([[KEY, read(9 * 3600_000)]]),
+        fileUnplannedCluster: async () => null,
+      }),
+    );
+    expect(r.unplannedClustersFiled).toBe(0);
+  });
+
+  it('never judges an UNHELD goal — that is the liveness leg', async () => {
+    let read_ = 0;
+    await runGoalLivenessSweepOnce(
+      sql,
+      base({
+        resolveLiveness: async () => vmap(verdict('su-2c130be1', 'ended')),
+        readUnplannedClusters: async (goals: readonly GoalRowLike[]) => {
+          read_ += goals.length;
+          return new Map([[KEY, read(9 * 3600_000)]]);
+        },
+        fileUnplannedCluster: async () => 'WI-NUDGE',
+      }),
+    );
+    expect(read_).toBe(0);
+  });
+
+  it('a failed read costs the leg silence, not the sweep', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const r = await runGoalLivenessSweepOnce(
+        sql,
+        base({
+          readUnplannedClusters: async () => {
+            throw new Error('pg down');
+          },
+          fileUnplannedCluster: async () => 'WI-NUDGE',
+        }),
+      );
+      expect(r.skipped).toBe(false);
+      expect(r.unplannedClustersFiled).toBe(0);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('unplanned-cluster read failed'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

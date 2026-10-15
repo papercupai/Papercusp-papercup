@@ -75,6 +75,36 @@ export function deriveFixFeasibility(vulnerableRange: string, installedVersions:
     vulnerableCopies: string[];
 };
 /**
+ * Advisories the PROD lens dropped although the prod tree still holds a vulnerable copy.
+ *
+ * The two inputs disagree about what "prod" means, and the disagreement fails OPEN.
+ * `npm audit --omit=dev` decides reachability from the lockfile's `dev` flags, while
+ * `npm ls --omit=dev` (the attribution source) follows peer edges. npm flags a package that
+ * reaches a workspace only as that workspace's PEER dependency `dev: true`, so the prod
+ * lens never reports it and the gate never saw it.
+ *
+ * Measured 2026-10-06 (WI-10006989): @papercusp/token-kit declares style-dictionary
+ * '^4 || ^5' as a peerDependency, `npm ls --omit=dev` shows
+ * token-kit > style-dictionary@4.4.0, and package-lock.json flags
+ * node_modules/style-dictionary `dev: true`. The prod lens dropped GHSA-vj5c-m527-mpff,
+ * and the gate reported the accepted entry STALE ("resolved") while 4.4.0 was installed.
+ * The same mechanism hid patch-package, @bundled-es-modules/glob, find-yarn-workspace-root,
+ * and (on the 10-06 frozen candidate) a CRITICAL vitest advisory.
+ *
+ * A full-lens advisory is folded in when the prod ls tree holds a copy INSIDE its vulnerable
+ * range. Fail closed: without semver or a parseable range, any copy counts. A package with
+ * no copy in the prod ls tree is genuinely dev-only and stays out.
+ *
+ * Keep this ABOVE analyze()'s doc block: placed between that block and analyze(), it
+ * captures the block, and the generated .d.mts narrows analyze's 4th parameter to `null`.
+ *
+ * @param {Record<string, any>} prodVulns  `vulnerabilities` of `npm audit --omit=dev --json`
+ * @param {Record<string, any> | null} fullVulns  `vulnerabilities` of `npm audit --json`
+ * @param {any} lsTree  parsed `npm ls --omit=dev --all --json`
+ * @returns {string[]} sorted package names
+ */
+export function findPeerMaskedAdvisories(prodVulns: Record<string, any>, fullVulns: Record<string, any> | null, lsTree: any): string[];
+/**
  * Core analysis. Pure: takes parsed audit + ls JSON, returns the classified population.
  *
  * `fullAuditJson` is the OPTIONAL second lens — `npm audit --json` over the tree as it is
@@ -108,6 +138,7 @@ export function deriveFixFeasibility(vulnerableRange: string, installedVersions:
 export function analyze(auditJson: any, lsJson: any, baseline: any, fullAuditJson?: any): {
     total: number;
     findings: {
+        peerMasked?: boolean | undefined;
         fixDisagreement?: string | undefined;
         name: string;
         severity: any;
@@ -127,6 +158,7 @@ export function analyze(auditJson: any, lsJson: any, baseline: any, fullAuditJso
         disposition: string;
     }[];
     gating: {
+        peerMasked?: boolean | undefined;
         fixDisagreement?: string | undefined;
         name: string;
         severity: any;
@@ -146,6 +178,7 @@ export function analyze(auditJson: any, lsJson: any, baseline: any, fullAuditJso
         disposition: string;
     }[];
     offenders: {
+        peerMasked?: boolean | undefined;
         fixDisagreement?: string | undefined;
         name: string;
         severity: any;
@@ -174,6 +207,7 @@ export function analyze(auditJson: any, lsJson: any, baseline: any, fullAuditJso
     }[];
     unattributed: string[];
     nonShippingOnly: number;
+    peerMasked: string[];
 };
 /**
  * UNDETERMINED, NOT CLEAN, AND NOT RED — the third verdict this gate has to be able to say.
@@ -202,3 +236,59 @@ export function measureJson(label: string, attempt: () => string | undefined, op
     delaysMs?: number[];
     sleep?: (ms: number) => void;
 }): any;
+/**
+ * Split `npm ls` dependency-tree problems into those that can hide part of the shipping
+ * graph (BLOCKING) and those that provably cannot (TOLERATED).
+ *
+ * WHY THE SPLIT: EI-24817591294929415 made this gate fail closed on ANY npm ls problem,
+ * because a lockfile drifted from our manifests let `npm audit --omit=dev` drop a real
+ * shipping advisory. But this monorepo permanently carries third-party peer-range
+ * mismatches (React 19 against libraries whose peer range stops at ^18, mem0ai's pg peers,
+ * claude-agent-sdk's @anthropic-ai/sdk peer, …), which npm reports as `invalid`/`missing`.
+ * The blanket refusal therefore red-pinned the strict leg on EVERY tree from 2026-10-02
+ * (measured 2026-10-06 under WI-10006055: 6 problems on the shared tree, 16 in the gate's
+ * checkout, all third-party peer edges or extraneous installs; npm 10.9.2, 11.6.2 and
+ * 11.19.0 all report them).
+ *
+ * A problem is TOLERATED only when it is provably one of:
+ *   - extraneous: installed but reached by no dependency edge, so it is outside this
+ *     gate's workspace-attributed population whatever the integrity verdict;
+ *   - invalid, where EVERY violated edge is a peer/peerOptional edge declared by an
+ *     installed third-party package (its location is under node_modules/);
+ *   - missing, where the dependent is an installed third-party package that declares the
+ *     name only as a peer/peerOptional dependency.
+ * Everything else BLOCKS: any edge declared by our own root or workspace manifests (the
+ * manifest/lockfile drift EI-24817591294929415 caught), any regular, optional or dev edge,
+ * an unreadable or unlocatable dependent, and any problem the tree does not explain.
+ *
+ * @param {any} lsTree parsed `npm ls --omit=dev --all --json`
+ * @param {string} root the directory npm ls ran in; tree locations are relative to it
+ * @returns {{ blocking: Array<{ problem: string, reason: string }>, tolerated: Array<{ problem: string, reason: string }> }}
+ */
+export function classifyNpmTreeProblems(lsTree: any, root: string): {
+    blocking: Array<{
+        problem: string;
+        reason: string;
+    }>;
+    tolerated: Array<{
+        problem: string;
+        reason: string;
+    }>;
+};
+/**
+ * Refuse a dependency tree whose npm ls problems can hide part of the shipping graph.
+ *
+ * @param {any} lsTree parsed `npm ls --omit=dev --all --json`
+ * @param {string} [root] the directory npm ls ran in
+ * @returns {{ blocking: Array<{ problem: string, reason: string }>, tolerated: Array<{ problem: string, reason: string }> }}
+ */
+export function assertNpmTreeIntegrity(lsTree: any, root?: string): {
+    blocking: Array<{
+        problem: string;
+        reason: string;
+    }>;
+    tolerated: Array<{
+        problem: string;
+        reason: string;
+    }>;
+};

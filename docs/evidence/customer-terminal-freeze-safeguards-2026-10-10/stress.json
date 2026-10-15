@@ -1,0 +1,226 @@
+{
+  "schemaVersion": 1,
+  "planSlug": "customer-terminal-freeze-safeguards-2026-10-10",
+  "scope": "Isolated GNOME history-reflow and POSIX stalled-reader workloads only; does not establish that every historical GUI freeze cause is eliminated.",
+  "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run lint:as-committed -- test:file --any --keep --ref=714072d2b207a9b9e9e85e53daa2ba2fa942597d -- packages/operator-core/lib/gnome-terminal-profile.test.ts packages/operator-core/lib/terminal-spawn.test.ts packages/operator-core/lib/console-spawn.test.ts papercusp-desktop/test/native-console-gnome.test.js apps/operator/scripts/psu-terminal-output.integration.test.ts apps/operator/scripts/psu-gnome-renderer.integration.test.ts",
+  "testsExecuted": 3,
+  "testsSkipped": 0,
+  "testRuns": [
+    {
+      "id": 21000682,
+      "filePath": "apps/operator/scripts/psu-gnome-renderer.integration.test.ts",
+      "status": "pass",
+      "commitSha": "714072d2b207a9b9e9e85e53daa2ba2fa942597d",
+      "worktreeDirty": false,
+      "startedAt": "2026-10-10T21:27:01.693Z",
+      "finishedAt": "2026-10-10T21:27:17.353Z"
+    },
+    {
+      "id": 21000681,
+      "filePath": "apps/operator/scripts/psu-terminal-output.integration.test.ts",
+      "status": "pass",
+      "commitSha": "714072d2b207a9b9e9e85e53daa2ba2fa942597d",
+      "worktreeDirty": false,
+      "startedAt": "2026-10-10T21:27:01.455Z",
+      "finishedAt": "2026-10-10T21:27:02.600Z"
+    }
+  ],
+  "sourceHashesAtReceiptCreation": {
+    "apps/operator/scripts/psu-gnome-renderer.integration.test.ts": "34bebe8945db7fedd05d5cc0116a562d5674cc86a8853bb4c0cfca5659794096",
+    "apps/operator/scripts/psu-terminal-output.integration.test.ts": "59deaeb7ff6300060b7fe613a68f4ff6b36a8842d99d808683a580e3569c2a17",
+    "apps/operator/scripts/fixtures/gnome-reflow-probe.py": "891349794bc1908d0b3ecd4c7d607b9b7241d65a6c9e88118dfdcfb73f305af8",
+    "apps/operator/scripts/psu-terminal-output.mjs": "b0759d82c0fa5c7af12be3352d818dbec3517caa466979fc165457574efebf68",
+    "packages/operator-core/lib/gnome-terminal-profile.mjs": "7e3f5a3b17ae8805e879d1c868a33310bf5441ab6f01465b69b693ee4327d7f7",
+    "packages/operator-core/lib/gnome-terminal-policy.json": "0dbaa9d2be3c77f201ad1a08a5bf7ed0ff41ada304e5f04f44dfaf8de8aad4a3"
+  },
+  "observations": [
+    {
+      "kind": "pty-stalled-reader",
+      "burstBytes": 2097152,
+      "observed": {
+        "synchronous": {
+          "inputWhileBlocked": false,
+          "inputAfterDrain": true,
+          "ticksWhileBlocked": 0,
+          "drained": 2097152
+        },
+        "asynchronous": {
+          "inputWhileBlocked": true,
+          "inputAfterDrain": true,
+          "ticksWhileBlocked": 14,
+          "drained": 2097152
+        }
+      }
+    },
+    {
+      "kind": "gnome-history-reflow",
+      "lines": 60000,
+      "displayHistoryLimit": 10000,
+      "siblingReplyBoundMs": 250,
+      "rows": [
+        {
+          "unlimited": false,
+          "server_pid": 3275631,
+          "sibling_server_pid": 3275631,
+          "independent_sibling": false,
+          "lines": 60000,
+          "limit": 10000,
+          "profile_uuid": "42e5b17a-5f06-4cec-b4b2-b21dedc90c82",
+          "default_profile_uuid": "1be264d5-cf8b-4bbe-a9ef-000000000001",
+          "default_still_unlimited": true,
+          "font_preserved": true,
+          "history_bytes": 5505024,
+          "columns_after_resize": [
+            "REFLOW_COLS_2_47",
+            "REFLOW_COLS_3_107",
+            "REFLOW_COLS_4_57",
+            "REFLOW_COLS_5_107"
+          ],
+          "geometry_after_resize": [
+            "WINDOW=6291467\nX=128\nY=208\nWIDTH=494\nHEIGHT=432\nSCREEN=0",
+            "WINDOW=6291467\nX=128\nY=208\nWIDTH=1094\nHEIGHT=432\nSCREEN=0",
+            "WINDOW=6291467\nX=128\nY=208\nWIDTH=594\nHEIGHT=432\nSCREEN=0",
+            "WINDOW=6291467\nX=128\nY=208\nWIDTH=1094\nHEIGHT=432\nSCREEN=0"
+          ],
+          "baseline_ping_ms": [
+            0.421,
+            0.144,
+            0.107,
+            0.264,
+            0.135
+          ],
+          "sibling_ping_after_resize_ms": [
+            1.707,
+            5.604,
+            13.383,
+            4.279
+          ]
+        },
+        {
+          "unlimited": true,
+          "server_pid": 3277714,
+          "sibling_server_pid": 3277714,
+          "independent_sibling": false,
+          "lines": 60000,
+          "limit": 10000,
+          "profile_uuid": "1be264d5-cf8b-4bbe-a9ef-000000000001",
+          "default_profile_uuid": "1be264d5-cf8b-4bbe-a9ef-000000000001",
+          "default_still_unlimited": true,
+          "font_preserved": true,
+          "history_bytes": 35258368,
+          "columns_after_resize": [
+            "REFLOW_COLS_2_47",
+            "REFLOW_COLS_3_107",
+            "REFLOW_COLS_4_57",
+            "REFLOW_COLS_5_107"
+          ],
+          "geometry_after_resize": [
+            "WINDOW=6291467\nX=128\nY=208\nWIDTH=494\nHEIGHT=432\nSCREEN=0",
+            "WINDOW=6291467\nX=128\nY=208\nWIDTH=1094\nHEIGHT=432\nSCREEN=0",
+            "WINDOW=6291467\nX=128\nY=208\nWIDTH=594\nHEIGHT=432\nSCREEN=0",
+            "WINDOW=6291467\nX=128\nY=208\nWIDTH=1094\nHEIGHT=432\nSCREEN=0"
+          ],
+          "baseline_ping_ms": [
+            0.332,
+            0.1,
+            0.086,
+            0.124,
+            0.106
+          ],
+          "sibling_ping_after_resize_ms": [
+            53.992,
+            49.387,
+            39.641,
+            61.245
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "gnome-renderer-isolation",
+      "lines": 20000,
+      "displayHistoryLimit": 10000,
+      "rows": [
+        {
+          "unlimited": false,
+          "server_pid": 3281422,
+          "sibling_server_pid": 3282125,
+          "independent_sibling": true,
+          "lines": 20000,
+          "limit": 10000,
+          "profile_uuid": "42e5b17a-5f06-4cec-b4b2-b21dedc90c82",
+          "default_profile_uuid": "1be264d5-cf8b-4bbe-a9ef-000000000001",
+          "default_still_unlimited": true,
+          "font_preserved": true,
+          "history_bytes": 5767168,
+          "columns_after_resize": [
+            "REFLOW_COLS_2_47",
+            "REFLOW_COLS_3_107",
+            "REFLOW_COLS_4_57",
+            "REFLOW_COLS_5_107"
+          ],
+          "geometry_after_resize": [
+            "WINDOW=6291467\nX=128\nY=208\nWIDTH=494\nHEIGHT=432\nSCREEN=0",
+            "WINDOW=6291467\nX=128\nY=208\nWIDTH=1094\nHEIGHT=432\nSCREEN=0",
+            "WINDOW=6291467\nX=128\nY=208\nWIDTH=594\nHEIGHT=432\nSCREEN=0",
+            "WINDOW=6291467\nX=128\nY=208\nWIDTH=1094\nHEIGHT=432\nSCREEN=0"
+          ],
+          "baseline_ping_ms": [
+            1.679,
+            0.172,
+            0.138,
+            0.202,
+            0.145
+          ],
+          "sibling_ping_after_resize_ms": [
+            1.921,
+            5.362,
+            1.337,
+            1.476
+          ]
+        },
+        {
+          "unlimited": true,
+          "server_pid": 3284238,
+          "sibling_server_pid": 3285284,
+          "independent_sibling": true,
+          "lines": 20000,
+          "limit": 10000,
+          "profile_uuid": "1be264d5-cf8b-4bbe-a9ef-000000000001",
+          "default_profile_uuid": "1be264d5-cf8b-4bbe-a9ef-000000000001",
+          "default_still_unlimited": true,
+          "font_preserved": true,
+          "history_bytes": 11665408,
+          "columns_after_resize": [
+            "REFLOW_COLS_2_47",
+            "REFLOW_COLS_3_107",
+            "REFLOW_COLS_4_57",
+            "REFLOW_COLS_5_107"
+          ],
+          "geometry_after_resize": [
+            "WINDOW=6291467\nX=128\nY=208\nWIDTH=494\nHEIGHT=432\nSCREEN=0",
+            "WINDOW=6291467\nX=128\nY=208\nWIDTH=1094\nHEIGHT=432\nSCREEN=0",
+            "WINDOW=6291467\nX=128\nY=208\nWIDTH=594\nHEIGHT=432\nSCREEN=0",
+            "WINDOW=6291467\nX=128\nY=208\nWIDTH=1094\nHEIGHT=432\nSCREEN=0"
+          ],
+          "baseline_ping_ms": [
+            0.409,
+            0.171,
+            0.126,
+            0.103,
+            0.101
+          ],
+          "sibling_ping_after_resize_ms": [
+            1.204,
+            1.995,
+            2.004,
+            0.73
+          ]
+        }
+      ]
+    }
+  ],
+  "preservation": "Private D-Bus/Xvfb profiles; production default, open windows and historical transcripts were not changed.",
+  "receiptSourceLog": "/tmp/customer-terminal-committed-tests.log",
+  "testedCommit": "714072d2b207a9b9e9e85e53daa2ba2fa942597d"
+}

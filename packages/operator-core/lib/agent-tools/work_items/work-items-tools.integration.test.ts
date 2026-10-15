@@ -35,11 +35,14 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { DISCLOSURE_LEDGER_FIXTURE_DDL } from '../../../test/_disclosure-ledger-fixture';
 import {
   CARRY_NOTES_DDL,
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   USER_TRUST_LIST_DDL,
+  WORK_ADMISSIONS_MIN_DDL,
   WORK_ITEM_DEPS_DDL,
+  applyClaimPathReadDeps,
 } from '../../../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { createWorkItem } from '../../work-items';
@@ -188,6 +191,23 @@ vi.mock('../../blueprint/operation-worker-binding', async (orig) => ({
   ...(await orig<typeof import('../../blueprint/operation-worker-binding')>()),
   readActiveOperationWorkerClaimBinding: async () => ({ status: 'none' as const }),
 }));
+// work_items:claim resolves an explicit assignee against the live agent roster and
+// refuses an off-roster id with assignee_unknown (claim.ts → resolveExplicitAgentOwnerId).
+// This fixture has no roster, so the lifecycle test's claim-for-a-peer id is declared a
+// known agent here. Every other id still goes through the real resolver, so the refusal
+// contract is not weakened; it is covered by claim.test.ts and recipient-resolve.test.ts
+// (WI-10005219). The id set lives inside the factory because vi.mock is hoisted.
+vi.mock('../coordination/recipient-resolve', async (orig) => {
+  const real = await orig<typeof import('../coordination/recipient-resolve')>();
+  const FIXTURE_PEER_AGENT_IDS = new Set(['agent-b']);
+  return {
+    ...real,
+    resolveExplicitAgentOwnerId: async (raw: string, callerOwnerId: string, workspaceId?: string | null) =>
+      FIXTURE_PEER_AGENT_IDS.has(raw.trim())
+        ? { ok: true as const, ownerId: raw.trim() }
+        : real.resolveExplicitAgentOwnerId(raw, callerOwnerId, workspaceId),
+  };
+});
 
 const { default: createTool } = await import('./create');
 const { default: getTool } = await import('./get');
@@ -283,12 +303,21 @@ beforeAll(async () => {
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(FLEET_MEMBERSHIP_EVENTS_DDL);
   await db.sql.unsafe(HFC_DDL);
+  // work_items:update's external-source ownership preflight reads the admission
+  // ledger even when this test item has no admission row.
+  await db.sql.unsafe(WORK_ADMISSIONS_MIN_DDL);
   await db.sql.unsafe(FLEET_ASSIGNMENT_DDL);
   // EI-22040912157347872: claim refusal details evaluate the same durable
   // assignment floor as the engine claim path. Keep this focused fixture on the
   // production schema so a missing table cannot collapse the refusal envelope.
   await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
   await db.sql.unsafe(USER_TRUST_LIST_DDL); // claim trust-leg join (mig 276)
+  // The claim tool handlers reach claimNextWorkItem/claimIssue, which read adv_sessions,
+  // event_awaits and the other claim-path tables (WI-10005130 / WI-10005225).
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
+  // Both comment families and expansion's audit comment consult the disclosure
+  // ledger before storing shared text. Keep their real fail-closed seal active.
+  await db.sql.unsafe(DISCLOSURE_LEDGER_FIXTURE_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL); // work_item_deps + work_item_blocked readiness (migs 367/379) — claimNextWorkItem references them UNCONDITIONALLY
   // HFC_DDL (the shared _work-items-schema fixture) is the COMPLETE post-374 schema:
   // the work_items BASE table (with item_kind/assignee_rank/rank_writer/rank_updated_at),
@@ -315,6 +344,7 @@ beforeEach(async () => {
                        harness_shared.fleet_membership_events,
                        harness_shared.coord_entity_subscriptions,
                        harness_shared.coord_threads, harness_shared.coord_thread_posts,
+                       harness_shared.personal_disclosures,
                        harness_shared.coord_links, harness_shared.coord_topics,
                        harness_shared.coord_event_log RESTART IDENTITY`;
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
@@ -570,9 +600,13 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     const featId = (feat.workItem as Record<string, unknown>).id as string;
 
     const claimed = await claimOne({ id: bugId, assignee: 'agent-b' });
+    // A refused claim returns no workItem; print the payload so the refusal reason is the
+    // failure message instead of an opaque "cannot read 'assignee' of undefined" (WI-10005219).
+    expect(claimed.workItem, `bug claim refused: ${JSON.stringify(claimed)}`).toBeDefined();
     expect((claimed.workItem as Record<string, unknown>).assignee).toBe('agent-b');
     // default assignee = the caller's ownerId
     const claimedFeat = await claimOne({ id: featId, harness: 'papercup' });
+    expect(claimedFeat.workItem, `feature claim refused: ${JSON.stringify(claimedFeat)}`).toBeDefined();
     expect((claimedFeat.workItem as Record<string, unknown>).assignee).toBe('su-tester');
 
     // 'closed' is a terminal issue-family state → the completion-integrity gate
@@ -816,6 +850,31 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     const missRes = (missing.results as { ok: boolean; error?: string }[])[0]!;
     expect(missRes.ok).toBe(false);
     expect(missRes.error).toMatch(/work_item 'WI-404' not found/);
+  });
+
+  it('comment: refuses an unavailable disclosure ledger and resumes both family writers after fixture repair', async () => {
+    const bug = await createOne({ kind: 'bug', title: 'ledger issue', harness: 'papercup' });
+    const feature = await createOne({ kind: 'feature', title: 'ledger feature', harness: 'papercup' });
+    const ids = [bug, feature].map((created) => (created.workItem as { id: string }).id);
+
+    await db.sql`DROP TABLE harness_shared.personal_disclosures`;
+    try {
+      for (const id of ids) {
+        const refused = await call(commentTool, { id, body: 'unsealed text must not persist' });
+        expect(refused.ok, JSON.stringify(refused)).toBe(false);
+        expect(JSON.stringify(refused)).toContain('disclosure_ledger_unavailable');
+      }
+      expect(await db.sql`SELECT body FROM harness_shared.coord_thread_posts`).toHaveLength(0);
+    } finally {
+      await db.sql.unsafe(DISCLOSURE_LEDGER_FIXTURE_DDL);
+    }
+
+    for (const id of ids) {
+      const accepted = await call(commentTool, { id, body: 'ledger is readable' });
+      expect(accepted.ok, JSON.stringify(accepted)).toBe(true);
+    }
+    const posts = await db.sql<{ body: string }[]>`SELECT body FROM harness_shared.coord_thread_posts`;
+    expect(posts.map((post) => post.body)).toEqual(['ledger is readable', 'ledger is readable']);
   });
 
   it('comment: preserves a non-default workspace and harness on both family writers', async () => {
@@ -1208,7 +1267,8 @@ describe('work_items body/summary alias round-trip (WI-4492, real PG)', () => {
     // update under the ALIAS `summary` (the name get RETURNS) — the exact get→edit→update
     // round-trip that used to silently drop the edit.
     const updated = await call(updateTool, { id, summary: 'BETA revised body via the summary alias' });
-    expect((updated.results as Record<string, unknown>[])[0]!.ok).toBe(true);
+    const updateResult = (updated.results as Record<string, unknown>[])[0]!;
+    expect(updateResult.ok, `summary alias update failed: ${JSON.stringify(updateResult)}`).toBe(true);
     const [afterUpdate] = await db.sql<{ body: string }[]>`
       SELECT body FROM harness_shared.engineer_issues WHERE issue_id = ${id}`;
     expect(afterUpdate.body).toBe('BETA revised body via the summary alias');
@@ -1258,6 +1318,47 @@ describe('work_items:get { operationalBrief } — work-item brief (real PG)', ()
     return { row, brief: row.operationalBrief as Brief };
   }
 
+  const PRIOR_UPDATE = [
+    '## Did', 'Older completed work.', '',
+    '## Left', 'Old residue.', '',
+    '## Next action', 'Do the stale action.',
+  ].join('\n');
+  const CURRENT_UPDATE = [
+    '## Did', 'Newest progress.', '',
+    '## Left', 'Current residue.', '',
+    '## Next action', 'Do the current action.',
+  ].join('\n');
+  const CURRENT_UPDATE_WITHOUT_NEXT = [
+    '## Did', 'Newest progress.', '',
+    '## Left', 'Current residue.',
+  ].join('\n');
+
+  async function seedAppendedCheckpoint(id: string, latestUpdate = CURRENT_UPDATE): Promise<string> {
+    const checkpoint = `${PRIOR_UPDATE}\n\n---\n${latestUpdate}`;
+    const { setWorkItemCheckpointWithPrior } = await import('../../work-item-checkpoint');
+    await setWorkItemCheckpointWithPrior(
+      { harness: 'papercup', workItemId: id },
+      checkpoint,
+      { latestUpdate },
+    );
+    return checkpoint;
+  }
+
+  async function alterLatestUpdateMetadata(id: string, mode: 'missing' | 'invalid'): Promise<void> {
+    const { workItemScope } = await import('../../carry-note');
+    const scope = workItemScope('papercup', id);
+    if (mode === 'missing') {
+      await db.sql`
+        UPDATE harness_shared.carry_notes SET journal = '[]'::jsonb
+         WHERE scope = ${scope}`;
+      return;
+    }
+    await db.sql`
+      UPDATE harness_shared.carry_notes
+         SET journal = jsonb_set(journal, '{0,latestUpdate,noteHash}', to_jsonb('invalid-hash'::text), true)
+       WHERE scope = ${scope}`;
+  }
+
   it('reports the active claim and the structured next action from the same read', async () => {
     const created = await createOne({ kind: 'feature', title: 'brief: claimed', harness: 'papercup' });
     const id = (created.workItem as Record<string, unknown>).id as string;
@@ -1283,6 +1384,44 @@ describe('work_items:get { operationalBrief } — work-item brief (real PG)', ()
     expect(brief.facts.successorResidue).toMatchObject({ status: 'known', value: { left: 'Bind evidence.' } });
     expect(brief.text).toContain('claim: su-tester');
   });
+
+  it('uses the validated latest update instead of preserved checkpoint history', async () => {
+    const created = await createOne({ kind: 'feature', title: 'brief: appended checkpoint', harness: 'papercup' });
+    const id = (created.workItem as Record<string, unknown>).id as string;
+    const checkpoint = await seedAppendedCheckpoint(id, CURRENT_UPDATE_WITHOUT_NEXT);
+    const { getWorkItemCheckpointWithMeta } = await import('../../work-item-checkpoint');
+    const checkpointRead = await getWorkItemCheckpointWithMeta({ harness: 'papercup', workItemId: id });
+    expect(checkpointRead.latestUpdate, `checkpoint metadata=${JSON.stringify(checkpointRead)}`).toEqual({
+      status: 'available', text: CURRENT_UPDATE_WITHOUT_NEXT,
+    });
+
+    const { row, brief } = await readBrief(id);
+    expect(row.checkpoint).toBe(checkpoint);
+    expect(brief.nextAction.status).toBe('unknown');
+    expect(brief.nextAction).not.toMatchObject({ value: 'Do the stale action.' });
+    expect(
+      brief.facts.successorResidue,
+      `checkpoint=${JSON.stringify(brief.facts.checkpoint)} nextAction=${JSON.stringify(brief.nextAction)}`,
+    ).toMatchObject({ status: 'known', value: { left: 'Current residue.' } });
+  });
+
+  it.each(['missing', 'invalid'] as const)(
+    'marks the current focus unknown when latest-update metadata is %s',
+    async (mode) => {
+      const created = await createOne({ kind: 'feature', title: `brief: ${mode} latest-update metadata`, harness: 'papercup' });
+      const id = (created.workItem as Record<string, unknown>).id as string;
+      await seedAppendedCheckpoint(id);
+      await alterLatestUpdateMetadata(id, mode);
+
+      const { brief } = await readBrief(id);
+      expect(brief.facts.checkpoint).toMatchObject({
+        status: 'known', value: { status: 'available' },
+      });
+      expect(brief.nextAction.status).toBe('unknown');
+      expect(brief.facts.successorResidue.status).toBe('unknown');
+      expect(brief.nextAction).not.toMatchObject({ value: 'Do the stale action.' });
+    },
+  );
 
   it('reports an active set_blocker record stored on the row as a blocker', async () => {
     const created = await createOne({ kind: 'feature', title: 'brief: blocked', harness: 'papercup' });

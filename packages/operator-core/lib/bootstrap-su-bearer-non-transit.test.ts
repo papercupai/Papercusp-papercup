@@ -79,7 +79,8 @@ vi.mock('./auth/require-principal', () => ({
     reason = 'denied';
   },
 }));
-vi.mock('./workspace-registry', () => ({
+vi.mock('./workspace-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./workspace-registry')>()),
   activeWorkspaceId: () => 'default',
   readRegistry: () => ({
     current: 'default',

@@ -111,4 +111,32 @@ describe('EI-20042650315152947 — the send path must request the lock-hold sour
     // passing a bogus domain that would key the lock read to the wrong tree.
     expect(firstCallOpts()?.coordinationDomain).toBeUndefined();
   });
+
+  it('reports each production reader boundary without letting the timing sink affect the result', async () => {
+    const timings: Array<{ name: string; elapsedMs: number; status: 'ok' | 'error' }> = [];
+    const result = await readPeerRelations('self-owner', {
+      workspaceId: 'ws',
+      harnessSlug: 'papercusp',
+      onStageTiming: (timing) => timings.push(timing),
+    });
+
+    expect(result).toBeInstanceOf(Map);
+    expect(timings.map(({ name }) => name)).toEqual([
+      'load-dependencies',
+      'coordination-domain',
+      'resolve-presence-scope',
+      'assemble-presence-snapshot',
+      'derive-couplings',
+      'list-coupling-edges',
+      'resolve-coupled-peers',
+    ]);
+    expect(timings).toEqual(timings.map((timing) => ({
+      ...timing,
+      elapsedMs: expect.any(Number),
+      status: 'ok',
+    })));
+    await expect(readPeerRelations('self-owner', {
+      onStageTiming: () => { throw new Error('diagnostic sink failed'); },
+    })).resolves.toBeInstanceOf(Map);
+  });
 });

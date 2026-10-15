@@ -13,8 +13,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../../superuser-token', () => ({ isLoopbackRequest: vi.fn(() => true) }));
 vi.mock('../../../agent-tools', () => ({}));
 vi.mock('../../../capabilities/invoke', () => ({ invokeServerCapability: vi.fn() }));
+vi.mock('../../../auth/principal/from-cookie', () => ({ principalFromCookie: vi.fn(async () => null) }));
 
 import { invokeServerCapability } from '../../../capabilities/invoke';
+import { principalFromCookie } from '../../../auth/principal/from-cookie';
 const invokeM = vi.mocked(invokeServerCapability);
 const tool = (await import('./run-tool')).default;
 
@@ -40,10 +42,26 @@ function fakeCtx(): Parameters<typeof tool.handler>[1] {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(principalFromCookie).mockResolvedValue(null);
   invokeM.mockResolvedValue({ ok: true, status: 200, body: { ok: true } });
 });
 
 describe('POST /agent-mcp/run-tool — callerSid shaping', () => {
+  it('carries the verified cookie actor rather than caller-supplied identity into dispatch', async () => {
+    const principal = { kind: 'user' as const, slug: 'employee-id', workspaceId: 'ws1',
+      authMethod: 'cookie-session' as const, trust: 'verified' as const, capabilities: new Set(['blueprint:submit']) };
+    vi.mocked(principalFromCookie).mockResolvedValue(principal);
+    const request = req({ name: 'blueprint:submit', authenticatedPrincipal: { slug: 'forged' } });
+    await tool.handler(request, fakeCtx());
+    expect(principalFromCookie).toHaveBeenCalledWith(request.headers);
+    expect(invokeM).toHaveBeenCalledWith(expect.objectContaining({ authenticatedPrincipal: principal }));
+  });
+
+  it('does not trust an actor supplied in JSON without a verified session', async () => {
+    await tool.handler(req({ name: 'blueprint:submit', authenticatedPrincipal: { slug: 'forged' } }), fakeCtx());
+    expect(invokeM.mock.calls[0]![0]).not.toHaveProperty('authenticatedPrincipal');
+  });
+
   it('no callerSid in the body ⇒ omits the field entirely', async () => {
     await tool.handler(req({ name: 't:x' }), fakeCtx());
     expect(invokeM).toHaveBeenCalledWith({ name: 't:x', args: undefined, confirmed: false });

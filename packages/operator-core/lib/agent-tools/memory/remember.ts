@@ -19,11 +19,12 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
+import { captureSurfacedOutcome, citedMemoryIds } from '../../memory/surfaced-outcomes';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { lexicalSimilarity } from '@papercusp/memory';
 import { getMemoryBackend, MemoryUnavailableError } from '../../memory/backend';
-import { MemoryTimeoutError, withMemoryToolTimeout, withMemoryWriteRetry, embedFailureReason } from '../../memory/op-deadline';
+import { MemoryTimeoutError, memoryToolTimeoutMs, withMemoryTimeout, withMemoryToolTimeout, withMemoryWriteRetry, embedFailureReason, isMemoryDegraded } from '../../memory/op-deadline';
 import { anchorMetadata } from '../../memory/anchors';
 import { expandRefsForEmbed } from '../../memory/ref-expand';
 import { getWorkItem } from '../../work-items';
@@ -39,6 +40,9 @@ import { resolveFactFederationSlug } from '../../agent-facts/store';
 import { hardText, LIMITS } from '../limits';
 import { coerceMemoryKind } from './remember-coerce';
 import { trackDetached } from '../../detached-imports';
+import { sealSharedText } from '../../personal-vault/shared-store-seal';
+import { DisclosureRefused } from '../../personal-vault/disclosure-ledger';
+import { disclosureSubject } from '../_disclosure-subject';
 
 // The store holds only STABLE facts (docs-and-memory-as-projections-2026-06-05 D-006).
 // The `ephemeral` kind was retired — ephemeral state belongs in coord (delta-
@@ -220,12 +224,47 @@ export default defineTool({
     }),
   ),
   async handler(args, ctx) {
-    const user = await getSessionUserOrDefault();
+    // Keep this request-start snapshot: the advisory dedup search below can
+    // timeout and arm the process-wide degraded latch, but that must not make
+    // this same request skip the single bounded retry for a transient WRITE
+    // timeout. A latch already active before the request still fails fast.
+    const memoryDegradedAtRequestStart = isMemoryDegraded();
+    let user: Awaited<ReturnType<typeof getSessionUserOrDefault>>;
+    try {
+      user = await withMemoryTimeout(
+        getSessionUserOrDefault(),
+        'memory:remember user resolution',
+        memoryToolTimeoutMs(),
+      );
+    } catch (err) {
+      if (!(err instanceof MemoryTimeoutError)) throw err;
+      return {
+        content: [{ type: 'text', text: JSON.stringify({
+          ok: false,
+          stored: false,
+          reason: 'memory_timeout',
+          step: 'user_resolution',
+        }) }],
+      };
+    }
     // EI-10355: the user's "stop remembering things about me" switch. Checked
     // BEFORE journalPendingWrite() below — a paused write must leave NO pending
     // journal row, or the embed-backfill drain would resurrect it and store the
     // memory anyway on resume (a pause that merely defers is not a pause).
-    if (await isMemoryPaused(user.id)) {
+    let paused = false;
+    try {
+      paused = await withMemoryTimeout(
+        isMemoryPaused(user.id),
+        'memory:remember pause lookup',
+        memoryToolTimeoutMs(),
+      );
+    } catch (err) {
+      if (!(err instanceof MemoryTimeoutError)) throw err;
+      // isMemoryPaused deliberately fails open on an unavailable PG read; a
+      // timeout is the same unavailable-read case, and the write path keeps
+      // the existing consent semantics while bounding the wait.
+    }
+    if (paused) {
       return {
         content: [{ type: 'text', text: JSON.stringify(MEMORY_PAUSED_REFUSAL) }],
       };
@@ -237,10 +276,19 @@ export default defineTool({
     // and refuse BEFORE the write-ahead journal so a later replay cannot
     // resurrect a federation request made while the feature was dark.
     if (args.shareable === true) {
-      const federationEnabled = await getFlag(
-        FLAGS.MEM0_FEDERATION_EGRESS,
-        'system',
-      ).catch(() => false);
+      let federationEnabled = false;
+      try {
+        federationEnabled = await withMemoryTimeout(
+          Promise.resolve()
+            .then(() => getFlag(FLAGS.MEM0_FEDERATION_EGRESS, 'system'))
+            .catch(() => false),
+          'memory:remember federation egress flag',
+          memoryToolTimeoutMs(),
+        );
+      } catch (err) {
+        if (!(err instanceof MemoryTimeoutError)) throw err;
+        // This flag is an egress safety rail: an unavailable read stays closed.
+      }
       if (!federationEnabled) {
         return {
           content: [{ type: 'text', text: JSON.stringify({
@@ -291,6 +339,29 @@ export default defineTool({
       scope = 'user';
     }
 
+    // personal-data-reader-set-labels P-012 / D-006: a harness/hive pool is read by
+    // every agent in it, so a writer holding a restricted Personal Vault disclosure
+    // stores a sealed stub there. Sealed BEFORE anchor extraction and the
+    // write-ahead journal, both of which persist the content. Owner-scoped (user)
+    // memory is read only by its owner and is never sealed.
+    if (scope !== 'user') {
+      try {
+        const sealed = await sealSharedText(() => getOrgPg().sql, {
+          workspaceId: ctx.principal?.workspaceId ?? ctx.workspaceId,
+          writerOwnerId: disclosureSubject(ctx),
+          store: 'memory',
+          text: args.content,
+          context: { scope: scopeKey, kind: args.kind },
+        });
+        if (sealed.sealed) args = { ...args, content: sealed.text };
+      } catch (error) {
+        if (!(error instanceof DisclosureRefused)) throw error;
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, stored: false, reason: error.code, message: error.message }) }],
+        };
+      }
+    }
+
     // Supersession authorization/link-integrity preflight. The target must be
     // a real current memory in the exact pool this write is authorized to use;
     // UUID shape alone is not authority, and mem0 entity rows are not facts.
@@ -337,7 +408,26 @@ export default defineTool({
     if (args.hive_slug) metadata.hive_slug = args.hive_slug;
     if (ctx.uiClientId && ctx.principal?.workspaceId) {
       const { wornMemoryIdentityIds } = await import('../../knowledge-packs/identity-learning');
-      metadata.worn_identity_ids = await wornMemoryIdentityIds(ctx.uiClientId, ctx.principal.workspaceId);
+      try {
+        metadata.worn_identity_ids = await withMemoryTimeout(
+          wornMemoryIdentityIds(ctx.uiClientId, ctx.principal.workspaceId),
+          'memory:remember identity provenance',
+          memoryToolTimeoutMs(),
+        );
+      } catch (err) {
+        if (!(err instanceof MemoryTimeoutError)) throw err;
+        // Provenance stays fail-closed: if the applied identity cannot be read,
+        // do not store an unstamped memory. Return promptly instead of leaving
+        // the caller behind an unbounded pre-write lookup.
+        return {
+          content: [{ type: 'text', text: JSON.stringify({
+            ok: false,
+            stored: false,
+            reason: 'memory_timeout',
+            step: 'identity_provenance',
+          }) }],
+        };
+      }
     }
 
     // EI-10432 — federation egress needs a ROUTING KEY, and this path never set
@@ -363,9 +453,26 @@ export default defineTool({
     // rather than silently routed to "the workspace's only hive" — inferring an
     // egress target is exactly what the D-006 privacy default exists to prevent.
     if (args.shareable === true) {
-      const fedSlug = args.hive_slug
-        ? args.hive_slug
-        : await resolveFactFederationSlug(args.harness_slug);
+      let fedSlug: string | null;
+      try {
+        fedSlug = args.hive_slug
+          ? args.hive_slug
+          : await withMemoryTimeout(
+              Promise.resolve().then(() => resolveFactFederationSlug(args.harness_slug)),
+              'memory:remember federation scope resolution',
+              memoryToolTimeoutMs(),
+            );
+      } catch (err) {
+        if (!(err instanceof MemoryTimeoutError)) throw err;
+        return {
+          content: [{ type: 'text', text: JSON.stringify({
+            ok: false,
+            stored: false,
+            reason: 'memory_timeout',
+            step: 'federation_scope',
+          }) }],
+        };
+      }
       if (!fedSlug) {
         return {
           content: [{ type: 'text', text: JSON.stringify({
@@ -413,19 +520,27 @@ export default defineTool({
     // (dedup/conflict) CLOSE the row so the drain never resurrects a write
     // the tool refused. journalId === null ⇒ journaling degraded (e.g. the
     // migration hasn't applied) — behavior is then exactly the old lossy path.
-    const journalId = await journalPendingWrite({
-      scope: scopeKey,
-      kind: args.kind,
-      content: args.content,
-      // The internal marker never reaches the stored memory payload. It lets
-      // the journal drain finish the SAME supersession if the embed/store or
-      // validity-close leg fails after this call has durably parked the write.
-      metadata: args.supersede
-        ? { ...metadata, __journal_supersede_of: args.supersede }
-        : metadata,
-      verbatim: true,
-      shareable: args.shareable,
-    });
+    let journalId: string | null;
+    try {
+      journalId = await withMemoryTimeout(journalPendingWrite({
+        scope: scopeKey,
+        kind: args.kind,
+        content: args.content,
+        // The internal marker never reaches the stored memory payload. It lets
+        // the journal drain finish the SAME supersession if the embed/store or
+        // validity-close leg fails after this call has durably parked the write.
+        metadata: args.supersede
+          ? { ...metadata, __journal_supersede_of: args.supersede }
+          : metadata,
+        verbatim: true,
+        shareable: args.shareable,
+      }), 'memory:remember write-ahead journal', memoryToolTimeoutMs());
+    } catch (err) {
+      if (!(err instanceof MemoryTimeoutError)) throw err;
+      // Journaling is best-effort by contract. A late INSERT is reconciled by
+      // the drain's near-duplicate guard; do not let it hold up the live write.
+      journalId = null;
+    }
     const journaledFields = journalId
       ? {
           journaled: true,
@@ -480,7 +595,20 @@ export default defineTool({
     const conflictWanted = !args.force && conflictCheckEnabled();
     // P-009 (D-016): Jev when a Jev key is stored, else Anthropic, else NO judge,
     // reported as such rather than as a no-op that looks like "nothing found".
-    const conflictJudge = conflictWanted ? await resolveConflictJudge() : null;
+    let conflictJudge: Awaited<ReturnType<typeof resolveConflictJudge>> | null = null;
+    if (conflictWanted) {
+      try {
+        conflictJudge = await withMemoryTimeout(
+          Promise.resolve().then(() => resolveConflictJudge()),
+          'memory:remember conflict-judge resolution',
+          memoryToolTimeoutMs(),
+        );
+      } catch (err) {
+        if (!(err instanceof MemoryTimeoutError)) throw err;
+        // Conflict checking is advisory; an unavailable judge must not block the write.
+        conflictJudge = { available: false, reason: 'memory_timeout' };
+      }
+    }
     // Configured ON but inert — say so ONCE. That silence is what let a default-ON
     // contradiction guard sit dead in this operator (EI-18746586784230719).
     if (conflictJudge && !conflictJudge.available) warnConflictJudgeUnavailableOnce();
@@ -492,10 +620,25 @@ export default defineTool({
     // instead of being filtered out of every later turn. Jev only (the question and
     // threshold were measured on Jev); the flag is the kill switch. A flag-store error
     // skips the check (fail open), since this is hygiene, not a safety rail.
+    let substanceRefusalEnabled = false;
+    if (conflictJudge?.available === true && conflictJudge.backend === 'jev') {
+      try {
+        substanceRefusalEnabled = await withMemoryTimeout(
+          Promise.resolve()
+            .then(() => getFlag(FLAGS.MEMORY_CONTENT_FREE_REFUSAL, 'system'))
+            .catch(() => false),
+          'memory:remember content-free refusal flag',
+          memoryToolTimeoutMs(),
+        );
+      } catch (err) {
+        if (!(err instanceof MemoryTimeoutError)) throw err;
+        // This hygiene flag is fail-open: skip the optional content check on timeout.
+      }
+    }
     const substanceWanted =
       conflictJudge?.available === true &&
       conflictJudge.backend === 'jev' &&
-      (await getFlag(FLAGS.MEMORY_CONTENT_FREE_REFUSAL, 'system').catch(() => false));
+      substanceRefusalEnabled;
     // Fail open, but never silently: when the check was wanted and no valid verdict
     // came back (Jev error, timeout, malformed answer, or the neighbour search
     // failing first), the save proceeds and both the stored row and the result say
@@ -687,7 +830,9 @@ export default defineTool({
         // conversation-extraction path (backend.rememberConversation) keeps the
         // LLM extraction, where pulling facts out of a chat window earns it.
         verbatim: true,
-      }), 'memory:remember remember'));
+      }), 'memory:remember remember', {
+        degradedAtStart: memoryDegradedAtRequestStart,
+      }));
     } catch (err) {
       // Every legible write-failure class below leaves the journal row
       // `pending` — the embed-backfill tick replays it (with a near-dup
@@ -774,6 +919,10 @@ export default defineTool({
       .then(({ invalidateUserMemoryViews }) => invalidateUserMemoryViews())
       .catch(() => { /* best-effort */ });
 
+    const outcomeCapture = await captureSurfacedOutcome(ctx, citedMemoryIds(args.content), 'used');
+    const contradictionCapture = typeof superseded === 'string'
+      ? await captureSurfacedOutcome(ctx, [superseded], 'contradicted') : { ok: true };
+
     // Phase 4 P-015: persist anchors to harness_shared.memory_anchors so
     // Layer 1 (audit-memory-anchors.ts) and the settings-UI broken_anchors
     // enrichment can find them. Fire-and-forget — never load-bearing on
@@ -799,6 +948,7 @@ export default defineTool({
         text: JSON.stringify({
           ok: true,
           ids,
+          ...(!outcomeCapture.ok || !contradictionCapture.ok ? { outcomeCapture: { use: outcomeCapture, contradiction: contradictionCapture } } : {}),
           ...(args.supersede
             ? {
                 superseded: superseded ?? false,

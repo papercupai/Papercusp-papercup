@@ -78,6 +78,24 @@ describe('goal-local findings and outcomes reach the routed-idea ledger (real PG
     await db?.cleanup();
   });
 
+  it('calibration: seeded plans and the Blender origin carry their declared goal attribution', async () => {
+    const plans = await db.adminSql`
+      SELECT plan_slug, status, goal_id FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}
+       ORDER BY plan_slug`;
+    expect(plans.map((plan) => [plan.plan_slug, plan.status, plan.goal_id])).toEqual([
+      ['blender-plan', 'active', GOAL_A],
+      ['goal-b-plan', 'active', GOAL_B],
+      ['local-plan', 'active', GOAL_A],
+      ['unowned-plan', 'active', null],
+    ]);
+    const origins = await rowsFor('plan:blender-plan');
+    expect(origins).toHaveLength(1);
+    expect(origins[0]).toMatchObject({
+      idea_id: 'scout-blender-1', origin: 'scout', created_by: null, lens: 'analogical', outcome: null,
+    });
+  });
+
   it('records exactly one su-ideate origin row for a goal-local plan, attributed to its holder', async () => {
     const first = await recordGoalLocalPlanOrigin({
       workspaceId: WS, harnessSlug: HARNESS, planSlug: 'local-plan', goalId: GOAL_A, ownerId: HOLDER_A,

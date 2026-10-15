@@ -13,11 +13,16 @@ import type postgres from 'postgres';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import {
   SESSION_SEARCH_INDEXES,
+  ISSUE_Q_SEARCH_INDEXES,
+  SESSION_TURN_PARTS_TABLE,
   SESSION_TURN_TRGM_EXPR,
+  SESSION_TURNS_TABLE,
   createIndexConcurrentlySql,
   readSessionSearchReadiness,
   runSessionSearchIndexBuildOnce as runSessionSearchIndexBuildOnceRaw,
+  sessionSearchIndexBuildFailureDetails,
   sessionSearchTierAvailability,
+  type SessionSearchIndexBuildResult,
   type SessionSearchReadiness,
 } from './session-search-index-build';
 
@@ -40,10 +45,12 @@ const M501 = path.join(SQL_DIR, '501-session-turns.sql');
 // so the falsifiability of these assertions is proven without ever mutating the tracked file.
 const M1273 =
   process.env.P002_MIGRATION_SQL_UNDER_TEST ?? path.join(SQL_DIR, '1273-session-turns-trigram-exact-fuzzy-index.sql');
+const M1512 = path.join(SQL_DIR, '1512-work-items-substring-trigram-indexes.sql');
 const GENERATED_SCHEMA = path.resolve(here, '../../../libs/papercusp/libs/db/src/schema/generated.ts');
 
 const TRGM = 'session_turns_text_trgm_idx';
 const TS_DESC = 'session_turns_ts_desc_idx';
+const TOOL_RESULT = 'session_turn_parts_owner_workspace_tool_result_idx';
 const VOCAB_TRGM = 'session_turn_vocab_word_trgm_idx';
 const OPTS = { minFreeDiskBytes: 0 };
 
@@ -52,6 +59,13 @@ let sql: postgres.Sql;
 
 async function indexValid(name: string): Promise<boolean | null> {
   const [r] = await sql<Array<{ valid: boolean }>>`
+    SELECT i.indisvalid AS valid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+     WHERE c.relname = ${name}`;
+  return r ? r.valid : null;
+}
+
+async function indexValidOn(s: postgres.Sql, name: string): Promise<boolean | null> {
+  const [r] = await s<Array<{ valid: boolean }>>`
     SELECT i.indisvalid AS valid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
      WHERE c.relname = ${name}`;
   return r ? r.valid : null;
@@ -198,15 +212,25 @@ describe('migration 1273 — replay safety + the index/EXPLAIN probe (SPEC-P002-
     expect(checks.map((c) => c.conname)).toContain('session_turn_vocab_state_status_check');
   });
 
-  it('spec table and migration text agree on every index name and definition (drift pin)', () => {
+  it('session_turns specs mirror migration 1273 and tool_result index stays online-built', () => {
     const migration = readFileSync(M1273, 'utf8').replace(/\s+/g, ' ');
-    for (const spec of SESSION_SEARCH_INDEXES) {
+    // Stage 'windows' indexes live in migration 1334 (pinned in session-turn-windows.integration.test.ts).
+    for (const spec of SESSION_SEARCH_INDEXES.filter((s) => s.table === SESSION_TURNS_TABLE)) {
       expect(migration).toContain(spec.name);
       // The migration splits the DDL over string literals; compare the definition body.
       expect(migration.replace(/' \|\| '/g, '')).toContain(spec.definition);
     }
     expect(createIndexConcurrentlySql(SESSION_SEARCH_INDEXES[0])).toBe(
       'CREATE INDEX CONCURRENTLY IF NOT EXISTS session_turns_text_trgm_idx ON harness_shared.session_turns USING gin (lower(text) gin_trgm_ops)',
+    );
+    const toolResultIndex = SESSION_SEARCH_INDEXES.find(
+      (spec) => spec.name === 'session_turn_parts_owner_workspace_tool_result_idx',
+    )!;
+    expect(toolResultIndex.table).toBe(SESSION_TURN_PARTS_TABLE);
+    expect(toolResultIndex.definition).toBe("(owner, workspace_id) WHERE part_kind = 'tool_result'");
+    expect(createIndexConcurrentlySql(toolResultIndex)).toBe(
+      "CREATE INDEX CONCURRENTLY IF NOT EXISTS session_turn_parts_owner_workspace_tool_result_idx " +
+      "ON harness_shared.session_turn_parts (owner, workspace_id) WHERE part_kind = 'tool_result'",
     );
   });
 });
@@ -243,8 +267,9 @@ describe('readSessionSearchReadiness / sessionSearchTierAvailability (the read p
         } as SessionSearchReadiness,
         ['w1', 'default'],
       );
+    // No windows readiness (migration 1334 not applied / backfill incomplete) => the legacy whole-turn route.
     expect(ready({}, { w1: 'ready', default: 'ready' })).toEqual({
-      exact: { available: true },
+      exact: { available: true, route: 'legacy' },
       fuzzy: { available: true },
     });
     expect(ready({ [TRGM]: 'absent' }, { w1: 'ready', default: 'ready' })).toEqual({
@@ -290,7 +315,54 @@ describe('readSessionSearchReadiness / sessionSearchTierAvailability (the read p
   });
 });
 
+async function prepareWorkItemsQDb(fresh: FreshPgDb): Promise<void> {
+  await fresh.sql.unsafe('CREATE TABLE IF NOT EXISTS harness_shared.coord_event_log (surface text, body jsonb)');
+  await applyMigrationForTest(fresh.sql, M501);
+  await applyMigrationForTest(fresh.sql, M1273);
+  await fresh.sql.unsafe(`
+    CREATE TABLE harness_shared.work_items (
+      workspace_id text NOT NULL,
+      harness_slug text NOT NULL,
+      feature_id text NOT NULL,
+      item_kind text NOT NULL,
+      title text,
+      summary text,
+      payload jsonb NOT NULL DEFAULT '{}'::jsonb
+    );
+    CREATE TABLE harness_shared.work_item_occurrences (
+      workspace_id text NOT NULL,
+      canonical_harness_slug text NOT NULL,
+      canonical_work_item_id text NOT NULL,
+      reported_title text NOT NULL,
+      evidence jsonb NOT NULL DEFAULT '{}'::jsonb
+    );
+  `).simple();
+}
+
+async function explainWithIndexes(s: postgres.Sql, query: string): Promise<string> {
+  return s.begin(async (tx) => {
+    await tx.unsafe('SET LOCAL enable_seqscan = off');
+    const rows = await tx.unsafe(`EXPLAIN ${query}`);
+    return rows.map((row) => String(row['QUERY PLAN'])).join('\\\\n');
+  });
+}
+
 describe('runSessionSearchIndexBuildOnce', () => {
+  it('preserves per-index, vocabulary, and invalid-drop errors for the scheduled log', () => {
+    const result: SessionSearchIndexBuildResult = {
+      invalidDropped: [],
+      invalidDropFailures: [{ name: 'stale_idx', error: 'lock not available' }],
+      indexes: [{ name: 'title_idx', action: 'failed', elapsedMs: 12, error: 'operator does not exist' }],
+      vocab: [{ workspaceId: 'ws-1', action: 'failed', elapsedMs: 7, error: 'lease update failed' }],
+      truncated: false,
+    };
+    expect(sessionSearchIndexBuildFailureDetails(result)).toEqual([
+      'drop invalid stale_idx: lock not available',
+      'index title_idx: operator does not exist',
+      'vocabulary ws-1: lease update failed',
+    ]);
+  });
+
   it('skips with tables-missing on a database the migration has not reached', async () => {
     const bare = await createFreshPgDb('sess-search-bare');
     try {
@@ -307,13 +379,37 @@ describe('runSessionSearchIndexBuildOnce', () => {
     expect(first.indexes.map((i) => [i.name, i.action])).toEqual([
       [TRGM, 'built'],
       [TS_DESC, 'built'],
+      [TOOL_RESULT, 'deferred-table-missing'],
+      ...ISSUE_Q_SEARCH_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
       [VOCAB_TRGM, 'built'],
     ]);
     for (const n of [TRGM, TS_DESC, VOCAB_TRGM]) expect(await indexValid(n)).toBe(true);
+    expect(await indexValid(TOOL_RESULT)).toBeNull();
 
     const second = await runSessionSearchIndexBuildOnce(sql, OPTS);
-    expect(second.indexes.every((i) => i.action === 'present')).toBe(true);
+    expect(second.indexes.map((i) => [i.name, i.action])).toEqual([
+      [TRGM, 'present'],
+      [TS_DESC, 'present'],
+      [TOOL_RESULT, 'deferred-table-missing'],
+      ...ISSUE_Q_SEARCH_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
+      [VOCAB_TRGM, 'present'],
+    ]);
     expect(second.vocab.every((v) => v.action === 'current')).toBe(true);
+  }, 60_000);
+
+  it('builds the tool_result owner index when session_turn_parts is present', async () => {
+    await sql.unsafe(`CREATE TABLE harness_shared.session_turn_parts (
+      owner text NOT NULL,
+      workspace_id text NOT NULL,
+      part_kind text NOT NULL
+    )`);
+    try {
+      const r = await runSessionSearchIndexBuildOnce(sql, OPTS);
+      expect(r.indexes.find((i) => i.name === TOOL_RESULT)?.action).toBe('built');
+      expect(await indexValid(TOOL_RESULT)).toBe(true);
+    } finally {
+      await sql.unsafe('DROP TABLE harness_shared.session_turn_parts CASCADE');
+    }
   }, 60_000);
 
   it('drops an invalid leftover (interrupted CONCURRENTLY build) and rebuilds it valid', async () => {
@@ -416,9 +512,89 @@ describe('runSessionSearchIndexBuildOnce', () => {
   it('dryRun reports what it would build and changes nothing', async () => {
     await seed('w1', ['dryrunword here']);
     const r = await runSessionSearchIndexBuildOnce(sql, { ...OPTS, dryRun: true });
-    expect(r.indexes.every((i) => i.action === 'would-build')).toBe(true);
+    expect(
+      r.indexes
+        .filter((i) => i.name !== TOOL_RESULT && i.action !== 'deferred-table-missing')
+        .every((i) => i.action === 'would-build'),
+    ).toBe(true);
+    expect(r.indexes.find((i) => i.name === TOOL_RESULT)?.action).toBe('deferred-table-missing');
+    for (const i of ISSUE_Q_SEARCH_INDEXES) {
+      expect(r.indexes.find((entry) => entry.name === i.name)?.action).toBe('deferred-table-missing');
+    }
     expect(r.vocab.every((v) => v.action === 'would-build')).toBe(true);
     for (const n of [TRGM, TS_DESC, VOCAB_TRGM]) expect(await indexValid(n)).toBeNull();
+    expect(await indexValid(TOOL_RESULT)).toBeNull();
     expect((await vocabOf('w1')).size).toBe(0);
   }, 60_000);
+});
+
+describe('work_items:list literal q trigram indexes (EI-25883110093789830)', () => {
+  it('creates indexes inline for small tables and each predicate can use its matching index', async () => {
+    const fresh = await createFreshPgDb('work-items-q-small');
+    try {
+      await prepareWorkItemsQDb(fresh);
+      await applyMigrationForTest(fresh.sql, M1512);
+      await fresh.sql.unsafe(`
+        INSERT INTO harness_shared.work_items
+          (workspace_id, harness_slug, feature_id, item_kind, title, summary)
+        SELECT 'default', 'h1', 'EI-' || n::text, 'bug',
+               CASE WHEN n = 1 THEN 'needle in title' ELSE 'ordinary title ' || n::text END,
+               CASE WHEN n = 1 THEN 'needle in summary' ELSE 'ordinary summary ' || n::text END
+          FROM generate_series(1, 1000) AS n;
+        INSERT INTO harness_shared.work_item_occurrences
+          (workspace_id, canonical_harness_slug, canonical_work_item_id, reported_title, evidence)
+        SELECT 'default', 'h1', 'EI-' || n::text,
+               CASE WHEN n = 1 THEN 'needle in report title' ELSE 'ordinary report ' || n::text END,
+               jsonb_build_object('body', CASE WHEN n = 1 THEN 'needle in evidence body' ELSE 'ordinary evidence ' || n::text END)
+          FROM generate_series(1, 1000) AS n;
+        ANALYZE harness_shared.work_items;
+        ANALYZE harness_shared.work_item_occurrences;
+      `).simple();
+
+      for (const spec of ISSUE_Q_SEARCH_INDEXES) {
+        expect(await indexValidOn(fresh.sql, spec.name)).toBe(true);
+      }
+      const queries = [
+        [ISSUE_Q_SEARCH_INDEXES[0]!.name, "SELECT feature_id FROM harness_shared.work_items WHERE COALESCE(title, '') ILIKE '%needle%' ESCAPE '\\'"],
+        [ISSUE_Q_SEARCH_INDEXES[1]!.name, "SELECT feature_id FROM harness_shared.work_items WHERE COALESCE(summary, '') ILIKE '%needle%' ESCAPE '\\'"],
+        [ISSUE_Q_SEARCH_INDEXES[2]!.name, "SELECT canonical_work_item_id FROM harness_shared.work_item_occurrences WHERE reported_title ILIKE '%needle%' ESCAPE '\\'"],
+        [ISSUE_Q_SEARCH_INDEXES[3]!.name, "SELECT canonical_work_item_id FROM harness_shared.work_item_occurrences WHERE COALESCE(evidence ->> 'body', '') ILIKE '%needle%' ESCAPE '\\'"],
+      ] as const;
+      for (const [name, query] of queries) {
+        expect(await explainWithIndexes(fresh.sql, query)).toContain(name);
+      }
+    } finally {
+      await fresh.cleanup();
+    }
+  }, 120_000);
+
+  it('defers populated-table indexes to the guarded concurrent builder', async () => {
+    const fresh = await createFreshPgDb('work-items-q-large');
+    try {
+      await prepareWorkItemsQDb(fresh);
+      await fresh.sql.unsafe(`
+        INSERT INTO harness_shared.work_items
+          (workspace_id, harness_slug, feature_id, item_kind, title, summary)
+        SELECT 'default', 'h1', 'EI-' || n::text, 'bug', 'ordinary title ' || n::text, 'ordinary summary ' || n::text
+          FROM generate_series(1, 10001) AS n;
+        INSERT INTO harness_shared.work_item_occurrences
+          (workspace_id, canonical_harness_slug, canonical_work_item_id, reported_title, evidence)
+        SELECT 'default', 'h1', 'EI-' || n::text, 'ordinary report ' || n::text,
+               jsonb_build_object('body', 'ordinary evidence ' || n::text)
+          FROM generate_series(1, 10001) AS n;
+      `).simple();
+      await applyMigrationForTest(fresh.sql, M1512);
+      for (const spec of ISSUE_Q_SEARCH_INDEXES) {
+        expect(await indexValidOn(fresh.sql, spec.name)).toBeNull();
+      }
+
+      const built = await runSessionSearchIndexBuildOnce(fresh.sql, OPTS);
+      for (const spec of ISSUE_Q_SEARCH_INDEXES) {
+        expect(built.indexes.find((entry) => entry.name === spec.name)?.action).toBe('built');
+        expect(await indexValidOn(fresh.sql, spec.name)).toBe(true);
+      }
+    } finally {
+      await fresh.cleanup();
+    }
+  }, 120_000);
 });

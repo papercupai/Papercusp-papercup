@@ -20,10 +20,17 @@
  * `unknown`, never as healthy.
  */
 
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { runHybridSearch, type LegReport } from '@papercusp/search';
+import { pgResultDiagnosticSnapshot } from '@papercusp/db-org';
+import { runHybridSearch } from '@papercusp/search';
+import { describeSearchLegs } from './describe-leg';
 import { SEARCH_SOURCES } from './sources';
+import { SEARCH_SEMANTIC_DEFER_HIGHLIGHT } from './semantic-engine-options';
+import { createReportSearchSource } from './report-source';
+import { createDocSearchSource, createPlanSearchSource } from './knowledge-sources';
+import { resolveViewer } from '../reports/_shared';
 import { scopeResidue } from './scope-residue';
 import { buildQueryEmbedderResolved, interactiveEmbedAcquireBudgetMs } from './embedder';
 import {
@@ -34,34 +41,9 @@ import { rerankCandidateCount, rerankPageHead } from './rerank';
 import { searchFilterArgs, resolveSearchFilters } from './filters';
 import { scopeArg, DEFAULT_SCOPE } from './scope';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { createStageAttempt, traceStageAwait, withStageAttempt } from '../../sync/hyperbee/stage-stall-log';
 
 const MODE_CHOICES = ['embeddings', 'hybrid'] as const;
-
-/**
- * Project one engine leg report into the agent-facing envelope (P-020).
- *
- * `candidates` is always stated — it is the number that distinguishes a leg
- * that ran and found nothing from one that never ran — while `floored` and
- * `failures` are emitted only when non-zero, so a healthy search stays as
- * compact as the `coverage` block beside it.
- */
-function describeLeg(leg: LegReport): Record<string, unknown> {
-  return {
-    status: leg.status,
-    candidates: leg.candidates,
-    ...(leg.floored > 0 ? { floored: leg.floored } : {}),
-    ...(leg.blocked ? { blocked: leg.blocked } : {}),
-    ...(leg.failures.length > 0
-      ? {
-          failures: leg.failures.map((f) => ({
-            source: f.source,
-            ranker: f.ranker,
-            error: f.error,
-          })),
-        }
-      : {}),
-  };
-}
 
 // + overwatch (overwatch-role-2026-06-15 B-01): the supervisor searches to ground nudges.
 const ALL_ROLES = [...SU_ROLES, 'papercup', 'papercup-deep', 'kettle'] as const;
@@ -110,7 +92,10 @@ export default defineTool({
         : !args.scope?.length
           ? DEFAULT_SCOPE
           : args.scope;
-    const sources = SEARCH_SOURCES.filter((s) => scope.includes(s.name));
+    const sources = SEARCH_SOURCES.filter((s) => scope.includes(s.name))
+      .map(s => s.name === 'report' ? createReportSearchSource(resolveViewer(ctx))
+        : s.name === 'plan' ? createPlanSearchSource({ harnessSlugs: ctx.harnessSlug && ctx.harnessSlug !== '*' ? [ctx.harnessSlug] : [] })
+        : s.name === 'doc' ? createDocSearchSource({ harnessSlugs: ctx.harnessSlug && ctx.harnessSlug !== '*' ? [ctx.harnessSlug] : [] }) : s);
 
     // P-002 filter bag: resolve 'self'/fleet sugars server-side (session:'self'
     // also live-tails the caller's own transcript — compaction recovery).
@@ -145,27 +130,77 @@ export default defineTool({
     // resolved-but-slow embedder (warm local ONNX under load, or the OpenAI
     // fetch which has no client-side timeout) could otherwise run unbounded
     // and blow this tool's own budget. Reuses the same interactive default.
-    const { results, totalHits, embedderAvailable, legs } = await runHybridSearch(sources, {
-      caller: 'search:semantic',
-      sql: ctx.tx,
-      query: args.query,
-      workspaceId: ctx.workspaceId ?? '',
-      scopeFilter: args.harness_slug ?? null,
-      // Stage B over-fetch: retrieve a larger pool than we return so the
-      // reranker can pull a buried hit INTO the page. `rerankPageHead` slices
-      // back to `limit`, so the caller-visible page size is unchanged — and it
-      // still slices correctly when reranking is unavailable (passthrough).
-      limit: rerankCandidateCount(limit),
-      mode,
-      embedder,
-      embedTimeoutMs: interactiveEmbedAcquireBudgetMs(),
-      filters,
-      // P-001 floors are INHERITED now, not hand-passed (P-017): the engine
-      // resolves them from the embedder instance via the policy installed by
-      // lib/search/configure-search-defaults. This surface used to be the only
-      // one of eight that floored, precisely because the floor lived here.
-      log: ctx.log,
-    });
+    const metadata = (ctx as { metadata?: (value: Record<string, unknown>) => void }).metadata;
+    const correlationId = randomUUID();
+    const queryAttempt = metadata ? createStageAttempt({ rowId: '', onEvent: () => {} }) : undefined;
+    let retrievalOutcome: 'fulfilled' | 'rejected' = 'rejected';
+    const searchResult = await (async () => {
+      try {
+        const result = await withStageAttempt(queryAttempt, () => traceStageAwait('scope-query', () =>
+          runHybridSearch(sources, {
+            caller: 'search:semantic',
+            sql: ctx.tx,
+            query: args.query,
+            workspaceId: ctx.workspaceId ?? '',
+            scopeFilter: args.harness_slug ?? null,
+            correlationId,
+            // Stage B over-fetch: retrieve a larger pool than we return so the
+            // reranker can pull a buried hit INTO the page. `rerankPageHead` slices
+            // back to `limit`, so the caller-visible page size is unchanged — and it
+            // still slices correctly when reranking is unavailable (passthrough).
+            limit: rerankCandidateCount(limit),
+            mode,
+            embedder,
+            embedTimeoutMs: interactiveEmbedAcquireBudgetMs(),
+            // See SEARCH_SEMANTIC_DEFER_HIGHLIGHT: headlines for the final page only.
+            deferHighlight: SEARCH_SEMANTIC_DEFER_HIGHLIGHT,
+            filters,
+            // P-001 floors are INHERITED now, not hand-passed (P-017): the engine
+            // resolves them from the embedder instance via the policy installed by
+            // lib/search/configure-search-defaults. This surface used to be the only
+            // one of eight that floored, precisely because the floor lived here.
+            log: ctx.log,
+          }),
+        ));
+        retrievalOutcome = 'fulfilled';
+        return result;
+      } finally {
+        queryAttempt?.finish(retrievalOutcome);
+      }
+    })();
+    const { results, totalHits, embedderAvailable, legs } = searchResult;
+    const pgQueries = queryAttempt
+      ? pgResultDiagnosticSnapshot('org-admin', 32).results
+        .filter((query) => query.correlation?.attemptId === queryAttempt.context.attemptId)
+        .map((query) => ({
+          connectionId: query.connectionId,
+          queryId: query.queryId,
+          backendPid: query.backendPid,
+          elapsedMs: query.elapsedMs,
+          status: query.status,
+        }))
+      : [];
+    const queryDiagnostics = queryAttempt
+      ? {
+          ...queryAttempt.context,
+          sourceScope: scope,
+          stage: 'scope-query',
+          coverage: 'queries-created-during-retrieval',
+          timing: 'query-build-to-terminal-not-acquisition',
+          queries: pgQueries,
+        }
+      : undefined;
+    const sourceCalls = [...(legs.lexical.sourceCalls ?? []), ...(legs.semantic.sourceCalls ?? [])]
+      .map(({ source, ranker, status, rows, durationMs }) => ({ source, ranker, status, rows, durationMs }));
+    metadata?.({ searchSemanticRead: {
+      schemaVersion: 'semantic-read-v1',
+      correlationId,
+      unit: 'ms',
+      timing: 'source-call-wall-time-including-acquisition; query-build-to-terminal-not-acquisition',
+      sourceCalls,
+      legs: describeSearchLegs(legs),
+      queryDiagnostics,
+    } });
 
     // Stage B: cross-encoder rerank the fused page. Fail-safe — no ZeroEntropy
     // key → the RRF order unchanged (see ./rerank).
@@ -251,12 +286,7 @@ export default defineTool({
           // (EI-19447237774252790) leaves the first two reporting perfect health
           // while the search is silently semantic-only, so this reports the
           // candidate counts rather than an execution flag.
-          legs: {
-            degraded: legs.degraded,
-            warning: legs.warning,
-            lexical: describeLeg(legs.lexical),
-            semantic: describeLeg(legs.semantic),
-          },
+          legs: describeSearchLegs(legs),
           coverage: {
             degraded: coverage.degraded,
             warning: coverageWarning,

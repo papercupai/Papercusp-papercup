@@ -10,7 +10,9 @@ import {
   CONTEXT_1M_STICKY_MIN_EST_TOKENS,
   accumulateGatewayRouteUsage,
   hasContext1mBeta,
+  isDefaultContext1mModel,
   nativeSessionIdFromMetaUserId,
+  shouldDefaultContext1m,
   shouldRestoreContext1m,
   supportsContext1m,
 } from './gateway';
@@ -85,6 +87,74 @@ describe('supportsContext1m', () => {
   it('refuses models that were never served at 1M: haiku and the sonnet-4.x downgrade target', () => {
     expect(supportsContext1m('claude-haiku-4-5')).toBe(false);
     expect(supportsContext1m('claude-sonnet-4-6', 'claude-fable-5-1')).toBe(false);
+  });
+  it('WI-10006049: accepts the dated point releases the 2.1.289 CLI actually sends, with no prior', () => {
+    expect(supportsContext1m('claude-opus-5-5')).toBe(true);
+    expect(supportsContext1m('claude-sonnet-5-5')).toBe(true);
+    expect(supportsContext1m('claude-fable-5-1')).toBe(true);
+  });
+});
+
+/**
+ * WI-10006049 — the 1M DEFAULT for every 1M-capable Claude family (owner Avi 2026-10-05 #1369
+ * "if the default is 1m that sounds good", #1371 "make sure this works for all claude models too
+ * not just opus"). The model ids below are the ones the installed Claude Code 2.1.289 binary
+ * carries; `claude-opus-5-5` without the beta is exactly what a bare `/model` menu pick sent
+ * (su-56e2f83b, gateway route context1m:false, 2026-10-05).
+ */
+describe('isDefaultContext1mModel — which families default to 1M', () => {
+  it.each([
+    'claude-opus-5',
+    'claude-opus-5-5',
+    'claude-sonnet-5',
+    'claude-sonnet-5-5',
+    'claude-fable-5',
+    'claude-fable-5-1',
+    'claude-opus-5-5-20261001',
+    'claude-opus-6',
+  ])('%s ⇒ 1M by default', (model) => {
+    expect(isDefaultContext1mModel(model)).toBe(true);
+  });
+  it.each([
+    'claude-haiku-4-5',
+    'claude-haiku-4-5-20251001',
+    'claude-sonnet-4-6',
+    'claude-sonnet-4-5-20250929',
+    'claude-opus-4-8',
+    'claude-opus-4-1-20250805',
+    'gpt-5.5',
+    '',
+    null,
+  ])('%s ⇒ keeps its real window (no forced beta)', (model) => {
+    expect(isDefaultContext1mModel(model)).toBe(false);
+  });
+});
+
+describe('shouldDefaultContext1m — the menu-proof 1M default', () => {
+  const base = {
+    owner: 'su-56e2f83b-010d-4f42-b750-19bc8fde6ea5',
+    url: '/v1/messages?beta=true',
+    model: 'claude-opus-5-5',
+    context1m: false,
+    clientHas1m: false,
+  };
+  it('a bare /model pick (opus, sonnet or fable sent WITHOUT the beta) is served at 1M', () => {
+    expect(shouldDefaultContext1m(base)).toBe(true);
+    expect(shouldDefaultContext1m({ ...base, model: 'claude-sonnet-5-5' })).toBe(true);
+    expect(shouldDefaultContext1m({ ...base, model: 'claude-fable-5-1' })).toBe(true);
+  });
+  it('haiku and the 4.x generations are never forced (a rejected beta is a 400)', () => {
+    expect(shouldDefaultContext1m({ ...base, model: 'claude-haiku-4-5' })).toBe(false);
+    expect(shouldDefaultContext1m({ ...base, model: 'claude-sonnet-4-6' })).toBe(false);
+  });
+  it('a caller already at 1M (body marker or client beta) needs nothing', () => {
+    expect(shouldDefaultContext1m({ ...base, context1m: true })).toBe(false);
+    expect(shouldDefaultContext1m({ ...base, clientHas1m: true })).toBe(false);
+  });
+  it('callers papercusp does not manage (no owner header) and non-messages endpoints are untouched', () => {
+    expect(shouldDefaultContext1m({ ...base, owner: undefined })).toBe(false);
+    expect(shouldDefaultContext1m({ ...base, owner: '' })).toBe(false);
+    expect(shouldDefaultContext1m({ ...base, url: '/v1/models' })).toBe(false);
   });
 });
 

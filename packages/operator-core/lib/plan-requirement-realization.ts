@@ -60,13 +60,42 @@ import {
 } from './plan-audits';
 import type { AcceptanceBarContractSnapshot, AcceptanceBarTrace } from './acceptance-bar-contract-snapshot';
 import { barRequiresAutomatedProof } from './acceptance-bar-contract-snapshot';
-import { isEnforceableSpecLifecycle } from './agent-tools/plans/spec-clauses-store';
+import { isEnforceableSpecLifecycle, type SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
+import { validExplicitExemption } from './agent-tools/plans/spec-quality';
 
 /** Derived from the canonical BAR evaluator, never from a doc citation or a completion claim. */
 export interface NonCodeItemProof {
   planItemId: string;
   barKeys: string[];
   evidenceRefs: string[];
+  /** Current, explicit non-behavioral scope; the completion audit proves the work. */
+  exemptionRefs?: string[];
+}
+
+/** Reuse the spec-quality exemption contract, without inventing an outcome BAR.
+ * An exemption can cover only a completed item's entire current clause scope.
+ * Active or draft behavior beside it still owes its ordinary proof. */
+export function deriveNonCodeExemptionProofs(input: {
+  planSlug: string;
+  clauses: readonly SpecClauseRevision[];
+  planItems: readonly PlanItemStatus[];
+}): NonCodeItemProof[] {
+  return input.planItems.filter((item) => item.status === 'done').flatMap((item) => {
+    const clauses = input.clauses.filter((clause) =>
+      clause.planSlug === input.planSlug && clause.planItemId === item.itemId &&
+      clause.currentRevision === clause.revision &&
+      clause.lifecycleStatus !== 'retired' && clause.lifecycleStatus !== 'superseded');
+    if (!clauses.length || !clauses.every((clause) =>
+      validExplicitExemption(clause) && !clause.sourceBar &&
+      clause.behavior.trim().length > 0 && clause.contentHash.trim().length > 0 &&
+      clause.requiredEvidence.length === 0 && clause.requiredTestLayers.length === 0 &&
+      !clause.mutationRequired && clause.falsifier == null)) return [];
+    return [{
+      planItemId: item.itemId, barKeys: [], evidenceRefs: [],
+      exemptionRefs: clauses.map((clause) =>
+        `${clause.planSlug}#${clause.specId}@${clause.revision}:${clause.contentHash}`).sort(),
+    }];
+  });
 }
 
 /**
@@ -180,6 +209,8 @@ export interface UnrealizedRequirement {
   /** The `P-NNN` target that failed to demonstrate the requirement. */
   planTarget: string;
   reason: UnrealizedReason;
+  /** Current liveness state is diagnostic only; a dropped target still owes evidence. */
+  targetDropped: boolean;
 }
 
 /**
@@ -337,6 +368,7 @@ export function judgeRequirementRealization(
           disposition: mapping.disposition,
           planTarget: trimmed,
           reason: 'target-not-in-plan',
+          targetDropped: false,
         });
         continue;
       }
@@ -363,6 +395,7 @@ export function judgeRequirementRealization(
           disposition: mapping.disposition,
           planTarget: trimmed,
           reason: 'no-item-audit',
+          targetDropped: currentStatus === 'dropped',
         });
         continue;
       }
@@ -372,7 +405,8 @@ export function judgeRequirementRealization(
       // its doc/none citations remain non-verifying and cannot satisfy this alone.
       const nonCodeProven = currentStatus === 'done' && audit.entry.verdict === 'not-code' &&
         Boolean(audit.entry.note?.trim()) && input.nonCodeItemProofs?.some((proof) =>
-          proof.planItemId === trimmed && proof.barKeys.length > 0 && proof.evidenceRefs.length > 0);
+          proof.planItemId === trimmed &&
+          ((proof.barKeys.length > 0 && proof.evidenceRefs.length > 0) || Boolean(proof.exemptionRefs?.length)));
       if (!audit.entry.citations.some(isVerifyingCitation) && !nonCodeProven) {
         unrealized.push({
           mappingId: mapping.id,
@@ -380,6 +414,7 @@ export function judgeRequirementRealization(
           disposition: mapping.disposition,
           planTarget: trimmed,
           reason: 'no-verifying-citation',
+          targetDropped: currentStatus === 'dropped',
         });
       }
     }
@@ -432,5 +467,6 @@ export function describeUnrealized(entry: UnrealizedRequirement): string {
         : 'audited with no verifying (code/test) citation or current operational proof for a non-code outcome';
   const requirement =
     entry.requirement.length > 80 ? `${entry.requirement.slice(0, 77)}...` : entry.requirement;
-  return `${entry.mappingId} (${entry.disposition}) → ${entry.planTarget}: ${why} — "${requirement}"`;
+  const targetState = entry.targetDropped ? ' (dropped; still subject to the evidence rule)' : '';
+  return `${entry.mappingId} (${entry.disposition}) → ${entry.planTarget}${targetState}: ${why} — "${requirement}"`;
 }

@@ -35,7 +35,7 @@ vi.mock('../capability-envelope/identity-grants-port', () => ({
   appliedOrCurrentIdentityArtifact: appliedIdentityArtifactMock,
 }));
 
-import { readAppliedWornRules } from './sync-hook-rules';
+import { readAppliedIdentityRules, readAppliedWornRules } from './sync-hook-rules';
 
 const ruleArtifact = {
   inputs: [{
@@ -55,6 +55,20 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('readAppliedWornRules', () => {
+  it('copies the exact APPLIED package pins without reading mutable sources or later revisions', async () => {
+    applied('owner-package-pins');
+    const packages = [{ kind: 'package', packageKind: 'blueprint', ref: 'paid', revision: '1.0.0', contentHash: 'old' },
+      { kind: 'package', packageKind: 'recipe', ref: 'dependency', revision: '2', contentHash: 'dep' }];
+    appliedIdentityArtifactMock.mockReturnValue({ inputs: packages });
+    const worn = await readAppliedIdentityRules('owner-package-pins', 'ws');
+    packages[0]!.contentHash = 'new';
+    expect(worn?.packagePins).toEqual([
+      { packageKind: 'blueprint', ref: 'paid', revision: '1.0.0', contentHash: 'old' },
+      { packageKind: 'recipe', ref: 'dependency', revision: '2', contentHash: 'dep' },
+    ]);
+    expect(readGateSelectedLaunchSpecMock).toHaveBeenCalledWith(expect.anything(), 'owner-package-pins', 'ws',
+      [{ specificationRevision: 'spec-owner-package-pins', stateRevision: 's1' }]);
+  });
   it('is null, without an artifact read, when nothing is applied', async () => {
     expect(await readAppliedWornRules('owner-none', 'ws')).toBeNull();
     expect(readGateSelectedLaunchSpecMock).not.toHaveBeenCalled();
@@ -72,6 +86,10 @@ describe('readAppliedWornRules', () => {
     expect(readGateSelectedLaunchSpecMock).toHaveBeenCalledTimes(2);
     expect(appliedIdentityArtifactMock).toHaveBeenLastCalledWith({ launch: true },
       { specificationRevision: 'spec-owner-cache', stateRevision: 's2' });
+    // WI-10004801: the launch record is read narrowed to exactly that pair's
+    // receipt, never whole (a whole record reached 13 MB of identityHistory).
+    expect(readGateSelectedLaunchSpecMock).toHaveBeenLastCalledWith(expect.anything(), 'owner-cache', 'ws',
+      [{ specificationRevision: 'spec-owner-cache', stateRevision: 's2' }]);
   });
 
   it('remembers an unreadable revision for 30s, then reads it again', async () => {

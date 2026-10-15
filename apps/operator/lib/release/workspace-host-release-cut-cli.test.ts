@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { projectByocReleaseMilestones } from '@papercusp/operator-core/lib/byoc-release-carry';
 import type { TaskReleaseJournal } from '@papercusp/operator-core/lib/task-manager/store';
@@ -22,18 +22,24 @@ import {
   DISK_PREFLIGHT_REFUSAL_EXIT_CODE,
   describeStepExit,
   WORKSPACE_HOST_BUILD_STAGE,
+  WORKSPACE_HOST_DOC_VECTOR_SEED_DIR,
   WORKSPACE_HOST_PUBLICATION_INPUT_TEMPLATE,
+  cutDocVectorSeed,
   WorkspaceHostCutStepError,
   buildWorkspaceHostPublicationInput,
+  readWorkspaceHostSourceRepository,
   buildWorkspaceHostReleaseJournalSeed,
+  buildWorkspaceHostBundle,
   cupboardBaseOverride,
   packDeterministically,
   parseWorkspaceHostReleaseCutArgs,
   pruneWorkspaceHostCutIntermediates,
   removeReleaseSourceWorktree,
   runWorkspaceHostReleaseCut,
+  runWorkspaceHostReleaseCutCli,
   sha256OfFile,
   workspaceHostCutStageContext,
+  workspaceHostModelCache,
   type WorkspaceHostBuildResult,
   type WorkspaceHostReleaseCutDeps,
 } from './workspace-host-release-cut-cli';
@@ -43,6 +49,56 @@ const DESKTOP_PIN = '2'.repeat(40);
 const GITLINKS = { 'papercusp-desktop': DESKTOP_PIN, 'libs/papercusp': '3'.repeat(40) };
 const VERSION = '0.0.21-p318r40';
 const BUNDLE = '4'.repeat(64);
+
+describe('workspace host model source preflight', () => {
+  it('honors an explicit maintained pack outside the repository cache', () => {
+    const cache = join(workDir, 'models');
+    for (const model of ['harrier-oss-v1-0.6b-ONNX', 'embeddinggemma-300m-ONNX']) {
+      const dir = join(cache, 'onnx-community', model, 'onnx');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'model.onnx'), 'fixture');
+    }
+    expect(workspaceHostModelCache(workDir, { PAPERCUSP_TRANSFORMERS_MODEL_CACHE: cache })).toBe(cache);
+    expect(() => workspaceHostModelCache(workDir, {})).toThrow('set PAPERCUSP_TRANSFORMERS_MODEL_CACHE');
+  });
+
+  it('refuses an incomplete explicitly configured pack', () => {
+    expect(() => workspaceHostModelCache(workDir, { PAPERCUSP_TRANSFORMERS_MODEL_CACHE: workDir }))
+      .toThrow('model source');
+  });
+
+  it('refuses missing models before materializing or stamping source ready', async () => {
+    vi.stubEnv('PAPERCUSP_TRANSFORMERS_MODEL_CACHE', join(workDir, 'missing-models'));
+    try {
+      const plan = { workDir, repoRoot: workDir, identity: { sourceSha: SHA }, desktopVersion: VERSION } as Parameters<typeof buildWorkspaceHostBundle>[0];
+      await expect(buildWorkspaceHostBundle(plan)).rejects.toMatchObject({ step: 'model-preflight' });
+      expect(existsSync(join(workDir, 'source'))).toBe(false);
+      expect(existsSync(join(workDir, 'source.ready.json'))).toBe(false);
+      expect(existsSync(join(workDir, 'logs/materialize.log'))).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('checks model-pack authenticity before materializing a source checkout', async () => {
+    const cache = join(workDir, 'corrupt-models');
+    for (const model of ['harrier-oss-v1-0.6b-ONNX', 'embeddinggemma-300m-ONNX']) {
+      const dir = join(cache, 'onnx-community', model, 'onnx');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'model.onnx'), 'plausible path, invalid bytes');
+    }
+    vi.stubEnv('PAPERCUSP_TRANSFORMERS_MODEL_CACHE', cache);
+    try {
+      const plan = { workDir, repoRoot: join(__dirname, '../../../..'), identity: { sourceSha: SHA }, desktopVersion: VERSION } as Parameters<typeof buildWorkspaceHostBundle>[0];
+      await expect(buildWorkspaceHostBundle(plan)).rejects.toMatchObject({ step: 'model-preflight' });
+      expect(readFileSync(join(workDir, 'logs/model-preflight.log'), 'utf8')).toMatch(/FATAL|missing|mismatch/i);
+      expect(existsSync(join(workDir, 'source'))).toBe(false);
+      expect(existsSync(join(workDir, 'source.ready.json'))).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
 
 let workDir: string;
 beforeEach(() => {
@@ -332,8 +388,8 @@ describe('post-publish intermediate prune (WI-10003700)', () => {
 
   it.each([
     ['a plan-only publish', () => options()],
-    ['an unpublished cut', () => ({ ...realPublish(), publish: false })],
     ['--keep-intermediates', () => ({ ...realPublish(), keepIntermediates: true })],
+    ['a retained build-only cut', () => ({ ...realPublish(), publish: false, keepIntermediates: true })],
   ])('keeps everything for %s', async (_label, opts) => {
     const h = harness();
     const result = await runWorkspaceHostReleaseCut(opts(), h.deps);
@@ -345,6 +401,25 @@ describe('post-publish intermediate prune (WI-10003700)', () => {
     const base = ['--source-sha', SHA, '--version', VERSION, '--work-dir', '/tmp/x'];
     expect(parseWorkspaceHostReleaseCutArgs(base, {}).keepIntermediates).toBe(false);
     expect(parseWorkspaceHostReleaseCutArgs([...base, '--keep-intermediates'], {}).keepIntermediates).toBe(true);
+  });
+
+  it('prunes a verified build-only cut and resumes from its retained publication', async () => {
+    const h = harness();
+    const buildOnly = { ...realPublish(), publish: false };
+    const first = await runWorkspaceHostReleaseCut(buildOnly, h.deps);
+    expect(first.published).toBe(false);
+    expect(first.pruned).toEqual([join(workDir, 'source'), join(workDir, 'sidecar')]);
+    expect(h.calls.publishes).toHaveLength(0);
+    const again = await runWorkspaceHostReleaseCut(buildOnly, h.deps);
+    expect(again.build).toBe('reused');
+    expect(h.calls.prunes).toHaveLength(2);
+  });
+
+  it('keeps build-only intermediates when the retained publication fails verification', async () => {
+    const h = harness({ verifyBuild: async () => { throw new Error('bundle digest mismatch'); } });
+    await expect(runWorkspaceHostReleaseCut({ ...realPublish(), publish: false }, h.deps))
+      .rejects.toThrow('bundle digest mismatch');
+    expect(h.calls.prunes).toEqual([]);
   });
 
   it('deletes nothing when the publication directory no longer matches the committed build', async () => {
@@ -492,12 +567,41 @@ describe('publication input', () => {
   const facts = {
     version: VERSION,
     sourceSha: SHA,
+    sourceRepository: 'https://github.com/Papercusp/papercup.git',
     desktopVersion: '0.0.21',
     desktopRevision: DESKTOP_PIN,
     sourceRoot: '/work/source',
     bundleRoot: '/work/extracted',
     rollbackVersion: null,
   };
+
+  it('uses the measured repository instead of a template repository', () => {
+    const template = JSON.parse(readFileSync(WORKSPACE_HOST_PUBLICATION_INPUT_TEMPLATE, 'utf8'));
+    const input = buildWorkspaceHostPublicationInput(template, facts);
+    expect(input.source.repository).toBe(facts.sourceRepository);
+  });
+
+  it.each([
+    'https://github.com/Papercusp/papercup.git',
+    'git@github.com:Papercusp/papercup.git',
+  ])('measures the actual integration origin %s', (origin) => {
+    const repo = join(workDir, 'origin-source');
+    mkdirSync(repo, { recursive: true });
+    execFileSync('git', ['init', '-q', repo]);
+    execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', origin]);
+    expect(readWorkspaceHostSourceRepository(repo)).toBe(facts.sourceRepository);
+  });
+
+  it('refuses hardcoded template origins and missing or credential-bearing measured origins', () => {
+    const template = JSON.parse(readFileSync(WORKSPACE_HOST_PUBLICATION_INPUT_TEMPLATE, 'utf8'));
+    expect(() => buildWorkspaceHostPublicationInput({
+      ...template, source: { repository: 'https://github.com/Papercusp/papercusp.git' },
+    }, facts)).toThrow(/template must not pin source.repository/);
+    for (const sourceRepository of [undefined, 'https://user:secret@github.com/Papercusp/papercup.git']) {
+      expect(() => buildWorkspaceHostPublicationInput(template, { ...facts, sourceRepository } as typeof facts))
+        .toThrow(/measured credential-free GitHub sourceRepository/);
+    }
+  });
 
   it('fills the tracked template from measured facts and passes the manifest CLI parser', () => {
     const template = JSON.parse(readFileSync(WORKSPACE_HOST_PUBLICATION_INPUT_TEMPLATE, 'utf8'));
@@ -559,10 +663,42 @@ describe('publication input', () => {
 describe('CLI args', () => {
   it('passes publisher flags through and rejects unknown flags', () => {
     expect(
-      parseWorkspaceHostReleaseCutArgs(['--source-sha', SHA, '--version', VERSION, '--work-dir', '/tmp/x', '--base', 'https://b', '--plan-only'], {}),
-    ).toMatchObject({ sourceSha: SHA, publish: true, publisherArgs: ['--base', 'https://b', '--plan-only'] });
+      parseWorkspaceHostReleaseCutArgs(['--source-sha', SHA, '--version', VERSION, '--work-dir', '/tmp/x', '--base', 'https://b', '--publish-plan-only'], {}),
+    ).toMatchObject({ sourceSha: SHA, publish: true, planOnly: false, publisherArgs: ['--base', 'https://b', '--plan-only'] });
+    expect(
+      parseWorkspaceHostReleaseCutArgs(['--source-sha', SHA, '--version', VERSION, '--work-dir', '/tmp/x', '--plan-only'], {}),
+    ).toMatchObject({ sourceSha: SHA, publish: true, planOnly: true, publisherArgs: [] });
     expect(() => parseWorkspaceHostReleaseCutArgs(['--source-sha', SHA, '--nope', 'x'], {})).toThrow(/unknown flag/);
     expect(() => parseWorkspaceHostReleaseCutArgs(['--version', VERSION, '--work-dir', '/tmp/x'], {})).toThrow(/--source-sha/);
+    expect(() => parseWorkspaceHostReleaseCutArgs(['--source-sha', SHA, '--version', VERSION, '--work-dir', '/tmp/x', '--plan-only', '--publish-plan-only'], {}))
+      .toThrow(/cannot be combined/);
+  });
+
+  it('prints a whole-cut preview without invoking the cut runner or creating its work directory', async () => {
+    const plannedWorkDir = join(workDir, 'planned-cut');
+    const lines: string[] = [];
+    const result = await runWorkspaceHostReleaseCutCli(
+      ['--source-sha', SHA, '--version', VERSION, '--work-dir', plannedWorkDir, '--plan-only'],
+      {
+        env: {},
+        signingKeyPath: join(workDir, 'missing-signing-key'),
+        newTaskId: () => TASK_ID,
+        newOperationId: () => OPERATION_ID,
+        log: (line) => lines.push(line),
+        run: async () => {
+          throw new Error('the cut runner must not run during --plan-only');
+        },
+      },
+    );
+
+    expect(result).toBe('planned');
+    expect(existsSync(plannedWorkDir)).toBe(false);
+    expect(lines.join('\n')).toContain(`source sha: ${SHA}`);
+    expect(lines.join('\n')).toContain(`version: ${VERSION}`);
+    expect(lines.join('\n')).toContain(`work directory: ${plannedWorkDir}`);
+    expect(lines.join('\n')).toContain(`task id: ${TASK_ID} (planned)`);
+    expect(lines.join('\n')).toContain(`operation id: ${OPERATION_ID} (planned)`);
+    expect(lines.join('\n')).toContain('signing key present: no');
   });
 
   // WI-10003172: from a box that SNI-blackholes the branded Cupboard (EI-16742) the cut
@@ -616,5 +752,105 @@ describe('step failure lines (EI-24283123732250788)', () => {
       .filter((code) => code !== 0 && code !== 1);
     expect(refusals.length).toBeGreaterThan(0);
     expect(new Set(refusals)).toEqual(new Set([DISK_PREFLIGHT_REFUSAL_EXIT_CODE]));
+  });
+});
+
+describe('doc-vector seed in the hosted bundle (WI-10004899)', () => {
+  let sidecar: string;
+  beforeEach(() => {
+    sidecar = mkdtempSync(join(tmpdir(), 'wh-seed-'));
+  });
+  afterEach(() => {
+    rmSync(sidecar, { recursive: true, force: true });
+  });
+  const seedDir = () => join(sidecar, WORKSPACE_HOST_DOC_VECTOR_SEED_DIR);
+  const writeSeed = (dir: string, marker: string) => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ marker }));
+  };
+  const outOf = (args: readonly string[]) => args[args.indexOf('--out') + 1] as string;
+
+  it('exports into <sidecar>/doc-vector-seed, the dir the hosted unit points PAPERCUSP_DOC_VECTOR_SEED_DIR at', async () => {
+    const calls: { args: readonly string[]; cwd: string }[] = [];
+    const outcome = await cutDocVectorSeed({
+      sidecarDir: sidecar,
+      repoRoot: '/repo',
+      logFile: join(sidecar, 'seed.log'),
+      exporter: async (args, { cwd }) => {
+        calls.push({ args, cwd });
+        writeSeed(outOf(args), 'new');
+      },
+    });
+    expect(outcome).toBe('exported');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.cwd).toBe('/repo');
+    expect(calls[0]!.args.slice(0, 2)).toEqual(['tsx', 'scripts/export-doc-vector-seed.mts']);
+    expect(calls[0]!.args).toContain('--allow-uncovered');
+    expect(calls[0]!.args).not.toContain('--previous');
+    expect(JSON.parse(readFileSync(join(seedDir(), 'manifest.json'), 'utf8'))).toEqual({ marker: 'new' });
+    expect(existsSync(`${seedDir()}.new`)).toBe(false);
+  });
+
+  it('applies the previous seed first and replaces it only once the new one is written', async () => {
+    writeSeed(seedDir(), 'old');
+    let previousAtExport: string | null = null;
+    const outcome = await cutDocVectorSeed({
+      sidecarDir: sidecar,
+      repoRoot: '/repo',
+      logFile: join(sidecar, 'seed.log'),
+      exporter: async (args) => {
+        const previous = args[args.indexOf('--previous') + 1] as string;
+        previousAtExport = JSON.parse(readFileSync(join(previous, 'manifest.json'), 'utf8')).marker;
+        writeSeed(outOf(args), 'new');
+      },
+    });
+    expect(outcome).toBe('exported');
+    expect(previousAtExport).toBe('old');
+    expect(JSON.parse(readFileSync(join(seedDir(), 'manifest.json'), 'utf8'))).toEqual({ marker: 'new' });
+  });
+
+  it('never fails the cut: a failed export keeps the previous seed and warns', async () => {
+    writeSeed(seedDir(), 'old');
+    const warnings: string[] = [];
+    const outcome = await cutDocVectorSeed({
+      sidecarDir: sidecar,
+      repoRoot: '/repo',
+      logFile: join(sidecar, 'seed.log'),
+      warn: (message) => warnings.push(message),
+      exporter: async (args) => {
+        writeSeed(outOf(args), 'partial');
+        throw new Error('npx exited 1');
+      },
+    });
+    expect(outcome).toBe('kept-previous');
+    expect(JSON.parse(readFileSync(join(seedDir(), 'manifest.json'), 'utf8'))).toEqual({ marker: 'old' });
+    expect(existsSync(`${seedDir()}.new`)).toBe(false);
+    expect(warnings.join('\n')).toMatch(/doc-vector-seed export failed .*previous cut's doc-vector seed/);
+  });
+
+  it('ships no seed when the exporter exits 0 without a manifest, and when skipped', async () => {
+    const empty = await cutDocVectorSeed({
+      sidecarDir: sidecar,
+      repoRoot: '/repo',
+      logFile: join(sidecar, 'seed.log'),
+      warn: () => {},
+      exporter: async (args) => {
+        mkdirSync(outOf(args), { recursive: true });
+      },
+    });
+    expect(empty).toBe('none');
+    expect(existsSync(seedDir())).toBe(false);
+    let ran = false;
+    const skipped = await cutDocVectorSeed({
+      sidecarDir: sidecar,
+      repoRoot: '/repo',
+      logFile: join(sidecar, 'seed.log'),
+      skip: true,
+      exporter: async () => {
+        ran = true;
+      },
+    });
+    expect(skipped).toBe('skipped');
+    expect(ran).toBe(false);
   });
 });

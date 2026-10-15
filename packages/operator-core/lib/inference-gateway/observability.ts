@@ -38,6 +38,9 @@ export interface GatewayHeadroom {
   /** Queue: how many bee requests are forwarding now vs waiting for a slot. */
   inFlight?: number;
   queueDepth?: number;
+  /** The provider queue's live adaptive concurrency window, from admission.maxConcurrent.
+   * Tier minShare values reserve service; they do not cap spare provider capacity. */
+  admissionWindow?: number;
   /** Per-priority queue breakdown (queen/interactive vs batch). */
   byPriority?: { priority: number; count: number }[];
   /** Pool-wide count of accounts that can serve a request RIGHT NOW (the `GatewayStats.healthyAccounts`
@@ -116,6 +119,7 @@ export function projectHeadroom(
     paused: provider === 'claude' ? stats.pausedUntil > now : undefined,
     inFlight: admission?.running,
     queueDepth: admission?.queued,
+    admissionWindow: admission?.maxConcurrent,
     healthyAccounts: Number.isFinite(healthyAccounts) ? healthyAccounts : undefined,
     byPriority: admission?.byPriority,
     priorityTiers,
@@ -147,6 +151,31 @@ export async function fetchGatewayHeadroom(
     return projectHeadroom(stats, Date.now(), { provider: opts.provider });
   } catch (e) {
     return { reachable: false, error: (e as Error).message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Live operation evidence from the existing owner report. Missing fields on
+ * an older gateway, an outage, or an owner mismatch are unknown, never zero. */
+export async function fetchGatewayOwnerExecution(ownerId: string, opts: {
+  port?: number; fetchImpl?: typeof fetch; timeoutMs?: number;
+} = {}): Promise<{ active: number | null; observedAt: number | null }> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 1000);
+  try {
+    const res = await (opts.fetchImpl ?? fetch)(
+      `http://127.0.0.1:${opts.port ?? gatewayPort()}/admin/owner-report?owner=${encodeURIComponent(ownerId)}`,
+      { signal: ctrl.signal });
+    if (!res.ok) return { active: null, observedAt: null };
+    const body = await res.json() as { owner?: string; now?: number; stageTelemetry?: { active?: number } };
+    const active = body.stageTelemetry?.active;
+    if (body.owner !== ownerId || !Number.isInteger(active) || Number(active) < 0 || !Number.isFinite(body.now)) {
+      return { active: null, observedAt: null };
+    }
+    return { active: Number(active), observedAt: Number(body.now) };
+  } catch {
+    return { active: null, observedAt: null };
   } finally {
     clearTimeout(timer);
   }

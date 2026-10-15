@@ -40,7 +40,8 @@ import {
   displayName as rosterDisplayName,
   distinctMachineCount,
   groupByFleet,
-  isTranscriptFresh,
+  isAgentThinking,
+  isRunningAgent,
   resumableSessionId,
   thinkingStreamUrl,
   type RosterAgent,
@@ -94,6 +95,7 @@ export {
   fmtCompactAge,
   groupByFleet,
   hasThinking,
+  isAgentThinking,
   isRunningAgent,
   isTranscriptFresh,
   machineKey,
@@ -197,13 +199,12 @@ const OPERATOR_BULK: RosterBulkActions = {
 
 export default function AgentsRunningPill() {
   const [open, setOpen] = useQueryState('agentsRoster', parseAsBoolean.withDefault(false));
-  const { data } = useSyncQuery<RosterResponse>({
+  const { data, error, failureCount } = useSyncQuery<RosterResponse>({
     queryName: 'advRoster.list',
-    args: advRosterArgs(null),
-    // `transcriptFresh` is derived from transcript mtimes rather than a database row,
-    // so no SSE invalidation can announce either edge of its 10s activity
-    // window. Keep this always-mounted header observer on a small explicit
-    // cadence; all roster consumers share the same structurally keyed query.
+    args: open ? advRosterArgs(null) : { ...advRosterArgs(null), view: 'header' },
+    // Lifecycle verdicts also depend on activity age and host state, so keep
+    // the always-mounted header current between database invalidations.
+    // All roster consumers share the same structurally keyed query.
     pollIntervalMs: 5_000,
   });
   // A 1s clock — only while the roster is open — so the last-active pills tick up
@@ -233,13 +234,12 @@ export default function AgentsRunningPill() {
   // AgentInspectorModal used by a native row click.
   const [inspectOwnerRaw, setInspectOwner] = useQueryState('agentsInspect');
   const inspectOwner = typeof inspectOwnerRaw === 'string' && inspectOwnerRaw ? inspectOwnerRaw : null;
-  // The pill says "running", so membership comes from the authoritative shared
-  // session-lifecycle oracle — NOT heartbeat freshness and NOT an armed loop.
-  // Parked/ended processes may keep heartbeating for hours; counting those is
-  // what produced the owner-visible "65 running" while only 3 were live.
+  // Running counts living sessions, including agents between turns. Thinking
+  // counts the ongoing-turn subset; recent transcript output is neither gauge.
+  // Both compact and expanded snapshots carry the same lifecycle verdicts.
   // Memoed on `data` so identities stay stable across the 1s nowMs ticks.
   const running = useMemo(
-    () => ((data?.[0]?.active ?? []) as RosterAgent[]).filter((a) => a.sessionState === 'live'),
+    () => ((data?.[0]?.active ?? []) as RosterAgent[]).filter(isRunningAgent),
     [data],
   );
   const activeOwnerIds = useMemo(() => new Set(running.map((a) => a.ownerId)), [running]);
@@ -264,6 +264,7 @@ export default function AgentsRunningPill() {
      a session by its unique id is not browsing — a human holding an id wants
      that session whatever state it is in. */
   const instantIdMatches = useMemo<SearchSessionResult[]>(() => {
+    if (!open) return [];
     const token = q.length >= 2 ? parseSessionIdQuery(q) : null;
     if (!token) return [];
     const out: SearchSessionResult[] = [];
@@ -280,16 +281,19 @@ export default function AgentsRunningPill() {
       });
     }
     return out;
-  }, [data, q]);
+  }, [data, q, open]);
 
-  // Always mounted, even at zero ([owner 2026-09-15] "it should instead say
-  // 0 agents running"): an absent pill read as "the feature is missing" during
-  // the post-boot hydration window (WI-37363), and an honest "0 agents running"
-  // is a reading where an empty header is not. `is-running` stays a STATE class.
+  // Always mounted, including a measured zero. Missing query data is not an
+  // empty roster: keep loading/failure visible instead of inventing a count.
+  const hasRoster = Array.isArray(data?.[0]?.active);
+  // The query's terminal error stays null while failed attempts are retrying.
+  const rosterUnavailable = Boolean(error) || failureCount > 0;
+  const rosterPending = !hasRoster && !rosterUnavailable;
+  const unavailableLabel = rosterUnavailable ? 'Agents unavailable' : 'Loading agents…';
   const isRunning = running.length > 0;
   const groups = groupByFleet(running);
   const fleetDots = groups.filter((g) => g.slug !== null && g.color).slice(0, 6);
-  const thinkingCount = running.filter(isTranscriptFresh).length;
+  const thinkingCount = running.filter(isAgentThinking).length;
   const machineCount = distinctMachineCount(running);
 
   return (
@@ -308,19 +312,27 @@ export default function AgentsRunningPill() {
             type="button"
             className={`pc-advshell__action pc-advshell__action--agents${isRunning ? ' is-running' : ''}`}
             data-testid="agents-running-pill"
+            aria-busy={rosterPending}
             aria-expanded={open}
             aria-controls="pc-advshell-agents-pop"
           >
             <span aria-hidden>⚡</span>
-            {running.length} agent{running.length === 1 ? '' : 's'} running
+            {hasRoster
+              ? <>{running.length} agent{running.length === 1 ? '' : 's'} running</>
+              : unavailableLabel}
             {thinkingCount > 0 && (
-              <span className="pc-agents-pill__thinking" data-testid="agents-thinking-count">
+              <span className="pc-agents-pill__thinking" data-testid="agents-thinking-count" title="Agents in an ongoing turn, including reasoning and tool work">
                 {' · '}{thinkingCount} thinking
               </span>
             )}
             {machineCount > 1 && (
               <span className="pc-agents-pill__machines" data-testid="agents-machine-count">
                 {' across '}{machineCount} machines
+              </span>
+            )}
+            {hasRoster && rosterUnavailable && (
+              <span className="pc-agents-pill__thinking" title="Could not refresh agents. Showing the last loaded counts.">
+                {' · '}update failed
               </span>
             )}
             {fleetDots.length > 0 && (
@@ -337,7 +349,7 @@ export default function AgentsRunningPill() {
             )}
           </button>
         )}
-        tooltipLabel="Agents running — grouped by fleet"
+        tooltipLabel="Agents running — grouped by fleet. Running: living agent sessions, including agents between turns. Thinking: agents processing a turn."
         side="bottom"
         align="end"
         ariaLabel="Agents running"
@@ -345,11 +357,20 @@ export default function AgentsRunningPill() {
       >
         <div id="pc-advshell-agents-pop" data-testid="agents-running-pop">
           <SessionsSearchInput value={searchQ} onChange={(v) => void setSearchQ(v || null)} />
+          {hasRoster && rosterUnavailable && (
+            <p className="pc-advshell__idle" role="status">
+              Could not refresh agents. Showing the last loaded roster.
+            </p>
+          )}
           {q.length >= 2 ? (
             <SessionSearchResults query={q} nowMs={nowMs} instantIdMatches={instantIdMatches} />
           ) : (
             <>
-              {isRunning ? (
+              {!hasRoster ? (
+                <p className="pc-advshell__idle" role="status" data-testid="agents-roster-status">
+                  {unavailableLabel}
+                </p>
+              ) : isRunning ? (
                 <AgentsRoster
                   agents={running}
                   nowMs={nowMs}

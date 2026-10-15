@@ -25,7 +25,7 @@
  * branching before a hook call) — the irrelevant one for a given `kind` is
  * simply `enabled: false`, which the sync layer treats as a no-op.
  */
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
 import { WorkRefPill, type WorkRefPillProps, type WorkRefState } from './WorkRefPill';
 import type { WorkRefKind } from './parse-work-refs';
@@ -59,21 +59,42 @@ export interface HydratedWorkRefPillProps extends Omit<WorkRefPillProps, 'state'
   planSlug?: string | null;
 }
 
+/** Keep old chat history from occupying the live-query queue. Nearby refs
+ * prefetch before scrolling into view; keyboard focus always admits the read.
+ * Hosts without IntersectionObserver retain eager hydration. */
+export function useWorkRefVisibility() {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [visible, setVisible] = useState(() => typeof IntersectionObserver === 'undefined');
+  const [focused, setFocused] = useState(false);
+  useEffect(() => {
+    const target = ref.current;
+    if (!target || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver((entries) => {
+      const entry = entries.find((candidate) => candidate.target === target);
+      if (entry) setVisible(entry.isIntersecting);
+    }, { rootMargin: '300px' });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, []);
+  return { ref, enabled: visible || focused, setFocused };
+}
+
 /**
  * Live-hydrated `WorkRefPill` — resolves `state`/`title` for the given ref
  * through `@papercusp/sync` and forwards every other prop (`href`,
  * `onActivate`, `size`, `className`, …) straight to the presentational pill.
  */
 export function HydratedWorkRefPill({ kind, id, harnessSlug, planSlug, ...rest }: HydratedWorkRefPillProps) {
+  const visibility = useWorkRefVisibility();
   const workItemQuery = useSyncQuery<WorkItemDetailRow>({
     queryName: 'workItems.detail',
     args: { harnessSlug, id },
-    enabled: kind === 'work-item' && !!harnessSlug,
+    enabled: visibility.enabled && kind === 'work-item' && !!harnessSlug,
   });
   const planItemQuery = useSyncQuery<PlanItemRowLike>({
     queryName: 'plans.items',
     args: { slug: planSlug ?? '' },
-    enabled: kind === 'plan-item' && !!planSlug,
+    enabled: visibility.enabled && kind === 'plan-item' && !!planSlug,
   });
 
   const { state, title } = useMemo(() => {
@@ -86,5 +107,11 @@ export function HydratedWorkRefPill({ kind, id, harnessSlug, planSlug, ...rest }
     return { state: asState(row?.item?.effectiveStatus), title: row?.item?.text ?? null };
   }, [kind, id, planSlug, workItemQuery.data, planItemQuery.data]);
 
-  return <WorkRefPill id={id} kind={kind} state={state} title={title} {...rest} />;
+  return (
+    <span ref={visibility.ref} style={{ display: 'inline-flex' }}
+      onFocusCapture={() => visibility.setFocused(true)}
+      onBlurCapture={() => visibility.setFocused(false)}>
+      <WorkRefPill id={id} kind={kind} state={state} title={title} {...rest} />
+    </span>
+  );
 }

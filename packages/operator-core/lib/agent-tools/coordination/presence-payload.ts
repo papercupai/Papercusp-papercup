@@ -35,45 +35,23 @@
  */
 
 import type { UnifiedPresenceRecord } from './federated-presence';
-import { formatIdleAge, type LastActiveSource, type PresenceTier1Joins } from './presence-tier1';
+import {
+  formatIdleAge,
+  type IntentDerivedFrom,
+  type IntentSource,
+  type LastActiveSource,
+  type PresenceTier1Joins,
+} from './presence-tier1';
 import type { SessionState } from './presence-wakeability';
 import type { ContextPressureBucket } from './context-pressure';
 import type { SelfWakeSource } from './presence-selfwake';
+import type { PickupRecoverable } from '../../events/await/turn-proof';
 
-/**
- * The self-referential placeholder a presence declare writes when an agent is
- * live but has declared no real intent (see the coord-hook + locks/enrich-busy).
- * It is a NON-signal on the roster — "(active — see coord:presence…)" read AS an
- * intent is circular and misleads the Queen/peers into thinking a real intent
- * exists. `toStableRosterRow` normalizes it to `null` on the READ side (P-004) so
- * the roster shows an honest "no declared intent" without touching the write path
- * (enrich-busy still relies on the written sentinel to detect the no-intent case).
- * Canonical here so every reader shares ONE string (was duplicated in enrich-busy).
- */
-export const PLACEHOLDER_INTENT = '(active — see coord:presence for current work)';
-
-/**
- * True when an intent string is a LIFECYCLE LABEL — the name of the hook or dispatch step that
- * happened to take a lock ('PreToolUse:Edit', 'capability:write') — rather than a declaration of
- * WHAT the agent is changing. Blank and {@link PLACEHOLDER_INTENT} count too: all three mean the
- * same thing to a consumer, "no usable intent here, look elsewhere".
- *
- * Canonical here, beside PLACEHOLDER_INTENT and for the same reason (EI-20055604348536487). The
- * predicate had independently grown THREE copies that did not agree — `isUninformativeLockIntent`
- * (locks/enrich-busy.ts) covered `capability:` and the placeholder, `isGenericLockIntent`
- * (harness/git-sync/git-sync-action.ts) covered neither, and the lock hook has a third in Python.
- * Two surfaces resolving one projection two ways is the divergence D-038 axis 5 forbids, and this
- * is the union: the narrower copies each classified a real sentinel as usable intent.
- *
- * ⚠ The regexes are ANCHORED to the label's own prefix, never a substring search — an agent whose
- * DECLARED intent legitimately discusses the hook ("stop PreToolUse:Edit leaking into the ledger",
- * which is literally the intent that produced this function) must not be classified as a sentinel.
- */
-export function isLifecycleIntent(intent: string | null | undefined): boolean {
-  const s = (intent ?? '').trim();
-  if (!s || s === PLACEHOLDER_INTENT) return true;
-  return /^(?:Pre|Post)ToolUse:/i.test(s) || /^capability:/i.test(s);
-}
+// PLACEHOLDER_INTENT + isLifecycleIntent are canonical in ./presence-intent (moved there so
+// presence-tier1 can apply the derived-intent rule without importing back from this module).
+// Re-exported so every existing importer of these names is unchanged.
+import { PLACEHOLDER_INTENT } from './presence-intent';
+export { PLACEHOLDER_INTENT, isLifecycleIntent } from './presence-intent';
 
 /**
  * A coord:presence roster row at the point it is emitted: the unified
@@ -104,6 +82,14 @@ export type RosterRow = UnifiedPresenceRecord &
        *  declared-vs-derived drift signal distinct from intentStale (which only
        *  fires when the agent is ALSO idle). null = unknown. */
       intentDivergent: boolean | null;
+      /** P-010 (derived-status-not-hand-written-2026-10-12#D-006): where `intent` came
+       *  from — 'declared' (the agent's own fresh declaration), 'derived' (built from
+       *  the work item it holds because no fresh declaration exists), or null (no
+       *  intent at all). */
+      intentSource: IntentSource | null;
+      /** P-010: the held work item (and its plan item, when stamped) a 'derived'
+       *  intent was built from. Absent when intentSource is not 'derived'. */
+      intentDerivedFrom: IntentDerivedFrom;
       /** P-001: live | parked | ended (null for a federated/unknown row). */
       sessionState: SessionState | null;
       /** P-001: a live inbox-wake await exists → a wake will be delivered. */
@@ -111,6 +97,11 @@ export type RosterRow = UnifiedPresenceRecord &
       /** WI-4400: stale-ish takeover read — verify with coord:send wake:'required'
        * before assuming the owner is dead or alive. null = liveness unknown. */
       confirmLiveness: boolean | null;
+      /** P-011(a) / D-011: why a session whose psu host is alive still cannot take
+       * a turn (auth-blocked | quota-blocked | unbound-successor | pending-turn-stuck).
+       * Set only alongside sessionState 'suspect'; null = not wedged OR not checked,
+       * never "checked healthy". */
+      wedged: PickupRecoverable | null;
       /** EI-19407725333778711: an active engine loop will re-wake this owner.
        * null = the self-wake enrichment was not measured. */
       loopArmed: boolean | null;
@@ -231,6 +222,11 @@ export const PRESENCE_STATE_FIELDS = [
   // intent text itself changes, exactly like `intent`, so it belongs beside it in
   // STATE, not LIVENESS (unlike the derived intentAgeSec, which churns every read).
   'intentDeclaredAt',
+  // P-010 (#D-006): provenance of `intent`. STATE, beside intent, because it moves only
+  // on discrete edges — holdings change, or the declaration crosses INTENT_STALE_SEC —
+  // never on the per-read clock, so it is safe on the byte-stable [coord+N] delta.
+  'intentSource',
+  'intentDerivedFrom',
   'currentPlanSlug',
   'currentView',
   'currentFiles',
@@ -273,6 +269,8 @@ export const PRESENCE_LIVENESS_FIELDS = [
   'sessionState',
   'wakeable',
   'confirmLiveness',
+  // P-011(a): derived every read from the host's current condition — liveness lane.
+  'wedged',
   'loopArmed',
   'selfWake',
   // EI-22805550006169069: the forward-looking half of the same liveness question
@@ -318,6 +316,9 @@ export const PRESENCE_DROPPED_FIELDS = [
   // for exactly the reason lastActiveAt is dropped: raw churning timestamps do not
   // belong on the emitted row — the derived scalar + provenance carry the signal.
   'turnPartLastAt',
+  // P-010 (#D-006): derivation input only (the owner's latest held work item). mergeTier1
+  // folds it into intent/intentSource/intentDerivedFrom and strips it before the spread.
+  'heldWorkIntent',
 ] as const satisfies readonly (keyof RosterRow)[];
 
 /** The delta-eligible field set (D-005 lane 1) = IDENTITY ∪ STATE. A change in
@@ -353,6 +354,7 @@ export const PRESENCE_FULL_ROW_FIELDS = [
   'sessionState',
   'wakeable',
   'confirmLiveness',
+  'wedged',
   'loopArmed',
   'selfWake',
   'dormantScheduled',
@@ -475,6 +477,8 @@ export function toStableRosterRow(row: RosterRow): Record<string, unknown> {
     // transition. Readers must confirm a draining/suspect candidate by sending
     // coord:send { wake:'required' } and inspecting its wake result.
     confirmLiveness: (liveness.confirmLiveness as boolean | null | undefined) ?? null,
+    // P-011(a) / D-011: always present for a reader; null = not wedged OR not checked.
+    wedged: (liveness.wedged as PickupRecoverable | null | undefined) ?? null,
     // EI-19407725333778711: a missing enrichment is UNKNOWN, not evidence that
     // the owner has no self-wake source.
     loopArmed: (liveness.loopArmed as boolean | null | undefined) ?? null,

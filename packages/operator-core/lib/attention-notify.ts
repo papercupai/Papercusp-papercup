@@ -69,6 +69,10 @@ export interface ReplaySafeAttentionNotifyInput extends AttentionNotifyInput {
 
 export interface AttentionNotifyResult {
   recordId: number | null;
+  /** Whether this call created the durable intent; null when its reservation was unavailable.
+   *  Independent of channel delivery: a replay can still deliver an unfinished channel.
+   *  Optional for compatibility with existing injected notification implementations. */
+  intentCreated?: boolean | null;
   deduped: boolean;
   mobileDelivered: boolean;
   desktopDelivered: boolean;
@@ -168,6 +172,7 @@ async function deliverAttention(
 
   return {
     recordId,
+    intentCreated: input.dedupeKey ? reservation?.created ?? null : recordId != null ? true : null,
     deduped: Boolean(input.dedupeKey && !reservation?.created && !mobileClaimed && !desktopClaimed),
     mobileDelivered,
     desktopDelivered,

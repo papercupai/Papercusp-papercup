@@ -15,13 +15,15 @@
  * `storage-prune` route (which re-invalidates the query). nuqs holds the filter,
  * the expanded category, and the confirm-dialog target.
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { useSyncQuery, useSyncMutate } from '@papercusp/sync';
 import { toast } from 'sonner';
 import { useFlag } from '@/lib/flag-hooks';
 import { FLAGS } from '@papercusp/flags';
 import { Modal } from '@/app/harness/Modal';
+import { Table } from '@/app/harness/Table';
+import type { DiskReclaimReceipt } from '@papercusp/operator-core/lib/storage/disk-reclaim';
 
 /* ── Wire types — mirror StorageUsageRow / PruneResult (operator-core/lib/storage). ── */
 type Federation = 'federated' | 'local-diagnostic' | 'bloat-queue';
@@ -137,6 +139,33 @@ export default function StorageSettingsPage() {
     parseAsStringEnum<Filter>([...FILTERS]).withDefault('all'),
   );
   const [selected, setSelected] = useQueryState('cat', parseAsString);
+  const [reclaim] = useQueryState('reclaim', parseAsString);
+  const [receipt, setReceipt] = useState<DiskReclaimReceipt | null>(null);
+  const [receiptError, setReceiptError] = useState<string | null>(null);
+  const [receiptLoading, setReceiptLoading] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    setReceipt(null); setReceiptError(null); setReceiptLoading(Boolean(reclaim));
+    if (!reclaim) return;
+    void (async () => {
+      try {
+        const response = await fetch('/api/agent-mcp/run-tool', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name: 'storage:census', args: { receiptId: reclaim, payloadTier: 'full' } }),
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.message ?? 'Could not read cleanup receipt');
+        const result = payload.result?.structuredContent ?? payload.result?.data ??
+          JSON.parse(payload.result?.content?.find((c: { type: string }) => c.type === 'text')?.text ?? '{}');
+        const record = result.receipt;
+        if (!record || record.id !== reclaim) throw new Error('Cleanup receipt not found');
+        if (!cancelled) setReceipt(record);
+      } catch (err) {
+        if (!cancelled) setReceiptError(err instanceof Error ? err.message : 'Could not read cleanup receipt');
+      } finally { if (!cancelled) setReceiptLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [reclaim]);
   // The confirm dialog target, encoded as "<categoryId>:<mode>" so it lives in
   // the URL (agent-controllable + survives reload).
   const [trim, setTrim] = useQueryState('trim', parseAsString);
@@ -196,10 +225,32 @@ export default function StorageSettingsPage() {
     <div>
       <h1>Storage</h1>
       <p className="pc-settings-intro">
-        Papercup keeps everything by default — nothing is pruned automatically. Here you can see what
-        each category is using and trim it selectively. Federated categories (shared with peers) are
-        read-only here; trimming them would change what peers see.
+        Disposable build and test artifacts expire automatically under the retention policy.
+        Here you can see what each category is using and trim it selectively.
+        Federated categories shared with peers are read-only here.
       </p>
+
+      {reclaim && <section className="pc-settings-section" aria-label="Cleanup receipt">
+        <h2>Cleanup receipt</h2>
+        {receiptLoading && <p role="status">Loading cleanup receipt…</p>}
+        {receiptError && <p role="alert">{receiptError}</p>}
+        {receipt && <>
+          <p>{receipt.finishedAt} · {receipt.dryRun ? 'Preview' : 'Cleanup'} · {receipt.complete ? 'Complete' : 'Partial'}</p>
+          <Table
+            ariaLabel="Disk space before and after cleanup"
+            rows={receipt.devices}
+            getRowKey={(device) => device.path}
+            columns={[
+              { key: 'disk', header: 'Disk', render: (device) => device.path },
+              { key: 'before', header: 'Free before', render: (device) => device.beforeFreeBytes === null ? 'Unknown' : formatBytes(device.beforeFreeBytes) },
+              { key: 'after', header: 'Free after', render: (device) => device.afterFreeBytes === null ? 'Unknown' : formatBytes(device.afterFreeBytes) },
+            ]}
+          />
+          <ul>{receipt.entries.map((e, i) => <li key={e.path + i}>{e.path} · {e.status} · {formatBytes(e.bytes)}{e.reason ? ' · ' + e.reason : ''}</li>)}</ul>
+          {receipt.delegates.map((d, i) => <details key={d.classId + i}><summary>{d.classId}: {d.ok ? 'Complete' : 'Failed'}</summary><pre>{JSON.stringify(d.detail, null, 2)}</pre></details>)}
+          {receipt.errors.length > 0 && <p role="alert">{receipt.errors.join('; ')}</p>}
+        </>}
+      </section>}
 
       <div
         role="status"

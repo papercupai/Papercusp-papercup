@@ -24,8 +24,10 @@ import {
   renderToolsCatalog,
   type Role,
 } from '../../prompt-assembly';
+import { readServingGeneration } from '../../serving-generation';
 import { buildMemoryContextBlock, lastUserContext } from '../../memory/injection';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { observeFallback } from '../../degradation/fallback-observations';
 import { loadHarnessRegistry } from '../../harness-registry';
 import {
   buildPlanContextSection,
@@ -42,6 +44,7 @@ export interface ConverseInput {
   welcomed_user?: { display_name?: string };
   mayAskActive?: boolean;
   modality?: 'voice' | 'text';
+  voiceProfile?: 'standard' | 'slim';
   /** Which persona the converse brain assumes — the Sentinel re-home seam.
    *  Defaults to 'operator' (fully backward-compatible). 'sentinel' loads
    *  the Sentinel persona set (sentinel.persona[.<mode>-mode].md / .converse.md /
@@ -126,7 +129,11 @@ export async function buildOperatorPrompt(
   // per turn; grep `prompt-phases` in the operator log.
   const tP0 = Date.now();
   const prefs = await loadVoicePrefs().catch(() => null);
-  const budget = prefs?.operatorHistoryTokenBudget ?? 40000;
+  const slimVoice = input.modality === 'voice' && input.voiceProfile !== 'standard';
+  // Reuse the history selector and rolling summary: recent verbatim context
+  // is smaller on a live voice turn, while prior decisions remain in summary.
+  const configuredBudget = prefs?.operatorHistoryTokenBudget ?? 40000;
+  const budget = slimVoice ? Math.min(configuredBudget, 8000) : configuredBudget;
   const messages = selectHistoryWithinBudget(
     (input.messages ?? []).filter(
       (m) => m && typeof m.role === 'string' && typeof m.content === 'string',
@@ -209,11 +216,18 @@ export async function buildOperatorPrompt(
       : Promise.resolve({ dossier: [], plan: null });
   let compactedSummary: string | null = null;
   if (contextMode === 'compaction' && input.conversationId && conversationsModule) {
+    const summaryWorkspaceId = activeWorkspaceId();
     try {
       const { readConversationSummary } = await conversationsModule;
       const s = await readConversationSummary(input.conversationId);
       if (s?.summaryText && s.summaryText.trim()) compactedSummary = s.summaryText.trim();
+      observeFallback('conversation-context-read', {
+        eligible: 1, applied: 1, reason: 'applied', scope: 'rolling-summary',
+      }, { workspaceId: summaryWorkspaceId });
     } catch (err) {
+      observeFallback('conversation-context-read', {
+        eligible: 1, applied: 0, reason: 'summary-read-failed', scope: 'rolling-summary',
+      }, { workspaceId: summaryWorkspaceId });
       console.warn(
         '[converse-prompt] summary read failed (window fallback):',
         err instanceof Error ? err.message : String(err),
@@ -259,35 +273,37 @@ export async function buildOperatorPrompt(
   const toClaudeName = (mcpName: string): string => mcpName.replace(/:/g, '_');
   // Phase 4 T3.1: pass modality so the catalog filters out tools
   // that don't declare 'voice' support when this turn is voice-side.
-  // Today chat_ask_choice is the load-bearing example — buttons are
-  // invisible to a voice user, so the tool declares modality:['text']
-  // and gets dropped from the voice catalog automatically (replaces
-  // the manual NOTE in the trigger sections below).
-  const catalog = renderToolsCatalog(role, operatorToolNames, modality, toClaudeName);
+  // This is registry-driven: tools may gain voice support (for example
+  // chat_ask_choice now speaks fallbackText), so keep no text-only roster here.
+  const servingGeneration = await readServingGeneration();
+  const catalog = renderToolsCatalog(role, operatorToolNames, modality, toClaudeName, servingGeneration);
   if (catalog) systemSections.push(catalog);
 
-  // Tool-calling contract (voice-persona P-005/P-009). The brain runs on
-  // claude-code with a SMALL, directly-loaded MCP surface — the catalog above
-  // is every tool it has, already loaded, NOT deferred. The historical failure
-  // mode was the brain `ToolSearch`-ing colon names (`harness:status`) that
-  // never resolved (claude-code presents the sanitized underscore form), firing
-  // 4+ searches per turn and occasionally looping to the wall-clock cap. This
-  // note + the underscore-named catalog close that gap.
+  // The catalog is the permission boundary; each native backend supplies its
+  // own calling transport. Codex code mode exposes MCP methods through
+  // functions.exec/ALL_TOOLS rather than direct top-level declarations. Keep
+  // both transports in the shared contract, including when a turn fails over.
   systemSections.push(
     `## Calling tools\n\n` +
-      `Every tool you can call is listed in **Available tools** above — they are ` +
-      `ALREADY LOADED and ready to call directly. Three hard rules:\n` +
-      `- **Never call \`ToolSearch\`.** Your tools are not deferred; searching ` +
-      `finds nothing new and wastes the turn. Just call the tool.\n` +
+      `The tools permitted for this turn are listed in **Available tools** above. ` +
+      `Use the calling transport your runtime exposes:\n` +
+      `- When tools are directly declared, call them directly. **Never call ` +
+      `\`ToolSearch\`** to search for another tool surface.\n` +
       `- **Use the exact catalog name — underscores, never colons.** It is ` +
       `\`harness_status\`, not \`harness:status\`; \`chat_ask_choice\`, not ` +
-      `\`chat:ask_choice\`. Don't retry name variants; the catalog name is the ` +
-      `only form that resolves.\n` +
-      `- **The catalog is your ENTIRE tool surface — there are no built-ins.** ` +
-      `You have no \`Bash\`, no \`Task\`, no file or shell access, and they will ` +
-      `not work if you try. Never emit a \`Bash(...)\` call as a comment or ` +
-      `no-op. If no catalog tool does what you need, say so in your \`<say>\` ` +
-      `instead of improvising a tool.` +
+      `\`chat:ask_choice\`.\n` +
+      `- When Codex exposes \`functions.exec\`, use it to call the permitted MCP ` +
+      `methods on \`tools\`. Inside that runtime, check \`ALL_TOOLS\` for the ` +
+      `exact method \`mcp__agentmcp__<catalog_name>\`, then call ` +
+      `\`tools[methodName](arguments)\` and return its result with \`text(...)\`. ` +
+      `For example, the catalog's \`docs_search\` is ` +
+      `\`tools.mcp__agentmcp__docs_search(...)\`. A missing top-level MCP ` +
+      `declaration does not establish that the tool is unavailable.\n` +
+      `- **The catalog remains your ENTIRE permitted tool surface.** ` +
+      `\`functions.exec\` is a calling transport, not permission to use shell, ` +
+      `file, network or task APIs outside that catalog. You have no \`Bash\` ` +
+      `or \`Task\`. If no catalog tool does what you need, say so in your ` +
+      `\`<say>\` instead of improvising a tool.` +
       (hostTrust === 'public'
         ? `\n- **This is a PUBLIC surface.** The catalog above is the complete set ` +
           `for this host; a tool named anywhere else in these instructions but ` +
@@ -349,6 +365,8 @@ export async function buildOperatorPrompt(
             userId: sessionUser?.id ?? null,
             workspaceId: activeWorkspaceId(),
             harnessSlugs,
+            knowledgeSourcesAllowed: hostTrust === 'owner',
+            reportViewer: { isOwner: hostTrust === 'owner' },
             ...(hostTrust === 'public' ? { hiveSlugs: [] } : {}),
             queryContext: lastUserContext(messages, 3),
             // The Sentinel's recall heading mirrors the operator one but names its own role
@@ -649,6 +667,29 @@ Do NOT emit \`<continue/>\` from this trigger — a sweep is one turn. Do NOT as
       ? 'Respond now per your operator instructions and trigger above. FINAL CHECK before you emit: if your reply enumerates two or more options and asks the user to pick, you MUST call chat_ask_choice with those options instead — on this surface a prose option list is a dead-end with nothing to click.'
       : 'Respond now per your operator instructions and trigger above.',
   );
+  if (slimVoice) userSections.push(
+    'Voice timing: lead with one short, useful sentence. For a tool-dependent answer, call the tool promptly and speak the verified result; never invent a result or claim an action before it completes. Continue with details only when needed.',
+  );
+
+  // Repeat the existing FAQ contract on this turn, including resumed turns.
+  // A short browser question still requires current product-source evidence.
+  const callableCatalogNames = operatorToolNames.map(name => name.replaceAll(':', '_'));
+  if (role === 'papercup' && hostTrust === 'public'
+    && ['docs_search', 'docs_get'].every(name => callableCatalogNames.includes(name))) {
+    userSections.push(
+      '## Public product answer — current-turn source check\n\n' +
+      'For a question about Papercusp behavior, retrieve the public manual before answering. ' +
+      'This includes short browser questions such as "Can I close this tab?". ' +
+      'Use the permitted calling transport to call docs_search with scope:"public" and the reader\'s question, ' +
+      'then docs_get with scope:"public" for the matching FAQ heading or linked guide. ' +
+      'Ground the answer in those returned sources. An earlier lookup or a remembered answer is insufficient. ' +
+      'If retrieval fails, say what could not be checked instead of guessing. ' +
+      'The manual explains product behavior; it does not establish whether this account\'s agents or workspace are running now. ' +
+      (modality === 'text'
+        ? 'Cite the retrieved public reference in the written answer.'
+        : 'Keep the spoken answer short and describe the source in plain words; do not read out a URL.'),
+    );
+  }
 
   console.log(
     `[converse-prompt] prompt-phases historySummaryMs=${tHistSummary - tP0} ` +

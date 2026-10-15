@@ -37,7 +37,6 @@ const BASELINE: ReadonlySet<string> = new Set([
   'papercup-backup-health.service',
   'papercup-docker-reclaim.service',
   'papercup-fedplane-disk-health.service',
-  'papercup-fedplane-key-permission.service',
   'papercup-isolated-dht-liveness.service',
   'papercup-live-federation-gate.service',
   'papercup-perf-signals-capture.service',

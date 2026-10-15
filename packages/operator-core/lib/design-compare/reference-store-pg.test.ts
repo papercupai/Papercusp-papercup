@@ -98,4 +98,45 @@ describe('WI-1202547: createPgReferenceStore resolves its client per call', () =
 
     expect(log).toEqual(['first', 'second', 'third']);
   });
+
+  it('retries a read after a connect-phase timeout, then returns the query result', async () => {
+    const log: string[] = [];
+    let attempts = 0;
+    const store = createPgReferenceStore({
+      getSql: () => (<T = Record<string, unknown>>(
+        _strings: TemplateStringsArray,
+        ..._values: unknown[]
+      ): Promise<T[]> => {
+        attempts += 1;
+        if (attempts === 1) {
+          const error = Object.assign(new Error('write CONNECT_TIMEOUT localhost:5432'), {
+            code: 'CONNECT_TIMEOUT',
+          });
+          return Promise.reject(error);
+        }
+        log.push('read-succeeded');
+        return Promise.resolve([{ reference_id: 'ref-a' }] as T[]);
+      }) as SqlTag,
+    });
+
+    await expect(store.listFeatureReferenceIds(SCOPE)).resolves.toEqual(['ref-a']);
+    expect(attempts).toBe(2);
+    expect(log).toEqual(['read-succeeded']);
+  });
+
+  it('does not retry a non-connect query error', async () => {
+    let attempts = 0;
+    const store = createPgReferenceStore({
+      getSql: () => (<T = Record<string, unknown>>(
+        _strings: TemplateStringsArray,
+        ..._values: unknown[]
+      ): Promise<T[]> => {
+        attempts += 1;
+        return Promise.reject(Object.assign(new Error('permission denied'), { code: '42501' }));
+      }) as SqlTag,
+    });
+
+    await expect(store.listFeatureReferenceIds(SCOPE)).rejects.toMatchObject({ code: '42501' });
+    expect(attempts).toBe(1);
+  });
 });

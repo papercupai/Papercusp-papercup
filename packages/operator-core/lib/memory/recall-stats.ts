@@ -23,6 +23,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { parseEnvelope, payloadSha256 } from '../turn-provenance/turn-provenance';
 import { detectPossibleSecrets } from './secret-detect';
 import type { MemoryEntry, ScoreScale, SearchLegStats } from './backend';
+import type { MemoryTimeoutTelemetry } from './op-deadline';
 // The funnel's leg-attribution shape lives with the GATES (recall-admission),
 // not with the telemetry writer — see `admittedByLeg` there for why.
 import type { AdmittedByLeg } from './recall-admission';
@@ -351,6 +352,9 @@ export interface RecallAdmissionStats {
    * filter was Off, never reached (no candidates), or faulted.
    */
   jev?: JevFunnelEntry;
+  /** Measured timeout facts for a failed recall. Contains only closed enums and
+   * elapsed time; exception text, raw query, and session identity stay out. */
+  timeout?: MemoryTimeoutTelemetry;
 }
 
 /**
@@ -415,6 +419,8 @@ export interface CorpusAdmissionStats {
   embedderAvailable: boolean;
   /** Raw search-leg execution report; null means fusion never ran. */
   legs: Record<string, unknown> | null;
+  /** Execution receipts from every automatic corpus cascade stage. */
+  stages?: Record<string, unknown>[];
   retrievalDepth: number;
   /** Whether stage-1 reranking actually ran, rather than merely being enabled. */
   rerank: string;

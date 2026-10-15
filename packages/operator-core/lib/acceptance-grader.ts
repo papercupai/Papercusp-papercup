@@ -10,7 +10,7 @@ import { areAcceptanceLineageRelated, resolvePlanImplementerIdentities } from '.
 import { readAcceptanceGradingSettlement, type AcceptanceGradingSettlement } from './acceptance-grading-authority';
 import { getLatestPlanAudit, summarizeCoverage } from './plan-audits';
 import { getAcceptanceRubricForPlan } from './rubrics';
-import { listWorkItems, type WorkItem } from './work-items';
+import { commentWorkItem, getWorkItemThreadWindow, listWorkItems, type WorkItem } from './work-items';
 import { reserveAcceptanceReviewTarget, type AcceptanceReviewReservationRef } from './coord/condition-upsert';
 import type { GraderEligibility, GraderEscalation } from './consult/acceptance-grader-select';
 // Type-only: erased at runtime, so it does NOT pull the oracle eagerly — the
@@ -20,6 +20,7 @@ import type { LivenessVerdict } from './agent-tools/coordination/liveness-oracle
 // the fresh-judge prompt and the assigned-grader briefs must say so identically —
 // so the guidance is single-sourced beside the briefs, in grading-cascade.ts.
 import {
+  ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE,
   ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE,
   acceptanceReviewReservationGuidance,
   GRADING_CASCADE_FLAVOR,
@@ -28,6 +29,10 @@ import { listTasks } from './task-manager/store';
 import { killTask } from './task-manager/control';
 
 type LaunchCtx = Parameters<typeof launchAgentTool.handler>[1];
+
+import { getBuildInfo } from './build-info';
+import { recordExpertiseRoutingInvocation } from './endpoint-route/telemetry';
+import { ACCEPTANCE_GRADING_POLICY } from './consult/selection-policies';
 
 /**
  * WI-10002156: a REAPED session wears a healthy costume at grader selection.
@@ -84,6 +89,31 @@ export function selectableGraderLiveness(
  * fail-closed below.
  */
 export const ACCEPTANCE_GRADING_SWEEP_ACTOR = 'system:acceptance-grading-sweep';
+
+/** Optional routine-scoped pin, carried through audit repair and re-certification. */
+export type GradingLaunchProfile = { agent: 'codex'; model: string; effort: 'xhigh'; account: 'auto' };
+
+export function gradingLaunchProfile(ctx: unknown): GradingLaunchProfile | undefined {
+  const raw = (ctx as { gradingLaunch?: unknown } | null)?.gradingLaunch;
+  if (raw == null) return undefined;
+  const p = raw as Partial<GradingLaunchProfile>;
+  if (p.agent !== 'codex' || p.model !== 'gpt-6.1-sol' || p.effort !== 'xhigh' || p.account !== 'auto') {
+    throw new Error('gradingLaunch must pin codex/gpt-6.1-sol/xhigh through account auto');
+  }
+  return { agent: p.agent, model: p.model, effort: p.effort, account: p.account };
+}
+
+export function withGradingLaunchProfile(
+  launch: typeof launchAgentTool.handler,
+  profile: GradingLaunchProfile | undefined,
+): typeof launchAgentTool.handler {
+  if (!profile) return launch;
+  return ((args, ctx) => launch({
+    ...args,
+    ...profile,
+    members: args.members?.map((member) => ({ ...member, ...profile })),
+  } as never, ctx)) as typeof launchAgentTool.handler;
+}
 
 /**
  * A task can be a grading request without carrying source-plan provenance: the
@@ -162,6 +192,22 @@ export function isAcceptanceGradingRequestForPlan(
 export const ACCEPTANCE_GRADING_REQUEST_UNHELD_GRACE_MS = 6 * 60 * 60 * 1000;
 
 /**
+ * The rubric revision a grading request was filed against, read from
+ * `payload.acceptanceReviewTarget.revision`. A review-target reservation and a
+ * consult-expiry pullable review converted from one both carry it. Returns
+ * `null` for an explicit legacy (revision-less) target and `undefined` when the
+ * payload says nothing usable. It never guesses a revision.
+ */
+export function acceptanceGradingRequestTargetRevision(payload: unknown): number | null | undefined {
+  if (!payload || typeof payload !== 'object') return undefined;
+  const target = (payload as { acceptanceReviewTarget?: unknown }).acceptanceReviewTarget;
+  if (!target || typeof target !== 'object') return undefined;
+  const revision = (target as { revision?: unknown }).revision;
+  if (revision === null) return null;
+  return typeof revision === 'number' && Number.isInteger(revision) && revision >= 0 ? revision : undefined;
+}
+
+/**
  * Is this task a grading request that is actually IN FLIGHT — the only kind that may
  * suppress recruiting a grader? Identity alone is not enough: an unheld request is
  * graded by nobody, and suppressing dispatch behind it strands the plan for good.
@@ -177,13 +223,34 @@ export const ACCEPTANCE_GRADING_REQUEST_UNHELD_GRACE_MS = 6 * 60 * 60 * 1000;
  * EI-22678191183363422 protects.
  */
 export function isInFlightAcceptanceGradingRequest(
-  workItem: Pick<WorkItem, 'title' | 'summary' | 'createdBy' | 'assignee' | 'createdAt' | 'lastProgressAt'>,
+  workItem: Pick<WorkItem, 'title' | 'summary' | 'createdBy' | 'assignee' | 'createdAt' | 'lastProgressAt'> & {
+    payload?: unknown;
+  },
   planSlug: string,
   nowMs: number,
   ineligibleHolders?: ReadonlySet<string>,
+  currentRubricRevision?: number | null,
 ): boolean {
   if (!isAcceptanceGradingRequestForPlan(workItem, planSlug)) return false;
   if (workItem.assignee) return !ineligibleHolders?.has(workItem.assignee);
+  // WI-10006620: an UNHELD request filed for a different rubric revision targets
+  // a superseded rubric, so nobody is grading the current one. A review-target
+  // reservation that the consult-expiry path turned into a pullable review quotes
+  // `scorecards:emit` and so matches the identity markers. Without this check it
+  // suppressed recruitment for the current revision for the whole grace window,
+  // even after its own target had been graded. The reservation key already
+  // separates revisions (acceptanceReviewTargetConditionKey), so this dedup must
+  // too. Compare only when both revisions are known integers; anything unknown
+  // keeps the previous behaviour. Held requests are excluded on purpose: an
+  // eligible holder can still emit against the current revision.
+  const targetRevision = acceptanceGradingRequestTargetRevision(workItem.payload);
+  if (
+    typeof targetRevision === 'number' &&
+    typeof currentRubricRevision === 'number' &&
+    targetRevision !== currentRubricRevision
+  ) {
+    return false;
+  }
   const lastMovedMs = Date.parse(workItem.lastProgressAt ?? workItem.createdAt);
   return Number.isFinite(lastMovedMs) && nowMs - lastMovedMs < ACCEPTANCE_GRADING_REQUEST_UNHELD_GRACE_MS;
 }
@@ -234,6 +301,12 @@ export type AcceptanceGraderLifecycle = {
    * unavailable (EI-24032136322947460); absent for launch-receipt dedupes.
    */
   existingWorkItemAssignee?: string | null;
+  /**
+   * WI-6554700010008552: when the gate refused independent_verification_missing and
+   * this lifecycle deduped onto a grading REQUEST, whether the re-observation section
+   * now sits on that request's thread. Absent when there was no section to carry.
+   */
+  verificationBriefOnRequest?: 'appended' | 'already-present' | 'failed';
   idempotencyKey: string;
   label: string;
   launch?: unknown;
@@ -333,7 +406,7 @@ export type AcceptanceGraderLifecycle = {
     retiredTaskIds: string[];
     attempts: number;
     codes: AcceptanceGraderTerminalFailureCode[];
-    fallback: { agent: 'codex'; model: 'gpt-5.6-sol'; effort: 'high'; account: 'auto' };
+    fallback: { agent: 'codex'; model: string; effort: string; account: 'auto' };
   };
 };
 
@@ -399,7 +472,13 @@ export type AcceptanceGraderTerminalFailureCode =
   /** A completed grading auditor turn explicitly says it could not reach platform tools. */
   | 'tool_surface_unavailable'
   /** A completed grading auditor turn explicitly declined to emit its audit. */
-  | 'grading_audit_refused';
+  | 'grading_audit_refused'
+  /**
+   * WI-10005295: the auditor finished a turn and then sat idle at its prompt past the
+   * reservation TTL while its card stayed pending, whatever the reason it stopped
+   * without emitting (misread target, tool error, unrecognised refusal wording).
+   */
+  | 'parked_without_emit';
 
 export interface AcceptanceGraderTerminalFailure {
   code: AcceptanceGraderTerminalFailureCode;
@@ -407,6 +486,37 @@ export interface AcceptanceGraderTerminalFailure {
 }
 
 type AcceptanceGraderLogTailReader = (path: string) => string | Promise<string>;
+
+/** Native API-error metadata separates a failed assistant turn from quoted
+ * diagnostics in the frozen user brief or a successful assistant answer. */
+function acceptanceGraderNativeApiErrorStatus(rawTranscript: string, sessionId: string): number | null {
+  type NativeTurn = { type?: unknown; sessionId?: unknown; isSidechain?: unknown;
+    isApiErrorMessage?: unknown; apiErrorStatus?: unknown;
+    message?: { role?: unknown; stop_reason?: unknown } | null };
+  let lastTurn: NativeTurn | null = null;
+  for (const line of rawTranscript.split(/\r?\n/u)) {
+    if (!line.trim()) continue;
+    try {
+      const row = JSON.parse(line) as NativeTurn | null;
+      if (row?.sessionId === sessionId && row.isSidechain !== true &&
+          (row.type === 'user' || row.type === 'assistant')) lastTurn = row;
+    } catch {
+      // A bounded tail can start inside a JSONL record. Incomplete records
+      // cannot authorize recovery, including a new turn after an error.
+      lastTurn = null;
+    }
+  }
+  const status = lastTurn?.apiErrorStatus;
+  if (lastTurn?.type !== 'assistant' || lastTurn.message?.role !== 'assistant' ||
+      lastTurn.isApiErrorMessage !== true || typeof status !== 'number' || status < 400 || status >= 600 ||
+      typeof lastTurn.message.stop_reason !== 'string' ||
+      !['end_turn', 'stop_sequence'].includes(lastTurn.message.stop_reason)) return null;
+  return status;
+}
+
+export function hasAcceptanceGraderNativeApiError(rawTranscript: string, sessionId: string): boolean {
+  return acceptanceGraderNativeApiErrorStatus(rawTranscript, sessionId) !== null;
+}
 
 /**
  * Read a launch receipt's log more than once, but only inside a bounded
@@ -435,6 +545,9 @@ export async function detectAcceptanceGraderTerminalFailure(
     allowToolSurfaceRefusal = false,
     allowGradingAuditRefusal = false,
     detectStartupStall = true,
+    nativeTranscriptPath = null,
+    nativeSessionId = null,
+    nativeBackend = 'claude',
   }: {
     readLogTail: AcceptanceGraderLogTailReader;
     sleep?: (ms: number) => Promise<void>;
@@ -488,18 +601,63 @@ export async function detectAcceptanceGraderTerminalFailure(
     /** Some consumers only need terminal quota detection and must not spend the
      * longer connection-stall window inside their synchronous dispatch path. */
     detectStartupStall?: boolean;
+    /** Exact native JSONL path and session id supplied by the launch receipt. */
+    nativeTranscriptPath?: string | null;
+    nativeSessionId?: string | null;
+    /** The caller must bind the transcript to this exact owner/session first. */
+    nativeBackend?: 'claude' | 'codex';
   },
 ): Promise<AcceptanceGraderTerminalFailure | null> {
   if (!logPath) return null;
   const boundedRechecks = Math.max(0, Math.floor(maxRechecks));
   const boundedDelay = Math.max(0, Math.floor(delayMs));
+  const nativeApiErrorStatus = async (): Promise<number | null> => {
+    if (!nativeTranscriptPath || !nativeSessionId) return null;
+    try {
+      const transcript = await readLogTail(nativeTranscriptPath);
+      if (nativeBackend === 'claude') return acceptanceGraderNativeApiErrorStatus(transcript, nativeSessionId);
+      // A capacity screen is transient. The native task_complete error is a
+      // completed failed turn, even when PTY redraws leave an old Working tail.
+      // Reuse the provider classifier, and discard an old error on any later
+      // turn activity or unreadable record. The owner-bound resolver supplies
+      // identity when the bounded tail no longer contains session_meta.
+      const { classifyCodexProviderError } = await import('./system-health/codex-rollout-persistence-watchdog');
+      let status: number | null = null;
+      for (const line of transcript.split(/\r?\n/u)) {
+        if (!line.trim()) continue;
+        try {
+          const row = JSON.parse(line);
+          if (row.type === 'session_meta' && row.payload?.id !== nativeSessionId) return null;
+          if (row.type === 'event_msg' && row.payload?.type === 'task_complete') {
+            status = classifyCodexProviderError(line)?.rawCode === 'server_overloaded' ? 503 : null;
+          } else if (row.type !== 'event_msg' || row.payload?.type !== 'token_count') {
+            status = null;
+          }
+        } catch {
+          status = null;
+        }
+      }
+      return status;
+    } catch {
+      return null;
+    }
+  };
   let latestRawLog = '';
   for (let recheck = 0; recheck <= boundedRechecks; recheck += 1) {
     latestRawLog = await readLogTail(logPath);
+    const nativeStatus = await nativeApiErrorStatus();
+    if (nativeStatus !== null && nativeStatus >= 500) {
+      return {
+        code: 'inference_gateway_error',
+        evidence: `native final assistant API error status ${nativeStatus}`,
+      };
+    }
+    const nativeCompletedApiError = nativeStatus !== null;
     const terminalFailure = classifyAcceptanceGraderTerminalFailure(latestRawLog, {
       allowStandaloneWeeklyLimit,
-      allowInferenceGatewayError,
-      allowGatewayErrorWithoutFooter,
+      allowInferenceGatewayError: allowInferenceGatewayError || nativeCompletedApiError,
+      // The native completed error remains a receipt when the PTY omits its footer.
+      allowGatewayErrorWithoutFooter: allowGatewayErrorWithoutFooter || nativeCompletedApiError,
       allowLauncherQuotaDrop,
       allowLauncherWalledPoolRefusal,
       allowLauncherKickoffDrop,
@@ -520,10 +678,18 @@ export async function detectAcceptanceGraderTerminalFailure(
   for (let recheck = 0; recheck < boundedStartupRechecks; recheck += 1) {
     await sleep(boundedStartupDelay);
     latestRawLog = await readLogTail(logPath);
+    const nativeStatus = await nativeApiErrorStatus();
+    if (nativeStatus !== null && nativeStatus >= 500) {
+      return {
+        code: 'inference_gateway_error',
+        evidence: `native final assistant API error status ${nativeStatus}`,
+      };
+    }
+    const nativeCompletedApiError = nativeStatus !== null;
     const terminalFailure = classifyAcceptanceGraderTerminalFailure(latestRawLog, {
       allowStandaloneWeeklyLimit,
-      allowInferenceGatewayError,
-      allowGatewayErrorWithoutFooter,
+      allowInferenceGatewayError: allowInferenceGatewayError || nativeCompletedApiError,
+      allowGatewayErrorWithoutFooter: allowGatewayErrorWithoutFooter || nativeCompletedApiError,
       allowLauncherQuotaDrop,
       allowLauncherWalledPoolRefusal,
       allowLauncherKickoffDrop,
@@ -555,6 +721,20 @@ function normalizeAcceptanceGraderLog(rawLog: string): string {
  * plan evidence is rendered in the same log, so broad words would create false
  * positives from the material the judge was asked to inspect.
  */
+/**
+ * WI-10004926: parsers for psu-pty-host's startup-turn drop receipt, which
+ * apps/operator/scripts/psu-pty-host.mjs writes ONLY through
+ * `formatStartupTurnDroppedLine`. Both are `$`-anchored on the
+ * `within <N>ms over <N> attempt(s))` tail. The contract is pinned by
+ * apps/operator/lib/psu-pty-host-drop-line-contract.test.ts, which runs every
+ * drop reason through the real formatter into these patterns. Non-global, so
+ * `String#match` is stateless and the constants are safe to share.
+ */
+export const LAUNCHER_QUOTA_KICKOFF_DROP_RE =
+  /psu-pty-host:\s+launch kickoff DROPPED for [^\n()]{1,200}\s+\(submit verification aborted \(quota-blocked\) within \d+ms over \d+ attempt\(s\)\)$/im;
+export const LAUNCHER_KICKOFF_DROP_RE =
+  /psu-pty-host:\s+launch kickoff DROPPED for [^\n()]{1,200}\s+\((?!submit verification aborted \(quota-blocked\))[^\n]{1,240}? within \d+ms over \d+ attempt\(s\)\)$/im;
+
 export function classifyAcceptanceGraderTerminalFailure(
   rawLog: string,
   {
@@ -626,11 +806,7 @@ export function classifyAcceptanceGraderTerminalFailure(
   // host remains kernel-live, the launch dedupes forever, and the audit
   // reservation never settles. Recognize only the host-owned terminal receipt,
   // only for controlled callers, and reuse the existing quota fallback path.
-  const launcherQuotaDrop = allowLauncherQuotaDrop
-    ? normalized.match(
-        /psu-pty-host:\s+launch kickoff DROPPED for [^\n()]{1,200}\s+\(submit verification aborted \(quota-blocked\) within \d+ms over \d+ attempt\(s\)\)$/im,
-      )
-    : null;
+  const launcherQuotaDrop = allowLauncherQuotaDrop ? normalized.match(LAUNCHER_QUOTA_KICKOFF_DROP_RE) : null;
   if (launcherQuotaDrop) {
     return {
       code: 'model_quota_exhausted',
@@ -646,11 +822,7 @@ export function classifyAcceptanceGraderTerminalFailure(
   // EI-24118203560334206). The quota variant is excluded here so it keeps its
   // dedicated code and backoff above, and a log that shows any first-turn
   // progress is never retired on this signal alone.
-  const launcherKickoffDrop = allowLauncherKickoffDrop
-    ? normalized.match(
-        /psu-pty-host:\s+launch kickoff DROPPED for [^\n()]{1,200}\s+\((?!submit verification aborted \(quota-blocked\))[^\n]{1,240}? within \d+ms over \d+ attempt\(s\)\)$/im,
-      )
-    : null;
+  const launcherKickoffDrop = allowLauncherKickoffDrop ? normalized.match(LAUNCHER_KICKOFF_DROP_RE) : null;
   if (launcherKickoffDrop && !hasAcceptanceGraderFirstTurnProgress(normalized)) {
     return {
       code: 'launch_kickoff_dropped',
@@ -704,13 +876,37 @@ export function classifyAcceptanceGraderTerminalFailure(
   const unsupportedSystemRole = allowInferenceGatewayError
     ? normalized.match(
         /API Error:\s*400\s+role\s+['"]system['"]\s+is not supported on this model[\s\S]{0,800}?✻\s*\p{L}{3,24}\s+for [^\n]{1,120}?\s*·\s*done\b/iu,
-      )
+      ) ?? (allowGatewayErrorWithoutFooter
+        ? normalized.match(/API Error:\s*400\s+role\s+['"]system['"]\s+is not supported on this model/iu)
+        : null)
     : null;
   if (unsupportedSystemRole) {
     return {
       code: 'inference_gateway_error',
       evidence: unsupportedSystemRole[0].replace(/\s+/g, ' ').trim().slice(0, 400),
     };
+  }
+
+  // EI-25493436056846904: native credit refusals omit the API Error prefix
+  // and leave a ledger-live auditor at its idle prompt. The duration/footer
+  // can be damaged by PTY redraws, so require the exact error-result line,
+  // footer and prompt instead of its rendered word "done". Only the latest
+  // result qualifies; resumed assistant/tool work invalidates the old screen.
+  // General acceptance briefs may quote this evidence and keep the opt-in off.
+  const latestResult = normalized.slice(Math.max(0, normalized.lastIndexOf('⎿')));
+  const creditBalanceError = allowInferenceGatewayError
+    ? latestResult.match(
+        /(?:^|\n)[ \t]*⎿[ \t\u00a0]*Credit balance too low[ \t]*·[ \t]*Add funds:[^\n]{0,240}\n[\s\S]{0,800}?✻[^\n]{1,160}\n(?:[ \t─]*\n)*[ \t]*❯/u,
+      )
+    : null;
+  if (creditBalanceError) {
+    const afterPrompt = latestResult.slice((creditBalanceError.index ?? 0) + creditBalanceError[0].length);
+    if (!hasAcceptanceGraderFirstTurnProgress(afterPrompt) && !/(?:^|\n)\s*●/u.test(afterPrompt)) {
+      return {
+        code: 'inference_gateway_error',
+        evidence: creditBalanceError[0].replace(/\s+/g, ' ').trim().slice(0, 400),
+      };
+    }
   }
 
   const gatewayError = allowInferenceGatewayError
@@ -821,12 +1017,12 @@ export function classifyAcceptanceGraderStartupStall(rawLog: string): Acceptance
 
 /**
  * A live task can outlast the grading reservation while its CLI is still
- * parked in startup UI. Process liveness is not first-turn progress: retire
- * only when the task itself and its log have both been quiet for the caller's
- * bounded stale window and the log contains no evidence that grading began.
+ * parked in startup UI. The ordinary path requires both task and log to be
+ * quiet; when title redraws keep mtime recent, an old task with no semantic
+ * first-turn evidence needs a definite `ended` owner-liveness verdict.
  *
  * This is candidate-only. Callers must first check explicit terminal receipts,
- * and should keep this opt-in at the stale-live-task recovery seam.
+ * and use the recent-mtime path only at the stale-live-task recovery seam.
  */
 export function classifyAcceptanceGraderNoFirstTurnStall(
   rawLog: string,
@@ -835,13 +1031,105 @@ export function classifyAcceptanceGraderNoFirstTurnStall(
     logMtimeMs,
     nowMs,
     staleAfterMs,
-  }: {
-    startedAt: string;
-    logMtimeMs: number | null;
-    nowMs: number;
-    staleAfterMs: number;
-  },
+  }: AcceptanceGraderQuietWindowInput,
+  liveness?: Pick<LivenessVerdict, 'sessionState'> | null,
 ): AcceptanceGraderTerminalFailure | null {
+  const quiet = measureAcceptanceGraderQuietWindow({ startedAt, logMtimeMs, nowMs, staleAfterMs });
+  const normalized = normalizeAcceptanceGraderLog(rawLog);
+  if (!normalized.trim() || hasAcceptanceGraderFirstTurnProgress(normalized)) return null;
+
+  if (quiet) {
+    return {
+      code: 'startup_first_turn_stalled',
+      evidence:
+        `no first-turn progress; task age ${quiet.taskAgeMs}ms and ` +
+        `grading log quiet for ${quiet.quietMs}ms`,
+    };
+  }
+
+  const recent = measureAcceptanceGraderRecentLogWindow({ startedAt, logMtimeMs, nowMs, staleAfterMs });
+  if (!recent || liveness?.sessionState !== 'ended') return null;
+
+  return {
+    code: 'startup_first_turn_stalled',
+    evidence:
+      `no first-turn progress; task age ${recent.taskAgeMs}ms and ` +
+      `log redrawn ${recent.logAgeMs}ms ago; owner session ended`,
+  };
+}
+
+/**
+ * A recent log mtime is a liveness-query candidate only when the task itself
+ * is old, the timestamp is sane, and normalized content still has no first-turn
+ * evidence. This filters terminal-title redraws without querying liveness for
+ * healthy turns, fresh tasks, empty logs, or unmeasurable clocks.
+ */
+export function isAcceptanceGraderNoFirstTurnLivenessCandidate(
+  rawLog: string,
+  input: AcceptanceGraderQuietWindowInput,
+): boolean {
+  const normalized = normalizeAcceptanceGraderLog(rawLog);
+  return Boolean(
+    normalized.trim() &&
+      !hasAcceptanceGraderFirstTurnProgress(normalized) &&
+      measureAcceptanceGraderRecentLogWindow(input),
+  );
+}
+
+interface AcceptanceGraderRecentLogWindowInput {
+  startedAt: string;
+  logMtimeMs: number | null;
+  nowMs: number;
+  staleAfterMs: number;
+}
+
+function measureAcceptanceGraderRecentLogWindow({
+  startedAt,
+  logMtimeMs,
+  nowMs,
+  staleAfterMs,
+}: AcceptanceGraderRecentLogWindowInput): { taskAgeMs: number; logAgeMs: number } | null {
+  const startedAtMs = Date.parse(startedAt);
+  const measuredLogMtimeMs =
+    typeof logMtimeMs === 'number' && Number.isFinite(logMtimeMs) ? logMtimeMs : null;
+  if (
+    !Number.isFinite(startedAtMs) ||
+    measuredLogMtimeMs === null ||
+    !Number.isFinite(nowMs) ||
+    !Number.isFinite(staleAfterMs) ||
+    staleAfterMs <= 0 ||
+    startedAtMs > nowMs ||
+    measuredLogMtimeMs < startedAtMs - 5_000 ||
+    measuredLogMtimeMs > nowMs + 5_000
+  ) {
+    return null;
+  }
+  const taskAgeMs = Math.floor(nowMs - startedAtMs);
+  const logAgeMs = Math.max(0, Math.floor(nowMs - measuredLogMtimeMs));
+  if (taskAgeMs < staleAfterMs || logAgeMs >= staleAfterMs) return null;
+  return { taskAgeMs, logAgeMs };
+}
+
+interface AcceptanceGraderQuietWindowInput {
+  startedAt: string;
+  logMtimeMs: number | null;
+  nowMs: number;
+  staleAfterMs: number;
+}
+
+/**
+ * Both the task AND its log must be older than `staleAfterMs`, measured on sane clocks.
+ * A live judge keeps writing its log (Claude's spinner and Codex's `Working ·` status
+ * tick while a turn or a long tool call runs), so a quiet log is the precondition every
+ * TTL-bounded live-task classifier shares. Any unmeasurable input answers null, which
+ * keeps the task: missing evidence is never permission to kill.
+ */
+function measureAcceptanceGraderQuietWindow({
+  startedAt,
+  logMtimeMs,
+  nowMs,
+  staleAfterMs,
+}: AcceptanceGraderQuietWindowInput): { taskAgeMs: number; quietMs: number } | null {
   const startedAtMs = Date.parse(startedAt);
   const measuredLogMtimeMs =
     typeof logMtimeMs === 'number' && Number.isFinite(logMtimeMs) ? logMtimeMs : null;
@@ -859,15 +1147,69 @@ export function classifyAcceptanceGraderNoFirstTurnStall(
   ) {
     return null;
   }
+  return {
+    taskAgeMs: Math.floor(nowMs - startedAtMs),
+    quietMs: Math.floor(nowMs - measuredLogMtimeMs),
+  };
+}
 
-  const normalized = normalizeAcceptanceGraderLog(rawLog);
-  if (!normalized.trim() || hasAcceptanceGraderFirstTurnProgress(normalized)) return null;
+/**
+ * Completed-turn markers of the two judge CLIs, matched on whitespace-stripped text
+ * because PTY redraws join and split words (WI-10003331). Claude ends a turn with
+ * `✻ <Verb> for <duration> · done`. Codex prints `Worked for <duration>` and flips its
+ * status bar to `Ready ·` (observed in task 0muqeanqadsbkcjglk2's log:
+ * `Worked for 20m 18s • 11:40 PMReady ·GPT-5.6-Sol high`).
+ */
+const COMPLETED_TURN_MARKERS: readonly RegExp[] = [
+  /✻[^●✻❯]{1,160}·done/gu,
+  /Workedfor\d+[hms][^●✻❯]{0,120}?Ready·/gu,
+  // WI-10007246: Codex omits Worked-for on a terminal upstream transport error.
+  // Require its error glyph, exact gateway failure and subsequent idle status.
+  // A reconnecting/working screen between the error and Ready is not terminal.
+  /■unexpectedstatus502BadGateway:inference-gateway:codexOAuthupstreamfailed:fetchfailed\((?:(?!Working·|Working\(|Thinking·|Thinking\(|esctointerrupt)[^■●✻❯]){1,1200}?Ready·/giu,
+];
+
+/** Turn activity that, AFTER the last completed-turn marker, means the judge resumed. */
+const RESUMED_TURN_ACTIVITY = /●|Working·|Working\(|Thinking·|Thinking\(|esctointerrupt/u;
+
+/**
+ * WI-10005295: a grading auditor that completed its turn and then sat idle at its prompt
+ * past `staleAfterMs`. Without this, a live-task guard keeps any such task "viable" and
+ * dedupes every later repair to it until a human kills it, whatever the reason the
+ * auditor stopped without emitting. The caller owns the "card still pending" premise:
+ * it only consults this for a pending audit's live task.
+ *
+ * Deliberately narrower than "idle": the latest turn-state in the log must be a
+ * completed-turn marker with no resumed activity after it, so a judge hung mid-turn
+ * (spinner frozen) or still inside a turn is not classified here.
+ */
+export function classifyAcceptanceGraderParkedWithoutEmit(
+  rawLog: string,
+  input: AcceptanceGraderQuietWindowInput,
+): AcceptanceGraderTerminalFailure | null {
+  const quiet = measureAcceptanceGraderQuietWindow(input);
+  if (!quiet) return null;
+
+  const compact = normalizeAcceptanceGraderLog(rawLog).replace(/\s+/g, '');
+  let markerStart = -1;
+  let markerEnd = -1;
+  for (const pattern of COMPLETED_TURN_MARKERS) {
+    for (const match of compact.matchAll(pattern)) {
+      const end = match.index + match[0].length;
+      if (end > markerEnd) {
+        markerStart = match.index;
+        markerEnd = end;
+      }
+    }
+  }
+  if (markerEnd < 0) return null;
+  if (RESUMED_TURN_ACTIVITY.test(compact.slice(markerEnd))) return null;
 
   return {
-    code: 'startup_first_turn_stalled',
+    code: 'parked_without_emit',
     evidence:
-      `no first-turn progress; task age ${Math.floor(nowMs - startedAtMs)}ms and ` +
-      `grading log quiet for ${Math.floor(nowMs - measuredLogMtimeMs)}ms`,
+      `completed its turn and parked without emitting; task age ${quiet.taskAgeMs}ms, ` +
+      `log quiet for ${quiet.quietMs}ms; last marker ${compact.slice(markerStart, markerEnd).slice(0, 120)}`,
   };
 }
 
@@ -1323,6 +1665,51 @@ export interface AcceptanceShipperCarrier {
    * allowed to override the gate (WI-10003286: it counted a 'role-…' card the gate
    * excluded and answered "settled" to every ship retry). An exclusion input only. */
   acceptanceGateFoundNoAdmissibleGrading?: boolean | null;
+  /** WI-6554700010008529: set when the gate refused `independent_verification_missing`.
+   * The rendered re-observation step every grader brief carries ahead of grading. */
+  acceptanceIndependentVerificationBrief?: string | null;
+}
+
+/** The carried re-observation section, or '' (WI-6554700010008529). */
+export function carriedIndependentVerificationBrief(ctx: unknown): string {
+  const raw = ((ctx ?? {}) as AcceptanceShipperCarrier).acceptanceIndependentVerificationBrief;
+  return typeof raw === 'string' ? raw.trim() : '';
+}
+
+/** Author of the re-observation comment carried onto a deduped grading request. */
+export const ACCEPTANCE_GRADER_RECRUITER_ACTOR = 'system:acceptance-grader';
+
+/** How many of a request's latest posts are searched for an identical section. */
+const VERIFICATION_BRIEF_THREAD_WINDOW = 50;
+
+/**
+ * WI-6554700010008552: post the ship gate's independent-verification section on a
+ * grading request the recruiter deduped onto, unless an identical section is already
+ * among its latest posts. A section whose gaps changed (a rebind, a new bar) differs
+ * in text and is posted again, so the newest post is the one to follow.
+ * Throws when the request does not exist.
+ */
+export async function appendIndependentVerificationBriefToRequest(
+  requestId: string,
+  brief: string,
+  scope: { harness?: string; workspaceId?: string },
+  deps: { readThread?: typeof getWorkItemThreadWindow; comment?: typeof commentWorkItem } = {},
+): Promise<'appended' | 'already-present'> {
+  const window = await (deps.readThread ?? getWorkItemThreadWindow)(
+    requestId,
+    VERIFICATION_BRIEF_THREAD_WINDOW,
+    scope.harness,
+  );
+  if (!window) throw new Error(`grading request ${requestId} not found`);
+  if (window.posts.some((post) => typeof post.body === 'string' && post.body.includes(brief))) {
+    return 'already-present';
+  }
+  const post = await (deps.comment ?? commentWorkItem)(requestId, brief, ACCEPTANCE_GRADER_RECRUITER_ACTOR, {
+    ...(scope.workspaceId ? { workspaceId: scope.workspaceId } : {}),
+    ...(scope.harness ? { harness: scope.harness } : {}),
+  });
+  if (!post) throw new Error(`grading request ${requestId} not found`);
+  return 'appended';
 }
 
 /** The union of the carried cohort-stale ids, trimmed and de-duplicated (WI-10003286). */
@@ -1393,6 +1780,7 @@ async function prodDiscoverGrader(
       import('./consult/acceptance-grader-select'),
     ]);
   const { lineagePartyKeys } = await import('./acceptance-author-identity');
+  const { filterDispatchableRoute, probeConsultSourceDispatchable } = await import('./consult/source-dispatchability');
   const resolved = await buildQueryEmbedderResolved();
   const embeddingProfile = resolved
     ? resolveProseProfileSelection(resolved.mode, resolved.profile)
@@ -1442,8 +1830,14 @@ async function prodDiscoverGrader(
       // has to be distinct by PARTY, not by ownerId. Same ledger the acceptance
       // gate already resolves scorecard authors through.
       getPartyKeys: (workspaceId, ownerIds) => lineagePartyKeys(ownerIds, { sql: getOrgPg().sql, workspaceId }),
-      route: (params) =>
-        routeConsult(params, {
+      // WI-6554700010009982: grading DISPATCHES (forks/converts the grader's
+      // transcript), so the router's ranked pool is filtered to sources whose
+      // transcript still exists natively or in the archive. A cascade seated on
+      // undispatchable sources otherwise waits on its 4h expiry.
+      route: async (params) => filterDispatchableRoute(await routeConsult({ ...params, telemetry: {
+          caller: 'acceptance-grader', policy: ACCEPTANCE_GRADING_POLICY, buildSha: getBuildInfo().sha,
+        } }, {
+          recordTelemetry: receipt => recordExpertiseRoutingInvocation(receipt, getOrgPg().sql),
           getSql: () => getOrgPg().sql,
           embed: resolved?.embed ?? null,
           embeddingProfile,
@@ -1459,7 +1853,7 @@ async function prodDiscoverGrader(
               [...verdicts.values()].map((v) => [v.ownerId, selectableGraderLiveness(v)]),
             );
           },
-        }),
+        }), probeConsultSourceDispatchable),
     },
   );
   return {
@@ -1593,6 +1987,97 @@ export function spentGradingCascadeAnswer(
 }
 
 /**
+ * WI-10006700: did cascade-core already finish this grading cascade's menu,
+ * leaving only the terminal STATE unwritten?
+ *
+ * cascade-core records the terminal digest + `selection.underFilled` itself and
+ * hands the state transition to whichever trigger called it. A trigger that drops
+ * that hand-off (the open-dispatch walk did, until WI-10006700) leaves the row
+ * `awaiting_responder` with NOBODY answering: the last digest event is the final
+ * slot's failed dispatch (cascade-core only skips a slot whose dispatch launched
+ * nothing — no queue, no answering owner). Counted as live, such a row makes every
+ * ship retry return `dispatch:'existing'` until the 4h expiry, and the fresh-judge
+ * fallback never fires. This predicate lets the recruiter finish the hand-off.
+ */
+export function gradingCascadeWalkedToExhaustion(routingRaw: unknown, digestRaw: unknown): boolean {
+  const parse = (raw: unknown): unknown => {
+    if (typeof raw !== 'string') return raw;
+    try {
+      return JSON.parse(raw) as unknown;
+    } catch {
+      return null;
+    }
+  };
+  const routing = parse(routingRaw) as { selection?: { underFilled?: unknown } } | null;
+  const underFilled = routing?.selection?.underFilled;
+  if (!underFilled || typeof underFilled !== 'object') return false;
+  const digest = parse(digestRaw);
+  if (!Array.isArray(digest) || digest.length === 0) return false;
+  const last = digest[digest.length - 1] as { kind?: unknown } | null;
+  return last?.kind === 'dispatch_failed';
+}
+
+type OpenGradingAnswererFailure = AcceptanceGraderTerminalFailure & {
+  /** Revalidate the native turn before retiring its exact task. Unknown keeps the slot. */
+  retire?: () => Promise<boolean>;
+};
+
+/** Inspect the CURRENT answering incarnation, never the routed expert's old transcript. */
+export async function readOpenGradingAnswererTerminalFailure(input: {
+  workspaceId: string; conversationId: string; answeringOwnerId: string;
+}, deps: {
+  resolveTarget?: typeof import('./agent-launch-core').resolveResumeTarget;
+  findTranscript?: typeof import('./claude-sessions').findSessionTranscript;
+  listTasks?: typeof listTasks;
+  killTask?: typeof killTask;
+  readLogTail?: AcceptanceGraderLogTailReader;
+} = {}): Promise<OpenGradingAnswererFailure | null> {
+  const [{ resolveResumeTarget }, { findSessionTranscript }] = await Promise.all([
+    import('./agent-launch-core'), import('./claude-sessions'),
+  ]);
+  const resolveTarget = deps.resolveTarget ?? resolveResumeTarget;
+  const findTranscript = deps.findTranscript ?? findSessionTranscript;
+  const readTasks = deps.listTasks ?? listTasks;
+  const readTail = deps.readLogTail ?? readAcceptanceGraderLogTail;
+  const taskFilter = { workspaceId: input.workspaceId, coordOwnerId: input.answeringOwnerId,
+    classes: ['agent-session'] as Array<'agent-session'>, includeEnded: true, limit: 1 };
+  const target = await resolveTarget({ agentId: input.answeringOwnerId });
+  if (!target.ok || target.ownerId !== input.answeringOwnerId ||
+      !['claude', 'claude-code'].includes(target.agent ?? '') || !target.sessionId) return null;
+  const [path, tasks] = await Promise.all([
+    findTranscript(target.sessionId, { owner: input.answeringOwnerId }),
+    readTasks(taskFilter),
+  ]);
+  const task = tasks[0];
+  // An unbound task, a newer incarnation, or an unreadable transcript is not failure evidence.
+  if (!path || !task?.logPath || task.sessionId !== target.sessionId) return null;
+  const nativeTail = await readTail(path);
+  if (!hasAcceptanceGraderNativeApiError(nativeTail, target.sessionId)) return null;
+  const failure = await detectAcceptanceGraderTerminalFailure(task.logPath, {
+    readLogTail: readTail, nativeTranscriptPath: path,
+    nativeSessionId: target.sessionId, maxRechecks: 0, detectStartupStall: false,
+  });
+  if (!failure) return null;
+  return {
+    ...failure,
+    retire: async () => {
+      const [current, currentTasks] = await Promise.all([
+        resolveTarget({ agentId: input.answeringOwnerId }), readTasks(taskFilter),
+      ]);
+      const currentTask = currentTasks[0];
+      if (!current.ok || current.ownerId !== input.answeringOwnerId ||
+          current.sessionId !== target.sessionId || current.agent !== target.agent ||
+          currentTask?.taskId !== task.taskId || currentTask.sessionId !== target.sessionId ||
+          await readTail(path) !== nativeTail) return false;
+      if (currentTask.endedAt) return true;
+      const result = await (deps.killTask ?? killTask)(task.taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
+      return result.ok || result.error === 'not_live' || result.error === 'task_not_found' ||
+        result.error === 'already_gone';
+    },
+  };
+}
+
+/**
  * The dedupe half of {@link prodOpenGradingCascade}, split out so its database
  * behaviour is testable on real PG without the dispatch half (which launches a
  * session). Every open cascade matching this plan + rubric (+ reservation) is read;
@@ -1607,7 +2092,11 @@ export function spentGradingCascadeAnswer(
  */
 export async function reconcileOpenGradingCascades(
   params: Pick<OpenGradingCascadeParams, 'workspaceId' | 'planSlug' | 'rubricId' | 'reservation'>,
-  deps: { nowMs?: number } = {},
+  deps: {
+    nowMs?: number;
+    readTerminalFailure?: typeof readOpenGradingAnswererTerminalFailure;
+    continueDispatch?: typeof import('./consult/consult-dispatch').continueCascadeDispatchProd;
+  } = {},
 ): Promise<{
   liveConversationId: string | null;
   closedSpent: Array<{ conversationId: string; answeredBy: string; answeredAt: string }>;
@@ -1616,7 +2105,8 @@ export async function reconcileOpenGradingCascades(
   const sql = getOrgPg().sql;
   const nowMs = deps.nowMs ?? Date.now();
   const rows = (await sql`
-    SELECT conversation_id, cascade_digest
+    SELECT conversation_id, cascade_digest, routing, cascade_cursor,
+           requester_id, responder_id, state, expires_at, question, latency_contract
       FROM harness_shared.consult_state
      WHERE workspace_id = ${params.workspaceId}
        AND closed_at IS NULL
@@ -1631,14 +2121,108 @@ export async function reconcileOpenGradingCascades(
        )
      ORDER BY created_at DESC
      LIMIT 16
-  `) as unknown as Array<{ conversation_id: string; cascade_digest: unknown }>;
+  `) as unknown as Array<{
+    conversation_id: string;
+    cascade_digest: unknown;
+    routing: unknown;
+    cascade_cursor: number;
+    requester_id: string;
+    responder_id: string | null;
+    state: string;
+    expires_at: string | Date | null;
+    question: string;
+    latency_contract: string;
+  }>;
 
+  // Independent bounded observations run together; updates and dispatch remain serialized by the row CAS.
+  const readFailure = deps.readTerminalFailure ?? readOpenGradingAnswererTerminalFailure;
+  const failures = await Promise.all(rows.map(async (row) => {
+    const answeringOwnerId = answeringOwnerAtCursor(row.routing, row.cascade_cursor);
+    if (!answeringOwnerId || spentGradingCascadeAnswer(row.cascade_digest, nowMs) ||
+        gradingCascadeWalkedToExhaustion(row.routing, row.cascade_digest)) return null;
+    try {
+      return await readFailure({ workspaceId: params.workspaceId,
+        conversationId: row.conversation_id, answeringOwnerId });
+    } catch {
+      return null; // An unavailable observation cannot retire a reviewer.
+    }
+  }));
+  const { advanceCascade, makeDigestEntry, queueCascadeDispatch } = await import('./consult/cascade-core');
+  const { continueCascadeDispatchProd } = await import('./consult/consult-dispatch');
   let liveConversationId: string | null = null;
   const closedSpent: Array<{ conversationId: string; answeredBy: string; answeredAt: string }> = [];
   const nowIso = new Date(nowMs).toISOString();
-  for (const row of rows) {
+  for (const [index, row] of rows.entries()) {
+    if (gradingCascadeWalkedToExhaustion(row.routing, row.cascade_digest)) {
+      // WI-10006700: finish the terminal hand-off a trigger dropped. The CAS
+      // re-asserts the same predicate in SQL, so a row a concurrent trigger
+      // moved (new slot, new digest event) is left alone and stays live.
+      const finished = (await sql`
+        UPDATE harness_shared.consult_state
+           SET state = 'no_qualified_responder',
+               responder_id = NULL,
+               expires_at = NULL,
+               updated_at = ${nowIso}::timestamptz
+         WHERE workspace_id = ${params.workspaceId}
+           AND conversation_id = ${row.conversation_id}
+           AND closed_at IS NULL
+           AND state IN ('awaiting_responder', 'active')
+           AND cascade_cursor = ${row.cascade_cursor}
+           AND routing -> 'selection' ? 'underFilled'
+           AND cascade_digest -> -1 ->> 'kind' = 'dispatch_failed'
+        RETURNING conversation_id
+      `) as unknown as Array<{ conversation_id: string }>;
+      if (finished[0]) continue;
+    }
     const spent = spentGradingCascadeAnswer(row.cascade_digest, nowMs);
     if (!spent) {
+      const failure = failures[index];
+      if (failure) {
+        // Lock only the exact observation. A new answer, cursor, owner, digest,
+        // TTL or close wins before any task is retired or another slot is queued.
+        const recovery = await sql.begin(async (transaction) => {
+          const tx = transaction as unknown as typeof sql;
+          const matched = await tx`
+            SELECT conversation_id FROM harness_shared.consult_state
+             WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${row.conversation_id}
+               AND closed_at IS NULL AND state = ${row.state}
+               AND cascade_cursor = ${row.cascade_cursor}
+               AND responder_id IS NOT DISTINCT FROM ${row.responder_id}
+               AND expires_at IS NOT DISTINCT FROM ${row.expires_at}::timestamptz
+               AND routing IS NOT DISTINCT FROM ${tx.json(row.routing as never)}::jsonb
+               AND cascade_digest IS NOT DISTINCT FROM ${tx.json(row.cascade_digest as never)}::jsonb
+             FOR UPDATE`;
+          if (!matched.length || (failure.retire && !(await failure.retire()))) return 'raced' as const;
+          const result = await advanceCascade({
+            workspaceId: params.workspaceId, conversationId: row.conversation_id,
+            question: row.question, latencyContract: row.latency_contract, requesterId: row.requester_id,
+            routing: row.routing, cascadeCursor: row.cascade_cursor, digest: row.cascade_digest,
+            expectedState: row.state, expectedExpiresAt: row.expires_at,
+            event: makeDigestEntry(row.responder_id ?? '(unrouted)', 'dispatch_failed', nowIso,
+              `Answering mission ended on ${failure.code}: ${failure.evidence}`),
+            stateOnAdvance: 'awaiting_responder', nowIso,
+          }, tx, async (opts) => ({
+            woke: 0, pending: await queueCascadeDispatch(tx, params.workspaceId, opts),
+          }));
+          if (result.raced) return 'raced' as const;
+          if (!result.exhausted) return 'pending' as const;
+          await tx`
+            UPDATE harness_shared.consult_state
+               SET state = 'no_qualified_responder', responder_id = NULL, expires_at = NULL,
+                   updated_at = ${nowIso}::timestamptz
+             WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${row.conversation_id}
+               AND closed_at IS NULL AND state IN ('awaiting_responder', 'active')`;
+          return 'exhausted' as const;
+        });
+        if (recovery === 'exhausted') continue;
+        if (recovery === 'pending') {
+          // The durable consult launch lease outlives this request. It owns the
+          // next dispatch, including the existing independence and model routing.
+          void (deps.continueDispatch ?? continueCascadeDispatchProd)(params.workspaceId, row.conversation_id, {
+            workspaceId: params.workspaceId, harnessSlug: null, launchedBy: ACCEPTANCE_GRADING_SWEEP_ACTOR,
+          }).catch(() => {});
+        }
+      }
       liveConversationId ??= row.conversation_id;
       continue;
     }
@@ -1681,6 +2265,15 @@ type GradingDispatchFailureEvent = {
  * write may report `exhausted`; a race is conservatively treated as an existing
  * live cascade so a fresh judge cannot be launched over another dispatcher.
  *
+ * WI-10006700: an `advance` can itself EXHAUST the menu. cascade-core walks
+ * every later undispatchable slot (skipUndispatched) and the one bounded
+ * min-answers refill round, then records the final digest at the LAST slot it
+ * reached and leaves the terminal state to the trigger. That is a finished
+ * walk, not a race: the terminal CAS must target the slot the walk reached
+ * (`terminalSlot`), not the cursor this loop last read. Collapsing it into
+ * `raced` left a fully-failed menu `awaiting_responder` until the 4h expiry,
+ * so the lineage-safe fresh-judge fallback never fired.
+ *
  * @internal Exported for the regression test that guards the orchestration.
  */
 export async function advanceUndispatchableGradingCascade(input: {
@@ -1696,10 +2289,22 @@ export async function advanceUndispatchableGradingCascade(input: {
     raced: boolean;
     nextOwnerId: string | null;
     queued: number;
+    /** The advance exhausted the menu (after any walk/refill) and recorded the
+     *  final digest itself; the caller owns only the terminal state write. */
+    exhausted?: boolean;
+    /** Where that walk ended — cascade-core's `exhaustedAfterDispatch`. Absent
+     *  when the advance exhausted at the cursor it was handed. */
+    terminalSlot?: { cascadeCursor: number; state: string; expiresAt: string } | null;
   }>;
   markExhausted: (input: {
     cursor: number;
-    digest: GradingDispatchFailureEvent[];
+    /** `null` = the advance already recorded the final digest; keep it. */
+    digest: GradingDispatchFailureEvent[] | null;
+    /** Stamp for `updated_at` when `digest` is null. */
+    at?: string;
+    /** Guard the slot snapshot the walk reported (expiry-core does the same). */
+    expectedState?: string;
+    expectedExpiresAt?: string;
   }) => Promise<boolean>;
 }): Promise<{ status: 'active' | 'exhausted' | 'raced'; woke: number }> {
   if (input.initialQueued > 0) return { status: 'active', woke: input.initialQueued };
@@ -1725,7 +2330,18 @@ export async function advanceUndispatchableGradingCascade(input: {
     }
 
     const step = await input.advance({ cursor, digest: [...digest], event });
-    if (step.raced || !step.advanced || !step.nextOwnerId) return { status: 'raced', woke: 0 };
+    if (step.raced) return { status: 'raced', woke: 0 };
+    if (step.exhausted && !step.advanced) {
+      const slot = step.terminalSlot ?? null;
+      const exhausted = await input.markExhausted({
+        cursor: slot?.cascadeCursor ?? cursor,
+        digest: null,
+        at: event.at,
+        ...(slot ? { expectedState: slot.state, expectedExpiresAt: slot.expiresAt } : {}),
+      });
+      return exhausted ? { status: 'exhausted', woke: 0 } : { status: 'raced', woke: 0 };
+    }
+    if (!step.advanced || !step.nextOwnerId) return { status: 'raced', woke: 0 };
     if (step.queued > 0) return { status: 'active', woke: step.queued };
 
     digest.push(event);
@@ -1830,7 +2446,8 @@ async function prodOpenGradingCascade(
   }
 
   const head = params.graders[0]!;
-  const brief =
+  const verify = carriedIndependentVerificationBrief(ctx);
+  const brief = (verify ? `${verify}\n\n` : '') + (
     head.via === 'minimum'
       ? briefs.buildMinimumFillAcceptanceGraderBrief(
           params.planSlug,
@@ -1843,7 +2460,7 @@ async function prodOpenGradingCascade(
           params.harnessSlug,
           params.rubricId,
           params.reservation,
-        );
+        ));
 
   const opened = await conversations.openConversation(identity, {
     kind: 'consult',
@@ -1950,19 +2567,27 @@ async function prodOpenGradingCascade(
         advanced: advanced.advanced,
         raced: advanced.raced,
         nextOwnerId: advanced.next?.ownerId ?? null,
-        queued: nextDispatch?.queued ?? advanced.woke,
+        // A walk that exhausted reports the slot it reached; a walked dispatch's
+        // queue count belongs to a slot that then failed, so it is never live.
+        queued: advanced.exhausted ? 0 : nextDispatch?.queued ?? advanced.woke,
+        exhausted: advanced.exhausted,
+        terminalSlot: advanced.exhaustedAfterDispatch ?? null,
       };
     },
-    markExhausted: async ({ cursor, digest }) => {
+    markExhausted: async ({ cursor, digest, at, expectedState, expectedExpiresAt }) => {
+      const stamp = at ?? digest?.[digest.length - 1]?.at ?? new Date().toISOString();
       const wrote = (await sql`
         UPDATE harness_shared.consult_state
            SET state = 'no_qualified_responder',
                responder_id = NULL,
                expires_at = NULL,
-               cascade_digest = ${sql.json(digest as never)},
-               updated_at = ${digest[digest.length - 1]!.at}::timestamptz
+               cascade_digest = COALESCE(${digest ? JSON.stringify(digest) : null}::jsonb, cascade_digest),
+               updated_at = ${stamp}::timestamptz
          WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${conversationId}
-           AND cascade_cursor = ${cursor} AND state = 'awaiting_responder' AND closed_at IS NULL
+           AND cascade_cursor = ${cursor} AND closed_at IS NULL
+           AND state = ${expectedState ?? 'awaiting_responder'}
+           AND (${expectedExpiresAt === undefined}::boolean
+                OR expires_at IS NOT DISTINCT FROM ${expectedExpiresAt ?? null}::timestamptz)
         RETURNING conversation_id
       `) as unknown as Array<{ conversation_id: string }>;
       return wrote.length > 0;
@@ -2074,6 +2699,44 @@ export async function advanceGradingCascadeOnCard(input: {
         };
       },
     );
+    // The shared cascade records its final answer but deliberately leaves the
+    // terminal transition to the trigger. Unlike consult:reply and the expiry
+    // sweep, this card trigger is fire-and-forget from the grader's perspective:
+    // they are told to emit the card and not reply. Close the row here when the
+    // selected menu is complete and its minimum was met, or it stays `active`
+    // until the four-hour expiry even though grading has finished.
+    if (result.exhausted && !result.raced && !result.underFilled) {
+      // WI-10006700: when the card's advance dispatched the next grader and
+      // that dispatch walked (skipUndispatched) to the end of the menu, the
+      // row now sits at the LATER slot with that failed grader as responder.
+      // Guard the slot the walk reported, exactly as the expiry sweep does;
+      // guarding the original slot would no-op and strand the row `active`.
+      const walked = result.exhaustedAfterDispatch ?? null;
+      const closed = (await sql`
+        UPDATE harness_shared.consult_state
+           SET state = 'closed_answered',
+               closed_at = ${nowIso}::timestamptz,
+               expires_at = NULL,
+               updated_at = ${nowIso}::timestamptz,
+               outcome = jsonb_build_object(
+                 'source', 'acceptance-grader-card',
+                 'reason', 'cascade_complete',
+                 'answeredBy', ${input.graderOwnerId}::text,
+                 'answeredAt', ${nowIso}::text
+               )
+         WHERE workspace_id = ${input.workspaceId}
+           AND conversation_id = ${row.conversation_id}
+           AND (${walked !== null}::boolean OR responder_id = ${input.graderOwnerId})
+           AND cascade_cursor = ${walked?.cascadeCursor ?? row.cascade_cursor}
+           AND state IN ('awaiting_responder', 'active')
+           AND (${walked === null}::boolean OR state = ${walked?.state ?? null}::text)
+           AND (${walked === null}::boolean
+                OR expires_at IS NOT DISTINCT FROM ${walked?.expiresAt ?? null}::timestamptz)
+           AND closed_at IS NULL
+        RETURNING conversation_id
+      `) as unknown as Array<{ conversation_id: string }>;
+      if (!closed[0]) return { advanced: false, reason: 'raced' };
+    }
     return {
       advanced: result.advanced,
       ...(result.next ? { next: result.next.ownerId } : {}),
@@ -2091,8 +2754,14 @@ export async function resolveAcceptanceGrader(
     discover?: typeof prodDiscoverGrader;
     openCascade?: typeof prodOpenGradingCascade;
     readSettlement?: typeof readAcceptanceGradingSettlement;
-    reserveReviewTarget?: typeof reserveAcceptanceReviewTarget;
+    // Typed by what this function CONSUMES, not by the full producer signature:
+    // the reservation also reports what it settled (WI-10006637), which the
+    // recruiter does not read, so a stub owes only the reference + `created`.
+    reserveReviewTarget?: (
+      ...args: Parameters<typeof reserveAcceptanceReviewTarget>
+    ) => Promise<AcceptanceReviewReservationRef & { created: boolean }>;
     readIneligibleHolders?: typeof prodReadIneligibleGradingHolders;
+    appendVerificationBrief?: typeof appendIndependentVerificationBriefToRequest;
     nowMs?: () => number;
   } = {},
 ): Promise<AcceptanceGraderLifecycle> {
@@ -2159,6 +2828,9 @@ export async function resolveAcceptanceGrader(
       // only a request held by an agent who could grade it (or one filed within
       // the grace window) counts as in flight; an abandoned one, or one held by
       // the shipper or another excluded party, grades nothing (WI-10002459).
+      // Read once: the in-flight guard compares each request's target revision with
+      // it (WI-10006620), and the review-target reservation below keys on it.
+      const rubricRevision = (rubric as unknown as { revision?: number | null }).revision ?? null;
       let existingGradingRequest: WorkItem | undefined;
       try {
         const candidates = await (deps.listWork ?? listWorkItems)({
@@ -2191,7 +2863,7 @@ export async function resolveAcceptanceGrader(
               },
             );
         existingGradingRequest = candidates.find((candidate) =>
-          isInFlightAcceptanceGradingRequest(candidate, planSlug, nowMs, ineligibleHolders),
+          isInFlightAcceptanceGradingRequest(candidate, planSlug, nowMs, ineligibleHolders, rubricRevision),
         );
       } catch (err) {
         // This read is a duplicate guard, not a prerequisite for grading. A
@@ -2203,12 +2875,33 @@ export async function resolveAcceptanceGrader(
         );
       }
       if (existingGradingRequest) {
+        // WI-6554700010008552: a request filed before the gate began refusing
+        // independent_verification_missing carries no re-observation section, so whoever
+        // takes it grades the rubric and binds nothing — and the next retry refuses
+        // again. A fresh launch carries the section in its brief; carry it onto the
+        // request we deduped onto. Fail open: the dedupe itself still stands.
+        const verificationBrief = carriedIndependentVerificationBrief(ctx);
+        const verificationBriefOnRequest = verificationBrief
+          ? await (deps.appendVerificationBrief ?? appendIndependentVerificationBriefToRequest)(
+              existingGradingRequest.id,
+              verificationBrief,
+              { harness: plan.row.harnessSlug ?? undefined, workspaceId: plan.row.workspaceId },
+            ).catch((err: unknown) => {
+              console.warn(
+                `[acceptance-grader] could not carry the independent-verification brief onto ` +
+                  `${existingGradingRequest?.id} for plan ${planSlug}: ` +
+                  `${err instanceof Error ? err.message : String(err)}`,
+              );
+              return 'failed' as const;
+            })
+          : undefined;
         return {
           state: 'deduped',
           idempotencyKey: '',
           label: '',
           existingWorkItemId: existingGradingRequest.id,
           existingWorkItemAssignee: existingGradingRequest.assignee ?? null,
+          ...(verificationBriefOnRequest ? { verificationBriefOnRequest } : {}),
         };
       }
 
@@ -2216,7 +2909,6 @@ export async function resolveAcceptanceGrader(
       // reservation protects the durable reviewer-visible target across retries
       // and concurrent dispatches. The key includes the nullable rubric revision
       // so distinct revisions remain independent.
-      const rubricRevision = (rubric as unknown as { revision?: number | null }).revision ?? null;
       const reserved = await (deps.reserveReviewTarget ?? reserveAcceptanceReviewTarget)(
         {
           workspaceId: plan.row.workspaceId,
@@ -2235,6 +2927,14 @@ export async function resolveAcceptanceGrader(
       // `created` is an upsert outcome for the caller, not part of the stable
       // reference copied into briefs and persisted routing.
       reviewReservation = { conditionKey: reserved.conditionKey, id: reserved.id };
+
+      // Transcript discovery can fork a reviewer with its previous model. An
+      // explicit routine profile must use the pinned launcher after the normal
+      // settlement, held-request and reservation guards have run.
+      if (gradingLaunchProfile(ctx)) {
+        const launched = await launchAcceptanceGrader(planSlug, ctx, { ...deps, reviewReservation });
+        return { ...launched, reviewReservation, ...(settlement ? { settlement } : {}) };
+      }
 
       const selection = await (deps.discover ?? prodDiscoverGrader)(plan, rubric, ctx);
       if (selection.verdict === 'assigned' && selection.graders.length > 0) {
@@ -2427,7 +3127,9 @@ export async function launchAcceptanceGrader(
   const brief = [
     `You are the dedicated acceptance judge for plan ${planSlug}. Grade rubric ${rubricRef} as a fresh non-implementer.`,
     'Do not modify implementation files, run shell commands, recruit peers, or broaden scope. Inspect the frozen evidence below, spot-check cited source/tests with read-only tools, and emit exactly one complete scorecards:emit verdict with concrete evidence for every criterion. After a successful create or unchanged-evidence result, the scorecard writer terminates this task automatically.',
+    ...(carriedIndependentVerificationBrief(ctx) ? [carriedIndependentVerificationBrief(ctx)] : []),
     'If FROZEN_ACCEPTANCE_CONTEXT has contextIntegrity.degraded, follow its recovery recipe with read-only Papercusp tools BEFORE returning NOT GRADED. Recovered evidence is admissible only when plans:get still matches frozenIdentity.planVersion/planContentHash and the completion audit still matches frozenIdentity.auditSeq; on a read or identity mismatch, mark only the affected criteria unknown and name the exact gap.',
+    ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE,
     ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE,
     acceptanceReviewReservationGuidance(deps.reviewReservation),
     `Recorded rerun command (for provenance; your judge policy forbids executing Bash): ${rerun}`,
@@ -2435,7 +3137,8 @@ export async function launchAcceptanceGrader(
   ].join('\n\n');
 
   try {
-    const launch = deps.launch ?? launchAgentTool.handler;
+    const profile = gradingLaunchProfile(ctx);
+    const launch = withGradingLaunchProfile(deps.launch ?? launchAgentTool.handler, profile);
     const readTasks = deps.listTasks ?? listTasks;
     const terminateTask = deps.killTask ?? killTask;
     const readLogTail = deps.readLogTail ?? readAcceptanceGraderLogTail;
@@ -2446,7 +3149,7 @@ export async function launchAcceptanceGrader(
     const terminalTaskIds: string[] = [];
     const terminalCodes: AcceptanceGraderTerminalFailureCode[] = [];
     let currentIdempotencyKey = idempotencyKey;
-    let launchBackend: 'claude' | 'codex' = 'claude';
+    let launchBackend: 'claude' | 'codex' = profile?.agent ?? 'claude';
     let terminalFallbacks = 0;
 
     const recoveryFields = (attempts: number) => ({
@@ -2457,7 +3160,7 @@ export async function launchAcceptanceGrader(
               retiredTaskIds: terminalTaskIds,
               attempts,
               codes: terminalCodes,
-              fallback: ACCEPTANCE_GRADER_FALLBACK,
+              fallback: profile ?? ACCEPTANCE_GRADER_FALLBACK,
             },
           }
         : {}),
@@ -2470,6 +3173,10 @@ export async function launchAcceptanceGrader(
           brief,
           harness: plan.row.harnessSlug,
           headless: true,
+          // The judge must evaluate and emit through the same code/proof plane
+          // that recruited it. The stable proxy may still serve an older green
+          // reader that cannot consume this plan's current evidence contract.
+          mcpTarget: 'spawn-host',
           // WI-10002152: an unattended headless judge MUST route through the
           // inference gateway (`auto`), never the single system credential
           // (`default`). `default` skips the gateway and therefore cannot fail
@@ -2514,7 +3221,8 @@ export async function launchAcceptanceGrader(
                * its deadline; only `kickoff-not-submitted:*` is conclusive by
                * itself. Pair other negative receipts with `agentStarted`.
                */
-              kickoffProof?: { persisted?: unknown; reason?: unknown } | null;
+              kickoffProof?: { persisted?: unknown; reason?: unknown; nativeRef?: unknown } | null;
+              nativeSession?: { backend?: unknown; sessionId?: unknown } | null;
             }>;
             // EI-21923986145923904: present only when the fresh-launch verification
             // path ran (see FreshLaunchVerdict.agentStarted); absent for a discovery
@@ -2559,6 +3267,12 @@ export async function launchAcceptanceGrader(
         : logPath
         ? await detectAcceptanceGraderTerminalFailure(logPath, {
             readLogTail,
+            ...(launchedTask?.nativeSession?.backend === 'claude' &&
+                typeof launchedTask.nativeSession.sessionId === 'string' &&
+                typeof launchedTask.kickoffProof?.nativeRef === 'string'
+              ? { nativeTranscriptPath: launchedTask.kickoffProof.nativeRef,
+                  nativeSessionId: launchedTask.nativeSession.sessionId }
+              : {}),
             ...(sleep ? { sleep } : {}),
             ...(deps.terminalLogRecheckDelayMs !== undefined ? { delayMs: deps.terminalLogRecheckDelayMs } : {}),
             ...(deps.terminalLogMaxRechecks !== undefined ? { maxRechecks: deps.terminalLogMaxRechecks } : {}),
@@ -2585,7 +3299,10 @@ export async function launchAcceptanceGrader(
           };
         }
         const killed = await terminateTask(taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
-        if (!killed.ok && killed.error !== 'not_live' && killed.error !== 'task_not_found') {
+        // The exact failed process may exit and have its scope collected before
+        // this signal. already_gone confirms retirement just as not_live does.
+        if (!killed.ok && killed.error !== 'not_live' && killed.error !== 'task_not_found' &&
+            killed.error !== 'already_gone') {
           return {
             state: 'failed',
             idempotencyKey: currentIdempotencyKey,
@@ -2678,7 +3395,7 @@ export async function launchAcceptanceGrader(
       }
       if (live) {
         const killed = await terminateTask(taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
-        if (!killed.ok) {
+        if (!killed.ok && killed.error !== 'already_gone') {
           return {
             state: 'failed',
             idempotencyKey: currentIdempotencyKey,
@@ -2709,7 +3426,7 @@ export async function launchAcceptanceGrader(
               retiredTaskIds: terminalTaskIds,
               attempts: ACCEPTANCE_GRADER_MAX_STALE_RETRIES + 1,
               codes: terminalCodes,
-              fallback: ACCEPTANCE_GRADER_FALLBACK,
+              fallback: profile ?? ACCEPTANCE_GRADER_FALLBACK,
             },
           }
         : {}),

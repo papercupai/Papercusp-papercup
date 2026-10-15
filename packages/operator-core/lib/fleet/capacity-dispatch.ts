@@ -37,7 +37,7 @@ export interface CapacitySignal {
   inFlight?: number;
   /** Pool-wide healthy accounts from the gateway tier oracle. */
   healthyAccounts?: number | null;
-  /** Spare slots in the bee tier: cap - inFlight - queued. */
+  /** Spare provider admission slots, with the legacy tier estimate only for older snapshots. */
   dispatchBudget?: number | null;
 }
 
@@ -498,11 +498,7 @@ export async function queenCapacityHeadroom(
     if (!gwOn) return noClamp('inference gateway off → no capacity oracle, no clamp (fail-safe)');
     const { fetchGatewayHeadroom } = await import('../inference-gateway/observability');
     const gw = await fetchGatewayHeadroom({ timeoutMs: opts.timeoutMs ?? 1200 });
-    const beeTier = tierOf('cup', DEFAULT_GATEWAY_PRIORITY_MAP);
-    const beeRow = gw.priorityTiers?.tiers.find((t) => t.tier === beeTier) ?? null;
-    const dispatchBudget =     beeRow && beeRow.minShare != null
-      ? Math.max(0, beeRow.minShare - beeRow.inFlight - beeRow.queued)
-      : null;
+    const capacity = buildCapacityReport(gw, { clampArmed: true, config });
     signal = {
       reachable: gw.reachable,
       utilization: gw.utilization,
@@ -511,8 +507,8 @@ export async function queenCapacityHeadroom(
       queueDepth: gw.queueDepth,
       inFlight: gw.inFlight,
       processUptimeMs: gw.processUptimeMs,
-      healthyAccounts: gw.priorityTiers?.healthyAccounts ?? null,
-      dispatchBudget,
+      healthyAccounts: capacity.healthyAccounts,
+      dispatchBudget: capacity.dispatchBudget,
     };
   }
   return computeCapacityHeadroom(beeHeadroom, signal, config);
@@ -548,13 +544,11 @@ export interface CapacityReport {
   resetInSecActionable: boolean;
   healthyAccounts: number | null;
   tier1Reserve: number | null;
-  /** The admission tier bee work maps to (default 3) — the band `dispatchBudget` is measured in. */
+  /** The admission tier bee work maps to (default 3), used by the legacy tier estimate. */
   beeTier: number;
-  /** Spare bee-tier slots right now = minShare − inFlight − queued (D-001). null when the tier layer is off.
-   *
-   *  ⚠ This is a CONSERVATIVE floor, not the pool's true headroom: `minShare` is the tier's guaranteed
-   *  minimum share, and since WI-4541 a tier at its share may still borrow idle slots when no
-   *  higher tier is waiting. A zero here therefore means "no guaranteed slots left", not "no capacity". */
+  /** Spare provider slots = live admission window − running − queued. Older snapshots
+   * without a window retain the conservative tier minimum-share estimate; incomplete
+   * live readings remain null. A tier reservation is never a live concurrency cap. */
   dispatchBudget: number | null;
   /** Real usable accounts for the bee provider from the account-pool projection (accounts:status), when
    *  supplied — the count that is `available` AND not edge-throttled. null when no cross-check was passed. */
@@ -701,10 +695,22 @@ export function buildCapacityReport(
   const pt = hr.priorityTiers;
   const capByTier = pt?.tiers ?? null;
   const beeRow = pt?.tiers.find((t) => t.tier === beeTier) ?? null;
-  const dispatchBudget =     beeRow && beeRow.minShare != null
+  // WI-10007425: priority tiers are work-conserving. A minimum share reserves
+  // capacity under contention; it is not the maximum number of fleet members.
+  // Reuse the provider queue's live window and occupancy, which also drive the
+  // canonical admission state. Retain the old estimate only for older snapshots
+  // that do not publish a window; an incomplete live reading stays unknown.
+  const liveAdmissionMeasured = [hr.admissionWindow, hr.inFlight, hr.queueDepth].every(
+    (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0,
+  );
+  const dispatchBudget = hr.admissionWindow !== undefined
+    ? liveAdmissionMeasured
+      ? Math.max(0, Math.floor(hr.admissionWindow! - hr.inFlight! - hr.queueDepth!))
+      : null
+    : beeRow && beeRow.minShare != null
       ? Math.max(0, beeRow.minShare - beeRow.inFlight - beeRow.queued)
       : null;
-  signal.healthyAccounts = pt?.healthyAccounts ?? null;
+  signal.healthyAccounts = pt?.healthyAccounts ?? hr.healthyAccounts ?? null;
   signal.dispatchBudget = dispatchBudget;
   let factor = capacityFactor(signal, config);
   const restartRecovering = isFreshGatewayRestart(signal, config);
@@ -976,7 +982,7 @@ export function buildCapacityReport(
     rejected: !!hr.rejected,
     resetInSec: hr.resetInSec ?? null,
     resetInSecActionable: !blind,
-    healthyAccounts: pt?.healthyAccounts ?? null,
+    healthyAccounts: pt?.healthyAccounts ?? hr.healthyAccounts ?? null,
     tier1Reserve: pt?.tier1Reserve ?? null,
     beeTier,
     dispatchBudget,

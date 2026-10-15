@@ -103,6 +103,25 @@ export const DISPATCH_WRAPPER_METADATA_KEY = 'dispatchWrapper';
 export const DISPATCH_WRAPPER_EXCLUSION_SQL =
   `NOT coalesce((metadata_json->>'${DISPATCH_WRAPPER_METADATA_KEY}')::boolean, false)`;
 
+/**
+ * Owner scope for sessions:timeline's page and audit queries. The namespaced
+ * system:<role>/<client> identity is accepted only when the dispatcher marked
+ * the signed spawn URL trusted and its request-origin client exactly matches
+ * the requested session owner.
+ */
+export function toolInvocationOwnerPredicate(sql: Sql, owner: string) {
+  return sql`(
+    coord_owner_id = ${owner}
+    OR (
+      principal_kind = 'harness'
+      AND principal_auth_method = 'spawn-url'
+      AND principal_trust = 'trusted'
+      AND metadata_json->'requestOrigin'->'query'->>'client' = ${owner}
+      AND coord_owner_id = ('system:' || role || '/' || ${owner})
+    )
+  )`;
+}
+
 /** `sql`-tag form of {@link DISPATCH_WRAPPER_EXCLUSION_SQL}, alias-aware like the
  *  behavior predicates below (alias is an internal identifier from the reader,
  *  never caller input — postgres cannot parameterize column names). */

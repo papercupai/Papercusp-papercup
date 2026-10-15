@@ -1,0 +1,833 @@
+{
+  "schemaVersion": 1,
+  "status": "applied-reviewed",
+  "seedRowsSha256": "a2fdb5475a100101ea8dafb6019d75045cb38e53ef1a5e4870c6670d5abb77e4",
+  "proposals": [
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts|<module>|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts",
+        "line": 106,
+        "syntax": "Parameter",
+        "declaration": "alert: CarryDrillDropAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts|<module>|2",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts",
+        "line": 147,
+        "syntax": "Parameter",
+        "declaration": "alert: OrphanedRespawnAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts|defaultEscalate|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts",
+        "line": 372,
+        "syntax": "Parameter",
+        "declaration": "alert: CarryDrillDropAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts|defaultEscalateOrphan|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts",
+        "line": 436,
+        "syntax": "Parameter",
+        "declaration": "alert: OrphanedRespawnAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts|escalateCompactionStranding|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts",
+        "line": 2076,
+        "syntax": "Parameter",
+        "declaration": "alert: CompactionStrandingAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as PropertySignature, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 577,
+        "syntax": "PropertySignature",
+        "declaration": "alert: GoalPlanFleetAlert | null;"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalPlanFleetLegEventKey|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 649,
+        "syntax": "Parameter",
+        "declaration": "alert: Pick<GoalPlanFleetAlert, 'goalId' | 'reason'>"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalPlanFleetEventPayload|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 664,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalPlanFleetAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalPlanFleetSubjectSignature|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 691,
+        "syntax": "Parameter",
+        "declaration": "alert: Pick<GoalPlanFleetAlert, 'workspaceId' | 'goalId' | 'reason' | 'planSlug'>"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalPlanFleetRemedy|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 697,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalPlanFleetAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalDrainRelaunchEligibility|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 845,
+        "syntax": "Parameter",
+        "declaration": "alert: Pick<GoalDrainAlert, 'reason'>"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|2",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 912,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalDrainAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|3",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 915,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalDrainAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|4",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 944,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalDrainFleetPullStallAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|5",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 953,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalPlanFleetAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|6",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 955,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalPlanFleetAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|7",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 957,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalPlanFleetAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|defaultEscalatePullStall|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 1544,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalDrainFleetPullStallAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|defaultEscalate|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 1596,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalDrainAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|defaultEmitDrainDead|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 1965,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalDrainAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|defaultEscalatePlanFleet|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 2000,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalPlanFleetAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|defaultEmitPlanFleet|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 2023,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalPlanFleetAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|defaultNotifyPlanFleetHolders|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 2052,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalPlanFleetAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts|<module>|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts",
+        "line": 146,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalEditClaimAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts|<module>|2",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts",
+        "line": 150,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalEditClaimAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts|defaultEscalate|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts",
+        "line": 250,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalEditClaimAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts|defaultEmitEditClaim|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts",
+        "line": 310,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalEditClaimAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|<module>|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts",
+        "line": 72,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalGradingBacklogAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|<module>|2",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts",
+        "line": 74,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalGradingBacklogAlert & { graderId: string }"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|describeGrader|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts",
+        "line": 112,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalGradingBacklogAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|defaultEscalate|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts",
+        "line": 119,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalGradingBacklogAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|defaultWakeGrader|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts",
+        "line": 151,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalGradingBacklogAlert & { graderId: string }"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|runGoalGradingBacklogSweepOnce|2",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as VariableDeclaration, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts",
+        "line": 249,
+        "syntax": "VariableDeclaration",
+        "declaration": "alert: GoalGradingBacklogAlert = { ...goal, verdict, graderId, graderAlive }"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+        "line": 507,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalLivenessAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|2",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+        "line": 515,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalReadinessAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|3",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+        "line": 524,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalWedgeAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|4",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+        "line": 540,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalPortfolioIdleAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|5",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+        "line": 552,
+        "syntax": "Parameter",
+        "declaration": "alert: UnplannedClusterAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|defaultEscalatePortfolioIdle|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+        "line": 771,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalPortfolioIdleAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|defaultEscalate|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+        "line": 1074,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalLivenessAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|defaultEscalateReadiness|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+        "line": 1140,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalReadinessAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|defaultEscalateWedge|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+        "line": 1265,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalWedgeAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts|buildReportSkeleton|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts",
+        "line": 338,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalOwnerReportAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts|<module>|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts",
+        "line": 357,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalOwnerReportAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts|<module>|2",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts",
+        "line": 359,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalOwnerReportAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts|defaultEscalate|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts",
+        "line": 503,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalOwnerReportAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts|defaultNudge|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts",
+        "line": 543,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalOwnerReportAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/kernel-leak-watchdog.ts|formatKernelLeakEscalation|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/kernel-leak-watchdog.ts",
+        "line": 219,
+        "syntax": "Parameter",
+        "declaration": "alert: KernelLeakAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/kernel-leak-watchdog.ts|<module>|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/kernel-leak-watchdog.ts",
+        "line": 256,
+        "syntax": "Parameter",
+        "declaration": "alert: KernelLeakAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/kernel-leak-watchdog.ts|defaultEscalate|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/kernel-leak-watchdog.ts",
+        "line": 318,
+        "syntax": "Parameter",
+        "declaration": "alert: KernelLeakAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts|<module>|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts",
+        "line": 157,
+        "syntax": "Parameter",
+        "declaration": "alert: RestartRateAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts|defaultEscalate|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts",
+        "line": 189,
+        "syntax": "Parameter",
+        "declaration": "alert: RestartRateAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts|<module>|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/unservable-critical-watchdog.ts",
+        "line": 189,
+        "syntax": "Parameter",
+        "declaration": "alert: UnservableAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts|remedyFor|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/unservable-critical-watchdog.ts",
+        "line": 325,
+        "syntax": "Parameter",
+        "declaration": "alert: UnservableAlert"
+      }
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts|defaultEscalate|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/unservable-critical-watchdog.ts",
+        "line": 340,
+        "syntax": "Parameter",
+        "declaration": "alert: UnservableAlert"
+      }
+    }
+  ],
+  "reviewerRef": "thread-post:1176052"
+}

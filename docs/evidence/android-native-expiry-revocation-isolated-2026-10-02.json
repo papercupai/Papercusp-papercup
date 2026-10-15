@@ -1,0 +1,299 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "android-native-expiry-revocation-isolated-2026-10-02",
+  "framework": "operational",
+  "command": [
+    "bash",
+    "tools/run-android-checks.sh",
+    "isolated-native",
+    "${PAPERCUP_OPERATOR_CHECKOUT}",
+    "android/app/build/ci-evidence/auth-20261002-2120"
+  ],
+  "commandCwd": "papercup-rust-mobile",
+  "commandParameterBasis": "Operator checkout is a read-only freshness-verified prepared ef3b3f4bc270 generation; exact source and loaded bundle hashes below. Portable placeholder avoids embedding the private host path.",
+  "startedAt": "2026-10-02T21:21:34.794875+00:00",
+  "finishedAt": "2026-10-02T21:22:38.548108+00:00",
+  "exitCode": 0,
+  "summary": "Eight maintained Compose/JNI tests passed against exact private operator ef3b3f4bc270, including actual signed expired JWT rejection, Settings fresh pairing, missing/denied/approved biometric callback controls, actual owned-device revocation and recovery. Provenance barrier and cleanup passed.",
+  "scope": "Local debug integration on owned API36/16KB emulator. Platform biometric callback and enrollment browser intent are explicitly stubbed. Not signed release candidate, OS biometric UI, full mesh/browser journey, physical phone, hosted automatic CI, Play or public-install acceptance.",
+  "workItems": [
+    "WI-10004768",
+    "WI-10004770",
+    "WI-10004773",
+    "EI-24902340217495812",
+    "EI-24903461105383050",
+    "EI-24903916158115381"
+  ],
+  "containingSourceCommit": "73863982d19cf7c56f0ad2af4b8abb33939b106b",
+  "sourceDirtyAtExecution": true,
+  "sourceDirtyBasis": "The lifecycle test environment regression guard was awaiting automatic commit during execution; retained exact source hashes identify the executed bytes. Product, launcher, runner and docs were committed in 73863982d19cf7c56f0ad2af4b8abb33939b106b and its containing history.",
+  "runId": "104b363a931741d1a3f3167f6445109d",
+  "sourceFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/run-android-checks.sh",
+      "sha256": "038fc70fa7d12a063c0ef354544a38548cf0e883be8639151ee7383901e7aa0e"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/build-scripts/build-android.sh",
+      "sha256": "536a01cbce75c84211a8e7043761934f7b6b4e2b69efdf63139185d923ea7596"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build.gradle.kts",
+      "sha256": "9e412c8c5f580d75cb5c858f41bdea55c2ba357c8dc6bac20497b6d1b82986e3"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/SettingsScreen.kt",
+      "sha256": "47fdad90680d0c1affa8764f7d2bc29340ebe27d72c434ad56474065d86ed57e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/DiagnosticsScreen.kt",
+      "sha256": "80d061ef6f14b1fe54b093b8464253df80f9c868a1ef8b1fb91036f9554905fd"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/MainActivity.kt",
+      "sha256": "2d9ec406c9485780dfaae59f22abd31f2a04cd8c08f56c40e60a027495e15638"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/AndroidManifest.xml",
+      "sha256": "f2156e5cd114b6c1f21e9fee92505d1b8671f9d5395eba1d5b8167e6e58caaa0"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/PapercupApplication.kt",
+      "sha256": "64d99440c8c918d82ca528d4454bd650c21c3eb0232c7153d0d5b78cf44e95ab"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/InboxScreen.kt",
+      "sha256": "1d6e8b64f543ddb9bd20f14e36415ee07c3c87f758adb363f7c2ccf48252e698"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/CompanionFeed.kt",
+      "sha256": "45715903c679d2e1ac2bc5c548ea27bfb401942107177d439550f2b4738baa41"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/Credentials.kt",
+      "sha256": "6ac079028424cdb141b6104298f68d3a38ed5e6807631406a8191459d0d088c1"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/HumanError.kt",
+      "sha256": "3ad6407a781490d8b46f4ad9bb6f6a0dd76d2d992dd4f74366c7b177a13e6783"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/PairScreen.kt",
+      "sha256": "3d7acc64a27e9b12f17c94fc77c2108460e0aa300ba4a10dff0c82eef61da50b"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/OperatorChatScreen.kt",
+      "sha256": "a0fda70c5069a35c9649b411bc3f9c61dae545e169d6550de1b9c0f319a3fb3d"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/PapercupAppSmokeTest.kt",
+      "sha256": "6f58a5e1fe3d1f06ba722445af0d2e258ab6f63d4ec569f665353616684b7958"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/OperatorChatScreenTest.kt",
+      "sha256": "ea8027b17abf01111a4f9b183fb961a2bd237daa370782b100472acaa4cd3160"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/UniffiCallbackTest.kt",
+      "sha256": "96d13216044dc5efe645c7e57f6e509bda62a041edc2dc29b40d14b0c2cd7426"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/tests/run-android-checks-test.sh",
+      "sha256": "32b2526dc4385e2f118f1fdada2e40691d78f16cd0710719ce639a3cfbbbef2a"
+    },
+    {
+      "path": "papercup-rust-mobile/crates/papercup-core/src/biometric.rs",
+      "sha256": "62232e1dfa29ec56ad2186850b41fd105bd01e5de7e03acd7098d6ef63c1c903"
+    },
+    {
+      "path": "papercup-rust-mobile/crates/papercup-bindings/src/lib.rs",
+      "sha256": "0a8e283c1bb2c65d9ada8d5ed30236ec9724328e05f5002b9720ddf71a86cdbe"
+    },
+    {
+      "path": "papercup-rust-mobile/docs/BUILD.md",
+      "sha256": "2a35df9c30891f950b6668bc49d4101077a7e5b8407a5e9b6015c0e8c995ca6e"
+    }
+  ],
+  "rawEvidence": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/auth-20261002-2120/result.json",
+      "sha256": "9d514c082de179df0f807961fe97dbc13844fc855143092d66a3b7a3bed368e7"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/auth-20261002-2120/native-test.log",
+      "sha256": "a0d6d021631b101c9f0cf9c29873f4b3940a58588167435b8cef3c6d1b726054"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/auth-20261002-2120/wrapper.log",
+      "sha256": "4126f19a4937051c1ce69cb436f75c9f6c013ab3dc12ceac17829d057382c1b9"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/auth-20261002-2120/runner-controls-r5.log",
+      "sha256": "8cdadad6db90b1099b1dff30419296bbea52ae246c8b8dac8bf562aec749e38e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/auth-20261002-2120/biometric-controls-r5.log",
+      "sha256": "b6bc7c2cc64f17bbb4ef7b1e699bfa26c227e32c2c1d81927feed7372ff98345"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/auth-20261002-2120/test-apk-build-r4.log",
+      "sha256": "17e1e25034bf28eb3b449d6a4ed1f800a55f0bbcc3025174243fe0db189f9da3"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/auth-20261002-2120-runtime/result.json",
+      "sha256": "54fb6131ffb639458a8442e58ef2cff0d52e66dc3961c8e8c27bd5bf1f92fdee"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/auth-20261002-2120/native-results/TEST-wi10004768-auth-20261002-2120-16k(AVD) - 16-_app-.xml",
+      "sha256": "093a3a54dbe40164e853904a103495dbe4ce895a04ce17dbc1d63f5ff5a5fecd"
+    }
+  ],
+  "testedArtifacts": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/auth-20261002-2120/app-debug.apk",
+      "sha256": "666b8d45dacbfa404c0a66a1140043f79d08361e94c22e0a5141bd5861944d69"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/auth-20261002-2120/app-debug-androidTest.apk",
+      "sha256": "506296e22bbe3bb4e1ab1c508b0d938e933f25d7ba4e3c8bd4bf8ab22b7d3428"
+    }
+  ],
+  "operator": {
+    "sourceCommit": "ef3b3f4bc270b54db0d647b508fb45482f62f6fe",
+    "bundleSha256": "bc18bb1d2f9c03d31bf8c2fc22131703c0da42e5b18a8a5710641cfd4e96bcdc",
+    "health": {
+      "ok": true,
+      "service": "papercusp-operator",
+      "sha": "ef3b3f4bc2",
+      "version": "0.0.0",
+      "ts": "2026-10-02T21:21:34.537Z"
+    },
+    "profile": "with-test-pg --isolated-runtime=operator-api",
+    "freshnessManifestVerified": true,
+    "bundleUsedReadOnly": true
+  },
+  "emulator": {
+    "api": 36,
+    "pageSizeBytes": 16384,
+    "serial": "emulator-5584",
+    "dataPartitionBytes": 6442450944
+  },
+  "testCounts": {
+    "native": {
+      "executed": 8,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "preflight": {
+      "lifecycleFixtureControls": 9,
+      "proofBarrierFixtureControls": 54,
+      "authFixtureControls": 8,
+      "liveFixtureControls": 36,
+      "rustBiometricTests": 5
+    }
+  },
+  "countBasis": "Native counts come from retained exact-eight JUnit testcase identities; preflight counts are reported by maintained control writers and the actual Rust lib test runner. Fixture controls establish their named guard behavior only.",
+  "nativeTestNames": [
+    "forbiddenSendKeepsDraftWithoutInventingAPersistedTurn",
+    "launcherActivityStarts",
+    "privateInboxScopeAcceptsOnlyDocumentedGlobalControls",
+    "rejectedDraftSurvivesSameScopeRepairAndActivityRecreation",
+    "rejectedDraftSurvivesSettingsRoundTrip",
+    "repairToAnotherServerDoesNotExposePreviousDraft",
+    "repairToAnotherWorkspaceDoesNotExposePreviousDraft",
+    "unauthorizedSendKeepsDraftWithoutInventingAPersistedTurn"
+  ],
+  "authFixtureBasis": {
+    "controlDeviceId": "8d33a740-a111-4968-9893-85b407189fed",
+    "controlAccepted": true,
+    "expiredRejectedStatus": 403,
+    "expiredTokenSha256": "e303588994b082d89122ae2dbeb32518116db62987336e171c5c19040328a90d",
+    "signerSourceSha256": "0b5b41450b9f764d56d037b2c267b953042ef32b7ff133b8b861067c5f3839c9",
+    "method": "existing signDeviceToken with past clock; same signature/scope/device positive control"
+  },
+  "nativeJourney": {
+    "runId": "104b363a931741d1a3f3167f6445109d",
+    "journeyCompleted": true,
+    "enrollmentBrowserStubbed": true,
+    "currentStage": "completed",
+    "deviceId": "8d5858a4-8094-4702-9091-4c4448efe122",
+    "workspaceId": "android-live-scope-104b363a931741d1a3f3167f6445109d",
+    "enrollmentIntentObserved": true,
+    "authenticatedRequestPassed": true,
+    "returnedToPairedShell": true,
+    "activityRecreated": true,
+    "inboxScopedReadPassed": true,
+    "inboxRenderingPassed": true,
+    "inboxUnauthorizedPassed": true,
+    "inboxRecoveryPassed": true,
+    "expiredJwtControlPassed": true,
+    "expiredJwtRejected": true,
+    "expiredJwtRenderingPassed": true,
+    "expiredJwtFreshPairPassed": true,
+    "revocationMissingPromptBlocked": true,
+    "revocationDeniedPromptBlocked": true,
+    "revocationApprovedPromptInvoked": true,
+    "revocationBiometricPromptStubbed": true,
+    "revokedDeviceRejected": true,
+    "revokedDeviceRenderingPassed": true,
+    "revokedDeviceFreshPairPassed": true,
+    "meshEnrollmentClaimCorrect": true,
+    "valueRowLabelsPassed": true,
+    "navigationPassed": true,
+    "credentialsCleared": true
+  },
+  "cleanup": {
+    "nativeOwnedWorkspaceAndDevicesRemoved": true,
+    "hostStopped": true,
+    "nativeProcessStopped": true,
+    "postgresDataDirsAbsent": [
+      "/tmp/papercusp-test-pg-7fSVh0"
+    ],
+    "ownedEmulatorUnitState": "MainPID=0\nActiveState=inactive",
+    "ownedAvdAndIniRemoved": true
+  },
+  "priorAttempts": {
+    "setupStageUnmeasured": "481260e87d534407a26cf7142733b2ed",
+    "expiredRecoveryPassedRevocationFixtureFailed": "22a3409eddef4359ae8c8a3a1b48b9c6",
+    "automaticPreflightRejectedInheritedPin": "/tmp/android-auth-native-20261002-2120.log"
+  },
+  "assertions": [
+    {
+      "id": "exact-eight-native",
+      "passed": true,
+      "evidence": "Eight unique maintained JUnit identities, zero failures/errors/skips; exact source/counterpart/APK/journey/cleanup verifier exit0."
+    },
+    {
+      "id": "actual-expired-jwt",
+      "passed": true,
+      "evidence": "Same signature/scope/device positive control accepted; signer past-clock token rejected HTTP403 by actual operator; JNI rejection, error rendering and Settings fresh pairing passed."
+    },
+    {
+      "id": "actual-revocation",
+      "passed": true,
+      "evidence": "Missing and Denied biometric prompts left device valid; test Approved callback invoked once; actual revoke caused JNI authorization failure, explicit error rendering and Settings fresh-pair recovery."
+    },
+    {
+      "id": "fixture-boundaries",
+      "passed": true,
+      "evidence": "Platform biometric decision and enrollment browser intent explicitly stubbed; actual UniFFI approval gate and owned HTTP/device state execute. No physical-phone or OS biometric acceptance claimed."
+    },
+    {
+      "id": "automatic-preflight",
+      "passed": true,
+      "evidence": "Maintained nine private-host lifecycle,54 proof-barrier,eight auth fixture and36 live fixture controls, plus five Rust biometric tests, passed automatically before native build. Actual outer operator pin retained; wrong counterpart rejected."
+    },
+    {
+      "id": "chat-draft-lifecycle",
+      "passed": true,
+      "evidence": "Six maintained chat HTTP fixture tests preserve rejected drafts and scope isolation; separate actual Inbox/auth launcher and scope controls passed."
+    },
+    {
+      "id": "cleanup",
+      "passed": true,
+      "evidence": "Native devices/workspace/input/reverse cleanup and private host/native process cleanup verified; PG data dir absent; owned AVD/ini absent and emulator unit inactive/MainPID0."
+    }
+  ]
+}

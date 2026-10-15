@@ -34,6 +34,7 @@ const store = await import('./store');
 const engine = await import('./engine');
 const { armInboxWake, cancelInboxWake } = await import('./inbox-wake-arm');
 const { inboxWakeKey } = await import('../../agent-tools/coordination/inbox-wake');
+const { consultExpiryEmitReplyEvent } = await import('../../consult/consult-expiry-adapters');
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 
 describe('wake pump — C6 idempotency + cross-agent isolation (real PG)', () => {
@@ -133,7 +134,10 @@ describe('wake pump — C6 idempotency + cross-agent isolation (real PG)', () =>
 
     // Drive the REAL pump with the executor's psu-host discovery pointed at the
     // testbed's isolated dir (real findLiveHost + real injectIntoHost).
-    await engine.pumpWakeDeliveries(h.ws, { findPsuHost: tb.findPsuHostDep() });
+    // Wrapped async: the executor's seam is async (`typeof findLiveHostAsync`), and this
+    // form type-checks whether the testbed's discovery dep is sync or async.
+    const findPsuHost = tb.findPsuHostDep();
+    await engine.pumpWakeDeliveries(h.ws, { findPsuHost: async (ownerId: string) => findPsuHost(ownerId) });
 
     // A's delivery landed on A's socket; B's socket got nothing.
     const recent = await store.listRecentDeliveries(a);
@@ -141,5 +145,59 @@ describe('wake pump — C6 idempotency + cross-agent isolation (real PG)', () =>
     expect(hostA.received).toHaveLength(1);
     expect(hostA.received[0]).toMatchObject({ v: 1, mode: 'turn' });
     expect(hostB.received).toHaveLength(0);
+  });
+
+  it('a system consult reply wakes the requester without consuming source or answerer watches (D-006)', async () => {
+    tb = MultiSessionTestbed.create();
+    const source = tb.session('consult source');
+    const answerer = tb.session('isolated answerer');
+    const requester = tb.session('consult requester');
+    const sourceHost = await tb.spawnSocketHost(source.ownerId);
+    const answererHost = await tb.spawnSocketHost(answerer.ownerId);
+    const requesterHost = await tb.spawnSocketHost(requester.ownerId);
+    await armInboxWake({ ownerId: source.ownerId, workspaceId: h.ws });
+    await armInboxWake({ ownerId: answerer.ownerId, workspaceId: h.ws });
+    const sourceBefore = await store.listActiveAwaits(source.ownerId);
+    const answererBefore = await store.listActiveAwaits(answerer.ownerId);
+    const key = `consult:reply:conv-${requester.ownerId}`;
+    await store.registerAwait({ subscriberId: requester.ownerId, eventKey: key });
+    const findPsuHost = tb.findPsuHostDep();
+    const pump = () => engine.pumpWakeDeliveries(h.ws, {
+      findPsuHost: async (ownerId: string) => findPsuHost(ownerId),
+    });
+
+    // Cross the maintained SYSTEM adapter and real event store/pump/socket
+    // seams. The transcript source in the payload is not a wake recipient.
+    await consultExpiryEmitReplyEvent(engine.emitAwaitedEvent)({
+      key, workspaceId: h.ws, to: [requester.ownerId], summary: 'answer window expired',
+      payload: { sourceOwnerId: source.ownerId, answeringOwnerId: answerer.ownerId, reason: 'expired' },
+    });
+    await pump();
+    expect(await store.listRecentDeliveries(requester.ownerId)).toEqual([
+      expect.objectContaining({ eventKey: key, source: 'consult-expiry-sweep',
+        status: 'delivered', channel: 'psu-socket-inject' }),
+    ]);
+    expect(requesterHost.received).toHaveLength(1);
+    expect(sourceHost.received).toHaveLength(0);
+    expect(answererHost.received).toHaveLength(0);
+    expect(await store.listRecentDeliveries(source.ownerId)).toEqual([]);
+    expect(await store.listRecentDeliveries(answerer.ownerId)).toEqual([]);
+    expect(await store.listActiveAwaits(source.ownerId)).toEqual(sourceBefore);
+    expect(await store.listActiveAwaits(answerer.ownerId)).toEqual(answererBefore);
+
+    // These negatives must not pass merely because either independent host
+    // is unusable. Their own exact wakes still land after the consult event.
+    for (const [ownerId, host] of [
+      [source.ownerId, sourceHost], [answerer.ownerId, answererHost],
+    ] as const) {
+      const emitted = await engine.emitAwaitedEvent({ key: inboxWakeKey(ownerId), workspaceId: h.ws });
+      expect(emitted.woken).toBe(1);
+      await pump();
+      expect(host.received).toHaveLength(1);
+      expect((await store.listRecentDeliveries(ownerId))[0]).toMatchObject({
+        status: 'delivered', channel: 'psu-socket-inject',
+      });
+    }
+    expect(requesterHost.received).toHaveLength(1);
   });
 });

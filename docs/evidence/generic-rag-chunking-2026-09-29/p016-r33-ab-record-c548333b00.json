@@ -1,0 +1,4831 @@
+{
+  "bench": "chunk-search-ab",
+  "mode": "ab",
+  "plan": "generic-rag-chunking-2026-09-29",
+  "bar": "R-33",
+  "methodDecision": "D-040",
+  "loadDecision": "D-041",
+  "reading": "valid",
+  "loadCheck": {
+    "matched": true,
+    "band": {
+      "low": 55.9,
+      "high": 83.9
+    },
+    "start": 79.05,
+    "end": 70.52
+  },
+  "budgetsPass": false,
+  "baselineDecision": "D-024",
+  "preChangeRef": "9a9473af95",
+  "startedAt": "2026-10-06T14:59:18.338Z",
+  "finishedAt": "2026-10-06T15:00:31.439Z",
+  "rounds": 3,
+  "sites": [
+    "plans",
+    "turns",
+    "work_item",
+    "work_items_search",
+    "consult"
+  ],
+  "arms": {
+    "plans": {
+      "a": "harness_plans.embedding ordered scan under withWorkspace (semantic-leg.ts @ 9a9473af95)",
+      "b": "queryTopPlansReal (chunk-aware leg + matched-section lateral)",
+      "limit": 30,
+      "budgetMs": 413
+    },
+    "turns": {
+      "a": "operator_turns.text_embedding HNSW joined to operator_conversations (sources.ts @ 9a9473af95)",
+      "b": "SEARCH_SOURCES 'turns'.embedding (chunk-aware leg)",
+      "limit": 30,
+      "budgetMs": 348
+    },
+    "work_item": {
+      "a": "engineer_issues.embedding HNSW (sources.ts @ 9a9473af95)",
+      "b": "SEARCH_SOURCES 'work_item'.embedding (chunk-aware leg)",
+      "limit": 30,
+      "budgetMs": 402.3
+    },
+    "work_items_search": {
+      "a": "searchWorkItems { limit: 10, semantic: false } (lexical legs only; no fair pre-change arm, D-033)",
+      "b": "searchWorkItems { limit: 10, semantic: true } (query vector precomputed)",
+      "limit": 10,
+      "budgetMs": 100
+    },
+    "consult": {
+      "a": "consult_state.query_embedding exact scan, peersKnowLookup body @ 9a9473af95",
+      "b": "peersKnowLookup (chunk-aware leg, scan 'exact', chunkScan 'ann' over the consult_questions partial HNSW index, ef_search 100; D-046)",
+      "limit": 1,
+      "budgetMs": 3.5
+    }
+  },
+  "embedder": {
+    "mode": "gemma",
+    "profileId": "gemma-embeddinggemma-300m-768@v1"
+  },
+  "measuredCode": {
+    "commits": {
+      ".": "c548333b00f76b017fd656a3c54a4aa923e4ae15",
+      "libs/generic/search": "c4f2c6e22f04f121b7a652f3e40dbd55320d0361"
+    },
+    "files": [
+      {
+        "repo": ".",
+        "path": "packages/operator-core/lib/agent-tools/search/sources.ts",
+        "headBlob": "7e73ff206d3a33953aa193504058abe8d56ba28f",
+        "dirty": false
+      },
+      {
+        "repo": ".",
+        "path": "packages/operator-core/lib/agent-tools/plans/semantic-leg.ts",
+        "headBlob": "e880231206b1f2197bdc09614149a41e86e5a7a7",
+        "dirty": false
+      },
+      {
+        "repo": ".",
+        "path": "packages/operator-core/lib/consult/peers-know.ts",
+        "headBlob": "33fe3ef9d95e56507167b8a8d6ed3e3d9a9bc127",
+        "dirty": false
+      },
+      {
+        "repo": ".",
+        "path": "packages/operator-core/lib/work-items.ts",
+        "headBlob": "98b3ae4baf22c68eaed18f8e59f30ddd5b81fa4b",
+        "dirty": false
+      },
+      {
+        "repo": ".",
+        "path": "packages/operator-core/lib/search/chunks/registry.ts",
+        "headBlob": "5d76da4f81ac9d09d22284a3838f4cb32ee95f37",
+        "dirty": false
+      },
+      {
+        "repo": "libs/generic/search",
+        "path": "src/chunks/vector-leg.ts",
+        "headBlob": "cd0763646283d303c3034e0457f2b4fefb6dea4c",
+        "dirty": false
+      }
+    ]
+  },
+  "loadavgStart": [
+    79.05,
+    98.67,
+    112.77
+  ],
+  "loadavgEnd": [
+    70.52,
+    92.03,
+    109.38
+  ],
+  "cores": 128,
+  "querySetHash": "a7b47c0b2e7aa900f19185f6a8f9d57626b18bf635a9b0c9d42c810464af2e10",
+  "queries": [
+    "green checkpoint gate stays red after the fix lands",
+    "git-sync push stalled for hours",
+    "embedding backfill coverage for work items",
+    "file lock held by a dead session",
+    "mutation probe restores the file after the test",
+    "carry-respawn loses background bash tasks",
+    "fleet leader stand-down wind-down order",
+    "HNSW iterative scan returns too few rows",
+    "chunk long documents before embedding them",
+    "desktop app webview headless verification",
+    "postgres connection pool exhausted under load",
+    "owner directive disposition and the orders list",
+    "acceptance rubric vetting and independent grading",
+    "release deploy auto-rollback crash loop",
+    "frozen repair queue admit paths",
+    "session transcript search by owner",
+    "consult router picks the wrong expert",
+    "SSE sync invalidation after a write commits",
+    "feature flag default off dark allowlist",
+    "migration number allocator reservation race",
+    "typecheck baseline errors in operator-vite",
+    "mcp proxy handshake starvation under load",
+    "work item claim conflict with a live peer",
+    "loop rewake not guaranteed after compaction",
+    "embed sidecar down so search degrades to lexical only",
+    "plan decision recorded for a cross-lane ruling",
+    "test affected selects zero workspaces",
+    "task manager cgroup kill by task id",
+    "reciprocal rank fusion of lexical and semantic legs",
+    "stale deploy sha on port 3070"
+  ],
+  "precomputedMisses": 1,
+  "warmupErrors": [
+    "work_items_search B: Error: semantic leg errored (0 failed): query embed failed: query embedder warming up (cold start; retry for semantic results)"
+  ],
+  "summaries": {
+    "plans": {
+      "n": 90,
+      "pairs": 90,
+      "aErrors": 0,
+      "bErrors": 0,
+      "a": {
+        "p50": 3.8,
+        "p95": 7,
+        "max": 18.5
+      },
+      "b": {
+        "p50": 8.8,
+        "p95": 13.5,
+        "max": 23.3
+      },
+      "addedP95": 6.5,
+      "pairedMedianDeltaMs": 5.06,
+      "pairedMedianRatio": 2.31,
+      "bEmptyWhereAHadRows": 0,
+      "topHitAgreement": {
+        "compared": 90,
+        "same": 57
+      },
+      "firstErrors": []
+    },
+    "turns": {
+      "n": 90,
+      "pairs": 90,
+      "aErrors": 0,
+      "bErrors": 0,
+      "a": {
+        "p50": 327.9,
+        "p95": 382.7,
+        "max": 546.7
+      },
+      "b": {
+        "p50": 335.9,
+        "p95": 428.1,
+        "max": 777.9
+      },
+      "addedP95": 45.4,
+      "pairedMedianDeltaMs": 5.9,
+      "pairedMedianRatio": 1.02,
+      "bEmptyWhereAHadRows": 0,
+      "topHitAgreement": {
+        "compared": 90,
+        "same": 87
+      },
+      "firstErrors": []
+    },
+    "work_item": {
+      "n": 90,
+      "pairs": 90,
+      "aErrors": 0,
+      "bErrors": 0,
+      "a": {
+        "p50": 6.4,
+        "p95": 9.2,
+        "max": 12.7
+      },
+      "b": {
+        "p50": 11.3,
+        "p95": 16.3,
+        "max": 19
+      },
+      "addedP95": 7.1,
+      "pairedMedianDeltaMs": 4.7,
+      "pairedMedianRatio": 1.77,
+      "bEmptyWhereAHadRows": 0,
+      "topHitAgreement": {
+        "compared": 90,
+        "same": 78
+      },
+      "firstErrors": []
+    },
+    "work_items_search": {
+      "n": 90,
+      "pairs": 90,
+      "aErrors": 0,
+      "bErrors": 0,
+      "a": {
+        "p50": 10.5,
+        "p95": 18.6,
+        "max": 31.1
+      },
+      "b": {
+        "p50": 74,
+        "p95": 90.3,
+        "max": 157.3
+      },
+      "addedP95": 71.7,
+      "pairedMedianDeltaMs": 63.56,
+      "pairedMedianRatio": 7.04,
+      "bEmptyWhereAHadRows": 0,
+      "topHitAgreement": {
+        "compared": 90,
+        "same": 33
+      },
+      "firstErrors": []
+    },
+    "consult": {
+      "n": 90,
+      "pairs": 90,
+      "aErrors": 0,
+      "bErrors": 0,
+      "a": {
+        "p50": 4.8,
+        "p95": 7,
+        "max": 7.8
+      },
+      "b": {
+        "p50": 8,
+        "p95": 11.4,
+        "max": 17.5
+      },
+      "addedP95": 4.4,
+      "pairedMedianDeltaMs": 3.24,
+      "pairedMedianRatio": 1.7,
+      "bEmptyWhereAHadRows": 0,
+      "topHitAgreement": {
+        "compared": 90,
+        "same": 84
+      },
+      "firstErrors": []
+    }
+  },
+  "verdicts": [
+    {
+      "site": "plans",
+      "addedP95": 6.5,
+      "budget": 413,
+      "withinBudget": true
+    },
+    {
+      "site": "turns",
+      "addedP95": 45.4,
+      "budget": 348,
+      "withinBudget": true
+    },
+    {
+      "site": "work_item",
+      "addedP95": 7.1,
+      "budget": 402.3,
+      "withinBudget": true
+    },
+    {
+      "site": "work_items_search",
+      "addedP95": 71.7,
+      "budget": 100,
+      "withinBudget": true
+    },
+    {
+      "site": "consult",
+      "addedP95": 4.4,
+      "budget": 3.5,
+      "withinBudget": false
+    }
+  ],
+  "passes": false,
+  "samples": {
+    "plans": [
+      {
+        "round": 0,
+        "q": 0,
+        "aMs": 18.51949500000046,
+        "bMs": 7.147737999999663,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "gate-verdict-liveness-and-repair-reliability-2026-08-31",
+        "bTop": "gate-verdict-liveness-and-repair-reliability-2026-08-31"
+      },
+      {
+        "round": 0,
+        "q": 1,
+        "aMs": 2.7161590000032447,
+        "bMs": 6.508805999998003,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "git-sync-system-audit-2026-06-09",
+        "aTop": "git-sync-system-audit-2026-06-09"
+      },
+      {
+        "round": 0,
+        "q": 2,
+        "aMs": 4.185414000006858,
+        "bMs": 8.00609500000428,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work-item-completion-boundary-integrity-2026-08-20",
+        "bTop": "design-to-code-coverage-seam-2026-09-02"
+      },
+      {
+        "round": 0,
+        "q": 3,
+        "aMs": 2.7091959999961546,
+        "bMs": 8.104483999995864,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "file-locking-improvements-2026-05-20",
+        "aTop": "file-locking-systems-comparison-2026-05-20"
+      },
+      {
+        "round": 0,
+        "q": 4,
+        "aMs": 3.381563000002643,
+        "bMs": 6.009854000003543,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "test-suite-recovery-2026-08-27",
+        "bTop": "test-suite-recovery-2026-08-27"
+      },
+      {
+        "round": 0,
+        "q": 5,
+        "aMs": 3.0300550000101794,
+        "bMs": 7.335370000000694,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "stale-prompt-render-in-live-sessions-2026-08-02",
+        "aTop": "codex-carry-respawn-transcript-continuity-2026-09-21"
+      },
+      {
+        "round": 0,
+        "q": 6,
+        "aMs": 3.699497000008705,
+        "bMs": 6.369747000004281,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "fleet-lead-instrumentation-audit-2026-08-09",
+        "bTop": "fleet-launch-agent-inheritance-2026-07-03"
+      },
+      {
+        "round": 0,
+        "q": 7,
+        "aMs": 3.678756000008434,
+        "bMs": 8.056030000007013,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "memory-vector-entity-index-split-2026-09-02",
+        "aTop": "memory-vector-entity-index-split-2026-09-02"
+      },
+      {
+        "round": 0,
+        "q": 8,
+        "aMs": 3.5756970000074944,
+        "bMs": 8.115194999991218,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "ship-precomputed-doc-vectors-2026-10-01",
+        "bTop": "generic-rag-chunking-2026-09-29"
+      },
+      {
+        "round": 0,
+        "q": 9,
+        "aMs": 3.000977999996394,
+        "bMs": 8.840684000009787,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "gui-e2e-tauri-surface-verification-2026-08-27",
+        "aTop": "gui-e2e-tauri-surface-verification-2026-08-27"
+      },
+      {
+        "round": 0,
+        "q": 10,
+        "aMs": 3.243176999996649,
+        "bMs": 5.914839999997639,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "infra-db-storage-backpressure-2026-06-19",
+        "bTop": "backend-reliability-100pct-2026-07-03"
+      },
+      {
+        "round": 0,
+        "q": 11,
+        "aMs": 3.324884000001475,
+        "bMs": 8.364295000006678,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "directive-visibility-and-ownership-2026-09-22",
+        "aTop": "directive-ownership-clarity-2026-09-23"
+      },
+      {
+        "round": 0,
+        "q": 12,
+        "aMs": 2.886908999993466,
+        "bMs": 6.372553000008338,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "meta-acceptance-rubric",
+        "bTop": "meta-acceptance-rubric"
+      },
+      {
+        "round": 0,
+        "q": 13,
+        "aMs": 2.8897149999975227,
+        "bMs": 8.166503000000375,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "mcp-host-availability-resilience-2026-06-22",
+        "aTop": "deploy-trigger-and-gate-unblock-2026-06-21"
+      },
+      {
+        "round": 0,
+        "q": 14,
+        "aMs": 4.185043999998015,
+        "bMs": 9.513432000007015,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "frozen-candidate-stays-frozen-through-all-fixes-2026-09-03",
+        "bTop": "frozen-candidate-stays-frozen-through-all-fixes-2026-09-03"
+      },
+      {
+        "round": 0,
+        "q": 15,
+        "aMs": 2.638931000008597,
+        "bMs": 6.40658799999801,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "session-transcript-exact-fuzzy-search-2026-09-14",
+        "aTop": "session-transcript-exact-fuzzy-search-2026-09-14"
+      },
+      {
+        "round": 0,
+        "q": 16,
+        "aMs": 3.1162009999970905,
+        "bMs": 6.815447999993921,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "consult-expert-routing-2026-09-22",
+        "bTop": "consult-expert-routing-2026-09-22"
+      },
+      {
+        "round": 0,
+        "q": 17,
+        "aMs": 2.772779000006267,
+        "bMs": 7.183357000001706,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "sse-per-client-invalidation-filtering-2026-09-04",
+        "aTop": "sse-per-client-invalidation-filtering-2026-09-04"
+      },
+      {
+        "round": 0,
+        "q": 18,
+        "aMs": 4.375952000002144,
+        "bMs": 7.137518999996246,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "flip-dark-flags-default-on-2026-06-23",
+        "bTop": "flip-dark-flags-default-on-2026-06-23"
+      },
+      {
+        "round": 0,
+        "q": 19,
+        "aMs": 3.161057000004803,
+        "bMs": 7.860484000004362,
+        "aRows": 20,
+        "bRows": 20,
+        "bTop": "spawn-door-governor-migration-2026-08-31",
+        "aTop": "priority-aware-psi-admission-for-heavy-verification-workload-2026-08-13"
+      },
+      {
+        "round": 0,
+        "q": 20,
+        "aMs": 4.346204000001308,
+        "bMs": 7.871845999994548,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "operator-core-typecheck-revision-5-split-repairs-2026-09-08",
+        "bTop": "operator-core-typecheck-revision-5-split-repairs-2026-09-08"
+      },
+      {
+        "round": 0,
+        "q": 21,
+        "aMs": 3.9991250000020955,
+        "bMs": 7.138380000003963,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "mcp-proxy-reconnect-herd-2026-08-25",
+        "aTop": "mcp-proxy-reconnect-herd-2026-08-25"
+      },
+      {
+        "round": 0,
+        "q": 22,
+        "aMs": 4.14627900000778,
+        "bMs": 6.801550000003772,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "cited-item-claim-context-2026-08-13",
+        "bTop": "cited-item-claim-context-2026-08-13"
+      },
+      {
+        "round": 0,
+        "q": 23,
+        "aMs": 3.7221299999946496,
+        "bMs": 8.199498000001768,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "agent-self-compaction-trigger-discipline-2026-07-10",
+        "aTop": "agent-self-compaction-trigger-discipline-2026-07-10"
+      },
+      {
+        "round": 0,
+        "q": 24,
+        "aMs": 4.099669000002905,
+        "bMs": 9.15545099999872,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "shared-embedding-sidecar-and-enrichment-2026-07-10",
+        "bTop": "shared-embedding-sidecar-and-enrichment-2026-07-10"
+      },
+      {
+        "round": 0,
+        "q": 25,
+        "aMs": 3.618700999999419,
+        "bMs": 14.963675999999396,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work-queue-judging-and-cleanup-2026-09-14",
+        "aTop": "deterministic-plan-state-derivation-2026-08-31"
+      },
+      {
+        "round": 0,
+        "q": 26,
+        "aMs": 3.8179850000014994,
+        "bMs": 7.788293999998132,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "file-level-test-selection-2026-08-17",
+        "bTop": "file-level-test-selection-2026-08-17"
+      },
+      {
+        "round": 0,
+        "q": 27,
+        "aMs": 3.843324000001303,
+        "bMs": 10.438487000006717,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "task-manager-no-escape-2026-07-27",
+        "aTop": "task-manager-no-escape-2026-07-27"
+      },
+      {
+        "round": 0,
+        "q": 28,
+        "aMs": 4.699204999997164,
+        "bMs": 13.64031299999624,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "semantic-search-fingerprint-coverage-2026-08-03",
+        "bTop": "context-injection-retrieval-reach-and-visibility-2026-08-03"
+      },
+      {
+        "round": 0,
+        "q": 29,
+        "aMs": 3.693715000001248,
+        "bMs": 11.214182999989134,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "mcp-host-availability-resilience-2026-06-22",
+        "aTop": "mcp-host-availability-resilience-2026-06-22"
+      },
+      {
+        "round": 1,
+        "q": 0,
+        "aMs": 3.374249000000418,
+        "bMs": 8.65825200000836,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "gate-verdict-liveness-and-repair-reliability-2026-08-31",
+        "aTop": "gate-verdict-liveness-and-repair-reliability-2026-08-31"
+      },
+      {
+        "round": 1,
+        "q": 1,
+        "aMs": 3.753070000006119,
+        "bMs": 9.062732999998843,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "git-sync-system-audit-2026-06-09",
+        "bTop": "git-sync-system-audit-2026-06-09"
+      },
+      {
+        "round": 1,
+        "q": 2,
+        "aMs": 2.8325840000034077,
+        "bMs": 8.256917999999132,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "design-to-code-coverage-seam-2026-09-02",
+        "aTop": "work-item-completion-boundary-integrity-2026-08-20"
+      },
+      {
+        "round": 1,
+        "q": 3,
+        "aMs": 3.543495999998413,
+        "bMs": 8.437868000008166,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "file-locking-systems-comparison-2026-05-20",
+        "bTop": "file-locking-improvements-2026-05-20"
+      },
+      {
+        "round": 1,
+        "q": 4,
+        "aMs": 3.248556999998982,
+        "bMs": 10.675254000001587,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "test-suite-recovery-2026-08-27",
+        "aTop": "test-suite-recovery-2026-08-27"
+      },
+      {
+        "round": 1,
+        "q": 5,
+        "aMs": 5.682010999997146,
+        "bMs": 10.35773099999642,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "codex-carry-respawn-transcript-continuity-2026-09-21",
+        "bTop": "stale-prompt-render-in-live-sessions-2026-08-02"
+      },
+      {
+        "round": 1,
+        "q": 6,
+        "aMs": 2.7574300000123912,
+        "bMs": 9.60012899999856,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "fleet-launch-agent-inheritance-2026-07-03",
+        "aTop": "fleet-lead-instrumentation-audit-2026-08-09"
+      },
+      {
+        "round": 1,
+        "q": 7,
+        "aMs": 4.955598999993526,
+        "bMs": 11.467390999998315,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "memory-vector-entity-index-split-2026-09-02",
+        "bTop": "memory-vector-entity-index-split-2026-09-02"
+      },
+      {
+        "round": 1,
+        "q": 8,
+        "aMs": 3.573363999996218,
+        "bMs": 11.682746999998926,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "generic-rag-chunking-2026-09-29",
+        "aTop": "ship-precomputed-doc-vectors-2026-10-01"
+      },
+      {
+        "round": 1,
+        "q": 9,
+        "aMs": 4.713433000011719,
+        "bMs": 9.771689999994123,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "gui-e2e-tauri-surface-verification-2026-08-27",
+        "bTop": "gui-e2e-tauri-surface-verification-2026-08-27"
+      },
+      {
+        "round": 1,
+        "q": 10,
+        "aMs": 4.1770180000021355,
+        "bMs": 11.476439000005485,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "backend-reliability-100pct-2026-07-03",
+        "aTop": "infra-db-storage-backpressure-2026-06-19"
+      },
+      {
+        "round": 1,
+        "q": 11,
+        "aMs": 6.996556999991299,
+        "bMs": 12.179315000001225,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "directive-ownership-clarity-2026-09-23",
+        "bTop": "directive-visibility-and-ownership-2026-09-22"
+      },
+      {
+        "round": 1,
+        "q": 12,
+        "aMs": 2.9484880000090925,
+        "bMs": 9.459728000001633,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "meta-acceptance-rubric",
+        "aTop": "meta-acceptance-rubric"
+      },
+      {
+        "round": 1,
+        "q": 13,
+        "aMs": 3.721078000002308,
+        "bMs": 7.458538000006229,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "deploy-trigger-and-gate-unblock-2026-06-21",
+        "bTop": "mcp-host-availability-resilience-2026-06-22"
+      },
+      {
+        "round": 1,
+        "q": 14,
+        "aMs": 3.9624840000033146,
+        "bMs": 11.677035000000615,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "frozen-candidate-stays-frozen-through-all-fixes-2026-09-03",
+        "aTop": "frozen-candidate-stays-frozen-through-all-fixes-2026-09-03"
+      },
+      {
+        "round": 1,
+        "q": 15,
+        "aMs": 4.457829999999376,
+        "bMs": 8.3663499999966,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "session-transcript-exact-fuzzy-search-2026-09-14",
+        "bTop": "session-transcript-exact-fuzzy-search-2026-09-14"
+      },
+      {
+        "round": 1,
+        "q": 16,
+        "aMs": 3.9993450000038138,
+        "bMs": 9.427255999995396,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "consult-expert-routing-2026-09-22",
+        "aTop": "consult-expert-routing-2026-09-22"
+      },
+      {
+        "round": 1,
+        "q": 17,
+        "aMs": 3.2027280000038445,
+        "bMs": 6.211773000002722,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "sse-per-client-invalidation-filtering-2026-09-04",
+        "bTop": "sse-per-client-invalidation-filtering-2026-09-04"
+      },
+      {
+        "round": 1,
+        "q": 18,
+        "aMs": 3.389548000006471,
+        "bMs": 7.797562000007019,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "flip-dark-flags-default-on-2026-06-23",
+        "aTop": "flip-dark-flags-default-on-2026-06-23"
+      },
+      {
+        "round": 1,
+        "q": 19,
+        "aMs": 5.242744000002858,
+        "bMs": 7.557037999999011,
+        "aRows": 20,
+        "bRows": 20,
+        "aTop": "priority-aware-psi-admission-for-heavy-verification-workload-2026-08-13",
+        "bTop": "spawn-door-governor-migration-2026-08-31"
+      },
+      {
+        "round": 1,
+        "q": 20,
+        "aMs": 3.1283849999890663,
+        "bMs": 9.782351000001654,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "operator-core-typecheck-revision-5-split-repairs-2026-09-08",
+        "aTop": "operator-core-typecheck-revision-5-split-repairs-2026-09-08"
+      },
+      {
+        "round": 1,
+        "q": 21,
+        "aMs": 3.2927720000006957,
+        "bMs": 5.5875189999933355,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "mcp-proxy-reconnect-herd-2026-08-25",
+        "bTop": "mcp-proxy-reconnect-herd-2026-08-25"
+      },
+      {
+        "round": 1,
+        "q": 22,
+        "aMs": 3.3918030000058934,
+        "bMs": 7.004461999997147,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "cited-item-claim-context-2026-08-13",
+        "aTop": "cited-item-claim-context-2026-08-13"
+      },
+      {
+        "round": 1,
+        "q": 23,
+        "aMs": 4.054871999993338,
+        "bMs": 6.51038900000276,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "agent-self-compaction-trigger-discipline-2026-07-10",
+        "bTop": "agent-self-compaction-trigger-discipline-2026-07-10"
+      },
+      {
+        "round": 1,
+        "q": 24,
+        "aMs": 2.809479999996256,
+        "bMs": 7.215389000004507,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "shared-embedding-sidecar-and-enrichment-2026-07-10",
+        "aTop": "shared-embedding-sidecar-and-enrichment-2026-07-10"
+      },
+      {
+        "round": 1,
+        "q": 25,
+        "aMs": 3.9600789999967674,
+        "bMs": 10.438777000003029,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "deterministic-plan-state-derivation-2026-08-31",
+        "bTop": "work-queue-judging-and-cleanup-2026-09-14"
+      },
+      {
+        "round": 1,
+        "q": 26,
+        "aMs": 4.499319000009564,
+        "bMs": 10.058432999998331,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "file-level-test-selection-2026-08-17",
+        "aTop": "file-level-test-selection-2026-08-17"
+      },
+      {
+        "round": 1,
+        "q": 27,
+        "aMs": 3.795561999999336,
+        "bMs": 8.880841999998665,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "task-manager-no-escape-2026-07-27",
+        "bTop": "task-manager-no-escape-2026-07-27"
+      },
+      {
+        "round": 1,
+        "q": 28,
+        "aMs": 3.7596530000009807,
+        "bMs": 13.515782999995281,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "context-injection-retrieval-reach-and-visibility-2026-08-03",
+        "aTop": "semantic-search-fingerprint-coverage-2026-08-03"
+      },
+      {
+        "round": 1,
+        "q": 29,
+        "aMs": 4.973343999998178,
+        "bMs": 8.411837000006926,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "mcp-host-availability-resilience-2026-06-22",
+        "bTop": "mcp-host-availability-resilience-2026-06-22"
+      },
+      {
+        "round": 2,
+        "q": 0,
+        "aMs": 3.7861439999978757,
+        "bMs": 7.339868999988539,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "gate-verdict-liveness-and-repair-reliability-2026-08-31",
+        "bTop": "gate-verdict-liveness-and-repair-reliability-2026-08-31"
+      },
+      {
+        "round": 2,
+        "q": 1,
+        "aMs": 4.447139000010793,
+        "bMs": 8.934726000006776,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "git-sync-system-audit-2026-06-09",
+        "aTop": "git-sync-system-audit-2026-06-09"
+      },
+      {
+        "round": 2,
+        "q": 2,
+        "aMs": 4.358858000006876,
+        "bMs": 8.294511000000057,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work-item-completion-boundary-integrity-2026-08-20",
+        "bTop": "design-to-code-coverage-seam-2026-09-02"
+      },
+      {
+        "round": 2,
+        "q": 3,
+        "aMs": 3.5900260000053095,
+        "bMs": 9.757191999990027,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "file-locking-improvements-2026-05-20",
+        "aTop": "file-locking-systems-comparison-2026-05-20"
+      },
+      {
+        "round": 2,
+        "q": 4,
+        "aMs": 5.534085000006598,
+        "bMs": 17.94973600000958,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "test-suite-recovery-2026-08-27",
+        "bTop": "test-suite-recovery-2026-08-27"
+      },
+      {
+        "round": 2,
+        "q": 5,
+        "aMs": 3.6947870000003604,
+        "bMs": 10.214363999999478,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "stale-prompt-render-in-live-sessions-2026-08-02",
+        "aTop": "codex-carry-respawn-transcript-continuity-2026-09-21"
+      },
+      {
+        "round": 2,
+        "q": 6,
+        "aMs": 5.9454400000104215,
+        "bMs": 13.040976999996928,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "fleet-lead-instrumentation-audit-2026-08-09",
+        "bTop": "fleet-launch-agent-inheritance-2026-07-03"
+      },
+      {
+        "round": 2,
+        "q": 7,
+        "aMs": 4.403846000001067,
+        "bMs": 9.8306339999981,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "memory-vector-entity-index-split-2026-09-02",
+        "aTop": "memory-vector-entity-index-split-2026-09-02"
+      },
+      {
+        "round": 2,
+        "q": 8,
+        "aMs": 7.787312000000384,
+        "bMs": 12.234461000014562,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "ship-precomputed-doc-vectors-2026-10-01",
+        "bTop": "generic-rag-chunking-2026-09-29"
+      },
+      {
+        "round": 2,
+        "q": 9,
+        "aMs": 3.040385000000242,
+        "bMs": 8.265985999983968,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "gui-e2e-tauri-surface-verification-2026-08-27",
+        "aTop": "gui-e2e-tauri-surface-verification-2026-08-27"
+      },
+      {
+        "round": 2,
+        "q": 10,
+        "aMs": 4.319802999991225,
+        "bMs": 8.98183699999936,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "infra-db-storage-backpressure-2026-06-19",
+        "bTop": "backend-reliability-100pct-2026-07-03"
+      },
+      {
+        "round": 2,
+        "q": 11,
+        "aMs": 3.196616000001086,
+        "bMs": 10.5249940000067,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "directive-visibility-and-ownership-2026-09-22",
+        "aTop": "directive-ownership-clarity-2026-09-23"
+      },
+      {
+        "round": 2,
+        "q": 12,
+        "aMs": 9.183825999993132,
+        "bMs": 9.562386000005063,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "meta-acceptance-rubric",
+        "bTop": "meta-acceptance-rubric"
+      },
+      {
+        "round": 2,
+        "q": 13,
+        "aMs": 3.21645500001614,
+        "bMs": 10.333414000022458,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "mcp-host-availability-resilience-2026-06-22",
+        "aTop": "deploy-trigger-and-gate-unblock-2026-06-21"
+      },
+      {
+        "round": 2,
+        "q": 14,
+        "aMs": 3.7914739999978337,
+        "bMs": 8.739269000012428,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "frozen-candidate-stays-frozen-through-all-fixes-2026-09-03",
+        "bTop": "frozen-candidate-stays-frozen-through-all-fixes-2026-09-03"
+      },
+      {
+        "round": 2,
+        "q": 15,
+        "aMs": 3.5815290000173263,
+        "bMs": 11.340968000004068,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "session-transcript-exact-fuzzy-search-2026-09-14",
+        "aTop": "session-transcript-exact-fuzzy-search-2026-09-14"
+      },
+      {
+        "round": 2,
+        "q": 16,
+        "aMs": 7.014601999981096,
+        "bMs": 23.27757500001462,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "consult-expert-routing-2026-09-22",
+        "bTop": "consult-expert-routing-2026-09-22"
+      },
+      {
+        "round": 2,
+        "q": 17,
+        "aMs": 4.3290519999864046,
+        "bMs": 11.271002000023145,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "sse-per-client-invalidation-filtering-2026-09-04",
+        "aTop": "sse-per-client-invalidation-filtering-2026-09-04"
+      },
+      {
+        "round": 2,
+        "q": 18,
+        "aMs": 4.231131999986246,
+        "bMs": 12.78503400000045,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "flip-dark-flags-default-on-2026-06-23",
+        "bTop": "flip-dark-flags-default-on-2026-06-23"
+      },
+      {
+        "round": 2,
+        "q": 19,
+        "aMs": 4.4593020000029355,
+        "bMs": 11.292755000002217,
+        "aRows": 20,
+        "bRows": 20,
+        "bTop": "spawn-door-governor-migration-2026-08-31",
+        "aTop": "priority-aware-psi-admission-for-heavy-verification-workload-2026-08-13"
+      },
+      {
+        "round": 2,
+        "q": 20,
+        "aMs": 4.379378999990877,
+        "bMs": 10.011123000003863,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "operator-core-typecheck-revision-5-split-repairs-2026-09-08",
+        "bTop": "operator-core-typecheck-revision-5-split-repairs-2026-09-08"
+      },
+      {
+        "round": 2,
+        "q": 21,
+        "aMs": 4.904701999999816,
+        "bMs": 8.539152000012109,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "mcp-proxy-reconnect-herd-2026-08-25",
+        "aTop": "mcp-proxy-reconnect-herd-2026-08-25"
+      },
+      {
+        "round": 2,
+        "q": 22,
+        "aMs": 4.190394000004744,
+        "bMs": 7.666599000018323,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "cited-item-claim-context-2026-08-13",
+        "bTop": "cited-item-claim-context-2026-08-13"
+      },
+      {
+        "round": 2,
+        "q": 23,
+        "aMs": 2.7483720000018366,
+        "bMs": 9.301573000004282,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "agent-self-compaction-trigger-discipline-2026-07-10",
+        "aTop": "agent-self-compaction-trigger-discipline-2026-07-10"
+      },
+      {
+        "round": 2,
+        "q": 24,
+        "aMs": 3.589906000008341,
+        "bMs": 7.864400999998907,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "shared-embedding-sidecar-and-enrichment-2026-07-10",
+        "bTop": "shared-embedding-sidecar-and-enrichment-2026-07-10"
+      },
+      {
+        "round": 2,
+        "q": 25,
+        "aMs": 2.930904000008013,
+        "bMs": 12.176891000010073,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work-queue-judging-and-cleanup-2026-09-14",
+        "aTop": "deterministic-plan-state-derivation-2026-08-31"
+      },
+      {
+        "round": 2,
+        "q": 26,
+        "aMs": 4.6941550000046846,
+        "bMs": 9.838019000017084,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "file-level-test-selection-2026-08-17",
+        "bTop": "file-level-test-selection-2026-08-17"
+      },
+      {
+        "round": 2,
+        "q": 27,
+        "aMs": 2.8701470000087284,
+        "bMs": 9.043816999997944,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "task-manager-no-escape-2026-07-27",
+        "aTop": "task-manager-no-escape-2026-07-27"
+      },
+      {
+        "round": 2,
+        "q": 28,
+        "aMs": 4.286227999982657,
+        "bMs": 10.914294999995036,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "semantic-search-fingerprint-coverage-2026-08-03",
+        "bTop": "context-injection-retrieval-reach-and-visibility-2026-08-03"
+      },
+      {
+        "round": 2,
+        "q": 29,
+        "aMs": 2.6766529999731574,
+        "bMs": 8.792260999995051,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "mcp-host-availability-resilience-2026-06-22",
+        "aTop": "mcp-host-availability-resilience-2026-06-22"
+      }
+    ],
+    "turns": [
+      {
+        "round": 0,
+        "q": 0,
+        "aMs": 289.91676199999347,
+        "bMs": 291.6051889999944,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:e2d3ce58-91b9-40e5-98e4-f3f67a86086a",
+        "bTop": "turns:e2d3ce58-91b9-40e5-98e4-f3f67a86086a"
+      },
+      {
+        "round": 0,
+        "q": 1,
+        "aMs": 288.34786500000337,
+        "bMs": 314.0677710000018,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:af092401-6288-465e-9e46-db523e4215fa",
+        "aTop": "turns:af092401-6288-465e-9e46-db523e4215fa"
+      },
+      {
+        "round": 0,
+        "q": 2,
+        "aMs": 295.00020799999766,
+        "bMs": 299.9680609999923,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:af751cdd-e4f9-488d-ba4c-5abcf24ca6aa",
+        "bTop": "turns:af751cdd-e4f9-488d-ba4c-5abcf24ca6aa"
+      },
+      {
+        "round": 0,
+        "q": 3,
+        "aMs": 277.8407170000137,
+        "bMs": 292.413418000011,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:6ec12eca-67ce-470a-a14b-955870c5a929",
+        "aTop": "turns:6ec12eca-67ce-470a-a14b-955870c5a929"
+      },
+      {
+        "round": 0,
+        "q": 4,
+        "aMs": 283.9558939999988,
+        "bMs": 303.88089000000036,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:140380bf-a0cc-4544-8ce8-6b6d2e72514f",
+        "bTop": "turns:140380bf-a0cc-4544-8ce8-6b6d2e72514f"
+      },
+      {
+        "round": 0,
+        "q": 5,
+        "aMs": 308.1741420000035,
+        "bMs": 301.28834800000186,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:94022432-8c3e-4407-8fc6-9013665ec4d1",
+        "aTop": "turns:94022432-8c3e-4407-8fc6-9013665ec4d1"
+      },
+      {
+        "round": 0,
+        "q": 6,
+        "aMs": 285.87757100000454,
+        "bMs": 284.96563200000674,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:9f0609b0-b73a-4529-a7d8-cd86535f9c7c",
+        "bTop": "turns:9f0609b0-b73a-4529-a7d8-cd86535f9c7c"
+      },
+      {
+        "round": 0,
+        "q": 7,
+        "aMs": 294.7187360000098,
+        "bMs": 286.14732099999674,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:6a0149fa-2edf-4f0e-bd4c-65941b647879",
+        "aTop": "turns:6a0149fa-2edf-4f0e-bd4c-65941b647879"
+      },
+      {
+        "round": 0,
+        "q": 8,
+        "aMs": 315.4710380000033,
+        "bMs": 285.72458599999663,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:d054c626-b43e-4acf-b56b-2195f5fc82bb",
+        "bTop": "turns:d054c626-b43e-4acf-b56b-2195f5fc82bb"
+      },
+      {
+        "round": 0,
+        "q": 9,
+        "aMs": 298.5877199999959,
+        "bMs": 310.7365650000138,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:72c90fda-ff05-4a89-aea5-870067db3bd5",
+        "aTop": "turns:72c90fda-ff05-4a89-aea5-870067db3bd5"
+      },
+      {
+        "round": 0,
+        "q": 10,
+        "aMs": 313.1920029999892,
+        "bMs": 297.99186100000225,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:fb86fa41-3032-4fc8-81da-728002068ff8",
+        "bTop": "turns:fb86fa41-3032-4fc8-81da-728002068ff8"
+      },
+      {
+        "round": 0,
+        "q": 11,
+        "aMs": 301.1431200000079,
+        "bMs": 734.7602879999904,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:a6407a09-5062-407d-abed-a84e9ebc8443",
+        "aTop": "turns:a6407a09-5062-407d-abed-a84e9ebc8443"
+      },
+      {
+        "round": 0,
+        "q": 12,
+        "aMs": 301.160063000003,
+        "bMs": 336.92470399999,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:d6e9492e-4b5e-4e2a-b93d-e7bf66c29681",
+        "bTop": "turns:d6e9492e-4b5e-4e2a-b93d-e7bf66c29681"
+      },
+      {
+        "round": 0,
+        "q": 13,
+        "aMs": 301.0469840000005,
+        "bMs": 309.03019499999937,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:648a0821-e706-46ff-ba98-8f3a098587b1",
+        "aTop": "turns:648a0821-e706-46ff-ba98-8f3a098587b1"
+      },
+      {
+        "round": 0,
+        "q": 14,
+        "aMs": 317.3301460000075,
+        "bMs": 294.2405140000046,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:6b3c9047-37ef-4d21-b5b0-5353e55e1d4e",
+        "bTop": "turns:6b3c9047-37ef-4d21-b5b0-5353e55e1d4e"
+      },
+      {
+        "round": 0,
+        "q": 15,
+        "aMs": 282.5437510000047,
+        "bMs": 291.79949599999236,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:a6407a09-5062-407d-abed-a84e9ebc8443",
+        "aTop": "turns:a6407a09-5062-407d-abed-a84e9ebc8443"
+      },
+      {
+        "round": 0,
+        "q": 16,
+        "aMs": 321.18032400000084,
+        "bMs": 318.82445899999584,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:4f1e583d-71a1-4f8e-838d-bec9c40c99b1",
+        "bTop": "turns:4f1e583d-71a1-4f8e-838d-bec9c40c99b1"
+      },
+      {
+        "round": 0,
+        "q": 17,
+        "aMs": 313.63276300000143,
+        "bMs": 366.1802510000125,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:d0cbab33-4f44-47ed-b9ee-ea7f4d7f0199",
+        "aTop": "turns:d0cbab33-4f44-47ed-b9ee-ea7f4d7f0199"
+      },
+      {
+        "round": 0,
+        "q": 18,
+        "aMs": 333.04862799998955,
+        "bMs": 349.3960439999937,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:9383112f-4707-406b-9f30-f22190199869",
+        "bTop": "turns:50a05027-f8cd-4b63-b8dd-334a82b99b93"
+      },
+      {
+        "round": 0,
+        "q": 19,
+        "aMs": 365.70744900000864,
+        "bMs": 384.0801610000053,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:75d811a0-34e5-469e-9e96-31debbfcaad0",
+        "aTop": "turns:75d811a0-34e5-469e-9e96-31debbfcaad0"
+      },
+      {
+        "round": 0,
+        "q": 20,
+        "aMs": 347.6715169999952,
+        "bMs": 363.40664200000174,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:f46f67a6-4e5e-4f4a-b43c-739471064703",
+        "bTop": "turns:f46f67a6-4e5e-4f4a-b43c-739471064703"
+      },
+      {
+        "round": 0,
+        "q": 21,
+        "aMs": 326.5673160000006,
+        "bMs": 339.99296499999764,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:e64b9cd5-dab9-4bf4-bd4b-2dd5bb399d72",
+        "aTop": "turns:e64b9cd5-dab9-4bf4-bd4b-2dd5bb399d72"
+      },
+      {
+        "round": 0,
+        "q": 22,
+        "aMs": 352.6027000000031,
+        "bMs": 355.89519100000325,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:99ab0484-0b6c-437e-9ef6-7ab67fc70f84",
+        "bTop": "turns:99ab0484-0b6c-437e-9ef6-7ab67fc70f84"
+      },
+      {
+        "round": 0,
+        "q": 23,
+        "aMs": 323.4778660000011,
+        "bMs": 354.566347999993,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:a46c8d6e-c5e8-43c5-a291-251b919eeb8e",
+        "aTop": "turns:a46c8d6e-c5e8-43c5-a291-251b919eeb8e"
+      },
+      {
+        "round": 0,
+        "q": 24,
+        "aMs": 321.1583729999984,
+        "bMs": 348.32984799999394,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:cc4031e7-3fd7-467a-81b2-767f25cb7839",
+        "bTop": "turns:cc4031e7-3fd7-467a-81b2-767f25cb7839"
+      },
+      {
+        "round": 0,
+        "q": 25,
+        "aMs": 317.1790270000056,
+        "bMs": 362.886268000002,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:e717c389-07e6-4d59-8fc2-7a537abdf048",
+        "aTop": "turns:e717c389-07e6-4d59-8fc2-7a537abdf048"
+      },
+      {
+        "round": 0,
+        "q": 26,
+        "aMs": 333.6605500000005,
+        "bMs": 344.0745889999962,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:d5aa50ad-f578-49e3-9862-fe74ed562656",
+        "bTop": "turns:d5aa50ad-f578-49e3-9862-fe74ed562656"
+      },
+      {
+        "round": 0,
+        "q": 27,
+        "aMs": 342.2226069999888,
+        "bMs": 321.3508339999971,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:94022432-8c3e-4407-8fc6-9013665ec4d1",
+        "aTop": "turns:94022432-8c3e-4407-8fc6-9013665ec4d1"
+      },
+      {
+        "round": 0,
+        "q": 28,
+        "aMs": 357.2284240000008,
+        "bMs": 331.1855860000069,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:1aa22042-48ae-4ab3-a427-9272cecd8e7f",
+        "bTop": "turns:1aa22042-48ae-4ab3-a427-9272cecd8e7f"
+      },
+      {
+        "round": 0,
+        "q": 29,
+        "aMs": 299.5855290000036,
+        "bMs": 295.72509100000025,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:571dc1c1-19ac-43bf-85af-eca04549b52c",
+        "aTop": "turns:571dc1c1-19ac-43bf-85af-eca04549b52c"
+      },
+      {
+        "round": 1,
+        "q": 0,
+        "aMs": 303.6485459999967,
+        "bMs": 300.3325299999997,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:e2d3ce58-91b9-40e5-98e4-f3f67a86086a",
+        "aTop": "turns:e2d3ce58-91b9-40e5-98e4-f3f67a86086a"
+      },
+      {
+        "round": 1,
+        "q": 1,
+        "aMs": 315.90460899999016,
+        "bMs": 317.5315269999992,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:af092401-6288-465e-9e46-db523e4215fa",
+        "bTop": "turns:af092401-6288-465e-9e46-db523e4215fa"
+      },
+      {
+        "round": 1,
+        "q": 2,
+        "aMs": 319.9226400000043,
+        "bMs": 321.990730000005,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:af751cdd-e4f9-488d-ba4c-5abcf24ca6aa",
+        "aTop": "turns:af751cdd-e4f9-488d-ba4c-5abcf24ca6aa"
+      },
+      {
+        "round": 1,
+        "q": 3,
+        "aMs": 307.6021039999905,
+        "bMs": 297.4509620000026,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:6ec12eca-67ce-470a-a14b-955870c5a929",
+        "bTop": "turns:6ec12eca-67ce-470a-a14b-955870c5a929"
+      },
+      {
+        "round": 1,
+        "q": 4,
+        "aMs": 300.54464899998857,
+        "bMs": 324.4598130000086,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:140380bf-a0cc-4544-8ce8-6b6d2e72514f",
+        "aTop": "turns:140380bf-a0cc-4544-8ce8-6b6d2e72514f"
+      },
+      {
+        "round": 1,
+        "q": 5,
+        "aMs": 546.663057999991,
+        "bMs": 449.16124000000127,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:94022432-8c3e-4407-8fc6-9013665ec4d1",
+        "bTop": "turns:94022432-8c3e-4407-8fc6-9013665ec4d1"
+      },
+      {
+        "round": 1,
+        "q": 6,
+        "aMs": 352.86794499999087,
+        "bMs": 344.3082219999924,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:9f0609b0-b73a-4529-a7d8-cd86535f9c7c",
+        "aTop": "turns:9f0609b0-b73a-4529-a7d8-cd86535f9c7c"
+      },
+      {
+        "round": 1,
+        "q": 7,
+        "aMs": 328.87899900000775,
+        "bMs": 338.1256960000028,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:6a0149fa-2edf-4f0e-bd4c-65941b647879",
+        "bTop": "turns:6a0149fa-2edf-4f0e-bd4c-65941b647879"
+      },
+      {
+        "round": 1,
+        "q": 8,
+        "aMs": 322.6452040000004,
+        "bMs": 333.7821980000008,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:d054c626-b43e-4acf-b56b-2195f5fc82bb",
+        "aTop": "turns:d054c626-b43e-4acf-b56b-2195f5fc82bb"
+      },
+      {
+        "round": 1,
+        "q": 9,
+        "aMs": 347.2365620000055,
+        "bMs": 309.69354900000326,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:72c90fda-ff05-4a89-aea5-870067db3bd5",
+        "bTop": "turns:72c90fda-ff05-4a89-aea5-870067db3bd5"
+      },
+      {
+        "round": 1,
+        "q": 10,
+        "aMs": 330.83615499999723,
+        "bMs": 306.76549000000523,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:fb86fa41-3032-4fc8-81da-728002068ff8",
+        "aTop": "turns:fb86fa41-3032-4fc8-81da-728002068ff8"
+      },
+      {
+        "round": 1,
+        "q": 11,
+        "aMs": 320.44600199999695,
+        "bMs": 340.51362399999925,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:a6407a09-5062-407d-abed-a84e9ebc8443",
+        "bTop": "turns:a6407a09-5062-407d-abed-a84e9ebc8443"
+      },
+      {
+        "round": 1,
+        "q": 12,
+        "aMs": 311.02669199999946,
+        "bMs": 325.18619600000966,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:d6e9492e-4b5e-4e2a-b93d-e7bf66c29681",
+        "aTop": "turns:d6e9492e-4b5e-4e2a-b93d-e7bf66c29681"
+      },
+      {
+        "round": 1,
+        "q": 13,
+        "aMs": 313.5576240000082,
+        "bMs": 304.2961179999984,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:648a0821-e706-46ff-ba98-8f3a098587b1",
+        "bTop": "turns:648a0821-e706-46ff-ba98-8f3a098587b1"
+      },
+      {
+        "round": 1,
+        "q": 14,
+        "aMs": 322.24087399999553,
+        "bMs": 350.00187699998787,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:6b3c9047-37ef-4d21-b5b0-5353e55e1d4e",
+        "aTop": "turns:6b3c9047-37ef-4d21-b5b0-5353e55e1d4e"
+      },
+      {
+        "round": 1,
+        "q": 15,
+        "aMs": 335.7350359999982,
+        "bMs": 302.8213929999911,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:a6407a09-5062-407d-abed-a84e9ebc8443",
+        "bTop": "turns:a6407a09-5062-407d-abed-a84e9ebc8443"
+      },
+      {
+        "round": 1,
+        "q": 16,
+        "aMs": 305.1042870000092,
+        "bMs": 330.0539870000066,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:4f1e583d-71a1-4f8e-838d-bec9c40c99b1",
+        "aTop": "turns:4f1e583d-71a1-4f8e-838d-bec9c40c99b1"
+      },
+      {
+        "round": 1,
+        "q": 17,
+        "aMs": 309.00480199999583,
+        "bMs": 313.9359850000037,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:d0cbab33-4f44-47ed-b9ee-ea7f4d7f0199",
+        "bTop": "turns:d0cbab33-4f44-47ed-b9ee-ea7f4d7f0199"
+      },
+      {
+        "round": 1,
+        "q": 18,
+        "aMs": 327.86997499999416,
+        "bMs": 325.64366000000155,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:50a05027-f8cd-4b63-b8dd-334a82b99b93",
+        "aTop": "turns:9383112f-4707-406b-9f30-f22190199869"
+      },
+      {
+        "round": 1,
+        "q": 19,
+        "aMs": 309.39721900000586,
+        "bMs": 317.48565200000303,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:75d811a0-34e5-469e-9e96-31debbfcaad0",
+        "bTop": "turns:75d811a0-34e5-469e-9e96-31debbfcaad0"
+      },
+      {
+        "round": 1,
+        "q": 20,
+        "aMs": 307.8249160000123,
+        "bMs": 366.5086719999963,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:f46f67a6-4e5e-4f4a-b43c-739471064703",
+        "aTop": "turns:f46f67a6-4e5e-4f4a-b43c-739471064703"
+      },
+      {
+        "round": 1,
+        "q": 21,
+        "aMs": 311.5427889999992,
+        "bMs": 316.938175999996,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:e64b9cd5-dab9-4bf4-bd4b-2dd5bb399d72",
+        "bTop": "turns:e64b9cd5-dab9-4bf4-bd4b-2dd5bb399d72"
+      },
+      {
+        "round": 1,
+        "q": 22,
+        "aMs": 297.6387170000089,
+        "bMs": 319.2579609999957,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:99ab0484-0b6c-437e-9ef6-7ab67fc70f84",
+        "aTop": "turns:99ab0484-0b6c-437e-9ef6-7ab67fc70f84"
+      },
+      {
+        "round": 1,
+        "q": 23,
+        "aMs": 289.8104750000057,
+        "bMs": 321.0806980000052,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:a46c8d6e-c5e8-43c5-a291-251b919eeb8e",
+        "bTop": "turns:a46c8d6e-c5e8-43c5-a291-251b919eeb8e"
+      },
+      {
+        "round": 1,
+        "q": 24,
+        "aMs": 328.1784100000077,
+        "bMs": 317.1308990000107,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:cc4031e7-3fd7-467a-81b2-767f25cb7839",
+        "aTop": "turns:cc4031e7-3fd7-467a-81b2-767f25cb7839"
+      },
+      {
+        "round": 1,
+        "q": 25,
+        "aMs": 336.66751600000134,
+        "bMs": 368.4820289999916,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:e717c389-07e6-4d59-8fc2-7a537abdf048",
+        "bTop": "turns:e717c389-07e6-4d59-8fc2-7a537abdf048"
+      },
+      {
+        "round": 1,
+        "q": 26,
+        "aMs": 373.03055300000415,
+        "bMs": 351.4288519999973,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:d5aa50ad-f578-49e3-9862-fe74ed562656",
+        "aTop": "turns:d5aa50ad-f578-49e3-9862-fe74ed562656"
+      },
+      {
+        "round": 1,
+        "q": 27,
+        "aMs": 382.6929230000096,
+        "bMs": 337.839948000008,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:94022432-8c3e-4407-8fc6-9013665ec4d1",
+        "bTop": "turns:94022432-8c3e-4407-8fc6-9013665ec4d1"
+      },
+      {
+        "round": 1,
+        "q": 28,
+        "aMs": 376.17761499999324,
+        "bMs": 368.0123840000015,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:1aa22042-48ae-4ab3-a427-9272cecd8e7f",
+        "aTop": "turns:1aa22042-48ae-4ab3-a427-9272cecd8e7f"
+      },
+      {
+        "round": 1,
+        "q": 29,
+        "aMs": 355.9171320000023,
+        "bMs": 358.6728870000079,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:571dc1c1-19ac-43bf-85af-eca04549b52c",
+        "bTop": "turns:571dc1c1-19ac-43bf-85af-eca04549b52c"
+      },
+      {
+        "round": 2,
+        "q": 0,
+        "aMs": 343.29057399999874,
+        "bMs": 356.51620700000785,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:e2d3ce58-91b9-40e5-98e4-f3f67a86086a",
+        "bTop": "turns:e2d3ce58-91b9-40e5-98e4-f3f67a86086a"
+      },
+      {
+        "round": 2,
+        "q": 1,
+        "aMs": 343.1043650000065,
+        "bMs": 337.6642109999957,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:af092401-6288-465e-9e46-db523e4215fa",
+        "aTop": "turns:af092401-6288-465e-9e46-db523e4215fa"
+      },
+      {
+        "round": 2,
+        "q": 2,
+        "aMs": 339.71639999999024,
+        "bMs": 331.6798070000077,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:af751cdd-e4f9-488d-ba4c-5abcf24ca6aa",
+        "bTop": "turns:af751cdd-e4f9-488d-ba4c-5abcf24ca6aa"
+      },
+      {
+        "round": 2,
+        "q": 3,
+        "aMs": 359.6391619999922,
+        "bMs": 340.27719100000104,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:6ec12eca-67ce-470a-a14b-955870c5a929",
+        "aTop": "turns:6ec12eca-67ce-470a-a14b-955870c5a929"
+      },
+      {
+        "round": 2,
+        "q": 4,
+        "aMs": 391.38236699999834,
+        "bMs": 397.2783020000061,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:140380bf-a0cc-4544-8ce8-6b6d2e72514f",
+        "bTop": "turns:140380bf-a0cc-4544-8ce8-6b6d2e72514f"
+      },
+      {
+        "round": 2,
+        "q": 5,
+        "aMs": 362.1115920000011,
+        "bMs": 356.1182300000073,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:94022432-8c3e-4407-8fc6-9013665ec4d1",
+        "aTop": "turns:94022432-8c3e-4407-8fc6-9013665ec4d1"
+      },
+      {
+        "round": 2,
+        "q": 6,
+        "aMs": 432.8089939999918,
+        "bMs": 376.4995679999993,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:9f0609b0-b73a-4529-a7d8-cd86535f9c7c",
+        "bTop": "turns:9f0609b0-b73a-4529-a7d8-cd86535f9c7c"
+      },
+      {
+        "round": 2,
+        "q": 7,
+        "aMs": 322.79295399998955,
+        "bMs": 336.9162079999951,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:6a0149fa-2edf-4f0e-bd4c-65941b647879",
+        "aTop": "turns:6a0149fa-2edf-4f0e-bd4c-65941b647879"
+      },
+      {
+        "round": 2,
+        "q": 8,
+        "aMs": 358.0123249999888,
+        "bMs": 366.5971360000258,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:d054c626-b43e-4acf-b56b-2195f5fc82bb",
+        "bTop": "turns:d054c626-b43e-4acf-b56b-2195f5fc82bb"
+      },
+      {
+        "round": 2,
+        "q": 9,
+        "aMs": 368.21034900000086,
+        "bMs": 777.9291490000032,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:72c90fda-ff05-4a89-aea5-870067db3bd5",
+        "aTop": "turns:72c90fda-ff05-4a89-aea5-870067db3bd5"
+      },
+      {
+        "round": 2,
+        "q": 10,
+        "aMs": 367.5914749999938,
+        "bMs": 362.9071479999984,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:fb86fa41-3032-4fc8-81da-728002068ff8",
+        "bTop": "turns:fb86fa41-3032-4fc8-81da-728002068ff8"
+      },
+      {
+        "round": 2,
+        "q": 11,
+        "aMs": 344.8734899999981,
+        "bMs": 334.9890219999943,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:a6407a09-5062-407d-abed-a84e9ebc8443",
+        "aTop": "turns:a6407a09-5062-407d-abed-a84e9ebc8443"
+      },
+      {
+        "round": 2,
+        "q": 12,
+        "aMs": 374.93937899998855,
+        "bMs": 351.7481009999756,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:d6e9492e-4b5e-4e2a-b93d-e7bf66c29681",
+        "bTop": "turns:d6e9492e-4b5e-4e2a-b93d-e7bf66c29681"
+      },
+      {
+        "round": 2,
+        "q": 13,
+        "aMs": 340.57819500000915,
+        "bMs": 369.06287399999565,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:648a0821-e706-46ff-ba98-8f3a098587b1",
+        "aTop": "turns:648a0821-e706-46ff-ba98-8f3a098587b1"
+      },
+      {
+        "round": 2,
+        "q": 14,
+        "aMs": 336.7175770000031,
+        "bMs": 347.697136999981,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:6b3c9047-37ef-4d21-b5b0-5353e55e1d4e",
+        "bTop": "turns:6b3c9047-37ef-4d21-b5b0-5353e55e1d4e"
+      },
+      {
+        "round": 2,
+        "q": 15,
+        "aMs": 339.6306470000127,
+        "bMs": 371.48933599999873,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:a6407a09-5062-407d-abed-a84e9ebc8443",
+        "aTop": "turns:a6407a09-5062-407d-abed-a84e9ebc8443"
+      },
+      {
+        "round": 2,
+        "q": 16,
+        "aMs": 351.7245669999975,
+        "bMs": 344.1766269999789,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:4f1e583d-71a1-4f8e-838d-bec9c40c99b1",
+        "bTop": "turns:4f1e583d-71a1-4f8e-838d-bec9c40c99b1"
+      },
+      {
+        "round": 2,
+        "q": 17,
+        "aMs": 345.6279860000068,
+        "bMs": 383.2842079999973,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:d0cbab33-4f44-47ed-b9ee-ea7f4d7f0199",
+        "aTop": "turns:d0cbab33-4f44-47ed-b9ee-ea7f4d7f0199"
+      },
+      {
+        "round": 2,
+        "q": 18,
+        "aMs": 349.66090700001223,
+        "bMs": 359.97052400000393,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:9383112f-4707-406b-9f30-f22190199869",
+        "bTop": "turns:50a05027-f8cd-4b63-b8dd-334a82b99b93"
+      },
+      {
+        "round": 2,
+        "q": 19,
+        "aMs": 410.4333130000159,
+        "bMs": 451.63784899999155,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:75d811a0-34e5-469e-9e96-31debbfcaad0",
+        "aTop": "turns:75d811a0-34e5-469e-9e96-31debbfcaad0"
+      },
+      {
+        "round": 2,
+        "q": 20,
+        "aMs": 371.6291959999944,
+        "bMs": 386.53313699999126,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:f46f67a6-4e5e-4f4a-b43c-739471064703",
+        "bTop": "turns:f46f67a6-4e5e-4f4a-b43c-739471064703"
+      },
+      {
+        "round": 2,
+        "q": 21,
+        "aMs": 351.93768000000273,
+        "bMs": 321.87360300001455,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:e64b9cd5-dab9-4bf4-bd4b-2dd5bb399d72",
+        "aTop": "turns:e64b9cd5-dab9-4bf4-bd4b-2dd5bb399d72"
+      },
+      {
+        "round": 2,
+        "q": 22,
+        "aMs": 334.37743500000215,
+        "bMs": 357.5834909999976,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:99ab0484-0b6c-437e-9ef6-7ab67fc70f84",
+        "bTop": "turns:99ab0484-0b6c-437e-9ef6-7ab67fc70f84"
+      },
+      {
+        "round": 2,
+        "q": 23,
+        "aMs": 322.6788069999893,
+        "bMs": 335.90967100000125,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:a46c8d6e-c5e8-43c5-a291-251b919eeb8e",
+        "aTop": "turns:a46c8d6e-c5e8-43c5-a291-251b919eeb8e"
+      },
+      {
+        "round": 2,
+        "q": 24,
+        "aMs": 339.13030300001265,
+        "bMs": 335.3591590000142,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:cc4031e7-3fd7-467a-81b2-767f25cb7839",
+        "bTop": "turns:cc4031e7-3fd7-467a-81b2-767f25cb7839"
+      },
+      {
+        "round": 2,
+        "q": 25,
+        "aMs": 331.5311849999998,
+        "bMs": 332.51862900002743,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:e717c389-07e6-4d59-8fc2-7a537abdf048",
+        "aTop": "turns:e717c389-07e6-4d59-8fc2-7a537abdf048"
+      },
+      {
+        "round": 2,
+        "q": 26,
+        "aMs": 321.97278500001994,
+        "bMs": 333.7446240000136,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:d5aa50ad-f578-49e3-9862-fe74ed562656",
+        "bTop": "turns:d5aa50ad-f578-49e3-9862-fe74ed562656"
+      },
+      {
+        "round": 2,
+        "q": 27,
+        "aMs": 364.38554400001885,
+        "bMs": 315.60430999999517,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:94022432-8c3e-4407-8fc6-9013665ec4d1",
+        "aTop": "turns:94022432-8c3e-4407-8fc6-9013665ec4d1"
+      },
+      {
+        "round": 2,
+        "q": 28,
+        "aMs": 349.3695969999826,
+        "bMs": 428.09968499999377,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "turns:1aa22042-48ae-4ab3-a427-9272cecd8e7f",
+        "bTop": "turns:1aa22042-48ae-4ab3-a427-9272cecd8e7f"
+      },
+      {
+        "round": 2,
+        "q": 29,
+        "aMs": 327.25059700000565,
+        "bMs": 339.04983000000357,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "turns:571dc1c1-19ac-43bf-85af-eca04549b52c",
+        "aTop": "turns:571dc1c1-19ac-43bf-85af-eca04549b52c"
+      }
+    ],
+    "work_item": [
+      {
+        "round": 0,
+        "q": 0,
+        "aMs": 5.898759000003338,
+        "bMs": 10.295299999997951,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-19384994887273312",
+        "bTop": "work_item:EI-19384994887273312"
+      },
+      {
+        "round": 0,
+        "q": 1,
+        "aMs": 3.7912729999952717,
+        "bMs": 9.160210000001825,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-23829902004959342",
+        "aTop": "work_item:EI-23829902004959342"
+      },
+      {
+        "round": 0,
+        "q": 2,
+        "aMs": 4.2188679999962915,
+        "bMs": 6.494789000003948,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-21213137825039445",
+        "bTop": "work_item:EI-21213137825039445"
+      },
+      {
+        "round": 0,
+        "q": 3,
+        "aMs": 4.907175999993342,
+        "bMs": 8.467083000010462,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-21040260421607564",
+        "aTop": "work_item:EI-21040260421607564"
+      },
+      {
+        "round": 0,
+        "q": 4,
+        "aMs": 5.4424980000039795,
+        "bMs": 10.057340999992448,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-24208760417171240",
+        "bTop": "work_item:EI-24208760417171240"
+      },
+      {
+        "round": 0,
+        "q": 5,
+        "aMs": 6.487804999997024,
+        "bMs": 12.183512000003248,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-21892192847540845",
+        "aTop": "work_item:EI-21892192847540845"
+      },
+      {
+        "round": 0,
+        "q": 6,
+        "aMs": 4.574053999996977,
+        "bMs": 7.131567000003997,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-12824",
+        "bTop": "work_item:EI-18840050859443769"
+      },
+      {
+        "round": 0,
+        "q": 7,
+        "aMs": 6.188458000004175,
+        "bMs": 10.94118600001093,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-24782222210094240",
+        "aTop": "work_item:EI-24782222210094240"
+      },
+      {
+        "round": 0,
+        "q": 8,
+        "aMs": 9.045660000003409,
+        "bMs": 14.56578800000716,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:WI-8943",
+        "bTop": "work_item:WI-8943"
+      },
+      {
+        "round": 0,
+        "q": 9,
+        "aMs": 8.129511999999522,
+        "bMs": 11.662125999995624,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-24825138968082228",
+        "aTop": "work_item:EI-24825138968082228"
+      },
+      {
+        "round": 0,
+        "q": 10,
+        "aMs": 6.276066999998875,
+        "bMs": 13.916105000011157,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-24795951060341813",
+        "bTop": "work_item:WI-8848"
+      },
+      {
+        "round": 0,
+        "q": 11,
+        "aMs": 6.510158000004594,
+        "bMs": 11.689389000006486,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:WI-10002437",
+        "aTop": "work_item:EI-24026089914526674"
+      },
+      {
+        "round": 0,
+        "q": 12,
+        "aMs": 6.834043000009842,
+        "bMs": 10.516295999987051,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-22079496079377201",
+        "bTop": "work_item:EI-22079496079377201"
+      },
+      {
+        "round": 0,
+        "q": 13,
+        "aMs": 5.920110000006389,
+        "bMs": 12.242596000010963,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-20280997362406715",
+        "aTop": "work_item:EI-20280997362406715"
+      },
+      {
+        "round": 0,
+        "q": 14,
+        "aMs": 5.1893810000037774,
+        "bMs": 11.954039999996894,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-24671241057222191",
+        "bTop": "work_item:EI-24671241057222191"
+      },
+      {
+        "round": 0,
+        "q": 15,
+        "aMs": 5.689816000012797,
+        "bMs": 8.443127000005916,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-25169332057261604",
+        "aTop": "work_item:EI-25169332057261604"
+      },
+      {
+        "round": 0,
+        "q": 16,
+        "aMs": 6.593168999999762,
+        "bMs": 11.074643999992986,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-23688008974687681",
+        "bTop": "work_item:EI-23688008974687681"
+      },
+      {
+        "round": 0,
+        "q": 17,
+        "aMs": 5.988821999999345,
+        "bMs": 8.83002399999532,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-22618936793836926",
+        "aTop": "work_item:EI-22618936793836926"
+      },
+      {
+        "round": 0,
+        "q": 18,
+        "aMs": 7.081671000007191,
+        "bMs": 14.966781000010087,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-7570",
+        "bTop": "work_item:EI-7570"
+      },
+      {
+        "round": 0,
+        "q": 19,
+        "aMs": 8.016434000004665,
+        "bMs": 15.042818000001716,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-22047906817637413",
+        "aTop": "work_item:EI-22047906817637413"
+      },
+      {
+        "round": 0,
+        "q": 20,
+        "aMs": 6.013760999994702,
+        "bMs": 9.681526000000304,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-22684218897012741",
+        "bTop": "work_item:EI-22684218897012741"
+      },
+      {
+        "round": 0,
+        "q": 21,
+        "aMs": 5.5654760000034,
+        "bMs": 9.4777929999982,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-21552904300168447",
+        "aTop": "work_item:EI-21552904300168447"
+      },
+      {
+        "round": 0,
+        "q": 22,
+        "aMs": 7.951528999998118,
+        "bMs": 12.16693999999552,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-18732290815182714",
+        "bTop": "work_item:EI-18732290815182714"
+      },
+      {
+        "round": 0,
+        "q": 23,
+        "aMs": 4.85016600000381,
+        "bMs": 8.910640000001877,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-25220939054591004",
+        "aTop": "work_item:EI-25220939054591004"
+      },
+      {
+        "round": 0,
+        "q": 24,
+        "aMs": 6.386150000005728,
+        "bMs": 10.995160000005853,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-21269997077721025",
+        "bTop": "work_item:EI-21269997077721025"
+      },
+      {
+        "round": 0,
+        "q": 25,
+        "aMs": 5.591306000002078,
+        "bMs": 9.434689999994589,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-21130132919602921",
+        "aTop": "work_item:EI-21130132919602921"
+      },
+      {
+        "round": 0,
+        "q": 26,
+        "aMs": 6.791270999994595,
+        "bMs": 12.689448999997694,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-22771958279093826",
+        "bTop": "work_item:EI-22152426246970496"
+      },
+      {
+        "round": 0,
+        "q": 27,
+        "aMs": 6.938343999994686,
+        "bMs": 11.11133400000108,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-22096211828237495",
+        "aTop": "work_item:EI-22096211828237495"
+      },
+      {
+        "round": 0,
+        "q": 28,
+        "aMs": 7.512541999996756,
+        "bMs": 11.592112000013003,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:WI-6970",
+        "bTop": "work_item:WI-6970"
+      },
+      {
+        "round": 0,
+        "q": 29,
+        "aMs": 4.5871079999924405,
+        "bMs": 8.236749000003329,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-22356441050853534",
+        "aTop": "work_item:EI-22356441050853534"
+      },
+      {
+        "round": 1,
+        "q": 0,
+        "aMs": 5.52182099998754,
+        "bMs": 10.845520999995642,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-19384994887273312",
+        "aTop": "work_item:EI-19384994887273312"
+      },
+      {
+        "round": 1,
+        "q": 1,
+        "aMs": 4.937494999991031,
+        "bMs": 11.045055999988108,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-23829902004959342",
+        "bTop": "work_item:EI-23829902004959342"
+      },
+      {
+        "round": 1,
+        "q": 2,
+        "aMs": 4.1805440000025555,
+        "bMs": 9.880520000006072,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-21213137825039445",
+        "aTop": "work_item:EI-21213137825039445"
+      },
+      {
+        "round": 1,
+        "q": 3,
+        "aMs": 5.087113000001409,
+        "bMs": 8.84191699999792,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-21040260421607564",
+        "bTop": "work_item:EI-21040260421607564"
+      },
+      {
+        "round": 1,
+        "q": 4,
+        "aMs": 9.327594000002136,
+        "bMs": 11.949290999997174,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-24208760417171240",
+        "aTop": "work_item:EI-24208760417171240"
+      },
+      {
+        "round": 1,
+        "q": 5,
+        "aMs": 7.428520000001299,
+        "bMs": 13.748861999993096,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-21892192847540845",
+        "bTop": "work_item:EI-21892192847540845"
+      },
+      {
+        "round": 1,
+        "q": 6,
+        "aMs": 5.874331999992137,
+        "bMs": 11.445309000002453,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-18840050859443769",
+        "aTop": "work_item:EI-12824"
+      },
+      {
+        "round": 1,
+        "q": 7,
+        "aMs": 8.75604100000055,
+        "bMs": 15.179220999998506,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-24782222210094240",
+        "bTop": "work_item:EI-24782222210094240"
+      },
+      {
+        "round": 1,
+        "q": 8,
+        "aMs": 12.721080000002985,
+        "bMs": 16.433179999992717,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:WI-8943",
+        "aTop": "work_item:WI-8943"
+      },
+      {
+        "round": 1,
+        "q": 9,
+        "aMs": 9.375375999996322,
+        "bMs": 11.146271999998135,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-24825138968082228",
+        "bTop": "work_item:EI-24825138968082228"
+      },
+      {
+        "round": 1,
+        "q": 10,
+        "aMs": 8.366639999992913,
+        "bMs": 15.59723899999517,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:WI-8848",
+        "aTop": "work_item:EI-24795951060341813"
+      },
+      {
+        "round": 1,
+        "q": 11,
+        "aMs": 7.77005900000222,
+        "bMs": 13.24615300000005,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-24026089914526674",
+        "bTop": "work_item:WI-10002437"
+      },
+      {
+        "round": 1,
+        "q": 12,
+        "aMs": 4.603631000005407,
+        "bMs": 9.13534300000174,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-22079496079377201",
+        "aTop": "work_item:EI-22079496079377201"
+      },
+      {
+        "round": 1,
+        "q": 13,
+        "aMs": 6.556156999999075,
+        "bMs": 12.59404500000528,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-20280997362406715",
+        "bTop": "work_item:EI-20280997362406715"
+      },
+      {
+        "round": 1,
+        "q": 14,
+        "aMs": 6.808013000001665,
+        "bMs": 13.168713000006392,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-24671241057222191",
+        "aTop": "work_item:EI-24671241057222191"
+      },
+      {
+        "round": 1,
+        "q": 15,
+        "aMs": 5.363545999993221,
+        "bMs": 8.281045000010636,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-25169332057261604",
+        "bTop": "work_item:EI-25169332057261604"
+      },
+      {
+        "round": 1,
+        "q": 16,
+        "aMs": 7.397209999995539,
+        "bMs": 12.164976999993087,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-23688008974687681",
+        "aTop": "work_item:EI-23688008974687681"
+      },
+      {
+        "round": 1,
+        "q": 17,
+        "aMs": 5.6177369999932125,
+        "bMs": 7.70683700000518,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-22618936793836926",
+        "bTop": "work_item:EI-22618936793836926"
+      },
+      {
+        "round": 1,
+        "q": 18,
+        "aMs": 8.49744200000714,
+        "bMs": 12.299115999994683,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-7570",
+        "aTop": "work_item:EI-7570"
+      },
+      {
+        "round": 1,
+        "q": 19,
+        "aMs": 5.570224999988568,
+        "bMs": 14.362135000003036,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-22047906817637413",
+        "bTop": "work_item:EI-22047906817637413"
+      },
+      {
+        "round": 1,
+        "q": 20,
+        "aMs": 6.974685000008321,
+        "bMs": 12.501696999999695,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-22684218897012741",
+        "aTop": "work_item:EI-22684218897012741"
+      },
+      {
+        "round": 1,
+        "q": 21,
+        "aMs": 4.616836000001058,
+        "bMs": 6.6264830000000075,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-21552904300168447",
+        "bTop": "work_item:EI-21552904300168447"
+      },
+      {
+        "round": 1,
+        "q": 22,
+        "aMs": 5.614150000008522,
+        "bMs": 10.140120999989449,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-18732290815182714",
+        "aTop": "work_item:EI-18732290815182714"
+      },
+      {
+        "round": 1,
+        "q": 23,
+        "aMs": 4.821191000010003,
+        "bMs": 7.6816689999977825,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-25220939054591004",
+        "bTop": "work_item:EI-25220939054591004"
+      },
+      {
+        "round": 1,
+        "q": 24,
+        "aMs": 5.459691999989445,
+        "bMs": 9.367700999995577,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-21269997077721025",
+        "aTop": "work_item:EI-21269997077721025"
+      },
+      {
+        "round": 1,
+        "q": 25,
+        "aMs": 7.990965000004508,
+        "bMs": 17.888438000009046,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-21130132919602921",
+        "bTop": "work_item:EI-21130132919602921"
+      },
+      {
+        "round": 1,
+        "q": 26,
+        "aMs": 6.361833000002662,
+        "bMs": 15.040455000009388,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-22152426246970496",
+        "aTop": "work_item:EI-22771958279093826"
+      },
+      {
+        "round": 1,
+        "q": 27,
+        "aMs": 5.861045999990893,
+        "bMs": 9.898765000005369,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-22096211828237495",
+        "bTop": "work_item:EI-22096211828237495"
+      },
+      {
+        "round": 1,
+        "q": 28,
+        "aMs": 7.884980999995605,
+        "bMs": 14.081323999998858,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:WI-6970",
+        "aTop": "work_item:WI-6970"
+      },
+      {
+        "round": 1,
+        "q": 29,
+        "aMs": 5.2990220000065165,
+        "bMs": 8.712046000000555,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-22356441050853534",
+        "bTop": "work_item:EI-22356441050853534"
+      },
+      {
+        "round": 2,
+        "q": 0,
+        "aMs": 9.18544899999688,
+        "bMs": 19.00072400001227,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-19384994887273312",
+        "bTop": "work_item:EI-19384994887273312"
+      },
+      {
+        "round": 2,
+        "q": 1,
+        "aMs": 5.278473000013037,
+        "bMs": 11.26356899998791,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-23829902004959342",
+        "aTop": "work_item:EI-23829902004959342"
+      },
+      {
+        "round": 2,
+        "q": 2,
+        "aMs": 5.437249000009615,
+        "bMs": 8.241798999995808,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-21213137825039445",
+        "bTop": "work_item:EI-21213137825039445"
+      },
+      {
+        "round": 2,
+        "q": 3,
+        "aMs": 5.319983000008506,
+        "bMs": 9.65952400000242,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-21040260421607564",
+        "aTop": "work_item:EI-21040260421607564"
+      },
+      {
+        "round": 2,
+        "q": 4,
+        "aMs": 8.202493999997387,
+        "bMs": 15.77742600000056,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-24208760417171240",
+        "bTop": "work_item:EI-24208760417171240"
+      },
+      {
+        "round": 2,
+        "q": 5,
+        "aMs": 8.349225999991177,
+        "bMs": 13.512417000005371,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-21892192847540845",
+        "aTop": "work_item:EI-21892192847540845"
+      },
+      {
+        "round": 2,
+        "q": 6,
+        "aMs": 6.611214000004111,
+        "bMs": 15.094278000004124,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-12824",
+        "bTop": "work_item:EI-18840050859443769"
+      },
+      {
+        "round": 2,
+        "q": 7,
+        "aMs": 7.862196000001859,
+        "bMs": 16.284352999995463,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-24782222210094240",
+        "aTop": "work_item:EI-24782222210094240"
+      },
+      {
+        "round": 2,
+        "q": 8,
+        "aMs": 12.449095000018133,
+        "bMs": 17.76818600000115,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:WI-8943",
+        "bTop": "work_item:WI-8943"
+      },
+      {
+        "round": 2,
+        "q": 9,
+        "aMs": 7.946679999993648,
+        "bMs": 12.299727000005078,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-24825138968082228",
+        "aTop": "work_item:EI-24825138968082228"
+      },
+      {
+        "round": 2,
+        "q": 10,
+        "aMs": 8.0601579999784,
+        "bMs": 14.240221000014571,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-24795951060341813",
+        "bTop": "work_item:WI-8848"
+      },
+      {
+        "round": 2,
+        "q": 11,
+        "aMs": 8.643773999996483,
+        "bMs": 14.469052000000374,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:WI-10002437",
+        "aTop": "work_item:EI-24026089914526674"
+      },
+      {
+        "round": 2,
+        "q": 12,
+        "aMs": 5.32373999999254,
+        "bMs": 11.155820999993011,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-22079496079377201",
+        "bTop": "work_item:EI-22079496079377201"
+      },
+      {
+        "round": 2,
+        "q": 13,
+        "aMs": 6.559664000000339,
+        "bMs": 12.719045999983791,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-20280997362406715",
+        "aTop": "work_item:EI-20280997362406715"
+      },
+      {
+        "round": 2,
+        "q": 14,
+        "aMs": 7.767363999999361,
+        "bMs": 12.463722999993479,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-24671241057222191",
+        "bTop": "work_item:EI-24671241057222191"
+      },
+      {
+        "round": 2,
+        "q": 15,
+        "aMs": 6.1704330000211485,
+        "bMs": 9.615448999975342,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-25169332057261604",
+        "aTop": "work_item:EI-25169332057261604"
+      },
+      {
+        "round": 2,
+        "q": 16,
+        "aMs": 7.5490329999884125,
+        "bMs": 12.037922999996226,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-23688008974687681",
+        "bTop": "work_item:EI-23688008974687681"
+      },
+      {
+        "round": 2,
+        "q": 17,
+        "aMs": 9.001734999998007,
+        "bMs": 9.103731999988668,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-22618936793836926",
+        "aTop": "work_item:EI-22618936793836926"
+      },
+      {
+        "round": 2,
+        "q": 18,
+        "aMs": 7.491551999992225,
+        "bMs": 15.864973999996437,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-7570",
+        "bTop": "work_item:EI-7570"
+      },
+      {
+        "round": 2,
+        "q": 19,
+        "aMs": 6.574282999994466,
+        "bMs": 11.872002000018256,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-22047906817637413",
+        "aTop": "work_item:EI-22047906817637413"
+      },
+      {
+        "round": 2,
+        "q": 20,
+        "aMs": 6.432769000006374,
+        "bMs": 14.347617999999784,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-22684218897012741",
+        "bTop": "work_item:EI-22684218897012741"
+      },
+      {
+        "round": 2,
+        "q": 21,
+        "aMs": 5.21944899999653,
+        "bMs": 9.355647999997018,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-21552904300168447",
+        "aTop": "work_item:EI-21552904300168447"
+      },
+      {
+        "round": 2,
+        "q": 22,
+        "aMs": 5.829505999980029,
+        "bMs": 10.841363999992609,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-18732290815182714",
+        "bTop": "work_item:EI-18732290815182714"
+      },
+      {
+        "round": 2,
+        "q": 23,
+        "aMs": 4.261109999992186,
+        "bMs": 8.780388000013772,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-25220939054591004",
+        "aTop": "work_item:EI-25220939054591004"
+      },
+      {
+        "round": 2,
+        "q": 24,
+        "aMs": 7.262730999995256,
+        "bMs": 9.700754000019515,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-21269997077721025",
+        "bTop": "work_item:EI-21269997077721025"
+      },
+      {
+        "round": 2,
+        "q": 25,
+        "aMs": 6.354427999991458,
+        "bMs": 9.801678999996511,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-21130132919602921",
+        "aTop": "work_item:EI-21130132919602921"
+      },
+      {
+        "round": 2,
+        "q": 26,
+        "aMs": 5.277280000009341,
+        "bMs": 11.522017000010237,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:EI-22771958279093826",
+        "bTop": "work_item:EI-22152426246970496"
+      },
+      {
+        "round": 2,
+        "q": 27,
+        "aMs": 5.6721919999981765,
+        "bMs": 10.605819999997038,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-22096211828237495",
+        "aTop": "work_item:EI-22096211828237495"
+      },
+      {
+        "round": 2,
+        "q": 28,
+        "aMs": 6.425985999987461,
+        "bMs": 11.984559999982594,
+        "aRows": 30,
+        "bRows": 30,
+        "aTop": "work_item:WI-6970",
+        "bTop": "work_item:WI-6970"
+      },
+      {
+        "round": 2,
+        "q": 29,
+        "aMs": 5.540227999998024,
+        "bMs": 9.968480000010459,
+        "aRows": 30,
+        "bRows": 30,
+        "bTop": "work_item:EI-22356441050853534",
+        "aTop": "work_item:EI-22356441050853534"
+      }
+    ],
+    "work_items_search": [
+      {
+        "round": 0,
+        "q": 0,
+        "aMs": 17.492093000008026,
+        "bMs": 83.36028500000248,
+        "aRows": 10,
+        "bRows": 10,
+        "aTop": "EI-22189589517637049",
+        "bTop": "EI-20669541349219660"
+      },
+      {
+        "round": 0,
+        "q": 1,
+        "aMs": 9.74349500000244,
+        "bMs": 62.93513499999244,
+        "aRows": 8,
+        "bRows": 10,
+        "bTop": "xbench-instance_flipt-io__flipt-aebaecd026f752b187f11328b0d464761b15d2ab",
+        "aTop": "EI-13924"
+      },
+      {
+        "round": 0,
+        "q": 2,
+        "aMs": 9.48959600001399,
+        "bMs": 64.22986300000048,
+        "aRows": 4,
+        "bRows": 10,
+        "aTop": "EI-20008037133036474",
+        "bTop": "EI-20008037133036474"
+      },
+      {
+        "round": 0,
+        "q": 3,
+        "aMs": 17.202183999994304,
+        "bMs": 68.2185870000103,
+        "aRows": 10,
+        "bRows": 10,
+        "bTop": "EI-22421329930319456",
+        "aTop": "EI-19420125335711829"
+      },
+      {
+        "round": 0,
+        "q": 4,
+        "aMs": 12.431880999996793,
+        "bMs": 69.15627500000119,
+        "aRows": 10,
+        "bRows": 10,
+        "aTop": "EI-24648737406632461",
+        "bTop": "EI-23809205858633494"
+      },
+      {
+        "round": 0,
+        "q": 5,
+        "aMs": 8.782550999996602,
+        "bMs": 64.493810999993,
+        "aRows": 2,
+        "bRows": 10,
+        "bTop": "EI-21600998523239527",
+        "aTop": "EI-19333267623373946"
+      },
+      {
+        "round": 0,
+        "q": 6,
+        "aMs": 8.432476999994833,
+        "bMs": 68.41998599999351,
+        "aRows": 4,
+        "bRows": 10,
+        "aTop": "EI-18840050859443769",
+        "bTop": "EI-18840050859443769"
+      },
+      {
+        "round": 0,
+        "q": 7,
+        "aMs": 8.5136829999974,
+        "bMs": 70.5675479999918,
+        "aRows": 4,
+        "bRows": 10,
+        "bTop": "WI-37606",
+        "aTop": "WI-37606"
+      },
+      {
+        "round": 0,
+        "q": 8,
+        "aMs": 4.790701000005356,
+        "bMs": 62.66488300000492,
+        "aRows": 0,
+        "bRows": 10,
+        "aTop": null,
+        "bTop": "WI-8943"
+      },
+      {
+        "round": 0,
+        "q": 9,
+        "aMs": 6.849462999991374,
+        "bMs": 65.67660299999989,
+        "aRows": 2,
+        "bRows": 10,
+        "bTop": "WI-3225",
+        "aTop": "WI-3225"
+      },
+      {
+        "round": 0,
+        "q": 10,
+        "aMs": 7.791308999992907,
+        "bMs": 62.796948000002885,
+        "aRows": 5,
+        "bRows": 10,
+        "aTop": "EI-19448566598986303",
+        "bTop": "WI-8848"
+      },
+      {
+        "round": 0,
+        "q": 11,
+        "aMs": 10.524211999989348,
+        "bMs": 64.89161900000181,
+        "aRows": 10,
+        "bRows": 10,
+        "bTop": "EI-23978486630643984",
+        "aTop": "EI-23978486630643984"
+      },
+      {
+        "round": 0,
+        "q": 12,
+        "aMs": 17.062584999992396,
+        "bMs": 86.37662400001136,
+        "aRows": 10,
+        "bRows": 10,
+        "aTop": "WI-2114861",
+        "bTop": "WI-2140945"
+      },
+      {
+        "round": 0,
+        "q": 13,
+        "aMs": 8.970435000010184,
+        "bMs": 68.32170600000245,
+        "aRows": 5,
+        "bRows": 10,
+        "bTop": "WI-6634",
+        "aTop": "EI-2118"
+      },
+      {
+        "round": 0,
+        "q": 14,
+        "aMs": 11.219051999985822,
+        "bMs": 64.38723599999503,
+        "aRows": 10,
+        "bRows": 10,
+        "aTop": "EI-22749400819514038",
+        "bTop": "EI-23973429928171203"
+      },
+      {
+        "round": 0,
+        "q": 15,
+        "aMs": 9.347342000008211,
+        "bMs": 72.90728200000012,
+        "aRows": 10,
+        "bRows": 10,
+        "bTop": "WI-10002220",
+        "aTop": "WI-4663"
+      },
+      {
+        "round": 0,
+        "q": 16,
+        "aMs": 5.464802000002237,
+        "bMs": 67.0077309999906,
+        "aRows": 0,
+        "bRows": 10,
+        "aTop": null,
+        "bTop": "EI-23688008974687681"
+      },
+      {
+        "round": 0,
+        "q": 17,
+        "aMs": 7.040821999995387,
+        "bMs": 71.53185900000972,
+        "aRows": 0,
+        "bRows": 10,
+        "bTop": "EI-21843904371852669",
+        "aTop": null
+      },
+      {
+        "round": 0,
+        "q": 18,
+        "aMs": 9.161983999991207,
+        "bMs": 70.08227199999965,
+        "aRows": 9,
+        "bRows": 10,
+        "aTop": "WI-572",
+        "bTop": "WI-1731"
+      },
+      {
+        "round": 0,
+        "q": 19,
+        "aMs": 10.108599999992293,
+        "bMs": 81.46245600000839,
+        "aRows": 7,
+        "bRows": 10,
+        "bTop": "EI-20300821494280085",
+        "aTop": "EI-12709"
+      },
+      {
+        "round": 0,
+        "q": 20,
+        "aMs": 10.51940299999842,
+        "bMs": 78.6256629999989,
+        "aRows": 10,
+        "bRows": 10,
+        "aTop": "EI-10874",
+        "bTop": "EI-22684218897012741"
+      },
+      {
+        "round": 0,
+        "q": 21,
+        "aMs": 10.356869000010192,
+        "bMs": 74.75503699999535,
+        "aRows": 6,
+        "bRows": 10,
+        "bTop": "EI-25227241424188017",
+        "aTop": "EI-25227241424188017"
+      },
+      {
+        "round": 0,
+        "q": 22,
+        "aMs": 15.777906000002986,
+        "bMs": 79.85296100001142,
+        "aRows": 10,
+        "bRows": 10,
+        "aTop": "EI-21581567261074616",
+        "bTop": "EI-22427741014249929"
+      },
+      {
+        "round": 0,
+        "q": 23,
+        "aMs": 6.4093640000064624,
+        "bMs": 71.42729799999506,
+        "aRows": 2,
+        "bRows": 10,
+        "bTop": "EI-20210946042796988",
+        "aTop": "EI-20210946042796988"
+      },
+      {
+        "round": 0,
+        "q": 24,
+        "aMs": 11.19836199999554,
+        "bMs": 88.45698899999843,
+        "aRows": 9,
+        "bRows": 10,
+        "aTop": "EI-21392851561477410",
+        "bTop": "EI-21392851561477410"
+      },
+      {
+        "round": 0,
+        "q": 25,
+        "aMs": 13.561491000000387,
+        "bMs": 83.73659200000111,
+        "aRows": 10,
+        "bRows": 10,
+        "bTop": "EI-21995293824411069",
+        "aTop": "EI-21995293824411069"
+      },
+      {
+        "round": 0,
+        "q": 26,
+        "aMs": 13.71878400001151,
+        "bMs": 80.99834099999862,
+        "aRows": 10,
+        "bRows": 10,
+        "aTop": "EI-20029696364111603",
+        "bTop": "EI-20029696364111603"
+      },
+      {
+        "round": 0,
+        "q": 27,
+        "aMs": 11.773460999989766,
+        "bMs": 73.05359399999725,
+        "aRows": 10,
+        "bRows": 10,
+        "bTop": "EI-19478780721557822",
+        "aTop": "EI-21587904634585710"
+      },
+      {
+        "round": 0,
+        "q": 28,
+        "aMs": 5.51458800000546,
+        "bMs": 71.99947099998826,
+        "aRows": 0,
+        "bRows": 10,
+        "aTop": null,
+        "bTop": "WI-6970"
+      },
+      {
+        "round": 0,
+        "q": 29,
+        "aMs": 10.694669999997132,
+        "bMs": 68.83669999999984,
+        "aRows": 10,
+        "bRows": 10,
+        "bTop": "EI-22750850092560167",
+        "aTop": "EI-22750850092560167"
+      },
+      {
+        "round": 1,
+        "q": 0,
+        "aMs": 16.417591000004904,
+        "bMs": 75.69811599999957,
+        "aRows": 10,
+        "bRows": 10,
+        "bTop": "EI-20669541349219660",
+        "aTop": "EI-22189589517637049"
+      },
+      {
+        "round": 1,
+        "q": 1,
+        "aMs": 13.614793000000645,
+        "bMs": 68.18807899999956,
+        "aRows": 8,
+        "bRows": 10,
+        "aTop": "EI-13924",
+        "bTop": "xbench-instance_flipt-io__flipt-aebaecd026f752b187f11328b0d464761b15d2ab"
+      },
+      {
+        "round": 1,
+        "q": 2,
+        "aMs": 10.383289999997942,
+        "bMs": 75.5748079999903,
+        "aRows": 4,
+        "bRows": 10,
+        "bTop": "EI-20008037133036474",
+        "aTop": "EI-20008037133036474"
+      },
+      {
+        "round": 1,
+        "q": 3,
+        "aMs": 18.590251999994507,
+        "bMs": 77.26481800001056,
+        "aRows": 10,
+        "bRows": 10,
+        "aTop": "EI-19420125335711829",
+        "bTop": "EI-22421329930319456"
+      },
+      {
+        "round": 1,
+        "q": 4,
+        "aMs": 12.545570999995107,
+        "bMs": 74.799543000001,
+        "aRows": 10,
+        "bRows": 10,
+        "bTop": "EI-23809205858633494",
+        "aTop": "EI-24648737406632461"
+      },
+      {
+        "round": 1,
+        "q": 5,
+        "aMs": 10.624364999996033,
+        "bMs": 79.7953700000071,
+        "aRows": 2,
+        "bRows": 10,
+        "aTop": "EI-19333267623373946",
+        "bTop": "EI-21600998523239527"
+      },
+      {
+        "round": 1,
+        "q": 6,
+        "aMs": 13.083077999996021,
+        "bMs": 78.03557600000931,
+        "aRows": 4,
+        "bRows": 10,
+        "bTop": "EI-18840050859443769",
+        "aTop": "EI-18840050859443769"
+      },
+      {
+        "round": 1,
+        "q": 7,
+        "aMs": 10.713056000007782,
+        "bMs": 72.53082599998743,
+        "aRows": 4,
+        "bRows": 10,
+        "aTop": "WI-37606",
+        "bTop": "WI-37606"
+      },
+      {
+        "round": 1,
+        "q": 8,
+        "aMs": 4.7317780000012135,
+        "bMs": 68.85141899999871,
+        "aRows": 0,
+        "bRows": 10,
+        "bTop": "WI-8943",
+        "aTop": null
+      },
+      {
+        "round": 1,
+        "q": 9,
+        "aMs": 7.0891260000062175,
+        "bMs": 64.84513000000152,
+        "aRows": 2,
+        "bRows": 10,
+        "aTop": "WI-3225",
+        "bTop": "WI-3225"
+      },
+      {
+        "round": 1,
+        "q": 10,
+        "aMs": 10.610668000008445,
+        "bMs": 81.00548399999388,
+        "aRows": 5,
+        "bRows": 10,
+        "bTop": "WI-8848",
+        "aTop": "EI-19448566598986303"
+      },
+      {
+        "round": 1,
+        "q": 11,
+        "aMs": 15.284264000001713,
+        "bMs": 77.34452300000703,
+        "aRows": 10,
+        "bRows": 10,
+        "aTop": "EI-23978486630643984",
+        "bTop": "EI-23978486630643984"
+      },
+      {
+        "round": 1,
+        "q": 12,
+        "aMs": 11.8496390000073,
+        "bMs": 75.2092840000114,
+        "aRows": 10,
+        "bRows": 10,
+        "bTop": "WI-2140945",
+        "aTop": "WI-2114861"
+      },
+      {
+        "round": 1,
+        "q": 13,
+        "aMs": 8.929306000005454,
+        "bMs": 84.37652800000797,
+        "aRows": 5,
+        "bRows": 10,
+        "aTop": "EI-2118",
+        "bTop": "WI-6634"
+      },
+      {
+        "round": 1,
+        "q": 14,
+        "aMs": 13.494180999987293,
+        "bMs": 90.26445600000443,
+        "aRows": 10,
+        "bRows": 10,
+        "bTop": "EI-23973429928171203",
+        "aTop": "EI-22749400819514038"
+      },
+      {
+        "round": 1,
+        "q": 15,
+        "aMs": 10.790424999999232,
+        "bMs": 73.81637600000249,
+        "aRows": 10,
+        "bRows": 10,
+        "aTop": "WI-4663",
+        "bTop": "WI-10002220"
+      },
+      {
+        "round": 1,
+        "q": 16,
+        "aMs": 4.866677999991225,
+        "bMs": 66.54370799999742,
+        "aRows": 0,
+        "bRows": 10,
+        "bTop": "EI-23688008974687681",
+        "aTop": null
+      },
+      {
+        "round": 1,
+        "q": 17,
+        "aMs": 5.789598000003025,
+        "bMs": 69.39797399999225,
+        "aRows": 0,
+        "bRows": 10,
+        "aTop": null,
+        "bTop": "EI-21843904371852669"
+      },
+      {
+        "round": 1,
+        "q": 18,
+        "aMs": 11.52931099999114,
+        "bMs": 70.96320299999206,
+        "aRows": 9,
+        "bRows": 10,
+        "bTop": "WI-1731",
+        "aTop": "WI-572"
+      },
+      {
+        "round": 1,
+        "q": 19,
+        "aMs": 9.25903100000869,
+        "bMs": 72.81080700000166,
+        "aRows": 7,
+        "bRows": 10,
+        "aTop": "EI-12709",
+        "bTop": "EI-20300821494280085"
+      },
+      {
+        "round": 1,
+        "q": 20,
+        "aMs": 8.994330999994418,
+        "bMs": 70.08610100000806,
+        "aRows": 10,
+        "bRows": 10,
+        "bTop": "EI-22684218897012741",
+        "aTop": "EI-10874"
+      },
+      {
+        "round": 1,
+        "q": 21,
+        "aMs": 11.566393000000971,
+        "bMs": 67.03230000000622,
+        "aRows": 6,
+        "bRows": 10,
+        "aTop": "EI-25227241424188017",
+        "bTop": "EI-25227241424188017"
+      },
+      {
+        "round": 1,
+        "q": 22,
+        "aMs": 15.862499999988358,
+        "bMs": 76.10642499999085,
+        "aRows": 10,
+        "bRows": 10,
+        "bTop": "EI-22427741014249929",
+        "aTop": "EI-21581567261074616"
+      },
+      {
+        "round": 1,
+        "q": 23,
+        "aMs": 7.07776400000148,
+        "bMs": 72.20257500000298,
+        "aRows": 2,
+        "bRows": 10,
+        "aTop": "EI-20210946042796988",
+        "bTop": "EI-20210946042796988"
+      },
+      {
+        "round": 1,
+        "q": 24,
+        "aMs": 8.380938000002061,
+        "bMs": 69.28147899999749,
+        "aRows": 9,
+        "bRows": 10,
+        "bTop": "EI-21392851561477410",
+        "aTop": "EI-21392851561477410"
+      },
+      {
+        "round": 1,
+        "q": 25,
+        "aMs": 31.140912999995635,
+        "bMs": 87.98685300000943,
+        "aRows": 10,
+        "bRows": 10,
+        "aTop": "EI-21995293824411069",
+        "bTop": "EI-21995293824411069"
+      },
+      {
+        "round": 1,
+        "q": 26,
+        "aMs": 17.82860300000175,
+        "bMs": 157.29680700000608,
+        "aRows": 10,
+        "bRows": 10,
+        "bTop": "EI-20029696364111603",
+        "aTop": "EI-20029696364111603"
+      },
+      {
+        "round": 1,
+        "q": 27,
+        "aMs": 10.141875000001164,
+        "bMs": 74.16463899999508,
+        "aRows": 10,
+        "bRows": 10,
+        "aTop": "EI-21587904634585710",
+        "bTop": "EI-19478780721557822"
+      },
+      {
+        "round": 1,
+        "q": 28,
+        "aMs": 6.917274000006728,
+        "bMs": 82.45013300000574,
+        "aRows": 0,
+        "bRows": 10,
+        "bTop": "WI-6970",
+        "aTop": null
+      },
+      {
+        "round": 1,
+        "q": 29,
+        "aMs": 12.655423999996856,
+        "bMs": 85.0936420000071,
+        "aRows": 10,
+        "bRows": 10,
+        "aTop": "EI-22750850092560167",
+        "bTop": "EI-22750850092560167"
+      },
+      {
+        "round": 2,
+        "q": 0,
+        "aMs": 23.28536900000472,
+        "bMs": 92.89572300000873,
+        "aRows": 10,
+        "bRows": 10,
+        "aTop": "EI-22189589517637049",
+        "bTop": "EI-20669541349219660"
+      },
+      {
+        "round": 2,
+        "q": 1,
+        "aMs": 11.387607999989996,
+        "bMs": 73.59366800000134,
+        "aRows": 8,
+        "bRows": 10,
+        "bTop": "xbench-instance_flipt-io__flipt-aebaecd026f752b187f11328b0d464761b15d2ab",
+        "aTop": "EI-13924"
+      },
+      {
+        "round": 2,
+        "q": 2,
+        "aMs": 12.152152999988175,
+        "bMs": 73.97939199999382,
+        "aRows": 4,
+        "bRows": 10,
+        "aTop": "EI-20008037133036474",
+        "bTop": "EI-20008037133036474"
+      },
+      {
+        "round": 2,
+        "q": 3,
+        "aMs": 21.905798000007053,
+        "bMs": 81.77125299999898,
+        "aRows": 10,
+        "bRows": 10,
+        "bTop": "EI-22421329930319456",
+        "aTop": "EI-19420125335711829"
+      },
+      {
+        "round": 2,
+        "q": 4,
+        "aMs": 19.56283799999801,
+        "bMs": 97.94213799999852,
+        "aRows": 10,
+        "bRows": 10,
+        "aTop": "EI-24648737406632461",
+        "bTop": "EI-23809205858633494"
+      },
+      {
+        "round": 2,
+        "q": 5,
+        "aMs": 10.60549900001206,
+        "bMs": 83.2219519999926,
+        "aRows": 2,
+        "bRows": 10,
+        "bTop": "EI-21600998523239527",
+        "aTop": "EI-19333267623373946"
+      },
+      {
+        "round": 2,
+        "q": 6,
+        "aMs": 11.513229999996838,
+        "bMs": 80.53338500000245,
+        "aRows": 4,
+        "bRows": 10,
+        "aTop": "EI-18840050859443769",
+        "bTop": "EI-18840050859443769"
+      },
+      {
+        "round": 2,
+        "q": 7,
+        "aMs": 10.780957000009948,
+        "bMs": 75.74706199998036,
+        "aRows": 4,
+        "bRows": 10,
+        "bTop": "WI-37606",
+        "aTop": "WI-37606"
+      },
+      {
+        "round": 2,
+        "q": 8,
+        "aMs": 5.434032999997726,
+        "bMs": 72.82996500001173,
+        "aRows": 0,
+        "bRows": 10,
+        "aTop": null,
+        "bTop": "WI-8943"
+      },
+      {
+        "round": 2,
+        "q": 9,
+        "aMs": 8.833431000006385,
+        "bMs": 73.95231000002241,
+        "aRows": 2,
+        "bRows": 10,
+        "bTop": "WI-3225",
+        "aTop": "WI-3225"
+      },
+      {
+        "round": 2,
+        "q": 10,
+        "aMs": 9.502299999992829,
+        "bMs": 70.96463699999731,
+        "aRows": 5,
+        "bRows": 10,
+        "aTop": "EI-19448566598986303",
+        "bTop": "WI-8848"
+      },
+      {
+        "round": 2,
+        "q": 11,
+        "aMs": 12.955191999993986,
+        "bMs": 83.44961099998909,
+        "aRows": 10,
+        "bRows": 10,
+        "bTop": "EI-23978486630643984",
+        "aTop": "EI-23978486630643984"
+      },
+      {
+        "round": 2,
+        "q": 12,
+        "aMs": 14.302621000009822,
+        "bMs": 72.20523999998113,
+        "aRows": 10,
+        "bRows": 10,
+        "aTop": "WI-2114861",
+        "bTop": "WI-2140945"
+      },
+      {
+        "round": 2,
+        "q": 13,
+        "aMs": 7.995924999995623,
+        "bMs": 73.81297100000666,
+        "aRows": 5,
+        "bRows": 10,
+        "bTop": "WI-6634",
+        "aTop": "EI-2118"
+      },
+      {
+        "round": 2,
+        "q": 14,
+        "aMs": 13.557422999991104,
+        "bMs": 85.01861800000188,
+        "aRows": 10,
+        "bRows": 10,
+        "aTop": "EI-22749400819514038",
+        "bTop": "EI-23973429928171203"
+      },
+      {
+        "round": 2,
+        "q": 15,
+        "aMs": 13.478401000000304,
+        "bMs": 89.86044899999979,
+        "aRows": 10,
+        "bRows": 10,
+        "bTop": "WI-10002220",
+        "aTop": "WI-4663"
+      },
+      {
+        "round": 2,
+        "q": 16,
+        "aMs": 6.376149999996414,
+        "bMs": 76.46040899999207,
+        "aRows": 0,
+        "bRows": 10,
+        "aTop": null,
+        "bTop": "EI-23688008974687681"
+      },
+      {
+        "round": 2,
+        "q": 17,
+        "aMs": 8.081459999986691,
+        "bMs": 93.99378300001263,
+        "aRows": 0,
+        "bRows": 10,
+        "bTop": "EI-21843904371852669",
+        "aTop": null
+      },
+      {
+        "round": 2,
+        "q": 18,
+        "aMs": 10.254881999979261,
+        "bMs": 75.26351000001887,
+        "aRows": 9,
+        "bRows": 10,
+        "aTop": "WI-572",
+        "bTop": "WI-1731"
+      },
+      {
+        "round": 2,
+        "q": 19,
+        "aMs": 9.68451200000709,
+        "bMs": 81.24543999999878,
+        "aRows": 7,
+        "bRows": 10,
+        "bTop": "EI-20300821494280085",
+        "aTop": "EI-12709"
+      },
+      {
+        "round": 2,
+        "q": 20,
+        "aMs": 9.951396999997087,
+        "bMs": 69.44403400001465,
+        "aRows": 10,
+        "bRows": 10,
+        "aTop": "EI-10874",
+        "bTop": "EI-22684218897012741"
+      },
+      {
+        "round": 2,
+        "q": 21,
+        "aMs": 11.267275999998674,
+        "bMs": 75.64173999999184,
+        "aRows": 6,
+        "bRows": 10,
+        "bTop": "EI-25227241424188017",
+        "aTop": "EI-25227241424188017"
+      },
+      {
+        "round": 2,
+        "q": 22,
+        "aMs": 14.990187000017613,
+        "bMs": 80.94916799999191,
+        "aRows": 10,
+        "bRows": 10,
+        "aTop": "EI-21581567261074616",
+        "bTop": "EI-22427741014249929"
+      },
+      {
+        "round": 2,
+        "q": 23,
+        "aMs": 6.438840999995591,
+        "bMs": 67.5323760000174,
+        "aRows": 2,
+        "bRows": 10,
+        "bTop": "EI-20210946042796988",
+        "aTop": "EI-20210946042796988"
+      },
+      {
+        "round": 2,
+        "q": 24,
+        "aMs": 9.505586999992374,
+        "bMs": 72.00121700001182,
+        "aRows": 9,
+        "bRows": 10,
+        "aTop": "EI-21392851561477410",
+        "bTop": "EI-21392851561477410"
+      },
+      {
+        "round": 2,
+        "q": 25,
+        "aMs": 10.237449000007473,
+        "bMs": 75.2867649999971,
+        "aRows": 10,
+        "bRows": 10,
+        "bTop": "EI-21995293824411069",
+        "aTop": "EI-21995293824411069"
+      },
+      {
+        "round": 2,
+        "q": 26,
+        "aMs": 10.275090999988606,
+        "bMs": 72.36538899998413,
+        "aRows": 10,
+        "bRows": 10,
+        "aTop": "EI-20029696364111603",
+        "bTop": "EI-20029696364111603"
+      },
+      {
+        "round": 2,
+        "q": 27,
+        "aMs": 12.907108999992488,
+        "bMs": 72.45144500001334,
+        "aRows": 10,
+        "bRows": 10,
+        "bTop": "EI-19478780721557822",
+        "aTop": "EI-21587904634585710"
+      },
+      {
+        "round": 2,
+        "q": 28,
+        "aMs": 6.593038999999408,
+        "bMs": 78.81597300001886,
+        "aRows": 0,
+        "bRows": 10,
+        "aTop": null,
+        "bTop": "WI-6970"
+      },
+      {
+        "round": 2,
+        "q": 29,
+        "aMs": 10.949793999985559,
+        "bMs": 75.26908100000583,
+        "aRows": 10,
+        "bRows": 10,
+        "bTop": "EI-22750850092560167",
+        "aTop": "EI-22750850092560167"
+      }
+    ],
+    "consult": [
+      {
+        "round": 0,
+        "q": 0,
+        "aMs": 3.936574000006658,
+        "bMs": 7.719662000003154,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mtysukyp-0000-f1ef241a05bb435385867a61b1a09ce2",
+        "bTop": "conv-mtysukyp-0000-f1ef241a05bb435385867a61b1a09ce2"
+      },
+      {
+        "round": 0,
+        "q": 1,
+        "aMs": 4.408574000000954,
+        "bMs": 8.09368400000676,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mugxkgem-0000-4a02a85f34df442b948858ae6eb99faf",
+        "aTop": "conv-mugxkgem-0000-4a02a85f34df442b948858ae6eb99faf"
+      },
+      {
+        "round": 0,
+        "q": 2,
+        "aMs": 4.0605930000019725,
+        "bMs": 7.5931669999990845,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-muvyxnus-0000-ed5cf210499b46cba7acb192480c6141",
+        "bTop": "conv-muvyxnus-0000-ed5cf210499b46cba7acb192480c6141"
+      },
+      {
+        "round": 0,
+        "q": 3,
+        "aMs": 5.317437000005157,
+        "bMs": 8.240806999994675,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-muqpqg1z-0000-aec585d3a15246ed8d331cf9c175d30e",
+        "aTop": "conv-muqpqg1z-0000-aec585d3a15246ed8d331cf9c175d30e"
+      },
+      {
+        "round": 0,
+        "q": 4,
+        "aMs": 7.838520999997854,
+        "bMs": 6.938804999997956,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-muwaswhg-0000-0fd5596e58d1417182db9d9f3c8b6ef7",
+        "bTop": "conv-muwaswhg-0000-0fd5596e58d1417182db9d9f3c8b6ef7"
+      },
+      {
+        "round": 0,
+        "q": 5,
+        "aMs": 3.55407600000035,
+        "bMs": 7.555624999993597,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mts9jyxz-0000-ce9fe939bad841b1a8bd90a6d87cbaed",
+        "aTop": "conv-mts9jyxz-0000-ce9fe939bad841b1a8bd90a6d87cbaed"
+      },
+      {
+        "round": 0,
+        "q": 6,
+        "aMs": 3.709906999996747,
+        "bMs": 6.270986999996239,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mtkg9obc-0000-d6cadb80b9974f4d8977bc0bb59f6014",
+        "bTop": "conv-mtkg9obc-0000-d6cadb80b9974f4d8977bc0bb59f6014"
+      },
+      {
+        "round": 0,
+        "q": 7,
+        "aMs": 3.970530000005965,
+        "bMs": 9.418047999992268,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-muq8ypsa-0000-732bcd01c0864c338270bafdb427de4c",
+        "aTop": "conv-mts9jyxz-0000-ce9fe939bad841b1a8bd90a6d87cbaed"
+      },
+      {
+        "round": 0,
+        "q": 8,
+        "aMs": 4.196014999994077,
+        "bMs": 6.571808000007877,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mtovtf2v-0000-559adb0d7aa24f638cdbb4ba29b1b549",
+        "bTop": "conv-mune72dq-0000-6fef80d3869943d29848b528894c74e7"
+      },
+      {
+        "round": 0,
+        "q": 9,
+        "aMs": 3.166968999998062,
+        "bMs": 7.205850999991526,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mtp95aj5-0000-ed593af4f79644f0ba112d751317e8f7",
+        "aTop": "conv-mtp95aj5-0000-ed593af4f79644f0ba112d751317e8f7"
+      },
+      {
+        "round": 0,
+        "q": 10,
+        "aMs": 3.989916999998968,
+        "bMs": 6.181915000008303,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-muqpqg1z-0000-aec585d3a15246ed8d331cf9c175d30e",
+        "bTop": "conv-muqpqg1z-0000-aec585d3a15246ed8d331cf9c175d30e"
+      },
+      {
+        "round": 0,
+        "q": 11,
+        "aMs": 3.2088700000022072,
+        "bMs": 6.579691999999341,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mudgvct9-0000-7092276209934669b338fd8b70dfdd87",
+        "aTop": "conv-mudgvct9-0000-7092276209934669b338fd8b70dfdd87"
+      },
+      {
+        "round": 0,
+        "q": 12,
+        "aMs": 5.93623099999968,
+        "bMs": 8.479177000001073,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mtr1iau7-0000-1f6cc7c929cf4147a4de1bbbacc1fdff",
+        "bTop": "conv-mtr1iau7-0000-1f6cc7c929cf4147a4de1bbbacc1fdff"
+      },
+      {
+        "round": 0,
+        "q": 13,
+        "aMs": 4.511192000005394,
+        "bMs": 7.865694000007352,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-munna6x0-0000-6f0ea8305b454d0ba66d638ab8574e33",
+        "aTop": "conv-munna6x0-0000-6f0ea8305b454d0ba66d638ab8574e33"
+      },
+      {
+        "round": 0,
+        "q": 14,
+        "aMs": 3.653027000007569,
+        "bMs": 5.752036000005319,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mttyrsby-0000-11456914377a41b6ba24f112a5ca80af",
+        "bTop": "conv-mttyrsby-0000-11456914377a41b6ba24f112a5ca80af"
+      },
+      {
+        "round": 0,
+        "q": 15,
+        "aMs": 3.7765349999972386,
+        "bMs": 6.9128250000067055,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mu19dy9w-0000-0f2b3e4cc11d48f4819ac30b2badd755",
+        "aTop": "conv-mu19dy9w-0000-0f2b3e4cc11d48f4819ac30b2badd755"
+      },
+      {
+        "round": 0,
+        "q": 16,
+        "aMs": 4.7476690000039525,
+        "bMs": 7.438339000000269,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mttyjny1-0000-a00269911f154c8fa4b6ed738c620454",
+        "bTop": "conv-mttyjny1-0000-a00269911f154c8fa4b6ed738c620454"
+      },
+      {
+        "round": 0,
+        "q": 17,
+        "aMs": 4.7918940000090515,
+        "bMs": 8.002697999996599,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-muwaswhg-0000-0fd5596e58d1417182db9d9f3c8b6ef7",
+        "aTop": "conv-muwaswhg-0000-0fd5596e58d1417182db9d9f3c8b6ef7"
+      },
+      {
+        "round": 0,
+        "q": 18,
+        "aMs": 7.65114000000176,
+        "bMs": 8.55080499999167,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mulhthd0-0000-766318029e394ff6971cf23e70ad0dca",
+        "bTop": "conv-mulhthd0-0000-766318029e394ff6971cf23e70ad0dca"
+      },
+      {
+        "round": 0,
+        "q": 19,
+        "aMs": 5.46838900000148,
+        "bMs": 7.916261000005761,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-muvgo83p-0000-76e6400726454ebc93cb4e72ff6d547f",
+        "aTop": "conv-muvgo83p-0000-76e6400726454ebc93cb4e72ff6d547f"
+      },
+      {
+        "round": 0,
+        "q": 20,
+        "aMs": 6.48228399999789,
+        "bMs": 10.598213999997824,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mujj4ufg-0000-f511ea54641d4a09912941b245528b95",
+        "bTop": "conv-mujj4ufg-0000-f511ea54641d4a09912941b245528b95"
+      },
+      {
+        "round": 0,
+        "q": 21,
+        "aMs": 5.439402999996673,
+        "bMs": 8.678269999989425,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mt5th8z2-0000-a2a8db92736f4400896af27f244322aa",
+        "aTop": "conv-mt5th8z2-0000-a2a8db92736f4400896af27f244322aa"
+      },
+      {
+        "round": 0,
+        "q": 22,
+        "aMs": 4.894952000002377,
+        "bMs": 8.037154000005103,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mtzooydk-0000-0640241ebce84543a0bca254ce5ad93e",
+        "bTop": "conv-mtzooydk-0000-0640241ebce84543a0bca254ce5ad93e"
+      },
+      {
+        "round": 0,
+        "q": 23,
+        "aMs": 5.668204000001424,
+        "bMs": 8.400043999994523,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-muwaswhg-0000-0fd5596e58d1417182db9d9f3c8b6ef7",
+        "aTop": "conv-muwaswhg-0000-0fd5596e58d1417182db9d9f3c8b6ef7"
+      },
+      {
+        "round": 0,
+        "q": 24,
+        "aMs": 5.341994999995222,
+        "bMs": 8.583008000001428,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mtovtf2v-0000-559adb0d7aa24f638cdbb4ba29b1b549",
+        "bTop": "conv-mtovtf2v-0000-559adb0d7aa24f638cdbb4ba29b1b549"
+      },
+      {
+        "round": 0,
+        "q": 25,
+        "aMs": 4.336345000003348,
+        "bMs": 7.621882999999798,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mttyjny1-0000-a00269911f154c8fa4b6ed738c620454",
+        "aTop": "conv-mttyjny1-0000-a00269911f154c8fa4b6ed738c620454"
+      },
+      {
+        "round": 0,
+        "q": 26,
+        "aMs": 4.116321000008611,
+        "bMs": 11.152023000002373,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mts9jyxz-0000-ce9fe939bad841b1a8bd90a6d87cbaed",
+        "bTop": "conv-mts9jyxz-0000-ce9fe939bad841b1a8bd90a6d87cbaed"
+      },
+      {
+        "round": 0,
+        "q": 27,
+        "aMs": 4.329470999990008,
+        "bMs": 8.960785999996006,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mursuxqd-0000-feb6886e4e884504b7a72fcc86ed90b3",
+        "aTop": "conv-mursuxqd-0000-feb6886e4e884504b7a72fcc86ed90b3"
+      },
+      {
+        "round": 0,
+        "q": 28,
+        "aMs": 5.924438999994891,
+        "bMs": 8.208324999999604,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mu19dy9w-0000-0f2b3e4cc11d48f4819ac30b2badd755",
+        "bTop": "conv-mu19dy9w-0000-0f2b3e4cc11d48f4819ac30b2badd755"
+      },
+      {
+        "round": 0,
+        "q": 29,
+        "aMs": 5.226232000000891,
+        "bMs": 7.349147000000812,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mtpjqdhl-0000-4b687d98b7494a3ca528aeeb8f1d7ed1",
+        "aTop": "conv-mtpjqdhl-0000-4b687d98b7494a3ca528aeeb8f1d7ed1"
+      },
+      {
+        "round": 1,
+        "q": 0,
+        "aMs": 4.418923999997787,
+        "bMs": 7.752996000010171,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mtysukyp-0000-f1ef241a05bb435385867a61b1a09ce2",
+        "aTop": "conv-mtysukyp-0000-f1ef241a05bb435385867a61b1a09ce2"
+      },
+      {
+        "round": 1,
+        "q": 1,
+        "aMs": 3.9709399999992456,
+        "bMs": 6.378093999999692,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mugxkgem-0000-4a02a85f34df442b948858ae6eb99faf",
+        "bTop": "conv-mugxkgem-0000-4a02a85f34df442b948858ae6eb99faf"
+      },
+      {
+        "round": 1,
+        "q": 2,
+        "aMs": 4.012910999997985,
+        "bMs": 8.130103999996209,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-muvyxnus-0000-ed5cf210499b46cba7acb192480c6141",
+        "aTop": "conv-muvyxnus-0000-ed5cf210499b46cba7acb192480c6141"
+      },
+      {
+        "round": 1,
+        "q": 3,
+        "aMs": 4.869502999994438,
+        "bMs": 9.15472000000591,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-muqpqg1z-0000-aec585d3a15246ed8d331cf9c175d30e",
+        "bTop": "conv-muqpqg1z-0000-aec585d3a15246ed8d331cf9c175d30e"
+      },
+      {
+        "round": 1,
+        "q": 4,
+        "aMs": 4.44337199999427,
+        "bMs": 6.436877000000095,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-muwaswhg-0000-0fd5596e58d1417182db9d9f3c8b6ef7",
+        "aTop": "conv-muwaswhg-0000-0fd5596e58d1417182db9d9f3c8b6ef7"
+      },
+      {
+        "round": 1,
+        "q": 5,
+        "aMs": 5.203668000001926,
+        "bMs": 7.975073999987217,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mts9jyxz-0000-ce9fe939bad841b1a8bd90a6d87cbaed",
+        "bTop": "conv-mts9jyxz-0000-ce9fe939bad841b1a8bd90a6d87cbaed"
+      },
+      {
+        "round": 1,
+        "q": 6,
+        "aMs": 5.679426000002422,
+        "bMs": 11.393008000013651,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mtkg9obc-0000-d6cadb80b9974f4d8977bc0bb59f6014",
+        "aTop": "conv-mtkg9obc-0000-d6cadb80b9974f4d8977bc0bb59f6014"
+      },
+      {
+        "round": 1,
+        "q": 7,
+        "aMs": 4.844395000007353,
+        "bMs": 8.30910899999435,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mts9jyxz-0000-ce9fe939bad841b1a8bd90a6d87cbaed",
+        "bTop": "conv-muq8ypsa-0000-732bcd01c0864c338270bafdb427de4c"
+      },
+      {
+        "round": 1,
+        "q": 8,
+        "aMs": 6.115677000008873,
+        "bMs": 8.17421800000011,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mune72dq-0000-6fef80d3869943d29848b528894c74e7",
+        "aTop": "conv-mtovtf2v-0000-559adb0d7aa24f638cdbb4ba29b1b549"
+      },
+      {
+        "round": 1,
+        "q": 9,
+        "aMs": 4.520761000007042,
+        "bMs": 6.4954799999977695,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mtp95aj5-0000-ed593af4f79644f0ba112d751317e8f7",
+        "bTop": "conv-mtp95aj5-0000-ed593af4f79644f0ba112d751317e8f7"
+      },
+      {
+        "round": 1,
+        "q": 10,
+        "aMs": 5.573009999992792,
+        "bMs": 8.548750999994809,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-muqpqg1z-0000-aec585d3a15246ed8d331cf9c175d30e",
+        "aTop": "conv-muqpqg1z-0000-aec585d3a15246ed8d331cf9c175d30e"
+      },
+      {
+        "round": 1,
+        "q": 11,
+        "aMs": 4.726457000011578,
+        "bMs": 6.885122000006959,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mudgvct9-0000-7092276209934669b338fd8b70dfdd87",
+        "bTop": "conv-mudgvct9-0000-7092276209934669b338fd8b70dfdd87"
+      },
+      {
+        "round": 1,
+        "q": 12,
+        "aMs": 3.5189490000047954,
+        "bMs": 6.931591000000481,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mtr1iau7-0000-1f6cc7c929cf4147a4de1bbbacc1fdff",
+        "aTop": "conv-mtr1iau7-0000-1f6cc7c929cf4147a4de1bbbacc1fdff"
+      },
+      {
+        "round": 1,
+        "q": 13,
+        "aMs": 5.942683999994188,
+        "bMs": 8.260225000005448,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-munna6x0-0000-6f0ea8305b454d0ba66d638ab8574e33",
+        "bTop": "conv-munna6x0-0000-6f0ea8305b454d0ba66d638ab8574e33"
+      },
+      {
+        "round": 1,
+        "q": 14,
+        "aMs": 5.954898000010871,
+        "bMs": 17.478927999996813,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mttyrsby-0000-11456914377a41b6ba24f112a5ca80af",
+        "aTop": "conv-mttyrsby-0000-11456914377a41b6ba24f112a5ca80af"
+      },
+      {
+        "round": 1,
+        "q": 15,
+        "aMs": 3.852701999989222,
+        "bMs": 8.56299899998703,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mu19dy9w-0000-0f2b3e4cc11d48f4819ac30b2badd755",
+        "bTop": "conv-mu19dy9w-0000-0f2b3e4cc11d48f4819ac30b2badd755"
+      },
+      {
+        "round": 1,
+        "q": 16,
+        "aMs": 3.4650740000070073,
+        "bMs": 7.502182000011089,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mttyjny1-0000-a00269911f154c8fa4b6ed738c620454",
+        "aTop": "conv-mttyjny1-0000-a00269911f154c8fa4b6ed738c620454"
+      },
+      {
+        "round": 1,
+        "q": 17,
+        "aMs": 5.506972999995924,
+        "bMs": 6.822180000002845,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-muwaswhg-0000-0fd5596e58d1417182db9d9f3c8b6ef7",
+        "bTop": "conv-muwaswhg-0000-0fd5596e58d1417182db9d9f3c8b6ef7"
+      },
+      {
+        "round": 1,
+        "q": 18,
+        "aMs": 4.872950000004494,
+        "bMs": 6.670887999993283,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mulhthd0-0000-766318029e394ff6971cf23e70ad0dca",
+        "aTop": "conv-mulhthd0-0000-766318029e394ff6971cf23e70ad0dca"
+      },
+      {
+        "round": 1,
+        "q": 19,
+        "aMs": 4.185473999998067,
+        "bMs": 7.354667999999947,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-muvgo83p-0000-76e6400726454ebc93cb4e72ff6d547f",
+        "bTop": "conv-muvgo83p-0000-76e6400726454ebc93cb4e72ff6d547f"
+      },
+      {
+        "round": 1,
+        "q": 20,
+        "aMs": 4.574915000004694,
+        "bMs": 7.632322999997996,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mujj4ufg-0000-f511ea54641d4a09912941b245528b95",
+        "aTop": "conv-mujj4ufg-0000-f511ea54641d4a09912941b245528b95"
+      },
+      {
+        "round": 1,
+        "q": 21,
+        "aMs": 5.226301999995485,
+        "bMs": 7.66273199999705,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mt5th8z2-0000-a2a8db92736f4400896af27f244322aa",
+        "bTop": "conv-mt5th8z2-0000-a2a8db92736f4400896af27f244322aa"
+      },
+      {
+        "round": 1,
+        "q": 22,
+        "aMs": 3.9961590000020806,
+        "bMs": 8.991334999998799,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mtzooydk-0000-0640241ebce84543a0bca254ce5ad93e",
+        "aTop": "conv-mtzooydk-0000-0640241ebce84543a0bca254ce5ad93e"
+      },
+      {
+        "round": 1,
+        "q": 23,
+        "aMs": 3.960571000003256,
+        "bMs": 6.820136999987881,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-muwaswhg-0000-0fd5596e58d1417182db9d9f3c8b6ef7",
+        "bTop": "conv-muwaswhg-0000-0fd5596e58d1417182db9d9f3c8b6ef7"
+      },
+      {
+        "round": 1,
+        "q": 24,
+        "aMs": 4.288943999999901,
+        "bMs": 7.5914040000061505,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mtovtf2v-0000-559adb0d7aa24f638cdbb4ba29b1b549",
+        "aTop": "conv-mtovtf2v-0000-559adb0d7aa24f638cdbb4ba29b1b549"
+      },
+      {
+        "round": 1,
+        "q": 25,
+        "aMs": 4.911875000005239,
+        "bMs": 8.359356000000844,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mttyjny1-0000-a00269911f154c8fa4b6ed738c620454",
+        "bTop": "conv-mttyjny1-0000-a00269911f154c8fa4b6ed738c620454"
+      },
+      {
+        "round": 1,
+        "q": 26,
+        "aMs": 4.555919000005815,
+        "bMs": 10.175518999996711,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mts9jyxz-0000-ce9fe939bad841b1a8bd90a6d87cbaed",
+        "aTop": "conv-mts9jyxz-0000-ce9fe939bad841b1a8bd90a6d87cbaed"
+      },
+      {
+        "round": 1,
+        "q": 27,
+        "aMs": 5.0334100000036415,
+        "bMs": 8.537549000000581,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mursuxqd-0000-feb6886e4e884504b7a72fcc86ed90b3",
+        "bTop": "conv-mursuxqd-0000-feb6886e4e884504b7a72fcc86ed90b3"
+      },
+      {
+        "round": 1,
+        "q": 28,
+        "aMs": 6.405446999997366,
+        "bMs": 11.558116000000155,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mu19dy9w-0000-0f2b3e4cc11d48f4819ac30b2badd755",
+        "aTop": "conv-mu19dy9w-0000-0f2b3e4cc11d48f4819ac30b2badd755"
+      },
+      {
+        "round": 1,
+        "q": 29,
+        "aMs": 4.454112000006717,
+        "bMs": 7.2032860000035726,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mtpjqdhl-0000-4b687d98b7494a3ca528aeeb8f1d7ed1",
+        "bTop": "conv-mtpjqdhl-0000-4b687d98b7494a3ca528aeeb8f1d7ed1"
+      },
+      {
+        "round": 2,
+        "q": 0,
+        "aMs": 5.214959999997518,
+        "bMs": 9.020130999997491,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mtysukyp-0000-f1ef241a05bb435385867a61b1a09ce2",
+        "bTop": "conv-mtysukyp-0000-f1ef241a05bb435385867a61b1a09ce2"
+      },
+      {
+        "round": 2,
+        "q": 1,
+        "aMs": 5.4255059999995865,
+        "bMs": 9.988868999993429,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mugxkgem-0000-4a02a85f34df442b948858ae6eb99faf",
+        "aTop": "conv-mugxkgem-0000-4a02a85f34df442b948858ae6eb99faf"
+      },
+      {
+        "round": 2,
+        "q": 2,
+        "aMs": 5.851278000001912,
+        "bMs": 8.364736000003177,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-muvyxnus-0000-ed5cf210499b46cba7acb192480c6141",
+        "bTop": "conv-muvyxnus-0000-ed5cf210499b46cba7acb192480c6141"
+      },
+      {
+        "round": 2,
+        "q": 3,
+        "aMs": 7.071011000007275,
+        "bMs": 10.6687099999981,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-muqpqg1z-0000-aec585d3a15246ed8d331cf9c175d30e",
+        "aTop": "conv-muqpqg1z-0000-aec585d3a15246ed8d331cf9c175d30e"
+      },
+      {
+        "round": 2,
+        "q": 4,
+        "aMs": 6.9976690000039525,
+        "bMs": 12.316709999999148,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-muwaswhg-0000-0fd5596e58d1417182db9d9f3c8b6ef7",
+        "bTop": "conv-muwaswhg-0000-0fd5596e58d1417182db9d9f3c8b6ef7"
+      },
+      {
+        "round": 2,
+        "q": 5,
+        "aMs": 5.033609999998589,
+        "bMs": 9.715853000001516,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mts9jyxz-0000-ce9fe939bad841b1a8bd90a6d87cbaed",
+        "aTop": "conv-mts9jyxz-0000-ce9fe939bad841b1a8bd90a6d87cbaed"
+      },
+      {
+        "round": 2,
+        "q": 6,
+        "aMs": 4.524428000004264,
+        "bMs": 8.8407739999966,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mtkg9obc-0000-d6cadb80b9974f4d8977bc0bb59f6014",
+        "bTop": "conv-mtkg9obc-0000-d6cadb80b9974f4d8977bc0bb59f6014"
+      },
+      {
+        "round": 2,
+        "q": 7,
+        "aMs": 5.545107000012649,
+        "bMs": 8.710763999988558,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-muq8ypsa-0000-732bcd01c0864c338270bafdb427de4c",
+        "aTop": "conv-mts9jyxz-0000-ce9fe939bad841b1a8bd90a6d87cbaed"
+      },
+      {
+        "round": 2,
+        "q": 8,
+        "aMs": 5.327557999989949,
+        "bMs": 7.960516999999527,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mtovtf2v-0000-559adb0d7aa24f638cdbb4ba29b1b549",
+        "bTop": "conv-mune72dq-0000-6fef80d3869943d29848b528894c74e7"
+      },
+      {
+        "round": 2,
+        "q": 9,
+        "aMs": 5.257933000015328,
+        "bMs": 8.4575350000232,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mtp95aj5-0000-ed593af4f79644f0ba112d751317e8f7",
+        "aTop": "conv-mtp95aj5-0000-ed593af4f79644f0ba112d751317e8f7"
+      },
+      {
+        "round": 2,
+        "q": 10,
+        "aMs": 4.727398999995785,
+        "bMs": 9.163437000010163,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-muqpqg1z-0000-aec585d3a15246ed8d331cf9c175d30e",
+        "bTop": "conv-muqpqg1z-0000-aec585d3a15246ed8d331cf9c175d30e"
+      },
+      {
+        "round": 2,
+        "q": 11,
+        "aMs": 6.556106999982148,
+        "bMs": 16.195983999990858,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mudgvct9-0000-7092276209934669b338fd8b70dfdd87",
+        "aTop": "conv-mudgvct9-0000-7092276209934669b338fd8b70dfdd87"
+      },
+      {
+        "round": 2,
+        "q": 12,
+        "aMs": 6.686248999991221,
+        "bMs": 7.949696000025142,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mtr1iau7-0000-1f6cc7c929cf4147a4de1bbbacc1fdff",
+        "bTop": "conv-mtr1iau7-0000-1f6cc7c929cf4147a4de1bbbacc1fdff"
+      },
+      {
+        "round": 2,
+        "q": 13,
+        "aMs": 4.09499899999355,
+        "bMs": 7.247991999989608,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-munna6x0-0000-6f0ea8305b454d0ba66d638ab8574e33",
+        "aTop": "conv-munna6x0-0000-6f0ea8305b454d0ba66d638ab8574e33"
+      },
+      {
+        "round": 2,
+        "q": 14,
+        "aMs": 4.573532000009436,
+        "bMs": 10.3443949999928,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mttyrsby-0000-11456914377a41b6ba24f112a5ca80af",
+        "bTop": "conv-mttyrsby-0000-11456914377a41b6ba24f112a5ca80af"
+      },
+      {
+        "round": 2,
+        "q": 15,
+        "aMs": 7.040492000000086,
+        "bMs": 8.726113000011537,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mu19dy9w-0000-0f2b3e4cc11d48f4819ac30b2badd755",
+        "aTop": "conv-mu19dy9w-0000-0f2b3e4cc11d48f4819ac30b2badd755"
+      },
+      {
+        "round": 2,
+        "q": 16,
+        "aMs": 4.683084000018425,
+        "bMs": 9.425323000003118,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mttyjny1-0000-a00269911f154c8fa4b6ed738c620454",
+        "bTop": "conv-mttyjny1-0000-a00269911f154c8fa4b6ed738c620454"
+      },
+      {
+        "round": 2,
+        "q": 17,
+        "aMs": 4.341084999992745,
+        "bMs": 9.853959000000032,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-muwaswhg-0000-0fd5596e58d1417182db9d9f3c8b6ef7",
+        "aTop": "conv-muwaswhg-0000-0fd5596e58d1417182db9d9f3c8b6ef7"
+      },
+      {
+        "round": 2,
+        "q": 18,
+        "aMs": 4.618129000009503,
+        "bMs": 8.093112000002293,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mulhthd0-0000-766318029e394ff6971cf23e70ad0dca",
+        "bTop": "conv-mulhthd0-0000-766318029e394ff6971cf23e70ad0dca"
+      },
+      {
+        "round": 2,
+        "q": 19,
+        "aMs": 5.55078799999319,
+        "bMs": 8.80853300000308,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-muvgo83p-0000-76e6400726454ebc93cb4e72ff6d547f",
+        "aTop": "conv-muvgo83p-0000-76e6400726454ebc93cb4e72ff6d547f"
+      },
+      {
+        "round": 2,
+        "q": 20,
+        "aMs": 5.796360999986064,
+        "bMs": 7.141927000018768,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mujj4ufg-0000-f511ea54641d4a09912941b245528b95",
+        "bTop": "conv-mujj4ufg-0000-f511ea54641d4a09912941b245528b95"
+      },
+      {
+        "round": 2,
+        "q": 21,
+        "aMs": 3.738011000008555,
+        "bMs": 7.0628949999809265,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mt5th8z2-0000-a2a8db92736f4400896af27f244322aa",
+        "aTop": "conv-mt5th8z2-0000-a2a8db92736f4400896af27f244322aa"
+      },
+      {
+        "round": 2,
+        "q": 22,
+        "aMs": 4.92125399998622,
+        "bMs": 8.917833999992581,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mtzooydk-0000-0640241ebce84543a0bca254ce5ad93e",
+        "bTop": "conv-mtzooydk-0000-0640241ebce84543a0bca254ce5ad93e"
+      },
+      {
+        "round": 2,
+        "q": 23,
+        "aMs": 4.302179999998771,
+        "bMs": 7.640959999989718,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-muwaswhg-0000-0fd5596e58d1417182db9d9f3c8b6ef7",
+        "aTop": "conv-muwaswhg-0000-0fd5596e58d1417182db9d9f3c8b6ef7"
+      },
+      {
+        "round": 2,
+        "q": 24,
+        "aMs": 4.812673999986146,
+        "bMs": 7.59327799998573,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mtovtf2v-0000-559adb0d7aa24f638cdbb4ba29b1b549",
+        "bTop": "conv-mtovtf2v-0000-559adb0d7aa24f638cdbb4ba29b1b549"
+      },
+      {
+        "round": 2,
+        "q": 25,
+        "aMs": 5.294703999999911,
+        "bMs": 6.572679999982938,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mttyjny1-0000-a00269911f154c8fa4b6ed738c620454",
+        "aTop": "conv-mttyjny1-0000-a00269911f154c8fa4b6ed738c620454"
+      },
+      {
+        "round": 2,
+        "q": 26,
+        "aMs": 4.991780000011204,
+        "bMs": 7.994703000003938,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mts9jyxz-0000-ce9fe939bad841b1a8bd90a6d87cbaed",
+        "bTop": "conv-mts9jyxz-0000-ce9fe939bad841b1a8bd90a6d87cbaed"
+      },
+      {
+        "round": 2,
+        "q": 27,
+        "aMs": 6.178738999995403,
+        "bMs": 11.283337000000756,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mursuxqd-0000-feb6886e4e884504b7a72fcc86ed90b3",
+        "aTop": "conv-mursuxqd-0000-feb6886e4e884504b7a72fcc86ed90b3"
+      },
+      {
+        "round": 2,
+        "q": 28,
+        "aMs": 5.211152999982005,
+        "bMs": 7.774407999997493,
+        "aRows": 1,
+        "bRows": 1,
+        "aTop": "conv-mu19dy9w-0000-0f2b3e4cc11d48f4819ac30b2badd755",
+        "bTop": "conv-mu19dy9w-0000-0f2b3e4cc11d48f4819ac30b2badd755"
+      },
+      {
+        "round": 2,
+        "q": 29,
+        "aMs": 4.019292999990284,
+        "bMs": 7.55669699999271,
+        "aRows": 1,
+        "bRows": 1,
+        "bTop": "conv-mtpjqdhl-0000-4b687d98b7494a3ca528aeeb8f1d7ed1",
+        "aTop": "conv-mtpjqdhl-0000-4b687d98b7494a3ca528aeeb8f1d7ed1"
+      }
+    ]
+  }
+}

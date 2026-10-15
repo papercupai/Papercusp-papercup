@@ -27,6 +27,7 @@ vi.mock('../workspace-registry', async () => {
 });
 
 const { explainIssueClaimFloors } = await import('../work-items');
+const { previewClaimSpecAdmission } = await import('../agent-tools/scheduler/set_claim_spec');
 const { diagnoseFleetScopeTerminalExhaustion } = await import('./fleet-scope-admission');
 
 const H = 'papercup';
@@ -46,8 +47,8 @@ async function seedIssue(id: string, payload: Record<string, unknown> | null, st
 /**
  * Seed a plan. The plan-lane floor is deliberately STATE-SENSITIVE, not merely payload-shaped:
  * a `plan_item` back-pointer reserves the row while its ordinary plan is in lifecycle
- * `draft`/`paused`/`active` or its operation is `started`/`paused` (reservedPlanLaneExclusionSql).
- * A ready plan with NULL/`done` op_status is a free control. Seeding the plan is therefore part
+ * `paused`/`active` or its operation is `started`/`paused` (reservedPlanLaneExclusionSql).
+ * An unleased draft or a ready plan with NULL/`done` op_status is a free control. Seeding the plan is therefore part
  * of the contract under test, not scaffolding: it distinguishes "reserved right now" from
  * "stamped".
  */
@@ -146,7 +147,8 @@ describe('WI-4413 — explainIssueClaimFloors names the floor that actually refu
     expect(by.get('WI-9006')).toMatchObject({ admissible: false, refusedBy: 'not-claimable-status' });
     expect(by.get('WI-9007')).toMatchObject({ admissible: false, refusedBy: 'plan-lane-reserved' });
     expect(by.get('WI-9008')).toMatchObject({ admissible: false, refusedBy: 'external-blocker' });
-    expect(by.get('WI-9009')).toMatchObject({ admissible: false, refusedBy: 'plan-lane-reserved' });
+    // EI-21859942410973983: a draft without a live lane lease has no occupant.
+    expect(by.get('WI-9009')).toMatchObject({ admissible: true, refusedBy: null });
     expect(by.get('WI-9010')).toMatchObject({ admissible: true, refusedBy: null });
     expect(by.get('WI-9011')).toMatchObject({ admissible: true, refusedBy: null });
     // A typo'd id is the single most likely way to author a dead tranche, and the old static
@@ -195,6 +197,71 @@ describe('WI-4413 — explainIssueClaimFloors names the floor that actually refu
     expect(open).toMatchObject({ admissible: true, refusedBy: null });
   });
 
+  it('scope authoring can include its member-held row without changing ordinary acquisition or ownership', async () => {
+    await seedIssue('EI-SCOPE-MEMBER', null);
+    await seedIssue('EI-SCOPE-FOREIGN', null);
+    await db.sql`
+      UPDATE harness_shared.work_items SET taken_by = 'su-member'
+       WHERE feature_id = 'EI-SCOPE-MEMBER'`;
+    await db.sql`
+      UPDATE harness_shared.work_items SET taken_by = 'su-foreign'
+       WHERE feature_id = 'EI-SCOPE-FOREIGN'`;
+    const ids = ['EI-SCOPE-MEMBER', 'EI-SCOPE-FOREIGN'];
+
+    const acquisition = await explainIssueClaimFloors(H, ids);
+    expect(acquisition).toEqual([
+      expect.objectContaining({ id: ids[0], admissible: false, refusedBy: 'already-taken', heldBy: 'su-member' }),
+      expect.objectContaining({ id: ids[1], admissible: false, refusedBy: 'already-taken', heldBy: 'su-foreign' }),
+    ]);
+    const scope = await explainIssueClaimFloors(H, ids, { scopeHeldBy: ['su-member'] });
+    expect(scope).toEqual([
+      expect.objectContaining({ id: ids[0], admissible: true, refusedBy: null }),
+      expect.objectContaining({ id: ids[1], admissible: false, refusedBy: 'already-taken', heldBy: 'su-foreign' }),
+    ]);
+    expect(await explainIssueClaimFloors(H, ids)).toEqual(acquisition);
+    const preview = await previewClaimSpecAdmission({
+      spec: {
+        specVersion: '1.0',
+        specId: 'held-repair-wave',
+        revision: 2,
+        view: { filter: { field: 'id', op: 'in', value: [ids[0]] } },
+        rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+      },
+      harness: H,
+      assignee: 'su-leader',
+      fleet: 'repair-fleet',
+      resolveFamily: async () => 'issue',
+      resolveFleetMembers: async () => ['su-member'],
+    });
+    expect(preview.errors).toEqual([]);
+    expect(preview.preview).toMatchObject({
+      admissibleIds: [],
+      scopeAdmissibleIds: [ids[0]],
+      alreadyHeldIds: [ids[0]],
+    });
+    const owners = await db.sql`
+      SELECT feature_id, taken_by FROM harness_shared.work_items
+       WHERE feature_id = ANY(${ids}::text[]) ORDER BY feature_id`;
+    expect(owners).toEqual([
+      { feature_id: 'EI-SCOPE-FOREIGN', taken_by: 'su-foreign' },
+      { feature_id: 'EI-SCOPE-MEMBER', taken_by: 'su-member' },
+    ]);
+  });
+
+  it.each([
+    ['observation-lane', { lane: 'observation' }, 'open'],
+    ['claim-hold', { _claimHold: true }, 'open'],
+    ['not-claimable-status', null, 'resolved'],
+  ] as const)('scope authoring does not hide a member-held %s floor', async (refusedBy, payload, status) => {
+    await seedIssue('EI-SCOPE-FLOORED', payload, status);
+    await db.sql`
+      UPDATE harness_shared.work_items SET taken_by = 'su-member'
+       WHERE feature_id = 'EI-SCOPE-FLOORED'`;
+    const [scope] = await explainIssueClaimFloors(H, ['EI-SCOPE-FLOORED'], { scopeHeldBy: ['su-member'] });
+    expect(scope).toMatchObject({ admissible: false, refusedBy });
+    expect(scope.heldBy).toBeUndefined();
+  });
+
   it('distinguishes an all-terminal id tranche from a mixed terminal/non-terminal tranche', async () => {
     const makeScope = (ids: string[]) =>
       ({
@@ -225,8 +292,9 @@ describe('WI-4413 — explainIssueClaimFloors names the floor that actually refu
         harness: H,
         workspaceId: WS,
       }),
-    ).resolves.toEqual({ matchedByFilter: 1, terminalMatchedByFilter: 1 });
+    ).resolves.toEqual({ matchedByFilter: 1, terminalMatchedByFilter: 1, inFlightMatchedByFilter: 0, parkedMatchedByFilter: 0 });
 
+    // An open, unheld row is pull-claimable: it lands in no never-pullable bucket.
     await seedIssue('WI-active', null, 'open');
     await expect(
       diagnoseFleetScopeTerminalExhaustion({
@@ -234,6 +302,59 @@ describe('WI-4413 — explainIssueClaimFloors names the floor that actually refu
         harness: H,
         workspaceId: WS,
       }),
-    ).resolves.toEqual({ matchedByFilter: 2, terminalMatchedByFilter: 1 });
+    ).resolves.toEqual({ matchedByFilter: 2, terminalMatchedByFilter: 1, inFlightMatchedByFilter: 0, parkedMatchedByFilter: 0 });
+  });
+
+  it('WI-6554700010010002: counts held and parked matches in disjoint never-pullable buckets', async () => {
+    const makeScope = (ids: string[]) =>
+      ({
+        ownerId: 'su-member',
+        fleetSlug: 'drain-fleet',
+        fleetRole: 'member',
+        workspaceId: WS,
+        record: {
+          source: 'fleet',
+          revision: 1,
+          updatedBy: 'leader',
+          updatedAt: 'now',
+          spec: {
+            specVersion: '1.0',
+            specId: 'id-drain',
+            revision: 3,
+            view: { filter: { field: 'id', op: 'in', value: ids } },
+            rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+            states: ['open'],
+          },
+        },
+      }) as never;
+    const read = (ids: string[]) =>
+      diagnoseFleetScopeTerminalExhaustion({ scope: makeScope(ids), harness: H, workspaceId: WS });
+
+    await seedIssue('WI-done', null, 'done');
+    await seedIssue('WI-done-held', null, 'done');
+    await seedIssue('WI-held-wip', null, 'wip');
+    await seedIssue('WI-held-blocked', null, 'blocked');
+    await seedIssue('WI-blocked', null, 'blocked');
+    await seedIssue('WI-needs-human', null, 'needs-human');
+    await seedIssue('WI-orphan-wip', null, 'wip');
+    await db.sql`
+      UPDATE harness_shared.work_items SET taken_by = 'su-peer'
+       WHERE feature_id IN ('WI-done-held', 'WI-held-wip', 'WI-held-blocked')`;
+
+    // The live shape: terminal rows plus one wip row held by a peer. A terminal row whose
+    // holder was never cleared counts once, as terminal; a held blocked row counts once, as
+    // held. So the buckets sum to matchedByFilter.
+    await expect(read(['WI-done', 'WI-done-held', 'WI-held-wip', 'WI-held-blocked'])).resolves.toEqual({
+      matchedByFilter: 4, terminalMatchedByFilter: 2, inFlightMatchedByFilter: 2, parkedMatchedByFilter: 0,
+    });
+    // Unheld blocked and needs-human rows are parked.
+    await expect(read(['WI-done', 'WI-blocked', 'WI-needs-human'])).resolves.toEqual({
+      matchedByFilter: 3, terminalMatchedByFilter: 1, inFlightMatchedByFilter: 0, parkedMatchedByFilter: 2,
+    });
+    // An unheld wip row is in none of the buckets, so the sum falls short of matchedByFilter.
+    // That keeps the caller's existing zero-match diagnosis instead of certifying a remainder.
+    await expect(read(['WI-done', 'WI-held-wip', 'WI-orphan-wip'])).resolves.toEqual({
+      matchedByFilter: 3, terminalMatchedByFilter: 1, inFlightMatchedByFilter: 1, parkedMatchedByFilter: 0,
+    });
   });
 });

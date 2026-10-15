@@ -5,7 +5,7 @@
  * Tier-1 on top), and the registry "available = live-member-count" annotation — all
  * without PG.
  */
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   filterPresenceToFleet,
   foldFleetRoster,
@@ -16,6 +16,7 @@ import {
   occupiesLaunchMemberSeat,
   livePsuFleetMemberIds,
   splitFleetRosterCounts,
+  oldestLiveFleetMember,
   type FederatedSessionFoldRow,
   type FleetFoldPresence,
 } from './fleet-roster';
@@ -23,6 +24,11 @@ import type { AgentAssignment, WorkListItem } from './assignments';
 import type { PresenceTier1Joins } from '../agent-tools/coordination/presence-tier1';
 import type { WakeabilitySignals } from '../agent-tools/coordination/presence-wakeability';
 import type { AgentFleetRecord } from '../agent-fleets-store';
+import { deriveVerdict } from '../agent-tools/coordination/liveness-oracle';
+
+const findLiveHostMock = vi.hoisted(() => vi.fn());
+vi.mock('../events/await/psu-pty-discovery', () => ({ findLiveHost: findLiveHostMock }));
+beforeEach(() => findLiveHostMock.mockReset());
 
 const NOW = Date.parse('2026-06-29T04:00:00Z');
 
@@ -189,6 +195,18 @@ describe('filterPresenceToFleet', () => {
   });
 });
 
+describe('oldestLiveFleetMember', () => {
+  it('selects the oldest positively-live su member and ignores unknown or non-member rows', () => {
+    expect(oldestLiveFleetMember([
+      { agentId: 'su-newer', agentRole: 'su', fleetRole: 'member', sessionState: 'live', startedAt: '2026-10-02T10:00:00Z' },
+      { agentId: 'su-oldest', agentRole: 'su', fleetRole: 'member', sessionState: 'live', startedAt: '2026-10-02T09:00:00Z' },
+      { agentId: 'su-excluded', agentRole: 'su', fleetRole: 'member', sessionState: 'live', startedAt: '2026-10-02T08:00:00Z' },
+      { agentId: 'su-unknown', agentRole: 'su', fleetRole: 'member', sessionState: null, startedAt: '2026-10-02T07:00:00Z' },
+      { agentId: 'cup', agentRole: 'cup', fleetRole: 'member', sessionState: 'live', startedAt: '2026-10-02T06:00:00Z' },
+    ], ['su-excluded'])).toBe('su-oldest');
+  });
+});
+
 describe('livePsuFleetMemberIds (WI-4755)', () => {
   it('keeps only visible members with a live psu host', () => {
     const rows = [
@@ -205,6 +223,105 @@ describe('livePsuFleetMemberIds (WI-4755)', () => {
 });
 
 describe('foldFleetRoster', () => {
+  it.each([
+    { name: 'an old activity clock', signals: { lastActivityMs: NOW - 24 * 60 * 60_000 } },
+    { name: 'a missed wake', signals: { wakeAttemptMiss: true } },
+  ])('matches targeted presence for a verified native leader despite $name', ({ signals }) => {
+    const p = pres({
+      ownerId: 'su-native-leader',
+      agentRole: 'su',
+      fleetRole: 'leader',
+      heartbeatAt: new Date(NOW - 5_000).toISOString(),
+    });
+    const w = { wakeable: true, liveTurn: false, ...signals };
+    const assignment = asg({ agentId: p.ownerId, doing: WI('WI-held'), load: 1 });
+    findLiveHostMock.mockReturnValue({ pid: 12345 });
+    const targeted = deriveVerdict(
+      { ...p, claimsHeld: true }, w, new Set(), NOW, () => null,
+      { enabled: true, negative: false, positive: true, findHostFn: findLiveHostMock },
+    );
+    expect(targeted.sessionState).toBe('parked');
+    const [member] = foldFleetRoster([p], [assignment], tier1({}), NOW, new Map([[p.ownerId, w]]));
+    expect(member.sessionState).toBe(targeted.sessionState);
+    expect(member.alive).toBe(true);
+    expect(member.doing).toEqual(WI('WI-held'));
+
+    findLiveHostMock.mockReturnValue(null);
+    const [hostless] = foldFleetRoster([p], [assignment], tier1({}), NOW, new Map([[p.ownerId, w]]));
+    expect(hostless.sessionState).toBe('suspect');
+    expect(hostless.alive).toBe(false);
+  });
+
+  // P-011(a) / D-011 (EI-25695434826164414 class): a live host rescues a member to
+  // `parked`, but a host that cannot take a turn must not be reported as parked.
+  describe('host conditions (P-011)', () => {
+    const p = pres({
+      ownerId: 'su-host-member',
+      agentRole: 'su',
+      heartbeatAt: new Date(NOW - 5_000).toISOString(),
+    });
+    const w = { wakeable: true, liveTurn: false, wakeAttemptMiss: true };
+    const hosts = new Map<string, unknown | null>([[p.ownerId, { pid: 12345 }]]);
+    const fold = (conditions?: Map<string, 'auth-blocked' | null>, presence = p) =>
+      foldFleetRoster(
+        [presence], [asg({ agentId: presence.ownerId, load: 1 })], tier1({}), NOW,
+        new Map([[presence.ownerId, w]]), new Set(), new Map(), new Set(), hosts, conditions,
+      )[0];
+
+    it('control: a healthy live host keeps the rescued parked state with wedged null', () => {
+      const member = fold(new Map([[p.ownerId, null]]));
+      expect(member.sessionState).toBe('parked');
+      expect(member.alive).toBe(true);
+      expect(member.wedged).toBeNull();
+      // No judged map at all (leg degraded) is the same plain derivation.
+      expect(fold(undefined).sessionState).toBe('parked');
+    });
+
+    it('a dead-auth live host reads suspect, not alive, with its class in wedged', () => {
+      const member = fold(new Map([[p.ownerId, 'auth-blocked']]));
+      expect(member.sessionState).toBe('suspect');
+      expect(member.alive).toBe(false);
+      expect(member.wedged).toBe('auth-blocked');
+      expect(member.confirmLiveness).toBe(true);
+    });
+
+    it('never judges a cup by a host condition', () => {
+      const cup = pres({ ownerId: 'cup-x', agentRole: 'cup', heartbeatAt: p.heartbeatAt });
+      const member = foldFleetRoster(
+        [cup], [asg({ agentId: cup.ownerId, load: 0 })], tier1({}), NOW,
+        new Map([[cup.ownerId, { wakeable: true, liveTurn: false }]]), new Set(), new Map(), new Set(),
+        new Map([[cup.ownerId, { pid: 1 }]]), new Map([[cup.ownerId, 'auth-blocked' as const]]),
+      )[0];
+      expect(member.wedged).toBeNull();
+      expect(member.sessionState).not.toBe('suspect');
+    });
+  });
+
+  it.each(['cup', null])('does not rescue an unverified native role %s', (agentRole) => {
+    const p = pres({ ownerId: 'unverified-role', agentRole, heartbeatAt: new Date(NOW - 5_000).toISOString() });
+    findLiveHostMock.mockReturnValue({ pid: 12345 });
+    const [member] = foldFleetRoster(
+      [p], [asg({ agentId: p.ownerId, load: 1 })], tier1({}), NOW,
+      wake({ [p.ownerId]: { wakeable: true, wakeAttemptMiss: true } }),
+    );
+    expect(member.sessionState).toBe('suspect');
+    expect(member.alive).toBe(false);
+  });
+
+  it.each([
+    { load: 0, state: 'ended' },
+    { load: 1, state: 'suspect' },
+  ])('preserves confirmed session death with $load held claims despite a native host', ({ load, state }) => {
+    const p = pres({ ownerId: 'ended-native', agentRole: 'su', heartbeatAt: new Date(NOW - 5_000).toISOString() });
+    findLiveHostMock.mockReturnValue({ pid: 12345 });
+    const [member] = foldFleetRoster(
+      [p], [asg({ agentId: p.ownerId, load })], tier1({}), NOW,
+      wake({ [p.ownerId]: { wakeable: true } }), new Set(), new Map(), new Set([p.ownerId]),
+    );
+    expect(member.sessionState).toBe(state);
+    expect(member.alive).toBe(false);
+  });
+
   it('preserves the work-detail and layers presence + fleet label + Tier-1 on top', () => {
     const a = asg({
       agentId: 'su-x',
@@ -277,6 +394,35 @@ describe('foldFleetRoster', () => {
     expect(e.sessionState).toBe('parked');
     expect(e.intentStale).toBe(true);
     expect(e.intentDivergent).toBe(false);
+  });
+
+  // derived-status-not-hand-written-2026-10-12#D-006 (WI-6554700010009431): the
+  // fleet roster reports a held work item as the intent exactly as coord:presence does.
+  it('derives intent from a held work item when the declaration is empty, and strips the input', () => {
+    const p = pres({ ownerId: 'su-held', intent: '' });
+    const [e] = foldFleetRoster(
+      [p],
+      [],
+      tier1({ 'su-held': { heldWorkIntent: { workItemId: 'WI-77', title: 'Fix the roster', planItemRef: 'plan-a#P-002' } } }),
+      NOW,
+    );
+    expect(e.intent).toBe('Fix the roster (WI-77 · plan-a#P-002)');
+    expect(e.intentSource).toBe('derived');
+    expect(e.intentDerivedFrom).toEqual({ workItemId: 'WI-77', planItemRef: 'plan-a#P-002' });
+    expect(e).not.toHaveProperty('heldWorkIntent');
+  });
+
+  it('keeps a fresh declared intent over a held work item, with no intentDerivedFrom', () => {
+    const p = pres({ ownerId: 'su-decl', intent: 'auditing the gate', intentDeclaredAt: new Date(NOW - 60_000).toISOString() });
+    const [e] = foldFleetRoster(
+      [p],
+      [],
+      tier1({ 'su-decl': { heldWorkIntent: { workItemId: 'WI-78', title: 'Other work' } } }),
+      NOW,
+    );
+    expect(e.intent).toBe('auditing the gate');
+    expect(e.intentSource).toBe('declared');
+    expect(e).not.toHaveProperty('intentDerivedFrom');
   });
 
   it('includes a presence-only idle member with empty work-detail + its fleet label', () => {

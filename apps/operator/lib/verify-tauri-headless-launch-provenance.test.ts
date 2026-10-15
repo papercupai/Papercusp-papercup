@@ -54,7 +54,8 @@ describe('EI-20200818150345989 — verifier bridge handoff carries launch proven
     expect(bridgeBlock).toContain(
       'PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$TAURI_LAUNCH_PROVENANCE',
     );
-    expect(bridgeBlock).toContain('/proc/$p/environ');
+    expect(bridgeBlock).toContain('find_pid_by_env "debug/papercusp-desktop"');
+    expect(src).toContain('/proc/$p/environ');
   });
 
   it('re-checks provenance immediately before exposing the PID', () => {

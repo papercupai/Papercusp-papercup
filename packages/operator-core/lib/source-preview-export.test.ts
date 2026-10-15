@@ -11,27 +11,64 @@
  * Every case drives a synthetic superproject under tmpdir; nothing touches the
  * shared checkout.
  */
-import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import type { Sql } from 'postgres';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdtempSync, promises as fsPromises, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative, sep } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { dirname, join, relative, sep } from 'node:path';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ADDED_FILES,
   SELECTION_LIB,
+  TAURI_VERIFIER_INPUTS,
   allowlistTops,
   exportSnapshot,
   loadReleaseHost,
   materializeCommit,
+  measureVerifierSourceBytes,
+  prepareVerifierSource,
+  prepareVerifierDependencies,
+  captureVerifierDependencies,
+  runVerifierCommand,
+  readVerifierPhaseMeasurements,
+  estimateVerifierCommandBudget,
+  admitVerifierCommandBudget,
+  validateVerifierInputs,
+  runCli,
+  verifyVerifierSource,
+  verifierSourceChildEnv,
   releasesPageUrl,
   sourceYear,
 } from '../../../scripts/source-preview.mjs';
-import { DROPPED, SHIPPED, childEnv, git, makeSuperproject, write, type Superproject } from './source-preview.fixture';
+import { DROPPED, INTERNAL_DOC_CONTENTS, SHIPPED, childEnv, git, makeSuperproject, write, type Superproject } from './source-preview.fixture';
+import { captureTestSourceSnapshot } from './testing-worktree';
+import { cleanupEndedVerifierDirectories, verifierSourceFiles, writeVerifierTaskReceipt } from './verifier-source';
+import { closeTask } from './task-manager/store';
+import type { TaskRow } from './task-manager/types';
 
 let tmp: string;
 let fx: Superproject;
 let out: string;
 let manifest: Awaited<ReturnType<typeof exportSnapshot>>['manifest'];
+
+const NATIVE_RUNTIME_FILES = [
+  'papercusp-desktop/src-tauri/sidecar.lock',
+  'papercusp-desktop/src-tauri/gen/schemas/acl-manifests.json',
+  'papercusp-desktop/src-tauri/gen/schemas/capabilities.json',
+  'papercusp-desktop/src-tauri/gen/schemas/desktop-schema.json',
+  'papercusp-desktop/src-tauri/gen/schemas/linux-schema.json',
+  'papercusp-desktop/src-tauri/sidecar/PLACEHOLDER-README.txt',
+  'papercusp-desktop/src-tauri/sidecar/db-sql/PLACEHOLDER-README.txt',
+  'papercusp-desktop/src-tauri/sidecar/spa/PLACEHOLDER-README.txt',
+  'papercusp-desktop/src-tauri/seed/PLACEHOLDER-README.txt',
+  'papercusp-desktop/src-tauri/doc-vector-seed/PLACEHOLDER-README.txt',
+];
+
+const VITEST_RESULT_CACHE = 'packages/operator-core/.vitest-tmp/vitest/da39a3ee5e6b4b0d3255bfef95601890afd80709/results.json';
+const DEPENDENCY_POLICY_PATH = 'apps/operator/bin/release/dependency-generation.sh';
+const DEPENDENCY_POLICY = readFileSync(new URL('../../../' + DEPENDENCY_POLICY_PATH, import.meta.url), 'utf8');
 
 function listFiles(dir: string): string[] {
   const acc: string[] = [];
@@ -82,6 +119,12 @@ describe('source-preview export — R-1 selection parity with the installer cut'
     expect(files.filter((f) => f.split('/').includes('.git'))).toEqual([]);
   });
 
+  it('retains the exact eligible bytes from both internal documentation roots', () => {
+    for (const [path, body] of Object.entries(INTERNAL_DOC_CONTENTS)) {
+      expect(readFileSync(join(out, path), 'utf8'), path).toBe(body);
+    }
+  });
+
   it('equals the installer selection over the same clean commit, minus node_modules', () => {
     const mono = join(tmp, 'parity-mono');
     rmSync(mono, { recursive: true, force: true });
@@ -92,6 +135,1191 @@ describe('source-preview export — R-1 selection parity with the installer cut'
     expect(preview).toEqual(installer);
     // The comparison is only meaningful if the installer side really shipped node_modules.
     expect(installerListing(mono)).toContain('node_modules/leftpad/index.js');
+    for (const path of Object.keys(INTERNAL_DOC_CONTENTS)) expect(installer, path).toContain(path);
+    expect(installer).not.toContain('libs/papercusp/plugins/gitnexus-bridge/index.ts');
+    expect(installer).toContain('libs/papercusp/plugins/markdown-preview/papercusp.json');
+  });
+});
+
+describe('EI-25303741091409100 — pinned verifier source identity', () => {
+  const budgetPhases = { 'source.freeze': 103_607, 'receipt.write': 377,
+    'deps.source.before': 11_836, 'deps.snapshot': 140_626, 'deps.source.after-snapshot': 22_222,
+    'deps.inputs': 212, 'deps.measure': 3_197, 'deps.source.after-preflight': 9_789,
+    'deps.census': 556_985, 'deps.receipt.write': 2_778 };
+
+  it('refuses a 900-second envelope from measured phases before preparation and reserves the full final census', () => {
+    const estimate = estimateVerifierCommandBudget(budgetPhases, 60_000);
+    expect(estimate).toMatchObject({ dependencyCheckMs: 556_985, sourceCheckMs: 22_222,
+      cleanupMs: 140_626, childEstimateMs: 60_000, unknownChild: false });
+    expect(estimate.totalMs).toBeGreaterThan(900_000);
+    expect(() => admitVerifierCommandBudget(estimate, { nowMs: 1_000, preparation: true,
+      env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '901000' } })).toThrow('TASK_DEADLINE_REFUSAL');
+    expect(() => admitVerifierCommandBudget(estimate, { nowMs: 1_000,
+      env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '49368' } })).toThrow('TASK_DEADLINE_REFUSAL');
+    expect(admitVerifierCommandBudget(estimate, { nowMs: 1_000, env: {} }).deadlineEpochMs).toBeNull();
+    expect(admitVerifierCommandBudget(estimate, { nowMs: 1_000, preparation: true,
+      env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(estimate.totalMs + 1_001) } }).knownEstimateMs).toBe(estimate.totalMs);
+    expect(estimateVerifierCommandBudget(budgetPhases).unknownChild).toBe(true);
+  });
+
+  it('does not count failed or unfinished phase records as completed budget observations', () => {
+    const path = join(tmp, 'verifier-budget-history.jsonl');
+    const rows = [
+      { phase: 'deps.census', event: 'started', elapsedMs: 0 },
+      { phase: 'deps.census', event: 'failed', elapsedMs: 15, durationMs: 15 },
+      { phase: 'child.preflight', event: 'started', elapsedMs: 16 },
+    ].map((row, index) => ({ schemaVersion: 'verifier-phase-v1', sequence: index + 1, ...row }));
+    writeFileSync(path, rows.map(row => JSON.stringify(row)).join('\n'));
+    expect(readVerifierPhaseMeasurements(path)).toEqual({});
+    expect(() => estimateVerifierCommandBudget(readVerifierPhaseMeasurements(path)))
+      .toThrow('requires completed phase');
+    writeFileSync(path, JSON.stringify({ ...rows[0], sequence: 9 }));
+    expect(() => readVerifierPhaseMeasurements(path)).toThrow('Invalid verifier phase budget receipt');
+  });
+
+  it('transports a complete list beyond the argv/env limit through file and piped stdout receipts', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-large-list-fixture'));
+    const paths = Array.from({ length: 2000 }, (_, i) =>
+      `apps/operator/acceptance/${String(i).padStart(4, '0')}-${'x'.repeat(70)}.ts`);
+    paths.push('apps/operator/acceptance/space and,comma.ts');
+    for (const path of paths) write(fixture.repo, path, `// ${path}\n`);
+    git(fixture.repo, ['add', 'apps/operator/acceptance']);
+    git(fixture.repo, ['commit', '-qm', 'large complete verifier list']);
+    const sha = git(fixture.repo, ['rev-parse', 'HEAD']).trim();
+    const inputsFile = join(tmp, 'verifier-large-inputs.json');
+    const serialized = JSON.stringify(paths);
+    expect(Buffer.byteLength(serialized)).toBeGreaterThan(128 * 1024);
+    writeFileSync(inputsFile, serialized);
+    const dest = join(tmp, 'verifier-large-export');
+    const receiptFile = join(tmp, 'verifier-large-receipt.json');
+    const tooling = SHIPPED.find((p) => p.startsWith('apps/'))!;
+    const result = spawnSync(process.execPath, [join(__dirname, '../../../scripts/source-preview.mjs'),
+      'verifier-prepare', '--repo', fixture.repo, '--ref', sha, '--out', dest,
+      '--inputs', tooling, '--inputs-file', inputsFile, '--receipt', receiptFile],
+    { encoding: 'utf8', env: childEnv(), timeout: 60_000 });
+    expect(result.status, result.stderr).toBe(0);
+    const receipt = JSON.parse(readFileSync(receiptFile, 'utf8'));
+    expect(receipt.sourceCommit).toBe(sha);
+    expect(receipt.submodules.length).toBeGreaterThan(0);
+    expect(receipt.testedInputs).toEqual([...paths, tooling].sort().map((path) => ({ path,
+      sha256: createHash('sha256').update(readFileSync(join(fixture.repo, path))).digest('hex') })));
+    expect(statSync(receiptFile).mode & 0o777).toBe(0o600);
+    const expected = await validateVerifierInputs({ repo: fixture.repo, ref: sha,
+      inputs: [tooling], inputsFile });
+    const checked = spawnSync(process.execPath, [join(__dirname, '../../../scripts/source-preview.mjs'),
+      'verifier-inputs-check', '--repo', fixture.repo, '--ref', sha,
+      '--inputs', tooling, '--inputs-file', inputsFile],
+    { encoding: 'utf8', env: childEnv(), timeout: 60_000, maxBuffer: 1024 * 1024 });
+    expect(checked.status, checked.stderr).toBe(0);
+    const expectedText = `${JSON.stringify(expected)}\n`;
+    expect(Buffer.byteLength(checked.stdout)).toBe(Buffer.byteLength(expectedText));
+    expect(JSON.parse(checked.stdout)).toEqual(expected);
+  }, 120_000);
+
+  it('flushes a large CLI rejection to piped stderr before preserving exit code 2', () => {
+    const inputsFile = join(tmp, 'verifier-large-invalid-inputs.json');
+    const invalid = `../${'x'.repeat(200_000)}`;
+    writeFileSync(inputsFile, JSON.stringify([invalid]));
+    const priorOptions = process.env.NODE_OPTIONS, priorPath = process.env.NODE_PATH;
+    let env: NodeJS.ProcessEnv;
+    try {
+      // A runner's inherited loader must neither add stderr nor substitute the
+      // CLI being tested. A missing loader makes contamination fail decisively.
+      process.env.NODE_OPTIONS = '--import=/nonexistent/source-preview-test-loader.mjs';
+      process.env.NODE_PATH = '/nonexistent/source-preview-test-dependencies';
+      env = childEnv();
+    } finally {
+      if (priorOptions === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = priorOptions;
+      if (priorPath === undefined) delete process.env.NODE_PATH;
+      else process.env.NODE_PATH = priorPath;
+    }
+    const result = spawnSync(process.execPath, [join(__dirname, '../../../scripts/source-preview.mjs'),
+      'verifier-inputs-check', '--repo', fx.repo, '--ref', fx.commit, '--inputs-file', inputsFile],
+    { encoding: 'utf8', env, timeout: 60_000, maxBuffer: 1024 * 1024 });
+    expect(result.status).toBe(2);
+    const expected = `ERROR: invalid tested input: ${invalid}\n`;
+    expect(Buffer.byteLength(result.stderr)).toBe(Buffer.byteLength(expected));
+    expect(createHash('sha256').update(result.stderr).digest('hex'))
+      .toBe(createHash('sha256').update(expected).digest('hex'));
+  });
+
+  it.each(['', '{bad', '{}', '[]', '[null]', '["../outside"]', '[""]'])
+    ('refuses malformed or empty input files before exporting (%s)', async (body) => {
+      const inputsFile = join(tmp, 'verifier-invalid-inputs.json');
+      const dest = join(tmp, 'verifier-invalid-export');
+      writeFileSync(inputsFile, body);
+      await expect(prepareVerifierSource({ repo: fx.repo, ref: fx.commit, dest,
+        inputs: [SHIPPED[0]], inputsFile })).rejects.toThrow();
+      expect(existsSync(dest)).toBe(false);
+    });
+
+  it('refuses an absent input file rather than using only the mandatory inputs', async () => {
+    const dest = join(tmp, 'verifier-absent-input-file-export');
+    await expect(prepareVerifierSource({ repo: fx.repo, ref: fx.commit, dest,
+      inputs: [SHIPPED[0]], inputsFile: join(tmp, 'does-not-exist.json') })).rejects.toThrow(/ENOENT/);
+    expect(existsSync(dest)).toBe(false);
+  });
+
+  it.each([{ tail: [] }, { tail: ['--receipt', 'receipt.json'] }])
+    ('refuses a missing --inputs-file value despite valid CSV inputs ($tail)', async ({ tail }) => {
+    const dest = join(tmp, 'verifier-missing-input-argument-export');
+    await expect(runCli(['verifier-prepare', '--repo', fx.repo, '--ref', fx.commit,
+      '--out', dest, '--inputs', SHIPPED[0], '--inputs-file', ...tail]))
+      .rejects.toThrow('missing value for --inputs-file');
+    expect(existsSync(dest)).toBe(false);
+  });
+
+  it.each(['dirty', 'missing'])('refuses a %s file-listed input and removes the incomplete export', async (kind) => {
+    const fixture = makeSuperproject(join(tmp, `verifier-file-${kind}-fixture`));
+    const dest = join(tmp, `verifier-file-${kind}-export`);
+    const inputsFile = join(tmp, `verifier-file-${kind}-inputs.json`);
+    const input = SHIPPED.find((p) => p.startsWith('apps/'))!;
+    if (kind === 'dirty') writeFileSync(join(fixture.repo, input), 'uncommitted acceptance change');
+    writeFileSync(inputsFile, JSON.stringify([kind === 'dirty' ? input : 'apps/operator/missing.ts']));
+    await expect(prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest,
+      inputs: [SHIPPED.find((p) => p !== input)!], inputsFile }))
+      .rejects.toThrow(kind === 'dirty' ? /dirty tested-input mismatch/ : /ENOENT/);
+    expect(existsSync(dest)).toBe(false);
+  });
+
+  it('transports independent verifier provenance to a child and refuses stale or internal receipts', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-child-env-fixture'));
+    const dest = join(tmp, 'verifier-child-env-export');
+    const input = SHIPPED.find((p) => p.startsWith('apps/'))!;
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    const receiptPath = join(tmp, 'verifier-child-env.receipt.json');
+    writeFileSync(receiptPath, JSON.stringify(receipt));
+    const env = verifierSourceChildEnv({ root: dest, receiptPath, env: {
+      PATH: process.env.PATH, VERIFY_TAURI_SOURCE_RECEIPT: '/stale/receipt', VERIFY_TAURI_SOURCE_REF: 'stale',
+    } });
+    expect(env.VERIFY_TAURI_SOURCE_RECEIPT).toBe(receiptPath);
+    expect(env.VERIFY_TAURI_SOURCE_REF).toBe(receipt.sourceCommit);
+    vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', env.VERIFY_TAURI_SOURCE_RECEIPT!);
+    vi.stubEnv('VERIFY_TAURI_SOURCE_REF', env.VERIFY_TAURI_SOURCE_REF!);
+    try {
+      expect(captureTestSourceSnapshot(dest)).toEqual({ commit: receipt.sourceCommit, porcelain: '' });
+    } finally { vi.unstubAllEnvs(); }
+    expect(() => verifierSourceChildEnv({ root: dest, receiptPath: join(dest, '.verifier-source.json') }))
+      .toThrow('receipt must be outside the archive');
+    writeFileSync(join(dest, input), 'changed after preflight');
+    expect(() => verifierSourceChildEnv({ root: dest, receiptPath })).toThrow(`changed ${input}`);
+  });
+
+  it('measures pinned source and gitlinks before export, ignoring dirty and untracked bytes', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-size-fixture'));
+    const before = measureVerifierSourceBytes({ repo: fixture.repo, ref: fixture.commit });
+    const dest = join(tmp, 'verifier-size-export');
+    const input = SHIPPED.find((p) => p.startsWith('apps/'))!;
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    const exported = listFiles(dest).filter(p => p !== '.verifier-source.json')
+      .reduce((bytes, p) => bytes + Math.ceil(statSync(join(dest, p)).size / 4096) * 4096, 0);
+    expect(before).toBe(exported);
+    expect(receipt.submodules).toHaveLength(1);
+    const output = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      expect(await runCli(['verifier-measure', '--repo', fixture.repo, '--ref', fixture.commit])).toBe(0);
+      expect(output).toHaveBeenCalledWith(before);
+    } finally { output.mockRestore(); }
+    write(fixture.repo, 'dirty-untracked.bin', 'x'.repeat(100_000));
+    write(fixture.repo, input, 'dirty'.repeat(10_000));
+    expect(measureVerifierSourceBytes({ repo: fixture.repo, ref: fixture.commit })).toBe(before);
+    git(fixture.repo, ['update-index', '--cacheinfo', `160000,${'1'.repeat(40)},libs/papercusp`]);
+    git(fixture.repo, ['commit', '-qm', 'unresolvable size fixture']);
+    expect(() => measureVerifierSourceBytes({ repo: fixture.repo, ref: 'HEAD' })).toThrow(/unresolvable gitlink/);
+  });
+
+  it('round-trips the verifier CLI with an external caller receipt and refuses tampering', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-cli-fixture'));
+    const dest = join(tmp, 'verifier-cli-export');
+    const receipt = join(tmp, 'verifier-cli-receipt.json');
+    const input = SHIPPED.find((p) => p.startsWith('apps/'))!;
+    expect(await runCli(['verifier-prepare', '--repo', fixture.repo, '--ref', fixture.commit,
+      '--out', dest, '--inputs', input, '--receipt', receipt])).toBe(0);
+    expect(statSync(receipt).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(readFileSync(receipt, 'utf8')).sourceCommit).toBe(fixture.commit);
+    expect(await runCli(['verifier-verify', '--out', dest, '--receipt', receipt])).toBe(0);
+    for (const artifact of NATIVE_RUNTIME_FILES) write(dest, artifact, 'native runtime output');
+    await expect(runCli(['verifier-verify', '--out', dest, '--receipt', receipt]))
+      .rejects.toThrow('tampered verification source archive');
+    expect(await runCli(['verifier-verify', '--out', dest, '--receipt', receipt,
+      '--runtime-artifacts'])).toBe(0);
+    writeFileSync(join(dest, input), 'changed after preparation');
+    await expect(runCli(['verifier-verify', '--out', dest, '--receipt', receipt, '--runtime-artifacts']))
+      .rejects.toThrow('tampered verification source archive');
+  });
+
+  it('exports exact gitlinks despite unrelated dirty donor bytes and detects archive tampering', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-fixture'));
+    const dest = join(tmp, 'verifier-export');
+    const input = SHIPPED.find((p) => p.startsWith('apps/'))!;
+    write(fixture.repo, 'unrelated-untracked.ts', 'peer edit');
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    expect(receipt.sourceCommit).toBe(fixture.commit);
+    expect(receipt.submodules.length).toBeGreaterThan(0);
+    expect(existsSync(join(dest, 'unrelated-untracked.ts'))).toBe(false);
+    await expect(verifyVerifierSource(dest, receipt)).resolves.toEqual(receipt);
+    writeFileSync(join(dest, input), 'tampered');
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow(`tampered verification source archive: changed ${input}`);
+  });
+
+  it('prepares real Git parent and recursive index semantics without changing the exported source population', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-checkout-fixture'));
+    git(fixture.repo, ['commit', '--allow-empty', '-m', 'second verifier revision']);
+    const head = git(fixture.repo, ['rev-parse', 'HEAD']);
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const dest = join(tmp, 'verifier-checkout');
+    const archive = await prepareVerifierSource({ repo: fixture.repo, ref: head,
+      dest: join(tmp, 'verifier-checkout-archive'), inputs: [input] });
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: head, dest, inputs: [input], gitCheckout: true });
+    expect(receipt.files).toEqual(archive.files);
+    expect(receipt.testedInputs).toEqual(archive.testedInputs);
+    expect(receipt.gitCheckout?.parentCommit).toBe(fixture.commit);
+    expect(git(dest, ['rev-parse', 'HEAD^'])).toBe(fixture.commit);
+    expect(git(dest, ['ls-files', '--recurse-submodules'])).toContain('libs/papercusp/package.json');
+    expect(git(dest, ['remote'])).toBe('');
+    await expect(verifyVerifierSource(dest, receipt)).resolves.toEqual(receipt);
+    expect(git(dest, ['status', '--porcelain', '--untracked-files=all'])).toBe('');
+    writeFileSync(join(dest, 'unexpected-source.ts'), 'export const unexpected = true;\n');
+    expect(git(dest, ['status', '--porcelain', '--untracked-files=all'])).toContain('?? unexpected-source.ts');
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('added unexpected-source.ts');
+    rmSync(join(dest, 'unexpected-source.ts'));
+    writeFileSync(join(dest, '.verifier-source.json'), '{}');
+    expect(git(dest, ['status', '--porcelain', '--untracked-files=all'])).toBe('');
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('tampered verification source provenance');
+    writeFileSync(join(dest, '.verifier-source.json'), JSON.stringify(receipt));
+    await expect(verifyVerifierSource(dest, receipt)).resolves.toEqual(receipt);
+
+    // Source-byte identity alone cannot detect a changed index.
+    git(dest, ['rm', '--cached', '--', input]);
+    expect(readFileSync(join(dest, input))).toEqual(readFileSync(join(fixture.repo, input)));
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('tampered verification Git checkout');
+  });
+
+  it('keeps native preparation pinned when the canonical donor changes after admission, and refuses fixed-source drift', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-native-race-fixture'));
+    for (const path of TAURI_VERIFIER_INPUTS) write(fixture.repo, path, `// ${path}\n`);
+    git(fixture.repo, ['add', ...TAURI_VERIFIER_INPUTS]);
+    git(fixture.repo, ['commit', '-qm', 'native invocation source']);
+    const ref = git(fixture.repo, ['rev-parse', 'HEAD']);
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const sourceRoot = join(tmp, 'verifier-native-race-invocation');
+    const options = { ref, inputs: [input], tauriInputs: true };
+    const receipt = await prepareVerifierSource({ ...options, repo: fixture.repo,
+      dest: sourceRoot, gitCheckout: true });
+    const externalReceipt = join(tmp, 'verifier-native-race-receipt.json');
+    writeFileSync(externalReceipt, JSON.stringify(receipt));
+
+    // This is the v4 ordering: admission succeeds, then a peer saves the wrapper
+    // while external fixtures are being allocated, before native preparation.
+    const wrapper = 'scripts/verify-tauri-headless.sh';
+    writeFileSync(join(fixture.repo, wrapper), 'peer edit after admission');
+    await expect(validateVerifierInputs({ ...options, repo: fixture.repo }))
+      .rejects.toThrow(`dirty tested-input mismatch: ${wrapper}`);
+    expect(await runCli(['verifier-verify', '--out', sourceRoot, '--receipt', externalReceipt])).toBe(0);
+    const nativeReceipt = await prepareVerifierSource({ ...options, repo: sourceRoot,
+      dest: join(tmp, 'verifier-native-race-runtime') });
+    expect(nativeReceipt.sourceCommit).toBe(ref);
+    expect(nativeReceipt.files).toEqual(receipt.files);
+    expect(nativeReceipt.testedInputs).toEqual(receipt.testedInputs);
+    expect(readFileSync(join(fixture.repo, wrapper), 'utf8')).toBe('peer edit after admission');
+
+    // Independence is not permission to weaken the input fence.
+    writeFileSync(join(sourceRoot, wrapper), 'tampered fixed invocation');
+    await expect(runCli(['verifier-verify', '--out', sourceRoot, '--receipt', externalReceipt]))
+      .rejects.toThrow(`tampered verification source archive: changed ${wrapper}`);
+    const refused = join(tmp, 'verifier-native-race-refused');
+    await expect(prepareVerifierSource({ ...options, repo: sourceRoot, dest: refused }))
+      .rejects.toThrow(`dirty tested-input mismatch: ${wrapper}`);
+    expect(existsSync(refused)).toBe(false);
+  });
+
+  it.each(['unchanged', 'content', 'added', 'removed', 'mode', 'new-tree', 'workspace-link', 'ephemeral',
+    'absolute-link', 'escaping-link', 'indirect-escape', 'dangling-link', 'redirected-tree',
+    'duplicate-tree', 'missing-population', 'invalid-path', 'nested-tree'] as const)
+  ('measures materialized dependency bytes with the existing census (%s)', async defect => {
+    const root = join(tmp, 'dependency-census-' + defect);
+    const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+    write(root, helper, '#!/bin/bash\nset -eu\ntest "$1" = trees\necho node_modules\nif [ -d "$2/app/node_modules" ]; then echo app/node_modules; fi\n');
+    write(root, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
+    write(root, 'node_modules/example/index.mjs', 'export default 1;\n');
+    const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit: 'a'.repeat(40),
+      testedInputs: [{ path: 'input.mjs', sha256: 'b'.repeat(64) }], files: [], submodules: [] };
+    const before = captureVerifierDependencies({ dest: root, receipt });
+    expect(before.trees.map(tree => tree.path)).toEqual(['node_modules']);
+    const dependency = join(root, 'node_modules/example/index.mjs');
+    if (defect === 'content') writeFileSync(dependency, 'export default 2;\n');
+    if (defect === 'added') write(root, 'node_modules/example/extra.mjs', 'added');
+    if (defect === 'removed') rmSync(dependency);
+    if (defect === 'mode') await fsPromises.chmod(dependency, 0o755);
+    if (defect === 'new-tree') write(root, 'app/node_modules/second/index.mjs', 'second');
+    if (defect === 'ephemeral') for (const path of ['.cache/out', '.package-lock.json',
+      '.papercusp-isolated-snapshot', 'example/.astro/out', 'example/.vite/out',
+      'example/.vite-temp/out', 'example/.verdict-data/out']) write(root, 'node_modules/' + path, 'runtime output');
+    if (defect === 'workspace-link') {
+      write(root, 'app/index.mjs', 'workspace source');
+      symlinkSync('../app', join(root, 'node_modules/workspace'));
+    }
+    if (defect === 'absolute-link') symlinkSync(join(root, 'app'), join(root, 'node_modules/redirect'));
+    if (defect === 'escaping-link') symlinkSync('../../', join(root, 'node_modules/redirect'));
+    if (defect === 'indirect-escape') {
+      symlinkSync(tmp, join(root, 'app'));
+      symlinkSync('../app', join(root, 'node_modules/redirect'));
+    }
+    if (defect === 'dangling-link') symlinkSync('../absent', join(root, 'node_modules/redirect'));
+    if (defect === 'redirected-tree') {
+      await fsPromises.rename(join(root, 'node_modules'), join(root, 'donor'));
+      symlinkSync('donor', join(root, 'node_modules'));
+    }
+    const populations: Partial<Record<typeof defect, string>> = { 'duplicate-tree': 'node_modules\\nnode_modules',
+      'missing-population': '', 'invalid-path': '../node_modules',
+      'nested-tree': 'node_modules\\nnode_modules/example/node_modules' };
+    const population = populations[defect];
+    if (population !== undefined) write(root, helper,
+      '#!/bin/bash\nprintf "' + population + '\\n"\n');
+    if (['absolute-link', 'escaping-link', 'indirect-escape', 'dangling-link',
+      'redirected-tree', 'duplicate-tree', 'missing-population', 'invalid-path', 'nested-tree'].includes(defect)) {
+      expect(() => captureVerifierDependencies({ dest: root, receipt })).toThrow();
+    } else {
+      const after = captureVerifierDependencies({ dest: root, receipt });
+      if (defect === 'unchanged' || defect === 'ephemeral') expect(after).toEqual(before);
+      else expect(after).not.toEqual(before);
+      if (defect === 'workspace-link') expect(after.trees[0]!.files).toContainEqual(expect.objectContaining({
+        path: 'workspace', kind: 'symlink', sha256: createHash('sha256').update('../app').digest('hex'),
+      }));
+    }
+  });
+
+  it('loads Node from the invoked tree before native allocation and survives donor dependency removal', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-native-dependencies'));
+    git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
+    const script = 'scripts/source-preview.mjs';
+    const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+    write(fixture.repo, script, "import value from '@native-proof/runtime';\nif (value !== 'private-snapshot') throw Error('wrong dependency');\nconsole.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
+    write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
+    // Substitute the expensive copy only; execute real Node resolution from the
+    // independent source tree, with ambient loaders and NODE_PATH excluded.
+    write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\ntest "$1" = snapshot-locked\ntest "$4" = hardlink\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
+    write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
+    git(fixture.repo, ['add', script, helper, '.gitignore', DEPENDENCY_POLICY_PATH]);
+    git(fixture.repo, ['commit', '-qm', 'native dependency preflight fixture']);
+    const scratch = join(fixture.repo, '.papercusp', 'scratch');
+    await fsPromises.mkdir(scratch, { recursive: true });
+    const dest = join(scratch, 'invoked');
+    const otherTemp = join(tmp, 'verifier-native-dependencies-other-temp');
+    await fsPromises.mkdir(otherTemp);
+    vi.stubEnv('TMPDIR', otherTemp);
+    let receipt: Awaited<ReturnType<typeof prepareVerifierSource>>;
+    try {
+      receipt = await prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD',
+        dest, inputs: [script], gitCheckout: true });
+    } finally { vi.unstubAllEnvs(); }
+    const probe = () => spawnSync(process.execPath, [join(dest, script), 'verifier-measure'],
+      { cwd: dest, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' } });
+    expect(probe().stderr).toContain('ERR_MODULE_NOT_FOUND');
+    write(fixture.repo, 'node_modules/@native-proof/runtime/package.json', JSON.stringify({
+      name: '@native-proof/runtime', type: 'module', exports: './index.mjs' }));
+    write(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs', "export default 'private-snapshot';\n");
+    const dependencies = await prepareVerifierDependencies({ donor: fixture.repo, dest, receipt });
+    expect(dependencies.trees[0]!.files.map(file => file.path)).toEqual([
+      '@native-proof/runtime/index.mjs', '@native-proof/runtime/package.json',
+    ]);
+    expect(statSync(join(dest, 'node_modules/@native-proof/runtime/index.mjs')).ino)
+      .toBe(statSync(join(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs')).ino);
+    rmSync(join(fixture.repo, 'node_modules/@native-proof/runtime'), { recursive: true });
+    expect(probe().status).toBe(0);
+    expect(probe().stdout.trim()).toBe('4096');
+    expect(captureVerifierDependencies({ dest, receipt })).toEqual(dependencies);
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
+    rmSync(join(dest, 'node_modules'), { recursive: true });
+    await expect(prepareVerifierDependencies({ donor: fixture.repo, dest, receipt }))
+      .rejects.toThrow('ERR_MODULE_NOT_FOUND');
+  });
+
+  it('freezes materialized committed source beside its physical dependency donor', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-materialized-dependencies'));
+    git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
+    const script = 'scripts/source-preview.mjs';
+    const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+    write(fixture.repo, script, "import value from '@native-proof/runtime';\nif (value !== 'private-snapshot') throw Error('wrong dependency');\nconsole.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
+    write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
+    // Keep the physical-donor precondition and real independent Node resolution;
+    // substitute only the expensive production dependency census/copy.
+    write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\ntest "$1" = snapshot-locked\ntest "$4" = hardlink\ntest ! -L "$2/node_modules/.bin"\ncase "$3" in "$2"/.papercusp/scratch/*) ;; *) echo "snapshot must be on physical donor filesystem" >&2; exit 1 ;; esac\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
+    write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/node_modules/\n/.papercusp/scratch/\n');
+    git(fixture.repo, ['add', script, helper, '.gitignore', DEPENDENCY_POLICY_PATH]);
+    git(fixture.repo, ['commit', '-qm', 'materialized dependency donor fixture']);
+    const sha = git(fixture.repo, ['rev-parse', 'HEAD']).trim();
+    write(fixture.repo, 'node_modules/.bin/probe', '#!/bin/sh\n');
+    write(fixture.repo, 'node_modules/@native-proof/runtime/package.json', JSON.stringify({
+      name: '@native-proof/runtime', type: 'module', exports: './index.mjs' }));
+    write(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs', "export default 'private-snapshot';\n");
+    const materialized = join(tmp, 'materialized-dependency-source');
+    git(fixture.repo, ['clone', '--local', '--shared', '--recurse-submodules', fixture.repo, materialized]);
+    const shadow = await import(new URL('../../../scripts/lint-as-committed.mjs', import.meta.url).href);
+    write(materialized, shadow.OWNER_MARKER, JSON.stringify({ sha, sourceRepoRoot: fixture.repo }));
+    shadow.linkNodeModulesShadow(join(fixture.repo, 'node_modules'), join(materialized, 'node_modules'), fixture.repo, materialized);
+    expect((await fsPromises.lstat(join(materialized, 'node_modules/.bin'))).isSymbolicLink()).toBe(true);
+    const receiptPath = join(tmp, 'materialized-dependency-source-receipt.json');
+    const options = { repo: materialized, ref: sha, inputs: [script], receiptPath,
+      command: [process.execPath, script, 'verifier-measure'] };
+    // The donor must pass the ignored-source-scratch guard, not accidentally
+    // be admitted because both fixture repositories are beneath OS tmpdir.
+    const restrictedTemp = join(tmp, 'materialized-source-only-temp');
+    await fsPromises.mkdir(restrictedTemp);
+    vi.stubEnv('TMPDIR', restrictedTemp);
+    try {
+      expect(await runVerifierCommand(options)).toBe(0);
+    } finally { vi.unstubAllEnvs(); }
+    expect(JSON.parse(readFileSync(receiptPath, 'utf8')).sourceCommit).toBe(sha);
+    const dependencyReceipt = JSON.parse(readFileSync(`${receiptPath}.dependencies.json`, 'utf8'));
+    expect(relative(fixture.repo, dependencyReceipt.root)).toMatch(/^\.papercusp\/scratch\/verifier-command-/);
+    expect(dependencyReceipt.sourceCommit).toBe(sha);
+    // The recorded donor must never make a mismatched source identity acceptable.
+    write(materialized, shadow.OWNER_MARKER, JSON.stringify({ sha: '0'.repeat(40), sourceRepoRoot: fixture.repo }));
+    await expect(runVerifierCommand({ ...options, receiptPath: join(tmp, 'refused-donor-receipt.json') }))
+      .rejects.toThrow('retained source commit does not match');
+    expect(existsSync(join(tmp, 'refused-donor-receipt.json'))).toBe(false);
+  });
+
+  it.each(['donor-change', 'child-failure', 'frozen-tamper', 'dependency-tamper', 'phase-io-failure', 'deadline-refusal', 'history-refusal'] as const)
+    ('freezes the full command before provider allocation and cleans its owned tree (%s)', async mode => {
+      const fixture = makeSuperproject(join(tmp, 'verifier-command-' + mode));
+      git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
+      const preflight = 'scripts/source-preview.mjs';
+      const provider = 'scripts/provider-fixture.mjs';
+      const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+      write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
+      write(fixture.repo, preflight, "console.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
+      write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
+      write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
+      write(fixture.repo, provider, [
+        "import { readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';",
+        "import { join } from 'node:path';",
+        "import value from '@native-proof/runtime';",
+        "const donor = process.argv[2], mode = process.argv[3];",
+        "writeFileSync(join(donor, 'scripts/provider-fixture.mjs'), 'peer edit after allocation');",
+        "rmSync(join(donor, 'node_modules'), { recursive: true, force: true });",
+        "const receipt = JSON.parse(readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT, 'utf8'));",
+        "writeFileSync(process.argv[4], JSON.stringify({ root: process.cwd(), value, ref: receipt.sourceCommit,",
+        "  receipt: process.env.VERIFY_TAURI_SOURCE_RECEIPT, repo: process.env.PAPERCUSP_REPO_DIR,",
+        "  source: readFileSync('scripts/provider-fixture.mjs', 'utf8'),",
+        "  options: process.env.NODE_OPTIONS, path: process.env.NODE_PATH, flag: process.argv[5] }));",
+        "if (mode === 'frozen-tamper') writeFileSync('scripts/provider-fixture.mjs', 'tampered frozen source');",
+        "if (mode === 'dependency-tamper') writeFileSync('node_modules/@native-proof/runtime/index.mjs', 'tampered installed bytes');",
+        "if (mode === 'child-failure') process.exitCode = 37;",
+        "if (mode === 'phase-io-failure') { const path = process.env.VERIFY_TAURI_SOURCE_RECEIPT + '.phases.jsonl'; rmSync(path); mkdirSync(path); }",
+      ].join('\n'));
+      git(fixture.repo, ['add', preflight, provider, helper, '.gitignore', DEPENDENCY_POLICY_PATH]);
+      git(fixture.repo, ['commit', '-qm', 'full verifier command fixture']);
+      const ref = git(fixture.repo, ['rev-parse', 'HEAD']);
+      const original = readFileSync(join(fixture.repo, provider), 'utf8');
+      write(fixture.repo, 'node_modules/@native-proof/runtime/package.json', JSON.stringify({
+        name: '@native-proof/runtime', type: 'module', exports: './index.mjs' }));
+      write(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs', "export default 'private-snapshot';\n");
+      const receiptPath = join(tmp, 'verifier-command-' + mode + '.receipt.json');
+      const proofPath = join(tmp, 'verifier-command-' + mode + '.proof.json');
+      const command = [process.execPath, provider, fixture.repo, mode, proofPath, '--provider-flag=literal'];
+      const budgetFrom = join(tmp, 'verifier-command-budget-' + mode + '.jsonl');
+      if (mode === 'history-refusal') {
+        let elapsedMs = 0;
+        const rows = Object.entries(budgetPhases).flatMap(([phase, durationMs], index) => [
+          { schemaVersion: 'verifier-phase-v1', sequence: index * 2 + 1, phase, event: 'started', elapsedMs },
+          { schemaVersion: 'verifier-phase-v1', sequence: index * 2 + 2, phase, event: 'completed', durationMs, elapsedMs: elapsedMs += durationMs },
+        ]);
+        writeFileSync(budgetFrom, rows.map(row => JSON.stringify(row)).join('\n'));
+      }
+      const invocation = mode === 'donor-change'
+        ? runCli(['verifier-run', '--repo', fixture.repo, '--ref', ref, '--inputs', provider,
+          '--receipt', receiptPath, '--', ...command])
+        : runVerifierCommand({ repo: fixture.repo, ref, inputs: [provider], receiptPath, command,
+          ...(mode === 'history-refusal' ? { budgetFrom } : {}),
+          childEstimateMs: mode === 'deadline-refusal' ? 600_000 : 0,
+          env: { ...process.env, NODE_OPTIONS: '--import=/nonexistent/ambient-loader', NODE_PATH: '/ambient/dependencies',
+            ...(['history-refusal', 'deadline-refusal'].includes(mode) ? { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + 60_000) } : {}) } });
+      if (mode === 'deadline-refusal' || mode === 'history-refusal') {
+        await expect(invocation).rejects.toThrow('TASK_DEADLINE_REFUSAL');
+        expect(existsSync(proofPath)).toBe(false);
+        expect(readdirSync(join(fixture.repo, '.papercusp/scratch'))).toEqual([]);
+        const phases = readFileSync(receiptPath + '.phases.jsonl', 'utf8').trim().split('\n').map(line => JSON.parse(line));
+        expect(phases.some(row => row.phase === 'child.preflight' || row.phase === 'child.run')).toBe(false);
+        expect(phases.filter(row => row.event === 'failed').map(row => row.phase))
+          .toEqual([mode === 'history-refusal' ? 'source.admission' : 'child.admission']);
+        expect(phases.at(-1)).toMatchObject({ phase: 'cleanup', event: 'completed' });
+        expect(readFileSync(join(fixture.repo, provider), 'utf8')).toBe(original);
+        if (mode === 'history-refusal') expect(existsSync(receiptPath)).toBe(false);
+        else expect(existsSync(receiptPath + '.dependencies.json')).toBe(true);
+        return;
+      }
+      if (mode === 'frozen-tamper') await expect(invocation).rejects.toThrow('tampered verification source archive');
+      else if (mode === 'dependency-tamper') await expect(invocation).rejects.toThrow('Verifier materialized dependencies changed during command');
+      else if (mode === 'phase-io-failure') await expect(invocation).rejects.toThrow('EISDIR');
+      else await expect(invocation).resolves.toBe(mode === 'child-failure' ? 37 : 0);
+      const proof = JSON.parse(readFileSync(proofPath, 'utf8'));
+      expect(proof).toMatchObject({ value: 'private-snapshot', ref, receipt: receiptPath,
+        source: original, options: '', path: '', flag: '--provider-flag=literal' });
+      expect(proof.root).toBe(proof.repo);
+      expect(proof.root).not.toBe(fixture.repo);
+      expect(existsSync(proof.root)).toBe(false);
+      expect(readdirSync(join(fixture.repo, '.papercusp/scratch'))).toEqual([]);
+      expect(readFileSync(join(fixture.repo, provider), 'utf8')).toBe('peer edit after allocation');
+      expect(existsSync(join(fixture.repo, 'node_modules'))).toBe(false);
+      expect(JSON.parse(readFileSync(receiptPath, 'utf8')).sourceCommit).toBe(ref);
+      const phasePath = receiptPath + '.phases.jsonl';
+      if (mode === 'phase-io-failure') {
+        expect(statSync(phasePath).isDirectory()).toBe(true);
+        return; // Owned-tree absence above proves telemetry failure still cleans.
+      }
+      const phases = readFileSync(phasePath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      expect(statSync(phasePath).mode & 0o777).toBe(0o600);
+      expect(phases.map(row => row.sequence)).toEqual(phases.map((_, index) => index + 1));
+      expect(phases.every(row => Number.isFinite(row.elapsedMs) && row.elapsedMs >= 0)).toBe(true);
+      expect(phases.filter(row => row.event === 'started').map(row => row.phase)).toEqual([
+        'source.admission', 'source.freeze', 'receipt.write', 'deps.source.before', 'deps.snapshot',
+        'deps.source.after-snapshot', 'deps.inputs', 'deps.measure', 'deps.source.after-preflight',
+        'deps.census', 'deps.receipt.write', 'child.admission', 'child.preflight', 'child.run', 'deps.postverify',
+        ...(mode === 'dependency-tamper' ? [] : ['source.postverify']), 'cleanup',
+      ]);
+      expect(phases.filter(row => row.event === 'failed').map(row => row.phase))
+        .toEqual(mode === 'frozen-tamper' ? ['source.postverify'] : mode === 'dependency-tamper' ? ['deps.postverify'] : []);
+      const beforeDependencies = JSON.parse(readFileSync(receiptPath + '.dependencies.json', 'utf8'));
+      const afterDependencies = JSON.parse(readFileSync(receiptPath + '.dependencies.after.json', 'utf8'));
+      expect(beforeDependencies.scope).toBe('materialized-dependency-files');
+      expect(beforeDependencies.sourceCommit).toBe(ref);
+      expect(beforeDependencies.sourceReceiptSha256).toBe(createHash('sha256')
+        .update(JSON.stringify(JSON.parse(readFileSync(receiptPath, 'utf8')))).digest('hex'));
+      if (mode === 'dependency-tamper') expect(afterDependencies).not.toEqual(beforeDependencies);
+      else expect(afterDependencies).toEqual(beforeDependencies);
+      expect(phases.find(row => row.phase === 'child.run' && row.event === 'completed'))
+        .toMatchObject({ exitCode: mode === 'child-failure' ? 37 : 0 });
+      expect(phases.at(-1)).toMatchObject({ phase: 'cleanup', event: 'completed' });
+    });
+
+  it.each(['spawned', 'pending'] as const)('terminal task close cleans a real SIGKILL during synchronous verifier preparation with %s enrollment and preserves peers', async (enrollment) => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-command-killed-' + enrollment));
+    git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
+    const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+    write(fixture.repo, helper, '#!/bin/bash\nset -eu\nprintf "%s\\n" "$3" > "$VERIFIER_KILL_READY"\nexec sleep 60\n');
+    write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
+    git(fixture.repo, ['add', helper, '.gitignore']);
+    git(fixture.repo, ['commit', '-qm', 'kill during verifier preparation']);
+    const ref = git(fixture.repo, ['rev-parse', 'HEAD']);
+    const ready = join(tmp, 'verifier-kill-ready-' + enrollment), taskId = 'verifierkillfixture';
+    const cli = new URL('../../../scripts/source-preview.mjs', import.meta.url).href;
+    const options = { repo: fixture.repo, ref, receiptPath: join(tmp, 'verifier-kill-source-' + enrollment + '.json'),
+      inputs: [helper], command: [process.execPath, '-e', 'process.exit(0)'] };
+    const child = spawn(process.execPath, ['--input-type=module', '-e',
+      `import { runVerifierCommand } from ${JSON.stringify(cli)}; process.exitCode = await runVerifierCommand(${JSON.stringify(options)});`],
+    { cwd: fixture.repo, detached: true, env: childEnv({
+      PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: taskId, VERIFIER_KILL_READY: ready,
+    }), stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    child.stdout.on('data', bytes => { output += bytes; });
+    child.stderr.on('data', bytes => { output += bytes; });
+    const closed = once(child, 'close');
+    try {
+      await vi.waitFor(() => expect(existsSync(ready), output).toBe(true), { timeout: 15_000, interval: 20 });
+      const owned = dirname(readFileSync(ready, 'utf8').trim());
+      const receipt = JSON.parse(readFileSync(join(owned, '.verifier-task.json'), 'utf8'));
+      expect(receipt).toMatchObject({ taskId, pid: child.pid, repoRoot: fixture.repo });
+      expect(statSync(join(owned, '.verifier-task.json')).mode & 0o777).toBe(0o600);
+      process.kill(-child.pid!, 'SIGKILL');
+      expect(await closed).toEqual([null, 'SIGKILL']);
+      expect(existsSync(owned)).toBe(true); // The killed process's finally never ran.
+      const phases = readFileSync(options.receiptPath + '.phases.jsonl', 'utf8').trim()
+        .split('\n').map(line => JSON.parse(line));
+      expect(phases.at(-1)).toMatchObject({ phase: 'deps.snapshot', event: 'started', taskId });
+      expect(phases.some(row => row.phase === 'child.run')).toBe(false);
+      const scratch = dirname(owned);
+      const peer = mkdtempSync(join(scratch, 'verifier-command-'));
+      writeFileSync(join(peer, '.verifier-task.json'), JSON.stringify({ ...receipt, taskId: 'peer-task' }));
+      const live = mkdtempSync(join(scratch, 'verifier-command-'));
+      writeVerifierTaskReceipt(live, fixture.repo, { PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: taskId });
+      const link = join(scratch, 'verifier-command-link');
+      symlinkSync(peer, link, 'dir');
+      const scopeUnit = 'pc-verifierkillfixture.service';
+      const cgroupPath = '/papercusp.slice/papercusp-bash.slice/papercusp-bash-job.slice/' + scopeUnit;
+      // Model the payload's kernel membership independently of the asynchronous
+      // markSpawned write. The real killed process above supplies the death proof.
+      const ownedReceipt = { ...receipt, cgroupPath };
+      const row = { task_id: taskId, workspace_id: 'fixture-workspace', root_task_id: taskId,
+        class: 'bash-job', cwd: fixture.repo, confined: enrollment === 'spawned',
+        state: enrollment === 'spawned' ? 'running' : 'pending', scope_unit: scopeUnit,
+        cgroup_path: enrollment === 'spawned' ? cgroupPath : null,
+        argv: [], launched_by: 'fixture', ended_at: null };
+      const cleanupRow = { taskId, class: 'bash-job', confined: true, cwd: fixture.repo,
+        scopeUnit, cgroupPath } as TaskRow;
+      for (const changed of [{ taskId: 'other-task' }, { confined: false },
+        { scopeUnit: 'wrong-scope.service' }, { cgroupPath: null }]) {
+        await cleanupEndedVerifierDirectories({ ...cleanupRow, ...changed });
+        expect(existsSync(owned)).toBe(true);
+      }
+      const receiptPath = join(owned, '.verifier-task.json');
+      const receiptCopy = join(tmp, 'verifier-kill-ownership.json');
+      writeFileSync(receiptCopy, JSON.stringify(receipt));
+      rmSync(receiptPath);
+      symlinkSync(receiptCopy, receiptPath);
+      await cleanupEndedVerifierDirectories(cleanupRow);
+      expect(existsSync(owned)).toBe(true);
+      rmSync(receiptPath);
+      if (enrollment === 'pending') {
+        const pending = { ...cleanupRow, confined: false, cgroupPath: null, state: 'pending' } as TaskRow;
+        for (const kernelPath of [null, '/unconfined/' + scopeUnit,
+          cgroupPath.replace(taskId, 'peertask'), cgroupPath + '/../../pc-peertask.service']) {
+          writeFileSync(receiptPath, JSON.stringify({ ...ownedReceipt, cgroupPath: kernelPath }));
+          await cleanupEndedVerifierDirectories(pending);
+          expect(existsSync(owned)).toBe(true);
+        }
+      }
+      writeFileSync(receiptPath, JSON.stringify(ownedReceipt));
+      let updated = false;
+      const sql = (async (strings: TemplateStringsArray) => {
+        if (strings.join('').includes('UPDATE harness_shared.task_ledger')) {
+          expect(existsSync(owned)).toBe(false); // Cleanup precedes terminal persistence.
+          updated = true;
+        }
+        return [row];
+      }) as unknown as Sql;
+      await expect(closeTask(taskId, { state: 'killed', exitCode: 137 }, sql,
+        { emitTerminal: vi.fn() })).resolves.toBe(true);
+      expect(updated).toBe(true);
+      expect(existsSync(peer)).toBe(true);
+      expect(existsSync(live)).toBe(true);
+      expect(existsSync(link)).toBe(true);
+      await cleanupEndedVerifierDirectories({ taskId, class: 'bash-job', confined: true,
+        cwd: fixture.repo, scopeUnit: row.scope_unit, cgroupPath: row.cgroup_path } as TaskRow);
+      expect(existsSync(peer)).toBe(true);
+    } finally {
+      try { process.kill(-child.pid!, 'SIGKILL'); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+      }
+      await closed;
+    }
+  });
+
+  it('refuses dirty inputs before running any provider command and rejects missing CLI commands', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-command-dirty'));
+    write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
+    git(fixture.repo, ['add', '.gitignore']); git(fixture.repo, ['commit', '-qm', 'ignored verifier scratch']);
+    const ref = git(fixture.repo, ['rev-parse', 'HEAD']);
+    const input = 'apps/operator/src/index.ts';
+    writeFileSync(join(fixture.repo, input), 'dirty before provider allocation');
+    const marker = join(tmp, 'refused-provider-marker');
+    const receiptPath = join(tmp, 'refused-provider-receipt.json');
+    await expect(runVerifierCommand({ repo: fixture.repo, ref, inputs: [input], receiptPath,
+      command: [process.execPath, '-e', 'require("node:fs").writeFileSync(process.argv[1], "allocated")', marker] }))
+      .rejects.toThrow('dirty tested-input mismatch: ' + input);
+    expect(existsSync(marker)).toBe(false); expect(existsSync(receiptPath)).toBe(false);
+    expect(readdirSync(join(fixture.repo, '.papercusp/scratch'))).toEqual([]);
+    const phases = readFileSync(receiptPath + '.phases.jsonl', 'utf8').trim()
+      .split('\n').map(line => JSON.parse(line));
+    expect(phases.find(row => row.event === 'failed')).toMatchObject({
+      phase: 'source.freeze', error: expect.stringContaining('dirty tested-input mismatch'),
+    });
+    expect(phases.some(row => row.phase === 'deps.snapshot' || row.phase === 'child.run')).toBe(false);
+    expect(phases.at(-1)).toMatchObject({ phase: 'cleanup', event: 'completed' });
+    const retained = readFileSync(receiptPath + '.phases.jsonl', 'utf8');
+    await expect(runVerifierCommand({ repo: fixture.repo, ref, inputs: [input], receiptPath,
+      command: [process.execPath, '-e', 'process.exit(0)'] })).rejects.toThrow('EEXIST');
+    expect(readFileSync(receiptPath + '.phases.jsonl', 'utf8')).toBe(retained);
+    expect(readdirSync(join(fixture.repo, '.papercusp/scratch'))).toEqual([]);
+    await expect(runCli(['verifier-run', '--repo', fixture.repo, '--ref', ref, '--receipt', receiptPath,
+      '--inputs', input, '--'])).rejects.toThrow('and -- <command>');
+  });
+
+  it('preserves unlisted gitlinks and original named mappings in a real verifier checkout', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-unlisted-fixture'));
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const unlisted = 'apps/unlisted';
+    git(fixture.repo, ['clone', '--quiet', '--shared', '--', fixture.subSrc, unlisted]);
+    git(fixture.repo, ['update-index', '--add', '--cacheinfo', `160000,${fixture.subCommit},${unlisted}`]);
+    git(fixture.repo, ['commit', '-m', 'unlisted verifier gitlink']);
+    const mappings = readFileSync(join(fixture.repo, '.gitmodules'));
+    const head = git(fixture.repo, ['rev-parse', 'HEAD']);
+    const archive = await prepareVerifierSource({ repo: fixture.repo, ref: head,
+      dest: join(tmp, 'verifier-unlisted-archive'), inputs: [input] });
+    const dest = join(tmp, 'verifier-unlisted-checkout');
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: head,
+      dest, inputs: [input], gitCheckout: true });
+    expect(receipt.files).toEqual(archive.files);
+    expect(receipt.submodules).toEqual(archive.submodules);
+    expect(readFileSync(join(dest, '.gitmodules'))).toEqual(mappings);
+    expect(git(join(dest, unlisted), ['rev-parse', 'HEAD'])).toBe(fixture.subCommit);
+    expect(git(dest, ['ls-files', '--recurse-submodules'])).toContain('libs/papercusp/package.json');
+    expect(git(dest, ['config', '--get-regexp', '^submodule\\..*\\.url$'])).not.toContain(unlisted);
+    await expect(verifyVerifierSource(dest, receipt)).resolves.toEqual(receipt);
+    git(join(dest, unlisted), ['rm', '--cached', '--', 'package.json']);
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('tampered verification Git checkout');
+  });
+
+  it('prepares a real verifier checkout from a relative repository path', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-relative-repo-fixture'));
+    git(fixture.repo, ['commit', '--allow-empty', '-m', 'with parent']);
+    const head = git(fixture.repo, ['rev-parse', 'HEAD']);
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const dest = join(tmp, 'verifier-relative-repo-checkout');
+    const receipt = await prepareVerifierSource({
+      repo: relative(process.cwd(), fixture.repo), ref: head, dest,
+      inputs: [input], gitCheckout: true,
+    });
+    expect(git(dest, ['rev-parse', 'HEAD'])).toBe(head);
+    expect(readFileSync(join(dest, input))).toEqual(readFileSync(join(fixture.repo, input)));
+    await expect(verifyVerifierSource(dest, receipt)).resolves.toEqual(receipt);
+  });
+
+  it('refuses an unreadable parent or submodule checkout before verification runs', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-checkout-parent-fixture'));
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const noParent = join(tmp, 'verifier-checkout-no-parent');
+    await expect(prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest: noParent,
+      inputs: [input], gitCheckout: true })).rejects.toThrow('HEAD^');
+    expect(existsSync(noParent)).toBe(false);
+
+    git(fixture.repo, ['commit', '--allow-empty', '-m', 'with parent']);
+    const dest = join(tmp, 'verifier-checkout-submodule');
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD', dest, inputs: [input], gitCheckout: true });
+    const submodule = receipt.submodules[0];
+    writeFileSync(join(dest, submodule.path, '.git', 'HEAD'), 'invalid checkout identity\n');
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('verification Git');
+  });
+
+  it('refuses an older committed tested input and cleans the incomplete export', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-dirty-fixture'));
+    const dest = join(tmp, 'verifier-dirty-export');
+    const input = SHIPPED.find((p) => p.startsWith('apps/'))!;
+    writeFileSync(join(fixture.repo, input), 'uncommitted acceptance change');
+    await expect(prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] }))
+      .rejects.toThrow('dirty tested-input mismatch');
+    expect(existsSync(dest)).toBe(false);
+  });
+
+  it.each([false, true])('refuses dirty input before materialization (gitCheckout=%s)', async (gitCheckout) => {
+    const fixture = makeSuperproject(join(tmp, `verifier-early-dirty-${gitCheckout}`));
+    const dest = join(tmp, `verifier-early-dirty-export-${gitCheckout}`);
+    const input = SHIPPED.find((p) => p.startsWith('apps/'))!;
+    writeFileSync(join(fixture.repo, input), 'uncommitted acceptance change');
+    // An archive/clone would encounter this unrelated broken checkout first.
+    // The dirty-input diagnostic must win without creating the destination.
+    rmSync(join(fixture.repo, 'libs/papercusp/.git'), { recursive: true, force: true });
+    const mkdir = vi.spyOn(fsPromises, 'mkdir');
+    try {
+      await expect(prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit,
+        dest, inputs: [input], gitCheckout })).rejects.toThrow('dirty tested-input mismatch');
+      expect(mkdir.mock.calls.some(([path]) => path === dest)).toBe(false);
+      expect(existsSync(dest)).toBe(false);
+    } finally {
+      mkdir.mockRestore();
+    }
+  });
+
+  it('refuses missing, altered provenance and extra archive files', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-provenance-fixture'));
+    const dest = join(tmp, 'verifier-provenance-export');
+    const input = SHIPPED.find((p) => p.startsWith('apps/'))!;
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    await expect(verifyVerifierSource(dest, undefined as never)).rejects.toThrow('missing verification source provenance');
+    writeFileSync(join(dest, '.verifier-source.json'), '{}');
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('tampered verification source provenance');
+    writeFileSync(join(dest, '.verifier-source.json'), JSON.stringify(receipt));
+    writeFileSync(join(dest, 'extra.ts'), 'unexpected');
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('tampered verification source archive: added extra.ts');
+  });
+
+  it('never excludes recorded files under runtime directories from the source verdict', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-runtime-recorded-fixture'));
+    const dest = join(tmp, 'verifier-runtime-recorded-export');
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    const recorded = receipt.files.find(file => file.path.startsWith('node_modules/'))!;
+    expect(recorded).toBeDefined();
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
+    writeFileSync(join(dest, recorded.path), 'changed recorded dependency source');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow('tampered verification source archive');
+  });
+
+  it('rebuilds committed verifier output separately while still rejecting source tampering', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-committed-bundle-fixture'));
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const output = 'apps/operator/dist-verify/hono-host.mjs';
+    write(fixture.repo, output, 'old generated host');
+    git(fixture.repo, ['add', output]);
+    git(fixture.repo, ['commit', '-qm', 'record generated host']);
+    const dest = join(tmp, 'verifier-committed-bundle-export');
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD', dest, inputs: [input] });
+    expect(receipt.files.some(file => file.path.startsWith('apps/operator/dist-verify/'))).toBe(false);
+    expect(existsSync(join(dest, output))).toBe(false);
+    write(dest, output, 'rebuilt private host');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
+    writeFileSync(join(dest, input), 'tampered source');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`changed ${input}`);
+    await expect(prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD', dest: join(tmp, 'refused-runtime-input'), inputs: [output] }))
+      .rejects.toThrow('generated verifier runtime output cannot be a tested source input');
+    await expect(prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD', dest: join(tmp, 'refused-runtime-checkout'), inputs: [input], gitCheckout: true }))
+      .rejects.toThrow('committed verifier runtime output requires archive export');
+  });
+
+  it('rejects a symlink posing as an independent runtime directory', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-runtime-link-fixture'));
+    const dest = join(tmp, 'verifier-runtime-link-export');
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    symlinkSync(join(dest, 'apps/operator/src'), join(dest, 'apps/operator/dist-verify'));
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow('runtime artifact is not an independent directory');
+  });
+
+  it('allows an unrecorded generated router tree only for runtime source attestation', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-router-runtime-fixture'));
+    const dest = join(tmp, 'verifier-router-runtime-export');
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    write(dest, 'apps/operator-vite/src/routeTree.gen.ts', 'generated from recorded routes');
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('added apps/operator-vite/src/routeTree.gen.ts');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
+    writeFileSync(join(dest, input), 'changed recorded route source');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`changed ${input}`);
+  });
+
+  it('allows only the exact unrecorded Vitest result cache during runtime source attestation', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-vitest-cache-fixture'));
+    const dest = join(tmp, 'verifier-vitest-cache-export');
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    write(dest, VITEST_RESULT_CACHE, '{"results":[]}');
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow(`added ${VITEST_RESULT_CACHE}`);
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
+    const unexpected = VITEST_RESULT_CACHE.replace('results.json', 'extra.ts');
+    write(dest, unexpected, 'export const unexpected = true;');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`added ${unexpected}`);
+  });
+
+  it('rejects result cache paths outside the Vitest hash namespace', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-vitest-cache-invalid-fixture'));
+    const dest = join(tmp, 'verifier-vitest-cache-invalid-export');
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    const unexpected = 'packages/operator-core/.vitest-tmp/vitest/not-a-hash/results.json';
+    write(dest, unexpected, '{"results":[]}');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`added ${unexpected}`);
+  });
+
+  it.each(['apps/operator-vite/src/routeTree.gen.ts', '.papercusp-pinned-deps', 'libs/generic/sse/dist/index.js', 'packages/omp-plugin/dist/native-extension.mjs', VITEST_RESULT_CACHE, ...NATIVE_RUNTIME_FILES])('never excludes recorded output from source attestation: %s', async input => {
+    const suffix = input.replaceAll('/', '-');
+    const fixture = makeSuperproject(join(tmp, `verifier-output-recorded-${suffix}`));
+    write(fixture.repo, input, 'recorded route tree');
+    git(fixture.repo, ['add', input]);
+    git(fixture.repo, ['commit', '-qm', 'recorded route tree fixture']);
+    const ref = git(fixture.repo, ['rev-parse', 'HEAD']).trim();
+    const dest = join(tmp, `verifier-output-recorded-export-${suffix}`);
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref, dest, inputs: [input] });
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
+    writeFileSync(join(dest, input), 'changed recorded route tree');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`changed ${input}`);
+  });
+
+  it('accepts unrecorded pinned dependency output while still detecting recorded source changes', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-pinned-output-fixture'));
+    const input = 'libs/generic/sse/src/index.ts';
+    write(fixture.repo, input, 'export const source = true;');
+    git(fixture.repo, ['add', input]);
+    git(fixture.repo, ['commit', '-qm', 'pinned runtime source fixture']);
+    const ref = git(fixture.repo, ['rev-parse', 'HEAD']).trim();
+    const dest = join(tmp, 'verifier-pinned-output-export');
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref, dest, inputs: [input] });
+    write(dest, '.papercusp-pinned-deps', 'immutable dependency receipt');
+    write(dest, 'libs/generic/sse/dist/index.js', 'export const source = true;');
+    write(dest, 'packages/omp-plugin/dist/native-extension.mjs', 'export const source = true;');
+    for (const artifact of NATIVE_RUNTIME_FILES) write(dest, artifact, 'generated native build output');
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('added .papercusp-pinned-deps');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
+    writeFileSync(join(dest, input), 'changed recorded source');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`changed ${input}`);
+  });
+
+  it.each(['.papercusp-pinned-deps', 'libs/generic/sse/dist', 'packages/omp-plugin/dist', 'papercusp-desktop/src-tauri/gen/schemas', VITEST_RESULT_CACHE, ...NATIVE_RUNTIME_FILES.filter(path => path.endsWith('PLACEHOLDER-README.txt') || path.endsWith('sidecar.lock'))])('rejects a redirect posing as runtime output: %s', async artifact => {
+    const fixture = makeSuperproject(join(tmp, `verifier-output-link-${artifact.replaceAll('/', '-')}`));
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const dest = join(tmp, `verifier-output-link-export-${artifact.replaceAll('/', '-')}`);
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    write(dest, artifact, 'placeholder');
+    rmSync(join(dest, artifact));
+    symlinkSync(join(dest, input), join(dest, artifact));
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow('runtime artifact is not an independent');
+  });
+
+  it('rejects a symlink posing as an unrecorded generated router tree', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-router-link-fixture'));
+    const dest = join(tmp, 'verifier-router-link-export');
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    write(dest, 'apps/operator-vite/src/routeTree.gen.ts', 'placeholder');
+    rmSync(join(dest, 'apps/operator-vite/src/routeTree.gen.ts'));
+    symlinkSync(join(dest, input), join(dest, 'apps/operator-vite/src/routeTree.gen.ts'));
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow('runtime artifact is not an independent file');
+  });
+
+  it('checks committed inputs without allocating a snapshot and rejects later source edits', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-input-check-fixture'));
+    const input = SHIPPED.find((p) => p.startsWith('apps/'))!;
+    const before = readdirSync(tmp).sort();
+    const result = await validateVerifierInputs({ repo: fixture.repo, ref: fixture.commit, inputs: [input] });
+    expect(result.sha).toBe(fixture.commit);
+    expect(result.paths).toEqual([input]);
+    expect(readdirSync(tmp).sort()).toEqual(before);
+    writeFileSync(join(fixture.repo, input), 'changed after commit');
+    await expect(validateVerifierInputs({ repo: fixture.repo, ref: fixture.commit, inputs: [input] }))
+      .rejects.toThrow(`dirty tested-input mismatch: ${input}`);
+    expect(readdirSync(tmp).sort()).toEqual(before);
+  });
+
+  it('shares native tooling validation with preparation and refuses drift before allocating', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-tauri-inputs-fixture'));
+    for (const path of TAURI_VERIFIER_INPUTS) write(fixture.repo, path, `// ${path}\n`);
+    git(fixture.repo, ['add', ...TAURI_VERIFIER_INPUTS]);
+    git(fixture.repo, ['commit', '-qm', 'native tooling inputs']);
+    const ref = git(fixture.repo, ['rev-parse', 'HEAD']);
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const inputsFile = join(tmp, 'verifier-tauri-inputs.json');
+    writeFileSync(inputsFile, JSON.stringify([input]));
+    const options = { repo: fixture.repo, ref, inputsFile, tauriInputs: true };
+    const checked = await validateVerifierInputs(options);
+    expect(checked.paths).toEqual([...new Set([input, ...TAURI_VERIFIER_INPUTS])].sort());
+    const dest = join(tmp, 'verifier-tauri-inputs-export');
+    const receipt = await prepareVerifierSource({ ...options, dest });
+    expect(receipt.testedInputs.map(row => row.path)).toEqual(checked.paths);
+
+    for (const [index, helper] of [
+      'apps/operator/bin/release/dependency-generation.sh',
+      'packages/operator-core/lib/testing-native-runtime.ts',
+      'packages/operator-core/lib/testing-playwright-reporter.ts',
+      'scripts/lib/run-in-isolated-netns.sh',
+    ].entries()) {
+      writeFileSync(join(fixture.repo, helper), 'changed native tooling after commit');
+      const refused = join(tmp, `verifier-tauri-inputs-refused-${index}`);
+      await expect(validateVerifierInputs(options)).rejects.toThrow(`dirty tested-input mismatch: ${helper}`);
+      await expect(prepareVerifierSource({ ...options, dest: refused }))
+        .rejects.toThrow(`dirty tested-input mismatch: ${helper}`);
+      expect(existsSync(refused)).toBe(false);
+      writeFileSync(join(fixture.repo, helper), `// ${helper}\n`);
+    }
+    await expect(validateVerifierInputs({ repo: fixture.repo, ref, tauriInputs: true }))
+      .rejects.toThrow('verification export needs explicit tested inputs');
+  });
+
+  it('refuses tracked source symlinks that read outside the immutable export', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-link-fixture'));
+    symlinkSync('/tmp/live-peer-source.ts', join(fixture.repo, 'outside-source'));
+    git(fixture.repo, ['add', 'outside-source']);
+    git(fixture.repo, ['commit', '-qm', 'outside source fixture']);
+    const dest = join(tmp, 'verifier-link-export');
+    const input = SHIPPED.find((p) => p.startsWith('apps/'))!;
+    await expect(prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD', dest, inputs: [input] }))
+      .rejects.toThrow('archive symlink escapes source root');
+    expect(existsSync(dest)).toBe(false);
+  });
+});
+
+describe('D044 independent operator-api input handoff', () => {
+  let fixture: Superproject;
+  const input = 'apps/operator/src/index.ts';
+  const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
+
+  beforeAll(() => {
+    fixture = makeSuperproject(join(tmp, 'd044-fixture'));
+    // These fixture dependencies are normally tracked. The independent donor
+    // must materialize its own dependencies after capturing source membership.
+    git(fixture.repo, ['rm', '-r', 'node_modules', 'apps/operator/node_modules']);
+    git(fixture.repo, ['commit', '-qm', 'independent materialization fixture']);
+    fixture.commit = git(fixture.repo, ['rev-parse', 'HEAD']);
+  });
+
+  async function handoff() {
+    const evidence = mkdtempSync(join(tmp, 'd044-case-'));
+    const root = join(evidence, 'donor');
+    const source = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit,
+      dest: root, inputs: [input] });
+    const sourceReceiptPath = join(evidence, 'source.json');
+    writeFileSync(sourceReceiptPath, JSON.stringify(source));
+    write(root, 'node_modules/pkg/index.js', 'module.exports = 1;\n');
+    symlinkSync('pkg/index.js', join(root, 'node_modules/relative.js'));
+    const planned = {
+      phase: 'planned', sourceCommit: source.sourceCommit, testPaths: [input],
+      helperPaths: ['packages/core/index.ts'], configPaths: ['package-lock.json'],
+      executedImports: [input], copiedSources: ['packages/core/index.ts'],
+      copiedArtifacts: [{ path: 'copied-helper.ts', sourcePath: 'packages/core/index.ts' }],
+      dependencyFiles: verifierSourceFiles(join(root, 'node_modules')),
+      externalResolutions: { pkg: 'node_modules/pkg/index.js' },
+      schema: { private: 'synthetic-applied-schema' }, environment: { MODE: digest('synthetic') },
+      omitted: [] as string[], opaque: [] as string[],
+    };
+    const operatorApi = { root, sourceReceiptPath, sourceReceiptSha256: digest(readFileSync(sourceReceiptPath)),
+      inputReceiptPath: join(evidence, 'planned.json'), inputReceiptSha256: '',
+      outputPath: join(evidence, 'operator-api-preflight.json') };
+    const repin = () => {
+      writeFileSync(operatorApi.inputReceiptPath, JSON.stringify(planned));
+      operatorApi.inputReceiptSha256 = digest(readFileSync(operatorApi.inputReceiptPath));
+    };
+    repin();
+    const dest = join(evidence, 'export');
+    return { planned, operatorApi, source, sourceReceiptPath, repin, dest,
+      prepare: () => prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit,
+        dest, inputs: [input], operatorApi }) };
+  }
+
+  it('copies pinned dependencies and relative symlinks and hands off the exact independent bytes', async () => {
+    const c = await handoff();
+    const receipt = await c.prepare();
+    expect(receipt.operatorApiInputs).toEqual({ path: c.operatorApi.outputPath,
+      sha256: c.operatorApi.inputReceiptSha256 });
+    expect(readFileSync(c.operatorApi.outputPath)).toEqual(readFileSync(c.operatorApi.inputReceiptPath));
+    expect(verifierSourceFiles(join(c.dest, 'node_modules'))).toEqual(c.planned.dependencyFiles);
+    expect(await verifyVerifierSource(c.dest, receipt)).toEqual(receipt);
+    const receiptPath = join(c.dest, '..', 'export-source.json');
+    writeFileSync(receiptPath, JSON.stringify(receipt));
+    expect(verifierSourceChildEnv({ root: c.dest, receiptPath }).VERIFY_TAURI_SOURCE_RECEIPT).toBe(receiptPath);
+    writeFileSync(c.operatorApi.outputPath, '{}');
+    expect(() => verifierSourceChildEnv({ root: c.dest, receiptPath })).toThrow('Pinned operator-api receipt changed');
+  });
+
+  it.each(['executedImports', 'schema', 'environment'] as const)(
+    'refuses an absent independent %s observation before allocating the export', async key => {
+      const c = await handoff();
+      Object.assign(c.planned, { [key]: key === 'executedImports' ? [] : {} });
+      c.repin();
+      await expect(c.prepare()).rejects.toThrow('required observation missing');
+      expect(existsSync(c.dest)).toBe(false);
+      expect(existsSync(c.operatorApi.outputPath)).toBe(false);
+    });
+
+  it.each(['omitted', 'opaque'] as const)('refuses a required %s dimension before effects', async key => {
+    const c = await handoff();
+    c.planned[key].push('loaded-host');
+    c.repin();
+    await expect(c.prepare()).rejects.toThrow(`required dimensions ${key}`);
+    expect(existsSync(c.dest)).toBe(false);
+  });
+
+  it('requires observed imports separately from static copied source membership', async () => {
+    const c = await handoff();
+    c.planned.executedImports = ['absent-observed-import.ts'];
+    c.repin();
+    await expect(c.prepare()).rejects.toThrow('source outside selected archive');
+    expect(existsSync(c.dest)).toBe(false);
+  });
+
+  it.each(['source', 'dependency', 'receipt'] as const)('refuses %s byte drift before effects', async kind => {
+    const c = await handoff();
+    if (kind === 'source') writeFileSync(join(c.operatorApi.root, input), 'source drift');
+    if (kind === 'dependency') writeFileSync(join(c.operatorApi.root, 'node_modules/pkg/index.js'), 'dependency drift');
+    if (kind === 'receipt') writeFileSync(c.operatorApi.inputReceiptPath, '{}');
+    await expect(c.prepare()).rejects.toThrow(/changed|census differs/);
+    expect(existsSync(c.dest)).toBe(false);
+    expect(existsSync(c.operatorApi.outputPath)).toBe(false);
+  });
+
+  it('refuses a selected tested-input pin that differs from the archived file', async () => {
+    const c = await handoff();
+    c.source.testedInputs[0].sha256 = '0'.repeat(64);
+    writeFileSync(c.sourceReceiptPath, JSON.stringify(c.source));
+    c.operatorApi.sourceReceiptSha256 = digest(readFileSync(c.sourceReceiptPath));
+    await expect(c.prepare()).rejects.toThrow('tampered verification source provenance');
+    expect(existsSync(c.dest)).toBe(false);
+  });
+
+  it('refuses absolute donor dependency links before allocation rather than rebasing their identity', async () => {
+    const c = await handoff();
+    const target = join(c.operatorApi.root, 'node_modules/pkg/index.js');
+    symlinkSync(target, join(c.operatorApi.root, 'node_modules/absolute.js'));
+    // Pin the supplied malformed identity without asking the maintained census
+    // to validate it before the exporter gets a chance to refuse it.
+    c.planned.dependencyFiles.push({ path: 'absolute.js', kind: 'symlink', executable: true, sha256: digest(target) });
+    c.repin();
+    const copy = vi.spyOn(fsPromises, 'cp');
+    try {
+      await expect(c.prepare()).rejects.toThrow('archive symlink escapes source root: absolute.js');
+      expect(copy).not.toHaveBeenCalled();
+      expect(existsSync(c.dest)).toBe(false);
+      expect(existsSync(c.operatorApi.outputPath)).toBe(false);
+    } finally { copy.mockRestore(); }
+  });
+
+  it('refuses a dependency link into an ambient tree before effects', async () => {
+    const c = await handoff();
+    symlinkSync('../../source.json', join(c.operatorApi.root, 'node_modules/ambient.js'));
+    c.planned.dependencyFiles.push({ path: 'ambient.js', kind: 'symlink', executable: true,
+      sha256: digest('../../source.json') });
+    c.repin();
+    await expect(c.prepare()).rejects.toThrow('archive symlink escapes source root: ambient.js');
+    expect(existsSync(c.dest)).toBe(false);
+  });
+
+  it('refuses an internal handoff path even when reached through a symlinked parent', async () => {
+    const c = await handoff();
+    symlinkSync(c.dest, join(c.dest, '..', 'export-alias'));
+    c.operatorApi.outputPath = join(c.dest, '..', 'export-alias', 'operator-api-preflight.json');
+    await expect(c.prepare()).rejects.toThrow('receipt must be outside the archive');
+    expect(existsSync(c.dest)).toBe(false);
+  });
+
+  it.each(['donor-source', 'export-source', 'planned-receipt'] as const)(
+    'removes the new export when %s drifts during dependency copy', async kind => {
+      const c = await handoff();
+      const original = fsPromises.cp;
+      const copy = vi.spyOn(fsPromises, 'cp').mockImplementation(async (...args) => {
+        await original(...args);
+        if (kind === 'donor-source') writeFileSync(join(c.operatorApi.root, input), 'racing source');
+        if (kind === 'export-source') writeFileSync(join(c.dest, input), 'racing source');
+        if (kind === 'planned-receipt') writeFileSync(c.operatorApi.inputReceiptPath, '{}');
+      });
+      try {
+        await expect(c.prepare()).rejects.toThrow(/changed/);
+        expect(existsSync(c.dest)).toBe(false);
+        expect(existsSync(c.operatorApi.outputPath)).toBe(false);
+      } finally { copy.mockRestore(); }
+    });
+
+  it.each(['partial-write', 'post-write-source-drift'] as const)(
+    'removes only its newly created handoff after %s', async kind => {
+      const c = await handoff();
+      const original = fsPromises.open;
+      const open = vi.spyOn(fsPromises, 'open').mockImplementation(async (...args) => {
+        const handle = await original(...args);
+        if (args[0] === c.operatorApi.outputPath) {
+          const write = handle.writeFile.bind(handle);
+          handle.writeFile = async (...writeArgs) => {
+            await write(...writeArgs);
+            if (kind === 'partial-write') throw new Error('synthetic partial handoff write');
+            writeFileSync(join(c.dest, input), 'post-write source drift');
+          };
+        }
+        return handle;
+      });
+      try {
+        await expect(c.prepare()).rejects.toThrow(/synthetic partial handoff write|changed/);
+        expect(existsSync(c.dest)).toBe(false);
+        expect(existsSync(c.operatorApi.outputPath)).toBe(false);
+      } finally { open.mockRestore(); }
+    });
+
+  it('preserves a preexisting handoff that wins the exclusive-create race', async () => {
+    const c = await handoff();
+    const original = fsPromises.cp;
+    const copy = vi.spyOn(fsPromises, 'cp').mockImplementation(async (...args) => {
+      await original(...args);
+      writeFileSync(c.operatorApi.outputPath, 'independent existing handoff');
+    });
+    try {
+      await expect(c.prepare()).rejects.toThrow(/EEXIST/);
+      expect(existsSync(c.dest)).toBe(false);
+      expect(readFileSync(c.operatorApi.outputPath, 'utf8')).toBe('independent existing handoff');
+    } finally { copy.mockRestore(); }
+  });
+
+  it('preserves complete source-only export without an operator-api handoff', async () => {
+    const dest = join(tmp, 'd044-source-only');
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    expect(receipt.operatorApiInputs).toBeUndefined();
+    expect(await verifyVerifierSource(dest, receipt)).toEqual(receipt);
+    expect(verifierSourceFiles(dest).filter(file => file.path !== '.verifier-source.json')).toEqual(receipt.files);
   });
 });
 
@@ -136,6 +1364,46 @@ describe('source-preview export — R-3 pinned, history-free snapshot', () => {
       expect(readFileSync(join(snap, 'apps/operator/src/index.ts'), 'utf8')).toBe('export const x = 1;\n');
     } finally {
       git(fx.repo, ['checkout', '--', 'apps/operator/src/index.ts']);
+    }
+  }, 120_000);
+
+  it('uses the pinned dependency graph and leaves dirty source, index and branch unchanged (D-007)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'source-preview-pin-'));
+    try {
+      const pinned = makeSuperproject(root);
+      const pinnedLock = JSON.stringify({ lockfileVersion: 3, packages: {
+        'node_modules/pinned-dependency': { version: '1.0.0', license: 'MIT' },
+      } });
+      write(pinned.repo, 'package-lock.json', pinnedLock);
+      git(pinned.repo, ['add', 'package-lock.json']);
+      git(pinned.repo, ['commit', '-q', '-m', 'pin dependency graph']);
+      const ref = git(pinned.repo, ['rev-parse', 'HEAD']);
+      // The installed/working tree deliberately disagrees with the pinned graph.
+      write(pinned.repo, 'package-lock.json', '{"packages":{"node_modules/integration-only":{"version":"2"}}}\n');
+      write(pinned.repo, 'node_modules/integration-only/index.js', 'module.exports = "integration-only";\n');
+      write(pinned.repo, 'apps/operator/src/index.ts', 'export const staged = true;\n');
+      git(pinned.repo, ['add', 'apps/operator/src/index.ts']);
+      const state = () => ({
+        head: git(pinned.repo, ['rev-parse', 'HEAD']),
+        branch: git(pinned.repo, ['symbolic-ref', 'HEAD']),
+        index: git(pinned.repo, ['diff', '--cached', '--binary']),
+        worktree: git(pinned.repo, ['diff', '--binary']),
+      });
+      const before = state();
+      expect(before.index).toContain('staged = true');
+      expect(before.worktree).toContain('integration-only');
+      const target = join(root, 'export');
+      const { manifest: receipt } = await exportSnapshot({ repoRoot: pinned.repo, ref, out: target, env: childEnv() });
+      expect(receipt.source.commit).toBe(ref);
+      expect(receipt.submodules).toEqual([{ path: 'libs/papercusp', sha: pinned.subCommit }]);
+      expect(readFileSync(join(target, 'package-lock.json'), 'utf8')).toBe(pinnedLock);
+      expect(readFileSync(join(target, 'apps/operator/src/index.ts'), 'utf8')).toBe('export const x = 1;\n');
+      expect(existsSync(join(target, 'node_modules'))).toBe(false);
+      expect(readFileSync(join(pinned.repo, 'node_modules/integration-only/index.js'), 'utf8'))
+        .toBe('module.exports = "integration-only";\n');
+      expect(state()).toEqual(before);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   }, 120_000);
 });

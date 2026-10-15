@@ -5,7 +5,7 @@ import { capabilityHash, capabilityUnitHash, CapabilityPacketSchema } from './ca
 import { createDreamCapabilityFixture } from '../../test/dream-capability-fixture';
 import { buildCapabilitySamplingSnapshot, sampleCapabilityCombination, type CapabilitySamplingSnapshot } from './capability-sampler';
 import { CAPABILITY_DREAM_PROMPT_VERSION } from './capability-pass';
-import { studySampling } from '../../../../scratchpad/dream-study-2026-09-09/sampling.mts';
+import { studySampling } from './study/sampling.mts';
 
 let snapshot: CapabilitySamplingSnapshot;
 let fixtureRoot: string;
@@ -50,5 +50,13 @@ describe('D017 source-grounded sampling setup', () => {
     expect(uniform.sampler).not.toHaveProperty('relations');
     expect(uniform.sampler.policy.cooldownMs).toBe(0);
     expect(uniform.annotationHash).not.toBe(studySampling(snapshot, 'structured-pair').annotationHash);
+  });
+  it('uses current graph evidence without injecting historical annotations into either treatment', () => {
+    const current = studySampling(snapshot, 'structured-pair', true);
+    expect(current.sampler).toEqual({ mode: 'structured', arity: 2, policy: { cooldownMs: 0 } });
+    expect(current.annotationHash).toBe(capabilityHash(JSON.stringify({ sourceSnapshot: snapshot.fingerprint, sampler: current.sampler })));
+    expect(current.annotationHash).not.toBe(studySampling(snapshot, 'structured-pair').annotationHash);
+    expect(() => studySampling(snapshot, 'uniform-pair', true)).toThrow('paired sampler');
+    expect(() => studySampling(snapshot, 'structured-triple', true)).toThrow('paired sampler');
   });
 });

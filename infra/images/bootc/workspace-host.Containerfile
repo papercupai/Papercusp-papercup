@@ -18,7 +18,7 @@
 #
 # Re-verify the table against the live base before editing this list:
 #   sudo -n podman run --rm -i --entrypoint /bin/bash \
-#     quay.io/centos-bootc/centos-bootc:stream9 -s < verify-rpm-equivalents.sh
+#     quay.io/centos-bootc/centos-bootc:stream10 -s < verify-rpm-equivalents.sh
 # (the `-i` is load-bearing: without it the container exits 0 having run NOTHING.)
 #
 # ── What is NOT here, and why ─────────────────────────────────────────────────
@@ -30,7 +30,7 @@
 # boot. D-314 therefore bakes its access as ordinary group ownership and makes
 # host prepare verify that metadata without writing to `/opt`.
 
-FROM quay.io/centos-bootc/centos-bootc:stream9 AS workspace-host-os
+FROM quay.io/centos-bootc/centos-bootc:stream10 AS workspace-host-os
 
 # The image records the base it was built FROM, because a BOOTED host cannot
 # otherwise answer that question about itself: `bootc status` reports the ref
@@ -39,7 +39,7 @@ FROM quay.io/centos-bootc/centos-bootc:stream9 AS workspace-host-os
 # it image content — read-only on a running bootc host, replaced atomically by
 # an upgrade — so the attested `bootc-base-image` check is reading a fact the
 # image carries rather than one the host was told.
-ARG PAPERCUSP_BASE_IMAGE=quay.io/centos-bootc/centos-bootc:stream9
+ARG PAPERCUSP_BASE_IMAGE=quay.io/centos-bootc/centos-bootc:stream10
 RUN install -d -m 0755 /usr/lib/papercusp \
  && printf '%s\n' "${PAPERCUSP_BASE_IMAGE}" > /usr/lib/papercusp/base-image \
  && chmod 0644 /usr/lib/papercusp/base-image
@@ -82,7 +82,7 @@ ARG PAPERCUSP_RUNTIME_READ_GROUP=papercusp-runtime-read
 # without the guest agent plus OS Login NSS/PAM modules, the VM reaches RUNNING
 # and sshd listens, but `enable-oslogin=TRUE` can never authenticate a user.
 # P-305 measured exactly that silent 15-minute failure. Install Google's
-# maintained EL9 metapackage into the one signed image so the capability also
+# maintained EL10 metapackage into the one signed image so the capability also
 # survives bootc upgrade/rollback; patching only the rendered GCE disk would
 # disappear on the first signed switch and violate P-307's one-image seam.
 #
@@ -103,17 +103,46 @@ ARG PAPERCUSP_RUNTIME_READ_GROUP=papercusp-runtime-read
 #     look correct inside RUN, then revert after COMMIT. Replace both with fresh
 #     inodes in this same layer; the P-306 probe checks the committed image.
 COPY papercusp-google-oslogin.conf /usr/lib/tmpfiles.d/papercusp-google-oslogin.conf
+# GCE transport is skipped off GCE, as amazon-ssm-agent is off EC2 (WI-10005618).
+COPY papercusp-google-guest-agent-gce-only.conf /usr/lib/systemd/system/google-guest-agent.service.d/papercusp-gce-only.conf
+# AWS transport (WI-10005605): amazon-ssm-agent is the session/command channel the AWS
+# provider and its connection profile require. AWS ships it as a standalone signed RPM,
+# not from a dnf repository, so it is pinned by VERSION and by the SHA-256 of the exact
+# bytes (measured 2026-10-02 from the HTTPS endpoint below; RPM header signed with AWS
+# key id 88d19d46). Bumping the version means re-measuring the digest; a mismatch
+# fails the build instead of baking unverified bytes. The drop-in skips the unit off
+# EC2 and the tmpfiles entry replaces the RPM's /var/lib/amazon/ssm (see each file).
+ARG AMAZON_SSM_AGENT_VERSION=3.3.5390.0
+ARG AMAZON_SSM_AGENT_RPM_SHA256=85369679511b67f8f01824043ae17a679b6f21edd78229ccd1d5acd6c347f82f
+COPY papercusp-amazon-ssm-agent-ec2-only.conf /usr/lib/systemd/system/amazon-ssm-agent.service.d/papercusp-ec2-only.conf
+COPY papercusp-amazon-ssm-agent.tmpfiles.conf /usr/lib/tmpfiles.d/papercusp-amazon-ssm-agent.conf
+# Azure transport/provisioning (WI-10005639): Stream 10's WALinuxAgent unit
+# carries ConditionVirtualization=|microsoft, so systemd runs it only on Azure.
+# Order its provisioning after the identities and roots created at every boot.
+# Repository metadata changes independently of this source. Each bake supplies a
+# fresh key so an old cached dnf upgrade cannot stand in for today's vendor fixes.
+ARG PAPERCUSP_VENDOR_REFRESH
 RUN set -eux; \
+    test -n "$PAPERCUSP_VENDOR_REFRESH"; \
     printf '%s\n' \
       '[google-compute-engine]' \
       'name=Google Compute Engine' \
-      'baseurl=https://packages.cloud.google.com/yum/repos/google-compute-engine-el9-x86_64-stable' \
+      'baseurl=https://packages.cloud.google.com/yum/repos/google-compute-engine-el10-x86_64-stable' \
       'enabled=0' \
       'gpgcheck=1' \
       'repo_gpgcheck=0' \
-      'gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg' \
+      'gpgkey=https://packages.cloud.google.com/yum/doc/rpm-package-key-v10.gpg' \
+      `# EL10's rpm (sequoia) rejects rpm-package-key.gpg (F09C394C3E1BA8D5): its only binding` \
+      `# signature is SHA-1, so dnf failed "Key import failed (code 3)" on google-guest-agent` \
+      `# (WI-10005910 chain4, 2026-10-03). The el10 repo is signed by the v10 key (b64936f9).` \
       > /etc/yum.repos.d/google-cloud.repo; \
     dnf -y install --setopt=install_weak_deps=False epel-release; \
+    `# Upgrade the BASE before installing (WI-10005681). dnf install never touches a package` \
+    `# the base already carries, so without this the image ships whatever the base digest` \
+    `# pinned: the P-012 AWS bake failed its trust report on 102 fixed high/critical findings` \
+    `# in base packages (openssl, libevent, sqlite-libs, podman, skopeo, ...) for which newer` \
+    `# Stream 9 builds were already published.` \
+    dnf -y upgrade --refresh --setopt=install_weak_deps=False; \
     dnf -y install --setopt=install_weak_deps=False \
          --enablerepo=google-compute-engine \
          `# system packages — WORKSPACE_HOST_BOOTSTRAP_SYSTEM_APT_PACKAGES` \
@@ -125,12 +154,20 @@ RUN set -eux; \
          ca-certificates \
          curl \
          dracut \
+         `# git <- the release's content bootstrap shallow-clones the first-party bundle with` \
+         `# git (offline-content-bundle-install-io.ts gitCloneShallow). Stock Ubuntu ships git,` \
+         `# so the apt contract never had to name it; Stream 9 bootc does not (WI-10005779).` \
+         git-core \
+         `# Keep the OS Login RPM scriptlets enabled: %post also enables its cache timer,` \
+         `# refreshes the linker cache and labels OS Login paths. Its semodule install` \
+         `# is retried against the booted host policy store by papercusp-host-prepare.` \
          google-compute-engine-oslogin \
          google-guest-agent \
          jq \
          nvme-cli \
          openssh-server \
          rsyslog \
+         WALinuxAgent \
          sudo \
          shadow-utils \
          policycoreutils \
@@ -138,7 +175,7 @@ RUN set -eux; \
          nftables \
          `# unattended-upgrades is NOT-IN-REPOS; dnf-automatic replaces it (layer 5)` \
          dnf-automatic \
-         `# minisign is NOT-IN-REPOS; EPEL 9 carries it (see note above)` \
+         `# minisign is NOT-IN-REPOS; EPEL 10 carries it (see note above)` \
          minisign \
          `# the bootstrap apt-get installs zstd ON DEMAND at runtime because stock` \
          `# Ubuntu ships no unzstd. Baking it removes that imperative install.` \
@@ -154,12 +191,19 @@ RUN set -eux; \
          libstdc++     `# libstdc++.so.6  <- libstdc++6` \
          openssl-libs  `# libssl.so.3     <- libssl3` \
          lz4-libs      `# liblz4.so.1     <- liblz4-1` \
-         zlib          `# libz.so.1       <- zlib1g` \
+         `# EL10 ships libz.so.1 from zlib-ng in compat mode; the EL9 'zlib' name is gone (WI-10005910).` \
+         zlib-ng-compat `# libz.so.1      <- zlib1g` \
          libzstd       `# libzstd.so.1    <- libzstd1` \
     && dnf -y install --setopt=install_weak_deps=False \
          --setopt=tsflags=noscripts \
          --enablerepo=google-compute-engine \
          google-compute-engine \
+    && curl -fsSL --retry 3 -o /tmp/amazon-ssm-agent.rpm \
+         "https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/${AMAZON_SSM_AGENT_VERSION}/linux_amd64/amazon-ssm-agent.rpm" \
+    && printf '%s  %s\n' "$AMAZON_SSM_AGENT_RPM_SHA256" /tmp/amazon-ssm-agent.rpm | sha256sum -c - \
+    && dnf -y install --setopt=install_weak_deps=False /tmp/amazon-ssm-agent.rpm \
+    && rm -f /tmp/amazon-ssm-agent.rpm \
+    && test "$(rpm -q --qf '%{VERSION}' amazon-ssm-agent)" = "$AMAZON_SSM_AGENT_VERSION" \
     && found_kernel=0 \
     && for modules_dir in /usr/lib/modules/*; do \
          test -d "$modules_dir" || continue; \
@@ -179,7 +223,12 @@ RUN set -eux; \
        done \
     && test "$found_kernel" -gt 0 \
     && rpm -q google-compute-engine google-compute-engine-oslogin google-guest-agent \
+    && rpm -q WALinuxAgent WALinuxAgent-udev azure-vm-utils \
+    && grep -Fqx 'ConditionVirtualization=|microsoft' /usr/lib/systemd/system/waagent.service \
+    && grep -Fxq 'Provisioning.Agent=auto' /etc/waagent.conf \
     && systemctl enable google-guest-agent.service google-oslogin-cache.timer \
+    && systemctl enable waagent.service \
+    && systemctl enable amazon-ssm-agent.service \
     && dnf clean all \
     `# Scrub dnf/subscription-manager residue from /var and /run.` \
     `# Not tidiness. bootc container lint fails three separate checks on it` \
@@ -188,7 +237,7 @@ RUN set -eux; \
     `# there is not image content in any useful sense — it is either discarded or` \
     `# it shadows the host's own state. A dnf repo cache baked into /var/lib/dnf is` \
     `# the "looks present, is not deployed" class this port keeps running into.` \
-    && rm -rf /var/cache/dnf /var/lib/dnf /var/google-users.d \
+    && rm -rf /var/cache/dnf /var/lib/dnf /var/google-users.d /var/lib/amazon \
               /var/log/dnf.* /var/log/hawkey.log \
               /var/log/rhsm /var/lib/rhsm /run/rhsm /var/cache/ldconfig \
     && test "$(rpm --eval '%{_dbpath}')" = /usr/share/rpm \
@@ -199,8 +248,13 @@ RUN set -eux; \
               /usr/share/rpm/rpmdb.sqlite-wal \
     && install -m 0644 /tmp/papercusp-rpmdb.sqlite /usr/share/rpm/rpmdb.sqlite \
     && rm -f /tmp/papercusp-rpmdb.sqlite \
-    && rpm -q minisign dnf-automatic alsa-lib libatomic \
-              google-compute-engine google-compute-engine-oslogin google-guest-agent
+    && rpm -q minisign dnf-automatic alsa-lib libatomic git-core \
+              google-compute-engine google-compute-engine-oslogin google-guest-agent \
+              amazon-ssm-agent
+
+# WALinuxAgent's upgrade scriptlet removes its service drop-in directory, so
+# copy our ordering edge only after the DNF upgrade/install transaction above.
+COPY papercusp-waagent-host-prepare.conf /usr/lib/systemd/system/waagent.service.d/papercusp-host-prepare.conf
 
 # ── Layer 2: the three identities (D-043 / D-248 / D-251) ─────────────────────
 #
@@ -460,6 +514,32 @@ RUN chmod 0755 /usr/libexec/papercusp/host-prepare.sh \
 # `bootc upgrade` refusal.
 RUN install -d -o root -g "$PAPERCUSP_RUNTIME_READ_GROUP" -m 0750 \
       /opt/papercusp /opt/papercusp/releases
+
+# ── Layer 8: /usr/local is machine-local (WI-10005830) ────────────────────────
+#
+# On this base `/usr/local` is a real directory inside `/usr` (MEASURED
+# 2026-10-03: `ls -ld /usr/local` in quay.io/centos-bootc/centos-bootc:stream9 is
+# a directory, not a link), so it is read-only on a booted host. The workspace-host
+# bootstrap installs into it at runtime — the privileged SSH conduits, native OMP,
+# the ollama runtime and the customer agent toolchain — and the first AWS clean
+# room to get past install-runtime died there:
+#   install: cannot create regular file '/usr/local/bin/papercusp-workspace-host-initialize': Read-only file system
+# Linking it to machine-local `/var/usrlocal` is the traditional OSTree layout; the
+# base's own `rpm-ostree-0-integration-opt-usrlocal.conf` already creates
+# `/var/usrlocal` for it, and papercusp-usrlocal.conf creates the subdirectories.
+# The bootstrap's validate-host phase asserts this link before its first write
+# (WORKSPACE_HOST_BOOTC_USR_LOCAL_TARGET).
+#
+# The base's `/usr/local` holds only empty directories from the `filesystem` RPM.
+# Refuse to build if anything earlier in this file put a FILE there: removing it
+# would silently drop that content from the image.
+COPY papercusp-usrlocal.tmpfiles.conf /usr/lib/tmpfiles.d/papercusp-usrlocal.conf
+RUN set -eu; \
+    leftover="$(find /usr/local -mindepth 1 -not -type d -print -quit)"; \
+    if [ -n "$leftover" ]; then echo "refusing to replace /usr/local: it carries image content ($leftover)" >&2; exit 1; fi; \
+    rm -rf /usr/local; \
+    ln -s ../var/usrlocal /usr/local; \
+    [ "$(readlink /usr/local)" = ../var/usrlocal ]
 
 # ── Lint ──────────────────────────────────────────────────────────────────────
 # `bootc container lint` validates that this image can actually be deployed as a

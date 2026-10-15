@@ -36,6 +36,10 @@ export interface CompactionPlanAuthorityCurrent {
     planItemId: string | null;
   }>;
   specsMore?: number;
+  /** D-006 (oversized-tool-results-reduction-2026-10-12): present when a recovery
+   *  orient emptied `decisions[].body` because this session's carry document already
+   *  delivered the same plan revision. `refetch` names the exact read. */
+  deliveredInCarry?: { builtAt: string; omitted: 'decision bodies'; refetch: string };
 }
 
 export interface CompactionPlanAuthorityUnavailable {
@@ -115,6 +119,15 @@ export interface CompactionRecovery {
    *  restores CONTEXT, not a TURN. This path already reads loop status LIVE, so
    *  the check reflects the world now rather than the last persisted anchor. */
   wakeSourceLostWarning?: string;
+  /** P-001 (carry-recheck-and-governed-memory-2026-10-14): the carried checks' probes (loop
+   *  carry-note + held items), RUN at automatic recovery and rendered as holds / changed /
+   *  could-not-run. Set only on the automatic boundary path — coord:orient replays the same
+   *  probes itself (`continuityProbes`). Absent when no carried check has a probe. */
+  carriedProbes?: string;
+  /** P-002 (carry-recheck-and-governed-memory-2026-10-14): one line per carried reference (loop
+   *  carry-note + held-item checkpoints) whose stamped version moved or no longer resolves,
+   *  re-checked at automatic recovery. Absent when nothing moved — an unchanged carry prints nothing. */
+  carriedRefChanges?: string;
   /** Held (assigned, non-terminal) work-items + their checkpoints. `body` is the
    *  item's description (capped) so the post-compaction agent doesn't re-fetch it
    *  via work_items:get — measured at 43% of post-compaction orients
@@ -292,14 +305,33 @@ export async function buildCompactionRecovery(
     recovery.control = null;
   }
 
-  // P-006 — the compact CTRL anchor tells us exactly which ONE plan matters.
-  // Read its canonical current row/spec revisions once, at the boundary, and
-  // carry that authority ahead of every older checkpoint/summary. Absence and
-  // wrong scope are explicit failures, never an empty snapshot that looks safe.
+  // P-006 — an explicit CTRL plan is the current lane authority. A fleet member
+  // can have no scoped plan claim while its persisted launch profile still
+  // identifies the plan that launched the fleet; use that only as a fallback.
+  // Planless claim-spec fleets intentionally stay planless. Read the selected
+  // plan's canonical current row/spec revisions once at the boundary and carry
+  // that authority ahead of every older checkpoint/summary.
   const control = recovery.control;
-  const scopedPlan = control?.state.scope.plan ?? null;
+  let scopedPlan = control?.state.scope.plan ?? null;
+  let scopedHarness = control?.state.scope.harness ?? null;
+  let fleetProfileReadFailed = false;
+  if (control && !scopedPlan && control.state.route.kind === 'fleet') {
+    try {
+      const { getFleetHeadcountTarget } = await import('../../agent-fleets-store');
+      const profile = await getFleetHeadcountTarget(workspaceId, control.state.route.fleet);
+      const profilePlan = profile?.config.plan?.trim();
+      if (profilePlan) {
+        scopedPlan = profilePlan;
+        scopedHarness = scopedHarness ?? profile.config.harness ?? null;
+      }
+    } catch {
+      // We cannot claim a complete recovery when we cannot determine whether
+      // this fleet carries a launching plan whose current decisions must lead.
+      fleetProfileReadFailed = true;
+      recovery.coverage.planAuthority = false;
+    }
+  }
   if (control && scopedPlan) {
-    const scopedHarness = control.state.scope.harness;
     const unavailable = (
       reason: CompactionPlanAuthorityUnavailable['reason'],
       detail?: string,
@@ -393,7 +425,7 @@ export async function buildCompactionRecovery(
     }
   } else {
     recovery.planAuthority = null;
-    recovery.coverage.planAuthority = null;
+    if (!fleetProfileReadFailed) recovery.coverage.planAuthority = null;
   }
 
   // (a) held work-items' checkpoints — normally re-injected only on pickup;
@@ -502,13 +534,88 @@ export async function buildCompactionRecovery(
  * carry-respawn and OMP deterministic maintenance compaction. Fail-soft like
  * every underlying leg: an incomplete marker is still delivered, but it tells
  * the successor to use the retained orient fallback exactly once. */
+/**
+ * P-001 (carry-recheck-and-governed-memory-2026-10-14): collect the carried checks the successor
+ * inherits — loop carry-note first, then held items (reusing the held-item rows the carry document
+ * already read) — through the SAME collector coord:orient uses, and run their probes through the
+ * bounded read-only runner. Never throws; null when no carried check has a probe.
+ */
+export async function defaultRecoveryCarriedProbes(
+  ownerId: string,
+  workspaceId: string,
+  opts: { sessionHarness?: string | null; heldItems?: CarryBriefHeldItem[] },
+): Promise<string | null> {
+  const readAtIso = new Date().toISOString();
+  try {
+    const [{ collectContinuityProbeSources }, { carriedProbeBlockForDelivery }] = await Promise.all([
+      import('../../continuity-probes'),
+      import('../../carry-probe-eval'),
+    ]);
+    const held = opts.heldItems;
+    const sources = await collectContinuityProbeSources(
+      ownerId,
+      workspaceId,
+      held
+        ? {
+            readHeldWorkItems: async () =>
+              held.map((h) => ({ id: h.id, harness: h.harness ?? null, checkpoint: h.checkpoint ?? null })),
+          }
+        : {},
+    );
+    return await carriedProbeBlockForDelivery(sources, { harness: opts.sessionHarness ?? null, readAtIso });
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    return (
+      `🧪 CARRIED PROBES — COULD NOT RUN at compaction recovery (readAt=${readAtIso}): ${why.slice(0, 220)}. ` +
+      `This is NOT evidence the carried checks hold; run their re-checks before relying on them.`
+    );
+  }
+}
+
+/**
+ * P-002 (carry-recheck-and-governed-memory-2026-10-14): re-check the version stamps of the
+ * references the successor's carried notes cite (loop carry-note + held items, reusing the
+ * held-item rows the carry document already read). Never throws; null when nothing moved.
+ */
+export async function defaultRecoveryCarriedRefChanges(
+  ownerId: string,
+  workspaceId: string,
+  opts: { sessionHarness?: string | null; heldItems?: CarryBriefHeldItem[] },
+): Promise<string | null> {
+  const readAtIso = new Date().toISOString();
+  try {
+    const { carryRefChangesForRecovery } = await import('../../carry-ref-delivery');
+    return await carryRefChangesForRecovery({
+      ownerId,
+      workspaceId,
+      sessionHarness: opts.sessionHarness ?? null,
+      heldItems: opts.heldItems?.map((h) => ({ id: h.id, harness: h.harness ?? null, checkpoint: h.checkpoint ?? null })),
+      readAtIso,
+    });
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    return (
+      `🔗 CARRIED REFERENCES — COULD NOT RE-CHECK at compaction recovery (readAt=${readAtIso}): ${why.slice(0, 220)}. ` +
+      `This is NOT evidence they are unchanged.`
+    );
+  }
+}
+
 export async function buildAutomaticCompactionRecovery(
   ownerId: string,
   workspaceId: string,
-  opts: { sessionHarness?: string | null; heldItems?: CarryBriefHeldItem[] } = {},
+  opts: {
+    sessionHarness?: string | null;
+    heldItems?: CarryBriefHeldItem[];
+    /** Injectable for tests; defaults to defaultRecoveryCarriedProbes. */
+    carriedProbesFn?: typeof defaultRecoveryCarriedProbes;
+    /** Injectable for tests; defaults to defaultRecoveryCarriedRefChanges. */
+    carriedRefChangesFn?: typeof defaultRecoveryCarriedRefChanges;
+  } = {},
 ): Promise<AutomaticCompactionRecovery> {
-  const [recovery, memoryEpoch] = await Promise.all([
-    buildCompactionRecovery(ownerId, workspaceId, opts),
+  const { carriedProbesFn, carriedRefChangesFn, ...recoveryOpts } = opts;
+  const [recovery, memoryEpoch, carriedProbes, carriedRefChanges] = await Promise.all([
+    buildCompactionRecovery(ownerId, workspaceId, recoveryOpts),
     (async () => {
       try {
         const [{ currentSessionEpoch }, { getOrgPg }] = await Promise.all([
@@ -520,7 +627,11 @@ export async function buildAutomaticCompactionRecovery(
         return 0;
       }
     })(),
+    (carriedProbesFn ?? defaultRecoveryCarriedProbes)(ownerId, workspaceId, recoveryOpts).catch(() => null),
+    (carriedRefChangesFn ?? defaultRecoveryCarriedRefChanges)(ownerId, workspaceId, recoveryOpts).catch(() => null),
   ]);
+  if (carriedProbes) recovery.carriedProbes = carriedProbes;
+  if (carriedRefChanges) recovery.carriedRefChanges = carriedRefChanges;
   return {
     marker: {
       schemaVersion: AUTOMATIC_COMPACTION_RECOVERY_SCHEMA,

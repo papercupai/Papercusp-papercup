@@ -368,6 +368,21 @@ describe('closeCloudResourceObligation', () => {
     expect(r).toEqual({ closed: false });
   });
 
+  it('does not fall through to the generic empty-incarnation close when confirmed absence misses', async () => {
+    const { sql, calls } = makeFakeSql({ updateAffected: false });
+    const r = await closeCloudResourceObligation(sql, {
+      workspaceId: 'papercusp-workspace',
+      provider: 'aws',
+      resourceKind: 'disk',
+      resourceId: 'vol-unincarnated-disk',
+      confirmedAbsentAt: '2026-10-06T00:00:00.000Z',
+      reason: 'provider not-found read predates this obligation',
+    });
+    expect(r).toEqual({ closed: false });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.text).toContain('created_at <= ?::timestamptz');
+  });
+
   it('requires a non-empty reason', async () => {
     const { sql } = makeFakeSql();
     await expect(

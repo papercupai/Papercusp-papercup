@@ -6,6 +6,7 @@ import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracl
 import type { GoalHolderLike } from './goal-liveness-watchdog';
 import {
   GOAL_DRAIN_FLEET_DEAD_GRACE_MS,
+  GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS,
   GOAL_DRAIN_FLEET_KICKOFF_GRACE_MS,
   GOAL_DRAIN_FLEET_RELAUNCH_RATE_LIMIT,
   GOAL_DRAIN_RELAUNCH_SPEND_CEILING,
@@ -17,6 +18,7 @@ import {
   claimSpecIsGoalScoped,
   classifyDelegatedDrainFleetLiveness,
   classifyDrainWorkerLiveness,
+  classifyGoalDrainFleetPullStall,
   decideGoalDrainFleetRelaunch,
   goalDrainRelaunchEligibility,
   goalPinnedRemedySpec,
@@ -28,6 +30,7 @@ import {
   classifyGoalDrainFleet,
   classifyGoalPlanFleetCoverage,
   fleetKey,
+  readActiveFleetPullStallAlerts,
   readGoalPlanFleetObservation,
   runGoalDrainFleetSweepOnce,
   scanGoalDrainFleets,
@@ -44,6 +47,7 @@ import {
   goalPlanFleetLegEventKey,
   goalPlanFleetRemedy,
   goalPlanFleetSubjectSignature,
+  oldestLiveDrainFleetMember,
 } from './goal-drain-fleet-watchdog';
 import { EVENT_CATALOG } from '../events/await/catalog';
 import { DEFAULT_CLAIM_SPEC, type ClaimSpec, type FilterNode } from '../scheduler/claim-spec';
@@ -51,6 +55,11 @@ import { evaluateCollapseGuard } from '../scheduler/spec-pool-preview';
 
 const NOW = 1_800_000_000_000;
 const PAST_GRACE = NOW - GOAL_DRAIN_FLEET_KICKOFF_GRACE_MS - 60_000;
+const noRegisteredActiveFleetsSql = (async (parts: TemplateStringsArray) => {
+  const statement = parts.join(' ');
+  if (statement.includes('FROM harness_shared.agent_fleets')) return [];
+  throw new Error(`unexpected SQL in an orchestration-only test: ${statement}`);
+}) as unknown as Sql;
 
 function makeGoal(over: Partial<GoalDrainRowLike> = {}): GoalDrainRowLike {
   return {
@@ -86,6 +95,105 @@ function makeVerdict(
 const verdicts = (...vs: LivenessVerdict[]) => new Map(vs.map((v) => [v.ownerId, v]));
 const fleets = (entries: Record<string, DrainFleetLiveness>) => new Map(Object.entries(entries));
 const scopes = (entries: Record<string, DrainFleetSpecScope> = {}) => new Map(Object.entries(entries));
+
+describe('drain-fleet recovery guards', () => {
+  it('promotes only the oldest positively-live su member, excluding holders and non-su rows', () => {
+    expect(oldestLiveDrainFleetMember('su-dead-leader', ['su-holder'], [
+      { agentId: 'su-newer', agentRole: 'su', fleetRole: 'member', sessionState: 'live', startedAt: '2026-10-02T10:00:00Z' },
+      { agentId: 'su-oldest', agentRole: 'su', fleetRole: 'member', sessionState: 'live', startedAt: '2026-10-02T09:00:00Z' },
+      { agentId: 'su-holder', agentRole: 'su', fleetRole: 'member', sessionState: 'live', startedAt: '2026-10-02T08:00:00Z' },
+      { agentId: 'su-unknown', agentRole: 'su', fleetRole: 'member', sessionState: null, startedAt: '2026-10-02T07:00:00Z' },
+      { agentId: 'bee', agentRole: 'cup', fleetRole: 'member', sessionState: 'live', startedAt: '2026-10-02T06:00:00Z' },
+    ])).toBe('su-oldest');
+  });
+
+  it('alarms only after ten minutes with positive live-member/start evidence and no successful pull', () => {
+    const member = {
+      agentId: 'su-member', agentRole: 'su', sessionState: 'live' as const,
+      startedAt: new Date(NOW - GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS - 1).toISOString(),
+    };
+    expect(classifyGoalDrainFleetPullStall({ members: [member], successfulPullOwnerIds: new Set(), nowMs: NOW }))
+      .toMatchObject({ liveMemberIds: ['su-member'] });
+    expect(classifyGoalDrainFleetPullStall({ members: [member], successfulPullOwnerIds: new Set(['su-old-member']), nowMs: NOW })).toBeNull();
+    expect(classifyGoalDrainFleetPullStall({
+      members: [{ ...member, startedAt: null }], successfulPullOwnerIds: new Set(), nowMs: NOW,
+    })).toBeNull();
+    expect(classifyGoalDrainFleetPullStall({
+      members: [{ ...member, sessionState: null }], successfulPullOwnerIds: new Set(), nowMs: NOW,
+    })).toBeNull();
+  });
+
+  it('scans active registered fleets that have no goal declaration', async () => {
+    const statements: string[] = [];
+    const sqlTag = vi.fn(async (parts: TemplateStringsArray) => {
+      const statement = parts.join(' ');
+      statements.push(statement);
+      if (statement.includes('FROM harness_shared.agent_fleets')) {
+        return [{ workspace_id: 'ws', fleet_slug: 'standalone' }];
+      }
+      if (statement.includes('FROM harness_shared.tool_invocations')) return [];
+      throw new Error(`unexpected query: ${statement}`);
+    });
+    const readRoster = vi.fn(async () => ({
+      entries: [{
+        agentId: 'su-member',
+        agentRole: 'su',
+        fleetRole: 'member',
+        sessionState: 'live',
+        startedAt: new Date(NOW - GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS - 1).toISOString(),
+      }],
+      degradedLegs: [],
+    } as never));
+    const readEverMembers = vi.fn(async () => ['su-member']);
+
+    const alerts = await readActiveFleetPullStallAlerts(
+      sqlTag as unknown as Sql,
+      [],
+      NOW,
+      { listRoster: readRoster as never, listEverMembers: readEverMembers as never },
+    );
+
+    expect(statements[0]).toMatch(/FROM harness_shared\.agent_fleets[\s\S]*WHERE control_state = 'active'/);
+    expect(alerts).toEqual([{
+      workspaceId: 'ws',
+      fleetSlug: 'standalone',
+      liveMemberIds: ['su-member'],
+      stalledForMs: GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS + 1,
+    }]);
+  });
+
+  it('suppresses an active-fleet pull alarm when any roster evidence leg is degraded', async () => {
+    const sqlTag = vi.fn(async (parts: TemplateStringsArray) => {
+      const statement = parts.join(' ');
+      if (statement.includes('FROM harness_shared.agent_fleets')) {
+        return [{ workspace_id: 'ws', fleet_slug: 'uncertain' }];
+      }
+      throw new Error(`unexpected query: ${statement}`);
+    });
+    const readRoster = vi.fn(async () => ({
+      entries: [{
+        agentId: 'su-member',
+        agentRole: 'su',
+        fleetRole: 'member',
+        sessionState: 'live',
+        startedAt: new Date(NOW - GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS - 1).toISOString(),
+      }],
+      degradedLegs: ['wakeability'],
+    } as never));
+    const readEverMembers = vi.fn(async () => ['su-member']);
+
+    const alerts = await readActiveFleetPullStallAlerts(
+      sqlTag as unknown as Sql,
+      [],
+      NOW,
+      { listRoster: readRoster as never, listEverMembers: readEverMembers as never },
+    );
+
+    expect(alerts).toEqual([]);
+    expect(readEverMembers).not.toHaveBeenCalled();
+    expect(sqlTag).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('P-014 drain worker liveness', () => {
   it('does not let a healthy leader conceal a fleet with zero live workers', () => {
@@ -728,7 +836,7 @@ describe('scanGoalDrainFleets', () => {
 });
 
 describe('runGoalDrainFleetSweepOnce', () => {
-  const sql = null as unknown as Sql; // every dep is injected; sql must never be touched
+  const sql = noRegisteredActiveFleetsSql;
 
   const baseDeps = () => ({
     readGoals: vi.fn(async () => ({
@@ -740,11 +848,24 @@ describe('runGoalDrainFleetSweepOnce', () => {
     resolveFleetSpecScopes: vi.fn(async () => scopes()),
     escalate: vi.fn(async () => {}),
     emitDrainDead: vi.fn(async () => {}),
+    promoteDrainLeader: vi.fn(async () => false),
+    readPullStallAlerts: vi.fn(async () => []),
+    escalatePullStall: vi.fn(async () => {}),
     flagEnabled: vi.fn(async () => true),
     now: () => NOW,
     graceMs: GOAL_DRAIN_FLEET_KICKOFF_GRACE_MS,
     ...relaunchDeps(),
     ...planFleetDeps(),
+  });
+
+  it('keeps the active-fleet pull scan running when there are no active goals', async () => {
+    const deps = baseDeps();
+    deps.readGoals = vi.fn(async () => ({ goals: [], holders: [] }));
+
+    const result = await runGoalDrainFleetSweepOnce(sql, deps);
+
+    expect(deps.readPullStallAlerts).toHaveBeenCalledWith([], NOW);
+    expect(result).toMatchObject({ scanned: 0, skipped: false });
   });
 
   it('repairs an UNCOUPLED fleet in place: no alarm, no dead stamp, no relaunch (EI-24556293106348130)', async () => {
@@ -799,6 +920,26 @@ describe('runGoalDrainFleetSweepOnce', () => {
     expect(deps.escalate).toHaveBeenCalledTimes(1);
     expect(deps.emitDrainDead).toHaveBeenCalledTimes(1);
     expect(deps.escalate).toHaveBeenCalledWith(expect.objectContaining({ reason: 'drain-fleet-dead' }));
+  });
+
+  it('uses the dead-episode grace to promote a live member before relaunch or alarm', async () => {
+    const deps = {
+      ...baseDeps(),
+      readGoals: vi.fn(async () => ({
+        goals: [makeGoal({ drainFleet: 'drain-1', standing: true })],
+        holders: [makeHolder()],
+      })),
+      markDrainDead: vi.fn(async () => NOW - GOAL_DRAIN_FLEET_DEAD_GRACE_MS),
+      promoteDrainLeader: vi.fn(async () => true),
+    };
+    await runGoalDrainFleetSweepOnce(sql, deps);
+    expect(deps.promoteDrainLeader).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'drain-fleet-dead' }),
+      expect.objectContaining({ drainFleet: 'drain-1' }),
+    );
+    expect(deps.escalate).toHaveBeenCalledTimes(1);
+    expect(deps.emitDrainDead).toHaveBeenCalledTimes(1);
+    expect(deps.reserveRelaunchSlot).not.toHaveBeenCalled();
   });
 
   it('resolves liveness only for holders of active goals, and fleet liveness only for declared fleets', async () => {
@@ -876,7 +1017,7 @@ describe('runGoalDrainFleetSweepOnce', () => {
   it('spec scopes are resolved ONLY for alive fleets — dead ones already have their verdict', async () => {
     const deps = baseDeps(); // baseDeps liveness: dead
     await runGoalDrainFleetSweepOnce(sql, deps);
-    expect(deps.resolveFleetSpecScopes).toHaveBeenCalledWith([]);
+    expect(deps.resolveFleetSpecScopes).not.toHaveBeenCalled();
   });
 });
 
@@ -1069,7 +1210,7 @@ describe('parseGoalDrainRespawnLedger', () => {
 });
 
 describe('runGoalDrainFleetSweepOnce — relaunch leg (WI-2140699)', () => {
-  const sql = null as unknown as Sql;
+  const sql = noRegisteredActiveFleetsSql;
   const standingGoal = () =>
     makeGoal({ drainFleet: 'drain-1', standing: true, installSlug: 'papercusp', drainRespawn: null });
 
@@ -1426,7 +1567,7 @@ describe('plan-fleet delivery helpers (pure)', () => {
 });
 
 describe('runGoalDrainFleetSweepOnce — plan-fleet leg (P-002)', () => {
-  const sql = null as unknown as Sql; // every dep is injected; sql must never be touched
+  const sql = noRegisteredActiveFleetsSql;
 
   /** A live-held goal whose declared drain fleet is healthy, so ONLY the plan-fleet leg can speak. */
   const healthyDrainDeps = (cohort: GoalPlanFleetCohort) => ({

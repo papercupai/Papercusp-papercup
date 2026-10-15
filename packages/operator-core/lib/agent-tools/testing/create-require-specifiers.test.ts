@@ -43,6 +43,17 @@ describe('createRequireSpecifiers (EI-24556278753778650)', () => {
       .toEqual({ status: 'ok', specifiers: ['./d'] });
   });
 
+  it('ignores a runtime typeof feature check and follows its guarded loader without treating cache reads as loads', () => {
+    const result = analyse([
+      "const require = (typeof createRequire === 'function'",
+      '  ? createRequire(import.meta.url)',
+      '  : undefined) as NodeRequire;',
+      "require('node:fs');",
+      'Object.keys(require.cache);',
+    ].join('\n'));
+    expect(result).toEqual({ status: 'ok', specifiers: ['node:fs'] });
+  });
+
   it('ignores createRequire mentioned only in comments and strings', () => {
     expect(createRequireSpecifiers('mod.ts', "// deliberately not `createRequire(import.meta.url)(…)`\nexport const s = 'createRequire(x)(y)';\n"))
       .toEqual({ status: 'ok', specifiers: [] });

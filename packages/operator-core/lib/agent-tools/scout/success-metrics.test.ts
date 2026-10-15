@@ -157,6 +157,23 @@ describe('blender:success-metrics window-floor args (EI-12148) + rubric-derived 
     expect(mocks.getRubric).not.toHaveBeenCalled();
   });
 
+  it('keeps parity unknown when reading the running generation fails', async () => {
+    mocks.readRunningGeneration.mockRejectedValue(new Error('host metadata unavailable'));
+
+    const out = await runSuccessMetrics({ sinceMs: Date.parse('2026-07-15T03:11:25.000Z') });
+
+    expect(out).toMatchObject({
+      ok: true,
+      runningGeneration: {
+        deployedSha: null,
+        hostStartedAt: null,
+        bootHeadSha: null,
+        scoutCodeHash: null,
+        staleHost: null,
+      },
+    });
+  });
+
   describe('EI-12146: default window (no sinceMs/watermarkRef) resolves from the rubric', () => {
     it('reads the release-readiness rubric\'s cycle-error-rate criterion', async () => {
       await runSuccessMetrics({});

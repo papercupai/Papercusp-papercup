@@ -1,4 +1,5 @@
 import type { Sql } from 'postgres';
+import { spawn } from 'node:child_process';
 import {
   getPlanRow,
   listPlanRowsMatchingAnyToken,
@@ -11,7 +12,11 @@ import { readRoutedIdeas, type ScoutLedgerOpts } from '../scout/routed-ledger';
 import type { RoutedIdeaProvenance } from '../scout/outcome-feedback';
 import { capabilityHash, type CapabilityManifest, type CapabilityPacket } from './capability-contracts';
 import { CapabilityProposalSchema } from './capability-pass';
-import { verifyCapabilityPacket, type BuildCapabilityPacketInput } from './capability-packets';
+import { readCapabilitySource, verifyCapabilityPacket, type BuildCapabilityPacketInput } from './capability-packets';
+import { FIRST_PARTY_SOURCE_GLOB, resolveRipgrep } from '../code-intelligence/first-party-callers';
+import { firstPartyCallersOffthread } from '../code-intelligence/first-party-callers-offthread';
+import { LSP_VENDOR_DIR } from '../code-intelligence/lsp-adapter';
+import { createTextCollector } from '../child-output';
 import { capabilityContentVersion } from './capability-sampler';
 import { getDreamRun, listDreamRuns, type DreamRun } from './dream-run-store';
 import {
@@ -40,6 +45,60 @@ export interface CapabilityReviewSourceDeps {
   runs: typeof listDreamRuns;
   run: typeof getDreamRun;
   verifyPacket: (packet: unknown, input: BuildCapabilityPacketInput) => ReturnType<typeof verifyCapabilityPacket>;
+  /** Candidate retrieval only; it never grants novelty or implementation authority. */
+  code?: (root: string, repositoryId: string, tokens: string[], signal?: AbortSignal) => Promise<{ paths: string[]; truncated: boolean; graphStatus?: 'measured' | 'unknown'; graphFailure?: string }>;
+  readCode?: typeof readCapabilitySource;
+}
+/** Extend the existing lexical/compiler primitives; no additional index or model call. */
+export async function discoverCapabilityReviewCode(root: string, repositoryId: string, tokens: string[], signal?: AbortSignal) {
+  if (!tokens.length) return { paths: [], truncated: false, graphStatus: 'unknown' as const };
+  const rg = resolveRipgrep();
+  if (!rg) throw new Error('Code prior retrieval requires the maintained ripgrep binary.');
+  signal?.throwIfAborted();
+  const found = await new Promise<{ paths: string[]; truncated: boolean }>((resolve, reject) => {
+    const child = spawn(rg, ['--null', '--files-with-matches', '--fixed-strings', '--ignore-case', '--glob', FIRST_PARTY_SOURCE_GLOB,
+      ...tokens.flatMap(token => ['-e', token]), '--', '.'], { cwd: root, signal, stdio: ['ignore', 'pipe', 'pipe'] });
+    const stdout = createTextCollector(child.stdout, { maxChars: 32_000 });
+    const stderr = createTextCollector(child.stderr, { maxChars: 1_000 });
+    const timer = setTimeout(() => { child.kill(); reject(new Error('Code prior retrieval exceeded its bounded deadline.')); }, 3_000);
+    child.once('error', error => { clearTimeout(timer); reject(error); });
+    child.once('close', code => {
+      clearTimeout(timer);
+      if (code !== 0 && code !== 1) { reject(new Error('Code prior retrieval failed: ' + stderr.text())); return; }
+      const output = stdout.text();
+      const records = output.split('\0');
+      const truncated = stdout.bytes > 32_000;
+      // The bounded collector retains a tail, which may start inside a path.
+      // Discard that boundary record. NUL framing also preserves newlines in
+      // real filenames; a partial filename must never become source evidence.
+      if (truncated) records.shift();
+      const paths = records.filter(Boolean).map(path => path.replace(/^\.\//, '')).sort();
+      resolve({ paths: paths.slice(0, 12), truncated: paths.length > 12 || truncated });
+    });
+  });
+  const paths = new Set(found.paths);
+  let graphStatus: 'measured' | 'unknown' = 'unknown';
+  let graphFailure: string | undefined;
+  // One bounded compiler expansion can discover renamed/non-matching helpers.
+  // Its edges only supply candidate paths; review still reads actual source.
+  const first = found.paths[0];
+  if (first) {
+    const source = await readCapabilitySource(root, first);
+    const declaration = /(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/.exec(source);
+    if (declaration) {
+      signal?.throwIfAborted();
+      const graph = await firstPartyCallersOffthread({ root, repositoryId, vendorDir: LSP_VENDOR_DIR,
+        name: declaration[1]!, filePath: first, paths: [first], op: 'context', limit: 12, authorizedReadRoots: [root] }, { budgetMs: 3_000 });
+      if (!graph.error && graph.evidence?.graphScope.basis === 'compiler-project') graphStatus = 'measured';
+      if (graph.error) graphFailure = graph.error;
+      for (const file of graph.error ? [] : graph.evidence?.sourceScope.supportingFiles ?? []) {
+        if (paths.size >= 16) { found.truncated = true; break; }
+        if (/\.[cm]?[jt]sx?$/.test(file.path)) paths.add(file.path);
+      }
+    }
+  }
+  signal?.throwIfAborted();
+  return { paths: [...paths], truncated: found.truncated, graphStatus, ...(graphFailure ? { graphFailure } : {}) };
 }
 const defaultDeps: CapabilityReviewSourceDeps = {
   plans: listPlanRowsMatchingAnyToken,
@@ -48,8 +107,11 @@ const defaultDeps: CapabilityReviewSourceDeps = {
   runs: listDreamRuns,
   run: getDreamRun,
   verifyPacket: verifyCapabilityPacket,
+  code: discoverCapabilityReviewCode,
+  readCode: readCapabilitySource,
 };
 export interface BuildCapabilityReviewSourcesInput {
+  verifyPacket?: CapabilityReviewSourceDeps['verifyPacket'];
   sql: Sql;
   scope: Scope;
   rootPath: string;
@@ -124,6 +186,11 @@ function packetPriors(packet: CapabilityPacket): CapabilityReviewPrior[] {
     );
   });
 }
+function sourcePrior(scope: Scope, path: string, text: string): CapabilityReviewPrior {
+  const body = JSON.stringify({ path, source: text, authority: 'current source candidate; graph/lexical discovery does not prove novelty or executed integration' });
+  return { ...prior(scope, 'code-source:' + path, /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(path) ? 'test' : 'implementation', body,
+    capabilityHash(text)), locator: { kind: 'code', id: 'source:' + path, path } };
+}
 const corpusKind = (kind: CapabilityReviewPrior['kind']): CorpusKind =>
   kind === 'plan' ? 'plan' : kind === 'idea' || kind === 'rejected-attempt' ? 'idea' : 'implementation';
 
@@ -147,6 +214,11 @@ function shortlist(query: string, values: CapabilityReviewPrior[], limit: number
   for (const kind of CAPABILITY_PRIOR_KINDS) {
     const hit = ranked.find((m) => unique.get(m.ref)!.kind === kind);
     if (hit && selected.size < limit) selected.set(hit.ref, unique.get(hit.ref)!);
+  }
+  // Keep a small source-discovery lane: a compiler neighbor can use different
+  // vocabulary and still expose an integration missing from the catalogue.
+  for (const value of values.filter(row => row.ref.startsWith('code-source:')).slice(0, 2)) {
+    if (selected.size < limit) selected.set(value.ref, value);
   }
   for (const match of ranked) {
     if (selected.size >= limit) break;
@@ -177,7 +249,7 @@ export function buildCapabilityReviewSources(
       throw new Error('Invalid catalogue scope or duplicate unit.');
     packets.set(packet.unit.id, packet);
   }
-  const locators = new Map<string, { kind: 'plan' | 'idea' | 'dream' | 'code'; id: string; subref?: string }>();
+  const locators = new Map<string, NonNullable<CapabilityReviewPrior['locator']>>();
   const remember = (p: CapabilityReviewPrior, locator: NonNullable<CapabilityReviewPrior['locator']>) => {
     locators.set(p.ref, locator);
     return { ...p, locator };
@@ -185,7 +257,7 @@ export function buildCapabilityReviewSources(
   async function fresh(packet: CapabilityPacket) {
     const unit = input.manifest.units.find((u) => u.id === packet.unit.id);
     if (!unit) throw new Error('Catalogue unit is absent from the current manifest.');
-    const result = await deps.verifyPacket(packet, {
+    const result = await (input.verifyPacket ?? deps.verifyPacket)(packet, {
       rootPath: input.rootPath,
       scope,
       unit,
@@ -237,13 +309,20 @@ export function buildCapabilityReviewSources(
           truncated: false,
           note: 'No searchable facet vocabulary.',
         };
-      const [snapshot, plans] = await Promise.all([
+      const [snapshot, plans, code] = await Promise.all([
         readHistory(),
         deps.plans(tokens, { ...planOpts, includeArchived: true, limit: PLAN_LIMIT }),
+        deps.code ? deps.code(input.rootPath, scope.repositoryId, tokens, signal) : Promise.resolve({ paths: [], truncated: false, graphStatus: 'unknown' as const }),
       ]);
       signal?.throwIfAborted();
+      const codePriors = await Promise.all([...new Set(code.paths)].slice(0, 16).map(async path => {
+        const text = await (deps.readCode ?? readCapabilitySource)(input.rootPath, path);
+        const value = sourcePrior(scope, path, text);
+        return remember(value, value.locator!);
+      }));
       const values = [
         ...snapshot.priors,
+        ...codePriors,
         ...plans.rows.map((p) => remember(planPrior(scope, p), { kind: 'plan', id: p.planSlug })),
       ];
       return {
@@ -254,16 +333,20 @@ export function buildCapabilityReviewSources(
         truncated:
           snapshot.truncated ||
           plans.truncated ||
+          code.truncated || code.paths.length > 16 ||
           values.length > request.limit ||
           values.some((p) => p.text.length === 12_000),
         note:
-          'Current bounded lexical search: admitted capability code/tests; matching plans including archives; ' +
+          'Current bounded lexical/compiler candidate search: admitted capability code/tests and up to 16 current source paths beyond the initial catalogue; matching plans including archives; ' +
           'latest ' +
           IDEA_LIMIT +
           ' ordinary routed Blender ideas; latest ' +
           RUN_LIMIT +
           ' Dream attempts including rejects. ' +
-          'Unmapped code, older evicted attempts and unrouted Scout critique artifacts are outside this search; global novelty is not established.',
+          'Compiler candidate expansion: ' + (code.graphStatus ?? 'unknown') +
+          ('graphFailure' in code && code.graphFailure ? '; ' + code.graphFailure : '') + '. ' +
+          (deps.code ? 'Unretrieved code' : 'Beyond-catalogue code retrieval was unavailable; Unmapped code') +
+          ', older evicted attempts and unrouted Scout critique artifacts are outside this search; no edge or match is not proof of absence, and global novelty is not established.',
       };
     },
     readCurrent: async (p, signal) => {
@@ -274,6 +357,10 @@ export function buildCapabilityReviewSources(
       const located = (value: CapabilityReviewPrior | null) =>
         value?.ref === p.ref ? { ...value, ...(p.locator ? { locator: p.locator } : {}) } : null;
       if (locator.kind === 'code') {
+        if (locator.path) {
+          const text = await (deps.readCode ?? readCapabilitySource)(input.rootPath, locator.path);
+          return located(sourcePrior(scope, locator.path, text));
+        }
         const packet = packets.get(locator.id)!;
         await fresh(packet);
         return located(packetPriors(packet).find((current) => current.ref === p.ref) ?? null);

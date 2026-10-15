@@ -1,0 +1,286 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "cwd": ".",
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "candidateAccepted": false,
+  "evidencePlane": "source-bound-arm-startup-diagnostic",
+  "sourceCommit": "dd07170622dbe1000a0e97a38c940af1a9da7403",
+  "imageId": "sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921",
+  "platform": "linux/arm64",
+  "name": "P-058 paused full-source ARM capture and original failed startup",
+  "workItemId": "EI-25604028797058995",
+  "relatedWorkItemIds": [
+    "EI-25500068013952985",
+    "EI-25608208328004035",
+    "EI-25612968663667405"
+  ],
+  "command": [
+    "$HOME/.local/node25/bin/node",
+    "--input-type=module"
+  ],
+  "hostCommand": "$HOME/.local/node25/bin/node --input-type=module <<'NODE'\nimport {readFile,writeFile,mkdtemp,readdir,chmod,appendFile} from 'node:fs/promises';import {createHash} from 'node:crypto';\nconst root='/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706',source=root+'/source',overlay=root+'/host-external-overlay2-PSI5tW';const sha=b=>createHash('sha256').update(b).digest('hex');\nconst receipt=JSON.parse(await readFile(root+'/source-receipt.json','utf8')),prep=JSON.parse(await readFile(root+'/external-imports-preparation.json','utf8')),fixture=JSON.parse(await readFile('/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-fixture1/fixture.json','utf8')),overlayReceipt=JSON.parse(await readFile(overlay+'/result.json','utf8'));\nconst collectorInputs=[{path:'scripts/cpu-sample.mjs',target:'/opt/papercusp/sidecar/p058-cpu-sample.mjs',sha256:'d7809931a346f13ff5410220e821143089273bd9fc4ecb8f7ee0b7f480fd8b05'},{path:'scripts/cdp-inspector.mjs',target:'/opt/papercusp/sidecar/cdp-inspector.mjs',sha256:'bb15dc2ac1ec9cb60d26d62d0790610f2cd097a9171b37c39465c8f5a7d22112'},{path:'scripts/lib/cpu-profile.mjs',target:'/opt/papercusp/sidecar/lib/cpu-profile.mjs',sha256:'b77446b36ee55d5670eb7bcd74955bef10f23e804be9672eeb25aef9f7ba9fc3'},{path:'scripts/proc-guard.mjs',target:'/opt/papercusp/sidecar/proc-guard.mjs',sha256:'5eb8c0c9ca8a2d39aef88e4840e14e4832f808450e13977b6c628fadd7677cda'}];\nconst check=async()=>{for(const x of receipt.testedInputs)if(sha(await readFile(source+'/'+x.path))!==x.sha256)throw Error('Frozen source changed '+x.path);for(const x of collectorInputs)if(sha(await readFile(x.path))!==x.sha256)throw Error('Collector changed '+x.path);if(sha(await readFile(root+'/private-output/serve.mjs'))!==prep.serveSha256)throw Error('Frozen bundle changed');};await check();\nconst v=await readFile(source+'/papercusp-desktop/bin/verify-sidecar-bundle.sh','utf8'),a=v.indexOf('check_boot_import_closure() {'),b=v.indexOf('\\nif [[ \"$CROSS\"',a);if(a<0||b<0)throw Error('No canonical helper');const helper=v.slice(a,b);if(sha(helper)!=='ffbd2d83808dd2129e6e8f8bcf770e4f1bd9799717a7d634d047a09b611fa3d9'||!helper.includes('timeout: 60000')||fixture.imageId!=='sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921'||overlayReceipt.status!=='passed'||overlayReceipt.nativeFiles.length||sha(await readFile(overlay+'/inventory.json'))!=='978c0594cdaf5ae326406e2d562d3ab2e71befe0d10f9c70635fb50d3a10054c')throw Error('Exact fixture/helper/overlay binding mismatch');\nconst old=\"spawnSync(executable, [join(side, 'serve.mjs'), '--verify-boot-imports']\";if(helper.split(old).length!==2)throw Error('Unexpected canonical child');const instrumented=helper.replace(old,\"spawnSync(executable, ['--inspect-wait=127.0.0.1:9231', join(side, 'serve.mjs'), '--verify-boot-imports']\");\nconst out=await mkdtemp(root+'/profile3-paused-');await chmod(out,0o777);await writeFile(out+'/boot-probe.sh','#!/usr/bin/env bash\\nset -euo pipefail\\n'+instrumented+'\\ncheck_boot_import_closure /opt/papercusp/sidecar\\n');await writeFile(out+'/guest-probe.mjs',\"import {spawn} from 'node:child_process';import {once} from 'node:events';import {writeFileSync,appendFileSync} from 'node:fs';\\nconst out='/p058-result';const phase=phase=>appendFileSync(out+'/guest-phases.jsonl',JSON.stringify({phase,at:new Date().toISOString()})+'\\\\n');\\nphase('guest-enter');const {captureCpuProfile,persistCpuProfile}=await import('/opt/papercusp/sidecar/p058-cpu-sample.mjs');phase('collector-imported');\\nconst boot=spawn('bash',[out+'/boot-probe.sh'],{stdio:['ignore','pipe','pipe']});const bootExit=once(boot,'exit');let stdout='',stderr='';boot.stdout.on('data',x=>{stdout+=String(x);appendFileSync(out+'/bootStdout.log',x);});boot.stderr.on('data',x=>{stderr+=String(x);appendFileSync(out+'/bootStderr.log',x);});phase('canonical-parent-started');\\nlet capture;try{phase('capture-start');const r=await captureCpuProfile({pid:0,startPort:9231,attachExisting:true,procIdentity:true,resumeStartup:true,expectedEntry:'/opt/papercusp/sidecar/serve.mjs',expectedArg:'--verify-boot-imports',durationMs:20000,deadlineMs:50000});const raw=JSON.stringify(r.profile);const saved=persistCpuProfile(out+'/profile.cpuprofile',raw);capture={status:'passed',target:r.target,startupResumed:r.startupResumed,captureMs:r.captureMs,samples:r.profile.samples?.length,nodes:r.profile.nodes.length,persistence:saved};phase('capture-saved');}catch(e){capture={status:'failed',error:e.message,stack:e.stack};phase('capture-failed');}writeFileSync(out+'/capture.json',JSON.stringify(capture,null,2)+'\\\\n');\\nconst exit=await bootExit;phase('canonical-parent-returned');const result={node:process.version,arch:process.arch,uid:process.getuid(),capture,boot:{exitCode:exit[0],signal:exit[1],markerObserved:stdout.includes('PAPERCUSP_BOOT_IMPORTS_OK'),stdout,stderr},candidateAccepted:false};writeFileSync(out+'/guest-result.json',JSON.stringify(result,null,2)+'\\\\n');console.log(JSON.stringify({capture:result.capture.status,boot:result.boot.exitCode,marker:result.boot.markerObserved}));if(capture.status!=='passed')process.exitCode=1;\");\nconst binds=[];for(const entry of await readdir(overlay+'/node_modules')){const ps=entry.startsWith('@')?(await readdir(overlay+'/node_modules/'+entry)).map(n=>entry+'/'+n):[entry];for(const p of ps)binds.push('--mount','type=bind,source='+overlay+'/node_modules/'+p+',target=/opt/papercusp/sidecar/node_modules/'+p+',readonly');}\nconst {runOwnedContainer,runCommand}=await import(source+'/papercusp-desktop/bin/lib/server-container.mjs');const result={schemaVersion:'p058-paused-full-source-profile/v1',workItemId:'EI-25604028797058995',out,startedAt:new Date().toISOString(),sourceCommit:receipt.sourceCommit,serveSha256:prep.serveSha256,imageId:fixture.imageId,platform:fixture.platform,canonicalBootFunctionSha256:sha(helper),instrumentedBootFunctionSha256:sha(instrumented),canonicalChildDeadlineMs:60000,collectorInputs,candidateAccepted:false};\ntry{const owned=await runOwnedContainer({out,engine:'docker',imageId:fixture.imageId,platform:fixture.platform,timeoutMs:60000,args:['--read-only','--network','none','--user','1001:1001','--memory','2g','--pids-limit','256','--tmpfs','/tmp:rw,exec','--mount','type=bind,source='+out+',target=/p058-result','--mount','type=bind,source='+root+'/private-output/serve.mjs,target=/opt/papercusp/sidecar/serve.mjs,readonly',...binds,...collectorInputs.flatMap(x=>['--mount','type=bind,source='+process.cwd()+'/'+x.path+',target='+x.target+',readonly'])],command:['/opt/papercusp/sidecar/bin/node','/p058-result/guest-probe.mjs']},async(c,args,opts)=>{const now=Date.now();await appendFile(out+'/engine-phases.jsonl',JSON.stringify({phase:'begin',verb:args[0],at:new Date().toISOString()})+'\\n');try{return await runCommand(c,args,{...opts,timeout:args[0]==='start'?90000:opts.timeout,stream:false});}finally{await appendFile(out+'/engine-phases.jsonl',JSON.stringify({phase:'end',verb:args[0],elapsedMs:Date.now()-now,at:new Date().toISOString()})+'\\n');}});const {output,...ownership}=owned;result.owned=ownership;result.status='capture-completed';}catch(e){result.status='failed';result.error=e.message;process.exitCode=1;}\ntry{result.guest=JSON.parse(await readFile(out+'/guest-result.json','utf8'));}catch{}try{const raw=await readFile(out+'/profile.cpuprofile');const {persistCpuProfile}=await import('./scripts/cpu-sample.mjs');result.profilePersistence=persistCpuProfile(out+'/profile.cpuprofile',raw);result.profileSha256=sha(raw);}catch(e){result.profileReadError=e.message;}\nawait check();result.inputsStable=true;result.finishedAt=new Date().toISOString();await writeFile(out+'/result.json',JSON.stringify(result,null,2)+'\\n');console.log(JSON.stringify({resultFile:out+'/result.json',status:result.status,error:result.error,capture:result.guest?.capture,boot:result.guest?.boot&&{exitCode:result.guest.boot.exitCode,markerObserved:result.guest.boot.markerObserved},profileSha256:result.profileSha256}));\nNODE",
+  "startedAt": "2026-10-10T17:02:36.648Z",
+  "finishedAt": "2026-10-10T17:05:01.035Z",
+  "exitCode": 1,
+  "summary": "Paused source-bound ARM capture saved a valid20s profile before the unchanged canonical60s startup timed out. Original wrapper remainsfailed due Docker cleanup and host read of guest0600 output; later exact cleanup was reconciled. Capture and boot verdicts remain separate. Sampled window shows compilation work; original startup root cause remains unproven.",
+  "producerTaskId": "0mv2n70jdnlpihk1onz",
+  "cleanupRecoveryTaskId": "0mv2ndcpe1xe8e922y4",
+  "rawResult": {
+    "path": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/profile3-paused-flr3OS/result.json",
+    "sha256": "548bca56737f06dcae42e66453f0adbec106dbfab30968e8d2c48dce8b4737f8",
+    "status": "failed",
+    "error": "Owned producer cleanup failed",
+    "profileReadError": "EACCES: permission denied, open '/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/profile3-paused-flr3OS/profile.cpuprofile'"
+  },
+  "guestResult": {
+    "path": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/profile3-paused-flr3OS/guest-result.json",
+    "sha256": "02adafe48dd09513531a8a6b9af25aa4fca0ed10f153159b8d8ae0c730770da7",
+    "capture": {
+      "status": "passed",
+      "target": {
+        "pid": 37,
+        "entry": "/opt/papercusp/sidecar/serve.mjs",
+        "argv": [
+          "--verify-boot-imports"
+        ],
+        "execArgv": [
+          "/opt/papercusp/sidecar/bin/node",
+          "/opt/papercusp/sidecar/bin/node",
+          "--inspect-wait=127.0.0.1:9231"
+        ],
+        "startTicks": "44076651",
+        "listenerInode": "573991989",
+        "identity": "proc"
+      },
+      "startupResumed": true,
+      "captureMs": 20000,
+      "samples": 16156,
+      "nodes": 752,
+      "persistence": {
+        "created": true,
+        "bytes": 291016
+      }
+    },
+    "boot": {
+      "exitCode": 1,
+      "signal": null,
+      "markerObserved": false,
+      "stdout": "",
+      "stderr": "boot import closure FAILED: spawnSync /opt/papercusp/sidecar/bin/node ETIMEDOUT\n{\"executable\":\"/opt/papercusp/sidecar/bin/node\",\"cwd\":\"/opt/papercusp/sidecar\",\"elapsedMs\":60548,\"pid\":37,\"status\":null,\"signal\":\"SIGTERM\",\"errorCode\":\"ETIMEDOUT\",\"allocatorCap\":\"2\",\"home\":\"/tmp/papercusp-boot-imports-ZiKz9g\",\"receiptObserved\":false}\n[child stdout tail]\n\n[child stderr tail]\nDebugger listening on ws://127.0.0.1:9231/18c247e9-21af-400e-95b3-02ca7fb50d76\nFor help, see: https://nodejs.org/learn/getting-started/debugging\nDebugger attached.\nDebugger ending on ws://127.0.0.1:9231/18c247e9-21af-400e-95b3-02ca7fb50d76\nFor help, see: https://nodejs.org/learn/getting-started/debugging\n\n"
+    }
+  },
+  "profile": {
+    "path": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/profile3-paused-flr3OS/profile.cpuprofile",
+    "sha256": "e5071cd5ba56d18dde6305bceee47be97fb2419c9653539e394e98a49ca34663",
+    "bytes": 291016,
+    "samples": 16156,
+    "nodes": 752,
+    "uid": 1001,
+    "mode": 384,
+    "wallUs": 20245476,
+    "aggregate": {
+      "totalUs": 18964204,
+      "excludedUs": 100641,
+      "excludedByKind": {
+        "profiler": 0,
+        "non-work": 100641
+      },
+      "realUs": 18863563,
+      "nominalIntervalUs": 1101,
+      "leadInUs": 140254,
+      "unsampledGapUs": 1141018,
+      "gapCount": 9,
+      "frames": [
+        [
+          "compileSourceTextModule @ node:internal/modules/esm/utils:315",
+          16219197
+        ],
+        [
+          "decodeUTF8 @ (native):-1",
+          579592
+        ],
+        [
+          "(garbage collector) @ (native):-1",
+          257516
+        ],
+        [
+          "compileForInternalLoader @ node:internal/bootstrap/realm:382",
+          109211
+        ],
+        [
+          "resolveExports @ node:internal/modules/cjs/loader:696",
+          61294
+        ],
+        [
+          "readFileUtf8 @ (native):-1",
+          58568
+        ],
+        [
+          "normalizeString @ node:path:91",
+          57533
+        ],
+        [
+          "debug @ node:internal/util/debuglog:91",
+          50544
+        ]
+      ]
+    }
+  },
+  "profileRecovery": {
+    "taskId": "0mv2ngsmt1bu6mr01fd",
+    "method": "Read-only privileged read; original bytes/owner/inode/mode/mtime/ctime preserved",
+    "command": "import {execFileSync} from 'node:child_process';import {createHash} from 'node:crypto';import {statSync,readFileSync} from 'node:fs';import {aggregateCpuProfile} from './scripts/lib/cpu-profile.mjs';\nconst file='/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/profile3-paused-flr3OS/profile.cpuprofile';const before=statSync(file),raw=execFileSync('sudo',['-n','cat',file],{maxBuffer:1024*1024});const p=JSON.parse(raw),after=statSync(file);const sha=createHash('sha256').update(raw).digest('hex');\nconst ids=new Set(p.nodes.map(n=>n.id));if(ids.size!==p.nodes.length||p.samples.some(id=>!ids.has(id))||p.samples.length!==p.timeDeltas.length)throw Error('Invalid profile graph');\nconst meta=x=>({uid:x.uid,mode:x.mode,ino:x.ino,mtimeMs:x.mtimeMs,ctimeMs:x.ctimeMs});if(JSON.stringify(meta(before))!==JSON.stringify(meta(after)))throw Error('Original metadata changed');const a=aggregateCpuProfile(p);console.log(JSON.stringify({file,sha256:sha,bytes:raw.length,samples:p.samples.length,nodes:p.nodes.length,metadata:meta(after),metadataUnchanged:true,wallUs:p.endTime-p.startTime,aggregate:{totalUs:a.totalUs,realUs:a.realUs,excludedUs:a.excludedUs,leadInUs:a.leadInUs,unsampledGapUs:a.unsampledGapUs,gapCount:a.gapCount,topFrames:a.frames.slice(0,8)},guest:JSON.parse(readFileSync(file.replace('profile.cpuprofile','guest-result.json'),'utf8')).capture}));"
+  },
+  "ownership": {
+    "path": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/profile3-paused-flr3OS/.native-producer-owner-vLTpwX/ownership.json",
+    "sha256": "14b6f538ca4c35ecda6baae2bbd0291b702a59320bf5e861271dd46df7894413",
+    "containerId": "9a63787d63a0b859c01e6e162955a9e12d2fe1230de477ef0f7325d85344ea69",
+    "removed": true,
+    "cleanupPending": false
+  },
+  "inputs": {
+    "serveSha256": "2cbbcca8d8da25a7bf972da3fa21e88a1f61cbfc17c842aa05615e63c3487365",
+    "canonicalBootFunctionSha256": "ffbd2d83808dd2129e6e8f8bcf770e4f1bd9799717a7d634d047a09b611fa3d9",
+    "instrumentedBootFunctionSha256": "ef0e22ea9ed412f66a95f491115aadafa467fa8b8e4d5cda2ad935232cc55979",
+    "collector": [
+      {
+        "path": "scripts/cpu-sample.mjs",
+        "target": "/opt/papercusp/sidecar/p058-cpu-sample.mjs",
+        "sha256": "d7809931a346f13ff5410220e821143089273bd9fc4ecb8f7ee0b7f480fd8b05"
+      },
+      {
+        "path": "scripts/cdp-inspector.mjs",
+        "target": "/opt/papercusp/sidecar/cdp-inspector.mjs",
+        "sha256": "bb15dc2ac1ec9cb60d26d62d0790610f2cd097a9171b37c39465c8f5a7d22112"
+      },
+      {
+        "path": "scripts/lib/cpu-profile.mjs",
+        "target": "/opt/papercusp/sidecar/lib/cpu-profile.mjs",
+        "sha256": "b77446b36ee55d5670eb7bcd74955bef10f23e804be9672eeb25aef9f7ba9fc3"
+      },
+      {
+        "path": "scripts/proc-guard.mjs",
+        "target": "/opt/papercusp/sidecar/proc-guard.mjs",
+        "sha256": "5eb8c0c9ca8a2d39aef88e4840e14e4832f808450e13977b6c628fadd7677cda"
+      }
+    ],
+    "stable": true,
+    "canonicalChildDeadlineMs": 60000
+  },
+  "phaseFiles": [
+    {
+      "path": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/profile3-paused-flr3OS/engine-phases.jsonl",
+      "sha256": "f350646619c7a158d074af14c37b5fcb251da863949042ed87abe7f8b0c7704b",
+      "rows": [
+        {
+          "phase": "begin",
+          "verb": "create",
+          "at": "2026-10-10T17:02:36.652Z"
+        },
+        {
+          "phase": "end",
+          "verb": "create",
+          "elapsedMs": 20019,
+          "at": "2026-10-10T17:02:56.671Z"
+        },
+        {
+          "phase": "begin",
+          "verb": "start",
+          "at": "2026-10-10T17:03:02.261Z"
+        },
+        {
+          "phase": "end",
+          "verb": "start",
+          "elapsedMs": 90020,
+          "at": "2026-10-10T17:04:32.281Z"
+        },
+        {
+          "phase": "begin",
+          "verb": "inspect",
+          "at": "2026-10-10T17:04:34.903Z"
+        },
+        {
+          "phase": "end",
+          "verb": "inspect",
+          "elapsedMs": 5011,
+          "at": "2026-10-10T17:04:39.914Z"
+        },
+        {
+          "phase": "begin",
+          "verb": "rm",
+          "at": "2026-10-10T17:04:48.499Z"
+        },
+        {
+          "phase": "end",
+          "verb": "rm",
+          "elapsedMs": 10033,
+          "at": "2026-10-10T17:04:58.532Z"
+        }
+      ]
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/profile3-paused-flr3OS/guest-phases.jsonl",
+      "sha256": "0ff3dcc3c0b80eeaa8e4da69a6466ed0227ea3a2f56ff8116108547b0e603ff7",
+      "rows": [
+        {
+          "phase": "guest-enter",
+          "at": "2026-10-10T17:03:10.249Z"
+        },
+        {
+          "phase": "collector-imported",
+          "at": "2026-10-10T17:03:11.559Z"
+        },
+        {
+          "phase": "canonical-parent-started",
+          "at": "2026-10-10T17:03:11.617Z"
+        },
+        {
+          "phase": "capture-start",
+          "at": "2026-10-10T17:03:11.617Z"
+        },
+        {
+          "phase": "capture-saved",
+          "at": "2026-10-10T17:03:34.773Z"
+        },
+        {
+          "phase": "canonical-parent-returned",
+          "at": "2026-10-10T17:04:14.786Z"
+        }
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "id": "canonical-startup-success",
+      "passed": false,
+      "evidence": "bootexit1/ETIMEDOUT/elapsed60548ms/markerfalse"
+    },
+    {
+      "id": "captured-exact-source-profile",
+      "passed": true,
+      "evidence": "Kernel entry+argument+listener+startTicks identity; resumed only after Profiler.start;16156samples/752nodes/291016bytes"
+    },
+    {
+      "id": "input-bytes-stable",
+      "passed": true,
+      "evidence": "Frozen source19,serve/helper/image/overlay and collector hashes pinned and stable"
+    },
+    {
+      "id": "eventual-owned-cleanup",
+      "passed": true,
+      "evidence": "Separate exact reconcile task completed0;removedtrue/cleanupPendingfalse"
+    }
+  ],
+  "limitations": [
+    "One20s sampling window does not explain the whole60s timeout or identify a specific compiled module.",
+    "Original host wrapperFAIL and guest bootFAIL are preserved; valid capture is not bootacceptance.",
+    "No fresh ARM producer at newer shared-mode source is claimed.",
+    "Installed-native,trustedpublication,independentdetector/transfer acceptance remain open."
+  ],
+  "evidenceSerialization": {
+    "serializer": "scripts/lib/identity-leak-patterns.mjs --serialize-json"
+  }
+}

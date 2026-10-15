@@ -11,5 +11,5 @@ Type=oneshot
 # three agents in thirty minutes on a backup that was in fact healthy).
 # ⚠ KEEP IN SYNC with papercusp-db-backup.service, kopia-healthcheck.service and
 # kopia-snapshots.service.
-Environment=PAPERCUSP_HOST_PG_DUMP_DIR=/mnt/backup/db-dumps
+Environment=PAPERCUSP_HOST_PG_DUMP_DIR=/mnt/cold-a/Backup/db-dumps
 ExecStart=%h/.config/kopia/backup-alert.sh "papercusp-db-backup.service failed"

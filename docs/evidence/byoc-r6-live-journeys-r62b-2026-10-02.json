@@ -1,0 +1,136 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "byoc R-6: live lifecycle/recovery journeys J1-J4, 1h soak, teardown census and budget on real GCP, release 0.0.21-p318r62b (release task 0munwgut01uzlcjdajh)",
+  "framework": "operational",
+  "command": ["journalctl", "--user", "-u", "p318-r62b-j23-chain-v8", "--no-pager"],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T22:41:08Z",
+  "finishedAt": "2026-10-02T00:28:44Z",
+  "summary": "su-9b75fa7c ran the J2/J3 chain on GCP project active-alcove-504205-q3 with bg-host on release 0.0.21-p318r62b (bundle dea508a8, the R-4 artifact). Host A (host-pc-p318-j23a-20261001-r62b2) was provisioned, canaried and probed: a repository clone with HEAD 8d83cc8f, owner papercusp-workspace, mode 770 and a named-user ACL. A was snapshotted (p318-j23-r62b2-snapshot-a-1) and destroyed, so the original VM was unavailable. The snapshot was restored onto a new host B (host-pc-p318-j23b-20261001-r62b2, op p318-j23-r62b2-restore-b-1); B was bootstrapped and its canary passed all five credential stages. The probe on B found the same clone with identical HEAD, owner, mode, birth time and full ACL (J3_DATA_ACL_PRESERVED). B was destroyed with a committed evidence census (p318-j23-r62b2-destroy-b-1), the snapshot was deleted, and the final gcloud census for both run labels returned zero instances, disks, networks, firewall rules and routers. The chain ended CHAIN_OK at 00:28:44Z. J1, J4, the soak and the r62 canary teardown were already recorded on the same release (D-445) and are cited by receipt below.",
+  "release": {
+    "releaseTaskId": "0munwgut01uzlcjdajh",
+    "version": "0.0.21-p318r62b",
+    "bundleSha256": "dea508a82409b4f3ba6273df398c044f4306034f42dc735f6b86c62dd01e4ab8",
+    "sourceSha": "3533167c19fe1efd9bb300badcd047ac3812feaf"
+  },
+  "journeys": {
+    "J1": {
+      "name": "upgrade and rollback on a real host",
+      "passed": true,
+      "operations": ["avi-test-accept-r62b-20261001-1", "avi-test-upgrade-r63-20261001-back-1"],
+      "host": "host-3daf37098c8096b5d9e0ac72",
+      "note": "r63 to r62b upgrade, then rollback by a second upgrade r62b to r63 (D-390). Both succeeded on 2026-10-01."
+    },
+    "J2": {
+      "name": "restore from snapshot with the original VM unavailable",
+      "passed": true,
+      "operations": ["4108d314-1299-4111-b364-2771c3f71e16", "p318-j23-r62b2-snapshot-a-1", "p318-j23-r62b2-destroy-a-1", "p318-j23-r62b2-restore-b-1", "canary:p318-j23b-20261001-r62b2:initialize"],
+      "note": "Host A was deleted before the restore. gcloud confirmed no p318-j23a instance, network or firewall remained. The restore created host B from the snapshot, and B initialized and served its canary (HTTP 200, ready-for-destroy at 2026-10-02T00:24:24Z)."
+    },
+    "J3": {
+      "name": "data and ACL preservation across VM replacement",
+      "passed": true,
+      "path": "/srv/papercusp/workspaces/repositories/papercusp-byoc-canary-p318-j23a-20261001-r62b2",
+      "before": { "host": "host-pc-p318-j23a-20261001-r62b2", "head": "8d83cc8f7b7dbdf16859d36b6498d61c79d2595a", "owner": "papercusp-workspace:papercusp-workspace", "mode": "770", "birth": "2026-10-01 23:08:13.107509476 +0000" },
+      "after": { "host": "host-pc-p318-j23b-20261001-r62b2", "head": "8d83cc8f7b7dbdf16859d36b6498d61c79d2595a", "owner": "papercusp-workspace:papercusp-workspace", "mode": "770", "birth": "2026-10-01 23:08:13.107509476 +0000" },
+      "acl": "user::rwx user:papercusp-agent:rwx user:papercusp:rwx user:papercusp-workspace:rwx group::rwx mask::rwx other::--- plus matching default: entries; identical on A and B",
+      "note": "Credential re-binding on the replacement VM is covered by canary:p318-j23b-20261001-r62b2:restore-rebind, which succeeded."
+    },
+    "J4": {
+      "name": "credential rotation, revocation and reconnect",
+      "passed": true,
+      "operations": ["canary:p318-canary-20260930-r62:rotate", "canary:p318-canary-20260930-r62:revoke", "canary:p318-canary-20260930-r62:reconnect", "canary:p318-canary-20260930-r62:restore-rebind", "canary:p318-j23a-20261001-r62b2:revoke", "canary:p318-j23b-20261001-r62b2:revoke"],
+      "note": "Passed on three independent r62b hosts."
+    },
+    "J5": {
+      "name": "agent execution during a Papercusp-service outage",
+      "required": false,
+      "note": "Not built in any release. Removed from R-6's required set and moved to plan aws-byoc-gcp-parity-2026-10-01 by D-445."
+    }
+  },
+  "soak": {
+    "receipt": "task:0munwgut01uzlcjdajh#acceptance.soak",
+    "soakId": "p318-soak-1h-r62b-20260930-1",
+    "host": "host-pc-p318-canary-20260930-r62",
+    "window": "2026-09-30T11:20:18.983Z/2026-09-30T12:20:19.006Z",
+    "samples": "61/61",
+    "verdict": "pass",
+    "note": "One-hour window per D-440."
+  },
+  "teardown": {
+    "r62Canary": { "operation": "p318-r62b-canary-destroy-20260930-1", "receipt": "task:0munwgut01uzlcjdajh#teardown.resource-census", "status": "succeeded" },
+    "j23HostB": { "operation": "p318-j23-r62b2-destroy-b-1", "status": "succeeded", "message": "Workspace-host discard teardown and evidence census completed" },
+    "j23HostA": { "operation": "p318-j23-r62b2-destroy-a-1", "status": "failed", "message": "Workspace-host resources were deleted, but terminal evidence is incomplete", "providerAbsence": "gcloud: no instance, disk, network, firewall rule or router for papercusp_run_id=p318-j23a-20261001-r62b2", "tracking": "EI-24818981551847665" },
+    "snapshot": { "name": "p318-j23-r62b2-a-snapshot-1", "status": "deleted" },
+    "finalCensus": { "at": "2026-10-02T00:28:44Z", "instances": 0, "disks": 0, "networks": 0, "firewallRules": 0, "routers": 0, "snapshotsMatchingP318J23": 2, "snapshotNote": "The two matches are p318-j23-r38-source-snapshot and p318-j23-r44-source-snapshot from 2026-09-22 and 2026-09-24 runs; neither belongs to this run." },
+    "eightKindCensus": {
+      "at": "2026-10-02T01:16:56Z",
+      "project": "active-alcove-504205-q3",
+      "kinds": ["vm", "disk", "firewall", "subnetwork", "network", "snapshot", "router", "nat"],
+      "kindsSource": "GCP_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS in packages/operator-core/lib/workspace-host/gcp-safety.ts",
+      "method": "gcloud list per kind, matched by label papercusp-host-id=host-pc-<run> OR name~<run>; nat counted from routers nats list on each matching router",
+      "runs": {
+        "p318-j23a-20261001-r62b2": { "vm": 0, "disk": 0, "firewall": 0, "subnetwork": 0, "network": 0, "snapshot": 0, "router": 0, "nat": 0 },
+        "p318-j23b-20261001-r62b2": { "vm": 0, "disk": 0, "firewall": 0, "subnetwork": 0, "network": 0, "snapshot": 0, "router": 0, "nat": 0 }
+      },
+      "positiveControls": {
+        "labelFilterSnapshots": 2,
+        "projectNetworks": 3,
+        "preDestroyExistence": "Host A existed (snapshot op p318-j23-r62b2-snapshot-a-1 read its disk); host B existed (restore op p318-j23-r62b2-restore-b-1 succeeded and canary p318-j23b-20261001-r62b2 initialized on it) before destroy ops p318-j23-r62b2-destroy-a-1 and -destroy-b-1 ran."
+      },
+      "transcript": ".papercusp/scratch/p318-j23-census-8kind-2026-10-02.txt"
+    },
+    "leftoverSnapshots": {
+      "names": ["p318-j23-r38-source-snapshot", "p318-j23-r44-source-snapshot"],
+      "disposition": "Retained. They belong to the 2026-09-22 (r38) and 2026-09-24 (r44) P-318 runs (labels papercusp-host-id=host-pc-p318-canary-20260922-r38 / -20260924-r44), not to this run, so they are outside this run's zero-residue census. They are inadmissible as r62b evidence under D-425."
+    },
+    "hostADestroyRating": "Destroy op p318-j23-r62b2-destroy-a-1 ended failed|99 'terminal evidence incomplete' after deleting every provider resource (EI-24818981551847665). Rated: provider absence verified by the eight-kind census above; the missing committed census receipt for A is a recorded limitation, not a pass of the receipt itself. Host B's destroy p318-j23-r62b2-destroy-b-1 succeeded with its census receipt."
+  },
+  "rebootObservation": {
+    "required": false,
+    "decision": "D-447",
+    "note": "No reboot was observed on r62b. On hosted hosts every boot re-runs the bootstrap and restarts papercusp-workspace about 3 minutes after boot (WI-10004242; fix 0e239859 in no released bundle). D-447 descopes the reboot observation from R-6 for this cut and carries it on WI-10004242."
+  },
+  "budget": {
+    "budgetEvidenceRef": "gcp://billing/billingAccounts/0113AC-50E9A0-8BB71D/budgets/a5775eed-11f0-4a22-83c8-08a8ca919379",
+    "admittedMaxSpendCents": { "p318-j23a-20261001-r62b2": 2500, "p318-j23b-20261001-r62b2": 2500 },
+    "billingExport": "active-alcove-504205-q3.papercusp_billing.gcp_billing_export_v1_0113AC_50E9A0_8BB71D",
+    "measured": [
+      { "runId": "p318-canary-20260930-r62", "costUsd": 0.1887, "creditsUsd": -0.1887, "usage": "2026-09-30 11:00/13:00" },
+      { "runId": "p318-j23a-20261001-r62b2", "costUsd": 0.0552, "creditsUsd": -0.055, "rows": 21, "usage": "2026-10-01 22:00/2026-10-02 01:00", "admittedMaxSpendCents": 2500, "withinCap": true },
+      { "runId": "p318-j23b-20261001-r62b2", "costUsd": 0.0034, "creditsUsd": -0.0033, "rows": 1, "usage": "2026-10-02 00:00/01:00", "admittedMaxSpendCents": 2500, "withinCap": true }
+    ],
+    "j23Reconciliation": {
+      "queriedAt": "2026-10-02T12:16Z",
+      "queriedBy": "su-9b75fa7c",
+      "exportCoverage": { "maxExportTime": "2026-10-02 11:01:53", "maxUsageEndTime": "2026-10-02 08:00:00", "coversRunWindows": true },
+      "method": "bq query over the billing export; a row belongs to a run when ANY label value ends with the run id (papercusp_run_id or papercusp-host-id=host-pc-<run>), counted once per row. Summing per label double-counts and the run-id label alone undercounts j23a (0.0272) because some disk rows carry only the host-id label.",
+      "services": ["Compute Engine"]
+    },
+    "note": "Queried 2026-10-02T00:33Z. The export had not yet ingested the 2026-10-01 J2/J3 runs. Their spend is bounded by the admitted 2500-cent cap per run; both hosts lived under two hours on e2-class machines."
+  },
+  "receiptRefs": [
+    "task:0munwgut01uzlcjdajh#acceptance.soak",
+    "task:0munwgut01uzlcjdajh#teardown.resource-census",
+    "workspace-host-operation:p318-j23-r62b2-snapshot-a-1",
+    "workspace-host-operation:p318-j23-r62b2-restore-b-1",
+    "workspace-host-operation:p318-j23-r62b2-destroy-b-1",
+    "workspace-host-operation:avi-test-accept-r62b-20261001-1",
+    "workspace-host-operation:avi-test-upgrade-r63-20261001-back-1",
+    "workspace-host-operation:p318-r62b-canary-destroy-20260930-1"
+  ],
+  "assertions": [
+    {
+      "id": "auto-bar-r-6-p-318",
+      "passed": true,
+      "evidence": "Required journeys J1-J4 passed on real GCP hosts running the R-4 artifact (0.0.21-p318r62b, bundle dea508a8). J2 restored onto a new VM after the original was deleted; J3 showed identical data and ACLs on the replacement. The 1h soak passed 61/61. Teardown left zero provider resources for every run label. Budget is admitted per run against GCP budget a5775eed and measured from the billing export. J5 is out of the required set per D-445."
+    }
+  ],
+  "limitations": [
+    "Host A's destroy operation deleted every provider resource but ended failed with 'terminal evidence incomplete' (EI-24818981551847665). Zero residue for A rests on the gcloud census, not on a committed census receipt.",
+    "J2/J3 spend was reconciled at 2026-10-02T12:16Z after the billing export covered their windows (budget.j23Reconciliation): j23a 0.0552 USD, j23b 0.0034 USD, both within the 2500-cent admitted cap. The 00:33Z note in budget.note predates that reconciliation.",
+    "Host A's eight-kind zero-residue census is teardown.eightKindCensus (01:16:56Z, all eight GCP_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS zero for p318-j23a-20261001-r62b2); it is an operator-run gcloud census, not the controller's terminal census receipt.",
+    "J1 ran on the customer host avi-test, not on a fresh canary host."
+  ]
+}

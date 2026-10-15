@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "Android signed 0.1.1 candidate build and immutable retention",
+  "workItem": "WI-10007202",
+  "command": ["python3 tools/android-ci.py --exclusive-command bash -c <release, verify, signature audit, immutable capture>"],
+  "exitCode": 0,
+  "releaseVersion": "0.1.1",
+  "versionCode": 101,
+  "sourceCommit": "3c11a340f9eb857ede22b52a793876793e665e29",
+  "sourceDirty": false,
+  "sourceFingerprint": "ba21e959437509e6ee7969da75135e69a812f6bb477cb7a6411fd61a1fc4758e",
+  "builtAt": "2026-10-10T04:48:15Z",
+  "nativeQualification": {
+    "attempt": "20261010T040401Z-242031a2",
+    "resultSha256": "0b162b1ba391d55f276019f7c126c2bb78049aeb502722d9e5492c614d815172",
+    "currentSourceAndSuccessReceiptMatched": true
+  },
+  "custody": {
+    "grantMessage": "coord-send-627147df5b6c6655fcda903e659c73183d848b4ecdb3a79d5ed9aa5f962a0069",
+    "expiresAt": "2026-10-10T05:44:20Z",
+    "returnedMessage": "coord-send-a0aabc4540aa631084daad4b948d4ee2841216b8444b2f92345e22daed4217b1",
+    "executorFreeAfterCommand": true,
+    "ownedTemporaryDirectoryRemoved": true
+  },
+  "retainedDirectory": "$HOME/.local/state/papercusp/android-release/0.1.1-3c11a340-20261010",
+  "log": "$HOME/.local/state/papercusp/android-release/0.1.1-3c11a340-20261010.log",
+  "logSha256": "ea14f81b4232f43b9330693b44b2b911b149e7b748e89c88b540b3277da91b9e",
+  "retainedFiles": {
+    "app-release.apk": "ea698c658ebe9032b48c53890241db62b30e5d9182e2322411a1dd2acb075ec9",
+    "app-release.aab": "5de90c10aa8cacf04a4634085b10726c244b54d08e349f672f16938b905720bb",
+    "papercusp-release-provenance.json": "c77a519b2f0349979f5db81afb53c41d31dadda08187c193399a8ee71198d565",
+    "papercusp-mobile-source.tar.gz": "0817e0f8f27658613232493177e29ea3ee8f582439f1e2860589cda9e29c8af9",
+    "RELEASE-CANDIDATE.md": "559d81731de4d3eaa3e4d345ef58816d804b4ca49f779c2d549f84f0f1be4ccd"
+  },
+  "verification": {
+    "releaseProvenanceVerify": "passed 0.1.1",
+    "packagedAbis": ["arm64-v8a", "armeabi-v7a", "x86", "x86_64"],
+    "uniFfiChecksumSymbols": 59,
+    "alignment": "16 KB APK and 14 packaged 64-bit shared libraries passed",
+    "apkSignature": "apksigner verify --print-certs passed",
+    "signerCertificateSha256": "efeb65c4e03a7eb6a1c445ea6d0361e95edf1e7509fc25cb4072d3f202912b93",
+    "retainedHashes": "five files verified inside custody; capture made read-only",
+    "actualJvmTemporaryDirectory": "matched owned command directory",
+    "storagePreflight": "passed"
+  },
+  "packageIdentity": {
+    "tool": "Android SDK apkanalyzer manifest",
+    "applicationId": "com.papercuspai.operator.mobile",
+    "versionCode": 101,
+    "versionName": "0.1.1"
+  },
+  "directDownloadPreparation": {
+    "command": "./node_modules/.bin/tsx apps/operator/lib/release/record-release-cli.ts --scan-mobile --version 0.1.1 --mobile-root \"$PAPERCUSP_MOBILE_ROOT\"",
+    "exitCode": 0,
+    "selectedInstallerName": "Papercusp_0.1.1_android.apk",
+    "selectedStoreBundleName": "Papercusp_0.1.1_android.aab",
+    "published": true,
+    "recipientRetrievalVerified": true,
+    "publicationCommand": "PAPERCUSP_MOBILE_ROOT=<maintained mobile checkout> bash papercusp-desktop/bin/upload-mobile-release.sh 0.1.1 alpha",
+    "publicationExitCode": 0,
+    "authenticatedStorageVerification": "APK and AAB both content verified by maintained uploader",
+    "relativeApkUrl": "desktop-v0.1.1-alpha/Papercusp_0.1.1_android.apk",
+    "recipientRetrieval": {
+      "transport": "curl default client, unauthenticated GET",
+      "httpStatus": 200,
+      "sha256": "ea698c658ebe9032b48c53890241db62b30e5d9182e2322411a1dd2acb075ec9",
+      "evidenceDirectory": "$HOME/.local/state/papercusp/android-release/0.1.1-3c11a340-20261010-download",
+      "privatePortalBuildConfig": "$HOME/.local/state/papercusp/android-release/0.1.1-3c11a340-20261010-download/portal-android-download.env",
+      "limitation": "Python urllib default client returns Cloudflare 403/1010; curl returns exact candidate bytes. No portal deployment or full browser click journey asserted."
+    },
+    "portalItem": "WI-10004860",
+    "portalBuildConfiguration": "NEXT_PUBLIC_PORTAL_ANDROID_DOWNLOAD_URL",
+    "portalActivation": {
+      "release": "Gv90RmF90lrmLL5Q9kyMn-20261010055646504-3862616-8d58175d",
+      "maintainedBuildExitCode": 0,
+      "maintainedHandoffExitCode": 0,
+      "sourceFreshnessAndHealth": "passed",
+      "servingPidAtVerification": 3891192,
+      "servedClientChunk": "/_next/static/chunks/4034-23981c4535cd9e56.js",
+      "servedChunkSha256": "414cb8289a21db9f6e5aa9bd6955f01a180126d7d3b1724c55bc04f09001fa2b",
+      "servedEqualsBuilt": true,
+      "androidDownloadLabelAndExactTargetPresent": true,
+      "authenticatedClickJourneyVerified": false,
+      "evidenceRef": "$HOME/.local/state/papercusp/android-release/0.1.1-3c11a340-20261010-download/portal-compiled-cta-proof.json",
+      "limitation": "Signed-in toolbar is not rendered in unauthenticated landing HTML. Verification covers the served compiled CTA and direct target retrieval; iPhone and authenticated click acceptance remain open."
+    },
+    "portalRequirement": "Set a verified APK destination in publisher configuration before the Next build. Existing DownloadLink stays inert without a destination; no fallback URL is invented."
+  },
+  "installationPreparation": {
+    "item": "WI-10007202",
+    "routingDecision": "android-public-release-2026-10-01#D-026",
+    "matrixItem": "WI-10004776",
+    "status": "Bounded retained signed installation slice passed on a newly owned disposable API 36 / 16 KB emulator; full app journey remains unverified.",
+    "installationEvidence": {
+      "directory": "$HOME/.local/state/papercusp/android-release/signed-install-20261010T053932Z-b2696b9a",
+      "grantMessage": "coord-send-e3031b5414c9e3fa1f0ebe321f65dcc344a280947f7e8765906af6d58b1a4953",
+      "returnedMessage": "coord-send-b8363416ac452651530b0b3d25443d11341f2c2db0282d1d3bc2832e875cba2f",
+      "commandExitCode": 0,
+      "serial": "emulator-5660",
+      "ownedEmulatorPid": 3049995,
+      "api": 36,
+      "pageSize": 16384,
+      "installedVersionCode": 101,
+      "installedVersionName": "0.1.1",
+      "installedBaseApkSha256": "ea698c658ebe9032b48c53890241db62b30e5d9182e2322411a1dd2acb075ec9",
+      "signerCertificateSha256": "efeb65c4e03a7eb6a1c445ea6d0361e95edf1e7509fc25cb4072d3f202912b93",
+      "launchStatus": "ok",
+      "activeActivityAtLaunchCompletion": "com.google.android.permissioncontroller/com.android.permissioncontroller.permission.ui.GrantPermissionsActivity",
+      "sampledLogcatFatalLines": [],
+      "ownedEmulatorStopped": true,
+      "ownedAvdRemoved": true,
+      "commandTemporaryRemoved": true,
+      "executorFreeAfter": true
+    },
+    "maintainedPreflight": "bash tools/run-android-checks.sh verify-emulator-boot <explicit owned serial> <evidence directory> 1",
+    "boundedSlice": "Verify owned boot/API/page size; adb -s serial install retained APK; resolve and launch main activity; verify installed version; pull installed base APK and verify exact hash/signature; retain launch/logcat evidence.",
+    "constraint": "Existing prepare_native builds debug bytes, so it is not run for this retained signed candidate. No uninstall without explicit permission for a disposable owned guest."
+  },
+  "scope": "Signed local candidate production, bounded disposable-emulator installation/launch/hash/signer verification, verified release-host publication, unauthenticated curl recipient retrieval of exact APK bytes, and deployed portal compiled Android CTA verification. Launch ended at Android's permission activity; full app journey and authenticated portal click remain unverified. Play approval, physical-phone acceptance, hosted adoption, BYOC target/IAM acceptance, release-key approval, and original ENOSPC filesystem proof remain unverified."
+}

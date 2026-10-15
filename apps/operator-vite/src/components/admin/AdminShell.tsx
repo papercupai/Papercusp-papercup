@@ -42,6 +42,8 @@ const TABS: ReadonlyArray<{
   { href: "/admin/tasks", label: "Tasks" },
   // WI-2145092: the workspace work-scope policy (which harnesses agents may work).
   { href: "/admin/work-scope", label: "Work scope" },
+  // P-005 (WI-6554700010011434): inherited org → department → workspace governance policy.
+  { href: "/admin/governance-policy", label: "Governance policy" },
   { href: "/admin/cupboard-moderation", label: "Cupboard", term: "cupboard" },
 ];
 

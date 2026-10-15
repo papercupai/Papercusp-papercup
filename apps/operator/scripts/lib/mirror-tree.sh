@@ -25,6 +25,22 @@
 # place after copying, so a byte comparison would never match. Hashing ~30 MB on
 # every install and build would also make the cheap path expensive.
 
+# Copy one generated runtime asset without writing through a destination that
+# another checkout may still hard-link. Stage at the caller's package root and
+# rename into public/ so a recursive Vite public-dir copy never sees the transient
+# staging file. The package root and public/ share a filesystem, so the rename is
+# atomic on both Linux and macOS: readers see the old complete asset or the new
+# complete asset, never a missing or partially copied file.
+mirror_copy_unlinked() {
+  local source="$1" destination="$2"
+  local staged
+  staged="$(mktemp "${PWD}/.mirror-tree.tmp.XXXXXX")"
+  if ! cp -p "$source" "$staged" || ! touch "$staged" || ! mv -f "$staged" "$destination"; then
+    rm -f "$staged"
+    return 1
+  fi
+}
+
 # mirror_file_set <dir> [excluded-relative-path...]
 # Print the sorted relative file paths under <dir> (./a/b.js form), excluding
 # the named paths (for a stamp file that lives inside the mirror).

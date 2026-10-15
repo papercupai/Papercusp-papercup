@@ -12,10 +12,11 @@
  *  - events SSE is shape-correct
  */
 import { test, expect } from './_egress';
+import { onAppOrigin } from './_app-origin';
 
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
-  `http://127.0.0.1:${Number(process.env.OPERATOR_E2E_PORT ?? process.env.PORT) || 3055}`;
+  `http://localhost:${Number(process.env.OPERATOR_E2E_PORT ?? process.env.PORT) || 3055}`;
 
 test.describe('plugin host routes', () => {
   test('GET /api/plugins/host/runtime-status returns rows array', async ({ request }) => {
@@ -51,6 +52,7 @@ test.describe('plugin host routes', () => {
   });
 
   test('GET /api/plugins/host/events is SSE-shaped or 401', async ({ page }) => {
+    await onAppOrigin(page, baseURL);
     const result = await page.evaluate(async (url) => {
       const controller = new AbortController();
       setTimeout(() => controller.abort(), 500);

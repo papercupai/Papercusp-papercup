@@ -29,6 +29,7 @@ import {
   type FrozenRepairEditMarker,
   type FrozenRepairMarkerLeg,
 } from './frozen-repair-edit-marker';
+import type { GateVerdictTarget } from './gate-verdict-target';
 import { renderAdmitCommand } from './repair-manifest';
 
 /**
@@ -69,6 +70,8 @@ export interface GateRedClaimEvidence {
 export interface GateRedClaimProbe {
   /** Injected for tests; omitted means "read the real marker". */
   marker?: FrozenRepairEditMarker | null;
+  /** Exact workspace/install scope for the live marker read. */
+  target?: GateVerdictTarget | null;
   containment?: (paths: string[], judgedSha: string) => PathContainment[];
 }
 
@@ -112,7 +115,7 @@ export function gateRedCompletionClaimWarning(
     const declared = evidence?.filesChanged?.filter((f) => typeof f === 'string' && f.trim());
     if (!declared?.length) return undefined;
 
-    const marker = 'marker' in probe ? probe.marker : readFrozenRepairMarker();
+    const marker = 'marker' in probe ? probe.marker : readFrozenRepairMarker(probe.target);
     // No frozen queue ⇒ the candidate is cut at tip ⇒ an ordinary commit IS the judged
     // lineage, so the claim is unremarkable. Silence, not a guess.
     if (!marker) return undefined;
@@ -181,7 +184,7 @@ export type GateRedClaimVerdict =
     }
   | {
       refuse: true;
-      reason: 'unadmitted-paths' | 'legs-still-red' | 'paths-required';
+      reason: 'unadmitted-paths' | 'legs-still-red' | 'paths-required' | 'main-still-red';
       candidate: string;
       judgedSha: string;
       /** Claimed paths in the red radius that the admission ledger does NOT carry (or whose leg is still red). */
@@ -209,6 +212,8 @@ export interface GateRedClaimVerdictOptions {
   administrativeSettlement?: boolean;
   /** Injected for tests; omitted means "read the real marker". */
   marker?: FrozenRepairEditMarker | null;
+  /** Exact workspace/install scope for the live marker read. */
+  target?: GateVerdictTarget | null;
 }
 
 const legStatusByPath = (legs: readonly FrozenRepairMarkerLeg[]): Map<string, FrozenRepairMarkerLeg['status']> => {
@@ -235,7 +240,7 @@ export function gateRedCompletionClaimVerdict(
     const administrativeSettlement = opts.administrativeSettlement === true;
     if (!prosaicClaim && !conditionItem) return { refuse: false, reason: 'no-claim' };
 
-    const marker = 'marker' in opts ? opts.marker : readFrozenRepairMarker();
+    const marker = 'marker' in opts ? opts.marker : readFrozenRepairMarker(opts.target);
     if (!marker) return { refuse: false, reason: 'no-frozen-queue' };
 
     const candidate = marker.candidate;
@@ -278,6 +283,30 @@ export function gateRedCompletionClaimVerdict(
           (paths.length ? ` Their subject paths: ${paths.join(', ')}.` : '') +
           (pathless.length ? ` ${pathless.length} leg(s) name no subject path — admit the files you fixed by hand.` : '') +
           refusalTail,
+      };
+    }
+
+    // green-main-cycle-time-2026-10-08 P-013 / D-028 (owner-approved D-021 fix 2): every leg
+    // admitted is NOT the gate green. The marker exists only while the frozen queue holds, i.e.
+    // while main is still red. The repair head must still pass a verdict before main moves,
+    // so closing the gate-red condition item now would record "gate green" while main is red.
+    // Administrative settlements make no such assertion and stay exempt.
+    if (conditionItem && !administrativeSettlement) {
+      return {
+        refuse: true,
+        reason: 'main-still-red',
+        candidate,
+        judgedSha,
+        unadmittedPaths: [],
+        redLegs,
+        admitCommand: null,
+        detail:
+          `⛔ GATE-RED CLOSE REFUSED: this is the gate-red condition item, and main is still red. ` +
+          `Frozen candidate ${candidate.slice(0, 12)} is held at repair head ${judgedSha.slice(0, 12)} ` +
+          `and no green verdict has promoted it. Every manifest leg reads admitted or green, so the ` +
+          `next gate tick re-verifies the repair head. This item settles when that verdict passes and ` +
+          `the queue clears. Keep it open until then; do not close it to report progress (record ` +
+          `progress with work_items:checkpoint).`,
       };
     }
 

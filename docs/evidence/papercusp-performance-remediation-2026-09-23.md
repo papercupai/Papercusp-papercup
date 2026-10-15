@@ -4,6 +4,383 @@ Plan: `papercusp-log-performance-remediation-2026-09-23`.
 Driving work: WI-10002801. Measurement/producer work: WI-10002823 (P-001).
 This is current-build implementation evidence, not final shipment acceptance.
 
+## R172 operation timing and clean P006 tests — 2026-10-02
+
+The changed r172 diagnostic passed preparation and boot, then failed its honest
+performance assertion. Popup was 812 ms against 1500 ms; FCP was 1351 ms against
+3000 ms; actual footer LCP was 4819 ms against 4000 ms. The matched footer queued
+its first frame at 3162 ms and ran at 4692 ms, with about 1 ms of measured reads.
+This sample supports small observer reads with a long queue interval. It does
+not explain the prior 134 ms sample or establish a product/CPU cause.
+
+The new operation rows were observed in native execution. The launcher logged
+one isolated collection and published 25 measures; its JSONL was removed by
+normal completion, so no retained row/hash claim is made. Official run
+`20261002T080301Z-1987766`, raw hashes, summary and identity-bound cleanup are in
+`r172TerminalDiagnosticCurrent` in the native audit JSON. All seven sampled
+owned PIDs were absent, the exact nonce scan was empty, and owned private
+profiles/HOME/tmpfs were removed. R-7 and its frozen cohort remain open.
+
+Separately, P006 clean committed tests at `920030a3b939` passed all 41 tests
+across three files with zero skips. Exact terminal rows 20499866, 20500782 and
+20500781 record clean execution. Source hashes and the retained clone are in
+[p006-current-clean-contracts-2026-10-02.json](p006-current-clean-contracts-2026-10-02.json).
+Five maintained lifecycle fault controls each caught the named fault while the
+independent calibration passed. Fresh one-to-one evidence was bound and selected
+before twelve stale bindings were withdrawn; historical runs and the baseline
+were preserved. The governing evaluator now passes BLOCKER@3 and TERMINAL@3.
+Other P006 clauses, rubric ratification, scorecard reuse and shipment remain open.
+
+## Shared target-schema readiness — 2026-10-02, Fire161
+
+The maintained verifier now checks shared schema readiness before allocating its
+work directory, copying dependencies or building the private API. It extends the
+existing PG probe with `--require-applied-schema`, reuses the migration runner's
+eligibility and numeric ordering, and reads the existing migration ledger through
+a read-only connection. Pending and unavailable results refuse preparation with
+distinct exits. The probe has bounded connection, query and process deadlines.
+It sources the same operator `.env.local` as the launcher and prints a target
+fingerprint rather than credentials. Ordinary launcher fallback and the isolated
+PG route retain their existing behavior.
+
+The registered Node suite passed 19 tests with no skips, including actual CLI and
+shell fixtures. Eight new checks failed against the old source. The verifier's
+eight focused files now have terminal passing ledger rows: seven passed in the
+initial matrix; the source-snapshot suite passed all 26 tests after repairing its
+stale admission-wrapper fixtures and line-continuation assertion. Syntax and diff
+checks passed. Exact source/log hashes, commands and ledger IDs are retained in
+`sharedSchemaReadinessFire161` in the native source/output audit JSON.
+
+A bounded execution of the real preflight against the selected shared DB returned
+ready, with no pending eligible migration files, during 07:43–07:44Z. That is a
+dated read, not a future boot guarantee: recheck before another native attempt.
+No native instance was launched, and there is no new popup, FCP or LCP result.
+P-007/R-7 and the separate P-006/P-008 acceptance remain open.
+
+## R171 boot failure recovery — 2026-10-02, Fire160
+
+The newer Fire159 record supersedes the old unlaunched preparation note. R171
+launched once with rebound manifest `c8473370b035`. The maintained verifier's
+official result is **FAIL at boot**, with assertions blocked. WDIO never started;
+there is no new popup, FCP, LCP, operation-partition or isolated-collection result.
+
+The owned API's boot proof reported pending migration
+`1339-session-gate-suppressed-ask-kind.sql` against backup-locked
+`session_pending_gates`. Its request-only migration preflight timed out after
+20 seconds and refused to serve. A native-addon abort followed that refusal;
+the abort's independent mechanism remains unproven. Preparation had already
+spent 324855 ms, followed by 269454 ms in the failed boot phase.
+
+Current scoped cleanup checks recovered the exact per-launch nonce and found no
+remaining processes bearing it. Both recorded API PIDs are absent; the owned
+source snapshot and SPA copy are removed, while small logs remain. The assertion's
+identity/result/native files, profiles, HOME and tmpfs root were never created.
+This is exact-run cleanup evidence, not global process or port absence.
+
+Before another expensive attempt, extend the existing PG probe and verifier
+preflight to establish the selected shared target schema's readiness before
+copy/build work. Reuse the migration runner's selection rules and ledger;
+preserve its backup guard, ordinary launcher fallback and isolated-DB path.
+This detector repair was pending at Fire160 and is verified above at Fire161.
+No unchanged R171 replay is justified.
+
+Exact result, manifest, log and cleanup references are under
+`r171BootFailureRecoveredFire160` in the native source/output audit JSON.
+P-007 cause, product repair, R-7 and the frozen cold/warm cohort remain open;
+P-006/P-008 acceptance remains separate.
+
+## First-frame observer operation guards — 2026-10-02, Fire154
+
+The existing startup probe now records separate first-frame intervals for the
+connection check, each ancestor's computed-style lookup, visibility properties
+and parent traversal, then rectangle and viewport checks. Records remain
+independent for footer and subtitle, are bounded to 99 per candidate, and are
+never appended by later frames. The existing read and short-circuit order is
+preserved. Throwing operations retain timing without exposing private errors.
+
+Four new direct/bundled guards failed against the old aggregate-only probe.
+A controlled fixture distinguishes 10 ms of style lookup, 13 ms of visibility
+properties, 8 ms of traversal, 7 ms of rectangle reads and 24 ms of viewport
+checks within a 62 ms interval. Separate guards cover exceptions, first-frame
+retention, candidate independence and the 32-ancestor limit. These are controlled
+observer measurements, not native rendering or product cause evidence.
+
+The red run also exposed an existing fixture's fractional-clock equality:
+Node returned 8636.999999999998 for a requested 8637 ms duration. An integer
+fixture start removes that arithmetic nondeterminism while retaining the exact
+assertion and production timing precision. The complete red result was
+82 pass / 5 fail; the final maintained suite is **87/87 pass**, zero skips,
+exit 0. Separate typechecking passed. Exact source/log fingerprints are under
+`firstFrameOperationGuardsFire154` in the native source/output audit JSON.
+
+r170's 134 ms aggregate remains unpartitioned historical evidence. Native
+adoption, timing overhead and a paired observer-off comparison are unmeasured.
+Fresh source/payload/manifest bindings and the logged isolated collection path
+are required for one justified changed native diagnostic. P-007 root cause,
+product, R-7 and its cold/warm cohort remain open; P-006/P-008 remain separate.
+
+r171 preparation is now complete, with an independent preserved app/baseline,
+two freshly compiled payloads and 21 current selected source/config bindings.
+The manifest binds the 87-pass suite, separate typecheck, exact index and derived
+assertion. Single early script, independent baseline identity, initially absent
+private roots and Bash syntax checks passed. The assertion recovers only the
+logged unique launcher collection and records whether it remains available;
+it cannot adopt the former shared file. At Fire154 preparation time, r171 had
+not launched. Its later failed boot is recorded above; exact preparation
+fingerprints remain under `r171PreparationFire154` in the audit JSON.
+
+## Isolated WDIO measure persistence — 2026-10-02, Fire152
+
+The controlled launcher/worker regression confirmed the shared-file defect:
+after launcher A recorded a failing interaction, launcher B's preparation reset
+erased it. Both distinct and reused profile names reproduced the loss. JSONL
+append safety protects simultaneous writes; it did not isolate separate runs.
+
+The existing writer now allocates a fresh exclusive collection file before
+preflight. Workers inherit its exact path; new launchers replace an inherited
+prior-run path. Read, reset and publication operate only on that collection,
+with no fallback to the former shared file. Failed publications retain their
+own file. The runner logs the selected path so native evidence recovery can
+bind it. Existing receipt schema and profile identity are unchanged.
+
+The canonical Node suite went from **78 pass / 2 fail** to **83/83 pass**, zero
+skips, exit 0. Separate package typechecking passed. Guards exercise overlapping
+distinct, reused and unnamed profiles with actual worker forks, inherited-path
+replacement, reset/read isolation, refusal of a stale legacy file and retention
+of an unpublished prior receipt. Exact source and log fingerprints are under
+`measurePersistenceIsolationFire152` in the native source/output audit JSON.
+
+This establishes a persistence defect class and its guarded fix. It does not
+establish historical receipt contamination or native adoption. No new native
+run occurred. r170's terminal summary and cleanup hashes were recovered and
+matched; its popup and LCP budgets remain failed. Its writer/config/test source
+bindings are now historical. A later justified native preparation must bind
+the new files and recover the logged collection path. P-007 cause, product,
+R-7 and the cold/warm cohort remain open, as do separate P-006/P-008 acceptance.
+
+## Fresh lifecycle diagnostic preparation — 2026-10-02, Fire149
+
+Prepared r170 from an independent copy of the preserved app and raw baseline,
+using the maintained startup and Web Vitals builders. The manifest binds 21
+current source/config files, both compiled payloads, the shell, baseline, SPA
+index, verifier and assertion. Exact source and log fingerprints recover the
+78-pass v5 guard suite and its separate successful typecheck. Index reconstruction,
+independent file identity, initially absent private roots and assertion syntax
+checks passed before launch. The maintained desktop-native runtime route was read.
+
+The one changed diagnostic completed **FAIL**, with verifier and suite exit 1.
+Popup was **1937 ms** against 1500 ms, FCP was 1618 ms, and actual footer LCP
+was **5341 ms** against 4000 ms. The footer's paired requests were queued at
+4769 ms, its frame callback arrived at 4820 ms, its geometry read completed at
+4954 ms, and its timer arrived at 5006 ms. The first read occupied 134 ms;
+without an observer-off control this is a measured observer cost, not proof of
+the product's initiating cause. Popup request/headers/response/content/preview
+phases were 40/1289/1333/1355/1921 ms cumulatively from the click.
+
+The v5 native trace retained one renderer zombie observation and then missing
+procfs entries during suite completion. It preserved exact earlier lifetimes,
+unknown signal/exit status, and `not-reaped` only at the zombie read. There was
+no unexpected WebDriver session loss or popup timeout in this run. This proves
+native detector adoption; r169's loss cause and native timeout-path adoption
+remain unverified. Five owned PIDs and the source snapshot were absent before
+cleanup. Exact tmpfs identity and retained logs matched. Only the owned profiles,
+HOME, tmpfs logs and matched stale IPC socket/per-port advert were removed;
+the peer's default advert was preserved. Port 33700 refused at that check.
+
+The maintained writer uses one shared `results/measures.jsonl`, and its reset
+removes that same file. A dated 25-row snapshot matches the emitted measurements;
+it cannot establish isolation between concurrent named runs. Verify that class
+with controlled launchers before the acceptance cohort and extend the existing
+writer if needed. Media restrictions, observer work, distinct clocks, changing
+private API and unknown original whole-SPA graph remain limits. P-007 cause,
+product repair, R-7 and its frozen cold/warm cohort remain open; P-006 and P-008
+acceptance remain separate. No unchanged native replay is authorized.
+
+Exact preparation and terminal fingerprints, raw references and failure-class
+audit are under `r170PreparationFire149` and `r170LifecycleTerminalFire149` in
+`p007-native-source-output-audit-2026-10-01.json`. Preserved runtime artifacts
+are under `$HOME/.papercusp/perf/p007-native-current/r170-*`.
+
+## Native disappearance detector — 2026-10-02, Fire147
+
+The maintained v4 sampler forgot previously observed identities when they
+disappeared from descendant discovery. That detector gap prevented distinguishing
+a missing procfs entry from an unreaped zombie, reparenting, PID replacement,
+or incomplete discovery after r169 lost its WebDriver session.
+
+The existing collector and sampler now retain at most 64 owned lifetime
+references and perform two stat reads, bounded to 4096 bytes each, for identities
+missing from the current sample. Their buffered observations distinguish
+`procfs-missing`, `identity-replaced`, `same-identity-present`, `zombie`, and
+`unavailable`. They preserve the last owned observation time. Signal and exit
+code remain unknown because this sampler cannot wait on those targets; only
+an observed zombie establishes `not-reaped`. Existing sample, byte, duration,
+environment and output-descriptor bounds remain in effect. The v5 header
+declares this evidence contract. No additional collector or service was added.
+
+The baseline passed 71 tests. Six new fixture guards failed against the old
+implementation. After the extension, one existing boot-race assertion still
+failed because the new refusal message omitted identity/boot wording; correcting
+that message preserved the refusal and restored the guard. The final maintained
+Node suite passed **78/78**, zero skips, exit 0. Separate package typechecking
+passed, exit 0. The real child-process regression observed a child before exit,
+received SIGTERM in its actual parent, and verified that the running sampler
+retained the exact missing identity while leaving signal and reaping unknown.
+
+An intermediate commentary overstated the first green result by reading the
+last typecheck command's shell status. That statement was immediately retracted;
+the retained logs record the single failing unit assertion and the separately
+run final checks. Commands, exact source/log fingerprints and the audit of the
+r168/r169 measurement gaps are in `nativeLifecycleGuardFire147` in
+`docs/evidence/p007-native-source-output-audit-2026-10-01.json`.
+
+This is detector verification only. No new native popup run was launched in this
+turn, and no crash cause, performance repair, R-7 acceptance or shipment is
+claimed. The prior r169 result remains historical evidence on its original
+sampler; its two changed sampler/test fingerprints now differ from current
+source. The next native preparation must bind the v5 source and its verified
+suite to a fresh owned artifact and manifest. P-007, P-006 and P-008 remain open.
+
+## Paired callback result and native session failure — 2026-10-02, Fire146
+
+Recovered r169 completed with verifier and suite exit 1; it was not replayed.
+The actual LCP node joined the Accounts footer at **4716 ms**, with FCP at
+1314 ms. Footer observation was at 3523 ms. Its paired requests were queued at
+3524 ms, the frame callback arrived at 4578 ms, the geometry read completed at
+4579 ms, and the companion timer arrived at 4723 ms. Both callbacks were late:
+1054 ms for the frame and 1199 ms for the timer. The first geometry read took
+1 ms. This contradicts the prompt-timer/frame-only hypothesis; it identifies
+paired scheduling behavior without establishing its initiating cause.
+
+WDIO then lost its session at spec line 121, before popup navigation. No popup
+duration, attempt timeout or late-total observation was collected. The driver's
+new timeout guard remains verified by its controlled tests, with native adoption
+unverified for that path. Bounded journal/coredump reads for the owned app and
+renderer during the failure window returned no records. The crash-or-hang label
+and missing appsink warning do not establish a signal or cause.
+
+The maintained v4 sampler records current owned descendants but has no
+per-identity disappearance or exit-status observation. Its last app/renderer
+snapshot spans 04:39:09.083–09.090Z. The first follow-up at 09.190–09.191Z
+contains no process rows and an unavailable app `exe` read (`ENOENT`); later
+samples contain no process or unavailable rows. This corrects the initial
+overbroad audit wording: the first missing sample was unavailable, not clean
+absence. It does not distinguish death, zombie/reaping, reparenting or loss
+from discovery. The selected [upstream warning branch](https://chromium.googlesource.com/external/github.com/WebKit/webkit/+/f27346baf833b1134f43b57d859570103117aa87/Source/WebCore/platform/graphics/gstreamer/GStreamerSinksWorkarounds.cpp)
+logs and returns false; that function does not abort. The upstream commit has
+not been matched to the installed WebKit source, so it is a constraint on the
+inference, not a native causal proof. The next detector change belongs in the
+existing probe, with explicit unknown signal and process-reaping semantics.
+
+All 16 prepared source fingerprints still match. The summary preserves the
+raw logs, native process trace, API identity and exact hashes. Five owned PIDs,
+the source snapshot and socket were absent before cleanup. The saved tmpfs
+device/inode and log fingerprints matched; only r169's private HOME, profiles
+and tmpfs logs were removed. Port 33700 refused at that cleanup check. The
+default IPC advert belonged to another runtime and was preserved.
+
+Evidence: `r169PairedTerminalFire146` in
+`p007-native-source-output-audit-2026-10-01.json`, backed by
+`$HOME/.papercusp/perf/p007-native-current/r169-native-summary.json`
+(`a6082fa59c8d…`) and `r169-cleanup-receipt.json` (`9defeea88e92…`).
+Current API identity, separate clocks, media suppression and observer work
+remain confounds. Before another native attempt, audit the maintained crash
+evidence path and add the justified causal detector or isolated preflight.
+No unchanged r169 or earlier replay; cause, initiating caller, product repair,
+R-7 and the frozen five-cold/five-warm cohort remain open.
+
+## Popup timeout observation guard — 2026-10-02, Fire142
+
+The maintained driver had a confirmed observation race: an eight-second wait
+could expire before `endInteraction` emitted the completed measure and consumed
+its start mark. The subsequent diagnostic read omitted completed measures, then
+the classifier treated the absent mark as proof that timing never began. The
+driver also retained previous phase measures when a new click never began timing.
+This is a detector defect. The r168 log lacks the post-timeout total count and
+phase start times needed to establish whether this race occurred in that run.
+Its 13 saved raw-file fingerprints still match; no unchanged r168 was replayed.
+
+The fix extends the existing classifier and `app-mount` driver helpers. Each
+trigger clears prior phases and captures its page-clock boundary and synchronous
+start. A single follow-up read attributes totals and phases to that start,
+including their exact start times. Late completion retains its real duration.
+An observed begin or current phase with a missing start and no total now fails
+as inconclusive instead of being retried away as void. The generic failure text
+no longer claims a dashboard never opened. The product's mark writers are unchanged.
+
+Canonical classifier regressions reproduced **26 passed / 3 failed** before the
+fix, then passed **29/29**, zero skips. Existing mark-writer tests passed **14/14**.
+Maintained WDIO Node integration tests execute the serialized helpers against the
+real User Timing API and real begin/phase/end writers. The first run caught an
+injected `__name` dependency; inline callbacks removed it. The final suite passed
+**71/71**, zero skips, and package typecheck passed. It retains an exact 8637 ms
+completed measure after start consumption and excludes old or different-start
+phases. These are controlled guard tests, not a new native performance sample.
+
+Exact source/test/log fingerprints and commands are recorded under
+`attemptTimeoutGuardFire142` in `p007-native-source-output-audit-2026-10-01.json`.
+Next: prepare a fresh r169 payload/manifest with the current paired-timer sensor
+and this driver, verify the owned runtime route and exact fingerprints, then run
+one changed native diagnostic. P-007 cause, initiating caller, product repair,
+R-7 and the frozen cold/warm cohort remain open; no shipment is claimed.
+
+## Frame-first callback recovery — 2026-10-02, Fire139
+
+The one changed r168 native run reached a startup measurement. Its popup attempt
+timed out and its follow-up read found no start mark; it was classified
+**UNMEASURABLE**. That read did not collect a total-measure count.
+The pre-click scheduler log and request/preview phase measures are present, so
+the earlier claim that its row never opened a dashboard was wrong. The classifier's
+"never began timing" inference requires a writer/attempt-freshness audit; there is
+no accepted popup timing. FCP was 1807 ms and LCP was 6642 ms. The actual LCP
+node joined the Accounts footer: its frame request was at 4767 ms, callback at
+6283 ms, and read completion at 6284 ms. Its companion timer was cancelled at
+eligibility, so this run cannot compare timer and frame scheduling.
+
+That cancellation originated in the probe's eligibility cleanup and callback
+state check. The probe now preserves the independently queued timer after frame
+eligibility, while explicit stop, replacement and the existing deadline still
+cancel it. Two canonical regressions failed before the fix; **68 tests, zero
+skips**, and the package typecheck pass afterward. This fixes the sensor lifetime,
+not the product latency cause. The r168 payload and manifest remain dated proof;
+they do not contain this later fix.
+
+Exact runtime, raw hashes, cleanup and guard references are in
+[the source audit](p007-native-source-output-audit-2026-10-01.json),
+`r168PairedDiagnosticFire139`. Seven observed owned PIDs and the source/socket
+were absent; owned private profiles/home and tmpfs logs were removed after
+identity/hash checks. Port 33700 already accepted connections again at cleanup;
+no signals were sent and no peer runtime was touched. P-007/R7 and separate
+P-006/P-008 acceptance remain open. Audit current and selected frozen interaction
+mark cleanup, phase provenance and timeout classification before another expensive
+native run. The absence of a start mark at timeout does not establish no popup.
+
+## Paired startup callback preparation — 2026-10-02, Fire135
+
+The existing early probe now records the first frame request, one companion
+zero-delay timer per candidate, the first frame callback, and completion of its
+style/geometry reads. This distinguishes a prompt timer with a delayed frame
+from two delayed callbacks or a costly read. These are callback observations;
+they do not identify a main-thread, import or paint cause. Cancelled, unavailable
+and overdue timer observations remain null.
+
+The canonical WDIO Node suite passed **67 tests, zero skips**, after the three
+new regressions failed against the previous source; the package typecheck passed.
+Source `921941fe76dd`, test `d717c2a5cd28` and final unit log `ff10bca4f775`
+bind this preparation. Fresh r168 early/Web Vitals payloads and an independent
+saved SPA are bound by manifest `bcad7d1075d5` and assertion `59d77782439a`.
+At that preparation boundary, no r168 native run had started. Baseline preparation caught one insertion newline
+before compilation; recovery used the exact saved raw baseline and added an
+assertion for its hash and absent probe marker.
+
+Exact references, predictions and limits are in
+[the source audit](p007-native-source-output-audit-2026-10-01.json),
+`pairedFramePreparationFire135`. The leader's later observation that port 33700
+was reused does not invalidate r167's dated cleanup receipt; it prevents a current
+global port-absence claim. P-007 cause/product/R7 and the separate P-006/P-008
+acceptance remain open. The next run must validate its own selected ports and
+runtime identity, preserve failed cohorts, and join the actual LCP candidate.
+
 ## Measurement profiles
 
 The original [audit](../audits/application-performance-audit-2026-09-23.md)
@@ -3663,3 +4040,1269 @@ The source defect and recurrence guard are verified. The retained live
 slow-sweep cause, app impact and shared-runtime adoption remain separate
 open questions under D-006. **P-008/R-8 remains open; no acceptance binding,
 shared-host restart or shipment is claimed.**
+
+### Matched metadata read controls — October 1, 10:44Z
+
+WI-10002830 extended the maintained private-runtime fixture with real
+synchronous filesystem call/byte counters. Every managed home now has a
+38-byte synthetic diagnostics stamp and a 55-byte config. The incremental
+workload remains 4,800 rollouts across 320 homes, 80 useful tails per pass,
+and the existing four repeats. Its workload hash remains
+`6fda56724fe55c56706e4c99460603d83685d6e3debceca2f24a3210b6140ad4`;
+the added metadata fixture hash is
+`d664293d6c33eceee43b15c3ff8807edb84f0a969e3885201d50ad8e1556e1e7`.
+
+The distinguishing control calls `codexTranscriptMeta` followed by
+`codexAdvSessionMetadata`, alternately omitting/passing the already resolved
+native id. Its four profiler-off observations use duplicate/reuse/reuse/duplicate
+order. The wrapper always invokes the original filesystem reader and records
+successes, errors, bytes and wall spans; it supplies no cached values. All four
+owner/native-id/model/effort output hashes are identical:
+`e55b702411dac67a678e9f756ef8c1cd7caff011c4109f2e551b26e7eca315d4`.
+
+| Mode, same 4,800 paths | Diagnostics calls | Diagnostics bytes | Config calls | Config bytes |
+|---|---:|---:|---:|---:|
+| Resolve identity twice | 9,600 | 364,800 | 4,800 | 264,000 |
+| Pass the resolved identity | 4,800 | 182,400 | 4,800 | 264,000 |
+
+The source cause is the second `codexTranscriptMeta` call inside
+`codexAdvSessionMetadata` when no id override is supplied. The pre-fix
+canonical runtime regression failed with actual 9,600 versus expected 4,800
+diagnostics reads. The fix passes the existing `meta.sessionId` from both the
+sweep and `ingestFileNow`; an explicit single-file override still wins. Config
+continues to be read freshly. The unit regression rewrites model/effort between
+metadata-only calls and checks the explicit identity and new settings.
+
+Both useful and matched unchanged sweeps now assert 4,800 successful diagnostics
+reads and 4,800 config reads, with exact byte totals and zero read errors.
+Single-file metadata-only repairs, with and without an explicit id, assert one
+read of each file and zero inserted turns. Each child retains 256 turns and
+2,560 parts, verifies offsets, removes its private HOME/datadir, and verifies
+the database port refuses connections. The existing profiler off/on/on/off
+comparison remains, with filesystem counters held fixed.
+
+Canonical verification:
+
+```bash
+PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/search/session-ingest-runtime.integration.test.ts packages/operator-core/lib/search/session-ingest-adv-metadata.test.ts packages/operator-core/lib/search/session-ingest-walker.test.ts packages/operator-core/lib/search/session-ingest-phases.test.ts packages/operator-core/lib/search/session-ingest.test.ts
+```
+
+Runs `r2` and `r3` each passed 58 tests in five files, zero skipped, exit 0.
+`r2` started 10:40:09Z on `28db2e820b`; its children were 4179054 and 17582.
+`r3` started 10:43:23Z on `3331de7812`. Automatic commits moved HEAD during
+both matrices, so the router explicitly marks broader dependency provenance
+**unknown**. The named files and ingestion source fingerprints stayed fixed;
+this is scoped fixture evidence, not a settled-HEAD acceptance result. A bounded
+git-sync resource-lock attempt was refused `held_exclusive`; no lock was taken
+or bypassed. Do not repeat these unchanged matrices merely to recover receipts.
+
+| Current file | SHA-256 |
+|---|---|
+| `session-ingest.ts` | `c7bb38ff15c421571116361362da12e8020b929c385894b424461297a7665af7` |
+| runtime fixture | `df457c62ac8e9fc2999972eaba57aceffb3892c9376dc3cc66295afdecdf8ee7` |
+| adv metadata test | `75554e5b06f9c45ef4178924407ac67e6cb771b951b7c0832967c65143e9dd06` |
+
+Red receipt: `/tmp/p008-metadata-red-20261001-r1.log`, SHA
+`e1080ab950bfa1b508d3d5b24ba892a3424387a1ce1755f7349078ebd6a4c712`.
+Final matrices: `/tmp/p008-metadata-matrix-20261001-r2.log`, SHA
+`f130592d89fb7058a0268d5c1c581f3578df11e79b5bfdb20ac6cc0da2a4e249`;
+`/tmp/p008-metadata-matrix-20261001-r3.log`, SHA
+`52ea8e02575b9ce576ad190f8a1f55a620dece106932fd02ba9611b4d377dbb4`.
+Scoped diff validation passed.
+
+The matched control proves a redundant-read mechanism and preserves metadata
+output. Its short process-CPU/wall observations include the observer and other
+child threads; they establish no stable overhead percentage or production
+speedup. Config's repeated per-rollout reads and their freshness/selection
+contract remain a separate possible optimization. The long shared-host sweep
+cause, app impact, adoption and sustained profiler overhead remain unproved.
+**P-008/R-8 stays open; no live acceptance binding or shipment is claimed.**
+
+### Selected-home config reads — October 1, 11:13Z
+
+WI-10002830 confirmed another redundant-read mechanism in the existing Codex
+metadata sweep. `codexMetadataBackfill` retained only the first valid rollout
+per managed home, but `codexAdvSessionMetadata` read config before checking
+whether that row had already been selected. The canonical private-runtime
+regression failed with 4,800 config calls versus the expected 320. Moving the
+read behind the existing map's selection check removes discarded work. No
+process cache, new flag, config key, service or metadata surface was added.
+
+The maintained fixture now gives all 4,800 rollouts distinct native IDs and
+explicit mtimes. It inserts 320 real private `adv_sessions` rows and checks
+that the newest valid rollout in each home supplies the original native ID,
+model and effort. These baseline assertions passed before the pre-fix read-count
+failure and also in both post-fix children. The selected-row hash after the fix
+is `8d449dacf45c2cd93b203b01df5b07f956ab9b8a9417c71a23f433cedf968295`.
+
+| Same 4,800-candidate sweep | Config calls | Config bytes | Diagnostics calls |
+|---|---:|---:|---:|
+| Pre-fix regression | 4,800 | 264,000 | 4,800 |
+| Selected-home reads | 320 | 17,600 | 4,800 |
+
+Every useful and matched unchanged sweep in both children checks these exact
+counts, successful reads and zero read errors. The real filesystem wrapper
+continues to call the original reader. Further private sweeps check that a newer
+malformed native ID does not occupy the home, a missing config permits native-ID
+repair with one failed config read, a recreated config's model/effort are seen
+on the next sweep, and explicit launch settings remain intact. Single-file
+metadata-only repair still reads config freshly and inserts no duplicate turns.
+Each child retains 256 turns and 2,560 parts, removes its private HOME/datadir,
+and verifies the database port refuses connections.
+
+Verification used the five-file command in **Matched metadata read controls**.
+The 11:08Z run passed both private-runtime cases and 55 of 56 unit cases. The
+sole unit failure was the phase fixture's old expected cost of two config reads
+for two rollouts in one home (6 instead of 3 injected wall-time units). After
+correcting that expectation, the exact phase file passed all three tests at
+11:11Z, zero skipped, exit 0. This supplies passing evidence for 58 distinct
+tests across those runs; the five-file invocation itself exited 1. The unchanged
+integration cases were not rerun merely to reconstruct their evidence.
+
+Both children used source `6934df03…`, Node `v25.9.0`, PIDs 2082455 and 2101864,
+and HEAD `50b2351ce345c810db05b6b363928596781ce81f`. The router's start/end HEAD
+stayed fixed, with local fixture edits. This verifies the named source and
+fixture contract; it does not inventory or freeze the entire import graph.
+Final scoped `lint:tsc` covered the source and both edited test files after the
+last test edit: zero type errors, exit 0. Scoped diff validation passed.
+
+| File | SHA-256 |
+|---|---|
+| `session-ingest.ts` | `6934df03e7d3da888bbf30fc63d1493f275bbf5a860edcd69ce965af6fb09871` |
+| runtime fixture | `6b5e1b460479ff96fffb878bf04d1fd2ead0c68e685933dd4c24a155384d54ce` |
+| phase test | `9e8db0391d189b5c404adf4d13ff6c977db7a78e321f18917b7d44a8309b563c` |
+
+Receipts:
+
+- `/tmp/p008-config-red-20261001-r1.log`: SHA
+  `21847bf051d8b46acec85bdd03c3f12926a9d3c378f7b9a72c85b4231a623959`;
+  selected case failed as intended, the other case was excluded.
+- `/tmp/p008-config-matrix-20261001-r1.log`: SHA
+  `49e67c653c10b8713743dc7a65a5c420a60d8aa34509c21183c7da2e6ac205e8`;
+  both runtime cases and 55 unit cases passed, old phase-cost assertion failed.
+- `/tmp/p008-config-phases-20261001-r2.log`: SHA
+  `13e3cdabac209f54d8cf6bdcdc2696ac1e95add675fb824b827ac08ccaf8f5c1`;
+  corrected phase file passed 3/3.
+- `/tmp/p008-config-types-20261001-r1.log`: SHA
+  `8d894dc2db15e6d56ad1ec73ad5f8d5c4efc322d90e66cbdd61e6bfc71220f54`;
+  final scoped typecheck passed with zero diagnostics.
+
+The root cause and recurrence guard are verified for discarded config reads.
+The detector gap was that the earlier fixture checked per-rollout metadata but
+did not exercise real backfill selection over distinct native IDs in one home;
+the maintained private-PG fixture now checks that behavior and sweep freshness.
+This is no measurement of production latency, long shared-host sweep cause,
+shared adoption, or sustained profiler overhead. D-006 remains binding, and
+**P-008/R-8 remains open**.
+
+### Current frozen mixed-record replay — October 1, 11:34Z
+
+WI-10002830 refreshed the frozen-tail measurement after the redaction,
+metadata-identity reuse and selected-home config changes. The original ended
+Codex rollout in managed `session-32189` still hashes to
+`daf3b19c556879679f73cc71e49822eda166ac5756cfffb19586787ffd16f4a7`.
+Its last 100 complete JSONL records remain 214,497 bytes, SHA-256
+`aca19605813043b6c1ba7d82bd89344f50c90aee1bddf47bcd51aec0064eb37e`.
+The temporary snapshot had mode 0600, stayed outside the repository, and was
+removed after verification. No transcript text is included in this evidence.
+
+The maintained canonical command was:
+
+```sh
+PAPERCUSP_TEST_RUN_HARNESS=papercusp TEST_INGEST_CORPUS_PATH=/tmp/p008-frozen-tail-fire68.jsonl npm run test:file -- packages/operator-core/lib/search/session-ingest-runtime.integration.test.ts
+```
+
+It passed **2/2 tests, zero skipped, exit 0**. Both children exercised the
+existing `--isolated-runtime` route with a private migrated PostgreSQL database,
+HOME and workspace, stripped live credentials, and background workers enabled.
+PIDs were 3496815 and 3524061, Node `v25.9.0`; both recorded HEAD
+`9800a28622a15e6d9b0e86ba582f2087b3947e9f`. Router start and end HEAD agreed;
+the named test file was clean. Source and fixture hashes remained
+`6934df03e7d3da888bbf30fc63d1493f275bbf5a860edcd69ce965af6fb09871`
+and `6b5e1b460479ff96fffb878bf04d1fd2ead0c68e685933dd4c24a155384d54ce`.
+This is named-source provenance, not a frozen inventory of the entire import
+graph.
+
+The current preflight derives 240 turns and 2,160 parts per useful sweep from
+the frozen parser input. Four repeats over 80 changed tails among 4,800
+candidates produce **960 turns and 8,640 parts per child**, verified by private
+database readback. Workload descriptor SHA-256 is
+`4608adf5589cf5b4c494d69b704a60b1c64401e6446fcc09a654f9501f396d58`.
+Matched unchanged sweeps insert zero turns/parts. Every useful and matched
+unchanged sweep reads config 320 times/17,600 bytes and diagnostics 4,800
+times/182,400 bytes. The same fixture also verifies malformed-newer-ID
+selection, missing config, next-sweep config freshness and explicit launch
+settings. Both children verified removal of the private HOME/datadir and
+connection refusal on their database ports, 34285 and 39395.
+
+| Child / useful pass | CPU profiler | Sweep wall ms | Decode wall ms | Write wall ms | Process CPU user + system ms |
+|---|---|---:|---:|---:|---:|
+| 3496815 / 1 | off | 5,083 | 319.7 | 4,359.7 | 1,096.226 |
+| 3496815 / 2 | off | 2,179 | 274.3 | 1,493.9 | 920.218 |
+| 3496815 / 3 | off | 2,423 | 312.3 | 1,692.0 | 907.170 |
+| 3496815 / 4 | off | 6,031 | 295.4 | 5,344.0 | 816.323 |
+| 3524061 / 1 | off | 1,768 | 297.3 | 1,014.1 | 1,108.584 |
+| 3524061 / 2 | on | 6,870 | 299.4 | 6,130.6 | 1,127.614 |
+| 3524061 / 3 | on | 1,711 | 309.8 | 909.0 | 1,001.596 |
+| 3524061 / 4 | off | 3,944 | 357.4 | 2,994.7 | 1,052.447 |
+
+These phase spans include awaited operations; they are not phase CPU
+measurements. Process CPU covers all child threads. Useful-pass sampling
+startup cost was 84.681/97.936 ms, with 47/683 and 44/170 ingestion-source
+samples. The large write-wall variation in both profiler modes does not
+establish a sustained profiler-overhead ratio or its cause. This private
+workload does not reproduce the dated long shared-host sweep, nor identify
+its wait mechanism or application impact.
+
+Receipts:
+
+- `/tmp/p008-frozen-runtime-20261001-fire68.log`, SHA-256
+  `cb278381b518d5ef0a0222fab51187955ffe9f96c76bab00265c18fa15f8b257`.
+- `/tmp/p008-frozen-runtime-20261001-fire68-summary.json`, SHA-256
+  `6658dafbc6dcd44824ae59597157b800b2c4af012ca850c34a240efcd5cc5900`;
+  derived counts, phase costs, private identities and named dependency hashes.
+
+This supersedes the 03:07Z proof's applicability to current ingestion source;
+the dated receipt remains historical evidence. D-006 still forbids a worker
+restart of the shared background host. R-8 revision 4 requires live/operational
+causal closure or an evidenced non-defect disposition for each named lead.
+**P-008/R-8 remains open; no acceptance binding or shipment is claimed.**
+
+### Committed cancellation proof and natural ingestion window — October 1, 14:06Z
+
+Fire 79 compared the four final cancellation source/test fingerprints in
+the "Codex cancellation parity" section
+with committed HEAD `8cfe6fd85b042b7f97c6f5a2cedaa495d1cfbf40`.
+All four match. Gateway and stage-test blobs landed in
+`d499db39862610c9c7f3748293612cc8bf83092a` at 13:43:52Z; OAuth adapter
+and adapter-test blobs landed in
+`49f6d06dcfa53e7c822abebacf342ffe358f9ff9` at 13:43:45Z.
+The existing 351-test matrix, final 31-test stage run and scoped typecheck
+remain the verification receipts; unchanged tests were not rerun.
+The gateway peer received the exact refs in `muplnt57-0000-faf70cd5f92f424b90be3b5edaa58817`.
+No further gateway source edits are planned during the requested quiet
+window through 14:23:52Z.
+
+The fresh path-scoped runtime read reports gateway owner build
+`6563e1ea76`, `containsChange:false`, method `start-after-mtime`.
+The serving-runtime writer compares process start with file mtime when the
+canonical-tree host has no matching boot-commit blob; this result is not a
+deployment verdict. The staging operator at `8cfe6fd85b` contains the
+gateway path by blob comparison. The ingestion path's later read reports
+bg-host build `8cfe6fd85b` containing that path by blob comparison, while
+the staging operator's health is unknown in that later receipt. No shared
+host was restarted. Gateway adoption was requested from the fleet leader;
+the first required wake missed, and a subsequent wake queued. Neither
+receipt proves pickup or completed adoption.
+
+One bounded natural-ingestion journal query covered October 1
+13:30:00–14:02:00 UTC, selected `session-ingest.*phases=`, and kept at most
+12 collapsed rows. It returned 10 matches without truncation, journal error
+or unknown-unit diagnostics. Numeric evidence was recovered from the
+unshaped result rather than the nested, shortened inline view:
+
+| Receipt UTC | Scanned | Total wall ms | Discovery ms | Decode ms | Writes ms |
+|---|---:|---:|---:|---:|---:|
+| 13:38:08.666 | 7306 | 115556 | 32031.6 | 25705.9 | 44513.9 |
+| 13:38:34.539 | 7309 | 3472 | 1097.9 | 299.4 | 489.7 |
+| 13:41:12.650 | 7319 | 36410 | 32322.2 | 757.2 | 958 |
+| 13:43:23.383 | 7353 | 52589 | 24522.6 | 4452.9 | 11223.9 |
+| 13:46:55.676 | 7364 | 136844 | 111637.7 | 1085.8 | 3541.6 |
+| 13:50:54.457 | 7384 | 14445 | 3328.4 | 1313.4 | 7687.3 |
+| 13:53:23.975 | 7405 | 42799 | 27852.9 | 2570.7 | 6091.7 |
+| 13:55:20.252 | 7418 | 41381 | 14794.3 | 3262 | 17437.3 |
+| 13:59:16.295 | 7430 | 165296 | 141881.6 | 6195.8 | 13612.3 |
+| 14:01:43.979 | 7517 | 73473 | 12479.9 | 19982.9 | 35304.2 |
+
+Each retained row reports zero errors. `runSessionIngestOnce` measures
+discovery around `listCandidateFiles`, which awaits directory enumeration
+and then serial file stats; these are exclusive wall buckets, including
+scheduling and I/O waits. This does not identify which operation caused
+the delay or establish CPU pressure, shared-pool pressure or app impact.
+The log-read surface omits process/invocation identifiers. A separate
+service-health read recognizes current `papercusp-bg-host.service`, and
+marks the queried `papercup-bg-host.service` name unknown; the journal
+reader's historical-name support means its successful old-name query
+cannot by itself bind these rows to the current service incarnation.
+
+A follow-up native journal read resolved that gap for the exact same ten
+timestamps. The first five rows (through 13:46:55.676Z) carry PID `3236420`
+and invocation `31884442bef849a180bfa2c133b6c0a5`. The last five carry
+PID `4099092`, invocation `ceec6e03ddd841b28c50ddd48a6223f2` and unit
+`papercusp-bg-host.service`. Targeted systemd reads resolve both old and
+new unit names to that current PID/invocation, started at 13:48:20Z.
+Thus service-health's old-name unknown is not evidence of an absent alias.
+The exact journal task is `0mupm2dp9tzatt8127v`, exit 0; its distilled
+identifiers partition all ten receipt timestamps into those two incarnations.
+
+An already-published profile for current PID `4099092`,
+`loop-saturation-1790863645955-pid4099092-p95_617ms.cpuprofile`, SHA-256
+`81927da9db2054243330cfc048d9109d5ce8a3eba9d8380dfb47ec0c0edf3708`,
+contains 134 samples over a 3.341397-second monotonic interval. Four
+distinct `spawn` leaves contribute 24, 20, 14 and 11 self samples; their
+ancestry passes through `streamGitFields` and
+`completionBlobHistoryContains`/`completionHistoryLocation`, including
+`residualPathsForCommit`. This is source-attribution evidence for that
+profile, not an explanation of the earlier ten sweeps: its artifact time
+is later than their window, and neither CPU samples nor wall buckets
+alone establish the causal connection or user latency. The exact bundled
+caller and same-window overlap still need a distinguishing measurement.
+
+Portal and the two additional checkpoint-harvest observations
+`EI-24784971427298446` / `EI-24784699543275632` remain in the leader's
+routing lane. R-8 still requires causal operational evidence or an
+evidenced non-defect disposition for each named lead. No acceptance
+binding, final shipment or causal closure is claimed here.
+
+### Published-profile window and neighboring ingestion receipts — October 1, 14:46Z
+
+The cold continuation recovered the post-checkpoint native transcript
+`01a0f7d4-fdf7-7e13-b4ec-26f3b1e99f2d`: the previous turn read the
+completion-history source, but did not complete this journal correlation.
+The current claim remains WI-10002830 / P-008. The refreshed lock-mode
+receipt selects automatic verified hooks, generation `1790863925000`.
+
+The previously inspected profile
+`loop-saturation-1790863645955-pid4099092-p95_617ms.cpuprofile` is now
+absent at its recorded path. Task `0mupn6p1k1aksn6q1ow` returned
+`FileNotFoundError`, exit 1, before reading the journal. This does not
+invalidate its saved SHA-256 and sample attribution, or establish why the
+file disappeared. The profile writer retains a bounded number of files,
+but no deletion receipt was obtained.
+
+The completed bounded native journal task `0mupnaa0i1obhcsrk6z`, exit 0,
+reads October 1 14:01–14:20 UTC and filters PID `4099092`, invocation
+`ceec6e03ddd841b28c50ddd48a6223f2`. It binds the exact profile filename
+to its capture log at **14:07:27.649930Z**, journal monotonic timestamp
+`153326790047` microseconds. Separately journaled detail fields report
+requested duration 3,000 ms, sampling interval 10,000 microseconds,
+profiler start-call cost 0.151393 ms and stop-call cost 7.159455 ms.
+These last two fields measure observer-call costs, not absolute sampling
+timestamps: `LoopCpuRecorder.record` writes differences of
+`performance.now()`. `captureCpuProfile` stamps the filename with
+`Date.now()` after `Profiler.stop`, before writing the file. Subtracting
+the requested duration from the filename cannot recover an exact start.
+
+The same journal window contains these neighboring ingestion receipts:
+
+| Receipt UTC | Scanned | Total wall ms | Discovery ms | Decode ms | Writes ms | Metadata backfill ms |
+|---|---:|---:|---:|---:|---:|---:|
+| 14:01:43.979112 | 7517 | 73473 | 12479.9 | 19982.9 | 35304.2 | 1033.1 |
+| 14:12:49.441406 | 179 | 488749 | 33733.1 | 58132.6 | 107510.3 | 284423 |
+
+Both report zero errors. Subtracting the latter rounded duration from its
+journal receipt gives **14:04:40.692406Z**. The profile publication falls
+inside that receipt-derived sweep envelope. This is a timing correlation,
+not exact sampling-to-phase overlap: the journal timestamps are log
+receipts, and the retained buckets do not carry per-operation start/end
+times. The narrow 14:04–14:11 UTC query, task
+`0mupn8zr9bibgik1ob7`, exit 0, contains the capture and completion-
+settlement markers but no completed ingestion phase receipt. It cannot
+establish that ingestion was inactive. An intermediate reducer failed on
+a null journal `MESSAGE` (task `0mupn8844esw7bo1voc`, exit 1); the final
+reducer handles null messages and returns only identifiers and numeric
+fields, without raw forensic output.
+
+Source inspection resolves the sampled ancestry:
+`residualPathsForCommit` calls `completionBlobHistoryContains` for a
+mismatched path; that resolves each endpoint with
+`completionHistoryLocation`, then performs a bounded Git history read
+through `streamGitFields`. The shared helper uses `child_process.spawn`
+and asynchronous stdout/close handlers. Its sampled `spawn` leaves do
+not establish a synchronous Git execution or prove that process launch
+caused this ingestion delay. Separately, ingestion's metadata-backfill
+bucket awaits `backfillSessionOwners` and, for Codex,
+`backfillCodexAdvSessions`; its 284,423 ms is wall time across those
+operations, including scheduling and database waits. A distinguishing
+measurement still needs the exact operation, wait/CPU mechanism and app
+impact. No shared-host restart, new source fix, unchanged test rerun,
+acceptance binding or shipment occurred in this continuation. P-008 / R-8
+remain open.
+
+### Gateway cancellation loaded-build receipt — October 1, 15:04Z
+
+The existing gateway runtime owner, su-839dcda5 / WI-10004644, supplied
+`coord-send-b626b8412ed5cbd248892b69ed959df68399926d5744954dba5521b4aec9eb85`.
+That 14:59:08Z receipt reports the gateway restarted at 14:29Z, loaded
+build `a6ab88c04e`, and health process-start stamp `1790864960064`.
+The owner reports no further gateway restart planned. The fleet leader
+separately confirmed this existing adoption route. No P-008 restart was
+performed.
+
+This continuation compared `git show` bytes at that reported loaded build
+with verified commit `8cfe6fd85b042b7f97c6f5a2cedaa495d1cfbf40`.
+All four SHA-256 fingerprints match the final source verification above:
+gateway `a6bcb149`, stage test `e119c153`, OAuth adapter `f4275b9b`,
+and OAuth adapter test `b055eca0`. The loaded build thus contains the
+exact verified cancellation sources, with the two tests as provenance;
+this does not assert that the test files execute inside the gateway.
+The process binding comes from the runtime owner's dated health receipt,
+not a fresh product-request trace. Existing 351-test and final 31-test
+receipts were retained without rerunning unchanged tests.
+
+The previously unknown gateway cancellation-source adoption is now
+established for that recorded incarnation. Historical downstream-close
+trigger, account proxy configuration, app impact, and R-8 acceptance
+remain open. This is not a final-shipment claim.
+
+### Archived owner-backfill SQL attribution — October 1, 15:14Z
+
+The bounded PostgreSQL stderr reducer, task `0mupo95ttkn7xqzu852`,
+exit 0, read only `/var/log/postgresql/postgresql-18-main.log` for
+14:04–14:14 UTC. It classified 317 timestamped records in that file and
+returned one owner-backfill UPDATE duration record, with no omitted
+matches: **14:12:49.381Z**, backend PID **1030409**, application name
+**`pcusp:org-admin:p4099092`**, duration **284,354.979 ms**.
+The unreturned full record's SHA-256 is
+`541d2daf238e5cb1322e35888d3726e38a2b9d6c1f10cf7c10237c62383728a8`.
+`pgAppName` in `libs/papercusp/libs/db/src/connection.ts` writes
+`pcusp:<pool-label>:p<process.pid>`, so the application name binds this
+statement to the same bg-host PID as the ingestion receipt above.
+
+The exact-backend follow-up, task `0mupod94xkrz7qw17e2`, exit 0,
+retained two records in the same file/window: that completed UPDATE and
+its parameter-detail record. The third parameter is **`claude`**.
+Thus the slow statement is `backfillSessionOwners` for Claude, rather
+than the Codex `adv_sessions` metadata UPDATE. The first two parameter
+values each retain 1,027 characters without a complete closing array;
+their exact array cardinalities were not recovered. Parameters and SQL
+text were processed inside the reducer and not returned. The parameter
+record SHA-256 is
+`fe1d288af14506631281975a637aca5b4c10eeb1c9253ec3ed642034af035d9d`.
+
+This directly locates almost all of the reported 284,423 ms backfill
+bucket in one PostgreSQL statement. It does not decompose that statement
+into execution, lock or I/O time. No target-backend lock/cancellation
+record was retained in this one-file window; that is not proof of no
+wait. A current settings read shows `log_lock_waits=off` and a 7,000 ms
+slow-statement floor, but no historical settings receipt was obtained.
+The current `session_turns` catalogue includes its composite primary
+index `(workspace_id, source_kind, session_id, turn_idx)` and a
+`session_id` index. Index existence does not establish the historical
+plan or its efficiency. The process-local completed-query ring retains
+32 results and cannot recover evicted historical query/wait linkage.
+
+Next, distinguish the bulk UPDATE's access plan and wait mechanism using
+the existing query/runtime route. The matched PostgreSQL and ingestion
+receipts narrow the investigation; historical app impact, R-8 acceptance
+and final shipment remain open. No production SQL mutation or shared
+restart was performed.
+
+### Current owner-backfill access and wait evidence — October 1, 16:00Z
+
+The current relation read returned the composite
+`session_turns_pkey(workspace_id, source_kind, session_id, turn_idx)`.
+EXPLAIN-only SELECT mirrors of the guarded owner UPDATE, using 1, 16 and
+179 currently indexed Claude session IDs, all selected a Nested Loop,
+Function Scan and `session_turns_pkey` Index Scan. Their index conditions
+include workspace, source kind and the resolved session ID; owner
+inequality remains a heap filter. These are current SELECT access plans,
+not the executed UPDATE plan or recovered historical parameters. The
+same current catalogue reports no non-internal row triggers. No missing
+index or trigger-induced delay is established by these reads.
+
+A separate natural recurrence was observed on backend **2451198**,
+application **`pcusp:org-admin:p1649158`**, query ID
+**`-9170796359460262385`**, query start
+**2026-10-01 15:47:59.513131 UTC**. The statement fingerprint checks
+confirmed the UNNEST join and workspace/source/session/owner guards.
+Two active snapshots showed **IO / DataFileRead**, with no blocking
+PIDs; another active snapshot had a null wait event. This directly
+observes data-file waiting at those instants, not a continuous wait
+classification, backend CPU consumption, or the earlier query's cause.
+
+The completed PostgreSQL log record is **15:55:40.233 UTC**,
+duration **460,720.337 ms**, SHA-256
+`90447858bbe79de268e639d1080dea4a97f2cc1806ca27ca2507513e82c6f193`.
+Its paired parameter record identifies **Claude**, SHA-256
+`335a4541f3d6cf3dcc0c4df367f01c584960427597dc87cf3771050393ebac40`.
+Task `0muppzaku195iei01nu`, exit 0, normalized the log's EDT timestamps
+to UTC and retained both matches without omission or parse errors.
+The first two reducers returned no selected-window matches because
+their timestamp handling was wrong; those results do not establish
+record absence. Parameter values were not returned.
+
+The fixed-window journal reducer, task `0mupq0tdj1kffa81cpd`, exit 0,
+retained one corresponding ingestion receipt at timestamp
+`1790870227025482`, PID **1649158**, invocation
+**`a90f90e3e3c5413380b9d59d0905dbd8`**, unit
+`papercusp-bg-host.service`. Its metadataBackfill wall bucket is
+**464,505.2 ms**, while its discovery/decode/writes buckets are
+56,729.8 / 23,065.4 / 77,367.4 ms. Receipt SHA-256:
+`23a80cd88fc760e0b0c64809e5c0dd513b8cd6b3ad04a7f2edd76f8f37b729d9`.
+It has no per-operation `metadataBackfills` field.
+
+The three-second `/proc` assay, task `0muppubgp1abmty84ml`, is deliberately
+**not** used as per-query CPU/I/O evidence: it started at 15:55:40.009496
+UTC and straddled the measured query completion. Its after-query
+identity read did not match the original statement. Process-incarnation
+continuity alone does not make that whole interval attributable.
+
+Thus a current slow Claude owner repair and momentary data-file waits
+are directly observed. The executed UPDATE access path, sustained
+wait mechanism, historical attribution and app impact remain open.
+No shared mutation, host restart, unchanged test rerun, source fix,
+acceptance binding or final-shipment claim was made.
+
+### Private executed owner-UPDATE control — October 1, 16:30Z
+
+Extended the existing `session-ingest-runtime.integration.test.ts` route;
+no production query, index or repair cadence was changed. The private
+postgres.js debug callback captures the actual production owner UPDATE
+and its bound parameters in memory. The fixture adds 179 synthetic
+Claude transcripts in the adapter's managed-home layout, ingests them,
+damages all 179 stored owners, then repairs them with no new file bytes.
+That sweep reports zero ingested files/turns/parts and 179 owner updates.
+
+The captured statement is replayed with `EXPLAIN (ANALYZE, BUFFERS,
+FORMAT JSON)` inside a private rollback transaction, first repairing
+179 owners and then updating zero already-correct owners. Both plans
+are real ModifyTable/Update plans with a Hash Join, Function Scan and
+`session_turns_pkey` Index Scan. Root Actual Rows is zero for UPDATE
+without RETURNING; the fixture checks private state and the join output
+instead. The two final child runs measured repair/no-op execution of
+7.154/0.552 ms and 11.434/0.669 ms. Root shared-read blocks were zero
+in all four replays. The no-op still visited 179 indexed rows. Rollback
+preserved the exact before/after owner and xmin rows.
+
+Canonical command: `PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file
+-- packages/operator-core/lib/search/session-ingest-runtime.integration.test.ts`.
+Final result: **2 passed, 0 skipped, exit 0**, log
+`/tmp/p008-owner-update-private-full-20261001.log`, SHA-256
+`0077a938ee88216231b712a9365a82f0a9f4f3634b75fa344fa5ea112b23e7af`.
+Both children verify home/datadir removal and refused database ports.
+Source SHA-256:
+`81276d349520ea93952d19232ede4a677c75a23783984d3b12215177f4395789`;
+fixture SHA-256:
+`abf3109f41160a6b560a7666a023da2dddefec9c8c9364c3e2849f685b5232d7`.
+Captured SQL SHA-256:
+`c33700f42ffa35ce2682fc96000aa49d0d8824cd23d605e682d77c585282df42`.
+Recorded child HEAD was `1219248f0a67a79795d4bd7572034f650986c022`;
+the fixture change was local during verification.
+
+This proves current-build no-new-tail owner repair and private executed
+UPDATE behavior. The small private relation and its cache state do not
+reproduce the live 460,720 ms statement, establish its access plan or
+sustained wait mechanism, or prove historical app impact. R-8 and P-008
+remain open. Avi's system-wide pause arrived during final verification;
+the worker finished that atomic test and saved state before pausing.
+
+### Current plan-only owner-UPDATE controls — October 1, 17:22Z
+
+Recovered the later resume checkpoint before continuing: Avi's explicit
+16:46:56Z resume superseded the earlier pause. WI-10002830 remained assigned
+to this worker; the source and private-fixture fingerprints above were
+unchanged, so their existing two-test receipt was retained without a rerun.
+
+The current `dev:pg_query` contract accepts EXPLAIN over SELECT only.
+`dev:pg_mutate` dry-run actually executes DML before rollback, so it cannot
+provide a plan-only control. This read instead reused the existing
+`createDedicatedOrgPg` native client through `code:run` / `capability:bash`.
+The native-SQL route explicitly requires server-side timeout verification.
+Task **0mupsli9p1owfl23rpa**, exit 0, extracted the production UPDATE from
+`backfillSessionOwners`; its SQL SHA-256 exactly matches the private captured
+statement `c33700f4…` above. It used EXPLAIN FORMAT JSON without ANALYZE.
+Backend **3564381**, database `papercusp`, reported PostgreSQL **180004**,
+transaction read-only **on**, statement timeout **5s**, lock timeout **1s**,
+and plan-cache mode **auto**. The dedicated client was closed before exit.
+
+The parameter-bound controls selected current non-null stored Claude owners,
+ordered by session ID and owner, then deduplicated by session ID. These are
+constructed current inputs, not recovered parameters from the slow statement.
+All four plans contain ModifyTable/Update, Nested Loop, Function Scan and
+`session_turns_pkey` Index Scan:
+
+| Current planning control | Function Scan estimated rows | Join estimated rows | Driver await time |
+|---|---:|---:|---:|
+| Bound arrays, 1 session | 1 | 10 | 67 ms |
+| Bound arrays, 16 sessions | 16 | 164 | 1 ms |
+| Bound arrays, 179 sessions | 179 | 1,839 | 2 ms |
+| GENERIC_PLAN TRUE, unknown parameters | 10 | 77 | 1 ms |
+
+These are planner estimates and command round trips, not UPDATE execution
+measurements. The full sanitized receipt is
+`/tmp/p008-owner-update-live-planonly-20261001.json`, SHA-256
+`956071317fcb7a50d01902ca1bf25f1e8770f129b8e14abfcb85459cf9b66aab`.
+It preserves input/plan hashes and node metadata without transcript contents
+or parameter values. The whole native read reported 168 ms.
+
+A separate bounded `dev:pg_query` density read repeated that current selection
+and counted its matching rows: **179 sessions / 4,099 turns**, minimum **1**,
+median **13**, maximum **156** turns per session, and **0** owners differing
+from the constructed stored-owner map. The read reported **128 ms**. It is
+an ordered sample, not the Claude population or the historical sweep. The
+zero difference follows this stored-owner control; it does not validate the
+adapter's owner map. It exposes one fixture limitation: the private executed
+control above has one stored turn per synthetic Claude session.
+
+The bounded natural-query assay, task **0mupsr9gu1s6wplbw9d**, exit 0,
+observed no matching active owner UPDATE in its 17:17:20–17:17:25Z read.
+Its separate backend **4082668** verified the same read-only/5s/1s preflight.
+No process CPU/I/O interval was taken, so there is no new per-query mechanism
+evidence. Receipt `/tmp/p008-owner-update-natural-assay-20261001.json`,
+SHA-256 `6173f37013f188bf61975ab4c5b2d83913bc351b83f9b11bf4feb4d844ddc4da`.
+This bounded miss does not establish that ingestion or owner repair stopped.
+
+The current UPDATE planning controls narrow the earlier SELECT-only access
+evidence; they do not recover the executed slow UPDATE plan, sustained waits,
+historical cause or app impact. No shared mutation, runtime restart, index,
+repair-cadence change, acceptance binding or shipment was performed. Next,
+extend the existing private control's turn-density fidelity while preserving
+EOF repair and exact source capture; keep live operational attribution open.
+
+### Private owner-UPDATE turn-density control — October 1, 17:35Z
+
+Extended the same canonical runtime integration fixture with a synthetic
+179-session / 4,099-turn distribution matching the ordered live sample's
+minimum 1, median 13 and maximum 156. It matches those aggregate observations,
+not the original session distribution, heap layout or cache state. The
+production ingestion source and UPDATE statement remained unchanged.
+
+The first two-child run failed `4007 !== 4099`: the fixture incorrectly
+expected one sweep to consume the full corpus. Source
+`MAX_TURNS_PER_TICK=4000` and the per-file budget decrement explain that
+partial sweep. The fixture now verifies a positive continuation completes
+the remaining turns, rather than changing the production budget or reducing
+the final expected population. Both final children ingested **4,007 + 92**
+turns, then repaired **all 4,099 owners at EOF** with no new file bytes.
+The captured parameter arrays still contain **179** sessions and owners;
+affected rows and rollback snapshots are counted by turn, with deterministic
+`session_id, turn_idx` ordering.
+
+The canonical runtime integration passed **2/2, zero skips, exit 0** on
+child HEAD `7575534bcf0076b625f59db41fc8a344e3baaf3e` plus the local fixture
+edit. Child PIDs were **2107259 / 2150508**, Node **v25.9.0**. Each checks
+the exact source fingerprint, real source SQL capture, repair/no-op replay,
+owner/xmin rollback preservation and home/datadir/port teardown. Both
+homes were also absent in the final receipt read. This is source/fixture
+provenance, not an immutable whole-import-graph claim.
+
+Private executed repair/no-op times were **251.246 / 10.261 ms** and
+**1,505.021 / 7.863 ms**. Each replay used ModifyTable/Update, Hash Join,
+Function Scan and `session_turns_pkey` Index Scan; its index scan visited
+4,099 rows even for the no-op. Root shared-read blocks remained **zero**.
+These measurements do not explain the variation between private runs or
+reproduce the live 460,720 ms UPDATE. No resource-pressure cause is inferred.
+
+Command remains the canonical `PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run
+test:file -- packages/operator-core/lib/search/session-ingest-runtime.integration.test.ts`.
+Final log `/tmp/p008-owner-update-density-20261001-r2.log`, SHA-256
+`8bf2bd9c4ff2ef3f1c8d871a6899f45bb90dca88f052c2b856c865d55065eae8`;
+reduced receipts `/tmp/p008-owner-update-density-summary-20261001.json`,
+SHA-256 `0173dad9598281b5f18480dad919575001e6788d56a06628608e8075fe2a79cd`.
+Fixture SHA-256 is
+`9f477fd79049d95749d27d868e8f84166236ae718629ae857b3d2c76fbe4729b`;
+source remains `81276d34…`, captured SQL remains `c33700f4…`.
+Scoped diff checking passed. The larger fixture strengthens current private
+repair coverage; executed live-plan attribution, sustained wait mechanism,
+historical app impact, R-8 acceptance and shipment remain open.
+
+### Natural owner-UPDATE completion and exact input count — October 1, 18:40Z
+
+Recovered the fire-99 work after the stale 17:40Z carry. Its saved
+[same-query receipt](p008-owner-update-same-query-2026-10-01-fire99.json)
+checks backend **3565425**, query start **17:48:12.265015Z**, hash
+`30af7b390b49a1d85cdb105be9582eb2` before and after the
+18:06:46.461–18:06:49.462Z process interval. The interval recorded
+**180 ms CPU**, **21,954,560 read bytes**, **24,576 written bytes** and
+zero major faults; both PG endpoints report DataFileRead and no blockers.
+Task `0mupuixby128r2up8co` exited 0. The initial unprivileged read
+failed before collecting counters; the authorized read-only retry succeeded.
+
+The bounded completion reducer, task `0mupvijir1678503b4d`, exit 0,
+assembled multiline PG log records and normalized SQL whitespace. It
+verified the UPDATE/UNNEST and all workspace/source/session/owner guards.
+The statement completed **18:06:55.893Z** in **1,123,628.046 ms**.
+Full statement-record SHA-256 is
+`55b90249e5549c87323aea49a897fe61748fa457f6a123df8a31319b369315bf`;
+the paired parameter record is `de2f1f2ff7f963d61f6601a15031d9132e97448c01981eb0ebef76b0f856cd23`.
+It names Claude. Both array values stop at 1,027 characters without a
+closing array; their complete values remain unrecovered. The earlier
+line-only reducer's false guard flags were formatting artifacts, not
+evidence of another query.
+
+The fixed 18:06:50–18:21:00Z journal reducer, task
+`0mupvnhf91aigkttkil`, exit 0, retained one ingestion receipt from
+PID **3240705**, invocation **916091e2a71d4170bf73a5bad0e4e6c3**,
+at timestamp `1790878462064784`. The DB application-name writer binds
+`pcusp:org-admin:p3240705` to that process. Its Claude sessionOwners
+operation requested **2,985 sessions**, updated **3,873 turns**, began
+at `1790876892252` and lasted **1,123,667.8 ms**. The current
+`measureMetadataBackfill` writer defines requested as map size and
+updated as the returned UPDATE count; these are different populations.
+The aggregate metadataBackfill wall bucket is **1,126,606.3 ms**.
+The whole sweep reports 340 inserted turns, 3,118 parts, 8,221 scanned
+files and 1,615,397 ms. Receipt SHA-256 is
+`07f7979eb51279af9a5523114ac6f6b2232c68e2628d304e72f0508027aa1515`.
+
+The [completion receipt](p008-owner-update-completion-2026-10-01-fire100.json)
+preserves sanitized records and exact task references. A current catalogue
+read reports only pg_stat_statements among plan/stat extensions, a
+7,000 ms slow-log floor and 1,024-character parameter logging limit;
+it does not recover historical settings or an executed plan. Live
+metadataBackfills fields are now observed, without an immutable loaded-source
+claim. Source `81276d34…` and fixture `9f477fd7…` remain unchanged, so
+the saved private two-test pass was retained.
+
+This binds a long natural UPDATE, its input count and one valid I/O interval.
+The complete input map, matching-turn distribution, executed access plan,
+whole-query wait decomposition and app impact remain unresolved. The private
+179-session control does not reproduce the observed 2,985-session input scope.
+P-008/R-8 and shipment remain open. Next use a bounded current plan-only
+control at the newly observed cardinality, preserving D-006's runtime route.
+
+### Observed-cardinality plan-only control — October 1, 18:51Z
+
+Task `0mupw1hkv1btozjgydd`, exit 0, reused the source UPDATE with a
+constructed current stored-owner map of **2,985 distinct Claude sessions**.
+The dedicated client verified read-only on, statement timeout 5s and lock
+timeout 1s, then closed. The exact source/SQL hashes remain
+`81276d34…` / `c33700f4…`. Both current-bound and generic EXPLAIN-only
+plans contain ModifyTable/Update, Nested Loop, Function Scan and the
+composite primary Index Scan. Bound Function/Join estimates are
+**2,985 / 29,677**; generic estimates are **10 / 76**. Planning round trips
+were 8 / 2 ms; the full native receipt spans 168 ms. These are estimates
+and planning reads, not UPDATE execution measurements.
+
+The first input selection, task `0mupvwwn044bxoj3rkp`, exited 1 with
+server timeout 57014 before producing a plan. Both attempts used the same
+5s/1s server bounds; the deadline was not widened. EXPLAIN-only selector
+controls show Incremental Sort for `ORDER BY session_id, owner` and no
+sort for primary-key order `session_id, turn_idx`. The successful attempt
+uses the latter. Changed time/cache state prevents attributing the first
+timeout to the sort. Both receipts are preserved in
+[p008-owner-update-planonly-2985-2026-10-01-fire100.json](p008-owner-update-planonly-2985-2026-10-01-fire100.json).
+
+This extends the current planning control to the observed input cardinality.
+It does not recover the original values, matching-turn distribution or
+executed live access plan. Existing private tests remain dated and passing;
+P-008/R-8 and whole-query/app-impact attribution remain open.
+
+### Current constructed owner-map density — October 1, 19:10Z
+
+Task `0mupwst3q1u0w835ck3`, exit 0, executed a bounded read through the
+existing `createDedicatedOrgPg` seam. The repeatable-read transaction
+verified read-only on, statement timeout 5s and lock timeout 1s; its
+owned client closed. Source SHA-256 remains `81276d34…`.
+
+A freshly constructed PK-ordered map of **2,985 distinct Claude sessions**
+matched **71,345 turns**. The per-session distribution was minimum **1**,
+median **17**, p90 **54** and maximum **406**. The snapshot had **zero
+owner mismatches**, **zero null owners** and **zero unmatched sessions**
+for that constructed map. Selection took 57 ms, the aggregate density
+query 87 ms, and the native receipt spans 181 ms. The aggregate explicitly
+counts joined turn indices and applies `owner IS DISTINCT FROM` the
+constructed owner; sessions and turns are separate populations.
+
+The [canonical receipt](p008-current-owner-density-2026-10-01-fire102.json)
+preserves the executed script, source/selection/density/input hashes,
+identity, results and cleanup. Its durable task log SHA-256 is
+`2e150fd849cfe93f9a745a3540a96b656e2fa729fad5454d548e538d17bee2aa`.
+The direct MCP dry-run was shed before launch with
+`loop_pressure_critical`; the sanctioned same-session `ptool` route
+previewed and launched this one task. No duplicate task was launched.
+
+This current stored-owner map is ordered by session ID and differs from
+the unrecovered natural input values. Zero mismatches are scoped to this
+snapshot, and the 87 ms SELECT does not establish the earlier UPDATE's
+execution cost, cache state or whole-query mechanism. It also does not
+recover its executed plan. The private 179-session/4,099-turn control is
+smaller than this current read; its saved pass remains dated. Existing
+production source/fixture fingerprints are unchanged, so no unchanged
+test matrix was repeated. P-008/R-8, app impact, adoption and shipment
+remain open.
+
+### Exact owner-input fingerprint guard — October 1, 20:39Z
+
+The adapter inspection confirmed that `ownerBackfill` collects path-derived
+metadata before the unchanged-byte short circuit, in newest-file order. The
+actual sweep can stop at its file/turn budgets, and duplicate session IDs use
+the existing Map's overwrite behavior. A map constructed from stored first-turn
+owners is therefore a different population from the adapter's actual input.
+
+The existing `metadataBackfills` receipt now adds `inputSha256` for owner repair:
+SHA-256 of `JSON.stringify([sessionIds, owners])` in the exact UNNEST parameter
+order. The repair computes it from the same arrays passed to postgres.js, before
+executing the query, so a failed repair retains its input fingerprint too. The
+existing completion logger carries that field without raw session or owner IDs.
+This extends the existing receipt; it adds no scanner, cache, table, timer,
+service or SQL round trip. A fingerprint cannot reconstruct the input values,
+and different fingerprints can reflect only changed traversal order.
+
+The canonical phase regression was red with **3 failures / 2 passes**, exit 1,
+because the old source omitted the fingerprint. After the source change, the
+five-file focused command passed **28 tests, zero skips, exit 0**. It compares
+the receipt with captured bound inputs, distinguishes different owners at equal
+cardinality, retains an unchanged fingerprint across failure/retry, checks one
+owner UPDATE and asserts that raw IDs stay out of the log.
+
+The maintained private background integration passed **2/2, zero skips, exit 0**
+at 20:38Z. Both children compare Codex and Claude receipt hashes with actual
+driver-bound arrays, preserve the hash across a Codex EOF owner repair, repair
+4,099 Claude turn owners from 179 sessions at EOF, retain rollback proof and
+verify private HOME/datadir removal and database-port closure. Their loaded
+source SHA-256 is `958f9bdc47721b971bf2f0d0494828ba40bee453ac20cf5f93cf2bb7771539e9`;
+child HEAD is `8a33b9bffc263a1b7185104448942cbe60bad350` plus the local edits.
+The source UPDATE SQL remains `c33700f4…`. Scoped `lint:tsc` for the source and
+both tests reported zero type errors, exit 0; scoped diff checking passed.
+
+The [canonical fingerprint evidence](p008-owner-input-fingerprint-2026-10-01-fire105.json)
+retains commands, exit codes, exact source/test/log hashes, native provenance,
+selected private receipts and limitations. Evidence-file SHA-256 is
+`43e06c5f86bed59b211c4657b241532cc8d7932b4765ace15e6a3d670cbc7f21`.
+This is a detector improvement and current private-source proof. It does not
+recover the original natural input arrays, certify shared bg-host adoption,
+explain the slow UPDATE's whole-query wait mechanism or establish app impact.
+The earlier frozen mixed-record replay remains dated evidence for its older
+source. **WI-10002830/P-008/R-8 and shipment remain open.**
+
+### Current adapter discovery owner population — October 1, 20:43Z
+
+Task `0muq03wyl11u2f1k1v0` reused the actual exported Claude adapter and
+`jsonlAtDepth` walker, then applied the source's 45-day/nonempty-file filter,
+newest-mtime ordering and Map overwrite behavior. It read metadata from paths;
+it did not read transcript payloads or launch ingestion. Source SHA-256 was
+`958f9bdc…` before and after the read. The dedicated PostgreSQL transaction
+verified repeatable-read, read-only on, statement timeout 5s and lock timeout
+1s; its client closed, task exit 0.
+
+The complete current discovery set contains **5,187 candidate files**:
+**332 unowned files**, **1,691 duplicate session-ID occurrences**, and a final
+map of **3,164 distinct sessions / 240 distinct owner strings**. Discovery
+took 868 ms. The current state read found **494 candidates with pending bytes**,
+including **449 without a saved state row**. Therefore this complete discovery
+map is **not** an observed natural sweep input: the source's file/turn budgets,
+actual insert counts and errors can select a shorter prefix.
+
+The map's ordered input fingerprint is
+`1455ca2aec361df717a98188e65320f1ec518ca0db6ade08454c91e527375726`.
+Its read-only density query matched **82,423 turns**, with minimum **0**,
+median **25**, p90 **46**, maximum **434**, **8,201 owner differences**, zero
+null turn owners and **13 sessions without indexed turns**. These are values
+at this DB snapshot relative to this path-derived map, not confirmed wrong-owner
+defects or changes to the original natural UPDATE population. The query took
+3,042 ms; the complete diagnostic receipt spans 4,152 ms. No UPDATE timing,
+execution plan, whole-query wait mechanism or app impact is inferred.
+
+The [current adapter evidence](p008-current-adapter-owner-read-2026-10-01-fire105.json)
+retains the exact script, source/discovery/input/SQL/log hashes, task identity,
+bounds, cleanup and limitations. The filesystem walk is not an atomic snapshot;
+active writers/deletions can race it. This replaces neither the historical
+2,985-session natural input nor the earlier 2,985-session database-constructed
+sample. Shared bg-host adoption remains on D-006's runtime-owner route;
+**P-008/R-8 and shipment remain open.**
+
+### R-8 revision-4 remaining evidence census — October 1, 11:41Z
+
+This census follows the six lead groups named in live BAR `R-8`, hash
+`8b105b4e0b7f664e97ebe433bb15543131b061365f3a004ab97cc6dbf13e83c7`.
+It records the remaining acceptance work; it is not a terminal disposition.
+Existing dated evidence below is retained without rerunning unchanged tests.
+
+| Named lead | Verified evidence retained | Still needed for live/operational disposition |
+|---|---|---|
+| Gateway/proxy failures | Local-shed HTTP regressions distinguish zero upstream attempts from an upstream 429; saved three-file matrix passed 268 tests. The selected paired-reset guard shows that one socket error produces both log categories. | Correlate the named operational failures with request/cancellation IDs and loaded gateway/proxy source. Category counts alone do not establish independent failures or explain app latency. |
+| Portal watchdog timeouts | The failed systemd-notify barrier is a measured precursor in EI-24354725412855158; a nonblocking-watchdog mitigation is not a confirmed root-cause fix. | Re-establish the legitimate Portal driver and its provider/runtime/notifier evidence. The 11:41Z authoritative item read is open with no assignee; earlier leader-held receipts are dated. Portal remains outside this worker's execution route. |
+| Repeated background work / ingestion | WI-10002822 is done with the one-shot boot-gate cause and maintained retry fix; its saved recovery receipt remains dated. Ingestion source guards and the current frozen private replay verify redaction, metadata/config selection, incremental writes and cleanup. | The long shared ingestion sweep still lacks a distinguishing live wait/CPU mechanism and app-impact trace. Private replay did not reproduce it. Shared adoption requires the D-006 coordinated runtime-owner route. Embedding fallback and scheduler warning guards do not establish historical latency causes. |
+| Migration rendezvous waits | Existing backup watchdog tests distinguish growing, stalled and ceiling-limited producers using scaled deadlines. Private-PG migration tests distinguish attempted from inserted reservations while preserving a peer reservation and backup guards. | Retain exact original backup-producer progress and rendezvous correlation, verify any live extension past the production 2,700-second stall floor, and establish relevant loaded-source adoption. A held backup lock alone is not a wedge. |
+| Historical account polling | The exact frozen 1,488-call population lacks a triggering-frame field. Maintained IPC and private-PG tests reproduce unrelated account refreshes and no-op write amplification, and verify their source fixes. | Historical producer mix and its app-latency contribution remain unknown; consumer identity is not emitter attribution. Current PUI and producer adoption require operational evidence. |
+| Expensive diagnostic scans | The native DO launch, full query and shell timeout are archived. Private psql tests distinguish frontend termination from continued backend execution; caller-deadline guards verify rollback of expired continuation. | The original task-to-backend-PID linkage, server bounds and app impact remain unproved. A current ledger miss plus retention policy cannot distinguish deletion from absent registration; active/null-wait labels do not prove CPU consumption or launcher identity. |
+
+The 11:30Z current-build route read reported shared bg-host build
+`50b2351ce3` with `containsChange:false` for the ingestion path, using the
+`start-after-mtime` method. That receipt is scoped to that path and time;
+it does not certify the adoption of other components. The worker sent the
+fleet leader one request to route coordinated shared-host adoption and a
+bounded operational trace, establish Portal's driver, and handle newly
+harvested observation EI-24775735048259377. No shared-host restart, Portal
+edit, live-gate operation or parallel monitor was performed.
+
+The remaining claims require those specific operational inputs or a
+distinguishing measurement, not another unchanged private-fixture run.
+**WI-10002830 and R-8 remain open.**
+
+### Gateway/proxy operational marker discrimination — October 1, 12:14Z
+
+The maintained `RESTART_TARGET_UNITS` map names
+`papercup-inference-gateway.service` and `papercup-mcp-proxy.service`.
+The previous read used `papercusp-…` names and returned `unitsUnknown`;
+its empty result did not establish an absence of failures. The corrected
+read kept the same October 1 **11:25–11:45 UTC** interval. Both units were
+recognized, the journal was available, and no journal error was reported.
+
+The combined read reached its 30-row bound: `matched:31` is a lower bound
+from the reader's `limit + 1` probe, not a failure count. The proxy tail
+contains paired `clientError`/`ECONNRESET` socket-reset categories at
+11:44:56.591Z, 11:44:52.769Z and 11:44:52.698Z. The current writer emits
+both categories for the same socket error; timestamps alone do not prove
+request identity, upstream failure or an independently failed user action.
+
+A gateway-only read of the same interval completed without truncation.
+The classifier retained the writer distinctions:
+
+- The six collapsed routing rows at 11:35:00.465Z through 11:36:32.371Z
+  matched the loose `429` search because their **client port numbers**
+  contained that substring. They are `gw-route` records, not evidence of
+  HTTP 429 responses. The writer uses `req.socket.remotePort` for `client`.
+- Resource-governor rows at 11:44:56.899Z, 11:44:48.736Z and
+  11:44:41.591Z report database **lock timeouts**. A colocated service log
+  does not make these inference-request timeout or cancellation evidence.
+- The 11:25:46.743Z error is a distinct upstream `STALLED`/aborted marker.
+  The current writer uses that category for both `ttfb-timeout` and
+  `cancelled` errors. The retained marker has no request ID, so it does
+  not distinguish those mechanisms or establish application impact.
+
+Receipts retain distilled diagnostics and identifiers, without raw logs:
+`/tmp/p008-fire69-gateway-trace.json`
+(`6ba2f37c98c8b020da420ae61efb37a6ca720eb979fa3ef53aa15fb72d17ce67`),
+gateway-only `/tmp/p008-fire69-gateway-only.json`
+(`7dfde0e11d986305b5d961fb862e343249e670731916f9af0da7acc6a5921a50`),
+and writer classification `/tmp/p008-fire69-gateway-classified.json`
+(`b7cf72fbca24f9debffda2f50cd0ad6e382ce239e974a88e2289e6f7935a25f5`).
+The classification receipt has no summary truncation or child failure.
+
+The live plan-acceptance resolver now returns an available verdict rather
+than the earlier unknown state: `satisfied:false`,
+`acceptance_bar_contract_not_ready`, plan revision 60/rubric revision 4.
+R-8 remains blocked by inadequate/stale proof, its unmet live evidence
+plane, and missing grading. No new binding, terminal disposition,
+shared-host restart or shipment is claimed. The next useful correlation
+is the exact 11:25:46.743Z upstream marker with its loaded runtime and
+existing request-stage/cancellation evidence.
+
+### Downstream cancellation misattribution — October 1, 12:52Z
+
+The exact October 1 11:25:46.743Z marker was read independently in its
+one-second journal window. The reader returned one matching entry, without
+clipping, journal error or truncation. Its extracted reason is
+`claude downstream response closed`, on account `aviynw6`, with no request ID.
+This resolves the earlier marker ambiguity to a downstream-close signal; it
+does not establish why the client closed, its application impact, or the
+account's historical proxy configuration. Receipt
+`/tmp/p008-fire73-marker-reason.json` has SHA-256
+`b2bebff0894ca198376d3ac36d3d49432f556964a2ff49b2d3593b1e0c89d950`.
+
+The current Claude attempt observer treated the kernel's typed `cancelled`
+error as an upstream failure: it incremented `upstreamErrors`, logged
+`STALLED`, and entered the egress failure/cooldown path when a proxy was
+configured. The existing request-stage timeline already classified it as
+cancellation, so that detector did not prevent the contradictory accounting
+and proxy penalty. The fix branches on the typed cancellation before either
+counter or penalty. Cancellation is logged at info level; both cancellation
+and genuine transport-failure markers carry the existing process instance,
+request ID and error code. No new service, tool, timer or telemetry store was
+introduced.
+
+The canonical HTTP regression compares a downstream disconnect with a real
+upstream first-byte timeout against the same proxy-configured fixture.
+Before the fix, cancellation produced `upstreamErrors:1` instead of zero;
+the timeout control also failed its missing-correlation assertion. After the
+fix, cancellation leaves both failure counters and the proxy cooldown quiet,
+retains the cancelled timeline, and allows a subsequent request to succeed.
+The genuine timeout still increments failures, cools the proxy and emits a
+correlated `ttfb-timeout` marker. Selected run: two passes with 26 tests
+excluded, exit 0. Full current matrix: **321 passes, zero skips, exit 0**:
+
+```sh
+PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- \
+  packages/operator-core/lib/inference-gateway/gateway.test.ts \
+  packages/operator-core/lib/inference-gateway/request-kernel.test.ts \
+  packages/operator-core/lib/inference-gateway/gateway-stage-telemetry.test.ts
+```
+
+The full run began at 12:50:24.365Z on HEAD `783d3c0860` plus local test
+changes. Gateway and stage-test fingerprints remained unchanged across the
+run: `3d38a31c2dcfec4ec5685226f3b2433289e802484db94851dc9ebe5572511451`
+and `9fdfef97378fd9886d7ddd92ab21336efee71ba9c2878644cb94e8e16ff5a986`.
+Kernel source/test fingerprints were
+`833afabb7c48d111725271f90e4800631fa1137b23f298fabaf41f0ef5e691eb` /
+`56ced5c321269944549a6d3334cf293d0e47610223e3ad40c95acd40b1d5aa1c`;
+gateway-test fingerprint was
+`bfca80745f4162f28da8189056b5aa9e26363083ae5ad3bfa27b494d2a9e7614`.
+This does not certify an immutable whole import graph. Red, selected green
+and full-matrix logs are `/tmp/p008-fire73-abort-red.log`,
+`/tmp/p008-fire73-abort-green.log`, and `/tmp/p008-fire73-gateway-matrix.log`,
+with hashes `7ee84893f86b05198dc1a776cbb663c36ee4e6728b200b0db85d03c1874940f5`,
+`c687810a68bca7462107e5eb8bbbc81cab5b69c908207d402c9e5e8f15164d66`, and
+`9b5afd91e5784bf1f7fb2763ee0f3cb99526441554ff66b107212fd47f24552d`.
+Focused diff validation passed.
+
+Other Codex attempt observers still count cancellation through their error
+branches; their distinguishing tests remain the next source step. Loaded
+gateway adoption, the historical client-close cause and application impact
+remain unverified. The shared-runtime, Portal and live-gate exclusions are
+unchanged. **P-008/R-8 remains open; no terminal disposition or shipment is
+claimed.**
+
+### Codex cancellation parity — October 1, final source verification
+
+The three Codex attempt observers (CLI, OAuth and bearer) also counted a
+downstream cancellation as an upstream error. Canonical HTTP regressions
+reproduced `codex.errors:1` rather than zero on each path. The observers now
+branch on the existing typed `cancelled` error before failure accounting,
+owner-ledger updates or credential-failure handling. Their cancellation and
+transport-error logs use the existing process instance/request ID and error
+code. No new telemetry surface was introduced.
+
+A separate OAuth transport regression distinguished a native fetch
+`AbortError` caused by downstream cancellation from a genuine TTFB timeout.
+The adapter previously cooled `chatgpt-a:default` for 30 seconds on either
+cause. It now reads the kernel's typed abort reason before attributing an
+egress failure: cancellation leaves both the failure callback and cooldown
+quiet; a real timeout preserves both. The direct adapter harness reproduced
+the cancellation failure while its timeout control passed, then its full
+suite passed **27/27**, zero skips, exit 0. It imports the adapter and kernel
+directly; the contemporaneous mutation probe named `gateway.ts`, which this
+harness does not exercise. This is not an immutable whole-import-graph claim.
+
+The four-file current matrix passed **351 tests**, zero skips, exit 0 on
+HEAD `0fa8a6e36d` plus local edits:
+
+```sh
+PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- \
+  packages/operator-core/lib/inference-gateway/gateway.test.ts \
+  packages/operator-core/lib/inference-gateway/request-kernel.test.ts \
+  packages/operator-core/lib/inference-gateway/gateway-stage-telemetry.test.ts \
+  packages/operator-core/lib/inference-gateway/codex-oauth-kernel-adapter.test.ts
+```
+
+All seven recorded source/test fingerprints stayed fixed during that run
+(`/tmp/p008-fire76-fingerprints-before.txt` and `-after.txt`). A first selected
+green run exposed a fixture mistake: buffered CLI request-ceiling expiry is
+`gateway-error`, whereas HTTP TTFB expiry is `upstream-error`. The assertion
+now preserves that existing distinction and verifies positive failure counts
+for both deadline controls.
+
+Scoped typechecking then caught three optional stats-map accesses in the
+stage tests (including the prior Claude assertions). After correcting those
+test accesses, the final stage suite passed **31/31**, zero skips, exit 0;
+the four-file scoped typecheck passed with zero new errors and two existing
+baseline diagnostics. The final production sources were unchanged by this
+test-only correction. Final fingerprints:
+
+- `gateway.ts`: `a6bcb14981baefc5b69498870635be76a5655b951911068016d294d89fbaaf99`
+- stage test: `e119c153fd76e6a847f001bb3998248e8b6380aa04affc5e1b844a7997794950`
+- OAuth adapter: `f4275b9bd8f1ce720a4ce68ef36e6c4e2f3c16ccf41dd955df9edcbef32e9a4f`
+- OAuth adapter test: `b055eca041d06c72b46886bd50c5cc33ea980310827340abaf64e17ff04b1cbc`
+
+Logs: `/tmp/p008-fire76-codex-red.log`, `-codex-green.log` (the fixture
+correction), `-oauth-red.log`, `-oauth-green.log`, `-gateway-matrix.log`,
+`-stage-final.log`, and `-tsc-final.log`. Final stage/typecheck log SHA-256:
+`2bec5e66818942b0bca2a5bee75554d1a5ac20e2f10f8538b1d528a24a53fa07` /
+`edb7092e14c6ec05878aa786d22984ffc9f14bf449a6f89d77c43a6e2a4e7ce9`.
+
+The gateway edit was initially refused on a peer's mutation-probe lock.
+After coordination and the durable lock grant, it was applied without
+discarding peer changes; the peer confirmed their probe was stopped. Live
+adoption, historical client-close cause/application impact and the remaining
+R-8 operational inputs are still unverified. Portal and harvested-item
+routing are now held by the fleet leader, as delivered in coordination.
+**P-008/R-8 remains open; no acceptance binding or shipment is claimed.**
+
+### Claude fork-seed owner attribution — October 2, current build
+
+The earlier duplicate-path hypothesis is now narrowed by identity evidence.
+The Claude adapter sorts candidate files newest first and takes the final
+`ownerBackfill` value for each native session ID. A managed fork can leave a
+same-ID seed copy under the fork's own owner directory. The launcher's
+first-write-wins `psu-session-owners` entry records the born owner and its
+resume path already uses that index when copies conflict. The ingest path did
+not read it, so a later seed in traversal order could overwrite the indexed
+turn owner.
+
+A read-only scan at 16:25:46Z applied the actual Claude adapter's 45-day,
+nonempty, newest-mtime candidate rules. It found 4,422 candidates, 519
+duplicate native IDs, 485 duplicates with a born-owner index, and five where
+the adapter's final path owner differed from that index; the indexed owner
+had a candidate file in all five. Source hash before and after was
+`83884d3931d290006a861c572296d43a4361469d043ab7188fc5059fa19a5f86`.
+A separate repeatable-read, read-only PG snapshot at 16:27:19Z used a five-ID
+sample with 5-second statement and 1-second lock timeouts and a closed
+dedicated client. All five had indexed turns attributed to the traversal
+winner; three also had `adv_sessions` rows naming the born owner. The sample
+contains 5, 16, 31, 28 and 22 stored turns respectively. Session IDs and
+owner IDs were hashed or reduced to role labels in the output. This confirms
+the attribution defect in that snapshot; neither scan is the actual historic
+natural sweep, and neither explains its slow UPDATE or application impact.
+
+The companion `session_turn_parts` snapshot showed canonical owners for four
+sample IDs but 196 parts attributed to the fork winner for the fifth. The
+parts index was therefore a separate repair target, not just a render concern.
+
+`session-ingest.ts` now reads the existing immutable birth index for managed
+Claude candidates, with a bounded 20,000-entry module-pinned cache and
+60-second negative expiry. The selected owner is used for ordinary sweeps,
+EOF-only turn and parts owner repair, single-file freshness ingest and
+historical parts backfill; sessions without an index keep their path-derived
+fallback. This extends the existing index and ingest paths without a new
+table, service or scheduled job. The private current-build regression makes
+a fork seed older than the born file, a case that previously let the Map's
+final write select the fork. It verifies initial insertion, EOF-only turn
+and parts repair, single-file tail and a final sweep after the born file is
+removed, including private database, HOME and port teardown.
+
+The final isolated integration file passed **2/2, zero skips, exit 0** at
+16:48:15Z on HEAD `a9d3048a08` plus local edits. The test route is
+`PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file --
+packages/operator-core/lib/search/session-ingest-runtime.integration.test.ts`;
+its maintained child calls `scripts/with-test-pg.mjs --isolated-runtime`.
+The phase receipt unit file passed **5/5, zero skips, exit 0** at 16:48:50Z.
+Scoped `npm run lint:tsc -- --files=packages/operator-core/lib/search/session-ingest.ts,packages/operator-core/lib/search/session-ingest-runtime.integration.test.ts`
+reported zero errors, exit 0 at 16:48:36Z; scoped `git diff --check` passed.
+The source/test SHA-256s after verification were
+`b1dc08570e06561ec05147f8f43775b87526b116e89641e8876ca2fe26e1f18f` /
+`26ea067ae323670211d02c8d09f473faa0907ea9537d55ab6ad486131cfa0704`.
+These are local-current-build observations, not a shared bg-host adoption
+receipt. D-006 still reserves shared-host changes to the runtime owner's
+coordinated route. Historical wait cause, app impact, live adoption and
+R-8 acceptance remain open.
+
+### Bounded natural owner-backfill receipts — October 2, 16:48–16:53Z
+
+The shared bg-host's existing `session-ingest` logger recorded two ordinary
+Claude sweeps. At 16:48:55.601Z it reported `requested=3589`,
+`inputSha256=da79f531d93b783554b4403a59859dc7dac10f2896a1b1bd624581bd2b68a498`,
+`durationMs=1050.8`, `updated=0`; at 16:53:22.132Z it reported
+`requested=3604`,
+`inputSha256=545e231a1c8f6c6e8cd4164eba64f550faf890b8d209a1fe3a29648eb9845b8c`,
+`durationMs=1011.9`, `updated=0`. Both receipts say `status=completed` and
+zero sweep errors. The bounded source was `logs:read` on
+`papercusp-bg-host.service`, filtered to `[session-ingest] +` in the last
+90 minutes; only these two matching sweep lines were returned. In
+`session-ingest.ts`, `requested` is the per-sweep owner map size,
+`inputSha256` hashes the exact ordered UNNEST arrays, and `updated` is the
+PostgreSQL UPDATE row count. The input hashes differ, but neither sweep
+changed a turn owner.
+
+This is a two-sweep, zero-update observation on the loaded shared runtime,
+not a reproduction or explanation of the earlier 1,123,628 ms UPDATE that
+changed 3,873 turns. `dev:pipeline_position` for `session-ingest.ts` with
+`testClass=background-federation` reported bg-host build `c194aeb678` and
+`containsChange=false` by `start-after-mtime`, so these receipts do not prove
+adoption of the October 2 fork-owner fix. D-006 still governs shared-host
+adoption; the loaded-source identity and historical wait/app-impact evidence
+remain open for R-8.
+
+### Partial Claude owner-map repair guard — October 2, 17:19Z
+
+A bounded `logs:read` of `papercusp-bg-host.service` selected natural
+`sessionOwners` receipts with nonzero updates over the preceding three hours.
+It returned 12 matching, untruncated journal entries. The 15:47:34.867Z
+sweep scanned 153 files, requested 153 Claude owners, updated 3,997 turns,
+and spent 165,562.8 ms in that repair. The 15:49:47.649Z sweep scanned
+7,673 files, requested 3,631 owners, updated 3,997 turns, and spent
+65,703.8 ms in the repair. Both reported zero sweep errors. Their bound-input
+fingerprints are respectively `afe412a62b886df9ab065f0f4c2bbb1f71ee687424d162cb1f6019a9d61453dc`
+and `be795e2dbb510a33954c5c96ee11c41a8981dc65788532fcaf4ccf4daaa944a8`.
+The next 15:50:41.170Z sweep requested 3,631 owners but updated zero turns
+in 109.5 ms; its input hash also differs. The 153-file sweep's 4,000-turn
+budget is consistent with its short scan, but the receipts do not retain row
+identities or owner values. The equal 3,997 update counts do **not** establish
+that the same rows changed twice, or why their two durations differ.
+
+Source inspection showed that the existing `ownerBackfill` map was filled
+inside the file loop, which stops at the turn/file budget, while the Claude
+candidate discovery and birth-index lookup already cover the complete set.
+The existing private integration fixture ingests 4,099 Claude turns over two
+sweeps. A new assertion requiring the first sweep's owner map to include all
+179 candidate sessions failed in both isolated child cases before the fix.
+The source now fills that map in the existing complete Claude candidate pass,
+retaining the birth-index override and the prior duplicate-ID order, and
+does not refill it from the budget-limited loop. The regression also requires
+the partial and continuation sweeps to bind the same ordered owner-map hash.
+The final current-build integration run passed **2/2**, zero skips, exit 0
+at 17:17:56Z; private HOME/datadir removal and port closure remained checked.
+Scoped `lint:tsc` checked both edited files and reported zero errors at
+17:18:32Z; scoped `git diff --check` passed. Final source/test SHA-256s are
+`017d2fc2c7ba534d7d56b672fc978a95dcae7108be278b06989147831a346719`
+and `84f07e35f88ed540c246cc2a3abc21da13bd772ddc9502a8a3810a8766258b61`.
+
+The coordinated D-006 runtime owner loaded a bg-host bundle at 17:12:07Z
+from the earlier fork-owner source (`b1dc08570e06…1f18f`). PID 1373881's
+command/cwd point at `apps/operator/dist-host/hono-host.mjs`; that bundle
+contains the birth-index lookup and still fills the owner map inside the
+budget-limited loop. It predates the partial-map edit above. Therefore the
+fork-owner fix has a loaded-source marker, while this new guard remains
+current-build only. No shared restart, live-gate operation, acceptance binding
+or shipment is claimed. The source-level budget defect is fixed and guarded;
+the historical 1,123,628 ms UPDATE's full wait decomposition and application
+impact remain unproved, so **P-008/R-8 remains open**.
+
+Commit and loaded-build handoff at 17:24Z: staging HEAD
+`a83c8168dbcd7e18c8b53be03703fa32855124e8` contains the tested
+source and test bytes (Git blobs `b5a0317f1eba3803b975aa3ce9eef19d964146c5`
+and `6fbbd24ecbb2c5061565af8f4c5f1235a7c93e67`, respectively), matching
+the SHA-256s above; the three edited paths were clean in that read. The
+unique source marker is `a partial sweep cannot revert owners repaired by a
+full sweep` at `session-ingest.ts:2986`. The first integration run ended
+17:13:01Z with **two failures** on the new partial-map assertion against
+the old source. The post-fix run ended 17:14:45Z with **2/2 passes**; a
+second current-build run after adding the matching ordered-input-hash guard
+ended 17:17:56Z with **2/2 passes**, zero skips. This is red/green proof
+for the new fix, not a report that its final test remains red. The approved
+D-006 bg-host runtime owner received the final hashes and committed-byte
+receipt; loaded adoption of this newer map fix remains to be verified.
+
+### Coordinated owner-map adoption and first natural sweeps — October 2, 17:36Z
+
+The D-006 bg-host runtime owner reported a coordinated `dev:restart` and a
+17:31:45Z bundle build (coord receipts
+`coord-send-230c7c7519d92ce972991d8c50a8c263f03dfa49e6b0d59160a19059cad9d82d`
+and `coord-send-5e30fb6e6a1fee0a19f735b2a2989533309add1c9209e552f30769fb5696854d`).
+An independent read found `papercusp-bg-host.service` MainPID **2457467**,
+active since **17:32:06Z**. Its command is `node dist-host/hono-host.mjs`
+from the canonical `apps/operator` directory. The bundle mtime is
+**17:31:45.894Z**, SHA-256
+`8dacf0b733bf8d26871fc2aa4e42fe7e97169443e8914ca8e04251448cf58e82`;
+bundle line 225651 contains the pre-budget
+`ownerBackfill.set(sessionId, selected2)` code. The current source SHA-256
+still matches the verified and committed
+`017d2fc2c7ba534d7d56b672fc978a95dcae7108be278b06989147831a346719`.
+Esbuild strips the source comment used as the earlier requested marker, so
+the **code**, process identity and bundle timestamp are the loaded-source
+evidence. This does not claim a byte-for-byte source-to-bundle attestation.
+
+One bounded `logs:read` of this unit since its new start returned **two**
+`session-ingest` receipts, untruncated and without journal error. The
+**17:33:41.278Z** natural sweep scanned 148 files, inserted 67 turns and 665
+parts, reported zero errors and repaired **715** Claude turn owners from a
+3,637-session map in **37,099 ms**. Its ordered input hash is
+`3c47a9fce46f251efd101e688dbff496604cfede950b58844b87032a35ebdecc`.
+The **17:35:36.651Z** sweep scanned 457 files, inserted 38 turns and 490
+parts, reported zero errors and updated **zero** Claude turn owners from a
+3,638-session map in **108.8 ms**. Its input hash is
+`7cde5125fb0f9d692acfe22abc2938ec0171aeed0424e348098d8cc6c9e88bb7`.
+Both sweeps requested 709 Claude part-owner repairs and updated zero parts.
+The maps have different sizes and hashes; the receipts do not identify the
+715 repaired rows or prove that an identical map was replayed. They do show
+one successful post-adoption repair followed by an ordinary zero-update
+sweep on the loaded build. No new private test run was needed: the source/test
+bytes are unchanged from the 17:17:56Z passing two-child regression above.
+
+A bounded, read-only `pg_stat_statements` read matched query ID
+`-9170796359460262385` to this exact guarded
+`UPDATE session_turns ... FROM UNNEST` statement. With
+`track_io_timing=on`, the **17:36Z** cumulative row since its
+**14:58:47Z** per-query stats start reported 195 calls, **517,419.0 ms**
+total execution and **452,028.5 ms** shared-block read time, with
+1,658,613 shared blocks read. This is **aggregate** evidence that data-file
+reads occupied much of this statement class's recorded time after the
+2026-10-02 14:52:50Z stats reset. It is not per-call I/O attribution and
+cannot decompose the **October 1** 1,123,628 ms UPDATE, which predates the
+reset. Neither the two natural receipts nor the cumulative PG statistics
+measure application latency. The historical wait mechanism, exact repaired
+row identity, app impact and R-8 disposition remain open; **P-008/R-8 is not
+terminal**.
+
+A second bounded read at **17:41Z** saw the same one top-level statement row
+after 200 calls: `total_exec_time=517,687.880 ms`,
+`max_exec_time=165,560.693 ms`, `shared_blk_read_time=452,040.716 ms`,
+and zero parallel workers launched. With no parallel worker time to double
+count, the longest call had at least **99,913.529 ms** of shared-block read
+time: total read time minus the maximum possible execution time of all other
+calls (`452,040.716 - (517,687.880 - 165,560.693)`). This identifies
+data-file reads as a material part of **that current-window slowest call**.
+Its duration closely matches the 15:47Z natural 165,562.8 ms repair receipt,
+but the aggregate stats row has no per-call ID, so the two records are not
+joined as the same call. This still does not measure the October 1 statement
+or user-facing application latency.

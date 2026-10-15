@@ -63,6 +63,13 @@ describe('sensitive diagnostic text', () => {
     expect(output).not.toContain('opaque-');
   });
 
+  it('redacts user-info in bare PostgreSQL URLs without hiding the host or path', () => {
+    const input = 'psql postgresql://user:opaque-password@db.example/app postgres://svc%40test:second-secret@db.example/other';
+    const expected = 'psql postgresql://[redacted]@db.example/app postgres://[redacted]@db.example/other';
+    expect(redactSensitiveText(input)).toBe(expected);
+    expect(redactStructuredSensitiveValue({ title: input })).toEqual({ title: expected });
+  });
+
   it('does not redact prose that merely mentions credential concepts', () => {
     const prose = 'The API key is unavailable, so the task remains stopped.';
     expect(redactSensitiveText(prose)).toBe(prose);

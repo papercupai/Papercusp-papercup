@@ -32,6 +32,7 @@ import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
+import { STOP_THE_LINE_RED_HOURS } from '../work-items-admission';
 import type { ClaimSpecRecord } from './claim-spec-store';
 import type { FleetScopeContext } from './fleet-scope-admission';
 
@@ -41,7 +42,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-const { diagnoseFleetScopeFeatureFamilyExclusions, diagnoseFleetScopeFeatureFamilyMatch } =
+const { diagnoseFleetScopeFeatureFamilyExclusions, diagnoseFleetScopeFeatureFamilyMatch, fleetScopedMiss } =
   await import('./fleet-scope-admission');
 
 const H = 'papercusp';
@@ -57,18 +58,20 @@ async function seedItem(
     takenBy?: string | null;
     sourcePlanSlug?: string | null;
     payload?: Record<string, unknown> | null;
+    conditionKey?: string | null;
+    createdAgoMs?: number;
     harness?: string;
     workspaceId?: string;
   } = {},
 ) {
   await db.sql`
     INSERT INTO harness_shared.work_items
-      (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id, source_plan_slug, created_ts, updated_ts, payload)
+      (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id, source_plan_slug, created_ts, updated_ts, payload, condition_key)
     VALUES (
       ${opts.harness ?? H}, ${id}, ${opts.itemKind ?? 'feature'}, ${`title ${id}`},
       ${opts.status ?? 'open'}, ${opts.takenBy ?? null}, ${opts.workspaceId ?? WS},
-      ${opts.sourcePlanSlug ?? null}, 0, 0,
-      ${opts.payload ? db.sql.json(opts.payload as postgres.JSONValue) : null}
+      ${opts.sourcePlanSlug ?? null}, ${opts.createdAgoMs == null ? 0 : Date.now() - opts.createdAgoMs}, 0,
+      ${opts.payload ? db.sql.json(opts.payload as postgres.JSONValue) : null}, ${opts.conditionKey ?? null}
     )`;
 }
 
@@ -197,8 +200,75 @@ describe('diagnoseFleetScopeFeatureFamilyMatch against real Postgres (WI-7151)',
     expect(breakdown).toEqual({
       matchedByFilter: 1,
       claimable: 0,
-      excluded: { claimFloors: 1, reservedPlanLane: 1 },
+      excluded: { claimFloors: 1, reservedPlanLane: 1, stopTheLine: 0 },
     });
+  });
+
+  it('names a stop-the-line-only exclusion in the feature-family breakdown', async () => {
+    await seedItem('WI-red-streak', {
+      itemKind: 'bug',
+      conditionKey: `gate-red-streak:${H}`,
+      createdAgoMs: (STOP_THE_LINE_RED_HOURS + 1) * 3_600_000,
+    });
+    await seedItem('F-plan-one', { sourcePlanSlug: PLAN });
+    await seedItem('F-plan-two', { sourcePlanSlug: PLAN });
+
+    const breakdown = await diagnoseFleetScopeFeatureFamilyExclusions({
+      scope: planScopeFor('su-member'),
+      harness: H,
+      workspaceId: WS,
+    });
+
+    expect(breakdown).toEqual({
+      matchedByFilter: 2,
+      claimable: 0,
+      excluded: { claimFloors: 2, reservedPlanLane: 0, stopTheLine: 2 },
+    });
+  });
+
+  it.each([
+    ['rig', { needs_2_machine_rig: true }],
+    ['canary', { canary: true }],
+    ['claimHold', { _claimHold: true }],
+  ] as const)('names %s using the same predicate that excludes the feature, with a ready control', async (name, payload) => {
+    await seedItem('WI-gated', { payload });
+    await seedItem('WI-ready');
+    const scope = planScopeFor('su-member');
+    scope.record.spec.view.filter = { field: 'id', op: 'in', value: ['WI-gated', 'WI-ready'] };
+    const breakdown = await diagnoseFleetScopeFeatureFamilyExclusions({ scope, harness: H, workspaceId: WS });
+    expect(breakdown).toMatchObject({ matchedByFilter: 2, claimable: 1, excluded: { claimFloors: 1, [name]: 1 } });
+    expect(Object.entries(breakdown!.excluded).filter(([, count]) => count && count > 0).map(([floor]) => floor).sort())
+      .toEqual(['claimFloors', name].sort());
+  });
+
+  it.each(['claim-hold', 'peer-claim'] as const)('diagnoses a non-plan feature behind %s without an authoring false alarm', async (floor) => {
+    await seedItem('WI-held-feature', floor === 'claim-hold'
+      ? { payload: { _claimHold: true } }
+      : { takenBy: 'su-peer' });
+    // Negative controls exercise both the authored filter and the family boundary.
+    await seedItem('WI-p2p-feature');
+    await seedItem('EI-held-change', { itemKind: 'change' });
+    const scope = planScopeFor('su-member');
+    scope.record.spec.view.filter = { all: [
+      { field: 'kind', op: '=', value: 'feature' },
+      { field: 'id', op: 'in', value: ['WI-held-feature', 'EI-held-change'] },
+    ] };
+    const featureBreakdown = await diagnoseFleetScopeFeatureFamilyExclusions({ scope, harness: H, workspaceId: WS });
+    expect(featureBreakdown).toEqual({
+      matchedByFilter: 1, claimable: 0, excluded: { claimFloors: 1, reservedPlanLane: 0, stopTheLine: 0,
+        ...(floor === 'claim-hold' ? { claimHold: 1 } : { taken: 1 }) },
+    });
+    const opts = {
+      featureBreakdown,
+      issueBreakdown: { matchedByFilter: 0, claimable: 0, excluded: {} } as never,
+    };
+    const miss = fleetScopedMiss(scope, [], opts);
+    expect(miss.reason).toBe('all_matches_gated');
+    expect(miss.claimability.population).toMatchObject({
+      basis: 'issue+feature-family', matchedByFilter: 1,
+      families: { feature: featureBreakdown },
+    });
+    expect(miss.advice).toContain('Do NOT re-author');
   });
 
   it('returns 0 (not null) for a plan with no promoted items at all — a genuine drain, not a diagnosis failure', async () => {

@@ -28,6 +28,8 @@ import {
 } from './poll-daemon';
 import { getSystemAction } from '../harness/routines/system-actions';
 import { DEFAULT_RETRY_POLICY } from './retry-policy-types';
+import { STANDING_PR_BRANCH } from '../harness/git-sync/decide-standing-pr';
+import type { StandingPrMergeOutcome } from '../harness/git-sync/standing-pr-merge';
 import type { Pr, PrHost, PrHostResult, PrChecksState } from './types';
 import { ok, err } from './types';
 
@@ -617,5 +619,82 @@ describe('parsePollMeta', () => {
   it('tolerates null / non-object', () => {
     expect(parsePollMeta(null)).toEqual({ last_seen: {}, consecutive_errors: 0 });
     expect(parsePollMeta(undefined)).toEqual({ last_seen: {}, consecutive_errors: 0 });
+  });
+});
+
+// P-021 / P-024 (plan pot-review-integration-mode-2026-10-05, D-008): the standing PR from a
+// working-copy pot lands ONLY by advancing <repo>'s base to the exact merge sha the pot suite
+// passed on. The GitHub merge button (tryAutoMerge → host.merge) would build its own untested
+// merge commit, so the standing PR must never reach it.
+describe('pollHarnessPrs — standing PR exact-merge gate (P-021/P-024, D-008)', () => {
+  const standing = () => makePr({ head_ref: STANDING_PR_BRANCH });
+
+  it('TEETH: no standingPrMerge dep wired → the standing PR is approved but NEVER merged (no GitHub merge)', async () => {
+    const { host, merge } = makeHost({ open: [standing()] });
+    const { store } = makeStore();
+    const stampMerge = vi.fn(async () => {});
+    const out = await pollHarnessPrs(ARGS, baseDeps(host, store, { stampMerge }));
+    expect(out.approved).toEqual([42]);
+    expect(merge).not.toHaveBeenCalled();
+    expect(out.merged).toEqual([]);
+    expect(stampMerge).not.toHaveBeenCalled();
+  });
+
+  it('TEETH: dep returns merged → counted + stamped with the TESTED merge sha, host.merge never called', async () => {
+    const { host, merge } = makeHost({ open: [standing()] });
+    const { store } = makeStore();
+    const stampMerge = vi.fn(async () => {});
+    const standingPrMerge = vi.fn(
+      async (): Promise<StandingPrMergeOutcome> => ({ action: 'merged', mergeSha: 'b'.repeat(40), detail: 'ff' }),
+    );
+    const out = await pollHarnessPrs(ARGS, baseDeps(host, store, { stampMerge, standingPrMerge }));
+    expect(standingPrMerge).toHaveBeenCalledTimes(1);
+    const arg = (standingPrMerge.mock.calls[0] as unknown as [{ pr: Pr; installSlug: string }])[0];
+    expect(arg.pr.ref.number).toBe(42);
+    expect(arg.pr.review_decision).toBe('approved');
+    expect(arg.installSlug).toBe('papercup');
+    expect(merge).not.toHaveBeenCalled();
+    expect(out.merged).toEqual([42]);
+    expect(stampMerge).toHaveBeenCalledTimes(1);
+    const stamped = (stampMerge.mock.calls[0] as unknown as [{ mergeCommitSha: string }])[0];
+    expect(stamped).toMatchObject({ mergeCommitSha: 'b'.repeat(40) });
+  });
+
+  it.each([
+    ['testing', { action: 'testing', reason: 'never-tested', mergeSha: 'c'.repeat(40), detail: 'started' }],
+    ['waiting', { action: 'waiting', mergeSha: 'c'.repeat(40), detail: 'suite running' }],
+    ['retest', { action: 'retest', reason: 'target-moved', detail: 'target moved' }],
+  ] as const)('dep returns %s → not merged, and the PR is left OUT of last_seen so the next poll re-checks it', async (_l, outcome) => {
+    const { host, merge } = makeHost({ open: [standing()] });
+    const { store, calls } = makeStore();
+    const standingPrMerge = vi.fn(async (): Promise<StandingPrMergeOutcome> => outcome as StandingPrMergeOutcome);
+    const out = await pollHarnessPrs(ARGS, baseDeps(host, store, { standingPrMerge }));
+    expect(out.merged).toEqual([]);
+    expect(merge).not.toHaveBeenCalled();
+    const seen = parsePollMeta(calls.patchMeta.at(-1) as Record<string, unknown>);
+    expect(seen.last_seen['42']).toBeUndefined();
+  });
+
+  it('dep returns refused → not merged and recorded in last_seen (an unchanged PR is not re-driven)', async () => {
+    const { host, merge } = makeHost({ open: [standing()] });
+    const { store, calls } = makeStore();
+    const standingPrMerge = vi.fn(
+      async (): Promise<StandingPrMergeOutcome> => ({ action: 'refused', reason: 'pr-head-not-promoted', detail: 'x' }),
+    );
+    const out = await pollHarnessPrs(ARGS, baseDeps(host, store, { standingPrMerge }));
+    expect(out.merged).toEqual([]);
+    expect(merge).not.toHaveBeenCalled();
+    const seen = parsePollMeta(calls.patchMeta.at(-1) as Record<string, unknown>);
+    expect(seen.last_seen['42']).toBeDefined();
+  });
+
+  it('a non-standing PR is unaffected: still merged through tryAutoMerge, the standing dep is never called', async () => {
+    const { host, merge } = makeHost();
+    const { store } = makeStore();
+    const standingPrMerge = vi.fn(async (): Promise<StandingPrMergeOutcome> => ({ action: 'left-for-owner' }));
+    const out = await pollHarnessPrs(ARGS, baseDeps(host, store, { standingPrMerge }));
+    expect(merge).toHaveBeenCalledTimes(1);
+    expect(out.merged).toEqual([42]);
+    expect(standingPrMerge).not.toHaveBeenCalled();
   });
 });

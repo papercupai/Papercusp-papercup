@@ -61,12 +61,15 @@ function makeFakeSocket(): { socket: unknown; fireClose: () => void } {
 /** A fake swarm capturing `discovery.refresh()` calls + the connection handler. */
 function makeFakeSwarm() {
   const refreshed: Array<object | undefined> = [];
+  /** Date.now() at each refresh (fake-timer clock), for cadence assertions. */
+  const refreshedAt: number[] = [];
   let connHandler: ((socket: unknown, info?: unknown) => void) | null = null;
   const swarm: HyperswarmLike = {
     join: () => ({
       flushed: async () => {},
       refresh: (o?: object) => {
         refreshed.push(o);
+        refreshedAt.push(Date.now());
       },
     }),
     leave: () => {},
@@ -79,6 +82,7 @@ function makeFakeSwarm() {
   return {
     swarm,
     refreshed,
+    refreshedAt,
     /** Simulate the shared swarm emitting a peer connection. */
     emitConnection: (socket: unknown) => connHandler?.(socket),
   };
@@ -236,9 +240,78 @@ describe('joinHarnessSwarm self-heal re-peer loop (WI-752 / FED-2)', () => {
       // Quiescent hive: no connection churn to naturally re-arm the fast
       // window, and the slow keepalive is far off — WITHOUT hasStalledLogs
       // this would now be a dead zone (see the sibling test above). A
-      // stalled admitted log keeps it on the fast cadence instead.
+      // stalled admitted log keeps it on the fast cadence instead (for the
+      // stall's own fast window — the stall was seen at the first tick).
       await vi.advanceTimersByTimeAsync(160);
-      expect(f.refreshed.length).toBeGreaterThanOrEqual(afterFastWindow + 3);
+      expect(f.refreshed.length).toBeGreaterThanOrEqual(afterFastWindow + 2);
+    });
+
+    // WI-10005270: a permanently peerless admitted log (an offline machine)
+    // used to hold every topic on the 2.5 s cadence FOREVER — 47 topics drove
+    // 5.35 DHT announce queries/s on bg-host. The stall now gets ONE fast
+    // window, then an exponential backoff to stalledMaxRefreshMs.
+    it('backs a persistent stall off exponentially to stalledMaxRefreshMs after its own fast window', async () => {
+      vi.useFakeTimers();
+      const f = makeFakeSwarm();
+      let stalled = false;
+      const handle = await joinHarnessSwarm({
+        store: STORE,
+        topic: TOPIC,
+        swarm: f.swarm,
+        guard: ALLOW_GUARD,
+        refreshMs: 50,
+        fastWindowMs: 200,
+        slowRefreshMs: 100_000,
+        stalledMaxRefreshMs: 400,
+        hasStalledLogs: () => stalled,
+      });
+      handles.push(handle);
+
+      await vi.advanceTimersByTimeAsync(200); // burn the join's fast window
+      stalled = true;
+      const atStall = f.refreshed.length;
+      await vi.advanceTimersByTimeAsync(200); // the stall's own fast window
+      expect(f.refreshed.length).toBeGreaterThanOrEqual(atStall + 3);
+
+      const base = f.refreshedAt.length - 1; // last fast refresh = the ladder's origin
+      await vi.advanceTimersByTimeAsync(3_000);
+      const times = f.refreshedAt.slice(base);
+      const gaps = times.slice(1).map((t, i) => t - times[i]!);
+      expect(gaps.length).toBeGreaterThanOrEqual(6);
+      // Starts at refreshMs, never speeds up, doubles, and settles on the cap.
+      expect(gaps[0]).toBe(50);
+      for (let i = 1; i < gaps.length; i++) expect(gaps[i]).toBeGreaterThanOrEqual(gaps[i - 1]!);
+      expect(gaps.slice(0, 4)).toEqual([50, 100, 200, 400]);
+      expect(Math.max(...gaps)).toBe(400);
+      expect(gaps.slice(-3)).toEqual([400, 400, 400]);
+    });
+
+    it('a stall that clears and recurs gets prompt retries again (the backoff resets)', async () => {
+      vi.useFakeTimers();
+      const f = makeFakeSwarm();
+      let stalled = false;
+      const handle = await joinHarnessSwarm({
+        store: STORE,
+        topic: TOPIC,
+        swarm: f.swarm,
+        guard: ALLOW_GUARD,
+        refreshMs: 50,
+        fastWindowMs: 200,
+        slowRefreshMs: 100_000,
+        stalledMaxRefreshMs: 400,
+        hasStalledLogs: () => stalled,
+      });
+      handles.push(handle);
+
+      await vi.advanceTimersByTimeAsync(200);
+      stalled = true;
+      await vi.advanceTimersByTimeAsync(1_500); // grace + backoff up to the cap
+      stalled = false;
+      await vi.advanceTimersByTimeAsync(100); // replication resumed — stall clears
+      stalled = true; // a NEW stall
+      const atNewStall = f.refreshed.length;
+      await vi.advanceTimersByTimeAsync(200);
+      expect(f.refreshed.length).toBeGreaterThanOrEqual(atNewStall + 3);
     });
 
     it('falls back to the dead-zone/slow-keepalive behavior once hasStalledLogs() clears', async () => {

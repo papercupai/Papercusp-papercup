@@ -1,18 +1,18 @@
 /** Read the active file-lock lease that marks an in-tree mutation window. */
-import { execFile } from 'node:child_process';
+import { execFile, fork, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { readFile, realpath } from 'node:fs/promises';
-import { isBuiltin } from 'node:module';
-import { tmpdir } from 'node:os';
-import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { terminateSpawnTree } from '@papercusp/backup/hook';
 import { createHash } from 'node:crypto';
 import { env as processEnv, getuid } from 'node:process';
 import { promisify } from 'node:util';
-import { build, type Metafile, type Plugin } from 'esbuild';
+import { createTextCollector } from '../../child-output';
 import ts from 'typescript';
 import { ensureBootstrap, getTxPool, readQueue } from '../locks/su-lock-store';
 import { acquireWithContentionRetry } from '../locks/contention-retry';
-import { createRequireSpecifiers, unfollowableImportCall } from './create-require-specifiers';
+import type { Closure } from './mutation-probe-closure';
 
 /**
  * Return active mutation-probe paths for one physical checkout. The lock is a
@@ -40,170 +40,70 @@ export type MutationProbeRefusal = {
   hint: string;
 };
 
-const CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs']);
-const CLOSURE_FILE_CAP = 20_000;
+export const CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs']);
 const CLOSURE_BUDGET_MS = 20_000;
 /**
  * Test-side code that reaches source through the FILESYSTEM or a child process instead of an
  * import. The import closure cannot see those reads, so a match refuses the run. A heuristic
  * that can only over-refuse: a false hit costs a retry, a miss would admit a mutant.
  */
-const OUT_OF_GRAPH_ACCESS =
+export const OUT_OF_GRAPH_ACCESS =
   /(?<![\w$])(?:readdirSync|readdir|opendirSync|opendir|globSync|glob|fastGlob|spawn|spawnSync|execSync|execFile|execFileSync|execa|fork)\s*\(|(?<![\w$.])exec\s*\(|import\.meta\.glob/;
 const TEST_SIDE_FILE = /(^|[\\/])(__tests__|tests?|fixtures?)[\\/]|\.(test|spec)\.|test-?(helpers?|utils?)/i;
 
-/** esbuild resolves a bare specifier; anything that lands in node_modules is a package, not source. */
-const externalPackages: Plugin = {
-  name: 'mutation-probe-external-packages',
-  setup(pluginBuild) {
-    const nested = Symbol('nested');
-    pluginBuild.onResolve({ filter: /^[^./]/ }, async (args) => {
-      if (args.pluginData === nested || isAbsolute(args.path)) return undefined;
-      if (isBuiltin(args.path)) return { path: args.path, external: true };
-      const resolved = await pluginBuild.resolve(args.path, {
-        kind: args.kind, resolveDir: args.resolveDir, importer: args.importer, pluginData: nested,
-      });
-      if (resolved.errors.length > 0) return { errors: resolved.errors };
-      if (resolved.external) return { path: args.path, external: true };
-      return resolved.path.split(sep).includes('node_modules') ? { path: args.path, external: true } : { path: resolved.path };
-    });
-  },
-};
-
 /**
- * EI-24556278753778650: make `createRequire` loaders visible to the import graph. esbuild cannot
- * follow a require made through `createRequire(...)`, so each such module is analysed and every
- * specifier its loaders can load is appended as a side-effect import. esbuild then resolves those
- * and walks them like any other edge (a builtin/package stays external), so a test's closure grows
- * by exactly what the loader can reach. A loader whose specifier set cannot be established is
- * recorded per MODULE, which refuses only the tests whose closure actually reaches that module.
+ * A closure build owns its compiler service. Its Go heap and protocol buffers
+ * must not survive in a long-lived HTTP worker, and a deadline must stop work.
+ * Compiler processes have separate esbuild module state, so stopping this service
+ * cannot interrupt transforms or another simultaneous closure in the caller.
  */
-const CODE_FILTER = /\.(?:[cm]?[jt]s|[jt]sx)$/;
-function createRequireEdges(unfollowable: Map<string, string>): Plugin {
-  return {
-    name: 'mutation-probe-create-require-edges',
-    setup(pluginBuild) {
-      pluginBuild.onLoad({ filter: CODE_FILTER }, async (args) => {
-        if (args.namespace !== 'file' || args.path.split(sep).includes('node_modules')) return undefined;
-        const text = await readFile(args.path, 'utf8');
-        // The regex is a cheap prefilter; the AST decides (strings and comments are not calls).
-        const dynamic = unfollowedImportAt(text) === null ? null : unfollowableImportCall(args.path, text);
-        if (dynamic) unfollowable.set(args.path, `has an import this walk cannot follow: ${dynamic}`);
-        const analysis = createRequireSpecifiers(args.path, text);
-        if (analysis === null) return undefined;
-        if (analysis.status === 'unfollowable') {
-          if (!unfollowable.has(args.path)) unfollowable.set(args.path, `has a createRequire loader this walk cannot follow: ${analysis.reason}`);
-          return undefined;
-        }
-        if (analysis.specifiers.length === 0) return undefined;
-        const ext = extname(args.path).slice(1);
-        const loader = ext === 'tsx' ? 'tsx' : ext === 'jsx' ? 'jsx' : /^[cm]?ts$/.test(ext) ? 'ts' : 'js';
-        return {
-          contents: `${text}\n${analysis.specifiers.map((spec) => `import ${JSON.stringify(spec)};`).join('\n')}\n`,
-          loader, resolveDir: dirname(args.path),
-        };
-      });
-    },
-  };
-}
-
-type Closure =
-  | { status: 'complete'; files: Map<string, Set<string>>; unfollowable: Map<string, string> }
-  | { status: 'incomplete'; reason: string };
-
-/**
- * An import esbuild could not follow. esbuild inlines every literal import it resolves and
- * keeps a quoted specifier for an external package, so an `import(`/`require(` left in the
- * bundle without a plain string literal is an edge the metafile graph does not contain.
- * Comments before a literal are trivia, while template literals can interpolate runtime paths.
- * esbuild does not warn for a non-literal `import()` in ESM output, so this scan is the signal.
- */
-const IMPORT_CALL = /(?<![\w$.])(?:import|__require|require)\s*\(/g;
-
-/** Skip comments as well as whitespace before classifying an import argument. */
-function importArgumentStart(text: string, start: number): number {
-  let at = start;
-  for (;;) {
-    while (/\s/.test(text[at] ?? '')) at++;
-    if (text.startsWith('/*', at)) {
-      const end = text.indexOf('*/', at + 2);
-      if (end < 0) return at;
-      at = end + 2;
-    } else if (text.startsWith('//', at)) {
-      const end = text.indexOf('\n', at + 2);
-      if (end < 0) return at;
-      at = end + 1;
-    } else {
-      return at;
-    }
-  }
-}
-
-/** createRequire loaders are handled by the AST analysis above, not by this textual scan. */
-function unfollowedImportAt(text: string): number | null {
-  IMPORT_CALL.lastIndex = 0;
-  for (const match of text.matchAll(IMPORT_CALL)) {
-    const at = importArgumentStart(text, match.index + match[0].length);
-    // esbuild keeps resolved external package imports as quoted specifiers.
-    if (text[at] !== '"' && text[at] !== "'") return match.index;
-  }
-  return null;
-}
-
-/**
- * The static module closure of each requested test file (absolute paths), computed by bundling
- * with esbuild and walking the metafile's import graph from each entry. The graph is walked
- * rather than read from the outputs because tree-shaking drops side-effect-free modules from
- * an output, while Vitest still evaluates them.
- */
-async function testImportClosures(root: string, tests: string[]): Promise<Closure> {
-  let metafile: Metafile;
-  const unfollowable = new Map<string, string>();
+export async function testImportClosures(root: string, tests: string[],
+  options: { workerPath?: string; budgetMs?: number } = {},
+): Promise<Closure> {
+  let worker: ChildProcess;
+  const here = typeof __filename !== 'undefined' ? __filename : fileURLToPath(import.meta.url);
+  const bundled = join(dirname(here), 'mutation-probe-closure.worker.mjs');
+  const workerPath = options.workerPath ?? (existsSync(bundled) ? bundled : join(dirname(here), 'mutation-probe-closure.worker.ts'));
+  const budgetMs = options.budgetMs ?? CLOSURE_BUDGET_MS;
+  const detached = process.platform !== 'win32';
+  try { worker = fork(workerPath, [], { serialization: 'advanced', execArgv: [], silent: true, detached }); }
+  catch (error) { return { status: 'incomplete', reason: String(error).slice(0, 200) }; }
+  const stderr = createTextCollector(worker.stderr, { maxChars: 1000 });
+  worker.stdout?.resume();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const exited = new Promise<void>(resolve => {
+    worker.once('exit', () => resolve());
+    // Failed spawn emits error without exit. A later IPC/kill error on an
+    // existing child does not end its lifetime: cleanup must still await exit.
+    worker.once('error', () => { if (!worker.pid) resolve(); });
+  });
   try {
-    const outdir = join(tmpdir(), 'mutation-probe-closure');
-    const result = await Promise.race([
-      build({
-        entryPoints: tests, absWorkingDir: root, bundle: true, write: false, metafile: true,
-        // Tree-shaking off so the unfollowed-import scan below sees every module's code.
-        outdir, platform: 'node', format: 'esm', treeShaking: false,
-        logLevel: 'silent', plugins: [externalPackages, createRequireEdges(unfollowable)],
-        loader: {
-          '.json': 'json', '.md': 'text', '.sql': 'text', '.txt': 'text', '.html': 'text', '.yaml': 'text', '.yml': 'text',
-          '.css': 'empty', '.scss': 'empty', '.svg': 'empty', '.png': 'empty', '.jpg': 'empty', '.gif': 'empty',
-          '.woff': 'empty', '.woff2': 'empty', '.wasm': 'empty', '.node': 'empty',
-        },
-      }),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`closure exceeded ${CLOSURE_BUDGET_MS}ms`)), CLOSURE_BUDGET_MS).unref()),
-    ]);
-    // An import esbuild could not follow is an edge this walk cannot see.
-    const unfollowed = result.warnings.find((w) => w.id === 'unsupported-dynamic-import' || w.id === 'unsupported-require-call');
-    if (unfollowed) {
-      const at = unfollowed.location ? ` (${unfollowed.location.file}:${unfollowed.location.line})` : '';
-      return { status: 'incomplete', reason: `non-literal import${at}` };
-    }
-    // Non-literal import()/require() calls and createRequire loaders are recorded per source
-    // module by the onLoad plugin (EI-24556278753778650), so they refuse only the tests whose
-    // closure reaches that module. Scanning the bundle TEXT refused every test for the words
-    // `import(...)` inside a string.
-    metafile = result.metafile;
-  } catch (error) {
-    const first = (error as { errors?: Array<{ text: string }> }).errors?.[0]?.text;
-    return { status: 'incomplete', reason: (first ?? (error instanceof Error ? error.message : String(error))).slice(0, 200) };
+    return await new Promise<Closure>(resolve => {
+      timer = setTimeout(() => resolve({ status: 'incomplete', reason: `closure exceeded ${budgetMs}ms` }), budgetMs);
+      worker.once('message', (result: Closure) => {
+        if (result?.status === 'incomplete' && typeof result.reason === 'string' ||
+          result?.status === 'complete' && result.files instanceof Map && result.unfollowable instanceof Map) resolve(result);
+        else resolve({ status: 'incomplete', reason: 'compiler worker returned an invalid closure' });
+      });
+      worker.once('error', error => resolve({ status: 'incomplete', reason: error.message.slice(0, 200) }));
+      worker.once('exit', code => {
+        const stderrText = stderr.peek();
+        const cause = stderrText.split(/\r?\n/).find(line => /^[A-Za-z]*Error(?: \[[^\]]+\])?:/.test(line));
+        resolve({ status: 'incomplete', reason: (cause ?? stderrText.trim()).slice(0, 200) || `compiler worker exited before returning a closure (${code})` });
+      });
+      worker.send({ root, tests }, error => { if (error) resolve({ status: 'incomplete', reason: error.message.slice(0, 200) }); });
+    });
+  } finally {
+    clearTimeout(timer);
+    // Thread termination alone leaves spawned esbuild children alive (the real
+    // deadline guard caught it). Reuse the owned-process-group kill mechanism.
+    if (!detached && worker.pid) await new Promise<void>(resolve => {
+      execFile('taskkill', ['/PID', String(worker.pid), '/T', '/F'], () => resolve());
+    });
+    terminateSpawnTree(worker, detached);
+    await exited;
+    worker.stdout?.destroy(); worker.stderr?.destroy();
   }
-  const inputs = Object.keys(metafile.inputs);
-  if (inputs.length > CLOSURE_FILE_CAP) return { status: 'incomplete', reason: `closure exceeds ${CLOSURE_FILE_CAP} files` };
-  const edges = new Map(inputs.map((key) => [resolve(root, key),
-    metafile.inputs[key]!.imports.filter((edge) => !edge.external).map((edge) => resolve(root, edge.path))]));
-  const files = new Map<string, Set<string>>();
-  for (const test of tests) {
-    const seen = new Set<string>([test]);
-    const queue = [test];
-    while (queue.length > 0) {
-      for (const next of edges.get(queue.pop()!) ?? []) if (!seen.has(next)) { seen.add(next); queue.push(next); }
-    }
-    files.set(test, seen);
-  }
-  return { status: 'complete', files, unfollowable };
 }
 
 const sha256 = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
@@ -236,7 +136,11 @@ async function verifiedRestored(admissionDir: string, realRoot: string, subject:
  * A hand mutation or later edit changes the bytes, so that path stays uncovered and fenced.
  */
 async function uncoveredProbePaths(realRoot: string, probePaths: string[]): Promise<string[]> {
-  const admissionDir = join('/tmp', `papercusp-mutation-probe-${getuid?.() ?? 0}-${sha256(realRoot)}`);
+  // Share the same configurable admission base as the probe writer and overlay.
+  // Tests set a private per-file base so a killed fixture cannot leave manifests
+  // in the production /tmp namespace; production remains /tmp by default.
+  const admissionBase = processEnv.PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT || '/tmp';
+  const admissionDir = join(admissionBase, `papercusp-mutation-probe-${getuid?.() ?? 0}-${sha256(realRoot)}`);
   const manifest = await readFile(join(admissionDir, 'original.manifest')).catch(() => null);
   let overlaid: string | null = null;
   if (manifest) {
@@ -306,11 +210,27 @@ async function committedUnchanged(realRoot: string, paths: string[]): Promise<Se
   } catch {
     return unchanged;
   }
-  await Promise.all(paths.map(async (path) => {
-    const blob = committed.get(path);
-    if (!blob) return;
+  const tracked = paths.filter((path) => committed.has(path));
+  if (tracked.length === 0) return unchanged;
+  // ONE fork for the whole set (EI-24852529885337741). Each operator-side fork costs ~160 ms of
+  // synchronous main-thread time, and this preflight runs on every testing:run while any probe
+  // lock is held: measured 2026-10-02 09:47-09:57Z on :3170 as 386 single-path forks in 10 min.
+  // `git hash-object -- <a> <b> ...` prints one blob per path, in argument order, applying each
+  // path's own clean filters exactly as N single calls would. It aborts on the first unreadable
+  // path, so on any failure (or a short reply) every path is re-proved on its own, which keeps
+  // the per-path semantics: one missing file leaves only itself fenced.
+  const batch = await git(['hash-object', '--', ...tracked])
+    .then((out) => out.split('\n').filter(Boolean))
+    .catch(() => null);
+  if (batch?.length === tracked.length) {
+    tracked.forEach((path, i) => {
+      if (batch[i] === committed.get(path)) unchanged.add(path);
+    });
+    return unchanged;
+  }
+  await Promise.all(tracked.map(async (path) => {
     const current = await git(['hash-object', '--', path]).catch(() => null);
-    if (current?.trim() === blob) unchanged.add(path);
+    if (current?.trim() === committed.get(path)) unchanged.add(path);
   }));
   return unchanged;
 }
@@ -370,8 +290,12 @@ function namedPathLiteral(file: string, text: string, filenames: string[]): stri
   return found;
 }
 
-/** Why one test file may observe a probed source, or null when its closure provably cannot. */
-async function reachReason(
+/**
+ * Why one test file may observe a probed source, or null when its closure provably cannot.
+ * Shared with the restricted-write fence (restricted-hold-fence.ts), whose held paths are
+ * "probes" in exactly this sense.
+ */
+export async function reachReason(
   closure: Set<string>, test: string, probes: string[], unfollowable: Map<string, string>,
 ): Promise<string | null> {
   const hit = probes.find((probe) => closure.has(probe));

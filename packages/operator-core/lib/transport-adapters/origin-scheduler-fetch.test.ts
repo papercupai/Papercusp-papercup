@@ -550,6 +550,33 @@ describe('installOriginSchedulerFetch single-flight read coalescing', () => {
     handle?.uninstall();
   });
 
+  it.each(['immediate', 'active'])('starts a fresh read when the last %s caller cancels before an immediate replacement', async phase => {
+    const hold = deferred<void>();
+    const inner = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.signal?.aborted) throw init.signal.reason;
+      await hold.promise;
+      return response();
+    });
+    stubWindow(inner as unknown as typeof fetch);
+    getOriginScheduler(ORIGIN, { limit: 2, reservedInteractive: 0, requestTimeoutMs: 1_000 });
+    const handle = installOriginSchedulerFetch();
+    const controller = new AbortController();
+    const abandoned = window.fetch('/api/tutorial-progress', { signal: controller.signal });
+    void abandoned.catch(() => {});
+    if (phase === 'active') await tick();
+    controller.abort();
+    // React StrictMode restarts the effect synchronously, before the old
+    // rejected request's promise cleanup has removed its single-flight entry.
+    const replacement = window.fetch('/api/tutorial-progress');
+    void replacement.catch(() => {});
+    await tick();
+    hold.resolve();
+    await expect(abandoned).rejects.toBeDefined();
+    await expect(replacement).resolves.toBeDefined();
+    expect(inner).toHaveBeenCalledTimes(2);
+    handle?.uninstall();
+  });
+
   it('lets one caller cancel without cancelling the read its peer awaits', async () => {
     const hold = deferred<void>();
     const inner = vi.fn(async () => {

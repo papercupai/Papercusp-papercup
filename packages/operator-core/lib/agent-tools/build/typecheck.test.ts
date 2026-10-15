@@ -724,6 +724,87 @@ describe('resolveTypecheckCwd — absolute external projects use their package-l
   });
 });
 
+describe('an include-glob file that vanishes mid-run is churn, not "checked nothing" (EI-24801454238382823)', () => {
+  let root: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'ei2480-vanish-'));
+    mkdirSync(join(root, 'lib', 'probe'), { recursive: true });
+    writeFileSync(join(root, 'tsconfig.json'), '{}');
+    writeFileSync(join(root, 'lib', 'probe', 'back.ts'), 'export {};\n');
+  });
+
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  // tsc's verbatim wording for a glob-listed file it could not read (TypeScript 6.0.3).
+  const vanishedLines = (abs: string) => [
+    `error TS6053: File '${abs}' not found.`,
+    '  The file is in the program because:',
+    `    Matched by include pattern 'lib/**/*.ts' in '${join(root, 'tsconfig.json')}'`,
+  ];
+
+  async function runWith(lines: string[]) {
+    const { child } = fakeChild();
+    const spawnMock = vi.mocked(childProcess.spawn);
+    spawnMock.mockImplementationOnce(() => {
+      queueMicrotask(() => {
+        child.stdout?.emit('data', Buffer.from(`${lines.join('\n')}\n`));
+        child.emit('close', 2);
+      });
+      return child;
+    });
+    try {
+      return await (
+        buildTypecheck as unknown as {
+          handler: (args: unknown, ctx: unknown) => Promise<{ data: Record<string, unknown> }>;
+        }
+      ).handler({ project: '.' }, { projectDir: root });
+    } finally {
+      spawnMock.mockReset();
+    }
+  }
+
+  it('judges the checked program and names the vanished file when it is gone for good', async () => {
+    const raw = await runWith(vanishedLines(join(root, 'lib', 'probe', 'gone.ts')));
+    expect(raw.data.error).toBeUndefined();
+    expect(raw.data).toMatchObject({
+      ok: true,
+      errorCount: 0,
+      vanishedDuringRun: ['lib/probe/gone.ts'],
+      inputRaceIncomplete: false,
+    });
+    expect(raw.data.parseWarning).toBeUndefined();
+  });
+
+  it('stays NOT ok when a vanished file exists again — tsc never checked it', async () => {
+    const raw = await runWith(vanishedLines(join(root, 'lib', 'probe', 'back.ts')));
+    expect(raw.data.error).toBeUndefined();
+    expect(raw.data).toMatchObject({
+      ok: false,
+      inputRaceIncomplete: true,
+      vanishedStillPresent: ['lib/probe/back.ts'],
+    });
+  });
+
+  it('still reports every real error beside a vanished file, and only those', async () => {
+    const raw = await runWith([
+      ...vanishedLines(join(root, 'lib', 'probe', 'gone.ts')),
+      "lib/a.ts(3,7): error TS2322: Type 'string' is not assignable to type 'number'.",
+    ]);
+    expect(raw.data).toMatchObject({ ok: false, errorCount: 1, vanishedDuringRun: ['lib/probe/gone.ts'] });
+    expect((raw.data.errors as { code: string }[]).map((e) => e.code)).toEqual(['TS2322']);
+  });
+
+  it('keeps refusing a genuinely missing operand as nothing_typechecked', async () => {
+    const raw = await runWith([
+      `error TS6053: File '${join(root, 'nope.ts')}' not found.`,
+      '  The file is in the program because:',
+      '    Root file specified for compilation',
+    ]);
+    expect(raw.data).toMatchObject({ ok: false, error: 'nothing_typechecked', code: 'TS6053' });
+  });
+});
+
 describe('dirs — the directory-attribution question `files` (suffix match) cannot express (EI-22050606808498557)', () => {
   let root: string;
 
@@ -1193,6 +1274,72 @@ describe('EI-19342308665972321 — runTsc kills the WHOLE process group on timeo
  * is the same false-green shape as the hand-rolled `tsc | head` fallback this mode
  * exists to replace, so these are correctness guards, not shape trivia.
  */
+describe('scoped package type references with the real compiler (WI-10006343)', () => {
+  let root: string;
+  let project: string;
+  let ts: typeof import('typescript');
+  beforeAll(async () => { ts = await import('typescript'); });
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'scoped-package-types-'));
+    const dir = join(root, 'packages', 'fixture');
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    mkdirSync(join(root, 'node_modules', 'test-kit'), { recursive: true });
+    mkdirSync(join(root, 'node_modules', 'unwanted-kit'), { recursive: true });
+    writeFileSync(join(root, 'node_modules', 'test-kit', 'globals.d.ts'), 'declare const testFixtureValue: 42;');
+    writeFileSync(join(root, 'node_modules', 'unwanted-kit', 'index.d.ts'), 'declare const unwantedFixtureValue: number;');
+    project = join(dir, 'tsconfig.json');
+    writeFileSync(project, JSON.stringify({ compilerOptions: { module: 'esnext', moduleResolution: 'bundler',
+      target: 'ES2022', strict: true, skipLibCheck: true, types: ['test-kit/globals'] }, include: ['src/**/*.ts'] }));
+    writeFileSync(join(dir, 'src', 'target.ts'), 'export const answer = testFixtureValue;');
+  });
+  afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+
+  function diagnostics(configPath: string) {
+    const read = ts.readConfigFile(configPath, ts.sys.readFile);
+    const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, dirname(configPath), undefined, configPath);
+    // Match tsc -p: automatic type resolution needs the actual config location.
+    expect(parsed.options.configFilePath).toBe(configPath);
+    return [...parsed.errors, ...ts.getPreEmitDiagnostics(ts.createProgram(parsed.fileNames, parsed.options))]
+      .map(error => ({ code: error.code, message: ts.flattenDiagnosticMessageText(error.messageText, '\n') }));
+  }
+
+  it('preserves an explicit package subpath type that resolves in the original project', () => {
+    expect(diagnostics(project)).toEqual([]);
+    const scope = buildScopedTsconfig(root, project, ['packages/fixture/src/target.ts']);
+    try { expect(diagnostics(scope.configPath)).toEqual([]); }
+    finally { scope.cleanup(); }
+  });
+
+  it('does not import other node_modules globals while restoring the explicit package', () => {
+    writeFileSync(join(dirname(project), 'src', 'target.ts'), 'export const answer = testFixtureValue + unwantedFixtureValue;');
+    const scope = buildScopedTsconfig(root, project, ['packages/fixture/src/target.ts']);
+    try {
+      const errors = diagnostics(scope.configPath);
+      expect(errors).toHaveLength(1);
+      expect([2304, 2552]).toContain(errors[0].code);
+      expect(errors[0].message).toContain('unwantedFixtureValue');
+    } finally { scope.cleanup(); }
+  });
+
+  it('keeps an explicitly empty types list empty', () => {
+    const config = JSON.parse(readFileSync(project, 'utf8'));
+    config.compilerOptions.types = [];
+    writeFileSync(project, JSON.stringify(config));
+    const scope = buildScopedTsconfig(root, project, ['packages/fixture/src/target.ts']);
+    try { expect(diagnostics(scope.configPath).map(error => error.code)).toEqual([2304]); }
+    finally { scope.cleanup(); }
+  });
+
+  it('still rejects an actually missing package type', () => {
+    const config = JSON.parse(readFileSync(project, 'utf8'));
+    config.compilerOptions.types = ['missing-kit/globals'];
+    writeFileSync(project, JSON.stringify(config));
+    const scope = buildScopedTsconfig(root, project, ['packages/fixture/src/target.ts']);
+    try { expect(diagnostics(scope.configPath).map(error => error.code)).toContain(2688); }
+    finally { scope.cleanup(); }
+  });
+});
+
 describe('buildScopedTsconfig (scopeToFiles)', () => {
   const pkgRoot = join(__dirname, '..', '..', '..');
   const realFile = join(pkgRoot, 'lib', 'tsc-diagnostics.ts');

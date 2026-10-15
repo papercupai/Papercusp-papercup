@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-15 (live alpha channel, after D-030 + D-032): every build the public channel distributes passes the Syft installer scan with no UNREVIEWED finding; every superseded build that fails or was never scanned is withdrawn from distribution and archived, not deleted",
+  "framework": "operational",
+  "command": [
+    ".papercusp/scratch/osr/r15-0025/scan.sh (2026-10-06 11:25:07-11:25:48Z, log scan.log; exe re-scan scan-exe-c320bea0c232.log 11:32Z): download the 3 0.0.25-alpha GUI installers the page links (deb, dmg, exe), compare sha256 with the release registry, run the installer license gate (Syft) over each",
+    ".papercusp/scratch/osr/r15-0025/history-scan.sh + sample scan (12:11-12:12Z, logs hlogs/Papercusp_GUI_0.0.13_amd64.AppImage.log, hlogs/Papercusp_GUI_0.0.24_amd64.AppImage.log, sample-scan.log): same scanner and flags over superseded AppImages",
+    ".papercusp/scratch/osr/r15-0025/archive-history.sh (D-032; 12:16:04-13:04:08Z, log archive-history.log) then archive-sweep.sh (13:04:15-13:06:53Z, log archive-sweep.log): server-side move of every object in the 10 superseded version dirs present in the bucket (0.0.13-0.0.18, 0.0.21-0.0.24) to an unlinked archive prefix in the same bucket",
+    ".papercusp/scratch/osr/r15-0025/r15-census.sh (13:06:53-13:07:03Z, log r15-census.log, result r15-census.json): HEAD the 93 superseded artifact URLs the page used to link; HEAD the same 93 paths under the archive prefix (status codes only, census-archive-codes.txt); papercusp-desktop/bin/check-page-links.mjs over the live index.html; fetch latest.json and history.json; list the channel prefix's version dirs",
+    "curl -sI <channel>/desktop-v0.0.25-alpha/{Papercusp_GUI_0.0.25_amd64.AppImage,Papercusp_GUI_0.0.25_amd64.AppImage.sig,Papercusp%20GUI_0.0.25_amd64.deb} (~13:08Z; D-030 withdrawal + control)",
+    "structural cross-check (~13:08Z): the 93 linked paths against the archive bucket listing ~/.papercusp/withdrawn-artifacts/history/archive-ls-final.txt (kept outside the repo)"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T11:25:07Z",
+  "finishedAt": "2026-10-06T13:09:36Z",
+  "summary": "The live alpha channel now distributes exactly the 3 0.0.25-alpha GUI installers (deb, dmg, exe). Each matches its registry sha256 and passes the installer license gate with denied=0 unreviewed=0. Withdrawn: the 0.0.25 AppImage (D-030; fails with 66 unreviewed GPL-family libraries) and every 0.0.8-0.0.24 artifact (D-032; none was ever scanned, and the sampled 0.0.24 and 0.0.13 AppImages fail). All 93 superseded URLs return 404, no superseded version dir remains in the channel, and the page's 93 relative links all resolve. latest.json offers 0.0.25 for darwin x2 + windows only, and history.json lists artifacts for 0.0.25 alone (3). The withdrawal is reversible: the 63 linked artifacts that were live return 200 under the archive prefix, and the archive holds 154 objects across the 10 moved dirs. The next distributed build (0.0.26, the first with D-013) already passed the same scan (osr-r15-dist-0026-2026-09-30.json).",
+  "assertions": [
+    {
+      "id": "distributed-builds-pass",
+      "passed": true,
+      "evidence": "scan.log 11:25Z, the installers the live page links: GUI_0.0.25_amd64.deb sha256 7fdae6ab… = registry, files=2086 payloads=4 covered=4 denied=0 unreviewed=0 status=pass; GUI_0.0.25_universal-apple-darwin.dmg 357210c4… = registry, files=2084 syftPackages=2 covered=6 denied=0 unreviewed=0 status=pass; GUI_0.0.25_x64-setup.exe d8972d76… = registry, files=2073 syftPackages=1 covered=5 denied=0 unreviewed=0 status=pass. census-downloads.txt (13:07Z) shows the page links exactly these 3 installers and nothing else."
+    },
+    {
+      "id": "withdrawn-builds-unreachable",
+      "passed": true,
+      "evidence": "r15-census.json: old_url_codes {404: 93} of old_url_total 93, non404_old []; channel_dirs ['desktop-v0.0.25-alpha/'], old_dirs_left []; sweep: 0.0.17, 0.0.18, 0.0.21, 0.0.22, 0.0.23, 0.0.24 each rc=0 left=0 (archive-history.log moved 0.0.13-0.0.16 with rc=0 left=0). D-030 leg: HEAD Papercusp_GUI_0.0.25_amd64.AppImage 404 and .sig 404, beside the control HEAD Papercusp GUI_0.0.25_amd64.deb 200."
+    },
+    {
+      "id": "withdrawn-not-deleted",
+      "passed": true,
+      "evidence": "Of the same 93 paths under the unlinked archive prefix: 63 return 200 and 30 return 404 (census-archive-codes.txt). Structurally, the 63 present in the archive bucket listing are exactly the linked artifacts of the 10 moved dirs (versions 13-18 and 21-24). The 30 absent are 0.0.8-0.0.12 plus three 0.0.14 mobile builds (android .aab/.apk, ios .ipa), which were never in the bucket. This matches D-032's pre-move count (63 live, 30 already 404). The archive lists 154 objects (artifacts + .sig) across those 10 dirs. Registry rows were backed up before the withdrawn metadata was written (~/.papercusp/withdrawn-artifacts/history/registry-before.json)."
+    },
+    {
+      "id": "page-and-manifest-consistent",
+      "passed": true,
+      "evidence": "check-page-links.mjs over the live index.html: '✓ all 93 relative link(s) on the page resolve' (links_rc=0), so the page links no withdrawn artifact. latest.json version 0.0.25, platforms darwin-aarch64, darwin-x86_64, windows-x86_64 (no linux AppImage). history.json: 17 releases kept as entries, and the only one with artifacts is 0.0.25 (3)."
+    },
+    {
+      "id": "failing-history-reason",
+      "passed": true,
+      "evidence": "This is why the history had to go, and also shows the instrument is not vacuous: the same gate reports fail on superseded builds. hlogs/Papercusp_GUI_0.0.24_amd64.AppImage.log (and sample-scan.log, sha256 b0483830…): files=3008 syftPackages=4 payloads=730 covered=668 denied=0 unreviewed=66 status=fail (libavcodec/libavformat/libx264 and other GPL-family libraries; the class D-013 removes). hlogs/Papercusp_GUI_0.0.13_amd64.AppImage.log: files=12758 syftPackages=9126 covered=5135 denied=205 unreviewed=1195 status=fail."
+    },
+    {
+      "id": "next-build-clean",
+      "passed": true,
+      "evidence": "docs/evidence/osr-r15-dist-0026-2026-09-30.json (exitCode 0, evidencePlane live): the 0.0.26-alpha signed Linux installers, the first cut containing D-013, pass the same scan with denied=0 unreviewed=0 (the GPL-family AppImage libraries were dropped). Distribution therefore resumes on a passing build when 0.0.26 publishes."
+    }
+  ],
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "R-15",
+  "subjectCommit": "728748a08564a423e34cc06ba6ea8e3ea69cdcbe",
+  "workItemId": "WI-10003960"
+}

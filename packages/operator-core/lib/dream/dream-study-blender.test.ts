@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createBlenderAdmission, sumBlenderTicks } from '../../../../scratchpad/dream-study-2026-09-09/blender-guard.mts';
-import { requireStudyRoom, STUDY_BLOCKS } from '../../../../scratchpad/dream-study-2026-09-09/accounting.mts';
+import { priceFor } from '@papercusp/model-pricing';
+import { createBlenderAdmission, sumBlenderTicks } from './study/blender-guard.mts';
+import { requireStudyRoom, STUDY_BLOCKS } from './study/accounting.mts';
 
 const model = 'gpt-5.6-luna:medium';
 const opts = { model, messages: [{ role: 'user' as const, content: 'test' }], maxTokens: 1024 };
@@ -9,6 +10,44 @@ const usage = { text: 'ok', costUsd: 0.0001, inputTokens: 10, outputTokens: 10, 
 describe('ordinary Blender admission into the finite Dream study', () => {
   it.each([0, -1, NaN, Infinity])('refuses invalid cycle cap %s', cap => {
     expect(() => createBlenderAdmission(cap, [model], async () => {})).toThrow(/Invalid/);
+  });
+  it.each(['gpt-6.1-sol:xhigh', 'gpt-6-sol:high', 'gpt-6-luna:medium'])('admits priced tiered model %s with a durable positive reservation', async model => {
+    expect(priceFor(model)).not.toBeNull();
+    const persist = vi.fn(async () => {});
+    const guard = createBlenderAdmission(10, [model], persist);
+    const invoke = vi.fn(async () => {
+      expect(persist).toHaveBeenCalledOnce();
+      expect(guard.calls[0]).toMatchObject({ model, status: 'reserved' });
+      expect(guard.calls[0]!.reservedUsd).toBeGreaterThan(0);
+      return usage;
+    });
+    await expect(guard.admit({ ...opts, model }, invoke)).resolves.toEqual(usage);
+    expect(invoke).toHaveBeenCalledOnce();
+    expect(persist).toHaveBeenCalledTimes(2);
+    guard.assertSettled();
+  });
+  it('uses the long-context tier and refuses a cap below its full reservation before a provider call', async () => {
+    const model = 'gpt-6.1-sol:xhigh';
+    const request: typeof opts & { system?: string } = { ...opts, model, messages: [{ role: 'user' as const, content: 'x'.repeat(280_000) }] };
+    const inputBound = Buffer.byteLength(JSON.stringify({ system: request.system, messages: request.messages }), 'utf8') + 4096;
+    const price = priceFor(model)!;
+    const standardContextUsd = (inputBound * price.in + request.maxTokens * price.out) / 1_000_000;
+    const probe = createBlenderAdmission(10, [model], async () => {});
+    await probe.admit(request, async () => usage);
+    expect(probe.calls[0]!.reservedUsd).toBeGreaterThan(standardContextUsd);
+    const invoke = vi.fn(async () => usage);
+    const bounded = createBlenderAdmission(standardContextUsd, [model], async () => {});
+    await expect(bounded.admit(request, invoke)).rejects.toThrow(/cost admission/);
+    expect(invoke).not.toHaveBeenCalled();
+    expect(bounded.calls).toEqual([]);
+  });
+  it('refuses a pinned model without a maintained price before invoking the provider', async () => {
+    const model = 'unpriced-study-provider';
+    const invoke = vi.fn(async () => usage);
+    const guard = createBlenderAdmission(10, [model], async () => {});
+    await expect(guard.admit({ ...opts, model }, invoke)).rejects.toThrow(/unpriced model/);
+    expect(invoke).not.toHaveBeenCalled();
+    expect(guard.calls).toEqual([]);
   });
   it('reserves before concurrent provider calls, with no oversubscription', async () => {
     const probe = createBlenderAdmission(10, [model], async () => {});

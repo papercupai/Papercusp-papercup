@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { createServer } from "node:http";
+import { appendHostEvent, eventLogPathForOwner } from "../scripts/psu-pty-host.mjs";
 import {
   mkdtempSync,
   mkdirSync,
@@ -20,6 +22,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { PSU_REQUEST_TIMEOUT_MS } from "./mcp-proxy/budgets.mjs";
+import { KICKOFF_PROMPT_FILE_ENV, prepareKickoffEnvironment } from "../../../packages/operator-core/lib/agent-kickoff/prompt-transport.mjs";
 import { resolvePtoolOperatorBase } from "../scripts/ptool.mjs";
 import {
   CODEX_SAFE_DEFAULT_MODEL,
@@ -28,11 +31,17 @@ import {
 } from "../../../packages/operator-core/lib/model-context-budget.mjs";
 import {
   parseArgs,
+  codexOriginalRoutingFingerprint,
+  assertOriginalCodexRouting,
+  applyOriginalCodexRouting,
+  consumeOriginalCodexRouting,
+  ORIGINAL_CODEX_ROUTING_ENV,
   resolveNativeMcpAssets,
   nativeOmpExtensionArgs,
   pickRole,
   pickIdentity,
   identityPickerChoices,
+  createLaunchOptionsReader,
   PSU_HELP_TEXT,
   planValue,
   parkRoleScopedMcpJson,
@@ -69,6 +78,7 @@ import {
   OMP_CORE_MCP_TOOL_NAMES,
   selectionsFromArgs,
   presetsFromArgs,
+  codexForkMcpUrlForOwner,
   resumeArgsFor,
   resumeEnvFor,
   contextTrimmingEnv,
@@ -89,6 +99,7 @@ import {
   ALLOW_WALLED_LAUNCH_ENV,
   accountRoutingMode,
   codexGatewayConfigPatch,
+  applyScopedNativeGateway,
   accountPinnable,
   accountPickerChoices,
   accountProviderFromChoices,
@@ -129,6 +140,8 @@ import {
   requestedRoleModelFromBootstrap,
   requireOmpRoleMcpJsonPath,
   forkSeedPaths,
+  resolveDirectTrackedResumeSession,
+  resumeFlow,
   findUntrackedSession,
   findTrackedCodexHomeRollout,
   sessionOwnersRoot,
@@ -163,6 +176,7 @@ import {
   modelArgsFor,
   normalizeOmpModelSpec,
   ompModelCompatibilityNotice,
+  readClaudeLaunchSettings,
   reconcileResumeModelForAccountRoute,
   ompTitleMitigationArgs,
   ompResponsesCompatibilityEnv,
@@ -184,10 +198,13 @@ import {
   reportSessionResumeReleased,
   describeResumeClaimRefusal,
   announceAdoptedCarryRespawn,
+  adoptedCarryRespawnFromHandoff,
   reportSessionRespawned,
+  reportSessionRespawnedDurably,
   reportSessionPortDelivery,
   reportSessionPortLaunchFailure,
   sessionPortLaunchAbortError,
+  launchFreshSu,
   tryRematerializeFromArchive,
   isClaudeConfigDirLaunchReady,
   ensureInteractiveConfigViaOperator,
@@ -298,6 +315,7 @@ import {
   LIVE_HOST_IDLE_THRESHOLD_MS,
   startSupervisorBeat,
   spawnInherit,
+  printPsuResumeHint,
 } from "../scripts/psu-launcher.mjs";
 import {
   nativeSchedulerDenyFlag,
@@ -676,6 +694,67 @@ describe("backend-not-installed helpers (owner req 2026-07-06 — psu prompt-to-
   });
 });
 
+describe("launch-options menu reuse", () => {
+  it("shares an in-flight read and reuses the active workspace for harness and fleet menus", async () => {
+    let resolve!: (page: object) => void;
+    const request = vi.fn((_path: string) => new Promise<object>((done) => { resolve = done; }));
+    const read = createLaunchOptionsReader({ request });
+    const first = read();
+    const concurrent = read({ include: "harnesses,workspaces,fleets" });
+    expect(concurrent).toBe(first);
+    await Promise.resolve();
+    resolve({ workspace: "ws1", harnesses: [{ slug: "app" }], fleets: [] });
+    const page = await first;
+    expect(await read({ workspace: "ws1" })).toBe(page);
+    expect(await read({ workspace: "ws1" })).toBe(page);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(new URL(request.mock.calls[0]![0], "http://operator").searchParams.get("include"))
+      .toBe("fleets,harnesses,workspaces");
+  });
+
+  it("keeps provider, workspace, section and operator data separate", async () => {
+    let origin = "operator-a";
+    const request = vi.fn(async (_path: string) => ({ accounts: { pool: [] } }));
+    const read = createLaunchOptionsReader({ request, scope: () => origin });
+    await read({ workspace: "ws1", agent: "claude", include: "accounts" });
+    await read({ workspace: "ws1", agent: "codex", include: "accounts" });
+    await read({ workspace: "ws2", agent: "codex", include: "accounts" });
+    await read({ workspace: "ws2", include: "ompCatalog" });
+    origin = "operator-b";
+    await read({ workspace: "ws1", agent: "codex", include: "accounts" });
+    expect(request).toHaveBeenCalledTimes(5);
+  });
+
+  it("expires snapshots and does not retain failed requests", async () => {
+    let clock = 0;
+    const request = vi.fn(async (_path: string) => ({ workspace: "ws1" }));
+    const read = createLaunchOptionsReader({ request, now: () => clock, maxAgeMs: 30_000 });
+    await read();
+    clock = 29_999;
+    await read({ workspace: "ws1" });
+    expect(request).toHaveBeenCalledTimes(1);
+    clock = 30_000;
+    await read({ workspace: "ws1" });
+    expect(request).toHaveBeenCalledTimes(2);
+    request.mockRejectedValueOnce(new Error("operator restarting"));
+    await expect(read({ workspace: "ws2" })).rejects.toThrow("operator restarting");
+    await read({ workspace: "ws2" });
+    expect(request).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not block an earlier menu on a pending account read", async () => {
+    const request = vi.fn(async (path: string) => {
+      const include = new URL(path, "http://operator").searchParams.get("include");
+      if (include === "accounts") return new Promise<object>(() => {});
+      return { workspace: "ws1", harnesses: [] };
+    });
+    const read = createLaunchOptionsReader({ request });
+    void read({ workspace: "ws1", agent: "claude", include: "accounts" });
+    expect(await read({ workspace: "ws1" })).toEqual({ workspace: "ws1", harnesses: [] });
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("tagKickoffProvenance (turn-provenance-owner-vs-agent-2026-07-11 P-002)", () => {
   let provDir: string;
   beforeEach(() => {
@@ -711,14 +790,44 @@ describe("tagKickoffProvenance (turn-provenance-owner-vs-agent-2026-07-11 P-002)
     expect(tagged).toContain(row.nonce); // the typed envelope references the ledger row
   });
 
-  it("pins the launcher mirror to the canonical turn-provenance contract", () => {
+  it("consumes a private loop-fire origin for one fresh kickoff, then restores fleet-kickoff", () => {
+    const env = {
+      ...envFor(),
+      PAPERCUSP_SID: "su-loop-kick-1",
+      PAPERCUSP_INTERNAL_KICKOFF_ORIGIN: "loop-fire",
+    };
+    const args = { picker: false };
+    const first = routeFreshKickoff(
+      "claude",
+      { kickoffPrompt: "Continue the persisted loop." },
+      args,
+      env,
+    );
+    expect(first.managedKickoff).toMatch(/^⟦turn-origin:loop-fire nonce:[a-f0-9]{16}⟧\nContinue the persisted loop\.$/);
+    expect(env).not.toHaveProperty("PAPERCUSP_INTERNAL_KICKOFF_ORIGIN");
+
+    const second = routeFreshKickoff(
+      "claude",
+      { kickoffPrompt: "A normal scripted kickoff." },
+      args,
+      env,
+    );
+    expect(second.managedKickoff).toMatch(/^⟦turn-origin:fleet-kickoff nonce:[a-f0-9]{16}⟧\nA normal scripted kickoff\.$/);
+    const rows = readFileSync(join(provDir, "su-loop-kick-1.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(rows.map((row) => row.origin)).toEqual(["loop-fire", "fleet-kickoff"]);
+  });
+
+  it("pins the launcher mirror to the canonical turn-provenance contract", async () => {
     const sid = "su/kickoff .. id";
     const text = " Begin: advance this plan.\r\n";
     const nowMs = 1_760_000_000_000;
     const canonicalDir = mkdtempSync(join(tmpdir(), "kickoff-prov-ts-"));
     const mirrorDir = mkdtempSync(join(tmpdir(), "kickoff-prov-mjs-"));
     try {
-      const canonical = tagTurnForInjection({
+      const canonical = await tagTurnForInjection({
         sid,
         origin: "fleet-kickoff",
         text,
@@ -785,6 +894,19 @@ describe("tagKickoffProvenance (turn-provenance-owner-vs-agent-2026-07-11 P-002)
   it("sanitizes the sid into the ledger filename", () => {
     tagKickoffProvenance("x", "su/../evil id", envFor());
     expect(existsSync(join(provDir, "su_.._evil_id.jsonl"))).toBe(true);
+  });
+});
+
+describe("shared launch model alias parsing", () => {
+  it("resolves a human versioned selector before selecting the backend", () => {
+    expect(parseArgs(["--no-picker", "--model=sol 6.1:xhigh"])).toMatchObject({
+      agent: "codex", model: "gpt-6.1-sol:xhigh", modelSource: "explicit",
+    });
+  });
+
+  it("refuses unknown and ambiguous human selectors before bootstrap", () => {
+    expect(() => parseArgs(["--no-picker", "--model=mystery"])).toThrow(/Unknown model alias/);
+    expect(() => parseArgs(["--no-picker", "--model=6"])).toThrow(/ambiguous.*gpt-6-sol.*gpt-6-astra/);
   });
 });
 
@@ -1074,6 +1196,9 @@ describe("OMP ox-alpha Responses compatibility guard (EI-21439300345381616)", ()
     expect(roleBody).toContain(
       "await writeOmpSessionConfigDirAsync(res.sessionId",
     );
+    expect(roleBody).toContain("const bootstrapIdempotencyKey = randomUUID();");
+    expect(roleBody).toContain("bootstrapIdempotencyKey,");
+    expect(roleBody).toContain("retryBootstrapFailures: true");
     expect(roleBody).toContain(
       'mcpJsonContents: readFileSync(requireOmpRoleMcpJsonPath(res), "utf8")',
     );
@@ -1353,6 +1478,16 @@ describe("finalizeFreshSuArgs (fresh SU kickoff reaches the backend)", () => {
 // relies on (a free-form question rides PAPERCUSP_KICKOFF_PROMPT, not a --kickoff arg,
 // so it survives buildConsoleOneliner's greeting escaping instead of breaking the shell).
 describe("resolveKickoffText (PAPERCUSP_KICKOFF_PROMPT env fallback)", () => {
+  it("consumes a large file-backed kickoff once and clears the inherited pointer", () => {
+    const text = "Full review: quotes '$' and Unicode ☎\n".repeat(6000);
+    const env = prepareKickoffEnvironment({ PAPERCUSP_KICKOFF_PROMPT: text });
+    const path = env[KICKOFF_PROMPT_FILE_ENV];
+    const args = parseArgs(["--no-picker", "--agent=claude"]);
+    expect(resolveKickoffText(args, env)).toBe(text);
+    expect(env[KICKOFF_PROMPT_FILE_ENV]).toBeUndefined();
+    expect(existsSync(path)).toBe(false);
+    expect(resolveKickoffText(args, env)).toBeNull();
+  });
   it("falls back to PAPERCUSP_KICKOFF_PROMPT when no --kickoff flag was parsed", () => {
     const args = parseArgs([
       "--no-picker",
@@ -2812,15 +2947,17 @@ describe("claudeSeedToolNames (EI-23319364088969722 — Claude's own minimal see
     expect(seed.size).toBeGreaterThan(CLAUDE_MINIMAL_SEED_TOOL_NAMES.length);
   });
 
-  it("claudeCompactToolNames is a strict SUBSET of the advertised seed", () => {
+  it("claudeCompactToolNames follows the generated tier map for either advertised seed", () => {
     const advertised = new Set(claudeSeedToolNames(processEnv({})));
     const compact = claudeCompactToolNames(processEnv({}));
     expect(compact.length).toBeGreaterThan(0);
     for (const n of compact) expect(advertised.has(n)).toBe(true);
-    // The revert hatch compacts NOTHING — otherwise it would not be a true revert.
-    expect(
-      claudeCompactToolNames(processEnv({ PAPERCUSP_CLAUDE_FULL_SEED: "1" })),
-    ).toEqual([]);
+    const fullSeed = claudeSeedToolNames(processEnv({ PAPERCUSP_CLAUDE_FULL_SEED: "1" }));
+    const fullCompact = claudeCompactToolNames(processEnv({ PAPERCUSP_CLAUDE_FULL_SEED: "1" }));
+    const expectedFullCompact = fullSeed.filter(
+      (name) => CLAUDE_TOOL_DELIVERY_ARTIFACT.tiers[name] === "compact",
+    );
+    expect([...fullCompact].sort()).toEqual([...expectedFullCompact].sort());
   });
 
   it("always seeds the reachability pair — the trim's load-bearing assumption", () => {
@@ -3460,6 +3597,7 @@ describe("psu-launcher arg parsing", () => {
       recoveryTtlMs: null,
       recoveryMaxRuntimeMs: null,
       compactionLimit: null,
+      terminalCheck: false,
       // subagent-launch governance (owner mandate 2026-07-02): tri-state, default
       // null (unset) — the picker prompts (falling back to DENY); a flag preselects.
       allowSubagents: null,
@@ -3613,6 +3751,7 @@ describe("psu-launcher arg parsing", () => {
       recoveryTtlMs: null,
       recoveryMaxRuntimeMs: null,
       compactionLimit: null,
+      terminalCheck: false,
       allowSubagents: null,
       kickoffPromptText: null,
       label: null,
@@ -4133,6 +4272,61 @@ describe("psu-launcher arg parsing", () => {
     ]);
   });
 
+  it("Codex SU forks bind Papercusp MCP to the fresh owner without changing CODEX_HOME", () => {
+    const home = mkdtempSync(join(tmpdir(), "codex-fork-mcp-"));
+    const configPath = join(home, "config.toml");
+    const sourceUrl =
+      "http://localhost:3070/api/mcp?superuser=1&client=su-source";
+    const configText =
+      '[mcp_servers."papercusp-su"]\nurl = ' +
+      JSON.stringify(sourceUrl) +
+      "\n";
+    try {
+      writeFileSync(configPath, configText);
+      const before = readFileSync(configPath);
+      const forkUrl = codexForkMcpUrlForOwner(home, "su-fork");
+      expect(forkUrl).toBeTruthy();
+      if (!forkUrl) throw new Error("expected a fork-specific MCP URL");
+
+      const parsed = new URL(forkUrl);
+      expect(parsed.searchParams.get("client")).toBe("su-fork");
+      expect(parsed.searchParams.get("superuser")).toBe("1");
+
+      const forkArgs = resumeArgsFor(
+        { agent: "codex", sessionId: "source-session" },
+        {
+          fork: true,
+          codexMcpUrl: forkUrl,
+          model: "gpt-5.6-sol",
+        } as unknown as Parameters<
+          typeof resumeArgsFor
+        >[1],
+      ).args;
+      expect(forkArgs.slice(0, 2)).toEqual([
+        "-c",
+        "mcp_servers.papercusp-su.url=" + JSON.stringify(forkUrl),
+      ]);
+      expect(forkArgs).toContain("fork");
+      expect(forkArgs).toContain("source-session");
+
+      const resumeArgs = resumeArgsFor(
+        { agent: "codex", sessionId: "source-session" },
+        {
+          codexMcpUrl: forkUrl,
+          model: "gpt-5.6-sol",
+        } as unknown as Parameters<
+          typeof resumeArgsFor
+        >[1],
+      ).args;
+      expect(resumeArgs).not.toContain(
+        "mcp_servers.papercusp-su.url=" + JSON.stringify(forkUrl),
+      );
+      expect(readFileSync(configPath)).toEqual(before);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("forkUnsupportedMessage documents the safe non-native fallback for OMP", () => {
     expect(forkUnsupportedMessage("omp")).toContain(
       "psu --agent=omp --launch-context=<brief.md>",
@@ -4368,6 +4562,49 @@ describe("psu-launcher arg parsing", () => {
         notice: null,
       }),
     ).toMatchObject({ mode: "default", id: null, env: defaultAccountEnv() });
+  });
+
+  it.each([
+    { name: "agent-launched headless", launchedBy: "su-parent", headless: true },
+    { name: "human-launched visible", launchedBy: null, headless: false },
+  ])("records $name fork provenance in the actual bootstrap request", async ({ launchedBy, headless }) => {
+    const source = {
+      agent: "claude", sessionId: "native-source", coordOwnerId: "su-source",
+      id: 17, cwd: "/repo", workspaceId: "fork-workspace", planSlug: "source-plan",
+      portId: "inherited-port", portSourceAdvSessionId: 11,
+    };
+    const postBootstrap = vi.fn().mockRejectedValue(new Error("stop after captured request"));
+    const launchResume = vi.fn();
+    await expect(launchTrackedFork(source, {
+      ownerId: "su-fork", launchedBy, headless, contextSize: "trimmed",
+      sessionPortSourceAdvSessionId: source.id,
+      sessionPortToken: "inherited-port-token", sessionPortProtocol: 1,
+    }, { forward: "auto", id: null, env: {}, notice: null }, "fable[1m]", {
+      api: postBootstrap, launchResume,
+    })).rejects.toThrow(/pre-pinned managed identity requires a launch record/);
+    const body = JSON.parse(postBootstrap.mock.calls[0]![1].body);
+    expect(body.launch_argv).toEqual(expect.arrayContaining([
+      "--resume=native-source", "--fork", "--owner-id=su-fork",
+      "--agent=claude", "--workspace=fork-workspace", "--plan=source-plan",
+      "--account=auto", "--model=fable[1m]",
+    ]));
+    expect(body.owner_id).toBe("su-fork");
+    expect(body.launch_argv.filter((arg: string) => /^--resume(?:=|$)/.test(arg)))
+      .toEqual(["--resume=native-source"]);
+    expect(body.launch_argv.some((arg: string) => arg.startsWith("--session-port"))).toBe(false);
+    for (const key of ["session_port_token", "session_port_protocol", "session_port_source_adv_session_id"]) {
+      expect(body).not.toHaveProperty(key);
+    }
+    if (launchedBy) {
+      expect(body.launched_by).toBe(launchedBy);
+      expect(body.launch_argv).toContain(`--launched-by=${launchedBy}`);
+    } else {
+      expect(body).not.toHaveProperty("launched_by");
+      expect(body.launch_argv.some((arg: string) => arg.startsWith("--launched-by="))).toBe(false);
+    }
+    expect(body.headless === true).toBe(headless);
+    expect(body.launch_argv.includes("--headless")).toBe(headless);
+    expect(launchResume).not.toHaveBeenCalled();
   });
 
   it("pre-pinned managed forks fail closed instead of launching without a record", async () => {
@@ -4794,6 +5031,8 @@ describe("psu-launcher arg parsing", () => {
         plan: null,
         account: "codex-main",
         ownerId: "su-auditor-canonical",
+        launchedBy: "system:acceptance-bar-amendment-review",
+        bootstrapIdempotencyKey: "role-launch-stable-key",
       }),
     ).toEqual({
       role: "worker",
@@ -4804,6 +5043,8 @@ describe("psu-launcher arg parsing", () => {
       plan: null,
       account: "codex-main",
       owner_id: "su-auditor-canonical",
+      launched_by: "system:acceptance-bar-amendment-review",
+      bootstrap_idempotency_key: "role-launch-stable-key",
       model: CODEX_SAFE_DEFAULT_MODEL,
       model_source: "configured-default",
     });
@@ -4817,6 +5058,15 @@ describe("psu-launcher arg parsing", () => {
         plan: null,
       }),
     ).not.toHaveProperty("account");
+  });
+
+  it('roleBootstrapBody forwards only the existing explicit spawn-host route', () => {
+    const input = { role: 'judge', agent: 'codex', workspace: 'ws1', harness: 'h1' };
+    expect(roleBootstrapBody({ ...input, mcpTarget: 'spawn-host' })).toMatchObject({
+      mcp_target: 'spawn-host', role: 'judge', workspace: 'ws1', harness_slug: 'h1',
+    });
+    expect(roleBootstrapBody(input)).not.toHaveProperty('mcp_target');
+    expect(roleBootstrapBody({ ...input, mcpTarget: 'stable' })).not.toHaveProperty('mcp_target');
   });
 
   it("forkSeedPaths points at the projects/ subtree of each config dir", () => {
@@ -5163,6 +5413,36 @@ describe("psu-launcher arg parsing", () => {
     });
   });
 
+  it("chooseResumeAccount: no-picker Codex resume inherits saved --account=auto when new args omit it", async () => {
+    const account = await withAccountChoices(
+      {
+        gatewayOn: true,
+        pool: ["codex-main"],
+        forcedAccounts: [],
+        excludeAccounts: [],
+        provider: "codex",
+      },
+      () =>
+        chooseResumeAccount(
+          {
+            agent: "codex",
+            workspaceId: "ws1",
+            coordOwnerId: "su-resume-codex-auto",
+            launchArgv: ["psu", "--no-picker", "--account=auto"],
+          },
+          { account: null, picker: false, model: "gpt-6.1-sol:xhigh" },
+        ),
+    );
+
+    expect(account).toMatchObject({
+      mode: "auto",
+      auto: true,
+      forward: "auto",
+      provider: "codex",
+      env: {},
+    });
+  });
+
   const withAccountChoices = async (
     accounts: Record<string, unknown>,
     run: () => Promise<unknown>,
@@ -5476,6 +5756,45 @@ describe("psu-launcher arg parsing", () => {
     }
   });
 
+  it("drops NATIVE deferred tool references from a resumed transcript but never from a fork's source (EI-24890753013901545)", () => {
+    const root = mkdtempSync(join(tmpdir(), "psu-resume-native-reference-"));
+    try {
+      const configDir = join(root, "claude");
+      const projectDir = join(configDir, "projects", "-repo");
+      mkdirSync(projectDir, { recursive: true });
+      const line = (name: string) =>
+        JSON.stringify({ type: "user", message: { content: [{ type: "tool_reference", tool_name: name }] } });
+      const transcript = [line("ExitPlanMode"), line("mcp__papercusp-su__plans_audit")].join("\n");
+      const file = join(projectDir, "native-2.jsonl");
+      const session = { agent: "claude", sessionId: "native-2", configDir };
+
+      // FORK: its transcriptPath is the SOURCE session's — it must stay byte-identical.
+      const forkEnv = { PAPERCUSP_TOOLS: "tools:find" };
+      writeFileSync(file, transcript);
+      const forked = addClaudeResumeToolReferencesToEnv(session, forkEnv, { home: root });
+      expect(readFileSync(file, "utf8")).toBe(transcript);
+      expect(forked.nativeNeutralized ?? { rewritten: 0 }).toMatchObject({ rewritten: 0 });
+
+      // RESUME: native reference dropped, Papercusp one kept and still re-seeded.
+      const env = { PAPERCUSP_TOOLS: "tools:find" };
+      const resumed = addClaudeResumeToolReferencesToEnv(session, env, { home: root, neutralizeNative: true });
+      expect(resumed.nativeNeutralized).toMatchObject({ rewritten: 1, toolNames: ["ExitPlanMode"] });
+      const after = readFileSync(file, "utf8");
+      // The reference BLOCK is gone (it becomes a text marker that still names the tool).
+      expect(after).not.toContain('"tool_name":"ExitPlanMode"');
+      expect(after).toContain('"tool_name":"mcp__papercusp-su__plans_audit"');
+      expect(env.PAPERCUSP_TOOLS).toBe("tools:find,mcp__papercusp-su__plans_audit");
+
+      // No PAPERCUSP_TOOLS seed at all: the native drop must still happen on a resume.
+      writeFileSync(file, transcript);
+      const noSeed = addClaudeResumeToolReferencesToEnv(session, {}, { home: root, neutralizeNative: true });
+      expect(noSeed.nativeNeutralized).toMatchObject({ rewritten: 1 });
+      expect(readFileSync(file, "utf8")).not.toContain('"tool_name":"ExitPlanMode"');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("every CLI-spawn env builder stamps the context-trimming trio (WI-2140943 lane 2)", () => {
     // roleFlow was the last uncovered spawn path: it stamped nativeCompactionEnv but NOT
     // contextTrimmingEnv, and runWrapper's healContextTrimmingEnv only fires on the
@@ -5779,6 +6098,85 @@ describe("psu-launcher arg parsing", () => {
       expect(codexAutoPoolVerdict({ ...input, now }).kind).toBe("proceed");
   });
 
+  it("codexAutoPoolVerdict: distinguishes a live upstream outage from an account usage wall", () => {
+    const now = Date.UTC(2026, 8, 5, 20, 0, 0);
+    const verdict = codexAutoPoolVerdict({
+      agent: "codex",
+      model: "gpt-5.6-sol",
+      account: "auto",
+      stats: {
+        codexHealthyAccounts: 0,
+        codexTotalAccounts: 8,
+        // This is an account park horizon and must not be presented as network recovery.
+        codexEarliestRecoveryAt: now + 60_000,
+        codexUnserviceableCause: "upstream-unreachable",
+      },
+      now,
+    });
+    expect(verdict.kind).toBe("refuse");
+    expect(verdict.recoveryAt).toBeNull();
+    expect(verdict.message).toContain("Codex upstream has not responded");
+    expect(verdict.message).toContain("fresh transport failures across accounts");
+    expect(verdict.message).toContain("transport cause has not been established");
+    expect(verdict.message).toContain("do not establish a usage or credit wall");
+    expect(verdict.message).not.toContain("Check this machine's network");
+    expect(verdict.message).not.toContain("429");
+    expect(verdict.message).not.toContain("earliest known recovery");
+  });
+
+  it('codexAutoPoolVerdict: launches through a known temporary cooldown, while preserving quota/unknown refusals', async () => {
+    const now = Date.UTC(2026, 9, 14, 18, 16, 40);
+    const stats = { codexHealthyAccounts: 0, codexTotalAccounts: 8,
+      codexEarliestRecoveryAt: Date.UTC(2026, 9, 14, 18, 18, 44, 413),
+      codexUnserviceableCause: 'temporary-cooldown' as const };
+    const verdict = codexAutoPoolVerdict({ agent: 'codex', account: 'auto', stats, now });
+    expect(verdict.kind).toBe('warn');
+    expect(verdict.message).toContain('temporarily cooling down');
+    expect(verdict.message).toContain('not a usage or credit wall');
+    expect(verdict.message).not.toContain('REFUSING');
+    expect(verdict.message).not.toContain('Every model call would fail');
+    const log = vi.fn();
+    await expect(preflightCodexAutoPool({ agent: 'codex', account: 'auto', log, env: {},
+      fetchImpl: vi.fn(async () => ({ ok: true, json: async () => ({ ...stats,
+        codexEarliestRecoveryAt: Date.now() + 120_000 }) })) as unknown as typeof fetch })).resolves.toBe(true);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('temporarily cooling down'));
+    const blocked = codexAutoPoolVerdict({ agent: 'codex', account: 'auto', now,
+      stats: { ...stats, codexUnserviceableCause: 'accounts-unserviceable' } });
+    expect(blocked.kind).toBe('refuse');
+    expect(blocked.message).toContain('credential quarantine');
+    expect(blocked.message).not.toContain('fully walled');
+    expect(blocked.message).not.toContain('Every model call would fail fast with 429');
+    expect(codexAutoPoolVerdict({ agent: 'codex', account: 'auto', now,
+      stats: { ...stats, codexUnserviceableCause: undefined } }).kind).toBe('refuse');
+  });
+
+  it.each([
+    { kind: "timeout" as const, diagnosis: "upstream response timeout" },
+    { kind: "dns" as const, diagnosis: "DNS lookup error" },
+    { kind: "connect" as const, diagnosis: "connection error" },
+    { kind: "other" as const, diagnosis: "transport cause has not been established" },
+  ])("codexAutoPoolVerdict: reports measured $kind failures without inventing account exhaustion", ({ kind, diagnosis }) => {
+    const verdict = codexAutoPoolVerdict({
+      agent: "codex",
+      model: "gpt-6.1-sol",
+      account: "auto",
+      stats: {
+        codexHealthyAccounts: 0,
+        codexTotalAccounts: 8,
+        codexEarliestRecoveryAt: null,
+        codexUnserviceableCause: "upstream-unreachable",
+        codexReachability: { lastTransportFailureKind: kind },
+      },
+    });
+    expect(verdict.kind).toBe("refuse");
+    expect(verdict.recoveryAt).toBeNull();
+    expect(verdict.message).toContain(diagnosis);
+    expect(verdict.message).toContain("do not establish a usage or credit wall");
+    expect(verdict.message).not.toContain("fully walled");
+    expect(verdict.message).not.toContain("Check this machine's network");
+    if (kind === "timeout") expect(verdict.message).toContain("does not establish that this machine's network is down");
+  });
+
   it("codexAutoPoolVerdict: an UNKNOWN horizon still refuses; a horizon already PAST only warns", () => {
     const now = Date.UTC(2026, 8, 5, 20, 0, 0);
     // OMP routed through the Codex pool, walled with no known recovery: still futile.
@@ -5819,6 +6217,24 @@ describe("psu-launcher arg parsing", () => {
     expect(stale.message).not.toContain("REFUSING");
   });
 
+  it("preflightCodexAutoPool: a valid scoped route never reads the unrelated ambient pool", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true, json: async () => ({
+      codexHealthyAccounts: 0, codexTotalAccounts: 8, codexEarliestRecoveryAt: Date.now() + 60_000,
+    }) })) as unknown as typeof fetch;
+    await expect(preflightCodexAutoPool({ agent: "codex", account: "auto", fetchImpl,
+      env: { PAPERCUSP_SCOPED_INFERENCE_GATEWAY: JSON.stringify({ baseURL: "http://127.0.0.1:32101", token: "a".repeat(64) }) },
+    })).resolves.toBe(true);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+  it.each(['{"token":"secret-value', JSON.stringify({ baseURL: "https://example.com", token: "a".repeat(64) }),
+    JSON.stringify({ baseURL: "http://127.0.0.1:32101", token: "short" })])(
+    "preflightCodexAutoPool: invalid scoped binding refuses before ambient fallback", async encoded => {
+      const fetchImpl = vi.fn();
+      await expect(preflightCodexAutoPool({ agent: "codex", account: "auto", fetchImpl,
+        env: { PAPERCUSP_SCOPED_INFERENCE_GATEWAY: encoded },
+      })).rejects.toThrow("Invalid scoped inference gateway envelope");
+      expect(fetchImpl).not.toHaveBeenCalled();
+    });
   it("preflightCodexAutoPool: ABORTS a provably-walled launch, and fails open for healthy, legacy, unreachable, and timed-out responses", async () => {
     const allWalledFetch = vi.fn(async () => ({
       ok: true,
@@ -5847,6 +6263,30 @@ describe("psu-launcher arg parsing", () => {
     );
     expect(log).toHaveBeenCalledOnce();
     expect(String(log.mock.calls[0]?.[0])).toContain("REFUSING TO LAUNCH");
+
+    const networkLog = vi.fn();
+    await expect(
+      preflightCodexAutoPool({
+        agent: "codex",
+        model: "gpt-5.6-sol",
+        account: "auto",
+        fetchImpl: vi.fn(async () => ({
+          ok: true,
+          json: async () => ({
+            codexHealthyAccounts: 0,
+            codexTotalAccounts: 8,
+            codexEarliestRecoveryAt: Date.now() + 60_000,
+            codexUnserviceableCause: "upstream-unreachable",
+          }),
+        })) as unknown as typeof fetch,
+        log: networkLog,
+        env: {},
+      }),
+    ).resolves.toBe(false);
+    expect(String(networkLog.mock.calls[0]?.[0])).toContain(
+      "The underlying transport cause has not been established",
+    );
+    expect(String(networkLog.mock.calls[0]?.[0])).not.toContain("429");
 
     // EVERY uncertain reading proceeds silently. A down, legacy or half-described
     // gateway must never block psu — only an affirmative, complete, self-consistent
@@ -5974,22 +6414,28 @@ describe("psu-launcher arg parsing", () => {
     const port = section("async function launchSessionPort(", "async function launchResolvedResume(");
     expect(port).toContain("await launchFreshSuImpl(");
     const fresh = section("async function launchFreshSu(", null);
-    expect(fresh).toContain("await preflightCodexAutoPool(");
+    expect(fresh).toContain("preflightCodexAutoPoolImpl = preflightCodexAutoPool");
+    expect(fresh).toContain("await preflightCodexAutoPoolImpl(");
 
-    expect(source.match(/await preflightCodexAutoPool\(/g) ?? []).toHaveLength(3);
+    const originalResume = section("async function resumeFlow(", null);
+    const guardedOriginal = originalResume.slice(0, originalResume.indexOf('const data = await apiImpl("/api/adv/sessions/resumable")'));
+    expect(guardedOriginal).toContain("await preflightCodexAutoPool(");
+    expect(guardedOriginal.indexOf("await launchResume(")).toBeGreaterThan(guardedOriginal.indexOf("await preflightCodexAutoPool("));
+    expect(guardedOriginal).not.toContain("tryRematerializeFromArchive");
+    expect(source.match(/await preflightCodexAutoPool(?:Impl)?\(/g) ?? []).toHaveLength(4);
 
     // Every call site must ACT on the verdict. A preflight that computes futility and
     // launches regardless IS the bug this guard exists for: measured 2026-09-11, the
     // warn-only ancestor printed "0 of 7 serviceable" into 342 judge launches over 3h
     // that emitted zero cards (EI-22976924584016603). Negating the call is what turns
     // the measurement into an abort, so assert the negation, not merely the call.
-    expect(source.match(/!\(await preflightCodexAutoPool\(/g) ?? []).toHaveLength(
-      3,
+    expect(source.match(/!\(await preflightCodexAutoPool(?:Impl)?\(/g) ?? []).toHaveLength(
+      4,
     );
-    // …and each abort carries the distinguishable exit code (const + 3 call sites).
+    // …and each abort carries the distinguishable exit code (const + 4 call sites).
     expect(
       (source.match(/WALLED_POOL_REFUSAL_EXIT/g) ?? []).length,
-    ).toBeGreaterThanOrEqual(4);
+    ).toBeGreaterThanOrEqual(5);
   });
 
   it("gatewayAutoEnv: claude routes through the gateway with NO account pin header (let it auto-select)", () => {
@@ -6128,6 +6574,53 @@ describe("psu-launcher arg parsing", () => {
     expect(applyHeadlessCodexBrowserPolicy(headlessClaude)).toEqual(headlessClaude);
   });
 
+  it("applies an exact private route after fresh and carry home materialization", () => {
+    const home = mkdtempSync(join(tmpdir(), "psu-scoped-route-"));
+    const configPath = join(home, "config.toml");
+    const gateway = { baseURL: "http://127.0.0.1:32101", token: "a".repeat(64) };
+    const env = { PAPERCUSP_AGENT: "codex", CODEX_HOME: home, PAPERCUSP_SID: "su-private",
+      PAPERCUSP_ACCOUNT_ROUTING_MODE: "pin", PAPERCUSP_ACCOUNT_ID: "provider-account",
+      PAPERCUSP_SCOPED_INFERENCE_GATEWAY: JSON.stringify(gateway) };
+    try {
+      for (const prior of ['model = "fixture-model"\n', codexGatewayConfigPatch('model = "fixture-model"\n', "ambient")]) {
+        writeFileSync(configPath, prior);
+        applyScopedNativeGateway(env);
+        const config = readFileSync(configPath, "utf8");
+        expect(config).toContain('base_url = "http://127.0.0.1:32101/v1"');
+        expect(config).toContain(`experimental_bearer_token = "${gateway.token}"`);
+        expect(config).toContain('"x-papercusp-account" = "provider-account"');
+        expect(config).toContain('"x-papercusp-owner" = "su-private"');
+        expect(config).toContain('model = "fixture-model"');
+        expect(config).not.toContain('"ambient"');
+        expect(statSync(configPath).mode & 0o777).toBe(0o600);
+      }
+      expect(sanitizeInheritedEnv(env)).not.toHaveProperty("PAPERCUSP_SCOPED_INFERENCE_GATEWAY");
+      expect(env.PAPERCUSP_SCOPED_INFERENCE_GATEWAY).toBe(JSON.stringify(gateway));
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it("refuses invalid private routes before writing the native home and keeps credentials out of errors", () => {
+    const home = mkdtempSync(join(tmpdir(), "psu-scoped-refusal-"));
+    const path = join(home, "config.toml");
+    const before = 'model = "fixture"\n';
+    writeFileSync(path, before);
+    const env = { PAPERCUSP_AGENT: "codex", CODEX_HOME: home,
+      PAPERCUSP_SCOPED_INFERENCE_GATEWAY: JSON.stringify({ baseURL: "http://127.0.0.1:32101", token: "a".repeat(64) }) };
+    try {
+      for (const bad of [
+        { ...env, PAPERCUSP_AGENT: "claude" },
+        { ...env, CODEX_HOME: "relative" },
+        { ...env, PAPERCUSP_ACCOUNT_ROUTING_MODE: "pin" },
+        { ...env, PAPERCUSP_SCOPED_INFERENCE_GATEWAY: '{"token":"secret-value' },
+      ]) {
+        expect(() => applyScopedNativeGateway(bad)).toThrow(/scoped|Scoped/);
+        expect(readFileSync(path, "utf8")).toBe(before);
+      }
+      try { applyScopedNativeGateway({ ...env, PAPERCUSP_SCOPED_INFERENCE_GATEWAY: '{"token":"secret-value' }); }
+      catch (error) { expect(String(error)).not.toContain("secret-value"); }
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
   it("codexGatewayConfigPatch inserts root provider selector before tables and replaces prior pin", () => {
     const current = [
       "# existing config",
@@ -6168,6 +6661,17 @@ describe("psu-launcher arg parsing", () => {
     expect(direct).toContain("# existing config");
     expect(direct).not.toContain("PAPERCUSP_CODEX_GATEWAY");
     expect(direct).not.toContain("papercusp-codex-gateway");
+  });
+
+  it("codexGatewayConfigPatch replaces an explicit root provider and preserves profile selectors", () => {
+    const current = 'model_provider = "openai"\n[profiles.direct]\nmodel_provider = "openai"\n';
+    const auto = codexGatewayConfigPatch(current, null, { gatewayOn: true });
+    const root = auto.split('[profiles.direct]', 1)[0];
+    expect(root.match(/^model_provider\s*=/gm)).toHaveLength(1);
+    expect(root).toContain('model_provider = "papercusp-codex-gateway"');
+    expect(auto).toContain('[profiles.direct]\nmodel_provider = "openai"');
+    expect(codexGatewayConfigPatch(auto, null, { gatewayOn: true })).toBe(auto);
+    expect(codexGatewayConfigPatch(current)).toBe(current);
   });
 
   it("accountPinnable: gates on gatewayOn + pool membership + session-override (mirrors resolveAccountPin)", () => {
@@ -6226,6 +6730,50 @@ describe("psu-launcher arg parsing", () => {
     expect(choices.find((choice) => choice.value === "uncertain")?.name).toContain("unverified");
     expect(choices.find((choice) => choice.value === "uncertain")?.disabled).toBe(false);
     expect(choices.find((choice) => choice.value === "fresh")?.disabled).toBe(false);
+  });
+
+  it("accountPickerChoices blocks auto when a different-provider allow-list excludes the selected provider", () => {
+    for (const provider of ["claude", "codex"]) {
+      const other = provider === "claude" ? "codex" : "claude";
+      const choices = accountPickerChoices({
+        gatewayOn: true,
+        provider,
+        pool: [`${provider}-main`],
+        forcedAccounts: [`${other}-main`],
+      });
+      expect(choices.find((choice) => choice.value === "auto")?.disabled)
+        .toContain(`no allowed ${provider} accounts`);
+      expect(choices.find((choice) => choice.value === `${provider}-main`)?.disabled)
+        .toBe("(blocked by session-override)");
+      expect(choices.some((choice) => choice.value === `${other}-main`)).toBe(false);
+      expect(choices[0].value).toBe("system");
+    }
+  });
+
+  it("accountPickerChoices applies exclusions to auto and re-enables it when an allowed account remains", () => {
+    const base = {
+      gatewayOn: true,
+      provider: "claude",
+      pool: ["claude-one", "claude-two"],
+      forcedAccounts: ["claude-one", "claude-two"],
+    };
+    expect(accountPickerChoices({ ...base, excludeAccounts: base.pool })
+      .find((choice) => choice.value === "auto")?.disabled)
+      .toContain("no allowed claude accounts");
+    expect(accountPickerChoices({ ...base, excludeAccounts: ["claude-one"] })
+      .find((choice) => choice.value === "auto")?.disabled).toBe(false);
+  });
+
+  it("accountPickerChoices leaves quota and credit eligibility to live preflight, not account restrictions", () => {
+    const choices = accountPickerChoices({
+      gatewayOn: true,
+      provider: "codex",
+      pool: ["codex-main"],
+      accountStates: { "codex-main": "unavailable" },
+    });
+    expect(choices.find((choice) => choice.value === "auto")?.disabled).toBe(false);
+    expect(accountPickerChoices({ gatewayOn: false, provider: "codex", pool: ["codex-main"] })
+      .some((choice) => choice.value === "auto")).toBe(false);
   });
 
   it("accountPickerChoices omits auto without a usable supported-provider pool", () => {
@@ -7522,6 +8070,7 @@ describe("resumeModelMenuFor — the resume menu is scoped to the session backen
 describe("cross-backend resume target + protocol-v1 launcher contract", () => {
   const source = {
     id: 42,
+    sessionId: "bb06937a-2054-4f27-945b-225b84dc3ccb",
     agent: "claude",
     role: null,
     workspaceId: "papercusp-workspace",
@@ -7596,6 +8145,8 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
     },
   );
 
+  // Every-pair picker + port resolution for codex/omp sources lives in
+  // psu-resume-cross-backend.test.ts (acceptance bar R-10's tree check).
   it("CONTROL: a resume that names no target still composes a same-backend native resume", () => {
     const command = buildAgentLaunchCommand({
       mode: "resume",
@@ -7604,7 +8155,11 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       model: "opus[1m]:high",
     });
     expect(command).not.toContain("--agent");
-    expect(resolveResumeTarget(source, parseArgs(command.split(" ").slice(1)))).toMatchObject({
+    // parseArgs consumes argv, after the shell has removed quotes around the model.
+    const argv = command.split(" ").slice(1).map(arg => arg.replace(/^--model='([^']+)'$/, "--model=$1"));
+    const parsed = parseArgs(argv);
+    expect(parsed.model).toBe("opus[1m]:high");
+    expect(resolveResumeTarget(source, parsed)).toMatchObject({
       operation: "native",
       targetAgent: "claude",
     });
@@ -7619,6 +8174,31 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       modelSpec: "gpt-5.6-sol:xhigh",
       modelSource: "explicit",
     });
+  });
+
+  it.each(["headless", "no-picker"])("round-trips a model-less %s Codex resume into recorded model inheritance", (placement) => {
+    const recorded = {
+      ...source,
+      agent: "codex",
+      launchArgv: ["psu", "--agent=codex", "--model=gpt-6.1-sol:high"],
+    };
+    const command = buildAgentLaunchCommand({
+      mode: "resume",
+      resumeId: String(recorded.id),
+      agent: "codex",
+      targetAgent: "codex",
+      headless: placement === "headless",
+    });
+    const argv = command.split(" ").slice(1);
+    if (placement === "no-picker") argv.push("--no-picker");
+    const parsed = parseArgs(argv);
+    expect(parsed.model).toBeNull();
+    expect(resolveResumeTarget(recorded, parsed)).toMatchObject({
+      operation: "native",
+      modelSpec: "gpt-6.1-sol:high",
+      modelSource: "inherited",
+    });
+    expect(() => resolveResumeTarget({ ...recorded, launchArgv: null }, parsed)).toThrow(/Codex model is required/);
   });
 
   it("inherits a recorded Codex model for unattended native resume and rejects unresolved history", () => {
@@ -7801,9 +8381,9 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
     expect(() =>
       resolveResumeTarget(source, { agent: "codex", fork: true }),
     ).toThrow(/cannot be combined/);
-    expect(() =>
+    expect(
       resolveResumeTarget({ ...source, agent: "codex" }, { agent: "claude" }),
-    ).toThrow(/v1 supports/);
+    ).toMatchObject({ operation: "port", targetAgent: "claude" });
     expect(() =>
       resolveResumeTarget(source, { agent: "codex", model: "opus" }),
     ).toThrow(/belongs to/);
@@ -7829,6 +8409,7 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       transformVersion: SESSION_PORT_TRANSFORM_VERSION,
       workspace: "papercusp-workspace",
       sourceAdvSessionId: 42,
+      sourceNativeSessionId: source.sessionId,
       targetBackend: "codex",
       targetModel: "gpt-5.6-sol:high",
       targetAccount: "acct-openai",
@@ -7848,6 +8429,41 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
     expect(() =>
       sessionPortRequestBody({ ...source, id: null }, target, {}, {}),
     ).toThrow(/tracked source/);
+  });
+
+  it("binds a port to the requested earlier incarnation instead of its tracking row's current session", () => {
+    const earlier = "2d90f85e-90f0-4d92-8a5e-2a9154dbd9fb";
+    const selected = rehydrateOutOfWindowTrackedSession(
+      { id: source.id, psuTracked: true, sessionId: earlier },
+      { sessions: [source] },
+    );
+    expect(selected).not.toBeNull();
+    const request = sessionPortRequestBody(selected, resolveResumeTarget(selected, { agent: "codex" }), {}, {});
+    expect(request).toMatchObject({ sourceAdvSessionId: source.id, sourceNativeSessionId: earlier });
+  });
+
+  it("uses the tracked OMP thread id for the exact port source", () => {
+    const selected = { ...source, agent: "omp", ompThreadId: "exact-omp-thread", sessionId: null };
+    expect(sessionPortRequestBody(selected, resolveResumeTarget(selected, { agent: "codex" }), {}, {}))
+      .toMatchObject({ sourceNativeSessionId: "exact-omp-thread" });
+  });
+
+  it("selects isolated ports for the complete backend matrix and preserves ordinary native resume", () => {
+    for (const sourceAgent of ['claude', 'codex', 'omp']) {
+      for (const targetAgent of ['claude', 'codex', 'omp']) {
+        const nativeSource = { ...source, agent: sourceAgent };
+        const args = { agent: targetAgent, model: targetAgent === 'codex' ? 'sol:high' : 'opus', ownerId: 'su-answer-owner', launchedBy: 'su-requester' };
+        const resolved = resolveResumeTarget(nativeSource, args);
+        expect(resolved).toMatchObject({ operation: 'port', targetAgent });
+        expect(sessionPortRequestBody(nativeSource, resolved, {}, args)).toMatchObject({ targetOwnerId: 'su-answer-owner' });
+        expect(sessionPortTargetArgs(nativeSource, resolved, {}, args, { portId: 'p', token: 'p.token' }))
+          .toMatchObject({ ownerId: 'su-answer-owner', launchedBy: 'su-requester', fork: false, resume: false });
+        expect(nativeSource.coordOwnerId).toBe(source.coordOwnerId);
+      }
+      expect(resolveResumeTarget({ ...source, agent: sourceAgent }, {
+        agent: sourceAgent, model: sourceAgent === 'codex' ? 'sol:high' : 'opus',
+      })).toMatchObject({ operation: 'native' });
+    }
   });
 
   it("carries the consult evidence-span selection into the session-port inspection request", () => {
@@ -7995,6 +8611,7 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       inspection: {
         source: {
           advSessionId: 42,
+          backend: "claude",
           snapshotKind: "live-jsonl",
           completeBytes: 100,
           sha256: "a".repeat(64),
@@ -8015,6 +8632,7 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
           sidechainRecords: 4,
         },
         disclosure: {
+          authorityCarried: true,
           targetEgress: "openai/default",
           summarizerEgress: "papercusp inference gateway",
         },
@@ -8024,6 +8642,58 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
     expect(lines.join("\n")).toMatch(/summary \+ recent tail/);
     expect(lines.join("\n")).toMatch(/preserving the source coordination identity/);
     expect(lines.join("\n")).toMatch(/one malformed record/);
+  });
+
+  describe("session-port inspection backend and authority disclosure", () => {
+    it.each([
+      ["claude", "Claude"],
+      ["codex", "Codex"],
+      ["omp", "OMP"],
+    ])("labels the actual %s source backend", (backend, label) => {
+      const lines = formatSessionPortInspection({
+        inspection: {
+          source: { backend, advSessionId: 42 },
+          target: { backend: "codex", model: "sol" },
+          disclosure: { authorityCarried: true },
+        },
+      });
+      expect(lines[0]).toBe(
+        `psu: cross-backend port preview — ${label} session #42 → codex/sol`,
+      );
+      expect(lines.join("\n")).toMatch(/preserving the source coordination identity/);
+    });
+
+    it.each(["claude", "codex", "omp"])(
+      "discloses a distinct answering owner for a %s source",
+      (backend) => {
+        const lines = formatSessionPortInspection({
+          inspection: {
+            source: { backend, advSessionId: 42 },
+            target: { backend: "codex", ownerId: "su-isolated-answer" },
+            disclosure: { authorityCarried: false },
+          },
+        });
+        const authority = lines.find((line) => line.startsWith("psu: isolation"));
+        expect(authority).toContain("su-isolated-answer");
+        expect(authority).toContain("source authority (fleet/loop/claims/modes/awaits/locks) is not carried to the target");
+        expect(lines.join("\n")).not.toMatch(/preserving the source coordination identity|continue on the target/);
+      },
+    );
+
+    it("keeps missing backend and authority declarations explicit", () => {
+      const lines = formatSessionPortInspection({
+        inspection: { source: { advSessionId: 42 }, target: { backend: "codex" } },
+      });
+      expect(lines[0]).toContain("unknown session #42");
+      expect(lines.join("\n")).toContain("coordination identity continuity is unknown");
+      expect(lines.join("\n")).not.toContain("preserving the source coordination identity");
+    });
+
+    it("reports absent inspection", () => {
+      expect(formatSessionPortInspection({})).toEqual([
+        "psu: session-port inspection unavailable",
+      ]);
+    });
   });
 
   it("reconciles a lost delivery response against the durable status route", async () => {
@@ -8060,6 +8730,49 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
       transformVersion: SESSION_PORT_TRANSFORM_VERSION,
     });
+  });
+
+  it.each([
+    ["pending", { status: "pending", targetAdvSessionId: 99 }, "session_port_ack_outcome_unknown"],
+    ["missing status", { targetAdvSessionId: 99 }, "session_port_ack_outcome_unknown"],
+    ["missing target", { status: "delivered" }, "session_port_ack_outcome_unknown"],
+    ["wrong target", { status: "delivered", targetAdvSessionId: 100 }, "session_port_ack_refused"],
+    ["wrong port", { id: "33333333-3333-4333-8333-333333333333", status: "delivered", targetAdvSessionId: 99 }, "session_port_ack_refused"],
+    ["terminal failure", { status: "failed", targetAdvSessionId: 99 }, "session_port_ack_refused"],
+  ])("EI-259750: preserves typed %s acknowledgement receipts without accepting delivery", async (_label, port, code) => {
+    const appendEventImpl = vi.fn();
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: false, error: "upstream reset SECRET-PAYLOAD", forwardingResult: "outcome_unknown" }), { status: 502 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, port }), { status: 200 }));
+    const failure = await reportSessionPortDelivery(
+      { portId: "22222222-2222-4222-8222-222222222222", targetAdvSessionId: 99, workspace: "test" },
+      { persisted: true, renderedHash: "a".repeat(64), nativeRef: "/native/SECRET-PATH.jsonl" },
+      { fetchImpl, operatorUrl: "http://operator", token: "SECRET-TOKEN", coordOwnerId: "su-test", appendEventImpl },
+    ).catch((error) => error);
+    expect(failure.code).toBe(code);
+    expect(failure.acknowledgement.receipts).toHaveLength(2);
+    expect(failure.acknowledgement.receipts[0]).toMatchObject({ stage: "delivery", httpStatus: 502, forwardingResult: "outcome_unknown" });
+    expect(failure.acknowledgement.receipts[1]).toMatchObject({ stage: "status", httpStatus: 200 });
+    expect(fetchImpl.mock.calls.map((call) => call[1].method)).toEqual(["POST", "GET"]);
+    expect(appendEventImpl).toHaveBeenCalledTimes(2);
+    for (let i = 0; i < 2; i++) {
+      expect(fetchImpl.mock.calls[i][1].headers["x-papercusp-mcp-trace-id"]).toBe(failure.acknowledgement.receipts[i].traceId);
+      expect(appendEventImpl.mock.calls[i][2]).toMatchObject({ portId: "22222222-2222-4222-8222-222222222222", expectedTargetAdvSessionId: 99, stage: i === 0 ? "delivery" : "status" });
+    }
+    expect(JSON.stringify(appendEventImpl.mock.calls)).not.toContain("SECRET");
+  });
+
+  it("EI-259750: records an invalid JSON status body as unknown rather than swallowing the receipt", async () => {
+    const fetchImpl = vi.fn().mockRejectedValueOnce(new Error("response lost"))
+      .mockResolvedValueOnce(new Response("not JSON", { status: 200 }));
+    const error = await reportSessionPortDelivery(
+      { portId: "22222222-2222-4222-8222-222222222222", targetAdvSessionId: 99 },
+      { persisted: true, renderedHash: "a".repeat(64), nativeRef: "/native/rollout.jsonl" },
+      { fetchImpl, operatorUrl: "http://operator", token: "token" },
+    ).catch((failure) => failure);
+    expect(error.code).toBe("session_port_ack_outcome_unknown");
+    expect(error.acknowledgement.receipts[1]).toMatchObject({ stage: "status", httpStatus: 200, errorName: "SyntaxError" });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it("token-finalizes a prepared port when target bootstrap never minted a row", async () => {
@@ -8126,7 +8839,7 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
     const sessionPortApiImpl = vi
       .fn()
       .mockResolvedValueOnce({
-        inspection: { source: { sha256: "a".repeat(64) } },
+        inspection: { source: { nativeSessionId: source.sessionId, sha256: "a".repeat(64) } },
       })
       .mockResolvedValueOnce({
         portId: "22222222-2222-4222-8222-222222222222",
@@ -8170,6 +8883,16 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       }),
       launchFailure,
     );
+  });
+
+  it.each(["another-native-session", undefined])("refuses substituted or missing inspected native session %s before preparation", async (nativeSessionId) => {
+    const sessionPortApiImpl = vi.fn(async () => ({ inspection: { source: { nativeSessionId } } }));
+    const launchFreshSuImpl = vi.fn();
+    await expect(launchSessionPort(source, resolveResumeTarget(source, { agent: "codex" }), {},
+      { picker: false }, { sessionPortApiImpl, launchFreshSuImpl }))
+      .rejects.toThrow(/did not preserve the selected native session.*upgrade/);
+    expect(sessionPortApiImpl).toHaveBeenCalledTimes(1);
+    expect(launchFreshSuImpl).not.toHaveBeenCalled();
   });
 
   it("converts only session-port preflight exits into finalizable exceptions", () => {
@@ -8586,6 +9309,64 @@ describe("suWrapperExtraArgs (P-032 omp-parity passthrough)", () => {
     ).toEqual(["-m", "gpt-5.5", "resume", "s-3"]);
   });
 
+  it('registered Codex bootstrap budget controls native argv (WI-6554700010011827)', () => {
+    const argv = suWrapperExtraArgs('codex', {
+      model: 'gpt-6.1-sol:xhigh', compactionLimit: 225_000,
+    });
+    expect(argv).toContain('model_auto_compact_token_limit=180000');
+    expect(argv).not.toContain('model_auto_compact_token_limit=784800');
+  });
+
+  it.each([
+    { label: 'registered over stale launch budget', current: 225_000, legacy: 250_000, threshold: 180_000, passthrough: [] },
+    { label: 'registered with absent launch budget', current: 225_000, legacy: null, threshold: 180_000, passthrough: [] },
+    { label: 'legacy launch budget without registered metadata', current: null, legacy: 250_000, threshold: 200_000, passthrough: [] },
+    { label: 'model default without either budget', current: null, legacy: null, threshold: 784_800, passthrough: [] },
+    { label: 'registered over conflicting duplicate overrides', current: 225_000, legacy: 250_000, threshold: 180_000,
+      passthrough: ['-c', 'model_auto_compact_token_limit=784800', '--config=model_auto_compact_token_limit=200000',
+        '-cmodel_auto_compact_token_limit=900000', '--config', 'model_auto_compact_token_limit=600000',
+        '-c=model_auto_compact_token_limit=700000', '-c', 'service_tier="fast"'] },
+    { label: 'passthrough without a managed model override', current: null, legacy: null, threshold: 784_800,
+      model: 'gpt-5.5', passthrough: ['-c', 'model_auto_compact_token_limit=784800', '-c', 'service_tier="fast"'] },
+  ])('fresh Codex launch boundary preserves $label', async ({ current, legacy, threshold, passthrough, model = 'gpt-6.1-sol:xhigh' }) => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const apiImpl = vi.fn(async () => ({
+        agent: 'codex', sessionId: 'budget-test', cwd: '/unused',
+        promptFile: '/unused/prompt.md', compactionLimit: current,
+        envelopeEnv: { CODEX_HOME: '/unused/codex-home' },
+      }));
+      const runWrapperImpl = vi.fn<(options: { args: string[]; envelopeEnv: Record<string, string> }) => void>();
+      await launchFreshSu({ agent: 'codex', workspace: 'budget-test' }, {
+        model, account: 'auto', headless: true,
+        picker: false, noKickoff: true, compactionLimit: legacy, passthrough,
+      }, {
+        apiImpl, runWrapperImpl,
+        preflightCodexAutoPoolImpl: vi.fn(async () => true),
+        runLaunchPreflightImpl: vi.fn(),
+      });
+
+      expect(apiImpl).toHaveBeenCalledWith('/api/agent-mcp/console/bootstrap-su', expect.any(Object));
+      expect(runWrapperImpl).toHaveBeenCalledOnce();
+      const launch = runWrapperImpl.mock.calls[0][0];
+      expect(launch.envelopeEnv.CODEX_HOME).toBe('/unused/codex-home');
+      const overrides: string[] = [];
+      for (let i = 0; i < launch.args.length; i++) {
+        const arg = launch.args[i];
+        const config = arg === '-c' || arg === '--config' ? launch.args[++i]
+          : arg.startsWith('--config=') ? arg.slice('--config='.length)
+          : arg.startsWith('-c') ? arg.slice(2).replace(/^=/, '') : null;
+        if (config?.startsWith('model_auto_compact_token_limit=')) overrides.push(config);
+      }
+      expect(overrides).toEqual([`model_auto_compact_token_limit=${threshold}`]);
+      if (threshold !== 784_800) expect(launch.args).not.toContain('model_auto_compact_token_limit=784800');
+      if (passthrough.length) expect(launch.args).toContain('service_tier="fast"');
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('psu: codex (su)'));
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   // The claude CLI takes effort as its own flag — a verbatim `<model>:<effort>` spec
   // silently drops the effort and the session falls back to the box's saved default
   // (the 2026-07-01 sonnet-5:high fleet that came up at xhigh).
@@ -8994,6 +9775,232 @@ describe("findUntrackedSession (resume a non-psu session by searching the agent 
     );
     expect(findTrackedCodexHomeRollout(UUID, { home })).toBeNull();
   });
+});
+
+describe("direct su-ID tracked-session recovery", () => {
+  const owner = "su-12345678-1234-4abc-8abc-123456789abc";
+  const latest = { id: 31413, agent: "codex", coordOwnerId: owner, sessionId: "latest-native-id" };
+
+  it.each(["claude", "codex", "omp"])("resolves the latest %s row even when an older row is cached", async (agent) => {
+    const source = { ...latest, agent };
+    const apiImpl = vi.fn(async () => ({
+      exact: { id: source.id, ownerId: owner, requestedAgentId: owner },
+      sessions: [{ ...source, id: 99, sessionId: "older-native-id" }, source],
+    }));
+    expect(await resolveDirectTrackedResumeSession([{ ...source, id: 99 }], owner, { apiImpl })).toBe(source);
+    expect(apiImpl).toHaveBeenCalledExactlyOnceWith(`/api/adv/sessions/resumable?agentId=${owner}`);
+    expect(resumeEnvFor(source).PAPERCUSP_SID).toBe(owner);
+  });
+
+  it.each([
+    { name: "absent agent", result: { sessions: [] } },
+    { name: "old server without exact resolution but with an exact owner row", result: { sessions: [latest] }, expected: latest },
+    { name: "different owner", result: { exact: { id: latest.id, ownerId: "su-other", requestedAgentId: owner }, sessions: [latest] } },
+    { name: "different requested agent", result: { exact: { id: latest.id, ownerId: owner, requestedAgentId: "su-other" }, sessions: [latest] } },
+    { name: "different row", result: { exact: { id: 999, ownerId: owner, requestedAgentId: owner }, sessions: [latest] } },
+    { name: "legacy different owner", result: { sessions: [{ ...latest, coordOwnerId: "su-other" }] } },
+    { name: "legacy owner prefix", result: { sessions: [{ ...latest, coordOwnerId: owner + "a" }] } },
+  ])("handles a $name response", async ({ result, expected = null }) => {
+    expect(await resolveDirectTrackedResumeSession([], owner, { apiImpl: async () => result })).toBe(expected);
+  });
+
+  it("keeps the newest legacy registration without using mutable activity order", async () => {
+    const source = { ...latest, cwd: "/repo" };
+    const apiImpl = vi.fn(async () => ({ sessions: [
+      { ...source, id: 100, sessionId: "older-native-id" },
+      { ...source, id: 99999, coordOwnerId: "su-other" },
+      source,
+    ] }));
+    expect(await resolveDirectTrackedResumeSession([], owner, { apiImpl })).toBe(source);
+  });
+
+  it("propagates owner lookup failure instead of interpreting the su ID as a native thread", async () => {
+    await expect(resolveDirectTrackedResumeSession([], owner, {
+      apiImpl: async () => { throw new Error("operator unavailable"); },
+    })).rejects.toThrow("operator unavailable");
+  });
+
+  it.each([["--resume", owner], [`--resume=${owner}`]])("parses the owner ID in %j", (...args) => {
+    expect(parseArgs(args)).toMatchObject({ resume: true, resumeId: owner });
+  });
+});
+
+describe("direct numeric tracked-session recovery (EI-24966472541417677)", () => {
+  const source = {
+    id: 31413,
+    agent: "claude",
+    sessionId: "ef31338b-ef6d-4a88-be7c-5ed60166e718",
+    cwd: "/repo/source",
+    workspaceId: "source-workspace",
+    planSlug: "source-plan",
+    coordOwnerId: "su-original-source",
+  };
+  const recent = { ...source, id: 34304, coordOwnerId: "su-recent" };
+
+  it("keeps a recent tracked source without another server read", async () => {
+    const apiImpl = vi.fn();
+    expect(await resolveDirectTrackedResumeSession([source], "31413", { apiImpl })).toBe(source);
+    expect(apiImpl).not.toHaveBeenCalled();
+  });
+
+  it.each(["claude", "codex", "omp"])(
+    "recovers the exact older %s row instead of treating its adv id as an OMP thread",
+    async (agent) => {
+      const historical = { ...source, agent, ompThreadId: agent === "omp" ? "source-thread" : null };
+      const apiImpl = vi.fn(async () => ({ sessions: [recent, historical] }));
+      const recovered = await resolveDirectTrackedResumeSession([recent], "31413", { apiImpl });
+      expect(apiImpl).toHaveBeenCalledExactlyOnceWith("/api/adv/sessions/resumable?id=31413");
+      expect(recovered).toBe(historical);
+      expect(recovered).toMatchObject({
+        sessionId: source.sessionId,
+        coordOwnerId: source.coordOwnerId,
+        workspaceId: source.workspaceId,
+        planSlug: source.planSlug,
+      });
+    },
+  );
+
+  it.each([
+    { name: "missing", sessions: [] },
+    { name: "different", sessions: [recent] },
+  ])("does not bless a $name exact row", async ({ sessions }) => {
+    const apiImpl = vi.fn(async () => ({ sessions }));
+    expect(await resolveDirectTrackedResumeSession([], "31413", { apiImpl })).toBeNull();
+    expect(apiImpl).toHaveBeenCalledOnce();
+  });
+
+  it.each([source.sessionId, "native-omp-thread", "0", "-1", "12.5", "1e3", "9007199254740992"])(
+    "leaves native or invalid adv id %s to its existing guarded path",
+    async (id) => {
+      const home = mkdtempSync(join(tmpdir(), "psu-unbound-native-resume-"));
+      try {
+        const apiImpl = vi.fn();
+        expect(await resolveDirectTrackedResumeSession([], id, { home, apiImpl })).toBeNull();
+        expect(apiImpl).not.toHaveBeenCalled();
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("propagates an exact-read failure instead of falling through to a raw source", async () => {
+    const apiImpl = vi.fn(async () => { throw new Error("operator unavailable"); });
+    await expect(resolveDirectTrackedResumeSession([], "31413", { apiImpl }))
+      .rejects.toThrow("operator unavailable");
+  });
+
+  it("recovers an out-of-window native UUID through its durable binding when the transcript is missing", async () => {
+    const home = mkdtempSync(join(tmpdir(), "psu-mapped-native-resume-"));
+    try {
+      const historical = { ...source, agent: "codex" };
+      recordSessionOwner(source.sessionId, source.coordOwnerId, { home, advSessionId: source.id });
+      const apiImpl = vi.fn(async () => ({ sessions: [historical] }));
+      const other = { ...recent, sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" };
+      expect(await resolveDirectTrackedResumeSession([other], source.sessionId, { home, apiImpl }))
+        .toBe(historical);
+      expect(apiImpl).toHaveBeenCalledExactlyOnceWith("/api/adv/sessions/resumable?id=31413");
+      expect(existsSync(join(home, ".papercusp", "su-codex-homes", "session-31413"))).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { name: "missing", sessions: [] },
+    { name: "different tracked id", sessions: [{ ...source, id: 34304 }] },
+    { name: "different native incarnation", sessions: [{ ...source, sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }] },
+    { name: "different owner", sessions: [{ ...source, coordOwnerId: "su-other" }] },
+  ])("does not bless a mapped UUID with a $name exact row", async ({ sessions }) => {
+    const home = mkdtempSync(join(tmpdir(), "psu-mapped-native-refusal-"));
+    try {
+      recordSessionOwner(source.sessionId, source.coordOwnerId, { home, advSessionId: source.id });
+      const apiImpl = vi.fn(async () => ({ sessions }));
+      expect(await resolveDirectTrackedResumeSession([], source.sessionId, { home, apiImpl })).toBeNull();
+      expect(apiImpl).toHaveBeenCalledExactlyOnceWith("/api/adv/sessions/resumable?id=31413");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("propagates mapped UUID lookup failure rather than misreporting it as an untracked source", async () => {
+    const home = mkdtempSync(join(tmpdir(), "psu-mapped-native-read-failure-"));
+    try {
+      recordSessionOwner(source.sessionId, source.coordOwnerId, { home, advSessionId: source.id });
+      const apiImpl = vi.fn(async () => { throw new Error("operator unavailable"); });
+      await expect(resolveDirectTrackedResumeSession([], source.sessionId, { home, apiImpl }))
+        .rejects.toThrow("operator unavailable");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("direct resume of an archived consult incarnation (EI-25730332883266828)", () => {
+  it.each(["claude", "codex", "omp"])(
+    "ports the selected %s archive even when the tracked row's newest transcript is missing",
+    async (agent) => {
+      const home = mkdtempSync(join(tmpdir(), "psu-archived-consult-"));
+      const earlier = "11111111-1111-4111-8111-111111111111";
+      const source = {
+        id: 35200, agent, cwd: "/repo/source", role: null,
+        sessionId: "22222222-2222-4222-8222-222222222222",
+        ompThreadId: agent === "omp" ? "newest-thread" : null,
+        coordOwnerId: "su-original-source", workspaceId: "source-workspace",
+        configDir: home, codexHome: home,
+      };
+      const before = structuredClone(source);
+      const args = {
+        resumeId: String(source.id), picker: false, agent: "codex", model: "sol:high",
+        ownerId: "su-isolated-answer", launchedBy: "su-requester",
+        consultEvidenceSpan: { sessionId: earlier, turnIndices: [2, 4], contextTurns: 2 },
+      };
+      const apiImpl = vi.fn(async (path) => ({
+        sessions: path.includes("?id=") ? [source] : [],
+      }));
+      const sessionPortApiImpl = vi.fn()
+        .mockResolvedValueOnce({ inspection: {
+          source: { nativeSessionId: earlier, sha256: "a".repeat(64) },
+        } })
+        .mockResolvedValueOnce({ portId: "port-archive", token: "port-archive.token" });
+      const launchFreshSuImpl = vi.fn();
+      const launchResolvedResumeImpl = vi.fn(async (row, launchArgs, options) => {
+        expect(options).toEqual({ tracked: true });
+        const target = resolveResumeTarget(row, launchArgs);
+        expect(target.operation).toBe("port");
+        await launchSessionPort(row, target, {}, launchArgs, {
+          sessionPortApiImpl, launchFreshSuImpl,
+        });
+      });
+      const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+      const exit = vi.spyOn(process, "exit").mockImplementation(() => {
+        throw new Error("latest native transcript rejected before port inspection");
+      });
+      // The old premature restore must fail deterministically, without making
+      // an operator request or touching an actual archived session.
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(JSON.stringify({ ok: false }), { status: 404 }),
+      );
+      try {
+        if (agent !== "omp") expect(sessionHasTranscript(source, { home })).toBe(false);
+        await resumeFlow(args, { apiImpl, launchResolvedResumeImpl });
+        expect(apiImpl).toHaveBeenCalledWith("/api/adv/sessions/resumable?id=35200");
+        expect(exit).not.toHaveBeenCalled();
+        expect(fetchSpy).not.toHaveBeenCalled();
+        expect(launchFreshSuImpl).toHaveBeenCalledOnce();
+        const inspect = JSON.parse(sessionPortApiImpl.mock.calls[0][1].body);
+        const prepare = JSON.parse(sessionPortApiImpl.mock.calls[1][1].body);
+        expect(inspect).toMatchObject({
+          sourceAdvSessionId: source.id, sourceNativeSessionId: earlier,
+          consultEvidenceSpan: args.consultEvidenceSpan, targetOwnerId: args.ownerId,
+        });
+        expect(prepare).toEqual({ ...inspect, expectedSourceHash: "a".repeat(64) });
+        expect(source).toEqual(before);
+      } finally {
+        fetchSpy.mockRestore(); exit.mockRestore(); stderr.mockRestore();
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe("out-of-window tracked-session recovery (WI-10002877)", () => {
@@ -9660,6 +10667,23 @@ describe("respawn model carry (WI-2141859 — an in-session /model switch must s
 
   describe("detectRespawnModelSpec", () => {
     const argv = ["claude", "--session-id", UUID, "--model", LAUNCHED];
+
+    it("Codex home repair retains an unchanged explicit 6.1 model instead of requesting the saved default", () => {
+      const previous = ["-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="xhigh"'];
+      const options = {
+        agent: "codex", codexHome: join(tmpdir(), "codex-model-carry-test"),
+        modelSource: "explicit", includeInherited: true,
+        readLatestCodexRollout: () => ({ id: UUID }),
+        readLastActiveModel: () => "gpt-6.1-sol:xhigh",
+      };
+      expect(detectRespawnModelSpec(previous, options)).toBe("gpt-6.1-sol:xhigh");
+      // Ordinary argv rewriting still uses null to mean no change.
+      expect(detectRespawnModelSpec(previous, { ...options, includeInherited: false })).toBeNull();
+      expect(detectRespawnModelSpec(previous, {
+        ...options, readLastActiveModel: () => null,
+      })).toBe("gpt-6.1-sol:xhigh");
+      expect(detectRespawnModelSpec([], options)).toBeNull();
+    });
 
     it("Codex carry uses the repaired isolated-home model when the old launch model was still active", () => {
       const home = mkdtempSync(join(tmpdir(), "codex-model-carry-"));
@@ -10998,6 +12022,44 @@ describe("usePtyHost — managed-pty rollout gate (turn-lifecycle-control Phase 
 describe("spawnInherit — plain fallback owns and cleans up the backend process group (EI-20234301056067173)", () => {
   const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
+  it.each([null, "SIGINT"])("prints the psu resume hint after an interactive exit (%s) and before returning control", async (signal) => {
+    const child = Object.assign(new EventEmitter(), { pid: 4142, kill: vi.fn() });
+    const write = vi.fn();
+    const processExit = vi.fn();
+    const processKill = vi.fn();
+    const owner = "su-12345678-1234-4abc-8abc-123456789abc";
+    spawnInherit({
+      wrapperBin: "codex", cwd: "/tmp", env: { PAPERCUSP_SID: owner },
+      spawnImpl: () => child, signalSource: new EventEmitter(),
+      processApi: { pid: 9000, stdin: { isTTY: true }, stdout: { isTTY: true, write }, exit: processExit, kill: processKill },
+      reportSessionEndedImpl: async () => undefined,
+    });
+    child.emit("exit", 0, signal);
+    await flush();
+    expect(write).toHaveBeenCalledExactlyOnceWith(`\npsu: Resume this agent with: psu --resume ${owner}\n`);
+    const end = signal ? processKill : processExit;
+    expect(write.mock.invocationCallOrder[0]).toBeLessThan(end.mock.invocationCallOrder.at(-1)!);
+    child.emit("exit", 0, signal);
+    expect(write).toHaveBeenCalledOnce();
+  });
+
+  it("suppresses resume hints in headless or nonterminal runs", () => {
+    const write = vi.fn();
+    const tty = { stdin: { isTTY: true }, stdout: { isTTY: true, write } };
+    expect(printPsuResumeHint({ PAPERCUSP_SID: "su-test", PAPERCUSP_PSU_HEADLESS: "1" }, tty as never)).toBe(false);
+    expect(printPsuResumeHint({ PAPERCUSP_SID: "su-test" }, { ...tty, stdout: { isTTY: false, write } } as never)).toBe(false);
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("uses a tracked session ID for other roles and never prints unsafe shell input", () => {
+    const write = vi.fn();
+    const tty = { stdin: { isTTY: true }, stdout: { isTTY: true, write } };
+    expect(printPsuResumeHint({ PAPERCUSP_SID: "role-worker", PAPERCUSP_ADV_SESSION_ID: "31413" }, tty as never)).toBe(true);
+    expect(write).toHaveBeenLastCalledWith("\npsu: Resume this agent with: psu --resume 31413\n");
+    printPsuResumeHint({ PAPERCUSP_SID: "su-owner; echo unsafe", PAPERCUSP_ADV_SESSION_ID: "$(unsafe)" }, tty as never);
+    expect(write).toHaveBeenLastCalledWith("\npsu: Resume this agent with: psu --resume\n");
+  });
+
   it("finalizes only after Node confirms the direct child spawned", async () => {
     const child = new EventEmitter() as EventEmitter & {
       pid: number;
@@ -11238,8 +12300,188 @@ describe("sessionIsResumable — picker keeps on-disk OR DB-archived sessions (W
   });
 });
 
+describe("original Codex routing — existing profile only", () => {
+  const uuid = "0123abcd-1234-5678-9abc-def012345678";
+  let home: string;
+  let source: any;
+  let pin: any;
+  const deps = { liveHost: () => null, writerHolder: () => ({ held: false, reason: "free" }) };
+  const config = () => readFileSync(join(home, "config.toml"), "utf8");
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "psu-original-route-"));
+    mkdirSync(join(home, "sessions"));
+    writeFileSync(join(home, "sessions", `rollout-${uuid}.jsonl`), JSON.stringify({ type: "session_meta", payload: { id: uuid, model_provider: "openai" } }) + "\n");
+    writeFileSync(join(home, "AGENTS.md"), "Original session instructions\n");
+    writeFileSync(join(home, "config.toml"), 'model = "gpt-6"\nmodel_reasoning_effort = "high"\n[mcp_servers.papercusp-su]\nurl = "http://localhost/api/mcp?client=su-original"\n[tui]\nterminal_title = []\nalternate_screen = "never"\n');
+    writeFileSync(join(home, "papercusp-diagnostics.json"), JSON.stringify({ lockOwnerSid: "su-original" }));
+    const hook = { hooks: [{ command: "PAPERCUSP_SID='su-original' lifecycle-report.sh" }] };
+    writeFileSync(join(home, "hooks.json"), JSON.stringify({ hooks: { SessionStart: [hook], SessionEnd: [hook], Stop: [hook] } }));
+    source = { id: 42, agent: "codex", coordOwnerId: "su-original", sessionId: uuid,
+      endedAt: "2026-10-07T00:00:00Z", startedAt: "2026-10-06T00:00:00Z", codexHome: home,
+      cwd: "/original", role: "su", feature: "WI-original", workspaceId: "workspace-original",
+      planSlug: "original-plan", launchArgv: ["psu", "--account=auto", "--carry=cold"] };
+    pin = { ownerId: source.coordOwnerId, advSessionId: source.id, sessionId: uuid,
+      codexHome: home, profileFingerprint: codexOriginalRoutingFingerprint(home, uuid) };
+  });
+  afterEach(() => rmSync(home, { recursive: true, force: true }));
+
+  it("accepts the real exact-resume command's unset parsed subagent option", () => {
+    const launchArgs = parseArgs(["--launched-by=su-caller", "--no-picker", "--account=auto", `--resume=${uuid}`]);
+    expect(launchArgs.allowSubagents).toBeNull();
+    expect(() => assertOriginalCodexRouting(source, pin, { ...deps, launchArgs })).not.toThrow();
+  });
+
+  it.each(["--allow-subagents", "--no-subagents", "--agent=codex", "--model=gpt-6", "--mode=grade"])(
+    "refuses an explicit parsed routing override (%s)", (override) => {
+      const launchArgs = parseArgs(["--no-picker", "--account=auto", `--resume=${uuid}`, override]);
+      expect(() => assertOriginalCodexRouting(source, pin, { ...deps, launchArgs })).toThrow("settings overrides");
+    });
+
+  it.each(["auto", "codex-pinned-account"])("patches only the provider for the original saved %s route", async (saved) => {
+    source.launchArgv[1] = `--account=${saved}`;
+    const before = { agents: readFileSync(join(home, "AGENTS.md")), hooks: readFileSync(join(home, "hooks.json")),
+      transcript: readFileSync(join(home, "sessions", `rollout-${uuid}.jsonl`)), session: JSON.stringify(source) };
+    const apiImpl = vi.fn(async () => ({ sessions: [{ ...source }] }));
+    await applyOriginalCodexRouting(source, pin, { mode: saved === "auto" ? "auto" : "pin", id: saved === "auto" ? null : saved }, { ...deps, apiImpl });
+    expect(apiImpl).toHaveBeenCalledWith("/api/adv/sessions/resumable?id=42");
+    expect(config()).toContain('model_provider = "papercusp-codex-gateway"');
+    expect(config()).toContain('model_reasoning_effort = "high"');
+    expect(config()).toContain('model = "gpt-6"');
+    expect(readFileSync(join(home, "AGENTS.md"))).toEqual(before.agents);
+    expect(readFileSync(join(home, "hooks.json"))).toEqual(before.hooks);
+    expect(readFileSync(join(home, "sessions", `rollout-${uuid}.jsonl`))).toEqual(before.transcript);
+    expect(JSON.stringify(source)).toBe(before.session);
+  });
+
+  it("preserves a restricted judge MCP profile during original routing recovery", async () => {
+    source.role = "judge";
+    writeFileSync(join(home, "config.toml"), config().replace("[mcp_servers.papercusp-su]", "[mcp_servers.papercusp]")
+      .replace("?client=su-original", "?client=su-original&role=judge&sig=original-signature&exp=0"));
+    pin.profileFingerprint = codexOriginalRoutingFingerprint(home, uuid);
+    const before = { agents: readFileSync(join(home, "AGENTS.md")), hooks: readFileSync(join(home, "hooks.json")),
+      transcript: readFileSync(join(home, "sessions", `rollout-${uuid}.jsonl`)) };
+    await applyOriginalCodexRouting(source, pin, { mode: "auto" }, { ...deps, apiImpl: async () => ({ sessions: [source] }) });
+    expect(config()).toContain("[mcp_servers.papercusp]");
+    expect(config()).not.toContain("papercusp-su");
+    expect(config()).toContain("client=su-original&role=judge&sig=original-signature&exp=0");
+    expect(readFileSync(join(home, "AGENTS.md"))).toEqual(before.agents);
+    expect(readFileSync(join(home, "hooks.json"))).toEqual(before.hooks);
+    expect(readFileSync(join(home, "sessions", `rollout-${uuid}.jsonl`))).toEqual(before.transcript);
+  });
+
+  it.each(["role=worker", "role=judge&superuser=1", "role=judge&client=su-other", "role=judge&sig="])(
+    "refuses a restricted role profile with mismatched authority (%s)", (query) => {
+      source.role = "judge";
+      writeFileSync(join(home, "config.toml"), config().replace("[mcp_servers.papercusp-su]", "[mcp_servers.papercusp]")
+        .replace("?client=su-original", `?client=su-original&sig=original-signature&${query}`));
+      pin.profileFingerprint = codexOriginalRoutingFingerprint(home, uuid);
+      const before = config();
+      expect(() => assertOriginalCodexRouting(source, pin, deps)).toThrow("restricted role");
+      expect(config()).toBe(before);
+    });
+
+  it("refuses an SU profile for a recorded restricted role", () => {
+    source.role = "judge";
+    expect(() => assertOriginalCodexRouting(source, pin, deps)).toThrow("restricted role");
+  });
+
+  it.each([{ coordOwnerId: "su-other" }, { id: 43 }, { sessionId: "another-thread" },
+    { agent: "claude" }, { endedAt: null }, { launchArgv: ["--account=default"] }])(
+    "refuses wrong custody/prerequisites before provider writes: %j", async (change) => {
+      const before = config();
+      await expect(applyOriginalCodexRouting(source, pin, { mode: "auto" },
+        { ...deps, apiImpl: async () => ({ sessions: [{ ...source, ...change }] }) })).rejects.toThrow("refused");
+      expect(config()).toBe(before);
+    });
+
+  it.each(["held", "no-proc-locks", "stat-error"])("refuses a live or unknown writer (%s) without changing config", (reason) => {
+    const before = config();
+    expect(() => assertOriginalCodexRouting(source, pin, { ...deps,
+      writerHolder: () => ({ held: reason === "held", reason }) })).toThrow("writer");
+    expect(config()).toBe(before);
+  });
+
+  it("refuses a live host even when the writer probe is free", () => {
+    expect(() => assertOriginalCodexRouting(source, pin, { ...deps, liveHost: () => ({ pid: 42 }) })).toThrow("host");
+  });
+
+  it.each(["AGENTS.md", "config.toml", "hooks.json", "sessions"])("refuses missing %s instead of repairing/restoring it", (file) => {
+    rmSync(join(home, file), { recursive: true });
+    expect(() => assertOriginalCodexRouting(source, pin, deps)).toThrow("refused");
+    expect(existsSync(join(home, file))).toBe(false);
+  });
+
+  it("refuses a profile race during the post-reservation exact-row read", async () => {
+    const before = config();
+    await expect(applyOriginalCodexRouting(source, pin, { mode: "auto" }, { ...deps, apiImpl: async () => {
+      writeFileSync(join(home, "AGENTS.md"), "changed while reserved");
+      return { sessions: [source] };
+    } })).rejects.toThrow("profile");
+    expect(config()).toBe(before);
+  });
+
+  it("refuses a saved account mismatch before provider writes", async () => {
+    const before = config();
+    await expect(applyOriginalCodexRouting(source, pin, { mode: "pin", id: "other-account" },
+      { ...deps, apiImpl: async () => ({ sessions: [source] }) })).rejects.toThrow("account");
+    expect(config()).toBe(before);
+  });
+
+  it("consumes the launch-only guard and strips it from inherited child env", () => {
+    const env = { [ORIGINAL_CODEX_ROUTING_ENV]: JSON.stringify(pin) };
+    expect(consumeOriginalCodexRouting(env)).toEqual(pin);
+    expect(env).toEqual({});
+    expect(sanitizeInheritedEnv({ [ORIGINAL_CODEX_ROUTING_ENV]: JSON.stringify(pin) })).not.toHaveProperty(ORIGINAL_CODEX_ROUTING_ENV);
+  });
+});
+
 describe("ensureResumeTranscriptPresent — the archive-at-death race (owner-hit 2026-08-12, WI-38236)", () => {
   const UUID = "0123abcd-1234-5678-9abc-def012345678";
+  it("uses the saved OMP home for transcript preflight and native resume", async () => {
+    const agentHome = join(home, 'relocated-omp', 'agent');
+    const sessions = join(agentHome, 'sessions', 'project');
+    mkdirSync(sessions, { recursive: true });
+    const transcript = join(sessions, `2026-10-12T00-00-00_${UUID}.jsonl`);
+    writeFileSync(transcript, `{"type":"session","id":"${UUID}"}\n`);
+    const source = { id: 42, agent: 'omp', ompThreadId: UUID, agentHome };
+    const rematerialize = vi.fn(async () => null);
+    expect(sessionTranscriptFile(source, { home })).toBe(transcript);
+    await expect(ensureResumeTranscriptPresent(source, { home, rematerialize })).resolves.toBe(true);
+    expect(rematerialize).not.toHaveBeenCalled();
+    expect(ompTrackedResumeEnv(source, { home })).toMatchObject({
+      PI_CONFIG_DIR: 'relocated-omp', PI_CODING_AGENT_DIR: agentHome,
+    });
+  });
+
+  it("uses the configured OMP root when no saved OMP home was supplied", async () => {
+    const root = join(home, 'configured-omp');
+    vi.stubEnv('PAPERCUSP_SU_OMP_HOMES_DIR', root);
+    try {
+      const agentHome = join(root, 'session-42', 'agent');
+      const sessions = join(agentHome, 'sessions', 'project');
+      mkdirSync(sessions, { recursive: true });
+      const transcript = join(sessions, `2026-10-12T00-00-00_${UUID}.jsonl`);
+      writeFileSync(transcript, `{"type":"session","id":"${UUID}"}\n`);
+      const source = { id: 42, agent: 'omp', ompThreadId: UUID };
+      const rematerialize = vi.fn(async () => null);
+      expect(sessionTranscriptFile(source, { home })).toBe(transcript);
+      await expect(ensureResumeTranscriptPresent(source, { home, rematerialize })).resolves.toBe(true);
+      expect(rematerialize).not.toHaveBeenCalled();
+      expect(ompTrackedResumeEnv(source, { home }).PI_CODING_AGENT_DIR).toBe(agentHome);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("does not replace a missing saved OMP home with a transcript in another home", async () => {
+    const sessions = join(home, '.papercusp', 'su-omp-homes', 'session-42', 'agent', 'sessions');
+    mkdirSync(sessions, { recursive: true });
+    writeFileSync(join(sessions, `2026-10-12T00-00-00_${UUID}.jsonl`), '{}\n');
+    const source = { id: 42, agent: 'omp', ompThreadId: UUID, agentHome: join(home, 'missing', 'agent') };
+    const rematerialize = vi.fn(async () => null);
+    await expect(ensureResumeTranscriptPresent(source, { home, rematerialize })).resolves.toBe(false);
+    expect(rematerialize).toHaveBeenCalledWith(UUID, 'omp', { sourceSession: source, home });
+    expect(ompTrackedResumeEnv(source, { home })).toEqual({});
+  });
+
   it("uses the saved Codex home for exact resume without restoring an unrelated default home", async () => {
     const codexHome = mkdtempSync(join(tmpdir(), 'pui-saved-codex-'));
     try {
@@ -11253,6 +12495,31 @@ describe("ensureResumeTranscriptPresent — the archive-at-death race (owner-hit
       expect(rematerialize).not.toHaveBeenCalled();
       expect(sessionHasTranscript({ ...source, sessionId: 'different-thread' }, { home })).toBe(false);
     } finally { rmSync(codexHome, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    { name: 'HTTP admission refusal', response: () => new Response(JSON.stringify({ ok: false, error: 'mcp_proxy_overloaded' }), { status: 429 }), cause: 'HTTP 429' },
+    { name: 'malformed archive response', response: () => new Response('not JSON', { status: 200 }), cause: 'invalid_response' },
+    { name: 'unreachable archive service', response: () => { throw new Error('ECONNREFUSED'); }, cause: 'ECONNREFUSED' },
+  ])("preserves $name instead of declaring the indexed native archive absent", async ({ response, cause }) => {
+    const source = { id: 42329, agent: 'codex', sessionId: UUID, coordOwnerId: 'su-original-reviewer' };
+    const before = structuredClone(source);
+    const rematerialize = (id, agent, options) => tryRematerializeFromArchive(id, agent, {
+      ...options, operatorUrl: 'http://archive', token: 'fixture-token', fetchImpl: async () => response(),
+    });
+    expect(sessionHasTranscript(source, { home })).toBe(false);
+    await expect(ensureResumeTranscriptPresent(source, { home, rematerialize }))
+      .rejects.toThrow(cause);
+    expect(source).toEqual(before);
+  });
+
+  it("reports archive absence only after the service explicitly confirms not_archived", async () => {
+    const source = { id: 42329, agent: 'codex', sessionId: UUID };
+    const rematerialize = (id, agent, options) => tryRematerializeFromArchive(id, agent, {
+      ...options, operatorUrl: 'http://archive', token: 'fixture-token',
+      fetchImpl: async () => new Response(JSON.stringify({ ok: false, reason: 'not_archived' }), { status: 404 }),
+    });
+    await expect(ensureResumeTranscriptPresent(source, { home, rematerialize })).resolves.toBe(false);
   });
 
   let home = "";
@@ -11288,7 +12555,7 @@ describe("ensureResumeTranscriptPresent — the archive-at-death race (owner-hit
     await expect(
       ensureResumeTranscriptPresent(source, { home, rematerialize }),
     ).resolves.toBe(true);
-    expect(rematerialize).toHaveBeenCalledWith(UUID, "claude");
+    expect(rematerialize).toHaveBeenCalledWith(UUID, "claude", { sourceSession: source, home });
   });
 
   it("REFUSES the launch when the transcript is gone AND the archive cannot restore it", async () => {
@@ -11303,6 +12570,28 @@ describe("ensureResumeTranscriptPresent — the archive-at-death race (owner-hit
         { home, rematerialize },
       ),
     ).resolves.toBe(false);
+  });
+
+  it("pins a native resume to the relocated archive root before checking restored bytes", async () => {
+    const source = { agent: "claude", sessionId: UUID, coordOwnerId: "su-relocated", configDir: join(home, "old") };
+    const restoredRoot = join(home, "restored");
+    const project = join(restoredRoot, "projects", "-d");
+    mkdirSync(project, { recursive: true });
+    writeFileSync(join(project, `${UUID}.jsonl`), `{"sessionId":"${UUID}"}\n`);
+    const rematerialize = (id, agent, options) => tryRematerializeFromArchive(id, agent, {
+      ...options, home, operatorUrl: "http://operator", token: "test-token",
+      fetchImpl: async () => new Response(JSON.stringify({
+        ok: true, written: 1, root: restoredRoot, sourceKind: "claude",
+      }), { status: 200 }),
+    });
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(ensureResumeTranscriptPresent(source, { home, rematerialize })).resolves.toBe(true);
+      expect(source.configDir).toBe(restoredRoot);
+      expect(source.coordOwnerId).toBe("su-relocated");
+      expect(source.sessionId).toBe(UUID);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining("transcript restored from the session archive"));
+    } finally { stderr.mockRestore(); }
   });
 
   it("does NOT restore when the transcript is still on disk — the healthy resume pays no round-trip", async () => {
@@ -11331,6 +12620,23 @@ describe("ensureResumeTranscriptPresent — the archive-at-death race (owner-hit
       ),
     ).resolves.toBe(true);
     expect(rematerialize).not.toHaveBeenCalled();
+  });
+
+  it("refuses a tracked OMP ghost and restores its native thread before a native resume", async () => {
+    const source = { agent: "omp", id: 42, ompThreadId: "t-1", sessionId: "different-row-native" };
+    const missing = vi.fn(async () => null);
+    await expect(ensureResumeTranscriptPresent(source, { home, rematerialize: missing })).resolves.toBe(false);
+    expect(missing).toHaveBeenCalledWith("t-1", "omp", { sourceSession: source, home });
+    const restore = vi.fn(async () => {
+      const dir = join(home, ".papercusp", "su-omp-homes", "session-42", "agent", "sessions", "project");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "2026-07-16T00-00-00_t-1.jsonl"), '{"type":"session","id":"t-1"}\n');
+      return { ok: true };
+    });
+    await expect(ensureResumeTranscriptPresent(source, { home, rematerialize: restore })).resolves.toBe(true);
+    expect(restore).toHaveBeenCalledWith("t-1", "omp", { sourceSession: source, home });
+    await expect(ensureResumeTranscriptPresent(source, { home, rematerialize: missing })).resolves.toBe(true);
+    expect(missing).toHaveBeenCalledOnce();
   });
 });
 
@@ -11582,6 +12888,26 @@ describe("WI-3758 — psu --resume model select + last-active model", () => {
       "--model",
       "anthropic.claude-3-5-sonnet-v2:0",
     ]);
+    expect(modelArgsFor("claude", "opus:xhigh")).toEqual([
+      "--model",
+      "opus",
+      "--effort",
+      "max",
+    ]);
+    expect(modelArgsFor("claude", "claude-opus-5-5:xhigh")).toEqual([
+      "--model",
+      "claude-opus-5-5",
+      "--effort",
+      "max",
+    ]);
+    expect(modelArgsFor("claude", "claude-opus-4-8:xhigh")).toEqual([
+      "--model",
+      "claude-opus-4-8",
+      "--effort",
+      "xhigh",
+    ]);
+    // OMP keeps its provider-native suffixed form unchanged.
+    expect(modelArgsFor("omp", "opus:xhigh")).toEqual(["--model", "opus:xhigh"]);
     // codex: bare -m + config-override effort, preserving max verbatim.
     expect(modelArgsFor("codex", "gpt-5.5:max")).toEqual([
       "-m",
@@ -11596,6 +12922,17 @@ describe("WI-3758 — psu --resume model select + last-active model", () => {
       "-c",
       'model_reasoning_effort="high"',
       ...codexContextConfigArgs("gpt-5.6-sol"),
+    ]);
+    expect(
+      modelArgsFor("codex", "sol:high", { compactionLimit: 250_000 }),
+    ).toEqual([
+      "-m",
+      "gpt-5.6-sol",
+      "-c",
+      'model_reasoning_effort="high"',
+      ...codexContextConfigArgs("gpt-5.6-sol", {
+        compactionLimit: 250_000,
+      }),
     ]);
     // omp understands the suffixed spec natively.
     expect(modelArgsFor("omp", "opus:high")).toEqual(["--model", "opus:high"]);
@@ -11701,6 +13038,128 @@ describe("WI-3758 — psu --resume model select + last-active model", () => {
         notice: null,
         reconciled: false,
       });
+    }
+  });
+
+  // WI-10005900: an argv with no effort of its own falls back to settings.json
+  // effortLevel, which Claude Code writes itself. On the `default` route there is
+  // no gateway clamp, so the launch boundary must pass the clamped level.
+  it("WI-10005900: claude argv clamps an inherited Opus 5 xhigh effortLevel on every launch path", () => {
+    const xhighSettings = { model: "opus[1m]", effortLevel: "xhigh" };
+
+    expect(
+      modelArgsFor("claude", "opus[1m]", { claudeSettings: xhighSettings }),
+    ).toEqual(["--model", "opus[1m]", "--effort", "max"]);
+    expect(
+      modelArgsFor("claude", null, { claudeSettings: xhighSettings }),
+    ).toEqual(["--effort", "max"]);
+    expect(
+      suWrapperExtraArgs("claude", { claudeSettings: xhighSettings }),
+    ).toEqual(["--effort", "max"]);
+
+    const resumed = resumeArgsFor(
+      { agent: "claude", sessionId: "uuid-1" },
+      { claudeSettings: xhighSettings },
+    ).args;
+    expect(resumed.slice(-2)).toEqual(["--effort", "max"]);
+
+    const role = roleLaunchArgs("claude", {
+      promptFile: "/tmp/p.md",
+      mcpJsonPath: "/tmp/m.json",
+      model: "opus[1m]",
+      claudeSettings: xhighSettings,
+    }).args;
+    expect(role.slice(-4)).toEqual(["--model", "opus[1m]", "--effort", "max"]);
+  });
+
+  it("WI-10005900: claude argv stays byte-identical when there is nothing to clamp", () => {
+    // No settings supplied: the pre-WI-10005900 argv.
+    expect(modelArgsFor("claude", "opus[1m]")).toEqual(["--model", "opus[1m]"]);
+    expect(modelArgsFor("claude", null)).toEqual([]);
+    expect(suWrapperExtraArgs("claude", {})).toEqual([]);
+    // A model-less non-claude launch still emits nothing (and never resolves a default).
+    expect(suWrapperExtraArgs("omp", {})).toEqual(["--no-title"]);
+    // An explicit effort wins; supported or non-Opus-5 inherited levels pass through.
+    expect(
+      modelArgsFor("claude", "opus:high", {
+        claudeSettings: { model: "opus", effortLevel: "xhigh" },
+      }),
+    ).toEqual(["--model", "opus", "--effort", "high"]);
+    expect(
+      modelArgsFor("claude", "opus[1m]", {
+        claudeSettings: { effortLevel: "max" },
+      }),
+    ).toEqual(["--model", "opus[1m]"]);
+    expect(
+      modelArgsFor("claude", "claude-sonnet-5", {
+        claudeSettings: { effortLevel: "xhigh" },
+      }),
+    ).toEqual(["--model", "claude-sonnet-5"]);
+    // Codex and OMP ignore claude settings entirely.
+    expect(
+      modelArgsFor("omp", "opus:high", {
+        claudeSettings: { model: "opus", effortLevel: "xhigh" },
+      }),
+    ).toEqual(modelArgsFor("omp", "opus:high"));
+  });
+
+  it("WI-10005900: readClaudeLaunchSettings reads the settings the child will read, fail-open", () => {
+    const files: Record<string, string> = {
+      "/iso/settings.json": JSON.stringify({ model: "opus[1m]", effortLevel: "xhigh", theme: "dark" }),
+      "/h/.claude/settings.json": JSON.stringify({ model: "sonnet", effortLevel: "high" }),
+    };
+    const readFile = (p: string) => {
+      if (!(p in files)) throw Object.assign(new Error(`ENOENT ${p}`), { code: "ENOENT" });
+      return files[p];
+    };
+    // The per-session isolated CLAUDE_CONFIG_DIR wins over ~/.claude.
+    expect(
+      readClaudeLaunchSettings({ CLAUDE_CONFIG_DIR: "/iso" }, { home: "/h", readFile }),
+    ).toEqual({ model: "opus[1m]", effortLevel: "xhigh" });
+    expect(readClaudeLaunchSettings({}, { home: "/h", readFile })).toEqual({
+      model: "sonnet",
+      effortLevel: "high",
+    });
+    // ANTHROPIC_MODEL outranks settings.model, as in the CLI.
+    expect(
+      readClaudeLaunchSettings(
+        { CLAUDE_CONFIG_DIR: "/iso", ANTHROPIC_MODEL: "claude-sonnet-5" },
+        { home: "/h", readFile },
+      ),
+    ).toEqual({ model: "claude-sonnet-5", effortLevel: "xhigh" });
+    // Missing or malformed settings never fail a launch.
+    expect(
+      readClaudeLaunchSettings({ CLAUDE_CONFIG_DIR: "/missing" }, { home: "/h", readFile }),
+    ).toBeNull();
+    expect(
+      readClaudeLaunchSettings({}, { home: "/h", readFile: () => "{not json" }),
+    ).toBeNull();
+    // A programming error is not "no settings": it must surface, not fail open.
+    expect(() =>
+      readClaudeLaunchSettings({}, {
+        home: "/h",
+        readFile: () => {
+          throw new ReferenceError("readFileSync is not defined");
+        },
+      }),
+    ).toThrow(ReferenceError);
+  });
+
+  it("WI-10005900: readClaudeLaunchSettings reads a real isolated settings.json through its default reader", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wi5900-claude-config-"));
+    try {
+      writeFileSync(
+        join(dir, "settings.json"),
+        JSON.stringify({ model: "opus[1m]", effortLevel: "xhigh" }),
+      );
+      const settings = readClaudeLaunchSettings({ CLAUDE_CONFIG_DIR: dir });
+      expect(settings).toEqual({ model: "opus[1m]", effortLevel: "xhigh" });
+      expect(modelArgsFor("claude", null, { claudeSettings: settings })).toEqual([
+        "--effort",
+        "max",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 
@@ -11892,6 +13351,58 @@ describe("WI-3758 — psu --resume model select + last-active model", () => {
         expect(carry.args).not.toContain("resume");
         expect(carry.args).not.toContain("fork");
       }
+    });
+
+    it.each([
+      { name: "older turn", timestamp: "2026-10-01T12:55:00.000Z" },
+      { name: "undated turn", timestamp: undefined },
+      { name: "invalid timestamp", timestamp: "not-a-time" },
+    ])("codex: carry ignores pre-launch models from an $name", ({ timestamp }) => {
+      const codexHome = join(home, ".papercusp", "su-codex-homes", "session-46");
+      const file = join(codexHome, "sessions", "2026", "10", "01",
+        `rollout-2026-10-01T12-00-00-${UUID}.jsonl`);
+      writeJsonl(file, [
+        { type: "turn_context", timestamp, payload: { model: "gpt-5.6-sol", effort: "xhigh" } },
+        { type: "response_item", payload: { output: "The restored session appended new metadata." } },
+      ]);
+      writeFileSync(join(codexHome, "config.toml"),
+        'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "xhigh"\n[features]\n');
+      writeFileSync(join(codexHome, "AGENTS.md"), "# Base persona\n");
+      const inherited = ["-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="xhigh"', "resume", UUID];
+      const opts = {
+        agent: "codex", codexHome, advSessionId: 46, home, modelSource: "explicit",
+        notBeforeMs: Date.parse("2026-10-01T13:01:00.000Z"),
+      };
+      expect(lastActiveModelFor({ agent: "codex", id: 46, sessionId: UUID }, { home }))
+        .toBe("gpt-5.6-sol:xhigh");
+      const selected = detectRespawnModelSpec(inherited, opts);
+      expect(selected).toBeNull();
+      expect(detectRespawnModelSpec(inherited, { ...opts, includeInherited: true }))
+        .toBe("gpt-6.1-sol:xhigh");
+      expect(modelSpecFromRecycleArgv(mintCarryRespawnArgs(inherited, {
+        agent: "codex", codexHome, home, model: selected,
+        systemPromptAddendum: "Continue the checkpointed session.",
+      }).args)).toBe("gpt-6.1-sol:xhigh");
+    });
+
+    it.each([
+      { model: "gpt-5.6-sol", effort: "xhigh" },
+      { model: "gpt-6.1-sol", effort: "medium" },
+    ])("codex: carry honors a post-launch switch to $model:$effort", ({ model, effort }) => {
+      const codexHome = join(home, ".papercusp", "su-codex-homes", "session-47");
+      const file = join(codexHome, "sessions", "2026", "10", "01",
+        `rollout-2026-10-01T12-00-00-${UUID}.jsonl`);
+      writeJsonl(file, [
+        { type: "turn_context", timestamp: "2026-10-01T12:55:00.000Z",
+          payload: { model: "gpt-5.6-sol", effort: "low" } },
+        { type: "turn_context", timestamp: "2026-10-01T13:02:00.000Z", payload: { model, effort } },
+      ]);
+      const selected = detectRespawnModelSpec(
+        ["-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="xhigh"'],
+        { agent: "codex", codexHome, advSessionId: 47, home, modelSource: "explicit",
+          notBeforeMs: Date.parse("2026-10-01T13:01:00.000Z") },
+      );
+      expect(selected).toBe(`${model}:${effort}`);
     });
 
     it("codex: reconstructs a model record spanning read chunks, including multibyte text", () => {
@@ -12440,6 +13951,42 @@ describe("WI-2141892 — Claude resume local-liveness evidence", () => {
     expect(holder).toMatchObject({ held: true, pid: 10, reason: "argv-match" });
   });
 
+  it("ignores an unrelated transport shell whose single argument contains the resume request", () => {
+    const id = "484dad61-fef2-4dd0-86e2-468a8bf41967";
+    const command = `ptool capability:launch-agent --json - <<'JSON'\n${JSON.stringify({ resume: { sessionId: id } })}\nJSON`;
+    const proc = fakeProc({
+      pids: [10, 11],
+      cmdlines: {
+        10: ["bash", "-c", command, ""].join("\0"),
+        11: ["node", "ptool.mjs", "--brief", `Review transcript ${id}`, ""].join("\0"),
+      },
+    });
+    expect(sessionProcessHolder(id, { ...proc, selfPid: 99 })).toMatchObject({
+      held: false,
+      reason: "clean-scan",
+    });
+  });
+
+  it("still detects exact native resume and session-id arguments outside the caller ancestry", () => {
+    const id = "484dad61-fef2-4dd0-86e2-468a8bf41967";
+    for (const argv of [
+      ["claude", "--resume", id],
+      ["claude", `--resume=${id}`],
+      ["claude", "--session-id", id],
+      ["claude", `--session-id=${id}`],
+      ["node", "omp", "-r", id],
+    ]) {
+      expect(sessionProcessHolder(id, {
+        ...fakeProc({ pids: [10], cmdlines: { 10: [...argv, ""].join("\0") } }),
+        selfPid: 99,
+      })).toMatchObject({ held: true, pid: 10, reason: "argv-match" });
+    }
+    expect(sessionProcessHolder(id, {
+      ...fakeProc({ pids: [10], cmdlines: { 10: ["claude", "--resume", `${id}-other`, ""].join("\0") } }),
+      selfPid: 99,
+    })).toMatchObject({ held: false, reason: "clean-scan" });
+  });
+
   it("EXCLUDES the caller's whole ancestor chain, not just its own pid", () => {
     // The trap this guard exists for: psu's own argv carries `--resume <uuid>`,
     // and so does the shell that launched it. pid 12 is the probe, 11 its
@@ -12806,6 +14353,22 @@ describe("WI-2141892 — Claude resume local-liveness evidence", () => {
 });
 
 describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", () => {
+  it("keeps retired refusal terminal and sends the opt-in only when explicitly true", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchImpl: typeof fetch = async (_url, opts) => {
+      bodies.push(JSON.parse(String(opts?.body)));
+      return Response.json({ ok: true, status: "retired", acquired: false, reactivated: false });
+    };
+    for (const allowRetired of [undefined, false, true]) {
+      await expect(reportSessionResumed(42, { fetchImpl, operatorUrl: "http://op:1", resumeClaimKey: "retired-key", allowRetired })).resolves.toMatchObject({ claimed: false, status: "retired" });
+    }
+    expect(bodies).toEqual([
+      { advSessionId: 42, resumeClaimKey: "retired-key" },
+      { advSessionId: 42, resumeClaimKey: "retired-key" },
+      { advSessionId: 42, resumeClaimKey: "retired-key", allowRetired: true },
+    ]);
+  });
+
   it("uses the shared proxy-derived request budget by default", async () => {
     const timeoutValues: number[] = [];
     const timeoutSpy = vi
@@ -13143,6 +14706,14 @@ describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", (
 });
 
 describe("acquireSessionResumeWithRecovery — truthful reserved wait/retry", () => {
+  it("preserves explicit relaunch permission across retries and never waits on retirement", async () => {
+    const sleep = vi.fn(async () => undefined);
+    const reportImpl = vi.fn(async () => ({ claimed: false, reason: "contended", status: "retired", resumeClaimKey: "key" }) as const);
+    await expect(acquireSessionResumeWithRecovery(42, { resumeClaimKey: "key", allowRetired: true, reportImpl, sleep })).resolves.toMatchObject({ claimed: false, status: "retired" });
+    expect(reportImpl).toHaveBeenCalledExactlyOnceWith(42, { resumeClaimKey: "key", allowRetired: true });
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
   it("waits through a held lease and retries with the SAME attempt key", async () => {
     const keys: string[] = [];
     const sleeps: number[] = [];
@@ -13319,6 +14890,22 @@ describe("acquireSessionResumeWithRecovery — truthful reserved wait/retry", ()
 });
 
 describe("resume reservation finalize/release reporters", () => {
+  it("sends explicit retirement permission on finalize and omits it on release", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchImpl: typeof fetch = async (_url, opts) => {
+      const body = JSON.parse(String(opts?.body));
+      bodies.push(body);
+      return Response.json({ ok: true, finalized: true, released: true, resumeClaimKey: body.resumeClaimKey });
+    };
+    const options = { fetchImpl, operatorUrl: "http://op:1", allowRetired: true };
+    await reportSessionResumeFinalized(42, "key", options);
+    await reportSessionResumeReleased(42, "key", options);
+    expect(bodies).toEqual([
+      { advSessionId: 42, resumeClaimKey: "key", allowRetired: true },
+      { advSessionId: 42, resumeClaimKey: "key" },
+    ]);
+  });
+
   it("finalizes with the exact acquisition key after spawn evidence", async () => {
     const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
     const fetchImpl = async (url, opts) => {
@@ -13542,7 +15129,8 @@ describe("launchResume wiring — claim before setup or spawn", () => {
       'if (session.agent === "codex" && env.CODEX_HOME)',
     );
     const homeRepair = body.indexOf("await ensureCodexHomeViaOperator(", codexBranch);
-    const hostRepair = src.indexOf("ensureCodexHome: () =>");
+    const hostRepair = src.search(/ensureCodexHome:\s*(?:async\s*)?\([^)]*\)\s*=>/);
+    const hostHomeRepair = src.indexOf("ensureCodexHomeViaOperator(", hostRepair);
     const authGuard = body.indexOf(
       'if (accountEnv?.mode === "default")',
       homeRepair,
@@ -13556,7 +15144,9 @@ describe("launchResume wiring — claim before setup or spawn", () => {
 
     expect(codexBranch).toBeGreaterThan(-1);
     expect(homeRepair).toBeGreaterThan(codexBranch);
-    expect(hostRepair).toBeGreaterThan(homeRepair);
+    // The host callback is in runWrapper; homeRepair is relative to launchResume.
+    expect(hostRepair).toBeGreaterThan(-1);
+    expect(hostHomeRepair).toBeGreaterThan(hostRepair);
     expect(authGuard).toBeGreaterThan(homeRepair);
     expect(authRepair).toBeGreaterThan(authGuard);
     expect(route).toBeGreaterThan(authRepair);
@@ -13665,15 +15255,18 @@ describe("launchResume wiring — claim before setup or spawn", () => {
   });
 
   it("returns the async respawn report so the PTY host can enforce ordering", () => {
-    const onRespawn = src.indexOf("onRespawn: (freshId) => {");
-    const report = src.indexOf("return reportSessionRespawned(", onRespawn);
+    // Keep this source-wiring guard independent of the callback's option
+    // parameters; the durable retry path may pass an onConfirmed callback.
+    const onRespawn = src.indexOf("onRespawn:");
+    // WI-10004917: the durable form, so a report lost to an operator restart is retried.
+    const report = src.indexOf("return reportSessionRespawnedDurably(", onRespawn);
     const callbackEnd = src.indexOf("        },", report);
 
     expect(onRespawn).toBeGreaterThan(-1);
     expect(report).toBeGreaterThan(onRespawn);
     expect(callbackEnd).toBeGreaterThan(report);
-    expect(src.slice(onRespawn, callbackEnd)).not.toContain(
-      "void reportSessionRespawned(",
+    expect(src.slice(onRespawn, callbackEnd)).not.toMatch(
+      /void reportSessionRespawned(Durably)?\(/,
     );
   });
 
@@ -13795,10 +15388,327 @@ describe("reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-
       }),
     ).resolves.toBe(false);
   });
+
+  describe("respawn report diagnostics", () => {
+    it.each([200, 503])("persists the real HTTP %i outcome without request or response secrets", async (status) => {
+      const dir = mkdtempSync(join(tmpdir(), "respawn-report-events-"));
+      const server = createServer((_request, response) => {
+        response.writeHead(status);
+        response.end("response-body-that-must-not-be-logged");
+      });
+      try {
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("test listener missing");
+        await expect(reportSessionRespawned("42", freshId, {
+          coordOwnerId: "su-diagnostic-fixture",
+          operatorUrl: `http://127.0.0.1:${address.port}`,
+          token: "never-log-this-token",
+          appendEventImpl: (owner, kind, extra) => appendHostEvent(owner, kind, extra, dir),
+        })).resolves.toBe(status === 200);
+        const rows = readFileSync(eventLogPathForOwner("su-diagnostic-fixture", dir), "utf8")
+          .trim().split("\n").map((line) => JSON.parse(line));
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+          kind: "respawn-report-attempt",
+          nativeId: freshId,
+          endpointClass: "session-respawned",
+          outcome: status === 200 ? "accepted" : "http-refused",
+          status,
+          errorName: null,
+          errorCode: null,
+          elapsedMs: expect.any(Number),
+        });
+        expect(rows[0].elapsedMs).toBeGreaterThanOrEqual(0);
+        const saved = JSON.stringify(rows);
+        expect(saved).not.toContain("never-log-this-token");
+        expect(saved).not.toContain("response-body-that-must-not-be-logged");
+        expect(saved).not.toContain("http://");
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("distinguishes a transport refusal and allowlists error fields", async () => {
+      const appendEventImpl = vi.fn();
+      const error = Object.assign(new TypeError("secret endpoint and bearer"), {
+        cause: { code: "ECONNREFUSED", message: "secret request body" },
+      });
+      await expect(reportSessionRespawned("42", freshId, {
+        coordOwnerId: "su-diagnostic-fixture",
+        token: "secret bearer",
+        fetchImpl: async () => { throw error; },
+        appendEventImpl,
+      })).resolves.toBe(false);
+      expect(appendEventImpl).toHaveBeenCalledExactlyOnceWith("su-diagnostic-fixture", "respawn-report-attempt", {
+        nativeId: freshId,
+        endpointClass: "session-respawned",
+        outcome: "transport-error",
+        status: null,
+        errorName: "TypeError",
+        errorCode: "ECONNREFUSED",
+        elapsedMs: expect.any(Number),
+      });
+      expect(JSON.stringify(appendEventImpl.mock.calls)).not.toContain("secret");
+    });
+
+    it("records an actual deadline abort as a timeout", async () => {
+      const appendEventImpl = vi.fn();
+      await expect(reportSessionRespawned("42", freshId, {
+        coordOwnerId: "su-diagnostic-fixture",
+        token: "fixture",
+        timeoutMs: 10,
+        fetchImpl: async (_url, options) => {
+          const signal = options?.signal;
+          if (!signal) throw new Error("test request signal missing");
+          return new Promise<Response>((_resolve, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          });
+        },
+        appendEventImpl,
+      })).resolves.toBe(false);
+      expect(appendEventImpl).toHaveBeenCalledExactlyOnceWith("su-diagnostic-fixture", "respawn-report-attempt", {
+        nativeId: freshId,
+        endpointClass: "session-respawned",
+        outcome: "timeout",
+        status: null,
+        errorName: "TimeoutError",
+        errorCode: null,
+        elapsedMs: expect.any(Number),
+      });
+    });
+
+    it("omits arbitrary error names and codes", async () => {
+      const appendEventImpl = vi.fn();
+      await reportSessionRespawned("42", freshId, {
+        coordOwnerId: "su-diagnostic-fixture",
+        token: "fixture",
+        fetchImpl: async () => { throw { name: "secret name", code: "secret code", message: "secret message" }; },
+        appendEventImpl,
+      });
+      expect(appendEventImpl.mock.calls[0]?.[2]).toMatchObject({
+        outcome: "transport-error", errorName: "Error", errorCode: null,
+      });
+      expect(JSON.stringify(appendEventImpl.mock.calls)).not.toContain("secret");
+    });
+
+    it.each([true, false])("a failed diagnostic write preserves the report verdict %s", async (ok) => {
+      const appendEventImpl = vi.fn(() => { throw new Error("event store unavailable"); });
+      await expect(reportSessionRespawned("42", freshId, {
+        coordOwnerId: "su-diagnostic-fixture",
+        token: "fixture",
+        fetchImpl: async () => new Response("", { status: ok ? 200 : 503 }),
+        appendEventImpl,
+      })).resolves.toBe(ok);
+      expect(appendEventImpl).toHaveBeenCalledTimes(1);
+    });
+  });
+});
+
+describe("reportSessionRespawnedDurably (WI-10004917: a respawn report lost to an operator restart is retried)", () => {
+  const freshId = "1d70c364-c3dd-4dc0-a014-2bbfdd4ccd3f";
+  const newerId = "2e81d475-d4ee-4ed1-b125-3cceee5dde4e";
+
+  /** A sleep the test releases by hand, one pending delay at a time. */
+  function manualSleep() {
+    const pending: Array<{ ms: number; release: () => void }> = [];
+    const sleepImpl = (ms: number) =>
+      new Promise<void>((resolve) => pending.push({ ms, release: resolve }));
+    const tick = async () => {
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+    };
+    return { pending, sleepImpl, tick };
+  }
+
+  it("resolves with the first attempt's verdict and retries in the background until accepted", async () => {
+    const verdicts = [false, false, true];
+    const reportImpl = vi.fn(async () => verdicts.shift() ?? true);
+    const { pending, sleepImpl, tick } = manualSleep();
+    await expect(
+      reportSessionRespawnedDurably("42", freshId, {
+        coordOwnerId: "su-owner",
+        reportImpl,
+        retryDelaysMs: [5, 15, 30],
+        sleepImpl,
+      }),
+    ).resolves.toBe(false);
+    expect(reportImpl).toHaveBeenCalledTimes(1);
+    expect(reportImpl).toHaveBeenCalledWith("42", freshId, { coordOwnerId: "su-owner" });
+
+    await tick();
+    expect(pending.map((p) => p.ms)).toEqual([5]);
+    pending.shift()!.release();
+    await tick();
+    expect(reportImpl).toHaveBeenCalledTimes(2);
+    pending.shift()!.release();
+    await tick();
+    expect(reportImpl).toHaveBeenCalledTimes(3);
+    // Accepted: no further delay is scheduled.
+    expect(pending).toHaveLength(0);
+  });
+
+  it("does not retry an accepted first report", async () => {
+    const reportImpl = vi.fn(async () => true);
+    const { pending, sleepImpl, tick } = manualSleep();
+    await expect(
+      reportSessionRespawnedDurably("42", freshId, { reportImpl, sleepImpl }),
+    ).resolves.toBe(true);
+    await tick();
+    expect(reportImpl).toHaveBeenCalledTimes(1);
+    expect(pending).toHaveLength(0);
+  });
+
+  it("notifies the carry after an eventual reanchor confirmation exactly once", async () => {
+    const onConfirmed = vi.fn();
+    const reportImpl = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+    const { pending, sleepImpl, tick } = manualSleep();
+    await expect(reportSessionRespawnedDurably("42", freshId, {
+      reportImpl, retryDelaysMs: [5, 15], sleepImpl, onConfirmed,
+    })).resolves.toBe(false);
+    expect(onConfirmed).not.toHaveBeenCalled();
+    await tick();
+    pending.shift()!.release();
+    await tick();
+    expect(reportImpl).toHaveBeenCalledTimes(2);
+    expect(onConfirmed).toHaveBeenCalledExactlyOnceWith(freshId);
+    expect(pending).toHaveLength(0);
+  });
+
+  it("withholds eventual confirmation from a superseded in-flight report", async () => {
+    let acceptOlder!: (accepted: boolean) => void;
+    const olderConfirmed = vi.fn();
+    const newerConfirmed = vi.fn();
+    const reportImpl = vi.fn().mockImplementationOnce(() => new Promise<boolean>((resolve) => {
+      acceptOlder = resolve;
+    })).mockResolvedValue(true);
+    const older = reportSessionRespawnedDurably("42", freshId, {
+      reportImpl, retryDelaysMs: [], onConfirmed: olderConfirmed,
+    });
+    await Promise.resolve();
+    await expect(reportSessionRespawnedDurably("42", newerId, {
+      reportImpl, onConfirmed: newerConfirmed,
+    })).resolves.toBe(true);
+    acceptOlder(true);
+    await expect(older).resolves.toBe(false);
+    expect(olderConfirmed).not.toHaveBeenCalled();
+    expect(newerConfirmed).toHaveBeenCalledExactlyOnceWith(newerId);
+  });
+
+  it("a newer respawn supersedes an older retry, so a late retry never re-anchors the older id", async () => {
+    const reportImpl = vi.fn(async () => false);
+    const { pending, sleepImpl, tick } = manualSleep();
+    await reportSessionRespawnedDurably("42", freshId, { reportImpl, retryDelaysMs: [5, 15], sleepImpl });
+    await tick();
+    await reportSessionRespawnedDurably("42", newerId, { reportImpl, retryDelaysMs: [5, 15], sleepImpl });
+    await tick();
+    expect(pending).toHaveLength(2);
+    for (const p of pending.splice(0)) p.release();
+    await tick();
+    const reported = reportImpl.mock.calls.map((call) => (call as unknown[])[1]);
+    expect(reported).toEqual([freshId, newerId, newerId]);
+  });
+
+  it("gives up after the last delay and never rejects", async () => {
+    const reportImpl = vi.fn(async () => {
+      throw new Error("ECONNREFUSED");
+    });
+    const { pending, sleepImpl, tick } = manualSleep();
+    await expect(
+      reportSessionRespawnedDurably(null, freshId, {
+        coordOwnerId: "su-owner",
+        reportImpl,
+        retryDelaysMs: [5, 15],
+        sleepImpl,
+      }),
+    ).resolves.toBe(false);
+    for (let i = 0; i < 2; i++) {
+      await tick();
+      pending.shift()!.release();
+    }
+    await tick();
+    expect(reportImpl).toHaveBeenCalledTimes(3);
+    expect(pending).toHaveLength(0);
+  });
+
+  it("no identity key or no native id: no attempt and no retry", async () => {
+    const reportImpl = vi.fn(async () => true);
+    const { pending, sleepImpl, tick } = manualSleep();
+    await expect(reportSessionRespawnedDurably(null, freshId, { reportImpl, sleepImpl })).resolves.toBe(false);
+    await expect(reportSessionRespawnedDurably("42", null, { reportImpl, sleepImpl })).resolves.toBe(false);
+    await tick();
+    expect(reportImpl).not.toHaveBeenCalled();
+    expect(pending).toHaveLength(0);
+  });
+
+  it("every launcher re-anchor call site uses the durable form", () => {
+    const src = readFileSync(fileURLToPath(new URL("../scripts/psu-launcher.mjs", import.meta.url)), "utf8");
+    const announce = src.indexOf("export async function announceAdoptedCarryRespawn(");
+    expect(src.slice(announce, announce + 400)).toContain("reportImpl = reportSessionRespawnedDurably,");
+    const callers = [...src.matchAll(/(?:void|return) (reportSessionRespawned\w*)\(/g)].map((m) => m[1]);
+    // Positive control: the scan found the call sites at all.
+    expect(callers.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(callers)).toEqual(new Set(["reportSessionRespawnedDurably"]));
+  });
+});
+
+describe("adoptedCarryRespawnFromHandoff (WI-10004791 late Codex id)", () => {
+  it("preserves a null Codex native id for pty-host proof and ignores non-carry handoffs", () => {
+    expect(adoptedCarryRespawnFromHandoff({ mode: "carry-respawn", nativeId: null }))
+      .toEqual({ nativeId: null });
+    expect(adoptedCarryRespawnFromHandoff({ mode: "carry-respawn", nativeId: "native-123" }))
+      .toEqual({ nativeId: "native-123" });
+    expect(adoptedCarryRespawnFromHandoff({ mode: "recycle", nativeId: "native-123" })).toBeNull();
+  });
+
+  it("preserves drill correlation metadata across host-code adoption", () => {
+    expect(adoptedCarryRespawnFromHandoff({
+      mode: "carry-respawn",
+      nativeId: "native-123",
+      drillId: "drill-456",
+      sessionClass: "claude-su",
+      launchContextPath: "/tmp/carry context.md",
+    })).toEqual({
+      nativeId: "native-123",
+      drillId: "drill-456",
+      sessionClass: "claude-su",
+      launchContextPath: "/tmp/carry context.md",
+    });
+  });
+
+  it("routes adoption through pty-host first-turn proof before launcher-side re-anchor", () => {
+    const src = readFileSync(fileURLToPath(new URL("../scripts/psu-launcher.mjs", import.meta.url)), "utf8");
+    const handoffStart = src.indexOf("const hostHandoff =");
+    const handoffEnd = src.indexOf("adopted updated host code for", handoffStart);
+    const handoff = src.slice(handoffStart, handoffEnd);
+    expect(handoff).toContain("adoptedCarryRespawn = adoptedCarryRespawnFromHandoff(hostHandoff);");
+    expect(handoff).not.toContain("announceAdoptedCarryRespawn(");
+    const hostCallStart = src.indexOf("hostThroughPty({", handoffEnd);
+    const hostCallEnd = src.indexOf("}).catch((e)", hostCallStart);
+    expect(src.slice(hostCallStart, hostCallEnd)).toContain("adoptedCarryRespawn,");
+  });
 });
 
 describe("announceAdoptedCarryRespawn (EI-21567375926533125 — report before wake)", () => {
   const freshId = "1d70c364-c3dd-4dc0-a014-2bbfdd4ccd3f";
+
+  it("announces an eventual reanchor confirmation after the first report fails", async () => {
+    let confirm!: (nativeId: string) => void;
+    const emitImpl = vi.fn();
+    await expect(announceAdoptedCarryRespawn("su-owner", "42", freshId, {
+      reportImpl: vi.fn(async (_adv, _native, options) => {
+        confirm = options.onConfirmed;
+        return false;
+      }),
+      emitImpl,
+    })).resolves.toBe(false);
+    expect(emitImpl).not.toHaveBeenCalled();
+    expect(confirm).toBeTypeOf("function");
+    confirm(freshId);
+    confirm(freshId);
+    expect(emitImpl).toHaveBeenCalledExactlyOnceWith("su-owner", "carry-respawn", { nativeId: freshId });
+  });
 
   it("waits for a successful successor re-anchor before emitting session:compacted", async () => {
     const order: string[] = [];
@@ -13819,7 +15729,9 @@ describe("announceAdoptedCarryRespawn (EI-21567375926533125 — report before wa
     });
 
     await Promise.resolve();
-    expect(reportImpl).toHaveBeenCalledWith("42", freshId, { coordOwnerId: "su-owner" });
+    expect(reportImpl).toHaveBeenCalledWith("42", freshId, {
+      coordOwnerId: "su-owner", onConfirmed: expect.any(Function),
+    });
     expect(emitImpl).not.toHaveBeenCalled();
 
     resolveReport(true);
@@ -13848,6 +15760,60 @@ describe("announceAdoptedCarryRespawn (EI-21567375926533125 — report before wa
 // whose transcript the archive-at-death lifecycle deletes ~15s after every
 // session end (WI-3859 F4) — NOT just a stale/swept one.
 describe("tryRematerializeFromArchive (psu --resume self-heals a transcript the archive-at-death hook deleted)", () => {
+  it.each([false, true])("uses the verified archive root for a tracked Claude source (timeout recovery: %s)", async (afterTimeout) => {
+    const root = mkdtempSync(join(tmpdir(), "psu-restored-root-"));
+    const sid = "0123abcd-1234-5678-9abc-def012345678";
+    const archiveRoot = join(root, "archive-owner");
+    const projects = join(archiveRoot, "projects", "project");
+    mkdirSync(projects, { recursive: true });
+    writeFileSync(join(projects, `${sid}.jsonl`), JSON.stringify({ sessionId: sid }) + "\n");
+    const source = { id: 29708, agent: "claude", sessionId: sid, coordOwnerId: "su-tracked-owner", configDir: join(root, "tracked-owner") };
+    const restored = { ok: true, ready: true, sourceKind: "claude", written: 1, root: archiveRoot };
+    const fetchImpl = async (_url, opts) => {
+      if (afterTimeout && opts.method === "POST") {
+        const error = new Error("request timed out");
+        error.name = "TimeoutError";
+        throw error;
+      }
+      return { json: async () => restored };
+    };
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(sessionHasTranscript(source, { home: root })).toBe(false);
+      await tryRematerializeFromArchive(sid, "claude", { fetchImpl, operatorUrl: "http://op:1", token: "tok", sourceSession: source, home: root });
+      expect(sessionHasTranscript(source, { home: root })).toBe(true);
+      expect(source).toEqual({ id: 29708, agent: "claude", sessionId: sid, coordOwnerId: "su-tracked-owner", configDir: archiveRoot });
+    } finally {
+      errSpy.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([false, true])("does not adopt an archive root without the tracked source's exact Claude transcript (shared copy: %s)", async (sharedCopy) => {
+    const root = mkdtempSync(join(tmpdir(), "psu-restored-miss-"));
+    const source = { agent: "claude", sessionId: "exact-native-id", coordOwnerId: "su-source", configDir: join(root, "original") };
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const projects = join(root, "archive", "projects", "project");
+      mkdirSync(projects, { recursive: true });
+      writeFileSync(join(projects, "other-native-id.jsonl"), "{}\n");
+      if (sharedCopy) {
+        const shared = join(root, ".claude", "projects", "project");
+        mkdirSync(shared, { recursive: true });
+        writeFileSync(join(shared, `${source.sessionId}.jsonl`), "{}\n");
+      }
+      await tryRematerializeFromArchive(source.sessionId, "claude", {
+        fetchImpl: async () => ({ json: async () => ({ ok: true, sourceKind: "claude", written: 1, root: join(root, "archive") }) }),
+        operatorUrl: "http://op:1", token: "tok", sourceSession: source, home: root,
+      });
+      expect(source.configDir).toBe(join(root, "original"));
+      expect(sessionHasTranscript(source, { home: root })).toBe(sharedCopy);
+    } finally {
+      errSpy.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("waits for an in-flight archive restore after the POST times out", async () => {
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const timeout = new Error("request timed out");
@@ -13885,6 +15851,27 @@ describe("tryRematerializeFromArchive (psu --resume self-heals a transcript the 
     } finally {
       errSpy.mockRestore();
     }
+  });
+
+  it.each(["not_ready", "not_archived"])("does not report an in-flight restore when status is %s", async (state) => {
+    const timeout = new Error("request timed out");
+    timeout.name = "TimeoutError";
+    const fetchImpl = vi.fn(async (_url, opts) => {
+      if (opts.method === "POST") throw timeout;
+      return { json: async () => ({ ok: true, state, pending: false, ready: false }) };
+    });
+    const sleep = vi.fn(async () => {});
+
+    const result = await tryRematerializeFromArchive("sid-missing", "codex", {
+      fetchImpl,
+      operatorUrl: "http://op:1",
+      token: "tok",
+      sleep,
+    });
+    if (state === "not_archived") expect(result).toBeNull();
+    else expect(result).toMatchObject({ ok: false, failed: true, reason: "restore_not_ready" });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(sleep).not.toHaveBeenCalled();
   });
 
   it("keeps the resume pending when the bounded status checks never observe completion", async () => {
@@ -13976,7 +15963,7 @@ describe("tryRematerializeFromArchive (psu --resume self-heals a transcript the 
     expect(calls).toHaveLength(0);
   });
 
-  it("ok:false (not_archived / sha_mismatch / …) → returns null, never throws", async () => {
+  it("an explicit not_archived result returns null", async () => {
     const fetchImpl = async () => ({
       json: async () => ({ ok: false, reason: "not_archived" }),
     });
@@ -13989,7 +15976,7 @@ describe("tryRematerializeFromArchive (psu --resume self-heals a transcript the 
     ).toBeNull();
   });
 
-  it("transport failure / unreachable operator → swallowed, returns null (never blocks the fallback not-found error)", async () => {
+  it("preserves an unreachable operator as a request failure", async () => {
     const fetchImpl = async () => {
       throw new Error("ECONNREFUSED");
     };
@@ -13999,10 +15986,10 @@ describe("tryRematerializeFromArchive (psu --resume self-heals a transcript the 
         operatorUrl: "http://op:1",
         token: "t",
       }),
-    ).resolves.toBeNull();
+    ).resolves.toMatchObject({ ok: false, failed: true, reason: "request_failed", error: expect.stringContaining("ECONNREFUSED") });
   });
 
-  it("non-JSON / malformed response body → swallowed, returns null", async () => {
+  it("preserves a malformed response instead of claiming archive absence", async () => {
     const fetchImpl = async () => ({
       json: async () => {
         throw new SyntaxError("Unexpected token");
@@ -14014,7 +16001,7 @@ describe("tryRematerializeFromArchive (psu --resume self-heals a transcript the 
         operatorUrl: "http://op:1",
         token: "t",
       }),
-    ).toBeNull();
+    ).toMatchObject({ ok: false, failed: true, reason: "invalid_response" });
   });
 });
 
@@ -14059,8 +16046,29 @@ describe("fetchWithResilience (psu connection-retry hardening)", () => {
         "/api/adv/sessions/resumable",
       ),
     ).toBe(
-      "mcp_proxy_overloaded — proxy already has 192 request(s) in flight — shed before forwarding — retry in 2s",
+      "GET /api/adv/sessions/resumable (HTTP 429) — mcp_proxy_overloaded — proxy already has 192 request(s) in flight — shed before forwarding — retry in 2s",
     );
+  });
+
+  it("EI-25231240145060739: distinguishes bootstrap hops with the same route deadline", () => {
+    const failure = { error: { code: "timeout", message: "route exceeded 30s" } };
+    const picker = formatApiFailureMessage(failure, 408, "/api/agent-mcp/console/bootstrap-su/options");
+    const bootstrap = formatApiFailureMessage(failure, 408, "/api/agent-mcp/console/bootstrap-su", "post");
+    expect(picker).toBe("GET /api/agent-mcp/console/bootstrap-su/options (HTTP 408) — timeout — route exceeded 30s");
+    expect(bootstrap).toBe("POST /api/agent-mcp/console/bootstrap-su (HTTP 408) — timeout — route exceeded 30s");
+    expect(picker).not.toBe(bootstrap);
+  });
+
+  it("omits query credentials and fragments from the failed request diagnostic", () => {
+    const message = formatApiFailureMessage(
+      { error: { code: "timeout", message: "route exceeded 30s" } },
+      408,
+      "/api/agent-mcp/console/bootstrap-su?token=private-query-token#private-fragment",
+      "POST",
+    );
+    expect(message).toContain("POST /api/agent-mcp/console/bootstrap-su (HTTP 408)");
+    expect(message).not.toContain("private-query-token");
+    expect(message).not.toContain("private-fragment");
   });
 
   it("recognizes only a Retry-After-marked 429 as proxy overload", () => {
@@ -15074,6 +17082,103 @@ describe("operator endpoint resolution (desktop vs dev box)", () => {
       expect(probed).not.toContain(9171);
     });
 
+    // EI-24899559853673371: background-host sessions use the dedicated
+    // :9271 → :3271 same-vintage proxy, carried as base + upstream port.
+    it("routes a local :3271 pin through its active same-vintage background proxy", () => {
+      const probed: number[] = [];
+      const warnings: string[] = [];
+      const target = resolveOperatorTarget({
+        env: {
+          PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:3271",
+          PAPERCUSP_OPERATOR_URL_PROVENANCE: "psu-launcher",
+          PAPERCUSP_MCP_PROXY_BASE: "http://127.0.0.1:9271/",
+          PAPERCUSP_MCP_PROXY_TARGET_PORT: "3271",
+        },
+        home,
+        probe: (port: number) => {
+          probed.push(port);
+          return port === 9271;
+        },
+        warn: (message: string) => warnings.push(message),
+      });
+      expect(target).toEqual({
+        url: "http://127.0.0.1:9271",
+        source: "managed-env",
+        startedAt: null,
+      });
+      expect(probed).toEqual([9271]);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatch(/EI-24899559853673371/);
+      expect(warnings[0]).toMatch(/PAPERCUSP_MCP_PROXY=0/);
+    });
+
+    it("keeps :3271 direct when its proxy is down, even if the live :9071 proxy is up", () => {
+      const probed: number[] = [];
+      const warnings: string[] = [];
+      const target = resolveOperatorTarget({
+        env: {
+          PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:3271",
+          PAPERCUSP_MCP_PROXY_BASE: "http://127.0.0.1:9271",
+          PAPERCUSP_MCP_PROXY_TARGET_PORT: "3271",
+        },
+        home,
+        probe: (port: number) => {
+          probed.push(port);
+          return port === 9071;
+        },
+        warn: (message: string) => warnings.push(message),
+      });
+      expect(target.url).toBe("http://127.0.0.1:3271");
+      expect(probed).toEqual([9271]);
+      expect(warnings).toHaveLength(0);
+    });
+
+    it("does not route a :3271 pin through a proxy for another runtime or a remote host", () => {
+      const warnings: string[] = [];
+      for (const env of [
+        {
+          PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:3271",
+          PAPERCUSP_MCP_PROXY_BASE: "http://127.0.0.1:9071",
+          PAPERCUSP_MCP_PROXY_TARGET_PORT: "3070",
+        },
+        {
+          PAPERCUSP_OPERATOR_URL: "http://10.0.0.5:3271",
+          PAPERCUSP_MCP_PROXY_BASE: "http://127.0.0.1:9271",
+          PAPERCUSP_MCP_PROXY_TARGET_PORT: "3271",
+        },
+      ]) {
+        expect(
+          resolveOperatorUrl({
+            env,
+            home,
+            probe: () => true,
+            warn: (message: string) => warnings.push(message),
+          }),
+        ).toBe(env.PAPERCUSP_OPERATOR_URL);
+      }
+      expect(warnings).toHaveLength(0);
+    });
+
+    it("PAPERCUSP_MCP_PROXY=0 opts out of same-vintage background proxy routing", () => {
+      const probed: number[] = [];
+      const target = resolveOperatorTarget({
+        env: {
+          PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:3271",
+          PAPERCUSP_MCP_PROXY: "0",
+          PAPERCUSP_MCP_PROXY_BASE: "http://127.0.0.1:9271",
+          PAPERCUSP_MCP_PROXY_TARGET_PORT: "3271",
+        },
+        home,
+        probe: (port: number) => {
+          probed.push(port);
+          return true;
+        },
+        warn: () => {},
+      });
+      expect(target.url).toBe("http://127.0.0.1:3271");
+      expect(probed).toEqual([]);
+    });
+
     it("leaves non-staging pins untouched even with the staging proxy live", () => {
       for (const pin of [
         "http://127.0.0.1:3070",
@@ -15100,6 +17205,46 @@ describe("operator endpoint resolution (desktop vs dev box)", () => {
       );
       writeOperatorJson({ token: "tok-from-operator-json" });
       expect(readToken({ home })).toBe("tok-from-file");
+    });
+
+    it("uses PAPERCUSP_HOME's token instead of the host user's token", () => {
+      const scopedHome = join(home, ".papercusp-workspaces", "demo", ".papercusp");
+      mkdirSync(scopedHome, { recursive: true });
+      writeFileSync(join(home, ".papercusp", "superuser-token"), "tok-from-host\n");
+      writeFileSync(join(scopedHome, "superuser-token"), "tok-from-scoped\n");
+
+      const priorHome = process.env.HOME;
+      const priorPapercuspHome = process.env.PAPERCUSP_HOME;
+      try {
+        process.env.HOME = home;
+        process.env.PAPERCUSP_HOME = scopedHome;
+        expect(readToken()).toBe("tok-from-scoped");
+      } finally {
+        if (priorHome === undefined) delete process.env.HOME;
+        else process.env.HOME = priorHome;
+        if (priorPapercuspHome === undefined) delete process.env.PAPERCUSP_HOME;
+        else process.env.PAPERCUSP_HOME = priorPapercuspHome;
+      }
+    });
+
+    it("does not fall back to the host user's token when the scoped token is missing", () => {
+      const scopedHome = join(home, ".papercusp-workspaces", "empty", ".papercusp");
+      mkdirSync(join(home, ".papercusp"), { recursive: true });
+      mkdirSync(scopedHome, { recursive: true });
+      writeFileSync(join(home, ".papercusp", "superuser-token"), "tok-from-host\n");
+
+      const priorHome = process.env.HOME;
+      const priorPapercuspHome = process.env.PAPERCUSP_HOME;
+      try {
+        process.env.HOME = home;
+        process.env.PAPERCUSP_HOME = scopedHome;
+        expect(readToken()).toBe("");
+      } finally {
+        if (priorHome === undefined) delete process.env.HOME;
+        else process.env.HOME = priorHome;
+        if (priorPapercuspHome === undefined) delete process.env.PAPERCUSP_HOME;
+        else process.env.PAPERCUSP_HOME = priorPapercuspHome;
+      }
     });
 
     it("falls back to operator.json.token when superuser-token is absent (fresh desktop)", () => {
@@ -17141,6 +19286,42 @@ describe("launch-time mode: the tokens launch-su emits are the tokens psu parses
  * path: it emits nothing when no model is named.
  */
 describe("codexContextWindowConfigPatch (resume inherits the window)", () => {
+  it("uses the current owner budget instead of a stale or missing launch flag", () => {
+    for (const launchArgv of [undefined, ["psu", "--compaction-limit=250000"]]) {
+      const resumed = resumeArgsFor(
+        { agent: "codex", sessionId: "rollout", compactionLimit: 200_000, launchArgv },
+        { model: "gpt-5.6-sol:xhigh" },
+      );
+      expect(resumed.args).toContain("model_auto_compact_token_limit=160000");
+      expect(resumed.args).toContain("model_context_window=1000000");
+      expect(resumed.args).toContain('model_reasoning_effort="xhigh"');
+      expect(resumed.args.slice(-2)).toEqual(["resume", "rollout"]);
+    }
+  });
+
+  it("keeps the native auto-compaction trigger at the recorded session cap", () => {
+    const out = codexContextWindowConfigPatch(
+      'model = "gpt-5.6-sol"\n',
+      "gpt-5.6-sol",
+      { compactionLimit: 250_000 },
+    );
+    expect(out).toContain("model_context_window = 1000000");
+    expect(out).toContain("model_auto_compact_token_limit = 200000");
+  });
+
+  it("passes the recorded cap from both launch argv spellings into Codex resume args", () => {
+    for (const launchArgv of [
+      ["psu", "--compaction-limit=250000"],
+      ["psu", "--compaction-limit", "250000"],
+    ]) {
+      const resumed = resumeArgsFor(
+        { agent: "codex", sessionId: "rollout", launchArgv },
+        { model: "gpt-5.6-sol" },
+      );
+      expect(resumed.args).toContain("model_auto_compact_token_limit=200000");
+    }
+  });
+
   it("prepends the window keys as ROOT keys, above any table", () => {
     const out = codexContextWindowConfigPatch(
       '[mcp_servers.papercusp-su]\nurl = "x"\n',

@@ -27,6 +27,7 @@
 
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { captureGateDecisionReplay, type GateDecisionReplay } from '@papercusp/operator-core/lib/release/gate-hygiene-split';
 import {
   evaluatePerfSignals,
   readLatestPerfSignals,
@@ -51,6 +52,7 @@ export interface PerfGatePolicy {
 }
 
 export interface PerfGateDecision {
+  replay?: GateDecisionReplay;
   action: PerfGateAction;
   /** The verdict's human reasons (the alarm copy) for the worst tier reached. */
   reasons: string[];
@@ -259,11 +261,8 @@ export async function runPerfGate(
   io: PerfGateIO = defaultPerfGateIO,
   budgets: PerfBudgets = PERF_BUDGETS,
 ): Promise<PerfGateDecision> {
-  if (!policy.enabled) {
-    // Skip IO entirely when off — the decision is `pass` regardless of any signal.
-    return evaluatePerfGate(evaluatePerfSignals(null, io.now(), budgets), policy, candidateSha);
-  }
-  const signals = await io.readSignals().catch(() => null);
-  const verdict = evaluatePerfSignals(signals, io.now(), budgets);
-  return evaluatePerfGate(verdict, policy, candidateSha);
+  const signals = policy.enabled ? await io.readSignals().catch(() => null) : null;
+  const now = io.now();
+  const decision = evaluatePerfGate(evaluatePerfSignals(signals, now, budgets), policy, candidateSha);
+  return { ...decision, replay: captureGateDecisionReplay('host-perf', [signals, now, budgets, policy, candidateSha], decision) };
 }

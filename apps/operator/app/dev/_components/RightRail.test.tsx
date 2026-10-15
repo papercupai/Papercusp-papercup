@@ -11,7 +11,8 @@
 // gating the formatter tests can't see.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { OperatorWorkspaceLocationProvider } from '@papercusp/operator-ui';
 
 import RightRail, { fmtRel, fmtRelMs } from './RightRail';
 
@@ -41,9 +42,9 @@ describe('fmtRelMs', () => {
 });
 
 describe('<RightRail /> polled blocks', () => {
-  afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+  afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
-  // The rail makes one POST to /api/plugins/host/refresh and three MCP-tool
+  // The rail reads plugin-host status and makes three read-only MCP-tool
   // POSTs (activity / pg_health / build_status); route by URL.
   const stubFetch = (impl: (url: string) => { ok: boolean; body?: unknown }) => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
@@ -55,6 +56,44 @@ describe('<RightRail /> polled blocks', () => {
       return { ok: true, json: async () => ({ content: [{ text: JSON.stringify(body) }] }) } as Response;
     }));
   };
+
+  it('reads plugin status without reloading plugins on mount, polling or workspace changes', () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn(() => new Promise<Response>(() => {}));
+    vi.stubGlobal('fetch', fetch);
+    const { rerender, unmount } = render(<RightRail workspaceIds={null} />);
+    act(() => { vi.advanceTimersByTime(15_000); });
+    rerender(<RightRail workspaceIds={['workspace-a']} />);
+    const hostRequests = () => (fetch.mock.calls as unknown as Array<[string, RequestInit]>)
+      .filter(([url]) => url === '/api/plugins/host/refresh');
+    expect(hostRequests()).toHaveLength(3);
+    expect(hostRequests().map(([, init]) => init?.method ?? 'GET')).toEqual(['GET', 'GET', 'GET']);
+    unmount();
+    act(() => { vi.advanceTimersByTime(30_000); });
+    expect(hostRequests()).toHaveLength(3);
+  });
+
+  it('explains cloud diagnostic availability without sending local diagnostic requests', () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn(() => new Promise<Response>(() => {}));
+    vi.stubGlobal('fetch', fetch);
+    render(<OperatorWorkspaceLocationProvider location="cloud"><RightRail workspaceIds={null} /></OperatorWorkspaceLocationProvider>);
+    expect(screen.getByRole('status').textContent).toContain('Local diagnostics unavailable');
+    act(() => { vi.advanceTimersByTime(30_000); });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('stops local polling when the host changes to a cloud workspace', () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn(() => new Promise<Response>(() => {}));
+    vi.stubGlobal('fetch', fetch);
+    const { rerender } = render(<OperatorWorkspaceLocationProvider location="local"><RightRail workspaceIds={null} /></OperatorWorkspaceLocationProvider>);
+    expect(fetch).toHaveBeenCalledTimes(4);
+    rerender(<OperatorWorkspaceLocationProvider location="cloud"><RightRail workspaceIds={null} /></OperatorWorkspaceLocationProvider>);
+    act(() => { vi.advanceTimersByTime(30_000); });
+    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(screen.getByRole('status').textContent).toContain('local desktop profile');
+  });
 
   it('shows the "…" placeholder in each block before data arrives', () => {
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => {})));

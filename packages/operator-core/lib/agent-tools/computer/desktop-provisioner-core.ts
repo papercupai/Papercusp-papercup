@@ -399,6 +399,12 @@ export interface DesktopTaskHandle {
 
 /** An OS-supervised worker supplies process ownership without receiving operator DB credentials. */
 export interface DesktopProvisionRuntime {
+  /**
+   * Optional DB-backed local display reservations. Operator provisioning supplies
+   * the shared registry view; the credential-free worker omits it and passes an
+   * explicit display already protected by its local flock pool.
+   */
+  reservedDisplayNumbers?: () => Promise<ReadonlySet<number>>;
   spawn: (...args: Parameters<typeof managedSpawn>) => Promise<{ child: ChildProcess; scopeUnit: string | null; confined: boolean; row: { detail: { unledgered?: boolean } }; taskId: string | null }>;
   startBus: typeof startA11yBus;
   sandbox: (display: string, env: NodeJS.ProcessEnv, opts: ProvisionOptions) => Promise<{
@@ -532,13 +538,19 @@ export async function releaseDesktopResources(
 }
 
 /**
- * Lowest free display number ≥ base (no `/tmp/.X<n>-lock`), NEVER 0. Pure over
- * an injectable `exists` so it unit-tests without touching the filesystem.
+ * Lowest display number ≥ base with neither a `/tmp/.X<n>-lock` nor a live
+ * registry reservation, NEVER 0. Pure over injectable inputs so it unit-tests
+ * without touching the filesystem or database.
  */
-export function findFreeDisplayNumber(base = BASE_DISPLAY, max = 250, exists: (p: string) => boolean = existsSync): number {
+export function findFreeDisplayNumber(
+  base = BASE_DISPLAY,
+  max = 250,
+  exists: (p: string) => boolean = existsSync,
+  reserved: ReadonlySet<number> = new Set(),
+): number {
   const from = Math.max(1, base); // never :0
   for (let n = from; n <= max; n++) {
-    if (!exists(`/tmp/.X${n}-lock`)) return n;
+    if (!reserved.has(n) && !exists(`/tmp/.X${n}-lock`)) return n;
   }
   throw new Error(`desktop-provisioner — no free X display number in [${from}, ${max}]`);
 }
@@ -637,7 +649,13 @@ export function assertDesktopPrerequisites(
  */
 export async function provisionSandboxDesktop(opts: ProvisionOptions, runtime: DesktopProvisionRuntime): Promise<SandboxDesktop> {
   const spawnDesktop = runtime.spawn;
-  const number = opts.displayNumber ?? findFreeDisplayNumber();
+  // Read durable host-local reservations before selecting a display. Failing this
+  // read is intentionally fail-closed: filesystem locks alone cannot account for
+  // live sibling-worker rows whose local X lock file has disappeared.
+  const reserved = opts.displayNumber === undefined
+    ? await runtime.reservedDisplayNumbers?.() ?? new Set<number>()
+    : new Set<number>();
+  const number = opts.displayNumber ?? findFreeDisplayNumber(BASE_DISPLAY, 250, existsSync, reserved);
   if (!Number.isInteger(number) || number <= 0) {
     throw new Error(`desktop-provisioner — refusing to provision on display :${number} (host :0 / invalid)`);
   }

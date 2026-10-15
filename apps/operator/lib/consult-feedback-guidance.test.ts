@@ -13,11 +13,10 @@ const REPO = join(HERE, '..', '..', '..');
 // what commit 565eec8d8e hit when it de-named the tool to green tools-md-sync
 // and thereby blanked guidanceBlock()'s marker. R-3/R-4 scope the block to
 // prompts that drive a WORKING agent, which operator-converse is not.
-// FOLLOW-UP (WI-10002729): worker.tools.md DOES drive a working agent and DOES
-// carry the tool, but is not listed below — it states the same rules in
-// different words than the literal predicates here, so adding it needs a prompt
-// rewording, not a list edit. That is a real coverage gap, not a decision to
-// leave it unguarded.
+// FOLLOW-UP (WI-10002729): worker.tools.md drives working agents and carries
+// the tool. Its first-pass and exclusion rules use equivalent wording, so the
+// predicates accept those established variants rather than requiring copied
+// prose. The prompt was missing dispatch behavior; this guard now covers it.
 // The negative controls below read THIS file BY NAME, never by list position:
 // each mutates a real block and asserts the predicate then fails, so if the list
 // order shifts under them they would mutate a file that never carried the phrase,
@@ -26,8 +25,17 @@ const NEGATIVE_CONTROL_FILE = 'apps/operator/prompts/papercup.tools.md';
 const GUIDANCE_FILES = [
   'apps/operator/prompts/papercup.tools.md',
   'apps/operator/prompts/papercup-deep.tools.md',
+  'apps/operator/prompts/worker.tools.md',
   'libs/papercusp/packages/harness/blueprints/base/prompts/agent-base-preamble.md',
 ];
+
+function normalizedGuidance(block: string): string {
+  return block.toLowerCase()
+    .replace(/-/g, ' ')
+    .replace(/[^\p{L}\p{N}_]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 function guidanceBlock(text: string): string {
   const marker = text.toLowerCase().indexOf('consult:get_feedback');
@@ -40,23 +48,31 @@ function guidanceBlock(text: string): string {
 }
 
 function hasWhenGuidance(block: string): boolean {
-  const lower = block.toLowerCase().split(/\r?\n/).map((line) => line.trim()).join(' ');
-  return lower.includes('first-pass check of local code, docs, or search') &&
-    (lower.includes('use it once') || lower.includes('use it for one')) &&
-    lower.includes('what you tried');
+  const lower = normalizedGuidance(block);
+  const checkedLocalSources = /\bfirst pass check\b.{0,32}\blocal code\b.{0,24}\bdocs?\b.{0,16}\b(?:and|or)\b.{0,16}\bsearch\b/.test(lower);
+  const asksOneQuestion = lower.includes('use it once') ||
+    lower.includes('use it for one') ||
+    /\bone (?:concrete|narrow|substantial) question\b/.test(lower);
+  return checkedLocalSources && asksOneQuestion && lower.includes('what you tried');
 }
 
 function hasWhenNotGuidance(block: string): boolean {
-  const lower = block.toLowerCase().split(/\r?\n/).map((line) => line.trim()).join(' ');
-  return lower.includes('live state') && lower.includes('known agent') &&
-    lower.includes('owner decisions') && lower.includes('no_available_responder') &&
-    (lower.includes('code/docs/search already answer') || lower.includes('code, docs, or search already answer'));
+  const lower = normalizedGuidance(block);
+  const knownAgent = lower.includes('known agent') || lower.includes('agent you can already name');
+  const ownerDecision = lower.includes('owner decisions') || lower.includes('decision that is the owner');
+  const workHandoff = lower.includes('work handoffs') ||
+    lower.includes('handing work off') ||
+    lower.includes('handing off work');
+  const answerableLocally = /\bcode\b.{0,32}\bdocs?\b.{0,32}\bsearch\b.{0,32}\balready answer\b/.test(lower);
+  return lower.includes('live state') && knownAgent && ownerDecision && workHandoff &&
+    lower.includes('no_available_responder') && answerableLocally;
 }
 
 function hasDispatchGuidance(block: string): boolean {
-  const lower = block.toLowerCase();
+  const lower = normalizedGuidance(block);
   return lower.includes('archive') && lower.includes('isolated answer session') &&
-    lower.includes('does not wake the expert') && lower.includes('walled');
+    lower.includes('does not wake the expert') && lower.includes('walled backend') &&
+    lower.includes('skip');
 }
 
 describe('consult:get_feedback prompt guidance (P-008)', () => {

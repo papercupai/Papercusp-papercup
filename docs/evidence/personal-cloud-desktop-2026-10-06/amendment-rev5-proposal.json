@@ -1,0 +1,749 @@
+{
+  "rubricRef": "acceptance-personal-cloud-desktop-2026-10-06",
+  "criteria": [
+    {
+      "key": "r-1",
+      "title": "The reaper never governs a personal desktop",
+      "intent": {
+        "request": "A personal desktop is the person's own seat, so agent idle cleanup must not freeze or kill it.",
+        "sourceRefs": [
+          "session_turn:claude:8bf41c63-94b9-4bcb-a6a5-53e67538b4df:4"
+        ]
+      },
+      "model": "The lifecycle reaper refuses to govern a desktop session whose scope is user.",
+      "bar": "The lifecycle reaper refuses to govern a desktop session whose scope is user.",
+      "barKey": "R-1",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "reaper exemption",
+        "scope user in registry + migration"
+      ],
+      "evidencePlane": "tree",
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "automated tests",
+      "driftMarkers": "The reaper freezes or terminates a scope=user desktop session.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/desktop/personal-desktop.test.ts"
+        ]
+      },
+      "requiredTestLayers": [
+        "unit"
+      ]
+    },
+    {
+      "key": "r-2",
+      "title": "The personal worker runs only as the customer account",
+      "intent": {
+        "request": "The personal desktop runs as the customer account so the person's own files and tools are present.",
+        "sourceRefs": [
+          "session_turn:claude:8bf41c63-94b9-4bcb-a6a5-53e67538b4df:4"
+        ]
+      },
+      "model": "The personal desktop worker refuses to start unless it runs as the customer workspace account.",
+      "bar": "The personal desktop worker refuses to start unless it runs as the customer workspace account.",
+      "barKey": "R-2",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "pack personal socket unit",
+        "worker identity assertion"
+      ],
+      "evidencePlane": "tree",
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "automated tests",
+      "driftMarkers": "The personal desktop worker starts under any other account.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/desktop/personal-desktop.test.ts",
+          "libs/generic/deployment-driver/src/workspace-host-desktop-pack.test.ts"
+        ]
+      },
+      "requiredTestLayers": [
+        "unit"
+      ]
+    },
+    {
+      "key": "r-3",
+      "title": "A person has exactly one personal desktop",
+      "intent": {
+        "request": "Opening my desktop again returns the same desktop rather than a new one.",
+        "sourceRefs": [
+          "session_turn:claude:8bf41c63-94b9-4bcb-a6a5-53e67538b4df:0",
+          "session_turn:claude:8bf41c63-94b9-4bcb-a6a5-53e67538b4df:4"
+        ]
+      },
+      "model": "Starting a personal desktop twice for the same person returns the same scope=user desktop session.",
+      "bar": "Starting a personal desktop twice for the same person returns the same scope=user desktop session.",
+      "barKey": "R-3",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "backend startPersonal",
+        "operator lease/provision path"
+      ],
+      "evidencePlane": "tree",
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "automated tests",
+      "driftMarkers": "A second start for the same person creates a second desktop session.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/desktop/personal-desktop.test.ts"
+        ]
+      },
+      "requiredTestLayers": [
+        "unit"
+      ]
+    },
+    {
+      "key": "r-4",
+      "title": "Nobody else can open a personal desktop",
+      "intent": {
+        "request": "A personal desktop belongs to one person.",
+        "sourceRefs": [
+          "session_turn:claude:8bf41c63-94b9-4bcb-a6a5-53e67538b4df:4"
+        ]
+      },
+      "model": "Opening another person's personal desktop in watch mode through the hosted session host is refused with desktop_not_owner.",
+      "bar": "Opening another person's personal desktop in watch mode through the hosted session host is refused with desktop_not_owner.",
+      "barKey": "R-4",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "audit",
+        "open authorization",
+        "roster filtering"
+      ],
+      "evidencePlane": "tree",
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "automated tests",
+      "driftMarkers": "A non-owner watch channel reaches another person's personal desktop.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/workspace-host/hosted-session-host.personal-desktop.test.ts"
+        ]
+      },
+      "requiredTestLayers": [
+        "unit"
+      ]
+    },
+    {
+      "key": "r-5",
+      "title": "My desktop opens in Take control",
+      "intent": {
+        "request": "One click from the Desktops tab lands the owner in control of their own desktop.",
+        "sourceRefs": [
+          "session_turn:claude:8bf41c63-94b9-4bcb-a6a5-53e67538b4df:0",
+          "session_turn:claude:8bf41c63-94b9-4bcb-a6a5-53e67538b4df:4"
+        ]
+      },
+      "model": "Clicking My desktop in the hosted Desktops view opens the caller's personal desktop in takeover mode.",
+      "bar": "Clicking My desktop in the hosted Desktops view opens the caller's personal desktop in takeover mode.",
+      "barKey": "R-5",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "Desktops view control",
+        "protocol message"
+      ],
+      "evidencePlane": "tree",
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "automated tests",
+      "driftMarkers": "The click opens a different desktop or opens it in watch mode.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "apps/operator/app/cloud-workspaces/hosted-desktop-viewer-protocol.test.ts",
+          "apps/operator/app/cloud-workspaces/HostedDesktopWorkspace.test.tsx"
+        ]
+      },
+      "requiredTestLayers": [
+        "unit"
+      ]
+    },
+    {
+      "key": "r-6",
+      "title": "It runs as the customer account on a real host",
+      "intent": {
+        "request": "Implemented start to finish means shown working on a real machine.",
+        "sourceRefs": [
+          "session_turn:claude:8bf41c63-94b9-4bcb-a6a5-53e67538b4df:4"
+        ]
+      },
+      "model": "On a real KasmVNC host the personal desktop X server process runs under the customer account uid.",
+      "bar": "On a real KasmVNC host the personal desktop X server process runs under the customer account uid.",
+      "barKey": "R-6",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "pack install on a real host",
+        "uid check"
+      ],
+      "evidencePlane": "live",
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "Live run on a real KasmVNC host with the desktop pack installed, running workspace-host runtime 0.0.21-pcd006b (live-run.json records the runtime version and host id): compare the uid of the personal desktop X server process (ps -o uid= -p <Xvnc pid>) with id -u papercusp-workspace. Live-plane provenance is MANUAL: the run is committed as docs/evidence/personal-cloud-desktop-2026-10-06/live-run.json (assertion personal-desktop-uid), recorded with testing:record-run, and posted on the P-006 work-item. The maintained real-host e2e suite executes this same observation through the production relay, with a distinct per-bar case and runtime-measured e2e layer. Clean committed test-run lineage accompanies the immutable observation artifact; historical manual evidence stays archived. Reconnect identity is derived from a newly received request-correlated owner roster, with receipt time, and the Xvnc PID is independently re-read.",
+      "driftMarkers": "The live personal desktop X server runs under another uid or fails to start.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/desktop/personal-desktop.live.e2e.test.ts"
+        ]
+      },
+      "requiredTestLayers": [
+        "e2e"
+      ]
+    },
+    {
+      "key": "r-7",
+      "title": "The personal desktop is documented",
+      "intent": {
+        "request": "Finishing the feature includes documenting it for the next agent.",
+        "sourceRefs": [
+          "session_turn:claude:8bf41c63-94b9-4bcb-a6a5-53e67538b4df:4"
+        ]
+      },
+      "model": "The repository docs projection contains an agent-insights doc for the personal cloud desktop that names the account it runs as.",
+      "bar": "The repository docs projection contains an agent-insights doc for the personal cloud desktop that names the account it runs as.",
+      "barKey": "R-7",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "agent-insights doc"
+      ],
+      "evidencePlane": "tree",
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "automated tests: the bound test reads the projected agent-insights doc from the tree and asserts it names papercusp-workspace.",
+      "driftMarkers": "No agent-insights doc for the personal cloud desktop exists in the docs projection, or it does not name the account it runs as.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/desktop/personal-desktop-doc.test.ts"
+        ]
+      },
+      "requiredTestLayers": [
+        "unit"
+      ]
+    },
+    {
+      "key": "r-8",
+      "title": "Sandbox desktops never reach the personal worker",
+      "intent": {
+        "request": "Agent sandboxes must stay isolated from the customer account (D-001).",
+        "sourceRefs": [
+          "session_turn:claude:8bf41c63-94b9-4bcb-a6a5-53e67538b4df:4"
+        ]
+      },
+      "model": "An agent or pot desktop start provisions through the sandbox socket and never dials the personal worker socket.",
+      "bar": "An agent or pot desktop start provisions through the sandbox socket and never dials the personal worker socket.",
+      "barKey": "R-8",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "sandbox socket routing"
+      ],
+      "evidencePlane": "tree",
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "automated tests",
+      "driftMarkers": "An agent or pot desktop request reaches the personal worker socket.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/desktop/personal-desktop.test.ts"
+        ]
+      },
+      "requiredTestLayers": [
+        "unit"
+      ]
+    },
+    {
+      "key": "r-9",
+      "title": "Personal desktops never use the sandbox worker",
+      "intent": {
+        "request": "The personal desktop must run as the customer account, never in the sandbox identity (D-001).",
+        "sourceRefs": [
+          "session_turn:claude:8bf41c63-94b9-4bcb-a6a5-53e67538b4df:4"
+        ]
+      },
+      "model": "A personal desktop start provisions through the personal worker socket and never dials the sandbox socket.",
+      "bar": "A personal desktop start provisions through the personal worker socket and never dials the sandbox socket.",
+      "barKey": "R-9",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "personal socket routing"
+      ],
+      "evidencePlane": "tree",
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "automated tests",
+      "driftMarkers": "A scope=user desktop is provisioned through the sandbox socket.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/desktop/personal-desktop.test.ts"
+        ]
+      },
+      "requiredTestLayers": [
+        "unit"
+      ]
+    },
+    {
+      "key": "r-10",
+      "title": "The owner can watch their personal desktop",
+      "intent": {
+        "request": "A person must be able to view their own desktop.",
+        "sourceRefs": [
+          "session_turn:claude:8bf41c63-94b9-4bcb-a6a5-53e67538b4df:4"
+        ]
+      },
+      "model": "Opening one's own personal desktop in watch mode through the hosted session host is accepted and streams the desktop.",
+      "bar": "Opening one's own personal desktop in watch mode through the hosted session host is accepted and streams the desktop.",
+      "barKey": "R-10",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "owner watch open"
+      ],
+      "evidencePlane": "tree",
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "automated tests",
+      "driftMarkers": "The owner's watch open of their own personal desktop is refused.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/workspace-host/hosted-session-host.personal-desktop.test.ts"
+        ]
+      },
+      "requiredTestLayers": [
+        "unit"
+      ]
+    },
+    {
+      "key": "r-11",
+      "title": "The owner can take control of their personal desktop",
+      "intent": {
+        "request": "A person must be able to drive their own desktop.",
+        "sourceRefs": [
+          "session_turn:claude:8bf41c63-94b9-4bcb-a6a5-53e67538b4df:4"
+        ]
+      },
+      "model": "Opening one's own personal desktop in takeover mode through the hosted session host is accepted with the control credential.",
+      "bar": "Opening one's own personal desktop in takeover mode through the hosted session host is accepted with the control credential.",
+      "barKey": "R-11",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "owner takeover open"
+      ],
+      "evidencePlane": "tree",
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "automated tests",
+      "driftMarkers": "The owner's takeover open of their own personal desktop is refused or downgraded to watch.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/workspace-host/hosted-session-host.personal-desktop.test.ts"
+        ]
+      },
+      "requiredTestLayers": [
+        "unit"
+      ]
+    },
+    {
+      "key": "r-12",
+      "title": "Nobody else can take control of a personal desktop",
+      "intent": {
+        "request": "A personal desktop is private to its owner in every viewer mode.",
+        "sourceRefs": [
+          "session_turn:claude:8bf41c63-94b9-4bcb-a6a5-53e67538b4df:4"
+        ]
+      },
+      "model": "Opening another person's personal desktop in takeover mode through the hosted session host is refused with desktop_not_owner.",
+      "bar": "Opening another person's personal desktop in takeover mode through the hosted session host is refused with desktop_not_owner.",
+      "barKey": "R-12",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "non-owner takeover refusal"
+      ],
+      "evidencePlane": "tree",
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "automated tests",
+      "driftMarkers": "A non-owner takeover channel reaches another person's personal desktop.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/workspace-host/hosted-session-host.personal-desktop.test.ts"
+        ]
+      },
+      "requiredTestLayers": [
+        "unit"
+      ]
+    },
+    {
+      "key": "r-13",
+      "title": "A refused personal-desktop open is audited",
+      "intent": {
+        "request": "Refused access to someone's desktop must leave a trace.",
+        "sourceRefs": [
+          "session_turn:claude:8bf41c63-94b9-4bcb-a6a5-53e67538b4df:4"
+        ]
+      },
+      "model": "A desktop_not_owner refusal emits an operation_denied audit event naming the channel and the refused operation.",
+      "bar": "A desktop_not_owner refusal emits an operation_denied audit event naming the channel and the refused operation.",
+      "barKey": "R-13",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "refusal audit"
+      ],
+      "evidencePlane": "tree",
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "automated tests",
+      "driftMarkers": "A desktop_not_owner refusal produces no audit event.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/workspace-host/hosted-session-host.personal-desktop.test.ts"
+        ]
+      },
+      "requiredTestLayers": [
+        "unit"
+      ]
+    },
+    {
+      "key": "r-14",
+      "title": "Rosters hide other people's personal desktops",
+      "intent": {
+        "request": "Other members must not see a person's private desktop in the Desktops grid.",
+        "sourceRefs": [
+          "session_turn:claude:8bf41c63-94b9-4bcb-a6a5-53e67538b4df:4"
+        ]
+      },
+      "model": "The desktop roster returned to person U lists agent and pot desktops but no scope=user desktop owned by anyone other than U.",
+      "bar": "The desktop roster returned to person U lists agent and pot desktops but no scope=user desktop owned by anyone other than U.",
+      "barKey": "R-14",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "roster filtering"
+      ],
+      "evidencePlane": "tree",
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "automated tests",
+      "driftMarkers": "A roster shown to a person includes another person's personal desktop or omits the agent and pot desktops.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/workspace-host/hosted-session-host.personal-desktop.test.ts"
+        ]
+      },
+      "requiredTestLayers": [
+        "unit"
+      ]
+    },
+    {
+      "key": "r-15",
+      "title": "A failed My desktop start shows its error",
+      "intent": {
+        "request": "A person must learn why their desktop did not open.",
+        "sourceRefs": [
+          "session_turn:claude:8bf41c63-94b9-4bcb-a6a5-53e67538b4df:4"
+        ]
+      },
+      "model": "When the My desktop start fails, the Desktops view shows the failure code to the person.",
+      "bar": "When the My desktop start fails, the Desktops view shows the failure code to the person.",
+      "barKey": "R-15",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "UI error surfacing"
+      ],
+      "evidencePlane": "tree",
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "automated tests: the component test includes the personal_desktop_unavailable failure a host without the desktop pack returns.",
+      "driftMarkers": "A failed My desktop start leaves a spinner or blank view with no error shown.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "apps/operator/app/cloud-workspaces/HostedDesktopWorkspace.test.tsx"
+        ]
+      },
+      "requiredTestLayers": [
+        "unit"
+      ]
+    },
+    {
+      "key": "r-16",
+      "title": "My desktop reopens the running desktop",
+      "intent": {
+        "request": "Clicking My desktop again must return to the same desktop.",
+        "sourceRefs": [
+          "session_turn:claude:8bf41c63-94b9-4bcb-a6a5-53e67538b4df:4"
+        ]
+      },
+      "model": "Clicking My desktop while the person's desktop is already running opens that running desktop session.",
+      "bar": "Clicking My desktop while the person's desktop is already running opens that running desktop session.",
+      "barKey": "R-16",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "UI reopen"
+      ],
+      "evidencePlane": "tree",
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "automated tests",
+      "driftMarkers": "Clicking My desktop while a personal desktop runs starts or opens a different desktop session.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "apps/operator/app/cloud-workspaces/HostedDesktopWorkspace.test.tsx",
+          "apps/operator/app/cloud-workspaces/HostedWorkspaceSession.test.tsx"
+        ]
+      },
+      "requiredTestLayers": [
+        "unit"
+      ]
+    },
+    {
+      "key": "r-17",
+      "title": "On a real host the person's home is visible",
+      "intent": {
+        "request": "The person's own files must be present on their desktop.",
+        "sourceRefs": [
+          "session_turn:claude:8bf41c63-94b9-4bcb-a6a5-53e67538b4df:4"
+        ]
+      },
+      "model": "On a real KasmVNC host the personal desktop session's HOME is the customer account home containing the workspace checkout.",
+      "bar": "On a real KasmVNC host the personal desktop session's HOME is the customer account home containing the workspace checkout.",
+      "barKey": "R-17",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "live home check"
+      ],
+      "evidencePlane": "live",
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "Live run on a real KasmVNC host with the desktop pack installed, running workspace-host runtime 0.0.21-pcd006b (live-run.json records the runtime version and host id): read HOME from /proc/<desktop session pid>/environ and list the workspace checkout under it. Live-plane provenance is MANUAL: the run is committed as docs/evidence/personal-cloud-desktop-2026-10-06/live-run.json (assertion personal-desktop-home), recorded with testing:record-run, and posted on the P-006 work-item. The maintained real-host e2e suite executes this same observation through the production relay, with a distinct per-bar case and runtime-measured e2e layer. Clean committed test-run lineage accompanies the immutable observation artifact; historical manual evidence stays archived. Reconnect identity is derived from a newly received request-correlated owner roster, with receipt time, and the Xvnc PID is independently re-read.",
+      "driftMarkers": "The live personal desktop shows a home other than the customer account's.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/desktop/personal-desktop.live.e2e.test.ts"
+        ]
+      },
+      "requiredTestLayers": [
+        "e2e"
+      ]
+    },
+    {
+      "key": "r-18",
+      "title": "On a real host the owner controls it through the production dial",
+      "intent": {
+        "request": "The person must drive their desktop over the real relay path.",
+        "sourceRefs": [
+          "session_turn:claude:8bf41c63-94b9-4bcb-a6a5-53e67538b4df:4"
+        ]
+      },
+      "model": "On a real KasmVNC host a window the owner opens by keyboard input through the production hosted-session-host KasmVNC dial appears in the personal desktop's window list.",
+      "bar": "On a real KasmVNC host a window the owner opens by keyboard input through the production hosted-session-host KasmVNC dial appears in the personal desktop's window list.",
+      "barKey": "R-18",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "dial + takeover"
+      ],
+      "evidencePlane": "live",
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "Live run on a real KasmVNC host with the desktop pack installed, running workspace-host runtime 0.0.21-pcd006b (live-run.json records the runtime version and host id): record the visible X window list before and after the owner sends keystrokes that open a terminal through the hosted-session-host takeover dial. Live-plane provenance is MANUAL: the run is committed as docs/evidence/personal-cloud-desktop-2026-10-06/live-run.json (assertion personal-desktop-takeover-input), recorded with testing:record-run, and posted on the P-006 work-item. The maintained real-host e2e suite executes this same observation through the production relay, with a distinct per-bar case and runtime-measured e2e layer. Clean committed test-run lineage accompanies the immutable observation artifact; historical manual evidence stays archived. Reconnect identity is derived from a newly received request-correlated owner roster, with receipt time, and the Xvnc PID is independently re-read.",
+      "driftMarkers": "Takeover input through the live production dial opens no new window on the personal desktop.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/desktop/personal-desktop.live.e2e.test.ts"
+        ]
+      },
+      "requiredTestLayers": [
+        "e2e"
+      ]
+    },
+    {
+      "key": "r-19",
+      "title": "On a real host it survives a viewer reconnect",
+      "intent": {
+        "request": "Closing the viewer must not end the person's desktop.",
+        "sourceRefs": [
+          "session_turn:claude:8bf41c63-94b9-4bcb-a6a5-53e67538b4df:4"
+        ]
+      },
+      "model": "On a real KasmVNC host the personal desktop keeps the same desktop session id and X server pid across a viewer disconnect and reconnect.",
+      "bar": "On a real KasmVNC host the personal desktop keeps the same desktop session id and X server pid across a viewer disconnect and reconnect.",
+      "barKey": "R-19",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "reconnect"
+      ],
+      "evidencePlane": "live",
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "Live run on a real KasmVNC host with the desktop pack installed, running workspace-host runtime 0.0.21-pcd006b (live-run.json records the runtime version and host id): record the desktop session id and the Xvnc pid before closing the viewer and again after reopening it. Live-plane provenance is MANUAL: the run is committed as docs/evidence/personal-cloud-desktop-2026-10-06/live-run.json (assertion personal-desktop-reconnect), recorded with testing:record-run, and posted on the P-006 work-item. The maintained real-host e2e suite executes this same observation through the production relay, with a distinct per-bar case and runtime-measured e2e layer. Clean committed test-run lineage accompanies the immutable observation artifact; historical manual evidence stays archived. Reconnect identity is derived from a newly received request-correlated owner roster, with receipt time, and the Xvnc PID is independently re-read.",
+      "driftMarkers": "A live viewer disconnect and reconnect changes the personal desktop's session id or X server pid.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/desktop/personal-desktop.live.e2e.test.ts"
+        ]
+      },
+      "requiredTestLayers": [
+        "e2e"
+      ]
+    },
+    {
+      "key": "r-20",
+      "title": "On a real host another member is refused",
+      "intent": {
+        "request": "A person's desktop must be private on the real relay path.",
+        "sourceRefs": [
+          "session_turn:claude:8bf41c63-94b9-4bcb-a6a5-53e67538b4df:4"
+        ]
+      },
+      "model": "On a real KasmVNC host a second member identity opening the person's desktop is refused with desktop_not_owner.",
+      "bar": "On a real KasmVNC host a second member identity opening the person's desktop is refused with desktop_not_owner.",
+      "barKey": "R-20",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "non-owner refusal"
+      ],
+      "evidencePlane": "live",
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "Live run on a real KasmVNC host with the desktop pack installed, running workspace-host runtime 0.0.21-pcd006b (live-run.json records the runtime version and host id): open the person's desktop over the relay as a second member identity and record the refusal code. Live-plane provenance is MANUAL: the run is committed as docs/evidence/personal-cloud-desktop-2026-10-06/live-run.json (assertion personal-desktop-non-owner-refused), recorded with testing:record-run, and posted on the P-006 work-item. The maintained real-host e2e suite executes this same observation through the production relay, with a distinct per-bar case and runtime-measured e2e layer. Clean committed test-run lineage accompanies the immutable observation artifact; historical manual evidence stays archived. Reconnect identity is derived from a newly received request-correlated owner roster, with receipt time, and the Xvnc PID is independently re-read.",
+      "driftMarkers": "A second live identity opens another person's personal desktop.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/desktop/personal-desktop.live.e2e.test.ts"
+        ]
+      },
+      "requiredTestLayers": [
+        "e2e"
+      ]
+    },
+    {
+      "key": "r-21",
+      "title": "The pack keeps the sandbox desktop user isolated",
+      "intent": {
+        "request": "D-001: the sandbox isolation property stays asserted for agent desktops after the personal worker is added.",
+        "sourceRefs": [
+          "session_turn:claude:8bf41c63-94b9-4bcb-a6a5-53e67538b4df:4"
+        ]
+      },
+      "model": "The desktop pack's verify step fails when the sandbox desktop user belongs to the service group or the workspace group.",
+      "bar": "The desktop pack's verify step fails when the sandbox desktop user belongs to the service group or the workspace group.",
+      "barKey": "R-21",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "sandbox user group isolation"
+      ],
+      "evidencePlane": "tree",
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "automated tests",
+      "driftMarkers": "The desktop pack verifies successfully with the sandbox desktop user in the service group or the workspace group.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "libs/generic/deployment-driver/src/workspace-host-desktop-pack.test.ts"
+        ]
+      },
+      "requiredTestLayers": [
+        "unit"
+      ]
+    },
+    {
+      "key": "r-22",
+      "title": "A host without the pack has no personal desktop",
+      "intent": {
+        "request": "D-001: a host without the desktop pack has no personal desktop, and says so instead of hanging.",
+        "sourceRefs": [
+          "session_turn:claude:8bf41c63-94b9-4bcb-a6a5-53e67538b4df:4"
+        ]
+      },
+      "model": "On a host without the desktop pack a personal desktop start is refused with personal_desktop_unavailable and starts no desktop.",
+      "bar": "On a host without the desktop pack a personal desktop start is refused with personal_desktop_unavailable and starts no desktop.",
+      "barKey": "R-22",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "no-pack refusal"
+      ],
+      "evidencePlane": "tree",
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "automated tests",
+      "driftMarkers": "A personal desktop start on a host without the desktop pack starts a desktop or fails without personal_desktop_unavailable.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/desktop/personal-desktop.test.ts"
+        ]
+      },
+      "requiredTestLayers": [
+        "unit"
+      ]
+    }
+  ],
+  "expectedRubricRevision": 4,
+  "expectedSubjectPlanRevision": 31,
+  "reason": "Require runtime-recorded e2e proof for the same five real-host behaviors. Preserve every condition/falsifier/scope/live plane and host runtime; replace manual check with maintained real-host suite. Explicit executable check also replaces unsupported inherited live layer without lowering any observable.",
+  "idempotencyKey": "pcd-realhost-e2e-rev5-20261007",
+  "dryRun": true,
+  "reviewPreviewPost": "thread-post:1161659"
+}

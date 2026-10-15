@@ -44,7 +44,7 @@ import { defineTool, SU_ROLES, fuzzyEnumAsync } from '@papercusp/agent-mcp';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
-import { spawnGovernedAgentProcess } from '../../resource-governor/spawn-execution';
+import { spawnGovernedAgentProcess, type GoalProcessAdmission } from '../../resource-governor/spawn-execution';
 import type { AdmissionContext } from '../../resource-governor/admission';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
@@ -108,8 +108,11 @@ import { checkPlanStartable, startVerdictForRow } from '../plans/plan-start-gate
 import {
   buildExactPlanClaimSpec,
   claimableStatesForKinds as exactPlanClaimableStatesForKinds,
+  type ExactPlanAdmission,
 } from '../plans/plan-admission-preflight';
+import { applyResultDoorAsync } from '../../result-door';
 import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller } from './_shared';
+import { fleetLaunchAbortCompletionReceipt } from './launch-abort-completion';
 import { extractWorkItemIds, TERMINAL_WORK_ITEM_STATES } from '../work_items/mirror-guard';
 import { itemMatchesRawClaimSpec } from '../../scheduler/fleet-scope-admission';
 import { reseedLeaderCompactionLimit } from './take-leadership-core';
@@ -136,7 +139,7 @@ import { liveFleetMemberIds, occupiesLaunchMemberSeat } from '../../fleet/fleet-
 import { listLiveTasks } from '../../task-manager/store';
 import type { TaskRow } from '../../task-manager/types';
 import { agentSpawnScopeMemoryMaxG } from '../../systemd-scope';
-import { resolveCodexModelSelection } from '../../model-context-budget.mjs';
+import { LaunchModelAliasError, normalizeCodexCliModel, resolveCodexModelSelection, resolveLaunchModelAlias } from '../../model-context-budget.mjs';
 import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
 import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
 import { localModelIdsAsync } from '../../inference-gateway/local-model-ids-cache';
@@ -251,6 +254,80 @@ async function readCallerLaunchMode(workspaceId: string, ownerId: string): Promi
  * A zero-promoted result is normally an idempotent no-op, but the spec-triad
  * refusal is different: the open items are not covered and the lane is empty.
  */
+/** Keep the action ahead of promotion/spec diagnostics and freeze oversized detail. */
+export async function fleetAdmissionRefusalResult(args: {
+  fleet: string;
+  plan: string;
+  harness: string;
+  admission: ExactPlanAdmission | null;
+  admissionError?: string | null;
+  promotionFailsafe: unknown;
+  workspaceId: string;
+  ownerId: string;
+}) {
+  const admission = args.admission;
+  const duplicateRows = admission?.promotion?.duplicateActionable ?? [];
+  const rows = [
+    ...duplicateRows.flatMap((row) => row.workItemIds.map((workItemId) => ({
+      planItemId: row.planItemId, workItemId,
+    }))),
+    ...(admission?.blockingRows ?? []),
+    ...(admission?.actionableRows ?? []),
+  ];
+  const planItemIds = [...new Set([
+    ...rows.map((row) => row.planItemId),
+    ...(admission?.promotion?.missingActionableItemIds ?? []),
+    ...(admission?.parallelism?.nonReadyItems ?? []).flatMap((item) => [item.itemId, ...item.blockerIds]),
+  ])];
+  const workItemIds = [...new Set(rows.map((row) => row.workItemId))];
+  const excluded = admission?.lane?.effective.excluded;
+  // claimFloors is a union count, not the name of a floor.
+  const namedFloors = excluded == null ? null : Object.fromEntries(
+    Object.entries(excluded).filter(([name, count]) => name !== 'claimFloors' && count > 0),
+  );
+  const held = new Set((admission?.blockingRows ?? []).map((row) => row.workItemId));
+  const claimId = workItemIds.find((id) => !held.has(id));
+  const canClaim = admission?.reason === 'floor-gated' && claimId &&
+    Object.keys(namedFloors ?? {}).length > 0 &&
+    Object.keys(namedFloors ?? {}).every((name) => ['stopTheLine', 'reservedPlanLane', 'releaseCooldown',
+      'claimHold', 'claimState', 'verificationConflict', 'rig', 'swarm', 'redundancy', 'dependencies'].includes(name));
+  const repairCall = canClaim
+    ? { tool: 'work_items:claim', args: { id: claimId, assignee: 'self', harness: args.harness },
+        effect: 'claim', note: 'Claim this exact row with readiness advisories, then retry the plan start.' }
+    : workItemIds.length > 0
+      ? { tool: 'work_items:get', args: { ids: workItemIds.slice(0, 16), harness: args.harness },
+          effect: 'inspect', note: duplicateRows.length
+            ? 'Compare the exact duplicate rows before choosing a canonical survivor; do not run whole-corpus dedup.'
+            : 'Read the exact blockers and their holders before repairing their recorded prerequisite.' }
+      : { tool: 'plans:get', args: { slug: args.plan, harness: args.harness },
+          effect: 'inspect', note: 'Repair the exact plan prerequisites shown by this read, then retry.' };
+  const message = admission
+    ? `Exact-plan admission refused before fleet creation: ${admission.message}`
+    : `Exact-plan admission could not be measured before fleet creation: ${args.admissionError ?? 'unknown error'}`;
+  return applyResultDoorAsync(json({
+    ok: false,
+    error: 'admission_refused',
+    reason: admission?.reason ?? 'lane-unknown',
+    message,
+    blockingPlanItemIds: planItemIds.slice(0, 16),
+    blockingWorkItemIds: workItemIds.slice(0, 16),
+    namedFloors,
+    repairCall,
+    blockerCounts: { planItems: planItemIds.length, workItems: workItemIds.length },
+    fleet: args.fleet,
+    plan: args.plan,
+    harness: args.harness,
+    promotionFailsafe: args.promotionFailsafe,
+    admission,
+    ...(args.admissionError ? { admissionError: args.admissionError } : {}),
+  }, true), {
+    toolName: 'fleet:launch-on-plan', workspaceId: args.workspaceId, ownerId: args.ownerId,
+    preservePaths: ['ok', 'error', 'reason', 'message', 'blockingPlanItemIds', 'blockingWorkItemIds',
+      'namedFloors', 'repairCall', 'repairCall.tool', 'repairCall.args', 'repairCall.effect',
+      'blockerCounts', 'fleet', 'plan', 'harness'],
+  });
+}
+
 function promotionFailsafeWarning(
   planSlug: string,
   result: (PromotePlanResult & { ran: boolean }) | null,
@@ -598,7 +675,16 @@ export function resolveFleetAgent(opts: {
   callerAgent?: string | null;
   callerModel?: string | null;
 }): FleetAgentResolution {
-  const argModel = opts.argModel?.trim() || undefined;
+  let argModel = opts.argModel?.trim() || undefined;
+  if (argModel) {
+    try {
+      argModel = resolveLaunchModelAlias(argModel, {
+        agent: opts.argAgent === 'omp' || isOmpLocalModel(argModel) ? 'omp' : undefined,
+      }).model;
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  }
   const localModel = isOmpLocalModel(argModel);
   if (opts.argAgent && opts.argAgent !== 'omp' && localModel) {
     return {
@@ -1882,6 +1968,9 @@ export default defineTool({
   requirePrincipal: false,
   skipWorkspaceTx: true,
   agentRoles: [...SU_ROLES, 'cup'],
+  // WI-10005670: a launch that returns just past the dispatch deadline has already persisted
+  // its transaction and opened members — report it as that launch, never a retryable timeout.
+  abortCompletionReceipt: fleetLaunchAbortCompletionReceipt,
   args: z.object({
     name: z
       .string()
@@ -2012,7 +2101,7 @@ export default defineTool({
       // cloud id set — it only rejects the unambiguous malformed classes (incl. the `sonnet-5`
       // versioned-shorthand leak, the most common agent typo).
       .superRefine((value, ctx) => {
-        const v = validateCloudModelSpec(value);
+        const v = validateCloudModelSpec(normalizeCodexCliModel(value));
         if (!v.ok) {
           ctx.addIssue({
             code: 'custom',
@@ -2142,6 +2231,34 @@ export default defineTool({
       ),
   }),
   async handler(args, ctx) {
+    let modelResolution: ReturnType<typeof resolveLaunchModelAlias> | null = null;
+    const memberAliasResolutions: Array<ReturnType<typeof resolveLaunchModelAlias> | undefined> = [];
+    const requestedDefaultEffort = args.effort;
+    try {
+      if (args.model) {
+        modelResolution = resolveLaunchModelAlias(args.model, {
+          effort: args.effort,
+          agent: args.agent ?? (isOmpLocalModel(args.model) ? 'omp' : undefined),
+        });
+        args = { ...args, model: modelResolution.model, effort: modelResolution.effort ?? undefined, agent: args.agent ?? modelResolution.agent ?? undefined };
+      }
+      if (args.members) {
+        args = { ...args, members: args.members.map((member, i) => {
+          if (!member.model) return member;
+          const resolved = resolveLaunchModelAlias(member.model, {
+            effort: member.effort ?? requestedDefaultEffort,
+            agent: member.agent ?? (isOmpLocalModel(member.model) ? 'omp' : undefined),
+          });
+          memberAliasResolutions[i] = resolved;
+          return { ...member, model: resolved.model, effort: resolved.effort ?? undefined, agent: member.agent ?? resolved.agent ?? undefined };
+        }) };
+      }
+    } catch (error) {
+      if (error instanceof LaunchModelAliasError) {
+        return json({ ok: false, error: error.code, message: error.message, candidates: error.candidates });
+      }
+      throw error;
+    }
     // Resolved FIRST, ahead of the option branch (P-006): the goal's launch
     // settings can supply `fleetType` and the per-role profiles, and reading them
     // needs the caller's workspace + owner id. All three resolvers below are
@@ -2935,22 +3052,10 @@ export default defineTool({
         admissionError = (error as Error).message;
       }
       if (!admission?.ready) {
-        return json(
-          {
-            ok: false,
-            error: 'admission_refused',
-            fleet: fleetSlug,
-            plan: planSlug,
-            harness: planHarnessSlug,
-            promotionFailsafe,
-            admission,
-            ...(admissionError ? { admissionError } : {}),
-            message: admission
-              ? `Exact-plan admission refused before fleet creation: ${admission.message}`
-              : `Exact-plan admission could not be measured before fleet creation: ${admissionError ?? 'unknown error'}`,
-          },
-          true,
-        );
+        return fleetAdmissionRefusalResult({
+          fleet: fleetSlug, plan: planSlug, harness: planHarnessSlug,
+          promotionFailsafe, admission, admissionError, workspaceId, ownerId,
+        });
       }
     }
 
@@ -2986,6 +3091,23 @@ export default defineTool({
     // Leaderless is the only state that is TRUE at this point, so it is the one to write.
     const wantsSpawnedLeader = args.leader === 'spawn';
     const spawnedLeaderOwnerId = wantsSpawnedLeader ? `su-${randomUUID()}` : null;
+    // A GOAL holder stewards the portfolio and DELEGATES execution; it is never a participant in
+    // a fleet it launches. resolveGoalFleetLeadership() already enforces that on the ARGUMENT
+    // (it forces leader:'spawn' for every holder and REFUSES leader:'caller'), but the argument
+    // alone did not keep the holder out of the fleet when the spawn was ignored because an
+    // existing fleet still had a live leader — see the join site below (WI-10005698).
+    const callerIsPortfolioSteward = goalHolderSubject != null;
+    // Deferred caller-enrollment writes. Set only when the caller genuinely joins, and applied
+    // after the live-member deficit guard so that a suppressed no-op mutates nothing. It RETURNS
+    // its outcomes instead of assigning the outer leaderControl/leaderReseed from inside the
+    // closure: TypeScript does not re-widen a variable from an assignment it cannot prove runs,
+    // so closure-mutation would narrow both to `null` at their later read sites.
+    let applyCallerFleetMembership:
+      | (() => Promise<{
+          leaderControl: LeaderControlOutcome | null;
+          leaderReseed: Awaited<ReturnType<typeof reseedLeaderCompactionLimit>>;
+        }>)
+      | null = null;
     // Set when 'spawn' was asked for but the fleet already has a confirmed-live leader:
     // installing a second one is a coup, so preserve the historical ignored/top-up path.
     let leaderSpawnSkipped: string | null = null;
@@ -3014,6 +3136,8 @@ export default defineTool({
         // fleet keeps its stored type, which is why launchType below reads the
         // RECORD rather than the argument.
         fleetType: launchOptions.type,
+        ...(planSlug ? { planSelection: { harness: planHarnessSlug, planSlug,
+          goalId: goalSettings.goalId, actorId: ownerId } } : {}),
       });
       // The authoritative type for the rest of this launch is the one on the
       // durable row — not what the caller asked for. On a top-up of an existing
@@ -3063,32 +3187,54 @@ export default defineTool({
       // label, no leader compaction re-seed, no window recolor. The caller is the delegator,
       // not a participant — labelling it here is exactly the "you are leading a fleet you
       // asked not to lead" state this mode exists to prevent. Skipped only when a leader was
-      // actually spawned; the ignored case above falls through to the normal join.
-      if ((wantsSpawnedLeader && created) || delegatedSpawnRetry || delegatedSpawnReplacement) {
+      // actually spawned, which left two holes that WI-10005698 (from EI-24837081637498361)
+      // closes — one about WHO is excluded, one about WHEN the exclusion is decided:
+      //   1. WHO: a GOAL holder topping up an EXISTING fleet whose leader is live reports
+      //      leaderSpawnIgnored, and used to fall through to the ordinary join — enrolling the
+      //      portfolio steward into the very fleet it paid a delegation to stay out of, and
+      //      flipping its mission to execute-fleet-plan-only. The steward exclusion is
+      //      unconditional; it is never contingent on a leader actually being spawned.
+      //   2. WHEN: enrolling here is a MUTATION performed before the live-member deficit guard
+      //      below has decided whether this call opens anything at all. A suppressed no-op must
+      //      not move the caller's membership or mission — the same rule that already defers the
+      //      claim-spec write past that guard. So the writes are CAPTURED here and applied at
+      //      that same boundary; callerMembership reports enrolled:false until they actually
+      //      run, which keeps the reported shape honest on every early return in between.
+      if (
+        (wantsSpawnedLeader && created) ||
+        delegatedSpawnRetry ||
+        delegatedSpawnReplacement ||
+        callerIsPortfolioSteward
+      ) {
         leaderRole = 'delegator';
       } else {
-        await setPresenceFleet(workspaceId, ownerId, fleetSlug, leaderRole);
-        if (leaderRole === 'leader') {
-          leaderControl = await ensureFleetLeaderControl({
-            workspaceId,
-            ownerId,
-            fleetSlug,
-            harnessSlug: harness,
-            planSlug,
-            carry: args.carry ?? 'warm',
-          });
-        }
-        // P-009 (incl. via launch): now that presence marks the caller this fleet's leader, lift a
-        // stuck 300k member-cap seed to the leader default (400k on [1m]). Auto-only (no explicit
-        // leader contextSize/limit arg on this door), and precise — it no-ops unless the caller was
-        // exactly at the member cap (an established leader stays put). Best-effort inside the helper.
-        if (leaderRole === 'leader') leaderReseed = await reseedLeaderCompactionLimit(ownerId);
-        // Recolor the caller's live window to the fleet's bound scheme — every other
-        // membership entry point (fleet:create / fleet:join / fleet:take-leadership)
-        // does this; a leader whose window keeps its old color while the members open
-        // in the fleet scheme is the bug, not a variant. Best-effort: a no-op for
-        // non-psu-hosted callers, never throws.
-        await recolorCallerTerminal(ownerId, record);
+        applyCallerFleetMembership = async () => {
+          let joinedLeaderControl: LeaderControlOutcome | null = null;
+          let joinedLeaderReseed: Awaited<ReturnType<typeof reseedLeaderCompactionLimit>> = null;
+          await setPresenceFleet(workspaceId, ownerId, fleetSlug, leaderRole);
+          if (leaderRole === 'leader') {
+            joinedLeaderControl = await ensureFleetLeaderControl({
+              workspaceId,
+              ownerId,
+              fleetSlug,
+              harnessSlug: harness,
+              planSlug,
+              carry: args.carry ?? 'warm',
+            });
+          }
+          // P-009 (incl. via launch): now that presence marks the caller this fleet's leader, lift a
+          // stuck 300k member-cap seed to the leader default (400k on [1m]). Auto-only (no explicit
+          // leader contextSize/limit arg on this door), and precise — it no-ops unless the caller was
+          // exactly at the member cap (an established leader stays put). Best-effort inside the helper.
+          if (leaderRole === 'leader') joinedLeaderReseed = await reseedLeaderCompactionLimit(ownerId);
+          // Recolor the caller's live window to the fleet's bound scheme — every other
+          // membership entry point (fleet:create / fleet:join / fleet:take-leadership)
+          // does this; a leader whose window keeps its old color while the members open
+          // in the fleet scheme is the bug, not a variant. Best-effort: a no-op for
+          // non-psu-hosted callers, never throws.
+          await recolorCallerTerminal(ownerId, record);
+          return { leaderControl: joinedLeaderControl, leaderReseed: joinedLeaderReseed };
+        };
       }
     } catch (e: any) {
       return err(`Failed to create/join fleet \`${fleetSlug}\`: ${e?.message ?? e}`);
@@ -3096,12 +3242,25 @@ export default defineTool({
     // True only when this call must actually open a leader terminal (asked for, and the
     // fleet was newly created rather than joined).
     const spawningLeader = wantsSpawnedLeader && (freshFleetCreated || delegatedSpawnReplacement);
+    // Deliberately NARROW: this predicate drives the DELEGATION narrative downstream (the
+    // goal↔leader coupling edge, and the "this fleet is led by a launched agent, not by you"
+    // brief), and both of those need a spawned or recorded leader they can name. Being a
+    // portfolio steward is a SEPARATE reason the caller stays out of the fleet, so it gets its
+    // own term below rather than widening this one and silently changing those two messages.
     const callerExcludedFromFleet = spawningLeader || delegatedSpawnRetry;
-    const callerMembership = {
-      enrolled: !callerExcludedFromFleet,
-      role: callerExcludedFromFleet ? 'delegator' : leaderRole,
-      reason: callerExcludedFromFleet ? 'leader-spawn-caller-excluded' : null,
-    } as const;
+    const callerStaysOutsideFleet = callerExcludedFromFleet || callerIsPortfolioSteward;
+    // enrolled:false until the deferred writes captured above actually run, which happens only
+    // once the live-member deficit guard admits a real wave. Every early return between here and
+    // there therefore reports the truth: this call joined the caller to nothing.
+    let callerMembership: { enrolled: boolean; role: string; reason: string | null } = {
+      enrolled: false,
+      role: callerStaysOutsideFleet ? 'delegator' : leaderRole,
+      reason: callerStaysOutsideFleet
+        ? callerExcludedFromFleet
+          ? 'leader-spawn-caller-excluded'
+          : 'goal-holder-portfolio-steward'
+        : 'launch-suppressed-before-enrollment',
+    };
 
     // LIVE-MEMBER deficit guard: a fleet that already has enough LIVE members gets NO new wave,
     // regardless of timing. The rate window alone cannot stop a doom-looping leader that re-fires
@@ -3183,6 +3342,21 @@ export default defineTool({
         relaunchSuppressed: true,
         message: lines.join('\n'),
       });
+    }
+
+    // WI-10005698: a real launch wave is admitted, so the caller's OWN membership may now be
+    // written. This sits at the same boundary as the claim-spec write below, for the same
+    // reason: every return above this line opened nothing, and a call that opens nothing must
+    // leave the caller's fleet label, leader control, compaction seed and window colour alone.
+    if (applyCallerFleetMembership) {
+      try {
+        const joined = await applyCallerFleetMembership();
+        leaderControl = joined.leaderControl;
+        leaderReseed = joined.leaderReseed;
+      } catch (e: any) {
+        return err(`Failed to join fleet \`${fleetSlug}\`: ${e?.message ?? e}`);
+      }
+      callerMembership = { enrolled: true, role: leaderRole, reason: null };
     }
 
     // #4 (fleet-launch-plan-scoped-claim-spec, 2026-07-08) + EI-7671 + EI-10409: set the
@@ -3601,6 +3775,8 @@ export default defineTool({
           fleetSlug,
           count,
           windowMs: RELAUNCH_SUPPRESS_MS,
+          ...(planSlug ? { planSelection: { harness: planHarnessSlug, planSlug,
+            goalId: goalSettings.goalId, actorId: ownerId } } : {}),
           allowCountIncreaseWithinWindow: leaderRole === 'leader' && liveMembers > 0,
         });
       } catch (e: any) {
@@ -3945,6 +4121,21 @@ export default defineTool({
     // or a named pool account. Existing account/seat choices always win.
     effAccount = defaultMemberAccountRouting(effAccount);
 
+    // WI-6554700010011633: the wave's model and provider (and any per-member override) are
+    // final here; judge them against the workspace's inherited governance policy BEFORE any
+    // terminal opens. The kernel dispatch seat only saw the raw `model` argument.
+    {
+      const { judgeLaunchGovernance } = await import('../../governance-policy/session-governance');
+      const refusal = await judgeLaunchGovernance(workspaceId, [
+        { agent: effAgent ?? 'claude', model: effModel },
+        ...(args.members ?? []).flatMap((member) =>
+          member && (member.model || member.agent)
+            ? [{ agent: member.agent ?? effAgent ?? 'claude', model: member.model ?? effModel }]
+            : []),
+      ]);
+      if (refusal) return err(refusal);
+    }
+
     // EI-20362893066852316: a codex wave launched with a model the ChatGPT backend refuses
     // boots EVERY member into a hard per-turn refusal that only the member terminals see
     // (burned a 4-member wave on bare 'gpt-5.6', 2026-08-13). ONE tiny streaming request
@@ -3985,6 +4176,8 @@ export default defineTool({
         fleetSlug,
         count,
         windowMs: RELAUNCH_SUPPRESS_MS,
+        ...(planSlug ? { planSelection: { harness: planHarnessSlug, planSlug,
+          goalId: goalSettings.goalId, actorId: ownerId } } : {}),
         allowCountIncreaseWithinWindow: leaderRole === 'leader' && liveMembers > 0,
       });
     } catch (e: any) {
@@ -4003,6 +4196,8 @@ export default defineTool({
           fleetSlug,
           count,
           windowMs: RELAUNCH_SUPPRESS_MS,
+          ...(planSlug ? { planSelection: { harness: planHarnessSlug, planSlug,
+            goalId: goalSettings.goalId, actorId: ownerId } } : {}),
           allowCountIncreaseWithinWindow: leaderRole === 'leader' && liveMembers > 0,
         });
       } catch {
@@ -4034,6 +4229,8 @@ export default defineTool({
               fleetSlug,
               count,
               windowMs: RELAUNCH_SUPPRESS_MS,
+              ...(planSlug ? { planSelection: { harness: planHarnessSlug, planSlug,
+                goalId: goalSettings.goalId, actorId: ownerId } } : {}),
               allowCountIncreaseWithinWindow: leaderRole === 'leader' && liveMembers > 0,
             });
           } catch {
@@ -4602,9 +4799,14 @@ export default defineTool({
     // FleetHeadcountConfig cannot represent their heterogeneous boot settings.
     // Keep this write AFTER command composition: an invalid effective model/effort
     // pair must not leave a governor recipe for a launch that never reached spawn.
+    // R-8 (feature-drain-delivery-readiness-and-outcome-accounting-2026-10-01): a
+    // pure claim-spec drain fleet (claimKinds, no plan) gets the same default
+    // target. Requiring a plan here left every plan-less drain fleet with a NULL
+    // target, so nothing recorded what headcount it was launched to hold. The
+    // claim scope itself stays in the claim-spec store, which top-ups read.
     if (
       freshFleetCreated &&
-      Boolean(planSlug) &&
+      (Boolean(planSlug) || Boolean(args.claimKinds?.length)) &&
       launchFleetType !== 'paired' &&
       memberSpecs.length === 0 &&
       !(args.perMemberLaunchContext && args.perMemberLaunchContext.length > 0)
@@ -4634,7 +4836,7 @@ export default defineTool({
       const modelSpec = composeModelSpec(fleetDefaults.model, fleetDefaults.effort) ?? null;
       const split = splitModelSpec(modelSpec);
       const config = normalizePersistedFleetLaunchConfig({
-        plan: planSlug!,
+        ...(planSlug ? { plan: planSlug } : {}),
         harness,
         agent: (fleetDefaults.agent ?? effAgent) as FleetHeadcountConfig['agent'],
         ...(split.model ? { model: split.model } : {}),
@@ -4740,6 +4942,23 @@ export default defineTool({
     // Back-compat: `command` (singular) is reported/reused where every member is
     // identical (the common case — no perMemberLaunchContext).
     const command = memberCommands[0] ?? '';
+    const memberModelResolutions = Array.from({ length: openCount }, (_v, i) => {
+      const config = resolvedMemberConfig(memberSpecIndex(i));
+      const model = composeModelSpec(config.model, config.effort);
+      if (!model) return null;
+      const requested = memberAliasResolutions[memberSpecIndex(i)] ?? modelResolution;
+      return {
+        requested: requested?.requested ?? model,
+        agent: config.agent ?? null,
+        model,
+        effort: (model.match(/:(low|medium|high|xhigh|max)$/i)?.[1] ?? null) as ReturnType<typeof resolveLaunchModelAlias>['effort'],
+        alias: requested?.alias ?? null,
+      };
+    });
+    const firstModelResolution = memberModelResolutions[0] ?? null;
+    const effectiveModelResolution = memberModelResolutions.every(resolved =>
+      resolved?.model === firstModelResolution?.model && resolved?.agent === firstModelResolution?.agent &&
+      resolved?.effort === firstModelResolution?.effort) ? firstModelResolution : null;
     // P-004 per-member disclosure: the fully-resolved config each member actually got
     // (precedence member > fleet > system), so the leader confirms it WITHOUT diffing raw
     // command strings. Only built when a declarative `members` spec was passed (a homogeneous
@@ -4769,6 +4988,10 @@ export default defineTool({
       command: string;
     }> = [];
     const failed: Array<{ ownerId?: string; error: string; code: number }> = [];
+    const goalAdmissionWarnings: string[] = [];
+    const finalGoalAdmissions: Array<{
+      ownerId: string; receiptId: string | null; admission: GoalProcessAdmission | null; outcome: 'opened' | 'failed';
+    }> = [];
     let persistedLaunchRevision = priorLaunchTransaction
       ? {
           transactionId: priorLaunchTransaction.transactionId,
@@ -4995,6 +5218,11 @@ export default defineTool({
               });
         },
       );
+      goalAdmissionWarnings.push(...(leaderResult.goalAdmissionDegraded ?? []).map((reason) => `⚠ ${reason}`));
+      finalGoalAdmissions.push({
+        ownerId: spawnedLeaderOwnerId, receiptId: leaderResult.admissionContext?.receiptId ?? null,
+        admission: leaderResult.goalAdmission ?? null, outcome: leaderResult.status === 'ok' ? 'opened' : 'failed',
+      });
       if (leaderResult.status !== 'ok') {
         // Nothing else has opened yet, so release the launch slot — an immediate, legitimate
         // retry must not be suppressed for the whole 5-minute window by a launch that
@@ -5008,11 +5236,10 @@ export default defineTool({
           ? `Fleet \`${fleetSlug}\` still records its prior absent leader ` +
             `\`${delegatedSpawnReplacementExpectedLeader ?? 'none'}\`; that value was not cleared or replaced.`
           : `Fleet \`${fleetSlug}\` now exists and is LEADERLESS — no leader was recorded, because none launched.`;
-        return err(
-          `leader:'spawn' — the LEADER failed to open (${leaderResult.error}), so NO members were ` +
+        const message = `leader:'spawn' — the LEADER failed to open (${leaderResult.error}), so NO members were ` +
             `opened (deliberately: an unled fleet is worse than none). ${registryTruth} ` +
-            `Recover by re-running this same leader:'spawn' call or taking leadership explicitly.`,
-        );
+            `Recover by re-running this same leader:'spawn' call or taking leadership explicitly.`;
+        return { ...json({ ok: false, error: leaderResult.error, finalGoalAdmissions, message }), isError: true };
       }
       leaderAdmissionContext = leaderResult.admissionContext;
       // The leader is OPEN — only now does the registry learn who leads. Before this line the
@@ -5188,6 +5415,11 @@ export default defineTool({
             waveResults.forEach((result, offset) => {
               const i = indices[offset];
               const memberOwnerId = requestedMemberIds[i];
+              goalAdmissionWarnings.push(...(result.goalAdmissionDegraded ?? []).map((reason) => `⚠ ${reason}`));
+              finalGoalAdmissions.push({
+                ownerId: memberOwnerId, receiptId: result.admissionContext?.receiptId ?? null,
+                admission: result.goalAdmission ?? null, outcome: result.status === 'ok' ? 'opened' : 'failed',
+              });
               if (result.status === 'ok') {
                 openedThisWave.push(memberOwnerId);
                 launchTransaction.openedMemberIds.push(memberOwnerId);
@@ -5432,6 +5664,7 @@ export default defineTool({
           requestedOpenCount,
           launchEvidence,
           completionPending: true,
+          finalGoalAdmissions,
           completionHandle,
           launchTransaction,
           opened,
@@ -5450,7 +5683,7 @@ export default defineTool({
       );
     }
     const completionError = responseRace.value;
-    const lines: string[] = [];
+    const lines: string[] = [...goalAdmissionWarnings];
     if (ignoredRoleNote) lines.push(ignoredRoleNote);
     if (leaderSpawnRecoveryWarning) lines.push(`⚠ ${leaderSpawnRecoveryWarning}`);
     if (sizingAdvisory) lines.push(sizingAdvisory.message);
@@ -5754,10 +5987,13 @@ export default defineTool({
     return json(
       {
         ok: launchTransaction.verifiedMemberIds.length > 0 || spawnedLeader?.registered === true,
+        modelResolution: effectiveModelResolution,
+        memberModelResolutions,
         fleet: fleetSlug,
         // WI-10004545: which goal the launching agent attributed the plan to (null = not a
         // goal launch / nothing attributed); `error` is set when the best-effort stamp threw.
         planGoalAttribution,
+        finalGoalAdmissions,
         leaderRole,
         callerMembership,
         // Machine-readable fact about the ACTUAL registered leader, never inferred from

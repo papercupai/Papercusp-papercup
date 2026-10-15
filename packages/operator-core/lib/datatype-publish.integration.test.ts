@@ -28,7 +28,7 @@ async function declare(db: OrgTestDb, ws: string, id: string) {
     workspaceId: ws,
     title: id,
     description: `the ${id} datatype`,
-    tier: 'generic-kind',
+    tier: 'generic-kind', nature: 'work', audience: 'agent',
     workItemKind: id,
   });
 }
@@ -116,7 +116,7 @@ describe('datatype publish + moderation lifecycle (real PG)', () => {
       workspaceId: 'ws-g-a',
       title: 'Kelly stake',
       description: 'optimal stake sizing from edge and bankroll',
-      tier: 'generic-kind',
+      tier: 'generic-kind', nature: 'work', audience: 'agent',
       workItemKind: 'kelly-stake',
     });
     await publishDatatype(db.adminSql, 'ws-g-a', 'kelly-stake');
@@ -126,7 +126,7 @@ describe('datatype publish + moderation lifecycle (real PG)', () => {
       workspaceId: 'ws-g-b',
       title: 'Kelly stake local',
       description: 'optimal stake sizing from edge and bankroll',
-      tier: 'generic-kind',
+      tier: 'generic-kind', nature: 'work', audience: 'agent',
       workItemKind: 'kelly-stake-local',
     });
 
@@ -147,7 +147,7 @@ describe('datatype publish + moderation lifecycle (real PG)', () => {
       workspaceId: src,
       title: 'Parlay',
       description: 'a multi-leg combined bet',
-      tier: 'generic-kind',
+      tier: 'generic-kind', nature: 'work', audience: 'agent',
       workItemKind: 'parlay',
       payloadSchema: { type: 'object', properties: { legs: { type: 'array' } }, required: ['legs'] },
     });
@@ -183,13 +183,13 @@ describe('datatype publish + moderation lifecycle (real PG)', () => {
     // Seed via admin (RLS bypass): an APPROVED datatype + a LOCAL one, both in ws-rls-owner.
     await upsertDatatype(db.adminSql, {
       id: 'rls-approved', workspaceId: 'ws-rls-owner', title: 'Approved', description: 'globally shared',
-      tier: 'generic-kind', workItemKind: 'rls-approved',
+      tier: 'generic-kind', nature: 'work', audience: 'agent', workItemKind: 'rls-approved',
     });
     await publishDatatype(db.adminSql, 'ws-rls-owner', 'rls-approved');
     await moderatePublishedDatatype(db.adminSql, 'ws-rls-owner', 'rls-approved', 'approve');
     await upsertDatatype(db.adminSql, {
       id: 'rls-private', workspaceId: 'ws-rls-owner', title: 'Private', description: 'workspace local',
-      tier: 'generic-kind', workItemKind: 'rls-private',
+      tier: 'generic-kind', nature: 'work', audience: 'agent', workItemKind: 'rls-private',
     });
 
     // A DIFFERENT workspace (ws-rls-other), through the RLS-ENFORCED app role:

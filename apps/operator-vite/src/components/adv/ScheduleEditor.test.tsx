@@ -198,6 +198,8 @@ describe('runScheduleTool payload handling', () => {
       counts: { ok: 1, failed: 0 },
     });
     await expect(runScheduleTool('plans:arm-schedule', { slug: 'ready-plan' }))
-      .resolves.toEqual({ ok: true });
+      .resolves.toEqual({ ok: true, data: {
+        ok: true, results: [{ ok: true, slug: 'ready-plan' }], counts: { ok: 1, failed: 0 },
+      } });
   });
 });

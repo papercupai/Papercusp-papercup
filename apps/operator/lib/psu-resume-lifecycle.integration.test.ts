@@ -40,6 +40,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { makeDelivery } from "../../../packages/operator-core/test/_multi-session-testbed";
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock("@papercusp/db-org", async (orig) => {
@@ -53,6 +56,10 @@ vi.mock("@papercusp/db-org", async (orig) => {
     getOrgPg: () => ({ sql: h.sql }),
   };
 });
+vi.mock("@papercusp/operator-core/lib/workspace-registry", async (orig) => ({
+  ...(await orig<typeof import("@papercusp/operator-core/lib/workspace-registry")>()),
+  activeWorkspaceId: () => WS,
+}));
 
 import {
   pendingSessionEndWitnessPath,
@@ -66,6 +73,11 @@ const {
   acquireAdvSessionResume,
   finalizeAdvSessionResume,
   releaseAdvSessionResume,
+  retireAdvSessionsByOwner,
+  claimAdvSessionResume,
+  reactivateAdvSessionByOwner,
+  getAdvSession,
+  latestAdvSessionByCoordOwner,
 } = await import("@papercusp/operator-core/lib/adv-sessions");
 
 const WS = `resume-lifecycle-it-${randomBytes(6).toString("hex")}`;
@@ -83,7 +95,7 @@ beforeAll(async () => {
   lockClient = await acquireBaselineSchemaMutex(inject("baselineSchemaDsn"), {
     label: "psu-resume-lifecycle.integration.test.ts",
   });
-  h.sql = postgres(inject("baselineSchemaDsn"), { max: 4, onnotice: () => {} });
+  h.sql = postgres(inject("baselineSchemaDsn"), { max: 4, onnotice: () => {}, connection: { application_name: WS } });
 });
 afterEach(async () => {
   await h.sql`DELETE FROM harness_shared.agent_launch_idempotency WHERE workspace_id = ${WS}`;
@@ -149,6 +161,7 @@ function makeLifecycleFetch(faults: {
       endAttemptKey?: string;
       resumeClaimKey?: string;
       launchArgv?: string[];
+      allowRetired?: boolean;
     };
 
     if (path.endsWith("/session-ended")) {
@@ -182,6 +195,10 @@ function makeLifecycleFetch(faults: {
       const reservation = await acquireAdvSessionResume(
         body.advSessionId,
         body.resumeClaimKey ?? "",
+        undefined,
+        undefined,
+        undefined,
+        body.allowRetired === true,
       );
       if (faults.acquireTimeoutAfterCommit && calls.acquired === 1) {
         throw timeoutAfterCommit("acquire response lost after commit");
@@ -199,6 +216,7 @@ function makeLifecycleFetch(faults: {
         body.advSessionId,
         body.resumeClaimKey ?? "",
         body.launchArgv,
+        body.allowRetired === true,
       );
       if (faults.finalizeTimeoutAfterCommit && calls.finalized === 1) {
         throw timeoutAfterCommit("finalize response lost after commit");
@@ -242,16 +260,180 @@ async function readLifecycleRow(id: number) {
       session_id: string;
       cwd: string;
       launch_argv: string[] | null;
+      retired_at: Date | null;
+      retired_by: string | null;
+      retired_reason: string | null;
     }>
   >`
     SELECT ended_at, exit_code, ended_by, resume_claim_key, resume_claimed_at,
-           session_id, cwd, launch_argv
+           session_id, cwd, launch_argv, retired_at, retired_by, retired_reason
       FROM harness_shared.adv_sessions
      WHERE id = ${id}`;
   return row;
 }
 
 describe("psu resume lifecycle lossless handoff (real launcher reporters + real PG)", () => {
+  it("a real headless process kill persists retirement and drops a later inbox wake without spawning", async () => {
+    const { killOne } = await import("@papercusp/operator-core/lib/agent-tools/fleet/kill");
+    const { executeWake } = await import("@papercusp/operator-core/lib/events/await/wake-executor");
+    const seeded = await seedLive("claude");
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    await once(child, "spawn");
+    const exited = once(child, "close");
+    const audit: string[] = [];
+    const spawnDetached = vi.fn(() => { throw new Error("retired owner must never spawn"); });
+    const claimResume = vi.fn(claimAdvSessionResume);
+    try {
+      const killed = await killOne({ actor: "test-operator", target: seeded.coordOwnerId, closeTerminal: false, reason: "retirement regression" }, {
+        retireOwner: retireAdvSessionsByOwner,
+        findHost: async () => ({ ownerId: seeded.coordOwnerId, advSessionId: String(seeded.id), pid: child.pid!, ptyPid: child.pid!, sock: "/tmp/private-fixture.sock", command: "psu", startedAt: Date.now(), bridgeTty: false }) as never,
+        markSessionEnded: async (id, signal) => {
+          await h.sql`UPDATE harness_shared.adv_sessions SET ended_at = now(), ended_by = 'signal', ended_signal = ${signal} WHERE id = ${Number(id)}`;
+        },
+        audit: async (action) => { audit.push(action); },
+      });
+      expect(killed).toMatchObject({ ok: true, kind: "headless", killed: true, signal: "SIGTERM" });
+      expect(await exited).toEqual([null, "SIGTERM"]);
+      expect(audit).toContain("fleet.kill_headless");
+      const row = await getAdvSession(seeded.id);
+      expect(row).toMatchObject({ retiredBy: "fleet:kill:test-operator", endedBy: "signal" });
+      const delivery = makeDelivery({ workspaceId: WS, subscriberId: seeded.coordOwnerId, createdAt: new Date().toISOString(), wakeHandle: {
+        kind: "adv-session", advSessionId: seeded.id, agent: "claude", sessionId: seeded.sessionId, ompThreadId: null, cwd: seeded.cwd, pid: child.pid!,
+      } });
+      const result = await executeWake(delivery, {
+        getSession: getAdvSession,
+        getLatestSessionForOwner: latestAdvSessionByCoordOwner,
+        findPsuHost: async () => null,
+        getSessionLifecycle: async () => ({}) as never,
+        presence: async () => null,
+        findPty: () => null,
+        spawnDetached,
+        claimResume,
+      });
+      expect(result).toMatchObject({ kind: "drop", reason: expect.stringContaining("owner retired by deliberate kill") });
+      expect(spawnDetached).not.toHaveBeenCalled();
+      expect(claimResume).not.toHaveBeenCalled();
+      expect(await getAdvSession(seeded.id)).toEqual(row);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      await exited;
+    }
+  }, 60_000);
+
+  it.each(["claude", "omp", "codex"] as const)(
+    "%s retirement fences every owner registration and every routine reactivation path",
+    async (agent) => {
+      const seeded = await seedLive(agent);
+      const [older] = await h.sql<Array<{ id: string }>>`
+        INSERT INTO harness_shared.adv_sessions
+          (workspace_id, agent, mode, coord_owner_id, session_id, cwd, started_at)
+        VALUES (${WS}, ${agent}, 'console', ${seeded.coordOwnerId}, 'other-native',
+                ${seeded.cwd}, now() - interval '1 hour') RETURNING id`;
+      await retireAdvSessionsByOwner(seeded.coordOwnerId, "test-operator", "replace member");
+      const before = await readLifecycleRow(seeded.id);
+      expect(before).toMatchObject({ retired_by: "fleet:kill:test-operator", retired_reason: "replace member" });
+      expect(before.retired_at).not.toBeNull();
+      for (const id of [seeded.id, Number(older.id)]) {
+        expect((await readLifecycleRow(id)).retired_at).not.toBeNull();
+        await expect(acquireAdvSessionResume(id, `auto-${id}`)).resolves.toEqual({ status: "retired", acquired: false });
+      }
+      // The newest registration is also fenced for both legacy protocols.
+      await expect(claimAdvSessionResume(Number(older.id))).resolves.toBe("retired");
+      await expect(claimAdvSessionResume(Number(older.id), "keyed-wake")).resolves.toBe("retired");
+      await expect(reactivateAdvSessionByOwner(seeded.coordOwnerId)).resolves.toBe(false);
+      expect(await readLifecycleRow(seeded.id)).toEqual(before);
+    },
+  );
+
+  it.each(["claude", "omp", "codex"] as const)(
+    "%s explicit relaunch keeps retirement through failure and clears it only on successful keyed finalization",
+    async (agent) => {
+      const seeded = await seedLive(agent);
+      await reportSessionEnded(seeded.id, 130, { fetchImpl: makeLifecycleFetch({}).fetchImpl, operatorUrl: "http://operator.test", token: "test" });
+      await retireAdvSessionsByOwner(seeded.coordOwnerId, "test-operator", "replace member");
+      const retired = await readLifecycleRow(seeded.id);
+      const transport = makeLifecycleFetch({});
+      const common = { fetchImpl: transport.fetchImpl, operatorUrl: "http://operator.test", token: "test" };
+      await expect(reportSessionResumed(seeded.id, { ...common, resumeClaimKey: "automatic" })).resolves.toMatchObject({ claimed: false, status: "retired" });
+      await expect(reportSessionResumed(seeded.id, { ...common, resumeClaimKey: "failed-explicit", allowRetired: true })).resolves.toMatchObject({ claimed: true });
+      expect((await readLifecycleRow(seeded.id)).retired_at).toEqual(retired.retired_at);
+      await expect(reportSessionResumeReleased(seeded.id, "failed-explicit", common)).resolves.toMatchObject({ released: true });
+      expect(await readLifecycleRow(seeded.id)).toEqual(retired);
+      await expect(reportSessionResumed(seeded.id, { ...common, resumeClaimKey: "successful-explicit", allowRetired: true })).resolves.toMatchObject({ claimed: true });
+      const launchArgv = ["psu", `--resume=${seeded.id}`, `--agent=${agent}`];
+      await expect(reportSessionResumeFinalized(seeded.id, "successful-explicit", { ...common, allowRetired: true, launchArgv })).resolves.toMatchObject({ finalized: true });
+      expect(await readLifecycleRow(seeded.id)).toMatchObject({ retired_at: null, retired_by: null, retired_reason: null, ended_at: null, ended_by: null, resume_claim_key: null, launch_argv: launchArgv, session_id: seeded.sessionId, cwd: seeded.cwd });
+      expect(readFileSync(seeded.marker, "utf8")).toContain(seeded.sessionId);
+    },
+  );
+
+  it("a kill invalidates an acquired explicit key and a previously successful legacy replay", async () => {
+    const seeded = await seedLive("codex");
+    await expect(claimAdvSessionResume(seeded.id, "old-success")).resolves.toBe(true);
+    await h.sql`UPDATE harness_shared.adv_sessions SET ended_at = now(), ended_by = 'signal' WHERE id = ${seeded.id}`;
+    await expect(acquireAdvSessionResume(seeded.id, "prepared-explicit", undefined, undefined, undefined, true)).resolves.toMatchObject({ acquired: true });
+    await retireAdvSessionsByOwner(seeded.coordOwnerId, "operator", "kill while prepared");
+    await expect(finalizeAdvSessionResume(seeded.id, "prepared-explicit", undefined, true)).resolves.toBe(false);
+    await expect(claimAdvSessionResume(seeded.id, "old-success")).resolves.toBe("retired");
+    expect(await readLifecycleRow(seeded.id)).toMatchObject({ ended_by: "signal", retired_by: "fleet:kill:operator", resume_claim_key: null });
+  });
+
+  it("retire and acquire serialize without leaving a finalizable reservation", async () => {
+    const seeded = await seedLive("codex");
+    await Promise.all([
+      acquireAdvSessionResume(seeded.id, "racing-wake"),
+      retireAdvSessionsByOwner(seeded.coordOwnerId, "operator", "race"),
+    ]);
+    expect(await readLifecycleRow(seeded.id)).toMatchObject({ retired_by: "fleet:kill:operator", resume_claim_key: null });
+    await expect(finalizeAdvSessionResume(seeded.id, "racing-wake")).resolves.toBe(false);
+  });
+
+  it("a keyed success replay waits for an in-flight retirement instead of returning its old receipt", async () => {
+    const seeded = await seedLive("codex");
+    await expect(claimAdvSessionResume(seeded.id, "old-success")).resolves.toBe(true);
+    let entered!: () => void;
+    let commit!: () => void;
+    const locked = new Promise<void>((resolve) => { entered = resolve; });
+    const canCommit = new Promise<void>((resolve) => { commit = resolve; });
+    // Hold the same row UPDATE lock as retireAdvSessionsByOwner, pausing just
+    // before commit so the claimant must consult the current retirement value.
+    const retirement = h.sql.begin(async (tx) => {
+      await tx`UPDATE harness_shared.adv_sessions SET retired_at = now(), retired_by = 'fleet:kill:race' WHERE id = ${seeded.id}`;
+      entered();
+      await canCommit;
+    });
+    await locked;
+    let settled = false;
+    const replay = claimAdvSessionResume(seeded.id, "old-success").finally(() => { settled = true; });
+    try {
+      await vi.waitFor(async () => {
+        const waiters = await h.sql<Array<{ count: string }>>`
+          SELECT count(*) FROM pg_stat_activity
+           WHERE application_name = ${WS} AND wait_event_type = 'Lock'`;
+        expect(settled || Number(waiters[0].count) > 0).toBe(true);
+      }, { timeout: 5_000, interval: 10 });
+    } finally {
+      commit();
+      await retirement;
+    }
+    await expect(replay).resolves.toBe("retired");
+    expect((await readLifecycleRow(seeded.id)).retired_by).toBe("fleet:kill:race");
+  });
+
+  it.each(["claude", "omp", "codex"] as const)(
+    "%s signal exit remains automatically resumable without deliberate retirement",
+    async (agent) => {
+      const seeded = await seedLive(agent);
+      const transport = makeLifecycleFetch({});
+      const common = { fetchImpl: transport.fetchImpl, operatorUrl: "http://operator.test", token: "test" };
+      await expect(reportSessionEnded(seeded.id, 143, { ...common, killedBySignal: "SIGTERM" })).resolves.toMatchObject({ reported: true });
+      expect(await readLifecycleRow(seeded.id)).toMatchObject({ ended_by: "signal", retired_at: null });
+      await expect(reportSessionResumed(seeded.id, { ...common, resumeClaimKey: "crash-recovery" })).resolves.toMatchObject({ claimed: true });
+      await expect(reportSessionResumeFinalized(seeded.id, "crash-recovery", common)).resolves.toMatchObject({ finalized: true });
+      expect(await readLifecycleRow(seeded.id)).toMatchObject({ ended_at: null, ended_by: null, retired_at: null });
+    },
+  );
+
   it.each(["claude", "omp", "codex"] as const)(
     "%s survives end 429 + acquire/finalize timeout-after-commit without a ghost or five-minute lockout",
     async (agent) => {

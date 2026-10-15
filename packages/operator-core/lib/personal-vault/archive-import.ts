@@ -53,7 +53,7 @@ export function parseMbox(text: string): PersonalDocumentInput[] {
     const body = withoutEnvelope.slice(split + 2).trim();
     const externalId = headers.get('message-id')?.replace(/[<>]/g, '') ?? null;
     const doc: PersonalDocumentInput = {
-      source: 'gmail',
+      source: 'mail',
       kind: 'message',
       externalId,
       occurredAt: headers.get('date') ?? null,
@@ -62,7 +62,7 @@ export function parseMbox(text: string): PersonalDocumentInput[] {
       text: body,
       metadata: { from: headers.get('from') ?? null, to: headers.get('to') ?? null },
     };
-    doc.dedupeKey = externalId ? `gmail:${externalId}` : `gmail:mbox:${index}:${dedupeKeyFor(doc)}`;
+    doc.dedupeKey = externalId ? `mail:${externalId}` : `mail:mbox:${index}:${dedupeKeyFor(doc)}`;
     return [doc];
   });
 }
@@ -278,7 +278,7 @@ async function parseMimeMboxMessage(raw: Buffer, index: number): Promise<Persona
     ...parsedAddressValues(parsed.cc),
   ];
   const document: PersonalDocumentInput = {
-    source: 'gmail',
+    source: 'mail',
     kind: 'message',
     externalId,
     occurredAt: parsed.date?.toISOString() ?? null,
@@ -297,8 +297,8 @@ async function parseMimeMboxMessage(raw: Buffer, index: number): Promise<Persona
     },
   };
   document.dedupeKey = externalId
-    ? `gmail:${externalId}`
-    : `gmail:mbox:${index}:${dedupeKeyFor(document)}`;
+    ? `mail:${externalId}`
+    : `mail:mbox:${index}:${dedupeKeyFor(document)}`;
   return document;
 }
 

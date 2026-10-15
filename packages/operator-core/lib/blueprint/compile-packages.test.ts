@@ -100,6 +100,9 @@ describe('P-006 operator package adapter', () => {
       operations: [{
         id: 'review', version: '1', target: { kind: 'work-item', itemKind: 'feature' },
         execution: { kind: 'agent', role: 'worker' },
+        policy: { identity: {
+          kind: 'identity', ref: 'rubric-worker', revision: '1.0.0', contentHash: 'b'.repeat(64),
+        } },
         inputSchema: { type: 'object' }, acceptance: { resultSchema: { type: 'object' }, rubric: {
           kind: 'rubric', ref: 'judge', revision: rubric.revision, contentHash: rubric.contentHash,
         } },
@@ -110,6 +113,8 @@ describe('P-006 operator package adapter', () => {
       workspaceId: 'workspace-a', harnessSlug: 'harness-a', resolvePackage,
     });
     expect(resolvePackage).toHaveBeenCalledTimes(1);
+    expect(specification.configuration.operations![0].policy.identity)
+      .toMatchObject({ ref: 'rubric-worker', revision: '1.0.0', contentHash: 'b'.repeat(64) });
     expect(pinnedOperationRubricPackage(specification.configuration.operations![0], specification.inputs))
       .toMatchObject({ ref: 'judge', contentHash: rubric.contentHash });
     expect(replayAgentSpecification(specification).specificationRevision).toBe(specification.specificationRevision);

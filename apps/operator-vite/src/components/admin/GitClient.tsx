@@ -50,9 +50,22 @@ interface WindowSummary {
   };
   deploy: { total: number; ok: number; rolledBack: number; failed: number; refused: number };
 }
+/**
+ * The kinds this pane has a bespoke label/detail for. The SERVER appends more kinds than these
+ * (`PipelineEventKind` in operator-core pipeline-events.ts: green_checkpoint_fire, gate_invariants,
+ * green_checkpoint_post_verdict, …) and `recentPipelineEvents` returns every one of them, so `kind`
+ * stays an open string: an unlabelled kind must still render its own name, never a blank chip
+ * (WI-6554700010010213 — a post-verdict deadline overrun rendered as an empty row).
+ */
+type KnownPipelineEventKind =
+  | 'git_sync'
+  | 'merge_resolver'
+  | 'green_checkpoint'
+  | 'green_checkpoint_post_verdict'
+  | 'deploy';
 interface PipelineEvent {
   id: string;
-  kind: 'git_sync' | 'merge_resolver' | 'green_checkpoint' | 'deploy';
+  kind: KnownPipelineEventKind | (string & {});
   status: string;
   detail: Record<string, unknown>;
   createdAtMs: number;
@@ -104,6 +117,11 @@ interface GitPipelineSnapshot {
   // release-pipeline-resilience-2026-06-09 P-004/P-009: green-checkpoint gate health.
   gate: {
     consecutiveReds: number;
+    consecutiveNoVerdict?: number;
+    recordedVerdict?: 'green' | 'not-green' | null;
+    fireHistory?: { windowHours: number; fires: number; verdictRecords: number; noVerdictAborts: number; skippedStarts: number } | null;
+    inconclusive?: { status: string; detail: string | null } | null;
+    qualification?: { blockers: { code: string; detail?: string }[]; safeNextAction: { reason: string } };
     lastGreenAtMs: number | null;
     firstRedAtMs: number | null;
     stalled: boolean;
@@ -130,7 +148,33 @@ interface GitPipelineSnapshot {
     } | null;
     // P-013: where the latest round's time went. Null/absent = not measured this round.
     roundPhases?: { breakdown: string } | null;
+    // green-main-cycle-time-2026-10-08 P-016: the green-main SLO, computed by the same
+    // function the watchdog pages from. Null/absent = not computed (an older server).
+    slo?: GreenMainSloView | null;
   };
+}
+interface GreenMainSloView {
+  metrics: {
+    timeSinceGreenMs: number | null;
+    timeSinceVerdictMs: number | null;
+    roundCycleTime: { lastMs: number | null; medianMs: number | null; intervals: number };
+    queueIdleMs: number | null;
+    roundsToConverge: { rounds: number; converged: false } | null;
+    redAddingAdmissions: { count: number; judged: number; heads: string[] } | null;
+    perSyncRedRate: { fleet: string | null; judgedBatches: number; redBatches: number; rate: number | null }[] | null;
+    nonVerdictReasons?: { windowHours: 24; measuredAtMs: number; reasons: { reason: string; count: number; latestAtMs: number }[] } | null;
+  };
+  breaches: { metric: string; severity: 'page' | 'alert'; title: string; detail: string; episodeKey: string }[];
+  thresholds: {
+    redPageMs: number;
+    noVerdictPageMs: number;
+    roundCycleAlertMs: number;
+    queueIdleAlertMs: number;
+    perSyncRedRateAlert: number;
+    nonVerdictReasonMinCount?: number;
+  };
+  /** Inputs the server could not read: their metrics are UNKNOWN, not healthy. */
+  unreadable: string[];
 }
 interface RepairManifestView {
   candidate: string;
@@ -177,6 +221,18 @@ function fmtRel(ts: number | null | undefined): string {
   if (d < 86_400_000) return `${Math.round(d / 3_600_000)}h ago`;
   return `${Math.round(d / 86_400_000)}d ago`;
 }
+function fmtDur(ms: number | null | undefined): string {
+  if (ms == null) return '—';
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
+  if (ms < 48 * 3_600_000) return `${(ms / 3_600_000).toFixed(1)}h`;
+  return `${(ms / 86_400_000).toFixed(1)}d`;
+}
+/** good under half the threshold, warn up to it, bad at or past it; neutral when unknown. */
+function thresholdTone(value: number | null | undefined, threshold: number): Tone {
+  if (value == null) return 'neutral';
+  if (value >= threshold) return 'bad';
+  return value >= threshold / 2 ? 'warn' : 'good';
+}
 function pct(n: number, d: number): string {
   if (d <= 0) return '—';
   return `${Math.round((n / d) * 100)}%`;
@@ -191,6 +247,7 @@ function statusTone(s: string | null): Tone {
     case 'conflict':
     case 'not-green':
     case 'failed':
+    case 'deadline-exceeded':
       return 'warn';
     case 'error':
     case 'create-failed':
@@ -199,12 +256,17 @@ function statusTone(s: string | null): Tone {
       return 'neutral';
   }
 }
-const KIND_LABEL: Record<PipelineEvent['kind'], string> = {
+const KIND_LABEL: Record<KnownPipelineEventKind, string> = {
   git_sync: 'git-sync',
   merge_resolver: 'resolver',
   green_checkpoint: 'green-check',
+  green_checkpoint_post_verdict: 'post-verdict',
   deploy: 'deploy',
 };
+/** The chip label for any event kind — a kind without a bespoke label renders its own name. */
+export function kindLabel(kind: string): string {
+  return (KIND_LABEL as Record<string, string>)[kind] ?? kind.replace(/_/g, '-');
+}
 
 function Dot({ on }: { on: boolean }) {
   return <span className={`pc-git__dot ${on ? 'is-on' : 'is-off'}`} aria-hidden="true" />;
@@ -215,6 +277,104 @@ function Stat({ label, value, tone, sub }: { label: string; value: React.ReactNo
       <div className="pc-git__stat-v">{value}</div>
       <div className="pc-git__stat-l">{label}</div>
       {sub && <div className="pc-git__stat-s">{sub}</div>}
+    </div>
+  );
+}
+
+/** P-016: the green-main SLO — the same numbers and breaches the watchdog pages the owner from. */
+export function GreenMainSloCard({ slo }: { slo: GreenMainSloView }) {
+  const m = slo.metrics;
+  const t = slo.thresholds;
+  const verdictUnknown = slo.unreadable.includes('lastVerdictAt');
+  const sync = m.perSyncRedRate;
+  const worstSync = sync?.filter((r) => r.rate !== null).sort((a, b) => (b.rate ?? 0) - (a.rate ?? 0))[0] ?? null;
+  return (
+    <div className="pc-git__card" style={{ gridColumn: '1 / -1' }} data-testid="gate-green-main-slo">
+      <div className="pc-git__card-h">
+        green-main SLO{' '}
+        {slo.breaches.length === 0 && slo.unreadable.length > 0 ? (
+          <StatusPill tone="warn" label="measurement incomplete" />
+        ) : slo.breaches.length === 0 ? (
+          <StatusPill tone="good" label="within SLO" />
+        ) : (
+          slo.breaches.map((b) => (
+            <span key={b.episodeKey}>
+              <StatusPill tone={b.severity === 'page' ? 'bad' : 'warn'} label={`${b.severity}: ${b.metric}`} />{' '}
+            </span>
+          ))
+        )}
+      </div>
+      <div className="pc-git__stats">
+        <Stat
+          label="since green"
+          value={fmtDur(m.timeSinceGreenMs)}
+          tone={thresholdTone(m.timeSinceGreenMs, t.redPageMs)}
+          sub={`page at ${fmtDur(t.redPageMs)}`}
+        />
+        <Stat
+          label="since any verdict"
+          value={verdictUnknown ? 'unknown' : fmtDur(m.timeSinceVerdictMs)}
+          tone={verdictUnknown ? 'warn' : thresholdTone(m.timeSinceVerdictMs, t.noVerdictPageMs)}
+          sub={verdictUnknown ? 'ledger unreadable' : `page at ${fmtDur(t.noVerdictPageMs)}`}
+        />
+        <Stat
+          label="round cycle"
+          value={fmtDur(m.roundCycleTime.lastMs)}
+          tone={thresholdTone(m.roundCycleTime.lastMs, t.roundCycleAlertMs)}
+          sub={m.roundCycleTime.intervals > 0 ? `median ${fmtDur(m.roundCycleTime.medianMs)} · ${m.roundCycleTime.intervals} interval(s)` : 'no repair rounds'}
+        />
+        <Stat
+          label="queue idle"
+          value={m.queueIdleMs === null ? 'no queue' : fmtDur(m.queueIdleMs)}
+          tone={thresholdTone(m.queueIdleMs, t.queueIdleAlertMs)}
+          sub={`alert past ${fmtDur(t.queueIdleAlertMs)}`}
+        />
+        <Stat
+          label="rounds so far"
+          value={m.roundsToConverge ? m.roundsToConverge.rounds : 'no queue'}
+          sub={m.roundsToConverge ? 'not yet converged' : undefined}
+        />
+        <Stat
+          label="red-adding admissions"
+          value={m.redAddingAdmissions ? `${m.redAddingAdmissions.count} of ${m.redAddingAdmissions.judged}` : '—'}
+          tone={m.redAddingAdmissions && m.redAddingAdmissions.count > 0 ? 'warn' : undefined}
+          sub="judged per admission window"
+        />
+        <Stat
+          label="per-sync red rate"
+          value={sync === null ? 'not measured' : worstSync ? pct(worstSync.redBatches, worstSync.judgedBatches) : '—'}
+          tone={worstSync?.rate != null ? thresholdTone(worstSync.rate, t.perSyncRedRateAlert * 2) : undefined}
+          sub={
+            worstSync
+              ? `${worstSync.redBatches} of ${worstSync.judgedBatches} batches · ${worstSync.fleet ?? 'all agents'}`
+              : sync === null
+                ? 'delta-check ledger unread'
+                : 'no judged batches'
+          }
+        />
+      </div>
+      <div className="pc-git__muted" data-testid="gate-non-verdict-reasons">
+        <strong>Non-verdict reasons · last 24h</strong>
+        {m.nonVerdictReasons == null ? (
+          <p>{slo.unreadable.includes('nonVerdictReasons') ? 'unknown · ledger unreadable' : 'not measured'}</p>
+        ) : m.nonVerdictReasons.reasons.length === 0 ? (
+          <p>0 terminal skips or aborts</p>
+        ) : (
+          <ul>
+            {m.nonVerdictReasons.reasons.map((r) => <li key={r.reason}>{r.reason}: {r.count}</li>)}
+          </ul>
+        )}
+        {t.nonVerdictReasonMinCount != null && <p>Owned follow-up at {t.nonVerdictReasonMinCount} outcomes per reason.</p>}
+      </div>
+      {slo.breaches.length > 0 && (
+        <ul className="pc-git__muted" data-testid="gate-green-main-slo-breaches">
+          {slo.breaches.map((b) => (
+            <li key={b.episodeKey}>
+              <strong>{b.title}</strong> — {b.detail}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -652,7 +812,9 @@ export default function GitClient() {
                   green-checkpoint gate{' '}
                   {st.gate.stalled ? (
                     <StatusPill tone="bad" label="STALLED" />
-                  ) : st.gate.consecutiveReds > 0 ? (
+                  ) : (st.gate.consecutiveNoVerdict ?? 0) > 0 || st.gate.inconclusive ? (
+                    <StatusPill tone="warn" label="no verdict" />
+                  ) : st.gate.consecutiveReds > 0 || st.gate.recordedVerdict === 'not-green' ? (
                     <StatusPill tone="warn" label="held" />
                   ) : (
                     <StatusPill tone="good" label="green" />
@@ -669,6 +831,31 @@ export default function GitClient() {
                   </span>
                   <span className="pc-git__k">last green</span>
                   <span className="pc-git__v">{fmtRel(st.gate.lastGreenAtMs)}</span>
+                  <span className="pc-git__k">promotion hold</span>
+                  <span className="pc-git__v" data-testid="gate-hold-duration">
+                    {(st.gate.consecutiveReds > 0 || st.gate.stalled || (st.gate.consecutiveNoVerdict ?? 0) > 0) && st.gate.firstRedAtMs != null
+                      ? fmtRel(st.gate.firstRedAtMs).replace(/ ago$/, '')
+                      : 'not measured'}
+                  </span>
+                  <span className="pc-git__k">verdict production · 24h</span>
+                  <span className="pc-git__v" data-testid="gate-fire-history">
+                    {st.gate.fireHistory
+                      ? `${st.gate.fireHistory.fires} activation requests · ${st.gate.fireHistory.verdictRecords} verdict records · ${st.gate.fireHistory.noVerdictAborts} no-verdict aborts · ${st.gate.fireHistory.skippedStarts} skipped starts`
+                      : 'not measured'}
+                  </span>
+                  <span className="pc-git__k">no-verdict streak</span>
+                  <span className="pc-git__v" data-testid="gate-no-verdict-streak">
+                    {st.gate.consecutiveNoVerdict == null ? 'not measured' : `${st.gate.consecutiveNoVerdict} consecutive abort(s)`}
+                  </span>
+                  {(st.gate.inconclusive || st.gate.qualification?.blockers.length) ? (
+                    <>
+                      <span className="pc-git__k">current blocker</span>
+                      <span className="pc-git__v" data-testid="gate-current-blocker">
+                        {st.gate.inconclusive?.detail || st.gate.inconclusive?.status.replace(/-/g, ' ') ||
+                          st.gate.qualification?.blockers.map((b) => b.detail || b.code.replace(/-/g, ' ')).join('; ')}
+                      </span>
+                    </>
+                  ) : null}
                   <span className="pc-git__k">release-fixer</span>
                   <span className="pc-git__v">
                     {st.gate.lastFixerStatus ? (
@@ -717,6 +904,9 @@ export default function GitClient() {
                   </span>
                 </div>
               </div>
+
+              {/* green-main-cycle-time-2026-10-08 P-016: the green-main SLO card. */}
+              {st.gate.slo && <GreenMainSloCard slo={st.gate.slo} />}
 
               {/* frozen-candidate-stays-frozen-through-all-fixes-2026-09-03 P-021 (D-007 #1):
                   the frozen candidate's REPAIR MANIFEST — one row per leg with its subject
@@ -863,7 +1053,7 @@ export default function GitClient() {
               <div className="pc-git__timeline">
                 {st.recent.map((e) => (
                   <div key={e.id} className="pc-git__event">
-                    <span className={`pc-git__chip is-${statusTone(e.status)}`}>{KIND_LABEL[e.kind]}</span>
+                    <span className={`pc-git__chip is-${statusTone(e.status)}`}>{kindLabel(e.kind)}</span>
                     <span className="pc-git__event-status">{e.status}</span>
                     <span className="pc-git__event-detail">{eventDetail(e)}</span>
                     <span className="pc-git__event-time">{fmtRel(e.createdAtMs)}</span>
@@ -904,6 +1094,14 @@ function eventDetail(e: PipelineEvent): string {
     if (typeof d.candidate === 'string') parts.push(`@${d.candidate}`);
     if (d.green === false) parts.push('not green');
     return parts.join(' ');
+  }
+  if (e.kind === 'green_checkpoint_post_verdict') {
+    // WI-6554700010010213: a bounded post-verdict step that hit its deadline and was skipped.
+    const parts: string[] = [];
+    if (typeof d.label === 'string') parts.push(d.label);
+    if (typeof d.deadlineMs === 'number') parts.push(`deadline ${d.deadlineMs}ms`);
+    if (typeof d.elapsedMs === 'number') parts.push(`waited ${d.elapsedMs}ms`);
+    return parts.join(' · ');
   }
   if (e.kind === 'deploy') {
     const parts: string[] = [];

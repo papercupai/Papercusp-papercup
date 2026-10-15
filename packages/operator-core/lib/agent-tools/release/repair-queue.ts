@@ -11,9 +11,14 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
+import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
-import { trackDetached } from '../../detached-imports';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
+import { resolveCheckpointRouting, resolvePotSuiteCommand } from '../../harness/routines/hive-release-env';
+import type { GateVerdictTarget } from '../../release/gate-verdict-target';
+import { getTask } from '../../task-manager/store';
+import { newTaskId } from '../../task-manager/types';
 import {
   applyFrozenCandidateRepairQueueTransition,
   readFrozenCandidateRepairQueueState,
@@ -27,8 +32,11 @@ import { isPidAlive } from '../../release/in-flight-candidate';
 import {
   describeUnreadableFrozenCandidateRepairQueue,
   diagnoseFrozenCandidateRepairQueue,
+  frozenRepairHeadAwaitsVerification,
   markFrozenRepairAdmitted,
   normalizeRepoPath,
+  settleFrozenRepairAdmission,
+  summarizeAdmissionRadius,
   type FrozenCandidateRepairQueue,
   type FrozenRepairAdmission,
   type FrozenRepairAdmissionPrecheck,
@@ -40,28 +48,40 @@ import {
   type FrozenRepairEditLedgerRow,
 } from '../../release/frozen-repair-edit-ledger';
 import {
-  buildCommittedPatchSource,
-  buildHunkExactSource,
+  attributeUnledgeredPaths,
+  findCarriedLedgerRowIds,
   summarizeForeignHunks,
+  SOLE_EDITOR_WINDOW_MARGIN_MS,
+  type EditAttributionRow,
   type HunkExactSuccess,
 } from '../../release/hunk-exact-admission';
-import { containmentForPaths, integrationBranch } from '../../release/judged-sha-containment';
-import { importCompletenessPreflight } from '../../release/admission-import-completeness';
+import { integrationBranch } from '../../release/judged-sha-containment';
+import { realAdmissionGit } from '../../release/repair-head-admission';
+// WI-10005223: every admission git sequence below runs on the admission worker thread, never
+// on the operator main thread (a single admit measured up to 61.8s of blocked event loop).
 import {
-  chainAdmissionPreflights,
-  lockfileManifestConsistencyPreflight,
-} from '../../release/admission-lockfile-consistency';
-import { admitPathsOntoRepairHead, realAdmissionGit, retractAdmission } from '../../release/repair-head-admission';
+  AdmissionOffthreadTimeoutError,
+  AdmissionOffthreadTimeoutUnavailableError,
+  runAdmissionJob,
+} from '../../release/admission-offthread';
+import type { AdmissionJobKind, AdmissionJobOf } from '../../release/admission-jobs';
+import { createAdmissionStepClock } from '../../release/admission-step-clock';
 import {
-  createCheckpointTreeFixPrecheckRunner,
+  ADMISSION_PRECHECK_PER_FILE_BUDGET_MS,
+  ADMISSION_PRECHECK_SETUP_BUDGET_MS,
   evaluateFixPrecheck,
   precheckPopulation,
   resolveCanonicalIntegrationRoot,
   type FixPrecheckPopulation,
-  type FixPrecheckProgress,
   type FixPrecheckVerdict,
 } from '../../release/admission-fix-precheck';
+import {
+  settleAdmissionPrecheck,
+  startAdmissionPrecheckWorker,
+  type AdmissionPrecheckWorkerInput,
+} from '../../release/admission-fix-precheck-managed';
 import { checkpointRootMirror } from '../../release-checkpoint-launch';
+import { scheduleRepairAutoVerify } from '../../release/repair-auto-verify';
 import {
   describeDependencyPrediction,
   isDependencyInputPath,
@@ -69,13 +89,96 @@ import {
   type DependencyGenerationPrediction,
 } from '../../release/dependency-admission-prediction';
 import { claimRepairManifestLeg, renderAdmitCommand } from '../../release/repair-manifest';
+import { parseRepairTickLegs, sameHeadContradictionAnnotation } from '../../release/repair-tick-legs-snapshot';
 import { readIdentity } from '../locks/identity';
 import { readGateOwnership, shouldStandDownForLivePeer } from '../../coord/gate-ownership';
 import { executeWithGateActionReceipt } from '../../release/gate-action-receipt';
+import { asRecord, completedResultPayload } from '../abort-completion-payload';
 
-const json = (payload: unknown) => ({ data: payload });
-const target = () => ({ workspaceId: activeWorkspaceId(), installSlug: operatorHomeHarnessSlug() });
+// Bounded result doors keep leading fields. Put the small authorization verdict
+// before queue diagnostics so a large repairQueue cannot erase whether this
+// caller is the delegated fixer. Keep the bulky contextual fields last.
+const PRIORITY_CONTEXT_KEYS = ['callerAuthorization'];
+const TRAILING_CONTEXT_KEYS = ['target', 'source', 'repairQueue', 'repairQueueRead', 'timings'];
+export function decisionFieldsFirst(payload: unknown): unknown {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+  const rec = payload as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(rec)) {
+    if (!TRAILING_CONTEXT_KEYS.includes(key) && !PRIORITY_CONTEXT_KEYS.includes(key)) out[key] = value;
+  }
+  for (const key of PRIORITY_CONTEXT_KEYS) if (key in rec) out[key] = rec[key];
+  for (const key of TRAILING_CONTEXT_KEYS) if (key in rec) out[key] = rec[key];
+  return out;
+}
+const json = (payload: unknown) => ({ data: decisionFieldsFirst(payload) });
+const target = (ctx: { workspaceId?: unknown; harnessSlug?: string | null } = {}): GateVerdictTarget => ({
+  workspaceId: typeof ctx.workspaceId === 'string' && ctx.workspaceId.trim() && ctx.workspaceId !== '*'
+    ? ctx.workspaceId : activeWorkspaceId(),
+  installSlug: resolveConcreteHarnessSlug(undefined, ctx) ?? operatorHomeHarnessSlug(),
+});
+
+/**
+ * A completed `release:repair-queue` call can outlive dispatch's deadline after it has
+ * committed a queue or edit-ledger write. Surface only the durable identity returned by
+ * that exact operation; a success-shaped response without one is not proof of persistence.
+ */
+export function repairQueueAbortCompletionReceipt(
+  _args: unknown,
+  result: ToolResult,
+  context: AbortCompletionContext,
+): AbortCompletionReceipt {
+  if (context.toolName !== 'release:repair-queue' || !context.callId.trim()) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'release:repair-queue receipt did not receive the dispatch attempt identity',
+      failures: ['missing-attempt-identity'],
+    };
+  }
+  const payload = completedResultPayload(result);
+  if (!payload) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'release:repair-queue result did not contain a parseable completion payload',
+      failures: ['missing-result-payload'],
+    };
+  }
+
+  const completionReceipt = asRecord(payload.completionReceipt);
+  const effectRef = typeof completionReceipt?.effectRef === 'string' ? completionReceipt.effectRef.trim() : '';
+  if (completionReceipt?.status === 'recorded' && effectRef.startsWith('release:repair-queue:')) {
+    return { status: 'recorded', effectRef };
+  }
+  if (completionReceipt?.status === 'not-recorded') {
+    return {
+      status: 'not-recorded',
+      ...(typeof completionReceipt.reason === 'string' ? { reason: completionReceipt.reason } : {}),
+    };
+  }
+
+  const op = payload.op;
+  if (
+    op === 'get' ||
+    payload.dryRun === true ||
+    payload.alreadyClear === true ||
+    payload.verdict === 'no-frozen-queue' ||
+    (payload.pending === true && payload.verdict === 'precheck-running') ||
+    (op === 'record-edit' && payload.recorded === true && payload.inserted === false) ||
+    (op === 'retire' && payload.retired === false && payload.casMiss === true) ||
+    (payload.refused === true && payload.effectMayHaveRun === false)
+  ) {
+    return { status: 'not-recorded', reason: 'completed response proves this attempt made no repair-queue write' };
+  }
+
+  return {
+    status: 'recovery-incomplete',
+    reason: 'release:repair-queue result did not prove whether its write committed',
+    failures: [effectRef ? 'invalid-completion-receipt' : 'missing-completion-receipt'],
+  };
+}
 const FULL_COMMIT_SHA = /^[0-9a-f]{40,64}$/;
+// Stay ahead of the observed 300s MCP client deadline. This applies to read-only previews only.
+const ADMISSION_PREVIEW_JOB_TIMEOUT_MS = 4 * 60 * 1000;
 const queueIdentityFields = {
   /** The frozen queue snapshot the caller read before building this admission. */
   expectedCandidate: z
@@ -119,6 +222,71 @@ function readQueueIdentity(args: QueueIdentityArgs): QueueIdentity | null {
     expectedUpdatedAtMs: args.expectedUpdatedAtMs!,
   };
 }
+
+async function emitRetiredUnjudgedRepairHeadTerminal(
+  queue: FrozenCandidateRepairQueue,
+  pipeline: string,
+): Promise<{
+  status: 'emitted' | 'partial' | 'failed';
+  sha: string;
+  emittedKeys: string[];
+  failedKeys: string[];
+}> {
+  const summary = `${pipeline} frozen repair head ${queue.repairHead.slice(0, 8)} was retired before verification; no verdict rendered`;
+  const payload = {
+    sha: queue.repairHead,
+    from: queue.candidate,
+    pipeline,
+    reason: 'repair-queue-retired-before-verification',
+    summary,
+    runId: null,
+  };
+  const cancelSiblingKeysFor = [
+    'release:green',
+    `release:green:${pipeline}`,
+    'green-checkpoint:red',
+    `green-checkpoint:red:${pipeline}`,
+    'green-checkpoint:held',
+    `green-checkpoint:held:${pipeline}`,
+  ];
+  const keys = ['green-checkpoint:inconclusive', `green-checkpoint:inconclusive:${pipeline}`];
+  const emittedKeys: string[] = [];
+  const failedKeys: string[] = [];
+
+  try {
+    const { emitAwaitedEvent } = await import('../../events/await/engine');
+    for (const key of keys) {
+      try {
+        await emitAwaitedEvent({
+          key,
+          summary,
+          payload,
+          source: 'release:repair-queue-retire',
+          cancelSiblingKeysFor,
+        });
+        emittedKeys.push(key);
+      } catch (error) {
+        failedKeys.push(key);
+        console.warn(
+          `[release:repair-queue] inconclusive retire wake failed for ${queue.repairHead} on ${key}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  } catch (error) {
+    failedKeys.push(...keys);
+    console.warn(
+      `[release:repair-queue] inconclusive retire wake setup failed for ${queue.repairHead}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  return {
+    status: failedKeys.length === 0 ? 'emitted' : emittedKeys.length > 0 ? 'partial' : 'failed',
+    sha: queue.repairHead,
+    emittedKeys,
+    failedKeys,
+  };
+}
+
 const argsSchema = z.preprocess(
   (value) => {
     // The read branch has no arguments. Treat an omitted op on an otherwise
@@ -156,6 +324,8 @@ const argsSchema = z.preprocess(
         ...queueIdentityFields,
         /** P-020 (D-008 3a): ALSO replay these agents' ledgered hunks — a genuinely shared fix. Never implied. */
         includeHunksFrom: z.array(z.string().min(1).max(200)).max(20).optional(),
+        /** Exact hunk ledger row ids from a reviewed preview; keeps source stable across R6. */
+        ledgerRowIds: z.array(z.number().int().positive().safe()).min(1).max(10000).optional(),
         /** P-020 (D-008 3b): admit staging's WHOLE blob (may carry foreign work). Requires `reason`; the ledger records every foreign hunk it carries. */
         wholeBlob: z.boolean().optional(),
         /** Pin whole-blob reads to one immutable integration-branch ancestor so a reviewed preview cannot drift with staging. */
@@ -168,7 +338,7 @@ const argsSchema = z.preprocess(
         /** P-006 (R6, D-002): opt OUT of the admission pre-check for a deliberate wide admission. Requires `precheckReason`; recorded on the ledger entry. */
         skipPrecheck: z.boolean().optional(),
         precheckReason: z.string().min(8).max(2000).optional(),
-        /** Retry a terminal failed pre-check for the same immutable built commit. A running one is never duplicated. */
+        /** Retry a terminal failed or deferred pre-check for the same immutable built commit. A running one is never duplicated. */
         retryPrecheck: z.boolean().optional(),
       }),
       z.object({
@@ -181,6 +351,7 @@ const argsSchema = z.preprocess(
         workItem: z.string().max(120).optional(),
         ...queueIdentityFields,
         includeHunksFrom: z.array(z.string().min(1).max(200)).max(20).optional(),
+        ledgerRowIds: z.array(z.number().int().positive().safe()).min(1).max(10000).optional(),
         wholeBlob: z.boolean().optional(),
         sourceCommit: z.string().regex(FULL_COMMIT_SHA).optional(),
         patchCommit: z
@@ -239,6 +410,7 @@ const argsSchema = z.preprocess(
         (value.wholeBlob === true ||
           value.sourceCommit !== undefined ||
           value.includeHunksFrom !== undefined ||
+          value.ledgerRowIds !== undefined ||
           !value.reason ||
           value.reason.trim().length < 8)
       ) {
@@ -254,6 +426,10 @@ const argsSchema = z.preprocess(
           path: ['sourceCommit'],
           message: 'sourceCommit is only valid with wholeBlob:true',
         });
+      }
+      if (value.ledgerRowIds !== undefined && value.wholeBlob === true) {
+        refinementCtx.addIssue({ code: z.ZodIssueCode.custom, path: ['ledgerRowIds'],
+          message: 'ledgerRowIds is only valid for hunk-exact admission' });
       }
       const fields: Array<keyof QueueIdentityArgs> = ['expectedCandidate', 'expectedRepairHead', 'expectedUpdatedAtMs'];
       const supplied = fields.filter((field) => value[field] !== undefined).length;
@@ -394,6 +570,7 @@ export function assessFrozenRepairFixerAuthorization(
 async function reconcileQueueRowWithLineage(
   queueTarget: ReturnType<typeof target>,
   queue: FrozenCandidateRepairQueue,
+  root: string,
 ): Promise<{
   queue: FrozenCandidateRepairQueue;
   ledger: { status: string; reconciled: number; detail: string } | null;
@@ -401,7 +578,6 @@ async function reconcileQueueRowWithLineage(
   try {
     const { reconcileFrozenRepairQueueWithLineageRef } = await import('../../release/frozen-lineage-ledger-reconcile');
     const { applyFrozenCandidateRepairQueueTransition } = await import('../../harness/routines/release-actions');
-    const root = integrationRoot();
     const probe = reconcileFrozenRepairQueueWithLineageRef(queue, { root });
     if (probe.status === 'in-sync') return { queue, ledger: null };
     if (probe.status !== 'reconciled') {
@@ -424,27 +600,77 @@ async function reconcileQueueRowWithLineage(
   }
 }
 
-async function inspectQueue() {
-  const queueTarget = target();
+/**
+ * WI-10007509: mark the queue entries the latest repair tick passed at the live repairHead.
+ * Same routine-row read as release-actions.ts's fixer dispatch (`gate_health.repairTickLegs`).
+ * A failed read returns `unknown`, never "no contradiction".
+ */
+async function readSameHeadContradiction(
+  installSlug: string,
+  queue: { repairHead: string; failingTests?: readonly string[] | null },
+): Promise<
+  | ReturnType<typeof sameHeadContradictionAnnotation>
+  | { status: 'unknown'; reason: 'repair-tick-legs-read-failed'; detail: string }
+> {
+  try {
+    const rows = (await getOrgPg().sql.unsafe(
+      `SELECT metadata->'gate_health'->'repairTickLegs' AS legs
+         FROM harness_shared.routines
+        WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
+      [installSlug],
+    )) as Array<{ legs: unknown }>;
+    return sameHeadContradictionAnnotation(queue.failingTests, parseRepairTickLegs(rows[0]?.legs), queue.repairHead);
+  } catch (err) {
+    return { status: 'unknown', reason: 'repair-tick-legs-read-failed', detail: String(err) };
+  }
+}
+
+async function inspectQueue(queueTarget: GateVerdictTarget, root: string) {
   const read = await readFrozenCandidateRepairQueueState(queueTarget);
   let queue = read.status === 'value' ? read.queue : null;
   let ledger: { status: string; reconciled: number; detail: string } | null = null;
-  if (queue) ({ queue, ledger } = await reconcileQueueRowWithLineage(queueTarget, queue));
-  // R6 runs in this host's process, not a persistent worker. A normal service restart
-  // kills its setup/test child and its in-memory finalizer. The marker must not keep
-  // advertising "running" until the entire per-file timeout budget expires.
+  if (queue) ({ queue, ledger } = await reconcileQueueRowWithLineage(queueTarget, queue, root));
+  // New R6 runs live in task-manager scopes and persist progress/verdict by operationId.
+  // The launcher host PID is only the pre-spawn race guard; after the task row exists,
+  // replacing that host must not cancel or fail an active pre-check.
   const pending = queue?.admissionPrecheck;
-  if (queue && pending?.status === 'running' && pending.runnerPidIdentity && pending.runnerPid) {
-    const alive = isPidAlive(pending.runnerPid);
-    const observedIdentity = alive === true ? checkpointPidIdentity(pending.runnerPid) : null;
-    if (alive === false || (observedIdentity !== null && observedIdentity !== pending.runnerPidIdentity)) {
-      const detail =
-        `R6 pre-check host process ${pending.runnerPid} ended or was replaced before settling ` +
-        `${pending.operationId}; no test verdict exists for ${pending.builtCommit.slice(0, 12)}. ` +
-        'The admission remains fail-closed; retryPrecheck:true starts a fresh measurement.';
+  if (queue && pending?.status === 'running') {
+    let managedTask: Awaited<ReturnType<typeof getTask>> | null = null;
+    let taskReadError: unknown;
+    if (pending.runnerTaskId) {
+      try {
+        managedTask = await getTask(pending.runnerTaskId);
+      } catch (err) {
+        taskReadError = err;
+      }
+    }
+    if (taskReadError) {
+      ledger = {
+        status: 'precheck-task-read-failed',
+        reconciled: 0,
+        detail: `Could not inspect managed runner ${pending.runnerTaskId}: ${String(taskReadError)}`,
+      };
+    }
+
+    const managedTaskLive = managedTask?.state === 'pending' || managedTask?.state === 'running';
+    const managedTaskEnded = Boolean(managedTask && !managedTaskLive);
+    let launcherHostDead = false;
+    if (!managedTask && !taskReadError && pending.runnerPidIdentity && pending.runnerPid) {
+      const alive = isPidAlive(pending.runnerPid);
+      const observedIdentity = alive === true ? checkpointPidIdentity(pending.runnerPid) : null;
+      launcherHostDead = alive === false || (observedIdentity !== null && observedIdentity !== pending.runnerPidIdentity);
+    }
+    const runnerLost = !taskReadError && (managedTaskEnded || launcherHostDead);
+    if (runnerLost) {
+      const detail = managedTaskEnded
+        ? `Managed R6 pre-check task ${pending.runnerTaskId} ended as ${managedTask!.state} ` +
+          `(exit=${managedTask!.exitCode ?? 'unknown'}${managedTask!.exitReason ? `, reason=${managedTask!.exitReason}` : ''}) ` +
+          `before persisting a verdict for ${pending.builtCommit.slice(0, 12)}.`
+        : `R6 pre-check launcher host process ${pending.runnerPid} ended or was replaced before ` +
+          `managed task ${pending.runnerTaskId ?? '(legacy runner)'} was registered; no verdict exists for ${pending.builtCommit.slice(0, 12)}.`;
       const verdict = evaluateFixPrecheck(
         precheckPopulation({ signature: queue.signature, admittedPaths: pending.files }),
-        { ran: false, reason: 'runner-failed', detail },
+        { ran: false, reason: 'runner-failed', detail: `${detail} The admission remains fail-closed; retryPrecheck:true starts a fresh measurement.` },
       );
       try {
         await settleAdmissionPrecheck(queueTarget, pending.operationId, verdict);
@@ -454,7 +680,7 @@ async function inspectQueue() {
         ledger = {
           status: 'precheck-reconcile-failed',
           reconciled: 0,
-          detail: `Could not persist host-restart failure for ${pending.operationId}: ${String(err)}`,
+          detail: `Could not persist managed-runner failure for ${pending.operationId}: ${String(err)}`,
         };
       }
     }
@@ -479,16 +705,23 @@ async function inspectFixerLiveness(queue: FrozenCandidateRepairQueue | null) {
   return releaseFixerSpawnAlive(getOrgPg().sql, queue.fixerSpawnId).catch(() => null);
 }
 
-/** P-006 (R6): the compact pre-check record carried on the ledger entry, the audit row and the result. */
-function precheckRecordOf(
+/**
+ * P-006 (R6): the compact pre-check record carried on the ledger entry, the audit row and the result.
+ * P-007 (green-main-cycle-time-2026-10-08#D-040): every branch also carries the admission's radius
+ * summary, so a later red round can tell an over-cap (unguarded) admission from a guarded one.
+ * Exported for its tests only.
+ */
+export function precheckRecordOf(
   verdict: FixPrecheckVerdict | null,
   ctx: { skipPrecheck: boolean; precheckReason: string; dryRun: boolean; population: FixPrecheckPopulation },
 ): NonNullable<FrozenRepairAdmission['precheck']> {
+  const summary = summarizeAdmissionRadius(ctx.population.radius);
+  const radius = summary ? { radius: summary } : {};
   if (verdict === null) {
     if (ctx.skipPrecheck)
-      return { ran: false, reason: 'skipped', precheckReason: ctx.precheckReason, wouldRun: ctx.population.files };
-    if (ctx.population.files.length === 0) return { ran: false, reason: 'nothing-to-run' };
-    return { ran: false, reason: ctx.dryRun ? 'dry-run' : 'not-run', wouldRun: ctx.population.files };
+      return { ran: false, reason: 'skipped', precheckReason: ctx.precheckReason, wouldRun: ctx.population.files, ...radius };
+    if (ctx.population.files.length === 0) return { ran: false, reason: 'nothing-to-run', ...radius };
+    return { ran: false, reason: ctx.dryRun ? 'dry-run' : 'not-run', wouldRun: ctx.population.files, ...radius };
   }
   if (verdict.ran) {
     return {
@@ -498,6 +731,7 @@ function precheckRecordOf(
       failing: verdict.failing,
       unmeasured: verdict.unmeasured,
       ...(verdict.ok ? { fixes: verdict.fixes } : {}),
+      ...radius,
     };
   }
   return {
@@ -505,11 +739,12 @@ function precheckRecordOf(
     reason: verdict.reason,
     ...('detail' in verdict ? { detail: verdict.detail } : {}),
     wouldRun: ctx.population.files,
+    ...radius,
   };
 }
 
-const ADMISSION_PRECHECK_SETUP_BUDGET_MS = 20 * 60_000;
-const ADMISSION_PRECHECK_PER_FILE_BUDGET_MS = 10 * 60_000;
+// Setup and per-file budgets are imported from the runner (admission-fix-precheck.ts) so
+// this deadline can never drift from the budgets the runner actually enforces (WI-10006014).
 const ADMISSION_PRECHECK_SETTLEMENT_BUDGET_MS = 60_000;
 
 function sameAdmissionPrecheck(
@@ -554,30 +789,6 @@ function admissionPrecheckDeadline(startedAtMs: number, files: readonly string[]
   );
 }
 
-async function settleAdmissionPrecheck(
-  queueTarget: ReturnType<typeof target>,
-  operationId: string,
-  verdict: FixPrecheckVerdict,
-): Promise<void> {
-  const settledAtMs = Date.now();
-  await applyFrozenCandidateRepairQueueTransition(queueTarget, (fresh) => {
-    const current = fresh.admissionPrecheck;
-    if (!current || current.operationId !== operationId || current.status !== 'running') return fresh;
-    const { dispatchReservation, ...rest } = fresh;
-    return {
-      ...rest,
-      ...(dispatchReservation?.token === operationId ? {} : { dispatchReservation }),
-      admissionPrecheck: {
-        ...current,
-        status: verdict.ok ? (verdict.ran ? 'passed' : 'deferred') : 'failed',
-        verdict,
-        updatedAtMs: settledAtMs,
-      },
-      updatedAtMs: Math.max(fresh.updatedAtMs + 1, settledAtMs),
-    };
-  });
-}
-
 async function recordAudit(actor: string, details: Record<string, unknown>): Promise<boolean> {
   try {
     const id = `repair-queue-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -604,8 +815,9 @@ export default defineTool({
   name: 'release:repair-queue',
   profile: 'engineer',
   description:
-    'Inspect, admit paths onto, claim a manifest leg, or retire the frozen repair queue. Workspace-global; omit harness/workspace. `admit{paths,...}` is the only door for a gate-red fix on judged lineage: it replays exactly the named integration-branch paths onto repairHead as one proved commit; `wholeBlob:true, sourceCommit:<ancestor SHA>` pins a reviewed source against later staging drift. Dry-run unless `confirm:true`. A confirmed admission with R6 test files first returns an observable `precheck-running` operation; no background leg publishes. `converge` aliases `admit`; `retire` is an exact-identity CAS and dry-run unless confirmed.',
+    'Inspect, admit exact paths onto, claim a manifest leg of, or retire the frozen repair queue for the selected harness (operator home if unscoped). For gate-red fixes, `admit{paths}` is the only door: it replays named integration-branch paths onto repairHead as one proved commit; `wholeBlob:true, sourceCommit:<ancestor SHA>` pins reviewed source against staging drift. Dry-run unless `confirm:true`. R6 test files first return `precheck-running`; no background leg publishes. `converge` aliases `admit`; `retire` uses exact-identity CAS and is dry-run unless confirmed.',
   capability: 'operator:write',
+  abortCompletionReceipt: repairQueueAbortCompletionReceipt,
   effectForCall: (args) => {
     const op = (args as { op?: unknown }).op;
     return op === undefined ||
@@ -622,11 +834,11 @@ export default defineTool({
   guidance: {
     when: 'After a gate-red fix is committed on staging, use `admit{paths}` for exactly the changed files; also inspect a frozen, blocked, or dead-fixer queue.',
     notWhen:
-      'Workspace-global: never pass harness/workspace. Never catch up to tip, retire live/unknown work, launch a checkpoint, or deploy.',
+      'Use the selected harness scope, not a harness/workspace key in the payload. Never catch up to tip, retire live/unknown work, launch a checkpoint, or deploy.',
     chaining:
       '`get` → dry-run `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify proof → repeat with `confirm:true`. If staging may move between preview and confirmation, use `wholeBlob:true, sourceCommit:<reviewed integration ancestor SHA>, reason`. If R6 returns `precheck-running`, read it via `get`, then repeat with refreshed identity after pass; retry only a terminal failed pre-check. For missed hook capture, `patchCommit:<full SHA>, reason` replays that commit’s named-path delta. Retire only when `get` proves `retireAllowed` and pass its exact identity.',
     returns:
-      '{ ok, op, verdict?, repairQueueRead?, admitted?, precheckOperation?, dryRun?, judgedSha?, nextAction?, containment?, proof? }. Read `nextAction`; mutations report verdict plus proof/containment and retire uses CAS.',
+      '{ ok, op, verdict?, repairQueueRead?, admitted?, precheckOperation?, dryRun?, judgedSha?, nextAction?, containment?, proof?, inconclusiveTerminal? }. Read `nextAction`; a successful retire of an unjudged repairHead emits the exact-SHA inconclusive terminal and reports its wake status.',
     seeAlso: ['release:deploy', 'dev:pipeline_position', 'release:trace'],
   },
   args: argsSchema,
@@ -666,10 +878,50 @@ export default defineTool({
       refused: z.boolean().optional(),
       casMiss: z.boolean().optional(),
       current: z.unknown().nullable().optional(),
+      completionReceipt: z.object({
+        status: z.enum(['recorded', 'not-recorded', 'recovery-incomplete']),
+        effectRef: z.string().optional(),
+        reason: z.string().optional(),
+        failures: z.array(z.string()).optional(),
+      }).optional(),
+      inconclusiveTerminal: z.object({
+        status: z.enum(['emitted', 'partial', 'failed']),
+        sha: z.string(),
+        emittedKeys: z.array(z.string()),
+        failedKeys: z.array(z.string()),
+      }).optional(),
     })
     .passthrough(),
   async handler(args, ctx) {
-    const inspected = await inspectQueue();
+    const queueTarget = target(ctx);
+    let scopeRoot = integrationRoot();
+    let toolingRoot = scopeRoot;
+    let testCommand: string[] | undefined;
+    let precheckClearEnv: string[] = [];
+    if (queueTarget.installSlug !== operatorHomeHarnessSlug()) {
+      const routing = await resolveCheckpointRouting(queueTarget, scopeRoot);
+      if (routing.skip) return json({ ok: false, refused: true, reason: 'checkpoint_routing_skip',
+        target: queueTarget, detail: routing.skip.reason });
+      scopeRoot = routing.extraEnv.PAPERCUSP_INTEGRATION_ROOT ?? routing.root;
+      toolingRoot = routing.root;
+      precheckClearEnv = routing.clearEnv;
+      const suite = await resolvePotSuiteCommand(queueTarget.installSlug, queueTarget.workspaceId);
+      testCommand = suite?.trim().split(/\s+/).filter(Boolean);
+    }
+    // WI-10005695: admit/converge report per-step timings (response `timings`) and log a step
+    // that is still running after 30s, so a call whose client gives up is still localizable.
+    const clock =
+      args.op === 'admit' || args.op === 'converge'
+        ? createAdmissionStepClock({
+            context:
+              `op=${args.op} paths=${Array.isArray(args.paths) ? args.paths.length : 0} ` +
+              `dryRun=${args.confirm !== true} wholeBlob=${args.wholeBlob === true}`,
+          })
+      : null;
+    try {
+    const inspected = clock
+      ? await clock.step('inspect-queue', () => inspectQueue(queueTarget, scopeRoot))
+      : await inspectQueue(queueTarget, scopeRoot);
     const compactRead =
       inspected.read.status === 'value'
         ? { status: 'value' as const, schemaVersion: inspected.read.queue.schemaVersion }
@@ -693,6 +945,9 @@ export default defineTool({
             isSuperuser: ctx.isSuperuser,
           });
     if (args.op === 'get') {
+      const sameHeadContradicted = inspected.queue
+        ? await readSameHeadContradiction(inspected.target.installSlug, inspected.queue)
+        : null;
       return json({
         ok: true,
         op: 'get',
@@ -700,6 +955,9 @@ export default defineTool({
         repairQueue: renderedQueue,
         repairQueueRead: compactRead,
         callerAuthorization,
+        // WI-10007509: signature entries the latest repair tick passed at this exact repairHead.
+        // Absent ⇒ no such contradiction was measured; `unknown` ⇒ the measurement was unreadable.
+        ...(sameHeadContradicted ? { sameHeadContradicted } : {}),
         // P-027 (D-014): ledger/ref agreement. Absent ⇒ in sync on this read; `reconciled` ⇒ the
         // row was rebuilt from the lineage ref just now; any other status ⇒ a disagreement this
         // read refused to repair, with the reason.
@@ -850,6 +1108,12 @@ export default defineTool({
         ok: true,
         recorded: true,
         inserted: outcome.inserted,
+        ...(outcome.inserted && outcome.id !== null
+          ? { completionReceipt: {
+              status: 'recorded',
+              effectRef: `release:repair-queue:record-edit:${outcome.id}`,
+            } }
+          : {}),
         oversize: outcome.oversize,
         ledgerId: outcome.id,
         path: outcome.path,
@@ -865,7 +1129,7 @@ export default defineTool({
       });
     }
     if (args.op === 'admit' || args.op === 'converge') {
-      const root = integrationRoot();
+      const root = scopeRoot;
       const branch = integrationBranch();
       const queue = inspected.queue;
       const paths = Array.isArray(args.paths) ? args.paths.filter((p) => typeof p === 'string' && p.trim()) : [];
@@ -876,6 +1140,12 @@ export default defineTool({
         repairQueue: inspected.diagnostic,
         repairQueueRead: compactRead,
         callerAuthorization,
+        // WI-10005695: a GETTER on purpose. Every admit response spreads `...base`, and a
+        // spread reads the getter at that moment, so each response carries the timings of
+        // every step that settled before it was built, with no per-return wiring.
+        get timings() {
+          return clock?.summary() ?? null;
+        },
       };
       if (!queue) {
         return json({
@@ -890,8 +1160,22 @@ export default defineTool({
           ...base,
         });
       }
-      const containmentAt = (judgedSha: string) =>
-        paths.length ? containmentForPaths(paths, judgedSha, root, undefined, branch) : null;
+      // WI-10005695: every slow step below runs through `step`, so the response and the
+      // journal both name where an admit spent its time.
+      const step = <T,>(name: string, run: () => Promise<T>): Promise<T> => (clock ? clock.step(name, run) : run());
+      const runJob = <K extends AdmissionJobKind>(name: string, job: AdmissionJobOf<K>) =>
+        step(name, () =>
+          runAdmissionJob(
+            job,
+            args.op === 'admit' && args.confirm !== true
+              ? { timeoutMs: ADMISSION_PREVIEW_JOB_TIMEOUT_MS, stepName: name }
+              : undefined,
+          ),
+        );
+      const containmentAt = async (judgedSha: string) =>
+        paths.length
+          ? runJob('containment', { kind: 'containment', paths, judgedSha, root, branch })
+          : null;
       if (paths.length === 0) {
         return json({
           ok: false,
@@ -931,7 +1215,7 @@ export default defineTool({
             updatedAtMs: queue.updatedAtMs,
           },
           expectedQueueIdentity,
-          containment: containmentAt(queue.repairHead),
+          containment: await containmentAt(queue.repairHead),
           ...base,
         });
       }
@@ -978,14 +1262,16 @@ export default defineTool({
       // is a synthesised commit = repairHead + ONLY the caller's ledgered hunks per path, so a
       // peer's concurrent work in the same file never rides in. `wholeBlob:true` (with a
       // reason) is the explicit, ledgered widening; `includeHunksFrom` replays named peers.
-      const wholeBlob = args.wholeBlob === true;
+      let wholeBlob = args.wholeBlob === true;
       const includeHunksFrom = (args.includeHunksFrom ?? []).map((a) => a.trim()).filter((a) => a.length > 0);
-      const mode = args.patchCommit !== undefined ? 'committed-patch' : wholeBlob ? 'whole-blob' : 'hunk-exact';
+      let mode: 'committed-patch' | 'whole-blob' | 'hunk-exact' =
+        args.patchCommit !== undefined ? 'committed-patch' : wholeBlob ? 'whole-blob' : 'hunk-exact';
       if (
         args.patchCommit !== undefined &&
         (wholeBlob ||
           args.sourceCommit !== undefined ||
           args.includeHunksFrom !== undefined ||
+          args.ledgerRowIds !== undefined ||
           !args.reason ||
           args.reason.trim().length < 8)
       ) {
@@ -1014,31 +1300,108 @@ export default defineTool({
           detail: 'sourceCommit is only valid with wholeBlob:true',
         });
       }
+      if (wholeBlob && args.ledgerRowIds !== undefined) {
+        return json({ ...base, ok: false, admitted: false, refused: true, dryRun,
+          verdict: 'refused', reason: 'invalid-ledger-selection',
+          detail: 'ledgerRowIds is only valid for hunk-exact admission' });
+      }
       let ledgerRows: FrozenRepairEditLedgerRow[] = [];
       let ledgerReadError: string | null = null;
       try {
-        ledgerRows = await readFrozenRepairEditLedger(getOrgPg().sql, {
-          workspaceId: inspected.target.workspaceId,
-          installSlug: inspected.target.installSlug,
-          candidate: queue.candidate,
-          paths,
-        });
+        ledgerRows = await step('ledger-read', () =>
+          readFrozenRepairEditLedger(getOrgPg().sql, {
+            workspaceId: inspected.target.workspaceId,
+            installSlug: inspected.target.installSlug,
+            candidate: queue.candidate,
+            paths,
+          }),
+        );
       } catch (err) {
         ledgerReadError = (err as Error).message;
+      }
+      // P-004 (gate-throughput-shift-left-2026-10-06, EI-24313562050732849 / EI-24557368838482892):
+      // when NOTHING on any requested path reached the hunk ledger, ask the independent edit
+      // attribution ledger. Caller-only editors on every path ⇒ admit staging's blob, pinned to the
+      // sha read now, under an automatic recorded reason. Otherwise hunk-exact refuses as before,
+      // with the attribution verdict appended so the refusal names exactly why.
+      let attributionNote: string | null = null;
+      // The sole-editor fallback supplies these. Never reassign `args`: any reassignment drops the
+      // op:'admit' narrowing inside the closures below (buildAdmission reads both).
+      let effectiveSourceCommit = args.sourceCommit;
+      let effectiveReason = args.reason;
+      if (
+        mode === 'hunk-exact' &&
+        args.ledgerRowIds === undefined &&
+        ledgerReadError === null &&
+        paths.every((p) => !ledgerRows.some((r) => r.path === p))
+      ) {
+        try {
+          const cut = await runJob('sole-editor-candidate-time', {
+            kind: 'git',
+            argv: ['show', '-s', '--format=%ct', queue.candidate],
+            cwd: root,
+          });
+          const tip = await runJob('sole-editor-pin', {
+            kind: 'git',
+            argv: ['rev-parse', '--verify', `${branch}^{commit}`],
+            cwd: root,
+          });
+          const cutSec = Number(cut.stdout.trim());
+          const pinned = tip.stdout.trim();
+          if (cut.status === 0 && Number.isFinite(cutSec) && tip.status === 0 && FULL_COMMIT_SHA.test(pinned)) {
+            const windowStartMs = cutSec * 1000 - SOLE_EDITOR_WINDOW_MARGIN_MS;
+            const raw = await getOrgPg().sql`
+              SELECT file, agent_id, ts
+                FROM harness_shared.edit_attribution_ledger
+               WHERE workspace_id = ${inspected.target.workspaceId}
+                 AND file = ANY(${[...paths]}::text[])
+                 AND ts >= to_timestamp(${windowStartMs / 1000})`;
+            const rows: EditAttributionRow[] = raw.map((r) => ({
+              path: String(r.file),
+              agent: String(r.agent_id),
+              tsMs: new Date(r.ts as string | Date).getTime(),
+            }));
+            const verdict = attributeUnledgeredPaths({
+              paths,
+              actor: identity.ownerId,
+              includeHunksFrom,
+              rows,
+              windowStartMs,
+            });
+            if (verdict.ok) {
+              wholeBlob = true;
+              mode = 'whole-blob';
+              effectiveSourceCommit = pinned;
+              effectiveReason =
+                `auto: sole post-freeze editor — no hunk reached the frozen ledger, and the edit attribution ledger ` +
+                `records only ${identity.ownerId} editing ${paths.join(', ')} since the candidate cut`;
+            } else {
+              attributionNote = `edit attribution ledger: ${verdict.detail}`;
+            }
+          } else {
+            attributionNote = 'edit attribution ledger: not consulted (could not read the candidate time or pin the integration tip)';
+          }
+        } catch (err) {
+          attributionNote = `edit attribution ledger: unreadable (${(err as Error).message})`;
+        }
       }
       let sourceRef = branch;
       let hunkExact: HunkExactSuccess | null = null;
       let patch: FrozenRepairAdmission['patch'];
       let foreign: ReturnType<typeof summarizeForeignHunks> = { count: 0, agents: [], byPath: {} };
       if (args.patchCommit !== undefined) {
-        const built = buildCommittedPatchSource({
-          root,
-          repairHead: queue.repairHead,
-          patchCommit: args.patchCommit,
-          integrationRef: branch,
-          paths,
-          reason: args.reason!,
-        });
+        const patchCommit = args.patchCommit;
+        const built = await runJob('committed-patch', {
+            kind: 'committed-patch',
+            input: {
+              root,
+              repairHead: queue.repairHead,
+              patchCommit,
+              integrationRef: branch,
+              paths,
+              reason: effectiveReason!,
+            },
+          });
         if (!built.ok) {
           return json({
             ...base,
@@ -1056,7 +1419,7 @@ export default defineTool({
         patch = built.patch;
         sourceRef = built.sourceCommit;
       } else if (wholeBlob) {
-        if (!args.reason || args.reason.trim().length < 8) {
+        if (!effectiveReason || effectiveReason.trim().length < 8) {
           return json({
             ok: false,
             admitted: false,
@@ -1067,13 +1430,18 @@ export default defineTool({
             detail:
               "wholeBlob:true admits staging's whole blob of each path, which may carry other agents' concurrent work (D-008) — say why that is safe in `reason` (≥ 8 chars). Prefer the default hunk-exact admission, or includeHunksFrom:[<agent>] for a shared fix.",
             judgedSha: queue.repairHead,
-            containment: containmentAt(queue.repairHead),
+            containment: await containmentAt(queue.repairHead),
             mode,
             ...base,
           });
         }
-        if (args.sourceCommit !== undefined) {
-          const resolved = realAdmissionGit(['rev-parse', '--verify', `${args.sourceCommit}^{commit}`], { cwd: root });
+        if (effectiveSourceCommit !== undefined) {
+          const sourceCommitArg = effectiveSourceCommit;
+          const resolved = await runJob('source-commit-resolve', {
+              kind: 'git',
+              argv: ['rev-parse', '--verify', `${sourceCommitArg}^{commit}`],
+              cwd: root,
+            });
           const resolvedSha = resolved.stdout.trim();
           if (resolved.status !== 0 || !FULL_COMMIT_SHA.test(resolvedSha)) {
             return json({
@@ -1083,13 +1451,17 @@ export default defineTool({
               dryRun,
               verdict: 'refused',
               reason: 'source-commit-unresolvable',
-              detail: `sourceCommit ${args.sourceCommit} does not resolve to a commit in the integration repository`,
+              detail: `sourceCommit ${effectiveSourceCommit} does not resolve to a commit in the integration repository`,
               judgedSha: queue.repairHead,
               mode,
               ...base,
             });
           }
-          const ancestor = realAdmissionGit(['merge-base', '--is-ancestor', resolvedSha, branch], { cwd: root });
+          const ancestor = await runJob('source-commit-ancestry', {
+              kind: 'git',
+              argv: ['merge-base', '--is-ancestor', resolvedSha, branch],
+              cwd: root,
+            });
           if (ancestor.status !== 0) {
             return json({
               ok: false,
@@ -1121,21 +1493,27 @@ export default defineTool({
             reason: 'ledger-unavailable',
             detail: `the edit ledger could not be read (${ledgerReadError}) — hunk-exact admission cannot tell your hunks from a peer's. Retry, or admit explicitly with wholeBlob:true and a reason.`,
             judgedSha: queue.repairHead,
-            containment: containmentAt(queue.repairHead),
+            containment: await containmentAt(queue.repairHead),
             mode,
             ...base,
           });
         }
-        const built = buildHunkExactSource({
-          root,
-          candidate: queue.candidate,
-          repairHead: queue.repairHead,
-          paths,
-          ledger: ledgerRows,
-          actor: identity.ownerId,
-          includeHunksFrom,
-          nowMs: Date.now(),
-        });
+        const built = await runJob('hunk-exact', {
+            kind: 'hunk-exact',
+            input: {
+              root,
+              candidate: queue.candidate,
+              repairHead: queue.repairHead,
+              paths,
+              ledger: ledgerRows,
+              actor: identity.ownerId,
+              includeHunksFrom,
+              ledgerRowIds: args.ledgerRowIds,
+              consumedLedgerRowIds: (queue.admissions ?? []).flatMap((entry) => entry.ledgerRowIds ?? []),
+              admissions: queue.admissions,
+              nowMs: Date.now(),
+            },
+          });
         if (!built.ok) {
           return json({
             ok: false,
@@ -1144,14 +1522,14 @@ export default defineTool({
             dryRun,
             verdict: 'refused',
             reason: built.code,
-            detail: built.detail,
+            detail: attributionNote ? `${built.detail}; ${attributionNote}` : built.detail,
             ...(built.path ? { path: built.path } : {}),
             ...(built.foreignAgents ? { foreignAgents: built.foreignAgents } : {}),
             ...(built.hunkIndex !== undefined ? { hunkIndex: built.hunkIndex } : {}),
             ...(built.step ? { step: built.step } : {}),
             exits: built.exits,
             judgedSha: queue.repairHead,
-            containment: containmentAt(queue.repairHead),
+            containment: await containmentAt(queue.repairHead),
             mode,
             ...base,
           });
@@ -1169,7 +1547,7 @@ export default defineTool({
       // (`precheck.ran:false, reason:'checkpoint-tree-busy'`) — the R-1 re-judge measures it.
       // Any other runner/setup failure refuses publication because an unmeasured result never
       // counts as passing. `skipPrecheck:true` + `precheckReason` is the deliberate ledgered opt-out.
-      const population = precheckPopulation({ signature: queue.signature ?? [], admittedPaths: paths });
+      let population = precheckPopulation({ signature: queue.signature ?? [], admittedPaths: paths });
       const skipPrecheck = args.skipPrecheck === true;
       const precheckReason = typeof args.precheckReason === 'string' ? args.precheckReason.trim() : '';
       if (skipPrecheck && precheckReason.length < 8) {
@@ -1184,58 +1562,75 @@ export default defineTool({
           detail:
             'skipPrecheck:true opts a confirmed admission OUT of the R6 pre-check (the built commit is not measured before publication) — say why that is safe in `precheckReason` (≥ 8 chars); it is recorded on the ledger entry.',
           judgedSha: queue.repairHead,
-          containment: containmentAt(queue.repairHead),
+          containment: await containmentAt(queue.repairHead),
           mode,
         });
       }
-      const precheckApplies = !dryRun && !skipPrecheck && population.files.length > 0;
       const buildAdmission = (dry: boolean) =>
-        admitPathsOntoRepairHead({
-          root,
-          candidate: queue.candidate,
-          repairHead: queue.repairHead,
-          paths,
-          source: {
-            ref: sourceRef,
-            ...(wholeBlob && args.sourceCommit !== undefined ? { recordAsRef: branch } : {}),
+        runJob(dry ? 'build-proof' : 'publish', {
+          kind: 'admit',
+          input: {
+            root,
+            candidate: queue.candidate,
+            repairHead: queue.repairHead,
+            paths,
+            source: {
+              ref: sourceRef,
+              ...(wholeBlob && effectiveSourceCommit !== undefined ? { recordAsRef: branch } : {}),
+            },
+            actor: identity.ownerId,
+            reason: effectiveReason,
+            nowMs: Date.now(),
+            dryRun: dry,
           },
-          actor: identity.ownerId,
-          reason: args.reason,
-          nowMs: Date.now(),
-          dryRun: dry,
           // P-004: the proved commit must resolve every relative import of every admitted TS/JS
           // file, or the door refuses `admission-incomplete` naming the sibling to admit. The
-          // The pinned whole-blob source is consulted when supplied; other modes preserve the
+          // pinned whole-blob source is consulted when supplied; other modes preserve the
           // integration branch as the suggestion source. Nothing is admitted on the caller's behalf.
           // WI-10004232: and a lockfile workspace entry it moves must still agree with its manifest,
-          // or npm install rewrites the lock and the promoted pin can never certify.
-          preflight: chainAdmissionPreflights(
-            importCompletenessPreflight({
-              root,
-              probeRef: wholeBlob && args.sourceCommit !== undefined ? sourceRef : branch,
-              ...(wholeBlob ? { enforceSourceCohort: true } : {}),
-            }),
-            lockfileManifestConsistencyPreflight({
-              root,
-              probeRef: wholeBlob && args.sourceCommit !== undefined ? sourceRef : branch,
-            }),
-          ),
+          // or npm install rewrites the lock and the promoted pin can never certify. Both checks
+          // are rebuilt from this spec on the worker thread (admissionPreflightFromSpec).
+          preflight: {
+            probeRef: wholeBlob && effectiveSourceCommit !== undefined ? sourceRef : branch,
+            ...(wholeBlob ? { enforceSourceCohort: true as const } : {}),
+          },
         });
       // Build the immutable candidate first. Publication is the effect boundary,
       // and must happen only while the condition claim row is locked below.
-      let outcome = buildAdmission(true);
+      let outcome = await buildAdmission(true);
+      // WI-8351: a gitlink directory is not a test filename. Resolve its own and paired test
+      // population from the unpublished built commit BEFORE deciding whether R6 applies.
+      // The serializable job runs all tree/blob reads on the existing admission worker.
+      if (outcome.ok && !dryRun && !skipPrecheck) {
+        const inventory = await runJob('precheck-population', {
+          kind: 'precheck-population',
+          input: { root, commit: outcome.commit, signature: queue.signature ?? [], admittedPaths: paths },
+        });
+        if (!inventory.ok) {
+          return json({ ...base, ok: false, admitted: false, refused: true, dryRun: false,
+            verdict: 'refused', reason: 'admission-precheck-unavailable', detail: inventory.detail,
+            builtCommit: outcome.commit, judgedSha: queue.repairHead, containment: await containmentAt(queue.repairHead), mode });
+        }
+        population = inventory.population;
+      }
+      const precheckApplies = !dryRun && !skipPrecheck && population.files.length > 0;
       // WI-10004151 part 2: an admitted lockfile/patch moves repairHead onto dependency inputs
       // the gate must materialise (`--ensure-ref`) before it can judge anything. Ask the SAME
       // script now whether that would succeed, so a lock no installed tree can produce is
       // refused here instead of parking verification an hour later. `unknown` never refuses.
       const dependencyPaths = paths.filter(isDependencyInputPath);
+      // A const, so the closure below keeps the narrowing (`outcome` is a reassigned `let`).
+      const provedCommit = outcome.ok ? outcome.commit : null;
       const dependencyGeneration: DependencyGenerationPrediction | null =
-        outcome.ok && dependencyPaths.length > 0
-          ? await predictDependencyGeneration({
-              integrationRoot: resolveCanonicalIntegrationRoot(root),
-              ref: outcome.commit,
-              paths: dependencyPaths,
-            })
+        provedCommit !== null && dependencyPaths.length > 0
+          ? await step('dependency-prediction', () =>
+              predictDependencyGeneration({
+                integrationRoot: resolveCanonicalIntegrationRoot(root),
+                ...(toolingRoot !== root ? { toolingRoot } : {}),
+                ref: provedCommit,
+                paths: dependencyPaths,
+              }),
+            )
           : null;
       const dependencyNote = dependencyGeneration ? describeDependencyPrediction(dependencyGeneration) : null;
       if (outcome.ok && dependencyGeneration?.verdict === 'refused' && !dryRun && !skipPrecheck) {
@@ -1251,7 +1646,7 @@ export default defineTool({
           dependencyGeneration,
           builtCommit: outcome.commit,
           judgedSha: queue.repairHead,
-          containment: containmentAt(queue.repairHead),
+          containment: await containmentAt(queue.repairHead),
           mode,
           note:
             'Nothing was published. The gate could never materialise these dependency inputs, so verification would park. ' +
@@ -1301,7 +1696,8 @@ export default defineTool({
         if (
           (matchingPrecheck?.status === 'passed' && matchingPrecheck.verdict?.ok === true && matchingPrecheck.verdict.ran) ||
           (matchingPrecheck?.status === 'deferred' && matchingPrecheck.verdict?.ok === true &&
-            !matchingPrecheck.verdict.ran && matchingPrecheck.verdict.reason === 'checkpoint-tree-busy')
+            !matchingPrecheck.verdict.ran && matchingPrecheck.verdict.reason === 'checkpoint-tree-busy' &&
+            args.retryPrecheck !== true)
         ) {
           precheck = matchingPrecheck.verdict;
         } else if (
@@ -1312,6 +1708,7 @@ export default defineTool({
           precheck = matchingPrecheck.verdict;
         } else {
           const startedAtMs = Date.now();
+          const runnerTaskId = newTaskId(startedAtMs);
           const runnerPidIdentity = checkpointPidIdentity(process.pid);
           const operationId =
             `repair-precheck-${queue.candidate.slice(0, 12)}-${builtCommit.slice(0, 12)}-` +
@@ -1324,11 +1721,13 @@ export default defineTool({
             repairHead: queue.repairHead,
             builtCommit,
             sourceCommit: outcome.entry.source.sha,
+            ledgerRowIds: hunkExact?.ledgerRowIds,
             builtTree: outcome.tree,
             files: [...population.files],
             actor: identity.ownerId,
             runnerPid: process.pid,
             ...(runnerPidIdentity ? { runnerPidIdentity } : {}),
+            runnerTaskId,
             startedAtMs,
             updatedAtMs: startedAtMs,
             expiresAtMs: admissionPrecheckDeadline(startedAtMs, population.files),
@@ -1338,6 +1737,9 @@ export default defineTool({
             completedCount: 0,
             totalCount: population.files.length,
             heartbeatAtMs: startedAtMs,
+            // P-007 (#D-037): the managed worker rebuilds the population from `files`; the
+            // partition keeps report-only radius files from becoming refusable admitted ones.
+            ...(population.radius ? { radius: population.radius } : {}),
           };
           const pendingQueue: FrozenCandidateRepairQueue = {
             ...queue,
@@ -1350,9 +1752,11 @@ export default defineTool({
             updatedAtMs: Math.max(queue.updatedAtMs + 1, startedAtMs),
           };
           try {
-            await writeFrozenCandidateRepairQueue(inspected.target, pendingQueue, {
-              expectedUpdatedAtMs: queue.updatedAtMs,
-            });
+            await step('precheck-marker-write', () =>
+              writeFrozenCandidateRepairQueue(inspected.target, pendingQueue, {
+                expectedUpdatedAtMs: queue.updatedAtMs,
+              }),
+            );
           } catch (err) {
             return json({
               ...base,
@@ -1368,66 +1772,65 @@ export default defineTool({
               judgedSha: queue.repairHead,
             });
           }
-          const runner = createCheckpointTreeFixPrecheckRunner({
+          const workerInput: AdmissionPrecheckWorkerInput = {
+            operationId,
+            taskId: runnerTaskId,
+            queueTarget: inspected.target,
             integrationRoot: precheckRoot,
             checkpointRoot: checkpointRootMirror(precheckRoot),
-          });
-          const persistPrecheckProgress = async (progress: FixPrecheckProgress): Promise<void> => {
-            await applyFrozenCandidateRepairQueueTransition(inspected.target, (fresh) => {
-              const current = fresh.admissionPrecheck;
-              if (!current || current.operationId !== operationId || current.status !== 'running') return fresh;
-              const updatedAtMs = Math.max(fresh.updatedAtMs + 1, progress.heartbeatAtMs);
-              return {
-                ...fresh,
-                updatedAtMs,
-                admissionPrecheck: {
-                  ...current,
-                  currentFile: progress.currentFile,
-                  completedCount: progress.completedCount,
-                  totalCount: progress.totalCount,
-                  heartbeatAtMs: progress.heartbeatAtMs,
-                  updatedAtMs,
-                },
-              };
-            });
+            ...(toolingRoot !== precheckRoot ? { toolingRoot } : {}),
+            ...(testCommand?.length ? { testCommand } : {}),
+            ...(precheckClearEnv.length ? { clearEnv: precheckClearEnv } : {}),
+            expiresAtMs: operation.expiresAtMs,
           };
-          void trackDetached(
-            (async () => {
-              let run: Awaited<ReturnType<typeof runner>>;
-              try {
-                run = await runner({
-                  commit: builtCommit,
-                  files: population.files,
-                  onProgress: persistPrecheckProgress,
-                });
-              } catch (err) {
-                run = { ran: false, reason: 'runner-failed', detail: (err as Error).message };
-              }
-              await settleAdmissionPrecheck(inspected.target, operationId, evaluateFixPrecheck(population, run));
-            })(),
-          ).catch((err) => {
-            console.error(`[release:repair-queue] detached pre-check ${operationId} failed to settle`, err);
-          });
-          return json({
-            ...base,
-            ok: true,
-            admitted: false,
-            pending: true,
-            dryRun: false,
-            verdict: 'precheck-running',
-            judgedSha: queue.repairHead,
-            builtCommit,
-            precheckOperation: operation,
-            currentQueueIdentity: {
-              candidate: pendingQueue.candidate,
-              repairHead: pendingQueue.repairHead,
-              updatedAtMs: pendingQueue.updatedAtMs,
-            },
-            note:
-              'R6 pre-check launched after its durable marker was written. NOTHING publishes in the background. Re-read op:get; after status=passed or status=deferred (checkpoint-tree-busy), repeat this confirmed admit with the refreshed exact queue identity' +
-              (wholeBlob ? ` and wholeBlob:true, sourceCommit:'${operation.sourceCommit}'` : '') +
-              '.',
-          });
+          let launchFailure: string | null = null;
+          try {
+            const managed = await startAdmissionPrecheckWorker(workerInput);
+            if (!managed.confined) {
+              launchFailure =
+                `managed R6 runner was not placed in a host-independent task scope` +
+                (managed.confinementSkippedReason ? ` (${managed.confinementSkippedReason})` : '');
+            }
+          } catch (err) {
+            launchFailure = err instanceof Error ? err.message : String(err);
+          }
+          if (launchFailure) {
+            precheck = evaluateFixPrecheck(population, {
+              ran: false,
+              reason: 'runner-failed',
+              detail: `Could not launch host-independent managed R6 pre-check ${operationId}: ${launchFailure}`,
+            });
+            try {
+              await settleAdmissionPrecheck(inspected.target, operationId, precheck);
+            } catch (err) {
+              console.error(`[release:repair-queue] failed to persist managed pre-check launch failure ${operationId}`, err);
+            }
+          } else {
+            return json({
+              ...base,
+              ok: true,
+              admitted: false,
+              pending: true,
+              dryRun: false,
+              verdict: 'precheck-running',
+              judgedSha: queue.repairHead,
+              builtCommit,
+              precheckOperation: operation,
+              completionReceipt: {
+                status: 'recorded',
+                effectRef: `release:repair-queue:admit-precheck:${operationId}`,
+              },
+              currentQueueIdentity: {
+                candidate: pendingQueue.candidate,
+                repairHead: pendingQueue.repairHead,
+                updatedAtMs: pendingQueue.updatedAtMs,
+              },
+              note:
+                'R6 pre-check launched as a managed task after its durable marker was written. Its progress and verdict are persisted by operationId and survive serving-host replacement. NOTHING publishes in the background. Re-read op:get; after status=passed or status=deferred (checkpoint-tree-busy), repeat this confirmed admit with the refreshed exact queue identity' +
+                (wholeBlob ? ` and wholeBlob:true, sourceCommit:'${operation.sourceCommit}'` : '') +
+                '.',
+            });
+          }
         }
         if (!precheck.ok) {
           return json({
@@ -1441,9 +1844,10 @@ export default defineTool({
             detail: precheck.detail,
             precheck: precheckRecordOf(precheck, { skipPrecheck, precheckReason, dryRun, population }),
             precheckResults: precheck.ran ? precheck.results : [],
+            precheckRadius: population.radius ?? null,
             builtCommit,
             judgedSha: queue.repairHead,
-            containment: containmentAt(queue.repairHead),
+            containment: await containmentAt(queue.repairHead),
             mode,
             note: precheck.ran
               ? 'R6: nothing was published — the admission commit was built and measured but the lineage ref did not move. ' +
@@ -1479,16 +1883,38 @@ export default defineTool({
         effectReceipt = { receiptId: admitted.receiptId, ownership: admitted.ownership };
         outcome = admitted.effect;
       }
+      // WI-6554700010009991: a whole-blob / committed-patch admission records the ledger rows its
+      // admitted blobs carry, judged against the real blob content, so a later hunk-exact admit
+      // treats them as consumed. Only paths with an unconsumed row are read. Bookkeeping never
+      // fails the admission: a blob that cannot be read leaves its rows unconsumed, and the
+      // WI-6554700010009955 content check still catches them on the next hunk-exact admit.
+      let carriedLedgerRowIds: number[] = [];
+      if (outcome.ok && !hunkExact && ledgerRows.length > 0) {
+        const consumed = new Set((queue.admissions ?? []).flatMap((e) => e.ledgerRowIds ?? []));
+        const contentByPath = new Map<string, string | null>();
+        for (const [path, blob] of Object.entries(outcome.entry.blobs)) {
+          if (!blob || !ledgerRows.some((r) => r.path === path && !consumed.has(r.id))) continue;
+          try {
+            const cat = await runJob('carried-ledger-rows', { kind: 'git', argv: ['cat-file', 'blob', blob], cwd: root });
+            if (cat.status === 0) contentByPath.set(path, cat.stdout);
+          } catch {
+            // Left unconsumed (see above).
+          }
+        }
+        carriedLedgerRowIds = findCarriedLedgerRowIds({ contentByPath, ledger: ledgerRows, consumedLedgerRowIds: consumed });
+      }
+      const carriedRecord = carriedLedgerRowIds.length > 0 ? { ledgerRowIds: carriedLedgerRowIds } : {};
       const precheckEntry = precheckRecordOf(precheck, { skipPrecheck, precheckReason, dryRun, population });
       const hunksRecord: Record<string, { applied: number; agents: string[] }> | null = hunkExact
         ? Object.fromEntries(hunkExact.perPath.map((p) => [p.path, { applied: p.applied, agents: p.agents }]))
         : null;
       const provenance = patch
-        ? { mode, patch, source: { ref: sourceRef, root } }
+        ? { mode, patch, source: { ref: sourceRef, root }, ...carriedRecord }
         : hunkExact
           ? {
               mode,
               hunks: hunksRecord,
+              ledgerRowIds: hunkExact.ledgerRowIds,
               hunkExact: hunkExact.perPath.map((p) => ({
                 path: p.path,
                 applied: p.applied,
@@ -1504,6 +1930,7 @@ export default defineTool({
               foreignHunksAccepted: foreign.count,
               foreignAgents: foreign.agents,
               foreignHunksByPath: foreign.byPath,
+              ...carriedRecord,
             };
       if (!outcome.ok) {
         if (outcome.code === 'nothing-to-admit') {
@@ -1514,7 +1941,7 @@ export default defineTool({
             verdict: 'already-admitted',
             detail: outcome.detail,
             judgedSha: queue.repairHead,
-            containment: containmentAt(queue.repairHead),
+            containment: await containmentAt(queue.repairHead),
             ...base,
           });
         }
@@ -1541,21 +1968,22 @@ export default defineTool({
               }
             : {}),
           judgedSha: queue.repairHead,
-          containment: containmentAt(queue.repairHead),
+          containment: await containmentAt(queue.repairHead),
           ...base,
         });
       }
       // The ledger entry carries HOW the source was built (D-008): hunk-exact with the replayed
-      // hunks per path, or whole-blob with the foreign hunks it accepted and why.
+      // hunks per path, or whole-blob with the foreign hunks it accepted and why. Whole-blob and
+      // committed-patch entries also name the ledger rows their blobs carry (WI-6554700010009991).
       const entry: FrozenRepairAdmission = {
         ...outcome.entry,
         mode,
         precheck: precheckEntry,
         ...(patch
-          ? { patch }
+          ? { patch, ...carriedRecord }
           : hunksRecord
-            ? { hunks: hunksRecord }
-            : { foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents }),
+            ? { hunks: hunksRecord, ledgerRowIds: hunkExact?.ledgerRowIds }
+            : { foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents, ...carriedRecord }),
       };
       const proof = {
         diff: outcome.diff,
@@ -1575,7 +2003,7 @@ export default defineTool({
           proof,
           precheck: precheckEntry,
           ...(dependencyGeneration ? { dependencyGeneration } : {}),
-          containment: containmentAt(queue.repairHead),
+          containment: await containmentAt(queue.repairHead),
           note:
             `Pass confirm:true to publish admission ${outcome.commit.slice(0, 12)} onto ${outcome.lineageRef} ` +
             'and advance repairHead to it (phase ready-to-verify). The immutable candidate is never touched; ' +
@@ -1593,11 +2021,9 @@ export default defineTool({
       try {
         next = markFrozenRepairAdmitted(queue, entry);
       } catch (err) {
-        const retracted = retractAdmission({
-          root,
-          candidate: queue.candidate,
-          published: outcome.commit,
-          previousRepairHead: queue.repairHead,
+        const retracted = await runAdmissionJob({
+          kind: 'retract',
+          input: { root, candidate: queue.candidate, published: outcome.commit, previousRepairHead: queue.repairHead },
         });
         return json({
           ok: false,
@@ -1607,11 +2033,17 @@ export default defineTool({
           reason: 'lineage-ref-moved',
           detail: `${(err as Error).message}${retracted ? ' (lineage ref retracted)' : ' (lineage ref could NOT be retracted — it is at the unrecorded admission; re-read the queue)'}`,
           judgedSha: queue.repairHead,
-          containment: containmentAt(queue.repairHead),
+          containment: await containmentAt(queue.repairHead),
           ...base,
         });
       }
       let persisted = true;
+      // WI-10006866: a missed write is NOT "nothing moved". Any repair-queue read in the window
+      // since the ref moved reconciles the row from that ref, so the CAS can miss because the
+      // admission IS already recorded. Retracting then leaves the row ahead of the ref. Settle
+      // against the FRESH row first; retract only when the row genuinely lacks this admission.
+      let persistError: string | null = null;
+      let persistSettlement: string | null = null;
       try {
         if (expectedQueueIdentity) {
           await writeFrozenCandidateRepairQueue(inspected.target, next, {
@@ -1622,21 +2054,40 @@ export default defineTool({
             expectedUpdatedAtMs: queue.updatedAtMs,
           });
         }
-      } catch {
-        persisted = false;
+      } catch (writeErr) {
+        persistError = writeErr instanceof Error ? writeErr.message : String(writeErr);
+        const settle: { kind: string; detail: string | null } = { kind: 'diverged', detail: null };
+        try {
+          const settled = await applyFrozenCandidateRepairQueueTransition(inspected.target, (fresh) => {
+            const s = settleFrozenRepairAdmission(fresh, entry);
+            settle.kind = s.kind;
+            settle.detail = s.kind === 'diverged' ? s.detail : null;
+            return s.queue ?? fresh;
+          });
+          persisted = settled.status !== 'absent' && settle.kind !== 'diverged';
+          if (persisted && settled.queue) next = settled.queue;
+          persistSettlement = settled.status === 'absent'
+            ? 'queue-absent'
+            : `${settle.kind}${settle.detail ? `: ${settle.detail}` : ''}`;
+        } catch (settleErr) {
+          persisted = false;
+          persistSettlement = `settle-failed: ${settleErr instanceof Error ? settleErr.message : String(settleErr)}`;
+        }
+        console.warn(
+          `[repair-queue] admit ${outcome.commit.slice(0, 12)}: queue-row write failed (${persistError}); ` +
+            `settled against the fresh row as ${persistSettlement} → persisted=${persisted}`,
+        );
       }
       let retracted: boolean | null = null;
       if (!persisted) {
-        retracted = retractAdmission({
-          root,
-          candidate: queue.candidate,
-          published: outcome.commit,
-          previousRepairHead: queue.repairHead,
+        retracted = await runAdmissionJob({
+          kind: 'retract',
+          input: { root, candidate: queue.candidate, published: outcome.commit, previousRepairHead: queue.repairHead },
         });
       }
       const auditRecorded = await recordAudit(identity.ownerId, {
         op: 'admit',
-        reason: args.reason ?? null,
+        reason: effectiveReason ?? null,
         workItem: args.workItem ?? null,
         candidate: queue.candidate,
         from: queue.repairHead,
@@ -1644,20 +2095,32 @@ export default defineTool({
         source: outcome.entry.source,
         paths: outcome.entry.paths,
         unchanged: outcome.entry.unchanged,
+        precheckRadius: population.radius ?? null,
         mode,
         ...(patch
-          ? { patch }
+          ? { patch, ...carriedRecord }
           : hunksRecord
-            ? { hunks: hunksRecord }
-            : { foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents }),
+            ? { hunks: hunksRecord, ledgerRowIds: hunkExact?.ledgerRowIds }
+            : { foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents, ...carriedRecord }),
         precheck: precheckEntry,
         ...(dependencyGeneration ? { dependencyGeneration } : {}),
         persisted,
+        ...(persistError ? { persistError, persistSettlement } : {}),
         ...(retracted === null ? {} : { retracted }),
       });
       const judgedSha = persisted ? outcome.commit : queue.repairHead;
       stampActionEffect({ status: persisted ? 'repair-head-published' : 'publish-failed',
         persisted, retracted, from: queue.repairHead, to: outcome.commit, auditRecorded });
+      // D-131: a persisted admit schedules a debounced, durable verify of the head it published.
+      // Never throws; a scheduling failure falls back to the D-127 manual path and is reported.
+      const autoVerify = persisted
+        ? await scheduleRepairAutoVerify({
+            candidate: queue.candidate,
+            repairHead: outcome.commit,
+            admittedAtMs: Date.now(),
+            ...(queueTarget.installSlug !== operatorHomeHarnessSlug() ? { target: queueTarget } : {}),
+          })
+        : null;
       return json({
         ok: persisted,
         admitted: persisted,
@@ -1670,20 +2133,32 @@ export default defineTool({
         admission: entry,
         ...provenance,
         precheck: precheckEntry,
+        precheckRadius: population.radius ?? null,
         ...(dependencyGeneration ? { dependencyGeneration } : {}),
-        containment: containmentAt(judgedSha),
+        containment: await containmentAt(judgedSha),
         persisted,
         auditRecorded,
         ...base,
+        ...(persisted && effectReceipt
+          ? { completionReceipt: {
+              status: 'recorded',
+              effectRef: `release:repair-queue:admit:${effectReceipt.receiptId}`,
+            } }
+          : {}),
         ...(patch ? { source: { ref: sourceRef, root } } : {}),
         repairQueue: persisted
           ? diagnoseFrozenCandidateRepairQueue(next, { nowMs: Date.now(), fixerAlive: inspected.fixerAlive })
           : inspected.diagnostic,
+        ...(autoVerify ? { autoVerify } : {}),
         ...(persisted
           ? {
               nextAction:
-                `repairHead is ${outcome.commit.slice(0, 12)} (phase ${next.phase}); the gate re-verifies at that head on its next tick. ` +
-                'Do NOT fire release:checkpoint-run and do NOT retire.' +
+                `repairHead is ${outcome.commit.slice(0, 12)} (phase ${next.phase}). ` +
+                (autoVerify?.scheduled
+                  ? `An auto-verify of that head is scheduled after a ${Math.round(autoVerify.quietMs / 60_000)}-min quiet window (D-131); a further admit restarts the window. ` +
+                    'Do NOT fire release:checkpoint-run unless you mean to skip the window, and do NOT retire.'
+                  : `Auto-verify was NOT scheduled (${autoVerify && !autoVerify.scheduled ? autoVerify.reason : 'unknown'}); ` +
+                    'the gate re-verifies at that head on its next tick. Do NOT fire release:checkpoint-run until your batch is complete (D-127), and do NOT retire.') +
                 (precheckEntry.ran
                   ? ` R6 pre-check ran at the built commit: ${precheckEntry.fixes?.length ?? 0} signature red(s) fixed, ${precheckEntry.failing?.length ?? 0} still failing, ${precheckEntry.unmeasured?.length ?? 0} unmeasured.`
                   : precheckEntry.reason === 'checkpoint-tree-busy'
@@ -1702,6 +2177,7 @@ export default defineTool({
                 ? 'The queue row could not be written, so the lineage ref was retracted to the previous repairHead; nothing moved. Re-run.'
                 : 'The queue row could not be written AND the lineage ref could not be retracted: the ref is at the admission but the row is not. Re-read the queue before relying on the judged sha.',
             }),
+        ...(persistError ? { persistError, persistSettlement } : {}),
       });
     }
     if (args.op === 'claim-leg') {
@@ -1858,6 +2334,12 @@ export default defineTool({
         persisted,
         auditRecorded,
         ...base,
+        ...(persisted && effectReceipt
+          ? { completionReceipt: {
+              status: 'recorded',
+              effectRef: `release:repair-queue:claim-leg:${effectReceipt.receiptId}`,
+            } }
+          : {}),
         repairQueue: persisted
           ? diagnoseFrozenCandidateRepairQueue(next, { nowMs: Date.now(), fixerAlive: inspected.fixerAlive })
           : inspected.diagnostic,
@@ -1984,6 +2466,10 @@ export default defineTool({
       retired: result.retired,
       casMiss,
     });
+    const inconclusiveTerminal =
+      result.retired && frozenRepairHeadAwaitsVerification(inspected.queue)
+        ? await emitRetiredUnjudgedRepairHeadTerminal(inspected.queue, inspected.target.installSlug)
+        : undefined;
     stampActionEffect({ status: result.retired ? 'queue-retired' : 'cas-miss',
       retired: result.retired, casMiss, auditRecorded });
     // A CAS miss is a storage outcome, not a liveness refusal. The nested `current`
@@ -1997,7 +2483,14 @@ export default defineTool({
       reason: casMiss ? 'cas-miss' : undefined,
       target: inspected.target,
       auditRecorded,
+      ...(result.retired && effectReceipt
+        ? { completionReceipt: {
+            status: 'recorded',
+            effectRef: `release:repair-queue:retire:${effectReceipt.receiptId}`,
+          } }
+        : {}),
       current: currentDiagnostic,
+      ...(inconclusiveTerminal ? { inconclusiveTerminal } : {}),
       // WI-1105109 [owner 2026-08-30, OWNER-interactive]: "make sure another agent
       // uses the frozen candidate system next and doesn't retire it like you did".
       //
@@ -2012,5 +2505,41 @@ export default defineTool({
         ? 'The next scheduled green-checkpoint run RE-FREEZES a candidate on its own — retiring does not stall the gate, so nothing needs firing to restart it. Do NOT call release:checkpoint-run to make the gate move: it always cuts a FRESH candidate at the current tip, which is the pre-D-001 re-cut-at-tip treadmill D-007 diagnosed (each cut re-admits the whole sweep and imports breakage faster than fixes land). To land a fix on the judged lineage, use release:repair-queue { op: "admit", paths: [...] }.'
         : undefined,
     });
+    } catch (err) {
+      if (args.op === 'admit' && args.confirm !== true && err instanceof AdmissionOffthreadTimeoutError) {
+        return json({
+          ok: false,
+          op: 'admit',
+          admitted: false,
+          refused: true,
+          dryRun: true,
+          verdict: 'timeout',
+          reason: 'admission-preview-timeout',
+          mode: args.wholeBlob === true ? 'whole-blob' : 'hunk-exact',
+          timedOutStep: err.stepName ?? err.jobKind,
+          timeoutMs: err.timeoutMs,
+          detail:
+            `The read-only preview exceeded ${err.timeoutMs}ms in ${err.stepName ?? err.jobKind}. ` +
+            'The admission worker is being stopped; no lineage ref or repair-queue row was written. ' +
+            'Retry with a smaller path set or investigate the named step.',
+          timings: clock?.summary() ?? null,
+        });
+      }
+      if (args.op === 'admit' && args.confirm !== true && err instanceof AdmissionOffthreadTimeoutUnavailableError) {
+        return json({
+          ok: false,
+          op: 'admit',
+          admitted: false,
+          refused: true,
+          dryRun: true,
+          verdict: 'refused',
+          reason: 'admission-preview-timeout-unavailable',
+          mode: args.wholeBlob === true ? 'whole-blob' : 'hunk-exact',
+          detail: err.message,
+          timings: clock?.summary() ?? null,
+        });
+      }
+      throw err;
+    }
   },
 });

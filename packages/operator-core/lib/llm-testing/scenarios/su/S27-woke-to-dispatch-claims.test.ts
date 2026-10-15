@@ -1,5 +1,6 @@
 import { PASS_THROUGH } from '@papercusp/testing-shell/llm';
 import { describe, expect, it } from 'vitest';
+import type { RunSummary } from '@papercusp/testing-shell/llm';
 
 import {
   makeS27DispatchWorld,
@@ -20,10 +21,71 @@ async function call(
   return JSON.parse(text) as Record<string, any>;
 }
 
+function runWithAssistantText(assistantText: string): RunSummary {
+  return {
+    runId: 's27-assertion-regression',
+    scenarioId: SU_S27_WOKE_TO_DISPATCH_CLAIMS.id,
+    scenarioVersion: SU_S27_WOKE_TO_DISPATCH_CLAIMS.version,
+    scenarioTarget: 'su',
+    identityHash: 'fixture',
+    sutModel: 'fixture',
+    judgeModel: 'fixture',
+    personaId: 'coordinator-dispatch',
+    personaTraits: {
+      verbosity: 'terse',
+      politeness: 'neutral',
+      clarification: 'never_clarifies',
+      goalClarity: 'precise',
+      interrupts: false,
+      modality: 'text',
+      domain: 'admin',
+    },
+    workspaceMode: 'isolated',
+    transportMode: 'in-process',
+    turns: [{
+      assistantText,
+      toolCalls: [],
+      toolResults: [],
+      cards: [],
+      controlTags: [],
+      costUsd: 0,
+      latencyMs: 0,
+      finishReason: 'done',
+      rawSseTape: [],
+    }],
+    toolInvocations: [],
+    continueChainRows: [],
+    totalCostUsd: 0,
+    startedAt: new Date(0),
+    finishedAt: new Date(0),
+    finishReason: 'completed',
+    capBreaches: [],
+  };
+}
+
 describe('SU-S27 directed-dispatch world', () => {
   const planSlug = 'fleet-dispatch-wake-clarity-2026-06-22';
   const planItems = ['P-001', 'P-002', 'P-003', 'P-004'];
   const workItems = ['WI-501', 'WI-502', 'WI-503', 'WI-504'];
+
+  it('allows explanatory repark mentions but rejects an affirmative repark', () => {
+    const noReadAndRepark = SU_S27_WOKE_TO_DISPATCH_CLAIMS.asserts.find(
+      (assertion) => assertion.kind === 'custom' && assertion.name === 'no-read-and-repark',
+    );
+    if (!noReadAndRepark || noReadAndRepark.kind !== 'custom') {
+      throw new Error('S27 no-read-and-repark assertion is missing');
+    }
+
+    for (const text of [
+      'P-003 requires the directed-wake claim-now obligation with no re-parking.',
+      'Neither is a license to re-park the whole lane.',
+    ]) {
+      expect(noReadAndRepark.eval(runWithAssistantText(text))).toEqual([]);
+    }
+    expect(
+      noReadAndRepark.eval(runWithAssistantText('I will re-park the whole lane until tomorrow.')),
+    ).toMatchObject([{ assertKind: 'custom:no-read-and-repark' }]);
+  });
 
   it('scripts the coordinator wake and keeps follow-up simulation out of the worker role', () => {
     expect(SU_S27_WOKE_TO_DISPATCH_CLAIMS.version).toBe(5);

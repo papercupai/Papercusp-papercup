@@ -27,16 +27,38 @@ import {
   openSync,
   readSync,
   closeSync,
-  appendFileSync,
   promises as fsp,
 } from 'node:fs';
 import net from 'node:net';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
+import { mapWithConcurrency } from '../../gym/concurrency';
+import { recordMcpRequestTraceOperation } from '../../mcp-request-trace';
 
 /** Shared with psu-pty-host.mjs PSU_PTY_DIR. */
 // Keep discovery aligned with the host writer, while allowing integration tests
 // and disposable probes to redirect both sides away from the live corpus.
 export const PSU_PTY_DIR = process.env.PAPERCUSP_PSU_PTY_DIR || join(homedir(), '.papercusp', 'psu-pty');
+
+/** Mirror of psu-pty-host.mjs HOST_HANDOFF_FILE_SUFFIX (WI-6554700010008431). */
+export const HOST_HANDOFF_FILE_SUFFIX = '.handoff.json';
+
+/**
+ * Mirror of psu-pty-host.mjs isDiscoveryRecordFileName (WI-6554700010008431): is this
+ * directory entry a host discovery record (`<key>.json`)? The host-code adoption handoff
+ * (`<key>.handoff.json`) also ends in `.json`; a sweep that globbed bare `.json` read it
+ * as a pid-less dead host and unlinked it, so a re-exec'd successor found no orders and
+ * cold-booted without its carry. Every lister/sweeper here goes through this predicate;
+ * psu-pty-dir-async-sweeps.test.ts pins it against the host's own `handoffPathFor`.
+ */
+export function isDiscoveryRecordFileName(name: string): boolean {
+  return name.endsWith('.json') && !name.endsWith(HOST_HANDOFF_FILE_SUFFIX);
+}
+
+/** Mirror of psu-pty-host.mjs looksLikeDiscoveryRecord: a parsed record counts as a
+ *  discovery record only if it carries `pid` or `sock`; any other JSON is left alone. */
+export function looksLikeDiscoveryRecord(rec: unknown): boolean {
+  return !!rec && typeof rec === 'object' && ('pid' in rec || 'sock' in rec);
+}
 
 /** Shared wire ceiling with psu-pty-host.mjs. Enforce it before opening a
  * socket as well as host-side so an accidental giant wake fails cheaply and
@@ -47,17 +69,30 @@ export interface PsuPtyHost {
   ownerId: string;
   advSessionId: string | null;
   pid: number;
-  ptyPid: number;
+  /** The hosted CLI's pid. `null` while the host has PARKED its child
+   *  (psu-process-free-parking-2026-10-06): the CLI was stopped to free memory
+   *  and the host never advertises a dead, recyclable pid. */
+  ptyPid: number | null;
+  /** psu-process-free-parking-2026-10-06: the host stopped its idle CLI and
+   *  will resume the same conversation on the next keystroke or control-socket
+   *  delivery. The host, socket and session stay live — a parked host is
+   *  WAKEABLE, never dead. Absent on hosts that predate parking. */
+  parked?: boolean;
+  /** Epoch ms the current park began; null/absent when not parked. */
+  parkedAt?: number | null;
   /** Authenticated interactive tab-shell pid captured inside the visible console.
    *  Additive and absent/null for headless or pre-EI-24399199756155153 hosts.
    *  Consumers must revalidate its console birth identity immediately before use. */
   terminalPid?: number | null;
   sock: string;
   command: string;
-  /** Exact argv of the hosted backend process. The writer has always persisted
-   *  this field; declaring it makes post-launch native-session attestation
-   *  possible instead of treating ownerId liveness as transcript identity. */
+  /** Initial launch argv. A carry replaces the child without changing these
+   *  arguments, so its requested resume UUID is not current native identity. */
   args?: string[];
+  /** Codex UUID observed through the current PTY child's writer lock. Null or
+   *  absent means unknown; never fall back to the requested argv UUID. */
+  nativeSessionId?: string | null;
+  childGeneration?: number;
   startedAt: number;
   // ── Activity annotation (liveness-hardening P-006; ADDITIVE — absent on
   //    files written by older hosts). The pty stream is a true mid-turn
@@ -67,11 +102,39 @@ export interface PsuPtyHost {
   lastInputAt?: number | null;
   lastOutputAt?: number | null;
   lastActivityAt?: number | null;
+  /** Native execution observation from this host's isolated child transcript.
+   * Absence or an expired observedAt is unknown, never proof of idle execution. */
+  execution?: {
+    phase: 'unknown' | 'running' | 'settled' | 'failed';
+    turnStartedAt: number | null;
+    lastProgressAt: number | null;
+    pendingTools: number;
+    observedAt: number;
+    ownerId?: string;
+    hostPid?: number;
+    childPid?: number | null;
+    childGeneration?: number;
+    receivedAtMs?: number;
+    ownerInputPending?: boolean;
+    ownerStopRequested?: boolean;
+  };
   /** Host-observed quota banner. Absence means an older host with no reading,
    * not a healthy quota state. Cleared on detector recovery and child recycle. */
   quotaBlocked?: boolean;
   /** Start of the current detected quota episode, epoch milliseconds. */
   quotaBlockedSinceMs?: number | null;
+  /** WI-6554700010008412: the reset the provider stated for the current episode
+   * (codex copy), epoch milliseconds; null when none was stated or parsed. The
+   * host releases its latch shortly after this, so a value here means "walled
+   * until then", not wedged. */
+  quotaResetAtMs?: number | null;
+  /** Host-observed provider-auth failure (codex only today): the child's own
+   * screen shows that its in-memory login can no longer be refreshed, so every
+   * turn it runs fails at once. Only a fresh child, which re-reads the shared
+   * auth file, can recover. Absence means an older host with no reading. */
+  authBlocked?: boolean;
+  /** Start of the current detected auth-failure episode, epoch milliseconds. */
+  authBlockedSinceMs?: number | null;
   // ── Host capability advertisement (WI-1804; ADDITIVE — absent on files written
   //    by older hosts, which is exactly how the tool detects an old host and falls
   //    back). A new host lists the control-socket modes it understands beyond the
@@ -292,21 +355,38 @@ export async function readHostEventTailAsync(
   ownerId: string,
   dir: string = PSU_PTY_DIR,
   maxBytes: number = RESPAWN_SCAN_TAIL_BYTES,
+  opts: { requireComplete?: boolean } = {},
 ): Promise<PtyHostEvent[]> {
   let text: string;
   try {
     const fh = await fsp.open(join(dir, `${sanitizeKey(ownerId)}.events.jsonl`), 'r');
     try {
       const { size } = await fh.stat();
+      if (opts.requireComplete && size > maxBytes) throw new Error('Host event ledger exceeds complete-read bound');
       const start = Math.max(0, size - maxBytes);
       const buf = Buffer.alloc(size - start);
-      await fh.read(buf, 0, buf.length, start);
+      const { bytesRead } = await fh.read(buf, 0, buf.length, start);
+      if (opts.requireComplete && bytesRead !== buf.length) throw new Error('Host event ledger read was incomplete');
       text = buf.toString('utf8');
     } finally {
       await fh.close();
     }
-  } catch {
+  } catch (error) {
+    if (opts.requireComplete) throw error;
     return [];
+  }
+  if (opts.requireComplete) {
+    // Health recovery needs a complete readable census; the legacy best-effort
+    // reader deliberately drops malformed/partially appended rows.
+    if (text && !text.endsWith('\n')) throw new Error('Host event ledger has an incomplete final row');
+    for (const line of text.split('\n').filter((line) => line.trim())) {
+      const row: unknown = JSON.parse(line);
+      if (!row || typeof row !== 'object' || Array.isArray(row)) throw new Error('Invalid host event ledger row');
+      const event = row as PtyHostEvent;
+      if (typeof event.kind !== 'string' || typeof event.ts !== 'string' || !Number.isFinite(Date.parse(event.ts))) {
+        throw new Error('Invalid host event kind or timestamp');
+      }
+    }
   }
   return parseHostEventTail(text);
 }
@@ -345,28 +425,65 @@ export function latestRespawnNativeSession(
   try {
     const startedAt = hostStartedAt(ownerId, dir);
     if (startedAt == null && !opts.allowWithoutHost) return null;
-    // Scan backwards: the newest respawn wins.
-    const events = readHostEventTail(ownerId, dir, RESPAWN_SCAN_TAIL_BYTES);
-    for (let i = events.length - 1; i >= 0; i--) {
-      const ev = events[i] as { kind?: unknown; mode?: unknown; nativeId?: unknown; ts?: unknown };
-      // Drill respawns rotate the native id exactly like a real one.
-      if (ev.kind !== 'respawned' && ev.kind !== 'carry-drill-respawned') continue;
-      // With no discovery file, the ONLY trustworthy producer is the Claude
-      // recovery hook: it writes owner-scoped mode=self-relaunch after deriving
-      // the new coord identity and native id together. A carry/drill row without
-      // current-host metadata could belong to an older host incarnation, which
-      // is exactly what the normal startedAt fence prevents us from trusting.
-      if (startedAt == null && ev.mode !== 'self-relaunch') return null;
-      // A respawn from a PREVIOUS host (and everything before it) is history.
-      const ts = typeof ev.ts === 'string' ? Date.parse(ev.ts) : NaN;
-      if (!Number.isFinite(ts) || (startedAt != null && ts < startedAt)) return null;
-      const nativeId = typeof ev.nativeId === 'string' && ev.nativeId ? ev.nativeId : null;
-      return nativeId ? { nativeId, atMs: ts } : null;
-    }
-    return null;
+    return pickLatestRespawn(readHostEventTail(ownerId, dir, RESPAWN_SCAN_TAIL_BYTES), startedAt);
   } catch {
     return null;
   }
+}
+
+/**
+ * {@link latestRespawnNativeSession} without blocking the event loop (WI-10005220).
+ *
+ * The sync form stats and reads two files in the shared psu-pty directory. While the
+ * ext4 journal is slow, each of those can wait in D-state behind another host's
+ * create/rename there (the WI-10004559 mechanism), and on bg-host's main thread that
+ * froze the whole process for 0.6-2.0 s per call (measured 2026-10-02: six such stalls,
+ * 6.3 s of a 30 s profile, all in this read via resolveSessionRefReconciled). Any
+ * caller that runs per owner or on a sweep must use this form; both share
+ * {@link pickLatestRespawn}, so they cannot disagree on the answer.
+ */
+export async function latestRespawnNativeSessionAsync(
+  ownerId: string,
+  dir: string = PSU_PTY_DIR,
+  opts: LatestRespawnNativeIdOptions = {},
+): Promise<LatestRespawnNativeSession | null> {
+  try {
+    const startedAt = await hostStartedAtAsync(ownerId, dir);
+    if (startedAt == null && !opts.allowWithoutHost) return null;
+    return pickLatestRespawn(
+      await readHostEventTailAsync(ownerId, dir, RESPAWN_SCAN_TAIL_BYTES),
+      startedAt,
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** The rung-3 decision over an already-read event tail, shared by the sync and async
+ *  readers. `startedAt` is the CURRENT host's start (null = no discovery file, which
+ *  the caller only lets through for `allowWithoutHost`). */
+function pickLatestRespawn(
+  events: PtyHostEvent[],
+  startedAt: number | null,
+): LatestRespawnNativeSession | null {
+  // Scan backwards: the newest respawn wins.
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i] as { kind?: unknown; mode?: unknown; nativeId?: unknown; ts?: unknown };
+    // Drill respawns rotate the native id exactly like a real one.
+    if (ev.kind !== 'respawned' && ev.kind !== 'carry-drill-respawned') continue;
+    // With no discovery file, the ONLY trustworthy producer is the Claude
+    // recovery hook: it writes owner-scoped mode=self-relaunch after deriving
+    // the new coord identity and native id together. A carry/drill row without
+    // current-host metadata could belong to an older host incarnation, which
+    // is exactly what the normal startedAt fence prevents us from trusting.
+    if (startedAt == null && ev.mode !== 'self-relaunch') return null;
+    // A respawn from a PREVIOUS host (and everything before it) is history.
+    const ts = typeof ev.ts === 'string' ? Date.parse(ev.ts) : NaN;
+    if (!Number.isFinite(ts) || (startedAt != null && ts < startedAt)) return null;
+    const nativeId = typeof ev.nativeId === 'string' && ev.nativeId ? ev.nativeId : null;
+    return nativeId ? { nativeId, atMs: ts } : null;
+  }
+  return null;
 }
 
 /** WI-5075 compatibility wrapper: return only the native id while the
@@ -394,17 +511,34 @@ export function latestRespawnNativeId(
  */
 export function hostStartedAt(ownerId: string, dir: string = PSU_PTY_DIR): number | null {
   try {
-    const meta = JSON.parse(
-      readFileSync(join(dir, `${sanitizeKey(ownerId)}.json`), 'utf8'),
-    ) as { ownerId?: unknown; startedAt?: unknown };
-    // EI-151: the same cross-owner misroute guard findLiveHost applies.
-    if (typeof meta.ownerId === 'string' && meta.ownerId !== ownerId) return null;
-    return typeof meta.startedAt === 'number' && Number.isFinite(meta.startedAt)
-      ? meta.startedAt
-      : null;
+    return parseHostStartedAt(ownerId, readFileSync(join(dir, `${sanitizeKey(ownerId)}.json`), 'utf8'));
   } catch {
     return null;
   }
+}
+
+/** {@link hostStartedAt} off the event loop (WI-10005220) — same contract, same parse. */
+export async function hostStartedAtAsync(
+  ownerId: string,
+  dir: string = PSU_PTY_DIR,
+): Promise<number | null> {
+  try {
+    return parseHostStartedAt(
+      ownerId,
+      await fsp.readFile(join(dir, `${sanitizeKey(ownerId)}.json`), 'utf8'),
+    );
+  } catch {
+    return null;
+  }
+}
+
+function parseHostStartedAt(ownerId: string, raw: string): number | null {
+  const meta = JSON.parse(raw) as { ownerId?: unknown; startedAt?: unknown };
+  // EI-151: the same cross-owner misroute guard findLiveHost applies.
+  if (typeof meta.ownerId === 'string' && meta.ownerId !== ownerId) return null;
+  return typeof meta.startedAt === 'number' && Number.isFinite(meta.startedAt)
+    ? meta.startedAt
+    : null;
 }
 
 function pidAlive(pid: number): boolean {
@@ -430,10 +564,11 @@ const defaultReadCmdline: ReadPidCmdline = (pid) => {
   }
 };
 
-/** The verify-identity seam findLiveHost/listLiveHostsAsync accept (default `pidIsPsuHost`).
- *  A test writing `process.pid` as a live-host stand-in injects `() => true`. Local type
- *  (not exported): callers pass an inline `{ verifyIdentity: () => … }`. */
+/** The synchronous verify seam used by findLiveHost and janitor callers. The async
+ *  find/list variants also accept an async verifier and default to pidIsPsuHostAsync.
+ *  A test writing `process.pid` as a live-host stand-in injects `() => true`. */
 type VerifyPidIdentity = (pid: number) => boolean;
+type VerifyPidIdentityAsync = (pid: number) => boolean | Promise<boolean>;
 
 /**
  * Process-IDENTITY check (WI-2339 defect #2): is `pid` actually a psu session host,
@@ -576,13 +711,82 @@ export function selfCompactionAvailability(
   return { available: true, reason: null, host };
 }
 
+/** Async counterpart for callers that run on the operator event loop. */
+export async function selfCompactionAvailabilityAsync(
+  ownerId: string,
+  dir: string = PSU_PTY_DIR,
+  opts: { verifyIdentity?: VerifyPidIdentity } = {},
+): Promise<SelfCompactionAvailability> {
+  const host = await findLiveHostAsync(ownerId, dir, opts);
+  if (!host) return { available: false, reason: 'no_live_pty_host', host: null };
+  if (!hostSupports(host, 'carry-respawn')) {
+    return { available: false, reason: 'host_predates_carry_respawn', host };
+  }
+  return { available: true, reason: null, host };
+}
+
 async function pathExistsAsync(p: string): Promise<boolean> {
+  const startedAt = performance.now();
   try {
     await fsp.access(p);
     return true;
   } catch {
     return false;
+  } finally {
+    recordMcpRequestTraceOperation('pathExistsAsync', performance.now() - startedAt);
   }
+}
+
+/** Async counterpart for periodic/event-loop-sensitive callers. Keep the same
+ *  identity contract as pidIsPsuHost while moving the /proc read off the main
+ *  thread. */
+async function pidIsPsuHostAsync(pid: number): Promise<boolean> {
+  if (!pid) return false;
+  const startedAt = performance.now();
+  try {
+    const cmdline = (await fsp.readFile(`/proc/${pid}/cmdline`, 'utf8')).replace(/\0/g, ' ');
+    return /psu-(launcher|pty-host)/.test(cmdline);
+  } catch {
+    // Match pidIsPsuHost: only fail open when /proc itself is absent (non-Linux).
+    return !(await pathExistsAsync('/proc'));
+  } finally {
+    recordMcpRequestTraceOperation('pidIsPsuHostAsync', performance.now() - startedAt);
+  }
+}
+
+/**
+ * Async keyed counterpart to findLiveHost. The orphan-respawn watchdog checks
+ * this once for each delayed pending owner; every filesystem read (metadata,
+ * socket and /proc cmdline) must stay off the operator event loop.
+ */
+export async function findLiveHostAsync(
+  ownerId: string,
+  dir: string = PSU_PTY_DIR,
+  opts: { verifyIdentity?: VerifyPidIdentity | VerifyPidIdentityAsync } = {},
+): Promise<PsuPtyHost | null> {
+  const startedAt = performance.now();
+  startJanitor();
+  const verify = opts.verifyIdentity ?? pidIsPsuHostAsync;
+  const metaPath = join(dir, `${sanitizeKey(ownerId)}.json`);
+  try {
+    const h = JSON.parse(await fsp.readFile(metaPath, 'utf8')) as PsuPtyHost;
+    if (h && h.ownerId && h.ownerId !== ownerId) return null;
+    if (
+      h &&
+      h.sock &&
+      h.pid &&
+      (await pathExistsAsync(h.sock)) &&
+      pidAlive(h.pid) &&
+      (await verify(h.pid))
+    ) {
+      return h;
+    }
+  } catch {
+    /* missing, unreadable or partial discovery file — treat as no host */
+  } finally {
+    recordMcpRequestTraceOperation('findLiveHostAsync', performance.now() - startedAt);
+  }
+  return null;
 }
 
 /**
@@ -602,30 +806,49 @@ async function pathExistsAsync(p: string): Promise<boolean> {
  * The synchronous `listLiveHosts` was deleted so that a new caller cannot reach for
  * it; `psu-pty-dir-async-sweeps.test.ts` guards against its return.
  */
+const LIVE_HOST_SCAN_CONCURRENCY = 8;
+
 export async function listLiveHostsAsync(
   dir: string = PSU_PTY_DIR,
-  opts: { verifyIdentity?: VerifyPidIdentity } = {},
+  opts: { verifyIdentity?: VerifyPidIdentity | VerifyPidIdentityAsync } = {},
 ): Promise<PsuPtyHost[]> {
+  const startedAt = performance.now();
   startJanitor();
-  const verify = opts.verifyIdentity ?? pidIsPsuHost;
+  const verify = opts.verifyIdentity ?? pidIsPsuHostAsync;
   let files: string[];
   try {
-    files = (await fsp.readdir(dir)).filter((f) => f.endsWith('.json'));
+    files = (await fsp.readdir(dir)).filter(isDiscoveryRecordFileName);
   } catch {
+    recordMcpRequestTraceOperation('listLiveHostsAsync', performance.now() - startedAt);
     return [];
   }
-  const out: PsuPtyHost[] = [];
-  for (const f of files) {
-    try {
-      const h = JSON.parse(await fsp.readFile(join(dir, f), 'utf8')) as PsuPtyHost;
-      if (h && h.ownerId && h.sock && h.pid && (await pathExistsAsync(h.sock)) && pidAlive(h.pid) && verify(h.pid)) {
-        out.push(h);
+  // Desktop presence may scan thousands of lingering host records. Keep each
+  // host's async metadata/socket/proc checks parallel but bounded; a serial
+  // loop multiplied slow filesystem probes, while Promise.all would flood them.
+  try {
+    const out = await mapWithConcurrency(files, LIVE_HOST_SCAN_CONCURRENCY, async (f): Promise<PsuPtyHost | null> => {
+      try {
+        const h = JSON.parse(await fsp.readFile(join(dir, f), 'utf8')) as PsuPtyHost;
+        if (
+          h &&
+          h.ownerId &&
+          h.sock &&
+          h.pid &&
+          (await pathExistsAsync(h.sock)) &&
+          pidAlive(h.pid) &&
+          (await verify(h.pid))
+        ) {
+          return h;
+        }
+      } catch {
+        /* unreadable / partial write — skip this host */
       }
-    } catch {
-      /* unreadable / partial write — skip this host */
-    }
+      return null;
+    });
+    return out.filter((h): h is PsuPtyHost => h !== null);
+  } finally {
+    recordMcpRequestTraceOperation('listLiveHostsAsync', performance.now() - startedAt);
   }
-  return out;
 }
 
 async function safeUnlinkAsync(p: string): Promise<void> {
@@ -634,6 +857,39 @@ async function safeUnlinkAsync(p: string): Promise<void> {
   } catch {
     /* best-effort — already gone, or a concurrent host cleaned it up */
   }
+}
+
+/** Age past which a `<target>.<pid>.tmp` staging file is treated as abandoned. The
+ *  host renames its staging file within the same synchronous call that wrote it,
+ *  so an hour is several orders of magnitude of margin. */
+export const ABANDONED_TEMP_MAX_AGE_MS = 60 * 60 * 1000;
+
+/** The host's atomic-write staging name: `<target>.<pid>.tmp` (psu-pty-host.mjs
+ *  writeMeta and the events-ledger trim). */
+const ATOMIC_STAGING_RE = /\.\d+\.tmp$/;
+
+/** Unlink staging files in `entries` older than `maxAgeMs`. Reuses the caller's
+ *  directory listing so the janitor iterates the directory once. Returns the count. */
+async function pruneAbandonedTempFilesAsync(
+  dir: string,
+  entries: readonly string[],
+  nowMs: number,
+  maxAgeMs: number,
+): Promise<number> {
+  let removed = 0;
+  for (const f of entries) {
+    if (!ATOMIC_STAGING_RE.test(f)) continue;
+    const p = join(dir, f);
+    try {
+      const st = await fsp.stat(p);
+      if (!st.isFile() || nowMs - st.mtimeMs < maxAgeMs) continue;
+      await fsp.unlink(p);
+      removed += 1;
+    } catch {
+      /* raced with its writer or another sweep — skip */
+    }
+  }
+  return removed;
 }
 
 /**
@@ -652,19 +908,36 @@ async function safeUnlinkAsync(p: string): Promise<void> {
  * ASYNC ONLY (WI-10004559, WI-10004587): the standing janitor runs it on the operator
  * main thread, and a synchronous scan of the psu-pty directory blocks that thread in
  * D-state during a journal stall. The synchronous `pruneDeadDiscoveryFiles` was deleted.
+ *
+ * It also reaps ABANDONED atomic-write staging files (WI-10004784), counted in the
+ * same return value. The host writes `<owner>.json` and trims `<owner>.events.jsonl`
+ * through `<target>.<pid>.tmp` + rename(2). A host that dies between the write and
+ * the rename leaves the staging file behind, and no other sweep removes one: the
+ * `.json` glob above cannot match it, and the events-ingest routine only globs
+ * `.events.jsonl`. Measured 2026-10-01: 35 of them, the oldest from 2026-08-20.
+ * A live writer renames its staging file within the same synchronous call, so one
+ * older than {@link ABANDONED_TEMP_MAX_AGE_MS} has no writer left. The ledgers
+ * themselves are NOT this janitor's: the ingest routine deletes each one 14 days after
+ * its last write, once its rows are in Postgres.
  */
 export async function pruneDeadDiscoveryFilesAsync(
   dir: string = PSU_PTY_DIR,
-  opts: { verifyIdentity?: VerifyPidIdentity } = {},
+  opts: { verifyIdentity?: VerifyPidIdentity; nowMs?: number; tempMaxAgeMs?: number } = {},
 ): Promise<number> {
   const verify = opts.verifyIdentity ?? pidIsPsuHost;
-  let files: string[];
+  let entries: string[];
   try {
-    files = (await fsp.readdir(dir)).filter((f) => f.endsWith('.json'));
+    entries = await fsp.readdir(dir);
   } catch {
     return 0; // no discovery dir yet — nothing to prune
   }
-  let pruned = 0;
+  const files = entries.filter(isDiscoveryRecordFileName);
+  let pruned = await pruneAbandonedTempFilesAsync(
+    dir,
+    entries,
+    opts.nowMs ?? Date.now(),
+    opts.tempMaxAgeMs ?? ABANDONED_TEMP_MAX_AGE_MS,
+  );
   for (const f of files) {
     const metaPath = join(dir, f);
     let h: PsuPtyHost | null = null;
@@ -675,6 +948,9 @@ export async function pruneDeadDiscoveryFilesAsync(
       pruned += 1;
       continue;
     }
+    // WI-6554700010008431: parseable JSON that is not a discovery record (no pid/sock)
+    // is some other writer's file — never ours to reap as a "dead host".
+    if (!looksLikeDiscoveryRecord(h)) continue;
     const alive = !!(h && h.sock && h.pid && (await pathExistsAsync(h.sock)) && pidAlive(h.pid) && verify(h.pid));
     if (alive) continue;
     await safeUnlinkAsync(metaPath);
@@ -750,6 +1026,19 @@ export interface InjectHostResult {
    *  shutdown path reads it (to tell an owner-attended REFUSAL apart from a
    *  transport miss); every other caller branches on `ok` exactly as before. */
   reason?: string | null;
+  /** Present only for a pinned, confirmed hooks-observe receipt. */
+  observation?: Record<string, unknown>;
+}
+
+export function qualifyHooksObservationAck(request: Record<string, unknown>, ack: Record<string, unknown>): boolean {
+  const identity = ack.identity as Record<string, unknown> | undefined;
+  const coverage = ack.coverage as Record<string, unknown> | undefined;
+  return ack.ok === true && ack.inputReleased === true && !!identity &&
+    identity.ownerId === request.ownerId && String(identity.advSessionId) === request.expectedAdvSessionId &&
+    identity.nativeSessionId === request.expectedNativeSessionId && identity.hostStartedAt === request.expectedHostStartedAt &&
+    identity.childGeneration === request.expectedChildGeneration && identity.hostCodeVersion === request.expectedHostCodeVersion &&
+    coverage?.scope === 'fresh-hook-browser-viewport' && coverage.complete === false &&
+    Array.isArray(ack.visibleRows) && ack.visibleRows.every((row) => typeof row === 'string');
 }
 
 /**
@@ -854,12 +1143,57 @@ function recordedOwnerIdForSock(sock: string, envelopeOwnerId: string | undefine
   return null;
 }
 
-function appendInjectAudit(row: Record<string, unknown>): void {
+/** Size cap for the sender inject audit log, in bytes.
+ *
+ *  WI-10004854: the log was append-only with no cap (1.6 MB / 10.5k rows in a
+ *  month, ~57 KB/day). When it reaches the cap it is renamed to `<path>.1`,
+ *  replacing the previous `.1`, so the log never holds more than about twice the cap. 4 MiB
+ *  keeps about two months of rows in each generation at the measured rate. Override
+ *  with PAPERCUSP_PSU_PTY_INJECT_AUDIT_MAX_BYTES; a non-numeric or non-positive
+ *  value keeps the default. */
+const INJECT_AUDIT_MAX_BYTES_DEFAULT = 4 * 1024 * 1024;
+
+function injectAuditMaxBytes(): number {
+  const raw = Number(process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_MAX_BYTES);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : INJECT_AUDIT_MAX_BYTES_DEFAULT;
+}
+
+/** Rotate `path` to `path.1` once it has reached the cap. A missing file is the
+ *  normal first-write case, not an error. Exported for the rotation test. */
+export async function rotateInjectAuditIfFull(path: string, maxBytes: number = injectAuditMaxBytes()): Promise<boolean> {
+  let size: number;
   try {
-    appendFileSync(injectAuditPath(), `${JSON.stringify({ ts: new Date().toISOString(), ...row })}\n`);
+    size = (await fsp.stat(path)).size;
   } catch {
-    /* A diagnostic must never be able to fail a delivery. */
+    return false;
   }
+  if (size < maxBytes) return false;
+  await fsp.rename(path, `${path}.1`);
+  return true;
+}
+
+let injectAuditWriteQueue: Promise<void> = Promise.resolve();
+
+function appendInjectAudit(row: Record<string, unknown>): void {
+  const path = injectAuditPath();
+  const maxBytes = injectAuditMaxBytes();
+  const line = `${JSON.stringify({ ts: new Date().toISOString(), ...row })}\n`;
+  // The audit is diagnostic-only, but its journal latency used to run inline on
+  // the operator event loop. Serialize the async rotate+append pair so rows
+  // from this process cannot race the size check or reorder around a rotation.
+  injectAuditWriteQueue = injectAuditWriteQueue
+    .then(async () => {
+      await rotateInjectAuditIfFull(path, maxBytes);
+      await fsp.appendFile(path, line);
+    })
+    .catch(() => {
+      /* A diagnostic must never be able to fail a delivery. */
+    });
+}
+
+/** Test-only barrier for the best-effort async audit writer. */
+export async function _flushInjectAuditForTest(): Promise<void> {
+  await injectAuditWriteQueue;
 }
 
 /**
@@ -1016,7 +1350,7 @@ export function _injectAuditCountersForTest(): {
   };
 }
 
-export function injectIntoHostWithConfirmation(
+export async function injectIntoHostWithConfirmation(
   sock: string,
   msg: {
     mode:
@@ -1028,12 +1362,24 @@ export function injectIntoHostWithConfirmation(
       | 'recycle'
       | 'carry-respawn'
       | 'mcp-reconnect'
+      | 'hooks-observe'
+      | 'delivery-cancel'
       | 'shutdown';
     data: string;
     /** WI-6638, mode:'shutdown' only: waive the mid-turn (agent-busy) refusal. It
      *  can NEVER waive the two human guards — those are evaluated by the host from
      *  its own process state and are not caller-influenced. */
     force?: boolean;
+    expectedStartedAt?: number;
+    requireNativeTurnStart?: boolean;
+    expectedChildGeneration?: number;
+    expectedHostStartedAt?: number;
+    observationVersion?: number;
+    expectedAdvSessionId?: string;
+    expectedNativeSessionId?: string;
+    expectedHostCodeVersion?: string;
+    expiresAtMs?: number;
+    provenanceIssuedAtMs?: number;
     focus?: string;
     systemPromptAddendum?: string;
     /** Exact requesting Codex rollout. The host validates it within CODEX_HOME
@@ -1073,6 +1419,8 @@ export function injectIntoHostWithConfirmation(
      * this wake, when the message represents one (a loop-wake / event-wake
      * `turn`/`reset`/`recycle`/`carry-respawn` delivery — never a one-shot
      * `raw`/`osc`/`compact`/`mcp-reconnect` call, which has no delivery row).
+     * The capability-gated `delivery-cancel` control request also carries this
+     * id to identify an existing row; it never writes a turn.
      * Riding it on the envelope lets the RECEIVING host recognize a RETRY of a
      * delivery it already accepted (the client's own ack-wait can time out or
      * the ack write back can fail — either way is indistinguishable from a
@@ -1086,25 +1434,55 @@ export function injectIntoHostWithConfirmation(
      * corresponds to a durable delivery row.
      */
     deliveryId?: string;
+    /** EI-16685: additive mode:'turn' cancellation metadata. Older hosts ignore
+     * these fields and their delivery-id dedup still prevents a duplicate write. */
+    cancelDeliveryIds?: string[];
+    handledMsgIds?: string[];
     /** P-004 measured quota recovery: an operator-authorized conversion of this
      * durable wake into the existing same-owner recycle path. The descriptor is
      * deliberately redundant with ownerId/deliveryId so the receiving host can
      * reject any mutated or cross-owner operation before it recycles a child.
      * Older hosts ignore this additive v1 field; callers must require the
-     * `quota-recovery` capability before sending it. */
+     * `quota-recovery` capability before sending it. `cause` is diagnostic only:
+     * the host (psu-pty-host.mjs decodeQuotaRecovery) maps anything but 'auth'
+     * to 'quota'. */
     quotaRecovery?: {
       operationId: string;
       ownerId: string;
       startedAtMs: number;
+      cause?: 'quota' | 'auth';
     };
   },
   timeoutMs = 2000,
 ): Promise<InjectHostResult> {
+  if (msg.mode === 'hooks-observe') {
+    // The receipt follows bounded command, browser and cleanup paints. A
+    // legacy 2s delivery-ACK budget would expire before that receipt exists.
+    timeoutMs = Math.min(30_000, Math.max(20_000, Number.isFinite(timeoutMs) ? timeoutMs : 20_000));
+    msg = { ...msg, expiresAtMs: Date.now() + timeoutMs };
+    const host = msg.ownerId ? await findLiveHostAsync(msg.ownerId) : null;
+    if (!host || host.sock !== sock || !hostSupports(host, 'codex-hooks-observe-v1') ||
+      msg.observationVersion !== 1 || !msg.expectedNativeSessionId || !msg.expectedHostCodeVersion ||
+      host.nativeSessionId !== msg.expectedNativeSessionId || host.hostCodeVersion !== msg.expectedHostCodeVersion ||
+      String(host.advSessionId) !== msg.expectedAdvSessionId || host.startedAt !== msg.expectedHostStartedAt ||
+      host.childGeneration !== msg.expectedChildGeneration)
+      return { ok: false, confirmation: 'error', reason: 'observation-capability-or-custody-unavailable' };
+  }
   const envelope: {
     v: 1;
     mode: string;
     data: string;
     force?: boolean;
+    expectedStartedAt?: number;
+    requireNativeTurnStart?: boolean;
+    expectedChildGeneration?: number;
+    expectedHostStartedAt?: number;
+    observationVersion?: number;
+    expectedAdvSessionId?: string;
+    expectedNativeSessionId?: string;
+    expectedHostCodeVersion?: string;
+    expiresAtMs?: number;
+    provenanceIssuedAtMs?: number;
     focus?: string;
     systemPromptAddendum?: string;
     sourceTranscriptPath?: string;
@@ -1114,10 +1492,13 @@ export function injectIntoHostWithConfirmation(
     routineId?: string;
     ownerId?: string;
     deliveryId?: string;
+    cancelDeliveryIds?: string[];
+    handledMsgIds?: string[];
     quotaRecovery?: {
       operationId: string;
       ownerId: string;
       startedAtMs: number;
+      cause?: 'quota' | 'auth';
     };
   } = {
     v: 1,
@@ -1125,6 +1506,16 @@ export function injectIntoHostWithConfirmation(
     data: msg.data,
   };
   if (msg.force !== undefined) envelope.force = msg.force;
+  if (msg.expectedStartedAt !== undefined) envelope.expectedStartedAt = msg.expectedStartedAt;
+  if (msg.requireNativeTurnStart !== undefined) envelope.requireNativeTurnStart = msg.requireNativeTurnStart;
+  if (msg.expectedChildGeneration !== undefined) envelope.expectedChildGeneration = msg.expectedChildGeneration;
+  if (msg.expectedHostStartedAt !== undefined) envelope.expectedHostStartedAt = msg.expectedHostStartedAt;
+  if (msg.observationVersion !== undefined) envelope.observationVersion = msg.observationVersion;
+  if (msg.expectedAdvSessionId !== undefined) envelope.expectedAdvSessionId = msg.expectedAdvSessionId;
+  if (msg.expectedNativeSessionId !== undefined) envelope.expectedNativeSessionId = msg.expectedNativeSessionId;
+  if (msg.expectedHostCodeVersion !== undefined) envelope.expectedHostCodeVersion = msg.expectedHostCodeVersion;
+  if (msg.expiresAtMs !== undefined) envelope.expiresAtMs = msg.expiresAtMs;
+  if (msg.provenanceIssuedAtMs !== undefined) envelope.provenanceIssuedAtMs = msg.provenanceIssuedAtMs;
   if (msg.focus !== undefined) envelope.focus = msg.focus;
   if (msg.systemPromptAddendum !== undefined) envelope.systemPromptAddendum = msg.systemPromptAddendum;
   if (msg.sourceTranscriptPath !== undefined) envelope.sourceTranscriptPath = msg.sourceTranscriptPath;
@@ -1134,14 +1525,10 @@ export function injectIntoHostWithConfirmation(
   if (msg.routineId !== undefined) envelope.routineId = msg.routineId;
   if (msg.ownerId !== undefined) envelope.ownerId = msg.ownerId;
   if (msg.deliveryId !== undefined) envelope.deliveryId = msg.deliveryId;
+  if (msg.cancelDeliveryIds !== undefined) envelope.cancelDeliveryIds = msg.cancelDeliveryIds;
+  if (msg.handledMsgIds !== undefined) envelope.handledMsgIds = msg.handledMsgIds;
   if (msg.quotaRecovery !== undefined) envelope.quotaRecovery = msg.quotaRecovery;
   const payload = JSON.stringify(envelope);
-  if (Buffer.byteLength(payload, 'utf8') > MAX_CONTROL_PAYLOAD_BYTES)
-    return Promise.resolve({ ok: false, confirmation: 'oversize' as const });
-
-  // WI-2140968: cross-check the caller's asserted ownerId against the socket path's
-  // own witness. Detector only — never blocks the write (see auditInjectOwnerBinding).
-  auditInjectOwnerBinding(sock, msg);
 
   return new Promise<InjectHostResult>((resolve) => {
     let settled = false;
@@ -1153,13 +1540,43 @@ export function injectIntoHostWithConfirmation(
     // authoritative and settles this promise on its own `ok` value.
     let ackReceived = false;
     let ackBuf = '';
-    const finish = (ok: boolean, confirmation: InjectConfirmation, reason?: string) => {
+    const finish = (
+      ok: boolean,
+      confirmation: InjectConfirmation,
+      reason?: string,
+      transportErrorCode?: string,
+      observation?: Record<string, unknown>,
+    ) => {
       if (settled) return;
       settled = true;
+      // EI-25257321199641888: a later successful retry clears the delivery
+      // row's last_error. Retain the first transport/host verdict in the
+      // existing bounded audit so a reachable socket cannot erase a failed
+      // wake's evidence. Correlate by identity, never persist the wake body.
+      if (!ok && msg.ownerId && msg.deliveryId && TURN_CLASS_MODES.has(msg.mode)) {
+        appendInjectAudit({
+          kind: 'inject-host-failed',
+          ownerId: msg.ownerId,
+          deliveryId: msg.deliveryId,
+          mode: msg.mode,
+          confirmation,
+          reason: reason?.slice(0, 300) ?? null,
+          transportErrorCode: transportErrorCode ?? null,
+          pid: process.pid,
+        });
+      }
       // Omit `reason` entirely when the host sent none, so this stays shape-compatible
       // with every existing exact-equality assertion on InjectHostResult.
-      resolve(reason === undefined ? { ok, confirmation } : { ok, confirmation, reason });
+      resolve({ ok, confirmation, ...(reason === undefined ? {} : { reason }),
+        ...(observation ? { observation } : {}) });
     };
+    if (Buffer.byteLength(payload, 'utf8') > MAX_CONTROL_PAYLOAD_BYTES) {
+      finish(false, 'oversize');
+      return;
+    }
+    // WI-2140968: cross-check the caller's asserted ownerId against the socket path's
+    // own witness. Detector only — never blocks the write (see auditInjectOwnerBinding).
+    auditInjectOwnerBinding(sock, msg);
     const c = net.connect(sock, () => {
       // `focus` rides the envelope only for mode:'compact' (WI-1804) — the host uses it
       // as the `/compact <focus>` argument, keeping `data` for the carry-note continuation.
@@ -1185,6 +1602,13 @@ export function injectIntoHostWithConfirmation(
         ) {
           ackReceived = true;
           const ackReason = (parsed as { reason?: unknown }).reason;
+          if (msg.mode === 'hooks-observe' && (parsed as { ok: boolean }).ok) {
+            const receipt = parsed as Record<string, unknown>;
+            const qualified = qualifyHooksObservationAck(msg, receipt);
+            finish(qualified, 'acked', qualified ? 'observed' : 'observation-unqualified-receipt',
+              undefined, qualified ? receipt : undefined);
+            return;
+          }
           finish(
             (parsed as { ok: boolean }).ok,
             'acked',
@@ -1195,7 +1619,7 @@ export function injectIntoHostWithConfirmation(
         /* malformed ack line — ignore, the close/timeout fallback still applies */
       }
     });
-    c.on('error', () => finish(false, 'error'));
+    c.on('error', (error: NodeJS.ErrnoException) => finish(false, 'error', undefined, error.code));
     c.on('close', () => {
       // No ack ever arrived — either an old host (pre-WI-5872, never sends
       // one: preserve today's optimistic behavior so this client-side change
@@ -1204,7 +1628,8 @@ export function injectIntoHostWithConfirmation(
       // before writing back. Either way this is the EXACT pre-fix fallback:
       // bare close alone still resolves true. Once a real ack DID arrive,
       // `finish` already ran above and this is a no-op (the `settled` guard).
-      if (!ackReceived) finish(true, 'assumed-close');
+      if (!ackReceived) finish(msg.mode !== 'hooks-observe', 'assumed-close',
+        msg.mode === 'hooks-observe' ? 'observation-unconfirmed' : undefined);
     });
     const t = setTimeout(() => {
       try {
@@ -1276,13 +1701,13 @@ export async function interruptViaPty(
   opts: { verifyIdentity?: VerifyPidIdentity } = {},
 ): Promise<boolean> {
   const data = key === 'esc' ? '\x1b' : '\x03';
-  let host = findLiveHost(ownerId, PSU_PTY_DIR, opts);
+  let host = await findLiveHostAsync(ownerId, PSU_PTY_DIR, opts);
   for (let attempt = 0; host && attempt < 2; attempt += 1) {
     const ok = await injectIntoHost(host.sock, { mode: 'raw', data, ownerId });
     if (ok) return true;
     // Re-read the owner-scoped discovery record after a miss. Do not reuse the
     // first host object: a live psu host may have rebound its control socket.
-    host = findLiveHost(ownerId, PSU_PTY_DIR, opts);
+    host = await findLiveHostAsync(ownerId, PSU_PTY_DIR, opts);
   }
   return false;
 }
@@ -1305,7 +1730,7 @@ export async function recolorViaPty(
   opts: { verifyIdentity?: VerifyPidIdentity } = {},
 ): Promise<boolean> {
   if (!osc) return false;
-  const host = findLiveHost(ownerId, PSU_PTY_DIR, opts);
+  const host = await findLiveHostAsync(ownerId, PSU_PTY_DIR, opts);
   if (!host) return false;
   return injectIntoHost(host.sock, { mode: 'osc', data: osc, ownerId });
 }
@@ -1334,6 +1759,8 @@ export type ShutdownViaPtyResult =
   | 'refused-not-agent-launched'
   | 'refused-human-attended'
   | 'refused-agent-busy';
+// A stale host incarnation is separate from a host refusing its own shutdown.
+export type BoundShutdownViaPtyResult = ShutdownViaPtyResult | 'refused-stale-host';
 
 /**
  * Ask a live psu-hosted session to WIND DOWN AND EXIT — closing its own terminal tab
@@ -1361,26 +1788,68 @@ export type ShutdownViaPtyResult =
  */
 export async function shutdownViaPty(
   ownerId: string,
-  opts: { reason?: string; force?: boolean; verifyIdentity?: VerifyPidIdentity } = {},
-): Promise<ShutdownViaPtyResult> {
-  const host = findLiveHost(ownerId, PSU_PTY_DIR, { verifyIdentity: opts.verifyIdentity });
+  opts: { reason?: string; force?: boolean; verifyIdentity?: VerifyPidIdentity; expectedHost?: { startedAt: number; advSessionId: string } } = {},
+): Promise<BoundShutdownViaPtyResult> {
+  const host = await findLiveHostAsync(ownerId, PSU_PTY_DIR, { verifyIdentity: opts.verifyIdentity });
   if (!host) return 'no-host';
   if (!hostSupports(host, 'shutdown')) return 'no-cap';
-  const res = await injectIntoHostWithConfirmation(host.sock, {
-    mode: 'shutdown',
-    data: String(opts.reason ?? '').slice(0, 500),
-    force: opts.force === true,
-    ownerId,
-  });
-  if (res.ok) return 'sent';
-  const reason = String(res.reason ?? '');
-  if (reason.startsWith('shutdown-refused:')) {
-    const which = reason.slice('shutdown-refused:'.length);
-    if (which === 'not-agent-launched') return 'refused-not-agent-launched';
-    if (which === 'human-attended') return 'refused-human-attended';
-    if (which === 'agent-busy') return 'refused-agent-busy';
+  if (opts.expectedHost) {
+    if (!hostSupports(host, 'shutdown-identity')) return 'no-cap';
+    if (host.startedAt !== opts.expectedHost.startedAt || host.advSessionId !== opts.expectedHost.advSessionId) return 'refused-stale-host';
   }
-  return 'send-failed';
+  const sendShutdown = (target: PsuPtyHost, expectedStartedAt?: number) =>
+    injectIntoHostWithConfirmation(target.sock, {
+      mode: 'shutdown',
+      data: String(opts.reason ?? '').slice(0, 500),
+      force: opts.force === true,
+      ownerId,
+      ...(expectedStartedAt !== undefined ? { expectedStartedAt } : {}),
+    });
+  const classifyResult = (result: InjectHostResult): BoundShutdownViaPtyResult | null => {
+    if (result.ok) return 'sent';
+    const reason = String(result.reason ?? '');
+    if (reason.startsWith('shutdown-refused:')) {
+      const which = reason.slice('shutdown-refused:'.length);
+      if (which === 'not-agent-launched') return 'refused-not-agent-launched';
+      if (which === 'human-attended') return 'refused-human-attended';
+      if (which === 'agent-busy') return 'refused-agent-busy';
+      if (which === 'stale-host') return 'refused-stale-host';
+      // Any host verdict is terminal, even when this caller does not recognize it.
+      return 'send-failed';
+    }
+    // An ACK (including an unrecognized negative verdict) is authoritative. Retry
+    // only when the transport itself failed before a host could give its verdict.
+    return result.confirmation === 'error' || result.confirmation === 'timeout'
+      ? null
+      : 'send-failed';
+  };
+
+  const firstResult = await sendShutdown(host, opts.expectedHost?.startedAt);
+  const firstOutcome = classifyResult(firstResult);
+  if (firstOutcome) return firstOutcome;
+
+  // A transport miss may race a live host rebinding its socket. Re-discover once,
+  // but never carry this shutdown over to a replacement session under the same key.
+  const retryHost = await findLiveHostAsync(ownerId, PSU_PTY_DIR, { verifyIdentity: opts.verifyIdentity });
+  if (!retryHost || !hostSupports(retryHost, 'shutdown')) return 'send-failed';
+  if (retryHost.startedAt !== host.startedAt || retryHost.advSessionId !== host.advSessionId) {
+    return opts.expectedHost ? 'refused-stale-host' : 'send-failed';
+  }
+  if (opts.expectedHost) {
+    if (!hostSupports(retryHost, 'shutdown-identity')) return 'no-cap';
+    if (
+      retryHost.startedAt !== opts.expectedHost.startedAt ||
+      retryHost.advSessionId !== opts.expectedHost.advSessionId
+    ) return 'refused-stale-host';
+  }
+
+  // When the host supports the identity fence, make it validate the incarnation
+  // again after discovery; otherwise the retry remains client-bound to the same
+  // startedAt/advSessionId pair checked above.
+  const retryExpectedStartedAt = opts.expectedHost?.startedAt ??
+    (hostSupports(retryHost, 'shutdown-identity') ? host.startedAt : undefined);
+  const retryResult = await sendShutdown(retryHost, retryExpectedStartedAt);
+  return classifyResult(retryResult) ?? 'send-failed';
 }
 
 export async function mcpReconnectViaPty(
@@ -1388,7 +1857,7 @@ export async function mcpReconnectViaPty(
   serverName = 'papercusp-su',
   opts: { verifyIdentity?: VerifyPidIdentity } = {},
 ): Promise<'sent' | 'no-host' | 'no-cap' | 'send-failed'> {
-  const host = findLiveHost(ownerId, PSU_PTY_DIR, opts);
+  const host = await findLiveHostAsync(ownerId, PSU_PTY_DIR, opts);
   if (!host) return 'no-host';
   if (!hostSupports(host, 'mcp-reconnect')) return 'no-cap';
   const ok = await injectIntoHost(host.sock, { mode: 'mcp-reconnect', data: serverName, ownerId });

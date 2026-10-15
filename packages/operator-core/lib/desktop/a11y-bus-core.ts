@@ -44,7 +44,12 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, copyFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseA11yBusAddress, a11yBusCommand, A11Y_APP_ENV } from '../agent-tools/computer/accessibility-tree';
+import {
+  a11yBusFromRootCommand,
+  a11yBusCommand,
+  parseA11yBusAddress,
+  A11Y_APP_ENV,
+} from '../agent-tools/computer/accessibility-tree';
 import { sandboxXEnv } from '../agent-tools/computer/desktop-driver';
 import type {
   beginSyncEnrolment,
@@ -166,6 +171,50 @@ export function publishBusPropertyCommand(display: string, busAddress: string): 
     bin: 'xprop',
     args: ['-display', display, '-root', '-f', 'AT_SPI_BUS', '8s', '-set', 'AT_SPI_BUS', busAddress],
   };
+}
+
+export interface A11yBusCommandResult {
+  status: number | null;
+  stdout?: string | Buffer;
+  stderr?: string | Buffer;
+  error?: Error;
+}
+
+function commandOutput(value: string | Buffer | undefined): string {
+  return Buffer.isBuffer(value) ? value.toString() : value ?? '';
+}
+
+function commandOutputDiagnostic(value: string | Buffer | undefined): string {
+  const output = commandOutput(value);
+  const excerpt = output.slice(0, 1000);
+  return JSON.stringify(output.length > excerpt.length ? `${excerpt}… [${output.length} chars]` : output);
+}
+
+/** Report why the cross-process AT-SPI bus publication command did not run. */
+export function a11yBusPropertyWriteFailure(result: A11yBusCommandResult): string | null {
+  if (result.error) return `xprop could not publish AT_SPI_BUS: ${result.error.message}`;
+  if (result.status !== 0) {
+    const stderr = commandOutput(result.stderr).trim().slice(0, 300);
+    return `xprop publication exited ${result.status ?? 'without a status'}${stderr ? `: ${stderr}` : ''}`;
+  }
+  return null;
+}
+
+/** Confirm that another process can resolve the exact bus the publisher returned. */
+export function a11yBusPropertyReadbackFailure(
+  expectedBus: string,
+  result: A11yBusCommandResult,
+): string | null {
+  const diagnostics = `stdout=${commandOutputDiagnostic(result.stdout)} stderr=${commandOutputDiagnostic(result.stderr)}`;
+  if (result.error) return `xprop readback could not run: ${result.error.message}; ${diagnostics}`;
+  if (result.status !== 0) {
+    const stderr = commandOutput(result.stderr).trim().slice(0, 300);
+    return `xprop readback exited ${result.status ?? 'without a status'}${stderr ? `: ${stderr}` : ''}; ${diagnostics}`;
+  }
+  const actualBus = parseA11yBusAddress(commandOutput(result.stdout));
+  if (!actualBus) return `xprop readback did not contain an AT_SPI_BUS property; ${diagnostics}`;
+  if (actualBus !== expectedBus) return `xprop read back ${actualBus}, expected ${expectedBus}; ${diagnostics}`;
+  return null;
 }
 
 /**
@@ -345,7 +394,26 @@ export function startA11yBus(display: string, opts: StartA11yBusOptions = {}): A
     }
 
     const publish = publishBusPropertyCommand(display, a11yBus);
-    spawnSync(publish.bin, publish.args, { env: sandboxXEnv(display), timeout: 5000 });
+    const publishResult = spawnSync(publish.bin, publish.args, {
+      encoding: 'utf8', env: sandboxXEnv(display), timeout: 5000,
+    });
+    const publishFailure = a11yBusPropertyWriteFailure(publishResult);
+    if (publishFailure) {
+      console.warn(`[a11y-bus] display ${display}: ${publishFailure}`);
+      ownedRelease();
+      return null;
+    }
+
+    const readback = a11yBusFromRootCommand(display);
+    const readbackResult = spawnSync(readback.bin, readback.args, {
+      encoding: 'utf8', env: readback.env, timeout: 5000,
+    });
+    const readbackFailure = a11yBusPropertyReadbackFailure(a11yBus, readbackResult);
+    if (readbackFailure) {
+      console.warn(`[a11y-bus] display ${display}: ${readbackFailure}`);
+      ownedRelease();
+      return null;
+    }
 
     return {
       sessionBus,

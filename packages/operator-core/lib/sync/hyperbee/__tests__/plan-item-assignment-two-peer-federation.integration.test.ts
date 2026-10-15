@@ -38,6 +38,7 @@ import { drainOutboxOnce } from '../outbox-drain';
 import { applyOpVia, type ProjectionLookup, type TableProjection } from '../projection';
 import { buildPlanItemAssignmentsProjection } from '../projections/plan-item-assignments';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
+import { stubHivePolicyReadsForSuite } from './_hive-policy-read-stubs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../../../../..');
@@ -48,6 +49,8 @@ const HARNESS_SLUG = 'sheets';
 const PLAN = 'demo-plan';
 const BINDING = { kind: 'local' as const, workspace_id: WORKSPACE_ID, harness_slug: HARNESS_SLUG };
 
+// Before this file's own afterEach, so the stub outlives substrate teardown (WI-6554700010008561).
+stubHivePolicyReadsForSuite();
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
   while (cleanups.length) {
@@ -252,14 +255,16 @@ describe('Phase-4 (a): a plan-item assignment federates A↔B end-to-end through
         swarmBinding: BINDING,
         swarmOverride: swarmA,
         verifyBindingOverride: async (_pk, _login, userId) => (userId === idB.userId ? 'verified' : 'fail'),
-        applyOverride: (op) => {
-          applyA ??= buildPeerApply(dbA.sql, handleA!.ownLog.keyHex);
+        // ctx, not `handleA`: a merge pass can run before bootHarnessSubstrate returns (WI-6554700010008561).
+        applyOverride: (op, ctx) => {
+          applyA ??= buildPeerApply(dbA.sql, ctx.ownLogKeyHex);
           return applyA(op);
         },
         mergePollMs: 0,
         pendingRetryMs: 0,
         loadRevokedOverride: async () => new Set(),
         announceIdentityOverride: idA.override,
+        rekeyDepsOverride: null, // no re-key build through the live org-admin pool (WI-6554700010008561)
       });
       cleanups.push(async () => {
         await handleA?.close();
@@ -273,14 +278,15 @@ describe('Phase-4 (a): a plan-item assignment federates A↔B end-to-end through
         swarmBinding: BINDING,
         swarmOverride: swarmB,
         verifyBindingOverride: async (_pk, _login, userId) => (userId === idA.userId ? 'verified' : 'fail'),
-        applyOverride: (op) => {
-          applyB ??= buildPeerApply(dbB.sql, handleB!.ownLog.keyHex);
+        applyOverride: (op, ctx) => {
+          applyB ??= buildPeerApply(dbB.sql, ctx.ownLogKeyHex);
           return applyB(op);
         },
         mergePollMs: 0,
         pendingRetryMs: 0,
         loadRevokedOverride: async () => new Set(),
         announceIdentityOverride: idB.override,
+        rekeyDepsOverride: null, // see boot A
       });
       cleanups.push(async () => {
         await handleB?.close();
@@ -391,9 +397,9 @@ describe('Phase-4 (a): a plan-item assignment federates A↔B end-to-end through
       // admitPeer → mergeOnePass) SYNCHRONOUSLY inside bootHarnessSubstrate — i.e.
       // BEFORE the `handleB = await bootHarnessSubstrate(...)` assignment below
       // completes — because A already has content to fold on B's very first
-      // connection. Buffer any op that arrives before `handleB` is set and replay
-      // it once real `applyB` exists, rather than crashing on `handleB!.ownLog`.
-      const preBootOpsB: Array<{ op: OpEnvelope; resolve: (v: boolean) => void; reject: (e: unknown) => void }> = [];
+      // connection. The apply closure therefore takes B's own-log key from the boot
+      // ctx (known before the first merge pass), never from `handleB`
+      // (WI-6554700010008569 — this replaced a pre-boot op buffer).
 
       // ── Boot ONLY A, write + drain the assignment, THEN close nothing — B does
       // not exist yet. This is the backfill precondition: the op is already in A's
@@ -405,14 +411,15 @@ describe('Phase-4 (a): a plan-item assignment federates A↔B end-to-end through
         swarmBinding: BINDING,
         swarmOverride: swarmA,
         verifyBindingOverride: async (_pk, _login, userId) => (userId === idB.userId ? 'verified' : 'fail'),
-        applyOverride: (op) => {
-          applyA ??= buildPeerApply(dbA.sql, handleA!.ownLog.keyHex);
+        applyOverride: (op, ctx) => {
+          applyA ??= buildPeerApply(dbA.sql, ctx.ownLogKeyHex);
           return applyA(op);
         },
         mergePollMs: 0,
         pendingRetryMs: 0,
         loadRevokedOverride: async () => new Set(),
         announceIdentityOverride: idA.override,
+        rekeyDepsOverride: null, // no re-key build through the live org-admin pool (WI-6554700010008561)
       });
       cleanups.push(async () => {
         await handleA?.close();
@@ -433,31 +440,20 @@ describe('Phase-4 (a): a plan-item assignment federates A↔B end-to-end through
         swarmBinding: BINDING,
         swarmOverride: swarmB,
         verifyBindingOverride: async (_pk, _login, userId) => (userId === idA.userId ? 'verified' : 'fail'),
-        applyOverride: (op) => {
-          if (!handleB) {
-            return new Promise<boolean>((resolve, reject) => preBootOpsB.push({ op, resolve, reject }));
-          }
-          applyB ??= buildPeerApply(dbB.sql, handleB.ownLog.keyHex);
+        applyOverride: (op, ctx) => {
+          applyB ??= buildPeerApply(dbB.sql, ctx.ownLogKeyHex);
           return applyB(op);
         },
         mergePollMs: 0,
         pendingRetryMs: 0,
         loadRevokedOverride: async () => new Set(),
         announceIdentityOverride: idB.override,
+        rekeyDepsOverride: null, // see boot A
       });
       cleanups.push(async () => {
         await handleB?.close();
         await closeHarnessStore({ workspaceRoot: rootB, harnessSlug: HARNESS_SLUG });
       });
-      applyB ??= buildPeerApply(dbB.sql, handleB.ownLog.keyHex);
-      while (preBootOpsB.length) {
-        const queued = preBootOpsB.shift()!;
-        try {
-          queued.resolve(await applyB(queued.op));
-        } catch (e) {
-          queued.reject(e);
-        }
-      }
 
       expect(handleA.swarm).not.toBeNull();
       expect(handleB.swarm).not.toBeNull();

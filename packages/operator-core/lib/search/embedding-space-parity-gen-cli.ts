@@ -7,13 +7,12 @@
  *   npx tsx packages/operator-core/lib/search/embedding-space-parity-gen-cli.ts [--check]
  */
 import { readFileSync, writeFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { moduleRepoRoot } from '../module-repo-root';
 import { buildEmbeddingSpaceParityFixture } from './embedding-space-parity-cases';
 
-const REPO_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
-export const FIXTURE_PATH = fileURLToPath(
-  new URL('../../../../libs/generic/search/src/__fixtures__/embedding-space-parity-cases.json', import.meta.url),
-);
+const REPO_ROOT = moduleRepoRoot(import.meta.url);
+export const FIXTURE_PATH = join(REPO_ROOT, 'libs/generic/search/src/__fixtures__/embedding-space-parity-cases.json');
 
 const body = `${JSON.stringify(buildEmbeddingSpaceParityFixture(REPO_ROOT), null, 2)}\n`;
 if (process.argv.includes('--check')) {

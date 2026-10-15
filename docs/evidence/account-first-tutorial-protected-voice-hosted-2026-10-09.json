@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Exact W_6 account-first protected spoken-question acceptance",
+  "framework": "playwright",
+  "workItemId": "WI-10007170",
+  "planSlug": "cloud-app-live-tutorial-2026-10-01",
+  "command": [
+    "Retained Portal99c93cb2 Playwright e2e/portal-voice-synthetic-roundtrip.spec.ts --grep 'served tutorial spoken questions' --workers=1",
+    "Retained Portal99c93cb2 same file --grep 'voice recorder instruments' --workers=1"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-09T21:54:29.047Z",
+  "finishedAt": "2026-10-09T21:55:18.463Z",
+  "timestampBasis": "Recorded selected-case start/finish from shared LOCAL row20963194. Runner reported50.6s including overhead.",
+  "assertions": [
+    {
+      "id": "account-entry-consent-before-capture",
+      "passed": true,
+      "evidence": "Executed current committed test requires disabled Start and zero microphone calls/token writes before explicit lesson checkbox consent."
+    },
+    {
+      "id": "authorized-real-lesson-only-response",
+      "passed": true,
+      "evidence": "Current committed case asserts grant200/promptOverride/LessonHelp prompt, real Help200, spoken reply transcription containing subscription/infrastructure/cloud and lesson Help text."
+    },
+    {
+      "id": "independently-decodable-post-question-audio",
+      "passed": true,
+      "evidence": "Retained diagnostics:18.96 seconds/tracks1/decodeErrors[]; inbound energy after reply0.35095293667233496 exceeds fresh before-question1.2107932468274894e-10."
+    },
+    {
+      "id": "mute-and-lesson-change-stop",
+      "passed": true,
+      "evidence": "Current committed case asserts microphone mute disables or ends tracks and lesson change ends tracks."
+    },
+    {
+      "id": "no-domain-write-or-progress-completion",
+      "passed": true,
+      "evidence": "Executed case compares persisted tutorial progress before/after speech and allows only voice token/tutorial-help in observed non-progress writes."
+    },
+    {
+      "id": "recorder-recurrence-control",
+      "passed": true,
+      "evidence": "Maintained real local WebRTC recorder instruments selected control PASS20963185 at clean committed source. Before repair control independently failed decoding; recorderEI25539339988897600 normallyDONE with committed authority."
+    }
+  ],
+  "summary": "One exact served protected-question case passed with real ElevenLabs provider, synthetic microphone and speech transcription. One independent maintained local recorder control passed. This is current retained-artifact acceptance; human/native review and production shipment remain separate.",
+  "source": {
+    "testCommit": "99c93cb2ab3db4bfd6baf893029d2c9d1796fec6",
+    "testRoot": "/dev/shm/pcv/papercusp-lint-as-committed-99c93cb2ab-QGU2eZ",
+    "testSha256": "f8bc8137802a3a73a4dd0a95c381119483b899a77e31706fa4dcae8be650930a",
+    "artifactPortalCommit": "d88481ce05a95aa1497730862c3dcd2d16693715",
+    "artifactSourceRoot": "/dev/shm/pcv/papercusp-lint-as-committed-d88481ce05-bNxRsV",
+    "operatorCommit": "405947bc4cfff1ed3b721daa4af027d64d71e970",
+    "operatorRoot": "/dev/shm/pcv/papercusp-lint-as-committed-405947bc4c-edpqzo",
+    "buildId": "W_6jLMz8UxKVrm1TZVhth",
+    "release": "/dev/shm/tutorial-protected-voice-origin-runtime-d88481ce/releases/W_6jLMz8UxKVrm1TZVhth-20261009212211948-2133149-d2243c7e",
+    "publishedAt": "2026-10-09T21:22:11.948Z",
+    "sourceRootDigest": "f324a986da9d5561899b6ed2bb24dc9117fefe63d950b5644a5e37e88cd1d6b8",
+    "worktreeDirty": false,
+    "workspaceLinksRemapped": 299
+  },
+  "testRuns": [
+    {
+      "id": 20963194,
+      "source": "local",
+      "file": "e2e/portal-voice-synthetic-roundtrip.spec.ts",
+      "passed": 1,
+      "skipped": 0,
+      "caseTitle": "served tutorial spoken questions > real lesson-only provider answers after consent and stops on lesson change without domain writes"
+    },
+    {
+      "id": 20963185,
+      "source": "local",
+      "file": "e2e/portal-voice-synthetic-roundtrip.spec.ts",
+      "passed": 1,
+      "skipped": 0,
+      "caseTitle": "voice recorder instruments > a restarted real remote audio segment remains independently decodable"
+    }
+  ],
+  "evidenceRefs": [
+    {
+      "path": "/dev/shm/tutorial-protected-voice-served-origin-20261009T2153.log",
+      "sha256": "c7270e56697de51fe393e0548cfe9a271b2fa39a378eabde88f24c7e210c063d"
+    },
+    {
+      "path": "/dev/shm/tutorial-recorder-clean-99c93cb2-20261009T2151.log",
+      "sha256": "b261a3d1bd3d67e758117bfa833ff34fc10d188d07b14d890bdac965e53e9dba"
+    },
+    {
+      "path": "/dev/shm/tutorial-protected-voice-served-origin-results-99c93cb2/portal-voice-synthetic-rou-000db-hange-without-domain-writes/tutorial-audio-diagnostics.json"
+    }
+  ],
+  "limitations": [
+    "Shared LOCAL ledger top-level root=null; exact immutable source custody comes from execution details, clean retained roots and independently compared committed file hashes.",
+    "The test's inline served-tutorial-voice-evidence attachment is not retained by the list/shared reporter. Its exact assertions are verified by the selected current test PASS; no unretained reply transcript is reconstructed here.",
+    "Synthetic microphone acceptance excludes real human microphone and native accessibility review.",
+    "No production shipment is claimed."
+  ],
+  "cleanup": {
+    "served": "Fresh80464 terminal0 drained",
+    "operator": "Fresh43165 deliberateSIGINTterminal1 drained",
+    "postgres": "Both Portal and operator private database shutdown observed",
+    "portsAbsent": [
+      4371,
+      4372,
+      4373,
+      41227
+    ],
+    "locks": "Private config locks released"
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "GN-BENCH-PROVENANCE operational probe: P-005 four-arm engine comparison (installed GitNexus 1.6.9 / candidate 1.6.12 / Codebase-Memory / baseline LSP+rg)",
+  "framework": "operational",
+  "command": [
+    "npx",
+    "tsx",
+    "docs/evidence/gitnexus-engine-comparison-2026-10-01-operational-probe.mts"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T22:05:41.037Z",
+  "finishedAt": "2026-10-01T22:05:41.041Z",
+  "summary": "10/10 provenance assertions hold on the real committed four-arm run (verdict keep; sourceParity.same=false; 20 attributed task rows; every arm executed and pinned).",
+  "assertions": [
+    {
+      "id": "every-arm-has-an-explicit-executed-or-unavailable-state",
+      "passed": true,
+      "evidence": "arms=baseline-lsp-rg,gitnexus-installed,gitnexus-candidate,codebase-memory; baseline-lsp-rg=executed(5 cases,3 fixtures); gitnexus-installed=executed(5 cases,3 fixtures); gitnexus-candidate=executed(5 cases,3 fixtures); codebase-memory=executed(5 cases,3 fixtures)"
+    },
+    {
+      "id": "all-four-required-arms-executed-none-reported-passed-without-running",
+      "passed": true,
+      "evidence": "each arm carries 5 corpus cases + 3 fixtures: baseline-lsp-rg:5/3 gitnexus-installed:5/3 gitnexus-candidate:5/3 codebase-memory:5/3"
+    },
+    {
+      "id": "task-runs-attribute-every-outcome-to-arm-task-and-grader",
+      "passed": true,
+      "evidence": "rows=20 distinct rolloutIds=20 preregHash=7ff941b3e5366038 grader=gradeSites@selective-corpus-v1"
+    },
+    {
+      "id": "fairness-audit-covers-the-same-four-arms-and-five-task-union",
+      "passed": true,
+      "evidence": "arms=baseline-lsp-rg,gitnexus-installed,gitnexus-candidate,codebase-memory unionTasks=5 allClear=false (allClear=false is the DISCLOSED state: single seed, no iso-budget)"
+    },
+    {
+      "id": "every-arm-records-a-backend-version-and-source-tree-fingerprint",
+      "passed": true,
+      "evidence": "baseline-lsp-rg@rg rg:08104b5503ccf9a3b0cf486a81bbc06fc94329f5 | gitnexus-installed@1.6.9:08104b5503ccf9a3b0cf486a81bbc06fc94329f5+dirty | gitnexus-candidate@1.6.12:08104b5503ccf9a3b0cf486a81bbc06fc94329f5 | codebase-memory@dev@339b3f40:08104b5503ccf9a3b0cf486a81bbc06fc94329f5"
+    },
+    {
+      "id": "candidate-and-installed-gitnexus-are-distinct-pinned-versions",
+      "passed": true,
+      "evidence": "installed=1.6.9 candidate=1.6.12"
+    },
+    {
+      "id": "source-parity-mismatch-is-disclosed-and-does-not-support-a-winner",
+      "passed": true,
+      "evidence": "recorded sourceParity.same=false (installed arm ran on a \"+dirty\" tree) decision=keep; markdown states \"identical tree fingerprint across arms: **NO**\""
+    },
+    {
+      "id": "recorded-verdict-is-keep-with-no-hidden-residue-and-cites-measured-reasons",
+      "passed": true,
+      "evidence": "decision=keep residue=[] reasons=[\"Codebase-Memory does not replace: correct 1/5 < installed 2/5; recall 0.20 < 0.50; warmMedianMs 2.60x installed\",\"candidate does not upgrade: correct 1/5 < installed 2/5; recall 0.43 < 0.50; coldIndexMs 1.33x installed; indexBytes 1.40x installed\"]"
+    },
+    {
+      "id": "verdict-re-derives-from-the-committed-arm-reports",
+      "passed": true,
+      "evidence": "re-derived decision=keep reasons-equal=true"
+    },
+    {
+      "id": "known-instrument-limits-are-disclosed-in-the-report",
+      "passed": true,
+      "evidence": "report names: health probe UNMEASURED (bench CLI dispatch lacks list_repos; fairness rows for the GitNexus arms read graderStatus=error for that diagnostic, NOT a failed task), the +dirty installed tree, and post-hoc grading corrections"
+    }
+  ]
+}

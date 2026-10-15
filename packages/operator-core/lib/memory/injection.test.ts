@@ -173,6 +173,18 @@ import {
 } from './injection';
 import { CORPUS_BLOCK_HEADING } from './corpus-recall';
 import { getMemoryBackend } from './backend';
+import { setSessionConfinementResolver } from '../capability-envelope/session-confinement-port';
+
+it('does no live memory or corpus IO for a frozen native assignment', async () => {
+  setSessionConfinementResolver(() => ({ denyTools: [], denyOutside: ['coord:whoami'],
+    denyAmbientContext: true, reason: 'frozen benchmark', imposedBy: 'host' }));
+  try {
+    expect(await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'private', queryContext: 'find hidden answers',
+      session: { sessionId: 'su-frozen', port: 'claim' } })).toBeNull();
+    expect(getMemoryBackend).not.toHaveBeenCalled();
+    expect(recallCorpusContext).not.toHaveBeenCalled();
+  } finally { setSessionConfinementResolver(undefined); }
+});
 import { _resetForTests } from './bump-last-surfaced';
 
 type Row = { id: string; text: string; kind?: string; metadata?: Record<string, unknown> };
@@ -221,7 +233,10 @@ it('cancels upstream search when the existing injection phase deadline expires',
     });
     await didStart;
     await vi.advanceTimersByTimeAsync(MEMORY_INJECT_TIMEOUT_MS + 1);
-    await expect(block).resolves.toContain('memory leg: timed-out');
+    const timedOutBlock = await block;
+    expect(timedOutBlock).toContain('memory leg: timed-out');
+    expect(timedOutBlock).toContain('authorized memory reader');
+    expect(timedOutBlock).not.toContain('memory:search');
     expect(upstream.aborted).toBe(true);
     expect(upstream.reason).toBeInstanceOf(MemoryTimeoutError);
     expect(backend.search).toHaveBeenCalledOnce();
@@ -297,6 +312,29 @@ it('keeps useful memory when the concurrently running corpus exhausts their shar
   } finally { deadline.close(); log.mockRestore(); warn.mockRestore(); resetMemoryDegradedForTest(); }
 });
 
+it('preserves ready healthy corpus when memory availability exceeds the native mid-turn deadline', async () => {
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const deadline = createMemoryWorkDeadline(1000);
+  const backend = mockBackend([]);
+  backend.available.mockImplementationOnce(() => new Promise(() => {}));
+  useBackend(backend);
+  corpusIoResult = {
+    block: null,
+    lines: [{ line: '- [doc doc:healthy-procedure] Retain the snapshot.', score: 1,
+      handle: { kind: 'doc', ref: 'doc:healthy-procedure', query: ['diagnostic evidence'],
+        resolve: 'docs:get { slugs: ["healthy-procedure"] }' } }],
+    dropped: [], outcome: 'ok', retrievalDepth: 24, rerank: 'nothing-to-reorder',
+    embedderAvailable: true, candidateCount: 1,
+  };
+  try {
+    const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws',
+      queryContext: 'diagnostic evidence', session: { sessionId: 'native-mid-turn-wall', port: 'mid-turn' }, deadline });
+    expect(block).toContain('healthy-procedure');
+    expect(block).toContain('memory leg: timed-out');
+    expect(backend.search).not.toHaveBeenCalled();
+  } finally { deadline.close(); log.mockRestore(); resetMemoryDegradedForTest(); }
+});
+
 it('charges availability and search to one budget and cancels the remaining search', async () => {
   vi.useFakeTimers();
   const log = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -320,6 +358,7 @@ it('charges availability and search to one budget and cancels the remaining sear
 });
 
 beforeEach(() => {
+  setSessionConfinementResolver(() => null);
   // Vitest's manual-mock callstack is shared across concurrent dynamic imports.
   // Spy on resolved exports so burst recalls cannot bypass these fixture seams.
   vi.spyOn(recallStats, 'recordRecallStats').mockImplementation(recordRecallStatsMock);
@@ -937,7 +976,7 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
           { id: 'm3', text: 'charlie charlie charlie charlie charlie charlie' },
         ]),
       );
-      await buildMemoryContextBlock({
+      const block = await buildMemoryContextBlock({
         userId: 'u1',
         workspaceId: 'ws',
         queryContext: 'why is the recall empty',
@@ -946,6 +985,10 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
         budgetChars: 60,
       });
       await flush();
+
+      expect(block).toContain('more learnings withheld this turn');
+      expect(block).toContain('authorized memory reader');
+      expect(block).not.toContain('memory:search');
 
       const { admission } = recordRecallStatsMock.mock.calls[0]![1] as {
         admission: { returned: number; admitted: number; truncated: boolean; dropped: Record<string, number> };
@@ -1099,7 +1142,8 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
     /**
      * The property that made the clamp the RIGHT lever rather than merely a
      * cheaper one (D-090): a clamped entry stays RECOVERABLE. It keeps its scope,
-     * id and lede and tells the agent how to get the rest, whereas an entry
+     * id and lede and tells the agent how to request the rest without assuming
+     * that this recipient is allowed to search memory, whereas an entry
      * dropped for budget is invisible and unrecoverable. If the clamp ever starts
      * truncating silently, halving it stops being a safe trade and this fails.
      */
@@ -1115,7 +1159,9 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
       });
       await flush();
 
-      expect(block).toContain('truncated — memory:search for the rest');
+      expect(block).toContain('truncated — ask an authorized memory reader for the full entry');
+      expect(block).not.toContain('memory:search');
+      expect(block).toContain('id=long1');
       // The lede survives the cut — a truncated entry is still identifiable.
       expect(block).toContain('mnemonic');
     });
@@ -1246,6 +1292,68 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
         pools: { user: { entries: [] }, harness: { entries: [] } },
         admission: { returned: 0, admitted: 0 },
       });
+    });
+
+    it('records only safe timeout facts when the search times out', async () => {
+      const backend = mockBackend([]);
+      backend.search.mockRejectedValue(new MemoryTimeoutError(
+        'raw request query and session su-private must not be copied',
+        'request-budget',
+        'shared-budget',
+        5000,
+      ));
+      useBackend(backend);
+
+      await buildMemoryContextBlock({
+        userId: 'u1',
+        workspaceId: 'ws',
+        queryContext: 'raw request query',
+        harnessSlugs: ['papercusp'],
+        potSlugs: [],
+      });
+      await flush();
+
+      const { admission } = recordRecallStatsMock.mock.calls[0]![1] as {
+        admission: { timeout: Record<string, unknown> };
+      };
+      expect(admission.timeout).toEqual({
+        scope: 'request-budget', phase: 'shared-budget', elapsedMs: 5000,
+      });
+      expect(Object.keys(admission.timeout).sort()).toEqual(['elapsedMs', 'phase', 'scope']);
+      expect(JSON.stringify(admission.timeout)).not.toContain('raw request query');
+      expect(JSON.stringify(admission.timeout)).not.toContain('su-private');
+    });
+
+    it('records safe timeout facts when backend availability times out before search', async () => {
+      const backend = mockBackend([]);
+      backend.available.mockRejectedValue(new MemoryTimeoutError(
+        'raw request query and session su-private must not be copied',
+        'backend-operation',
+        'availability',
+        5000,
+      ));
+      try {
+        useBackend(backend);
+
+        await buildMemoryContextBlock({
+          userId: 'u1',
+          workspaceId: 'ws',
+          queryContext: 'raw request query',
+          harnessSlugs: ['papercusp'],
+          potSlugs: [],
+        });
+        await flush();
+
+        const { admission } = recordRecallStatsMock.mock.calls[0]![1] as {
+          admission: { timeout: Record<string, unknown> };
+        };
+        expect(admission.timeout).toEqual({
+          scope: 'backend-operation', phase: 'availability', elapsedMs: 5000,
+        });
+        expect(Object.keys(admission.timeout).sort()).toEqual(['elapsedMs', 'phase', 'scope']);
+      } finally {
+        resetMemoryDegradedForTest();
+      }
     });
 
     it('writes EXACTLY ONE row per recall', async () => {
@@ -1564,6 +1672,21 @@ describe('buildMemoryContextBlock', () => {
     expect(block).toContain('- [identity] (id=i2) User name is Aviyn');
   });
 
+  it('redacts credential-bearing memory text before returning the recall block', async () => {
+    useBackend(mockBackend([
+      {
+        id: 'i-secret',
+        text: 'Database recovery note: postgresql://memory-user:synthetic-db-password@db.example/app',
+        kind: 'project',
+      },
+    ]));
+    const block = await buildMemoryContextBlock({
+      userId: 'u1', workspaceId: 'ws', queryContext: 'database recovery',
+    });
+    expect(block).toContain('postgresql://[redacted]@db.example/app');
+    expect(block).not.toContain('synthetic-db-password');
+  });
+
   it('labels a harness-scoped hit with its slug', async () => {
     useBackend(mockBackend([
       { id: 'i3', text: 'Project uses PG by default', kind: 'project' },
@@ -1878,6 +2001,33 @@ describe('buildMemoryContextBlock', () => {
  * rendering assertions live in the P-003 describe below.
  */
 describe('corpus leg carries its own retrieval health (P-001)', () => {
+  it('retains eligible mem0 alongside new plan/doc/report contributions without expanding the memory budget', async () => {
+    useBackend(mockBackend([{ id: 'm-knowledge-control',text: 'retain verified snapshot' }]));
+    corpusIoResult = { block: null,dropped: [],embedderAvailable: true,candidateCount: 3,
+      lines: (['plan','doc','report'] as const).map(kind => ({ line: `- [${kind} fixture] cited ${kind} section`,score: 1,
+        handle: { kind,ref: `${kind}:fixture`,query: ['repair'],resolve: `${kind}:get` } })),
+    };
+    const block = await buildMemoryContextBlock({ userId: 'u1',workspaceId: 'ws',harnessSlugs: ['papercusp'],
+      queryContext: 'repair the queue boundary',budgetChars: 1800 });
+    expect(block).toContain('retain verified snapshot');
+    for (const kind of ['plan','doc','report']) expect(block).toContain(`[${kind} fixture] cited ${kind} section`);
+    expect(recallCorpusContext).toHaveBeenCalledWith(expect.objectContaining({ harnessSlugs: ['papercusp'],workspaceId: 'ws' }));
+  });
+
+  it('suppresses a previously delivered report at turn start while retaining a new doc and mem0 control', async () => {
+    useBackend(mockBackend([{ id: 'm-turn-start-control',text: 'retain verified snapshot' }]));
+    corpusIoResult = { block: null,dropped: [],embedderAvailable: true,candidateCount: 2,
+      lines: (['report','doc'] as const).map(kind => ({ line: `- [${kind} fixture] cited ${kind} section`,score: 1,
+        handle: { kind,ref: `${kind}:fixture`,query: ['repair'],resolve: `${kind}:get` } })),
+    };
+    sqlRows = [{ ref: 'report:fixture',epoch: 0 }];
+    const block = await buildMemoryContextBlock({ userId: 'u1',workspaceId: 'ws',harnessSlugs: ['papercusp'],
+      queryContext: 'repair the queue boundary',budgetChars: 1800,
+      session: { sessionId: 'su-knowledge-dedup',epoch: 0,port: 'turn-start' } });
+    expect(block).toContain('retain verified snapshot');
+    expect(block).toContain('[doc fixture] cited doc section');
+    expect(block).not.toContain('[report fixture] cited report section');
+  });
   const oneLine = (over: Partial<CorpusIoStub> = {}): CorpusIoStub => ({
     block: null,
     lines: [{ line: '- [work-item WI-6512] a pointer', score: 1,
@@ -2084,13 +2234,17 @@ describe('corpus leg carries its own retrieval health (P-001)', () => {
     const block = await run();
     expect(block).toContain('Memory retrieval was DEGRADED');
     expect(block).toContain('timed-out');
-    // The marker must carry its own recovery, or it is just an apology.
-    expect(block).toContain('memory:search');
+    // The marker must carry recovery that does not assume this recipient's role.
+    expect(block).toContain('authorized memory reader');
+    expect(block).not.toContain('memory:search');
   });
 
   it('marks a FAILED corpus leg the same way', async () => {
     corpusIoResult = oneLine({ lines: [], candidateCount: 0, outcome: 'failed' });
-    expect(await run()).toContain('Memory retrieval was DEGRADED');
+    const block = await run();
+    expect(block).toContain('Memory retrieval was DEGRADED');
+    expect(block).toContain('authorized memory reader');
+    expect(block).not.toContain('memory:search');
   });
 
   /**
@@ -2124,6 +2278,45 @@ describe('corpus leg carries its own retrieval health (P-001)', () => {
 
 /** P-009 — the corpus leg shares the existing one-row admission telemetry. */
 describe('records the corpus admission funnel on the same recall row (P-009)', () => {
+  it.each(['degraded', 'unavailable', 'error'] as const)(
+    'retains delivered corpus execution receipts when memory exits early: %s', async (failure) => {
+      const backend = mockBackend([], { ok: failure !== 'unavailable' });
+      if (failure === 'error') backend.available = vi.fn(async () => { throw new Error('memory probe failed'); });
+      useBackend(backend);
+      if (failure === 'degraded') noteMemoryFailure(new MemoryTimeoutError('prior recall timed out'));
+      const first = { ...legsWith(0), lexical: { ...legsWith(0).lexical, sourceCalls: [
+        { source: 'plan', ranker: 'lexical', status: 'timed-out', rows: null, durationMs: 200, reason: 'source deadline' },
+      ] } };
+      const second = legsWith(3);
+      corpusIoResult = oneLine({ legs: second, stages: [first, second] });
+      try {
+        const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws',
+          queryContext: 'why did the corpus leg return that' });
+        expect(block).toContain('work-item WI-6512');
+        expect(recordRecallStatsMock).toHaveBeenCalledTimes(1);
+        expect(recordRecallStatsMock.mock.calls[0]![1]).toMatchObject({
+          legs: null,
+          admission: { returned: 0, admitted: 0, corpus: {
+            outcome: 'ok', returned: 4, selected: 1, admitted: 1,
+            sessionDedup: 0, embedderAvailable: true, retrievalDepth: 24, rerank: 'reranked',
+            dropped: { 'ambient-excluded': 1, 'no-term-overlap': 1, 'budget-exhausted': 1 },
+            legs: second, stages: [first, second], gate: null,
+          } },
+        });
+        expect(backend.search).not.toHaveBeenCalled();
+      } finally { resetMemoryDegradedForTest(); }
+    },
+  );
+  it('retains the source receipts from every cascade stage on the same telemetry row', async () => {
+    const first = { ...legsWith(0),lexical: { ...legsWith(0).lexical,sourceCalls: [
+      { source: 'plan',ranker: 'lexical',status: 'timed-out' as const,rows: null,durationMs: 200,reason: 'source deadline' },
+    ] } };
+    const second = legsWith(1);
+    corpusIoResult = oneLine({ legs: second,stages: [first,second] });
+    const corpus = await run();
+    expect(corpus).toMatchObject({ stages: [first,second] });
+    expect(recordRecallStatsMock).toHaveBeenCalledTimes(1);
+  });
   const flush = async (): Promise<void> => {
     for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
   };

@@ -17,6 +17,7 @@ vi.mock('../../../harness-core', () => ({
 vi.mock('@papercusp/orchestrator/blueprint', () => ({
   loadBlueprintFromFile: h.loadBlueprintFromFile,
 }));
+vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'selected-workspace' }));
 
 import routes from './blueprint-params';
 
@@ -61,7 +62,7 @@ describe('GET /harness/:slug/blueprint-params identity sections', () => {
   it('projects the exact resolved blueprint sections without parallel field names', async () => {
     const response = await call('?phase=testing');
     expect(response.status).toBe(200);
-    expect(h.resolvePhasedProject).toHaveBeenCalledWith('workspace', 'testing');
+    expect(h.resolvePhasedProject).toHaveBeenCalledWith('workspace', 'testing', 'selected-workspace');
     expect(h.loadBlueprintFromFile).toHaveBeenCalledWith('/repos/workspace/blueprint.yaml');
     expect(await response.json()).toEqual({
       blueprintId: 'work-identity',

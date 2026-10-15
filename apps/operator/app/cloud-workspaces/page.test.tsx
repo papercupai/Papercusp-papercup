@@ -24,9 +24,11 @@
  */
 
 import { readFileSync } from "node:fs";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -41,6 +43,7 @@ const H = vi.hoisted(() => ({
   loading: false,
   mutate: vi.fn(),
   invalidate: vi.fn(),
+  tooltip: vi.fn(),
   queryDefaults: {} as Record<string, unknown>,
   queryUpdates: [] as Array<[string, unknown]>,
 }));
@@ -56,17 +59,13 @@ vi.mock("@papercusp/sync", () => ({
   useSyncMutate: () => H.mutate,
 }));
 
-vi.mock("nuqs", async () => {
+vi.mock("nuqs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("nuqs")>();
   const React = await import("react");
-  const parser = (defaultValue: unknown = null) => ({
-    defaultValue,
-    withDefault(value: unknown) {
-      return parser(value);
-    },
-  });
   return {
-    parseAsString: parser(),
-    parseAsStringEnum: () => parser(),
+    // Expanded host details compose collection parsers. Keep the real parser
+    // API so nested surfaces can add query types without breaking this fixture.
+    ...actual,
     useQueryState: (key: string, config?: { defaultValue?: unknown }) => {
       const [value, setValue] = React.useState(
         Object.prototype.hasOwnProperty.call(H.queryDefaults, key)
@@ -125,22 +124,28 @@ vi.mock("@/app/harness/Modal", () => ({
     open,
     title,
     children,
+    onOpenChange,
   }: {
     open: boolean;
     title: string;
     children: React.ReactNode;
+    onOpenChange?: (open: boolean) => void;
   }) =>
     open ? (
       <section role="dialog" aria-label={title}>
+        <button aria-label="Close modal" onClick={() => onOpenChange?.(false)} />
         {children}
       </section>
     ) : null,
 }));
 
-/* The rail's tooltip is Radix-portalled decoration; the accessible name it
-   supplements is on the button itself, which is what these tests read. */
+/* Record the reason supplied to the portalled tooltip as well as the
+   accessible name on its trigger. */
 vi.mock("@/app/harness/Tooltip", () => ({
-  Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  Tooltip: ({ children, label }: { children: React.ReactNode; label: string }) => {
+    H.tooltip(label);
+    return <>{children}</>;
+  },
 }));
 
 import CloudWorkspacesPage, {
@@ -149,6 +154,7 @@ import CloudWorkspacesPage, {
   workspaceHostIdFromName,
 } from "./page";
 import { focusSafely } from "./stage-primitives";
+import { EMPTY_CONNECT_DRAFT, connectionActionFromDraft } from "./ConnectStage";
 
 const cloudPageCss = readFileSync(
   "app/cloud-workspaces/cloud-workspaces.module.css",
@@ -297,12 +303,14 @@ beforeEach(() => {
   H.loading = false;
   H.mutate.mockReset().mockResolvedValue({ ok: true });
   H.invalidate.mockReset().mockResolvedValue(undefined);
+  H.tooltip.mockReset();
   H.queryDefaults = {};
   H.queryUpdates = [];
 });
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -392,6 +400,8 @@ describe("CloudWorkspacesPage — rail and step routing", () => {
 
     expect(operateStep.getAttribute("aria-disabled")).toBe("true");
     expect(operateStep.disabled).toBe(false);
+    expect(operateStep.getAttribute("aria-label")).toContain("No workspaces yet");
+    expect(H.tooltip).toHaveBeenCalledWith("03 Operate — No workspaces yet");
 
     /* Reachable by keyboard, which is what lets a keyboard user surface the
        reason at all. */
@@ -683,6 +693,142 @@ describe("CloudWorkspacesPage — mutation seam", () => {
   });
 });
 
+const awsConnectionRow = {
+  ...connectionRow,
+  id: "aws-main",
+  target: "aws",
+  label: "Production AWS",
+  provider: { vpcId: "vpc-0123456789abcdef0", securityGroupIds: ["sg-0123456789abcdef0"], launchTemplateId: "lt-0123456789abcdef0" },
+  scopes: [{ id: "123456789012", label: "AWS account 123456789012" }],
+  regions: [{ id: "us-east-1", label: "us-east-1", zones: ["us-east-1a"] }],
+  sizes: [{ id: "m6i.xlarge", label: "m6i.xlarge", vcpu: 4, memoryGiB: 16 }],
+  images: [{ id: "ami-0123456789abcdef0", label: "Ubuntu 24.04" }],
+  networks: [{ id: "subnet-0123456789abcdef0", label: "Private subnet" }],
+} satisfies CloudWorkspacesControlRow;
+
+describe("CloudWorkspacesPage — AWS parity", () => {
+  it("offers the existing setup-template download for a valid local account and region", () => {
+    H.rows = [];
+    render(<CloudWorkspacesPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Connect Amazon Web Services" }));
+    expect((screen.getByRole("button", { name: "Download AWS setup template" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByRole("textbox", { name: "AWS account ID" }), { target: { value: "123456789012" } });
+    const link = screen.getByRole("link", { name: "Download AWS setup template" });
+    expect(link.getAttribute("href")).toBe("/api/workspace-hosts/aws-setup-template?accountId=123456789012&region=us-east-1");
+    expect(link.hasAttribute("download")).toBe(true);
+    fireEvent.change(screen.getByRole("textbox", { name: "AWS region" }), { target: { value: "eu-west-1" } });
+    expect(link.getAttribute("href")).toContain("region=eu-west-1");
+    fireEvent.change(screen.getByRole("textbox", { name: "AWS region" }), { target: { value: "cn-north-1" } });
+    expect(screen.queryByRole("link", { name: "Download AWS setup template" })).toBeNull();
+    expect(H.mutate).not.toHaveBeenCalled();
+  });
+
+  it("dismisses the restore dialog through the Modal lifecycle callback", () => {
+    H.rows = [awsConnectionRow, {
+      ...workspaceRow, target: "aws", connectionId: awsConnectionRow.id,
+      capabilities: { ...workspaceRow.capabilities, restore: true },
+      resources: [{ logicalKey: "snapshot", kind: "snapshot", state: "applied", providerId: "snapshot-1", attempts: 1 }],
+    }];
+    H.queryDefaults = { ...onOperate };
+    render(<CloudWorkspacesPage />);
+    fireEvent.click(screen.getByRole("button", { name: "More actions for research-control" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Restore snapshot" }));
+    const dialog = screen.getByRole("dialog", { name: "Restore research-control" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close modal" }));
+    expect(screen.queryByRole("dialog", { name: "Restore research-control" })).toBeNull();
+    expect(H.mutate).not.toHaveBeenCalled();
+  });
+
+  it("collects AWS launch resources and SDK references without GCP fields", async () => {
+    H.rows = [];
+    render(<CloudWorkspacesPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Connect Amazon Web Services" }));
+    expect(screen.queryByRole("textbox", { name: "Runtime service account email" })).toBeNull();
+    const submit = screen.getByRole("button", { name: "Connect and validate" }) as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    for (const [label, value] of [
+      ["Connection label", "Production AWS"],
+      ["Injected credential reference", "resolver://aws/default"],
+      ["AWS account ID", "123456789012"],
+      ["VPC ID", "vpc-0123456789abcdef0"],
+      ["Private subnet ID", "subnet-0123456789abcdef0"],
+      ["Security group IDs", "sg-0123456789abcdef0, sg-0123456789abcdef0"],
+      ["Launch template ID", "lt-0123456789abcdef0"],
+      ["AMI ID", "ami-0123456789abcdef0"],
+      ["Instance profile ARN", "arn:aws:iam::123456789012:instance-profile/host"],
+      ["KMS key ARN", "arn:aws:kms:us-east-1:123456789012:key/host-key"],
+    ]) fireEvent.change(screen.getByRole("textbox", { name: label }), { target: { value } });
+    expect(submit.disabled).toBe(false);
+    fireEvent.click(submit);
+    await waitFor(() => expect(H.mutate).toHaveBeenCalledWith({
+      action: "connect", target: "aws", label: "Production AWS", credentialRef: "resolver://aws/default",
+      accountId: "123456789012", region: "us-east-1", vpcId: "vpc-0123456789abcdef0",
+      subnetId: "subnet-0123456789abcdef0", securityGroupIds: ["sg-0123456789abcdef0"],
+      launchTemplateId: "lt-0123456789abcdef0", imageId: "ami-0123456789abcdef0",
+      instanceProfileArn: "arn:aws:iam::123456789012:instance-profile/host",
+      kmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/host-key",
+      credentialSource: { environment: "local", method: "default-chain" },
+    }));
+  });
+
+  it.each(["shared-profile", "assume-role"] as const)("uses the %s source without unrelated credential fields", (credentialMethod) => {
+    const draft = { ...EMPTY_CONNECT_DRAFT, label: "AWS", credentialRef: "resolver://aws/local", accountId: "123456789012",
+      vpcId: "vpc-01234567", securityGroupIds: "sg-01234567", subnetId: "subnet-01234567", launchTemplateId: "lt-01234567",
+      imageId: "ami-01234567", instanceProfileArn: "arn:aws:iam::123456789012:instance-profile/host",
+      kmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/host", credentialMethod, profile: " production ",
+      roleArn: " arn:aws:iam::123456789012:role/host ", externalIdRef: " env:AWS_EXTERNAL_ID " };
+    expect(connectionActionFromDraft("aws", { ...draft, profile: "", roleArn: "" })).toBeNull();
+    expect(connectionActionFromDraft("aws", draft)).toMatchObject({ credentialSource: credentialMethod === "shared-profile"
+      ? { environment: "local", method: credentialMethod, profile: "production" }
+      : { environment: "local", method: credentialMethod, roleArn: "arn:aws:iam::123456789012:role/host", sourceProfile: "production", externalIdRef: "env:AWS_EXTERNAL_ID" } });
+    expect(connectionActionFromDraft("aws", draft)).not.toHaveProperty("projectId");
+  });
+
+  it("provisions the AWS account and subnet from the settled catalog", async () => {
+    H.rows = [awsConnectionRow];
+    H.queryDefaults = { step: "configure" };
+    render(<CloudWorkspacesPage />);
+    fireEvent.change(screen.getByRole("textbox", { name: "Workspace name" }), { target: { value: "aws-research" } });
+    const submit = screen.getByRole("button", { name: "Provision workspace" }) as HTMLButtonElement;
+    await waitFor(() => expect(submit.disabled).toBe(false));
+    fireEvent.click(submit);
+    await waitFor(() => expect(H.mutate).toHaveBeenCalledWith({ action: "provision", connectionId: "aws-main", name: "aws-research",
+      desired: { hostId: "host-aws-research", target: "aws", scope: { kind: "account", id: "123456789012" },
+        region: "us-east-1", zone: "us-east-1a", size: "m6i.xlarge", image: { id: "ami-0123456789abcdef0" },
+        data: { volumeGiB: 100, encrypted: true }, provider: { subnetId: "subnet-0123456789abcdef0" } } }));
+  });
+
+  it.each(["gcp", "aws"] as const)("restores a registered %s snapshot to a distinct host without browser credential config", async (target) => {
+    H.rows = [target === "aws" ? awsConnectionRow : connectionRow, { ...workspaceRow, target, id: "host-research-control",
+      capabilities: { ...workspaceRow.capabilities, restore: true },
+      resources: [...(workspaceRow.resources ?? []), { logicalKey: "snapshot-1", kind: "snapshot", state: "applied", providerId: "snapshot-1", attempts: 1 }],
+    }];
+    render(<CloudWorkspacesPage />);
+    fireEvent.click(screen.getByRole("button", { name: "More actions for research-control" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Restore snapshot" }));
+    const submit = screen.getByRole("button", { name: "Restore workspace" }) as HTMLButtonElement;
+    fireEvent.change(screen.getByRole("textbox", { name: "Restored workspace name" }), { target: { value: "research-control" } });
+    expect(submit.disabled).toBe(true);
+    fireEvent.change(screen.getByRole("textbox", { name: "Restored workspace name" }), { target: { value: "research-restored" } });
+    expect(submit.disabled).toBe(false);
+    fireEvent.click(submit);
+    await waitFor(() => expect(H.mutate).toHaveBeenCalledWith({ action: "restore", workspaceId: "host-research-control", name: "research-restored",
+      snapshot: { target, hostId: "host-research-control", providerId: "snapshot-1" }, desired: { hostId: "host-research-restored" } }));
+  });
+
+  it("validates AWS and snapshots an AWS host through the shared mutation seam", async () => {
+    H.rows = [awsConnectionRow, { ...workspaceRow, target: "aws", connectionId: "aws-main" }];
+    H.queryDefaults = { step: "connect" };
+    render(<CloudWorkspacesPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Validate Amazon Web Services connection" }));
+    await waitFor(() => expect(H.mutate).toHaveBeenCalledWith({ action: "validate-connection", connectionId: "aws-main" }));
+    fireEvent.click(screen.getByRole("button", { name: /^03 Operate:/ }));
+    fireEvent.click(screen.getByRole("button", { name: "More actions for research-control" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Snapshot" }));
+    await waitFor(() => expect(H.mutate).toHaveBeenCalledWith({ action: "snapshot", workspaceId: "host-1" }));
+  });
+});
+
 describe("CloudWorkspacesPage — 01 Connect", () => {
   it("collects the complete supported GCP connection admission contract", async () => {
     H.rows = [];
@@ -788,6 +934,7 @@ describe("CloudWorkspacesPage — 01 Connect", () => {
        renders elsewhere in the DOM. */
     H.rows = [];
     render(<CloudWorkspacesPage />);
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
 
     const trigger = screen.getByRole("button", {
       name: "Connect Google Cloud",
@@ -799,6 +946,8 @@ describe("CloudWorkspacesPage — 01 Connect", () => {
       "Connection label",
     ) as HTMLInputElement;
     expect(document.activeElement).toBe(panelInput);
+    // The new form can grow below the scrollport. Opening focus must reveal it.
+    expect(focus).toHaveBeenLastCalledWith({ preventScroll: false });
 
     /* Closed: focus returns to the trigger, NOT to <body>. */
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
@@ -809,6 +958,51 @@ describe("CloudWorkspacesPage — 01 Connect", () => {
     expect(document.activeElement).toBe(
       screen.getByRole("button", { name: "Connect Google Cloud" }),
     );
+    // Restoring focus must preserve the user's scroll position.
+    expect(focus).toHaveBeenLastCalledWith({ preventScroll: true });
+    focus.mockRestore();
+  });
+
+  it("keeps an opening field visible across layout changes until the user moves focus", () => {
+    const callbacks: Array<() => void> = [];
+    const observed: Element[] = [];
+    const disconnect = vi.fn();
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) { callbacks.push(callback); }
+      observe(element: Element) { observed.push(element); }
+      disconnect = disconnect;
+    });
+    const frames = new Map<number, FrameRequestCallback>();
+    let frameId = 0;
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { frames.set(++frameId, callback); return frameId; });
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+    const flush = () => act(() => { for (const [id, callback] of [...frames]) { frames.delete(id); callback(0); } });
+    H.rows = [];
+    const view = render(<StrictMode><CloudWorkspacesPage /></StrictMode>);
+    fireEvent.click(screen.getByRole("button", { name: "Connect Google Cloud" }));
+    const input = screen.getByLabelText("Connection label");
+    expect(observed).toContain(input.closest("form"));
+    expect(document.activeElement).toBe(input);
+    const scroll = vi.fn();
+    input.scrollIntoView = scroll;
+    let top = 20;
+    vi.spyOn(input, "getBoundingClientRect").mockImplementation(() => ({ x: 20, y: top, top, left: 20,
+      width: 200, height: 30, right: 220, bottom: top + 30, toJSON: () => ({}) }));
+    act(() => callbacks.forEach(callback => callback())); flush();
+    expect(scroll).not.toHaveBeenCalled();
+    top = window.innerHeight + 80;
+    act(() => callbacks.forEach(callback => callback())); flush();
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(input);
+    // A resize response must never take focus or scroll after the user leaves.
+    screen.getByLabelText("Injected credential reference").focus();
+    act(() => callbacks.forEach(callback => callback())); flush();
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(screen.getByLabelText("Injected credential reference"));
+    expect(disconnect).toHaveBeenCalled();
+    view.unmount();
+    expect(frames.size).toBe(0);
+    vi.unstubAllGlobals();
   });
 
   it("control: removing a focused element really does drop focus to <body> here", () => {
@@ -848,10 +1042,11 @@ describe("CloudWorkspacesPage — 01 Connect", () => {
     expect(
       (
         screen.getByRole("button", {
-          name: "Amazon Web Services connection is not available",
+          name: "Microsoft Azure connection is not available",
         }) as HTMLButtonElement
       ).disabled,
     ).toBe(true);
+    expect((screen.getByRole("button", { name: "Connect Amazon Web Services" }) as HTMLButtonElement).disabled).toBe(false);
   });
 });
 
@@ -1169,10 +1364,32 @@ describe("CloudWorkspacesPage — 03 Operate", () => {
       Array.from(menu.querySelectorAll('[role="menuitem"]')).map(
         (item) => item.textContent,
       ),
-    ).toEqual(["Repair", "Snapshot", "Destroy"]);
+    ).toEqual(["Repair", "Snapshot", "Restore snapshot", "Destroy"]);
 
     fireEvent.keyDown(repairItem, { key: "Tab" });
     expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it.each(["pointer", "Tab"])("does not steal the destination's focus on %s dismissal", (dismissal) => {
+    H.queryDefaults = { ...onOperate };
+    render(<CloudWorkspacesPage />);
+    const trigger = screen.getByRole("button", {
+      name: "More actions for research-control",
+    }) as HTMLButtonElement;
+    fireEvent.click(trigger);
+    const repair = screen.getByRole("menuitem", { name: "Repair" });
+    expect(document.activeElement).toBe(repair);
+    const destination = screen.getByRole("button", { name: "Stop machine" });
+    destination.focus();
+    expect(document.activeElement).toBe(destination);
+    const restore = vi.spyOn(trigger, "focus");
+
+    if (dismissal === "pointer") fireEvent.pointerDown(destination);
+    else fireEvent.keyDown(repair, { key: "Tab" });
+
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(restore).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(destination);
   });
 
   it("does not focus a detached lifecycle target", () => {
@@ -1183,7 +1400,9 @@ describe("CloudWorkspacesPage — 03 Operate", () => {
     button.focus();
     host.removeChild(button);
 
+    const focus = vi.spyOn(button, "focus");
     expect(focusSafely(button)).toBe(false);
+    expect(focus).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(document.body);
 
     document.body.removeChild(host);
@@ -1419,6 +1638,13 @@ describe("CloudWorkspacesPage — failure and layout", () => {
        prove the paired transition lives in ONE rule. */
     expect(cloudPageCss).toContain("container-type: inline-size");
     expect(cloudPageCss).toContain("container-name: cw-page");
+    // The desktop content pane can be 394px inside a 1280px window. A
+    // viewport breakpoint let the provider track collapse to zero and cover
+    // the form. The open panel must reflow using its own available width.
+    expect(cloudPageCss).toContain("repeat(auto-fit, minmax(min(100%, 380px), 1fr))");
+    const configureColumns = /\.configureColumns\s*\{([^}]+)\}/.exec(cloudPageCss)?.[1];
+    expect(configureColumns).toContain("repeat(auto-fit, minmax(min(100%, 380px), 1fr))");
+    expect(cloudPageCss).not.toMatch(/@media[^{}]+\{\s*\.configureColumns/);
     expect(cloudPageCss).not.toContain("container-name: cw-shell");
 
     const mediumStart = cloudPageCss.indexOf(
@@ -1449,8 +1675,19 @@ describe("CloudWorkspacesPage — failure and layout", () => {
     expect(narrow).toContain(
       "grid-template-columns: repeat(4, minmax(0, 1fr))",
     );
-    expect(narrow).toContain(".hostRow {");
-    expect(narrow).toContain(".hostRowActions {");
+    // Equal-specificity responsive row rules must follow their base rules.
+    // Finding them only in the first container block misses a later override
+    // that squeezes the workspace name into the status badge.
+    const responsiveRowsStart = cloudPageCss.lastIndexOf(
+      "@container cw-page (max-width: 760px)",
+    );
+    expect(responsiveRowsStart).toBeGreaterThan(
+      cloudPageCss.search(/^\.hostRowMain \{/m),
+    );
+    const responsiveRows = cloudPageCss.slice(responsiveRowsStart);
+    expect(responsiveRows).toContain(".hostRow {");
+    expect(responsiveRows).toContain(".hostRowActions {");
+    expect(responsiveRows).toContain("grid-template-columns: auto minmax(0, 1fr) auto;");
   });
 
   it("bounds recent activity density without dropping its entries", () => {

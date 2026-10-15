@@ -102,6 +102,13 @@ export interface VerifyChainOptions {
   readonly digestEntry?: (entry: unknown) => string;
   /** A head published elsewhere; detects tail truncation and forks. */
   readonly expectedHead?: ChainHead | null;
+  /**
+   * Verify a SEGMENT that continues after this already-verified head instead of a chain rooted at
+   * genesis: the first record must be seq `startAfter.seq + 1` with prevHash `startAfter.entryHash`.
+   * This lets an incremental export (each batch appended after the last delivered head) be verified
+   * batch by batch. Omitted / null = the chain starts at genesis (seq 0).
+   */
+  readonly startAfter?: ChainHead | null;
 }
 
 export function sha256Hex(text: string): string {
@@ -170,6 +177,13 @@ export function verifyChain(
     firstBreak: { index, seq, reason, detail },
   });
 
+  const start = options.startAfter ?? null;
+  if (start && (!Number.isSafeInteger(start.seq) || start.seq < 0 || typeof start.entryHash !== 'string' || !HEX64.test(start.entryHash))) {
+    return fail(0, null, 'malformed', 'startAfter must be {seq: non-negative integer, entryHash: 64 lowercase hex}');
+  }
+  const baseSeq = start ? start.seq + 1 : 0;
+  const rootPrev = start ? start.entryHash : GENESIS_PREV_HASH;
+
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index]!;
     const link = record.link;
@@ -178,10 +192,10 @@ export function verifyChain(
     if (link.streamId !== streamId) {
       return fail(index, link.seq, 'stream-mismatch', `link names stream '${link.streamId}'`);
     }
-    if (link.seq !== index) {
-      return fail(index, link.seq, 'seq-gap', `expected seq ${index}, found ${link.seq}`);
+    if (link.seq !== baseSeq + index) {
+      return fail(index, link.seq, 'seq-gap', `expected seq ${baseSeq + index}, found ${link.seq}`);
     }
-    const expectedPrev = previous ? previous.entryHash : GENESIS_PREV_HASH;
+    const expectedPrev = previous ? previous.entryHash : rootPrev;
     if (link.prevHash !== expectedPrev) {
       return fail(index, link.seq, 'prev-mismatch', `prevHash ${link.prevHash} does not match ${expectedPrev}`);
     }
@@ -210,8 +224,10 @@ export function verifyChain(
 
   const expected = options.expectedHead;
   if (expected) {
-    if (!previous || previous.seq !== expected.seq || previous.entryHash !== expected.entryHash) {
-      const found = previous ? `seq ${previous.seq} ${previous.entryHash}` : 'an empty chain';
+    // An empty segment ends where it started: at `startAfter`, which then must BE the expected head.
+    const end: ChainHead | null = previous ?? start;
+    if (!end || end.seq !== expected.seq || end.entryHash !== expected.entryHash) {
+      const found = end ? `seq ${end.seq} ${end.entryHash}` : 'an empty chain';
       return fail(
         records.length,
         previous ? previous.seq : null,

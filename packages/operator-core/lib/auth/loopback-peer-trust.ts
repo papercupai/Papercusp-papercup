@@ -104,6 +104,14 @@ export function loopbackPeerUidPolicyActive(env: NodeJS.ProcessEnv = process.env
   );
 }
 
+/** Customer native execution needs its own OS authority even when TCP peer
+ * trust is explicitly relaxed. Reuse the existing multi-account host census;
+ * the peer-policy opt-out must not authorize operator-owned native tools. */
+export function customerAgentExecutionRequired(env: NodeJS.ProcessEnv = process.env): boolean {
+  return loopbackPeerUidPolicyActive(env)
+    || loopbackPeerUidPolicyActive({ ...env, [LOOPBACK_PEER_UID_POLICY_ENV]: '' });
+}
+
 /** Loopback in any of the spellings Node reports for an accepted socket. */
 export function isLoopbackAddress(address: string | null | undefined): boolean {
   if (!address) return false;

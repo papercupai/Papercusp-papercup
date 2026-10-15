@@ -21,6 +21,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildSnapshotOps, type SnapshotPayload } from '../log-snapshot';
 import {
+  STORED_ORDER_PEEK_CONCURRENCY,
   createMergeCursor,
   mergeAdmittedLogsIncremental,
   type AdmittedLog,
@@ -57,6 +58,8 @@ interface SpanLog extends AdmittedLog {
   /** Look-ahead reads (`getCancellable`) that delivered their block, and that were cancelled. */
   fetched: Set<number>;
   cancelled: Set<number>;
+  /** Every position a look-ahead read was ISSUED for (WI-10005291: issued, not fetched). */
+  requested: Set<number>;
   getCancellable?(i: number): CancellableRead;
   /** Ranged prefetches (EI-92) requested, in order, and whether each was withdrawn. */
   ranges: { start: number; end: number; cancelled: boolean }[];
@@ -72,6 +75,8 @@ interface SpanLogOpts {
   cancellable?: boolean;
   /** Offer a withdrawable ranged `prefetch`, as a RemoteLog does. */
   prefetchable?: boolean;
+  /** Chunk size for the set `logWithSet` builds (default 2,000 bytes: a few chunks). */
+  maxChunkBytes?: number;
 }
 
 function spanLog(opts: SpanLogOpts = {}): SpanLog {
@@ -82,6 +87,7 @@ function spanLog(opts: SpanLogOpts = {}): SpanLog {
     reads: [],
     fetched: new Set(),
     cancelled: new Set(),
+    requested: new Set(),
     ranges: [],
     get keyHex() {
       return KEY;
@@ -101,6 +107,7 @@ function spanLog(opts: SpanLogOpts = {}): SpanLog {
   };
   if (opts.cancellable) {
     log.getCancellable = (i: number): CancellableRead => {
+      log.requested.add(i);
       let timer: ReturnType<typeof setTimeout> | undefined;
       let reject: (err: Error) => void = () => {};
       const op = new Promise<PeerLogOp | null>((resolve, rej) => {
@@ -144,7 +151,14 @@ function logWithSet(opts: SpanLogOpts = {}): { log: SpanLog; c: number; n: numbe
   };
   for (let i = 0; i < 200; i++) append(put(`K${i}`, { v: i }, 1 + i));
   const c = log.ops.length;
-  const set = buildSnapshotOps({ ops: log.history, coversUpTo: c, author_pubkey: 'me', ts: 1_000_000, schema_version: 1, maxChunkBytes: 2_000 });
+  const set = buildSnapshotOps({
+    ops: log.history,
+    coversUpTo: c,
+    author_pubkey: 'me',
+    ts: 1_000_000,
+    schema_version: 1,
+    maxChunkBytes: opts.maxChunkBytes ?? 2_000,
+  });
   log.ops.push(...set);
   for (let i = 0; i < 10; i++) append(put(`T${i}`, { v: i }, 10_000 + i));
   const rows = set.reduce((sum, op) => sum + (op.value as SnapshotPayload).rows.length, 0);
@@ -192,6 +206,7 @@ async function converged(log: SpanLog, c: number, extra: Partial<IncrementalMerg
   log.reads.length = 0;
   log.fetched.clear();
   log.cancelled.clear();
+  log.requested.clear();
   log.ranges.length = 0;
   return { cursor, pg };
 }
@@ -332,6 +347,44 @@ describe('P-533: the look-ahead does not fetch a skipped set', () => {
     expect([...log.fetched].filter((p) => p >= c && p < c + n)).toHaveLength(n);
     expect(res.applies).toBe(rows + 10);
     expect(Object.fromEntries(pg)).toEqual(await historyOracle(log));
+  });
+
+  // WI-10005291: cancelling withdraws only a network request. On a LOCAL log (the own log)
+  // an issued read is a storage read, so the bound is on what the look-ahead ISSUES: the
+  // tower read ~4 GB per skipped set when the whole 2048-op window went out at once.
+  it('a LOCAL log (no cancellable reads): the look-ahead issues at most the concurrency bound into a skipped span', async () => {
+    const { log, c, n } = logWithSet({ maxChunkBytes: 1 });
+    expect(n - 2).toBeGreaterThan(4 * STORED_ORDER_PEEK_CONCURRENCY); // the fixture can tell bounded from unbounded
+    const { cursor, pg } = await converged(log, c, lookAhead);
+
+    const res = await fold(log, cursor, pg, lookAhead);
+    const inSpan = log.reads.filter((p) => p > c && p < c + n - 1);
+    expect(inSpan.length).toBeLessThanOrEqual(STORED_ORDER_PEEK_CONCURRENCY);
+    expect(res.snapshotChunksJumped).toBe(n - 1);
+    expect(cursor.positions.get(KEY)).toBe(log.length);
+    expect(Object.fromEntries(pg)).toEqual(await historyOracle(log));
+  });
+
+  it('a REMOTE log: reads it never issues need no cancelling; at most the bound reach the span', async () => {
+    const { log, c, n } = logWithSet({ cancellable: true, maxChunkBytes: 1 });
+    expect(n - 2).toBeGreaterThan(4 * STORED_ORDER_PEEK_CONCURRENCY);
+    const { cursor, pg } = await converged(log, c, lookAhead);
+
+    const res = await fold(log, cursor, pg, lookAhead);
+    const span = range(c + 1, c + n - 1);
+    expect(span.filter((p) => log.requested.has(p)).length).toBeLessThanOrEqual(STORED_ORDER_PEEK_CONCURRENCY);
+    expect(span.filter((p) => log.fetched.has(p))).toEqual([]);
+    expect(res.snapshotChunksJumped).toBe(n - 1);
+    expect(cursor.positions.get(KEY)).toBe(log.length);
+    expect(Object.fromEntries(pg)).toEqual(await historyOracle(log));
+  });
+
+  it('CONTROL: the bound does not shrink coverage: every op of a window with no set is still peeked', async () => {
+    const { log, c, n } = logWithSet({ cancellable: true });
+    const { cursor, pg } = await converged(log, c, lookAhead);
+    await fold(log, cursor, pg, lookAhead);
+    // The look-ahead opened at c and covered the whole tail past the set.
+    expect(range(c + n, log.length).every((p) => log.requested.has(p))).toBe(true);
   });
 });
 

@@ -1,4 +1,5 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -6,12 +7,14 @@ import type { AdvSessionRow } from '../adv-sessions';
 import type { SessionPortRow } from './store';
 import {
   acquireTrackedClaudeSource,
+  acquireTrackedSessionSource,
   deriveSessionPortIdempotencyKey,
   inspectAcquiredSessionPort,
   prepareInspectedSessionPort,
   publicSessionPortInspection,
   selectSessionPortEvidenceSpan,
 } from './service';
+import type { SessionArchiveStore } from '../session-archive';
 import type { StableSource } from './source';
 import type { PortableTurn } from './types';
 import { verifySessionPortSeed } from './render';
@@ -69,6 +72,80 @@ const target = {
   contextSize: 'trimmed' as const,
   launchContextHash: '0'.repeat(64),
 };
+
+describe('isolated answering identity on the maintained session port', () => {
+  it('binds a distinct answer owner into the logical request without carrying source authority', () => {
+    const continuing = inspectAcquiredSessionPort({ sourceRow: row, stableSource: source('evidence'), target });
+    const isolated = inspectAcquiredSessionPort({
+      sourceRow: row, stableSource: source('evidence'), target: { ...target, ownerId: 'su-answer-owner' },
+    });
+    const another = inspectAcquiredSessionPort({
+      sourceRow: row, stableSource: source('evidence'), target: { ...target, ownerId: 'su-other-answer' },
+    });
+    expect(continuing.disclosure.authorityCarried).toBe(true);
+    expect(isolated.disclosure.authorityCarried).toBe(false);
+    expect(isolated.source).toEqual(continuing.source);
+    expect(deriveSessionPortIdempotencyKey(isolated)).not.toBe(deriveSessionPortIdempotencyKey(continuing));
+    expect(deriveSessionPortIdempotencyKey(another)).not.toBe(deriveSessionPortIdempotencyKey(isolated));
+    expect(row.coordOwnerId).toBe('su-source');
+  });
+
+  it.each(['su-source', '', 'not-an-owner', null, 42])('refuses invalid or source-equal isolated owner %s', (ownerId) => {
+    expect(() => inspectAcquiredSessionPort({
+      sourceRow: row, stableSource: source('evidence'), target: { ...target, ownerId } as never,
+    })).toThrow(/isolated target owner/);
+  });
+
+  it('persists the isolated owner and disclosure in the existing prepared contract', async () => {
+    const inspection = inspectAcquiredSessionPort({
+      sourceRow: row, stableSource: source('exact evidence'), target: { ...target, ownerId: 'su-answer-owner' },
+    });
+    const artifactRoot = mkdtempSync(join(tmpdir(), 'consult-port-isolated-'));
+    const createPrepared = vi.fn(async (input: any) => ({ ...input, status: 'prepared' }) as SessionPortRow);
+    try {
+      const prepared = await prepareInspectedSessionPort({
+        inspection, expectedSourceHash: inspection.source.sha256, tokenKey: 'server-only-key',
+        artifactRoot, findExisting: async () => null, createPrepared,
+      });
+      expect(prepared.summary.target.ownerId).toBe('su-answer-owner');
+      expect(createPrepared.mock.calls[0]![0].metadata).toMatchObject({
+        sourceCoordOwnerId: 'su-source', disclosure: { authorityCarried: false },
+        summary: { target: { ownerId: 'su-answer-owner' } },
+      });
+      expect(readFileSync(createPrepared.mock.calls[0]![0].artifactPath, 'utf8')).toContain('exact evidence');
+    } finally {
+      rmSync(artifactRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([true, false])('renders and budgets the prepared identity disclosure (authorityCarried=%s)', async (authorityCarried) => {
+    const inspection = inspectAcquiredSessionPort({
+      sourceRow: row, stableSource: source('exact evidence'),
+      target: authorityCarried ? target : { ...target, ownerId: 'su-answer-owner' },
+    });
+    const artifactRoot = mkdtempSync(join(tmpdir(), 'consult-port-identity-'));
+    const createPrepared = vi.fn(async (input: any) => ({ ...input, status: 'prepared' }) as SessionPortRow);
+    try {
+      const prepared = await prepareInspectedSessionPort({
+        inspection, expectedSourceHash: inspection.source.sha256, tokenKey: 'server-only-key',
+        artifactRoot, findExisting: async () => null, createPrepared,
+      });
+      const persisted = createPrepared.mock.calls[0]![0];
+      const seed = readFileSync(persisted.artifactPath, 'utf8');
+      expect(inspection.disclosure.authorityCarried).toBe(authorityCarried);
+      expect(persisted.metadata.disclosure.authorityCarried).toBe(authorityCarried);
+      expect(seed).toContain(authorityCarried
+        ? 'This session continues the source coordination identity.'
+        : 'This is a fresh session identity.');
+      expect(seed.includes('This is a fresh session identity.')).toBe(!authorityCarried);
+      expect(inspection.fullPayloadEstimatedTokens).toBe(Buffer.byteLength(seed, 'utf8'));
+      expect(prepared.summary.budget.finalPayloadEstimatedTokens).toBe(Buffer.byteLength(seed, 'utf8'));
+      expect(verifySessionPortSeed(seed, prepared.summary.hashes.rendered)).toBe(true);
+    } finally {
+      rmSync(artifactRoot, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('session-port current-version test fixtures', () => {
   it('derives protocol and transform versions instead of copying the current numbers', () => {
@@ -189,6 +266,45 @@ describe('consult evidence-span session ports (P-007)', () => {
 });
 
 describe('tracked Claude source acquisition', () => {
+  it.each([null, '2026-10-13T00:00:00.000Z'])('ports the exact retained transcript without an archive (endedAt=%s)', async (endedAt) => {
+    const config = mkdtempSync(join(tmpdir(), 'port-retained-claude-'));
+    const project = join(config, 'projects', 'cwd');
+    mkdirSync(project, { recursive: true });
+    const path = join(project, `${row.sessionId}.jsonl`);
+    const original = source('selected retained history').bytes;
+    writeFileSync(path, original);
+    // A later incarnation in the same tracked home must never replace the
+    // selected history merely because the archive stamp is absent.
+    writeFileSync(join(project, '22222222-2222-4222-8222-222222222222.jsonl'), source('unrelated later history').bytes);
+    const readStamp = vi.fn(async () => null);
+    const readFiles = vi.fn();
+    const archiveStore = { readStamp, readFiles } as unknown as SessionArchiveStore;
+    const selected = { ...row, endedAt };
+    try {
+      const acquired = await acquireTrackedClaudeSource(selected, {
+        configDirForOwner: () => config,
+        archiveStore: () => archiveStore,
+      });
+      const inspection = publicSessionPortInspection(inspectAcquiredSessionPort({
+        sourceRow: selected, stableSource: acquired, target,
+      }));
+      expect(acquired.bytes).toEqual(original);
+      expect(inspection.source).toMatchObject({
+        nativeSessionId: row.sessionId,
+        snapshotKind: 'live-jsonl',
+        completeBytes: original.length,
+        sha256: createHash('sha256').update(original).digest('hex'),
+      });
+      expect(acquired.fileIdentity?.path).toBe(path);
+      expect(readFileSync(path)).toEqual(original);
+      expect(readFiles).not.toHaveBeenCalled();
+      if (endedAt) expect(readStamp).toHaveBeenCalledWith('claude', row.sessionId);
+      else expect(readStamp).not.toHaveBeenCalled();
+    } finally {
+      rmSync(config, { recursive: true, force: true });
+    }
+  });
+
   it('falls back to the canonical archive when cleanup deletes the inspected live JSONL', async () => {
     const archived = {
       ...source('archived history'),
@@ -244,7 +360,138 @@ describe('tracked Claude source acquisition', () => {
   });
 });
 
+describe.each(['claude', 'codex', 'omp'] as const)('ended %s source acquisition', (backend) => {
+  const ended = { ...row, agent: backend, endedAt: '2026-10-03T00:00:00.000Z' };
+  const stable = source('exact retained incarnation');
+  const acquire = (readArchive: () => Promise<StableSource>, findLive = vi.fn(async () => '/tracked/exact.jsonl')) => {
+    const readLive = vi.fn(async () => stable);
+    const deps = { readArchive, findLive, readLive, archiveStore: () => ({} as never),
+      rootForSource: () => '/tracked/sessions', configDirForOwner: () => '/tracked' };
+    return { result: backend === 'claude' ? acquireTrackedClaudeSource(ended, deps)
+      : acquireTrackedSessionSource(ended, deps), findLive, readLive };
+  };
+
+  it('prefers the immutable archive when it exists', async () => {
+    const archived = { ...stable, source: 'archive-manifest' as const };
+    const { result, findLive, readLive } = acquire(async () => archived);
+    await expect(result).resolves.toBe(archived);
+    expect(findLive).not.toHaveBeenCalled();
+    expect(readLive).not.toHaveBeenCalled();
+  });
+
+  it('reads the exact retained incarnation when only its archive is absent', async () => {
+    const { result, findLive, readLive } = acquire(async () => {
+      throw new Error(`canonical ${backend === 'claude' ? 'Claude' : backend} archive not found`);
+    });
+    await expect(result).resolves.toBe(stable);
+    expect(findLive).toHaveBeenCalledWith(...(backend === 'claude'
+      ? ['/tracked', ended.sessionId] : ['/tracked/sessions', backend, ended.sessionId]));
+    expect(readLive).toHaveBeenCalledWith('/tracked/exact.jsonl');
+  });
+
+  it.each(['archive sha mismatch', 'archive is ambiguous', 'archive manifest/file metadata mismatch'])(
+    'refuses %s without using a retained transcript', async (message) => {
+      const error = new Error(message);
+      const { result, findLive, readLive } = acquire(async () => { throw error; });
+      await expect(result).rejects.toBe(error);
+      expect(findLive).not.toHaveBeenCalled();
+      expect(readLive).not.toHaveBeenCalled();
+    },
+  );
+
+  it('preserves both missing-archive and unsafe-local evidence when neither source is usable', async () => {
+    const archiveError = new Error(`canonical ${backend === 'claude' ? 'Claude' : backend} archive not found`);
+    const liveError = new Error('canonical exact local source is ambiguous');
+    const { result, readLive } = acquire(async () => { throw archiveError; },
+      vi.fn(async () => { throw liveError; }));
+    const failure = await result.catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([archiveError, liveError]);
+    expect(readLive).not.toHaveBeenCalled();
+  });
+});
+
 describe('session-port preparation service', () => {
+  it.each((['codex', 'omp'] as const).flatMap((backend) =>
+    (['claude', 'codex', 'omp'] as const).map((targetBackend) => ({ backend, targetBackend }))))(
+    'prepares $backend → $targetBackend with source lineage and content-free durable metadata', async ({ backend, targetBackend }) => {
+      const records = backend === 'codex' ? [
+        { type: 'session_meta', payload: { id: row.sessionId } },
+        { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'exact native history' }] } },
+      ] : [
+        { type: 'session', id: row.sessionId },
+        { type: 'message', id: 'native-evidence', parentId: null, message: { role: 'user', content: 'exact native history' } },
+      ];
+      const bytes = Buffer.from(records.map((record) => JSON.stringify(record)).join('\n') + '\n');
+      const inspection = inspectAcquiredSessionPort({ sourceRow: { ...row, agent: backend },
+        stableSource: { ...source(''), bytes }, target: { ...target, backend: targetBackend } });
+      const artifactRoot = mkdtempSync(join(tmpdir(), 'native-port-prepare-'));
+      const createPrepared = vi.fn(async (input: any): Promise<SessionPortRow> => ({ ...input, status: 'prepared',
+        targetAdvSessionId: null, error: null, preparedAt: new Date().toISOString(), pendingAt: null, deliveredAt: null, failedAt: null }));
+      try {
+        const prepared = await prepareInspectedSessionPort({ inspection, expectedSourceHash: inspection.source.sha256,
+          tokenKey: 'server-only-key', artifactRoot, findExisting: async () => null, createPrepared });
+        expect(prepared.port.sourceBackend).toBe(backend);
+        expect(prepared.port.targetBackend).toBe(targetBackend);
+        expect(prepared.summary.source.nativeSessionId).toBe(row.sessionId);
+        expect(JSON.stringify(prepared.port.metadata)).not.toContain('exact native history');
+        expect(prepared.port.metadata.sourceCoordOwnerId).toBe(row.coordOwnerId);
+        const seed = readFileSync(prepared.port.artifactPath, 'utf8');
+        expect(verifySessionPortSeed(seed, prepared.port.renderedHash)).toBe(true);
+        expect(seed).toContain(`source-backend: ${backend}`);
+        expect(seed).toContain(`target-backend: ${targetBackend}`);
+        expect(seed).toContain('exact native history');
+      } finally { rmSync(artifactRoot, { recursive: true, force: true }); }
+    },
+  );
+
+  it.each(['codex', 'omp'] as const)('inspects an exact %s source into the existing portable contract', (backend) => {
+    const nativeId = row.sessionId!;
+    const records = backend === 'codex' ? [
+      { type: 'session_meta', payload: { id: nativeId } },
+      { type: 'response_item', timestamp: '2026-10-03T00:00:00Z', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'exact evidence' }] } },
+    ] : [
+      { type: 'session', id: nativeId },
+      { type: 'message', id: 'evidence', parentId: null, timestamp: '2026-10-03T00:00:00Z', message: { role: 'user', content: 'exact evidence' } },
+    ];
+    const bytes = Buffer.from(records.map((record) => JSON.stringify(record)).join('\n') + '\n');
+    const inspection = inspectAcquiredSessionPort({
+      sourceRow: { ...row, agent: backend, ...(backend === 'omp' ? { sessionId: null, ompThreadId: nativeId } : {}) },
+      stableSource: { ...source(''), bytes }, target: { ...target, backend: 'claude' },
+      evidenceSpan: { sessionId: nativeId, turnIndices: [3], contextTurns: 0,
+        evidenceTurns: [{ turnIdx: 3, timestamp: '2026-10-03T00:00:00Z', speaker: 'user', text: 'exact evidence' }] },
+    });
+    expect(inspection.source.backend).toBe(backend);
+    expect(inspection.source.nativeSessionId).toBe(nativeId);
+    expect(inspection.internal.turns).toHaveLength(1);
+    expect(inspection.internal.turns[0]?.blocks[0]).toEqual({ type: 'text', text: 'exact evidence' });
+    expect(inspection.internal.sourceRow.coordOwnerId).toBe(row.coordOwnerId);
+  });
+
+  it.each(['codex', 'omp'] as const)('acquires the exact tracked %s home and falls back only on missing source', async (backend) => {
+    const sourceRow = { ...row, agent: backend, ompThreadId: backend === 'omp' ? row.sessionId : null };
+    const stable = source('native source');
+    const findLive = vi.fn(async () => '/exact/source.jsonl');
+    await expect(acquireTrackedSessionSource(sourceRow, {
+      rootForSource: () => '/tracked/home/sessions', findLive,
+      readLive: async () => stable,
+    })).resolves.toBe(stable);
+    expect(findLive).toHaveBeenCalledWith('/tracked/home/sessions', backend, row.sessionId);
+    const archived = { ...stable, source: 'archive-manifest' as const };
+    const readArchive = vi.fn(async () => archived);
+    await expect(acquireTrackedSessionSource(sourceRow, {
+      findLive: async () => { throw new Error(`canonical live ${backend} JSONL is missing`); },
+      readArchive, archiveStore: () => ({} as never),
+    })).resolves.toBe(archived);
+    expect(readArchive).toHaveBeenCalledWith({ backend, sessionId: row.sessionId }, expect.anything());
+    readArchive.mockClear();
+    await expect(acquireTrackedSessionSource(sourceRow, {
+      findLive: async () => { throw new Error(`canonical live ${backend} JSONL is ambiguous`); },
+      readArchive,
+    })).rejects.toThrow(/ambiguous/);
+    expect(readArchive).not.toHaveBeenCalled();
+  });
+
   it('inspects without exposing internal transcript data and redacts before persistence', async () => {
     const inspection = inspectAcquiredSessionPort({
       sourceRow: row,

@@ -155,10 +155,8 @@ export interface WhisperServeOptions {
   host?: string;
   /** Default WHISPER_SERVER_DEFAULT_PORT (2022, the VOICEMODE_URL seam's default). */
   port?: number;
-  /** Default: all-but-one core, CLAMPED to 16 (WI-4501). STT on whisper-base is realtime well
-   *  under 16 threads (this box's live voicemode unit runs exactly 16); an unclamped
-   *  `cpus()-1` on a big box claims 127 threads PER SERVER, which turned a duplicate-spawn
-   *  bug into a machine-wide CPU incident. */
+  /** Requested inference-thread ceiling. The renderer also bounds this against the HTTP
+   *  worker pool, because cpp-httplib keeps an inference team for each request worker it uses. */
   threads?: number;
   /** Default true — webview/browser audio arrives as webm/opus; whisper-server needs its
    *  ffmpeg conversion path to accept it (the live voicemode unit runs --convert). */
@@ -167,17 +165,37 @@ export interface WhisperServeOptions {
   noGpu?: boolean;
 }
 
-/** Render the whisper-server argv (no binary path) — mirrors this box's live, working
- *  voicemode-whisper unit: `--host … --port … --model … --inference-path
- *  /v1/audio/transcriptions --threads … --convert [--no-gpu]`. The OpenAI-compatible
- *  inference path is what operator-voice-proxy-helpers already targets via VOICEMODE_URL. */
-export function renderWhisperServerArgs(opts: WhisperServeOptions): string[] {
+/** Maximum projected task count for one local Whisper server, including its HTTP workers
+ *  and the inference teams those workers may retain. */
+export const WHISPER_MAX_SERVER_TASKS = 256;
+
+/**
+ * cpp-httplib v1.9.1 defaults to max(8, hardware_concurrency - 1) HTTP workers. The server's
+ * inference handler serializes model work, but a worker that handles an inference can retain
+ * its own `threads - 1` compute threads. Bound the product so a high-core host cannot turn the
+ * per-request inference setting into thousands of idle tasks. The two extra tasks account for
+ * the server process and its control thread.
+ */
+export function whisperInferenceThreadsForCpuCount(cpuCount: number, requestedThreads?: number): number {
+  const cpus = Math.max(1, Math.floor(cpuCount));
+  const httpWorkers = Math.max(8, cpus - 1);
+  const cpuThreadLimit = Math.max(1, Math.min(16, cpus - 1));
+  const requestedLimit = requestedThreads === undefined ? cpuThreadLimit : Math.max(1, Math.floor(requestedThreads));
+  const aggregateLimit = Math.max(1, Math.floor((WHISPER_MAX_SERVER_TASKS - 2) / httpWorkers));
+  return Math.min(cpuThreadLimit, requestedLimit, aggregateLimit);
+}
+
+/** Render the whisper-server argv (no binary path) — `--host … --port … --model … --inference-path
+ *  /v1/audio/transcriptions --threads … --convert [--no-gpu]`. The OpenAI-compatible inference
+ *  path is what operator-voice-proxy-helpers already targets via VOICEMODE_URL. `cpuCount` is
+ *  injectable so the worker-budget rule stays deterministic in tests. */
+export function renderWhisperServerArgs(opts: WhisperServeOptions, cpuCount = os.cpus().length): string[] {
   const args = [
     '--host', opts.host ?? '127.0.0.1',
     '--port', String(opts.port ?? WHISPER_SERVER_DEFAULT_PORT),
     '--model', opts.modelPath,
     '--inference-path', '/v1/audio/transcriptions',
-    '--threads', String(opts.threads ?? Math.max(1, Math.min(16, os.cpus().length - 1))),
+    '--threads', String(whisperInferenceThreadsForCpuCount(cpuCount, opts.threads)),
   ];
   if (opts.convert ?? true) args.push('--convert');
   if (opts.noGpu) args.push('--no-gpu');

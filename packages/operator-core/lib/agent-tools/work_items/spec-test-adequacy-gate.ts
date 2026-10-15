@@ -5,7 +5,8 @@ import {
   listWorkItemSpecRevisionEdges,
   type EvidenceCurrentInput,
 } from '../plans/spec-evidence-store';
-import { listSpecClauses } from '../plans/spec-clauses-store';
+import { listSpecClauses, type SpecClauseRevision } from '../plans/spec-clauses-store';
+import { resolveEvaluatorClassRef } from '../plans/evaluate-spec-test-adequacy';
 import {
   enforcedClausesOf,
   ENFORCEABLE_LIFECYCLE_STATUSES,
@@ -28,9 +29,13 @@ import {
   type SpecTestAdequacyResult,
   type SpecEvidenceForAdequacy,
 } from '../plans/spec-test-adequacy';
+import {
+  resolveSourceBarTestRequirements,
+  type SourceBarRubricCache,
+} from '../plans/source-bar-test-requirements';
 
 export interface SpecAdequacyCompletionAttestation {
-  classRef: PlanClassRubricRef;
+  classRef?: PlanClassRubricRef;
   /**
    * Exact immutable proof identities to grade. Historical bindings remain in the
    * ledger, but a caller can exclude superseded run-specific refs just as
@@ -160,6 +165,81 @@ export type SpecAdequacyCompletionGateResult =
  * precondition. Imported rather than re-declared so the two cannot drift.
  */
 type WorkItemForSpecGate = WorkItemForContract;
+
+/**
+ * A file suffix is only a contradiction signal; it never grants an exemption by itself.
+ * Scope authority comes from a current, registered INVENTORY-P-NNN clause below.
+ */
+function isExecutableSourcePath(path: string): boolean {
+  return /\.(?:[cm]?[jt]sx?|rs|py|go|sh|bash|zsh|sql|css|s[ac]ss|less|html?|vue|svelte|c|cc|cpp|cxx|h|hpp|java|kt|kts|swift|rb|php|ex|exs|erl|hs|lua|pl|ps1|bat|cmd)$/i
+    .test(path.trim());
+}
+
+function isDocumentationInventoryPath(path: string): boolean {
+  const segments = path.trim().replaceAll('\\', '/').split('/');
+  if (segments.length < 2 || segments.some((segment) => !segment || segment === '.' || segment === '..')) {
+    return false;
+  }
+  return segments[0] === 'docs' ||
+    (segments[0] === 'apps' && segments[1] === 'operator-docs' && segments[2] === 'src' &&
+      segments[3] === 'content' && segments[4] === 'docs');
+}
+
+function isPlanDecisionRef(value: string, planSlug: string): boolean {
+  const prefix = `${planSlug}#`;
+  return value.startsWith(prefix) && /^D-\d{3,}$/.test(value.slice(prefix.length));
+}
+
+function isRegisteredInventoryExemption(
+  clause: SpecClauseRevision,
+  planSlug: string,
+  planItemId: string,
+): boolean {
+  const provenance = typeof clause.exemption?.provenance === 'string'
+    ? clause.exemption.provenance.trim()
+    : '';
+  const justification = typeof clause.exemption?.justification === 'string'
+    ? clause.exemption.justification.trim()
+    : '';
+  return clause.planSlug === planSlug &&
+    clause.planItemId === planItemId &&
+    clause.specId === `INVENTORY-${planItemId}` &&
+    clause.currentRevision === clause.revision &&
+    clause.sourceValId === null &&
+    clause.sourceBar == null &&
+    clause.behavior.trim().length > 0 &&
+    clause.behaviorClass === 'non-automated' &&
+    clause.requiredEvidence.length === 0 &&
+    clause.requiredTestLayers.length === 0 &&
+    !clause.mutationRequired &&
+    clause.lifecycleStatus === 'exempt' &&
+    clause.falsifier == null &&
+    Boolean(justification) &&
+    isPlanDecisionRef(provenance, planSlug) &&
+    clause.acceptanceRef === provenance;
+}
+
+/** Resolve a current inventory exemption only when it owns the whole enforced item scope. */
+function registeredInventoryExemptionFor(
+  workItem: WorkItemForSpecGate,
+  contract: WorkItemBehaviorContract,
+  enforcedClauses: readonly SpecClauseRevision[],
+): SpecClauseRevision | undefined {
+  if (workItem.kind?.trim().toLowerCase() !== 'feature') return undefined;
+  const stamp = planStampOf(workItem);
+  if (!stamp || stamp.planItemIds.length !== 1) return undefined;
+  const [planItemId] = stamp.planItemIds;
+  if (enforcedClauses.some((clause) => clause.planSlug !== stamp.planSlug || clause.planItemId !== planItemId)) {
+    return undefined;
+  }
+  const group = contract.groups.find((candidate) =>
+    candidate.planSlug === stamp.planSlug && candidate.eligibility.enforcing,
+  );
+  if (!group) return undefined;
+  return group.clauses.find((clause) =>
+    isRegisteredInventoryExemption(clause, stamp.planSlug, planItemId),
+  );
+}
 
 /**
  * Re-exported from the resolver rather than re-declared. This was a local
@@ -426,7 +506,7 @@ function evaluatorUnknownFailureReason(label: string, result: SpecTestAdequacyRe
 export const SPEC_ADEQUACY_ATTESTATION_GUIDANCE =
   'pass a TOP-LEVEL `specAdequacy` argument to work_items:complete — a SIBLING of ' +
   '`completion`, never nested inside it (`completion.specAdequacy` is rejected). ' +
-  '`classRef` is the ONLY required key, and on its own it is SUFFICIENT once the evidence is ' +
+  '`specAdequacy:{}` derives the persisted subject plan class; `classRef` alone is sufficient when it matches, while ad-hoc scopes require explicit class attestation. Once evidence is ' +
   'ready — the gate resolves the governing clauses, the bound evidence and every fingerprint ' +
   'dimension itself. Do NOT hand-author fingerprints: `current` and `evidenceRefs` are optional ' +
   'and exist only to NARROW the graded selection or REPLAY a persisted evaluator snapshot. ' +
@@ -453,6 +533,7 @@ export async function specTestAdequacyCompletionGate(
      * injectable — a unit test that could not stub it would open a real database.
      */
     listPlanStatuses?: ResolveBehaviorContractDeps['listPlanStatuses'];
+    resolveSourceBarTestRequirements?: typeof resolveSourceBarTestRequirements;
   } = {},
 ): Promise<SpecAdequacyCompletionGateResult> {
   const listClauses = deps.listClauses ?? listSpecClauses;
@@ -460,6 +541,8 @@ export async function specTestAdequacyCompletionGate(
   const listEvidence = deps.listEvidence ?? listSpecEvidence;
   const listCards = deps.listCards ?? listScorecards;
   const listPlanStatuses = deps.listPlanStatuses;
+  const resolvePinnedSourceBarTestRequirements = deps.resolveSourceBarTestRequirements ?? resolveSourceBarTestRequirements;
+  const sourceBarRubricCache: SourceBarRubricCache = new Map();
 
   // D-012/D-013: applicability is BEHAVIOR-owned, not plan-owned. Resolve the item's
   // whole contract across plan namespaces FIRST. Before P-016 this function opened with
@@ -503,6 +586,48 @@ export async function specTestAdequacyCompletionGate(
   const { planSlugs: enforcedPlanSlugs, clauses } = enforcedClausesOf(contract);
   if (clauses.length === 0) return withReport({ ok: true, applicable: false, checked: [] });
 
+  const changedPaths = input.changedPaths ?? [];
+  const executableSourceChanges = changedPaths.filter(isExecutableSourcePath);
+  const documentationInventoryChanges = changedPaths.length > 0 &&
+    changedPaths.every(isDocumentationInventoryPath) && executableSourceChanges.length === 0;
+  const inventoryExemption = registeredInventoryExemptionFor(input.workItem, contract, clauses);
+  if (inventoryExemption && !input.attestation && documentationInventoryChanges) {
+    const inventoryRef = `${inventoryExemption.specId}@${inventoryExemption.revision}`;
+    return withReport({
+      ok: true,
+      applicable: false,
+      checked: [],
+      exempted: clauses.map((clause) =>
+        exemptionLabel(
+          clause,
+          `registered non-code inventory scope ${inventoryRef}; item completion only, final shipment BAR proof remains required`,
+        ),
+      ),
+    });
+  }
+
+  const classes = new Map<string, PlanClassRubricRef>();
+  if (input.attestation) {
+    const subjectHarness = stamp?.harnessSlug ?? input.workItem.harness?.trim();
+    if (!subjectHarness) return withReport({ ok: false, applicable: true, retryable: true, checked: [], reason: 'plan_class_unresolved: the subject harness is unavailable' });
+    for (const planSlug of enforcedPlanSlugs) {
+      const resolution = await resolveEvaluatorClassRef(planSlug, subjectHarness, {
+        classRef: input.attestation.classRef,
+        workItemIds: [input.workItem.id],
+      });
+      if (!resolution.ok || (input.attestation.classRef !== undefined && input.attestation.classRef !== resolution.classRef)) {
+        return withReport({ ok: false, applicable: true, retryable: true, checked: [],
+          reason: !resolution.ok ? resolution.message : `plan_class_mismatch: '${planSlug}' requires ${resolution.classRef}, not ${input.attestation.classRef}` });
+      }
+      classes.set(planSlug, resolution.classRef);
+    }
+  }
+  const classFor = (clause: SpecClauseRevision): PlanClassRubricRef => {
+    const value = classes.get(clause.planSlug);
+    if (!value) throw new Error(`plan_class_unresolved: ${clause.planSlug}`);
+    return value;
+  };
+
   // `task` is the canonical non-code kind (research was folded into it). A plan may
   // still carry projected clauses for a task deliverable, but executable L3/L4 proof
   // is not a meaningful completion obligation for that item. Resolve the contract first
@@ -515,12 +640,9 @@ export async function specTestAdequacyCompletionGate(
     // submission against test-requiring clauses. Refuse and require an intentional
     // re-kind; silently relabelling only the evaluator input would hide the bad
     // execution record and leave every other kind-sensitive gate exempt.
-    const sourceChanges = (input.changedPaths ?? []).filter((path) =>
-      /\.(?:[cm]?[jt]sx?|rs|py|go|sh|bash|zsh|sql|css|s[ac]ss|less|html?|vue|svelte|c|cc|cpp|cxx|h|hpp|java|kt|kts|swift|rb|php|ex|exs|erl|hs|lua|pl|ps1|bat|cmd)$/i
-        .test(path.trim()),
-    );
+    const sourceChanges = executableSourceChanges;
     const submitsExecutableProof = input.attestation && clauses.some((clause) =>
-      requiredProofFloor(clause, input.attestation!.classRef) !== 'none',
+      requiredProofFloor(clause, classFor(clause)) !== 'none',
     );
     if (sourceChanges.length > 0 || submitsExecutableProof) {
       return withReport({
@@ -590,13 +712,13 @@ export async function specTestAdequacyCompletionGate(
     });
   }
 
-  const relevant = clauses.filter((clause) => requiredProofFloor(clause, input.attestation!.classRef) !== 'none');
+  const relevant = clauses.filter((clause) => requiredProofFloor(clause, classFor(clause)) !== 'none');
   // WI-10002055: the complement of `relevant` is the excused set. Computed once so every
   // exit below can name it — including the MIXED case, where some clauses are enforced and
   // others excused in the same completion and the excused ones would otherwise vanish
   // behind a populated `checked`.
   const exempted = clauses
-    .filter((clause) => requiredProofFloor(clause, input.attestation!.classRef) === 'none')
+    .filter((clause) => requiredProofFloor(clause, classFor(clause)) === 'none')
     .map((clause) => exemptionLabel(clause, 'proof floor none — non-automated with no required test layer'));
   if (relevant.length === 0) return withReport({ ok: true, applicable: false, checked: [], exempted });
   // ⚠ The evidence read is scoped by the SAME namespaces as the enforced clause set, and
@@ -646,12 +768,17 @@ export async function specTestAdequacyCompletionGate(
   const failedGradingAuditTargetIds = new Set<string>();
   const failedGradingAudits: FailedGradingAudit[] = [];
   for (const clause of relevant) {
+    const sourceBarTestRequirements = await resolvePinnedSourceBarTestRequirements(
+      clause.sourceBar,
+      sourceBarRubricCache,
+    );
     const result = evaluateSpecTestAdequacy({
       clause,
       evidence,
-      classRef: input.attestation.classRef,
+      classRef: classFor(clause),
       harness: harnessSlug,
       workItemKind: input.workItem.kind,
+      sourceBarTestRequirements,
     });
     const label = `${clause.specId}@${clause.revision}`;
     const evaluatorUnknownFailure = evaluatorUnknownFailureReason(label, result);

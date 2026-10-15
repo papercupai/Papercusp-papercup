@@ -4,95 +4,80 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: "Grading memory-recall-health: the system-side telemetry reads (runbook)"
-description: "Runbook for grading the memory-recall-health rubric: per-surface liveness, admission floors, injection budgets, and dedup-ledger identity — the canonical queries, the identity model, and the score-scale trap (RRF vs cosine)."
+title: "Grading memory-recall-health: effective contracts and actual delivery"
+description: "Canonical memory system grading: effective calibration, client/port attempts, exact emitted context, budgets and session dedup."
+type: Insight
 discovered: 2026-07-12
 tags: ["runbook", "rubrics", "grading", "memory", "recall", "telemetry"]
 status: active
 documents:
+  - "packages/operator-core/lib/memory/recall-admission.ts"
+  - "packages/operator-core/lib/memory/push-search-floors.ts"
+  - "packages/operator-core/lib/memory/injection-delivery-coverage.ts"
   - "packages/operator-core/lib/memory/session-epoch-ledger.ts"
-  - "packages/operator-core/lib/memory/recall-stats.ts"
-  - "packages/operator-core/lib/memory/mcp-prelude.ts"
-  - "packages/operator-core/lib/memory/compact-reprime.ts"
 plans:
-  - "rubric-system-improvements-2026-07-12"
-  - "memory-delivery-unification-2026-07-12"
-  - "orient-recall-quality-2026-07-12"
-type: Insight
+  - "context-injection-rubric-improvements-and-grading-2026-10-09"
 generated:
   by: agent
   at: 2026-07-12
 ---
 
-The rubric-level runbook `memory-recall-health` points at via `methodRef`. This
-rubric grades the SYSTEM half of recall quality from its own telemetry; the
-agent half is `su-agent-behavior`'s `recall-utilization` (see its runbook). The
-deterministic teeth are in Vitest — this page is the LIVE read layer.
+The system-side rubric grades delivered recall, admission, budgets and session dedup. Agent recall utilization is a separate behavior measure. Deterministic guards verify the measurement mechanisms; they do not replace a fresh population study.
 
-## Surface liveness (criterion: per-surface-telemetry-liveness)
+## Observation contract
+
+Freeze a 24-hour interval, expected active clients and ports, independent eligible attempts, identity, effective runtime/embedding/score/fusion/filter/budget contract and fixture/judge versions before measuring. State persistence-lag tolerance and practical decision/confidence policy. A quiet unused surface is not-applicable; silence without independent attempts is unknown. A known eligible attempt with missing or mislabelled telemetry is a detector failure. Never average one client or port into another.
+
+Read the writers before using counts: memory/recall-stats.ts records individual recall attempts, while context_injection_coverage aggregates by day/client/port/outcome/tool. The latter is date-granular, not an exact rolling window or a prompt delivery acknowledgement. Correlate endpoint/tool evidence with exact surface and session identity. Failures and unavailable telemetry remain in the denominator.
 
 ```sql
-SELECT surface, count(*) AS n,
-       max(created_at) AT TIME ZONE 'America/New_York' AS last_edt
+SELECT surface, count(*) AS n, max(created_at) AS last_at
 FROM harness_shared.memory_recall_stats
-WHERE created_at > now() - interval '8 hours'
-GROUP BY surface ORDER BY n DESC;
+WHERE created_at >= now() - interval '24 hours'
+GROUP BY surface ORDER BY surface;
 ```
 
-Columns are `hit_count` / `top_score` (NOT `hits`). Expected-active surfaces on
-a busy fleet: `search`, `initialize`, `claim`, `create`, `compact`, `brief` —
-plus `orient` and `turn-start` once those paths are healthy (both were the
-silent/broken ones found 2026-07-12). ⚠ Liveness by COUNT alone can mask a
-whole population getting nothing: 68 initialize recalls/8h looked healthy while
-every one belonged to a stateless client and zero reached a real agent —
-always cross-check the ledger's identity kinds (below).
+This query is a scoped liveness input, not proof of complete eligible-attempt coverage. Fields are hit_count/top_score. A shared client/port population needs independent endpoint/prompt records.
 
-## The score-scale trap (criteria: admission-floor-integrity + the orient fold)
+## Effective admission and calibration
 
-The hybrid backend returns **reciprocal-rank-fusion scores**: rank-1 on one leg
-≈ `1/61 ≈ 0.0164`, on both legs ≈ `0.0328`. Pure-vector paths return cosine
-(≈0.5–0.9). A floor calibrated for one scale silently zeroes the other — the
-2026-07-12 live incident: orient's blanket 0.05 floor emptied every fold
-(`hits: [], filteredLowScore: 5`) while `search`'s p50 looked fine. When a
-surface's `top_score` p50 sits near 0.016–0.033, that is the RRF signature,
-not "bad memories."
+Current push defaults are cosine 0.58 and lexical 0.40; defaults do not establish effective environment overrides. Read push-search-floors.ts and the precision monitor's recorded effective metadata: embedding model/version/dimension, score scale, fusion, floors, optional Jev mode/model/threshold, fixture version and delivery surface. Compare only matching contracts. Old embedding-space or July baselines are incomparable until revalidated; one run cannot set production thresholds.
 
-## Dedup-ledger identity (criterion: dedup-ledger-integrity)
+Healthy fused RRF scores can be around 0.016–0.033 and must not be compared to cosine floors. Orient's 0.05 noise floor applies only to explicitly degraded cosine responses, not healthy RRF/lexical responses. Run recall-admission.test.ts with both scale controls. Read monitor ATTEMPTS as well as successful rows: missing current calibration makes operating-point quality unknown.
+
+## Content budgets and final fidelity
+
+Read effective per-port allocation and documented first-entry exceptions. Record content allocation, withheld material/IDs, header/notice overhead, final block characters and independently measured tokens separately. A content budget is not an exact token or final-response ceiling. Material that was not delivered must remain eligible.
+
+Grade EXACT emitted snippets and assembled client prompt blocks after clipping, filtering, dedup and budgets. Independently label necessary negations, approval conditions, scope, dates and authority qualifiers. Recovery references must resolve within authorized scope. A condition-stripped or unauthorized instruction is a hard failure even when topically relevant. Unlabelled block residue stays unknown. Reuse assessDeliveredContext in injection-delivery-coverage.ts; its independent labels are not inferred semantic truth.
+
+## Session, epoch and actual emitted dedup
+
+ONE warm session identity crosses ports: MCP client from PAPERCUSP_SID, hook owner and coord ownerId. Synthetic fallback IDs require inspection against actual active sessions; spelling alone is not proof of drift.
 
 ```sql
-SELECT CASE WHEN session_id LIKE 's-%' THEN 'synthetic s-*'
-            WHEN session_id LIKE 'su-%' THEN 'su ownerId'
-            ELSE 'other' END AS id_kind,
-       port, count(DISTINCT session_id) AS sessions, count(*) AS rows
+SELECT session_id, epoch, memory_id, port, surfaced_at
 FROM harness_shared.memory_session_surfaced
-WHERE surfaced_at > now() - interval '24 hours'
-GROUP BY 1,2 ORDER BY 2,1;
+WHERE surfaced_at >= now() - interval '24 hours'
+ORDER BY session_id, epoch, surfaced_at;
 ```
 
-The invariant: ONE identity per session across every port — the MCP URL's
-`client=` (from `PAPERCUSP_SID`) == the hook owner == the coord ownerId. The
-`s-*` shape is the transport-id fallback for clients that supplied no
-`client=`; a port whose stamps are predominantly `s-*`/`other` while agent
-sessions run is the "identity drift — one end renamed" marker live (this exact
-query found initialize fully drifted on 2026-07-12; root cause: the psu MCP URL
-template lacked `&harness=`, fixed in `claude-integration.ts`).
+The ledger's unique key is (session_id, epoch, memory_id). ON CONFLICT DO NOTHING suppresses a second row even when two contexts were emitted. Zero duplicate ledger rows proves uniqueness only. Compare actual blocks/client prompt records by session/epoch/port; use independently labelled equivalent fact keys to detect redundancy under distinct IDs. Cover sequential, concurrent, retry/failure-between-render-and-stamp, and epoch changes. Include a negative control with two actual emitted same-fact blocks but one ledger row; the detector must fail it.
 
-Epoch semantics: `bumpSessionEpoch` fires once per compaction via the
-recovery-brief endpoint; the re-prime stamps the NEW epoch under
-`port='compact'`. Same memory_id under two ports in ONE epoch = the
-double-injection signature. ⚠ Forensics: read the ledger DURING a drill —
-superseded-epoch rows persist only until the 14-day age sweep (and were
-bump-deleted before 2026-07-12).
+The real-PG session-epoch-cross-port.integration.test.ts exercises actual returned blocks and post-compaction re-prime. Delivery-assessment fixtures additionally discriminate concurrent/retry evidence; they are NOT an actual concurrent live-client drill. Report that applicability gap until exercised.
 
-## Live end-to-end probe (the drill-2 protocol, replayable)
+Epoch rows persist until the ledger age sweep (currently 14 days; re-read the writer before depending on retention). Inspect actual emitted blocks during a drill, with ledger rows used only for identity/epoch corroboration.
 
-Plant two harness-scoped fixture memories (record ids), launch one visible
-subject on a plan that requires: (A) report fixture-fact-1 at session start
-stating the delivery source first; (B) `session:request-compaction` while
-holding the WI, with a focus that forbids carrying the values; (C) report
-fixture-fact-2 post-compaction, delivery source first. Grade delivery from the
-ledger (initialize/claim stamps pre-compaction; epoch+1 `compact` stamps after)
-and consumption from the completion record. Cleanup: `memory:forget` both ids
-(they leak into other agents' folds while they exist), wind down the fleet.
-Full worked example: plan `recall-drill-2-injection-2026-07-12` + scorecards
-EI-10406/EI-10407.
+## Live end-to-end drill
+
+First select the current-build route with dev:pipeline_position(path, testClass:'operator-api') and verify the served code. Use an isolated fixture scope; record source IDs, session ID, epoch, exact emitted blocks, relevant contracts and observation times. Plant two scoped fixture memories, then run one subject through: (A) fixture fact at session start, naming the delivery source; (B) compaction while holding the work item, with a focus that excludes carrying fixture values; (C) second fact post-compaction, naming its source. Actual prompt records establish delivery; independently checked task/completion evidence establishes consumption. Ledger stamps alone establish neither.
+
+Historical protocol: recall-drill-2-injection-2026-07-12, EI-10406/EI-10407. Clean up fixture memories and the drill subject. Do not revive a retired emitter or schedule recurring paid judging merely because a historical card is old.
+
+## Verification and truthful ratings
+
+```bash
+PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/memory/recall-admission.test.ts packages/operator-core/lib/memory/session-epoch-cross-port.integration.test.ts packages/operator-core/lib/memory/corpus-recall.test.ts packages/operator-core/lib/memory/injection-delivery-coverage.test.ts
+```
+
+Use scorecards:evaluate for the exact current skeleton, supply every criterion with population/window/runtime/evidence references, validate, then emit and inspect the saved card and freshness/trend. Distinguish manual/self-reported evidence from a registered platform-computed instrument. Healthy requires current valid evidence meeting the frozen policy; confirmed hard correctness failures are broken; insufficient measurements are unknown with a concrete next evidence action.

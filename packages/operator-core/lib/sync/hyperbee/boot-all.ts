@@ -67,6 +67,7 @@ import { RemoteBootedHarnessHandle } from './remote-booted-harness';
 import { backgroundWorkersEnabled } from '../../background-workers';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { getOwnLogForkState } from './own-log-fork-guard';
+import { observeFallback } from '../../degradation/fallback-observations';
 
 /**
  * THE SUBSTRATE BOOT REGISTRY — pinned to the realm, not to this module record.
@@ -777,7 +778,10 @@ export async function defaultResolveSwarmBinding(
     // to the gh-binding path unchanged.
     const { resolveHiveSwarmBinding, potHomeSlugForHarness } = await import('../../hive-federation');
     const hiveBinding = await resolveHiveSwarmBinding(workspaceId, harnessSlug);
-    if (hiveBinding) return hiveBinding;
+    if (hiveBinding) {
+      observeFallback('substrate-binding-resolution', { eligible: 1, applied: 1, reason: 'applied', scope: `${workspaceId}:${harnessSlug}` });
+      return hiveBinding;
+    }
 
     // (2) A committed shared.json. PREFER the EXPLICIT topic it carries: a
     // joiner learns a Hive's topic from its member/invite link (persisted here
@@ -790,10 +794,17 @@ export async function defaultResolveSwarmBinding(
     // the gh-repo topic (== what gh:<repo_id> derives), so no behavior change.
     const { resolveHarnessPaths } = await import('../../resolve-harness-paths');
     const { projectDir } = await resolveHarnessPaths(harnessSlug, workspaceId);
-    if (projectDir.startsWith('/tmp/papercusp-unresolved/')) return null;
+    if (projectDir.startsWith('/tmp/papercusp-unresolved/')) {
+      observeFallback('substrate-binding-resolution', { eligible: 1, applied: 0, reason: 'harness-path-unresolved', scope: `${workspaceId}:${harnessSlug}` });
+      return null;
+    }
     const cfg = loadSharedConfigFromProjectDir(projectDir);
-    if (!cfg) return null;
+    if (!cfg) {
+      observeFallback('substrate-binding-resolution', { eligible: 1, applied: 1, reason: 'applied', scope: `${workspaceId}:${harnessSlug}` });
+      return null;
+    }
     if (cfg.topic && /^[0-9a-f]{64}$/i.test(cfg.topic)) {
+      observeFallback('substrate-binding-resolution', { eligible: 1, applied: 1, reason: 'applied', scope: `${workspaceId}:${harnessSlug}` });
       return { kind: 'topic', topic_hex: cfg.topic };
     }
 
@@ -807,6 +818,7 @@ export async function defaultResolveSwarmBinding(
     if (!cfg.topic) {
       const potHomeSlug = await potHomeSlugForHarness(workspaceId, harnessSlug);
       if (potHomeSlug) {
+        observeFallback('substrate-binding-resolution', { eligible: 1, applied: 0, reason: 'hive-binding-unresolved', scope: `${workspaceId}:${harnessSlug}` });
         console.warn(
           `[boot-all] harness '${harnessSlug}' is a Hive member (home '${potHomeSlug}') but its ` +
             'Hive binding is unresolvable and shared.json has no stored topic — staying LOCAL ' +
@@ -817,8 +829,10 @@ export async function defaultResolveSwarmBinding(
       }
     }
 
+    observeFallback('substrate-binding-resolution', { eligible: 1, applied: 1, reason: 'applied', scope: `${workspaceId}:${harnessSlug}` });
     return { kind: 'gh', github_repository_id: cfg.github_repository_id };
   } catch {
+    observeFallback('substrate-binding-resolution', { eligible: 1, applied: 0, reason: 'binding-read-failed', scope: `${workspaceId}:${harnessSlug}` });
     return null;
   }
 }
@@ -1020,6 +1034,9 @@ export async function bootSingleHarness(
   let rawBoot: Promise<BootedHarnessHandle> | null = null;
   const bootPromise = (async () => {
     const swarmBinding = (await resolver(workspaceId, harnessSlug)) ?? null;
+    // Count a fresh engine route once, never cached handles or duplicate callers.
+    observeFallback('substrate-boot-routing', { eligible: 1, applied: routingTimedOut ? 0 : 1,
+      reason: routingTimedOut ? 'routing-decision-timeout' : 'applied', scope: `${workspaceId}:${harnessSlug}` });
     // WI-3297: durable merge-cursor for the DEFAULT in-process engine only. An
     // explicit override or an installed sidecar factory builds/owns its own
     // (or deliberately goes without — tests), so it is never injected there.
@@ -1215,7 +1232,7 @@ async function resolveActivationDeferrals(
   if (pairs.length === 0) return empty;
   try {
     const [{ getFlag }, { FLAGS }] = await Promise.all([import('@papercusp/flags/server'), import('@papercusp/flags')]);
-    const on = await getFlag(FLAGS.LAZY_SUBSTRATE_BOOT, 'system').catch(() => false);
+    const on = await getFlag(FLAGS.LAZY_SUBSTRATE_BOOT, 'system');
     if (!on) return empty;
 
     const { loadHarnessRegistry } = await import('../../harness-registry');
@@ -1277,8 +1294,11 @@ async function resolveActivationDeferrals(
       // may still force eager federation with an explicit false rollback.
       deferFederating: opts.deferFederatingHarnesses !== false,
     });
+    observeFallback('substrate-activation-plan', { eligible: pairs.length, applied: entries.length,
+      reason: entries.length === pairs.length ? 'applied' : 'registry-entry-missing' });
     return new Set(decision.defer);
   } catch (e) {
+    observeFallback('substrate-activation-plan', { eligible: pairs.length, applied: 0, reason: 'activation-plan-failed' });
     console.warn(
       '[boot-all] activation planning failed — booting every harness eagerly (fail-open):',
       e instanceof Error ? e.message : String(e),

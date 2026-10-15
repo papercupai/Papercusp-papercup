@@ -145,6 +145,11 @@ describe('ChromeShell', () => {
 
   it('compacts from the header content box and restores when dock space returns', () => {
     let notifyWidth: ((width: number) => void) | null = null;
+    let frameId = 0;
+    const frames = new Map<number, FrameRequestCallback>();
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.set(++frameId, callback); return frameId; });
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => { frames.delete(id); });
+    const flushFrame = () => act(() => { const callbacks = [...frames.values()]; frames.clear(); callbacks.forEach(callback => callback(0)); });
     const observe = vi.fn();
     const disconnect = vi.fn();
     vi.stubGlobal(
@@ -172,22 +177,35 @@ describe('ChromeShell', () => {
     expect(observe).toHaveBeenCalledWith(header);
 
     act(() => notifyWidth?.(640));
+    // Resize delivery must not synchronously mutate the observed element.
+    expect(header.classList.contains('pc-header--compact')).toBe(false);
+    flushFrame();
     expect(header.classList.contains('pc-header--compact')).toBe(true);
     act(() => notifyWidth?.(900));
+    flushFrame();
     expect(header.classList.contains('pc-header--compact')).toBe(false);
 
+    act(() => notifyWidth?.(640));
     unmount();
+    expect(frames.size).toBe(0);
     expect(disconnect).toHaveBeenCalledOnce();
     expect(header.classList.contains('pc-header--compact')).toBe(false);
   });
 
-  it('gives the measured compact class one-column, horizontal-scroll chrome', () => {
+  it('gives the measured compact class one column: CTAs scroll, the utility nav wraps', () => {
     expect(GLOBAL_CSS).toMatch(
       /\.pc-header\.pc-header--compact\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s,
     );
     expect(GLOBAL_CSS).toMatch(
-      /\.pc-header--compact \.pc-header-center,\s*\.pc-header--compact \.pc-header-right\s*\{[^}]*flex-wrap:\s*nowrap[^}]*overflow-x:\s*auto/s,
+      /\.pc-header--compact \.pc-header-center\s*\{[^}]*flex-wrap:\s*nowrap[^}]*overflow-x:\s*auto/s,
     );
+    // WI-10006979: a scrolling utility nav hid Theme / workspace switcher /
+    // account off-screen at 1280px with both rails docked. It must wrap.
+    const rightRules = [...GLOBAL_CSS.matchAll(/\.pc-header--compact \.pc-header-right\s*\{([^}]*)\}/g)].map((m) => m[1]);
+    expect(rightRules.length).toBeGreaterThan(0);
+    const last = rightRules[rightRules.length - 1];
+    expect(last).toMatch(/flex-wrap:\s*wrap/);
+    expect(last).not.toMatch(/overflow-x:\s*auto/);
   });
 
   it('types the header quote on the papercusp.com cadence, then settles', () => {
@@ -283,6 +301,22 @@ describe('ChromeShell', () => {
     operatorChatSidebarFlag = false;
     render(<ChromeShell />);
     expect(screen.queryByTestId('op-chat')).toBeNull();
+  });
+
+  it('switches the operations chat off for DAO Management and restores it on returning', () => {
+    operatorChatSidebarFlag = true;
+    pathname = '/adv';
+    const { rerender } = render(<ChromeShell />);
+    expect(screen.getByTestId('op-chat')).toBeTruthy();
+    for (const path of ['/daos', '/dao']) {
+      pathname = path;
+      rerender(<ChromeShell />);
+      expect(screen.queryByTestId('op-chat')).toBeNull();
+      expect(screen.getByLabelText('DAO Management (current page)')).toBeTruthy();
+    }
+    pathname = '/adv';
+    rerender(<ChromeShell />);
+    expect(screen.getByTestId('op-chat')).toBeTruthy();
   });
 
   it('renders CONTENT ONLY when /adv is framed by the portal — no header, no Papercup chat dock, even with the chat flag ON', () => {

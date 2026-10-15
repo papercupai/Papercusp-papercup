@@ -10,7 +10,8 @@
  *   auth-failures    >= 10 refused uses of the key in the current and previous clock hour
  *                    (counted by `recordAppKeyAuthFailure`, called from `verifyAppKey`)
  *   key-expiring     expires_at within the next 7 days
- *   creator-removed  the key's creator has organization memberships and none of them is active (D-007)
+ *   creator-removed  the key's creator has organization memberships and none of them is active (D-007);
+ *                    on a machine, the portal's membership report names them (membership-report.ts)
  *
  * Every alert carries a stable dedupe key, so a sweep that re-runs (a retry, a second host) never
  * notifies twice for the same condition.
@@ -252,13 +253,17 @@ export async function loadSweepKeys(sql: SqlClient = getOrgPg().sql): Promise<Sw
                       WHERE f.app_id = a.id AND f.hour >= date_trunc('hour', now() - interval '1 hour')), 0) AS auth_failures,
            (SELECT f.last_reason FROM harness_shared.connected_app_auth_failures f
              WHERE f.app_id = a.id ORDER BY f.last_at DESC LIMIT 1) AS last_failure_reason,
-           EXISTS (
+           (EXISTS (
              SELECT 1 FROM papercusp_auth.hosted_users u
               WHERE a.user_email IS NOT NULL AND lower(u.primary_email) = lower(a.user_email)
                 AND EXISTS (SELECT 1 FROM papercusp_auth.organization_memberships m WHERE m.user_id = u.id)
                 AND NOT EXISTS (SELECT 1 FROM papercusp_auth.organization_memberships m
                                  WHERE m.user_id = u.id AND m.status = 'active')
-           ) AS creator_removed
+           ) OR EXISTS (
+             -- On a machine: the portal's latest membership report (WI-10004257, membership-report.ts).
+             SELECT 1 FROM harness_shared.connected_app_removed_creators r
+              WHERE a.user_email IS NOT NULL AND r.email = lower(a.user_email)
+           )) AS creator_removed
       FROM harness_shared.connected_apps a
      WHERE a.kind IN ('app', 'service') AND a.revoked_at IS NULL
      ORDER BY a.workspace_id, a.id

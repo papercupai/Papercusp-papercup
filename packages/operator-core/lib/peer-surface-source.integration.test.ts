@@ -114,10 +114,12 @@ beforeAll(async () => {
       '143-agent-activity.sql',
       '188-work-item-claims.sql',
       '472-carry-notes.sql',
-      '680-carry-note-declared-deps.sql',
       '605-session-turn-journal.sql',
       '609-session-cursor.sql',
       '610-push-delivery.sql',
+      '680-carry-note-declared-deps.sql',
+      '1118-carry-note-unchanged-attestation.sql',
+      '1243-drop-carry-notes-embedding.sql',
     ],
     { label: 'peer-surface-source.integration.test.ts' },
   );
@@ -134,6 +136,7 @@ afterAll(async () => {
 });
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   for (const t of [
     'agent_activity',
     'work_item_claims',
@@ -178,6 +181,8 @@ describe('fetch → distill → render against real PG (P-012)', () => {
 
 describe('the rail + the pull tool (P-012 → P-003 → P-011, PG)', () => {
   it('a critical collision push auto-injects the brief; the pull tool then flips pulled_at', async () => {
+    // The real rail enriches only when its existing cursor flag is enabled.
+    vi.stubEnv('PAPERCUSP_AMBIENT_CURSOR', '1');
     await seedPeerPresence();
     await seedCursor(READER_SESSION, READER_OWNER);
     await enqueuePush({

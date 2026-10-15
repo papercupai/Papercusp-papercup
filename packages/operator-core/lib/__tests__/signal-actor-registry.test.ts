@@ -19,8 +19,15 @@ describe('signal-actor-registry', () => {
     const ids = listSignals().map((e) => e.id);
     expect(new Set(ids).size, 'no duplicate signal ids').toBe(ids.length);
     expect(ids.sort()).toEqual(
-      ['coord-conditions', 'hive-watchdog-fires', 'liveness-alarm', 'scorecards-freshness'].sort(),
+      // degradation-watchdog: degradation-signals-on-condition-rail-2026-10-11 P-003 (R-8).
+      ['coord-conditions', 'degradation-watchdog', 'hive-watchdog-fires', 'liveness-alarm', 'scorecards-freshness'].sort(),
     );
+  });
+
+  it('the degradation watchdog is actor-backed by the condition bridge, never a waiver (R-8)', () => {
+    const entry = getSignal('degradation-watchdog');
+    expect(entry?.actingConsumer).toBe('system:condition-bridge');
+    expect(entry?.waiver).toBeUndefined();
   });
 
   it('every registered signal is currently COVERED (live actor, or a live waiver) — the CI floor', () => {

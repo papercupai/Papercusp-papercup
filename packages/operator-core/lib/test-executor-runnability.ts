@@ -239,7 +239,7 @@ function explicitExecutor(
   relativeFile: string,
   deps: TestRunnabilityDependencies,
 ): TestRunnabilityResult | null {
-  if (/^apps\/operator\/e2e\/.*\.spec\.ts$/.test(relativeFile)) {
+  if (/^apps\/operator\/e2e\/.*\.spec\.(?:ts|mts)$/.test(relativeFile)) {
     const config = resolve(repoRoot, 'apps/operator/playwright.config.ts');
     const packageJson = resolve(repoRoot, 'apps/operator/package.json');
     const script = expandPackageScript(deps, packageJson, 'test:e2e');

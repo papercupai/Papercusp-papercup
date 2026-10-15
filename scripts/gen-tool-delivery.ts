@@ -526,7 +526,7 @@ async function build(): Promise<{
   // each candidate cap and re-resolve — both are pure, so this is cheap once
   // the catalog is loaded (the expensive part is the barrel import above).
   const sweepLines: string[] = [];
-  for (const cap of [0, 60, 64, 70, 80, 100, 120, 140, 160, 200]) {
+  for (const cap of [0, 20, 30, 40, 50, 60, 64, 70, 80, 100, 120, 140, 160, 200]) {
     const capped = projected
       .map((t: { expose?: { mcp?: { name?: string } }; description?: string; inputSchema?: unknown }) => {
         const name = t.expose?.mcp?.name;

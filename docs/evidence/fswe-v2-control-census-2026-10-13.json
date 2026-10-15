@@ -1,0 +1,59 @@
+{
+ "schemaVersion": 1,
+ "kind": "operational-test-evidence",
+ "framework": "operational",
+ "name": "FrontierSWE v2 per-version control census (benchmark-coverage-frontierswe-v2-2026-10-10#P-007, AUTO-BAR-R-5-P-007@2)",
+ "command": ["npx", "tsx", ".papercusp/scratch/p007-census.mts"],
+ "startedAt": "2026-10-13T02:41:00Z",
+ "finishedAt": "2026-10-13T02:41:03Z",
+ "exitCode": 0,
+ "summary": "The published v2 control ledger was read through the production loader (loadFrontierSweTaskSet) and admitByFrontierSweControls at staging source 4385f55c4e. Result: 34 v2 tasks; 11 admitted, 8 quarantined, 15 GPU/external tasks pending and failing closed. Every CPU-runnable task has controls. Possible follow-up: notebook-compression and snooker-prediction scored gold=0 although the solve exited 0, which may be a verifier fault. They stay quarantined until a re-run proves otherwise.",
+ "ledger": {
+  "path": "~/.papercusp/bench-results/frontier-swe-v2/controls.jsonl",
+  "rows": 36,
+  "sha256": "a4e7a258186c60ed7190b88a71252f5abfe1fde1026a8af86be08287f2ac7d56",
+  "networkPolicy": {"declaredMode": "allowlist", "agentNetworkMode": "none"}
+ },
+ "census": {
+  "admitted": {
+   "rule": "gold=1 (graderStatus passed), empty=0, both rows pinned to the task's corpusCommit + dockerImage, declared network verified",
+   "tasks": ["crash-proof-flash-filesystem", "dart-style-in-haskell", "flight-sim-renderer-in-opengl", "git-to-zig", "kolmogorov-audio-compression", "lean-4-kernel-type-checker-in-pascal", "postgresql-18-on-sqlite", "quantum-espresso-pwx-in-rust", "spice-circuit-simulator-in-rust", "synthetic-music-diarization", "verilog-simulator-in-swift"]
+  },
+  "quarantined": [
+   {"id": "astronomy-toolkit", "reasons": ["gold-below-full"], "gold": 0.9172533927010751, "empty": 0},
+   {"id": "fitness-recap-video-in-remotion", "reasons": ["empty-above-zero"], "gold": 1, "empty": 0.002868},
+   {"id": "higgs-uncertainty-inference", "reasons": ["gold-below-full"], "gold": 0.8898504515883522, "empty": 0},
+   {"id": "lua-native-compiler", "reasons": ["no-gold-control"], "gold": null, "empty": 0},
+   {"id": "notebook-compression", "reasons": ["gold-below-full"], "gold": 0, "empty": 0},
+   {"id": "qubit-routing", "reasons": ["no-gold-control"], "gold": null, "empty": 0},
+   {"id": "snooker-prediction", "reasons": ["gold-below-full"], "gold": 0, "empty": 0},
+   {"id": "stepper-music-sequencer-gba", "reasons": ["empty-above-zero"], "gold": 1, "empty": 0.000032}
+  ],
+  "pending": [
+   {"id": "cranelift-codegen-opt", "reason": "external: modal-vm-runtime"},
+   {"id": "ffmpeg-libswscale-optimization", "reason": "external: modal-vm-runtime"},
+   {"id": "frogsgame-post-training", "reason": "needs 1 GPU"},
+   {"id": "granite-mamba2-inference-optimization", "reason": "needs 1 GPU"},
+   {"id": "libexpat-optimization", "reason": "external: modal-vm-runtime"},
+   {"id": "machine-learned-interatomic-potential", "reason": "needs 1 GPU"},
+   {"id": "medium-range-weather-forecast", "reason": "needs 1 GPU"},
+   {"id": "meg-speech-decoding", "reason": "needs 1 GPU"},
+   {"id": "msms-denovo-generation", "reason": "needs 1 GPU"},
+   {"id": "multi-gpu-efficient-finetuning", "reason": "needs 4 GPUs"},
+   {"id": "optimizer-design", "reason": "needs 1 GPU"},
+   {"id": "reconnaissance-blind-chess-recovery", "reason": "external: runtime:modal, modal-vm-runtime, registry-secret:px-evals-gcr-secret"},
+   {"id": "sglang-inference-system-optimization", "reason": "needs 1 GPU"},
+   {"id": "vision-only-torcs-racing-bot", "reason": "needs 1 GPU"},
+   {"id": "wan-2.1-on-max-mojo", "reason": "needs 1 GPU"}
+  ]
+ },
+ "assertions": [
+  {"id": "census-complete", "passed": true, "evidence": "34 v2 corpus tasks from loadFrontierSweTaskSet('frontier-swe-v2'); admitted=11, quarantined=8, pending=15; each task has exactly one status"},
+  {"id": "cpu-first-phase-complete", "passed": true, "evidence": "all 19 CPU-runnable tasks (no GPU, no external service) carry control rows; 0 CPU tasks pending"},
+  {"id": "admitted-strict-gold1-empty0-pinned", "passed": true, "evidence": "all 11 admitted tasks have gold score 1 (graderStatus passed) and empty score 0, and both rows match the task's corpusCommit and dockerImage pins"},
+  {"id": "quarantine-explicit", "passed": true, "evidence": "all 8 excluded tasks with control rows name their exclusion reasons: gold-below-full x4, empty-above-zero x2, no-gold-control x2"},
+  {"id": "pending-disclosed-fail-closed", "passed": true, "evidence": "the 15 tasks with no control rows are recorded as pending, each with its GPU/external-service reason, and none is admitted to a scored set"},
+  {"id": "declared-network-fidelity", "passed": true, "evidence": "all 36 ledger rows carry networkPolicy {declaredMode:allowlist, agentNetworkMode:none} from the network-qualified r2 rerun; the published ledger has no historical open-egress row"},
+  {"id": "enforced-cpu-set-equals-admitted", "passed": true, "evidence": "with control gating, loadFrontierSweTaskSet('frontier-swe-v2-cpu') returns exactly the 11 admitted tasks"}
+ ]
+}

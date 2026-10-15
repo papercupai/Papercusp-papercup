@@ -26,27 +26,29 @@
  * unrelated commit must still dedupe to `unchanged`.
  */
 import { createHash } from 'node:crypto';
-import { execFile } from 'node:child_process';
 import { lstat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { promisify } from 'node:util';
 import { z } from 'zod';
+import { execFileResult, execFileResultShared, gitReadIsContentAddressed } from '../../sync-exec-replay';
 
 export const MEASUREMENT_PIN_DETAILS_KEY = 'measurementPin';
 
 /** One measured file, hashed from the exact bytes the fingerprint was computed over. */
 export interface MeasuredRepoFile {
   path: string;
-  dimension: 'source' | 'test';
+  dimension: 'source' | 'test' | 'fixture';
   sha256: string;
   /** Git blob id of the working-tree bytes (`git hash-object`), sha1 object format. */
   gitBlob: string;
+  /** Set only when this file is measured from a repository root distinct from the default root. */
+  rootHarnessSlug?: string;
 }
 
 const pinnedFileSchema = z.object({
   path: z.string(),
-  dimension: z.enum(['source', 'test']),
+  dimension: z.enum(['source', 'test', 'fixture']),
   sha256: z.string(),
+  rootHarnessSlug: z.string().optional(),
   /** Repo-relative location of the owning repository; `.` is the measurement root. */
   repo: z.string(),
   /** The blob HEAD held for this path when measured; null when untracked or unreadable. */
@@ -57,6 +59,7 @@ const pinnedFileSchema = z.object({
 
 const pinnedRepoSchema = z.object({
   repo: z.string(),
+  rootHarnessSlug: z.string().optional(),
   head: z.string().nullable(),
   /** The commit the PARENT repository's HEAD pins for this submodule; null for the root. */
   gitlink: z.string().nullable(),
@@ -74,15 +77,31 @@ export type PinnedFile = z.infer<typeof pinnedFileSchema>;
 
 export type GitRunner = (cwd: string, args: readonly string[]) => Promise<string>;
 
-const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 5_000;
 
+/**
+ * EI-24852529885337741: each fork of the ~1.7 GB operator costs ~160 ms of synchronous
+ * main-thread time, and an execve census of :3170 (2026-10-02 08:01-08:12Z) caught
+ * `plans:bind-from-test-run` issuing the same `rev-parse --verify --quiet <sha>:<path>` twice
+ * within 0.3-0.5 s for each of its paths. Calls that name only immutable objects (a full sha,
+ * optionally `:<path>`) therefore go through the process-wide single-flight git-read memo.
+ * HEAD-relative reads (`rev-parse HEAD`, `ls-tree HEAD`, `log <pin>..HEAD`) do NOT: this module
+ * compares a pin against the CURRENT tree, and a reused answer up to 2 s old reads a commit made
+ * in between as an uncommitted edit (the submodule-attribution test catches exactly that).
+ * The contract is unchanged: stdout on exit 0, otherwise a thrown `Command failed …` error
+ * whose first line names the argv (callers record `errorText(error)`, which reads it).
+ */
 export const defaultGitRunner: GitRunner = async (cwd, args) => {
-  const { stdout } = await execFileAsync('git', ['-C', cwd, ...args], {
-    timeout: GIT_TIMEOUT_MS,
-    maxBuffer: 1024 * 1024,
-  });
-  return stdout;
+  const argv = ['-C', cwd, ...args];
+  const exec = gitReadIsContentAddressed(argv) ? execFileResultShared : execFileResult;
+  const result = await exec('git', argv, { timeout: GIT_TIMEOUT_MS });
+  if (result.status === 0) return result.stdout;
+  const why = result.status === null
+    ? result.error
+      ? `no exit status; code=${result.error.code ?? 'none'}, signal=${result.error.signal ?? 'none'}, killed=${result.error.killed}`
+      : 'no exit status'
+    : `exit ${result.status}`;
+  throw new Error(`Command failed (${why}): git ${argv.join(' ')}\n${result.stderr}`);
 };
 
 /** Git's sha1 blob id for `content`, identical to `git hash-object`. */
@@ -139,62 +158,102 @@ const errorText = (error: unknown) => (error instanceof Error ? error.message : 
 export async function buildMeasurementPin(
   root: string,
   files: readonly MeasuredRepoFile[],
-  options: { git?: GitRunner; exists?: (repo: string) => Promise<boolean> } = {},
+  options: {
+    git?: GitRunner;
+    exists?: (repo: string, root?: string) => Promise<boolean>;
+    roots?: Readonly<Record<string, string>>;
+  } = {},
 ): Promise<MeasurementPin> {
   const git = options.git ?? defaultGitRunner;
-  const exists = options.exists ?? ((repo: string) => hasGitEntry(root, repo));
   const errors: string[] = [];
-  const repoOf = new Map<string, string>();
-  for (const file of files) repoOf.set(file.path, await owningRepo(root, file.path, exists));
+  const fileKey = (file: Pick<MeasuredRepoFile, 'path' | 'rootHarnessSlug'>) =>
+    `${file.rootHarnessSlug ?? ''}\0${file.path}`;
+  const rootFor = (rootHarnessSlug: string | undefined): string | null => {
+    if (!rootHarnessSlug) return root;
+    return options.roots?.[rootHarnessSlug] ?? null;
+  };
+  const repoOf = new Map<string, { repo: string; root: string | null; rootHarnessSlug?: string }>();
+  for (const file of files) {
+    const fileRoot = rootFor(file.rootHarnessSlug);
+    if (!fileRoot) {
+      errors.push(`root:${file.rootHarnessSlug}:unavailable`);
+      repoOf.set(fileKey(file), { repo: '.', root: null, rootHarnessSlug: file.rootHarnessSlug });
+      continue;
+    }
+    const exists = (repo: string) => options.exists
+      ? options.exists(repo, fileRoot)
+      : hasGitEntry(fileRoot, repo);
+    repoOf.set(fileKey(file), {
+      repo: await owningRepo(fileRoot, file.path, exists),
+      root: fileRoot,
+      ...(file.rootHarnessSlug ? { rootHarnessSlug: file.rootHarnessSlug } : {}),
+    });
+  }
 
-  const repos = [...new Set(repoOf.values())].sort();
+  const groupKey = (group: { repo: string; rootHarnessSlug?: string }) =>
+    `${group.rootHarnessSlug ?? ''}\0${group.repo}`;
+  const repoGroups = new Map<string, { repo: string; root: string | null; rootHarnessSlug?: string }>();
+  for (const value of repoOf.values()) repoGroups.set(groupKey(value), value);
+  const repos = [...repoGroups.entries()].sort(([a], [b]) => a.localeCompare(b));
   const heads = new Map<string, string | null>();
   const blobs = new Map<string, Map<string, { type: string; object: string }>>();
   await Promise.all(
-    repos.map(async (repo) => {
-      const cwd = join(root, repo);
-      try {
-        heads.set(repo, (await git(cwd, ['rev-parse', 'HEAD'])).trim() || null);
-      } catch (error) {
-        heads.set(repo, null);
-        errors.push(`head:${repo}:${errorText(error)}`);
+    repos.map(async ([key, group]) => {
+      if (!group.root) {
+        heads.set(key, null);
         return;
       }
-      const paths = files.filter((file) => repoOf.get(file.path) === repo).map((file) => relativeTo(repo, file.path));
+      const cwd = join(group.root, group.repo);
       try {
-        blobs.set(repo, parseLsTree(await git(cwd, ['ls-tree', 'HEAD', '--', ...new Set(paths)])));
+        heads.set(key, (await git(cwd, ['rev-parse', 'HEAD'])).trim() || null);
       } catch (error) {
-        errors.push(`ls-tree:${repo}:${errorText(error)}`);
+        heads.set(key, null);
+        errors.push(`head:${group.rootHarnessSlug ?? 'default'}:${group.repo}:${errorText(error)}`);
+        return;
+      }
+      const paths = files
+        .filter((file) => groupKey(repoOf.get(fileKey(file))!) === key)
+        .map((file) => relativeTo(group.repo, file.path));
+      try {
+        blobs.set(key, parseLsTree(await git(cwd, ['ls-tree', 'HEAD', '--', ...new Set(paths)])));
+      } catch (error) {
+        errors.push(`ls-tree:${group.rootHarnessSlug ?? 'default'}:${group.repo}:${errorText(error)}`);
       }
     }),
   );
 
   const pinnedRepos = await Promise.all(
-    repos.map(async (repo) => {
-      if (repo === '.') return { repo, head: heads.get(repo) ?? null, gitlink: null };
-      const parent = await owningRepo(root, repo, exists);
+    repos.map(async ([key, group]) => {
+      const identity = group.rootHarnessSlug ? { rootHarnessSlug: group.rootHarnessSlug } : {};
+      if (group.repo === '.' || !group.root) return { ...identity, repo: group.repo, head: heads.get(key) ?? null, gitlink: null };
+      const exists = (repo: string) => options.exists
+        ? options.exists(repo, group.root!)
+        : hasGitEntry(group.root!, repo);
+      const parent = await owningRepo(group.root, group.repo, exists);
       let gitlink: string | null = null;
       try {
-        const entry = parseLsTree(await git(join(root, parent), ['ls-tree', 'HEAD', '--', relativeTo(parent, repo)])).get(
-          relativeTo(parent, repo),
+        const entry = parseLsTree(await git(join(group.root, parent), ['ls-tree', 'HEAD', '--', relativeTo(parent, group.repo)])).get(
+          relativeTo(parent, group.repo),
         );
         gitlink = entry?.type === 'commit' ? entry.object : null;
       } catch (error) {
-        errors.push(`gitlink:${repo}:${errorText(error)}`);
+        errors.push(`gitlink:${group.rootHarnessSlug ?? 'default'}:${group.repo}:${errorText(error)}`);
       }
-      return { repo, head: heads.get(repo) ?? null, gitlink };
+      return { ...identity, repo: group.repo, head: heads.get(key) ?? null, gitlink };
     }),
   );
 
   const pinnedFiles = files.map((file) => {
-    const repo = repoOf.get(file.path)!;
-    const tree = blobs.get(repo);
-    const entry = tree?.get(relativeTo(repo, file.path));
+    const group = repoOf.get(fileKey(file))!;
+    const identity = file.rootHarnessSlug ? { rootHarnessSlug: file.rootHarnessSlug } : {};
+    const key = groupKey(group);
+    const tree = blobs.get(key);
+    const entry = tree?.get(relativeTo(group.repo, file.path));
     const headBlob = entry?.type === 'blob' ? entry.object : null;
     // Only a sha1 repository's blob id is comparable with `gitBlobId`; a sha256 object
     // format would read as permanently dirty, which is a wrong answer, so say unknown.
     const clean = tree === undefined ? null : headBlob === null ? false : headBlob.length === 40 ? headBlob === file.gitBlob : null;
-    return { path: file.path, dimension: file.dimension, sha256: file.sha256, repo, headBlob, clean };
+    return { ...identity, path: file.path, dimension: file.dimension, sha256: file.sha256, repo: group.repo, headBlob, clean };
   });
 
   return {
@@ -212,7 +271,8 @@ export function readMeasurementPin(details: Record<string, unknown> | null | und
 
 export interface MovedPath {
   path: string;
-  dimension: 'source' | 'test';
+  dimension: 'source' | 'test' | 'fixture';
+  rootHarnessSlug?: string;
   /** `changed` = bytes differ; `added` = measured now but absent from the pin; `removed` = pinned but no longer measured. */
   change: 'changed' | 'added' | 'removed';
 }
@@ -224,22 +284,24 @@ export interface MovedPath {
  */
 export function diffMeasuredFiles(
   pin: MeasurementPin | null,
-  current: readonly Pick<MeasuredRepoFile, 'path' | 'dimension' | 'sha256'>[],
+  current: readonly Pick<MeasuredRepoFile, 'path' | 'dimension' | 'sha256' | 'rootHarnessSlug'>[],
 ): { pinned: false } | { pinned: true; moved: MovedPath[] } {
   if (!pin) return { pinned: false };
-  const key = (file: { path: string; dimension: string }) => `${file.dimension}\0${file.path}`;
+  const key = (file: { path: string; dimension: string; rootHarnessSlug?: string }) =>
+    `${file.rootHarnessSlug ?? ''}\0${file.dimension}\0${file.path}`;
   const before = new Map(pin.files.map((file) => [key(file), file]));
   const after = new Map(current.map((file) => [key(file), file]));
   const moved: MovedPath[] = [];
   for (const [id, file] of after) {
     const prior = before.get(id);
-    if (!prior) moved.push({ path: file.path, dimension: file.dimension, change: 'added' });
-    else if (prior.sha256 !== file.sha256) moved.push({ path: file.path, dimension: file.dimension, change: 'changed' });
+    if (!prior) moved.push({ path: file.path, dimension: file.dimension, ...(file.rootHarnessSlug ? { rootHarnessSlug: file.rootHarnessSlug } : {}), change: 'added' });
+    else if (prior.sha256 !== file.sha256) moved.push({ path: file.path, dimension: file.dimension, ...(file.rootHarnessSlug ? { rootHarnessSlug: file.rootHarnessSlug } : {}), change: 'changed' });
   }
   for (const [id, file] of before) {
-    if (!after.has(id)) moved.push({ path: file.path, dimension: file.dimension, change: 'removed' });
+    if (!after.has(id)) moved.push({ path: file.path, dimension: file.dimension, ...(file.rootHarnessSlug ? { rootHarnessSlug: file.rootHarnessSlug } : {}), change: 'removed' });
   }
-  return { pinned: true, moved: moved.sort((a, b) => a.path.localeCompare(b.path) || a.dimension.localeCompare(b.dimension)) };
+  return { pinned: true, moved: moved.sort((a, b) =>
+    (a.rootHarnessSlug ?? '').localeCompare(b.rootHarnessSlug ?? '') || a.path.localeCompare(b.path) || a.dimension.localeCompare(b.dimension)) };
 }
 
 export interface MovedPathExplanation extends MovedPath {
@@ -264,19 +326,27 @@ export async function explainMovedPaths(
   pin: MeasurementPin,
   moved: readonly MovedPath[],
   current: ReadonlyMap<string, Pick<MeasuredRepoFile, 'gitBlob'>>,
-  options: { git?: GitRunner; exists?: (repo: string) => Promise<boolean> } = {},
+  options: { git?: GitRunner; exists?: (repo: string, root?: string) => Promise<boolean>; roots?: Readonly<Record<string, string>> } = {},
 ): Promise<MovedPathExplanation[]> {
   const git = options.git ?? defaultGitRunner;
-  const exists = options.exists ?? ((repo: string) => hasGitEntry(root, repo));
-  const pinnedHead = new Map(pin.repos.map((repo) => [repo.repo, repo.head]));
-  const pinnedRepoOf = new Map(pin.files.map((file) => [file.path, file.repo]));
+  const groupKey = (repo: { repo: string; rootHarnessSlug?: string }) => `${repo.rootHarnessSlug ?? ''}\0${repo.repo}`;
+  const pinnedHead = new Map(pin.repos.map((repo) => [groupKey(repo), repo.head]));
+  const pinnedRepoOf = new Map(pin.files.map((file) => [`${file.rootHarnessSlug ?? ''}\0${file.path}`, file.repo]));
   return Promise.all(
     moved.map(async (entry) => {
-      const repo = pinnedRepoOf.get(entry.path) ?? (await owningRepo(root, entry.path, exists));
-      const head = pinnedHead.get(repo) ?? null;
-      const rel = relativeTo(repo, entry.path);
-      const cwd = join(root, repo);
+      const entryRoot = entry.rootHarnessSlug ? options.roots?.[entry.rootHarnessSlug] : root;
       const errors: string[] = [];
+      if (!entryRoot) {
+        errors.push(`root:${entry.rootHarnessSlug}:unavailable`);
+        return { ...entry, repo: '.', pinnedHead: null, commits: [], uncommitted: null, errors };
+      }
+      const exists = (repo: string) => options.exists
+        ? options.exists(repo, entryRoot)
+        : hasGitEntry(entryRoot, repo);
+      const repo = pinnedRepoOf.get(`${entry.rootHarnessSlug ?? ''}\0${entry.path}`) ?? (await owningRepo(entryRoot, entry.path, exists));
+      const head = pinnedHead.get(groupKey({ repo, rootHarnessSlug: entry.rootHarnessSlug })) ?? null;
+      const rel = relativeTo(repo, entry.path);
+      const cwd = join(entryRoot, repo);
       let commits: MovedPathExplanation['commits'] = [];
       if (head) {
         try {
@@ -293,7 +363,7 @@ export async function explainMovedPaths(
         }
       }
       let uncommitted: boolean | null = null;
-      const live = current.get(entry.path);
+      const live = current.get(`${entry.rootHarnessSlug ?? ''}\0${entry.path}`) ?? current.get(entry.path);
       if (live && entry.change !== 'removed') {
         try {
           const tree = parseLsTree(await git(cwd, ['ls-tree', 'HEAD', '--', rel]));

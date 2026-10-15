@@ -121,6 +121,8 @@ export interface WorkItemDependencyMutationTelemetry extends DependencyGraphPerf
 export interface WorkItemDependencyWriterOptions {
   readonly createdBy?: string;
   readonly satisfaction?: DependencySatisfaction;
+  /** Sync only this prior owned subset; undefined retains the full replace contract. */
+  readonly priorBlockerIds?: readonly string[];
   /** Injectable root database handle for real-Postgres tests and explicitly scoped internal callers. */
   readonly sql?: Sql;
   /** Endpoint-row workspace. Edge rows remain in DEFAULT_COORD_WORKSPACE. */
@@ -210,13 +212,16 @@ function applyDependencyMutations(
       }
       continue;
     }
+    const key = storedEdgeKey({ blocked: mutation.blocked, blocker: mutation.blocker });
+    const existing = candidate.get(key);
     const edge: StoredDependencyEdge = {
       blocked: mutation.blocked,
       blocker: mutation.blocker,
-      createdBy: mutation.createdBy ?? null,
-      satisfaction: mutation.satisfaction ?? 'settled',
+      createdBy: mutation.createdBy ?? existing?.createdBy ?? null,
+      // An idempotent add is not a request to weaken an existing SUCCESS edge.
+      // Explicit satisfaction still updates the requirement through this same seam.
+      satisfaction: mutation.satisfaction ?? existing?.satisfaction ?? 'settled',
     };
-    const key = storedEdgeKey(edge);
     if (mutation.op === 'add') candidate.set(key, edge);
     else candidate.delete(key);
   }
@@ -352,6 +357,14 @@ function newlyActiveDependantConflicts(
     // satisfied, so inserting that retained edge does not change reachability.
     if (workItemRowIsTerminal(dependant.row) || edgeIsSatisfiedByRow(edge, blocker.row)) continue;
     if (!workItemRowIsActivelyOwned(dependant.row)) continue;
+
+    // A claimant may add a dependency they discovered on their own active item:
+    // the authenticated link author is the row's current holder, so the change
+    // cannot strand another agent's in-flight work. Keep the refusal for every
+    // other caller. Callers without a server-derived author remain fail-closed.
+    const holder = dependant.row.taken_by?.trim();
+    const author = edge.createdBy?.trim();
+    if (holder && author && author === holder) continue;
 
     conflicts.push({
       edge,
@@ -588,60 +601,75 @@ export async function mutateWorkItemDependencies(
   const sql = opts.sql ?? (getOrgPg().sql as Sql);
   return withWorkItemDependencyAdmissionTransaction(
     sql,
-    async (tx) => {
-      const itemWorkspaceId = input.itemWorkspaceId ?? input.workspaceId;
-      await lockDependencyMutationEndpoints(tx, itemWorkspaceId, input.mutations);
-      const current = await loadStoredDependencyEdges(tx, input.workspaceId);
-      const candidate = applyDependencyMutations(current, input.mutations);
-      const { nodes, lifecycleRows, outOfScopeIdentityKeys } = await loadDependencyNodes(tx, itemWorkspaceId, [
-        ...current,
-        ...candidate,
-      ]);
-      const before = analyseStoredEdges(nodes, current);
-      const after = analyseStoredEdges(nodes, candidate);
-      const findings = newlyRejectedFindings(before, after, current, candidate, outOfScopeIdentityKeys);
-      const lifecycleConflicts = newlyActiveDependantConflicts(current, candidate, lifecycleRows);
-      if (lifecycleConflicts.length > 0) {
-        findings.push({
-          policy: getDependencyPolicy('active-dependant-unreconciled')!,
-          cycles: [],
-          endpointDefects: [],
-          stranded: [],
-          lifecycleConflicts,
-        });
-      }
-      if (findings.length > 0) {
-        throw new WorkItemDependencyAdmissionError(findings, before, after, {
-          ...dependencyGraphPerformanceTelemetry({
-            operation: 'mutation',
-            durationMs: performance.now() - startedAt,
-            nodes: after.verdicts.length,
-            edges: candidate.length,
-          }),
-          event: 'dependency-mutation-rejected',
-          policyCodes: findings.map((finding) => finding.policy.code),
-        });
-      }
-      const diff = await applyStoredEdgeDiff(tx, input.workspaceId, current, candidate);
-      return {
-        ...diff,
-        before,
-        after,
-        telemetry: {
-          ...dependencyGraphPerformanceTelemetry({
-            operation: 'mutation',
-            durationMs: performance.now() - startedAt,
-            nodes: after.verdicts.length,
-            edges: candidate.length,
-          }),
-          event: 'dependency-mutation-committed',
-          policyCodes: [],
-          ...diff,
-        },
-      };
-    },
+    (tx) => mutateWorkItemDependenciesInTransaction(tx, input, startedAt),
     opts.retry,
   );
+}
+
+/**
+ * The same admission writer for a larger atomic operation. The caller must
+ * open its root transaction through withWorkItemDependencyAdmissionTransaction;
+ * reject READ COMMITTED callers rather than weakening graph write-skew safety.
+ */
+export async function mutateWorkItemDependenciesInTransaction(
+  tx: Sql,
+  input: WorkItemDependencyBatchInput,
+  startedAt = performance.now(),
+): Promise<WorkItemDependencyBatchResult> {
+  const isolation = await tx<{ transaction_isolation: string }[]>`SHOW transaction_isolation`;
+  if (isolation[0]?.transaction_isolation !== 'serializable') {
+    throw new Error('dependency mutation requires a SERIALIZABLE admission transaction');
+  }
+  const itemWorkspaceId = input.itemWorkspaceId ?? input.workspaceId;
+  await lockDependencyMutationEndpoints(tx, itemWorkspaceId, input.mutations);
+  const current = await loadStoredDependencyEdges(tx, input.workspaceId);
+  const candidate = applyDependencyMutations(current, input.mutations);
+  const { nodes, lifecycleRows, outOfScopeIdentityKeys } = await loadDependencyNodes(tx, itemWorkspaceId, [
+    ...current,
+    ...candidate,
+  ]);
+  const before = analyseStoredEdges(nodes, current);
+  const after = analyseStoredEdges(nodes, candidate);
+  const findings = newlyRejectedFindings(before, after, current, candidate, outOfScopeIdentityKeys);
+  const lifecycleConflicts = newlyActiveDependantConflicts(current, candidate, lifecycleRows);
+  if (lifecycleConflicts.length > 0) {
+    findings.push({
+      policy: getDependencyPolicy('active-dependant-unreconciled')!,
+      cycles: [],
+      endpointDefects: [],
+      stranded: [],
+      lifecycleConflicts,
+    });
+  }
+  if (findings.length > 0) {
+    throw new WorkItemDependencyAdmissionError(findings, before, after, {
+      ...dependencyGraphPerformanceTelemetry({
+        operation: 'mutation',
+        durationMs: performance.now() - startedAt,
+        nodes: after.verdicts.length,
+        edges: candidate.length,
+      }),
+      event: 'dependency-mutation-rejected',
+      policyCodes: findings.map((finding) => finding.policy.code),
+    });
+  }
+  const diff = await applyStoredEdgeDiff(tx, input.workspaceId, current, candidate);
+  return {
+    ...diff,
+    before,
+    after,
+    telemetry: {
+      ...dependencyGraphPerformanceTelemetry({
+        operation: 'mutation',
+        durationMs: performance.now() - startedAt,
+        nodes: after.verdicts.length,
+        edges: candidate.length,
+      }),
+      event: 'dependency-mutation-committed',
+      policyCodes: [],
+      ...diff,
+    },
+  };
 }
 
 /**
@@ -933,11 +961,13 @@ export function activeWorkItemDependencyRefsSql(
     successfulStates: readonly string[];
     terminalStates: readonly string[];
     edgeWorkspaceId?: string;
+    /** Bounded item presentation needs the actual active wait identities. */
+    includeBlockerRefs?: boolean;
   },
 ) {
   const edgeWorkspaceId = input.edgeWorkspaceId ?? DEFAULT_COORD_WORKSPACE;
   return sql`
-    SELECT d.blocked_ref
+    SELECT d.blocked_ref ${input.includeBlockerRefs ? sql`, d.blocker_ref` : sql``}
       FROM harness_shared.work_item_deps d
       JOIN harness_shared.work_items blocker
         ON position('#' in d.blocker_ref) = 0
@@ -953,7 +983,7 @@ export function activeWorkItemDependencyRefsSql(
          )
        )
     UNION
-    SELECT d.blocked_ref
+    SELECT d.blocked_ref ${input.includeBlockerRefs ? sql`, d.blocker_ref` : sql``}
       FROM harness_shared.work_item_deps d
       JOIN harness_shared.work_items blocker
         ON position('#' in d.blocker_ref) > 0
@@ -1210,8 +1240,11 @@ export async function removeMirroredWorkItemBlockingEdge(
 }
 
 /** blocked feature_id → blocker feature_ids (within `harnessSlug`, prefix-stripped). Pure read. */
-export async function getWorkItemDepBlockers(harnessSlug: string): Promise<Map<string, WorkItemBlockerRequirement[]>> {
-  const { sql } = getOrgPg();
+export async function getWorkItemDepBlockers(
+  harnessSlug: string,
+  opts: Pick<WorkItemDependencyWriterOptions, 'sql'> = {},
+): Promise<Map<string, WorkItemBlockerRequirement[]>> {
+  const sql = opts.sql ?? getOrgPg().sql;
   const prefix = `${harnessSlug}#`;
   const rows = await sql<{ blocked_ref: string; blocker_ref: string; satisfaction: DependencySatisfaction }[]>`
     SELECT blocked_ref, blocker_ref, satisfaction
@@ -1326,6 +1359,8 @@ export function wouldCreateCycle(
 /**
  * Set ONE work-item's `blocks` edges in work_item_deps to exactly `blockedBy` (delete + insert),
  * through the canonical P-005 candidate-graph admission transaction. Transactional + idempotent.
+ * With priorBlockerIds, remove only prior owned edges absent from blockedBy and add the new
+ * set. All other families/harnesses and retained edge requirements are left intact.
  *
  * ⚠ EI-19325959789634791 / D-017 — endpoint kind is resolved from the TARGET ROW'S FAMILY, not
  * assumed to be `feature`. It was assumed for a long time, and the assumption held only because
@@ -1359,6 +1394,11 @@ export async function syncWorkItemDepEdges(
   const blockers = blockerResolutions
     .map((resolution) => resolution.endpoint)
     .filter((blocker) => workItemBlockingEdge(blocker, blockedResolution.endpoint) !== null);
+  const priorResolutions = await Promise.all(
+    (opts.priorBlockerIds ?? []).map((blockerId) =>
+      resolveActualDepEndpoint(sql, { kind: FEATURE_KIND, ref: featureRef(harnessSlug, blockerId) }),
+    ),
+  );
   const mutations: WorkItemDependencyMutation[] = [];
   if (blockedResolution.endpoint.kind === ISSUE_ENDPOINT_KIND) {
     const historicalFeatureAlias = { kind: FEATURE_KIND, ref: featureRef(harnessSlug, featureId) };
@@ -1366,17 +1406,35 @@ export async function syncWorkItemDepEdges(
       mutations.push({ op: 'replace', blocked: historicalFeatureAlias, blockers: [] });
     }
   }
-  mutations.push({
-    op: 'replace',
-    blocked: blockedResolution.endpoint,
-    blockers,
-    createdBy: opts.createdBy,
-    satisfaction: opts.satisfaction,
-  });
+  if (opts.priorBlockerIds === undefined) {
+    mutations.push({
+      op: 'replace',
+      blocked: blockedResolution.endpoint,
+      blockers,
+      createdBy: opts.createdBy,
+      satisfaction: opts.satisfaction,
+    });
+  } else {
+    const desiredKeys = new Set(blockers.map(dependencyIdentityKey));
+    for (const { endpoint: blocker } of priorResolutions) {
+      if (!desiredKeys.has(dependencyIdentityKey(blocker))) {
+        mutations.push({ op: 'remove', blocked: blockedResolution.endpoint, blocker });
+      }
+    }
+    for (const blocker of blockers) {
+      mutations.push({
+        op: 'add', blocked: blockedResolution.endpoint, blocker,
+        createdBy: opts.createdBy, satisfaction: opts.satisfaction,
+      });
+    }
+  }
+  if (mutations.length === 0) return;
   await mutateWorkItemDependencies(
     {
       workspaceId: DEFAULT_COORD_WORKSPACE,
-      itemWorkspaceId: mutationItemWorkspaceId([blockedResolution, ...blockerResolutions], opts.itemWorkspaceId),
+      itemWorkspaceId: mutationItemWorkspaceId(
+        [blockedResolution, ...blockerResolutions, ...priorResolutions], opts.itemWorkspaceId,
+      ),
       mutations,
     },
     { sql, retry: opts.retry },

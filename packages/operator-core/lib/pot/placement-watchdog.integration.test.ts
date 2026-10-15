@@ -32,6 +32,10 @@ vi.mock('../agent-tools/coordination/escalations', async (orig) => ({
   openEscalation: mocks.openEscalation,
   resolveEscalation: mocks.resolveEscalation,
 }));
+vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async () => true) }));
+vi.mock('../agent-tools/coordination/tools/conditions', () => ({
+  readConditionEnvelopes: async () => [], computeConditionStates: () => [],
+}));
 // The tier is permanently retired, so its production gate is always closed.
 // Force that one seam open here to keep the watchdog's delivery-body contract
 // covered; placement-watchdog.test.ts separately proves the gate stays closed.
@@ -41,7 +45,7 @@ vi.mock('./started', async (orig) => ({
 }));
 
 import { hostname } from 'node:os';
-import { reconcileOnePot, summarizeOpenPlacements, type PlacementConfig } from './placement-watchdog';
+import { reconcileOnePot, placementConditionKey, summarizeOpenPlacements, type PlacementConfig } from './placement-watchdog';
 import { RECLAIM_STALE_MS } from '../fleet/spawn-reclaim';
 
 const WS = 'default'; // coord_links default workspace == the org workspace here
@@ -103,11 +107,14 @@ async function seedUnit(opts: {
   takenBy?: string | null;
   harness?: string;
 }): Promise<void> {
+  const payload = opts.status === 'blocked'
+    ? { blockedReason: 'placement test: deliberately parked by leader triage', blockedAt: new Date().toISOString() }
+    : {};
   await sql`
     INSERT INTO harness_shared.harness_features_consolidated
-      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts)
+      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, payload)
     VALUES (${opts.harness ?? POT}, ${opts.id}, 'feature', ${opts.status},
-            ${opts.takenBy ?? null}, ${WS}, 0, 0)`;
+            ${opts.takenBy ?? null}, ${WS}, 0, 0, ${sql.json(payload)})`;
 }
 
 async function readPlacement(
@@ -191,6 +198,45 @@ describe('pot_placements completion sweep (real PG, migration 263)', () => {
     expect(out.find((r) => r.workItemId === 'F-100')?.decision).toBe('recover');
     expect(mocks.wakeRecipients).toHaveBeenCalledTimes(1);
     expect(mocks.wakeRecipients.mock.calls[0]![0]).toEqual([MUG]);
+  });
+
+  it('condition rail opens independent original detector episodes before legacy dedup and recovers exact PG subjects', async () => {
+    const open = new Map<string, number>();
+    const broadcast = vi.fn(async (event: { conditionKey?: string; oneShot?: boolean }) => {
+      expect(event.oneShot).toBe(true); open.set(event.conditionKey!, open.get(event.conditionKey!) ?? NOW); return true;
+    });
+    const resolve = vi.fn(async (event: { conditionKey: string }) => open.delete(event.conditionKey));
+    const conditions = { rail: { broadcast, resolve }, readOpenConditions: async () =>
+      [...open].map(([conditionKey, openedAtMs]) => ({ conditionKey, openedAtMs })) };
+    for (const [id, state, fails, infra, disposition] of [
+      ['F-CURSED-RAIL', 'cursed', 3, 0, 'breaker'], ['F-INFRA-RAIL', 'cursed', 0, 12, 'breaker'],
+      ['F-STALE-RAIL', 'recovering', 1, 0, 'recovering'],
+    ] as const) {
+      await seedUnit({ id, status: 'open' });
+      await sql`INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id, status, fail_count,
+         infra_loss_count, last_disposition, placed_at, last_seen_at, updated_at, recovery_started_at, last_recovery_at)
+        VALUES (${WS}, ${POT}, ${id}, ${POT}, ${MUG}, ${state}, ${fails}, ${infra}, ${disposition},
+          now(), ${new Date(NOW)}, now(), ${new Date(NOW - 25 * 3_600_000)}, ${new Date(NOW - 6 * 60_000)})`;
+    }
+    await seedUnit({ id: 'F-BLOCKER-RAIL', status: 'failing' });
+    await seedUnit({ id: 'F-DOWNSTREAM-RAIL', status: 'open' });
+    await sql`INSERT INTO harness_shared.work_item_deps
+      (workspace_id, blocker_kind, blocker_ref, blocked_kind, blocked_ref, dep_type)
+      VALUES ('default', 'feature', ${POT + '#F-BLOCKER-RAIL'}, 'feature', ${POT + '#F-DOWNSTREAM-RAIL'}, 'blocks')`;
+    await reconcileOnePot(sql, WS, POT, CFG, NOW, () => false, conditions);
+    expect(open.size).toBe(4);
+    await reconcileOnePot(sql, WS, POT, CFG, NOW + 1, () => false, conditions);
+    expect(open.size).toBe(4); expect(broadcast).toHaveBeenCalledTimes(8);
+    const foreign = placementConditionKey('foreign', POT, POT, 'F-CURSED-RAIL', 'cursed');
+    open.set(foreign, NOW);
+    // Recovery is independent of the vanished historical driver and serving cups.
+    await sql`DELETE FROM harness_shared.adv_sessions`;
+    await sql`UPDATE harness_shared.harness_features_consolidated SET status = 'done'
+      WHERE workspace_id = ${WS} AND harness_slug = ${POT} AND feature_id IN
+        ('F-CURSED-RAIL', 'F-INFRA-RAIL', 'F-STALE-RAIL', 'F-DOWNSTREAM-RAIL')`;
+    await reconcileOnePot(sql, WS, POT, CFG, NOW + 2, () => false, conditions);
+    expect([...open.keys()]).toEqual([foreign]); expect(resolve).toHaveBeenCalledTimes(4);
   });
 
   it('EI-15990: recovery_started_at survives exit from recovering — a durable timeline marker, not wiped on completion', async () => {

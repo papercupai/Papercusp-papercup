@@ -250,6 +250,42 @@ describe('detectScopeOverreach — the advisory lint', () => {
     ).toHaveLength(1);
   });
 
+  it('does not flag a result-scoped no-truncation claim when returned metadata says truncated=0', () => {
+    expect(
+      detectScopeOverreach([
+        {
+          claim: 'returned 3 messages, no truncation',
+          recheck: "coord:inbox { from:'leader', directed:true, limit:10 }",
+          verified: 'fresh response: total=3, returned=3, truncated=0',
+        },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('still flags a workspace-wide no-truncation claim from one bounded response', () => {
+    expect(
+      detectScopeOverreach([
+        {
+          claim: 'returned 3 messages, no truncation anywhere in the workspace today',
+          recheck: "coord:inbox { from:'leader', directed:true, limit:10 }",
+          verified: 'fresh response: total=3, returned=3, truncated=0',
+        },
+      ]),
+    ).toMatchObject([{ quantifier: 'no', probeScope: 'limit 10' }]);
+  });
+
+  it('requires explicit no-truncation metadata for a result-scoped exception', () => {
+    expect(
+      detectScopeOverreach([
+        {
+          claim: 'returned 3 messages, no truncation',
+          recheck: "coord:inbox { from:'leader', directed:true, limit:10 }",
+          verified: 'fresh response: total=3, returned=3',
+        },
+      ]),
+    ).toMatchObject([{ quantifier: 'no', probeScope: 'limit 10' }]);
+  });
+
   it('does NOT flag quantifier-looking fragments inside hyphenated identifiers', () => {
     const claims = [
       'the sql_read_census deliberate-no-pair TRI-STATE is shipped and running.',

@@ -1,6 +1,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { hostname } from 'node:os';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { readProcessIdentity } from './process-identity';
+import {
+  configureRuntimeVintageStore, InMemoryRuntimeVintageStore,
+  reportRuntimeVintage, resetRuntimeVintageStore,
+} from './runtime-vintage';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -12,6 +18,7 @@ const { runWorkItemAdmissionBulkDedup: runBulkImpl } = await import('./work-item
 const { ADMISSION_MERGE_QUALITY_GOLD_CORPUS, admissionMergeQualityGoldJudgements } =
   await import('./work-items-admission-merge-quality');
 const { LEARNING_MODEL_SPEC } = await import('./learning/model-policy');
+const { readCompletedAdmissionCensus, runWorkItemAdmissionCensus } = await import('./work-items-admission-census');
 
 type BulkOptions = Parameters<typeof runBulkImpl>[0];
 const MERGE_QUALITY_SENTINEL = ADMISSION_MERGE_QUALITY_GOLD_CORPUS[0]!.pair.pairKey;
@@ -57,6 +64,7 @@ const DDL = `
     lane text,
     payload jsonb,
     item_kind text NOT NULL DEFAULT 'task',
+    nature text NOT NULL DEFAULT 'work',
     origin text NOT NULL DEFAULT 'local',
     condition_key text,
     created_ts bigint,
@@ -190,10 +198,12 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => {
+  resetRuntimeVintageStore();
   await db?.cleanup();
 });
 
 beforeEach(async () => {
+  configureRuntimeVintageStore(new InMemoryRuntimeVintageStore());
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.coord_links, harness_shared.work_item_deps, harness_shared.scout_routed_ideas,
     harness_shared.work_item_occurrences,
     harness_shared.dedup_edges, harness_shared.dedup_adjudications,
@@ -280,6 +290,211 @@ async function runBlockedMergeQualityGate(
 }
 
 describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
+  it.each(['complete', 'failed'] as const)('retains the original bulk producing runtime through %s and replay', async (outcome) => {
+    await seed();
+    await reportRuntimeVintage({
+      workspaceId: WS, unit: 'bulk-fixture-producer', pid: process.pid,
+      treeSha: 'a'.repeat(40), bundleVersion: 'original-bulk-runtime',
+    });
+    const runId = `bulk-runtime-${outcome}`;
+    let original: Record<string, unknown> | undefined;
+    const options: BulkOptions = {
+      workspaceId: WS, harnessSlug: HARNESS, runId, sql: db.sql, maxStages: 1,
+      census: { chunkCount: 2, targetTokens: 1_000 },
+      batchRetryBackoffsMs: [], transportRetryBackoffsMs: [],
+      llmCall: async () => {
+        const [running] = await db.sql`
+          SELECT detail FROM harness_shared.admission_runs WHERE id = ${`${runId}-stage-1`}`;
+        original = running.detail.producingRuntime;
+        expect(original).toMatchObject({
+          host: hostname(), pid: process.pid, processIdentity: readProcessIdentity(process.pid),
+          buildSha: 'a'.repeat(40), version: 'original-bulk-runtime',
+          buildIdentityStatus: 'matched-boot-record',
+        });
+        await reportRuntimeVintage({
+          workspaceId: WS, unit: 'bulk-fixture-producer', pid: process.pid,
+          treeSha: 'b'.repeat(40), bundleVersion: 'later-bulk-runtime',
+        });
+        if (outcome === 'failed') throw new Error('bulk runtime witness failure');
+        return {
+          text: '', json: { judgements: [{ pairKey: 'a::b', verdict: 'r-remedy-keep', reason: 'Separate remedy' }] },
+          inputTokens: 25, outputTokens: 10,
+        };
+      },
+    };
+    if (outcome === 'failed') await expect(runBulk(options)).rejects.toThrow('bulk runtime witness failure');
+    else await runBulk(options);
+    const [finished] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = ${`${runId}-stage-1`}`;
+    expect(finished.detail.status).toBe(outcome);
+    expect(finished.detail.producingRuntime).toEqual(original);
+    await runBulk({
+      ...options,
+      llmCall: async () => ({
+        text: '', json: { judgements: [{ pairKey: 'a::b', verdict: 'r-remedy-keep', reason: 'Separate remedy' }] },
+        inputTokens: 25, outputTokens: 10,
+      }),
+    });
+    const [replayed] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = ${`${runId}-stage-1`}`;
+    expect(replayed.detail.producingRuntime).toEqual(original);
+  }, 60_000);
+
+  it('keeps bulk runtime identity unknown when no boot witness exists and does not backfill legacy stages', async () => {
+    await seed();
+    const options: BulkOptions = {
+      workspaceId: WS, harnessSlug: HARNESS, runId: 'bulk-runtime-unknown', sql: db.sql, maxStages: 1,
+      census: { chunkCount: 2, targetTokens: 1_000 },
+      llmCall: async () => ({
+        text: '', json: { judgements: [{ pairKey: 'a::b', verdict: 'r-remedy-keep', reason: 'Separate remedy' }] },
+        inputTokens: 25, outputTokens: 10,
+      }),
+    };
+    await runBulk(options);
+    const [run] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'bulk-runtime-unknown-stage-1'`;
+    expect(run.detail.producingRuntime).toMatchObject({
+      buildSha: null, buildIdentityStatus: 'unknown', buildIdentityReason: 'boot-record-absent',
+    });
+    await db.sql`
+      UPDATE harness_shared.admission_runs SET detail = detail - 'producingRuntime'
+       WHERE id = 'bulk-runtime-unknown-stage-1'`;
+    await reportRuntimeVintage({
+      workspaceId: WS, unit: 'bulk-fixture-producer', pid: process.pid,
+      treeSha: 'b'.repeat(40), bundleVersion: 'later-bulk-runtime',
+    });
+    await runBulk(options);
+    const [legacy] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'bulk-runtime-unknown-stage-1'`;
+    expect(legacy.detail).not.toHaveProperty('producingRuntime');
+  }, 60_000);
+
+  it.each([
+    { requested: undefined, expected: 512 },
+    { requested: 20_000, expected: 10_000 },
+  ])('uses the default/capped pair budget in the persisted stage ($requested -> $expected)', async ({ requested, expected }) => {
+    await seed();
+    const runId = `bulk-normalized-pair-budget-${expected}`;
+    const result = await runBulk({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId,
+      sql: db.sql,
+      maxStages: 1,
+      ...(requested === undefined ? {} : { maxPairsPerStage: requested }),
+      census: { chunkCount: 2, targetTokens: 1_000, fullCorpusPairThreshold: 0 },
+      llmCall: async () => ({
+        text: '',
+        json: { judgements: [{ pairKey: 'a::b', verdict: 'distinct', reason: 'Separate findings' }] },
+        inputTokens: 25,
+        outputTokens: 10,
+      }),
+    });
+    expect(result.stages).toHaveLength(1);
+    expect(result.stages[0]?.pairs).toBe(1);
+    const [stage] = await db.sql<Array<{ status: string; budget: unknown }>>`
+      SELECT detail->>'status' AS status, detail->'workBudget' AS budget
+        FROM harness_shared.admission_runs WHERE id = ${`${runId}-stage-1`}`;
+    expect(stage).toEqual({
+      status: 'complete',
+      budget: { pairLimit: expected, availablePairs: 1, selectedPairs: 1, deferredPairs: 0 },
+    });
+  }, 60_000);
+
+  it.each([1, 2])('commits bounded pair work with maxStages=%i without hiding residuals or mistaking them for no progress', async (maxStages) => {
+    await seed();
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, lane, payload,
+         item_kind, condition_key, created_ts, updated_ts, embedding, embedding_mode, admission,
+         admitted_at, admitted_by)
+      VALUES (${WS}, ${HARNESS}, 'd', 'Unrelated sibling', 'Separate second pair', 'open', NULL, '{}'::jsonb,
+              'change', 'watch:other', 4, 4, '[0,0.999,0.04]'::vector, 'gemma', 'admitted', now(), 'test')`;
+    // An unkeyed pair is outside the machine cohort; threshold=0 then selects
+    // full-corpus. Two keyed pairs alone correctly remain targeted.
+    await db.sql`UPDATE harness_shared.work_items SET condition_key = NULL WHERE feature_id IN ('c', 'd')`;
+    const judgedPairs: string[] = [];
+    const result = await runBulk({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: `bulk-pair-budget-${maxStages}`,
+      sql: db.sql,
+      maxStages,
+      maxPairsPerStage: 1,
+      census: { chunkCount: 2, targetTokens: 1_000, fullCorpusPairThreshold: 0 },
+      llmCall: async (input) => {
+        const keys = [...input.messages[0]!.content.matchAll(/^([^\s]+::[^\s]+) \|/gm)].map((match) => match[1]!);
+        judgedPairs.push(...keys);
+        return {
+          text: '',
+          json: { judgements: keys.map((pairKey) => ({ pairKey, verdict: 'distinct', reason: 'Separate findings' })) },
+          inputTokens: 25,
+          outputTokens: 10,
+        };
+      },
+    });
+    expect(result.scope).toBe('full-corpus');
+    expect(result.initialCensus).toBe(2);
+    expect(result.stages).toHaveLength(maxStages);
+    expect(result.stages.every((stage) => stage.pairs === 1)).toBe(true);
+    expect(result.stages[0]).toMatchObject({ censusBefore: 2, censusAfter: 1, scopedPairsAfter: 1 });
+    expect(result.finalScopedPairs).toBe(2 - maxStages);
+    expect(result.converged).toBe(maxStages === 2);
+    expect(judgedPairs).toEqual(maxStages === 1 ? ['a::b'] : ['a::b', 'c::d']);
+    const [ledger] = await db.sql<Array<{ status: string; before: number; after: number; budget: unknown }>>`
+      SELECT detail->>'status' AS status, (detail->>'scopedPairsBefore')::int AS before,
+             (detail->>'scopedPairsAfter')::int AS after, detail->'workBudget' AS budget
+        FROM harness_shared.admission_runs WHERE id = ${`bulk-pair-budget-${maxStages}-stage-1`}`;
+    expect(ledger).toEqual({
+      status: 'complete', before: 2, after: 1,
+      budget: { pairLimit: 1, availablePairs: 2, selectedPairs: 1, deferredPairs: 1 },
+    });
+  }, 60_000);
+
+  it('gives the pair budget to movable work and reexamines protected pairs after their hold lifts', async () => {
+    await seed();
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, lane, payload,
+         item_kind, condition_key, created_ts, updated_ts, embedding, embedding_mode, admission,
+         admitted_at, admitted_by)
+      VALUES (${WS}, ${HARNESS}, 'd', 'Unrelated sibling', 'Separate second pair', 'open', NULL, '{}'::jsonb,
+              'change', NULL, 4, 4, '[0,0.999,0.04]'::vector, 'gemma', 'admitted', now(), 'test')`;
+    await db.sql`UPDATE harness_shared.work_items SET condition_key = NULL WHERE feature_id = 'c'`;
+    await db.sql`UPDATE harness_shared.work_items SET payload = '{"_claimHold":true}'::jsonb WHERE feature_id = 'b'`;
+    const seen: string[] = [];
+    const llmCall = async (input: Parameters<BulkOptions['llmCall']>[0]) => {
+      const keys = [...input.messages[0]!.content.matchAll(/^([^\s]+::[^\s]+) \|/gm)].map((match) => match[1]!);
+      seen.push(...keys);
+      return {
+        text: '', json: { judgements: keys.map((pairKey) => ({ pairKey, verdict: 'distinct', reason: 'separate findings' })) },
+        inputTokens: 25, outputTokens: 10,
+      };
+    };
+    const options = {
+      workspaceId: WS, harnessSlug: HARNESS, sql: db.sql, maxStages: 1, maxPairsPerStage: 1,
+      census: { chunkCount: 2, targetTokens: 1_000, fullCorpusPairThreshold: 0 }, llmCall,
+    };
+    const result = await runBulk({ ...options, runId: 'bulk-prescreen-mixed' });
+    expect(seen).toEqual(['c::d']);
+    expect(result).toMatchObject({ converged: false, convergenceReason: 'stage-budget', finalScopedPairs: 1 });
+    expect(result.stages[0]).toMatchObject({ pairs: 1, censusBefore: 2, censusAfter: 1 });
+    const [stage] = await db.sql<Array<{ status: string; protected_pairs: number; movable_pairs: number }>>`
+      SELECT detail->>'status' AS status,
+             (detail #>> '{prescreen,protectedPairs}')::int AS protected_pairs,
+             (detail #>> '{prescreen,movablePairs}')::int AS movable_pairs
+        FROM harness_shared.admission_runs WHERE id = 'bulk-prescreen-mixed-stage-1'`;
+    expect(stage).toEqual({ status: 'complete', protected_pairs: 1, movable_pairs: 1 });
+    const [protectedRow] = await db.sql<Array<{ status: string; held: boolean }>>`
+      SELECT status, (payload->>'_claimHold')::boolean AS held
+        FROM harness_shared.work_items WHERE feature_id = 'b'`;
+    expect(protectedRow).toEqual({ status: 'open', held: true });
+    await db.sql`UPDATE harness_shared.work_items SET payload = '{}'::jsonb WHERE feature_id = 'b'`;
+    const resumed = await runBulk({ ...options, runId: 'bulk-prescreen-lifted' });
+    expect(seen).toEqual(['c::d', 'a::b']);
+    expect(resumed).toMatchObject({ converged: true, finalScopedPairs: 0 });
+  }, 60_000);
+
   it('preserves a merge endpoint with explicit unknown implementation readiness', async () => {
     await seed();
     await db.sql`
@@ -666,8 +881,8 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
   /**
    * WI-2140406 F4 — a process death mid-run strands admission_runs rows in
    * status 'running' forever (d035-1-stage-1 + d035-3-census-0, stuck since
-   * 2026-08-30). The next run start must mark stale foreign rows failed while
-   * leaving genuinely-live rows alone.
+   * 2026-08-30). The next run start must mark expired foreign rows failed while
+   * leaving a refreshed lease alone even when its row is old.
    */
   it('reaps foreign admission runs stuck running past the stage lease at run start', async () => {
     await seed();
@@ -677,7 +892,13 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
       VALUES ('d035-old-stage-1', ${WS}, ${HARNESS}, 'bulk-stage', now() - interval '3 hours',
               '{"status":"running"}'::jsonb),
              ('fresh-census-0', ${WS}, ${HARNESS}, 'census', now(),
-              '{"status":"running"}'::jsonb)`;
+              '{"status":"running"}'::jsonb),
+             ('expired-lease-stage', ${WS}, ${HARNESS}, 'bulk-stage', now() - interval '10 minutes',
+              jsonb_build_object('status', 'running', 'lease',
+                jsonb_build_object('ownerId', 'workflow-expired', 'expiresAt', ${Date.now() - 1}::bigint))),
+             ('z-live-long-stage', ${WS}, ${HARNESS}, 'bulk-stage', now() - interval '3 hours',
+              jsonb_build_object('status', 'running', 'lease',
+                jsonb_build_object('ownerId', 'workflow-live', 'expiresAt', ${Date.now() + 60 * 60_000}::bigint)))`;
 
     const result = await runBulk({
       workspaceId: WS,
@@ -697,10 +918,19 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     });
     expect(result.converged).toBe(true);
 
-    const rows = await db.sql<Array<{ id: string; finished: boolean; status: string; error: string | null }>>`
-      SELECT id, (finished_at IS NOT NULL) AS finished, detail->>'status' AS status, detail->>'error' AS error
+    const rows = await db.sql<Array<{
+      id: string;
+      finished: boolean;
+      status: string;
+      error: string | null;
+      failureReason: string | null;
+      leaseOwner: string | null;
+    }>>`
+      SELECT id, (finished_at IS NOT NULL) AS finished, detail->>'status' AS status,
+             detail->>'error' AS error, detail->'outcome'->>'failureReason' AS "failureReason",
+             detail->'lease'->>'ownerId' AS "leaseOwner"
         FROM harness_shared.admission_runs
-       WHERE id IN ('d035-old-stage-1', 'fresh-census-0')
+       WHERE id IN ('d035-old-stage-1', 'expired-lease-stage', 'fresh-census-0', 'z-live-long-stage')
        ORDER BY id`;
     expect(rows).toEqual([
       {
@@ -708,8 +938,26 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
         finished: true,
         status: 'failed',
         error: expect.stringContaining('reaped') as unknown as string,
+        failureReason: 'stranded',
+        leaseOwner: null,
       },
-      { id: 'fresh-census-0', finished: false, status: 'running', error: null },
+      {
+        id: 'expired-lease-stage',
+        finished: true,
+        status: 'failed',
+        error: expect.stringContaining('reaped') as unknown as string,
+        failureReason: 'stranded',
+        leaseOwner: null,
+      },
+      { id: 'fresh-census-0', finished: false, status: 'running', error: null, failureReason: null, leaseOwner: null },
+      {
+        id: 'z-live-long-stage',
+        finished: false,
+        status: 'running',
+        error: null,
+        failureReason: null,
+        leaseOwner: 'workflow-live',
+      },
     ]);
   }, 60_000);
 
@@ -946,7 +1194,7 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     expect(ledger).toEqual([{ model_id: override }]);
   }, 60_000);
 
-  it('includes durable parks for judging but the shared guard refuses every mutation and records the hold', async () => {
+  it('keeps protected-only pairs in the census but spends no model call and never reports convergence', async () => {
     await seed();
     const mergedPark = {
       _claimHold: true,
@@ -973,6 +1221,9 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
               'open', NULL, ${JSON.stringify(distinctPark)}::text::jsonb, 'change', 'watch:other', 4, 4,
               '[0,0.999,0.04]'::vector, 'gemma', 'admitted', now(), 'test')`;
 
+    const llmCall = vi.fn(async () => {
+      throw new Error('protected-only pairs must not reach the model');
+    });
     await expect(
       runBulk({
         workspaceId: WS,
@@ -980,25 +1231,10 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
         runId: 'bulk-parks',
         sql: db.sql,
         census: { chunkCount: 2, targetTokens: 1_000 },
-        llmCall: async (input) => {
-          expect(input.system).toContain('DUPLICATION ONLY');
-          expect(input.messages[0]?.content).toContain('a::b');
-          expect(input.messages[0]?.content).toContain('c::d');
-          expect(input.messages[0]?.content).toContain('su-parked-duplicate');
-          return {
-            text: '',
-            json: {
-              judgements: [
-                { pairKey: 'a::b', verdict: 'r-finding-merge', reason: 'same failure and remedy' },
-                { pairKey: 'c::d', verdict: 'distinct', reason: 'different failure and remedy' },
-              ],
-            },
-            inputTokens: 100,
-            outputTokens: 30,
-          };
-        },
+        llmCall,
       }),
-    ).rejects.toThrow(/merge guard refused 2 endpoint/);
+    ).rejects.toThrow(/prescreen blocked: 2 protected pair/);
+    expect(llmCall).not.toHaveBeenCalled();
 
     const parked = await db.sql<
       Array<{
@@ -1057,18 +1293,18 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
              (detail #>> '{outcome,rolledBack}')::int AS rolled_back,
              (detail #>> '{outcome,unchanged}')::int AS unchanged,
              (detail #>> '{outcome,uniqueRowsChanged}')::int AS rows_changed,
-             ARRAY(SELECT entry->>'reason' FROM jsonb_array_elements(detail->'guardRefusals') entry ORDER BY 1)
+             ARRAY(SELECT entry->>'reason' FROM jsonb_array_elements(detail->'prescreen'->'samples') entry ORDER BY 1)
                AS refusal_reasons
         FROM harness_shared.admission_runs
        WHERE id = 'bulk-parks-stage-1'`;
     expect(ledger).toEqual([
       {
         status: 'blocked',
-        held: 2,
-        attempted: 2,
+        held: 0,
+        attempted: 0,
         successful: 0,
         rolled_back: 0,
-        unchanged: 2,
+        unchanged: 0,
         rows_changed: 0,
         refusal_reasons: ['claim-held', 'claim-held'],
       },
@@ -1142,7 +1378,85 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     });
   }, 60_000);
 
-  it('rolls back the complete stage and marks it failed when an injected post-judgement census rises', async () => {
+  it.each([false, true])('commits a safe sibling despite snapshot drift and preserves refusals through recovery=%s', async (recover) => {
+    await seed();
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET condition_key = NULL, embedding = '[0,1,0]'::vector
+       WHERE feature_id = 'c'`;
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, lane, payload,
+         item_kind, created_ts, updated_ts, embedding, embedding_mode, admission, admitted_at, admitted_by)
+      VALUES (${WS}, ${HARNESS}, 'd', 'Safe sibling', 'Same independent finding as c', 'open', NULL,
+              '{}'::jsonb, 'change', 4, 4, '[0,0.999,0.04]'::vector, 'gemma', 'admitted', now(), 'test')`;
+    let mutated = false;
+    let interrupted = false;
+    let calls = 0;
+    const options: BulkOptions = {
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: `bulk-safe-sibling-${recover}`,
+      sql: db.sql,
+      maxStages: 1,
+      census: { chunkCount: 2, targetTokens: 1_000, fullCorpusPairThreshold: 0 },
+      llmCall: async (input) => {
+        calls += 1;
+        if (!mutated) {
+          mutated = true;
+          await db.sql`
+            UPDATE harness_shared.work_items
+               SET summary = 'Changed after the captured judgment snapshot', updated_ts = updated_ts + 1
+             WHERE feature_id = 'b'`;
+        }
+        const keys = [...input.messages[0]!.content.matchAll(/^([^\s]+::[^\s]+) \|/gm)].map((match) => match[1]!);
+        return {
+          text: '',
+          json: { judgements: keys.map((pairKey) => ({ pairKey, verdict: 'r-finding-merge', reason: 'same failure and remedy' })) },
+          inputTokens: 100,
+          outputTokens: 20,
+        };
+      },
+      beforePostStageCensus: async () => {
+        if (recover && !interrupted) {
+          interrupted = true;
+          throw new Error('post-commit census interrupted');
+        }
+      },
+    };
+    if (recover) await expect(runBulk(options)).rejects.toThrow('post-commit census interrupted');
+    const callsBeforeRecovery = calls;
+    const result = await runBulk(recover ? {
+      ...options,
+      llmCall: async () => { throw new Error('committed stage must not be judged again'); },
+    } : options);
+    if (recover) expect(calls).toBe(callsBeforeRecovery);
+    expect(result).toMatchObject({ converged: false, convergenceReason: 'stage-budget', finalScopedPairs: 1 });
+    const stage = result.stages[0]!;
+    expect(stage).toMatchObject({ pairs: 2, merged: 1 });
+    expect(stage.guardRefusals).toEqual([expect.objectContaining({ itemId: 'b', reason: 'snapshot-drift' })]);
+    expect(await db.sql`
+      SELECT feature_id, status, payload #>> '{admissionMerge,canonicalId}' AS canonical
+        FROM harness_shared.work_items ORDER BY feature_id`).toEqual([
+      { feature_id: 'a', status: 'open', canonical: null },
+      { feature_id: 'b', status: 'open', canonical: null },
+      { feature_id: 'c', status: 'open', canonical: null },
+      { feature_id: 'd', status: 'dropped', canonical: 'c' },
+    ]);
+    expect(await db.sql`SELECT a, b FROM harness_shared.dedup_adjudications ORDER BY a, b`)
+      .toEqual([{ a: 'c', b: 'd' }]);
+    const [ledger] = await db.sql<Array<{ status: string; refusals: unknown; receipt_refusals: unknown; outcome: unknown }>>`
+      SELECT detail->>'status' AS status, detail->'guardRefusals' AS refusals,
+             detail #> '{mergeReceipt,guardRefusals}' AS receipt_refusals, detail->'outcome' AS outcome
+        FROM harness_shared.admission_runs WHERE id = ${`${options.runId}-stage-1`}`;
+    expect(ledger).toMatchObject({ status: 'complete', refusals: stage.guardRefusals, receipt_refusals: stage.guardRefusals });
+    expect(ledger!.outcome).toMatchObject({ attempted: 2, successful: 1, rolledBack: 0, unchanged: 1 });
+  }, 60_000);
+
+  // WI-10006491: the ratchet runs after the merge commit. A rise still fails the
+  // stage and stops the pass. The judged, guarded verdicts stay committed and the
+  // failure reports them; it no longer claims an unknown rollback.
+  it('marks the stage failed and reports its committed merges when the post-commit census rises', async () => {
     await seed();
     await expect(
       runBulk({
@@ -1164,21 +1478,301 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     ).rejects.toThrow(/admission census ratchet violated: 1 -> 2/);
 
     expect(
-      await db.sql<Array<{ count: number }>>`SELECT count(*)::int AS count FROM harness_shared.dedup_adjudications`,
-    ).toEqual([{ count: 0 }]);
-    expect(
-      await db.sql<Array<{ embedding: string }>>`
-        SELECT embedding::text AS embedding FROM harness_shared.work_items WHERE feature_id = 'c'`,
-    ).toEqual([{ embedding: '[0,1,0]' }]);
-    const stage = await db.sql<Array<{ state: string; error: string; unit: string; failure: string }>>`
+      await db.sql<Array<{ a: string; b: string }>>`SELECT a, b FROM harness_shared.dedup_adjudications`,
+    ).toEqual([{ a: 'a', b: 'b' }]);
+    const [stage] = await db.sql<
+      Array<{
+        state: string;
+        error: string;
+        unit: string;
+        failure: string;
+        successful: number;
+        rolled_back: number;
+        after_commit: boolean;
+        receipt_pairs: number;
+        receipt_census: string;
+      }>
+    >`
       SELECT detail->>'status' AS state, detail->>'error' AS error,
              detail #>> '{outcome,unit}' AS unit,
-             detail #>> '{outcome,failureReason}' AS failure
+             detail #>> '{outcome,failureReason}' AS failure,
+             (detail #>> '{outcome,successful}')::int AS successful,
+             (detail #>> '{outcome,rolledBack}')::int AS rolled_back,
+             (detail->>'failedAfterMergeCommit')::boolean AS after_commit,
+             (detail #>> '{mergeReceipt,pairs}')::int AS receipt_pairs,
+             detail #>> '{mergeReceipt,sourceCensusRunId}' AS receipt_census
         FROM harness_shared.admission_runs WHERE id = 'bulk-rise-stage-1'`;
-    expect(stage[0]?.state).toBe('failed');
-    expect(stage[0]?.error).toMatch(/ratchet violated/);
-    expect(stage[0]?.unit).toBe('pairs');
-    expect(stage[0]?.failure).toMatch(/ratchet violated/);
+    expect(stage).toEqual({
+      state: 'failed',
+      error: expect.stringMatching(/ratchet violated/),
+      unit: 'pairs',
+      failure: expect.stringMatching(/ratchet violated/),
+      successful: 1,
+      rolled_back: 0,
+      after_commit: true,
+      receipt_pairs: 1,
+      receipt_census: 'bulk-rise-census-0',
+    });
+  }, 60_000);
+
+  // WI-10006491 recurrence guard. Measured 2026-10-06: stage
+  // bulk-dedup-scheduled-1791260346916-a3ffb71a-stage-1 ran its full post-stage
+  // census INSIDE the serializable merge transaction. The fleet's concurrent
+  // writes failed every commit, and after 12 attempts (pg 40001, ~80 minutes)
+  // the stage lost all of its merges. The peer below forms the same
+  // read/write cycle on every census attempt: it reads the stage's adjudication
+  // table and writes a corpus row the census reads.
+  it('commits the merges before the post-stage census, so a concurrent serializable writer cannot fail the stage', async () => {
+    await seed();
+    const censusAfter: Array<{ withinTransaction: boolean; committedAdjudications: number }> = [];
+    const result = await runBulk({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'bulk-concurrent-writer',
+      sql: db.sql,
+      maxStages: 1,
+      census: { chunkCount: 2, targetTokens: 1_000 },
+      llmCall: async () => ({
+        text: '',
+        json: { judgements: [{ pairKey: 'a::b', verdict: 'distinct', reason: 'different remedy' }] },
+        inputTokens: 50,
+        outputTokens: 10,
+      }),
+      runCensus: async (censusOpts) => {
+        if (censusOpts.runId?.endsWith('-census-after')) {
+          await db.sql.begin(async (peer) => {
+            await peer`SET TRANSACTION ISOLATION LEVEL SERIALIZABLE`;
+            await peer`SELECT count(*) FROM harness_shared.dedup_adjudications`;
+            await peer`UPDATE harness_shared.work_items SET updated_ts = updated_ts + 1 WHERE feature_id = 'c'`;
+          });
+          // Read on ANOTHER connection: only a committed merge is visible here.
+          const [row] = await db.sql<Array<{ n: number }>>`
+            SELECT count(*)::int AS n FROM harness_shared.dedup_adjudications`;
+          censusAfter.push({
+            withinTransaction: censusOpts.withinTransaction === true,
+            committedAdjudications: row?.n ?? -1,
+          });
+        }
+        return runWorkItemAdmissionCensus(censusOpts);
+      },
+    });
+
+    expect(censusAfter).toEqual([{ withinTransaction: false, committedAdjudications: 1 }]);
+    expect(result).toMatchObject({ converged: true, finalScopedPairs: 0 });
+    expect(result.stages[0]).toMatchObject({ pairs: 1, censusBefore: 1, censusAfter: 0, scopedPairsAfter: 0 });
+    const [ledger] = await db.sql<Array<{ status: string; attempts: number; successful: number; ratchet: unknown }>>`
+      SELECT detail->>'status' AS status,
+             (detail #>> '{mergeReceipt,commitAttempts}')::int AS attempts,
+             (detail #>> '{outcome,successful}')::int AS successful,
+             detail->'ratchet' AS ratchet
+        FROM harness_shared.admission_runs WHERE id = 'bulk-concurrent-writer-stage-1'`;
+    expect(ledger).toEqual({
+      status: 'complete',
+      attempts: 1,
+      successful: 1,
+      ratchet: { before: 1, after: 0, population: 'census-0-members', corpusAfter: 0, influxEdges: 0 },
+    });
+  }, 60_000);
+
+  // WI-10006491: once the merge transaction commits, its receipt is the only
+  // record of what the stage did. A rerun of the same stage after a post-commit
+  // failure must finish from the receipt. A fresh read finds the committed pairs
+  // adjudicated, so re-reading would either re-judge other pairs under this row
+  // or record an empty stage.
+  it('finishes a stage from its merge receipt after a post-commit failure, without another model call', async () => {
+    await seed();
+    let productionCalls = 0;
+    let failPostCommit = true;
+    const options = {
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'bulk-receipt-resume',
+      sql: db.sql,
+      maxStages: 1,
+      census: { chunkCount: 2, targetTokens: 1_000 },
+      llmCall: async () => {
+        productionCalls += 1;
+        return {
+          text: '',
+          json: { judgements: [{ pairKey: 'a::b', verdict: 'distinct', reason: 'different remedy' }] },
+          inputTokens: 50,
+          outputTokens: 10,
+        };
+      },
+      beforePostStageCensus: async () => {
+        if (!failPostCommit) return;
+        failPostCommit = false;
+        throw new Error('injected post-commit failure');
+      },
+    } satisfies BulkOptions;
+
+    await expect(runBulk(options)).rejects.toThrow('injected post-commit failure');
+    const [failed] = await db.sql<Array<{ status: string; successful: number; after_commit: boolean }>>`
+      SELECT detail->>'status' AS status,
+             (detail #>> '{outcome,successful}')::int AS successful,
+             (detail->>'failedAfterMergeCommit')::boolean AS after_commit
+        FROM harness_shared.admission_runs WHERE id = 'bulk-receipt-resume-stage-1'`;
+    expect(failed).toEqual({ status: 'failed', successful: 1, after_commit: true });
+    expect(productionCalls).toBe(1);
+
+    const result = await runBulk(options);
+    expect(productionCalls).toBe(1);
+    expect(result).toMatchObject({ converged: true, finalScopedPairs: 0 });
+    expect(result.stages).toHaveLength(1);
+    expect(result.stages[0]).toMatchObject({ pairs: 1, modelCalls: 1, scopedPairsAfter: 0 });
+    const [ledger] = await db.sql<
+      Array<{ status: string; successful: number; attempted: number; history: Array<{ message: string }> }>
+    >`
+      SELECT detail->>'status' AS status,
+             (detail #>> '{outcome,successful}')::int AS successful,
+             (detail #>> '{outcome,attempted}')::int AS attempted,
+             detail->'failureHistory' AS history
+        FROM harness_shared.admission_runs WHERE id = 'bulk-receipt-resume-stage-1'`;
+    expect(ledger).toMatchObject({ status: 'complete', successful: 1, attempted: 1 });
+    expect(ledger?.history.map((entry) => entry.message)).toEqual(['injected post-commit failure']);
+    expect(
+      await db.sql<Array<{ a: string; b: string }>>`SELECT a, b FROM harness_shared.dedup_adjudications`,
+    ).toEqual([{ a: 'a', b: 'b' }]);
+  }, 60_000);
+
+  // WI-10006553: a recovered pass re-ran a COMPLETED stage's result census from
+  // scratch, resetting its row to 'running' (~16 min live) while the next stage
+  // and the daily digest (complete-only) depended on it.
+  it('rehydrates a completed stage result census on recovery instead of re-running it', async () => {
+    await seed();
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, lane, payload,
+         item_kind, condition_key, created_ts, updated_ts, embedding, embedding_mode, admission,
+         admitted_at, admitted_by)
+      VALUES (${WS}, ${HARNESS}, 'd', 'Unrelated sibling', 'Separate second pair', 'open', NULL, '{}'::jsonb,
+              'change', 'watch:other', 4, 4, '[0,0.999,0.04]'::vector, 'gemma', 'admitted', now(), 'test')`;
+    await db.sql`UPDATE harness_shared.work_items SET condition_key = NULL WHERE feature_id IN ('c', 'd')`;
+    const rootRunId = 'bulk-result-census-recovery';
+    const resultCensusId = `${rootRunId}-stage-1-census-after`;
+    const censusRuns: string[] = [];
+    let interruptStageTwo = true;
+    // DBOS-faithful steps: a step that completed returns its recorded output on
+    // recovery instead of executing again (census-0 is NOT recomputed).
+    const recorded = new Map<string, unknown>();
+    const step = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+      if (recorded.has(name)) return recorded.get(name) as T;
+      const value = await fn();
+      recorded.set(name, value);
+      return value;
+    };
+    const options = {
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: rootRunId,
+      sql: db.sql,
+      step,
+      maxStages: 2,
+      maxPairsPerStage: 1,
+      census: { chunkCount: 2, targetTokens: 1_000, fullCorpusPairThreshold: 0 },
+      llmCall: async (input) => {
+        const keys = [...input.messages[0]!.content.matchAll(/^([^\s]+::[^\s]+) \|/gm)].map((match) => match[1]!);
+        return {
+          text: '',
+          json: { judgements: keys.map((pairKey) => ({ pairKey, verdict: 'distinct', reason: 'Separate findings' })) },
+          inputTokens: 25,
+          outputTokens: 10,
+        };
+      },
+      runCensus: async (censusOpts) => {
+        censusRuns.push(censusOpts.runId ?? '');
+        return runWorkItemAdmissionCensus(censusOpts);
+      },
+      beforePostStageCensus: async (_sql, stageIndex) => {
+        if (stageIndex !== 2 || !interruptStageTwo) return;
+        interruptStageTwo = false;
+        throw new Error('injected stage-2 interruption');
+      },
+    } satisfies BulkOptions;
+    const readResultCensusRow = async () =>
+      (
+        await db.sql<Array<{ started: string; finished: string | null; status: string }>>`
+          SELECT started_at::text AS started, finished_at::text AS finished, detail->>'status' AS status
+            FROM harness_shared.admission_runs WHERE id = ${resultCensusId}`
+      )[0];
+
+    await expect(runBulk(options)).rejects.toThrow('injected stage-2 interruption');
+    const before = await readResultCensusRow();
+    expect(before).toMatchObject({ status: 'complete' });
+    expect(before?.finished).not.toBeNull();
+    expect(censusRuns.filter((id) => id === resultCensusId)).toHaveLength(1);
+
+    censusRuns.length = 0;
+    const result = await runBulk(options);
+    expect(result.stages).toHaveLength(2);
+    expect(result.stages[0]).toMatchObject({ resultCensusRunId: resultCensusId });
+    expect(censusRuns).not.toContain(resultCensusId);
+    expect(await readResultCensusRow()).toEqual(before);
+
+    // Reader contract: only a complete row rehydrates; anything else returns null
+    // so the driver runs (and, for an unfinished row, resumes) the census instead.
+    const scope = { workspaceId: WS, harnessSlug: HARNESS };
+    await expect(readCompletedAdmissionCensus(db.sql, scope, resultCensusId)).resolves.toMatchObject({
+      runId: resultCensusId,
+    });
+    await db.sql`
+      UPDATE harness_shared.admission_runs SET detail = jsonb_set(detail, '{status}', '"running"')
+       WHERE id = ${resultCensusId}`;
+    await expect(readCompletedAdmissionCensus(db.sql, scope, resultCensusId)).resolves.toBeNull();
+  }, 60_000);
+
+  // WI-10006336: the 10-05 scheduled stage failed "56606 -> 65264" because 39
+  // near-duplicate emitter items were FILED while it judged; the live recount
+  // counted their edges against census-0. The ratchet must judge census-0's own
+  // members (the rise test above stays red: `c` is a member), and disclose the
+  // influx instead of failing on it.
+  it('commits a stage when near-duplicates are filed between census-0 and the recount, disclosing the influx', async () => {
+    await seed();
+    const result = await runBulk({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'bulk-influx',
+      sql: db.sql,
+      maxStages: 1,
+      census: { chunkCount: 2, targetTokens: 1_000 },
+      llmCall: async (input) => {
+        const keys = [...input.messages[0]!.content.matchAll(/^([^\s]+::[^\s]+) \|/gm)].map((match) => match[1]!);
+        return {
+          text: '',
+          json: { judgements: keys.map((pairKey) => ({ pairKey, verdict: 'distinct', reason: 'different remedy' })) },
+          inputTokens: 50,
+          outputTokens: 10,
+        };
+      },
+      beforePostStageCensus: async (sql) => {
+        await sql`
+          INSERT INTO harness_shared.work_items
+            (workspace_id, harness_slug, feature_id, title, summary, status, lane, payload,
+             item_kind, condition_key, created_ts, updated_ts, embedding, embedding_mode, admission,
+             admitted_at, admitted_by)
+          VALUES (${WS}, ${HARNESS}, 'd', 'Clone failure filed mid-stage', 'Clone failure filed mid-stage summary',
+                  'open', NULL, '{}'::jsonb, 'change', 'watch:clone', 4, 4, '[1,0,0]'::vector, 'gemma',
+                  'admitted', now(), 'test')`;
+      },
+    });
+
+    // Census-0 had one unadjudicated edge (a-b); the stage adjudicated it. The
+    // live corpus now also holds a-d and b-d, which arrived mid-stage.
+    // The influx pairs (a-d, b-d) are the next stage's work, not a stall.
+    expect(result).toMatchObject({ converged: false, convergenceReason: 'stage-budget', finalScopedPairs: 2 });
+    expect(result.stages).toHaveLength(1);
+    expect(result.stages[0]).toMatchObject({ censusBefore: 1, censusAfter: 2 });
+    const [ledger] = await db.sql<Array<{ status: string; ratchet: unknown; census_after: number }>>`
+      SELECT detail->>'status' AS status, detail->'ratchet' AS ratchet, census_after
+        FROM harness_shared.admission_runs WHERE id = 'bulk-influx-stage-1'`;
+    expect(ledger).toEqual({
+      status: 'complete',
+      ratchet: { before: 1, after: 0, population: 'census-0-members', corpusAfter: 2, influxEdges: 2 },
+      census_after: 2,
+    });
+    expect(
+      await db.sql<Array<{ a: string; b: string }>>`SELECT a, b FROM harness_shared.dedup_adjudications ORDER BY a, b`,
+    ).toEqual([{ a: 'a', b: 'b' }]);
   }, 60_000);
 
   it('persists a nested transport Error.cause alongside the compatible error message', async () => {
@@ -1196,6 +1790,9 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
         runId: 'bulk-cause',
         sql: db.sql,
         census: { chunkCount: 2, targetTokens: 1_000 },
+        // Persistence of the cause is the subject here, not the outage ladder
+        // (WI-10004942); without this the default ladder sleeps ~3.75 min.
+        transportRetryBackoffsMs: [],
         llmCall: async () => {
           throw nested;
         },
@@ -1238,7 +1835,7 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
         FROM harness_shared.admission_runs WHERE id = 'bulk-cause-stage-1'`;
     expect(retried[0]?.detail).toMatchObject({
       status: 'failed',
-      error: 'bulk dedup made no scoped progress: 1 -> 1 pair(s)',
+      error: 'bulk dedup made no scoped progress: 1 -> 1 pair(s) among census-0 members',
     });
     expect(retried[0]?.has_error_cause).toBe(false);
   }, 60_000);
@@ -1392,6 +1989,94 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
         FROM harness_shared.admission_runs WHERE id = 'bulk-transient-retry-stage-1'`;
     expect(stage).toEqual([{ state: 'complete', retries: 1 }]);
   }, 60_000);
+
+  describe('transport-outage ladder (WI-10004942)', () => {
+    // Two pairs at one pair per call: a::b (the canary) succeeds, then c::d meets
+    // a socket outage lasting `outage` consecutive attempts. The short ladder is
+    // [1, 2]; the recorded waits show which ladder each retry used.
+    async function runThroughOutage(runId: string, outage: number, transportRetryBackoffsMs: number[]) {
+      await seed();
+      await db.sql`
+        INSERT INTO harness_shared.work_items
+          (workspace_id, harness_slug, feature_id, title, summary, status, lane, payload,
+           item_kind, condition_key, created_ts, updated_ts, embedding, embedding_mode, admission,
+           admitted_at, admitted_by)
+        VALUES (${WS}, ${HARNESS}, 'd', 'Unrelated sibling', 'A separate failure and remedy',
+                'open', NULL, '{}'::jsonb, 'change', 'watch:other', 4, 4,
+                '[0,0.999,0.04]'::vector, 'gemma', 'admitted', now(), 'test')`;
+      let calls = 0;
+      let failures = 0;
+      const waits: number[] = [];
+      const outcome = await runBulk({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId,
+        sql: db.sql,
+        pairsPerCall: 1,
+        shardConcurrency: 1,
+        batchRetryBackoffsMs: [1, 2],
+        transportRetryBackoffsMs,
+        batchRetryDelay: async (ms) => {
+          waits.push(ms);
+        },
+        census: { chunkCount: 1, targetTokens: 1_000 },
+        llmCall: async (input) => {
+          calls += 1;
+          const pairKey = [...input.messages[0]!.content.matchAll(/^([^\s]+::[^\s]+) \|/gm)][0]?.[1];
+          if (pairKey === 'c::d' && failures < outage) {
+            failures += 1;
+            throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'UND_ERR_SOCKET' } });
+          }
+          return {
+            text: '',
+            json: {
+              judgements: [
+                {
+                  pairKey,
+                  verdict: pairKey === 'a::b' ? 'r-finding-merge' : 'distinct',
+                  reason: pairKey === 'a::b' ? 'same failure and remedy' : 'different failure and remedy',
+                },
+              ],
+            },
+            inputTokens: 50,
+            outputTokens: 10,
+          };
+        },
+      }).then(
+        (result) => ({ ok: true as const, result }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      const [stage] = await db.sql<Array<{ state: string; retries: number | null }>>`
+        SELECT detail->>'status' AS state, (detail->>'modelRetries')::int AS retries
+          FROM harness_shared.admission_runs WHERE id = ${`${runId}-stage-1`}`;
+      return { outcome, waits, calls, stage };
+    }
+
+    it('waits out an outage longer than the short ladder, spending the short ladder first', async () => {
+      const t = await runThroughOutage('bulk-outage-survived', 4, [10, 20, 30]);
+      expect(t.outcome.ok).toBe(true);
+      expect(t.outcome.ok && t.outcome.result).toMatchObject({ converged: true, finalCensus: 0 });
+      expect(t.waits).toEqual([1, 2, 10, 20]);
+      expect(t.calls).toBe(6);
+      expect(t.stage).toEqual({ state: 'complete', retries: 4 });
+    }, 60_000);
+
+    it('still fails the stage once the transport ladder is spent too', async () => {
+      const t = await runThroughOutage('bulk-outage-exhausted', 6, [10, 20, 30]);
+      expect(t.outcome.ok).toBe(false);
+      expect(String(!t.outcome.ok && t.outcome.error)).toMatch(/fetch failed/);
+      expect(t.waits).toEqual([1, 2, 10, 20, 30]);
+      expect(t.stage?.state).toBe('failed');
+    }, 60_000);
+
+    it('CONTROL: with no transport ladder the same 4-attempt outage fails the stage (pre-fix behaviour)', async () => {
+      const t = await runThroughOutage('bulk-outage-control', 4, []);
+      expect(t.outcome.ok).toBe(false);
+      expect(String(!t.outcome.ok && t.outcome.error)).toMatch(/fetch failed/);
+      expect(t.waits).toEqual([1, 2]);
+      expect(t.stage?.state).toBe('failed');
+    }, 60_000);
+  });
 
   it('returns the durable terminal result on a repeated root runId without another census or model call', async () => {
     await seed();
@@ -1602,6 +2287,172 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
              (detail->>'reusedBatches')::int AS reused
         FROM harness_shared.admission_runs WHERE id = 'bulk-stale-takeover-stage-1'`;
     expect(recovered).toEqual([{ state: 'complete', takeover_count: 1, checkpoint_count: 2, reused: 1 }]);
+  }, 60_000);
+
+  // WI-10004862: a DBOS recovery re-reads a LIVE corpus, so the stage input
+  // fingerprint drifts between the crash and the resume (measured live: 35
+  // adjudications + 178 item edits on the pinned members in 56 min). The stage
+  // used to wipe its whole checkpoint map on any drift and re-judge every batch.
+  // Judgements are now donated per pair while both endpoints are unchanged.
+  // D-007: with `freshRunId` the second executor is the NEXT driver fire (a new
+  // runId and stage row), not a DBOS recovery of the same stage.
+  async function crashAfterFirstCheckpointThenDrift(
+    runId: string,
+    driftItemId: string,
+    opts: { freshRunId?: string } = {},
+  ) {
+    await seed();
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, lane, payload,
+         item_kind, condition_key, created_ts, updated_ts, embedding, embedding_mode, admission,
+         admitted_at, admitted_by)
+      VALUES (${WS}, ${HARNESS}, 'd', 'Unrelated sibling', 'A separate failure and remedy',
+              'open', NULL, '{}'::jsonb, 'change', 'watch:other', 4, 4,
+              '[0,0.999,0.04]'::vector, 'gemma', 'admitted', now(), 'test')`;
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET condition_key = NULL
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}`;
+    const ready = {
+      status: 'ready' as const,
+      provider: 'claude' as const,
+      model: 'test-model',
+      checkedAt: '2026-09-01T00:00:00.000Z',
+      reason: 'integration capacity is injected',
+    };
+    const seenPairs: string[] = [];
+    const stepNames: string[] = [];
+    const judge = (failOnCall?: number) => {
+      let calls = 0;
+      return async (input: { messages: Array<{ content: string }> }) => {
+        calls += 1;
+        const pairKey = [...input.messages[0]!.content.matchAll(/^([^\s]+::[^\s]+) \|/gm)][0]?.[1];
+        expect(pairKey).toBeTruthy();
+        seenPairs.push(pairKey!);
+        if (calls === failOnCall) throw new Error('executor died after first checkpoint');
+        return {
+          text: '',
+          json: { judgements: [{ pairKey, verdict: 'distinct', reason: 'separate finding' }] },
+          inputTokens: 13,
+          outputTokens: 5,
+        };
+      };
+    };
+    const base = {
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId,
+      sql: db.sql,
+      model: 'test-model',
+      stageLeaseMs: 1_000,
+      preflight: async () => ready,
+      pairsPerCall: 1,
+      shardConcurrency: 1,
+      batchRetryBackoffsMs: [],
+      census: { chunkCount: 1, targetTokens: 1_000, fullCorpusPairThreshold: 0 },
+    };
+    await expect(
+      runBulk({ ...base, executionId: 'executor-dead', now: () => 10_000, llmCall: judge(2) }),
+    ).rejects.toThrow('executor died after first checkpoint');
+    expect(seenPairs).toEqual(['a::b', 'c::d']);
+    if (!opts.freshRunId) {
+      await db.sql`
+        UPDATE harness_shared.admission_runs
+           SET finished_at = NULL,
+               detail = detail || ${JSON.stringify({
+                 status: 'running',
+                 lease: { ownerId: 'executor-dead', acquiredAt: 1, heartbeatAt: 1, expiresAt: 1, takeoverCount: 0 },
+               })}::text::jsonb
+         WHERE id = ${`${runId}-stage-1`}`;
+    }
+    // The drift a live corpus produces while the executor is down: one edit.
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET summary = summary || ' (edited while the stage was down)'
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = ${driftItemId}`;
+    seenPairs.length = 0;
+    const secondRunId = opts.freshRunId ?? runId;
+    const resumed = await runBulk({
+      ...base,
+      runId: secondRunId,
+      executionId: 'executor-replacement',
+      now: () => 20_000,
+      step: async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+        stepNames.push(name);
+        return fn();
+      },
+      llmCall: judge(),
+    });
+    const rows = await db.sql<Array<{ detail: Record<string, unknown> }>>`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = ${`${secondRunId}-stage-1`}`;
+    return { resumed, seenPairs, stepNames, detail: rows[0]!.detail };
+  }
+
+  it('reuses a judged pair across corpus drift on another pair instead of re-judging the whole stage', async () => {
+    const { resumed, seenPairs, stepNames, detail } = await crashAfterFirstCheckpointThenDrift(
+      'bulk-drift-unrelated',
+      'd',
+    );
+    // a::b was judged before the crash and neither endpoint changed: donated.
+    expect(seenPairs).toEqual(['c::d']);
+    expect(resumed).toMatchObject({ converged: true, initialCensus: 2, finalCensus: 0 });
+    expect(resumed.stages[0]).toMatchObject({ pairs: 2, modelCalls: 2, reusedBatches: 1 });
+    // The canary DBOS step is replayed exactly once, as a no-op.
+    expect(stepNames.filter((name) => name === 'bulk:bulk-drift-unrelated-stage-1:canary')).toHaveLength(1);
+    const batches = Object.values(
+      (detail.checkpoints as { batches: Record<string, Record<string, unknown>> }).batches,
+    );
+    expect(batches.length).toBeGreaterThan(0);
+    for (const batch of batches) {
+      expect(batch).toMatchObject({ qualityGateKey: expect.any(String), pairFingerprints: expect.any(Object) });
+    }
+  }, 60_000);
+
+  it('re-judges a checkpointed pair whose endpoint changed during the outage', async () => {
+    const { resumed, seenPairs, stepNames, detail } = await crashAfterFirstCheckpointThenDrift(
+      'bulk-drift-endpoint',
+      'a',
+    );
+    // a's merge snapshot changed, so the a::b judgement is no longer evidence.
+    expect(seenPairs).toEqual(['a::b', 'c::d']);
+    expect(resumed).toMatchObject({ converged: true, initialCensus: 2, finalCensus: 0 });
+    expect(resumed.stages[0]).toMatchObject({ pairs: 2, modelCalls: 2, reusedBatches: 0 });
+    // The durable canary is not re-spent through the step: one no-op replay.
+    expect(stepNames.filter((name) => name === 'bulk:bulk-drift-endpoint-stage-1:canary')).toHaveLength(1);
+    const canaries = Object.values(
+      (detail.checkpoints as { batches: Record<string, { canary: boolean }> }).batches,
+    ).filter((batch) => batch.canary);
+    expect(canaries).toHaveLength(1);
+  }, 60_000);
+
+  // D-007: each driver fire mints a fresh runId and a full-corpus pass is
+  // cancelled at the 24h fire timeout. Judgements lived only in that fire's own
+  // stage row, so a pass longer than one fire restarted from zero every day and
+  // could never complete. Earlier stage rows now donate under the same per-pair
+  // evidence guard, and their spend stays on their own ledger row.
+  it('continues a pass cancelled in an earlier fire: a fresh runId reuses that row’s judged pairs', async () => {
+    const { resumed, seenPairs, detail } = await crashAfterFirstCheckpointThenDrift('bulk-fire-1', 'd', {
+      freshRunId: 'bulk-fire-2',
+    });
+    expect(seenPairs).toEqual(['c::d']);
+    expect(resumed).toMatchObject({ runId: 'bulk-fire-2', converged: true, initialCensus: 2, finalCensus: 0 });
+    // Only c::d was called; the donated pair's call is fire-1's spend, not fire-2's.
+    expect(resumed.stages[0]).toMatchObject({ pairs: 2, modelCalls: 1, reusedBatches: 0, priorRunDonatedPairs: 1 });
+    expect(detail).toMatchObject({ status: 'complete' });
+    const ledger = await db.sql<Array<{ donated: string | null }>>`
+      SELECT detail->>'priorRunDonatedPairs' AS donated
+        FROM harness_shared.admission_runs
+       WHERE id = 'bulk-fire-2-stage-1'`;
+    expect(ledger[0]?.donated).toBe('1');
+  }, 60_000);
+
+  it('re-judges an earlier fire’s pair whose endpoint changed since, instead of donating stale evidence', async () => {
+    const { resumed, seenPairs } = await crashAfterFirstCheckpointThenDrift('bulk-fire-stale-1', 'a', {
+      freshRunId: 'bulk-fire-stale-2',
+    });
+    expect(seenPairs).toEqual(['a::b', 'c::d']);
+    expect(resumed.stages[0]).toMatchObject({ pairs: 2, modelCalls: 2, priorRunDonatedPairs: 0 });
   }, 60_000);
 
   it('judges independent shards concurrently while keeping each shard internally ordered', async () => {

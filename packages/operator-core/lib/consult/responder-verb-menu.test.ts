@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { consultReadDoorLine, consultResponderVerbMenu, consultVoidExitLine } from './responder-verb-menu';
-import { cascadeWakeBody } from './cascade-core';
+import { cascadeWakeBody, cascadeWakeCopyForRouting } from './cascade-core';
 import { consultDispatchBrief } from './consult-dispatch';
 
 /** The first turn a DISPATCHED answering session actually receives: the cascade
@@ -33,6 +33,59 @@ const CONSULT_DIR = resolve(dirname(fileURLToPath(import.meta.url)));
 // because every wake that routes a consult named the WRITE verbs and none named the READ door.
 // These guards pin both halves: the menu says the right thing, and it is the ONLY thing that
 // says it — so a sixth wake variant cannot quietly reintroduce the omission.
+
+describe('the amendment request remains answerable after a cascade', () => {
+  it.each(['fork', 'convert', 'brief'] as const)('carries current amendment inputs through a %s dispatch', (operation) => {
+    const question = 'Review new amendment {"key":"r-006","files":["soak.test.ts"]}; preserve literal24h; approve thread-post:12345.';
+    const input = {
+      question, conversationId: 'conv-amendment', position: 2, menuSize: 2,
+      next: { ownerId: 'su-expert', score: 0.72, relevance: 0.74, similarity: 0.66, via: 'floor' as const, liveness: 'ended' },
+      digest: [],
+    };
+    const routing = { policy: 'acceptance-bar-amendment-review' };
+    for (const snapshot of [routing, JSON.stringify(routing)]) {
+      const copy = cascadeWakeCopyForRouting(snapshot)(input);
+      const brief = consultDispatchBrief({
+        conversationId: input.conversationId, sourceOwnerId: 'su-expert', operation, ...copy,
+      });
+      expect(brief).toContain(question);
+      expect(brief).toContain('CURRENT AMENDMENT');
+      expect(brief).toContain('do not decline solely');
+      expect(copy.body).not.toContain('answer FROM your transcript');
+      expect(brief).toContain('ANSWER-ONLY');
+      expect(brief).toContain('Do not claim work-items');
+      expect(brief).toContain('consult:reply');
+    }
+    const generic = cascadeWakeCopyForRouting({})(input);
+    expect(generic.body).toContain('answer FROM your transcript');
+    expect(generic.body).not.toContain('CURRENT AMENDMENT');
+  });
+});
+
+describe('current review evidence survives the dispatch frame', () => {
+  for (const policy of ['rubric-vetting', 'acceptance-bar-amendment-review']) {
+    for (const via of ['floor', 'minimum'] as const) {
+      it.each(['fork', 'convert', 'brief'] as const)(`${policy}/${via} reviews current evidence on a %s launch`, (operation) => {
+        const conversationId = 'conv-current-review';
+        const copy = cascadeWakeCopyForRouting({ policy })({
+          question: 'Review the current mobile rubric revision; replay probes are in observed/tried.',
+          conversationId, position: 2, menuSize: 2, digest: [],
+          next: { ownerId: 'su-unrelated-history', score: 0.1, relevance: 0.1, similarity: 0.1, via, liveness: 'ended' },
+        });
+        const brief = consultDispatchBrief({
+          conversationId, sourceOwnerId: 'su-unrelated-history', operation, ...copy,
+        });
+        expect(brief).toContain('results[0].conversation.body');
+        expect(brief).toContain('results[0].posts');
+        expect(brief).toContain('do not decline solely');
+        expect(brief).toContain('Cite the evidence you actually checked');
+        expect(brief).not.toMatch(/you answer from the transcript you inherited|Answer from the cited turns|Answer from the transcript\.|answer FROM your transcript/);
+        expect(brief).toContain('ANSWER-ONLY');
+        expect(brief).toContain('Do not claim work-items');
+      });
+    }
+  }
+});
 
 describe('the consult responder verb menu names the read door', () => {
   it('names conversations:get, and says what a wrong-door read looks like', () => {

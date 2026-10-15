@@ -23,6 +23,8 @@
  */
 
 import {
+  acquireSnapshot,
+  acquireTicketSnapshot,
   DEFAULT_TX_ACQUIRE_DEADLINE_MS,
   DbCallDeadlineError,
   getOrgPg,
@@ -30,6 +32,8 @@ import {
   pgbouncerEnabled,
   retryOnRetryableDbDeadline,
   withAcquisitionDeadline,
+  type AcquireSnapshot,
+  type AcquireTicketSnapshot,
 } from '@papercusp/db-org';
 
 /** The postgres-js client type the org handle exposes. */
@@ -73,6 +77,32 @@ export class PgReadQueryTimeoutError extends PgReadQueryError {
     super(message);
     this.name = 'PgReadQueryTimeoutError';
   }
+}
+
+export type PgReadTxnTimeoutPhase = 'acquire' | 'setup' | 'callback' | 'commit';
+
+/** Bounded, local-only diagnostics attached when boundedPgReadTxn times out. */
+export interface PgReadTxnTimeoutContext {
+  phase: PgReadTxnTimeoutPhase;
+  acquirePool: string | null;
+  /** Null means the transaction's pool could not be identified by this process. */
+  acquireSnapshot: AcquireSnapshot | null;
+  /** Null means the transaction's pool could not be identified by this process. */
+  acquireTicketSnapshot: AcquireTicketSnapshot | null;
+}
+
+function attachBoundedPgReadTxnTimeoutContext(
+  error: DbCallDeadlineError | PgReadQueryTimeoutError,
+  context: PgReadTxnTimeoutContext,
+): void {
+  (error as Error & { boundedPgReadTxn?: PgReadTxnTimeoutContext }).boundedPgReadTxn = context;
+  // Most call sites persist only Error.message. Carry compact, sanitized local
+  // acquire evidence there as well as on the structured error object.
+  error.message +=
+    ` boundedPgReadTxn timeout context: phase=${context.phase}, ` +
+    `acquirePool=${context.acquirePool ?? 'unmeasured'}, ` +
+    `acquireSnapshot=${JSON.stringify(context.acquireSnapshot)}, ` +
+    `acquireTicketSnapshot=${JSON.stringify(context.acquireTicketSnapshot)}.`;
 }
 
 /** The diagnostic fields worth surfacing from a failed query. */
@@ -178,7 +208,8 @@ export function extractReferencedTables(rawSql: string): string[] {
   // so pg-mutate-query's tenant gate sees the table being written, not just
   // FROM/JOIN sources. A `SELECT … FOR UPDATE OF t` capture lands on a keyword
   // (`of`/`nowait`/`skip`) — filtered below rather than mis-read as a table.
-  const re = /\b(from|join|update|into)\s+(?:only\s+)?([A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)?)/gi;
+  const re =
+    /\b(from|join|update|into)\s+(?:only\s+)?(?:lateral\s+)?([A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)?)/gi;
   const notATable = new Set(['of', 'nowait', 'skip', 'set', 'select']);
   for (let m = re.exec(stripped); m && out.length < GUARD_MAX_TABLES; m = re.exec(stripped)) {
     // WI-10002041: `FROM` is not always a clause. `IS [NOT] DISTINCT FROM col`
@@ -188,6 +219,17 @@ export function extractReferencedTables(rawSql: string): string[] {
     // and callers that take tables[0] as the relation (planPredicatePartition)
     // then render `FROM <column-name>`, i.e. SQL that cannot run.
     if (m[1].toLowerCase() === 'from' && fromIsNotAClause(stripped, m.index)) continue;
+    // A table-valued function contributes rows but is not a physical relation.
+    // Counting a call such as `FROM jsonb_object_keys(row.jsonb)` as another
+    // table makes table-count-based tenant exceptions reject an exact-key read
+    // whose scalar projection only expands a value from that already-scoped row.
+    // The function's arguments remain part of the query; only a FROM/JOIN
+    // function name is excluded. Do not apply this to INTO: `INSERT INTO t (c)`
+    // has a column list immediately after its physical write target.
+    if (
+      (m[1].toLowerCase() === 'from' || m[1].toLowerCase() === 'join') &&
+      /^\s*\(/.test(stripped.slice(m.index + m[0].length))
+    ) continue;
     const name = m[2].toLowerCase();
     if (notATable.has(name)) continue;
     if (seen.has(name)) continue;
@@ -202,6 +244,24 @@ interface SchemaHintRow {
   table_name: string;
   column_name: string;
   data_type: string;
+}
+
+// Optional SQL advisories and error enrichments must not outlive the primary
+// `dev:pg_query` deadline. Keep their database work in a read-only transaction
+// with a short server-side statement timeout as well as a bounded acquire.
+// These hints fail open; the caller's original query result/error remains the
+// authoritative response when diagnostic metadata is unavailable.
+const PG_READ_ADVISORY_TIMEOUT_MS = 1_000;
+
+function boundedAdvisoryRead<T>(
+  read: (tx: OrgSql) => Promise<T>,
+  client?: OrgSql,
+): Promise<T> {
+  return boundedPgReadTxn(read, {
+    ...(client ? { client } : {}),
+    timeoutMs: PG_READ_ADVISORY_TIMEOUT_MS,
+    acquireTimeoutMs: PG_READ_ADVISORY_TIMEOUT_MS,
+  });
 }
 
 /** Prefer the schema an agent almost certainly meant when a BARE table name
@@ -219,15 +279,14 @@ async function readReferencedColumns(
 ): Promise<Map<string, { schema: string; columns: string[]; typedColumns: string[] }>> {
   const qualified = tables.filter((t) => t.includes('.'));
   const bare = tables.filter((t) => !t.includes('.'));
-  const sql = client ?? getOrgPg().sql;
-  const rows = (await sql`
+  const rows = (await boundedAdvisoryRead((sql) => sql`
     SELECT table_schema, table_name, column_name, data_type
       FROM information_schema.columns
      WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
        AND (lower(table_schema || '.' || table_name) = ANY(${qualified})
             OR lower(table_name) = ANY(${bare}))
      ORDER BY table_schema, table_name, ordinal_position
-  `) as unknown as SchemaHintRow[];
+  `, client)) as unknown as SchemaHintRow[];
 
   // Group by schema.table, then pick ONE schema per referenced name.
   const bySchemaTable = new Map<string, { schema: string; table: string; columns: string[]; typedColumns: string[] }>();
@@ -552,10 +611,12 @@ const CORPUS_NAMESPACED_TABLES = new Set([
  * clean-looking empty result, indistinguishable from "no failures". `source`/`commit_sha` are the
  * columns that actually discriminate a gate row, so `test_runs` is excluded from the
  * generic/override checks below and gets its own advisory ({@link buildTestRunsAdvisory}). An
- * exact run_group_id, bounded row-id group, or bounded exact file_path read fenced by BOTH
- * explicit tenant predicates is the separate safe case: it is an intentional per-run/local
- * evidence read, so it must not be rejected as an unscoped query. A local evidence lookup may
- * instead carry only `harness_slug` when it also fixes BOTH `run_group_id` and `file_path` exactly;
+ * exact primary-key id equality/finite literal IN-list is also safe on its own: the globally
+ * unique id selects only the named run rows, including CI/mutation-probe rows with NULL tenant
+ * columns. A bounded row-id range/group, exact run_group_id, or bounded exact file_path read fenced
+ * by BOTH explicit tenant predicates remains the separate safe local-evidence case. A local
+ * evidence lookup may instead carry only `harness_slug` when it also fixes BOTH `run_group_id` and
+ * `file_path` exactly;
  * that three-part identity is the narrow local reporter shape filed in EI-22641981769449390.
  * Broad/partial tenant filters retain the CI warning.
  */
@@ -565,33 +626,37 @@ interface TestRunsReference {
   qualifier: string;
 }
 
+const RELATION_ALIAS_KEYWORDS = new Set([
+  'as',
+  'on',
+  'where',
+  'join',
+  'left',
+  'right',
+  'inner',
+  'outer',
+  'full',
+  'cross',
+  'natural',
+  'using',
+  'group',
+  'order',
+  'limit',
+  'offset',
+  'fetch',
+  'union',
+  'intersect',
+  'except',
+  'having',
+]);
+
 function extractTestRunsReferences(strippedSql: string): TestRunsReference[] {
-  const sqlKeywords = new Set([
-    'as',
-    'on',
-    'where',
-    'join',
-    'left',
-    'right',
-    'inner',
-    'outer',
-    'full',
-    'cross',
-    'using',
-    'group',
-    'order',
-    'limit',
-    'offset',
-    'fetch',
-    'union',
-    'having',
-  ]);
   const references: TestRunsReference[] = [];
   const referenceRe =
     /\b(?:from|join)\s+(?:only\s+)?(?:[A-Za-z_][A-Za-z0-9_$]*\s*\.\s*)?test_runs\b(?:\s+(?:as\s+)?([A-Za-z_][A-Za-z0-9_$]*))?/gi;
   for (let match = referenceRe.exec(strippedSql); match; match = referenceRe.exec(strippedSql)) {
     const alias = match[1]?.toLowerCase();
-    references.push({ qualifier: alias && !sqlKeywords.has(alias) ? alias : TEST_RUNS_TABLE });
+    references.push({ qualifier: alias && !RELATION_ALIAS_KEYWORDS.has(alias) ? alias : TEST_RUNS_TABLE });
   }
   return references;
 }
@@ -601,12 +666,13 @@ function extractTestRunsReferences(strippedSql: string): TestRunsReference[] {
  * expressed as a {@link TENANT_SCOPE_OVERRIDES} entry (those suppress on "any required column
  * mentioned"; here workspace_id/harness_slug mentioned is not enough for a broad CI read).
  * Fires whenever `test_runs` is referenced with a WHERE clause and neither `source` nor
- * `commit_sha` is used as a predicate, unless the query has an exact run_group_id, bounded row-id, or
- * bounded exact file_path predicate alongside both workspace_id and harness_slug predicates.
- * The latter are explicit per-run/local-evidence tenant fences and are safe to execute without
- * allowUnscoped; broad/partial tenant filters retain the CI warning.
+ * `commit_sha` is used as a predicate, unless the query has an exact test_runs primary-key id
+ * predicate, an exact run_group_id, a bounded row-id group, or a bounded exact file_path predicate
+ * alongside both workspace_id and harness_slug predicates. The latter are explicit per-run/local-
+ * evidence tenant fences and are safe to execute without allowUnscoped; broad/partial tenant filters
+ * retain the CI warning.
  */
-function buildTestRunsAdvisory(stripped: string, tables: string[]): string | null {
+function buildTestRunsAdvisory(stripped: string, tables: string[], rawSql: string): string | null {
   if (!tables.some((t) => bareTableName(t) === TEST_RUNS_TABLE)) return null;
   // A SELECT-list mention is not an identity fence. The old `mentions` check
   // treated `SELECT source` / `SELECT commit_sha` as if the query filtered on
@@ -631,6 +697,13 @@ function buildTestRunsAdvisory(stripped: string, tables: string[]): string | nul
   const boundedLocalGroup =
     tables.length === 1 &&
     (hasBoundedPredicate(stripped, 'run_group_id') || hasBoundedPredicate(stripped, 'id'));
+  // A single exact PK lookup cannot accidentally discard the NULL-tenant CI
+  // rows: it names the rows directly. Keep this separate from the bounded id
+  // range exception above, which still needs the explicit local tenant fence.
+  const exactPrimaryKeyRead =
+    tables.length === 1 &&
+    testRunsReferences.length === 1 &&
+    hasExactTestRunsIdPredicate(rawSql, testRunsReferences[0]!);
   // An exact file path is a local reporter identity fence when the result is
   // explicitly bounded. Without LIMIT/FETCH, the same path can span every
   // historical run and must retain the CI-row warning.
@@ -657,6 +730,7 @@ function buildTestRunsAdvisory(stripped: string, tables: string[]): string | nul
       stripped,
     );
   if (
+    exactPrimaryKeyRead ||
     harnessScopedLocalEvidenceFence ||
     (explicitTenantFence && (boundedLocalGroup || boundedLocalFileRead)) ||
     joinedBoundedLocalGroup ||
@@ -1135,7 +1209,6 @@ export async function buildJsonbPathRedirect(
   }
   if (!candidates.length) return null;
 
-  const sql = opts.client ?? getOrgPg().sql;
   for (const c of candidates.slice(0, JSONB_PROBE_MAX_COLUMNS)) {
     // Depth 1 (`payload -> key`) and depth 2 (`payload -> parent -> key`) in one
     // statement. Two levels is where the real folds live (`payload._ei.severity`)
@@ -1155,7 +1228,10 @@ export async function buildJsonbPathRedirect(
       `WHERE jsonb_typeof(s.v) = 'object' AND jsonb_typeof(e.value) = 'object' ` +
       `AND jsonb_exists(e.value, $1) LIMIT 1) ` +
       `ORDER BY depth LIMIT 1`;
-    const rows = (await sql.unsafe(probe, [column]).catch(() => [])) as unknown as Array<{
+    const rows = (await boundedAdvisoryRead(
+      (tx) => tx.unsafe(probe, [column]).catch(() => []),
+      opts.client,
+    )) as unknown as Array<{
       depth: number;
       parent: string | null;
     }>;
@@ -1268,8 +1344,10 @@ async function probeTenantPopulation(
   }
 
   try {
-    const sql = client ?? getOrgPg().sql;
-    const rows = (await sql.unsafe(`SELECT ${selects.join(', ')}`, params)) as unknown as Array<{
+    const rows = (await boundedAdvisoryRead(
+      (tx) => tx.unsafe(`SELECT ${selects.join(', ')}`, params),
+      client,
+    )) as unknown as Array<{
       has_rows: boolean;
       ws_hit?: boolean;
       hs_hit?: boolean;
@@ -1373,6 +1451,16 @@ function sqlLiteralAndCommentRanges(sql: string): Array<[number, number]> {
       ranges.push([i, j]);
       i = j;
       continue;
+    }
+    if (ch === '$') {
+      const tag = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i))?.[0];
+      if (tag) {
+        const end = sql.indexOf(tag, i + tag.length);
+        const to = end === -1 ? len : end + tag.length;
+        ranges.push([i, to]);
+        i = to;
+        continue;
+      }
     }
     if (ch === "'") {
       const start = i;
@@ -1827,6 +1915,96 @@ export function buildJsonbTypeofNegationAdvisory(rawSql: string): string | null 
       '`jsonb_typeof(...)` NULL, and `NOT (comparison)` stays NULL, so a WHERE/FILTER ' +
       'silently drops the absent-key rows. Use `coalesce(jsonb_typeof(...) = ..., false)` ' +
       'or test key presence with `?` / `NOT (... ? \'key\')`. (EI-19423706381923521.)'
+    );
+  }
+
+  return null;
+}
+
+/**
+ * Flag a jsonb-returning accessor (`->` / `#>`) compared with `IS [NOT] NULL`.
+ *
+ * `->` yields JSONB, so a key that is PRESENT with a JSON null value comes back
+ * as jsonb `null`, which is not SQL NULL: `(col->'k') IS NULL` is FALSE for
+ * every such row, and `IS NOT NULL` counts those rows as populated. The
+ * predicate is not merely imprecise, it is INVERTED on exactly the rows the
+ * caller is asking about — it read as "the field is populated on all 349 rows"
+ * in a real CTRL investigation (EI-23761509275982493), a perfectly plausible
+ * report that was the opposite of the truth.
+ *
+ * Two deliberate boundaries, both load-bearing:
+ *
+ *  1. The text-returning siblings `->>` / `#>>` ARE correct with `IS NULL`
+ *     (they return SQL NULL for a JSON null), so a chain whose LAST accessor is
+ *     a text arrow must not fire. Without that, the advisory would fire on the
+ *     very form it recommends and get discounted as noise — the failure mode
+ *     that retires an advisory faster than being wrong does.
+ *  2. The `IS NULL` must follow the accessor chain directly (closing parens
+ *     aside). An intervening cast — `(col->'k')::text IS NULL` — carries the
+ *     same trap but is left UNFLAGGED on purpose: a narrow trigger that is
+ *     always right beats a broad one agents learn to skip. Widen it only with
+ *     evidence that the cast form actually bites.
+ */
+export function buildJsonNullArrowAdvisory(rawSql: string): string | null {
+  const masked = rawSql.split('');
+  for (const [from, to] of sqlLiteralAndCommentRanges(rawSql)) {
+    for (let i = from; i < to; i++) {
+      if (masked[i] !== '\n') masked[i] = ' ';
+    }
+  }
+  const code = masked.join('');
+  const skipWhitespace = (from: number): number => {
+    let i = from;
+    while (i < code.length && /\s/.test(code[i] ?? '')) i++;
+    return i;
+  };
+  /** Offset just past a jsonb-returning arrow at `at`, or null. */
+  const jsonbArrowAt = (at: number): number | null => {
+    if (code.startsWith('->>', at) || code.startsWith('#>>', at)) return null;
+    if (code.startsWith('->', at) || code.startsWith('#>', at)) return at + 2;
+    return null;
+  };
+
+  for (let i = 0; i < code.length; i++) {
+    const afterArrow = jsonbArrowAt(i);
+    if (afterArrow === null) continue;
+
+    let cursor = skipWhitespace(afterArrow);
+    let endsWithTextArrow = false;
+    for (;;) {
+      // The key operand: an identifier, a number, or a quoted literal that the
+      // mask above already blanked to whitespace.
+      // Quote chars are consumed as part of the operand because the mask above
+      // blanks a literal's CONTENT; whether it also blanks the delimiters is not
+      // something this scan should depend on.
+      // Do NOT consume the predicate as if it were a key operand: the literal
+      // mask above can blank the key entirely, leaving IS NULL as the very next
+      // token. Consuming first ate the IS keyword, so every real trap returned
+      // null while the silent-form cases kept passing vacuously.
+      if (!/^IS\s+(?:NOT\s+)?NULL\b/i.test(code.slice(cursor))) {
+        while (cursor < code.length && /[A-Za-z0-9_$."']/.test(code[cursor] ?? '')) cursor++;
+      }
+      cursor = skipWhitespace(cursor);
+      if (code.startsWith('->>', cursor) || code.startsWith('#>>', cursor)) {
+        endsWithTextArrow = true;
+        break;
+      }
+      const chained = jsonbArrowAt(cursor);
+      if (chained === null) break;
+      cursor = skipWhitespace(chained);
+    }
+    if (endsWithTextArrow) continue;
+
+    while (code[cursor] === ')') cursor = skipWhitespace(cursor + 1);
+    if (!/^IS\s+(?:NOT\s+)?NULL\b/i.test(code.slice(cursor))) continue;
+
+    return (
+      '⚠ json null is not SQL NULL: `->` / `#>` return JSONB, so a key present with a ' +
+      'JSON null value is jsonb `null` — `(col->\'k\') IS NULL` is FALSE for those rows ' +
+      'and `IS NOT NULL` counts them as populated, inverting the predicate on exactly ' +
+      'the rows in question. Use `col->>\'k\' IS NULL`, ' +
+      '`jsonb_typeof(col->\'k\') = \'null\'`, or `col->\'k\' = \'null\'::jsonb`. ' +
+      '(EI-23761509275982493.)'
     );
   }
 
@@ -2296,23 +2474,60 @@ export function buildToolRoutingAdvisory(rawSql: string): string | null {
 const NATIVE_CLIENT_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Read', 'Bash', 'Glob', 'Grep'];
 
 /**
- * Every `workspace_id = '<literal>'` style predicate in a query, as its literal values.
+ * Literal workspace predicates bound to the relation they actually reference.
  *
  * Matched against RAW sql for the same reason as the claimability advisory: the interesting
  * token IS the string literal, which the stripper erases. Only equality-shaped operators are
  * collected — a `workspace_id <> 'default'` is a deliberate exclusion, not the habit this
  * catches.
  */
-function workspaceIdPredicateValues(rawSql: string): string[] {
+function workspaceIdPredicatesByRelation(rawSql: string): Array<{ table: string; values: string[] }> {
   const masked = sqlLiteralAndCommentRanges(rawSql);
-  const startsInsideComment = (idx: number): boolean =>
-    masked.some(([from, to]) => idx >= from && idx < to && rawSql.slice(from, from + 2) === '--');
-  const re = /\bworkspace_id\b\s*(?:=|\bin\b|=\s*any)\s*\(?\s*(?:array\s*\[\s*)?'([^']*)'/gi;
-  const out: string[] = [];
-  for (let m = re.exec(rawSql); m; m = re.exec(rawSql)) {
-    if (!startsInsideComment(m.index)) out.push(m[1]);
+  const isMasked = (idx: number): boolean => masked.some(([from, to]) => idx >= from && idx < to);
+  // Preserve offsets while hiding literals/comments from relation discovery. The existing
+  // stripper changes offsets, so it cannot be used to compare matches against raw literals.
+  let code = '';
+  let end = 0;
+  for (const [from, to] of masked) {
+    code += rawSql.slice(end, from) + ' '.repeat(to - from);
+    end = to;
   }
-  return out;
+  code += rawSql.slice(end);
+
+  const references: Array<{ table: string; qualifiers: string[]; values: string[] }> = [];
+  const referenceRe = /\b(from|join)\s+(?:only\s+)?([A-Za-z_][A-Za-z0-9_$]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_$]*)?)(?:\s+(?:as\s+)?([A-Za-z_][A-Za-z0-9_$]*))?/gi;
+  for (let m = referenceRe.exec(code); m; m = referenceRe.exec(code)) {
+    if (m[1].toLowerCase() === 'from' && fromIsNotAClause(code, m.index)) continue;
+    const table = m[2].replaceAll(/\s/g, '').toLowerCase();
+    const alias = m[3]?.toLowerCase();
+    // An alias hides the original table name in PostgreSQL. Without an alias, both the
+    // bare and schema-qualified table name are legal column qualifiers.
+    const qualifiers = alias && !RELATION_ALIAS_KEYWORDS.has(alias)
+      ? [alias]
+      : [table, bareTableName(table)];
+    references.push({ table, qualifiers, values: [] });
+    // Do not consume JOIN as a rejected alias: it introduces the next relation.
+    if (alias && RELATION_ALIAS_KEYWORDS.has(alias)) referenceRe.lastIndex -= m[3].length;
+  }
+
+  // The lightweight relation extractor does not resolve comma joins. Likewise a bare
+  // column in a multi-relation statement needs schema/query-scope resolution we do not
+  // have here. Stay silent rather than assign that predicate to an arbitrary corpus table.
+  const hasCommaFrom = /\bfrom\b(?:(?!\b(?:where|join|group|order|limit|having)\b)[\s\S])*,/i.test(code);
+  const re = /\b(?:([A-Za-z_][A-Za-z0-9_$]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_$]*)?)\s*\.\s*)?workspace_id\b\s*(?:=|\bin\b|=\s*any)\s*\(?\s*(?:array\s*\[\s*)?'((?:''|[^'])*)'/gi;
+  for (let m = re.exec(rawSql); m; m = re.exec(rawSql)) {
+    if (isMasked(m.index)) continue;
+    const clauses = [...code.slice(0, m.index).matchAll(/\b(select|from|join|where|on|having|group|order|limit|union)\b/gi)];
+    const clause = clauses.at(-1)?.[1].toLowerCase();
+    if (clause !== 'where' && clause !== 'on' && clause !== 'having') continue;
+    const qualifier = m[1]?.replaceAll(/\s/g, '').toLowerCase();
+    const candidates = qualifier
+      ? references.filter((r) => r.qualifiers.includes(qualifier))
+      : references.length === 1 && !hasCommaFrom ? references : [];
+    // Reused aliases across nested queries are ambiguous to this analyzer, too.
+    if (candidates.length === 1) candidates[0].values.push(m[2].replaceAll("''", "'"));
+  }
+  return references.filter((r) => r.values.length && CORPUS_NAMESPACED_TABLES.has(bareTableName(r.table)));
 }
 
 /**
@@ -2337,24 +2552,18 @@ function workspaceIdPredicateValues(rawSql: string): string[] {
  * point is to be loud about the wrong answer, never about the right one.
  */
 export function buildCorpusNamespaceAdvisory(rawSql: string): string | null {
-  const tables = extractReferencedTables(rawSql);
-  const corpusHits = tables.filter((t) => CORPUS_NAMESPACED_TABLES.has(bareTableName(t)));
+  const corpusHits = workspaceIdPredicatesByRelation(rawSql);
   if (!corpusHits.length) return null;
 
-  const values = workspaceIdPredicateValues(rawSql);
-  if (!values.length) return null; // unscoped: correct for these tables
-
-  const sessionTurnsOnly =
-    corpusHits.some((t) => bareTableName(t) === 'session_turns') &&
-    corpusHits.every((t) => bareTableName(t) === 'session_turns');
-  if (sessionTurnsOnly) {
+  const parts: string[] = [];
+  for (const { values } of corpusHits.filter((r) => bareTableName(r.table) === 'session_turns')) {
     const tenantValues = [...new Set(values.filter((v) => v !== 'default'))];
     // `default` alone is an intentional host-global slice. A tenant plus
     // `default` is the production reader's full accessible-corpus predicate.
-    if (!tenantValues.length || values.includes('default')) return null;
+    if (!tenantValues.length || values.includes('default')) continue;
     const tenant = tenantValues[0]!;
     const wrong = tenantValues.slice(0, 2).map((v) => "'" + v + "'").join(', ');
-    return (
+    parts.push(
       '⚠ mixed global/tenant transcript scope: session_turns is NOT a corpus constant. ' +
       "File-backed claude/omp/codex transcripts use workspace_id = 'default' (the host-global " +
       'corpus sentinel), while agent_chat transcripts retain their real workspace id because ' +
@@ -2366,11 +2575,13 @@ export function buildCorpusNamespaceAdvisory(rawSql: string): string | null {
     );
   }
 
-  if (values.includes('default')) return null; // caller already knows the namespace
+  const offenders = corpusHits.filter((r) => bareTableName(r.table) !== 'session_turns' && !r.values.includes('default'));
+  if (!offenders.length) return parts.length ? parts.join('\n') : null;
 
-  const named = [...new Set(corpusHits)].slice(0, 3).join(', ');
+  const named = [...new Set(offenders.map((r) => r.table))].slice(0, 3).join(', ');
+  const values = offenders.flatMap((r) => r.values);
   const wrong = [...new Set(values)].slice(0, 2).map((v) => "'" + v + "'").join(', ');
-  return (
+  parts.push(
     '⚠ corpus namespace, not a tenant: ' + named + ' stores every row under the literal ' +
     "workspace_id = 'default' (the session-transcript CORPUS namespace — see " +
     'search/session-ingest.ts, which hardcodes it deliberately). This query filters it by ' +
@@ -2380,6 +2591,7 @@ export function buildCorpusNamespaceAdvisory(rawSql: string): string | null {
     "workspace_id = 'default'. To scope to a tenant here, filter on `owner` (the coord " +
     'ownerId) instead — that is the column that actually identifies an agent.'
   );
+  return parts.join('\n');
 }
 
 /**
@@ -2937,6 +3149,96 @@ export function buildDbosWorkflowStatusSchemaHint(
 }
 
 /**
+ * Warn when a DBOS interval join starts from every workflow before a window
+ * high-water mark, then checks operation overlap. The row cap does not bound
+ * the scan, and workflow_status has no composite index that makes a name plus
+ * an upper-only start-time predicate selective. Build a small candidate UUID
+ * set from the operation window (with a separate path for still-running
+ * operations), or join an explicit workflow UUID set, before reading workflow
+ * status. This preserves operations whose workflow began before the window.
+ */
+export function buildDbosHistoricalIntervalJoinAdvisory(rawSql: string): string | null {
+  const tables = extractReferencedTables(rawSql).map((table) => table.toLowerCase());
+  if (
+    !tables.includes('dbos.workflow_status') ||
+    !tables.includes('dbos.operation_outputs')
+  ) {
+    return null;
+  }
+
+  const body = stripSqlLiteralsAndComments(rawSql);
+  const reservedAliases = new Set([
+    'cross', 'except', 'fetch', 'full', 'group', 'inner', 'intersect', 'join', 'left',
+    'limit', 'offset', 'on', 'order', 'outer', 'right', 'union', 'where',
+  ]);
+  const aliasFor = (relation: string): string | null => {
+    const relationPattern = relation.replace('.', '\\s*\\.\\s*');
+    const match = body.match(
+      new RegExp(
+        '\\b(?:from|join)\\s+(?:only\\s+)?' +
+          relationPattern +
+          '\\s+(?:as\\s+)?([a-z_][a-z0-9_]*)',
+        'i',
+      ),
+    );
+    const alias = match?.[1]?.toLowerCase();
+    return alias && !reservedAliases.has(alias) ? alias : null;
+  };
+
+  const workflowAlias = aliasFor('dbos.workflow_status');
+  const operationAlias = aliasFor('dbos.operation_outputs');
+  if (!workflowAlias || !operationAlias) return null;
+
+  const workflowPrefix = '\\b' + workflowAlias + '\\s*\\.\\s*';
+  const operationPrefix = '\\b' + operationAlias + '\\s*\\.\\s*';
+  const workflowHasUpperBound = new RegExp(
+    workflowPrefix + 'started_at_epoch_ms\\s*(?:<|<=)',
+    'i',
+  ).test(body);
+  const workflowHasLowerBound = new RegExp(
+    workflowPrefix + 'started_at_epoch_ms\\s*(?:>=|>)',
+    'i',
+  ).test(body);
+  const operationHasUpperBound = new RegExp(
+    operationPrefix + 'started_at_epoch_ms\\s*(?:<|<=)',
+    'i',
+  ).test(body);
+  const operationHasLowerBound = new RegExp(
+    operationPrefix + 'started_at_epoch_ms\\s*(?:>=|>)',
+    'i',
+  ).test(body);
+  const operationHasOverlapEnd = new RegExp(
+    operationPrefix + 'completed_at_epoch_ms\\s*(?:>=|>)',
+    'i',
+  ).test(body);
+  const operationIncludesRunningRows = new RegExp(
+    operationPrefix + 'completed_at_epoch_ms\\s+is\\s+null',
+    'i',
+  ).test(body);
+
+  if (
+    !workflowHasUpperBound ||
+    workflowHasLowerBound ||
+    !operationHasUpperBound ||
+    operationHasLowerBound ||
+    !operationHasOverlapEnd ||
+    !operationIncludesRunningRows
+  ) {
+    return null;
+  }
+
+  return (
+    '⚠ DBOS historical interval join: the workflow start predicate has only a window upper bound, ' +
+    'so every earlier workflow remains a candidate before the operation-overlap test; maxRows limits ' +
+    'returned rows, not scan work. For a narrow window, first reduce operation candidates by the ' +
+    'interval, handle completed and still-running rows as separate paths, then join workflow_status ' +
+    'by workflow_uuid (or join an explicit workflow UUID set). Do not add a lower bound to workflow ' +
+    'start time if that would exclude operations whose workflow began before the window, and do not ' +
+    'raise timeoutMs as a workaround. (EI-25237971414928998).'
+  );
+}
+
+/**
  * Flag an unbounded substring search over the large tool-invocation JSONB
  * columns (EI-21663090256112441).
  *
@@ -3046,6 +3348,61 @@ function hasBoundedPredicate(strippedSql: string, column: string): boolean {
 }
 
 /**
+ * Recognize only a direct, positive primary-key equality or finite scalar IN
+ * list in the test_runs relation's own WHERE clause. This is narrower than a
+ * bounded id range: ranges still need explicit tenant fences because they can
+ * span an arbitrary part of the CI ledger. Comments and strings are masked
+ * without moving offsets so an OR or nested subquery cannot borrow an id
+ * predicate that does not constrain test_runs itself.
+ */
+function hasExactTestRunsIdPredicate(rawSql: string, reference: TestRunsReference): boolean {
+  const masked = maskSqlNoise(rawSql);
+  const where = locateWhereClause(masked);
+  if (!where) return false;
+  const whereBody = masked.slice(where.start, where.end);
+  // A top-level OR can select arbitrary rows outside the id set. An OR inside
+  // a separate AND-conjunct remains bounded by the exact id predicate.
+  const orRe = /\bor\b/gi;
+  for (let match = orRe.exec(whereBody); match; match = orRe.exec(whereBody)) {
+    if (where.depth[where.start + match.index] === where.base) return false;
+  }
+
+  // The table reference must belong to the same query block as this WHERE and
+  // precede it. Otherwise an id predicate in a parent/child CTE could be
+  // mistaken for a fence on test_runs.
+  const tableRe =
+    /\b(?:from|join)\s+(?:only\s+)?(?:[A-Za-z_][A-Za-z0-9_$]*\s*\.\s*)?test_runs\b/gi;
+  let tableMatch: RegExpExecArray | null;
+  let sameBlockSource = false;
+  while ((tableMatch = tableRe.exec(masked))) {
+    if (where.depth[tableMatch.index] === where.base && tableMatch.index < where.start) {
+      sameBlockSource = true;
+      break;
+    }
+  }
+  if (!sameBlockSource) return false;
+
+  const qualifier = reference.qualifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const column = `(?:\\b${qualifier}\\s*\\.\\s*)?\\bid\\b`;
+  const cast = String.raw`(?:\s*::\s*[A-Za-z_][A-Za-z0-9_.]*)*`;
+  const value = String.raw`[+-]?\d+${cast}`;
+  const predicate = new RegExp(
+    `${column}${cast}\\s*(?:=\\s*${value}|\\bIN\\s*\\(\\s*${value}(?:\\s*,\\s*${value})*\\s*\\))`,
+    'gi',
+  );
+  for (let match = predicate.exec(whereBody); match; match = predicate.exec(whereBody)) {
+    const absoluteStart = where.start + match.index;
+    // Only accept a predicate at this WHERE's own depth, never one buried in a
+    // scalar/EXISTS subquery. Parenthesized predicates conservatively stay on
+    // the advisory path until their shape is explicitly supported.
+    if (where.depth[absoluteStart] !== where.base) continue;
+    if (/\bnot\s*(?:\(\s*)?$/i.test(whereBody.slice(0, match.index))) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
  * An exact identity predicate is deliberately narrower than a bounded value/range predicate:
  * `IN (...)` and `BETWEEN` can name several historical rows, while a local run/file lookup must
  * fix one harness, one run group, and one file path before it may omit workspace_id.
@@ -3081,7 +3438,7 @@ export async function buildTenantScopeAdvisory(
   // every downstream `suggest`/predicate builder only ever sees a real id or undefined.
   const resolvedOpts = { ...opts, workspaceId: realScopeValue(opts.workspaceId), harnessSlug: realScopeValue(opts.harnessSlug) };
 
-  const testRunsAdvisory = buildTestRunsAdvisory(stripped, tables);
+  const testRunsAdvisory = buildTestRunsAdvisory(stripped, tables, rawSql);
   // P-003: the SEMANTIC advisory — guards what a column MEANS, not which rows
   // belong to you. Independent of the tenancy checks below (a scout_routed_ideas
   // query can be perfectly tenant-scoped and still count the wrong population).
@@ -3334,6 +3691,27 @@ export const SET_LOCAL_ORG_SEARCH_PATH =
   "SELECT set_config('search_path', 'harness_shared, papercusp_shared, public', true)";
 
 /**
+ * Keep agent-authored ad-hoc SQL out of pg_stat_statements for the rest of this
+ * transaction (papercusp-performance-audit-2026-10-12 P-003).
+ *
+ * Measured 2026-10-13 00:10Z: 7,992 of the 19,621 pg_stat_statements entries
+ * (cap 20,000) were this module's `SELECT * FROM (…) AS _pgq` wrapper, and 8,376
+ * entries had been called exactly once. Each one-off diagnostic read occupies an
+ * entry for good, crowding out the application statements the stats exist to
+ * measure, and at the cap every new statement evicts the least-used ones.
+ *
+ * `pg_stat_statements.track` is superuser-settable. Under a role that may not set
+ * it, the DO block swallows `insufficient_privilege` so the read still runs
+ * (tracked, as before) instead of aborting the transaction. When the extension is
+ * not loaded the name is an ordinary placeholder setting and this is a no-op.
+ * `set_config(…, true)` is transaction-local and survives the block's exception
+ * subtransaction, so it never leaks onto a pooled connection.
+ */
+export const SET_LOCAL_UNTRACKED_STATEMENTS =
+  "DO $untracked$ BEGIN PERFORM set_config('pg_stat_statements.track', 'none', true); " +
+  'EXCEPTION WHEN insufficient_privilege THEN NULL; END $untracked$';
+
+/**
  * Run an internal query in one bounded, READ ONLY transaction.
  *
  * This is the shared seam for operator read paths that already use a tagged
@@ -3380,9 +3758,12 @@ export async function boundedPgReadTxn<T>(
   // expired() guard prevents a late transaction from ever invoking fn, so retrying
   // this PRE-callback phase cannot execute a read twice.
   return retryOnRetryableDbDeadline(async () => {
+    let phase: PgReadTxnTimeoutPhase = 'acquire';
     const work = withAcquisitionDeadline(
       ({ disarm, expired }) =>
         sql.begin(async (tx) => {
+          // BEGIN has returned; setup is still covered by the acquisition deadline.
+          phase = 'setup';
           // READ ONLY must be the first transaction setting before the query.
           await tx.unsafe('SET TRANSACTION READ ONLY');
           await tx`SELECT set_config('statement_timeout', ${`${timeoutMs}ms`}, true)`;
@@ -3398,12 +3779,36 @@ export async function boundedPgReadTxn<T>(
             );
           }
           disarm();
-          return fn(tx as unknown as OrgSql);
+          phase = 'callback';
+          const result = await fn(tx as unknown as OrgSql);
+          // postgres-js commits after its begin callback resolves.
+          phase = 'commit';
+          return result;
         }),
       { ms: acquireTimeoutMs, label: 'boundedPgReadTxn:acquire(admin)', pool: acquirePool },
     );
-    await withCallDeadline(work, callDeadlineMs, callTimeoutMessage(timeoutMs, callDeadlineMs));
-    return (await work) as T;
+    try {
+      await withCallDeadline(work, callDeadlineMs, callTimeoutMessage(timeoutMs, callDeadlineMs));
+      return (await work) as T;
+    } catch (error) {
+      if (error instanceof DbCallDeadlineError || error instanceof PgReadQueryTimeoutError) {
+        // DbCallDeadlineError captures tickets before the acquisition seam releases
+        // its timed-out ticket. Preserve that breach-time view; for a whole-call
+        // timeout, take the current bounded in-memory view while the txn is pending.
+        const tickets = error instanceof DbCallDeadlineError && error.acquisitionTickets
+          ? error.acquisitionTickets
+          : acquirePool
+            ? acquireTicketSnapshot(acquirePool)
+            : null;
+        attachBoundedPgReadTxnTimeoutContext(error, {
+          phase,
+          acquirePool: acquirePool ?? null,
+          acquireSnapshot: acquirePool ? acquireSnapshot(acquirePool) : null,
+          acquireTicketSnapshot: tickets,
+        });
+      }
+      throw error;
+    }
   });
 }
 
@@ -3619,7 +4024,17 @@ export function assertSingleReadStatement(raw: string): string {
       'only a single statement is allowed — remove the `;`-separated statements',
     );
   }
-  if (!/^(select|with)\b/i.test(noiseStripped)) {
+  // PostgreSQL permits a query expression to begin with a parenthesized
+  // SELECT, including set-operation forms such as (SELECT …) UNION ALL
+  // (SELECT …). Accept that read-query head while retaining the early reject
+  // for parenthesized DML/DDL. The transaction's READ ONLY mode remains the
+  // enforcement for nested data-modifying constructs inside a WITH query.
+  let queryHead = skipSqlTrivia(noiseStripped, 0);
+  while (noiseStripped[queryHead] === '(') {
+    queryHead = skipSqlTrivia(noiseStripped, queryHead + 1);
+  }
+  const headWord = readSqlWord(noiseStripped, queryHead)?.word;
+  if (!headWord || !/^(select|with)$/i.test(headWord)) {
     throw new PgReadQueryError(
       'only SELECT / WITH…SELECT queries are allowed (this is a read-only surface; use the documented write verbs to change state)',
     );
@@ -3637,7 +4052,7 @@ export function assertSingleReadStatement(raw: string): string {
  * reach these tables, and MEASURED 2026-09-18 (WI-10001796) in ONE session,
  * seconds apart:
  *
- *   personal:search { scopes:['personal:gmail'] }  -> allowed:false, no_live_grant
+ *   personal:search { scopes:['personal:mail'] }  -> allowed:false, no_live_grant
  *   SELECT count(*) FROM harness_shared.personal_documents -> 32,653 gmail messages
  *
  * ⚠ The data-layer control is NOT missing, it is INERT — do not "fix" this by
@@ -3672,8 +4087,15 @@ export function assertSingleReadStatement(raw: string): string {
  * CONSENT (or these tables revoked outright from whatever role agent SQL uses),
  * not merely workspace. Until one exists, THIS is the control — not a
  * belt-and-braces addition to a working one.
+ *
+ * `documents` is the vault table's name since migration 1327 (WI-10005071).
+ * `personal_documents` stays fenced because 1327 leaves a compat VIEW under that
+ * name for the release build that still reads it; that view reads the same
+ * rows. Drop the old name from this list only in the contract migration that
+ * drops the view, never before: an unfenced alias is a way into the mailbox.
  */
 const PERSONAL_VAULT_RELATIONS = [
+  'documents',
   'personal_documents',
   'personal_identities',
   'personal_identity_aliases',
@@ -3683,7 +4105,30 @@ const PERSONAL_VAULT_RELATIONS = [
 ] as const;
 
 /**
- * The refusal message when `rawSql` touches a Personal Vault relation, else null.
+ * Organization-corpus access-control relations (migration 1316, plan
+ * enterprise-data-sources-2026-10-01 P-014). Organization documents themselves
+ * live in `documents` (scope='organization'), which the list above
+ * already fences. These three decide WHO may read them: the source-derived
+ * permission lists, their members, and the owner-configured mapping from a
+ * provider identity (a Slack/Asana user) to a local user. Ad-hoc SQL against
+ * them reads company membership and account linkage without the grant check,
+ * ACL evaluation or disclosure ledger that searchOrganizationDocuments applies,
+ * and a write here forges access outright. Same reasoning as the vault list:
+ * RLS on these tables is inert for agent connections.
+ */
+const ORGANIZATION_CORPUS_RELATIONS = [
+  'document_permission_lists',
+  'document_permission_members',
+  'provider_identity_mappings',
+] as const;
+
+function findFencedRelation(stripped: string, relations: readonly string[]): string | undefined {
+  return relations.find((rel) => new RegExp(`\\b${rel}\\b`, 'i').test(stripped));
+}
+
+/**
+ * The refusal message when `rawSql` touches a Personal Vault or organization-corpus
+ * access-control relation, else null.
  *
  * Deliberately NOT built on {@link extractReferencedTables}: that one is capped at
  * GUARD_MAX_TABLES and only sees FROM/JOIN/UPDATE/INTO, so a fifth-table join or a
@@ -3692,9 +4137,14 @@ const PERSONAL_VAULT_RELATIONS = [
  *
  * Stripping literals and comments FIRST is what keeps the guard usable rather
  * than merely strict: auditing the vault's own schema — `WHERE relname =
- * 'personal_documents'`, or this file's own doc comments — stays allowed, because
- * there the name is a string, not a table reference. `personal_documents_id` does
- * not match either: `_` is a word character, so the trailing `\b` fails.
+ * 'documents'`, or this file's own doc comments — stays allowed, because
+ * there the name is a string, not a table reference. `documents_id` and
+ * `personal_documents` do not match `documents` either: `_` is a word character,
+ * so the `\b` on that side fails. That is also why each name is listed on its own.
+ *
+ * The match is on the bare identifier, so `documents` is fenced in any schema,
+ * not only harness_shared. That is deliberate (a fence errs closed); a table in
+ * another schema that happens to be named `documents` is read by quoting it.
  *
  * Absolute rather than grant-aware on purpose. This is a pure SQL helper with no
  * principal in scope; a consent check it cannot actually perform would be worse
@@ -3703,7 +4153,19 @@ const PERSONAL_VAULT_RELATIONS = [
  */
 export function personalVaultRefusal(rawSql: string): string | null {
   const stripped = stripSqlLiteralsAndComments(rawSql);
-  const hit = PERSONAL_VAULT_RELATIONS.find((rel) => new RegExp(`\\b${rel}\\b`, 'i').test(stripped));
+  const orgHit = findFencedRelation(stripped, ORGANIZATION_CORPUS_RELATIONS);
+  const hit = findFencedRelation(stripped, PERSONAL_VAULT_RELATIONS);
+  if (!hit && orgHit) {
+    return (
+      `refused: harness_shared.${orgHit} controls access to the organization documents corpus — ` +
+      'which provider identities may read which company documents, and which local user each ' +
+      'provider identity is mapped to. Ad-hoc SQL is not an authorized path to it: no grant is ' +
+      'checked, no ACL is evaluated and no disclosure is recorded here, and a write would forge ' +
+      'access. Organization documents are read through searchOrganizationDocuments (organization:search), ' +
+      'which requires a live organization grant for your principal. Reading SCHEMA is still fine — ' +
+      `quote the name ('${orgHit}') so it is a literal rather than a table reference.`
+    );
+  }
   if (!hit) return null;
   return (
     `refused: harness_shared.${hit} holds Personal Vault data — the owner's synced mail, ` +
@@ -3711,7 +4173,7 @@ export function personalVaultRefusal(rawSql: string): string | null {
     'here and no vault access is audited, so this door reads the mailbox that personal:search ' +
     'refuses without consent (WI-10001796). Use personal:search, which resolves your principal ' +
     "and requires a live owner grant. Reading vault SCHEMA is still fine — quote the name " +
-    "('personal_documents') so it is a literal rather than a table reference."
+    `('${hit}') so it is a literal rather than a table reference.`
   );
 }
 
@@ -3792,6 +4254,8 @@ export async function pgReadQuery(
     // READ ONLY must be set before the first data statement in the txn.
     await tx.unsafe('SET TRANSACTION READ ONLY');
     assertActive();
+    await tx.unsafe(SET_LOCAL_UNTRACKED_STATEMENTS);
+    assertActive();
     await tx.unsafe(`SET LOCAL statement_timeout = ${timeoutMs}`);
     assertActive();
     await tx.unsafe(SET_LOCAL_UTC);
@@ -3870,6 +4334,8 @@ export async function explainReadQuery(
     const work = (assertActive: () => void) => sql.begin(async (tx) => {
       assertActive();
       await tx.unsafe('SET TRANSACTION READ ONLY');
+      assertActive();
+      await tx.unsafe(SET_LOCAL_UNTRACKED_STATEMENTS);
       assertActive();
       await tx.unsafe(`SET LOCAL statement_timeout = ${timeoutMs}`);
       assertActive();
@@ -3978,53 +4444,52 @@ export async function describeRelation(
   const relation = await resolveRelation(ref, opts.client);
   if (!relation) return null;
 
-  // WI-37360: a column's own COMMENT is the one piece of schema metadata that can name
-  // "this column is dead" / "read THAT one instead" directly on the thing an agent is
-  // looking at — col_description() joined by ordinal_position (works for tables AND
-  // views; COMMENT ON COLUMN is valid on both). Left NULL for a column nobody commented,
-  // same as every other optional field here.
-  const columnRows = (await sql`
-    SELECT c.column_name, c.data_type, c.is_nullable, c.column_default,
-           col_description(format('%I.%I', c.table_schema, c.table_name)::regclass, c.ordinal_position) AS comment
-      FROM information_schema.columns c
-     WHERE c.table_schema = ${relation.schema} AND c.table_name = ${relation.name}
-     ORDER BY c.ordinal_position
+  // EI-25597414544524089: three concurrent descriptions of ordinary shared
+  // tables reached the 8s whole-call deadline. Keep metadata in one catalog
+  // round-trip instead of issuing separate columns, indexes and constraints
+  // queries after relation resolution.
+  const [metadata] = (await sql`
+    SELECT COALESCE((
+             -- Keep column comments in the \\d-style description; they carry
+             -- replacement guidance for deprecated or misleading columns.
+             SELECT jsonb_agg(jsonb_build_object(
+               'name', c.column_name,
+               'type', COALESCE(NULLIF(c.data_type, ''), 'unknown'),
+               'nullable', c.is_nullable = 'YES',
+               'default', c.column_default,
+               'comment', col_description(format('%I.%I', c.table_schema, c.table_name)::regclass, c.ordinal_position)
+             ) ORDER BY c.ordinal_position)
+               FROM information_schema.columns c
+              WHERE c.table_schema = ${relation.schema} AND c.table_name = ${relation.name}
+           ), '[]'::jsonb) AS columns,
+           COALESCE((
+             SELECT jsonb_agg(jsonb_build_object('name', i.indexname, 'definition', i.indexdef) ORDER BY i.indexname)
+               FROM pg_indexes i
+              WHERE i.schemaname = ${relation.schema} AND i.tablename = ${relation.name}
+           ), '[]'::jsonb) AS indexes,
+           COALESCE((
+             SELECT jsonb_agg(jsonb_build_object(
+               'name', con.conname,
+               'contype', con.contype::text,
+               'definition', pg_get_constraintdef(con.oid)
+             ) ORDER BY con.conname)
+               FROM pg_constraint con
+               JOIN pg_class c ON c.oid = con.conrelid
+               JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = ${relation.schema} AND c.relname = ${relation.name}
+           ), '[]'::jsonb) AS constraints
   `) as unknown as Array<{
-    column_name: string;
-    data_type: string;
-    is_nullable: string;
-    column_default: string | null;
-    comment: string | null;
+    columns: RelationDescription['columns'];
+    indexes: RelationDescription['indexes'];
+    constraints: Array<{ name: string; contype: string; definition: string }>;
   }>;
-
-  const indexRows = (await sql`
-    SELECT indexname, indexdef
-      FROM pg_indexes
-     WHERE schemaname = ${relation.schema} AND tablename = ${relation.name}
-     ORDER BY indexname
-  `) as unknown as Array<{ indexname: string; indexdef: string }>;
-
-  const constraintRows = (await sql`
-    SELECT con.conname AS name, con.contype::text AS contype, pg_get_constraintdef(con.oid) AS definition
-      FROM pg_constraint con
-      JOIN pg_class c ON c.oid = con.conrelid
-      JOIN pg_namespace n ON n.oid = c.relnamespace
-     WHERE n.nspname = ${relation.schema} AND c.relname = ${relation.name}
-     ORDER BY con.conname
-  `) as unknown as Array<{ name: string; contype: string; definition: string }>;
 
   return {
     relation: `${relation.schema}.${relation.name}`,
     kind: RELATION_KIND[relation.relkind] ?? relation.relkind,
-    columns: columnRows.map((r) => ({
-      name: r.column_name,
-      type: r.data_type || 'unknown',
-      nullable: r.is_nullable === 'YES',
-      default: r.column_default,
-      comment: r.comment,
-    })),
-    indexes: indexRows.map((r) => ({ name: r.indexname, definition: r.indexdef })),
-    constraints: constraintRows.map((r) => ({
+    columns: metadata.columns,
+    indexes: metadata.indexes,
+    constraints: metadata.constraints.map((r) => ({
       name: r.name,
       type: CONSTRAINT_TYPE[r.contype] ?? r.contype,
       definition: r.definition,
@@ -4117,14 +4582,19 @@ function extractFilterPredicates(rawSql: string, masked: string): string[] {
   return out;
 }
 
-/** Top-level conjuncts of the FIRST WHERE clause, sliced from the raw SQL.
+/** Location of the shallowest WHERE clause, sliced from the raw SQL.
  *
  * The WHERE is located at whatever depth it actually sits at rather than only
  * at depth 0, because `SELECT EXISTS (SELECT 1 FROM t WHERE …)` — one of the two
  * shapes this advisory exists for — carries its predicates one paren deep. The
  * clause ends at the first sibling clause keyword or as soon as depth drops
  * BELOW the WHERE's own, which is the subquery's closing paren. */
-function extractWhereConjuncts(rawSql: string, masked: string): string[] {
+function locateWhereClause(masked: string): {
+  depth: Int32Array;
+  base: number;
+  start: number;
+  end: number;
+} | null {
   const depth = sqlDepthPrefix(masked);
   // Prefer the SHALLOWEST `where`, not the lexically first one. In a census the
   // first `where` token belongs to a `FILTER (WHERE …)` bucket one paren deep,
@@ -4139,7 +4609,7 @@ function extractWhereConjuncts(rawSql: string, masked: string): string[] {
       whereAt = { index: m.index, length: m[0].length };
     }
   }
-  if (!whereAt) return [];
+  if (!whereAt) return null;
   const base = depth[whereAt.index]!;
   const start = whereAt.index + whereAt.length;
 
@@ -4161,6 +4631,21 @@ function extractWhereConjuncts(rawSql: string, masked: string): string[] {
       break;
     }
   }
+
+  return { depth, base, start, end };
+}
+
+/** The complete shared WHERE expression, preserved for the FILTER partition. */
+function extractWhereClause(rawSql: string, masked: string): string {
+  const where = locateWhereClause(masked);
+  return where ? rawSql.slice(where.start, where.end).replace(/;\s*$/, '').trim() : '';
+}
+
+/** Top-level AND/OR-separated predicates of the shallowest WHERE clause. */
+function extractWhereConjuncts(rawSql: string, masked: string): string[] {
+  const where = locateWhereClause(masked);
+  if (!where) return [];
+  const { depth, base, start, end } = where;
 
   const out: string[] = [];
   let last = start;
@@ -4210,11 +4695,13 @@ const NON_SUMMING_JSONB_RE =
 export interface PredicatePartitionPlan {
   /** The relation the partition runs against. */
   relation: string;
+  /** Complete caller FROM clause, including aliases, joins, and lateral sources. */
+  fromClause: string;
   /** The discriminating expressions, capped, in caller order. */
   dimensions: string[];
   /** Discriminators beyond the cap, named so the preview cannot imply completeness. */
   droppedDimensions: string[];
-  /** Tenant predicates, kept as WHERE so the partition holds the caller's scope. */
+  /** Caller population predicates kept as WHERE in generated partition SQL. */
   scope: string[];
   touchesJsonb: boolean;
 }
@@ -4234,6 +4721,173 @@ export interface PredicatePartitionData {
   truncated?: boolean;
 }
 
+/** A COUNT used with OVER is a window value on each result row, not a scalar. */
+function hasWindowedCount(masked: string): boolean {
+  const countRe = /\bcount\s*\(/gi;
+  for (let match = countRe.exec(masked); match; match = countRe.exec(masked)) {
+    const open = match.index + match[0].lastIndexOf('(');
+    let depth = 0;
+    let close = -1;
+    for (let k = open; k < masked.length; k++) {
+      if (masked[k] === '(') depth++;
+      else if (masked[k] === ')') {
+        depth--;
+        if (depth === 0) {
+          close = k;
+          break;
+        }
+      }
+    }
+    if (close < 0) continue;
+
+    let after = close + 1;
+    const filter = /^\s*filter\s*\(/i.exec(masked.slice(after));
+    if (filter) {
+      const filterOpen = after + filter[0].lastIndexOf('(');
+      let filterDepth = 0;
+      let filterClose = -1;
+      for (let k = filterOpen; k < masked.length; k++) {
+        if (masked[k] === '(') filterDepth++;
+        else if (masked[k] === ')') {
+          filterDepth--;
+          if (filterDepth === 0) {
+            filterClose = k;
+            break;
+          }
+        }
+      }
+      if (filterClose < 0) continue;
+      after = filterClose + 1;
+    }
+
+    if (/^\s*over\b/i.test(masked.slice(after))) return true;
+  }
+  return false;
+}
+
+/**
+ * Find the outer SELECT list. CTE and scalar-subquery SELECTs are nested, so
+ * their tokens must not make a row-returning outer query look like a census.
+ */
+function locateOuterSelectList(masked: string): { list: string; hasOuterFrom: boolean } | null {
+  const depth = sqlDepthPrefix(masked);
+  const selectRe = /\bselect\b/gi;
+  let selectEnd = -1;
+  for (let match = selectRe.exec(masked); match; match = selectRe.exec(masked)) {
+    if (depth[match.index] !== 0) continue;
+    selectEnd = match.index + match[0].length;
+    break;
+  }
+  if (selectEnd < 0) return null;
+
+  const fromRe = /\bfrom\b/gi;
+  fromRe.lastIndex = selectEnd;
+  for (let match = fromRe.exec(masked); match; match = fromRe.exec(masked)) {
+    if (depth[match.index] !== 0 || fromIsNotAClause(masked, match.index)) continue;
+    return { list: masked.slice(selectEnd, match.index), hasOuterFrom: true };
+  }
+  return { list: masked.slice(selectEnd), hasOuterFrom: false };
+}
+
+/** COUNT must belong to an outer SELECT expression, not a correlated subquery. */
+function hasTopLevelCountProjection(list: string): boolean {
+  const depth = sqlDepthPrefix(list);
+  const countRe = /\bcount\s*\(/gi;
+  for (let match = countRe.exec(list); match; match = countRe.exec(list)) {
+    if (depth[match.index] === 0) return true;
+  }
+  return false;
+}
+
+/** A standalone EXISTS is scalar only when it is the entire projection call. */
+function isOnlyExistsProjection(list: string): boolean {
+  let expression = list.trim();
+  expression = expression
+    .replace(/\s+as\s+(?:"(?:""|[^"])*"|[A-Za-z_][A-Za-z0-9_$]*)\s*$/i, '')
+    .replace(/^\s*(?:distinct|all)\b/i, '')
+    .trim();
+
+  // Parentheses around one expression preserve its scalar shape; do not unwrap
+  // when they contain trailing operators or additional projection text.
+  while (expression.startsWith('(')) {
+    let nesting = 0;
+    let close = -1;
+    for (let index = 0; index < expression.length; index++) {
+      if (expression[index] === '(') nesting++;
+      else if (expression[index] === ')') {
+        nesting--;
+        if (nesting === 0) {
+          close = index;
+          break;
+        }
+      }
+    }
+    if (close !== expression.length - 1) break;
+    expression = expression.slice(1, -1).trim();
+  }
+
+  const exists = /^exists\s*\(/i.exec(expression);
+  if (!exists) return false;
+  let nesting = 0;
+  const open = exists[0].lastIndexOf('(');
+  for (let index = open; index < expression.length; index++) {
+    if (expression[index] === '(') nesting++;
+    else if (expression[index] === ')') {
+      nesting--;
+      if (nesting === 0) return expression.slice(index + 1).trim().length === 0;
+    }
+  }
+  return false;
+}
+
+/**
+ * A partition applies to a scalar census, not to rows whose projection happens
+ * to contain EXISTS. Accept an outer COUNT or a standalone EXISTS with no outer
+ * FROM; a correlated EXISTS over an outer relation is row-returning.
+ */
+function hasScalarPartitionShape(masked: string): boolean {
+  const projection = locateOuterSelectList(masked);
+  if (!projection) return false;
+  if (hasTopLevelCountProjection(projection.list)) return true;
+  return !projection.hasOuterFrom && isOnlyExistsProjection(projection.list);
+}
+
+/**
+ * Slice the source clause for the WHERE that supplied the predicates. Rebuilds
+ * from only the first physical relation drop aliases and row-producing JOIN /
+ * LATERAL sources, making an otherwise plausible partition SQL unrunnable.
+ */
+function locateFromClause(masked: string, base: number, before: number): { start: number; end: number } | null {
+  const depth = sqlDepthPrefix(masked);
+  const fromRe = /\bfrom\b/gi;
+  let fromAt: { index: number; length: number } | null = null;
+  for (let match = fromRe.exec(masked); match; match = fromRe.exec(masked)) {
+    if (match.index >= before) break;
+    if (depth[match.index] !== base || fromIsNotAClause(masked, match.index)) continue;
+    fromAt = { index: match.index, length: match[0].length };
+  }
+  if (!fromAt) return null;
+
+  let end = masked.length;
+  for (let k = fromAt.index + fromAt.length; k < masked.length; k++) {
+    if (depth[k + 1]! < base) {
+      end = k;
+      break;
+    }
+  }
+  const tailRe = /\b(group\s+by|having|order\s+by|limit|offset|fetch|window|union|intersect|except|returning|for\s+(?:update|share|no\s+key\s+update|key\s+share)|where)\b/gi;
+  tailRe.lastIndex = fromAt.index + fromAt.length;
+  for (let match = tailRe.exec(masked); match && match.index < end; match = tailRe.exec(masked)) {
+    if (depth[match.index] !== base) continue;
+    // A set operation has multiple source clauses; this bounded scanner cannot
+    // faithfully partition the combined result without wrapping the full query.
+    if (/^(?:union|intersect|except)$/i.test(match[1]!)) return null;
+    end = match.index;
+    break;
+  }
+  return { start: fromAt.index, end };
+}
+
 /**
  * THE shared primitive (AUTO-BAR-R-001-P-002). Every surface that wants a
  * predicate partition or a NULL profile calls THIS — the query surface here and
@@ -4251,17 +4905,22 @@ export interface PredicatePartitionData {
  */
 export function planPredicatePartition(rawSql: string): PredicatePartitionPlan | null {
   const stripped = stripSqlLiteralsAndComments(rawSql);
+  const masked = maskSqlNoise(rawSql);
 
   // Already partitioned: the cells are on screen, so nothing is hidden.
   if (/\bgroup\s+by\b/i.test(stripped)) return null;
-  if (!/\bcount\s*\(/i.test(stripped) && !/\bexists\s*\(/i.test(stripped)) return null;
+  if (!hasScalarPartitionShape(masked)) return null;
+  // A window COUNT returns one value for every input row. Calling it a scalar
+  // is a false alarm, even though its expression contains the same `count(` token.
+  if (hasWindowedCount(masked)) return null;
 
   const tables = extractReferencedTables(rawSql);
   if (!tables.length) return null;
   const relation = tables[0]!;
 
-  const masked = maskSqlNoise(rawSql);
   const filters = extractFilterPredicates(rawSql, masked);
+  const whereClauseInfo = locateWhereClause(masked);
+  const whereClause = extractWhereClause(rawSql, masked);
   const whereConjuncts = extractWhereConjuncts(rawSql, masked);
   // FILTER buckets ARE the caller's dimensions when present; the surrounding
   // WHERE is then a shared scope rather than a discriminator.
@@ -4279,21 +4938,29 @@ export function planPredicatePartition(rawSql: string): PredicatePartitionPlan |
     if (NON_SUMMING_SCOPE_RE.test(text)) addScope(text);
     else if (!dimensions.includes(text)) dimensions.push(text);
   }
-  // When FILTER buckets supplied the dimensions the WHERE was never consulted,
-  // so its scope predicates would be dropped from the suggested partition.
-  if (filters.length) {
-    for (const predicate of whereConjuncts) {
-      const text = predicate.replace(/\s+/g, ' ').trim();
-      if (NON_SUMMING_SCOPE_RE.test(text)) addScope(text);
-    }
+  // FILTER buckets are measured within the caller's complete WHERE population.
+  // Keeping only tenant-like terms silently drops time bounds and other shared
+  // restrictions, so preserve the original expression intact (including ORs).
+  if (filters.length && whereClause) {
+    addScope(whereClause.replace(/\s+/g, ' ').trim());
   }
   if (!dimensions.length) return null;
 
   const touchesJsonb = dimensions.some((d) => NON_SUMMING_JSONB_RE.test(d));
   if (!touchesJsonb && dimensions.length < 2) return null;
 
+  // FILTER predicates may be the only WHERE clauses, but their source is still
+  // the query's top-level FROM. Otherwise pair the source with the selected
+  // shallowest WHERE (for example the FROM inside an EXISTS subquery).
+  const fromBase = filters.length ? 0 : (whereClauseInfo?.base ?? 0);
+  const fromBefore = whereClauseInfo?.base === fromBase ? whereClauseInfo.start : masked.length;
+  const fromRange = locateFromClause(masked, fromBase, fromBefore);
+  if (!fromRange) return null;
+  const fromClause = rawSql.slice(fromRange.start, fromRange.end).replace(/;\s*$/, '').trim();
+
   return {
     relation,
+    fromClause,
     dimensions: dimensions.slice(0, NON_SUMMING_MAX_DIMENSIONS),
     droppedDimensions: dimensions.slice(NON_SUMMING_MAX_DIMENSIONS),
     scope,
@@ -4313,7 +4980,7 @@ export function predicatePartitionSql(plan: PredicatePartitionPlan, limit = 50):
     'SELECT\n' +
     shown.map((d, i) => `       (${d}) AS d${i + 1}`).join(',\n') +
     ',\n       count(*) AS row_count\n' +
-    `  FROM ${plan.relation}` +
+    `  ${plan.fromClause}` +
     (plan.scope.length ? `\n WHERE ${plan.scope.join('\n   AND ')}` : '') +
     `\n GROUP BY ${shown.map((_, i) => i + 1).join(', ')}` +
     `\n ORDER BY ${shown.length + 1} DESC\n LIMIT ${limit};`
@@ -4328,7 +4995,8 @@ export function predicatePartitionSql(plan: PredicatePartitionPlan, limit = 50):
 export function predicatePartitionSampleSql(plan: PredicatePartitionPlan, limit = 3): string {
   const nullish = plan.dimensions.map((d) => `(${d}) IS NULL`).join(' OR ');
   const where = [...plan.scope, `(${nullish})`].join('\n   AND ');
-  return `SELECT t::text AS sample\n  FROM ${plan.relation} t\n WHERE ${where}\n LIMIT ${limit};`;
+  const sample = plan.dimensions.map((d) => `(${d})`).join(', ');
+  return `SELECT ROW(${sample})::text AS sample\n  ${plan.fromClause}\n WHERE ${where}\n LIMIT ${limit};`;
 }
 
 /**
@@ -4437,7 +5105,7 @@ export const PREDICATE_PARTITION_TIMEOUT_MS = 5_000;
  */
 export function predicatePartitionTotalSql(plan: PredicatePartitionPlan): string {
   return (
-    `SELECT count(*) AS total\n  FROM ${plan.relation}` +
+    `SELECT count(*) AS total\n  ${plan.fromClause}` +
     (plan.scope.length ? `\n WHERE ${plan.scope.join('\n   AND ')}` : '') +
     ';'
   );

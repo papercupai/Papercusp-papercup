@@ -10,6 +10,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../test/_work-items-schema';
 import { recordSpawn, finishSpawn, getSpawn } from './spawn-tree';
+import { admitSpawn } from './operator-spawn';
 import {
   recordRestartIntensity,
   restartSet,
@@ -173,6 +174,24 @@ describe('supervision — superviseCrash decision (D-002, real PG)', () => {
   it('a successful relaunch retires the superseded row to \'reaped\' (frees the ceiling debit)', async () => {
     await spawn('parent');
     await spawn('a', { parent: 'parent', strategy: 'one_for_one' });
+    const invalidReplacement = await admitSpawn(db.sql, {
+      workspaceId: WS,
+      spawnId: 'a-invalid-replacement',
+      idempotencyKey: null,
+      replacesSpawnId: 'a',
+      cap: 2,
+      record: (tx) => recordSpawn(tx, {
+        spawnId: 'a-invalid-replacement',
+        workspaceId: WS,
+        harnessSlug: 'papercup',
+        parentSpawnId: 'parent',
+        runId: 'r-a-invalid-replacement',
+        childRole: 'worker',
+      }),
+    });
+    // The parent plus child already fill the cap. A running row is not a
+    // replacement credit, even when a caller supplies its id.
+    expect(invalidReplacement.admission).toEqual({ kind: 'over_cap', running: 2, cap: 2 });
     await finishSpawn(db.sql, { spawnId: 'a', workspaceId: WS, status: 'failed', exitCode: 1 });
 
     const res = await superviseCrash(db.sql, {
@@ -180,7 +199,24 @@ describe('supervision — superviseCrash decision (D-002, real PG)', () => {
       escalate: spyEscalate, lockReleaser: spyReleaser, notifier: spyNotifier,
       relaunch: async (spawnId) => {
         relaunchCalls.push(spawnId);
-        return { spawnId, ok: true, newSpawnId: 'a-replacement' };
+        const newSpawnId = 'a-replacement';
+        const replacement = await admitSpawn(db.sql, {
+          workspaceId: WS,
+          spawnId: newSpawnId,
+          idempotencyKey: null,
+          replacesSpawnId: spawnId,
+          cap: 2,
+          record: (tx) => recordSpawn(tx, {
+            spawnId: newSpawnId,
+            workspaceId: WS,
+            harnessSlug: 'papercup',
+            parentSpawnId: 'parent',
+            runId: 'r-' + newSpawnId,
+            childRole: 'worker',
+          }),
+        });
+        expect(replacement.admission).toEqual({ kind: 'admitted' });
+        return { spawnId, ok: true, newSpawnId };
       },
     });
 
@@ -188,6 +224,7 @@ describe('supervision — superviseCrash decision (D-002, real PG)', () => {
     expect(res.relaunches).toEqual([{ spawnId: 'a', ok: true, newSpawnId: 'a-replacement' }]);
     const row = await getSpawn(db.sql, WS, 'a');
     expect(row?.status).toBe('reaped');
+    expect((await getSpawn(db.sql, WS, 'a-replacement'))?.status).toBe('running');
     const [raw] = await db.sql<{ error_message: string | null }[]>`
       SELECT error_message FROM harness_shared.spawned_agents WHERE workspace_id=${WS} AND spawn_id='a'`;
     expect(raw.error_message).toMatch(/superseded by supervised restart/);

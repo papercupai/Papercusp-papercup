@@ -284,6 +284,33 @@ describe('P-522 (a): an inconclusive fresh seed scan holds the log instead of fo
     return clock;
   }
 
+  /**
+   * Run seed passes until `view` seeds, at most `maxPasses` of them.
+   *
+   * These tests pair a 5 ms wall-clock read timeout with the offset clock above. On a loaded
+   * machine an ordinary read can miss its 5 ms bound with no hang at all (WI-10008296: the
+   * gate's lane-stateful leg failed this way at 35bdf177 while it passed locally). The miss
+   * parks that block for SNAPSHOT_UNREADABLE_RETRY_MS. The offset clock moves only at real
+   * speed, so it never reaches that retry by itself, and every later pass does nothing.
+   * So whenever a pass stops on an unreadable block, move the clock past one retry, which is
+   * what production time would do. The 3-min stuck bound counts only repeats on the SAME
+   * block, so a stray miss on another block does not move a test toward a give-up.
+   */
+  async function seedUntilSeeded(
+    view: AdmittedLog,
+    cursor: ReturnType<typeof createMergeCursor>,
+    opts: Parameters<typeof seedCursorFromSnapshots>[2],
+    clock: { offset: number },
+    maxPasses = 400,
+  ): Promise<void> {
+    for (let pass = 0; pass < maxPasses && !cursor.positions.has(view.keyHex); pass++) {
+      await seedCursorFromSnapshots([view], cursor, opts);
+      if (cursor.snapshotScans?.get(view.keyHex)?.unreadableAtLength !== undefined) {
+        clock.offset += SNAPSHOT_UNREADABLE_RETRY_MS + 1_000;
+      }
+    }
+  }
+
   it('P-007 run #2: ONE read timeout after a long budget-only hold does not give up (the hold age is not a stuck block)', async () => {
     // Measured on mac-vm 08:25:05-08:29:04Z: the hold engaged on the 30-min bound (budget),
     // one scan read then missed its 5 s bound, and the 3-min UNREADABLE bound, measured from
@@ -303,7 +330,11 @@ describe('P-522 (a): an inconclusive fresh seed scan holds the log instead of fo
 
     clock.offset = 4 * 60_000; // past the 3-min unreadable bound, inside the 30-min one
     hangOnce.add(resumeBelow! - 1); // the very next block the resumed scan reads times out once
-    await seedCursorFromSnapshots([view], cursor, opts);
+    // From here on the budget is unbounded. The hold above is already a budget hold, and a
+    // 2 ms budget checked before the first read can stop a pass before it reaches the hanging
+    // block on a loaded machine (WI-10008296).
+    const resumeOpts = { ...opts, scanBudgetMs: 0 };
+    await seedCursorFromSnapshots([view], cursor, resumeOpts);
     expect(cursor.snapshotScans?.get(log.keyHex)?.unreadableAtLength).toBeDefined(); // it WAS unreadable
     expect(cursor.snapshotSeedPending?.has(log.keyHex)).toBe(true); // ...and still held
     expect(warn.mock.calls.some((c) => String(c[0]).includes('P-522 snapshot seed GAVE UP'))).toBe(false);
@@ -314,9 +345,7 @@ describe('P-522 (a): an inconclusive fresh seed scan holds the log instead of fo
     expect(progress[0]).toContain(`stopped on unreadable #${resumeBelow! - 1}`);
 
     clock.offset += SNAPSHOT_UNREADABLE_RETRY_MS + 1_000; // the block now reads on the retry
-    for (let pass = 0; pass < 400 && !cursor.positions.has(log.keyHex); pass++) {
-      await seedCursorFromSnapshots([view], cursor, opts);
-    }
+    await seedUntilSeeded(view, cursor, resumeOpts, clock);
     expect(cursor.positions.get(log.keyHex)).toBe(setAt); // seeded at the set, not folded from 0
     expect(cursor.snapshotSeedPending?.size ?? 0).toBe(0);
   });
@@ -342,7 +371,7 @@ describe('P-522 (a): an inconclusive fresh seed scan holds the log instead of fo
     expect(clock.offset).toBeGreaterThan(SNAPSHOT_SEED_UNREADABLE_DEFER_MAX_MS);
     expect(warn.mock.calls.some((c) => String(c[0]).includes('P-522 snapshot seed GAVE UP'))).toBe(false);
 
-    await seedCursorFromSnapshots([view], cursor, opts); // nothing hangs now: the scan concludes
+    await seedUntilSeeded(view, cursor, opts, clock); // nothing hangs now: the scan concludes
     expect(cursor.positions.get(log.keyHex)).toBe(setAt);
     expect(cursor.snapshotSeedPending?.size ?? 0).toBe(0);
   });

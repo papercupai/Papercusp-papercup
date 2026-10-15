@@ -44,6 +44,17 @@ node_modules.old*/
 # not sweep it into commits or guarded-build source fingerprints.
 .papercusp-tmp/
 **/.papercusp-tmp/
+
+# These repository-root names are reserved for agent/test scratch. Keep the
+# rules root-anchored so legitimate nested source directories with similar
+# names remain visible. Existing tracked files still need index-only removal.
+/.agent-tmp
+/.tmp
+/.tmp-*
+/.tsx-tmp
+/scratch
+/scratchpad
+/scratch-*
 # Stray nested lockfiles (workspace members must ride the root lock) stay
 # ignored, but the ROOT lockfile is the npm-ci source of truth for CI +
 # fresh clones (regenerated + validated 2026-06-11, audit P-024/EI-84) —
@@ -53,10 +64,11 @@ package-lock.json
 *.tsbuildinfo
 .DS_Store
 *.log
-!docs/evidence/shared-agent-obligations-2026-09-07-acceptance-tests.log
-!docs/evidence/shared-agent-obligations-2026-09-07-recovery-tests.log
-!docs/evidence/shared-agent-obligations-2026-09-07-launch-injection-tests.log
-!docs/evidence/shared-agent-obligations-2026-09-07-launch-current-tests.log
+# Evidence a plan cites must be TRACKED, whatever its extension. `*.log` above
+# silently kept 12 evidence logs across 4 plans out of git (git-sync never commits
+# an ignored file), so one directory-wide negation replaces the old per-file ones
+# (WI-10006796). Guarded by packages/operator-core/lib/harness/git-sync/evidence-logs-tracked.test.ts.
+!docs/evidence/**/*.log
 
 # Vitest coverage output (published as CI artifacts, never committed — spec §1.13)
 # coverage-*/ variants (EI-22195215129102176): a non-default --coverage.reportsDirectory
@@ -116,6 +128,10 @@ apps/operator-docs/src/content/docs/preview/
 # papercusp-docs (Astro+Starlight)
 apps/papercusp-docs/dist/
 apps/papercusp-docs/.astro/
+
+# Repo-root Astro prerender cache. Its generated modules contain checkout-specific
+# absolute source IDs and are runtime build output, not repository content.
+/.astro/
 
 # src-as-entry packages — `build` (tsc) emits dist/, but package.json "exports"
 # routes every subpath to ./src/*, so nothing ever consumes the emitted dist/.
@@ -180,6 +196,15 @@ apps/operator/docs/plans/**/*.md
 # slash-anchored patterns miss the .papercusp dirs that appear inside packages/apps.
 .papercusp/dependency-generations/
 **/.papercusp/dependency-generations/
+# The env-named generation store recorded for env-less callers (WI-10005159).
+**/.papercusp/dependency-generation-root
+
+# The maintained dependency snapshotter writes this inert donor/copy receipt.
+# Keep it out of source provenance while retaining arbitrary untracked source.
+/.papercusp-pinned-deps
+# Retained staging/rollback trees are inert snapshot output, never source input.
+node_modules.pinned-deps-tmp*/
+node_modules.pinned-deps-old.*/
 
 # git-sync-embedded-repo-strand fix (2026-06-30, joint w/ 2b1a8 / WI-1354): transient test-scratch
 # dirs that get a nested .git (an embedded repo). When ANY has NO commit checked out, `git add -A`
@@ -209,7 +234,9 @@ apps/operator/docs/plans/**/*.md
 **/.papercusp/scratch/
 **/.papercusp/vitest-tmp/
 **/.papercusp/tmp/
-**/.papercusp/tmp-*/
+**/.papercusp/tmp-*
+**/.papercusp/node-compile-cache
+**/.papercusp/tsx-*
 **/.papercusp/logs/
 **/.papercusp/bench-reports/
 **/.papercusp/pi-sessions/
@@ -292,6 +319,7 @@ yarn.lock
 # Derived voice-runtime assets — copied out of node_modules by apps/operator's
 # postinstall (scripts/setup-{vad,wake}-runtime.sh); every fresh install regenerates.
 apps/operator/public/vad-runtime/
+apps/operator/public/elevenlabs-runtime/
 apps/operator/public/wake-runtime/
 apps/operator/public/ort-wasm-*
 apps/operator/public/silero_vad_*.onnx
@@ -338,12 +366,22 @@ apps/operator/public/internal/docs/llms-small.txt
 
 # WI-3336: esbuild-bundled host entry (bundle-host.sh) — built per bg-host restart
 apps/operator/dist-host/
+# Private proof hosts use named siblings of the default generated bundle.
+apps/operator/dist-host-*/
+apps/operator/dist-hosted-control-plane/
+# Per-run bundle written by scripts/verify-tauri-headless.sh. Swept into 79e67ad983 (228 files,
+# ~2M lines) because it was missing here, which reds the VAL census on bundled code.
+apps/operator/dist-verify/
 # Sibling of dist-host: the esbuild-bundled DESKTOP SIDECAR (embed-sidecar.mjs, ~51MB) + the
 # blueprint copies the embed build stages beside it. Generated output, never source — it was
 # swept into git by accident (2026-07-11) and every tree-scanning guard (no-raw-harness-sentinel,
 # drop-database-force, envelope-grammar, undrained-stdout) then reddened the gate on bundle text
 # (EI-22059281687580461, WI-2139971, WI-2139976). Untracked 2026-09-02 (WI-2141120).
 apps/operator/dist-sidecar/
+# Sibling of dist-host: the attended `npm run dev` desktop operator's bundled host
+# (papercusp-desktop/bin/dev-operator-ifneeded.sh, plan desktop-dev-startup-speed-2026-10-06).
+# Generated output only; a bundle here is ~50MB of esbuild text.
+apps/operator/dist-devhost/
 
 # WI-4481: flake-soak "prove it discriminates" fixtures. A flake fix drops a
 # KNOWN-FLAKY *.flakeproof.test.tsx next to the code under test and runs
@@ -461,3 +499,8 @@ probehome.*/
 # The COMMITTED artifact is packages/operator-core/lib/design-compare/
 # policy-calibration.json — a small, reviewed measurement, deliberately in-tree.
 design-evidence-report/
+
+# Original private calibration evidence remains byte-for-byte in owner report
+# custody. Its separately frozen *-key-public-v2.json view is the source artifact.
+# Keep the original local key without publishing diagnostic machine identities.
+packages/operator-core/lib/dream/study/native-graph-calibration-key-v2.json

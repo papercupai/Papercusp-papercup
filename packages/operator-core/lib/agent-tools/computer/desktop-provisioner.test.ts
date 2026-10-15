@@ -4,6 +4,11 @@
  * the end-to-end proof script, not here.
  */
 import { describe, expect, it, vi } from 'vitest';
+const registryReservations = vi.hoisted(() => ({ list: vi.fn(async () => [] as string[]) }));
+vi.mock('../../desktop/desktop-session-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../desktop/desktop-session-registry')>()),
+  listReservedLocalDesktopDisplays: registryReservations.list,
+}));
 import {
   assertDesktopPrerequisites,
   findFreeDisplayNumber,
@@ -81,12 +86,26 @@ describe('findFreeDisplayNumber', () => {
     expect(findFreeDisplayNumber(110, 250, (p) => locked.has(p))).toBe(112);
   });
 
+  it('skips database reservations as well as filesystem locks', () => {
+    const locked = new Set(['/tmp/.X111-lock']);
+    expect(findFreeDisplayNumber(110, 250, (p) => locked.has(p), new Set([110, 112])))
+      .toBe(113);
+  });
+
   it('never returns :0 even if base is 0', () => {
     expect(findFreeDisplayNumber(0, 250, () => false)).toBe(1);
   });
 
   it('throws when the whole range is taken', () => {
     expect(() => findFreeDisplayNumber(110, 112, () => true)).toThrow(/no free X display/);
+  });
+});
+
+describe('operator display reservations', () => {
+  it('loads live registry reservations before local allocation', async () => {
+    registryReservations.list.mockResolvedValue(Array.from({ length: 141 }, (_, index) => `:${110 + index}`));
+    await expect(provisionSandboxDesktop({})).rejects.toThrow(/no free X display number/);
+    expect(registryReservations.list).toHaveBeenCalledTimes(1);
   });
 });
 

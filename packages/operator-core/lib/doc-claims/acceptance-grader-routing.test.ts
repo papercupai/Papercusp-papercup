@@ -139,3 +139,61 @@ describe('CLAUDE.md acceptance-grader routing claim', () => {
     });
   });
 });
+
+const BASE_JUDGE_PROMPT_RELPATH = 'libs/papercusp/packages/harness/blueprints/base/prompts/judge.md';
+const GYM_JUDGE_PROMPT_RELPATH = 'libs/papercusp/packages/harness/blueprints/gym/prompts/judge.md';
+
+/** Keep acceptance grading on the generic evaluator persona, with gym scoring scoped to gym. */
+export function judgePersonaSplitViolations(basePrompt: string, gymPrompt: string): string[] {
+  const violations: string[] = [];
+  const gymOnlyTerms = /gym:judge|blueprint\.gym\.rubric|variant-runner/;
+
+  if (!/independent evaluator/i.test(basePrompt) || !/acceptance grading/i.test(basePrompt)) {
+    violations.push('the shared base judge prompt no longer describes the generic acceptance evaluator.');
+  }
+  if (gymOnlyTerms.test(basePrompt)) {
+    violations.push('gym-only scoring instructions have leaked back into the shared base judge prompt.');
+  }
+  if (!gymOnlyTerms.test(gymPrompt)) {
+    violations.push('the gym-specific judge prompt no longer owns its gym scoring instructions.');
+  }
+
+  return violations;
+}
+
+describe('acceptance judge persona separation', () => {
+  describe('fixture controls (the detector must be able to FAIL)', () => {
+    it('catches the pre-fix gym persona restored into the shared base prompt', () => {
+      const preFixGymPersona =
+        'You are the judge for the gym blueprint. Score runs from variant-runner using ' +
+        'blueprint.gym.rubric and call gym:judge.';
+      const violations = judgePersonaSplitViolations(
+        preFixGymPersona,
+        'gym:judge blueprint.gym.rubric variant-runner',
+      );
+
+      expect(violations).not.toHaveLength(0);
+      expect(violations.join('\n')).toMatch(/leaked back into the shared base judge prompt/);
+    });
+
+    it('catches gym scoring instructions missing from the gym-specific prompt', () => {
+      const violations = judgePersonaSplitViolations(
+        'You are an independent evaluator for acceptance grading. Follow your kickoff brief.',
+        'You are a generic independent evaluator.',
+      );
+
+      expect(violations.join('\n')).toMatch(/gym-specific judge prompt no longer owns/);
+    });
+  });
+
+  describe('the live prompts', () => {
+    it('keeps acceptance grading generic and the gym scoring persona under gym', () => {
+      expect(
+        judgePersonaSplitViolations(
+          read(BASE_JUDGE_PROMPT_RELPATH),
+          read(GYM_JUDGE_PROMPT_RELPATH),
+        ),
+      ).toEqual([]);
+    });
+  });
+});

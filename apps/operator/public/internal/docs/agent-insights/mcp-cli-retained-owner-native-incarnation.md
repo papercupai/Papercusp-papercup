@@ -1,0 +1,54 @@
+# CLI fallbacks must retain the current native incarnation of an owner
+URL: /internal/docs/agent-insights/mcp-cli-retained-owner-native-incarnation
+
+A retained owner can have multiple session rows. CLI fallbacks and control activation writers must preserve the live native incarnation or preflight can deny it as stale.
+
+## Measured failure
+
+During the October3 non-P2P fleet restoration, the same owner had multiple Codex incarnations. Owner-only ptool fleet:status requests selected an older reactivated session row and failed stale-artifact/receipt-missing. Holding owner, endpoint and payload constant and forwarding the actual CODEX\_SESSION\_ID as native\_session made the request succeed. This was a transport identity defect, not evidence that the current leader lacked authority. WI-10005821 records the distinguishing test and 172 passing framework tests.
+
+## Existing mechanism
+
+The superuser MCP transport accepts x-papercusp-native-session or native\_session, verifies that the native ID belongs to the supplied owner, and threads the verified advSessionId into current kernel launch-record selection. The native Codex MCP configuration preserves a legacy process-environment header. For tool calls, the source repair prefers Codex's per-call `_meta.threadId`, then verifies that claim through the same owner/native-session classifier; header and query carriers remain for older clients and non-tool requests. The maintained ptool and scripts/mcp-call.mjs fallbacks now preserve CODEX\_SESSION\_ID automatically when their client is this process's PAPERCUSP\_SID. ptool preserves an explicit native\_session URL; neither helper attaches this native session to another client identity. No authority or role gate is weakened.
+
+The psu launcher strips inherited `CODEX_SESSION_ID` and `PAPERCUSP_NATIVE_SESSION_ID` before starting an independent child. A parent shell's Codex ID can otherwise be paired with the child's Papercusp SID, which the operator rejects as `superuser_foreign_native_session`. The child can supply its own Codex ID after startup; when bootstrap already knows a bound native ID, the explicit launch envelope restores `PAPERCUSP_NATIVE_SESSION_ID` after sanitization.
+
+## Distinguish process identity from the current tool-call thread
+
+EI-25305704795423227 records an isolated Codex target whose native MCP calls were rejected while the sanctioned CLI control succeeded. Target row 36488 owned native session `01a1154e-07f6-7450-a631-8b89b496cfa7`, but its retained shell snapshot contained the inherited `CODEX_SESSION_ID` of parent `01a1152c-db72-7be2-8a02-57c018d99469`. Hashing that parent value exactly reproduced the native failure fingerprint on invocations 32780450 and 32780693; invocation 32780852 carried the target value and bound successfully. The distinction is measured in thread-post:1161737.
+
+Codex 0.160.1 reads MCP environment headers from its process environment while shell-command setup injects the current session identity into the execution environment. A successful shell fallback therefore cannot prove that the native MCP client presented the same incarnation. Use per-call thread metadata for tool requests and keep the binding classifier: a nested thread with an inherited valid parent header must be rejected when its own thread does not belong to that owner. Metadata is a claim, not an authority grant. Malformed explicit thread metadata fails closed rather than falling back to a parent header.
+
+The maintained MCP gating matrix tests a valid child with an inherited header, a foreign nested thread with a matching parent header, and malformed values. The existing `mcp-handler-sdk-request-url.test.ts` also exercises the installed SDK transport and protocol to verify that request `params._meta` reaches handler `extra._meta`; each stateless fixture uses a separate transport. Local continuation evidence is matrix/home 360 passing tests plus SDK 3 passing tests and a clean named-file typecheck. These results establish source behavior only. The full consultation matrix, physical-actor attribution and deployed shipment still require their own evidence under WI-10005889 and the parent plan.
+
+## Control receipts must target the live session row
+
+session\_briefs is keyed by owner, while native MCP preflight validates the adv\_sessions row carried by the verified native session. A control-source transition therefore needs its activation event and launch receipt on the live owner row that will make the next tool call. Selecting ORDER BY id DESC alone can choose a newer row whose ended\_at is already set. The owner-level activation then advances, but the still-live caller row lacks the applied pair and preflight reports stale-artifact / receipt-missing.
+
+The October 7, 2026 incident had 14 port-3170 refusals on build 7f880aeffb across two owners. The live caller row ids were 34453 and 34463; the matching applied events named higher-id siblings 34907 and 34806, which had ended the prior day. A bounded query of port-3170 fleet:assignments, coord:inbox, and work\_items:list calls over 2026-10-07T10:41:36.877Z through 2026-10-09T15:54:42.306Z found 531 stale-artifact rows. For each row, the latest prior applied event for that owner and revision named a different adv\_session\_id than the request's candidateAdvSessionId. This broader mismatch does not by itself prove that every candidate was live or that every stale call should inherit another session's receipt. Check the caller and applied-row lifecycle at the time of each refusal; the October 7 sample above is the live-caller/newer-ended-sibling case.
+
+Both recordCurrentSessionIdentityActivation and carryControlActivationIdentityReceipt now select the newest owner row whose ended\_at and ended\_by are null. Receipt carry locks that row while reading and updating, so it also serializes with recordSuLaunchSpec. The PostgreSQL regression uses an older live row plus a newer ended sibling, then races a launch-spec rewrite; it checks that the activation event and applied receipt stay on the live row.
+
+## Diagnose the actual request
+
+Use the maintained CLI under the current session environment. If the native wrapper and a CLI both fail, that alone does not distinguish missing binding from a real identity failure: compare their actual native binding and the serving runtime. Older deployed runtimes may not yet honor the verified advSessionId; current staging does. A native ID must come from the actual current session and pass the operator's binding verifier. Do not fabricate a receipt or rewrite activation.applied/prepared merely to silence the refusal. The audit found an earlier raw activation update that changed one row but still left loop:status denied; it did not fix the request's selected incarnation.
+
+## Preserve temporal meaning
+
+An initial turn\_context or launch record describes the model selected at that time. It cannot establish the current model after an owner model switch. The audited leader was unnecessarily replaced because historical Luna metadata was treated as current despite Avi switching this session to Sol; leadership was reclaimed and the unnecessary session was stood down. Current owner steering and fresh inference/session evidence govern recovery.
+
+## Related evidence
+
+WI-10005827 contains the exact retained census in comment 1156911: 45 unique epochs, 663 indexed text turns, and 345 unique quoted text-turn references. These counts describe the stored text census; tool parts are excerpts and do not establish exhaustive byte-for-byte coverage. Critical raw launch/state actions and completion receipts were checked separately. Ordinary ptool and mcp-call reads on current staging preserve the native session automatically.
+
+## Qualify queue counts
+
+A bug-labelled row is a report. A committed completion is a queue disposition. Neither alone proves a distinct defect was fixed. Reuse the canonical claim-spec compiler and workItemIntakeStageSql; record population, time window, parent/child treatment, acceptance stage and unknowns. countsAsBugWork requires qualifying executable acceptance. A false value means the acceptance proof is absent or nonqualifying; it does not prove no real defect exists. Fleet status completionStats is harness-scoped completion integrity, not a fleet-specific count of unique defects.
+
+## Check wake continuity
+
+A delivered wake can carry a checkpoint older than a later successful write. Compare readAt, checkpoint timestamps and hashes before following its next action. loop.active does not guarantee another wake: inspect rewake.rewakeGuaranteed. In the audited continuation an active bounded loop had exhausted maxDurationSec; renewing the authorized work loop restored a verified wake. Preserve a current checkpoint and the chosen fleet route rather than returning to an obsolete member pull lane.
+
+## Preserve identity through admission replay
+
+The later audit found a second seam: work-item-admission-authority.ts serialized authenticated recovery context without the host-verified advSessionId. The direct current-incarnation request succeeded, while its rebuilt admission context selected an older launch specification and failed receipt-missing. WI-10005893 owns the source repair and regressions. This is separate from a foreign-native-session rejection. Preserve and revalidate the original authenticated incarnation while reading current policy; do not replay grants or applied-state stamps, fabricate receipts, or relax owner/workspace/credential/confinement checks.

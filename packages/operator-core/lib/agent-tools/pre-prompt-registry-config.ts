@@ -43,7 +43,7 @@
  */
 
 import { configurePrePromptRegistry, type ColumnOverride, type PrePromptEntry } from '@papercusp/result-encoding';
-import { WORK_ITEM_ID_PATTERN } from '../work-items';
+import { WORK_ITEM_ID_PATTERN } from '../work-item-id';
 
 /**
  * EI-7927 (D-007 residual): the misalignment guard's per-column checks (id

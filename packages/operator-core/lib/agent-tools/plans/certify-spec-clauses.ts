@@ -26,6 +26,11 @@ import { harnessArg } from '../_harness-scope';
 import evaluatorTool, { argsSchema as evaluatorArgsSchema } from './evaluate-spec-test-adequacy';
 import { PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
 import { emitScorecardForToolContext, scorecardEmitArgs, SCORECARD_EMIT_TIMEOUT_SEC } from '../scorecards/emit';
+import { listScorecards } from '../../scorecards';
+import { getBuildInfo } from '../../build-info';
+import { GRADING_AUDIT_RESERVATION_TTL_MS } from '../../grading-integrity';
+import { getWorkItem } from '../../work-items';
+import { specTestAdequacyCompletionGate } from '../work_items/spec-test-adequacy-gate';
 
 const argsSchema = z.object({
   harness: harnessArg,
@@ -34,11 +39,16 @@ const argsSchema = z.object({
     .enum(PLAN_CLASS_RUBRIC_REFS)
     .describe('Existing plan-class standard rubric referenced by the plan acceptance rubric.'),
   workItemIds: z.array(z.string().min(1)).min(1).max(500).optional(),
+  completionWorkItemId: z.string().trim().min(1).optional().describe(
+    'Work item whose existing spec-test-adequacy completion gate should be checked before filing. Advisory only; does not change the certification evidence selection. A single workItemIds entry supplies the default target.',
+  ),
   evidenceRefs: z.array(z.string().trim().min(1).max(2000)).min(1).max(500).optional(),
   specIds: z.array(z.string().min(1)).min(1).max(500).optional(),
   planItemIds: z.array(z.string().regex(/^P-\d{3,}$/)).min(1).max(200).optional(),
   includeDraft: z.boolean().optional(),
-  limit: z.number().int().min(1).max(1000).optional(),
+  limit: z.number().int().min(1).max(1000).optional().describe(
+    'Maximum evidence rows to load for the filtered plan/spec/work-item/evidence scope, not the number of selected clauses. The default is 1000. If loaded rows reach this ceiling, evaluation refuses with evidence_selection_hit_limit and no verdict because the cohort may be truncated; omit this argument or set it above the expected evidence rows (up to 1000), or narrow the selectors.',
+  ),
   dryRun: z.boolean().optional().describe('Grade and report which clauses WOULD be filed, without filing any card.'),
   acknowledgeExisting: z.boolean().optional().describe('Explicitly acknowledge existing independent cards when filing another current-evidence card.'),
 });
@@ -51,6 +61,8 @@ type EvaluatorRow = {
   scorecardDraft?: unknown;
 };
 
+type StrandedCard = { issueId: string; evaluatorBuild: { sha: string; version: string } };
+
 type ClauseOutcome = {
   specId: string;
   specRevision: number | null;
@@ -61,23 +73,66 @@ type ClauseOutcome = {
     | { status: 'would-file' }
     | { status: 'not-passing' }
     | { status: 'refused'; code: string | null; error: string };
+  /** The build-stranded pending card this clause's new card superseded (or, under dryRun, would). */
+  strandedSuperseded?: StrandedCard;
 };
 
 function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
 }
 
+/**
+ * WI-6554700010008541: find a pending card whose grading audit this host can never dispatch.
+ *
+ * The grading-integrity sweep dispatches a pending card only on a host serving the card's
+ * recorded evaluator build (grading-integrity.ts, evaluatorBuildDriftPendingCards). Emit
+ * refuses every new same-rubric, same-subject card while that card is pending. Once the host
+ * that minted the card moves to a newer build, nothing settles it, and the clause cannot be
+ * certified again. Superseding the card with a freshly reproduced one is emit's own exit
+ * (its grading_audit_required refusal names it).
+ *
+ * This returns a card only when superseding it cannot cut across live work:
+ *   - it is the ONLY pending same-subject card (otherwise which card blocks is ambiguous);
+ *   - it records an evaluator build that differs from this host's build;
+ *   - it holds no unexpired dispatch reservation, so no auditor is working on it now.
+ */
+async function findBuildStrandedPendingCard(
+  rubricRef: string,
+  subject: { kind?: string | null; ref: string },
+  now: number = Date.now(),
+): Promise<StrandedCard | null> {
+  const pending = ((await listScorecards({ rubricRef, subjectRef: subject.ref, limit: 100 })) ?? []).filter(
+    (card) =>
+      card.gradingAudit?.state === 'pending' &&
+      card.subject?.ref === subject.ref &&
+      (card.subject?.kind ?? null) === (subject.kind ?? null) &&
+      card.supersededBy == null &&
+      !card.retracted,
+  );
+  if (pending.length !== 1) return null;
+  const card = pending[0]!;
+  const recorded = card.rerunRecipe?.evaluatorBuild;
+  // A card with no issue id cannot be named in `supersedes`, and one with no recorded build
+  // sha cannot be proven to sit on a retired build, so neither is ours to replace.
+  if (!recorded?.sha || !card.issueId) return null;
+  const live = getBuildInfo();
+  if (recorded.sha === live.sha && recorded.version === live.version) return null;
+  const reservedAt = Date.parse(card.gradingAudit?.dispatchReservation?.reservedAt ?? '');
+  if (Number.isFinite(reservedAt) && now - reservedAt < GRADING_AUDIT_RESERVATION_TTL_MS) return null;
+  return { issueId: card.issueId, evaluatorBuild: { sha: recorded.sha, version: recorded.version } };
+}
+
 export default defineTool({
   name: 'plans:certify-spec-clauses',
   description:
-    "Evaluate spec-test adequacy and file a terminal spec-test-adequacy card for every PASSING clause in one call. Runs plans:evaluate-spec-test-adequacy on the server's own measurement, then files each passing draft through the scorecards:emit path, including its exact-replay gate. Clauses that do not pass are reported with their wouldBlock criteria and never filed. dryRun:true reports without filing. If an existing_independent_scorecards refusal calls for a new sample, re-run with acknowledgeExisting:true.",
+    "Evaluate spec-test adequacy and file a terminal spec-test-adequacy card for every PASSING clause in one call. Runs plans:evaluate-spec-test-adequacy on the server's own measurement, then files each passing draft through the scorecards:emit path, including its exact-replay gate. Clauses that do not pass are reported with their wouldBlock criteria and never filed. Select a cohort with workItemIds and specIds; evidenceRefs must be exact persisted evidence_ref values returned by plans:get-spec-evidence, not test-run table IDs such as test_runs:<id>. If you start from test-run IDs, use workItemIds + specIds or read the bound evidence refs first. The optional limit is an evidence-row ceiling, not a clause count; omit it for the 1000-row default or set it above the filtered evidence cohort. dryRun:true reports without filing. If an existing_independent_scorecards refusal calls for a new sample, re-run with acknowledgeExisting:true.",
   guidance: {
     when: 'Certifying spec-covered work before work_items:complete, instead of evaluating and then emitting each draft by hand.',
     notWhen:
       "Reading one clause's ratings without filing — plans:evaluate-spec-test-adequacy. Filing any other rubric — scorecards:emit.",
     chaining: 'plans:bind-spec-evidence → plans:certify-spec-clauses → work_items:complete.',
     returns:
-      '{ ok, dryRun, counts, clauses } — ok is true only when the evaluation succeeded and no passing clause was refused. counts = { clauses, passing, filed, unchanged, refused, notPassing }. Each clause row carries specId, specRevision, verdict, wouldBlock and card.status (filed | unchanged | would-file | not-passing | refused, with code and error when refused). When the evaluator itself refuses, ok is false and `evaluator` carries its reply (error, remedy) unchanged.',
+      '{ ok, dryRun, counts, clauses } — ok is true only when the evaluation succeeded and no passing clause was refused. counts = { clauses, passing, filed, unchanged, refused, notPassing }. Each clause row carries specId, specRevision, verdict, wouldBlock and card.status (filed | unchanged | would-file | not-passing | refused, with code and error when refused). A row also carries strandedSuperseded { issueId, evaluatorBuild } when its card superseded a pending card whose audit no host can dispatch (recorded on a different evaluator build, no live reservation). When the evaluator itself refuses, ok is false and `evaluator` carries its reply (error, remedy) unchanged.',
     seeAlso: ['plans:evaluate-spec-test-adequacy', 'scorecards:emit'],
   },
   capability: 'coord:write',
@@ -129,6 +184,44 @@ export default defineTool({
       return { data: { ok: false, dryRun, evaluator: evaluation } };
     }
 
+    // A plan-level PASS may combine proofs from several work items. Completion
+    // consumes only its target's bindings and reconciled behavior contract, so
+    // reuse that gate rather than deriving a second readiness verdict here.
+    const completionWorkItemId = args.completionWorkItemId ??
+      (args.workItemIds?.length === 1 ? args.workItemIds[0] : undefined);
+    const completionReadiness = await (async () => {
+      if (!completionWorkItemId) return {
+        status: 'not-checked' as const,
+        note: 'Certification can combine evidence from multiple work items. It does not establish that any work item can close. Supply completionWorkItemId to check the existing scoped completion gate.',
+      };
+      try {
+        const workItem = await getWorkItem(completionWorkItemId, args.harness);
+        if (!workItem) return {
+          status: 'unavailable' as const,
+          workItemId: completionWorkItemId,
+          reason: 'The target work item could not be resolved.',
+        };
+        const gate = await specTestAdequacyCompletionGate({
+          workItem,
+          attestation: { classRef: args.classRef },
+        });
+        return {
+          status: gate.ok ? 'ready' as const : 'not-ready' as const,
+          workItemId: completionWorkItemId,
+          scope: 'spec-test-adequacy' as const,
+          checkedBeforeFiling: true,
+          gate,
+          note: 'This is the existing spec-test-adequacy gate before card filing, not the full work-item completion contract. Filing does not change this snapshot.',
+        };
+      } catch (error) {
+        return {
+          status: 'unavailable' as const,
+          workItemId: completionWorkItemId,
+          reason: error instanceof Error ? error.message : String(error),
+        };
+      }
+    })();
+
     const rows = Array.isArray(evaluation.rows) ? (evaluation.rows as EvaluatorRow[]) : [];
     const clauses: ClauseOutcome[] = [];
     // Sequential on purpose: scorecards:emit serializes on a per-rubric mutex anyway, and
@@ -144,10 +237,6 @@ export default defineTool({
       };
       if (verdict !== 'pass' || wouldBlock.length > 0) {
         clauses.push({ ...base, card: { status: 'not-passing' } });
-        continue;
-      }
-      if (dryRun) {
-        clauses.push({ ...base, card: { status: 'would-file' } });
         continue;
       }
       const draft =
@@ -175,20 +264,48 @@ export default defineTool({
         });
         continue;
       }
-      const emitted = (await emitScorecardForToolContext(parsed.data, ctx)) as {
+      type EmitReply = {
         ok?: unknown;
         created?: unknown;
         issueId?: unknown;
+        previousIssueId?: unknown;
+        reason?: unknown;
         code?: unknown;
         error?: unknown;
       };
+      let emitted = (await emitScorecardForToolContext(parsed.data, ctx, { previewOnly: dryRun })) as EmitReply;
+      // A card stranded on a retired evaluator build blocks this clause forever (see
+      // findBuildStrandedPendingCard). Supersede it once with the card just reproduced.
+      // Identical evidence can return success before the pending-audit gate. It still
+      // needs a current-build card when the old build cannot complete that audit.
+      let strandedSuperseded: StrandedCard | undefined;
+      const unchangedEvidence = emitted.ok === true && emitted.created === false && emitted.reason === 'unchanged-evidence';
+      if ((emitted.code === 'grading_audit_required' || unchangedEvidence) && !parsed.data.supersedes && parsed.data.subject) {
+        const stranded = await findBuildStrandedPendingCard(parsed.data.rubricRef, parsed.data.subject);
+        if (stranded) {
+          strandedSuperseded = stranded;
+          emitted = (await emitScorecardForToolContext(
+            { ...parsed.data, supersedes: stranded.issueId },
+            ctx,
+            { previewOnly: dryRun },
+          )) as EmitReply;
+        }
+      }
+      const strandedField = strandedSuperseded ? { strandedSuperseded } : {};
       if (emitted.ok === true) {
+        const unchanged = emitted.created === false && emitted.reason === 'unchanged-evidence';
+        const card = dryRun && !unchanged
+          ? { status: 'would-file' as const }
+          : {
+              status: unchanged ? 'unchanged' as const : 'filed' as const,
+              issueId: unchanged
+                ? (typeof emitted.previousIssueId === 'string' ? emitted.previousIssueId : null)
+                : (typeof emitted.issueId === 'string' ? emitted.issueId : null),
+            };
         clauses.push({
           ...base,
-          card: {
-            status: emitted.created === false ? 'unchanged' : 'filed',
-            issueId: typeof emitted.issueId === 'string' ? emitted.issueId : null,
-          },
+          card,
+          ...strandedField,
         });
       } else {
         clauses.push({
@@ -198,6 +315,7 @@ export default defineTool({
             code: typeof emitted.code === 'string' ? emitted.code : null,
             error: typeof emitted.error === 'string' ? emitted.error : 'scorecards:emit refused without an error message',
           },
+          ...strandedField,
         });
       }
     }
@@ -222,6 +340,7 @@ export default defineTool({
         ...(typeof evaluation.governingNote === 'string' ? { governingNote: evaluation.governingNote } : {}),
         counts,
         clauses,
+        completionReadiness,
       },
     };
   },

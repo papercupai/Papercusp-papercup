@@ -1,13 +1,13 @@
 /**
- * datatype-frontier-placement.integration.test — the P-001 placement OPT-IN against real PG
- * (reflexive-platform-extensibility-datatypes-2026-06-24). Proves `frontierPlacementKindClause`:
- * built-in feature-family kinds always pass; a generic-kind datatype's kind passes ONLY when it
- * carries the `hive-placement` tag; an untagged generic-kind is excluded (visible ≠ placeable).
+ * datatype-frontier-placement.integration.test — `frontierPlacementKindClause` against real PG
+ * (enterprise-data-sources-2026-10-01 P-009 / D-022).
  *
- * Drives the clause against a small VALUES(item_kind) table — it filters on `item_kind` + a
- * subquery over `datatype_registry`, so no `harness_features_consolidated` insert is needed; the
- * registry rows (created via upsertDatatype) supply the opt-in signal. Mirrors the
- * datatype-registry integration fixture: apply 421, use the RLS-bypass admin client.
+ * Placement is decided by the row's NATURE + AUDIENCE through the single work predicate
+ * (`harness_shared.work_item_is_agent_work`, migration 1325) plus the issue-family ROUTE — no
+ * longer by the retired `hive-placement` registry tag. The clause reads columns only, so it is
+ * driven over a synthetic VALUES relation shaped like `harness_features_consolidated`
+ * (item_kind, nature, audience, payload); createOrgTestDb applies the full migration set, so
+ * the 1325 function exists.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../test/_org-test-db';
@@ -16,23 +16,29 @@ import { frontierPlacementKindClause, HIVE_PLACEMENT_TAG } from './datatype-fron
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
 
-/** Run the frontier clause over a synthetic set of candidate kinds; return those it admits. */
-async function placeableKinds(db: OrgTestDb, ws: string, kinds: string[]): Promise<string[]> {
-  const rows = await db.adminSql<{ item_kind: string }[]>`
-    SELECT item_kind FROM unnest(${kinds}::text[]) AS t(item_kind)
-     WHERE ${frontierPlacementKindClause(db.adminSql, ws)}
-     ORDER BY item_kind`;
-  return rows.map((r) => r.item_kind);
+interface Candidate {
+  id: string;
+  item_kind: string;
+  nature: string | null;
+  audience: string | null;
+  payload?: Record<string, unknown>;
 }
 
-describe('frontier placement opt-in (real PG)', () => {
+/** Run the frontier clause over synthetic candidate rows; return the ids it admits. */
+async function placeable(db: OrgTestDb, rows: Candidate[]): Promise<string[]> {
+  const json = JSON.stringify(rows.map((r) => ({ ...r, payload: r.payload ?? {} })));
+  const out = await db.adminSql<{ id: string }[]>`
+    SELECT id FROM jsonb_to_recordset(${json}::jsonb)
+             AS t(id text, item_kind text, nature text, audience text, payload jsonb)
+     WHERE ${frontierPlacementKindClause(db.adminSql, 'ws-frontier')}
+     ORDER BY id`;
+  return out.map((r) => r.id);
+}
+
+describe('frontier placement by nature/audience (real PG)', () => {
   let db: OrgTestDb;
 
   beforeAll(async () => {
-    // createOrgTestDb applies the FULL migration set (incl. 421/425 and the D-007
-    // pot-rename 506/523) — replaying 421/425 verbatim here is redundant AND re-runs
-    // their old hive_slug index against the post-523 schema, 42703-ing "column
-    // hive_slug does not exist". See datatype-registry.integration.test.ts.
     db = await createOrgTestDb();
   }, 120_000);
 
@@ -40,62 +46,60 @@ describe('frontier placement opt-in (real PG)', () => {
     await db?.cleanup();
   });
 
-  it('admits built-ins always, a tagged generic-kind, but NOT an untagged generic-kind', async () => {
+  it('admits feature-family agent work; excludes issue-routed kinds, human audience and non-work natures', async () => {
+    const admitted = await placeable(db, [
+      { id: 'a-feature', item_kind: 'feature', nature: 'work', audience: 'agent' },
+      { id: 'b-generic-work', item_kind: 'bet-analysis', nature: 'work', audience: 'agent' },
+      { id: 'c-bug', item_kind: 'bug', nature: 'work', audience: 'agent' },
+      { id: 'd-task', item_kind: 'task', nature: 'work', audience: 'agent' },
+      { id: 'e-email-draft', item_kind: 'email-draft-proposal', nature: 'work', audience: 'human' },
+      { id: 'f-record', item_kind: 'wager', nature: 'record', audience: null },
+      { id: 'g-document', item_kind: 'slack-message', nature: 'document', audience: null },
+      { id: 'h-event', item_kind: 'calendar-event', nature: 'event', audience: null },
+    ]);
+    expect(admitted).toEqual(['a-feature', 'b-generic-work']);
+  });
+
+  it('excludes the observation lane and needs-owner-action rows, as the work predicate does', async () => {
+    const admitted = await placeable(db, [
+      { id: 'a-plain', item_kind: 'feature', nature: 'work', audience: 'agent' },
+      { id: 'b-observation', item_kind: 'feature', nature: 'work', audience: 'agent', payload: { lane: 'observation' } },
+      { id: 'c-owner-action', item_kind: 'feature', nature: 'work', audience: 'agent', payload: { needsOwnerAction: true } },
+      { id: 'd-owner-action-false', item_kind: 'feature', nature: 'work', audience: 'agent', payload: { needsOwnerAction: false } },
+    ]);
+    expect(admitted).toEqual(['a-plain', 'd-owner-action-false']);
+  });
+
+  it('the retired hive-placement tag is not a decider: placement follows the stamped nature, tagged or not', async () => {
     const ws = 'ws-frontier';
-    // A generic-kind datatype that OPTED IN (carries the hive-placement tag).
+    // Registry rows are what migration 1322's trigger stamps nature/audience FROM; the tag on
+    // them must no longer change the verdict in either direction.
     await upsertDatatype(db.adminSql, {
-      id: 'bet-analysis',
+      id: 'tagged-record',
       workspaceId: ws,
-      title: 'Bet analysis',
-      description: 'reason about a bet',
+      title: 'Tagged record',
+      description: 'a record that still carries the old opt-in tag',
       tier: 'generic-kind',
-      workItemKind: 'bet-analysis',
-      tags: ['oddsmith', HIVE_PLACEMENT_TAG],
-    });
-    // A generic-kind datatype that did NOT opt in (visible, but not auto-placed).
-    await upsertDatatype(db.adminSql, {
-      id: 'note',
-      workspaceId: ws,
-      title: 'Note',
-      description: 'a plain note',
-      tier: 'generic-kind',
-      workItemKind: 'note',
-      tags: ['oddsmith'],
-    });
-
-    const admitted = await placeableKinds(db, ws, ['feature', 'chunk', 'bet-analysis', 'note', 'bug']);
-    // built-ins + the opted-in 'bet-analysis'; NOT 'note' (untagged) and NOT 'bug' (issue-family).
-    expect(admitted).toEqual(['bet-analysis', 'chunk', 'feature']);
-  });
-
-  it('is workspace-scoped: an opt-in in ws-A does not place ws-B', async () => {
-    const wsA = 'ws-fa';
-    const wsB = 'ws-fb';
-    await upsertDatatype(db.adminSql, {
-      id: 'wager',
-      workspaceId: wsA,
-      title: 'Wager',
-      description: 'a wager',
-      tier: 'generic-kind',
-      workItemKind: 'wager',
+      nature: 'record',
+      workItemKind: 'tagged-record',
       tags: [HIVE_PLACEMENT_TAG],
     });
-    expect(await placeableKinds(db, wsA, ['wager'])).toEqual(['wager']);
-    expect(await placeableKinds(db, wsB, ['wager'])).toEqual([]); // not opted-in in ws-B
-  });
-
-  it('a projection-tier datatype with the tag is still NOT placed (only generic-kind enrols)', async () => {
-    const ws = 'ws-proj';
     await upsertDatatype(db.adminSql, {
-      id: 'position',
+      id: 'untagged-work',
       workspaceId: ws,
-      title: 'Position',
-      description: 'engine-owned money truth',
-      tier: 'projection',
-      workItemKind: 'position', // even if a kind is set, projection is engine-written, not bee-placed
-      authoritativeWriter: 'engine:oddsmith',
-      tags: [HIVE_PLACEMENT_TAG],
+      title: 'Untagged work',
+      description: 'agent work that never opted in',
+      tier: 'generic-kind',
+      nature: 'work',
+      audience: 'agent',
+      workItemKind: 'untagged-work',
+      tags: [],
     });
-    expect(await placeableKinds(db, ws, ['position'])).toEqual([]);
+    const stamped = await db.adminSql<{ kind: string; nature: string; audience: string | null }[]>`
+      SELECT v.kind, k.nature, k.audience
+        FROM (VALUES ('tagged-record'), ('untagged-work')) AS v(kind),
+             LATERAL harness_shared.work_item_kind_nature(${ws}, v.kind) AS k`;
+    const rows = stamped.map((s) => ({ id: s.kind, item_kind: s.kind, nature: s.nature, audience: s.audience }));
+    expect(await placeable(db, rows)).toEqual(['untagged-work']);
   });
 });

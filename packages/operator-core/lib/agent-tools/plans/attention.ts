@@ -67,7 +67,9 @@ import { applyTriage, deriveAuthorization, groupByTier, type AttentionItem } fro
 import { readTriageByWorkspace } from '../../attention/triage-store';
 import { shapePlansAttention } from './attention-shape';
 import { cachedRead, type CachedReadCtx } from '../../cache';
-import { conversationsScopeWorkspace } from '../coordination/conversations';
+import { conversationsScopeWorkspace, listConversationsWithTopics } from '../coordination/conversations';
+import { readInbox, readAckedMsgIds } from '../coordination/messages';
+import { ADMIN_COORD_UI_OWNER } from '../coordination/identity';
 import {
   classifyReadActionability,
   resolveSessionStates,
@@ -77,6 +79,7 @@ import {
 import { runWithWorkspace } from '../../workspace-als';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { ownerAttentionSourcesFor, type OwnerAttentionSource } from '../../interest-profiles';
+import { ownerAskDefaultDisclosure } from '../../external-blockers';
 import { attachListMeta } from '../../sync-resolver/list-meta';
 import { deriveAttentionCounts, deriveAttentionRefs } from '../../sync-resolver/attention-counts';
 
@@ -91,11 +94,11 @@ function attentionProjections(groups: ReturnType<typeof buildAttentionGroups>) {
 /**
  * SWR backstop for plans:attention (cache-expensive-tool-reads-2026-06-22 P-003 / D-001).
  * Shorter than plans:list's: the feed folds ~10 sources beyond the plan tables — several
- * append-heavy (coord_event_log: escalations + messages-to-human) — which are deliberately
- * NOT tagged (tagging an append-heavy source = ~0 hit-rate, the coord:inbox problem D-006).
- * The plan tables ARE tagged, so a plan-item change (the dominant attention change) busts
- * immediately; this short soft TTL bounds staleness for the un-tagged sources (a new
- * escalation/message/smoke-fail surfaces within the window).
+ * append-heavy (coord_event_log: escalations, messages-to-human and acknowledgments).
+ * The existing leading/trailing tag debouncer coalesces coord-log invalidation over
+ * a 4s window, retaining cache hits while refreshing acknowledged messages promptly.
+ * Plan-table writes bust immediately; this short soft TTL remains the backstop for
+ * sources without change-stream tags (such as smoke failures).
  */
 const PLANS_ATTENTION_SOFT_TTL_MS = 20_000;
 
@@ -300,11 +303,15 @@ export default defineTool({
     // includeArchived, and the conversations workspace partition (WI-3348 — a
     // WORKSPACE dimension, not a caller one: two callers viewing the same workspace
     // share the entry; without it in the key one workspace's feed would be served to
-    // another from cache). Tags are ONLY the trigger-covered plan tables; the other
-    // sources (coord_event_log escalations/messages — append-heavy, the coord:inbox
-    // D-006 problem) are deliberately un-tagged and bounded by the short SWR softTtl.
+    // another from cache). Tag the trigger-covered plan tables and coord log: the
+    // latter contains inbox acknowledgments as well as new messages/escalations.
+    // Its existing append-heavy debouncer bounds invalidation frequency; the short
+    // SWR softTtl remains the backstop for sources without change-stream tags.
     const aggregation = await cachedRead(
-      ctx as CachedReadCtx,
+      // Superuser HTTP contexts may carry '*', while this aggregation reads
+      // one concrete workspace. Key L1/L2 in that same partition so its PG
+      // change events invalidate the cached acknowledgment state.
+      { ...(ctx as CachedReadCtx), workspaceId: conversationsWorkspace },
       {
         tool: 'plans:attention',
         key: {
@@ -313,7 +320,7 @@ export default defineTool({
           includeArchived,
           conversationsWorkspace,
         },
-        tags: ['harness_plans', 'plan_revisions', 'plan_runs'],
+        tags: ['harness_plans', 'plan_revisions', 'plan_runs', 'coord_event_log'],
         softTtlMs: PLANS_ATTENTION_SOFT_TTL_MS,
         // P-007/D-082: the read D-078 measured. :3070 runs 16 workers against
         // per-process L1s, so each paid its OWN cold build of this ~10-source
@@ -440,8 +447,6 @@ export default defineTool({
           //    can't suppress it from the human's inbox (security review).
           (async () => {
             try {
-              const { readInbox, readAckedMsgIds } = await import('../coordination/messages');
-              const { ADMIN_COORD_UI_OWNER } = await import('../coordination/identity');
               // EI-1541: same coordLog ambient-workspace pitfall as source #2 —
               // pin the ALS so a detached SWR refresh can't fall through to the
               // global registry workspace and leak another workspace's
@@ -464,8 +469,25 @@ export default defineTool({
                   readAckedMsgIds(ADMIN_COORD_UI_OWNER),
                 ]),
               );
-              for (const m of msgs.slice(-WINDOW)) {
-                if (acked.has(m.msg_id)) continue;
+              const page = msgs.slice(-WINDOW).filter((m) => !acked.has(m.msg_id));
+              // personal-data-reader-set-labels P-006 / D-006: a restricted sender's
+              // message is persisted as a sealed stub. The owner is always a
+              // permitted reader, so the Inbox shows what was written; if the
+              // sealed store cannot be read, the stub is shown instead.
+              const { COORD_SEAL_STORE, mergeUnsealed, sealMarkerOf } = await import('../../personal-vault/coord-seal');
+              const sealedRefs = page.filter((m) => sealMarkerOf(m)).map((m) => m.msg_id);
+              const opened = sealedRefs.length
+                ? await import('../../personal-vault/sealed-contents')
+                    .then(async ({ openSealedForOwner }) =>
+                      (await import('@papercusp/db-org')).withWorkspace(conversationsWorkspace, (tx) =>
+                        openSealedForOwner(tx, { workspaceId: conversationsWorkspace, store: COORD_SEAL_STORE, refs: sealedRefs }),
+                      ),
+                    )
+                    .catch(() => new Map<string, Record<string, unknown>>())
+                : new Map<string, Record<string, unknown>>();
+              for (const raw of page) {
+                const content = opened.get(raw.msg_id);
+                const m = content ? mergeUnsealed(raw, content) : raw;
                 const mm = m as typeof m & {
                   auto?: unknown;
                   lifecycle?: unknown;
@@ -620,7 +642,6 @@ export default defineTool({
           (async () => {
             if (!ownerSourceEnabled('open-owner-questions')) return;
             try {
-              const { listConversationsWithTopics } = await import('../coordination/conversations');
               // Pinned to the workspace resolved up front (and named in the cache
               // key) — NOT the ambient ALS, which is absent on agent MCP calls and
               // on SWR background refreshes and would fall to 'default' (WI-3348).
@@ -699,9 +720,16 @@ export default defineTool({
                     workItemId: r.feature_id,
                     itemKind: r.item_kind ?? 'unknown',
                     title: r.title ?? r.feature_id,
-                    body: r.summary,
                     harnessSlug: resolveHarness(r.harness_slug, null),
                     ownerAgentId: r.taken_by,
+                    // Owner-attention ledger (EI-23783029010995961): say what the system
+                    // will do if the owner never answers, in the card the owner reads.
+                    body: [
+                      (r.summary ?? '').trim() || r.title || r.feature_id,
+                      ownerAskDefaultDisclosure(r.payload),
+                    ]
+                      .filter(Boolean)
+                      .join('\n\n'),
                     // P-003: WHICH leg of the source query admitted this row —
                     // the terminal action clears a different gate for each.
                     status: r.status,
@@ -726,7 +754,6 @@ export default defineTool({
             if (!ownerSourceEnabled('owner-walls')) return;
             try {
               const { listOwnerWalls } = await import('../coordination/tools/walls');
-              const { activeWorkspaceId } = await import('../../workspace-registry');
               const { walls } = await listOwnerWalls({
                 workspaceId: activeWorkspaceId(),
                 harness: harnessFilter ?? undefined,
@@ -794,7 +821,6 @@ export default defineTool({
             if (!ownerSourceEnabled('pending-owner-gates')) return;
             try {
               const { listPendingGates } = await import('../../attention/gate-store');
-              const { activeWorkspaceId } = await import('../../workspace-registry');
               const gates = await listPendingGates({
                 workspaceId: activeWorkspaceId(),
                 order: 'oldest',
@@ -826,6 +852,8 @@ export default defineTool({
                     refId: g.ref_id,
                     gateKind: g.kind,
                     question: g.question,
+                    decideBy: g.decide_by,
+                    defaultIfUnanswered: g.default_if_unanswered,
                     ownerAgentId: g.owner_id,
                     harnessSlug: resolveHarness(g.harness_slug, null),
                     waitingHours,
@@ -885,7 +913,6 @@ export default defineTool({
           (async () => {
             try {
               const { readDecisionsOwed } = await import('../../attention/decision-owed-source');
-              const { activeWorkspaceId } = await import('../../workspace-registry');
               const owed = await readDecisionsOwed({ workspaceId: activeWorkspaceId() });
               for (const d of owed) {
                 if (harnessFilter && d.harnessSlug && d.harnessSlug !== harnessFilter) continue;
@@ -913,7 +940,6 @@ export default defineTool({
           (async () => {
             try {
               const { readUnhandledDirectives } = await import('../../attention/unhandled-directives-source');
-              const { activeWorkspaceId } = await import('../../workspace-registry');
               for (const d of await readUnhandledDirectives({ workspaceId: activeWorkspaceId() })) {
                 items.push({ ...unhandledDirectiveToAttention(d), occurredAt: toIsoOrNull(tsOf(d.createdAt)) });
               }
@@ -1002,7 +1028,6 @@ export default defineTool({
           try {
             const { FLAGS } = await import('@papercusp/flags');
             const { getFlag } = await import('@papercusp/flags/server');
-            const { activeWorkspaceId } = await import('../../workspace-registry');
             armed = await getFlag(FLAGS.MUG_AUTONOMY_ARMED, `autonomy:${activeWorkspaceId()}`);
           } catch {
             /* fail-safe: treat as unarmed */

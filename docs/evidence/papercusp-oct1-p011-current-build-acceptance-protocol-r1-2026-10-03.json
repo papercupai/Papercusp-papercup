@@ -1,0 +1,151 @@
+{
+  "schemaVersion": "p011-current-build-acceptance-protocol-v1",
+  "status": "prepared-not-executed",
+  "workItem": "WI-10004890",
+  "savedOracleWorkItem": "WI-10005907",
+  "ownerId": "su-7db4feb8-04cb-46ce-80c2-844aa23006d2",
+  "nativeSession": "01a100cd-148f-77d3-b994-3af4d5712773",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "planItem": "P-011",
+  "planVersionRead": 101,
+  "planContentHashRead": "8ac15bb31f55ef20df51464ae9e326c286a472ecf19b066df98df26ff02b5807",
+  "spec": {
+    "id": "PERF-OCT1-P011-MEMORY",
+    "revision": 2,
+    "fingerprint": "6059e251ea51a61458afd5075a8190a60e1f1139d28c55784b4ff12d2c624010",
+    "behavior": "Every retained-memory source selected for optimization has a matched PSS and allocation measurement supporting either a verified reduction or a specific non-defect disposition.",
+    "requiredTestLayer": "integration",
+    "requiredEvidencePlane": "live"
+  },
+  "scope": {
+    "newRuntimeMeasurement": false,
+    "newExecutableTests": false,
+    "newEvidenceBinding": false,
+    "contractChanged": false,
+    "fullP011Acceptance": false,
+    "independentPlanAcceptance": false,
+    "shipmentVerified": false,
+    "purpose": "Source-backed preparation for necessary forward acceptance; this protocol is not a measurement receipt or fulfillment evidence."
+  },
+  "preservedReceipts": [
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-proof-census-2026-10-02.json",
+      "bytes": 43488,
+      "sha256": "ce7f942025573298f90a487a65775c63ec48861b20bde6eb2bcb82a0d6efb950"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-exact-owner-oracle-r1-qualification-2026-10-03.json",
+      "bytes": 10456,
+      "sha256": "a995b87f3b6c680423a3b4bb33a8f221495c9f4234b02e47ed50c9a3567f8a01"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-exact-owner-oracle-r1-2026-10-03.json",
+      "bytes": 4400,
+      "sha256": "4619229f67ef51755aac60e059f42c0dd4b201e751a189927b826c5905595388"
+    }
+  ],
+  "savedLedgerReadback": {
+    "finalSourceValidation": { "id": 20659110, "status": "pass" },
+    "mutationBaseline": { "id": 20660892, "status": "pass" },
+    "mutationUnmutatedCopy": { "id": 20660893, "status": "pass" },
+    "mutationMutant": { "id": 20660896, "status": "fail" },
+    "bindings": [23370, 23371, 23387, 23388],
+    "bindingCurrentnessAtRead": "current",
+    "bindingScope": "Exact spec/source/test/run readback of four selected rows; not the full evidence population.",
+    "replayedForRecovery": false
+  },
+  "maintainedSurfaces": [
+    {
+      "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+      "bytes": 166621,
+      "sha256": "6b6bafdd7e944c78d841e1d984d0c30d57c055249024eb7af9c7634e911d5bfc",
+      "reuse": "Order-reversed inbox/spawner pairs, raw resource/functionality oracles, HTTP overlap guards, private operator-api runtime and cleanup. Serving-compiler path already accepts a serving-generation directory and copies it before intervention."
+    },
+    {
+      "path": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+      "bytes": 46384,
+      "sha256": "296552a8b44f09048c660c9289a1f4fad4bd38e1e42816cc1dc47b462b691ff7",
+      "reuse": "PID/startTicks/executable/build/socket fences, unforced counters and bounded actual staging idle/ordinary windows. It explicitly leaves request assignment and allocation ownership unknown."
+    },
+    {
+      "path": "scripts/cdp-inspector.mjs",
+      "bytes": 40012,
+      "sha256": "0fae03367aef907fa7b42b825b2482417b470d350a02d4a000075be35d04a1c1",
+      "reuse": "readProcessMemory cumulative V8 allocation and separate PSS; readPinnedState bounded logical payloads without GC, queryObjects or getters."
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/dev/pg_health.ts",
+      "bytes": 5899,
+      "sha256": "3d4dfe8bd1208e3cfbf4122240d6c01e1e40cc81f111437945ac81e53f0f2e33",
+      "reuse": "Existing process-local completed-query reader, localOnly mode and source/connection/query identity tuple. This reader does not establish retained ownership or a historical initiating call."
+    },
+    {
+      "path": "libs/papercusp/libs/db/src/acquire-registry.ts",
+      "bytes": 26902,
+      "sha256": "efccd28a72e45f1572ff85505637ac997f463ccd6d6479df5a2e3248903778e4",
+      "reuse": "The diagnostic writer retains bounded numeric metadata, not SQL parameters or decoded rows. wireBytes is query-result wire traffic, not unique retained or allocated bytes. Ring eviction and omitted records must remain explicit."
+    },
+    {
+      "path": "packages/operator-core/lib/cache/cached-read.ts",
+      "bytes": 16533,
+      "sha256": "73b09e7f3c4b5a53511fd8c51d9cf81a4cc7eff6b2d21e774eeec049dbfc39c9",
+      "reuse": "Existing raw-read cache owner and normalized key path; no parallel cache or new measurement service."
+    }
+  ],
+  "runtimeRoute": {
+    "class": "operator-api",
+    "source": "dev:pipeline_position(path=packages/operator-core/lib/service-memory-live-baseline.integration.test.ts,testClass=operator-api), selected currentBuildTestRoute and servingRuntimes",
+    "route": "http://127.0.0.1:3170 after containment check",
+    "runtime": "staging-operator",
+    "isolation": "Separate port, process and checkout; database and workspace are not isolated.",
+    "prerequisites": ["Containing staging commit loaded", "private test identity/data for writes"],
+    "verification": "Measured :3170 build identity plus request/response on that build.",
+    "loadedBuildAtRead": "4bfd135beb",
+    "containsNamedBaselineSourceAtRead": true,
+    "freshness": "Snapshot only. Re-identify before a future run; do not infer other source containment, allocation ownership or request assignment."
+  },
+  "nextExecutionUnit": {
+    "selectedSource": "Full inbox cache keys duplicate identical raw input across display variants",
+    "reasonNewWorkIsNecessary": "Saved observed-inbox arms use private artifacts built from the canonical tree. They do not establish containment and behavior on the selected loaded staging generation or its complete source graph.",
+    "firstImplementationStep": "Register a change child under WI-10004890 before source edits. Extend the existing inbox pair with the serving-generation copy input already used by its compiler cohort; keep its default current-tree route and all historical receipts. Add preflight guards before any expensive cohort.",
+    "requiredPreflightGuards": [
+      "Read serving candidate artifacts without modifying their checkout; copy only into the maintained disposable runtime.",
+      "Pin loaded staging health identity, candidate bundle and companion worker bytes before copy; fail closed on mismatch or drift rather than rebuild from a different tree.",
+      "Record source/test/fixture hashes and freeze the final test bytes before measurement; bound the executed-source claim to what was actually measured.",
+      "Require exactly one guarded cache-key intervention in the baseline copy and unchanged candidate/companion bytes.",
+      "Require private request-only operator-api identity and database isolation for deterministic fixture writes.",
+      "Keep actual staging request/response evidence separate from disposable paired resource evidence; neither alone establishes the whole clause."
+    ],
+    "pairedMeasurement": {
+      "arms": ["baseline", "shared", "shared", "baseline"],
+      "fixtureRows": 256,
+      "bodyStringCodeUnitsPerRow": 32768,
+      "windowsPerArm": 3,
+      "clientRequestsPerWindow": 8,
+      "samplesPerArm": 11,
+      "metrics": ["PID/startTicks-bound PSS bytes", "cumulative V8 allocated bytes", "full raw-content digest", "response IDs/summaries/counts", "client request intervals", "descendant identity and graceful cleanup"],
+      "acceptance": "Both order-reversed pairs must satisfy the existing independent raw oracle. Preserve unfavorable resource results as results, not source defects or missing data. Cumulative allocation and transient PSS growth remain distinct from unique retained/native savings."
+    },
+    "causalOwnerAcceptance": "Join exact raw-cache entry selection to the actually exercised inbox key path and fixture/output digests. Query diagnostic wireBytes may corroborate completed result flow but cannot replace retained/native ownership evidence. If the actual serving PID/query link is not observed, keep it unknown and do not relabel the private pair as live whole-contract proof.",
+    "runGate": "No new cohort until the copy/identity/intervention/private-data preconditions and canonical focused guards pass. No recovery replay of the saved suite, mutation or producer.",
+    "bindingAndClose": "Bind new necessary ledger-backed proof to the unchanged exact P011 revision with honest plane and gap declarations. Under D-021, each linked child and the parent remain open until its whole resolved clause set passes on its own bindings."
+  },
+  "sourceDispositionPopulation": [
+    { "source": "Spawner full-host boot import and initialization graph", "owner": "WI-10004890", "next": "Keep saved private reduction and separately loaded sibling baseline qualified; broader live paired/native ownership is not established." },
+    { "source": "Full inbox cache keys duplicate identical raw input across display variants", "owner": "WI-10004890", "next": "Next execution unit above; retain original and order-reversed observed comparisons separately." },
+    { "source": "Hard-expired cache roots", "owner": "EI-24812912892068980", "next": "Preserve exact useful-context and root-reclamation proof. PSS did not decrease; do not manufacture physical savings or a cumulative-allocation measurement." },
+    { "source": "Closure compiler worker lifetime", "owner": "WI-10005114", "next": "Preserve saved exercised caller and cleanup evidence; disposable-worker proof does not recover historical services." },
+    { "source": "Historical long-lived esbuild services", "owner": "EI-24815884898197408", "next": "Need a future same-owner completed-work/idle discriminator with executable/PID/startTicks/caller evidence. Later absence cannot establish historical recovery." },
+    { "source": "Historical PostgreSQL parse/DataRow allocations", "owner": "WI-10004890", "next": "Need a current named-query decoded-result owner and matched allocation/PSS/useful-context windows. Existing bounded metadata ring is not a result retainer graph." },
+    { "source": "Background host freed-but-retained own-log pages", "owner": "WI-10005291", "next": "Peer-owned P017 lane; preserve peer discriminator and missing durable matched acceptance. No intervention or monitoring by this session." },
+    { "source": "Anonymous/native and cgroup remainder", "owner": "WI-10004890", "next": "Need owner-specific allocation/free behavior and matched functionality/PSS; never derive native bytes by subtracting overlapping counters." }
+  ],
+  "preservedAuthorityAndLimits": [
+    "Original approval provenance and pending authenticated native owner affirmation/EI-24935025969323640 are unchanged; no duplicate ask or source reclassification.",
+    "P018/WI-10005898 remains done; P010, R8/R9, independent acceptance and shipment remain open.",
+    "Eight original source dispositions and original acceptanceGaps remain byte-preserved in the referenced census.",
+    "Small singleton dominator V8 totals are not total reachable payload or physical/native ownership; overlapping parent totals cannot be summed.",
+    "No P017 work, LIVE_GATE_OPS, native agent launch, profiler, forced GC or restart is part of this unit.",
+    "Future measurements must use the existing test framework and maintained runtime boundary. This JSON preparation does not warrant an executable-test replay."
+  ]
+}

@@ -378,6 +378,7 @@ async function runFleetControlPostSaga(args: {
               byOwnerId: args.ownerId,
               leaderOwnerId: args.fleet.leaderOwnerId,
               reason: pauseHoldReason,
+              resumeGate: args.park?.gate,
             })
         : clearFleetPauseHolds({ fleetSlug: args.slug, workspaceId: args.workspaceId }),
     {
@@ -388,7 +389,8 @@ async function runFleetControlPostSaga(args: {
   );
   if (pauseWork.result.degraded) degraded = true;
   const held = pauseWork.result.value;
-  if (held && (held.items.length > 0 || held.failed.length > 0)) pauseHolds = held;
+  if (held?.degraded) degraded = true;
+  if (held && (held.items.length > 0 || held.failed.length > 0 || held.degraded)) pauseHolds = held;
   // The cue MUST remain after the hold promise settles. This wait happens in
   // the post-flip saga, so a slow hold cannot take the durable receipt down.
   if (pauseWork.result.degraded) await pauseWork.settled.catch(() => null);

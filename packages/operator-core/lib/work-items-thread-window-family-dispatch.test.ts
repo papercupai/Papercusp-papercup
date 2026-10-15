@@ -24,6 +24,41 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { getWorkItemThreadWindow } from './work-items';
+import { getIssueThreadWindow, type EngineerIssue } from './issues-engineer';
+
+const boundedReadMocks = vi.hoisted(() => ({
+  read: vi.fn(async (run: (tx: unknown) => Promise<unknown>) => run({ marker: 'bounded-read-transaction' })),
+  getThreadByParent: vi.fn(),
+  listRecentPosts: vi.fn(),
+  listTags: vi.fn(),
+  observedSql: [] as unknown[],
+}));
+
+vi.mock('./pg-read-query', () => ({ boundedPgReadTxn: boundedReadMocks.read }));
+vi.mock('@papercusp/coordination/capabilities', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/coordination/capabilities')>();
+  return {
+    ...actual,
+    PgThreadStore: class {
+      constructor(private readonly opts: { getSql: () => unknown }) {}
+      getThreadByParent(...args: unknown[]) {
+        boundedReadMocks.observedSql.push(this.opts.getSql());
+        return boundedReadMocks.getThreadByParent(...args);
+      }
+      listRecentPosts(...args: unknown[]) {
+        boundedReadMocks.observedSql.push(this.opts.getSql());
+        return boundedReadMocks.listRecentPosts(...args);
+      }
+    },
+    PgTaggableStore: class {
+      constructor(private readonly opts: { getSql: () => unknown }) {}
+      listTags(...args: unknown[]) {
+        boundedReadMocks.observedSql.push(this.opts.getSql());
+        return boundedReadMocks.listTags(...args);
+      }
+    },
+  };
+});
 
 const issueWindow = vi.fn(async () => ({
   posts: [{ id: 1, thread_id: 't', author_id: 'su-a', body: 'hi', created_ts: '2026-08-03T00:00:00.000Z' }],
@@ -36,7 +71,53 @@ const item = (family: string) =>
   vi.fn(async () => ({ id: 'WI-6857', family, harness: 'papercusp', createdAt: '2026-08-02T04:23:32.237Z' }));
 
 describe('getWorkItemThreadWindow family dispatch', () => {
-  beforeEach(() => issueWindow.mockClear());
+  beforeEach(() => {
+    issueWindow.mockClear();
+    boundedReadMocks.read.mockClear();
+    boundedReadMocks.getThreadByParent.mockReset().mockResolvedValue({ thread_id: 'thread-feature' });
+    boundedReadMocks.listRecentPosts.mockReset().mockResolvedValue({
+      posts: [{ id: 2, thread_id: 'thread-feature', author_id: 'su-a', body: 'comment', created_ts: '2026-08-03T00:00:00.000Z' }],
+      total: 4,
+    });
+    boundedReadMocks.listTags.mockReset().mockResolvedValue(['topic']);
+    boundedReadMocks.observedSql.length = 0;
+  });
+
+  it('bounds the complete feature-family window read in one database transaction', async () => {
+    const win = await getWorkItemThreadWindow('WI-6857', 3, undefined, {
+      getWorkItem: item('feature') as never,
+    });
+
+    expect(boundedReadMocks.read).toHaveBeenCalledTimes(1);
+    expect(boundedReadMocks.getThreadByParent).toHaveBeenCalledWith({ kind: 'feature', ref: 'papercusp#WI-6857' });
+    expect(boundedReadMocks.listRecentPosts).toHaveBeenCalledWith('thread-feature', 3);
+    expect(boundedReadMocks.listTags).toHaveBeenCalledWith({ kind: 'feature', ref: 'papercusp#WI-6857' });
+    expect(boundedReadMocks.observedSql).toEqual([
+      { marker: 'bounded-read-transaction' },
+      { marker: 'bounded-read-transaction' },
+      { marker: 'bounded-read-transaction' },
+    ]);
+    expect(win).toMatchObject({ total: 4, topics: ['topic'], createdAt: '2026-08-02T04:23:32.237Z' });
+  });
+
+  it('bounds the issue row, tags, and comment window in one database transaction', async () => {
+    const issueClient = vi.fn();
+    const win = await getIssueThreadWindow('EI-6857', 3, {
+      getIssue: async (id, tx) => {
+        expect(id).toBe('EI-6857');
+        issueClient(tx);
+        return { id, createdAt: '2026-08-02T04:23:32.237Z' } as EngineerIssue;
+      },
+    });
+
+    expect(boundedReadMocks.read).toHaveBeenCalledTimes(1);
+    expect(issueClient).toHaveBeenCalledWith({ marker: 'bounded-read-transaction' });
+    expect(boundedReadMocks.getThreadByParent).toHaveBeenCalledWith({ kind: 'issue', ref: 'EI-6857' });
+    expect(boundedReadMocks.listRecentPosts).toHaveBeenCalledWith('thread-feature', 3);
+    expect(boundedReadMocks.listTags).toHaveBeenCalledWith({ kind: 'issue', ref: 'EI-6857' });
+    expect(boundedReadMocks.observedSql).toHaveLength(3);
+    expect(win).toMatchObject({ total: 4, topics: ['topic'], createdAt: '2026-08-02T04:23:32.237Z' });
+  });
 
   it('routes an ISSUE-family item to the issues-engineer window reader', async () => {
     const win = await getWorkItemThreadWindow('WI-6857', 3, undefined, {

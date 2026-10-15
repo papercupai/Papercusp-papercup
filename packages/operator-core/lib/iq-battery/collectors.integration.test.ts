@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { readRepoFile } from '@papercusp/test-config';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { createMetricsCollector, getMetricsSummary, getMetricsPercentiles } from './collectors';
 
 describe('IQ Battery Metrics Collectors', () => {
@@ -14,6 +14,7 @@ describe('IQ Battery Metrics Collectors', () => {
     const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
     try {
       await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+      await markManagedTestDatabase(admin, dbName);
     } finally {
       await admin.end({ timeout: 5 });
     }

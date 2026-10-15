@@ -147,6 +147,16 @@ describe('evaluateVerdictRateAlarm — the silent-window limb', () => {
 });
 
 describe('readVerdictRateWindow — the one bounded read', () => {
+  it.each([[], [{}], [{ fires: 0, verdicts: 0 }],
+    [{ fires: 'bad', verdicts: 0, last_verdict_ms: null }],
+    [{ fires: -1, verdicts: 0, last_verdict_ms: null }],
+    [{ fires: 1, verdicts: 0, last_verdict_ms: 'bad' }]].map((rows) => ({ rows })))(
+    'rejects an incomplete aggregate instead of manufacturing a recovered window (%j)', async ({ rows }) => {
+      const sql = vi.fn(async () => rows) as unknown as Parameters<typeof readVerdictRateWindow>[0];
+      await expect(readVerdictRateWindow(sql, { workspaceId: 'ws', installSlug: 'coverage' }))
+        .rejects.toThrow('measurement is incomplete');
+    },
+  );
   const fakeSqlReturning = (row: Record<string, unknown>) => {
     const fn = vi.fn(async () => [row]);
     return fn as unknown as Parameters<typeof readVerdictRateWindow>[0];
@@ -163,6 +173,12 @@ describe('readVerdictRateWindow — the one bounded read', () => {
     const w = await readVerdictRateWindow(sql, { workspaceId: 'ws', installSlug: 'papercusp' });
     expect(w.lastVerdictBearingAtMs).toBeNull();
     expect(w.fires).toBe(0);
+  });
+
+  it('preserves fractional epoch milliseconds returned by extract(epoch)*1000', async () => {
+    const sql = fakeSqlReturning({ fires: '6', verdicts: '6', last_verdict_ms: '1755990000000.123' });
+    expect((await readVerdictRateWindow(sql, { workspaceId: 'ws', installSlug: 'coverage' }))
+      .lastVerdictBearingAtMs).toBe(1755990000000.123);
   });
 
   it('binds the window to VERDICT_RATE_WINDOW_MS by default and passes the derived status list', async () => {

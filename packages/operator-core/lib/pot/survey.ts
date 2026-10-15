@@ -1005,41 +1005,81 @@ export async function fetchHarnessBlockGraph(
  * blockers. Pure, injected for testability.
  */
 export function buildPlanItemBlockGraph(planRowsPerHarness: readonly PlanIndexRow[][]): PlanItemBlockGraph {
+  // WI-10008237: surveyPot and potReadyFrontierDepth rebuild this graph on every call,
+  // over every item of every plan (0.54 s of a 15 s bg-host profile). The per-harness row
+  // arrays come from listPlanIndexRowsCached, which hands back the SAME array until the
+  // plan index changes, so each array's graph is memoized on its identity and only the
+  // cheap per-plan merge runs per call. The graph is read-only to every consumer;
+  // cached inner maps are never mutated (a plan present in several arrays is merged
+  // into fresh maps).
+  if (planRowsPerHarness.length === 1) return graphForPlanRows(planRowsPerHarness[0]);
+  const planItemBlockers = new Map<string, Map<string, string[]>>();
+  const planItemStatuses = new Map<string, Map<string, string>>();
+  const owned = new Set<string>();
+  for (const rows of planRowsPerHarness) {
+    const part = graphForPlanRows(rows);
+    for (const [planSlug, itemBlockers] of part.planItemBlockers) {
+      const itemStatuses = part.planItemStatuses.get(planSlug)!;
+      const existingBlockers = planItemBlockers.get(planSlug);
+      if (!existingBlockers) {
+        planItemBlockers.set(planSlug, itemBlockers);
+        planItemStatuses.set(planSlug, itemStatuses);
+        continue;
+      }
+      if (!owned.has(planSlug)) {
+        planItemBlockers.set(planSlug, new Map(existingBlockers));
+        planItemStatuses.set(planSlug, new Map(planItemStatuses.get(planSlug)!));
+        owned.add(planSlug);
+      }
+      const mergedBlockers = planItemBlockers.get(planSlug)!;
+      const mergedStatuses = planItemStatuses.get(planSlug)!;
+      for (const [itemId, blockers] of itemBlockers) mergedBlockers.set(itemId, blockers);
+      for (const [itemId, status] of itemStatuses) mergedStatuses.set(itemId, status);
+    }
+  }
+  return { planItemBlockers, planItemStatuses };
+}
+
+const planRowsGraphMemo = new WeakMap<readonly PlanIndexRow[], PlanItemBlockGraph>();
+
+function graphForPlanRows(rows: readonly PlanIndexRow[]): PlanItemBlockGraph {
+  const memoized = planRowsGraphMemo.get(rows);
+  if (memoized) return memoized;
   const planItemBlockers = new Map<string, Map<string, string[]>>();
   const planItemStatuses = new Map<string, Map<string, string>>();
 
-  for (const rows of planRowsPerHarness) {
-    for (const row of rows) {
-      const planSlug = row.planSlug;
-      // Initialize maps for this plan if not already present
-      if (!planItemBlockers.has(planSlug)) {
-        planItemBlockers.set(planSlug, new Map());
-        planItemStatuses.set(planSlug, new Map());
-      }
-      const itemBlockers = planItemBlockers.get(planSlug)!;
-      const itemStatuses = planItemStatuses.get(planSlug)!;
+  for (const row of rows) {
+    const planSlug = row.planSlug;
+    // Initialize maps for this plan if not already present
+    if (!planItemBlockers.has(planSlug)) {
+      planItemBlockers.set(planSlug, new Map());
+      planItemStatuses.set(planSlug, new Map());
+    }
+    const itemBlockers = planItemBlockers.get(planSlug)!;
+    const itemStatuses = planItemStatuses.get(planSlug)!;
 
-      // Build a map of item_id → status for quick lookup
-      const itemStatusMap = new Map<string, string>();
-      for (const item of row.items) {
-        itemStatusMap.set(item.id, item.status);
-      }
+    // Build a map of item_id → status for quick lookup
+    const itemStatusMap = new Map<string, string>();
+    for (const item of row.items) {
+      itemStatusMap.set(item.id, item.status);
+    }
 
-      // Record blockedBy and statuses for each item
-      for (const item of row.items) {
-        itemBlockers.set(item.id, item.blockedBy ?? []);
-        // Also record all blocker statuses for terminal resolution
-        for (const blocker of item.blockedBy ?? []) {
-          const blockerStatus = itemStatusMap.get(blocker);
-          if (blockerStatus) {
-            itemStatuses.set(blocker, blockerStatus);
-          }
+    // Record blockedBy and statuses for each item
+    for (const item of row.items) {
+      itemBlockers.set(item.id, item.blockedBy ?? []);
+      // Also record all blocker statuses for terminal resolution
+      for (const blocker of item.blockedBy ?? []) {
+        const blockerStatus = itemStatusMap.get(blocker);
+        if (blockerStatus) {
+          itemStatuses.set(blocker, blockerStatus);
         }
       }
     }
   }
 
-  return { planItemBlockers, planItemStatuses };
+  const graph = { planItemBlockers, planItemStatuses };
+  planRowsGraphMemo.set(rows, graph);
+  return graph;
 }
 
 // ── The assembled survey ────────────────────────────────────────────────────

@@ -47,6 +47,48 @@ const selfScopedPayload = () => ({
 });
 
 describe('shapeFleetAssignments preserves the scope disclosure', () => {
+  it('preserves snapshot detail and unknown metrics through both payload tiers', () => {
+    const payload = {
+      ...selfScopedPayload(),
+      detail: 'snapshot',
+      unmeasuredMetrics: ['orphaned_claims', 'member.verdict'],
+      summary: {
+        agents: 1,
+        alive: 1,
+        claims: 1,
+        scheduler_claim_state_status: 'unknown',
+        scheduler_active_work_item_claims: null,
+        orphaned_claims: null,
+        stalled_claims: null,
+        reclaimable_claims: null,
+      },
+      agents: [
+        {
+          agentId: 'su-e40dceb1',
+          isSelf: true,
+          alive: true,
+          claims: [{ id: 'WI-123', planSlug: 'plan-a' }],
+        },
+      ],
+    };
+
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const out = shapeFleetAssignments(payload, tier) as Record<string, unknown>;
+
+      expect(out.detail).toBe('snapshot');
+      expect(out.unmeasuredMetrics).toEqual(['orphaned_claims', 'member.verdict']);
+      expect(out.summary).toMatchObject({
+        claims: 1,
+        scheduler_claim_state_status: 'unknown',
+        scheduler_active_work_item_claims: null,
+        orphaned_claims: null,
+        stalled_claims: null,
+        reclaimable_claims: null,
+      });
+      expect(out.agents).toMatchObject([{ agentId: 'su-e40dceb1', claims: 1 }]);
+    }
+  });
+
   for (const tier of ['trimmed', 'standard'] as const) {
     it(`keeps scope.selfScoped at ${tier} tier — the unmeasured-zero marker`, () => {
       const out = shapeFleetAssignments(selfScopedPayload(), tier) as Record<string, unknown>;
@@ -73,6 +115,20 @@ describe('shapeFleetAssignments preserves the scope disclosure', () => {
     };
     const out = shapeFleetAssignments(payload, 'trimmed') as Record<string, unknown>;
     expect(out.scope).toMatchObject({ fleet: 'drain-squad', selfScoped: false });
+  });
+
+  it('preserves opt-in bounded-read timings through both payload tiers', () => {
+    const readTimings = [
+      { phase: 'assignments', startOffsetMs: 4, elapsedMs: 137, outcome: 'ok' },
+      { phase: 'coverage', startOffsetMs: 5, elapsedMs: 8000, outcome: 'timeout' },
+    ];
+    const payload = { ...selfScopedPayload(), readTimings, handlerElapsedMs: 8042 };
+
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const out = shapeFleetAssignments(payload, tier) as Record<string, unknown>;
+      expect(out.readTimings).toEqual(readTimings);
+      expect(out.handlerElapsedMs).toBe(8042);
+    }
   });
 
   it('omits scope rather than fabricating one when the source had none', () => {

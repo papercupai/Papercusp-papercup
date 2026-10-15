@@ -74,6 +74,7 @@ const stub = (name) => {
 // no-pg-stub-covers-db-org-imports.test.ts — do not prune by hand.
 export const _resetForTests = stub('_resetForTests');
 export const _resetStoreIdentityForTests = stub('_resetStoreIdentityForTests');
+export const acquireTicketSnapshot = stub('acquireTicketSnapshot');
 export const buildConnectionOptions = stub('buildConnectionOptions');
 export const consumeEvents = stub('consumeEvents');
 export const createDedicatedOrgPg = stub('createDedicatedOrgPg');
@@ -125,11 +126,15 @@ export const orgPg = stub('orgPg');
 export const parseStoreIdentity = stub('parseStoreIdentity');
 export const PG_BIGINT_AS_NUMBER_TYPES = stub('PG_BIGINT_AS_NUMBER_TYPES');
 export const pgbouncerEnabled = stub('pgbouncerEnabled');
+export const pgDiagnosticIdentity = stub('pgDiagnosticIdentity');
 export const pinOrVerifyStoreIdentity = stub('pinOrVerifyStoreIdentity');
+export const pinnedStoreIdentity = stub('pinnedStoreIdentity');
 export const poolIdleTimeoutSec = stub('poolIdleTimeoutSec');
 export const potsForGoal = stub('potsForGoal');
 export const recordEphemeralFire = stub('recordEphemeralFire');
+export const recordPgResult = stub('recordPgResult');
 export const restoreRawJsonbSerializer = stub('restoreRawJsonbSerializer');
+export const retryBeforeCallbackStarts = stub('retryBeforeCallbackStarts');
 export const retryOnRetryableDbDeadline = stub('retryOnRetryableDbDeadline');
 export const RoutineRow = stub('RoutineRow');
 // Inert for the same reason as `setAdminPoolStatementTimeoutProvider` below — see that note
@@ -202,6 +207,9 @@ export const setPgDiagnosticContextResolver = stub('setPgDiagnosticContextResolv
 // 2026-09-28: snapshot-read helper operator-core newly binds from @papercusp/db-org
 // (carry-note.integration.test.ts and friends).
 export const acquireSnapshot = stub('acquireSnapshot');
+// 2026-10-02: completed-query diagnostic row type operator-core newly names from
+// @papercusp/db-org (service-memory-attribution.integration.test.ts).
+export const PgResultDiagnostic = stub('PgResultDiagnostic');
 
 export default new Proxy(
   {},

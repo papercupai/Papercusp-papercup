@@ -203,6 +203,11 @@ const RULES: ReadonlyArray<{
       // instead of letting the family-wide VT default manufacture drift.
       { method: 'POST', path: '/admin/accounts/:verb', auth: VTL },
       { method: 'POST', path: '/admin/config/:verb', auth: VTL },
+      // PlanAuditPane's start/history/report fetches use the same cookie-less
+      // desktop fallback. The POST retains its CSRF guard; plan-audit.test.ts
+      // exercises admission and denial through the production route stack.
+      { method: 'POST', path: '/admin/plan-audit', auth: VTL },
+      { method: 'GET', path: '/admin/plan-audit', auth: VTL },
       // The Goals tab's WRITE half posts from that same cookie-less loopback
       // webview as its /admin/mode/:verb sibling immediately above — which
       // admin/goals.ts is explicitly modelled on — so the same EI-338
@@ -225,6 +230,12 @@ const RULES: ReadonlyArray<{
       // Plans cleanup uses the same cookie-less desktop-webview POST path and
       // the same requireAllowedOriginOr403 CSRF backstop as Inbox bulk resolve.
       { method: 'POST', path: '/admin/plan-cleanup', auth: VTL },
+      // Inbox triage + the standing bulk automation policy (Settings > Autonomy,
+      // the Plans pane) post from that same cookie-less desktop webview. VT 403'd
+      // both in the shipping shell (webview-fetch-auth.test.ts, WI-6554700010009809);
+      // the route's own model is "same posture as admin/coord", which is VTL.
+      // dispatchWrite applies requireAllowedOriginOr403 before proxying any verb.
+      { method: 'POST', path: '/admin/inbox/:verb', auth: VTL },
       // Same cookie-less desktop-webview HTTP-fallback path (EI-338): the
       // gateway rate/headroom stats view admits unverified-loopback (see the
       // route's own auth declaration in admin/inference-gateway-stats.ts).
@@ -278,6 +289,10 @@ const RULES: ReadonlyArray<{
       // requireAllowedOriginOr403 — see the route's own auth comment in
       // admin/owner-presence-touch.ts.
       { method: 'POST', path: '/admin/owner-presence/touch', auth: VTL },
+      // WI-6554700010011967: the psu pty-host reports quota starvation from the
+      // same cookie-less local process; CSRF-guarded like owner-presence/touch,
+      // and it can only fire a fleet health event.
+      { method: 'POST', path: '/admin/psu-pty/quota-starvation', auth: VTL },
       // Same EI-338 cookie-less desktop-webview rationale as the VTL entries
       // above: AdminOps/TableAdmin/DbosClient/SchedulesClient bare-fetch these
       // from the packaged desktop app with no session cookie, so they only
@@ -401,15 +416,22 @@ describe('auth-tier Wave 1 — no public mutating routes (standing gate)', () =>
     'POST /flags/webhook',
   ]);
   /**
-   * Own-auth TRANSPORT surfaces — `auth: 'public'` at the route layer is the
-   * design, not a gap: each enforces bearer/principal auth in its own
-   * dispatch (the composite resolver / mcpHandler), and remote reachability
-   * is intentional (the phone calls built-in tools cross-origin through the
-   * tunnel; remote MCP rides /:transport). NOT part of the owner-ratified
-   * 16-row table — flagged for owner review on WI-99; do not grow this set
-   * without the same own-auth story.
+   * Own-auth routes — `auth: 'public'` at the route layer is intentional:
+   * each route authenticates its caller in its handler or dispatch. Remote
+   * reachability is part of the contract (for example, mobile built-in tools
+   * and MCP transport calls across the tunnel). These are NOT owner-ratified
+   * `public!` exceptions; keep them separate and require the same explicit
+   * own-auth story before adding an entry.
    */
-  const OWN_AUTH_TRANSPORTS: ReadonlySet<string> = new Set([
+  const OWN_AUTH_ROUTES: ReadonlySet<string> = new Set([
+    // Documenso e-signature completion (routes/pot/contracts.ts). The self-hosted
+    // provider POSTs here remotely, so loopback would break signing. The handler
+    // constant-time compares X-Documenso-Secret with DOCUMENSO_WEBHOOK_SECRET and
+    // refuses invalid_webhook (a secret under 24 chars is not_configured). The
+    // event body only identifies a candidate contract: completion re-reads the
+    // envelope with the API key, matches both signers, and downloads the sealed
+    // PDF and certificate itself (documenso.ts).
+    'POST /dao-hr/documenso/webhook',
     'POST /agent-tools/*',
     'PUT /agent-tools/*',
     'PATCH /agent-tools/*',
@@ -459,7 +481,7 @@ describe('auth-tier Wave 1 — no public mutating routes (standing gate)', () =>
     const offenders = ALL_ROUTES.filter((r) => MUTATING.has(r.method))
       .filter((r) => (r.auth as unknown) === 'public')
       .map((r) => `${r.method} ${r.path}`)
-      .filter((key) => !OWNER_PUBLIC.has(key) && !OWN_AUTH_TRANSPORTS.has(key));
+      .filter((key) => !OWNER_PUBLIC.has(key) && !OWN_AUTH_ROUTES.has(key));
     expect(
       offenders,
       `PUBLIC mutating route(s) — declare auth: 'loopback' (the Wave-1 rule) or get ` +

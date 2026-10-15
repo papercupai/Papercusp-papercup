@@ -224,7 +224,7 @@ describe('refusals write nothing (R-23)', () => {
     expect(unknown).toEqual({ status: 404, body: { ok: false, error: 'not_found' } });
 
     const other = await createWebhookSource(sql, { workspaceId: WS }, { encryptionKey: DB_KEY });
-    await sql`UPDATE harness_shared.trigger_sources SET status = 'disabled' WHERE workspace_id = ${WS} AND id = ${other.source.id}::uuid`;
+    await sql`UPDATE harness_shared.data_sources SET status = 'disabled' WHERE workspace_id = ${WS} AND id = ${other.source.id}::uuid`;
     const disabled = await post(other.source.id, body, { 'papercusp-signature': signWebhook(other.signingKey, nowSec(), body) });
     expect(disabled).toEqual({ status: 404, body: { ok: false, error: 'not_found' } });
     expect(await counts()).toEqual(before);

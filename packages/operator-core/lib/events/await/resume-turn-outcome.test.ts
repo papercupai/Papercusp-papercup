@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyResumeTurnExit, isRateLimitDeath, type ResumeTurnExitRaw } from './resume-turn-outcome';
+import { classifyResumeTurnExit, isRateLimitDeath, isUnavailableToolReferenceError, type ResumeTurnExitRaw } from './resume-turn-outcome';
 
 const raw = (p: Partial<ResumeTurnExitRaw>): ResumeTurnExitRaw => ({
   exitCode: 0,
@@ -96,6 +96,25 @@ describe('classifyResumeTurnExit — survived vs died (P0a)', () => {
       expect(out.error.message).toBe(message);
       expect(out.error.retryable).toBe(false);
       expect(out.error.surfaceToUser).toBe(true);
+    }
+  });
+
+  it('keeps an auth-like missing-tool identifier on the permanent tool-reference path', () => {
+    const message = "API Error: 400 Tool reference 'mcp__tsenta__complete_authentication' not found in available tools";
+    const out = classifyResumeTurnExit(
+      raw({
+        exitCode: 1,
+        stdoutTail: message,
+        stderrTail: 'Permission deny rule "ToolSearch" matches no known tool — check for typos.',
+      }),
+    );
+
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.error.class).toBe('permanent');
+      expect(out.error.message).toBe(message);
+      expect(out.error.retryable).toBe(false);
+      expect(isUnavailableToolReferenceError(out)).toBe(true);
     }
   });
 

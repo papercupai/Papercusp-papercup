@@ -53,6 +53,7 @@ const EXACT_ROWS: Array<[string, 'low' | 'medium' | 'high']> = [
   ['routines:write', 'medium'],
   ['proposals:write', 'medium'],
   ['search:read', 'medium'],
+  ['sessions:read', 'medium'],
   // High — secrets, outbound network, cross-plugin reads, audit, dispatch
   ['audit:read', 'high'],
   ['intel:read', 'high'],

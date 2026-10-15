@@ -8,7 +8,6 @@
  * here.
  */
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — plain .mjs module without type declarations
 import { ccTurnStartMemoryHookEnrollment, ccHookEnrollment } from '../psu-launcher.mjs';
 
 const HOOK = '/home/user/.papercusp/hooks/cc/userpromptsubmit-memory.sh';

@@ -45,10 +45,10 @@ function fakePg(nextRows: () => unknown[], opts: { onUpdate?: (vals: unknown[]) 
   return tag as never;
 }
 
-function fakeHandle(append: (op: unknown) => Promise<void>): BootedHarnessHandle {
+function fakeHandle(append: (op: unknown) => Promise<void>, harnessSlug = 'hx'): BootedHarnessHandle {
   return {
     workspaceId: 'ws',
-    harnessSlug: 'hx',
+    harnessSlug,
     ownLog: { keyHex: 'aa'.repeat(32) },
     append,
     registerCloseHook: () => {},
@@ -59,7 +59,124 @@ function row(id: number, key: string) {
   return { id, table_name: 'harness_features_consolidated', op: 'put', key, row: { id: key }, ts: id, op_hlc: null };
 }
 
+/** Model the real SELECT exclusion and the persistence receipt, including a
+ * delayed/failed write. A test must not return quarantined rows from the batch
+ * query: doing so hides the DB-clear vs process-local-set disagreement. */
+function quarantinePg(opts: {
+  initiallyQuarantined?: boolean;
+  persist?: () => Promise<void>;
+} = {}) {
+  let quarantined = opts.initiallyQuarantined ?? false;
+  let drained = false;
+  const persist = vi.fn(async () => {
+    await opts.persist?.();
+    quarantined = true;
+    return [{ id: 1 }];
+  });
+  const tag = async (strings: TemplateStringsArray, ..._vals: unknown[]) => {
+    const sql = strings.join(' ');
+    if (/SELECT id, table_name/.test(sql)) return quarantined || drained ? [] : [row(1, 'retry')];
+    if (/SELECT id FROM/.test(sql)) return quarantined && !drained ? [{ id: 1 }] : [];
+    if (/SET quarantined_at/.test(sql)) return persist();
+    if (/SET drained_at/.test(sql)) drained = true;
+    return Object.assign([], { count: 0 });
+  };
+  tag.listen = () => ({ unlisten: async () => {} });
+  return {
+    pg: tag as never,
+    persist,
+    clear: () => { quarantined = false; },
+    drained: () => drained,
+    quarantined: () => quarantined,
+  };
+}
+
 describe('outbox-drain per-row poison quarantine (WI-3896)', () => {
+  it.each(['boot', 'live'] as const)('manual DB clear retries a %s quarantine without restarting the drain', async (origin) => {
+    vi.useFakeTimers();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const db = quarantinePg({ initiallyQuarantined: origin === 'boot' });
+    let repaired = false;
+    const append = vi.fn(async () => {
+      if (!repaired) return new Promise<void>(() => {});
+    });
+    const episodes: string[] = [];
+    const drain = startOutboxDrain(fakeHandle(append), db.pg, {
+      pollMs: 1000, _passTimeoutMs: 0, _backlogStallMs: 0,
+      _rowTimeoutMs: 100, _rowQuarantineThreshold: 3,
+      _onStallEpisode: (_detail, kind) => { if (kind) episodes.push(kind); },
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(3200);
+      expect(db.quarantined()).toBe(true);
+      expect(db.drained()).toBe(false);
+      expect(append).toHaveBeenCalledTimes(origin === 'boot' ? 0 : 3);
+      repaired = true;
+      db.clear(); // the documented manual retry, using the SAME live drain
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(append).toHaveBeenCalledTimes(origin === 'boot' ? 1 : 4);
+      expect(db.drained()).toBe(true); // only after the append actually resolves
+      expect(episodes.filter(kind => kind === 'drain_row_quarantined')).toHaveLength(origin === 'boot' ? 0 : 1);
+    } finally {
+      await drain.stop();
+      errSpy.mockRestore(); warnSpy.mockRestore(); vi.useRealTimers();
+    }
+  });
+
+  it.each(['pending', 'failed', 'no-receipt'] as const)('keeps the in-memory quarantine while persistence is %s', async (outcome) => {
+    vi.useFakeTimers();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const db = quarantinePg({ persist: () => outcome === 'pending'
+      ? new Promise<void>(() => {}) : Promise.reject(new Error('persist failed')) });
+    const pg = outcome === 'no-receipt'
+      ? fakePg(() => [row(1, 'retry')]) : db.pg;
+    const append = vi.fn(() => new Promise<void>(() => {}));
+    const drain = startOutboxDrain(fakeHandle(append, `hx-fallback-${outcome}`), pg, {
+      pollMs: 1000, _passTimeoutMs: 0, _backlogStallMs: 0,
+      _rowTimeoutMs: 100, _rowQuarantineThreshold: 3,
+      _onStallEpisode: () => {},
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(6200);
+      expect(append).toHaveBeenCalledTimes(3);
+      expect(db.drained()).toBe(false);
+    } finally {
+      await drain.stop();
+      errSpy.mockRestore(); warnSpy.mockRestore(); vi.useRealTimers();
+    }
+  });
+
+  it('a cleared row that still hangs gets three new attempts and is quarantined again without false delivery', async () => {
+    vi.useFakeTimers();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const db = quarantinePg();
+    const append = vi.fn(() => new Promise<void>(() => {}));
+    const episodes: string[] = [];
+    const drain = startOutboxDrain(fakeHandle(append), db.pg, {
+      pollMs: 1000, _passTimeoutMs: 0, _backlogStallMs: 0,
+      _rowTimeoutMs: 100, _rowQuarantineThreshold: 3,
+      _onStallEpisode: (_detail, kind) => { if (kind) episodes.push(kind); },
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(3200);
+      expect(append).toHaveBeenCalledTimes(3);
+      expect(db.persist).toHaveBeenCalledTimes(1);
+      db.clear();
+      await vi.advanceTimersByTimeAsync(4000);
+      expect(append).toHaveBeenCalledTimes(6);
+      expect(db.persist).toHaveBeenCalledTimes(2);
+      expect(db.quarantined()).toBe(true);
+      expect(db.drained()).toBe(false);
+      expect(episodes.filter(kind => kind === 'drain_row_quarantined')).toHaveLength(2);
+    } finally {
+      await drain.stop();
+      errSpy.mockRestore(); warnSpy.mockRestore(); vi.useRealTimers();
+    }
+  });
+
   it('a row that NEVER settles is quarantined after N consecutive timeouts — later rows then drain', async () => {
     vi.useFakeTimers();
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});

@@ -147,3 +147,26 @@ describe('pg_stat_activity readers must not run on the harness_app role', () => 
     ).toEqual([]);
   });
 });
+
+describe('pg_read_all_stats boot assertion wiring (EI-19447868110362941)', () => {
+  const host = stripComments(readFileSync(join(REPO_ROOT, 'apps/operator/bin/hono-host.ts'), 'utf8'));
+
+  it('runs exactly once from primary boot after the migration gate, not from each request worker', () => {
+    const primaryAt = host.indexOf('onPrimary:');
+    const workerAt = host.indexOf('onWorker:', primaryAt);
+    const primary = primaryAt >= 0 && workerAt > primaryAt ? host.slice(primaryAt, workerAt) : '';
+    const workerEnd = host.indexOf('onUnbootable:', workerAt);
+    const worker = workerAt >= 0 && workerEnd > workerAt ? host.slice(workerAt, workerEnd) : '';
+    const calls = host.match(/assertPgReadAllStatsCapabilityAtBoot\s*\(/g) ?? [];
+
+    expect(calls, 'the host must retain one boot assertion call').toHaveLength(1);
+    expect(primary, 'the one call belongs to the host primary').toContain('assertPgReadAllStatsCapabilityAtBoot()');
+    expect(primary.indexOf('waitForBootMigrationGate')).toBeGreaterThanOrEqual(0);
+    expect(primary.indexOf('waitForBootMigrationGate')).toBeLessThan(
+      primary.indexOf('assertPgReadAllStatsCapabilityAtBoot()'),
+    );
+    expect(worker, 'request workers must not repeat the capability probe').not.toContain(
+      'assertPgReadAllStatsCapabilityAtBoot()',
+    );
+  });
+});

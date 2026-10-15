@@ -10,6 +10,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { DISCLOSURE_LEDGER_FIXTURE_DDL } from '../../../test/_disclosure-ledger-fixture';
 
 const refreshTargetSessionBeforeRead = vi.hoisted(() => vi.fn(async () => ({ attempted: 1, refreshed: 1 })));
 const refreshLiveSessionsBeforeRead = vi.hoisted(() => vi.fn(async () => ({ attempted: 1, refreshed: 1 })));
@@ -65,6 +66,8 @@ interface ReadResult {
 beforeAll(async () => {
   db = await createFreshPgDb('sessions-read');
   sql = db.sql;
+  // D-006: both reads consult the disclosure ledger (empty here: nothing is withheld).
+  await sql.unsafe(DISCLOSURE_LEDGER_FIXTURE_DDL);
   // Minimal projection of the indexed read table, following digest's fixture.
   // No application DB default, migrations, background ingestion or live rows.
   await sql.unsafe(`

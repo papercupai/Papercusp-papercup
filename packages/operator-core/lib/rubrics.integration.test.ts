@@ -24,6 +24,9 @@ import { runWithWorkspace } from './workspace-als';
 import { activeWorkspaceId } from './workspace-registry';
 import { OrgTxnTimeoutError } from './pg-bounded-txn';
 import { PLAN_ADVISORY_LOCK_NAMESPACE, planAdvisoryLockKey } from './agent-tools/plans/plan-lock-key';
+import { hashPlanContent } from './agent-tools/plans/content-hash';
+import { listLocalRubrics } from './cupboard/rubric-store';
+import setTemplateDataTool from './agent-tools/plans/set-template-data';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 
@@ -141,6 +144,40 @@ async function insertRubricPlan(
             'rubric', ${JSON.stringify(opts.data ?? rubricData)}::text::jsonb, ${opts.templateSlug ?? null}, 'local')`;
 }
 
+async function withPlanRevisionInsertFailure<T>(
+  planSlug: string,
+  run: () => Promise<T>,
+  onlyRubricRevision?: number,
+): Promise<T> {
+  if (!/^[a-z0-9-]+$/.test(planSlug)) throw new Error(`unsafe test plan slug: ${planSlug}`);
+  if (onlyRubricRevision !== undefined && !Number.isSafeInteger(onlyRubricRevision)) {
+    throw new Error('unsafe test rubric revision');
+  }
+  const suffix = Math.random().toString(36).slice(2, 10);
+  const functionName = `rubric_revision_failure_${suffix}`;
+  const triggerName = `${functionName}_trigger`;
+  try {
+    await db.adminSql.unsafe(`
+      CREATE FUNCTION harness_shared.${functionName}() RETURNS trigger
+      LANGUAGE plpgsql AS $revision_failure$
+      BEGIN
+        IF NEW.plan_slug = '${planSlug}' ${onlyRubricRevision === undefined ? ''
+          : `AND position('"rubricRevision": ${onlyRubricRevision},' in NEW.content_snapshot) > 0`} THEN
+          RAISE EXCEPTION 'injected plan_revisions insert failure';
+        END IF;
+        RETURN NEW;
+      END;
+      $revision_failure$`);
+    await db.adminSql.unsafe(`
+      CREATE TRIGGER ${triggerName} BEFORE INSERT ON harness_shared.plan_revisions
+      FOR EACH ROW EXECUTE FUNCTION harness_shared.${functionName}()`);
+    return await run();
+  } finally {
+    await db.adminSql.unsafe(`DROP TRIGGER IF EXISTS ${triggerName} ON harness_shared.plan_revisions`);
+    await db.adminSql.unsafe(`DROP FUNCTION IF EXISTS harness_shared.${functionName}()`);
+  }
+}
+
 beforeAll(async () => {
   db = await createOrgTestDb();
   h.sql = db.adminSql;
@@ -176,16 +213,30 @@ describe('reads — a rubric-template plan resolves as a Rubric', () => {
     await insertRubricPlan('direct-id-fast-path');
     const originalSql = h.sql;
     const statements: string[] = [];
-    h.sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
-      statements.push(strings.join(' '));
-      return Reflect.apply(originalSql, undefined, [strings, ...values]);
-    }) as unknown as postgres.Sql;
+    const observe = (client: postgres.Sql): postgres.Sql => new Proxy(client, {
+      apply(target, thisArg, args) {
+        const statement = (args[0] as TemplateStringsArray).join(' ');
+        if (statement.includes('FROM harness_shared.harness_plans')) statements.push(statement);
+        return Reflect.apply(target, thisArg, args);
+      },
+    });
+    // Preserve the native SQL surface and observe the REAL bounded transaction.
+    // A bare callable drops .begin and makes the production read fail closed.
+    h.sql = new Proxy(originalSql, {
+      get(target, property, receiver) {
+        if (property !== 'begin') return Reflect.get(target, property, receiver);
+        return (run: (tx: postgres.Sql) => Promise<unknown>) =>
+          target.begin((tx) => run(observe(tx as unknown as postgres.Sql)));
+      },
+    });
     try {
       const rubric = await rubrics.getRubric('direct-id-fast-path');
       expect(rubric?.rubricId).toBe('direct-id-fast-path');
       expect(statements).toHaveLength(1);
       expect(statements[0]).toContain('plan_slug =');
-      expect(statements[0]).toContain('LIMIT 1');
+      // Still a point read, not the library scan. LIMIT 2 (not 1) so a slug held by two
+      // harnesses is observable and refused (WI-6554700010008395).
+      expect(statements[0]).toContain('LIMIT 2');
       expect(statements[0]).not.toContain('LIMIT 500');
     } finally {
       h.sql = originalSql;
@@ -316,6 +367,44 @@ describe('reads — a rubric-template plan resolves as a Rubric', () => {
   });
 });
 
+describe('rubric refs are workspace-unique — a slug held by two harnesses refuses (WI-6554700010008395)', () => {
+  /** The PK is (workspace_id, harness_slug, plan_slug), so the schema admits this twin. */
+  async function insertTwinInSecondHarness(slug: string) {
+    await insertRubricPlan(slug);
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status,
+         created, updated, owner, archived, template, template_data, template_slug, origin)
+      VALUES (${activeWorkspaceId()}, 'zz-second-hive', ${slug}, '', md5(${slug}), 1, ${slug},
+              'active', '2026-06-20', '2026-06-20', 'queen-1', false,
+              'rubric', ${JSON.stringify(rubricData)}::text::jsonb, null, 'local')`;
+  }
+
+  it('getRubric and getRubricWithoutSeeding throw RubricRefAmbiguousError naming both harnesses', async () => {
+    await insertTwinInSecondHarness('twin-rubric');
+    for (const read of [rubrics.getRubric, rubrics.getRubricWithoutSeeding]) {
+      const error = await read('twin-rubric').then(() => null, (e: unknown) => e);
+      expect(error).toBeInstanceOf(rubrics.RubricRefAmbiguousError);
+      expect((error as InstanceType<typeof rubrics.RubricRefAmbiguousError>).harnesses).toEqual([
+        'papercusp',
+        'zz-second-hive',
+      ]);
+    }
+  });
+
+  it('the revision read fails closed (ok:false), and a pinned-revision read throws', async () => {
+    await insertTwinInSecondHarness('twin-rubric-rev');
+    await expect(rubrics.readRubricPlanRevision('twin-rubric-rev')).resolves.toEqual({ ok: false, revision: null });
+    await expect(rubrics.getRubric('twin-rubric-rev', 1)).rejects.toBeInstanceOf(rubrics.RubricRefAmbiguousError);
+  });
+
+  it('CONTROL: the same slug in ONE harness still resolves, so the refusal is about the twin', async () => {
+    await insertRubricPlan('single-rubric');
+    await expect(rubrics.getRubric('single-rubric')).resolves.toMatchObject({ rubricId: 'single-rubric' });
+    await expect(rubrics.readRubricPlanRevision('single-rubric')).resolves.toEqual({ ok: true, revision: 1 });
+  });
+});
+
 describe('writes — propose / ratify author + promote a rubric-template plan', () => {
   it('refuses to overwrite an ordinary plan whose slug collides with rubricId', async () => {
     const body = `---
@@ -377,6 +466,105 @@ Preserve this plan body.
     expect(r.methodRef).toBe('pot-coordination-health-runbook');
     // it lands as a queryable rubric-template plan, not a duplicate
     expect((await rubrics.listRubrics({})).map((x) => x.rubricId)).toEqual(['pot-coordination-health']);
+  });
+
+  it('guards normalized BAR projections on proposal and amendment while preserving unchanged legacy BARs', async () => {
+    const subjectPlan = 'acceptance-bar-atomicity-subject';
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status,
+         created, updated, owner, archived, template, origin)
+      VALUES (${activeWorkspaceId()}, 'papercusp', ${subjectPlan}, '', md5(${subjectPlan}), 1,
+              'Acceptance BAR atomicity subject', 'active', '2026-09-04', '2026-09-04', 'su-test', false, NULL, 'local')`;
+
+    const criterion = (bar: string) => ({
+      key: 'R-1',
+      barKey: 'R-1',
+      title: 'Request outcome',
+      evidencePlane: 'tree' as const,
+      // Deliberately author only the read alias. The writer must canonicalize it
+      // to `model` before checking the exact behavior projected into AUTO-BAR.
+      bar: `Request outcome. ${bar}`,
+      method: 'Observe the request response at the public boundary.',
+      driftMarkers: 'An accepted request does not produce the expected response.',
+      check: { kind: 'instrument' as const, instrumentKey: 'none' },
+    });
+    const bundled = [criterion('A valid event is accepted and its payload is streamed.')];
+
+    await expect(
+      rubrics.proposeRubric({
+        rubricId: 'non-atomic-bar-proposal',
+        kind: 'acceptance',
+        subjectPlan,
+        characteristic: 'plan-acceptance',
+        title: 'Non-atomic proposal',
+        criteria: bundled,
+        by: 'atomicity-author',
+      }),
+    ).rejects.toThrow('acceptance_bar_non_atomic_projection');
+    expect(await rubrics.getRubric('non-atomic-bar-proposal')).toBeNull();
+
+    const accepted = await rubrics.proposeRubric({
+      rubricId: 'atomic-bar-amendment',
+      kind: 'acceptance',
+      subjectPlan,
+      characteristic: 'plan-acceptance',
+      title: 'Atomic BAR amendment',
+      criteria: [criterion('A request is accepted.')],
+      by: 'atomicity-author',
+    });
+    const priorRevision = accepted.revision;
+    await expect(
+      rubrics.amendRubric({
+        rubricId: accepted.rubricId,
+        criteria: bundled,
+        by: 'atomicity-author',
+      }),
+    ).rejects.toThrow('acceptance_bar_non_atomic_projection');
+    expect((await rubrics.getRubric(accepted.rubricId))?.revision).toBe(priorRevision);
+    expect((await rubrics.getRubric(accepted.rubricId))?.criteria[0]?.model)
+      .toBe('Request outcome. A request is accepted.');
+
+    const legacySlug = 'unchanged-legacy-non-atomic-bar';
+    const legacySubjectPlan = 'acceptance-bar-atomicity-legacy-subject';
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status,
+         created, updated, owner, archived, template, origin)
+      VALUES (${activeWorkspaceId()}, 'papercusp', ${legacySubjectPlan}, '', md5(${legacySubjectPlan}), 1,
+              'Legacy acceptance BAR subject', 'active', '2026-09-04', '2026-09-04', 'su-test', false, NULL, 'local')`;
+    const legacyBehavior = 'The request is accepted. Its payload is returned.';
+    await insertRubricPlan(legacySlug, {
+      data: {
+        ...rubricData,
+        kind: 'acceptance',
+        subjectPlan: legacySubjectPlan,
+        ratingScale: ['pass', 'fail', 'unknown'],
+        criteria: [{
+          key: 'legacy-outcome',
+          title: 'Legacy outcome',
+          model: legacyBehavior,
+          method: 'Observe the stored response behavior.',
+          driftMarkers: 'The request is not accepted or its payload is not returned.',
+          check: { kind: 'instrument', instrumentKey: 'none' },
+        }],
+      },
+    });
+    const legacyBefore = (await rubrics.getRubric(legacySlug))!;
+    const legacyAfter = await rubrics.proposeRubric({
+      rubricId: legacySlug,
+      kind: 'acceptance',
+      subjectPlan: legacySubjectPlan,
+      characteristic: legacyBefore.characteristic,
+      title: legacyBefore.title,
+      description: legacyBefore.description,
+      criteria: legacyBefore.criteria,
+      ratingScale: legacyBefore.ratingScale,
+      methodRef: 'legacy-outcome-runbook',
+      by: 'legacy-editor',
+    });
+    expect(legacyAfter.methodRef).toBe('legacy-outcome-runbook');
+    expect(legacyAfter.criteria[0]?.model).toBe(legacyBehavior);
   });
 
   it('persists and reads normalized unpinned standard-rubric composition refs', async () => {
@@ -581,6 +769,24 @@ Preserve this plan body.
     expect(ratifyRev.content_hash).toBe(activePlan.content_hash);
   });
 
+  it('rolls back a rubric plan write when its strict revision insert fails', async () => {
+    const rubricId = 'strict-revision-failure-rubric';
+    await expect(
+      withPlanRevisionInsertFailure(rubricId, () => rubrics.proposeRubric({
+        rubricId,
+        characteristic: 'hive-coordination',
+        title: 'Strict revision failure',
+        criteria: sampleCriteria,
+        by: 'failure-test',
+      })),
+    ).rejects.toThrow(/plan revision unavailable/);
+
+    const plans = await db.adminSql`SELECT 1 FROM harness_shared.harness_plans WHERE plan_slug=${rubricId}`;
+    const revisions = await db.adminSql`SELECT 1 FROM harness_shared.plan_revisions WHERE plan_slug=${rubricId}`;
+    expect(plans).toHaveLength(0);
+    expect(revisions).toHaveLength(0);
+  });
+
   it('addresses committed rubric versions independently of the audit sequence', async () => {
     const rubricId = 'offset-standard-rubric';
     await insertRubricPlan(rubricId, { version: 7 });
@@ -640,6 +846,116 @@ Preserve this plan body.
     expect(await rubrics.getRubric(rubricId, 7)).toBeNull();
   });
 
+  it.each(['propose', 'amend', 'ratify', 'retire'] as const)(
+    'preserves a proved legacy rubric preimage when %s advances its version (EI-25394374042899729)',
+    async (write) => {
+      const rubricId = `legacy-preimage-${write}`;
+      const initial = await rubrics.proposeRubric({
+        rubricId, characteristic: 'hive-coordination', title: 'Legacy preimage',
+        criteria: sampleCriteria, by: 'author-a',
+      });
+      await db.adminSql`
+        UPDATE harness_shared.plan_revisions
+           SET content_snapshot = regexp_replace(content_snapshot, '\n  "rubricRevision": [0-9]+,', '', 'g')
+         WHERE plan_slug = ${rubricId}`;
+      // The audit sequence is 1 while the authoritative plan version is 7.
+      await db.adminSql`UPDATE harness_shared.harness_plans SET version = 7 WHERE plan_slug = ${rubricId}`;
+      const before = await db.adminSql<{ seq: number; content_hash: string; content_snapshot: string }[]>`
+        SELECT seq, content_hash, content_snapshot FROM harness_shared.plan_revisions
+         WHERE plan_slug = ${rubricId} ORDER BY seq`;
+      expect((await rubrics.getRubric(rubricId, 7))?.criteriaHash).toBe(initial.criteriaHash);
+      expect(await rubrics.getRubric(rubricId, 1)).toBeNull();
+      const changed = sampleCriteria.map((criterion, i) => i === 0
+        ? { ...criterion, method: 'Changed grading procedure after the legacy contract.' }
+        : criterion);
+      if (write === 'propose') {
+        await rubrics.proposeRubric({
+          rubricId, characteristic: 'hive-coordination', title: 'Legacy preimage',
+          criteria: changed, by: 'author-a',
+        });
+      } else if (write === 'amend') {
+        await rubrics.amendRubric({
+          rubricId, by: 'author-a',
+          criterion: { key: sampleCriteria[0].key, field: 'method', mode: 'append', text: 'New procedure.' },
+        });
+      } else if (write === 'ratify') {
+        await rubrics.ratifyRubric(rubricId, 'independent-reviewer');
+      } else {
+        await rubrics.retireRubric(rubricId, 'independent-reviewer', 'test retirement');
+      }
+      const historical = await rubrics.getRubric(rubricId, 7);
+      expect(historical?.revision).toBe(7);
+      expect(historical?.criteria).toEqual(initial.criteria);
+      expect(historical?.criteriaHash).toBe(initial.criteriaHash);
+      expect(await rubrics.getRubric(rubricId, 1)).toBeNull();
+      const after = await db.adminSql<{ seq: number; content_hash: string; content_snapshot: string }[]>`
+        SELECT seq, content_hash, content_snapshot FROM harness_shared.plan_revisions
+         WHERE plan_slug = ${rubricId} ORDER BY seq`;
+      expect(after.slice(0, before.length)).toEqual(before); // Append only; retain authentic raw evidence.
+      expect(after.map((row) => rubrics.inspectRubricRevisionSnapshot(row.content_snapshot).rubricRevision))
+        .toEqual([undefined, 7, 8]);
+      expect(after[1]!.content_hash).toBe(before[0]!.content_hash);
+      expect(rubrics.parseRubricRevisionTemplateData(after[1]!.content_snapshot))
+        .toEqual(rubrics.parseRubricRevisionTemplateData(before[0]!.content_snapshot));
+    },
+  );
+
+  it('rolls back legacy preimage capture and the advance when revision insertion fails', async () => {
+    const rubricId = 'legacy-preimage-rollback';
+    await rubrics.proposeRubric({
+      rubricId, characteristic: 'hive-coordination', title: 'Legacy rollback',
+      criteria: sampleCriteria, by: 'author-a',
+    });
+    await db.adminSql`
+      UPDATE harness_shared.plan_revisions
+         SET content_snapshot = regexp_replace(content_snapshot, '\n  "rubricRevision": [0-9]+,', '', 'g')
+       WHERE plan_slug = ${rubricId}`;
+    await db.adminSql`UPDATE harness_shared.harness_plans SET version = 7 WHERE plan_slug = ${rubricId}`;
+    const before = await db.adminSql`SELECT * FROM harness_shared.harness_plans WHERE plan_slug = ${rubricId}`;
+    const beforeRevisions = await db.adminSql`SELECT * FROM harness_shared.plan_revisions WHERE plan_slug = ${rubricId}`;
+    // Fail the NEW version insert after the legacy preimage insert succeeded.
+    await expect(withPlanRevisionInsertFailure(rubricId, () => rubrics.ratifyRubric(rubricId, 'reviewer'), 8))
+      .rejects.toThrow(/plan revision unavailable/);
+    expect(await db.adminSql`SELECT * FROM harness_shared.harness_plans WHERE plan_slug = ${rubricId}`)
+      .toEqual(before);
+    expect(await db.adminSql`SELECT * FROM harness_shared.plan_revisions WHERE plan_slug = ${rubricId}`)
+      .toEqual(beforeRevisions);
+    expect((await rubrics.getRubric(rubricId, 7))?.revision).toBe(7);
+  });
+
+  it.each(['structured-data', 'body-hash'] as const)(
+    'does not bind an unproved legacy preimage after %s drift', async (drift) => {
+      const rubricId = `legacy-unproved-${drift}`;
+      await rubrics.proposeRubric({
+        rubricId, characteristic: 'hive-coordination', title: 'Unproved legacy',
+        criteria: sampleCriteria, by: 'author-a',
+      });
+      await db.adminSql`
+        UPDATE harness_shared.plan_revisions
+           SET content_snapshot = regexp_replace(content_snapshot, '\n  "rubricRevision": [0-9]+,', '', 'g')
+         WHERE plan_slug = ${rubricId}`;
+      await db.adminSql`UPDATE harness_shared.harness_plans SET version = 7 WHERE plan_slug = ${rubricId}`;
+      if (drift === 'structured-data') {
+        await db.adminSql`
+          UPDATE harness_shared.harness_plans SET template_data =
+            jsonb_set(template_data, '{criteria,0,method}', '"Unrecorded grading procedure"')
+           WHERE plan_slug = ${rubricId}`;
+      } else {
+        await db.adminSql`
+          UPDATE harness_shared.plan_revisions SET content_hash = 'unproved'
+           WHERE plan_slug = ${rubricId}`;
+      }
+      expect(await rubrics.getRubric(rubricId, 7)).toBeNull();
+      await rubrics.ratifyRubric(rubricId, 'independent-reviewer');
+      expect(await rubrics.getRubric(rubricId, 7)).toBeNull();
+      const rows = await db.adminSql<{ content_snapshot: string }[]>`
+        SELECT content_snapshot FROM harness_shared.plan_revisions
+         WHERE plan_slug = ${rubricId} ORDER BY seq`;
+      expect(rows.map((row) => rubrics.inspectRubricRevisionSnapshot(row.content_snapshot).rubricRevision))
+        .toEqual([undefined, 8]);
+    },
+  );
+
   it('does not infer legacy historical versions even when sequence counters align', async () => {
     const rubricId = 'aligned-legacy-standard';
     await rubrics.proposeRubric({
@@ -653,6 +969,288 @@ Preserve this plan body.
        WHERE plan_slug = ${rubricId}`;
     expect(await rubrics.getRubric(rubricId, 1)).toBeNull();
     expect((await rubrics.getRubric(rubricId, 2))?.criteriaHash).toBe(current?.criteriaHash);
+  });
+
+  it('backfills only the exact current non-first-party standard rubric version', async () => {
+    const rubricId = 'legacy-current-standard-backfill';
+    const write = (criteria: typeof sampleCriteria) => rubrics.proposeRubric({
+      rubricId,
+      characteristic: 'hive-coordination',
+      title: 'Legacy current standard backfill',
+      criteria,
+      by: 'su-test',
+    });
+    await write(sampleCriteria);
+    const changedCriteria = sampleCriteria.map((criterion, index) => index === 0
+      ? { ...criterion, method: 'Read the current claim ledger and verify its owner.' }
+      : criterion);
+    const current = await write(changedCriteria);
+    const currentRevision = Number(current.revision);
+    expect(currentRevision).toBeGreaterThan(1);
+
+    const [plan] = await db.adminSql<{ content: string; content_hash: string; owner: string; template_data: unknown }[]>`
+      SELECT content, content_hash, owner, template_data
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+         AND plan_slug = ${rubricId}`;
+    expect(plan!.owner).toBe('su-test');
+    const priorRows = await db.adminSql<{
+      id: number; seq: number; content_snapshot: string; content_hash: string; author_id: string;
+    }[]>`
+      SELECT id, seq, content_snapshot, content_hash, author_id
+        FROM harness_shared.plan_revisions
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+         AND plan_slug = ${rubricId}
+       ORDER BY seq ASC`;
+    expect(priorRows.length).toBeGreaterThan(1);
+
+    // Model the pre-snapshot history: immutable rows retain their hashes and
+    // provenance, but their stored snapshots contain only rubric markdown.
+    await db.adminSql`
+      UPDATE harness_shared.plan_revisions
+         SET content_snapshot = ${plan!.content}
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+         AND plan_slug = ${rubricId}`;
+    const legacyRows = await db.adminSql<{
+      id: number; seq: number; content_snapshot: string; content_hash: string; author_id: string;
+    }[]>`
+      SELECT id, seq, content_snapshot, content_hash, author_id
+        FROM harness_shared.plan_revisions
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+         AND plan_slug = ${rubricId}
+       ORDER BY seq ASC`;
+    expect(legacyRows.every((row) => row.content_snapshot === plan!.content)).toBe(true);
+
+    const scope = { workspaceId: activeWorkspaceId(), harnessSlug: 'papercusp' };
+    const historical = await rubrics.repairLegacyRubricRevisionSnapshots(rubricId, scope, {
+      dryRun: true,
+      rubricRevision: currentRevision - 1,
+    });
+    expect(historical).toMatchObject({ status: 'not_eligible', currentRevision });
+
+    const preview = await rubrics.repairLegacyRubricRevisionSnapshots(rubricId, scope, {
+      dryRun: true,
+      rubricRevision: currentRevision,
+    });
+    expect(preview).toMatchObject({ status: 'dry_run', currentRevision, revisionsToRepair: 1 });
+
+    const identity = {
+      ownerId: 'test-current-standard-rubric-backfill',
+      ownerLabel: 'test-current-standard-rubric-backfill',
+      source: 'static-client' as const,
+      workspaceId: null,
+      userId: null,
+    };
+    const applied = await rubrics.repairLegacyRubricRevisionSnapshots(rubricId, scope, {
+      dryRun: false,
+      rubricRevision: currentRevision,
+      identity,
+    });
+    expect(applied).toMatchObject({ status: 'repaired', currentRevision, revisionsRepaired: 1 });
+
+    const afterRows = await db.adminSql<{
+      id: number; seq: number; content_snapshot: string; content_hash: string; author_id: string;
+    }[]>`
+      SELECT id, seq, content_snapshot, content_hash, author_id
+        FROM harness_shared.plan_revisions
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+         AND plan_slug = ${rubricId}
+       ORDER BY seq ASC`;
+    expect(afterRows.slice(0, legacyRows.length)).toEqual(legacyRows);
+    expect(afterRows).toHaveLength(legacyRows.length + 1);
+    expect(afterRows.at(-1)!.content_snapshot).toContain(`"rubricRevision": ${currentRevision},`);
+    expect((await rubrics.getRubric(rubricId, currentRevision))?.criteriaHash).toBe(current.criteriaHash);
+    expect(await rubrics.getRubric(rubricId, currentRevision - 1)).toBeNull();
+  });
+
+  it('appends an exact current first-party snapshot without rewriting divergent history', async () => {
+    rubrics.__resetRubricSeedStateForTests();
+    try {
+      const rubricId = 'fleet-execution-health';
+      const source = listLocalRubrics().find(
+        (candidate) => candidate.rubricId === rubricId && candidate.source === 'first-party',
+      );
+      if (!source) throw new Error(`bundled first-party rubric ${rubricId} is unavailable`);
+      // Seed only the row under test; the global seed pass spans unrelated rubric content.
+      await rubrics.provisionPinnedRubric(source, activeWorkspaceId());
+      const [seeded] = await db.adminSql<{
+        version: number;
+        content: string;
+        content_hash: string;
+        owner: string;
+        template: string;
+        template_slug: string | null;
+        archived: boolean;
+        template_data: unknown;
+      }[]>`
+        SELECT version, content, content_hash, owner, template, template_slug, archived, template_data
+          FROM harness_shared.harness_plans
+         WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+           AND plan_slug = ${rubricId}`;
+      expect(seeded).toBeDefined();
+      const targetRevision = Number(seeded!.version) + 1;
+      const updatedBody = `${seeded!.content}\n\n# Current-version backfill fixture\n`;
+      const updatedHash = hashPlanContent(updatedBody);
+      await db.adminSql`
+        UPDATE harness_shared.harness_plans
+           SET version = ${targetRevision}, content = ${updatedBody}, content_hash = ${updatedHash}
+         WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+           AND plan_slug = ${rubricId}`;
+
+      const scope = { workspaceId: activeWorkspaceId(), harnessSlug: 'papercusp' };
+      const priorRows = await db.adminSql<{
+        seq: number;
+        content_hash: string;
+        content_snapshot: string;
+        author_id: string;
+      }[]>`
+        SELECT seq, content_hash, content_snapshot, author_id
+          FROM harness_shared.plan_revisions
+         WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+           AND plan_slug = ${rubricId}
+         ORDER BY seq ASC`;
+      expect(priorRows.length).toBeGreaterThan(0);
+
+      const wholeChain = await rubrics.repairLegacyRubricRevisionSnapshots(rubricId, scope, { dryRun: true });
+      expect(wholeChain).toMatchObject({ status: 'not_eligible', revisionsToRepair: 0 });
+
+      const preview = await rubrics.repairLegacyRubricRevisionSnapshots(rubricId, scope, {
+        dryRun: true,
+        rubricRevision: targetRevision,
+      });
+      expect(preview).toMatchObject({
+        status: 'dry_run',
+        currentRevision: targetRevision,
+        revisionsToRepair: 1,
+        revisionsRepaired: 0,
+      });
+      const stillPrior = await db.adminSql<{ seq: number; content_snapshot: string; author_id: string }[]>`
+        SELECT seq, content_snapshot, author_id
+          FROM harness_shared.plan_revisions
+         WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+           AND plan_slug = ${rubricId}
+         ORDER BY seq ASC`;
+      expect(stillPrior).toEqual(priorRows.map(({ seq, content_snapshot, author_id }) => ({ seq, content_snapshot, author_id })));
+
+      const identity = {
+        ownerId: 'test-current-rubric-backfill',
+        ownerLabel: 'test-current-rubric-backfill',
+        source: 'static-client' as const,
+        workspaceId: null,
+        userId: null,
+      };
+      const applied = await rubrics.repairLegacyRubricRevisionSnapshots(rubricId, scope, {
+        dryRun: false,
+        rubricRevision: targetRevision,
+        identity,
+      });
+      expect(applied).toMatchObject({
+        status: 'repaired',
+        revisionsToRepair: 1,
+        revisionsRepaired: 1,
+      });
+      expect(applied.revisionSeq).toBe(priorRows.at(-1)!.seq + 1);
+
+      const afterRows = await db.adminSql<{
+        seq: number;
+        content_hash: string;
+        content_snapshot: string;
+        author_id: string;
+      }[]>`
+        SELECT seq, content_hash, content_snapshot, author_id
+          FROM harness_shared.plan_revisions
+         WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+           AND plan_slug = ${rubricId}
+         ORDER BY seq ASC`;
+      expect(afterRows.slice(0, priorRows.length)).toEqual(priorRows);
+      expect(afterRows).toHaveLength(priorRows.length + 1);
+      expect(afterRows.at(-1)).toMatchObject({
+        seq: applied.revisionSeq,
+        content_hash: updatedHash,
+        author_id: identity.ownerId,
+      });
+      expect(afterRows.at(-1)!.content_snapshot).toContain(`"rubricRevision": ${targetRevision},`);
+      expect((await rubrics.getRubric(rubricId, targetRevision))?.revision).toBe(targetRevision);
+
+      const repeated = await rubrics.repairLegacyRubricRevisionSnapshots(rubricId, scope, {
+        dryRun: false,
+        rubricRevision: targetRevision,
+        identity,
+      });
+      expect(repeated).toMatchObject({ status: 'already_repaired', revisionsRepaired: 0 });
+      expect(await db.adminSql`SELECT id FROM harness_shared.plan_revisions WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp' AND plan_slug = ${rubricId}`)
+        .toHaveLength(priorRows.length + 1);
+    } finally {
+      rubrics.__resetRubricSeedStateForTests();
+    }
+  });
+
+  it('WI-10006335: a latest revision with no structured snapshot falls through to the backfill instead of throwing', async () => {
+    rubrics.__resetRubricSeedStateForTests();
+    const rubricId = 'fleet-execution-health';
+    // The previous case backfills this same rubric, leaving a `"rubricRevision": N,`
+    // marker that would claim this case's target revision and reject it early. Start
+    // (and finish) from a never-provisioned rubric so the case is order-independent.
+    const clearRubric = async () => {
+      await db.adminSql`
+        DELETE FROM harness_shared.plan_revisions
+         WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp' AND plan_slug = ${rubricId}`;
+      await db.adminSql`
+        DELETE FROM harness_shared.harness_plans
+         WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp' AND plan_slug = ${rubricId}`;
+    };
+    await clearRubric();
+    try {
+      const source = listLocalRubrics().find(
+        (candidate) => candidate.rubricId === rubricId && candidate.source === 'first-party',
+      );
+      if (!source) throw new Error(`bundled first-party rubric ${rubricId} is unavailable`);
+      await rubrics.provisionPinnedRubric(source, activeWorkspaceId());
+      const [seeded] = await db.adminSql<{ version: number; content: string }[]>`
+        SELECT version, content
+          FROM harness_shared.harness_plans
+         WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+           AND plan_slug = ${rubricId}`;
+      expect(seeded).toBeDefined();
+      const targetRevision = Number(seeded!.version) + 1;
+      const updatedBody = `${seeded!.content}\n\n# Markdown-only latest revision fixture\n`;
+      const updatedHash = hashPlanContent(updatedBody);
+      await db.adminSql`
+        UPDATE harness_shared.harness_plans
+           SET version = ${targetRevision}, content = ${updatedBody}, content_hash = ${updatedHash}
+         WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+           AND plan_slug = ${rubricId}`;
+      // The LATEST revision carries the live content hash but no structured snapshot
+      // (a legacy markdown-only row), so parseRubricRevisionSnapshot returns null for it.
+      // The hash equality is what reaches the already-repaired comparison; before the
+      // fix that comparison dereferenced the null parse and threw a TypeError.
+      await db.adminSql`
+        INSERT INTO harness_shared.plan_revisions
+          (workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot,
+           rationale, author_kind, author_id, created_at)
+        SELECT ${activeWorkspaceId()}, 'papercusp', ${rubricId}, COALESCE(MAX(seq), 0) + 1, ${updatedHash},
+               '# markdown-only legacy rubric revision', 'test', 'agent', 'test', 1
+          FROM harness_shared.plan_revisions
+         WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+           AND plan_slug = ${rubricId}`;
+
+      const scope = { workspaceId: activeWorkspaceId(), harnessSlug: 'papercusp' };
+      const preview = await rubrics.repairLegacyRubricRevisionSnapshots(rubricId, scope, {
+        dryRun: true,
+        rubricRevision: targetRevision,
+      });
+      // An unparseable latest snapshot is not evidence of a prior repair.
+      expect(preview.reason).toBeUndefined();
+      expect(preview).toMatchObject({
+        status: 'dry_run',
+        currentRevision: targetRevision,
+        revisionsToRepair: 1,
+        revisionsRepaired: 0,
+      });
+    } finally {
+      await clearRubric();
+      rubrics.__resetRubricSeedStateForTests();
+    }
   });
 
   it('reads an immutable historical rubric revision without falling back to current template_data', async () => {
@@ -1551,6 +2149,70 @@ describe('list / get / search over written rubrics', () => {
     expect(all.map((r) => r.rubricId)).toEqual(['active-a', 'proposed-b']);
   });
 
+  it('paginates the ordered result and stops with a null nextOffset', async () => {
+    const first = await rubrics.listRubricsPage({ limit: 1 });
+    expect(first.rubrics.map((r) => r.rubricId)).toEqual(['active-a']);
+    expect(first.hasMore).toBe(true);
+    expect(first.nextOffset).toBe(1);
+
+    const second = await rubrics.listRubricsPage({ limit: 1, offset: first.nextOffset! });
+    expect(second.rubrics.map((r) => r.rubricId)).toEqual(['proposed-b']);
+    expect(second.hasMore).toBe(false);
+    expect(second.nextOffset).toBeNull();
+    expect((await rubrics.listRubrics({ limit: 1, offset: 1 })).map((r) => r.rubricId)).toEqual(['proposed-b']);
+  });
+
+  it('continues beyond the former 500-row SQL cap', async () => {
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status,
+         created, updated, owner, archived, template, template_data, template_slug, origin)
+      SELECT ${activeWorkspaceId()}, 'papercusp', 'rubric-page-' || lpad(series.id::text, 3, '0'),
+             '', md5('rubric-page-' || lpad(series.id::text, 3, '0')), 1,
+             'Rubric page ' || series.id::text, 'active',
+             '2026-06-20', '2026-06-20', 'queen-1', false, 'rubric',
+             ${JSON.stringify(rubricData)}::text::jsonb, NULL, 'local'
+        FROM generate_series(1, 501) AS series(id)`;
+
+    const first = await rubrics.listRubricsPage({ limit: 500 });
+    expect(first.rubrics).toHaveLength(500);
+    expect(first.hasMore).toBe(true);
+    expect(first.nextOffset).toBe(500);
+
+    const second = await rubrics.listRubricsPage({ limit: 500, offset: first.nextOffset! });
+    const ids = [...first.rubrics, ...second.rubrics].map((r) => r.rubricId);
+    expect(second.rubrics).toHaveLength(3);
+    expect(second.hasMore).toBe(false);
+    expect(second.nextOffset).toBeNull();
+    expect(ids).toHaveLength(503);
+    expect(new Set(ids).size).toBe(503);
+    expect(ids).toContain('rubric-page-501');
+  });
+
+  it('filters acceptance rubrics by subjectPlan before the bounded page limit', async () => {
+    const targetPlan = 'acceptance-subject-past-page-cap';
+    await insertRubricPlan('acceptance-page-target', {
+      data: { ...rubricData, kind: 'acceptance', subjectPlan: targetPlan },
+    });
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status,
+         created, updated, owner, archived, template, template_data, template_slug, origin)
+      SELECT ${activeWorkspaceId()}, 'papercusp', 'acceptance-page-noise-' || lpad(series.id::text, 3, '0'),
+             '', md5('acceptance-page-noise-' || lpad(series.id::text, 3, '0')), 1,
+             'Acceptance page noise ' || series.id::text, 'active',
+             '2026-06-20', '2026-06-20', 'queen-1', false, 'rubric',
+             ${JSON.stringify({ ...rubricData, kind: 'acceptance' })}::text::jsonb ||
+               jsonb_build_object('subjectPlan', 'another-plan-' || series.id::text),
+             NULL, 'local'
+        FROM generate_series(1, 501) AS series(id)`;
+    const page = await rubrics.listRubricsPage({ kind: 'acceptance', subjectPlan: targetPlan, limit: 1 });
+
+    expect(page.rubrics.map((rubric) => rubric.rubricId)).toEqual(['acceptance-page-target']);
+    expect(page.hasMore).toBe(false);
+    expect(page.nextOffset).toBeNull();
+  });
+
   it('list filters by status and by characteristic', async () => {
     expect((await rubrics.listRubrics({ status: 'active' })).map((r) => r.rubricId)).toEqual(['active-a']);
     expect((await rubrics.listRubrics({ characteristic: 'memory-recall' })).map((r) => r.rubricId)).toEqual([
@@ -1681,7 +2343,12 @@ describe('template_data persistence boundary — the set-template-data door', ()
         criteria: current.criteria.map((criterion) => ({
           ...criterion,
           method: 'Execute the seeded acceptance fixture.',
-          check: { kind: 'tests' as const, files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
+          // Later amendment cases require integration coverage without changing
+          // the check set, so seed both conventional test layers up front.
+          check: { kind: 'tests' as const, files: [
+            'packages/operator-core/lib/acceptance-bar-seed.test.ts',
+            'packages/operator-core/lib/rubrics.integration.test.ts',
+          ] },
           requiredTestLayers: ['unit'],
         })),
       };
@@ -1689,6 +2356,137 @@ describe('template_data persistence boundary — the set-template-data door', ()
     }
     return { ...seeded, workspaceId, subject };
   }
+
+  it('authors an unstarted successor without changing the historical subject pin, and still refuses a pinned orphan', async () => {
+    const seeded = await seedBarContract('successor-authoring-subject');
+    await db.adminSql`UPDATE harness_shared.harness_plans SET status='superseded'
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.rubricSlug}`;
+    const [historicalBefore] = await db.adminSql`SELECT content, version, status, template_data
+      FROM harness_shared.harness_plans WHERE workspace_id=${seeded.workspaceId}
+      AND harness_slug='papercusp' AND plan_slug=${seeded.rubricSlug}`;
+    const [subjectBefore] = await db.adminSql`SELECT version, acceptance_bar_rubric_slug,
+      acceptance_bar_rubric_revision, acceptance_bar_set_hash FROM harness_shared.harness_plans
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    const successor = await rubrics.proposeRubric({
+      rubricId: 'acceptance-successor-authoring',
+      kind: 'acceptance',
+      subjectPlan: seeded.subject,
+      subjectHarnessSlug: 'papercusp',
+      classRef: 'plan-class-feature-ship',
+      characteristic: 'successor-authoring',
+      title: 'Successor author preparation',
+      criteria: [{
+        key: 'successor-state', title: 'Successor state', model: 'The successor preserves its author procedure.',
+        method: 'Read the preserved procedure.', driftMarkers: 'The preserved procedure is missing.',
+        check: { kind: 'tests', files: ['packages/operator-core/lib/agent-tools/plans/rubric-loss-guard.test.ts'] },
+      }],
+      by: 'successor-author',
+    });
+    const amendment = {
+      rubricId: successor.rubricId,
+      criterion: { key: 'successor-state', field: 'method' as const, mode: 'append' as const,
+        text: 'REPLICATION DRILL: read the stored author procedure through rubrics:get.' },
+      expectedRubricRevision: successor.revision,
+    };
+    const authored = await rubrics.amendRubric(amendment);
+    expect(authored?.criteria[0]?.method).toContain('REPLICATION DRILL');
+    expect(authored?.barContract).toBeUndefined();
+    const [historicalAfter] = await db.adminSql`SELECT content, version, status, template_data
+      FROM harness_shared.harness_plans WHERE workspace_id=${seeded.workspaceId}
+      AND harness_slug='papercusp' AND plan_slug=${seeded.rubricSlug}`;
+    const [subjectAfter] = await db.adminSql`SELECT version, acceptance_bar_rubric_slug,
+      acceptance_bar_rubric_revision, acceptance_bar_set_hash FROM harness_shared.harness_plans
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    expect(historicalAfter).toEqual(historicalBefore);
+    expect(subjectAfter).toEqual(subjectBefore);
+
+    await db.adminSql`UPDATE harness_shared.harness_plans SET acceptance_bar_rubric_slug=${successor.rubricId}
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    await expect(rubrics.amendRubric({ ...amendment, expectedRubricRevision: authored?.revision }))
+      .rejects.toThrow(/missing its server-owned barContract/);
+  });
+
+  it('resolves a legacy current revision after an in-place subject pin advance, still failing closed on grading drift (WI-10006667)', async () => {
+    const seeded = await seedBarContract('legacy-subject-pin-advance');
+    const current = await rubrics.getRubric(seeded.rubricSlug);
+    if (!current?.revision) throw new Error(`seeded rubric '${seeded.rubricSlug}' did not resolve`);
+    expect((await rubrics.getRubric(seeded.rubricSlug, current.revision))?.criteriaHash).toBe(current.criteriaHash);
+    // Make the rubric's revision history legacy (no explicit rubricRevision stamp), so
+    // only the current-version proof branch of getRubricAtRevision can resolve it.
+    await db.adminSql`
+      UPDATE harness_shared.plan_revisions
+         SET content_snapshot = regexp_replace(content_snapshot, '\n  "rubricRevision": [0-9]+,', '', 'g')
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.rubricSlug}`;
+    expect((await rubrics.getRubric(seeded.rubricSlug, current.revision))?.criteriaHash).toBe(current.criteriaHash);
+    // The production writer (acceptance-bar-amendment.ts, advanceAcceptanceBarSubjectRevision)
+    // advances ONLY this pin, in place, at the same rubric version and without a snapshot.
+    const advancedPin = Number(current.barContract?.subjectPlanRevision ?? 1) + 7;
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET template_data = jsonb_set(template_data, '{barContract,subjectPlanRevision}', to_jsonb(${advancedPin}::integer))
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.rubricSlug}`;
+    const pinned = await rubrics.getRubric(seeded.rubricSlug, current.revision);
+    expect(pinned?.revision).toBe(current.revision);
+    expect(pinned?.criteriaHash).toBe(current.criteriaHash);
+    expect(pinned?.barContract?.subjectPlanRevision).toBe(advancedPin);
+    // An unrecorded grading change alongside the pin advance must still fail closed.
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET template_data = jsonb_set(template_data, '{criteria,0,method}', '"Unrecorded new instructions"')
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.rubricSlug}`;
+    expect(await rubrics.getRubric(seeded.rubricSlug, current.revision)).toBeNull();
+  });
+
+  it('rolls back both BAR plan rows and the first revision when the subject revision insert fails', async () => {
+    const seeded = await seedBarContract('strict-bar-revision-failure-subject', { authorMethods: true });
+    const rubric = await rubrics.getRubric(seeded.rubricSlug);
+    if (!rubric) throw new Error(`seeded rubric '${seeded.rubricSlug}' did not resolve`);
+    const [rubricBefore] = await db.adminSql`
+      SELECT content, content_hash, version, template_data FROM harness_shared.harness_plans
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.rubricSlug}`;
+    const [subjectBefore] = await db.adminSql`
+      SELECT content, content_hash, version, acceptance_bar_rubric_revision, acceptance_bar_set_hash
+        FROM harness_shared.harness_plans
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    const planSlugs = [seeded.rubricSlug, seeded.subject];
+    const revisionsBefore = await db.adminSql<{ plan_slug: string; seq: number; content_hash: string }[]>`
+      SELECT plan_slug, seq, content_hash FROM harness_shared.plan_revisions
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
+         AND plan_slug=ANY(${planSlugs}::text[]) ORDER BY plan_slug, seq`;
+    const amendment = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'revision-failure-amender',
+      reason: 'Verify the two-plan write rolls back when revision capture fails.',
+      criterion: {
+        key: rubric.criteria[0]!.key,
+        field: 'driftMarkers' as const,
+        mode: 'replace' as const,
+        text: 'The first outcome is missing after commit.',
+      },
+    };
+    const approvalRef = await postApproval(amendment, 'outside-reviewer');
+
+    await expect(
+      withPlanRevisionInsertFailure(seeded.subject, () =>
+        rubrics.amendRubric({ ...amendment, approvalRef, approvedBy: 'outside-reviewer' }),
+      ),
+    ).rejects.toThrow(/plan revision unavailable/);
+
+    const [rubricAfter] = await db.adminSql`
+      SELECT content, content_hash, version, template_data FROM harness_shared.harness_plans
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.rubricSlug}`;
+    const [subjectAfter] = await db.adminSql`
+      SELECT content, content_hash, version, acceptance_bar_rubric_revision, acceptance_bar_set_hash
+        FROM harness_shared.harness_plans
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    const revisionsAfter = await db.adminSql<{ plan_slug: string; seq: number; content_hash: string }[]>`
+      SELECT plan_slug, seq, content_hash FROM harness_shared.plan_revisions
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
+         AND plan_slug=ANY(${planSlugs}::text[]) ORDER BY plan_slug, seq`;
+    expect(rubricAfter).toEqual(rubricBefore);
+    expect(subjectAfter).toEqual(subjectBefore);
+    expect(revisionsAfter).toEqual(revisionsBefore);
+  });
 
   it('names the offending BAR and missing Requirements record in an amendment refusal', async () => {
     const seeded = await seedBarContract('amendment-missing-requirement');
@@ -1737,6 +2535,20 @@ describe('template_data persistence boundary — the set-template-data door', ()
     };
     expect((await rubrics.previewAcceptanceBarAmendment(withUnitLayer))?.changedBars).toEqual(['R-1', 'R-2']);
 
+    // WI-10006536: 'component' is not a layer the run ledger records, so it can never pass
+    // correct-layer — refused at the amendment door, before approval or any revision write.
+    const withComponentLayer = {
+      ...testsWithoutLayer,
+      criteria: testsWithoutLayer.criteria.map((criterion) => ({
+        ...criterion,
+        requiredTestLayers: ['component', 'unit'],
+      })),
+    };
+    await expect(rubrics.previewAcceptanceBarAmendment(withComponentLayer)).rejects.toThrow(
+      /acceptance_bar_amendment_test_layer_unrecordable.*R-1.*component/,
+    );
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before.revision);
+
     const manual = {
       ...testsWithoutLayer,
       criteria: testsWithoutLayer.criteria.map((criterion) => ({
@@ -1745,6 +2557,44 @@ describe('template_data persistence boundary — the set-template-data door', ()
       })),
     };
     expect((await rubrics.previewAcceptanceBarAmendment(manual))?.changedBars).toEqual(['R-1', 'R-2']);
+
+    const manualWithTestLayer = {
+      ...manual,
+      criteria: manual.criteria.map((criterion) => ({
+        ...criterion,
+        requiredTestLayers: ['unit'],
+      })),
+    };
+    await expect(rubrics.previewAcceptanceBarAmendment(manualWithTestLayer)).rejects.toThrow(
+      /acceptance_bar_amendment_check_layer_mismatch.*R-1.*explicitly manual.*unit/,
+    );
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before.revision);
+  });
+
+  it('refuses unit-only check files for an e2e BAR during preview before any revision write', async () => {
+    const seeded = await seedBarContract('amendment-unit-check-e2e-layer');
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const unitCheckForE2e = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'check-layer-preview-author',
+      reason: 'A source unit test cannot discharge the declared end-to-end obligation.',
+      criteria: before.criteria.map((criterion) => ({
+        ...criterion,
+        method: 'Run the declared end-to-end proof.',
+        requiredTestLayers: ['e2e'],
+        check: { kind: 'tests' as const, files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
+      })),
+    };
+
+    await expect(rubrics.previewAcceptanceBarAmendment(unitCheckForE2e)).rejects.toThrow(
+      /acceptance_bar_amendment_check_layer_mismatch.*R-1.*e2e.*acceptance-bar-seed\.test\.ts is unit/,
+    );
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before.revision);
+    const [subject] = await db.adminSql<{ version: number }[]>`
+      SELECT version FROM harness_shared.harness_plans
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
+         AND plan_slug=${seeded.subject}`;
+    expect(subject!.version).toBe(before.barContract!.subjectPlanRevision);
   });
 
   // EI-24372605712471072: a BAR on a plan that has not started may name the test file its
@@ -2003,6 +2853,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
   it.each(['layers', 'check', 'model', 'falsifier', 'plane'] as const)(
     'preserves reviewed scenarios and causal pairing only for verification-contract changes (%s)',
     async (change) => {
+      const alternateUnitCheck = 'packages/operator-core/lib/acceptance-bar-contract-completeness.test.ts';
       const seeded = await seedBarContract(`atomic-layer-preservation-${change}`, { authorMethods: true });
       const { listSpecClauses, setSpecClause } = await import('./agent-tools/plans/spec-clauses-store');
       const scope = { harnessSlug: 'papercusp', planSlug: seeded.subject };
@@ -2033,15 +2884,15 @@ describe('template_data persistence boundary — the set-template-data door', ()
       const amendment = {
         rubricId: seeded.rubricSlug,
         actorId: 'amendment-actor',
-        reason: 'Require browser and integration proof without replacing the reviewed behavior.',
+        reason: 'Require unit and integration proof without replacing the reviewed behavior.',
         criteria: rubricBefore.criteria.map((criterion) =>
           criterion.barKey === before.sourceBar!.barKey
             ? {
                 ...criterion,
-                requiredTestLayers: ['browser', 'integration'],
-                method: `${criterion.method}\nInspect browser proof.`,
+                requiredTestLayers: ['unit', 'integration'],
+                method: `${criterion.method}\nInspect unit and integration proof.`,
                 ...(change === 'check'
-                  ? { check: { kind: 'tests' as const, files: ['packages/operator-core/lib/rubrics.integration.test.ts'] } }
+                  ? { check: { kind: 'tests' as const, files: ['packages/operator-core/lib/rubrics.integration.test.ts', alternateUnitCheck] } }
                   : {}),
                 ...(change === 'model' ? { model: 'The changed outcome holds.', bar: undefined } : {}),
                 ...(change === 'falsifier' ? { driftMarkers: 'The changed outcome is absent.' } : {}),
@@ -2057,19 +2908,22 @@ describe('template_data persistence boundary — the set-template-data door', ()
       if (change === 'check') {
         // The check really moved the BAR hash; preservation is not a no-op read.
         expect(rubricAfter.criteria.find((entry) => entry.barKey === before.sourceBar!.barKey)!.check)
-          .toEqual({ kind: 'tests', files: ['packages/operator-core/lib/rubrics.integration.test.ts'] });
+          .toEqual({ kind: 'tests', files: ['packages/operator-core/lib/rubrics.integration.test.ts', alternateUnitCheck] });
       }
       if (change === 'layers' || change === 'check') {
         expect(after).toMatchObject({
           ...authored,
           requiredEvidence: before.requiredEvidence,
-          requiredTestLayers: ['browser', 'e2e', 'integration'],
+          requiredTestLayers: ['e2e', 'integration', 'unit'],
         });
       } else {
         const criterion = rubricAfter.criteria.find((entry) => entry.barKey === before.sourceBar!.barKey)!;
         expect(after.behavior).toBe(criterion.model);
         expect(after.falsifier).toEqual({ observation: criterion.driftMarkers });
-        expect(after.requiredTestLayers).toEqual(['browser', 'integration']);
+        // WI-6554700010009658 replaces parent layers on every projection while
+        // retaining the atomic clause's authored extras. A meaning change drops
+        // its reviewed behavior/falsifier refinement, but not that extra e2e proof.
+        expect(after.requiredTestLayers).toEqual(['e2e', 'integration', 'unit']);
         expect(after.behaviorClass).not.toBe('lifecycle');
         if (change === 'plane') expect(after.requiredEvidence).toContain('live');
       }
@@ -2091,13 +2945,15 @@ describe('template_data persistence boundary — the set-template-data door', ()
           reason: 'Replace the canonical layers while retaining the atomic e2e requirement.',
           criteria: rubricAfter.criteria.map((criterion) =>
             criterion.barKey === before.sourceBar!.barKey
-              ? { ...criterion, requiredTestLayers: ['component'] }
+              // A RECORDED layer: 'component' (used here before WI-10006536) is now refused at
+              // the amendment door because no test run can ever record it.
+              ? { ...criterion, requiredTestLayers: ['unit'] }
               : criterion,
           ),
         };
         await rubrics.amendRubric({ ...replacement, approvalRef: await postApproval(replacement) });
         const replaced = (await listSpecClauses(scope)).find((clause) => clause.specId === before.specId)!;
-        expect(replaced.requiredTestLayers).toEqual(['component', 'e2e']);
+        expect(replaced.requiredTestLayers).toEqual(['e2e', 'unit']);
         expect(replaced.behavior).toBe(before.behavior);
         expect(replaced.falsifier).toEqual(before.falsifier);
         expect(replaced.behaviorClass).toBe(before.behaviorClass);
@@ -2615,6 +3471,124 @@ describe('template_data persistence boundary — the set-template-data door', ()
     );
   });
 
+  async function explicitAmendmentSubject(subject: string) {
+    const seeded = await seedBarContract(subject, { authorMethods: true });
+    const rubric = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const [row] = await db.adminSql<{ content: string; version: number }[]>`SELECT content, version
+      FROM harness_shared.harness_plans WHERE workspace_id=${seeded.workspaceId}
+      AND harness_slug='papercusp' AND plan_slug=${subject}`;
+    let content = row!.content;
+    for (const [index, criterion] of rubric.criteria.entries()) {
+      const sections = {
+        intent: { request: `Retain outcome ${index + 1}.`, sourceRefs: ['session_turn:fixture'] },
+        acceptance: { condition: criterion.model, falsifier: criterion.driftMarkers,
+          requiredScope: criterion.requiredScope, evidencePlane: criterion.evidencePlane,
+          requiredTestLayers: criterion.requiredTestLayers },
+        verification: { method: criterion.method, check: criterion.check },
+      };
+      content = content.replace(
+        `**R-${index + 1} — ${index === 0 ? 'First' : 'Second'} outcome.** The ${index === 0 ? 'first' : 'second'} outcome holds.`,
+        `**R-${index + 1} — ${index === 0 ? 'First' : 'Second'} outcome.**\n\`\`\`requirement\n${JSON.stringify(sections)}\n\`\`\``,
+      );
+    }
+    await db.adminSql`UPDATE harness_shared.harness_plans SET content=${content}, content_hash=${hashPlanContent(content)}
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${subject}`;
+    return { ...seeded, rubric, content, subjectRevision: Number(row!.version) };
+  }
+
+  it('repairs stale explicit Requirements on an unchanged amendment without changing BAR meaning', async () => {
+    const seeded = await explicitAmendmentSubject('stale-requirement-repair-subject');
+    const { parseRequirementBars } = await import('./acceptance-bar-seed');
+    const original = parseRequirementBars(seeded.content);
+    expect(original.ok).toBe(true);
+    const staleContent = seeded.content.replace(
+      JSON.stringify({ method: seeded.rubric.criteria[0]!.method, check: seeded.rubric.criteria[0]!.check }),
+      JSON.stringify({ method: 'Superseded verification procedure.', check: { kind: 'instrument', instrumentKey: 'none' } }),
+    );
+    expect(staleContent).not.toBe(seeded.content);
+    await db.adminSql`UPDATE harness_shared.harness_plans
+      SET content=${staleContent}, content_hash=${hashPlanContent(staleContent)}
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    const amendment = {
+      rubricId: seeded.rubricSlug, actorId: 'projection-repair-author',
+      reason: 'Repair an older amendment writer\'s stale Requirements from the canonical rubric.',
+      expectedRubricRevision: seeded.rubric.revision, expectedSubjectPlanRevision: seeded.subjectRevision,
+      criteria: seeded.rubric.criteria,
+    };
+    expect(await rubrics.previewAcceptanceBarAmendment(amendment)).toMatchObject({
+      changedBars: [], approvalRequired: false, requirementsDrift: { rerenderedOnApply: ['R-1'] },
+      revisionMovement: { subject: { from: seeded.subjectRevision, to: seeded.subjectRevision + 1 } },
+    });
+    await expect(rubrics.amendRubric({ ...amendment, faultInjection: 'after-rubric' })).rejects.toThrow();
+    const [rolledBack] = await db.adminSql`SELECT content, version FROM harness_shared.harness_plans
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    expect(rolledBack!.content).toBe(staleContent);
+    expect(Number(rolledBack!.version)).toBe(seeded.subjectRevision);
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(seeded.rubric.revision);
+
+    const after = (await rubrics.amendRubric(amendment))!;
+    expect(after.criteria).toEqual(seeded.rubric.criteria);
+    expect(after.barSetHash).toBe(seeded.rubric.barSetHash);
+    expect(after.barContract!.meaningRevision).toBe(seeded.rubric.barContract!.meaningRevision);
+    const [row] = await db.adminSql`SELECT content, version, acceptance_bar_rubric_revision FROM harness_shared.harness_plans
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    const repaired = parseRequirementBars(row!.content);
+    expect(repaired.ok).toBe(true);
+    if (repaired.ok && original.ok) {
+      expect(repaired.bars).toEqual(original.bars);
+    }
+    expect(Number(row!.version)).toBe(seeded.subjectRevision + 1);
+    expect(Number(row!.acceptance_bar_rubric_revision)).toBe(after.revision);
+  });
+
+  it('EI-25970739425963382: commits a METHOD-only requirement update atomically without changing BAR meaning', async () => {
+    const seeded = await explicitAmendmentSubject('method-render-subject');
+    const method = 'Run the updated exact fixture and retain its result.';
+    const amendment = { rubricId: seeded.rubricSlug, actorId: 'method-author', reason: 'Keep the explicit requirement procedure current.',
+      expectedRubricRevision: seeded.rubric.revision, expectedSubjectPlanRevision: seeded.subjectRevision,
+      criterion: { key: seeded.rubric.criteria[0]!.key, field: 'method' as const, mode: 'replace' as const, text: method } };
+    const preview = await rubrics.previewAcceptanceBarAmendment(amendment);
+    expect(preview).toMatchObject({ changedBars: [], approvalRequired: false,
+      requirementsDrift: { rerenderedOnApply: ['R-1'] },
+      revisionMovement: { subject: { from: seeded.subjectRevision, to: seeded.subjectRevision + 1 } } });
+    await expect(rubrics.amendRubric({ ...amendment, faultInjection: 'after-rubric' })).rejects.toThrow();
+    const [unchanged] = await db.adminSql`SELECT content, version FROM harness_shared.harness_plans
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    expect(unchanged!.content).toBe(seeded.content);
+    expect(Number(unchanged!.version)).toBe(seeded.subjectRevision);
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(seeded.rubric.revision);
+    const after = (await rubrics.amendRubric(amendment))!;
+    expect(after.criteria.map((c) => c.barHash)).toEqual(seeded.rubric.criteria.map((c) => c.barHash));
+    expect(after.barContract!.meaningRevision).toBe(seeded.rubric.barContract!.meaningRevision);
+    const [row] = await db.adminSql`SELECT content, version, acceptance_bar_rubric_revision FROM harness_shared.harness_plans
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    const { parseRequirementBars } = await import('./acceptance-bar-seed');
+    const parsed = parseRequirementBars(row!.content);
+    expect(parsed.ok && parsed.bars[0]!.criterion?.method).toBe(method);
+    expect(Number(row!.version)).toBe(seeded.subjectRevision + 1);
+    expect(Number(row!.acceptance_bar_rubric_revision)).toBe(after.revision);
+  });
+
+  it('EI-25970739425963382: renders method edits beside a meaning change while only that meaning changes BAR identity', async () => {
+    const seeded = await explicitAmendmentSubject('mixed-render-subject');
+    const method = 'Run the second current fixture and retain its result.';
+    const criteria = seeded.rubric.criteria.map((criterion, index) => {
+      const { bar: _bar, barHash: _barHash, ...canonical } = criterion;
+      return index === 0 ? { ...canonical, model: 'The first revised outcome holds.' } : { ...canonical, method };
+    });
+    const amendment = { rubricId: seeded.rubricSlug, actorId: 'method-author', reason: 'Change the first outcome and the second procedure.', criteria };
+    const preview = await rubrics.previewAcceptanceBarAmendment(amendment);
+    expect(preview).toMatchObject({ changedBars: ['R-1'], requirementsDrift: { rerenderedOnApply: ['R-1', 'R-2'] } });
+    const after = (await rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(amendment) }))!;
+    expect(after.criteria[0]!.barHash).not.toBe(seeded.rubric.criteria[0]!.barHash);
+    expect(after.criteria[1]!.barHash).toBe(seeded.rubric.criteria[1]!.barHash);
+    const [row] = await db.adminSql`SELECT content FROM harness_shared.harness_plans
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    const { parseRequirementBars } = await import('./acceptance-bar-seed');
+    const parsed = parseRequirementBars(row!.content);
+    expect(parsed.ok && parsed.bars[1]!.criterion?.method).toBe(method);
+  });
+
   it('updates the BAR set pin without churning stable clause revisions on a METHOD edit, then rolls back a late refusal', async () => {
     const seeded = await seedBarContract('method-pin-subject', { authorMethods: true });
     const { workspaceId, subject } = seeded;
@@ -2639,7 +3613,6 @@ describe('template_data persistence boundary — the set-template-data door', ()
       criteria: data.criteria.map((criterion) => ({
         ...criterion,
         method: 'Execute the current integration fixture.',
-        check: { kind: 'tests', files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
       })),
     };
     const projectionsBefore = await db.adminSql`SELECT r.source_rubric_revision FROM harness_shared.plan_spec_clauses c
@@ -3225,7 +4198,10 @@ describe('template_data persistence boundary — the set-template-data door', ()
 
     const method = {
       method: 'Run the integration fixture and compare every output record.',
-      check: { kind: 'tests' as const, files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
+      check: { kind: 'tests' as const, files: [
+        'packages/operator-core/lib/acceptance-bar-seed.test.ts',
+        'packages/operator-core/lib/rubrics.integration.test.ts',
+      ] },
     };
     const preview = await rubrics.previewAcceptanceBarAmendment({
       rubricId: seeded.rubricSlug,
@@ -3286,6 +4262,32 @@ describe('template_data persistence boundary — the set-template-data door', ()
   function reword<T extends { bar?: unknown }>({ bar: _bar, ...criterion }: T, model: string) {
     return { ...criterion, model };
   }
+
+  it('preserves a proved legacy acceptance preimage before a started-BAR amendment', async () => {
+    const seeded = await seedBarContract('legacy-acceptance-preimage-subject', { authorMethods: true });
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const templateData = await storedTemplateData(seeded.rubricSlug);
+    const [latest] = await db.adminSql<{ id: string; content_snapshot: string }[]>`
+      SELECT id, content_snapshot FROM harness_shared.plan_revisions
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+         AND plan_slug = ${seeded.rubricSlug} ORDER BY seq DESC LIMIT 1`;
+    const body = latest!.content_snapshot.split('## Structured rubric data (`template_data`)')[0]!.trimEnd();
+    const legacySnapshot = `${body}\n\n## Structured rubric data (\`template_data\`)\n\n~~~json\n${JSON.stringify(templateData, null, 2)}\n~~~\n`;
+    await db.adminSql`UPDATE harness_shared.plan_revisions SET content_snapshot = ${legacySnapshot}
+      WHERE id = ${latest!.id} AND workspace_id = ${activeWorkspaceId()}`;
+    await rubrics.amendRubric({
+      rubricId: seeded.rubricSlug, actorId: 'amendment-actor',
+      reason: 'Require an additional recorded layer.',
+      requirement: { key: before.criteria[0]!.key, acceptance: { requiredTestLayers: ['unit', 'integration'] } },
+    });
+    const historical = await rubrics.getRubric(seeded.rubricSlug, before.revision!);
+    expect(historical?.revision).toBe(before.revision);
+    expect(historical?.criteria).toEqual(before.criteria);
+    const [original] = await db.adminSql<{ content_snapshot: string }[]>`
+      SELECT content_snapshot FROM harness_shared.plan_revisions WHERE id = ${latest!.id}
+       AND workspace_id = ${activeWorkspaceId()}`;
+    expect(original!.content_snapshot).toBe(legacySnapshot);
+  });
 
   it('applies a started-BAR amendment that only grows required test layers without approval', async () => {
     const seeded = await seedBarContract('additive-layer-amendment-subject', { authorMethods: true });
@@ -3803,6 +4805,64 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect((await storedTemplateData('growable-rubric')).criteria.map((c) => c.key)).toContain(
       'portfolio-activity-floor',
     );
+  });
+
+  it('records an exact projectable rubric snapshot when set-template-data advances the plan version', async () => {
+    const slug = 'versioned-template-data-rubric';
+    await seedRubric(slug);
+    const before = await rubrics.getRubric(slug);
+    if (!before) throw new Error(`seeded rubric '${slug}' did not resolve`);
+    const priorData = await storedTemplateData(slug) as unknown as {
+      [key: string]: unknown;
+      criteria: Array<Record<string, unknown>>;
+    };
+    const revisedMethod = 'Read the exact committed set-template-data revision snapshot.';
+    const nextData = {
+      ...priorData,
+      criteria: priorData.criteria.map((criterion, index) =>
+        index === 0 ? { ...criterion, method: revisedMethod } : criterion,
+      ),
+    };
+
+    const response = await setTemplateDataTool.handler(
+      { harness: 'papercusp', slug, data: nextData, rationale: 'Exercise the real rubric writer.' } as never,
+      {
+        isSuperuser: true,
+        uiClientId: 'su-rubric-template-data-integration',
+        workspaceId: activeWorkspaceId(),
+        harnessSlug: 'papercusp',
+      } as never,
+    );
+    expect(response).toHaveProperty('content');
+    if (!('content' in response)) throw new Error('template data handler must return text content');
+    const responseText = response.content.find((part) => part.type === 'text')?.text;
+    expect(responseText).toBeTruthy();
+    const written = JSON.parse(responseText!) as {
+      ok: boolean;
+      version: number;
+      revision: { seq: number } | null;
+    };
+    expect(written.ok).toBe(true);
+    expect(written.version).toBe(before.revision! + 1);
+    expect(written.revision).toEqual({ seq: 2 });
+
+    const historical = await rubrics.getRubric(slug, before.revision!);
+    expect(historical?.criteria).toEqual(before.criteria);
+    const current = await rubrics.getRubric(slug, written.version);
+    expect(current?.revision).toBe(written.version);
+    expect(current?.criteria[0]?.method).toBe(revisedMethod);
+
+    const [snapshotRow] = await db.adminSql<{ seq: number; content_snapshot: string }[]>`
+      SELECT seq, content_snapshot FROM harness_shared.plan_revisions
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+         AND plan_slug = ${slug} ORDER BY seq DESC LIMIT 1`;
+    const snapshotJson = snapshotRow.content_snapshot.match(/~~~json\s*\n([\s\S]*?)\n~~~/)?.[1];
+    expect(snapshotJson).toBeTruthy();
+    expect(JSON.parse(snapshotJson!)).toMatchObject({
+      schemaVersion: 2,
+      rubricRevision: written.version,
+      templateData: nextData,
+    });
   });
 
   it("leaves a NON-rubric plan's structured data alone (the guard is scoped, not global)", async () => {

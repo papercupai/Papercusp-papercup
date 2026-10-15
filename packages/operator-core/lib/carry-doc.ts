@@ -139,6 +139,12 @@ export interface CarryDocTailTurn {
   /** Native logical request/turn identity, resolved through message-parent
    *  links by turn-journal for clients that do not stamp it directly. */
   requestId?: string | null;
+  /** USER turns only: the request the native PARENT node belongs to — for an
+   *  AskUserQuestion dialog answer, the request whose running turn raised the
+   *  dialog. Structural (message-parent linkage), never inferred from position.
+   *  A delivered response that settles a dialog answer also settles this chain
+   *  ancestor (EI-25227743201307257). Absent ⇒ no chaining (prior behaviour). */
+  parentRequestId?: string | null;
   /** Authoritative response lifecycle from the client wire.  Only
    *  `delivered` settles a request; progress and interruption leave it open. */
   responseDisposition?: 'progress' | 'delivered' | 'interrupted' | null;
@@ -399,6 +405,13 @@ export interface BuildCarryDocOpts extends BuildCarryBriefOpts {
     workspaceId: string,
     stampedGeneration: number,
   ) => Promise<unknown>;
+  /** Test seam for the D-006 recovery-delivery record (oversized-tool-results-reduction-2026-10-12).
+   *  Defaults to the session_briefs write a later recovery orient compares against. */
+  recordRecoveryDeliveryFn?: (
+    ownerId: string,
+    recovery: AutomaticCompactionRecovery['recovery'],
+    buildEpoch: number,
+  ) => Promise<unknown>;
   getModesFn?: (workspaceId: string, ownerId: string) => Promise<CarryDocMode[]>;
   getPlanItemsFn?: (ownerId: string, workspaceId: string) => Promise<CarryDocPlanItem[]>;
   getAsksFn?: (ownerId: string, workspaceId: string) => Promise<CarryDocAsk[]>;
@@ -604,6 +617,7 @@ async function defaultGetTail(opts: BuildCarryDocOpts): Promise<CarryDocTailTurn
       text: t.text,
       ts: t.ts ? t.ts.toISOString() : null,
       requestId: t.requestId ?? null,
+      ...(t.parentRequestId ? { parentRequestId: t.parentRequestId } : {}),
       responseDisposition: t.responseDisposition ?? null,
       requestHistoryStatus: t.requestHistoryStatus,
       provenance: t.speaker === 'user' ? classifyRecordedTurn(t.text) : null,
@@ -638,7 +652,11 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
       fleet: null,
     }),
   );
-  const ws = opts.workspaceId ?? 'default';
+  // buildCarryBrief resolves an omitted workspace from the request/process registry and
+  // returns its concrete scope. Reuse that scope for the recovery/control, modes, plan
+  // claims, asks and identity legs below; falling straight to `default` split one carry
+  // document across two workspaces when the caller omitted the explicit option.
+  const ws = opts.workspaceId ?? brief.workspaceId ?? 'default';
 
   const buildAutomaticRecovery =
     opts.buildAutomaticRecoveryFn ??
@@ -656,10 +674,43 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
   // caller/session's scope. Keep both carry-document projections bound to the
   // explicit caller option; an omitted caller harness is intentionally null.
   const callerHarness = opts.harness ?? null;
-  const automaticRecovery = await buildAutomaticRecovery(ownerId, ws, {
+  let automaticRecovery = await buildAutomaticRecovery(ownerId, ws, {
     sessionHarness: callerHarness,
     heldItems: brief.heldItems,
   }).catch(() => null);
+
+  // A complete marker is only safe when the control anchor and the carried brief
+  // were assembled from the same concrete workspace. A split read can otherwise
+  // publish a default/empty control snapshot as complete and suppress the successor's
+  // one-shot orient fallback. Treat a missing or mismatched scope as incomplete.
+  const recoveryScopeMismatch = automaticRecovery !== null && (
+    (!opts.workspaceId && !brief.workspaceId) ||
+    (brief.workspaceId != null && brief.workspaceId !== ws) ||
+    automaticRecovery.recovery.control?.state.scope.workspace !== ws
+  );
+  if (recoveryScopeMismatch && automaticRecovery) {
+    automaticRecovery = {
+      ...automaticRecovery,
+      marker: {
+        ...automaticRecovery.marker,
+        complete: false,
+        controlGeneration: null,
+        controlStateHash: null,
+      },
+      recovery: {
+        ...automaticRecovery.recovery,
+        loop: null,
+        control: null,
+        planAuthority: null,
+        wakeSourceLostWarning: undefined,
+        coverage: {
+          ...automaticRecovery.recovery.coverage,
+          control: false,
+          planAuthority: false,
+        },
+      },
+    };
+  }
 
   // WI-10002058: this document is stamped at BUILD time, and every caller of
   // buildCarryDoc is a context-wipe producer — the context that was told the
@@ -680,8 +731,23 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
   // this invariant for its truth; remove the re-arm and that instruction goes
   // back to being a hope rather than a guarantee.
   const armControlWitness = opts.armControlWitnessFn ?? defaultArmControlWitness;
-  if (typeof automaticRecovery?.marker.controlGeneration === 'number') {
+  if (!recoveryScopeMismatch && typeof automaticRecovery?.marker.controlGeneration === 'number') {
     await armControlWitness(ownerId, ws, automaticRecovery.marker.controlGeneration).catch(
+      () => {},
+    );
+  }
+  // D-006 (oversized-tool-results-reduction-2026-10-12): record what this document
+  // delivers, stamped with the PRE-wipe epoch. Every caller bumps the epoch after
+  // building, so a recovery orient trusts this record only across exactly that one
+  // bump and re-sends in full otherwise. Fail-soft: a missed write costs only the dedupe.
+  if (!recoveryScopeMismatch && automaticRecovery) {
+    const recordRecoveryDelivery =
+      opts.recordRecoveryDeliveryFn ??
+      (async (id: string, recovery: AutomaticCompactionRecovery['recovery'], buildEpoch: number) => {
+        const mod = await import('./agent-tools/coordination/recovery-delivery');
+        return mod.recordRecoveryDelivery(id, recovery, buildEpoch);
+      });
+    await recordRecoveryDelivery(ownerId, automaticRecovery.recovery, automaticRecovery.marker.memoryEpoch).catch(
       () => {},
     );
   }
@@ -967,6 +1033,28 @@ export function deriveContinuation(
     for (const request of requestByKey.get(requestId) ?? []) request.settled = true;
   };
 
+  // EI-25227743201307257 — an AskUserQuestion dialog answer is a tool result
+  // INSIDE the agent's running turn. The agent acts on it and then (often)
+  // raises the NEXT dialog, so that answer's id never receives a `delivered`
+  // response: the turn's eventual end_turn carries the LATER answer's id. Left
+  // alone it reads as an open owner message and is re-delivered to a carry
+  // successor as a fresh directive — measured twice (directives #1379, #1460).
+  // A dialog answer therefore records the request whose turn raised it, and a
+  // RESPONSE that settles the answer settles that chain too. Only owner-dialog
+  // answers chain (a queued owner-typed message is an independent request), the
+  // link is structural (native parent node), and cancellation/supersession do
+  // not cascade — only a response does.
+  const chainParent = new Map<string, string>();
+  const settleResponse = (requestId: string | null | undefined) => {
+    const seen = new Set<string>();
+    let id = requestId ?? null;
+    while (id && !seen.has(id)) {
+      seen.add(id);
+      settle(id);
+      id = chainParent.get(id) ?? null;
+    }
+  };
+
   for (let i = 0; i < tail.length; i += 1) {
     const turn = tail[i];
     for (const superseded of turn.supersedesRequestIds ?? []) settle(superseded);
@@ -985,13 +1073,22 @@ export function deriveContinuation(
       const same = requestByKey.get(key) ?? [];
       same.push(entry);
       requestByKey.set(key, same);
+      if (
+        turn.provenance?.verdict === 'owner-dialog' &&
+        turn.requestId &&
+        turn.parentRequestId &&
+        turn.parentRequestId !== turn.requestId
+      ) {
+        chainParent.set(turn.requestId, turn.parentRequestId);
+      }
     }
 
-    // A response settles ONLY the request whose native/thread id it shares and
-    // only at the client's final delivered boundary. Commentary, acknowledg-
-    // ments, unrelated final answers and interrupted turns remain open.
+    // A response settles ONLY the request whose native/thread id it shares (and
+    // that request's dialog chain, above) and only at the client's final
+    // delivered boundary. Commentary, acknowledgements, unrelated final answers
+    // and interrupted turns remain open.
     if (turn.speaker === 'assistant' && turn.responseDisposition === 'delivered') {
-      settle(turn.requestId);
+      settleResponse(turn.requestId);
     }
   }
 
@@ -1018,7 +1115,7 @@ export function deriveContinuation(
   if (opts.finalTurnInFlight && tail.length > 0) {
     const live = tail[tail.length - 1];
     if (live.speaker === 'assistant' && live.responseDisposition !== 'interrupted') {
-      settle(live.requestId);
+      settleResponse(live.requestId);
     }
   }
 
@@ -1510,6 +1607,16 @@ export function renderAutomaticCompactionRecovery(
     lines.push(
       `- changes after the prior summary (${recovery.staleness_warnings.summaryAt}): ${recovery.staleness_warnings.warnings.join(' · ')}`,
     );
+  }
+  // P-001 (carry-recheck-and-governed-memory-2026-10-14): the carried checks' probes, RUN when this
+  // recovery was built — a changed probe tells the successor which carried claim no longer holds.
+  if (recovery.carriedProbes && !judgeSafe) {
+    lines.push(recovery.carriedProbes);
+  }
+  // P-002 (carry-recheck-and-governed-memory-2026-10-14): carried references whose stamped version
+  // moved or no longer resolves since the checkpoint was written. Absent when nothing moved.
+  if (recovery.carriedRefChanges && !judgeSafe) {
+    lines.push(recovery.carriedRefChanges);
   }
   if (marker.complete) {
     lines.push(postCompactionRecoveryInstruction(role));

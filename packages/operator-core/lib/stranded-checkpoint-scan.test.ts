@@ -369,6 +369,38 @@ describe('closableLocally: the federation wall a drain agent otherwise hits last
     const r = classifyStrandedRows([row({ issue_id: 'WI-3529', origin: 'remote' })], { limit: 5 });
     expect(r.candidates[0]!.closableLocally).toBe(false);
     expect(r.candidates[0]!.origin).toBe('remote');
+    expect(r.candidates[0]!.ownNodeAuthored).toBe(false);
+  });
+
+  /**
+   * WI-10006562: a row this node authored but a sync echo stranded at origin='remote' is
+   * closable here (the write paths heal its origin). Measured 2026-10-06: all 66 open
+   * checkpointed remote rows on the dev box were own-node, so every one was mislabelled.
+   */
+  it('treats an own-node row stranded at origin=remote as closable, and does not count it', () => {
+    const r = classifyStrandedRows(
+      [
+        row({ issue_id: 'OWN', origin: 'remote', own_node_authored: true, updated_ts: String(daysAgo(20)) }),
+        row({ issue_id: 'PEER', origin: 'remote', own_node_authored: false, updated_ts: String(daysAgo(19)) }),
+      ],
+      { limit: 5 },
+    );
+    const byId = Object.fromEntries(r.candidates.map((c) => [c.id, c]));
+    expect(byId.OWN).toMatchObject({ closableLocally: true, ownNodeAuthored: true, origin: 'remote' });
+    expect(byId.PEER).toMatchObject({ closableLocally: false, ownNodeAuthored: false, origin: 'remote' });
+    expect(r.matchedNotClosableLocally).toBe(1);
+  });
+
+  it.each([[null], [undefined]])('keeps the remote wall when own-node is unknown (%s)', (own) => {
+    const r = classifyStrandedRows([row({ origin: 'remote', own_node_authored: own })], { limit: 5 });
+    expect(r.candidates[0]!.closableLocally).toBe(false);
+    expect(r.candidates[0]!.ownNodeAuthored).toBe(false);
+  });
+
+  it('reports ownNodeAuthored only for a remote-labelled row', () => {
+    const r = classifyStrandedRows([row({ origin: 'local', own_node_authored: true })], { limit: 5 });
+    expect(r.candidates[0]!.ownNodeAuthored).toBe(false);
+    expect(r.candidates[0]!.closableLocally).toBe(true);
   });
 
   it('treats a locally-authored candidate as closable', () => {

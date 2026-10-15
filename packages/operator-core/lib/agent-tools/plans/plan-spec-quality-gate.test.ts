@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { scorecardEvidenceFingerprint, type ScorecardRow } from '../../scorecards';
+import type { TaskRow } from '../../task-manager/types';
 import type { SpecClauseRevision } from './spec-clauses-store';
 import { evaluatePlanSpecQuality, SPEC_QUALITY_RUBRIC_REF } from './spec-quality';
 import { evaluatePlanSpecQualityGate } from './plan-spec-quality-gate';
@@ -73,11 +74,19 @@ function matchingCard(
   };
 }
 
-function auditPendingCard(clauses: SpecClauseRevision[]): ScorecardRow {
+function auditPendingCard(
+  clauses: SpecClauseRevision[],
+  dispatchReservation?: { key: string; reservedAt: string },
+): ScorecardRow {
   return {
     ...matchingCard(clauses),
     issueId: 'EI-quality-card-pending',
-    gradingAudit: { state: 'pending', metaRubricRef: 'grading-integrity', stampedAt: '2026-08-20T00:03:00.000Z' },
+    gradingAudit: {
+      state: 'pending',
+      metaRubricRef: 'grading-integrity',
+      stampedAt: '2026-08-20T00:03:00.000Z',
+      ...(dispatchReservation ? { dispatchReservation } : {}),
+    },
   };
 }
 
@@ -140,6 +149,48 @@ function withIdentityEvidence(card: ScorecardRow, evidence: string): ScorecardRo
 }
 
 describe('evaluatePlanSpecQualityGate', () => {
+  it('blocks activation when a runtime BAR is projected onto an exempt prerequisite instead of its dependent implementation', async () => {
+    const sourceBar = {
+      barKey: 'R-1',
+      barHash: 'a'.repeat(64),
+      barSetHash: 'b'.repeat(64),
+      rubricSlug: 'quality-plan-acceptance',
+      rubricRevision: 4,
+      evidencePlane: 'tree' as const,
+    };
+    const clauses = [
+      clause({
+        specId: 'INVENTORY-P-001', sourceValId: null, planItemId: 'P-001',
+        behaviorClass: 'non-automated', requiredTestLayers: [], mutationRequired: false,
+        lifecycleStatus: 'exempt', exemption: { justification: 'Read-only inventory.', provenance: 'D-006' },
+      }),
+      clause({ specId: 'AUTO-BAR-R-1-P-001', sourceValId: null, planItemId: 'P-001', sourceBar: { ...sourceBar } }),
+      clause({ specId: 'AUTO-BAR-R-1-P-002', sourceValId: null, planItemId: 'P-002', sourceBar: { ...sourceBar } }),
+      clause({ specId: 'CONTRACT-P-002', sourceValId: null, planItemId: 'P-002' }),
+    ];
+    const listCards = vi.fn(async () => []);
+    const result = await evaluatePlanSpecQualityGate(
+      {
+        harnessSlug: 'papercup',
+        planSlug: 'quality-plan',
+        planItemIds: ['P-001', 'P-002'],
+        planItems: [
+          { id: 'P-001', blockedBy: [] },
+          { id: 'P-002', blockedBy: ['P-001'] },
+        ],
+      },
+      gateDeps({ listClauses: async () => clauses, listCards }),
+    );
+
+    expect(result).toMatchObject({
+      satisfied: false,
+      applicable: true,
+      code: 'spec_quality_failed',
+      wouldBlock: ['item-contract-coverage'],
+    });
+    expect(listCards).not.toHaveBeenCalled();
+  });
+
   it.each(['current', 'active/accepted current'])(
     'preserves an audited all-active card with the exact equivalent "%s" identity wording',
     async (wording) => {
@@ -306,6 +357,29 @@ describe('evaluatePlanSpecQualityGate', () => {
     });
   });
 
+  it('accepts exact current findings with historical replay metadata but refuses changed findings and replay hashes', async () => {
+    const clauses = [clause()];
+    const evaluation = evaluatePlanSpecQuality({ planSlug: 'quality-plan', harnessSlug: 'papercusp',
+      planItemIds: ['P-001'], clauses, classRef: 'plan-class-feature-ship',
+      replaySnapshot: { planContentHash: 'a'.repeat(64), clausesAsOf: '2026-08-20T00:00:00.001Z' } });
+    const card = { ...matchingCard(clauses), ratings: evaluation.ratings };
+    const refresh = () => { card.evidenceFingerprint = scorecardEvidenceFingerprint({ rubricRef: SPEC_QUALITY_RUBRIC_REF, ratings: card.ratings }); };
+    refresh();
+    const gate = () => evaluatePlanSpecQualityGate({ harnessSlug: 'papercusp', planSlug: 'quality-plan', planItemIds: ['P-001'] },
+      gateDeps({ listClauses: vi.fn(async () => clauses), listCards: vi.fn(async () => [card]) }));
+    expect((await gate()).satisfied).toBe(true);
+    const original = card.ratings.falsifiability!.evidence;
+    card.ratings.falsifiability!.evidence = original.replace(evaluation.specSetHash, 'f'.repeat(64));
+    refresh();
+    expect((await gate()).satisfied).toBe(false);
+    card.ratings.falsifiability!.evidence = original.replace('Historical replay', 'Untrusted replay');
+    refresh();
+    expect((await gate()).satisfied).toBe(false);
+    card.ratings.falsifiability!.evidence = original.replace('falsifiable', 'unproven');
+    refresh();
+    expect((await gate()).satisfied).toBe(false);
+  });
+
   it('accepts an instrumented scorecard using the persisted snapshot-aware fingerprint', async () => {
     const clauses = [clause()];
     const result = await evaluatePlanSpecQualityGate(
@@ -341,6 +415,42 @@ describe('evaluatePlanSpecQualityGate', () => {
     });
     expect(result.message).toContain('grading-integrity');
     expect(result.message).toContain('EI-quality-card-pending');
+  });
+
+  it('names the auditor task and reservation time instead of asking the caller to dispatch a duplicate audit', async () => {
+    const clauses = [clause()];
+    const reservation = {
+      key: 'grading-audit:EI-quality-card-pending',
+      reservedAt: '2026-08-20T00:03:01.000Z',
+    };
+    const listTasks = vi.fn(async () => [{
+      taskId: 'task-grading-auditor',
+      class: 'agent-session',
+      state: 'running',
+      workItemId: 'EI-quality-card-pending',
+      detail: { label: reservation.key, coordOwnerId: 'su-reserved-auditor' },
+    }] as unknown as TaskRow[]);
+    const result = await evaluatePlanSpecQualityGate(
+      { harnessSlug: 'papercusp', planSlug: 'quality-plan', planItemIds: ['P-001'] },
+      gateDeps({
+        listClauses: vi.fn(async () => clauses),
+        listCards: vi.fn(async () => [auditPendingCard(clauses, reservation)]),
+        listTasks,
+      }),
+    );
+
+    expect(result.code).toBe('spec_quality_scorecard_grading_audit_pending');
+    expect(result.message).toContain("task 'task-grading-auditor'");
+    expect(result.message).toContain("owner 'su-reserved-auditor'");
+    expect(result.message).toContain(reservation.reservedAt);
+    expect(result.message).toContain('no further action is needed while it settles');
+    expect(result.message).toContain('No grading-audit await key is available');
+    expect(result.message).not.toContain('scorecards:emit');
+    expect(listTasks).toHaveBeenCalledWith({
+      states: ['pending', 'running'],
+      labelPrefix: reservation.key,
+      limit: 10,
+    });
   });
 
   it('reports the grading-audit-failed verdict distinctly from a pending one', async () => {

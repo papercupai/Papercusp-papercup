@@ -1,11 +1,15 @@
 /**
  * GET /api/plugins/configs?harness=<h>&plugins=<a>,<b>,<c> — batched config read.
  * Ported from app/api/plugins/configs/route.ts. `auth: 'public'`.
+ *
+ * Every secret value is masked before it leaves the host (plugin-config-secrets.ts,
+ * WI-6554700010008325) — the same contract as GET /plugins/config.
  */
 import { promises as fs } from 'node:fs';
 import { join, basename, dirname } from 'node:path';
 import { papercuspRoot } from '../../../papercusp-root';
 import { listPluginsIn } from '../../../plugin-catalog';
+import { redactPluginConfigSecrets } from '../../../plugin-config-secrets';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const HARNESS_SLUG = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
@@ -24,15 +28,20 @@ async function readJson<T>(path: string): Promise<T | null> {
   }
 }
 
+interface ResolvedPlugin {
+  name: string;
+  schema: Record<string, unknown> | null;
+}
+
 async function resolveCanonicalSlugs(
   harness: string,
   inputSlugs: string[],
-): Promise<Map<string, string>> {
+): Promise<Map<string, ResolvedPlugin>> {
   const sources: Array<[string, 'harness' | 'global']> = [
     [join(HARNESSES_DIR(), harness, 'plugins'), 'harness'],
     [GLOBAL_PLUGINS_DIR(), 'global'],
   ];
-  const out = new Map<string, string>();
+  const out = new Map<string, ResolvedPlugin>();
   for (const [src, kind] of sources) {
     let entries: Awaited<ReturnType<typeof listPluginsIn>> = [];
     try {
@@ -48,7 +57,10 @@ async function resolveCanonicalSlugs(
       for (const slug of inputSlugs) {
         if (out.has(slug)) continue;
         if (candidates.has(slug)) {
-          out.set(slug, entry.name);
+          out.set(slug, {
+            name: entry.name,
+            schema: (entry as { configSchema?: Record<string, unknown> }).configSchema ?? null,
+          });
         }
       }
     }
@@ -90,7 +102,8 @@ export default defineTool({
 
     const entries = await Promise.all(
       slugs.map(async (slug) => {
-        const canonicalSlug = canonical.get(slug) ?? slug;
+        const resolved = canonical.get(slug);
+        const canonicalSlug = resolved?.name ?? slug;
         const canonicalPath = join(
           HARNESSES_DIR(), harness, 'plugin-configs', `${canonicalSlug}.json`,
         );
@@ -101,7 +114,7 @@ export default defineTool({
           (await readJson<Record<string, unknown>>(canonicalPath))
           ?? (await readJson<Record<string, unknown>>(fallbackPath))
           ?? {};
-        return [slug, config] as const;
+        return [slug, redactPluginConfigSecrets(config, resolved?.schema ?? null)] as const;
       }),
     );
 

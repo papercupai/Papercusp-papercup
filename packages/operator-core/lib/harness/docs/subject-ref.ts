@@ -30,7 +30,21 @@ export type GitRunner = (
 export type SubjectRef =
   | { kind: 'path'; globs: string[] }
   | { kind: 'symbol'; file: string; name: string }
-  | { kind: 'feature'; ref: string };
+  | { kind: 'feature'; ref: string }
+  /**
+   * A plan item or decision, `<plan-slug>#P-NNN` / `<plan-slug>#D-NNN` (WI-6554700010008908).
+   * It documents a plan RECORD, not a file: it has no git pathspec, so it never
+   * anchors drift and is never filesystem-checked. Before this kind existed the
+   * parser fell through to `path`, and lint:insight-citations reported the plan ref
+   * as a missing file.
+   */
+  | { kind: 'plan'; ref: string };
+
+/**
+ * Matches a scoped plan item/decision ref: `byoc-cloud-workspaces-2026-08-22#D-143`,
+ * `some-plan#P-004`. The slug is the plan-store slug form (lowercase, digits, hyphens).
+ */
+const PLAN_REF_RE = /^[a-z0-9][a-z0-9-]*[a-z0-9]#[PD]-\d+$/;
 
 /**
  * Matches a feature/work-item id: F-001, WI-12, EI-18693907749585513
@@ -61,6 +75,10 @@ export function parseSubjectRef(raw: string): SubjectRef | null {
 
   if (FEATURE_RE.test(s)) {
     return { kind: 'feature', ref: s.toUpperCase() };
+  }
+
+  if (PLAN_REF_RE.test(s)) {
+    return { kind: 'plan', ref: s };
   }
 
   const dc = s.indexOf('::');
@@ -106,6 +124,8 @@ export function parseDocumentsField(value: unknown): SubjectRef[] {
         const o = entry as Record<string, unknown>;
         if (typeof o.feature === 'string' && FEATURE_RE.test(o.feature.trim())) {
           refs.push({ kind: 'feature', ref: o.feature.trim().toUpperCase() });
+        } else if (typeof o.plan === 'string' && PLAN_REF_RE.test(o.plan.trim())) {
+          refs.push({ kind: 'plan', ref: o.plan.trim() });
         } else if (typeof o.symbol === 'string' || (typeof o.file === 'string' && typeof o.name === 'string')) {
           if (typeof o.file === 'string' && typeof o.name === 'string' && o.file.trim() && o.name.trim()) {
             refs.push({ kind: 'symbol', file: o.file.trim(), name: o.name.trim() });
@@ -174,6 +194,7 @@ export function stringifySubjectRef(ref: SubjectRef): string {
     case 'symbol':
       return `${ref.file} :: ${ref.name}`;
     case 'feature':
+    case 'plan':
       return ref.ref;
   }
 }
@@ -223,6 +244,9 @@ export async function resolveAnchorPaths(
       }
       return [...files];
     }
+    case 'plan':
+      // A plan record has no files to watch.
+      return [];
   }
 }
 

@@ -5,18 +5,29 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => { throw new Error('no PG in unit tests'); },
 }));
 vi.mock('../agent-tools/coordination/escalations', () => ({ openEscalation: vi.fn() }));
+vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async () => true) }));
+vi.mock('../alarm-attention', () => ({ resolveAlarm: vi.fn(async (conditionKey, source, deps) =>
+  deps?.resolve?.({ conditionKey, summary: `${source} recovered` }) ?? false) }));
 
 import {
   DYING_DESCENDANTS_FLOOR,
+  KERNEL_LEAK_RETENTION_DAYS,
   KERNEL_LEAK_SAMPLE_INTERVAL_MS,
   KERNEL_LEAK_WARMUP_MS,
+  appSliceOf,
+  buildHostPressureTotals,
   buildKernelMemorySample,
+  contentionCgroups,
   evaluateKernelLeak,
   formatKernelLeakEscalation,
+  parseCpuUsageUsec,
   parseDyingDescendants,
+  parsePressureTotal,
+  runHostSampleOnce,
   runKernelLeakCheckOnce,
   slopePerDay,
   slopeWindow,
+  type HostContentionReading,
   type KernelMemorySample,
 } from './kernel-leak-watchdog';
 
@@ -26,7 +37,7 @@ const DAY = 24 * HOUR;
 const MEM_TOTAL = 251 * GIB;
 const BOOT_AT = Date.parse('2026-09-27T02:07:37Z');
 
-/** A series of samples every 10 min from `startMs` to `endMs`, growing linearly per day. */
+/** A series of samples every KERNEL_LEAK_SAMPLE_INTERVAL_MS (60 s) from `startMs` to `endMs`, growing linearly per day. */
 function series(opts: {
   startMs: number;
   endMs: number;
@@ -55,6 +66,12 @@ function series(opts: {
 }
 
 const last = <T>(xs: T[]): T => xs[xs.length - 1];
+
+/** A distinct contention reading, so a store call is provably handed THIS one. */
+const contention: HostContentionReading = {
+  pressure: { cpuSomeUs: 11, ioSomeUs: 22, ioFullUs: 33, memorySomeUs: 44, memoryFullUs: 55 },
+  cgroupCpuUsageUs: { '/': 1_000, 'system-postgresql.slice': 250 },
+};
 
 describe('parsing', () => {
   const meminfo = [
@@ -201,6 +218,54 @@ describe('formatKernelLeakEscalation', () => {
 });
 
 describe('runKernelLeakCheckOnce', () => {
+  it('opens each signal independently of legacy failures and resolves only measured healthy signals', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const high = series({ startMs: BOOT_AT + 7 * HOUR, endMs: BOOT_AT + 20 * HOUR,
+      sUnreclaimStart: 30 * GIB, sUnreclaimPerDay: 3 * GIB, dyingStart: 1500, dyingPerDay: 800 });
+    const low = series({ startMs: BOOT_AT + 7 * HOUR, endMs: BOOT_AT + 20 * HOUR,
+      sUnreclaimStart: GIB, sUnreclaimPerDay: 0, dyingStart: 100, dyingPerDay: 0 });
+    let rows = high, current: KernelMemorySample | null = last(rows), unreadable = false;
+    const open = new Set<string>();
+    const rail = { broadcast: vi.fn(async (event: { conditionKey?: string }) => { open.add(event.conditionKey!); return true; }),
+      resolve: vi.fn(async (event: { conditionKey: string }) => open.delete(event.conditionKey)) };
+    const deps = { rail, readSample: async () => current, store: async () => {}, prune: async () => {},
+      loadSeries: async () => { if (unreadable) throw new Error('history unavailable'); return rows; },
+      escalate: async () => { throw new Error('legacy unavailable'); } };
+    try {
+      await runKernelLeakCheckOnce(deps);
+      expect(open.size).toBe(3);
+      expect(rail.broadcast).toHaveBeenCalledTimes(3);
+      current = null; await runKernelLeakCheckOnce(deps);
+      expect(open.size).toBe(3);
+      rows = low; current = { ...last(low), dyingDescendants: null }; unreadable = true;
+      await runKernelLeakCheckOnce(deps);
+      expect([...open].sort()).toEqual(['alarm:kernel-leak:tower:dying-growth', 'alarm:kernel-leak:tower:sunreclaim-growth']);
+      unreadable = false; rows = [current]; await runKernelLeakCheckOnce(deps);
+      expect(open.size).toBe(2); // one point is not proof that the trend recovered
+      rows = low.map((row) => ({ ...row, bootId: 'other-boot' })); await runKernelLeakCheckOnce(deps);
+      expect(open.size).toBe(2);
+      rows = low.map((row, index) => index === 5 ? { ...row, sUnreclaimBytes: NaN } : row);
+      await runKernelLeakCheckOnce(deps);
+      expect(open.size).toBe(2); // malformed history is unknown, not a healthy slope
+      rows = low; current = last(low); await runKernelLeakCheckOnce(deps);
+      expect(open.size).toBe(0);
+      expect(warn).toHaveBeenCalled();
+    } finally { warn.mockRestore(); }
+  });
+
+  it('continues legacy notification when condition delivery fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const current = series({ startMs: BOOT_AT + HOUR, endMs: BOOT_AT + HOUR,
+      sUnreclaimStart: 30 * GIB, sUnreclaimPerDay: 0 })[0];
+    const escalate = vi.fn(async () => {});
+    try {
+      await runKernelLeakCheckOnce({ readSample: async () => current, store: async () => {}, prune: async () => {},
+        loadSeries: async () => [], escalate, rail: { broadcast: async () => { throw new Error('rail failed'); } } });
+      expect(escalate).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('condition sunreclaim-absolute failed'));
+    } finally { warn.mockRestore(); }
+  });
+
   it('skips cleanly when no sample is readable (non-Linux, missing /proc)', async () => {
     const store = vi.fn();
     const r = await runKernelLeakCheckOnce({ readSample: async () => null, store });
@@ -215,12 +280,13 @@ describe('runKernelLeakCheckOnce', () => {
     const escalate = vi.fn(async () => {});
     const r = await runKernelLeakCheckOnce({
       readSample: async () => current,
+      readContention: async () => contention,
       store,
       prune: async () => {},
       loadSeries: async () => s.slice(0, -1),
       escalate,
     });
-    expect(store).toHaveBeenCalledWith(current);
+    expect(store).toHaveBeenCalledWith(current, contention);
     expect(r.alerts.map((a) => a.signal)).toEqual(['sunreclaim-growth']);
     expect(escalate).toHaveBeenCalledTimes(1);
   });
@@ -238,6 +304,176 @@ describe('runKernelLeakCheckOnce', () => {
     // The absolute signal still fires without history.
     expect(r.alerts.map((a) => a.signal)).toEqual(['sunreclaim-absolute']);
     expect(warn).toHaveBeenCalledTimes(3);
+    warn.mockRestore();
+  });
+});
+
+// ── P-002 / D-005: contention readings (papercusp-performance-audit-2026-10-12) ──
+
+describe('contention parsing', () => {
+  // Verbatim shapes of /proc/pressure/{cpu,io,memory} on kernel 6.x. cpu "full" is
+  // reported with total=0 at the system level: a real zero, not an absent line.
+  const cpu = 'some avg10=1.60 avg60=2.19 avg300=2.07 total=21700182638\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n';
+  const io = 'some avg10=44.70 avg60=44.70 avg300=30.12 total=987654321\nfull avg10=31.90 avg60=31.90 avg300=20.01 total=555555555\n';
+  const memory = 'some avg10=0.00 avg60=2.99 avg300=1.00 total=4242\nfull avg10=0.00 avg60=0.50 avg300=0.10 total=1717\n';
+
+  it('reads the cumulative total= of each PSI line kind, never an avg field', () => {
+    expect(parsePressureTotal(io, 'some')).toBe(987654321);
+    expect(parsePressureTotal(io, 'full')).toBe(555555555);
+    expect(parsePressureTotal(cpu, 'some')).toBe(21700182638);
+  });
+
+  it('keeps a reported total=0 as zero, and an absent line or file as null', () => {
+    expect(parsePressureTotal(cpu, 'full')).toBe(0);
+    expect(parsePressureTotal('some avg10=0.00 avg60=0.00 avg300=0.00 total=9\n', 'full')).toBeNull();
+    expect(parsePressureTotal(null, 'some')).toBeNull();
+    expect(parsePressureTotal('', 'some')).toBeNull();
+  });
+
+  it('builds all five stall totals, with null only for what was unreadable', () => {
+    expect(buildHostPressureTotals({ cpu, io, memory })).toEqual({
+      cpuSomeUs: 21700182638,
+      ioSomeUs: 987654321,
+      ioFullUs: 555555555,
+      memorySomeUs: 4242,
+      memoryFullUs: 1717,
+    });
+    expect(buildHostPressureTotals({ cpu: null, io, memory: null })).toEqual({
+      cpuSomeUs: null,
+      ioSomeUs: 987654321,
+      ioFullUs: 555555555,
+      memorySomeUs: null,
+      memoryFullUs: null,
+    });
+  });
+
+  it('reports no pressure at all (CONFIG_PSI=n) as null, never as five zeros', () => {
+    expect(buildHostPressureTotals({ cpu: null, io: null, memory: null })).toBeNull();
+  });
+
+  it('reads usage_usec from cpu.stat and does not confuse it with user_usec', () => {
+    expect(parseCpuUsageUsec('user_usec 700\nusage_usec 1000\nsystem_usec 300\nnr_periods 0\n')).toBe(1000);
+    expect(parseCpuUsageUsec('user_usec 700\nsystem_usec 300\n')).toBeNull();
+    expect(parseCpuUsageUsec(null)).toBeNull();
+  });
+
+  it("finds this process's app.slice, and nothing for a system service or cgroup v1", () => {
+    expect(appSliceOf('0::/user.slice/user-1000.slice/user@1000.service/app.slice/papercusp-dev-api.service\n')).toBe(
+      'user.slice/user-1000.slice/user@1000.service/app.slice',
+    );
+    expect(appSliceOf('0::/system.slice/postgresql@16-main.service\n')).toBeNull();
+    expect(appSliceOf('12:cpu,cpuacct:/user.slice/app.slice/x.service\n')).toBeNull();
+    expect(appSliceOf(null)).toBeNull();
+  });
+
+  it('samples the root, top-level slices, postgres and only the papercusp units of the app.slice', () => {
+    const appSlice = 'user.slice/user-1000.slice/user@1000.service/app.slice';
+    const groups = contentionCgroups({
+      appSlice,
+      rootEntries: ['user.slice', 'cgroup.procs', 'system.slice', 'cpu.stat', 'init.scope', 'machine.slice'],
+      appSliceEntries: [
+        'papercusp-staging-api.service',
+        'firefox.service',
+        'papercusp-dev-api.service',
+        'papercup-embed-sidecar.service',
+        'papercusp-test-1470200-mv5zxogr-4.scope',
+        'cgroup.procs',
+      ],
+    });
+    expect(groups).toEqual([
+      { key: '/', path: '' },
+      { key: 'machine.slice', path: 'machine.slice' },
+      { key: 'system.slice', path: 'system.slice' },
+      { key: 'user.slice', path: 'user.slice' },
+      { key: 'system-postgresql.slice', path: 'system.slice/system-postgresql.slice' },
+      { key: 'app.slice', path: appSlice },
+      { key: 'papercup-embed-sidecar.service', path: `${appSlice}/papercup-embed-sidecar.service` },
+      { key: 'papercusp-dev-api.service', path: `${appSlice}/papercusp-dev-api.service` },
+      { key: 'papercusp-staging-api.service', path: `${appSlice}/papercusp-staging-api.service` },
+    ]);
+  });
+
+  it('still samples the host-wide cgroups when this process is not under an app.slice', () => {
+    const keys = contentionCgroups({ appSlice: null, rootEntries: ['system.slice'], appSliceEntries: ['papercusp-dev-api.service'] })
+      .map((g) => g.key);
+    expect(keys).toEqual(['/', 'system.slice', 'system-postgresql.slice']);
+  });
+});
+
+describe('retention (PERF-P002-RETENTION)', () => {
+  it('the kernel-leak check prunes on every pass, after its sample is stored; the 60 s sampler never prunes', async () => {
+    const sample = series({ startMs: BOOT_AT + 8 * HOUR, endMs: BOOT_AT + 8 * HOUR, sUnreclaimStart: 5 * GIB, sUnreclaimPerDay: 0 })[0];
+    const store = vi.fn(async () => {});
+    const prune = vi.fn(async () => {});
+    for (let pass = 0; pass < 2; pass++) {
+      await runKernelLeakCheckOnce({
+        readSample: async () => sample,
+        readContention: async () => contention,
+        store,
+        prune,
+        loadSeries: async () => [],
+        escalate: async () => {},
+      });
+    }
+    expect(prune).toHaveBeenCalledTimes(2);
+    expect(store.mock.invocationCallOrder[0]).toBeLessThan(prune.mock.invocationCallOrder[0]!);
+    expect(KERNEL_LEAK_RETENTION_DAYS).toBe(14);
+    // runHostSampleOnce accepts no prune dependency at all: rows are bounded by the 10-minute check.
+    const sampled = await runHostSampleOnce({ readSample: async () => sample, readContention: async () => contention, store });
+    expect(sampled.stored).toBe(true);
+    expect(prune).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('runHostSampleOnce (the 60 s host-contention-sampler tick)', () => {
+  const sample = series({ startMs: BOOT_AT + 8 * HOUR, endMs: BOOT_AT + 8 * HOUR, sUnreclaimStart: 5 * GIB, sUnreclaimPerDay: 0 })[0];
+
+  it('stores the sample together with its contention reading, and nothing else', async () => {
+    const store = vi.fn(async () => {});
+    const r = await runHostSampleOnce({ readSample: async () => sample, readContention: async () => contention, store });
+    expect(store).toHaveBeenCalledTimes(1);
+    expect(store).toHaveBeenCalledWith(sample, contention);
+    expect(r).toEqual({ stored: true, sample, contention });
+  });
+
+  it('a failed contention read never costs the kernel-memory sample: it is stored without contention', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const store = vi.fn(async () => {});
+    const r = await runHostSampleOnce({
+      readSample: async () => sample,
+      readContention: async () => { throw new Error('EACCES pressure/io'); },
+      store,
+    });
+    expect(store).toHaveBeenCalledWith(sample, null);
+    expect(r).toEqual({ stored: true, sample, contention: null });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toMatch(/contention read failed.*EACCES/);
+    warn.mockRestore();
+  });
+
+  it('stores nothing and reads no contention when no sample is readable', async () => {
+    const store = vi.fn(async () => {});
+    const readContention = vi.fn(async () => contention);
+    const r = await runHostSampleOnce({ readSample: async () => null, readContention, store });
+    expect(r).toEqual({ stored: false, sample: null, contention: null });
+    expect(store).not.toHaveBeenCalled();
+    expect(readContention).not.toHaveBeenCalled();
+  });
+
+  it('never throws: a failed read or store is logged and reported as not stored', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const readFailed = await runHostSampleOnce({
+      readSample: async () => { throw new Error('meminfo unreadable'); },
+      store: vi.fn(async () => {}),
+    });
+    expect(readFailed).toEqual({ stored: false, sample: null, contention: null });
+    const storeFailed = await runHostSampleOnce({
+      readSample: async () => sample,
+      readContention: async () => contention,
+      store: async () => { throw new Error('pg down'); },
+    });
+    expect(storeFailed).toEqual({ stored: false, sample, contention });
+    expect(warn).toHaveBeenCalledTimes(2);
     warn.mockRestore();
   });
 });

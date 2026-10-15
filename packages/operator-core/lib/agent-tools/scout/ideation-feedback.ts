@@ -33,7 +33,7 @@ import {
   type RoutedIdeaProvenance,
 } from '../../scout/outcome-feedback';
 import { buildScoutOutcomeReaders } from '../../scout/routed-ledger';
-import { resolveIntentSims, rankByIntent, type IntentRankDeps } from '../../scout/intent-rank-leg';
+import { resolveIntentSims, rankByIntent, type IntentRankDeps, type IntentSimByRef } from '../../scout/intent-rank-leg';
 import {
   resolveObservationsImpact,
   type ObservationImpactDeps,
@@ -284,7 +284,9 @@ export async function runIdeationFeedback(
   const intent = args.intent?.trim() ? args.intent.trim() : undefined;
 
   let outcomes: IdeationOutcomeEntry[] = [];
-  const summary = { won: 0, lost: 0, pending: 0, graded: 0, total: 0 };
+  // `unresolvable` (scout-su-ideate-pipeline-gaps-2026-10-08 P-002): ideas that can
+  // never decide (paused rail / legacy gym ref) — counted, but never as pending.
+  const summary = { won: 0, lost: 0, pending: 0, unresolvable: 0, graded: 0, total: 0 };
   let lensWinRates: SuLensWinRate[] = [];
   let outcomesError: string | undefined;
   // P-019: resolved ONCE from the provenance refs, then shared by BOTH the outcomes

@@ -100,8 +100,8 @@ export function agentBinaryCandidates(bin: string): string[] {
 }
 
 /** First candidate that is present and executable, else null. */
-function firstExecutableCandidate(bin: string): string | null {
-  for (const path of agentBinaryCandidates(bin)) {
+function firstExecutableCandidate(candidates: readonly string[]): string | null {
+  for (const path of candidates) {
     if (isExecutable(path)) return path;
   }
   return null;
@@ -122,8 +122,11 @@ async function whichAsync(bin: string): Promise<string | null> {
 }
 
 /**
- * Absolute path to `bin`, or null. PATH first (cheapest and honours an
- * operator-set override), then the candidate list.
+ * Absolute path to `bin`, or null. Prefer managed installs tied to this
+ * Papercusp process before PATH: a service PATH can retain an older shim even
+ * when the Node prefix running the operator has a newer CLI. If neither
+ * managed location is executable, keep PATH ahead of the remaining fallback
+ * locations so ordinary operator overrides still work.
  *
  * Callers that SPAWN one of these CLIs must use this rather than passing the
  * bare name to `spawn` — a bare name re-resolves against the spawning
@@ -131,12 +134,22 @@ async function whichAsync(bin: string): Promise<string | null> {
  * unable to run a codex that was installed and working.
  */
 export function resolveAgentBinarySync(bin: string): string | null {
-  return whichSync(bin) ?? firstExecutableCandidate(bin);
+  const candidates = agentBinaryCandidates(bin);
+  // The first three entries are derived from this process's Node prefix or
+  // Papercusp-managed install roots. They outrank a PATH hit that may be a
+  // stale service-manager shim. Keep this tied to the candidate-list contract
+  // documented above; later entries are general user/system fallbacks.
+  return firstExecutableCandidate(candidates.slice(0, 3))
+    ?? whichSync(bin)
+    ?? firstExecutableCandidate(candidates.slice(3));
 }
 
 /** Async twin of `resolveAgentBinarySync` (the `which` probe runs off-thread). */
 export async function resolveAgentBinary(bin: string): Promise<string | null> {
-  return (await whichAsync(bin)) ?? firstExecutableCandidate(bin);
+  const candidates = agentBinaryCandidates(bin);
+  return firstExecutableCandidate(candidates.slice(0, 3))
+    ?? (await whichAsync(bin))
+    ?? firstExecutableCandidate(candidates.slice(3));
 }
 
 /** Synchronous detection — kept only for callers that are already sync

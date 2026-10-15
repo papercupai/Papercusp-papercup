@@ -26,6 +26,7 @@ import { recordUserAction } from '../../../user-actions';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { runGovernedOperation } from '../../../resource-governor/execution';
+import { createControlPlaneTempFile } from '../../../control-plane-temp.mjs';
 
 // ── POST /:slug/product-review ─────────────────────────────────────────
 
@@ -92,7 +93,8 @@ const replan = defineTool({
     }
 
     const orchBin = orchestratorRunBin();
-    const logPath = `/tmp/harness-replan-${project.slug}.log`;
+    const safeSlug = project.slug.replace(/[^A-Za-z0-9._-]+/g, '-');
+    const logPath = createControlPlaneTempFile('harness-replan-' + safeSlug + '-', '.log', 'log');
     // Instance config via the env-transport — the orchestrator never reads
     // `.papercusp/config.json` (deprecate-harness-config-json-2026-06-06).
     const instEnv = await (async (): Promise<Record<string, string>> => {

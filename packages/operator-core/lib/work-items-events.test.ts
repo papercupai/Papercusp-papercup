@@ -29,8 +29,19 @@ vi.mock('./work-items-admission', async (importOriginal) => ({
   isWorkItemDuplicateAdmitted: duplicateAdmissionCheck,
 }));
 
+// WI-10005020: the claimable emitter's default dependency check lazily reads
+// `readUnresolvedDepBlockers`; without this partial mock every un-injected emit opens a
+// real PG pool (blocked by the unit-layer guard, then swallowed by the fail-open catch),
+// so those tests would never exercise the satisfied-dependency path they assume.
+const unresolvedDepBlockers = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => []));
+vi.mock('./work-items', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./work-items')>()),
+  readUnresolvedDepBlockers: unresolvedDepBlockers,
+}));
+
 beforeEach(() => {
   duplicateAdmissionCheck.mockReset().mockResolvedValue(true);
+  unresolvedDepBlockers.mockReset().mockResolvedValue([]);
 });
 
 const wi = (over: Partial<WorkItem> = {}): WorkItem => ({
@@ -259,6 +270,22 @@ describe('emitWorkItemSettledEvents', () => {
     const arg = (emit.mock.calls[0] as unknown as [{ key: string; to: string[] }])[0];
     expect(arg.key).toBe('work-item:done:WI-1');
     expect(arg.to.sort()).toEqual(['su-grand', 'su-parent']);
+  });
+
+  it('reports terminal lifecycle state separately from proposed completion authority', async () => {
+    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null, waiters: 0 }));
+    await emitWorkItemSettledEvents(wi({ id: 'WI-PROPOSED', state: 'done', completionAuthority: 'proposed' }), {
+      emit: emit as never,
+      getItem: vi.fn(async () => null) as never,
+      listOut: vi.fn(async () => []) as never,
+      listIn: vi.fn(async () => []) as never,
+    });
+
+    const arg = (emit.mock.calls[0] as unknown as [{ key: string; summary: string; payload: Record<string, unknown> }])[0];
+    expect(arg.key).toBe('work-item:done:WI-PROPOSED');
+    expect(arg.summary).toBe("WI-PROPOSED reached terminal state 'done' (completion authority: proposed): the work");
+    expect(arg.summary).not.toContain('settled');
+    expect(arg.payload).toMatchObject({ state: 'done', completionAuthority: 'proposed' });
   });
 
   it('emits targeted claim:released when terminalization clears a prior assignee without broad claimable co-fire', async () => {
@@ -713,6 +740,65 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
     });
   });
 
+  // WI-10005020 (D-008 #4b): a blocked→open restore of a row that still has an unsatisfied
+  // `blocks` edge must not announce work that no claim can take.
+  it('does not announce a row whose blocks dependency edges are unsatisfied', async () => {
+    const emit = typedEmit();
+    const unresolvedDependencyCheck = vi.fn(async () => true);
+    const item = wi({ id: 'WI-edge-blocked', state: 'open', assignee: null });
+    emitWorkItemClaimableEvent(item, 'unblocked', {
+      emit,
+      duplicateAdmissionCheck: async () => true,
+      unresolvedDependencyCheck,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(unresolvedDependencyCheck).toHaveBeenCalledWith(item);
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('announces a row whose dependency edges are all satisfied', async () => {
+    const emit = typedEmit();
+    emitWorkItemClaimableEvent(wi({ id: 'WI-edge-clear', state: 'open', assignee: null }), 'unblocked', {
+      emit,
+      duplicateAdmissionCheck: async () => true,
+      unresolvedDependencyCheck: async () => false,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit).toHaveBeenCalledOnce();
+    expect(emit.mock.calls[0][0]).toMatchObject({
+      key: 'work-item:claimable',
+      payload: expect.objectContaining({ id: 'WI-edge-clear', reason: 'unblocked' }),
+    });
+  });
+
+  it('fails open when the dependency read fails (the scheduler floor stays authoritative)', async () => {
+    const emit = typedEmit();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    emitWorkItemClaimableEvent(wi({ id: 'WI-edge-unknown', state: 'open', assignee: null }), 'unblocked', {
+      emit,
+      duplicateAdmissionCheck: async () => true,
+      unresolvedDependencyCheck: async () => {
+        throw new Error('pg unavailable');
+      },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
+  it('the default dependency check consults readUnresolvedDepBlockers with the row harness', async () => {
+    const emit = typedEmit();
+    unresolvedDepBlockers.mockResolvedValue([{ blockerId: 'WI-upstream' }]);
+    emitWorkItemClaimableEvent(
+      wi({ id: 'WI-edge-default', state: 'open', assignee: null, harness: 'papercusp' }),
+      'unblocked',
+      { emit, duplicateAdmissionCheck: async () => true },
+    );
+    await vi.waitFor(() => expect(unresolvedDepBlockers).toHaveBeenCalledWith('WI-edge-default', 'papercusp'));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit).not.toHaveBeenCalled();
+  });
+
   it('fires the GLOBAL work-item:claimable key with id/kind/severity/harness/title/state/reason/assignee', async () => {
     const emit = typedEmit();
     const { emitWorkItemClaimableEvent } = await import('./work-items-events');
@@ -978,11 +1064,50 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
       harness: 'email',
       summary: `${dependent.id} became actionable after WI-ROOT settled`,
       source: 'system:plan-run-successor-dispatch',
+      // WI-10004815: the lane restore may have claimed it since the snapshot.
+      wakeRetained: false,
     });
     const keys = emit.mock.calls.map((call) => call[0].key);
     expect(keys).toContain(`work-item:unblocked:${dependent.id}`);
     expect(keys).not.toContain('work-item:claimable');
     expect((dispatchActionable as any).mock.invocationCallOrder[0]).toBeLessThan(emit.mock.invocationCallOrder[0]!);
+  });
+
+  it('restores a stored blocked dependent before announcing it as unblocked and claimable', async () => {
+    const emit = typedEmit();
+    const dependent = wi({ id: 'WI-DEP-BLOCKED', state: 'blocked', assignee: null });
+    const restored = { ...dependent, state: 'open' };
+    const restoreBlockedDependent = vi.fn(async () => restored);
+    await emitUnblockedOnEdgeRemoved({ kind: 'issue', ref: dependent.id }, 'WI-ROOT', {
+      emit, getItem: vi.fn(async () => dependent), listIn: vi.fn(async () => []), restoreBlockedDependent,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(restoreBlockedDependent).toHaveBeenCalledWith(dependent, 'WI-ROOT');
+    expect(emit.mock.calls.map(([event]) => event.key)).toEqual([
+      `work-item:unblocked:${dependent.id}`, 'work-item:claimable',
+    ]);
+    expect(restoreBlockedDependent.mock.invocationCallOrder[0]).toBeLessThan(emit.mock.invocationCallOrder[0]!);
+  });
+
+  it('does not announce unblocked when restoration retains an independent hold', async () => {
+    const emit = typedEmit();
+    const dependent = wi({ id: 'WI-DEP-HELD', state: 'blocked', assignee: null });
+    await emitUnblockedOnEdgeRemoved({ kind: 'issue', ref: dependent.id }, 'WI-ROOT', {
+      emit, getItem: vi.fn(async () => dependent), listIn: vi.fn(async () => []),
+      restoreBlockedDependent: vi.fn(async () => dependent),
+    });
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('does not emit unblocked for an open dependent with an unsatisfied success-only prerequisite', async () => {
+    const emit = typedEmit();
+    const dependent = wi({ id: 'WI-SUCCESS-ONLY', state: 'open', assignee: null });
+    const unresolvedDependencyCheck = vi.fn(async () => true);
+    await emitUnblockedOnEdgeRemoved({ kind: 'issue', ref: dependent.id }, 'WI-DROPPED', {
+      emit, getItem: vi.fn(async () => dependent), listIn: vi.fn(async () => []), unresolvedDependencyCheck,
+    });
+    expect(unresolvedDependencyCheck).toHaveBeenCalledWith(dependent);
+    expect(emit).not.toHaveBeenCalled();
   });
 
   it('CO-FIRES from emitWorkItemCreatedEvent for an unclaimed-claimable create (one hook at the call site)', async () => {

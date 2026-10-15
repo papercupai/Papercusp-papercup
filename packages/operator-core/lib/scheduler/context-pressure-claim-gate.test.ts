@@ -15,11 +15,13 @@ import {
 
 describe('decideContextPressureGate', () => {
   it('REFUSES at critical, with a typed code and no lane claim', () => {
-    const d = decideContextPressureGate({ bucket: 'critical' });
+    const reading = { bucket: 'critical' as const, estimatedAt: '2026-10-11T15:00:00.000Z', ageSec: 90 };
+    const d = decideContextPressureGate({ bucket: 'critical', reading });
     expect(d.refuse).toBe(true);
     if (!d.refuse) throw new Error('unreachable');
     expect(d.code).toBe(CONTEXT_CRITICAL_REFUSAL_CODE);
     expect(d.diagnosis.contextPressureBlocked).toBe(true);
+    expect(d.diagnosis.contextEstimate).toEqual({ estimatedAt: reading.estimatedAt, ageSec: reading.ageSec });
     // The filing's point 2: a VERDICT, not silence — and explicitly not a drain claim.
     expect(d.diagnosis.laneEvaluated).toBe(false);
     expect(d.error).toMatch(/NOT evaluated/i);
@@ -86,7 +88,7 @@ describe('decideContextPressureGate', () => {
     });
   });
 
-  it('offers the warm-loop retune when no host exists but a WARM loop is active', () => {
+  it('preserves the warm loop when no host exists and request-compaction cannot retune it', () => {
     const d = decideContextPressureGate({
       bucket: 'critical',
       recovery: {
@@ -97,10 +99,12 @@ describe('decideContextPressureGate', () => {
       },
     });
     if (!d.refuse) throw new Error('expected refusal');
-    expect(d.error).toContain('no-PTY fallback retunes the active WARM loop to COLD');
+    expect(d.error).toContain('keep the active WARM loop');
+    expect(d.error).toContain('returns no_live_pty_host with retuned:false');
+    expect(d.error).toContain('does not retune WARM to COLD');
     expect(d.error).toContain('session:request-compaction');
     expect(d.diagnosis).toMatchObject({
-      remedy: 'checkpoint, then warm-loop retune',
+      remedy: 'checkpoint, preserve the warm loop, and use a managed host',
       recoveryPath: 'warm-loop',
     });
   });

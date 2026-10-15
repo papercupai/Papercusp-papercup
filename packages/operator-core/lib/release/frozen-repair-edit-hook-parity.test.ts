@@ -1,4 +1,4 @@
-import { mkdtempSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, existsSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -24,6 +24,9 @@ import {
   parseMcpToolResult,
   recordOneHunk,
   scratchUriToPath,
+  markersDir as hookMarkersDir,
+  readMarkers as hookReadMarkers,
+  selectMarker as hookSelectMarker,
 } from '../../../../apps/operator/scripts/hooks/cc/posttooluse-frozen-candidate-edit-nudge.mjs';
 import { hunksFromToolCall } from './frozen-repair-edit-ledger';
 
@@ -200,6 +203,83 @@ describe('marker projection round-trip', () => {
   });
 });
 
+/**
+ * EI-24313562050732849 — the round-trip suite above passes ONE explicit path to both the writer
+ * and the reader, so it pinned the marker FORMAT while the two DEFAULT locations drifted apart:
+ * the writer moved to per-install `frozen-repair-edit-markers/<scope>.json` and the hook kept
+ * reading a global file nothing wrote, silently dropping every repair hunk. These cases use
+ * each side's default location, so that split fails here instead of at admission time.
+ */
+describe('marker LOCATION parity — the hook reads where the writer writes', () => {
+  type Target = Parameters<typeof projectFrozenRepairMarker>[1];
+  const target = (installSlug: string): Target => ({ workspaceId: 'ws-parity', installSlug }) as unknown as Target;
+  const queue = (phase: string, candidate = 'c'.repeat(40)): FrozenCandidateRepairQueue =>
+    ({
+      candidate,
+      repairHead: 'r'.repeat(40),
+      phase,
+      failingTests: ['a/b.test.ts'],
+      updatedAtMs: 7,
+    }) as unknown as FrozenCandidateRepairQueue;
+  const withStateDir = (fn: () => void) => {
+    const dir = mkdtempSync(join(tmpdir(), 'frozen-marker-location-'));
+    const prev = process.env.PAPERCUSP_STATE_DIR;
+    process.env.PAPERCUSP_STATE_DIR = dir;
+    try {
+      fn();
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_STATE_DIR;
+      else process.env.PAPERCUSP_STATE_DIR = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it('finds the marker the writer projects at its DEFAULT location', () => {
+    withStateDir(() => {
+      projectFrozenRepairMarker(queue('repair-in-progress'), target('papercusp'));
+      const markers = hookReadMarkers();
+      expect(markers).toHaveLength(1);
+      expect(markers[0].candidate).toBe('c'.repeat(40));
+      expect(hookSelectMarker(markers, '/w/papercusp')?.candidate).toBe('c'.repeat(40));
+    });
+  });
+
+  it('reads nothing once the writer clears the marker', () => {
+    withStateDir(() => {
+      projectFrozenRepairMarker(queue('repair-in-progress'), target('papercusp'));
+      projectFrozenRepairMarker(queue('ready-to-test'), target('papercusp'));
+      expect(hookReadMarkers()).toEqual([]);
+    });
+  });
+
+  it('picks the edited install among several frozen installs and refuses to guess otherwise', () => {
+    withStateDir(() => {
+      projectFrozenRepairMarker(queue('repair-in-progress', 'a'.repeat(40)), target('papercusp'));
+      projectFrozenRepairMarker(queue('repair-in-progress', 'b'.repeat(40)), target('crm'));
+      const markers = hookReadMarkers();
+      expect(markers).toHaveLength(2);
+      expect(hookSelectMarker(markers, '/w/papercusp')?.candidate).toBe('a'.repeat(40));
+      expect(hookSelectMarker(markers, '/w/crm')?.candidate).toBe('b'.repeat(40));
+      expect(hookSelectMarker(markers, '/w/portal')).toBeNull();
+      expect(hookSelectMarker(markers, null)).toBeNull();
+      const crmOnly = markers.filter((m: { candidate: string }) => m.candidate === 'b'.repeat(40));
+      expect(hookSelectMarker(crmOnly, '/w/papercusp')).toBeNull();
+    });
+  });
+
+  it('a corrupt marker file reads as absent without hiding the valid ones', () => {
+    withStateDir(() => {
+      projectFrozenRepairMarker(queue('repair-in-progress'), target('papercusp'));
+      writeFileSync(join(hookMarkersDir(), 'zz-corrupt.json'), '{not json', 'utf8');
+      expect(hookReadMarkers()).toHaveLength(1);
+    });
+  });
+
+  it('a missing marker directory reads as no markers', () => {
+    expect(hookReadMarkers('/definitely/not/a/marker-dir')).toEqual([]);
+  });
+});
+
 describe('P-019 hook/module HUNK parity — the ledger writer and the replay reader agree on what an edit IS', () => {
   const CODEX_UPDATE_PATCH = [
     '*** Begin Patch',
@@ -223,8 +303,10 @@ describe('P-019 hook/module HUNK parity — the ledger writer and the replay rea
     ['mcp__papercusp-su__capability_edit', { file_path: 'lib/a.ts', old_string: 'o', new_string: 'n' }],
     ['mcp__papercusp-su__capability_write', { file_path: 'lib/a.ts', content: 'w' }],
     ['mcp__papercusp-su__capability_multi_edit', { file_path: 'lib/a.ts', edits: [{ old_string: 'x', new_string: 'y' }] }],
+    ['mcp__papercusp-su__capability_patch', { edits: [{ file_path: 'lib/a.ts', old_string: 'x', new_string: 'y' }] }],
     ['mcp__papercusp-su__tools_invoke', { name: 'capability:edit', args: { file_path: 'lib/a.ts', old_string: 'o', new_string: 'n' } }],
     ['mcp__papercusp-su__tools_invoke', { name: 'capability:write', args: { file_path: 'lib/a.ts', content: 'w' } }],
+    ['mcp__papercusp-su__tools_invoke', { name: 'capability:patch', args: { edits: [{ file_path: 'lib/a.ts', old_string: 'x', new_string: 'y' }] } }],
     ['mcp__papercusp-su__tools_invoke', { name: 'capability:read', args: { file_path: 'lib/a.ts' } }],
     ['mcp__papercusp-su__tools_invoke', { name: 'capability:edit' }],
     ['write_file', { path: 'lib/a.ts', content: 'codex' }],
@@ -255,6 +337,26 @@ describe('P-019 hook/module HUNK parity — the ledger writer and the replay rea
     const otherInvoke = { tool_name: 'mcp__papercusp-su__tools_invoke', tool_input: { name: 'capability:read', args: { file_path: 'lib/a.ts' } } };
     expect(hookHunksFrom(otherInvoke)).toEqual([]);
     expect(editedPathsFrom(otherInvoke)).toEqual([]);
+  });
+  it('keeps each capability:patch hunk ledger-ready with its own path and edit index', () => {
+    const args = {
+      edits: [
+        { file_path: 'lib/a.ts', old_string: 'a', new_string: 'A' },
+        { file_path: 'lib/b.ts', old_string: 'b', new_string: 'B', replace_all: true },
+      ],
+    };
+    const expected = [
+      { path: 'lib/a.ts', hunk: { kind: 'edit', old: 'a', new: 'A', replaceAll: false }, editIndex: 0 },
+      { path: 'lib/b.ts', hunk: { kind: 'edit', old: 'b', new: 'B', replaceAll: true }, editIndex: 1 },
+    ];
+    const direct = { tool_name: 'mcp__papercusp-su__capability_patch', tool_input: args };
+    const wrapped = { tool_name: 'mcp__papercusp-su__tools_invoke', tool_input: { name: 'capability:patch', args } };
+
+    expect(hunksFromToolCall(direct.tool_name, direct.tool_input)).toEqual(expected);
+    expect(hookHunksFrom(direct)).toEqual(expected);
+    expect(hunksFromToolCall(wrapped.tool_name, wrapped.tool_input)).toEqual(expected);
+    expect(hookHunksFrom(wrapped)).toEqual(expected);
+    expect(editedPathsFrom(wrapped)).toEqual(['lib/a.ts', 'lib/b.ts']);
   });
   it('is a real check — a deliberately different extraction is caught', () => {
     const wrong = hunksFromToolCall('Edit', { file_path: 'a', old_string: 'o', new_string: 'n' }).map((h) => ({

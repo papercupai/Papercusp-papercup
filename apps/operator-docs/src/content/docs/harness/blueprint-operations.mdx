@@ -5,7 +5,7 @@
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "Blueprint operations — typed durable work through blueprint:*"
-description: "How to declare, submit, observe, signal, resume, cancel and collect blueprint operations through the seven blueprint:* tools over HTTP and MCP; direct (agent/program) vs plan targets; trigger and schedule automation and legacy binding migration; vocabulary, typed client, durability and refusals. Runnable examples are executed verbatim by operation-docs-examples.integration.test.ts."
+description: "How to declare, submit, observe, signal, resume, cancel and collect blueprint operations through the seven blueprint:* tools over HTTP and MCP; direct vs plan targets; structured Requirements BARs and Design mapping for plan-target activation; trigger and schedule automation; vocabulary, durability and refusals. Runnable examples are executed verbatim by operation-docs-examples.integration.test.ts."
 type: Convention
 discovered: 2026-09-27
 tags: ["blueprint", "operations", "api"]
@@ -13,6 +13,9 @@ status: active
 documents:
   - "packages/operator-core/lib/blueprint/operation-*.ts"
   - "packages/operator-core/lib/agent-tools/blueprint/*-operation.ts"
+  - "packages/operator-core/lib/acceptance-bar-seed.ts"
+  - "packages/operator-core/lib/agent-tools/plans/rubric-template.ts"
+  - "packages/operator-core/lib/acceptance-bar-seed.test.ts"
 plans:
   - "blueprint-backed-work-item-execution-2026-09-23"
   - "external-app-access-to-workspaces-2026-09-29"
@@ -258,6 +261,38 @@ An armed plan schedule hits the same gate. Only the run instances a template min
 pre-contract test fixture seeded directly in the database; no public door creates one
 like it.
 
+### Activation BAR Markdown format
+
+`plans:audit { phase: "activation" }` reads the plan's Markdown source to seed its acceptance BARs. A plan that will be activated needs the structured fields below even when an older shipped plan uses plain prose.
+
+Under `## Requirements`, start each record with the exact form `**R-1 — Title.**` (bare `R-N` key, spaced dash, and the period before the closing `**`). Follow the title with one `requirement` JSON fence that is the whole body of the record. The top-level object has `intent`, `acceptance` and `verification` sections. Include `intent.request`, `acceptance.condition`, `acceptance.falsifier` and `verification.method`.
+
+Include a structured `verification.check`. For automated checks, use a supported kind such as `tests` with real test paths and include a non-empty `acceptance.requiredTestLayers` array that names the layer the check exercises. For deliberately manual review, use the manual instrument form `{"kind":"instrument","instrumentKey":"none"}` and describe the actual review in `verification.method`; do not claim automated layers for manual evidence.
+
+For example, replace the placeholders with the plan's real outcome and registered verification:
+
+~~~markdown
+**R-1 — Example outcome.**
+```requirement
+{
+  "intent": { "request": "..." },
+  "acceptance": {
+    "condition": "...",
+    "falsifier": "...",
+    "requiredTestLayers": ["e2e"]
+  },
+  "verification": {
+    "method": "...",
+    "check": { "kind": "tests", "files": ["path/to/registered.e2e.test.ts"] }
+  }
+}
+```
+~~~
+
+Inside `## Design`, add `### Bar-to-work map for this plan`. Its table maps each requirement once: the first cell is the bare `R-N` key, the second contains one or more existing `P-NNN` item IDs, and the optional third evidence-plane cell is `tree`, `deployed` or `live` (omission defaults to `tree`). A duplicate or unmapped requirement, unknown item, or mapping to dropped-only items prevents seeding.
+
+Then run the activation audit and use its returned repair details. The existing seed regression cases in `packages/operator-core/lib/acceptance-bar-seed.test.ts` guard the prose-only refusal and the complete structured source shape.
+
 ```json runnable=plan-target
 {
   "id": "fork-join",
@@ -451,17 +486,17 @@ cold p95 at most 1.75x + 500 ms, and throughput at 8 concurrent callers at least
 
 | Metric | Callers | Control | Candidate | Limit | Result |
 |---|---|---|---|---|---|
-| warm p50 | 1 | 633 ms | 643 ms | 743 ms | pass |
-| warm p95 | 1 | 951 ms | 1074 ms | 1214 ms | pass |
-| warm p99 | 1 | 1740 ms | 1428 ms | 2660 ms | pass |
-| cold p95 | 1 | 4159 ms | 4509 ms | 7779 ms | pass |
-| warm p50 | 8 | 2363 ms | 2113 ms | 2733 ms | pass |
-| warm p95 | 8 | 3707 ms | 3265 ms | 4659 ms | pass |
-| warm p99 | 8 | 4171 ms | 4148 ms | 6307 ms | pass |
-| cold p95 | 8 | 4494 ms | 4739 ms | 8365 ms | pass |
-| throughput | 8 | 2.95/s | 3.28/s | 2.36/s | pass |
+| warm p50 | 1 | 275 ms | 275 ms | 331 ms | pass |
+| warm p95 | 1 | 601 ms | 573 ms | 777 ms | pass |
+| warm p99 | 1 | 1194 ms | 1102 ms | 1842 ms | pass |
+| cold p95 | 1 | 4047 ms | 5146 ms | 7582 ms | pass |
+| warm p50 | 8 | 652 ms | 594 ms | 765 ms | pass |
+| warm p95 | 8 | 940 ms | 876 ms | 1200 ms | pass |
+| warm p99 | 8 | 1080 ms | 1082 ms | 1669 ms | pass |
+| cold p95 | 8 | 4571 ms | 4714 ms | 8500 ms | pass |
+| throughput | 8 | 10.47/s | 10.50/s | 8.37/s | pass |
 
-Evidence: `docs/evidence/p013-workload-a-2026-09-29.json`.
+Evidence: `docs/evidence/p013-workload-a-2026-10-01.json`.
 
 Not proven by this workload:
 
@@ -472,40 +507,40 @@ Not proven by this workload:
 
 | Metric | Callers | Control | Candidate | Limit | Result |
 |---|---|---|---|---|---|
-| warm p50 | 1 | 1693 ms | 1767 ms | 2056 ms | pass |
-| warm p95 | 1 | 3182 ms | 2428 ms | 4027 ms | pass |
-| warm p99 | 1 | 5115 ms | 3923 ms | 7773 ms | pass |
-| cold p95 | 1 | 7829 ms | 7911 ms | 14201 ms | pass |
-| warm p50 | 8 | 9948 ms | 10121 ms | 11963 ms | pass |
-| warm p95 | 8 | 15794 ms | 13752 ms | 19792 ms | pass |
-| warm p99 | 8 | 25654 ms | 14768 ms | 38581 ms | pass |
-| cold p95 | 8 | 5447 ms | 9222 ms | 10032 ms | pass |
-| throughput | 8 | 0.72/s | 0.75/s | 0.58/s | pass |
+| warm p50 | 1 | 927 ms | 886 ms | 1137 ms | pass |
+| warm p95 | 1 | 1984 ms | 1517 ms | 2530 ms | pass |
+| warm p99 | 1 | 3342 ms | 3581 ms | 5113 ms | pass |
+| cold p95 | 1 | 6757 ms | 8613 ms | 12324 ms | pass |
+| warm p50 | 8 | 4190 ms | 3838 ms | 5052 ms | pass |
+| warm p95 | 8 | 5506 ms | 5075 ms | 6933 ms | pass |
+| warm p99 | 8 | 5822 ms | 6614 ms | 8834 ms | pass |
+| cold p95 | 8 | 5551 ms | 8906 ms | 10215 ms | pass |
+| throughput | 8 | 1.84/s | 1.99/s | 1.47/s | pass |
 
-Evidence: `docs/evidence/p013-workload-b-2026-09-29.json`.
+Evidence: `docs/evidence/p013-workload-b-snap-2026-10-02.json`.
 
 Not proven by this workload:
 
 - Actual-model latency: this matrix uses a deterministic fixture worker only.
 - Absolute latency on an idle box: the box was shared with fleet work throughout; only the paired candidate/control ratio is graded.
 
-### C. Four-step conditional program — FAIL 6/9
+### C. Four-step conditional program — FAIL 2/9
 
 | Metric | Callers | Control | Candidate | Limit | Result |
 |---|---|---|---|---|---|
-| warm p50 | 1 | 46 ms | 47 ms | 80 ms | pass |
-| warm p95 | 1 | 52 ms | 95 ms | 115 ms | pass |
-| warm p99 | 1 | 54 ms | 101 ms | 182 ms | pass |
-| cold p95 | 1 | 83 ms | 233 ms | 646 ms | pass |
-| warm p50 | 8 | 46 ms | 93 ms | 80 ms | fail |
-| warm p95 | 8 | 54 ms | 122 ms | 118 ms | fail |
-| warm p99 | 8 | 59 ms | 148 ms | 188 ms | pass |
-| cold p95 | 8 | 82 ms | 274 ms | 643 ms | pass |
-| throughput | 8 | 149.94/s | 72.93/s | 119.95/s | fail |
+| warm p50 | 1 | 46 ms | 92 ms | 80 ms | fail |
+| warm p95 | 1 | 54 ms | 104 ms | 117 ms | pass |
+| warm p99 | 1 | 62 ms | 231 ms | 192 ms | fail |
+| cold p95 | 1 | 131 ms | 1137 ms | 730 ms | fail |
+| warm p50 | 8 | 46 ms | 105 ms | 80 ms | fail |
+| warm p95 | 8 | 63 ms | 166 ms | 128 ms | fail |
+| warm p99 | 8 | 82 ms | 235 ms | 223 ms | fail |
+| cold p95 | 8 | 107 ms | 491 ms | 687 ms | pass |
+| throughput | 8 | 141.43/s | 57.38/s | 113.15/s | fail |
 
-Evidence: `docs/evidence/p013-workload-c-final-2026-09-29.json`.
+Evidence: `docs/evidence/p013-workload-c-snap-2026-10-02.json`.
 
-This workload does not meet its budget: warm p50 at 8 callers, warm p95 at 8 callers, throughput at 8 callers fail. It stays graded against the same control and limits as the other workloads (plan decision D-036). The remaining cost is in the canonical work-item write path, and it is tracked as WI-10003818.
+This workload does not meet its budget: warm p50, warm p99 and cold p95 at 1 caller, and warm p50, warm p95, warm p99 and throughput at 8 callers fail. This grade is the snapshot-runner re-measure that replaces the 2026-09-29 result (plan decisions D-051 and D-059). It stays graded against the same control and limits as the other workloads (plan decision D-036). The 2026-09-29 analysis placed the 8-caller cost in the canonical work-item write path. The 1-caller misses first appear in this re-measure and are not yet attributed. Both are tracked as WI-10003818.
 
 Not proven by this workload:
 
@@ -517,17 +552,17 @@ Not proven by this workload:
 
 | Metric | Callers | Control | Candidate | Limit | Result |
 |---|---|---|---|---|---|
-| warm p50 | 1 | 81 ms | 108 ms | 171 ms | pass |
-| warm p95 | 1 | 102 ms | 120 ms | 279 ms | pass |
-| warm p99 | 1 | 132 ms | 127 ms | 497 ms | pass |
-| cold p95 | 1 | 234 ms | 421 ms | 1585 ms | pass |
-| warm p50 | 8 | 205 ms | 189 ms | 357 ms | pass |
-| warm p95 | 8 | 247 ms | 258 ms | 533 ms | pass |
-| warm p99 | 8 | 299 ms | 279 ms | 873 ms | pass |
-| cold p95 | 8 | 291 ms | 468 ms | 1727 ms | pass |
-| throughput | 8 | 38.63/s | 39.82/s | 25.11/s | pass |
+| warm p50 | 1 | 97 ms | 115 ms | 196 ms | pass |
+| warm p95 | 1 | 144 ms | 181 ms | 352 ms | pass |
+| warm p99 | 1 | 232 ms | 218 ms | 723 ms | pass |
+| cold p95 | 1 | 383 ms | 399 ms | 1958 ms | pass |
+| warm p50 | 8 | 292 ms | 241 ms | 488 ms | pass |
+| warm p95 | 8 | 442 ms | 372 ms | 874 ms | pass |
+| warm p99 | 8 | 493 ms | 503 ms | 1309 ms | pass |
+| cold p95 | 8 | 332 ms | 481 ms | 1829 ms | pass |
+| throughput | 8 | 24.36/s | 29.92/s | 15.84/s | pass |
 
-Evidence: `docs/evidence/p013-workload-d-2026-09-29.json`.
+Evidence: `docs/evidence/p013-workload-d-snap-2026-10-02.json`.
 
 Not proven by this workload:
 

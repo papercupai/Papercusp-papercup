@@ -11,10 +11,11 @@
  * only with a passing acceptance file for that same archive digest. The
  * committed compatibility.json never advertises anything (D-017).
  */
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync, type SpawnOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import {
@@ -23,6 +24,10 @@ import {
 } from './release-acceptance';
 import type { EvidenceFile } from './release-acceptance-reporter';
 import { startDedicatedNativePg } from '@papercusp/test-config/pg';
+import { ADMIN_TEST_RUNS_REPORTER_PATH } from '@papercusp/test-config/vitest-config';
+import { parseSseStream } from '@papercusp/sse';
+import { codexGatewayPort } from '@papercusp/orchestrator/codex-gateway-config';
+import { codexModelRefusalDetail, isCodexModelRefusal } from '../inference-gateway/codex-model-refusals';
 
 /**
  * One dedicated native Postgres shared by every leg (WI-10004247 H4). Without
@@ -42,8 +47,8 @@ async function startAcceptancePg(work: string): Promise<{ env: Record<string, st
       fsync: 'off',
       synchronous_commit: 'off',
       full_page_writes: 'off',
-      // The legs run under spawnSync, which leaves this child's stderr pipe
-      // undrained; the collector keeps server logs off that pipe.
+      // Keep PostgreSQL logs in the collector so they do not interleave with
+      // the acceptance leg's live stdout/stderr log.
       logging_collector: 'on',
     },
   });
@@ -63,7 +68,59 @@ const ACCEPTANCE_SOURCES = [
 ];
 const REPORTER = path.join(REPO_ROOT, 'packages/operator-core/lib/pui-e2e/release-acceptance-reporter.ts');
 const VITEST = path.join(REPO_ROOT, 'node_modules/.bin/vitest');
+// CLI reporter options replace the config's reporter list. Preserve the existing
+// ledger recorder alongside the installed-product evidence collector.
+export const RELEASE_ACCEPTANCE_REPORTER_ARGS = [
+  '--reporter=default',
+  `--reporter=${ADMIN_TEST_RUNS_REPORTER_PATH}`,
+  `--reporter=${REPORTER}`,
+];
 const OPERATOR_CORE = path.join(REPO_ROOT, 'packages/operator-core');
+
+export interface LoggedChildResult {
+  status: number | null;
+  signal: NodeJS.Signals | null;
+  error: Error | null;
+}
+
+/**
+ * Run a child with stdout and stderr sent directly to a live log file. The file
+ * is created before spawn and the child inherits its descriptor, so long test
+ * legs remain observable while they run instead of only after exit.
+ */
+export function runChildWithLiveLog(
+  command: string,
+  args: string[],
+  options: SpawnOptions,
+  logPath: string,
+): Promise<LoggedChildResult> {
+  writeFileSync(logPath, `--- live child output started ${new Date().toISOString()} ---\n`);
+  const logFd = openSync(logPath, 'a');
+  let child: ReturnType<typeof spawn>;
+  try {
+    child = spawn(command, args, { ...options, stdio: ['ignore', logFd, logFd] });
+  } catch (caught) {
+    closeSync(logFd);
+    const error = caught instanceof Error ? caught : new Error(String(caught));
+    appendFileSync(logPath, `\n--- child spawn error: ${error.message} ---\n`);
+    return Promise.resolve({ status: null, signal: null, error });
+  }
+  closeSync(logFd);
+
+  return new Promise((resolve, reject) => {
+    let processError: Error | null = null;
+    child.once('error', (error) => { processError = error; });
+    child.once('close', (status, signal) => {
+      try {
+        appendFileSync(logPath,
+          `\n--- child exit: code=${status ?? 'null'} signal=${signal ?? 'none'}${processError ? ` error=${processError.message}` : ''} ---\n`);
+        resolve({ status, signal, error: processError });
+      } catch (error) {
+        reject(error);
+      }
+    });
+  });
+}
 
 export interface RealLeg {
   /** PUI_REAL_BACKEND: claude | codex | omp. */
@@ -99,10 +156,10 @@ export interface RunResult {
 export interface StockMachineResult {
   image: string;
   /**
-   * True when the host could not start a container at all (the create/start
-   * preflight refused), so the image never ran the candidate. That says
-   * nothing about the binary: it must not stop the PTY legs, which need no
-   * Docker, and the smoke is measured again after them (WI-10004247 run 7).
+   * True when the host could not complete the smoke (preflight refusal or
+   * an interrupted Docker invocation). This cannot establish a binary failure:
+   * let the Docker-independent PTY legs run, then measure the smoke again.
+   * An unmeasured smoke still refuses the final release verdict.
    */
   unmeasured?: boolean;
   status: number | null;
@@ -216,8 +273,12 @@ const STOCK_LINUX_IMAGES = ['ubuntu:24.04', 'debian:stable-slim'];
 export const DOCKER_START_PROBE_TIMEOUT_MS = 90_000;
 const DOCKER_START_PROBE_ATTEMPTS = 3;
 const PROBE_NAME_PREFIX = 'pui-release-preflight-';
-type DockerRun = (args: string[], timeout: number) => { status: number | null; stdout?: string; error?: { message: string } };
-const defaultDockerRun: DockerRun = (args, timeout) => spawnSync('docker', args, { encoding: 'utf8', timeout });
+type DockerRun = (args: string[], timeout: number) => {
+  status: number | null; stdout?: string; stderr?: string; error?: { message: string };
+};
+const defaultDockerRun: DockerRun = (args, timeout) => spawnSync('docker', args, {
+  encoding: 'utf8', timeout, maxBuffer: 8 * 1024 * 1024,
+});
 function defaultPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -329,7 +390,7 @@ export function remeasureStockMachines(
 /** The refusal a stock smoke contributes to the verdict, or null when it passed. */
 export function stockMachineRefusal(machine: StockMachineResult): string | null {
   if (machine.unmeasured) {
-    return `stock-machine smoke on ${machine.image} was not measured: the host could not start a container `
+    return `stock-machine smoke on ${machine.image} was not measured: the host could not complete the smoke `
       + `before or after the legs: ${machine.output.slice(-1_000)}`;
   }
   return machine.status === 0
@@ -339,24 +400,30 @@ export function stockMachineRefusal(machine: StockMachineResult): string | null 
 
 /** Exercise the shipped unit on stock Linux, without host libraries or network. */
 export function runStockMachineSmoke(
-  unit: string, images = STOCK_LINUX_IMAGES, probe = probeDockerCreateStart,
+  unit: string, images = STOCK_LINUX_IMAGES, probe?: () => string | null, run: DockerRun = defaultDockerRun,
 ): StockMachineResult[] {
-  const dockerProblem = probe();
+  const dockerProblem = (probe ?? (() => probeDockerCreateStart(run)))();
   if (dockerProblem) {
     return images.map((image) => ({ image, unmeasured: true, status: null, output: dockerProblem }));
   }
-  return images.map((image) => {
-    const run = spawnSync('docker', [
-      'run', '--rm', '--pull=missing', '--network=none', '--read-only',
+  return images.map((image, index) => {
+    // Reuse the preflight orphan sweep: a timed-out Docker client can leave a
+    // container in Created even after --rm and an immediate removal both race.
+    const name = `${PROBE_NAME_PREFIX}${process.pid}-${Date.now()}-smoke-${index}`;
+    const result = run([
+      'run', '--rm', '--name', name, '--pull=missing', '--network=none', '--read-only',
       '--tmpfs', '/tmp:rw,exec,mode=1777',
       '--mount', `type=bind,source=${realpathSync(unit)},target=/candidate,readonly`,
       '--env', 'HOME=/tmp/pui-home', '--env', 'TERM=dumb', '--env', 'PAPERCUSP_HONO_PORT=1',
       '--entrypoint', '/bin/sh', image, '-ec', STOCK_MACHINE_SCRIPT,
-    ], { encoding: 'utf8', timeout: 5 * 60_000, maxBuffer: 8 * 1024 * 1024 });
+    ], 5 * 60_000);
+    const unmeasured = Boolean(result.error) || result.status === null;
+    if (unmeasured) run(['rm', '--force', name], DOCKER_START_PROBE_TIMEOUT_MS);
     return {
       image,
-      status: run.status,
-      output: `${run.stdout ?? ''}\n${run.stderr ?? ''}${run.error ? `\n${run.error.message}` : ''}`.slice(-8_000),
+      ...(unmeasured ? { unmeasured: true } : {}),
+      status: result.status,
+      output: `${result.stdout ?? ''}\n${result.stderr ?? ''}${result.error ? `\n${result.error.message}` : ''}`.slice(-8_000),
     };
   });
 }
@@ -452,8 +519,51 @@ function listedDigest(unit: string, file: string): string | null {
   return line ? line.split(/\s+/)[0] : null;
 }
 
-/** Reject a missing routed-account fixture before the long scripted leg starts. */
-function preflightRoutedAccountCatalog(real: RealLeg[] | undefined): void {
+/** Use the same auto route as the native home. A catalog row or HTTP 200 is
+ * insufficient: retain the terminal inference outcome before the long suites.
+ * Only a definitive model refusal blocks; inconclusive probes remain explicit. */
+export async function probeRoutedCodexModel(
+  model: string,
+  ownerId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ model: string; verdict: 'completed' | 'refused' | 'unmeasured'; status?: number;
+  terminal?: string; account?: string; detail?: string }> {
+  if (!ownerId.trim()) throw new Error('Routed Codex model preflight requires the calling PAPERCUSP_SID');
+  const result = { model, verdict: 'unmeasured' as 'completed' | 'refused' | 'unmeasured' };
+  try {
+    const response = await fetchImpl(`http://127.0.0.1:${codexGatewayPort()}/v1/responses`, {
+      method: 'POST', signal: AbortSignal.timeout(20_000),
+      headers: { authorization: 'Bearer papercusp-gateway', 'content-type': 'application/json',
+        originator: 'codex_cli_rs', 'x-papercusp-owner': ownerId },
+      body: JSON.stringify({ model, stream: true, store: false, instructions: 'This is a model readiness probe.',
+        input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Reply with OK.' }] }],
+        tools: [], tool_choice: 'auto', reasoning: { effort: 'low' } }),
+    });
+    const receipt = { ...result, status: response.status,
+      account: response.headers.get('x-papercusp-routed-account') ?? undefined };
+    if (!response.ok) {
+      const body = await response.text();
+      return { ...receipt, verdict: isCodexModelRefusal(response.status, body) ? 'refused' : 'unmeasured',
+        detail: codexModelRefusalDetail(body) };
+    }
+    for await (const frame of parseSseStream(response.body)) {
+      let event: { type?: string; response?: { error?: unknown }; error?: unknown };
+      try { event = JSON.parse(frame.data); } catch { continue; }
+      if (event.type === 'response.completed') return { ...receipt, verdict: 'completed', terminal: event.type };
+      if (['response.failed', 'response.incomplete', 'error'].includes(event.type ?? '')) {
+        const body = JSON.stringify(event.response?.error ?? event.error ?? {});
+        return { ...receipt, terminal: event.type,
+          verdict: isCodexModelRefusal(400, body) ? 'refused' : 'unmeasured', detail: codexModelRefusalDetail(body) };
+      }
+    }
+    return { ...receipt, detail: 'Stream ended without completed inference' };
+  } catch (error) {
+    return { ...result, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** Reject missing routed accounts or a refused model before opening an archive. */
+async function preflightRoutedAccountCatalog(real: RealLeg[] | undefined): Promise<void> {
   for (const leg of real ?? []) {
     const account = leg.env?.PUI_REAL_ACCOUNT ?? process.env.PUI_REAL_ACCOUNT;
     if (account !== 'auto') continue;
@@ -478,11 +588,36 @@ function preflightRoutedAccountCatalog(real: RealLeg[] | undefined): void {
     })) {
       throw new Error(`PUI_NATIVE_ACCOUNT_CATALOG must contain nonempty accounts:list accounts with valid id/provider metadata: ${catalogPath}`);
     }
+    if (leg.backend === 'codex' && leg.model) {
+      const receipt = await probeRoutedCodexModel(leg.model, process.env.PAPERCUSP_SID ?? '');
+      console.info('PUI_ROUTED_CODEX_MODEL_PREFLIGHT', JSON.stringify(receipt));
+      if (receipt.verdict === 'refused') {
+        throw new Error(`Native Codex model preflight refused ${leg.model}: ${receipt.detail}`);
+      }
+    }
   }
 }
 
+/** Cold operator children use the workspace package's CommonJS export.
+ * Git checkouts omit its generated dist, even when the dependency snapshot is
+ * complete. Build from this checkout's source before any expensive acceptance
+ * leg, then load the same package specifier the child will use.
+ */
+export function prepareOperatorRuntimePackages(repoRoot = REPO_ROOT): void {
+  const packageRoot = path.join(repoRoot, 'libs/generic/sse');
+  execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], {
+    cwd: packageRoot, stdio: 'pipe', timeout: 60_000,
+  });
+  const requireFromPackage = createRequire(path.join(packageRoot, 'package.json'));
+  requireFromPackage('@papercusp/sse');
+}
+
 export async function runReleaseAcceptance(options: RunOptions): Promise<RunResult> {
-  preflightRoutedAccountCatalog(options.real);
+  if (process.env.PUI_CAPTURE_BASELINE === '1' || options.real?.some(leg => leg.env?.PUI_CAPTURE_BASELINE === '1')) {
+    throw new Error('PUI_CAPTURE_BASELINE=1 captures a pre-fix counterexample and must not be enabled for installed release acceptance; run that historical calibration separately');
+  }
+  await preflightRoutedAccountCatalog(options.real);
+  prepareOperatorRuntimePackages();
   const archive = path.resolve(options.archive);
   const work = options.work ?? mkdtempSync(path.join(tmpdir(), 'pui-release-acceptance-'));
   const archiveSha256 = sha256(archive);
@@ -540,13 +675,13 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
   for (const leg of legsToRun) {
     const engine = leg ? leg.backend : 'scripted';
     const evidence = path.join(work, `evidence-${engine}.json`);
-    const run = spawnSync(VITEST, [
+    const run = await runChildWithLiveLog(VITEST, [
       'run', '--config', 'vitest.integration.config.ts',
       ...suites.map((file) => path.join(REPO_ROOT, file)),
       ...(options.testFilter ? ['-t', options.testFilter] : []),
-      '--reporter=default', `--reporter=${REPORTER}`,
+      ...RELEASE_ACCEPTANCE_REPORTER_ARGS,
     ], {
-      cwd: OPERATOR_CORE, encoding: 'utf8', timeout: 90 * 60_000, maxBuffer: 512 * 1024 * 1024,
+      cwd: OPERATOR_CORE, timeout: 90 * 60_000,
       env: {
         ...inherited,
         ...acceptancePg.env,
@@ -559,8 +694,7 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
         ...(leg ? { PUI_REAL_ENGINE: '1', PUI_REAL_BACKEND: leg.backend, ...(leg.model ? { PUI_REAL_MODEL: leg.model } : {}), ...leg.env }
           : { PUI_REAL_ENGINE: '' }),
       },
-    });
-    writeFileSync(path.join(work, `vitest-${engine}.log`), `${run.stdout ?? ''}\n--- stderr\n${run.stderr ?? ''}`);
+    }, path.join(work, `vitest-${engine}.log`));
     const harvested = existsSync(evidence) ? (JSON.parse(readFileSync(evidence, 'utf8')) as EvidenceFile).rows : [];
     rows.push(...harvested);
     legs.push({ engine, status: run.status, evidence, rows: harvested.length });

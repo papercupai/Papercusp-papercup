@@ -51,6 +51,7 @@
  * durable `routinesTick` (repo rule: no bare setInterval, no third scheduler).
  */
 import type { Sql } from 'postgres';
+import { observeFallback as defaultObserveFallback } from '../../degradation/fallback-observations';
 import { CHECKPOINT_QUIESCENCE_PAUSE_MARKER } from '../../release/checkpoint-serializer-authority';
 
 /** The routine group whose pauses are release-critical and therefore always finite. */
@@ -528,8 +529,10 @@ interface LoopStanddownRow {
  */
 export async function listLoopStanddownOwners(
   sql: Sql,
-  opts: { workspaceId?: string | null; nowMs?: number; limit?: number; workspaceWideOnly?: boolean } = {},
+  opts: { workspaceId?: string | null; nowMs?: number; limit?: number; workspaceWideOnly?: boolean;
+    observeFallback?: typeof defaultObserveFallback } = {},
 ): Promise<Set<string>> {
+  const observeFallback = opts.observeFallback ?? defaultObserveFallback;
   const nowMs = opts.nowMs ?? Date.now();
   const limit = opts.limit ?? SWEEP_ROW_CAP;
   const workspaceId = opts.workspaceId ?? null;
@@ -546,7 +549,13 @@ export async function listLoopStanddownOwners(
          AND metadata->'pause'->>${LOOP_STANDDOWN_MARKER} = 'true'
          AND (${workspaceId}::text IS NULL OR workspace_id = ${workspaceId})
        LIMIT ${limit}`;
+    observeFallback('release-state-read', { eligible: 1,
+      applied: rows.length < limit ? 1 : 0, reason: rows.length < limit ? 'applied' : 'scan-truncated',
+      scope: `${workspaceId ?? 'all'}:loop-standdown` }, { sql, workspaceId: workspaceId ?? undefined });
   } catch (e) {
+    observeFallback('release-state-read', { eligible: 1, applied: 0,
+      reason: 'hold-scan-failed', scope: `${workspaceId ?? 'all'}:loop-standdown` },
+    { sql, workspaceId: workspaceId ?? undefined });
     console.warn(
       `[loop-standdown] hold scan failed (non-fatal, failing open): ${e instanceof Error ? e.message : String(e)}`,
     );

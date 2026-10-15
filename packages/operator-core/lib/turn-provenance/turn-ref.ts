@@ -132,7 +132,9 @@ export type RecordedTurnVerdict =
   | 'owner-dialog'
   | 'agent-injected'
   | 'machine-surface'
-  | 'synthetic';
+  | 'synthetic'
+  /** The indexed row is real, but its authorship was not established. */
+  | 'unknown';
 
 /**
  * Durable marker for an owner answer returned by Claude Code's
@@ -643,9 +645,11 @@ async function loadIndexedTurnsByPrefix(
 }
 
 /** Apply persisted provenance fields when available, then fall back to the
- * recorded text classifier. A clean indexed user turn is deliberately named
- * `owner-turn`: it was proven from the cross-session store, not merely assumed
- * to be the current caller's owner-typed transcript turn. */
+ * recorded text classifier. A clean indexed user turn is `owner-turn` only
+ * when the row carries affirmative owner evidence. Finding an indexed row
+ * proves its identity and text, not who authored it: `unenrolled-origin` and
+ * legacy NULL verdicts must stay unknown rather than regain the text
+ * classifier's owner-typed residual. */
 function classifyIndexedTurn(turn: IndexedRecordedTurn): RecordedTurnClass {
   const recorded = classifyRecordedTurn(turn.text);
   const persisted = turn.turnOriginVerdict?.toLowerCase() ?? null;
@@ -656,19 +660,19 @@ function classifyIndexedTurn(turn: IndexedRecordedTurn): RecordedTurnClass {
   if (persisted === 'machine-surface') return { verdict: 'machine-surface', origin: null };
   if (persisted === 'synthetic') return { verdict: 'synthetic', origin: null };
 
-  // The index records `unenrolled-origin` for a clean file-backed row. It is
-  // still the affirmative clean-user shape for this verifier: the row was
-  // located by the exact session+timestamp anchor, and no machine marker was
-  // present in its recorded text.
+  // An explicit owner-dialog marker is positive text evidence. For the generic
+  // owner-typed residual, however, only an affirmative persisted verdict may
+  // promote the indexed row; a session/timestamp match is not authorship proof.
   if (
-    turn.speaker.toLowerCase() === 'user' &&
-    (recorded.verdict === 'owner-typed' || recorded.verdict === 'owner-dialog') &&
-    (persisted === null ||
-      persisted === 'owner-typed' ||
-      persisted === 'owner-dialog' ||
-      persisted === 'unenrolled-origin')
+    recorded.verdict === 'owner-dialog' ||
+    (turn.speaker.toLowerCase() === 'user' &&
+      recorded.verdict === 'owner-typed' &&
+      (persisted === 'owner-typed' || persisted === 'owner-dialog'))
   ) {
     return { verdict: 'owner-turn', origin: null };
+  }
+  if (turn.speaker.toLowerCase() === 'user' && recorded.verdict === 'owner-typed') {
+    return { verdict: 'unknown', origin: null };
   }
   return recorded;
 }

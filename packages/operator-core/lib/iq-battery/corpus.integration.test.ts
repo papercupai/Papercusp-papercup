@@ -6,7 +6,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { readRepoFile } from '@papercusp/test-config';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { seedCorpus, AllCases } from './corpus';
 
 describe('seedCorpus', () => {
@@ -18,6 +18,7 @@ describe('seedCorpus', () => {
     const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
     try {
       await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+      await markManagedTestDatabase(admin, dbName);
     } finally {
       await admin.end({ timeout: 5 });
     }

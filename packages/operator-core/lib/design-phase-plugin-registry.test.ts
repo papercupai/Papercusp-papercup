@@ -59,11 +59,18 @@ describe('design-phase plugin registry search', () => {
 
     expect(result.results.map((entry) => entry.id)).toEqual([
       'control.select',
+      'control.combobox-menu',
       'control.checkbox',
       'control.text',
       'control.theme',
       'feedback.tooltip',
     ]);
+  });
+
+  it('finds the maintained searchable subject picker through its component vocabulary', async () => {
+    const result = await search('subject combobox');
+    expect(result.authoritative).toBe(true);
+    expect(result.results.map(entry => entry.id)).toEqual(['control.combobox-menu']);
   });
 
   it('finds the reusable bundle for a task-list sidebar query', async () => {

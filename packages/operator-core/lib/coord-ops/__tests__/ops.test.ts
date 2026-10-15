@@ -144,6 +144,19 @@ describe('threadPostOp', () => {
     expect(postThread).toHaveBeenCalledWith({ conversation_id: 'c1', body: 'my vote', isAnswer: true });
   });
 
+  it('directs work-item thread keys to work_items:comment', async () => {
+    const postThread = vi.fn();
+    const a = threadPostOp.argsSchema.parse({
+      conversation_id: 'work-item-thread-WI-7',
+      body: 'comment',
+    });
+    await expect(threadPostOp.run(a, makeCtx({ postThread }))).rejects.toThrow(
+      'This is a work-item thread key, not a coordination conversation ID. Use work_items:comment',
+    );
+    expect(threadPostOp.description).toContain('work-item-thread-* values are not conversation IDs');
+    expect(postThread).not.toHaveBeenCalled();
+  });
+
   it('rejects an empty body', () => {
     expect(() => threadPostOp.argsSchema.parse({ conversation_id: 'c', body: '' })).toThrow();
   });

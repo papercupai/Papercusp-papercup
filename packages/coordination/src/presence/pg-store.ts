@@ -109,6 +109,12 @@ function toRecord(r: CoordPresenceDbRow, now: number): PresenceRecord {
   };
 }
 
+export interface ContextEstimateSessionIdentity {
+  nativeSessionId: string | null;
+  /** The selected adv_sessions row id also fences Codex, whose native id is not stored there. */
+  advSessionId?: number | null;
+}
+
 export class PgPresenceStore implements PresenceStore {
   constructor(private readonly opts: PgPresenceStoreOptions) {}
 
@@ -169,14 +175,16 @@ export class PgPresenceStore implements PresenceStore {
         -- parameter directly rather than EXCLUDED, because the VALUES row already
         -- COALESCEd the omitted case to '[]' to satisfy the NOT NULL column.
         current_files     = COALESCE(${filesJson}::text::jsonb, harness_shared.coord_presence.current_files),
-        host              = EXCLUDED.host,
-        pid               = EXCLUDED.pid,
-        -- Same "always set from this write's resolved value" rule as host/pid
-        -- above — every current write() caller passes tty as undefined (only the
-        -- supervisor beat's touchHeartbeat call genuinely knows it), so this
-        -- resets to NULL here and the next beat (<=60s) repopulates it, exactly
-        -- like host/pid's existing reset-then-repopulate cadence.
-        tty               = EXCLUDED.tty,
+        -- An intent-only declaration has no process evidence. Preserve the
+        -- supervisor's last binding atomically instead of erasing it until the
+        -- next beat. Explicit empty/null values still clear; a new reported pid
+        -- still invalidates the old process's context estimate below.
+        host              = CASE WHEN ${input.host !== undefined}
+                              THEN EXCLUDED.host ELSE harness_shared.coord_presence.host END,
+        pid               = CASE WHEN ${input.pid !== undefined}
+                              THEN EXCLUDED.pid ELSE harness_shared.coord_presence.pid END,
+        tty               = CASE WHEN ${input.tty !== undefined}
+                              THEN EXCLUDED.tty ELSE harness_shared.coord_presence.tty END,
         -- EI-19418749207847685: a carry-respawn REUSES the ownerId but starts a NEW
         -- process, so any cached context estimate describes a session that no longer
         -- exists. AGE alone cannot catch this — the estimate can be only minutes old
@@ -243,12 +251,9 @@ export class PgPresenceStore implements PresenceStore {
     //
     // WI-3898 P1 (+ EI-19948333346987654 for tty): pid/host/tty are set ONLY
     // when the caller actually reported them this beat — an omitted field is
-    // left UNTOUCHED, never clobbered to null/''. (Unlike write()'s ON
-    // CONFLICT, which unconditionally sets EXCLUDED.host/EXCLUDED.pid/
-    // EXCLUDED.tty — that's fine there because write() always carries a
-    // caller-resolved value; here a bare keepalive from a caller that
-    // doesn't know its own pid/tty must not erase a value a prior liveness
-    // beat recorded.)
+    // left UNTOUCHED, never clobbered to null/''. Intent-only write() calls
+    // preserve these fields too. Explicit write() values remain the way to
+    // clear a binding; neither path fabricates the operator's own process id.
     const pid = liveness?.pid;
     const host = liveness?.host;
     const tty = liveness?.tty;
@@ -330,17 +335,46 @@ export class PgPresenceStore implements PresenceStore {
     }
   }
 
-  async setContextEstimate(ownerId: string, tokens: number): Promise<void> {
+  async setContextEstimate(
+    ownerId: string,
+    tokens: number,
+    expectedSession: ContextEstimateSessionIdentity,
+  ): Promise<boolean> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
     // Cached context-size estimate (agent-managed-compaction P-007/P-009) — written
     // by the compaction-compliance watchdog on a cadence, read by the inbox usage
-    // signal. No-op when no row exists.
-    await sql`
-      UPDATE harness_shared.coord_presence
-         SET context_tokens = ${tokens}, context_estimated_at = now()
-       WHERE owner_id = ${ownerId}
-    `;
+    // signal. Lock the resolver-selected adv-session row before updating the
+    // owner-keyed cache: a carry-respawn updates that row's native id in place.
+    // A delayed predecessor estimate then sees the successor id and is rejected.
+    // The resolver and this fence intentionally share the same selection order.
+    const written = await sql.begin(async (tx) => {
+      const current = await tx<{ id: number; session_id: string | null }[]>`
+        SELECT id, session_id
+          FROM harness_shared.adv_sessions
+         WHERE coord_owner_id = ${ownerId}
+           AND (session_id IS NOT NULL OR agent = 'codex')
+         ORDER BY started_at DESC, id DESC
+         LIMIT 1
+         FOR UPDATE
+      `;
+      const selected = current[0];
+      if (
+        !selected ||
+        selected.session_id !== expectedSession.nativeSessionId ||
+        (expectedSession.advSessionId != null && Number(selected.id) !== expectedSession.advSessionId)
+      ) {
+        return false;
+      }
+      const rows = await tx<{ owner_id: string }[]>`
+        UPDATE harness_shared.coord_presence
+           SET context_tokens = ${tokens}, context_estimated_at = now()
+         WHERE owner_id = ${ownerId}
+        RETURNING owner_id
+      `;
+      return rows.length > 0;
+    });
+    return written;
   }
 
   async clearContextEstimate(ownerId: string): Promise<void> {

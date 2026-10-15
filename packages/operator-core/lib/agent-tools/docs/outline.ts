@@ -186,7 +186,7 @@ export default defineTool({
     notWhen:
       'You already called docs:outline this run — cached. For prose recall (chats, escalations, brainstorms) use search:fulltext. To explore another harness from outside, use cross_harness:docs_outline.',
     chaining:
-      "docs:outline → (harness:'all'/'engineering' only) docs:outline { harness:'all', section } to drill into one section → docs:get { slugs: [...] }. Use { slug, heading } when only one section of a long page is relevant. A workspace-scoped session gets harness_forbidden for 'all' — pass 'engineering' instead (same corpus, EI-18894866320087268).",
+      "docs:outline → (harness:'all'/'engineering' only) docs:outline { harness:'all', section } to drill into one section → docs:get { slugs: [...] }. For one section of a long page, call docs:get { slugs: [slug], heading }. A workspace-scoped session gets harness_forbidden for 'all' — pass 'engineering' instead (same corpus, EI-18894866320087268).",
     seeAlso: [
       'docs:search (find a page by specific term instead of browsing the tree)',
       'docs:get (read the slugs the outline lists)',

@@ -1,0 +1,176 @@
+# Papercusp Server on Linux — install, configure, back up, restore, recover, offboard
+URL: /internal/docs/guides/papercusp-server-linux-operations
+
+Linux operator runbook with measured install/configuration, diagnostics, backup, clone/in-place restore, crash/reinstall recovery and offboarding on Ubuntu 24.04. Headless boot, configuration-archive restore and later packaged fixes remain explicitly unverified; no support/SLA/certification commitment.
+
+This runbook covers one supported candidate deployment: the **Papercusp Server** Debian package on **Ubuntu 24.04 (noble), amd64**, run as a systemd user service for one Linux user. It is the documented path required by `papercusp-enterprise-readiness-roadmap-2026-10-09` P-010 (work item WI-6554700010012436).
+
+**How it was verified.** The verified lifecycle drills ran on 2026-10-14 against `papercusp-server 0.0.26` (build `c864f7a1`) on an isolated clean-room VM (`vmctl` instance `p010a`). The drills covered a fresh install, a reinstall on retained data, three crash kinds, a reboot, a backup, a restore to a clone, an in-place restore after simulated data loss, a package purge, and user-data removal. Each result below says whether it was **verified** in that drill or is **not yet verified**. Restoring the configuration archive and headless reboot without a login were not drilled. The later boot-helper, CLI SDK, PG credential and service-launch fixes have source tests; their packaged acceptance awaits the recut tracked on the four items below.
+
+> **Scope limits.** This is not a support agreement, an SLA, an RPO/RTO commitment, or a security certification. None of those exist yet; see [Commitments that do not exist yet](#commitments-that-do-not-exist-yet). macOS, Windows, multi-user hosts, and upgrades from earlier versions were not drilled.
+
+## 1. Install
+
+```bash
+sudo apt install ./"Papercusp Server_0.0.26_amd64.deb"   # depends: bubblewrap, libwebkit2gtk-4.1-0, libgtk-3-0, libayatana-appindicator3-1
+# Run the rest as the user who will own the service, in a session with a user bus.
+systemctl --user daemon-reload
+systemctl --user enable --now papercusp-server.service
+```
+
+* **Verified:** the package postinst *enables* `papercusp-server.service` for every user (symlink in `/etc/systemd/user/default.target.wants/`) but does **not start** it. You must start it yourself.
+* **Verified:** first start reaches a healthy operator in about 15 s on a warm reinstall and up to about 3 min on a cold first boot, which seeds the embedded database.
+* **Required on a headless host:** nothing keeps the user's systemd manager running without a login. `loginctl` reported `Linger=no` after install, and the reboot drill passed only because the test VM auto-logs-in its user. On 0.0.26, run `sudo loginctl enable-linger USER`, then `systemctl --user enable --now papercusp-server.service` as that user. From Server 0.0.27 the package ships `/usr/sbin/papercusp-server-enable-boot-start` (0.0.26 does not include it, per release decision D-237), which does both steps and checks that they took: `sudo papercusp-server-enable-boot-start --user USER` (`--disable` reverses it). A reboot with no login session has not been drilled on either path yet (WI-6554700010012562).
+* If you also install the GUI package, **start the unit before the first GUI launch**. A GUI started while the unit is stopped appears to run its own server outside the unit, and that server ignores your drop-in configuration (WI-6554700010012567, unconfirmed).
+
+The process tree under the unit looks like this: `papercusp-server --headless-service` → `node …/sidecar/serve.mjs --ensure` → `postgres -D ~/.papercusp-workspaces/.shared/embedded-pg-data`.
+
+## 2. Configure
+
+Configure through a systemd drop-in, never by editing the packaged unit (`/usr/lib/systemd/user/papercusp-server.service`):
+
+```bash
+mkdir -p ~/.config/systemd/user/papercusp-server.service.d
+cat > ~/.config/systemd/user/papercusp-server.service.d/10-enterprise.conf <<'EOF'
+[Service]
+# Do not auto-join the public dogfood hive on first boot.
+Environment=PAPERCUSP_DISABLE_DOGFOOD_HIVE=1
+EOF
+systemctl --user daemon-reload
+systemctl --user restart papercusp-server.service
+```
+
+**Verified:** `systemctl --user status` lists the drop-in, and the operator running in `app.slice/papercusp-server.service` had the variable in its environment.
+
+## 3. Diagnostics
+
+```bash
+systemctl --user status papercusp-server.service --no-pager -l
+journalctl --user -u papercusp-server.service --no-pager -n 200
+PORT=$(python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.papercusp/operator.json")))["port"])')
+curl -s "http://127.0.0.1:$PORT/api/health"   # {"ok":true,"service":"papercusp-operator","version":"0.0.26",...}
+ls -la ~/.papercusp/logs
+ss -ltnp | grep -E 'node|postgres'
+df -h ~
+```
+
+The operator port and the database port **change across restarts**: after the in-place restore the operator moved from 20993 to 20838. Re-read `~/.papercusp/operator.json` and `~/.papercusp/embedded-pg.json` every time; never hard-code a port.
+
+The packaged `ptool` CLI does not work in 0.0.26 (WI-6554700010012487), so use the commands above rather than in-product diagnostic tools.
+
+## 4. Back up
+
+The package ships PostgreSQL 18 client tools at `/usr/lib/Papercusp Server/sidecar/bin` (`pg_dump`, `pg_restore`, `psql`). Back up while the service is running:
+
+```bash
+SB="/usr/lib/Papercusp Server/sidecar/bin"
+DSN=$(python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.papercusp/embedded-pg.json")))["url"])')
+mkdir -p backup
+"$SB/pg_dump" -Fc -d "$DSN" -f backup/db.dump
+"$SB/pg_restore" -l backup/db.dump | grep -vc '^;'      # TOC entry count, a quick sanity check
+tar -C ~ -czf backup/config.tgz \
+  --exclude=embedded-pg-data --exclude=logs --exclude='*.sock' --exclude='*.lock' \
+  .papercusp .papercusp-workspaces .config/systemd/user/papercusp-server.service.d
+(cd backup && sha256sum db.dump config.tgz > SHA256SUMS)
+```
+
+* **Verified:** `pg_dump` rc=0 in about 1 s; the dump was 4.4–8.7 MB with about 6,100 TOC entries. `config.tgz` was 177–491 MB, mostly `.papercusp-workspaces/.shared/dev-source/node_modules`.
+* `tar` may exit 1 with `file changed as we read it` for live files. That is expected for the config archive. The database is protected by the dump, **not** by `tar`; never rely on a file copy of the running data directory.
+* **The backup contains secrets** and must be stored encrypted and access-controlled: `~/.papercusp/db-encryption-key` (required to read encrypted columns after a restore), `~/.papercusp/superuser-token`, and the database credentials in `~/.papercusp/embedded-pg.json`. The embedded database uses the same fixed default credentials on every install (WI-6554700010012477, unconfirmed), so do not expose its port.
+* In-product snapshots (`backup:snapshot_create`) cannot be used on 0.0.26 because they need `ptool` (WI-6554700010012487).
+
+## 5. Restore
+
+### 5a. Prove a backup restores (non-destructive)
+
+Restore into a scratch database next to the live one:
+
+```bash
+BASE=${DSN%/*}                                   # DSN without the database name
+"$SB/psql" "$BASE/postgres" -c 'CREATE DATABASE restore_check'
+"$SB/pg_restore" --no-owner -d "$BASE/restore_check" backup/db.dump
+# compare row counts / a known record, then:
+"$SB/psql" "$BASE/postgres" -c 'DROP DATABASE restore_check'
+```
+
+**Verified:** rc=0 with 0 errors in 97 s, 613 tables, 1,090 applied migrations, and the drill's 5,000-row sentinel matched by checksum.
+
+### 5b. In-place restore (destructive: replaces the live database)
+
+```bash
+DATA=~/.papercusp-workspaces/.shared/embedded-pg-data
+PGBIN="/usr/lib/Papercusp Server/sidecar/node_modules/@papercusp/embedded-postgres-server/node_modules/@embedded-postgres/linux-x64/native/bin"
+PORT=$(python3 -c 'import sys,urllib.parse as u;print(u.urlparse(sys.argv[1]).port)' "$DSN")
+DB=$(python3 -c 'import sys,urllib.parse as u;print(u.urlparse(sys.argv[1]).path.lstrip("/"))' "$DSN")
+
+systemctl --user stop papercusp-server.service
+# Wait until the postmaster recorded in the lock file has exited.
+while p=$(head -1 "$DATA/postmaster.pid" 2>/dev/null) && [ -n "$p" ] && kill -0 "$p" 2>/dev/null; do sleep 2; done
+
+LD_LIBRARY_PATH="$PGBIN/../lib" "$PGBIN/pg_ctl" -D "$DATA" \
+  -o "-p $PORT -k /tmp -c listen_addresses=127.0.0.1" -w -t 120 start
+"$SB/psql" "${DSN%/*}/postgres" -c "DROP DATABASE \"$DB\" WITH (FORCE)" -c "CREATE DATABASE \"$DB\""
+"$SB/pg_restore" --no-owner -d "$DSN" backup/db.dump
+LD_LIBRARY_PATH="$PGBIN/../lib" "$PGBIN/pg_ctl" -D "$DATA" -m fast -w stop
+
+systemctl --user start papercusp-server.service   # then wait for /api/health
+```
+
+* **Verified:** after deliberately dropping data, `pg_restore` took 9 s with 0 errors, the service was healthy 10 s after start, and the sentinel checksum matched.
+* Wait for the **lock-file pid**, not for `postgres` to vanish from `ps`. An exiting postmaster drops its `-D` arguments before it exits, and starting too early fails with `lock file "postmaster.pid" already exists`. A stale lock file left by a dead pid is fine; `pg_ctl` warns `another server might be running` and starts anyway.
+* Restoring `config.tgz` (`tar -C ~ -xzf backup/config.tgz` with the unit stopped) is **not yet verified**. Restore it before the database when you are moving to a new host, because the database depends on `db-encryption-key`.
+
+## 6. Recovery
+
+| Failure                                                  | What happens                                                                      | Verified result                                                                                                    |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Operator process killed (`kill -9` on the node operator) | The unit restarts it                                                              | Healthy in 10 s; `NRestarts=1`                                                                                     |
+| Unit main process killed                                 | systemd restarts the unit                                                         | Healthy in 5 s; `NRestarts=2`                                                                                      |
+| Postgres postmaster killed                               | The operator respawns Postgres; no unit restart                                   | Healthy; new postmaster pid                                                                                        |
+| Host reboot                                              | The user manager starts the enabled unit                                          | Healthy 15 s after boot **with a login session**. With linger and no login session: not yet verified (see Install) |
+| Package removed by mistake, user data kept               | Reinstall the same `.deb`, then `systemctl --user start papercusp-server.service` | Healthy in 15 s with the prior data intact                                                                         |
+
+If the unit enters a restart loop, read the last 200 journal lines and the newest files in `~/.papercusp/logs` first, then check free disk.
+
+## 7. Offboard
+
+Take a final backup (section 4) if the data must be retained, then:
+
+```bash
+systemctl --user stop papercusp-server.service
+# Purge only the packages that are installed: apt aborts the WHOLE transaction (rc=100)
+# on a name it cannot find, which leaves the Server installed.
+sudo apt-get purge -y $(for p in papercusp-gui papercusp-server; do dpkg -s $p >/dev/null 2>&1 && echo $p; done)
+```
+
+**Verified:** purge rc=0, and 20 s later the unit was `not-found` with no restart loop, no Papercusp or Postgres processes, no listeners, and no files left under `/usr/lib/Papercusp*`, `/usr/bin/papercusp*`, the user unit, or `default.target.wants`.
+
+Package removal deliberately keeps per-user data. To remove it, run this for **every user** who ran the service. It cannot be undone:
+
+```bash
+rm -rf ~/.papercusp ~/.papercusp-workspaces ~/.local/state/papercusp \
+       ~/.config/systemd/user/papercusp-server.service.d \
+       ~/.local/share/com.papercusp.gui ~/.local/share/applications/papercusp-tutorial.desktop \
+       ~/papercusp-app.log
+systemctl --user daemon-reload
+sudo loginctl disable-linger USER   # if you enabled linger at install, by hand or with the boot-start helper
+```
+
+**Verified:** this list leaves no Papercusp entries under the home directory. The last three paths were found as leftovers in the drill and are easy to miss.
+
+## Known gaps (filed and owned)
+
+| Item                | Gap                                                                                                                                                  | Effect on this runbook                                                |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| WI-6554700010012562 | Boot-start helper is not shipped in 0.0.26. Ships from 0.0.27 as `/usr/sbin/papercusp-server-enable-boot-start`; not yet verified on a built package | On 0.0.26, enable linger by hand for headless boot start              |
+| WI-6554700010012487 | `/usr/bin/ptool` fails: `@modelcontextprotocol/sdk` missing from the shipped sidecar                                                                 | No in-product snapshots or CLI diagnostics; use `pg_dump` and systemd |
+| WI-6554700010012477 | 0.0.26 accepted public default PG credentials; host-specific credential fix is source-verified, packaged acceptance pending                          | Keep the DB port local-only; treat backups as secret                  |
+| WI-6554700010012567 | 0.0.26 GUI/desktop-entry launches could bypass the unit; service-attachment fixes are source-verified, packaged acceptance pending                   | Start the unit before the GUI                                         |
+
+## Commitments that do not exist yet
+
+Per plan decision D-010, these belong to the owner and are **missing**, not implied by this runbook: priced support terms and response times, any SLA, RPO/RTO targets, a signed data-processing agreement, external security assurance or certification, and validation against a real MDM tenant. Under D-009 the buyer profile behind this work is a labelled assumption register (`docs/evidence/enterprise-assumed-profile-2026-10-13.md`), not buyer evidence.
+
+## Evidence
+
+Raw drill output is kept on the build host under `~/.papercusp/evidence/p010a-lifecycle-20261014/`: package hashes and fields, the guest census, `p2-*` (phase 2), `p3-*` (unit-managed phase 3), and `phase4/` (the in-place restore and purge re-run). The drill scripts are in `.papercusp/scratch/p010a/` (`guest-lib.sh`, `phase3-unit-drills.sh`).

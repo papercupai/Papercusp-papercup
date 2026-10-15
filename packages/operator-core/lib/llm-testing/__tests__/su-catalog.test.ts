@@ -5,7 +5,9 @@
  * Run with: cd packages/operator-core && npx vitest run lib/llm-testing/__tests__/su-catalog.test.ts
  */
 import { describe, expect, it } from 'vitest';
-import { sanitizeToolName, buildCatalog, SU_CATALOG } from '../targets/su-catalog';
+import { sanitizeToolName, buildCatalog, SU_CATALOG, type SuCatalogEntry } from '../targets/su-catalog';
+import { CODE_SEARCH_CATALOG } from '../targets/code-search-catalog';
+import { WORKER_CATALOG } from '../targets/worker';
 import { FOR_YOU_BECAUSE_RELATIONS, messageBodyArg } from '../../agent-tools/coordination/message-fields';
 import { CompletionRecordSchema } from '../../coord-lifecycle/records';
 
@@ -23,6 +25,34 @@ describe('sanitizeToolName', () => {
 
   it('passes through a name with no colon', () => {
     expect(sanitizeToolName('repomix_pack')).toBe('repomix_pack');
+  });
+
+  it('maps a dotted plugin name too — the API refuses a dot exactly like a colon', () => {
+    expect(sanitizeToolName('gitnexus.context')).toBe('gitnexus__context');
+    expect(sanitizeToolName('gitnexus.context')).toMatch(ANTHROPIC_NAME_RE);
+  });
+});
+
+describe('every catalog a target ships builds to API-legal, collision-free names', () => {
+  const catalogs: Record<string, ReadonlyArray<SuCatalogEntry>> = {
+    su: SU_CATALOG,
+    worker: WORKER_CATALOG,
+    'su-code': [...SU_CATALOG, ...CODE_SEARCH_CATALOG],
+  };
+  for (const [label, entries] of Object.entries(catalogs)) {
+    it(`${label}: every wire name matches the Anthropic constraint and maps back to its canonical name`, () => {
+      const built = buildCatalog(entries);
+      expect(built.tools).toHaveLength(entries.length);
+      for (const t of built.tools) {
+        expect(t.name).toMatch(ANTHROPIC_NAME_RE);
+        expect(built.canonicalBySanitized.get(t.name)).toBeDefined();
+      }
+    });
+  }
+
+  it('refuses two canonical names that sanitize to the same wire name', () => {
+    const entry = (name: string): SuCatalogEntry => ({ name, description: name, input: { type: 'object' } }) as SuCatalogEntry;
+    expect(() => buildCatalog([entry('a:b'), entry('a.b')])).toThrow(/both sanitize to "a__b"/);
   });
 });
 

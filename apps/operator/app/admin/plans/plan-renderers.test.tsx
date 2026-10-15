@@ -10,7 +10,7 @@
  * skip-inside-anchor) — exactly what regresses silently without tests.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { decoratePlanDom, attachPlanRefClickHandler, decoratePlanItemTestBadges } from './plan-renderers';
+import { decoratePlanDom, attachPlanRefClickHandler } from './plan-renderers';
 import type { PlanItem } from './plans-api';
 
 function root(html: string): HTMLElement {
@@ -200,36 +200,7 @@ describe('attachPlanRefClickHandler', () => {
   });
 });
 
-describe('decoratePlanItemTestBadges — P-083 coverage badge', () => {
-  const html =
-    '<ul>' +
-    '<li data-plan-item="P-001"><strong>P-001</strong> implement X</li>' +
-    '<li data-plan-item="P-002"><strong>P-002</strong> exempt-only copy</li>' +
-    '</ul>';
-
-  it('injects a ✓ pass/required badge on items with test-requiring VALs', () => {
-    const r = root(html);
-    decoratePlanItemTestBadges(r, {
-      'P-001': { valsTotal: 2, valsRequiringTest: 2, valsCovered: 2, valsPassing: 1 },
-      'P-002': { valsTotal: 1, valsRequiringTest: 0, valsCovered: 0, valsPassing: 0 },
-    });
-    const p1 = r.querySelector('li[data-plan-item="P-001"] .pc-item-test-badge');
-    expect(p1?.textContent).toBe('✓ 1/2');
-    // P-002 has no test-requiring VAL → no badge.
-    expect(r.querySelector('li[data-plan-item="P-002"] .pc-item-test-badge')).toBeNull();
-  });
-
-  it('is idempotent — re-decorating replaces, not duplicates', () => {
-    const r = root(html);
-    const cov = { 'P-001': { valsTotal: 1, valsRequiringTest: 1, valsCovered: 1, valsPassing: 1 } };
-    decoratePlanItemTestBadges(r, cov);
-    decoratePlanItemTestBadges(r, cov);
-    expect(r.querySelectorAll('li[data-plan-item="P-001"] .pc-item-test-badge')).toHaveLength(1);
-  });
-
-  it('no-ops on an empty coverage map', () => {
-    const r = root(html);
-    decoratePlanItemTestBadges(r, {});
-    expect(r.querySelectorAll('.pc-item-test-badge')).toHaveLength(0);
-  });
+it('no longer exports the retired VAL test-coverage badge decorator (P-003)', async () => {
+  const mod = (await import('./plan-renderers')) as Record<string, unknown>;
+  expect(mod).not.toHaveProperty('decoratePlanItemTestBadges');
 });

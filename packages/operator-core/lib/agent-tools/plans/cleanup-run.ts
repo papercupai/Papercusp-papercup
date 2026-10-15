@@ -32,10 +32,10 @@ import {
   type CleanupFindingOutcomeReport,
 } from '../../plan-cleanup/run-store';
 import { dispatchCleanupFindingAction } from '../../plan-cleanup/action-dispatch';
+import { cleanupAutomationEligibility } from '../../plan-cleanup/automation-policy';
 import {
   BULK_CONFIDENCE_LEVELS,
   BULK_RECOMMENDATION_KINDS,
-  bulkAutomationEligibility,
   normalizeBulkAutomationPolicy,
 } from '../../attention/bulk-dispositions';
 
@@ -108,9 +108,18 @@ export const cleanupManifest = defineTool({
     }
 
     const currentById = new Map(scan.map((finding) => [finding.findingId, finding]));
+    const policy = run.automationPolicy
+      ? normalizeBulkAutomationPolicy(run.automationPolicy)
+      : null;
     const wanted = args.includeReported ? rows : rows.filter((row) => row.outcome === 'pending');
     const findings = wanted.map((row) => {
       const current = currentById.get(row.findingId);
+      const policyEligibility = current
+        ? cleanupAutomationEligibility(policy, current, row.confidenceLevel ?? undefined)
+        : null;
+      const policyBlockedBy = policyEligibility && !policyEligibility.allowed
+        ? policyEligibility.reason ?? 'confidence-policy'
+        : null;
       return {
         ...row,
         disposition: row.disposition,
@@ -122,8 +131,12 @@ export const cleanupManifest = defineTool({
         responsibility: row.responsibility,
         confidenceLevel: row.confidenceLevel,
         retryCondition: row.retryCondition,
-        autoApply: current?.autoApply === true,
-        autoApplyBlockedBy: current ? current.autoApplyBlockedBy : 'stale-finding',
+        risk: policyEligibility?.risk ?? null,
+        proposalRequired: current?.kind === 'stale-now',
+        autoApply: policyEligibility?.allowed === true,
+        autoApplyBlockedBy: current
+          ? policyEligibility?.allowed ? null : policyBlockedBy ?? current.autoApplyBlockedBy
+          : 'stale-finding',
         current: Boolean(current),
       };
     });
@@ -156,10 +169,10 @@ export const cleanupManifest = defineTool({
 export const cleanupAct = defineTool({
   name: 'plans:cleanup-act',
   description:
-    'Apply ONE currently-provable cleanup finding. Holds the run authority lock across fresh re-verification, canonical plan/claim dispatch, outcome, and counters. If Stop won first, no mutation starts.',
+    'Apply ONE cleanup finding authorized by the run risk policy. Holds the run authority lock across fresh re-verification, canonical plan/claim dispatch, outcome, and counters. Now rewrites require a state/next proposal. If Stop won first, no mutation starts.',
   guidance: {
     when: 'The cleanup manifest marks one pending finding autoApply:true and you have a concise evidence-based rationale.',
-    notWhen: 'The finding is recommended, blocked by a live agent, stale, or only needs reporting.',
+    notWhen: 'The manifest withholds autonomy, a live agent holds the plan, the finding is stale, or only reporting is needed.',
   },
   capability: 'coord:write',
   requirePrincipal: false,
@@ -168,6 +181,10 @@ export const cleanupAct = defineTool({
     runId: z.string().min(1).optional(),
     findingId: z.string().min(1),
     rationale: softText(LIMITS.ANNOTATION),
+    proposal: z.object({
+      state: z.string().trim().min(1).max(2000),
+      next: z.string().trim().min(1).max(8000),
+    }).optional(),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -204,28 +221,20 @@ export const cleanupAct = defineTool({
       });
     }
 
-    if (run.automationPolicy) {
-      const policy = normalizeBulkAutomationPolicy(run.automationPolicy);
-      const finding = (await getRunFindings(runId, run.workspaceId)).find(
-        (row) => row.findingId === args.findingId,
-      );
-      const confidenceLevel =
-        finding?.confidenceLevel ?? (finding?.confidence === 'provable' ? 'high' : 'medium');
-      const eligibility = bulkAutomationEligibility(policy, confidenceLevel);
+    const policy = run.automationPolicy ? normalizeBulkAutomationPolicy(run.automationPolicy) : null;
+    const storedFinding = (await getRunFindings(runId, run.workspaceId)).find((row) => row.findingId === args.findingId);
+    const current = (await scanCleanupRun(run, storedFinding ? [storedFinding.planSlug] : run.seedRefs))
+      .find((finding) => finding.findingId === args.findingId);
+    if (current) {
+      const eligibility = cleanupAutomationEligibility(policy, current, storedFinding?.confidenceLevel ?? undefined);
       if (!eligibility.allowed) {
         return toolJson({
-          ok: false,
-          refused: 'confidence_policy',
-          reason: eligibility.reason,
-          policy,
-          runId,
-          findingId: args.findingId,
-          message:
-            'The selected confidence policy does not permit auto-application. Report a typed recommendation with evidence and confidence instead.',
+          ok: false, refused: 'confidence_policy', reason: eligibility.reason,
+          risk: eligibility.risk, policy, runId, findingId: args.findingId, actionDispatched: false,
+          message: 'The run risk or confidence policy requires review for this finding.',
         });
       }
     }
-
     const call = inProcessCall(ctx);
     let actionDispatched = false;
     try {
@@ -240,12 +249,13 @@ export const cleanupAct = defineTool({
             (finding) => finding.findingId === locked.findingId,
           );
           if (!fresh) throw new Error(`${locked.findingId}: finding is no longer present at current state`);
-          if (!fresh.autoApply) {
+          const eligibility = cleanupAutomationEligibility(policy, fresh, locked.confidenceLevel ?? undefined);
+          if (!eligibility.allowed) {
             throw new Error(
-              `${locked.findingId}: auto-apply is not currently authorized (${fresh.autoApplyBlockedBy ?? fresh.confidence})`,
+              `${locked.findingId}: auto-apply is not currently authorized (${eligibility.reason})`,
             );
           }
-          const dispatched = await dispatchCleanupFindingAction({ run, finding: fresh, call });
+          const dispatched = await dispatchCleanupFindingAction({ run, finding: fresh, call, ...(args.proposal ? { proposal: args.proposal } : {}) });
           actionDispatched = true;
           return dispatched;
         },

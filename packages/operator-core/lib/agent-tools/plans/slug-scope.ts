@@ -16,8 +16,8 @@
 import { PAPERCUSP_WORKSPACE_ID } from '../../harness/papercusp-workspace';
 import { planHarnessesForSlugs } from './source';
 
-/** Per-slug candidate harnesses, most-recently-updated first — index 0 is the
- *  same deterministic pick `resolvePlanHarnessSlug` makes. */
+/** Per-slug candidate harnesses, most-recently-updated first. More than one
+ *  entry for a slug is ambiguity, which refuses (P-006). */
 export type SlugCandidates = Record<string, string[]>;
 
 export interface PlanHarnessMismatch {
@@ -31,12 +31,11 @@ export interface PlanHarnessMismatch {
 
 export type SlugScopeDecision =
   | {
-      /** Every requested slug is store-backed and resolves to ONE harness. */
+      /** Every requested slug is store-backed in exactly ONE harness, and all
+       *  of them in the same one. */
       status: 'resolved';
       harnessSlug: string;
       bySlug: Record<string, string>;
-      /** Slugs whose mapping was ambiguous (store-backed rows in >1 harness). */
-      ambiguous: SlugCandidates;
     }
   | {
       status: 'missing';
@@ -45,29 +44,29 @@ export type SlugScopeDecision =
       found: Record<string, string>;
       workspaceId: string;
     }
+  | {
+      /** At least one slug is store-backed in more than one harness of this
+       *  workspace. `candidates` holds ONLY those slugs, most recently updated
+       *  first. */
+      status: 'ambiguous';
+      candidates: SlugCandidates;
+      workspaceId: string;
+    }
   | { status: 'split'; mapping: Record<string, string>; workspaceId: string };
 
-/** Write tools may reuse exact-slug recovery, but must never use the read
- * path's "most recently updated wins" rule when one slug exists in multiple
- * harnesses. A lifecycle mutation needs a single unambiguous owner. */
-export type WritableSlugScopeDecision =
-  | Exclude<SlugScopeDecision, { status: 'resolved' }>
-  | Extract<SlugScopeDecision, { status: 'resolved' }>
-  | { status: 'ambiguous'; candidates: SlugCandidates; workspaceId: string };
-
-export function requireUnambiguousSlugScope(
-  decision: SlugScopeDecision,
-  workspaceId: string,
-): WritableSlugScopeDecision {
-  if (decision.status !== 'resolved' || Object.keys(decision.ambiguous).length === 0) return decision;
-  return { status: 'ambiguous', candidates: decision.ambiguous, workspaceId };
-}
-
 /**
- * Pure decision over the candidate map. Ambiguity inside a single slug does
- * NOT block resolution: index 0 wins (the `resolvePlanHarnessSlug`
- * most-recently-updated precedent), but the ambiguity is carried on the
- * resolved decision so handlers can surface it in metadata.
+ * Pure decision over the candidate map.
+ *
+ * A slug that exists in more than one harness of the workspace REFUSES (plan
+ * scope-unique-identifiers-2026-07-26 P-006). This used to resolve to the most
+ * recently updated copy, with the ambiguity carried only as metadata, while the
+ * write tools refused through a separate wrapper. That left every new read
+ * caller one forgotten wrapper away from silently answering about the wrong
+ * plan, so the refusal now lives in the one decider every caller goes through.
+ * An explicit `harness` on the call never reaches this path.
+ *
+ * Order: missing, then ambiguous, then split. A missing slug is reported first
+ * because no harness choice can satisfy it.
  */
 export function decideSlugScope(
   slugs: readonly string[],
@@ -83,17 +82,23 @@ export function decideSlugScope(
       missing.push(slug);
       continue;
     }
+    if (list.length > 1) {
+      ambiguous[slug] = list;
+      continue;
+    }
     bySlug[slug] = list[0];
-    if (list.length > 1) ambiguous[slug] = list;
   }
   if (missing.length > 0) {
     return { status: 'missing', missing, found: bySlug, workspaceId };
+  }
+  if (Object.keys(ambiguous).length > 0) {
+    return { status: 'ambiguous', candidates: ambiguous, workspaceId };
   }
   const distinct = [...new Set(Object.values(bySlug))];
   if (distinct.length > 1) {
     return { status: 'split', mapping: bySlug, workspaceId };
   }
-  return { status: 'resolved', harnessSlug: distinct[0], bySlug, ambiguous };
+  return { status: 'resolved', harnessSlug: distinct[0], bySlug };
 }
 
 /** The workspace the recovery searches: a concrete session workspace passes
@@ -135,8 +140,13 @@ export async function harnessMismatchForMiss(
 ): Promise<PlanHarnessMismatch | null> {
   try {
     const decision = await recoverHarnessFromSlugs(ctx, [slug]);
-    if (decision.status !== 'resolved') return null;
-    const availableHarnesses = decision.ambiguous[slug] ?? [decision.harnessSlug];
+    const availableHarnesses =
+      decision.status === 'resolved'
+        ? [decision.harnessSlug]
+        : decision.status === 'ambiguous'
+          ? (decision.candidates[slug] ?? [])
+          : [];
+    if (availableHarnesses.length === 0) return null;
     if (availableHarnesses.includes(callerHarness)) return null;
     const reportedHarness = availableHarnesses.length === 1 ? availableHarnesses[0] : undefined;
     const target = reportedHarness
@@ -217,9 +227,7 @@ export async function verifyExplicitPlanHarness(
  */
 export function slugScopeErrorResult(
   toolName: string,
-  decision:
-    | Extract<SlugScopeDecision, { status: 'missing' | 'split' }>
-    | Extract<WritableSlugScopeDecision, { status: 'ambiguous' }>,
+  decision: Exclude<SlugScopeDecision, { status: 'resolved' }>,
 ): { isError: true; content: Array<{ type: 'text'; text: string }> } {
   const hint =
     "Pass an explicit `harness` on this call (for example 'papercusp' for " +
@@ -246,9 +254,12 @@ export function slugScopeErrorResult(
         : {
             error: 'plan_slug_ambiguous_across_harnesses',
             candidates: decision.candidates,
+            workspaceId: decision.workspaceId,
             detail:
-              `At least one requested slug exists in multiple harnesses (${JSON.stringify(decision.candidates)}). ` +
-              'A write cannot safely pick the most recently updated copy — pass an explicit `harness`.',
+              `At least one requested slug exists in multiple harnesses of workspace ` +
+              `'${decision.workspaceId}' (${JSON.stringify(decision.candidates)}). These are different ` +
+              'plans that share a slug, so the slug alone cannot name one of them. Pass an explicit ' +
+              '`harness` naming the plan you mean.',
           };
   return {
     isError: true,

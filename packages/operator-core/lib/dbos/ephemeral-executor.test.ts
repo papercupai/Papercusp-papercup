@@ -140,6 +140,30 @@ describe('tick → fire + durable liveness', () => {
     await flush();
     expect(recorded).toEqual([{ id: 'r1', error: 'boom' }]);
   });
+
+  // WI-10005164: a fail-soft sub-pass failure must reach last_error. task-reconcile is an
+  // ephemeral routine, and its swallowed lifecycle-sweep error left last_error empty for a day.
+  it('records a returned softError as the fire error (the action did not throw)', async () => {
+    installFakeRegistry();
+    const { deps, recorded } = mkDeps({
+      fire: async () => ({ softError: 'task-lifecycle sub-pass failing (1x since 2026-10-01T00:00:00.000Z): 42703' }),
+    });
+    await armEphemeralExecutor(deps);
+    ticks[0].cb();
+    await flush();
+    expect(recorded).toEqual([
+      { id: 'r1', error: 'task-lifecycle sub-pass failing (1x since 2026-10-01T00:00:00.000Z): 42703' },
+    ]);
+  });
+
+  it('control: a returned result without softError records a clean fire', async () => {
+    installFakeRegistry();
+    const { deps, recorded } = mkDeps({ fire: async () => ({ diagnostics: { ok: true } }) });
+    await armEphemeralExecutor(deps);
+    ticks[0].cb();
+    await flush();
+    expect(recorded).toEqual([{ id: 'r1', error: null }]);
+  });
 });
 
 describe('event-driven sync / unarm / disarm', () => {

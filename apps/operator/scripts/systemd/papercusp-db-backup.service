@@ -2,7 +2,7 @@
 Description=Papercusp Postgres backup (pg_dump -Fd, parallel) — EI-10733
 Documentation=https://papercusp.internal/issues/EI-10733
 After=network-online.target
-RequiresMountsFor=/mnt/backup
+RequiresMountsFor=/mnt/cold-a/Backup/db-dumps
 # The backup is the thing you need most when everything else is broken, so its
 # failure must be VISIBLE. The old pg_dumpall leg failed silently behind a
 # one-line "pg-5432 FAIL" for 30 days (EI-10733); db-backup.sh exits non-zero
@@ -21,19 +21,16 @@ Type=oneshot
 SuccessExitStatus=75
 Nice=19
 IOSchedulingClass=idle
-# WI-2145150: the dump lives on /mnt/backup (/dev/sda1, 1.2T free), NOT /mnt/data.
-# /mnt/data hit 97% and the headroom guard (papercusp-db-backup.sh:112-124) began
-# SKIPPING the papercusp dump every run — 5 consecutive failures, RPO degrading.
-# db-backup.sh:60 reads this var and its fs_avail_gb() follows $PGOUT deliberately
-# (see the comment at :119), so the guard measures the NEW volume with no threshold
-# lowered. Relocation, not deletion, is what retires that blocker.
+# WI-6554700010014799: dumps now live on /mnt/cold-a/Backup/db-dumps. The
+# producer measures free space on its actual PGOUT and keeps the 120 GiB floor;
+# moving the destination preserves that guard while the largest tier is staged.
 #
 # ⚠ KEEP IN SYNC with kopia-healthcheck.service, which sets the SAME var so the
 # healthcheck asserts freshness against the tree the backup actually writes.
 # Two units genuinely need it (different cgroups); a single ~/.config/environment.d
 # definition would need `systemctl --user daemon-reexec`, which would disturb every
 # other user unit on this box, so the per-unit form is deliberate.
-Environment=PAPERCUSP_HOST_PG_DUMP_DIR=/mnt/backup/db-dumps
+Environment=PAPERCUSP_HOST_PG_DUMP_DIR=/mnt/cold-a/Backup/db-dumps
 # One pg_dump worker keeps this large recurring producer in the scheduled
 # low-impact lane. The script default remains 4 for deliberate one-off runs,
 # but the hourly service must not recreate the four-worker MCP contention that

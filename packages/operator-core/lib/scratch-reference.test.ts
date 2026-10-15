@@ -1,12 +1,26 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  DEFAULT_MAX_SPOOL_BYTES,
+  createGatewayPayloadSpool,
+  type GatewayPayloadSpool,
+} from './inference-gateway/payload-spool';
+import {
+  DURABLE_SCRATCH_REFERENCE_SCHEME,
+  DURABLE_SCRATCH_REFERENCE_TTL_MS,
   authorizeScratchReference,
+  isDurableScratchReferenceUri,
   parseScratchReference,
+  persistVolatileScratchReference,
+  readDurableScratchReference,
   ScratchReferenceError,
+  readVolatileScratchReference,
   scratchReferenceBodyByteOffset,
+  storeVolatileScratchReference,
+  VOLATILE_SCRATCH_REFERENCE_TTL_MS,
   writeScratchReference,
 } from './scratch-reference';
 
@@ -128,5 +142,147 @@ describe('stable scratch references', () => {
 
   it('returns null for legacy scratch files', () => {
     expect(parseScratchReference(Buffer.from('legacy payload'))).toBeNull();
+  });
+
+  it('keeps volatile recovery bytes exact and enforces workspace, owner, and expiry', () => {
+    const payload = Buffer.from('volatile result with exact bytes: \u2603', 'utf8');
+    const stored = storeVolatileScratchReference({
+      payload,
+      workspaceId: 'ws',
+      ownerId: 'su-1',
+      audience: 'owner',
+      mediaType: 'text/plain',
+      content: [{ index: 0, type: 'text', byteCount: payload.length }],
+      bodyOffsetInPayload: 0,
+    });
+
+    expect(stored).not.toBeNull();
+    expect(stored!.uri).toMatch(/^papercusp:\/\/scratch-memory\/[0-9a-f-]{36}$/);
+    expect(stored!.manifest).toMatchObject({
+      workspaceId: 'ws',
+      ownerId: 'su-1',
+      audience: 'owner',
+      byteCount: payload.length,
+      bodyOffsetInPayload: 0,
+    });
+    expect(readVolatileScratchReference(stored!.uri, {
+      workspaceId: 'ws', ownerId: 'su-1',
+    }).payload).toEqual(payload);
+
+    expect(() => readVolatileScratchReference(stored!.uri, {
+      workspaceId: 'other', ownerId: 'su-1',
+    })).toThrowError(/different workspace/);
+    expect(() => readVolatileScratchReference(stored!.uri, {
+      workspaceId: 'ws', ownerId: 'su-2',
+    })).toThrowError(/restricted to its creating owner/);
+    expect(() => readVolatileScratchReference(stored!.uri, {
+      workspaceId: 'ws', ownerId: 'su-1', nowMs: Date.parse(stored!.manifest.expiresAt),
+    })).toThrowError(/expired/);
+    expect(() => readVolatileScratchReference(stored!.uri, {
+      workspaceId: 'ws', ownerId: 'su-1',
+    })).toThrowError(/no longer available/);
+  });
+
+  it('persists volatile fallbacks in the content-addressed spool with bounded expiry and manifest authorization', async () => {
+    const nowMs = 1_000;
+    const payload = Buffer.from('durable recovery bytes: ☃', 'utf8');
+    const stored = storeVolatileScratchReference({
+      payload,
+      workspaceId: 'ws',
+      ownerId: 'su-1',
+      audience: 'owner',
+      mediaType: 'text/plain',
+      content: [{ index: 0, type: 'text', byteCount: payload.length }],
+      nowMs,
+    });
+    expect(stored).not.toBeNull();
+    if (!stored) throw new Error('volatile scratch reference was not stored');
+
+    const blobs = new Map<string, Buffer>();
+    const spool: GatewayPayloadSpool = {
+      spool: vi.fn(async (body: Buffer) => {
+        const payloadRef = createHash('sha256').update(body).digest('hex');
+        blobs.set(payloadRef, Buffer.from(body));
+        return { payloadRef, bytes: body.byteLength, deduped: false };
+      }),
+      read: vi.fn(async (payloadRef: string) => {
+        const bytes = blobs.get(payloadRef);
+        return bytes ? Buffer.from(bytes) : null;
+      }),
+      retain: vi.fn(async () => undefined),
+      release: vi.fn(async () => undefined),
+      sweep: vi.fn(async () => 0),
+    };
+    const createSpool = vi.spyOn(
+      await import('./inference-gateway/payload-spool'),
+      'createGatewayPayloadSpool',
+    ).mockReturnValue(spool);
+
+    try {
+      const persistAtMs = nowMs + 1;
+      const persisted = await persistVolatileScratchReference(stored.uri, {
+        workspaceId: 'ws',
+        ownerId: 'su-1',
+        nowMs: persistAtMs,
+      });
+
+      expect(DURABLE_SCRATCH_REFERENCE_TTL_MS).toBe(VOLATILE_SCRATCH_REFERENCE_TTL_MS);
+      expect(createSpool).toHaveBeenNthCalledWith(1, {
+        maxBytes: DEFAULT_MAX_SPOOL_BYTES,
+        ttlMs: Date.parse(stored.manifest.expiresAt) - persistAtMs,
+      });
+      expect(persisted.uri).toMatch(new RegExp('^' + DURABLE_SCRATCH_REFERENCE_SCHEME + '/[a-f0-9]{64}$'));
+      expect(isDurableScratchReferenceUri(persisted.uri)).toBe(true);
+      expect(spool.spool).toHaveBeenCalledWith(expect.any(Buffer), {
+        contentType: 'application/vnd.papercusp.scratch-reference',
+      });
+
+      const recovered = await readDurableScratchReference(persisted.uri, {
+        workspaceId: 'ws',
+        ownerId: 'su-1',
+        nowMs: persistAtMs + 1,
+      });
+      expect(recovered).toEqual({ manifest: stored.manifest, payload });
+
+      await expect(readDurableScratchReference(persisted.uri, {
+        workspaceId: 'other',
+        ownerId: 'su-1',
+        nowMs: persistAtMs + 2,
+      })).rejects.toThrowError(/different workspace/);
+      await expect(readDurableScratchReference(persisted.uri, {
+        workspaceId: 'ws',
+        ownerId: 'su-2',
+        nowMs: persistAtMs + 2,
+      })).rejects.toThrowError(/restricted to its creating owner/);
+      await expect(readDurableScratchReference(persisted.uri, {
+        workspaceId: 'ws',
+        ownerId: 'su-1',
+        nowMs: Date.parse(stored.manifest.expiresAt),
+      })).rejects.toThrowError(/expired/);
+    } finally {
+      createSpool.mockRestore();
+    }
+  });
+
+  it('enforces the volatile entry and cache-count bounds', () => {
+    const tooLarge = storeVolatileScratchReference({
+      payload: Buffer.alloc(16 * 1024 * 1024 + 1),
+      workspaceId: 'ws',
+      audience: 'workspace',
+      mediaType: 'application/octet-stream',
+    });
+    expect(tooLarge).toBeNull();
+
+    const refs = Array.from({ length: 65 }, (_, index) => storeVolatileScratchReference({
+      payload: `entry-${index}`,
+      workspaceId: 'ws',
+      audience: 'workspace',
+      mediaType: 'text/plain',
+    }));
+    expect(refs.every((entry) => entry !== null)).toBe(true);
+    expect(() => readVolatileScratchReference(refs[0]!.uri, { workspaceId: 'ws' }))
+      .toThrowError(/no longer available/);
+    expect(readVolatileScratchReference(refs.at(-1)!.uri, { workspaceId: 'ws' }).payload.toString())
+      .toBe('entry-64');
   });
 });

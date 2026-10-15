@@ -119,6 +119,7 @@ describe('plan_items:claim — plan-Decisions brief, bare-lease path (flag OFF)'
     expect(r.ok).toBe(true);
     expect(r.planDecisions).toEqual(BRIEF.decisions);
     expect(r.planDecisionsNote).toBe(AFFECTS_WARNING);
+    expect(r.enrichmentDelivery.delivered).toContain('planDecisions');
     expect(renderPlanDecisionsNote).toHaveBeenCalledWith(BRIEF);
   });
 
@@ -166,6 +167,7 @@ describe('plan_items:claim — plan-Decisions brief, auto-convert path (flag ON)
     expect(r.convertStatus).toBe('converted');
     expect(r.planDecisions).toEqual(BRIEF.decisions);
     expect(r.planDecisionsNote).toBe(AFFECTS_WARNING);
+    expect(r.enrichmentDelivery.delivered).toContain('planDecisions');
   });
 
   it('serializes affected-plan authority before a resumed work-item checkpoint', async () => {

@@ -17,6 +17,7 @@ import { z } from 'zod';
 import type { CoordOp } from '../types.js';
 import { registerCoordOp } from '../registry.js';
 import { conversationLinkMeta } from '../../attention/conversation-escalation-link.js';
+import type { GoalAskDedupOutcome } from '../goal-ask-dedup.js';
 
 // ── coord:vote ────────────────────────────────────────────────────────────────
 
@@ -112,6 +113,18 @@ const askResult = z.object({
   answered: z.boolean(),
   answer: z.string().nullable(),
   conversation_id: z.string(),
+  /** P-006: what the goal-lineage owner-ask dedup did (see ../goal-ask-dedup.ts). */
+  goal_ask_dedup: z
+    .object({
+      status: z.enum(['explicit-supersede', 'not-in-goal', 'no-overlap', 'superseded', 'joined', 'unmeasured']),
+      goalId: z.string().optional(),
+      conversationId: z.string().optional(),
+      askerId: z.string().optional(),
+      similarity: z.number().optional(),
+      compared: z.number().int().optional(),
+      error: z.string().optional(),
+    })
+    .optional(),
   interest_watch: z.object({
     event_keys: z.array(z.string()),
     await_ids: z.array(z.number().int()),
@@ -125,25 +138,103 @@ const askResult = z.object({
 
 const MAX_POLLS = 100_000;
 
+type AskArgs = z.infer<typeof askArgs>;
+type AskCtx = Parameters<CoordOp<AskArgs, z.infer<typeof askResult>>['run']>[1];
+
+/**
+ * P-006: should this owner ask supersede the caller's own overlapping open ask,
+ * join another goal session's overlapping ask, or open fresh? Never throws — a
+ * failed read is reported as `unmeasured` and the ask opens normally.
+ */
+async function resolveGoalAskDedup(a: AskArgs, ctx: AskCtx): Promise<GoalAskDedupOutcome> {
+  if (a.supersedes_conversation_id) return { status: 'explicit-supersede' };
+  try {
+    const r = await ctx.caps.findOverlappingGoalAsk({ question: a.question });
+    if (!r.goalId) return { status: 'not-in-goal' };
+    if (!r.overlap) return { status: 'no-overlap', goalId: r.goalId, compared: r.compared };
+    return r.overlap.sameAsker
+      ? { status: 'superseded', goalId: r.goalId, conversationId: r.overlap.conversationId, similarity: r.overlap.similarity }
+      : {
+          status: 'joined',
+          goalId: r.goalId,
+          conversationId: r.overlap.conversationId,
+          askerId: r.overlap.askerId,
+          similarity: r.overlap.similarity,
+        };
+  } catch (err) {
+    return { status: 'unmeasured', error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** The bounded wait for the owner's answer on one conversation. */
+async function pollOwnerAnswer(
+  a: AskArgs,
+  ctx: AskCtx,
+  conversationId: string,
+  askerId: string,
+): Promise<{ answered: boolean; answer: string | null }> {
+  // EI-18682693723293580: `timeout_s: 0` (the agent-facing tool's new default)
+  // must mean ZERO polling — a single immediate read, no `sleep` at all —
+  // not "at least one 2s poll cycle" (the old `Math.max(1, …)` floor forced
+  // that even at timeout_s=0, which is harmless standalone but defeats the
+  // whole point of a code:run-safe non-blocking default: a caller that
+  // asked for an instant return still paid a guaranteed sleep(poll_ms)).
+  const maxPolls =
+    a.timeout_s <= 0
+      ? 0
+      : Math.min(MAX_POLLS, Math.max(1, Math.ceil((a.timeout_s * 1000) / a.poll_ms)));
+  let ans = await ctx.caps.readAnswer({ conversationId, askerId });
+  for (let poll = 0; poll < maxPolls && !ans.answered; poll++) {
+    await ctx.caps.sleep(a.poll_ms);
+    ans = await ctx.caps.readAnswer({ conversationId, askerId });
+  }
+  return { answered: ans.answered, answer: ans.answer };
+}
+
 export const askOp: CoordOp<z.infer<typeof askArgs>, z.infer<typeof askResult>> = {
   name: 'coord:ask',
   description: 'Ask the owner a question and wait a bounded time for an answer (the ladder\'s first rung).',
   argsSchema: askArgs,
   resultSchema: askResult,
   async run(a, ctx) {
-    const thread = await ctx.caps.openThread({
+    let dedup = await resolveGoalAskDedup(a, ctx);
+    if (dedup.status === 'joined') {
+      // Another session of this goal already holds an open owner gate for this
+      // question: join it rather than open a duplicate. No new thread and no new
+      // inbox escalation — the existing ask is already in front of the owner.
+      const joined = await pollOwnerAnswer(a, ctx, dedup.conversationId, dedup.askerId);
+      return { ...joined, conversation_id: dedup.conversationId, goal_ask_dedup: dedup };
+    }
+    const openArgs = {
       title: a.question,
       body: a.body ?? a.question,
-      kind: 'question',
+      kind: 'question' as const,
       // This op is registered as `coord:ask` but the EXPOSED agent tool is
       // `coord:ask-owner` (coord-ops/agent-tools.ts:101,137) — the user-facing
       // name is what makes the attribution readable, and it is distinct from
       // the agent-to-agent `coord:ask` in tools/ask.ts.
-      producer: 'coord:ask-owner',
+      producer: 'coord:ask-owner' as const,
       topics: a.topics,
       harness: ctx.harnessSlug,
-      supersedes_conversation_id: a.supersedes_conversation_id,
-    });
+    };
+    let thread: Awaited<ReturnType<typeof ctx.caps.openThread>>;
+    try {
+      thread = await ctx.caps.openThread({
+        ...openArgs,
+        supersedes_conversation_id:
+          dedup.status === 'superseded' ? dedup.conversationId : a.supersedes_conversation_id,
+      });
+    } catch (err) {
+      // The auto-dedup target can be answered or closed between the read and the
+      // supersede; that race must not cost the caller its question. An EXPLICIT
+      // supersede the caller asked for still fails loudly.
+      if (dedup.status !== 'superseded') throw err;
+      dedup = {
+        status: 'unmeasured',
+        error: `auto-supersede of ${dedup.conversationId} failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+      thread = await ctx.caps.openThread(openArgs);
+    }
     // Land it in the human's inbox so the ask is actually seen. This is the
     // DECISION-tier leg of the ask (escalationToAttention: blocker/question →
     // Decision); the thread above is the Alert-tier leg. `conversationId` links
@@ -162,27 +253,12 @@ export const askOp: CoordOp<z.infer<typeof askArgs>, z.infer<typeof askResult>> 
         /* best-effort — the thread itself is the durable ask surface */
       });
 
-    const askerId = ctx.identity.ownerId;
-    // EI-18682693723293580: `timeout_s: 0` (the agent-facing tool's new default)
-    // must mean ZERO polling — a single immediate read, no `sleep` at all —
-    // not "at least one 2s poll cycle" (the old `Math.max(1, …)` floor forced
-    // that even at timeout_s=0, which is harmless standalone but defeats the
-    // whole point of a code:run-safe non-blocking default: a caller that
-    // asked for an instant return still paid a guaranteed sleep(poll_ms)).
-    const maxPolls =
-      a.timeout_s <= 0
-        ? 0
-        : Math.min(MAX_POLLS, Math.max(1, Math.ceil((a.timeout_s * 1000) / a.poll_ms)));
-    let ans = await ctx.caps.readAnswer({ conversationId: thread.conversation_id, askerId });
-    for (let poll = 0; poll < maxPolls && !ans.answered; poll++) {
-      await ctx.caps.sleep(a.poll_ms);
-      ans = await ctx.caps.readAnswer({ conversationId: thread.conversation_id, askerId });
-    }
+    const ans = await pollOwnerAnswer(a, ctx, thread.conversation_id, ctx.identity.ownerId);
     return {
-      answered: ans.answered,
-      answer: ans.answer,
+      ...ans,
       conversation_id: thread.conversation_id,
       ...(thread.interest_watch ? { interest_watch: thread.interest_watch } : {}),
+      goal_ask_dedup: dedup,
     };
   },
 };

@@ -38,12 +38,17 @@ const jsonObject = fc
 // depend on brace-slicing.
 const anyJsonValue = fc.jsonValue().map((v) => JSON.parse(JSON.stringify(v)));
 
-// Inert prose: brace-free (no fake slice spans) AND quote-free (a quote pair
+// Inert prose: brace-free (no fake slice spans), quote-free (a quote pair
 // around the payload would make the WHOLE reply a valid JSON string — the
-// undecidable class described in the header).
+// undecidable class described in the header) AND bracket-free (a bracket pair
+// makes the whole reply a valid JSON ARRAY: `[ {} ]` IS the array [{}], so
+// whole-document precedence correctly returns the array, not the object —
+// fast-check seed -712458106, counterexample [{}, '[', ']'], green-checkpoint
+// run 762a13a6 at 382606c4). Strings and arrays are the only JSON containers
+// that can enclose an object, so excluding both delimiters closes the class.
 const braceFreeProse = fc
   .string()
-  .map((s) => s.replace(/[{}"]/g, ''));
+  .map((s) => s.replace(/[{}"[\]]/g, ''));
 
 describe('tryParseJson — round-trip properties', () => {
   it('recovers any JSON value from its bare serialization', () => {

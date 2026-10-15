@@ -86,3 +86,21 @@ If you are writing a bounded or overflowing result, **never describe a recoverab
 the vocabulary of loss** — and state the recovery move where the reader actually reads, not only in
 `_meta`. Guidance computed downstream of the thing it guides is invisible on exactly the path where
 it matters.
+
+## Read a result-door scratch file
+
+A scratch spill is a framed text file, not necessarily a JSON document. Its first line is the scratch-reference marker and its second line is the manifest. The text header and any advisory lines may precede the JSON body, so parsing the whole file—or everything after the manifest—as JSON can fail.
+
+For a JSON-shaped spill, the manifest's `bodyOffsetInPayload` gives the body's byte offset in the payload that `capability:read` pages. For the raw file, add the byte length of its first two lines:
+
+```python
+raw = Path(path).read_bytes()
+lines = raw.splitlines(keepends=True)
+manifest = json.loads(lines[1])
+if "bodyOffsetInPayload" not in manifest:
+    raise ValueError("this spill is text-shaped; read it as text")
+body_start = len(lines[0]) + len(lines[1]) + manifest["bodyOffsetInPayload"]
+payload = json.loads(raw[body_start:])
+```
+
+That offset is emitted only when the body is valid JSON. If it is absent, the spill is text-shaped: use bounded text reads and treat the content as text. Do not guess the boundary from the first brace; that can select the manifest instead of the result.

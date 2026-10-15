@@ -18,6 +18,8 @@ import {
   epochMsForOrigin,
   harnessScopeAbsorbsWorkspaceGlobal,
   summarizeUngraded,
+  countActionableUngradedOlderThan,
+  countActionableUngradedOutsideScopes,
   DEFAULT_UNGRADED_EPOCH_POLICY,
   SCOUT_UNGRADED_EPOCH_MS,
   SU_IDEATE_UNGRADED_EPOCH_MS,
@@ -34,6 +36,41 @@ import { PLATFORM_POT_SLUG } from '../platform-pot-slug';
 const EPOCH = Date.parse('2026-07-11T00:00:00Z');
 const AFTER = EPOCH + 86_400_000;
 const BEFORE = EPOCH - 86_400_000;
+
+describe('authoritative ungraded counts used for condition recovery', () => {
+  const policy = DEFAULT_UNGRADED_EPOCH_POLICY;
+  it.each([[], [{ c: null }], [{ c: '' }], [{ c: -1 }], [{ c: 0.5 }], [{ c: 'bad' }], [{ c: 0 }, { c: 0 }]])(
+    'rejects incomplete or malformed counts in both readers: %j', async (...rows) => {
+      const sql = (async () => rows) as unknown as import('postgres').Sql;
+      const args = { workspaceId: 'fixture', policy, staleBeforeMs: AFTER };
+      await expect(countActionableUngradedOlderThan(sql, args)).rejects.toThrow('ungraded count unavailable');
+      await expect(countActionableUngradedOutsideScopes(sql, { ...args, harnessSlugs: [] })).rejects.toThrow('ungraded count unavailable');
+    });
+  it('accepts a measured zero and numeric PostgreSQL count in both readers', async () => {
+    for (const count of [0, '0', 2, '2']) {
+      const sql = (async () => [{ c: count }]) as unknown as import('postgres').Sql;
+      const args = { workspaceId: 'fixture', policy, staleBeforeMs: AFTER };
+      expect(await countActionableUngradedOlderThan(sql, args)).toBe(Number(count));
+      expect(await countActionableUngradedOutsideScopes(sql, { ...args, harnessSlugs: [] })).toBe(Number(count));
+    }
+  });
+  it('exact origin recovery retains the row reader scope, epoch, terminality and shadow exclusion', async () => {
+    let text = ''; let values: unknown[] = [];
+    const sql = (async (strings: TemplateStringsArray, ...args: unknown[]) => {
+      text = strings.join(' '); values = args; return [{ c: 0 }];
+    }) as unknown as import('postgres').Sql;
+    await countActionableUngradedOlderThan(sql, { workspaceId: 'fixture', harnessSlug: 'papercusp',
+      origin: 'future-producer', policy, staleBeforeMs: AFTER });
+    expect(text).toContain('harness_slug = ANY(');
+    expect(text).toContain('origin =');
+    expect(text).toContain('human_grade IS NULL');
+    expect(text).toContain("outcome = 'pending'");
+    expect(text).toContain('routed_at >= epoch_ms');
+    expect(values).toContain('future-producer');
+    expect(values).toContain('shadow-variant');
+    expect(values).toContain(true); // platform harness absorbs the existing global labels
+  });
+});
 
 /**
  * A SINGLE-floor policy: every origin falls back to one epoch. This is exactly the

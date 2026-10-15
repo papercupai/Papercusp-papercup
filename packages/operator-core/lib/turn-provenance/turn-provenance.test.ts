@@ -157,6 +157,14 @@ describe('WI-10002461: a prompt that is ENTIRELY one paste block is read by its 
     expect(parseEnvelope(`why did this fire?${quoted}`)).toBeNull();
   });
 
+  it('EI-25237423028877031: a torn nonce followed by an event wake never grants owner authority', () => {
+    const wake = '0d55a713f50015a⟧\n[await-event] coord:inbox-wake:su-a20d fired — continue AUTO mode';
+    expect(classify(wake, [], { nowMs: NOW, ttlMs: TTL }).verdict).toBe('machine-surface');
+    expect(classify(pasteBlock('torn', wake), [], { nowMs: NOW, ttlMs: TTL }).verdict).toBe('machine-surface');
+    expect(classify(`Why did this appear?\n${wake}`, [], { nowMs: NOW, ttlMs: TTL }).verdict).toBe('owner-interactive');
+    expect(classify('0d55a713f50015a⟧\nthese are my notes', [], { nowMs: NOW, ttlMs: TTL }).verdict).toBe('owner-interactive');
+  });
+
   it('CONTROL: mismatched opening/closing paste ids are not unwrapped', () => {
     const r = row({ sha256: payloadSha256(text) });
     const res = classify(
@@ -296,6 +304,45 @@ describe('classifier boundaries', () => {
     },
   );
 
+  const partialLoopFireFragment =
+    '• ✓ R-18-P-004@6 fails only correct-layer and freshness — re-check the carried result.\n' +
+    'Before you END this turn you MUST refresh this carry-note so the NEXT cold wake can continue —\n' +
+    '    loop:checkpoint { did, left, insight, next } (compressed facts, not a transcript)';
+
+  it('a fresh loop-fire row plus the truncated carry footer is unverified, never owner', () => {
+    const r = row({
+      origin: 'loop-fire',
+      sha256: payloadSha256('the complete loop-fire payload'),
+      ts: NOW,
+    });
+    const res = classify(partialLoopFireFragment, [r], { nowMs: NOW + 4_000, ttlMs: TTL });
+
+    expect(res.verdict).toBe('unverified-claim');
+    expect(res.origin).toBe('loop-fire');
+    expect(res.textMangled).toBe(true);
+    expect(res.reason).toMatch(/UNVERIFIED partial loop-fire input/u);
+  });
+
+  it('the loop-fire footer without a loop-fire ledger row stays owner-interactive', () => {
+    const res = classify(partialLoopFireFragment, [], { nowMs: NOW, ttlMs: TTL });
+
+    expect(res.verdict).toBe('owner-interactive');
+  });
+
+  it('a recent loop-fire row alone does not shadow ordinary owner input', () => {
+    const r = row({ origin: 'loop-fire', ts: NOW });
+    const res = classify('please fix the login page', [r], { nowMs: NOW + 4_000, ttlMs: TTL });
+
+    expect(res.verdict).toBe('owner-interactive');
+  });
+
+  it('an old loop-fire row does not shadow later owner text containing the footer', () => {
+    const r = row({ origin: 'loop-fire', ts: NOW });
+    const res = classify(partialLoopFireFragment, [r], { nowMs: NOW + 120_001, ttlMs: TTL });
+
+    expect(res.verdict).toBe('owner-interactive');
+  });
+
   it('a launch row older than the startup window does not shadow a later owner prompt', () => {
     const r = row({
       origin: 'fleet-kickoff',
@@ -339,8 +386,8 @@ describe('classifier boundaries', () => {
       expect(alive.verdict).toBe('verified-agent');
     });
 
-    it('readLedgerRows respects per-row ttlMs (not just classify)', () => {
-      appendLedgerRow(
+    it('readLedgerRows respects per-row ttlMs (not just classify)', async () => {
+      await appendLedgerRow(
         { sid: SID, nonce: 'aaaaaaaaaaaaaaaa', origin: 'cli-schedule-wakeup', sha256: 'x', ts: NOW, ttlMs: 65 * 60_000 },
         { dir, nowMs: NOW },
       );
@@ -440,62 +487,72 @@ describe('machine-surface banner (EI-9904 — never false-OWNER a CLI notificati
 });
 
 describe('ledger write/read/GC', () => {
-  it('appendLedgerRow → readLedgerRows round-trip; jq-simple one-object-per-line JSONL', () => {
+  it('appendLedgerRow → readLedgerRows round-trip; jq-simple one-object-per-line JSONL', async () => {
     const r = row();
-    expect(appendLedgerRow(r, { dir, nowMs: NOW, ttlMs: TTL })).toBe(true);
+    expect(await appendLedgerRow(r, { dir, nowMs: NOW, ttlMs: TTL })).toBe(true);
     const raw = readFileSync(ledgerPathForSid(SID, dir), 'utf8');
     expect(raw.trim().split('\n')).toHaveLength(1);
     expect(JSON.parse(raw.trim())).toEqual(r);
     expect(readLedgerRows(SID, { dir, nowMs: NOW + 1000, ttlMs: TTL })).toEqual([r]);
   });
 
-  it('expired rows are dropped on read; includeExpired keeps them', () => {
-    appendLedgerRow(row({ nonce: 'aaaaaaaaaaaaaaaa', ts: NOW - TTL - 1000 }), { dir, nowMs: NOW, ttlMs: TTL });
-    appendLedgerRow(row({ nonce: 'bbbbbbbbbbbbbbbb', ts: NOW }), { dir, nowMs: NOW, ttlMs: TTL });
+  it('expired rows are dropped on read; includeExpired keeps them', async () => {
+    await appendLedgerRow(row({ nonce: 'aaaaaaaaaaaaaaaa', ts: NOW - TTL - 1000 }), { dir, nowMs: NOW, ttlMs: TTL });
+    await appendLedgerRow(row({ nonce: 'bbbbbbbbbbbbbbbb', ts: NOW }), { dir, nowMs: NOW, ttlMs: TTL });
     expect(readLedgerRows(SID, { dir, nowMs: NOW, ttlMs: TTL }).map((r) => r.nonce)).toEqual(['bbbbbbbbbbbbbbbb']);
     expect(readLedgerRows(SID, { dir, nowMs: NOW, ttlMs: TTL, includeExpired: true })).toHaveLength(2);
   });
 
-  it('a torn/corrupt line is skipped, not fatal', () => {
-    appendLedgerRow(row(), { dir, nowMs: NOW, ttlMs: TTL });
+  it('a torn/corrupt line is skipped, not fatal', async () => {
+    await appendLedgerRow(row(), { dir, nowMs: NOW, ttlMs: TTL });
     const p = ledgerPathForSid(SID, dir);
     writeFileSync(p, readFileSync(p, 'utf8') + '{"torn":tr\n');
     expect(readLedgerRows(SID, { dir, nowMs: NOW + 1000, ttlMs: TTL })).toHaveLength(1);
   });
 
-  it('missing dir/file reads as [] and append fail-softs to false on an unwritable dir', () => {
+  it('missing dir/file reads as [] and append fail-softs to false on an unwritable dir', async () => {
     expect(readLedgerRows('nobody', { dir, nowMs: NOW })).toEqual([]);
-    expect(appendLedgerRow(row(), { dir: join(dir, 'not-a-dir-file'), nowMs: NOW })).toBe(true); // mkdir -p creates it
+    expect(await appendLedgerRow(row(), { dir: join(dir, 'not-a-dir-file'), nowMs: NOW })).toBe(true); // mkdir -p creates it
     // ⚠ NEVER use '/proc/…' as the unwritable path: node 25's recursive
     // mkdirSync retries /proc's EPERM forever (90% CPU, no exit) — it wedged
     // every test gate for hours on 2026-07-11. A file-as-parent path throws
     // ENOTDIR instantly instead.
     const plainFile = join(dir, 'plain-file');
     writeFileSync(plainFile, 'x');
-    expect(appendLedgerRow(row(), { dir: join(plainFile, 'sub'), nowMs: NOW })).toBe(false);
+    expect(await appendLedgerRow(row(), { dir: join(plainFile, 'sub'), nowMs: NOW })).toBe(false);
   });
 
-  it('gcLedgerDir drops rows past TTL + grace and unlinks fully-dead files', () => {
+  // The serialization of concurrent writes (WI-10005327) is pinned
+  // deterministically in turn-provenance-write-serialization.test.ts.
+  it('recreates the ledger dir when it is removed after this process created it', async () => {
+    const sub = join(dir, 'ledger');
+    expect(await appendLedgerRow(row({ nonce: '1'.repeat(16) }), { dir: sub, nowMs: NOW, ttlMs: TTL })).toBe(true);
+    rmSync(sub, { recursive: true, force: true });
+    expect(await appendLedgerRow(row({ nonce: '2'.repeat(16) }), { dir: sub, nowMs: NOW, ttlMs: TTL })).toBe(true);
+    expect(readLedgerRows(SID, { dir: sub, nowMs: NOW, ttlMs: TTL }).map((r) => r.nonce)).toEqual(['2'.repeat(16)]);
+  });
+
+  it('gcLedgerDir drops rows past TTL + grace and unlinks fully-dead files', async () => {
     // Aged past TTL + grace — the point at which reclamation is verdict-neutral.
     // (This case previously aged rows only past TTL and asserted they were
     // dropped, which is the behaviour D-007 identifies as unsafe; see the
     // retention test below for why presence outlives usefulness.)
     const dead = NOW - TTL - LEDGER_GC_GRACE_MS - 1000;
-    appendLedgerRow(row({ sid: 'dead-sid', ts: dead }), { dir, nowMs: NOW, ttlMs: TTL });
-    appendLedgerRow(row({ sid: 'live-sid', nonce: 'cccccccccccccccc', ts: NOW }), { dir, nowMs: NOW, ttlMs: TTL });
-    appendLedgerRow(row({ sid: 'live-sid', nonce: 'dddddddddddddddd', ts: dead }), { dir, nowMs: NOW, ttlMs: TTL });
-    const res = gcLedgerDir({ dir, nowMs: NOW, ttlMs: TTL });
+    await appendLedgerRow(row({ sid: 'dead-sid', ts: dead }), { dir, nowMs: NOW, ttlMs: TTL });
+    await appendLedgerRow(row({ sid: 'live-sid', nonce: 'cccccccccccccccc', ts: NOW }), { dir, nowMs: NOW, ttlMs: TTL });
+    await appendLedgerRow(row({ sid: 'live-sid', nonce: 'dddddddddddddddd', ts: dead }), { dir, nowMs: NOW, ttlMs: TTL });
+    const res = await gcLedgerDir({ dir, nowMs: NOW, ttlMs: TTL });
     expect(res.filesRemoved).toBe(1);
     expect(res.rowsDropped).toBe(2);
     expect(readLedgerRows('live-sid', { dir, nowMs: NOW, ttlMs: TTL, includeExpired: true })).toHaveLength(1);
   });
 
-  it('gcLedgerDir RETAINS an expired row still inside the grace window (D-007)', () => {
+  it('gcLedgerDir RETAINS an expired row still inside the grace window (D-007)', async () => {
     // Expired means "no longer USED" (readLedgerRows drops it); it does not mean
     // "safe to delete". On the envelope-less branch, presence is what holds the
     // turn at unverified-claim instead of the OWNER default.
-    appendLedgerRow(row({ sid: 'grace-sid', ts: NOW - TTL - 1000 }), { dir, nowMs: NOW, ttlMs: TTL });
-    const res = gcLedgerDir({ dir, nowMs: NOW, ttlMs: TTL });
+    await appendLedgerRow(row({ sid: 'grace-sid', ts: NOW - TTL - 1000 }), { dir, nowMs: NOW, ttlMs: TTL });
+    const res = await gcLedgerDir({ dir, nowMs: NOW, ttlMs: TTL });
     expect(res.rowsDropped).toBe(0);
     expect(res.filesRemoved).toBe(0);
     expect(readLedgerRows('grace-sid', { dir, nowMs: NOW, ttlMs: TTL, includeExpired: true })).toHaveLength(1);
@@ -503,34 +560,34 @@ describe('ledger write/read/GC', () => {
     expect(readLedgerRows('grace-sid', { dir, nowMs: NOW, ttlMs: TTL })).toHaveLength(0);
   });
 
-  it('GC never PROMOTES a turn: the same envelope-less turn keeps its verdict across a sweep (D-007)', () => {
+  it('GC never PROMOTES a turn: the same envelope-less turn keeps its verdict across a sweep (D-007)', async () => {
     // The invariant itself, end-to-end and independent of the constant: run the
     // real classifier over rows read from disk BEFORE and AFTER a real sweep.
     // If GC ever deletes a row whose absence changes the branch, this flips from
     // unverified-claim to owner-interactive — the failure the plan exists to stop.
     const text = 'continue the drain';
     const r = row({ sid: 'gc-verdict-sid', ts: NOW - TTL - 1000, sha256: payloadSha256(text) });
-    appendLedgerRow(r, { dir, nowMs: NOW, ttlMs: TTL });
+    await appendLedgerRow(r, { dir, nowMs: NOW, ttlMs: TTL });
 
     const before = classify(text, readLedgerRows('gc-verdict-sid', { dir, nowMs: NOW, ttlMs: TTL, includeExpired: true }), { nowMs: NOW, ttlMs: TTL });
     expect(before.verdict).toBe('unverified-claim');
 
-    gcLedgerDir({ dir, nowMs: NOW, ttlMs: TTL });
+    await gcLedgerDir({ dir, nowMs: NOW, ttlMs: TTL });
 
     const after = classify(text, readLedgerRows('gc-verdict-sid', { dir, nowMs: NOW, ttlMs: TTL, includeExpired: true }), { nowMs: NOW, ttlMs: TTL });
     expect(after.verdict).toBe(before.verdict);
     expect(after.verdict).not.toBe('owner-interactive');
   });
 
-  it('FALSIFIABLE control: a TTL-only sweep DOES promote that turn to owner-interactive', () => {
+  it('FALSIFIABLE control: a TTL-only sweep DOES promote that turn to owner-interactive', async () => {
     // Proves the guard above can fail. graceMs:0 reproduces the pre-D-007 sweep;
     // if this ever stops promoting, the invariant test has stopped testing
     // anything and both cases must be re-examined.
     const text = 'continue the drain';
     const r = row({ sid: 'gc-control-sid', ts: NOW - TTL - 1000, sha256: payloadSha256(text) });
-    appendLedgerRow(r, { dir, nowMs: NOW, ttlMs: TTL });
+    await appendLedgerRow(r, { dir, nowMs: NOW, ttlMs: TTL });
 
-    gcLedgerDir({ dir, nowMs: NOW, ttlMs: TTL, graceMs: 0 });
+    await gcLedgerDir({ dir, nowMs: NOW, ttlMs: TTL, graceMs: 0 });
 
     const after = classify(text, readLedgerRows('gc-control-sid', { dir, nowMs: NOW, ttlMs: TTL, includeExpired: true }), { nowMs: NOW, ttlMs: TTL });
     expect(after.verdict).toBe('owner-interactive');
@@ -566,9 +623,9 @@ describe('ledger write/read/GC', () => {
 });
 
 describe('tagTurnForInjection (the injector one-call API)', () => {
-  it('writes the ledger row FIRST and returns envelope-prefixed text that classifies verified', () => {
+  it('writes the ledger row FIRST and returns envelope-prefixed text that classifies verified', async () => {
     const text = '[await-event] fired: fleet:x:gate — payload attached';
-    const tagged = tagTurnForInjection({ sid: SID, origin: 'wake-pump', text, dir, nowMs: NOW });
+    const tagged = await tagTurnForInjection({ sid: SID, origin: 'wake-pump', text, dir, nowMs: NOW });
     expect(tagged.ledgerWritten).toBe(true);
     expect(tagged.taggedText).toBe(`${tagged.envelope}\n${text}`);
 
@@ -582,10 +639,10 @@ describe('tagTurnForInjection (the injector one-call API)', () => {
     expect(res.matchedBy).toBe('nonce+hash');
   });
 
-  it('fail-soft: unwritable ledger still returns deliverable tagged text', () => {
+  it('fail-soft: unwritable ledger still returns deliverable tagged text', async () => {
     const plainFile = join(dir, 'plain-file-2');
     writeFileSync(plainFile, 'x');
-    const tagged = tagTurnForInjection({
+    const tagged = await tagTurnForInjection({
       sid: SID,
       origin: 'loop-fire',
       text: 'tick',

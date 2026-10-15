@@ -64,6 +64,7 @@
  * witness, and there is no lower rung available without inventing a second store.
  */
 import type { Sql } from 'postgres';
+import { observeFallback as defaultObserveFallback } from '../degradation/fallback-observations';
 
 /**
  * The `harness_shared.routines.metadata` key these markers live under.
@@ -74,14 +75,18 @@ import type { Sql } from 'postgres';
  */
 export const WATCHDOG_HEALTH_METADATA_KEY = 'watchdog_health';
 
-/** The six passes in `green-stall-watchdog.ts` that swallow their own failure. */
+/** The passes in `green-stall-watchdog.ts` that swallow their own failure. */
 export type WatchdogPassName =
   | 'paused-green-checkpoint'
   | 'green-stall'
   | 'main-behind-staging'
   | 'release-trigger-freeze'
   | 'release-trigger-fire-stale'
-  | 'stranded-repair-queue';
+  | 'stranded-repair-fixer-silence'
+  | 'stranded-repair-queue'
+  | 'idle-repair-queue'
+  | 'gate-live-invariants'
+  | 'green-main-slo';
 
 export interface WatchdogPassScope {
   /** `routines.name` of the routine this pass watches. */
@@ -126,7 +131,18 @@ export async function recordWatchdogPassOutcome(
   pass: WatchdogPassName,
   scope: WatchdogPassScope,
   error?: unknown,
+  deps: { observeFallback?: typeof defaultObserveFallback } = {},
 ): Promise<number> {
+  const { observeFallback = defaultObserveFallback } = deps;
+  // Measure the pass itself, including healthy ticks. The metadata marker remains
+  // a diagnostic; the shared watchdog now owns rate detection and recovery.
+  try {
+    observeFallback('release-watchdog-pass', {
+      scope: `${scope.installSlug ?? 'all'}:${scope.routineName}:${pass}`,
+      eligible: 1, applied: error === undefined ? 1 : 0,
+      reason: error === undefined ? 'completed' : 'pass-failed',
+    });
+  } catch { /* Observation must never replace the pass's return value. */ }
   try {
     return error === undefined
       ? await clearWatchdogPassFailure(sql, pass, scope)

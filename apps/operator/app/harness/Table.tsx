@@ -84,6 +84,7 @@ export function Table<Row>({
   className,
   style,
   caption,
+  ariaLabel,
   columns,
   rows,
   getRowKey,
@@ -92,11 +93,14 @@ export function Table<Row>({
   rowStyle,
   rowClassName,
   rowTestId,
+  rowDataAttributes,
   emptyLabel,
 }: {
   className?: string;
   style?: CSSProperties;
   caption?: ReactNode;
+  /** Accessible name for tables whose visible column headers do not identify the table. */
+  ariaLabel?: string;
   columns: TableColumn<Row>[];
   rows: Row[];
   getRowKey: (row: Row) => string;
@@ -108,11 +112,13 @@ export function Table<Row>({
   rowClassName?: (row: Row) => string | undefined;
   /** Optional per-row `data-testid` on the `<tr>` (for test hooks that target a specific row). */
   rowTestId?: (row: Row) => string | undefined;
+  /** Optional per-row `data-*` attributes applied to the `<tr>` (for stable source identity). */
+  rowDataAttributes?: (row: Row) => Record<`data-${string}`, string | number | undefined>;
   /** Rendered as a single caption-only row when `rows` is empty (default: nothing extra). */
   emptyLabel?: ReactNode;
 }) {
   return (
-    <table className={className} style={{ ...TABLE_STYLE, ...style }}>
+    <table className={className} aria-label={ariaLabel} style={{ ...TABLE_STYLE, ...style }}>
       {caption != null && <caption style={CAPTION_STYLE}>{caption}</caption>}
       <thead>
         <tr>
@@ -137,6 +143,7 @@ export function Table<Row>({
               <tr
                 key={key}
                 className={rowClassName?.(row)}
+                {...rowDataAttributes?.(row)}
                 data-testid={rowTestId?.(row)}
                 onClick={onRowClick ? () => onRowClick(row) : undefined}
                 style={{

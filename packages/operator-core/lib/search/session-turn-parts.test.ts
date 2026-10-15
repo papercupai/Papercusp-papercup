@@ -34,6 +34,11 @@ import {
   PART_TEXT_CAP_TOOL,
   type ParsedPart,
 } from './session-ingest';
+import {
+  PAPERCUSP_MCP_SERVER,
+  PAPERCUSP_MCP_SERVER_NAMES,
+  PSU_MCP_SERVER,
+} from '../papercusp-mcp-servers';
 
 const assistantLine = (content: unknown, extra: Record<string, unknown> = {}) =>
   JSON.stringify({
@@ -312,6 +317,36 @@ describe('session tool-name canonicalization — live catalog aliases', () => {
       .toBe('blender:ideation-feedback');
     expect(canonicalSessionPartToolName('mcp__papercusp_su.blender_ideation_feedback', names))
       .toBe('blender:ideation-feedback');
+  });
+
+  // WI-6554700010008643: spawned agents register the catalog under the
+  // `papercusp` server, not `papercusp-su`; ~13k rows/day stayed mangled.
+  it('maps the spawned-agent `papercusp` server spellings too (Claude and Codex)', () => {
+    const names = catalog('tools:invoke', 'code:run', 'blender:ideation-feedback');
+
+    expect(canonicalSessionPartToolName('mcp__papercusp__tools_invoke', names)).toBe('tools:invoke');
+    expect(canonicalSessionPartToolName('mcp__papercusp__code_run', names)).toBe('code:run');
+    expect(canonicalSessionPartToolName('mcp__papercusp.code_run', names)).toBe('code:run');
+    expect(canonicalSessionPartToolName('mcp__papercusp__blender_ideation-feedback', names))
+      .toBe('blender:ideation-feedback');
+    expect(canonicalSessionPartToolName('mcp__papercusp.blender_ideation_feedback', names))
+      .toBe('blender:ideation-feedback');
+    // Unknown verb under the same server stays byte-for-byte.
+    expect(canonicalSessionPartToolName('mcp__papercusp__not_in_catalog', names))
+      .toBe('mcp__papercusp__not_in_catalog');
+  });
+
+  it('derives its prefixes from every registered server name, so a new one needs no second edit', () => {
+    const names = catalog('coord:presence');
+    for (const server of PAPERCUSP_MCP_SERVER_NAMES) {
+      expect(canonicalSessionPartToolName(`mcp__${server}__coord_presence`, names)).toBe('coord:presence');
+      expect(canonicalSessionPartToolName(`mcp__${server.replace(/-/g, '_')}.coord_presence`, names))
+        .toBe('coord:presence');
+    }
+    // Both servers the launch writers use are covered.
+    expect([...PAPERCUSP_MCP_SERVER_NAMES].sort()).toEqual(
+      [PAPERCUSP_MCP_SERVER, PSU_MCP_SERVER].sort(),
+    );
   });
 
   it('canonicalizes at the persisted row seam while preserving native and unknown names', () => {

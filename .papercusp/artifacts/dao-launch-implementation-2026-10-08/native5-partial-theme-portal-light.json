@@ -1,0 +1,7 @@
+{
+  "theme": "portal-light",
+  "background": "rgb(244, 240, 232)",
+  "foreground": "rgb(32, 32, 30)",
+  "steps": 5,
+  "url": "http://127.0.0.1:33710/dao?daoOrg=9ece2d75-a9ed-4c58-8e05-3b80293aa673&ws=verify-tauri-isolated-91"
+}

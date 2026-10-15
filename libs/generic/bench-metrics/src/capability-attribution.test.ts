@@ -209,6 +209,22 @@ describe('buildCapabilityAttribution (pass@1)', () => {
 });
 
 describe('buildCapabilityAttribution — fairness same-denominator (C1/C6)', () => {
+  it('includes a frozen task absent from both arms without shrinking the population', () => {
+    const rows = [attempt('a', 'vanilla', true, 1), attempt('a', '+memory', true, 1)];
+    const result = buildCapabilityAttribution(rows, { assignedTaskIds: ['a', 'b'], assignedSeeds: [rows[0].seed, rows[1].seed] });
+    expect(result.capabilities[0]).toMatchObject({ tasksCompared: 2, controlValue: 0.25, capabilityValue: 0.25 });
+    expect(result.capabilities[0].controlCoverage.absent).toBe(1);
+  });
+
+  it('records grader outages as missing measurements and suppresses advantage claims', () => {
+    const rows = [attempt('a', 'vanilla', true, 1),
+      mk({ taskId: 'a', arm: '+memory', graderStatus: 'timeout', resolved: null })];
+    const result = buildCapabilityAttribution(rows);
+    expect(result.capabilities).toEqual([]);
+    expect(result.missingMeasurements).toEqual([{ arm: '+memory', taskId: 'a', seed: rows[1].seed }]);
+    expect(result.caveats.at(-1)).toContain('inconclusive');
+  });
+
   it('counts an arm infra-failure as false in the shared denominator (C1) and tracks coverage (C6)', () => {
     const rows = [
       // both arms attempt t1,t2,t3. control resolves all 3. +memory resolves t1,t2 but INFRA-FAILS t3.

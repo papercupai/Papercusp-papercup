@@ -30,10 +30,11 @@
  * the gemma bake-off's rejection-margin geometry (P-006) — calibrate against
  * the backfilled dupe-storm rows before tightening.
  */
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, withDbCallDeadline } from '@papercusp/db-org';
 import { issuesScopeWorkspace } from '../../issues-engineer';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { ALL_TERMINAL_STATUSES } from '../../work-item-blocking';
+import { observationLaneExclusionSql } from '../../work-items';
 import { withIterativeScan } from '@papercusp/search';
 import type { EmbedderProfileSpec } from '@papercusp/memory';
 
@@ -115,7 +116,7 @@ const CO_SIGNAL_MIN_TITLE = 0.45;
 /** Whole-prescreen budget (embed + both queries). A warm sidecar answers in
  *  ~10ms; a cold in-process model load (~2.8s) simply forfeits THIS create's
  *  verdict while the model warms for the next one. */
-const BUDGET_MS = 2500;
+export const SEMANTIC_DUPE_GUARD_BUDGET_MS = 2_500;
 /** Top-k per family ("top-3 vs OPEN items"); the single base-table query
  *  takes 2× since it spans both families. */
 const TOP_K = 3;
@@ -235,6 +236,7 @@ export async function queryCandidatesReal(
       FROM harness_shared.work_items
      WHERE workspace_id = ANY(${workspaces}::text[])
        AND embedding IS NOT NULL
+       AND ${observationLaneExclusionSql(scanSql, 'payload')}
        AND ${proseProfilePredicateSql(scanSql, selection, 'embedding_profile', 'embedding_mode')}
        AND (status IS NULL OR NOT (status = ANY(${terminal}::text[])))
        AND ${harness ? scanSql`harness_slug = ${harness}` : scanSql`TRUE`}
@@ -308,17 +310,27 @@ export async function findSemanticDupes(
   // Inert under vitest unless a test injects deps: the real resolver
   // lazy-loads an ONNX model, which unrelated tool tests must never pay.
   if (process.env.VITEST && !deps) return null;
+  const startedAt = Date.now();
   let result: SemanticDupeResult | null;
   try {
-    result = await withBudget(BUDGET_MS, classify(deps ?? realDeps, input));
+    result = await withBudget(SEMANTIC_DUPE_GUARD_BUDGET_MS, classify(deps ?? realDeps, input));
   } catch {
     return null;
   }
   if (!result) return null;
-  // DELIBERATELY outside the budget wrapper and in its own try/catch: coverage is a
-  // diagnostic ABOUT the verdict, so it must never be able to cost us one.
+  // Coverage is diagnostic ABOUT the verdict, so it must never cost the caller its
+  // verdict. It uses only the semantic prescreen's remaining wall-clock budget: a
+  // bare org-PG read can otherwise wait through postgres.js's initial-connect retry
+  // indefinitely, holding checkDuplicatesOnly open after classification already
+  // finished. A timed-out coverage read omits the assessment; callers must render that
+  // as unavailable, never as healthy.
   try {
-    const snapshot = await loadDupeGuardCoverage(deps?.loadCoverage);
+    const remainingMs = SEMANTIC_DUPE_GUARD_BUDGET_MS - (Date.now() - startedAt);
+    if (remainingMs <= 0) return result;
+    const snapshot = await withDbCallDeadline(
+      loadDupeGuardCoverage(deps?.loadCoverage),
+      { ms: remainingMs, label: 'semantic-dupe-guard:coverage-snapshot' },
+    );
     if (snapshot === null) return result;
     return {
       ...result,

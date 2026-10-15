@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { summarizeLegOutput } from './green-checkpoint';
+import { summarizeLegOutput, summarizeLegStreams } from './green-checkpoint';
 
 /**
  * WI-10002075 — a failing LINT leg must persist the FILES it named, not the advice.
@@ -148,5 +148,164 @@ describe('summarizeLegOutput (WI-10002075, WI-10002081)', () => {
     const summary = summarizeLegOutput(withNpmNoise);
     expect(summary).toContain(REGRESSED_FILE);
     expect(summary).not.toContain('npm error');
+  });
+});
+
+/**
+ * WI-10007516 — a failing TEST leg must persist the test it named, not npm's footer.
+ *
+ * pipeline_events 601064 (2026-10-07): the frozen repair head's `test:lane-stateful` leg was
+ * recorded as `[executed-source-map] written … npm error Lifecycle script … command failed`
+ * and nothing else. The STDERR below and the source-map receipt are copied verbatim from that
+ * event; the vitest body is the default reporter's real failure layout (progress rollup with
+ * `×`, then the Failed Tests section, then the counts).
+ */
+const FAILING_FILE = 'lib/release/admission-fix-precheck-exec.test.ts';
+const FAILING_CASE =
+  'resolves on the direct child exit when a backgrounded grandchild still holds stdout, and kills it';
+const VITEST_STDOUT = [
+  ' RUN  v4.0.8 /checkout/packages/operator-core',
+  '',
+  ' ✓ lib/release/repair-head-admission.test.ts (31 tests) 812ms',
+  ` ❯ ${FAILING_FILE} (6 tests | 1 failed) 2310ms`,
+  '   ✓ resolves on a clean exit 12ms',
+  `   × ${FAILING_CASE} 2004ms`,
+  '     → expected false to be true // Object.is equality',
+  '',
+  '⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯',
+  '',
+  ` FAIL  ${FAILING_FILE} > admission fix precheck exec > ${FAILING_CASE}`,
+  'AssertionError: expected false to be true // Object.is equality',
+  '',
+  '- Expected',
+  '+ Received',
+  '',
+  '- true',
+  '+ false',
+  '',
+  ` ❯ ${FAILING_FILE}:88:31`,
+  ...Array.from({ length: 12 }, (_, i) => `     ${80 + i}|     expect(grandchildAlive(pid)).toBe(false); // frame line ${i}`),
+  ...Array.from({ length: 8 }, (_, i) => ` ❯ ChildProcess.<anonymous> lib/release/admission-fix-precheck-exec.ts:${120 + i}:9`),
+  '',
+  '⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯',
+  '',
+  ' Test Files  1 failed | 904 passed (905)',
+  '      Tests  1 failed | 9123 passed | 14 skipped (9138)',
+  '   Start at  14:02:11',
+  '   Duration  612.33s (transform 30.1s, setup 0ms, collect 88.2s, tests 1402.7s)',
+  '',
+  '[executed-source-map] written ws=@papercusp/operator-core rows=905 skipped=14 sha=f07043ba0fece95393ea27b173dce94ab21726eb dirty=false',
+].join('\n');
+const NPM_FOOTER_STDERR = [
+  'npm error Lifecycle script `test:lane-stateful` failed with error:',
+  'npm error code 1',
+  'npm error path /checkout/papercusp-checkpoint/packages/operator-core',
+  'npm error workspace @papercusp/operator-core@0.1.0',
+  'npm error location /checkout/papercusp-checkpoint/packages/operator-core',
+  'npm error command failed',
+  'npm error command sh -c PC_TEST_LANE=stateful ../../scripts/pc-heavy.sh -- vitest run --passWithNoTests',
+].join('\n');
+
+/** The pre-fix capture in `measureTargetedGateRuns`, verbatim: 1000 of each stream, 2000 joined. */
+const legacyTargetedTail = (stdout: string, stderr: string): string =>
+  [stdout.slice(-1_000).trim(), stderr.slice(-1_000).trim()].filter(Boolean).join('\n').slice(-2_000);
+
+describe('summarizeLegStreams (WI-10007516)', () => {
+  it('CALIBRATION: the legacy capture really did lose the failing test', () => {
+    // Not decoration — proves this fixture still reproduces 601064's empty diagnosis.
+    const tail = legacyTargetedTail(VITEST_STDOUT, NPM_FOOTER_STDERR);
+    expect(tail).not.toContain(FAILING_CASE);
+    expect(tail).not.toContain(` FAIL  ${FAILING_FILE}`);
+    const brief = tail.replace(/\s+/g, ' ').slice(-600);
+    expect(brief).toContain('npm error Lifecycle script');
+    expect(brief).not.toContain('Test Files');
+    // ...and the other two seams' `stderr || stdout` never even looked at vitest's stdout.
+    expect(summarizeLegOutput(NPM_FOOTER_STDERR || VITEST_STDOUT)).not.toContain(FAILING_FILE);
+  });
+
+  it('names the failing file, case and counts, ahead of everything else', () => {
+    const summary = summarizeLegStreams([VITEST_STDOUT, NPM_FOOTER_STDERR], 1_900);
+    expect(summary).toContain(` FAIL  ${FAILING_FILE}`);
+    expect(summary).toContain(`× ${FAILING_CASE}`);
+    expect(summary).toContain(`${FAILING_FILE} (6 tests | 1 failed)`);
+    expect(summary).toContain('Test Files  1 failed | 904 passed (905)');
+    expect(summary).toContain('AssertionError: expected false to be true');
+    expect(summary.indexOf(FAILING_CASE)).toBeLessThan(summary.indexOf('--- tail ---'));
+  });
+
+  it('fits the failing case inside the 600-char summary budget', () => {
+    const brief = summarizeLegStreams([VITEST_STDOUT, NPM_FOOTER_STDERR], 600);
+    expect(brief.length).toBeLessThanOrEqual(600);
+    expect(brief).toContain(FAILING_CASE);
+  });
+
+  it('drops the npm footer and the source-map receipt that used to fill the window', () => {
+    const summary = summarizeLegStreams([VITEST_STDOUT, NPM_FOOTER_STDERR], 1_900);
+    expect(summary).not.toContain('npm error');
+    expect(summary).not.toContain('[executed-source-map]');
+  });
+
+  it('lists a case vitest prints twice (progress + Failed Tests) once', () => {
+    const twice = `${VITEST_STDOUT}\n FAIL  ${FAILING_FILE} > admission fix precheck exec > ${FAILING_CASE}`;
+    // Count in the DIGEST: the raw tail underneath may legitimately repeat the last line.
+    const digest = summarizeLegStreams([twice], 1_900).split('--- tail ---')[0]!;
+    expect(digest.split(` FAIL  ${FAILING_FILE}`).length - 1).toBe(1);
+  });
+
+  it('keeps a node:test failure (spec and TAP reporters)', () => {
+    const spec = [
+      '✔ resolves the sidecar root (1.1ms)',
+      '✖ fails loudly when papercusp is missing (3.2ms)',
+      "  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /papercusp not found at/. Input:",
+      '      at Test.postRun (node:internal/test_runner/test:1330:19)',
+      'ℹ tests 14',
+      'ℹ fail 1',
+    ].join('\n');
+    const specSummary = summarizeLegStreams([spec, NPM_FOOTER_STDERR]);
+    expect(specSummary).toContain('✖ fails loudly when papercusp is missing');
+    expect(specSummary).toContain('AssertionError [ERR_ASSERTION]: The input did not match');
+    expect(specSummary).toContain('ℹ fail 1');
+    const tap = summarizeLegStreams(['ok 1 - resolves\nnot ok 2 - fails loudly\n# fail 1']);
+    expect(tap).toContain('not ok 2 - fails loudly');
+    expect(tap).toContain('# fail 1');
+  });
+
+  it('keeps a process-level termination, the tell that a red is not a test failure', () => {
+    const killed = summarizeLegStreams([
+      ' ✓ lib/a.test.ts (3 tests) 9ms',
+      'npm error path /checkout/packages/operator-core\nnpm error signal SIGKILL\nnpm error command failed',
+    ]);
+    expect(killed).toContain('npm error signal SIGKILL');
+    expect(killed).not.toContain('npm error command failed');
+  });
+
+  it('never lets logged error headers push a failing name out of the digest', () => {
+    // A passing test that logs an expected error prints the same header shape. 40 of them
+    // ahead of the real FAIL line must not crowd it out.
+    const noisy = [
+      ...Array.from({ length: 40 }, (_, i) => `Error: expected rejection ${i} (logged by a passing test)`),
+      ` FAIL  ${FAILING_FILE} > ${FAILING_CASE}`,
+    ].join('\n');
+    const summary = summarizeLegStreams([noisy], 1_900);
+    expect(summary.split('\n')[0]).toContain(FAILING_CASE);
+    expect(summary.split('--- tail ---')[0]!.match(/^Error: expected rejection/gm)?.length).toBeLessThanOrEqual(8);
+  });
+
+  it('keeps an npm-only stream when it is the only evidence (missing script, spawn failure)', () => {
+    const missing = summarizeLegStreams([
+      '',
+      'npm error Missing script: "test:lane-stateful"\nnpm error\nnpm error To see a list of scripts, run:',
+    ]);
+    expect(missing).toContain('Missing script: "test:lane-stateful"');
+    const bare = summarizeLegStreams([undefined, 'npm error code 1\nnpm error command failed']);
+    expect(bare).toContain('npm error command failed');
+  });
+
+  it('splits the no-digest fallback across streams, so neither hides the other', () => {
+    const out = summarizeLegStreams([`${'x'.repeat(5_000)}\nSTDOUT-LAST`, `${'y'.repeat(5_000)}\nSTDERR-LAST`], 600);
+    expect(out.length).toBeLessThanOrEqual(600);
+    expect(out).toContain('STDOUT-LAST');
+    expect(out).toContain('STDERR-LAST');
+    expect(summarizeLegStreams([undefined, '', '  '])).toBe('');
   });
 });

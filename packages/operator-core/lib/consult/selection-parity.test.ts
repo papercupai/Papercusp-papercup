@@ -42,7 +42,7 @@ import type { ConsultRouteParams, RouteResult } from './relevance-router';
 import { selectAcceptanceGrader } from './acceptance-grader-select';
 // Importing this module REGISTERS the policies (it calls configureSelectionPolicies
 // at module scope), which is what makes selectionPolicy resolvable below.
-import { ACCEPTANCE_GRADING_POLICY, ensureSelectionPolicies } from './selection-policies';
+import { ACCEPTANCE_GRADING_POLICY, BAR_CRITIQUE_POLICY, ensureSelectionPolicies } from './selection-policies';
 
 ensureSelectionPolicies();
 
@@ -123,6 +123,10 @@ function throughCritique(
 }
 
 describe('the two consumers agree — parity, not shared ancestry (D-001)', () => {
+  it('registers the plan-start bar-critique policy in the shared selection registry', () => {
+    expect(selectionPolicy(BAR_CRITIQUE_POLICY)).toEqual({ min: 1, max: 2 });
+  });
+
   // Bounds are read from the registry rather than typed here, so this file
   // cannot be the eighth hand-maintained copy of a number the plan spent an
   // item removing.

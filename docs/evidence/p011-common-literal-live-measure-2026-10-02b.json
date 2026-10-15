@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "session-transcript-exact-fuzzy-search P-011 live real-corpus receipt (re-measure after the recency walk): common and near-ubiquitous literals on the windows route",
+  "framework": "operational",
+  "plan": "session-transcript-exact-fuzzy-search-2026-09-14",
+  "planItem": "P-011",
+  "acceptanceBar": "R-1",
+  "specClause": "SPEC-P011-COMMON-LITERAL-BOUNDED@1",
+  "workItem": "WI-10005256",
+  "evidencePlane": "live",
+  "runtime": "live operator database, harness_shared.session_turn_windows_state status=ready (windows route available), exact-tier deadline 2000 ms; host load average ~93 on 128 cores during the run (measured, not a controlled idle host)",
+  "command": [
+    "LEGACY=1 tsx .papercusp/scratch/p011-measure-windows.mts  # prints AVAIL, then one TIERS line per literal (windows route, through retrieveSessionTurnLiteralTiers) and LEGACY lines (forced legacy route control); log .papercusp/scratch/p011-measure-run-b.log"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-02T07:48:54.000Z",
+  "finishedAt": "2026-10-02T07:49:07.000Z",
+  "recordedBy": "su-b96d9ec7-fc10-46cd-b6c3-d48879793d32",
+  "summary": "Re-measure of the R-1 receipt against the current source (recency walk landed, WI-10005294 / plan decision D-015). With the windows index ready, the exact tier answers every probed literal with status=ran and 150 hits inside the 2000 ms deadline: 'finder' 1175 ms, 'error' 1284 ms, 'the' 1231 ms, 'function' 1277 ms, 'papercusp' 1319 ms (exact-tier elapsedMs from the receipt). The previously disclosed residue (near-ubiquitous literals 'the' and 'papercusp' returning status=deadline with 0 hits in the 2026-10-02 receipt) is therefore closed on the live corpus. The forced-legacy control for 'finder' still hits the deadline (deadline=true, 54 partial hits at 2037 ms), so the improvement is the windows route and not a warm cache. Caveat: exact-tier elapsedMs sits at 1.2-1.3 s of the 2.0 s deadline on a heavily loaded host, so the margin is real but not large.",
+  "assertions": [
+    {
+      "id": "common-trigram-literal-finder-ran-inside-deadline-with-hits",
+      "passed": true,
+      "evidence": "TIERS {\"lit\":\"finder\",\"ms\":2080,\"exactHits\":150,\"exactReceipt\":{\"status\":\"ran\",\"returned\":150,\"elapsedMs\":1175}} — status ran, 150 hits, 1175 ms exact-tier elapsed against a 2000 ms deadline (AVAIL {\"exact\":{\"available\":true,\"route\":\"windows\"},\"policy\":{\"deadline\":2000}})."
+    },
+    {
+      "id": "legacy-control-reproduces-the-defect",
+      "passed": true,
+      "evidence": "LEGACY {\"lit\":\"finder\",\"ms\":2037,\"hits\":54,\"deadline\":true} — the unchanged substring route on the same corpus still hits the deadline for the R-1 example literal, so the improvement comes from the windows route and not a warm cache."
+    },
+    {
+      "id": "other-common-literals-ran",
+      "passed": true,
+      "evidence": "TIERS error: status ran, 150 hits, 1284 ms. TIERS function: status ran, 150 hits, 1277 ms. LEGACY error control: 150 hits, 98 ms, no deadline."
+    },
+    {
+      "id": "near-ubiquitous-literals-now-answered-inside-the-deadline",
+      "passed": true,
+      "evidence": "TIERS the: status ran, 150 hits, 1231 ms. TIERS papercusp: status ran, 150 hits, 1319 ms. In the 2026-10-02 receipt both returned status deadline with 0 hits (2013 ms / 2015 ms); the recency walk (WI-10005294, plan decision D-015) closes that residue."
+    }
+  ]
+}

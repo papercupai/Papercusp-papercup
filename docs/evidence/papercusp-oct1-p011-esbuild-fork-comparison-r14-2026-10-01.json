@@ -1,0 +1,206 @@
+{
+  "schemaVersion": 1,
+  "definition": "Isolated real closure versus transforms; one-second idle is not a production idle baseline.",
+  "reports": [
+    {
+      "mode": "closure",
+      "version": "0.27.3",
+      "modules": 192,
+      "declarations": 128,
+      "sourceBytes": 4662080,
+      "samples": [
+        {
+          "phase": "warm",
+          "at": "2026-10-01T22:40:20.736Z",
+          "services": [
+            {
+              "pid": 2681847,
+              "pssKb": 4759,
+              "anonymousKb": 4096
+            }
+          ],
+          "parent": {
+            "rss": 405446656,
+            "heapTotal": 153178112,
+            "heapUsed": 118261992,
+            "external": 37330520,
+            "arrayBuffers": 34658421
+          }
+        },
+        {
+          "phase": "pass-0",
+          "at": "2026-10-01T22:40:21.726Z",
+          "services": [
+            {
+              "pid": 2681847,
+              "pssKb": 4718,
+              "anonymousKb": 4104
+            }
+          ],
+          "parent": {
+            "rss": 424321024,
+            "heapTotal": 181772288,
+            "heapUsed": 122209680,
+            "external": 38183836,
+            "arrayBuffers": 35485549
+          }
+        },
+        {
+          "phase": "pass-1",
+          "at": "2026-10-01T22:40:22.684Z",
+          "services": [
+            {
+              "pid": 2681847,
+              "pssKb": 4767,
+              "anonymousKb": 4104
+            }
+          ],
+          "parent": {
+            "rss": 447389696,
+            "heapTotal": 207986688,
+            "heapUsed": 140024480,
+            "external": 39401485,
+            "arrayBuffers": 36703198
+          }
+        },
+        {
+          "phase": "pass-2",
+          "at": "2026-10-01T22:40:23.713Z",
+          "services": [
+            {
+              "pid": 2681847,
+              "pssKb": 4791,
+              "anonymousKb": 4128
+            }
+          ],
+          "parent": {
+            "rss": 448438272,
+            "heapTotal": 208773120,
+            "heapUsed": 104324376,
+            "external": 36959998,
+            "arrayBuffers": 34261711
+          }
+        },
+        {
+          "phase": "one-second-idle",
+          "at": "2026-10-01T22:40:24.716Z",
+          "services": [
+            {
+              "pid": 2681847,
+              "pssKb": 4791,
+              "anonymousKb": 4128
+            }
+          ],
+          "parent": {
+            "rss": 448438272,
+            "heapTotal": 208773120,
+            "heapUsed": 104344392,
+            "external": 36961055,
+            "arrayBuffers": 34262768
+          }
+        }
+      ],
+      "unreaped": []
+    },
+    {
+      "mode": "transform",
+      "version": "0.27.3",
+      "modules": 192,
+      "declarations": 128,
+      "sourceBytes": 4662080,
+      "samples": [
+        {
+          "phase": "warm",
+          "at": "2026-10-01T22:40:27.488Z",
+          "services": [
+            {
+              "pid": 2705569,
+              "pssKb": 6130,
+              "anonymousKb": 5456
+            }
+          ],
+          "parent": {
+            "rss": 404865024,
+            "heapTotal": 153178112,
+            "heapUsed": 117892608,
+            "external": 37330520,
+            "arrayBuffers": 34658421
+          }
+        },
+        {
+          "phase": "pass-0",
+          "at": "2026-10-01T22:40:28.056Z",
+          "services": [
+            {
+              "pid": 2705569,
+              "pssKb": 11819,
+              "anonymousKb": 11120
+            }
+          ],
+          "parent": {
+            "rss": 403816448,
+            "heapTotal": 153722880,
+            "heapUsed": 100744256,
+            "external": 59923490,
+            "arrayBuffers": 57251351
+          }
+        },
+        {
+          "phase": "pass-1",
+          "at": "2026-10-01T22:40:28.633Z",
+          "services": [
+            {
+              "pid": 2705569,
+              "pssKb": 12152,
+              "anonymousKb": 11456
+            }
+          ],
+          "parent": {
+            "rss": 418496512,
+            "heapTotal": 153722880,
+            "heapUsed": 108922496,
+            "external": 83526979,
+            "arrayBuffers": 80854840
+          }
+        },
+        {
+          "phase": "pass-2",
+          "at": "2026-10-01T22:40:29.184Z",
+          "services": [
+            {
+              "pid": 2705569,
+              "pssKb": 12399,
+              "anonymousKb": 11700
+            }
+          ],
+          "parent": {
+            "rss": 434225152,
+            "heapTotal": 155295744,
+            "heapUsed": 93672624,
+            "external": 39730967,
+            "arrayBuffers": 37058828
+          }
+        },
+        {
+          "phase": "one-second-idle",
+          "at": "2026-10-01T22:40:30.186Z",
+          "services": [
+            {
+              "pid": 2705569,
+              "pssKb": 12349,
+              "anonymousKb": 11700
+            }
+          ],
+          "parent": {
+            "rss": 434225152,
+            "heapTotal": 155295744,
+            "heapUsed": 93688296,
+            "external": 39732024,
+            "arrayBuffers": 37059885
+          }
+        }
+      ],
+      "unreaped": []
+    }
+  ]
+}

@@ -43,6 +43,8 @@ const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 const WS = 'ws-dream-run-store';
 const POT = 'papercusp';
+const DATABASE_ENV_KEYS = ['HARNESS_ADMIN_DATABASE_URL', 'HARNESS_DATABASE_URL', 'DATABASE_URL'] as const;
+const savedDatabaseEnv = Object.fromEntries(DATABASE_ENV_KEYS.map(key => [key, process.env[key]]));
 const PAIR: DreamFragmentPair = {
   anchor: {
     id: 'recent-observation',
@@ -69,14 +71,30 @@ describe('migration 862 + dream run accounting (real PG)', () => {
 
   beforeAll(async () => {
     db = await createOrgTestDb();
+    // The canonical plan and Scout readers resolve their own db-org pools.
+    // Pin them to the same disposable database as the injected Dream readers.
+    process.env.HARNESS_ADMIN_DATABASE_URL = db.adminDsn;
+    process.env.HARNESS_DATABASE_URL = db.appDsn;
+    process.env.DATABASE_URL = db.adminDsn;
+    const { _resetForTests } = await import('@papercusp/db-org');
+    await _resetForTests();
     // Before arming, the normal fixture deliberately ignores *.DRAFT. After
     // arming, this is an idempotency replay over the already-migrated template.
     await db.adminSql.unsafe(MIGRATION_SQL);
   }, 180_000);
 
   afterAll(async () => {
-    await db?.cleanup();
-    if (!process.env.KEEP_TEST_PG) await teardownTestPg();
+    try {
+      const { _resetForTests } = await import('@papercusp/db-org');
+      await _resetForTests();
+    } finally {
+      for (const key of DATABASE_ENV_KEYS) {
+        if (savedDatabaseEnv[key] === undefined) delete process.env[key];
+        else process.env[key] = savedDatabaseEnv[key];
+      }
+      await db?.cleanup();
+      if (!process.env.KEEP_TEST_PG) await teardownTestPg();
+    }
   });
 
   it('DREAM-REVIEW-PREFLIGHT: persists a no-spend refusal through real source readers, phase ledger and detail projection', async () => {
@@ -86,6 +104,7 @@ describe('migration 862 + dream run accounting (real PG)', () => {
     try {
       const llmCall = vi.fn<DreamCycleDeps['llmCall']>(async () => { throw new Error('Must not pay for generation'); });
       const sink = vi.fn<DreamCycleDeps['sink']>(async () => { throw new Error('Must not route an unreviewed proposal'); });
+      const rerank = vi.fn<NonNullable<DreamCycleDeps['rerank']>>(async (_query, priors) => ({ priors, outcome: { attempted: false, reason: 'Scorer offline' } }));
       const result = await runDreamCycle({ ...f.scope, rootPath: f.root, manifest: f.manifest, mode: 'manual', cycleId: 'preflight-pg', cycle: { maxDreamsPerCycle: 3 }, pass: { model: 'generator' }, review: { model: 'reviewer' } }, {
         llmCall, sink,
         preflight: async () => ({ allow: true, loopId: 'test', cycleRemainingUsd: 1, rollingSpentUsd: 0, rollingRemainingUsd: 5, rollingLoopCount: 0 }),
@@ -100,16 +119,17 @@ describe('migration 862 + dream run accounting (real PG)', () => {
         recordReview: input => recordDreamRunReview(sql, { ...input, workspaceId }),
         finalizeRun: input => finalizeDreamRun(sql, { ...input, workspaceId }),
         recordSpend: run => recordDreamRunSpend(sql, { workspaceId, potSlug: POT, runId: run.runId }),
-        rerank: async (_query, priors) => ({ priors, outcome: { attempted: false, reason: 'Scorer offline' } }),
+        rerank,
       });
       expect(result).toMatchObject({ reason: 'review-unavailable', attempts: 1, accepted: 0, costUsd: 0 });
       const detail = await readDreamDetail(sql, { workspaceId, potSlug: POT, runId: result.runs[0]!.runId });
-      expect(detail?.run.review).toMatchObject({ verdict: 'unverified', reason: 'rerank-unavailable' });
+      expect(detail?.run.review, JSON.stringify(detail?.run.review)).toMatchObject({ verdict: 'unverified', reason: 'rerank-unavailable' });
       expect(detail?.run.outcome).toMatchObject({ generationSkipped: true });
       expect(detail?.nextCheck).toMatchObject({ kind: 'dependency', maxSourceQueries: 2 });
       expect(detail?.proposal).toBeNull();
       expect(detail?.provenance!.calls.map(c => c.callId)).toContain('rerank:preflight');
       expect(detail?.provenance!.calls.every(c => c.reservedUsd === 0 && c.status === 'settled')).toBe(true);
+      expect(rerank).toHaveBeenCalledOnce();
       expect(llmCall).not.toHaveBeenCalled(); expect(sink).not.toHaveBeenCalled();
     } finally {
       await rm(f.root, { recursive: true, force: true });
@@ -369,6 +389,35 @@ describe('migration 862 + dream run accounting (real PG)', () => {
     } finally {
       await rm(f.root, { recursive: true, force: true });
     }
+  });
+
+  it('bounds legacy tiered zero settlements before and after spend recording without changing history', async () => {
+    const workspaceId = 'ws-dream-legacy-tiered-cost';
+    const fixture = await createDreamCapabilityFixture(workspaceId, POT);
+    const key = { workspaceId, runId: 'legacy-tiered:dream:1' };
+    try {
+      await registerLearningLoop(db.adminSql, dreamRegistrationInput({ workspaceId, potSlug: POT }));
+      await beginDreamRun(db.adminSql, { ...key, potSlug: POT, cycleId: 'legacy-tiered', mode: 'manual',
+        capability: { ...fixture.header, dreamerModel: 'gpt-6.1-sol', reviewerModel: 'gpt-6.1-sol' } });
+      await beginDreamRunCall(db.adminSql, { ...key, call: { callId: 'generation', phase: 'generation',
+        model: 'gpt-6.1-sol', reservedUsd: 0.1 } });
+      await settleDreamRunCall(db.adminSql, { ...key, callId: 'generation',
+        usage: { model: 'gpt-6.1-sol', costUsd: 0, inputTokens: 6670, outputTokens: 446 } });
+      await finalizeDreamRun(db.adminSql, { ...key, status: 'abstained' });
+      const window = { workspaceId, sinceMs: Date.now() - 86400000 };
+      const before = await sumDreamSpendSince(db.adminSql, window);
+      expect(before.totalUsd).toBeGreaterThan(0);
+      expect(before.totalUsd).toBeLessThanOrEqual(0.1);
+      expect(before.loopCount).toBe(1);
+      await recordDreamRunSpend(db.adminSql, { ...key, potSlug: POT });
+      expect(await sumDreamSpendSince(db.adminSql, window)).toEqual(before);
+      const stored = await getDreamRun(db.adminSql, key);
+      expect(stored?.costUsd).toBe(0);
+      expect(dreamCapabilityRun(stored!)?.calls[0]?.usage?.costUsd).toBe(0);
+      await db.adminSql`UPDATE harness_shared.dream_runs SET completed_at = now() - interval '25 hours'
+        WHERE workspace_id = ${workspaceId} AND run_id = ${key.runId}`;
+      expect((await sumDreamSpendSince(db.adminSql, window)).totalUsd).toBe(0);
+    } finally { await rm(fixture.root, { recursive: true, force: true }); }
   });
 
   it.each([1, 10])(

@@ -1,0 +1,12 @@
+[Unit]
+Description=Check Phone operations and deliver actionable alerts every 15 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+Persistent=true
+AccuracySec=1s
+Unit=papercusp-phone-ops-alert.service
+
+[Install]
+WantedBy=timers.target

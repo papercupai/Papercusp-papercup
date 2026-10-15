@@ -104,6 +104,7 @@ const SYSTEMD_UNIT_ENV: NodeJS.ProcessEnv = {
   PAPERCUSP_INTEGRATION_ROOT: '/tmp/papercusp-parity-fixture',
   PAPERCUSP_GATEWAY_PORT: '8788',
   PAPERCUSP_GATEWAY_REQUEST_ABSORB_MS: '120000',
+  HARNESS_ADMIN_DATABASE_URL: 'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp',
 };
 
 const LAUNCH_MATRIX: readonly LaunchPath[] = [
@@ -292,6 +293,20 @@ test('setting a retired ceiling changes NO admission decision but DOES raise a l
  * run, so the day someone adds a Tauri sidecar entry or a container CMD for the gateway, the
  * decision stops being silently wrong and this fails instead.
  */
+test('the fleet systemd gateway pins its database instead of following desktop discovery', () => {
+  const repoRoot = join(__dirname, '..', '..', '..', '..');
+  const unit = readFileSync(
+    join(repoRoot, 'apps/operator/scripts/systemd/papercup-inference-gateway.service'),
+    'utf8',
+  );
+  const databasePin = unit.match(/^Environment="HARNESS_ADMIN_DATABASE_URL=([^"\r\n]+)"$/m)?.[1];
+  assert.equal(databasePin, SYSTEMD_UNIT_ENV.HARNESS_ADMIN_DATABASE_URL);
+  const database = new URL(databasePin!);
+  assert.equal(database.hostname, 'localhost');
+  assert.equal(database.port, '5432');
+  assert.equal(database.pathname, '/papercusp');
+});
+
 test('D-014 recurrence guard: the packaged app and containers still spawn no gateway', () => {
   const repoRoot = join(__dirname, '..', '..', '..', '..');
 

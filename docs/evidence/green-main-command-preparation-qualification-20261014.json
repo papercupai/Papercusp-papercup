@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "kind": "native-command-preparation-reader-qualification",
+  "workItemId": "WI-6554700010010682",
+  "planSlug": "green-main-cycle-time-2026-10-08",
+  "status": "saved-native-readback-passed-no-operational-acceptance",
+  "reader": "scripts/lib/budgeted-task-scheduler.mjs::readBudgetedTaskComparisonArtifacts",
+  "mode": "command-preparation",
+  "commands": [
+    {
+      "task": "@papercupai/operator-docs :: test",
+      "step": null,
+      "format": "astro-check",
+      "inputs": 14,
+      "checkedFiles": 5,
+      "diagnostics": { "errors": 0, "warnings": 0, "hints": 23 },
+      "wrapperMapping": "apps/operator-docs/package.json check -> astro check"
+    },
+    {
+      "task": "@papercupai/papercusp-docs :: test",
+      "step": 0,
+      "format": "astro-check",
+      "inputs": 18,
+      "checkedFiles": 9,
+      "diagnostics": { "errors": 0, "warnings": 0, "hints": 0 },
+      "wrapperMapping": "apps/papercusp-docs/package.json check -> astro check"
+    },
+    {
+      "task": "@papercusp/web :: lint:el-tools",
+      "step": null,
+      "format": "native-transcript-command-check",
+      "inputs": 13,
+      "clientTools": 25,
+      "wrapperMapping": "apps/operator/scripts/el-tools-check.mjs"
+    }
+  ],
+  "qualification": {
+    "astroReceipts": "docs/evidence/green-main-astro-native-receipts-20261014.json",
+    "voiceSourceReceipt": {
+      "path": "~/.papercusp/su-codex-homes/session-42663/sessions/2026/10/14/rollout-2026-10-14T12-11-19-01a13b2e-b43f-7511-b168-5ed9a7616762.jsonl",
+      "sha256": "df9840d8680a39136ba48da11ba5853c5b0735d688a4f18f3f499dd83ff71834",
+      "sessionId": "01a13b2e-b43f-7511-b168-5ed9a7616762",
+      "eventId": "exec-aab592a4-8148-4fa7-98be-e53de8be1540",
+      "childWallMs": null,
+      "nativeExecutionWallMs": 971,
+      "durationScope": "discovery-and-command"
+    },
+    "readback": "~/.papercusp/scratch/c0523-five-command-preparation-readback-v1.json",
+    "readbackSha256": "5d69109b3c8beef43350b275f0122135d20ffbf641abea0d60118b6bd60a85c0",
+    "maintainedTests": {
+      "log": "~/.papercusp/scratch/c0523-command-preparation-astro-voice-tests-v1.log",
+      "sha256": "949ac30bb09fcfa3cf9061dde8b202219336d05f57b22f75638765b876e8228a",
+      "passed": 223,
+      "skipped": 0,
+      "childSubstituted": 0,
+      "nativeExitCode": 0
+    },
+    "typecheck": {
+      "log": "~/.papercusp/scratch/c0523-command-preparation-astro-voice-tsc-v1.log",
+      "sha256": "8a750ba77a346ed00318ebeb1fda0efbac2f5a8e9ab034c74af468ef34d097a2",
+      "namedFiles": 1,
+      "typeErrors": 0,
+      "nativeExitCode": 0
+    }
+  },
+  "sourcePins": [
+    {
+      "path": "scripts/lib/budgeted-task-scheduler.mjs",
+      "sha256": "108c6242f8f46be5dbb964637853c659c155a7ad5af8a21911478bd24eba76ea"
+    },
+    {
+      "path": "scripts/lib/budgeted-task-scheduler.d.mts",
+      "sha256": "b8699ad66a7230af0ff7333e06bff3bca599cb7907478196bfaa4b46636525bb"
+    },
+    {
+      "path": "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+      "sha256": "34679152c2bf1e98fb9118464dadff6a43eb016cef17f7b0084a87c2370372d6"
+    }
+  ],
+  "scope": {
+    "orderedChainQualified": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "selection": "partial",
+    "remaining": "dependency/import/final-transform closure, complete ordered chain, ABBA cohorts and shipment remain open",
+    "hold": "D020/P006 remains in force; six receipt forms remain unbound and unapproved; P018 seven-day, strict-idle60, genuine alarm delivery, shipped D045/P031 and final shipment remain open"
+  }
+}

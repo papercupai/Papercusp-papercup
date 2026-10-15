@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "generic-rag-chunking-2026-09-29 R-33: search stays fast \u2014 paired A/B reading of record (D-040 method, D-041 load band, D-052 rule) PASSES all five sites",
+  "framework": "operational",
+  "command": [
+    "capability:bash task 0muwu2z1v2vzoph1n93: R33_DEADLINE=2026-10-07T03:15:00Z bash .papercusp/scratch/rag-ea145/r33-ab-record-d052.sh (quiet gate: the measured files and the libs/generic/search gitlink committed, clean and unchanged for 10 minutes, then attempts until the first band-matched run)",
+    "inside the script: npx tsx packages/operator-core/lib/search/bench/chunk-search-ab-cli.ts --rounds 3 --band-wait-min 3 \u2014 3 rounds x 30 fixed queries per site, arm A = pre-change query path (D-024 baseline, preChangeRef 9a9473af95), arm B = shipped chunk-aware path, same build, same DB, interleaved pairs",
+    "load check per D-041: 1-minute loadavg at start and end must both lie in the band [55.9, 83.9]; an out-of-band run is not a reading",
+    "post-run: git rev-parse HEAD:<path> for each measured file == the headBlob recorded in the reading (all equal and clean)"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T15:46:29.959Z",
+  "finishedAt": "2026-10-06T15:47:54.405Z",
+  "summary": "Reading of record per D-052: the first band-matched run after the vector-leg single-evaluation fix (libs/generic/search 60503d2ee6), attempt 1. Load 72.75 -> 78.9, inside the D-041 band. Added p95 per site (ms, budget): plans +8.4 (413), turns +43.3 (348), work_item +9 (402.3), work_items_search +99 (100), consult +3.1 (3.5). All five sites are within budget, so the reading PASSES. Source file docs/evidence/generic-rag-chunking-2026-09-29/p016-r33-ab-record.json, sha256 d27ceac79496f733a37717369f38f827f6e883ac40863c051fc1f9c74bacf8aa.",
+  "assertions": [
+    {
+      "id": "r33-reading-load-band-matched",
+      "passed": true,
+      "evidence": "loadCheck.matched true: start 72.75, end 78.9, band 55.9-83.9 (D-041). reading = 'valid'."
+    },
+    {
+      "id": "r33-plans-within-budget",
+      "passed": true,
+      "evidence": "plans: A p95 10 ms, B p95 18.4 ms, added +8.4 ms vs budget 413 ms; 90 pairs, 0/0 errors, bEmptyWhereAHadRows 0."
+    },
+    {
+      "id": "r33-turns-within-budget",
+      "passed": true,
+      "evidence": "turns: A p95 451.9 ms, B p95 495.2 ms, added +43.3 ms vs budget 348 ms; 90 pairs, 0/0 errors, bEmptyWhereAHadRows 0."
+    },
+    {
+      "id": "r33-work-item-within-budget",
+      "passed": true,
+      "evidence": "work_item: A p95 12.9 ms, B p95 21.9 ms, added +9 ms vs budget 402.3 ms; 90 pairs, 0/0 errors, bEmptyWhereAHadRows 0."
+    },
+    {
+      "id": "r33-work-items-search-within-budget",
+      "passed": true,
+      "evidence": "work_items_search: A p95 22.5 ms, B p95 121.5 ms, added +99 ms vs budget 100 ms; 90 pairs, 0/0 errors, bEmptyWhereAHadRows 0."
+    },
+    {
+      "id": "r33-consult-within-budget",
+      "passed": true,
+      "evidence": "consult: A p95 8.4 ms, B p95 11.5 ms, added +3.1 ms vs budget 3.5 ms; 90 pairs, 0/0 errors, bEmptyWhereAHadRows 0."
+    },
+    {
+      "id": "r33-measured-code-is-committed-head",
+      "passed": true,
+      "evidence": "post-run: git rev-parse HEAD:<path> == headBlob for every measured file (superproject commit 9a62096917, libs/generic/search 60503d2ee6); all clean."
+    }
+  ],
+  "plan": "generic-rag-chunking-2026-09-29",
+  "bar": "R-33",
+  "spec": "AUTO-BAR-R-33-P-015",
+  "planItem": "P-016",
+  "decisions": [
+    "D-024",
+    "D-040",
+    "D-041",
+    "D-043",
+    "D-049",
+    "D-051",
+    "D-052",
+    "D-053"
+  ],
+  "measuredBy": "su-ea145858-8dc8-4602-ae3d-675eb6c2b804",
+  "details": {
+    "sourceReading": {
+      "path": "docs/evidence/generic-rag-chunking-2026-09-29/p016-r33-ab-record.json",
+      "sha256": "d27ceac79496f733a37717369f38f827f6e883ac40863c051fc1f9c74bacf8aa"
+    },
+    "supersededReadings": [
+      {
+        "path": "docs/evidence/generic-rag-chunking-2026-09-29/p016-r33-ab-record-c548333b00.json",
+        "note": "D-051 reading on c548333b00: consult +4.4 vs 3.5, fail; root cause the chunk leg evaluating <=> twice per row (D-052)"
+      },
+      {
+        "path": "docs/evidence/generic-rag-chunking-2026-09-29/p016-r33-ab-record-46bfcc2a98.json",
+        "note": "D-050 reading on 46bfcc2a98: all five sites passed (consult +1.8); peer edits after it staled its measured blobs, so D-051 made the next band-matched run the reading of record"
+      },
+      {
+        "path": "docs/evidence/generic-rag-chunking-2026-09-29/p016-r33-ab-record-e8369026d6.json",
+        "note": "D-045 reading on e8369026d6: consult +7.9 vs 3.5, fail"
+      },
+      {
+        "path": "docs/evidence/generic-rag-chunking-2026-09-29/p016-r33-ab-record-d047.json",
+        "note": "D-047 reading: consult +8.0 vs 3.5, fail"
+      },
+      {
+        "path": "docs/evidence/generic-rag-chunking-2026-09-29/p016-r33-ab-record-d048.json",
+        "note": "D-048 reading passed all five sites, but a peer edit to sources.ts landed 37 s later, so per D-049 it is not the reading of record"
+      }
+    ],
+    "querySetHash": "a7b47c0b2e7aa900f19185f6a8f9d57626b18bf635a9b0c9d42c810464af2e10",
+    "queries": 30,
+    "roundsPerSite": 3,
+    "embedder": "gemma-embeddinggemma-300m-768@v1",
+    "warmupNote": "warmupErrors: [\"work_items_search B: Error: semantic leg errored (0 failed): query embed failed: query embedder warming up (cold start; retry for semantic results)\"]",
+    "precomputedMisses": 1,
+    "cores": 128
+  }
+}

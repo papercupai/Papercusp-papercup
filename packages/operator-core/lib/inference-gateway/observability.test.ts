@@ -1,7 +1,7 @@
 /** Tests for the gateway rate-observability read-model (P-014). */
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { projectHeadroom, fetchGatewayHeadroom, gatewayWholesaleThrottled, isWholesaleThrottled, readmitGatewayAccounts } from './observability';
+import { projectHeadroom, fetchGatewayHeadroom, fetchGatewayOwnerExecution, gatewayWholesaleThrottled, isWholesaleThrottled, readmitGatewayAccounts } from './observability';
 import type { GatewayStats } from './gateway';
 
 const baseStats = (over: Partial<GatewayStats> = {}): GatewayStats => ({
@@ -10,6 +10,7 @@ const baseStats = (over: Partial<GatewayStats> = {}): GatewayStats => ({
   totalRequests: 12,
   inFlight: 2,
   queueDepth: 5,
+  healthyAccounts: 1,
   admission: { running: 2, queued: 5, maxConcurrent: 24, byPriority: [{ priority: 100, count: 1 }, { priority: 0, count: 4 }] },
   // codexAdmission is a REQUIRED GatewayStats field — set it concretely (it previously came only from the
   // `...over` spread, so `baseStats().codexAdmission` was silently undefined and tripped the assignability check).
@@ -23,6 +24,7 @@ const baseStats = (over: Partial<GatewayStats> = {}): GatewayStats => ({
   concurrencyCap: 24,
   aimd: { effective: 24, cap: 24, floor: 4, pressure: 0, cleanStreak: 0, decreases: 0, increases: 0, hardFailures: 0 },
   opusToSonnetDowngrades: 0,
+  effortClamps: { retries: 0, rewrites: 0, learned: [] },
   proactiveEgressProbe: { enabled: false, intervalMs: 0, lastTickAt: 0, circuitOpens: 0, failStreakByAccount: {} },
   failovers: 0,
   upstreamErrors: 0,
@@ -39,6 +41,10 @@ const baseStats = (over: Partial<GatewayStats> = {}): GatewayStats => ({
   beeFacing503: { egressExhausted: 0, tokenStall: 0 },
   pausedUntil: 0,
   pausedActuallyEnforced: false,
+  billing: {
+    byAccount: {},
+    metered: { requests: 0, inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, outputTokens: 0, usageKnown: 0, outputKnown: 0 },
+  },
   cache: {
     read: 0, create: 0, input: 0, hits: 0, misses: 0, failoverMisses: 0, hitRate: null, byAccount: {},
     knownTokenTotals: { read: 0, create: 0, input: 0 },
@@ -47,6 +53,18 @@ const baseStats = (over: Partial<GatewayStats> = {}): GatewayStats => ({
     affinity: { hits: 0, cold: 0, nokey: 0, yields: 0, enabled: true, ttlMs: 0 },
   },
   ...over,
+});
+
+test('owner execution keeps absent and mismatched telemetry unknown', async () => {
+  for (const body of [{ owner: 'su-a', now: 100 }, { owner: 'su-b', now: 100, stageTelemetry: { active: 0 } },
+    { owner: 'su-a', now: 100, stageTelemetry: { active: -1 } }]) {
+    const result = await fetchGatewayOwnerExecution('su-a', {
+      fetchImpl: (async () => new Response(JSON.stringify(body))) as typeof fetch });
+    assert.equal(result.active, null);
+  }
+  assert.deepEqual(await fetchGatewayOwnerExecution('su-a', {
+    fetchImpl: (async () => new Response(JSON.stringify({ owner: 'su-a', now: 100, stageTelemetry: { active: 2 } }))) as typeof fetch,
+  }), { active: 2, observedAt: 100 });
 });
 
 test('projectHeadroom — maps the unified window + queue into the read-model', () => {
@@ -67,6 +85,8 @@ test('projectHeadroom — maps the unified window + queue into the read-model', 
   assert.equal(h.resetInSec, 3600);
   assert.equal(h.paused, false);
   assert.equal(h.queueDepth, 5);
+  assert.equal(h.admissionWindow, 24);
+  assert.equal(h.healthyAccounts, 1);
   assert.deepEqual(h.byPriority, [{ priority: 100, count: 1 }, { priority: 0, count: 4 }]);
 });
 
@@ -94,6 +114,7 @@ test('projectHeadroom — Codex scope uses Codex admission and health, not Claud
   assert.equal(h.healthyAccounts, 1);
   assert.equal(h.inFlight, 1);
   assert.equal(h.queueDepth, 2);
+  assert.equal(h.admissionWindow, 4, 'the Codex live window must not inherit Claude concurrency');
   assert.deepEqual(h.byPriority, [{ priority: 0, count: 2 }]);
   assert.deepEqual(h.priorityTiers, {
     healthyAccounts: 1,

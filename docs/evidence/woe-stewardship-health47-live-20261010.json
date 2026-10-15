@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "WOE active rubric stewardship measurement",
+  "framework": "operational",
+  "command": [
+    "ptool",
+    "rubrics:get",
+    "--url=http://127.0.0.1:3170",
+    "--json",
+    "-"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-10T01:23:16.501Z",
+  "finishedAt": "2026-10-10T01:23:17.281Z",
+  "summary": "Active reviewed canonical rubric47 retains all three falsifiable stewardship duties. Native executor supplies clean source provenance and stable measured before/after runtime witnesses; originalExecution is the ledger authority.",
+  "assertions": [
+    {
+      "id": "active-reviewed-rubric47-identity",
+      "passed": true,
+      "evidence": "{\"revision\":47,\"status\":\"active\",\"criteriaHash\":\"2bf720c3b50c952723dfef7d307a208681e72a169003a9ca6faebc94a3f4d76e\"}"
+    },
+    {
+      "id": "rubric-coverage-stewardship-falsifiable-stewardship",
+      "passed": true,
+      "evidence": "{\"criterionClass\":\"violatable\",\"model\":\"The holder reviews selected work and the unowned frontier each operating window, reuses suitable active rubrics and routes only genuine coverage gaps through proposal and independent ratification. A rubric proposal alone is not coverage.\",\"method\":\"For the exact goal/holder/window, read the selected worklist and the holder reports/plan decisions. Enumerate important targets and their active rubric revision or evidenced gap. Re-run rubrics:search/get for reuse decisions. Follow each proposed rubric through independent ratification or justified rejection. Pass requires a recorded coverage review and an accountable disposition for every gap; fail when a material in-scope target has no reviewed standard or owned gap. Unknown requires an explicit missing-source action, never inferred coverage.\",\"driftMarkers\":\"Fail if the holder skips the operating-window review, silently invents a duplicate rubric, presents an unratified proposal as active coverage or drops a discovered gap without an owner.\",\"replication\":\"REPLICATION DRILL: pin goalId, holder lease and window; reconstruct the selected-target population from canonical goal portfolio; replay each cited rubric read and coverage/gap decision. Negative control: a selected important target with neither rubric nor owned gap must fail. Positive control: reuse of an active suitable rubric with a recorded coverage review is assessable.\"}"
+    },
+    {
+      "id": "rubric-quality-stewardship-falsifiable-stewardship",
+      "passed": true,
+      "evidence": "{\"criterionClass\":\"violatable\",\"model\":\"The holder reviews vague criteria, weak falsifiers, recurring unknowns and outcome blind spots, records an evidence-backed keep/amend decision, and delegates reviewed versioned changes while preserving historical comparability.\",\"method\":\"Read exact-window quality-review decisions and the immutable revisions of cited rubrics. Tie each keep/amend decision to scorecard evidence, drift or real outcomes. Check proposal/ratification provenance and preserve prior criteria. Pass requires a substantive review with justified keep decisions or verified changes; fail on no review, unexplained weakening or unowned material defects. Count neither edits nor rubric proliferation as quality by themselves.\",\"driftMarkers\":\"Fail if criteria are weakened to improve the score, blind spots recur without an accountable decision, existing criteria are lost or a rubric revision is changed inside a before/after comparison without a new baseline.\",\"replication\":\"REPLICATION DRILL: replay rubrics:get at each cited immutable revision, compare criterion/falsifier changes and review decisions against the original outcome evidence. Negative control: a lowered standard with no outcome improvement fails. Positive control: a reviewed unchanged rubric with a justified keep decision remains assessable without forcing an amendment.\"}"
+    },
+    {
+      "id": "grading-correction-closure-falsifiable-stewardship",
+      "passed": true,
+      "evidence": "{\"criterionClass\":\"violatable\",\"model\":\"Each warranted cycle has a goal-attributed bounded GRADE assignment, exact target and pinned rubric revision, baseline before repair, owned confirmed remediation with recurrence guards, verified repairs and a terminal comparable re-grade. GOAL keeps the portfolio role. Required independent acceptance is preserved.\",\"method\":\"Start from the goal detail rubricStewardship snapshot and canonical goal-stamped scorecards/work items. For each warranted cycle follow launch/claim evidence, baseline, repair references, completion evidence and linked terminal re-grade. Use classifyStewardshipCycle as a deterministic countercheck. Pass requires the window owed grading to be discharged through verified comparable cycles or an evidenced healthy baseline with no warranted repairs. Partial when a live owned cycle is progressing within its declared budget; fail when findings are abandoned, cycles exceed their exit budget without audit/reallocation, or launch/fix-only activity is called completion. Unknown sources remain explicit.\",\"driftMarkers\":\"Fail on no warranted launch, no baseline-before-repair, unverified or foreign-goal repairs, changed target/revision without a new baseline, required self-acceptance, stale terminal evidence, duplicate live lanes or a stalled cycle repeatedly fed more agents.\",\"replication\":\"REPLICATION DRILL: pin goal, target, rubric revision and operating window. Re-read canonical baseline and re-grade plus each linked completion; replay the named classifier regression suite. Counterexamples include foreign-goal repairs, unaudited scorecards, changed criteria hashes, repairs after the re-grade and implementer-as-final-grader. None may earn verified-improvement credit. Verify the baseline remains available as immutable history.\"}"
+    },
+    {
+      "id": "three-required-stewardship-criteria-present",
+      "passed": true,
+      "evidence": "rubric-coverage-stewardship,rubric-quality-stewardship,grading-correction-closure"
+    }
+  ],
+  "originalExecution": {
+    "ok": true,
+    "runGroupId": "operational-native:a55dda7e-f158-431e-b8f8-61011ab1b31c",
+    "testRunIds": [
+      20966161
+    ],
+    "status": "pass",
+    "runtimeEnvironmentMeasured": true
+  },
+  "preflight": "f96f46720b057813ba0b9cd78829f66394c14381a3f005f0aa3f3c90649600c2",
+  "observed": {
+    "rubricRef": "work-on-everything-stewardship-health",
+    "revision": 47,
+    "criteriaHash": "2bf720c3b50c952723dfef7d307a208681e72a169003a9ca6faebc94a3f4d76e",
+    "status": "active",
+    "criterionKeys": [
+      "goal-mode-foundation",
+      "standing-holder-lifecycle",
+      "worklist-authority-and-priority",
+      "frontier-scope-sovereignty",
+      "delegated-execution-and-drain-health",
+      "placement-taxonomy-integrity",
+      "claim-flow-and-completion-integrity",
+      "blender-feedback-and-disposition",
+      "steering-through-claim-rails",
+      "rolling-budget-circuit-and-capacity",
+      "owner-steering-and-reporting",
+      "end-to-end-stewardship-closure",
+      "deployed-generation-and-instrument-parity",
+      "retired-tier-nonresurrection",
+      "plan-fleet-materialization",
+      "holder-plan-authorship",
+      "ideation-yield",
+      "owner-report-truthfulness",
+      "stewardship-loop-liveness",
+      "nudge-efficacy",
+      "rubric-coverage-stewardship",
+      "rubric-quality-stewardship",
+      "grading-correction-closure"
+    ],
+    "criteria": [
+      {
+        "key": "rubric-coverage-stewardship",
+        "title": "Important in-scope targets have reviewed rubric coverage",
+        "criterionClass": "violatable"
+      },
+      {
+        "key": "rubric-quality-stewardship",
+        "title": "Rubric quality is reviewed and improved through versioned evidence",
+        "criterionClass": "violatable"
+      },
+      {
+        "key": "grading-correction-closure",
+        "title": "Delegated grading reaches verified repairs and a comparable independent re-grade",
+        "criterionClass": "violatable"
+      }
+    ]
+  },
+  "sourceCommit": "fb489c2ee35d4d27f219c93dcdfcb3284e01c600",
+  "runtimeUnits": [
+    "hono-host:3170"
+  ],
+  "query": {
+    "rubricRef": "work-on-everything-stewardship-health",
+    "detail": "full",
+    "payloadTier": "full"
+  },
+  "procedure": "Preflight requires a non-null independently measured runtime fingerprint. executeOperationalRun supplies timestamps, source snapshots and fresh before/after runtime observations. Read canonical rubrics:get and pin active revision47/hash; check three duties retain violatable class, substantive model, fail-oriented method, drift markers and replay drills. Contract-suite absence/failure/unknown positive-negative controls and copied mutation establish behavioral adequacy separately."
+}

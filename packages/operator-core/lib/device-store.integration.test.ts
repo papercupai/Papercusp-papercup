@@ -46,6 +46,11 @@ const {
   revokeDeviceById,
   upsertPushToken,
   pushTargetsForWorkspace,
+  findDeviceIdByNoisePublicKey,
+  getDeviceNoisePublicKey,
+  deviceAgentSessionsAllowed,
+  setDeviceAgentSessionsEnabled,
+  setDevicePaused,
 } = await import('./device-store');
 const { createOrgTestDb } = await import('../test/_org-test-db');
 
@@ -85,6 +90,44 @@ describe('device-store (real PG + real RLS)', () => {
       revoked_at: null,
     });
     expect(rows[0].paired_at).toBeInstanceOf(Date);
+  });
+
+  it('session grants require an explicit grant and remain isolated by device/workspace through real RLS', async () => {
+    const ws = freshWs();
+    const otherWs = freshWs();
+    const id = freshDevice();
+    const second = freshDevice();
+    await insertDevice({ deviceId: id, userEmail: 'a@example.com', workspaceId: ws });
+    await insertDevice({ deviceId: second, userEmail: 'a@example.com', workspaceId: ws });
+    expect(await deviceAgentSessionsAllowed(id, ws)).toBe(false);
+    expect(await setDeviceAgentSessionsEnabled(id, otherWs, true)).toBe(false);
+    expect(await setDeviceAgentSessionsEnabled(id, ws, true)).toBe(true);
+    expect(await deviceAgentSessionsAllowed(id, ws)).toBe(true);
+    expect(await deviceAgentSessionsAllowed(id, otherWs)).toBe(false);
+    expect(await deviceAgentSessionsAllowed(second, ws)).toBe(false);
+    await setDevicePaused(ws, id, true);
+    expect(await deviceAgentSessionsAllowed(id, ws)).toBe(false);
+    await setDevicePaused(ws, id, false);
+    expect(await deviceAgentSessionsAllowed(id, ws)).toBe(true);
+    await revokeDevice(id, ws);
+    expect(await deviceAgentSessionsAllowed(id, ws)).toBe(false);
+    expect(await setDeviceAgentSessionsEnabled(id, ws, true)).toBe(false);
+  });
+
+  it('session grant changes are idempotent and preserve unrelated connected-app scopes', async () => {
+    const ws = freshWs();
+    const id = freshDevice();
+    await insertDevice({ deviceId: id, userEmail: 'a@example.com', workspaceId: ws });
+    const scopes = { capabilities: ['device:read'], harnesses: ['project'], tools: ['safe:read'] };
+    await db.adminSql`UPDATE harness_shared.connected_apps SET scopes = ${JSON.stringify(scopes)}::jsonb WHERE id = ${id}`;
+    await setDeviceAgentSessionsEnabled(id, ws, true);
+    await setDeviceAgentSessionsEnabled(id, ws, true);
+    const granted = await db.adminSql<{ scopes: Record<string, unknown> }[]>`SELECT scopes FROM harness_shared.connected_apps WHERE id = ${id}`;
+    expect(granted[0].scopes).toEqual({ ...scopes, capabilities: ['device:read', 'agent-sessions'] });
+    await setDeviceAgentSessionsEnabled(id, ws, false);
+    const revoked = await db.adminSql<{ scopes: Record<string, unknown> }[]>`SELECT scopes FROM harness_shared.connected_apps WHERE id = ${id}`;
+    expect(revoked[0].scopes).toEqual(scopes);
+    expect(await deviceAgentSessionsAllowed(id, ws)).toBe(false);
   });
 
   it('insertDevice ON CONFLICT (device_id) DO NOTHING — the first label wins', async () => {
@@ -201,5 +244,50 @@ describe('device-store (real PG + real RLS)', () => {
     // Revoking device A drops its token from the targets (JOIN ... WHERE revoked_at IS NULL).
     await revokeDevice(idA, wsA);
     expect(await pushTargetsForWorkspace(wsA)).toHaveLength(0);
+  });
+  it('session pushes require the grant and exclude paused, revoked and foreign devices', async () => {
+    const ws = freshWs(); const foreign = freshWs();
+    const allowed = freshDevice(); const absent = freshDevice(); const paused = freshDevice(); const revoked = freshDevice(); const other = freshDevice();
+    for (const [id, workspaceId] of [[allowed, ws], [absent, ws], [paused, ws], [revoked, ws], [other, foreign]]) {
+      await insertDevice({ deviceId: id, workspaceId, userEmail: 'owner@example.com' });
+      await upsertPushToken({ deviceId: id, workspaceId, platform: 'fcm', token: `token-${id}` });
+      if (id !== absent) await setDeviceAgentSessionsEnabled(id, workspaceId, true);
+    }
+    await setDevicePaused(ws, paused, true); await revokeDevice(revoked, ws);
+    expect(await pushTargetsForWorkspace(ws, 'agent-sessions')).toEqual([{ platform: 'fcm', token: `token-${allowed}` }]);
+    await setDeviceAgentSessionsEnabled(allowed, ws, false);
+    expect(await pushTargetsForWorkspace(ws, 'agent-sessions')).toEqual([]);
+  });
+
+  // D-013 #6: a sealed cloud channel identifies the phone by its Noise static key.
+  it('findDeviceIdByNoisePublicKey: resolves one live device, fails closed on unknown, revoked, shared or foreign keys', async () => {
+    const ws = freshWs();
+    const other = freshWs();
+    const key = () => randomBytes(32).toString('base64');
+    const keyA = key();
+    const idA = freshDevice();
+    await insertDevice({ deviceId: idA, userEmail: 'a@example.com', workspaceId: ws, noisePublicKey: keyA });
+    expect(await findDeviceIdByNoisePublicKey(ws, keyA)).toBe(idA);
+    expect(await getDeviceNoisePublicKey(idA, ws)).toBe(keyA);
+
+    expect(await findDeviceIdByNoisePublicKey(ws, key())).toBeNull();
+    expect(await findDeviceIdByNoisePublicKey(ws, '')).toBeNull();
+    // Another workspace never resolves this workspace's phone.
+    expect(await findDeviceIdByNoisePublicKey(other, keyA)).toBeNull();
+
+    // Two live devices sharing one key: ambiguous, so neither authenticates.
+    const shared = key();
+    const idB = freshDevice();
+    const idC = freshDevice();
+    await insertDevice({ deviceId: idB, userEmail: 'b@example.com', workspaceId: ws, noisePublicKey: shared });
+    await insertDevice({ deviceId: idC, userEmail: 'c@example.com', workspaceId: ws, noisePublicKey: shared });
+    expect(await findDeviceIdByNoisePublicKey(ws, shared)).toBeNull();
+    // Revoking one leaves the other as the single live holder.
+    await revokeDevice(idC, ws);
+    expect(await findDeviceIdByNoisePublicKey(ws, shared)).toBe(idB);
+
+    await revokeDevice(idA, ws);
+    expect(await findDeviceIdByNoisePublicKey(ws, keyA)).toBeNull();
+    expect(await getDeviceNoisePublicKey(idA, ws)).toBeNull();
   });
 });

@@ -40,11 +40,20 @@ vi.mock('@papercusp/db-org', async (orig) => ({
         ),
       );
       return Promise.resolve([]);
-    }, { begin: vi.fn() }),
+    }, { begin: vi.fn(async function (this: unknown, write: (sql: unknown) => Promise<unknown>) {
+      return write(this);
+    }) }),
   }),
 }));
 
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
+// Lifecycle receipt persistence has its own transactional integration coverage.
+// Keep this unit seam focused on the provenance SQL while executing the real
+// transaction callback above (an empty begin mock silently skipped the write).
+vi.mock('../experiment/producer-lifecycle-store', async (original) => ({
+  ...(await original<typeof import('../experiment/producer-lifecycle-store')>()),
+  recordProducerObservation: vi.fn(async () => {}),
+}));
 vi.mock('../hive-federation', () => ({ potHomeSlugForHarness: async () => 'papercusp' }));
 
 const { recordRoutedIdea } = await import('./routed-ledger');

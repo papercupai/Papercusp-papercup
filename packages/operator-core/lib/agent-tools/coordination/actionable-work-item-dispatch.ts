@@ -29,6 +29,7 @@ import { wakeRecipients, type WakeRecipientsResult } from './inbox-wake';
 import { assemblePresenceSnapshot, matchesOwner, resolvePresenceScope } from './presence-snapshot';
 import { listSessionsForAgentName, type AdoptionRow } from '../../plan-items/agent-names';
 import type { LegacyFleetScopeDowngradeAdmission } from '../../work-item-fleet-scope-recovery';
+import type { RefusalContract } from '../../capability-envelope/identity-refusal-contract';
 
 const UNASSIGNED_FRONTIER_STATES = new Set(['open', 'failing', 'todo']);
 const RETAINED_EXECUTION_STATES = new Set([...UNASSIGNED_FRONTIER_STATES, 'wip', 'in_progress', 'validating']);
@@ -59,6 +60,12 @@ export interface WorkItemDispatchSkip {
    * release { claimHold:true } park. Keep both because either can coexist.
    */
   claimHold?: ClaimHoldDispatchDetails;
+  /**
+   * WI-10005197: what would LIFT this skip. Present on the blocked/denied skips whose
+   * cause is a condition another agent or the owner can clear (dependency_blocked,
+   * plan_lane_blocked, authority_denied); read/shape skips carry none.
+   */
+  refusal?: RefusalContract;
 }
 
 type ClaimHoldProvenance = ReturnType<typeof readWorkItemClaimHoldProvenance>;
@@ -115,6 +122,13 @@ export interface StableAgentTargetState {
   wakeable: boolean | null;
   /** Acting-as user carried by the presence row, when available. */
   userId?: string;
+  /**
+   * Every session that adopted `requested` as a stable name, newest first. Set only
+   * when `present` is false: the name is adopted, but no adopter has a presence row,
+   * so a wake cannot reach anyone until a live agent adopts the name again
+   * (WI-6554700010010397).
+   */
+  adoptedBy?: string[];
 }
 
 export interface StableAgentTargetDeps {
@@ -129,7 +143,12 @@ const defaultTargetDeps: StableAgentTargetDeps = {
   listSessions: listSessionsForAgentName,
 };
 
-export type RequiredWakeFailureCode = 'target_dead' | 'target_absent' | 'target_unwakeable' | 'wake_delivery_unknown';
+export type RequiredWakeFailureCode =
+  | 'target_dead'
+  | 'target_absent'
+  | 'target_adopter_gone'
+  | 'target_unwakeable'
+  | 'wake_delivery_unknown';
 
 export interface RequiredWakeFailure {
   code: RequiredWakeFailureCode;
@@ -154,7 +173,7 @@ export interface ActionableWorkItemDispatchDeps {
   claim: (
     id: string,
     assignee: string,
-    opts: { harness?: string; legacyFleetScopeDowngradeAdmission?: LegacyFleetScopeDowngradeAdmission },
+    opts: { harness?: string; assignedBy?: string; fromHolder?: string; legacyFleetScopeDowngradeAdmission?: LegacyFleetScopeDowngradeAdmission },
   ) => Promise<WorkItem | null>;
   /** The same named-id claim-floor oracle used by work_items:claim. */
   explainClaimFloors: typeof explainIssueClaimFloors;
@@ -304,7 +323,7 @@ async function classifyOne(
   actor: string | undefined,
   deps: ActionableWorkItemDispatchDeps,
 ): Promise<
-  | { kind: 'claim'; workItemId: string; legacyFleetScopeDowngradeAdmission?: LegacyFleetScopeDowngradeAdmission }
+  | { kind: 'claim'; workItemId: string; fromHolder?: string; legacyFleetScopeDowngradeAdmission?: LegacyFleetScopeDowngradeAdmission }
   | { kind: 'retained'; workItemId: string }
   | { kind: 'skip'; skipped: WorkItemDispatchSkip }
 > {
@@ -333,7 +352,12 @@ async function classifyOne(
   const workItem = observed.item;
   const holder = observed.claimedBy ?? workItem.assignee;
   const retainedByTarget = sameAgent(holder, targetAgent);
-  const allowedStates = retainedByTarget ? RETAINED_EXECUTION_STATES : UNASSIGNED_FRONTIER_STATES;
+  // A caller can transfer its own held item through claimWorkItem's atomic
+  // fromHolder compare-and-claim. Keep this distinct from a peer-held item:
+  // dispatch must never take another agent's live claim.
+  const transferFromCaller = Boolean(holder && actor && !retainedByTarget && sameAgent(holder, actor));
+  const heldForExecution = retainedByTarget || transferFromCaller;
+  const allowedStates = heldForExecution ? RETAINED_EXECUTION_STATES : UNASSIGNED_FRONTIER_STATES;
   if (!allowedStates.has(workItem.state)) {
     return {
       kind: 'skip',
@@ -367,16 +391,24 @@ async function classifyOne(
         code: 'dependency_blocked',
         reason: `unresolved work-item blocker${unresolved.length === 1 ? '' : 's'}${ids.length ? `: ${ids.join(', ')}` : ''}`,
         ...(ids.length ? { blockers: ids } : {}),
+        refusal: {
+          observed: { workItemId, unresolvedBlockers: ids.length ? ids.join(',') : String(unresolved.length) },
+          liftsWhen:
+            'every listed blocker work-item reaches a terminal state (done, dropped or resolved), or the ' +
+            'blocked-by link is removed. Re-dispatching before then re-skips: finish or drop the blocker, or ' +
+            'unlink it with work_items:link',
+          whoCanMakeItTrue: ['another-agent', 'owner'],
+        },
       },
     };
   }
 
   // observeWorkItem already resolves these for an unassigned row. A retained
-  // row needs the same fresh checks because idempotent replay must not wake work
-  // whose plan was edited back behind a blocker after the original assignment.
+  // row or caller-held transfer needs fresh checks because dispatch must not wake
+  // work whose plan was edited back behind a blocker after the original claim.
   let planBlocked = observed.planItemBlocked ?? null;
   let planClaimed = observed.planItemLiveClaimed ?? null;
-  if (retainedByTarget) {
+  if (heldForExecution) {
     try {
       [planBlocked, planClaimed] = await Promise.all([deps.planBlock(workItem), deps.planClaim(workItem)]);
     } catch (error) {
@@ -393,7 +425,24 @@ async function classifyOne(
   if (planBlocked) {
     return {
       kind: 'skip',
-      skipped: { workItemId, code: 'plan_lane_blocked', reason: planBlocked.reason },
+      skipped: {
+        workItemId,
+        code: 'plan_lane_blocked',
+        reason: planBlocked.reason,
+        refusal: {
+          observed: {
+            workItemId,
+            planSlug: planBlocked.planSlug,
+            planItemId: planBlocked.itemId,
+            effectiveStatus: planBlocked.effectiveStatus,
+          },
+          liftsWhen:
+            'the plan item this work-item implements is no longer blocked: its effective status leaves ' +
+            '`blocked` (blocked-by dependencies resolve, or a sticky `blocked` token is cleared with ' +
+            'plans:set-status). Re-dispatching before then re-skips',
+          whoCanMakeItTrue: ['another-agent', 'owner'],
+        },
+      },
     };
   }
   if (planClaimed && planClaimed.claimedBy !== targetAgent) {
@@ -419,7 +468,7 @@ async function classifyOne(
       },
     };
   }
-  if (holder && !retainedByTarget) {
+  if (holder && !retainedByTarget && !transferFromCaller) {
     return {
       kind: 'skip',
       skipped: {
@@ -437,7 +486,20 @@ async function classifyOne(
       ...(workspaceId ? { workspaceId } : {}),
     });
     if (!authority.allowed) return {
-      kind: 'skip', skipped: { workItemId, code: 'authority_denied', reason: authority.reason },
+      kind: 'skip',
+      skipped: {
+        workItemId,
+        code: 'authority_denied',
+        reason: authority.reason,
+        refusal: {
+          observed: { workItemId, targetAgent, actor: actor ?? null },
+          liftsWhen:
+            'the dispatch authority check admits this exact work-item for the target agent: the fleet leader ' +
+            'widens the target\'s claim spec (scheduler:set_claim_spec) or admits the id, or an actor with ' +
+            'authority over the target dispatches it. Retrying the same dispatch cannot lift it',
+          whoCanMakeItTrue: ['another-agent', 'owner'],
+        },
+      },
     };
     legacyFleetScopeDowngradeAdmission = authority.legacyFleetScopeDowngradeAdmission;
   } catch (error) {
@@ -448,7 +510,7 @@ async function classifyOne(
       },
     };
   }
-  if (observed.gated || (!retainedByTarget && !observed.available)) {
+  if (observed.gated || (!heldForExecution && !observed.available)) {
     // EI-22008434629323224: preserve the claim path's floors for targeted dispatch,
     // but do not collapse an issue-family refusal into the generic frontier text.
     // Reuse the same named-id oracle as work_items:claim so the caller receives the
@@ -472,6 +534,8 @@ async function classifyOne(
         code: observed.gated ? 'admission_gated' : 'read_failed',
         reason: observed.operationClaimDenied
           ? `operation claim authority: ${observed.operationClaimDenied}`
+          : observed.reproductionRefused
+          ? observed.reproductionRefused.detail
           : observed.gated
           ? claimFloor
             ? claimFloorReason(claimFloor)
@@ -487,6 +551,7 @@ async function classifyOne(
   return {
     kind: 'claim',
     workItemId,
+    ...(transferFromCaller && actor ? { fromHolder: actor } : {}),
     ...(legacyFleetScopeDowngradeAdmission ? { legacyFleetScopeDowngradeAdmission } : {}),
   };
 }
@@ -511,13 +576,15 @@ export async function assignActionableWorkItems(
     .map((r) => r.skipped);
 
   const claimResults = await Promise.all(
-    toClaim.map(async ({ workItemId, legacyFleetScopeDowngradeAdmission }) => {
+    toClaim.map(async ({ workItemId, fromHolder, legacyFleetScopeDowngradeAdmission }) => {
       // Authorization/read failures propagate to the durable caller, rather than
       // being misclassified as an ordinary atomic claim refusal.
       await args.beforeMutate?.('claim');
       try {
         const claimed = await deps.claim(workItemId, args.targetAgent, {
           ...(args.harness ? { harness: args.harness } : {}),
+          ...(args.actor ? { assignedBy: args.actor } : {}),
+          ...(fromHolder ? { fromHolder } : {}),
           ...(legacyFleetScopeDowngradeAdmission ? { legacyFleetScopeDowngradeAdmission } : {}),
         });
         return claimed
@@ -601,6 +668,7 @@ export async function resolveStableAgentTarget(
         present: false,
         sessionState: null,
         wakeable: false,
+        ...(adoptions.length > 0 ? { adoptedBy: candidateOwnerIds } : {}),
       };
     }
     return {
@@ -620,6 +688,20 @@ export async function resolveStableAgentTarget(
       wakeable: null,
     };
   }
+}
+
+/**
+ * The diagnosis for a stable agent name whose every adopter has no live presence
+ * (WI-6554700010010397). Shared by the required-wake classifier below and by
+ * coord:dispatch (WI-6554700010010992), so every door names the NAME and its repair
+ * instead of one dead session id.
+ */
+export function adopterGoneDiagnosis(name: string, adopters: readonly string[]): string {
+  return (
+    `agent name "${name}" is adopted only by sessions with no live presence ` +
+    `(${adopters.slice(0, 3).join(', ')}${adopters.length > 3 ? `, +${adopters.length - 3} more` : ''}); ` +
+    `launch an agent that runs plan_items:adopt_name { name: "${name}" }, or retarget/disarm the caller`
+  );
 }
 
 export function classifyRequiredWakeFailure(args: {
@@ -642,6 +724,18 @@ export function classifyRequiredWakeFailure(args: {
       ...base,
       code: 'target_dead',
       message: `${target} has sessionState=${args.target.sessionState}; assignment is durable but the target must be relaunched`,
+    };
+  }
+  const adopters = args.target.adoptedBy ?? [];
+  if (!args.target.present && queued === 0 && adopters.length > 0) {
+    // The stable name outlived every session that adopted it. Name the NAME, not one
+    // dead session id: the repair is a live agent re-adopting it (WI-6554700010010397).
+    const name = args.target.requested;
+    return {
+      ...base,
+      target: name,
+      code: 'target_adopter_gone',
+      message: `${adopterGoneDiagnosis(name, adopters)}. The assignment is durable and keyed on the name`,
     };
   }
   if (!args.target.present && queued === 0) {

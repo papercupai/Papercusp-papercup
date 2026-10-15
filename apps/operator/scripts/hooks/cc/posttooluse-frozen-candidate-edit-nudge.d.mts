@@ -4,8 +4,38 @@
 // apps/operator/scripts/hooks/cc/posttooluse-frozen-candidate-edit-nudge.mjs and regenerate.
 /** MUST match packages/operator-core/lib/release/frozen-candidate-repair-queue.ts. */
 export function normalizeRepoPath(value: any): string;
-export function markerPath(): string;
-export function readMarker(path?: string): any;
+/**
+ * The scoped marker directory. MUST match `frozenRepairMarkerPath` in
+ * packages/operator-core/lib/release/frozen-repair-edit-marker.ts, which writes one
+ * `<sha256 scope>.json` per (workspace, install) frozen queue.
+ *
+ * EI-24313562050732849: this hook used to read one global `frozen-repair-edit-marker.json`.
+ * The writer stopped producing that file when markers became install-scoped (2026-10-01), so
+ * the hook gated hunk recording on a file nothing in the tree wrote: absent ⇒ every hunk was
+ * silently dropped (⇒ `no-ledgered-hunks` at admission); a leftover ⇒ nudges about a dead
+ * repair radius. `frozen-repair-edit-hook-parity.test.ts` pins this default LOCATION against
+ * the writer's default, not only the file format.
+ */
+export function markersDir(): string;
+/** Every readable scoped marker, in a stable order. A missing directory or a corrupt file
+ *  reads as absent — the hook must never fail an edit. */
+export function readMarkers(dir?: string): any[];
+/**
+ * Which frozen lineage an edit belongs to, for the CANDIDATE HINT and the NUDGE only —
+ * recording itself is gated on ANY live marker, because the server resolves the install
+ * authoritatively and a wrong local guess must never drop a hunk.
+ *
+ * The marker whose scope names the edited file's repository root (the install slug is that
+ * checkout's directory name). With no repository root, a lone marker is used. Anything else —
+ * several matches, a lone marker scoped to a different install, no match — is ambiguous ⇒
+ * null: no candidate hint and no nudge, because a wrong repair radius is worse than silence.
+ *
+ * @param {any[]} markers
+ * @param {string | null} repoRoot
+ */
+export function selectMarker(markers: any[], repoRoot: string | null): any;
+/** @param {string} path */
+export function readMarker(path: string): any;
 /**
  * P-019: the repair RADIUS — the failing paths plus every P-021 manifest leg's subject paths
  * (a pre-P-022 marker has no `legs`, so the radius is the failing set alone). Normalized.
@@ -50,6 +80,9 @@ export function ownerIdentity(payload: any, env?: NodeJS.ProcessEnv, readFile?: 
  * when the file is outside any repository — nothing to attribute to a lineage then.
  */
 export function repoRelativePath(filePath: any, cwd?: string, git?: typeof execFileSync): string | null;
+/** The repository root `repoRelativePath` measures from (superproject when in a submodule),
+ *  or null outside any repository. Used to pick the edit's install marker. */
+export function repoRootOf(filePath: any, cwd?: string, git?: typeof execFileSync): any;
 /** Map a trusted papercusp://scratch URI to a path below the configured root. */
 export function scratchUriToPath(uri: any, env?: NodeJS.ProcessEnv): string;
 /**

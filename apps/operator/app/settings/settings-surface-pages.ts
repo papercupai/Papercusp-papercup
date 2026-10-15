@@ -35,6 +35,7 @@ export const SETTINGS_SURFACE_PAGES = {
   'deploy-accounts': lazy(() => import('./deploy-accounts/page')),
   'expert-routing': lazy(() => import('./expert-routing/page')),
   identities: lazy(() => import('./identities/page')),
+  integrations: lazy(() => import('./integrations/page')),
   // /settings/mobile is replaced by Remote access (external-app-access P-010); its route redirects
   // there, and the in-panel surface renders the same page for the old sub-path.
   mobile: lazy(() => import('./remote-access/page')),

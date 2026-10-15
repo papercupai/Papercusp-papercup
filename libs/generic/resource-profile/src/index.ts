@@ -138,6 +138,9 @@ export interface DatabaseTuning {
   readonly maxParallelWorkersPerGather: number;
   /** `max_parallel_maintenance_workers` — parallel workers for CREATE INDEX etc. */
   readonly maxParallelMaintenanceWorkers: number;
+  /** `pg_textsearch.memory_limit` (MiB): the shared-memory budget for the BM25 memtable
+   *  cache across all indexes. Inert on a server that does not preload pg_textsearch. */
+  readonly bm25MemtableMemoryLimitMb: number;
 }
 
 /** The memoized, fully-derived profile — every scale cap the app needs. */
@@ -302,6 +305,12 @@ export function deriveDatabaseTuning(signals: ResourceSignals): DatabaseTuning {
   const maxParallelWorkers = clamp(cores, 8, 256);
   const maxParallelWorkersPerGather = clamp(Math.round(cores / 2), 1, 8);
   const maxParallelMaintenanceWorkers = clamp(Math.round(cores / 2), 1, 8);
+  // pg_textsearch.memory_limit caps the BM25 memtable cache (dynamic shared memory, so
+  // it is a ceiling, not a reservation). The upstream default is a fixed 2 GB, which a
+  // small embedded host cannot spare beside its 15% shared_buffers. Scale it with
+  // shared_buffers and keep the upstream 2 GB as the ceiling (plan
+  // bm25-lexical-search-evoke-adoption-2026-10-10 P-004).
+  const bm25MemtableMemoryLimitMb = clamp(Math.round(sharedBuffersMb / 8), 64, 2048);
 
   return {
     maxConnections,
@@ -318,6 +327,7 @@ export function deriveDatabaseTuning(signals: ResourceSignals): DatabaseTuning {
     maxParallelWorkers,
     maxParallelWorkersPerGather,
     maxParallelMaintenanceWorkers,
+    bm25MemtableMemoryLimitMb,
   };
 }
 
@@ -421,6 +431,9 @@ export function databaseTuningToSettings(t: DatabaseTuning): Record<string, stri
     // ONLY method every build accepts: embedded PG 18.3 is built without lz4/zstd
     // and refuses them with a FATAL at startup. Fixed, not host-scaled; reloadable.
     wal_compression: 'pglz',
+    // BM25 memtable cache budget (see deriveDatabaseTuning). A two-part name, so a
+    // server without pg_textsearch accepts it as an inert placeholder; reloadable.
+    'pg_textsearch.memory_limit': `${t.bm25MemtableMemoryLimitMb}MB`,
     // max_slot_wal_keep_size — disk-fill-SPOF defense (WI-347; complements the
     // WARN-only detector in operator-core storage/replication-slot-alarm.ts).
     // With PG's default -1 (UNLIMITED), a stuck/abandoned replication slot pins
@@ -701,7 +714,13 @@ function pgValuesEqual(target: string, live: PgLiveSetting): boolean {
 /** Render a live value with its unit, so it reads like the config-file form. */
 function renderLive(live: PgLiveSetting): string {
   const unit = (live.unit ?? '').trim();
-  return unit ? `${live.setting}${unit}` : live.setting;
+  if (!unit) return live.setting;
+  // A block unit such as `8kB` carries a multiplier. Gluing it on unscaled printed
+  // effective_cache_size = 24725888 blocks as "247258888kB" (measured 2026-10-11).
+  const scaled = /^(\d+)\s*([A-Za-z]+)$/.exec(unit);
+  const n = Number(live.setting);
+  if (scaled && Number.isFinite(n)) return `${n * Number(scaled[1])}${scaled[2]}`;
+  return `${live.setting}${unit}`;
 }
 
 /**
@@ -742,6 +761,48 @@ export function diffPgSettings(
     reloadSuffices: diverged.length > 0 && restartRequired.length === 0,
     inSync: diverged.length === 0,
   };
+}
+
+/** A later config file that assigns a key the managed drop-in also sets. */
+export interface PgShadowingAssignment {
+  /** File name within the include directory. */
+  file: string;
+  /** The key as written in that file. */
+  key: string;
+  /** 1-based line number of the assignment. */
+  line: number;
+}
+
+/**
+ * Assignments in an `include_dir` that override the managed drop-in `ownName`.
+ * PostgreSQL reads the directory's `*.conf` files in C-locale name order and the last
+ * assignment of a key wins, so any file sorting after `ownName` that sets one of `keys`
+ * silently replaces the managed value. Names are compared case-insensitively, as
+ * PostgreSQL does; comments and non-assignment lines are ignored.
+ *
+ * Measured 2026-10-11 on the dev box: a hand-written `20-pg-stat-statements.conf` set
+ * `shared_preload_libraries = 'pg_stat_statements'` after the managed
+ * `10-papercusp-autotune.conf`, so any library the managed drop-in added to the preload
+ * list (pg_textsearch) would have been dropped again at the next restart.
+ */
+export function findShadowingPgAssignments(
+  files: ReadonlyArray<{ name: string; text: string }>,
+  ownName: string,
+  keys: readonly string[],
+): PgShadowingAssignment[] {
+  const wanted = new Set(keys.map((k) => k.toLowerCase()));
+  const later = files
+    .filter((f) => f.name.endsWith('.conf') && f.name > ownName)
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const out: PgShadowingAssignment[] = [];
+  for (const f of later) {
+    f.text.split('\n').forEach((raw, i) => {
+      // `name = value`, `name=value` and `name value` are all assignments.
+      const m = /^\s*([A-Za-z_][\w.]*)(?:\s*=\s*|\s+)\S/.exec(raw.replace(/#.*$/, ''));
+      if (m && wanted.has(m[1].toLowerCase())) out.push({ file: f.name, key: m[1], line: i + 1 });
+    });
+  }
+  return out;
 }
 
 /**

@@ -3,10 +3,38 @@
  * The concurrency sampler + the bounded pool are the work-surface-agnostic core every driver shares.
  */
 import { describe, expect, it } from 'vitest';
-import { makeConcurrencySampler, makePoolBacklogDriver, runConcurrencyPool } from './hive-backlog-utilities';
+import { concurrencyTimelineFromIntervals, makeConcurrencySampler, makePoolBacklogDriver, runConcurrencyPool } from './hive-backlog-utilities';
 import type { CoordEvent } from '@papercusp/bench-metrics';
 import type { FleetTaskResult, HiveBacklogRunRequest } from './hive-backlog';
 import type { BenchTask } from './types';
+
+describe('concurrencyTimelineFromIntervals', () => {
+  it('weights irregular overlaps by elapsed time, independent of input order', () => {
+    const intervals = [{ startedAtMs: 100, endedAtMs: 200 }, { startedAtMs: 100, endedAtMs: 110 }];
+    const result = concurrencyTimelineFromIntervals(intervals)!;
+    expect(result).toEqual({ startedAtMs: 100, endedAtMs: 200, wallClockMs: 100, participantWallClockMs: 110,
+      concurrencyTimeline: { samples: [{ tMs: 0, live: 2 }, { tMs: 10, live: 1 }, { tMs: 100, live: 0 }],
+        peakConcurrent: 2, avgConcurrent: 1.1 } });
+    expect(concurrencyTimelineFromIntervals([...intervals].reverse())).toEqual(result);
+  });
+  it('includes idle gaps and does not invent overlap at a recovery boundary', () => {
+    expect(concurrencyTimelineFromIntervals([{ startedAtMs: 0, endedAtMs: 10 },
+      { startedAtMs: 10, endedAtMs: 20 }, { startedAtMs: 30, endedAtMs: 40 }])).toMatchObject({
+      wallClockMs: 40, participantWallClockMs: 30,
+      concurrencyTimeline: { avgConcurrent: 0.75, peakConcurrent: 1,
+        samples: [{ tMs: 0, live: 1 }, { tMs: 10, live: 1 }, { tMs: 20, live: 0 }, { tMs: 30, live: 1 }, { tMs: 40, live: 0 }] } });
+  });
+  it('records observed zero-duration lifetimes without a fictitious peak', () => {
+    expect(concurrencyTimelineFromIntervals([{ startedAtMs: 12, endedAtMs: 12 }])).toMatchObject({
+      wallClockMs: 0, participantWallClockMs: 0, concurrencyTimeline: { avgConcurrent: 0, peakConcurrent: 0, samples: [{ tMs: 0, live: 0 }] } });
+  });
+  it.each([[], [{ startedAtMs: -1, endedAtMs: 2 }], [{ startedAtMs: 3, endedAtMs: 2 }],
+    [{ startedAtMs: 1, endedAtMs: NaN }], [{ startedAtMs: 0.5, endedAtMs: 2 }],
+    [{ startedAtMs: 0, endedAtMs: Number.MAX_SAFE_INTEGER }, { startedAtMs: 0, endedAtMs: 1 }]].map(intervals => ({ intervals })))
+  ('returns unknown for invalid or absent intervals %j', ({ intervals }) => {
+    expect(concurrencyTimelineFromIntervals(intervals)).toBeNull();
+  });
+});
 
 describe('makeConcurrencySampler', () => {
   it('tracks live occupancy, inline peak, and projects the timeline', () => {

@@ -26,7 +26,9 @@ export type CodeIntelBackend =
   | 'ripgrep'
   | 'ast-grep'
   | 'repomix'
-  | 'code2prompt';
+  | 'code2prompt'
+  /** The vendored TypeScript's own LanguageService, in-process (first-party-callers.ts, D-026). */
+  | 'typescript-service';
 
 /**
  * Safe fallback guidance for the text-search route.
@@ -68,7 +70,45 @@ export const LINE_INDEX_BASE: Readonly<Record<CodeIntelBackend, 0 | 1>> = Object
   'ast-grep': 0,
   repomix: 1,
   code2prompt: 1,
+  // getLineAndCharacterOfPosition is zero-based; first-party-callers.ts adds 1 itself.
+  'typescript-service': 0,
 });
+
+/**
+ * GitNexus raw `startLine` base PER VERSION — the version-aware companion to
+ * `LINE_INDEX_BASE.gitnexus` (WI-10005091 residue of plan
+ * gitnexus-selective-hardening-and-comparison-2026-09-13 D-002).
+ *
+ * `LINE_INDEX_BASE.gitnexus` is a single number, which is only true for the
+ * pinned install (`PINNED_GITNEXUS_VERSION`, 1.6.9). GitNexus 1.6.12 reports a
+ * 1-BASED `startLine`, so `toOneIndexed('gitnexus', …)`'s unconditional +1 would
+ * put EVERY site one line late and an exact path:line consumer would score 0 by
+ * construction (the bench's attempt 2 did exactly that). Measured on ONE source
+ * tree, `getLongLivedAdminPool` (declared on 1-based line 145 of
+ * long-lived-admin-pool.ts): raw `startLine` 144 on 1.6.9, 145 on 1.6.12.
+ *
+ * A version absent from this table is UNMEASURED: `gitnexusStartLineBase`
+ * returns null and callers must refuse rather than guess. Adding a version here
+ * requires re-measuring it against the fixture above — never infer it from a
+ * neighbouring release. `contracts.test.ts` pins the pinned version to this
+ * table so a pin bump cannot ship without the measurement.
+ */
+export const GITNEXUS_START_LINE_BASE_BY_VERSION: Readonly<Record<string, 0 | 1>> = Object.freeze({
+  '1.6.9': 0,
+  '1.6.12': 1,
+});
+
+/**
+ * Raw `startLine` base for a GitNexus version string (`1.6.9`, or a banner such
+ * as `GitNexus Analyzer (1.6.12)` — the first `x.y.z` found wins). Returns null
+ * for an unparseable or UNMEASURED version, never a default.
+ */
+export function gitnexusStartLineBase(version: string | null | undefined): 0 | 1 | null {
+  const m = typeof version === 'string' ? /(\d+\.\d+\.\d+)/.exec(version) : null;
+  if (!m) return null;
+  const base = GITNEXUS_START_LINE_BASE_BY_VERSION[m[1]!];
+  return base === undefined ? null : base;
+}
 
 /**
  * Normalize a backend-reported line to the one-indexed convention every human
@@ -108,6 +148,13 @@ export interface SymbolSite {
    * detail to give", never "the detail was empty".
    */
   readonly detail?: string | null;
+  /**
+   * The symbol's own name, on sites that name a symbol (a workspace-symbol
+   * hit). OPTIONAL for the same reason as `detail`. Exact-name questions need
+   * it: tsserver's symbol search is fuzzy, so a hit's location alone cannot say
+   * whether it IS the symbol that was asked for.
+   */
+  readonly name?: string | null;
 }
 
 /** Whether returned matches were cut off. This says nothing about index coverage. */
@@ -146,6 +193,97 @@ export interface Freshness {
   readonly indexedCommit: string | null;
 }
 
+/** Source versions are content identities, not claims about runtime execution.
+ * A local-root identity is scoped to that checkout. Cross-checkout remapping
+ * requires a registry identity and re-resolution; line/name similarity is insufficient.
+ */
+export interface CodeIntelSourceFile {
+  readonly path: string;
+  readonly contentHash: string;
+  readonly language: string;
+  readonly representation: 'full-source' | 'reexport-stub';
+}
+
+/** Context joins source relationships without adding duplicate semantic query tools. */
+export type CodeIntelRelationshipKind = CodeIntelIntent | 'imports' | 'inheritance' | 'members'
+  | 'field-read' | 'field-write' | 'overrides';
+
+export interface CodeIntelVersionedSite {
+  readonly site: SymbolSite;
+  readonly contentHash: string;
+  readonly versionedSymbolId: string | null;
+}
+
+/** Paths refer to call-site indices, in walk order. Call edges retain their original direction. */
+export interface CodeIntelTraversal {
+  readonly direction: 'upstream' | 'downstream' | 'both' | 'forward';
+  readonly maxDepth: number;
+  readonly maxPaths: number;
+  readonly start: CodeIntelVersionedSite;
+  readonly target?: CodeIntelVersionedSite;
+  readonly paths: readonly { readonly siteIndices: readonly number[]; readonly walk: 'forward' | 'reverse' }[];
+  readonly truncationReasons: readonly ('depth' | 'paths' | 'sites' | 'nodes')[];
+  /** Unresolved calls prevent a negative result from proving absence. */
+  readonly outcome: 'found' | 'not-found-in-scope' | 'incomplete';
+}
+
+export interface CodeIntelSourceEvidence {
+  readonly schemaVersion: 1;
+  readonly sourceScope: {
+    readonly repositoryId: string | null;
+    readonly identityKind: 'registry' | 'local-root' | 'unknown';
+    /** Digest of actual inputs; null when no snapshot was measured. */
+    readonly sourceFingerprint: string | null;
+    readonly paths: readonly string[];
+    readonly supportingFiles: readonly CodeIntelSourceFile[];
+  };
+  readonly graphScope: {
+    readonly basis: 'compiler-project' | 'indexed-code' | 'syntax';
+    readonly sourceCompleteness: 'unverified';
+    readonly limitations: readonly string[];
+  };
+  readonly languageCapabilities: readonly {
+    readonly language: string;
+    readonly intent: CodeIntelIntent;
+    readonly status: 'compiler-backed' | 'syntax-only' | 'unsupported' | 'unknown';
+  }[];
+  readonly siteIdentities: readonly {
+    readonly siteIndex: number;
+    readonly versionedSymbolId: string | null;
+    readonly sourcePath: string;
+    readonly contentHash: string | null;
+  }[];
+  readonly relationships: readonly {
+    readonly siteIndex: number;
+    readonly kind: CodeIntelRelationshipKind;
+    readonly origin: 'compiler' | 'syntax' | 'index' | 'unknown';
+    readonly knowledge: 'observed' | 'inferred' | 'unknown';
+    readonly runtimeExecution: 'unknown';
+    readonly binding?: 'direct' | 'indirect' | 'dynamic' | 'unresolved';
+    readonly source?: CodeIntelVersionedSite;
+    /** Same repository as sourceScope; measured from the same compiler program. */
+    readonly target?: CodeIntelVersionedSite;
+  }[];
+}
+
+/** A versioned site identity, deliberately invalidated by a source edit or move.
+ * This is not a persistent semantic identifier. Resolve again after a mismatch.
+ */
+export function versionedSymbolIdentity(repositoryId: string | null, site: SymbolSite,
+  source: CodeIntelSourceFile | undefined): string | null {
+  if (!repositoryId?.trim() || !source || source.path !== site.path ||
+    !/^[a-f0-9]{64}$/.test(source.contentHash) || source.representation !== 'full-source' ||
+    site.line1 === null || !Number.isInteger(site.line1) || site.line1 < 1 ||
+    site.path.startsWith('/') || site.path.split('/').includes('..') || site.path.includes('\\')) return null;
+  return JSON.stringify(['symbol-site-v1', repositoryId, site.path, source.contentHash,
+    site.line1, site.name ?? null, site.kind]);
+}
+
+/** Only identical repository/content/location tuples survive without re-resolution. */
+export function sourceIdentityContinuity(previous: string | null, current: string | null): 'unchanged' | 'needs-resolution' {
+  return previous !== null && current !== null && previous === current ? 'unchanged' : 'needs-resolution';
+}
+
 /** The normalized answer shape every backend is scored against. */
 export interface CodeIntelAnswer {
   readonly backend: CodeIntelBackend;
@@ -154,12 +292,27 @@ export interface CodeIntelAnswer {
   readonly sites: readonly SymbolSite[];
   readonly truncation: Truncation;
   readonly freshness: Freshness;
+  /** Omission on a legacy backend is unmeasured; never fill hashes from a later disk read. */
+  readonly evidence?: CodeIntelSourceEvidence;
+  readonly traversal?: CodeIntelTraversal;
+  /** Retrieval/grouping suggestions over a captured compiler scope, never execution proof. */
+  readonly discovery?: {
+    readonly knowledge: 'inferred';
+    readonly method: 'weak-call-components/lexical-rrf';
+    readonly semanticSimilarity: 'unmeasured';
+    readonly outcome: 'suggestions' | 'not-found-in-scope' | 'incomplete';
+    readonly nodesMeasured: number;
+    readonly truncationReasons: readonly string[];
+    readonly groups: readonly { id: string; members: readonly CodeIntelVersionedSite[] }[];
+    readonly flows: readonly { entry: CodeIntelVersionedSite; nodes: readonly CodeIntelVersionedSite[]; runtimeExecution: 'unknown' }[];
+    readonly matches: readonly { symbol: CodeIntelVersionedSite; groupId: string; score: number; rankers: readonly string[]; evidence: 'retrieval' }[];
+  };
   /**
    * Scope of the evidence, independently of health, freshness and output limits.
    * Omission on a legacy producer means unmeasured, never source completeness.
    */
   readonly coverage?: {
-    readonly basis: 'indexed-code' | 'compiler-project';
+    readonly basis: 'indexed-code' | 'compiler-project' | 'syntax';
     readonly sourceCompleteness: 'unverified';
     readonly limitations: readonly string[];
   };
@@ -172,6 +325,24 @@ export interface CodeIntelAnswer {
   readonly error: string | null;
 }
 
+/** Preserve a producer's scope without substituting later disk bytes for its inputs. */
+export function unmeasuredSourceEvidence(answer: Pick<CodeIntelAnswer, 'intent' | 'sites'>,
+  scope: { repositoryId: string | null; identityKind: CodeIntelSourceEvidence['sourceScope']['identityKind'];
+    paths: readonly string[]; basis: CodeIntelSourceEvidence['graphScope']['basis']; language?: string },
+  limitations: readonly string[]): CodeIntelSourceEvidence {
+  return {
+    schemaVersion: 1,
+    sourceScope: { repositoryId: scope.repositoryId, identityKind: scope.identityKind,
+      paths: [...scope.paths], sourceFingerprint: null, supportingFiles: [] },
+    graphScope: { basis: scope.basis, sourceCompleteness: 'unverified', limitations: [...limitations] },
+    languageCapabilities: [{ language: scope.language ?? 'unknown', intent: answer.intent, status: 'unknown' }],
+    siteIdentities: answer.sites.map((site, siteIndex) => ({ siteIndex, sourcePath: site.path,
+      contentHash: null, versionedSymbolId: null })),
+    relationships: answer.sites.map((_site, siteIndex) => ({ siteIndex, kind: answer.intent,
+      origin: 'unknown', knowledge: 'unknown', runtimeExecution: 'unknown' })),
+  };
+}
+
 /** The question kinds the routing table dispatches on. */
 export type CodeIntelIntent =
   | 'definition'
@@ -180,6 +351,7 @@ export type CodeIntelIntent =
   | 'callers'
   | 'callees'
   | 'impact'
+  | 'trace'
   | 'rename-preview'
   | 'diagnostics'
   /**

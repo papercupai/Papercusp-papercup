@@ -123,4 +123,21 @@ describe('frontierRankReport — the suite rollup', () => {
   });
 
   it('rejects k < 1', () => expect(() => frontierRankReport(tasks, 0)).toThrow());
+
+  it('can rank by task-weighted mean when best-score rank prefers the other arm', () => {
+    const v2: ArmTaskTrials[] = [
+      { taskId: 't1', trials: { steady: [0.6, 0.6, 0.6, 0.6, 0.6], spike: [1, 0, 0, 0, 0] } },
+      { taskId: 't2', trials: { steady: [0.6, 0.6, 0.6, 0.6, 0.6], spike: [1, 0, 0, 0, 0] } },
+      { taskId: 'short', trials: { steady: [1, 1, 1, 1] } },
+    ];
+    expect(frontierRankReport(v2, 5).arms[0].arm).toBe('spike');
+    const r = frontierRankReport(v2, 5, { ranking: 'mean' });
+    expect(r.arms.map(a => a.arm)).toEqual(['steady', 'spike']);
+    expect(r.arms[0].meanAtK).toBeCloseTo(0.6);
+    expect(r.arms[0].tasksUsed).toBe(2);
+    expect(r.perTaskMeanAtK).toEqual([
+      { taskId: 't1', tier: undefined, scores: { steady: 0.6, spike: 0.2 } },
+      { taskId: 't2', tier: undefined, scores: { steady: 0.6, spike: 0.2 } },
+    ]);
+  });
 });

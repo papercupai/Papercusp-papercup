@@ -24,6 +24,8 @@ function row(p: Partial<ScorecardRow> & { issueId: string; createdAt: string }):
     extraKeys: [],
     rubricResolved: true,
     synthesized: false,
+    score10: null,
+    linkedItems: [],
     ...p,
   };
 }

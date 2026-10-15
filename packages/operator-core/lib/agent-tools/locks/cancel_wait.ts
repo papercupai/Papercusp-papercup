@@ -12,6 +12,8 @@ import { readFileLockIdentity } from './identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryCancelWait } from './su-lock-store';
 import { bulkContent, runBulk } from '../_bulk';
+import { finishHookLockOperationSchema } from '../../authority/file-lock-authority-ops';
+import { resolveExplicitFileLockDomain } from './coordination-domain';
 
 export default defineTool({
   name: 'locks:cancel_wait',
@@ -27,14 +29,28 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   args: z
     .object({
+      hook_operation: finishHookLockOperationSchema.optional().describe('native hook only: cancel this exact prepared operation before or after acquire'),
+      coordination_domain: z.string().min(1).max(4096).optional(),
       ticket_id: z.string().uuid().optional().describe('single waiter ticket to cancel'),
       ticket_ids: z.array(z.string().uuid()).min(1).max(200).optional().describe('waiter tickets to cancel in one call'),
     })
-    .refine((a) => Boolean(a.ticket_id) || (a.ticket_ids?.length ?? 0) > 0, {
+    .refine((a) => Boolean(a.hook_operation) || Boolean(a.ticket_id) || (a.ticket_ids?.length ?? 0) > 0, {
       message: 'pass `ticket_id` or `ticket_ids`',
-    }),
+    })
+    .refine((a) => !a.hook_operation || (!a.ticket_id && !a.ticket_ids?.length),
+      { message: 'hook_operation cannot be combined with ticket selectors' }),
   async handler(args, ctx) {
     const { ownerId, coordinationDomain } = readFileLockIdentity(ctx);
+    if (args.hook_operation) {
+      const op = args.hook_operation;
+      const { routeHookOperationFinish } = await import('./file-lock-authority-wiring');
+      const result = await routeHookOperationFinish({
+        owner: ownerId, coordinationDomain: resolveExplicitFileLockDomain(args.coordination_domain, coordinationDomain),
+        operation: { id: op.id, deadline: op.deadline, paths: op.paths, intent: op.intent,
+          ttlSec: op.ttl_sec, outcome: 'cancelled' },
+      }, op.authority);
+      return { data: result };
+    }
     const ticketIds = Array.from(new Set([...(args.ticket_id ? [args.ticket_id] : []), ...(args.ticket_ids ?? [])]));
     const env = await runBulk(
       ticketIds,

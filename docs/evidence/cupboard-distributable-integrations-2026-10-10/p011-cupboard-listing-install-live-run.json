@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-011 live: slack and bug-triage are listed in the public Cupboard and install from those listings into a fresh desktop app, with no local checkout standing in for the published repositories",
+  "framework": "shell",
+  "command": [
+    "scripts/verify-tauri-headless.sh",
+    "--",
+    "bash",
+    ".papercusp/scratch/p011-fixtures/headless-p011.sh",
+    "(launched by .papercusp/scratch/p011-fixtures/launch-p011.sh with VERIFY_TAURI_ISOLATED_DB=1, a private PAPERCUSP_HOME, VERIFY_TAURI_SOURCE_REF pinned and the acceptance inputs checked byte-identical to that ref; unlike the P-006 and P-010 runs there is NO git url rewrite, and the assertion script's first step checks that none is configured for the isolated operator)"
+  ],
+  "startedAt": "2026-10-11T19:05:48.455Z",
+  "finishedAt": "2026-10-11T19:22:47.912Z",
+  "exitCode": 0,
+  "summary": "verify-tauri-headless run 20261011T190546Z-3144427 verdict=pass (passed=3 failed=0 blocked=0 skipped=0), isolated DB and private home, superproject e3023ae14b, libs/papercusp c96718ef02. Boot needed a second launch attempt (attempt 2 booted). The isolated operator had no github.com url rewrite (checked against the operator pid's own environment). The public mirrors resolved anonymously at Papercusp/papercusp-slack HEAD 121caaa5 and Papercusp/papercusp-bug-triage HEAD 5a300049. Slack: no Slack card existed before install; installing Cupboard listing ccd90bf0-f04c-486d-93cd-2c84d8241efe returned 409 (review required) then 200 after accepting the review; the install source is https://github.com/Papercusp/papercusp-slack and the review declares provider slack (chat-message; chat.channels, chat.reply, ingress.normalize; egress slack.com). Without an app update, Settings -> Integrations then showed the Slack card with its app registration (Create, Copy definition, socket mode) and exactly two masked credential inputs, both unset. bug-triage: no section existed before install; installing listing 508f85df-cb5a-4e92-9fdb-26c26eafd00f returned 200 for review and 200 for accept, source https://github.com/Papercusp/papercusp-bug-triage, review shows a trigger pack (1 binding, datatype chat-message, plan target bug-triage, not armed); Settings -> Integrations then showed the '@papercupai/bug-triage Version 0.1.0 · installed, not set up yet' section with its project, channel and destination inputs.",
+  "assertions": [
+    { "id": "no-local-rewrite", "passed": true, "evidence": "OK no github.com url rewrite (operator pid 3825424)." },
+    { "id": "public-mirrors-resolve", "passed": true, "evidence": "MIRROR papercusp-slack HEAD=121caaa539676894088644fed14b23464a85e68a; MIRROR papercusp-bug-triage HEAD=5a300049a78b222a8239452b8717beea7deacada." },
+    { "id": "slack-card-absent-before-install", "passed": true, "evidence": "CARD_BEFORE_INSTALL count=0." },
+    { "id": "slack-installs-from-listing", "passed": true, "evidence": "INSTALL_SLACK first=409 second=200 providerId=slack; result source https://github.com/Papercusp/papercusp-slack, installedTo <private home>/global-plugins/slack." },
+    { "id": "slack-card-after-install", "passed": true, "evidence": "OK Slack card after install; APP_REGISTRATION create=true name=\"Papercusp\" socket=true buttons=[\"Copy definition\"]." },
+    { "id": "slack-credential-fields", "passed": true, "evidence": "[PASS] two password inputs under [data-provider-credentials=\"slack\"]; CREDENTIALS app_token:false,bot_token:false." },
+    { "id": "bug-triage-section-absent-before-install", "passed": true, "evidence": "PACK_SECTION_BEFORE_INSTALL count=0." },
+    { "id": "bug-triage-installs-from-listing", "passed": true, "evidence": "INSTALL_BUG_TRIAGE first=200 second=200; review @papercupai/bug-triage 0.1.0 triggerPack bindingCount 1, datatypes [chat-message], planTargets bug-triage, armed false; result source https://github.com/Papercusp/papercusp-bug-triage." },
+    { "id": "bug-triage-section-after-install", "passed": true, "evidence": "PACK_SECTION '@papercupai/bug-triage Version 0.1.0 · installed, not set up yet Not set up Trigger pack: reads messages in the chat channels you pick, decides which ones report a bug, and files each bug as a ticket in the project you pick…'." }
+  ],
+  "plan": "cupboard-distributable-integrations-2026-10-10",
+  "items": ["P-011"],
+  "specs": ["SPEC-R-1-P-011"],
+  "evidencePlane": "live",
+  "harnessRun": {
+    "harness": "verify-tauri-headless",
+    "runId": "20261011T190546Z-3144427",
+    "verdict": "pass",
+    "evidenceDir": "~/.local/state/verification-harness/verify-tauri-headless/20261011T190546Z-3144427",
+    "superprojectRef": "e3023ae14bf5638f71bd38531e8600dea28dd311",
+    "packageRef": "libs/papercusp@c96718ef0213e99e65987f67b7f6ce274947428d",
+    "listings": {
+      "slack": "ccd90bf0-f04c-486d-93cd-2c84d8241efe",
+      "bug-triage": "508f85df-cb5a-4e92-9fdb-26c26eafd00f"
+    },
+    "mirrors": {
+      "https://github.com/Papercusp/papercusp-slack": "121caaa539676894088644fed14b23464a85e68a",
+      "https://github.com/Papercusp/papercusp-bug-triage": "5a300049a78b222a8239452b8717beea7deacada"
+    },
+    "testedInputs": [
+      "apps/operator/app/settings/integrations/page.tsx",
+      "packages/operator-core/lib/cupboard/install-plugin-core.ts"
+    ]
+  },
+  "limitations": [
+    "This run proves listing and install. Connecting, arming and firing the installed packages on a real Slack workspace is the P-008 live drill (D-010), and the provider-author journey is SPEC-R-6-P-011 (socket-provider-author-journey.integration.test.ts).",
+    "The package code installed is the published mirror content, which is exported from libs/papercusp at 84ceeccc; the operator under test ran from the pinned superproject ref above.",
+    "The harness's result.json leaves finishedAt empty; finishedAt above is the write time of the launcher's EXIT=0 line.",
+    "The fixture's screenshot calls printed paths under /tmp/su0dd6-p011-headless/; the DOM text assertions above are the evidence."
+  ]
+}

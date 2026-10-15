@@ -70,7 +70,6 @@
 export type HygieneCategory =
   | "generated-artifact-stale"
   | "budget-exceeded"
-  | "fixture-drift"
   | "detector-coverage-drift";
 
 export type GateFailureClass = "product" | "hygiene";
@@ -98,13 +97,15 @@ export const EXPLICIT_HYGIENE_GATE_SCRIPTS: Record<string, ExplicitHygieneEntry>
       "`main`. Historically this is the single most common way a tool-description edit " +
       "froze the fleet gate hours after the edit landed.",
   },
-  "lint:migration-fixture-drift:check": {
-    category: "fixture-drift",
-    remedy: "npm run lint:migration-fixture-drift",
-    why:
-      "A test fixture has fallen behind the migrations it mirrors. The remedy is to " +
-      "regenerate the fixture; the check makes no claim about production behaviour.",
-  },
+  // `lint:migration-fixture-drift:check` (category `fixture-drift`) USED TO SIT HERE and is
+  // RETIRED with its npm script (WI-6554700010009165). No gate leg ever ran it, so this entry
+  // classified a failure that could not occur. Wiring it instead was measured and rejected:
+  // `findFixtureGaps` flags every inline fixture that lacks a new column, deliberate partial
+  // stubs included, so 11 of the last 120 migrations would have fired on non-defects. The
+  // detector lives on as the advisory PostToolUse nudge, which runs
+  // scripts/check-migration-fixture-drift.mjs by path. An unregistered entry fails closed to
+  // `product`, so re-adding the script without an entry here holds the gate rather than
+  // waving it through.
 };
 
 /** ## The one admitted exception to "a test file is never hygiene" (WI-41765, D-010)
@@ -463,4 +464,155 @@ export function decidePromotion(input: PromotionInput): PromotionDecision {
     hygieneFailures,
     hygieneWorkItems,
   };
+}
+
+/** Exact observations at the measured-suite decision boundary, not a new suite run. */
+export interface GateSuiteDecisionInput {
+  green: boolean | null;
+  infraFault: boolean;
+  failures: string[];
+  rootScripts: Record<string, string> | null;
+  failingCasesByFile: Array<[string, string[]]> | null;
+}
+
+export interface GateSuiteDecisionSignature {
+  disposition: 'green' | 'hygiene-green' | 'red' | 'inconclusive';
+  productFailures: string[];
+  hygieneFailures: string[];
+  hygieneConditionKeys: string[];
+}
+
+export interface GateSuiteVerdictReplay {
+  version: 1;
+  candidate: string;
+  runId: string | null;
+  measuredAtMs: number;
+  input: GateSuiteDecisionInput;
+  expected: GateSuiteDecisionSignature;
+  /** Ordered observations of the actual downstream decisions. Absent on legacy captures. */
+  decisions?: GateDecisionReplay[];
+  /** False for selective-repair/queue decisions that rendered without a canonical suite. */
+  suiteMeasured?: boolean;
+}
+
+export interface GateDecisionReplay {
+  kind: string;
+  args: unknown[];
+  expected: unknown;
+}
+
+export function gateActionBlocks(action: 'pass' | 'warn' | 'block' | null): boolean {
+  return action === 'block';
+}
+
+export function gateVerdictAppliesToHead(actualHead: string, measuredHead: string): boolean {
+  return actualHead === measuredHead;
+}
+
+/** JSONB may reorder keys. Compare meaning, not serialization order or display copy. */
+export function gateReplayCanonical(value: unknown): string {
+  if (Array.isArray(value)) return '[' + value.map(gateReplayCanonical).join(',') + ']';
+  if (value !== null && typeof value === 'object') return '{' + Object.entries(value)
+    .filter(([, v]) => v !== undefined).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+    .map(([k, v]) => JSON.stringify(k) + ':' + gateReplayCanonical(v)).join(',') + '}';
+  return JSON.stringify(value) ?? 'null';
+}
+
+export function gateDecisionSignature(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+  const { summary: _summary, replay: _replay, ...signature } = value as Record<string, unknown>;
+  return signature;
+}
+
+/** Copy the exact IO observations/clock before another retry can mutate them. */
+export function captureGateDecisionReplay(kind: string, args: unknown[], output: unknown): GateDecisionReplay {
+  return JSON.parse(JSON.stringify({ kind, args, expected: gateDecisionSignature(output) })) as GateDecisionReplay;
+}
+
+/** Explicit, source-reviewed transition: exact old measurement and exact accepted result.
+ * A maintainer records the governing plan decision alongside both canonical snapshots.
+ * No wildcard, deletion of history, or runtime bypass is supported. */
+export interface GateReplayBaselineTransition {
+  decisionRef: string;
+  reason: string;
+  previous: string;
+  accepted: string;
+}
+
+export const GATE_REPLAY_BASELINE_TRANSITIONS: readonly GateReplayBaselineTransition[] = Object.freeze([]);
+
+export function acceptedGateReplayTransition(previous: unknown, accepted: unknown,
+  transitions: readonly GateReplayBaselineTransition[] = GATE_REPLAY_BASELINE_TRANSITIONS): string | null {
+  const from = gateReplayCanonical(previous), to = gateReplayCanonical(accepted);
+  return transitions.find(t => /^[-a-z0-9]+#D-\d+$/.test(t.decisionRef) && t.reason.trim() &&
+    t.previous !== t.accepted && t.previous === from && t.accepted === to)?.decisionRef ?? null;
+}
+
+/** Shared by the real gate and replay. Preserve the existing four fail-closed axes. */
+export function decideGateSuite(input: GateSuiteDecisionInput): {
+  hygieneSplit: PromotionDecision | null;
+  signature: GateSuiteDecisionSignature;
+} {
+  const hygieneSplit = input.green === false && !input.infraFault &&
+    input.failures.length > 0 && input.rootScripts !== null
+    ? decidePromotion({ failures: input.failures, verdictRendered: true, ctx: {
+        rootScripts: input.rootScripts,
+        ...(input.failingCasesByFile === null ? {} : {
+          failingCasesByFile: new Map(input.failingCasesByFile),
+        }),
+      } })
+    : null;
+  return { hygieneSplit, signature: {
+    disposition: input.green === true ? 'green' : hygieneSplit?.promote ? 'hygiene-green'
+      : input.infraFault ? 'inconclusive' : 'red',
+    productFailures: (hygieneSplit?.productFailures.map(f => f.entry) ?? []).sort(),
+    hygieneFailures: (hygieneSplit?.hygieneFailures.map(f => f.entry) ?? []).sort(),
+    hygieneConditionKeys: (hygieneSplit?.hygieneWorkItems.map(f => f.conditionKey) ?? []).sort(),
+  } };
+}
+
+/** Copy every input so later retries/mutations cannot rewrite the historical measurement. */
+export function captureGateSuiteVerdictReplay(
+  identity: Pick<GateSuiteVerdictReplay, 'candidate' | 'runId' | 'measuredAtMs'>,
+  input: GateSuiteDecisionInput,
+): GateSuiteVerdictReplay {
+  const copied: GateSuiteDecisionInput = { ...input, failures: [...input.failures],
+    rootScripts: input.rootScripts === null ? null : { ...input.rootScripts },
+    failingCasesByFile: input.failingCasesByFile === null ? null
+      : input.failingCasesByFile.map(([file, cases]) => [file, [...cases]]),
+  };
+  return { version: 1, ...identity, input: copied, expected: decideGateSuite(copied).signature, decisions: [] };
+}
+
+/** JSON/version boundary: malformed history must not be mistaken for a bootstrap. */
+export function parseGateSuiteVerdictReplay(value: unknown): GateSuiteVerdictReplay | null {
+  const object = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+  const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every(x => typeof x === 'string');
+  if (!object(value) || value.version !== 1 || typeof value.candidate !== 'string' || !value.candidate ||
+    !(value.runId === null || typeof value.runId === 'string') || typeof value.measuredAtMs !== 'number' ||
+    !Number.isFinite(value.measuredAtMs) || value.measuredAtMs < 0 || !object(value.input) || !object(value.expected)) return null;
+  const { input, expected } = value;
+  if (!(input.green === null || typeof input.green === 'boolean') || typeof input.infraFault !== 'boolean' ||
+    !strings(input.failures) || !(input.rootScripts === null || (object(input.rootScripts) &&
+      Object.values(input.rootScripts).every(v => typeof v === 'string'))) ||
+    !(input.failingCasesByFile === null || (Array.isArray(input.failingCasesByFile) && input.failingCasesByFile.every(
+      row => Array.isArray(row) && row.length === 2 && typeof row[0] === 'string' && strings(row[1])))) ||
+    !['green', 'hygiene-green', 'red', 'inconclusive'].includes(String(expected.disposition)) ||
+    !strings(expected.productFailures) || !strings(expected.hygieneFailures) || !strings(expected.hygieneConditionKeys) ||
+    !(value.suiteMeasured === undefined || typeof value.suiteMeasured === 'boolean') ||
+    !(value.decisions === undefined || (Array.isArray(value.decisions) && value.decisions.every(d =>
+      object(d) && typeof d.kind === 'string' && d.kind.length > 0 && Array.isArray(d.args) &&
+      Object.hasOwn(d, 'expected'))))) return null;
+  return value as unknown as GateSuiteVerdictReplay;
+}
+
+/** Re-evaluate old observations with CURRENT decision code. No tests, writes, or promotion. */
+export function checkGateSuiteVerdictReplay(replay: GateSuiteVerdictReplay): { ok: boolean; detail: string } {
+  const current = decideGateSuite(replay.input).signature;
+  const changes = (Object.keys(current) as Array<keyof GateSuiteDecisionSignature>)
+    .filter(key => JSON.stringify(current[key]) !== JSON.stringify(replay.expected[key]));
+  return changes.length === 0
+    ? { ok: true, detail: `measured suite verdict reproduced for ${replay.candidate} (${current.disposition})` }
+    : { ok: false, detail: `measured suite verdict changed for ${replay.candidate}: ${changes.join(', ')} ` +
+        `(was ${replay.expected.disposition}, now ${current.disposition})` };
 }

@@ -46,8 +46,8 @@
 #     5 minutes, so the backup looked perfectly healthy at the snapshot layer
 #     while the payload rotted).
 #
-# RESTORE:  psql -f /mnt/data/Backup/db-dumps/pg/globals.sql     (roles first)
-#           pg_restore -d <db> -j4 /mnt/data/Backup/db-dumps/pg/<db>/
+# RESTORE:  psql -f /mnt/cold-a/Backup/db-dumps/pg/globals.sql     (roles first)
+#           pg_restore -d <db> -j4 /mnt/cold-a/Backup/db-dumps/pg/<db>/
 # ─────────────────────────────────────────────────────────────────────────────
 set -uo pipefail
 
@@ -67,7 +67,14 @@ set -uo pipefail
 # A default should name the volume that actually has room; the env var stays
 # the override. Pinned to host-dump-coverage.ts by
 # host-dump-coverage-defaults.test.ts — change both or that test goes red.
-DUMP="${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/backup/db-dumps}"
+# Current default moved to /mnt/cold-a/Backup/db-dumps under WI-6554700010014799:
+# /mnt/backup no longer has enough headroom for the largest tier, its atomic
+# replacement, and the existing 120 GiB free-space floor. The old tree stays intact.
+DUMP="${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/cold-a/Backup/db-dumps}"
+BACKUP_SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+# Reuse the installed shared Kopia helper for the hold lease and dump rotation.
+source "$(dirname "$BACKUP_SELF")/kopia-cache-bootstrap.sh"
+BACKUP_REPO_ROOT="$(git -C "$(dirname "$BACKUP_SELF")" rev-parse --show-toplevel 2>/dev/null || true)"
 STATUS="$DUMP/STATUS.json"
 LOG="$DUMP/db-backup.log"
 BACKUP_USER="${USER:-$(id -un)}"
@@ -108,9 +115,10 @@ readonly DISPOSABLE_SCHEMA_PATTERN='bench_memory*'
 
 # The host cron producer is a separate backup path from the per-workspace
 # hook, but it dumps the same Postgres cluster. Hold the canonical
-# backup↔migration rendezvous on a dedicated psql session for the complete
-# dump lifecycle; otherwise a long pg_dump can acquire AccessShareLock while a
-# migration is already retrying its DDL and exhaust all five short attempts.
+# backup↔migration rendezvous on a dedicated psql session around every dump of
+# the migration database; otherwise a long pg_dump can acquire AccessShareLock
+# while a migration is already retrying its DDL and exhaust all five short
+# attempts. Hold it around THOSE dumps only — see guarded_dump_one (WI-10008166).
 readonly BACKUP_MIGRATION_ADVISORY_LOCK_KEY='papercusp:backup:migration-rendezvous'
 # PostgreSQL advisory locks are DATABASE-scoped. Migration appliers connect to
 # the Papercusp database; using psql's historical `postgres` catalog default
@@ -189,7 +197,12 @@ fs_avail_gb() {
 # Databases that are NOT real state: per-test, scratch, repro, e2e, gym fixtures.
 # Deny-list (not an allow-list) so a genuinely new production DB is picked up
 # automatically instead of being silently skipped.
-EXCLUDE_RE='(_test$|_e2e|^e2e|^repro_|scratch|restore_check|gym_smoke|^template)'
+# ^tmpl_ and ^papercusp_it_baseline_ are the test harness's migration templates
+# (tmpl_<key>, tmpl_bld_*, tmpl_gym_*: libs/test-config/src/pg-migrate.ts) and its
+# throwaway integration baselines (baseline-schema-global-setup.ts). Measured
+# 2026-10-06: 17 + 7 of them were dumped every hour, and one dropped mid-run
+# failed the whole backup (EI-25211496463956189, WI-10006723).
+EXCLUDE_RE='(_test$|_e2e|^e2e|^repro_|scratch|restore_check|gym_smoke|^template|^tmpl_|^papercusp_it_baseline_)'
 
 log() { printf '[%s] %s\n' "$(date -Iseconds)" "$*" | tee -a "$LOG" >&2; }
 
@@ -198,6 +211,35 @@ if ! mkdir -p "$DUMP"; then
     "$(date -Iseconds)" "$DUMP" >&2
   exit 1
 fi
+
+# STATUS.json is a completion receipt, so publish a separate, bounded signal
+# while this writer is active. The consumer verifies the PID generation against
+# /proc and ignores a stale marker left by SIGKILL. This marker is best-effort;
+# it must never turn a bookkeeping failure into a skipped backup.
+HOST_BACKUP_PROGRESS_PATH="$DUMP/IN_PROGRESS.$$.json"
+write_host_backup_progress_marker() {
+  local stat_line start_ticks started_at tmp
+  stat_line=$(cat "/proc/$$/stat" 2>/dev/null) || return 0
+  start_ticks=$(printf '%s\n' "$stat_line" | awk '{ sub(/^.*\) /, ""); print $20 }')
+  [[ "$start_ticks" =~ ^[0-9]+$ ]] || return 0
+  started_at=$(date +%s)
+  [[ "$started_at" =~ ^[0-9]+$ ]] || return 0
+  tmp="${HOST_BACKUP_PROGRESS_PATH}.tmp.$$"
+  if ! printf '{"pid":%s,"processStartTicks":"%s","startedAtEpoch":%s,"phase":"host-backup"}\n' \
+      "$$" "$start_ticks" "$started_at" >"$tmp" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 0
+  fi
+  mv -f "$tmp" "$HOST_BACKUP_PROGRESS_PATH" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+  return 0
+}
+cleanup_host_backup_progress_marker() {
+  [ -z "${HOST_BACKUP_PROGRESS_PATH:-}" ] || \
+    rm -f "$HOST_BACKUP_PROGRESS_PATH" "${HOST_BACKUP_PROGRESS_PATH}.tmp.$$" 2>/dev/null || true
+}
+trap cleanup_host_backup_progress_marker EXIT
+write_host_backup_progress_marker
+
 if ! mkdir -p "$(dirname "$LOCK")"; then
   log "FATAL: unable to create backup lock directory $(dirname "$LOCK") — refusing to skip this backup"
   exit 1
@@ -289,7 +331,7 @@ log "headroom ok: ${PC_FREE_GB} GiB free (floor ${PC_BACKUP_MIN_FREE_GB} GiB)"
 run_bounded_watched() {
   local floor_secs="$1" max_secs="$2" progress_path="$3"; shift 3
   local rc=0 dump_pid watch_pid start_epoch now_epoch elapsed
-  local last_bytes=0 last_progress_epoch=0 current_bytes=0
+  local last_bytes=0 last_progress_epoch=0 current_bytes=0 progress_path_seen=0
   start_epoch=$(date +%s)
   last_progress_epoch="$start_epoch"
   "$@" &
@@ -309,8 +351,28 @@ run_bounded_watched() {
 
       now_epoch=$(date +%s)
       elapsed=$(( now_epoch - start_epoch ))
-      current_bytes=$(du -sb "$progress_path" 2>/dev/null | cut -f1)
-      current_bytes=${current_bytes:-0}
+      # A -Fd producer may not have created its output directory by the first
+      # watch sample. Treat that startup interval as zero bytes while the free
+      # space floor and elapsed watchdog remain active. Once observed, a missing
+      # or unreadable path is still an immediate measurement failure.
+      if [ ! -e "$progress_path" ] && [ "$progress_path_seen" -eq 0 ]; then
+        current_bytes=0
+      else
+        progress_path_seen=1
+        measurement_output=$(sudo -n -u postgres du -sb "$progress_path" 2>&1)
+        measurement_rc=$?
+        current_bytes=${measurement_output%%$'\t'*}
+        if [ "$measurement_rc" -ne 0 ] || ! [[ "$current_bytes" =~ ^[0-9]+$ ]]; then
+          measurement_detail=$(printf '%s' "$measurement_output" | tr '\r\n' ' ')
+          measurement_detail=${measurement_detail:0:240}
+          log "ABORTING DUMP: unable to measure archive progress at $progress_path as postgres (du_status=$measurement_rc output=${measurement_detail:-<empty>}); terminating bounded producer"
+          kill -TERM "$dump_pid" 2>/dev/null
+          sleep "$KILL_GRACE_SEC"
+          kill -KILL "$dump_pid" 2>/dev/null
+          reap_own_stragglers
+          return 0
+        fi
+      fi
       if [ "$current_bytes" -gt "$last_bytes" ]; then
         last_bytes="$current_bytes"
         last_progress_epoch="$now_epoch"
@@ -387,22 +449,45 @@ release_migration_rendezvous() {
   if [ -n "${BACKUP_MIGRATION_LOCK_OUT_FD:-}" ]; then
     exec {BACKUP_MIGRATION_LOCK_OUT_FD}<&- 2>/dev/null || true
   fi
+  if [ "${BACKUP_MIGRATION_LOCK_HELD:-false}" = true ]; then
+    # The hold length is the number a waiting migration pays; log it so a
+    # regression to a whole-run hold is visible in the journal (WI-10008166).
+    log "migration rendezvous released after $(( $(date +%s) - ${BACKUP_MIGRATION_LOCK_SINCE:-$(date +%s)} ))s (${BACKUP_MIGRATION_LOCK_LEG:-host dump})"
+  fi
   BACKUP_MIGRATION_LOCK_PID=''
   BACKUP_MIGRATION_LOCK_IN_FD=''
   BACKUP_MIGRATION_LOCK_OUT_FD=''
   BACKUP_MIGRATION_LOCK_HELD=false
+  BACKUP_MIGRATION_LOCK_SINCE=''
+  BACKUP_MIGRATION_LOCK_LEG=''
 }
 
-trap release_migration_rendezvous EXIT
+trap 'release_migration_rendezvous; cleanup_host_backup_progress_marker' EXIT
 
-# Acquire the shared rendezvous on a session that remains open while all of
-# this script's pg_dump children run. A one-shot `psql -c pg_advisory_lock`
-# would release the lock as soon as psql exits, so use a coprocess and keep its
-# stdin open until the dump lifecycle is complete. The marker is emitted only
-# after the advisory lock has been granted, making the hand-off observable and
-# preventing the first pg_dump from racing the lock wait.
+# Ask kopia-backup-guard.sh to hand the host-wide Kopia lock back while this
+# script goes on running (WI-10004870). The guard holds that lock, not this
+# script, so it can only be asked: creating KOPIA_BACKUP_GUARD_RELEASE_PATH does
+# it, and the guard unlocks within one monitor interval while still waiting for
+# us. Call it only once nothing left in the run writes a snapshotted artifact.
+# Outside the guard (a manual run) the variable is unset and this is a no-op.
+release_shared_backup_lock() {
+  [ -n "${KOPIA_BACKUP_GUARD_RELEASE_PATH:-}" ] || return 0
+  if : >"$KOPIA_BACKUP_GUARD_RELEASE_PATH" 2>/dev/null; then
+    log "shared backup lock: early release requested before the local-only transcript tier(s) of: $*"
+  else
+    log "WARNING: could not ask the guard to release the shared backup lock ($KOPIA_BACKUP_GUARD_RELEASE_PATH); it stays held to the end of the run"
+  fi
+}
+
+# Acquire the shared rendezvous on a session that remains open while the
+# guarded pg_dump runs. A one-shot `psql -c pg_advisory_lock` would release the
+# lock as soon as psql exits, so use a coprocess and keep its stdin open until
+# release_migration_rendezvous closes it. The marker is emitted only after the
+# advisory lock has been granted, making the hand-off observable and preventing
+# the pg_dump from racing the lock wait. Re-acquirable: release reaps the
+# coprocess, so each guarded leg opens its own session. $1 names the leg.
 acquire_migration_rendezvous() {
-  local line acquired=false
+  local line acquired=false leg="${1:-host dump}"
   coproc BACKUP_MIGRATION_LOCK_PSQL {
     exec sudo -n -u postgres env "PGAPPNAME=$HOST_BACKUP_APPLICATION_NAME" \
       psql -X -q -v ON_ERROR_STOP=1 -At \
@@ -444,7 +529,44 @@ acquire_migration_rendezvous() {
     return 1
   fi
   BACKUP_MIGRATION_LOCK_HELD=true
-  log "migration rendezvous acquired for host dump"
+  BACKUP_MIGRATION_LOCK_SINCE=$(date +%s)
+  BACKUP_MIGRATION_LOCK_LEG="$leg"
+  log "migration rendezvous acquired for $leg"
+}
+
+# guarded_dump_one <db> <label> [extra pg_dump args...] — dump_one, holding the
+# migration rendezvous for exactly that dump when <db> is the migration database.
+#
+# Only a dump of $BACKUP_MIGRATION_ADVISORY_DATABASE can collide with a papercusp
+# migration: the advisory lock AND the relation locks a pg_dump takes are both
+# per-database, and every migration applier connects to that one database. So
+# holding the rendezvous across any other leg — the other databases on this
+# cluster, oddsmith on its own server — blocks every papercusp migration while
+# protecting nothing. MEASURED 2026-10-10 (WI-10008166): the old whole-run hold
+# (acquired before the first dump, released after the transcript tier) covered
+# ~15 GB of unrelated databases plus a 35-min oddsmith dump on top of the two
+# papercusp tiers, ~3.4 h end to end. Armed migrations 1438-1440 waited out all
+# of it, and bg-host withheld the background plane until they applied.
+#
+# Each guarded leg takes its own session, so a waiting migration runs BETWEEN
+# legs. The tiers are separate pg_dump snapshots already, so nothing assumed
+# cross-leg consistency. A rendezvous that cannot be acquired fails THAT leg —
+# recorded like any dump failure — rather than dumping unguarded or aborting the
+# legs still to come.
+guarded_dump_one() {
+  local db="$1" label="$2" rc=0
+  if [ "$db" != "$BACKUP_MIGRATION_ADVISORY_DATABASE" ]; then
+    dump_one "$@"
+    return
+  fi
+  if ! acquire_migration_rendezvous "$label"; then
+    log "$label FAIL — migration rendezvous not acquired; leg not dumped"
+    return 1
+  fi
+  dump_one "$@" || rc=$?
+  release_migration_rendezvous
+  reap_own_stragglers   # nothing of ours may outlive the hold holding locks
+  return "$rc"
 }
 
 # Bounded run. NOTE the grandchild trap of EI-10730 does not exist here BY
@@ -466,7 +588,8 @@ run_bounded() {
 START=$(date +%s)
 reap_own_stragglers
 reap_foreign_dumps
-acquire_migration_rendezvous || exit 1
+# No whole-run rendezvous: guarded_dump_one holds it around each dump of the
+# migration database only (WI-10008166).
 
 FAILED=()
 DUMPED=()
@@ -509,6 +632,12 @@ DBS=$(sudo -n -u postgres psql -h /var/run/postgresql -d postgres -tAc \
        "$DB_SELECT_SQL" 2>/dev/null \
        | grep -vE "$EXCLUDE_RE")
 INVALID_SKIPPED=()
+# WI-10006723: databases enumerated above but DROPPED before their turn came. A
+# run dumps sequentially for an hour or more, so a scratch database created and
+# dropped by a test or rehearsal inside that window used to fail its pg_dump
+# ("database ... does not exist") and turn the whole run red. Filled by the dump
+# loop below and listed in STATUS.json's "vanishedSkipped", never in "failed".
+VANISHED_SKIPPED=()
 while IFS= read -r inv; do
   [ -n "$inv" ] || continue
   INVALID_SKIPPED+=("$inv")
@@ -629,8 +758,16 @@ dump_one() {
     # erroring its snapshot of db-dumps every cycle (found 2026-07-12: errors:4).
     # On FAILURE we still leave the existing "$out" untouched (see the branch
     # above), so last-known-good survives a bad run without any .prev.
-    rm -rf "$out"
-    mv -f "$out.tmp" "$out"
+    if [ "$db" = "$BACKUP_MIGRATION_ADVISORY_DATABASE" ]; then
+      if ! kopia_with_hold_lease "$db" kopia_install_dump_if_held "$out"; then
+        log "$label FAIL — legal-hold rotation lease unavailable; previous dump preserved"
+        rm -f "$dumperr"
+        return 1
+      fi
+    else
+      rm -rf "$out"
+      mv -f "$out.tmp" "$out"
+    fi
     sz=$(du -sb "$out" 2>/dev/null | cut -f1)
     log "$label ok ($(numfmt --to=iec "${sz:-0}" 2>/dev/null || echo "${sz:-0}") , $(pg_restore -l "$out" 2>/dev/null | grep -c '^[0-9]') objects)"
     rm -f "$dumperr"
@@ -674,6 +811,26 @@ is_tiered() {
   case " $PC_BACKUP_TIER_DBS " in *" $1 "*) return 0 ;; *) return 1 ;; esac
 }
 
+# db_presence <db> — prints "present", "absent", or "unknown" (WI-10006723).
+#
+# Asked only AFTER a dump failed, to tell "the database was dropped while this
+# run was working through the list" apart from a real dump failure. "absent"
+# also covers a database invalidated by an interrupted DROP since enumeration,
+# because that is the same event caught half-way.
+#
+# The answer must never manufacture "absent": a failed or empty catalog read is
+# "unknown", and the caller then counts the dump as FAILED. The query runs while
+# connected to the postgres database, so a successful read always lists at least
+# that one name; an empty list therefore means the read itself went wrong.
+DB_PRESENT_SQL="SELECT datname FROM pg_database WHERE datconnlimit <> -2;"
+db_presence() {
+  local names
+  names=$(sudo -n -u postgres psql -h /var/run/postgresql -d postgres -tAc \
+            "$DB_PRESENT_SQL" 2>/dev/null) || { echo unknown; return 0; }
+  [ -n "$names" ] || { echo unknown; return 0; }
+  if printf '%s\n' "$names" | grep -Fxq -- "$1"; then echo present; else echo absent; fi
+}
+
 for db in $DBS; do
   # RETIRED 2026-09-05 (WI-2146225): the undifferentiated papercusp dump. It was
   # 94G written every hour beside 95G of tiers covering the same rows — the same
@@ -686,7 +843,17 @@ for db in $DBS; do
     log "$db dumped as tiers ($db-state + $db-transcript), not undifferentiated"
     continue
   fi
-  if dump_one "$db" "$db"; then DUMPED+=("$db"); else FAILED+=("$db"); fi
+  # Guarded: when tiers are disabled the migration database itself lands here.
+  if guarded_dump_one "$db" "$db"; then
+    DUMPED+=("$db")
+  elif [ "$(db_presence "$db")" = absent ]; then
+    # Dropped after enumeration (WI-10006723): nothing is left to back up, so
+    # this is not a backup failure. Its last good dump, if any, stays on disk.
+    VANISHED_SKIPPED+=("$db")
+    log "$db VANISHED — dropped after enumeration, so there is nothing left to dump; not counted as a failure (listed in STATUS.json vanishedSkipped)"
+  else
+    FAILED+=("$db")
+  fi
 done
 
 # ── tiered dumps (WI-2146225) — AUTHORITATIVE PHASE ─────────────────────────
@@ -729,6 +896,9 @@ PC_BACKUP_TRANSCRIPT_TABLES="${PC_BACKUP_TRANSCRIPT_TABLES:-harness_shared.sessi
 TIER_DUMPED=()
 TIER_FAILED=()
 TIER_NOT_DUE=()
+# Tier databases whose transcript tier is due this run. Dumped LAST, after the
+# shared backup lock is handed back (WI-10004870, local-only phase below).
+TRANSCRIPT_DUE=()
 
 # ── Transcript-tier cadence (WI-10004603) ────────────────────────────────────
 # MEASURED 2026-10-01: the hourly run took 2822 / 2999 / 2995 / 3397 s, ~95% of
@@ -840,7 +1010,7 @@ if [ "$PC_BACKUP_TIERS_ENABLED" = 1 ]; then
     # database's backup and a failure has to reach ALERT-BACKUP-FAILING like any
     # other. Reporting a tier failure only in tierFailed[] would leave the run's
     # top-level "ok" true with the database wholly unbacked.
-    if dump_one "$db" "$db-state" "${ex[@]}"; then
+    if guarded_dump_one "$db" "$db-state" "${ex[@]}"; then
       TIER_DUMPED+=("$db-state"); DUMPED+=("$db-state")
     else
       TIER_FAILED+=("$db-state"); FAILED+=("$db-state")
@@ -850,16 +1020,19 @@ if [ "$PC_BACKUP_TIERS_ENABLED" = 1 ]; then
        && [ "$tx_age" -lt "$PC_BACKUP_TRANSCRIPT_MIN_AGE_SEC" ]; then
       TIER_NOT_DUE+=("$db-transcript")
       log "$db-transcript not due: existing dump is ${tx_age}s old (< ${PC_BACKUP_TRANSCRIPT_MIN_AGE_SEC}s, WI-10004603); kept as-is"
-    elif dump_one "$db" "$db-transcript" "${inc[@]}"; then
-      TIER_DUMPED+=("$db-transcript"); DUMPED+=("$db-transcript")
     else
-      TIER_FAILED+=("$db-transcript"); FAILED+=("$db-transcript")
+      # Dumped in the local-only phase at the END of the run, after the shared
+      # backup lock is handed back (WI-10004870) — see TRANSCRIPT_DUE below.
+      TRANSCRIPT_DUE+=("$db")
     fi
   done
 fi
 
-# Let migrations proceed before the final backend sweep/status bookkeeping. The
-# EXIT trap also makes this release happen when any later step aborts.
+# Backstop before oddsmith (another server) and the final bookkeeping: the
+# rendezvous is held only inside guarded_dump_one, so it is never held here and
+# this release is an idempotent no-op — unconditional on purpose, so no future
+# edit can carry a held rendezvous across oddsmith again (WI-10008166). The EXIT
+# trap still covers every abort.
 release_migration_rendezvous
 reap_own_stragglers   # nothing of ours may outlive this script holding locks
 
@@ -968,6 +1141,39 @@ else
   fi
 fi
 
+# ── Local-only phase: transcript tiers, OUTSIDE the shared backup lock ───────
+# WI-10004870. Every artifact Kopia snapshots is written by now (the state
+# tiers, every undifferentiated database, oddsmith), so what is left is the
+# transcript tier, which .kopiaignore keeps out of every snapshot (WI-2146225).
+# Holding the host-wide Kopia lock for it bought nothing: MEASURED 2026-10-01 it
+# was ~25 min of a 101G dump every ~2.5 h, during which the off-host hot sweep
+# could not start. So the guard is asked to hand the lock back first.
+#
+# What the lock protected does not apply to this phase:
+#   * snapshot consistency — neither papercusp-transcript nor its
+#     papercusp-transcript.tmp work dir (*.tmp) is ever snapshotted;
+#   * I/O contention — the sweep's long phase reads the workspace (NVMe) and
+#     writes the repo on /mnt/data, while this dump writes /mnt/backup (HDD).
+#     They overlap on that disk only during the sweep's ~12 min db-dumps read.
+# What still serializes it is kept: this script's own single-instance lock
+# (pg_dump vs pg_dump) and the migration rendezvous — re-acquired by
+# guarded_dump_one for exactly this dump so no migration takes these tables
+# mid-dump, and NOT held across oddsmith above (WI-10008166).
+if [ ${#TRANSCRIPT_DUE[@]} -gt 0 ]; then
+  release_shared_backup_lock "${TRANSCRIPT_DUE[*]}"
+  inc=()
+  for t in $PC_BACKUP_TRANSCRIPT_TABLES; do inc+=("--table=$t"); done
+  for db in "${TRANSCRIPT_DUE[@]}"; do
+    if guarded_dump_one "$db" "$db-transcript" "${inc[@]}"; then
+      TIER_DUMPED+=("$db-transcript"); DUMPED+=("$db-transcript")
+    else
+      TIER_FAILED+=("$db-transcript"); FAILED+=("$db-transcript")
+    fi
+  done
+  release_migration_rendezvous
+  reap_own_stragglers   # nothing of ours may outlive this script holding locks
+fi
+
 ELAPSED=$(( $(date +%s) - START ))
 OK=true; [ ${#FAILED[@]} -eq 0 ] || OK=false
 
@@ -1022,6 +1228,9 @@ SYSID=$($PSQL "SELECT system_identifier FROM pg_control_system()" 2>/dev/null | 
   # WI-10003455: invalid (datconnlimit=-2) databases skipped — undumpable by
   # definition, so NOT a failure, but listed so an interrupted-DROP leak stays visible.
   printf '  "invalidSkipped": [%s],\n' "$(json_arr ${INVALID_SKIPPED[@]+"${INVALID_SKIPPED[@]}"})"
+  # WI-10006723: databases dropped between enumeration and their dump. Nothing
+  # was left to back up, so NOT a failure; listed so the skip is never silent.
+  printf '  "vanishedSkipped": [%s],\n' "$(json_arr ${VANISHED_SKIPPED[@]+"${VANISHED_SKIPPED[@]}"})"
   printf '  "systemIdentifier": "%s",\n' "$SYSID"
   # WI-2146225 tiered dumps. These fields are now a NAMED VIEW of the split, not a
   # quarantine: since the 2026-09-05 cutover each tier ALSO appears in dumped[] /
@@ -1059,7 +1268,16 @@ if $OK; then
   # alarm is a bug in the alarm: a marker that never clears trains readers to
   # ignore the single signal meant to catch silent backup rot.
   rm -f "$DUMP/ALERT-BACKUP-FAILING"
-  log "backup OK in ${ELAPSED}s: ${DUMPED[*]}"
+  if [ -n "$BACKUP_REPO_ROOT" ] && [ -f "$BACKUP_REPO_ROOT/scripts/mcp-call.mjs" ]; then
+    RECOVERY_BODY='{"to":["*"],"expects":"none","summary":"BACKUP RECOVERED: papercusp-db-backup succeeded","body":[{"text":"STATUS.json is green and ALERT-BACKUP-FAILING was cleared."}],"resolvesCondition":"papercusp-db-backup-failing"}'
+    if ! (cd "$BACKUP_REPO_ROOT" && timeout 30 node scripts/mcp-call.mjs coord:send "$RECOVERY_BODY" \
+        --client system-backup-alert --harness papercusp --workspace papercusp-workspace >/dev/null); then
+      echo "BACKUP RECOVERY: coord:send leg FAILED — recovery condition remains open" >&2
+    fi
+  else
+    echo "BACKUP RECOVERY: coord:send unavailable — recovery condition remains open" >&2
+  fi
+  log "backup OK in ${ELAPSED}s: ${DUMPED[*]}${VANISHED_SKIPPED[*]:+ (vanished after enumeration: ${VANISHED_SKIPPED[*]})}"
   exit 0
 fi
 log "backup FAILED in ${ELAPSED}s: ${FAILED[*]}"

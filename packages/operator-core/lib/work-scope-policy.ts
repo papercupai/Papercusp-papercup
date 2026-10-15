@@ -19,6 +19,11 @@
  * policy must never freeze the fleet.
  */
 import { placementOverride, readPotControlPolicy, refreshPotControlPolicy, writePotControlPolicy } from './pot-control-policy';
+import type { RefusalContract } from './capability-envelope/identity-refusal-contract';
+import { z } from 'zod';
+
+/** Shared by authoring and cached-policy decisions; malformed stored expiry cannot grant. */
+export const workScopeExceptionExpirySchema = z.string().datetime({ offset: true });
 
 export interface WorkScopeException {
   /** harness slug or glob (`foo/*`) the exception admits */
@@ -31,6 +36,8 @@ export interface WorkScopeException {
   workItem?: string;
   reason: string;
   setBy?: string;
+  /** Optional absolute expiry; an exception stops granting at this instant. */
+  expiresAt?: string;
 }
 
 export type WorkScopeVerdictKind = 'denied' | 'held' | 'rehomed';
@@ -137,8 +144,19 @@ export type WorkScopeDenied = {
   message: string;
   setBy?: string;
   reason?: string;
+  /** WI-10005197: what would LIFT the denial (the policy edit / exception / re-home that makes it allowed). */
+  refusal?: RefusalContract;
 };
 export type WorkScopeVerdict = WorkScopeAllowed | WorkScopeDenied;
+
+function activeWorkScopeExceptions(policy: WorkScopePolicy, nowMs = Date.now()): WorkScopeException[] {
+  return (policy.exceptions ?? []).filter((exception) => {
+    if (!exception || typeof exception !== 'object') return false;
+    if (exception.expiresAt === undefined) return true;
+    const expiry = workScopeExceptionExpirySchema.safeParse(exception.expiresAt);
+    return expiry.success && Date.parse(expiry.data) > nowMs;
+  });
+}
 
 /** Pure decision — no I/O, no ledger. */
 export function evaluateWorkScope(subject: WorkScopeSubject, policy: WorkScopePolicy | null = workScopePolicy()): WorkScopeVerdict {
@@ -147,7 +165,7 @@ export function evaluateWorkScope(subject: WorkScopeSubject, policy: WorkScopePo
   const h = subject.harness?.trim();
   if (!h || h === '*') return { allowed: true, reason: 'unscoped' };
   if (policy.allowHarnesses.some((p) => matchHarnessPattern(p, h))) return { allowed: true, reason: 'in-scope' };
-  const exception = (policy.exceptions ?? []).find(
+  const exception = activeWorkScopeExceptions(policy).find(
     (e) =>
       (!!e.harness && matchHarnessPattern(e.harness, h)) ||
       (!!e.plan && !!subject.plan && e.plan === subject.plan) ||
@@ -164,6 +182,14 @@ export function evaluateWorkScope(subject: WorkScopeSubject, policy: WorkScopePo
     allowHarnesses: [...policy.allowHarnesses],
     setBy: policy.setBy,
     reason: policy.reason,
+    refusal: {
+      observed: { harness: h, allowHarnesses: allow || null, policySetBy: policy.setBy ?? null },
+      liftsWhen:
+        `harness '${h}' matches the workspace work-scope policy allow-list, or carries a work-scope exception. ` +
+        `Widen the policy or add an exception with workspace:work_scope { op:'set' }, or re-home the item to an ` +
+        `allowed harness if it is really that harness's work. Out-of-scope work is parked, never deleted`,
+      whoCanMakeItTrue: ['owner', 'self'],
+    },
     message:
       `scope_denied: harness '${h}' is outside the workspace work-scope policy (allowed: ${allow}${provenance}). ` +
       `Out-of-scope work is parked, never deleted — widen the policy or add an exception with workspace:work_scope { op:'set' }, ` +
@@ -184,6 +210,7 @@ export function workScopeRefusal(
     message: v.message,
     ...(v.setBy ? { setBy: v.setBy } : {}),
     ...(v.reason ? { reason: v.reason } : {}),
+    ...(v.refusal ? { refusal: v.refusal } : {}),
     ...extra,
   };
 }
@@ -297,29 +324,70 @@ export async function gateWorkScope(site: string, subject: WorkScopeSubject, pol
   return v;
 }
 
+interface WorkScopeSqlExceptionTerms {
+  exactHarnesses: string[];
+  harnessLikePrefixes: string[];
+  plans: string[];
+  goals: string[];
+  workItems: string[];
+}
+
+interface WorkScopeSqlTerms {
+  exact: string[];
+  likePrefixes: string[];
+  exceptions?: WorkScopeSqlExceptionTerms;
+}
+
 /**
- * The parts of the allow-list a SQL predicate needs: exact slugs and LIKE prefixes.
- * `null` ⇒ not enforced (emit no predicate). Used by the admission promoter so
- * out-of-scope pending items are simply never promoted (they stay `pending` =
- * visibly not admitted, reversible the moment the policy widens).
+ * The allow-list and explicit exceptions as SQL-ready terms. `null` means the
+ * policy is unenforced or admits every harness, so callers emit no predicate.
+ * The admission promoter uses these terms for both its admitted set and the
+ * complementary held census; keep every exception axis aligned with
+ * evaluateWorkScope.
  */
-export function workScopeSqlTerms(policy: WorkScopePolicy | null = workScopePolicy()): { exact: string[]; likePrefixes: string[] } | null {
+export function workScopeSqlTerms(policy: WorkScopePolicy | null = workScopePolicy()): WorkScopeSqlTerms | null {
   if (!isWorkScopeEnforced(policy)) return null;
   const exact: string[] = [];
   const likePrefixes: string[] = [];
   for (const raw of policy.allowHarnesses) {
-    const p = (raw ?? '').trim();
-    if (!p) continue;
-    if (p === '*') return null; // everything allowed — no predicate
-    if (p.endsWith('/*')) {
-      const root = p.slice(0, -2);
-      exact.push(root);
-      likePrefixes.push(`${escapeLike(root)}/%`);
-    } else if (p.endsWith('*')) {
-      likePrefixes.push(`${escapeLike(p.slice(0, -1))}%`);
-    } else exact.push(p);
+    if (appendHarnessSqlTerm(raw, exact, likePrefixes)) return null;
   }
-  return { exact, likePrefixes };
+
+  const exceptionTerms: WorkScopeSqlExceptionTerms = {
+    exactHarnesses: [],
+    harnessLikePrefixes: [],
+    plans: [],
+    goals: [],
+    workItems: [],
+  };
+  for (const exception of activeWorkScopeExceptions(policy)) {
+    if (appendHarnessSqlTerm(exception.harness, exceptionTerms.exactHarnesses, exceptionTerms.harnessLikePrefixes)) {
+      return null;
+    }
+    if (exception.plan) exceptionTerms.plans.push(exception.plan);
+    if (exception.goal) exceptionTerms.goals.push(exception.goal);
+    if (exception.workItem) exceptionTerms.workItems.push(exception.workItem);
+  }
+
+  const hasExceptions = Object.values(exceptionTerms).some((terms) => terms.length > 0);
+  return { exact, likePrefixes, ...(hasExceptions ? { exceptions: exceptionTerms } : {}) };
+}
+
+/** Returns true only when this pattern admits every harness. */
+function appendHarnessSqlTerm(raw: string | undefined, exact: string[], likePrefixes: string[]): boolean {
+  const p = (raw ?? '').trim();
+  if (!p) return false;
+  if (p === '*') return true;
+  if (p.endsWith('/*')) {
+    const root = p.slice(0, -2);
+    exact.push(root);
+    likePrefixes.push(`${escapeLike(root)}/%`);
+  } else if (p.endsWith('*')) {
+    likePrefixes.push(`${escapeLike(p.slice(0, -1))}%`);
+  } else {
+    exact.push(p);
+  }
+  return false;
 }
 
 function escapeLike(s: string): string {
@@ -407,6 +475,14 @@ export interface RehomeClassifierPolicy {
   platformSystemRoles: string[];
   /** vocabulary that names platform surfaces (tool verbs, subsystems) */
   platformTerms: string[];
+  /**
+   * Harness-slug prefixes that are the platform's own NON-POT homes. `operator:<workspaceId>` is
+   * the legacy workspace-global issue slug (issues-engineer.ts now homes `operator` scope to the
+   * platform Pot), so anything still landing there was mis-homed by a filer that skipped that
+   * resolution — never another pot's work. WI-10004723: 14 learning-loop alarms filed under
+   * `operator:papercusp-workspace` sat held by scope for 6 days because no text signal matched.
+   */
+  platformHarnessPrefixes: string[];
 }
 
 export const DEFAULT_REHOME_CLASSIFIER_POLICY: RehomeClassifierPolicy = {
@@ -439,7 +515,17 @@ export const DEFAULT_REHOME_CLASSIFIER_POLICY: RehomeClassifierPolicy = {
     'capability:',
     'papercusp',
   ],
+  platformHarnessPrefixes: ['operator:'],
 };
+
+/** True when `harness` is a platform non-pot home (`operator:<ws>`), i.e. a held row there is mis-homed. */
+export function isPlatformNonPotHarness(
+  harness: string | null | undefined,
+  cls: RehomeClassifierPolicy = DEFAULT_REHOME_CLASSIFIER_POLICY,
+): boolean {
+  const slug = (harness ?? '').trim();
+  return slug.length > 0 && cls.platformHarnessPrefixes.some((prefix) => slug.startsWith(prefix));
+}
 
 export type RehomeVerdict =
   | { action: 'keep'; reason: 'in-scope' }
@@ -453,6 +539,7 @@ export function classifyForRehome(
 ): RehomeVerdict {
   if (isHarnessInScope(item.harness, scope)) return { action: 'keep', reason: 'in-scope' };
   const signals: string[] = [];
+  if (isPlatformNonPotHarness(item.harness, cls)) signals.push(`harness:${item.harness.trim()}`);
   const role = item.createdByRole?.trim().toLowerCase();
   if (role && cls.platformSystemRoles.includes(role)) signals.push(`system-role:${role}`);
   for (const p of item.paths ?? []) {

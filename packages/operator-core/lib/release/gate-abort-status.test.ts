@@ -61,6 +61,16 @@ describe('gate abort classification — every recorded status is explicitly rout
   });
 });
 
+describe('not-applicable checkpoint outcomes', () => {
+  it('records the missing integration-branch outcome without inheriting abort advice', () => {
+    expect(isRecordedInconclusiveStatus('not-applicable')).toBe(true);
+    expect(classifyGateAbort('not-applicable')).toBe('not-applicable');
+    expect(gateAbortLever('not-applicable')).toContain('not applicable');
+    expect(gateAbortLever('not-applicable')).not.toContain(CLEAR_CLAIM);
+    expect(gateAbortRefireClause('not-applicable')).not.toContain(LATCH_CLAIM);
+  });
+});
+
 describe('transient aborts — the reported defect', () => {
   const transient = RECORDED_INCONCLUSIVE_STATUSES.filter((s) => classifyGateAbort(s) === 'transient');
 

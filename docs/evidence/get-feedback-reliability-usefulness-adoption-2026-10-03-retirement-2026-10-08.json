@@ -1,0 +1,180 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "retirementEvidenceSchemaVersion": "get-feedback-retirement-evidence-v1",
+  "name": "Scoped served consult catalog retirement and retained requester history",
+  "framework": "operational",
+  "command": [
+    "ptool agent_tools:list --url=http://127.0.0.1:3170 --json -; stdin JSON = currentBuild.catalog.args",
+    "ptool dev:pg_query --url=http://127.0.0.1:3170 --json -; stdin JSON = history.args"
+  ],
+  "startedAt": "2026-10-09T19:10:36Z",
+  "finishedAt": "2026-10-09T19:10:39Z",
+  "exitCode": 0,
+  "summary": "Current staging catalog omits consult:reconcile and retains an allowed consult:get_feedback positive control. All four named requester history records retain the exact hashes captured on October 8. These scoped reads do not prove all-row immutability, lifecycle transitions, complete feature acceptance or shipment.",
+  "assertions": [
+    {
+      "id": "retired-consult-registration-absent",
+      "passed": true,
+      "evidence": "Authenticated staging agent_tools:list filter consult: returned five entries and none named consult:reconcile."
+    },
+    {
+      "id": "active-consult-positive-control",
+      "passed": true,
+      "evidence": "The same catalog read returned consult:get_feedback with allowed:true."
+    },
+    {
+      "id": "exact-four-historical-records-retained",
+      "passed": true,
+      "evidence": "Current scoped SQL returned all four history.rows identities, authors, timestamps, dispositions, decision references and MD5 JSONB hashes unchanged from the October 8 capture."
+    },
+    {
+      "id": "history-reader-positive-control",
+      "passed": true,
+      "evidence": "The same scoped SQL transaction returned conv-muvkvv0y-0000-598ee0fa316049bb86d9ad6b07871574 as its positive control."
+    }
+  ],
+  "operationalReadback": {
+    "endpoint": "http://127.0.0.1:3170",
+    "runtime": "staging-operator",
+    "buildShaPrefix": "42ead3e6b0",
+    "catalogMatchesOriginalCapture": true,
+    "historyMatchesOriginalCapture": true,
+    "scope": "Catalog absence with positive control and exact four preserved historical records; no native consultation matrix credit."
+  },
+  "status": "scoped current-build evidence; independent acceptance and exact shipment pending",
+  "recordedAt": "2026-10-08T23:38:25Z",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "planRevision": 38,
+  "rubricRevision": 8,
+  "workItem": "WI-10007524",
+  "recorderOwnerId": "su-e16e0da4-f858-4e10-9665-55116edbc36b",
+  "reusedSurface": "Existing docs/evidence artifacts and maintained catalog/datastore readers",
+  "currentBuild": {
+    "endpoint": "http://127.0.0.1:3170",
+    "runtime": "staging-operator",
+    "buildShaPrefix": "76d72d3e3f",
+    "containment": {
+      "tool": "dev:pipeline_position",
+      "args": {
+        "path": "packages/operator-core/lib/agent-tools/index.ts",
+        "testClass": "operator-api"
+      },
+      "method": "blob",
+      "containsChange": true,
+      "targetCommit": "fdecccfff052e74658a9e0b9d4aba77233089025"
+    },
+    "catalog": {
+      "tool": "agent_tools:list",
+      "args": {
+        "filter": "consult:",
+        "limit": 100
+      },
+      "result": [
+        {
+          "name": "consult:get_feedback",
+          "allowed": true
+        },
+        {
+          "name": "consult:reply",
+          "allowed": true
+        },
+        {
+          "name": "consult:decline",
+          "allowed": true
+        },
+        {
+          "name": "consult:close",
+          "allowed": true
+        },
+        {
+          "name": "consult:routing-health",
+          "allowed": true
+        }
+      ],
+      "retiredName": "consult:reconcile",
+      "retiredNamePresent": false,
+      "positiveControl": {
+        "name": "consult:get_feedback",
+        "allowed": true
+      },
+      "transport": "Authenticated ptool MCP, explicit --url=http://127.0.0.1:3170",
+      "execution": "Fresh exec43958 completed exit0 after install-safe SDK import wait; this historical identifier must not be resumed"
+    }
+  },
+  "history": {
+    "scope": "Exact four original-cohort consultation records, read-only current persisted requester project records",
+    "tool": "dev:pg_query",
+    "args": {
+      "sql": "SELECT conversation_id, outcome->'reconciliation'->>'by' AS recorded_by, outcome->'reconciliation'->>'at' AS recorded_at, outcome->'reconciliation'->>'disposition' AS disposition, outcome->'reconciliation'->>'decision_ref' AS decision_ref, md5((outcome->'reconciliation')::text) AS historical_record_hash FROM harness_shared.consult_state WHERE workspace_id = 'papercusp-workspace' AND conversation_id IN ('conv-mus1v26j-0000-68ff1c643c2b4f10be212508682b280f','conv-musb29y1-0000-cf39e1f18138446ebc68b0a6af8436d8','conv-muvio65y-0000-f1aa8000e03d45e78c48082936ad9898','conv-muvkvv0y-0000-598ee0fa316049bb86d9ad6b07871574') ORDER BY created_at,conversation_id LIMIT 4",
+      "positiveControlSql": "SELECT conversation_id FROM harness_shared.consult_state WHERE workspace_id = 'papercusp-workspace' AND conversation_id = 'conv-muvkvv0y-0000-598ee0fa316049bb86d9ad6b07871574' LIMIT 1",
+      "maxRows": 4,
+      "timeoutMs": 10000,
+      "allowUnscoped": false
+    },
+    "rows": [
+      {
+        "conversation_id": "conv-mus1v26j-0000-68ff1c643c2b4f10be212508682b280f",
+        "recorded_by": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+        "recorded_at": "2026-10-05T20:44:04.023Z",
+        "disposition": "rescoped",
+        "decision_ref": "get-feedback-reliability-usefulness-adoption-2026-10-03#D-003",
+        "historical_record_hash": "84c6b28cbfe95a7332c5cac41561a485"
+      },
+      {
+        "conversation_id": "conv-musb29y1-0000-cf39e1f18138446ebc68b0a6af8436d8",
+        "recorded_by": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+        "recorded_at": "2026-10-05T20:44:03.306Z",
+        "disposition": "confirmed",
+        "decision_ref": null,
+        "historical_record_hash": "409a1469b53e1c01456ff11f57d01a23"
+      },
+      {
+        "conversation_id": "conv-muvio65y-0000-f1aa8000e03d45e78c48082936ad9898",
+        "recorded_by": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+        "recorded_at": "2026-10-05T17:27:51.854Z",
+        "disposition": "confirmed",
+        "decision_ref": null,
+        "historical_record_hash": "d69ceb1cad46d63c350e08530512fad0"
+      },
+      {
+        "conversation_id": "conv-muvkvv0y-0000-598ee0fa316049bb86d9ad6b07871574",
+        "recorded_by": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+        "recorded_at": "2026-10-05T18:31:23.018Z",
+        "disposition": "confirmed",
+        "decision_ref": null,
+        "historical_record_hash": "b11999a54cfd1db682fe33502edc9d99"
+      }
+    ],
+    "positiveControl": "passed",
+    "truncated": false,
+    "hashDefinition": "MD5 of PostgreSQL jsonb::text for the complete stored outcome.reconciliation record",
+    "limitation": "Surviving current records do not substitute for a captured pre-retirement database hash or all-row datastore immutability proof."
+  },
+  "originalCohort": {
+    "path": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-live.json",
+    "commit": "8a2111c8c08b080e3d8ddb0329632a7a4e61331e",
+    "sha256": "e99b3e1675e935005d3ba693bc3cc00987311384a35bb5435ad4bb16456b27c3",
+    "currentBytesEqualOriginalCommit": true,
+    "cut": "2026-10-05T20:27:24.000Z",
+    "shortfall": 4,
+    "credit": "unchanged; later history observations do not backfill the fixed quality cohort"
+  },
+  "retainedConventionalProof": {
+    "testRunId": 20938584,
+    "result": "14 passed, 0 skipped",
+    "sourceCapture": "/tmp/get-feedback-interest-20261008-2144-source-map.json",
+    "bindings": {
+      "r4": 31968,
+      "callableAbsence": 31969,
+      "agendaAbsence": 31970
+    },
+    "scope": "Production registration absence, public guidance and proceed watch controls",
+    "provenance": "Original local dirty run preserved; no rerun solely for HEAD"
+  },
+  "remaining": [
+    "Calibrated retirement/agenda counterexamples and integration evidence",
+    "Independent/native acceptance for the complete current feature",
+    "Exact final release catalog and changed-behavior artifact equality"
+  ]
+}

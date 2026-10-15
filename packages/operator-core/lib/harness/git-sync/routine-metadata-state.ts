@@ -35,6 +35,7 @@ export interface GithubBridgeRoutineState {
   agent_actionable: boolean;
   agent_remedies: AgentActionableRemedy[];
   egress_head: string | null;
+  egress_scan_progress: NonNullable<BridgeTickOutcome['egressScanProgress']> | null;
   errors: string[];
 }
 
@@ -98,6 +99,7 @@ const GITHUB_BRIDGE_FIELDS = [
   'agent_actionable',
   'agent_remedies',
   'egress_head',
+  'egress_scan_progress',
   'errors',
 ] as const satisfies readonly (keyof GithubBridgeRoutineState)[];
 

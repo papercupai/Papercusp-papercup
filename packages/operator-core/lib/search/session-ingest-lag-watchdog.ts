@@ -33,6 +33,60 @@ import { getOrgPg } from '@papercusp/db-org';
 import { recentWatchdogFires, recordFire } from '../pot/watchdog';
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { broadcastSevereEvent } from '../severe-event-broadcast';
+import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+import {
+  readInteractiveUsageFreshness,
+  type InteractiveUsageFreshness,
+} from '../interactive-usage/freshness';
+
+const CONDITION_PREFIX = 'alarm:session-ingest:';
+type IngestConditionKind = 'backlog' | 'parts' | 'usage';
+export function sessionIngestConditionKey(kind: IngestConditionKind, workspaceId: string,
+  installSlug: string, sourceKind: string, path?: string): string {
+  return CONDITION_PREFIX + kind + ':' + encodeURIComponent(JSON.stringify(
+    path === undefined ? [workspaceId, installSlug, sourceKind] : [workspaceId, installSlug, sourceKind, path],
+  ));
+}
+async function readOpenIngestConditionKeys(): Promise<string[]> {
+  const { computeConditionStates, readConditionEnvelopes } = await import('../agent-tools/coordination/tools/conditions');
+  return computeConditionStates(await readConditionEnvelopes())
+    .filter(condition => condition.open && condition.condition_key.startsWith(CONDITION_PREFIX))
+    .map(condition => condition.condition_key);
+}
+function backlogIdentity(key: string, workspaceId: string, installSlug: string): [string, string] | null {
+  const prefix = CONDITION_PREFIX + 'backlog:';
+  if (!key.startsWith(prefix)) return null;
+  try {
+    const value: unknown = JSON.parse(decodeURIComponent(key.slice(prefix.length)));
+    if (!Array.isArray(value) || value.length !== 4 ||
+        !value.every(part => typeof part === 'string' && part.trim().length > 0) ||
+        value[0] !== workspaceId || value[1] !== installSlug ||
+        sessionIngestConditionKey('backlog', value[0], value[1], value[2], value[3]) !== key) return null;
+    return [value[2], value[3]];
+  } catch { return null; }
+}
+function validCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+function measuredCount(value: unknown): number {
+  if (typeof value !== 'number' && !(typeof value === 'string' && /^\d+$/.test(value))) {
+    throw new Error('invalid ingest ledger count');
+  }
+  const count = Number(value);
+  if (!validCount(count)) throw new Error('invalid ingest ledger count');
+  return count;
+}
+function validLagObservation(obs: AdapterLagObservation): boolean {
+  return typeof obs.sourceKind === 'string' && obs.sourceKind.trim().length > 0 &&
+    validCount(obs.behindFiles) && validCount(obs.backlogBytes) &&
+    Number.isFinite(obs.oldestBacklogAgeMs) && obs.oldestBacklogAgeMs >= 0 &&
+    (obs.worstPath === null || typeof obs.worstPath === 'string' && obs.worstPath.trim().length > 0);
+}
+function validPartsObservation(obs: PartsWriterObservation): boolean {
+  return typeof obs.sourceKind === 'string' && obs.sourceKind.trim().length > 0 &&
+    typeof obs.expectsParts === 'boolean' && validCount(obs.turnsInWindow) && validCount(obs.partsInWindow);
+}
 
 /** How long an adapter may sit on unconsumed on-disk bytes before this
  *  watchdog alerts. Default 1 h — comfortably longer than the 2-min ingest
@@ -186,10 +240,14 @@ export interface IngestLagSweepResult {
 
 export interface IngestLagSweepDeps {
   observe?: () => Promise<AdapterLagObservation[]>;
+  observeInteractiveUsageFreshness?: (workspaceId: string, nowMs?: number) => Promise<InteractiveUsageFreshness>;
   recentWatchdogFires?: typeof recentWatchdogFires;
   recordFire?: typeof recordFire;
   openEscalation?: typeof openEscalation;
   now?: number;
+  rail?: AlarmAttentionDeps;
+  readOpenConditionKeys?: () => Promise<string[]>;
+  readBacklogRecovery?: (sourceKind: string, path: string, thresholdMs: number, nowMs: number) => Promise<boolean | null>;
 }
 
 /**
@@ -206,26 +264,53 @@ export interface IngestLagSweepDeps {
  *
  * Bounded: probes at most MAX_TAIL_PROBE_BYTES, and a remainder larger than
  * that is taken as real backlog without reading. Fail-soft — an unreadable
- * file is treated as NOT consumable, so an fs error can never manufacture a
- * wedge alert.
+ * file is unknown, so an fs error can neither manufacture a wedge nor prove
+ * that an existing affected-file episode recovered.
  */
 async function remainderHasCompleteLine(
   path: string,
   byteOffset: number,
   remainderBytes: number,
-): Promise<boolean> {
+): Promise<boolean | null> {
   if (remainderBytes > MAX_TAIL_PROBE_BYTES) return true;
   let fh: Awaited<ReturnType<typeof open>> | null = null;
   try {
     fh = await open(path, 'r');
     const buf = Buffer.allocUnsafe(remainderBytes);
     const { bytesRead } = await fh.read(buf, 0, remainderBytes, byteOffset);
+    if (bytesRead !== remainderBytes) return null;
     return buf.subarray(0, bytesRead).includes(0x0a); // '\n'
   } catch {
-    return false;
+    return null;
   } finally {
     await fh?.close().catch(() => {});
   }
+}
+
+/** Exact affected-file recovery, independent of the bounded candidate scan.
+ * Missing bookkeeping/files and failed probes cannot establish recovery. */
+export async function readIngestBacklogRecovery(sourceKind: string, path: string,
+  thresholdMs: number, nowMs: number): Promise<boolean | null> {
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ source_kind: string; file_path: string; byte_offset: number | string; updated_at: string }>>`
+    SELECT source_kind, file_path, byte_offset, updated_at::text AS updated_at
+      FROM harness_shared.session_ingest_state
+     WHERE source_kind = ${sourceKind} AND file_path = ${path}
+  `;
+  if (rows.length !== 1 || rows[0].source_kind !== sourceKind || rows[0].file_path !== path) return null;
+  const row = rows[0];
+  if (typeof row.byte_offset !== 'number' &&
+      !(typeof row.byte_offset === 'string' && /^\d+$/.test(row.byte_offset))) return null;
+  const offset = Number(row.byte_offset), updated = Date.parse(row.updated_at);
+  if (!validCount(offset) || !Number.isFinite(updated) || !Number.isFinite(nowMs) ||
+      !Number.isFinite(thresholdMs) || thresholdMs <= 0) return null;
+  const file = await stat(path);
+  if (!file.isFile() || !validCount(file.size) || file.size < offset) return null;
+  const behind = file.size - offset;
+  if (behind < INGEST_LAG_MIN_BACKLOG_BYTES) return true;
+  const consumable = await remainderHasCompleteLine(path, offset, behind);
+  if (consumable === null) return null;
+  return !consumable || Math.max(0, nowMs - updated) < thresholdMs;
 }
 
 async function observeAdapterLag(): Promise<AdapterLagObservation[]> {
@@ -260,7 +345,10 @@ async function observeAdapterLag(): Promise<AdapterLagObservation[]> {
       // Archived/deleted after its state row was written — not a backlog.
       continue;
     }
-    const behind = size - Number(r.byte_offset);
+    const offset = measuredCount(r.byte_offset);
+    const updated = Date.parse(r.updated_at);
+    if (!Number.isFinite(updated)) throw new Error('invalid ingest bookkeeping timestamp');
+    const behind = size - offset;
     if (behind <= 0) continue;
     // EI-19280389878453845: filter PER FILE before aggregating. Both of these
     // shapes are normal steady state, and counting them reported a healthy
@@ -270,11 +358,11 @@ async function observeAdapterLag(): Promise<AdapterLagObservation[]> {
       obs.ignoredTailFiles = (obs.ignoredTailFiles ?? 0) + 1;
       continue;
     }
-    if (!(await remainderHasCompleteLine(r.file_path, Number(r.byte_offset), behind))) {
+    if (!(await remainderHasCompleteLine(r.file_path, offset, behind))) {
       obs.ignoredIncompleteFiles = (obs.ignoredIncompleteFiles ?? 0) + 1;
       continue;
     }
-    const ageMs = Math.max(0, now - Date.parse(r.updated_at));
+    const ageMs = Math.max(0, now - updated);
     obs.behindFiles += 1;
     obs.backlogBytes += behind;
     if (ageMs > obs.oldestBacklogAgeMs) {
@@ -307,11 +395,20 @@ export async function sessionIngestLagSweep(
     const observations = await (deps.observe ?? observeAdapterLag)();
     for (const obs of observations) {
       try {
+        if (!validLagObservation(obs)) throw new Error('invalid ingest backlog measurement');
         const verdict = evaluateIngestLag(obs, thresholdMs);
         if (!verdict.wedged) {
           results.push({ sourceKind: obs.sourceKind, outcome: 'healthy', reason: verdict.reason });
           continue;
         }
+        if (!obs.worstPath) throw new Error('wedged ingest measurement has no affected file');
+        const event = { conditionKey: sessionIngestConditionKey('backlog', workspaceId, installSlug,
+          obs.sourceKind, obs.worstPath), oneShot: true,
+          summary: `Transcript ingest wedged for source_kind '${obs.sourceKind}'`, body: verdict.reason };
+        try {
+          if (deps.rail?.broadcast) await deps.rail.broadcast(event);
+          else await broadcastSevereEvent(event);
+        } catch { /* legacy escalation remains independent of rail delivery */ }
         const windowHours = Math.max(1, Math.round(thresholdSec / 3_600));
         const firedRecently =
           (await (deps.recentWatchdogFires ?? recentWatchdogFires)(
@@ -344,6 +441,77 @@ export async function sessionIngestLagSweep(
           sourceKind: obs.sourceKind, outcome: 'error', reason: e instanceof Error ? e.message : String(e),
         });
       }
+    }
+    // A candidate can fall outside the LIMIT or 45-day window while its episode
+    // remains open. Re-read its exact source/file rather than treating absence as green.
+    try {
+      const keys = await (deps.readOpenConditionKeys ?? readOpenIngestConditionKeys)();
+      for (const key of keys) {
+        const identity = backlogIdentity(key, workspaceId, installSlug);
+        if (!identity) continue;
+        try {
+          if (await (deps.readBacklogRecovery ?? readIngestBacklogRecovery)(
+            identity[0], identity[1], thresholdMs, deps.now ?? Date.now()) === true) {
+            await resolveAlarm(key, 'session-ingest-lag', deps.rail);
+          }
+        } catch { /* unknown exact recovery preserves the episode */ }
+      }
+    } catch { /* unknown condition ledger preserves every episode */ }
+    try {
+      const freshness = await (deps.observeInteractiveUsageFreshness ?? (async (ws, nowMs) => {
+        const { sql } = getOrgPg();
+        return readInteractiveUsageFreshness(sql, { workspaceId: ws, nowMs });
+      }))(workspaceId, deps.now);
+      if (freshness.status === 'fresh') {
+        // Re-check the measurements behind the status before clearing an episode.
+        if (freshness.lastIngestedAtMs !== null && Number.isFinite(freshness.lastIngestedAtMs) &&
+            freshness.lastIngestedAtMs >= 0 && freshness.ageMs !== null && Number.isFinite(freshness.ageMs) &&
+            freshness.ageMs >= 0 && Number.isFinite(freshness.windowMs) && freshness.windowMs > 0 &&
+            freshness.ageMs <= freshness.windowMs && freshness.maxRecentIngestLagMs !== null &&
+            Number.isFinite(freshness.maxRecentIngestLagMs) && freshness.maxRecentIngestLagMs >= 0 &&
+            Number.isFinite(freshness.lagThresholdMs) && freshness.lagThresholdMs > 0 &&
+            freshness.maxRecentIngestLagMs <= freshness.lagThresholdMs) {
+          await resolveAlarm(sessionIngestConditionKey('usage', workspaceId, installSlug, 'interactive'),
+            'interactive-usage-freshness', deps.rail);
+        }
+        results.push({ sourceKind: 'interactive-usage', outcome: 'healthy', reason: freshness.reason });
+      } else if (freshness.status === 'unavailable') {
+        results.push({ sourceKind: 'interactive-usage', outcome: 'error', reason: freshness.reason });
+      } else if (freshness.status === 'stale') {
+        const event = { conditionKey: sessionIngestConditionKey('usage', workspaceId, installSlug, 'interactive'),
+          oneShot: true, summary: 'Interactive usage ingestion freshness is stale', body: freshness.reason };
+        try {
+          if (deps.rail?.broadcast) await deps.rail.broadcast(event);
+          else await broadcastSevereEvent(event);
+        } catch { /* legacy escalation remains independent */ }
+        const windowHours = Math.max(1, Math.round(thresholdSec / 3_600));
+        const firedRecently =
+          (await (deps.recentWatchdogFires ?? recentWatchdogFires)(
+            workspaceId, installSlug, windowHours, 'interactive-usage-freshness', 'interactive',
+          )) > 0;
+        if (firedRecently) {
+          results.push({ sourceKind: 'interactive-usage', outcome: 'debounced', reason: 'fires-ledger debounce' });
+        } else {
+          const reason =
+            `${freshness.reason}. Goal spend is unmeasured until a recent ingestion timestamp is available; ` +
+            `this freshness signal does not establish why samples were not written.`;
+          console.warn(`[session-ingest-lag] ALERT: ${reason}`);
+          await (deps.recordFire ?? recordFire)({
+            workspaceId, installSlug, source: 'interactive-usage-freshness', reason, wakeAt: null,
+          });
+          await (deps.openEscalation ?? openEscalation)(INGEST_LAG_IDENTITY, {
+            severity: 'advisory',
+            summary: 'Interactive usage ingestion freshness is stale',
+            body: reason,
+          });
+          results.push({ sourceKind: 'interactive-usage', outcome: 'alerted', reason });
+        }
+      }
+    } catch (error) {
+      results.push({
+        sourceKind: 'interactive-usage', outcome: 'error',
+        reason: error instanceof Error ? error.message : String(error),
+      });
     }
   } catch (e) {
     results.push({ sourceKind: '*', outcome: 'error', reason: e instanceof Error ? e.message : String(e) });
@@ -416,33 +584,61 @@ export interface PartsWriterVerdict {
  * wrong model here produces exactly the false alarms D-006 forbids. The only
  * question asked is the unambiguous one: it did work, and produced nothing.
  */
-export function evaluatePartsWriter(obs: PartsWriterObservation): PartsWriterVerdict {
+interface PartsWriterConditionContext {
+  workspaceId: string;
+  installSlug: string;
+  rail?: AlarmAttentionDeps;
+}
+export function evaluatePartsWriter(obs: PartsWriterObservation): PartsWriterVerdict;
+export function evaluatePartsWriter(obs: PartsWriterObservation, context: PartsWriterConditionContext): Promise<PartsWriterVerdict>;
+export function evaluatePartsWriter(obs: PartsWriterObservation,
+  context?: PartsWriterConditionContext): PartsWriterVerdict | Promise<PartsWriterVerdict> {
+  // Existing pure consumers retain their synchronous verdict. The sweep supplies
+  // context and awaits the same original producer's condition delivery.
+  let delivery: Promise<unknown> = Promise.resolve();
+  if (context) {
+    if (!validPartsObservation(obs)) return Promise.reject(new Error('invalid parts writer measurement'));
+    const conditionKey = sessionIngestConditionKey('parts', context.workspaceId, context.installSlug, obs.sourceKind);
+    if (obs.expectsParts && obs.turnsInWindow > 0 && obs.partsInWindow === 0) {
+      const event = { conditionKey, oneShot: true,
+        summary: `Session parts writer silently dead for source_kind '${obs.sourceKind}'`,
+        body: `${obs.turnsInWindow} turns consumed and zero parts written in the measured window` };
+      try {
+        if (context.rail?.broadcast) delivery = context.rail.broadcast(event);
+        else delivery = broadcastSevereEvent(event);
+      } catch { /* a synchronous rail refusal cannot suppress the original verdict */ }
+    } else if (obs.expectsParts && obs.turnsInWindow > 0 && obs.partsInWindow > 0) {
+      delivery = resolveAlarm(conditionKey, 'session-parts-writer', context.rail);
+    }
+  }
+  const delivered = (verdict: PartsWriterVerdict): PartsWriterVerdict | Promise<PartsWriterVerdict> =>
+    context ? delivery.catch(() => undefined).then(() => verdict) : verdict;
   if (!obs.expectsParts) {
-    return {
+    return delivered({
       degraded: false,
       reason:
         `${obs.sourceKind}: no parseParts adapter — storing zero parts is this adapter's CORRECT ` +
         `steady state, not a regression. (Judging it would alarm forever on three of four adapters, ` +
         `which is the alert-fatigue failure D-006 exists to prevent.)`,
-    };
+    });
   }
   if (obs.turnsInWindow === 0) {
-    return {
+    return delivered({
       degraded: false,
       reason:
         `${obs.sourceKind}: no turns ingested in the window — nothing was consumed, so the writer ` +
         `cannot be judged. A quiet client is silent here exactly as in the lag sweep.`,
-    };
+    });
   }
   if (obs.partsInWindow > 0) {
-    return {
+    return delivered({
       degraded: false,
       reason:
         `${obs.sourceKind}: writer healthy — ${obs.partsInWindow} part(s) alongside ` +
         `${obs.turnsInWindow} turn(s) in the window.`,
-    };
+    });
   }
-  return {
+  return delivered({
     degraded: true,
     reason:
       `${obs.sourceKind} parts writer is SILENTLY DEAD: ${obs.turnsInWindow} turn(s) were ingested in ` +
@@ -451,7 +647,7 @@ export function evaluatePartsWriter(obs: PartsWriterObservation): PartsWriterVer
       `"fully caught up" while this happens, which is why it needs its own guard. ` +
       `⚠ THE LOSS IS PERMANENT: consumed bytes are never re-read, so every byte ingested while this ` +
       `persists is missing from session_turn_parts forever. Fix it NOW, not at the next deploy.`,
-  };
+  });
 }
 
 const PARTS_WRITER_IDENTITY: AgentIdentity = {
@@ -498,8 +694,8 @@ async function observePartsWriter(windowMs: number): Promise<PartsWriterObservat
     byKind.set(r.source_kind, {
       sourceKind: r.source_kind,
       expectsParts: expects.has(r.source_kind),
-      turnsInWindow: Number(r.turns),
-      partsInWindow: Number(r.parts),
+      turnsInWindow: measuredCount(r.turns),
+      partsInWindow: measuredCount(r.parts),
     });
   }
   return [...byKind.values()];
@@ -510,6 +706,7 @@ export interface PartsWriterSweepDeps {
   recentWatchdogFires?: typeof recentWatchdogFires;
   recordFire?: typeof recordFire;
   openEscalation?: typeof openEscalation;
+  rail?: AlarmAttentionDeps;
 }
 
 /**
@@ -537,7 +734,7 @@ export async function sessionPartsWriterSweep(
     const observations = await (deps.observe ?? observePartsWriter)(windowMs);
     for (const obs of observations) {
       try {
-        const verdict = evaluatePartsWriter(obs);
+        const verdict = await evaluatePartsWriter(obs, { workspaceId, installSlug, rail: deps.rail });
         if (!verdict.degraded) {
           results.push({ sourceKind: obs.sourceKind, outcome: 'healthy', reason: verdict.reason });
           continue;

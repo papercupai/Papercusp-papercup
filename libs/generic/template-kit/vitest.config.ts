@@ -4,6 +4,9 @@ export default defineVitestConfig({
   layer: 'unit',
   include: [
     'src/**/*.test.ts',
+    // The portable reference/control suite also runs without a materialized app.
+    // Owning it here records the unit layer and excludes desktop mirror copies.
+    '../../../templates/papercusp-ops-pots/checks/operation-first-triggers.test.ts',
     // EI-21113741017731833: the mobile templates' fixture suites are the
     // in-repo FALSIFIABILITY harness for their contracts, and nothing was
     // executing them — they skipIf(materialized) inside a materialized app,
@@ -26,5 +29,8 @@ export default defineVitestConfig({
     // cost pin. A MUST whose enforcing check never runs is prose wearing a
     // mechanism's name. (plan unified-app-template-2026-08-23, P-005.)
     '../../../templates/papercusp-app/checks/composition-integrity.test.ts',
+    // The app-root package script guard is portable and also runs unconfigured
+    // here against this repository's root manifest.
+    '../../../templates/papercusp-app/checks/package-script-targets.test.ts',
   ],
 });

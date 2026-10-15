@@ -156,7 +156,10 @@ export interface DesktopAuditDeps {
  */
 export function recordDesktopAudit(event: DesktopAuditEvent, deps: DesktopAuditDeps = {}): void {
   const now = deps.now ?? Date.now;
-  const onError = deps.onError ?? ((error: unknown) => console.warn('[desktop-audit] write failed:', error));
+  // Database errors can include SQL bindings in both params and message. The
+  // default console is a metadata sink; an explicit scoped onError may inspect
+  // the original error without automatically publishing it to console.
+  const onError = deps.onError ?? (() => console.warn('[desktop-audit] write failed:', 'desktop_audit_write_failed'));
   void (async () => {
     try {
       const id = `${deps.idPrefix ?? 'vnc'}-${now().toString(36)}-${randomBytes(4).toString('hex')}`;

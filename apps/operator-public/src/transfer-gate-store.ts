@@ -170,10 +170,20 @@ export async function readReconciliationInputs(db: D1Database, nowMs: number): P
     .prepare(
       `SELECT transfer_id, chain_id, transaction_hash, amount_micros, created_at_ms
          FROM treasury_transfers
-        WHERE share = 'dao'
+        WHERE share = 'dao' AND submission_state = 'submitted'
         ORDER BY created_at_ms ASC, transfer_id ASC`,
     )
     .all<{ transfer_id: string; chain_id: number; transaction_hash: string; amount_micros: number; created_at_ms: number }>();
+  // D-032: the DAO's allocation of every FINAL batch is the independent accrual
+  // the operator's dao-payable invariant compares the journal against.
+  const { results: batches } = await db
+    .prepare(
+      `SELECT batch_id, chain_id, claim_tx_hash, claim_micros, allocations_micros, finalized_at_ms
+         FROM settlement_batches
+        WHERE state = 'final'
+        ORDER BY finalized_at_ms ASC, batch_id ASC`,
+    )
+    .all<{ batch_id: string; chain_id: number; claim_tx_hash: string; claim_micros: number; allocations_micros: string; finalized_at_ms: number }>();
   return {
     outstandingCreditsMicros: Number(credits?.outstanding ?? 0),
     daoTransfers: (results ?? []).map((r) => ({
@@ -183,6 +193,32 @@ export async function readReconciliationInputs(db: D1Database, nowMs: number): P
       amountMicros: r.amount_micros,
       createdAtMs: r.created_at_ms,
     })),
+    finalSettlementBatches: (batches ?? []).map((b) => ({
+      batchId: b.batch_id,
+      chainId: Number(b.chain_id),
+      claimTransactionHash: b.claim_tx_hash,
+      claimMicros: Number(b.claim_micros),
+      daoMicros: daoAllocationMicros(b.allocations_micros),
+      finalizedAtMs: Number(b.finalized_at_ms),
+    })),
     generatedAtMs: nowMs,
   };
+}
+
+/**
+ * The `dao` entry of a batch's canonical allocations JSON (decimal micro
+ * strings). Anything unreadable becomes NaN, which serializes as null and makes
+ * the operator's parser refuse the whole read: a guessed zero would silently
+ * understate what the DAO is owed.
+ */
+export function daoAllocationMicros(allocationsJson: string): number {
+  try {
+    const parsed: unknown = JSON.parse(allocationsJson);
+    const dao = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>).dao : undefined;
+    if (typeof dao !== 'string' || !/^\d+$/.test(dao)) return Number.NaN;
+    const micros = Number(dao);
+    return Number.isSafeInteger(micros) ? micros : Number.NaN;
+  } catch {
+    return Number.NaN;
+  }
 }

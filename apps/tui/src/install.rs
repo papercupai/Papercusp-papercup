@@ -64,6 +64,10 @@ pub fn this_target() -> String {
 /// The release unit root a binary at `<root>/bin/pui` belongs to, when that root
 /// carries a manifest. `None` for a loose binary (cargo install, target dir).
 pub fn release_root_of(exe: &Path) -> Option<PathBuf> {
+    // macOS current_exe can retain ~/.local/bin/pui. Resolve both the launcher
+    // and current-release symlinks before looking beside the physical binary.
+    // Preserve loose-binary lookup when the executable cannot be resolved.
+    let exe = fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
     exe.parent()
         .and_then(Path::parent)
         .filter(|root| root.join(MANIFEST_NAME).is_file())
@@ -88,16 +92,9 @@ pub fn prefer_bundled_tools() {
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
-    let Some(root) = release_root_of(&exe) else {
+    let Some(bin) = bundled_tools_bin_of(&exe) else {
         return;
     };
-    let versioned = read_manifest(&root.join(MANIFEST_NAME))
-        .map(|manifest| manifest.version.is_some())
-        .unwrap_or(false);
-    let bin = root.join("bin");
-    if !versioned || !bin.join("zellij").is_file() {
-        return;
-    }
     let mut paths: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|value| std::env::split_paths(&value).collect())
         .unwrap_or_default();
@@ -109,6 +106,13 @@ pub fn prefer_bundled_tools() {
     if let Ok(joined) = std::env::join_paths(paths) {
         std::env::set_var("PATH", joined);
     }
+}
+
+fn bundled_tools_bin_of(exe: &Path) -> Option<PathBuf> {
+    let root = release_root_of(exe)?;
+    let manifest = read_manifest(&root.join(MANIFEST_NAME)).ok()?;
+    let bin = root.join("bin");
+    (manifest.version.is_some() && bin.join("zellij").is_file()).then_some(bin)
 }
 
 pub fn read_manifest(manifest_path: &Path) -> Result<InstallManifest> {
@@ -924,6 +928,85 @@ mod tests {
         .unwrap_err()
         .to_string()
         .contains("must not escape"));
+    }
+
+    /// macOS can return the launcher symlink from current_exe, unlike Linux's
+    /// /proc-based lookup. Exercise the actual self-install link layout.
+    #[cfg(unix)]
+    #[test]
+    fn installed_launcher_resolves_the_physical_release_and_its_artifacts() {
+        use std::os::unix::fs::symlink;
+
+        let home = tempdir().unwrap();
+        let local = home.path().join(".local");
+        let store = local.join("share/pui");
+        let release = store.join("releases/0.1.0-abc123");
+        fs::create_dir_all(release.join("bin")).unwrap();
+        fs::create_dir_all(local.join("bin")).unwrap();
+        let binary = release.join("bin/pui");
+        let companion = release.join("pui-companion.wasm");
+        fs::write(&binary, b"installed-binary").unwrap();
+        fs::write(&companion, b"installed-wasm").unwrap();
+        fs::write(release.join("bin/zellij"), b"bundled-zellij").unwrap();
+        fs::write(release.join(ANCESTRY_NAME), b"abcdef123456\n").unwrap();
+        let companion_sha = sha256_file(&companion).unwrap();
+        let manifest = InstallManifest {
+            schema_version: 1,
+            source_sha: "abcdef123456".into(),
+            source_dirty: false,
+            built_at_epoch: 456,
+            binary_path: "bin/pui".into(),
+            binary_sha256: sha256_file(&binary).unwrap(),
+            companion_path: "pui-companion.wasm".into(),
+            companion_sha256: companion_sha.clone(),
+            source_root: None,
+            version: Some("0.1.0".into()),
+            target: Some(this_target()),
+        };
+        fs::write(
+            release.join(MANIFEST_NAME),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        symlink("releases/0.1.0-abc123", store.join("current")).unwrap();
+        let launcher = local.join("bin/pui");
+        symlink("../share/pui/current/bin/pui", &launcher).unwrap();
+        // A manifest near the launcher must not shadow the executable's unit.
+        fs::write(local.join(MANIFEST_NAME), b"unrelated launcher manifest").unwrap();
+
+        let physical_release = fs::canonicalize(&release).unwrap();
+        assert_eq!(release_root_of(&launcher), Some(physical_release.clone()));
+        assert_eq!(
+            release_companion_of(&launcher),
+            Some(physical_release.join("pui-companion.wasm"))
+        );
+        assert_eq!(
+            bundled_tools_bin_of(&launcher),
+            Some(physical_release.join("bin"))
+        );
+        assert_eq!(install_origin_of(&launcher), InstallOrigin::Release);
+        assert_eq!(
+            release_generation_contained(&launcher, "abcdef1"),
+            Some(true)
+        );
+        assert_eq!(
+            release_generation_contained(&launcher, "1234567"),
+            Some(false)
+        );
+        let manifest_path = default_manifest_path(&launcher).unwrap();
+        assert_eq!(manifest_path, physical_release.join(MANIFEST_NAME));
+        let check = inspect_paths(
+            &manifest_path,
+            &launcher,
+            &stamp("abcdef123456", 456, &companion_sha),
+        )
+        .unwrap();
+        assert!(check.is_ok(), "{:?}", check.problems);
+        assert!(check.warnings.is_empty());
+
+        fs::remove_file(release.join(MANIFEST_NAME)).unwrap();
+        assert_eq!(release_root_of(&launcher), None);
+        assert_eq!(install_origin_of(&launcher), InstallOrigin::Checkout);
     }
 
     #[test]

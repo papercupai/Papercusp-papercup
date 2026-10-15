@@ -84,7 +84,7 @@ for so in ld-linux-x86-64.so.2 libc.so.6 libdl.so.2 libm.so.6 libpthread.so.0 li
 done
 
 hr "SYSTEM PACKAGE EQUIVALENTS - availability in this base's repos"
-for p in acl bubblewrap ca-certificates curl jq openssh-server sudo minisign firewalld nftables dnf-automatic; do probe_rpmpkg "$p"; done
+for p in acl bubblewrap ca-certificates curl git-core jq openssh-server sudo minisign firewalld nftables dnf-automatic; do probe_rpmpkg "$p"; done
 
 hr "PACKAGES WITH NO RPM EQUIVALENT (expect NOT-IN-REPOS - substitution required)"
 for p in ufw unattended-upgrades; do probe_rpmpkg "$p"; done

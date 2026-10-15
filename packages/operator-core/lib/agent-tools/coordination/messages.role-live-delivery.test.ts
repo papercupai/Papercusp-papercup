@@ -37,6 +37,7 @@ vi.mock('./log', () => ({
   coordLog: { appendLine: vi.fn(async () => undefined) },
   coordSql: () => ({}),
   coordWorkspaceId: () => 'default',
+  coordHasPgFastPath: () => false,
 }));
 vi.mock('./role-slot-live-resolve', () => ({
   resolveLiveRoleHolders: vi.fn(async () => [] as string[]),

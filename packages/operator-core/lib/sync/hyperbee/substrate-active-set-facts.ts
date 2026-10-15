@@ -22,6 +22,7 @@
  */
 
 import type { HarnessActivationFacts } from './substrate-active-set-policy';
+import { observeFallback } from '../../degradation/fallback-observations';
 
 /** The registry fields that decide `federating` / `pinned`, already in hand. */
 export interface ActivationRegistryEntry {
@@ -75,6 +76,9 @@ export async function gatherActivationFacts(
     // Independent reads — issue them together rather than serially.
     [pending, presence] = await Promise.all([deps.pendingOutboxCounts(), deps.lastPresenceMs()]);
   } catch (e) {
+    if (entries.length > 0) observeFallback('substrate-activation-probe', {
+      eligible: entries.length, applied: 0, reason: 'activation-probe-failed',
+    });
     console.warn(
       '[substrate-active-set] activation probe failed — booting EVERY harness eagerly (fail-open):',
       e instanceof Error ? e.message : String(e),
@@ -88,6 +92,9 @@ export async function gatherActivationFacts(
     }));
   }
 
+  if (entries.length > 0) observeFallback('substrate-activation-probe', {
+    eligible: entries.length, applied: entries.length, reason: 'applied',
+  });
   return entries.map((entry) => {
     const key = factsKey(entry.workspaceId, entry.harnessSlug);
     return {

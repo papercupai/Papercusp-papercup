@@ -22,17 +22,22 @@
  *   window, no lock, no restore trap, nothing for a sweep to commit.
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { buildSync } from 'esbuild';
 
 import {
   EXIT_NOT_CHECKED,
+  INDEX_FAULT_CAPTURE_COMMAND,
+  INDEX_FAULT_TRACKING_ITEM,
+  INDEX_AUDIT_SINK_STATE_PATH,
   RepositoryIndexFaultError,
   isRepositoryIndexFault,
+  probeIndexAuditSink,
   reportIndexFaultNotChecked,
   withGitIndexFaultRetry,
 } from '../../../scripts/lib/git-index-fault.mjs';
@@ -59,6 +64,185 @@ beforeAll(() => {
 
 afterAll(() => {
   rmSync(tmp, { recursive: true, force: true });
+});
+
+it('keeps the audit CLI inert when imported into a real sidecar bundle', () => {
+  const fakeChildProcess = join(tmp, 'inert-child-process.mjs');
+  writeFileSync(fakeChildProcess, 'export function execFileSync() { throw new Error("audit CLI ran from a bundled import"); }');
+  const bundle = join(tmp, 'audit-library-bundle.mjs');
+  buildSync({
+    stdin: {
+      contents: 'import "./scripts/lib/git-index-fault.mjs"; console.log("LIBRARY_IMPORTED");',
+      resolveDir: REPO_ROOT,
+      sourcefile: 'audit-library-entry.mjs',
+    },
+    outfile: bundle,
+    bundle: true,
+    platform: 'node',
+    format: 'esm',
+    define: { __PAPERCUSP_BUNDLED_SIDECAR__: 'true' },
+    alias: { 'node:child_process': fakeChildProcess },
+  });
+  const result = spawnSync(process.execPath, [bundle, '--audit-sink'], {
+    encoding: 'utf8', timeout: 10_000, env: { ...process.env, NODE_OPTIONS: '' },
+  });
+  expect(result.error).toBeUndefined();
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout.trim()).toBe('LIBRARY_IMPORTED');
+});
+
+describe('audit sink persistence — kernel intake is not proof of a live log', () => {
+  const marker = 'papercusp-audit-sink-test';
+  const healthy = 'writing to logs = yes\nlogging suspended = no\n';
+  // Actual auditctl -m record shape, measured with persisted event5572724.
+  const receipt = `type=USER msg=audit(1791970000.123:5566084): msg='text=${marker} exe="/usr/sbin/auditctl" hostname=? addr=? terminal=? res=success'`;
+  function harness({ state = healthy, stateDelay = 0, receiptDelay = 0, output = receipt } = {}) {
+    let clock = 1000;
+    let stateReads = 0;
+    let searches = 0;
+    const calls: { args: string[]; timeout: number }[] = [];
+    const options = {
+      marker, timeoutMs: 100, pollMs: 10, auditLogPath: '/var/log/audit/audit.log',
+      now: () => clock,
+      sleep: (ms: number) => { clock += ms; },
+      readState: () => ({ text: state, updatedAtMs: ++stateReads > stateDelay ? 1000 : 900 }),
+      run: (args: string[], timeout: number) => {
+        calls.push({ args, timeout });
+        return args[0] === 'ausearch' && ++searches > receiptDelay ? output : '';
+      },
+    };
+    return { options, calls, elapsed: () => clock - 1000 };
+  }
+
+  it('detects the observed enabled=1/lost=0 but logging-suspended counterexample', () => {
+    const h = harness({ state: 'enabled 1\nlost 0\nwriting to logs = yes\nlogging suspended = yes\n' });
+    expect(probeIndexAuditSink(h.options).status).toBe('suspended');
+    expect(h.calls.map(c => c.args)).toEqual([['auditctl', '--signal', 'state']]);
+  });
+
+  it('detects disabled log writes even if the suspension field says no', () => {
+    const h = harness({ state: 'writing to logs = no\nlogging suspended = no\n' });
+    expect(probeIndexAuditSink(h.options).status).toBe('suspended');
+  });
+
+  it('requires a fresh snapshot AND the uniquely tagged persisted USER event', () => {
+    const h = harness({ stateDelay: 2, receiptDelay: 2 });
+    expect(probeIndexAuditSink(h.options)).toEqual({
+      status: 'live', reason: 'fresh-daemon-state-and-persisted-positive-control',
+      marker, stateUpdatedAtMs: 1000, eventId: '1791970000.123:5566084',
+    });
+    expect(h.elapsed()).toBe(40);
+    expect(h.calls.some(c => c.args.includes('resume'))).toBe(false);
+    expect(h.calls.filter(c => c.args[0] === 'ausearch').every(c => c.args.slice(1, 3).join(' ') === '--input /var/log/audit/audit.log')).toBe(true);
+    expect(INDEX_AUDIT_SINK_STATE_PATH).toBe('/run/auditd.state');
+  });
+
+  it('reads the configured sink instead of scanning rotated log history', () => {
+    const h = harness();
+    const run = h.options.run;
+    const options = { ...h.options, auditLogPath: undefined, run: (args: string[], timeout: number) => {
+      if (args.join(' ') === 'cat /etc/audit/auditd.conf') return '# comment\nlog_file = /custom/current.log\n';
+      return run(args, timeout);
+    } };
+    expect(probeIndexAuditSink(options).status).toBe('live');
+    expect(h.calls.find(c => c.args[0] === 'ausearch')?.args.slice(1, 3)).toEqual(['--input', '/custom/current.log']);
+  });
+
+  it('does not emit a control when the configured sink is unavailable', () => {
+    const h = harness();
+    expect(probeIndexAuditSink({ ...h.options, auditLogPath: undefined })).toMatchObject({ status: 'unknown', reason: 'configured-audit-log-unavailable' });
+    expect(h.calls.some(c => c.args[1] === '-m')).toBe(false);
+  });
+
+  it('preserves timeout evidence without reading a failed search as a negative result', () => {
+    const h = harness();
+    const run = h.options.run;
+    h.options.run = (args, timeout) => {
+      if (args[0] === 'ausearch') throw Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' });
+      return run(args, timeout);
+    };
+    expect(probeIndexAuditSink(h.options)).toMatchObject({ status: 'unknown', reason: 'positive-control-search-failed', errorCode: 'ETIMEDOUT' });
+  });
+
+  it('allows asynchronous creation of the snapshot after a missing first read', () => {
+    const h = harness();
+    const read = h.options.readState;
+    let reads = 0;
+    h.options.readState = () => {
+      if (++reads === 1) throw new Error('ENOENT');
+      return read();
+    };
+    expect(probeIndexAuditSink(h.options).status).toBe('live');
+    expect(h.elapsed()).toBe(10);
+  });
+
+  it('expires a stale snapshot without asserting healthy or emitting a probe', () => {
+    const h = harness({ stateDelay: 100 });
+    expect(probeIndexAuditSink(h.options)).toMatchObject({ status: 'unknown', reason: 'fresh-daemon-state-unavailable' });
+    expect(h.elapsed()).toBe(100);
+    expect(h.calls).toHaveLength(1);
+  });
+
+  it('does not accept a snapshot from the future', () => {
+    const h = harness();
+    h.options.readState = () => ({ text: healthy, updatedAtMs: 2000 });
+    expect(probeIndexAuditSink(h.options).status).toBe('unknown');
+  });
+
+  it('does not infer readiness from absent or malformed daemon fields', () => {
+    const h = harness({ state: 'enabled 1\nlost 0\nlogging suspended = maybe\n' });
+    expect(probeIndexAuditSink(h.options)).toMatchObject({ status: 'unknown', reason: 'daemon-state-fields-unreadable' });
+  });
+
+  for (const output of ['', receipt.replace(marker, marker + '-other'), receipt.replace('type=USER ', 'type=PROCTITLE '), receipt.replace('res=success', 'res=failed'), receipt.replace('text=', 'command=')]) {
+    it(`does not accept an empty, unrelated, echoed or failed receipt: ${output}`, () => {
+      const h = harness({ output });
+      expect(probeIndexAuditSink(h.options)).toMatchObject({ status: 'unknown', reason: 'positive-control-not-persisted-before-deadline' });
+      expect(h.elapsed()).toBe(100);
+      expect(h.calls.every(c => c.timeout > 0 && c.timeout <= 100)).toBe(true);
+    });
+  }
+
+  it('waits for the asynchronous receipt on ausearch no-match, but not a permission error', () => {
+    const h = harness();
+    const run = h.options.run;
+    let first = true;
+    h.options.run = (args, timeout) => {
+      if (args[0] === 'ausearch' && first) {
+        first = false;
+        throw Object.assign(new Error('<no matches>'), { status: 1 });
+      }
+      return run(args, timeout);
+    };
+    expect(probeIndexAuditSink(h.options).status).toBe('live');
+    expect(h.elapsed()).toBe(10);
+    const denied = harness();
+    const deniedRun = denied.options.run;
+    denied.options.run = (args, timeout) => {
+      if (args[0] === 'ausearch') throw Object.assign(new Error('permission denied'), { status: 1 });
+      return deniedRun(args, timeout);
+    };
+    expect(probeIndexAuditSink(denied.options)).toMatchObject({ status: 'unknown', reason: 'positive-control-search-failed' });
+  });
+
+  for (const phase of ['state', 'emission']) {
+    it(`reports a failed ${phase} request as unknown without changing audit configuration`, () => {
+      const h = harness();
+      h.options.run = (args) => {
+        if (phase === 'state' || args.includes('-m')) throw new Error('sudo refused');
+        return '';
+      };
+      expect(probeIndexAuditSink(h.options)).toMatchObject({
+        status: 'unknown', reason: phase === 'state' ? 'daemon-state-request-failed' : 'positive-control-emission-failed',
+      });
+    });
+  }
+
+  it('rejects unsafe markers before running any privileged command', () => {
+    const h = harness();
+    expect(probeIndexAuditSink({ ...h.options, marker: 'bad\nmarker' }).status).toBe('unknown');
+    expect(h.calls).toHaveLength(0);
+  });
 });
 
 describe('classification — what counts as "the instrument could not read the repository"', () => {
@@ -187,8 +371,38 @@ describe('reporting — an undetermined run announces itself', () => {
     expect(text).toContain('index file smaller than expected');
   });
 
+  it('tells the agent who hits a torn index to CAPTURE the writer, not to wait it out (WI-10004911)', () => {
+    // The torn-index writer is still unknown after three recurrences, and the auditd trail that
+    // names it rotates within hours. The banner is printed at the one moment someone is looking,
+    // so it must carry the capture command and the owning item; calling the fault a "known
+    // transient" is exactly what let two earlier items close without a cause.
+    const lines: string[] = [];
+    reportIndexFaultNotChecked(execFileSyncLikeError(REAL_INCIDENT_STDERR), {
+      guard: 'demo-guard',
+      log: (m: string) => lines.push(m),
+    });
+    const text = lines.join('\n');
+    expect(text).toContain(INDEX_FAULT_TRACKING_ITEM);
+    expect(text).toContain(INDEX_FAULT_CAPTURE_COMMAND);
+    expect(INDEX_FAULT_CAPTURE_COMMAND).toContain('-k papercusp-gitindex');
+    expect(INDEX_FAULT_CAPTURE_COMMAND).toContain('--start recent');
+    expect(text).not.toMatch(/known transient/i);
+  });
+
   it('returns null for a non-index error so the caller rethrows instead of swallowing it', () => {
     expect(reportIndexFaultNotChecked(new Error('real violation'), { guard: 'x', log: () => {} })).toBeNull();
+  });
+
+  it('does not treat an armed watch or empty search as proof of audit sink persistence', () => {
+    const lines: string[] = [];
+    reportIndexFaultNotChecked(execFileSyncLikeError(REAL_INCIDENT_STDERR), {
+      log: (m: string) => lines.push(m),
+    });
+    const text = lines.join('\n');
+    expect(text).toContain('--audit-sink');
+    expect(text).toContain('logging suspended');
+    expect(text).toContain('empty search is inconclusive');
+    expect(text).not.toContain('it names every process');
   });
 
   // runGuardWithIndexFaultGuard wraps `main` in a SYNC try/catch. An ASYNC main returns a

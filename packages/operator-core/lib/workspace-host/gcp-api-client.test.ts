@@ -8,6 +8,7 @@ import {
   GCP_BILLING_EXPORT_MAX_BYTES_BILLED,
   GoogleBigQueryBillingExportReader,
   GoogleComputeWorkspaceHostApiClient,
+  recreateInput as gcpRecreateInput,
   parseGcpBillingExportDescriptor,
 } from './gcp-api-client';
 import {
@@ -855,6 +856,36 @@ describe('ADC-backed GCP workspace-host API client', () => {
       error: { code: 'QUOTA_EXCEEDED', message: 'GCP operation failed (QUOTA_EXCEEDED)' },
     });
     expect(JSON.stringify(observed)).not.toContain(TOKEN);
+    // No httpErrorStatusCode on the wire: nothing is invented, and QUOTA_EXCEEDED is never a throttle.
+    expect(observed.error).not.toHaveProperty('status');
+    expect(observed.error).not.toHaveProperty('throttled');
+  });
+
+  it('a failed operation carries its own HTTP status and marks rate-limit codes as throttled (WI-10005323)', async () => {
+    const answer = (codes: string[], httpErrorStatusCode: number) =>
+      makeClient(
+        vi.fn(async () =>
+          json({
+            name: 'operation-1',
+            status: 'DONE',
+            zone: `projects/${PROJECT}/zones/${ZONE}`,
+            httpErrorStatusCode,
+            httpErrorMessage: 'FORBIDDEN',
+            error: { errors: codes.map((code) => ({ code, message: `provider detail ${TOKEN}` })) },
+          }),
+        ) as typeof fetch,
+      ).waitForOperation({ name: 'operation-1', projectId: PROJECT, scope: 'zone', location: ZONE, requestId: REQUEST_ID });
+
+    const denied = await answer(['SERVICE_ACCOUNT_ACCESS_DENIED'], 403);
+    expect(denied.error).toEqual({
+      code: 'SERVICE_ACCOUNT_ACCESS_DENIED',
+      message: 'GCP operation failed (SERVICE_ACCOUNT_ACCESS_DENIED)',
+      status: 403,
+    });
+    expect(JSON.stringify(denied)).not.toContain(TOKEN);
+    expect((await answer(['RESOURCE_OPERATION_RATE_EXCEEDED'], 403)).error).toMatchObject({ status: 403, throttled: true });
+    expect((await answer(['RESOURCE_NOT_READY'], 400)).error).toMatchObject({ status: 400, throttled: true });
+    expect((await answer(['QUOTA_EXCEEDED'], 403)).error).not.toHaveProperty('throttled');
   });
 
   it('creates, reads, and deletes a dedicated regional Router/NAT with provider-read absence', async () => {
@@ -1177,5 +1208,42 @@ describe('boot disk sizing against the source image', () => {
     await client.insertInstance(PROJECT, ZONE, bootInstance(30), REQUEST_ID);
 
     expect(body().disks[0].initializeParams.diskSizeGb).toBe(30);
+  });
+});
+
+describe('recreateInput keeps a spot host on spot (WI-10005210)', () => {
+  const raw = (scheduling?: Record<string, unknown>) =>
+    ({
+      name: 'pc-host-vm',
+      machineType: `zones/${ZONE}/machineTypes/e2-custom-16-32768`,
+      networkInterfaces: [{ network: 'global/networks/n', subnetwork: `regions/${REGION}/subnetworks/s` }],
+      disks: [
+        { boot: true, autoDelete: true, source: `zones/${ZONE}/disks/pc-host-boot` },
+        { boot: false, autoDelete: false, source: `zones/${ZONE}/disks/pc-host-data`, deviceName: 'papercusp-data' },
+      ],
+      ...(scheduling ? { scheduling } : {}),
+    }) as Parameters<typeof gcpRecreateInput>[0];
+  const boot = { sourceImage: 'projects/p/global/images/i', sizeGb: '30', type: 'pd-balanced' } as Parameters<
+    typeof gcpRecreateInput
+  >[1];
+
+  it('re-creates a SPOT instance with STOP-on-reclaim scheduling and an on-demand one without any', () => {
+    // GCP reports the defaults it filled in for spot; the re-create pins them.
+    const spot = gcpRecreateInput(
+      raw({ provisioningModel: 'SPOT', instanceTerminationAction: 'STOP', automaticRestart: false, onHostMaintenance: 'TERMINATE' }),
+      boot,
+      ZONE,
+    );
+    expect(spot?.scheduling).toEqual({
+      provisioningModel: 'SPOT',
+      instanceTerminationAction: 'STOP',
+      automaticRestart: false,
+      onHostMaintenance: 'TERMINATE',
+    });
+    // An on-demand instance reports STANDARD (or nothing); its re-create carries no scheduling block.
+    expect(gcpRecreateInput(raw({ provisioningModel: 'STANDARD', automaticRestart: true }), boot, ZONE)).not.toHaveProperty(
+      'scheduling',
+    );
+    expect(gcpRecreateInput(raw(), boot, ZONE)).not.toHaveProperty('scheduling');
   });
 });

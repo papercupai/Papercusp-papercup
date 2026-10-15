@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-023 native creation question + settings switch (working-copy pilot pot)",
+  "framework": "operational",
+  "command": [
+    "scripts/verify-tauri-headless.sh -- bash .papercusp/scratch/wi-10006104-native-v3.sh",
+    "(retry wrapper: up to 6 attempts, 60s apart, retried only on verifier exit 75)"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T09:57:57Z",
+  "finishedAt": "2026-10-06T10:08:50Z",
+  "harnessRun": "verify-tauri-headless run=20261006T095802Z-2670062 verdict=pass passed=3 failed=0 blocked=0",
+  "summary": "Real desktop (Tauri) app booted headless against the LIVE database, where the pilot pot pot-review-pilot exists in working-copy (review) mode. READ-ONLY: the creation form was never submitted, and the settings switch was cancelled at its confirm step. 11/11 assertions passed. Attempts 1-3 refused at prepare (exit 75) because a peer's armed migration 1394 was pending on the shared DB; it was applied through the guarded db:migrate path at 09:57Z, and attempt 4 passed. Boot attempt 1 lost its port to another verifier instance (EADDRINUSE); the harness re-picked a port and attempt 2 booted.",
+  "assertions": [
+    { "section": "1. creation question in New-pot mode", "name": "form-url-input", "result": "pass" },
+    { "section": "1. creation question in New-pot mode", "name": "url-continue-offered", "result": "pass" },
+    { "section": "1. creation question in New-pot mode", "name": "create-form-open", "result": "pass" },
+    { "section": "1. creation question in New-pot mode", "name": "question-visible", "result": "pass" },
+    { "section": "1. creation question in New-pot mode", "name": "question-has-direct", "result": "pass" },
+    { "section": "1. creation question in New-pot mode", "name": "question-has-review", "result": "pass" },
+    { "section": "2. pilot pot settings show the switch with review selected", "name": "settings-section-visible", "result": "pass" },
+    { "section": "2. pilot pot settings show the switch with review selected", "name": "settings-review-checked", "result": "pass" },
+    { "section": "3. choosing direct asks to confirm; cancel writes nothing", "name": "confirm-panel-appears", "result": "pass" },
+    { "section": "3. choosing direct asks to confirm; cancel writes nothing", "name": "cancel-closes-panel", "result": "pass" },
+    { "section": "3. choosing direct asks to confirm; cancel writes nothing", "name": "review-still-checked", "result": "pass" }
+  ],
+  "observations": [
+    "Creation question text: 'Where should the agents' work go? ... Straight into Papercusp/pot-review-pilot RECOMMENDED Agents commit directly, as today. Into a working copy of Papercusp/pot-review-pilot ...'",
+    "Settings section text: 'Where should the agents' work go? Straight into Papercusp/pot-review-pilot ... Into a working copy of Papercusp/pot-review-pilot (current) ...'",
+    "The creation entry is a search box: paste the GitHub URL, press [data-testid=gh-search-url-continue], and EntryGithubUrlForm opens with [data-testid=integration-mode-question].",
+    "Screenshots (not committed, gitignored scratch): .papercusp/scratch/wi-10006104-native-run5/{1-creation-question,2-settings-review,3-confirm-panel}.png; full log beside them.",
+    "The PR viewer, the third native check P-023 names, is covered by docs/evidence/wi-10006102-pr-viewer-native-2026-10-06.json (P-022)."
+  ]
+}

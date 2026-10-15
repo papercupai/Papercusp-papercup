@@ -8,6 +8,7 @@ import {
   resolveBestEffort,
   resolveRecipientsAgainst,
   resolveRecipients,
+  resolveExplicitAgentOwnerId,
   resolveBestEffortAgainstRoster,
   resetKnownOwnerIdsCache,
   knownOwnerIdSet,
@@ -405,5 +406,40 @@ describe('readKnownOwnerIds roster memoization (EI-9299)', () => {
     expect(second).toEqual(['su-df00939e']);
     // Both calls served from the ONE memoized fetch — no re-fetch within the TTL window.
     expect(mockedList).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('resolveExplicitAgentOwnerId (strict work-item placement)', () => {
+  beforeEach(() => {
+    resetKnownOwnerIdsCache();
+    mockedList.mockReset().mockResolvedValue(roster(KNOWN));
+    mockedRecorded.mockReset().mockResolvedValue(recorded([]));
+    mockedRemote.mockReset().mockResolvedValue(remoteSess([]));
+    mockedNursery.mockReset().mockResolvedValue(nursery([]));
+  });
+
+  it('resolves a unique known owner prefix and the caller self token', async () => {
+    await expect(resolveExplicitAgentOwnerId('su-df00939e', 'su-caller', 'ws-1')).resolves.toEqual({
+      ok: true,
+      ownerId: 'su-df00939e-1f16-410d-ac0d-ef1aebd41d96',
+    });
+    await expect(resolveExplicitAgentOwnerId('self', 'su-caller', 'ws-1')).resolves.toEqual({
+      ok: true,
+      ownerId: 'su-caller',
+    });
+  });
+
+  it('rejects unknown owners even when the roster is empty', async () => {
+    mockedList.mockResolvedValue(roster([]));
+    const result = await resolveExplicitAgentOwnerId('noop-do-not-use', 'su-caller', 'ws-1');
+    expect(result).toMatchObject({ ok: false, code: 'assignee_unknown' });
+  });
+
+  it('rejects ambiguous handles and audience selectors as non-concrete assignees', async () => {
+    mockedList.mockResolvedValue(roster(KNOWN));
+    const ambiguous = await resolveExplicitAgentOwnerId('su-', 'su-caller', 'ws-1');
+    const selector = await resolveExplicitAgentOwnerId('@fleet:bugs', 'su-caller', 'ws-1');
+    expect(ambiguous).toMatchObject({ ok: false, code: 'assignee_ambiguous' });
+    expect(selector).toMatchObject({ ok: false, code: 'assignee_not_agent' });
   });
 });

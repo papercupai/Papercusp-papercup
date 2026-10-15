@@ -15,19 +15,69 @@ import {
 } from '@papercusp/agent-mcp';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import { runWithoutAmbientArgPeeling } from '../ambient-args-scope';
+import { applyScopedSuperuserTransportBoundary } from '../../endpoint-route/routes/transport/scoped-superuser-transport-boundary';
 import {
   dispatchNeedsTx,
   effectiveDispatchWorkspace,
   synthesizeDispatchPrincipal,
   synthesizeTransportPrincipal,
 } from '../../endpoint-route/routes/transport/role-principal-caps';
-import { ToolDispatchError } from '@papercusp/tooldef';
+import { ToolDispatchError, unwrapToolResult, type ToolResult } from '@papercusp/tooldef';
+import { pinModuleState } from '@papercusp/module-singleton';
+import { resolveHarnessScope } from '../_harness-scope';
 import {
   applyNestedProjection,
   nestedProjectionContext,
   nestedProjectionInvalidMessage,
   prepareNestedProjection,
 } from '../../result-projection';
+
+type AcceptanceStep = 'pending' | 'passed' | 'stopped';
+// runToolOrchestration creates a fresh signal for each run, including saved recipes
+// and durable execution. A weak key keeps this barrier local to that run's lifetime.
+const acceptanceRuns = pinModuleState('@papercusp/operator.acceptance-orchestration', () =>
+  new WeakMap<AbortSignal, Map<string, AcceptanceStep>>(),
+);
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown> : undefined;
+}
+
+function acceptanceCall(name: string, input: unknown, ctx: UnifiedToolContext) {
+  let args = record(input);
+  // The original caller used tools:invoke. Apply the same barrier to both spellings.
+  while (name === 'tools:invoke' && typeof args?.name === 'string') {
+    name = args.name;
+    args = record(args.args);
+  }
+  const evaluation = name === 'plans:evaluate-spec-test-adequacy';
+  const dependent = name === 'plans:certify-spec-clauses' ||
+    (name === 'plans:set-plan-status' && (args?.status === 'shipped' || args?.status === 'done'));
+  if ((!evaluation && !dependent) || !args) return undefined;
+  const slugs = typeof args.slug === 'string' ? [args.slug] : Array.isArray(args.slugs) ? args.slugs : [];
+  const harnessScope = resolveHarnessScope(typeof args.harness === 'string' ? args.harness : undefined, ctx);
+  const harnessIdentity = harnessScope.kind === 'harness' ? `harness:${harnessScope.slug}` : harnessScope.kind;
+  return {
+    evaluation,
+    keys: slugs.filter((slug): slug is string => typeof slug === 'string').map(slug =>
+      JSON.stringify([ctx.workspaceId, harnessIdentity, slug])),
+  };
+}
+
+function completePassingEvaluation(value: unknown): boolean {
+  const result = record(value);
+  const rows = result?.rows;
+  return result?.ok === true && !result.error && result.partial !== true && result._partial !== true &&
+    result.truncated !== true && record(result._projection)?.truncated !== true &&
+    result.classRefSource === 'active-acceptance-rubric' && typeof result.classRef === 'string' &&
+    typeof result.count === 'number' && result.count > 0 &&
+    Array.isArray(result.wouldBlock) && result.wouldBlock.length === 0 &&
+    Array.isArray(rows) && rows.length === result.count && rows.every(row => {
+      const clause = record(row);
+      return clause?.verdict === 'pass' && Array.isArray(clause.wouldBlock) && clause.wouldBlock.length === 0;
+    });
+}
 
 /**
  * Rebind one nested orchestration call exactly as a direct MCP dispatch would.
@@ -44,6 +94,12 @@ const rebindCurrentCallerDispatch: WrapDispatch = async (tool, _toolName, args, 
     role: ctx.role ?? '',
     isSuperuser: ctx.isSuperuser,
   };
+  const boundary = await applyScopedSuperuserTransportBoundary(
+    { name: _toolName, crossWorkspace: tool.crossWorkspace, profile: tool.profile },
+    { workspaceId: spawnCtxLike.workspaceId, isSuperuser: spawnCtxLike.isSuperuser, profile: ctx.profile },
+  );
+  if (!boundary.ok) return boundary.result;
+
   const effectiveWs = effectiveDispatchWorkspace(spawnCtxLike, args);
 
   const baseCtx: UnifiedToolContext = {
@@ -51,6 +107,7 @@ const rebindCurrentCallerDispatch: WrapDispatch = async (tool, _toolName, args, 
     contextTier: undefined,
     transportCapExempt: true,
     codeMode: true,
+    indirectDispatch: true,
   };
 
   if (tool.crossWorkspace === true) {
@@ -130,19 +187,52 @@ const rebindCurrentCallerDispatch: WrapDispatch = async (tool, _toolName, args, 
  * one. Argument validation runs inside `next` (orchestrate.ts's `call` → `realDispatch`),
  * so it is covered by this scope.
  */
-export const bindCurrentCallerDispatch: WrapDispatch = (tool, toolName, args, ctx, next) => {
+export const bindCurrentCallerDispatch: WrapDispatch = async (tool, toolName, args, ctx, next) => {
   const prepared = prepareNestedProjection(args);
   if (prepared.error) {
     return Promise.reject(new ToolDispatchError(toolName, 'invalid_input', nestedProjectionInvalidMessage(prepared.error)));
   }
 
+  const acceptance = acceptanceCall(toolName, prepared.args, ctx);
+  let steps: Map<string, AcceptanceStep> | undefined;
+  if (acceptance && ctx.signal) {
+    steps = acceptanceRuns.get(ctx.signal);
+    if (!steps) acceptanceRuns.set(ctx.signal, steps = new Map());
+    if (acceptance.keys.some(key => {
+      const step = steps!.get(key);
+      return step !== undefined && step !== 'passed';
+    })) {
+      throw new ToolDispatchError(toolName, 'acceptance_orchestration_stopped',
+        'A prior evaluation is pending, refused, incomplete or uncertain. Archive the original receipt; ' +
+        'do not replay evaluation or dispatch dependent certification/gate/recruitment in this run.');
+    }
+    if (acceptance.evaluation) for (const key of acceptance.keys) steps.set(key, 'pending');
+  }
+
+  let complete = false;
+
   const projectedNext = async (callCtx: UnifiedToolContext): Promise<unknown> => {
     const materializedCtx = nestedProjectionContext(callCtx, prepared.args, prepared.spec);
     const result = await next(materializedCtx, prepared.args);
+    // Inspect the full receipt BEFORE a caller projection can hide the refusal.
+    if (acceptance?.evaluation && steps) {
+      const body = record(result)?.content ? unwrapToolResult(result as ToolResult) : result;
+      const step = completePassingEvaluation(body) ? 'passed' : 'stopped';
+      for (const key of acceptance.keys) steps.set(key, step);
+      complete = true;
+    }
     return applyNestedProjection(result, prepared.spec, { toolName, effect: tool.effect });
   };
 
-  return runWithoutAmbientArgPeeling(() =>
-    rebindCurrentCallerDispatch(tool, toolName, prepared.args, ctx, projectedNext),
-  );
+  try {
+    return await runWithoutAmbientArgPeeling(() =>
+      rebindCurrentCallerDispatch(tool, toolName, prepared.args, ctx, projectedNext),
+    );
+  } finally {
+    // Includes thrown timeouts and dispatch refusals that never entered projectedNext.
+    // Catching one in the script cannot erase the barrier or replay the original call.
+    if (acceptance?.evaluation && steps && !complete) {
+      for (const key of acceptance.keys) steps.set(key, 'stopped');
+    }
+  }
 };

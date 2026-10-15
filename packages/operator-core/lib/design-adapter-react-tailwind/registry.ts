@@ -71,6 +71,26 @@ const HANDCURATED: RegistryEntry[] = [
     },
   },
   {
+    id: 'control.combobox-menu',
+    kind: 'component',
+    summary: 'Searchable single-select menu with a caller-supplied trigger',
+    searchTerms: ['subject', 'picker', 'combobox', 'filter'],
+    inputs: [
+      { name: 'value', type: 'string', required: true },
+      { name: 'options', type: 'ComboboxEntry[]', required: true },
+      { name: 'onChange', type: '(value:string)=>void', required: true },
+      { name: 'ariaLabel', type: 'string', required: true },
+      { name: 'triggerChildren', type: 'ReactNode', required: true },
+    ],
+    states: ['open', 'closed', 'disabled'],
+    ecosystems: {
+      [ECOSYSTEM]: {
+        sourcePointer: { path: `${LIVE_HARNESS}/Combobox.tsx`, symbol: 'ComboboxMenu' },
+        importHint: "import { ComboboxMenu } from '@/app/harness/Combobox'",
+      },
+    },
+  },
+  {
     id: 'control.checkbox',
     kind: 'component',
     summary: 'Checkbox',

@@ -12,9 +12,17 @@ const phases = vi.hoisted(() => ({
   prepare: vi.fn(),
   finish: vi.fn(),
   retract: vi.fn(),
+  provenance: vi.fn(),
 }));
 vi.mock('../../verification-attempts/loop-gate', () => ({ loopLaunchRefusal: phases.gate }));
 vi.mock('./mutation-probe-fence', () => ({ mutationProbeRefusal: phases.fence }));
+// The restricted-write fence (WI-10005634) reads the fence module's closure exports, which the
+// factory above omits; it has its own suite (restricted-hold-fence.test.ts).
+vi.mock('./restricted-hold-fence', () => ({ restrictedHoldRefusal: vi.fn(async () => null) }));
+vi.mock('../capability/bash-task-provenance', async (original) => ({
+  ...(await original<typeof import('../capability/bash-task-provenance')>()),
+  resolveBashTaskProvenance: phases.provenance,
+}));
 vi.mock('./evidence', async (original) => ({
   ...(await original<typeof import('./evidence')>()),
   prepareTestEvidence: phases.prepare,
@@ -22,6 +30,7 @@ vi.mock('./evidence', async (original) => ({
   retractRefusedTestEvidence: phases.retract,
 }));
 
+import { BashProvenanceRefusal } from '../capability/bash-task-provenance';
 import runTool from './run';
 
 const roots: string[] = [];
@@ -82,4 +91,57 @@ it('asks the gate about the named work item with the REQUESTED budget, not the f
   phases.gate.mockResolvedValue(refusal);
   await invoke({ timeoutMs: 60_000 });
   expect(phases.gate).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 60_000 }));
+});
+
+it('attributes the slow-run gate to the explicitly named item instead of a stale WI goal stamp', async () => {
+  phases.provenance.mockImplementation(async (_ctx, _harness, _deps, options) => ({
+    launchedBy: 'su-gate-test',
+    sessionId: 'su-gate-test',
+    harnessSlug: 'gate-harness',
+    workItemId: options?.explicitWorkItemId ?? 'WI-10004353',
+    planSlug: null,
+    goalRef: 'WI-10004353',
+  }));
+  const namedRefusal = {
+    ...refusal,
+    work_item_id: 'WI-10004437',
+    message: 'loop_audit_required — WI-10004437 is grinding',
+  };
+  phases.gate.mockResolvedValue(namedRefusal);
+
+  const { result } = await invoke({ evidence: undefined, work_item_id: 'WI-10004437' });
+
+  expect(result).toMatchObject({ ok: false, reason: 'loop_audit_required', work_item_id: 'WI-10004437' });
+  expect(phases.provenance).toHaveBeenCalledWith(
+    expect.objectContaining({ uiClientId: 'su-gate-test' }),
+    'gate-harness',
+    undefined,
+    { explicitWorkItemId: 'WI-10004437' },
+  );
+  expect(phases.gate).toHaveBeenCalledWith(expect.objectContaining({ workItemId: 'WI-10004437' }));
+  expect(phases.prepare).not.toHaveBeenCalled();
+  expect(phases.finish).not.toHaveBeenCalled();
+});
+
+it('returns a held-claim refusal before the loop gate when the named item is not held', async () => {
+  phases.provenance.mockRejectedValue(
+    new BashProvenanceRefusal('work_item_not_held', "work_item_id 'WI-not-held' is not one of your held work-items."),
+  );
+
+  const { result } = await invoke({ evidence: undefined, work_item_id: 'WI-not-held' });
+
+  expect(result).toMatchObject({ ok: false, error: 'work_item_not_held' });
+  expect(phases.gate).not.toHaveBeenCalled();
+  expect(phases.prepare).not.toHaveBeenCalled();
+  expect(phases.fence).not.toHaveBeenCalled();
+});
+
+it('rejects an explicit work item that conflicts with the evidence attribution', async () => {
+  const { result } = await invoke({ work_item_id: 'WI-explicit' });
+
+  expect(result).toMatchObject({ ok: false, error: 'work_item_id_conflicts_with_evidence' });
+  expect(phases.provenance).not.toHaveBeenCalled();
+  expect(phases.gate).not.toHaveBeenCalled();
+  expect(phases.prepare).not.toHaveBeenCalled();
+  expect(phases.finish).not.toHaveBeenCalled();
 });

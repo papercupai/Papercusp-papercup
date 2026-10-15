@@ -1,51 +1,121 @@
 # FrontierSWE — ultra-long-horizon implementation / perf-eng / ML-research
 URL: /internal/docs/benchmarks/frontier-swe
 
-How Papercusp integrates the FrontierSWE benchmark (Proximal Labs) — an M2 in-container, continuous-score, ultra-long-horizon suite graded by each task's own scorer, reported as mean@5 / best@5 + AVG-RANK / dominance across a coordination-topology arm pool.
+FrontierSWE v2 grading, fail-closed gold/empty admission, mean@5 with task-paired uncertainty, measured cost reporting and current-runtime integration gates; v1 remains separate history.
 
 import { Aside } from '@astrojs/starlight/components';
 
-**FrontierSWE** ([Proximal Labs](https://github.com/Proximal-Labs/frontier-swe);
+**FrontierSWE** ([Proximal Labs](https://github.com/Proximal-Labs/frontier-swe-v2);
 [leaderboard](https://www.frontierswe.com)) is an *ultra-long-horizon* coding-agent
-benchmark — **17 tasks** = **7 implementation / 7 performance-engineering / 3 ML-research**,
-with **4–20 h agent budgets per trial**. No model fully solves the
+benchmark with **multi-hour agent budgets per trial**. No model fully solves the
 implementation tasks, so it is scored on a **continuous \[0,1]** scale over **5 trials**
 per (model, harness) and reported as **mean\@5 / best\@5**; the leaderboard ranks models
 by **AVG RANK** (mean position, lower = better) + **dominance** (win rate vs a random
-opponent on a task). Plan: `benchmark-suite-frontier-swe-2026-06-18`.
+opponent on a task). Plans: `benchmark-suite-frontier-swe-2026-06-18` (v1 integration),
+`benchmark-coverage-frontierswe-v2-2026-10-10` (v2).
 
-FrontierSWE is **M2 in-container + own-scorer** (the METR-HCAST shape), NOT the SWE-bench
-diff-batch (M1) shape. The agent works *inside* the task's Docker container over hours;
-each task ships its OWN verifier (`tests/test.sh` → `compute_reward.py` →
-`/logs/verifier/reward.txt`). We **do not author a verifier** — every arm hits the
-byte-identical task scorer (the fairness invariant).
+* **v2** — the separate repo `Proximal-Labs/frontier-swe-v2`, pinned at
+  `da83f84f8fbcec3cbf0f2b17c98ebc811355c2df`: **34 tasks**, each assigned by the upstream
+  README to one or two of five suite categories (Implementation, Scientific Computing,
+  Performance Optimisation, Visual Reasoning, AI Research). Coarse buckets at that pin:
+  19 implementation / 8 performance / 7 research.
+* **v1** — `Proximal-Labs/frontier-swe`: **17 tasks** = 7 implementation / 7 performance /
+  3 research. HISTORY: kept for old results, never aggregated or compared with v2.
+
+Counts are derived from the ingested corpus (`frontier-swe-ingest.ts`), not hand-copied.
+Every graded row carries its scorer pin (`graderVersion`), and the corpus reader, the
+task-set loader and the report all refuse to mix versions.
+
+FrontierSWE is **M2 + own-scorer** (the METR-HCAST shape), NOT the SWE-bench diff-batch
+(M1) shape: the agent works *inside* the task's Docker image over hours, and each task
+ships its OWN verifier. We **do not author a verifier** — every arm hits the byte-identical
+task scorer (the fairness invariant).
+
+* **v2 (Harbor flow)** — the verifier is baked at `/root/tests` (root-only) in both
+  images; only the published **verifier image** adds a `/tests/test.sh` shim. So grading
+  starts a **fresh container from `[verifier.environment].docker_image`** as root, copies
+  every `task.toml` `artifacts` entry out of the agent container and re-materializes it at
+  its ORIGINAL source path (emptied first), then runs `/tests/test.sh` with `[verifier.env]`.
+  `docker exec` into the arm's own container cannot grade a v2 task.
+* **v1** — `tests/test.sh` runs inside the arm's own container (`docker exec`).
 
 ## How the integration is shaped
 
-| Concern      | Where                                                                                                                                      | Notes                                                                                                                                                                                                                                          |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Suite vocab  | `external-bench/types.ts` (`BenchmarkFamily`), `bench-metrics/schema.ts` (`BenchSuite`), `gym/report-set-firewall.ts` (`REPORT_ON_SUITES`) | `'frontier-swe'` in all 3 lock-step places — a published, gym-fenced suite.                                                                                                                                                                    |
-| Grader       | `external-bench/grader/frontier-swe.ts`                                                                                                    | `OfficialGrader`, modality **`in-container`**. Runs the task's own `test.sh` against the arm's container, reads `reward.txt` (bare scalar) / `reward.json` (fallback) → `GradeResult.score ∈ [0,1]`; `resolved = (score === 1)` is degenerate. |
-| Live binding | `external-bench/grader/frontier-swe-live.ts`                                                                                               | `resolveFrontierSweConfigFromEnv` + `buildLiveFrontierSweGrader` + `preflightFrontierSwe` + `describeFrontierSweRun`. Drives `docker exec` shell-free.                                                                                         |
-| Task sets    | `external-bench/task-sets.ts`                                                                                                              | `frontier-swe` (full 17) · `frontier-swe-pilot` (1/bucket → **3 tasks**) · `frontier-swe-cpu` (GPU-free) · `frontier-swe-custom`. Corpus at `~/.papercusp/bench-results/frontier-swe/tasks.jsonl`.                                             |
-| Aggregation  | `@papercusp/bench-metrics` `frontier-rank.ts`                                                                                              | `meanAtK` / `bestAtK` (unbiased), `avgRank`, `dominance`, `frontierRankReport`. New — `pass-k` is binary, `pareto` is cost/accuracy.                                                                                                           |
-| Arms         | the shared coordination-topology runtime (su-37e53a76)                                                                                     | FrontierSWE supplies only its task-set + clone/grade; it does NOT roll its own arms (D-007).                                                                                                                                                   |
+| Concern      | Where                                                                                                                                      | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Suite vocab  | `external-bench/types.ts` (`BenchmarkFamily`), `bench-metrics/schema.ts` (`BenchSuite`), `gym/report-set-firewall.ts` (`REPORT_ON_SUITES`) | `'frontier-swe'` in all 3 lock-step places — a published, gym-fenced suite. The version lives on each row's `graderVersion`, not in the suite id.                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Ingest       | `external-bench/frontier-swe-ingest.ts` (+ `scripts/frontier-swe-ingest.ts`)                                                               | Reads the pinned checkout's `task.toml` files + README category table → the corpus JSONL (verifier mode/image/env, artifacts, suite categories, GPU and external needs).                                                                                                                                                                                                                                                                                                                                                                             |
+| Grader       | `external-bench/grader/frontier-swe.ts`                                                                                                    | `OfficialGrader`. **Reward precedence (Harbor):** `reward.json` is PRIMARY whenever it exists (a dict of name → finite number, or a bare number); `reward.txt` is read only when `reward.json` is absent. An empty / non-numeric / non-finite file, or neither file, is a `grader_error` (score null) — never 0, and a malformed `reward.json` never falls back to `reward.txt`. Every row is pinned: `frontier-swe@v2+<commit12> verifier=<image@sha256:…>` (v2) or `frontier-swe@v1 <pin>` (v1); an unpinnable row is a grader error, not a guess. |
+| Live binding | `external-bench/grader/frontier-swe-live.ts`                                                                                               | `resolveFrontierSweConfigFromEnv` + `buildLiveFrontierSweGrader` + `preflightFrontierSwe` + `describeFrontierSweRun`. v2: prepares the separate verifier container and copies artifacts, torn down in a `finally`; v1: `docker exec` shell-free.                                                                                                                                                                                                                                                                                                     |
+| Task sets    | `external-bench/task-sets.ts`                                                                                                              | v2: `frontier-swe-v2` (full) · `frontier-swe-v2-pilot` (one DISTINCT task per README suite category → 5 tasks, scarcest category first) · `frontier-swe-v2-cpu` (no GPU and no external service) · `frontier-swe-v2-custom`. Corpus at `~/.papercusp/bench-results/frontier-swe-v2/tasks.jsonl`. v1 (history): `frontier-swe` · `frontier-swe-pilot` (1/bucket) · `frontier-swe-cpu` · `frontier-swe-custom`, corpus at `~/.papercusp/bench-results/frontier-swe/tasks.jsonl`.                                                                       |
+| Report       | `external-bench/report/frontier-report.ts`                                                                                                 | `buildFrontierSweSuiteData` → `suiteData['frontier-swe']`. **Refuses** rows graded against both corpus versions, and any task whose scored rows carry more than one scorer pin (arms graded by different verifier images are not comparable). Task / per-bucket counts and the small-N caveat are derived from the rows.                                                                                                                                                                                                                             |
+| Aggregation  | `@papercusp/bench-metrics` `frontier-rank.ts`                                                                                              | `meanAtK` / `bestAtK` (unbiased), `avgRank`, `dominance`, `frontierRankReport`. `pass-k` is binary, `pareto` is cost/accuracy.                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Arms         | the maintained current su/native-fleet launch adapter                                                                                      | FrontierSWE supplies its task set and clone/grade seam; companion P-006 consumes modernization P-003. Stock/native references and ablations consume its P-004, aggregate accounting its P-005, and Evaluation UI its P-008. Definition or registry membership alone does not establish runnable support (D-004).                                                                                                                                                                                                                                     |
+
+## Control admission and current launch status
+
+Every scored v2 task set loads the published control ledger at
+`~/.papercusp/bench-results/frontier-swe-v2/controls.jsonl` (override:
+`PAPERCUSP_BENCH_FRONTIER_SWE_V2_CONTROLS_JSONL`). At the task's own corpus commit and
+agent image, gold must earn **1** and empty must earn **0**. Missing, errored or
+outdated evidence excludes the task; the latest `finishedAt` wins. If no task is
+admitted the loader refuses the launch. `controls: 'ignore'` belongs only to the
+no-LLM control producer, not to a scored campaign.
+
+The v2 oracle writes a fresh `HARBOR_ORACLE_FLAG` marker and the separate verifier
+scores its image's reference. A performance baseline may score zero by construction:
+that is a valid control observation, not necessarily a failed solve. It still fails
+this plan's full-reward gold admission rule. A positive empty floor also excludes the
+task; no epsilon is authorized. Inspect `oracle.logTail` and distinguish a real
+score from a grading error before making a diagnosis.
+
+D-015 enforces agent network policy fail-closed: `no-network` uses Docker
+`--network none`; `allowlist` also does so unless an arm supplies an explicitly
+restricted egress network. Initial controls that began before enforcement retain
+their open-egress caveat.
+
+D-014 pins **gpt-6-luna / reasoning effort max for every initial setup**. Each
+reference must demonstrate that exact provider identity and effort; unsupported
+clients stay unavailable. Current-runtime integration remains behind modernization
+P-003/P-004/P-005/P-008 (D-004), so no run command below establishes its completion.
+D-001 authorizes only the bounded smoke with an owner-set hard USD cap; absent that
+recorded cap, no inference starts. Calibration and the headline study need fresh
+approval; the canary was declined for now.
 
 ## Scoring & the headline
 
-Each task's verifier emits a continuous reward in `[0,1]`. Per task we report **mean\@5**
-(expected mean of a random 5-subset = the trial mean) and **best\@5** (the unbiased
-expected max of a random 5-subset; `best@1 = mean`, `best@n = max`). Across tasks the
-suite headline is the **coordination-topology comparison**: per-arm **mean\@5 / best\@5**,
-**AVG RANK**, and **dominance**, optionally per bucket (implementation / performance /
-research).
+Each task's verifier emits a continuous reward in `[0,1]`. For v2 the primary
+metric is **mean\@5** (or the declared `k`), with one mean per complete task and
+equal task weighting. **best\@5, AVG RANK and dominance are secondary**. v1 keeps
+its historical AVG RANK ordering and never aggregates with v2.
 
-The public AVG RANK / dominance are relative to a fixed competitor pool (the `job.yaml`
-models: claude-opus-4-6, gpt-5.4, gemini-3.1-pro, qwen, kimi, glm-5). By default we report
-the **central-Mug vs distributed-peer vs ensemble vs single-agent** comparison on the
-same tasks + same scorers under **iso-budget** — where FrontierSWE's real headroom (no
-model fully solves the implementation tasks) makes a topology lift measurable. Reproducing
-the absolute public rank requires running that competitor pool (an optional, owner-gated step).
+The report freezes assigned tasks/arms when supplied. Any incomplete assigned task
+makes that arm's headline value and interval unavailable; the remaining complete-task
+rollup is explicitly conditional. Entirely absent tasks cannot be discovered from
+observed rows alone, so omission of the frozen assignment scope is disclosed.
+
+Headline intervals bootstrap task means. Paired differences resample matched complete
+tasks across arms, not individual seed rows. The report discloses excluded pairs,
+overlapping upstream categories, the small task population and trial counts. A
+single-run gap is not evidence of lift.
+
+## Cost beside outcome
+
+The shared portable report shows measured **USD per assigned task** and token totals
+beside the outcome. Its descriptive cost/score Pareto view reuses
+`costAccuracyFrontier` and admits only a frozen assignment, complete outcomes and
+complete compatible cost accounting. Partial cost subtotals, absent attempts,
+unknown grades and mixed cost bases cannot establish efficiency.
+
+Per-task winner rows retain positive-score ties and show each winner's full recorded
+task-trial cost and token total; a zero-outcome tie has no successful winner. Unknown
+cost remains unknown. These projections do not supply missing all-role telemetry:
+runtime worker/leader/consult/retry/recovery accounting remains modernization P-005.
+
+Absolute AVG RANK and dominance depend on the competitor pool. The defensible
+comparison is a matched within-pool study on the same tasks, scorers, model and
+aggregate budgets; recreating public rank requires its fixed pool and separate
+approval.
 
 ## Fairness (binding)
 
@@ -53,33 +123,38 @@ Every FrontierSWE number passes the **C1–C10 pre-claim audit** in
 [Benchmark Fairness Criteria](/benchmarks/fairness-criteria) (use
 `buildFairnessAudit` from `@papercusp/bench-metrics`). FrontierSWE-specific points:
 
-* **C1 same denominator** — an empty / no-progress workspace scores **0** (it COUNTS); a
-  verifier that *fails to run* (image/OOM/timeout) is a `graderError`, excluded
-  *symmetrically* across arms and disclosed — never a vanished row.
+* **C1 same denominator** — a measured capability score of **0** counts. Do not assume every
+  untouched task scores zero: the v2 control gate excludes positive empty rewards. Generation or
+  grader failures remain missing measurements with an explicit assigned denominator; a complete-task
+  conditional rollup is labelled separately and cannot become a v2 headline.
 * **C3 iso-budget** — cap all arms to the same per-task budget; **wall-clock is a
   first-class cap dimension** here (tasks run hours), alongside calls + `$`.
+* **C5 one scorer** — every arm of a task must be graded by the same pinned verifier; the
+  report refuses otherwise.
 * **C8** — the native 5-trial protocol satisfies ≥2 seeds; report per bucket.
-* **C9** — validate against a published number using a task's `solution/solve.sh` gold
-  control (or a reference model) before any cross-arm claim.
+* **C9** — gold/empty controls validate the grading path, while published-number calibration
+  is a separate matched reference-arm study. This companion plan retains its calibration-before-claims
+  gate (D-004); model, effort, harness, image, task roster and budget must match, and paid calibration
+  requires fresh approval.
 
 ## Hard gates (read before launching)
 
-* **GPUs** — 5 of 17 tasks need datacenter GPUs (B200: `granite-mamba2-inference-optimization`,
-  `inference-system-optimization`; H100: `modular-stack-wan21`, `optimizer-design`,
-  `pcqm4mv2-autoresearch`). Not runnable on a CPU host — use `frontier-swe-cpu` (12 tasks)
-  there, or run the GPU tasks on a cloud GPU. Note `pcqm4mv2-autoresearch` needs **both** an
-  H100 **and** internet, so it is excluded from `frontier-swe-cpu` *and* needs network.
-* **Wall-clock + disk** — 4–20 h agent + up to 24 h verifier per trial; per-task images are
-  GB-scale (`ghcr.io/proximal-labs/...`), memory up to 128 GB, storage up to 150 GB. Grade
-  on a **dedicated volume**, prune between tasks.
-* **External APIs** — only two tasks reach the network: `frogsgame-rl` needs `TINKER_API_KEY` +
-  internet (and is the only external-API task runnable on a CPU host — `gpus=0`, 8 h agent budget);
-  `pcqm4mv2-autoresearch` allows internet but also requires an H100.
+* **GPUs and external services (v2)** — at the pinned commit 11 tasks need GPUs and 5 need
+  Modal or a registry secret (one needs both), leaving **19 CPU-only tasks** with no external
+  needs: that is `frontier-swe-v2-cpu`. GPU passthrough for v2 GPU verifiers is not wired yet.
+* **GPUs (v1 history)** — 5 of 17 tasks need datacenter GPUs (B200:
+  `granite-mamba2-inference-optimization`, `inference-system-optimization`; H100:
+  `modular-stack-wan21`, `optimizer-design`, `pcqm4mv2-autoresearch`); `frontier-swe-cpu`
+  is the GPU-free remainder.
+* **Wall-clock + disk** — honor each ingested agent/verifier timeout and resource cap.
+  At the current pin, task memory reaches 128 GiB and declared storage reaches **512 GiB**
+  (`storageMb = 524288`). D-013 places grading on the dedicated **750 GB `/mnt/bench`**
+  volume with its own Docker daemon; prune between tasks.
 * **Reliability (D-009)** — long big-repo trials are the worst case for the slow-but-alive
   heartbeat-reclaim gap; the liveness-conditioned reclaim fix (F-FIX-038 / EI-1293) shipped,
-  but infra non-completions are still counted-as-`false` + disclosed symmetrically (C6).
-* **License (D-005)** — the repo ships **no LICENSE**: research/eval use only, no
-  redistribution of derived data without owner sign-off.
+  and infra non-completions are excluded + disclosed symmetrically (C6).
+* **License** — neither pinned v1 nor v2 checkout ships a LICENSE. Preserve the recorded
+  research/evaluation-only posture; no redistribution of derived data without sign-off.
 
 ## Running it
 

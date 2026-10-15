@@ -44,9 +44,17 @@ test.describe('backup route surface', () => {
   });
 
   test('POST /api/backups/snapshots accepts a valid manual reason', async ({ request }) => {
+    // The route runs the WHOLE snapshot (pg_dump + kopia over the workspace
+    // root) inside the request and returns its id + trace, so its latency is
+    // the snapshot's. Measured 2026-10-07 from harness_shared.backup_snapshots
+    // (14 days): manual snapshots p50 30s / max 36s. Playwright's default 10s
+    // request budget timed this out on EVERY isolated run (WI-10006791), so give
+    // this one call an explicit budget well above the measured max.
+    test.setTimeout(150_000);
     const res = await request.post(`${baseURL}/api/backups/snapshots`, {
       data: { reason: 'manual', context: { source: 'e2e-test' } },
       headers: { 'Content-Type': 'application/json' },
+      timeout: 120_000,
     });
     // Either succeeds (kopia bootstrapped) or fails-gracefully with 500 + error string
     // (kopia not installed). Both prove the route is wired.

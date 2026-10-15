@@ -38,6 +38,9 @@ const argsSchema = z.object({
     .describe('Compatibility alias for planItemIds (a single P-NNN id); planItemIds wins when both are supplied.'),
   revision: z.number().int().positive().optional().describe('Read this exact revision number.'),
   includeHistory: z.boolean().optional().describe('Return every immutable revision; current only by default.'),
+  asOf: z.string().datetime({ offset: true }).optional().describe('Read the latest immutable revision of each clause at this cutoff. Cannot combine with revision or includeHistory.'),
+}).refine((args) => !args.asOf || (args.revision === undefined && !args.includeHistory), {
+  message: 'asOf cannot combine with revision or includeHistory', path: ['asOf'],
 });
 
 export default defineTool({
@@ -75,6 +78,7 @@ export default defineTool({
         (args.itemId ? [args.itemId] : undefined),
       revision: args.revision,
       includeHistory: args.includeHistory,
+      asOf: args.asOf,
     });
     return {
       data: {
@@ -83,7 +87,7 @@ export default defineTool({
         harnessSlug,
         specs,
         count: specs.length,
-        mode: args.revision !== undefined ? 'exact-revision' : args.includeHistory ? 'history' : 'current',
+        mode: args.asOf ? 'snapshot' : args.revision !== undefined ? 'exact-revision' : args.includeHistory ? 'history' : 'current',
       },
     };
   },

@@ -28,6 +28,10 @@ import { closeHarnessStore, _resetCacheForTests } from '../corestore';
 import type { OpEnvelope } from '../op-envelope-types';
 import type { PeerLogOp } from '../peer-log';
 import { generateCorpus } from './corpus';
+import { stubHivePolicyReadsForSuite } from '../__tests__/_hive-policy-read-stubs';
+
+// WI-10007530: no PG here, and the merge pass no longer swallows a failed policy read.
+stubHivePolicyReadsForSuite();
 
 /**
  * Keep this suite hermetic. Production resolves re-key dependencies

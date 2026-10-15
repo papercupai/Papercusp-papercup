@@ -45,19 +45,35 @@ export type DispatchStepAttribution = {
 
 /**
  * Split warm-sample step rows (D-047) into the warm trials they belong to.
- * runPairedBenchmark awaits each trial before starting the next and runs exactly
- * `trial.samples` warm samples per warm trial, so the rows, in completion order,
- * split into consecutive chunks in `trials` order. Any mismatch (a row from the
- * wrong arm, rows left over or missing) throws: a misaligned attribution would
- * credit one arm's steps to the other.
+ * runPairedBenchmark measures one BLOCK per (concurrency, repetition, mode) at a
+ * time and awaits it before the next; since D-050 the block's samples alternate
+ * between the arms in ABBA chunks, and both arms' trials are pushed adjacently
+ * once the block ends. So the rows, in completion order, split into consecutive
+ * BLOCKS of the block's total warm samples, and within a block each arm's rows
+ * are exactly that arm's samples (D-050 broke the older per-trial contiguity this
+ * function once assumed; the a7 matrix failed on it, 2026-10-01). The pre-D-050
+ * sequential order is the special case of one chunk per arm. Any mismatch (a row
+ * from an arm with no trial in the block, rows left over or missing) throws: a
+ * misaligned attribution would credit one arm's steps to the other.
  */
 export function attributeDispatchSteps(trials: readonly Trial[], rows: readonly WarmDispatchStepRow[]): DispatchStepAttribution[] {
   let cursor = 0;
   const round = (value: number) => +value.toFixed(2);
-  const out = trials.filter((trial) => trial.mode === 'warm').map((trial) => {
-    const chunk = rows.slice(cursor, cursor + trial.samples);
-    cursor += trial.samples;
-    if (chunk.length !== trial.samples || chunk.some((row) => row.arm !== trial.arm)) {
+  const warm = trials.filter((trial) => trial.mode === 'warm');
+  const blockRows = new Map<Trial, readonly WarmDispatchStepRow[]>();
+  for (let start = 0; start < warm.length;) {
+    let end = start + 1;
+    while (end < warm.length && warm[end]!.concurrency === warm[start]!.concurrency
+      && warm[end]!.repetition === warm[start]!.repetition) end++;
+    const size = warm.slice(start, end).reduce((sum, trial) => sum + trial.samples, 0);
+    const block = rows.slice(cursor, cursor + size);
+    cursor += size;
+    for (const trial of warm.slice(start, end)) blockRows.set(trial, block);
+    start = end;
+  }
+  const out = warm.map((trial) => {
+    const chunk = blockRows.get(trial)!.filter((row) => row.arm === trial.arm);
+    if (chunk.length !== trial.samples) {
       throw new Error(`P-013 dispatch-step rows do not align with the ${trial.arm} warm trial ` +
         `c${trial.concurrency} rep ${trial.repetition} (${chunk.length}/${trial.samples} rows)`);
     }

@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import ts from 'typescript';
 import {
   MODEL_WINDOW_1M,
   MODEL_WINDOW_DEFAULT,
@@ -26,6 +29,7 @@ import {
   PUBLIC_PORTAL_AGENT_BASELINE,
 } from './agent-config-constants';
 import { ROLE_MODEL_DEFAULTS } from '@papercusp/orchestrator/role-models';
+import { CODEX_GATEWAY_FALLBACK_LINEUP } from './inference-gateway/gateway';
 
 // opus + fable + sonnet-5 are LAUNCHED at the full 1M window — psu-launcher
 // normalizeModelSpec injects the [1m] marker for all three families — and
@@ -72,6 +76,46 @@ describe('isDefault1mModelSpec (the FAMILY predicate the [1m] launch normalizer 
 });
 
 describe('bulk resolver client-safe launch vocabulary', () => {
+  it('keeps server dependencies out of the shared constants including literal lazy imports', () => {
+    // TypeScript follows literal import() even when bundlers tree-shake the
+    // exported server function. The receipt leaf must stay client-safe too.
+    const queue = [resolve(__dirname, 'agent-config-constants.ts')];
+    const seen = new Set<string>();
+    const offenders: string[] = [];
+    while (queue.length) {
+      const file = queue.shift()!;
+      if (seen.has(file)) continue;
+      seen.add(file);
+      const syntax = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
+      const visit = (node: ts.Node): void => {
+        let spec: string | undefined;
+        if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
+          && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) spec = node.moduleSpecifier.text;
+        if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword
+          && node.arguments.length === 1 && ts.isStringLiteral(node.arguments[0])) spec = node.arguments[0].text;
+        if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)
+          && ts.isStringLiteral(node.argument.literal)) spec = node.argument.literal.text;
+        if (spec) {
+          if (spec.startsWith('node:') || ['@papercusp/agent-mcp', '@papercusp/db-org'].includes(spec)) {
+            offenders.push(`${file} -> ${spec}`);
+          } else if (spec.startsWith('.')) {
+            const base = resolve(dirname(file), spec);
+            const target = [base, `${base}.ts`, `${base}.tsx`, resolve(base, 'index.ts')]
+              .find(candidate => existsSync(candidate) && statSync(candidate).isFile());
+            if (target) {
+              if (/\/(intake-promotion|work-items|operator-state-pg)\.ts$/.test(target)) offenders.push(`${file} -> ${target}`);
+              else queue.push(target);
+            }
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(syntax);
+    }
+    expect([...seen].some(file => file.endsWith('/attention/bug-reproduction.ts'))).toBe(true);
+    expect(offenders).toEqual([]);
+  });
+
   it('defaults both panes to the exact pre-configuration launch behavior', () => {
     expect(defaultBulkResolverLaunchProfiles()).toEqual({
       'inbox-resolve': { model: null, effort: null, account: 'default', carry: 'warm' },
@@ -85,6 +129,24 @@ describe('bulk resolver client-safe launch vocabulary', () => {
     expect(launchAgentBackendForModel('openrouter/anthropic/claude-opus:max')).toBe('omp');
     expect(launchAgentBackendForModel(null)).toBeNull();
     expect(launchAgentBackendForModel('unknown-full-id')).toBeNull();
+  });
+
+  // WI-10004814: owner directive #1111 set resolverProfiles.plan-cleanup and
+  // .inbox-resolve to gpt-6.1-sol, which resolved to NO backend — every bulk
+  // resolver start (Plans Clean-up button, scheduled sweep) was refused.
+  it('resolves every Codex model the gateway offers to the codex CLI', () => {
+    const slugs = CODEX_GATEWAY_FALLBACK_LINEUP.map((entry) => entry.slug);
+    expect(slugs).toContain('gpt-6.1-sol');
+    for (const slug of slugs) {
+      expect({ slug, backend: launchAgentBackendForModel(slug) }).toEqual({ slug, backend: 'codex' });
+      expect({ slug, backend: launchAgentBackendForModel(`${slug}:xhigh`) }).toEqual({ slug, backend: 'codex' });
+    }
+  });
+
+  it('accepts the owner-configured gpt-6.1-sol resolver profile as a codex launch', () => {
+    expect(
+      resolveBulkResolverLaunch({ model: 'gpt-6.1-sol', effort: 'xhigh', account: 'default', carry: 'warm' }),
+    ).toMatchObject({ ok: true, effective: { model: 'gpt-6.1-sol', effort: 'xhigh', backend: 'codex' } });
   });
 
   it('carries owner automation policy through the effective launch snapshot', () => {

@@ -2,10 +2,10 @@
  * rubric-staleness-watchdog.test.ts — EI-12149: a release-gating rubric that goes
  * ungraded must PAGE, not silently sit. Pure decider in all three states + the
  * sweep's orchestration (gating filter, debounce, fail-soft) via injected deps —
- * no PG (the DISCRIMINATION bar: a watchdog never shown to fire on a dead grader
- * is a green light with extra steps).
+ * no PG (the DISCRIMINATION bar: a watchdog never shown to report a stale
+ * observation window is a green light with extra steps).
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   evaluateRubricProposalDwell,
@@ -22,6 +22,106 @@ import type { ScorecardFreshness } from './scorecard-freshness';
 
 const SIX_H = 6 * 3_600_000;
 const DAY = 24 * 3_600_000;
+
+describe('rubric watchdog condition lifecycle (P-014)', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const rubric = { rubricId: 'fixture-rubric', releaseGating: true, status: 'active',
+    updatedAt: '2026-07-13T00:00:00.000Z', proposedBy: 'su-proposer' } as unknown as Rubric;
+  const alarm = () => ({ broadcast: vi.fn(async () => true), resolve: vi.fn(async () => true) });
+  const legacy = () => ({ recordFire: vi.fn(async () => undefined), openEscalation: vi.fn(async () => ({}) as never) });
+
+  it('refreshes a stale condition during legacy debounce, preserves unknown reads, then resolves measured recovery', async () => {
+    const sink = alarm();
+    let state: ScorecardFreshness = freshness();
+    const deps = { ...legacy(), alarm: sink, listRubrics: async () => [rubric],
+      recentWatchdogFires: async () => 1, checkScorecardFreshness: async () => state };
+    await rubricStalenessSweep({ workspaceId: 'fixture-ws', installSlug: 'fixture-pot' }, deps);
+    expect(sink.broadcast).toHaveBeenCalledWith(expect.objectContaining({
+      conditionKey: 'alarm:rubric-staleness:fixture-ws:fixture-pot:fixture-rubric', oneShot: true,
+    }));
+    expect(deps.openEscalation).not.toHaveBeenCalled();
+    state = freshness({ status: 'unknown-rubric', rubricKnown: false });
+    await rubricStalenessSweep({ workspaceId: 'fixture-ws', installSlug: 'fixture-pot' }, deps);
+    expect(sink.resolve).not.toHaveBeenCalled();
+    deps.checkScorecardFreshness = async () => { throw new Error('read unavailable'); };
+    await rubricStalenessSweep({ workspaceId: 'fixture-ws', installSlug: 'fixture-pot' }, deps);
+    expect(sink.resolve).not.toHaveBeenCalled();
+    deps.checkScorecardFreshness = async () => freshness({ status: 'fresh', complete: true });
+    await rubricStalenessSweep({ workspaceId: 'fixture-ws', installSlug: 'fixture-pot' }, deps);
+    expect(sink.resolve).toHaveBeenCalledWith(expect.objectContaining({
+      conditionKey: 'alarm:rubric-staleness:fixture-ws:fixture-pot:fixture-rubric',
+    }));
+  });
+
+  it('keeps condition delivery independent of the fires ledger and legacy escalation', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const sink = alarm();
+    const deps: Parameters<typeof rubricStalenessSweep>[1] = { ...legacy(), alarm: sink, listRubrics: async () => [rubric],
+      recentWatchdogFires: async () => { throw new Error('ledger unavailable'); },
+      checkScorecardFreshness: async () => freshness() };
+    await rubricStalenessSweep({}, deps);
+    expect(sink.broadcast).toHaveBeenCalledTimes(1);
+    sink.broadcast.mockRejectedValueOnce(new Error('condition transport unavailable'));
+    deps.recentWatchdogFires = async () => 0;
+    await rubricStalenessSweep({}, deps);
+    expect(deps.openEscalation).toHaveBeenCalledTimes(1);
+  });
+
+  it('visits a proposal past the first page and resolves it when ratified or revised', async () => {
+    const sink = alarm();
+    let proposal = { ...rubric, status: 'proposed' } as Rubric;
+    const pages = vi.fn(async ({ offset }: { offset?: number } = {}) => offset === 0
+      ? { rubrics: [{ ...rubric, rubricId: 'other-rubric' }], hasMore: true, nextOffset: 100 }
+      : { rubrics: [proposal], hasMore: false, nextOffset: null });
+    const deps = { ...legacy(), alarm: sink, listRubricsPage: pages,
+      recentWatchdogFires: async () => 1, now: Date.parse('2026-07-15T00:00:00.000Z') };
+    await rubricProposalDwellSweep({ workspaceId: 'fixture-ws', installSlug: 'fixture-pot' }, deps);
+    expect(pages.mock.calls.map(([filter]) => filter?.offset)).toEqual([0, 100]);
+    expect(sink.broadcast).toHaveBeenCalledWith(expect.objectContaining({
+      conditionKey: 'alarm:rubric-proposal-dwell:fixture-ws:fixture-pot:fixture-rubric',
+    }));
+    expect(deps.openEscalation).not.toHaveBeenCalled();
+    sink.resolve.mockClear();
+    proposal = { ...proposal, status: 'active' };
+    await rubricProposalDwellSweep({ workspaceId: 'fixture-ws', installSlug: 'fixture-pot' }, deps);
+    expect(sink.resolve).toHaveBeenCalledWith(expect.objectContaining({
+      conditionKey: 'alarm:rubric-proposal-dwell:fixture-ws:fixture-pot:fixture-rubric',
+    }));
+    sink.broadcast.mockClear();
+    proposal = { ...proposal, status: 'proposed', updatedAt: '2026-07-14T23:00:00.000Z' };
+    await rubricProposalDwellSweep({}, deps);
+    expect(sink.broadcast).not.toHaveBeenCalled();
+  });
+
+  it('fails an incomplete non-advancing page read without clearing any condition', async () => {
+    const sink = alarm();
+    const results = await rubricStalenessSweep({}, { alarm: sink,
+      listRubricsPage: async () => ({ rubrics: [rubric], hasMore: true, nextOffset: 0 }) });
+    expect(results).toEqual([{ rubricRef: '*', outcome: 'error', reason: 'rubric page did not advance' }]);
+    expect(sink.broadcast).not.toHaveBeenCalled();
+    expect(sink.resolve).not.toHaveBeenCalled();
+  });
+
+  it('recovers existing durable conditions after restart with one fold read and no quiet-rubric broadcasts', async () => {
+    const conditions = await import('./agent-tools/coordination/tools/conditions');
+    const severe = await import('./severe-event-broadcast');
+    const key = 'alarm:rubric-staleness:fixture-ws:fixture-pot:fixture-rubric';
+    const read = vi.spyOn(conditions, 'readConditionEnvelopes').mockResolvedValue([
+      { ts: '2026-07-14T00:00:00.000Z', condition_key: key, from: 'system-watchdog' },
+    ]);
+    const resolve = vi.spyOn(severe, 'broadcastSevereEventResolved').mockResolvedValue(true);
+    const broadcast = vi.spyOn(severe, 'broadcastSevereEvent').mockResolvedValue(true);
+    await rubricStalenessSweep({ workspaceId: 'fixture-ws', installSlug: 'fixture-pot' }, {
+      listRubrics: async () => [rubric, { ...rubric, rubricId: 'quiet-rubric' }],
+      checkScorecardFreshness: async () => freshness({ status: 'fresh', complete: true }),
+    });
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ conditionKey: key }));
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+});
 
 const freshness = (over: Partial<ScorecardFreshness> = {}): ScorecardFreshness => ({
   rubricRef: 'blender-release-readiness',
@@ -52,14 +152,19 @@ describe('evaluateRubricStaleness — the pure decider', () => {
     expect(v.reason).toContain('2026-07-14T17:00:00.000Z');
   });
 
-  it('STALE on an empty window — grading stopped is a page, not a quiet period', () => {
+  it('STALE on an empty window — reports absence without inferring cause or history', () => {
     const v = evaluateRubricStaleness(rubric, freshness(), SIX_H);
     expect(v.stale).toBe(true);
     expect(v.reason).toContain('NO scorecard in the last 6h');
     expect(v.reason).toContain('blender-release-readiness');
+    expect(v.reason).toContain('cause unknown');
+    expect(v.reason).toContain('older verdict exists');
+    expect(v.reason).not.toContain('dead grader');
+    expect(v.reason).not.toContain('predates');
+    expect(v.reason).not.toContain('newest verdict');
   });
 
-  it('STALE on partial-only — and names TRUNCATION, a different chase than a dead loop', () => {
+  it('STALE on partial-only — reports incomplete cards without inferring cause or history', () => {
     const v = evaluateRubricStaleness(
       rubric,
       freshness({ status: 'partial-only', emitted: true, count: 3, partialCount: 3, lastEmittedAt: '2026-07-14T17:30:00.000Z' }),
@@ -67,7 +172,11 @@ describe('evaluateRubricStaleness — the pure decider', () => {
     );
     expect(v.stale).toBe(true);
     expect(v.reason).toContain('NONE complete');
-    expect(v.reason).toContain('silent truncation');
+    expect(v.reason).toContain('Newest in-window emission: 2026-07-14T17:30:00.000Z');
+    expect(v.reason).toContain('Cause of incompleteness is unknown');
+    expect(v.reason).not.toContain('silent truncation');
+    expect(v.reason).not.toContain('predates');
+    expect(v.reason).not.toContain('dead grader');
   });
 
   it('UNKNOWN-RUBRIC is healthy/non-actionable rather than a stale grader alert', () => {
@@ -132,7 +241,7 @@ describe('evaluateRubricStaleness — the pure decider', () => {
       SIX_H,
     );
     expect(v.stale).toBe(true);
-    expect(v.reason).toContain('dead grader loop');
+    expect(v.reason).toContain('cause unknown');
     expect(v.reason).not.toContain('UNGRADEABLE BY CONSTRUCTION');
   });
 
@@ -226,6 +335,7 @@ describe('rubricProposalDwellSweep — orchestration (injected deps, no PG)', ()
     recentWatchdogFires: vi.fn(async () => 0),
     recordFire: vi.fn(async () => undefined),
     openEscalation: vi.fn(async () => ({}) as never),
+    alarm: { broadcast: vi.fn(async () => true), resolve: vi.fn(async () => false) },
     ...over,
   });
 
@@ -294,6 +404,7 @@ describe('rubricStalenessSweep — orchestration (injected deps, no PG)', () => 
     recentWatchdogFires: vi.fn(async () => 0),
     recordFire: vi.fn(async () => undefined),
     openEscalation: vi.fn(async () => ({}) as never),
+    alarm: { broadcast: vi.fn(async () => true), resolve: vi.fn(async () => false) },
     ...over,
   });
 

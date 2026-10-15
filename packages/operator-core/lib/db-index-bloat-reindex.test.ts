@@ -14,7 +14,7 @@ import { runIndexBloatReindexOnce } from './db-index-bloat-reindex';
 
 /** Statements the fake driver was asked to execute, in order. */
 interface FakeCall {
-  kind: 'template' | 'unsafe';
+  kind: 'template' | 'unsafe' | 'release';
   text: string;
 }
 
@@ -73,12 +73,16 @@ function makeFakeSql(opts: FakeOpts = {}) {
     return Promise.resolve([]);
   }) as unknown as postgres.Sql & { __calls: FakeCall[] };
 
-  (sql as unknown as { unsafe: (q: string) => Promise<unknown> }).unsafe = (q: string) => {
+  const unsafe = (q: string) => {
     calls.push({ kind: 'unsafe', text: q });
     const failing = (opts.failOn ?? []).find((n) => q.includes(n));
     if (failing) return Promise.reject(new Error(`boom: ${failing}`));
     return Promise.resolve([]);
   };
+  (sql as unknown as { unsafe: typeof unsafe }).unsafe = unsafe;
+  // A reserved connection shares the call log so ordering across both is observable.
+  (sql as unknown as { reserve: () => Promise<unknown> }).reserve = () =>
+    Promise.resolve({ unsafe, release: () => calls.push({ kind: 'release', text: 'release' }) });
 
   (sql as unknown as { __calls: FakeCall[] }).__calls = calls;
   return sql as postgres.Sql & { __calls: FakeCall[] };
@@ -133,6 +137,69 @@ describe('runIndexBloatReindexOnce', () => {
     expect(r.skipped).toBeUndefined();
     const drops = sql.__calls.filter((c) => c.text.includes('DROP INDEX CONCURRENTLY'));
     expect(drops).toHaveLength(1);
+  });
+
+  // WI-6554700010008628: the cleanup used to sit behind the long-transaction guard, so a
+  // pg_dump open at tick time skipped it every day and 8 orphans (~740 MB) accumulated.
+  it('drops orphans even while a long transaction blocks the REINDEX, under a bounded lock_timeout', async () => {
+    const sql = makeFakeSql({
+      openTxnSeconds: 900,
+      orphans: [{ schema_name: 'harness_shared', index_name: 'route_invocations_ws_time_idx_ccnew' }],
+      candidates: [candidate('idx_a')],
+    });
+    const r = await runIndexBloatReindexOnce(sql, { maxOpenTxnSeconds: 60, orphanLockTimeoutMs: 5000 });
+
+    expect(r.skipped).toBe('long-running-transaction');
+    expect(r.orphansDropped).toEqual(['harness_shared.route_invocations_ws_time_idx_ccnew']);
+    expect(r.orphanDropFailures).toEqual([]);
+    const seq = sql.__calls.filter((c) => c.kind !== 'template').map((c) => c.text);
+    expect(seq).toEqual([
+      'SET lock_timeout = 5000',
+      'DROP INDEX CONCURRENTLY IF EXISTS "harness_shared"."route_invocations_ws_time_idx_ccnew"',
+      'RESET lock_timeout',
+      'release',
+    ]);
+    // The REINDEX half still honours the guard.
+    expect(seq.some((t) => t.includes('REINDEX'))).toBe(false);
+  });
+
+  it('reports an orphan it cannot drop instead of swallowing the error', async () => {
+    const sql = makeFakeSql({
+      orphans: [{ schema_name: 'harness_shared', index_name: 'carry_notes_bm25_ccnew' }],
+      failOn: ['carry_notes_bm25_ccnew'],
+    });
+    const r = await runIndexBloatReindexOnce(sql);
+
+    expect(r.orphansDropped).toEqual([]);
+    expect(r.orphanDropFailures).toEqual([
+      { index: 'harness_shared.carry_notes_bm25_ccnew', error: 'boom: carry_notes_bm25_ccnew' },
+    ]);
+    // The session setting is still reset and the connection released after a failure.
+    const seq = sql.__calls.filter((c) => c.kind !== 'template').map((c) => c.text);
+    expect(seq).toEqual([
+      'SET lock_timeout = 10000',
+      'DROP INDEX CONCURRENTLY IF EXISTS "harness_shared"."carry_notes_bm25_ccnew"',
+      'RESET lock_timeout',
+      'release',
+    ]);
+  });
+
+  it('never targets a table whose index build is in flight', async () => {
+    const sql = makeFakeSql({ orphans: [] });
+    await runIndexBloatReindexOnce(sql);
+    const orphanQuery = sql.__calls.find((c) => c.kind === 'template' && c.text.includes('_ccnew'));
+    expect(orphanQuery?.text).toContain('pg_stat_progress_create_index');
+  });
+
+  it('dryRun lists orphans without dropping them', async () => {
+    const sql = makeFakeSql({
+      orphans: [{ schema_name: 'harness_shared', index_name: 'shared_presence_pkey_ccnew' }],
+    });
+    const r = await runIndexBloatReindexOnce(sql, { dryRun: true });
+
+    expect(r.orphansFound).toEqual(['harness_shared.shared_presence_pkey_ccnew']);
+    expect(r.orphansDropped).toEqual([]);
+    expect(sql.__calls.filter((c) => c.kind !== 'template')).toHaveLength(0);
   });
 
   it('reports no-candidates when there is genuinely nothing to do', async () => {

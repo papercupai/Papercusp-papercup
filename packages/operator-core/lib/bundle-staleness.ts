@@ -78,7 +78,7 @@ let cached: BundleStaleness | null | undefined;
  * healthy — the single failure mode this module exists to prevent — so we
  * return staleness with a `reason` instead.
  */
-function unreadable(reason: string): BundleStaleness {
+function unreadable(reason: string, path: string): BundleStaleness {
   return {
     schema: 'bundle-stale-v1',
     failedAt: 'unknown',
@@ -87,14 +87,25 @@ function unreadable(reason: string): BundleStaleness {
     servingBundleMtime: null,
     servingBundleAgeSecAtFailure: null,
     failingFiles: [],
-    error: `${reason} — the marker at ${markerPath()} exists, so this process is serving STALE code; its details could not be read`,
+    error: `${reason} — the marker at ${path} exists, so this process is serving STALE code; its details could not be read`,
   };
 }
 
 function read(): BundleStaleness | null {
+  return readBundleStaleMarkerAt(markerPath());
+}
+
+/**
+ * Read a bundle-stale marker at an explicit path — for a caller that judges ANOTHER
+ * process's bundle (dev:restart reading bg-host's `dist-host/.bundle-stale.json` after it
+ * restarted it, EI-25257294558913225). Same contract as this process's own verdict:
+ * `null` ONLY when the file is absent (bundle-host.sh deletes it on every successful
+ * build); an existing-but-unusable marker is still STALE, never healthy. Not cached.
+ */
+export function readBundleStaleMarkerAt(path: string): BundleStaleness | null {
   let raw: string;
   try {
-    raw = readFileSync(markerPath(), 'utf8');
+    raw = readFileSync(path, 'utf8');
   } catch {
     // ENOENT is the overwhelmingly common case and is the ONLY thing that means
     // HEALTHY: the last build succeeded, so bundle-host.sh removed the marker.
@@ -105,13 +116,13 @@ function read(): BundleStaleness | null {
   try {
     parsed = JSON.parse(raw) as Partial<BundleStaleness>;
   } catch {
-    return unreadable('bundle-stale marker could not be parsed as JSON');
+    return unreadable('bundle-stale marker could not be parsed as JSON', path);
   }
   if (!parsed || typeof parsed !== 'object') {
-    return unreadable('bundle-stale marker was not a JSON object');
+    return unreadable('bundle-stale marker was not a JSON object', path);
   }
   if (typeof parsed.outfile !== 'string') {
-    return unreadable('bundle-stale marker is missing the `outfile` field');
+    return unreadable('bundle-stale marker is missing the `outfile` field', path);
   }
 
   return {

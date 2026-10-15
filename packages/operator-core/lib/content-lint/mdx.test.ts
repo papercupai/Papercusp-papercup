@@ -41,6 +41,33 @@ describe('blankFrontmatter', () => {
 });
 
 describe('findMdxCompileError', () => {
+  it('rejects the Azure plan field list as an unbound runtime expression', async () => {
+    const err = await findMdxCompileError('azure.mdx', 'An optional plan {publisher, product, name}.\n');
+    expect(err?.reason).toContain('publisher');
+    expect(err?.reason).toContain('backticks');
+  });
+
+  it.each(['{publisher}', '{publisher.name}', '{({publisher})}', '<div title={publisher} />'])(
+    'rejects unbound identifiers in %s', async (expression) => {
+      expect((await findMdxCompileError('unbound.mdx', expression))?.reason).toContain('publisher');
+    },
+  );
+
+  it.each([
+    'An optional plan `{publisher, product, name}`.\n',
+    '```js\nconst plan = {publisher, product, name};\n```\n',
+    'An optional plan \\{publisher, product, name\\}.\n',
+    'export const publisher = "Azure"\n\n{publisher}\n',
+    'import publisher from "./publisher.js"\n\n{publisher}\n',
+    '{["Azure"].map((publisher) => publisher.toUpperCase()).join(", ")}\n',
+    '{JSON.stringify({publisher: "Azure"})}\n',
+    '{props.publisher}\n',
+    '<Card title="Azure" />\n',
+    '{typeof window === "undefined" ? "server" : "browser"}\n',
+  ])('accepts literal examples and valid scoped MDX: %s', async (text) => {
+    expect(await findMdxCompileError('valid.mdx', text)).toBeNull();
+  });
+
   it('returns null for plain valid markdown/MDX', async () => {
     const err = await findMdxCompileError('ok.mdx', '# Hello\n\nSome **bold** and a [link](https://x).\n');
     expect(err).toBeNull();

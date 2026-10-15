@@ -4,9 +4,11 @@
  * The load-bearing test in this file is INCIDENT ANCHOR (the fifth term). Everything else guards
  * an exemption; that one guards the difference between a detector and a 4,037-page metronome.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import {
+  countPendingWakeSources,
   evaluateSilentHalt,
+  silentHaltWakeBody,
   sweepSilentHalts,
   disarmEpochToken,
   wakeMarkerSummary,
@@ -19,6 +21,38 @@ import {
   type SilentHaltWakeMarker,
 } from './silent-halt-reconcile';
 import { resolveFleetParkResumePath } from '../../fleet-park-resume-path';
+import type { StalledLoopHostClass } from '../../events/await/host-recovery-eligibility';
+
+// Never publish synthetic halt conditions to the shared fleet.
+vi.mock('../../severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async () => true) }));
+vi.mock('../../alarm-attention', () => ({ resolveAlarm: vi.fn(async () => true) }));
+
+// Keep the real attention helper and DEFAULT sweep adapter. Only isolate the durable
+// store and external channels; injecting deps.notify hid the production return loss.
+const attention = vi.hoisted(() => ({
+  ensureIntent: vi.fn(),
+  claimChannel: vi.fn(),
+  recordIntent: vi.fn(),
+  recordOutcome: vi.fn(),
+  mobile: vi.fn(),
+  desktop: vi.fn(),
+}));
+vi.mock('../../attention-notify-store', () => ({
+  ensureAttentionNotifyIntent: attention.ensureIntent,
+  claimAttentionNotifyChannel: attention.claimChannel,
+  recordAttentionNotifyIntent: attention.recordIntent,
+  recordAttentionNotifyOutcome: attention.recordOutcome,
+}));
+vi.mock('../../device-push-dispatcher', () => ({ notifyWorkspace: attention.mobile }));
+vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: attention.desktop }));
+
+// The default host reader (D-006 (2)) discovers live psu hosts on disk. Tests that call
+// sweepSilentHalts without injecting readHostClass must never read the real ~/.papercusp/psu-pty.
+vi.mock('../../events/await/psu-pty-discovery', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../events/await/psu-pty-discovery')>()),
+  findLiveHostAsync: vi.fn(async () => null),
+  readHostEventTailAsync: vi.fn(async () => []),
+}));
 
 const MIN = 60 * 1000;
 
@@ -72,6 +106,26 @@ describe('evaluateSilentHalt', () => {
     // heartbeat-fresh owner is not reclaimed by the dead-owner reaper, and a session taking no
     // turns will not advance the item, so it is stuck whichever the agent turns out to be.
     expect(evaluateSilentHalt(haltedInput({ heldWorkItems: 2 })).halted).toBe(true);
+  });
+
+  it('active typed external-blocker holds alone do not justify a silent-halt page (D-010/P-010)', () => {
+    const v = evaluateSilentHalt(haltedInput({
+      heldWorkItems: 0,
+      blockerParkedWorkItemIds: ['WI-CREDENTIAL'],
+    }));
+    expect(v.halted).toBe(false);
+    expect(v.exemption).toContain('holds-only-active-external-blockers');
+    expect(v.exemption).toContain('WI-CREDENTIAL');
+  });
+
+  it('still pages on actionable held work and names coexisting blocker-parked IDs', () => {
+    const v = evaluateSilentHalt(haltedInput({
+      heldWorkItems: 1,
+      blockerParkedWorkItemIds: ['WI-CREDENTIAL'],
+    }));
+    expect(v.halted).toBe(true);
+    expect(v.reason).toContain('1 actionable held work item');
+    expect(v.reason).toContain('WI-CREDENTIAL');
   });
 
   it('a stale heartbeat means the process is gone, not halted', () => {
@@ -152,6 +206,9 @@ function sweepHarness(
     readFleetParkPath?: SilentHaltSweepDeps['readFleetParkPath'];
     /** Engine-loop residue fed to the end classifier; default = never armed (⇒ 'abnormal'). */
     readEngineLoopRows?: SilentHaltSweepDeps['readEngineLoopRows'];
+    /** D-006 (2) host class per owner; default = unreadable (null), i.e. today's wake-first. */
+    readHostClass?: SilentHaltSweepDeps['readHostClass'];
+    alertFleetLeader?: ReturnType<typeof vi.fn>;
   } = {},
 ) {
   const nowMs = opts.nowMs ?? Date.now();
@@ -162,10 +219,13 @@ function sweepHarness(
   const markers = opts.markers;
   const readWakeMarkers: SilentHaltSweepDeps['readWakeMarkers'] =
     typeof markers === 'function' ? markers : async () => markers ?? [];
+  const alertFleetLeader =
+    opts.alertFleetLeader ?? vi.fn(async (_slug: string, _summary: string, _body: string, _ws: string) => {});
   return {
     notify,
     sendWakeMessage,
     fireWake,
+    alertFleetLeader,
     run: () =>
       sweepSilentHalts({
         workspaceId: 'ws',
@@ -182,6 +242,8 @@ function sweepHarness(
           fireWake: fireWake as unknown as SilentHaltSweepDeps['fireWake'],
           readEngineLoopRows: opts.readEngineLoopRows ?? ((async () => ({})) as never),
           readFleetParkPath: opts.readFleetParkPath ?? (async () => null),
+          readHostClass: opts.readHostClass ?? (async () => null),
+          alertFleetLeader: alertFleetLeader as unknown as SilentHaltSweepDeps['alertFleetLeader'],
         },
       }),
   };
@@ -201,6 +263,21 @@ function candidate(over: Partial<SilentHaltCandidate> = {}): SilentHaltCandidate
     ...over,
   };
 }
+
+describe('silent-halt wake guidance', () => {
+  it('checks checkpoint gates before resuming or releasing held work', () => {
+    const body = silentHaltWakeBody(
+      candidate(),
+      { halted: true, reason: 'held work with no wake source', exemption: null, staleFloorMs: 30 * MIN },
+      null,
+    );
+
+    expect(body).toContain('governing decision');
+    expect(body).toContain('Preserve any named evidence gate or explicit stop');
+    expect(body).toContain('this alarm does not prove the gate cleared');
+    expect(body).toContain('only when that named condition permits it');
+  });
+});
 
 describe('sweepSilentHalts', () => {
   const now = Date.parse('2026-09-01T07:00:00.000Z');
@@ -372,7 +449,7 @@ describe('sweepSilentHalts — wake-first rung (P-003)', () => {
     const [owner, summary, body] = h.sendWakeMessage.mock.calls[0];
     expect(owner).toBe('su-halted');
     expect(summary).toBe(wakeMarkerSummary('su-halted', disarmEpochToken(now, 120 * MIN)));
-    expect(body).toMatch(/HOLDING 1 work-item/);
+    expect(body).toMatch(/HOLDING 1 actionable work-item/);
     expect(body).toMatch(/next sweep tick pages the human owner/);
     expect(h.fireWake).toHaveBeenCalledOnce();
     // Restart-safety ordering: the durable marker strictly precedes the wake fire.
@@ -553,5 +630,395 @@ describe('sweepSilentHalts — wake-first rung (P-003)', () => {
     const r2 = await second.run();
     expect(r2.paged).toEqual(['su-halted']);
     expect(second.notify.mock.calls[0][0].data.endClassification).toBe('deliberate');
+  });
+});
+
+describe('sweepSilentHalts — P-007 slice 2 (D-006)', () => {
+  const now = Date.parse('2026-10-10T23:00:00.000Z');
+  const oldTurn = new Date(now - 120 * MIN).toISOString();
+  const haltedAs = (...owners: string[]) =>
+    Object.fromEntries(owners.map((o) => [o, { active: false, lastRealTurnAt: oldTurn }]));
+  const unbound: StalledLoopHostClass = {
+    kind: 'needs-relaunch',
+    condition: 'unbound-successor' as never,
+    why: 'the carry-respawn child never bound a native session.',
+    remedy: 'Relaunch the session (psu --resume).',
+  };
+
+  /**
+   * Drives the REAL default candidate read end to end against a routing fake: the candidate query
+   * yields one AUTO session with its loop off, and `event_awaits` yields `awaitRows` for it.
+   */
+  async function sweepWithAwaits(
+    awaitRows: Array<Record<string, unknown>>,
+    items: Array<Record<string, unknown>> = [],
+    heldItems: Array<Record<string, unknown>> = [
+      { owner_id: 'su-x', work_item_id: 'WI-BASE', status: 'open', external_blockers: null },
+    ],
+  ) {
+    const fakeSql = ((strings: TemplateStringsArray) => {
+      const text = strings.join('?');
+      if (text.includes('WITH loops AS')) {
+        return Promise.resolve([
+          {
+            owner_id: 'su-x',
+            workspace_id: 'ws',
+            routine_id: 'loop-su-x',
+            interval_sec: 300,
+            fleet_slug: null,
+            heartbeat_age_ms: 30_000,
+            inactive_for_ms: 120 * MIN,
+            modes: ['auto'],
+          },
+        ]);
+      }
+      if (text.includes('/* silent-halt-held-work */')) return Promise.resolve(heldItems);
+      if (text.includes('harness_shared.event_awaits')) return Promise.resolve(awaitRows);
+      if (text.includes('FROM harness_shared.work_items')) return Promise.resolve(items);
+      return Promise.resolve([]);
+    }) as never;
+    return sweepSilentHalts({
+      workspaceId: 'ws',
+      sql: fakeSql,
+      dryRun: true,
+      deps: {
+        nowMs: now,
+        notify: vi.fn() as never,
+        readLoopStatuses: (async () =>
+          new Map([['su-x', { active: false, lastRealTurnAt: oldTurn }]])) as never,
+      },
+    });
+  }
+
+  it("the candidate read does NOT count the session's own inbox-wake watcher as a wake source", async () => {
+    // The measured blind spot: every parked session holds coord:inbox-wake:<self>, which fires
+    // only on an inbound message — counting it exempted 115 of 115 candidates on 2026-10-10.
+    // Since P-009 the exclusion lives in the shared wake-source predicate (D-008 (1)).
+    const r = await sweepWithAwaits([
+      { subscriber_id: 'su-x', event_key: 'coord:inbox-wake:su-x', expires_ts: null, timeout_behavior: 'expire', once: false },
+    ]);
+    expect(r.checked).toBe(1);
+    expect(r.exempt['su-x'] ?? '').not.toMatch(/pending-await/);
+    expect(r.halted).toEqual(['su-x']);
+  });
+
+  it('a dead work-item await does not exempt the session either (D-008 (1), via the shared predicate)', async () => {
+    const r = await sweepWithAwaits(
+      [{ subscriber_id: 'su-x', event_key: 'work-item:done:WI-7', expires_ts: null, timeout_behavior: null, once: true }],
+      [{ feature_id: 'WI-7', status: 'wip', taken_by: 'su-x' }],
+    );
+    expect(r.exempt['su-x'] ?? '').not.toMatch(/pending-await/);
+    expect(r.halted).toEqual(['su-x']);
+  });
+
+  it('a live untimed await still exempts the session (D-009: the detector stays lenient)', async () => {
+    const r = await sweepWithAwaits([
+      { subscriber_id: 'su-x', event_key: 'work-item:claimable', expires_ts: null, timeout_behavior: null, once: true },
+    ]);
+    expect(r.exempt['su-x']).toMatch(/pending-await x1/);
+    expect(r.halted).toEqual([]);
+  });
+
+  it.each([
+    { itemStatus: 'blocked', blockerStatus: 'active', shouldPark: true },
+    { itemStatus: 'needs-human', blockerStatus: 'active', shouldPark: true },
+    { itemStatus: 'needs-human', blockerStatus: 'cleared', shouldPark: false },
+    { itemStatus: 'wip', blockerStatus: 'active', shouldPark: false },
+  ])(
+    'applies D-010/P-010 to $itemStatus work with a $blockerStatus blocker',
+    async ({ itemStatus, blockerStatus, shouldPark }) => {
+      const r = await sweepWithAwaits([], [], [{
+        owner_id: 'su-x',
+        work_item_id: 'WI-CREDENTIAL',
+        status: itemStatus,
+        external_blockers: [{
+          kind: 'runtime',
+          capability: 'credential',
+          capabilitySource: 'explicit',
+          ref: 'credential:provider',
+          summary: 'Waiting for the credential provider',
+          status: blockerStatus,
+          createdAt: new Date(now).toISOString(),
+          createdBy: 'su-x',
+          updatedAt: new Date(now).toISOString(),
+        }],
+      }]);
+      expect(r.checked).toBe(1);
+      if (shouldPark) {
+        expect(r.halted).toEqual([]);
+        expect(r.exempt['su-x']).toContain('holds-only-active-external-blockers');
+        expect(r.exempt['su-x']).toContain('WI-CREDENTIAL');
+      } else {
+        expect(r.halted).toEqual(['su-x']);
+        expect(r.exempt).not.toHaveProperty('su-x');
+      }
+    },
+  );
+
+  it('a host that needs a relaunch is NOT woken; it is paged at once with the HOST UNHEALTHY remedy', async () => {
+    const h = sweepHarness([candidate()], haltedAs('su-halted'), {
+      nowMs: now,
+      wakeFirstEnabled: true,
+      readHostClass: async () => unbound,
+    });
+    const r = await h.run();
+
+    expect(r.woken).toEqual([]);
+    expect(h.sendWakeMessage).not.toHaveBeenCalled();
+    expect(h.fireWake).not.toHaveBeenCalled();
+    expect(r.paged).toEqual(['su-halted']);
+    const payload = h.notify.mock.calls[0][0];
+    expect(payload.body).toMatch(/HOST UNHEALTHY \(unbound-successor\)/);
+    expect(payload.body).toMatch(/No wake was attempted/);
+    expect(payload.body).toMatch(/psu --resume/);
+    expect(payload.data.hostClass).toBe('needs-relaunch');
+  });
+
+  it('a healthy, recoverable, or unreadable host keeps the wake-first rung exactly as before', async () => {
+    for (const host of [{ kind: 'healthy' }, null] as (StalledLoopHostClass | null)[]) {
+      const h = sweepHarness([candidate()], haltedAs('su-halted'), {
+        nowMs: now,
+        wakeFirstEnabled: true,
+        readHostClass: async () => host,
+      });
+      const r = await h.run();
+      expect(r.woken).toEqual(['su-halted']);
+      expect(h.notify).not.toHaveBeenCalled();
+    }
+  });
+
+  it('a host read that THROWS degrades to the wake-first rung, never to silence', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const h = sweepHarness([candidate()], haltedAs('su-halted'), {
+        nowMs: now,
+        wakeFirstEnabled: true,
+        readHostClass: async () => {
+          throw new Error('psu-pty dir unreadable');
+        },
+      });
+      const r = await h.run();
+      expect(r.woken).toEqual(['su-halted']);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/host read for su-halted failed/));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a DEDUPED page does not consume the per-sweep cap, so standing halts cannot starve a new one', async () => {
+    const owners = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
+    expect(owners.length).toBeGreaterThan(SILENT_HALT_MAX_PAGES_PER_SWEEP);
+    // a..f already paged this epoch (deduped); g is a NEW halt and must still be paged.
+    const notify = vi.fn(async (p: { data: { ownerId: string } }) => ({ deduped: p.data.ownerId !== 'g' }));
+    const h = sweepHarness(owners.map((o) => candidate({ ownerId: o })), haltedAs(...owners), {
+      nowMs: now,
+      notify,
+    });
+    const r = await h.run();
+
+    expect(r.paged).toEqual(owners);
+    expect(r.pageCapReached).toBe(false);
+  });
+
+  it('the cap still bounds NEWLY created pages', async () => {
+    const owners = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
+    const h = sweepHarness(owners.map((o) => candidate({ ownerId: o })), haltedAs(...owners), { nowMs: now });
+    const r = await h.run();
+
+    expect(r.paged).toHaveLength(SILENT_HALT_MAX_PAGES_PER_SWEEP);
+    expect(r.pageCapReached).toBe(true);
+  });
+
+  it("a fleet member's NEW page also alerts its fleet leader, once; a deduped page does not", async () => {
+    const fresh = sweepHarness([candidate({ fleetSlug: 'fleet-x', heldWorkItems: 3 })], haltedAs('su-halted'), {
+      nowMs: now,
+    });
+    const r = await fresh.run();
+
+    expect(r.fleetLeaderAlerted).toEqual(['su-halted']);
+    expect(fresh.alertFleetLeader).toHaveBeenCalledOnce();
+    const [slug, summary, body, ws] = fresh.alertFleetLeader.mock.calls[0];
+    expect(slug).toBe('fleet-x');
+    expect(summary).toMatch(/su-halted is halted holding 3 work-item\(s\)/);
+    expect(summary).toMatch(/inspect checkpoints; re-place or resume only if their gates permit/);
+    expect(body).toMatch(/re-read each held item's checkpoint and governing decision/);
+    expect(body).toMatch(/Preserve any named evidence gate or explicit stop/);
+    expect(body).toMatch(/is alive but has taken no turns/);
+    expect(ws).toBe('ws');
+
+    const deduped = sweepHarness([candidate({ fleetSlug: 'fleet-x' })], haltedAs('su-halted'), {
+      nowMs: now,
+      notify: vi.fn(async () => ({ deduped: true })),
+    });
+    const r2 = await deduped.run();
+    expect(r2.paged).toEqual(['su-halted']);
+    expect(r2.fleetLeaderAlerted).toEqual([]);
+    expect(deduped.alertFleetLeader).not.toHaveBeenCalled();
+  });
+
+  it('a non-fleet session is paged without any fleet-leader alert', async () => {
+    const h = sweepHarness([candidate()], haltedAs('su-halted'), { nowMs: now });
+    const r = await h.run();
+    expect(r.paged).toEqual(['su-halted']);
+    expect(h.alertFleetLeader).not.toHaveBeenCalled();
+  });
+});
+
+describe('sweepSilentHalts — default notification adapter', () => {
+  const now = Date.parse('2026-10-10T23:00:00.000Z');
+  const alertLeader = vi.fn(async () => {});
+
+  beforeEach(() => {
+    attention.ensureIntent.mockReset().mockResolvedValue({ id: 9, created: true });
+    attention.claimChannel.mockReset().mockResolvedValue(true);
+    attention.recordIntent.mockReset().mockResolvedValue(10);
+    attention.recordOutcome.mockReset().mockResolvedValue(undefined);
+    attention.mobile.mockReset().mockResolvedValue([]);
+    attention.desktop.mockReset().mockResolvedValue(undefined);
+    alertLeader.mockClear();
+  });
+
+  const run = (candidates: SilentHaltCandidate[], nowMs = now) => sweepSilentHalts({
+    workspaceId: 'ws',
+    sql: {} as never,
+    deps: {
+      nowMs,
+      readCandidates: async () => candidates,
+      readLoopStatuses: (async () => new Map(candidates.map((c) => [c.ownerId, {
+        active: false, lastRealTurnAt: new Date(nowMs - 180 * MIN).toISOString(),
+      }]))) as never,
+      wakeFirstEnabled: false,
+      readEngineLoopRows: (async () => ({})) as never,
+      readFleetParkPath: async () => null,
+      readHostClass: async () => null,
+      alertFleetLeader: alertLeader,
+    },
+  });
+
+  it('alerts once for the same owner and epoch, then alerts again for a new epoch', async () => {
+    const member = candidate({ fleetSlug: 'fleet-x' });
+    expect((await run([member])).fleetLeaderAlerted).toEqual(['su-halted']);
+
+    attention.ensureIntent.mockResolvedValueOnce({ id: 9, created: false });
+    attention.claimChannel.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+    expect((await run([candidate({ ...member, inactiveForMs: 130 * MIN })], now + 10 * MIN)).fleetLeaderAlerted).toEqual([]);
+    expect(alertLeader).toHaveBeenCalledTimes(1);
+    const firstKey = attention.ensureIntent.mock.calls[0][1];
+    expect(attention.ensureIntent.mock.calls[1][1]).toBe(firstKey);
+
+    expect((await run([member], now + 20 * MIN)).fleetLeaderAlerted).toEqual(['su-halted']);
+    expect(attention.ensureIntent.mock.calls[2][1]).not.toBe(firstKey);
+    expect(alertLeader).toHaveBeenCalledTimes(2);
+    expect(attention.recordIntent).not.toHaveBeenCalled();
+  });
+
+  it('does not re-alert for an existing intent even when an unfinished channel is delivered', async () => {
+    attention.ensureIntent.mockResolvedValue({ id: 9, created: false });
+    attention.claimChannel.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const result = await run([candidate({ fleetSlug: 'fleet-x' })]);
+    expect(attention.mobile).toHaveBeenCalledTimes(1);
+    expect(attention.desktop).not.toHaveBeenCalled();
+    expect(result.fleetLeaderAlerted).toEqual([]);
+    expect(alertLeader).not.toHaveBeenCalled();
+  });
+
+  it('does not let existing intents with channel attempts starve a new halt out of the page cap', async () => {
+    const owners = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
+    attention.ensureIntent.mockImplementation(async (input: { data: { ownerId: string } }) => ({
+      id: owners.indexOf(input.data.ownerId) + 1, created: input.data.ownerId === 'g',
+    }));
+    const result = await run(owners.map((ownerId) => candidate({ ownerId, fleetSlug: 'fleet-x' })));
+    expect(result.paged).toEqual(owners);
+    expect(result.pageCapReached).toBe(false);
+    expect(result.fleetLeaderAlerted).toEqual(['g']);
+    expect(alertLeader).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves fail-soft delivery and leader alerting when intent storage is unavailable', async () => {
+    attention.ensureIntent.mockResolvedValue(null);
+    const result = await run([candidate({ fleetSlug: 'fleet-x' })]);
+    expect(attention.mobile).toHaveBeenCalledTimes(1);
+    expect(attention.desktop).toHaveBeenCalledTimes(1);
+    expect(result.fleetLeaderAlerted).toEqual(['su-halted']);
+  });
+});
+
+// ── P-009 / D-008 (1): the candidate read's await count comes from the shared predicate ──────────
+describe('countPendingWakeSources — the seam to wake-source-predicate', () => {
+  const INBOX = 'coord:inbox-wake:';
+  type AwaitRow = {
+    subscriber_id: string;
+    event_key: string;
+    expires_ts: string | null;
+    timeout_behavior: string | null;
+    once: boolean | null;
+  };
+  type ItemRow = { feature_id: string; status: string; taken_by: string | null };
+
+  /** A tagged-template stand-in for `Sql`: routes by the table the statement reads. */
+  function fakeSql(awaits: AwaitRow[], items: ItemRow[]) {
+    const queries: string[] = [];
+    const fn = (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      queries.push(text);
+      const ids = (values.find(Array.isArray) as string[] | undefined) ?? [];
+      if (text.includes('harness_shared.event_awaits')) {
+        return Promise.resolve(awaits.filter((a) => ids.includes(a.subscriber_id)));
+      }
+      if (text.includes('harness_shared.work_items')) {
+        return Promise.resolve(items.filter((i) => ids.includes(i.feature_id)));
+      }
+      throw new Error(`unexpected statement: ${text}`);
+    };
+    return { sql: fn as unknown as Parameters<typeof countPendingWakeSources>[2], queries };
+  }
+  const row = (subscriber_id: string, event_key: string, over: Partial<AwaitRow> = {}): AwaitRow => ({
+    subscriber_id,
+    event_key,
+    expires_ts: null,
+    timeout_behavior: null,
+    once: true,
+    ...over,
+  });
+
+  it('counts none of the four dead shapes, so a stranded session reads as having no wake source', async () => {
+    const { sql } = fakeSql(
+      [
+        // the session's own standing inbox keepalive (D-006)
+        row('su-a', `${INBOX}su-a`, { once: false, timeout_behavior: 'expire' }),
+        // waiting for its OWN held item to finish: a self-deadlock
+        row('su-a', 'work-item:done:WI-1'),
+        // the item already closed: the event already happened
+        row('su-a', 'work-item:done:WI-2'),
+        // the item does not exist: the event can never happen
+        row('su-a', 'work-item:done:WI-3'),
+      ],
+      [
+        { feature_id: 'WI-1', status: 'wip', taken_by: 'su-a' },
+        { feature_id: 'WI-2', status: 'done', taken_by: 'su-z' },
+      ],
+    );
+    const counts = await countPendingWakeSources(['su-a'], INBOX, sql);
+    expect(counts.get('su-a') ?? 0).toBe(0);
+  });
+
+  it('still counts an UNTIMED live watch (D-009: this detector stays lenient) and a bounded inbox await', async () => {
+    const { sql } = fakeSql(
+      [
+        row('su-a', 'work-item:claimable'),
+        row('su-b', `${INBOX}su-b`, { expires_ts: '2099-01-01T00:00:00.000Z', timeout_behavior: 'wake' }),
+        row('su-c', 'work-item:done:WI-9'),
+      ],
+      [{ feature_id: 'WI-9', status: 'wip', taken_by: 'su-peer' }],
+    );
+    const counts = await countPendingWakeSources(['su-a', 'su-b', 'su-c'], INBOX, sql);
+    expect(Object.fromEntries(counts)).toEqual({ 'su-a': 1, 'su-b': 1, 'su-c': 1 });
+  });
+
+  it('does not query work_items when no candidate has an open await', async () => {
+    const { sql, queries } = fakeSql([], []);
+    const counts = await countPendingWakeSources(['su-a'], INBOX, sql);
+    expect(counts.size).toBe(0);
+    expect(queries.filter((q) => q.includes('harness_shared.work_items'))).toEqual([]);
   });
 });

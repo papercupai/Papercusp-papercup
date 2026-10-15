@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { frozenRepairLatency } from './release/frozen-candidate-repair-queue';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { GATE_ABORT_DETAIL_LIVENESS_MARKER } from './release/gate-abort-status';
 
 /**
@@ -38,7 +39,10 @@ import {
   runtimeGenerationDivergenceNote,
   evaluateChangeInCandidate,
   evaluateReleaseContentDrift,
+  evaluateAcceptedSourceContainment,
   evaluateSweepExposure,
+  gitSyncDeferralFor,
+  turnHoldFor,
   parsePorcelainPaths,
   deriveBlocker,
   staleVerdictSafeLever,
@@ -152,12 +156,17 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
+/** A `merge-base` answer that is no fixture's target sha — "not contained". */
+const NOT_AN_ANCESTOR = '0'.repeat(40);
+
 /** A fake `git` runner keyed by arg shape + a per-ref containment map. */
 function fakeGit(opts: {
   submodules?: string[];
   dirty?: boolean;
   /** P-006: raw porcelain for the TREE-WIDE status (the sweep's blast radius). */
   dirtyTree?: string;
+  /** Constrain dirty status to one repo for nested-submodule regressions. */
+  dirtyRepo?: string;
   pathCommit?: string | null;
   subject?: string;
   /** ref → set of shas that ref's history contains (ancestor-or-equal). */
@@ -237,6 +246,7 @@ function fakeGit(opts: {
     // case at all, which is the only case P-006 exists for.
     if (args[0] === 'status') {
       if (!opts.dirty) return '';
+      if (opts.dirtyRepo && _repo !== opts.dirtyRepo) return '';
       return args.includes('--') ? 'M somefile' : (opts.dirtyTree ?? 'M somefile');
     }
     // The gitlink read that IS the ground truth across the boundary.
@@ -302,6 +312,15 @@ function fakeGit(opts: {
     }
     if (args[0] === 'log' && args.includes('--pretty=%H')) return opts.pathCommit ?? null;
     if (args[0] === 'log' && args.includes('--pretty=%s')) return opts.subject ?? 'subj';
+    // Containment is `merge-base <sha> <ref>` (git-ref-contains.ts): it prints `sha`
+    // itself exactly when `ref` contains it.
+    if (args[0] === 'merge-base' && args.length === 3) {
+      const [, sha, ref] = args;
+      if (opts.failRefs?.includes(ref)) return null; // the READ failed — not "not contained"
+      if (ref === sha) return sha;
+      const set = new Set(opts.contains?.[ref] ?? []);
+      return set.has(sha) ? sha : NOT_AN_ANCESTOR;
+    }
     if (args[0] === 'rev-list' && args[1] === '--count') {
       const [ref, sha] = args[2].split('..');
       if (opts.failRefs?.includes(ref)) return null; // the READ failed — not "not contained"
@@ -384,6 +403,181 @@ const snap = (
     deploy: snapDeploy(deployOver),
   }) as GitPipelineSnapshot;
 
+/**
+ * Supply the evidence that makes a candidate authoritative at the full pipeline entry point.
+ * `resolveGateCandidates` alone is only the checkout probe; reconciliation trusts the run's
+ * published marker only when the separately mapped checkpoint snapshot says a run is active.
+ */
+const activeCandidateDeps = (candidate: string) => {
+  const observedAtMs = Date.now();
+  return {
+    loadSnapshot: async () =>
+      snap({
+        inFlightCandidate: {
+          candidate,
+          candidateSource: 'pinned',
+          base: null,
+          selectedAtMs: observedAtMs,
+          quietCutApplied: false,
+          tipAtSelection: candidate,
+          refireDepth: 0,
+          pid: 4242,
+          observedAtMs,
+          verdictWrittenAtMs: null,
+        },
+      }),
+    readCheckpointRunSnapshot: async () => ({
+      activeRun: { active: true, candidate, startedAtMs: observedAtMs - 5_000, elapsedSec: 5 },
+      computedAtMs: observedAtMs,
+    }),
+    readCheckpointRunLock: async () => null,
+  };
+};
+
+describe('accepted-source pipeline containment (WI-10007982)', () => {
+  const acceptedBytes = Buffer.from('accepted recovery source\n');
+  const expectedSourceSha256 = createHash('sha256').update(acceptedBytes).digest('hex');
+  const acceptedBlob = createHash('sha1').update(`blob ${acceptedBytes.length}\0`).update(acceptedBytes).digest('hex');
+  const target = 'a'.repeat(40);
+  const laterArtifact = 'b'.repeat(40);
+  const otherRuntimeBuild = 'c'.repeat(40);
+  const sourcePath = 'packages/operator-core/lib/harness/routines/loop-execution-recovery.ts';
+
+  async function readAccepted(options: {
+    bytes?: Buffer | null;
+    artifactBlob?: string | null;
+    runtimeBlob?: string | null;
+    moveSource?: boolean;
+    moveMtime?: boolean;
+    unknownFormat?: boolean;
+    startedAtMs?: number;
+    path?: string;
+  } = {}) {
+    const fallback = fakeGit({ pathCommit: target, dirty: true, contains: {
+      HEAD: [target], 'origin/staging': [target], 'origin/main': [target], [laterArtifact]: [target],
+    } });
+    let runtimeProbed = false;
+    const git: GitRunner = async (repo, args) => {
+      if (args[0] === 'rev-parse' && args[1] === '--show-object-format') return options.unknownFormat ? null : 'sha1';
+      if (args[0] === 'rev-parse' && args.at(-1)?.includes(':')) {
+        const ref = args.at(-1)!.split(':')[0];
+        return ref === laterArtifact
+          ? (options.artifactBlob === undefined ? acceptedBlob : options.artifactBlob)
+          : (options.runtimeBlob === undefined ? acceptedBlob : options.runtimeBlob);
+      }
+      // Deliberately different: accepted containment must use the frozen source,
+      // never the mutable hash-object answer from a later tree observation.
+      if (args[0] === 'hash-object') return 'd'.repeat(40);
+      return fallback(repo, args);
+    };
+    return gitPipelinePosition({ path: options.path ?? sourcePath, expectedSourceSha256 }, {
+      git,
+      loadDeploy: async () => deploy({ deployed: { sha: laterArtifact } as DevDeployState['deployed'] }),
+      loadSnapshot: async () => snap(),
+      readGateOwnership: async () => unownedCell('test'),
+      readCheckpointRunSnapshot: async () => null,
+      readCheckpointRunLock: async () => null,
+      resolveGateCandidates: async () => ({ judgingSha: null, nextCandidateSha: target }),
+      probeUnitStart: async () => ({ pid: 42, startedAtMs: options.startedAtMs ?? 500 }),
+      probeServingHealthSha: async () => laterArtifact,
+      probeHealthSha: async (port) => {
+        runtimeProbed = true;
+        return port === 3070 ? laterArtifact : otherRuntimeBuild;
+      },
+      probeHealthBundle: async () => null,
+      loadRuntimeVintage: async () => [],
+      readCgroup: async () => null,
+      fileMtimeMs: async () => options.moveMtime && runtimeProbed ? 3000 : 1000,
+      listPtyHostInstances: async () => [
+        { pid: 101, startedAtMs: 500 },
+        { pid: 102, startedAtMs: 900 },
+        { pid: 103, startedAtMs: 2000 },
+      ],
+      readFileBytes: async () => options.moveSource && runtimeProbed
+        ? Buffer.from('later unaccepted edit\n')
+        : options.bytes === undefined ? acceptedBytes : options.bytes,
+    });
+  }
+
+  it('binds accepted bytes to a later deployed artifact and differently pinned named runtimes', async () => {
+    const result = await readAccepted();
+    expect(result.dirtyUncommitted).toBe(true);
+    expect(result.targetSha).toBe(target);
+    expect(result.deployedSha).toBe(laterArtifact);
+    expect(result.acceptedSource).toMatchObject({ expectedSha256: expectedSourceSha256,
+      observedSha256: expectedSourceSha256, matches: true, deployedContains: true });
+    expect(result.acceptedSource?.runtimeContainment['release-operator']).toBe(true);
+    expect(result.acceptedSource?.runtimeContainment['bg-host']).toBe(true);
+  });
+
+  it('rejects old deployed bytes even when latest-path ancestry reports deployed=true', async () => {
+    const result = await readAccepted({ artifactBlob: 'e'.repeat(40) });
+    expect(result.positions.deployed).toBe(true);
+    expect(result.acceptedSource?.matches).toBe(true);
+    expect(result.acceptedSource?.deployedContains).toBe(false);
+    expect(result.acceptedSource?.runtimeContainment['release-operator']).toBe(false);
+  });
+
+  it('rejects a changed accepted source even with positive deployed ancestry and runtime probes', async () => {
+    const result = await readAccepted({ bytes: Buffer.from('unaccepted replacement\n') });
+    expect(result.positions.deployed).toBe(true);
+    expect(result.acceptedSource?.matches).toBe(false);
+    expect(result.acceptedSource?.deployedContains).toBe(false);
+    expect(result.acceptedSource?.runtimeContainment['bg-host']).toBe(false);
+  });
+
+  it('retains unreadable source and failed artifact reads as unknown', async () => {
+    const missingSource = await readAccepted({ bytes: null });
+    expect(missingSource.acceptedSource).toMatchObject({ observedSha256: null, matches: null, deployedContains: null });
+    const missingArtifact = await readAccepted({ artifactBlob: null });
+    expect(missingArtifact.acceptedSource).toMatchObject({ matches: true, deployedContains: null });
+  });
+
+  it('retains stale and unknown named runtime results without substituting deployed=true', async () => {
+    const stale = await readAccepted({ runtimeBlob: 'e'.repeat(40) });
+    expect(stale.acceptedSource?.deployedContains).toBe(true);
+    expect(stale.acceptedSource?.runtimeContainment['bg-host']).toBe(false);
+    const unknown = await readAccepted({ runtimeBlob: null });
+    expect(unknown.acceptedSource?.runtimeContainment['staging-operator']).toBeNull();
+  });
+
+  it('refuses a source change during the runtime observation', async () => {
+    const result = await readAccepted({ moveSource: true });
+    expect(result.acceptedSource).toMatchObject({ matches: false, deployedContains: false });
+    expect(result.acceptedSource?.runtimeContainment['bg-host']).toBe(false);
+  });
+
+  it('does not invent blob containment when the repository object format cannot be read', async () => {
+    const result = await readAccepted({ unknownFormat: true });
+    expect(result.acceptedSource).toMatchObject({ matches: true, deployedContains: null });
+    expect(result.acceptedSource?.runtimeContainment['release-operator']).toBeNull();
+  });
+
+  it('invalidates time-based load evidence when source mtime changes during the read', async () => {
+    const result = await readAccepted({ moveMtime: true, runtimeBlob: 'e'.repeat(40), startedAtMs: 2000 });
+    expect(result.acceptedSource?.matches).toBe(true);
+    expect(result.acceptedSource?.deployedContains).toBe(true);
+    expect(result.servingRuntimes.find((runtime) => runtime.runtime === 'bg-host')?.method).toBe('start-after-mtime');
+    expect(result.acceptedSource?.runtimeContainment['bg-host']).toBeNull();
+  });
+
+  it('binds actual PTY instance observations without demanding that every old session restart', async () => {
+    const result = await readAccepted({ path: 'apps/operator/scripts/psu-pty-host.mjs' });
+    expect(result.servingRuntimes.find((runtime) => runtime.runtime === 'psu-pty-host')?.instances)
+      .toMatchObject({ total: 3, current: 1 });
+    expect(result.acceptedSource?.runtimeContainment['psu-pty-host']).toBe(true);
+  });
+
+  it('preserves PTY at-least-one-instance semantics and explicit unknown runtime values', () => {
+    const runtimes = [
+      { runtime: 'psu-pty-host', containsChange: true, instances: { total: 3, current: 1, stale: 2 } },
+      { runtime: 'bg-host', containsChange: null },
+    ] as unknown as import('./serving-runtimes').ServingRuntimeEntry[];
+    expect(evaluateAcceptedSourceContainment(expectedSourceSha256, acceptedBytes, true, runtimes).runtimeContainment)
+      .toEqual({ 'psu-pty-host': true, 'bg-host': null });
+  });
+});
+
 describe('gitPipelinePosition diagnostic defaults (EI-21306970701615848)', () => {
   it('EI-24356772206513832: the default unit probes supply a local exec path', async () => {
     const probe = vi.mocked(probeServiceStart);
@@ -396,11 +590,11 @@ describe('gitPipelinePosition diagnostic defaults (EI-21306970701615848)', () =>
     expect(probe.mock.calls.every(([, exec]) => typeof exec === 'function')).toBe(true);
   });
 
-  it('keeps the default release readers on local git instead of the spawner sidecar', () => {
+  it('routes only the bounded dev-deploy reader through the sidecar and keeps the pipeline snapshot local', () => {
     const source = readFileSync(new URL('./git-pipeline-position.ts', import.meta.url), 'utf8');
 
     expect(source).toContain(
-      'const loadDeploy = deps.loadDeploy ?? (() => devDeployState({ useSpawnerSidecar: false }));',
+      'const loadDeploy = deps.loadDeploy ?? (() => devDeployState({ useSpawnerSidecar: true }));',
     );
     expect(source).toContain(
       'deps.loadSnapshot ?? (() => gitPipelineSnapshot(undefined, { useSpawnerSidecar: false }));',
@@ -474,8 +668,8 @@ describe('gitPipelinePosition diagnostic defaults (EI-21306970701615848)', () =>
     });
     const inner = fakeGit({ pathCommit: 'abc1234567', subject: 'ordered fan-out' });
     const git: GitRunner = async (repo, args) => {
-      if (args[0] === 'rev-list' && args[1] === '--count' && containmentResolvers.length < 4) {
-        started.push(`contain:${args[2]}`);
+      if (args[0] === 'merge-base' && containmentResolvers.length < 4) {
+        started.push(`contain:${args[2]}..${args[1]}`);
         return new Promise<string | null>((resolve) => {
           containmentResolvers.push(resolve);
           if (containmentResolvers.length === 4) signalContainmentStarted();
@@ -513,7 +707,7 @@ describe('gitPipelinePosition diagnostic defaults (EI-21306970701615848)', () =>
     expect(started.slice(0, 4)).toEqual(['checkpoint', 'lock', 'ownership', 'candidates']);
     expect(containmentResolvers).toHaveLength(4);
 
-    for (const resolve of containmentResolvers) resolve('0');
+    for (const resolve of containmentResolvers) resolve('abc1234567');
     resolveCandidates({ judgingSha: null, nextCandidateSha: null });
     await expect(pending).resolves.toMatchObject({ repoRoot: '/repo' });
   });
@@ -890,6 +1084,42 @@ describe('gitPipelinePosition (P-002)', () => {
       // crying wolf on a leg that cannot exhibit the defect.
       expect(res.positionsNewerCommit).not.toContain('committedLocal');
       expect(res.positions.committedLocal).toBe(true);
+    });
+
+    it('reads eligible marker refs concurrently while preserving each correction', async () => {
+      const refs = ['origin/main', 'deployedsha0'] as const;
+      const base = fakeGit({
+        pathCommit: PEER,
+        contains: { HEAD: [PEER], 'origin/staging': [PEER], 'origin/main': [], deployedsha0: [] },
+        newestInRef: { 'origin/main': MINE, deployedsha0: MINE },
+        blobAtRef: Object.fromEntries(refs.map((ref) => [ref, 'function exactlyOnceHere() {}\n'])),
+        parentBlobAtTarget: 'empty baseline\n',
+        parentBlobs: { [`${MINE}~1`]: 'empty baseline\n' },
+      });
+      let activeMarkerRefReads = 0;
+      let maxConcurrentMarkerRefReads = 0;
+      const git: GitRunner = async (repo, args) => {
+        const markerRef = args[0] === 'rev-parse' ? args[2]?.replace(/\^\{commit\}$/, '') : undefined;
+        if (markerRef && refs.includes(markerRef as (typeof refs)[number])) {
+          activeMarkerRefReads += 1;
+          maxConcurrentMarkerRefReads = Math.max(maxConcurrentMarkerRefReads, activeMarkerRefReads);
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          activeMarkerRefReads -= 1;
+        }
+        return base(repo, args);
+      };
+
+      const res = await gitPipelinePosition(
+        { path: P, marker: 'exactlyOnceHere' },
+        { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+
+      expect(maxConcurrentMarkerRefReads).toBe(2);
+      expect(res.positions).toMatchObject({ onStaging: true, inMain: true, deployed: true });
+      expect(res.positionsMarker).toMatchObject({
+        inMain: { present: true, count: 1 },
+        deployed: { present: true, count: 1 },
+      });
     });
 
     it('a MARKER present in the ref CORRECTS the leg to true, in the result and the summary', async () => {
@@ -2022,6 +2252,26 @@ describe('gitPipelinePosition (P-002)', () => {
     expect(res.notes.join(' ')).toMatch(/submodule/i);
   });
 
+  it('reads dirty file status from the nested submodule repo', async () => {
+    const git = fakeGit({
+      submodules: ['libs/papercusp'],
+      pathCommit: 'a1234567890',
+      submoduleStagingPin: { pinnedSha: 'a1234567890', path: 'libs/papercusp' },
+      dirty: true,
+      dirtyRepo: '/repo/libs/papercusp',
+      dirtyTree: ' M libs/db/src/raw-serializers.ts',
+      contains: { HEAD: ['a1234567890'] },
+    });
+    const res = await gitPipelinePosition(
+      { path: 'libs/papercusp/libs/db/src/raw-serializers.ts' },
+      { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+    );
+
+    expect(res.submodule).toBe('libs/papercusp');
+    expect(res.dirtyUncommitted).toBe(true);
+    expect(res.sweepExposure.dirtyPathCount).toBe(1);
+  });
+
   it('does not treat nested origin/HEAD as staging evidence when the superproject gitlink is behind', async () => {
     const git = fakeGit({
       submodules: ['libs/papercusp'],
@@ -2478,14 +2728,6 @@ describe('runtime-owner map (EI-10895)', () => {
     expect(own.activation).toMatch(/dev:restart.*bg-host/s);
   });
 
-  it('EI-21458114771988888: google-pubsub.ts is a bg-host dependency of the Gmail polling routine', () => {
-    const own = classifyRuntimeOwner('packages/operator-core/lib/external-triggers/google-pubsub.ts')!;
-    expect(own.host).toBe('bg-host');
-    expect(own.releasePipelineApplies).toBe(false);
-    expect(own.restartTarget).toBe('bg-host');
-    expect(own.activation).toMatch(/dev:restart.*bg-host/s);
-  });
-
   it('EI-22090053297465523: fleet-control-reconcile.ts is a bg-host dependency of the fleet transition system action', () => {
     const own = classifyRuntimeOwner(
       'packages/operator-core/lib/harness/routines/fleet-control-reconcile.ts',
@@ -2801,6 +3043,122 @@ describe('computeStages: position x health', () => {
   it('a clean committed path reads past/advancing with no noise', () => {
     const s = computeStages(input());
     expect(stage(s, 'committed')).toMatchObject({ position: 'past', health: 'advancing', detail: null });
+  });
+
+  // WI-10006493 (residue of EI-25203408414398603): while git-sync's migration dependency fence
+  // deferred unrelated dirty paths, this surface said "BLOCKED AT COMMITTED -> git-sync:run".
+  // A forced sync defers the same path again, so the lever sent agents round a loop. When the
+  // last pass recorded the queried path as deferred, the stage must name the blocker and owner.
+  describe('WI-10006493: a path the last git-sync pass deferred is not unblocked by git-sync:run', () => {
+    const fenced = {
+      scope: 'superproject',
+      path: 'packages/operator-core/lib/schema-consumer.ts',
+      reason: 'migration-dependency-fence' as const,
+      detail:
+        'deferred because this path shares work-item attribution with a reservation-blocked migration at ' +
+        'libs/papercusp/libs/db/sql/1234-unreserved.sql',
+      blockingMigrations: ['libs/papercusp/libs/db/sql/1234-unreserved.sql'],
+      blockingAgents: ['su-migration-author'],
+      blockingWorkItems: ['WI-777'],
+    };
+    const deferred = (skippedPaths: StageInput['gitSync']['skippedPaths'], path: string) =>
+      input({
+        dirtyUncommitted: true,
+        input: { path },
+        gitSync: { ...HEALTHY_GIT_SYNC, syncAgeMs: 120_000, skippedPaths },
+      });
+
+    it('names the fence, the blocking migration, its author and work-item, and never advertises git-sync:run', () => {
+      const s = computeStages(deferred([fenced], fenced.path));
+      const committed = stage(s, 'committed');
+      expect(committed).toMatchObject({ position: 'pending', health: 'stalled' });
+      expect(committed.detail).toMatch(/migration dependency fence/);
+      expect(committed.detail).toContain('libs/papercusp/libs/db/sql/1234-unreserved.sql');
+      expect(committed.detail).toContain('su-migration-author');
+      expect(committed.detail).toContain('WI-777');
+      expect(committed.lever).toContain('libs/papercusp/libs/db/sql/1234-unreserved.sql');
+      expect(committed.lever).not.toMatch(/git-sync:run/);
+
+      const { blockedOn, nextAction } = deriveBlocker(s);
+      expect(blockedOn).toBe('committed');
+      expect(nextAction).not.toMatch(/git-sync:run/);
+      expect(nextAction).toContain('su-migration-author');
+    });
+
+    it('matches a submodule-scoped reservation deferral against the superproject-relative path', () => {
+      const reservation = {
+        scope: 'libs/papercusp',
+        path: 'libs/db/sql/1234-unreserved.sql',
+        reason: 'migration-reservation' as const,
+        detail: 'no reservation row for 1234',
+      };
+      const s = computeStages(deferred([reservation], 'libs/papercusp/libs/db/sql/1234-unreserved.sql'));
+      const committed = stage(s, 'committed');
+      expect(committed.detail).toContain('no reservation row for 1234');
+      expect(committed.lever).toMatch(/next-migration\.mjs/);
+      expect(committed.lever).not.toMatch(/git-sync:run/);
+    });
+
+    it('names the lock holder when a live edit lock deferred the path', () => {
+      const lock = { scope: 'superproject', path: 'apps/operator/lib/x.ts', owner: 'su-holder', intent: 'refactor x' };
+      const s = computeStages(deferred([lock], 'apps/operator/lib/x.ts'));
+      const committed = stage(s, 'committed');
+      expect(committed.detail).toContain('su-holder');
+      expect(committed.detail).toContain('refactor x');
+      expect(committed.lever).not.toMatch(/git-sync:run/);
+    });
+
+    it('keeps git-sync:run as the lever when the deferral is for a DIFFERENT path', () => {
+      // Control: the match is per path. A fence elsewhere in the tree must not hide the real lever.
+      const s = computeStages(deferred([fenced], 'packages/operator-core/lib/unrelated.ts'));
+      expect(stage(s, 'committed').lever).toMatch(/^git-sync:run/);
+      expect(deriveBlocker(s).nextAction).toMatch(/^git-sync:run/);
+    });
+
+    it('ignores a recorded deferral once the path is no longer dirty', () => {
+      const s = computeStages(input({ input: { path: fenced.path }, gitSync: { ...HEALTHY_GIT_SYNC, skippedPaths: [fenced] } }));
+      expect(stage(s, 'committed')).toMatchObject({ position: 'past', detail: null, lever: null });
+    });
+  });
+
+  describe('EI-25225672179870571: a content-quarantined path needs its finding fixed', () => {
+    const path = 'docs/evidence/reboot-residue-live-probes-2026-10-06/r001-live-probe-rubric-rev15.txt';
+    const contentError = { path, detector: 'identity-leak' };
+
+    it('names the content finding and never recommends repeating git-sync while it remains', () => {
+      const s = computeStages(
+        input({
+          dirtyUncommitted: true,
+          input: { path },
+          gitSync: { ...HEALTHY_GIT_SYNC, contentErrors: [contentError] },
+        }),
+      );
+      const committed = stage(s, 'committed');
+      expect(committed).toMatchObject({ position: 'pending', health: 'stalled' });
+      expect(committed.detail).toMatch(/identity-leak/);
+      expect(committed.detail).not.toMatch(/git-sync:run/);
+      expect(committed.lever).toMatch(/identity-leak/);
+      expect(committed.lever).not.toMatch(/git-sync:run/);
+
+      const { blockedOn, nextAction } = deriveBlocker(s);
+      expect(blockedOn).toBe('committed');
+      expect(nextAction).toMatch(/identity-leak/);
+      expect(nextAction).not.toMatch(/git-sync:run/);
+    });
+
+    it('keeps the normal sync lever for a different path and ignores a clean quarantined path', () => {
+      const unrelated = computeStages(
+        input({
+          dirtyUncommitted: true,
+          input: { path: 'docs/other.txt' },
+          gitSync: { ...HEALTHY_GIT_SYNC, contentErrors: [contentError] },
+        }),
+      );
+      expect(stage(unrelated, 'committed').lever).toMatch(/^git-sync:run/);
+
+      const clean = computeStages(input({ input: { path }, gitSync: { ...HEALTHY_GIT_SYNC, contentErrors: [contentError] } }));
+      expect(stage(clean, 'committed')).toMatchObject({ position: 'past', detail: null, lever: null });
+    });
   });
 
   it('EI-21175951870654462: a fresh-invocation route is past serving with no restart blocker', () => {
@@ -5086,6 +5444,7 @@ describe('changeInCandidate (P-004)', () => {
         if (args[0] === 'log' && args.includes('--pretty=%H')) return 'abc1234567';
         if (args[0] === 'log' && args.includes('--pretty=%s')) return 'subj';
         if (args[0] === 'rev-list') return '0';
+        if (args[0] === 'merge-base') return args[1];
         // The candidate COMMIT must resolve before any path verdict is computed — an
         // unresolvable sha is UNKNOWN, not a blanket "absent".
         if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2].endsWith('^{commit}')) return 'c'.repeat(40);
@@ -5101,7 +5460,7 @@ describe('changeInCandidate (P-004)', () => {
         {
           git,
           loadDeploy: async () => deploy(),
-          loadSnapshot: async () => snap(),
+          ...activeCandidateDeps('judging1'),
           resolveGateCandidates: async () => ({
             judgingSha: 'judging1',
             judgingShaSource: 'in-flight-candidate',
@@ -5122,6 +5481,7 @@ describe('changeInCandidate (P-004)', () => {
         if (args[0] === 'log' && args.includes('--pretty=%H')) return 'abc1234567';
         if (args[0] === 'log' && args.includes('--pretty=%s')) return 'subj';
         if (args[0] === 'rev-list') return '0';
+        if (args[0] === 'merge-base') return args[1];
         if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2].endsWith('^{commit}')) return 'c'.repeat(40);
         if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2].endsWith(':a.ts')) return '0'.repeat(40);
         if (args[0] === 'hash-object') return '0'.repeat(40);
@@ -5169,6 +5529,8 @@ describe('changeInCandidate (P-004)', () => {
           if (args[0] === 'log' && args.includes('--pretty=%H')) return 'abc1234567';
           if (args[0] === 'log' && args.includes('--pretty=%s')) return 'subj';
           if (args[0] === 'rev-list') return '0';
+          if (args[0] === 'merge-base') return args[1];
+        if (args[0] === 'merge-base') return args[1];
           if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2].endsWith('^{commit}')) return 'c'.repeat(40);
           if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'judging1:a.ts') return '0'.repeat(40);
           // HEAD matches the tree ⇒ committed-but-newer, i.e. reason 'newer-commit'.
@@ -5185,7 +5547,7 @@ describe('changeInCandidate (P-004)', () => {
           {
             git: peerEditedGit(contents),
             loadDeploy: async () => deploy(),
-            loadSnapshot: async () => snap(),
+            ...activeCandidateDeps('judging1'),
             resolveGateCandidates: async () => ({
               judgingSha: 'judging1',
               judgingShaSource: 'in-flight-candidate',
@@ -5276,6 +5638,8 @@ describe('changeInCandidate (P-004)', () => {
           if (args[0] === 'log' && args.includes('--pretty=%H')) return 'abc1234567';
           if (args[0] === 'log' && args.includes('--pretty=%s')) return 'subj';
           if (args[0] === 'rev-list') return '0';
+          if (args[0] === 'merge-base') return args[1];
+        if (args[0] === 'merge-base') return args[1];
           if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2].endsWith('^{commit}')) return 'c'.repeat(40);
           if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'judging1:a.ts') return '0'.repeat(40);
           if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'next1:a.ts') return '1'.repeat(40);
@@ -5292,7 +5656,7 @@ describe('changeInCandidate (P-004)', () => {
           {
             git: splitGit(atJudging, atNext),
             loadDeploy: async () => deploy(),
-            loadSnapshot: async () => snap(),
+            ...activeCandidateDeps('judging1'),
             resolveGateCandidates: async () => ({
               judgingSha: 'judging1',
               judgingShaSource: 'in-flight-candidate',
@@ -5410,6 +5774,8 @@ describe('changeInCandidate (P-004)', () => {
           if (args[0] === 'log' && args.includes('--pretty=%H')) return 'abc1234567';
           if (args[0] === 'log' && args.includes('--pretty=%s')) return 'subj';
           if (args[0] === 'rev-list') return '0';
+          if (args[0] === 'merge-base') return args[1];
+        if (args[0] === 'merge-base') return args[1];
           if (args[0] === 'status') return '';
           return null;
         };
@@ -5430,6 +5796,8 @@ describe('changeInCandidate (P-004)', () => {
           if (args[0] === 'log' && args.includes('--pretty=%H')) return 'abc1234567';
           if (args[0] === 'log' && args.includes('--pretty=%s')) return 'subj';
           if (args[0] === 'rev-list') return '0';
+          if (args[0] === 'merge-base') return args[1];
+        if (args[0] === 'merge-base') return args[1];
           return null;
         };
       }
@@ -5440,7 +5808,7 @@ describe('changeInCandidate (P-004)', () => {
           {
             git: submoduleGit(o),
             loadDeploy: async () => deploy(),
-            loadSnapshot: async () => snap(),
+            ...activeCandidateDeps('cand1'),
             resolveGateCandidates: async () => ({
               judgingSha: 'cand1',
               judgingShaSource: 'in-flight-candidate',
@@ -5568,6 +5936,7 @@ describe('gitPipelinePosition: release-content-drift note (EI-19327418148563597)
     if (args[0] === 'log' && args.includes('--pretty=%H')) return 'abc1234567';
     if (args[0] === 'log' && args.includes('--pretty=%s')) return 'subj';
     if (args[0] === 'rev-list') return '0';
+    if (args[0] === 'merge-base') return args[1];
     return null;
   };
 
@@ -6549,6 +6918,8 @@ describe('EI-19447523039740352: a running deploy reaches nextAction through the 
         loadSnapshot: async () => snap(),
         probeUnitStart: async () => ({ pid: 99, startedAtMs: Date.now() - 3 * 60 * 60_000 }),
         fileMtimeMs: async () => Date.now() - 60_000,
+        probeHealthSha: async () => null,
+        probeHealthBundle: async () => null,
         readDeployInFlight: probe,
       },
     );
@@ -6750,6 +7121,59 @@ describe('sweep exposure (P-006)', () => {
     changeInCandidate: NO_CANDIDATE,
     runtime: classifyRuntimeOwner('packages/operator-core/lib/x.ts'),
     sweepExposure: sweep,
+  });
+
+  // git-sync-turn-scoped-commit-hold-2026-10-11 P-003: a path the last sweep turn-held is
+  // reported as held (holder + age), never as "the next tick will commit it mid-edit".
+  describe('turn-scoped hold (P-003)', () => {
+    const TURN_INTENT = 'turn-scoped hold (git-sync-turn-scoped-commit-hold P-002): held';
+    const skipped = [
+      { scope: 'superproject', path: 'packages/a.ts', owner: 'su-a', intent: TURN_INTENT, heldSince: new Date(NOW - 10 * 60_000).toISOString() },
+      { scope: 'libs/papercusp', path: 'libs/x.ts', owner: 'su-b', intent: TURN_INTENT },
+      { scope: 'superproject', path: 'packages/locked.ts', owner: 'su-c', intent: 'editing locked.ts' },
+    ];
+
+    it('turnHoldFor matches only turn-hold entries, joining the submodule scope', () => {
+      expect(turnHoldFor('packages/a.ts', skipped)).toEqual({ holder: 'su-a', heldSince: skipped[0].heldSince });
+      expect(turnHoldFor('./libs/papercusp/libs/x.ts', skipped)).toEqual({ holder: 'su-b', heldSince: null });
+      expect(turnHoldFor('packages/locked.ts', skipped)).toBeNull();
+      expect(turnHoldFor(null, skipped)).toBeNull();
+    });
+
+    it('a turn-held dirty path is NOT exposed and names its holder and age', () => {
+      const s = evaluateSweepExposure({
+        dirtyUncommitted: true,
+        dirtyPaths: ['packages/a.ts', 'packages/b.ts'],
+        nextSweepAtMs: NOW + 60_000,
+        nowMs: NOW,
+        turnHold: turnHoldFor('packages/a.ts', skipped),
+      });
+      expect(s.exposed).toBe(false);
+      expect(s.turnHeld).toEqual({ holder: 'su-a', heldSince: skipped[0].heldSince });
+      expect(s.detail).toContain('TURN-HELD');
+      expect(s.detail).toContain('su-a');
+      expect(s.detail).toContain('~10 min');
+      expect(s.detail).not.toContain('SWEEP-EXPOSED');
+    });
+
+    it('an ordinary dirty path carries no turnHeld field', () => {
+      const s = evaluateSweepExposure({
+        dirtyUncommitted: true,
+        dirtyPaths: ['packages/b.ts'],
+        nextSweepAtMs: NOW + 60_000,
+        nowMs: NOW,
+        turnHold: turnHoldFor('packages/b.ts', skipped),
+      });
+      expect(s.exposed).toBe(true);
+      expect(s).not.toHaveProperty('turnHeld');
+    });
+
+    it('the deferral for a turn-held path never tells the caller to release a lock', () => {
+      const d = gitSyncDeferralFor('packages/a.ts', { skippedPaths: skipped, syncAgeMs: 60_000 });
+      expect(d?.reason).toBe('turn-hold');
+      expect(d?.lever).toContain('locks:release does not lift it');
+      expect(gitSyncDeferralFor('packages/locked.ts', { skippedPaths: skipped, syncAgeMs: 60_000 })?.reason).toBe('edit-lock');
+    });
   });
 
   it('a clean path is not exposed at all — and says nothing', () => {
@@ -8516,16 +8940,14 @@ describe('P-002 / D-009 pipeline assessment truth tables', () => {
  * the precedence at the pure seam instead, where a fixture cannot paper over it.
  */
 /**
- * main-green-status-visible-2026-09-03 P-011 follow-up — grader card EI-22277841040474660
- * rated C5 partial because its third leg (submodule containment as ONE read) was not
- * measurable: with no run in flight the cell answered `no-active-run` and with a CRON run
- * in flight it answered `inferred-candidate`, so for the entire life of a frozen repair
- * queue the containment verdict never materialised. Under freeze-and-converge the queue's
- * candidate IS the judged sha (the recorded red was computed on it; the next run resumes
- * it), so the persisted queue row is an authoritative source, ranked below the run's own
- * markers and above the checkout-head probe.
+ * main-green-status-visible-2026-09-03 P-011 follow-up — grader card EI-22277841040474660.
+ * The repair queue is authoritative while liveness is measured idle: the next run resumes
+ * its current repairHead. It is not evidence of an active run's sha, because admission can
+ * move repairHead mid-run while that run continues on its prior head. During an active
+ * markerless run, retain the checkout probe as run-probe (non-authoritative); a run-published
+ * marker remains authoritative. Unknown liveness never promotes the queue.
  */
-describe('P-011 follow-up: a frozen repair queue is the authoritative judged sha', () => {
+describe('P-011 follow-up: a repair queue is authoritative only while the runner is measured idle', () => {
   const probeNull = { judgingSha: null, nextCandidateSha: 'tip00000' };
   const probeHead = { judgingSha: 'checkouthead', nextCandidateSha: 'tip00000' };
   const queue = { candidate: 'frozen0000', phase: 'awaiting-fixer' };
@@ -8533,26 +8955,59 @@ describe('P-011 follow-up: a frozen repair queue is the authoritative judged sha
   it('LOAD-BEARING: between runs (probe null, no marker) the queue candidate is the judged sha', () => {
     // THE REGRESSION: before the fix this stayed { judgingSha: null } → 'no-active-run',
     // whose safe action named a re-cut at tip while a candidate was frozen.
-    const out = reconcileGateCandidates(probeNull, { candidate: null, candidateSource: 'run-probe' }, queue);
+    const out = reconcileGateCandidates(
+      probeNull,
+      { active: false, candidate: null, candidateSource: 'run-probe' },
+      queue,
+    );
     expect(out.judgingSha).toBe('frozen0000');
     expect(out.judgingShaSource).toBe('repair-queue');
     expect(out.nextCandidateSha).toBe('tip00000');
     expect(isAuthoritativeJudgingShaSource(out.judgingShaSource)).toBe(true);
   });
 
-  it('outranks a checkout-head probe during a CRON run — the run resumed the frozen candidate', () => {
-    const out = reconcileGateCandidates(probeHead, { candidate: 'checkouthead', candidateSource: 'run-probe' }, queue);
-    expect(out.judgingSha).toBe('frozen0000');
-    expect(out.judgingShaSource).toBe('repair-queue');
+  it('does not let a repairHead admitted mid-run replace the active run probe', () => {
+    const movedQueue = {
+      ...queue,
+      phase: 'ready-to-verify',
+      frozenCandidate: 'run-started-head',
+      repairHead: 'repair-head-after-admission',
+    };
+    expect(frozenQueueCandidate(movedQueue)).toBe('repair-head-after-admission');
+    const out = reconcileGateCandidates(
+      { judgingSha: 'run-started-head', nextCandidateSha: 'tip00000' },
+      { active: true, candidate: 'run-started-head', candidateSource: 'run-probe' },
+      movedQueue,
+    );
+    expect(out.judgingSha).toBe('run-started-head');
+    expect(out.judgingShaSource).toBe('run-probe');
+    expect(isAuthoritativeJudgingShaSource(out.judgingShaSource)).toBe(false);
+  });
+
+  it('does not promote the repair queue when run liveness is unknown', () => {
+    const movedQueue = {
+      ...queue,
+      phase: 'ready-to-verify',
+      frozenCandidate: 'frozen0000',
+      repairHead: 'repair-head-after-admission',
+    };
+    const out = reconcileGateCandidates(probeHead, null, movedQueue);
+    expect(out.judgingSha).toBe('checkouthead');
+    expect(out.judgingShaSource).toBe('run-probe');
+    expect(isAuthoritativeJudgingShaSource(out.judgingShaSource)).toBe(false);
   });
 
   it("never outranks the run's own published marker", () => {
-    const out = reconcileGateCandidates(probeHead, { candidate: 'refiring9', candidateSource: 'retriage-marker' }, queue);
+    const out = reconcileGateCandidates(
+      probeHead,
+      { active: true, candidate: 'refiring9', candidateSource: 'retriage-marker' },
+      queue,
+    );
     expect(out.judgingSha).toBe('refiring9');
     expect(out.judgingShaSource).toBe('retriage-marker');
     const inFlight = reconcileGateCandidates(
       probeHead,
-      { candidate: 'started11', candidateSource: 'in-flight-candidate' },
+      { active: true, candidate: 'started11', candidateSource: 'in-flight-candidate' },
       queue,
     );
     expect(inFlight.judgingSha).toBe('started11');
@@ -8560,7 +9015,11 @@ describe('P-011 follow-up: a frozen repair queue is the authoritative judged sha
   });
 
   it('prefers the immutable frozenCandidate pin over the compatibility candidate field', () => {
-    const out = reconcileGateCandidates(probeNull, null, { ...queue, frozenCandidate: 'pinned0000' });
+    const out = reconcileGateCandidates(
+      probeNull,
+      { active: false, candidate: null, candidateSource: 'run-probe' },
+      { ...queue, frozenCandidate: 'pinned0000' },
+    );
     expect(out.judgingSha).toBe('pinned0000');
   });
 
@@ -8568,10 +9027,14 @@ describe('P-011 follow-up: a frozen repair queue is the authoritative judged sha
     // attempts / wall-clock exhausted → the queue awaits retire or escape; asserting "the
     // next run resumes this" would be exactly the confident-wrong reading P-004 forbids.
     expect(frozenQueueCandidate({ ...queue, phase: 'blocked' })).toBeNull();
-    const out = reconcileGateCandidates(probeHead, { candidate: 'checkouthead', candidateSource: 'run-probe' }, {
-      ...queue,
-      phase: 'blocked',
-    });
+    const out = reconcileGateCandidates(
+      probeHead,
+      { active: true, candidate: 'checkouthead', candidateSource: 'run-probe' },
+      {
+        ...queue,
+        phase: 'blocked',
+      },
+    );
     expect(out.judgingSha).toBe('checkouthead');
     expect(out.judgingShaSource).toBe('run-probe');
     expect(reconcileGateCandidates(probeNull, null, { ...queue, phase: 'blocked' }).judgingSha).toBeNull();
@@ -8590,7 +9053,11 @@ describe('P-011 follow-up: a frozen repair queue is the authoritative judged sha
   it('a repair-queue sha is NOT refused containment the way a run-probe sha is', () => {
     // The refusal exists because a checkout-head inference cannot support a verdict. The
     // frozen candidate is a persisted, published sha — the verdict-shaped boolean must arrive.
-    const reconciled = reconcileGateCandidates(probeNull, null, queue);
+    const reconciled = reconcileGateCandidates(
+      probeNull,
+      { active: false, candidate: null, candidateSource: 'run-probe' },
+      queue,
+    );
     const cic = evaluateChangeInCandidate({
       relPath: 'libs/papercusp/libs/db/sql/999-x.sql',
       candidates: reconciled,
@@ -8606,7 +9073,11 @@ describe('P-011 follow-up: a frozen repair queue is the authoritative judged sha
     // CONTROL: the same shape from a run-probe source still withholds the boolean.
     const probed = evaluateChangeInCandidate({
       relPath: 'libs/papercusp/libs/db/sql/999-x.sql',
-      candidates: reconcileGateCandidates(probeHead, { candidate: 'checkouthead', candidateSource: 'run-probe' }, null),
+      candidates: reconcileGateCandidates(
+        probeHead,
+        { active: true, candidate: 'checkouthead', candidateSource: 'run-probe' },
+        null,
+      ),
       judging: { inCandidate: false, reason: 'newer-commit' } as never,
       next: null,
     });

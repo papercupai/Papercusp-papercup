@@ -16,11 +16,12 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, delimiter } from 'node:path';
 
 import {
+  backendBinOverrideEnvKey,
   backendSearchDirs,
   decodeSpawnPathDirs,
   encodeSpawnPathDirs,
@@ -170,6 +171,54 @@ describe('executableNames — win32 needs PATHEXT, POSIX does not (P-005)', () =
     expect(names).toContain('omp.EXE');
     expect(names).toContain('omp.cmd');
     expect(new Set(names).size).toBe(names.length); // deduped
+  });
+});
+
+describe('native backends skip psu entrypoints', () => {
+  it.each(['claude', 'codex', 'omp'])('executes the native %s behind a packaged launcher on PATH', (agent) => {
+    const root = mkdtempSync(join(tmpdir(), 'backend-launcher-'));
+    try {
+      const wrapperDir = join(root, 'sidecar', 'bin');
+      const nativeDir = join(root, 'native');
+      mkdirSync(wrapperDir, { recursive: true });
+      mkdirSync(nativeDir, { recursive: true });
+      const wrapper = join(wrapperDir, agent);
+      writeFileSync(wrapper, '#!/bin/sh\nexec "$BIN/node" "$ROOT/scripts/psu.mjs" "--agent=$BACKEND" "$@"\n', { mode: 0o755 });
+      const native = join(nativeDir, agent);
+      writeFileSync(native, '#!/bin/sh\nprintf native-backend\n', { mode: 0o755 });
+      const env = { PATH: [wrapperDir, nativeDir, DESKTOP_PATH].join(delimiter) };
+      const resolved = resolveBackendLaunch(agent, { home: root, env });
+      expect(resolved?.bin).toBe(native);
+      expect(execFileSync(resolved!.bin, ['--version'], { env, encoding: 'utf8' })).toBe('native-backend');
+      symlinkSync(wrapper, join(root, agent));
+      expect(resolveOnPath(agent, { env: { PATH: [root, nativeDir].join(delimiter) } })).toBe(native);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('skips launcher wrappers in well-known install locations too', () => {
+    const root = mkdtempSync(join(tmpdir(), 'backend-launcher-fallback-'));
+    try {
+      for (const dir of ['.local/bin', '.papercusp/bin']) mkdirSync(join(root, dir), { recursive: true });
+      writeFileSync(join(root, '.local/bin/codex'), '#!/bin/sh\nexec node psu-launcher.mjs --agent=codex "$@"\n');
+      const native = join(root, '.papercusp/bin/codex');
+      writeFileSync(native, '#!/bin/sh\nexit 0\n');
+      expect(wellKnownBackendBin('codex', { home: root, env: { PATH: '' } })).toBe(native);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports no installed backend when Windows install candidates are only psu wrappers', () => {
+    const root = mkdtempSync(join(tmpdir(), 'backend-launcher-only-'));
+    try {
+      mkdirSync(join(root, '.papercusp/bin'), { recursive: true });
+      writeFileSync(join(root, '.papercusp/bin/codex.cmd'), '@echo off\r\nnode "%ROOT%\\scripts\\psu.mjs" --agent=codex %*\r\n');
+      expect(resolveBackendLaunch('codex', { home: root, platform: 'win32', env: { PATH: '', USERPROFILE: root } })).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -503,3 +552,70 @@ describe.skipIf(process.platform === 'win32')(
     });
   },
 );
+
+describe('per-launch backend override (benchmark-coverage-frontierswe-v2 D-026)', () => {
+  let root: string;
+  let pathDir: string;
+  let wrapper: string;
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'backend-override-'));
+    pathDir = join(root, 'path-bin');
+    mkdirSync(pathDir, { recursive: true });
+    writeFileSync(join(pathDir, 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    wrapper = join(root, 'cexec', 'codex');
+    mkdirSync(dirname(wrapper), { recursive: true });
+    writeFileSync(wrapper, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  });
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  it('names one key per agent', () => {
+    expect(backendBinOverrideEnvKey('codex')).toBe('PAPERCUSP_BACKEND_BIN_CODEX');
+    expect(backendBinOverrideEnvKey('claude')).toBe('PAPERCUSP_BACKEND_BIN_CLAUDE');
+  });
+
+  it('a set override wins over a codex that PATH would find', () => {
+    const r = resolveBackendLaunch('codex', {
+      home: root,
+      platform: 'linux',
+      env: { PATH: pathDir, [backendBinOverrideEnvKey('codex')]: wrapper },
+    });
+    expect(r?.bin).toBe(wrapper);
+    expect(r?.override).toBe(true);
+    expect(r?.onPath).toBe(false);
+  });
+
+  it('without the override the same env resolves the PATH codex', () => {
+    const r = resolveBackendLaunch('codex', { home: root, platform: 'linux', env: { PATH: pathDir } });
+    expect(r?.bin).toBe(join(pathDir, 'codex'));
+    expect(r?.override).toBe(false);
+  });
+
+  it.each([
+    ['a relative path', 'cexec/codex'],
+    ['a missing file', '/nonexistent/papercusp/codex'],
+    ['a directory', '__DIR__'],
+    ['a non-executable file', '__NOEXEC__'],
+  ])('fails closed on %s instead of falling back to the PATH codex', (_label, value) => {
+    let v = value;
+    if (value === '__DIR__') v = dirname(wrapper);
+    if (value === '__NOEXEC__') {
+      v = join(root, 'noexec-codex');
+      writeFileSync(v, '#!/bin/sh\nexit 0\n', { mode: 0o644 });
+    }
+    const r = resolveBackendLaunch('codex', {
+      home: root,
+      platform: 'linux',
+      env: { PATH: pathDir, [backendBinOverrideEnvKey('codex')]: v },
+    });
+    expect(r).toBeNull();
+  });
+
+  it('an override for another agent does not affect codex resolution', () => {
+    const r = resolveBackendLaunch('codex', {
+      home: root,
+      platform: 'linux',
+      env: { PATH: pathDir, [backendBinOverrideEnvKey('claude')]: '/nonexistent/claude' },
+    });
+    expect(r?.bin).toBe(join(pathDir, 'codex'));
+  });
+});

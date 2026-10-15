@@ -55,6 +55,7 @@ import {
   manuallyBoundAccount,
   normalizeAccount,
   recordAccountPenalty,
+  recordAccountCredentialFailure,
   selectAccountByHeadroom,
   selectAccountForSpawn,
   setSoftPin,
@@ -78,6 +79,8 @@ import {
 import { fetchGatewayStatsRaw } from '../inference-gateway/observability';
 import type { RawGatewayStats } from '../inference-gateway/gateway-wedge';
 import { trackDetached } from '../detached-imports';
+import { readCodexAuth } from '../inference-gateway/codex-oauth-proxy';
+import { parseCodexCliRef } from '../inference-gateway/codex-cli-bridge';
 
 // ── P-004: the owner's session-now account override (fail-soft, no-op-when-unset) ──
 
@@ -440,6 +443,35 @@ export async function updateAccountPool(
   );
 }
 
+/** The existing host-event ingester feeds confirmed native auth failures here.
+ * Alert before recording the marker: a failed alert remains retryable from the
+ * retained event file, while a completed marker makes replay a no-op. */
+export async function recordNativeCredentialFailure(
+  input: { accountId: string; ownerId: string; observedAt: number; workspaceId: string },
+  deps: {
+    loadPool?: typeof loadAccountPool;
+    updatePool?: typeof updateAccountPool;
+    alert?: (accountId: string, ownerId: string, workspaceId: string) => Promise<void>;
+  } = {},
+): Promise<void> {
+  const pool = await (deps.loadPool ?? loadAccountPool)(input.workspaceId);
+  if (recordAccountCredentialFailure(pool, input.accountId, input.observedAt, input.ownerId) === pool) return;
+  const alert = deps.alert ?? (async (accountId, ownerId, workspaceId) => {
+    const { openEscalation } = await import('../agent-tools/coordination/escalations');
+    await openEscalation({ ownerId: 'system:psu-pty-host-events-ingest', ownerLabel: 'native credential health', source: 'static-client', workspaceId, userId: null }, {
+      severity: 'blocker',
+      summary: `Provider authentication failed for account '${accountId}' in ${ownerId}`,
+      body: 'The native Claude transcript confirmed a revoked/expired login. New pins and automatic spawn selection are blocked for this credential. Repair it and re-register the account to clear the failure; quota resets do not repair authentication.',
+      meta: { source: 'credential-health', deadAccountId: accountId, subjectSignature: `inference-gateway:credential-health:${accountId}` },
+    });
+  });
+  await alert(input.accountId, input.ownerId, input.workspaceId);
+  await (deps.updatePool ?? updateAccountPool)(
+    (current) => recordAccountCredentialFailure(current, input.accountId, input.observedAt, input.ownerId),
+    input.workspaceId,
+  );
+}
+
 // ── P-020: deploy-time account selection ─────────────────────────────────────
 
 export interface DeployAccountDeps {
@@ -751,6 +783,7 @@ export interface AccountStatusRow {
   provider: AccountProvider;
   label?: string;
   credentialRef: string;
+  anthropicWorkspaceId?: string;
   boundTo: string[];
   /** Can this account ACTUALLY serve right now — not rate-paused AND not usage-walled
    *  (`!accountFull`). WI-3310: this used to be the pause-only `isAvailable`, which read
@@ -773,6 +806,8 @@ export interface AccountStatusRow {
   edgeThrottleCooledIps: number;
   edgeThrottleBare429Streak: number;
   rate: AccountRateState;
+  /** Non-secret provider wallet identity, used to avoid counting aliases twice. */
+  creditWalletId?: string;
   /** Per-account egress pin (proxy / local source IP), if the account is IP-routed. */
   egress?: AccountEgress;
   /** Per-account egress IP POOL (the rotating list) when the account is multi-IP routed. */
@@ -812,6 +847,7 @@ export interface AccountStatusRow {
 export interface AccountStatusDeps {
   /** Inject a gateway snapshot for deterministic tests; omitted means best-effort live :8788 read. */
   gatewayStats?: RawGatewayStats | null;
+  readCodexWalletId?: (home: string) => Promise<string | null>;
 }
 
 export interface LiveEdgeThrottleStatus {
@@ -845,13 +881,23 @@ export async function accountStatus(ws?: string, now = Date.now(), deps: Account
   const scalePolicy = await readScalePolicy();
   const gatewayStats =
     deps.gatewayStats !== undefined ? deps.gatewayStats : await fetchGatewayStatsRaw({ timeoutMs: 500 });
-  return pool.accounts.map((a) => {
+  return Promise.all(pool.accounts.map(async (a) => {
     const { readingStatus, readingAgeMs } = accountReadingStatus(a, now);
+    const codexHome = accountProvider(a) === 'codex' ? parseCodexCliRef(a.credentialRef) : null;
+    // Account ids are public wallet identities; never expose the token bundle. Aliases can
+    // use different credential homes and still draw from exactly the same credit balance.
+    let creditWalletId = a.rate.creditBalance?.walletId;
+    if (codexHome) {
+      try {
+        creditWalletId = await (deps.readCodexWalletId ?? (async (home) => (await readCodexAuth(home))?.accountId ?? null))(codexHome) ?? creditWalletId;
+      } catch { /* A missing local credential must not make the entire account sidebar unavailable. */ }
+    }
     return {
       id: a.id,
       provider: accountProvider(a),
       label: a.label,
       credentialRef: a.credentialRef,
+      ...(a.anthropicWorkspaceId ? { anthropicWorkspaceId: a.anthropicWorkspaceId } : {}),
       boundTo: a.boundTo,
       // WI-3310: `available` = "can actually serve" — pause-clear AND usage headroom. The old
       // pause-only read (`isAvailable`) told every consumer (stall-waker capacityBack, why-chain,
@@ -863,6 +909,7 @@ export async function accountStatus(ws?: string, now = Date.now(), deps: Account
       sustainedlyLimited: isSustainedlyLimited(a, now, scalePolicy),
       ...projectLiveEdgeThrottle(a.id, gatewayStats),
       rate: a.rate,
+      ...(creditWalletId ? { creditWalletId } : {}),
       egress: a.egress,
       egressPool: a.egressPool,
       liveBuckets: live
@@ -879,7 +926,7 @@ export async function accountStatus(ws?: string, now = Date.now(), deps: Account
       lastProbeFailedAt: a.rate.lastProbeFailedAt,
       burn: accountBurnVerdict(a.rate, now),
     };
-  });
+  }));
 }
 
 // ── Per-provider pool verdict (P-002) ────────────────────────────────────────

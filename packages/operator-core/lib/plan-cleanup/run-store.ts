@@ -35,7 +35,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import type { Sql, TransactionSql } from 'postgres';
 import { activeWorkspaceId } from '../workspace-registry';
-import { RUNNING_PHASES, type BulkRunPhase, type BulkRunRow } from '../attention/bulk-run-store';
+import { deriveSettleOutcome, RUNNING_PHASES, type BulkRunPhase, type BulkRunRow } from '../attention/bulk-run-store';
 import type { CleanupConfidence, CleanupEvidenceRef, CleanupFindingKind } from './scanner';
 import {
   canonicalDispositionForRow,
@@ -287,6 +287,40 @@ const RUN_COLUMNS = `run_id, workspace_id, harness_slug, requested_by, resolver_
                      total_items, auto_resolved, recommended, skipped, failed,
                      error, created_at, updated_at, started_at, finished_at, heartbeat_at`;
 
+/** Bounded inventory for the existing Plans cleanup snapshot. Counts come from
+ * unresolved finding rows; a stale cached run counter cannot hide a review. */
+export async function getCleanupReviewRuns(workspaceId?: string): Promise<{
+  runs: Array<{ runId: string; createdAt: string | null; unresolved: number }>;
+  total: number;
+  error?: string;
+}> {
+  try {
+  const { sql } = getOrgPg();
+  const ws = workspaceId ?? activeWorkspaceId();
+  const rows = await sql<{ run_id: string; created_at: Date | string; unresolved: number; total: number }[]>`
+    SELECT r.run_id, r.created_at, count(*)::int AS unresolved,
+           count(*) OVER ()::int AS total
+      FROM harness_shared.attention_bulk_runs r
+      JOIN harness_shared.plan_cleanup_run_findings f
+        ON f.workspace_id = r.workspace_id AND f.run_id = r.run_id
+     WHERE r.workspace_id = ${ws} AND r.run_kind = 'plan-cleanup' AND r.phase = 'review'
+       AND (f.outcome IN ('pending', 'recommended', 'failed') OR
+            (f.outcome = 'skipped' AND NOT (COALESCE(f.disposition, '') = 'routed' AND EXISTS (
+              SELECT 1 FROM jsonb_array_elements_text(f.evidence_basis) basis
+               WHERE basis LIKE 'cleanup-reconciled:%'
+            ))))
+     GROUP BY r.run_id, r.created_at
+     ORDER BY r.created_at DESC, r.run_id
+     LIMIT 100
+  `;
+  return { runs: rows.map((row) => ({ runId: row.run_id, createdAt: iso(row.created_at),
+    unresolved: Number(row.unresolved) })), total: Number(rows[0]?.total ?? 0) };
+  } catch {
+    // This supplementary read must not hide the selected run's existing report.
+    return { runs: [], total: 0, error: 'Older cleanup reviews could not be loaded.' };
+  }
+}
+
 type StoreSql = Sql | TransactionSql;
 
 /**
@@ -355,6 +389,13 @@ export async function seedFindings(input: {
   findings: readonly SeedableCleanupFinding[];
   resolverOwner?: string | null;
   workspaceId?: string;
+  /** Full fresh scanner scope; only policy-withheld, unchanged review decisions
+   * may carry. Omission retains the legacy single-run seeding contract. */
+  reconcile?: {
+    harnessSlug: string;
+    planSlugs: readonly string[];
+    carryReviewFindingIds: readonly string[];
+  };
 }): Promise<{ findings: CleanupRunFindingRow[]; refused: CleanupFindingWriteRefusal | null }> {
   const { sql } = getOrgPg();
   const ws = input.workspaceId ?? activeWorkspaceId();
@@ -372,6 +413,33 @@ export async function seedFindings(input: {
     const { refused } = await lockLiveCleanupRun(tx, input.runId, ws, input.resolverOwner);
     if (refused) return { findings: [], refused };
 
+    const scope = input.reconcile;
+    if (scope) {
+      const membership = await tx<{ harness_slug: string | null; seed_refs: string[] }[]>`
+        SELECT harness_slug, seed_refs FROM harness_shared.attention_bulk_runs
+         WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+      `;
+      const snapshot = membership[0];
+      if (!snapshot || (snapshot.harness_slug !== null && snapshot.harness_slug !== scope.harnessSlug) ||
+          scope.planSlugs.some((slug) => !snapshot.seed_refs.includes(slug))) {
+        throw new Error('cleanup reconciliation scope must stay inside the immutable run membership');
+      }
+    }
+    const previous = scope && scope.planSlugs.length > 0 ? await tx<RawFindingRow[]>`
+      SELECT f.*
+        FROM harness_shared.plan_cleanup_run_findings f
+        JOIN harness_shared.attention_bulk_runs r
+          ON r.workspace_id = f.workspace_id AND r.run_id = f.run_id
+       WHERE f.workspace_id = ${ws} AND r.run_kind = 'plan-cleanup'
+         AND r.phase = 'review' AND r.run_id <> ${input.runId}
+         AND r.harness_slug = ${scope.harnessSlug}
+         AND f.plan_slug = ANY(${[...scope.planSlugs]}::text[])
+         AND f.outcome = 'recommended' AND f.finding_kind <> 'semantic'
+       ORDER BY r.created_at DESC, r.run_id, f.finding_id
+       FOR UPDATE OF r, f
+    ` : [];
+    const carryIds = new Set(scope?.carryReviewFindingIds ?? []);
+    const sourceIdentity = (basis: unknown) => asStringArray(basis).find((entry) => entry.startsWith('cleanup-source:'));
     const rows: CleanupRunFindingRow[] = [];
     for (let i = 0; i < unique.length; i += 1) {
       const f = unique[i]!;
@@ -401,12 +469,89 @@ export async function seedFindings(input: {
               to_state = EXCLUDED.to_state,
               confidence = EXCLUDED.confidence,
               evidence = EXCLUDED.evidence,
+              evidence_basis = CASE WHEN plan_cleanup_run_findings.outcome = 'pending'
+                                    THEN EXCLUDED.evidence_basis ELSE plan_cleanup_run_findings.evidence_basis END,
               position = EXCLUDED.position,
               updated_at = now()
         RETURNING ${tx.unsafe(FINDING_COLUMNS)}
       `;
-      if (inserted[0]) rows.push(mapFinding(inserted[0]));
+      let current = inserted[0];
+      if (!current) continue;
+      const identity = sourceIdentity(f.evidenceBasis);
+      // A carried decision can become stale after another action in this run.
+      // Reopen only that copied decision; terminal action history stays intact.
+      if (current.outcome === 'recommended' &&
+          asStringArray(current.evidence_basis).some((entry) => entry.startsWith('cleanup-carried:')) &&
+          (sourceIdentity(current.evidence_basis) !== identity || !carryIds.has(f.findingId))) {
+        const reset = await tx<RawFindingRow[]>`
+          UPDATE harness_shared.plan_cleanup_run_findings
+             SET outcome = 'pending', disposition = 'pending', decided_at = NULL,
+                 recommendation_kind = NULL, recommendation_label = NULL,
+                 recommendation_rationale = NULL, confidence_level = NULL,
+                 evidence_basis = ${JSON.stringify(f.evidenceBasis ?? [])}::jsonb
+           WHERE workspace_id = ${ws} AND run_id = ${input.runId} AND finding_id = ${f.findingId}
+          RETURNING ${tx.unsafe(FINDING_COLUMNS)}
+        `;
+        current = reset[0]!;
+      }
+      const prior = identity && carryIds.has(f.findingId) ? previous.find((row) =>
+        row.finding_id === f.findingId && row.finding_kind === f.kind &&
+        row.from_state === (f.from ?? '') && row.to_state === (f.to ?? '') &&
+        row.confidence === (f.confidence ?? 'recommended') && sourceIdentity(row.evidence_basis) === identity) : undefined;
+      if (current.outcome === 'pending' && prior) {
+        const evidence = [...(f.evidence ?? []), { kind: 'plan', ref: f.planSlug,
+          note: `Unchanged review decision carried from cleanup run ${prior.run_id}` }];
+        const carried = await tx<RawFindingRow[]>`
+          UPDATE harness_shared.plan_cleanup_run_findings
+             SET outcome = 'recommended', disposition = 'recommended', decided_at = now(),
+                 recommendation_kind = ${prior.recommendation_kind}, recommendation_label = ${prior.recommendation_label},
+                 recommendation_rationale = ${prior.recommendation_rationale},
+                 responsibility = ${prior.responsibility}, confidence_level = ${prior.confidence_level},
+                 retry_condition = ${prior.retry_condition},
+                 evidence = ${JSON.stringify(evidence)}::jsonb,
+                 evidence_basis = ${JSON.stringify([...(f.evidenceBasis ?? []), `cleanup-carried:${prior.run_id}`])}::jsonb
+           WHERE workspace_id = ${ws} AND run_id = ${input.runId} AND finding_id = ${f.findingId}
+          RETURNING ${tx.unsafe(FINDING_COLUMNS)}
+        `;
+        current = carried[0]!;
+      }
+      rows.push(mapFinding(current));
     }
+    // Transfer duplicate/stale recommendations with an attributed scan receipt,
+    // never as owner acceptance or dismissal. Their original evidence remains.
+    const currentIds = new Set(unique.map((finding) => finding.findingId));
+    const oldRunIds = new Set<string>();
+    for (const prior of previous) {
+      const note = currentIds.has(prior.finding_id)
+        ? `Review superseded by freshly verified cleanup run ${input.runId}`
+        : `Fresh cleanup scan ${input.runId} found this recommendation no longer applicable`;
+      const evidence = [...asEvidence(prior.evidence), { kind: 'plan', ref: prior.plan_slug, note }];
+      await tx`
+        UPDATE harness_shared.plan_cleanup_run_findings
+           SET outcome = 'skipped', disposition = 'routed',
+               evidence_basis = ${JSON.stringify([...asStringArray(prior.evidence_basis), `cleanup-reconciled:${input.runId}`])}::jsonb,
+               evidence = ${JSON.stringify(evidence)}::jsonb, decided_at = now(), updated_at = now()
+         WHERE workspace_id = ${ws} AND run_id = ${prior.run_id} AND finding_id = ${prior.finding_id}
+           AND outcome = 'recommended'
+      `;
+      oldRunIds.add(prior.run_id);
+    }
+    for (const oldRunId of oldRunIds) {
+      await recomputeCountersFromFindings(tx, oldRunId, ws);
+      const states = await tx<{ outcome: string; disposition: string | null; evidence_basis: unknown }[]>`
+        SELECT outcome, disposition, evidence_basis FROM harness_shared.plan_cleanup_run_findings
+         WHERE workspace_id = ${ws} AND run_id = ${oldRunId}
+      `;
+      const { phase } = deriveSettleOutcome({ runKind: 'plan-cleanup',
+        outcomes: states.map((row) => row.outcome), dispositions: states.map((row) => row.disposition),
+        reconciled: states.map((row) => asStringArray(row.evidence_basis).some((basis) => basis.startsWith('cleanup-reconciled:'))),
+        everReportedLife: true });
+      if (phase === 'complete') await tx`
+        UPDATE harness_shared.attention_bulk_runs SET phase = 'complete', updated_at = now()
+         WHERE workspace_id = ${ws} AND run_id = ${oldRunId} AND phase = 'review'
+      `;
+    }
+    await recomputeCountersFromFindings(tx, input.runId, ws);
     return { findings: rows, refused: null };
   });
 }
@@ -486,7 +631,10 @@ export async function executeCleanupFindingAction<T>(input: {
              recommendation_kind = ${input.recommendationKind ?? null},
              recommendation_label = ${input.recommendationLabel ?? null},
              recommendation_rationale = ${input.recommendationRationale ?? input.rationale ?? null},
-             evidence_basis = ${JSON.stringify(input.evidenceBasis ?? [])}::jsonb,
+             evidence_basis = ${JSON.stringify([
+               ...(locked.evidenceBasis ?? []).filter((entry) => entry.startsWith('cleanup-source:')),
+               ...(input.evidenceBasis ?? []).filter((entry) => !entry.startsWith('cleanup-source:')),
+             ])}::jsonb,
              responsibility = ${input.responsibility ?? null},
              confidence_level = ${input.confidenceLevel ?? 'high'},
              retry_condition = ${input.retryCondition ?? null},
@@ -548,7 +696,11 @@ export async function reportFindingOutcomes(input: {
                recommendation_kind = ${report.recommendationKind ?? null},
                recommendation_label = ${report.recommendationLabel ?? null},
                recommendation_rationale = ${report.recommendationRationale ?? null},
-               evidence_basis = ${JSON.stringify(report.evidenceBasis ?? [])}::jsonb,
+               evidence_basis = COALESCE((
+                 SELECT jsonb_agg(basis) FROM jsonb_array_elements_text(evidence_basis) basis
+                  WHERE basis LIKE 'cleanup-source:%'
+               ), '[]'::jsonb) || ${JSON.stringify((report.evidenceBasis ?? [])
+                 .filter((entry) => !entry.startsWith('cleanup-source:')))}::jsonb,
                responsibility = ${report.responsibility ?? null},
                confidence_level = ${report.confidenceLevel ?? null},
                retry_condition = ${report.retryCondition ?? null},

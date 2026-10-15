@@ -39,7 +39,7 @@ import { listScorecards, ratingVerdict } from './scorecards';
 import { areAcceptanceLineageRelated, resolvePlanImplementerIdentities } from './acceptance-author-identity';
 import { rubricVettingConsultHint } from './consult/selection-policies';
 import {
-  describeGradingAuditDispatchSuppression,
+  getAcceptanceRubricVettingStatus,
   type GradingAuditDispatchSuppression,
 } from './acceptance-rubric-vetting';
 // EI-20249725405239230: the no-claim FACT is single-sourced beside the grader
@@ -66,25 +66,32 @@ import {
   getLatestActivationAudit,
   getLatestPlanAudit,
   getPlanItemStatuses,
+  isRepoFileCitation,
+  isVerifyingCitation,
   isCitationContextFailure,
   planItemTextHash,
   planItemTextHashCandidates,
   repoCitationContextForHarness,
+  measureCitationBlobsAtHead,
   resolveCitation,
   UNFINISHED_ITEM_STATUSES,
 } from './plan-audits';
 import {
   describeUnrealized,
+  deriveNonCodeExemptionProofs,
   judgeRequirementRealization,
   type DroppedTarget,
   type ExemptMapping,
   type NonCodeItemProof,
 } from './plan-requirement-realization';
+import { listSpecClauses } from './agent-tools/plans/spec-clauses-store';
 import { detectEphemeralDeliverableReferences, type EphemeralDeliverableReference } from './turn-end-tracking';
 import { citationDeploymentForPaths, type CitationDeployment } from './deployment-position';
 import { readAndEvaluateAcceptanceBarLifecycle, type AcceptanceBarLifecycleVerdict } from './acceptance-bar-lifecycle-evaluator';
 import { splitPlanSections } from './agent-tools/plans/plan-sections';
 import { planDesignEvidenceGate } from './agent-tools/work_items/design-evidence-gate';
+import { evaluateIndependentVerificationGate } from './independent-verification-gate';
+import { evaluateBlindReviewGate } from './blind-review-gate';
 import { getBuildInfo, type BuildInfo } from './build-info';
 import { beginPlanClosureObservation, isCanonicalClosureGateCall } from './goals/plan-closure-observations';
 
@@ -144,6 +151,17 @@ export type PlanAcceptanceGateCode =
   // of the plan's acceptance rubric, so its revision counter is not the one the
   // authoring node's cards were graded against. Ship and grade from the authoring node.
   | 'acceptance_authored_on_other_node'
+  // verification-system-improvements-2026-10-10 P-008 (D-005, D-015 pt4) — a live/deployed
+  // mandatory outcome bar with no binding from outside the implementer lineage.
+  | 'independent_verification_missing'
+  // The same door could not READ its scope, bindings or lineage, and refused rather than guess.
+  | 'independent_verification_unavailable'
+  // verification-system-improvements-2026-10-10 P-006 (D-006, D-039) — no counted blind gap
+  // review for the plan's latest activation audit, or a counted review's gap is undispositioned.
+  | 'blind_review_missing'
+  | 'blind_review_gap_undispositioned'
+  // The blind-review door could not read its inputs and refused rather than guess.
+  | 'blind_review_unavailable'
   /** Never accompanies a refusal (the census degrades to report-only), carried for the union's honesty. */
   | 'spec_coverage_unavailable';
 
@@ -154,10 +172,35 @@ export type PlanAcceptanceGateWaivedCheck =
   | 'bar_snapshot_proof_inadequate'
   | 'bar_snapshot_proof_stale';
 
+/**
+ * One failing gate check with its own repair route
+ * (plan-verification-friction-reduction-2026-10-11 P-001, R-1).
+ */
+export interface PlanAcceptanceGateBlocker {
+  code: PlanAcceptanceGateCode;
+  message?: string;
+  repairAction: PlanAcceptanceRepairAction;
+}
+
 export interface PlanAcceptanceGateVerdict {
   /** The loaded operator build that produced this time-sensitive verdict. */
   buildProvenance: BuildInfo;
   satisfied: boolean;
+  /**
+   * P-001 (plan-verification-friction-reduction-2026-10-11, R-1): every failing check on a
+   * refusal, primary (`code`) first. Present on every refusal.
+   *
+   * With `collectAllBlockers` the gate keeps evaluating the independent pre-grading checks
+   * after the first failure: BAR contract, deliverable durability, items, code-truth audit,
+   * spec proof, independent verification, blind review, design evidence, and rubric
+   * existence and vetting. The grading-phase checks still run only once all of those pass,
+   * because a grading obligation cannot be worked before them.
+   *
+   * Without that option it has one entry, the first failure, as before. Measured over 14
+   * days before this: 865 ship attempts across 86 plans, because each refusal revealed only
+   * the next blocker.
+   */
+  blockers?: PlanAcceptanceGateBlocker[];
   /**
    * Why the gate did not apply (satisfied:true without a graded rubric).
    *
@@ -215,12 +258,12 @@ export interface PlanAcceptanceGateVerdict {
   blockingPhaseLifecycle?: Omit<AcceptanceBarLifecycleVerdict, 'nonCodeItemProofs'>;
   /** Exact authoritative grading to read before recording an author verdict. */
   gradingRef?: string;
-  /** On `self_graded_only`: the independent scorecard the acceptance BAR judged
-   * cohort-stale. The grader recruiter excludes it from its settlement read, so the
+  /** On `self_graded_only` or `acceptance_rubric_vetted_after_grading`: the independent
+   * scorecard the gate excluded. The recruiter excludes it from its settlement read, so the
    * fresh grading this refusal asks for is actually dispatched (WI-10003286). */
   staleGradingScorecardId?: string;
-  /** On `self_graded_only`: EVERY independent scorecard this gate excluded as
-   * cohort-stale — the named card above plus each older independent card that
+  /** EVERY independent scorecard this gate excluded as cohort- or ordering-stale —
+   * the named card above plus each older independent card that
    * predates it. The recruiter must exclude the whole set: handing it only the named
    * id lets its settlement read fall back to an older, equally excluded card and
    * report "settled", so the fresh grading is never dispatched (WI-10003286). */
@@ -392,6 +435,17 @@ export interface PlanAcceptanceGateOpts {
    * moment the record needs to be permanent.
    */
   probeCitationDeployment?: boolean;
+  /**
+   * P-001 (plan-verification-friction-reduction-2026-10-11): keep evaluating the independent
+   * pre-grading checks after the first failure and report each one in `blockers`. The
+   * primary `code`/`message` are unchanged, so grader recruitment and the closure observation
+   * read the same verdict either way.
+   *
+   * Opt-in for the reason `probeCitationDeployment` is: a refused plan would otherwise run
+   * every later check (including forked git blob measurement in the audit leg) on the sync
+   * resolver's per-plan hot read. Only the ship door (`plans:set-plan-status`) sets it.
+   */
+  collectAllBlockers?: boolean;
   /** Read whether a pending meta-scorecard's owner is paused before dispatch can settle it. */
   readGradingAuditDispatchSuppression?: (targetOwnerId?: string | null) => Promise<GradingAuditDispatchSuppression | null>;
 }
@@ -701,6 +755,21 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   // deferred refusal permanent and the re-grade unrecruitable. Carry the BAR's verdict
   // rather than re-deriving the cohort fingerprint here, so there is one staleness judgment.
   let barStaleGradingScorecardId: string | null = null;
+  // P-001 (plan-verification-friction-reduction-2026-10-11): refusals from the independent
+  // pre-grading checks, in the gate's advertised order, so the first stays the primary
+  // `code`. `refuse` records one and answers whether to stop now (the default first-failure
+  // mode) or keep evaluating (`collectAllBlockers`).
+  const preGradingRefusals: PlanAcceptanceGateVerdictWithoutBuildProvenance[] = [];
+  const refuse = (verdict: PlanAcceptanceGateVerdictWithoutBuildProvenance): boolean => {
+    preGradingRefusals.push(verdict);
+    return opts.collectAllBlockers !== true;
+  };
+  const collectedRefusal = (): PlanAcceptanceGateVerdictWithoutBuildProvenance =>
+    withPreGradingBlockers(planSlug, preGradingRefusals, opts, subject);
+  const gradingRefusal = (verdict: PlanAcceptanceGateVerdictWithoutBuildProvenance) => {
+    refuse(verdict);
+    return collectedRefusal();
+  };
 
   // Exemptions: a rubric-template plan does not get an acceptance rubric of its own
   // (infinite regress), and a scheduled template INSTANCE is an auto-generated
@@ -818,13 +887,13 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       nonCodeItemProofs = barLifecycle.nonCodeItemProofs ?? [];
       barContractApplicable = barLifecycle.applicable;
       if (expectedApplicable && !barLifecycle.applicable) {
-        return {
+        if (refuse({
           satisfied: false, code: 'acceptance_bar_contract_not_ready',
           acceptanceBarLifecycle: barLifecycle,
           message: `plan '${planSlug}' has original requirements but no verifiable requirement contract. ` +
             'Adopt the complete original requirement set and its work mappings before shipment; an as-built rubric or disclosure cannot replace it. This is not waived by force.',
-        };
-      }
+        })) return collectedRefusal();
+      } else {
       const proofMetadataCodes = opts.force?.acceptanceBarProofMetadata
         ? barLifecycle.codes.filter((code): code is 'bar_snapshot_proof_inadequate' | 'bar_snapshot_proof_stale' =>
             code === 'bar_snapshot_proof_inadequate' || code === 'bar_snapshot_proof_stale')
@@ -846,7 +915,9 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         };
         const gradingMissing = barLifecycle.codes.includes('bar_snapshot_grading_missing');
         const gradingStale = barLifecycle.codes.includes('bar_snapshot_grading_stale');
-        if (!gradingMissing && !gradingStale) return refusal;
+        if (!gradingMissing && !gradingStale) {
+          if (refuse(refusal)) return collectedRefusal();
+        } else {
         // A missing OR stale grading recruits an independent grader. Let it run
         // only after the BAR's pre-grading obligations pass, while retaining this
         // ship refusal through every later success path. In the stale case the
@@ -858,13 +929,22 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         const preGrading = await readAndEvaluateAcceptanceBarLifecycle(planSlug, 'pre-grading', {
           expectedApplicable: true,
           ...(planHarnessSlug ? { harnessSlug: planHarnessSlug } : {}),
+          ...(opts.current ? { current: opts.current } : {}),
         });
         // P-038: the pre-grading verdict IS the explanation of this refusal — the ship-phase
         // codes include grading/author-verdict obligations nobody can work yet. Return it
         // instead of discarding it, and lead the message with the repair that unblocks.
-        if (!preGrading.satisfied) return preGradingBlockedRefusal(refusal, preGrading);
-        requireCurrentBarGrading = gradingStale;
-        if (gradingStale) barStaleGradingScorecardId = barLifecycle.staleGradingScorecardId;
+        if (!preGrading.satisfied) {
+          // The ship refusal deferred above is a grading-phase obligation; it no longer
+          // applies once pre-grading itself refuses, which is what this records.
+          deferredBarShipRefusal = undefined;
+          if (refuse(preGradingBlockedRefusal(refusal, preGrading))) return collectedRefusal();
+        } else {
+          requireCurrentBarGrading = gradingStale;
+          if (gradingStale) barStaleGradingScorecardId = barLifecycle.staleGradingScorecardId;
+        }
+        }
+      }
       }
     }
   } catch (error) {
@@ -906,7 +986,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   const deliverableDurability = evaluateEphemeralDeliverableDurability(planContent ?? '');
   if (!deliverableDurability.satisfied) {
     const listed = locateEphemeralDeliverableReferences(planContent ?? '', deliverableDurability.references).join(', ');
-    return {
+    if (refuse({
       satisfied: false,
       code: 'ephemeral_deliverable_unbacked',
       message:
@@ -915,13 +995,15 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         `record it in the plan as \`durable source: <path>\` (or \`work-item: EI-/WI-id\`). An Artifact URL, ` +
         `scratch path, or loopback preview alone is not a grader-readable deliverable. This refusal is not waived by ` +
         `force: { reason }.`,
-    };
+    })) return collectedRefusal();
   }
 
   const itemGate = await getFlag(FLAGS.PLAN_ITEM_COMPLETION_GATE, 'system').catch(() => true);
   const gradingRecruitmentTail = new Set<string>();
   if (itemGate) {
-    const items = await getPlanItemStatuses(planSlug);
+    // planHarnessSlug is the positively selected plan row's own harness (ambiguity is
+    // refused above), so it is safe to scope the per-(harness, slug) item rows to it.
+    const items = await getPlanItemStatuses(planSlug, { harnessSlug: planHarnessSlug });
     const unfinished = items.filter((i) => (UNFINISHED_ITEM_STATUSES as readonly string[]).includes(i.status));
     if (unfinished.length > 0) {
       const recruitmentTail =
@@ -934,7 +1016,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
           forcedChecks.push('plan_items_unfinished');
         } else {
           const list = unfinished.map((i) => `${i.itemId} (${i.status})`).join(', ');
-          return {
+          if (refuse({
             satisfied: false,
             code: 'plan_items_unfinished',
             message:
@@ -943,7 +1025,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
               `with a reason: plans:set-status { slug:'${planSlug}', item:'<P-NNN>', status:'dropped', ` +
               `note:'<why this was departed from>' }. Departing from the plan is legitimate; departing from it ` +
               `silently is what this refuses. To ship anyway, pass force:{ reason } — it is recorded on the plan.`,
-          };
+          })) return collectedRefusal();
         }
       }
     }
@@ -955,8 +1037,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
     if (!audit) {
       if (force) {
         forcedChecks.push('acceptance_unaudited');
-      } else {
-        return {
+      } else if (refuse({
           satisfied: false,
           code: 'acceptance_unaudited',
           message:
@@ -966,7 +1047,8 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
             `Citations are resolved against the real tree, so a path that does not exist is refused. Gaps inside ` +
             `the plan's scope get fixed or dropped with a reason; bugs outside it go in \`findings\` with a filed ` +
             `work-item ref. To ship without one, pass force:{ reason } — it is recorded on the plan.`,
-        };
+        })) {
+        return collectedRefusal();
       }
     } else {
       // D-006/D-007: a pass is NOT a full-plan snapshot. Resolve the latest entry
@@ -974,16 +1056,16 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       // evidence with the current tree. A narrow re-audit therefore cannot make all
       // the unchanged items disappear, and carrying an item cannot re-stamp it.
       const [items, effectiveAudits] = await Promise.all([
-        getPlanItemStatuses(planSlug),
+        getPlanItemStatuses(planSlug, { harnessSlug: planHarnessSlug }),
         getEffectiveItemAudits(planSlug),
       ]);
       const effectiveByItem = new Map(effectiveAudits.map((entry) => [entry.entry.itemId, entry]));
       const stale: string[] = [];
       const broken: string[] = [];
-      const hasVerifyingCitations = effectiveAudits.some(({ entry }) =>
-        entry.citations.some((citation) => citation.kind === 'code' || citation.kind === 'test'),
+      const hasRepoFileCitations = effectiveAudits.some(({ entry }) =>
+        entry.citations.some(isRepoFileCitation),
       );
-      const citationContextResult = hasVerifyingCitations
+      const citationContextResult = hasRepoFileCitations
         ? await repoCitationContextForHarness(
             audit.harnessSlug,
             effectiveAudits.flatMap(({ entry }) => entry.citations),
@@ -992,7 +1074,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       const citationContext =
         citationContextResult && !isCitationContextFailure(citationContextResult) ? citationContextResult : null;
 
-      if (hasVerifyingCitations && !citationContext) {
+      if (hasRepoFileCitations && !citationContext) {
         if (isCitationContextFailure(citationContextResult)) {
           broken.push(
             ...citationContextResult.citations.map(
@@ -1003,6 +1085,18 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
           broken.push(`audit harness '${audit.harnessSlug}' has no registered canonical source root`);
         }
       }
+
+      // P-019 (proof-freshness-pinned-candidate-2026-10-06 D-001): compare audited blobs
+      // with the COMMITTED bytes at one measurement commit M per repository, not the
+      // shared working tree, so a peer's uncommitted edit to a cited file cannot stale a
+      // shipped audit. A committed change still reads stale. Citations M cannot measure
+      // keep the working-tree fingerprint.
+      const measurement = citationContext
+        ? await measureCitationBlobsAtHead(
+            effectiveAudits.flatMap(({ entry }) => entry.citations),
+            citationContext.deps,
+          ).catch(() => null)
+        : null;
 
       for (const item of items) {
         // A deliberate drop is the recorded exit supplied by D-002. It does not need
@@ -1031,9 +1125,9 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
 
         if (citationContext) {
           for (const citation of entry.citations) {
-            // D-008: only code/test citations constitute verification. Doc/none
-            // declarations never become code-truth merely by surviving this read.
-            if (citation.kind !== 'code' && citation.kind !== 'test') continue;
+            // D-008: only code/test citations constitute verification. A path-backed doc
+            // gets resolution and freshness checks, but never becomes code-truth evidence.
+            if (!isRepoFileCitation(citation)) continue;
             const resolution = resolveCitation(citation, citationContext.deps);
             if (!resolution.ok) {
               broken.push(
@@ -1044,15 +1138,26 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
 
             // Collect only RESOLVED code/test citations: an unresolvable path is
             // already reported as `broken` and has no deployment position to ask about.
-            if (citation.path?.trim()) citedEvidencePaths.add(citation.path.trim());
+            if (isVerifyingCitation(citation) && citation.path?.trim()) {
+              citedEvidencePaths.add(citation.path.trim());
+            }
 
-            const currentBlobSha = citationBlobSha(citation, citationContext.deps);
+            const rel = citation.path?.trim() ?? '';
+            const measuredAt = measurement?.commits.get(rel);
+            const currentBlobSha = measuredAt
+              ? (measurement!.blobs.get(rel) ?? null)
+              : citationBlobSha(citation, citationContext.deps);
+            const at = measuredAt ? ` at commit ${measuredAt.slice(0, 12)}` : '';
             if (!citation.blobSha) {
               reasons.push(`${citation.path ?? '(no path)'} has no audit-time blob fingerprint (audit #${auditSeq})`);
             } else if (!currentBlobSha) {
-              reasons.push(`${citation.path ?? '(no path)'} cannot be fingerprinted now (audit #${auditSeq})`);
+              reasons.push(
+                measuredAt
+                  ? `${citation.path ?? '(no path)'} is not a committed file${at} (audit #${auditSeq})`
+                  : `${citation.path ?? '(no path)'} cannot be fingerprinted now (audit #${auditSeq})`,
+              );
             } else if (currentBlobSha !== citation.blobSha) {
-              reasons.push(`${citation.path ?? '(no path)'} changed since audit #${auditSeq}`);
+              reasons.push(`${citation.path ?? '(no path)'} changed since audit #${auditSeq}${at}`);
             }
           }
         }
@@ -1066,8 +1171,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       if (stale.length > 0) {
         if (force) {
           forcedChecks.push('audit_coverage_stale');
-        } else {
-          return {
+        } else if (refuse({
             satisfied: false,
             code: 'audit_coverage_stale',
             message:
@@ -1076,15 +1180,15 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
               `forward mechanically with its original auditedSha/auditedAt, so do not resubmit unchanged items. ` +
               `If no items are listed on a future check, no new audit pass is required. To ship anyway, pass ` +
               `force:{ reason }.`,
-          };
+          })) {
+          return collectedRefusal();
         }
       }
 
       if (broken.length > 0) {
         if (force) {
           forcedChecks.push('audit_citations_unresolved');
-        } else {
-          return {
+        } else if (refuse({
             satisfied: false,
             code: 'audit_citations_unresolved',
             message:
@@ -1092,7 +1196,8 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
               `longer resolve against the tree — ${broken.slice(0, 5).join('; ')}` +
               `${broken.length > 5 ? ` (+${broken.length - 5} more)` : ''}. Re-run plans:audit for ONLY the ` +
               `listed items; all other item audits carry forward unchanged. To ship anyway, pass force:{ reason }.`,
-          };
+          })) {
+          return collectedRefusal();
         }
       }
 
@@ -1123,10 +1228,23 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       const activationAudit = await getLatestActivationAudit(planSlug);
       const activationMappings = activationAudit?.activation?.mappings ?? [];
       if (activationMappings.length > 0) {
+        // The BAR projection census cannot see non-behavioral inventory clauses.
+        // Resolve that existing exemption contract only for reasoned not-code items;
+        // a failed clause read leaves the requirement unproven.
+        const nonCodeItems = items.filter((item) => item.status === 'done' &&
+          effectiveByItem.get(item.itemId)?.entry.verdict === 'not-code' &&
+          Boolean(effectiveByItem.get(item.itemId)?.entry.note?.trim()));
+        const exemptionProofs = nonCodeItems.length && planHarnessSlug
+          ? await listSpecClauses({
+              planSlug, harnessSlug: planHarnessSlug, workspaceId: activeWorkspaceId(),
+              planItemIds: nonCodeItems.map((item) => item.itemId),
+            }).then((clauses) => deriveNonCodeExemptionProofs({ planSlug, clauses, planItems: nonCodeItems }))
+              .catch(() => [])
+          : [];
         const realization = judgeRequirementRealization({
           mappings: activationMappings,
           itemAudits: effectiveAudits,
-          nonCodeItemProofs,
+          nonCodeItemProofs: [...nonCodeItemProofs, ...exemptionProofs],
           // P-016 / D-040: without this the judge resolves every `P-NNN` target against
           // the folded audit alone, which spans all passes and is never filtered by the
           // plan's current items — so an item deleted from the plan keeps vouching for
@@ -1143,7 +1261,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         requirementDroppedTargets = realization.droppedTargets;
         if (!realization.ok) {
             const lines = realization.unrealized.map(describeUnrealized);
-            return {
+            if (refuse({
               satisfied: false,
               code: 'requirement_unrealized',
               message:
@@ -1152,12 +1270,13 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
                 `${lines.slice(0, 5).join('; ')}${lines.length > 5 ? ` (+${lines.length - 5} more)` : ''}. ` +
                 `Each names a requirement the plan claims it absorbed. Code verification requires code/test ` +
                 `citations (D-008); a completed, reasoned not-code outcome instead requires exact current ` +
-                `operational/check BAR proof. Doc/none citations alone prove neither. Audit the named ` +
+                `operational/check BAR proof or a current explicit non-behavioral exemption. ` +
+                `Doc/none citations alone prove neither. Audit the named ` +
                 `item(s) against real code or bind current proof for the non-code outcome; if the requirement was not ` +
                 `absorbed — correct its disposition to 'rejected'/'open' via plans:audit { phase:'activation' } ` +
                 `so the record stops claiming otherwise. Unfulfilled requirements are not waived by force; ` +
                 `a follow-on task or disclosure is not fulfillment of the original promise.`,
-            };
+            })) return collectedRefusal();
         }
       }
     }
@@ -1191,14 +1310,50 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       const code = specCoverage.code ?? 'spec_proof_stale';
       if (force) {
         forcedChecks.push(code);
-      } else {
-        return {
+      } else if (refuse({
           satisfied: false,
           code,
           message: specCoverage.message ?? `plan '${planSlug}' has spec clauses proven only at a superseded revision.`,
           specCoverage,
-        };
+        })) {
+        return collectedRefusal();
       }
+    }
+  }
+
+  // ── INDEPENDENT VERIFICATION (verification-system-improvements-2026-10-10 P-008) ──
+  // A live/deployed mandatory outcome bar must carry a binding from OUTSIDE the
+  // implementers' lineage that re-observed the implementer's evidence (D-005). Placed
+  // after spec proof (no point asking for re-observation of unproven clauses) and NOT
+  // waivable by force: it is an independence check, the same class as independent
+  // grading, which force never waives.
+  if (planHarnessSlug) {
+    const independentVerification = await evaluateIndependentVerificationGate({
+      planSlug,
+      harnessSlug: planHarnessSlug,
+    });
+    if (!independentVerification.satisfied && refuse({
+      satisfied: false,
+      code: independentVerification.code ?? 'independent_verification_missing',
+      message: independentVerification.message ?? `plan '${planSlug}' lacks independent verification of live evidence.`,
+    })) {
+      return collectedRefusal();
+    }
+  }
+
+  // ── BLIND GAP REVIEW (verification-system-improvements-2026-10-10 P-006) ──────────
+  // The awaiting-acceptance writers already require it (D-006 (1)); the ship door
+  // re-checks it for the revision being shipped, because a plan can be re-activated
+  // after its review or reach ship without passing through awaiting-acceptance.
+  // Not waivable by force (D-039 (5)): an independence check, like the door above.
+  if (planHarnessSlug) {
+    const blindReview = await evaluateBlindReviewGate({ planSlug, harnessSlug: planHarnessSlug });
+    if (!blindReview.satisfied && refuse({
+      satisfied: false,
+      code: blindReview.code ?? 'blind_review_missing',
+      message: blindReview.message ?? `plan '${planSlug}' has no blind gap review for its current revision.`,
+    })) {
+      return collectedRefusal();
     }
   }
 
@@ -1209,13 +1364,15 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       const outcomes = await planDesignEvidenceGate(planSlug, planHarnessSlug);
       const blocked = outcomes.filter(outcome =>
         (outcome.status === 'unsatisfied' || outcome.status === 'unavailable') && outcome.enforced);
-      if (blocked.length) return {
+      if (blocked.length && refuse({
         satisfied: false,
         code: blocked.some(row => row.status === 'unsatisfied') ? 'design_evidence_unsatisfied' : 'design_evidence_unavailable',
         message: blocked.map(row => row.status === 'not-applicable' ? '' : row.report).join('\n\n'),
-      };
+      })) return collectedRefusal();
     } catch (error) {
-      return { satisfied: false, code: 'design_evidence_unavailable', message: `Design shipment proof could not be read: ${error instanceof Error ? error.message : String(error)}` };
+      if (refuse({ satisfied: false, code: 'design_evidence_unavailable', message: `Design shipment proof could not be read: ${error instanceof Error ? error.message : String(error)}` })) {
+        return collectedRefusal();
+      }
     }
   }
 
@@ -1224,6 +1381,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   // owner ruling, and collapsing both families into one switch would make the override
   // far broader than the one that was actually authorised.
   if (!rubricGate) {
+    if (preGradingRefusals.length > 0) return collectedRefusal();
     return {
       satisfied: true,
       skipped: 'flag-off',
@@ -1235,8 +1393,10 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   const rubrics = await getAcceptanceRubricsForPlan(planSlug, {
     ...(planHarnessSlug ? { harnessSlug: planHarnessSlug } : {}),
   });
+  // Rubric existence/uniqueness: every later check needs exactly ONE rubric, so collect
+  // mode records the refusal and stops here with everything gathered so far.
   if (rubrics.length === 0) {
-    return {
+    refuse({
       satisfied: false,
       code: 'acceptance_rubric_missing',
       message:
@@ -1248,17 +1408,19 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         `(a pure investigation may pass classRef:'plan-class-investigation' with criteria:[] — D-009). ` +
         `It activates immediately (no ratification); then a ` +
         `NON-implementer grades it (scorecards:emit) and the ship succeeds.`,
-    };
+    });
+    return collectedRefusal();
   }
   if (rubrics.length > 1) {
-    return {
+    refuse({
       satisfied: false,
       code: 'acceptance_rubric_ambiguous',
       message:
         `plan '${planSlug}' cannot be marked shipped: it has multiple active acceptance rubrics ` +
         `(${rubrics.map((candidate) => `'${candidate.rubricId}'`).join(', ')}). ` +
         'Retire all but one contract before shipping; the gate fails closed when one subject plan has competing rubrics.',
-    };
+    });
+    return collectedRefusal();
   }
   const rubric = rubrics[0];
 
@@ -1281,6 +1443,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   // rubric, no registered meta-rubric) — the ordering leg then has nothing to order
   // against and is correctly skipped rather than guessed at.
   let vettingAttestedAt: string | undefined;
+  let gradingInputsAvailable = true;
   // Exempt: a criteria:[] investigation rubric (D-009 — nothing to vet) and the
   // meta-rubric itself (kind:'standard' so it can never be a plan's acceptance rubric,
   // but the guard is cheap and the regress would be infinite).
@@ -1290,66 +1453,55 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
     // meta-rubric at all cannot run the flow, so the check disables rather than
     // deadlocking every ship on a missing prerequisite (recorded as a plan Decision).
     const metaRubric = await getRubric(META_ACCEPTANCE_RUBRIC_ID);
-    if (metaRubric) {
-      // EI-21827040531672903: a FAILED revision read must not be spelled the same way
-      // as "no revision". The old `currentRevision == null || …` short-circuited TRUE
-      // on the null a transient DB error produced, silently widening the check from
-      // "attested at the CURRENT revision" to "any vetted card that ever existed" and
-      // rendering no refusal, so nothing recorded the degradation. Refuse instead: an
-      // unreadable revision is a retryable infrastructure fault, not a pass.
-      const revisionRead = await readRubricPlanRevision(rubric.rubricId);
-      if (!revisionRead.ok) {
-        return {
-          satisfied: false,
-          code: 'acceptance_rubric_revision_unreadable',
-          rubricId: rubric.rubricId,
-          message:
-            `plan '${planSlug}' cannot be marked shipped right now: the current revision of acceptance rubric ` +
-            `'${rubric.rubricId}' could not be read, so the gate cannot confirm the vetting attestation covers ` +
-            `what ships. This is an infrastructure fault, not a missing step — nothing about the plan is wrong. ` +
-            `Retry the ship; if it persists, the rubric plan-row read is failing and that is the thing to fix.`,
-        };
-      }
+    // EI-21827040531672903: a FAILED revision read must not be spelled the same way
+    // as "no revision". The old `currentRevision == null || …` short-circuited TRUE
+    // on the null a transient DB error produced, silently widening the check from
+    // "attested at the CURRENT revision" to "any vetted card that ever existed" and
+    // rendering no refusal, so nothing recorded the degradation. Refuse instead: an
+    // unreadable revision is a retryable infrastructure fault, not a pass. In collect
+    // mode the vetting evaluation is skipped (it needs the revision) and the barrier
+    // below stops before grading.
+    const revisionRead = metaRubric ? await readRubricPlanRevision(rubric.rubricId) : null;
+    if (revisionRead && !revisionRead.ok) gradingInputsAvailable = false;
+    if (revisionRead && !revisionRead.ok && refuse({
+      satisfied: false,
+      code: 'acceptance_rubric_revision_unreadable',
+      rubricId: rubric.rubricId,
+      message:
+        `plan '${planSlug}' cannot be marked shipped right now: the current revision of acceptance rubric ` +
+        `'${rubric.rubricId}' could not be read, so the gate cannot confirm the vetting attestation covers ` +
+        `what ships. This is an infrastructure fault, not a missing step — nothing about the plan is wrong. ` +
+        `Retry the ship; if it persists, the rubric plan-row read is failing and that is the thing to fix.`,
+    })) return collectedRefusal();
+    if (metaRubric && revisionRead?.ok) {
       const currentRevision = revisionRead.revision;
-      const metaCards = (
-        await listScorecards({ rubricRef: META_ACCEPTANCE_RUBRIC_ID, subjectRef: rubric.rubricId, limit: 50 })
-      ).filter((s) => s.rubricResolved && s.missingKeys.length === 0 && !s.synthesized);
-      // The linked critique channel is what makes an attestation a VETTING (a plain
-      // meta-grade without one skipped the external critique the flow exists to
-      // inject). WI-41477: either channel counts — a get_feedback consult, or the
-      // review work-item a launched independent reviewer's comments land on.
-      const vettedCards = metaCards.filter((s) => s.vetting?.consultId || s.vetting?.workItemId);
-      const currentness = vettedCards.map((card) => ({
-        card,
-        verdict: classifyRubricEvidenceCurrentness(
-          {
-            revision: card.vetting?.rubricRevision,
-            criteriaHash: card.vetting?.criteriaHash,
-            meaningRevision: card.vetting?.rubricMeaningRevision,
-          },
-          {
-            revision: currentRevision,
-            criteriaHash: rubric.criteriaHash,
-            meaningRevision: rubric.barContract?.meaningRevision,
-          },
-        ),
-      }));
-      const current = currentness.find((entry) => entry.verdict.state === 'current')?.card;
-      if (!current) {
-        const vettedRevisions = [
-          ...new Set(vettedCards.map((s) => s.vetting?.rubricRevision).filter((v) => v != null)),
-        ];
-        const stale = currentness.some((entry) => entry.verdict.state === 'stale');
-        const unknown = currentness.some((entry) => entry.verdict.state === 'unknown');
+      // Keep the ship-time gate on the same vetting policy as rubrics:get,
+      // scorecards:emit, and bind. Reuse the already-read meta-rubric and revision
+      // so this gate's unreadable-revision refusal remains authoritative.
+      const vettingStatus = await getAcceptanceRubricVettingStatus(rubric, {
+        vettingGateEnabled: true,
+        getRubric: async () => metaRubric,
+        getRubricPlanRevision: async () => currentRevision,
+        listScorecards,
+        ...(opts.readGradingAuditDispatchSuppression
+          ? { readGradingAuditDispatchSuppression: opts.readGradingAuditDispatchSuppression }
+          : {}),
+      });
+      const current = vettingStatus.candidates.find((candidate) => candidate.rejectedBy === null);
+      if (vettingStatus.required && !vettingStatus.satisfied) {
+        const vettedRevisions = vettingStatus.attestedRevisions;
+        const stale = vettingStatus.reason === 'stale-attestation';
         // A subject-less historical meta-card cannot be returned by the
         // subjectRef-filtered read above, but it is still useful diagnostic
         // evidence: it explains how an emitter could believe vetting happened
         // while the gate correctly found no card bound to this rubric. Keep the
         // note explicitly unattributed rather than guessing which rubric the
         // malformed card intended to attest.
-        const unboundMetaCards = (await listScorecards({ rubricRef: META_ACCEPTANCE_RUBRIC_ID, limit: 50 })).filter(
-          (s) => s.rubricResolved && s.missingKeys.length === 0 && !s.synthesized && !s.subject,
-        );
+        const unboundMetaCards = stale
+          ? []
+          : (await listScorecards({ rubricRef: META_ACCEPTANCE_RUBRIC_ID, limit: 50 })).filter(
+              (s) => s.rubricResolved && s.missingKeys.length === 0 && !s.synthesized && !s.subject,
+            );
         const unboundIds = unboundMetaCards.slice(0, 3).map((s) => s.issueId);
         const unboundDiagnostic =
           unboundIds.length > 0
@@ -1361,33 +1513,23 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
                 ? ` and a current vetting linkage.`
                 : ` plus vettingConsult:'<consult conversation_id>' (or vettingWorkItem:'<review WI-/EI- id>').`)
             : '';
-        const staleDiagnostic =
-          vettedCards.length > 0
-            ? ` The linked attestation card(s) ${vettedCards
-                .slice(0, 3)
-                .map((s) => s.issueId)
-                .join(', ')} do not cover the current revision.`
-            : '';
-        const pendingAuditCard = metaCards.find((card) => card.gradingAudit?.state === 'pending');
-        const dispatchSuppression = pendingAuditCard && opts.readGradingAuditDispatchSuppression
-          ? await opts.readGradingAuditDispatchSuppression(pendingAuditCard.createdBy).catch(() => null)
-          : null;
-        const suppressionNote = dispatchSuppression
-          ? ` ${describeGradingAuditDispatchSuppression(dispatchSuppression)}`
+        const candidateDiagnostic = vettingStatus.diagnosis
+          ? ` Candidate diagnostics: ${vettingStatus.diagnosis}.`
           : '';
-        return {
+        if (refuse({
           satisfied: false,
           code: 'acceptance_rubric_unvetted',
           rubricId: rubric.rubricId,
-          message: (stale || unknown
+          message: (stale
             ? `plan '${planSlug}' cannot be marked shipped: acceptance rubric '${rubric.rubricId}' was vetted at ` +
               `revision ${vettedRevisions.join('/') || '(unrecorded)'} but the rubric identity now in force is ` +
               `revision ${currentRevision ?? '(unrecorded)'}, criteriaHash ${rubric.criteriaHash ?? '(unrecorded)'}. ` +
-              `${unknown ? 'The recorded/live identity is incomplete, so currentness cannot be established' : 'The graded criteria or method changed after vetting'}; the attestation no longer covers what ` +
-              `ships. Re-emit the meta-scorecard against the current revision: scorecards:emit ` +
+              `The graded criteria or method changed after vetting, or the recorded/live identity is incomplete; ` +
+              `the attestation does not establish the current rubric. ` +
+              `Re-emit the meta-scorecard against the current revision: scorecards:emit ` +
               `{ rubricRef:'${META_ACCEPTANCE_RUBRIC_ID}', subject:{ kind:'rubric', ref:'${rubric.rubricId}' }, ` +
               `vettingConsult:'<consult conversation_id>', ratings:{ <every meta criterion> } }. Citing the SAME ` +
-              `consult is fine when the revision IS the improvement its critique asked for.${staleDiagnostic}`
+              `consult is fine when the revision IS the improvement its critique asked for.${candidateDiagnostic}`
             : `plan '${planSlug}' cannot be marked shipped: its acceptance rubric '${rubric.rubricId}' has not ` +
               `been VETTED against the meta-rubric (consult-min-max-and-rubric-vetting-2026-08-17). The rubric ` +
               `AUTHOR vets it BEFORE a non-implementer grades the work: (1) consult:get_feedback for external ` +
@@ -1396,22 +1538,21 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
               `{ rubricRef:'${META_ACCEPTANCE_RUBRIC_ID}', subject:{ kind:'rubric', ref:'${rubric.rubricId}' }, ` +
               `vettingConsult:'<the consult conversation_id>', ratings:{ <every meta criterion, with evidence> } }. ` +
               `${unboundDiagnostic ? unboundDiagnostic.slice(1) : ''}` +
-              `Pass is your judgment per criterion — no mechanical score floor (D-001 §3).`) + suppressionNote,
-          ...(dispatchSuppression ? { gradingAuditDispatchSuppressed: dispatchSuppression } : {}),
-        };
-      }
-      // The unanswered waiver exists only on the consult channel (a work-item link
-      // with no third-party comment is refused at emit, never waived), so a waived
-      // stamp always carries its consultId.
-      vettingAttestedAt = current.createdAt;
-      if (current.vetting?.unanswered && current.vetting.consultId) {
-        vettedUnderWaiver = {
-          consultId: current.vetting.consultId,
-          ...(current.vetting.unansweredReason ? { reason: current.vetting.unansweredReason } : {}),
-        };
+              `Pass is your judgment per criterion — no mechanical score floor (D-001 §3).${candidateDiagnostic}`),
+          ...(vettingStatus.gradingAuditDispatchSuppressed
+            ? { gradingAuditDispatchSuppressed: vettingStatus.gradingAuditDispatchSuppressed }
+            : {}),
+        })) return collectedRefusal();
+      } else if (vettingStatus.required && current) {
+        vettingAttestedAt = current.createdAt;
+        if (vettingStatus.vettedUnderWaiver) vettedUnderWaiver = vettingStatus.vettedUnderWaiver;
       }
     }
   }
+
+  // A known rubric permits independent grading checks even when earlier proof is
+  // blocked. Unknown revision inputs cannot support grading-currentness conclusions.
+  if (!gradingInputsAvailable) return collectedRefusal();
 
   // A qualifying grading: complete (every criterion rated), agent-emitted (synthesized
   // floors are excluded by listScorecards' default), against THIS rubric.
@@ -1466,7 +1607,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       workspaceId: rubric.workspaceId,
     });
   } catch (error) {
-    return {
+    return gradingRefusal({
       satisfied: false,
       code: 'acceptance_lineage_unreadable',
       rubricId: rubric.rubricId,
@@ -1475,7 +1616,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         `acceptance rubric '${rubric.rubricId}' could not be read ` +
         `(${error instanceof Error ? error.message : String(error)}). The gate refuses rather than ` +
         'shrinking the exclusion set and admitting a related grader; repair/retry the lineage read.',
-    };
+    });
   }
   const principalImplementerIdentities = new Set(principalImplementers);
   const implementerIdentities = new Set<string>();
@@ -1542,7 +1683,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         !isPlanImplementerScorecard(s)),
   );
   if (complete.length === 0) {
-    return {
+    return gradingRefusal({
       satisfied: false,
       code: 'acceptance_ungraded',
       rubricId: rubric.rubricId,
@@ -1553,7 +1694,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         `evidence per rating — then the ship succeeds (grader ≠ implementer, plan D-005). ` +
         `${ACCEPTANCE_GRADING_NO_CLAIM_FACT} Say so when you ask: a peer declining on claim-scope grounds is ` +
         `declining on a constraint that does not exist (EI-20249725405239230).`,
-    };
+    });
   }
   // ── the authoritative grading among several (P-004) ──
   // Grading is a CASCADE of up to two graders since D-003 [owner], and D-002
@@ -1644,7 +1785,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
     const staleGradingScorecardIds = [
       ...new Set([...(staleIndependent ? [staleIndependent.issueId] : []), ...cohortStaleIndependentIds]),
     ];
-    return {
+    return gradingRefusal({
       satisfied: false,
       code: 'self_graded_only',
       rubricId: rubric.rubricId,
@@ -1663,7 +1804,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
           `different agent or the owner must file the grading scorecard. ` +
           `${ACCEPTANCE_GRADING_NO_CLAIM_FACT} Say so when you ask: a peer declining on claim-scope grounds is ` +
           `declining on a constraint that does not exist (EI-20249725405239230).`,
-    };
+    });
   }
 
   // requirements-with-teeth-bar-before-method-2026-09-04 P-013 (landed early to
@@ -1705,7 +1846,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
           `'${criterionKey}' (bar '${barKey}', rating ${rating == null ? 'missing' : `'${rating}'`})`,
       )
       .join(', ');
-    return {
+    if (refuse({
       satisfied: false,
       code: 'acceptance_bar_not_met',
       rubricId: rubric.rubricId,
@@ -1717,7 +1858,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         `authoritative independent grading: ${detail}. Every mandatory outcome needs a current ` +
         `pass-equivalent rating; a disclosure criterion or the rubric author's acceptance verdict ` +
         `cannot substitute for the outcome.`,
-    };
+    })) return collectedRefusal();
   }
   // ── vetting PRECEDED grading (EI-21827040531672903) ──
   // The vetting block above established only that an attestation exists at the current
@@ -1734,10 +1875,18 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
     !gradingPredatesOrderRule &&
     Date.parse(vettingAttestedAt) > Date.parse(independent.createdAt)
   ) {
-    return {
+    if (refuse({
       satisfied: false,
       code: 'acceptance_rubric_vetted_after_grading',
       rubricId: rubric.rubricId,
+      gradingRef: independent.issueId,
+      staleGradingScorecardId: independent.issueId,
+      staleGradingScorecardIds: [...new Set([
+        ...cohortStaleIndependentIds,
+        ...independentCards
+          .filter((card) => Date.parse(card.createdAt) < Date.parse(vettingAttestedAt))
+          .map((card) => card.issueId),
+      ])],
       gradedBy: independent.createdBy ?? null,
       gradedVia: independentVia,
       ...(unknownRatedCriteria.length > 0 ? { unknownRatedCriteria } : {}),
@@ -1748,7 +1897,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         `attestation is not in doubt; its ORDER is. Have a non-implementer re-grade against the now-vetted ` +
         `rubric: scorecards:emit { rubricRef:'${rubric.rubricId}', ratings:{ <every criterion key> } } with ` +
         `concrete evidence per rating, then record the implementer's acceptance verdict on that newer grading.`,
-    };
+    })) return collectedRefusal();
   }
 
   const explicitVerdicts = implementer ? complete.filter((s) => holdsAuthorAuthority(s) && s.acceptance) : [];
@@ -1760,7 +1909,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
     : false;
   const latestIndependentIsLegacy = Date.parse(independent.createdAt) < Date.parse(ACCEPTANCE_VERDICT_REQUIRED_AFTER);
   if (!verdictFollowsLatestIndependent && !latestIndependentIsLegacy) {
-    return {
+    if (refuse({
       satisfied: false,
       code: 'acceptance_not_recorded',
       rubricId: rubric.rubricId,
@@ -1778,10 +1927,10 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         `delivery plane you cannot reach (a deployed/live BAR behind a gate, or a deploy another agent owns): 'accept' ` +
         `would overclaim delivery and 'reject' would be false. It does not block this gate, and it does not waive the ` +
         `delivery-plane evidence, which keeps blocking on its own code.`,
-    };
+    })) return collectedRefusal();
   }
   if (verdictFollowsLatestIndependent && latestVerdict?.acceptance?.verdict === 'reject') {
-    return {
+    if (refuse({
       satisfied: false,
       code: 'acceptance_rejected',
       rubricId: rubric.rubricId,
@@ -1793,7 +1942,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         `plan '${planSlug}' cannot be marked shipped: implementer '${implementer}' recorded REJECT — ` +
         `${latestVerdict.acceptance.reasoning}. Address the grading, then record a newer acceptance verdict with ` +
         `scorecards:emit; the latest implementer verdict is authoritative.`,
-    };
+    })) return collectedRefusal();
   }
   // WI-10004135 — 'accept-pending-delivery' promises that the delivery-plane evidence
   // "keeps blocking on its own code". Inside the acceptance-BAR contract it does: the
@@ -1815,7 +1964,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         return rating == null || ratingVerdict(rating) !== 'pass';
       })
       .map((criterion) => criterion.key);
-    return {
+    if (refuse({
       satisfied: false,
       code: 'acceptance_pending_delivery',
       rubricId: rubric.rubricId,
@@ -1834,9 +1983,13 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         `itself does. Bank the delivery evidence, then record a newer acceptance verdict with scorecards:emit ` +
         `{ rubricRef:'${rubric.rubricId}', acceptanceOf:'${independent.issueId}', acceptance:{ verdict:'accept', ` +
         `reasoning:'<the delivery evidence>' } } — or have the grading refreshed first if it rated that evidence unknown.`,
-    };
+    })) return collectedRefusal();
   }
-  if (deferredBarShipRefusal) return deferredBarShipRefusal;
+  if (deferredBarShipRefusal) {
+    if (!opts.collectAllBlockers) return deferredBarShipRefusal;
+    refuse(deferredBarShipRefusal);
+  }
+  if (preGradingRefusals.length > 0) return collectedRefusal();
 
   // EI-22181490624100467 — the ship is going to happen; record WHAT the graded
   // evidence's deployment position actually was, so the shipped artifact cannot
@@ -1961,6 +2114,50 @@ export function planAcceptanceRepairAction(
   return { kind: 'diagnostic', nextVerb: diagnostic, instruction };
 }
 
+/**
+ * P-001 (plan-verification-friction-reduction-2026-10-11): the primary refusal (the first
+ * collected, so `code`/`message` match first-failure mode) carrying every collected
+ * refusal as a blocker with its own repair route. Pure apart from the repair router.
+ */
+function withPreGradingBlockers(
+  planSlug: string,
+  refusals: readonly PlanAcceptanceGateVerdictWithoutBuildProvenance[],
+  opts: PlanAcceptanceGateOpts,
+  subject: { status?: string | null; harnessSlug?: string },
+): PlanAcceptanceGateVerdictWithoutBuildProvenance {
+  const [primary] = refusals;
+  if (!primary) throw new Error('withPreGradingBlockers: no refusal was collected');
+  const repairOpts = { ...opts, harnessSlug: subject.harnessSlug ?? opts.harnessSlug };
+  return {
+    ...primary,
+    blockers: refusals.flatMap((refusal) => refusal.code
+      ? [{
+          code: refusal.code,
+          ...(refusal.message ? { message: refusal.message } : {}),
+          repairAction: planAcceptanceRepairAction(planSlug, refusal, repairOpts, subject.status),
+        }]
+      : []),
+  };
+}
+
+/**
+ * P-001: the ship door's response message — the primary message, followed by one line
+ * naming every other failing check, so a caller reading only `message` still learns that
+ * the plan has more than one blocker. The gate's own `message` is left unchanged for the
+ * closure observation.
+ */
+export function messageWithAdditionalBlockers(
+  message: string | undefined,
+  blockers: readonly { code: string }[] | undefined,
+): string | undefined {
+  const rest = (blockers ?? []).slice(1);
+  if (rest.length === 0) return message;
+  const tail =
+    `ALSO FAILING: ${rest.length} more independent check(s) — ${rest.map((b) => b.code).join(', ')}. ` +
+    'Each is listed with its own message and repairAction in blockers[]; repair them together before retrying.';
+  return message ? `${message}\n\n${tail}` : tail;
+}
+
 export async function evaluatePlanAcceptanceGate(
   planSlug: string,
   opts: PlanAcceptanceGateOpts = {},
@@ -1972,11 +2169,16 @@ export async function evaluatePlanAcceptanceGate(
   // The fingerprint is read BEFORE evaluation starts, never beside it.
   const observation = isCanonicalClosureGateCall(opts) ? await beginPlanClosureObservation(planSlug) : null;
   const verdict = await evaluatePlanAcceptanceGateWithoutBuildProvenance(planSlug, opts, subject);
+  const repairAction = planAcceptanceRepairAction(
+    planSlug, verdict, { ...opts, harnessSlug: subject.harnessSlug ?? opts.harnessSlug }, subject.status,
+  );
   const result: PlanAcceptanceGateVerdict = {
     ...verdict,
-    repairAction: planAcceptanceRepairAction(
-      planSlug, verdict, { ...opts, harnessSlug: subject.harnessSlug ?? opts.harnessSlug }, subject.status,
-    ),
+    repairAction,
+    // P-001: every refusal names its blockers; a first-failure refusal has exactly one.
+    ...(!verdict.satisfied && !verdict.blockers && verdict.code
+      ? { blockers: [{ code: verdict.code, ...(verdict.message ? { message: verdict.message } : {}), repairAction }] }
+      : {}),
     buildProvenance: getBuildInfo(),
   };
   await observation?.record(subject.harnessSlug, result);

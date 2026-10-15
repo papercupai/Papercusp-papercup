@@ -13,7 +13,9 @@
  *      (`spawn_child.template`; the `repo` URL override is surfaced as a
  *      warning until scaffold supports it).
  *   2. **Synthesize the child seed plan** (D-002): slug `<child>-seed-<date>`,
- *      goal + one item per feature + acceptance→inline VAL-* assertions, written
+ *      goal + one item per feature (its acceptance entries ride as plain
+ *      `**Acceptance:**` sub-bullets — inline VAL-* assertions are retired,
+ *      verification-system-improvements-2026-10-10 P-003), written
  *      to the CHILD's plans scope. This is what makes the features eligible —
  *      the dispatcher's frontier read gates plan-sourced features on a
  *      `op_status='started'` plan row (orchestrator-loop.ts readFrontierFeatures).
@@ -47,10 +49,10 @@
 import { dispatchAction } from '../../execute-action';
 import { resolveProject } from '../../harness-core';
 import { mugKettleSystemEnabled } from '../../pot/started';
-import { getOrgPg, withWorkspace } from '@papercusp/db-org';
+import { withWorkspace } from '@papercusp/db-org';
 import { withPlanLock } from '../plans/with-plan-lock';
+import { CHILD_SEED_TEMPLATE_NAME } from '../plans/plan-activation-gate';
 import { resolvePlanScope } from '../plans/source';
-import { extractAssertions, type PlanAssertion } from '../plans/val-assertions';
 import type { SpawnChild, BuiltFeature } from '../plans/promote-policy';
 
 // ── Pure synthesis ──────────────────────────────────────────────────────────
@@ -82,8 +84,6 @@ export interface SeedPlanItem {
   itemId: string;
   /** Index into the wave's feature array this item was synthesized from. */
   featureIndex: number;
-  /** Inline VAL-* ids synthesized from the feature's acceptance entries. */
-  valIds: string[];
 }
 
 export interface SynthesizeSeedPlanInput {
@@ -108,10 +108,15 @@ export interface SynthesizedSeedPlan {
 
 /**
  * Synthesize the child's minimal seed plan (D-002): frontmatter + `## Now` +
- * one `P-NNN` item per feature, each carrying its acceptance entries as inline
- * `VAL-<seed-slug>-NNN` assertion sub-bullets in the canonical
- * validation-assertion format (so `extractAssertions` round-trips them and the
- * child's validator gate sees real acceptance contracts), + a provenance note.
+ * one `P-NNN` item per feature, each carrying its acceptance entries as plain
+ * `**Acceptance:**` sub-bullets, + a provenance note.
+ *
+ * Inline VAL-* assertions are RETIRED (verification-system-improvements-2026-10-10
+ * P-003): the seed mints no VAL ids, the imported features carry no `claims`,
+ * and nothing is written to harness_plan_assertions. A plan body carrying a
+ * VAL block is refused by plans:promote (`val-block-retired`), so the synthesized
+ * seed must never emit one. Formal acceptance belongs in the plan's requirement
+ * contract, not in synthesized prose.
  *
  * Pure — same input always yields the same body/ids (the D-004 retry
  * idempotency hinges on this determinism).
@@ -123,26 +128,20 @@ export function synthesizeChildSeedPlan(input: SynthesizeSeedPlanInput): Synthes
 
   const items: SeedPlanItem[] = [];
   const itemLines: string[] = [];
-  let valCounter = 0;
   input.features.forEach((f, i) => {
     const itemId = `P-${String(i + 1).padStart(3, '0')}`;
-    const valIds: string[] = [];
     itemLines.push(`- **${itemId}** \`todo\` ${oneLine(f.title)}`);
     for (const acceptance of f.acceptance ?? []) {
-      valCounter += 1;
-      const valId = `VAL-${input.seedSlug}-${String(valCounter).padStart(3, '0')}`;
-      valIds.push(valId);
-      itemLines.push(`  - **[${valId}]**`);
-      itemLines.push(`    - **Verify:** ${oneLine(acceptance)}`);
-      itemLines.push(`    - **Status:** \`todo\``);
+      itemLines.push(`  - **Acceptance:** ${oneLine(acceptance)}`);
     }
-    items.push({ itemId, featureIndex: i, valIds });
+    items.push({ itemId, featureIndex: i });
   });
 
   const body = `---
 title: ${title}
 slug: ${input.seedSlug}
 status: active
+template: ${CHILD_SEED_TEMPLATE_NAME}
 created: ${input.date}
 updated: ${input.date}
 ---
@@ -190,7 +189,6 @@ export interface ChildImportFeature {
   title: string;
   summary?: string;
   metadata: Record<string, unknown>;
-  claims?: string[];
   source_plan_slug: string;
   source_plan_item_ids: string[];
   blocked_by?: string[];
@@ -200,8 +198,9 @@ export interface ChildImportFeature {
 /**
  * Build the child-side /features/import payload: deterministic ids,
  * `source_plan_slug = <seed-slug>` + `metadata.source_plan = <seed-slug>` (the
- * dispatcher eligibility key), claims = the seed plan's synthesized VAL ids,
- * and `metadata.spawned_from` provenance back to the parent plan/wave.
+ * dispatcher eligibility key), and `metadata.spawned_from` provenance back to
+ * the parent plan/wave. No `claims`: VAL-* ids are retired (P-003), so there is
+ * nothing for a claim to name.
  */
 export function buildChildImportPayload(opts: {
   features: ReadonlyArray<BuiltFeature>;
@@ -229,7 +228,6 @@ export function buildChildImportPayload(opts: {
       metadata,
       source_plan_slug: opts.seed.seedSlug,
       source_plan_item_ids: [item.itemId],
-      ...(item.valIds.length > 0 && { claims: item.valIds }),
       ...(f.blocked_by && f.blocked_by.length > 0 && { blocked_by: f.blocked_by }),
       ...(f.order != null && { order: f.order }),
     };
@@ -260,20 +258,19 @@ export interface SpawnChildResult {
   seed_plan: 'created' | 'already_existed' | 'failed' | 'skipped';
   /** Deterministic child feature ids actually imported ([] when import skipped/failed). */
   feature_ids: string[];
-  assertions_written: number;
   started: boolean;
   /**
    * P-071/D-063 — WHY `started` is what it is, so a false reading is never
    * ambiguous. `axis_retired` is the normal outcome now (the op_status axis
    * retired with the Mug/Kettle tier) and is NOT a partial failure: unlike
    * `plan_not_found`/`failed` it produces no warning and re-promoting cannot
-   * change it. `skipped` means step 5 never ran (an earlier step aborted).
+   * change it. `skipped` means step 4 never ran (an earlier step aborted).
    */
   start: SpawnStartOutcome;
   warnings: string[];
 }
 
-/** Outcome of step 5 (start the seed plan). See `SpawnChildResult.start`. */
+/** Outcome of step 4 (start the seed plan). See `SpawnChildResult.start`. */
 export type SpawnStartOutcome =
   | 'started'
   | 'plan_not_found'
@@ -302,6 +299,28 @@ export function describeSpawnStart(start: SpawnStartOutcome): string {
   }
 }
 
+/**
+ * A seed-plan write that the locked plan-write seam REFUSED (the conversation
+ * activation gate, dependency validation, …). withPlanLock returns a distinct
+ * `kind:'refused'` result; the dep preserves its typed domain failure here.
+ */
+export interface SeedPlanRefusal {
+  refused: true;
+  code: string;
+  message: string;
+}
+
+/** Map whatever withPlanLock handed back in place of a success literal to a refusal. */
+export function seedPlanRefusalOf(value: unknown): SeedPlanRefusal {
+  const v = (value && typeof value === 'object' ? value : {}) as { code?: unknown; message?: unknown };
+  return {
+    refused: true,
+    code: typeof v.code === 'string' ? v.code : 'unknown_refusal',
+    message:
+      typeof v.message === 'string' ? v.message : `unexpected seed-plan write value: ${JSON.stringify(value)}`,
+  };
+}
+
 export interface SpawnChildDeps {
   /** Is the child slug already a registered harness? */
   resolveChild(slug: string): Promise<boolean>;
@@ -316,18 +335,12 @@ export interface SpawnChildDeps {
     childSlug: string,
     seedSlug: string,
     body: string,
-  ): Promise<'created' | 'already_existed' | 'busy'>;
+  ): Promise<'created' | 'already_existed' | 'busy' | SeedPlanRefusal>;
   /** POST the payload to the child's /features/import. */
   importFeatures(
     childSlug: string,
     payload: ChildImportFeature[],
   ): Promise<{ ids: string[]; inserted: number; updated: number }>;
-  /** Upsert the seed plan's VAL-* rows into harness_plan_assertions (child scope). */
-  writeAssertions(
-    childSlug: string,
-    seedSlug: string,
-    assertions: PlanAssertion[],
-  ): Promise<{ written: number; errors: string[] }>;
   /**
    * plans:start equivalent — op_status='started' on the seed plan row.
    *
@@ -341,7 +354,7 @@ export interface SpawnChildDeps {
 
 /**
  * Run the spawn sequence for ONE child wave: scaffold → synth+write seed plan →
- * import features → write assertions → start. Never throws (D-004) — every
+ * import features → start. Never throws (D-004) — every
  * failure is a `warnings[]` entry, and a step failure aborts the LATER steps so
  * a re-promote can resume from the partial state.
  */
@@ -357,7 +370,6 @@ export async function executeSpawnChild(
     scaffold: 'skipped',
     seed_plan: 'skipped',
     feature_ids: [],
-    assertions_written: 0,
     started: false,
     start: 'skipped',
     warnings: [],
@@ -422,6 +434,11 @@ export async function executeSpawnChild(
       warn('seed plan write was locked by another writer — child left scaffolded-but-unseeded; re-promote to retry');
       return result;
     }
+    if (typeof w === 'object') {
+      result.seed_plan = 'failed';
+      warn(`seed plan write was refused (${w.code}): ${w.message} — child left scaffolded-but-unseeded`);
+      return result;
+    }
     result.seed_plan = w;
   } catch (e) {
     result.seed_plan = 'failed';
@@ -429,41 +446,13 @@ export async function executeSpawnChild(
     return result;
   }
 
-  // ── 3. Assertions, BEFORE the import (P-003, D-002/D-005) ────────────────
-  // The child's features carry the seed plan's synthesized VAL-* ids as `claims`
-  // (buildChildImportPayload), and a claim is only resolvable through
-  // harness_shared.harness_plan_assertions — a DIFFERENT datastore from the child
-  // harness DB that `importFeatures` writes. No transaction spans both, so step
-  // ORDER is the only integrity boundary available. Running this AFTER the import
-  // (the previous order, explicitly best-effort) left the child durably carrying
-  // claim ids with no assertion row whenever the store failed, and said so only in
-  // a warning: /assertion/:valId then resolves nothing and harness-test-gate cannot
-  // approve the required test those claims exist to demand.
-  //
-  // Persisting first makes the surviving failure mode ORPHAN ROWS — nothing
-  // references them, the upsert is idempotent, and the next promote re-converges.
-  const assertions = extractAssertions(seed.body);
-  if (assertions.length > 0) {
-    const abort = (detail: string) => {
-      warn(
-        `${detail} — features were NOT imported rather than carry claim ids with no assertion row; ` +
-          `seed plan exists but carries no features, re-promote to retry (the assertion upsert is idempotent)`,
-      );
-      return result;
-    };
-    try {
-      const a = await deps.writeAssertions(opts.child.slug, seedSlug, assertions);
-      result.assertions_written = a.written;
-      for (const err of a.errors) warn(`assertion write: ${err}`);
-      if (a.errors.length > 0) {
-        return abort(`${a.errors.length} of ${assertions.length} assertion row(s) failed to persist`);
-      }
-    } catch (e) {
-      return abort(`assertion store threw: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
+  // (The former step 3 — upserting the seed's synthesized VAL-* rows into
+  // harness_plan_assertions before the import — is RETIRED with inline VAL-*
+  // assertions, verification-system-improvements-2026-10-10 P-003. The seed
+  // carries plain Acceptance sub-bullets and the import carries no claims, so
+  // there is no cross-datastore claim→row integrity boundary left to order.)
 
-  // ── 4. Import the wave's features into the child ──────────────────────────
+  // ── 3. Import the wave's features into the child ──────────────────────────
   const childIds = mintChildFeatureIds(opts.child.slug, opts.features.length);
   const payload = buildChildImportPayload({
     features: opts.features,
@@ -481,7 +470,7 @@ export async function executeSpawnChild(
     return result;
   }
 
-  // ── 5. Start the seed plan (the RETIRED dispatcher eligibility gate) ─────
+  // ── 4. Start the seed plan (the RETIRED dispatcher eligibility gate) ─────
   // P-071/D-063: `startPlan` is gated on mugKettleSystemEnabled and normally
   // refuses. Each falsy case gets its OWN outcome because they need opposite
   // reactions from the reader: `plan_not_found` means the seed row is missing
@@ -542,46 +531,25 @@ export function buildDefaultSpawnChildDeps(io: {
     async writeSeedPlan(childSlug, seedSlug, body) {
       const r = await withPlanLock<'created' | 'already_existed'>(
         null,
-        { slug: seedSlug, harnessSlug: childSlug, intent: `plans:promote spawn_child → seed plan ${seedSlug}` },
+        {
+          slug: seedSlug,
+          harnessSlug: childSlug,
+          intent: `plans:promote spawn_child → seed plan ${seedSlug}`,
+          // D-038: the ONLY writer allowed to introduce the child-seed template.
+          allowChildSeedTemplate: true,
+        },
         async (current) => {
           if (current !== null) return { newBody: null, value: 'already_existed' as const };
           return { newBody: body, value: 'created' as const };
         },
       );
       if (r.kind === 'busy') return 'busy';
-      return r.value;
+      if (r.kind === 'refused') return seedPlanRefusalOf(r.value);
+      if (r.value === 'created' || r.value === 'already_existed') return r.value;
+      return seedPlanRefusalOf(r.value);
     },
 
     importFeatures: io.importFeatures,
-
-    async writeAssertions(childSlug, seedSlug, assertions) {
-      const { workspaceId } = await resolvePlanScope({ harnessSlug: childSlug });
-      const { sql } = getOrgPg();
-      let written = 0;
-      const errors: string[] = [];
-      for (const a of assertions) {
-        try {
-          await sql`
-            INSERT INTO harness_shared.harness_plan_assertions
-              (workspace_id, harness_slug, val_id, plan_slug, item_id, verify_text, evidence_text, status, requires_test)
-            VALUES
-              (${workspaceId}, ${childSlug}, ${a.valId}, ${seedSlug}, ${a.itemId},
-               ${a.verifyText}, ${a.evidenceText}, ${a.status}, ${a.requiresTest})
-            ON CONFLICT (workspace_id, harness_slug, val_id) DO UPDATE SET
-              plan_slug     = EXCLUDED.plan_slug,
-              item_id       = EXCLUDED.item_id,
-              verify_text   = EXCLUDED.verify_text,
-              evidence_text = EXCLUDED.evidence_text,
-              requires_test = EXCLUDED.requires_test,
-              updated_at    = now()
-          `;
-          written++;
-        } catch (e) {
-          errors.push(`${a.valId}: ${e instanceof Error ? e.message : String(e)}`);
-        }
-      }
-      return { written, errors };
-    },
 
     async startPlan(childSlug, seedSlug) {
       // P-071 / D-063: the op_status axis retires with the Mug/Kettle tier, so

@@ -6,8 +6,16 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
+const routineSql = vi.hoisted(() => vi.fn());
+vi.mock('@papercusp/db-org', async (original) => ({
+  ...(await original<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: routineSql }),
+}));
 import {
+  readPipelineRoutineControl,
+  readReleaseTriggerControl,
   resolverModel,
+  summarizeGateFireHistory,
   toRoutineInfo,
   pinProvenGateCorrection,
   mapActiveRun,
@@ -25,11 +33,38 @@ import {
   gateFailingTestsMeasurement,
   deriveInRoutineGateStalled,
   combineGateStallSignals,
+  skippedPathArr,
+  contentErrorArr,
   type RawGateCounters,
 } from './git-pipeline-stats';
 import { decideStallNotification } from './release/stall-escalation-ladder';
 import type { PipelineEventRow } from './harness/git-sync/pipeline-events';
 import { buildCandidateSnapshot } from './release/candidate-snapshot';
+
+describe('strict pipeline routine control reads', () => {
+  afterEach(() => routineSql.mockReset());
+
+  it('returns absence only after the exact checkpoint configuration query succeeds', async () => {
+    routineSql.mockResolvedValue([]);
+    expect(await readPipelineRoutineControl('customer', 'green-checkpoint')).toBeNull();
+    const [query, slug, name] = routineSql.mock.calls[0]!;
+    expect(query.join('?')).toContain('FROM harness_shared.routines');
+    expect(query.join('?')).toContain('install_slug = ?');
+    expect(query.join('?')).toContain('name = ?');
+    expect([slug, name]).toEqual(['customer', 'green-checkpoint']);
+  });
+
+  it('does not turn a failed checkpoint configuration read into absence', async () => {
+    routineSql.mockRejectedValue(new Error('routine query failed'));
+    await expect(readPipelineRoutineControl('customer', 'green-checkpoint')).rejects.toThrow('routine query failed');
+  });
+
+  it('retains the release-trigger control reader and inactive routine evidence', async () => {
+    routineSql.mockResolvedValue([{ name: 'release-trigger', active: false }]);
+    expect(await readReleaseTriggerControl('customer')).toMatchObject({ name: 'release-trigger', active: false });
+    expect(routineSql.mock.calls[0]!.slice(1)).toEqual(['customer', 'release-trigger']);
+  });
+});
 
 describe('gitPipelineSnapshot latency topology', () => {
   it('starts every independent snapshot read before consuming the routines result', () => {
@@ -47,10 +82,26 @@ describe('gitPipelineSnapshot latency topology', () => {
       'const weekPromise =',
       'const recentPromise =',
       'const deployPromise =',
+      'const fireHistoryPromise =',
     ]) {
       expect(body.indexOf(declaration)).toBeGreaterThan(0);
       expect(body.indexOf(declaration)).toBeLessThan(firstConsumption);
     }
+  });
+});
+
+describe('checkpoint fire history', () => {
+  it('keeps fires, verdict records, no-verdict aborts and skipped starts distinct across UTC day boundaries', () => {
+    const days = [
+      { fires: 30, verdictsGreen: 0, verdictsRed: 0, noVerdicts: 2, skips: 20 },
+      { fires: 44, verdictsGreen: 0, verdictsRed: 0, noVerdicts: 5, skips: 26 },
+    ] as Parameters<typeof summarizeGateFireHistory>[0];
+    expect(summarizeGateFireHistory(days)).toEqual({
+      windowHours: 24, fires: 74, verdictRecords: 0, noVerdictAborts: 7, skippedStarts: 46,
+    });
+    expect(summarizeGateFireHistory([])).toEqual({
+      windowHours: 24, fires: 0, verdictRecords: 0, noVerdictAborts: 0, skippedStarts: 0,
+    });
   });
 });
 
@@ -787,6 +838,7 @@ describe('mapActiveRun (overview-tab-expansion P-001)', () => {
         terminal_marker: false,
         terminal_evidence: {
           source: 'systemd-exec-stop-post',
+          observed_at_ms: 12345,
           candidate: '1f64eb2d',
           service_result: 'oom-kill',
           exit_code: 'killed',
@@ -799,6 +851,7 @@ describe('mapActiveRun (overview-tab-expansion P-001)', () => {
       terminalMarker: false,
       terminalEvidence: {
         candidate: '1f64eb2d',
+        observedAtMs: 12345,
         serviceResult: 'oom-kill',
         exitCode: 'killed',
         exitStatus: 'KILL',
@@ -1157,5 +1210,73 @@ describe('pickRetriageVerdict (EI-19399662484764592, pure)', () => {
         null,
       ),
     ).toBeNull();
+  });
+});
+
+// WI-10006493: git-sync persists every deferral variant in `last_skipped_paths`. This parser used
+// to keep only the lock-holder shape, so fence and reservation deferrals never reached
+// dev:pipeline_position, which then advertised a git-sync:run that could not help.
+describe('skippedPathArr: every persisted git-sync deferral variant survives the read', () => {
+  const lock = { scope: 'superproject', path: 'a.ts', owner: 'su-a', intent: 'edit a' };
+  const reservation = {
+    scope: 'libs/papercusp',
+    path: 'libs/db/sql/1234-x.sql',
+    reason: 'migration-reservation',
+    detail: 'no reservation row for 1234',
+  };
+  const fence = {
+    scope: 'superproject',
+    path: 'b.ts',
+    reason: 'migration-dependency-fence',
+    detail: 'deferred because ...',
+    blockingMigrations: ['libs/papercusp/libs/db/sql/1234-x.sql'],
+    blockingAgents: ['su-author'],
+    blockingWorkItems: ['WI-777'],
+  };
+
+  it('keeps lock, reservation and fence entries with their provenance', () => {
+    expect(skippedPathArr([lock, reservation, fence])).toEqual([lock, reservation, fence]);
+  });
+
+  it('accepts a fence entry written before the provenance fields existed', () => {
+    const legacy = { scope: 'superproject', path: 'c.ts', reason: 'migration-dependency-fence', detail: 'd' };
+    expect(skippedPathArr([legacy])).toEqual([legacy]);
+  });
+
+  it('drops malformed entries and unknown reasons instead of passing them through', () => {
+    expect(
+      skippedPathArr([
+        null,
+        'a.ts',
+        { scope: 'superproject', path: 'x.ts' },
+        { scope: 'superproject', path: 'y.ts', reason: 'something-new', detail: 'd' },
+        { scope: 'superproject', path: 'z.ts', reason: 'migration-reservation' },
+        { ...fence, blockingAgents: ['su-author', 7] },
+      ]),
+    ).toEqual([{ ...fence, blockingAgents: ['su-author'] }]);
+    expect(skippedPathArr(undefined)).toEqual([]);
+  });
+});
+
+describe('contentErrorArr: content-quarantine metadata maps to exact pipeline paths', () => {
+  it('normalizes root scopes and keeps only the detector key', () => {
+    expect(
+      contentErrorArr([
+        'superproject/docs/evidence/reboot-residue-live-probes-2026-10-06/r001-live-probe-rubric-rev15.txt [identity-leak]',
+        'root/docs/other.txt [mdx]',
+        'libs/papercusp/libs/db/sql/1234-x.sql [sql-comment-backtick]',
+        'superproject/apps/operator/x.ts [quarantined-importer of superproject/private/root.txt (identity-leak)]',
+      ]),
+    ).toEqual([
+      { path: 'docs/evidence/reboot-residue-live-probes-2026-10-06/r001-live-probe-rubric-rev15.txt', detector: 'identity-leak' },
+      { path: 'docs/other.txt', detector: 'mdx' },
+      { path: 'libs/papercusp/libs/db/sql/1234-x.sql', detector: 'sql-comment-backtick' },
+      { path: 'apps/operator/x.ts', detector: 'quarantined-importer' },
+    ]);
+  });
+
+  it('drops malformed rows and unknown detector keys', () => {
+    expect(contentErrorArr([null, 4, 'missing-detector', 'superproject/no-bracket', ' [identity-leak]'])).toEqual([]);
+    expect(contentErrorArr(undefined)).toEqual([]);
   });
 });

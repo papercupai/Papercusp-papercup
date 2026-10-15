@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "harness": "dao-launch",
+  "runId": "20261009T060041Z-1690800",
+  "evidenceDir": "/tmp/dao-native-legal-e78cc-output-6/harness/20261009T060041Z-1690800",
+  "selection": {
+    "only": null,
+    "from": null
+  },
+  "reuseFromRunId": null,
+  "preflight": null,
+  "phases": [
+    {
+      "phase": "native-assertions",
+      "status": "passed",
+      "step": null,
+      "reasonCode": null,
+      "evidenceDir": "/tmp/dao-native-legal-e78cc-output-6/harness/20261009T060041Z-1690800/phases/native-assertions",
+      "startedAt": "2026-10-09T06:00:44.945Z",
+      "endedAt": "2026-10-09T06:01:38.334Z",
+      "elapsedMs": 53396
+    }
+  ],
+  "verdict": "pass",
+  "firstFailure": null,
+  "guardRails": null,
+  "startedAt": "2026-10-09T06:00:44.301Z",
+  "endedAt": "2026-10-09T06:01:41.041Z"
+}

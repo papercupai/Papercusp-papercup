@@ -26,8 +26,9 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { wellKnownBackendBin } from './psu-launcher.mjs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { spawnSync } from 'node:child_process';
+import { codexManagedDaemonArgs, detectBackendBin, ensureBackendInstalled, wellKnownBackendBin } from './psu-launcher.mjs';
 
 /**
  * Install locations a backend can legitimately land in, that a desktop-spawned
@@ -77,6 +78,121 @@ describe('wellKnownBackendBin — PATH-independent backend detection (WI-37920)'
       expect(wellKnownBackendBin('omp', { home: empty, env: { NODE_ENV: 'test', PATH: '' } })).toBeNull();
     } finally {
       rmSync(empty, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('packaged backend launchers cannot recursively launch psu', () => {
+  it.each([
+    { args: ['--resume', '11111111-1111-4111-8111-111111111111', '--fork-session', '--session-id', '22222222-2222-4222-8222-222222222222'], expected: '22222222-2222-4222-8222-222222222222' },
+    { args: ['--resume', '11111111-1111-4111-8111-111111111111', '--fork-session'], expected: '' },
+  ])('derives the ordinary child MCP identity from argv without restoring Claude ancestry: $expected', ({ args, expected }) => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-native-carrier-'));
+    try {
+      const nativeDir = join(root, 'native');
+      mkdirSync(nativeDir, { recursive: true });
+      writeFileSync(join(nativeDir, 'claude'), '#!/bin/sh\nprintf "CARRIER:%s\\nANCESTRY:%s\\n" "$PAPERCUSP_NATIVE_SESSION_ID" "$CLAUDE_CODE_SESSION_ID"\n', { mode: 0o755 });
+      const launcherUrl = process.env.PROBE_SUBJECT
+        ? pathToFileURL(process.env.PROBE_SUBJECT).href
+        : new URL('./psu-launcher.mjs', import.meta.url).href;
+      const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+        import { runWrapper } from ${JSON.stringify(launcherUrl)};
+        runWrapper({
+          wrapperBin: 'claude', args: ${JSON.stringify(args)}, cwd: ${JSON.stringify(root)},
+          preserveCwd: true,
+          envelopeEnv: { PAPERCUSP_AGENT: 'claude', PAPERCUSP_PSU_NO_PTY: '1',
+            PAPERCUSP_NATIVE_SESSION_ID: '11111111-1111-4111-8111-111111111111' },
+          reportSessionEndedImpl: async () => {},
+        });
+      `], {
+        encoding: 'utf8', timeout: 15_000,
+        env: { HOME: root, NODE_ENV: 'test', PATH: [nativeDir, process.env.PATH].join(':'),
+          PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1', PAPERCUSP_MCP_PROXY: '0',
+          CLAUDE_CODE_SESSION_ID: '11111111-1111-4111-8111-111111111111' },
+      });
+      expect(result.error, JSON.stringify({ status: result.status, signal: result.signal,
+        stdout: result.stdout, stderr: result.stderr })).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe(`CARRIER:${expected}\nANCESTRY:\n`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { operation: 'launch', args: ['--help'] },
+    { operation: 'resume', args: ['resume', 'test-thread'] },
+    { operation: 'owner-reported flags', args: [
+      '--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', '--no-alt-screen',
+    ] },
+  ])('spawns the native executable for $operation without an earlier install check', ({ args }) => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-native-spawn-'));
+    try {
+      const wrapperDir = join(root, 'sidecar/bin');
+      const nativeDir = join(root, 'native');
+      mkdirSync(wrapperDir, { recursive: true });
+      mkdirSync(nativeDir, { recursive: true });
+      const packagedLauncher = join(root, 'psu.mjs');
+      writeFileSync(packagedLauncher, "console.log('PACKAGED_LAUNCHER');\n");
+      writeFileSync(
+        join(wrapperDir, 'codex'),
+        `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(packagedLauncher)} "$@"\n`,
+        { mode: 0o755 },
+      );
+      writeFileSync(join(nativeDir, 'codex'), '#!/bin/sh\nprintf "NATIVE_ARG:%s\\n" "$@"\n', { mode: 0o755 });
+      const launcherUrl = process.env.PROBE_SUBJECT
+        ? pathToFileURL(process.env.PROBE_SUBJECT).href
+        : new URL('./psu-launcher.mjs', import.meta.url).href;
+      const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+        import { runWrapper } from ${JSON.stringify(launcherUrl)};
+        runWrapper({
+          wrapperBin: 'codex',
+          args: ${JSON.stringify(args)},
+          cwd: ${JSON.stringify(root)},
+          preserveCwd: true,
+          envelopeEnv: { PAPERCUSP_AGENT: 'codex', PAPERCUSP_PSU_NO_PTY: '1' },
+          reportSessionEndedImpl: async () => {},
+        });
+      `], {
+        encoding: 'utf8',
+        timeout: 15_000,
+        env: { HOME: root, NODE_ENV: 'test', PATH: [wrapperDir, nativeDir, process.env.PATH].join(':') },
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).not.toContain('PACKAGED_LAUNCHER');
+      expect(result.stdout).toBe(['--no-daemon', ...args].map(argument => `NATIVE_ARG:${argument}\n`).join(''));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('isolates managed Codex feature settings from the shared background daemon on launch and resume', () => {
+    expect(codexManagedDaemonArgs('codex', ['--no-alt-screen'])).toEqual(['--no-daemon', '--no-alt-screen']);
+    expect(codexManagedDaemonArgs('/opt/bin/codex', ['resume', 'thread'])).toEqual(['--no-daemon', 'resume', 'thread']);
+    expect(codexManagedDaemonArgs('codex', ['--no-daemon'])).toEqual(['--no-daemon']);
+    expect(codexManagedDaemonArgs('claude', [])).toEqual([]);
+  });
+  it('detects and promotes the native backend even when its directory is already later on PATH', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-native-backend-'));
+    const originalPath = process.env.PATH;
+    try {
+      const wrapperDir = join(root, 'sidecar/bin');
+      const nativeDir = join(root, 'native');
+      mkdirSync(wrapperDir, { recursive: true });
+      mkdirSync(nativeDir, { recursive: true });
+      writeFileSync(join(wrapperDir, 'codex'), '#!/bin/sh\nexec node "$ROOT/scripts/psu.mjs" --agent=codex "$@"\n');
+      const native = join(nativeDir, 'codex');
+      writeFileSync(native, '#!/bin/sh\nexit 0\n');
+      process.env.PATH = [wrapperDir, nativeDir, originalPath].join(':');
+      expect(detectBackendBin('codex')).toEqual({ path: native, onPath: true });
+      expect(await ensureBackendInstalled('codex', { interactive: false })).toBe(true);
+      expect(process.env.PATH?.split(':')[0]).toBe(nativeDir);
+      expect(detectBackendBin('codex')?.path).toBe(native);
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

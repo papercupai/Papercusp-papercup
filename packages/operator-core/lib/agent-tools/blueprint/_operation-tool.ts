@@ -42,6 +42,7 @@ export interface OperationScope {
   sql: Sql;
   workspaceId: string;
   callerId: string;
+  principalId: string;
 }
 
 function concrete(value: string | null | undefined): string | null {
@@ -58,7 +59,7 @@ export function resolveOperationScope(ctx: OperationToolContext): OperationScope
   if (!workspaceId) {
     throw new UnauthorizedToolError('blueprint operations require a principal bound to a concrete workspace');
   }
-  return { sql: getOrgPg().sql, workspaceId, callerId: operationCallerId(slug, ctx.uiClientId) };
+  return { sql: getOrgPg().sql, workspaceId, callerId: operationCallerId(slug, ctx.uiClientId), principalId: slug };
 }
 
 function refuse(code: string, message: string): never {

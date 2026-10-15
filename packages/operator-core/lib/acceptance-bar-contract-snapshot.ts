@@ -469,7 +469,7 @@ export function predictAmendedBarProofFloor(
       const plane = (criterion.evidencePlane ?? before?.evidencePlane ?? 'tree') as AcceptanceEvidencePlane;
       const layers = criterion.requiredTestLayers ?? [];
       const clause: ProjectedClauseProofObligation = {
-        behaviorClass: acceptanceBarBehaviorClass(plane, layers),
+        behaviorClass: before?.mutationRequired === true ? 'happy-path' : acceptanceBarBehaviorClass(plane, layers, criterion.check),
         requiredTestLayers: layers,
         mutationRequired: before?.mutationRequired === true,
       };
@@ -846,9 +846,11 @@ export function nextRepair(
       + 'The required BAR amendment advances the rubric meaning revision and can invalidate an existing independent '
       + 'grading card and vetting attestation; batch this change before commissioning those artifacts, or expect to re-grade and re-vet.',
     bar_snapshot_proof_inadequate:
-      'Run plans:evaluate-spec-test-adequacy for the mapped outcome with current fingerprints; fix every fail/unknown proof obligation before ship. '
-      + 'A read-only shipReadiness probe supplies no current fingerprints, so freshness rates unknown and this code can persist however good the evidence is — '
-      + 'supply current fingerprints before concluding the evidence itself is at fault.',
+      'Run plans:evaluate-spec-test-adequacy for the mapped outcome and fix every fail/unknown proof obligation before ship. '
+      + 'You do not need to supply current fingerprints: the server re-measures each binding from its recorded measurement recipe. '
+      + 'If freshness still reads unknown, read the binding\'s unknownReasons in plans:get-spec-evidence: '
+      + 'server-measurement-unavailable:<reason> names why the server could not measure it, and *-current-fingerprint-not-supplied '
+      + 'means the binding carries no measurement recipe, so re-bind it with fromTestRun or a measurement.',
     bar_snapshot_evidence_plane_unmet: "Record current evidence on the BAR's declared evidence plane.",
     bar_snapshot_evidence_runtime_unmet:
       "Measure on the BAR's declared evidenceRuntime (dev:pipeline_position servingRuntimes names its build) and bind evidence with details.runtime set to it — green main is only required when that runtime IS release-operator.",
@@ -1156,6 +1158,10 @@ export function projectAcceptanceBarContractSnapshot(
     );
     const staleEvidence = activeEvidence.filter((row) => !currentEvidence.includes(row));
     const requiredTestLayers = normalized(criterion.requiredTestLayers);
+    const hasStructuredTestsCheck = criterion.check?.kind === 'tests';
+    const sourceBarTestRequirements = criterion.check?.kind === 'tests'
+      ? { status: 'required' as const, files: criterion.check.files }
+      : { status: 'not-required' as const };
     // The declared evidence plane is a separate lifecycle obligation. Adequacy
     // must inspect every current exact-cohort row because a BAR can require
     // mixed test layers (for example, tree/unit plus live/e2e). Filtering here
@@ -1164,18 +1170,19 @@ export function projectAcceptanceBarContractSnapshot(
     // on the BAR's declared plane.
     const classRef: PlanClassRubricRef = PLAN_CLASS_RUBRIC_REFS.includes(rubric?.classRef as PlanClassRubricRef)
       ? rubric!.classRef as PlanClassRubricRef : 'plan-class-feature-ship';
-    const adequacyChecks = requiredTestLayers.length === 0 ? [] : enforceableClauses.map((clause) => {
+    const adequacyDeclared = requiredTestLayers.length > 0 || hasStructuredTestsCheck;
+    const adequacyChecks = !adequacyDeclared ? [] : enforceableClauses.map((clause) => {
       // A clause may add proof obligations above its BAR's minimum. Keep those
       // obligations when grading instead of replacing them with the BAR floor.
       const clauseTestLayers = normalized([...requiredTestLayers, ...clause.requiredTestLayers]);
       const result = evaluateSpecTestAdequacy({ clause: { ...clause, requiredTestLayers: clauseTestLayers },
         // Selection precedes freshness: a newer stale/unknown registered attempt
         // must not vanish and leave a passing counterexample to stand in for it.
-        evidence, classRef, harness: plan.harnessSlug });
+        evidence, classRef, harness: plan.harnessSlug, sourceBarTestRequirements });
       return { specId: clause.specId, revision: clause.revision, verdict: result.verdict,
         wouldBlock: result.wouldBlock, evidenceRefs: result.evidenceRefs };
     });
-    const adequacyState = requiredTestLayers.length === 0 ? 'undeclared' as const
+    const adequacyState = !adequacyDeclared ? 'undeclared' as const
       : adequacyChecks.some((check) => check.verdict === 'pass') ? 'pass' as const
         : adequacyChecks.some((check) => check.verdict === 'unknown') ? 'unknown' as const : 'fail' as const;
     const ratingEntry = grading.card?.ratings[criterion.key] as { rating?: string; evidence?: string } | undefined;
@@ -1812,7 +1819,11 @@ async function defaultReadPlanItems(
 async function defaultReadClauses(
   plan: AcceptanceBarSubjectPlanSource,
 ): Promise<BoundedAcceptanceBarRows<SpecClauseRevision>> {
+  // Scope to the subject row's OWN workspace, like every other reader here. Without it the
+  // operator-home harness resolves to PAPERCUSP_WORKSPACE_ID and a plan stored elsewhere
+  // reads zero clauses, so every BAR reports bar_snapshot_mapping_missing (WI-10005140).
   const rows = await listSpecClauses({
+    workspaceId: plan.workspaceId,
     harnessSlug: plan.harnessSlug,
     planSlug: plan.planSlug,
     limit: MAX_BAR_PROJECTION_EDGES + 1,
@@ -1833,12 +1844,27 @@ async function defaultReadWorkContracts(
       spec_fingerprint: string;
     }>
   >`
-    SELECT work_item_id, plan_slug, spec_id, spec_revision, spec_fingerprint
-      FROM harness_shared.work_item_spec_revision_edges
-     WHERE workspace_id = ${plan.workspaceId}
-       AND harness_slug = ${plan.harnessSlug}
-       AND plan_slug = ${plan.planSlug}
-     ORDER BY work_item_id, spec_id, spec_revision
+    -- ONE edge per (work item, spec): the edge at the clause's CURRENT revision when it
+    -- exists, else the newest. Edges are append-only (an immutability trigger rejects
+    -- DELETE/UPDATE), so every spec revision a work item ever bound stays a row, and
+    -- reading that whole history let a long-lived plan exceed MAX_BAR_PROJECTION_EDGES on
+    -- SUPERSEDED rows alone — refusing the entire contract as bar_snapshot_source_truncated
+    -- with zero BARs blocking (EI-25254803369850716: 1,129 edges, 422 live pairs). Every
+    -- consumer asks only whether SOME edge for a clause is current; a superseded edge never
+    -- is, and the newest-edge fallback keeps a stale-only work item visible as stale. The
+    -- cap now bounds the live bar-to-work map, which is what it bounds at seed time.
+    SELECT DISTINCT ON (e.work_item_id, e.spec_id)
+           e.work_item_id, e.plan_slug, e.spec_id, e.spec_revision, e.spec_fingerprint
+      FROM harness_shared.work_item_spec_revision_edges e
+      LEFT JOIN harness_shared.plan_spec_clauses c
+        ON c.workspace_id = e.workspace_id AND c.harness_slug = e.harness_slug
+       AND c.plan_slug = e.plan_slug AND c.spec_id = e.spec_id
+     WHERE e.workspace_id = ${plan.workspaceId}
+       AND e.harness_slug = ${plan.harnessSlug}
+       AND e.plan_slug = ${plan.planSlug}
+     ORDER BY e.work_item_id, e.spec_id,
+              (e.spec_revision = c.current_revision) DESC NULLS LAST,
+              e.spec_revision DESC
      LIMIT ${MAX_BAR_PROJECTION_EDGES + 1}`;
   return bounded(
     rows.map((row) => ({
@@ -2106,6 +2132,8 @@ function acceptanceBarHashInputFromTrace(
     evidenceRuntime: bar.requirement?.acceptance.evidenceRuntime ?? undefined,
     requiredTestLayers: bar.requiredTestLayers,
     check: bar.check ?? undefined,
+    // P-011: hashed only when declared, so undeclared bars keep their pre-P-011 hash.
+    productionConfiguration: bar.requirement?.verification.productionConfiguration ?? undefined,
     role: bar.role ?? undefined,
     mandatory: bar.mandatory ?? undefined,
     passRatings: bar.passRatings,

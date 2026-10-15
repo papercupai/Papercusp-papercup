@@ -19,16 +19,20 @@ import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 import type { ReactElement } from 'react';
 
 /* ── Mocks ─────────────────────────────────────────────────────────── */
-let syncResult: { data: unknown[] };
+let syncResult: { data: unknown[] | undefined; loading?: boolean; error?: Error | null };
+const invalidateConfig = vi.fn();
 vi.mock('@papercusp/sync', () => ({
   onSyncBusEvent: () => () => {},
-  useSyncQuery: () => ({ ...syncResult, error: null, loading: false, fetching: false, invalidate: vi.fn() }),
+  useSyncQuery: () => ({ loading: false, error: null, ...syncResult, fetching: false, invalidate: invalidateConfig }),
 }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('@/lib/use-workspace-id', () => ({ useWorkspaceId: () => 'ws-test' }));
 // Heavy children — out of scope for this panel's own logic.
 vi.mock('./SavedPromptsSection', () => ({ default: () => <div data-testid="saved-prompts" /> }));
 vi.mock('./HarnessPluginsSection', () => ({ default: () => <div data-testid="plugins-section" /> }));
+vi.mock('./IntegrationModeSection', () => ({
+  default: ({ slug }: { slug: string }) => <div data-testid="integration-mode-section-mount">{slug}</div>,
+}));
 
 // The blueprint-params engine — fully mocked so we drive views + validation.
 let mockViews: Array<{ key: string; spec: Record<string, unknown>; value: unknown; overridden: boolean }>;
@@ -165,5 +169,147 @@ describe('BlueprintSettingsPanel (schema-driven per-harness settings)', () => {
     renderPanel(<BlueprintSettingsPanel slug="h" phase="production" />);
     await waitFor(() => expect(screen.getByTestId('saved-prompts')).toBeTruthy());
     expect(screen.getByTestId('plugins-section')).toBeTruthy();
+  });
+
+  it('withholds denied blueprint settings and retries the schema read', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('{"error":"forbidden","params":{"m":{}}}', { status: 403 }))
+      .mockResolvedValueOnce(new Response('{"blueprintId":"research","params":{}}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    mockViews = [{ key: 'm', spec: { type: 'string', label: 'Model' }, value: 'denied-model', overridden: false }];
+    renderPanel(<BlueprintSettingsPanel slug="h" phase="production" />);
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('HTTP 403'));
+    expect(screen.queryByDisplayValue('denied-model')).toBeNull();
+    expect(screen.queryByText(/declares no tunable settings/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry settings' }));
+    await waitFor(() => expect(screen.getByText('research')).toBeTruthy());
+    expect(fetchMock.mock.calls.map(c => c[0])).toEqual([
+      '/api/harness/h/blueprint-params?phase=production', '/api/harness/h/blueprint-params?phase=production',
+    ]);
+  });
+
+  it('waits for the saved config before editing and preserves unrelated fields on save', async () => {
+    stubBlueprintParamsFetch({ blueprintId: 'coding', params: { m: {} } });
+    mockViews = [{ key: 'm', spec: { type: 'string', label: 'Model' }, value: 'initial', overridden: false }];
+    mockValidate = { ok: true, errors: [], unknownKeys: [], patch: { m: 'edited' } };
+    syncResult = { data: undefined, loading: true };
+    const panel = renderPanel(<BlueprintSettingsPanel slug="h" phase="production" />);
+    await waitFor(() => expect(fetch).toHaveBeenCalled());
+    expect(screen.queryByDisplayValue('initial')).toBeNull();
+    expect(screen.getByText('Loading…')).toBeTruthy();
+    syncResult = { data: [{ config: '{"unrelated":{"keep":true},"m":"initial"}' }], loading: false };
+    panel.rerender(<NuqsTestingAdapter><BlueprintSettingsPanel slug="h" phase="production" /></NuqsTestingAdapter>);
+    await waitFor(() => expect(screen.getByDisplayValue('initial')).toBeTruthy());
+    fireEvent.change(screen.getByDisplayValue('initial'), { target: { value: 'edited' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Settings saved'));
+    const put = vi.mocked(fetch).mock.calls.find(c => c[1]?.method === 'PUT')!;
+    expect(JSON.parse(JSON.parse(String(put[1]!.body)).config)).toEqual({ unrelated: { keep: true }, m: 'edited' });
+  });
+
+  it('clears previous saved config when the authoritative mirror becomes empty', async () => {
+    stubBlueprintParamsFetch({ blueprintId: 'coding', params: { m: {} } });
+    mockViews = [{ key: 'm', spec: { type: 'string', label: 'Model' }, value: 'initial', overridden: false }];
+    mockValidate = { ok: true, errors: [], unknownKeys: [], patch: { m: 'edited' } };
+    syncResult = { data: [{ config: '{"staleOnly":"must-not-return"}' }] };
+    const panel = renderPanel(<BlueprintSettingsPanel slug="h" phase="production" />);
+    await waitFor(() => expect(screen.getByDisplayValue('initial')).toBeTruthy());
+    syncResult = { data: [] };
+    panel.rerender(<NuqsTestingAdapter><BlueprintSettingsPanel slug="h" phase="production" /></NuqsTestingAdapter>);
+    fireEvent.change(screen.getByDisplayValue('initial'), { target: { value: 'edited' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(toast.success).toHaveBeenCalled());
+    const put = vi.mocked(fetch).mock.calls.find(c => c[1]?.method === 'PUT')!;
+    expect(JSON.parse(JSON.parse(String(put[1]!.body)).config)).toEqual({ m: 'edited' });
+  });
+
+  it('discards prior edits and schema while a different harness is loading', async () => {
+    let resolveNext!: (response: Response) => void;
+    vi.stubGlobal('fetch', vi.fn((url: string) => url.includes('/next/')
+      ? new Promise<Response>(resolve => { resolveNext = resolve; })
+      : Promise.resolve(new Response('{"blueprintId":"old-blueprint","params":{"m":{}}}'))));
+    mockViews = [{ key: 'm', spec: { type: 'string', label: 'Model' }, value: 'initial', overridden: false }];
+    const panel = renderPanel(<BlueprintSettingsPanel slug="old" phase="production" />);
+    await waitFor(() => expect(screen.getByDisplayValue('initial')).toBeTruthy());
+    fireEvent.change(screen.getByDisplayValue('initial'), { target: { value: 'old-edit' } });
+    panel.rerender(<NuqsTestingAdapter><BlueprintSettingsPanel slug="next" phase="production" /></NuqsTestingAdapter>);
+    expect(screen.queryByDisplayValue('old-edit')).toBeNull();
+    expect(screen.queryByText('old-blueprint')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+    resolveNext(new Response('{"blueprintId":"new-blueprint","params":{"m":{}}}'));
+    await waitFor(() => expect(screen.getByText('new-blueprint')).toBeTruthy());
+    expect(screen.queryByText(/unsaved change/)).toBeNull();
+  });
+
+  it('retains edits after a denied save and retries the exact selected harness', async () => {
+    let deny = true;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (!init?.method) return new Response('{"blueprintId":"coding","params":{"m":{}}}');
+      return new Response(deny ? '{"error":"forbidden"}' : '{"ok":true}', { status: deny ? 403 : 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    mockViews = [{ key: 'm', spec: { type: 'string', label: 'Model' }, value: 'initial', overridden: false }];
+    mockValidate = { ok: true, errors: [], unknownKeys: [], patch: { m: 'edited' } };
+    renderPanel(<BlueprintSettingsPanel slug="chosen" phase="production" />);
+    await waitFor(() => expect(screen.getByDisplayValue('initial')).toBeTruthy());
+    fireEvent.change(screen.getByDisplayValue('initial'), { target: { value: 'edited' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Save failed', { description: 'HTTP 403' }));
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(screen.getByDisplayValue('edited')).toBeTruthy();
+    deny = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Settings saved'));
+    expect(fetchMock.mock.calls.filter(c => c[1]?.method === 'PUT').map(c => c[0]))
+      .toEqual(['/api/harness/chosen/spec?phase=production', '/api/harness/chosen/spec?phase=production']);
+  });
+
+  it('shows blueprint resolution errors even when the API returns HTTP 200', async () => {
+    stubBlueprintParamsFetch({ params: {}, error: 'Invalid blueprint schema' } as never);
+    renderPanel(<BlueprintSettingsPanel slug="h" phase="production" />);
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Invalid blueprint schema'));
+    expect(screen.queryByText(/declares no tunable settings/)).toBeNull();
+  });
+
+  it('withholds config read errors and retries the existing named query', async () => {
+    stubBlueprintParamsFetch({ params: { m: {} } });
+    syncResult = { data: [], error: new Error('Config denied') };
+    renderPanel(<BlueprintSettingsPanel slug="h" phase="production" />);
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Config denied'));
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry settings' }));
+    expect(invalidateConfig).toHaveBeenCalledOnce();
+  });
+
+  it.each(['{"unterminated":', '[]', 'null'])('does not overwrite malformed saved config %s', async config => {
+    stubBlueprintParamsFetch({ params: { m: {} } });
+    syncResult = { data: [{ config }] };
+    renderPanel(<BlueprintSettingsPanel slug="h" phase="production" />);
+    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+    expect(vi.mocked(fetch).mock.calls.some(c => c[1]?.method === 'PUT')).toBe(false);
+  });
+
+  it('resets edits when the same harness switches spec phase', async () => {
+    stubBlueprintParamsFetch({ params: { m: {} } });
+    mockViews = [{ key: 'm', spec: { type: 'string', label: 'Model' }, value: 'initial', overridden: false }];
+    const panel = renderPanel(<BlueprintSettingsPanel slug="h" phase="production" />);
+    await waitFor(() => expect(screen.getByDisplayValue('initial')).toBeTruthy());
+    fireEvent.change(screen.getByDisplayValue('initial'), { target: { value: 'old-phase-edit' } });
+    panel.rerender(<NuqsTestingAdapter><BlueprintSettingsPanel slug="h" phase="staging" /></NuqsTestingAdapter>);
+    await waitFor(() => expect(screen.getByDisplayValue('initial')).toBeTruthy());
+    expect(screen.queryByDisplayValue('old-phase-edit')).toBeNull();
+    expect(screen.queryByText(/unsaved change/)).toBeNull();
+  });
+
+  // WI-10006501: this is the panel the Settings tab mounts by default
+  // (BLUEPRINT_AWARE_SETTINGS on), so the pot's working-copy switch (P-016) must be
+  // here too, keyed to the selected pot. Before the fix it existed only in the
+  // legacy HarnessSettingsPanel, so with defaults no user could reach it.
+  it("mounts the pot's working-copy switch for the selected pot, including while params load", async () => {
+    stubBlueprintParamsFetch({ blueprintId: 'coding', params: {} });
+    renderPanel(<BlueprintSettingsPanel slug="pot-review-pilot" phase="production" />);
+    await waitFor(() => expect(screen.getByTestId('integration-mode-section-mount')).toBeTruthy());
+    expect(screen.getByTestId('integration-mode-section-mount').textContent).toBe('pot-review-pilot');
   });
 });

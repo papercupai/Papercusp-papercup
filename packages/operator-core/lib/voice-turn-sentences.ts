@@ -44,6 +44,49 @@ const MAX_TAG_LITERAL = 300;
 
 const SENTENCE_END = new Set(['.', '!', '?', '…']);
 
+export interface SpeechTextLimits {
+  maxChars: number;
+  maxUtf8Bytes?: number;
+}
+
+/** Split already-normalized source text without trimming, dropping, or rephrasing it. */
+export function splitSpeechText(text: string, limits: SpeechTextLimits): string[] {
+  const { maxChars, maxUtf8Bytes = Number.MAX_SAFE_INTEGER } = limits;
+  if (!Number.isSafeInteger(maxChars) || maxChars < 1 || !Number.isSafeInteger(maxUtf8Bytes) || maxUtf8Bytes < 1) {
+    throw new RangeError('Speech chunk limits must be positive safe integers.');
+  }
+  const chunks: string[] = [];
+  let start = 0;
+  while (start < text.length) {
+    let end = start;
+    let bytes = 0;
+    let wordBoundary = start;
+    let sentenceBoundary = start;
+    while (end < text.length) {
+      const point = text.codePointAt(end)!;
+      const width = point > 0xffff ? 2 : 1;
+      const utf8Bytes = point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4;
+      if (end - start + width > maxChars || bytes + utf8Bytes > maxUtf8Bytes) break;
+      const char = text.slice(end, end + width);
+      end += width;
+      bytes += utf8Bytes;
+      if (/\s/u.test(char)) {
+        wordBoundary = end;
+        if (char === '\n' || SENTENCE_END.has(text[end - width - 1] ?? '')) sentenceBoundary = end;
+      }
+    }
+    if (end === start) throw new RangeError('A source character exceeds the selected speech provider chunk limit.');
+    if (end < text.length) {
+      const usefulBoundary = start + (end - start) / 2;
+      if (sentenceBoundary > usefulBoundary) end = sentenceBoundary;
+      else if (wordBoundary > usefulBoundary) end = wordBoundary;
+    }
+    chunks.push(text.slice(start, end));
+    start = end;
+  }
+  return chunks;
+}
+
 /** Does the candidate sentence contain anything worth speaking? */
 function isSpeakable(s: string): boolean {
   return /[\p{L}\p{N}]/u.test(s);

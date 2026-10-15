@@ -56,6 +56,15 @@ function select(rows: PlanContentRow[], over: Partial<Parameters<typeof selectSp
 }
 
 describe('selectSpecTriadFilings', () => {
+  it('does not refile a reasoned drop and never files acceptance companions', () => {
+    const dropped = row({ slug: 'reasoned-drop' });
+    const control = row({ slug: 'ordinary' });
+    const s = select([dropped, row({ slug: 'acceptance-old', declare: 'required' }), control], {
+      alreadyOpen: new Set([planRef(dropped)]),
+    });
+    expect(s.batch.map((x) => x.row.plan_slug)).toEqual(['ordinary']);
+    expect(s.alreadyFiled).toBe(1);
+  });
   it('files for an in-scope plan missing the triad', () => {
     const s = select([row({ slug: 'a' })]);
     expect(s.inScope).toBe(1);
@@ -219,6 +228,7 @@ describe('selectSpecTriadReconciliations — dangling/moot filings close, live o
     archived: o.archived ?? false,
     is_legacy: o.is_legacy ?? false,
     template: o.template === undefined ? null : o.template,
+    content: o.content,
   });
 
   const sel = (
@@ -234,6 +244,16 @@ describe('selectSpecTriadReconciliations — dangling/moot filings close, live o
     expect(s.toClose[0].reason).toBe('plan-missing');
     expect(s.toClose[0].detail).toContain('ws/home');
     expect(s.kept).toBe(0);
+  });
+
+  it('settles legacy companion and explicitly exempt reminders with exemption evidence', () => {
+    const s = sel(
+      [filing({ ref: 'ws/home/acceptance-old' }), filing({ ref: 'ws/home/exempt' })],
+      [locator({ slug: 'acceptance-old' }), locator({ slug: 'exempt', content: '---\nspecTriad: exempt\n---\n' })],
+    );
+    expect(s.toClose.map((r) => r.reason)).toEqual(['plan-exempt', 'plan-exempt']);
+    expect(s.toClose[0].detail).toContain('acceptance-*');
+    expect(s.toClose[1].detail).toContain('specTriad: exempt');
   });
 
   it('closes a filing for a deleted plan (no row anywhere) without a phantom home', () => {

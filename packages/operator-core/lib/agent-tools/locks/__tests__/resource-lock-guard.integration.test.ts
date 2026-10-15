@@ -15,6 +15,7 @@ import {
   getTxPool,
   _resetForTests,
   tryAcquireResource,
+  tryReleaseResource,
   readResourceQueue,
 } from '../su-lock-store';
 import { inWorkspaceTxn } from '../in-workspace-txn';
@@ -22,6 +23,7 @@ import { _resetListenersForTests } from '../workspace-listener';
 import { readInbox } from '../../coordination/messages';
 import type { AgentIdentity } from '../../coordination/identity';
 import { guardResource } from '../resource-lock-guard';
+import { resourceLockDomain } from '../coordination-domain';
 
 async function dbLive(): Promise<boolean> {
   try {
@@ -48,6 +50,51 @@ describe('guardResource (requiresLock enforcement)', async () => {
   beforeAll(async () => {
     if (live) await readInbox(`warmup-${Date.now()}`).catch(() => {});
   });
+
+  it.skipIf(!live).each([
+    ['staging-server', 0], ['staging-server-cooldown', 0],
+    ['staging-server', 0.02], ['staging-server-cooldown', 0.02],
+  ] as const)(
+    'a shared %s probe excludes and cleans up a restart with drain budget %s', async (resource, maxDrainSec) => {
+      await ensureBootstrap();
+      const saved = process.env.PAPERCUSP_LOCK_DOMAIN;
+      // Isolate the actual PG lock rows; never hold the production service.
+      process.env.PAPERCUSP_LOCK_DOMAIN = uniqueWs();
+      const probeDomain = resourceLockDomain(resource, '/checkouts/canonical');
+      const restartDomain = resourceLockDomain(resource, '/checkouts/staging-generation');
+      const owner = 'probe-' + uniqueWs();
+      const restartOwner = 'restart-' + owner;
+      const held = await inWorkspaceTxn(probeDomain, owner, tx => tryAcquireResource(tx, {
+        coordinationDomain: probeDomain, resource, mode: 'shared', owner,
+        ownerLabel: 'protected probe', reason: 'cross-checkout regression', ttlSec: 30,
+      }));
+      try {
+        expect(held.ok).toBe(true);
+        let ran = false;
+        const out = await guardResource({ coordinationDomain: restartDomain, ownerId: restartOwner,
+          ownerLabel: 'restart', coordIdentity: mkId(restartOwner), resource,
+          mode: 'exclusive', maxDrainSec }, async () => { ran = true; });
+        expect(ran).toBe(false);
+        expect(out.acquired).toBe(false);
+        // A declined guard has no body left to run. Its reservation must not
+        // become an effective exclusive after the probe finishes.
+        const declined = await readResourceQueue(getTxPool(), { coordinationDomain: restartDomain, resource });
+        expect(declined.holders.some(holder => holder.owner === restartOwner)).toBe(false);
+        expect(probeDomain).toBe(restartDomain);
+        expect(resourceLockDomain('per-tree-fixture', '/checkouts/canonical'))
+          .not.toBe(resourceLockDomain('per-tree-fixture', '/checkouts/staging-generation'));
+      } finally {
+        // Release the test-owned restart too when a regression assertion fails.
+        await inWorkspaceTxn(restartDomain, restartOwner, tx => tryReleaseResource(tx, {
+          coordinationDomain: restartDomain, owner: restartOwner, resource,
+        }));
+        if (held.ok) await inWorkspaceTxn(probeDomain, owner, tx => tryReleaseResource(tx, {
+          coordinationDomain: probeDomain, owner, lockId: held.lock_id,
+        }));
+        if (saved === undefined) delete process.env.PAPERCUSP_LOCK_DOMAIN;
+        else process.env.PAPERCUSP_LOCK_DOMAIN = saved;
+      }
+    });
 
   it.skipIf(!live)('acquires exclusive, runs the body while held, releases after', async () => {
     await ensureBootstrap();

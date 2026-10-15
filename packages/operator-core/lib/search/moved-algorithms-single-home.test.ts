@@ -112,6 +112,7 @@ const MOVED: MovedAlgorithm[] = [
     },
     hosts: [
       { file: 'lib/search/prose-vector-dims.ts', imports: ['createEmbeddingSpace'], calls: /\bPROSE_EMBEDDING_SPACE\.validateCompatibility\(/ },
+      { file: 'lib/capability-class-registry-store.ts', imports: ['createEmbeddingSpace'], calls: /\.validateCompatibility\(/ },
     ],
   },
   {
@@ -176,11 +177,7 @@ const MOVED: MovedAlgorithm[] = [
  * Copies still defined in operator-core, each owned by a work-item. An entry
  * must keep matching its fingerprint, so it is deleted together with the copy.
  */
-const KNOWN_RESIDUE: Array<{ algorithm: string; file: string; workItem: string }> = [
-  // Deferred until portable-identity-packages-2026-09-26 ships: the file is in
-  // the measured source set of that plan's live proofs.
-  { algorithm: 'storage compatibility check', file: 'lib/capability-class-registry-store.ts', workItem: 'WI-10004433' },
-];
+const KNOWN_RESIDUE: Array<{ algorithm: string; file: string; workItem: string }> = [];
 
 const SOURCES = walk(join(OPERATOR_CORE, 'lib'));
 

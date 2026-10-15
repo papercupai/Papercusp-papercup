@@ -113,11 +113,13 @@ describe('telemetry invoked_at stamping (EI-7040)', () => {
   });
 
   it.each(['http', 'uds'] as const)('persists protocol and %s connection metadata alongside reaction metadata', async connection => {
+    const mcpRequestTraceId = 'e57ef6b3-46ef-4cc5-8214-fec83f2a463e';
     await record('pot:set-steering', {
       transport: 'mcp',
       requestOrigin: {
         transport: 'mcp',
         connection,
+        mcpRequestTraceId,
         path: '/api/mcp',
         query: { superuser: '1', workspace: 'ws-test', client: 'su-test' },
         headers: { 'x-papercusp-client': 'su-test', 'user-agent': 'codex-cli-test' },
@@ -137,6 +139,7 @@ describe('telemetry invoked_at stamping (EI-7040)', () => {
       requestOrigin: {
         transport: 'mcp',
         connection,
+        mcpRequestTraceId,
         path: '/api/mcp',
         query: { superuser: '1', workspace: 'ws-test', client: 'su-test' },
         headers: { 'x-papercusp-client': 'su-test', 'user-agent': 'codex-cli-test' },
@@ -148,6 +151,22 @@ describe('telemetry invoked_at stamping (EI-7040)', () => {
         rootRunId: 'run-root',
       },
     });
+  });
+
+  it('persists host-classified native carrier evidence without a raw native session value', async () => {
+    const nativeSession = {
+      carrier: 'header:x-papercusp-native-session' as const,
+      valueFingerprint: 'a'.repeat(64),
+      binding: 'bound' as const,
+      candidateAdvSessionId: 541,
+    };
+    await record('gatingtest:scoped', {
+      transport: 'mcp',
+      requestOrigin: { transport: 'mcp', nativeSession },
+    });
+    await flushPendingTelemetry();
+    const insert = captured.find(c => c.sql.includes('INSERT INTO harness_shared.tool_invocations'))!;
+    expect(JSON.parse(String(insert.params[19]))).toMatchObject({ requestOrigin: { nativeSession } });
   });
 
   it('rejects unresolved shell scope placeholders before they reach the INSERT (EI-21334973614275969)', async () => {

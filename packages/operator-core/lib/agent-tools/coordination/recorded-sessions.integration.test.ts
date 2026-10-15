@@ -11,17 +11,25 @@
  * present to live-test when the fix landed.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { hostname } from 'node:os';
 import type postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
 import {
   acquireAdvSessionResume,
+  advSessionsByCoordOwner,
   claimAdvSessionResume,
   finalizeAdvSessionResume,
+  getLatestActiveAdvSessionByOwner,
+  latestAdvSessionByCoordOwner,
   listRecordedLiveSessions,
   reactivateAdvSessionByOwner,
   releaseAdvSessionResume,
 } from '../../adv-sessions';
+import { resolveSessionStates } from './liveness-oracle';
+import { getPresence, probeProcessLiveness } from './presence';
 
 let fx: BaselineCoordFixture | null = null;
 let admin: postgres.Sql;
@@ -47,15 +55,17 @@ async function seedAdv(opts: {
   label?: string | null;
   startedAgoSec?: number;
   ended?: boolean;
+  pid?: number | null;
+  display?: string | null;
 }): Promise<void> {
   await admin`
     INSERT INTO harness_shared.adv_sessions
-      (workspace_id, agent, mode, role, label, coord_owner_id, started_at, ended_at)
+      (workspace_id, agent, mode, role, label, coord_owner_id, started_at, ended_at, pid, display)
     VALUES (
       ${opts.workspaceId ?? WS}, ${opts.agent ?? 'claude'}, ${opts.mode ?? 'console'},
       ${opts.role ?? null}, ${opts.label ?? null}, ${opts.coordOwnerId},
       now() - ${`${opts.startedAgoSec ?? 60} seconds`}::interval,
-      ${opts.ended ? new Date() : null}
+      ${opts.ended ? new Date() : null}, ${opts.pid ?? null}, ${opts.display ?? null}
     )
   `;
 }
@@ -63,6 +73,91 @@ async function seedAdv(opts: {
 beforeAll(async () => {
   fx = await setupBaselineCoordFixture();
   admin = fx.admin;
+});
+
+describe('WI-10006572 — real recorded reader / absent presence / local OS PID', () => {
+  it.each([false, true])('elects the newest registration after predecessor activity is bumped (successor ended=%s)', async (ended) => {
+    const ownerId = `s-registration-${WS}-${ended}`;
+    await seedAdv({ coordOwnerId: ownerId, startedAgoSec: 7200, pid: 72 });
+    await seedAdv({ coordOwnerId: ownerId, startedAgoSec: 3600, pid: 73, ended });
+    const rows = await admin`
+      SELECT id FROM harness_shared.adv_sessions
+       WHERE workspace_id = ${WS} AND coord_owner_id = ${ownerId}
+       ORDER BY id ASC`;
+    const predecessorId = Number(rows[0].id);
+    const successorId = Number(rows[1].id);
+    await admin`
+      UPDATE harness_shared.adv_sessions SET started_at = now()
+       WHERE id = ${predecessorId}`;
+
+    // Resume activity changes started_at, but cannot change registration order.
+    expect.soft((await latestAdvSessionByCoordOwner(ownerId))?.id).toBe(successorId);
+    expect.soft((await advSessionsByCoordOwner(1, [ownerId])).get(ownerId)?.id).toBe(successorId);
+    expect.soft((await advSessionsByCoordOwner(500)).get(ownerId)?.id).toBe(successorId);
+    const priorWorkspace = process.env.PAPERCUSP_WORKSPACE_ID;
+    process.env.PAPERCUSP_WORKSPACE_ID = WS;
+    try {
+      const active = await getLatestActiveAdvSessionByOwner(ownerId);
+      expect.soft(active?.id ?? null).toBe(ended ? null : successorId);
+    } finally {
+      if (priorWorkspace === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+      else process.env.PAPERCUSP_WORKSPACE_ID = priorWorkspace;
+    }
+  });
+
+  it('targeted latest-per-owner reads retain PID/locality outside the global recent window', async () => {
+    const a = `s-hydration-a-${WS}`;
+    const b = `s-hydration-b-${WS}`;
+    await seedAdv({ coordOwnerId: a, startedAgoSec: 7200, pid: 72, display: 'terminal' });
+    await seedAdv({ coordOwnerId: a, startedAgoSec: 3600, pid: 73, display: 'terminal' });
+    await seedAdv({ coordOwnerId: b, startedAgoSec: 8000, pid: 74, ended: true });
+    const rows = await advSessionsByCoordOwner(2, [a, b]);
+    expect([...rows.keys()]).toEqual([a, b]);
+    expect(rows.get(a)).toMatchObject({ pid: 73, display: 'terminal' });
+    expect(rows.get(b)?.endedAt).not.toBeNull();
+    expect((await advSessionsByCoordOwner(500, [])).size).toBe(0);
+  });
+
+  it('both hydration paths detect an exited recorded local PID without changing the binding', async () => {
+    const child = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' });
+    const pid = child.pid;
+    await once(child, 'exit');
+    expect(pid).toBeGreaterThan(0);
+    expect(probeProcessLiveness({ host: hostname(), pid })).toBe(false);
+    const ownerId = `s-hydration-dead-${WS}`;
+    await seedAdv({ coordOwnerId: ownerId, startedAgoSec: 3600, pid, display: 'terminal' });
+    expect(await getPresence(ownerId)).toBeNull();
+    const before = (await advSessionsByCoordOwner(1, [ownerId])).get(ownerId)!;
+    const options = {
+      fetchWakeabilityFn: async () => new Map([[ownerId, { wakeable: true, liveTurn: false }]]),
+      findHostFn: () => null,
+    };
+    for (const hydration of [{ hydratePerId: true }, { hydrateBatch: true }]) {
+      const out = await resolveSessionStates([{ ownerId }], { ...options, ...hydration });
+      expect(out.get(ownerId)?.sessionState).toBe('ended');
+    }
+    const after = (await advSessionsByCoordOwner(1, [ownerId])).get(ownerId)!;
+    expect(after).toEqual(before);
+    expect(after.endedAt).toBeNull(); // verdict assembly must never write a fake exit
+  });
+
+  it('the same dead PID with no host provenance is unknown, never a guessed local death', async () => {
+    const child = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' });
+    const pid = child.pid;
+    await once(child, 'exit');
+    expect(pid).toBeGreaterThan(0);
+    expect(probeProcessLiveness({ host: hostname(), pid })).toBe(false);
+    const ownerId = `s-hydration-unknown-${WS}`;
+    await seedAdv({ coordOwnerId: ownerId, startedAgoSec: 3600, pid });
+    const out = await resolveSessionStates([{ ownerId }], {
+      hydratePerId: true,
+      fetchWakeabilityFn: async () => new Map([[ownerId, { wakeable: false, liveTurn: false }]]),
+      findHostFn: () => null,
+    });
+    expect(out.get(ownerId)).toMatchObject({
+      sessionState: null, signalMissing: true, confirmLiveness: true,
+    });
+  });
 });
 afterAll(async () => {
   await cleanOwnedRows().catch(() => {});
@@ -216,6 +311,53 @@ describe('claimAdvSessionResume (single-winner Channel 2 resume claim)', () => {
 
   it('returns false for an unknown id', async () => {
     expect(await claimAdvSessionResume(99999999)).toBe(false);
+  });
+
+  it.each([
+    ['legacy unkeyed', false, false],
+    ['legacy keyed', true, false],
+    ['owner unkeyed', false, true],
+    ['owner keyed', true, true],
+  ] as const)('%s does not reactivate a superseded row even after its started_at was bumped', async (_label, keyed, explicitOwner) => {
+    const ownerId = `s-claim-current-${randomBytes(6).toString('hex')}`;
+    const [predecessor] = await admin`
+      INSERT INTO harness_shared.adv_sessions
+        (workspace_id, agent, mode, coord_owner_id, started_at, ended_at, exit_code, ended_by)
+      VALUES (${WS}, 'claude', 'console', ${ownerId}, now() - interval '3 days', now() - interval '2 days', 137, 'signal')
+      RETURNING id`;
+    const [successor] = await admin`
+      INSERT INTO harness_shared.adv_sessions
+        (workspace_id, agent, mode, coord_owner_id, started_at, ended_at, exit_code, ended_by)
+      VALUES (${WS}, 'claude', 'console', ${ownerId}, now() - interval '2 days', NULL, NULL, NULL)
+      RETURNING id`;
+
+    // A delayed legacy resumer may already have bumped the predecessor. A
+    // mutable activity timestamp must not make that row the latest incarnation.
+    await admin`
+      UPDATE harness_shared.adv_sessions SET started_at = now()
+       WHERE id = ${Number(predecessor.id)}`;
+    const key = keyed ? `superseded-${predecessor.id}` : null;
+    const expectedOwner = explicitOwner ? ownerId : null;
+    expect(await claimAdvSessionResume(Number(predecessor.id), key, undefined, expectedOwner)).toBe(false);
+    expect(await claimAdvSessionResume(Number(successor.id), key, undefined, expectedOwner)).toBe(true);
+
+    const [oldRow] = await admin`
+      SELECT ended_at, ended_by
+        FROM harness_shared.adv_sessions
+       WHERE workspace_id = ${WS} AND id = ${Number(predecessor.id)}`;
+    expect(oldRow.ended_at).not.toBeNull();
+    expect(oldRow.ended_by).toBe('signal');
+  });
+
+  it('does not replay a successful keyed predecessor claim after a successor registers', async () => {
+    const predecessorId = await seedRow('2 days', false);
+    const key = `superseded-replay-${predecessorId}`;
+    expect(await claimAdvSessionResume(predecessorId, key)).toBe(true);
+    const [predecessor] = await admin`
+      SELECT coord_owner_id FROM harness_shared.adv_sessions WHERE id = ${predecessorId}`;
+    await seedAdv({ coordOwnerId: predecessor.coord_owner_id, startedAgoSec: 60 });
+
+    expect(await claimAdvSessionResume(predecessorId, key)).toBe(false);
   });
 });
 

@@ -14,7 +14,9 @@
  * outbound relay. D-020's "loopback-only" property is therefore preserved by
  * construction rather than by configuration.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { createHostedPrincipal } from '../auth/hosted-principal';
+import type { HostedCustomerCommandDependencies } from './hosted-customer-command';
 import { constants } from 'node:fs';
 import { open, realpath, readdir } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
@@ -40,8 +42,9 @@ import {
   type HostedDesktopGrant,
 } from '../desktop/hosted-desktop-channel';
 import { OperatorHttpChannel, type OperatorHttpFetch } from './hosted-operator-http';
-import { AppKeyMintChannel, createAppHttpChannel } from './hosted-app-relay';
+import { AppKeyMintChannel, createAppHttpChannel, createDeviceHttpChannel, type DeviceChannelBinding } from './hosted-app-relay';
 import { hostedPsuPtySpawnSpec, parseHostedPsuCustomerArgv } from './hosted-psu-session';
+import { ByocSealedChannel, isByocSealedPacket } from './byoc-sealed-channel';
 
 export const HOSTED_HOST_MAX_MESSAGE_BYTES = 1024 * 1024;
 export const HOSTED_HOST_MAX_FILE_BYTES = 8 * 1024 * 1024;
@@ -86,6 +89,12 @@ export const HOSTED_HOST_MAX_DESKTOP_FRAME_BYTES = 256 * 1024;
 export const HOSTED_HOST_MAX_THUMBNAIL_BYTES = 512 * 1024;
 /** Roster entries served in one reply — a host serving more is misconfigured. */
 export const HOSTED_HOST_MAX_ROSTER_ENTRIES = 64;
+/**
+ * What `channelIdentity` answers for a channel whose principal it cannot resolve.
+ * Audit lines still need a value, but it is never an identity: a personal desktop
+ * treats it as "no viewer" and refuses (fail closed).
+ */
+const UNKNOWN_IDENTITY = 'unknown';
 
 const OUTPUT_CHUNK_BYTES = 48 * 1024;
 const MAX_DIRECTORY_ENTRIES = 2_000;
@@ -106,14 +115,14 @@ export type HostedHostChannelKind = 'pty' | 'psu' | 'desktop' | 'operator-http';
 export type HostedHostTerminalProgram = 'shell' | 'psu';
 
 /** Every kind a `relay.open` can ask for, including the two app planes (P-007, P-325). */
-export type HostedHostOpenKind = HostedHostChannelKind | 'app-http' | 'app-key-mint';
+export type HostedHostOpenKind = HostedHostChannelKind | 'app-http' | 'app-key-mint' | 'device-http';
 
 /**
  * The channels a relay-linked local install serves (EAA P-008, D-031 #7): outside apps only.
  * pty, desktop and operator-http would hand the portal a terminal, the screen, or
  * loopback-trusted access to a home computer, so they are refused.
  */
-export const LOCAL_RELAY_CHANNEL_KINDS: ReadonlySet<HostedHostOpenKind> = new Set(['app-http', 'app-key-mint']);
+export const LOCAL_RELAY_CHANNEL_KINDS: ReadonlySet<HostedHostOpenKind> = new Set(['app-http', 'app-key-mint', 'device-http']);
 
 export interface HostedHostRelayOpen {
   type: 'relay.open';
@@ -143,6 +152,8 @@ export interface HostedHostRelayOpen {
   argv?: string[];
   /** `kind === 'app-http'` only: the portal relay's usage this month (P-328). Counts only. */
   relayUsage?: unknown;
+  /** Content on this channel is Noise-sealed end to end; relay.open remains control metadata. */
+  sealed?: true;
 }
 
 export interface HostedHostRelayMessage {
@@ -160,6 +171,7 @@ export interface HostedHostRelayClose {
 export type HostedHostRelayEnvelope = HostedHostRelayOpen | HostedHostRelayMessage | HostedHostRelayClose;
 
 export type HostedHostOutboundEnvelope =
+  | { type: 'session.authorize'; channelId: string; requestId: string; diagnostics?: true }
   | { type: 'relay'; channelId: string; payload: unknown }
   | { type: 'relay.close'; channelId: string; reason: string };
 
@@ -214,6 +226,18 @@ export interface HostedDesktopSessionRecord {
   endpoint: HostedDesktopEndpoint | null;
   /** The session's view-only and control users (P-012, D-020). */
   credentials: Pick<KasmvncSessionCredentials, 'view' | 'control'>;
+  /**
+   * Set exactly when the desktop is a PERSON'S OWN desktop (scope `user`,
+   * personal-cloud-desktop-2026-10-06): the hosted userId it belongs to, read from the
+   * lease this host holds. The relay admits only that user to it.
+   */
+  personalOwner?: string;
+}
+
+/** Who is asking for the roster — so a person's own desktop is listed only to them. */
+export interface HostedDesktopViewer {
+  /** The hosted userId behind the channel, or null when the channel carries none. */
+  userId: string | null;
 }
 
 export interface HostedDesktopDialInput {
@@ -239,6 +263,18 @@ export interface HostedDesktopRosterEntry {
   displayNumber?: number;
   geometry?: string;
   lastActiveAt?: string;
+  /** Plan agent-multi-desktops-grid P-006: who the desktop belongs to, so the grid
+   *  can label each tile. `owner` is the agent's ownerId for an agent desktop and
+   *  the pot slug for a pot desktop; the workspace desktop has none. A `user` desktop
+   *  (personal-cloud-desktop-2026-10-06) is owned by the hosted userId in `owner`. */
+  scope?: 'pot' | 'agent' | 'workspace' | 'user';
+  owner?: string;
+  /** The agent-chosen name of an agent desktop. */
+  name?: string;
+  /** The work-item the owning agent is on RIGHT NOW (D-009): read from its live
+   *  claim at roster time, never stored on the desktop row. */
+  workItemId?: string;
+  workItemIntent?: string;
 }
 
 export interface HostedDesktopBackend {
@@ -252,11 +288,13 @@ export interface HostedDesktopBackend {
    * The desktops this host serves. Empty is a valid answer (no desktop pack, or
    * none running) and must not be confused with a failure.
    *
-   * NOT filtered by caller: the connector binding already scopes this adapter to
-   * ONE organization + customer workspace, and that binding IS the authorization
-   * boundary. A per-user filter here would imply a second, weaker one.
+   * Agent, pot and workspace desktops are NOT filtered by caller: the connector
+   * binding already scopes this adapter to ONE organization + customer workspace, and
+   * that binding IS their authorization boundary. A person's own desktop (scope
+   * `user`) is the one exception — it is listed only to its owner, and with no viewer
+   * every personal desktop is withheld (fail closed).
    */
-  roster(): Promise<HostedDesktopRosterEntry[]>;
+  roster(viewer?: HostedDesktopViewer): Promise<HostedDesktopRosterEntry[]>;
   /**
    * The latest capture JPEG for one desktop, or null when none is fresh.
    *
@@ -278,6 +316,14 @@ export interface HostedDesktopBackend {
    * handing the viewer an id nothing can resolve.
    */
   start(): Promise<HostedDesktopRosterEntry | null>;
+  /**
+   * Start ONE person's own desktop, or return theirs if it is already running
+   * (personal-cloud-desktop-2026-10-06 P-003). Idempotent per user. A host without the
+   * personal desktop worker rejects with `PersonalDesktopUnavailableError`
+   * (`personal_desktop_unavailable`) and starts nothing. Absent: this host serves no
+   * personal desktops.
+   */
+  startPersonal?(userId: string): Promise<HostedDesktopRosterEntry | null>;
 }
 
 export interface HostedWorkspaceHostOptions {
@@ -305,18 +351,40 @@ export interface HostedWorkspaceHostOptions {
    * The `operator-http` plane's forward target (D-418). Defaults to this process's
    * own loopback operator; overridable only so tests need no listening server.
    */
-  operatorHttp?: { origin?: string; fetch?: OperatorHttpFetch };
+  operatorHttp?: { origin?: string; fetch?: OperatorHttpFetch;
+    /** Optional private route composition on this VM. Never used by app/device
+     * planes, and never installed from relay frames or identity headers. */
+    handleRequest?: HostedCustomerOperatorHttpHandler };
   /**
    * P-328 (D-030 #4): the portal sends this month's relay usage on an `app-http` `relay.open`.
    * The raw field is passed through unparsed; the receiver validates it and may raise an alert.
    */
   onRelayUsage?: (relayUsage: unknown) => void;
   /**
+   * WI-10004257: the portal's `membership.report` frame — the addresses in this machine's
+   * organization whose membership is no longer active. Sent outside any channel, after `bound`
+   * and whenever it changes. Called only for a frame naming THIS binding's organization; the raw
+   * frame is passed through and the receiver validates it.
+   */
+  onMembershipReport?: (report: unknown) => void;
+  /**
    * The channel kinds this adapter serves; any other `relay.open` is closed with
    * `channel_kind_not_allowed`. Absent means every kind (a Papercusp-hosted machine).
    * A relay-linked local install passes {@link LOCAL_RELAY_CHANNEL_KINDS} (D-031 #7).
    */
   allowedChannelKinds?: ReadonlySet<HostedHostOpenKind>;
+  /** Independently provisioned endpoint keys. The relay never receives either secret. */
+  byocSealedChannel?: {
+    localKeyPair: { publicKey: Buffer; secretKey: Buffer };
+    /** A single provisioned peer key, pinned for every sealed non-device channel. */
+    expectedRemotePublicKey?: Buffer;
+    /**
+     * D-013 #6: resolves a phone's static Noise key (canonical base64) to its live paired
+     * device id, or null for an unregistered key. Required for a sealed `device-http`
+     * channel; without it that channel is refused `sealed_channel_unavailable`.
+     */
+    resolveDeviceNoiseKey?: (noisePublicKeyBase64: string) => Promise<string | null>;
+  };
 }
 
 type HostSession = {
@@ -435,12 +503,14 @@ type Channel =
       userId: string;
       hostedSessionId: string;
       http: OperatorHttpChannel;
+      /** Private native invocations die with this exact operator channel. */
+      lifetime?: AbortController;
       /**
        * `app` for an `app-http` channel (P-007): the same one-way request pipe, built
        * with the app plane's route and header policy and no ticket user — the app's
        * own key is the credential, checked by this operator's bearer chain.
        */
-      plane?: 'app';
+      plane?: 'app' | 'device';
     }
   /**
    * One key mint for a grant the portal's consent page approved (P-325, D-021). Carries only
@@ -793,9 +863,20 @@ function ptyHandleAdapter(handle: PtyHandle, scope: PtyAccessScope): HostedHostP
   };
 }
 
+export interface HostedCustomerHttpRequestContext {
+  readonly channelId: string;
+  readonly sessionHost: Pick<HostedWorkspaceHostSessionAdapter,
+    'resolveCustomerPrincipal' | 'customerInvocationSignal'>;
+}
+export type HostedCustomerOperatorHttpHandler = (request: Request,
+  context: HostedCustomerHttpRequestContext) => Promise<Response | undefined>;
+
 export class HostedWorkspaceHostSessionAdapter {
   private readonly sessions = new Map<string, HostSession>();
   private readonly channels = new Map<string, Channel>();
+  private readonly authorityPending = new Map<string, { channelId: string;
+    settle: (authority: unknown) => void }>();
+  private readonly sealedChannels = new Map<string, ByocSealedChannel>();
   private readonly desktopChannels = new Map<string, DesktopChannel>();
   /**
    * Only channels whose dial SUCCEEDED. Kept separate from `desktopChannels` (which
@@ -821,20 +902,103 @@ export class HostedWorkspaceHostSessionAdapter {
     this.warn = options.onWarning ?? ((message: string) => console.warn(`[hosted-session-host] ${message}`));
   }
 
+  /** Private invocation lifetime, never a header or serialized credential.
+   * A later channel reusing the id cannot revive an earlier invocation. */
+  customerInvocationSignal(channelId: string, signal?: AbortSignal): AbortSignal {
+    const channel = this.channels.get(channelId);
+    if (this.closed || !channel || channel.kind !== 'operator-http' || channel.plane
+      || !channel.lifetime) throw new Error('hosted_customer_execution_denied');
+    return signal ? AbortSignal.any([signal, channel.lifetime.signal]) : channel.lifetime.signal;
+  }
+
+  /** Private host API. A relay label is never a principal: query the current
+   * ticket-bound control-plane session for EACH call on the authenticated socket. */
+  resolveCustomerPrincipal(channelId: string, signal?: AbortSignal, diagnostics?: true): ReturnType<HostedCustomerCommandDependencies['resolvePrincipal']> {
+    const channel = this.channels.get(channelId);
+    if (this.closed || signal?.aborted || !channel || channel.kind !== 'operator-http'
+      || channel.plane || this.authorityPending.size >= 64) return Promise.resolve({ ok: false });
+    const requestId = randomUUID();
+    const binding = { ...this.options.binding };
+    return new Promise(resolve => {
+      let timer: ReturnType<typeof setTimeout>;
+      const onAbort = () => settle(null);
+      const settle = (authority: unknown) => {
+        if (!this.authorityPending.delete(requestId)) return;
+        clearTimeout(timer); signal?.removeEventListener('abort', onAbort);
+        if (this.closed || signal?.aborted || this.channels.get(channelId) !== channel) {
+          resolve({ ok: false }); return;
+        }
+        try {
+          const a = object(authority);
+          if (!a || a.userId !== channel.userId || a.sessionId !== channel.hostedSessionId
+            || a.controlPlaneWorkspaceId !== binding.controlPlaneWorkspaceId
+            || a.organizationId !== binding.organizationId || a.customerWorkspaceId !== binding.customerWorkspaceId
+            || !Array.isArray(a.permissions) || a.permissions.length > 7) throw new Error('denied');
+          const principal = createHostedPrincipal({ workspaceId: binding.controlPlaneWorkspaceId,
+            activeOrganizationId: binding.organizationId, selectedWorkspaceId: binding.customerWorkspaceId,
+            userId: channel.userId, sessionId: channel.hostedSessionId,
+            sessionVersion: a.sessionVersion as number, permissions: a.permissions });
+          if (!principal.permissions.has('workspace:operate')) throw new Error('denied');
+          resolve({ ok: true, principal, ...(diagnostics ? { monitoringConsent: a.monitoringConsent } : {}) });
+        } catch { resolve({ ok: false }); }
+      };
+      this.authorityPending.set(requestId, { channelId, settle });
+      timer = setTimeout(() => settle(null), 15_000);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      if (signal?.aborted) { onAbort(); return; }
+      try { this.options.send({ type: 'session.authorize', channelId, requestId, ...(diagnostics ? { diagnostics } : {}) }); }
+      catch { settle(null); }
+    });
+  }
+
+  private settleAuthority(message: Record<string, unknown>): void {
+    const requestId = string(message.requestId, 64);
+    if (!requestId) return;
+    const pending = this.authorityPending.get(requestId);
+    if (pending && pending.channelId === message.channelId) pending.settle(message.authority);
+  }
+
+  private cancelAuthority(channelId?: string): void {
+    for (const pending of [...this.authorityPending.values()]) {
+      if (channelId === undefined || pending.channelId === channelId) pending.settle(null);
+    }
+  }
+
   async accept(envelope: unknown): Promise<void> {
     if (this.closed || byteLength(envelope) > this.maxMessageBytes) return;
     const message = object(envelope);
     if (!message) return;
     const type = string(message.type, 64);
     if (type === 'relay.open') await this.open(message);
+    else if (type === 'session.authorized') this.settleAuthority(message);
     else if (type === 'relay') await this.relay(message);
     else if (type === 'relay.close')
       this.detach(string(message.channelId, 256), string(message.reason, 256) ?? 'remote_closed');
+    else if (type === 'membership.report') this.membershipReport(message);
+  }
+
+  /**
+   * A membership report applies only to the organization this connector is bound to. A frame
+   * naming another organization is dropped: the binding, not the frame, is the authority on which
+   * organization this machine belongs to.
+   */
+  private membershipReport(message: Record<string, unknown>): void {
+    if (!this.options.onMembershipReport) return;
+    if (message.organizationId !== this.options.binding.organizationId) {
+      this.warn('dropped a membership report for another organization');
+      return;
+    }
+    try {
+      this.options.onMembershipReport(message);
+    } catch {
+      this.warn('membership_report_failed');
+    }
   }
 
   close(reason = 'connector_closed'): void {
     if (this.closed) return;
     this.closed = true;
+    this.cancelAuthority();
     for (const channelId of [...this.channels.keys()]) this.options.send({ type: 'relay.close', channelId, reason });
     this.closeOperatorHttpChannels();
     // notify:false — the broadcast above already told the control plane about
@@ -844,6 +1008,8 @@ export class HostedWorkspaceHostSessionAdapter {
     this.desktopHeartbeat?.stop();
     this.desktopHeartbeat = null;
     this.channels.clear();
+    for (const sealed of this.sealedChannels.values()) sealed.close();
+    this.sealedChannels.clear();
   }
 
   /**
@@ -864,6 +1030,7 @@ export class HostedWorkspaceHostSessionAdapter {
     const handoff = new SessionHandoff(this.options.binding);
     if (this.closed) return handoff;
     this.closed = true;
+    this.cancelAuthority();
     for (const channelId of [...this.channels.keys()]) this.options.send({ type: 'relay.close', channelId, reason });
     this.closeOperatorHttpChannels();
     for (const desktop of [...this.desktopChannels.values()]) this.closeDesktopChannel(desktop, reason, false);
@@ -880,6 +1047,8 @@ export class HostedWorkspaceHostSessionAdapter {
     this.desktopHeartbeat?.stop();
     this.desktopHeartbeat = null;
     this.channels.clear();
+    for (const sealed of this.sealedChannels.values()) sealed.close();
+    this.sealedChannels.clear();
     return handoff;
   }
 
@@ -916,7 +1085,7 @@ export class HostedWorkspaceHostSessionAdapter {
         if (refusedChannelId) {
           this.options.send({ type: 'relay.close', channelId: refusedChannelId, reason: 'channel_kind_not_allowed' });
         }
-        this.warn(`refused a ${typeof requested === 'string' ? requested.slice(0, 32) : 'malformed'} channel: not served by this install`);
+        this.warn('channel_kind_not_allowed');
         return;
       }
     }
@@ -930,6 +1099,7 @@ export class HostedWorkspaceHostSessionAdapter {
         this.options.send({ type: 'relay.close', channelId: appChannelId, reason: 'channel_already_open' });
         return;
       }
+      if (message.sealed === true && !this.openSealedChannel(appChannelId)) return;
       const identity = { userId: 'app-relay', hostedSessionId: appChannelId };
       const http = createAppHttpChannel({
         send: (payload) => this.send(appChannelId, payload),
@@ -943,10 +1113,36 @@ export class HostedWorkspaceHostSessionAdapter {
       if (message.relayUsage !== undefined && this.options.onRelayUsage) {
         try {
           this.options.onRelayUsage(message.relayUsage);
-        } catch (err) {
-          this.options.onWarning?.(`relay usage report failed: ${err instanceof Error ? err.message : String(err)}`);
+        } catch {
+          this.options.onWarning?.('relay_usage_report_failed');
         }
       }
+      return;
+    }
+    if (message.kind === 'device-http') {
+      // android-public-release D-013 #2: a phone's device-API call relayed by the portal. The
+      // forwarded device JWT (shape-checked) is the credential; the operator verifies it, and
+      // the ingress marker keeps the operator from granting the call loopback trust.
+      const deviceChannelId = string(message.channelId, 256);
+      if (!deviceChannelId || message.audience !== 'device') return;
+      if (this.channels.has(deviceChannelId)) {
+        this.options.send({ type: 'relay.close', channelId: deviceChannelId, reason: 'channel_already_open' });
+        return;
+      }
+      // A sealed channel binds the phone's handshake key to a device; its JWT must name it.
+      const boundDevice: DeviceChannelBinding | undefined = message.sealed === true ? { deviceId: null } : undefined;
+      if (boundDevice && !this.openSealedChannel(deviceChannelId, boundDevice)) return;
+      const identity = { userId: 'device-relay', hostedSessionId: deviceChannelId };
+      const http = createDeviceHttpChannel({
+        ...(boundDevice ? { boundDevice } : {}),
+        send: (payload) => this.send(deviceChannelId, payload),
+        audit: (action, detail) => this.audit(action.replace(/^operator_http_/, 'device_http_'), identity, deviceChannelId, detail),
+        ...(this.options.operatorHttp?.origin ? { origin: this.options.operatorHttp.origin } : {}),
+        ...(this.options.operatorHttp?.fetch ? { fetch: this.options.operatorHttp.fetch } : {}),
+      });
+      this.channels.set(deviceChannelId, { kind: 'operator-http', ...identity, http, plane: 'device' });
+      this.send(deviceChannelId, { type: 'http.ready' });
+      this.audit('device_http_attached', identity, deviceChannelId);
       return;
     }
     if (message.kind === 'app-key-mint') {
@@ -999,19 +1195,61 @@ export class HostedWorkspaceHostSessionAdapter {
       this.options.send({ type: 'relay.close', channelId, reason: 'channel_already_open' });
       return;
     }
+    const sealed = message.sealed === true;
+    if (this.options.binding.hosting === 'byoc' && !sealed) {
+      this.options.send({ type: 'relay.close', channelId, reason: 'byoc_plaintext_relay_refused' });
+      return;
+    }
+    if (sealed) {
+      if (!this.openSealedChannel(channelId)) return;
+    }
 
     if (kind === 'operator-http') {
       // D-418: the principal is the one the control plane bound from the single-use
       // ticket; nothing a later frame carries can change it.
       const principal = { userId, hostedSessionId };
+      const lifetime = new AbortController();
+      const handleRequest = this.options.operatorHttp?.handleRequest;
       const http = new OperatorHttpChannel({
         principal,
         send: (payload) => this.send(channelId, payload),
         audit: (action, detail) => this.audit(action, principal, channelId, detail),
         ...(this.options.operatorHttp?.origin ? { origin: this.options.operatorHttp.origin } : {}),
         ...(this.options.operatorHttp?.fetch ? { fetch: this.options.operatorHttp.fetch } : {}),
+        handleRequest: async (request: Request) => {
+          // Capture this CHANNEL OBJECT, not merely its reusable id. A delayed
+          // request cannot acquire authority from a replacement channel.
+          const current = () => {
+            const channel = this.channels.get(channelId);
+            return !this.closed && !lifetime.signal.aborted && channel?.kind === 'operator-http'
+              && channel.http === http && !channel.plane;
+          };
+          const sessionHost: HostedCustomerHttpRequestContext['sessionHost'] = Object.freeze({
+            customerInvocationSignal: (id: string, signal?: AbortSignal) => {
+              if (id !== channelId || !current()) throw new Error('hosted_customer_execution_denied');
+              return AbortSignal.any([lifetime.signal, request.signal, ...(signal ? [signal] : [])]);
+            },
+            resolveCustomerPrincipal: (id: string, signal?: AbortSignal) => {
+              if (id !== channelId || !current() || request.signal.aborted) return Promise.resolve({ ok: false as const });
+              return this.resolveCustomerPrincipal(channelId,
+                AbortSignal.any([lifetime.signal, request.signal, ...(signal ? [signal] : [])]));
+            },
+          });
+          if (request.method === 'POST' && /^\/api\/harness\/[^/]+\/insights\/diagnostic-export$/.test(new URL(request.url).pathname)) {
+            const signal = sessionHost.customerInvocationSignal(channelId, request.signal);
+            const { handleCustomerDiagnosticExport } = await import('../harness-insights/load-tokens');
+            return handleCustomerDiagnosticExport(request, {
+              workspaceId: this.options.binding.customerWorkspaceId,
+              organizationId: this.options.binding.organizationId,
+              controlPlaneWorkspaceId: this.options.binding.controlPlaneWorkspaceId,
+              authorize: () => current() ? this.resolveCustomerPrincipal(channelId, signal, true) : Promise.resolve({ ok: false }),
+            });
+          }
+          return handleRequest?.(request, Object.freeze({ channelId, sessionHost }));
+        },
       });
-      this.channels.set(channelId, { kind: 'operator-http', userId, hostedSessionId, http });
+      this.channels.set(channelId, { kind: 'operator-http', userId, hostedSessionId, http,
+        lifetime });
       this.send(channelId, { type: 'http.ready' });
       this.audit('operator_http_attached', principal, channelId);
       return;
@@ -1176,6 +1414,16 @@ export class HostedWorkspaceHostSessionAdapter {
     try {
       const record = await backend.lookup(desktopSessionId);
       if (!record) throw new SafeRootFileError('desktop_session_unknown');
+      // A person's own desktop admits only that person, in EITHER role
+      // (personal-cloud-desktop-2026-10-06 P-004). Refused before the dial, so a
+      // non-owner never holds a socket — not even a view-only one. Audited as a
+      // denied operation naming the role it asked for, separately from the
+      // `desktop_detached` the close writes, so the refusal is never only implied.
+      if (record.personalOwner !== undefined && record.personalOwner !== userId) {
+        this.audit('operation_denied', channel, channelId, `desktop.${channel.action} desktop=${desktopSessionId} desktop_not_owner`);
+        this.closeDesktopChannel(channel, 'desktop_not_owner');
+        return;
+      }
       const endpoint = assertLoopbackDesktopEndpoint(record.endpoint);
       const grant = hostedDesktopGrant(role, record.credentials);
       const socket = await backend.dial({ desktopSessionId, endpoint, grant });
@@ -1218,6 +1466,69 @@ export class HostedWorkspaceHostSessionAdapter {
     if (!channel) return;
     const payload = object(message.payload);
     if (!payload) return;
+    const sealed = this.sealedChannels.get(channelId);
+    if (sealed) {
+      if (isByocSealedPacket(payload)) sealed.receive(payload);
+      return;
+    }
+    await this.acceptPayload(channelId, payload);
+  }
+
+  /**
+   * Opens the responder end of a sealed channel. With `deviceBinding` (a `device-http`
+   * channel) the phone's handshake key is resolved to its paired device and recorded in the
+   * binding; an unregistered key is admitted unbound (it can still redeem a pair, never use a
+   * JWT), and a resolver failure refuses the handshake. Every other channel pins the single
+   * provisioned key.
+   */
+  private openSealedChannel(channelId: string, deviceBinding?: DeviceChannelBinding): boolean {
+    const keys = this.options.byocSealedChannel;
+    const resolve = keys?.resolveDeviceNoiseKey;
+    const remoteKeyPolicy = !keys
+      ? null
+      : deviceBinding
+        ? resolve
+          ? {
+            verifyRemotePublicKey: async (remotePublicKey: Buffer) => {
+              // The handshake proved the phone holds this key's secret; a pair redeemed on this
+              // channel registers exactly this key (bindPairBodyToProvenKey).
+              deviceBinding.noisePublicKey = remotePublicKey.toString('base64');
+              try {
+                deviceBinding.deviceId = await resolve(remotePublicKey.toString('base64'));
+                return true;
+              } catch {
+                return false;
+              }
+            },
+          }
+          : null
+        : keys.expectedRemotePublicKey
+          ? { expectedRemotePublicKey: keys.expectedRemotePublicKey }
+          : null;
+    if (!keys || !remoteKeyPolicy) {
+      this.options.send({ type: 'relay.close', channelId, reason: 'sealed_channel_unavailable' });
+      return false;
+    }
+    const channel = new ByocSealedChannel({
+      initiator: false,
+      localKeyPair: keys.localKeyPair,
+      ...remoteKeyPolicy,
+      sendPacket: (packet) => this.options.send({ type: 'relay', channelId, payload: packet }),
+      onFrame: (frame) => { void this.acceptPayload(channelId, frame); },
+      onError: () => {
+        // This failure originates on the host. Unlike a peer-requested detach,
+        // it must notify the broker so its caller cannot keep a dead channel open.
+        this.options.send({ type: 'relay.close', channelId, reason: 'sealed_channel_failed' });
+        this.detach(channelId, 'sealed_channel_failed');
+      },
+    });
+    this.sealedChannels.set(channelId, channel);
+    return true;
+  }
+
+  private async acceptPayload(channelId: string, payload: Record<string, unknown>): Promise<void> {
+    const channel = this.channels.get(channelId);
+    if (!channel) return;
     const type = string(payload.type, 64);
     if (!type) return;
 
@@ -1464,7 +1775,7 @@ export class HostedWorkspaceHostSessionAdapter {
       const session = this.sessions.get(channel.sessionKey);
       if (session) return { userId: session.userId, hostedSessionId: session.hostedSessionId };
     }
-    return { userId: 'unknown', hostedSessionId: 'unknown' };
+    return { userId: UNKNOWN_IDENTITY, hostedSessionId: UNKNOWN_IDENTITY };
   }
 
   /**
@@ -1493,9 +1804,13 @@ export class HostedWorkspaceHostSessionAdapter {
       return;
     }
 
+    // A person's own desktop is listed and previewed only to its owner (P-004 / R-14):
+    // the roster is filtered for THIS channel's proven user, never an argument the
+    // viewer supplies.
+    const viewer: HostedDesktopViewer = { userId: identity.userId === UNKNOWN_IDENTITY ? null : identity.userId };
     try {
       if (type === 'desktop.roster') {
-        const desktops = (await backend.roster()).slice(0, HOSTED_HOST_MAX_ROSTER_ENTRIES);
+        const desktops = (await backend.roster(viewer)).slice(0, HOSTED_HOST_MAX_ROSTER_ENTRIES);
         this.send(channelId, { type: 'desktop.roster.result', requestId, desktops });
         this.audit('desktop_roster', identity, channelId, `count=${desktops.length}`);
         return;
@@ -1503,6 +1818,14 @@ export class HostedWorkspaceHostSessionAdapter {
       const desktopSessionId = string(payload.desktopSessionId);
       if (!desktopSessionId) {
         this.send(channelId, { type: 'operation.error', requestId, operation: type, code: 'desktop_session_required' });
+        return;
+      }
+      // A thumbnail is a picture of the screen, so it obeys the same owner rule as
+      // opening the desktop does.
+      const record = await backend.lookup(desktopSessionId);
+      if (record?.personalOwner !== undefined && record.personalOwner !== viewer.userId) {
+        this.send(channelId, { type: 'operation.error', requestId, operation: type, code: 'desktop_not_owner' });
+        this.audit('operation_denied', identity, channelId, `desktop.thumbnail desktop=${desktopSessionId} desktop_not_owner`);
         return;
       }
       const image = await backend.thumbnail(desktopSessionId);
@@ -1529,7 +1852,7 @@ export class HostedWorkspaceHostSessionAdapter {
       this.audit('desktop_thumbnail', identity, channelId, `desktop=${desktopSessionId} bytes=${image.byteLength}`);
     } catch (error) {
       const code = error instanceof SafeRootFileError ? error.code : 'desktop_query_failed';
-      if (code === 'desktop_query_failed') this.warn(`${type} failed: ${String(error)}`);
+      if (code === 'desktop_query_failed') this.warn('desktop_query_failed');
       this.send(channelId, { type: 'operation.error', requestId, operation: type, code });
       this.audit('operation_denied', identity, channelId, code);
     }
@@ -1561,14 +1884,29 @@ export class HostedWorkspaceHostSessionAdapter {
     const backend = this.options.desktop;
     if (!backend) return refuse('desktop_unsupported');
 
+    // `personal: true` asks for the CALLER's own desktop (personal-cloud-desktop-2026-10-06
+    // P-004). Whose desktop it is comes from the channel's proven identity, never from
+    // the payload, so no frame can start or reach somebody else's.
+    const personal = payload.personal === true;
+    if (personal) {
+      if (identity.userId === UNKNOWN_IDENTITY) return refuse('desktop_not_owner');
+      if (!backend.startPersonal) return refuse('personal_desktop_unavailable');
+    }
+
     try {
-      const desktop = await backend.start();
-      if (!desktop) return refuse('desktop_unavailable');
+      const desktop = personal ? await backend.startPersonal!(identity.userId) : await backend.start();
+      if (!desktop) return refuse(personal ? 'personal_desktop_unavailable' : 'desktop_unavailable');
       this.send(channelId, { type: 'desktop.start.result', requestId, desktop });
-      this.audit('desktop_started', identity, channelId, `desktop=${desktop.desktopSessionId}`);
+      this.audit('desktop_started', identity, channelId, `desktop=${desktop.desktopSessionId}${personal ? ' personal' : ''}`);
     } catch (error) {
       if (error instanceof SafeRootFileError) return refuse(error.code);
-      this.warn(`desktop.start failed: ${String(error)}`);
+      // A host whose desktop pack has no personal worker (R-22): a typed, named code
+      // the viewer can show, never a generic start failure. Matched by its code so the
+      // relay does not import the desktop session client.
+      if (personal && (error as { code?: unknown } | null)?.code === 'personal_desktop_unavailable') {
+        return refuse('personal_desktop_unavailable');
+      }
+      this.warn('desktop_start_failed');
       refuse('desktop_start_failed');
     }
   }
@@ -1693,11 +2031,18 @@ export class HostedWorkspaceHostSessionAdapter {
 
   private detach(channelId: string | null, reason: string): void {
     if (!channelId) return;
+    this.cancelAuthority(channelId);
+    const sealed = this.sealedChannels.get(channelId);
+    if (sealed) {
+      this.sealedChannels.delete(channelId);
+      sealed.close();
+    }
     const channel = this.channels.get(channelId);
     if (!channel) return;
     this.channels.delete(channelId);
     if (channel.kind === 'operator-http') {
       // Aborts every in-flight forward, so a closed portal tab tears its SSE down.
+      channel.lifetime?.abort();
       channel.http.close();
       this.audit('operator_http_detached', channel, channelId, reason);
       return;
@@ -1723,7 +2068,10 @@ export class HostedWorkspaceHostSessionAdapter {
 
   private closeOperatorHttpChannels(): void {
     for (const channel of this.channels.values()) {
-      if (channel.kind === 'operator-http') channel.http.close();
+      if (channel.kind === 'operator-http') {
+        channel.lifetime?.abort();
+        channel.http.close();
+      }
       else if (channel.kind === 'app-key-mint') channel.mint.close();
     }
   }
@@ -1770,6 +2118,11 @@ export class HostedWorkspaceHostSessionAdapter {
   }
 
   private send(channelId: string, payload: unknown): void {
+    const sealed = this.sealedChannels.get(channelId);
+    if (sealed && payload && typeof payload === 'object' && !Array.isArray(payload)) {
+      void sealed.send(payload as Record<string, unknown>).catch(() => this.detach(channelId, 'sealed_channel_failed'));
+      return;
+    }
     this.options.send({ type: 'relay', channelId, payload });
   }
 

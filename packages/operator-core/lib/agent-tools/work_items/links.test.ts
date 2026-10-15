@@ -37,6 +37,7 @@ vi.mock('../../work-item-blocking', async (importOriginal) => {
 vi.mock('../../work-items', () => ({ getWorkItem: vi.fn(), workItemObjectRef: vi.fn() }));
 
 import { getWorkItem, workItemObjectRef } from '../../work-items';
+import { workItemFixture } from '../../testing/work-item-fixture';
 import tool from './links';
 
 type Out = { data: any };
@@ -124,7 +125,7 @@ describe('work_items:links handler', () => {
   });
 
   it('applies the limit independently to every requested id', async () => {
-    getM.mockImplementation(async (id: string) => ({ family: 'issue', harness: 'papercusp', id }) as never);
+    getM.mockImplementation(async (id: string) => workItemFixture({ family: 'issue', harness: 'papercusp', id }));
     refM.mockImplementation((item) => ({ kind: 'issue', ref: item.id }) as never);
     issueOutM.mockResolvedValue([
       row({ id: 1 }),
@@ -136,6 +137,28 @@ describe('work_items:links handler', () => {
     expect(b.results.map((r: { links: unknown[] }) => r.links)).toHaveLength(2);
     expect(b.results[0].links).toHaveLength(2);
     expect(b.results[1].links).toHaveLength(2);
+  });
+
+  it('omits empty successes and reports exact checked-set coverage for a 100-id selection', async () => {
+    const ids = Array.from({ length: 100 }, (_, i) => `EI-${50_000 + i}`);
+    const linkedIds = ids.filter((_, i) => i % 10 === 0);
+    getM.mockImplementation(async (id: string) => workItemFixture({ family: 'issue', harness: 'papercusp', id }));
+    refM.mockImplementation((item) => ({ kind: 'issue', ref: item.id }) as never);
+    issueOutM.mockImplementation(async (ref: { ref: string }) =>
+      Number(ref.ref.split('-').at(-1)) % 10 === 0 ? [row({ dst: { kind: 'issue', ref: `${ref.ref}-linked` } })] as never : [],
+    );
+
+    const b = await run({ id: undefined, ids, limit: 100 });
+
+    expect(b.counts).toEqual({ ok: 100, failed: 0 });
+    expect(b.results.map((result: { id: string }) => result.id)).toEqual(linkedIds);
+    expect(b.coverage).toEqual({
+      selectedCount: 100,
+      checkedCount: 100,
+      complete: true,
+      linkedCount: linkedIds.length,
+    });
+    expect(getM).toHaveBeenCalledTimes(100);
   });
 
   it('defaults and caps the per-item limit, and rejects an empty id selection', () => {

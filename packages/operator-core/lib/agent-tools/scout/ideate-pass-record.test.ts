@@ -12,6 +12,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { RecordScoutTickInput } from '../../scout/tick-ledger';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { GOAL_DAY_MIN_CANDIDATES, goalDayIdeationYield } from '../../goal-planning-review';
 import {
   ideatePassRecordArgs,
   runIdeatePassRecord,
@@ -95,11 +96,11 @@ describe('runIdeatePassRecord', () => {
     await runIdeatePassRecord({ ideasFiled: 0 }, { harnessSlug: 'my-harness' }, deps);
     expect(recordTick).toHaveBeenCalledWith(expect.objectContaining({ installSlug: 'my-harness' }));
 
-    recordTick.mockClear();
+    vi.mocked(recordTick).mockClear();
     await runIdeatePassRecord({ ideasFiled: 0 }, {}, deps);
     expect(recordTick).toHaveBeenCalledWith(expect.objectContaining({ installSlug: 'papercusp' }));
 
-    recordTick.mockClear();
+    vi.mocked(recordTick).mockClear();
     await runIdeatePassRecord({ ideasFiled: 0 }, { harnessSlug: '*' }, deps);
     expect(recordTick).toHaveBeenCalledWith(expect.objectContaining({ installSlug: 'papercusp' }));
   });
@@ -126,12 +127,68 @@ const goalReview = {
   rationale: 'The current plan covers the remaining goal outcome.',
   evidenceRefs: ['plan:papercusp/existing-plan'],
   planRefs: ['plan:papercusp/existing-plan'],
+  coverage: [{ need: 'checkout recovery', itemRefs: ['WI-1', 'WI-2', 'WI-3'], planRef: 'plan:papercusp/existing-plan' }],
 };
 const reviewContext = {
   goalId: 'goal-1',
   portfolioFingerprint: 'server-measured-portfolio',
   observedAt: '2026-09-23T06:00:00.000Z',
 };
+
+/**
+ * EI-24428150977170134 / plan scout-su-ideate-pipeline-gaps-2026-10-08 P-007 (R-15).
+ * The three refusal shapes measured on live tool_invocations 2026-09-27..10-08
+ * (23 of 120 calls): an undeclared pass `lens`, a bare plan slug in planRefs, and
+ * a coverage need with no work-items yet. Each fixture is the measured shape.
+ */
+describe('ideate-pass-record invalid_input regressions (R-15)', () => {
+  it('accepts the pass lens, stores it on the tick detail and echoes it', async () => {
+    expect(ideatePassRecordArgs.safeParse({ ideasFiled: 2, lens: 'risk-first' }).success).toBe(true);
+    const { deps, recordTick } = makeDeps();
+    const out = await runIdeatePassRecord({ ideasFiled: 2, lens: ' cost-leverage ' }, { harnessSlug: 'papercusp' }, deps);
+    expect(recordTick).toHaveBeenCalledWith(
+      expect.objectContaining({ detail: { owner: 'su-caller', lens: 'cost-leverage' } }),
+    );
+    expect(out).toMatchObject({ ok: true, lens: 'cost-leverage' });
+  });
+
+  it('canonicalizes a bare plan slug in goalReview.planRefs instead of refusing it', () => {
+    const parsed = ideatePassRecordArgs.safeParse({
+      ideasFiled: 0,
+      goalReview: { ...goalReview, planRefs: ['fuzzy-tool-name-resolution-2026-07-02', 'papercusp/existing-plan'] },
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.goalReview?.planRefs).toEqual([
+      'plan:fuzzy-tool-name-resolution-2026-07-02',
+      'plan:papercusp/existing-plan',
+    ]);
+  });
+
+  it('still refuses a malformed plan ref (normalization only rescues bare slugs)', () => {
+    expect(
+      ideatePassRecordArgs.safeParse({ ideasFiled: 0, goalReview: { ...goalReview, planRefs: ['two words'] } }).success,
+    ).toBe(false);
+  });
+
+  it('accepts a coverage need with no work-items yet when it is justified or plan-covered', () => {
+    const blocked = {
+      ...goalReview,
+      disposition: 'blocked' as const,
+      coverage: [
+        { need: 'Fresh independent stewardship grade', itemRefs: [], justification: 'Rubric trend is stale; no item exists yet.' },
+        { need: 'Custody routing rubric read', itemRefs: [], planRef: 'plan:papercusp/existing-plan' },
+      ],
+    };
+    expect(ideatePassRecordArgs.safeParse({ ideasFiled: 0, goalReview: blocked }).success).toBe(true);
+  });
+
+  it('refuses an empty coverage need that carries neither a justification nor a planRef', () => {
+    const bare = { ...goalReview, disposition: 'blocked' as const, coverage: [{ need: 'Unexplained need', itemRefs: [] }] };
+    const parsed = ideatePassRecordArgs.safeParse({ ideasFiled: 0, goalReview: bare });
+    expect(parsed.success).toBe(false);
+    expect(JSON.stringify(parsed.error?.issues)).toContain('itemRefs');
+  });
+});
 
 describe('goal-local planning review', () => {
   it('accepts an evidence-backed sufficient-plan review with zero new ideas', () => {
@@ -146,6 +203,39 @@ describe('goal-local planning review', () => {
       ideasFiled: 0,
       goalReview: { ...goalReview, portfolioFingerprint: 'caller-forged' },
     }).success).toBe(false);
+  });
+
+  // P-003: a no-new-plan review must show which plan covers each recurring need.
+  it('refuses a no-new-plan review without a coverage map, or with an unplanned 3+ item cluster', () => {
+    const { coverage: _omit, ...unbacked } = goalReview;
+    const missing = ideatePassRecordArgs.safeParse({ ideasFiled: 0, goalReview: unbacked });
+    expect(missing.success).toBe(false);
+    expect(JSON.stringify(missing.error?.issues)).toContain('coverage map');
+    const cluster = ideatePassRecordArgs.safeParse({
+      ideasFiled: 0,
+      goalReview: { ...goalReview, coverage: [{ need: 'stale loop wakes', itemRefs: ['WI-4', 'WI-5', 'WI-6'] }] },
+    });
+    expect(cluster.success).toBe(false);
+    expect(JSON.stringify(cluster.error?.issues)).toContain('plans:new');
+    expect(ideatePassRecordArgs.safeParse({
+      ideasFiled: 0,
+      goalReview: { ...goalReview, coverage: [{ need: 'one-off typo', itemRefs: ['WI-7'], justification: 'single item, drain handles it' }] },
+    }).success).toBe(true);
+  });
+
+  it('refuses a coverage planRef that names no live plan, recording nothing', async () => {
+    const recordTick = vi.fn(async () => {});
+    const result = await runIdeatePassRecord(
+      { ideasFiled: 0, goalReview },
+      { ownerId: 'su-goal', workspaceId: 'ws-1' },
+      {
+        recordTick,
+        readGoalReviewContext: async () => reviewContext,
+        missingPlanRefs: async (_ws, refs) => [...refs],
+      },
+    );
+    expect(result).toMatchObject({ ok: false, reason: 'goal-review-unresolved-plan-ref' });
+    expect(recordTick).not.toHaveBeenCalled();
   });
 
   it('requires the uncovered outcome for a new-plan disposition', () => {
@@ -252,6 +342,50 @@ describe('goal review → routed-idea ledger feedback (P-009)', () => {
     );
     await runIdeatePassRecord({ ideasFiled: 1 }, { harnessSlug: 'papercusp' }, noRefs.deps);
     expect(unused).not.toHaveBeenCalled();
+  });
+});
+
+describe('goal-day ideation yield on the receipt (P-004 / D-001)', () => {
+  const goalDay = (plansNew: number, ideasFiled: number) =>
+    vi.fn(async () => ({ since: '2026-09-22T06:00:00.000Z', plansNew, ideasFiled }));
+
+  it('reports owed:true when the goal-day has no candidate, this zero-idea pass included', async () => {
+    const readGoalDayCandidates = goalDay(0, 0);
+    const { deps } = makeDeps({ readGoalReviewContext: vi.fn(async () => reviewContext), readGoalDayCandidates });
+    const out = await runIdeatePassRecord({ ideasFiled: 0, goalReview }, { harnessSlug: 'papercusp' }, deps);
+    expect(readGoalDayCandidates).toHaveBeenCalledWith({ workspaceId: 'ws-1', goalId: 'goal-1', at: expect.any(Date) });
+    expect(out).toMatchObject({ ok: true, ideationYield: { goalId: 'goal-1', candidates: 0, owed: true } });
+    expect(out.ok && out.ideationYield?.message).toMatch(/owes at least 1 per goal-day/);
+  });
+
+  it("adds this pass's ideas, which the ledger does not hold yet, so one filed idea discharges the day", async () => {
+    const { deps } = makeDeps({ readGoalReviewContext: vi.fn(async () => reviewContext), readGoalDayCandidates: goalDay(0, 0) });
+    const out = await runIdeatePassRecord({ ideasFiled: 1, goalReview }, { harnessSlug: 'papercusp' }, deps);
+    expect(out).toMatchObject({ ok: true, ideationYield: { ideasFiled: 1, candidates: 1, owed: false } });
+  });
+
+  it('counts a plan proposed for the goal earlier in the goal-day as a candidate', async () => {
+    const { deps } = makeDeps({ readGoalReviewContext: vi.fn(async () => reviewContext), readGoalDayCandidates: goalDay(1, 0) });
+    const out = await runIdeatePassRecord({ ideasFiled: 0, goalReview }, { harnessSlug: 'papercusp' }, deps);
+    expect(out).toMatchObject({ ok: true, ideationYield: { plansNew: 1, candidates: 1, owed: false } });
+  });
+
+  it('omits ideationYield when the count cannot be read, and never reads it for an ordinary pass', async () => {
+    const failing = vi.fn(async () => { throw new Error('pg down'); });
+    const withGoal = makeDeps({ readGoalReviewContext: vi.fn(async () => reviewContext), readGoalDayCandidates: failing });
+    const out = await runIdeatePassRecord({ ideasFiled: 0, goalReview }, { harnessSlug: 'papercusp' }, withGoal.deps);
+    expect(out.ok).toBe(true);
+    expect(out).not.toHaveProperty('ideationYield');
+    const plain = goalDay(0, 0);
+    const ordinary = makeDeps({ readGoalDayCandidates: plain });
+    await runIdeatePassRecord({ ideasFiled: 0 }, { harnessSlug: 'papercusp' }, ordinary.deps);
+    expect(plain).not.toHaveBeenCalled();
+  });
+
+  it('shares the WOE threshold and never counts a negative or fractional input as a candidate', () => {
+    expect(GOAL_DAY_MIN_CANDIDATES).toBe(1);
+    const y = goalDayIdeationYield({ goalId: 'g', since: 's', plansNew: -2, priorIdeasFiled: 0.5, thisPassIdeasFiled: -1 });
+    expect(y).toMatchObject({ plansNew: 0, ideasFiled: 0, candidates: 0, owed: true });
   });
 });
 

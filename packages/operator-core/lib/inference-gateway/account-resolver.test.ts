@@ -6,6 +6,7 @@ vi.mock('../deployment/account-pool', () => ({ accountByCredentialRef: vi.fn() }
 import { resolveBoundAccount, resolveAccountPool, poolAccountIdForRef, localLoginCredentialRef } from './account-resolver';
 import { loadAccountPool, readDefaultAccountId } from '../deployment/account-pool-store';
 import { accountByCredentialRef } from '../deployment/account-pool';
+
 import type { ClaudeAccount } from '../deployment/account-pool';
 
 const mockedLoad = vi.mocked(loadAccountPool);
@@ -39,6 +40,18 @@ const acct = (id: string, credentialRef: string, extra: Partial<ClaudeAccount> =
 const noDefault = () => mockedDefault.mockResolvedValue(undefined);
 
 describe('resolveBoundAccount', () => {
+  it('carries the Anthropic workspace through full-pool, sole, pinned and default account resolution', async () => {
+    const api = acct('api', 'apikey:env:TEST_API_KEY', { anthropicWorkspaceId: 'wrkspc_bound' });
+    mockedLoad.mockResolvedValue({ accounts: [api] });
+    expect((await resolveAccountPool('ws'))[0]?.anthropicWorkspaceId).toBe('wrkspc_bound');
+    expect((await resolveBoundAccount('ws')).anthropicWorkspaceId).toBe('wrkspc_bound');
+    process.env.PAPERCUSP_ACCOUNT_ID = 'api';
+    expect((await resolveBoundAccount('ws')).anthropicWorkspaceId).toBe('wrkspc_bound');
+    delete process.env.PAPERCUSP_ACCOUNT_ID;
+    mockedDefault.mockResolvedValue('api');
+    expect((await resolveBoundAccount('ws')).anthropicWorkspaceId).toBe('wrkspc_bound');
+  });
+
   const savedAccountId = process.env.PAPERCUSP_ACCOUNT_ID;
   beforeEach(() => {
     vi.clearAllMocks();

@@ -208,8 +208,9 @@ describe('pui --connect over the cloud workspace transport (P-017)', () => {
   test('runs pui on the workspace, prints its output here and returns its exit status', async () => {
     remoteInput.length = 0;
     const run = await runLocalPui([`--connect=${profileName}/${WORKSPACE}`, '--version']);
-    // The workspace shell was told to run pui, forwarded, with the argv the user typed.
-    expect(remoteInput[0]).toBe(`exec env PAPERCUSP_PSU_CONNECTION_FORWARDED=1 pui '--version'\r`);
+    // Check the forwarded command independently of its screen-clear and
+    // missing-program shell fallback wrapper; the real PTY proves the result.
+    expect(remoteInput[0]).toContain(`exec env PAPERCUSP_PSU_CONNECTION_FORWARDED=1 pui '--version'`);
     expect(run.output).toContain(`psu: connected to ${profileName}/${WORKSPACE}`);
     expect(run.output).toMatch(/pui \d+\.\d+\.\d+/);
     expect(run.exitCode).toBe(0);
@@ -220,7 +221,7 @@ describe('pui --connect over the cloud workspace transport (P-017)', () => {
     // `--fleet=` is forwarded untouched (it is not a transport flag) and the
     // REMOTE pui rejects it; the refusal and its status must come back.
     const run = await runLocalPui([`--connect=${profileName}/${WORKSPACE}`, '--fleet=']);
-    expect(remoteInput[0]).toBe(`exec env PAPERCUSP_PSU_CONNECTION_FORWARDED=1 pui '--fleet='\r`);
+    expect(remoteInput[0]).toContain(`exec env PAPERCUSP_PSU_CONNECTION_FORWARDED=1 pui '--fleet='`);
     expect(run.output).toContain('--fleet requires a non-empty value');
     expect(run.exitCode).toBe(1);
   }, 120_000);

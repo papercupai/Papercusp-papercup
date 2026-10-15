@@ -22,6 +22,21 @@ export function isUnstampedWorkItemWriter(relPath: string, source: string): bool
  */
 export function mintsWorkItems(relPath: string, source: string): boolean;
 /**
+ * Scan the measured production source population. Exported so the registered
+ * real-tree test exercises this exact filter and verdict without a subprocess.
+ *
+ * @returns {{ minting: Array<{ rel: string, decided: boolean, allowlisted: boolean }>, offenders: string[], unscanned: unknown }}
+ */
+export function scan(): {
+    minting: Array<{
+        rel: string;
+        decided: boolean;
+        allowlisted: boolean;
+    }>;
+    offenders: string[];
+    unscanned: unknown;
+};
+/**
  * Writers that legitimately mint WITHOUT the born-pending stamp. Every entry states
  * WHICH bypass class it is, because "no stamp" and "deliberately auto-admitted" look
  * identical in the database and only this file records which one a site meant.

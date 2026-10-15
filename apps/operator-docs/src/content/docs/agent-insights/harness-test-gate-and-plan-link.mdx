@@ -4,22 +4,21 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Harness tests gate feature approval, and link to plans through the VAL
-description: The V2 tester writes one black-box test per VAL; the validator runs them as the approval gate. VALs live in harness_plan_assertions (inline plan bullets via plans:promote) — NOT validation-contract.md or a validation_criteria table. The plan↔test link is a rollup join on the VAL.
+title: "Harness tests gate feature approval, and link to plans through the VAL"
+description: "The V2 tester writes one black-box test per VAL; the validator runs them as the approval gate. VALs live in harness_plan_assertions (inline plan bullets via plans:promote) — NOT validation-contract.md or a validation_criteria table. The plan↔test link is a rollup join on the VAL."
+type: Insight
 discovered: 2026-05-30
-tags: [harness, testing, tester, validator, plans, val, orchestrator]
+tags: ["harness", "testing", "tester", "validator", "plans", "val", "orchestrator"]
 status: active
 documents:
-  - packages/operator-core/lib/agent-tools/plans/val-assertions.ts
-  - packages/operator-core/lib/dbos/orchestrator-decide.ts
-  - packages/operator-core/lib/harness-test-rollup.ts
-  - packages/operator-core/lib/testing-domains-registry.ts
+  - "packages/operator-core/lib/agent-tools/plans/val-assertions.ts"
+  - "packages/operator-core/lib/dbos/orchestrator-decide.ts"
+  - "packages/operator-core/lib/testing-domains-registry.ts"
 plans:
-  - harness-tests-tab-and-tester-promotion-2026-05-26
-  - plans-central-harness-ux-2026-05-26
+  - "harness-tests-tab-and-tester-promotion-2026-05-26"
+  - "plans-central-harness-ux-2026-05-26"
 sidebar:
   order: 31
-type: Insight
 generated:
   by: agent
   at: 2026-05-30

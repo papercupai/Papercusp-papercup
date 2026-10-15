@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { hostname } from 'node:os';
 import {
   countStarts,
   evaluateReading,
@@ -33,6 +34,10 @@ function read(over: Partial<JournalReadResult> = {}): JournalReadResult {
 
 function reading(over: Partial<RestartRateReading> = {}): RestartRateReading {
   return { unit: UNIT, starts: 0, atLeast: false, unreadable: null, ...over };
+}
+
+function quietRail() {
+  return { broadcast: async () => true, resolve: async () => true };
 }
 
 describe('countStarts (EI-18741922664751805)', () => {
@@ -114,6 +119,7 @@ describe('runRestartRateSweepOnce', () => {
     const result = await runRestartRateSweepOnce({
       flagEnabled: async () => true,
       readStarts,
+      rail: quietRail(),
       escalate: vi.fn(async () => {}),
     });
     expect(readStarts.mock.calls.map(([unit]) => unit)).toEqual([
@@ -125,7 +131,7 @@ describe('runRestartRateSweepOnce', () => {
 
   it('skips entirely (no journal read) when the flag is OFF', async () => {
     const readStarts = vi.fn();
-    const result = await runRestartRateSweepOnce({ flagEnabled: async () => false, readStarts });
+    const result = await runRestartRateSweepOnce({ flagEnabled: async () => false, readStarts, rail: quietRail() });
     expect(result).toEqual({ alerts: [], unreadable: [], skipped: true });
     expect(readStarts).not.toHaveBeenCalled();
   });
@@ -135,6 +141,7 @@ describe('runRestartRateSweepOnce', () => {
     const result = await runRestartRateSweepOnce({
       flagEnabled: async () => true,
       units: ['a.service', 'b.service'],
+      rail: quietRail(),
       threshold: 8,
       readStarts: async (unit) =>
         reading({ unit, starts: unit === 'a.service' ? 12 : 3 }),
@@ -150,6 +157,7 @@ describe('runRestartRateSweepOnce', () => {
     const result = await runRestartRateSweepOnce({
       flagEnabled: async () => true,
       units: ['broken.service', 'b.service'],
+      rail: quietRail(),
       threshold: 8,
       readStarts: async (unit) =>
         unit === 'broken.service'
@@ -166,6 +174,7 @@ describe('runRestartRateSweepOnce', () => {
     const result = await runRestartRateSweepOnce({
       flagEnabled: async () => true,
       units: ['boom.service', 'b.service'],
+      rail: quietRail(),
       threshold: 8,
       readStarts: async (unit) => {
         if (unit === 'boom.service') throw new Error('journalctl exploded');
@@ -185,6 +194,7 @@ describe('runRestartRateSweepOnce', () => {
     const result = await runRestartRateSweepOnce({
       flagEnabled: async () => true,
       units: ['a.service', 'b.service'],
+      rail: quietRail(),
       threshold: 8,
       readStarts: async (unit) => reading({ unit, starts: 20 }),
       escalate,
@@ -192,5 +202,30 @@ describe('runRestartRateSweepOnce', () => {
     expect(escalate).toHaveBeenCalledTimes(2);
     // 'a' failed to escalate so it is not reported as alerted; 'b' still is.
     expect(result.alerts).toEqual([expect.objectContaining({ unit: 'b.service' })]);
+  });
+
+  it('preserves a host/unit episode through unavailable, truncated and disabled reads, then resolves measured recovery', async () => {
+    const open = new Set<string>();
+    const broadcast = vi.fn(async (event: { conditionKey?: string }) => { open.add(event.conditionKey!); return true; });
+    const resolve = vi.fn(async (event: { conditionKey: string }) => open.delete(event.conditionKey));
+    const key = `alarm:service-restart-rate:${encodeURIComponent(hostname())}:${UNIT}`;
+    let current = reading({ starts: 20 });
+    const deps = { units: [UNIT], flagEnabled: async () => true, rail: { broadcast, resolve },
+      readStarts: async () => current, escalate: async () => { throw new Error('legacy failed'); } };
+    await runRestartRateSweepOnce(deps);
+    expect([...open]).toEqual([key]);
+    for (const unknown of [reading({ starts: null, unreadable: 'journal unavailable' }),
+      reading({ starts: null }), reading({ starts: 1, atLeast: true })]) {
+      current = unknown; await runRestartRateSweepOnce(deps);
+      expect([...open]).toEqual([key]);
+    }
+    await runRestartRateSweepOnce({ ...deps, readStarts: async () => { throw new Error('journal failed'); } });
+    current = reading({ starts: 1 });
+    await runRestartRateSweepOnce({ ...deps, flagEnabled: async () => false });
+    expect(resolve).not.toHaveBeenCalled();
+    await runRestartRateSweepOnce(deps);
+    expect(open.size).toBe(0);
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    expect(resolve).toHaveBeenCalledWith({ conditionKey: key, summary: 'service-restart-rate-watchdog recovered' });
   });
 });

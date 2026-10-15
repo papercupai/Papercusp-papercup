@@ -203,7 +203,7 @@ function isSqlFile(fileName) {
  */
 function collectSqlRanges(
   text,
-  { strings = false, dollarBodies = strings ? 'literal' : 'code' } = {},
+  { strings = false, dollarBodies = strings ? 'literal' : 'code', preserveIdentifiers = false } = {},
 ) {
   const ranges = [];
   const n = text.length;
@@ -307,7 +307,7 @@ function collectSqlRanges(
         }
         j += 1;
       }
-      if (strings) ranges.push([bodyStart, Math.min(j, n)]);
+      if (strings && !(preserveIdentifiers && quote === '"')) ranges.push([bodyStart, Math.min(j, n)]);
       i = Math.min(j + 1, n);
       continue;
     }
@@ -362,16 +362,16 @@ export function stripSqlComments(text) {
  * `findUniqueIndexShapeSwap` (6 firing files -> 5) with every test still green (WI-37800).
  *
  * @param {string} text
- * @param {{ dollarBodies?: 'literal'|'code' }} [opts]
+ * @param {{ dollarBodies?: 'literal'|'code', preserveIdentifiers?: boolean }} [opts]
  * @returns {string}
  */
 export function stripSqlCommentsAndStrings(
   text,
-  { dollarBodies = 'literal' } = {},
+  { dollarBodies = 'literal', preserveIdentifiers = false } = {},
 ) {
   return blankRanges(
     text,
-    collectSqlRanges(text, { strings: true, dollarBodies }),
+    collectSqlRanges(text, { strings: true, dollarBodies, preserveIdentifiers }),
   );
 }
 

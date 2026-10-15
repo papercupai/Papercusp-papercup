@@ -46,6 +46,7 @@ function session(over: Partial<DesktopSessionRecord> = {}): DesktopSessionRecord
     kind: 'xvfb-local',
     scope: 'pot',
     scopeRef: 'pot-a',
+    name: null,
     hostRef: null,
     ownerPid: 4242,
     ownerBootId: 'boot-1',

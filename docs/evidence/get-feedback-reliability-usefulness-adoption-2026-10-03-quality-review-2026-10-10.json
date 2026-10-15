@@ -1,0 +1,704 @@
+{
+  "schemaVersion": 1,
+  "kind": "supplementary-bounded-quality-review",
+  "planSlug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemRefs": [
+    "WI-10007521",
+    "WI-10005891"
+  ],
+  "reviewerId": "su-e16e0da4-f858-4e10-9665-55116edbc36b",
+  "status": "review-complete; R6 live-matrix and independent acceptance remain open",
+  "scope": "A separately identified later-cut review of the original requester's naturally occurring plan-attributed consultations. It does not revise the frozen historical cohort, estimate fleet usefulness/reliability, or establish current live-source matrix success.",
+  "window": {
+    "start": "2026-10-03T05:21:32.561Z",
+    "end": "2026-10-10T12:34:00.000Z",
+    "fixedBeforeSupplementaryContentReview": true,
+    "matrixSnapshotCoupling": "pending: this review cut is separate from the retained native matrix snapshot; independent acceptance must verify the final artifact coupling"
+  },
+  "requesterId": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+  "originWorkItems": {
+    "P-001": "WI-10005836",
+    "P-002": "WI-10005889",
+    "P-003": "WI-10005848",
+    "P-004": "WI-10005886",
+    "P-005": "WI-10005890",
+    "P-006": "WI-10005891",
+    "P-007": "WI-10005892"
+  },
+  "sourceQuery": {
+    "args": {
+      "sql": "SELECT cs.conversation_id,cs.created_at,cs.requester_id,cs.origin_task_ref,cs.state,cs.routing->>'deliveryIntent' AS delivery_intent,cs.routing->>'policy' AS policy,cs.outcome,cs.routing#>'{selection,selected}' AS selected,cs.dispatch_attempts,(SELECT string_agg(pm.post_id::text,',' ORDER BY pm.created_at,pm.post_id) FROM harness_shared.consult_post_meta pm WHERE pm.workspace_id=cs.workspace_id AND pm.conversation_id=cs.conversation_id AND pm.created_at<'2026-10-10T12:34:00.000Z' AND pm.author_id<>cs.requester_id AND pm.kind IN ('answer','new_fact')) AS answer_posts FROM harness_shared.consult_state cs WHERE cs.workspace_id='papercusp-workspace' AND cs.requester_id IN ('su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4','su-e16e0da4-f858-4e10-9665-55116edbc36b') AND cs.created_at>='2026-10-03T05:21:32.561Z' AND cs.created_at<'2026-10-10T12:34:00.000Z' AND cs.origin_task_ref IN ('WI-10005836','WI-10005889','WI-10005848','WI-10005886','WI-10005890','WI-10005891','WI-10005892','WI-10007524') AND EXISTS(SELECT 1 FROM harness_shared.consult_post_meta pm WHERE pm.workspace_id=cs.workspace_id AND pm.conversation_id=cs.conversation_id AND pm.created_at<'2026-10-10T12:34:00.000Z' AND pm.author_id<>cs.requester_id AND pm.kind IN ('answer','new_fact')) ORDER BY cs.created_at,cs.conversation_id LIMIT 101",
+      "maxRows": 101,
+      "allowUnscoped": false,
+      "timeoutMs": 10000,
+      "payloadTier": "full"
+    },
+    "receiptPath": "/dev/shm/get-feedback-r6-population-full-20261010-1242.json",
+    "receiptSha256": "6fd50f75f60b2212d89b5996356080832774e5e8b37e737538bf54e80dfac87f",
+    "rowCount": 12,
+    "truncated": false
+  },
+  "excludedOtherRequester": [
+    {
+      "conversationId": "conv-request-061189b84359f587ca4d669209fa802670bde77c2c17a05e5050cb729d13c44f",
+      "requesterId": "su-e16e0da4-f858-4e10-9665-55116edbc36b",
+      "reason": "Different requester; not merged into this review population."
+    }
+  ],
+  "fullEligiblePopulation": [
+    {
+      "conversationId": "conv-mus1v26j-0000-68ff1c643c2b4f10be212508682b280f",
+      "createdAt": "2026-10-03 07:07:41.955276+00",
+      "originTaskRef": "WI-10005848",
+      "stratum": "cross-backend-dispatch",
+      "sourceOwnerId": "su-5f010c19-0916-48a8-8fc2-d63380bdfdf8",
+      "sourceNativeSessionId": "767e13d7-af6a-4847-9cac-8cd7dc5ed73c",
+      "sourceBackend": "claude",
+      "targetBackend": "codex",
+      "answeringOwnerId": "su-5f010c19-0916-48a8-8fc2-d63380bdfdf8",
+      "answerPostIds": [
+        1156967
+      ],
+      "requesterDecision": {
+        "at": "2026-10-05T20:44:04.023Z",
+        "by": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+        "note": "Requester re-read method critique1156967. Its non-vacuous matrix, deterministic eight-thread population/shortfall, requester-only evidence and exact shipment chain informed D-003 and normal D-004/D-005 amendments while all seven BARs were preserved. I record the rescope explicitly now rather than infer an earlier structured reconciliation from close prose or subsequent code. The fixed20:27:24Z artifact snapshot still records the earlier missing reconciliation as unknown; this later record must not retroactively change that cut.",
+        "disposition": "rescoped",
+        "decision_ref": "get-feedback-reliability-usefulness-adoption-2026-10-03#D-003",
+        "consult_state": "closed_cant_help"
+      }
+    },
+    {
+      "conversationId": "conv-musb29y1-0000-cf39e1f18138446ebc68b0a6af8436d8",
+      "createdAt": "2026-10-03 11:25:15.132413+00",
+      "originTaskRef": "WI-10005889",
+      "stratum": "same-backend-dispatch",
+      "sourceOwnerId": "su-b188e54a-d2b4-4e5e-9d6c-c0fdbd68ddcd",
+      "sourceNativeSessionId": "8a6f14d0-80de-4e75-9fc5-43a757d4bdec",
+      "sourceBackend": "claude",
+      "targetBackend": "claude",
+      "answeringOwnerId": "su-c960cc81-0b1a-41dd-b4d5-bea3d6fbb4f5",
+      "answerPostIds": [
+        1157488,
+        1157540
+      ],
+      "requesterDecision": {
+        "at": "2026-10-05T20:44:03.306Z",
+        "by": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+        "note": "Requester re-read exact revision-3 critique1157488 and author-seat refusal1157540. I retained rubric revision3/hash2bca6116, preserved both review posts, and emitted corrected author meta-card EI-25171788938691287 using named detector assertions instead of unsupported reviewer test totals. Independent audit remains pending. This records adoption of the review, not a vetting pass or implementation acceptance. The artifact cutoff20:27:24Z precedes this record and truthfully retains the earlier missing reconciliation as unknown.",
+        "disposition": "confirmed",
+        "consult_state": "expired"
+      }
+    },
+    {
+      "conversationId": "conv-muvio65y-0000-f1aa8000e03d45e78c48082936ad9898",
+      "createdAt": "2026-10-05 17:21:32.503861+00",
+      "originTaskRef": "WI-10005889",
+      "stratum": "same-backend-dispatch",
+      "sourceOwnerId": "su-678f0ae8-c42e-443e-a96e-117103fad70e",
+      "sourceNativeSessionId": "01a10215-de68-7071-93ea-3931b2a7ec1f",
+      "sourceBackend": "codex",
+      "targetBackend": "codex",
+      "answeringOwnerId": "su-ee05d5f4-6dde-4639-bc4d-430964088d0b",
+      "answerPostIds": [
+        1157626
+      ],
+      "requesterDecision": {
+        "at": "2026-10-05T17:27:51.854Z",
+        "by": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+        "note": "Requester reviewed answer post1157626 from isolated ee05d. It confirms the existing scope split: WI10002749 adapter/identity correctness may close independently only if its stored acceptance supports that boundary; P002/R6 still require actual isolated source/native/claim continuity. I am keeping live matrix acceptance open and adopting the concrete five-assertion test: prep owner, child owner, exact carried native/evidence span, unchanged source claims, typed child reply. Current trial provides substantive advice and one native Codex-target reply, not full adapter matrix or shipment. Claude auto/default bootstrap refusals separately filed and self-owned as EI25161224402098219; no quota or provider-wall inference.",
+        "disposition": "confirmed",
+        "consult_state": "active"
+      }
+    },
+    {
+      "conversationId": "conv-muvkvv0y-0000-598ee0fa316049bb86d9ad6b07871574",
+      "createdAt": "2026-10-05 18:23:30.545068+00",
+      "originTaskRef": "WI-10005889",
+      "stratum": "cross-backend-dispatch",
+      "sourceOwnerId": "su-678f0ae8-c42e-443e-a96e-117103fad70e",
+      "sourceNativeSessionId": "01a10215-de68-7071-93ea-3931b2a7ec1f",
+      "sourceBackend": "codex",
+      "targetBackend": "claude",
+      "answeringOwnerId": "su-befe0695-b613-4ad0-9abf-af2365aabadb",
+      "answerPostIds": [
+        1157673
+      ],
+      "requesterDecision": {
+        "at": "2026-10-05T18:31:23.018Z",
+        "by": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+        "note": "The changed-build Codex→Claude port delivered a full native frame10fa1659 to isolated answering owner su-befe0695, native5b610d62, and exact typed post1157673. The answer confirms the adapter/live-acceptance scope split and identifies the per-source five-assertion trial. Source span17 is weak historical expertise by responder admission; usefulness rests on fresh source reads and this trial's live port evidence. I will retain the original source-adapter scope separately and keep source-claim immutability, OMP/Claude source rows, deterministic eight-thread review and final shipment open; this positive is not the fullmatrix.",
+        "disposition": "confirmed",
+        "consult_state": "active"
+      }
+    },
+    {
+      "conversationId": "conv-muvsow6d-0000-9db0d462af354281ae14190a8776e7bf",
+      "createdAt": "2026-10-05 22:02:02.421532+00",
+      "originTaskRef": "WI-10005889",
+      "stratum": "same-backend-dispatch",
+      "sourceOwnerId": "su-c30824bf-a127-4ac7-94f8-edae1319e2c7",
+      "sourceNativeSessionId": "f268f11b-3576-4755-b533-8b56b71366d0",
+      "sourceBackend": "claude",
+      "targetBackend": "claude",
+      "answeringOwnerId": "su-1501cf66-7e51-42e8-b991-931b29c25170",
+      "answerPostIds": [
+        1158254,
+        1158261,
+        1158267
+      ],
+      "requesterDecision": {
+        "at": "2026-10-05T22:21:13.124Z",
+        "by": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+        "note": "Read typed child reply1158254 and exact native/port lineage. The source's eight claim signatures and fleet leadership match at three census points including after the reply, but endpoint equality cannot attribute changes or exclude mutate-then-revert. I am retaining that bounded observation and strengthening P002/P006 verification with launch-record actor attribution and a controlled spoof guard, per D006. The historical Claude-to-Claude port is supplemental, not the required native-fork row or an eight-thread cohort credit. Product sourceUntouched remains a promise; no metadata rename or independent monitoring system is adopted from advice alone.",
+        "disposition": "rescoped",
+        "decision_ref": "get-feedback-reliability-usefulness-adoption-2026-10-03#D-006",
+        "consult_state": "active"
+      }
+    },
+    {
+      "conversationId": "conv-muvxj55p-0000-2f13c764fead4560a1bdc21d7dc5556c",
+      "createdAt": "2026-10-06 00:17:32.174081+00",
+      "originTaskRef": "WI-10005889",
+      "stratum": "cross-backend-dispatch",
+      "sourceOwnerId": "su-0f0a6f2a-3bf0-417d-88fd-22dd7b234197",
+      "sourceNativeSessionId": "01a10d90-17a6-7752-9d1c-6793d261de0a",
+      "sourceBackend": "codex",
+      "targetBackend": "claude",
+      "answeringOwnerId": "su-be2ecc34-8ab6-4b01-a112-a34a64b09668",
+      "answerPostIds": [
+        1158421
+      ],
+      "requesterDecision": {
+        "at": "2026-10-06T00:33:54.288Z",
+        "by": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+        "note": "Read the full typed answer post1158421 and checked current _mcp-host.ts native classifier and projected-tool-deps.ts invocation writer. The advice confirms the existing D-006 boundary: selection/row/xmin prove which incarnation was evaluated, not physical actor or immutability. Successful su calls currently lack a persisted carrier fingerprint; unknown/unbound and same-owner different-carrier controls remain necessary. No universal isolation or parent acceptance is credited. I will repair the scoped success-path evidence gap within the existing metadata surface, while retaining physical-actor attribution as unverified.",
+        "disposition": "confirmed",
+        "consult_state": "active"
+      }
+    },
+    {
+      "conversationId": "conv-muw7q0ro-0000-ccd3b704774f4fb8beb2ec22acda51ac",
+      "createdAt": "2026-10-06 05:02:49.231142+00",
+      "originTaskRef": "WI-10005889",
+      "stratum": "same-backend-dispatch",
+      "sourceOwnerId": "su-da584eff-1ba0-4420-856f-ec5290ad740a",
+      "sourceNativeSessionId": "6f1a1199-7c4d-4c67-8e38-1fe9060efd99",
+      "sourceBackend": "claude",
+      "targetBackend": "claude",
+      "answeringOwnerId": "su-a052e153-3a05-48d1-9eb8-b2f8c7cc150e",
+      "answerPostIds": [
+        1158871
+      ],
+      "requesterDecision": {
+        "at": "2026-10-06T05:22:57.938Z",
+        "by": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+        "note": "Verified thread-post:1158871 against forkBootstrapBody, bootstrap-su recordAdvSession branch, dispatchRecordEntry, isExactTrackedResumeTarget and isCurrentResponder. New conversion target is34708/owner a052e153/native dbf90857/port cc3c9f64; the inherited10fa1659 belongs to source34372 and never credits fork34697. Following through in owned EI-25206236378668878 on actual POST port-absence/native-resume assertions and real-PG recorded launch argv. No physical-actor, current-Claude fork, cohort or shipment acceptance inferred.",
+        "disposition": "confirmed",
+        "consult_state": "active"
+      }
+    },
+    {
+      "conversationId": "conv-muwaswhg-0000-0fd5596e58d1417182db9d9f3c8b6ef7",
+      "createdAt": "2026-10-06 06:29:02.484499+00",
+      "originTaskRef": "WI-10005889",
+      "stratum": "same-backend-dispatch",
+      "sourceOwnerId": "su-56e2f83b-010d-4f42-b750-19bc8fde6ea5",
+      "sourceNativeSessionId": "9d657323-6de6-492b-a83b-639f6e70f9b2",
+      "sourceBackend": "claude",
+      "targetBackend": "claude",
+      "answeringOwnerId": "su-b0435610-4e1c-426c-8037-37548d83b551",
+      "answerPostIds": [
+        1159125,
+        1159141
+      ],
+      "requesterDecision": {
+        "at": "2026-10-06T06:55:35.827Z",
+        "by": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+        "note": "Requester adopted origin-only testing:run recoverEvidence with the default 30s wait after checking the current writer. Also adopted reviewer2 thread-post:1159141's correction to reply1159125: foreground tasks are enrolled, and exact processes:list task0muwain791eqe9e01ek live:true confirms ended_unobserved with systemd scope released, all processes exited. Thus this ended attempt can be recovered; no pre-spawn conclusion is claimed. Actual recovery returned recoveryWait.outcome unavailable, waitedMs4284, pending-retained for all8 rows; no retirement/pass/new measurement follows. Snapshot-read failure remains open. Unmeasured load and host-restart hypotheses are not adopted. Suspected live-foreground abandonment gap is filed and self-owned as EI-25211998329472706.",
+        "disposition": "confirmed",
+        "consult_state": "active"
+      }
+    },
+    {
+      "conversationId": "conv-muwncdon-0000-0933df1a99314596b0b91727bdef396c",
+      "createdAt": "2026-10-06 12:20:06.684013+00",
+      "originTaskRef": "WI-10005889",
+      "stratum": "same-backend-dispatch",
+      "sourceOwnerId": "su-17e8def7-4534-4e50-92a0-978a51fbd6d9",
+      "sourceNativeSessionId": "a4861b8b-cd38-4e2a-ac5e-0281ded5028e",
+      "sourceBackend": "claude",
+      "targetBackend": "claude",
+      "answeringOwnerId": "su-89413428-d12b-49c8-a378-92c79940ccf9",
+      "answerPostIds": [
+        1159868
+      ],
+      "requesterDecision": {
+        "at": "2026-10-06T12:32:10.165Z",
+        "by": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+        "note": "Current staging72f1 native trial delivered ended Claude source a4861b8b/su17e8 to distinct Claude fork native68806532/su8941; exact native kickoff turn4 and typed reply1159868/invocation32206168(statusok) read. Source evidence support is bounded to this trial; startup was not counted as answering. Reply confirms launch-row selection is per-call-path metadata and not OS actor proof; full source-claim immutability/rotation matrix and shipment remain unverified. Independently found existing foreign-native negative guards in mcp-handler-gating-matrix.test.ts (around4880/5088), so its conditional missing-test suggestion is not adopted as a confirmed absence. Preserve frozenR6/sample4/shortfall4; no recut or cohort credit.",
+        "disposition": "confirmed",
+        "decision_ref": "get-feedback-reliability-usefulness-adoption-2026-10-03#D-006",
+        "consult_state": "active"
+      }
+    },
+    {
+      "conversationId": "conv-muwrt471-0000-8613dedfe0b44e46b76881c6eba7ffd9",
+      "createdAt": "2026-10-06 14:25:06.622599+00",
+      "originTaskRef": "WI-10005889",
+      "stratum": "same-backend-dispatch",
+      "sourceOwnerId": "su-3b652a5d-25c5-4f03-a0dd-765fe8b5d5cc",
+      "sourceNativeSessionId": "a00082dc-43c3-4c05-a510-559168f07077",
+      "sourceBackend": "claude",
+      "targetBackend": "claude",
+      "answeringOwnerId": "su-23959a75-2171-4fdf-8ab9-1d34e66656e9",
+      "answerPostIds": [
+        1160098,
+        1160114
+      ],
+      "requesterDecision": {
+        "at": "2026-10-06T14:46:56.910Z",
+        "by": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+        "note": "Requester reviewed original1160098 and correction1160114. The indexed-text absence inference was wrong and is withdrawn: sessions:read omits native tool frames, so it does not prove no implementation happened. The answer's own numerical edge-case measurements remain supplemental advice; source file delivery is unknown. Normal request377aebc9 landed despite caller55s timeout and forked Claude source3b652 to distinct answering23959/native6b3b4c8b; it did NOT exercise OMP-source launch, exact older-incarnation port, live claim immutability or full P006 acceptance. Fixed R6 cohort/cut and plan scope remain unchanged; no native/quality/shipment credit.",
+        "disposition": "confirmed",
+        "consult_state": "active"
+      }
+    },
+    {
+      "conversationId": "conv-muxmv23m-0000-06f46e10e15840f29b6b159481424a1f",
+      "createdAt": "2026-10-07 04:54:27.336621+00",
+      "originTaskRef": "WI-10005891",
+      "stratum": "same-backend-dispatch",
+      "sourceOwnerId": "su-23959a75-2171-4fdf-8ab9-1d34e66656e9",
+      "sourceNativeSessionId": "6b3b4c8b-ec77-43c1-ad03-fce066d7ecb1",
+      "sourceBackend": "claude",
+      "targetBackend": "claude",
+      "answeringOwnerId": "su-b2563f9d-28fd-4b8b-8373-fb8971fb0942",
+      "answerPostIds": [
+        1161398
+      ],
+      "requesterDecision": {
+        "at": "2026-10-07T05:05:41.367Z",
+        "by": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+        "note": "Read full answer1161398 by actual answering owner su-b2563f9d-28fd-4b8b-8373-fb8971fb0942. Advice distinguishes unchanged JavaScript null behavior from normalization and explicitly limits implementation claims to indexed source text; no calc file change is needed for this trial. Exact native911de968 userturn154 names source6b3b4c8b#11, independent Claude fork and conversation; typed reply32677250 is OK and audit36420/xmin802353469 at33287 with positive control32676774. This is supplemental Claude-to-Claude native/fidelity evidence, not a direct OMP source trial, physical actor assurance, frozen R6 cohort credit, parent acceptance or shipment. Preserve unknown OMP/source matrix and the original cut/shortfall4; no repeat trial.",
+        "disposition": "confirmed",
+        "consult_state": "active"
+      }
+    }
+  ],
+  "selection": {
+    "strata": [
+      "same-backend-dispatch",
+      "cross-backend-dispatch",
+      "archive-retrieval-only"
+    ],
+    "stratumCounts": {
+      "same-backend-dispatch": 8,
+      "cross-backend-dispatch": 3,
+      "archive-retrieval-only": 0
+    },
+    "rule": "For each stratum in listed order choose the earliest eligible thread by created_at then conversation id; fill from remaining earliest threads globally to eight distinct threads. Classify a multi-responder thread by its first substantive answer and matching successful dispatch walk.",
+    "chosenIds": [
+      "conv-musb29y1-0000-cf39e1f18138446ebc68b0a6af8436d8",
+      "conv-mus1v26j-0000-68ff1c643c2b4f10be212508682b280f",
+      "conv-muvio65y-0000-f1aa8000e03d45e78c48082936ad9898",
+      "conv-muvkvv0y-0000-598ee0fa316049bb86d9ad6b07871574",
+      "conv-muvsow6d-0000-9db0d462af354281ae14190a8776e7bf",
+      "conv-muvxj55p-0000-2f13c764fead4560a1bdc21d7dc5556c",
+      "conv-muw7q0ro-0000-ccd3b704774f4fb8beb2ec22acda51ac",
+      "conv-muwaswhg-0000-0fd5596e58d1417182db9d9f3c8b6ef7"
+    ],
+    "target": 8,
+    "eligible": 11,
+    "shortfall": 0
+  },
+  "reviewed": [
+    {
+      "conversationId": "conv-mus1v26j-0000-68ff1c643c2b4f10be212508682b280f",
+      "answerPosts": [
+        {
+          "postId": 1156967,
+          "authorId": "su-5f010c19-0916-48a8-8fc2-d63380bdfdf8",
+          "createdAt": "2026-10-03T07:11:33.958Z",
+          "bodySha256": "c9a4f3f27850b8c7fc51789d087ea0c1dc38ad464f90b98ba6ead9a2696388a2"
+        }
+      ],
+      "quality": {
+        "rating": "useful",
+        "reason": "Identified missing non-vacuous matrix rules, deterministic sampling, requester evidence and exact shipment links. Requester adopted method amendments in D-003, while implementation remained open."
+      },
+      "requesterDecision": {
+        "rating": "recorded",
+        "evidence": {
+          "at": "2026-10-05T20:44:04.023Z",
+          "by": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+          "note": "Requester re-read method critique1156967. Its non-vacuous matrix, deterministic eight-thread population/shortfall, requester-only evidence and exact shipment chain informed D-003 and normal D-004/D-005 amendments while all seven BARs were preserved. I record the rescope explicitly now rather than infer an earlier structured reconciliation from close prose or subsequent code. The fixed20:27:24Z artifact snapshot still records the earlier missing reconciliation as unknown; this later record must not retroactively change that cut.",
+          "disposition": "rescoped",
+          "decision_ref": "get-feedback-reliability-usefulness-adoption-2026-10-03#D-003",
+          "consult_state": "closed_cant_help"
+        },
+        "postRefs": [
+          "thread-post:1157033",
+          "thread-post:1157042"
+        ],
+        "decisionRefs": [
+          "get-feedback-reliability-usefulness-adoption-2026-10-03#D-003"
+        ]
+      }
+    },
+    {
+      "conversationId": "conv-musb29y1-0000-cf39e1f18138446ebc68b0a6af8436d8",
+      "answerPosts": [
+        {
+          "postId": 1157488,
+          "authorId": "su-c960cc81-0b1a-41dd-b4d5-bea3d6fbb4f5",
+          "createdAt": "2026-10-05T15:01:37.562Z",
+          "bodySha256": "f6e1599cdb6d382b3d1cab04ec53a34c0dcda0ffd9f5ccfbf53a4be127ea26a1"
+        },
+        {
+          "postId": 1157540,
+          "authorId": "su-c960cc81-0b1a-41dd-b4d5-bea3d6fbb4f5",
+          "createdAt": "2026-10-05T15:39:15.929Z",
+          "bodySha256": "b5db8d734af8e3ae9124356b54c740eed41c1f1f55f132dc5c55b0d2b3b08dac"
+        }
+      ],
+      "quality": {
+        "rating": "useful",
+        "reason": "Vetted revision 3 and then clarified the author-bound attestation procedure after an exact refusal. Requester retained the rubric and corrected the author card; reviewer test counts are not reused as execution proof."
+      },
+      "requesterDecision": {
+        "rating": "recorded",
+        "evidence": {
+          "at": "2026-10-05T20:44:03.306Z",
+          "by": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+          "note": "Requester re-read exact revision-3 critique1157488 and author-seat refusal1157540. I retained rubric revision3/hash2bca6116, preserved both review posts, and emitted corrected author meta-card EI-25171788938691287 using named detector assertions instead of unsupported reviewer test totals. Independent audit remains pending. This records adoption of the review, not a vetting pass or implementation acceptance. The artifact cutoff20:27:24Z precedes this record and truthfully retains the earlier missing reconciliation as unknown.",
+          "disposition": "confirmed",
+          "consult_state": "expired"
+        },
+        "postRefs": [
+          "thread-post:1157334",
+          "thread-post:1157410",
+          "thread-post:1157515"
+        ],
+        "decisionRefs": []
+      }
+    },
+    {
+      "conversationId": "conv-muvio65y-0000-f1aa8000e03d45e78c48082936ad9898",
+      "answerPosts": [
+        {
+          "postId": 1157626,
+          "authorId": "su-ee05d5f4-6dde-4639-bc4d-430964088d0b",
+          "createdAt": "2026-10-05T17:24:04.787Z",
+          "bodySha256": "88bf4771af3f9f9a5a3ef3dedbec5399a5ae8c23f0d1cd0cb4e0a94279b03bf1"
+        }
+      ],
+      "quality": {
+        "rating": "useful",
+        "reason": "Separated adapter correctness from actual isolated consult acceptance and supplied the concrete five-boundary native trial. Requester adopted that scope split while leaving live matrix acceptance open."
+      },
+      "requesterDecision": {
+        "rating": "recorded",
+        "evidence": {
+          "at": "2026-10-05T17:27:51.854Z",
+          "by": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+          "note": "Requester reviewed answer post1157626 from isolated ee05d. It confirms the existing scope split: WI10002749 adapter/identity correctness may close independently only if its stored acceptance supports that boundary; P002/R6 still require actual isolated source/native/claim continuity. I am keeping live matrix acceptance open and adopting the concrete five-assertion test: prep owner, child owner, exact carried native/evidence span, unchanged source claims, typed child reply. Current trial provides substantive advice and one native Codex-target reply, not full adapter matrix or shipment. Claude auto/default bootstrap refusals separately filed and self-owned as EI25161224402098219; no quota or provider-wall inference.",
+          "disposition": "confirmed",
+          "consult_state": "active"
+        },
+        "postRefs": [],
+        "decisionRefs": []
+      }
+    },
+    {
+      "conversationId": "conv-muvkvv0y-0000-598ee0fa316049bb86d9ad6b07871574",
+      "answerPosts": [
+        {
+          "postId": 1157673,
+          "authorId": "su-befe0695-b613-4ad0-9abf-af2365aabadb",
+          "createdAt": "2026-10-05T18:30:04.154Z",
+          "bodySha256": "3d5034335678058a5f84fe7915cbc82911797b3991a3e69a9e0782c8960f3d1a"
+        }
+      ],
+      "quality": {
+        "rating": "useful",
+        "reason": "Disclosed weak inherited relevance, read the maintained source and supplied exact Codex-to-Claude port evidence. Requester adopted the adapter/live acceptance distinction and tracked source-continuation guards."
+      },
+      "requesterDecision": {
+        "rating": "recorded",
+        "evidence": {
+          "at": "2026-10-05T18:31:23.018Z",
+          "by": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+          "note": "The changed-build Codex→Claude port delivered a full native frame10fa1659 to isolated answering owner su-befe0695, native5b610d62, and exact typed post1157673. The answer confirms the adapter/live-acceptance scope split and identifies the per-source five-assertion trial. Source span17 is weak historical expertise by responder admission; usefulness rests on fresh source reads and this trial's live port evidence. I will retain the original source-adapter scope separately and keep source-claim immutability, OMP/Claude source rows, deterministic eight-thread review and final shipment open; this positive is not the fullmatrix.",
+          "disposition": "confirmed",
+          "consult_state": "active"
+        },
+        "postRefs": [],
+        "decisionRefs": []
+      }
+    },
+    {
+      "conversationId": "conv-muvsow6d-0000-9db0d462af354281ae14190a8776e7bf",
+      "answerPosts": [
+        {
+          "postId": 1158254,
+          "authorId": "su-1501cf66-7e51-42e8-b991-931b29c25170",
+          "createdAt": "2026-10-05T22:13:30.249Z",
+          "bodySha256": "d4bc591b716c6905288ef3b9e603da0d049bfdf133b4f8d6f86c1ca7024145dc"
+        },
+        {
+          "postId": 1158261,
+          "authorId": "su-17e8def7-4534-4e50-92a0-978a51fbd6d9",
+          "createdAt": "2026-10-05T22:20:33.642Z",
+          "bodySha256": "78b7c3824d457e925e7ba1bc92ae2d378e3bcf44e17bdbe7edcee16e6cf26f18"
+        },
+        {
+          "postId": 1158267,
+          "authorId": "su-11be44f3-0243-4685-a84f-7ad340f38aef",
+          "createdAt": "2026-10-05T22:25:20.702Z",
+          "bodySha256": "ac9b8b8b38ba6acd30cd764075481edf2020c9e98ee759a66ae8262f1a564be8"
+        }
+      ],
+      "quality": {
+        "rating": "contradictory",
+        "reason": "The three replies supply useful census and actor-attribution distinctions, but disagree on the source-incarnation set: a single source row misses respawn, and excluding ported rows falsely rejects legitimate continuation. Reply1158267 corrects both. Requester adopted the bounded ledger/spoof-control rescope in D-006, without adopting literal sourceUntouched as proof or a new monitoring system.",
+        "conflicts": [
+          {
+            "posts": [
+              1158254,
+              1158261,
+              1158267
+            ],
+            "issue": "Single-incarnation or port_id IS NULL classification is not a complete source-owner incarnation set.",
+            "resolution": "Include source continuations and keep caller/row consistency separate from physical actor proof.",
+            "authorityRefs": [
+              "get-feedback-reliability-usefulness-adoption-2026-10-03#D-006",
+              "packages/operator-core/lib/session-port/service.ts",
+              "packages/operator-core/lib/session-port/render.ts"
+            ]
+          }
+        ]
+      },
+      "requesterDecision": {
+        "rating": "recorded",
+        "evidence": {
+          "at": "2026-10-05T22:21:13.124Z",
+          "by": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+          "note": "Read typed child reply1158254 and exact native/port lineage. The source's eight claim signatures and fleet leadership match at three census points including after the reply, but endpoint equality cannot attribute changes or exclude mutate-then-revert. I am retaining that bounded observation and strengthening P002/P006 verification with launch-record actor attribution and a controlled spoof guard, per D006. The historical Claude-to-Claude port is supplemental, not the required native-fork row or an eight-thread cohort credit. Product sourceUntouched remains a promise; no metadata rename or independent monitoring system is adopted from advice alone.",
+          "disposition": "rescoped",
+          "decision_ref": "get-feedback-reliability-usefulness-adoption-2026-10-03#D-006",
+          "consult_state": "active"
+        },
+        "postRefs": [],
+        "decisionRefs": [
+          "get-feedback-reliability-usefulness-adoption-2026-10-03#D-006"
+        ]
+      }
+    },
+    {
+      "conversationId": "conv-muvxj55p-0000-2f13c764fead4560a1bdc21d7dc5556c",
+      "answerPosts": [
+        {
+          "postId": 1158421,
+          "authorId": "su-be2ecc34-8ab6-4b01-a112-a34a64b09668",
+          "createdAt": "2026-10-06T00:28:48.910Z",
+          "bodySha256": "8c7e3e6793d73c1f46d8fbb06180f3c5f2c3f90158a9e18519a4dd026ba7cee1"
+        }
+      ],
+      "quality": {
+        "rating": "useful",
+        "reason": "Read the native classifier and invocation writer, separating selected-row consistency from physical actor possession. Requester adopted the scoped success-path metadata improvement while leaving universal actor immutability unverified."
+      },
+      "requesterDecision": {
+        "rating": "recorded",
+        "evidence": {
+          "at": "2026-10-06T00:33:54.288Z",
+          "by": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+          "note": "Read the full typed answer post1158421 and checked current _mcp-host.ts native classifier and projected-tool-deps.ts invocation writer. The advice confirms the existing D-006 boundary: selection/row/xmin prove which incarnation was evaluated, not physical actor or immutability. Successful su calls currently lack a persisted carrier fingerprint; unknown/unbound and same-owner different-carrier controls remain necessary. No universal isolation or parent acceptance is credited. I will repair the scoped success-path evidence gap within the existing metadata surface, while retaining physical-actor attribution as unverified.",
+          "disposition": "confirmed",
+          "consult_state": "active"
+        },
+        "postRefs": [],
+        "decisionRefs": []
+      }
+    },
+    {
+      "conversationId": "conv-muw7q0ro-0000-ccd3b704774f4fb8beb2ec22acda51ac",
+      "answerPosts": [
+        {
+          "postId": 1158871,
+          "authorId": "su-a052e153-3a05-48d1-9eb8-b2f8c7cc150e",
+          "createdAt": "2026-10-06T05:14:18.236Z",
+          "bodySha256": "99eaee81b8bd4da2b64fbdd04ebf133e1b27c2c094ccc944d4701cbff44623df"
+        }
+      ],
+      "quality": {
+        "rating": "useful",
+        "reason": "Distinguished a new fork's own adv row/native kickoff from an inherited source port, and named the native-resume and port-absence guards. Requester confirmed the bounded conversion evidence and filed the guard follow-through."
+      },
+      "requesterDecision": {
+        "rating": "recorded",
+        "evidence": {
+          "at": "2026-10-06T05:22:57.938Z",
+          "by": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+          "note": "Verified thread-post:1158871 against forkBootstrapBody, bootstrap-su recordAdvSession branch, dispatchRecordEntry, isExactTrackedResumeTarget and isCurrentResponder. New conversion target is34708/owner a052e153/native dbf90857/port cc3c9f64; the inherited10fa1659 belongs to source34372 and never credits fork34697. Following through in owned EI-25206236378668878 on actual POST port-absence/native-resume assertions and real-PG recorded launch argv. No physical-actor, current-Claude fork, cohort or shipment acceptance inferred.",
+          "disposition": "confirmed",
+          "consult_state": "active"
+        },
+        "postRefs": [
+          "thread-post:1158894"
+        ],
+        "decisionRefs": []
+      }
+    },
+    {
+      "conversationId": "conv-muwaswhg-0000-0fd5596e58d1417182db9d9f3c8b6ef7",
+      "answerPosts": [
+        {
+          "postId": 1159125,
+          "authorId": "su-b0435610-4e1c-426c-8037-37548d83b551",
+          "createdAt": "2026-10-06T06:42:05.153Z",
+          "bodySha256": "4495298d075f77e8356d28e0c855ed145abc8151188b98825849e00de8ea103e"
+        },
+        {
+          "postId": 1159141,
+          "authorId": "su-e0f5ce3b-c15e-42c1-a88f-2b11bc8773a5",
+          "createdAt": "2026-10-06T06:48:25.668Z",
+          "bodySha256": "9e6962acc6ef75005dda6ca0b3c6a9952bd7035086d699b419174df85486dc7a"
+        }
+      ],
+      "quality": {
+        "rating": "contradictory",
+        "reason": "Both reviewers recommend origin-only recovery, but the first incorrectly says foreground tests lack task-ledger enrollment and suggests an unmeasured load explanation. The second reads the managed foreground writer and exact task, correcting the claim. Requester adopted that correction and retained unreadable evidence as pending, without inferring pre-spawn cancellation or resource causality.",
+        "conflicts": [
+          {
+            "posts": [
+              1159125,
+              1159141
+            ],
+            "issue": "Whether foreground testing:run tasks are enrolled and whether absence of a detached snapshot proves no running foreground child.",
+            "resolution": "The maintained writer uses managedSpawn with a foreground task title and launchedBy testing:run:<group>; check that task before recovery. Cause of unreadable snapshot remains unknown.",
+            "authorityRefs": [
+              "packages/operator-core/lib/agent-tools/testing/run.ts:2004",
+              "thread-post:1159164"
+            ]
+          }
+        ]
+      },
+      "requesterDecision": {
+        "rating": "recorded",
+        "evidence": {
+          "at": "2026-10-06T06:55:35.827Z",
+          "by": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+          "note": "Requester adopted origin-only testing:run recoverEvidence with the default 30s wait after checking the current writer. Also adopted reviewer2 thread-post:1159141's correction to reply1159125: foreground tasks are enrolled, and exact processes:list task0muwain791eqe9e01ek live:true confirms ended_unobserved with systemd scope released, all processes exited. Thus this ended attempt can be recovered; no pre-spawn conclusion is claimed. Actual recovery returned recoveryWait.outcome unavailable, waitedMs4284, pending-retained for all8 rows; no retirement/pass/new measurement follows. Snapshot-read failure remains open. Unmeasured load and host-restart hypotheses are not adopted. Suspected live-foreground abandonment gap is filed and self-owned as EI-25211998329472706.",
+          "disposition": "confirmed",
+          "consult_state": "active"
+        },
+        "postRefs": [
+          "thread-post:1159164"
+        ],
+        "decisionRefs": []
+      }
+    }
+  ],
+  "counts": {
+    "quality": {
+      "useful": 6,
+      "partial": 0,
+      "contradictory": 2
+    },
+    "requesterDecisions": {
+      "recorded": 8,
+      "unknown": 0
+    }
+  },
+  "historicalSnapshot": {
+    "path": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-live.json",
+    "sha256": "e99b3e1675e935005d3ba693bc3cc00987311384a35bb5435ad4bb16456b27c3",
+    "window": {
+      "start": "2026-10-03T05:21:32.561Z",
+      "end": "2026-10-05T20:27:24.000Z",
+      "cutFixedBeforeQualityReview": true
+    },
+    "eligible": 4,
+    "shortfall": 4,
+    "unchanged": true
+  },
+  "runtime": {
+    "measurementEndpoint": "http://127.0.0.1:3170",
+    "buildSha": "dfdf41df9d",
+    "readRoute": "PAPERCUSP_HONO_PORT=3170 and PAPERCUSP_MCP_PROXY_BASE=http://127.0.0.1:3170",
+    "functionalAcceptance": false,
+    "scope": "Conversation and routing-health reads on shared database; this is not corrected-evaluator adoption or a new live matrix."
+  },
+  "provenance": {
+    "captures": [
+      {
+        "path": "/dev/shm/get-feedback-r6-population-full-20261010-1242.json",
+        "sha256": "6fd50f75f60b2212d89b5996356080832774e5e8b37e737538bf54e80dfac87f"
+      },
+      {
+        "path": "/dev/shm/get-feedback-r6-conversations-20261010-1236.json",
+        "sha256": "f26727651af5b1ab9a368571b16cd197754afca8a4c6348ddd8fc2d1e6b690c4"
+      },
+      {
+        "path": "/dev/shm/get-feedback-r6-health-20261010-1234.json",
+        "sha256": "6ee39d27e2c5516f34462add15309d790f98aca0ed637968d517365d30992f92"
+      },
+      {
+        "path": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-live.json",
+        "sha256": "e99b3e1675e935005d3ba693bc3cc00987311384a35bb5435ad4bb16456b27c3"
+      }
+    ],
+    "conversationReads": [
+      {
+        "id": "conv-mus1v26j-0000-68ff1c643c2b4f10be212508682b280f",
+        "ok": true
+      },
+      {
+        "id": "conv-musb29y1-0000-cf39e1f18138446ebc68b0a6af8436d8",
+        "ok": true
+      },
+      {
+        "id": "conv-muvio65y-0000-f1aa8000e03d45e78c48082936ad9898",
+        "ok": true
+      },
+      {
+        "id": "conv-muvkvv0y-0000-598ee0fa316049bb86d9ad6b07871574",
+        "ok": true
+      },
+      {
+        "id": "conv-muvsow6d-0000-9db0d462af354281ae14190a8776e7bf",
+        "ok": true
+      },
+      {
+        "id": "conv-muvxj55p-0000-2f13c764fead4560a1bdc21d7dc5556c",
+        "ok": true
+      },
+      {
+        "id": "conv-muw7q0ro-0000-ccd3b704774f4fb8beb2ec22acda51ac",
+        "ok": true
+      },
+      {
+        "id": "conv-muwaswhg-0000-0fd5596e58d1417182db9d9f3c8b6ef7",
+        "ok": true
+      }
+    ],
+    "sourceBackendWriter": "packages/operator-core/lib/search/session-ingest.ts writes session_turn_parts.source_kind under corpus workspace_id=default; exact selected native ids were queried.",
+    "contentReview": "All substantive posts in the chosen eight threads were reread. The first four historical review body hashes also match their retained immutable hashes.",
+    "requesterEvidence": "Existing requester-authored project decisions and notes are cited; no new reporting submission was required.",
+    "sourceBackendQuery": {
+      "sql": "SELECT DISTINCT session_id,source_kind FROM harness_shared.session_turn_parts WHERE workspace_id='default' AND session_id IN ('767e13d7-af6a-4847-9cac-8cd7dc5ed73c','8a6f14d0-80de-4e75-9fc5-43a757d4bdec','01a10215-de68-7071-93ea-3931b2a7ec1f','f268f11b-3576-4755-b533-8b56b71366d0','01a10d90-17a6-7752-9d1c-6793d261de0a','6f1a1199-7c4d-4c67-8e38-1fe9060efd99','9d657323-6de6-492b-a83b-639f6e70f9b2','a4861b8b-cd38-4e2a-ac5e-0281ded5028e','a00082dc-43c3-4c05-a510-559168f07077','6b3b4c8b-ec77-43c1-ad03-fce066d7ecb1') ORDER BY session_id LIMIT 30",
+      "allowUnscoped": false,
+      "maxRows": 30,
+      "timeoutMs": 10000
+    }
+  },
+  "limitations": [
+    "No current live-source preservation or full backend matrix acceptance is asserted.",
+    "The corrected evaluator is still absent from staging-operator at the retained runtime read; background-host containment does not substitute.",
+    "The historical four-thread cohort remains four with shortfall four.",
+    "Supplementary review cut/matrix coupling and suitability for R6 remain for independent acceptance.",
+    "Exact release shipment and normal plans:ship remain open."
+  ]
+}

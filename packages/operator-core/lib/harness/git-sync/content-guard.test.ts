@@ -10,7 +10,12 @@
  *     (a content-check bug must never wedge the whole tree's commit).
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { detectContentOffenders, parseDirtyPaths } from './content-guard';
+import {
+  contentSnapshotHash,
+  detectContentOffenders,
+  detectUnscannedStagedOffenders,
+  parseDirtyPaths,
+} from './content-guard';
 import {
   DEFAULT_CONTENT_DETECTORS,
   setContentLintExemptionLoader,
@@ -462,5 +467,180 @@ describe('detectContentOffenders — the real registry quarantines an esbuild-on
       readText: async () => ESBUILD_ONLY_BROKEN_TS,
     });
     expect(offenders).toEqual([]);
+  });
+});
+
+/**
+ * EI-23381057036304308 — shell output redirected into a repo-root filename is
+ * not covered by the extension-scoped source detectors. Keep the exact status
+ * artifact and ordinary paths as a production-registry guard.
+ */
+describe('detectContentOffenders — suspicious root redirect filenames', () => {
+  const artifact = 'VERDICT: WORKING (cpu is being consumed)';
+
+  it('quarantines extensionless root-level shell output artifacts', async () => {
+    const offenders = await detectContentOffenders({
+      repoPath: '/repo',
+      detectors: DEFAULT_CONTENT_DETECTORS,
+      runGit: statusRunGit([`?? ${artifact}`]),
+      readText: async (file) => (file === artifact ? '1.02067' : null),
+    });
+
+    expect([...new Set(offenders.map((o) => o.file))]).toEqual([artifact]);
+    const hit = offenders.find((o) => o.detectorKey === 'root-redirect-artifact');
+    expect(hit).toBeDefined();
+    expect(hit!.error).toMatch(/root-level.*shell output|shell output.*root-level/i);
+    expect(hit!.fixerRole).toBe('content-fixer');
+  });
+
+  it('does not quarantine normal files or nested status-like paths', async () => {
+    const offenders = await detectContentOffenders({
+      repoPath: '/repo',
+      detectors: DEFAULT_CONTENT_DETECTORS,
+      runGit: statusRunGit([
+        '?? CPU: report.md',
+        '?? logs/VERDICT: WORKING (cpu is being consumed)',
+      ]),
+      readText: async () => 'ordinary text',
+    });
+
+    expect(offenders).toEqual([]);
+  });
+});
+
+/**
+ * EI-21230011589307899 — the SCAN→STAGE race. The pre-stage pass judges the dirty set,
+ * then other guards and the lock census run, then `git add -A` stages whatever is dirty
+ * by THEN. A file created in that window was committed unscanned: on 2026-10-13 a
+ * secret-shaped test fixture reached HEAD this way and the own-head publish guard froze
+ * git egress. The post-stage rescan judges exactly the staged blobs the pass never saw.
+ */
+describe('detectUnscannedStagedOffenders — staged blobs the pre-stage pass never judged (EI-21230011589307899)', () => {
+  /** Assembled so this file's own text never carries the contiguous shape (see above). */
+  const awsShape = (): string => 'AK' + 'IA' + 'QRSTUVWXYZ234567';
+  const CREDENTIAL_TS = `export const id = '${awsShape()}';\n`;
+  const CLEAN_TS = 'export const a = 1;\n';
+  const LATE = 'packages/operator-core/lib/late-fixture.test.ts';
+
+  /** A runner bound to a fake index: `show :<path>` answers from `index`; an absent path
+   *  fails the way a staged deletion does. `status` answers the pre-stage dirty list. */
+  const fakeRepo = (index: Record<string, string>, dirty: string[] = []): RunGit =>
+    async (args) => {
+      if (args[0] === 'show') {
+        const path = args[1].slice(1);
+        return path in index
+          ? { code: 0, stdout: index[path], stderr: '' }
+          : { code: 128, stdout: '', stderr: `fatal: path '${path}' exists on disk, but not in the index` };
+      }
+      if (args[0] === 'status') {
+        return { code: 0, stdout: dirty.map((f) => ` M ${f}`).join('\0') + (dirty.length ? '\0' : ''), stderr: '' };
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    };
+
+  afterEach(() => setContentLintExemptionLoader());
+
+  it('holds a credential-shaped file staged after the pre-stage scan, with the production registry', async () => {
+    setContentLintExemptionLoader(async () => new Set());
+    const scanned = new Map<string, string>();
+    // Pre-stage: only the clean file is dirty, so only it is judged.
+    const pre = await detectContentOffenders({
+      repoPath: '/repo',
+      detectors: DEFAULT_CONTENT_DETECTORS,
+      runGit: fakeRepo({}, ['src/clean.ts']),
+      readText: async () => CLEAN_TS,
+      scanned,
+    });
+    expect(pre).toEqual([]);
+    expect(scanned).toEqual(new Map([['src/clean.ts', contentSnapshotHash(CLEAN_TS)]]));
+
+    // The fixture lands before `git add -A`, which stages it alongside the clean file.
+    const offenders = await detectUnscannedStagedOffenders({
+      repoPath: '/repo',
+      detectors: DEFAULT_CONTENT_DETECTORS,
+      staged: ['src/clean.ts', LATE],
+      scanned,
+      runGit: fakeRepo({ 'src/clean.ts': CLEAN_TS, [LATE]: CREDENTIAL_TS }),
+    });
+    const hit = offenders.find((o) => o.detectorKey === 'secrets');
+    expect(hit).toBeDefined();
+    expect(hit!.file).toBe(LATE);
+    expect(hit!.contentHash).toBe(contentSnapshotHash(CREDENTIAL_TS));
+    expect(offenders.every((o) => o.file === LATE)).toBe(true);
+  });
+
+  it('CONTROL: the same staged set yields no secrets finding once `secrets` is dropped from the registry', async () => {
+    setContentLintExemptionLoader(async () => new Set());
+    const offenders = await detectUnscannedStagedOffenders({
+      repoPath: '/repo',
+      detectors: DEFAULT_CONTENT_DETECTORS.filter((d) => d.key !== 'secrets'),
+      staged: [LATE],
+      scanned: new Map(),
+      runGit: fakeRepo({ [LATE]: CREDENTIAL_TS }),
+    });
+    expect(offenders.filter((o) => o.detectorKey === 'secrets')).toEqual([]);
+  });
+
+  it('does not re-judge a staged blob identical to the text the pre-stage pass judged', async () => {
+    const detect = vi.fn((_f: string, text: string) => (text.includes('BROKEN') ? 'is broken' : null));
+    const offenders = await detectUnscannedStagedOffenders({
+      repoPath: '/repo',
+      detectors: [makeDetector({ detect })],
+      staged: ['docs/a.mdx'],
+      scanned: new Map([['docs/a.mdx', contentSnapshotHash('fine')]]),
+      runGit: fakeRepo({ 'docs/a.mdx': 'fine' }),
+    });
+    expect(offenders).toEqual([]);
+    expect(detect).not.toHaveBeenCalled();
+  });
+
+  it('re-judges a path whose content changed between the scan and the add', async () => {
+    const offenders = await detectUnscannedStagedOffenders({
+      repoPath: '/repo',
+      detectors: [makeDetector()],
+      staged: ['docs/a.mdx'],
+      scanned: new Map([['docs/a.mdx', contentSnapshotHash('fine')]]),
+      runGit: fakeRepo({ 'docs/a.mdx': 'now BROKEN' }),
+    });
+    expect(offenders.map((o) => [o.file, o.detectorKey, o.error])).toEqual([['docs/a.mdx', 'fake', 'is broken']]);
+  });
+
+  it('judges the INDEX blob, not the working tree', async () => {
+    // Clean on disk is irrelevant: the commit records the index.
+    const offenders = await detectUnscannedStagedOffenders({
+      repoPath: '/repo',
+      detectors: [makeDetector()],
+      staged: ['docs/a.mdx'],
+      scanned: new Map(),
+      runGit: fakeRepo({ 'docs/a.mdx': 'staged BROKEN' }),
+    });
+    expect(offenders.map((o) => o.file)).toEqual(['docs/a.mdx']);
+  });
+
+  it('skips staged deletions and paths no detector targets', async () => {
+    const detect = vi.fn(() => 'would flag');
+    const offenders = await detectUnscannedStagedOffenders({
+      repoPath: '/repo',
+      detectors: [makeDetector({ detect })],
+      staged: ['docs/deleted.mdx', 'src/a.ts'],
+      scanned: new Map(),
+      runGit: fakeRepo({ 'src/a.ts': 'x' }),
+    });
+    expect(offenders).toEqual([]);
+    expect(detect).not.toHaveBeenCalled();
+  });
+
+  it('FAILS OPEN — a detector that throws on a staged blob is logged, never an offender', async () => {
+    const log = vi.fn();
+    const offenders = await detectUnscannedStagedOffenders({
+      repoPath: '/repo',
+      detectors: [makeDetector({ detect: () => { throw new Error('boom'); } })],
+      staged: ['docs/a.mdx'],
+      scanned: new Map(),
+      runGit: fakeRepo({ 'docs/a.mdx': 'BROKEN' }),
+      log,
+    });
+    expect(offenders).toEqual([]);
+    expect(log.mock.calls.flat().join('\n')).toMatch(/threw on staged docs\/a\.mdx/);
   });
 });

@@ -67,6 +67,7 @@ export interface StoredSettlementBatch {
   readonly settlementId: string;
   readonly splitManifestHash: string;
   readonly allocationsMicros: Readonly<Record<RevenueShare, string>>;
+  readonly componentAllocationsMicros?: Readonly<Record<string, string>>;
   readonly providerCostMicros: number;
   readonly distributableMicros: number;
   readonly daoTreasury: string;
@@ -100,8 +101,22 @@ function parseAllocations(value: string): Readonly<Record<RevenueShare, string>>
   return allocations;
 }
 
+/** Add author amounts to the existing allocation JSON; old rows stay readable. */
+function parseComponentAllocations(value: string): Readonly<Record<string, string>> | undefined {
+  const source: unknown = JSON.parse(value);
+  if (!source || typeof source !== 'object' || !Object.hasOwn(source, 'componentAuthors')) return undefined;
+  const authors = (source as { componentAuthors: unknown }).componentAuthors;
+  if (!authors || typeof authors !== 'object' || Array.isArray(authors) ||
+      Object.entries(authors).some(([author, amount]) => !author.trim() ||
+        typeof amount !== 'string' || !/^(0|[1-9][0-9]*)$/.test(amount))) {
+    throw new Error('invalid component author allocations in settlement receipt');
+  }
+  return Object.fromEntries(Object.entries(authors)) as Record<string, string>;
+}
+
 function fromRow(row: SettlementBatchRow): StoredSettlementBatch {
   const state = row.state as SettlementLifecycleState;
+  const componentAllocationsMicros = parseComponentAllocations(row.allocations_micros);
   return {
     batchId: row.batch_id,
     channelId: row.channel_id,
@@ -117,6 +132,7 @@ function fromRow(row: SettlementBatchRow): StoredSettlementBatch {
     settlementId: row.settlement_id,
     splitManifestHash: row.split_manifest_hash,
     allocationsMicros: parseAllocations(row.allocations_micros),
+    ...(componentAllocationsMicros !== undefined ? { componentAllocationsMicros } : {}),
     providerCostMicros: Number(row.provider_cost_micros),
     distributableMicros: Number(row.distributable_micros),
     daoTreasury: row.dao_treasury,
@@ -288,9 +304,13 @@ export async function recordSettlementClaim(
   );
   if (existing) return { ok: true, created: false, batch: existing };
 
-  const allocations: Record<string, string> = {};
+  const allocations: Record<string, unknown> = {};
   for (const share of REVENUE_SHARES) {
     allocations[share] = input.plan.receipt.allocationsMicros[share].toString();
+  }
+  if (input.plan.receipt.componentAllocationsMicros !== undefined) {
+    allocations.componentAuthors = Object.fromEntries(Object.entries(input.plan.receipt.componentAllocationsMicros)
+      .map(([author, amount]) => [author, amount.toString()]));
   }
 
   try {
@@ -496,6 +516,13 @@ export async function markSettlementDisputeDismissed(
   const batch = await getSettlementBatch(db, batchId);
   if (!batch) throw new Error(`settlement batch '${batchId}' not found`);
   return batch;
+}
+
+/** Exact retained usage membership of one batch, for payout re-verification. */
+export async function retainedBatchUsageNonces(db: D1Database, batchId: string): Promise<readonly string[]> {
+  const { results } = await db.prepare('SELECT usage_nonce FROM settlement_batch_vouchers WHERE batch_id = ?')
+    .bind(batchId).all<{ usage_nonce: string }>();
+  return (results ?? []).map((row) => row.usage_nonce);
 }
 
 /** Usage nonces already consumed by a live batch on this channel. */

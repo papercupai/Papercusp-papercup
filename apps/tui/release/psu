@@ -23,6 +23,7 @@ fi
 psu_reexecs=0
 
 while :; do
+  export PAPERCUSP_PSU_REEXEC_COUNT="$psu_reexecs"
   self=$0
   # Re-resolve the current link each pass so a handoff picks up the active release.
   while [ -L "$self" ]; do

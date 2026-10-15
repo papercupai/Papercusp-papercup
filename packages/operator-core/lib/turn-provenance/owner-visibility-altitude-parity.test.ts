@@ -63,6 +63,7 @@ const MACHINE_TURNS: ReadonlyArray<readonly [label: string, text: string]> = [
   ['mcp auto-heal advisory', '⚠ MCP transport auto-heal (mcp-dark-watchdog): your MCP server was restarted.'],
   ['skill-loader preamble', 'Base directory for this skill: /tmp/claude-1000/bundled-skills/2.1.228'],
   ['claude usage reset', 'Your claude.ai usage limit has reset. Continue the task you were working on when the limit was reached; do not repeat work that is already complete.'],
+  ['torn nonce event wake', '0d55a713f50015a⟧\n[await-event] coord:inbox-wake:su-a20d fired — continue the work'],
 ];
 
 /**
@@ -80,6 +81,7 @@ const OWNER_TURNS: ReadonlyArray<readonly [label: string, text: string]> = [
   ['pasted markdown', '# my notes\n\n- fix the gate\n- ship it'],
   ['quotes a machine marker mid-sentence', 'why does my transcript keep saying "This session is being continued from a previous conversation"? it is annoying'],
   ['quotes a migrated marker mid-sentence', 'the agent printed Base directory for this skill: and I have no idea what that means'],
+  ['quotes a torn wake', 'Why did this appear?\n0d55a713f50015a⟧\n[await-event] coord:inbox-wake:su-a20d fired — continue the work'],
 ];
 
 describe('owner-visibility parity across altitudes', () => {

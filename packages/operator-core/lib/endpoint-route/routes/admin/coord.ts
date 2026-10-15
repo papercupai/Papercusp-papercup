@@ -1,5 +1,5 @@
 /**
- * /api/admin/coord/:verb — admin surface for the coord:* WRITE tools.
+ * /api/admin/coord/:verb — admin surface for coord writes and the narrow wake-mode read.
  *
  * The Planning-tab attention feed lets the human Resolve an escalation or
  * Ack a coord message — actions that until now only agents could do (via
@@ -25,23 +25,16 @@
  *   (wake:true fires their inbox-wake). Sender is the admin UI owner.
  */
 
-import { handleHttpToolRequest } from '@papercusp/agent-mcp';
-// Side-effect: register operator-side first-party tools (the coord:* tools
-// included). Same import the agent-tools catch-all + admin/plans use.
-import '../../../agent-tools/index';
-// WI-5364: shared extras carry the runScoped seam so proxied handlers that use
-// ctx.tx get a real DB handle instead of 500ing "ctx.tx is not a function".
-import { ADMIN_PROXY_HOST_EXTRAS as HOST_EXTRAS } from './proxy-host-extras';
 import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
 import { requireAllowedOriginOr403 } from '../../cors';
-import { ADMIN_COORD_UI_OWNER } from '../../../agent-tools/coordination/identity';
-import { applyOwnerMessageDefaults } from '../../../agent-tools/coordination/owner-message';
+import { activeWorkspaceId } from '../../../workspace-registry';
+// The in-process re-dispatch as the admin UI owner (ADMIN_COORD_UI_OWNER — the
+// identity the Planning inbox's ack-dismiss filter reads acks BY) and the owner
+// send path live in owner-sessions/actions.ts, shared with the device routes.
+import { dispatchOwnerCoordSend, dispatchToolAsAdminUi } from '../../../owner-sessions/actions';
 
-// Shared with the Planning inbox's ack-dismiss filter (plans/attention.ts) so
-// "Acknowledge" actually dismisses: the human acks AS this owner here, and the
-// reader drops messages acked BY this owner.
-const ADMIN_UI_CLIENT_ID = ADMIN_COORD_UI_OWNER;
 const WRITE_VERBS = new Set(['resolve', 'ack', 'message-agent', 'send']);
+const READ_ONLY_VERBS = new Set(['wake-mode']);
 
 function unwrap(toolResult: { status: number; body: unknown }): Response {
   if (toolResult.status === 200) {
@@ -67,13 +60,6 @@ function collectHeaders(req: Request): Record<string, string | undefined> {
   return m;
 }
 
-function adminSearchParams(inbound: URLSearchParams): URLSearchParams {
-  const sp = new URLSearchParams(inbound);
-  sp.set('superuser', '1');
-  if (!sp.has('client')) sp.set('client', ADMIN_UI_CLIENT_ID);
-  return sp;
-}
-
 async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response> {
   // The unverified-loopback admission below relies on this CSRF backstop
   // (auth-posture.test.ts): a browser cross-origin POST is refused; the desktop
@@ -82,7 +68,7 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
   if (csrf) return csrf;
 
   const verb = ctx.params.verb;
-  if (!WRITE_VERBS.has(verb)) {
+  if (!WRITE_VERBS.has(verb) && !READ_ONLY_VERBS.has(verb)) {
     return Response.json(
       { error: { code: 'unknown_verb', message: `coord write verb '${verb}' not found` } },
       { status: 404 },
@@ -95,27 +81,39 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
   } catch {
     return Response.json({ error: { code: 'invalid_json', message: 'request body must be JSON' } }, { status: 400 });
   }
-  // P-033: a GUI sender is not an agent and cannot author the protocol fields
-  // coord:send now requires — D-048 made `expects` REQUIRED with no default, and
-  // every GUI call site (the HUD session chat, the Agents-pill composer + nudge)
-  // posts without it, so all three have been failing validation since it landed.
-  // The wrapper fills the gaps HONESTLY and STAMPS what it filled, so the D-070
-  // measurement never counts a GUI-derived value as sender intent. Applied here,
-  // at the one route every GUI sender already goes through, rather than at each
-  // call site — three are broken today and patching them one by one leaves the
-  // trap armed for the fourth.
-  const dispatchBody = verb === 'send' ? applyOwnerMessageDefaults(body) : body;
+  if (READ_ONLY_VERBS.has(verb) && ('mode' in body || 'reason' in body)) {
+    return Response.json(
+      { error: { code: 'read_only_verb', message: 'coord:wake-mode is read-only through this admin route' } },
+      { status: 405 },
+    );
+  }
   const url = new URL(req.url);
-  const result = await handleHttpToolRequest(
-    {
-      method: 'POST',
-      pathname: `/api/agent-tools/coord/${verb}`,
-      searchParams: adminSearchParams(url.searchParams),
+  // The in-process admin projection does not resolve cookie principals again.
+  // Bind both its typed context and ambient readers to the admitted workspace;
+  // forwarding the caller's header would validate one roster and send in another.
+  const workspaceId = ctx.principal?.workspaceId ?? activeWorkspaceId();
+  if (verb === 'send') {
+    // The owner send path — recipient checks against this workspace, the P-033
+    // protocol defaults a GUI sender cannot author, then coord:send as the admin
+    // UI owner — is shared with the device session send route
+    // (owner-sessions/actions.ts, mobile-agent-sessions-2026-10-12 P-001).
+    const outcome = await dispatchOwnerCoordSend({
+      workspaceId,
+      body,
       headers: collectHeaders(req),
-      body: dispatchBody,
-    },
-    HOST_EXTRAS,
-  );
+      searchParams: url.searchParams,
+    });
+    if ('refused' in outcome) return Response.json(outcome.refused.body, { status: outcome.refused.status });
+    return unwrap(outcome.result);
+  }
+  const result = await dispatchToolAsAdminUi({
+    group: 'coord',
+    verb,
+    body,
+    headers: collectHeaders(req),
+    searchParams: url.searchParams,
+    workspaceId,
+  });
   return unwrap(result);
 }
 

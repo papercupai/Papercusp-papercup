@@ -9,6 +9,15 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+const provenanceFixture = vi.hoisted(() => ({
+  readHeldWorkItems: vi.fn(async () => []),
+}));
+// Authenticated callers still use the real provenance policy. This fixture has
+// no live work-item claims, so its reader must not consult production Postgres.
+vi.mock('../../carry-brief', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../carry-brief')>()),
+  readHeldWorkItems: provenanceFixture.readHeldWorkItems,
+}));
 // This suite exercises DISPLAY leasing, NOT the exec-sandbox. capability:bash resolves
 // the papercusp-capability-exec-sandbox flag at spawn (bash.ts → capabilityExecSandboxEnabled),
 // and when the flag reads ON but the host has no sandbox binary (bubblewrap absent — e.g. a
@@ -78,6 +87,7 @@ function fakeLease(display: string) {
 
 describe('capability:bash — DISPLAY from the hive desktop lease (Gap C)', () => {
   beforeEach(() => {
+    provenanceFixture.readHeldWorkItems.mockClear();
     savedDisplay = process.env.DISPLAY;
     savedPapercuspSid = process.env.PAPERCUSP_SID;
     process.env.DISPLAY = ':5'; // a sentinel host-seat value: proves the lease overrides it, and that it is otherwise stripped
@@ -126,6 +136,9 @@ describe('capability:bash — DISPLAY from the hive desktop lease (Gap C)', () =
 
     expect(r.content[0].text).toContain(`SID=[${callerSid}]`);
     expect(r.content[0].text).not.toContain('operator-process-sid');
+    expect(provenanceFixture.readHeldWorkItems).toHaveBeenCalledWith(
+      callerSid, '', { limit: 2 },
+    );
   });
 });
 
@@ -136,7 +149,9 @@ describe('capability:bash — durable task provenance', () => {
       resolveIdentity: (() => ({ ownerId: 'su-owner' })) as never,
       readStamp: (() => ({ intentEventId: 1, assumptionSetId: null, goalRef: 'EI-21192501620501693' })) as never,
       resolveGoal,
-      readHeldWorkItems: (async () => []) as never,
+      // A declared goal is only a CANDIDATE: the resolver links it after the live
+      // held-claim read confirms the caller still holds it (bash-task-provenance.ts).
+      readHeldWorkItems: (async () => [{ id: 'EI-21192501620501693' }]) as never,
     });
 
     expect(result).toEqual({

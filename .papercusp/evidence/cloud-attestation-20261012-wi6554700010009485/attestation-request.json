@@ -1,0 +1,45 @@
+{
+  "rubricRef": "meta-acceptance-rubric",
+  "subject": {
+    "kind": "rubric",
+    "ref": "acceptance-cloud-cross-feature-e2e-shipment-2026-10-08"
+  },
+  "vettingConsult": "conv-mv1jv15d-0000-248852d6ea4940c88476953379e3d3d9",
+  "terminal": true,
+  "acknowledgeExisting": true,
+  "title": "Current Cloud acceptance rubric6 attestation with plan16 detector review",
+  "body": "Owned prerequisite WI-6554700010009485. Current rubric6/hash50c85cea; meta5/hash215de083; current plan16/hash67e21d91. Recovered complete existing consultation, third-party1169455 approval of exactrubric6. Fresh six-BAR detector/currentD001-D005 source review retained in detector-mapping.md. Historical terminal card EI-25585761932988344 and stale old audit preserved. This new card requires independent current grading audit; no actual acceptance, provider, gate or shipment proof is emitted. R4edition6 NONPASS39 and original54rows preserved. Existing host/Git/source/scope questions already asked/pending.",
+  "ratings": {
+    "outcomes-not-diff-restatements": {
+      "rating": "pass",
+      "evidence": "Current rev6 R1-R6 measure inventory disclosure, persistent happy coverage, adversarial recovery, durable repair, real current runtime and exact deployed artifact; none is satisfied by reading a diff. Full current plan16 requirements and rubric6 were read. Contract review only; actual R2-R6 remains nonpass.",
+      "evidenceRef": "file:.papercusp/evidence/cloud-attestation-20261012-wi6554700010009485/detector-mapping.md"
+    },
+    "traces-to-goal-or-decision": {
+      "rating": "pass",
+      "evidence": "Current plan16/hash67e21d91 Requirements map directly to R1-R6. Reverse decision mapping: D001 Cloud UI files retained under R4; D002 pinned inventory R1; D003 canonical joins R2-R6; D004 thirteen portal repairs preserve R4 recurrence/trigger proof; D005 scoped PTY/file/reconnect/desktop slice fits R2/R3/R5 and preserves no-host-grant/fullprovider/exactshipment boundaries. Full decisions retained in plan-decisions.json.",
+      "evidenceRef": "file:.papercusp/evidence/cloud-attestation-20261012-wi6554700010009485/detector-mapping.md"
+    },
+    "falsifiable-with-evidence": {
+      "rating": "pass",
+      "evidence": "Specific bound falsifiers read: omitted/overlapping inventory; result/affected-selection/source/test/title/ledger contradictions R2; missed adversarial control R3; missing/unowned/open/same-predictions/no-trigger/proposed repair R4; mock/auth/source/artifact/tenant/time/census/billing contradictions R5; invented nonempty/canonical refs, wrong serving, pre-deploy final, proposed audit, self/pending grade and report mismatch R6. Each assertion names the expected problem. No runtime pass inferred.",
+      "evidenceRef": "file:.papercusp/evidence/cloud-attestation-20261012-wi6554700010009485/detector-mapping.md"
+    },
+    "failure-mode-coverage": {
+      "rating": "pass",
+      "evidence": "Rubric and bound assertions cover unavailable/omitted populations, selection/collection drift, uncaught permission/lifecycle boundaries, owned-open and proposed repairs, identical root-cause predictions, missing recurrence/trigger, synthetic/foreign/stale runtime, incomplete five-runtime/full-kind provider cleanup/billing, red/failed release, wrong serving/order, stale scope/audit/grade/report and unmet prior bars/residue. D004/D005 preserve current failure/authority obligations.",
+      "evidenceRef": "file:.papercusp/evidence/cloud-attestation-20261012-wi6554700010009485/detector-mapping.md"
+    },
+    "non-overlapping": {
+      "rating": "pass",
+      "evidence": "Distinct observed assertion axes: missed adversarial control fails R3 while R2 stays empty (test245-250); mock/wrong real GCP identity fails R5 while R2 stays empty (284-290); valid candidate runtime plus invented shipment ref fails R6 while R5 stays empty (322-327); owned deferred residue is accounted R4 but refuses R6 (276-281). Inventory disclosure never certifies later acceptance. Source repair and exact deployment remain distinct.",
+      "evidenceRef": "file:.papercusp/evidence/cloud-attestation-20261012-wi6554700010009485/detector-mapping.md"
+    },
+    "prefer-structured-check": {
+      "rating": "pass",
+      "evidence": "All15 bound paths resolve; verdict is based on actual assertions, not path validity or old passcounts. Bound campaign test pins population/exact partition at29-53, detector/selection/ledger contradictions238-261, adversarial missed control245-250, durable repair264-281, runtime/census/billing284-319, exact canonical shipment322-390. Positive assertion226-229 exercises evaluator and demands all partitions pass for correlated synthetic validator input;231-235 refuses authored shipped status for incomplete actual campaign. Current committed checker SHA6016943d/test88716794 match saved receipt. Full per-BAR drift/branch map retained; no historic tests replayed or real/provider/deployed proof asserted.",
+      "evidenceRef": "file:.papercusp/evidence/cloud-attestation-20261012-wi6554700010009485/detector-mapping.md",
+      "positiveControlRef": "file:packages/operator-core/lib/workspace-host/cloud-e2e-campaign-evidence.test.ts:226"
+    }
+  }
+}

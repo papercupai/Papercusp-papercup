@@ -1,6 +1,23 @@
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import runTool, { emptyDistilledRunRefusal, nameFilterNoMatchRefusal, testEvidenceRecoveryRunId } from './run';
+import runTool, {
+  buildDetachedMixedTestRunRequest,
+  buildDetachedTestRunRequest,
+  clampTestingRunForegroundTimeoutMs,
+  emptyDistilledRunRefusal,
+  nameFilterNoMatchRefusal,
+  parseRouterTerminalCompletion,
+  recoverCompletedRunAfterBudget,
+  reportlessNameFilterNoMatchRefusal,
+  resolveDetachedHarnessSlug,
+  selectTestFileRoot,
+  testEvidenceRecoveryRunId,
+} from './run';
+import { REPO_ROOT } from '../docs/_repo-paths';
+import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transport-cap';
 
 /**
  * `files` became OPTIONAL when `changedPaths` was added, which made `testing:run {}`
@@ -20,6 +37,74 @@ async function callHandler(args: unknown) {
 }
 
 describe('testing:run selector arbitration', () => {
+  it('diagnoses reportless Node zero-match without inventing a verdict from unrelated output', () => {
+    const pattern = '^missing "case"$';
+    const output = ['ROUTE cwd=packages/x runner=node:test', '  requested real.test.ts',
+      'ℹ tests 0', 'ℹ pass 0', 'ℹ fail 0', 'ℹ skipped 0',
+      `TEST_FILE_NAME_FILTER_NO_MATCH requested=1 matched=1 executedFiles=1 testsExecuted=0 status=failed reason=name-filter-matched-no-tests pattern=${JSON.stringify(pattern)}; refusing to report a verdict`,
+    ].join('\n');
+    const args = { output, routerExit: 2, pattern, files: 1, runId: 'node-zero-match', root: '/repo' };
+    expect(reportlessNameFilterNoMatchRefusal(args)).toMatchObject({
+      ok: false, error: 'name_filter_no_match', skipped: 0, files: 1, runId: args.runId,
+    });
+    for (const routerExit of [0, 1, null]) {
+      expect(reportlessNameFilterNoMatchRefusal({ ...args, routerExit })).toBeNull();
+    }
+    for (const changed of [
+      output.replace('testsExecuted=0', 'testsExecuted=1'),
+      output.replace('matched=1', 'matched=0'),
+      output.replace('executedFiles=1', 'executedFiles=0'),
+      output.replace('status=failed', 'status=passed'),
+      output.replace('TEST_FILE_NAME_FILTER_NO_MATCH', 'TEST_FILE_RESULT'),
+    ]) {
+      expect(reportlessNameFilterNoMatchRefusal({ ...args, output: changed })).toBeNull();
+    }
+    expect(reportlessNameFilterNoMatchRefusal({ ...args, pattern: 'another case' })).toBeNull();
+    expect(reportlessNameFilterNoMatchRefusal({ ...args, pattern: undefined })).toBeNull();
+    expect(reportlessNameFilterNoMatchRefusal({ ...args, files: 2 })).toBeNull();
+  });
+
+  it('reuses completed Node proof after its budget without needing PostgreSQL or a replay', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'completed-node-proof-'));
+    const output = ['ROUTE cwd=packages/x runner=node:test', '  requested real.test.ts',
+      '# tests 2', '# pass 1', '# fail 0', '# skipped 1',
+      'TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed'].join('\n');
+    try {
+      const args = { output, dir, root: '/repo', runId: 'preserved-node-run',
+        files: ['packages/x/real.test.ts'], timeoutMs: 1000 };
+      expect(await recoverCompletedRunAfterBudget(args)).toMatchObject({
+        ok: true, runId: 'preserved-node-run', passed: 1, failed: 0, skipped: 1, budgetExceeded: true,
+      });
+      expect(await recoverCompletedRunAfterBudget({ ...args,
+        output: output.replace('status=passed', 'status=passed finalizationError=true') })).toBeNull();
+      expect(parseRouterTerminalCompletion(output.replace('# pass 1', '# pass 2'))).toBeNull();
+      expect(parseRouterTerminalCompletion(output.replace('# pass 1', '# pass 0'))).toBeNull();
+      expect(parseRouterTerminalCompletion(output.replace('executed=1', 'executed=2'))).toBeNull();
+      expect(parseRouterTerminalCompletion(output.replace('runner=node:test', 'runner=vitest'))).toBeNull();
+      expect(parseRouterTerminalCompletion(output.split('\n').slice(0, -1).join('\n'))).toBeNull();
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  const nativeConsult = { request_key: 'native-retry', question: 'Does the archived source reach the configured backend?',
+    tried: 'Read the exact dispatcher and launcher', observed: 'Prior native source failed to launch',
+    decision_at_stake: 'Whether historical conversion is supported',
+    sourceBackend: 'claude', sourceState: 'ended', targetBackend: 'codex' };
+
+  it('requires an explicit held work-item for native consults before resolving or launching anything', async () => {
+    expect(await callHandler({ nativeConsult })).toMatchObject({ ok: false, error: 'native_consult_requires_work_item' });
+  });
+
+  it.each(['files', 'changedPaths', 'recoverEvidence', 'remeasureEvidence', 'evidence', 'rootHarnessSlug', 'testNamePattern'])(
+    'refuses native consult mixed with %s before launching anything', async (selector) => {
+      expect(await callHandler({ nativeConsult, work_item_id: 'WI-1', [selector]: [] })).toMatchObject({
+        ok: false, error: 'mutually_exclusive_selectors',
+      });
+    });
+
+  it('rejects a native source/backend selector outside the finite contract', () => {
+    expect(runTool.args.safeParse({ nativeConsult: { ...nativeConsult, targetBackend: 'unknown' } }).success).toBe(false);
+  });
+
   it('is classified as a write so a timed-out MCP call can replay its result', () => {
     expect(runTool.effect).toBe('write');
   });
@@ -72,6 +157,88 @@ describe('testing:run selector arbitration', () => {
     expect(testEvidenceRecoveryRunId(originRunId, { error: 'timeout', detachedRunId })).toBe(detachedRunId);
     expect(testEvidenceRecoveryRunId(originRunId, { error: 'timeout' })).toBe(originRunId);
     expect(testEvidenceRecoveryRunId(originRunId, { error: undefined, detachedRunId })).toBe(originRunId);
+  });
+
+  it('keeps detached timeout recovery locally adoptable and preserves its explicit harness scope', () => {
+    const files = ['agent-credentials.test.ts'];
+    const single = buildDetachedTestRunRequest({
+      root: REPO_ROOT,
+      files,
+      harnessSlug: 'papercusp',
+      workspaceId: 'papercusp-workspace',
+      timeoutMs: 90_000,
+    });
+    const unscoped = buildDetachedTestRunRequest({
+      root: REPO_ROOT,
+      files,
+      timeoutMs: 90_000,
+    });
+    const focused = buildDetachedTestRunRequest({
+      root: REPO_ROOT,
+      files,
+      testNamePattern: 'focused proof',
+      harnessSlug: 'papercusp',
+      workspaceId: 'papercusp-workspace',
+      timeoutMs: 90_000,
+    });
+    const mixed = buildDetachedMixedTestRunRequest({
+      groups: [{ root: REPO_ROOT, files }],
+      harnessSlug: 'papercusp',
+      workspaceId: 'papercusp-workspace',
+      timeoutMs: 90_000,
+    });
+
+    for (const request of [single, mixed]) {
+      expect(request.testRunSource).toBe('local');
+      expect(request.env).toMatchObject({
+        PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
+        PAPERCUSP_WORKSPACE_ID: 'papercusp-workspace',
+      });
+    }
+    expect(unscoped.testRunSource).toBe('local');
+    expect(unscoped.env).not.toHaveProperty('PAPERCUSP_TEST_RUN_HARNESS');
+    expect(single.detachedReportArtifacts).toHaveLength(1);
+    expect(single.detachedReportArtifacts?.[0]).toMatchObject({
+      root: REPO_ROOT,
+      routerReports: true,
+      scope: { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
+    });
+    expect(mixed.detachedReportArtifacts).toHaveLength(1);
+    expect(mixed.detachedReportArtifacts?.[0]).toMatchObject({ root: REPO_ROOT, routerReports: true });
+    expect(unscoped.detachedReportArtifacts).toHaveLength(1);
+    expect(unscoped.detachedReportArtifacts?.[0]).not.toHaveProperty('scope');
+    const reportPath = focused.detachedReportArtifacts?.[0]?.reportPath;
+    expect(focused.detachedReportArtifacts).toHaveLength(1);
+    expect(focused.detachedReportArtifacts?.[0]).toMatchObject({
+      root: REPO_ROOT,
+      testNamePattern: 'focused proof',
+      scope: { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
+    });
+    expect(reportPath).toContain('papercusp-testing-run-detached-');
+    expect(focused.args).toEqual([
+      join(REPO_ROOT, 'scripts', 'test-files.mjs'),
+      ...files,
+      '--',
+      '--reporter=json',
+      `--reporter=${join(REPO_ROOT, 'libs/test-config/src/admin-test-runs-reporter.ts')}`,
+      `--outputFile=${reportPath}`,
+      '--testNamePattern=focused proof',
+    ]);
+  });
+
+  it('retains a JSON recovery report beside the admin reporter for ordinary multi-file runs', () => {
+    const request = buildDetachedTestRunRequest({
+      root: REPO_ROOT,
+      files: ['packages/operator-core/lib/testing-run-store.test.ts', 'apps/operator/lib/verify-tauri-headless-env.test.ts'],
+      harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace',
+    });
+    const artifact = request.detachedReportArtifacts?.[0];
+    expect(artifact).toMatchObject({ root: REPO_ROOT, routerReports: true, testNamePattern: null });
+    expect(request.args).toEqual(expect.arrayContaining([
+      '--reporter=json',
+      `--reporter=${join(REPO_ROOT, 'libs/test-config/src/admin-test-runs-reporter.ts')}`,
+      `--outputFile=${artifact?.reportPath}`,
+    ]));
   });
 
   it('does not claim evidence from an affected-test plan that runs nothing', async () => {
@@ -159,5 +326,98 @@ describe('testing:run selector arbitration', () => {
     // measure-nothing hazard wearing a different hat.
     expect(runTool.args.safeParse({ files: [] }).success).toBe(false);
     expect(runTool.args.safeParse({ changedPaths: [] }).success).toBe(false);
+  });
+});
+
+describe('testing:run cross-hive root fallback reproduction (EI-24176097539238030)', () => {
+  const files = ['packages/operator-core/lib/testing-flakiness.test.ts'];
+  const unrelatedHiveRoot = '/tmp/unrelated-hive';
+
+  it('does not use the operator process REPO_ROOT when an unrelated caller requests its test path', () => {
+    expect(selectTestFileRoot(files, unrelatedHiveRoot, { discoveredRoots: [] })).toEqual({
+      root: unrelatedHiveRoot,
+      source: 'requested',
+    });
+  });
+
+  it('rejects a release/checkpoint-style worktree as the configured canonical fallback', async () => {
+    const releaseWorktree = await mkdtemp(join(tmpdir(), 'papercup-release-root-fallback-'));
+    const file = join(releaseWorktree, files[0]!);
+    try {
+      await writeFile(join(releaseWorktree, '.git'), 'gitdir: /tmp/worktrees/release/.git');
+      await writeFile(
+        join(releaseWorktree, 'package.json'),
+        JSON.stringify({ private: true, workspaces: ['packages/*'] }),
+      );
+      await mkdir(join(releaseWorktree, 'scripts'), { recursive: true });
+      await writeFile(join(releaseWorktree, 'scripts', 'test-files.mjs'), 'process.exit(0);\n');
+      await mkdir(dirname(file), { recursive: true });
+      await writeFile(file, 'export {};\n');
+
+      expect(
+        selectTestFileRoot(files, unrelatedHiveRoot, {
+          discoveredRoots: [],
+          canonicalRepoRoot: releaseWorktree,
+        }),
+      ).toEqual({ root: unrelatedHiveRoot, source: 'requested' });
+    } finally {
+      await rm(releaseWorktree, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('testing:run foreground handler budget', () => {
+  it('reserves handler-phase headroom inside the shared foreground ceiling', () => {
+    const maximum = clampTestingRunForegroundTimeoutMs(Number.MAX_SAFE_INTEGER);
+
+    expect(maximum).toBe(FOREGROUND_TIMEOUT_CEILING_MS - 20_000);
+    expect(maximum).toBe(25_000);
+    expect(clampTestingRunForegroundTimeoutMs(10_000)).toBe(10_000);
+  });
+});
+
+/**
+ * WI-10006949: an operator/superuser `testing:run` carries the '*' harness sentinel, and a
+ * detached recovery request without a concrete harness had no scope — so its recovered report
+ * rows were silently never written to test_runs. The detached harness must resolve from the
+ * registry entry that owns the root whenever the caller did not name a concrete one.
+ */
+describe('resolveDetachedHarnessSlug', () => {
+  const root = '/fixture/checkout';
+  const lookups: Array<[string, string]> = [];
+  const lookup = async (r: string, w: string) => { lookups.push([r, w]); return 'registered-harness'; };
+
+  it.each([undefined, '*'])('resolves the registered harness when the caller sent %s', async (harnessSlug) => {
+    lookups.length = 0;
+    await expect(resolveDetachedHarnessSlug({
+      root, workspaceId: 'ws-1', detachedEnabled: true, ...(harnessSlug !== undefined ? { harnessSlug } : {}),
+    }, lookup)).resolves.toBe('registered-harness');
+    expect(lookups).toEqual([[root, 'ws-1']]);
+  });
+
+  it('keeps an explicit concrete harness without a registry lookup', async () => {
+    lookups.length = 0;
+    await expect(resolveDetachedHarnessSlug({
+      root, workspaceId: 'ws-1', harnessSlug: 'papercusp', detachedEnabled: true,
+    }, lookup)).resolves.toBe('papercusp');
+    expect(lookups).toEqual([]);
+  });
+
+  it('does not look up a harness when detached recovery is off or the workspace is not concrete', async () => {
+    lookups.length = 0;
+    await expect(resolveDetachedHarnessSlug({ root, workspaceId: 'ws-1', harnessSlug: '*', detachedEnabled: false }, lookup))
+      .resolves.toBe('*');
+    await expect(resolveDetachedHarnessSlug({ root, workspaceId: '*', detachedEnabled: true }, lookup)).resolves.toBeUndefined();
+    await expect(resolveDetachedHarnessSlug({ root, detachedEnabled: true }, lookup)).resolves.toBeUndefined();
+    expect(lookups).toEqual([]);
+  });
+
+  it('falls back to what the caller sent when the root is unregistered or the lookup fails', async () => {
+    await expect(resolveDetachedHarnessSlug(
+      { root, workspaceId: 'ws-1', harnessSlug: '*', detachedEnabled: true }, async () => undefined,
+    )).resolves.toBe('*');
+    await expect(resolveDetachedHarnessSlug(
+      { root, workspaceId: 'ws-1', detachedEnabled: true }, async () => { throw new Error('registry unavailable'); },
+    )).resolves.toBeUndefined();
   });
 });

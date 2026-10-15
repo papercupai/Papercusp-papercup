@@ -46,6 +46,10 @@ import { type HyperswarmLike } from '../swarm';
 import type { OpEnvelope } from '../op-envelope-types';
 import { _resetBootHistoryForTests } from '../boot-history';
 import { _resetCacheForTests, closeHarnessStore } from '../corestore';
+import { stubHivePolicyReadsForSuite } from './_hive-policy-read-stubs';
+
+// WI-10007530: no PG here, and the merge pass no longer swallows a failed policy read.
+stubHivePolicyReadsForSuite();
 
 /**
  * Keep this suite hermetic. Production resolves re-key dependencies

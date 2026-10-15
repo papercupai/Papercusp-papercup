@@ -1,0 +1,767 @@
+{
+  "run": "titanium50-run6",
+  "agents": 50,
+  "totals": {
+    "warmTasks": 300,
+    "wakeTasks": 300
+  },
+  "invalidAgents": [],
+  "sourceSha256": "38e5c16fc4632d11075f191aaaf95442e8cf0fee25a7ca518ad20a2cb4c89415",
+  "records": [
+    {
+      "agent": "a1",
+      "nativePath": "/home/agent/codex-homes/a1/sessions/2026/10/14/rollout-2026-10-14T23-17-52-01a13cb5-3c22-7273-8175-bdb75ba1e16a.jsonl",
+      "nativeSha256": "5de158c31866ffaba1c747971745e33fdb2b20d483fe5e58b5fb7b4c261524db",
+      "expectedFileSha256": "ed73eff48dd18c01399995779354d9b40d6925968d1d638fd5dfce179721f24b",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a2",
+      "nativePath": "/home/agent/codex-homes/a2/sessions/2026/10/14/rollout-2026-10-14T23-17-53-01a13cb5-3fe1-7542-9c90-d8ff5366a833.jsonl",
+      "nativeSha256": "a15281c754fc24c7e6f3baa7fa38fda1fd7a3d02e31e3616af7dba417496313d",
+      "expectedFileSha256": "ea64d979abbd579d59dde3dd1a5de75c578e60ca9ad3e5af6aea874630368f02",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a3",
+      "nativePath": "/home/agent/codex-homes/a3/sessions/2026/10/14/rollout-2026-10-14T23-18-07-01a13cb5-60e0-77b3-af48-f33ef4228b67.jsonl",
+      "nativeSha256": "d435c8b531310e63b686b85302cde0456c9c2fabc479f8839a38055c4bc78758",
+      "expectedFileSha256": "975b008cd6bd695ef2f4a89a2b21da8dddd674e2be06021a8068f8ab534cd3fc",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a4",
+      "nativePath": "/home/agent/codex-homes/a4/sessions/2026/10/14/rollout-2026-10-14T23-18-07-01a13cb5-618e-7263-ad05-a264ede893a1.jsonl",
+      "nativeSha256": "5f3b264e70ee7f8aaf6cbab63d541b91e4c6eeb6f0f7061e0f7736c28ce48b20",
+      "expectedFileSha256": "41219b7f495bd0b9da1771dba99570379065ac90919611b1203c771421527b22",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a5",
+      "nativePath": "/home/agent/codex-homes/a5/sessions/2026/10/14/rollout-2026-10-14T23-18-07-01a13cb5-6232-7601-ba92-00fcdd6da615.jsonl",
+      "nativeSha256": "b2c1ae95ba2639ca49f72afd1f84c0ac7958a70de05530270de776719416a10f",
+      "expectedFileSha256": "bff0a723c0a39c9cc1bad6ebf9a3ff33ca63f2de17468dd8d4359a12a91b6e5a",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a6",
+      "nativePath": "/home/agent/codex-homes/a6/sessions/2026/10/14/rollout-2026-10-14T23-18-07-01a13cb5-62e8-7f81-b4ae-3ac093f5e7e7.jsonl",
+      "nativeSha256": "e0ae4f2712c4616279f6e0f1deda5f09fe250351ca86d014565deef0c8abe054",
+      "expectedFileSha256": "72ad05748cfb7b22cc4656c3bd815e99d061ffc363bbddbc56553b5541f2a9fe",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a7",
+      "nativePath": "/home/agent/codex-homes/a7/sessions/2026/10/14/rollout-2026-10-14T23-18-07-01a13cb5-63bc-7072-958f-2b195154124a.jsonl",
+      "nativeSha256": "c936c8f2fa3f616e98b276c58a90ab48d8c00497b70e2cb9632a94a24e736ef2",
+      "expectedFileSha256": "ff32e553d247ab97fed4dea045161b7a443696596491a8de82f5c14f41ff026e",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a8",
+      "nativePath": "/home/agent/codex-homes/a8/sessions/2026/10/14/rollout-2026-10-14T23-18-08-01a13cb5-6424-7371-a703-2e473992c16f.jsonl",
+      "nativeSha256": "eb29eb78aa59beba731b5af5d80727281bfac1ea5be1d1b4276a1cd0f9b816a5",
+      "expectedFileSha256": "27b667c8d1ea9f995037f2a078653f671e4683372f4d22a33cbf0eff3ac2a57c",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a9",
+      "nativePath": "/home/agent/codex-homes/a9/sessions/2026/10/14/rollout-2026-10-14T23-18-08-01a13cb5-64b0-7d41-a2a6-995aca924473.jsonl",
+      "nativeSha256": "7f3ecd802d938c3696b3621f7d7244983db3dd4320bc84f51f22ee3fb42fe178",
+      "expectedFileSha256": "1afeeffb8801792d9e370a73d94a80e8d5a19feb489f80a2bb8fb0f1c8dec952",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a10",
+      "nativePath": "/home/agent/codex-homes/a10/sessions/2026/10/14/rollout-2026-10-14T23-18-08-01a13cb5-656e-7470-8e2c-f01afffe3d96.jsonl",
+      "nativeSha256": "4024a6f599737b3d8f196d6433c7109fa8011df18d50f7cfa3494a4dee7ae1cc",
+      "expectedFileSha256": "09665f74cf947007532a45e7a460bd6b77d3a5a711559ca19389f193cf34d0b4",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a11",
+      "nativePath": "/home/agent/codex-homes/a11/sessions/2026/10/14/rollout-2026-10-14T23-18-08-01a13cb5-65ed-7d50-9461-c59584239ae0.jsonl",
+      "nativeSha256": "e18c250b837d4495ebd35cff3080836ba04e12420f38f4bc2ac76dfac7391ee6",
+      "expectedFileSha256": "db9cf2a2a4ebdbcf929d0a060e9859fbb9045f2347b922fc6295fe2086411b01",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a12",
+      "nativePath": "/home/agent/codex-homes/a12/sessions/2026/10/14/rollout-2026-10-14T23-18-08-01a13cb5-6694-7340-b5b2-6dd82cc22c83.jsonl",
+      "nativeSha256": "f96e42080abf025d285d65d5b893e241b242c3f19d940710b4bcb1a95e6a61cf",
+      "expectedFileSha256": "5a9323851313d1049df6f01a8b6d793d83061ecf954049349ff4cc632f0918b2",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a13",
+      "nativePath": "/home/agent/codex-homes/a13/sessions/2026/10/14/rollout-2026-10-14T23-18-08-01a13cb5-6746-79d2-932b-875b88b6c912.jsonl",
+      "nativeSha256": "c8c8fff59ffd8451f290613ef657dd9e2a8bed1730a39cd71a122cd03d737b28",
+      "expectedFileSha256": "fe982416d65c77990ffb9b5943595cc3054fbba33bf3daef1cb4223f7a60f5fa",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a14",
+      "nativePath": "/home/agent/codex-homes/a14/sessions/2026/10/14/rollout-2026-10-14T23-18-09-01a13cb5-67e3-7592-bda6-9878b4485f44.jsonl",
+      "nativeSha256": "1975040a9f66c7ce58d16a8bd9a1b0cd8d44a09ff2cdbff2a041ceb3bc302e50",
+      "expectedFileSha256": "b4388869f6df89bd2d06fea52bb87d7c8cb596febe288ba4a6a5b284136486c5",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a15",
+      "nativePath": "/home/agent/codex-homes/a15/sessions/2026/10/14/rollout-2026-10-14T23-18-09-01a13cb5-6885-7ce2-8839-aa7a1d867baa.jsonl",
+      "nativeSha256": "a94238636c256960c324ad7f919c8f57cfead41178319a473f6ff96244d05c3c",
+      "expectedFileSha256": "9811aa0a364e550ee5b3b4467cfe94f40545eb69d167930984fc7c1e625523c9",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a16",
+      "nativePath": "/home/agent/codex-homes/a16/sessions/2026/10/14/rollout-2026-10-14T23-18-09-01a13cb5-6925-76c3-bed0-9265d69aa052.jsonl",
+      "nativeSha256": "41168e5e43c106407c7497c86dbeb9ab05e7882c20d3f6690b019bfb93be671e",
+      "expectedFileSha256": "7d063001dea296af6f8ae6ad06597d8f1f2486aad99aed12f83e9cea750d7e64",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a17",
+      "nativePath": "/home/agent/codex-homes/a17/sessions/2026/10/14/rollout-2026-10-14T23-18-09-01a13cb5-69ab-7ee0-b95c-c2365fe811ff.jsonl",
+      "nativeSha256": "2680fe5c567df11f6e7e4ba247371263b3c047aebf3063237d5c8f204747716e",
+      "expectedFileSha256": "e1f40eddb50320705c0c67ad9129d280953c5b4b26b9e7f3a9d8a5974a5e8b14",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a18",
+      "nativePath": "/home/agent/codex-homes/a18/sessions/2026/10/14/rollout-2026-10-14T23-18-09-01a13cb5-6a5e-70d2-97d3-54a54926148d.jsonl",
+      "nativeSha256": "68100ba8c80083f3fdad9dbb0ba9a0d0c5673880cf761ff0a666fcaee2f1f99f",
+      "expectedFileSha256": "c61410e48f52db8c27f3f504cddf3286de41a7cea63ddb0058ae4de5c0a6bec8",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a19",
+      "nativePath": "/home/agent/codex-homes/a19/sessions/2026/10/14/rollout-2026-10-14T23-18-09-01a13cb5-6aff-7632-bc60-9769c62e37e0.jsonl",
+      "nativeSha256": "ede9945a8920a126f1d2ff26006c9fbff9b323460ca22a7fca8896358e312c0d",
+      "expectedFileSha256": "0f9e6be5f5028ec9115cc05c63cda122eb52fcae304576c90708db9e8f3b46e4",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a20",
+      "nativePath": "/home/agent/codex-homes/a20/sessions/2026/10/14/rollout-2026-10-14T23-18-09-01a13cb5-6b91-7580-9924-cd894ade0d31.jsonl",
+      "nativeSha256": "9e473b4c89674d1c3a08a9d15804bff192ebe7929200af6dcf17d0a29dd7961a",
+      "expectedFileSha256": "96a1e70a63b2bf02aa327d7e04a592b95b12bf1588c715a7840c9d483d19045e",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a21",
+      "nativePath": "/home/agent/codex-homes/a21/sessions/2026/10/14/rollout-2026-10-14T23-18-10-01a13cb5-6c2e-7cd2-bcac-b4c9809fbbba.jsonl",
+      "nativeSha256": "56a37b704cef466921c9221f98d58872fb70c37d798809a40d0d44c5fe02fe0d",
+      "expectedFileSha256": "beea4481818c35f3a1bde274b40264a0f14b7f0ec6678c78a802a5ef152001dd",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a22",
+      "nativePath": "/home/agent/codex-homes/a22/sessions/2026/10/14/rollout-2026-10-14T23-18-10-01a13cb5-6cca-7a32-93dd-890bd92aae68.jsonl",
+      "nativeSha256": "29110d617a74f209eebf767ce8fc8c15c715deeb4741c6e6e24061351c754d41",
+      "expectedFileSha256": "75b07e5e723ba6216818162e4cc21444f8af334037a9495a208f7c3647d67b0e",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a23",
+      "nativePath": "/home/agent/codex-homes/a23/sessions/2026/10/14/rollout-2026-10-14T23-18-10-01a13cb5-6d64-77d1-a7a5-adcbe9af4458.jsonl",
+      "nativeSha256": "0c85ff7ae8b95e2c42dcd087cb20cf9cba7ea2b2d824c6f520b130b251b0a8f6",
+      "expectedFileSha256": "9b2323df675ce88fb45fed2a0ba28d825e5ea6ed1febc1201a2f71bdd62b6973",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a24",
+      "nativePath": "/home/agent/codex-homes/a24/sessions/2026/10/14/rollout-2026-10-14T23-18-10-01a13cb5-6e2c-7e43-a9eb-28411bde81e1.jsonl",
+      "nativeSha256": "f092767c52d3a79f044a47d55382c802e43ef521631872ceb8150e9aabc7ea09",
+      "expectedFileSha256": "46a52f672056fb91c024229212c499c808b5586d25609de118c26df2522815d8",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a25",
+      "nativePath": "/home/agent/codex-homes/a25/sessions/2026/10/14/rollout-2026-10-14T23-18-10-01a13cb5-6ecc-7360-b782-1d73c49255f2.jsonl",
+      "nativeSha256": "114b4ce576686bde15c1e774d3f605f48a59e8ac31ecf1701b7eeb7eeeca1a67",
+      "expectedFileSha256": "0703c3addb4770b1b9b00f646499120e3eae6d1699e70480b706a410edce8a40",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a26",
+      "nativePath": "/home/agent/codex-homes/a26/sessions/2026/10/14/rollout-2026-10-14T23-18-10-01a13cb5-6f5a-74f1-b20c-79a4ab8ee678.jsonl",
+      "nativeSha256": "4656df85e0276f875f62b37758ee8ab761b19e2006b22a46d5fbe1e407baa295",
+      "expectedFileSha256": "519546680aff7b7988c4689e59644d32658140ba9876ca5d84ff794614a7dca9",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a27",
+      "nativePath": "/home/agent/codex-homes/a27/sessions/2026/10/14/rollout-2026-10-14T23-18-11-01a13cb5-6ff4-7253-ae96-5598d09ec5f6.jsonl",
+      "nativeSha256": "f94b668600efeeba58f9144b95c76f68e642874c0d6c5d19d34290b3b4bbfc44",
+      "expectedFileSha256": "dc27e78649c1d160f966018b7a2bed701b576efe3e801d457bac0129411d27d3",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a28",
+      "nativePath": "/home/agent/codex-homes/a28/sessions/2026/10/14/rollout-2026-10-14T23-18-11-01a13cb5-708c-7c02-88f7-253eb834523c.jsonl",
+      "nativeSha256": "77acd96eedb04eff6e2a7beeb8182d24c7da0d95121b0ade526e91d944799b43",
+      "expectedFileSha256": "81afe2bab90b6de67b7e3fdeddc4e0ef26cf12dd99747d0b1f93a8aff9313e5a",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a29",
+      "nativePath": "/home/agent/codex-homes/a29/sessions/2026/10/14/rollout-2026-10-14T23-18-11-01a13cb5-7128-7372-b7e1-9561c9897ed4.jsonl",
+      "nativeSha256": "73bf47194ee7e97f3c88c5fb81d82d613c514ca424ab7b4290cfbc3e2eeb4534",
+      "expectedFileSha256": "3f00f7fb4751b709e31d3a2e47f14eb4c42d896f1013cc040b9d8d233e2067d0",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a30",
+      "nativePath": "/home/agent/codex-homes/a30/sessions/2026/10/14/rollout-2026-10-14T23-18-11-01a13cb5-71cf-7e31-8434-f9cd97fd5d80.jsonl",
+      "nativeSha256": "d452c6a34b41875c999ff1de52c87929111d133a0bc619c317f6ae451e948922",
+      "expectedFileSha256": "fcf0804f5484128e73f914c22aa725fc355b84d95e296ccba8dda9a9db673ba6",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a31",
+      "nativePath": "/home/agent/codex-homes/a31/sessions/2026/10/14/rollout-2026-10-14T23-18-11-01a13cb5-726d-7712-a396-f5aeebbd6b1f.jsonl",
+      "nativeSha256": "d33810d0ac91837de2e7ddd579b49ff16b225f6466823fec4669c8dbddf26acd",
+      "expectedFileSha256": "a5005620c36ab0efa66ea50c11ef5ab70db9a21459fb3ee2fe125d5d6c36a67e",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a32",
+      "nativePath": "/home/agent/codex-homes/a32/sessions/2026/10/14/rollout-2026-10-14T23-18-11-01a13cb5-7313-7212-b3ac-9c4a4cbc23fd.jsonl",
+      "nativeSha256": "169c7146159197a289f24bac669996118bcd64d2562cf74fd7eee09d2d01f898",
+      "expectedFileSha256": "87fc4772e2fbc3aa0a995ad976e58313f6ba1629025e6c001baf5522c8a05632",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a33",
+      "nativePath": "/home/agent/codex-homes/a33/sessions/2026/10/14/rollout-2026-10-14T23-18-12-01a13cb5-73b9-7731-a98d-e35daf227d00.jsonl",
+      "nativeSha256": "1e510ab1b88b77a3b0b4f9d067ce2a913cb1976f65bad2afd0ebbadc7d7ca373",
+      "expectedFileSha256": "1a35a60e33649cb2b41d23e2ae7826d1c344f90abd959154be2af7270e475fd0",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a34",
+      "nativePath": "/home/agent/codex-homes/a34/sessions/2026/10/14/rollout-2026-10-14T23-18-12-01a13cb5-743e-7c13-b0e5-ba78f6f66f73.jsonl",
+      "nativeSha256": "ed7f59f5f760d7e67eb029882d5ec81b7712b60c863ac1d2062cb63a6c20ca04",
+      "expectedFileSha256": "8b3144cbf369a5ca8b82fe1cdbcbf5b5e8da792301d9cab9b90ec8a66c7ac805",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a35",
+      "nativePath": "/home/agent/codex-homes/a35/sessions/2026/10/14/rollout-2026-10-14T23-18-12-01a13cb5-74da-7840-8a0b-bf195984eb91.jsonl",
+      "nativeSha256": "c46bfe381cf116533c9dcb112a799967675bb1eef2c5e5b449cfb951728d3b2a",
+      "expectedFileSha256": "ce0793277fbb3b0ba9004cf0979d0f83f6b883f0ecee07e55f957ed1cd08295d",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a36",
+      "nativePath": "/home/agent/codex-homes/a36/sessions/2026/10/14/rollout-2026-10-14T23-18-12-01a13cb5-7589-7942-8d7a-d721d0ddf8f2.jsonl",
+      "nativeSha256": "52a4fb2f77b2f7a9111a2ae6278505f000974ada33a8474f83f5cfb5968ba2af",
+      "expectedFileSha256": "cf94c2af295e0a9c5623c092112ee40994f9647c78957f8a16fe03fe1e608c8a",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a37",
+      "nativePath": "/home/agent/codex-homes/a37/sessions/2026/10/14/rollout-2026-10-14T23-18-12-01a13cb5-7612-7e61-9971-81b2043bba48.jsonl",
+      "nativeSha256": "8f9a9d1d4cc98addd2ab733780ef3efa5d95dc85e85aa82722721e36de9be07c",
+      "expectedFileSha256": "24779e7e5473cc213d4df3ed2e18a0b14ab0313a792c94450c78d4c04522f383",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a38",
+      "nativePath": "/home/agent/codex-homes/a38/sessions/2026/10/14/rollout-2026-10-14T23-18-12-01a13cb5-76e1-7263-a66a-1aeeda8b402d.jsonl",
+      "nativeSha256": "126bd2e2cb9b4246380d52cb00abec8fd4e753505b8f28f45fac503997891151",
+      "expectedFileSha256": "f445273d7402e2ffa9627ccf3ab1508820d0fb7ee379e2e8f1ed03b0197f53a7",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a39",
+      "nativePath": "/home/agent/codex-homes/a39/sessions/2026/10/14/rollout-2026-10-14T23-18-12-01a13cb5-776d-7302-b345-302ea33faaf2.jsonl",
+      "nativeSha256": "8bd3fdc542ee8f599a0396b4756369141781daa067c1b853d463fc553b45ea41",
+      "expectedFileSha256": "ff57e105a2d2df8f5535806b026f52d500e74090aceb6ea44f9ba372661c06ff",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a40",
+      "nativePath": "/home/agent/codex-homes/a40/sessions/2026/10/14/rollout-2026-10-14T23-18-13-01a13cb5-7811-7833-8478-806aca467584.jsonl",
+      "nativeSha256": "a7c5a7dc3511ffba05d66be89d006af5b27784fb8940e63620f00d650d7dd28c",
+      "expectedFileSha256": "a05608ee14670ae6e18991d3464b63f7861a6ce44ec44d86e40fa9e441a73e2b",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a41",
+      "nativePath": "/home/agent/codex-homes/a41/sessions/2026/10/14/rollout-2026-10-14T23-18-13-01a13cb5-7892-7382-8407-d078d9078edd.jsonl",
+      "nativeSha256": "6f77c79b36e15c19e8ba4a298b41e99bac38856fbd21bcece71e26c21c49b7bd",
+      "expectedFileSha256": "f758a7f591960d7b35604f88c0bd391809160efdde3240957a165ff1a2cf7a24",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a42",
+      "nativePath": "/home/agent/codex-homes/a42/sessions/2026/10/14/rollout-2026-10-14T23-18-13-01a13cb5-7933-75a0-8f13-ada3404ddeba.jsonl",
+      "nativeSha256": "577af0214dde53d6b0face654eddfeffacfa50229f559991598800d4ee8f62f9",
+      "expectedFileSha256": "eb6abcab7da715e808de2e921e36413da75dcad6229e56583f06afa50f6fffdc",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a43",
+      "nativePath": "/home/agent/codex-homes/a43/sessions/2026/10/14/rollout-2026-10-14T23-18-13-01a13cb5-79d4-7ae3-a82e-a27907e7ccce.jsonl",
+      "nativeSha256": "44ed94e1ff6f2465846adef4adc008b5a9f0f06b4de132a15cc1822e7029c6b0",
+      "expectedFileSha256": "d72c5cc790ebc8539f0278193a14a947fadd991f9528f41ba896c83b15b087ed",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a44",
+      "nativePath": "/home/agent/codex-homes/a44/sessions/2026/10/14/rollout-2026-10-14T23-18-13-01a13cb5-7a94-7ec1-bbb0-9b3e8b6c59e4.jsonl",
+      "nativeSha256": "759ced58a58c77193d6cd1fb1a6f12708dfb8329aae6b0ba47cf0851d7e5d727",
+      "expectedFileSha256": "2964c3df155f8b64d36d1919d399e9c8e9447e58db37e56e89f2633fce47a873",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a45",
+      "nativePath": "/home/agent/codex-homes/a45/sessions/2026/10/14/rollout-2026-10-14T23-18-13-01a13cb5-7b2a-7991-83b9-0644d054f27f.jsonl",
+      "nativeSha256": "ebc3a16bff684c028f115d4f164bceda47613651c673440cb6a7c7c8d51e2a14",
+      "expectedFileSha256": "ea5419248395088ee584cbb73efd971dae7c86e0765ea0eb03c4117b08bfed67",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a46",
+      "nativePath": "/home/agent/codex-homes/a46/sessions/2026/10/14/rollout-2026-10-14T23-18-14-01a13cb5-7bb5-7ef1-b913-8c568738ec90.jsonl",
+      "nativeSha256": "0e1cbe646ed4cf07a40464a41747bd709c36991f6c8b0c5f023d6586bdb0e284",
+      "expectedFileSha256": "772ab24b8f60c124537bc143696d1abfbbeb0f0d3b1511e055281d984df91626",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a47",
+      "nativePath": "/home/agent/codex-homes/a47/sessions/2026/10/14/rollout-2026-10-14T23-18-14-01a13cb5-7c53-7e51-a03b-2f1fcd9d68ea.jsonl",
+      "nativeSha256": "7937c841da634e53255f337108150594cfccc873b9c648139d1cef6c84bb8f78",
+      "expectedFileSha256": "29dcf8db008cc80ea3d7be1a68e6931389b684da0098d47cebd3de801ea83d63",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a48",
+      "nativePath": "/home/agent/codex-homes/a48/sessions/2026/10/14/rollout-2026-10-14T23-18-14-01a13cb5-7cff-7541-b5c9-a5b9ca47b234.jsonl",
+      "nativeSha256": "b21b43d0f533da191fbf7800ac14e84ab6cddf61f00501575d8a71ec688d4467",
+      "expectedFileSha256": "3fc2a91821051083a75464e59147b43df3451abebd591a44378ee7d4f288bbd9",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a49",
+      "nativePath": "/home/agent/codex-homes/a49/sessions/2026/10/14/rollout-2026-10-14T23-18-14-01a13cb5-7d92-7c93-945c-9308d425c4ce.jsonl",
+      "nativeSha256": "3a71bef40c26881bbf4f9592cfd16a6ecd26b20075713ec78591c46a9e9be7ec",
+      "expectedFileSha256": "7bd670630016c911601f98932855a9a0021243a3050db29645bf775250074141",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    },
+    {
+      "agent": "a50",
+      "nativePath": "/home/agent/codex-homes/a50/sessions/2026/10/14/rollout-2026-10-14T23-18-14-01a13cb5-7e25-7122-80e2-620321d81425.jsonl",
+      "nativeSha256": "2799d2d5a42ce3026196ec89e856f5e016641b79a1a094b976ef9f7ec20e29d9",
+      "expectedFileSha256": "79e82cc5c86ba864dedebb4a17cf3d1cd9e4b87413a834044393a38824391089",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "efforts": [
+        "low"
+      ],
+      "warmTasks": 6,
+      "wakeTasks": 6,
+      "errors": []
+    }
+  ],
+  "cleanup": {
+    "scopeCount": 0,
+    "sliceActive": "inactive",
+    "swapDevices": ""
+  }
+}

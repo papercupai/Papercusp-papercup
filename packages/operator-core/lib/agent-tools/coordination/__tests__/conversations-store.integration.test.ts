@@ -125,6 +125,21 @@ describe('create → get round-trip', () => {
     expect(row?.title).toBe('a title');
   });
 
+  it('reads lifecycle only for the requested ids in the current workspace', async () => {
+    const other = new PgConversationStore({ getSql: () => sql, ensureSchema: async () => {}, workspaceId: 'other-ws' });
+    await store.create(input('batch-open'));
+    await store.create(input('batch-resolved'));
+    await store.setState('batch-resolved', 'resolved', { now_ts: T1 });
+    await other.create(input('batch-other'));
+
+    const rows = await store.getStatesByIds(['batch-open', 'batch-resolved', 'missing', 'batch-open', 'batch-other']);
+    expect(rows.sort((a, b) => a.id.localeCompare(b.id))).toEqual([
+      { id: 'batch-open', state: 'open' },
+      { id: 'batch-resolved', state: 'resolved' },
+    ]);
+    expect(await store.getStatesByIds([])).toEqual([]);
+  });
+
   it('a duplicate-id create is DO NOTHING + read-back: the first row wins', async () => {
     await store.create(input('dup', { body: 'first' }));
     const second = await store.create(input('dup', { body: 'second', title: 'late title' }));
@@ -204,6 +219,25 @@ describe('setState — resolved_at semantics, no transition guard', () => {
       /coord_conversations_state_check/,
     );
     expect((await store.get('s3'))?.state).toBe('open');
+  });
+});
+
+describe('closeIfOpen — the conversations:withdraw compare-and-set', () => {
+  it('closes an open row once, and the loser of a second close learns the terminal state', async () => {
+    await store.create(input('w1'));
+    const first = await store.closeIfOpen('w1', { now_ts: T1 });
+    expect(first).toMatchObject({ ok: true, conversation: { id: 'w1', state: 'closed', resolved_ts: null, updated_ts: T1 } });
+
+    const second = await store.closeIfOpen('w1', { now_ts: T2 });
+    expect(second).toMatchObject({ error: 'not_open', conversation: { state: 'closed', updated_ts: T1 } });
+  });
+
+  it('never overwrites a resolved row, and reports an unknown id as not_found', async () => {
+    await store.create(input('w2'));
+    await store.setState('w2', 'resolved', { now_ts: T1 });
+    expect(await store.closeIfOpen('w2', { now_ts: T2 })).toMatchObject({ error: 'not_open', conversation: { state: 'resolved' } });
+    expect((await store.get('w2'))?.resolved_ts).toBe(T1);
+    expect(await store.closeIfOpen('ghost', { now_ts: T1 })).toEqual({ error: 'not_found' });
   });
 });
 
@@ -316,6 +350,47 @@ describe('reopenResolved — bounded compensation inverse', () => {
 });
 
 describe('supersede — row transaction', () => {
+  it('uses the exact accepted answer as a compare-and-set for correcting a resolved owner question', async () => {
+    await store.create(input('resolved-owner-question'));
+    await store.setAcceptedAnswer('resolved-owner-question', {
+      answer: 'approved answer v1',
+      post_id: 17,
+      capture_target: 'mem0:workspace:default',
+      now_ts: T1,
+    });
+    await store.setState('resolved-owner-question', 'resolved', { now_ts: T1 });
+
+    const stale = await store.supersede(
+      'resolved-owner-question',
+      input('stale-replacement'),
+      { now_ts: T2, expected_answer: 'older answer' },
+    );
+    expect(stale).toMatchObject({
+      error: 'source_changed',
+      conversation: { id: 'resolved-owner-question', state: 'resolved', accepted_answer: 'approved answer v1' },
+    });
+    expect(await store.get('stale-replacement')).toBeNull();
+
+    const corrected = await store.supersede(
+      'resolved-owner-question',
+      input('corrected-replacement'),
+      { now_ts: T2, expected_answer: 'approved answer v1' },
+    );
+    if ('error' in corrected) throw new Error(corrected.error);
+    expect(corrected).toMatchObject({
+      conversation: {
+        id: 'resolved-owner-question',
+        state: 'superseded',
+        superseded_by: 'corrected-replacement',
+        accepted_answer: null,
+        accepted_post_id: null,
+        capture_target: null,
+        resolved_ts: null,
+      },
+      replacement: { id: 'corrected-replacement', state: 'open' },
+    });
+  });
+
   it('inserts the replacement and retires the old gate in one store operation', async () => {
     await store.create(input('old-gate', { title: 'old title' }));
     const result = await store.supersede(

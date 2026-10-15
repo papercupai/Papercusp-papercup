@@ -118,6 +118,13 @@ const ENSURE_ARMED_TTL_MS = 120_000;
  */
 export async function ensureInboxWakeArmedForActiveSession(input: {
   ownerId: string;
+  /**
+   * Recheck even when the process-local hot-path throttle is warm. A successful
+   * resume claim starts a new adv-session incarnation; that caller must not
+   * inherit an earlier tool report's throttle result. This bypasses only the
+   * throttle: the live-session and explicit-cancellation checks still apply.
+   */
+  forceRecheck?: boolean;
   /** @deprecated dead since WI-3575 — forwarded to armInboxWake, itself a no-op; kept
    *  for caller compat only. */
   workspaceId?: string;
@@ -126,7 +133,7 @@ export async function ensureInboxWakeArmedForActiveSession(input: {
   if (!ownerId) return false;
   const now = Date.now();
   const last = ensuredArmedAt.get(ownerId);
-  if (last != null && now - last < ENSURE_ARMED_TTL_MS) return false; // throttled
+  if (!input.forceRecheck && last != null && now - last < ENSURE_ARMED_TTL_MS) return false; // throttled
   ensuredArmedAt.set(ownerId, now);
   if (ensuredArmedAt.size > 1024) {
     // Bounded: drop the oldest insertions (Map preserves insertion order) down to

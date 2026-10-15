@@ -84,6 +84,27 @@ describe('Dream quality calibration and watchdog evidence', () => {
     expect(report.rejectedReview.population).toBe(0);
   });
 
+  it('accepts a persisted review-preflight refusal without reporting invalid or unresolved review provenance', () => {
+    const preflight = run('review-preflight');
+    preflight.status = 'rejected';
+    preflight.review = {
+      schemaVersion: 'dream-capability-preflight-v1',
+      verdict: 'unverified',
+      reason: 'search-unavailable',
+    };
+    preflight.outcome = {
+      verdict: 'unverified',
+      generationSkipped: true,
+      capabilityRun: dreamCapabilityRun(preflight),
+    };
+
+    const report = reportDreamQuality([preflight], scope);
+
+    expect(report.coverage).toEqual({ complete: true, inspected: 1, valid: 1 });
+    expect(codes(report)).toEqual([]);
+    expect(report.reviewPassRate).toEqual({ numerator: 0, denominator: 0, value: null });
+  });
+
   it('flags accounting faults and family concentration even when every review accepts', () => {
     const repeated = Array.from({ length: 6 }, (_, i) => run(`repeat-${i}`, 'same-family'));
     expect(codes(reportDreamQuality(repeated, scope))).toContain('family-concentration');
@@ -92,9 +113,32 @@ describe('Dream quality calibration and watchdog evidence', () => {
     const unknown = run('unknown'); const p = dreamCapabilityRun(unknown)!;
     p.calls[1] = { ...p.calls[1]!, status: 'unknown', usage: null, error: 'lost reply' };
     unknown.outcome!.capabilityRun = p; unknown.costUsd = 0.15;
-    expect(codes(reportDreamQuality([unknown], scope))).toContain('unknown-accounting');
+    const unknownReport = reportDreamQuality([unknown], scope);
+    expect(codes(unknownReport)).toContain('unknown-accounting');
+    expect(unknownReport.faults.find(f => f.code === 'unknown-accounting')).toMatchObject({
+      identifiedRunCount: 1,
+      runIds: ['unknown'],
+    });
     const tooMuch = run('over-cap'); tooMuch.costUsd = 6;
     expect(codes(reportDreamQuality([tooMuch], scope))).toContain('budget-breach');
+  });
+
+  it('does not flag a recorded pre-call model-price refusal as unknown accounting', () => {
+    const skipped = run('unpriced-model');
+    skipped.status = 'error';
+    skipped.review = null;
+    skipped.costUsd = 0;
+    const provenance = dreamCapabilityRun(skipped)!;
+    skipped.outcome = {
+      verdict: 'unverified',
+      generationSkipped: true,
+      capabilityRun: { ...provenance, calls: [] },
+    };
+
+    const report = reportDreamQuality([skipped], scope);
+
+    expect(report.coverage).toMatchObject({ inspected: 1, valid: 1 });
+    expect(codes(report)).not.toContain('unknown-accounting');
   });
 
   it('keeps corrupt rows visible and excludes in-flight calls, old rows and replayed deliveries', () => {

@@ -41,7 +41,12 @@ function errorBody(result: unknown) {
 
 function makeTx() {
   const tx = Object.assign(
-    vi.fn<(...args: unknown[]) => Promise<unknown[]>>(async () => []),
+    vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const parts = [...strings];
+      return parts.join(' ').includes('FROM harness_shared.')
+        ? Promise.resolve([])
+        : { kind: 'fragment' as const, strings: parts, values };
+    }),
     {
       unsafe: vi.fn((value: string) => value),
       array: vi.fn((value: unknown[]) => value),
@@ -86,6 +91,45 @@ describe('sessions:timeline owner resolution', () => {
     const templateParts = timelineQuery?.[0] as readonly string[] | undefined;
     expect(prefixParam).toBeGreaterThanOrEqual(0);
     expect(templateParts?.[prefixParam + 1]).toMatch(/^::text/);
+  });
+
+  it('includes historical tool calls only for a trusted signed role-spawn session alias', async () => {
+    const owner = 'su-12345678-1234-4234-8234-123456789abc';
+    const tx = makeTx();
+
+    await run(owner, tx);
+
+    const invocationQueries = tx.mock.calls.filter(
+      (call) =>
+        Array.isArray(call[0]) &&
+        call[0].some(
+          (part: unknown) =>
+            typeof part === 'string' && part.includes('FROM harness_shared.tool_invocations'),
+        ),
+    );
+    expect(invocationQueries).toHaveLength(2);
+
+    const ownerPredicates = invocationQueries.map((query) => {
+      const fragments = query.slice(1).filter((value) => {
+        if (typeof value !== 'object' || value === null) return false;
+        const strings = (value as { strings?: unknown }).strings;
+        return Array.isArray(strings) && strings.join(' ').includes('coord_owner_id');
+      }) as Array<{ strings: readonly string[]; values: unknown[] }>;
+      expect(fragments).toHaveLength(1);
+      return fragments[0]!;
+    });
+
+    // The page and audit count must consume the exact same owner clause. This
+    // catches a future one-sided edit that would make entries and totals disagree.
+    expect(ownerPredicates[1]).toEqual(ownerPredicates[0]);
+    const sqlText = ownerPredicates[0]!.strings.join(' ');
+    expect(sqlText).toContain('coord_owner_id =');
+    expect(sqlText).toContain("principal_kind = 'harness'");
+    expect(sqlText).toContain("principal_auth_method = 'spawn-url'");
+    expect(sqlText).toContain("principal_trust = 'trusted'");
+    expect(sqlText).toContain("metadata_json->'requestOrigin'->'query'->>'client'");
+    expect(sqlText).toContain("'system:' || role || '/' ||");
+    expect(ownerPredicates[0]!.values).toEqual([owner, owner, owner]);
   });
 
   it('normalizes a unique short owner handle before constructing the history query', async () => {

@@ -6,6 +6,7 @@ import {
   deriveDatabaseTuning,
   deriveResourceProfile,
   diffPgSettings,
+  findShadowingPgAssignments,
   getResourceProfile,
   parsePgSizeToBytes,
   parsePgDurationToMs,
@@ -978,5 +979,68 @@ describe('configure + memoized singleton', () => {
     expect(p.signals.cores).toBeGreaterThanOrEqual(1);
     expect(p.maxSimultaneousAgents).toBeGreaterThanOrEqual(1);
     expect(p.hostClass).toMatch(/laptop|workstation|server/);
+  });
+});
+
+describe('diffPgSettings renders a block-unit live value scaled, not glued', () => {
+  it('shows 24725888 x 8kB as 197807104kB', () => {
+    const drift = diffPgSettings(
+      { effective_cache_size: '193172MB' },
+      [{ name: 'effective_cache_size', setting: '24725888', unit: '8kB', context: 'user' } as PgLiveSetting],
+    );
+    expect(drift.diverged).toHaveLength(1);
+    expect(drift.diverged[0]?.live).toBe('197807104kB');
+  });
+});
+
+describe('pg_textsearch memtable budget (BM25 plan P-004)', () => {
+  it('keeps the upstream 2 GB on a big host and scales down with shared_buffers', () => {
+    const big = deriveDatabaseTuning(signals({ cores: 128, embeddedPg: false, totalMemBytes: 256 * GIB }));
+    expect(big.bm25MemtableMemoryLimitMb).toBe(2048);
+    expect(databaseTuningToSettings(big)['pg_textsearch.memory_limit']).toBe('2048MB');
+
+    const laptop = deriveDatabaseTuning(signals({ cores: 4, embeddedPg: true, totalMemBytes: 8 * GIB }));
+    expect(laptop.bm25MemtableMemoryLimitMb).toBe(Math.max(64, Math.round(laptop.sharedBuffersMb / 8)));
+    expect(laptop.bm25MemtableMemoryLimitMb).toBeLessThan(big.bm25MemtableMemoryLimitMb);
+  });
+
+  it('never drops below 64 MB', () => {
+    const tiny = deriveDatabaseTuning(signals({ cores: 1, embeddedPg: true, totalMemBytes: 1 * GIB }));
+    expect(tiny.bm25MemtableMemoryLimitMb).toBe(64);
+  });
+});
+
+describe('findShadowingPgAssignments — later conf.d files override the managed drop-in', () => {
+  const own = '10-papercusp-autotune.conf';
+  const keys = ['shared_preload_libraries', 'work_mem'];
+
+  it('reports the dev-box shape: a later file pins shared_preload_libraries', () => {
+    expect(findShadowingPgAssignments([
+      { name: own, text: "shared_preload_libraries = 'pg_stat_statements,pg_textsearch'\n" },
+      { name: '20-pg-stat-statements.conf', text: "# keep stats\nshared_preload_libraries = 'pg_stat_statements'\n" },
+    ], own, keys)).toEqual([{ file: '20-pg-stat-statements.conf', key: 'shared_preload_libraries', line: 2 }]);
+  });
+
+  it('ignores earlier files, non-.conf files, comments and unmanaged keys', () => {
+    expect(findShadowingPgAssignments([
+      { name: '05-early.conf', text: 'work_mem = 4MB\n' },
+      { name: '20-pg-stat-statements.conf.bak-2026-10-01', text: "shared_preload_libraries = 'x'\n" },
+      { name: '30-notes.conf', text: "# work_mem = 1MB\nlog_min_duration_statement = 250\n" },
+    ], own, keys)).toEqual([]);
+  });
+
+  it('matches every assignment form, case-insensitively, in name order', () => {
+    expect(findShadowingPgAssignments([
+      { name: '90-b.conf', text: 'WORK_MEM 8MB\n' },
+      { name: '50-a.conf', text: "work_mem='16MB'  # tuned\n" },
+    ], own, keys)).toEqual([
+      { file: '50-a.conf', key: 'work_mem', line: 1 },
+      { file: '90-b.conf', key: 'WORK_MEM', line: 1 },
+    ]);
+  });
+
+  it('does not read a bare prefix of a longer name as the key', () => {
+    expect(findShadowingPgAssignments([{ name: '20-x.conf', text: 'work_mem_extra = 1\nwork_me\n' }], own, keys))
+      .toEqual([]);
   });
 });

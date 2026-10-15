@@ -1,8 +1,11 @@
+import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   AdmissionIdempotencyConflictError,
   AdmissionPersistenceError,
   Governor,
+  admissionRequestFingerprint,
+  normalizeAdmissionRequest,
   type AdmissionContext,
 } from './admission';
 import {
@@ -302,6 +305,69 @@ function recordingSqlClient(activeRows: unknown[] = []) {
   }) as never;
   return { client, queries };
 }
+
+describe('goal observation replay binding', () => {
+  it('accepts legacy snapshot-inclusive receipts while rejecting changed semantic pins', async () => {
+    const store = new MemoryAdmissionQueueStore();
+    const input = { idempotencyKey: 'legacy-goal-replay', admissionClass: 'agent',
+      metadata: { goalId: 'goal', fleetSlug: 'fleet', targetOwnerId: 'target', goalAdmission: 'first-snapshot' } };
+    const first = await governor(store).governor.admit(input);
+    const stored = (await store.find('test', input.idempotencyKey))!;
+    const normalized = normalizeAdmissionRequest(input);
+    const legacyFingerprint = createHash('sha256').update(JSON.stringify({
+      idempotencyKey: normalized.idempotencyKey, admissionClass: normalized.admissionClass,
+      priority: normalized.priority, deadlineAtMs: normalized.deadlineAtMs, demand: normalized.demand,
+      payloadRef: normalized.payloadRef, coalesceKey: normalized.coalesceKey,
+      parentRequestId: normalized.parent?.requestId ?? null, bypassKey: normalized.bypassKey,
+      metadata: normalized.metadata,
+    })).digest('hex');
+    expect(legacyFingerprint).not.toBe(createHash('sha256').update(admissionRequestFingerprint(normalized)).digest('hex'));
+    Object.assign(stored.record, { requestFingerprint: legacyFingerprint });
+    const retry = await governor(store).governor.admit({ ...input,
+      metadata: { ...input.metadata, goalAdmission: 'new-snapshot' } });
+    expect(retry).toEqual(first);
+    expect(stored.record.requestFingerprint).toBe(legacyFingerprint);
+    expect(stored.record.metadata.goalAdmission).toBe('first-snapshot');
+    const { goalAdmission: _observation, ...pins } = input.metadata;
+    expect(await governor(store).governor.admit({ ...input, metadata: pins })).toEqual(first);
+    for (const [field, value] of Object.entries({ goalId: 'other-goal', fleetSlug: 'other-fleet', targetOwnerId: 'other-target' })) {
+      await expect(governor(store).governor.admit({ ...input, metadata: { ...input.metadata, [field]: value } }))
+        .rejects.toBeInstanceOf(AdmissionIdempotencyConflictError);
+    }
+  });
+
+  it('reuses the original durable receipt across governor instances without replacing its observation', async () => {
+    const store = new MemoryAdmissionQueueStore();
+    const input = {
+      idempotencyKey: 'goal-replay', admissionClass: 'agent', demand: { cpuWeight: 1 },
+      metadata: { goalId: 'goal', fleetSlug: 'fleet', targetOwnerId: 'target', goalReservation: true,
+        goalAdmission: JSON.stringify({ measuredAt: 'first', headcount: 1 }) },
+    };
+    const first = await governor(store).governor.admit(input);
+    const retryGovernor = governor(store).governor;
+    const retry = await retryGovernor.admit({ ...input, metadata: { ...input.metadata,
+      goalAdmission: JSON.stringify({ measuredAt: 'retry', headcount: 2 }) } });
+    expect(retry).toEqual(first);
+    expect((await store.find('test', input.idempotencyKey))?.record.metadata.goalAdmission)
+      .toBe(input.metadata.goalAdmission);
+    for (const [field, value] of Object.entries({ goalId: 'other-goal', fleetSlug: 'other-fleet',
+      targetOwnerId: 'other-target', goalReservation: false })) {
+      await expect(governor(store).governor.admit({ ...input, metadata: { ...input.metadata, [field]: value } }))
+        .rejects.toBeInstanceOf(AdmissionIdempotencyConflictError);
+    }
+    await expect(governor(store).governor.admit({ ...input, demand: { cpuWeight: 2 } }))
+      .rejects.toBeInstanceOf(AdmissionIdempotencyConflictError);
+  });
+
+  it('still rejects changed goalAdmission metadata for other admission classes', async () => {
+    const store = new MemoryAdmissionQueueStore();
+    const input = { idempotencyKey: 'process-replay', admissionClass: 'process',
+      metadata: { goalAdmission: 'first' } };
+    await governor(store).governor.admit(input);
+    await expect(governor(store).governor.admit({ ...input, metadata: { goalAdmission: 'retry' } }))
+      .rejects.toBeInstanceOf(AdmissionIdempotencyConflictError);
+  });
+});
 
 describe('resource-governor queue liveness and census boundaries (EI-219699)', () => {
   it('selects only explicit ended owners and preserves every ambiguous state', () => {

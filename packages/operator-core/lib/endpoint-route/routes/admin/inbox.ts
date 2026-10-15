@@ -21,11 +21,12 @@ import '../../../agent-tools/index';
 import { ADMIN_PROXY_HOST_EXTRAS as HOST_EXTRAS } from './proxy-host-extras';
 import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
 import { ADMIN_COORD_UI_OWNER } from '../../../agent-tools/coordination/identity';
+import { requireAllowedOriginOr403 } from '../../cors';
 
 // The human triages AS the admin UI owner — same identity the coord proxy
 // uses, so triage audit rows (`triaged_by`) attribute consistently.
 const ADMIN_UI_CLIENT_ID = ADMIN_COORD_UI_OWNER;
-const WRITE_VERBS = new Set(['triage']);
+const WRITE_VERBS = new Set(['triage', 'automation-policy']);
 
 function unwrap(toolResult: { status: number; body: unknown }): Response {
   if (toolResult.status === 200) {
@@ -59,6 +60,10 @@ function adminSearchParams(inbound: URLSearchParams): URLSearchParams {
 }
 
 async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response> {
+  // CSRF backstop for the VTL tier below: a foreign page's cross-origin POST is
+  // refused before any verb is proxied; Origin-less server callers still pass.
+  const csrf = requireAllowedOriginOr403(req);
+  if (csrf) return csrf;
   const verb = ctx.params.verb;
   if (!WRITE_VERBS.has(verb)) {
     return Response.json(
@@ -90,8 +95,11 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
 const writeRoute = defineTool({
   method: 'POST',
   path: '/admin/inbox/:verb',
-  // Mutating triage ops — gate to the admin tier, same posture as admin/coord.
-  auth: { trust: ['verified', 'trusted'] },
+  // Mutating triage ops + the standing bulk automation policy. Same posture as
+  // admin/coord (VTL): Settings > Autonomy and the Plans pane post here from the
+  // cookie-less desktop webview, which resolves 'unverified-loopback' and was
+  // 403'd under VT (webview-fetch-auth.test.ts). CSRF-gated in dispatchWrite.
+  auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
   handler: dispatchWrite,
 });
 

@@ -211,6 +211,22 @@ function projectBriefMember(m: unknown, titleCap: number, reasonCap: number): un
   };
 }
 
+/**
+ * What coord:orient puts under `inbox.recent`: a POINTER to `inbox.entries`, never the rows.
+ *
+ * EI-18667514339699744 found the two tools naming the same list differently (coord:inbox
+ * `entries`, coord:orient `recent`), so a reader on the wrong key saw a SILENT empty inbox.
+ * The first fix aliased both keys to one array — free in memory, but JSON serializes it
+ * twice: 26.1% of all coord:orient spill bytes (69 spills, 8h, 2026-10-12;
+ * oversized-tool-results-reduction-2026-10-12 P-006). The root fix is one name: the rows
+ * live under `entries`. This pointer keeps the misread LOUD rather than silent: `length`
+ * reports the real row count (so an "is there mail?" check says yes), and it is not
+ * iterable, so `for…of` / `.map` on the old key throws instead of yielding nothing.
+ */
+export function inboxRecentPointer(length: number): { movedTo: 'inbox.entries'; length: number } {
+  return { movedTo: 'inbox.entries', length };
+}
+
 /** Project one inbox entry to glyph-line essentials. */
 function projectInboxEntry(e: unknown, summaryCap: number): unknown {
   if (!e || typeof e !== 'object') return e;
@@ -604,6 +620,19 @@ interface OrientOmittedLeg {
   recoverVia: string;
 }
 
+function omittedLegDisclosure(omitted: readonly OrientOmittedLeg[]) {
+  return {
+    reason: 'floor-budget recovery; omissions follow shared orient priority',
+    omitted: omitted.map(({ leg, fields, recoverVia }) => ({
+      leg,
+      recoverVia,
+      // The usual field is the leg name; retain explicit multi-field groups only.
+      ...(fields.length === 1 && fields[0] === leg ? {} : { fields }),
+    })),
+    more: "payloadTier:'full' for the complete result",
+  };
+}
+
 const tightenedMarker = (rung: string, omitted?: readonly OrientOmittedLeg[]) => ({
   rung,
   budgetChars: SHAPER_BUDGET_CHARS,
@@ -628,21 +657,13 @@ function evictOptionalFloorLegs(projected: Record<string, unknown>): Record<stri
     if (fields.length === 0) continue;
     for (const field of fields) delete projected[field];
     omitted.push({ leg: leg.name, tier: leg.tier, fields, recoverVia: leg.recoverVia });
-    projected.optionalLegsOmitted = {
-      reason: 'floor-budget recovery; omissions follow shared orient priority',
-      omitted: [...omitted],
-      more: "payloadTier:'full' for the complete result",
-    };
+    projected.optionalLegsOmitted = omittedLegDisclosure(omitted);
     projected.shaperTightened = tightenedMarker('floor-optional-eviction', omitted);
     if (jsonLen(projected) <= SHAPER_BUDGET_CHARS) return projected;
   }
 
   if (omitted.length > 0) {
-    projected.optionalLegsOmitted = {
-      reason: 'floor-budget recovery; omissions follow shared orient priority',
-      omitted,
-      more: "payloadTier:'full' for the complete result",
-    };
+    projected.optionalLegsOmitted = omittedLegDisclosure(omitted);
   }
   return projected;
 }
@@ -825,7 +846,7 @@ function projectOrient(d: Record<string, unknown>, c: Caps, tier: TierName): Rec
     if (bodiesCut > 0) out.factsBodiesTruncated = { facts: bodiesCut, cap: c.factsBody, more: FACTS_MORE };
   }
 
-  const inbox = d.inbox as { summary?: unknown; recent?: unknown } | undefined;
+  const inbox = d.inbox as { summary?: unknown; entries?: unknown } | undefined;
   if (inbox && typeof inbox === 'object') {
     // fold #2 (compaction-fold-audit-2026-07-06): a post-compaction orient (recovery
     // block present ⇒ afterCompaction) carries a deliberately BEEFED inbox — a
@@ -840,18 +861,16 @@ function projectOrient(d: Record<string, unknown>, c: Caps, tier: TierName): Rec
     // un-beefed shape the fold was improving on.
     const inboxCap = c.inbox;
     const inboxSummaryCap = c.inboxSummary;
-    const recent = Array.isArray(inbox.recent) ? inbox.recent : [];
-    const projectedRecent = recent.slice(-inboxCap).map((e) => projectInboxEntry(e, inboxSummaryCap));
+    const rows = Array.isArray(inbox.entries) ? inbox.entries : [];
+    const projected = rows.slice(-inboxCap).map((e) => projectInboxEntry(e, inboxSummaryCap));
     out.inbox = {
       summary: inbox.summary,
-      recent: projectedRecent,
-      // EI-18667514339699744: keep `entries` aliased to the SAME projected/capped
-      // array as `recent` through tier-shaping too — reconstructing `inbox` here
-      // without it would silently re-drop the alias for trimmed/standard sessions
-      // (the common fleet-member case) even after coord:orient/coord:inbox added it.
-      entries: projectedRecent,
-      ...(recent.length > inboxCap
-        ? { recentTruncated: { total: recent.length, shown: inboxCap, more: 'coord:inbox' } }
+      // The rows travel ONCE, under coord:inbox's own key; `recent` is a pointer
+      // (see inboxRecentPointer). Never re-add a second copy of the rows here.
+      entries: projected,
+      recent: inboxRecentPointer(projected.length),
+      ...(rows.length > inboxCap
+        ? { recentTruncated: { total: rows.length, shown: inboxCap, more: 'coord:inbox' } }
         : {}),
     };
   }

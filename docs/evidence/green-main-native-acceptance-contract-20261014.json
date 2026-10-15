@@ -1,0 +1,253 @@
+{
+  "schemaVersion": 1,
+  "status": "draft-unapproved-unbound",
+  "workItemId": "WI-6554700010010682",
+  "serializationIssue": "EI-25948814148775899",
+  "planSlug": "green-main-cycle-time-2026-10-08",
+  "subjectPlanRevision": 129,
+  "rubricRef": "acceptance-green-main-cycle-time-2026-10-08",
+  "rubricRevision": 5,
+  "postgresPlanValidation": {
+    "componentKeys": ["recovery", "admission", "idle", "invariants", "alarm_filing"],
+    "syntaxAndColumnReferences": "valid",
+    "method": "Read-only EXPLAIN (FORMAT JSON) of each template against the live test_runs schema using explicit non-evidence sentinel parameters.",
+    "sourcePath": "docs/evidence/green-main-native-receipt-settlement-20261014.json",
+    "schemaRevisionBinding": "Still unbound; the ContinuityProbe writer resolves schemaRevision:live to its own exact registry revision before an approved amendment is stored.",
+    "operationalAcceptance": false,
+    "throughputExtension": {
+      "component": "throughput",
+      "syntaxAndColumnReferences": "valid",
+      "method": "Read-only EXPLAIN with non-evidence sentinel parameters; explicit env database target localhost5432",
+      "taskId": "0mv81908bbkxe2o1l08",
+      "sourcePath": "docs/evidence/green-main-r12-paired-preparation-20261014.json",
+      "parametersBound": false,
+      "operationalAcceptance": false
+    }
+  },
+  "reuses": [
+    "harness_shared.test_runs",
+    "executeOperationalRun",
+    "TestRunExecutionDetails",
+    "ContinuityProbe sql",
+    "rubric criterion check.all"
+  ],
+  "r11": {
+    "condition": "Promotion remains blocked after an admission until its previously-green affected tests have green results under the radius-specific safeguard with ADMISSION_RADIUS_CAP = 40.",
+    "falsifier": "A radius of at most ADMISSION_RADIUS_CAP = 40 files lacks its complete pre-publication related-test check at the built unpublished admission commit, a red-adding within-cap admission publishes, or a refusal lacks the test and leg; an over-cap radius runs partially or lacks the admission's skipped-over-cap record; the next red repair round lacks attribution of each newly red previously-green test to its window admissions naming test, leg, admission and basis; the queue leaves awaiting-fixer before that test re-measures green.",
+    "note": "Proposed atomic statement with the complete within-cap and over-cap observable branches retained in its falsifier; requires outside-lineage semantic approval, not merely detector acceptance."
+  },
+  "requiredTestLayers": [],
+  "operationalFramework": "operational",
+  "parameters": {
+    "installSlug": null,
+    "windowStartMs": null,
+    "windowEndMs": null,
+    "definitionCommit": null,
+    "runtimeUnits": null,
+    "runtimeFingerprint": null,
+    "sqlSchemaRevision": null
+  },
+  "throughputParameters": {
+    "definitionCommit": null,
+    "evidenceRoot": null,
+    "manifestRef": null,
+    "manifestFileSha256": null,
+    "manifestContentSha256": null,
+    "fileSetSha256": null,
+    "sourceRef": null,
+    "dependenciesRef": null,
+    "runtimeClosureRef": null,
+    "cohortPins": null,
+    "runtimeUnits": null,
+    "runtimeFingerprint": null,
+    "sqlSchemaRevision": null,
+    "D020PrerequisiteReceipt": null
+  },
+  "components": [
+    {
+      "key": "throughput",
+      "filePath": "packages/operator-core/lib/release/green-main-slo.ts",
+      "producer": "executeGreenMainThroughputComparison",
+      "status": "draft-unapproved-unbound",
+      "assertions": [
+        "immutable-full-gate-comparison-inputs",
+        "complete-original-abba-cohort-population",
+        "unchanged-contained-no-skip-paired-headroom-longest-first-cohorts",
+        "full-identical-file-set-at-most-half-baseline-wall"
+      ],
+      "testRunId": null,
+      "populationHash": null,
+      "sqlTemplate": "SELECT CASE WHEN count(*) = 1 THEN 1 ELSE 0 END AS accepted\nFROM harness_shared.test_runs r\nWHERE r.id = __TEST_RUN_ID__\nAND r.workspace_id = 'papercusp-workspace' AND r.harness_slug = 'papercusp'\nAND r.file_path = 'packages/operator-core/lib/release/green-main-slo.ts' AND r.framework = 'operational'\nAND r.source = 'local' AND r.run_group_id LIKE 'operational-native:%'\nAND r.status = 'pass' AND r.worktree_dirty = false AND r.commit_sha = '__DEFINITION_COMMIT__'\nAND r.finished_at IS NOT NULL AND r.finished_at >= r.started_at\nAND r.execution_details->>'schemaVersion' = '1'\nAND r.execution_details->>'worktreeDirty' = 'false'\nAND r.execution_details->>'commitSha' = r.commit_sha\nAND r.execution_details->>'workspaceId' = r.workspace_id\nAND r.execution_details->>'harnessSlug' = r.harness_slug\nAND r.execution_details->>'filePath' = r.file_path\nAND r.execution_details->>'runGroupId' = r.run_group_id\nAND r.execution_details->>'passed' = '4'\nAND r.execution_details->>'failed' = '0' AND r.execution_details->>'skipped' = '0'\nAND r.execution_details->>'collectionFailed' = 'false'\nAND coalesce(r.execution_details->>'passedCaseTitlesTruncated', 'false') = 'false'\nAND r.execution_details->'passedCaseTitles' @> '[\"immutable-full-gate-comparison-inputs\",\"complete-original-abba-cohort-population\",\"unchanged-contained-no-skip-paired-headroom-longest-first-cohorts\",\"full-identical-file-set-at-most-half-baseline-wall\"]'::jsonb\nAND jsonb_array_length(r.execution_details->'passedCaseTitles') = 4\nAND r.execution_details->'operational'->>'schemaVersion' = '1'\nAND r.execution_details->'operational'->'command' = '[\"executeGreenMainThroughputComparison\",\"papercusp-workspace\",\"papercusp\",\"__EVIDENCE_ROOT__\",\"__MANIFEST_REF__\",\"__MANIFEST_FILE_SHA256__\",\"__SOURCE_REF__\",\"__DEPENDENCIES_REF__\",\"__RUNTIME_CLOSURE_REF__\",\"__COHORT_0_REF__\",\"__COHORT_0_SHA256__\",\"__COHORT_1_REF__\",\"__COHORT_1_SHA256__\",\"__COHORT_2_REF__\",\"__COHORT_2_SHA256__\",\"__COHORT_3_REF__\",\"__COHORT_3_SHA256__\"]'::jsonb\nAND r.output_tail LIKE '%manifest_sha256=__MANIFEST_CONTENT_SHA256__%'\nAND r.output_tail LIKE '%file_set_sha256=__FILE_SET_SHA256__%'\nAND r.output_tail LIKE '%original_population_sha256=__POPULATION_SHA256__%'\nAND r.execution_details->'runtimeEnvironmentBefore'->>'schemaVersion' = '1'\nAND r.execution_details->'runtimeEnvironmentAfter'->>'schemaVersion' = '1'\nAND r.execution_details->'runtimeEnvironmentBefore'->>'fingerprint' = '__RUNTIME_FINGERPRINT__'\nAND r.execution_details->'runtimeEnvironmentAfter'->>'fingerprint' = '__RUNTIME_FINGERPRINT__'\nAND r.execution_details->'runtimeEnvironmentBefore'->'units' = '__RUNTIME_UNITS_JSON__'::jsonb\nAND r.execution_details->'runtimeEnvironmentAfter'->'units' = '__RUNTIME_UNITS_JSON__'::jsonb\nAND (r.execution_details->'runtimeEnvironmentBefore'->>'observedAt')::timestamptz <= r.started_at\nAND (r.execution_details->'runtimeEnvironmentAfter'->>'observedAt')::timestamptz >= r.finished_at",
+      "probeTemplate": {
+        "kind": "sql",
+        "schemaRevision": "__SQL_SCHEMA_REVISION__",
+        "maxRows": 1,
+        "expect": { "path": "$.rows[0].accepted", "op": "eq", "value": 1 }
+      },
+      "bindingRequirements": [
+        "Verify the actual D020 storage/mutex-write prerequisite before any new slow comparison.",
+        "Resolve the complete original gate-file selection and unchanged source/dependency/runtime closure; a planner task list or fixture declaration is insufficient.",
+        "Resolve all four NEW real ABBA cohorts and their original child/cgroup observations, acquired waits and headroom; local integration fixtures cannot bind these parameters.",
+        "Manifest file SHA256 pins serialized bytes; manifest content SHA256 pins canonical comparison input. Preserve both identities.",
+        "This SQL recognizes a native receipt only after independent original-population and scope validation; it does not authorize statistical semantics or policy promotion."
+      ]
+    },
+    {
+      "key": "recovery",
+      "filePath": "packages/operator-core/lib/release/green-main-slo.ts",
+      "producer": "executeGreenMainRecoveryWindow",
+      "assertions": [
+        "bounded-recovery-window",
+        "complete-recovery-population",
+        "qualified-recovery-verdicts",
+        "recovery-left-boundary-known",
+        "all-red-episodes-closed",
+        "nonempty-recovery-sample",
+        "recovery-median-at-most-4h",
+        "recovery-p90-at-most-8h"
+      ],
+      "testRunId": null,
+      "populationHash": null,
+      "sqlTemplate": "SELECT CASE WHEN count(*) = 1 THEN 1 ELSE 0 END AS accepted\nFROM harness_shared.test_runs r\nWHERE r.id = __TEST_RUN_ID__\nAND r.workspace_id = 'papercusp-workspace' AND r.harness_slug = 'papercusp'\nAND r.file_path = 'packages/operator-core/lib/release/green-main-slo.ts' AND r.framework = 'operational'\nAND r.source = 'local' AND r.run_group_id LIKE 'operational-native:%'\nAND r.status = 'pass' AND r.worktree_dirty = false AND r.commit_sha = '__DEFINITION_COMMIT__'\nAND r.finished_at IS NOT NULL AND r.finished_at >= r.started_at\nAND r.execution_details->>'schemaVersion' = '1'\nAND r.execution_details->>'worktreeDirty' = 'false'\nAND r.execution_details->>'commitSha' = r.commit_sha\nAND r.execution_details->>'workspaceId' = r.workspace_id\nAND r.execution_details->>'harnessSlug' = r.harness_slug\nAND r.execution_details->>'filePath' = r.file_path\nAND r.execution_details->>'runGroupId' = r.run_group_id\nAND r.execution_details->>'passed' = '8'\nAND r.execution_details->>'failed' = '0' AND r.execution_details->>'skipped' = '0'\nAND r.execution_details->>'collectionFailed' = 'false'\nAND coalesce(r.execution_details->>'passedCaseTitlesTruncated', 'false') = 'false'\nAND r.execution_details->'passedCaseTitles' @> '[\"bounded-recovery-window\",\"complete-recovery-population\",\"qualified-recovery-verdicts\",\"recovery-left-boundary-known\",\"all-red-episodes-closed\",\"nonempty-recovery-sample\",\"recovery-median-at-most-4h\",\"recovery-p90-at-most-8h\"]'::jsonb\nAND jsonb_array_length(r.execution_details->'passedCaseTitles') = 8\nAND r.execution_details->'operational'->>'schemaVersion' = '1'\nAND r.execution_details->'operational'->'command' =\n '[\"executeGreenMainRecoveryWindow\",\"papercusp-workspace\",\"__INSTALL_SLUG__\",\"__WINDOW_START_MS__\",\"__WINDOW_END_MS__\"]'::jsonb\nAND r.output_tail LIKE '%original_population_sha256=__POPULATION_SHA256__%'\nAND r.execution_details->'runtimeEnvironmentBefore'->>'schemaVersion' = '1'\nAND r.execution_details->'runtimeEnvironmentAfter'->>'schemaVersion' = '1'\nAND r.execution_details->'runtimeEnvironmentBefore'->>'fingerprint' = '__RUNTIME_FINGERPRINT__'\nAND r.execution_details->'runtimeEnvironmentAfter'->>'fingerprint' = '__RUNTIME_FINGERPRINT__'\nAND r.execution_details->'runtimeEnvironmentBefore'->'units' @> '__RUNTIME_UNITS_JSON__'::jsonb\nAND r.execution_details->'runtimeEnvironmentAfter'->'units' @> '__RUNTIME_UNITS_JSON__'::jsonb\nAND jsonb_array_length(r.execution_details->'runtimeEnvironmentBefore'->'units') = __RUNTIME_UNIT_COUNT__\nAND jsonb_array_length(r.execution_details->'runtimeEnvironmentAfter'->'units') = __RUNTIME_UNIT_COUNT__\nAND (r.execution_details->'runtimeEnvironmentBefore'->>'observedAt')::timestamptz <= r.started_at\nAND (r.execution_details->'runtimeEnvironmentAfter'->>'observedAt')::timestamptz >= r.finished_at",
+      "probeTemplate": {
+        "kind": "sql",
+        "schemaRevision": "__SQL_SCHEMA_REVISION__",
+        "maxRows": 1,
+        "expect": {
+          "path": "$.rows[0].accepted",
+          "op": "eq",
+          "value": 1
+        }
+      }
+    },
+    {
+      "key": "admission",
+      "filePath": "packages/operator-core/lib/release/green-main-slo.ts",
+      "producer": "executeGreenMainAdmissionWindow",
+      "assertions": [
+        "bounded-admission-window",
+        "complete-admission-snapshot-population",
+        "original-complete-admission-chains",
+        "admission-lifetimes-cover-window-end",
+        "nonempty-admission-round-population",
+        "admission-rounds-at-most-45min",
+        "all-admission-rounds-have-verdicts",
+        "at-least-five-consecutive-admission-rounds",
+        "admission-round-median-at-most-45min"
+      ],
+      "testRunId": null,
+      "populationHash": null,
+      "sqlTemplate": "SELECT CASE WHEN count(*) = 1 THEN 1 ELSE 0 END AS accepted\nFROM harness_shared.test_runs r\nWHERE r.id = __TEST_RUN_ID__\nAND r.workspace_id = 'papercusp-workspace' AND r.harness_slug = 'papercusp'\nAND r.file_path = 'packages/operator-core/lib/release/green-main-slo.ts' AND r.framework = 'operational'\nAND r.source = 'local' AND r.run_group_id LIKE 'operational-native:%'\nAND r.status = 'pass' AND r.worktree_dirty = false AND r.commit_sha = '__DEFINITION_COMMIT__'\nAND r.finished_at IS NOT NULL AND r.finished_at >= r.started_at\nAND r.execution_details->>'schemaVersion' = '1'\nAND r.execution_details->>'worktreeDirty' = 'false'\nAND r.execution_details->>'commitSha' = r.commit_sha\nAND r.execution_details->>'workspaceId' = r.workspace_id\nAND r.execution_details->>'harnessSlug' = r.harness_slug\nAND r.execution_details->>'filePath' = r.file_path\nAND r.execution_details->>'runGroupId' = r.run_group_id\nAND r.execution_details->>'passed' = '9'\nAND r.execution_details->>'failed' = '0' AND r.execution_details->>'skipped' = '0'\nAND r.execution_details->>'collectionFailed' = 'false'\nAND coalesce(r.execution_details->>'passedCaseTitlesTruncated', 'false') = 'false'\nAND r.execution_details->'passedCaseTitles' @> '[\"bounded-admission-window\",\"complete-admission-snapshot-population\",\"original-complete-admission-chains\",\"admission-lifetimes-cover-window-end\",\"nonempty-admission-round-population\",\"admission-rounds-at-most-45min\",\"all-admission-rounds-have-verdicts\",\"at-least-five-consecutive-admission-rounds\",\"admission-round-median-at-most-45min\"]'::jsonb\nAND jsonb_array_length(r.execution_details->'passedCaseTitles') = 9\nAND r.execution_details->'operational'->>'schemaVersion' = '1'\nAND r.execution_details->'operational'->'command' =\n '[\"executeGreenMainAdmissionWindow\",\"papercusp-workspace\",\"__INSTALL_SLUG__\",\"__WINDOW_START_MS__\",\"__WINDOW_END_MS__\"]'::jsonb\nAND r.output_tail LIKE '%original_population_sha256=__POPULATION_SHA256__%'\nAND r.execution_details->'runtimeEnvironmentBefore'->>'schemaVersion' = '1'\nAND r.execution_details->'runtimeEnvironmentAfter'->>'schemaVersion' = '1'\nAND r.execution_details->'runtimeEnvironmentBefore'->>'fingerprint' = '__RUNTIME_FINGERPRINT__'\nAND r.execution_details->'runtimeEnvironmentAfter'->>'fingerprint' = '__RUNTIME_FINGERPRINT__'\nAND r.execution_details->'runtimeEnvironmentBefore'->'units' @> '__RUNTIME_UNITS_JSON__'::jsonb\nAND r.execution_details->'runtimeEnvironmentAfter'->'units' @> '__RUNTIME_UNITS_JSON__'::jsonb\nAND jsonb_array_length(r.execution_details->'runtimeEnvironmentBefore'->'units') = __RUNTIME_UNIT_COUNT__\nAND jsonb_array_length(r.execution_details->'runtimeEnvironmentAfter'->'units') = __RUNTIME_UNIT_COUNT__\nAND (r.execution_details->'runtimeEnvironmentBefore'->>'observedAt')::timestamptz <= r.started_at\nAND (r.execution_details->'runtimeEnvironmentAfter'->>'observedAt')::timestamptz >= r.finished_at",
+      "probeTemplate": {
+        "kind": "sql",
+        "schemaRevision": "__SQL_SCHEMA_REVISION__",
+        "maxRows": 1,
+        "expect": {
+          "path": "$.rows[0].accepted",
+          "op": "eq",
+          "value": 1
+        }
+      }
+    },
+    {
+      "key": "idle",
+      "filePath": "packages/operator-core/lib/release/idle-repair-queue-actuator.ts",
+      "producer": "executeIdleQueueActuatorWindow",
+      "assertions": [
+        "bounded-idle-actuator-window",
+        "complete-idle-actuator-population",
+        "original-idle-actuator-receipts",
+        "continuous-idle-actuator-observations",
+        "nonempty-idle-actuator-episodes",
+        "idle-actuator-action-at-most-60min"
+      ],
+      "testRunId": null,
+      "populationHash": null,
+      "sqlTemplate": "SELECT CASE WHEN count(*) = 1 THEN 1 ELSE 0 END AS accepted\nFROM harness_shared.test_runs r\nWHERE r.id = __TEST_RUN_ID__\nAND r.workspace_id = 'papercusp-workspace' AND r.harness_slug = 'papercusp'\nAND r.file_path = 'packages/operator-core/lib/release/idle-repair-queue-actuator.ts' AND r.framework = 'operational'\nAND r.source = 'local' AND r.run_group_id LIKE 'operational-native:%'\nAND r.status = 'pass' AND r.worktree_dirty = false AND r.commit_sha = '__DEFINITION_COMMIT__'\nAND r.finished_at IS NOT NULL AND r.finished_at >= r.started_at\nAND r.execution_details->>'schemaVersion' = '1'\nAND r.execution_details->>'worktreeDirty' = 'false'\nAND r.execution_details->>'commitSha' = r.commit_sha\nAND r.execution_details->>'workspaceId' = r.workspace_id\nAND r.execution_details->>'harnessSlug' = r.harness_slug\nAND r.execution_details->>'filePath' = r.file_path\nAND r.execution_details->>'runGroupId' = r.run_group_id\nAND r.execution_details->>'passed' = '6'\nAND r.execution_details->>'failed' = '0' AND r.execution_details->>'skipped' = '0'\nAND r.execution_details->>'collectionFailed' = 'false'\nAND coalesce(r.execution_details->>'passedCaseTitlesTruncated', 'false') = 'false'\nAND r.execution_details->'passedCaseTitles' @> '[\"bounded-idle-actuator-window\",\"complete-idle-actuator-population\",\"original-idle-actuator-receipts\",\"continuous-idle-actuator-observations\",\"nonempty-idle-actuator-episodes\",\"idle-actuator-action-at-most-60min\"]'::jsonb\nAND jsonb_array_length(r.execution_details->'passedCaseTitles') = 6\nAND r.execution_details->'operational'->>'schemaVersion' = '1'\nAND r.execution_details->'operational'->'command' =\n '[\"executeIdleQueueActuatorWindow\",\"papercusp-workspace\",\"__INSTALL_SLUG__\",\"__WINDOW_START_MS__\",\"__WINDOW_END_MS__\"]'::jsonb\nAND r.output_tail LIKE '%original_population_sha256=__POPULATION_SHA256__%'\nAND r.execution_details->'runtimeEnvironmentBefore'->>'schemaVersion' = '1'\nAND r.execution_details->'runtimeEnvironmentAfter'->>'schemaVersion' = '1'\nAND r.execution_details->'runtimeEnvironmentBefore'->>'fingerprint' = '__RUNTIME_FINGERPRINT__'\nAND r.execution_details->'runtimeEnvironmentAfter'->>'fingerprint' = '__RUNTIME_FINGERPRINT__'\nAND r.execution_details->'runtimeEnvironmentBefore'->'units' @> '__RUNTIME_UNITS_JSON__'::jsonb\nAND r.execution_details->'runtimeEnvironmentAfter'->'units' @> '__RUNTIME_UNITS_JSON__'::jsonb\nAND jsonb_array_length(r.execution_details->'runtimeEnvironmentBefore'->'units') = __RUNTIME_UNIT_COUNT__\nAND jsonb_array_length(r.execution_details->'runtimeEnvironmentAfter'->'units') = __RUNTIME_UNIT_COUNT__\nAND (r.execution_details->'runtimeEnvironmentBefore'->>'observedAt')::timestamptz <= r.started_at\nAND (r.execution_details->'runtimeEnvironmentAfter'->>'observedAt')::timestamptz >= r.finished_at",
+      "probeTemplate": {
+        "kind": "sql",
+        "schemaRevision": "__SQL_SCHEMA_REVISION__",
+        "maxRows": 1,
+        "expect": {
+          "path": "$.rows[0].accepted",
+          "op": "eq",
+          "value": 1
+        }
+      }
+    },
+    {
+      "key": "invariants",
+      "filePath": "packages/operator-core/lib/release/gate-live-invariants.ts",
+      "producer": "executeGateInvariantWindow",
+      "assertions": [
+        "seven-day-invariant-window",
+        "complete-invariant-population",
+        "exact-seven-invariant-identities",
+        "pass-only-invariant-history",
+        "hourly-invariant-history-coverage"
+      ],
+      "testRunId": null,
+      "populationHash": null,
+      "sqlTemplate": "SELECT CASE WHEN count(*) = 1 THEN 1 ELSE 0 END AS accepted\nFROM harness_shared.test_runs r\nWHERE r.id = __TEST_RUN_ID__\nAND r.workspace_id = 'papercusp-workspace' AND r.harness_slug = 'papercusp'\nAND r.file_path = 'packages/operator-core/lib/release/gate-live-invariants.ts' AND r.framework = 'operational'\nAND r.source = 'local' AND r.run_group_id LIKE 'operational-native:%'\nAND r.status = 'pass' AND r.worktree_dirty = false AND r.commit_sha = '__DEFINITION_COMMIT__'\nAND r.finished_at IS NOT NULL AND r.finished_at >= r.started_at\nAND r.execution_details->>'schemaVersion' = '1'\nAND r.execution_details->>'worktreeDirty' = 'false'\nAND r.execution_details->>'commitSha' = r.commit_sha\nAND r.execution_details->>'workspaceId' = r.workspace_id\nAND r.execution_details->>'harnessSlug' = r.harness_slug\nAND r.execution_details->>'filePath' = r.file_path\nAND r.execution_details->>'runGroupId' = r.run_group_id\nAND r.execution_details->>'passed' = '5'\nAND r.execution_details->>'failed' = '0' AND r.execution_details->>'skipped' = '0'\nAND r.execution_details->>'collectionFailed' = 'false'\nAND coalesce(r.execution_details->>'passedCaseTitlesTruncated', 'false') = 'false'\nAND r.execution_details->'passedCaseTitles' @> '[\"seven-day-invariant-window\",\"complete-invariant-population\",\"exact-seven-invariant-identities\",\"pass-only-invariant-history\",\"hourly-invariant-history-coverage\"]'::jsonb\nAND jsonb_array_length(r.execution_details->'passedCaseTitles') = 5\nAND r.execution_details->'operational'->>'schemaVersion' = '1'\nAND r.execution_details->'operational'->'command' =\n '[\"executeGateInvariantWindow\",\"papercusp-workspace\",\"__INSTALL_SLUG__\",\"__WINDOW_START_MS__\",\"__WINDOW_END_MS__\"]'::jsonb\nAND r.output_tail LIKE '%original_population_sha256=__POPULATION_SHA256__%'\nAND r.execution_details->'runtimeEnvironmentBefore'->>'schemaVersion' = '1'\nAND r.execution_details->'runtimeEnvironmentAfter'->>'schemaVersion' = '1'\nAND r.execution_details->'runtimeEnvironmentBefore'->>'fingerprint' = '__RUNTIME_FINGERPRINT__'\nAND r.execution_details->'runtimeEnvironmentAfter'->>'fingerprint' = '__RUNTIME_FINGERPRINT__'\nAND r.execution_details->'runtimeEnvironmentBefore'->'units' @> '__RUNTIME_UNITS_JSON__'::jsonb\nAND r.execution_details->'runtimeEnvironmentAfter'->'units' @> '__RUNTIME_UNITS_JSON__'::jsonb\nAND jsonb_array_length(r.execution_details->'runtimeEnvironmentBefore'->'units') = __RUNTIME_UNIT_COUNT__\nAND jsonb_array_length(r.execution_details->'runtimeEnvironmentAfter'->'units') = __RUNTIME_UNIT_COUNT__\nAND (r.execution_details->'runtimeEnvironmentBefore'->>'observedAt')::timestamptz <= r.started_at\nAND (r.execution_details->'runtimeEnvironmentAfter'->>'observedAt')::timestamptz >= r.finished_at",
+      "probeTemplate": {
+        "kind": "sql",
+        "schemaRevision": "__SQL_SCHEMA_REVISION__",
+        "maxRows": 1,
+        "expect": {
+          "path": "$.rows[0].accepted",
+          "op": "eq",
+          "value": 1
+        }
+      }
+    },
+    {
+      "key": "alarm_filing",
+      "filePath": "packages/operator-core/lib/release/gate-live-invariants.ts",
+      "producer": "executeGateInvariantAlarmWindow",
+      "separateExerciseWindow": true,
+      "assertions": [
+        "bounded-invariant-alarm-window",
+        "complete-invariant-alarm-population",
+        "original-invariant-breach-filing-receipts",
+        "nonempty-invariant-breach-episodes",
+        "invariant-breach-filings-within-one-tick"
+      ],
+      "testRunId": null,
+      "populationHash": null,
+      "sqlTemplate": "SELECT CASE WHEN count(*) = 1 THEN 1 ELSE 0 END AS accepted\nFROM harness_shared.test_runs r\nWHERE r.id = __TEST_RUN_ID__\nAND r.workspace_id = 'papercusp-workspace' AND r.harness_slug = 'papercusp'\nAND r.file_path = 'packages/operator-core/lib/release/gate-live-invariants.ts' AND r.framework = 'operational'\nAND r.source = 'local' AND r.run_group_id LIKE 'operational-native:%'\nAND r.status = 'pass' AND r.worktree_dirty = false AND r.commit_sha = '__DEFINITION_COMMIT__'\nAND r.finished_at IS NOT NULL AND r.finished_at >= r.started_at\nAND r.execution_details->>'schemaVersion' = '1'\nAND r.execution_details->>'worktreeDirty' = 'false'\nAND r.execution_details->>'commitSha' = r.commit_sha\nAND r.execution_details->>'workspaceId' = r.workspace_id\nAND r.execution_details->>'harnessSlug' = r.harness_slug\nAND r.execution_details->>'filePath' = r.file_path\nAND r.execution_details->>'runGroupId' = r.run_group_id\nAND r.execution_details->>'passed' = '5'\nAND r.execution_details->>'failed' = '0' AND r.execution_details->>'skipped' = '0'\nAND r.execution_details->>'collectionFailed' = 'false'\nAND coalesce(r.execution_details->>'passedCaseTitlesTruncated', 'false') = 'false'\nAND r.execution_details->'passedCaseTitles' @> '[\"bounded-invariant-alarm-window\",\"complete-invariant-alarm-population\",\"original-invariant-breach-filing-receipts\",\"nonempty-invariant-breach-episodes\",\"invariant-breach-filings-within-one-tick\"]'::jsonb\nAND jsonb_array_length(r.execution_details->'passedCaseTitles') = 5\nAND r.execution_details->'operational'->>'schemaVersion' = '1'\nAND r.execution_details->'operational'->'command' =\n '[\"executeGateInvariantAlarmWindow\",\"papercusp-workspace\",\"__INSTALL_SLUG__\",\"__WINDOW_START_MS__\",\"__WINDOW_END_MS__\"]'::jsonb\nAND r.output_tail LIKE '%original_population_sha256=__POPULATION_SHA256__%'\nAND r.execution_details->'runtimeEnvironmentBefore'->>'schemaVersion' = '1'\nAND r.execution_details->'runtimeEnvironmentAfter'->>'schemaVersion' = '1'\nAND r.execution_details->'runtimeEnvironmentBefore'->>'fingerprint' = '__RUNTIME_FINGERPRINT__'\nAND r.execution_details->'runtimeEnvironmentAfter'->>'fingerprint' = '__RUNTIME_FINGERPRINT__'\nAND r.execution_details->'runtimeEnvironmentBefore'->'units' @> '__RUNTIME_UNITS_JSON__'::jsonb\nAND r.execution_details->'runtimeEnvironmentAfter'->'units' @> '__RUNTIME_UNITS_JSON__'::jsonb\nAND jsonb_array_length(r.execution_details->'runtimeEnvironmentBefore'->'units') = __RUNTIME_UNIT_COUNT__\nAND jsonb_array_length(r.execution_details->'runtimeEnvironmentAfter'->'units') = __RUNTIME_UNIT_COUNT__\nAND (r.execution_details->'runtimeEnvironmentBefore'->>'observedAt')::timestamptz <= r.started_at\nAND (r.execution_details->'runtimeEnvironmentAfter'->>'observedAt')::timestamptz >= r.finished_at",
+      "probeTemplate": {
+        "kind": "sql",
+        "schemaRevision": "__SQL_SCHEMA_REVISION__",
+        "maxRows": 1,
+        "expect": {
+          "path": "$.rows[0].accepted",
+          "op": "eq",
+          "value": 1
+        }
+      }
+    }
+  ],
+  "bindingRules": [
+    "No template is executable until each parameter is bound to authoritative evidence and the exact SQL schema revision is resolved.",
+    "Use exact original testRunId; no latest-pass search or archived caller-authored substitution.",
+    "Primary Goal components must share original workspace/install/window/source/runtime identity.",
+    "Re-read each original source population and compare its pinned hash; a receipt hash alone does not prove completeness.",
+    "Exact operational.command binds producer/workspace/install/window; historical receipts missing it remain unproven and are never restamped.",
+    "Actual seven-day pass-only history is mandatory; alarm filing uses a separate genuine exercise window.",
+    "Alarm first-observed-breach filing does not establish malfunction onset, human delivery or pickup."
+  ],
+  "openReviewQuestions": [
+    "Median as typical and nearest-rank p90 require an explicit ruling.",
+    "Strict idle action by 60min remains the Goal; no added tick grace.",
+    "R11 complete branch preservation requires semantic review.",
+    "Bind exact serving runtime units from the executable current-build route and original producer context."
+  ],
+  "remaining": [
+    "R12 full identical gate-file-set producer and immutable full paired inputs",
+    "D020 storage prerequisite receipt (owner confirmed absent 2026-10-14T10:03Z)",
+    "P028 actual pickup and cadence",
+    "Alarm malfunction-onset and delivery evidence",
+    "One complete outside-lineage amendment review; no partial approval request",
+    "Actual P018 seven-day passes and final shipped D045 requests/P031 historical cause"
+  ]
+}

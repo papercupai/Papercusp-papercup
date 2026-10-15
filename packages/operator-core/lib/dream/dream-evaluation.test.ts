@@ -5,6 +5,7 @@ import { DREAM_BENCHMARK_CASES } from '../../test/dream-benchmark-cases';
 import { DREAM_BENCHMARK_LABELS } from '../../test/dream-benchmark-labels';
 import independentReview from '../../test/dream-benchmark-review.fixture.json';
 import { capabilityHash } from './capability-contracts';
+import { findBoxIdentityPaths, serializeIdentitySafeJson } from '../../../../scripts/lib/identity-leak-patterns.mjs';
 import {
   DREAM_EVALUATION_ARMS,
   DREAM_EVALUATION_COSTS,
@@ -16,7 +17,9 @@ import {
   requireDreamPilotProtocol,
   summarizeDreamEvaluationCosts,
   summarizeDreamComparison,
+  summarizeDreamGraphComparison,
   dreamComparisonInputHash,
+  applyDreamGraphTreatment,
   type DreamEvaluationCost,
 } from './dream-evaluation';
 
@@ -47,6 +50,77 @@ const costs = (arm: DreamEvaluationCost['arm']): DreamEvaluationCost => ({
 });
 
 describe('frozen Dream evaluation protocol — P017', () => {
+  it('publishes study diagnostics without machine identities while preserving private evidence and measurements', () => {
+    const home = ['','home','study-machine-user','source','worker.ts'].join('/');
+    const original = { protocolPin: 'a'.repeat(64), blindHash: 'b'.repeat(64),
+      attempts: 4, accountedUsd: 0.949124, downstreamTrialsExecuted: 0,
+      diagnostic: JSON.stringify({ path: home, error: `Worker failed at ${home}` }) };
+    const before = JSON.stringify(original);
+    expect(findBoxIdentityPaths(before).length).toBeGreaterThan(0);
+    const encoded = serializeIdentitySafeJson(original, []);
+    const published = JSON.parse(encoded);
+    expect(findBoxIdentityPaths(encoded)).toEqual([]);
+    expect(published).toMatchObject({ protocolPin: original.protocolPin, blindHash: original.blindHash,
+      attempts: 4, accountedUsd: 0.949124, downstreamTrialsExecuted: 0 });
+    expect(JSON.stringify(original)).toBe(before);
+    expect(JSON.parse(published.diagnostic).path).not.toBe(home);
+  });
+  it('reconstructs the spent graph study without promoting unknown novelty or reopening downstream trials', () => {
+    const read = (name: string) => JSON.parse(readFileSync(new URL(`./study/${name}`, import.meta.url), 'utf8'));
+    const comparison = read('native-graph-protocol.json');
+    const blind = read('native-graph-calibration-blind-v2.json');
+    const frozenReview = read('native-graph-calibration-review-2026-10-14.json');
+    const unblinded = read('native-graph-calibration-unblinded-review-2026-10-14.json');
+    const saved = read('native-graph-evidence-summary.json');
+    expect(findBoxIdentityPaths(JSON.stringify(saved))).toEqual([]);
+    const blindHash = capabilityHash(JSON.stringify(blind));
+    expect(dreamEvaluationProtocolHash(comparison.protocol)).toBe(comparison.pin);
+    expect([frozenReview.blindHash, unblinded.blindHash, saved.blindHash]).toEqual([blindHash, blindHash, blindHash]);
+    expect(unblinded.blindPostId).toBe(frozenReview.posts[0].id);
+    expect(unblinded.posts[0].id).toBe(1179964);
+    expect(unblinded.posts[0].body).toContain('frozen labels UNCHANGED: both REJECT as frozen');
+    expect(unblinded.cases.map((row: { caseId: string }) => row.caseId).sort()).toEqual(
+      blind.cases.map((row: { caseId: string }) => row.caseId).sort());
+    const independent = { ref: 'native-graph-calibration-unblinded-review-2026-10-14.json',
+      labels: frozenReview.cases.map((label: { caseId: string }) => ({ ...label,
+        ...unblinded.cases.find((row: { caseId: string }) => row.caseId === label.caseId) })) };
+    const rebuilt = summarizeDreamGraphComparison({ protocol: comparison.protocol, attempts: saved.dreams, independent });
+    expect(rebuilt.treatments).toEqual(saved.treatments);
+    expect(rebuilt.matchedPairs).toEqual(saved.matchedPairs);
+    expect(rebuilt.completeAttempts).toBe(true);
+    expect(rebuilt.commonInput).toBe(true);
+    expect(rebuilt.verdict).toBe('inconclusive');
+    expect(rebuilt.treatments.map(row => row.attempts)).toEqual([2, 2]);
+    expect(rebuilt.treatments.map(row => row.qualifiedFamilies)).toEqual([0, 0]);
+    expect(rebuilt.treatments[1]).toMatchObject({ refinementCandidates: 1, noveltyUnknownCandidates: 1,
+      duplicateRate: null, refinementRate: null });
+    expect(saved.downstreamDisposition).toBe('not-applicable-no-qualified-candidates');
+    expect(saved.downstreamTrialsExecuted).toBe(0);
+    expect(saved.verifiedBeneficialExperiments).toBe(0);
+    expect(saved.usefulOutcomesPerDollar).toBeNull();
+  });
+  it('NATIVE-GRAPH-COMPARISON: pins treatments, assignment count, sampler and independent executed outcomes without changing legacy pins', () => {
+    const original = frozen();
+    const common = { manifestRevision: 'current-v2', scope: { workspaceId: 'ws', potSlug: 'pot' },
+      problemContext: { mode: 'open-exploration' as const, evidence: [], note: 'Frozen open exploration.' } };
+    const comparison = { ...common, inputHash: dreamComparisonInputHash({ ...common, sourceSnapshot: current.sourceSnapshot }),
+      graphAblation: { treatments: ['graph', 'control'] as ['graph', 'control'], populationIds: ['a', 'b'],
+        samplerHash: capabilityHash('{}'), attemptsPerTreatment: 2, usdPerTreatment: 2,
+        outcomeAssessment: 'blinded-independent-executed-benefit' as const } };
+    const bound = freezeDreamEvaluationProtocol({ ...original.protocol, comparison });
+    const now = { ...current, ...common, samplerHash: comparison.graphAblation.samplerHash };
+    for (const graphTreatment of ['graph', 'control'] as const) {
+      const assigned = { ...bound, arm: 'structured-pair' as const, graphTreatment, matchedPairIndex: 0 };
+      expect(requireDreamPilotProtocol(assigned, now)).toEqual(bound.protocol);
+      expect(() => requireDreamPilotProtocol(assigned, { ...now, samplerHash: 'b'.repeat(64) })).toThrow('sampler changed');
+      expect(() => requireDreamPilotProtocol({ ...assigned, matchedPairIndex: 2 }, now)).toThrow('bounded paired treatment');
+    }
+    expect(() => requireDreamPilotProtocol({ ...bound, arm: 'structured-pair' }, now)).toThrow('paired treatment');
+    expect(() => requireDreamPilotProtocol({ ...original, arm: 'structured-pair', graphTreatment: 'control' }, current)).toThrow('preregistered');
+    expect(dreamEvaluationProtocolHash(original.protocol)).toBe(original.pin);
+    expect(original.protocol.comparison).toBeUndefined();
+    expect(applyDreamGraphTreatment({ fingerprint: 'unused' } as never, null)).toEqual({ fingerprint: 'unused' });
+  });
   it('DREAM-COMPARABLE: binds current catalogue and attributed problem input without altering old protocol pins', () => {
     const original = frozen();
     const scope = { workspaceId: 'ws', potSlug: 'pot' };
@@ -65,6 +139,45 @@ describe('frozen Dream evaluation protocol — P017', () => {
       problemContext: { ...common.problemContext, evidence: [{ ...evidence, text: 'changed without a matching hash' }] } })).toThrow('invalid or foreign');
     expect(dreamEvaluationProtocolHash(original.protocol)).toBe(original.pin);
     expect(original.protocol.comparison).toBeUndefined();
+  });
+  it('keeps failed graph trials, missing judgments and unknown cost out of benefit claims', () => {
+    const original = frozen();
+    const common = { manifestRevision: 'v2', scope: { workspaceId: 'ws', potSlug: 'pot' },
+      problemContext: { mode: 'open-exploration' as const, evidence: [], note: 'Frozen.' } };
+    const protocol = freezeDreamEvaluationProtocol({ ...original.protocol,
+      comparison: { ...common, inputHash: dreamComparisonInputHash({ ...common, sourceSnapshot: current.sourceSnapshot }),
+        graphAblation: { treatments: ['graph', 'control'], populationIds: ['a', 'b'], samplerHash: 'b'.repeat(64),
+          attemptsPerTreatment: 2, usdPerTreatment: 2, outcomeAssessment: 'blinded-independent-executed-benefit' } } }).protocol;
+    const attempts = (['graph', 'control'] as const).flatMap(treatment => [0, 1].map(pairIndex => ({
+      runId: treatment + pairIndex, treatment, pairIndex, sourceSnapshot: protocol.sourceSnapshot,
+      inputHash: protocol.comparison!.inputHash, unitIds: ['a', 'b'],
+      candidateCaseId: treatment === 'control' ? 'case' + pairIndex : null,
+      accountedUsd: treatment === 'control' ? 0.4 : 0, unknownCostCalls: 0,
+    })));
+    const missing = summarizeDreamGraphComparison({ protocol, attempts, independent: null });
+    expect(missing).toMatchObject({ completeAttempts: true, commonInput: true, fullyAttributedCost: false,
+      usefulOutcomesPerDollar: null, verdict: 'inconclusive' });
+    expect(missing.treatments[0]).toMatchObject({ attempts: 2, candidateCount: 0, noCandidateAttempts: 2,
+      qualifiedFamilies: null, duplicateRate: null });
+    expect(missing.treatments[1]).toMatchObject({ missingLabels: 2, qualifiedFamilies: null, duplicateRate: null });
+    const independent = { ref: 'frozen-review', labels: [0, 1].map(i => ({ caseId: 'case' + i,
+      verdict: 'reject' as const, family: 'same-family', novelty: 'refinement' as const, qualified: false })) };
+    const assessed = summarizeDreamGraphComparison({ protocol, attempts, independent });
+    expect(assessed.treatments[1]).toMatchObject({ qualifiedFamilies: 0, refinementRate: 1, accountedUsd: 0.8 });
+    expect(assessed.treatments[0]!.duplicateRate).toBeNull();
+    const unknownNovelty = summarizeDreamGraphComparison({ protocol, attempts, independent: {
+      ...independent, labels: independent.labels.map(label => ({ ...label, novelty: 'unknown', qualified: null })) } });
+    expect(unknownNovelty.treatments[1]).toMatchObject({ duplicateRate: null, refinementRate: null,
+      noveltyUnknownCandidates: 2, qualifiedFamilies: null });
+    expect(assessed.matchedPairs.every(pair => pair.sameUnits)).toBe(true);
+    expect(() => summarizeDreamGraphComparison({ protocol, attempts: [...attempts, attempts[0]!], independent })).toThrow('identity');
+    expect(() => summarizeDreamGraphComparison({ protocol, attempts, independent: { ref: 'bad',
+      labels: [{ ...independent.labels[0]!, qualified: true }] } })).toThrow('assessment');
+    const unknown = attempts.map((row, i) => i ? row : { ...row, inputHash: null, unknownCostCalls: 1, unitIds: ['other', 'b'] });
+    const incomplete = summarizeDreamGraphComparison({ protocol, attempts: unknown.slice(0, 3), independent: null });
+    expect(incomplete).toMatchObject({ commonInput: false, completeAttempts: false, usefulOutcomesPerDollar: null });
+    expect(incomplete.treatments[0]!.unknownCostCalls).toBe(1);
+    expect(incomplete.matchedPairs[0]!.sameUnits).toBe(false);
   });
   it('DREAM-COMPARABLE: reports missing human calibration, input/spend mismatch and unknown effort honestly', () => {
     const inputHash = 'c'.repeat(64);

@@ -7,6 +7,15 @@
  * tool self-registers via defineTool on import).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+// WI-1074216/P-006: permanent wrong store adapters prove the literal launch
+// oracles fail without mutating production code. The lost-slot suppression
+// test bypasses both adapters and calibrates each focused control run.
+const idempotenceControls = ['initial-cas-loss', 'partial-exact-retry'] as const;
+const idempotenceControl = process.env.PAPERCUSP_FLEET_IDEMPOTENCE_CONTROL;
+if (idempotenceControl && !idempotenceControls.some((value) => value === idempotenceControl)) {
+  throw new Error(`Unknown permanent fleet idempotence control: ${idempotenceControl}`);
+}
 import type { SpecPoolEffect, CollapseGuardVerdict } from '../../../scheduler/spec-pool-preview';
 import { admissionPendingExplanation } from '../../../work-items-admission';
 
@@ -3188,6 +3197,12 @@ describe('fleet:launch-on-plan handler — EI-8985 per-member launch-context bri
     const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     const cmd = (i: number) => spawnConsoleMock.mock.calls[i][0].envelope.greetingCmd as string;
+    expect(payload.modelResolution).toBeNull();
+    expect(payload.memberModelResolutions).toMatchObject([
+      { requested: 'opus[1m]', agent: 'claude', model: 'opus[1m]:high', effort: 'high' },
+      { requested: 'sonnet', agent: 'claude', model: 'sonnet', effort: null },
+      { requested: 'sonnet', agent: 'claude', model: 'sonnet', effort: null },
+    ]);
     // Member 1: its own model, with effort folded ONTO the spec (psu has no --effort).
     expect(cmd(0)).toContain("--model='opus[1m]:high'");
     expect(cmd(0)).not.toContain('--effort');
@@ -3512,6 +3527,9 @@ describe('fleet:launch-on-plan handler — spawn failures surface failed[], neve
 
     expect(payload.ok).toBe(false);
     expect(payload.opened).toEqual([]);
+    expect(payload.finalGoalAdmissions).toEqual([{
+      ownerId: payload.launchTransaction.requestedMemberIds[0], receiptId: null, admission: null, outcome: 'failed',
+    }]);
     expect(payload.failed).toEqual([
       {
         ownerId: payload.launchTransaction.requestedMemberIds[0],
@@ -3674,11 +3692,13 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     expect(command).toContain(`--owner-id=${payload.launchTransaction.requestedMemberIds[0]}`);
   });
 
-  it('opens no member and releases its slot when a concurrent transaction wins the initial CAS', async () => {
+  it.each(['repaired', 'outer control'])('opens no member and releases its slot when a concurrent transaction wins the initial CAS: %s', async (mode) => {
     const { releaseFleetLaunchSlot } = await import('../../../agent-fleets-store');
     const releaseSlot = releaseFleetLaunchSlot as ReturnType<typeof vi.fn>;
     releaseSlot.mockClear();
-    launchTransaction.persist.mockResolvedValueOnce(false);
+    // Wrong adapter loses the store's CAS rejection; the expected rejection
+    // and zero-spawn oracle below remain literal and unchanged.
+    launchTransaction.persist.mockResolvedValueOnce(mode === 'outer control' || idempotenceControl === 'initial-cas-loss');
 
     const res = await invokeLaunchHandler(
       { name: 'CAS Loss Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
@@ -3686,7 +3706,13 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     );
     const responseText = (res as any).content[0].text as string;
 
-    expect((res as any).isError).toBe(true);
+    const assertRejected = () => expect((res as any).isError, 'idempotence-contract:initial-cas-loss').toBe(true);
+    if (mode === 'outer control') {
+      expect(() => assertRejected()).toThrowError();
+      expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+      return;
+    }
+    assertRejected();
     expect(responseText).toContain('changed concurrently');
     expect(launchTransaction.persist).toHaveBeenCalledWith(expect.objectContaining({
       expectedRevision: null,
@@ -4259,6 +4285,167 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
     expect(payload.ok).toBe(true);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
   });
+
+  // WI-10005698: a suppressed no-op must not enroll the CALLER either. Two independent
+  // faults composed to break this, and each half gets its own case below because each
+  // was individually survivable:
+  //   WHO  — the caller-exclusion branch excluded a GOAL holder only when a leader was
+  //          ACTUALLY spawned, so a portfolio steward topping up an existing fleet that
+  //          still had a live leader fell through the ignored-spawn path into the normal
+  //          join and was enrolled as a member (flipping its mission to execute-plan-only).
+  //   WHEN — that whole enrollment block ran BEFORE this deficit guard, so even an
+  //          ordinary caller had its fleet label, leader control, compaction seed and
+  //          window colour written by a call that opened nothing.
+  // This is handler-level by construction: no type changed and each side was locally
+  // correct, so only the ORDERING of two correct things was wrong — nothing a unit test
+  // on either side alone could see.
+  it('WHO: a GOAL-holder portfolio steward stays out of a fleet it only tops up', async () => {
+    const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
+    // BOTH mocks are load-bearing: the getModeSubject call that marks the caller a
+    // portfolio steward is itself gated behind `if (goalSettings.goalId)`, so mocking the
+    // mode subject alone leaves goalHolderSubject null and the caller is enrolled as an
+    // ordinary member — i.e. the test would silently stop exercising the fix.
+    goalLaunchReadMock.mockResolvedValue({
+      goalId: 'parent-goal',
+      settings: null,
+      drainFleetSlug: null,
+      degraded: false,
+      degradedReasons: [],
+    });
+    goalModeSubjectMock.mockResolvedValue('parent-goal');
+    // Arming goalId above also arms the goal plan-placement fence, which returns an early
+    // ok:false 'goal-plan-placement-prerequisite' BEFORE the enrollment path. Satisfy it
+    // explicitly here rather than leaning on the file-level default, so this case cannot
+    // start silently refusing (and passing vacuously) if that default drifts.
+    obligationAgendaReadMock.mockImplementation(async (input: any) => ({
+      goalId: input.goalId,
+      observedAt: new Date().toISOString(),
+      agenda: {
+        sourceGeneration: 'agenda-current',
+        evaluations: [
+          {
+            id: 'obl:goal-plan-placement:steward',
+            ruleId: 'goal-plan-placement',
+            family: 'plan-placement',
+            title: 'Place my-plan',
+            scope: {
+              workspaceId: input.workspaceId,
+              ownerId: input.ownerId,
+              goalId: input.goalId,
+              planSlug: 'my-plan',
+            },
+            responsibleOwnerId: input.ownerId,
+            status: 'due',
+            sourceGeneration: 'placement-current',
+            evidence: [
+              {
+                ref: 'goal-plan-placement:my-plan',
+                observedAt: new Date().toISOString(),
+                freshness: 'current',
+              },
+            ],
+          },
+        ],
+      },
+    }));
+    // An EXISTING fleet owned by someone else, still led: leader:'spawn' is IGNORED (a
+    // second leader is a coup), and that ignored-spawn path is precisely the one that used
+    // to fall through to the normal join and enroll the steward as an ordinary member.
+    createFleetIfAbsentMock.mockResolvedValueOnce({
+      record: {
+        owner: 'other-caller',
+        leaderOwnerId: 'other-leader',
+        colorScheme: { name: 'Ocean' },
+      },
+      created: false,
+    });
+    // Deliberately a REAL wave (0 alive, 1 requested) so the deficit guard ADMITS. That
+    // isolates the WHO half from the WHEN half: the steward must stay out on its own
+    // merits, not merely because nothing was opened. Members really do spawn here.
+    (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
+
+    const res = await invokeLaunchHandler(
+      {
+        name: 'Steward Top Up',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 1,
+        leader: 'spawn',
+      } as never,
+      {} as never,
+    );
+    const payload = parseHandlerPayload(res);
+
+    // Guard the path itself: several early returns above (the goal plan-placement fence,
+    // the admission refusals) answer ok:false and carry NO callerMembership, so without
+    // this every "not called" assertion below would pass vacuously on a refusal.
+    expect(payload.error ?? null).toBeNull();
+    expect(payload.ok).toBe(true);
+    expect(payload.relaunchSuppressed).toBeUndefined();
+    expect(payload.leaderSpawnIgnored).toContain('only tops up members');
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    // The steward reason, not the spawned-leader one: being a portfolio holder is its own
+    // ground for staying out, which is why callerExcludedFromFleet was NOT widened.
+    expect(payload.callerMembership.enrolled).toBe(false);
+    expect(payload.callerMembership.role).toBe('delegator');
+    expect(payload.callerMembership.reason).toBe('goal-holder-portfolio-steward');
+    expect(setPresenceFleetMock).not.toHaveBeenCalled();
+    expect(ensureFleetLeaderControlMock).not.toHaveBeenCalled();
+  });
+
+  it('WHEN: an ordinary caller is not enrolled by a call the deficit guard suppresses', async () => {
+    const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
+    // No goal mocks: callerIsPortfolioSteward is false, so this caller DOES take the
+    // enrollment branch. Only the deferral past this guard keeps the writes from running.
+    getFleetMock.mockResolvedValueOnce({
+      leaderOwnerId: 'owner-1',
+      colorScheme: { name: 'Ocean' },
+    });
+    (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue(['m-1', 'm-2']);
+
+    const res = await invokeLaunchHandler(
+      { name: 'Ordinary Top Up', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
+      {} as never,
+    );
+    const payload = parseHandlerPayload(res);
+
+    expect(payload.relaunchSuppressed).toBe(true);
+    expect(payload.liveMembers).toBe(2);
+    expect(payload.opened).toEqual([]);
+    // Distinct reason from the WHO case: this caller was eligible to join and simply
+    // never reached the writes, which is what the reported shape has to say honestly.
+    expect(payload.callerMembership).toEqual({
+      enrolled: false,
+      role: 'leader',
+      reason: 'launch-suppressed-before-enrollment',
+    });
+    expect(setPresenceFleetMock).not.toHaveBeenCalled();
+    expect(ensureFleetLeaderControlMock).not.toHaveBeenCalled();
+    expect(setClaimSpecMock).not.toHaveBeenCalled();
+  });
+
+  it('CALIBRATION: a real wave still enrolls the caller (the two cases above are not vacuous)', async () => {
+    const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
+    getFleetMock.mockResolvedValueOnce({
+      leaderOwnerId: 'owner-1',
+      colorScheme: { name: 'Ocean' },
+    });
+    // 1 requested, 0 alive => the deficit guard ADMITS, so the deferred writes must run.
+    (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
+
+    const res = await invokeLaunchHandler(
+      { name: 'Real Wave', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
+      {} as never,
+    );
+    const payload = parseHandlerPayload(res);
+
+    expect(payload.relaunchSuppressed).toBeUndefined();
+    expect(payload.callerMembership.enrolled).toBe(true);
+    expect(setPresenceFleetMock).toHaveBeenCalledTimes(1);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 // WI-1811 (fleet-launch-agent-inheritance-2026-07-03#P-007): the P-005 idempotency guard's
@@ -4287,6 +4474,7 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
   });
 
   it('a lost claim opens 0 members — spawnConsole is never called', async () => {
+    // Calibration: real suppression path, independent of either wrong adapter.
     const { claimFleetLaunchSlot } = await import('../../../agent-fleets-store');
     (claimFleetLaunchSlot as ReturnType<typeof vi.fn>).mockResolvedValue({
       won: false,
@@ -4332,7 +4520,7 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
     expect(setClaimSpecMock).not.toHaveBeenCalled();
   });
 
-  it('resumes exact unopened pre-pinned identities when a partial canary becomes live inside the window', async () => {
+  it.each(['repaired', 'outer control'])('resumes exact unopened pre-pinned identities when a partial canary becomes live inside the window: %s', async (mode) => {
     const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
     (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue(['su-late-canary']);
     const { claimFleetLaunchSlot, releaseFleetLaunchSlot } = await import('../../../agent-fleets-store');
@@ -4343,6 +4531,9 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
       .mockResolvedValueOnce({ won: false, priorAt: 1_000, priorCount: 3 })
       .mockResolvedValueOnce({ won: true, at: 2_000 });
     releaseSlot.mockClear();
+    // Wrong adapter corrupts one durable pre-pinned identity. Assertions keep
+    // the original identities, so a consistent but wrong retry still fails.
+    const firstRetryOwnerId = mode === 'outer control' || idempotenceControl === 'partial-exact-retry' ? 'su-wrong-retry-1' : 'su-retry-1';
     createFleetIfAbsentMock.mockResolvedValueOnce({
       record: {
         leaderOwnerId: 'owner-1',
@@ -4353,7 +4544,7 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
           state: 'partial',
           requestedAt: 500,
           updatedAt: 900,
-          requestedMemberIds: ['su-late-canary', 'su-retry-1', 'su-retry-2'],
+          requestedMemberIds: ['su-late-canary', firstRetryOwnerId, 'su-retry-2'],
           openedMemberIds: ['su-late-canary'],
           verifiedMemberIds: [],
           failed: [{ ownerId: 'su-late-canary', phase: 'verification', reason: 'bounded timeout' }],
@@ -4366,7 +4557,7 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
             },
           ],
           recovery: {
-            retryOwnerIds: ['su-late-canary', 'su-retry-1', 'su-retry-2'],
+            retryOwnerIds: ['su-late-canary', firstRetryOwnerId, 'su-retry-2'],
             nextAction: 'resume unresolved pre-pinned identities',
           },
         },
@@ -4383,7 +4574,23 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
     const commands = spawnConsoleMock.mock.calls.map(
       (call) => (call[0].envelope as { greetingCmd: string }).greetingCmd,
     );
+    const persisted = launchTransaction.persist.mock.calls.at(-1)?.[0] as {
+      transaction: { transactionId: string; requestedMemberIds: string[]; openedMemberIds: string[] };
+    };
 
+    const assertExactIdentities = () => expect(payload.opened.map((member: { ownerId: string }) => member.ownerId),
+      'idempotence-contract:partial-exact-retry').toEqual(['su-retry-1', 'su-retry-2']);
+    if (mode === 'outer control') {
+      expect(() => assertExactIdentities()).toThrowError();
+      expect(payload.opened.map((member: { ownerId: string }) => member.ownerId)).toEqual(['su-wrong-retry-1', 'su-retry-2']);
+      expect(spawnConsoleMock).toHaveBeenCalledTimes(2);
+      return;
+    }
+    assertExactIdentities();
+    expect(payload.launchTransaction.transactionId).toBe('partial-tx');
+    expect(persisted.transaction.transactionId).toBe('partial-tx');
+    expect(persisted.transaction.requestedMemberIds).toEqual(['su-late-canary', 'su-retry-1', 'su-retry-2']);
+    expect(persisted.transaction.openedMemberIds).toEqual(['su-late-canary', 'su-retry-1', 'su-retry-2']);
     expect(releaseSlot).toHaveBeenCalledWith(expect.objectContaining({ at: 1_000 }));
     expect(claimSlot).toHaveBeenCalledTimes(2);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(2);
@@ -4610,6 +4817,35 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
     const call = setClaimSpecMock.mock.calls[0][0] as { spec: { specId: string; view: { filter: unknown } } };
     expect(call.spec.specId).toBe('fleet-launch-pure-drain-fleet-kinds');
     expect(call.spec.view.filter).toEqual({ field: 'kind', op: 'in', value: ['bug', 'change'] });
+  });
+
+  // R-8 (feature-drain-delivery-readiness-and-outcome-accounting-2026-10-01, AUTO-BAR-R-8-P-007):
+  // the fresh-recipe write used to require a plan, so every plan-less drain fleet was left with
+  // a NULL headcount target. A drain launched without an explicit headcount must still record one.
+  it('R-8: a fresh plan-less claimKinds drain fleet receives a headcount target (no plan, no supervise grant)', async () => {
+    const res = await invokeLaunchHandler(
+      { name: 'Target Drain Fleet', harness: 'papercusp', count: 3, claimKinds: ['bug', 'change'] } as never,
+      {} as never,
+    );
+    const payload = parseHandlerPayload(res);
+    expect(payload.ok).toBe(true);
+    expect(setFleetHeadcountTargetMock).toHaveBeenCalledTimes(1);
+    const persisted = setFleetHeadcountTargetMock.mock.calls[0][0] as {
+      fleetSlug: string;
+      target: number;
+      config: Record<string, unknown>;
+    };
+    expect(persisted.fleetSlug).toBe('target-drain-fleet');
+    expect(persisted.target).toBe(3);
+    // The recipe mirrors the launch: `headless` was omitted, so it records the visible default.
+    expect(persisted.config).toMatchObject({ harness: 'papercusp', headless: false, carry: 'warm' });
+    // Claim scope lives in the claim-spec store (top-ups launch plan-less and read it there),
+    // so the recipe carries no plan and no duplicated claimKinds.
+    expect(persisted.config).not.toHaveProperty('plan');
+    expect(persisted.config).not.toHaveProperty('claimKinds');
+    // A recorded target is not supervision consent (R5 / WI-1454201).
+    expect(persisted.config).not.toHaveProperty('supervise');
+    expect(payload.headcountProfile).toMatchObject({ applied: true, target: 3 });
   });
 
   it('#4: ALWAYS sets a PLAN-scoped claim spec even when claimKinds is omitted', async () => {
@@ -5159,6 +5395,9 @@ function reservesLaneForLaunchingFleet(
     expect(payload).toMatchObject({
       ok: false,
       error: 'admission_refused',
+      reason: 'family-disagreement',
+      message: expect.stringContaining('Actionable promoted families disagree'),
+      repairCall: { tool: 'plans:get', args: { slug: 'my-plan', harness: 'papercusp' } },
       fleet: 'refused-admission',
       plan: 'my-plan',
       promotionFailsafe: { ran: true, promoted: 0, skipped: 3 },

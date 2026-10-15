@@ -1040,7 +1040,7 @@ export default function MemoryPage() {
           the current system. */}
       <JevSection />
 
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
         <input
           type="search"
           value={q}
@@ -1058,7 +1058,7 @@ export default function MemoryPage() {
           style={{
             padding: '8px 12px', borderRadius: 6,
             border: '1px solid var(--border)', background: 'var(--bg-2)',
-            color: 'var(--fg)', fontSize: 13, flex: 1,
+            color: 'var(--fg)', fontSize: 13, flex: '1 1 220px', minWidth: 0,
           }}
         />
         {possiblyMoreThanShown && (

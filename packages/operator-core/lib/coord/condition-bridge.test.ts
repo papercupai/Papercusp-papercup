@@ -214,7 +214,22 @@ describe('resolveConditionHarness', () => {
   it('every catalog entry declares how its harness is derived', () => {
     for (const c of ACTIONABLE_CONDITIONS) {
       expect(c.prefix.endsWith(':')).toBe(true);
-      expect(['suffix', 'ambient']).toContain(c.harnessFrom);
+      expect(['suffix', 'ambient', 'leading-segment']).toContain(c.harnessFrom);
     }
+  });
+
+  // P-013 (green-main-cycle-time-2026-10-08): a leg key is `<pipeline>:<leg>` and the
+  // leg may itself contain ':' — only the FIRST segment names the harness.
+  it('reads a leading-segment harness even when the detail contains colons', () => {
+    expect(resolveConditionHarness('frozen-repair-leg:papercusp:lint:tsc', 'x')).toBe('papercusp');
+    expect(
+      resolveConditionHarness('frozen-repair-leg:papercusp:packages/a/b.test.ts', null),
+    ).toBe('papercusp');
+  });
+
+  it('fails CLOSED on a leading-segment key with no harness or no detail', () => {
+    expect(resolveConditionHarness('frozen-repair-leg:papercusp', 'papercusp')).toBeNull();
+    expect(resolveConditionHarness('frozen-repair-leg::lint:tsc', 'papercusp')).toBeNull();
+    expect(resolveConditionHarness('frozen-repair-leg:papercusp:', 'papercusp')).toBeNull();
   });
 });

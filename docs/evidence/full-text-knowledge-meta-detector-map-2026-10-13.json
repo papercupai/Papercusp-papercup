@@ -1,0 +1,1643 @@
+{
+  "schemaVersion": 1,
+  "plan": "full-text-knowledge-retrieval-2026-10-08",
+  "workItem": "WI-10007679",
+  "rubric": "acceptance-full-text-knowledge-retrieval-2026-10-08",
+  "rubricRevision": 3,
+  "criteriaHash": "a0e7fda5b8e07a69fa125b84bc23e76ad191f30fdcfcf1b88b7fd38084dd6f88",
+  "sourceCommit": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+  "repairsAudit": "EI-25824691021530214",
+  "claimBoundary": "Exact committed static detector map for all 15 tests checks and 13 bound files. This does not claim a new execution, independent vetting, current source adequacy or shipment. Existing test-run and mutation ledgers remain authoritative; R-15/R-17 remain exact-artifact dependent. Source-read probes require the pinned current-build capability:git-evidence seat; unavailable seats are access gaps. Full assertionSource is embedded so the detector remains inspectable without inferring it from pass counts.",
+  "boundFileCensus": [
+    {
+      "file": "libs/generic/search/src/hybrid.test.ts",
+      "sha256": "5e7ef6ab0c633ac1ef9fd424e04b9fe3bafb203d5ff96016cfd8777dcb444c54",
+      "sourceLocator": {
+        "root": "libs/generic/search",
+        "commitSha": "b41a38b4c09a6b823b223442b1449e92544df80f",
+        "path": "src/hybrid.test.ts",
+        "superprojectCommitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+        "gitlinkPath": "libs/generic/search"
+      }
+    },
+    {
+      "file": "packages/operator-core/lib/agent-tools/docs/__tests__/semantic-leg.query.test.ts",
+      "sha256": "6ea22b6d1f451b5f0aeecd5d943ae55042146a2a85362f75245ebc85f27f6a01",
+      "sourceLocator": {
+        "root": ".",
+        "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+        "path": "packages/operator-core/lib/agent-tools/docs/__tests__/semantic-leg.query.test.ts"
+      }
+    },
+    {
+      "file": "packages/operator-core/lib/agent-tools/plans/__tests__/search-rrf-fusion.integration.test.ts",
+      "sha256": "4cad26033099b223d56d81c48f6f3bde596d014aa170e29db094a87a50f09be6",
+      "sourceLocator": {
+        "root": ".",
+        "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+        "path": "packages/operator-core/lib/agent-tools/plans/__tests__/search-rrf-fusion.integration.test.ts"
+      }
+    },
+    {
+      "file": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts",
+      "sha256": "71e6482f095a4de97d9adf0158032d69d2d167c7581bfb6298f55d6a017c0c37",
+      "sourceLocator": {
+        "root": ".",
+        "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+        "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+      }
+    },
+    {
+      "file": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts",
+      "sha256": "6eeb7d2033c86f812b58e097b5761774b87185eca0bebc03547f8931e793f283",
+      "sourceLocator": {
+        "root": ".",
+        "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+        "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+      }
+    },
+    {
+      "file": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.test.ts",
+      "sha256": "28caa7e310884092af0fcafec961712ee9e67c80c40a95855012a2d0b8f02a12",
+      "sourceLocator": {
+        "root": ".",
+        "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+        "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.test.ts"
+      }
+    },
+    {
+      "file": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts",
+      "sha256": "fdfd150e83272f4ed2eac0b946358cfdeb83b542fcf9a3fb4319306657b85e1e",
+      "sourceLocator": {
+        "root": ".",
+        "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+        "path": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts"
+      }
+    },
+    {
+      "file": "packages/operator-core/lib/memory/corpus-recall-io.test.ts",
+      "sha256": "211dcaa0365f498059c080dbf245ce9300195af43e72a14433984c24928327d6",
+      "sourceLocator": {
+        "root": ".",
+        "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+        "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+      }
+    },
+    {
+      "file": "packages/operator-core/lib/memory/corpus-recall.test.ts",
+      "sha256": "95c1c90f6304c9db54310fa29285c29d2e78719d65e463412b80c8e4d53d85a8",
+      "sourceLocator": {
+        "root": ".",
+        "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+        "path": "packages/operator-core/lib/memory/corpus-recall.test.ts"
+      }
+    },
+    {
+      "file": "packages/operator-core/lib/memory/injection-coverage.test.ts",
+      "sha256": "7370a519c770d3a82eaf5676801995188242ae12cf9f9c53e7b8a6829bfdb85c",
+      "sourceLocator": {
+        "root": ".",
+        "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+        "path": "packages/operator-core/lib/memory/injection-coverage.test.ts"
+      }
+    },
+    {
+      "file": "packages/operator-core/lib/memory/injection.test.ts",
+      "sha256": "212463b7635cf35a4a1148ac36633243cca655bad9d98fa6c7d77acf07047959",
+      "sourceLocator": {
+        "root": ".",
+        "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+        "path": "packages/operator-core/lib/memory/injection.test.ts"
+      }
+    },
+    {
+      "file": "packages/operator-core/lib/search/chunks/registry.test.ts",
+      "sha256": "3968bfefc86f1b6a72fbea28f0e34f665bf35cdbd8976e90230e0be41a16fff8",
+      "sourceLocator": {
+        "root": ".",
+        "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+        "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+      }
+    },
+    {
+      "file": "packages/operator-core/lib/search/prose-vector-dims.test.ts",
+      "sha256": "53df6ddee14ad56397b872cbecef2db4461bad95ab12c90cde60498f139a969c",
+      "sourceLocator": {
+        "root": ".",
+        "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+        "path": "packages/operator-core/lib/search/prose-vector-dims.test.ts"
+      }
+    }
+  ],
+  "criteria": [
+    {
+      "criterion": "r-1",
+      "barKey": "R-1",
+      "driftMarkers": "The marker is omitted because indexing or retrieval stopped at an earlier text window. A missed sweep or stale capped parent continues omitting the known tail. An alternative authoritative feature store, chunk registry entry or scheduler replaces or duplicates that source's maintained engine.",
+      "boundFiles": [
+        "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/plans/__tests__/search-rrf-fusion.integration.test.ts",
+        "packages/operator-core/lib/search/chunks/registry.test.ts",
+        "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+      ],
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts",
+          "line": 63,
+          "testDeclaration": "it('retrieves a plan body beyond the old 32-window cap with its heading and prerequisite', async () => {",
+          "assertionSource": "  it('retrieves a plan body beyond the old 32-window cap with its heading and prerequisite', async () => {\n    const source = createPlanSearchSource({ harnessSlugs: ['pot-a'], automatic: true });\n    for (const [leg,query] of [[source.lexical!,'zephyrquartz'],[source.embedding!,'restore diagnostic state']] as const) {\n      const rows = await leg({ ...params(),query });\n      expect(rows.map(r=>r.row.source_id)).toEqual(['pot-a:late-plan']);\n      expect(rows[0].row.excerpt).toContain('retain the snapshot');\n      expect(rows[0].row.excerpt).toContain('zephyrquartz');\n      expect(rows[0].row.meta?.section).toBe('Late repair');\n    }\n  });\n",
+          "testFileSha256": "71e6482f095a4de97d9adf0158032d69d2d167c7581bfb6298f55d6a017c0c37",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts",
+          "line": 96,
+          "testDeclaration": "it('recuts a formerly capped plan index and recovers its known tail section', async () => {",
+          "assertionSource": "  it('recuts a formerly capped plan index and recovers its known tail section', async () => {\n    const surface = { ...PLANS_CHUNK_SURFACE,eligibleSql: `p.workspace_id = '${workspaceId}' AND p.harness_slug = 'pot-a'` };\n    const embedChunks = () => db.adminSql`UPDATE harness_shared.text_chunks SET embedding =\n      CASE WHEN content LIKE '%zephyrquartz%' THEN ${vec(true)}::vector ELSE ${vec(false)}::vector END,\n      embedding_profile = ${profileId},embedding_mode = 'gemma'\n      WHERE surface = 'plans' AND parent_key[1] = ${workspaceId}`;\n    const source = createPlanSearchSource({ harnessSlugs: ['pot-a'] });\n    const warn = vi.fn(),error = vi.fn();\n    await runChunkSyncTick({ sql: db.adminSql,surfaces: [{ ...surface,completeBody: false }],logger: { warn,error } });\n    expect(warn.mock.calls.some(call=>String(call[0]).includes('truncated by maxChunks'))).toBe(true);\n    expect(error).not.toHaveBeenCalled();\n    await embedChunks();\n    const capped = await source.embedding!({ ...params(),query: 'restore diagnostic state' });\n    expect(capped[0].row.excerpt).not.toContain('zephyrquartz');\n    await runChunkSyncTick({ sql: db.adminSql,surfaces: [surface] });\n    await embedChunks();\n    const recovered = await source.embedding!({ ...params(),query: 'restore diagnostic state' });\n    expect(recovered[0].row.excerpt).toContain('zephyrquartz');\n    expect(recovered[0].row.meta?.section).toBe('Late repair');\n  });\n",
+          "testFileSha256": "71e6482f095a4de97d9adf0158032d69d2d167c7581bfb6298f55d6a017c0c37",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/search/chunks/registry.test.ts",
+          "line": 22,
+          "testDeclaration": "it('has exactly one live search source for each canonical knowledge family, with a duplicate negative control', () => {",
+          "assertionSource": "  it('has exactly one live search source for each canonical knowledge family, with a duplicate negative control', () => {\n    const names = SEARCH_SOURCES.map(source => source.name);\n    const duplicates = (input: string[]) => input.filter((name, index) => input.indexOf(name) !== index);\n    expect(duplicates(names)).toEqual([]);\n    for (const family of ['plan', 'doc', 'report']) {\n      expect(names.filter(name => name === family), family).toEqual([family]);\n      expect(duplicates([...names, family])).toContain(family);\n    }\n  });\n",
+          "testFileSha256": "3968bfefc86f1b6a72fbea28f0e34f665bf35cdbd8976e90230e0be41a16fff8",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/search/chunks/registry.test.ts",
+          "line": 32,
+          "testDeclaration": "it('keeps knowledge ingestion on the existing periodic and publication paths, detecting a second schedule', () => {",
+          "assertionSource": "  it('keeps knowledge ingestion on the existing periodic and publication paths, detecting a second schedule', () => {\n    const calls = (body: string) => {\n      const file = ts.createSourceFile('fixture.ts', body, ts.ScriptTarget.Latest, true);\n      const out: Array<{ callee: string; first: string }> = [];\n      const visit = (node: ts.Node) => {\n        if (ts.isCallExpression(node)) out.push({ callee: node.expression.getText(file), first: node.arguments[0]?.getText(file) ?? '' });\n        ts.forEachChild(node, visit);\n      };\n      visit(file);\n      return out;\n    };\n    const source = (relative: string) => readFileSync(new URL(relative, import.meta.url), 'utf8');\n    // Inspect every DBOS registration module, including a newly added file.\n    // Resolve declarations/import aliases to the actual ingestion calls: the\n    // workflow variable's spelling is not evidence of what it schedules.\n    const dbos = new URL('../../dbos/', import.meta.url);\n    const modules = readdirSync(dbos, { recursive: true }).map(String)\n      .filter(path => path.endsWith('.ts') && !path.endsWith('.test.ts'))\n      .map(path => ({ path, body: readFileSync(join(dbos.pathname, path), 'utf8') }));\n    const knowledgeSchedules = (inputs: Array<{ path: string; body: string }>) => {\n      const declarations = new Map<string, ts.Node[]>();\n      const roots = new Set(['runEmbedBackfillOnce', 'runChunkSyncTick', 'runDocSectionsSyncOnce',\n        'runHarnessDocSectionsSweep', 'indexReport']);\n      const files = inputs.map(input => ({ ...input,\n        ast: ts.createSourceFile(input.path, input.body, ts.ScriptTarget.Latest, true) }));\n      const remember = (name: string, node: ts.Node) => declarations.set(name,\n        [...(declarations.get(name) ?? []), node]);\n      for (const { ast } of files) {\n        const visit = (node: ts.Node) => {\n          if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) remember(node.name.text, node.initializer);\n          if (ts.isFunctionDeclaration(node) && node.name && node.body) remember(node.name.text, node.body);\n          if (ts.isImportSpecifier(node)) remember(node.name.text, node.propertyName ?? node.name);\n          ts.forEachChild(node, visit);\n        };\n        visit(ast);\n      }\n      const reaches = (node: ts.Node, targets: ReadonlySet<string>): boolean => {\n        const pending = [node];\n        const seenNames = new Set<string>();\n        const seenNodes = new Set<ts.Node>();\n        while (pending.length) {\n          const current = pending.pop()!;\n          if (seenNodes.has(current)) continue;\n          seenNodes.add(current);\n          if (ts.isIdentifier(current)) {\n            if (targets.has(current.text)) return true;\n            if (seenNames.has(current.text)) continue;\n            seenNames.add(current.text);\n            pending.push(...(declarations.get(current.text) ?? []));\n          } else {\n            if (ts.isPropertyAccessExpression(current) && targets.has(current.getText())) return true;\n            ts.forEachChild(current, child => { pending.push(child); });\n          }\n        }\n        return false;\n      };\n      const registrations: Array<{ path: string; first: string }> = [];\n      const isSchedule = (node: ts.Node, seen = new Set<string>()): boolean => {\n        if (ts.isPropertyAccessExpression(node)) return node.getText() === 'DBOS.registerScheduled';\n        if (!ts.isIdentifier(node) || seen.has(node.text)) return false;\n        const next = new Set([...seen, node.text]);\n        return (declarations.get(node.text) ?? []).some(value => isSchedule(value, next));\n      };\n      for (const { path, ast } of files) {\n        const visit = (node: ts.Node) => {\n          if (ts.isCallExpression(node) && node.arguments[0]\n            && isSchedule(node.expression)\n            && reaches(node.arguments[0], roots)) registrations.push({ path, first: node.arguments[0].getText(ast) });\n          ts.forEachChild(node, visit);\n        };\n        visit(ast);\n      }\n      return registrations;\n    };\n    expect(knowledgeSchedules(modules)).toEqual([{ path: 'periodic-workflows.ts', first: 'embedBackfillWorkflow' }]);\n    const alias = '\\nconst knowledgeSweepWorkflow = embedBackfillWorkflow;\\nDBOS.registerScheduled(knowledgeSweepWorkflow, {name: \"parallelKnowledge\"});';\n    expect(knowledgeSchedules(modules.map(module => module.path === 'periodic-workflows.ts'\n      ? { ...module, body: module.body + alias } : module))).toHaveLength(2);\n    expect(knowledgeSchedules([...modules, { path: 'new-knowledge-scheduler.ts',\n      body: 'import { runChunkSyncTick as rebuild } from \"../search/chunks/tick\"; const schedule = DBOS.registerScheduled; const unnamed = () => rebuild(); schedule(unnamed, {});' }]))\n      .toHaveLength(2);\n    expect(knowledgeSchedules([{ path: 'cyclic-alias.ts',\n      body: 'const first = second; const second = first; DBOS.registerScheduled(first, {});' }])).toEqual([]);\n    const backfillCalls = calls(source('../embed-backfill.ts')).map(call => call.callee);\n    for (const child of ['runDocSectionsSyncOnce', 'runHarnessDocSectionsSweep', 'runChunkSyncTick']) {\n      expect(backfillCalls, child).toContain(child);\n    }\n    expect(calls(source('../../report-publication.ts')).filter(call => call.callee === 'indexReport')).toHaveLength(1);\n    const schedulers = new Set(['setInterval', 'managedSetInterval', 'DBOS.registerScheduled', 'registerSystemAction']);\n    for (const child of ['../doc-embed-sync.ts', './tick.ts', '../report-index.ts']) {\n      expect(calls(source(child)).filter(call => schedulers.has(call.callee)), child).toEqual([]);\n      expect(calls(source(child) + '\\nsetInterval(runDuplicateKnowledgeIndex, 1000);').filter(call => schedulers.has(call.callee)))\n        .toHaveLength(1);\n    }\n  });\n",
+          "testFileSha256": "3968bfefc86f1b6a72fbea28f0e34f665bf35cdbd8976e90230e0be41a16fff8",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/search/chunks/registry.test.ts",
+          "line": 137,
+          "testDeclaration": "it('knowledge indexes extend canonical parents in the shared chunk store rather than registering parallel stores', () => {",
+          "assertionSource": "  it('knowledge indexes extend canonical parents in the shared chunk store rather than registering parallel stores', () => {\n    expect(CHUNK_SURFACES.filter(s=>s.searchSource === 'plan')).toEqual([PLANS_CHUNK_SURFACE]);\n    expect(CHUNK_SURFACES.filter(s=>s.searchSource === 'report')).toEqual([REPORTS_CHUNK_SURFACE]);\n    expect(PLANS_CHUNK_SURFACE.parent.table).toBe('harness_shared.harness_plans');\n    expect(REPORTS_CHUNK_SURFACE.parent.table).toBe('harness_shared.report_library');\n    for (const surface of [PLANS_CHUNK_SURFACE,REPORTS_CHUNK_SURFACE]) {\n      expect(surfaceStoreTable(surface)).toBe('harness_shared.text_chunks');\n      expect(() => resolveChunkSurface(surface)).not.toThrow();\n    }\n    expect(CHUNK_SURFACES.filter(s=>s.searchSource === 'plan' || s.searchSource === 'report')\n      .map(s=>s.surface).sort()).toEqual(['plans','report']);\n  });\n",
+          "testFileSha256": "3968bfefc86f1b6a72fbea28f0e34f665bf35cdbd8976e90230e0be41a16fff8",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/agent-tools/plans/__tests__/search-rrf-fusion.integration.test.ts",
+          "line": 165,
+          "testDeclaration": "it('a plan found ONLY via the semantic leg (rank #1 there) is not buried behind lexical noise', async () => {",
+          "assertionSource": "  it('a plan found ONLY via the semantic leg (rank #1 there) is not buried behind lexical noise', async () => {\n    queryTopPlans.mockResolvedValue([\n      { slug: BURIED_SLUG, harness: HARNESS, title: 'The exact topic plan', status: 'active', archived: false, similarity: 0.93 },\n    ]);\n    const { hits } = await runSearch('gadget');\n    const buriedIdx = hits.findIndex((h) => h.plan === BURIED_SLUG);\n    expect(buriedIdx, 'buried plan must be present').toBeGreaterThanOrEqual(0);\n    // Pre-fix it was appended after EVERY lexical hit (dead last); post-fix\n    // its semantic rank-#1 RRF contribution ties/beats every lexical entry\n    // beyond rank #1, so it must land ahead of at least the #2 and #3 noise\n    // plans — never last among 4 results.\n    expect(buriedIdx).toBeLessThan(hits.length - 1);\n    expect(hits.some((h) => h.plan === SLUG_N3)).toBe(true);\n    expect(buriedIdx).toBeLessThan(hits.findIndex((h) => h.plan === SLUG_N3));\n\n    const buried = hits[buriedIdx];\n    expect(buried.semantic).toBe(true);\n    expect(buried.similarity).toBe(0.93);\n  });\n",
+          "testFileSha256": "4cad26033099b223d56d81c48f6f3bde596d014aa170e29db094a87a50f09be6",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/plans/__tests__/search-rrf-fusion.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/plans/__tests__/search-rrf-fusion.integration.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/plans/__tests__/search-rrf-fusion.integration.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/memory/corpus-recall-io.test.ts",
+          "line": 235,
+          "testDeclaration": "it('reads the registered session/work-item and complete knowledge sources', async () => {",
+          "assertionSource": "  it('reads the registered session/work-item and complete knowledge sources', async () => {\n    runHybridSearch.mockResolvedValue(ok());\n    await recallCorpusContext(base);\n    const [sources] = runHybridSearch.mock.calls[0];\n    expect((sources as Array<{ name: string }>).map((s) => s.name).sort()).toEqual([\n      'doc',\n      'plan',\n      'report',\n      'session_turn',\n      'work_item',\n    ]);\n  });\n",
+          "testFileSha256": "211dcaa0365f498059c080dbf245ce9300195af43e72a14433984c24928327d6",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "interpretation": "Positive control: the registered source list passed to runHybridSearch contains plan, doc, report, session_turn and work_item. Omitting this criterion's knowledge source from automatic corpus recall changes the exact source list and fails this assertion; the criterion's other detectors independently verify complete body ingestion and retrieval.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "criterion": "r-2",
+      "barKey": "R-2",
+      "driftMarkers": "Only the title or initial section is searched. A late heading, preceding prerequisite, or retry batch is omitted or reordered. An alternative authoritative feature store, chunk registry entry or scheduler replaces or duplicates that source's maintained engine.",
+      "boundFiles": [
+        "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/docs/__tests__/semantic-leg.query.test.ts",
+        "packages/operator-core/lib/search/chunks/registry.test.ts",
+        "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+      ],
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts",
+          "line": 85,
+          "testDeclaration": "it('retrieves a deep doc section and excludes foreign/crowding harnesses before the limit', async () => {",
+          "assertionSource": "  it('retrieves a deep doc section and excludes foreign/crowding harnesses before the limit', async () => {\n    const source = createDocSearchSource({ harnessSlugs: ['pot-a'], automatic: true });\n    for (const leg of [source.lexical!,source.embedding!]) {\n      const rows = await leg(params());\n      expect(rows.map(r=>r.row.source_id)).toEqual(['harness:pot-a:late-doc']);\n      expect(rows[0].row.excerpt).toContain('retain the snapshot');\n      expect(rows[0].row.meta?.section).toBe('procedure-299');\n      expect(rows[0].row.meta?.path).toBe('/docs/late-doc#procedure-299');\n    }\n  });\n",
+          "testFileSha256": "71e6482f095a4de97d9adf0158032d69d2d167c7581bfb6298f55d6a017c0c37",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts",
+          "line": 117,
+          "testDeclaration": "it('writes complete ordered doc batches atomically and retains valid rows after a failed refresh', async () => {",
+          "assertionSource": "  it('writes complete ordered doc batches atomically and retains valid rows after a failed refresh', async () => {\n    let body = Array.from({ length: 1_300 },(_,i)=>`## Step ${i}\\nInstruction ${i}.`).join('\\n');\n    const page = { slug: 'atomic',slugs: ['atomic'],title: 'Atomic procedure',url: '/docs/atomic',toc: [] };\n    const source: DocSource = { name: 'harness:pot-a',listPages: async()=>[page],getPage: async()=>page,\n      getContent: async()=>body };\n    expect(await syncDocSourceSections(db.adminSql,source,{ prune: false })).toMatchObject({ sections: 1_300,errors: 0 });\n    const count = async()=> (await db.adminSql`SELECT count(*)::int AS n,max(section_idx) AS last\n      FROM harness_shared.doc_sections WHERE source_key = 'harness:pot-a' AND slug = 'atomic'`)[0];\n    expect(await count()).toMatchObject({ n: 1_300,last: 1_299 });\n    await db.adminSql`ALTER TABLE harness_shared.doc_sections ADD CONSTRAINT reject_atomic_fixture\n      CHECK (content <> 'forbidden_atomic_text') NOT VALID`;\n    body = '## Failure\\nforbidden_atomic_text';\n    const warning = vi.spyOn(console,'warn').mockImplementation(()=>{});\n    try {\n      expect(await syncDocSourceSections(db.adminSql,source,{ prune: false })).toMatchObject({ errors: 1,changed: 0 });\n      expect(warning).toHaveBeenCalled();\n      expect(await count()).toMatchObject({ n: 1_300,last: 1_299 });\n    } finally { warning.mockRestore(); }\n    body = '## Repaired\\nValid procedure.';\n    expect(await syncDocSourceSections(db.adminSql,source,{ prune: false })).toMatchObject({ sections: 1,errors: 0,changed: 1 });\n    expect(await count()).toMatchObject({ n: 1,last: 0 });\n  });\n",
+          "testFileSha256": "71e6482f095a4de97d9adf0158032d69d2d167c7581bfb6298f55d6a017c0c37",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/agent-tools/docs/__tests__/semantic-leg.query.test.ts",
+          "line": 61,
+          "testDeclaration": "it('issues the filtered vector query on the iterative-scan transaction handle', async () => {",
+          "assertionSource": "  it('issues the filtered vector query on the iterative-scan transaction handle', async () => {\n    const signal = new AbortController().signal;\n    const rows = await realDocSemanticDeps.querySections([0.1, 0.2], 'gemma', 'harness:papercusp', 72, GEMMA, signal);\n\n    expect(mocks.withIterativeScan).toHaveBeenCalledTimes(1);\n    expect(mocks.withIterativeScan).toHaveBeenCalledWith(\n      mocks.poolSql,\n      expect.any(Function),\n      { runReadOnlyTransaction: expect.any(Function) },\n    );\n    expect(mocks.boundedOrgTxn).toHaveBeenCalledWith(expect.any(Function), { signal, readOnly: true });\n    expect(mocks.txSql).toHaveBeenCalledTimes(1);\n    expect(mocks.poolSql).not.toHaveBeenCalled();\n    // The query that ran is the source-filtered, distance-ordered read.\n    const [strings, ...values] = mocks.txSql.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];\n    const text = strings.join('?');\n    expect(text).toMatch(/FROM harness_shared\\.doc_sections/);\n    expect(text).toMatch(/WHERE source_key = \\?/);\n    expect(text).toMatch(/ORDER BY embedding <=> \\?::vector/);\n    expect(values).toContain('harness:papercusp');\n    expect(values).toContain(72);\n    // Rows keep their mapping: continuation-chunk anchors report their heading.\n    expect(rows).toEqual([\n      {\n        slug: 'docs/long-report',\n        anchor: 'findings',\n        title: 'Long report',\n        url: '/docs/long-report#findings',\n        excerpt: 'past the cut',\n        similarity: 0.61,\n      },\n    ]);\n  });\n",
+          "testFileSha256": "6ea22b6d1f451b5f0aeecd5d943ae55042146a2a85362f75245ebc85f27f6a01",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/docs/__tests__/semantic-leg.query.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/docs/__tests__/semantic-leg.query.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/docs/__tests__/semantic-leg.query.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/search/chunks/registry.test.ts",
+          "line": 137,
+          "testDeclaration": "it('knowledge indexes extend canonical parents in the shared chunk store rather than registering parallel stores', () => {",
+          "assertionSource": "  it('knowledge indexes extend canonical parents in the shared chunk store rather than registering parallel stores', () => {\n    expect(CHUNK_SURFACES.filter(s=>s.searchSource === 'plan')).toEqual([PLANS_CHUNK_SURFACE]);\n    expect(CHUNK_SURFACES.filter(s=>s.searchSource === 'report')).toEqual([REPORTS_CHUNK_SURFACE]);\n    expect(PLANS_CHUNK_SURFACE.parent.table).toBe('harness_shared.harness_plans');\n    expect(REPORTS_CHUNK_SURFACE.parent.table).toBe('harness_shared.report_library');\n    for (const surface of [PLANS_CHUNK_SURFACE,REPORTS_CHUNK_SURFACE]) {\n      expect(surfaceStoreTable(surface)).toBe('harness_shared.text_chunks');\n      expect(() => resolveChunkSurface(surface)).not.toThrow();\n    }\n    expect(CHUNK_SURFACES.filter(s=>s.searchSource === 'plan' || s.searchSource === 'report')\n      .map(s=>s.surface).sort()).toEqual(['plans','report']);\n  });\n",
+          "testFileSha256": "3968bfefc86f1b6a72fbea28f0e34f665bf35cdbd8976e90230e0be41a16fff8",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/memory/corpus-recall-io.test.ts",
+          "line": 235,
+          "testDeclaration": "it('reads the registered session/work-item and complete knowledge sources', async () => {",
+          "assertionSource": "  it('reads the registered session/work-item and complete knowledge sources', async () => {\n    runHybridSearch.mockResolvedValue(ok());\n    await recallCorpusContext(base);\n    const [sources] = runHybridSearch.mock.calls[0];\n    expect((sources as Array<{ name: string }>).map((s) => s.name).sort()).toEqual([\n      'doc',\n      'plan',\n      'report',\n      'session_turn',\n      'work_item',\n    ]);\n  });\n",
+          "testFileSha256": "211dcaa0365f498059c080dbf245ce9300195af43e72a14433984c24928327d6",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "interpretation": "Positive control: the registered source list passed to runHybridSearch contains plan, doc, report, session_turn and work_item. Omitting this criterion's knowledge source from automatic corpus recall changes the exact source list and fails this assertion; the criterion's other detectors independently verify complete body ingestion and retrieval.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "criterion": "r-3",
+      "barKey": "R-3",
+      "driftMarkers": "The same keyword is absent from general report-source results. An alternative authoritative feature store, chunk registry entry or scheduler replaces or duplicates that source's maintained engine.",
+      "boundFiles": [
+        "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts",
+        "packages/operator-core/lib/search/chunks/registry.test.ts",
+        "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+      ],
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts",
+          "line": 142,
+          "testDeclaration": "it('finds a long report tail through lexical and semantic engines', async () => {",
+          "assertionSource": "  it('finds a long report tail through lexical and semantic engines', async () => {\n    const report = await publish('workspace', 'ordinary filler '.repeat(500) + ' zephyrquartz');\n    const source = createReportSearchSource();\n    const lexical = await runFullTextSearch([source], context());\n    expect(lexical.results.map(r => r.source_id)).toContain(report.reportId);\n    const semantic = await runHybridSearch([source], { ...context(), embedder: embed, mode: 'embeddings' });\n    expect(semantic.results.map(r => r.source_id)).toContain(report.reportId);\n    expect(semantic.results.find(r => r.source_id === report.reportId)?.rankers).toContain('embeddings');\n    const chunks = await db.adminSql`SELECT count(*)::int AS n FROM harness_shared.text_chunks\n      WHERE surface = 'report' AND parent_key = ${[workspaceId, report.reportId]}::text[] AND embedding IS NOT NULL`;\n    expect(chunks[0].n).toBeGreaterThan(3);\n  });\n",
+          "testFileSha256": "6eeb7d2033c86f812b58e097b5761774b87185eca0bebc03547f8931e793f283",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts",
+          "line": 109,
+          "testDeclaration": "it('routes Reports tab search and the registered source to the same live corpus, ignoring a parallel decoy', async () => {",
+          "assertionSource": "  it('routes Reports tab search and the registered source to the same live corpus, ignoring a parallel decoy', async () => {\n    const report = await publish('owner', 'corpusquartzunique');\n    // A real second corpus disagrees with the authoritative document. Routing\n    // the UI to this legacy table must fail the positive and negative controls.\n    await db.adminSql`INSERT INTO harness_shared.report_library_chunks\n      (workspace_id, report_id, chunk_idx, text)\n      VALUES (${workspaceId}, ${report.reportId}, 0, 'paralleldecoyunique')`;\n    const uiIds = async (query: string) => {\n      const rows = await resolveNamedQueryV2('reports.list', { query, limit: 200 });\n      expect(Array.isArray(rows)).toBe(true);\n      return (rows as Array<{ report_id: string }>).map(r => r.report_id);\n    };\n    const sourceIds = async (query: string) => (await createReportSearchSource({ isOwner: true })\n      .lexical!({ ...context(), query })).map(r => r.row.source_id);\n    for (const query of ['corpusquartzunique', 'paralleldecoyunique']) {\n      const expected = query === 'corpusquartzunique' ? [report.reportId] : [];\n      expect(await uiIds(query)).toEqual(expected);\n      expect(await sourceIds(query)).toEqual(expected);\n    }\n    // Change only the canonical row: both paths must immediately follow its\n    // generated search_tsv; the parallel corpus remains deliberately stale.\n    await db.adminSql`UPDATE harness_shared.report_library SET body_md = 'corpusreplacementunique'\n      WHERE workspace_id = ${workspaceId} AND report_id = ${report.reportId}`;\n    expect(await uiIds('corpusquartzunique')).toEqual([]);\n    expect(await sourceIds('corpusquartzunique')).toEqual([]);\n    expect(await uiIds('corpusreplacementunique')).toEqual([report.reportId]);\n    expect(await sourceIds('corpusreplacementunique')).toEqual([report.reportId]);\n    expect(await uiIds('paralleldecoyunique')).toEqual([]);\n    await retireReport(db.adminSql, workspaceId, report.reportId);\n    expect(await uiIds('corpusreplacementunique')).toEqual([]);\n    expect(await sourceIds('corpusreplacementunique')).toEqual([]);\n  });\n",
+          "testFileSha256": "6eeb7d2033c86f812b58e097b5761774b87185eca0bebc03547f8931e793f283",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/search/chunks/registry.test.ts",
+          "line": 22,
+          "testDeclaration": "it('has exactly one live search source for each canonical knowledge family, with a duplicate negative control', () => {",
+          "assertionSource": "  it('has exactly one live search source for each canonical knowledge family, with a duplicate negative control', () => {\n    const names = SEARCH_SOURCES.map(source => source.name);\n    const duplicates = (input: string[]) => input.filter((name, index) => input.indexOf(name) !== index);\n    expect(duplicates(names)).toEqual([]);\n    for (const family of ['plan', 'doc', 'report']) {\n      expect(names.filter(name => name === family), family).toEqual([family]);\n      expect(duplicates([...names, family])).toContain(family);\n    }\n  });\n",
+          "testFileSha256": "3968bfefc86f1b6a72fbea28f0e34f665bf35cdbd8976e90230e0be41a16fff8",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/memory/corpus-recall-io.test.ts",
+          "line": 235,
+          "testDeclaration": "it('reads the registered session/work-item and complete knowledge sources', async () => {",
+          "assertionSource": "  it('reads the registered session/work-item and complete knowledge sources', async () => {\n    runHybridSearch.mockResolvedValue(ok());\n    await recallCorpusContext(base);\n    const [sources] = runHybridSearch.mock.calls[0];\n    expect((sources as Array<{ name: string }>).map((s) => s.name).sort()).toEqual([\n      'doc',\n      'plan',\n      'report',\n      'session_turn',\n      'work_item',\n    ]);\n  });\n",
+          "testFileSha256": "211dcaa0365f498059c080dbf245ce9300195af43e72a14433984c24928327d6",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "interpretation": "Positive control: the registered source list passed to runHybridSearch contains plan, doc, report, session_turn and work_item. Omitting this criterion's knowledge source from automatic corpus recall changes the exact source list and fails this assertion; the criterion's other detectors independently verify complete body ingestion and retrieval.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "criterion": "r-4",
+      "barKey": "R-4",
+      "driftMarkers": "The report is absent despite its section's verified embedding.",
+      "boundFiles": [
+        "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+      ],
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts",
+          "line": 202,
+          "testDeclaration": "it('returns the semantic matching body section for a paraphrase without keyword overlap', async () => {",
+          "assertionSource": "  it('returns the semantic matching body section for a paraphrase without keyword overlap', async () => {\n    const query = 'restore the diagnostic snapshot';\n    const section = '## Contingency\\nPrerequisite: recover archived reference copy; zephyrquartz marker.';\n    const queryTerms = new Set(query.toLowerCase().match(/[a-z0-9]+/g) ?? []);\n    const sectionTerms = section.toLowerCase().match(/[a-z0-9]+/g) ?? [];\n    expect(sectionTerms.filter(term => queryTerms.has(term))).toEqual([]);\n    const report = await publish('workspace', 'ordinary filler '.repeat(300) + '\\n' + section);\n    const rows = await runHybridSearch([createReportSearchSource()], { ...context(),\n      query, embedder: embed, mode: 'embeddings' });\n    const match = rows.results.find(r=>r.source_id === report.reportId);\n    expect(match?.rankers).toContain('embeddings');\n    expect(match?.excerpt).toContain('zephyrquartz');\n    expect(match?.excerpt).toContain('recover archived reference copy');\n    expect(match?.meta?.section).toBe('Contingency');\n    expect(await createReportSearchSource().lexical!({ ...context(), query }))\n      .not.toEqual(expect.arrayContaining([expect.objectContaining({ row: expect.objectContaining({ source_id: report.reportId }) })]));\n  });\n",
+          "testFileSha256": "6eeb7d2033c86f812b58e097b5761774b87185eca0bebc03547f8931e793f283",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "criterion": "r-5",
+      "barKey": "R-5",
+      "driftMarkers": "Automatic context requires a prior manual plan search.",
+      "boundFiles": [
+        "packages/operator-core/lib/memory/corpus-recall-io.test.ts",
+        "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.test.ts"
+      ],
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/memory/corpus-recall-io.test.ts",
+          "line": 235,
+          "testDeclaration": "it('reads the registered session/work-item and complete knowledge sources', async () => {",
+          "assertionSource": "  it('reads the registered session/work-item and complete knowledge sources', async () => {\n    runHybridSearch.mockResolvedValue(ok());\n    await recallCorpusContext(base);\n    const [sources] = runHybridSearch.mock.calls[0];\n    expect((sources as Array<{ name: string }>).map((s) => s.name).sort()).toEqual([\n      'doc',\n      'plan',\n      'report',\n      'session_turn',\n      'work_item',\n    ]);\n  });\n",
+          "testFileSha256": "211dcaa0365f498059c080dbf245ce9300195af43e72a14433984c24928327d6",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.test.ts",
+          "line": 211,
+          "testDeclaration": "it('preserves bound-plan orientation and eligible memory alongside cited knowledge with server-bound agent scope', async () => {",
+          "assertionSource": "  it('preserves bound-plan orientation and eligible memory alongside cited knowledge with server-bound agent scope', async () => {\n    detectHarnessSlugSyncMock.mockReturnValue({ slug: 'papercusp',source: 'meta-papercup' });\n    buildTurnStartOrientationBlockMock.mockResolvedValue({ block: '## Orientation\\nBound plan: current repair requirement',deliveryToken: null });\n    buildMemoryContextBlockMock.mockResolvedValue('Relevant memory: retain verified snapshot\\n\\n'\n      + 'Related context: [plan other-repair] tail decision; [doc repair-runbook] prerequisite; [report rpt-repair] dated evidence');\n    const out = await post({ owner: 'su-knowledge-reader',prompt: 'repair the queue boundary',harness: 'papercusp',client: 'codex' });\n    expect(out.text).toContain('Bound plan: current repair requirement');\n    expect(out.text).toContain('retain verified snapshot');\n    expect(out.text).toContain('[plan other-repair]');\n    expect(out.text).toContain('[doc repair-runbook] prerequisite');\n    expect(out.text).toContain('[report rpt-repair] dated evidence');\n    expect(buildMemoryContextBlockMock).toHaveBeenCalledWith(expect.objectContaining({\n      workspaceId: 'ws-test',harnessSlugs: ['papercusp'],session: expect.objectContaining({ sessionId: 'su-knowledge-reader',client: 'codex' }),\n    }));\n  });",
+          "testFileSha256": "28caa7e310884092af0fcafec961712ee9e67c80c40a95855012a2d0b8f02a12",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.test.ts"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "criterion": "r-6",
+      "barKey": "R-6",
+      "driftMarkers": "Only a startup index entry is delivered.",
+      "boundFiles": [
+        "packages/operator-core/lib/memory/corpus-recall-io.test.ts",
+        "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+      ],
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/memory/corpus-recall-io.test.ts",
+          "line": 248,
+          "testDeclaration": "it('binds agent visibility and ambient exclusions before source ranking', async () => {",
+          "assertionSource": "  it('binds agent visibility and ambient exclusions before source ranking', async () => {\n    runHybridSearch.mockResolvedValue(ok([hit({ source: 'doc', source_id: 'harness:papercusp:repair',\n      excerpt: 'http2 transport prerequisite: keep snapshot', meta: { section: 'Repair' } })]));\n    const excluded = new Set(['report:R-secret']);\n    const result = await recallCorpusContext({ ...base,harnessSlugs: ['papercusp'],\n      excludeOwnerId: 'su-me',ambientExcludedRefs: excluded });\n    expect(planSource).toHaveBeenCalledWith({ harnessSlugs: ['papercusp'],automatic: true,excludedRefs: excluded });\n    expect(docSource).toHaveBeenCalledWith({ harnessSlugs: ['papercusp'],automatic: true,excludedRefs: excluded });\n    expect(reportSource).toHaveBeenCalledWith({ ownerId: 'su-me',potSlug: 'papercusp' },\n      { harnessSlugs: ['papercusp'],automatic: true,excludedRefs: excluded });\n    expect(result.block).toContain('doc:');\n    expect(result.block).toContain('docs:get');\n    expect(result.block).toContain('keep snapshot');\n  });\n",
+          "testFileSha256": "211dcaa0365f498059c080dbf245ce9300195af43e72a14433984c24928327d6",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts",
+          "line": 85,
+          "testDeclaration": "it('retrieves a deep doc section and excludes foreign/crowding harnesses before the limit', async () => {",
+          "assertionSource": "  it('retrieves a deep doc section and excludes foreign/crowding harnesses before the limit', async () => {\n    const source = createDocSearchSource({ harnessSlugs: ['pot-a'], automatic: true });\n    for (const leg of [source.lexical!,source.embedding!]) {\n      const rows = await leg(params());\n      expect(rows.map(r=>r.row.source_id)).toEqual(['harness:pot-a:late-doc']);\n      expect(rows[0].row.excerpt).toContain('retain the snapshot');\n      expect(rows[0].row.meta?.section).toBe('procedure-299');\n      expect(rows[0].row.meta?.path).toBe('/docs/late-doc#procedure-299');\n    }\n  });\n",
+          "testFileSha256": "71e6482f095a4de97d9adf0158032d69d2d167c7581bfb6298f55d6a017c0c37",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "criterion": "r-7",
+      "barKey": "R-7",
+      "driftMarkers": "Report candidates are absent from automatic recall.",
+      "boundFiles": [
+        "packages/operator-core/lib/memory/corpus-recall-io.test.ts",
+        "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+      ],
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/memory/corpus-recall-io.test.ts",
+          "line": 235,
+          "testDeclaration": "it('reads the registered session/work-item and complete knowledge sources', async () => {",
+          "assertionSource": "  it('reads the registered session/work-item and complete knowledge sources', async () => {\n    runHybridSearch.mockResolvedValue(ok());\n    await recallCorpusContext(base);\n    const [sources] = runHybridSearch.mock.calls[0];\n    expect((sources as Array<{ name: string }>).map((s) => s.name).sort()).toEqual([\n      'doc',\n      'plan',\n      'report',\n      'session_turn',\n      'work_item',\n    ]);\n  });\n",
+          "testFileSha256": "211dcaa0365f498059c080dbf245ce9300195af43e72a14433984c24928327d6",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts",
+          "line": 220,
+          "testDeclaration": "it('fences automatic report candidates before their limit and never revives a superseded visible edition', async () => {",
+          "assertionSource": "  it('fences automatic report candidates before their limit and never revives a superseded visible edition', async () => {\n    const old = await publish('workspace');\n    const correction = await publishReport(db.adminSql, { workspaceId, title: 'Private correction',\n      bodyMd: 'zephyrquartz', visibility: 'owner', supersedes: old.reportId },author);\n    await indexReport(db.adminSql,correction,documentEmbedder);\n    const excluded = await publish('workspace');\n    const source = createReportSearchSource({ ownerId: 'stranger', potSlug: 'pot-a' }, {\n      automatic: true, harnessSlugs: ['pot-a'], excludedRefs: new Set([`report:${excluded.reportId}`]),\n    });\n    for (const leg of [source.lexical!,source.embedding!]) {\n      const options = { ...context(),limit: 1,qVec: JSON.stringify(vector('zephyrquartz')),\n        embeddingProfile: { profileId,legacyMode: 'gemma' } };\n      const rows = await leg(options);\n      const ids = rows.map(r=>r.row.source_id);\n      expect(ids).not.toContain(old.reportId);\n      expect(ids).not.toContain(correction.reportId);\n      expect(ids).not.toContain(excluded.reportId);\n    }\n    const wrongHarness = createReportSearchSource({ isOwner: true }, { automatic: true,harnessSlugs: ['pot-unrelated'] });\n    expect(await wrongHarness.lexical!(context())).toEqual([]);\n    expect(await wrongHarness.embedding!({ ...context(),qVec: JSON.stringify(vector('zephyrquartz')),\n      embeddingProfile: { profileId,legacyMode: 'gemma' } })).toEqual([]);\n  });\n});",
+          "testFileSha256": "6eeb7d2033c86f812b58e097b5761774b87185eca0bebc03547f8931e793f283",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "criterion": "r-8",
+      "barKey": "R-8",
+      "driftMarkers": "The selected instruction loses the prerequisite needed to interpret it.",
+      "boundFiles": [
+        "packages/operator-core/lib/memory/corpus-recall.test.ts"
+      ],
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/memory/corpus-recall.test.ts",
+          "line": 63,
+          "testDeclaration": "it('retains prerequisite context and resolves all three source kinds', () => {",
+          "assertionSource": "  it('retains prerequisite context and resolves all three source kinds', () => {\n    const hits: CorpusHit[] = [\n      { source: 'plan',sourceId: 'papercusp:repair',scope: 'harness:papercusp',excerpt: 'http2 transport repair',score: .03 },\n      { source: 'doc',sourceId: 'harness:papercusp:repair',scope: 'harness:papercusp',\n        excerpt: 'Prerequisite: retain the snapshot. Apply the http2 transport recovery.',\n        highlight: 'http2 transport',score: .03,meta: { section: 'Recovery' } },\n      { source: 'report',sourceId: 'R1',scope: 'papercusp',excerpt: 'http2 transport incident evidence',score: .03 },\n    ];\n    const selected = selectCorpusLines({ hits,queryText: QUERY,harnessSlugs: ['papercusp'],budgetChars: 2000 });\n    expect(selected.lines).toHaveLength(3);\n    expect(selected.lines.map(l=>l.handle.kind).sort()).toEqual(['doc','plan','report']);\n    const block = renderCorpusBlock(selected.lines)!;\n    expect(block).toContain('retain the snapshot');\n    expect(block).toContain('plans:get');\n    expect(block).toContain('docs:get');\n    expect(selected.lines.find(l=>l.handle.kind === 'doc')?.handle.resolve)\n      .toBe('docs:get {\"slugs\":[\"repair\"],\"harness\":\"papercusp\"}');\n    expect(block).toContain('reports:get');\n    expect(block).toContain('dated evidence');\n    expect(selectCorpusLines({ hits,queryText: QUERY,ambientExcludedRefs: new Set(['report:R1']) }).lines\n      .some(l=>l.handle.ref === 'report:R1')).toBe(false);\n  });\n",
+          "testFileSha256": "95c1c90f6304c9db54310fa29285c29d2e78719d65e463412b80c8e4d53d85a8",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/corpus-recall.test.ts"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "criterion": "r-9",
+      "barKey": "R-9",
+      "driftMarkers": "A title, excerpt, highlight, reranker input, or receipt exposes private report content. Inaccessible candidates crowd out permitted matches or leak through a projection or automatic port.",
+      "boundFiles": [
+        "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts",
+        "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+      ],
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts",
+          "line": 155,
+          "testDeclaration": "it('enforces private, pot, author and workspace access before either ranker, even with spoofed author filters', async () => {",
+          "assertionSource": "  it('enforces private, pot, author and workspace access before either ranker, even with spoofed author filters', async () => {\n    const privateReport = await publish('owner');\n    const potReport = await publish('pot');\n    const publicReport = await publish('workspace');\n    for (const [viewer, allowed] of [\n      [{ ownerId: 'stranger', potSlug: 'pot-b' }, [publicReport.reportId]],\n      [{ ownerId: 'peer', potSlug: 'pot-a' }, [potReport.reportId, publicReport.reportId]],\n      [{ ownerId: 'writer', potSlug: 'pot-b' }, [privateReport.reportId, potReport.reportId, publicReport.reportId]],\n      [{ isOwner: true }, [privateReport.reportId, potReport.reportId, publicReport.reportId]],\n    ] as const) {\n      const source = createReportSearchSource(viewer);\n      for (const semantic of [false, true]) {\n        const options = { ...context(), filters: { owners: ['writer'] } };\n        const result = semantic ? await runHybridSearch([source], { ...options, embedder: embed, mode: 'embeddings' })\n          : await runFullTextSearch([source], options);\n        const actual = result.results.map(r => r.source_id).filter(id => [privateReport.reportId, potReport.reportId, publicReport.reportId].includes(id));\n        expect(actual.sort()).toEqual([...allowed].sort());\n      }\n    }\n  });\n",
+          "testFileSha256": "6eeb7d2033c86f812b58e097b5761774b87185eca0bebc03547f8931e793f283",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts",
+          "line": 220,
+          "testDeclaration": "it('fences automatic report candidates before their limit and never revives a superseded visible edition', async () => {",
+          "assertionSource": "  it('fences automatic report candidates before their limit and never revives a superseded visible edition', async () => {\n    const old = await publish('workspace');\n    const correction = await publishReport(db.adminSql, { workspaceId, title: 'Private correction',\n      bodyMd: 'zephyrquartz', visibility: 'owner', supersedes: old.reportId },author);\n    await indexReport(db.adminSql,correction,documentEmbedder);\n    const excluded = await publish('workspace');\n    const source = createReportSearchSource({ ownerId: 'stranger', potSlug: 'pot-a' }, {\n      automatic: true, harnessSlugs: ['pot-a'], excludedRefs: new Set([`report:${excluded.reportId}`]),\n    });\n    for (const leg of [source.lexical!,source.embedding!]) {\n      const options = { ...context(),limit: 1,qVec: JSON.stringify(vector('zephyrquartz')),\n        embeddingProfile: { profileId,legacyMode: 'gemma' } };\n      const rows = await leg(options);\n      const ids = rows.map(r=>r.row.source_id);\n      expect(ids).not.toContain(old.reportId);\n      expect(ids).not.toContain(correction.reportId);\n      expect(ids).not.toContain(excluded.reportId);\n    }\n    const wrongHarness = createReportSearchSource({ isOwner: true }, { automatic: true,harnessSlugs: ['pot-unrelated'] });\n    expect(await wrongHarness.lexical!(context())).toEqual([]);\n    expect(await wrongHarness.embedding!({ ...context(),qVec: JSON.stringify(vector('zephyrquartz')),\n      embeddingProfile: { profileId,legacyMode: 'gemma' } })).toEqual([]);\n  });\n});",
+          "testFileSha256": "6eeb7d2033c86f812b58e097b5761774b87185eca0bebc03547f8931e793f283",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts",
+          "line": 85,
+          "testDeclaration": "it('retrieves a deep doc section and excludes foreign/crowding harnesses before the limit', async () => {",
+          "assertionSource": "  it('retrieves a deep doc section and excludes foreign/crowding harnesses before the limit', async () => {\n    const source = createDocSearchSource({ harnessSlugs: ['pot-a'], automatic: true });\n    for (const leg of [source.lexical!,source.embedding!]) {\n      const rows = await leg(params());\n      expect(rows.map(r=>r.row.source_id)).toEqual(['harness:pot-a:late-doc']);\n      expect(rows[0].row.excerpt).toContain('retain the snapshot');\n      expect(rows[0].row.meta?.section).toBe('procedure-299');\n      expect(rows[0].row.meta?.path).toBe('/docs/late-doc#procedure-299');\n    }\n  });\n",
+          "testFileSha256": "71e6482f095a4de97d9adf0158032d69d2d167c7581bfb6298f55d6a017c0c37",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/memory/corpus-recall-io.test.ts",
+          "line": 248,
+          "testDeclaration": "it('binds agent visibility and ambient exclusions before source ranking', async () => {",
+          "assertionSource": "  it('binds agent visibility and ambient exclusions before source ranking', async () => {\n    runHybridSearch.mockResolvedValue(ok([hit({ source: 'doc', source_id: 'harness:papercusp:repair',\n      excerpt: 'http2 transport prerequisite: keep snapshot', meta: { section: 'Repair' } })]));\n    const excluded = new Set(['report:R-secret']);\n    const result = await recallCorpusContext({ ...base,harnessSlugs: ['papercusp'],\n      excludeOwnerId: 'su-me',ambientExcludedRefs: excluded });\n    expect(planSource).toHaveBeenCalledWith({ harnessSlugs: ['papercusp'],automatic: true,excludedRefs: excluded });\n    expect(docSource).toHaveBeenCalledWith({ harnessSlugs: ['papercusp'],automatic: true,excludedRefs: excluded });\n    expect(reportSource).toHaveBeenCalledWith({ ownerId: 'su-me',potSlug: 'papercusp' },\n      { harnessSlugs: ['papercusp'],automatic: true,excludedRefs: excluded });\n    expect(result.block).toContain('doc:');\n    expect(result.block).toContain('docs:get');\n    expect(result.block).toContain('keep snapshot');\n  });\n",
+          "testFileSha256": "211dcaa0365f498059c080dbf245ce9300195af43e72a14433984c24928327d6",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "criterion": "r-10",
+      "barKey": "R-10",
+      "driftMarkers": "A superseded, retired or archived source survives in ordinary automatic candidates, or an authorized explicit historical read loses its historical provenance.",
+      "boundFiles": [
+        "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+      ],
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts",
+          "line": 176,
+          "testDeclaration": "it('returns latest editions and removes retired reports from both rankers', async () => {",
+          "assertionSource": "  it('returns latest editions and removes retired reports from both rankers', async () => {\n    const old = await publish('workspace');\n    const replacement = await publishReport(db.adminSql, { workspaceId, title: 'Corrected', bodyMd: 'zephyrquartz',\n      supersedes: old.reportId, visibility: 'workspace' }, author);\n    await indexReport(db.adminSql, replacement, documentEmbedder);\n    for (const mode of ['lexical', 'embedding'] as const) {\n      const source = createReportSearchSource();\n      const rows = mode === 'lexical' ? await source.lexical!(context()) : await source.embedding!({ ...context(),\n        qVec: JSON.stringify(vector('zephyrquartz')), embeddingProfile: { profileId, legacyMode: 'gemma' } });\n      expect(rows.map(r => r.row.source_id)).toContain(replacement.reportId);\n      expect(rows.map(r => r.row.source_id)).not.toContain(old.reportId);\n    }\n    await retireReport(db.adminSql, workspaceId, replacement.reportId);\n    const rows = await createReportSearchSource().lexical!(context());\n    expect(rows.map(r => r.row.source_id)).not.toContain(replacement.reportId);\n  });\n",
+          "testFileSha256": "6eeb7d2033c86f812b58e097b5761774b87185eca0bebc03547f8931e793f283",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts",
+          "line": 140,
+          "testDeclaration": "it('applies ambient fences and canonical retirement before either ranker', async () => {",
+          "assertionSource": "  it('applies ambient fences and canonical retirement before either ranker', async () => {\n    for (const [source,ref] of [\n      [createPlanSearchSource,'plan:pot-a:late-plan'],\n      [createDocSearchSource,'doc:harness:pot-a:late-doc'],\n    ] as const) {\n      const fenced = source({ harnessSlugs: ['pot-a'], automatic: true, excludedRefs: new Set([ref]) });\n      expect(await fenced.lexical!(params())).toEqual([]);\n      expect(await fenced.embedding!(params())).toEqual([]);\n    }\n    await db.adminSql`UPDATE harness_shared.harness_plans SET superseded_by = 'replacement'\n      WHERE workspace_id = ${workspaceId} AND plan_slug = 'late-plan'`;\n    const plans = createPlanSearchSource({ harnessSlugs: ['pot-a'], automatic: true });\n    expect(await plans.lexical!(params())).toEqual([]);\n    expect(await plans.embedding!(params())).toEqual([]);\n    const historical = createPlanSearchSource({ harnessSlugs: ['pot-a'] });\n    for (const leg of [historical.lexical!,historical.embedding!]) {\n      const rows = await leg(params());\n      expect(rows.map(r=>r.row.source_id)).toEqual(['pot-a:late-plan']);\n      expect(rows[0].row.meta?.currentness).toBe('historical');\n      expect(rows[0].row.excerpt).toContain('retain the snapshot');\n    }\n    await db.adminSql`UPDATE harness_shared.harness_plans SET superseded_by = NULL,archived = true\n      WHERE workspace_id = ${workspaceId} AND plan_slug = 'late-plan'`;\n    expect(await plans.lexical!(params())).toEqual([]);\n    expect(await plans.embedding!(params())).toEqual([]);\n    expect((await historical.lexical!(params()))[0].row.meta?.currentness).toBe('historical');\n    await db.adminSql`INSERT INTO harness_shared.harness_docs\n      (workspace_id,harness_slug,doc_id,retired_at) VALUES (${workspaceId},'pot-a','late-doc.mdx',now())`;\n    const docs = createDocSearchSource({ harnessSlugs: ['pot-a'], automatic: true });\n    expect(await docs.lexical!(params())).toEqual([]);\n    expect(await docs.embedding!(params())).toEqual([]);\n  });\n});",
+          "testFileSha256": "71e6482f095a4de97d9adf0158032d69d2d167c7581bfb6298f55d6a017c0c37",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "criterion": "r-11",
+      "barKey": "R-11",
+      "driftMarkers": "A conflicting historical report becomes current procedural instruction.",
+      "boundFiles": [
+        "packages/operator-core/lib/memory/corpus-recall.test.ts"
+      ],
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/memory/corpus-recall.test.ts",
+          "line": 86,
+          "testDeclaration": "it('selects maintained guidance ahead of conflicting dated evidence within a single slot', () => {",
+          "assertionSource": "  it('selects maintained guidance ahead of conflicting dated evidence within a single slot', () => {\n    const report: CorpusHit = { source: 'report',sourceId: 'R1',excerpt: 'http2 transport: discard the snapshot',\n      score: .04,rankers: ['lexical','embeddings'] };\n    const doc: CorpusHit = { source: 'doc',sourceId: 'papercusp-engineering:repair',scope: 'operator',\n      excerpt: 'http2 transport: retain the snapshot',score: .01,rankers: ['lexical'] };\n    const result = selectCorpusLines({ hits: [report,doc],queryText: QUERY,maxItems: 1 });\n    expect(result.lines[0].handle.kind).toBe('doc');\n    expect(result.lines[0].line).toContain('retain the snapshot');\n    expect(result.lines[0].handle.resolve).toBe('docs:get {\"slugs\":[\"repair\"],\"harness\":\"engineering\"}');\n  });\n});\n\ndescribe('corpusTerms', () => {",
+          "testFileSha256": "95c1c90f6304c9db54310fa29285c29d2e78719d65e463412b80c8e4d53d85a8",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/corpus-recall.test.ts"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "criterion": "r-12",
+      "barKey": "R-12",
+      "driftMarkers": "New prose sources evict the separate memory contribution. Source expansion drops the bound-plan contribution, mixes incompatible embedding spaces, or duplicates an already delivered source handle.",
+      "boundFiles": [
+        "packages/operator-core/lib/memory/injection.test.ts",
+        "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.test.ts",
+        "packages/operator-core/lib/memory/corpus-recall-io.test.ts",
+        "packages/operator-core/lib/search/prose-vector-dims.test.ts"
+      ],
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/memory/injection.test.ts",
+          "line": 2004,
+          "testDeclaration": "it('retains eligible mem0 alongside new plan/doc/report contributions without expanding the memory budget', async () => {",
+          "assertionSource": "  it('retains eligible mem0 alongside new plan/doc/report contributions without expanding the memory budget', async () => {\n    useBackend(mockBackend([{ id: 'm-knowledge-control',text: 'retain verified snapshot' }]));\n    corpusIoResult = { block: null,dropped: [],embedderAvailable: true,candidateCount: 3,\n      lines: (['plan','doc','report'] as const).map(kind => ({ line: `- [${kind} fixture] cited ${kind} section`,score: 1,\n        handle: { kind,ref: `${kind}:fixture`,query: ['repair'],resolve: `${kind}:get` } })),\n    };\n    const block = await buildMemoryContextBlock({ userId: 'u1',workspaceId: 'ws',harnessSlugs: ['papercusp'],\n      queryContext: 'repair the queue boundary',budgetChars: 1800 });\n    expect(block).toContain('retain verified snapshot');\n    for (const kind of ['plan','doc','report']) expect(block).toContain(`[${kind} fixture] cited ${kind} section`);\n    expect(recallCorpusContext).toHaveBeenCalledWith(expect.objectContaining({ harnessSlugs: ['papercusp'],workspaceId: 'ws' }));\n  });\n",
+          "testFileSha256": "212463b7635cf35a4a1148ac36633243cca655bad9d98fa6c7d77acf07047959",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/injection.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/injection.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/injection.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/memory/injection.test.ts",
+          "line": 2017,
+          "testDeclaration": "it('suppresses a previously delivered report at turn start while retaining a new doc and mem0 control', async () => {",
+          "assertionSource": "  it('suppresses a previously delivered report at turn start while retaining a new doc and mem0 control', async () => {\n    useBackend(mockBackend([{ id: 'm-turn-start-control',text: 'retain verified snapshot' }]));\n    corpusIoResult = { block: null,dropped: [],embedderAvailable: true,candidateCount: 2,\n      lines: (['report','doc'] as const).map(kind => ({ line: `- [${kind} fixture] cited ${kind} section`,score: 1,\n        handle: { kind,ref: `${kind}:fixture`,query: ['repair'],resolve: `${kind}:get` } })),\n    };\n    sqlRows = [{ ref: 'report:fixture',epoch: 0 }];\n    const block = await buildMemoryContextBlock({ userId: 'u1',workspaceId: 'ws',harnessSlugs: ['papercusp'],\n      queryContext: 'repair the queue boundary',budgetChars: 1800,\n      session: { sessionId: 'su-knowledge-dedup',epoch: 0,port: 'turn-start' } });\n    expect(block).toContain('retain verified snapshot');\n    expect(block).toContain('[doc fixture] cited doc section');\n    expect(block).not.toContain('[report fixture] cited report section');\n  });\n  const oneLine = (over: Partial<CorpusIoStub> = {}): CorpusIoStub => ({\n    block: null,\n    lines: [{ line: '- [work-item WI-6512] a pointer', score: 1,\n      handle: { kind: 'work-item', ref: 'work-item:WI-6512', query: ['pointer'], resolve: 'work_items:get { id: \"WI-6512\" }' } }],\n    dropped: [],\n    embedderAvailable: true,\n    candidateCount: 4,\n    ...over,\n  });\n\n  const run = async () => {\n    useBackend(mockBackend([{ id: 'm1', text: 'alpha' }]));\n    return await buildMemoryContextBlock({\n      userId: 'u1',\n      workspaceId: 'ws',\n      queryContext: 'why did the corpus leg return that',\n    });\n  };\n\n  const runWithSession = async () => {\n    useBackend(mockBackend([{ id: 'm1', text: 'alpha' }]));\n    return await buildMemoryContextBlock({\n      userId: 'u1',\n      workspaceId: 'ws',\n      queryContext: 'why did the corpus leg return that',\n      session: { sessionId: 'su-ambient-fence', epoch: 0, port: 'mid-turn' },\n    });\n  };\n",
+          "testFileSha256": "212463b7635cf35a4a1148ac36633243cca655bad9d98fa6c7d77acf07047959",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/injection.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/injection.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/injection.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.test.ts",
+          "line": 211,
+          "testDeclaration": "it('preserves bound-plan orientation and eligible memory alongside cited knowledge with server-bound agent scope', async () => {",
+          "assertionSource": "  it('preserves bound-plan orientation and eligible memory alongside cited knowledge with server-bound agent scope', async () => {\n    detectHarnessSlugSyncMock.mockReturnValue({ slug: 'papercusp',source: 'meta-papercup' });\n    buildTurnStartOrientationBlockMock.mockResolvedValue({ block: '## Orientation\\nBound plan: current repair requirement',deliveryToken: null });\n    buildMemoryContextBlockMock.mockResolvedValue('Relevant memory: retain verified snapshot\\n\\n'\n      + 'Related context: [plan other-repair] tail decision; [doc repair-runbook] prerequisite; [report rpt-repair] dated evidence');\n    const out = await post({ owner: 'su-knowledge-reader',prompt: 'repair the queue boundary',harness: 'papercusp',client: 'codex' });\n    expect(out.text).toContain('Bound plan: current repair requirement');\n    expect(out.text).toContain('retain verified snapshot');\n    expect(out.text).toContain('[plan other-repair]');\n    expect(out.text).toContain('[doc repair-runbook] prerequisite');\n    expect(out.text).toContain('[report rpt-repair] dated evidence');\n    expect(buildMemoryContextBlockMock).toHaveBeenCalledWith(expect.objectContaining({\n      workspaceId: 'ws-test',harnessSlugs: ['papercusp'],session: expect.objectContaining({ sessionId: 'su-knowledge-reader',client: 'codex' }),\n    }));\n  });",
+          "testFileSha256": "28caa7e310884092af0fcafec961712ee9e67c80c40a95855012a2d0b8f02a12",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/memory/corpus-recall-io.test.ts",
+          "line": 263,
+          "testDeclaration": "it('preserves the prose query profile across memoization instead of borrowing a mem0 profile', async () => {",
+          "assertionSource": "  it('preserves the prose query profile across memoization instead of borrowing a mem0 profile', async () => {\n    const { stampEmbedderMode,embedderModeOf,embedderProfileIdOf } = await import('../search/embedder-mode-registry');\n    const { EMBEDDER_DIM_SPECS } = await import('@papercusp/memory');\n    const prose = vi.fn(async()=>Array(EMBEDDER_DIM_SPECS.gemma.targetDims).fill(0.1));\n    stampEmbedderMode(prose,'gemma',EMBEDDER_DIM_SPECS.gemma.profileId);\n    buildQueryEmbedder.mockResolvedValue(prose);\n    await warmCorpusEmbedder();\n    prose.mockClear(); // Warmup has its own probe; count only the recall's query.\n    runHybridSearch.mockResolvedValue(ok());\n    await recallCorpusContext(base);\n    const options = runHybridSearch.mock.calls[0][1];\n    expect(options.embedder).not.toBe(prose);\n    expect(embedderModeOf(options.embedder)).toBe('gemma');\n    expect(embedderProfileIdOf(options.embedder)).toBe(EMBEDDER_DIM_SPECS.gemma.profileId);\n    expect(embedderProfileIdOf(options.embedder)).not.toBe(EMBEDDER_DIM_SPECS.local.profileId);\n    expect(await options.embedder('transport')).toHaveLength(EMBEDDER_DIM_SPECS.gemma.targetDims);\n    expect(await options.embedder('transport')).toHaveLength(EMBEDDER_DIM_SPECS.gemma.targetDims);\n    expect(prose).toHaveBeenCalledOnce();\n  });\n",
+          "testFileSha256": "211dcaa0365f498059c080dbf245ce9300195af43e72a14433984c24928327d6",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/search/prose-vector-dims.test.ts",
+          "line": 61,
+          "testDeclaration": "it('rejects an equal-width, equal-metric profile whose exact identity is not accepted', () => {",
+          "assertionSource": "  it('rejects an equal-width, equal-metric profile whose exact identity is not accepted', () => {\n    const current = EMBEDDER_DIM_SPECS.gemma;\n    expect(\n      validateProseStorageCompatibility({\n        profileId: 'gemma-embeddinggemma-300m-768@v2',\n        targetDims: current.targetDims,\n        distanceMetric: current.distanceMetric,\n      }),\n    ).toEqual([\n      expect.stringContaining('does not accept profile gemma-embeddinggemma-300m-768@v2'),\n    ]);\n  });\n",
+          "testFileSha256": "53df6ddee14ad56397b872cbecef2db4461bad95ab12c90cde60498f139a969c",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/search/prose-vector-dims.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/search/prose-vector-dims.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/search/prose-vector-dims.test.ts"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "criterion": "r-13",
+      "barKey": "R-13",
+      "driftMarkers": "The missing vector is reported as a healthy zero-result search. An omitted/stalled source is conflated with a successful empty call, or an earlier-stage failure disappears from telemetry.",
+      "boundFiles": [
+        "packages/operator-core/lib/memory/injection-coverage.test.ts",
+        "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts",
+        "libs/generic/search/src/hybrid.test.ts",
+        "packages/operator-core/lib/memory/injection.test.ts"
+      ],
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts",
+          "line": 82,
+          "testDeclaration": "it('reports measured missing report embeddings through the existing coverage gate', async () => {",
+          "assertionSource": "  it('reports measured missing report embeddings through the existing coverage gate', async () => {\n    await publish('workspace');\n    const assess = async () => {\n      const surface = 'harness_shared.text_chunks.embedding:report';\n      const target = coverageTargets().find(t=>surfaceKey(t) === surface)!;\n      const q = buildCoverageQuery(target,true,'gemma');\n      const [row] = await db.adminSql.unsafe(q.sql,q.params);\n      const eligible = Number(row.eligible_rows),embedded = Number(row.embedded_rows);\n      const snapshot: CoverageSnapshot = new Map([[surface, {\n        surface, observedAt: new Date(), eligibleRows: eligible, embeddedRows: embedded,\n        pct: eligible === 0 ? 1 : embedded / eligible, recentPct: null, stale: false, ageMs: 0,\n      }]]);\n      return assessSourceCoverage('report', snapshot);\n    };\n    expect((await assess()).verdict).toBe('healthy');\n    // A healthy sibling in the same physical table must not cover missing report vectors.\n    await db.adminSql`INSERT INTO harness_shared.text_chunks\n      (surface,parent_key,chunk_idx,content,parent_sha,chunk_sha,splitter_version,embedding,embedding_mode,embedding_profile)\n      SELECT 'plans',ARRAY[${workspaceId},'coverage-decoy','coverage-decoy'],chunk_idx,content,\n        parent_sha,chunk_sha,splitter_version,embedding,embedding_mode,embedding_profile\n      FROM harness_shared.text_chunks WHERE surface = 'report' AND parent_key[1] = ${workspaceId}\n      LIMIT 1 ON CONFLICT DO NOTHING`;\n    await db.adminSql`UPDATE harness_shared.text_chunks SET embedding = NULL\n      WHERE surface = 'report' AND parent_key[1] = ${workspaceId}`;\n    expect(await assess()).toMatchObject({ verdict: 'degraded', coverage: 0 });\n  });\n",
+          "testFileSha256": "6eeb7d2033c86f812b58e097b5761774b87185eca0bebc03547f8931e793f283",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/memory/injection-coverage.test.ts",
+          "line": 187,
+          "testDeclaration": "it('an unmeasured source reads unknown, never healthy', () => {",
+          "assertionSource": "  it('an unmeasured source reads unknown, never healthy', () => {\n    const r = assessInjectionReach([surface(WORK_ITEM_VEC)], []);\n    const st = r.perSource.find((s) => s.source === 'session_turn');\n    expect(st?.verdict).toBe('unknown');\n    expect(st?.coverage).toBeNull();\n    expect(r.degraded).toBe(true);\n    expect(r.warning).toContain('unknown is not health');\n  });\n",
+          "testFileSha256": "7370a519c770d3a82eaf5676801995188242ae12cf9f9c53e7b8a6829bfdb85c",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/injection-coverage.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/injection-coverage.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/injection-coverage.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/memory/injection.test.ts",
+          "line": 2310,
+          "testDeclaration": "it('retains the source receipts from every cascade stage on the same telemetry row', async () => {",
+          "assertionSource": "  it('retains the source receipts from every cascade stage on the same telemetry row', async () => {\n    const first = { ...legsWith(0),lexical: { ...legsWith(0).lexical,sourceCalls: [\n      { source: 'plan',ranker: 'lexical',status: 'timed-out' as const,rows: null,durationMs: 200,reason: 'source deadline' },\n    ] } };\n    const second = legsWith(1);\n    corpusIoResult = oneLine({ legs: second,stages: [first,second] });\n    const corpus = await run();\n    expect(corpus).toMatchObject({ stages: [first,second] });\n    expect(recordRecallStatsMock).toHaveBeenCalledTimes(1);\n  });\n  const flush = async (): Promise<void> => {\n    for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));\n  };\n\n  const oneLine = (over: Partial<CorpusIoStub> = {}): CorpusIoStub => ({\n    block: null,\n    lines: [{ line: '- [work-item WI-6512] a pointer', score: 1,\n      handle: { kind: 'work-item', ref: 'work-item:WI-6512', query: ['pointer'], resolve: 'work_items:get { id: \"WI-6512\" }' } }],\n    dropped: [\n      { ref: 'work-item:WI-excluded', reason: 'ambient-excluded' },\n      { ref: 'work-item:WI-drop-1', reason: 'no-term-overlap' },\n      { ref: 'work-item:WI-drop-2', reason: 'budget-exhausted' },\n    ],\n    embedderAvailable: true,\n    candidateCount: 4,\n    outcome: 'ok',\n    rerank: 'reranked',\n    legs: legsWith(3),\n    retrievalDepth: 24,\n    ...over,\n  });\n\n  const run = async (session = false) => {\n    useBackend(mockBackend([{ id: 'm1', text: 'alpha' }]));\n    await buildMemoryContextBlock({\n      userId: 'u1',\n      workspaceId: 'ws',\n      queryContext: 'why did the corpus leg return that',\n      ...(session ? { session: { sessionId: 'su-corpus', epoch: 0, port: 'mid-turn' } } : {}),\n    });\n    await flush();\n    return (\n      recordRecallStatsMock.mock.calls.at(-1)![1] as {\n        admission: {\n          corpus: null | {\n            outcome: string;\n            returned: number;\n            selected: number;\n            admitted: number;\n            sessionDedup: number;\n            embedderAvailable: boolean;\n            retrievalDepth: number;\n            rerank: string;\n            dropped: Record<string, number>;\n            gate: { verdict: string; dropped: number } | null;\n          };\n        };\n      }\n    ).admission.corpus;\n  };\n",
+          "testFileSha256": "212463b7635cf35a4a1148ac36633243cca655bad9d98fa6c7d77acf07047959",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/injection.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/injection.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/injection.test.ts"
+            }
+          }
+        },
+        {
+          "file": "libs/generic/search/src/hybrid.test.ts",
+          "line": 156,
+          "testDeclaration": "it('distinguishes a blocked semantic call from a successful empty call and an unsupported call', async () => {",
+          "assertionSource": "  it('distinguishes a blocked semantic call from a successful empty call and an unsupported call', async () => {\n    const sources = [fakeSource('plan', { embedding: [] }), fakeSource('doc')];\n    const failed = await runHybridSearch(sources, { ...baseCtx,mode: 'hybrid',\n      embedder: async () => { throw new Error('embedding transport down'); } });\n    expect(failed.legs.semantic.sourceCalls).toEqual([\n      expect.objectContaining({ source: 'plan',status: 'blocked',rows: null,reason: expect.stringContaining('transport down') }),\n      expect.objectContaining({ source: 'doc',status: 'not-run',rows: null }),\n    ]);\n    const healthy = await runHybridSearch(sources, { ...baseCtx,mode: 'hybrid',embedder: async () => [1] });\n    expect(healthy.legs.semantic.sourceCalls?.find(call => call.source === 'plan')).toMatchObject({ source: 'plan',status: 'ran',rows: 0 });\n    const lexical = await runFullTextSearch(sources, baseCtx);\n    expect(lexical.legs.semantic.sourceCalls?.every(call => call.status === 'not-run')).toBe(true);\n  });\n});\n\n/**\n * The calls a source's lexical leg received, EXCLUDING the cascade's stage-2\n * re-query (WI-37582: `lexicalMode:'coverage-graded'`, fired whenever stage 1\n * under-fills — which these in-memory doubles nearly always do).\n *\n * Every call-count assertion below is a PROXY for \"how many LEGS ran\" (a fresh\n * leg? a serial embed?), and a raw count stopped answering that question once\n * one leg could issue two queries. Filtering by mode restores the question the\n * assertion is actually asking instead of relaxing the number until it passes\n * — the cascade's own coverage lives in hybrid-cascade.test.ts.\n */\nfunction legCalls(fn: unknown): SearchSourceParams[] {\n  const calls = (fn as { mock: { calls: unknown[][] } }).mock.calls;\n  return calls\n    .map((c) => c[0] as SearchSourceParams)\n    .filter((p) => p?.lexicalMode !== \"coverage-graded\");\n}\n\n/**\n * Assert EVERY lexical call — stage 1 AND any cascade stage-2 re-query — was\n * given the same `wantHighlight`.\n *\n * Deliberately stronger than the fixed-length array this replaced: the\n * deferral seam is only correct if stage 2 INHERITS the flag, so a widened\n * search would otherwise compute inline highlights for exactly the rows the\n * deferral exists to avoid computing them for. A fixed-length assertion could\n * not express that — it could only be satisfied by suppressing the cascade.\n */\nfunction expectEveryCallSaw(\n  seen: Array<boolean | undefined>,\n  want: boolean | undefined,\n): void {\n  expect(seen.length).toBeGreaterThan(0);\n  expect(seen.filter((v) => v !== want)).toEqual([]);\n}\n\ndescribe(\"runFullTextSearch\", () => {",
+          "testFileSha256": "5e7ef6ab0c633ac1ef9fd424e04b9fe3bafb203d5ff96016cfd8777dcb444c54",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "libs/generic/search/src/hybrid.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": "libs/generic/search",
+            "commitSha": "b41a38b4c09a6b823b223442b1449e92544df80f",
+            "path": "src/hybrid.test.ts",
+            "superprojectCommitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "gitlinkPath": "libs/generic/search"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "libs/generic/search/src/hybrid.test.ts"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "criterion": "r-14",
+      "barKey": "R-14",
+      "driftMarkers": "A single source extends preparation beyond the contract. A fast empty result loses healthy siblings, or source work continues without cancellation after its budget.",
+      "boundFiles": [
+        "packages/operator-core/lib/memory/corpus-recall-io.test.ts",
+        "libs/generic/search/src/hybrid.test.ts"
+      ],
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/memory/corpus-recall-io.test.ts",
+          "line": 345,
+          "testDeclaration": "it('keeps a doc section and source receipts through the real engine when a plan source stalls', async () => {",
+          "assertionSource": "  it('keeps a doc section and source receipts through the real engine when a plan source stalls', async () => {\n    const engine = await vi.importActual<typeof import('@papercusp/search')>('@papercusp/search');\n    runHybridSearch.mockImplementation(engine.runHybridSearch);\n    let stalledSignal: AbortSignal | undefined;\n    planSource.mockImplementation(() => ({ name: 'plan', lexical: async (params: { signal?: AbortSignal }) => {\n      stalledSignal = params.signal;\n      return await new Promise<never>(() => {});\n    } }));\n    const row = hit({ source: 'doc',source_id: 'harness:papercusp:repair',\n      excerpt: 'http2 transport repair prerequisite: keep snapshot',score: 1,\n      meta: { section: 'Repair' } });\n    docSource.mockImplementation(() => ({ name: 'doc',lexical: async () => [{ key: 'doc:repair',row,score: 1 }] }));\n    reportSource.mockImplementation(() => ({ name: 'report',lexical: async () => [] }));\n    process.env.PAPERCUSP_MEMORY_CORPUS_TIMEOUT_MS = '800';\n    try {\n      const result = await recallCorpusContext({ ...base,harnessSlugs: ['papercusp'],excludeOwnerId: 'su-me' });\n      expect(result.outcome).toBe('ok');\n      expect(result.block).toContain('keep snapshot');\n      expect(stalledSignal?.aborted).toBe(true);\n      expect(result.stages?.[0]?.lexical.sourceCalls).toEqual(expect.arrayContaining([\n        expect.objectContaining({ source: 'plan',status: 'timed-out',rows: null }),\n        expect.objectContaining({ source: 'doc',status: 'ran',rows: 1 }),\n        expect.objectContaining({ source: 'report',status: 'ran',rows: 0 }),\n      ]));\n      expect(result.stages?.[0]?.semantic.sourceCalls).toEqual(expect.arrayContaining([\n        expect.objectContaining({ source: 'plan',status: 'not-run' }),\n      ]));\n    } finally {\n      planSource.mockImplementation(() => ({ name: 'plan' }));\n      docSource.mockImplementation(() => ({ name: 'doc' }));\n      reportSource.mockImplementation(() => ({ name: 'report' }));\n    }\n  });\n",
+          "testFileSha256": "211dcaa0365f498059c080dbf245ce9300195af43e72a14433984c24928327d6",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/memory/corpus-recall-io.test.ts",
+          "line": 379,
+          "testDeclaration": "it('retains healthy sources when both plan rankers stall under a shorter native caller deadline', async () => {",
+          "assertionSource": "  it('retains healthy sources when both plan rankers stall under a shorter native caller deadline', async () => {\n    const engine = await vi.importActual<typeof import('@papercusp/search')>('@papercusp/search');\n    runHybridSearch.mockImplementation(engine.runHybridSearch);\n    await warmCorpusEmbedder();\n    const stalled = vi.fn(async () => await new Promise<never>(() => {}));\n    planSource.mockImplementation(() => ({ name: 'plan', lexical: stalled, embedding: stalled }));\n    const row = hit({ source: 'doc', source_id: 'harness:papercusp:repair',\n      excerpt: 'http2 transport repair prerequisite: keep snapshot', score: 1,\n      meta: { section: 'Repair' } });\n    docSource.mockImplementation(() => ({ name: 'doc', lexical: async () => [{ key: 'doc:repair', row, score: 1 }] }));\n    reportSource.mockImplementation(() => ({ name: 'report', lexical: async () => [] }));\n    const deadline = createMemoryWorkDeadline(400);\n    try {\n      const result = await recallCorpusContext({ ...base, harnessSlugs: ['papercusp'],\n        excludeOwnerId: 'su-me', signal: deadline.signal, deadline });\n      expect(result.outcome).toBe('ok');\n      expect(result.block).toContain('keep snapshot');\n      expect(result.stages).toHaveLength(2);\n      for (const stage of result.stages!) {\n        expect(stage.lexical.sourceCalls).toEqual(expect.arrayContaining([\n          expect.objectContaining({ source: 'plan', status: 'timed-out', rows: null }),\n          expect.objectContaining({ source: 'doc', status: 'ran', rows: 1 }),\n        ]));\n        expect(stage.semantic.sourceCalls).toEqual(expect.arrayContaining([\n          expect.objectContaining({ source: 'plan', status: 'timed-out', rows: null }),\n        ]));\n      }\n      expect(deadline.signal.aborted).toBe(false);\n    } finally {\n      deadline.close();\n      planSource.mockImplementation(() => ({ name: 'plan' }));\n      docSource.mockImplementation(() => ({ name: 'doc' }));\n      reportSource.mockImplementation(() => ({ name: 'report' }));\n    }\n  });\n",
+          "testFileSha256": "211dcaa0365f498059c080dbf245ce9300195af43e72a14433984c24928327d6",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+            }
+          }
+        },
+        {
+          "file": "libs/generic/search/src/hybrid.test.ts",
+          "line": 136,
+          "testDeclaration": "it('retains a healthy hit when a sibling never settles and cancels that sibling', async () => {",
+          "assertionSource": "  it('retains a healthy hit when a sibling never settles and cancels that sibling', async () => {\n    let stalledSignal: AbortSignal | undefined;\n    const stalled: SearchSource = { name: 'plan', lexical: async (params) => {\n      stalledSignal = params.signal;\n      return await new Promise<Listing>(() => {});\n    } };\n    const out = await runHybridSearch([stalled, fakeSource('doc', { lexical: [hit('doc','repair',1)] }),\n      fakeSource('report')], { ...baseCtx, mode: 'hybrid', embedder: null,\n      lexicalCascade: false, sourceTimeoutMs: 25, recency: false, minScore: false });\n    expect(out.results.map(row => row.source_id)).toEqual(['repair']);\n    expect(stalledSignal?.aborted).toBe(true);\n    expect(out.legs.lexical.sourceCalls).toEqual(expect.arrayContaining([\n      expect.objectContaining({ source: 'plan',status: 'timed-out',rows: null }),\n      expect.objectContaining({ source: 'doc',status: 'ran',rows: 1 }),\n      expect.objectContaining({ source: 'report',status: 'ran',rows: 0 }),\n    ]));\n    expect(out.legs.degraded).toBe(true);\n    expect(out.legs.semantic.sourceCalls).toHaveLength(3);\n  });\n",
+          "testFileSha256": "5e7ef6ab0c633ac1ef9fd424e04b9fe3bafb203d5ff96016cfd8777dcb444c54",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "libs/generic/search/src/hybrid.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": "libs/generic/search",
+            "commitSha": "b41a38b4c09a6b823b223442b1449e92544df80f",
+            "path": "src/hybrid.test.ts",
+            "superprojectCommitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "gitlinkPath": "libs/generic/search"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "libs/generic/search/src/hybrid.test.ts"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "criterion": "r-16",
+      "barKey": "R-16",
+      "driftMarkers": "The dated report is used as the sole maintained procedural store. Publication alone passes while the reusable procedure never reaches maintained docs.",
+      "boundFiles": [
+        "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts"
+      ],
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts",
+          "line": 41,
+          "testDeclaration": "it('rejects report-only completion when the requested reusable procedure was not maintained', () => {",
+          "assertionSource": "  it('rejects report-only completion when the requested reusable procedure was not maintained', () => {\n    const calls = [{ name: 'reports:publish',input: { title: 'Review',body_md: REPORT_BODY } },\n      { name: 'reports:get',input: { id: 'rpt_fixture' } }];\n    expect(violations(calls,undefined,false)).toEqual([expect.objectContaining({ assertKind: 'custom:maintained-procedure-authored-and-read-back' })]);\n  });\n",
+          "testFileSha256": "fdfd150e83272f4ed2eac0b946358cfdeb83b542fcf9a3fb4319306657b85e1e",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts",
+          "line": 47,
+          "testDeclaration": "it('uses production doc schemas and verifies the actual stored procedure before accepting routing', async () => {",
+          "assertionSource": "  it('uses production doc schemas and verifies the actual stored procedure before accepting routing', async () => {\n    const world = createReportsCaptureWorld();\n    const missing = await world.override('docs:get',{ harness: 'engineering',slugs: [PROCEDURE_REF] });\n    expect(JSON.parse((missing as { content: [{ text: string }] }).content[0].text)).toMatchObject({ results: [{ found: false }] });\n    await world.override('docs:author',{ harness: 'engineering',slug: PROCEDURE_SLUG,title: 'Shared visibility procedure',body: PROCEDURE_BODY });\n    const read = await world.override('docs:get',{ harness: 'engineering',slugs: [PROCEDURE_REF] });\n    expect(JSON.parse((read as { content: [{ text: string }] }).content[0].text)).toMatchObject({ results: [{ found: true,content: PROCEDURE_BODY }] });\n    const invalid = await world.override('docs:author',{ slug: PROCEDURE_SLUG,body: PROCEDURE_BODY });\n    expect(JSON.parse((invalid as { content: [{ text: string }] }).content[0].text)).toMatchObject({ ok: false });\n  });",
+          "testFileSha256": "fdfd150e83272f4ed2eac0b946358cfdeb83b542fcf9a3fb4319306657b85e1e",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts",
+          "line": 81,
+          "testDeclaration": "it('rejects a missing read-back, altered Markdown, or broader visibility', () => {",
+          "assertionSource": "  it('rejects a missing read-back, altered Markdown, or broader visibility', () => {\n    expect(violations([{ name: 'reports:publish', input: { title: 'Review', body_md: REPORT_BODY } }])).toHaveLength(1);\n    for (const input of [{ title: 'Review', body_md: REPORT_BODY.replace('```mermaid', '```text') },\n      { title: 'Review', body_md: REPORT_BODY, visibility: 'workspace' },\n      { title: 'Review', body_md: REPORT_BODY, kind: 'architecture-review' },\n      { body_md: REPORT_BODY }, { title: '', body_md: REPORT_BODY }]) {\n      expect(violations([{ name: 'reports:publish', input },\n        { name: 'reports:get', input: { ids: ['rpt_fixture'] } }])).toHaveLength(1);\n    }\n  });\n",
+          "testFileSha256": "fdfd150e83272f4ed2eac0b946358cfdeb83b542fcf9a3fb4319306657b85e1e",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

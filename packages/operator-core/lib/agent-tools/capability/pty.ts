@@ -90,6 +90,18 @@ function unknownTask(taskId: string) {
   return errorResult('unknown_task_id', { task_id: taskId });
 }
 
+function endedSession(task: TaskRow, handle?: PtyHandle) {
+  return errorResult('pty_session_ended', {
+    task_id: task.taskId,
+    state: isTerminalState(task.state) ? task.state : handle?.exitCode == null ? 'killed' : 'exited',
+    exit_code: task.exitCode ?? handle?.exitCode ?? null,
+    exit_reason: task.exitReason,
+    reattachment: 'not_applicable',
+    replacement_started: false,
+    advice: 'The PTY has ended. Inspect the terminal outcome above; open a new PTY only if more interactive work is required.',
+  });
+}
+
 function taskBelongsToCaller(task: TaskRow, taskId: string, caller: CallerScope): boolean {
   const detail = task.detail ?? {};
   return (
@@ -138,15 +150,7 @@ async function attachTask(taskId: string, caller: CallerScope): Promise<
     if (isTerminalState(task.state)) {
       return {
         ok: false,
-        result: errorResult('pty_session_ended', {
-          task_id: taskId,
-          state: task.state,
-          exit_code: task.exitCode,
-          exit_reason: task.exitReason,
-          reattachment: 'not_applicable',
-          replacement_started: false,
-          advice: 'The PTY has ended. Inspect the terminal outcome above; open a new PTY only if more interactive work is required.',
-        }),
+        result: endedSession(task),
       };
     }
     return {
@@ -196,7 +200,11 @@ function okResult(body: Record<string, unknown>): PtyToolResult {
 }
 
 async function runLocalPtyOp(op: PtyOp, attachment: Attachment): Promise<PtyToolResult> {
-  const { handle, caller } = attachment;
+  const { task, handle, caller } = attachment;
+  const ended = handle.killed || isTerminalState(task.state);
+  // Natural exit retains the final screen briefly. That retention is never
+  // authority to send new input or resize an already-terminal process.
+  if (ended && (op.op === 'write' || op.op === 'resize')) return endedSession(task, handle);
   switch (op.op) {
     case 'write':
       if (!writePty(handle.id, Buffer.from(op.data, 'utf8'), caller.accessScope)) {
@@ -210,7 +218,9 @@ async function runLocalPtyOp(op: PtyOp, attachment: Attachment): Promise<PtyTool
       return okResult({ task_id: op.task_id, cols: op.cols, rows: op.rows });
     case 'read': {
       const screen = await getScreenSerialization(handle.id, caller.accessScope);
-      if (screen === null) return errorResult('pty_session_unavailable', { task_id: op.task_id });
+      if (screen === null) return ended || handle.killed
+        ? endedSession(task, handle)
+        : errorResult('pty_session_unavailable', { task_id: op.task_id });
       const cols = handle.headless.cols;
       const rows = handle.headless.rows;
       return {
@@ -469,6 +479,7 @@ export const ptyOpenTool = defineTool({
         payloadRef: `task:${enrolment.taskId}`,
       });
     } catch (error) {
+      enrolment.releaseEnvironmentTransport();
       return errorResult('pty_spawn_failed', {
         message: error instanceof Error ? error.message : String(error),
       });
@@ -525,6 +536,7 @@ export const ptyOpenTool = defineTool({
       await enrolment.registrationReady;
     } catch (error) {
       killPty(handle.id, caller.accessScope);
+      enrolment.releaseEnvironmentTransport();
       return errorResult('task_enrollment_failed', {
         message: error instanceof Error ? error.message : String(error),
       });
@@ -599,6 +611,7 @@ export const ptyReadScreenTool = defineTool({
     seeAlso: ['capability:pty_write_stdin', 'capability:pty_resize', 'capability:pty_kill'],
   },
   ...commonTool,
+  effect: 'read',
   args: z.object({
     task_id: z.string().min(1).describe('Durable task id returned by capability:pty_open.'),
   }),

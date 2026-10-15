@@ -62,7 +62,7 @@ import { _resetUrlCacheForTests } from '../../../../libs/papercusp/libs/db/src/c
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { registerHarnessProject } from '../agent-tools/plans/__tests__/_pg-tool-fixture';
 import { createIssue } from '../issues-engineer';
-import { OBSERVATION_TOPIC } from '../harness/improvements/read-items';
+import { OBSERVATION_LANE, OBSERVATION_TOPIC } from '../harness/improvements/read-items';
 import { ORGANIC_ONLY } from '../harness/improvements/provenance';
 import { runScoutCycle, type ScoutCycleResult } from './cycle';
 import { buildScoutCycleDeps } from './cycle-deps';
@@ -163,13 +163,14 @@ describe('rubric-seeding drill — a vaccination-planted broken criterion seeds 
 
     // ── Plant the drill scorecard: a rubric-graded observation, signal_origin='drill',
     //    with ONE distinctive broken criterion. Real filing path (createIssue → the
-    //    observation topic → the observations() reader → buildRubricRatings). ──
+    //    canonical observation lane → the observations() reader → buildRubricRatings). ──
     await createIssue({
       title: 'rubric-seeding drill scorecard (vaccination)',
       topics: [OBSERVATION_TOPIC],
       createdBy: 'rubric-drill',
       signalOrigin: 'drill',
       payload: {
+        lane: OBSERVATION_LANE,
         observation: {
           rubricRef: RUBRIC_REF,
           sourceHive: HIVE,
@@ -246,6 +247,36 @@ describe('rubric-seeding drill — a vaccination-planted broken criterion seeds 
     expect(pat).toBeDefined();
     expect(pat!.category).toBe('rubric-rating');
     expect(pat!.summary).toContain('broken');
+  });
+
+  it.each([
+    { label: 'topic-only', lane: undefined },
+    { label: 'null-lane', lane: null },
+  ])('INVARIANT: a $label scorecard is excluded even when drill origins are allowed', async ({ label, lane }) => {
+    const rubricRef = `${RUBRIC_REF}-${label}`;
+    await createIssue({
+      title: `rubric-seeding ${label} negative control`,
+      topics: [OBSERVATION_TOPIC],
+      createdBy: 'rubric-drill',
+      signalOrigin: 'drill',
+      payload: {
+        ...(lane === undefined ? {} : { lane }),
+        observation: {
+          rubricRef,
+          sourceHive: HIVE,
+          ratings: {
+            [CRITERION]: { rating: 'broken', evidence: 'drill: non-observation lane negative control' },
+          },
+        },
+      },
+    });
+
+    const digest = await synthesizeStateOfHive(
+      buildStateOfHiveReaders({ observationOrigins: [...ORGANIC_ONLY, 'drill'] }),
+      { nowMs: NOW_MS },
+    );
+    expect(digest.rubricRatings.some((p) => p.ref === DRILL_PATTERN_REF)).toBe(true);
+    expect(digest.rubricRatings.some((p) => p.ref === `rubric:${rubricRef}#${CRITERION}@${HIVE}`)).toBe(false);
   });
 
   it('SEEDED + GROUNDED: the cycle routes an idea that grounds on the drill rubric ref', () => {

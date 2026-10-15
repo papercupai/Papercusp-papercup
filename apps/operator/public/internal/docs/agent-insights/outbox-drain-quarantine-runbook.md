@@ -1,4 +1,4 @@
-# The promised-but-missing WI-3896 quarantine runbook: manually clearing a poison outbox row (mig 645)
+# Clearing a poison outbox row without losing delivery evidence
 URL: /internal/docs/agent-insights/outbox-drain-quarantine-runbook
 
 outbox-drain.ts's WI-3896 quarantine was in-memory only, and the reconcile counted quarantined rows as stalled forever — mig 645 persists quarantine + excludes it from the drain SELECT and the reconcile metric. Addendum: the exclusion missed a second independent reader (fleet-monitors.ts's scanOutboxHealth), fixed in EI-21009625512310918.
@@ -58,11 +58,13 @@ succeeded, and the metric bug means the alert never stops regardless.
 
 * **`substrate_outbox.quarantined_at`** (nullable bigint, epoch-ms): stamped
   the moment a row crosses `ROW_QUARANTINE_THRESHOLD`.
-* `startOutboxDrain` now **seeds** `quarantinedIds` from any already-persisted
-  `quarantined_at` rows at boot (no re-discovery dance after a restart), and
-  **persists** a new quarantine the moment it's decided (fire-and-forget,
-  best-effort — an in-memory quarantine still protects the current process
-  even if the persist write fails).
+* `startOutboxDrain` **persists** a new quarantine the moment it is decided.
+  Its in-memory fallback protects the row while the write is pending or failed.
+  After a scoped `UPDATE ... RETURNING id` confirms persistence, the SQL batch
+  exclusion becomes authoritative and the local fallback is removed. A boot
+  reads that same exclusion directly; it does not seed a permanent local copy.
+  This permits an explicit database clear to retry in the same running process
+  (EI-26001567781414812).
 * `drainOutboxOnce`'s SELECT batch now excludes `quarantined_at IS NOT NULL`
   rows directly (read resiliently via `to_jsonb(...) ->> 'quarantined_at'`, so
   a pre-mig-645 outbox degrades to "nothing excluded" instead of crashing) —
@@ -85,10 +87,14 @@ topic join / epoch-key state is what it should be), then:
   every health/backlog metric, permanently, by design.
 * **(b) Retry it** (you believe the underlying condition has cleared): `UPDATE
   harness_shared.substrate_outbox SET quarantined_at = NULL WHERE id = <id>`
-  — the next drain pass re-attempts it fresh from a clean slate (the
-  in-memory `rowTimeoutCounts` for that id was never touched by the manual
-  clear, so it gets a full new `ROW_QUARANTINE_THRESHOLD` allowance before
-  being re-quarantined if it's still genuinely poison).
+  — on a runtime containing EI-26001567781414812, the next drain pass
+  re-attempts it in the same process. The threshold counter was removed when
+  quarantine was entered, so the row gets three new attempts. A continuing
+  fault quarantines it again; `drained_at` is written only after append resolves.
+  Scope the update by workspace, harness and exact row id, and verify the
+  actual append receipt (`drained_at` and `drained_log_key`) before declaring
+  delivery. A timeout identifies a stage; it does not establish a resource
+  bottleneck or any other underlying cause.
 
 ## Addendum (EI-21009625512310918, 2026-08-21): the exclusion missed a SECOND independent reader
 
@@ -116,3 +122,24 @@ column meaning. `scanOutboxHealth` and `loadSubstrateDrainStats` now both
 carry `AND quarantined_at IS NULL`; if a THIRD reader of `substrate_outbox`'s
 undrained state is ever added, it needs the same line, and nothing enforces
 that structurally — this doc is the only thing pointing at it.
+
+## Addendum (EI-26001567781414812, 2026-10-15): database clear and live memory must agree
+
+The original manual-clear instruction was incomplete: a persisted quarantine
+was copied into a permanent process-local set. Clearing the database flag
+therefore left both boot-loaded and newly quarantined rows skipped forever
+in that process. The old detector tests returned quarantined rows from fake
+SELECTs and never exercised the database-clear transition, so they missed it.
+
+The maintained quarantine tests now model the SQL exclusion and verify both
+origins, pending/failed/missing persistence receipts, and a continuing fault
+that receives a fresh three-attempt allowance before re-quarantine. Real-PG
+integration tests exercise the same boot/live clear transitions. The fix reuses
+the existing quarantine column and drain loop; it introduces no retry service.
+
+An older already-running drainer still has its old local set: a source edit
+does not change that closure. Verify the actual runtime before applying the
+manual clear. Do not restart a protected runtime or stamp rows as delivered
+merely to make a seed export pass. Any temporary replay repair requires its
+own bounded audit, preserved operation payload/timestamp/HLC, and a positive
+append receipt before acknowledging an original row.

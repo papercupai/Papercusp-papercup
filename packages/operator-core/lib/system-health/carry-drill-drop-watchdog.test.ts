@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   ORPHANED_RESPAWN_MAX_AGE_MS,
+  PRODUCTION_CARRY_DELIVERY_RATE_FLOOR,
+  PRODUCTION_CARRY_MIN_TERMINAL_OUTCOMES,
   listOrphanCandidateOwners,
   orphanedRespawnAlert,
   type OrphanedRespawnAlert,
@@ -16,6 +18,18 @@ import {
 import { deriveLastRespawnOutcome, type PriorRespawn } from '../carry-respawn-outcome';
 import type { ColdBootDrillHostEvent, ColdBootDrillLedgerEvent } from '../cold-boot-drill-live';
 import type { PtyHostEvent } from '../events/await/psu-pty-discovery';
+import { readColdBootDrillLedger } from '../cold-boot-drill-live';
+import { readPriorRespawnOutcome } from '../carry-respawn-outcome';
+
+// Legacy predicate tests also exercise the new production-default rail. Keep
+// those reads/deliveries isolated; lifecycle cases below inject a durable rail.
+vi.mock('../severe-event-broadcast', () => ({
+  broadcastSevereEvent: async () => true, broadcastSevereEventResolved: async () => true,
+}));
+vi.mock('../agent-tools/coordination/tools/conditions', () => ({
+  computeConditionStates: () => [], readConditionEnvelopes: async () => [],
+  readLatestConditionEnvelope: async () => null,
+}));
 
 const T0 = Date.parse('2026-07-15T12:00:00.000Z');
 
@@ -117,6 +131,7 @@ describe('production carry delivery rate (EI-18168050721107453)', () => {
       delivered: 1,
       dropped: 1,
       respawnFailed: 1,
+      retiredSuperseded: 0,
       terminalOutcomes: 3,
       deliveryRate: 1 / 3,
       failureReasons: {
@@ -124,6 +139,39 @@ describe('production carry delivery rate (EI-18168050721107453)', () => {
         'respawn-failed:spawn-failed': 1,
       },
     });
+  });
+
+  // WI-10005752: `respawn-carry-dropped {reason:'superseded'}` is the host RETIRING a moot request
+  // because a real successor already exists — not a lost continuation. Measured 2026-10-03 over
+  // 4,263 owner ledgers: 5,433 such rows against ~1.6k deliveries, so counting them as drops
+  // pins the rate under the 0.5 floor with nothing actually lost.
+  it('does not count superseded retirements as failed deliveries (WI-10005752)', () => {
+    const events: PtyHostEvent[] = [
+      ...Array.from({ length: 12 }, (_, i) => event('respawn-carry-delivered', -10_000 - i)),
+      ...Array.from({ length: 30 }, (_, i) =>
+        event('respawn-carry-dropped', -5_000 - i, { reason: 'superseded', rearmed: true })),
+      event('respawn-carry-dropped', -4_000, { reason: 'turn-start-unverified' }),
+    ];
+    const reading = summarizeProductionCarryDelivery(events, NOW);
+
+    expect(reading).toMatchObject({
+      delivered: 12,
+      dropped: 1,
+      respawnFailed: 0,
+      retiredSuperseded: 30,
+      terminalOutcomes: 13,
+      failureReasons: { 'turn-start-unverified': 1 },
+    });
+    expect(reading.deliveryRate).toBeCloseTo(12 / 13);
+    expect(reading.failureReasons).not.toHaveProperty('superseded');
+
+    // CONTROL: the pre-fix tally (every respawn-carry-dropped is a drop) reads the SAME window as
+    // 12/43 ≈ 28% — under the 0.5 floor with 43 ≥ the 20-outcome minimum, i.e. a false alarm.
+    const naiveDropped = events.filter((e) => e.kind === 'respawn-carry-dropped').length;
+    const naiveRate = 12 / (12 + naiveDropped);
+    expect(naiveRate).toBeLessThan(PRODUCTION_CARRY_DELIVERY_RATE_FLOOR);
+    expect(12 + naiveDropped).toBeGreaterThanOrEqual(PRODUCTION_CARRY_MIN_TERMINAL_OUTCOMES);
+    expect(reading.deliveryRate!).toBeGreaterThanOrEqual(PRODUCTION_CARRY_DELIVERY_RATE_FLOOR);
   });
 
   it('reads recent per-owner bounded tails and excludes the shared drill ledger', async () => {
@@ -331,13 +379,53 @@ describe('runOrphanedRespawnSweepOnce (WI-10001537)', () => {
       ...baseDeps,
       listCandidates: async () => ['su-unknown'],
       readPrior: async () => pending(),
-      hostLive: () => {
+      hostLive: async () => {
         throw new Error('procfs unreadable');
       },
       escalate,
     });
     expect(result.alerts).toBe(0);
     expect(escalate).not.toHaveBeenCalled();
+  });
+
+  it('prefilters non-delayed outcomes before awaiting host liveness', async () => {
+    const order: string[] = [];
+    const priorByOwner: Record<string, PriorRespawn> = {
+      delivered: pending({ outcome: 'delivered' }),
+      early: pending({ ageMs: 400_000 }),
+      unknownAge: pending({ ageMs: null }),
+      orphan: pending(),
+    };
+    const hostLive = vi.fn(async (ownerId: string) => {
+      order.push(`live:${ownerId}`);
+      return false;
+    });
+    const escalate = vi.fn(async (alert: OrphanedRespawnAlert) => {
+      order.push(`escalate:${alert.ownerId}`);
+    });
+
+    const result = await runOrphanedRespawnSweepOnce({
+      ...baseDeps,
+      listCandidates: async () => Object.keys(priorByOwner),
+      readPrior: async (ownerId) => {
+        order.push(`prior:${ownerId}`);
+        return priorByOwner[ownerId];
+      },
+      hostLive,
+      escalate,
+    });
+
+    expect(result).toMatchObject({ scanned: 4, alerts: 1, escalated: 1 });
+    expect(hostLive).toHaveBeenCalledTimes(1);
+    expect(hostLive).toHaveBeenCalledWith('orphan');
+    expect(order).toEqual([
+      'prior:delivered',
+      'prior:early',
+      'prior:unknownAge',
+      'prior:orphan',
+      'live:orphan',
+      'escalate:orphan',
+    ]);
   });
 
   it('keeps sweeping when one ledger is unreadable, so a bad file cannot hide other orphans', async () => {
@@ -368,5 +456,158 @@ describe('runOrphanedRespawnSweepOnce (WI-10001537)', () => {
       escalate,
     });
     expect(result).toMatchObject({ alerts: 1, escalated: 0, skipped: false });
+  });
+});
+
+describe('carry-delivery condition rail', () => {
+  function fixture() {
+    const open = new Set<string>();
+    const broadcast = vi.fn(async (event: { conditionKey?: string; oneShot?: boolean }) => {
+      expect(event.oneShot).toBe(true);
+      open.add(event.conditionKey!); return true;
+    });
+    const resolve = vi.fn(async (event: { conditionKey: string }) => open.delete(event.conditionKey));
+    return { open, broadcast, resolve, deps: { host: () => 'fixture-host',
+      rail: { broadcast, resolve }, readOpenConditionKeys: async () => [...open],
+      flagEnabled: async () => true, now: () => ORPHAN_NOW } };
+  }
+
+  it('opens drill conditions before failed legacy delivery and resolves only the matching later terminal success', async () => {
+    const { deps, open, broadcast } = fixture();
+    const failed = drop('fixture-drill', 1_000);
+    const escalate = vi.fn(async () => { expect(broadcast).toHaveBeenCalled(); throw new Error('legacy down'); });
+    expect(await runCarryDrillDropSweepOnce(T0, { ...deps, readLedger: async () => [failed], escalate }))
+      .toMatchObject({ watermarkMs: T0, escalated: 0 });
+    expect(open.size).toBe(1);
+    // Durable keys survive watermark advancement/restart. Empty/malformed/foreign
+    // readings and delivery before the failure cannot clear the episode.
+    for (const events of [[], [{ ...failed, kind: 'carry-drill-carry-delivered' as const, ts: 'invalid' }],
+      [{ ...failed, kind: 'carry-drill-carry-delivered' as const, drillId: 'sibling', ts: new Date(T0 + 2_000).toISOString() }],
+      [{ ...failed, kind: 'carry-drill-carry-delivered' as const, ts: new Date(T0).toISOString() }]]) {
+      await runCarryDrillDropSweepOnce(T0 + 1_000, { ...deps, readLedger: async () => events, escalate });
+      expect(open.size).toBe(1);
+    }
+    const success = { ...failed, kind: 'carry-drill-carry-delivered' as const, ts: new Date(T0 + 2_000).toISOString() };
+    // A later failure outranks an earlier success even with out-of-order IO rows.
+    await runCarryDrillDropSweepOnce(T0 + 3_000, { ...deps,
+      readLedger: async () => [drop('fixture-drill', 3_000), success], escalate });
+    expect(open.size).toBe(1);
+    await runCarryDrillDropSweepOnce(T0 + 3_000, { ...deps, readLedger: async () => [success], escalate });
+    expect(open.size).toBe(0);
+  });
+
+  it('keeps the drill watermark for a failed broadcast and still runs legacy delivery', async () => {
+    const { deps } = fixture();
+    const escalate = vi.fn(async () => {});
+    expect(await runCarryDrillDropSweepOnce(T0, { ...deps, readLedger: async () => [drop('d', 1_000)],
+      rail: { broadcast: async () => { throw new Error('rail down'); } }, escalate }))
+      .toEqual({ watermarkMs: T0, escalated: 1, skipped: false });
+    expect(escalate).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves low-rate conditions on sparse, empty, skipped or failed scans and recovers on enough measured successes', async () => {
+    const { deps, open } = fixture();
+    const row = (kind: string): PtyHostEvent => ({ kind, mode: 'carry-respawn', ts: new Date(ORPHAN_NOW - 1_000).toISOString() });
+    let events = [row('respawn-carry-dropped'), row('respawn-failed')];
+    const rateDeps = { ...deps, minTerminalOutcomes: 2, readEvents: async () => events, escalate: async () => {} };
+    await runProductionCarryDeliverySweepOnce(rateDeps);
+    expect(open.size).toBe(1);
+    events = [row('respawn-carry-delivered')];
+    await runProductionCarryDeliverySweepOnce(rateDeps);
+    events = [];
+    await runProductionCarryDeliverySweepOnce(rateDeps);
+    await runProductionCarryDeliverySweepOnce({ ...rateDeps, flagEnabled: async () => false });
+    await expect(runProductionCarryDeliverySweepOnce({ ...rateDeps,
+      readEvents: async () => { throw new Error('unreadable'); } })).rejects.toThrow('unreadable');
+    events = [row('respawn-carry-delivered'), row('respawn-carry-delivered')];
+    await runProductionCarryDeliverySweepOnce({ ...rateDeps, host: () => 'sibling-host' });
+    expect(open.size).toBe(1);
+    await runProductionCarryDeliverySweepOnce(rateDeps);
+    expect(open.size).toBe(0);
+  });
+
+  it('opens the low-rate condition before a failed escalation', async () => {
+    const { deps, open } = fixture();
+    await expect(runProductionCarryDeliverySweepOnce({ ...deps, minTerminalOutcomes: 1,
+      readEvents: async () => [{ kind: 'respawn-failed', mode: 'carry-respawn', ts: new Date(ORPHAN_NOW - 1).toISOString() }],
+      escalate: async () => { throw new Error('legacy down'); } })).rejects.toThrow('legacy down');
+    expect(open.size).toBe(1);
+  });
+
+  it('recovers a durable orphan outside the candidate list only from its measured later delivery', async () => {
+    const { deps, open } = fixture();
+    const prior = pending();
+    let owners = ['fixture-owner'], current = prior;
+    const orphanDeps = { ...deps, listCandidates: async () => owners, readPrior: async () => current,
+      hostLive: async () => false, escalate: async () => { throw new Error('legacy down'); } };
+    await runOrphanedRespawnSweepOnce(orphanDeps);
+    expect(open.size).toBe(1);
+    owners = [];
+    for (const unknown of [{ outcome: 'none' as const }, pending({ ageMs: null }),
+      pending({ ageMs: ORPHANED_RESPAWN_MAX_AGE_MS + 1 }), pending({ outcome: 'dropped' }),
+      pending({ outcome: 'delivered', ts: new Date(ORPHAN_NOW + 1).toISOString() })]) {
+      current = unknown;
+      await runOrphanedRespawnSweepOnce(orphanDeps);
+      expect(open.size).toBe(1);
+    }
+    current = pending({ outcome: 'delivered', ts: new Date(ORPHAN_NOW - 1).toISOString() });
+    await runOrphanedRespawnSweepOnce({ ...orphanDeps, host: () => 'sibling-host' });
+    expect(open.size).toBe(1);
+    await runOrphanedRespawnSweepOnce(orphanDeps);
+    expect(open.size).toBe(0);
+  });
+
+  it('resolves an aged-out orphan from matching live-host recovery, preserving failed and unrelated probes', async () => {
+    const { deps, open } = fixture();
+    const prior = pending();
+    const orphanDeps = { ...deps, listCandidates: async () => ['fixture-owner'], readPrior: async () => prior,
+      hostLive: async () => false, escalate: async () => {} };
+    await runOrphanedRespawnSweepOnce(orphanDeps);
+    expect(open.size).toBe(1);
+    const recovery = { ...orphanDeps, listCandidates: async () => [],
+      readPrior: async () => ({ ...prior, ageMs: ORPHANED_RESPAWN_MAX_AGE_MS + 1 }) };
+    await runOrphanedRespawnSweepOnce({ ...recovery, hostLive: async () => { throw new Error('unknown liveness'); } });
+    await runOrphanedRespawnSweepOnce({ ...recovery, readPrior: async () => pending({ ts: 'invalid' }), hostLive: async () => true });
+    expect(open.size).toBe(1);
+    await runOrphanedRespawnSweepOnce({ ...recovery, hostLive: async () => true });
+    expect(open.size).toBe(0);
+  });
+
+  it('rejects incomplete production ledger censuses rather than manufacturing a healthy rate', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'carry-census-'));
+    const file = join(dir, 'fixture-owner.events.jsonl');
+    try {
+      await expect(readRecentProductionCarryEvents(join(dir, 'absent'), ORPHAN_NOW)).rejects.toThrow();
+      const delivered = JSON.stringify({ kind: 'respawn-carry-delivered', mode: 'carry-respawn',
+        ts: new Date(ORPHAN_NOW - 1).toISOString() });
+      for (const body of [delivered, `${delivered}\n{broken}\n`, `${delivered}\nnull\n`,
+        `${delivered}\n${JSON.stringify({ kind: 'respawn-failed', mode: 'carry-respawn', ts: 'invalid' })}\n`]) {
+        writeFileSync(file, body);
+        await expect(readRecentProductionCarryEvents(dir, ORPHAN_NOW)).rejects.toThrow();
+      }
+      writeFileSync(file, `${delivered}\n`);
+      await expect(readRecentProductionCarryEvents(dir, ORPHAN_NOW, 60_000, 1)).rejects.toThrow('complete-read bound');
+      expect(await readRecentProductionCarryEvents(dir, ORPHAN_NOW)).toHaveLength(1);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('rejects corrupt shared drill/owner ledgers while retaining the legacy best-effort reader contract', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'carry-drill-census-'));
+    try {
+      const success = { ...drop('fixture', 1_000), kind: 'carry-drill-carry-delivered' };
+      writeFileSync(join(dir, 'carry-drills.events.jsonl'), `${JSON.stringify(success)}\n{broken}\n`);
+      expect(await readColdBootDrillLedger(dir)).toHaveLength(1);
+      await expect(readColdBootDrillLedger(dir, { requireComplete: true })).rejects.toThrow();
+      for (const invalid of ['null', '{}', JSON.stringify({ kind: 'carry-drill-carry-dropped', ts: 'invalid' })]) {
+        writeFileSync(join(dir, 'carry-drills.events.jsonl'), `${JSON.stringify(success)}\n${invalid}\n`);
+        await expect(readColdBootDrillLedger(dir, { requireComplete: true })).rejects.toThrow();
+      }
+      const ownerSuccess = { kind: 'respawn-carry-delivered', ts: new Date(ORPHAN_NOW - 1).toISOString() };
+      writeFileSync(join(dir, 'fixture-owner.events.jsonl'), `${JSON.stringify(ownerSuccess)}\n{broken}\n`);
+      expect((await readPriorRespawnOutcome('fixture-owner', { dir, now: ORPHAN_NOW })).outcome).toBe('delivered');
+      expect((await readPriorRespawnOutcome('fixture-owner', { dir, now: ORPHAN_NOW, requireComplete: true })).outcome).toBe('none');
+      writeFileSync(join(dir, 'fixture-owner.events.jsonl'), `${JSON.stringify(ownerSuccess)}\n`);
+      expect((await readPriorRespawnOutcome('fixture-owner', { dir, now: ORPHAN_NOW, requireComplete: true })).outcome).toBe('delivered');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

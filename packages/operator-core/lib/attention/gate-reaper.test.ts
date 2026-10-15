@@ -142,6 +142,56 @@ describe('decideGateReap — the unknown-asker safety rail', () => {
   });
 });
 
+describe('decideGateReap — suppressed_ask outlives its declaring session (WI-10005039)', () => {
+  // A suppressed ask is the "DO NOT ask the owner a 4th time" population: the agent registered it
+  // PRECISELY so the owner would see it after the agent is gone. Closing it as asker_gone would
+  // delete the very ask the kind exists to keep.
+  it('does NOT reap a suppressed_ask whose asker has ended, however old', () => {
+    const d = decideGateReap(input({ kind: 'suppressed_ask', askerLiveness: 'ended', openedAt: new Date(NOW.getTime() - 400 * DAY) }));
+    expect(d).toEqual({ close: false, why: 'suppressed-awaiting-owner' });
+  });
+
+  it('does NOT reap a suppressed_ask whose asker is unknown past the age floor', () => {
+    const d = decideGateReap(
+      input({ kind: 'suppressed_ask', askerLiveness: 'unknown', openedAt: new Date(NOW.getTime() - DEFAULT_UNKNOWN_GONE_AFTER_MS - 1) }),
+    );
+    expect(d).toEqual({ close: false, why: 'suppressed-awaiting-owner' });
+  });
+
+  it('still applies the declared default once its own deadline passes', () => {
+    const d = decideGateReap(
+      input({
+        kind: 'suppressed_ask',
+        askerLiveness: 'ended',
+        decideBy: new Date(NOW.getTime() - 1),
+        defaultIfUnanswered: { choice: 'proceed-with-recommended' },
+      }),
+    );
+    expect(d).toEqual({ close: true, reason: 'default_applied', disposition: { choice: 'proceed-with-recommended' } });
+  });
+
+  it('holds a suppressed_ask open BEFORE its deadline even with an ended asker', () => {
+    const d = decideGateReap(
+      input({ kind: 'suppressed_ask', askerLiveness: 'ended', decideBy: new Date(NOW.getTime() + DAY) }),
+    );
+    expect(d).toEqual({ close: false, why: 'suppressed-awaiting-owner' });
+  });
+
+  it('never reopens a closed suppressed_ask', () => {
+    const d = decideGateReap(input({ kind: 'suppressed_ask', closedAt: new Date(NOW.getTime() - DAY) }));
+    expect(d).toEqual({ close: false, why: 'already-closed' });
+  });
+
+  it('CONTROL: a plain session-bound ask with the same ended asker IS still reaped', () => {
+    // If this ever stops closing, the suppressed_ask assertions above would pass vacuously
+    // (e.g. a do-nothing reaper) — so pin both sides.
+    for (const kind of [undefined, 'ask'] as const) {
+      const d = decideGateReap(input({ ...(kind ? { kind } : {}), askerLiveness: 'ended', openedAt: new Date(NOW.getTime() - 60_000) }));
+      expect(d).toEqual({ close: true, reason: 'asker_gone', disposition: null });
+    }
+  });
+});
+
 describe('control: the rail is real, not vacuous', () => {
   const withinGrace = input({ askerLiveness: 'unknown', openedAt: new Date(NOW.getTime() - 2 * DAY) });
 

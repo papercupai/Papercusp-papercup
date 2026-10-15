@@ -241,7 +241,10 @@ describe('createOneWorkItem × semantic dupe prescreen (P-008)', () => {
       kind: 'task',
       title: 'fleet-scope downgrade remains admissible',
       admissionBypass: 'bypass:explicit-assignment',
-      payload: { _claimHold: true },
+      payload: { _claimHold: true, claim_hold_release: {
+        condition: 'fleet scope permits pickup', owner: 'fleet-leader', trigger: 'work-item:unblocked:WI-NEW',
+        reachability: 'blocked', evidence: 'requested claim is outside current fleet scope',
+      } },
     }, ctx);
     expect(r.ok).toBe(true);
     expect(createM).toHaveBeenCalledWith(
@@ -252,6 +255,15 @@ describe('createOneWorkItem × semantic dupe prescreen (P-008)', () => {
         payload: expect.objectContaining({ _claimHold: true }),
       }),
     );
+  });
+
+  it('refuses raw untracked parks before creation and preserves lease-only creation', async () => {
+    const refused = await createOneWorkItem({ kind: 'task', title: 'untracked park', payload: { _claimHold: true } }, ctx);
+    expect(refused.ok).toBe(false);
+    expect(createM).not.toHaveBeenCalled();
+    const lease = await createOneWorkItem({ kind: 'task', title: 'independent lease', payload: { _claimHold: true, held_open_by: 'reviewer' } }, ctx);
+    expect(lease.ok).toBe(true);
+    expect(createM).toHaveBeenCalledOnce();
   });
 
   it('null verdict (guard fail-open) creates cleanly with no advisory key', async () => {

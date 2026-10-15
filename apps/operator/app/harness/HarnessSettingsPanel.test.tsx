@@ -47,6 +47,7 @@ vi.mock('@papercusp/grid-core', () => ({
 }));
 vi.mock('./SavedPromptsSection', () => ({ default: () => <div data-testid="saved-prompts" /> }));
 vi.mock('./HarnessPluginsSection', () => ({ default: () => <div data-testid="plugins-section" /> }));
+vi.mock('./IntegrationModeSection', () => ({ default: () => <div data-testid="integration-mode-section" /> }));
 
 import { toast } from 'sonner';
 import HarnessSettingsPanel from './HarnessSettingsPanel';
@@ -198,5 +199,39 @@ describe('HarnessSettingsPanel (legacy per-harness settings)', () => {
     renderPanel(<HarnessSettingsPanel slug="h" phase="production" />);
     await waitFor(() => expect(screen.getByTestId('saved-prompts')).toBeTruthy());
     expect(screen.getByTestId('plugins-section')).toBeTruthy();
+  });
+
+  it('withholds the previous harness config while a different harness is loading', async () => {
+    stubFetch();
+    setLoadedConfig({ aiBackend: { default: { model: 'old-model' } } });
+    const panel = renderPanel(<HarnessSettingsPanel slug="old" phase="production" />);
+    await waitFor(() => expect(screen.getByDisplayValue('old-model')).toBeTruthy());
+    syncState.set('harnessProjectFiles.byHarness', { data: undefined, loading: true });
+    panel.rerender(<NuqsTestingAdapter><HarnessSettingsPanel slug="next" phase="production" /></NuqsTestingAdapter>);
+    expect(screen.queryByDisplayValue('old-model')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+    expect(screen.getByText('Loading…')).toBeTruthy();
+  });
+
+  it('does not claim success on a denied save and retries without losing edits', async () => {
+    let deny = true;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      if (!init?.method) return new Response('{"isShared":false}');
+      return new Response(deny ? '{"error":"forbidden"}' : '{"ok":true}', { status: deny ? 403 : 200 });
+    }));
+    setLoadedConfig({ unrelated: { keep: true } });
+    renderPanel(<HarnessSettingsPanel slug="chosen" phase="production" />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeTruthy());
+    fireEvent.change(screen.getByPlaceholderText('omp -p'), { target: { value: 'codex' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Save failed', { description: 'HTTP 403' }));
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(screen.getByDisplayValue('codex')).toBeTruthy();
+    deny = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Settings saved'));
+    const puts = vi.mocked(fetch).mock.calls.filter(c => c[1]?.method === 'PUT');
+    expect(puts.map(c => c[0])).toEqual(['/api/harness/chosen/spec?phase=production', '/api/harness/chosen/spec?phase=production']);
+    expect(JSON.parse(JSON.parse(String(puts[1][1]!.body)).config).unrelated).toEqual({ keep: true });
   });
 });

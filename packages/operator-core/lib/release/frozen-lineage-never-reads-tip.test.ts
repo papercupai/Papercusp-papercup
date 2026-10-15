@@ -194,7 +194,12 @@ describe('the ready-to-verify path verifies the repair head at its own sha, neve
     // `verdictTransitionAtHead`, which hands the marker a FRESH re-read of the row (`fresh`)
     // so a concurrent admission is never overwritten (the 2026-09-05 17:41Z lost update);
     // either spelling names the queue row, never the tip.
-    expect(branch).toMatch(/markFrozenRepairVerificationRed\((?:repairQueue|fresh),/);
+    // Since 2026-10-08 (be90772aa9) the marker is no longer CALLED directly: it is handed by
+    // reference to `recordedGateDecision('frozen-repair-red', markFrozenRepairVerificationRed,
+    // [fresh, …])`, which records the gate decision and then applies it to that argument list.
+    // Accept the direct call or that wrapper — in both the FIRST argument must still be the
+    // queue row (`repairQueue` / `fresh`), so a tip-derived argument fails here either way.
+    expect(branch).toMatch(/markFrozenRepairVerificationRed(?:\(|,\s*\[)(?:repairQueue|fresh),/);
     expect(branch).toContain('verdictTransitionAtHead(');
     expect(branch).not.toContain('writeFrozenRepairQueue?.(null)');
   });

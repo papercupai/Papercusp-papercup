@@ -108,6 +108,12 @@ describe('swe-bench-verified task sets', () => {
     expect(t.graderMeta.swebench_difficulty).toBe('15 min - 1 hour');
   });
 
+  it('carries the upstream created_at as createdAt for the contamination policy, and omits it when absent (D-007)', () => {
+    expect(verifiedRowToBenchTask({ ...ROW_ASTROPY, created_at: '2023-01-02T03:04:05Z' }).createdAt).toBe('2023-01-02T03:04:05Z');
+    const { created_at: _omit, ...undated } = ROW_ASTROPY as typeof ROW_ASTROPY & { created_at?: string };
+    expect('createdAt' in verifiedRowToBenchTask(undated)).toBe(false);
+  });
+
   it('does NOT leak the gold patch into the task (un-gameable)', () => {
     const t = verifiedRowToBenchTask(ROW_ASTROPY);
     // the verified row schema never persists `patch`; the BenchTask must not expose it anywhere

@@ -150,11 +150,17 @@ export function isHostAllowed(host: string, allowed: string[]): boolean {
 function matchHostPattern(host: string, pat: string): boolean {
   const pParts = pat.split('.');
   const hParts = host.split('.');
+  // A wildcard represents nonempty DNS labels, never an empty label.
+  if (pParts.some((part) => part.length === 0) || hParts.some((part) => part.length === 0)) return false;
   // Pattern with leading `*.` = exactly one extra subdomain slot.
   if (pParts[0] === '*') {
+    if (hParts.length !== pParts.length) return false;
+    return pParts.slice(1).every((pp, i) => pp === hParts[i + 1]);
+  }
+  // An explicitly declared `**.` permits one or more subdomain labels.
+  if (pParts[0] === '**') {
     if (hParts.length < pParts.length) return false;
-    // tail match
-    return pParts.slice(1).every((pp, i) => pp === hParts[i + (hParts.length - pParts.length + 1)]);
+    return pParts.slice(1).every((pp, i) => pp === hParts[i + hParts.length - pParts.length + 1]);
   }
   if (pParts.length !== hParts.length) return false;
   return pParts.every((pp, i) => pp === hParts[i]);

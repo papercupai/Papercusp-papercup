@@ -130,6 +130,8 @@ beforeAll(async () => {
   await applyMigrationForTest(db.sql, migration('851-first-class-plan-spec-clauses.sql'));
   await applyMigrationForTest(db.sql, migration('929-spec-clause-falsifier.sql'));
   await applyMigrationForTest(db.sql, migration('1111-acceptance-bar-contract-seed.sql'));
+  // The canonical seed writer clears the receiver-local verification pin.
+  await applyMigrationForTest(db.sql, migration('1258-acceptance-bar-verified-revision.sql'));
 }, 90_000);
 
 afterAll(async () => {

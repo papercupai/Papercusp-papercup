@@ -8,7 +8,7 @@ import {
 } from './capability-contracts';
 import { verifyCapabilityPacket, type BuildCapabilityPacketInput } from './capability-packets';
 
-export const CAPABILITY_SAMPLING_VERSION = 'domain-structural-v1';
+export const CAPABILITY_SAMPLING_VERSION = 'domain-structural-v2';
 type Scope = CapabilityPacket['scope'];
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const boundedText = z.string().trim().min(1).max(2_000);
@@ -285,6 +285,81 @@ function recipe(
 function refsExist(entry: EligibleCapability, refs: string[]): boolean {
   return refs.length > 0 && refs.every((ref) => entry.packet.sources.some((s) => s.id === ref));
 }
+
+/** Reuse verified packet boundaries and manifest claims as candidate hints, never execution authority. */
+export function buildCapabilityGraphSamplingHints(snapshot: CapabilitySamplingSnapshot): {
+  relations: CapabilityStructuralRelation[];
+  thirdRoles: CapabilityThirdRole[];
+} {
+  const relations: CapabilityStructuralRelation[] = [], thirdRoles: CapabilityThirdRole[] = [];
+  const measured = (entry: EligibleCapability) => {
+    const { graph, sources } = entry.packet;
+    return graph?.status === 'measured' && graph.repositoryId === snapshot.scope.repositoryId
+      && graph.sourceFingerprint === capabilityHash(JSON.stringify(sources.map(s => [s.id, s.path, s.sourceHash])))
+      && graph.candidates.length > 0 && sameScope(entry.packet.scope, snapshot.scope)
+      && entry.contentVersion === capabilityContentVersion(entry.packet);
+  };
+  type Claim = CapabilityPacket['unit']['purpose'][number];
+  const observed = (entry: EligibleCapability, claims: Claim[]) => claims.filter(claim =>
+    claim.status === 'observed' && refsExist(entry, claim.evidenceIds));
+  const equalClaim = (a: EligibleCapability, left: Claim[], b: EligibleCapability, right: Claim[]) => {
+    for (const x of observed(a, left)) for (const y of observed(b, right)) {
+      if (x.text.trim().toLowerCase() === y.text.trim().toLowerCase()) return [x, y] as const;
+    }
+    return null;
+  };
+  const entries = snapshot.eligible.filter(measured).sort((a, b) => compare(a.packet.unit.id, b.packet.unit.id));
+  pairs: for (const a of entries) for (const b of entries) {
+    if (relations.length >= 2_000) break pairs;
+    if (aliases(a, b) || a.packet.unit.homeDomain === b.packet.unit.homeDomain) continue;
+    const au = a.packet.unit, bu = b.packet.unit;
+    const cases = [
+      ['producer-consumer', au.contracts.outputs, bu.contracts.inputs],
+      ['transferable-invariant', au.contracts.guarantees, bu.contracts.guarantees],
+      ['purpose-mechanism', au.purpose, bu.mechanism],
+      ['complementary-lifecycle', au.contracts.events, bu.contracts.state],
+    ] as const;
+    for (const [kind, left, right] of cases) {
+      const match = equalClaim(a, [...left], b, [...right]);
+      if (!match || relations.length >= 2_000) continue;
+      relations.push({
+        aId: au.id, bId: bu.id, aVersion: a.contentVersion, bVersion: b.contentVersion, kind,
+        rationale: `Candidate ${kind} at compiler-discovered boundaries: ${match[0].text}. Existing connectivity and runtime compatibility remain unverified.`.slice(0, 2_000),
+        preconditions: [
+          'Independently verify order, failure behavior, allowed workspace/auth scope and resource admission before integrating.',
+          ...[au, bu].flatMap(unit => [...unit.contracts.prerequisites, ...unit.contracts.resourceConstraints]
+            .map(claim => `${unit.id} ${claim.status}: ${claim.text}`.slice(0, 2_000))).slice(0, 7),
+        ],
+        aEvidenceIds: match[0].evidenceIds, bEvidenceIds: match[1].evidenceIds,
+      });
+      // C must supply a cited, removable role. Mere graph proximity cannot admit a third member.
+      if (thirdRoles.length >= 2_000) continue;
+      for (const c of entries) {
+        if (thirdRoles.length >= 2_000) break;
+        if (aliases(a, c) || aliases(b, c)) continue;
+        const cu = c.packet.unit;
+        const roles = [
+          ['consumer', au.contracts.outputs, cu.contracts.inputs],
+          ['enabling-mechanism', bu.contracts.prerequisites, cu.contracts.outputs],
+          ['constraint', bu.contracts.prerequisites, cu.contracts.guarantees],
+        ] as const;
+        for (const [role, need, provides] of roles) {
+          const roleMatch = equalClaim(role === 'consumer' ? a : b, [...need], c, [...provides]);
+          if (!roleMatch || thirdRoles.length >= 2_000) continue;
+          thirdRoles.push({
+            aId: au.id, bId: bu.id, cId: cu.id,
+            aVersion: a.contentVersion, bVersion: b.contentVersion, cVersion: c.contentVersion, role,
+            contribution: `Candidate ${role}: ${roleMatch[1].text}; validate its cited contract and prerequisites.`.slice(0, 2_000),
+            removalEffect: `Removing ${cu.id} removes this proposed ${role} contract; A/B remain exploratory candidates.`,
+            evidenceIds: roleMatch[1].evidenceIds,
+          });
+        }
+      }
+    }
+  }
+  return { relations, thirdRoles };
+}
+
 function resolvePolicy(override: Partial<CapabilitySamplingPolicy> = {}): CapabilitySamplingPolicy {
   const p = {
     ...DEFAULT_CAPABILITY_SAMPLING_POLICY,
@@ -348,6 +423,10 @@ export function sampleCapabilityCombination(
     )
   )
     throw new RangeError('Invalid eligible packet identity');
+  if (options.relations === undefined || options.thirdRoles === undefined) {
+    const hints = buildCapabilityGraphSamplingHints(snapshot);
+    options = { ...options, relations: options.relations ?? hints.relations, thirdRoles: options.thirdRoles ?? hints.thirdRoles };
+  }
   const exposures = Object.fromEntries(
     entries.map((e) => [e.packet.unit.id, options.exposures?.[e.packet.unit.id] ?? 0]),
   );

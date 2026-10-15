@@ -20,6 +20,7 @@
  */
 import { createHash } from 'node:crypto';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
+import type { SellerReceiptAuthority } from '../p2p/metered-invocation';
 
 export interface Money {
   /** Integer amount in the currency's minor unit (cents for USD). */
@@ -62,6 +63,7 @@ export interface Offer {
   readonly price: Money;
   /** Present only for `pricingModel: 'per-use'`. */
   readonly perUse?: PerUseOfferTerms | null;
+  readonly receiptAuthority?: SellerReceiptAuthority;
   readonly active: boolean;
 }
 
@@ -154,6 +156,7 @@ export interface LedgerEvent {
 
 export type LedgerRejectionCode =
   | 'invalid-event'
+  | 'seller-authority-immutable'
   | 'invalid-money'
   | 'unknown-product'
   | 'unknown-offer'
@@ -304,12 +307,23 @@ function applyEvent(state: LedgerState, event: LedgerEvent): ApplyResult {
       if (pricingModel !== 'per-use' && p.perUse != null) {
         return { ok: false, code: 'invalid-event', detail: 'perUse terms are only valid for a per-use offer' };
       }
+      const authority = p.receiptAuthority as SellerReceiptAuthority | undefined;
+      if (authority !== undefined && (pricingModel !== 'per-use' || !authority ||
+          !/^[A-Za-z0-9+/]{43}=$/.test(authority.pubkeyBase64) || !/^[A-Za-z0-9+/]{86}==$/.test(authority.proof))) {
+        return { ok: false, code: 'invalid-event', detail: 'receiptAuthority requires an Ed25519 public key and possession proof on a per-use offer' };
+      }
+      const existing = state.offers.get(offerId);
+      if (existing?.receiptAuthority && (existing.productId !== productId ||
+          canonicalJson(existing.receiptAuthority) !== canonicalJson(authority ?? null))) {
+        return { ok: false, code: 'seller-authority-immutable', detail: 'a new seller receipt authority requires a new offer' };
+      }
       state.offers.set(offerId, {
         offerId,
         productId,
         pricingModel,
         price: p.price,
         perUse: terms,
+        ...(authority ? { receiptAuthority: { pubkeyBase64: authority.pubkeyBase64, proof: authority.proof } } : {}),
         active: p.active !== false,
       });
       return { ok: true };

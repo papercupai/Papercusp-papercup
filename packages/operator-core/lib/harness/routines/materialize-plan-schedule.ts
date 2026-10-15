@@ -36,6 +36,16 @@ export interface BlueprintOperationRoutineTarget {
   input?: Record<string, unknown>;
 }
 
+/**
+ * test-rubric-unification-2026-10-12 D-008: a plan-schedulable SYSTEM action fired directly
+ * by the schedule (a deterministic run — no agent turn, no pinned blueprint operation).
+ * `system` is the bare action name; the routine targets `system:<system>`.
+ */
+export interface PlanScheduleSystemAction {
+  system: string;
+  input?: Record<string, unknown>;
+}
+
 /** Stable per-plan routine name (the upsert key under the harness install slug). */
 export function planScheduleRoutineName(templateSlug: string): string {
   return `plan-schedule-${templateSlug}`;
@@ -51,6 +61,8 @@ export interface MaterializePlanScheduleInput {
   schedule?: ScheduleTrigger | null;
   /** Registered operation target. Omit to preserve the legacy system:plan-run path. */
   operation?: BlueprintOperationRoutineTarget | null;
+  /** Plan-schedulable system action (D-008). Mutually exclusive with `operation`. */
+  action?: PlanScheduleSystemAction | null;
   /** One-shot fire time (drag-onto-a-day). When set with no recurrence, the routine
    *  fires once at this instant then deactivates (claim.ts one-shot path). */
   scheduledAt?: Date | null;
@@ -73,11 +85,14 @@ export async function materializePlanSchedule(
   const workspaceId = input.workspaceId ?? activeWorkspaceId();
   const schedule = input.schedule ?? undefined;
   const operation = input.operation ?? undefined;
+  const action = input.action ?? undefined;
+  if (operation && action) throw new Error('plan_schedule_target_ambiguous: operation and action are mutually exclusive');
   const triggerConfig: Record<string, unknown> = schedule ? { ...schedule } : {};
-  // ArmPlanSchedule carries the operation alongside the recurrence in the
+  // ArmPlanSchedule carries the operation/action alongside the recurrence in the
   // authored schedule JSON. It belongs in payload_template, not in the cadence
   // parser's trigger_config.
   delete triggerConfig.operation;
+  delete triggerConfig.action;
 
   // First fire: an explicit one-shot time, else the schedule's next occurrence
   // (rrule or cron). Null ⇒ nothing to schedule (e.g. an already-expired rule).
@@ -91,8 +106,14 @@ export async function materializePlanSchedule(
       name: planScheduleRoutineName(input.templateSlug),
       triggerKind: 'cron', // time-scheduled / next_fire_at-driven (cron OR rrule), per listDueCronRoutines
       triggerConfig,
-      targetRole: operation ? BLUEPRINT_OPERATION_ACTION : PLAN_RUN_ACTION,
-      payloadTemplate: operation
+      targetRole: operation
+        ? BLUEPRINT_OPERATION_ACTION
+        : action
+          ? `system:${action.system}`
+          : PLAN_RUN_ACTION,
+      payloadTemplate: action
+        ? { templateSlug: input.templateSlug, harnessSlug: input.harnessSlug, input: action.input ?? {} }
+        : operation
         ? {
             templateSlug: input.templateSlug,
             harnessSlug: input.harnessSlug,

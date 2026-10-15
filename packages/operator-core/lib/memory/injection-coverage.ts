@@ -88,7 +88,7 @@ import { SEARCH_SOURCE_SURFACES } from '../search/coverage-gate';
  * alarming on the wrong corpus — the same loud-on-omission discipline
  * `coverage-gate.test.ts` applies to `SEARCH_SOURCE_SURFACES`.
  */
-export const INJECTION_SOURCE_NAMES = ['session_turn', 'work_item'] as const;
+export const INJECTION_SOURCE_NAMES = ['session_turn', 'work_item', 'plan', 'doc', 'report'] as const;
 
 /**
  * Breach kinds. The first two are RE-FRAMED upstream verdicts (same floors, same

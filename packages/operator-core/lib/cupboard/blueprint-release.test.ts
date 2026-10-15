@@ -10,6 +10,8 @@ import {
   diffBlueprintReleases,
   prepareBlueprintPublicRelease,
   readBlueprintLifecycle,
+  blueprintReleaseRevenueDependencies,
+  readBlueprintReleaseRevenueDependencies,
   rollbackBlueprintRelease,
   uninstallBlueprintRelease,
   type BlueprintLifecycleJournal,
@@ -53,6 +55,77 @@ async function source(version: string, prompt: string, maxCostUsd: number) {
 }
 
 describe('immutable blueprint release lifecycle', () => {
+  const reference = ({ packageKind, ref, revision, contentHash }:
+    Pick<ReturnType<typeof pinPackageInput>, 'packageKind' | 'ref' | 'revision' | 'contentHash'>) =>
+    ({ packageKind, ref, revision, contentHash });
+
+  it('derives each transitive component once from exact publisher pins, excluding the root and unrelated packages', () => {
+    const dependency = (ref: string, publisher: string, dependencies: Parameters<typeof pinPackageInput>[0]['dependencies'] = []) =>
+      pinPackageInput({ packageKind: 'blueprint', ref, revision: '1.0.0', files: [],
+        value: { publisher: { id: publisher } }, dependencies: dependencies.map(reference) });
+    const shared = dependency('shared', 'alice');
+    const parent = dependency('parent', 'bob', [shared]);
+    const other = dependency('unrelated', 'mallory');
+    const identity = dependency('identity', 'creator', [parent, shared]);
+    const archive = buildBlueprintReleaseArchive([other, shared, identity, parent], 'identity');
+    expect(blueprintReleaseRevenueDependencies(archive)).toEqual([
+      { packageKind: 'blueprint', ref: 'parent', revision: '1.0.0', contentHash: parent.contentHash, author: 'bob' },
+      { packageKind: 'blueprint', ref: 'shared', revision: '1.0.0', contentHash: shared.contentHash, author: 'alice' },
+    ]);
+  });
+
+  it('refuses missing component authors and modified closure metadata instead of crediting the identity creator', () => {
+    const component = pinPackageInput({ packageKind: 'blueprint', ref: 'component', revision: '1.0.0', files: [] });
+    const identity = pinPackageInput({ packageKind: 'blueprint', ref: 'identity', revision: '1.0.0', files: [],
+      value: { publisher: { id: 'creator' } }, dependencies: [reference(component)] });
+    const archive = buildBlueprintReleaseArchive([identity, component], 'identity');
+    expect(() => blueprintReleaseRevenueDependencies({ ...archive,
+      root: { ...archive.root, contentHash: 'f'.repeat(64) } })).toThrow(/retained release/);
+    expect(() => blueprintReleaseRevenueDependencies({ ...archive,
+      package: { ...archive.package, rootHash: 'f'.repeat(64) } })).toThrow(/retained release/);
+    expect(() => blueprintReleaseRevenueDependencies(archive)).toThrow(/no pinned publisher id/);
+    archive.pins.find((pin) => pin.ref === 'component')!.value = { publisher: { id: 'forged' } };
+    expect(() => blueprintReleaseRevenueDependencies(archive)).toThrow(/hash/i);
+  });
+
+  it('reads revenue authors from the retained historical release despite active-source edits and refuses a re-pinned forgery', async () => {
+    const v1 = await source('1.0.0', 'old prompt', 2);
+    const component = pinPackageInput({ packageKind: 'blueprint', ref: 'component', revision: '2.0.0',
+      files: [], value: { publisher: { id: 'alice' } } });
+    const identity = pinPackageInput({ packageKind: 'blueprint', ref: 'identity', revision: '1.0.0',
+      files: v1.pin.files.map((file) => ({ path: file.path, bytes: Buffer.from(file.bytes, 'base64') })),
+      value: v1.pin.value, dependencies: [reference(component)] });
+    const installed = await commitBlueprintRelease({ installedDir, sourceDir: v1.dir, id: 'identity', version: '1.0.0',
+      source: 'https://github.com/example/identity', pins: [identity, component] });
+    await fs.writeFile(join(installed.installedTo, 'blueprint.yaml'), 'publisher: { id: mallory }\n');
+    expect(await readBlueprintReleaseRevenueDependencies(installedDir, { id: 'identity', version: '1.0.0' }))
+      .toEqual([{ packageKind: 'blueprint', ref: 'component', revision: '2.0.0', contentHash: component.contentHash, author: 'alice' }]);
+    const forgedComponent = pinPackageInput({ packageKind: 'blueprint', ref: 'component', revision: '2.0.0',
+      files: [], value: { publisher: { id: 'mallory' } } });
+    const forgedIdentity = pinPackageInput({ packageKind: 'blueprint', ref: 'identity', revision: '1.0.0',
+      files: v1.pin.files.map((file) => ({ path: file.path, bytes: Buffer.from(file.bytes, 'base64') })),
+      value: v1.pin.value, dependencies: [reference(forgedComponent)] });
+    await fs.writeFile(join(installed.historyDir, 'closure.json'), JSON.stringify({ pins: [forgedIdentity, forgedComponent] }));
+    await expect(readBlueprintReleaseRevenueDependencies(installedDir, { id: 'identity', version: '1.0.0' }))
+      .rejects.toThrow(/retained closure hash mismatch/);
+    await expect(readBlueprintReleaseRevenueDependencies(installedDir, { id: 'identity', version: '9.0.0' }))
+      .rejects.toThrow(/one exact retained release/);
+  });
+
+  it('refuses two distinct retained releases with the same version instead of selecting the active one', async () => {
+    const first = await source('1.0.0', 'first release', 2);
+    await commitBlueprintRelease({ installedDir, sourceDir: first.dir, id: 'identity', version: '1.0.0',
+      source: 'https://github.com/example/identity', pins: [first.pin] });
+    expect(await readBlueprintReleaseRevenueDependencies(installedDir, { id: 'identity', version: '1.0.0' })).toEqual([]);
+    const second = await source('1.0.0', 'different bytes at the same version', 2);
+    await commitBlueprintRelease({ installedDir, sourceDir: second.dir, id: 'identity', version: '1.0.0',
+      source: 'https://github.com/example/identity', pins: [second.pin] });
+    const lifecycle = await readBlueprintLifecycle(installedDir, 'identity');
+    expect(lifecycle.releases.map((release) => release.version)).toEqual(['1.0.0', '1.0.0']);
+    await expect(readBlueprintReleaseRevenueDependencies(installedDir, { id: 'identity', version: '1.0.0' }))
+      .rejects.toThrow(/one exact retained release; found 2/);
+  });
+
   it('stores mode policy approval only for the exact moderated artifact', async () => {
     const dir = join(root, 'mode-source');
     const yaml = 'id: su.mode-auto-custom\nversion: 1.0.0\nslots: [{ slot: autonomy }]\n';

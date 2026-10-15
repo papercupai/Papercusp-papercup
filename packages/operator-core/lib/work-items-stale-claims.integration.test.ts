@@ -4,7 +4,11 @@
  * the mig-225 alias-aware rule exactly: coord_presence heartbeat OR a
  * RUNNING/RESTARTING spawned_agents row matched on ANY alias.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// These fresh-PG fixtures own claim state; original-row cases assert diagnostics.
+// Never let their incidental cleanup observations flush to the operator database.
+vi.mock('./degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
@@ -48,13 +52,15 @@ const AGENT_ACTIVITY_DDL = `
     summary text,
     created_at timestamptz NOT NULL DEFAULT now()
   )`;
-// WI-6015: a deliberately minimal projection of the real tool_invocations table
-// (see projected-tool-deps.ts's TELEMETRY_INSERT_SQL for the full column list) —
-// the STALLED-leg activity guard under test reads only coord_owner_id/invoked_at.
+// A deliberately minimal projection of the real tool_invocations table (see
+// projected-tool-deps.ts's TELEMETRY_INSERT_SQL for the full column list). The
+// stalled regression records an unrelated owner-state goal_ref to show that
+// call activity cannot stand in for progress on the held item.
 const TOOL_INVOCATIONS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.tool_invocations (
     id BIGSERIAL PRIMARY KEY,
     coord_owner_id text,
+    goal_ref text,
     invoked_at timestamptz NOT NULL DEFAULT now()
   )`;
 // EI-21431501901242395: the durable continuation leg read by
@@ -615,29 +621,27 @@ describe('reclaimStaleWorkItemClaims', () => {
     expect(r.released[0]).toMatchObject({ feature_id: 'F-ST6', reason: 'stalled' });
   });
 
-  // WI-6015 (EI-18691099450966094 trap c): last_progress_at is only bumped by an
-  // explicit work_items:checkpoint call, so a holder doing real work WITHOUT
-  // checkpointing reads as "no progress" forever on last_progress_at/taken_at
-  // alone — this must never be enough, by itself, to reclaim a genuinely-active
-  // holder's claim. Mirrors the watchdog's EI-14763 holder_active guard.
-  it('stalled: flag ON — a holder with RECENT tool_invocations is KEPT despite stale last_progress_at/taken_at', async () => {
+  // Owner activity is not item progress. tool_invocations.goal_ref is a
+  // snapshot of the owner's declared goal at call time, not call-local item
+  // attribution, and cannot override this item's stale progress timestamp.
+  it('stalled: flag ON — a recent tool invocation for another goal does not mask stale item progress', async () => {
     await seedItem('F-ST7', 'su-tool-active', 30, 'in_progress', 0, 30); // claimed + "progressed" 30 min ago
     await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-tool-active', now())`; // alive
-    // The exact incident shape: 138 tool_invocations in the prior 8 minutes.
-    await sql`INSERT INTO harness_shared.tool_invocations (coord_owner_id, invoked_at)
-              SELECT 'su-tool-active', now() - make_interval(mins => g) FROM generate_series(0, 7) AS g`;
+    await sql`INSERT INTO harness_shared.tool_invocations (coord_owner_id, goal_ref, invoked_at)
+              VALUES ('su-tool-active', 'WI-OTHER', now() - interval '2 minutes')`;
     const r = await reclaimStaleWorkItemClaims(sql, { includeStalled: true });
-    expect(r.released).toHaveLength(0);
-    expect((await statusOf('F-ST7')).taken_by).toBe('su-tool-active');
+    expect(r.released[0]).toMatchObject({ feature_id: 'F-ST7', reason: 'stalled', new_status: 'open' });
+    expect((await statusOf('F-ST7')).taken_by).toBeNull();
   });
 
-  it('stalled: flag ON — a holder with RECENT agent_activity is KEPT despite stale last_progress_at/taken_at', async () => {
+  it('stalled: flag ON — recent owner agent_activity does not mask stale item progress', async () => {
     await seedItem('F-ST8', 'su-turn-active', 30, 'in_progress', 0, 30);
     await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-turn-active', now())`;
     await sql`INSERT INTO harness_shared.agent_activity (owner_id, kind, summary, created_at)
               VALUES ('su-turn-active', 'lifecycle', 'turn', now() - make_interval(mins => 2))`;
     const r = await reclaimStaleWorkItemClaims(sql, { includeStalled: true });
-    expect(r.released).toHaveLength(0);
+    expect(r.released[0]).toMatchObject({ feature_id: 'F-ST8', reason: 'stalled', new_status: 'open' });
+    expect((await statusOf('F-ST8')).taken_by).toBeNull();
   });
 
   it('stalled: flag ON — a holder with NO recent activity of any kind IS still freed (guard does not mask genuine stalls)', async () => {
@@ -835,15 +839,156 @@ describe('WI-1999 remote-holder guard', () => {
 
   it('a never-seen holder DOES free once the long-horizon fallback lapses (anchored on taken_at)', async () => {
     await seedItem('F-RH3', 'su-remote-abandoned', 30, 'in_progress'); // taken 30 min ago
+    // Abandoned: the row has not changed since the claim either (WI-10005136 — a
+    // recently-changed row is a federated sign of life, see the tests below).
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now() - 30 * 60_000}, fed_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'F-RH3'`;
     // Fallback shrunk to 15 min → the 30-min-old anchor is past it: truly-abandoned rows still free.
     const r = await reclaimStaleWorkItemClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
     expect(r.released[0]).toMatchObject({ feature_id: 'F-RH3', reason: 'dead' });
   });
 
-  it('a never-seen holder with NULL taken_at anchors the fallback on updated_ts (EI-2534 must not re-strand)', async () => {
+  // WI-10005136 (2026-10-01): the mac-VM rig reaped a LIVE tower holder's >24h-old
+  // claims as 'reaper:dead' (WI-10004353, WI-10004436) — claim age alone is not death.
+  // Past the fallback, a never-seen holder is only dead when NO work_items row it holds
+  // or terminally owns was claimed or changed within the window (those writes federate).
+  it('WI-10005136: a never-seen holder past the fallback that CLAIMED another row recently is KEPT', async () => {
+    await seedItem('F-RH5', 'su-remote-live-holder', 30, 'in_progress');
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now() - 30 * 60_000}, fed_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'F-RH5'`;
+    await seedItem('F-RH5b', 'su-remote-live-holder', 2, 'in_progress'); // fresh claim, inside grace
+    const r = await reclaimStaleWorkItemClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
+    expect(r.released.map((x) => x.feature_id)).not.toContain('F-RH5');
+    expect((await statusOf('F-RH5')).taken_by).toBe('su-remote-live-holder');
+  });
+
+  it('WI-10005136: a never-seen holder past the fallback that CLOSED a row recently is KEPT', async () => {
+    await seedItem('F-RH6', 'su-remote-closer', 30, 'in_progress');
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now() - 30 * 60_000}, fed_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'F-RH6'`;
+    await seedItem('F-RH6b', null, 0, 'done');
+    await sql`UPDATE harness_shared.work_items
+                 SET terminal_owner = 'su-remote-closer', updated_ts = ${Date.now() - 60_000}, fed_ts = ${Date.now() - 60_000}
+               WHERE feature_id = 'F-RH6b'`;
+    const r = await reclaimStaleWorkItemClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
+    expect(r.released.map((x) => x.feature_id)).not.toContain('F-RH6');
+    // Control: once that close ages past the window too, the long-held claim frees.
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now() - 30 * 60_000}, fed_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'F-RH6b'`;
+    const later = await reclaimStaleWorkItemClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
+    expect(later.released[0]).toMatchObject({ feature_id: 'F-RH6', reason: 'dead' });
+  });
+
+  it('WI-10005136: issue reaper parity — a never-seen assignee with a recently-changed held row is KEPT past the fallback', async () => {
+    await seedIssue('EI-RH2', 'bug', 'su-remote-issue-live', 30);
+    // The held issue row itself is idle, so only the OTHER row can keep it.
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now() - 30 * 60_000}, fed_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'EI-RH2'`;
+    await seedItem('F-RH7', 'su-remote-issue-live', 2, 'in_progress'); // live elsewhere: fresh claim
+    const r = await reclaimStaleIssueClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
+    expect(r.released.map((c) => c.issue_id)).not.toContain('EI-RH2');
+    expect(await assigneeOf('EI-RH2')).toBe('su-remote-issue-live');
+    // Control: without that other row, the same idle claim frees.
+    await sql`DELETE FROM harness_shared.work_items WHERE feature_id = 'F-RH7'`;
+    const later = await reclaimStaleIssueClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
+    expect(later.released.map((c) => c.issue_id)).toContain('EI-RH2');
+  });
+
+  // WI-10005928 (2026-10-03): the mac-VM rig freed a PARKED tower holder's claims through
+  // this fallback at 08:40:37Z. The holder's newer tower writes had not replicated, so the
+  // WI-10005136 sign-of-life check found nothing. Only the node that last wrote the row
+  // judges a never-seen holder. The local-origin control in the SAME sweep proves the
+  // fallback still fires under identical conditions, so the kept row is not vacuous.
+  it('WI-10005928: past the fallback, a never-seen holder on a PEER-WRITTEN (origin=remote) row is KEPT; the local control frees', async () => {
+    await seedItem('F-RH8', 'su-peer-parked-holder', 30, 'in_progress');
+    await seedItem('F-RH8L', 'su-local-forgotten-holder', 30, 'in_progress');
+    const idle = Date.now() - 30 * 60_000;
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${idle}, fed_ts = ${idle} WHERE feature_id = 'F-RH8L'`;
+    await sql`UPDATE harness_shared.work_items SET origin = 'remote', updated_ts = ${idle}, fed_ts = ${idle} WHERE feature_id = 'F-RH8'`;
+    const r = await reclaimStaleWorkItemClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
+    const released = r.released.map((x) => x.feature_id);
+    expect(released).not.toContain('F-RH8');
+    expect((await statusOf('F-RH8')).taken_by).toBe('su-peer-parked-holder');
+    expect(r.released.find((x) => x.feature_id === 'F-RH8L')).toMatchObject({ reason: 'dead' });
+  });
+
+  it('WI-10005928: issue reaper parity — a never-seen assignee on a PEER-WRITTEN issue row is KEPT past the fallback; the local control frees', async () => {
+    await seedIssue('EI-RH3', 'bug', 'su-peer-issue-holder', 30);
+    await seedIssue('EI-RH3L', 'bug', 'su-local-issue-forgotten', 30);
+    const idle = Date.now() - 30 * 60_000;
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${idle}, fed_ts = ${idle} WHERE feature_id = 'EI-RH3L'`;
+    await sql`UPDATE harness_shared.work_items SET origin = 'remote', updated_ts = ${idle}, fed_ts = ${idle} WHERE feature_id = 'EI-RH3'`;
+    const r = await reclaimStaleIssueClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
+    const released = r.released.map((c) => c.issue_id);
+    expect(released).not.toContain('EI-RH3');
+    expect(await assigneeOf('EI-RH3')).toBe('su-peer-issue-holder');
+    expect(released).toContain('EI-RH3L');
+  });
+
+  // WI-10005935: updated_ts is bookkeeping (stamp_local_federated_write, WI-10002882).
+  // Embedding, settlement and admission rewrites advance it with no holder action, which
+  // used to read as "this holder is alive" forever. Only a CONTENT write (fed_ts) counts.
+  it('WI-10005935: a bookkeeping-only touch (updated_ts without fed_ts) is NOT a sign of life', async () => {
+    const idle = Date.now() - 30 * 60_000;
+    await seedItem('F-RH9', 'su-remote-bookkept', 30, 'in_progress');
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${idle}, fed_ts = ${idle} WHERE feature_id = 'F-RH9'`;
+    // A local bookkeeping rewrite touches the held row: updated_ts moves, fed_ts does not.
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now()} WHERE feature_id = 'F-RH9'`;
+    const [row] = await sql<{ fed_ts: string }[]>`SELECT fed_ts::text AS fed_ts FROM harness_shared.work_items WHERE feature_id = 'F-RH9'`;
+    expect(Number(row?.fed_ts)).toBe(idle); // the fixture really is bookkeeping-only
+    const r = await reclaimStaleWorkItemClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
+    expect(r.released.map((x) => x.feature_id)).toContain('F-RH9');
+  });
+
+  it('WI-10005935: a NULL fed_ts plus recent updated_ts on a sibling row is NOT a sign of life', async () => {
+    const idle = Date.now() - 30 * 60_000;
+    const holder = 'su-remote-bookkept-null-fed-ts';
+    await seedItem('F-RH10', holder, 30, 'in_progress');
+    await sql`UPDATE harness_shared.work_items
+                 SET updated_ts = ${idle}, fed_ts = ${idle}
+               WHERE feature_id = 'F-RH10'`;
+
+    // A sibling claim is old too; its recent bookkeeping timestamp must not make
+    // this never-seen holder look active when the content clock is absent.
+    await seedTaskItem('WI-RH10B', holder, 30, 'wip');
+    await sql`UPDATE harness_shared.work_items
+                 SET updated_ts = ${idle}, fed_ts = ${idle}
+               WHERE feature_id = 'WI-RH10B'`;
+    await sql`UPDATE harness_shared.work_items
+                 SET updated_ts = ${Date.now()}, fed_ts = NULL
+               WHERE feature_id = 'WI-RH10B'`;
+
+    const [sibling] = await sql<{ fed_ts: string | null; updated_ts: string | number }[]>`
+      SELECT fed_ts::text AS fed_ts, updated_ts
+        FROM harness_shared.work_items WHERE feature_id = 'WI-RH10B'`;
+    expect(sibling?.fed_ts).toBeNull();
+    expect(Number(sibling?.updated_ts)).toBeGreaterThan(idle);
+
+    const r = await reclaimStaleWorkItemClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
+    expect(r.released.map((x) => x.feature_id)).toContain('F-RH10');
+  });
+
+  it('WI-10005935: issue reaper ignores a sibling bookkeeping touch without fed_ts', async () => {
+    const idle = Date.now() - 30 * 60_000;
+    const holder = 'su-remote-bookkept-null-fed-ts-issue';
+    await seedIssue('EI-RH10', 'bug', holder, 30);
+    await sql`UPDATE harness_shared.work_items
+                 SET updated_ts = ${idle}, fed_ts = ${idle}
+               WHERE feature_id = 'EI-RH10'`;
+
+    await seedTaskItem('WI-RH10B-ISSUE', holder, 30, 'wip');
+    await sql`UPDATE harness_shared.work_items
+                 SET updated_ts = ${idle}, fed_ts = ${idle}
+               WHERE feature_id = 'WI-RH10B-ISSUE'`;
+    await sql`UPDATE harness_shared.work_items
+                 SET updated_ts = ${Date.now()}, fed_ts = NULL
+               WHERE feature_id = 'WI-RH10B-ISSUE'`;
+
+    const r = await reclaimStaleIssueClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
+    expect(r.released.map((x) => x.issue_id)).toContain('EI-RH10');
+  });
+
+  it('a never-seen holder with NULL taken_at anchors the fallback on fed_ts (EI-2534 must not re-strand)', async () => {
     await seedItem('F-RH4', 'su-remote-noanchor', 30, 'in_progress');
     await sql`UPDATE harness_shared.harness_features_consolidated
                  SET taken_at = NULL, updated_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'F-RH4'`;
+    // WI-10005935: the anchor is the content clock; age it with the row.
+    await sql`UPDATE harness_shared.work_items SET fed_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'F-RH4'`;
     // Fresh-updated row is skipped…
     expect((await reclaimStaleWorkItemClaims(sql)).released).toHaveLength(0);
     // …but frees once updated_ts is older than the fallback.
@@ -857,6 +1002,9 @@ describe('WI-1999 remote-holder guard', () => {
     await seedIssue('EI-RH1', 'bug', 'su-remote-issue-holder', 30);
     expect((await reclaimStaleIssueClaims(sql)).released.map((c) => c.issue_id)).not.toContain('EI-RH1');
     expect(await assigneeOf('EI-RH1')).toBe('su-remote-issue-holder');
+    // Abandoned: its own row (engineer_issues is a view over work_items) has not changed
+    // since the claim either — WI-10005136 counts a recently-changed held row as life.
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now() - 30 * 60_000}, fed_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'EI-RH1'`;
     const r = await reclaimStaleIssueClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
     expect(r.released.map((c) => c.issue_id)).toContain('EI-RH1');
     expect(await assigneeOf('EI-RH1')).toBeNull();

@@ -10,7 +10,7 @@
  * Exact match only, never a prefix: a new route under /api/hooks/ is not exposed by accident.
  */
 
-/** A source id: a lowercase UUID, as Postgres renders `trigger_sources.id`. */
+/** A source id: a lowercase UUID, as Postgres renders `data_sources.id`. */
 export const WEBHOOK_SOURCE_ID_PATTERN = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 
 const SOURCE_ID_RE = new RegExp(`^${WEBHOOK_SOURCE_ID_PATTERN}$`);

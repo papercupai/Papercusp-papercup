@@ -13,7 +13,9 @@
 # its omp leg to a mid-edit syntax error in gateway.ts, neither of them PUI code.
 # So this script checks out the archive's own source commit (PROVENANCE.json
 # source.commit) with the release checkout helper, object-sourced and with
-# node_modules hardlinked, and runs the stage from there. Up to three reusable
+# node_modules captured under the maintained install-reader lock into an
+# independent immutable generation, and runs
+# the stage from there. Up to three reusable
 # checkouts live under PUI_ACCEPTANCE_CHECKOUT_ROOT (default
 # ~/.cache/pui-acceptance-checkouts) and are re-pinned on each use.
 # PUI_ACCEPTANCE_ALLOW_LIVE_TREE=1 runs in place instead, for development only:
@@ -30,6 +32,24 @@ run_in() {
   exec "$root/node_modules/.bin/tsx" "$root/packages/operator-core/lib/pui-e2e/release-acceptance-cli.mts" "$@"
 }
 fail() { echo "release-acceptance: ERROR: $*" >&2; exit 2; }
+
+# Retire only explicitly named rebuildable dependencies of an idle slot. Source,
+# archives and acceptance evidence stay in place; normal preparation restores
+# these trees from its required immutable generation on the next use.
+if [ "${1:-}" = --retire-dependencies ]; then
+  shift
+  slot="${1:-}"; expected="${2:-}"; shift 2 || fail 'retirement needs slot and exact source commit'
+  [[ "$slot" =~ ^[123]$ ]] || fail 'retirement slot must be 1, 2 or 3'
+  [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || fail 'retirement needs the exact source commit'
+  checkouts="${PUI_ACCEPTANCE_CHECKOUT_ROOT:-$HOME/.cache/pui-acceptance-checkouts}"
+  [ -d "$checkouts" ] || fail "no acceptance cache at $checkouts"
+  checkouts="$(cd "$checkouts" && pwd -P)"
+  [ ! -L "$checkouts/slot-$slot.lock" ] || fail 'slot lock cannot be a symlink'
+  exec 9>"$checkouts/slot-$slot.lock"
+  flock -n 9 || fail "slot $slot is held"
+  exec "$ROOT/node_modules/.bin/tsx" "$ROOT/packages/operator-core/lib/pui-e2e/release-acceptance-cache.ts" \
+    "$checkouts/slot-$slot" "$expected" "$@"
+fi
 
 archive=""
 args=("$@")
@@ -58,26 +78,70 @@ sha="$(printf '%s' "$provenance" | node -e '
 
 checkouts="${PUI_ACCEPTANCE_CHECKOUT_ROOT:-$HOME/.cache/pui-acceptance-checkouts}"
 mkdir -p "$checkouts"
+checkouts="$(cd "$checkouts" && pwd -P)"
 # A few reusable slots, each re-pinned per run: bounded disk, and a re-pin moves
 # only what changed. One run per slot, since a second would re-pin the tree
 # under the first. The lock is held by this process and everything it execs; a
 # leftover child of an earlier run holds it too (`fuser -v <slot>.lock`).
 checkout=""
 for slot in 1 2 3; do
+  # Offload-backed caches can retain legacy symlinked slots. The cleanup helper
+  # correctly refuses those aliases; skip them here and use another physical
+  # slot instead of aborting before the acceptance stage starts.
+  if [ -L "$checkouts/slot-$slot" ]; then
+    echo "release-acceptance: skipping symlinked checkout slot $slot" >&2
+    continue
+  fi
   exec 9>"$checkouts/slot-$slot.lock"
   if flock -n 9; then checkout="$checkouts/slot-$slot"; break; fi
   exec 9>&-
 done
-[ -n "$checkout" ] || fail "all three acceptance checkouts under $checkouts are held by other runs"
+[ -n "$checkout" ] || fail "no free physical acceptance slot under $checkouts (all three slots are held or nonphysical)"
+
+# A killed prior parent may have missed its EXIT cleanup. Clear that slot's
+# verified, idle copies before admission, so an otherwise admissible retry is
+# not blocked by the previous attempt's retained bytes.
+if [ -d "$checkout" ]; then
+  cached_sha="$(git -C "$checkout" rev-parse HEAD)" || fail "cannot verify cached source at $checkout"
+  "$ROOT/node_modules/.bin/tsx" "$ROOT/packages/operator-core/lib/pui-e2e/release-acceptance-cache.ts" \
+    "$checkout" "$cached_sha" --all-dependencies --execute >&2 \
+    || fail "cached-slot dependency retirement refused at $checkout"
+fi
 
 echo "release-acceptance: checking out candidate source $sha at $checkout" >&2
-bash "$ROOT/apps/operator/bin/release/setup-release-checkout.sh" \
+# Freeze the shared helper and its adjacent sidecars before its long checkout
+# work. Bash reads scripts lazily; a peer edit during materialization must not
+# change the program this invocation is executing.
+# Keep immutable dependency generations in the acceptance cache. Each slot
+# consumes a validated donor while the shared integration tree may change.
+# Use the maintained install-reader boundary throughout capture/materialization.
+node "$ROOT/scripts/npm-install-safe.mjs" --repo-root "$ROOT" --exec-under-lock -- \
+  bash "$ROOT/apps/operator/scripts/systemd/papercusp-script-snapshot.sh" \
+  "$ROOT/apps/operator/bin/release/setup-release-checkout.sh" \
   --ref "$sha" --integration "$ROOT" --release "$checkout" \
-  --node-modules force --node-modules-copy hardlink --node-modules-generation off \
+  --node-modules force --node-modules-copy copy --node-modules-generation required \
+  --dependency-generation-root "$checkouts/dependency-generations" \
   --source-integrity object-sourced >&2 \
   || fail "could not check out $sha at $checkout (setup-release-checkout.sh failed; output above)"
 landed="$(git -C "$checkout" rev-parse HEAD)"
 [ "$landed" = "$sha" ] || fail "checkout $checkout is at $landed, not the candidate source $sha"
 
 export PUI_ACCEPTANCE_ISOLATED="$checkout"
-run_in "$checkout" "$@"
+# A bounded slot count does not bound its retained physical dependency copies.
+# Retire these after every completed attempt, including a refused verdict. Source,
+# archives and receipts stay intact; the next preparation restores dependencies.
+# Keep fd 9 locked until the retirement helper has verified no child still uses
+# the slot. A refused cleanup is visible and cannot turn into a successful run.
+retire_completed_slot() {
+  local run_status=$? cleanup_status=0
+  trap - EXIT
+  "$ROOT/node_modules/.bin/tsx" "$ROOT/packages/operator-core/lib/pui-e2e/release-acceptance-cache.ts" \
+    "$checkout" "$sha" --all-dependencies --execute >&2 || cleanup_status=$?
+  if [ "$cleanup_status" -ne 0 ]; then
+    echo "release-acceptance: ERROR: completed-slot dependency retirement refused (run=$run_status cleanup=$cleanup_status); source and evidence retained" >&2
+    [ "$run_status" -ne 0 ] || run_status=2
+  fi
+  exit "$run_status"
+}
+trap retire_completed_slot EXIT
+"$checkout/node_modules/.bin/tsx" "$checkout/packages/operator-core/lib/pui-e2e/release-acceptance-cli.mts" "$@"

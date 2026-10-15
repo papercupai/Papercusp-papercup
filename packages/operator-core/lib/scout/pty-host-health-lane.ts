@@ -27,10 +27,24 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'discovery-reasserted' ||
     kind === 'owner-composer-wedge-cleared' ||
     kind === 'launch-kickoff-turn-start-retry' ||
+    // WI-10004943: a fresh Codex child stuck at Starting was replaced and the
+    // kickoff re-delivered. The replacement's outcome is a separate event
+    // (launch-kickoff-fresh-child-failed counts as failure via the suffix rule).
+    kind === 'launch-kickoff-fresh-child-retry' ||
+    // EI-24818010361425604: a same-host respawn replaced the child mid-kickoff
+    // and the kickoff is re-delivered to the successor. Like the fresh-child
+    // retry above, the redelivery itself is recovery evidence.
+    kind === 'launch-kickoff-respawn-redelivery' ||
     kind === 'launch-kickoff-model-turn-retry-result' ||
     kind === 'submit-verify-human-input-retry' ||
+    // The guarded verifier emitted one safe CR after confirming the prior
+    // submit did not start a turn; payload carries the resubmit counters.
+    kind === 'submit-verify-recovery-resubmit' ||
     kind === 'respawn-carry-fresh-epoch-retry' ||
     kind === 'respawn-carry-turn-start-retry' ||
+    // WI-10005472: a headless Claude child whose composer paint was never seen
+    // fell back to the ordinary busy gate instead of dropping its carry/kickoff.
+    kind === 'headless-claude-composer-unseen-ordinary-gate' ||
     kind === 'operator-pin-healed' ||
     // The same heal, resolved by routing through the staging proxy instead.
     kind === 'operator-pin-routed' ||
@@ -40,29 +54,77 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     // WI-10003875: a claude quota latch the native transcript proved was the
     // model's own prose, dismissed so wakes resume — a detector false positive
     // that self-healed, worth counting but not a final failure.
-    kind === 'quota-block-dismissed-transcript-echo'
+    kind === 'quota-block-dismissed-transcript-echo' ||
+    // WI-6554700010008412: a codex quota latch released at the provider's
+    // stated reset so the next deferred wake can run.
+    kind === 'quota-block-expired-at-reset' ||
+    kind === 'quota-recovery-resumed'
   ) return 'recovered';
 
   if (
+    // D-014: a latched codex quota wall let one deferred wake through as a probe;
+    // routine whether or not the wall is still up (it re-latches if so).
+    kind === 'quota-block-probe-released' ||
     kind === 'stale-fire-dropped' ||
     kind === 'respawn-rearm-superseded' ||
+    // A carry-respawn replaced the child while a delivery's native turn-start
+    // proof was still pending. That proof can never be certified against the
+    // successor, so the host tombstones the delivery ID to refuse a second paste
+    // (dedup, not a fault). The unproven start was already recorded by the
+    // delivery path's own failure event (native-turn-start-unverified or
+    // submit-verify-unconfirmed), so counting this retirement would double-count.
+    kind === 'native-turn-start-superseded' ||
     kind === 'wake-turn-deferred-for-pending-respawn' ||
+    kind === 'pty-spawned' ||
     kind === 'turn-deferred-for-owner-input' ||
     kind === 'duplicate-delivery-id' ||
+    // An explicit cancellation fences the pending delivery before PTY write;
+    // duplicates remain suppressed rather than resurrecting a cancelled turn.
+    kind === 'delivery-cancellation-requested' ||
+    kind === 'delivery-cancelled-before-write' ||
+    kind === 'duplicate-cancelled-delivery-id' ||
+    // Idle parking, successful resume, and retained delivery waits are lifecycle
+    // state. Their failed/refused outcomes are separate events below.
+    kind === 'child-parked' ||
+    kind === 'child-park-deferred' ||
+    kind === 'child-unparked' ||
+    kind === 'parked-delivery-held' ||
+    // Completion records exit/force-kill diagnostics; the separate force-kill
+    // event carries escalation, so this event does not assert successful stop.
+    kind === 'respawn-predecessor-stop-finished' ||
     // The first model turn began while its retry was queued; suppressing that
     // second kickoff is successful duplicate prevention, not a host failure.
     kind === 'launch-kickoff-model-turn-retry-skipped' ||
     kind === 'queued-turn-folded' ||
     kind === 'headless-codex-model-choice-kept-existing' ||
     kind === 'headless-codex-model-choice-select-existing' ||
+    // Sending Escape is a startup control action, not proof the dialog closed.
+    // Skipping a stale/shutdown child is intentional; write failure is separate.
+    kind === 'codex-startup-update-dialog-escape-sent' ||
+    kind === 'codex-startup-update-dialog-escape-skipped' ||
     kind === 'headless-claude-onboarding-advanced' ||
+    // A requested hooks observation records its structured result separately;
+    // the result itself is diagnostic data, not a PTY-host failure verdict.
+    kind === 'hooks-observation-result' ||
+    // Waiting while the backend explicitly shows Starting is an in-deadline
+    // hold; the terminal timeout/drop has its own failure event.
+    kind === 'kickoff-waiting-for-codex-startup' ||
     kind === 'claude-resume-compaction-summary-selected' ||
     kind === 'shutdown-accepted' ||
     kind === 'host-teardown' ||
     // A slow Codex composer paste still inside the kickoff delivery deadline.
     // Its terminal outcome is recorded separately as `-confirmed` (routine) or
     // `-unconfirmed` (failure), so counting this as a failure double-counts.
-    kind === 'launch-kickoff-marker-echo-pending'
+    kind === 'launch-kickoff-marker-echo-pending' ||
+    // The hold and its diagnostic snapshot have separate terminal drop events.
+    // Hold-ended includes successful and interrupted outcomes, so it is not a
+    // failure verdict by itself.
+    kind === 'kickoff-held-for-codex-frame' ||
+    kind === 'kickoff-codex-frame-hold-ended' ||
+    kind === 'codex-starting-stuck-snapshot' ||
+    // An explicitly Starting Codex footer extends the early frame wait only
+    // within the kickoff deadline; the terminal timeout is recorded separately.
+    kind === 'launch-kickoff-backend-frame-wait-extended'
   ) return 'routine';
 
   if (
@@ -70,15 +132,37 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'orphan-teardown' ||
     kind === 'control-payload-unaddressed' ||
     kind === 'control-payload-rejected' ||
+    kind === 'wake-provenance-rejected' ||
+    // Resume was abandoned after repeated exits; no live child was restored.
+    kind === 'child-unpark-abandoned' ||
+    // The predecessor did not exit within the graceful stop deadline.
+    kind === 'respawn-predecessor-force-kill' ||
+    // The kickoff was refused and publishing its refusal receipt failed; the
+    // headless host terminates with an error rather than hiding the refusal.
+    kind === 'kickoff-refusal-unreported-terminating' ||
     kind === 'persona-refresh-skipped' ||
     kind === 'turn-verifier-unsupported' ||
     kind === 'wake-rearm-unsupported' ||
     kind === 'quota-block-detected' ||
+    // P-004: the codex login is dead; the child cannot take a turn until recovery.
+    kind === 'auth-block-detected' ||
     kind === 'model-capacity-detected' ||
     kind === 'turn-deferred-quota-blocked' ||
     kind === 'launch-kickoff-model-turn-absent' ||
     kind === 'launch-role-mcp-unavailable' ||
+    // The submitted kickoff was rejected by a provider quota wall.
+    kind === 'launch-kickoff-quota-rejected' ||
+    // The predecessor remains alive/unconfirmed after the force-kill request;
+    // the recycle fence correctly stays held until exit is observed.
+    kind === 'respawn-predecessor-stop-pending' ||
+    // Native seed persistence was verified, but the operator receipt remains
+    // unconfirmed and must not be reported as delivered.
+    kind === 'session-port-delivery-ack-pending' ||
+    // The carry-respawn sibling of launch-role-mcp-unavailable (computed kind in
+    // psu-pty-host.mjs: result.ok ? 'respawn-carry-mcp-ready' : '...-unavailable').
+    kind === 'respawn-carry-mcp-unavailable' ||
     kind === 'busy-gate-expired' ||
+    kind === 'codex-starting-stuck-early-drop' ||
     // A respawn whose compaction was never reported to the operator.
     kind === 'respawn-compaction-unannounced' ||
     /(?:^|-)(?:failed|error|expired|timeout|timed-out|unconfirmed|unverified|exhausted|truncated|dropped|refused|stuck|starvation|suspected|partial)$/.test(kind)

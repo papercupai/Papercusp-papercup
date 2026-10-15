@@ -17,7 +17,7 @@
  *     gym_autoloop_config, so accumulating here would double-count).
  */
 import type { Sql, TransactionSql } from 'postgres';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   checkLoopVerdict,
   LEARNING_GOVERNOR_BUDGET_FLOOR_USD,
@@ -41,6 +41,7 @@ import {
   type SpendReservationStatus,
 } from './spend';
 import type { LearningSpend } from '../experiment/types';
+import type { GatewayCarryTrialAttemptResult } from '../inference-gateway/gateway';
 
 type Row = Record<string, unknown>;
 const str = (v: unknown): string => String(v);
@@ -366,6 +367,15 @@ export interface LearningReservationResourceBudget {
   outputTokens: number;
   requestsPerArm: number;
   armIds: string[];
+  /** Optional strict monetary/time bounds, shared by every role/retry on an arm.
+   * Benchmark controllers use an assignment identity as the arm id. */
+  usdPerArm?: number;
+  maxOpenUsd?: number;
+  wallClockMs?: number;
+  wallClockMsPerArm?: number;
+  /** Combined complete input (including cache) and output reservation bounds
+   * across every role, failed request, retry and recovery on an assignment. */
+  totalTokensPerArm?: number;
 }
 
 const resourceCount = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
@@ -381,7 +391,22 @@ function resourceBudgetValid(value: unknown): value is LearningReservationResour
   const v = value as LearningReservationResourceBudget;
   return resourceCount(v.inputTokens) && resourceCount(v.outputTokens) && resourceCount(v.requestsPerArm) &&
     v.requestsPerArm > 0 && Array.isArray(v.armIds) && v.armIds.length > 0 && v.armIds.length <= 1000 &&
-    v.armIds.every(resourceArm) && new Set(v.armIds).size === v.armIds.length;
+    v.armIds.every(resourceArm) && new Set(v.armIds).size === v.armIds.length &&
+    [v.usdPerArm, v.maxOpenUsd].every(n => n === undefined || (exactUsdMicros(n) !== null && n > 0)) &&
+    [v.wallClockMs, v.wallClockMsPerArm, v.totalTokensPerArm].every(n => n === undefined || (resourceCount(n) && n > 0));
+}
+
+function resourceBudgetFingerprint(budget: LearningReservationResourceBudget): string {
+  return createHash('sha256').update(JSON.stringify({ inputTokens: budget.inputTokens,
+    outputTokens: budget.outputTokens, requestsPerArm: budget.requestsPerArm,
+    armIds: [...budget.armIds].sort(),
+    // Preserve the original cycle identity when additive bounds are absent.
+    ...(budget.usdPerArm === undefined ? {} : { usdPerArm: budget.usdPerArm }),
+    ...(budget.maxOpenUsd === undefined ? {} : { maxOpenUsd: budget.maxOpenUsd }),
+    ...(budget.wallClockMs === undefined ? {} : { wallClockMs: budget.wallClockMs }),
+    ...(budget.wallClockMsPerArm === undefined ? {} : { wallClockMsPerArm: budget.wallClockMsPerArm }),
+    ...(budget.totalTokensPerArm === undefined ? {} : { totalTokensPerArm: budget.totalTokensPerArm }),
+  })).digest('hex');
 }
 
 function mapReservation(r: Row): LearningSpendReservation {
@@ -434,6 +459,38 @@ export async function sumOpenReservedUsd(
   }
 }
 
+/** One native run's frozen per-cycle policy. This scopes issuer arithmetic,
+ * not authentication or provider invoice enforcement. Persisted using the
+ * existing reservation run_ref; no new ledger or registration is needed. */
+export interface CycleSpendReservationScope {
+  runId: string;
+  budgetUsd: number;
+  /** Optional native resource policy, matched against the registered policy.
+   * Bounds are retained for every disposition and scoped to this run. */
+  resources?: LearningReservationResources;
+  expectedResourceBudget?: LearningReservationResourceBudget;
+}
+
+const cycleUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** Shared receipt identity check for the store and governed dispatch helper. */
+export function cycleReservationRunRef(cycle: CycleSpendReservationScope, reservationId: string): string | null {
+  if (!cycle || typeof cycle.runId !== 'string' || !cycleUuid.test(cycle.runId) ||
+    exactUsdMicros(cycle.budgetUsd) === null || typeof reservationId !== 'string' || !cycleUuid.test(reservationId)) return null;
+  let resourcePolicy = '';
+  if (cycle.resources !== undefined || cycle.expectedResourceBudget !== undefined) {
+    const resources = cycle.resources, budget = cycle.expectedResourceBudget;
+    if (!resources || !resourceBudgetValid(budget) || !resourceArm(resources.armId) ||
+      !resourceCount(resources.inputTokens) || !resourceCount(resources.outputTokens) || resources.outputTokens === 0) return null;
+    // Retain the frozen policy in the existing run identity. A registration
+    // change cannot renew a running cycle's token/request allowance. Arm order
+    // is immaterial, just as it is in the registered-policy equality check.
+    const hash = resourceBudgetFingerprint(budget);
+    resourcePolicy = `/resources:${hash}`;
+  }
+  return `cycle:${cycle.runId.toLowerCase()}/cap:${exactUsdMicros(cycle.budgetUsd)}${resourcePolicy}/attempt:${reservationId.toLowerCase()}`;
+}
+
 export interface ReserveLearningSpendInput {
   workspaceId: string;
   loopId: string;
@@ -445,6 +502,10 @@ export interface ReserveLearningSpendInput {
   runRef?: string | null;
   note?: string | null;
   floorUsd?: number;
+  /** Bound all attempts in ONE per-cycle run under the registration lock.
+   * The registered cap must still match; other runs retain their own cap.
+   * Incompatible with exact lifetime/resource reservations or caller runRef. */
+  cycle?: CycleSpendReservationScope;
   /** Exact, single-use reservation for a controller's frozen manifest. The
    * registration must carry meta.reservationBinding with this SHA256, be
    * enabled/lifetime, and still have the expected dollar cap. No partial grant
@@ -461,16 +522,19 @@ export interface ReserveLearningSpendInput {
 }
 
 type ExactReservationRefusal = 'invalid-exact-request' | 'transaction-required' | 'binding-required' |
-  'stale-binding' | 'disabled' | 'unsupported-budget-kind' | 'insufficient-headroom' | 'already-reserved' |
+  'stale-binding' | 'disabled' | 'pot-disabled' | 'unsupported-budget-kind' | 'insufficient-headroom' | 'already-reserved' |
   'resource-binding-required' | 'resource-accounting-incomplete' | 'resource-cap-exceeded';
+
+type CycleReservationRefusal = 'invalid-cycle-request' | 'cycle-binding-required' |
+  'stale-cycle-budget' | 'cycle-accounting-incomplete';
 
 export type ReserveLearningSpendResult =
   | { ok: true; reservation: LearningSpendReservation; clamped: boolean; headroomUsd: number | null }
-  | { ok: false; reason: ReservationRefusal | ExactReservationRefusal; requestedUsd: number; headroomUsd: number | null };
+  | { ok: false; reason: ReservationRefusal | ExactReservationRefusal | CycleReservationRefusal; requestedUsd: number; headroomUsd: number | null };
 
 /**
- * Open one attempt. Refuses (fail-closed) on an unbudgeted registration, an
- * invalid amount, or no headroom; grants a CLAMPED reservation when the loop
+ * Open one attempt. Refuses (fail-closed) on a disabled or unbudgeted registration,
+ * an invalid amount, or no headroom; grants a CLAMPED reservation when the loop
  * can afford some but not all of the request — a partial grant is an allow,
  * and the caller bounds itself at `reservation.reservedUsd`.
  *
@@ -485,18 +549,30 @@ export async function reserveLearningSpend(
   sql: Sql,
   q: ReserveLearningSpendInput,
 ): Promise<ReserveLearningSpendResult> {
-  q = { ...q, ...(q.exact ? { exact: { ...q.exact,
+  q = { ...q, ...(q.cycle !== undefined ? { cycle: { ...q.cycle,
+    ...(q.cycle.resources ? { resources: { ...q.cycle.resources } } : {}),
+    ...(q.cycle.expectedResourceBudget ? { expectedResourceBudget: { ...q.cycle.expectedResourceBudget,
+      armIds: Array.isArray(q.cycle.expectedResourceBudget.armIds) ? [...q.cycle.expectedResourceBudget.armIds] : [] } } : {}),
+  } } : {}), ...(q.exact ? { exact: { ...q.exact,
     ...(q.exact.resources ? { resources: { ...q.exact.resources } } : {}),
     ...(q.exact.expectedResourceBudget ? { expectedResourceBudget: { ...q.exact.expectedResourceBudget,
       armIds: Array.isArray(q.exact.expectedResourceBudget.armIds) ? [...q.exact.expectedResourceBudget.armIds] : [] } } : {}),
   } } : {}) };
   const exact = q.exact;
-  const refuse = (reason: ReservationRefusal | ExactReservationRefusal, headroomUsd: number | null = null): ReserveLearningSpendResult =>
+  const cycle = q.cycle;
+  const reservationId = exact?.reservationId ?? randomUUID();
+  const cycleRef = cycle === undefined ? null : cycleReservationRunRef(cycle, reservationId);
+  const refuse = (reason: ReservationRefusal | ExactReservationRefusal | CycleReservationRefusal, headroomUsd: number | null = null): ReserveLearningSpendResult =>
     ({ ok: false, reason, requestedUsd: q.requestedUsd, headroomUsd });
   // Work in integer microdollars on the exact path, not floating subtraction
   // that can round remaining headroom UP. Reject non-microdollar input.
   const micros = exactUsdMicros;
   const begin = (sql as unknown as { begin?: unknown }).begin;
+  if (cycle !== undefined && (!cycleRef || exact !== undefined || q.runRef != null || micros(q.requestedUsd) === null)) {
+    return refuse('invalid-cycle-request');
+  }
+  if (cycle === undefined && q.runRef?.startsWith('cycle:')) return refuse('cycle-binding-required');
+  if (cycle !== undefined && typeof begin !== 'function') return refuse('transaction-required');
   if (exact && (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(exact.reservationId) ||
     !/^[a-f0-9]{64}$/.test(exact.binding) || micros(exact.expectedBudgetUsd) === null ||
     micros(q.requestedUsd) === null || micros(q.floorUsd ?? LEARNING_GOVERNOR_BUDGET_FLOOR_USD) === null ||
@@ -504,8 +580,8 @@ export async function reserveLearningSpend(
   // The legacy test seam may run without begin; exact grants must NEVER take
   // a FOR UPDATE lock in autocommit and then insert outside its transaction.
   if (exact && typeof begin !== 'function') return refuse('transaction-required');
-  const resources = exact?.resources;
-  const expectedResources = exact?.expectedResourceBudget;
+  const resources = exact?.resources ?? cycle?.resources;
+  const expectedResources = exact?.expectedResourceBudget ?? cycle?.expectedResourceBudget;
   if ((resources || expectedResources) && (!resources || !resourceBudgetValid(expectedResources) ||
     !resourceArm(resources.armId) || !resourceCount(resources.inputTokens) ||
     !resourceCount(resources.outputTokens) || resources.outputTokens === 0)) return refuse('invalid-exact-request');
@@ -515,25 +591,36 @@ export async function reserveLearningSpend(
        WHERE workspace_id = ${q.workspaceId} AND loop_id = ${q.loopId}
        FOR UPDATE`) as Row[];
     const reg = regRows[0] ? mapLoop(regRows[0]) : null;
-    if ((reg?.meta?.reservationBinding != null || reg?.meta?.reservationResourceBudget != null) && !exact) {
+    // Preflight may have allowed the loop before an async pool/dispatch wait.
+    // Re-read authority under the registration lock for every reservation,
+    // including native per-cycle mirrors and zero-cost attempts.
+    // Attribution on the request cannot choose a different pot's authority.
+    if (reg?.potSlug && !(await potLearningEnabled(tx as Sql, {
+      workspaceId: q.workspaceId, potSlug: reg.potSlug,
+    }))) return refuse('pot-disabled');
+    if (reg && !reg.enabled) return refuse('disabled');
+    if ((reg?.meta?.reservationBinding != null && !exact) ||
+      (reg?.meta?.reservationResourceBudget != null && !exact && !cycle)) {
       return refuse('binding-required');
     }
     if (exact) {
       if (!reg || reg.budgetUsd === null) return refuse('unbudgeted');
-      if (!reg.enabled) return refuse('disabled');
       if (reg.budgetKind !== 'lifetime') return refuse('unsupported-budget-kind');
       if (reg.meta?.reservationBinding !== exact.binding || reg.budgetUsd !== exact.expectedBudgetUsd) {
         return refuse('stale-binding');
       }
     }
+    if (cycle !== undefined) {
+      if (!reg || reg.budgetUsd === null) return refuse('unbudgeted');
+      if (reg.budgetKind !== 'per-cycle') return refuse('unsupported-budget-kind');
+      if (reg.budgetUsd !== cycle.budgetUsd) return refuse('stale-cycle-budget');
+    }
     const resourceBudget = reg?.meta?.reservationResourceBudget;
     if (resourceBudget != null || resources) {
       if (!resources || !expectedResources || !resourceBudgetValid(resourceBudget)) return refuse('resource-binding-required');
-      if (resourceBudget.inputTokens !== expectedResources.inputTokens || resourceBudget.outputTokens !== expectedResources.outputTokens ||
-        resourceBudget.requestsPerArm !== expectedResources.requestsPerArm ||
-        resourceBudget.armIds.length !== expectedResources.armIds.length ||
-        resourceBudget.armIds.some(id => !expectedResources.armIds.includes(id))) return refuse('stale-binding');
+      if (resourceBudgetFingerprint(resourceBudget) !== resourceBudgetFingerprint(expectedResources)) return refuse('stale-binding');
       if (!resourceBudget.armIds.includes(resources.armId)) return refuse('resource-cap-exceeded');
+      const attemptPrefix = exact ? `manifest:${exact.binding}/attempt:` : cycleRef!.slice(0, -reservationId.length);
       // No status filter: a failed/cancelled/settled request may have spent
       // tokens. Releasing USD is not authority to refund any resource bound.
       // GROUP BY keeps the result bounded by the frozen arm population, and
@@ -541,23 +628,48 @@ export async function reserveLearningSpend(
       const history = (await tx`
         SELECT arm_id, SUM(reserved_input_tokens) AS inputs, SUM(reserved_output_tokens) AS outputs,
           COUNT(*) AS requests,
+          SUM(CASE WHEN status = 'open' THEN GREATEST(reserved_usd, used_usd) ELSE used_usd END) AS committed_usd,
+          SUM(CASE WHEN status = 'open' THEN GREATEST(reserved_usd, used_usd) ELSE 0 END) AS open_usd,
+          EXTRACT(EPOCH FROM (clock_timestamp() - MIN(created_at))) * 1000 AS age_ms,
           BOOL_AND(reserved_input_tokens IS NOT NULL AND reserved_output_tokens IS NOT NULL
-            AND run_ref IS NOT DISTINCT FROM ${`manifest:${exact!.binding}/attempt:`} || id::text) AS complete
+            AND reserved_usd >= 0 AND used_usd >= 0
+            AND run_ref IS NOT DISTINCT FROM ${attemptPrefix} || id::text) AS complete
         FROM harness_shared.learning_spend_reservations
         WHERE workspace_id = ${q.workspaceId} AND loop_id = ${q.loopId}
+          ${cycle ? tx`AND run_ref LIKE ${`cycle:${cycle.runId.toLowerCase()}/%`}` : tx``}
         GROUP BY arm_id`) as Row[];
       let inputs = resources.inputTokens, outputs = resources.outputTokens;
+      let armTokens = inputs + outputs;
       let armRequests = 1;
+      const requestedMicros = micros(q.requestedUsd);
+      if (requestedMicros === null) return refuse('invalid-exact-request');
+      let armMicros = requestedMicros, openMicros = requestedMicros, oldestAgeMs = 0;
       for (const row of history) {
         const input = Number(row.inputs), output = Number(row.outputs), requests = Number(row.requests);
+        const committed = micros(Number(row.committed_usd)), open = micros(Number(row.open_usd)), ageMs = Number(row.age_ms);
         if (row.complete !== true || !resourceArm(row.arm_id) || !resourceBudget.armIds.includes(row.arm_id) ||
-          !resourceCount(input) || !resourceCount(output) || !resourceCount(requests)) return refuse('resource-accounting-incomplete');
+          !resourceCount(input) || !resourceCount(output) || !resourceCount(requests) || committed === null || open === null ||
+          !Number.isFinite(ageMs) || ageMs < 0) return refuse('resource-accounting-incomplete');
         inputs += input; outputs += output;
-        if (row.arm_id === resources.armId) armRequests += requests;
+        openMicros += open;
+        oldestAgeMs = Math.max(oldestAgeMs, ageMs);
+        if (row.arm_id === resources.armId) {
+          armTokens += input + output;
+          armRequests += requests; armMicros += committed;
+          if (resourceBudget.wallClockMsPerArm !== undefined && ageMs >= resourceBudget.wallClockMsPerArm) return refuse('resource-cap-exceeded');
+        }
+        if (resourceBudget.usdPerArm !== undefined && committed > micros(resourceBudget.usdPerArm)!) return refuse('resource-cap-exceeded');
         if (requests > resourceBudget.requestsPerArm) return refuse('resource-cap-exceeded');
+        if (resourceBudget.totalTokensPerArm !== undefined &&
+          (!resourceCount(input + output) || input + output > resourceBudget.totalTokensPerArm)) return refuse('resource-cap-exceeded');
       }
-      if (![inputs, outputs, armRequests].every(resourceCount) || inputs > resourceBudget.inputTokens ||
-        outputs > resourceBudget.outputTokens || armRequests > resourceBudget.requestsPerArm) return refuse('resource-cap-exceeded');
+      if (![inputs, outputs, armRequests, armTokens].every(resourceCount) || inputs > resourceBudget.inputTokens ||
+        outputs > resourceBudget.outputTokens || armRequests > resourceBudget.requestsPerArm ||
+        resourceBudget.totalTokensPerArm !== undefined && armTokens > resourceBudget.totalTokensPerArm ||
+        !Number.isSafeInteger(armMicros) || !Number.isSafeInteger(openMicros) ||
+        resourceBudget.usdPerArm !== undefined && armMicros > micros(resourceBudget.usdPerArm)! ||
+        resourceBudget.maxOpenUsd !== undefined && openMicros > micros(resourceBudget.maxOpenUsd)! ||
+        resourceBudget.wallClockMs !== undefined && oldestAgeMs >= resourceBudget.wallClockMs) return refuse('resource-cap-exceeded');
     }
     const openReserved = await sumOpenReservedUsd(tx as Sql, {
       workspaceId: q.workspaceId,
@@ -568,6 +680,26 @@ export async function reserveLearningSpend(
       openReserved,
       q.floorUsd ?? LEARNING_GOVERNOR_BUDGET_FLOOR_USD,
     );
+    if (cycle !== undefined) {
+      const runPrefix = `cycle:${cycle.runId.toLowerCase()}/`;
+      const attemptPrefix = cycleRef!.slice(0, -reservationId.length);
+      // OPEN rows hold their full reservation, even when a caller knows only
+      // a usage subtotal. Every terminal disposition charges its actual use.
+      // Mirror accumulate:false therefore cannot reopen this run's capacity.
+      const history = (await tx`
+        SELECT COALESCE(SUM(CASE WHEN status = 'open' THEN reserved_usd ELSE used_usd END), 0) AS committed_usd,
+          COALESCE(BOOL_AND(reserved_usd >= 0 AND used_usd >= 0
+            AND reserved_usd * 1000000 = TRUNC(reserved_usd * 1000000)
+            AND used_usd * 1000000 = TRUNC(used_usd * 1000000)
+            AND status IN ('open', 'settled', 'failed', 'cancelled')
+            AND run_ref = ${attemptPrefix} || id::text), TRUE) AS complete
+        FROM harness_shared.learning_spend_reservations
+        WHERE workspace_id = ${q.workspaceId} AND loop_id = ${q.loopId}
+          AND run_ref LIKE ${runPrefix + '%'}`) as Row[];
+      const committed = micros(Number(history[0]?.committed_usd));
+      if (history[0]?.complete !== true || committed === null) return refuse('cycle-accounting-incomplete');
+      headroomUsd = Math.max(0, micros(cycle.budgetUsd)! - committed) / 1_000_000;
+    }
     if (exact && reg) {
       const cap = micros(reg.budgetUsd!), spent = micros(reg.spentUsd), open = micros(openReserved);
       const floor = micros(q.floorUsd ?? LEARNING_GOVERNOR_BUDGET_FLOOR_USD);
@@ -586,10 +718,10 @@ export async function reserveLearningSpend(
         (id, workspace_id, loop_id, pot_slug, attempt_kind, requested_usd, reserved_usd,
          status, signal_origin, run_ref, note
          ${resources ? tx`, arm_id, reserved_input_tokens, reserved_output_tokens` : tx``})
-      VALUES (${exact?.reservationId ?? randomUUID()}, ${q.workspaceId}, ${q.loopId}, ${q.potSlug === undefined ? (reg?.potSlug ?? null) : q.potSlug},
+      VALUES (${reservationId}, ${q.workspaceId}, ${q.loopId}, ${q.potSlug === undefined ? (reg?.potSlug ?? null) : q.potSlug},
         ${q.attemptKind ?? 'cycle'}, ${q.requestedUsd}, ${plan.reservedUsd},
         'open', ${q.signalOrigin ?? 'organic'},
-        ${exact ? `manifest:${exact.binding}/attempt:${exact.reservationId.toLowerCase()}` : q.runRef ?? null}, ${q.note ?? null}
+        ${exact ? `manifest:${exact.binding}/attempt:${exact.reservationId.toLowerCase()}` : cycleRef ?? q.runRef ?? null}, ${q.note ?? null}
         ${resources ? tx`, ${resources.armId}, ${resources.inputTokens}, ${resources.outputTokens}` : tx``})
       ON CONFLICT (id) DO NOTHING
       RETURNING *`) as Row[];
@@ -617,6 +749,9 @@ export interface SettleLearningSpendInput {
    * an explicit nonnegative microdollar value; unknown charges stay OPEN. */
   usedUsd?: number;
   note?: string | null;
+  /** Guard a source-bound reconciliation against a changed reservation. Checked
+   * under the row lock before releasing any headroom or writing a charge. */
+  expectedNoteSha256?: string;
   /**
    * true (default): the charge also bumps the registration's spent_usd — the
    * path for loops whose only spend store is the governor. false: ledger the
@@ -636,7 +771,7 @@ export type SettleLearningSpendResult =
       releasedUsd: number;
       overrunUsd: number;
     }
-  | { ok: false; reason: 'not-found' | 'already-settled' | 'exact-settlement-required'; reservation: LearningSpendReservation | null };
+  | { ok: false; reason: 'not-found' | 'already-settled' | 'exact-settlement-required' | 'cycle-settlement-required' | 'reservation-changed'; reservation: LearningSpendReservation | null };
 
 /**
  * Close one attempt — the ONLY way an attempt leaves 'open'. Idempotent by
@@ -650,6 +785,88 @@ export type SettleLearningSpendResult =
  * record that the attempt happened and cost nothing, which is exactly the
  * cancelled/failed case the old `costUsd > 0` guards dropped on the floor.
  */
+export interface RecordLearningSpendAttemptResultInput {
+  workspaceId: string;
+  reservationId: string;
+  result: GatewayCarryTrialAttemptResult;
+}
+
+/** Preserve actual provider attempt evidence in its existing reservation.
+ * This does not release headroom or convert measured tokens into a bill. */
+export async function recordLearningSpendAttemptResult(sql: Sql, q: RecordLearningSpendAttemptResultInput): Promise<{
+  ok: boolean; reason?: 'invalid-result' | 'not-found' | 'identity-mismatch' | 'transition-refused' | 'transaction-required';
+}> {
+  const value = q.result;
+  const count = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
+  const sha = (s: unknown): s is string => typeof s === 'string' && /^[a-f0-9]{64}$/.test(s);
+  const text = (s: unknown): s is string => typeof s === 'string' && !!s.trim() && s.length <= 4096;
+  const identity = { attemptId: value.attemptId, manifestSha256: value.manifestSha256, armId: value.armId,
+    transport: value.transport, accountId: value.accountId, credentialHeader: value.credentialHeader,
+    credentialSha256: value.credentialSha256, target: value.target, bodySha256: value.bodySha256, clockId: value.clockId,
+    ...(value.nativeSessionId === undefined && value.nativeTurnId === undefined ? {} :
+      { nativeSessionId: value.nativeSessionId, nativeTurnId: value.nativeTurnId }) };
+  if (!text(q.workspaceId) || !text(q.reservationId) || value.reservationRef !== q.reservationId ||
+      ![identity.attemptId, identity.armId, identity.accountId, identity.target, identity.clockId].every(text) ||
+      ![identity.manifestSha256, identity.credentialSha256, identity.bodySha256].every(sha) ||
+      !['oauth-http', 'bearer-http', 'anthropic-http'].includes(identity.transport) ||
+      !['authorization', 'x-api-key'].includes(identity.credentialHeader)) return { ok: false, reason: 'invalid-result' };
+  if ((identity.nativeSessionId !== undefined || identity.nativeTurnId !== undefined) &&
+      ![identity.nativeSessionId, identity.nativeTurnId].every(id => typeof id === 'string' &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))) return { ok: false, reason: 'invalid-result' };
+  let result: Record<string, unknown> = { ...identity, reservationRef: q.reservationId, outcome: value.outcome,
+    responseStatus: value.responseStatus, costUsdMeasurementMissing: value.costUsdMeasurementMissing };
+  if (value.outcome === 'send-refused') {
+    if (value.responseStatus !== null || value.costUsd !== 0 || value.costUsdMeasurementMissing !== false) return { ok: false, reason: 'invalid-result' };
+    result.costUsd = 0;
+  } else if (value.outcome === 'fetch-failed') {
+    if (value.responseStatus !== null || value.costUsdMeasurementMissing !== true) return { ok: false, reason: 'invalid-result' };
+  } else {
+    if (!count(value.responseStatus) || value.responseStatus < 100 || value.responseStatus > 599 ||
+        value.costUsdMeasurementMissing !== true) return { ok: false, reason: 'invalid-result' };
+    if (value.outcome === 'response-completed' || value.outcome === 'response-incomplete') {
+      if (!sha(value.responseSha256) || !count(value.responseBytes)) return { ok: false, reason: 'invalid-result' };
+      result.responseSha256 = value.responseSha256; result.responseBytes = value.responseBytes;
+      if (value.outcome === 'response-completed') {
+        const p = value.providerCompletion, u = p?.usage;
+        if (value.responseStatus < 200 || value.responseStatus >= 300 || !text(p?.responseId) || !text(p?.model) ||
+            p.providerEffort !== null && !text(p.providerEffort) || !u || u.inputTokenBasis !== 'inclusive' ||
+            !count(u.inputTokens) || !count(u.outputTokens) ||
+            u.cacheReadTokens !== null && !count(u.cacheReadTokens) || u.cacheCreationTokens !== null && !count(u.cacheCreationTokens) ||
+            (u.cacheReadTokens ?? 0) + (u.cacheCreationTokens ?? 0) > u.inputTokens) return { ok: false, reason: 'invalid-result' };
+        result.providerCompletion = { responseId: p.responseId, model: p.model, providerEffort: p.providerEffort,
+          usage: { inputTokens: u.inputTokens, inputTokenBasis: u.inputTokenBasis, outputTokens: u.outputTokens,
+            cacheReadTokens: u.cacheReadTokens, cacheCreationTokens: u.cacheCreationTokens } };
+      }
+    } else if (value.outcome !== 'response-headers') return { ok: false, reason: 'invalid-result' };
+  }
+  // Snapshot and whitelist before awaiting the row lock. Extra caller properties
+  // (body, credentials, output text, guessed dollars) never enter the ledger.
+  const snapshot = JSON.parse(JSON.stringify(result)) as Record<string, unknown>;
+  const workspaceId = q.workspaceId, reservationId = q.reservationId;
+  if (typeof sql.begin !== 'function') return { ok: false, reason: 'transaction-required' };
+  return sql.begin(async tx => {
+    const rows = await tx`SELECT * FROM harness_shared.learning_spend_reservations
+      WHERE workspace_id = ${workspaceId} AND id = ${reservationId} FOR UPDATE` as Row[];
+    if (!rows[0]) return { ok: false, reason: 'not-found' as const };
+    let note: Record<string, unknown>;
+    try { note = JSON.parse(String(rows[0].note)); } catch { return { ok: false, reason: 'identity-mismatch' as const }; }
+    const attempt = note?.nativeGatewayAttempt as Record<string, unknown> | undefined;
+    if (!attempt || Object.entries(identity).some(([key, expected]) => attempt[key] !== expected)) return { ok: false, reason: 'identity-mismatch' as const };
+    const prior = note.nativeGatewayAttemptResult as Record<string, unknown> | undefined;
+    if (prior && JSON.stringify(prior) === JSON.stringify(snapshot)) return { ok: true };
+    if (prior && (prior.outcome !== 'response-headers' ||
+        !['response-completed', 'response-incomplete'].includes(String(snapshot.outcome)) ||
+        prior.responseStatus !== snapshot.responseStatus) ||
+        !prior && ['response-completed', 'response-incomplete'].includes(String(snapshot.outcome))) {
+      return { ok: false, reason: 'transition-refused' as const };
+    }
+    await tx`UPDATE harness_shared.learning_spend_reservations
+      SET note = ${JSON.stringify({ ...note, nativeGatewayAttemptResult: snapshot })}
+      WHERE workspace_id = ${workspaceId} AND id = ${reservationId}`;
+    return { ok: true };
+  });
+}
+
 export async function settleLearningSpend(
   sql: Sql,
   q: SettleLearningSpendInput,
@@ -667,6 +884,10 @@ export async function settleLearningSpend(
     if (current.status !== 'open') {
       return { ok: false, reason: 'already-settled', reservation: current };
     }
+    if (q.expectedNoteSha256 !== undefined && (!/^[a-f0-9]{64}$/.test(q.expectedNoteSha256) ||
+        createHash('sha256').update(current.note ?? '').digest('hex') !== q.expectedNoteSha256)) {
+      return { ok: false, reason: 'reservation-changed', reservation: current };
+    }
     // Identify the original exact grant from durable provenance, not today's
     // registration settings, which may have changed since it was reserved.
     const exact = current.runRef !== null &&
@@ -674,6 +895,18 @@ export async function settleLearningSpend(
       current.runRef.slice(-current.id.length) === current.id;
     if (exact && (typeof begin !== 'function' || q.accumulate === false || exactUsdMicros(q.usedUsd) === null)) {
       return { ok: false, reason: 'exact-settlement-required', reservation: current };
+    }
+    if (current.runRef?.startsWith('cycle:')) {
+      const parts = current.runRef.split('/');
+      const scope = { runId: parts[0].slice(6), budgetUsd: Number(parts[1]?.slice(4)) / 1_000_000 };
+      const monetaryRef = cycleReservationRunRef(scope, current.id);
+      const resourceHash = /^resources:([a-f0-9]{64})$/.exec(parts[2] ?? '')?.[1];
+      const expectedRef = resourceHash && current.resources
+        ? monetaryRef?.replace('/attempt:', `/resources:${resourceHash}/attempt:`) : monetaryRef;
+      if (typeof begin !== 'function' || exactUsdMicros(q.usedUsd) === null ||
+        current.runRef !== expectedRef || (current.resources !== undefined && !resourceHash)) {
+        return { ok: false, reason: 'cycle-settlement-required', reservation: current };
+      }
     }
     const settlement = settleReservation({
       reservedUsd: current.reservedUsd,
@@ -746,19 +979,40 @@ export async function listLearningSpendReservations(
  * `LearningSpend` a learning contract embeds verbatim, so a candidate's spend
  * record is the governor's ledger rather than a number reassembled beside it.
  */
+/** Complete coverage of this ledger only. A native request/session census is
+ * still required to establish that no inference bypassed this ledger. */
+export type LearningSpendReservationCensus = {
+  status: 'complete'; source: 'learning-spend-reservations'; populationSha256: string;
+  reservations: LearningSpendReservation[];
+} | { status: 'unavailable'; source: 'learning-spend-reservations'; reason: 'schema-unavailable' };
+
 export async function getLearningSpendPositions(
   sql: Sql,
-  q: { workspaceId: string; loopId?: string; sinceMs?: number },
-): Promise<{ positions: LearningSpendPositions; spend: LearningSpend }> {
+  q: { workspaceId: string; loopId?: string; sinceMs?: number; includeReservations?: boolean },
+): Promise<{ positions: LearningSpendPositions; spend: LearningSpend; census?: LearningSpendReservationCensus }> {
+  if (q.includeReservations && (!q.workspaceId.trim() || !q.loopId?.trim())) {
+    throw new Error('A complete reservation census requires its exact workspace and loop.');
+  }
   let positions: LearningSpendPositions;
+  let census: LearningSpendReservationCensus | undefined;
   try {
     const since = q.sinceMs === undefined ? null : new Date(q.sinceMs).toISOString();
     const rows = (await sql`
-      SELECT requested_usd, reserved_usd, used_usd, status
+      SELECT ${q.includeReservations ? sql`*` : sql`requested_usd, reserved_usd, used_usd, status`}
         FROM harness_shared.learning_spend_reservations
        WHERE workspace_id = ${q.workspaceId}
          ${q.loopId ? sql`AND loop_id = ${q.loopId}` : sql``}
-         ${since ? sql`AND created_at >= ${since}` : sql``}`) as Row[];
+         ${since ? sql`AND created_at >= ${since}` : sql``}
+       ORDER BY id`) as Row[];
+    // The same unbounded SELECT supplies both the positions and the census:
+    // no pagination limit or separate read can silently omit an older retry or
+    // let a concurrent settlement produce contradictory evidence.
+    if (q.includeReservations) {
+      const reservations = rows.map(mapReservation);
+      census = { status: 'complete', source: 'learning-spend-reservations', reservations,
+        populationSha256: createHash('sha256').update(JSON.stringify({ version: 1, workspaceId: q.workspaceId,
+          loopId: q.loopId, sinceMs: q.sinceMs ?? null, reservations })).digest('hex') };
+    }
     positions = summarizeSpendPositions(
       rows.map((r) => ({
         requestedUsd: Number(r.requested_usd ?? 0),
@@ -770,6 +1024,7 @@ export async function getLearningSpendPositions(
   } catch (e) {
     if (!isUndefinedTable(e)) throw e;
     positions = summarizeSpendPositions([]);
+    if (q.includeReservations) census = { status: 'unavailable', source: 'learning-spend-reservations', reason: 'schema-unavailable' };
   }
-  return { positions, spend: toLearningSpend(positions, new Date().toISOString()) };
+  return { positions, spend: toLearningSpend(positions, new Date().toISOString()), ...(census ? { census } : {}) };
 }

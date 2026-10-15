@@ -35,28 +35,65 @@
  * instance avoids that entirely.
  */
 import { createRequire } from 'node:module';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { _resetVerifiedSpawns } from '../../spawn-signing';
+import { MCP_REQUEST_TRACE_HEADER } from '../../mcp-request-trace';
+import { _resetScratchUsageForTests, _setScratchUsageForTests, WORKSPACE_QUOTA_BYTES, type ScratchWriteTimings } from '../../scratch-gc';
+import { parseScratchReference } from '../../scratch-reference';
 import type { McpCallResult } from '../routes/transport/mcp-diagnostic-warnings';
 
 const h = vi.hoisted(() => {
+  const unsafeCalls: Array<{ sql: string; params: unknown[] }> = [];
   const fakeTx = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
-    unsafe: async (..._a: unknown[]) => [] as unknown[],
+    unsafe: async (...args: unknown[]) => {
+      const [sql, params] = args;
+      if (typeof sql === 'string') {
+        unsafeCalls.push({ sql, params: Array.isArray(params) ? params : [] });
+      }
+      return [] as unknown[];
+    },
+  });
+  const fakeReservedSql = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
+    release: () => {},
   });
   const fakeSql = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
     unsafe: async (..._a: unknown[]) => [] as unknown[],
     begin: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn(fakeTx),
+    reserve: async () => fakeReservedSql,
   });
   return {
     fakeTx,
     fakeSql,
+    unsafeCalls,
     withWorkspaceCalls: [] as string[],
     withWorkspaceDelayMs: 0,
     commitFailure: null as Error | null,
     txEvents: [] as string[],
     replayStores: [] as Array<{ idempotencyKey: string; result: unknown }>,
-    storedReplay: null as { content: Array<Record<string, unknown>>; _meta?: Record<string, unknown> } | null,
+    storedReplay: null as {
+      content: Array<Record<string, unknown>>;
+      structuredContent?: Record<string, unknown>;
+      _meta?: Record<string, unknown>;
+    } | null,
     invocations: [] as unknown[],
+    telemetryGate: null as Promise<void> | null,
+    telemetryEntered: null as (() => void) | null,
+    resultDoorGate: null as Promise<void> | null,
+    resultDoorEntered: null as (() => void) | null,
+    progressCalls: 0,
+    resultDoorDelayMs: 0,
+    resultDoorCalls: 0,
+    resultDoorRequestTraceIds: [] as Array<string | null>,
+    scratchWriteTimings: [] as ScratchWriteTimings[],
+    realScratchWriteTimings: [] as ScratchWriteTimings[],
+    captureScratchWriteTimings: false,
+    spillWriteGate: null as Promise<void> | null,
+    spillWriteEntered: null as (() => void) | null,
+    spillWritePathSegment: 'deadlinetest:spill',
+    spillPaths: [] as string[],
     handlers: new Map<string, (req: unknown, extra: unknown) => Promise<unknown>>(),
     verifySpawnParams: vi.fn(
       async (_u: unknown): Promise<{ ok: boolean; reason?: string }> => ({ ok: true }),
@@ -73,6 +110,22 @@ const h = vi.hoisted(() => {
     resolveWorkspaceForHarnessSlugIn: vi.fn(
       async (preferredWs: string): Promise<string | null> => preferredWs,
     ),
+  };
+});
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    writeFile: async (...args: Parameters<typeof actual.writeFile>): Promise<void> => {
+      const path = String(args[0]);
+      if (h.spillWriteGate && path.includes(`/${h.spillWritePathSegment}/`)) {
+        h.spillPaths.push(path);
+        h.spillWriteEntered?.();
+        await h.spillWriteGate;
+      }
+      return actual.writeFile(...args);
+    },
   };
 });
 
@@ -132,6 +185,37 @@ vi.mock('../routes/transport/_mcp-result-replay', async (importOriginal) => {
     },
   };
 });
+vi.mock('../../result-door', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  const applyResultDoorAsync = actual.applyResultDoorAsync as (...args: unknown[]) => Promise<unknown>;
+  return {
+    ...actual,
+    applyResultDoorAsync: async (...args: unknown[]): Promise<unknown> => {
+      h.resultDoorCalls += 1;
+      h.resultDoorEntered?.();
+      if (h.resultDoorGate) await h.resultDoorGate;
+      if (h.resultDoorDelayMs > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, h.resultDoorDelayMs));
+      }
+      const opts = args[1] as {
+        onScratchWriteTiming?: (timings: typeof h.scratchWriteTimings[number]) => void;
+        requestTraceId?: string;
+      };
+      h.resultDoorRequestTraceIds.push(opts.requestTraceId ?? null);
+      for (const timing of h.scratchWriteTimings) opts.onScratchWriteTiming?.(timing);
+      if (h.captureScratchWriteTimings) {
+        return applyResultDoorAsync(args[0], {
+          ...opts,
+          onScratchWriteTiming: (timings: ScratchWriteTimings) => {
+            h.realScratchWriteTimings.push(timings);
+            opts.onScratchWriteTiming?.(timings);
+          },
+        });
+      }
+      return applyResultDoorAsync(...args);
+    },
+  };
+});
 vi.mock('../../projected-tool-deps', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   const realDeps = actual.PROJECTED_DEPS as Record<string, unknown>;
@@ -141,6 +225,8 @@ vi.mock('../../projected-tool-deps', async (importOriginal) => {
       ...realDeps,
       recordInvocation: async (input: unknown): Promise<void> => {
         h.invocations.push(input);
+        h.telemetryEntered?.();
+        if (h.telemetryGate) await h.telemetryGate;
       },
     },
   };
@@ -187,7 +273,9 @@ delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
 // MCP_DEADLINE_MS is read ONCE at module load, so this must be set before the
 // import below — and setting it here applies ONLY to this file's own module
 // instance, never to gating-matrix's other 96 cases.
-const TEST_DEADLINE_MS = 25;
+// The progress path measured 32ms on this runner with a 25ms budget, so leave
+// headroom for ordinary filesystem work while keeping the deadline below the slow fixture.
+const TEST_DEADLINE_MS = 100;
 process.env.PAPERCUSP_MCP_DEADLINE_MS = String(TEST_DEADLINE_MS);
 
 const { mcpHandler } = await import('../routes/transport/_mcp-handler');
@@ -207,9 +295,39 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-const SLOW_TOOL_MS = 150; // several multiples of TEST_DEADLINE_MS
+function waitForSignal<T>(
+  signal: Promise<T>,
+  label: string,
+  timeoutMs = 5_000,
+  diagnostics?: () => unknown,
+): Promise<T> {
+  let poll: NodeJS.Immediate | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    const deadline = Date.now() + timeoutMs;
+    const check = () => {
+      if (Date.now() >= deadline) {
+        let detail = '';
+        try {
+          if (diagnostics) detail = `; diagnostics=${JSON.stringify(diagnostics())}`;
+        } catch {
+          detail = '; diagnostics unavailable';
+        }
+        reject(new Error(`${label} was not received within ${timeoutMs}ms${detail}`));
+        return;
+      }
+      poll = setImmediate(check);
+    };
+    poll = setImmediate(check);
+  });
+  return Promise.race([signal, timeout]).finally(() => {
+    if (poll) clearImmediate(poll);
+  });
+}
+
+const SLOW_TOOL_MS = 500; // five multiples of TEST_DEADLINE_MS
 const REAL_OUTCOME_TEXT = 'deadlinetest-real-outcome-not-a-timeout';
 let slowCalls = 0;
+let syntheticAbortCalls = 0;
 
 registerProjectedTool({
   pluginName: 'mcp-deadline-receipt-test',
@@ -225,16 +343,78 @@ registerProjectedTool({
   },
 });
 
+const SPILL_CHECKPOINT = 'mcp-real-spill-checkpoint-evidence\n'.repeat(2_000);
+registerProjectedTool({
+  pluginName: 'mcp-deadline-receipt-test',
+  description: 'test-only probe: oversized checkpoint-shaped result for real scratch-write phase attribution',
+  inputSchema: { type: 'object', additionalProperties: true },
+  capabilities: [],
+  agentRoles: ['scoper'],
+  expose: { mcp: { name: 'deadlinetest:spill' } },
+  fn: async () => ({ content: [{ type: 'text' as const, text: JSON.stringify({
+    ok: true, results: [{ id: 'EI-mcp-spill-test', checkpoint: SPILL_CHECKPOINT }],
+  }) }] }),
+});
+
+registerProjectedTool({
+  pluginName: 'mcp-deadline-receipt-test',
+  description: 'test-only probe: small result for synthetic scratch-progress callback coverage',
+  inputSchema: { type: 'object', additionalProperties: true },
+  capabilities: [],
+  agentRoles: ['scoper'],
+  expose: { mcp: { name: 'deadlinetest:progress' } },
+  fn: async () => {
+    h.progressCalls += 1;
+    return { content: [{ type: 'text' as const, text: 'synthetic-progress-fixture' }] };
+  },
+});
+
+const SYNTHETIC_COORD_SEND_ABORT = {
+  ok: false,
+  partial: true,
+  results: [{ ok: false, to: ['synthetic-recipient-fixture'], error: 'request_aborted' }],
+  counts: { ok: 0, failed: 1 },
+  deliveryFailureWarning: 'coord:send completed the batch with a failed delivery: request_aborted',
+};
+registerProjectedTool({
+  pluginName: 'mcp-deadline-receipt-test',
+  description: 'test-only synthetic coord:send pre-persist abort result for MCP same-key replay coverage',
+  inputSchema: { type: 'object', additionalProperties: false },
+  outputJsonSchema: {
+    type: 'object',
+    properties: {
+      ok: { type: 'boolean' },
+      partial: { type: 'boolean' },
+      results: { type: 'array', items: { type: 'object', additionalProperties: true } },
+      counts: { type: 'object', additionalProperties: true },
+      deliveryFailureWarning: { type: 'string' },
+    },
+    required: ['ok', 'partial', 'results', 'counts', 'deliveryFailureWarning'],
+    additionalProperties: true,
+  },
+  capabilities: [],
+  agentRoles: ['scoper'],
+  expose: { mcp: { name: 'deadlinetest:coord-send-abort' } },
+  fn: async () => {
+    syntheticAbortCalls += 1;
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(SYNTHETIC_COORD_SEND_ABORT) }],
+      structuredContent: SYNTHETIC_COORD_SEND_ABORT,
+      _meta: { format: 'json' },
+    };
+  },
+});
+
 afterAll(() => {
   unregisterProjectedToolsForPlugin('mcp-deadline-receipt-test');
 });
 
 const MCP = 'http://127.0.0.1:3070/api/mcp';
 
-function extraFor(url: string, headers: Record<string, string> = {}): unknown {
+function extraFor(url: string, headers: Record<string, string> = {}): Record<string, unknown> {
   return { requestInfo: { url, headers: { host: '127.0.0.1:3070', ...headers } } };
 }
-function superuserExtra(query = '', headers: Record<string, string> = {}): unknown {
+function superuserExtra(query = '', headers: Record<string, string> = {}): Record<string, unknown> {
   return extraFor(`${MCP}?superuser=1${query}`, { authorization: 'Bearer test-su-bearer', ...headers });
 }
 
@@ -264,9 +444,23 @@ async function callTool(
 }
 const textOf = (r: CallResult): string => r.content.map((c) => c.text ?? '').join('');
 
+function traceEvents(calls: readonly unknown[][]): Array<Record<string, unknown>> {
+  return calls.flatMap((call) => {
+    const line = String(call[0] ?? '');
+    const prefix = '[mcp-request-trace] ';
+    if (!line.startsWith(prefix)) return [];
+    try {
+      return [JSON.parse(line.slice(prefix.length)) as Record<string, unknown>];
+    } catch {
+      return [];
+    }
+  });
+}
+
 beforeEach(() => {
   vi.resetAllMocks();
   slowCalls = 0;
+  syntheticAbortCalls = 0;
   h.withWorkspaceCalls.length = 0;
   h.withWorkspaceDelayMs = 0;
   h.commitFailure = null;
@@ -274,6 +468,22 @@ beforeEach(() => {
   h.replayStores.length = 0;
   h.storedReplay = null;
   h.invocations.length = 0;
+  h.telemetryGate = null;
+  h.telemetryEntered = null;
+  h.resultDoorGate = null;
+  h.resultDoorEntered = null;
+  h.progressCalls = 0;
+  h.unsafeCalls.length = 0;
+  h.resultDoorDelayMs = 0;
+  h.scratchWriteTimings = [];
+  h.realScratchWriteTimings = [];
+  h.captureScratchWriteTimings = false;
+  h.spillWriteGate = null;
+  h.spillWriteEntered = null;
+  h.spillWritePathSegment = 'deadlinetest:spill';
+  h.spillPaths = [];
+  h.resultDoorCalls = 0;
+  h.resultDoorRequestTraceIds.length = 0;
   delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
   _resetVerifiedSpawns();
 });
@@ -292,6 +502,57 @@ afterEach(async () => {
 describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6914)', () => {
   const scoped = (ws: string) => superuserExtra(`&workspace=${ws}`);
 
+  it('attributes pre-dispatch time to the workspace principal transaction and persists the phase profile', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const traceId = 'c8b63439-fd54-44e4-ae1d-a78246337d54';
+    const forcedWorkspaceWaitMs = 35;
+    h.withWorkspaceDelayMs = forcedWorkspaceWaitMs;
+    try {
+      const result = await callTool(
+        'deadlinetest:progress',
+        {},
+        superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
+      );
+      expect(result.isError).not.toBe(true);
+      expect(h.withWorkspaceCalls).toContain('ws-test');
+
+      const started = traceEvents(info.mock.calls).find((event) =>
+        event.traceId === traceId && event.stage === 'inner_dispatch_started',
+      );
+      expect(started?.preDispatchPhaseTimingsMs).toMatchObject({
+        operatorToolsLoad: expect.any(Number),
+        spawnContext: expect.any(Number),
+        transportScopeSetup: expect.any(Number),
+        toolContextBuild: expect.any(Number),
+        idempotencyReplayLookup: null,
+        dispatchPreflight: expect.any(Number),
+        unattributedMs: expect.any(Number),
+      });
+      const startedProfile = started?.preDispatchPhaseTimingsMs as Record<string, number | null>;
+      expect(Number(startedProfile.dispatchPreflight)).toBeGreaterThanOrEqual(forcedWorkspaceWaitMs - 5);
+
+      await vi.waitFor(() => {
+        const settled = traceEvents(info.mock.calls).find((event) =>
+          event.traceId === traceId && event.stage === 'inner_dispatch_settled',
+        );
+        expect(settled?.preDispatchPhaseTimingsMs).toEqual(startedProfile);
+      });
+
+      let persistedSettlement: { sql: string; params: unknown[] } | undefined;
+      await vi.waitFor(() => {
+        persistedSettlement = h.unsafeCalls.find((call) =>
+          call.sql.includes('UPDATE harness_shared.tool_invocations') &&
+          call.sql.includes("metadata_json->'requestOrigin'->>'mcpRequestTraceId' = $4"),
+        );
+        expect(persistedSettlement).toBeDefined();
+      });
+      const settlementMetadata = JSON.parse(String(persistedSettlement?.params[0])).mcpRequestSettlement;
+      expect(settlementMetadata.preDispatchPhaseTimingsMs).toEqual(startedProfile);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
   it('answers with a clean request_timeout error once the deadline fires, without waiting for the tool', async () => {
     const res = await callTool('deadlinetest:slow', {}, scoped('ws-test'), { idempotencyKey: 'idem-deadline-1' });
     expect(res.isError).toBe(true);
@@ -309,6 +570,685 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     // to comply, found no key in the envelope, and fell back to reconciling by hand. Asserting
     // the literal VALUE (not just the phrase above) is what makes that non-recurrable.
     expect(textOf(res)).toContain('idem-deadline-1');
+  });
+
+  it('correlates the forwarded trace id across request start, deadline, and late handler settlement', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const traceId = 'e57ef6b3-46ef-4cc5-8214-fec83f2a463e';
+    const resultDoorDelayMs = 45;
+    h.resultDoorDelayMs = resultDoorDelayMs;
+    h.scratchWriteTimings = [
+      {
+        quotaWaitMs: 25, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 4, totalMs: 29,
+        quotaRecoveryDiagnostics: {
+          sizeWalkMs: 4, sizeWalkDirectories: 2, sizeWalkEntries: 5, sizeWalkFiles: 3,
+          readdirOperations: 2, statOperations: 3, operationTotalMs: 5, maxOperationMs: 2,
+          maxOperationKind: 'readdir', currentOperationKind: null, currentOperationElapsedMs: 0,
+          directoryReadErrors: 0, fileStatErrors: 1, runListingMs: 2, runsListed: 3,
+          selectedRunSizingMs: 1, runsConsidered: 1, fallbackRunSizes: 1, deletionMs: 1,
+          deleteAttempts: 1, runsDeleted: 1, deletedBytes: 100,
+        },
+      },
+      {
+        quotaWaitMs: 0, refreshWaitMs: 3, quotaRecoveryMs: 10, writeMs: 2, totalMs: 15,
+        quotaRecoveryDiagnostics: {
+          sizeWalkMs: 9, sizeWalkDirectories: 4, sizeWalkEntries: 8, sizeWalkFiles: 5,
+          readdirOperations: 4, statOperations: 5, operationTotalMs: 8, maxOperationMs: 3,
+          maxOperationKind: 'stat', currentOperationKind: null, currentOperationElapsedMs: 0,
+          directoryReadErrors: 1, fileStatErrors: 0, runListingMs: 5, runsListed: 6,
+          selectedRunSizingMs: 2, runsConsidered: 2, fallbackRunSizes: 0, deletionMs: 3,
+          deleteAttempts: 2, runsDeleted: 2, deletedBytes: 200,
+        },
+      },
+    ];
+    try {
+      const res = await callTool(
+        'deadlinetest:slow',
+        {},
+        superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
+      );
+      expect(res.isError).toBe(true);
+      expect(textOf(res)).toContain('request_timeout');
+      const beforeSettlement = traceEvents(info.mock.calls);
+      expect(beforeSettlement).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            traceId,
+            toolName: 'deadlinetest:slow',
+            stage: 'request_started',
+            elapsedMs: expect.any(Number),
+          }),
+          expect.objectContaining({ traceId, toolName: 'deadlinetest:slow', stage: 'inner_dispatch_started' }),
+          expect.objectContaining({
+            traceId,
+            toolName: 'deadlinetest:slow',
+            stage: 'deadline',
+            phase: 'inner_dispatch',
+            deadlineMs: TEST_DEADLINE_MS,
+          }),
+        ]),
+      );
+      expect(beforeSettlement.some((event) => event.stage === 'inner_dispatch_settled')).toBe(false);
+
+      await sleep(SLOW_TOOL_MS + resultDoorDelayMs + 100);
+      const settled = traceEvents(info.mock.calls).find((event) => event.stage === 'inner_dispatch_settled');
+      expect(settled).toEqual(
+        expect.objectContaining({
+          traceId,
+          toolName: 'deadlinetest:slow',
+          outcome: 'success',
+          elapsedMs: expect.any(Number),
+          afterDeadline: true,
+          phaseTimingsMs: expect.objectContaining({
+            postDispatchToSettlement: expect.any(Number),
+            resultDoor: expect.any(Number),
+            advisory: expect.any(Number),
+            advisoryFlagReads: expect.any(Number),
+            scratchWrites: expect.objectContaining({
+              count: 2, perSpill: h.scratchWriteTimings,
+              quotaWaitMs: 25, refreshWaitMs: 3, quotaRecoveryMs: 10, writeMs: 6, totalMs: 44,
+              quotaRecoveryDiagnostics: expect.objectContaining({
+                sizeWalkMs: 13, sizeWalkDirectories: 6, sizeWalkEntries: 13, sizeWalkFiles: 8,
+                readdirOperations: 6, statOperations: 8, operationTotalMs: 13, maxOperationMs: 3,
+                maxOperationKind: 'stat', currentOperationKind: null, currentOperationElapsedMs: 0,
+                directoryReadErrors: 1, fileStatErrors: 1, runListingMs: 7, runsListed: 9,
+                selectedRunSizingMs: 3, runsConsidered: 3, fallbackRunSizes: 1, deletionMs: 4,
+                deleteAttempts: 3, runsDeleted: 3, deletedBytes: 300,
+              }),
+            }),
+          }),
+        }),
+      );
+      expect(h.resultDoorCalls).toBeGreaterThan(0);
+      expect(h.resultDoorRequestTraceIds).toContain(traceId);
+      expect((settled?.phaseTimingsMs as { resultDoor?: number } | undefined)?.resultDoor)
+        .toBeGreaterThanOrEqual(resultDoorDelayMs);
+      expect(Number(settled?.elapsedMs)).toBeGreaterThanOrEqual(TEST_DEADLINE_MS);
+
+      let persistedSettlement: { sql: string; params: unknown[] } | undefined;
+      await vi.waitFor(() => {
+        persistedSettlement = h.unsafeCalls.find((call) =>
+          call.sql.includes('UPDATE harness_shared.tool_invocations') &&
+          call.sql.includes("metadata_json->'requestOrigin'->>'mcpRequestTraceId' = $4"),
+        );
+        expect(persistedSettlement).toBeDefined();
+      });
+      expect(persistedSettlement?.params.slice(1)).toEqual(['ws-test', 'deadlinetest:slow', traceId, 900]);
+      const settlementMetadata = JSON.parse(String(persistedSettlement?.params[0])).mcpRequestSettlement;
+      expect(settlementMetadata).toEqual(expect.objectContaining({
+        traceId,
+        stage: 'inner_dispatch_settled',
+        outcome: 'success',
+        afterDeadline: true,
+        elapsedMs: expect.any(Number),
+        settledAt: expect.any(String),
+        phaseTimingsMs: expect.objectContaining({
+          resultDoor: expect.any(Number),
+          scratchWrites: expect.objectContaining({
+            count: 2, perSpill: h.scratchWriteTimings, totalMs: 44,
+          }),
+        }),
+      }));
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it.each(['telemetry', 'result-door'] as const)(
+    'distinguishes a fast handler held at %s from an unfinished handler',
+    async (phase) => {
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      const traceId = phase === 'telemetry'
+        ? '48b44c43-41de-4ea0-8dd4-26a740052ab3'
+        : '27f0e4f5-e02b-4320-a498-709140695eaf';
+      let release!: () => void;
+      let entered!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const entry = new Promise<void>((resolve) => { entered = resolve; });
+      if (phase === 'telemetry') {
+        h.telemetryGate = gate;
+        h.telemetryEntered = entered;
+      } else {
+        h.resultDoorGate = gate;
+        h.resultDoorEntered = entered;
+      }
+      try {
+        const response = callTool(
+          'deadlinetest:progress', {},
+          superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
+        );
+        await waitForSignal(entry, `${phase} entry`);
+        const barrierObservedAtMs = Date.now();
+        // The real dispatcher already ran the fast handler exactly once. The
+        // controlled barrier is later, so a deadline cannot imply handler failure.
+        expect(h.progressCalls).toBe(1);
+        expect(h.invocations).toHaveLength(1);
+        expect(h.resultDoorCalls).toBe(phase === 'telemetry' ? 0 : 1);
+        const result = await response;
+        expect(result.isError).toBe(true);
+        expect(textOf(result)).toContain('request_timeout');
+        expect(traceEvents(info.mock.calls)).toEqual(expect.arrayContaining([
+          expect.objectContaining({ traceId, stage: 'inner_dispatch_started' }),
+          expect.objectContaining({ traceId, stage: 'deadline' }),
+        ]));
+        expect(traceEvents(info.mock.calls).some((event) =>
+          event.traceId === traceId && event.stage === 'inner_dispatch_settled',
+        )).toBe(false);
+
+        const barrierHeldMs = Date.now() - barrierObservedAtMs;
+        release();
+        await vi.waitFor(() => {
+          const settled = traceEvents(info.mock.calls).find((event) =>
+            event.traceId === traceId && event.stage === 'inner_dispatch_settled',
+          );
+          expect(settled).toMatchObject({ outcome: 'success', afterDeadline: true });
+          const timings = settled?.phaseTimingsMs as { resultDoor?: number; postDispatchToSettlement?: number };
+          expect(timings.resultDoor).toEqual(expect.any(Number));
+          expect(timings.postDispatchToSettlement).toBeGreaterThanOrEqual(timings.resultDoor!);
+          // The phase starts after the request's deadline clock. Compare its
+          // duration with the interval we actually held this phase's barrier.
+          if (phase === 'result-door') expect(timings.resultDoor).toBeGreaterThanOrEqual(barrierHeldMs);
+          expect(h.resultDoorRequestTraceIds).toContain(traceId);
+        });
+        expect(h.progressCalls).toBe(1);
+        expect(h.invocations).toHaveLength(1);
+      } finally {
+        release();
+        info.mockRestore();
+      }
+    },
+  );
+
+  it('a fast handler completes normally without a telemetry or result-door barrier', async () => {
+    const result = await callTool('deadlinetest:progress', {}, scoped('ws-test'));
+    expect(result.isError).not.toBe(true);
+    expect(textOf(result)).toContain('synthetic-progress-fixture');
+    expect(h.progressCalls).toBe(1);
+    expect(h.invocations).toHaveLength(1);
+    expect(h.resultDoorCalls).toBe(1);
+  });
+
+  it('forwards synthetic scratch progress to MCP clients that supplied a progress token', async () => {
+    const progressToken = 'mcp-spill-progress';
+    const traceId = '7c6a1e48-6764-4937-8b8e-f35fef8ea93d';
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const notifications: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const extra = {
+      ...superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
+      sendNotification: async (notification: { method: string; params: Record<string, unknown> }) => {
+        notifications.push(notification);
+      },
+    };
+    h.scratchWriteTimings = [{
+      quotaWaitMs: 0,
+      refreshWaitMs: 0,
+      quotaRecoveryMs: 5_000,
+      writeMs: 0,
+      totalMs: 5_000,
+      progress: {
+        phase: 'quota-recovery',
+        phaseElapsedMs: 5_000,
+        totalElapsedMs: 5_000,
+        bytes: 60_000,
+        pendingWrites: 1,
+        recoveryActive: true,
+        refreshActive: false,
+        quotaRecoveryDiagnostics: {
+          sizeWalkMs: 4,
+          sizeWalkDirectories: 2,
+          sizeWalkEntries: 3,
+          sizeWalkFiles: 1,
+          readdirOperations: 2,
+          statOperations: 1,
+          operationTotalMs: 7,
+          maxOperationMs: 4,
+          maxOperationKind: 'readdir',
+          currentOperationKind: 'readdir',
+          currentOperationElapsedMs: 250,
+          directoryReadErrors: 0,
+          fileStatErrors: 0,
+          runListingMs: 0,
+          runsListed: 0,
+          selectedRunSizingMs: 0,
+          runsConsidered: 0,
+          fallbackRunSizes: 0,
+          deletionMs: 0,
+          deleteAttempts: 0,
+          runsDeleted: 0,
+          deletedBytes: 0,
+        },
+      },
+    }];
+    try {
+      const result = await callTool('deadlinetest:progress', {}, extra, { progressToken });
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      expect(traceEvents(info.mock.calls)).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          traceId,
+          toolName: 'deadlinetest:progress',
+          stage: 'scratch_write_progress',
+          scratchWriteProgress: expect.objectContaining({
+            quotaRecoveryDiagnostics: expect.objectContaining({
+              readdirOperations: 2,
+              statOperations: 1,
+              operationTotalMs: 7,
+              maxOperationKind: 'readdir',
+              currentOperationKind: 'readdir',
+              currentOperationElapsedMs: 250,
+            }),
+          }),
+        }),
+      ]));
+      expect(notifications).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          method: 'notifications/papercusp/event',
+          params: expect.objectContaining({
+            progressToken,
+            event: 'progress',
+            data: expect.objectContaining({
+              progress: 0,
+              total: 100,
+              message: expect.stringContaining('quota recovery'),
+            }),
+          }),
+        }),
+        expect.objectContaining({
+          method: 'notifications/progress',
+          params: expect.objectContaining({
+            progressToken,
+            progress: 0,
+            total: 100,
+            message: expect.stringContaining('quota recovery'),
+          }),
+        }),
+      ]));
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it('traces a real checkpoint spill write after the deadline and preserves its readable payload', async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'papercusp-mcp-real-spill-'));
+    const previousRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+    const previousKillSwitch = process.env.PAPERCUSP_RESULT_DOOR_OFF;
+    process.env.PAPERCUSP_SCRATCH_ROOT = join(sandbox, 'scratch');
+    delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+    _resetScratchUsageForTests();
+    h.captureScratchWriteTimings = true;
+    let releaseWrite!: () => void;
+    h.spillWriteGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
+    const enteredWrite = new Promise<void>((resolve) => { h.spillWriteEntered = resolve; });
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const traceId = '4429f9ae-11d4-4ea6-95d6-958f4ee77f9e';
+    const receiptKey = 'idem-real-checkpoint-spill';
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const response = callTool('deadlinetest:spill', {},
+        superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
+        { idempotencyKey: receiptKey });
+      await waitForSignal(enteredWrite, 'scratch spill write entry', 5_000, () => ({
+        traceEvents: traceEvents(info.mock.calls).filter((event) => event.traceId === traceId),
+        resultDoorCalls: h.resultDoorCalls,
+        spillPaths: [...h.spillPaths],
+      }));
+      expect(traceEvents(info.mock.calls)).toContainEqual(
+        expect.objectContaining({ traceId, stage: 'inner_dispatch_started' }),
+      );
+      // Let dispatch and the scratch writer reach the intended post-deadline gate
+      // before expiring the request-entry timer. This keeps unrelated pre-dispatch
+      // startup variation from turning the spill-path test into a setup timeout.
+      await vi.advanceTimersByTimeAsync(TEST_DEADLINE_MS);
+      const timedOut = await response;
+      expect(timedOut.isError).toBe(true);
+      expect(textOf(timedOut)).toContain('request_timeout');
+      expect(h.realScratchWriteTimings).toEqual([]);
+      expect(traceEvents(info.mock.calls).some((event) =>
+        event.traceId === traceId && event.stage === 'inner_dispatch_settled')).toBe(false);
+
+      vi.useRealTimers();
+      releaseWrite();
+      await vi.waitFor(() => expect(h.replayStores.some((store) =>
+        store.idempotencyKey === receiptKey)).toBe(true));
+      expect(h.scratchWriteTimings).toEqual([]); // no synthetic phase injection
+      expect(h.realScratchWriteTimings).toHaveLength(1);
+      const timing = h.realScratchWriteTimings[0];
+      // Concurrent quota bookkeeping may add a short, legitimate wait.
+      expect(Number.isFinite(timing.quotaWaitMs)).toBe(true);
+      expect(timing.quotaWaitMs).toBeGreaterThanOrEqual(0);
+      expect(timing.quotaRecoveryMs).toBe(0);
+      expect(Number.isFinite(timing.refreshWaitMs)).toBe(true);
+      expect(timing.refreshWaitMs).toBeGreaterThanOrEqual(0);
+      expect(timing.writeMs).toBeGreaterThan(0);
+      expect(timing.totalMs).toBeGreaterThanOrEqual(timing.writeMs);
+      const settled = traceEvents(info.mock.calls).find((event) =>
+        event.traceId === traceId && event.stage === 'inner_dispatch_settled');
+      expect(settled).toMatchObject({
+        outcome: 'success', afterDeadline: true,
+        phaseTimingsMs: { scratchWrites: { count: 1, ...timing } },
+      });
+      expect(h.spillPaths).toHaveLength(1);
+      const spill = parseScratchReference(readFileSync(h.spillPaths[0]));
+      expect(spill).not.toBeNull();
+      expect(spill!.payload.toString()).toContain(JSON.stringify(SPILL_CHECKPOINT).slice(1, -1));
+      const receipt = h.replayStores.find((store) => store.idempotencyKey === receiptKey)!.result as CallResult;
+      expect(receipt.isError).not.toBe(true);
+      expect(textOf(receipt)).not.toContain('request_timeout');
+      expect(JSON.stringify(receipt)).toContain(h.spillPaths[0]);
+    } finally {
+      vi.useRealTimers();
+      releaseWrite();
+      await sleep(SLOW_TOOL_MS + 100);
+      info.mockRestore();
+      _resetScratchUsageForTests();
+      if (previousRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+      else process.env.PAPERCUSP_SCRATCH_ROOT = previousRoot;
+      if (previousKillSwitch === undefined) delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+      else process.env.PAPERCUSP_RESULT_DOOR_OFF = previousKillSwitch;
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it('traces spill existence and trace-correlated backfill after the result-door bounded wait returns', async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'papercusp-mcp-late-spill-'));
+    const previousRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+    const previousKillSwitch = process.env.PAPERCUSP_RESULT_DOOR_OFF;
+    process.env.PAPERCUSP_SCRATCH_ROOT = join(sandbox, 'scratch');
+    delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+    _resetScratchUsageForTests();
+    _setScratchUsageForTests('ws-test', WORKSPACE_QUOTA_BYTES + 1);
+    h.captureScratchWriteTimings = true;
+    let releaseWrite!: () => void;
+    h.spillWriteGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
+    // The result door stores this nested result under the outer MCP tool path.
+    h.spillWritePathSegment = 'tools:invoke';
+    const enteredWrite = new Promise<void>((resolve) => { h.spillWriteEntered = resolve; });
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const traceId = '879b64d8-741b-4e8a-a111-39dd7b35c05f';
+    let responsePromise: Promise<CallResult> | undefined;
+    let releasePendingBackfill!: () => void;
+    const pendingBackfillGate = new Promise<void>((resolve) => { releasePendingBackfill = resolve; });
+    let signalPendingBackfillStarted!: () => void;
+    const pendingBackfillStarted = new Promise<void>((resolve) => { signalPendingBackfillStarted = resolve; });
+    const backfillOrder: string[] = [];
+    const originalUnsafe = h.fakeTx.unsafe;
+    h.fakeTx.unsafe = async (...args: unknown[]) => {
+      const [sql, params] = args;
+      if (typeof sql === 'string' && sql.includes('UPDATE harness_shared.tool_invocations') && Array.isArray(params)) {
+        let metadata: Record<string, unknown> = {};
+        try { metadata = JSON.parse(String(params[2])) as Record<string, unknown>; } catch { /* not a result-door update */ }
+        if (metadata.spillTimeoutCount === 1) {
+          backfillOrder.push('timeout-start');
+          signalPendingBackfillStarted();
+          await pendingBackfillGate;
+          const result = await originalUnsafe(...args);
+          backfillOrder.push('timeout-finished');
+          return result;
+        }
+        if (typeof metadata.spillSettlementStatus === 'string') backfillOrder.push('settlement-start');
+      }
+      return originalUnsafe(...args);
+    };
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      responsePromise = callTool('tools:invoke', { name: 'deadlinetest:spill', args: {} },
+        superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
+        { idempotencyKey: 'idem-late-scratch-settlement' });
+      await waitForSignal(enteredWrite, 'nested scratch spill write entry');
+      // Keep the real scratch write blocked until applyResultDoorAsync's 30s bounded wait expires.
+      await vi.advanceTimersByTimeAsync(30_001);
+      await waitForSignal(pendingBackfillStarted, 'pending spill timeout backfill');
+      expect(backfillOrder).toEqual(['timeout-start']);
+
+      vi.useRealTimers();
+      releasePendingBackfill();
+      await vi.waitFor(() => expect(backfillOrder).toEqual(['timeout-start', 'timeout-finished']));
+      const response = await responsePromise;
+      expect(response.isError).not.toBe(true);
+      expect(textOf(response)).not.toContain('request_timeout');
+      expect(response._meta?.resultDoor).toMatchObject({
+        spillPending: true,
+        spillFailed: false,
+        pendingSpill: { cursor: { kind: 'pending-spill' } },
+      });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(
+        '[bounded-timeout] result-door scratch spill write exceeded 30000ms',
+      ));
+      const initialInvocation = h.invocations.find((candidate) =>
+        Boolean(candidate && typeof candidate === 'object' &&
+          (candidate as Record<string, unknown>).toolName === 'deadlinetest:spill')) as
+        | Record<string, unknown>
+        | undefined;
+      expect(initialInvocation).toEqual(expect.objectContaining({
+        toolName: 'deadlinetest:spill',
+        status: 'ok',
+        outputSize: expect.any(Number),
+      }));
+      expect(initialInvocation).not.toHaveProperty('outputRef');
+      expect((initialInvocation?.ctx as { requestOrigin?: { mcpRequestTraceId?: string } } | undefined)
+        ?.requestOrigin?.mcpRequestTraceId).toBe(traceId);
+
+      const timeoutBackfill = h.unsafeCalls.find((call) => {
+        if (!call.sql.includes('UPDATE harness_shared.tool_invocations') || call.params[8] !== traceId) return false;
+        try { return JSON.parse(String(call.params[2])).spillTimeoutCount === 1; } catch { return false; }
+      });
+      expect(timeoutBackfill).toBeDefined();
+      const timeoutMetadata = JSON.parse(String(timeoutBackfill?.params[2])) as Record<string, unknown>;
+      expect(timeoutMetadata).toEqual(expect.objectContaining({
+        spillPending: true,
+        spillErrorCode: 'ETIMEDOUT',
+        spillTimeoutCount: 1,
+        spillTimeoutMs: 30_000,
+        spillTimeoutAt: expect.any(String),
+      }));
+      expect(backfillOrder).toEqual(['timeout-start', 'timeout-finished']);
+      await vi.waitFor(() => expect(traceEvents(info.mock.calls).some((event) =>
+        event.traceId === traceId && event.stage === 'inner_dispatch_settled')).toBe(true));
+
+      // The timeout count is now in the invocation row. Release the blocked writer and
+      // verify its late settlement follows that durable timeout update.
+      expect(h.spillPaths).toHaveLength(1);
+      releaseWrite();
+      await vi.waitFor(() => expect(existsSync(h.spillPaths[0])).toBe(true));
+      await vi.waitFor(() => expect(traceEvents(info.mock.calls).some((event) =>
+        event.traceId === traceId && event.stage === 'scratch_write_settled')).toBe(true));
+      const settled = traceEvents(info.mock.calls).find((event) =>
+        event.traceId === traceId && event.stage === 'scratch_write_settled');
+      expect(settled).toMatchObject({
+        traceId,
+        // The request trace belongs to the outer transport call; only the
+        // invocation row/backfill selector uses the nested target name.
+        toolName: 'tools:invoke',
+        stage: 'scratch_write_settled',
+        // The target handler settled before the result-door's own bounded
+        // scratch wait, so this is not a late handler settlement.
+        afterDeadline: false,
+        scratchWriteTimings: {
+          quotaWaitMs: expect.any(Number),
+          refreshWaitMs: expect.any(Number),
+          quotaRecoveryMs: expect.any(Number),
+          writeMs: expect.any(Number),
+          totalMs: expect.any(Number),
+          quotaRecoveryDiagnostics: expect.objectContaining({
+            sizeWalkDirectories: expect.any(Number),
+          }),
+        },
+      });
+      expect((settled?.scratchWriteTimings as ScratchWriteTimings).quotaRecoveryDiagnostics?.sizeWalkDirectories)
+        .toBeGreaterThan(0);
+      expect(existsSync(h.spillPaths[0])).toBe(true);
+      const spill = parseScratchReference(readFileSync(h.spillPaths[0]));
+      expect(spill).not.toBeNull();
+      expect(spill!.payload.toString()).toContain(JSON.stringify(SPILL_CHECKPOINT).slice(1, -1));
+
+      let persistedBackfill: { sql: string; params: unknown[] } | undefined;
+      await vi.waitFor(() => {
+        persistedBackfill = h.unsafeCalls.find((call) => {
+          if (!call.sql.includes('UPDATE harness_shared.tool_invocations') || call.params[8] !== traceId) {
+            return false;
+          }
+          try {
+            return JSON.parse(String(call.params[2])).spillSettlementStatus === 'persisted';
+          } catch {
+            return false;
+          }
+        });
+        expect(persistedBackfill).toBeDefined();
+      });
+      expect(persistedBackfill?.params[3]).toBe('ws-test');
+      expect(persistedBackfill?.params[5]).toBe('deadlinetest:spill');
+      expect(persistedBackfill?.params[7]).toBe(persistedBackfill?.params[0]);
+      const settlementMetadata = JSON.parse(String(persistedBackfill?.params[2])) as Record<string, unknown>;
+      expect(settlementMetadata).toEqual(expect.objectContaining({
+        spillPath: h.spillPaths[0],
+        spillUri: persistedBackfill?.params[0],
+        spillPending: false,
+        spillFailed: false,
+        spillSettlementStatus: 'persisted',
+        spillSettledAt: expect.any(String),
+        scratchWriteTimings: expect.objectContaining({
+          count: 1,
+          perSpill: [expect.objectContaining({
+            writeMs: expect.any(Number),
+            totalMs: expect.any(Number),
+            quotaRecoveryDiagnostics: expect.objectContaining({
+              sizeWalkDirectories: expect.any(Number),
+            }),
+          })],
+          quotaWaitMs: expect.any(Number),
+          refreshWaitMs: expect.any(Number),
+          quotaRecoveryMs: expect.any(Number),
+          writeMs: expect.any(Number),
+          totalMs: expect.any(Number),
+          quotaRecoveryDiagnostics: expect.objectContaining({
+            sizeWalkDirectories: expect.any(Number),
+          }),
+        }),
+      }));
+      const mcpSettlement = settlementMetadata.mcpRequestSettlement as {
+        phaseTimingsMs?: { scratchWrites?: Record<string, unknown> };
+      };
+      expect(mcpSettlement.phaseTimingsMs?.scratchWrites).toEqual(expect.objectContaining({
+        count: 1,
+        totalMs: expect.any(Number),
+        quotaWaitMs: expect.any(Number),
+        writeMs: expect.any(Number),
+      }));
+      expect(persistedBackfill?.sql).toContain("metadata_json #> '{mcpRequestSettlement,phaseTimingsMs}'");
+      expect(settlementMetadata).not.toHaveProperty('spillTimeoutCount');
+      await vi.waitFor(() => expect(backfillOrder).toEqual([
+        'timeout-start', 'timeout-finished', 'settlement-start',
+      ]));
+      expect(warn.mock.calls.some(([message]) =>
+        String(message).includes('backfillResultDoorOutputRef failed'))).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      releasePendingBackfill();
+      releaseWrite();
+      h.fakeTx.unsafe = originalUnsafe;
+      if (responsePromise) {
+        await Promise.race([
+          responsePromise.catch(() => undefined),
+          sleep(5_000),
+        ]);
+      }
+      await vi.waitFor(() => expect(traceEvents(info.mock.calls).some((event) =>
+        event.traceId === traceId && event.stage === 'inner_dispatch_settled')).toBe(true), { timeout: 3_000 });
+      info.mockRestore();
+      warn.mockRestore();
+      _resetScratchUsageForTests();
+      if (previousRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+      else process.env.PAPERCUSP_SCRATCH_ROOT = previousRoot;
+      if (previousKillSwitch === undefined) delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+      else process.env.PAPERCUSP_RESULT_DOOR_OFF = previousKillSwitch;
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it('returns at the request-entry deadline while the scoped transport gate is held, then blocks late handler start', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const traceId = '2bc6eafe-a0fa-4d50-9e56-0bcc88a1bfc6';
+    let releaseScope!: () => void;
+    let enterScope!: () => void;
+    const scopeGate = new Promise<void>((resolve) => { releaseScope = resolve; });
+    const scopeEntered = new Promise<void>((resolve) => { enterScope = resolve; });
+    h.resolveWorkspaceForHarnessSlugIn.mockImplementationOnce(async () => {
+      enterScope();
+      await scopeGate;
+      return 'ws-test';
+    });
+
+    const responsePromise = callTool(
+      'deadlinetest:slow',
+      { harness: 'papercusp' },
+      superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
+    );
+    let responseBeforeRelease: CallResult | null = null;
+    let traceAtDeadline: Array<Record<string, unknown>> = [];
+    try {
+      await waitForSignal(scopeEntered, 'scoped transport harness resolver');
+      responseBeforeRelease = await Promise.race([
+        responsePromise,
+        sleep(TEST_DEADLINE_MS * 3).then(() => null),
+      ]);
+      traceAtDeadline = traceEvents(info.mock.calls);
+    } finally {
+      releaseScope();
+      info.mockRestore();
+    }
+
+    const result = responseBeforeRelease ?? await responsePromise;
+    expect(responseBeforeRelease).not.toBeNull();
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('request_timeout');
+    expect(textOf(result)).toContain('during MCP request setup');
+    expect(traceAtDeadline).toContainEqual(
+      expect.objectContaining({
+        traceId,
+        toolName: 'deadlinetest:slow',
+        stage: 'deadline',
+        phase: 'pre_dispatch',
+        preDispatchActivePhase: 'transportScopeSetup',
+      }),
+    );
+    await sleep(50);
+    expect(slowCalls).toBe(0);
+  });
+
+  it('marks a delayed workspace acquisition as pre-dispatch and blocks late handler start', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const traceId = '73f01cc4-b44b-4d15-82f8-28d0d5774c31';
+    const acquisitionDelayMs = TEST_DEADLINE_MS * 4;
+    h.withWorkspaceDelayMs = acquisitionDelayMs;
+    try {
+      const res = await callTool(
+        'deadlinetest:slow',
+        {},
+        superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
+      );
+      expect(res.isError).toBe(true);
+      expect(textOf(res)).toContain('request_timeout');
+      expect(h.withWorkspaceCalls).toEqual(['ws-test']);
+      expect(traceEvents(info.mock.calls)).toContainEqual(
+        expect.objectContaining({
+          traceId,
+          toolName: 'deadlinetest:slow',
+          stage: 'deadline',
+          phase: 'pre_dispatch',
+          deadlineMs: TEST_DEADLINE_MS,
+        }),
+      );
+      expect(traceEvents(info.mock.calls).some((event) => event.stage === 'inner_dispatch_started')).toBe(false);
+
+      // Let the acquisition finish after its caller was answered. The absolute
+      // deadline guard must still prevent entering the tool handler.
+      await sleep(acquisitionDelayMs + 20);
+      expect(slowCalls).toBe(0);
+      expect(traceEvents(info.mock.calls).some((event) => event.stage === 'inner_dispatch_started')).toBe(false);
+    } finally {
+      info.mockRestore();
+    }
   });
 
   // EI-21697542694243148: naming the VALUE is not enough — the message must also name a DOOR
@@ -424,5 +1364,31 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     await sleep(SLOW_TOOL_MS + 100);
     expect(slowCalls).toBe(1);
     expect(h.replayStores).toEqual([]);
+  });
+
+  it('stores a coord:send-shaped pre-persist abort and replays the structured result for the same transport key', async () => {
+    const key = 'idem-coord-send-pre-persist-abort';
+    const extra = scoped('ws-test');
+
+    const initial = await callTool('deadlinetest:coord-send-abort', {}, extra, { idempotencyKey: key });
+
+    expect(syntheticAbortCalls).toBe(1);
+    expect(initial.structuredContent).toEqual(SYNTHETIC_COORD_SEND_ABORT);
+    expect(textOf(initial)).toContain(JSON.stringify(SYNTHETIC_COORD_SEND_ABORT));
+    expect(h.replayStores).toHaveLength(1);
+    expect(h.replayStores[0]!.idempotencyKey).toBe(key);
+
+    const stored = h.replayStores[0]!.result as CallResult;
+    expect(stored.structuredContent).toEqual(SYNTHETIC_COORD_SEND_ABORT);
+    expect(textOf(stored)).toContain(JSON.stringify(SYNTHETIC_COORD_SEND_ABORT));
+    h.storedReplay = stored as typeof h.storedReplay;
+
+    const retry = await callTool('deadlinetest:coord-send-abort', {}, extra, { idempotencyKey: key });
+
+    expect(retry._meta).toMatchObject({ replayed: true });
+    expect(retry.structuredContent).toEqual(initial.structuredContent);
+    expect(textOf(retry)).toContain(JSON.stringify(SYNTHETIC_COORD_SEND_ABORT));
+    expect(syntheticAbortCalls).toBe(1);
+    expect(h.replayStores).toHaveLength(1);
   });
 });

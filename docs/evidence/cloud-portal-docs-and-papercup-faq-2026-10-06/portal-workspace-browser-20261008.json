@@ -1,0 +1,149 @@
+{
+  "schemaVersion": 1,
+  "observedAt": "2026-10-08T22:36:22Z",
+  "workItem": "EI-25441313743672037",
+  "followUp": "WI-10007627",
+  "verdict": "failed",
+  "scope": "Filtered maintained authorized workspace browser journey; excludes other manual cases, provider readiness and shipment",
+  "case": "authorized workspace lists admitted resources without claiming a connected host",
+  "runner": {
+    "root": "/tmp/papercusp-lint-as-committed-f812c6ece2-cER5Y8",
+    "commit": "f812c6ece265ead566822ff9cde3f9897e58c9a0",
+    "cleanBeforeRun": true,
+    "testAndConfigMatchCanonical": true
+  },
+  "fixture": {
+    "root": "/dev/shm/pcv/papercusp-lint-as-committed-2e52955ace-CPorQc",
+    "commit": "2e52955ace93bf83fbabf282ce5eb7347ce0a24b",
+    "repairItem": "WI-10007623",
+    "focusedTests": "10 passed, 0 skipped, committed authority",
+    "admissionSourcesMatchingFrozenOperator": 7,
+    "provider": "WorkOS TEST",
+    "provisioning": "inert fixture; admission and ownership checks are real"
+  },
+  "portal": {
+    "buildId": "6Avr3UKWpC7WkTO1D8XcA",
+    "release": "/dev/shm/pcv/.portal-runtime/papercusp-lint-as-committed-7ab8d41d63-T1lANC/releases/6Avr3UKWpC7WkTO1D8XcA-20261008212650600-1656908-0cbc61a1",
+    "sourceRootDigest": "cbb7c257839f1110502775201f964e4f6f80355d332d2e21dee8d741deac1feb",
+    "artifactModified": false,
+    "promoted": false
+  },
+  "operator": {
+    "root": "/tmp/pcv/papercusp-lint-as-committed-c19484fc98-dZs3my",
+    "commit": "c19484fc98aa929a8596441a0ff1e52b0fe7315e",
+    "composition": "createHostedHandlerFromEnvironment",
+    "healthStatus": 200,
+    "healthSha": "c19484fc98",
+    "controlRouteMounted": true,
+    "isolation": "maintained with-test-pg.mjs operator-api private database/home; background workers disabled"
+  },
+  "results": {
+    "passed": 0,
+    "failed": 1,
+    "skipped": 0,
+    "sessionStatus": 200,
+    "selectedWorkspaceMatchesAdmission": true,
+    "controlPreflight": { "status": 200, "error": null, "rowsPresent": true },
+    "navigation": "/?app=workspaces",
+    "failingAssertion": "Selected workspaces surface is visible",
+    "testLine": 149,
+    "browserHeading": "Control plane not reachable",
+    "browserNamedError": "portal_auth_session_not_found",
+    "rootCause": "unconfirmed; browser/server-render auth transport requires investigation"
+  },
+  "evidence": {
+    "report": "/tmp/su73-r2-report-2235.json",
+    "reportSha256": "a8e9e991580f77deb5f08ee78eea2481a3136226e5d6b52be78f81370f9e6e7b",
+    "browserSnapshot": "/tmp/su73-r2-output-2235/public-manual-product-manu-f41c3-t-claiming-a-connected-host-chromium/error-context.md",
+    "browserSnapshotSha256": "f596be02b9da49539883784a6914ad77c4571d54b5a734b4a6b6b8b9aed5f4f0",
+    "portalLog": "/tmp/su73-r2-hosted-browser-2235.log",
+    "operatorLog": "/tmp/su73-r2-hosted-operator-2235.log",
+    "browserAndPortalExitCode": 1,
+    "portalShutdownObserved": true
+  },
+  "diagnosticAttempts": [
+    {
+      "attempt": "2340",
+      "observedAt": "2026-10-08T23:46:19.709Z",
+      "verdict": "blocked-before-test-collection",
+      "followUp": "EI-25457032253199068",
+      "followUpAssignee": "su-7a94555d-4fbb-42b8-a39d-ff28fade9e0f",
+      "runnerCommit": "1a9fbcfba1eefb90b4f4d6544144a9cd8907b9cc",
+      "runnerClean": true,
+      "specHelperAndConfigMatchCanonical": true,
+      "samePortalBuildId": "6Avr3UKWpC7WkTO1D8XcA",
+      "samePortalDigestVerified": true,
+      "fixtureAdmissionPathsMatchingFrozenOperator": 7,
+      "operatorHealthStatus": 200,
+      "operatorHealthSha": "c19484fc98",
+      "operatorControlRouteMounted": true,
+      "collectionError": "Named export capturePublicManualFailure not found; ../lib/public-manual-failure-evidence loaded as CommonJS",
+      "collectedSuites": 0,
+      "reportStats": { "expected": 0, "skipped": 0, "unexpected": 0, "flaky": 0 },
+      "browserAcceptanceExercised": false,
+      "preCleanupAttachmentsCaptured": false,
+      "servedWrapperExitCode": 1,
+      "operatorExitCode": 0,
+      "privateHomeRemoved": true,
+      "report": "/tmp/su73-r2-report-2340.json",
+      "reportSha256": "59b853a61d05328fd6f4464dbd124357c1f10a8a672789ab60a370d67bedf5f4",
+      "portalLog": "/tmp/su73-r2-hosted-browser-2340.log",
+      "portalLogSha256": "60d1d10767a47bbcf6ce81505630b956000f43e237e807f0701d71f61663afee",
+      "operatorLog": "/tmp/su73-r2-hosted-operator-2340.log",
+      "operatorLogSha256": "5ef595c764c9e47f13d8ed3f380e44b7cd3b173bd504bf97b6b4ef5faa0eb3f5",
+      "prereadyWrapperLog": "/tmp/su73-r2-hosted-browser-2340-preready.log",
+      "prereadyWrapperLogSha256": "31032428e1ba7483a3472938549dda243ee242d0cfa7dc1bbb7d2b2f0ca72127",
+      "prereadyObservation": "First 25-second readiness check expired; caller launched wrapper without branching on that failure. It exited on connection refusal before Next/browser launch. Exact health and mounted control were then verified before the collection attempt.",
+      "nextAttemptPreconditions": [
+        "Compatible helper loading verified by maintained Playwright discovery without product or provider calls",
+        "Readiness success enforced before served/browser launch",
+        "Harness audit covers readiness branching and ESM/CommonJS collection failure"
+      ],
+      "scope": "Runner diagnostics only; preserves the original 2235 browser failure and earlier passing API/account evidence; no new browser acceptance or shipment verdict"
+    },
+    {
+      "attempt": "D031-20261009T0512",
+      "observedAt": "2026-10-09T05:12:09.695Z",
+      "verdict": "passed-selected-workspace-case",
+      "distinctReplacement": true,
+      "buildId": "a3vvr3As2z-SKFdzH_pQr",
+      "sourceRootDigest": "896fe9c9c5e330a42fa112456a7ebd39e241ea1ca246dc20bf27a30533714d9d",
+      "runnerCommit": "61a8b7e5f5ee828d8e21fce3470fa192e023d59b",
+      "fixtureCommit": "2e52955ace93bf83fbabf282ce5eb7347ce0a24b",
+      "operatorCommit": "abc9a41cb7421a53e2d112925d981c4e9a183208",
+      "reportStats": {
+        "startTime": "2026-10-09T05:12:09.695Z",
+        "duration": 35539.133,
+        "expected": 1,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "controlStatus": 200,
+      "sessionHasAuthorizedWorkspace": true,
+      "providerVisible": true,
+      "healthUnverifiedExplanation": true,
+      "servedWrapperExitCode": 0,
+      "operatorWrapperExitCode": 0,
+      "privateHomeRemoved": true,
+      "ownConfigRemoved": true,
+      "evidence": "portal-workspace-browser-d031-20261009.json",
+      "scope": "Real admission, session and served resource listing with inert provisioning transport; excludes actual provider readiness",
+      "notVerified": [
+        "Actual provider or connector readiness",
+        "Provisioning or payment behavior",
+        "Root cause or durable repair of historical WI-10007627",
+        "Full R-1/R-2 acceptance",
+        "Real 3-participant by 4-task novice study",
+        "Independent acceptance",
+        "Exact production shipment"
+      ]
+    }
+  ],
+  "notVerified": [
+    "Workspace browser resource listing",
+    "Connected host readiness",
+    "Full manual acceptance",
+    "Production shipment"
+  ]
+}

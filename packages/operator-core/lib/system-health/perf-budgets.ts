@@ -16,6 +16,8 @@ import { constants as fsConstants } from 'node:fs';
 import { readdir, readFile, stat, copyFile, unlink } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { homedir } from 'node:os';
+import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+import { broadcastSevereEvent } from '../severe-event-broadcast';
 
 /**
  * One captured cgroup-v2 memory row.
@@ -967,6 +969,21 @@ export function worstOwnedInotifyHolder(
   return { attributable: true, worst: owned.reduce((w, p) => (p.watches > w.watches ? p : w)) };
 }
 
+export interface PerfConditionContext {
+  workspaceId: string;
+  hostId: string;
+  rail?: AlarmAttentionDeps;
+  readOpenConditions?: () => Promise<Array<{ conditionKey: string; openedAtMs: number }>>;
+}
+
+export function perfBudgetConditionKey(kind: 'operator' | 'ambient', workspaceId: string, hostId: string): string {
+  return `alarm:perf-budget:${kind}:${encodeURIComponent(JSON.stringify([workspaceId, hostId]))}`;
+}
+
+export function evaluatePerfSignals(signals: PerfSignalsV1 | null | undefined, nowMs: number,
+  budgets?: PerfBudgets, deployInProgress?: boolean): PerfVerdict;
+export function evaluatePerfSignals(signals: PerfSignalsV1 | null | undefined, nowMs: number,
+  budgets: PerfBudgets | undefined, deployInProgress: boolean, context: PerfConditionContext): Promise<PerfVerdict>;
 export function evaluatePerfSignals(
   signals: PerfSignalsV1 | null | undefined,
   nowMs: number,
@@ -978,7 +995,64 @@ export function evaluatePerfSignals(
    *  per-thread wedge signal (event-loop lag, CLOSE_WAIT, PSI, inotify) is unaffected
    *  — those are never expected during a routine restart, so they still page. */
   deployInProgress = false,
-): PerfVerdict {
+  context?: PerfConditionContext,
+): PerfVerdict | Promise<PerfVerdict> {
+  const delivered = (verdict: PerfVerdict): PerfVerdict | Promise<PerfVerdict> => {
+    if (!context) return verdict;
+    return (async () => {
+      const capturedAtMs = signals ? Date.parse(signals.capturedAt) : Number.NaN;
+      const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+      if (typeof context.workspaceId !== 'string' || !context.workspaceId.trim() ||
+          typeof context.hostId !== 'string' || !context.hostId.trim() || !finite(nowMs) || nowMs === 0 ||
+          !signals || signals.schemaVersion !== 'perf-signals-v1' || !finite(capturedAtMs) ||
+          capturedAtMs > nowMs || !finite(budgets.staleMs) || nowMs - capturedAtMs > budgets.staleMs ||
+          ![budgets.eventLoopLagP95CritMs, budgets.closeWaitCrit, budgets.inotifyLimitCritFrac,
+            budgets.psiCpuSomeCrit, budgets.psiMemoryFullCrit].every(finite)) return verdict;
+      const s = signals.signals;
+      if (!s || typeof s !== 'object') return verdict;
+      let episodes: Array<{ conditionKey: string; openedAtMs: number }> = [];
+      try {
+        if (context.readOpenConditions) episodes = await context.readOpenConditions();
+        else {
+          const { computeConditionStates, readConditionEnvelopes } = await import('../agent-tools/coordination/tools/conditions');
+          episodes = computeConditionStates(await readConditionEnvelopes()).filter(condition => condition.open)
+            .map(condition => ({ conditionKey: condition.condition_key,
+              openedAtMs: condition.open_since ? Date.parse(condition.open_since) : Number.NaN }));
+        }
+      } catch { /* failed episode discovery must never manufacture recovery */ }
+      const lag = lagReading(s);
+      const completeOperator = !deployInProgress && ['stable', 'wedge-active'].includes(signals.hostState) &&
+        typeof s.operator_3070_reachable === 'boolean' && finite(lag.p95Ms) && lag.windowMature !== false &&
+        finite(s.closeWait_3070) && Number.isInteger(s.closeWait_3070);
+      const percent = (value: unknown) => finite(value) && value <= 100;
+      const completeAmbient = percent(s.psi?.cpu?.some?.avg60) && percent(s.psi?.memory?.full?.avg60) &&
+        finite(s.inotify?.totalWatches) && Number.isInteger(s.inotify?.totalWatches) &&
+        finite(s.inotify?.limits?.maxUserWatches) && s.inotify.limits.maxUserWatches > 0;
+      for (const [kind, reasons, complete] of [
+        ['operator', verdict.critAttribution.operatorDefect, completeOperator],
+        ['ambient', verdict.critAttribution.ambientHost, completeAmbient],
+      ] as const) {
+        const conditionKey = perfBudgetConditionKey(kind, context.workspaceId, context.hostId);
+        const validMeasurement = kind === 'operator'
+          ? [lag.p95Ms, s.closeWait_3070].every(value => value == null || finite(value))
+          : [s.psi?.cpu?.some?.avg60, s.psi?.memory?.full?.avg60].every(value => value == null || percent(value)) &&
+            [s.inotify?.totalWatches, s.inotify?.limits?.maxUserWatches].every(value => value == null || finite(value));
+        if (reasons.length > 0 && validMeasurement) {
+          const event = { conditionKey, oneShot: true,
+            summary: `Perf budget breached on ${context.hostId} (${kind})`, body: reasons.join('\n') };
+          try {
+            if (context.rail?.broadcast) await context.rail.broadcast(event);
+            else await broadcastSevereEvent(event);
+          } catch { /* an unavailable rail cannot suppress the health verdict or the other condition */ }
+        } else if (complete && Array.isArray(episodes) && episodes.some(episode =>
+          episode?.conditionKey === conditionKey && finite(episode.openedAtMs) && episode.openedAtMs > 0 &&
+          episode.openedAtMs <= capturedAtMs)) {
+          await resolveAlarm(conditionKey, 'perf-budget', context.rail);
+        }
+      }
+      return verdict;
+    })();
+  };
   const memoryPressure = evaluateMemoryPressure(signals, nowMs, budgets);
   const base: PerfVerdict = {
     status: 'unknown', degraded: false, reasons: [], hostState: null,
@@ -994,7 +1068,7 @@ export function evaluatePerfSignals(
     // Empty on every non-crit path; the crit branch below is the only writer.
     critAttribution: { operatorDefect: [], ambientHost: [] },
   };
-  if (!signals || signals.schemaVersion !== 'perf-signals-v1') return base;
+  if (!signals || signals.schemaVersion !== 'perf-signals-v1') return delivered(base);
   const s = signals.signals ?? ({} as PerfSignalsV1['signals']);
   const capMs = Date.parse(signals.capturedAt);
   const ageMs = Number.isNaN(capMs) ? null : Math.max(0, nowMs - capMs);
@@ -1041,15 +1115,15 @@ export function evaluatePerfSignals(
     // original fail-safe). WI-324 recurrence guard.
     if (ageMs !== null && ageMs > budgets.blindMs) {
       const mins = Math.round(ageMs / 60_000);
-      return {
+      return delivered({
         ...v,
         status: 'warn',
         reasons: [
           `perf-signals capture ${mins}min stale (> ${Math.round(budgets.blindMs / 60_000)}min) — host SLO monitor blind; check papercup-perf-signals-capture.timer`,
         ],
-      };
+      });
     }
-    return { ...v, status: 'unknown' };
+    return delivered({ ...v, status: 'unknown' });
   }
 
   // ── CRIT: definitive per-thread wedge (NOT loadavg — see the file header) ──────
@@ -1123,14 +1197,14 @@ export function evaluatePerfSignals(
   // exists: measured 2026-08-16 it was the SOLE crit reason on a live capture.
   if (memoryPressure.pressure === 'crit') for (const r of memoryPressure.reasons) raise(r, 'ambient-host');
   if (crit.length) {
-    return {
+    return delivered({
       ...v,
       status: 'crit',
       degraded: true,
       reasons: crit,
       suppressedReasons: suppressed,
       critAttribution: { operatorDefect, ambientHost },
-    };
+    });
   }
 
   // ── WARN: hot-but-not-fatal ────────────────────────────────────────────────────
@@ -1183,8 +1257,8 @@ export function evaluatePerfSignals(
     }
   }
   if (s.gateway_8788_reachable === false) warn.push('inference gateway :8788 unreachable');
-  if (warn.length) return { ...v, status: 'warn', reasons: warn, suppressedReasons: suppressed };
-  return { ...v, status: 'ok', reasons: [], suppressedReasons: suppressed };
+  if (warn.length) return delivered({ ...v, status: 'warn', reasons: warn, suppressedReasons: suppressed });
+  return delivered({ ...v, status: 'ok', reasons: [], suppressedReasons: suppressed });
 }
 
 export const PERF_BASELINES_DIR = join(homedir(), '.papercusp', 'perf-baselines');

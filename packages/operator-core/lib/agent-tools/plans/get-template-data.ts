@@ -29,7 +29,7 @@ export default defineTool({
   description:
     "Read a plan's template TYPE + its STRUCTURED instance data (the `template_data` jsonb) — the structured read complement of plans:set-template-data, without parsing the markdown. Returns { template, templateData, version }; templateData is null until set. Read-only.",
   guidance: {
-    when: 'Reading a template-instance plan\'s structured data (e.g. a rubric instance\'s fields) to consume it programmatically — never scrape it out of the markdown.',
+    when: 'Reading a template-instance plan\'s structured data (e.g. a rubric instance\'s fields) to consume it programmatically — never scrape it out of the markdown. An evidence-only judge may use this read when rubrics:get cannot project a backing rubric row.',
     notWhen:
       'You need the whole plan (Now / items / decisions / prose) — plans:get. Writing the data — plans:set-template-data. Listing plans of a template type — plans:list { template }.',
     chaining: 'plans:get-template-data { slug } → plans:set-template-data { slug, data } to update it.',
@@ -38,7 +38,9 @@ export default defineTool({
   requirePrincipal: false,
   skipWorkspaceTx: true,
   // + overwatch (read-only, like plans:get-item) so the supervisor can ground on template instances.
-  agentRoles: [...SU_ROLES, 'kettle'],
+  // The evidence-only judge needs the raw rubric-template fallback when rubrics:get's
+  // build-local projection cannot read structured fields written by a newer build.
+  agentRoles: [...SU_ROLES, 'kettle', 'judge'],
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {

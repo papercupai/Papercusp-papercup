@@ -38,8 +38,10 @@
  * Tauri/Xvfb stack, so its env wiring can only be asserted at the wiring site
  * (same rationale as verify-tauri-headless-spa-isolation.test.ts).
  */
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
 const SCRIPT = resolve(__dirname, '../../../scripts/verify-tauri-headless.sh');
@@ -52,6 +54,62 @@ const assertionExecIdx = src.lastIndexOf('log "running assertion command: $*"');
 const containmentIdx = src.indexOf('SNAPSHOT_NEEDLE="${VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS:-}"');
 const containmentEndIdx = src.indexOf('verify_assertion_input_integrity || exit $?', containmentIdx);
 const containmentBlock = src.slice(containmentIdx, containmentEndIdx);
+
+describe('snapshot marker admission before database and native boot', () => {
+  function probe(scope: 'spa' | 'host', marker: string, content?: string) {
+    const dir = mkdtempSync(join(tmpdir(), 'snapshot-marker-preflight.'));
+    try {
+      const artifact = join(dir, 'bundle.js');
+      if (content !== undefined) writeFileSync(artifact, content);
+      const start = src.indexOf('verify_snapshot_marker_preflight() {');
+      const end = src.indexOf('\n\nvh_run_step snapshot-containment-preflight', start);
+      expect(start).toBeGreaterThan(-1);
+      expect(end).toBeGreaterThan(start);
+      return spawnSync('bash', ['-c', [
+        'set -eu', 'log() { :; }', src.slice(start, end),
+        'verify_snapshot_marker_preflight',
+      ].join('\n')], {
+        encoding: 'utf8', timeout: 5_000,
+        env: { ...process.env, SNAPSHOT_SCOPE: scope, SPA_DIST: dir,
+          OPERATOR_HOST_BUNDLE: artifact, VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS: marker },
+      });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+
+  it('rejects a runtime-concatenated DOM id while accepting an emitted statement literal', () => {
+    const bundle = '({"data-testid":`cupboard-kind-tab-${k}`,"aria-label":"Identity usage statement"})';
+    const absent = probe('spa', 'cupboard-kind-tab-statements', bundle);
+    expect(absent.status, absent.stderr).toBe(3);
+    expect(absent.stderr).toContain('runtime-concatenated DOM id');
+    const present = probe('spa', 'Identity usage statement', bundle);
+    expect(present.status, present.stderr).toBe(0);
+  });
+
+  it.each(['spa', 'host'] as const)('refuses a missing artifact in %s scope', scope => {
+    const result = probe(scope, 'missing-marker');
+    expect(result.status, result.stderr).toBe(3);
+    expect(result.stderr).toContain('refusing before database/native boot');
+  });
+
+  it('checks the frozen host artifact for backend markers', () => {
+    const result = probe('host', 'backend-acceptance-marker', 'const x="backend-acceptance-marker";');
+    expect(result.status, result.stderr).toBe(0);
+  });
+
+  it('does not require a marker when none was requested', () => {
+    const result = probe('spa', '');
+    expect(result.status, result.stderr).toBe(0);
+  });
+
+  it('runs admission before database preparation and native launch', () => {
+    const preflight = src.indexOf('vh_run_step snapshot-containment-preflight verify_snapshot_marker_preflight || exit $?');
+    const database = src.indexOf('vh_step isolated-database-prepare');
+    const native = src.indexOf('vh_step "launch-attempt-$BOOT_ATTEMPTS"');
+    expect(preflight).toBeGreaterThan(-1);
+    expect(database).toBeGreaterThan(preflight);
+    expect(native).toBeGreaterThan(database);
+  });
+});
 
 describe('EI-19444780917356384 — the freshness guard is reachable in assertion (`--`) mode', () => {
   it('is the right script, with both anchor sites present (guards a vacuous suite)', () => {
@@ -144,13 +202,14 @@ describe('EI-19444780917356384 — the freshness guard is reachable in assertion
     // missing. Hard-failing on drift would block valid runs, so the drift path
     // must warn (log) rather than exit. Pinned by asserting the drift branch
     // body carries no bare exit.
-    // Anchor the region to the exec site rather than a fixed character window:
-    // the drift branch is the last thing before the assertion runs, and a fixed
-    // window silently goes vacuous the moment the explanatory comment above the
-    // log lines grows past it (which it did — the window read as empty and the
-    // assertion passed against '' until the anchor was made structural).
+    // Bound the actual branch. Later independent source-integrity checks may
+    // correctly refuse a run; they are not part of the advisory drift warning.
     const driftIdx = src.indexOf('! bash "$VERIFY_TAURI_FRESHNESS_CHECK"');
-    const driftBlock = src.slice(driftIdx, assertionExecIdx);
+    const driftEndIdx = src.indexOf('\nfi\n', driftIdx);
+    expect(driftIdx).toBeGreaterThan(-1);
+    expect(driftEndIdx).toBeGreaterThan(driftIdx);
+    expect(driftEndIdx).toBeLessThan(assertionExecIdx);
+    const driftBlock = src.slice(driftIdx, driftEndIdx);
     expect(driftBlock).toContain('DRIFT');
     expect(driftBlock).not.toMatch(/^\s*exit \d/m);
     // …and it must point at the decisive check rather than dead-ending.

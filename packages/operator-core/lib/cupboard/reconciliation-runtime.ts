@@ -26,6 +26,9 @@
  *   PAPERCUSP_RECONCILIATION_GATE_SECRET_REF   HMAC secret shared with the Worker (RECONCILIATION_GATE_SECRET)
  *   PAPERCUSP_CUPBOARD_URL                     the Worker origin (base-url.ts)
  *   PAPERCUSP_RECONCILIATION_CHAIN_RPC_URL     optional: verify DAO transfer receipts on chain
+ *   PAPERCUSP_RECONCILIATION_SAFE_ADDRESS      optional, with the two below: the DAO Safe the
+ *   PAPERCUSP_RECONCILIATION_SAFE_TOKEN_ADDRESS  safe-balance invariant reads (needs the RPC URL;
+ *   PAPERCUSP_RECONCILIATION_SAFE_FROM_BLOCK     a 6-decimal token such as USDC; the deployment block)
  *
  * The DBOS schedule (dbos/reconciliation-workflow.ts) and the
  * `cupboard:reconciliation` tool both call `runReconciliationPass`.
@@ -36,6 +39,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { resolveCupboardBaseUrl } from './base-url';
 import {
   importStripeBalanceTransactions,
+  journalVerdictForSettlementClaim,
   journalVerdictForStripeBalanceTransaction,
   journalVerdictForTreasuryTransfer,
   stripeBalanceTransactionLister,
@@ -48,6 +52,7 @@ import {
 } from './money-journal-producers';
 import { MICROS_PER_CENT, type JournalEntry } from './money-journal';
 import { postMoneyJournalEntry, readMoneyJournalEntries } from './money-journal-store';
+import { recordPaymentReceipts, type RecordPaymentReceiptsResult } from './payment-receipt-store';
 import {
   reconciliationPeriod,
   runReconciliation,
@@ -58,6 +63,7 @@ import {
   type ReconciliationRunRecord,
   type ReconciliationSources,
   type ReconciliationStore,
+  type SafeSnapshot,
   type SourceRead,
 } from './reconciliation';
 import {
@@ -86,6 +92,48 @@ export interface ReconciliationRuntimeConfig {
   readonly gateSecretRef: string | null;
   readonly cupboardUrl: string;
   readonly chainRpcUrl: string | null;
+  /** The DAO Safe whose token balance the safe-balance invariant checks (D-025 §1). */
+  readonly safe: SafeReadConfig;
+}
+
+/**
+ * Where the DAO Safe lives on chain. `invalid` is a misconfiguration (some
+ * variables set, or set wrongly), which the pass reads as a failed source: the
+ * Safe was meant to be checked.
+ */
+export type SafeReadConfig =
+  | { readonly status: 'not-configured' }
+  | { readonly status: 'invalid'; readonly detail: string }
+  | {
+      readonly status: 'configured';
+      readonly safeAddress: `0x${string}`;
+      readonly tokenAddress: `0x${string}`;
+      /** The block the Safe was deployed in: receipts are summed from here. */
+      readonly fromBlock: bigint;
+    };
+
+const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+
+export function parseSafeReadConfig(env: NodeJS.ProcessEnv): SafeReadConfig {
+  const safeAddress = trimmed(env.PAPERCUSP_RECONCILIATION_SAFE_ADDRESS);
+  const tokenAddress = trimmed(env.PAPERCUSP_RECONCILIATION_SAFE_TOKEN_ADDRESS);
+  const fromBlock = trimmed(env.PAPERCUSP_RECONCILIATION_SAFE_FROM_BLOCK);
+  if (!safeAddress && !tokenAddress && !fromBlock) return { status: 'not-configured' };
+  if (!safeAddress || !EVM_ADDRESS.test(safeAddress)) {
+    return { status: 'invalid', detail: 'PAPERCUSP_RECONCILIATION_SAFE_ADDRESS must be an EVM address' };
+  }
+  if (!tokenAddress || !EVM_ADDRESS.test(tokenAddress)) {
+    return { status: 'invalid', detail: 'PAPERCUSP_RECONCILIATION_SAFE_TOKEN_ADDRESS must be an EVM address' };
+  }
+  if (!fromBlock || !/^\d+$/.test(fromBlock)) {
+    return { status: 'invalid', detail: "PAPERCUSP_RECONCILIATION_SAFE_FROM_BLOCK must be the Safe's deployment block number" };
+  }
+  return {
+    status: 'configured',
+    safeAddress: safeAddress.toLowerCase() as `0x${string}`,
+    tokenAddress: tokenAddress.toLowerCase() as `0x${string}`,
+    fromBlock: BigInt(fromBlock),
+  };
 }
 
 const trimmed = (value: string | undefined): string | null => (typeof value === 'string' && value.trim() ? value.trim() : null);
@@ -117,6 +165,7 @@ export function readReconciliationRuntimeConfig(env: NodeJS.ProcessEnv = process
     gateSecretRef: trimmed(env.PAPERCUSP_RECONCILIATION_GATE_SECRET_REF),
     cupboardUrl: trimmed(env.PAPERCUSP_CUPBOARD_URL)?.replace(/\/+$/, '') ?? resolveCupboardBaseUrl(),
     chainRpcUrl: trimmed(env.PAPERCUSP_RECONCILIATION_CHAIN_RPC_URL),
+    safe: parseSafeReadConfig(env),
   };
 }
 
@@ -243,14 +292,157 @@ export async function verifyDaoTransfers(
   transfers: ReconciliationInputs['daoTransfers'],
   verifier: ChainReceiptVerifier | null,
 ): Promise<VerifiedDaoTransfers> {
-  if (!verifier) return { confirmed: transfers, unconfirmed: [] };
-  const confirmed: ReconciliationInputs['daoTransfers'][number][] = [];
+  return verifyOnChain(transfers, verifier, (t) => t.transactionHash);
+}
+
+export type SettlementClaims = ReconciliationInputs['finalSettlementBatches'];
+
+export interface VerifiedSettlementClaims {
+  /** Final claims confirmed on chain, or every listed one when no verifier is configured. */
+  readonly confirmed: SettlementClaims;
+  /** Listed as final by the Worker but missing or reverted on chain. */
+  readonly unconfirmed: readonly string[];
+}
+
+/** D-032: a final claim is journaled only once the chain confirms its transaction, like a DAO transfer. */
+export async function verifySettlementClaims(claims: SettlementClaims, verifier: ChainReceiptVerifier | null): Promise<VerifiedSettlementClaims> {
+  return verifyOnChain(claims, verifier, (c) => c.claimTransactionHash);
+}
+
+async function verifyOnChain<T extends { readonly chainId: number }>(
+  rows: readonly T[],
+  verifier: ChainReceiptVerifier | null,
+  hashOf: (row: T) => string,
+): Promise<{ confirmed: readonly T[]; unconfirmed: readonly string[] }> {
+  if (!verifier) return { confirmed: rows, unconfirmed: [] };
+  const confirmed: T[] = [];
   const unconfirmed: string[] = [];
-  for (const t of transfers) {
-    if (await verifier({ chainId: t.chainId, transactionHash: t.transactionHash })) confirmed.push(t);
-    else unconfirmed.push(`chain-tx:${t.chainId}:${t.transactionHash}`);
+  for (const row of rows) {
+    if (await verifier({ chainId: row.chainId, transactionHash: hashOf(row) })) confirmed.push(row);
+    else unconfirmed.push(`chain-tx:${row.chainId}:${hashOf(row)}`);
   }
   return { confirmed, unconfirmed };
+}
+
+/** The DAO's chain-rail accrual: each final claim's allocation in cents, rounded per batch as the import rounds it. */
+export function settlementDaoAccruedCents(claims: SettlementClaims, untilMs: number): number {
+  return claims.filter((c) => c.finalizedAtMs < untilMs).reduce((sum, c) => sum + centsFromMicros(c.daoMicros), 0);
+}
+
+// ---------------------------------------------------------------------------
+// The DAO Safe (D-025 §1, WI-10004708).
+//
+// Balance and receipts come from the chain; approved spends come from the
+// Worker's treasury transfers (each one authorized through the Zodiac Roles
+// modifier and confirmed on chain). A spend that bypassed the Worker, such as
+// an owner-signed transfer, leaves the balance short of receipts minus approved
+// spends, which breaks the invariant and closes the transfer gate. A transfer
+// the Worker has not recorded yet reads the same way until the next pass.
+// ---------------------------------------------------------------------------
+
+/** One consistent read of the Safe's token position, pinned to a single block. */
+export interface SafeChainState {
+  readonly chainId: number;
+  readonly blockNumber: bigint;
+  readonly decimals: number;
+  /** Token balance of the Safe at `blockNumber`, in base units. */
+  readonly balance: bigint;
+  /** Sum of Transfer(to = Safe) from the deployment block through `blockNumber`, excluding the Safe paying itself. */
+  readonly received: bigint;
+}
+
+export type SafeChainReader = (input: {
+  readonly safeAddress: `0x${string}`;
+  readonly tokenAddress: `0x${string}`;
+  readonly fromBlock: bigint;
+}) => Promise<SafeChainState>;
+
+const ERC20_READ_ABI = [
+  { type: 'function', name: 'balanceOf', stateMutability: 'view', inputs: [{ name: 'owner', type: 'address' }], outputs: [{ name: '', type: 'uint256' }] },
+  { type: 'function', name: 'decimals', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'uint8' }] },
+] as const;
+
+const ERC20_TRANSFER_EVENT = {
+  type: 'event',
+  name: 'Transfer',
+  inputs: [
+    { name: 'from', type: 'address', indexed: true },
+    { name: 'to', type: 'address', indexed: true },
+    { name: 'value', type: 'uint256', indexed: false },
+  ],
+} as const;
+
+/**
+ * A viem reader over one RPC endpoint. Logs are read in `blockSpan` windows
+ * because providers cap the range of one eth_getLogs call; more than `maxSpans`
+ * windows fails the read rather than returning a partial sum.
+ */
+export function viemSafeChainReader(rpcUrl: string, opts: { readonly blockSpan?: bigint; readonly maxSpans?: number } = {}): SafeChainReader {
+  const blockSpan = opts.blockSpan ?? 10_000n;
+  const maxSpans = opts.maxSpans ?? 2_000;
+  return async ({ safeAddress, tokenAddress, fromBlock }) => {
+    const { createPublicClient, http } = await import('viem');
+    const pc = createPublicClient({ transport: http(rpcUrl) });
+    const [chainId, blockNumber] = await Promise.all([pc.getChainId(), pc.getBlockNumber()]);
+    if (fromBlock > blockNumber) throw new Error(`the Safe's deployment block ${fromBlock} is after the chain head ${blockNumber}`);
+    const spans = (blockNumber - fromBlock) / blockSpan + 1n;
+    if (spans > BigInt(maxSpans)) throw new Error(`${spans} log windows of ${blockSpan} blocks exceed the limit of ${maxSpans}`);
+    const [balance, decimals] = await Promise.all([
+      pc.readContract({ address: tokenAddress, abi: ERC20_READ_ABI, functionName: 'balanceOf', args: [safeAddress], blockNumber }),
+      pc.readContract({ address: tokenAddress, abi: ERC20_READ_ABI, functionName: 'decimals', blockNumber }),
+    ]);
+    const safe = safeAddress.toLowerCase();
+    let received = 0n;
+    for (let from = fromBlock; from <= blockNumber; from += blockSpan) {
+      const to = from + blockSpan - 1n < blockNumber ? from + blockSpan - 1n : blockNumber;
+      const logs = await pc.getLogs({ address: tokenAddress, event: ERC20_TRANSFER_EVENT, args: { to: safeAddress }, fromBlock: from, toBlock: to, strict: true });
+      for (const log of logs) {
+        if (log.args.from.toLowerCase() === safe) continue;
+        received += log.args.value;
+      }
+    }
+    return { chainId, blockNumber, decimals: Number(decimals), balance, received };
+  };
+}
+
+/**
+ * The SafeSnapshot the engine checks. Fails closed on anything that would make
+ * the comparison meaningless: a token that is not 6-decimal (base units are then
+ * not micro-USD), a DAO transfer on another chain (it did not leave this Safe),
+ * or an amount beyond exact Number range.
+ */
+export async function readSafeSnapshot(input: {
+  readonly reader: SafeChainReader;
+  readonly safeAddress: `0x${string}`;
+  readonly tokenAddress: `0x${string}`;
+  readonly fromBlock: bigint;
+  readonly approvedSpends: ReconciliationInputs['daoTransfers'];
+}): Promise<SourceRead<SafeSnapshot>> {
+  let state: SafeChainState;
+  try {
+    state = await input.reader({ safeAddress: input.safeAddress, tokenAddress: input.tokenAddress, fromBlock: input.fromBlock });
+  } catch (error) {
+    return { status: 'failed', detail: `the Safe could not be read on chain: ${errorText(error)}` };
+  }
+  if (state.decimals !== 6) {
+    return { status: 'failed', detail: `the Safe token has ${state.decimals} decimals; the invariant compares 6-decimal micros` };
+  }
+  const foreign = input.approvedSpends.filter((t) => t.chainId !== state.chainId);
+  if (foreign.length > 0) {
+    return {
+      status: 'failed',
+      detail: `${foreign.length} DAO transfer(s) settled on chain ${foreign[0]!.chainId}, but the Safe is read on chain ${state.chainId}`,
+    };
+  }
+  const spent = input.approvedSpends.reduce((sum, t) => sum + BigInt(t.amountMicros), 0n);
+  const max = BigInt(Number.MAX_SAFE_INTEGER);
+  if (state.balance > max || state.received > max || spent > max) {
+    return { status: 'failed', detail: 'a Safe amount exceeds the exact integer range of the comparison' };
+  }
+  return {
+    status: 'ok',
+    value: { balanceMicros: Number(state.balance), receiptsMicros: Number(state.received), approvedSpendsMicros: Number(spent) },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -289,6 +481,32 @@ export async function importDaoTransfers(
     else posted += 1;
   }
   return { scanned: transfers.length, posted, duplicates, refused };
+}
+
+/** D-032: every final settlement claim becomes one customer-payment entry keyed by its claim transaction. */
+export async function importSettlementClaims(claims: SettlementClaims, post: JournalPoster): Promise<DaoTransferImportReport> {
+  let posted = 0;
+  let duplicates = 0;
+  const refused: Array<{ sourceId: string; code: string; detail: string }> = [];
+  for (const c of claims) {
+    const verdict = journalVerdictForSettlementClaim({
+      chainId: c.chainId,
+      txHash: c.claimTransactionHash,
+      grossCents: centsFromMicros(c.claimMicros),
+      daoCents: centsFromMicros(c.daoMicros),
+      occurredAtMs: c.finalizedAtMs,
+      memo: `settlement claim ${c.batchId}`,
+    });
+    if (verdict.disposition !== 'entry') {
+      refused.push({ sourceId: c.batchId, code: 'unmapped', detail: verdict.reason });
+      continue;
+    }
+    const outcome = await post(verdict.entry);
+    if (!outcome.ok) refused.push({ sourceId: c.batchId, code: outcome.code, detail: outcome.detail });
+    else if (outcome.duplicate) duplicates += 1;
+    else posted += 1;
+  }
+  return { scanned: claims.length, posted, duplicates, refused };
 }
 
 // ---------------------------------------------------------------------------
@@ -402,6 +620,10 @@ export interface WorkspaceReconciliation {
   readonly workspaceId: string;
   readonly stripeImport: ImportReport | { readonly skipped: string } | { readonly failed: string };
   readonly daoTransferImport: DaoTransferImportReport | { readonly skipped: string } | { readonly failed: string };
+  /** D-032: final settlement claims imported as customer payments over the chain. */
+  readonly settlementClaimImport: DaoTransferImportReport | { readonly skipped: string } | { readonly failed: string };
+  /** P-046: a salted receipt commitment for every balance transaction the import listed. */
+  readonly paymentReceipts: RecordPaymentReceiptsResult | { readonly skipped: string } | { readonly failed: string };
   readonly run: ReconciliationRunRecord | null;
   readonly error: string | null;
 }
@@ -418,11 +640,18 @@ export interface ReconciliationPassDeps {
   readonly stripeLister?: StripeBalanceTransactionLister | null;
   readonly cupboardInputs?: CupboardInputsReader | null;
   readonly chainVerifier?: ChainReceiptVerifier | null;
+  /** WI-10004708: reads the DAO Safe (default: viem over the chain RPC URL, when the Safe is configured). */
+  readonly safeReader?: SafeChainReader | null;
   readonly store?: ReconciliationStore;
   readonly filer?: BreakFiler;
   readonly gate?: GatePublisher;
   readonly post?: (workspaceId: string) => JournalPoster;
   readonly readEntries?: (workspaceId: string) => Promise<JournalEntry[]>;
+  /** P-046: record receipts for the balance transactions the import listed (default: Postgres). */
+  readonly recordReceipts?: (
+    workspaceId: string,
+    transactions: readonly StripeBalanceTransaction[],
+  ) => Promise<RecordPaymentReceiptsResult>;
   readonly now?: () => number;
   readonly fetchImpl?: typeof fetch;
 }
@@ -490,6 +719,9 @@ export async function runReconciliationPass(
         return r.ok ? { ok: true, duplicate: r.duplicate } : { ok: false, code: r.code, detail: r.detail };
       });
   const readEntries = deps.readEntries ?? ((ws: string) => readMoneyJournalEntries(ws, { sql: sql() }));
+  const recordReceipts =
+    deps.recordReceipts ??
+    ((ws: string, transactions: readonly StripeBalanceTransaction[]) => recordPaymentReceipts(ws, transactions, { sql: sql() }));
 
   // The Worker's records are deployment-wide (one Cupboard per operator), read once.
   let cupboard: SourceRead<ReconciliationInputs> = cupboardUnavailable;
@@ -500,14 +732,42 @@ export async function runReconciliationPass(
       cupboard = { status: 'failed', detail: errorText(error) };
     }
   }
-  let verified: SourceRead<VerifiedDaoTransfers> = cupboard.status === 'ok' ? { status: 'not-configured' } : cupboard;
+  let verified: SourceRead<VerifiedDaoTransfers & { readonly claims: VerifiedSettlementClaims }> =
+    cupboard.status === 'ok' ? { status: 'not-configured' } : cupboard;
   if (cupboard.status === 'ok') {
     try {
-      verified = { status: 'ok', value: await verifyDaoTransfers(cupboard.value.daoTransfers, chainVerifier) };
+      const transfers = await verifyDaoTransfers(cupboard.value.daoTransfers, chainVerifier);
+      const claims = await verifySettlementClaims(cupboard.value.finalSettlementBatches, chainVerifier);
+      verified = { status: 'ok', value: { ...transfers, claims } };
     } catch (error) {
       verified = { status: 'failed', detail: `chain receipts could not be read: ${errorText(error)}` };
     }
   }
+
+  // The Safe is deployment-wide too: read once, and only if a treasury workspace runs.
+  const safeReader =
+    deps.safeReader !== undefined ? deps.safeReader : config.chainRpcUrl ? viemSafeChainReader(config.chainRpcUrl) : null;
+  let safeRead: Promise<SourceRead<SafeSnapshot>> | null = null;
+  const readSafe = (): Promise<SourceRead<SafeSnapshot>> => {
+    safeRead ??= (async (): Promise<SourceRead<SafeSnapshot>> => {
+      const safe = config.safe;
+      if (safe.status === 'not-configured') return { status: 'not-configured' };
+      if (safe.status === 'invalid') return { status: 'failed', detail: safe.detail };
+      if (!safeReader) return { status: 'failed', detail: 'PAPERCUSP_RECONCILIATION_CHAIN_RPC_URL is required to read the Safe' };
+      if (verified.status !== 'ok') {
+        const why = verified.status === 'failed' ? verified.detail : 'the Cupboard reconciliation inputs are not configured';
+        return { status: 'failed', detail: `approved spends could not be read: ${why}` };
+      }
+      return readSafeSnapshot({
+        reader: safeReader,
+        safeAddress: safe.safeAddress,
+        tokenAddress: safe.tokenAddress,
+        fromBlock: safe.fromBlock,
+        approvedSpends: verified.value.confirmed,
+      });
+    })();
+    return safeRead;
+  };
 
   const workspaceIds =
     input.workspaces ?? (await reconciliationWorkspaces(sql(), [config.stripeJournalWorkspace, config.treasuryWorkspace]));
@@ -520,13 +780,23 @@ export async function runReconciliationPass(
     const treasuryReconciled = ownsTreasury && cupboard.status === 'ok' && verified.status === 'ok';
     let stripeImport: WorkspaceReconciliation['stripeImport'] = { skipped: 'this workspace has no Stripe account' };
     let daoTransferImport: WorkspaceReconciliation['daoTransferImport'] = { skipped: 'this workspace does not own the Cupboard treasury' };
+    let settlementClaimImport: WorkspaceReconciliation['settlementClaimImport'] = { skipped: 'this workspace does not own the Cupboard treasury' };
+    let paymentReceipts: WorkspaceReconciliation['paymentReceipts'] = { skipped: 'this workspace has no Stripe account' };
     try {
       const post = postFor(workspaceId);
       // 1. Import.
       if (ownsStripe && stripeLister && config.policy) {
+        // Tee the lister: every balance transaction the import sees also gets a receipt (D-029 §4).
+        const listed: StripeBalanceTransaction[] = [];
+        const lister = stripeLister;
+        const teed: StripeBalanceTransactionLister = async (params) => {
+          const page = await lister(params);
+          listed.push(...page.data);
+          return page;
+        };
         try {
           stripeImport = await importStripeBalanceTransactions({
-            list: stripeLister,
+            list: teed,
             post,
             policy: config.policy,
             createdGte: Math.floor(period.fromMs / 1000),
@@ -534,12 +804,26 @@ export async function runReconciliationPass(
         } catch (error) {
           stripeImport = { failed: errorText(error) };
         }
-      } else if (ownsStripe) stripeImport = { skipped: stripeUnavailable.status === 'failed' ? stripeUnavailable.detail : 'Stripe is not configured' };
+        // Whatever was listed before a failure still gets its receipt; the rest arrives next pass.
+        try {
+          paymentReceipts = await recordReceipts(workspaceId, listed);
+        } catch (error) {
+          paymentReceipts = { failed: errorText(error) };
+        }
+      } else if (ownsStripe) {
+        stripeImport = { skipped: stripeUnavailable.status === 'failed' ? stripeUnavailable.detail : 'Stripe is not configured' };
+        paymentReceipts = { skipped: 'Stripe is not configured' };
+      }
       if (ownsTreasury && verified.status === 'ok') {
         try {
           daoTransferImport = await importDaoTransfers(verified.value.confirmed, post);
         } catch (error) {
           daoTransferImport = { failed: errorText(error) };
+        }
+        try {
+          settlementClaimImport = await importSettlementClaims(verified.value.claims.confirmed, post);
+        } catch (error) {
+          settlementClaimImport = { failed: errorText(error) };
         }
       }
 
@@ -554,9 +838,15 @@ export async function runReconciliationPass(
           ? verified
           : {
               status: 'ok',
-              value: verified.value.confirmed
-                .filter((t) => t.createdAtMs >= period.fromMs && t.createdAtMs < period.untilMs)
-                .map((t) => ({ ref: `chain-tx:${t.chainId}:${t.transactionHash}`, netCents: -centsFromMicros(t.amountMicros) })),
+              value: [
+                ...verified.value.confirmed
+                  .filter((t) => t.createdAtMs >= period.fromMs && t.createdAtMs < period.untilMs)
+                  .map((t) => ({ ref: `chain-tx:${t.chainId}:${t.transactionHash}`, netCents: -centsFromMicros(t.amountMicros) })),
+                // D-032: a final claim is cash in, dated by its finality.
+                ...verified.value.claims.confirmed
+                  .filter((c) => c.finalizedAtMs >= period.fromMs && c.finalizedAtMs < period.untilMs)
+                  .map((c) => ({ ref: `chain-tx:${c.chainId}:${c.claimTransactionHash}`, netCents: centsFromMicros(c.claimMicros) })),
+              ],
             };
       const sources: ReconciliationSources = {
         stripe,
@@ -576,10 +866,11 @@ export async function runReconciliationPass(
                   transferredCents: verified.value.confirmed
                     .filter((t) => t.createdAtMs < period.untilMs)
                     .reduce((sum, t) => sum + centsFromMicros(t.amountMicros), 0),
+                  chainAccruedCents: settlementDaoAccruedCents(verified.value.claims.confirmed, period.untilMs),
                 },
               }
             : verified,
-        safe: { status: 'not-configured' },
+        safe: ownsTreasury ? await readSafe() : { status: 'not-configured' },
       };
 
       // 3. Reconcile, persist, file or resolve, push the gate.
@@ -588,9 +879,9 @@ export async function runReconciliationPass(
         { workspaceId, mode: input.mode, entries, sources, startedAtMs },
         { store, filer, gate: gateFor(treasuryReconciled), now, newRunId: () => `recon-${randomUUID()}` },
       );
-      results.push({ workspaceId, stripeImport, daoTransferImport, run, error: null });
+      results.push({ workspaceId, stripeImport, daoTransferImport, settlementClaimImport, paymentReceipts, run, error: null });
     } catch (error) {
-      results.push({ workspaceId, stripeImport, daoTransferImport, run: null, error: errorText(error) });
+      results.push({ workspaceId, stripeImport, daoTransferImport, settlementClaimImport, paymentReceipts, run: null, error: errorText(error) });
     }
   }
   return { mode: input.mode, workspaces: results };

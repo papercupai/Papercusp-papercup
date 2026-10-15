@@ -67,7 +67,9 @@ const WALLS_HEADING_RE = /^walls$/i;
  * of owner-walled facts with the wall marker do not match.
  */
 const OWNER_QUESTION_RES: RegExp[] = [
-  /\b(?:ask|asking|need(?:s)? to ask|should ask|must ask)\s+(?:the\s+)?(?:owner|human)\b/i,
+  // `coord:ask owner-UI-only` is a tool-mode label, not prose; a word boundary
+  // alone treats the hyphen before `UI` as the end of the word "owner".
+  /\b(?:ask|asking|need(?:s)? to ask|should ask|must ask)\s+(?:the\s+)?(?:owner|human)\b(?!-UI-only\b)/i,
   /\bquestion\s+for\s+(?:the\s+)?(?:owner|human)\b/i,
   // A non-possessive owner is ambiguous but conventionally means the human
   // owner ("waiting on the owner to decide"). A possessive owner must name
@@ -116,6 +118,24 @@ const PEER_OWNER_SUBJECT_RE = /\b(?:peer|item|work[-\s]?item)\s+owner\b/i;
 const DEV_WHY_PEER_REPAIR_NEXT_VERB_QUOTE_RE =
   /^`?dev:why`?\s+nextVerb\s+[—:-]\s*["“]wait\s+for\s+the\s+owner\s+of\s+the\s+in-flight\s+repair\s+to\s+finish\s+\(repair-in-progress\)\s+—\s+there\s+is\s+nothing\s+for\s+you\s+to\s+clear\b[^"”\n]*\band\s+a\s+re-fire\s+contends\s+with\s+them\b[^"”\n]*["”]`?$/i;
 
+/** An explicit description of the detector's own vocabulary is documentation,
+ *  not a request. Keep this exemption tied to the named regex and its
+ *  "patterns look for" introduction; a later sentence or clause is still
+ *  evaluated normally (EI-25663783345644648). */
+const OWNER_QUESTION_VOCABULARY_DESCRIPTION_RE =
+  /\bOWNER_QUESTION_RES\b[\s\S]{0,160}?\bpatterns?\s+look\s+for\b/i;
+
+function isMatcherVocabularyMention(line: string, match: RegExpExecArray): boolean {
+  const description = OWNER_QUESTION_VOCABULARY_DESCRIPTION_RE.exec(line);
+  if (!description) return false;
+  const descriptionEnd = description.index + description[0].length;
+  if (match.index < descriptionEnd) return false;
+  // Commas and slashes are part of the enumerated vocabulary. A sentence or
+  // clause terminator ends that enumeration so a real follow-up ask still
+  // triggers on the same line.
+  return !/[.!?;:](?:\s+|$)/.test(line.slice(descriptionEnd, match.index));
+}
+
 /** Clause delimiters bounding how far back a suppression check looks — a
  *  negation or subject in an earlier, unrelated clause must not mask a real
  *  question in a later one on the same line. */
@@ -154,6 +174,8 @@ export interface TypedSlotLintMatch {
   /** The offending line, trimmed and capped for display. */
   line: string;
   kind: 'owner-question-prose';
+  /** The exact trigger phrase; unlike `line`, this is never hidden by its cap. */
+  matchedText: string;
 }
 
 export interface TypedSlotLintResult {
@@ -195,13 +217,25 @@ export function lintOwnerQuestionSlots(text: string | null | undefined): TypedSl
     if (ASK_REF_RE.test(line)) continue; // the question IS a typed record
     if (WALL_MARKER_RE.test(line)) continue; // the walls slot is the typed form
     if (DEV_WHY_PEER_REPAIR_NEXT_VERB_QUOTE_RE.test(line)) continue; // quoted peer-owned diagnostic, not a human ask
-    const hasUnsuppressedMatch = OWNER_QUESTION_RES.some((re) => {
-      const m = re.exec(line); // none of these patterns carry the /g flag, so exec is stateless here
-      if (!m) return false;
-      return !isSuppressedMatch(line, m);
-    });
-    if (hasUnsuppressedMatch) {
-      matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'owner-question-prose' });
+    let matchedTrigger: RegExpExecArray | undefined;
+    for (const sourceRe of OWNER_QUESTION_RES) {
+      // Continue past a suppressed technical-vocabulary mention so a real
+      // later question using the same pattern on this line is still found.
+      const re = new RegExp(sourceRe.source, `${sourceRe.flags}g`);
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(line)) !== null) {
+        if (isSuppressedMatch(line, m) || isMatcherVocabularyMention(line, m)) continue;
+        matchedTrigger = m;
+        break;
+      }
+      if (matchedTrigger) break;
+    }
+    if (matchedTrigger) {
+      matches.push({
+        line: line.slice(0, MATCH_LINE_CAP),
+        kind: 'owner-question-prose',
+        matchedText: matchedTrigger[0],
+      });
     }
   }
   return { flagged: matches.length > 0, matches };

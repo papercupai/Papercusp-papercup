@@ -344,6 +344,7 @@ describe("cc PostToolUse activity-report hook — hook_bundle fold (stub operato
       const r = await run(ambientSid, {}, { session_id: nativeSessionId });
       expect(r.status).toBe(0);
       expect(lastRequest?.url).toContain(`client=${resolvedSid}`);
+      expect(new URL(lastRequest?.url ?? '', 'http://127.0.0.1').searchParams.get('native_session')).toBe(nativeSessionId);
       expect(lastRequest?.body.params.arguments.owner).toBe(resolvedSid);
       expect(cursorFor(resolvedSid)).toEqual({
         generation: "host-a:1",
@@ -435,6 +436,7 @@ describe("cc PostToolUse activity-report hook — hook_bundle fold (stub operato
     expect(requestCount).toBe(1); // exactly ONE round trip for this tool call — the whole point of the fix
     expect(lastRequest?.body.params.arguments.hook_bundle).toEqual({
       generation: "host-a:2",
+      glance_stale: false,
     });
     const cur = cursorFor(sid);
     expect(cur).toEqual({ generation: "host-a:2", glance, glanceObservedAt }); // untouched
@@ -464,6 +466,7 @@ describe("cc PostToolUse activity-report hook — hook_bundle fold (stub operato
     expect(r.stdout).toBe("");
     expect(lastRequest?.body.params.arguments.hook_bundle).toEqual({
       generation: "host-a:2",
+      glance_stale: false,
     });
     expect(cursorFor(sid)).toEqual({
       generation: "host-a:3",
@@ -517,6 +520,36 @@ describe("cc PostToolUse activity-report hook — hook_bundle fold (stub operato
       glance: newGlance,
       glanceObservedAt: newObservedAt,
     });
+  });
+
+  it("marks a fresh glance cache explicitly and keeps it on an inbox-only fold", async () => {
+    const sid = "sid-fresh-glance";
+    const glance = { display: { title: "fresh title", notice: null } };
+    const glanceObservedAt = new Date().toISOString();
+    fs.writeFileSync(
+      join(cache, `activity-hook-bundle-${sid}.json`),
+      JSON.stringify({ generation: "host-a:2", glance, glanceObservedAt }),
+    );
+    nextResult = {
+      ok: true,
+      id: 33,
+      hook_bundle: {
+        schemaVersion: ACTIVITY_HOOK_BUNDLE_SCHEMA,
+        generation: "host-a:3",
+        changed: true,
+        complete: true,
+        provenance: { observedAt: new Date().toISOString() },
+        surfaces: { inbox: { entries: [], summary: { newest_ts: null } } },
+      },
+    };
+
+    const r = await run(sid);
+    expect(r.status).toBe(0);
+    expect(lastRequest?.body.params.arguments.hook_bundle).toEqual({
+      generation: "host-a:2",
+      glance_stale: false,
+    });
+    expect(cursorFor(sid)).toEqual({ generation: "host-a:3", glance, glanceObservedAt });
   });
 
   it("quiet fold with an empty inbox still surfaces the P-015 context gauge", async () => {

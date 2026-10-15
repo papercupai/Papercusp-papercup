@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Public Docs exact production Playwright reader and artifact identity",
+  "framework": "playwright",
+  "command": [
+    "env",
+    "PORTAL_DOCS_BASE_URL=https://app.papercusp.com",
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp",
+    "PAPERCUSP_TEST_RUN_GROUP=public-docs-production-20261001-1957",
+    "PLAYWRIGHT_JSON_OUTPUT_NAME=$HOME/.papercusp/evidence/public-docs-20261001/production-1948/ready-runtime/results.json",
+    "npx",
+    "playwright",
+    "test",
+    "e2e/portal-public-docs.spec.ts",
+    "--reporter=list,json,$HOME/papercupai-workspace/papercusp/packages/operator-core/test/reporters/admin-test-runs-reporter-playwright.ts",
+    "--output=$HOME/.papercusp/evidence/public-docs-20261001/production-1948/ready-runtime/browser"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T19:56:49.691Z",
+  "finishedAt": "2026-10-01T19:57:32.740Z",
+  "summary": "Four maintained production journeys passed against app.papercusp.com. HTTPS responses for all 43 public documentation artifact files matched the actual serving release bytes. Original unscoped test-run row 20430888 is preserved; this committed evidence registers the same observed execution in the scoped canonical ledger.",
+  "assertions": [
+    {
+      "id": "production-reader-1",
+      "passed": true,
+      "evidence": "anonymous HTTP reader preserves assets, HEAD, missing-page and private-route boundaries; durationMs=21201; raw report=$HOME/.papercusp/evidence/public-docs-20261001/production-1948/ready-runtime/results.json"
+    },
+    {
+      "id": "production-reader-2",
+      "passed": true,
+      "evidence": "anonymous visitor opens public Docs, follows an article, and reloads its deep link; durationMs=2709; raw report=$HOME/.papercusp/evidence/public-docs-20261001/production-1948/ready-runtime/results.json"
+    },
+    {
+      "id": "production-reader-3",
+      "passed": true,
+      "evidence": "desktop reader searches the built Pagefind index and opens a result; durationMs=13696; raw report=$HOME/.papercusp/evidence/public-docs-20261001/production-1948/ready-runtime/results.json"
+    },
+    {
+      "id": "production-reader-4",
+      "passed": true,
+      "evidence": "mobile and keyboard readers reach the content without page overflow; durationMs=1282; raw report=$HOME/.papercusp/evidence/public-docs-20261001/production-1948/ready-runtime/results.json"
+    },
+    {
+      "id": "production-artifact-byte-census",
+      "passed": true,
+      "evidence": "All 43 files matched local serving-artifact SHA256 to exact HTTPS bytes; runtime PID 2693549 remained stable through census; $HOME/.papercusp/evidence/public-docs-20261001/production-1948/production-artifact-census.json"
+    },
+    {
+      "id": "accepted-source-identity",
+      "passed": true,
+      "evidence": "Serving release PWerfUIlxIu_lvqdKFSz7-20261001195053231-2554075-1fc06dd0; sourceRootDigest fd8320641c67d545f2d2dccec55975a2cfae454fc6d05be369eb2334d08f7638 equals accepted candidate"
+    }
+  ],
+  "runtime": {
+    "pid": "2693549",
+    "cwd": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.portal-runtime/portal/releases/PWerfUIlxIu_lvqdKFSz7-20261001195053231-2554075-1fc06dd0/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+    "releaseRoot": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.portal-runtime/portal/releases/PWerfUIlxIu_lvqdKFSz7-20261001195053231-2554075-1fc06dd0",
+    "manifest": {
+      "schemaVersion": 2,
+      "buildId": "PWerfUIlxIu_lvqdKFSz7",
+      "release": "PWerfUIlxIu_lvqdKFSz7-20261001195053231-2554075-1fc06dd0",
+      "sourceRoot": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+      "publishedAt": "2026-10-01T19:50:53.231Z",
+      "sourceRootDigest": "fd8320641c67d545f2d2dccec55975a2cfae454fc6d05be369eb2334d08f7638"
+    }
+  },
+  "acceptedSourceDigest": "fd8320641c67d545f2d2dccec55975a2cfae454fc6d05be369eb2334d08f7638",
+  "rawArtifacts": [
+    {
+      "path": "$HOME/.papercusp/evidence/public-docs-20261001/production-1948/ready-runtime/results.json",
+      "sha256": "1f074dbd25e85d070bedc64f712ed7dc73fa37cd8e49c2e491556b030e8bed13"
+    },
+    {
+      "path": "$HOME/.papercusp/evidence/public-docs-20261001/production-1948/production-artifact-census.json",
+      "sha256": "00df52a174d4d789e2a35c42d06c6ec99a2b728453c0a0d07caf6d409af073df"
+    }
+  ],
+  "priorFailedAttempts": [
+    "production-1948/results.json:setup fetch abort before journeys",
+    "production-1948/retry-2/results.json:HTTP502 during concurrent Portal backend restart before journeys"
+  ],
+  "scopedIncident": "EI-24807838237100502",
+  "scopedProductionProof": {
+    "testRunId": 20431096,
+    "runGroup": "public-docs-production-scoped-20261001-2016",
+    "reporter": "apps/operator/test/reporters/admin-test-runs-reporter-playwright.ts",
+    "startedAt": "2026-10-01T20:16:16.691Z",
+    "durationMs": 35823.577,
+    "passed": 4,
+    "failed": 0,
+    "skipped": 0,
+    "release": "aAjfaUcPP0Cx491rlVTYJ-20261001200509115-3469172-d9e07273",
+    "servingPid": "3529556",
+    "processStartedAt": "2026-10-01T20:05:42.052Z",
+    "sourceRootDigest": "fd8320641c67d545f2d2dccec55975a2cfae454fc6d05be369eb2334d08f7638",
+    "publicArtifactFiles": 43,
+    "allHttpsBytesMatchServingArtifact": true,
+    "rawReport": {
+      "path": "$HOME/.papercusp/evidence/public-docs-20261001/production-1948/scoped/results.json",
+      "sha256": "564e394b5c6e40b3678f997588ba1b8f66819c9403a33233931d275da3e41459"
+    },
+    "rawCensus": {
+      "path": "$HOME/.papercusp/evidence/public-docs-20261001/production-1948/scoped-artifact-census.json",
+      "sha256": "8c8b092851fdca329980a9da9d11004312e35785cf5147492e1d397ddc191194"
+    }
+  },
+  "publicationRootNegativeControl": {
+    "testRunId": 20431633,
+    "source": "mutation-probe",
+    "runGroup": "public-docs-wrong-publication-root-20261001",
+    "fault": "Configure the maintained reader suite with https://app.papercusp.com/zz-wrong-release-root-78291 as its publication base.",
+    "observed": "The real readiness check rejected the wrong publication root with public_docs_exact_origin_not_ready and HTTP404. No production source, routing, credential or data was modified.",
+    "executionBoundary": "The beforeAll readiness check ran and failed; all three subsequent reader journeys did not run. This is a negative readiness control, not a passing reader run.",
+    "rawReport": {
+      "path": "$HOME/.papercusp/evidence/public-docs-20261001/production-1948/wrong-root/results.json",
+      "sha256": "bedfd4b693e4866b9ba3413b69eec19d500fabac3ea2b4165269e85a9d56423b"
+    }
+  },
+  "authenticatedManualEvidence": {
+    "method": "verdict cookie-import app.papercusp.com (legitimate existing Chrome session, cookie values never logged)",
+    "observations": [
+      "Signed-in shell exposes aria-label Docs (public manual) href /docs",
+      "Project docs is a distinct More destination at /?app=docs; reload retains Project docs",
+      "Signed-in public link opens the Welcome manual",
+      "Authenticated /internal/docs/search-palette.html returned403; this principal does not prove an authorized internal-doc positive control"
+    ],
+    "screenshots": [
+      "$HOME/.papercusp/evidence/public-docs-20261001/production-1948/signed-in.png",
+      "$HOME/.papercusp/evidence/public-docs-20261001/production-1948/project-docs.png",
+      "$HOME/.papercusp/evidence/public-docs-20261001/production-1948/auth-public-manual.png"
+    ]
+  },
+  "pathEncoding": "$HOME in recorded path and command fields denotes os.homedir() of the collecting host. Expand it before reading artifacts. Raw artifact bytes and their hashes are unchanged; the preceding absolute-path snapshot is retained privately with the raw evidence."
+}

@@ -37,6 +37,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import {
   defaultSessionDirRoots,
   gatherProtectedSessionIdentity,
+  isOwnedByThisInstance,
   isProtected,
   sessionDirKey,
   type ProtectedSessionIdentity,
@@ -132,6 +133,10 @@ export interface ReconcileStats {
   /** Sessions skipped this tick: files still CHANGING (possibly a live
    *  untracked session the protected set cannot see) — retried once quiet. */
   diskSkippedFresh: number;
+  /** Dirs left untouched because ANOTHER install sharing this `$HOME`
+   *  materialized them — this database never launched their identity
+   *  (WI-6554700010010238). Non-zero means a second install is present. */
+  diskSkippedForeign: number;
   ompFilesArchived: number;
   /** Gauge after the tick — the P-007 watchdog reads this trend. */
   endedUnarchivedRemaining: number;
@@ -256,6 +261,7 @@ export async function runSessionArchiveReconcileOnce(deps: ReconcilerDeps = {}):
     diskLeftoversRetained: 0,
     diskFailed: 0,
     diskSkippedFresh: 0,
+    diskSkippedForeign: 0,
     ompFilesArchived: 0,
     endedUnarchivedRemaining: 0,
     oldestEndedUnarchivedAgeMs: null,
@@ -315,6 +321,12 @@ export async function runSessionArchiveReconcileOnce(deps: ReconcilerDeps = {}):
       if (!d.isDirectory()) continue;
       const key = sessionDirKey(d.name, rootSpec.keyKind);
       if (isProtected({ keyKind: rootSpec.keyKind, key }, prot)) continue;
+      // OWNERSHIP before any archive/delete (WI-6554700010010238): "not live in
+      // MY database" is not "dead" when another install shares this $HOME.
+      if (!isOwnedByThisInstance({ keyKind: rootSpec.keyKind, key }, prot)) {
+        stats.diskSkippedForeign++;
+        continue;
+      }
       const dirPath = join(rootSpec.root, d.name);
       const ids =
         sourceKind === 'claude'

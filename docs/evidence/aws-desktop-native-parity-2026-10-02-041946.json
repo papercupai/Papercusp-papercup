@@ -1,0 +1,567 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "AWS desktop native parity 20261002T041946Z-1505643",
+  "framework": "operational",
+  "command": [
+    "VERIFY_TAURI_ISOLATED_DB=1",
+    "VERIFY_TAURI_ISOLATED_SEED=ready",
+    "VERIFY_TAURI_REQUIRE_BUILT=apps/operator/app/cloud-workspaces/ConnectStage.tsx,apps/operator/app/cloud-workspaces/cloud-workspaces.module.css,apps/operator/app/cloud-workspaces/page.tsx,apps/operator/app/cloud-workspaces/workspace-host-actions.ts,apps/operator/app/cloud-workspaces/workspace-view-model.ts",
+    "scripts/verify-tauri-headless.sh",
+    "--",
+    "node",
+    "scripts/verify-cloud-workspaces-aws.mjs"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-02T04:19:47.187Z",
+  "finishedAt": "2026-10-02T04:28:31.124Z",
+  "summary": "The real frozen Tauri SPA passed native AWS connect inputs, setup-template link, account-scoped provision request, stop/start and snapshot requests, and restore Modal Escape dismissal and submitted snapshot/target/name. Provider responses are explicit synthetic fixtures. This proves desktop requests and interaction, not actual AWS resources.",
+  "assertions": [
+    {
+      "id": "native-001",
+      "passed": true,
+      "evidence": "AWS admission available"
+    },
+    {
+      "id": "native-002",
+      "passed": true,
+      "evidence": "pointer target:button[aria-label=\"Connect Amazon Web Services\"]"
+    },
+    {
+      "id": "native-003",
+      "passed": true,
+      "evidence": "AWS fields and incomplete admission guard"
+    },
+    {
+      "id": "native-004",
+      "passed": true,
+      "evidence": "pointer target:input[aria-label=\"Connection label\"]"
+    },
+    {
+      "id": "native-005",
+      "passed": true,
+      "evidence": "focus:Connection label"
+    },
+    {
+      "id": "native-006",
+      "passed": true,
+      "evidence": "input:Connection label"
+    },
+    {
+      "id": "native-007",
+      "passed": true,
+      "evidence": "pointer target:input[aria-label=\"Injected credential reference\"]"
+    },
+    {
+      "id": "native-008",
+      "passed": true,
+      "evidence": "focus:Injected credential reference"
+    },
+    {
+      "id": "native-009",
+      "passed": true,
+      "evidence": "input:Injected credential reference"
+    },
+    {
+      "id": "native-010",
+      "passed": true,
+      "evidence": "pointer target:input[aria-label=\"AWS account ID\"]"
+    },
+    {
+      "id": "native-011",
+      "passed": true,
+      "evidence": "focus:AWS account ID"
+    },
+    {
+      "id": "native-012",
+      "passed": true,
+      "evidence": "input:AWS account ID"
+    },
+    {
+      "id": "native-013",
+      "passed": true,
+      "evidence": "pointer target:input[aria-label=\"VPC ID\"]"
+    },
+    {
+      "id": "native-014",
+      "passed": true,
+      "evidence": "focus:VPC ID"
+    },
+    {
+      "id": "native-015",
+      "passed": true,
+      "evidence": "input:VPC ID"
+    },
+    {
+      "id": "native-016",
+      "passed": true,
+      "evidence": "pointer target:input[aria-label=\"Private subnet ID\"]"
+    },
+    {
+      "id": "native-017",
+      "passed": true,
+      "evidence": "focus:Private subnet ID"
+    },
+    {
+      "id": "native-018",
+      "passed": true,
+      "evidence": "input:Private subnet ID"
+    },
+    {
+      "id": "native-019",
+      "passed": true,
+      "evidence": "pointer target:input[aria-label=\"Security group IDs\"]"
+    },
+    {
+      "id": "native-020",
+      "passed": true,
+      "evidence": "focus:Security group IDs"
+    },
+    {
+      "id": "native-021",
+      "passed": true,
+      "evidence": "input:Security group IDs"
+    },
+    {
+      "id": "native-022",
+      "passed": true,
+      "evidence": "pointer target:input[aria-label=\"Launch template ID\"]"
+    },
+    {
+      "id": "native-023",
+      "passed": true,
+      "evidence": "focus:Launch template ID"
+    },
+    {
+      "id": "native-024",
+      "passed": true,
+      "evidence": "input:Launch template ID"
+    },
+    {
+      "id": "native-025",
+      "passed": true,
+      "evidence": "pointer target:input[aria-label=\"AMI ID\"]"
+    },
+    {
+      "id": "native-026",
+      "passed": true,
+      "evidence": "focus:AMI ID"
+    },
+    {
+      "id": "native-027",
+      "passed": true,
+      "evidence": "input:AMI ID"
+    },
+    {
+      "id": "native-028",
+      "passed": true,
+      "evidence": "pointer target:input[aria-label=\"Instance profile ARN\"]"
+    },
+    {
+      "id": "native-029",
+      "passed": true,
+      "evidence": "focus:Instance profile ARN"
+    },
+    {
+      "id": "native-030",
+      "passed": true,
+      "evidence": "input:Instance profile ARN"
+    },
+    {
+      "id": "native-031",
+      "passed": true,
+      "evidence": "pointer target:input[aria-label=\"KMS key ARN\"]"
+    },
+    {
+      "id": "native-032",
+      "passed": true,
+      "evidence": "focus:KMS key ARN"
+    },
+    {
+      "id": "native-033",
+      "passed": true,
+      "evidence": "input:KMS key ARN"
+    },
+    {
+      "id": "native-034",
+      "passed": true,
+      "evidence": "AWS setup-template download link"
+    },
+    {
+      "id": "native-035",
+      "passed": true,
+      "evidence": "AWS complete admission guard"
+    },
+    {
+      "id": "native-036",
+      "passed": true,
+      "evidence": "pointer target:form[aria-labelledby=\"connect-panel-heading\"] button[type=\"submit\"]"
+    },
+    {
+      "id": "native-037",
+      "passed": true,
+      "evidence": "AWS connection request captured"
+    },
+    {
+      "id": "native-038",
+      "passed": true,
+      "evidence": "AWS catalog renders"
+    },
+    {
+      "id": "native-039",
+      "passed": true,
+      "evidence": "pointer target:input[aria-label=\"Workspace name\"]"
+    },
+    {
+      "id": "native-040",
+      "passed": true,
+      "evidence": "focus:Workspace name"
+    },
+    {
+      "id": "native-041",
+      "passed": true,
+      "evidence": "input:Workspace name"
+    },
+    {
+      "id": "native-042",
+      "passed": true,
+      "evidence": "AWS provision readiness settled"
+    },
+    {
+      "id": "native-043",
+      "passed": true,
+      "evidence": "enabled button:Provision workspace"
+    },
+    {
+      "id": "native-044",
+      "passed": true,
+      "evidence": "pointer target:#cw-native-43"
+    },
+    {
+      "id": "native-045",
+      "passed": true,
+      "evidence": "AWS account provision request captured"
+    },
+    {
+      "id": "native-046",
+      "passed": true,
+      "evidence": "AWS host renders in Operate"
+    },
+    {
+      "id": "native-047",
+      "passed": true,
+      "evidence": "enabled button:Stop machine"
+    },
+    {
+      "id": "native-048",
+      "passed": true,
+      "evidence": "pointer target:#cw-native-47"
+    },
+    {
+      "id": "native-049",
+      "passed": true,
+      "evidence": "AWS stop request and observed fixture state"
+    },
+    {
+      "id": "native-050",
+      "passed": true,
+      "evidence": "enabled button:Start machine"
+    },
+    {
+      "id": "native-051",
+      "passed": true,
+      "evidence": "pointer target:#cw-native-50"
+    },
+    {
+      "id": "native-052",
+      "passed": true,
+      "evidence": "AWS start request captured"
+    },
+    {
+      "id": "native-053",
+      "passed": true,
+      "evidence": "pointer target:[aria-label=\"More actions for native-aws\"]"
+    },
+    {
+      "id": "native-054",
+      "passed": true,
+      "evidence": "AWS shared lifecycle menu"
+    },
+    {
+      "id": "native-055",
+      "passed": true,
+      "evidence": "enabled button:Snapshot"
+    },
+    {
+      "id": "native-056",
+      "passed": true,
+      "evidence": "pointer target:#cw-native-55"
+    },
+    {
+      "id": "native-057",
+      "passed": true,
+      "evidence": "AWS snapshot request captured"
+    },
+    {
+      "id": "native-058",
+      "passed": true,
+      "evidence": "pointer target:[aria-label=\"More actions for native-aws\"]"
+    },
+    {
+      "id": "native-059",
+      "passed": true,
+      "evidence": "AWS durable restore action available"
+    },
+    {
+      "id": "native-060",
+      "passed": true,
+      "evidence": "enabled button:Restore snapshot"
+    },
+    {
+      "id": "native-061",
+      "passed": true,
+      "evidence": "pointer target:#cw-native-60"
+    },
+    {
+      "id": "native-062",
+      "passed": true,
+      "evidence": "Real restore Modal opens"
+    },
+    {
+      "id": "native-063",
+      "passed": true,
+      "evidence": "Real Modal onOpenChange closes on Escape"
+    },
+    {
+      "id": "native-064",
+      "passed": true,
+      "evidence": "pointer target:[aria-label=\"More actions for native-aws\"]"
+    },
+    {
+      "id": "native-065",
+      "passed": true,
+      "evidence": "Restore menu reopens"
+    },
+    {
+      "id": "native-066",
+      "passed": true,
+      "evidence": "enabled button:Restore snapshot"
+    },
+    {
+      "id": "native-067",
+      "passed": true,
+      "evidence": "pointer target:#cw-native-66"
+    },
+    {
+      "id": "native-068",
+      "passed": true,
+      "evidence": "Durable snapshot selected"
+    },
+    {
+      "id": "native-069",
+      "passed": true,
+      "evidence": "pointer target:input[aria-label=\"Restored workspace name\"]"
+    },
+    {
+      "id": "native-070",
+      "passed": true,
+      "evidence": "focus:Restored workspace name"
+    },
+    {
+      "id": "native-071",
+      "passed": true,
+      "evidence": "input:Restored workspace name"
+    },
+    {
+      "id": "native-072",
+      "passed": true,
+      "evidence": "enabled button:Restore workspace"
+    },
+    {
+      "id": "native-073",
+      "passed": true,
+      "evidence": "pointer target:#cw-native-72"
+    },
+    {
+      "id": "native-074",
+      "passed": true,
+      "evidence": "AWS restore request and successful Modal dismissal"
+    },
+    {
+      "id": "frozen-source-matches",
+      "passed": true,
+      "evidence": "All five UI paths and the native driver were independently hashed against canonical sources before boot; all matched. Required SPA build stamp 2026-10-02T04:16:21Z exceeded every required UI source."
+    },
+    {
+      "id": "owned-cleanup",
+      "passed": true,
+      "evidence": "Verifier1505643, launchers1782188/1839869 and bridge1911527 absent; source snapshot i6iual absent; ports33700/33701 connect_ex111 after terminal exit0."
+    }
+  ],
+  "workItemId": "WI-10005035",
+  "planSlug": "aws-byoc-gcp-parity-2026-10-01",
+  "specId": "AWSP-P-011-desktop-aws-option",
+  "specRevision": 2,
+  "run": "20261002T041946Z-1505643",
+  "native": {
+    "display": ":90",
+    "bridgePid": 1911527,
+    "ownerSid": "su-0da9d55e-30de-4a57-9380-8c81a7e3c99d",
+    "launchProvenance": "agent:su-0da9d55e-30de-4a57-9380-8c81a7e3c99d:run:1790914786241657497-1505643-15788",
+    "sourceHashes": {
+      "apps/operator/app/cloud-workspaces/ConnectStage.tsx": "41fa7be43c7d8490356a3c2eb23f72dd6049e374ee02c0f9bbd7d8eeb690a7eb",
+      "apps/operator/app/cloud-workspaces/cloud-workspaces.module.css": "741c4ed794dd0ad8e1d18a4aa9d057919c0ae832190cbdf7a324d28fd985120d",
+      "apps/operator/app/cloud-workspaces/page.tsx": "f5602bb864d76268bfa711dc861551762701c8a68d7ab3bc354781a7cd6705b0",
+      "apps/operator/app/cloud-workspaces/workspace-host-actions.ts": "ac843415aa85faad7553e3aa112d12a837d2aed2ae88dc2f2ae838a8111167e2",
+      "apps/operator/app/cloud-workspaces/workspace-view-model.ts": "2556c1859d8d8ef579e618b5c238161c40ec14680d6dfa778bf253758b2217b9",
+      "scripts/verify-cloud-workspaces-aws.mjs": "fe072268cb2d7564a61f01139acd3307d85060703958d3025161f2b525e5e467"
+    },
+    "syntheticCloudResponses": true,
+    "realAwsLifecycleProven": false
+  },
+  "requests": [
+    {
+      "path": "/api/workspace-hosts/connection",
+      "payload": {
+        "action": "connect",
+        "label": "AWS native fixture",
+        "credentialRef": "resolver://aws/native",
+        "target": "aws",
+        "credentialSource": {
+          "environment": "local",
+          "method": "default-chain"
+        },
+        "accountId": "123456789012",
+        "region": "us-east-1",
+        "subnetId": "subnet-native",
+        "imageId": "ami-native",
+        "kmsKeyArn": "arn:aws:kms:us-east-1:123456789012:key/native",
+        "instanceProfileArn": "arn:aws:iam::123456789012:instance-profile/native",
+        "vpcId": "vpc-native",
+        "launchTemplateId": "lt-native",
+        "securityGroupIds": [
+          "sg-native"
+        ]
+      }
+    },
+    {
+      "path": "/api/workspace-hosts/provision",
+      "payload": {
+        "connectionId": "aws-native",
+        "name": "native-aws",
+        "desired": {
+          "hostId": "host-native-aws",
+          "target": "aws",
+          "scope": {
+            "kind": "account",
+            "id": "123456789012"
+          },
+          "region": "us-east-1",
+          "zone": "us-east-1a",
+          "size": "m6i.xlarge",
+          "image": {
+            "id": "ami-native"
+          },
+          "data": {
+            "volumeGiB": 100,
+            "encrypted": true
+          },
+          "provider": {
+            "subnetId": "subnet-native"
+          }
+        }
+      }
+    },
+    {
+      "path": "/api/workspace-hosts/action",
+      "payload": {
+        "action": "stop",
+        "workspaceId": "host-native-aws"
+      }
+    },
+    {
+      "path": "/api/workspace-hosts/action",
+      "payload": {
+        "action": "start",
+        "workspaceId": "host-native-aws"
+      }
+    },
+    {
+      "path": "/api/workspace-hosts/action",
+      "payload": {
+        "action": "snapshot",
+        "workspaceId": "host-native-aws"
+      }
+    },
+    {
+      "path": "/api/workspace-hosts/action",
+      "payload": {
+        "action": "restore",
+        "workspaceId": "host-native-aws",
+        "name": "native-aws-restored",
+        "snapshot": {
+          "target": "aws",
+          "hostId": "host-native-aws",
+          "providerId": "snap-native"
+        },
+        "desired": {
+          "hostId": "host-native-aws-restored"
+        }
+      }
+    }
+  ],
+  "screenshots": [
+    "docs/evidence/aws-desktop-native-parity-2026-10-02-041946.png"
+  ],
+  "cleanup": {
+    "ownedPidsAbsent": {
+      "1505643": true,
+      "1782188": true,
+      "1839869": true,
+      "1911527": true
+    },
+    "portConnectEx": {
+      "33700": 111,
+      "33701": 111
+    },
+    "sourceSnapshotAbsent": true
+  },
+  "phases": [
+    {
+      "phase": "prepare",
+      "status": "passed",
+      "startedAt": "2026-10-02T04:19:47.187Z",
+      "endedAt": "2026-10-02T04:23:40.374Z"
+    },
+    {
+      "phase": "boot",
+      "status": "passed",
+      "startedAt": "2026-10-02T04:23:40.387Z",
+      "endedAt": "2026-10-02T04:26:36.778Z"
+    },
+    {
+      "phase": "assert",
+      "status": "passed",
+      "startedAt": "2026-10-02T04:26:36.794Z",
+      "endedAt": "2026-10-02T04:28:31.124Z"
+    }
+  ],
+  "limitations": [
+    "Synthetic cloud discovery and lifecycle responses; actual AWS resource completion remains unproved.",
+    "This is current-build desktop acceptance, not final green-main shipment verification."
+  ],
+  "rawEvidence": [
+    {
+      "path": "/tmp/cw-aws-native-wi10005035-lifecycle/result.json",
+      "sha256": "19cce10ca85983085ec94e5178cc1d7f9a74c2c53261dcc3333a78dd7987de1b"
+    },
+    {
+      "path": "~/.local/state/verification-harness/verify-tauri-headless/20261002T041946Z-1505643/phases.jsonl",
+      "sha256": "407752b2297f505b900eceb9a83bfad041132aee74a1fa0ac0d42e9c89643d3e"
+    },
+    {
+      "path": "docs/evidence/aws-desktop-native-parity-2026-10-02-041946.png",
+      "sha256": "2d496c768a21027561f5052d149c044321e264a58f29bb57887770280b1f5adc"
+    }
+  ]
+}

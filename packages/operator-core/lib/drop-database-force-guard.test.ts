@@ -19,7 +19,6 @@ import {
   findUnforcedDrops,
   findOffenders,
   stripComments,
-  withoutTestTitle,
   // TS7016 is reported on the module SPECIFIER line, so the suppression sits directly above it.
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicate only.
@@ -83,20 +82,35 @@ describe('drop-database-force guard predicate (WI-4311)', () => {
   });
 
   it('does NOT flag a test TITLE that names the statement (prose, not a statement)', () => {
-    // The real shape: libs/test-config/src/invalid-db-drop-reap.test.ts at gitlink e1cb05ed.
+    // Test names are not SQL executor arguments, even when they contain the banned words.
     expect(findUnforcedDrops("describe('cancelled DROP DATABASE never leaks an INVALID database', () => {")).toHaveLength(0);
     expect(findUnforcedDrops('it(`a plain DROP DATABASE blocks on a live backend`, async () => {')).toHaveLength(0);
     expect(findUnforcedDrops('  test.each(cases)("DROP DATABASE %s", (c) => {')).toHaveLength(0);
   });
 
+  it('ignores descriptive cleanup labels and status tuples but still scans executable SQL', () => {
+    const labels = [
+      'const results = [',
+      "  { name: 'DROP DATABASE', run: () => {} },",
+      "  ['DROP DATABASE', 'completed'],",
+      "  { name: 'DROP DATABASE', run: neverSettles },",
+      "  ['DROP DATABASE', 'timed-out'],",
+      '];',
+      'await admin.unsafe(`DROP DATABASE IF EXISTS "${db}" WITH (FORCE)`);',
+    ].join('\n');
+    expect(findUnforcedDrops(labels)).toEqual([]);
+
+    const withUnforcedSql = labels + '\nawait admin.unsafe("DROP DATABASE IF EXISTS x");';
+    const hits = findUnforcedDrops(withUnforcedSql);
+    expect(hits).toHaveLength(1);
+    expect(hits[0].text).toContain('admin.unsafe');
+  });
+
   it('STILL flags an unforced statement that shares a line with a test title', () => {
-    // Only the title string is blanked; the rest of the line is scanned.
+    // A title is ignored, but its nested SQL executor call is still scanned.
     const line = "it('drops', async () => { await admin.unsafe('DROP DATABASE IF EXISTS x'); });";
     expect(findUnforcedDrops(line)).toHaveLength(1);
-    expect(withoutTestTitle(line)).toContain('DROP DATABASE IF EXISTS x');
-    // Calibration: a non-title line passes through untouched.
     const plain = 'await admin.unsafe(`DROP DATABASE IF EXISTS "${n}"`);';
-    expect(withoutTestTitle(plain)).toBe(plain);
     expect(findUnforcedDrops(plain)).toHaveLength(1);
   });
 

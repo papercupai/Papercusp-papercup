@@ -95,6 +95,18 @@ export function isSidecarCopiedIdentityPath(file: any): boolean;
  */
 export function redactIdentityLeaks(text: string, entries?: [string, string][]): string;
 /**
+ * Serialize diagnostic JSON through the same redactor as the distribution guard.
+ * Redact string values before JSON escaping; counters, hashes, keys and the input
+ * object stay intact. Reject identity-bearing keys instead of changing its schema.
+ * @param {unknown} value JSON-compatible diagnostic report
+ * @param {[string,string][]} [entries] synthetic identity literals for tests
+ * @param {{compact?: boolean}} [options] set `compact` for JSON Lines records
+ * @returns {string} redacted JSON with a final newline
+ */
+export function serializeIdentitySafeJson(value: unknown, entries?: [string, string][], options?: {
+    compact?: boolean;
+}): string;
+/**
  * Names that identify NOBODY: the stand-ins a test fixture or doc example uses on purpose,
  * precisely because they name no real person. A fixture asserting that the release scrubber
  * strips `[owner:Jane …]` must be able to say `[owner:Jane …]`.

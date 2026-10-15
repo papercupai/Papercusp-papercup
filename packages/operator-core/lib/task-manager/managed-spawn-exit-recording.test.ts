@@ -30,9 +30,12 @@ import { EventEmitter } from 'node:events';
 import type { ChildProcess, spawn as nodeSpawn } from 'node:child_process';
 
 const L = vi.hoisted(() => ({
-  closed: [] as { taskId: string; state: string; exitReason: string | null }[],
+  closed: [] as { taskId: string; state: string; exitCode: number | null; exitReason: string | null }[],
   marked: [] as { cgroupPath: string | null; confined: boolean }[],
   terminal: [] as unknown[],
+  markDelay: undefined as (() => Promise<void>) | undefined,
+  closeDelay: undefined as (() => Promise<void>) | undefined,
+  enabled: true,
   // Rest-typed so the pass-through mocks below can spread their `unknown[]` args in:
   // a zero-parameter vi.fn() makes `L.fn(...args)` a TS2556 spread error.
   inspectTaskUnitTerminals: vi.fn(async (..._args: unknown[]) => new Map()),
@@ -40,7 +43,7 @@ const L = vi.hoisted(() => ({
 }));
 
 vi.mock('./enabled', () => ({
-  isTaskManagerEnabled: async () => true,
+  isTaskManagerEnabled: async () => L.enabled,
   taskManagerEnabledSync: () => true,
   warmTaskManagerFlag: () => {},
   setTaskManagerEnabledForTest: () => {},
@@ -53,10 +56,13 @@ vi.mock('./store', () => ({
   }),
   markSpawned: async (_id: string, v: { cgroupPath: string | null; confined: boolean }) => {
     L.marked.push(v);
+    await L.markDelay?.();
   },
-  closeTask: async (taskId: string, v: { state: string; exitReason: string | null }) => {
-    L.closed.push({ taskId, state: v.state, exitReason: v.exitReason });
+  closeTask: async (taskId: string, v: { state: string; exitCode?: number | null; exitReason: string | null }) => {
+    await L.closeDelay?.();
+    L.closed.push({ taskId, state: v.state, exitCode: v.exitCode ?? null, exitReason: v.exitReason });
     L.terminal.push((v as { terminalProvenance?: unknown }).terminalProvenance ?? null);
+    return true;
   },
 }));
 
@@ -155,12 +161,74 @@ describe('confined task exit recording (WI-37509)', () => {
     L.closed.length = 0;
     L.marked.length = 0;
     L.terminal.length = 0;
+    L.markDelay = undefined;
+    L.closeDelay = undefined;
+    L.enabled = true;
     L.inspectTaskUnitTerminals.mockReset().mockResolvedValue(new Map());
     L.resetFailedTaskUnit.mockReset().mockResolvedValue(false);
   });
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it('records a child that exits while the post-spawn ledger write is pending', async () => {
+    const { emitter, child } = makeChild();
+    let entered!: () => void;
+    let release!: () => void;
+    const marking = new Promise<void>((resolve) => { entered = resolve; });
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    L.markDelay = async () => { entered(); await pending; };
+    const launching = managedSpawn('true', [], SIDECAR_SPEC, {
+      confine: false, spawnFn: (() => child) as unknown as typeof nodeSpawn,
+    });
+    await marking;
+    emitter.emit('exit', 0, null);
+    release();
+    const result = await launching;
+    await flush();
+    expect(L.closed).toEqual([{
+      taskId: result.taskId, state: 'exited', exitCode: 0, exitReason: null,
+    }]);
+  });
+
+  it('awaits delayed terminal persistence before a caller can finish', async () => {
+    const { emitter, child } = makeChild();
+    let release!: () => void;
+    L.closeDelay = () => new Promise<void>((resolve) => { release = resolve; });
+    const result = await managedSpawn('true', [], SIDECAR_SPEC, {
+      confine: false, spawnFn: (() => child) as unknown as typeof nodeSpawn,
+    });
+    emitter.emit('exit', 0, null);
+    emitter.emit('close', 0, null);
+    let finished = false;
+    const completion = result.waitForCompletion().then((outcome) => { finished = true; return outcome; });
+    await flush();
+    expect(finished).toBe(false);
+    expect(L.closed).toEqual([]);
+    release();
+    await expect(completion).resolves.toEqual({ status: 'recorded' });
+    expect(L.closed).toMatchObject([{ taskId: result.taskId, exitCode: 0 }]);
+  });
+
+  it('reports a persistence failure without inventing terminal evidence', async () => {
+    L.closeDelay = async () => { throw new Error('fixture terminal store offline'); };
+    const { emitter, child } = makeChild();
+    const result = await managedSpawn('true', [], SIDECAR_SPEC, {
+      confine: false, spawnFn: (() => child) as unknown as typeof nodeSpawn,
+    });
+    emitter.emit('exit', 0, null);
+    await expect(result.waitForCompletion()).resolves.toEqual({ status: 'unavailable', reason: 'fixture terminal store offline' });
+    expect(L.closed).toEqual([]);
+  });
+
+  it('reports disabled accounting after the unledgered child exits', async () => {
+    L.enabled = false;
+    const { emitter, child } = makeChild();
+    const result = await managedSpawn('true', [], SIDECAR_SPEC, { spawnFn: (() => child) as unknown as typeof nodeSpawn });
+    emitter.emit('exit', 0, null);
+    await expect(result.waitForCompletion()).resolves.toEqual({ status: 'unavailable', reason: 'task manager disabled' });
+    expect(L.closed).toEqual([]);
   });
 
   it('does NOT close the row when the client dies but the scope still holds processes', async () => {
@@ -183,7 +251,7 @@ describe('confined task exit recording (WI-37509)', () => {
   it('does not warn when a clean client exit hands a populated scope to the reconciler', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});
-    const { emitter } = await spawnConfined([3204532, 3204609, 3204726]);
+    const { emitter, result } = await spawnConfined([3204532, 3204609, 3204726]);
 
     emitter.emit('exit', 0, null);
     await flushAfterHandoff();
@@ -192,6 +260,7 @@ describe('confined task exit recording (WI-37509)', () => {
     expect(warn).not.toHaveBeenCalled();
     expect(info).toHaveBeenCalledTimes(1);
     expect(String(info.mock.calls[0]![0])).toMatch(/scope still holds processes/);
+    await expect(result.waitForCompletion()).resolves.toMatchObject({ status: 'delegated' });
   });
 
   it('downgrades a populated-scope signal during intentional teardown to info', async () => {
@@ -247,6 +316,27 @@ describe('confined task exit recording (WI-37509)', () => {
     expect(info).toHaveBeenCalledTimes(1);
     expect(String(info.mock.calls[0]![0])).toMatch(/Intentional teardown/);
     expect(String(info.mock.calls[0]![0])).toMatch(/signal SIGKILL/);
+  });
+
+  it('records an explicit kill request as cancelled even when the client exits with code 2', async () => {
+    vi.spyOn(console, 'info').mockImplementation(() => {});
+    const { emitter, result } = await spawnConfined(null);
+
+    notifyTaskKillRequested(result.taskId, 'SIGTERM');
+    // systemd-run's client exit is not the verdict for the task; the task may
+    // have exited with a designed non-zero code after the kill request arrived.
+    emitter.emit('exit', 2, null);
+    await flushAfterHandoff();
+
+    expect(L.closed).toEqual([
+      {
+        taskId: result.taskId,
+        state: 'killed',
+        exitCode: 143,
+        exitReason: 'processes:kill requested SIGTERM',
+      },
+    ]);
+    expect(L.terminal).toEqual([null]);
   });
 
   it('keeps an unannounced signal loud when only a different task was killed', async () => {

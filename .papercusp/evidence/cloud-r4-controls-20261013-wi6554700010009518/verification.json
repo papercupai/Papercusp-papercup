@@ -1,0 +1,31 @@
+{
+  "verifiedAt": "2026-10-13T00:43:09.448185+00:00",
+  "workItem": "WI-6554700010009518",
+  "result": "PASS",
+  "testRunId": 21169066,
+  "runGroupId": "28d506d6-c547-4876-ab80-8407a4d5f223",
+  "passed": 2,
+  "failed": 0,
+  "filtered": 92,
+  "collectionFailed": false,
+  "passedCaseTitles": [
+    "cloud campaign measured evidence contradictions > rejects a committed defect with only its originating fix reference removed",
+    "cloud campaign measured evidence contradictions > rejects a committed defect with only its recurrence detector reference removed"
+  ],
+  "sourceStable": [
+    {
+      "path": "packages/operator-core/lib/workspace-host/cloud-e2e-campaign-evidence.ts",
+      "sha256": "6016943d82e87410e81ee5f28b7eff8ac4c77425837967ebf586d1ac572ce4d4",
+      "unchanged": true
+    },
+    {
+      "path": "packages/operator-core/lib/workspace-host/cloud-e2e-campaign-evidence.test.ts",
+      "sha256": "c5b378e9f33142484302279578a50fa577842e8bc1d67480c9bf96ba7c909543",
+      "unchanged": true
+    }
+  ],
+  "worktreeDirty": true,
+  "scope": "Two new unit checker controls only; other92cases notrun, importgraph/currentruntime/provider/affectedselection/shipment unproven",
+  "framework": "Vitest via maintained testing:run detached recovery",
+  "originalRunId": "39983189-72b5-4196-baa5-f1f1fbf98baa"
+}

@@ -7,6 +7,8 @@ import {
   admitCheckpointMemory,
   CHECKPOINT_MEMORY_ADMISSION_ENV,
   CHECKPOINT_MEMORY_BUDGET_ENV,
+  CHECKPOINT_SMALL_RUN_ALLOWANCE_G,
+  CHECKPOINT_SMALL_RUN_MAX_G,
   type CheckpointMemoryProbe,
   checkpointMemoryBudgetG,
   measureCheckpointCommitment,
@@ -180,6 +182,61 @@ describe('admitCheckpointMemory', () => {
     expect(a.admit).toBe(false);
     expect(a.reason).toBe('over-budget');
     expect(a.detail).toContain('DEFERRING');
+  });
+
+  // WI-10006274: observed 2026-10-06 — three 40 GiB Papercusp runs deferred a working-copy pot
+  // whose whole suite is two node:test cases, so its standing PR waited on the large runs.
+  it('admits a SMALL run beside three large ones, within the bounded small-run allowance', () => {
+    const threeLarge = [
+      reserved(101, '/user.slice/run-a.scope'),
+      reserved(202, '/user.slice/run-b.scope'),
+      reserved(303, '/user.slice/run-c.scope'),
+    ];
+    const a = admitCheckpointMemory({
+      requestG: CHECKPOINT_SMALL_RUN_MAX_G,
+      env: {},
+      probe: fakeProbe({ runs: threeLarge, totalMemG: 251 }),
+    });
+    expect(a.admit).toBe(true);
+    expect(a.reason).toBe('admitted-small-run');
+    expect(a.detail).toContain('small-run allowance');
+  });
+
+  it('still REFUSES a small run once the allowance is spent, so the host bound holds', () => {
+    // 120 GiB committed; a budget chosen so 120 + small request lands 1 GiB past
+    // budget + allowance. Admitting it would breach the bound the allowance promises.
+    const budgetG = 120 + CHECKPOINT_SMALL_RUN_MAX_G - CHECKPOINT_SMALL_RUN_ALLOWANCE_G - 1;
+    const a = admitCheckpointMemory({
+      requestG: CHECKPOINT_SMALL_RUN_MAX_G,
+      env: { [CHECKPOINT_MEMORY_BUDGET_ENV]: String(budgetG) },
+      probe: fakeProbe({
+        runs: [
+          reserved(101, '/user.slice/run-a.scope'),
+          reserved(202, '/user.slice/run-b.scope'),
+          reserved(303, '/user.slice/run-c.scope'),
+        ],
+        totalMemG: 251,
+      }),
+    });
+    expect(a.admit).toBe(false);
+    expect(a.reason).toBe('over-budget');
+  });
+
+  it('never extends the allowance to a LARGE run', () => {
+    const a = admitCheckpointMemory({
+      requestG: CHECKPOINT_SMALL_RUN_MAX_G + 1,
+      env: {},
+      probe: fakeProbe({
+        runs: [
+          reserved(101, '/user.slice/run-a.scope'),
+          reserved(202, '/user.slice/run-b.scope'),
+          reserved(303, '/user.slice/run-c.scope'),
+        ],
+        totalMemG: 251,
+      }),
+    });
+    expect(a.admit).toBe(false);
+    expect(a.reason).toBe('over-budget');
   });
 
   it('FAILS OPEN when commitment cannot be measured', () => {

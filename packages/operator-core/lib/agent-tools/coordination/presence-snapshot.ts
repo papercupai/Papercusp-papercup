@@ -18,7 +18,12 @@
  */
 
 import { activeWorkspaceId } from '../../workspace-registry';
-import { listEndedAdvSessionsByOwners, listRecordedLiveSessions, recordedLiveOwnerIds } from '../../adv-sessions';
+import {
+  endedRecordedOwnerIds,
+  listEndedAdvSessionsByOwners,
+  listRecordedLiveSessions,
+  recordedLiveOwnerIds,
+} from '../../adv-sessions';
 import { listPresence, sweepStalePresence } from './presence';
 import { listFederatedPresence } from './federated-presence';
 import { reconcileRosterSources, synthesizeEndedRosterRows } from './recorded-sessions';
@@ -36,7 +41,7 @@ import {
   overrideIntentStaleForSessionState,
   type WakeabilitySignals,
 } from './presence-wakeability';
-import { deriveVerdict } from './liveness-oracle';
+import { applyHostConditionLeg, deriveVerdict, type LivenessVerdict } from './liveness-oracle';
 // EI-22805550006169069: the SAME derivation the wake path uses to tell "dormant
 // between loop fires" from "dead" (`recipient_dormant_scheduled`). Imported, never
 // re-derived: re-implementing the rule here is how the two surfaces would drift
@@ -44,7 +49,7 @@ import { deriveVerdict } from './liveness-oracle';
 // hours from being reported as a promise that it will fire again.
 import { deriveDormantSchedule, fetchSelfWake, type SelfWakeSignals } from './presence-selfwake';
 import { getLoopStatuses, type LoopStatus } from '../../harness/routines/loop';
-import { findLiveHost } from '../../events/await/psu-pty-discovery';
+import { findLiveHostAsync } from '../../events/await/psu-pty-discovery';
 import { deriveContextPressure, deriveContextPressureAgeSec } from './context-pressure';
 import { writeWatermark } from './watermarks';
 import {
@@ -59,6 +64,22 @@ import type { Watermark } from '@papercusp/coordination/core';
 /** Hard GC threshold: rows whose heartbeat is older than this are dead beyond
  *  any doubt and are swept on read so the roster stays bounded. */
 const PRESENCE_GC_MS = 24 * 60 * 60 * 1000;
+
+export interface PresenceSnapshotDiagnostic {
+  phase: 'source' | 'enrichment' | 'post-enrichment' | 'derivation' | 'detail';
+  name: string;
+  elapsedMs: number;
+  status: 'ok' | 'error';
+  details?: {
+    activeRows?: number;
+    staleRows?: number;
+    hostLookupCalls?: number;
+    hostLookupTotalMs?: number;
+    hostLookupMaxMs?: number;
+    hostLookupNullResults?: number;
+    hostLookupErrors?: number;
+  };
+}
 
 /** EI-9029: below this size, the re-bootstrap block still inlines a full
  *  per-agent roster (small enough to be cheap AND genuinely readable at a
@@ -419,8 +440,47 @@ export async function assemblePresenceSnapshot(
     owners?: readonly string[];
     nowMs?: number;
     detail?: { coordinationDomain: string };
+    /** Defaults to true. Compact presence rebootstrap blocks do not render desktop state. */
+    includeDesktopEnrichment?: boolean;
+    onDiagnostic?: (diagnostic: PresenceSnapshotDiagnostic) => void;
   } = {},
 ): Promise<PresenceSnapshot> {
+  const reportDiagnostic = (diagnostic: PresenceSnapshotDiagnostic) => {
+    try {
+      opts.onDiagnostic?.(diagnostic);
+    } catch {
+      /* Diagnostics are best-effort and must not change the snapshot result. */
+    }
+  };
+  const timeAsync = <T>(
+    phase: PresenceSnapshotDiagnostic['phase'],
+    name: string,
+    action: () => Promise<T>,
+  ): Promise<T> => {
+    if (!opts.onDiagnostic) return action();
+    const startedAt = performance.now();
+    const report = (status: 'ok' | 'error') => reportDiagnostic({
+      phase,
+      name,
+      elapsedMs: Math.max(0, performance.now() - startedAt),
+      status,
+    });
+    try {
+      return action().then(
+        (value) => {
+          report('ok');
+          return value;
+        },
+        (error) => {
+          report('error');
+          throw error;
+        },
+      );
+    } catch (error) {
+      report('error');
+      throw error;
+    }
+  };
   const { wsId, potId, scope, scopeNote } = resolved;
   // EI-9454: a `{ owner }` read is a TARGETED point-lookup — source queries and
   // downstream enrichment must receive only the bounded owner selectors, and it
@@ -428,17 +488,20 @@ export async function assemblePresenceSnapshot(
   const ownerSelectors = opts.owners?.length ? opts.owners : opts.owner ? [opts.owner] : [];
   const targeted = ownerSelectors.length > 0;
   const targetedOwnerIds = targeted ? [...ownerSelectors] : undefined;
-  const [records, federated, recordedLive, , nurseryAliasRows] = await Promise.all([
-    listPresence({
+  const [records, federated, recordedLive, , nurseryAliasRows] = await timeAsync(
+    'source',
+    'initialReadBatch',
+    () => Promise.all([
+    timeAsync('source', 'listPresence', () => listPresence({
       workspaceId: wsId,
       potSlug: potId,
       ...(targetedOwnerIds ? { ownerIds: targetedOwnerIds } : {}),
-    }),
-    listFederatedPresence({
+    })),
+    timeAsync('source', 'listFederatedPresence', () => listFederatedPresence({
       workspaceId: wsId,
       potSlug: potId,
       ...(targetedOwnerIds ? { ownerIds: targetedOwnerIds } : {}),
-    }),
+    })),
     // The AUTHORITATIVE-session-log leg (P-001): live recorded sessions of ANY
     // CLI not yet self-registered in coord_presence — so a recorded session is
     // visible the instant it launches, never gated on a self-heartbeat. Skipped
@@ -446,12 +509,12 @@ export async function assemblePresenceSnapshot(
     // including it could leak cross-hive agents; P-002 adds hive_slug). Runs for
     // the workspace/all views — the su/operator/admin roster where the gap lives.
     // listRecordedLiveSessions is itself best-effort ([] on DB error).
-    potId == null
+    timeAsync('source', 'listRecordedLiveSessions', () => potId == null
       ? listRecordedLiveSessions({
           workspaceId: wsId,
           ...(targetedOwnerIds ? { ownerIds: targetedOwnerIds } : {}),
         })
-      : Promise.resolve([] as Awaited<ReturnType<typeof listRecordedLiveSessions>>),
+      : Promise.resolve([] as Awaited<ReturnType<typeof listRecordedLiveSessions>>)),
     // Blunt 24h GC of long-dead rows (the pre-existing backstop, still here as a
     // final safety net). NOTE: the READ side additionally excludes `ended` rows from
     // the default payload (`selectRosterRows`) WITHOUT deleting them — that's a
@@ -466,7 +529,9 @@ export async function assemblePresenceSnapshot(
     // a targeted { owner } lookup is the hot "is this agent alive?" point-read and
     // must not queue a write behind a starved pool. The hourly presence-reaper and
     // every default read keep the sweep cadence, so retention is unaffected.
-    targeted ? Promise.resolve(0) : sweepStalePresence(PRESENCE_GC_MS).catch(() => 0),
+    timeAsync('source', 'sweepStalePresence', () => targeted
+      ? Promise.resolve(0)
+      : sweepStalePresence(PRESENCE_GC_MS)).catch(() => 0),
     // EI-16639: the alias-aware nursery-liveness leg (nursery-alias-liveness.ts)
     // — closes the same identity-alias gap migration 225/EI-311 already closed
     // for fleet_assignment. Gated the SAME way as the recordedLive leg above
@@ -475,13 +540,14 @@ export async function assemblePresenceSnapshot(
     // cross-hive bee. A targeted read scopes the query to just the requested
     // owner (EI-9454 point-lookup-cost discipline); a full-roster read takes the
     // bounded (500-row) default. Best-effort ([] on any DB error).
-    potId == null
+    timeAsync('source', 'listRunningNurseryAliasRows', () => potId == null
       ? listRunningNurseryAliasRows({
           workspaceId: wsId,
           ...(targeted ? { ownerIds: [...ownerSelectors] } : {}),
-        }).catch(() => [] as NurseryAliasRow[])
-      : Promise.resolve([] as NurseryAliasRow[]),
-  ]);
+        })
+      : Promise.resolve([] as NurseryAliasRow[])).catch(() => [] as NurseryAliasRow[]),
+  ]),
+  );
   // Reconcile the two liveness sources: a fresh presence row wins; a live
   // session-log record supersedes a STALE presence row (so a resumed-but-idle
   // session whose old heartbeat went stale is still surfaced, not shadowed); an
@@ -514,7 +580,11 @@ export async function assemblePresenceSnapshot(
   if (targeted) {
     const needle = opts.owner as string;
     if (!all.some((r) => matchesOwner(r, needle))) {
-      const endedRows = await listEndedAdvSessionsByOwners([needle]).catch(() => []);
+      const endedRows = await timeAsync(
+        'source',
+        'listEndedAdvSessionsByOwners',
+        () => listEndedAdvSessionsByOwners([needle]),
+      ).catch(() => []);
       const endedSynth = synthesizeEndedRosterRows(endedRows, new Set(all.map((r) => r.ownerId)));
       if (endedSynth.length > 0) {
         all = [...all, ...endedSynth];
@@ -550,6 +620,8 @@ export async function assemblePresenceSnapshot(
   let joins = new Map<string, PresenceTier1Joins>();
   let wakeability = new Map<string, WakeabilitySignals>();
   let recordedLiveOwners = new Set<string>();
+  // WI-10006738: positive session-log death evidence (latest adv_session ended).
+  let recordedEndedOwners = new Set<string>();
   let onDesktopOwners = new Set<string>();
   let viewerAttachedOwners = new Set<string>();
   // Named-fleet membership (P-005): the SOFT coord_presence label, joined in per-owner
@@ -571,14 +643,14 @@ export async function assemblePresenceSnapshot(
   // oracle omits the fields and the wire projection emits null rather than
   // fabricating `selfWake:'none'`.
   let selfWakeSignals = new Map<string, SelfWakeSignals>();
-  await Promise.all([
+  await timeAsync('enrichment', 'enrichmentBatch', () => Promise.all([
     // each best-effort + independent — presence must list even if any join fails.
-    fetchPresenceTier1(localActiveIds)
+    timeAsync('enrichment', 'fetchPresenceTier1', () => fetchPresenceTier1(localActiveIds))
       .then((m) => {
         joins = m;
       })
       .catch(() => {}),
-    fetchWakeability(localAllIds)
+    timeAsync('enrichment', 'fetchWakeability', () => fetchWakeability(localAllIds))
       .then((m) => {
         wakeability = m;
       })
@@ -587,7 +659,7 @@ export async function assemblePresenceSnapshot(
     // adv_session is live rescue a not-wakeable row to `recorded` instead of
     // `ended` — the SAME leg fleet:assignments has applied since EI-6374, now
     // uniform here via the oracle's deriveVerdict. Best-effort like every join.
-    recordedLiveOwnerIds(localAllIds)
+    timeAsync('enrichment', 'recordedLiveOwnerIds', () => recordedLiveOwnerIds(localAllIds))
       .then((s) => {
         // EI-16639: fold the alive nursery-alias ids in too, so deriveVerdict's
         // `recordedLiveOnly` (liveness-oracle.ts) classifies an alias-only bee as
@@ -599,24 +671,59 @@ export async function assemblePresenceSnapshot(
             : new Set([...s, ...nurseryAliasRows.map((r) => r.alias)]);
       })
       .catch(() => {}),
+    // WI-10006738: the oracle's POSITIVE ended-session leg — the same input
+    // resolveSessionStates (fleet:status / fleet:assignments / the send-miss
+    // report) already feeds deriveVerdict. Without it this surface kept a session
+    // whose latest adv_session had ENDED (a launch failure closed as 'cleanup', a
+    // clean exit) at `parked`/wakeable for as long as its heartbeat stayed warm,
+    // while every other surface said `ended`. A newer recorded-live successor row
+    // wins (the query reads only the latest row per owner), and the psu-host
+    // positive rescue below still applies. Best-effort: a read failure degrades
+    // to the older verdict, never to a death claim. Deferred through a thunk so a
+    // throwing accessor (a partial test mock) lands in the catch, not the batch.
+    timeAsync('enrichment', 'endedRecordedOwnerIds', () =>
+      Promise.resolve().then(() => endedRecordedOwnerIds(localAllIds)))
+      .then((s) => {
+        recordedEndedOwners = s;
+      })
+      .catch(() => {}),
     // On-desktop (live OS window) owners — best-effort, box-local (empty on a
     // headless box). Independent of the other joins so a wmctrl hiccup never
     // affects wakeability/tier-1, and vice-versa.
-    gatherOnDesktopSessions()
-      .then((s) => {
-        onDesktopOwners = s.owners;
-      })
-      .catch(() => {}),
+    // The rebootstrap renderer only consumes labels, roles, intents, plans and
+    // by-state counts. Its cold first read can skip this full local-host/proc
+    // ancestry traversal; normal presence reads retain the desktop enrichment.
+    opts.includeDesktopEnrichment === false
+      ? Promise.resolve()
+      : timeAsync('enrichment', 'gatherOnDesktopSessions', () =>
+          gatherOnDesktopSessions({
+            // This snapshot already knows its complete local owner set. Keep
+            // desktop attribution within those rows instead of making a broad
+            // presence read scan every PSU-PTY discovery record on disk. The
+            // reaper still uses the unfiltered census because it must protect
+            // desktop sessions that are absent from the current presence rows.
+            ownerIds: localAllIds,
+            onDiagnostic: (diagnostic) => reportDiagnostic({
+              phase: 'enrichment',
+              name: `gatherOnDesktopSessions.${diagnostic.name}`,
+              elapsedMs: diagnostic.elapsedMs,
+              status: diagnostic.status,
+            }),
+          }))
+          .then((s) => {
+            onDesktopOwners = s.owners;
+          })
+          .catch(() => {}),
     // PTY-panel viewer-attach owners (pty-viewer-heartbeat.ts) — the no-OS-window
     // sibling of on-desktop. Best-effort + independent so a DB hiccup never affects
     // the other joins.
-    gatherViewerAttachedOwners()
+    timeAsync('enrichment', 'gatherViewerAttachedOwners', () => gatherViewerAttachedOwners())
       .then((s) => {
         viewerAttachedOwners = s;
       })
       .catch(() => {}),
     // Named-fleet membership (P-005) — best-effort + independent of the other joins.
-    fetchPresenceFleet(localAllIds)
+    timeAsync('enrichment', 'fetchPresenceFleet', () => fetchPresenceFleet(localAllIds))
       .then((m) => {
         fleet = m;
       })
@@ -626,18 +733,18 @@ export async function assemblePresenceSnapshot(
     // a failed read leaves `loops` empty, which surfaces as `dormantScheduled:null`
     // (NOT MEASURED) on every row — never as `false`, which would assert that
     // nothing will wake an agent when we simply failed to look.
-    getLoopStatuses(localAllIds)
+    timeAsync('enrichment', 'getLoopStatuses', () => getLoopStatuses(localAllIds))
       .then((m) => {
         loops = m;
         loopsRead = true;
       })
       .catch(() => {}),
-    fetchSelfWake(localAllIds)
+    timeAsync('enrichment', 'fetchSelfWake', () => fetchSelfWake(localAllIds))
       .then((m) => {
         selfWakeSignals = m;
       })
       .catch(() => {}),
-  ]);
+  ]));
 
   // EI-22072194984361823: the fleet's CONTROL state (active|winding-down),
   // batched for exactly the distinct slugs this roster touched above. Must
@@ -649,9 +756,11 @@ export async function assemblePresenceSnapshot(
   let fleetControl = new Map<string, { controlState: 'active' | 'winding-down'; controlReason: string | null }>();
   if (wsId && fleet.size > 0) {
     try {
-      const { getFleetControlStates } = await import('../../agent-fleets-store');
-      const slugs = [...new Set([...fleet.values()].map((m) => m.fleetSlug).filter((s): s is string => !!s))];
-      fleetControl = await getFleetControlStates(wsId, slugs);
+      await timeAsync('post-enrichment', 'getFleetControlStates', async () => {
+        const { getFleetControlStates } = await import('../../agent-fleets-store');
+        const slugs = [...new Set([...fleet.values()].map((m) => m.fleetSlug).filter((s): s is string => !!s))];
+        fleetControl = await getFleetControlStates(wsId, slugs);
+      });
     } catch {
       /* fail-soft — see comment above */
     }
@@ -665,6 +774,44 @@ export async function assemblePresenceSnapshot(
    *  path. A federated/unknown row has no local wakeability entry →
    *  sessionState/wakeable stay absent (emitted as null by toStableRosterRow). */
   const nowMs = Date.now();
+  const hostLookupTiming = { calls: 0, totalMs: 0, maxMs: 0, nullResults: 0, errors: 0 };
+  const activeWithTier1 = mergeTier1(active, joins, now);
+  const hostLookupRows = [...activeWithTier1, ...stale];
+  const hostOwnerIds = [...new Set(hostLookupRows
+    .filter((r) => !isFederated(r) && wakeability.has(r.ownerId))
+    .map((r) => r.ownerId))];
+  const liveHostsByOwner = new Map<string, unknown | null>();
+  await timeAsync('enrichment', 'findLiveHostsAsync', async () => {
+    // A synchronous `existsSync` in this same psu-pty directory was measured
+    // holding the staging API's event loop in D state for 24 seconds (the
+    // accept-loop wedge). Keep these per-owner lookups off-loop and bounded.
+    for (let i = 0; i < hostOwnerIds.length; i += 16) {
+      await Promise.all(hostOwnerIds.slice(i, i + 16).map(async (ownerId) => {
+        const startedAt = performance.now();
+        hostLookupTiming.calls += 1;
+        try {
+          const host = await findLiveHostAsync(ownerId);
+          liveHostsByOwner.set(ownerId, host);
+          if (host === null) hostLookupTiming.nullResults += 1;
+        } catch {
+          hostLookupTiming.errors += 1;
+          liveHostsByOwner.set(ownerId, null);
+        } finally {
+          const elapsedMs = Math.max(0, performance.now() - startedAt);
+          hostLookupTiming.totalMs += elapsedMs;
+          hostLookupTiming.maxMs = Math.max(hostLookupTiming.maxMs, elapsedMs);
+        }
+      }));
+    }
+  });
+  const findHostForVerdict = (ownerId: string) => liveHostsByOwner.get(ownerId) ?? null;
+  // P-011(a) / D-011: every verdict this surface derives, kept so the shared
+  // host-condition leg (applyHostConditionLeg) can judge it after the synchronous
+  // derivation below. EI-25695434826164414: without it coord:presence called
+  // deriveVerdict directly and never ran that leg, so a dead-auth live-host
+  // session read `parked` here while fleet:status read `suspect`.
+  const derivedVerdicts = new Map<string, LivenessVerdict>();
+  const derivedSubjects: { ownerId: string; agentRole?: string | null }[] = [];
   const withWakeability = (r: RosterRow): RosterRow => {
     const w = wakeability.get(r.ownerId);
     if (!w) return r;
@@ -688,9 +835,12 @@ export async function assemblePresenceSnapshot(
       recordedLiveOwners,
       nowMs,
       undefined,
-      { enabled: true, negative: false, positive: true, findHostFn: findLiveHost },
+      { enabled: true, negative: false, positive: true, findHostFn: findHostForVerdict },
       selfWakeSignals.get(r.ownerId),
+      recordedEndedOwners,
     );
+    if (!derivedVerdicts.has(r.ownerId)) derivedSubjects.push({ ownerId: r.ownerId, agentRole: r.agentRole });
+    derivedVerdicts.set(r.ownerId, v);
     return {
       ...r,
       wakeable: v.wakeable,
@@ -776,22 +926,78 @@ export async function assemblePresenceSnapshot(
     };
   };
 
-  const activeEnriched = mergeTier1(active, joins, now)
-    .map(withWakeability)
-    .map(withOnDesktop)
-    .map(withViewerAttached)
-    .map(withDormantSchedule)
-    .map(withContextPressure)
-    .map(withFleet);
+  let activeEnriched: RosterRow[] = [];
+  let staleEnriched: RosterRow[] = [];
+  let derivationStatus: 'ok' | 'error' = 'error';
+  const derivationStartedAt = opts.onDiagnostic ? performance.now() : 0;
+  try {
+    activeEnriched = activeWithTier1
+      .map(withWakeability)
+      .map(withOnDesktop)
+      .map(withViewerAttached)
+      .map(withDormantSchedule)
+      .map(withContextPressure)
+      .map(withFleet);
   // EI-22805550006169069: the STALE chain gets withDormantSchedule too, and that is
   // the leg that actually matters — a dormant-between-fires agent is stale BY
   // CONSTRUCTION (no heartbeat between fires), so omitting it here would leave the
   // originating bug unfixed on the exact population it was reported against.
-  const staleEnriched = stale.map((r) =>
-    withFleet(
-      withContextPressure(withDormantSchedule(withViewerAttached(withOnDesktop(withWakeability(r as RosterRow))))),
-    ),
-  );
+    staleEnriched = stale.map((r) =>
+      withFleet(
+        withContextPressure(withDormantSchedule(withViewerAttached(withOnDesktop(withWakeability(r as RosterRow))))),
+      ),
+    );
+    derivationStatus = 'ok';
+  } finally {
+    if (opts.onDiagnostic) {
+      reportDiagnostic({
+        phase: 'derivation',
+        name: 'deriveVerdictAndRowDecorators',
+        elapsedMs: Math.max(0, performance.now() - derivationStartedAt),
+        status: derivationStatus,
+        details: {
+          activeRows: active.length,
+          staleRows: stale.length,
+          hostLookupCalls: hostLookupTiming.calls,
+          hostLookupTotalMs: hostLookupTiming.totalMs,
+          hostLookupMaxMs: hostLookupTiming.maxMs,
+          hostLookupNullResults: hostLookupTiming.nullResults,
+          hostLookupErrors: hostLookupTiming.errors,
+        },
+      });
+    }
+  }
+
+  // P-011(a) / D-011: the host-condition leg, the SAME one resolveSessionStates
+  // runs. This surface derives with positive psu-host authority (a live host
+  // rescues a row to parked/recorded), so it must also ask whether that host can
+  // take a turn: a dead-auth / quota-walled / unbound / stuck-pending host makes
+  // the row `suspect` and names the condition in `wedged`. Hosts were already
+  // looked up above, so there is no fallback lookup; fail-soft like every join.
+  await timeAsync('enrichment', 'hostConditionLeg', async () => {
+    try {
+      await applyHostConditionLeg(derivedVerdicts, derivedSubjects, {
+        nowMs,
+        findHostFn: findHostForVerdict,
+        findHostAsyncFn: null,
+      });
+    } catch {
+      /* fail-soft: an unjudged row keeps its plain derivation */
+    }
+  });
+  const withHostCondition = (r: RosterRow): RosterRow => {
+    const v = derivedVerdicts.get(r.ownerId);
+    if (v?.wedged == null) return r;
+    return {
+      ...r,
+      sessionState: v.sessionState,
+      confirmLiveness: v.confirmLiveness,
+      wedged: v.wedged,
+      intentStale: overrideIntentStaleForSessionState(r.intentStale ?? null, v.sessionState),
+    };
+  };
+  activeEnriched = activeEnriched.map(withHostCondition);
+  staleEnriched = staleEnriched.map(withHostCondition);
 
   // The FULL enriched roster (fresh-heartbeat + stale), each carrying its derived
   // sessionState. What we RETURN is a filtered view of it:

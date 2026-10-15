@@ -9,6 +9,7 @@ import {
   LIFECYCLE_JUDGE_BLUEPRINT_ID,
   LIFECYCLE_JUDGE_EXTRAS,
   LIFECYCLE_JUDGE_INTERVAL_MS,
+  LIFECYCLE_JUDGE_RETRY_FLOOR_MS,
   LIFECYCLE_JUDGE_ROLE,
   LIFECYCLE_LAUNCHER_ENDED_GRACE_MS,
   LIFECYCLE_UNACCOUNTED_RESIDUE_GRACE_MS,
@@ -19,11 +20,14 @@ import {
   lifecycleJudgeBrief,
   lifecycleCandidateConditionKey,
   lifecycleJudgeIntervalKey,
+  recordLifecycleVerdictAudit,
   runLifecycleJudgementSweep,
   type LifecycleJudgementDeps,
+  type LifecycleVerdictAuditRecord,
   type LifecycleVerdictEnforcementDeps,
   type ProcessLifecycleProbe,
   type ProcessLifecycleVerdict,
+  type LifecycleLauncherLiveness,
 } from './lifecycle-judgement';
 import { isRetiredTierRole } from '../pot/retired-tier-roles';
 import type { TaskRow } from './types';
@@ -75,18 +79,34 @@ function evaluate(input: {
   rows: TaskRow[];
   nowMs?: number;
   residue?: string[];
-  launchers?: Array<[string, string | null]>;
+  launchers?: Array<[string, string | null | LifecycleLauncherLiveness]>;
   verdicts?: Array<[string, ProcessLifecycleVerdict]>;
   logMtimeMs?: number | null;
 }) {
   return evaluateLifecycleCandidates({
     rows: input.rows,
     confirmedResidueTaskIds: new Set(input.residue ?? []),
-    launcherStates: new Map(input.launchers ?? []),
+    launcherStates: new Map((input.launchers ?? []).map(([ownerId, state]) => [
+      ownerId,
+      typeof state === 'string' ? launcherState(state as LifecycleLauncherLiveness['sessionState']) :
+        state ?? launcherState(null, { signalMissing: true }),
+    ] as const)),
     latestVerdicts: new Map(input.verdicts ?? []),
     statLogMtimeMs: () => input.logMtimeMs ?? null,
     nowMs: input.nowMs ?? NOW,
   });
+}
+
+function launcherState(
+  sessionState: LifecycleLauncherLiveness['sessionState'],
+  over: Partial<LifecycleLauncherLiveness> = {},
+): LifecycleLauncherLiveness {
+  return {
+    sessionState,
+    wakeable: sessionState === 'parked',
+    liveTurn: sessionState === 'live',
+    ...over,
+  };
 }
 
 describe('evaluateLifecycleCandidates', () => {
@@ -111,6 +131,38 @@ describe('evaluateLifecycleCandidates', () => {
     });
     expect(second.candidates).toHaveLength(1);
     expect(second.candidates[0].kinds).toContain('launcher-ended');
+  });
+
+  it('requires consistent ended liveness and resets the grace clock on parked, contradictory, or unknown evidence', () => {
+    const first = evaluate({
+      rows: [row({ logPath: null })],
+      launchers: [['su-launcher', launcherState('ended')]],
+    });
+    const priorProbe = first.probeUpdates[0].probe;
+    const afterGrace = NOW + LIFECYCLE_LAUNCHER_ENDED_GRACE_MS + 1;
+
+    const parked = evaluate({
+      rows: [row({ logPath: null, detail: { processLifecycleProbe: priorProbe } })],
+      nowMs: afterGrace,
+      launchers: [['su-launcher', launcherState('parked')]],
+    });
+    expect(parked.candidates).toEqual([]);
+    expect(parked.probeUpdates[0].probe.launcherEndedSinceMs).toBeNull();
+
+    const contradictory = evaluate({
+      rows: [row({ logPath: null, detail: { processLifecycleProbe: priorProbe } })],
+      nowMs: afterGrace,
+      launchers: [['su-launcher', launcherState('ended', { wakeable: true })]],
+    });
+    expect(contradictory.candidates).toEqual([]);
+    expect(contradictory.probeUpdates[0].probe.launcherEndedSinceMs).toBeNull();
+
+    const unknown = evaluate({
+      rows: [row({ logPath: null, detail: { processLifecycleProbe: priorProbe } })],
+      nowMs: afterGrace,
+    });
+    expect(unknown.candidates).toEqual([]);
+    expect(unknown.probeUpdates[0].probe.launcherEndedSinceMs).toBeNull();
   });
 
   it('uses a readable old log immediately, but a no-log task gets a first-observation baseline', () => {
@@ -279,6 +331,42 @@ describe('evaluateLifecycleCandidates', () => {
     ]);
   });
 
+  it('reports CPU movement for confirmed terminal residue and marks only that probe for terminal persistence', () => {
+    const sampledAtMs = NOW - 120_000;
+    const prior: ProcessLifecycleProbe = {
+      version: 1,
+      launcherEndedSinceMs: null,
+      logPath: '/logs/terminal-cpu.log',
+      logMtimeMs: NOW - 300_000,
+      cpuUsec: 100,
+      cpuSampledAtMs: sampledAtMs,
+      lastActivityAtMs: sampledAtMs,
+    };
+    const taskId = 'terminal-cpu';
+    const result = evaluate({
+      rows: [row({
+        taskId,
+        state: 'stranded',
+        endedAt: new Date(NOW - 16 * 60_000).toISOString(),
+        lastSeenAt: new Date(NOW).toISOString(),
+        cpuUsec: 101,
+        detail: { processLifecycleProbe: prior },
+      })],
+      residue: [taskId],
+    });
+
+    expect(result.candidates[0]!.metrics.cpuActivity).toEqual({
+      state: 'active',
+      previous: { cpuUsec: 100, sampledAtMs },
+      current: { cpuUsec: 101, sampledAtMs: NOW },
+    });
+    expect(result.probeUpdates).toEqual([{
+      taskId,
+      terminalResidue: true,
+      probe: { ...prior, cpuUsec: 101, cpuSampledAtMs: NOW, lastActivityAtMs: NOW },
+    }]);
+  });
+
   it('does not file a confirmed unaccounted scope during its first 15 minutes', () => {
     const young = row({
       taskId: 'young-unaccounted',
@@ -332,49 +420,152 @@ describe('evaluateLifecycleCandidates', () => {
     });
   });
 
-  it('gives unaccounted residue a discriminating exact-scope verification recipe', () => {
+  it('gives unaccounted residue a stable exact-scope verification recipe', () => {
     const candidate = evaluate({
       rows: [row({ taskId: 'unaccounted', state: 'unaccounted', scopeUnit: 'pc-unaccounted.scope' })],
       residue: ['unaccounted'],
     }).candidates[0];
     expect(candidate.scopeUnit).toBe('pc-unaccounted.scope');
     const summary = lifecycleCandidateSummary(candidate);
-    expect(summary).toContain('processes:list { scopeUnit:"pc-unaccounted.scope", live:true }');
+    expect(summary).toContain('payload.processLifecycleCandidate.scopeUnit');
+    expect(summary).toContain('processes:list { scopeUnit, live:true }');
     expect(summary).toContain('live.exactScopeUnitMatches');
     expect(summary).toContain('An empty result is not proof by itself');
     expect(summary).toContain('only live.exactScopeUnitMatches entries with kind "unaccounted"');
-    expect(summary).toContain('same-kind unaccounted control from an unfiltered live census');
+    expect(summary).toContain('live.unaccountedCount ?? live.unaccounted');
+    expect(summary).toContain('live.unaccountedPidCount ?? live.unaccountedPids');
+    expect(summary).toContain('If live.unaccountedGroups is missing or not an array, leave the result unknown');
+    expect(summary).toContain('never coerce a missing group list to []');
+    expect(summary).toContain('When live.unaccountedGroups is non-empty, require a known-present same-kind control from the unfiltered census');
+    expect(summary).toContain('processes:list { scopeUnit, live:true, includeEnded:true }');
+    expect(summary).toContain('the ageSec-bearing row is terminal and the default tasks[] filter would hide it');
+    expect(summary).toContain('When live.unaccountedGroups is empty, the same-kind control prerequisite is structurally unavailable, not a failed read');
+    expect(summary).toContain('independently walk the complete, readable Papercusp cgroupfs subtree');
+    expect(summary).toContain('complete, readable Papercusp cgroupfs subtree under /sys/fs/cgroup');
+    expect(summary).toContain('exact candidate scopeUnit directory absence');
+    expect(summary).toContain('populated peer pc-*.scope');
+    expect(summary).toContain('Never use stored cgroupPath, /proc absence, detector reason, or empty filtered output');
     expect(summary).toContain('Do not infer death from these shell readings');
     expect(summary).toContain('readlink /proc/self/ns/pid, the visible numeric /proc PID count, and $$ in the same call');
     expect(summary).toContain('if $$ is tiny or only a few PIDs are visible, discard every /proc absence');
-    expect(summary).toContain('Read the control twice and confirm tasks[].ageSec advances by elapsed wall time');
+    expect(summary).toContain('When live.unaccountedGroups is non-empty, require a known-present same-kind control from the unfiltered census, read it twice, and confirm tasks[].ageSec advances by elapsed wall time');
     expect(summary).toContain('confined:false does not prove abandonment');
-    expect(summary).toContain('Timestamped cgroup CPU activity');
-
-    const escaped = lifecycleCandidateSummary({ ...candidate, scopeUnit: 'pc-"quoted.scope' });
-    expect(escaped).toContain('scopeUnit:"pc-\\"quoted.scope"');
+    expect(summary).toContain('payload.processLifecycleCandidate.metrics.cpuActivity');
+    expect(summary).not.toContain('pc-unaccounted.scope');
 
     const noScope = { ...candidate, scopeUnit: null };
     expect(lifecycleCandidateSummary(noScope)).toContain('unfiltered processes:list { live:true }');
     expect(lifecycleCandidateSummary(noScope)).toContain('complete live.unaccountedGroups');
   });
 
+  it('does not let a taskId-filtered live read clear terminal residue', () => {
+    const candidate = evaluate({
+      rows: [row({
+        taskId: 'terminal-residue',
+        state: 'exited',
+        endedAt: new Date(NOW - 16 * 60_000).toISOString(),
+        scopeUnit: 'pc-terminal-residue.scope',
+      })],
+      residue: ['terminal-residue'],
+    }).candidates[0]!;
+    const expected = [
+      'processes:list { taskId, live:true } omits terminal ledger rows by construction because includeEnded defaults false',
+      'an empty tasks array is expected even when the old cgroup is still populated',
+      'Never treat a taskId-filtered empty result as absence evidence for terminal or unaccounted residue',
+      'processes:list { scopeUnit, live:true }',
+      'a matching live.exactScopeUnitMatches entry is positive liveness even when the ledger row is terminal',
+      'an empty exact-scope result alone remains unknown',
+      'If scopeUnit is missing or any required census/control check is unavailable, leave the decision unknown',
+    ];
+
+    const summary = lifecycleCandidateSummary(candidate);
+    const brief = lifecycleJudgeBrief([{ id: 'EI-1', taskId: candidate.taskId, harnessSlug: 'papercusp' }]);
+    for (const guidance of expected) {
+      expect(summary).toContain(guidance);
+      expect(brief).toContain(guidance);
+    }
+    expect(brief).toContain('For launcher-ended and old-and-idle only, use processes:list { taskId, live:true }');
+    expect(brief).not.toContain('For other kinds, use processes:list { taskId, live:true }');
+  });
+
+  it('rejects capability:bash systemd DBus failures as absence evidence', () => {
+    const candidate = evaluate({
+      rows: [row({ taskId: 'dbus-absence', state: 'unaccounted', scopeUnit: 'pc-dbus-absence.scope' })],
+      residue: ['dbus-absence'],
+    }).candidates[0]!;
+    const guidance = [
+      lifecycleCandidateSummary(candidate),
+      lifecycleJudgeBrief([{ id: 'EI-DBUS', taskId: candidate.taskId, harnessSlug: 'papercusp' }]),
+    ];
+
+    for (const text of guidance) {
+      expect(text).toContain('systemctl --user show/list-units from capability:bash cannot reach the user manager D-Bus');
+      expect(text).toContain('Failed to connect to bus: Operation not permitted');
+      expect(text).toContain('grep -c masks it as exit 0 with a false zero');
+      expect(text).toContain('Treat systemd readings from that sandbox as unknown, never unit-absence evidence');
+      expect(text).toContain('query a known-present positive control in the same call');
+      expect(text).toContain('discard every negative result and leave the verdict unknown');
+    }
+  });
+
+  it('keeps the claim subject summary stable across reconciliation refreshes', () => {
+    const candidate = evaluate({
+      rows: [row({ taskId: 'changing-candidate', state: 'unaccounted', scopeUnit: 'pc-changing.scope' })],
+      residue: ['changing-candidate'],
+    }).candidates[0]!;
+    const summary = lifecycleCandidateSummary(candidate);
+    const refreshed = {
+      ...candidate,
+      scopeUnit: 'pc-replaced.scope',
+      kinds: ['old-and-idle'] as typeof candidate.kinds,
+      reasons: ['the detector reason changed on a later pass'],
+      liveness: {
+        status: 'present' as const,
+        source: 'healthy-task-reconcile' as const,
+        observedAt: new Date(NOW + 300_000).toISOString(),
+      },
+      metrics: {
+        ...candidate.metrics,
+        cpuActivity: {
+          state: 'active' as const,
+          previous: { cpuUsec: 100, sampledAtMs: NOW },
+          current: { cpuUsec: 110, sampledAtMs: NOW + 300_000 },
+        },
+      },
+    };
+
+    expect(lifecycleCandidateSummary(refreshed)).toBe(summary);
+    expect(summary).toContain('payload.processLifecycleCandidate');
+    expect(summary).not.toContain(new Date(NOW).toISOString());
+    expect(summary).not.toContain('pc-changing.scope');
+    expect(summary).not.toContain('unaccounted-residue');
+  });
+
   it('warns the judge that a task-scoped read cannot clear unaccounted residue', () => {
     const brief = lifecycleJudgeBrief([{ id: 'WI-1', taskId: 'unaccounted', harnessSlug: 'papercusp' }]);
     expect(brief).toContain('live.exactScopeUnitMatches');
     expect(brief).toContain('taskId-filtered processes:list result cannot prove absence');
-    expect(brief).toContain('known-present same-kind unaccounted control from the unfiltered census');
+    expect(brief).toContain('When live.unaccountedGroups is non-empty, require a known-present same-kind control from that census');
+    expect(brief).toContain('processes:list { scopeUnit, live:true, includeEnded:true }');
+    expect(brief).toContain('the ageSec-bearing row is terminal and the default tasks[] filter would hide it');
+    expect(brief).toContain('When live.unaccountedGroups is empty, that same-kind control prerequisite is structurally unavailable, not a failed read');
+    expect(brief).toContain('recursively enumerate the complete, readable Papercusp slice subtree under /sys/fs/cgroup by exact scopeUnit');
+    expect(brief).toContain('a populated peer pc-*.scope elsewhere in that subtree');
+    expect(brief).toContain('Never substitute stored cgroupPath, /proc absence, a detector reason, or empty filtered output');
     expect(brief).toContain('inspect only live.exactScopeUnitMatches entries with kind "unaccounted"');
-    expect(brief).toContain('known-present same-kind unaccounted control from the unfiltered census');
+    expect(brief).toContain('When live.unaccountedGroups is non-empty, require a known-present same-kind control from that census');
     expect(brief).toContain('live.ownedTruncated=false');
-    expect(brief).toContain('live.unaccountedPids matching the listed PIDs');
+    expect(brief).toContain('live.unaccountedCount ?? live.unaccounted matching live.unaccountedGroups.length');
+    expect(brief).toContain('live.unaccountedPidCount ?? live.unaccountedPids matching the sum of the listed group PIDs');
+    expect(brief).toContain('If live.unaccountedGroups is missing or is not an array, leave the result unknown');
+    expect(brief).toContain('never coerce a missing group list to []');
     expect(brief).toContain('usage_usec changed between its timestamps');
     expect(brief).toContain('unknown is not dead');
     expect(brief).toContain('cgroup.procs containing only 0 means at least one task is in the cgroup but hidden from that PID namespace');
     expect(brief).toContain('pids.current counts kernel tasks (including threads), not task-manager process rows');
     expect(brief).toContain('HTTP 502 is not ECONNREFUSED (curl exit 7)');
     expect(brief).toContain('readlink /proc/self/ns/pid, the visible numeric /proc PID count, and $$ in that same call');
-    expect(brief).toContain('Read the control twice and confirm tasks[].ageSec advances by elapsed wall time');
+    expect(brief).toContain('read it twice, and confirm tasks[].ageSec advances by elapsed wall time');
     expect(brief).toContain('confined:false does not prove abandonment');
   });
 
@@ -460,6 +651,109 @@ describe('enforceLifecycleVerdicts', () => {
     expect(killScopeUnit).toHaveBeenCalledWith('pc-orphan.scope');
     expect(killTask).not.toHaveBeenCalled();
     expect(outcome[0]).toMatchObject({ target: 'scope-unit', targetId: 'pc-orphan.scope', settled: true });
+  });
+
+  it('writes a durable audit intent before scope-unit signalling and settles it with the outcome', async () => {
+    const records: LifecycleVerdictAuditRecord[] = [];
+    const recordAudit = vi.fn(async (record: LifecycleVerdictAuditRecord) => {
+      records.push(record);
+      return record.auditId ?? 'audit-row-1';
+    });
+    const killScopeUnit = vi.fn(async (scopeUnit: string) => {
+      expect(records.map((record) => record.phase)).toEqual(['intent']);
+      return { ok: true as const, scopeUnit, action: 'kill' };
+    });
+    const outcome = await enforceLifecycleVerdicts(
+      new Map([['orphan', killVerdict('orphan')]]),
+      enforcementDeps({
+        loadTask: async () =>
+          row({ taskId: 'orphan', rootTaskId: 'orphan', state: 'unaccounted', scopeUnit: 'pc-orphan.scope' }),
+        killScopeUnit,
+        recordAudit,
+      }),
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp' },
+    );
+
+    expect(killScopeUnit).toHaveBeenCalledWith('pc-orphan.scope');
+    expect(outcome[0]).toMatchObject({ target: 'scope-unit', targetId: 'pc-orphan.scope', settled: true });
+    expect(records.map((record) => record.phase)).toEqual(['intent', 'outcome']);
+    expect(records[0]).toMatchObject({ phase: 'intent', taskId: 'orphan', target: 'scope-unit' });
+    expect(records[1]).toMatchObject({
+      phase: 'outcome',
+      auditId: 'audit-row-1',
+      outcome: { settled: true, signalled: true },
+    });
+  });
+
+  it('does not signal a scope unit when its audit intent cannot be written', async () => {
+    const killScopeUnit = vi.fn();
+    const recordAudit = vi.fn(async () => {
+      throw new Error('audit unavailable');
+    });
+
+    await expect(
+      enforceLifecycleVerdicts(
+        new Map([['orphan', killVerdict('orphan')]]),
+        enforcementDeps({
+          loadTask: async () =>
+            row({ taskId: 'orphan', rootTaskId: 'orphan', state: 'unaccounted', scopeUnit: 'pc-orphan.scope' }),
+          killScopeUnit,
+          recordAudit,
+        }),
+        { workspaceId: 'ws-1', harnessSlug: 'papercusp' },
+      ),
+    ).rejects.toThrow('audit unavailable');
+    expect(killScopeUnit).not.toHaveBeenCalled();
+  });
+
+  it('inserts and settles lifecycle audit rows in the workspace audit log', async () => {
+    const calls: Array<{ query: string; values: unknown[] }> = [];
+    const sql = {
+      unsafe: vi.fn(async (query: string, values: unknown[] = []) => {
+        calls.push({ query, values });
+        return [{ id: String(values[0]) }];
+      }),
+    } as never;
+    const intent = {
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      taskId: 'orphan',
+      verdict: killVerdict('orphan'),
+      target: 'scope-unit' as const,
+      targetId: 'pc-orphan.scope',
+      phase: 'intent' as const,
+    };
+    const auditId = await recordLifecycleVerdictAudit(intent, sql);
+    const outcome = {
+      taskId: 'orphan',
+      decision: 'kill' as const,
+      target: 'scope-unit' as const,
+      targetId: 'pc-orphan.scope',
+      settled: true,
+      signalled: true,
+      reapTerminalResidue: false,
+    };
+    await recordLifecycleVerdictAudit({ ...intent, phase: 'outcome', auditId, outcome }, sql);
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.query).toContain('INSERT INTO harness_shared.audit_log');
+    expect(calls[0]?.values[2]).toBe('system:task-manager');
+    expect(calls[0]?.values[3]).toBe('task.lifecycle.verdict');
+    expect(calls[0]?.values[4]).toBe('orphan');
+    expect(calls[0]?.values[6]).toBe('ws-1');
+    expect(JSON.parse(String(calls[0]?.values[5]))).toMatchObject({
+      phase: 'intent',
+      taskId: 'orphan',
+      harnessSlug: 'papercusp',
+      target: 'scope-unit',
+      targetId: 'pc-orphan.scope',
+    });
+    expect(calls[1]?.query).toContain('UPDATE harness_shared.audit_log SET details');
+    expect(calls[1]?.values[0]).toBe(auditId);
+    expect(JSON.parse(String(calls[1]?.values[1]))).toMatchObject({
+      phase: 'outcome',
+      outcome: { settled: true, signalled: true },
+    });
   });
 
   it('routes an owned row by task id and positively re-verifies terminal residue', async () => {
@@ -557,7 +851,7 @@ describe('runLifecycleJudgementSweep', () => {
 
   it('changes the launch key only when the one-hour interval changes', () => {
     const current = lifecycleJudgeIntervalKey('ws-1', NOW);
-    expect(current).toMatch(/^process-lifecycle-judge:v2:ws-1:/);
+    expect(current).toMatch(/^process-lifecycle-judge:v5:ws-1:/);
     expect(lifecycleJudgeIntervalKey('ws-1', NOW + LIFECYCLE_JUDGE_INTERVAL_MS - 1)).toBe(current);
     expect(lifecycleJudgeIntervalKey('ws-1', NOW + LIFECYCLE_JUDGE_INTERVAL_MS)).not.toBe(current);
   });
@@ -600,9 +894,11 @@ describe('runLifecycleJudgementSweep', () => {
     );
 
     const spawnId = spawn.mock.calls[0]![0].spawnId;
+    const judgeOwnerId = `system:operator/${spawnId}`;
     expect(order).toEqual(['claim', 'spawn']);
-    expect(claim).toHaveBeenCalledWith([candidate], spawnId);
-    expect(claim.mock.calls[0]![1]).toBe(spawnId);
+    expect(claim).toHaveBeenCalledWith([candidate], judgeOwnerId);
+    expect(claim.mock.calls[0]![1]).toBe(judgeOwnerId);
+    expect(spawn.mock.calls[0]![0].spawnId).toBe(spawnId);
     expect(first.openItems).toEqual(['WI-open']);
     expect(first.judge.attempted).toBe(true);
     expect(nextHour.openItems).toEqual([]);
@@ -647,12 +943,14 @@ describe('runLifecycleJudgementSweep', () => {
     );
 
     const spawnId = spawn.mock.calls[0]![0].spawnId;
+    const judgeOwnerId = `system:operator/${spawnId}`;
     expect(order).toEqual(['claim', 'spawn', 'release']);
-    expect(claim).toHaveBeenCalledWith([candidate], spawnId);
+    expect(claim).toHaveBeenCalledWith([candidate], judgeOwnerId);
     expect(release).toHaveBeenCalledWith(
-      [{ ...candidate, takenBy: spawnId, assignee: spawnId }],
-      spawnId,
+      [{ ...candidate, takenBy: judgeOwnerId, assignee: judgeOwnerId }],
+      judgeOwnerId,
     );
+    expect(spawn.mock.calls[0]![0].spawnId).toBe(spawnId);
   });
 
   it('does not launch a second judge across an interval boundary for candidates claimed in either work-item family', async () => {
@@ -690,10 +988,12 @@ describe('runLifecycleJudgementSweep', () => {
     expect(result.openItems).toEqual([]);
     expect(result.judge.attempted).toBe(false);
     expect(spawn).not.toHaveBeenCalled();
-    expect(readFileSync(new URL('./lifecycle-judgement.ts', import.meta.url), 'utf8'))
-      .toContain("AND (taken_by IS NULL OR taken_by = '')");
-    expect(readFileSync(new URL('./lifecycle-judgement.ts', import.meta.url), 'utf8'))
-      .toContain("AND (assignee IS NULL OR assignee = '')");
+    const source = readFileSync(new URL('./lifecycle-judgement.ts', import.meta.url), 'utf8');
+    expect(source).toContain("AND (taken_by IS NULL OR taken_by = '')");
+    // WI-10005157: this used to pin an assignee predicate, but harness_shared.work_items has
+    // no assignee column (only the engineer_issues view does), so every real pass threw 42703.
+    // The real-schema guard is lifecycle-judgement.integration.test.ts.
+    expect(source).not.toMatch(/AND \(assignee IS NULL/);
   });
 
   it('launches for an earlier open candidate even when this sweep finds no current candidate', async () => {
@@ -755,6 +1055,143 @@ describe('runLifecycleJudgementSweep', () => {
     expect(upsert).not.toHaveBeenCalled();
     expect(spawn).not.toHaveBeenCalled();
   });
+
+  it('loads and honors a keep verdict for a recovered open item missing from current task rows', async () => {
+    const verdict: ProcessLifecycleVerdict = {
+      taskId: 'recovered-task',
+      decision: 'keep',
+      reason: 'still active',
+      keepCount: 4,
+      recheckAt: new Date(NOW + LIFECYCLE_JUDGE_RETRY_FLOOR_MS).toISOString(),
+      decidedAt: new Date(NOW - 2 * LIFECYCLE_JUDGE_RETRY_FLOOR_MS).toISOString(),
+    };
+    const readLatest = vi.fn(async (_workspaceId: string, taskIds: readonly string[]) =>
+      taskIds.includes('recovered-task')
+        ? new Map([['recovered-task', verdict]])
+        : new Map<string, ProcessLifecycleVerdict>());
+    const claim = vi.fn(async (items: Parameters<LifecycleJudgementDeps['claimOpenCandidateItems']>[0]) =>
+      items.map((item) => ({ ...item })));
+    const spawn = vi.fn(async (input: Parameters<LifecycleJudgementDeps['spawnJudge']>[0]) =>
+      ({ ok: true, spawnId: input.spawnId }));
+    const result = await runLifecycleJudgementSweep(
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp', nowMs: NOW },
+      depsForRunner({
+        readLatestVerdicts: readLatest,
+        listOpenCandidateItems: async () => [{
+          id: 'WI-recovered',
+          taskId: 'recovered-task',
+          harnessSlug: 'papercusp',
+          lastReleasedAt: new Date(NOW - 2 * LIFECYCLE_JUDGE_RETRY_FLOOR_MS),
+        }],
+        claimOpenCandidateItems: claim,
+        spawnJudge: spawn,
+      }),
+    );
+
+    expect(readLatest.mock.calls.map((call) => call[1])).toEqual([[], ['recovered-task']]);
+    expect(result.suppressedByKeep).toBe(1);
+    expect(result.suppressedByRetryFloor).toBe(0);
+    expect(result.openItems).toEqual([]);
+    expect(claim).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('prevents a second recovered-row claim under a new judge owner after a recent release', async () => {
+    let lastReleasedAt = new Date(NOW - 2 * LIFECYCLE_JUDGE_RETRY_FLOOR_MS);
+    const claimOwners: string[] = [];
+    const claim = vi.fn(async (
+      items: Parameters<LifecycleJudgementDeps['claimOpenCandidateItems']>[0],
+      assignee: Parameters<LifecycleJudgementDeps['claimOpenCandidateItems']>[1],
+    ) => {
+      claimOwners.push(assignee);
+      return items.map((item) => ({ ...item, takenBy: assignee, assignee }));
+    });
+    const spawn = vi.fn(async (input: Parameters<LifecycleJudgementDeps['spawnJudge']>[0]) =>
+      ({ ok: true, spawnId: input.spawnId }));
+    const deps = depsForRunner({
+      listOpenCandidateItems: async () => [{
+        id: 'WI-released',
+        taskId: 'released-task',
+        harnessSlug: 'papercusp',
+        lastReleasedAt,
+      }],
+      claimOpenCandidateItems: claim,
+      spawnJudge: spawn,
+    });
+
+    const first = await runLifecycleJudgementSweep(
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp', nowMs: NOW },
+      deps,
+    );
+    // The first judge has released the same stable condition row; its next owner id will differ.
+    lastReleasedAt = new Date(NOW);
+    const retry = await runLifecycleJudgementSweep(
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp', nowMs: NOW + 5 * 60_000 },
+      deps,
+    );
+
+    expect(first.judge.attempted).toBe(true);
+    expect(claimOwners).toHaveLength(1);
+    expect(claimOwners[0]).toMatch(/^system:operator\/s-/);
+    expect(first.suppressedByRetryFloor).toBe(0);
+    expect(retry.suppressedByRetryFloor).toBe(1);
+    expect(retry.openItems).toEqual([]);
+    expect(claim).toHaveBeenCalledTimes(1);
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts a fresh retry-floor epoch when the latest keepCount advances', async () => {
+    let verdict: ProcessLifecycleVerdict = {
+      taskId: 'epoch-task',
+      decision: 'keep',
+      reason: 'first keep epoch is due',
+      keepCount: 4,
+      recheckAt: new Date(NOW - LIFECYCLE_JUDGE_RETRY_FLOOR_MS).toISOString(),
+      decidedAt: new Date(NOW - 2 * LIFECYCLE_JUDGE_RETRY_FLOOR_MS).toISOString(),
+    };
+    const readLatest = async (_workspaceId: string, taskIds: readonly string[]) =>
+      taskIds.includes('epoch-task')
+        ? new Map([['epoch-task', verdict]])
+        : new Map<string, ProcessLifecycleVerdict>();
+    const spawn = vi.fn(async (input: Parameters<LifecycleJudgementDeps['spawnJudge']>[0]) =>
+      ({ ok: true, spawnId: input.spawnId }));
+    const deps = depsForRunner({
+      readLatestVerdicts: readLatest,
+      listOpenCandidateItems: async () => [{
+        id: 'WI-epoch',
+        taskId: 'epoch-task',
+        harnessSlug: 'papercusp',
+        lastReleasedAt: new Date(NOW - 2 * LIFECYCLE_JUDGE_RETRY_FLOOR_MS),
+      }],
+      spawnJudge: spawn,
+    });
+
+    const dueOldEpoch = await runLifecycleJudgementSweep(
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp', nowMs: NOW },
+      deps,
+    );
+    verdict = {
+      ...verdict,
+      reason: 'new keep count starts a new retry epoch',
+      keepCount: 5,
+      recheckAt: new Date(NOW).toISOString(),
+      decidedAt: new Date(NOW).toISOString(),
+    };
+    const freshEpoch = await runLifecycleJudgementSweep(
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp', nowMs: NOW + 5 * 60_000 },
+      deps,
+    );
+    const afterFloor = await runLifecycleJudgementSweep(
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp', nowMs: NOW + LIFECYCLE_JUDGE_RETRY_FLOOR_MS + 1 },
+      deps,
+    );
+
+    expect(dueOldEpoch.judge.attempted).toBe(true);
+    expect(freshEpoch.suppressedByRetryFloor).toBe(1);
+    expect(freshEpoch.openItems).toEqual([]);
+    expect(afterFloor.judge.attempted).toBe(true);
+    expect(spawn).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('task-reconcile production wiring', () => {
@@ -764,6 +1201,7 @@ describe('task-reconcile production wiring', () => {
   it('keeps the lifecycle sweep on the existing task-reconcile routine', () => {
     expect(actionSource).toContain("registerSystemAction('task-reconcile'");
     expect(actionSource).toContain('runLifecycleJudgementSweep({');
+    expect(lifecycleSource).toContain('harness_slug, taken_by, last_released_at');
     expect(actionSource).toContain('confirmedResidueTaskIds');
     expect(actionSource).toContain('intervalMs: LIFECYCLE_SWEEP_INTERVAL_MS');
   });

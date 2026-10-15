@@ -172,6 +172,19 @@ export function describePresenceConformance(
       expect(ms(after!.heartbeatAt)).toBeGreaterThanOrEqual(ms(before!.heartbeatAt));
     });
 
+    it('intent-only writes preserve supervisor liveness and explicit clears remain effective', async () => {
+      if (skip) return;
+      const store = makeStore();
+      const id = ident(store, 'intent-liveness');
+      await store.write(id, { intent: 'registered' });
+      expect(await store.get(id.ownerId)).toMatchObject({ host: '', pid: null, tty: null });
+      await store.touchHeartbeat(id.ownerId, { host: 'box-a', pid: 4242, tty: '/dev/pts/42' });
+      await store.write(id, { intent: 'assigned work' });
+      expect(await store.get(id.ownerId)).toMatchObject({ host: 'box-a', pid: 4242, tty: '/dev/pts/42' });
+      await store.write(id, { host: '', pid: null, tty: null });
+      expect(await store.get(id.ownerId)).toMatchObject({ host: '', pid: null, tty: null });
+    });
+
     it('touchHeartbeat liveness (WI-3898 P1): sets pid/host only when reported, never clobbers an omitted field', async () => {
       if (skip) return;
       const store = makeStore();

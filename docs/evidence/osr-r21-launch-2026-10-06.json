@@ -1,0 +1,50 @@
+{
+  "name": "R-21: external contributions have a source-of-truth path and a configured CLA check",
+  "specId": "AUTO-BAR-R-21-P-011",
+  "subjectCommit": "3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c",
+  "command": [
+    "git show 3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c:CONTRIBUTING.md",
+    "git show 3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c:CLA.md",
+    "git show 3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c:.github/workflows/cla.yml"
+  ],
+  "startedAt": "2026-10-06T03:44:52Z",
+  "finishedAt": "2026-10-06T03:44:55Z",
+  "summary": "At the launch commit CONTRIBUTING.md explains that accepted pull requests are applied in the private development tree and re-exported (the PR is closed with a link, not merged), and names the CLA; CLA.md is present; cla.yml runs contributor-assistant on pull_request_target/issue_comment, checks out no PR code, and records signatures on the cla-signatures branch.",
+  "assertions": [
+    {
+      "id": "contributing-source-of-truth-route",
+      "passed": true,
+      "evidence": "CONTRIBUTING.md: 'When we accept a pull request, we apply the change in the development tree' ... 'The pull request itself is not merged directly.'"
+    },
+    {
+      "id": "contributing-names-cla",
+      "passed": true,
+      "evidence": "CONTRIBUTING.md names the Contributor License Agreement (CLA) and the bot flow"
+    },
+    {
+      "id": "cla-md-present",
+      "passed": true,
+      "evidence": "CLA.md present at launch commit, 3207 bytes, first line '# Papercusp Individual Contributor License Agreement'"
+    },
+    {
+      "id": "cla-check-configured",
+      "passed": true,
+      "evidence": "cla.yml uses contributor-assistant/github-action@v2.6.1 with path-to-document CLA.md, signatures on branch cla-signatures"
+    },
+    {
+      "id": "cla-workflow-never-checks-out-pr-code",
+      "passed": true,
+      "evidence": "cla.yml has no actions/checkout step; it only reads comments and writes signatures"
+    }
+  ],
+  "limitations": [
+    "No external pull request has been opened yet, so the CLA bot's live comment flow is verified from configuration, not from an observed PR."
+  ],
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "workItemId": "WI-10003960",
+  "exitCode": 0
+}

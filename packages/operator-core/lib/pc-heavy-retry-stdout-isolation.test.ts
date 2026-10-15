@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { pcHeavyFixtureOptions } from './testing/pc-heavy-fixture';
+
 /**
  * WI-42126 / green-main-fast-2026-08-25#D-025 — pc-heavy's preemption-retry loop
  * CONCATENATED every attempt's stdout into the caller's single pipe.
@@ -106,7 +108,7 @@ function runPcHeavy(command: string, retries: number): RunResult {
       // stdio 'pipe' is the point: a piped (non-TTY) stdout is what every machine
       // consumer has, and it is the path that must be isolated.
       stdio: ['ignore', 'pipe', 'pipe'],
-      env,
+      ...pcHeavyFixtureOptions(slotDir, env),
       maxBuffer: 8 * 1024 * 1024,
     });
     return { stdout, stderr: '', status: 0 };

@@ -69,6 +69,19 @@ describe('coord:wake', () => {
     expect(res.pickupConfirmed).toBe(false);
   });
 
+  // P-006 / D-005: pickup is reported by a LATER seam; the result hands over the key to await.
+  it('surfaces the not-picked-up handle and names it in the warning, still pickupConfirmed:false', async () => {
+    const pickup = [{ target: 'su-bee-FULL', event: 'wake:not-picked-up:su-bee-FULL', windowSec: 600 }];
+    wakeRecipients.mockResolvedValue({ targets: ['su-bee-FULL'], keys: [], woken: 1, staged: 0, pickup });
+
+    const res = out(await wake.handler({ to: 'su-bee' } as never, ctx));
+
+    expect(res.pickupConfirmed).toBe(false);
+    expect(res.pickup).toEqual(pickup);
+    expect(res.warning).toMatch(/pickup is NOT confirmed/i);
+    expect(res.warning).toContain('wake:not-picked-up:su-bee-FULL');
+  });
+
   it('passes the note as the wake summary when given', async () => {
     await wake.handler({ to: 'su-bee', note: 'lane ready' } as never, ctx);
     expect(wakeRecipients.mock.calls[0][1]).toMatchObject({ summary: 'lane ready' });

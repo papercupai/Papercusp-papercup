@@ -453,8 +453,10 @@ export interface LaunchEnvOperatorsDeps {
    *  defaultDetectSourceArchivePending: PAPERCUSP_SOURCE_ARCHIVE points at a real file).
    *  Only consulted when detectSourceRoot() found no tree. */
   detectSourceArchivePending?: () => boolean;
-  /** Whether a Node/npx+tsx run path exists (default: a `which`-style check). */
-  hasToolchain?: () => Promise<boolean>;
+  /** Whether a Node/npx+tsx run path exists (default: a `which`-style check). Receives the
+   *  same detected source root the default probes, so an injected check can vary by it
+   *  (WI-6554700010009519 — a narrower seam made per-root behaviour untestable). */
+  hasToolchain?: (sourceRoot: string | null) => Promise<boolean>;
   /** Resolve the bundled per-branch sidecar for a branch (owner directive 2026-07-06 /
    *  WI-3285): absolute path to that branch's serve.mjs, or null when the package
    *  doesn't ship one. DEFAULT: resolveBundledSidecar — `<dir>/<branch>/serve.mjs`
@@ -1003,7 +1005,7 @@ export async function launchEnvOperators(
     deps.detectSourceArchivePending ?? defaultDetectSourceArchivePending;
   const sourceArchivePending = hasSourceTree ? false : detectSourceArchivePending();
   const hasToolchain = deps.hasToolchain
-    ? await deps.hasToolchain()
+    ? await deps.hasToolchain(sourceRoot)
     : await defaultHasToolchain(sourceRoot);
 
   // Which envs ship a bundled sidecar in this package (owner directive 2026-07-06;

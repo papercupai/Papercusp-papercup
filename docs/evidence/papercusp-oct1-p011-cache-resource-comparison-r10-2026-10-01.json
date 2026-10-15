@@ -1,0 +1,606 @@
+{
+  "schemaVersion": 1,
+  "workItem": "EI-24812912892068980",
+  "parent": "WI-10004890",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "kind": "canonical-isolated-historical-cache-resource-comparison",
+  "status": "expired-root-and-heap-reduction-verified-PSS-reduction-not-observed",
+  "recordedAt": "2026-10-01T21:37:44.930809+00:00",
+  "canonicalTest": "packages/operator-core/lib/cache-retention.performance.integration.test.ts",
+  "testSha256": "a698e9140046c0adbb1bbb2911aee755af5150b2fdda823e17e2be351a61e9cd",
+  "testRunIds": [
+    20440084,
+    20440113
+  ],
+  "failedAttemptTestRunIds": [
+    20439841
+  ],
+  "rawEvidence": {
+    "path": ".papercusp/scratch/bash-963b084f-f56.log",
+    "sha256": "342f5753ff9a6e4361ee59058b2f8608d41f9f0fe98b956b8c33d145b642e06f",
+    "taskId": "0muq1x2mfdjlzmu1pp0",
+    "bashId": "963b084f-f56"
+  },
+  "fixture": {
+    "entries": 1042,
+    "hardExpired": 438,
+    "useful": 604,
+    "rowsPerExpiredContext": 948,
+    "bodyCharactersPerRow": 256,
+    "hardTtlMs": 100,
+    "ordinaryReadsToMeasure": 32,
+    "hotReadBlocks": 9,
+    "readsPerBlock": 10000,
+    "clock": "controlled 0 then 100 ms",
+    "maxL1Entries": 50000
+  },
+  "definition": {
+    "heap": "Node process.memoryUsage heapUsed after three isolated GC/yield cycles",
+    "pss": "Pss kB from each child smaps_rollup multiplied by 1024",
+    "reachability": "WeakRef to each synthetic expired context, evaluated after isolated GC/yields",
+    "cpu": "process.cpuUsage deltas; block median microseconds per read",
+    "wall": "performance.now block timing; block median microseconds per read",
+    "idle": "100 ms timer before/after the ordinary read phase; CPU delta reported",
+    "baseline": "Exact cache.ts and l1.ts objects from cache submodule 4c32764e; same generation-store source as candidate",
+    "candidate": "Current source contents identified by SHA256, both arms compiled identically with esbuild, same Node v25.9.0"
+  },
+  "measurements": {
+    "control": {
+      "control": true,
+      "controlKind": "historical:4c32764e",
+      "sourceHashes": {
+        "cache": "0c50f7316f954d91c02206a861f745dfd5423017f5883725ab08e0f52004d5f9",
+        "l1": "bcd0755a8bb9668204b8f8f2d3b90f933468931e9da9f0144a2bda3bc27c9683",
+        "generationStore": "9a5994bcf99eddfa65562343415c3c90a5fdb42c8729b4d275277e3891c00c47"
+      },
+      "pid": 1500972,
+      "node": "v25.9.0",
+      "empty": {
+        "rss": 53039104,
+        "heapTotal": 6164480,
+        "heapUsed": 4282264,
+        "external": 1879121,
+        "arrayBuffers": 22767,
+        "pssBytes": 10213376
+      },
+      "populated": {
+        "rss": 301551616,
+        "heapTotal": 264900608,
+        "heapUsed": 168285752,
+        "external": 1879161,
+        "arrayBuffers": 22767,
+        "pssBytes": 276802560
+      },
+      "expiredIdle": {
+        "memory": {
+          "rss": 301551616,
+          "heapTotal": 265162752,
+          "heapUsed": 168305544,
+          "external": 1879177,
+          "arrayBuffers": 22783,
+          "pssBytes": 276813824
+        },
+        "entries": 1042,
+        "reachable": 438
+      },
+      "ordinary": {
+        "memory": {
+          "rss": 301551616,
+          "heapTotal": 265424896,
+          "heapUsed": 168303816,
+          "external": 1879177,
+          "arrayBuffers": 22783,
+          "pssBytes": 276817920
+        },
+        "entries": 1042,
+        "reachable": 438
+      },
+      "cleared": {
+        "memory": {
+          "rss": 337203200,
+          "heapTotal": 127799296,
+          "heapUsed": 4398592,
+          "external": 1879177,
+          "arrayBuffers": 22783,
+          "pssBytes": 313441280
+        },
+        "entries": 0,
+        "reachable": 0
+      },
+      "idleBefore": {
+        "wallMs": 100.81605300000001,
+        "cpuMs": 2.026
+      },
+      "idleAfter": {
+        "wallMs": 100.66512200000011,
+        "cpuMs": 0.19
+      },
+      "reclamation": {
+        "wallMs": 0.20350200000007135,
+        "cpuMs": 0.501,
+        "reads": 32
+      },
+      "blocks": [
+        {
+          "reads": 10000,
+          "wallMs": 9.33287499999983,
+          "cpuMs": 11.142
+        },
+        {
+          "reads": 10000,
+          "wallMs": 8.78129100000001,
+          "cpuMs": 10.732
+        },
+        {
+          "reads": 10000,
+          "wallMs": 10.050207999999884,
+          "cpuMs": 11.617
+        },
+        {
+          "reads": 10000,
+          "wallMs": 11.38093600000002,
+          "cpuMs": 17.024
+        },
+        {
+          "reads": 10000,
+          "wallMs": 10.477662999999893,
+          "cpuMs": 10.452
+        },
+        {
+          "reads": 10000,
+          "wallMs": 9.609106999999995,
+          "cpuMs": 9.543
+        },
+        {
+          "reads": 10000,
+          "wallMs": 10.584258999999975,
+          "cpuMs": 10.573
+        },
+        {
+          "reads": 10000,
+          "wallMs": 9.183827000000065,
+          "cpuMs": 9.174
+        },
+        {
+          "reads": 10000,
+          "wallMs": 9.573259000000007,
+          "cpuMs": 9.547
+        }
+      ],
+      "stats": {
+        "hits": 92032,
+        "misses": 1042,
+        "staleServed": 0,
+        "builds": 1042,
+        "singleFlightJoins": 0
+      }
+    },
+    "current": {
+      "control": false,
+      "controlKind": "current",
+      "sourceHashes": {
+        "cache": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+        "l1": "89ac9e14aeed616e2ba82060f9e153d62975d9c9806a4587f831d8700ad84977",
+        "generationStore": "9a5994bcf99eddfa65562343415c3c90a5fdb42c8729b4d275277e3891c00c47"
+      },
+      "pid": 1503211,
+      "node": "v25.9.0",
+      "empty": {
+        "rss": 53014528,
+        "heapTotal": 6164480,
+        "heapUsed": 4297096,
+        "external": 1879121,
+        "arrayBuffers": 22767,
+        "pssBytes": 10294272
+      },
+      "populated": {
+        "rss": 321449984,
+        "heapTotal": 282726400,
+        "heapUsed": 168321320,
+        "external": 1879161,
+        "arrayBuffers": 22767,
+        "pssBytes": 294797312
+      },
+      "expiredIdle": {
+        "memory": {
+          "rss": 321449984,
+          "heapTotal": 282726400,
+          "heapUsed": 168340848,
+          "external": 1879177,
+          "arrayBuffers": 22783,
+          "pssBytes": 294789120
+        },
+        "entries": 1042,
+        "reachable": 438
+      },
+      "ordinary": {
+        "memory": {
+          "rss": 321449984,
+          "heapTotal": 118362112,
+          "heapUsed": 4650064,
+          "external": 1879177,
+          "arrayBuffers": 22783,
+          "pssBytes": 294801408
+        },
+        "entries": 604,
+        "reachable": 0
+      },
+      "cleared": {
+        "memory": {
+          "rss": 322498560,
+          "heapTotal": 139333632,
+          "heapUsed": 4441632,
+          "external": 1879177,
+          "arrayBuffers": 22783,
+          "pssBytes": 295538688
+        },
+        "entries": 0,
+        "reachable": 0
+      },
+      "idleBefore": {
+        "wallMs": 100.60698000000002,
+        "cpuMs": 0.258
+      },
+      "idleAfter": {
+        "wallMs": 100.74154000000021,
+        "cpuMs": 0.209
+      },
+      "reclamation": {
+        "wallMs": 0.6410060000000612,
+        "cpuMs": 0.651,
+        "reads": 32
+      },
+      "blocks": [
+        {
+          "reads": 10000,
+          "wallMs": 17.319873000000143,
+          "cpuMs": 19.758
+        },
+        {
+          "reads": 10000,
+          "wallMs": 15.038041000000021,
+          "cpuMs": 17.24
+        },
+        {
+          "reads": 10000,
+          "wallMs": 14.900666000000001,
+          "cpuMs": 18.932
+        },
+        {
+          "reads": 10000,
+          "wallMs": 14.584646999999904,
+          "cpuMs": 23.249
+        },
+        {
+          "reads": 10000,
+          "wallMs": 12.75721099999987,
+          "cpuMs": 12.747
+        },
+        {
+          "reads": 10000,
+          "wallMs": 14.61747000000014,
+          "cpuMs": 15.599
+        },
+        {
+          "reads": 10000,
+          "wallMs": 15.000088000000005,
+          "cpuMs": 15.91
+        },
+        {
+          "reads": 10000,
+          "wallMs": 13.34710999999993,
+          "cpuMs": 13.323
+        },
+        {
+          "reads": 10000,
+          "wallMs": 13.439928000000009,
+          "cpuMs": 14.235
+        }
+      ],
+      "stats": {
+        "hits": 92032,
+        "misses": 1042,
+        "staleServed": 0,
+        "builds": 1042,
+        "singleFlightJoins": 0
+      }
+    }
+  },
+  "summary": {
+    "expiredReachableAfterOrdinary": {
+      "control": 438,
+      "current": 0
+    },
+    "heapUsedDifferenceAfterOrdinaryBytes": 163653752,
+    "medianCpuMicrosecondsPerRead": {
+      "control": 1.0573,
+      "current": 1.591
+    },
+    "medianWallMicrosecondsPerRead": {
+      "control": 0.9609106999999995,
+      "current": 1.461747000000014
+    }
+  },
+  "limitations": [
+    "Synthetic payload bytes are not a production retained-byte estimate. Fixture entry counts and root shape come from R9; payload bodies are newly generated.",
+    "One matched historical/current process pair with repeated hot-read blocks, not a production p95 or leak verdict.",
+    "No PSS reduction was observed after reclamation; PSS remains near the populated plateau. Heap reclamation does not establish physical resident-memory savings.",
+    "No production GC, snapshots, queryObjects, profiler lifecycle changes, cache clearing or service restart.",
+    "Native allocator ownership, production workers and descendant lifetimes remain separate P011 work.",
+    "The earlier startup failure 20439841 produced no measurements; it is preserved rather than replaced.",
+    "The default current-with-pruning-removed recurring control is checked separately; historical Git objects are optional for CI."
+  ],
+  "recurringGuard": {
+    "control": "current-with-pruning-removed; requires no historical Git object",
+    "measurements": {
+      "control": {
+        "control": true,
+        "controlKind": "current-with-pruning-removed",
+        "sourceHashes": {
+          "cache": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+          "l1": "89ac9e14aeed616e2ba82060f9e153d62975d9c9806a4587f831d8700ad84977",
+          "generationStore": "9a5994bcf99eddfa65562343415c3c90a5fdb42c8729b4d275277e3891c00c47"
+        },
+        "pid": 1653256,
+        "node": "v25.9.0",
+        "empty": {
+          "rss": 53010432,
+          "heapTotal": 6164480,
+          "heapUsed": 4296264,
+          "external": 1879121,
+          "arrayBuffers": 22767,
+          "pssBytes": 10305536
+        },
+        "populated": {
+          "rss": 307814400,
+          "heapTotal": 264900608,
+          "heapUsed": 168300992,
+          "external": 1879161,
+          "arrayBuffers": 22767,
+          "pssBytes": 276865024
+        },
+        "expiredIdle": {
+          "memory": {
+            "rss": 307814400,
+            "heapTotal": 265162752,
+            "heapUsed": 168320784,
+            "external": 1879177,
+            "arrayBuffers": 22783,
+            "pssBytes": 276888576
+          },
+          "entries": 1042,
+          "reachable": 438
+        },
+        "ordinary": {
+          "memory": {
+            "rss": 307814400,
+            "heapTotal": 265162752,
+            "heapUsed": 168319032,
+            "external": 1879177,
+            "arrayBuffers": 22783,
+            "pssBytes": 276899840
+          },
+          "entries": 1042,
+          "reachable": 438
+        },
+        "cleared": {
+          "memory": {
+            "rss": 343465984,
+            "heapTotal": 128061440,
+            "heapUsed": 4413840,
+            "external": 1879177,
+            "arrayBuffers": 22783,
+            "pssBytes": 313886720
+          },
+          "entries": 0,
+          "reachable": 0
+        },
+        "idleBefore": {
+          "wallMs": 100.75753000000009,
+          "cpuMs": 0.231
+        },
+        "idleAfter": {
+          "wallMs": 100.52744600000005,
+          "cpuMs": 4.847
+        },
+        "reclamation": {
+          "wallMs": 0.2648309999999583,
+          "cpuMs": 0.284,
+          "reads": 32
+        },
+        "blocks": [
+          {
+            "reads": 10000,
+            "wallMs": 16.143776000000116,
+            "cpuMs": 18.673
+          },
+          {
+            "reads": 10000,
+            "wallMs": 14.863897000000179,
+            "cpuMs": 17.982
+          },
+          {
+            "reads": 10000,
+            "wallMs": 16.147874,
+            "cpuMs": 17.746
+          },
+          {
+            "reads": 10000,
+            "wallMs": 19.328179999999975,
+            "cpuMs": 28.208
+          },
+          {
+            "reads": 10000,
+            "wallMs": 15.833186999999953,
+            "cpuMs": 15.823
+          },
+          {
+            "reads": 10000,
+            "wallMs": 16.822766,
+            "cpuMs": 16.421
+          },
+          {
+            "reads": 10000,
+            "wallMs": 16.17172000000005,
+            "cpuMs": 16.172
+          },
+          {
+            "reads": 10000,
+            "wallMs": 16.69467899999995,
+            "cpuMs": 16.009
+          },
+          {
+            "reads": 10000,
+            "wallMs": 14.221326999999974,
+            "cpuMs": 14.212
+          }
+        ],
+        "stats": {
+          "hits": 92032,
+          "misses": 1042,
+          "staleServed": 0,
+          "builds": 1042,
+          "singleFlightJoins": 0
+        }
+      },
+      "current": {
+        "control": false,
+        "controlKind": "current",
+        "sourceHashes": {
+          "cache": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+          "l1": "89ac9e14aeed616e2ba82060f9e153d62975d9c9806a4587f831d8700ad84977",
+          "generationStore": "9a5994bcf99eddfa65562343415c3c90a5fdb42c8729b4d275277e3891c00c47"
+        },
+        "pid": 1656908,
+        "node": "v25.9.0",
+        "empty": {
+          "rss": 53039104,
+          "heapTotal": 6164480,
+          "heapUsed": 4299480,
+          "external": 1879121,
+          "arrayBuffers": 22767,
+          "pssBytes": 10348544
+        },
+        "populated": {
+          "rss": 305745920,
+          "heapTotal": 272764928,
+          "heapUsed": 168321464,
+          "external": 1879161,
+          "arrayBuffers": 22767,
+          "pssBytes": 285129728
+        },
+        "expiredIdle": {
+          "memory": {
+            "rss": 305745920,
+            "heapTotal": 272764928,
+            "heapUsed": 168340992,
+            "external": 1879177,
+            "arrayBuffers": 22783,
+            "pssBytes": 285133824
+          },
+          "entries": 1042,
+          "reachable": 438
+        },
+        "ordinary": {
+          "memory": {
+            "rss": 305745920,
+            "heapTotal": 102895616,
+            "heapUsed": 4649008,
+            "external": 1879177,
+            "arrayBuffers": 22783,
+            "pssBytes": 285150208
+          },
+          "entries": 604,
+          "reachable": 0
+        },
+        "cleared": {
+          "memory": {
+            "rss": 306794496,
+            "heapTotal": 139333632,
+            "heapUsed": 4441776,
+            "external": 1879177,
+            "arrayBuffers": 22783,
+            "pssBytes": 285326336
+          },
+          "entries": 0,
+          "reachable": 0
+        },
+        "idleBefore": {
+          "wallMs": 100.80652399999997,
+          "cpuMs": 0.258
+        },
+        "idleAfter": {
+          "wallMs": 100.57140099999992,
+          "cpuMs": 0.227
+        },
+        "reclamation": {
+          "wallMs": 0.6023720000000594,
+          "cpuMs": 0.611,
+          "reads": 32
+        },
+        "blocks": [
+          {
+            "reads": 10000,
+            "wallMs": 21.08854599999995,
+            "cpuMs": 24.224
+          },
+          {
+            "reads": 10000,
+            "wallMs": 16.633029999999962,
+            "cpuMs": 18.901
+          },
+          {
+            "reads": 10000,
+            "wallMs": 17.861249000000043,
+            "cpuMs": 22.721
+          },
+          {
+            "reads": 10000,
+            "wallMs": 17.135839999999916,
+            "cpuMs": 26.859
+          },
+          {
+            "reads": 10000,
+            "wallMs": 19.524347999999918,
+            "cpuMs": 19.497
+          },
+          {
+            "reads": 10000,
+            "wallMs": 17.71072900000013,
+            "cpuMs": 18.445
+          },
+          {
+            "reads": 10000,
+            "wallMs": 15.213721999999962,
+            "cpuMs": 16.241
+          },
+          {
+            "reads": 10000,
+            "wallMs": 12.847126000000117,
+            "cpuMs": 12.805
+          },
+          {
+            "reads": 10000,
+            "wallMs": 12.83084400000007,
+            "cpuMs": 13.495
+          }
+        ],
+        "stats": {
+          "hits": 92032,
+          "misses": 1042,
+          "staleServed": 0,
+          "builds": 1042,
+          "singleFlightJoins": 0
+        }
+      }
+    },
+    "testRunId": 20440113,
+    "rawEvidence": {
+      "path": ".papercusp/scratch/bash-3dd7642b-1cc.log",
+      "sha256": "c42cfb976e2952c6cea8f6111bab8d7bdd67e62455ba3ea8ec9a77eac1bfbb5d",
+      "taskId": "0muq1zn4wqh2ga317dj",
+      "bashId": "3dd7642b-1cc"
+    },
+    "result": "passed 1 test, 0 skips; terminal task exit 0"
+  }
+}

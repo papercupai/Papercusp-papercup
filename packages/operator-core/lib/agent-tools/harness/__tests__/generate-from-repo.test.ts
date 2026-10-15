@@ -58,6 +58,12 @@ const run = async (args: Record<string, unknown>, ctx = CTX) => {
 const flushImmediate = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 const created: string[] = [];
+// Background create runs the repo's real test command (npm -> node). Under gate load that is
+// seconds, not milliseconds, so the two async-completion cases wait on observed state with a
+// generous ceiling and carry a per-test timeout above it (the 5 s default would cut them first).
+const BACKGROUND_COMPLETION_TIMEOUT_MS = 30_000;
+const BACKGROUND_COMPLETION_TEST_TIMEOUT_MS = BACKGROUND_COMPLETION_TIMEOUT_MS + 15_000;
+
 function fixture(files: Record<string, string>): string {
   const root = mkdtempSync(join(tmpdir(), 'p009-tool-'));
   created.push(root);
@@ -218,13 +224,15 @@ describe('harness:generate-from-repo', () => {
       progress: vi.fn(),
     } as never;
 
-    const startedAt = Date.now();
     const r = await run(
       { slug: 'slow-mobile', path: root, dryRun: false, runTests: true, testTimeoutMs: 300_000 },
       ctx,
     );
 
-    expect(Date.now() - startedAt).toBeLessThan(100);
+    // Acceptance precedes completion, asserted by ORDER rather than a 100 ms wall-clock bound:
+    // the detected test command alone sleeps 150 ms, so finalize cannot have fired yet unless
+    // run() awaited the background work.
+    expect(mocks.finalizePendingMcpResult).not.toHaveBeenCalled();
     expect(r).toMatchObject({
       ok: true,
       accepted: true,
@@ -248,10 +256,14 @@ describe('harness:generate-from-repo', () => {
       }),
     );
 
-    const completionDeadline = Date.now() + 3_000;
-    while (!mocks.finalizePendingMcpResult.mock.calls.length && Date.now() < completionDeadline) {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
+    // Wait for the OBSERVABLE completion, not a fixed wall-clock budget. Background detection
+    // spawns the repo's real test command (npm -> node), and under green-checkpoint load that
+    // took past a 3 s budget (run 014f2801 on c697f739: file 3180 ms, dispatchTool 0 calls).
+    // The ceiling only matters on failure; success returns as soon as finalize fires.
+    await vi.waitFor(() => expect(mocks.finalizePendingMcpResult).toHaveBeenCalled(), {
+      timeout: BACKGROUND_COMPLETION_TIMEOUT_MS,
+      interval: 20,
+    });
     expect(pending).toBeDefined();
     expect(dispatchTool).toHaveBeenCalledTimes(1);
     expect(mocks.finalizePendingMcpResult).toHaveBeenCalledWith(
@@ -281,7 +293,7 @@ describe('harness:generate-from-repo', () => {
       'done',
       expect.any(Object),
     );
-  });
+  }, BACKGROUND_COMPLETION_TEST_TIMEOUT_MS);
 
   it('does not launch a duplicate background create when the same idempotency key is retried while pending', async () => {
     const root = fixture({
@@ -334,12 +346,12 @@ describe('harness:generate-from-repo', () => {
 
     await flushImmediate();
     await flushImmediate();
-    const completionDeadline = Date.now() + 2_000;
-    while (!mocks.finalizePendingMcpResult.mock.calls.length && Date.now() < completionDeadline) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await vi.waitFor(() => expect(mocks.finalizePendingMcpResult).toHaveBeenCalled(), {
+      timeout: BACKGROUND_COMPLETION_TIMEOUT_MS,
+      interval: 10,
+    });
     expect(dispatchTool).toHaveBeenCalledTimes(1);
     expect(mocks.claimPendingMcpResult).toHaveBeenCalledTimes(2);
     expect(mocks.finalizePendingMcpResult).toHaveBeenCalledTimes(1);
-  });
+  }, BACKGROUND_COMPLETION_TEST_TIMEOUT_MS);
 });

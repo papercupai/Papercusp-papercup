@@ -328,6 +328,27 @@ describe('<LearningLoopControl>', () => {
       expect(screen.getByText('2 of 2 pots learning')).toBeTruthy();
     });
 
+    it('keeps every figure reachable in the verdict tooltip when narrow windows drop them whole (WI-10006513)', () => {
+      H.arming = makeArming({
+        gymPots: [gym('alpha', true), gym('beta', true)],
+        potScope: scope([]),
+      });
+      const { container } = render(<LearningLoopControl />);
+      const verdict = container.querySelector<HTMLElement>('.pc-lloop__verdict');
+      expect(verdict).toBeTruthy();
+      const title = verdict!.getAttribute('title') ?? '';
+      const figs = Array.from(container.querySelectorAll<HTMLElement>('.pc-lloop__fig')).map((el) =>
+        (el.textContent ?? '').replace('·', '').trim(),
+      );
+      // Positive control: the strip rendered all three figures (pots, lanes, spend).
+      expect(figs).toHaveLength(3);
+      for (const fig of figs) {
+        expect(fig.length).toBeGreaterThan(0);
+        expect(title).toContain(fig);
+      }
+      expect(title).toContain('2 of 2 pots learning');
+    });
+
     it("a row's switch writes that pot's SCOPE only, then refetches the catalog", async () => {
       H.arming = makeArming({
         gymPots: [gym('alpha', true)],

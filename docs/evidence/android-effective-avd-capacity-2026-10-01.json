@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Android effective AVD capacity and guarded host cleanup regressions",
+  "framework": "operational",
+  "command": ["make", "test-android-runner", "test-android-ci", "then", "cargo", "test", "-p", "papercup-core", "--test", "android_uniffi_abi_guard", "android_ci", "--locked"],
+  "startedAt": "2026-10-01T21:59:14.859406+00:00",
+  "finishedAt": "2026-10-01T21:59:23.414632+00:00",
+  "exitCode": 0,
+  "summary": "Retained execution: both maintained Make targets exited 0; Cargo CI integration tests 2 passed, 0 failed, 0 ignored, 3 filtered. Workflow controls rejected 12 omissions and runner controls rejected 15 omissions. Scope is local guard behavior only; hosted boot/instrumentation, actual automatic containing-source execution, release candidate, physical phone and Play evidence remain pending.",
+  "repository": "papercup-rust-mobile",
+  "sourceDirty": true,
+  "sourceCommitAtExecution": "2bc8c33910f742c30c4c2259d38c650419576d55",
+  "results": [
+    {"command": ["make", "test-android-runner", "test-android-ci"], "exitCode": 0},
+    {"command": ["cargo", "test", "-p", "papercup-core", "--test", "android_uniffi_abi_guard", "android_ci", "--locked"], "exitCode": 0}
+  ],
+  "rawEvidence": {
+    "path": "papercup-rust-mobile/android/app/build/ci-evidence/effective-avd-capacity-20261001/checks.log",
+    "sha256": "994fb3cae0e484253f43380f4bcac06cc78a42e921417a42a9ade59d261056fd",
+    "metadataPath": "papercup-rust-mobile/android/app/build/ci-evidence/effective-avd-capacity-20261001/result.json"
+  },
+  "sourceFiles": [
+    {"path": ".github/workflows/ci.yml", "sha256": "e1a10bd3fa2feb056a67a16c3a72bc621b60aac73b972e20cb2563a0a5f11e12"},
+    {"path": "tools/run-android-checks.sh", "sha256": "0fe988f4ab8ed39210da22ccb3d2afc3f95e076394645b0c9a5169c8ebee74da"},
+    {"path": "tools/tests/run-android-checks-test.sh", "sha256": "c8bb2b130608c7b9e3da98e4ce2fcd015f87699f2fb5fe81de12d2a8271102ca"},
+    {"path": "tools/tests/android-ci-contract-test.sh", "sha256": "7fe58a773ee7cc18a51f78465ffc71853d3d106796508a73e3dcc4a4bbdd6101"}
+  ],
+  "assertions": [
+    {"id": "effective-partition-capacity", "passed": true, "evidence": "Maintained runner tests reject free space below max(requested partition, measured 6-GiB runtime minimum) plus reserve; a 2-GiB request cannot false-pass the prior hosted failure."},
+    {"id": "guarded-after-host-cleanup", "passed": true, "evidence": "Maintained runner tests require a disposable hosted runner, installed SDK, passed executed host XML and a built APK before full Cargo intermediate cleanup."},
+    {"id": "workflow-omission-controls", "passed": true, "evidence": "Maintained workflow contract rejected 12 mutated workflow fixtures, including absent/undersized userdata demand, capacity checks and after-host cleanup."},
+    {"id": "runner-omission-controls", "passed": true, "evidence": "Maintained runner contract rejected 15 omitted mandatory host/native phases."},
+    {"id": "cargo-integration-reachability", "passed": true, "evidence": "android_ci_reachability_rejects_omitted_checks_and_failed_proof_caching and android_ci_results_require_executed_host_and_native_tests both executed and passed in the maintained Cargo suite."},
+    {"id": "scope-preserved", "passed": true, "evidence": "This local result is not a claim of hosted, scheduled, signed-candidate, physical-phone, provider-account or Play acceptance."}
+  ]
+}

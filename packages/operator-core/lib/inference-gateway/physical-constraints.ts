@@ -44,6 +44,7 @@ import {
 } from '../resource-governor/live-health';
 import {
   RollingHealthAnalyzer,
+  type HealthConditionContext,
   type HealthAnalysisFrame,
   type HealthVerdict,
 } from '../resource-governor/health-analysis';
@@ -2435,13 +2436,23 @@ export interface GatewayPhysicalHealthEvaluation {
 
 /** One convenience composition for callers that want both physical and governor verdicts. */
 export function evaluateGatewayPhysicalHealth(
+  input: GatewayPhysicalConstraintInput, scopeId?: string, analyzer?: RollingHealthAnalyzer,
+): GatewayPhysicalHealthEvaluation;
+export function evaluateGatewayPhysicalHealth(
+  input: GatewayPhysicalConstraintInput, scopeId: string, analyzer: RollingHealthAnalyzer,
+  context: HealthConditionContext,
+): Promise<GatewayPhysicalHealthEvaluation>;
+export function evaluateGatewayPhysicalHealth(
   input: GatewayPhysicalConstraintInput,
   scopeId = 'inference-gateway',
   analyzer = new RollingHealthAnalyzer(),
-): GatewayPhysicalHealthEvaluation {
+  context?: HealthConditionContext,
+): GatewayPhysicalHealthEvaluation | Promise<GatewayPhysicalHealthEvaluation> {
   const physical = collectGatewayPhysicalConstraints(input);
   const frame = physicalConstraintsToHealthFrame(physical.observations, scopeId, physical.evaluatedAtMs);
-  return Object.freeze({ physical, frame, health: analyzer.evaluate(frame) });
+  return context
+    ? analyzer.evaluate(frame, context).then(health => Object.freeze({ physical, frame, health }))
+    : Object.freeze({ physical, frame, health: analyzer.evaluate(frame) });
 }
 
 // Short aliases used by callers that describe this layer as an adapter rather

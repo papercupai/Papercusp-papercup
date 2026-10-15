@@ -1,0 +1,5 @@
+{"device":"io2-6000","job":"randread-4k-qd1","iops":1505,"mbps":6.2,"clatP50us":667.6,"clatP99us":905.2}
+{"device":"io2-6000","job":"randread-4k-qd32","iops":6599,"mbps":27.0,"clatP50us":5275.6,"clatP99us":5734.4}
+{"device":"io2-6000","job":"randread-32k-qd16","iops":6171,"mbps":202.2,"clatP50us":2637.8,"clatP99us":3096.6}
+{"device":"io2-6000","job":"randwrite-4k-qd32","iops":6162,"mbps":25.2,"clatP50us":5341.2,"clatP99us":5734.4}
+{"device":"io2-6000","job":"seqread-1m-qd8","iops":1311,"mbps":1374.7,"clatP50us":6586.4,"clatP99us":7110.7}

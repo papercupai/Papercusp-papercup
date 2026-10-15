@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "papercusp-performance-audit-2026-10-12 R-3 app priority and R-4 host hygiene (live)",
+  "plan": "papercusp-performance-audit-2026-10-12",
+  "bars": ["R-3", "R-4"],
+  "instrument": "scripts/check-systemd-dropins-installed.mjs plus systemctl, docker, stat and df read-outs",
+  "command": [
+    "sudo systemctl show -p CPUWeight system-postgresql.slice system.slice; systemctl show -p CPUWeight --value <each system-*.slice>",
+    "systemctl --user show -p CPUWeight papercup-dev-api.service papercusp-bg-host.service app.slice",
+    "node scripts/check-systemd-dropins-installed.mjs",
+    "systemctl --user list-timers --all | grep reclaim",
+    "for id in $(docker ps -q --no-trunc --filter label=org.testcontainers=true): docker inspect Created; stat /tmp/pcv/testcontainers-last-used/<id>",
+    "df -B1G --output=target,size,used,avail,pcent / /mnt/data /mnt/backup",
+    "testing:run libs/test-config/src/testcontainer-last-used.test.ts apps/operator/lib/docker-reclaim-leaked-testcontainers.test.ts"
+  ],
+  "startedAt": "2026-10-13T13:30:23Z",
+  "finishedAt": "2026-10-13T13:41:05Z",
+  "exitCode": 0,
+  "summary": "R-3 holds: Postgres slice at CPUWeight 1000 against weight-100 siblings, serving units at 2000 in app.slice, all tracked drop-ins installed. R-4: the hourly reaper runs and every running testcontainer has a last-use marker under 24 h old; all three volumes are above 85% (96/96/92%), owned by WI-6554700010010388.",
+  "assertions": [
+    {
+      "id": "r3-postgres-slice-outweighs-siblings",
+      "passed": true,
+      "evidence": "system-postgresql.slice CPUWeight=1000; system.slice CPUWeight not set (default 100); other system-*.slice units (getty, modprobe, systemd-coredump, systemd-fsck, wg-quick, apport-coredump-hook) not set (default 100)."
+    },
+    {
+      "id": "r3-serving-units-weighted",
+      "passed": true,
+      "evidence": "User manager: papercup-dev-api.service CPUWeight=2000, papercusp-bg-host.service CPUWeight=2000, app.slice CPUWeight=100."
+    },
+    {
+      "id": "r3-tracked-dropins-installed",
+      "passed": true,
+      "evidence": "node scripts/check-systemd-dropins-installed.mjs exit 0: 'all 55 tracked drop-in(s) for units present on this host are loaded.'"
+    },
+    {
+      "id": "r4-reaper-timer-runs-hourly",
+      "passed": true,
+      "evidence": "papercup-docker-reclaim.timer: last run 2026-10-13 13:17:00Z, next 14:17:00Z (hourly), running bin/reclaim-docker-disk.sh with TESTCONTAINER_IDLE_MAX_SECS=86400 (1 h floor)."
+    },
+    {
+      "id": "r4-no-testcontainer-idle-over-24h",
+      "passed": true,
+      "evidence": "10 running org.testcontainers=true containers; every one has a marker in /tmp/pcv/testcontainers-last-used dated 2026-10-13 between 09:17:02Z (first-sight stamp) and 13:30:03Z. Containers created 2026-09-26..2026-10-13 (e73ffd98dfcf oldest), so none has been idle past the 24 h threshold since markers began."
+    },
+    {
+      "id": "r4-disk-reported-and-owned",
+      "passed": true,
+      "evidence": "df 13:31Z: / 1876G size, 80G avail, 96%; /mnt/data 7451G, 307G avail, 96%; /mnt/backup 1980G, 170G avail, 92%. All three at or above 85%; owned by open follow-up WI-6554700010010388 (assignee su-982534a7)."
+    },
+    {
+      "id": "r4-unit-tests-pass",
+      "passed": true,
+      "evidence": "test_runs 21207978 (apps/operator/lib/docker-reclaim-leaked-testcontainers.test.ts, pass), commit 094d57643b; libs/test-config/src/testcontainer-last-used.test.ts was submitted in the same testing:run batch."
+    }
+  ]
+}

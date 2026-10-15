@@ -14,17 +14,12 @@
  *   2. THE REAL TREE has no unstamped work-item writer.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import {
   isUnstampedWorkItemWriter,
   mintsWorkItems,
   ALLOWLIST,
+  scan,
 } from '../../../scripts/check-work-item-admission-writers.mjs';
-import { listTrackedFiles } from '../../../scripts/lib/tracked-files.mjs';
-
-/** This file sits at packages/operator-core/lib/ — three levels down. */
-const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
 /** A path in no map, so only the PREDICATE decides the verdict. */
 const NEW = 'packages/operator-core/lib/brand-new-filer.ts';
@@ -102,27 +97,10 @@ describe('isUnstampedWorkItemWriter (the predicate)', () => {
 
 describe('the real tree', () => {
   it('has no work-item writer that mints without deciding admission', () => {
-    const { files } = listTrackedFiles(REPO_ROOT);
-    const offenders: string[] = [];
-    let minting = 0;
-    for (const rel of files) {
-      if (!/\.tsx?$/.test(rel)) continue;
-      if (rel.includes('/_retired/') || rel.includes('/node_modules/')) continue;
-      if (/\.(test|spec)\.tsx?$/.test(rel)) continue;
-      let source: string;
-      try {
-        source = readFileSync(`${REPO_ROOT}${rel}`, 'utf8');
-      } catch {
-        continue;
-      }
-      if (!mintsWorkItems(rel, source)) continue;
-      minting += 1;
-      if (isUnstampedWorkItemWriter(rel, source)) offenders.push(rel);
-    }
-    // CALIBRATION: if the scan found no minting files at all, the instrument is
-    // broken and an empty `offenders` proves nothing (an absence claim needs a
-    // positive control).
-    expect(minting, 'scan found no work-item writers at all — the instrument is broken').toBeGreaterThan(5);
+    // Use the exact population and verdict function the CLI uses. The count is a
+    // positive control: a broken/empty scan cannot make this pass vacuously.
+    const { minting, offenders } = scan();
+    expect(minting.length, 'scan found no work-item writers at all — the instrument is broken').toBeGreaterThan(5);
     expect(offenders).toEqual([]);
   });
 });

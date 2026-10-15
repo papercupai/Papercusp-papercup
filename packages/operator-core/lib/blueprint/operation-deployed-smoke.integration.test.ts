@@ -43,6 +43,10 @@
  * it is bound with details.evidencePlane:'deployed' only for a run against the
  * shipped build (P015_EXPECTED_SHA pins that).
  *
+ * Auth: the bearer must be the token in the TARGET host's home. A shell with a
+ * workspace-scoped PAPERCUSP_HOME reads a different token by default; pass
+ * P015_SMOKE_TOKEN_FILE=~/.papercusp/superuser-token (or unset PAPERCUSP_HOME).
+ *
  * The run writes real state to the target workspace: one local pot and one
  * harness (both reused on later runs), one work item per agent/program
  * submission, and one plan run.
@@ -54,7 +58,6 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { readSuperuserToken } from '../superuser-token';
 import {
   BLUEPRINT_OPERATION_TOOLS,
   BlueprintOperationCancelReceiptSchema,
@@ -69,7 +72,17 @@ import { P013B_OPERATION } from './operation-performance-b-driver';
 const BASE = process.env.P015_DEPLOYED_OPERATOR_URL?.replace(/\/+$/, '');
 const EXPECTED_SHA = process.env.P015_EXPECTED_SHA?.trim() || null;
 const WORKSPACE = process.env.P015_SMOKE_WORKSPACE?.trim() || 'papercusp-workspace';
-const CLIENT = process.env.P015_SMOKE_CLIENT?.trim() || process.env.PAPERCUSP_SID?.trim() || 'p015-deployed-smoke';
+interface SmokeClientEnvironment {
+  P015_SMOKE_CLIENT?: string;
+  PAPERCUSP_SID?: string;
+}
+
+/** This smoke creates a dedicated pot outside the caller's hive; never inherit a scoped agent SID. */
+function resolveSmokeClient(env: SmokeClientEnvironment): string {
+  return env.P015_SMOKE_CLIENT?.trim() || 'p015-deployed-smoke';
+}
+
+const CLIENT = resolveSmokeClient(process.env);
 // Paired with SMOKE_TEMPLATE: the harness's blueprint pins the template it was created
 // with, so a new template needs a new harness slug (the 2026-09-30 harness pins the
 // pre-D-044 template, which can never start).
@@ -179,10 +192,37 @@ function decodeMcp(raw: string, id: number): unknown {
   throw new Error(`no JSON-RPC response for id ${id} in: ${raw.slice(0, 500)}`);
 }
 
+/**
+ * The local deployed host accepts the token in the operator user's home.
+ * PAPERCUSP_HOME may point at this workspace's separate Papercusp directory,
+ * so it must not choose the default token. P015_SMOKE_TOKEN_FILE overrides the
+ * local host path for a target with a different home; refusals report the path.
+ */
+interface SmokeTokenEnvironment {
+  P015_SMOKE_TOKEN_FILE?: string;
+  PAPERCUSP_HOME?: string;
+}
+
+/** The local deployed host validates its own home token, not a workspace-scoped PAPERCUSP_HOME token. */
+function resolveSmokeTokenSource(env: SmokeTokenEnvironment, home: string): string {
+  return env.P015_SMOKE_TOKEN_FILE?.trim() || join(home, '.papercusp', 'superuser-token');
+}
+
+const HOST_HOME = homedir();
+const TOKEN_SOURCE = resolveSmokeTokenSource(process.env, HOST_HOME);
+function smokeToken(): string | null {
+  try {
+    const tok = readFileSync(TOKEN_SOURCE, 'utf8').trim();
+    return tok.length >= 16 ? tok : null;
+  } catch {
+    return null;
+  }
+}
+
 let rpcId = 0;
 async function mcp(tool: string, args: Record<string, unknown>): Promise<unknown> {
-  const token = readSuperuserToken();
-  if (!token) throw new Error('no superuser token (~/.papercusp/superuser-token) — cannot authenticate to the deployed host');
+  const token = smokeToken();
+  if (!token) throw new Error(`no superuser token at ${TOKEN_SOURCE} — cannot authenticate to the deployed host`);
   const id = ++rpcId;
   const qs = new URLSearchParams({ superuser: '1', client: CLIENT, workspace: WORKSPACE, format: 'json' });
   const res = await fetch(`${BASE}/api/mcp?${qs}`, {
@@ -203,7 +243,15 @@ async function mcp(tool: string, args: Record<string, unknown>): Promise<unknown
     return decodeMcp(raw, id);
   } catch (err) {
     if (err instanceof ToolRefusal) throw new ToolRefusal(tool, err.body);
-    throw new Error(`${tool}: HTTP ${res.status}: ${(err as Error).message}`);
+    const message = (err as Error).message;
+    if (message.includes('superuser_invalid_bearer')) {
+      throw new Error(
+        `${tool}: the deployed host refused the bearer read from ${TOKEN_SOURCE} (superuser_invalid_bearer). ` +
+          'The host validates against the token in ITS home; set P015_SMOKE_TOKEN_FILE to that file ' +
+          '(e.g. ~/.papercusp/superuser-token) or unset a workspace-scoped PAPERCUSP_HOME.',
+      );
+    }
+    throw new Error(`${tool}: HTTP ${res.status}: ${message}`);
   }
 }
 
@@ -214,6 +262,27 @@ async function refusalOf(p: Promise<unknown>): Promise<string> {
 
 const T = BLUEPRINT_OPERATION_TOOLS;
 type Handle = Record<string, unknown>;
+
+describe('deployed smoke context defaults', () => {
+  it('uses the dedicated smoke client instead of inheriting a hive-scoped agent SID', () => {
+    expect(resolveSmokeClient({ PAPERCUSP_SID: 'su-scoped-agent' })).toBe('p015-deployed-smoke');
+  });
+
+  it('honors an explicit client override', () => {
+    expect(resolveSmokeClient({ P015_SMOKE_CLIENT: '  p015-owner-client  ', PAPERCUSP_SID: 'su-scoped-agent' }))
+      .toBe('p015-owner-client');
+  });
+
+  it('uses the deployed host home token despite a workspace-scoped PAPERCUSP_HOME', () => {
+    expect(resolveSmokeTokenSource({ PAPERCUSP_HOME: '/workspace/.papercusp' }, HOST_HOME))
+      .toBe(join(HOST_HOME, '.papercusp', 'superuser-token'));
+  });
+
+  it('honors an explicit deployed token file override', () => {
+    expect(resolveSmokeTokenSource({ P015_SMOKE_TOKEN_FILE: '  /host/token  ' }, HOST_HOME))
+      .toBe('/host/token');
+  });
+});
 
 async function submit(operationId: string, requestKey: string, input: Record<string, unknown>): Promise<Handle> {
   return SubmitResultSchema.parse(await mcp(T.submit, { harness: SMOKE_HARNESS, operationId, requestKey, input })).handle as Handle;
@@ -251,7 +320,7 @@ describe.skipIf(!BASE)('blueprint operations on a DEPLOYED operator (R-12 deploy
     for (const [name, path] of Object.entries(routes)) {
       const res = await fetch(`${BASE}${path}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${readSuperuserToken()}` },
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${smokeToken()}` },
         body: '{}',
       });
       // An empty body must be refused by the tool's own schema; 404/405 means the route is not served.

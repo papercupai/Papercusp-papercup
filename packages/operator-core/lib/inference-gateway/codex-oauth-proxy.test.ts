@@ -85,6 +85,29 @@ describe('accepted Codex provider completion evidence', () => {
     }
   });
 
+  it.each(['sse', 'json'])('reads headerless %s provider evidence across split opening bytes', (format) => {
+    const wire = format === 'sse'
+      ? `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response })}\n\n`
+      : JSON.stringify(response);
+    const decoder = createCodexProviderCompletionDecoder('');
+    const bytes = Buffer.from(wire);
+    for (let at = 0; at < bytes.length; at += 3) decoder.push(bytes.subarray(at, at + 3));
+    expect(decoder.finish()).toMatchObject({ responseId: response.id, model: response.model,
+      usage: { inputTokens: 120, outputTokens: 17 } });
+  });
+
+  it('refuses unsupported declared media and headerless bodies without provider evidence', () => {
+    expect(() => createCodexProviderCompletionDecoder('text/html')).toThrow('unsupported content type');
+    for (const wire of ['<html>not a provider response</html>',
+      'data: {"type":"response.created"}\n\n', JSON.stringify({ ...response, usage: null })]) {
+      expect(() => {
+        const decoder = createCodexProviderCompletionDecoder('');
+        decoder.push(Buffer.from(wire));
+        decoder.finish();
+      }).toThrow();
+    }
+  });
+
   it('keeps an absent provider effort distinct from forwarded request effort', () => {
     const decoder = createCodexProviderCompletionDecoder('application/json');
     const { reasoning: _reasoning, ...withoutReasoning } = response;
@@ -107,6 +130,54 @@ describe('accepted Codex provider completion evidence', () => {
     const complete = `data: ${JSON.stringify({ type: 'response.completed', response })}\n\n`;
     expect(decoder.push(Buffer.from(filler + complete))).toMatchObject({ responseId: response.id });
     expect(decoder.finish()).toMatchObject({ responseId: response.id });
+  });
+
+  const anthropicStart = { type: 'message_start', message: { type: 'message', id: 'message-provider-1',
+    model: 'claude-provider', stop_reason: null, usage: { input_tokens: 80, cache_read_input_tokens: 20,
+      cache_creation_input_tokens: 5, output_tokens: 0 } } };
+  const anthropicFinal = { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 17 } };
+  const frame = (event: unknown) => `data: ${JSON.stringify(event)}\n\n`;
+  const decode = (protocol: 'openai-responses' | 'anthropic-messages', events: unknown[]) => {
+    const decoder = createCodexProviderCompletionDecoder('text/event-stream', protocol);
+    for (const event of events) decoder.push(Buffer.from(frame(event)));
+    return decoder.finish();
+  };
+  it.each([0, 17])('uses explicit final Anthropic output tokens %s instead of the initial placeholder', output => {
+    expect(decode('anthropic-messages', [anthropicStart,
+      { ...anthropicFinal, usage: { output_tokens: output } }, { type: 'message_stop' }]))
+      .toMatchObject({ responseId: 'message-provider-1', usage: { inputTokens: 105, outputTokens: output,
+        cacheReadTokens: 20, cacheCreationTokens: 5 } });
+  });
+  it('refuses an Anthropic final delta without a final output count', () => {
+    expect(() => decode('anthropic-messages', [anthropicStart, { ...anthropicFinal, usage: {} }, { type: 'message_stop' }])).toThrow();
+  });
+  it('refuses an Anthropic initial stop reason without any final usage event', () => {
+    expect(() => decode('anthropic-messages', [{ ...anthropicStart,
+      message: { ...anthropicStart.message, stop_reason: 'end_turn' } }, { type: 'message_stop' }])).toThrow();
+  });
+  it('refuses Anthropic usage arriving after message_stop', () => {
+    expect(() => decode('anthropic-messages', [anthropicStart, anthropicFinal, { type: 'message_stop' },
+      { ...anthropicFinal, usage: { output_tokens: 999 } }])).toThrow();
+  });
+  it.each(['error', 'response.failed', 'response.incomplete'])('refuses %s even around a provider completion', type => {
+    const complete = { type: 'response.completed', response };
+    expect(() => decode('openai-responses', [complete, { type }])).toThrow();
+    expect(() => decode('openai-responses', [{ type }, complete])).toThrow();
+  });
+  it('refuses an explicit unsuccessful JSON response status despite measured token usage', () => {
+    const decoder = createCodexProviderCompletionDecoder('application/json');
+    decoder.push(Buffer.from(JSON.stringify({ ...response, status: 'failed' })));
+    expect(() => decoder.finish()).toThrow();
+  });
+  it('refuses non-object SSE payloads after a provider completion', () => {
+    expect(() => decode('openai-responses', [{ type: 'response.completed', response }, []])).toThrow();
+  });
+  it('keeps completion evidence invalid after a caller catches a malformed trailing event', () => {
+    const decoder = createCodexProviderCompletionDecoder('text/event-stream');
+    decoder.push(Buffer.from(frame({ type: 'response.completed', response })));
+    expect(() => decoder.push(Buffer.from(frame({ type: 'response.failed' })))).toThrow();
+    expect(() => decoder.finish()).toThrow();
+    expect(() => decoder.push(Buffer.from('data: [DONE]\n\n'))).toThrow();
   });
 });
 
@@ -798,5 +869,78 @@ describe('parseCodexRateReset — the codex-dialect 429 reset parser (WI-2038027
     expect(r.resetAt).toBeNull();
     expect(r.retryAfterMs).toBeNull();
     expect(r.transient).toBe(true);
+  });
+});
+
+describe('Codex usage-credit capacity', () => {
+  it.each(['0', '50321.8471577500'])('retains the numeric wallet balance %s without converting its unit', (balance) => {
+    expect(parseCodexRateLimitHeaders({ 'x-codex-credits-balance': balance }).creditBalance)
+      .toEqual({ amount: Number(balance), unit: 'credits', source: 'codex', unlimited: false });
+  });
+
+  it.each(['', ' ', 'invalid', '-1', 'Infinity'])('does not turn malformed balance %s into zero', (balance) => {
+    expect(parseCodexRateLimitHeaders({ 'x-codex-credits-balance': balance }).creditBalance).toBeUndefined();
+  });
+
+  it('represents an unlimited wallet independently of its numeric header', () => {
+    expect(parseCodexRateLimitHeaders({ 'x-codex-credits-unlimited': 'True', 'x-codex-credits-balance': '0' }).creditBalance)
+      .toEqual({ amount: null, unit: 'credits', source: 'codex', unlimited: true });
+  });
+
+  it('does not turn a paid-account burst throttle into the included weekly reset', () => {
+    const now = Date.UTC(2026, 9, 2);
+    expect(parseCodexRateReset({
+      'x-codex-primary-used-percent': '100',
+      'x-codex-primary-window-minutes': '10080',
+      'x-codex-primary-reset-after-seconds': '604800',
+      'x-codex-credits-has-credits': 'True',
+      'x-codex-credits-balance': '50000',
+      'retry-after': '1',
+    }, now)).toMatchObject({ resetAt: now + 1000, transient: true });
+  });
+
+  it('preserves an exhausted reserve meter even when the wallet has credits', () => {
+    const now = Date.UTC(2026, 9, 2);
+    expect(parseCodexRateReset({
+      'x-codex-active-limit': 'base_model_inference',
+      'x-base-model-inference-primary-used-percent': '100',
+      'x-base-model-inference-primary-window-minutes': '10080',
+      'x-base-model-inference-primary-reset-after-seconds': '3600',
+      'x-codex-credits-has-credits': 'True',
+      'x-codex-credits-balance': '50000',
+    }, now)).toMatchObject({ resetAt: now + 3600_000, transient: false });
+  });
+
+  it('retains available credits alongside an exhausted included allowance', () => {
+    expect(parseCodexRateLimitHeaders({
+      'x-codex-active-limit': 'premium',
+      'x-codex-primary-used-percent': '100',
+      'x-codex-primary-window-minutes': '10080',
+      'x-codex-credits-has-credits': 'True',
+      'x-codex-credits-unlimited': 'False',
+      'x-codex-credits-balance': '50321.8471577500',
+    })).toMatchObject({ utilization7d: 1, bucket: 'premium', usageCreditsAvailable: true });
+  });
+
+  it.each([
+    ['False', 'False', '0', false],
+    ['True', 'False', '0', false],
+    ['True', 'False', 'invalid', false],
+    ['False', 'True', '0', true],
+  ])('interprets credit flags %s/%s with balance %s', (hasCredits, unlimited, balance, available) => {
+    expect(parseCodexRateLimitHeaders({
+      'x-codex-primary-used-percent': '100',
+      'x-codex-primary-window-minutes': '10080',
+      'x-codex-credits-has-credits': hasCredits as string,
+      'x-codex-credits-unlimited': unlimited as string,
+      'x-codex-credits-balance': balance as string,
+    }).usageCreditsAvailable).toBe(available);
+  });
+
+  it('does not invent credit eligibility when no credit headers were observed', () => {
+    expect(parseCodexRateLimitHeaders({
+      'x-codex-primary-used-percent': '100',
+      'x-codex-primary-window-minutes': '10080',
+    }).usageCreditsAvailable).toBeUndefined();
   });
 });

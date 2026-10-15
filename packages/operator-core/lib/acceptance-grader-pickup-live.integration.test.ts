@@ -25,10 +25,12 @@
  * makes the eligible pool non-replenishable, so every redundant dispatch
  * permanently shrinks it. Hence one explicit negative PER VERDICT.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../test/_org-test-db';
 import { observeGraderPickup } from './acceptance-grader-pickup';
 import {
+  advanceGradingCascadeOnCard,
+  detectAcceptanceGraderTerminalFailure,
   isInFlightAcceptanceGradingRequest,
   reconcileOpenGradingCascades,
   resolveAcceptanceGrader,
@@ -303,6 +305,9 @@ describe('R-3 grader recruitment idempotence + three-valued pickup (real PG)', (
       planSlug?: string;
       createdAgoMs: number;
       digest: Array<{ at: string; kind: string; ownerId: string; excerpt?: string }>;
+      selection?: Record<string, unknown>;
+      cascadeCursor?: number;
+      state?: string;
     }): Promise<void> {
       const routing = {
         cascade: {
@@ -312,16 +317,23 @@ describe('R-3 grader recruitment idempotence + three-valued pickup (real PG)', (
           harnessSlug: HARNESS,
           reservation: RESERVATION,
         },
+        ...(opts.selection ? { selection: opts.selection } : {}),
       };
+      // A selected slot names its routed source in responder_id; the answering
+      // identity is separate. Keep the shared fixture consistent with that wire contract.
+      const selected = opts.selection?.selected as Array<{ ownerId?: string }> | undefined;
+      const responderId = selected?.[opts.cascadeCursor ?? 0]?.ownerId ?? 'su-head';
       const createdAt = new Date(Date.now() - opts.createdAgoMs).toISOString();
       await db.adminSql`
         INSERT INTO harness_shared.consult_state
           (workspace_id, conversation_id, requester_id, responder_id, state, question, latency_contract,
-           routing, cascade_digest, created_at, updated_at, expires_at)
+           routing, cascade_digest, cascade_cursor, created_at, updated_at, expires_at)
         VALUES
-          (${RECONCILE_WS}, ${opts.conversationId}, ${'acceptance-grading-sweep'}, ${'su-head'}, ${'active'},
+          (${RECONCILE_WS}, ${opts.conversationId}, ${'acceptance-grading-sweep'}, ${responderId},
+           ${opts.state ?? 'active'},
            ${'grade it'}, ${'proceed'}, ${db.adminSql.json(routing as never)},
-           ${db.adminSql.json(opts.digest as never)}, ${createdAt}::timestamptz, ${createdAt}::timestamptz,
+           ${db.adminSql.json(opts.digest as never)}, ${opts.cascadeCursor ?? 0},
+           ${createdAt}::timestamptz, ${createdAt}::timestamptz,
            ${new Date(Date.now() + 3_600_000).toISOString()}::timestamptz)`;
     }
 
@@ -398,6 +410,247 @@ describe('R-3 grader recruitment idempotence + three-valued pickup (real PG)', (
       expect(res.liveConversationId).toBe('conv-wi10003451-just-answered');
       expect(await stateOf('conv-wi10003451-declined-only')).toMatchObject({ state: 'active', closed: false });
       expect(await stateOf('conv-wi10003451-just-answered')).toMatchObject({ state: 'active', closed: false });
+    });
+
+    describe('EI-25855370514874242: completed failed answering missions', () => {
+      const sessionId = 'failed-answerer-native';
+      const ownerId = 'su-failed-answerer';
+      const providerError = 'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s';
+      const errorTurn = JSON.stringify({
+        type: 'assistant', sessionId, isApiErrorMessage: true, apiErrorStatus: 429,
+        message: { role: 'assistant', stop_reason: 'end_turn' },
+      });
+      const selection = {
+        min: 1,
+        selected: [{ ownerId: 'su-failed-source', answeringOwnerId: ownerId,
+          via: 'floor', score: 0.9, relevance: 0.9, similarity: 0.9, liveness: 'live' }],
+      };
+      const inspect = (native: string) => detectAcceptanceGraderTerminalFailure('answerer.log', {
+        readLogTail: (path) => path === 'answerer.jsonl' ? native : `●${providerError}\n❯`,
+        nativeTranscriptPath: 'answerer.jsonl', nativeSessionId: sessionId,
+        maxRechecks: 0, detectStartupStall: false,
+      });
+
+      it('retires the exact failed slot instead of returning an open provider-error-only mission forever', async () => {
+        const planSlug = 'failed-answerer-provider-429';
+        const conversationId = 'conv-failed-answerer-provider-429';
+        await seedCascade({ conversationId, planSlug, createdAgoMs: 60_000, digest: [], selection });
+        const dependencies = { nowMs: Date.now(), readTerminalFailure: async () => inspect(errorTurn) };
+        expect(await inspect(errorTurn)).toMatchObject({ code: 'inference_gateway_error' });
+        const result = await reconcileOpenGradingCascades({ ...params, planSlug }, dependencies);
+        expect(result.liveConversationId).toBeNull();
+        expect(await stateOf(conversationId)).toMatchObject({ state: 'no_qualified_responder' });
+        const [row] = await db.adminSql<{ cascade_digest: Array<{ kind: string; ownerId: string }> }[]>`
+          SELECT cascade_digest FROM harness_shared.consult_state
+           WHERE workspace_id = ${RECONCILE_WS} AND conversation_id = ${conversationId}`;
+        expect(row.cascade_digest).toContainEqual(expect.objectContaining({
+          kind: 'dispatch_failed', ownerId: 'su-failed-source',
+        }));
+        expect((await reconcileOpenGradingCascades({ ...params, planSlug }, dependencies)).liveConversationId).toBeNull();
+      });
+
+      it.each([
+        ['quoted', JSON.stringify({ type: 'user', sessionId, message: { role: 'user', content: providerError } })],
+        ['newer-turn', errorTurn + '\n' + JSON.stringify({ type: 'user', sessionId })],
+        ['incomplete', errorTurn + '\n{"type":"user"'],
+        ['foreign', errorTurn.replace(sessionId, 'other-native')],
+      ])('keeps a %s failure reading live', async (name, native) => {
+        const planSlug = `failed-answerer-control-${name}`;
+        const conversationId = `conv-${planSlug}`;
+        await seedCascade({ conversationId, planSlug, createdAgoMs: 60_000, digest: [], selection });
+        const dependencies = { nowMs: Date.now(), readTerminalFailure: async () => inspect(native) };
+        expect(await inspect(native)).toBeNull();
+        expect((await reconcileOpenGradingCascades({ ...params, planSlug }, dependencies)).liveConversationId)
+          .toBe(conversationId);
+        expect(await stateOf(conversationId)).toMatchObject({ state: 'active', closed: false });
+      });
+
+      it('queues the next selected slot once and preserves its durable dispatch across retries', async () => {
+        const planSlug = 'failed-answerer-next-slot';
+        const conversationId = `conv-${planSlug}`;
+        const nextOwner = 'su-next-source';
+        await seedCascade({ conversationId, planSlug, createdAgoMs: 60_000, digest: [],
+          selection: { ...selection, selected: [...selection.selected,
+            { ownerId: nextOwner, via: 'floor', score: 0.9, relevance: 0.9, similarity: 0.9, liveness: 'live' }] } });
+        const continueDispatch = vi.fn(async () => false);
+        const readTerminalFailure = vi.fn(async () => inspect(errorTurn));
+        const dependencies = { nowMs: Date.now(), readTerminalFailure, continueDispatch };
+        const result = await reconcileOpenGradingCascades({ ...params, planSlug }, dependencies);
+        expect(result.liveConversationId).toBe(conversationId);
+        const readDispatch = async () => (await db.adminSql<Array<{
+          cascade_cursor: number; responder_id: string; cascade_digest: unknown; routing: Record<string, unknown>;
+        }>>`SELECT cascade_cursor, responder_id, cascade_digest, routing FROM harness_shared.consult_state
+          WHERE workspace_id = ${RECONCILE_WS} AND conversation_id = ${conversationId}`)[0]!;
+        const queued = await readDispatch();
+        expect(queued).toMatchObject({ cascade_cursor: 1, responder_id: nextOwner,
+          cascade_digest: [expect.objectContaining({ kind: 'dispatch_failed', ownerId: 'su-failed-source' })],
+          routing: { cascadeDispatch: { responder: nextOwner, cursor: 1, leaseToken: null } } });
+        expect(continueDispatch).toHaveBeenCalledTimes(1);
+        await reconcileOpenGradingCascades({ ...params, planSlug }, dependencies);
+        expect(await readDispatch()).toEqual(queued);
+        expect(readTerminalFailure).toHaveBeenCalledTimes(1);
+        expect(continueDispatch).toHaveBeenCalledTimes(1);
+        const { continueCascadeDispatchCore } = await import('./consult/cascade-core');
+        expect(await continueCascadeDispatchCore(RECONCILE_WS, conversationId, {
+          getSql: () => db.adminSql,
+          dispatch: (isCurrent) => async (opts) => {
+            expect(await isCurrent()).toBe(true);
+            expect(opts.responder).toBe(nextOwner);
+            await opts.onAnsweringOwner?.('su-next-answerer');
+            return { woke: 1, answeringOwnerId: 'su-next-answerer' };
+          },
+        })).toBe(true);
+        const dispatched = await readDispatch();
+        expect(dispatched.routing).not.toHaveProperty('cascadeDispatch');
+        expect(dispatched.routing).toMatchObject({ selection: { selected: [
+          expect.anything(), expect.objectContaining({ ownerId: nextOwner, answeringOwnerId: 'su-next-answerer' }),
+        ] } });
+      });
+
+      it.each(['answer', 'cursor', 'answering-owner', 'digest'])('preserves a concurrent %s change while inspecting failure', async (change) => {
+        const planSlug = `failed-answerer-race-${change}`;
+        const conversationId = `conv-${planSlug}`;
+        await seedCascade({ conversationId, planSlug, createdAgoMs: 60_000, digest: [], selection });
+        const dependencies = {
+          nowMs: Date.now(),
+          readTerminalFailure: async () => {
+            const failure = await inspect(errorTurn);
+            if (change === 'answer') {
+              await db.adminSql`UPDATE harness_shared.consult_state SET state = 'closed_answered', closed_at = now()
+                WHERE workspace_id = ${RECONCILE_WS} AND conversation_id = ${conversationId}`;
+            } else if (change === 'cursor') {
+              await db.adminSql`UPDATE harness_shared.consult_state SET cascade_cursor = 1
+                WHERE workspace_id = ${RECONCILE_WS} AND conversation_id = ${conversationId}`;
+            } else if (change === 'answering-owner') {
+              await db.adminSql`UPDATE harness_shared.consult_state SET routing = jsonb_set(routing,
+                '{selection,selected,0,answeringOwnerId}', '"su-current-answerer"'::jsonb)
+                WHERE workspace_id = ${RECONCILE_WS} AND conversation_id = ${conversationId}`;
+            } else {
+              await db.adminSql`UPDATE harness_shared.consult_state SET cascade_digest = ${db.adminSql.json([
+                { kind: 'answer', ownerId, at: agoIso(0), excerpt: 'valid concurrent answer' },
+              ] as never)}
+                WHERE workspace_id = ${RECONCILE_WS} AND conversation_id = ${conversationId}`;
+            }
+            return failure;
+          },
+        };
+        const result = await reconcileOpenGradingCascades({ ...params, planSlug }, dependencies);
+        // A raced receipt is conservatively existing; this retry must launch nobody.
+        expect(result.liveConversationId).toBe(conversationId);
+        const [row] = await db.adminSql<{
+          state: string; cascade_cursor: number; cascade_digest: unknown;
+          answering_owner: string;
+        }[]>`SELECT state, cascade_cursor, cascade_digest,
+            routing #>> '{selection,selected,0,answeringOwnerId}' AS answering_owner
+          FROM harness_shared.consult_state WHERE workspace_id = ${RECONCILE_WS} AND conversation_id = ${conversationId}`;
+        expect(row.state).toBe(change === 'answer' ? 'closed_answered' : 'active');
+        expect(row.cascade_cursor).toBe(change === 'cursor' ? 1 : 0);
+        expect(row.answering_owner).toBe(change === 'answering-owner' ? 'su-current-answerer' : ownerId);
+        expect(row.cascade_digest).toEqual(change === 'digest'
+          ? [expect.objectContaining({ kind: 'answer', ownerId })] : []);
+      });
+    });
+
+    // WI-10006700 — the shape MEASURED on conv-muwrapka (2026-10-06): every slot,
+    // incl. the min-answers refill pick, failed to dispatch; cascade-core wrote
+    // `underFilled: refill-spent` at cursor 2 and handed the terminal state to a
+    // trigger that dropped it. Counted live, the row returned dispatch:'existing'
+    // on every ship retry for the full 4h TTL.
+    it('WI-10006700: finishes a cascade cascade-core already walked to exhaustion instead of reusing it', async () => {
+      const plan = 'wi-10006700-subject-plan';
+      const failed = (ownerId: string) => ({ at: agoIso(10 * 60_000), kind: 'dispatch_failed', ownerId });
+      await seedCascade({
+        conversationId: 'conv-wi10006700-walked',
+        planSlug: plan,
+        createdAgoMs: 15 * 60_000,
+        state: 'awaiting_responder',
+        cascadeCursor: 2,
+        selection: {
+          min: 1,
+          underFilled: { at: agoIso(10 * 60_000), min: 1, answers: 0, reason: 'refill-spent' },
+        },
+        digest: [failed('su-g1'), failed('su-g2'), failed('su-refill')],
+      });
+      // CONTROL: the same failed digest WITHOUT underFilled is a cascade still
+      // mid-walk (cascade-core has not finished the menu) — it must stay live.
+      await seedCascade({
+        conversationId: 'conv-wi10006700-mid-walk',
+        planSlug: 'wi-10006700-control-plan',
+        createdAgoMs: 15 * 60_000,
+        state: 'awaiting_responder',
+        cascadeCursor: 1,
+        selection: { min: 1 },
+        digest: [failed('su-g1')],
+      });
+
+      const res = await reconcileOpenGradingCascades({ ...params, planSlug: plan });
+      expect(res).toEqual({ liveConversationId: null, closedSpent: [] });
+      expect(await stateOf('conv-wi10006700-walked')).toMatchObject({
+        state: 'no_qualified_responder',
+        closed: false,
+      });
+
+      const control = await reconcileOpenGradingCascades({ ...params, planSlug: 'wi-10006700-control-plan' });
+      expect(control.liveConversationId).toBe('conv-wi10006700-mid-walk');
+      expect(await stateOf('conv-wi10006700-mid-walk')).toMatchObject({ state: 'awaiting_responder', closed: false });
+    });
+  });
+
+  describe('a final acceptance card closes its grading cascade', () => {
+    it('persists the card answer and closes the consult without requiring a reply', async () => {
+      const conversationId = 'conv-r3-card-final-answer';
+      const nowIso = new Date().toISOString();
+      const routing = {
+        selection: {
+          min: 1,
+          max: 2,
+          selected: [{
+            ownerId: 'su-r3-final-grader',
+            via: 'floor',
+            score: 0.9,
+            relevance: 0.9,
+            similarity: 0.9,
+            liveness: 'live',
+          }],
+          candidates: [],
+        },
+        cascade: {
+          flavor: GRADING_CASCADE_FLAVOR,
+          planSlug: 'r3-card-final-plan',
+          rubricId: 'acceptance-r3-card-final-plan',
+          harnessSlug: HARNESS,
+        },
+      };
+      await db.adminSql`
+        INSERT INTO harness_shared.consult_state
+          (workspace_id, conversation_id, requester_id, responder_id, state, question,
+           latency_contract, routing, cascade_digest, cascade_cursor, wakes_used,
+           created_at, updated_at, expires_at)
+        VALUES
+          (${LIST_WORKSPACE}, ${conversationId}, ${'su-r3-requester'}, ${'su-r3-final-grader'},
+           ${'active'}, ${'grade it'}, ${'proceed'}, ${db.adminSql.json(routing as never)},
+           ${db.adminSql.json([] as never)}, ${0}, ${1}, ${nowIso}::timestamptz,
+           ${nowIso}::timestamptz, ${new Date(Date.now() + 3_600_000).toISOString()}::timestamptz)`;
+
+      const result = await advanceGradingCascadeOnCard({
+        workspaceId: LIST_WORKSPACE,
+        rubricRef: 'acceptance-r3-card-final-plan',
+        graderOwnerId: 'su-r3-final-grader',
+        cardSummary: 'complete independent grade',
+      });
+
+      expect(result).toEqual({ advanced: false, reason: 'menu_exhausted' });
+      const [row] = await db.adminSql<
+        Array<{ state: string; closed: boolean; expires_at: string | null; outcome: Record<string, unknown> | null }>
+      >`SELECT state, closed_at IS NOT NULL AS closed, expires_at, outcome
+          FROM harness_shared.consult_state
+         WHERE workspace_id = ${LIST_WORKSPACE} AND conversation_id = ${conversationId}`;
+      expect(row).toMatchObject({ state: 'closed_answered', closed: true, expires_at: null });
+      expect(row?.outcome).toMatchObject({
+        source: 'acceptance-grader-card',
+        reason: 'cascade_complete',
+        answeredBy: 'su-r3-final-grader',
+      });
     });
   });
 });

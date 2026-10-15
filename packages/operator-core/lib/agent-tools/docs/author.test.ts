@@ -9,6 +9,8 @@ import { describe, it, expect } from 'vitest';
 import {
   normalizeSlug,
   normalizeSection,
+  DOCS_ROOT_SECTION,
+  docRefFor,
   insightsIndexNudge,
   stripLeadingFrontmatter,
   normalizeList,
@@ -74,6 +76,31 @@ describe('normalizeSection', () => {
   });
   it('allows nested kebab dirs', () => {
     expect(normalizeSection('spec/decisions')).toEqual({ ok: true, section: 'spec/decisions' });
+  });
+});
+
+// WI-6554700010011197: root-level docs (branding.mdx, index.mdx, performance.mdx) were
+// unreachable — '' fell to agent-insights and '.' is rejected. The root is addressable
+// only EXPLICITLY, so a bare slug keeps the agent-insights default.
+describe('docs-root section (WI-6554700010011197)', () => {
+  it('an all-slash section is the docs root', () => {
+    expect(normalizeSection('/')).toEqual({ ok: true, section: DOCS_ROOT_SECTION });
+    expect(normalizeSection(' // ')).toEqual({ ok: true, section: DOCS_ROOT_SECTION });
+  });
+  it('absent / empty sections keep the agent-insights default, never the root', () => {
+    expect(normalizeSection(undefined)).toEqual({ ok: true, section: 'agent-insights' });
+    expect(normalizeSection('')).toEqual({ ok: true, section: 'agent-insights' });
+    expect(normalizeSlug('branding.mdx')).toEqual({ ok: true, slug: 'branding' });
+  });
+  it('a leading-slash slug with no dir is docs-root-absolute (and agrees with "//")', () => {
+    expect(normalizeSlug('/branding.mdx')).toEqual({ ok: true, slug: 'branding', section: DOCS_ROOT_SECTION });
+    expect(normalizeSlug('//branding')).toEqual({ ok: true, slug: 'branding', section: DOCS_ROOT_SECTION });
+    expect(normalizeSlug('/system/foo')).toEqual({ ok: true, slug: 'foo', section: 'system' });
+  });
+  it('docRefFor composes the root ref without a dir, and every other section with one', () => {
+    expect(docRefFor(DOCS_ROOT_SECTION, 'branding')).toEqual({ ref: 'branding', docId: 'branding.mdx' });
+    expect(docRefFor('agent-insights', 'x')).toEqual({ ref: 'agent-insights/x', docId: 'agent-insights/x.mdx' });
+    expect(docRefFor('spec/decisions', 'd-1')).toEqual({ ref: 'spec/decisions/d-1', docId: 'spec/decisions/d-1.mdx' });
   });
 });
 

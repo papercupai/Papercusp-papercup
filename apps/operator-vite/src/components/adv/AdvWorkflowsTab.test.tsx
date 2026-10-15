@@ -25,9 +25,20 @@ const H = vi.hoisted(() => ({
   noRollup: false,
   /** Core inventory queries are unresolved — absence must render as loading, never zero. */
   loadingData: false,
+  occurrenceError: null as Error | null,
+  emptyOccurrences: false,
   /** Swap the connected-source fixture to Gmail for direct Email-target coverage. */
   gmailSource: false,
+  /** The catalog carries the `external-trigger-dispatch` routine, inactive (WI-10004922). */
+  dispatcherPaused: false,
+  /** Every external binding in the admin snapshot is disarmed. */
+  externalDisarmed: false,
+  /** The external bindings belong to an unreviewed trigger pack (P-013): arming answers 409. */
+  packOwned: false,
 }));
+
+const PACK_INSTALLATION_ID = '33333333-3333-4333-8333-333333333333';
+const PACK_FINGERPRINT = 'f'.repeat(64);
 
 /** 230 triggered plans, 12 of them urgent — the shape measured in the desktop shell. */
 const BULK_PLANS = Array.from({ length: 230 }, (_, i) => ({
@@ -74,6 +85,13 @@ const external: ExternalTriggerAdminSnapshot = {
       id: "source-slack",
       kind: "slack",
       status: "connected",
+      scope: "pot",
+      scopeRef: "papercusp",
+      permissionMode: "source-acl",
+      backfillStatus: "not-requested",
+      lastSyncAt: null,
+      nextAttemptAt: null,
+      failureCount: 0,
       config: {},
       credentialRef: null,
       cursor: {},
@@ -154,6 +172,10 @@ vi.mock('@papercusp/sync', () => ({
     if (enabled === false) return { data: [], loading: false, invalidate };
     if (H.loadingData) return { data: [], loading: true, invalidate };
     if (H.emptyData) return { data: [], loading: false, invalidate };
+    if (queryName === 'automation.catalog' && H.dispatcherPaused) {
+      const dispatcher = { ...routine(), name: 'external-trigger-dispatch', group: 'external-triggers', active: false };
+      return { data: [{ ...catalog, routines: [...catalog.routines, dispatcher] }], loading: false, invalidate };
+    }
     if (queryName === 'automation.catalog') return { data: [catalog], loading: false, invalidate };
     if (queryName === 'harnessProjects.lite') return { data: [{ slug: 'papercusp' }], loading: false, invalidate };
     if (queryName === 'plans.list' && H.manyPlans) return { data: BULK_PLANS, loading: false, invalidate };
@@ -162,7 +184,7 @@ vi.mock('@papercusp/sync', () => ({
       { slug: 'rubric-ratification', title: 'Rubric ratification', harness: 'papercusp', status: 'ready', nextAction: 'Wait for independent review', triggered: true, triggerSources: ['manual'], scheduled: false, scheduleActive: false },
     ], loading: false, invalidate };
     if (queryName === 'plans.schedule') return { data: [{ templateSlug: 'customer-digest', title: 'Customer feedback digest', harnessSlug: 'papercusp', schedule: { rrule: 'RRULE:FREQ=DAILY;BYHOUR=9', tzid: 'America/New_York' }, scheduledAt: null, expiresAt: null, tzid: 'America/New_York', scheduleActive: true }], loading: false, invalidate };
-    if (queryName === 'plans.scheduledOccurrences') return { data: [{ templateSlug: 'customer-digest', title: 'Customer feedback digest', harnessSlug: 'papercusp', occurrenceMs: Date.now() + 18 * 60_000, kind: 'recurring', scheduleActive: true, lastOutcome: 'success' }], loading: false, invalidate };
+    if (queryName === 'plans.scheduledOccurrences') return { data: H.emptyOccurrences ? [] : [{ templateSlug: 'customer-digest', title: 'Customer feedback digest', harnessSlug: 'papercusp', occurrenceMs: Date.now() + 18 * 60_000, kind: 'recurring', scheduleActive: true, lastOutcome: 'success' }], error: H.occurrenceError, loading: false, invalidate };
     if (queryName === 'plans.runHistory' && H.noRollup) return { data: [{ runs: [], rollup: null }], loading: false, invalidate };
     if (queryName === 'plans.runHistory') return { data: [{ runs: [{ id: 1, status: 'done', trigger: 'manual', outcome: 'success', launchedAt: Date.now() - 60_000, durationMs: 45_000, costUsd: 0.62 }], rollup: { total: 1, successRate: 1, totalCostUsd: 0.62, medianDurationMs: 45_000, running: 0, failed: 0 } }], loading: false, invalidate };
     return { data: [], loading: false, invalidate };
@@ -242,13 +264,50 @@ beforeEach(() => {
   H.manyPlans = false;
   H.noRollup = false;
   H.loadingData = false;
+  H.occurrenceError = null;
+  H.emptyOccurrences = false;
   H.gmailSource = false;
+  H.dispatcherPaused = false;
+  H.externalDisarmed = false;
+  H.packOwned = false;
   vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
     if (init?.method === 'POST' && String(_input).includes('/agent-chats')) {
       return new Response(JSON.stringify({ id: 'workflow-composer-chat-1' }), { status: 200 });
     }
     if (init?.method === 'PATCH') {
-      const request = JSON.parse(String(init.body ?? '{}')) as { op?: string; id?: string };
+      const request = JSON.parse(String(init.body ?? '{}')) as { op?: string; id?: string; armed?: boolean };
+      if (H.packOwned && request.op === 'set-armed' && request.armed === true) {
+        return new Response(JSON.stringify({
+          ok: false,
+          error: 'trigger_pack_review_required',
+          detail: 'binding belongs to an unreviewed trigger pack',
+          pack: { installationId: PACK_INSTALLATION_ID, pluginName: 'gmail-triage' },
+        }), { status: 409 });
+      }
+      if (request.op === 'pack-review') {
+        return new Response(JSON.stringify({
+          ok: true,
+          review: {
+            installationId: PACK_INSTALLATION_ID,
+            fingerprint: PACK_FINGERPRINT,
+            reviewedFingerprint: null,
+            reviewedBy: null,
+            reviewedAt: null,
+            current: false,
+            bindingCount: 2,
+            review: {
+              pluginName: 'gmail-triage', pluginVersion: '1.2.0', harnessSlug: 'papercusp', status: 'configured',
+              capabilities: ['mail.draft'], oauth: [{ provider: 'google', scopes: ['gmail.readonly'] }],
+              bindings: [], entryPoints: [], plans: [], recipients: [], unmet: [],
+            },
+          },
+        }), { status: 200 });
+      }
+      if (request.op === 'pack-arm') {
+        return new Response(JSON.stringify({
+          ok: true, installationId: PACK_INSTALLATION_ID, fingerprint: PACK_FINGERPRINT, armedBindingIds: ['a', 'b'],
+        }), { status: 200 });
+      }
       if (request.op === 'attach-external') {
         return new Response(JSON.stringify({ ok: true, binding: { id: '22222222-2222-4222-8222-222222222222' } }), { status: 200 });
       }
@@ -280,6 +339,10 @@ beforeEach(() => {
         triggeredAt: new Date(Date.parse('2026-08-22T19:00:00.000Z') - i * 60_000).toISOString(),
       }));
       return new Response(JSON.stringify({ ...external, recentRuns }), { status: 200 });
+    }
+    if (H.externalDisarmed) {
+      const bindings = external.bindings.map((binding) => ({ ...binding, armed: false }));
+      return new Response(JSON.stringify({ ...external, bindings }), { status: 200 });
     }
     return new Response(JSON.stringify(external), { status: 200 });
   }));
@@ -337,6 +400,77 @@ describe('<AdvWorkflowsTab> — one frame (D-001)', () => {
     await screen.findByRole('heading', { name: 'Workflows', level: 1 });
     // The rule this preserves: no "all clear" card, no empty frame — absence IS the state.
     expect(screen.queryByTestId('workflows-needs-you')).toBeNull();
+  });
+
+  it('reports an occurrence read failure while retaining the workflow and routine inventory', async () => {
+    H.occurrenceError = new Error('occurrence read denied');
+    renderTab();
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('occurrence read denied');
+    expect(within(alert).getByRole('button', { name: 'Retry schedule read' })).toBeTruthy();
+    expect(screen.getByTestId(`wf-row:${DIGEST}`)).toBeTruthy();
+    expect(screen.getByTestId('wf-row:routine:git-sync:papercusp')).toBeTruthy();
+  });
+
+  it('does not show stale next-run values after an occurrence read fails', async () => {
+    H.occurrenceError = new Error('occurrence read denied');
+    renderTabOnDigest();
+    const row = await screen.findByTestId(`wf-row:${DIGEST}`);
+    expect(row.textContent).not.toContain('18m');
+    expect(row.textContent).toContain('Schedule unavailable');
+    expect(screen.getByLabelText('Workflow inspector').textContent).not.toContain('18m');
+  });
+
+  it('retries the occurrence read and restores verified next-run values on recovery', async () => {
+    H.occurrenceError = new Error('occurrence read denied');
+    const view = renderTab();
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry schedule read' }));
+    expect(H.invalidates).toEqual(['plans.scheduledOccurrences']);
+    expect(H.runTool).not.toHaveBeenCalled();
+    H.occurrenceError = null;
+    view.rerender(<NuqsTestingAdapter><AdvWorkflowsTab /></NuqsTestingAdapter>);
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(screen.getByTestId(`wf-row:${DIGEST}`).textContent).toContain('18m');
+  });
+
+  it('keeps a genuinely empty successful occurrence read distinct from failure', async () => {
+    H.emptyOccurrences = true;
+    renderTab();
+    await screen.findByTestId(`wf-row:${DIGEST}`);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Retry schedule read' })).toBeNull();
+    expect(screen.getByTestId(`wf-row:${DIGEST}`).textContent).not.toContain('Schedule unavailable');
+  });
+
+  it('shows verified next-run values for a successful occurrence read', async () => {
+    renderTabOnDigest();
+    expect((await screen.findByTestId(`wf-row:${DIGEST}`)).textContent).toContain('18m');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  /**
+   * WI-10004922: the trigger dispatcher was paused for two weeks while an armed workflow
+   * looked ready. The catalog's routine row is the only input that can say so.
+   */
+  it('leads the needs-you strip when the trigger dispatcher is paused under an armed event workflow', async () => {
+    H.dispatcherPaused = true;
+    renderTab();
+    const strip = await screen.findByTestId('workflows-needs-you');
+    expect(
+      await within(strip).findByText(/Event triggers are paused: 1 armed workflow is queuing runs/),
+    ).toBeTruthy();
+  });
+
+  it('raises no dispatcher alarm when only schedules are armed, because schedules keep firing', async () => {
+    // customer-digest keeps an ARMED schedule; only its event binding is disarmed. Counting
+    // every un-paused triggered row (the first cut) raised the alarm here falsely.
+    H.dispatcherPaused = true;
+    H.externalDisarmed = true;
+    renderTab();
+    // Not vacuous: the armed-schedule workflow has rendered, and the snapshot has been read.
+    expect((await screen.findAllByText('Customer feedback digest')).length).toBeGreaterThan(0);
+    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalled());
+    expect(screen.queryByText(/Event triggers are paused/)).toBeNull();
   });
 
   /**
@@ -483,6 +617,23 @@ describe('<AdvWorkflowsTab> — the inspector is the detail surface (D-002)', ()
       expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PATCH'
         && String(init.body).includes('11111111-1111-4111-8111-111111111111')
         && String(init.body).includes('"armed":false'))).toBe(true);
+    });
+  });
+
+  it('arms a pack-owned binding only through the pack review, against the reviewed fingerprint (P-013)', async () => {
+    H.externalDisarmed = true;
+    H.packOwned = true;
+    renderTabOnDigest();
+    const inspector = await screen.findByLabelText('Workflow inspector');
+    fireEvent.click(within(inspector).getByRole('button', { name: 'Arm ext:slack:message' }));
+    await waitFor(() => {
+      const bodies = vi.mocked(fetch).mock.calls
+        .filter(([, init]) => init?.method === 'PATCH')
+        .map(([, init]) => JSON.parse(String(init?.body)) as Record<string, unknown>);
+      expect(bodies.map((body) => body.op)).toEqual(['set-armed', 'pack-review', 'pack-arm']);
+      expect(bodies[2]).toEqual({
+        op: 'pack-arm', installationId: PACK_INSTALLATION_ID, fingerprint: PACK_FINGERPRINT, confirm: true,
+      });
     });
   });
 

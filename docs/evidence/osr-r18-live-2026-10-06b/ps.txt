@@ -1,0 +1,50 @@
+   1165    1129    3319      \_ xinit /home/tester/.xinitrc -- /usr/bin/X :0 -nolisten tcp vt1 -auth /tmp/serverauth.mroU7ZDw8N
+   1166    1165    3319          \_ /usr/lib/xorg/Xorg :0 -nolisten tcp vt1 -auth /tmp/serverauth.mroU7ZDw8N
+  35252   35251     359      \_ npm run tauri dev --no-watch --no-dev-server-wait --config {"build":{"devUrl":"http://127.0.0.1:3270"}}
+  35310   35252     359          \_ sh -c bin/tauri-guarded dev --no-watch --no-dev-server-wait --config '{"build":{"devUrl":"http://127.0.0.1:3270"}}'
+  35311   35310     359              \_ bash bin/tauri-guarded dev --no-watch --no-dev-server-wait --config {"build":{"devUrl":"http://127.0.0.1:3270"}}
+  35322   35311     359                  \_ node /home/tester/papercusp-app/papercusp-desktop/node_modules/.bin/tauri dev --no-watch --no-dev-server-wait --config {"build":{"devUrl":"http://127.0.0.1:3270"}}
+  35559   35382     353                      |       \_ bash -c echo "$$" > "$1"; shift   port="$1"; shift   stopping=0   trap "stopping=1" TERM INT HUP   fails=0   max_fails=8   while :; do     ( eval "$1" ); code=$?   
+  35564   35559     353                      |       |   \_ bash -c echo "$$" > "$1"; shift   port="$1"; shift   stopping=0   trap "stopping=1" TERM INT HUP   fails=0   max_fails=8   while :; do     ( eval "$1" ); code=$
+  35566   35564     353                      |       |       \_ npm exec tsx bin/serve.ts --ui
+  35782   35566     352                      |       |           \_ sh -c "tsx" bin/serve.ts --ui
+  35784   35782     352                      |       |               \_ node /home/tester/papercusp-app/node_modules/.bin/tsx bin/serve.ts --ui
+  35813   35784     352                      |       |                   \_ /home/tester/.nvm/versions/node/v25.9.0/bin/node --require /home/tester/papercusp-app/node_modules/tsx/dist/preflight.cjs --import file:///home/
+  37001   35813     344                      |       |                       \_ /home/tester/papercusp-app/node_modules/@embedded-postgres/linux-x64/native/bin/postgres -D /home/tester/.papercusp/embedded-pg-data -p 5532
+  43815   37001     238                      |       |                       |   \_ postgres: harness_admin papercusp 127.0.0.1(60406) idle
+  43816   37001     238                      |       |                       |   \_ postgres: harness_admin papercusp 127.0.0.1(60410) idle
+  43817   37001     238                      |       |                       |   \_ postgres: harness_admin papercusp 127.0.0.1(60420) idle
+  43818   37001     238                      |       |                       |   \_ postgres: harness_admin papercusp 127.0.0.1(60436) idle
+  43819   37001     238                      |       |                       |   \_ postgres: harness_admin papercusp 127.0.0.1(60442) idle
+  43820   37001     238                      |       |                       |   \_ postgres: harness_admin papercusp 127.0.0.1(60454) idle
+  43821   37001     238                      |       |                       |   \_ postgres: harness_admin papercusp 127.0.0.1(60458) idle
+  43822   37001     238                      |       |                       |   \_ postgres: harness_admin papercusp 127.0.0.1(60468) idle
+  43823   37001     238                      |       |                       |   \_ postgres: harness_admin papercusp 127.0.0.1(60478) idle
+  43824   37001     238                      |       |                       |   \_ postgres: harness_admin papercusp 127.0.0.1(60486) idle
+  43825   37001     238                      |       |                       |   \_ postgres: harness_admin papercusp 127.0.0.1(60502) idle
+  43826   37001     238                      |       |                       |   \_ postgres: harness_admin papercusp 127.0.0.1(60518) idle
+  43827   37001     238                      |       |                       |   \_ postgres: harness_admin papercusp 127.0.0.1(60532) idle
+  43828   37001     238                      |       |                       |   \_ postgres: harness_admin papercusp 127.0.0.1(60534) idle
+  43829   37001     238                      |       |                       |   \_ postgres: harness_admin papercusp 127.0.0.1(60536) idle
+  43830   37001     238                      |       |                       |   \_ postgres: harness_admin papercusp 127.0.0.1(60546) idle
+  43831   37001     238                      |       |                       |   \_ postgres: harness_admin papercusp 127.0.0.1(60562) idle
+  43832   37001     238                      |       |                       |   \_ postgres: harness_admin papercusp 127.0.0.1(60568) idle
+  43834   37001     238                      |       |                       |   \_ postgres: harness_admin papercusp 127.0.0.1(60572) idle
+  43842   37001     238                      |       |                       |   \_ postgres: harness_admin papercusp 127.0.0.1(60586) idle
+  44018   37001     230                      |       |                       |   \_ postgres: harness_admin papercusp 127.0.0.1(38860) idle
+  44019   37001     230                      |       |                       |   \_ postgres: harness_admin papercusp 127.0.0.1(38868) idle
+  44531   37001     194                      |       |                       |   \_ postgres: harness_admin papercusp 127.0.0.1(44984) idle
+  44534   37001     192                      |       |                       |   \_ postgres: harness_admin papercusp 127.0.0.1(44988) idle
+  44972   37001      11                      |       |                       |   \_ postgres: harness_app papercusp 127.0.0.1(41256) idle
+  39747   35813     320                      |       |                       \_ /home/tester/papercusp-app/node_modules/@esbuild/linux-x64/bin/esbuild --service=0.27.3 --ping
+  43162   35813     271                      |       |                       \_ /home/tester/papercusp-app/node_modules/@esbuild/linux-x64/bin/esbuild --service=0.27.3 --ping
+  43808   35813     238                      |       |                       \_ npm exec tsx /home/tester/papercusp-app/packages/operator-core/lib/inference-gateway/bin.ts
+  43861   43808     237                      |       |                       |   \_ sh -c "tsx" /home/tester/papercusp-app/packages/operator-core/lib/inference-gateway/bin.ts
+  43862   43861     237                      |       |                       |       \_ node /home/tester/papercusp-app/node_modules/.bin/tsx /home/tester/papercusp-app/packages/operator-core/lib/inference-gateway/bin.ts
+  43874   43862     237                      |       |                       |           \_ /home/tester/.nvm/versions/node/v25.9.0/bin/node --require /home/tester/papercusp-app/node_modules/tsx/dist/preflight.cjs --impo
+  44039   35813     230                      |       |                       \_ /home/tester/.nvm/versions/node/v25.9.0/bin/node /home/tester/papercusp-app/packages/operator-core/lib/systemd-scope-env-runner.mjs --env-fd
+  44046   44039     230                      |       |                           \_ npm exec tsx /home/tester/papercusp-app/packages/operator-core/lib/resource-governor/live-health-monitor-bin.ts
+  44059   44046     229                      |       |                               \_ sh -c "tsx" /home/tester/papercusp-app/packages/operator-core/lib/resource-governor/live-health-monitor-bin.ts
+  44060   44059     229                      |       |                                   \_ node /home/tester/papercusp-app/node_modules/.bin/tsx /home/tester/papercusp-app/packages/operator-core/lib/resource-governor/li
+  44071   44060     229                      |       |                                       \_ /home/tester/.nvm/versions/node/v25.9.0/bin/node --require /home/tester/papercusp-app/node_modules/tsx/dist/preflight.cjs --
+  35381   35322     358                      \_ target/debug/papercusp-desktop

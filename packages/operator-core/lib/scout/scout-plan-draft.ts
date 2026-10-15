@@ -202,6 +202,7 @@ export async function createScoutPlanDraft(
     },
   );
 
+  if (result.kind === 'refused') throw new Error(`${result.value.code}: ${result.value.message}`);
   if (result.kind === 'busy') {
     throw new Error(`createScoutPlanDraft: plan ${slug} is being written by another caller`);
   }

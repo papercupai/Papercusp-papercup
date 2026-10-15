@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-11 (fresh-boot capture): a fresh public 0.0.26 build, built from the public repo at 1a3db574 and booted in production mode with a new HOME and no opt-in, sends no telemetry and opens no outbound connection from any Papercusp process",
+  "framework": "operational",
+  "command": [
+    "VM osr18c (disposable overlay): .papercusp/scratch/osr/r18/guest-r11n.sh builds Server deb + GUI AppImage from a clone of public Papercusp/papercusp-app at 1a3db574b837954299168af89caecf5cb14706e8 (HEAD asserted equal before build; build 10:57:15-12:52:44Z rc=0), then runs the installer license scan, apt install 'Papercusp Server_0.0.26_amd64.deb' (12:55:53-12:57:10Z rc=0)",
+    "capture (12:57:22-13:03:45Z): sudo tcpdump -n -i any '(udp port 53) or (outbound TCP SYN, excluding 127.0.0.0/8 and the 10.0.2.2 host gateway)' > tcpdump.txt; ss -tunp sampled every 2s (non-loopback peers) > ss-samples.txt",
+    "launch: HOME=/tmp/r11home4 (fresh, empty) XDG_* under it, PAPERCUSP_INTERNAL_BUILD / PAPERCUSP_POSTHOG_HOST / PAPERCUSP_POSTHOG_KEY unset, setsid Papercusp_GUI_0.0.26_amd64.AppImage --appimage-extract-and-run; wait for operator.json + /api/health ok (ready 12:58:44Z); no user action and no opt-in for the whole window",
+    "positive control at ready+150s (13:01:14Z): getent hosts r11n-positive-control.example.com; curl https://example.com; idle another 150s; /api/health at end (13:03:45Z)",
+    "host analysis (~13:12Z) over the copied outputs .papercusp/scratch/osr/r18/out-2026-10-06-r11n/{capture/,licscan.log,install.log,steps.log}: map every SYN destination to the DNS answer captured in the same tcpdump.txt, and every non-local ss peer to its owning process"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T12:57:22Z",
+  "finishedAt": "2026-10-06T13:03:45Z",
+  "summary": "Fresh-boot outbound capture of a public build before opt-in: the gap the rev-7 grader named for R-11. The build came from the public repo at 1a3db574 and ran production mode with the public distribution profile, a new HOME and no opt-in, for 5 minutes after ready (6m23s captured). The capture holds 16 outbound SYNs. 15 go to OS package repositories, owned by apt's http/https method processes; 1 is the positive control. The Papercusp sidecar processes held no non-local socket in any of 185 samples, and the public default telemetry host flags.papercuspai.com was never resolved or contacted. The positive control shows the instrument sees both DNS and TCP egress during the window.",
+  "assertions": [
+    {
+      "id": "fresh-public-build-exercised",
+      "passed": true,
+      "evidence": "artifacts.sha256: AppImage dc2985a248d532bee5b896b52b29c181a221f6e3972481ab920b365f78af0adb, Server deb 74bd2e2ef656c690f17bf798500f24986b7f6681e37b05110f169dcaffad126f, /usr/bin/papercusp-server cc1355e66f2b…, dpkg 'Status: install ok installed' 'Version: 0.0.26', subject=1a3db574b837954299168af89caecf5cb14706e8. sidecar-env.txt: all 5 serve.mjs/runner node processes have NODE_ENV=production, PAPERCUSP_DISTRIBUTION_PROFILE=public, HOME=/tmp/r11home4 and no PAPERCUSP_INTERNAL_BUILD/POSTHOG variable. health.json (12:58:44Z) and health-end.json (13:03:45Z): ok:true, sha 1a3db574, version 0.0.26. posthog-discovery.txt: no ~/.papercusp/posthog.json was created."
+    },
+    {
+      "id": "no-egress-before-opt-in",
+      "passed": true,
+      "evidence": "tcpdump.txt (1023 lines, 0 packets dropped by kernel): 16 outbound SYNs to 13 addresses, each mapped to the DNS answer in the same capture. security.ubuntu.com 91.189.92.22 x2, 91.189.91.83, 185.125.190.82; esm.ubuntu.com 91.189.91.47, 185.125.190.24; ppa.launchpadcontent.net 185.125.189.188 x2, 185.125.189.187; apt.postgresql.org 151.101.3.52, 151.101.195.52; packages.kopia.io 104.26.12.245 x2 (ports 80 and 443), 104.26.13.245, 172.67.69.102; and example.com 104.20.23.154 (the positive control, 13:01:14Z). DNS questions: only the VM hostname, those apt sources (plus their _http/_https SRV lookups), the control names and example.com. No Papercusp-originated connection exists in the window."
+    },
+    {
+      "id": "telemetry-host-never-contacted",
+      "passed": true,
+      "evidence": "flags.papercuspai.com (packages/operator-core/lib/posthog-public-defaults.ts:29, the public build's default PostHog host) appears in no DNS query and no socket: grep -ci papercuspai = 0 in tcpdump.txt and in ss-samples.txt. No 'posthog', 'sentry', 'telemetry', 'segment', 'amplitude' or 'mixpanel' string appears in the capture."
+    },
+    {
+      "id": "per-process-attribution",
+      "passed": true,
+      "evidence": "ss-samples.txt, 185 samples at 2s intervals over the window. Non-local peers are held only by systemd-resolve (to the 10.0.2.3:53 upstream resolver), apt's 'http'/'https' method processes, and add-apt-repository (185.125.189.225, the Launchpad API, a connection open before the capture began). The Papercusp sidecar (comm MainThread, 146 rows) never holds a non-local peer."
+    },
+    {
+      "id": "instrument-positive-control",
+      "passed": true,
+      "evidence": "control.txt: curl https://example.com -> 200. tcpdump.txt holds 8 r11n-positive-control.example.com questions (lo + enp0s2), the example.com question, and the SYN to 104.20.23.154 at 13:01:14Z. So DNS and TCP egress made from the guest during the app's run are visible to this instrument; a telemetry request would have been seen."
+    },
+    {
+      "id": "os-noise-attributed",
+      "passed": true,
+      "evidence": "Unlike the 2026-09-30 run, the window was not free of OS traffic: os-updaters-running.txt lists fwupd.service, and apt fetched from its configured sources at 12:57:23-12:58:15Z (left over from the guest's add-apt-repository/apt setup). Every such connection is attributed to apt by both its DNS answer and its owning process (see per-process-attribution), so the OS traffic cannot hide a Papercusp request. Stated as a limit of this run, not dismissed as noise."
+    }
+  ],
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "R-11",
+  "subjectCommit": "1a3db574b837954299168af89caecf5cb14706e8",
+  "workItemId": "WI-10003960"
+}

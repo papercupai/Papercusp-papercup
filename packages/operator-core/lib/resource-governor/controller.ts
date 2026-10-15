@@ -30,6 +30,13 @@ export interface ControllerClassSample {
   readonly demand?: ResourceDemand;
   /** Per-start attribution weights for resources not represented by ResourceDemand. */
   readonly resourceWeights?: Readonly<Partial<Record<HealthResource, number>>>;
+  /**
+   * Caller-supplied floor for THIS class on THIS step (e.g. a demand-derived liveness
+   * floor). The class's desired window never sits below max(controller minimumWindow,
+   * this): a cold class starts at it and contraction stops at it. Severe-progress pause
+   * still applies. Omit it (or pass <= the controller minimum) for the ordinary floor.
+   */
+  readonly minimumWindow?: number;
 }
 
 export interface CaplessControllerOptions {
@@ -127,6 +134,8 @@ interface AggregatedClassSample {
   readonly admissionClass: AdmissionClass;
   readonly inFlight: number;
   readonly resourceWeights: Readonly<Record<HealthResource, number>>;
+  /** Largest caller floor supplied for this class this step (0 = none). */
+  readonly minimumWindow: number;
 }
 
 function finiteNonNegative(value: number | undefined): number {
@@ -156,6 +165,7 @@ function demandWeight(resource: HealthResource, demand: ResourceDemand | undefin
       return finiteNonNegative(demand?.databaseConnections);
     case 'provider':
       return finiteNonNegative(demand?.providerRequests);
+    case 'io':
     case 'service':
     case 'queue':
     case 'governor':
@@ -164,14 +174,22 @@ function demandWeight(resource: HealthResource, demand: ResourceDemand | undefin
 }
 
 function aggregateSamples(samples: readonly ControllerClassSample[]): AggregatedClassSample[] {
-  const byClass = new Map<AdmissionClass, { inFlight: number; weights: Record<HealthResource, number> }>();
+  const byClass = new Map<
+    AdmissionClass,
+    { inFlight: number; weights: Record<HealthResource, number>; minimumWindow: number }
+  >();
   for (const sample of samples) {
     const current = byClass.get(sample.admissionClass) ?? {
       inFlight: 0,
-      weights: { cpu: 0, memory: 0, database: 0, service: 0, provider: 0, queue: 0, governor: 0 },
+      weights: { cpu: 0, io: 0, memory: 0, database: 0, service: 0, provider: 0, queue: 0, governor: 0 },
+      minimumWindow: 0,
     };
     const inFlight = sample.inFlight === undefined ? 1 : Math.max(0, Math.floor(finiteNonNegative(sample.inFlight)));
     current.inFlight += inFlight;
+    current.minimumWindow = Math.max(
+      current.minimumWindow,
+      Math.min(Number.MAX_SAFE_INTEGER, Math.floor(finiteNonNegative(sample.minimumWindow))),
+    );
     for (const resource of Object.keys(current.weights) as HealthResource[]) {
       const perStartWeight =
         finiteNonNegative(sample.resourceWeights?.[resource]) || demandWeight(resource, sample.demand);
@@ -184,6 +202,7 @@ function aggregateSamples(samples: readonly ControllerClassSample[]): Aggregated
       admissionClass,
       inFlight: value.inFlight,
       resourceWeights: Object.freeze({ ...value.weights }),
+      minimumWindow: value.minimumWindow,
     }))
     .sort((a, b) => a.admissionClass.localeCompare(b.admissionClass));
 }
@@ -371,6 +390,7 @@ export class CaplessAdaptiveController {
         if (!insideCooldown && reductionFraction > 0) {
           state.desiredWindow = Math.max(
             this.minimumWindow,
+            sample.minimumWindow,
             floorNearInteger(state.desiredWindow * (1 - reductionFraction)),
           );
           state.lastContractionAtMs.set(resource, atMs);
@@ -405,7 +425,12 @@ export class CaplessAdaptiveController {
   }): CaplessControllerDecision {
     const atMs = Math.max(0, Math.floor(input.atMs ?? input.verdict.evaluatedAtMs));
     const samples = aggregateSamples(input.classes);
-    for (const sample of samples) this.#state(sample.admissionClass);
+    for (const sample of samples) {
+      // A caller floor lifts the class before this step's feedback is applied, so a
+      // cold class starts at it and a contracted one resumes at it (WI-10006946).
+      const state = this.#state(sample.admissionClass);
+      state.desiredWindow = Math.max(state.desiredWindow, sample.minimumWindow);
+    }
     this.#expire(atMs);
 
     let reasons: string[];

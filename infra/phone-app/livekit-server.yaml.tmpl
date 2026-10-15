@@ -17,13 +17,17 @@ rtc:
   # collide with the other project's 50000-60000 range.
   udp_port: 7892
   use_external_ip: true
-  # Advertise loopback + LAN as well as the public IP so that co-located services
-  # (livekit-sip, the agent worker) pick 127.0.0.1 for ICE rather than hairpinning
-  # out through the public address — hairpin NAT drops WebRTC consent keepalives.
+  # Rendered by infra/phone-app/edge/edge-config.mjs livekit-interfaces. LiveKit hands the
+  # same candidates to EVERY participant, so with the public media edge (D-025) only the
+  # tunnel interface is listed: its traffic leaves through the cloud edge, use_external_ip's
+  # per-interface STUN maps it to the edge's public IP, and a public client never receives a
+  # LAN or loopback address (P-002 R-13, WI-10006708). Co-located services (the agent worker,
+  # livekit-sip) reach that public candidate through the box-local DNAT the edge tunnel
+  # installs. Without an edge, loopback + LAN keep co-located ICE off the home router's
+  # hairpin NAT, which drops WebRTC consent keepalives.
   interfaces:
     includes:
-      - lo
-      - ${PHONE_LAN_IFACE}
+${PHONE_LIVEKIT_INTERFACES}
 
 # Coordination bus shared with livekit-sip. db 3 — db0/db1 are already in use on
 # this host by other services.
@@ -33,11 +37,28 @@ redis:
 
 turn:
   enabled: true
-  udp_port: 7893
-  # TLS intentionally off: it needs a real cert for a real hostname. UDP TURN is
-  # enough for LAN + a public-IP host. Revisit before shipping to clients on
-  # restrictive corporate networks.
-  tls_port: 0
+  # TURN is TLS-only: never set udp_port. LiveKit would hand every client
+  # turn:<node IP>:<udp_port>, and the node IP is the home address, which no
+  # outside client can reach (WI-10006616). Clients with UDP reach the SFU
+  # directly at its public edge candidate, and LiveKit issues its default public
+  # STUN servers when no UDP TURN is configured.
+  # This TURN server is public (D-024/D-025). livekit-server >= 1.12 refuses to
+  # relay to private, loopback, link-local and multicast peers unless
+  # allow_restricted_peer_cidrs lists them. Keep that default: never list the
+  # box's LAN or loopback here. livekit-sip listens on every address, so a TURN
+  # credential would reach SIP past the edge's carrier-only firewall. The relay
+  # reaches the co-located SFU through its public edge candidate (WI-10006603).
+  # One participant may hold at most this many relays (upstream default, >= 1.13.6).
+  per_user_relay_allocation_limit: 12
+  # Relay source ports, pinned (upstream default) because the box-local DNAT exempts them:
+  # relay -> SFU traffic must leave through the edge, or the browser is handed the box's
+  # LAN address as its mapped address (WI-10006708). Must equal TURN_RELAY_RANGE in
+  # infra/phone-app/edge/edge-config.mjs; a test keeps them equal.
+  relay_range_start: 30000
+  relay_range_end: 40000
+  # Hosted mode validates the hostname, certificate and key before rendering.
+  # The public TCP/443 frontend must reach this TLS backend (default 7894).
+${PHONE_TURN_TLS_CONFIG}
 
 keys:
   ${PHONE_LIVEKIT_API_KEY}: ${PHONE_LIVEKIT_API_SECRET}

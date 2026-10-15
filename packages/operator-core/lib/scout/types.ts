@@ -24,7 +24,7 @@
 
 // P-005/P-006 (su-d1170) extend this contract below; the pure critic spine lives
 // in ./critique-core (Idea-shape-agnostic + reusable) and supplies these types.
-import type { CorpusMatch, CritiqueVerdict } from './critique-core';
+import type { CorpusMatch, CritiqueVerdict, RejectCause, SemanticLegStatus } from './critique-core';
 
 /**
  * The forced-diversity lens taxonomy (D-004). Each lens is a structurally
@@ -380,6 +380,25 @@ export interface ScoredIdea {
   verdict: CritiqueVerdict;
   /** One-line rationale (verdict reason + critic notes), for the digest / audit. */
   notes: string;
+  /**
+   * D-002 stage 2: the shortlisted prior the critic adjudicated this idea a
+   * RESTATEMENT of (same problem, same mechanism). Present ⇒ verdict 'reject' by
+   * merge, independent of the novelty/feasibility buckets. Absent on a non-duplicate,
+   * and on artifacts persisted before the two-stage dedup existed.
+   */
+  duplicateOf?: string;
+  /**
+   * What the P-017 semantic novelty leg did for this idea (D-002 point 4), so a
+   * fail-open reads as "unavailable: <reason>" instead of as "nothing similar".
+   * Always set by `critiqueIdea`; optional only for artifacts persisted before it.
+   */
+  semanticLeg?: SemanticLegStatus;
+  /**
+   * WI-10007486: why the idea was rejected — set exactly when `verdict` is 'reject'
+   * (by `critiqueIdea` / `critiqueIdeas`). Optional only for artifacts persisted
+   * before causes existed; `countRejectCauses` counts those as `unclassified`.
+   */
+  rejectCause?: RejectCause;
 }
 
 /**
@@ -415,8 +434,13 @@ export interface ProposalConsultation {
    * is NOT a synonym for `no_qualified_responder`: the latter is a measured finding
    * that nobody cleared the floor, the former means the embedder was down so nothing
    * was measured. Both yield status 'unavailable', which is why they were collapsed
-   * here until EI-21485716602970457 — but only one of them justifies a retry. */
-  verdict: 'routed' | 'served_from_archive' | 'no_qualified_responder' | 'relevance_unmeasured' | 'failed';
+   * here until EI-21485716602970457 — but only one of them justifies a retry.
+   * `retrieval_only` means the caller forbade any responder launch, so the core
+   * returned its ranked menu without attempting a review: also 'unavailable', and
+   * not a failed launch. `no_launchable_responder` means experts WERE selected but
+   * no answering session could be launched for any of them: a dispatch failure,
+   * not a measured absence. */
+  verdict: 'routed' | 'served_from_archive' | 'no_qualified_responder' | 'no_launchable_responder' | 'relevance_unmeasured' | 'retrieval_only' | 'failed';
   /** Selected/answering reviewer when known. */
   reviewerId?: string;
   /** Critique folded into the routed artifact once an answer is available. */

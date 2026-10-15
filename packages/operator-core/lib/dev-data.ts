@@ -235,6 +235,98 @@ export async function telemetryRollup(
   };
 }
 
+// ── Handler phase rollup (papercusp-performance-audit-2026-10-12 P-001) ──
+
+export interface HandlerPhaseRollupInput {
+  toolName: string;
+  workspaceIds?: string[] | null;
+  hours?: number;
+}
+
+export interface HandlerPhaseRollup {
+  tool_name: string;
+  hours: number;
+  /** Calls in the window whose metadata_json carried handlerPhases (handler-phases-v1). */
+  calls_with_phases: number;
+  /** sum(attributedMs) / sum(elapsedMs): the share of the tool's wall time named phases explain. */
+  coverage_total: number | null;
+  /** Median per-call attributedMs / elapsedMs. */
+  coverage_p50: number | null;
+  /** Share of calls whose named phases cover at least 90% of their wall time. */
+  coverage_ge_90_share: number | null;
+  phases: Array<{ phase: string; count: number; p50_ms: number | null; p95_ms: number | null; total_ms: number }>;
+}
+
+/**
+ * Per-phase timing for one tool, read from the handler-phases-v1 record the dispatcher
+ * persists in tool_invocations.metadata_json.handlerPhases on every call that tracked a
+ * phase (libs/generic/tooldef/src/phase-tracker.ts).
+ */
+export async function handlerPhaseRollup(input: HandlerPhaseRollupInput): Promise<HandlerPhaseRollup> {
+  const hours = Math.max(1, Math.min(336, input.hours ?? 24));
+  const { sql } = getOrgPg();
+  const sinceIso = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+  const workspaceIds = input.workspaceIds ?? [];
+  const wsFilter = workspaceIds.length > 0 ? sql`AND t.workspace_id = ANY(${sql.array(workspaceIds)})` : sql``;
+
+  type CoverageRow = { calls: number; attributed: number | null; elapsed: number | null; cov_p50: number | null; cov_ge_90: number | null };
+  const [coverage] = (await sql`
+    SELECT count(*)::int AS calls,
+           sum(attributed)::float8 AS attributed,
+           sum(elapsed)::float8 AS elapsed,
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY attributed / NULLIF(elapsed, 0)) AS cov_p50,
+           avg((attributed / NULLIF(elapsed, 0) >= 0.9)::int)::float8 AS cov_ge_90
+      FROM (
+        SELECT (t.metadata_json->'handlerPhases'->>'attributedMs')::float8 AS attributed,
+               (t.metadata_json->'handlerPhases'->>'elapsedMs')::float8 AS elapsed
+          FROM harness_shared.tool_invocations t
+         WHERE t.invoked_at > ${sinceIso}::timestamptz
+           AND t.tool_name = ${input.toolName}
+           AND t.metadata_json ? 'handlerPhases'
+           ${wsFilter}
+      ) c
+  `) as unknown as CoverageRow[];
+
+  type PhaseRow = { phase: string; count: number; p50: number | null; p95: number | null; total: number };
+  const phaseRows = (await sql`
+    SELECT p->>'phase' AS phase,
+           count(*)::int AS count,
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY (p->>'durationMs')::float8) AS p50,
+           percentile_cont(0.95) WITHIN GROUP (ORDER BY (p->>'durationMs')::float8) AS p95,
+           coalesce(sum((p->>'durationMs')::float8), 0)::float8 AS total
+      FROM harness_shared.tool_invocations t
+      CROSS JOIN LATERAL jsonb_array_elements(
+        CASE WHEN jsonb_typeof(t.metadata_json->'handlerPhases'->'phases') = 'array'
+             THEN t.metadata_json->'handlerPhases'->'phases' ELSE '[]'::jsonb END
+      ) p
+     WHERE t.invoked_at > ${sinceIso}::timestamptz
+       AND t.tool_name = ${input.toolName}
+       AND t.metadata_json ? 'handlerPhases'
+       ${wsFilter}
+     GROUP BY 1
+     ORDER BY total DESC
+  `) as unknown as PhaseRow[];
+
+  const round = (v: number | null | undefined) => (v == null ? null : Math.round(v));
+  const ratio = (v: number | null | undefined) => (v == null ? null : Math.round(v * 1000) / 1000);
+  const c = coverage ?? { calls: 0, attributed: null, elapsed: null, cov_p50: null, cov_ge_90: null };
+  return {
+    tool_name: input.toolName,
+    hours,
+    calls_with_phases: c.calls ?? 0,
+    coverage_total: c.elapsed ? ratio((c.attributed ?? 0) / c.elapsed) : null,
+    coverage_p50: ratio(c.cov_p50),
+    coverage_ge_90_share: ratio(c.cov_ge_90),
+    phases: phaseRows.map((r) => ({
+      phase: r.phase,
+      count: r.count,
+      p50_ms: round(r.p50),
+      p95_ms: round(r.p95),
+      total_ms: Math.round(r.total ?? 0),
+    })),
+  };
+}
+
 // ── Poll-suspect detector (EI-7029) ────────────────────────────────
 
 export interface PollSuspect {
@@ -1432,9 +1524,59 @@ export async function getSessionDetail(spawnId: string): Promise<SessionDetail |
         LIMIT 1
       `) as AdvSessionRow[]);
   const advSession = advSessionRows[0] ?? null;
+
+  // A native session can outlive its adv_sessions row. Resolve its owner and
+  // time bounds from the same historical event sources used by sessions:list
+  // before reading tool_invocations, which are keyed by coord_owner_id for
+  // interactive sessions rather than by the native session id.
+  type OwnerSessionEvidence = {
+    owner: string | null;
+    started_at: string | null;
+    ended_at: string | null;
+  };
+  const ownerSessionRows =
+    !agent && !advSession
+      ? ((await sql`
+          WITH session_evidence AS (
+            SELECT owner,
+                   MIN(COALESCE(ts, ingested_at))::text AS started_at,
+                   MAX(COALESCE(ts, ingested_at))::text AS ended_at,
+                   MAX(COALESCE(ts, ingested_at)) AS last_event_at
+              FROM harness_shared.session_turn_parts
+             WHERE workspace_id = 'default'
+               AND source_kind IN ('claude', 'omp', 'codex')
+               AND session_id = ${spawnId}
+             GROUP BY source_kind, owner
+            UNION ALL
+            SELECT owner,
+                   MIN(COALESCE(ts, ingested_at))::text AS started_at,
+                   MAX(COALESCE(ts, ingested_at))::text AS ended_at,
+                   MAX(COALESCE(ts, ingested_at)) AS last_event_at
+              FROM harness_shared.session_turns
+             WHERE owner IS NOT NULL
+               AND session_id = ${spawnId}
+             GROUP BY source_kind, owner
+            UNION ALL
+            SELECT owner_id AS owner,
+                   MIN(created_at)::text AS started_at,
+                   MAX(created_at)::text AS ended_at,
+                   MAX(created_at) AS last_event_at
+              FROM harness_shared.agent_activity
+             WHERE owner_id IS NOT NULL
+               AND session_id = ${spawnId}
+             GROUP BY agent, owner_id
+          )
+          SELECT owner, started_at, ended_at
+            FROM session_evidence
+           WHERE owner IS NOT NULL
+           ORDER BY last_event_at DESC NULLS LAST
+          LIMIT 1
+        `) as OwnerSessionEvidence[])
+      : [];
+  const ownerSessionEvidence = ownerSessionRows[0] ?? null;
   const resolvedSpawnId = agent?.spawn_id ?? spawnId;
 
-  // 2. tool_invocations for this spawn (timeline).
+  // 2. Tool invocations for this native session or spawn (timeline).
   type InvocRow = {
     id: string;
     tool_name: string;
@@ -1444,22 +1586,26 @@ export async function getSessionDetail(spawnId: string): Promise<SessionDetail |
     error_message: string | null;
     args_json: unknown;
   };
-  const invocations = (await (advSession
-    ? advSession.ended_at
+  const hasOwnerScopedSession = advSession !== null || ownerSessionEvidence?.owner != null;
+  const invocationOwner = advSession?.coord_owner_id ?? ownerSessionEvidence?.owner ?? null;
+  const invocationStartedAt = advSession?.started_at ?? ownerSessionEvidence?.started_at ?? null;
+  const invocationEndedAt = advSession?.ended_at ?? ownerSessionEvidence?.ended_at ?? null;
+  const invocations = (await (hasOwnerScopedSession
+    ? invocationEndedAt
       ? sql`
           SELECT id::text, tool_name, invoked_at, duration_ms, status, error_message, args_json
           FROM harness_shared.tool_invocations
-          WHERE coord_owner_id = ${advSession.coord_owner_id}
-            AND invoked_at >= ${advSession.started_at}
-            AND invoked_at <= ${advSession.ended_at}
+          WHERE coord_owner_id = ${invocationOwner}
+            AND invoked_at >= ${invocationStartedAt}
+            AND invoked_at <= ${invocationEndedAt}
           ORDER BY invoked_at ASC
           LIMIT 500
         `
       : sql`
           SELECT id::text, tool_name, invoked_at, duration_ms, status, error_message, args_json
           FROM harness_shared.tool_invocations
-          WHERE coord_owner_id = ${advSession.coord_owner_id}
-            AND invoked_at >= ${advSession.started_at}
+          WHERE coord_owner_id = ${invocationOwner}
+            AND invoked_at >= ${invocationStartedAt}
           ORDER BY invoked_at ASC
           LIMIT 500
         `
@@ -1536,35 +1682,21 @@ export async function getSessionDetail(spawnId: string): Promise<SessionDetail |
     }
   }
 
-  // A native CLI transcript can outlive its adv_sessions row. In that case,
-  // use the faithful parts store to distinguish a transcript-backed session
-  // from an unknown id. Keep every leading PK column bound: the writer sets
-  // workspace_id='default', and session_turn_parts is intentionally not
-  // indexed by session_id alone.
-  type TranscriptRow = { owner: string | null };
-  const transcriptRows =
-    !agent && !advSession && invocations.length === 0 && children.length === 0
-      ? ((await sql`
-          SELECT owner
-          FROM harness_shared.session_turn_parts
-          WHERE workspace_id = 'default'
-            AND source_kind IN ('claude', 'omp', 'codex')
-            AND session_id = ${spawnId}
-          ORDER BY ingested_at DESC
-          LIMIT 1
-        `) as TranscriptRow[])
-      : [];
-  const transcriptOnly = transcriptRows[0] ?? null;
-
-  if (!agent && !advSession && invocations.length === 0 && children.length === 0 && !transcriptOnly) {
+  if (
+    !agent &&
+    !advSession &&
+    invocations.length === 0 &&
+    children.length === 0 &&
+    !ownerSessionEvidence
+  ) {
     return null;
   }
 
   return {
     spawn_id: resolvedSpawnId,
-    session_id: agent?.session_id ?? advSession?.session_id ?? (transcriptOnly ? spawnId : null),
+    session_id: agent?.session_id ?? advSession?.session_id ?? (ownerSessionEvidence ? spawnId : null),
     omp_thread_id: advSession?.omp_thread_id ?? null,
-    coord_owner_id: advSession?.coord_owner_id ?? transcriptOnly?.owner ?? null,
+    coord_owner_id: advSession?.coord_owner_id ?? ownerSessionEvidence?.owner ?? null,
     agent,
     invocations,
     children,

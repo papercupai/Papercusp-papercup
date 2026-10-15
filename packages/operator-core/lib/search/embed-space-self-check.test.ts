@@ -11,6 +11,7 @@ import {
 import type { EscalationRecord } from '../agent-tools/coordination/escalations';
 import type { Sql } from 'postgres';
 import { EMBEDDER_DIM_SPECS, type EmbedderMode, type EmbedderProfileSpec, type ResolvedEmbedder } from '@papercusp/memory';
+import { createSelfCheckMemo } from '@papercusp/search';
 
 const SELF_CHECK_PROFILES: Record<'local' | 'openai', EmbedderProfileSpec> = {
   local: {
@@ -47,8 +48,10 @@ function resolved(mode: 'local' | 'openai', embed: () => Promise<number[]>): Res
 // AssertionError with the rail message nowhere in sight — and before the rail they
 // were passing only because they really were reading the live database.
 const SQL_STUB = {} as unknown as Sql;
+// A fresh memo per call: the default is one per PROCESS, so without this a
+// healthy case would make the next case with the same canary skip its embed.
 const runTick = (deps: EmbedSpaceSelfCheckDeps) =>
-  runEmbedSpaceSelfCheckTick({ sql: SQL_STUB, ...deps });
+  runEmbedSpaceSelfCheckTick({ sql: SQL_STUB, memo: createSelfCheckMemo(), ...deps });
 
 describe('cosineDistance (pure)', () => {
   it('identical vectors → distance ~0', () => {
@@ -256,6 +259,46 @@ describe('runEmbedSpaceSelfCheckTick', () => {
     });
     expect(result.distance).toBeCloseTo(0, 10);
     expect(escalateCalled).toBe(false);
+  });
+
+  it('an idle Server: the next tick with the same embedder profile and canary does not embed (WI-10005523)', async () => {
+    const memo = createSelfCheckMemo();
+    let embedCalls = 0;
+    let resolveOpenCalls = 0;
+    let profile = SELF_CHECK_PROFILES.local;
+    const deps: EmbedSpaceSelfCheckDeps = {
+      memo,
+      resolveEmbedder: async () => ({
+        mode: 'local' as EmbedderMode,
+        dims: 3,
+        profile,
+        embed: async () => {
+          embedCalls++;
+          return [1, 0, 0];
+        },
+      }),
+      pickCanary: async () => mkCanary({ storedVectorText: '[1,0,0]' }),
+      listOpen: async () => [],
+      resolveOpen: async () => {
+        resolveOpenCalls++;
+      },
+    };
+    expect(await runTick(deps)).toMatchObject({ ok: true, distance: 0, mode: 'local' });
+    expect(await runTick(deps)).toEqual({
+      ok: true,
+      skipped: 'unchanged_since_last_pass',
+      table: 'harness_shared.operator_turns',
+      keyLabel: 'harness_shared.operator_turns#42',
+      distance: 0,
+      mode: 'local',
+    });
+    expect(embedCalls).toBe(1);
+
+    // A new model revision is a different space: the check must run again.
+    profile = { ...SELF_CHECK_PROFILES.local, modelRevision: 'test-revision-2' };
+    expect(await runTick(deps)).toMatchObject({ ok: true, distance: 0 });
+    expect(embedCalls).toBe(2);
+    expect(resolveOpenCalls).toBe(0);
   });
 
   it('default threshold constant is exported and reasonably small (not ~0, not huge)', () => {

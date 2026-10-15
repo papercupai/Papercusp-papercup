@@ -4,6 +4,8 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import SecretStream from '@hyperswarm/secret-stream';
+import { ByocSealedChannel } from './byoc-sealed-channel';
 import {
   HOSTED_HOST_MAX_FILE_BYTES,
   HOSTED_HOST_MAX_UPLOAD_CHUNK_BYTES,
@@ -137,6 +139,127 @@ function harness(root: string, files?: SafeRootFileService) {
 }
 
 describe('hosted customer PTY identity', () => {
+  const authority = { userId: 'user-1', sessionId: 'session-1', sessionVersion: 2,
+    controlPlaneWorkspaceId: 'control-1', organizationId: 'org-1', customerWorkspaceId: 'workspace-1',
+    permissions: ['workspace:operate'] };
+  async function authorityHarness() {
+    const f = harness(await projectRoot());
+    await f.adapter.accept({ type: 'relay.open', channelId: 'http', userId: 'user-1',
+      hostedSessionId: 'session-1', audience: 'workspace-operator', role: 'controller', kind: 'operator-http' });
+    return f;
+  }
+
+  it.each(['detach', 'release', 'close'])('aborts native invocations on channel %s', async action => {
+    const f = await authorityHarness();
+    const caller = new AbortController();
+    const signal = f.adapter.customerInvocationSignal('http', caller.signal);
+    expect(signal.aborted).toBe(false);
+    if (action === 'detach') await f.adapter.accept({ type: 'relay.close', channelId: 'http' });
+    else if (action === 'release') f.adapter.release();
+    else f.adapter.close();
+    expect(signal.aborted).toBe(true);
+    expect(caller.signal.aborted).toBe(false);
+    expect(() => f.adapter.customerInvocationSignal('http')).toThrow('hosted_customer_execution_denied');
+    f.adapter.close();
+  });
+
+  it('cannot revive an invocation by reopening the same channel id', async () => {
+    const f = await authorityHarness();
+    const old = f.adapter.customerInvocationSignal('http');
+    await f.adapter.accept({ type: 'relay.close', channelId: 'http' });
+    await f.adapter.accept({ type: 'relay.open', channelId: 'http', userId: 'user-1',
+      hostedSessionId: 'session-1', audience: 'workspace-operator', role: 'controller', kind: 'operator-http' });
+    const fresh = f.adapter.customerInvocationSignal('http');
+    expect(old.aborted).toBe(true); expect(fresh.aborted).toBe(false); expect(fresh).not.toBe(old);
+    f.adapter.close();
+  });
+
+  it('isolates native channel lifetimes and accepts caller cancellation', async () => {
+    const f = await authorityHarness();
+    await f.adapter.accept({ type: 'relay.open', channelId: 'other', userId: 'user-1',
+      hostedSessionId: 'session-1', audience: 'workspace-operator', role: 'controller', kind: 'operator-http' });
+    const caller = new AbortController();
+    const first = f.adapter.customerInvocationSignal('http', caller.signal);
+    const second = f.adapter.customerInvocationSignal('other');
+    caller.abort(); expect(first.aborted).toBe(true); expect(second.aborted).toBe(false);
+    await f.adapter.accept({ type: 'relay.close', channelId: 'http' });
+    expect(second.aborted).toBe(false); f.adapter.close(); expect(second.aborted).toBe(true);
+  });
+
+  it('refuses missing and PTY channel labels as invocation authority', async () => {
+    const f = harness(await projectRoot()); await f.open('pty');
+    for (const channel of ['missing', 'pty']) {
+      expect(() => f.adapter.customerInvocationSignal(channel)).toThrow('hosted_customer_execution_denied');
+    }
+    f.adapter.close();
+  });
+
+  it('derives customer authority only from a correlated private connector answer', async () => {
+    const f = await authorityHarness();
+    const pending = f.adapter.resolveCustomerPrincipal('http');
+    const req = f.sent.find(m => m.type === 'session.authorize') as Extract<HostedHostOutboundEnvelope, { type: 'session.authorize' }>;
+    await f.adapter.accept({ type: 'relay', channelId: 'http', payload: { ...req, type: 'session.authorized', authority } });
+    await f.adapter.accept({ type: 'session.authorized', channelId: 'different', requestId: req.requestId, authority });
+    await f.adapter.accept({ type: 'session.authorized', channelId: 'http', requestId: req.requestId, authority });
+    expect(await pending).toMatchObject({ ok: true, principal: { userId: 'user-1', sessionVersion: 2,
+      activeOrganizationId: 'org-1', selectedWorkspaceId: 'workspace-1' } });
+    const next = f.adapter.resolveCustomerPrincipal('http');
+    const fresh = f.sent.filter(m => m.type === 'session.authorize').at(-1)!;
+    expect(fresh).not.toEqual(req);
+    f.adapter.close(); expect(await next).toEqual({ ok: false });
+  });
+  it('requests diagnostics separately and returns only the correlated control-plane consent', async () => {
+    const f = await authorityHarness();
+    const pending = f.adapter.resolveCustomerPrincipal('http', undefined, true);
+    const req = f.sent.find(m => m.type === 'session.authorize') as Extract<HostedHostOutboundEnvelope, { type: 'session.authorize' }>;
+    expect(req.diagnostics).toBe(true);
+    const monitoringConsent = { disclosure_version: '2026-10-13', diagnostics: { enabled: false, since: null }, analytics: { enabled: false, since: null } };
+    await f.adapter.accept({ ...req, type: 'session.authorized', authority: { ...authority, monitoringConsent } });
+    expect(await pending).toMatchObject({ ok: true, monitoringConsent });
+    f.adapter.close();
+  });
+
+  it.each(['userId', 'sessionId', 'controlPlaneWorkspaceId', 'organizationId',
+    'customerWorkspaceId', 'sessionVersion', 'permissions'])(
+    'rejects mismatched/malformed %s authority', async key => {
+      const f = await authorityHarness(); const pending = f.adapter.resolveCustomerPrincipal('http');
+      const req = f.sent.find(m => m.type === 'session.authorize')!;
+      await f.adapter.accept({ ...req, type: 'session.authorized', authority: {
+        ...authority, [key]: key === 'permissions' ? ['*'] : 'foreign' } });
+      expect(await pending).toEqual({ ok: false }); f.adapter.close();
+    });
+
+  it('bounds pending authority with cancellation, detach and release, ignoring late answers', async () => {
+    for (const action of ['abort', 'detach', 'release']) {
+      const f = await authorityHarness(); const controller = new AbortController();
+      const pending = f.adapter.resolveCustomerPrincipal('http', controller.signal);
+      const req = f.sent.find(m => m.type === 'session.authorize')!;
+      if (action === 'abort') controller.abort();
+      else if (action === 'detach') await f.adapter.accept({ type: 'relay.close', channelId: 'http' });
+      else f.adapter.release();
+      expect(await pending).toEqual({ ok: false });
+      await f.adapter.accept({ ...req, type: 'session.authorized', authority });
+      f.adapter.close();
+    }
+  });
+
+  it('refuses labels on a PTY channel before sending an authority query', async () => {
+    const f = harness(await projectRoot()); await f.open('pty');
+    expect(await f.adapter.resolveCustomerPrincipal('pty')).toEqual({ ok: false });
+    expect(f.sent).not.toContainEqual(expect.objectContaining({ type: 'session.authorize' })); f.adapter.close();
+  });
+  it('expires a stalled authority answer and bounds concurrent requests', async () => {
+    const f = await authorityHarness();
+    vi.useFakeTimers();
+    try {
+      const pending = Array.from({ length: 64 }, () => f.adapter.resolveCustomerPrincipal('http'));
+      expect(await f.adapter.resolveCustomerPrincipal('http')).toEqual({ ok: false });
+      expect(f.sent.filter(m => m.type === 'session.authorize')).toHaveLength(64);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(await Promise.all(pending)).toEqual(Array.from({ length: 64 }, () => ({ ok: false })));
+    } finally { f.adapter.close(); vi.useRealTimers(); }
+  });
+
   it('uses pinned loopback SSH into the workspace account with a clean remote environment', () => {
     const spec = hostedWorkspacePtySpawnSpec({
       scope: {} as never,
@@ -156,6 +279,56 @@ describe('hosted customer PTY identity', () => {
     expect(spec.args.at(-1)).not.toContain('/var/lib/papercusp');
     expect(spec.inheritEnv).toBe(false);
     expect(spec.env).toEqual({ HOME: '/', PATH: '/usr/bin:/bin', LANG: 'C.UTF-8', TERM: 'xterm-256color' });
+  });
+});
+
+describe('membership.report frames (WI-10004257)', () => {
+  function membershipHarness(onMembershipReport?: (report: unknown) => void) {
+    const sent: HostedHostOutboundEnvelope[] = [];
+    const warnings: string[] = [];
+    const adapter = new HostedWorkspaceHostSessionAdapter({
+      binding,
+      workspaceRoot: tmpdir(),
+      send: (message) => sent.push(message),
+      onAudit: vi.fn(),
+      onWarning: (message) => warnings.push(message),
+      ...(onMembershipReport ? { onMembershipReport } : {}),
+    });
+    return { adapter, sent, warnings };
+  }
+  const frame = (organizationId: string) => ({
+    type: 'membership.report',
+    organizationId,
+    removedEmails: ['gone@example.test'],
+  });
+
+  it("hands a report for the binding's organization to the sink, opening no channel", async () => {
+    const reports: unknown[] = [];
+    const { adapter, sent } = membershipHarness((report) => reports.push(report));
+    await adapter.accept(frame('org-1'));
+    expect(reports).toEqual([frame('org-1')]);
+    expect(sent).toEqual([]);
+  });
+
+  it('drops a report naming another organization', async () => {
+    const reports: unknown[] = [];
+    const { adapter, warnings } = membershipHarness((report) => reports.push(report));
+    await adapter.accept(frame('org-2'));
+    await adapter.accept({ type: 'membership.report', removedEmails: [] });
+    expect(reports).toEqual([]);
+    expect(warnings).toEqual([
+      'dropped a membership report for another organization',
+      'dropped a membership report for another organization',
+    ]);
+  });
+
+  it('survives a sink that throws, and ignores the frame without a sink', async () => {
+    const throwing = membershipHarness(() => { throw new Error('store down'); });
+    await expect(throwing.adapter.accept(frame('org-1'))).resolves.toBeUndefined();
+    expect(throwing.warnings).toEqual(['membership_report_failed']);
+    const none = membershipHarness();
+    await expect(none.adapter.accept(frame('org-1'))).resolves.toBeUndefined();
+    expect(none.warnings).toEqual([]);
   });
 });
 
@@ -1060,7 +1233,7 @@ describe('HostedWorkspaceHostSessionAdapter — desktop roster and thumbnails (P
       code: 'desktop_query_failed',
     });
     // The wire carries only the code; the cause must reach the host journal (D-405).
-    expect(warnings).toHaveBeenCalledWith('desktop.roster failed: Error: registry unavailable');
+    expect(warnings).toHaveBeenCalledWith('desktop_query_failed');
   });
 
   it('starts the workspace desktop for a controller on a terminal channel, before any desktop exists (D-405)', async () => {
@@ -1124,7 +1297,7 @@ describe('HostedWorkspaceHostSessionAdapter — desktop roster and thumbnails (P
       operation: 'desktop.start',
       code: 'desktop_start_failed',
     });
-    expect(failing.warnings).toHaveBeenCalledWith('desktop.start failed: Error: desktop pack socket refused');
+    expect(failing.warnings).toHaveBeenCalledWith('desktop_start_failed');
     expect(JSON.stringify(failing.payloads('term-1'))).not.toContain('socket refused');
 
     const bare = desktopHarness();
@@ -1174,5 +1347,123 @@ describe('hosted lane teardown window vs the governor hold (P-014)', () => {
     // governor would start freezing desktops this adapter had not yet released.
     // Nothing else in the tree connects these two numbers.
     expect(HOSTED_HOST_SESSION_IDLE_MS / 1000).toBeLessThanOrEqual(VIEWER_STREAM_TEARDOWN_CEILING_SEC);
+  });
+});
+
+// android-public-release-2026-10-01 D-013 #6: a phone's device-http channel is Noise-sealed
+// end to end; the handshake key names the device, and only that device's JWT is forwarded.
+describe('sealed device-http channel (D-013 #6)', () => {
+  const jwtFor = (sub: string) =>
+    `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({ sub })).toString('base64url')}.c2ln`;
+  const hostKey = SecretStream.keyPair(Buffer.alloc(32, 31));
+  const phoneKey = SecretStream.keyPair(Buffer.alloc(32, 41));
+
+  async function settle(predicate: () => boolean): Promise<void> {
+    for (let i = 0; i < 200 && !predicate(); i++) await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+
+  function sealedDeviceHarness(resolveDeviceNoiseKey?: (key: string) => Promise<string | null>) {
+    const sent: HostedHostOutboundEnvelope[] = [];
+    const forwarded: Array<Record<string, string>> = [];
+    const clientErrors: Error[] = [];
+    const frames: Array<Record<string, unknown>> = [];
+    const audit = vi.fn();
+    let phone!: ByocSealedChannel;
+    const adapter = new HostedWorkspaceHostSessionAdapter({
+      binding,
+      workspaceRoot: '/nonexistent',
+      onAudit: audit,
+      send: (message) => {
+        sent.push(message);
+        if (message.type === 'relay' && message.channelId === 'dev-ch') {
+          // One relay message per event, as a websocket relay delivers them. A same-tick burst
+          // trips ByocSealedChannel's single-slot content-type check (filed separately).
+          setImmediate(() => phone.receive(message.payload as never));
+        }
+      },
+      createPty: () => new FakePty(),
+      operatorHttp: {
+        origin: 'http://127.0.0.1:1',
+        fetch: async (_url, init) => {
+          forwarded.push({ ...(init.headers as Record<string, string>) });
+          return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+        },
+      },
+      byocSealedChannel: {
+        localKeyPair: hostKey,
+        ...(resolveDeviceNoiseKey ? { resolveDeviceNoiseKey } : {}),
+      },
+    });
+    phone = new ByocSealedChannel({
+      initiator: true,
+      localKeyPair: phoneKey,
+      expectedRemotePublicKey: hostKey.publicKey,
+      sendPacket: (packet) => { void adapter.accept({ type: 'relay', channelId: 'dev-ch', payload: packet }); },
+      onFrame: (frame) => { frames.push(frame as Record<string, unknown>); },
+      onError: (error) => clientErrors.push(error),
+    });
+    const open = () => adapter.accept({ type: 'relay.open', channelId: 'dev-ch', kind: 'device-http', audience: 'device', sealed: true });
+    const request = async (requestId: string, token: string) => {
+      const before = forwarded.length;
+      await phone.send({ type: 'http.request', requestId, method: 'GET', path: '/api/device/runtime-config', headers: { authorization: `Bearer ${token}` } });
+      await settle(() => forwarded.length > before);
+      return forwarded[before];
+    };
+    return { adapter, sent, forwarded, frames, audit, clientErrors, phone, open, request };
+  }
+
+  it("forwards the JWT of the device the handshake key resolves to, and drops another device's", async () => {
+    const resolve = vi.fn(async (key: string) => (key === phoneKey.publicKey.toString('base64') ? 'dev-a' : null));
+    const h = sealedDeviceHarness(resolve);
+    await h.open();
+    await h.phone.opened;
+    expect(resolve).toHaveBeenCalledWith(phoneKey.publicKey.toString('base64'));
+    expect((await h.request('r1', jwtFor('dev-a')))?.authorization).toBe(`Bearer ${jwtFor('dev-a')}`);
+    const other = await h.request('r2', jwtFor('dev-b'));
+    expect(other).toBeDefined();
+    expect(other.authorization).toBeUndefined();
+    // Content never crosses the relay in the clear.
+    expect(JSON.stringify(h.sent)).not.toContain(jwtFor('dev-a'));
+  });
+
+  it('admits an unregistered phone key unbound: the call still reaches the machine, with no JWT', async () => {
+    const h = sealedDeviceHarness(async () => null);
+    await h.open();
+    await h.phone.opened;
+    const headers = await h.request('r1', jwtFor('dev-a'));
+    expect(headers).toBeDefined();
+    expect(headers.authorization).toBeUndefined();
+  });
+
+  it('a pair redeemed over the sealed channel registers the handshake key, and a different body key is refused', async () => {
+    const h = sealedDeviceHarness(async () => null);
+    const frames = h.frames;
+    await h.open();
+    await h.phone.opened;
+    const pair = (requestId: string, body: Record<string, unknown>) =>
+      h.phone.send({ type: 'http.request', requestId, method: 'POST', path: '/api/device/pair', headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(body)).toString('base64') });
+    const other = Buffer.alloc(32, 5).toString('base64');
+    await pair('p1', { pairToken: 'tok', noisePublicKey: other });
+    await settle(() => frames.some((f) => f.requestId === 'p1'));
+    expect(frames.find((f) => f.requestId === 'p1')).toMatchObject({ type: 'http.error', code: 'noise_key_mismatch', status: 403 });
+    expect(h.forwarded).toEqual([]);
+    await pair('p2', { pairToken: 'tok' });
+    await settle(() => h.forwarded.length > 0);
+    expect(h.forwarded).toHaveLength(1);
+  });
+
+  it('refuses a sealed device channel when the host has no device-key resolver', async () => {
+    const h = sealedDeviceHarness();
+    await h.open();
+    expect(h.sent).toContainEqual({ type: 'relay.close', channelId: 'dev-ch', reason: 'sealed_channel_unavailable' });
+  });
+
+  it('refuses the handshake when the resolver fails, and forwards nothing', async () => {
+    const h = sealedDeviceHarness(async () => { throw new Error('db down'); });
+    await h.open();
+    await settle(() => JSON.stringify(h.audit.mock.calls).includes('sealed_channel_failed') || h.clientErrors.length > 0);
+    await h.phone.send({ type: 'http.request', requestId: 'r1', method: 'GET', path: '/api/device/runtime-config', headers: {} }).catch(() => {});
+    await settle(() => false);
+    expect(h.forwarded).toEqual([]);
   });
 });

@@ -69,6 +69,26 @@ beforeEach(() => {
   vi.doMock('../../../blueprint/materialize-triggers', () => ({
     materializeBlueprintTriggers: async () => [],
   }));
+  // dependencies.* union across extends. Supply the parent's ready providers
+  // through the real catalog assembler; this isolated test does not bootstrap
+  // the operator's complete tool registry. The dependency gate remains active.
+  vi.doMock('../../../cupboard/pack-catalog', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../../../cupboard/pack-catalog')>();
+    const { operatorResolveExtends } = await import('../../../blueprint/installed-blueprints');
+    const { loadBlueprintFromFile } = await import('@papercusp/orchestrator/blueprint');
+    const resolve = operatorResolveExtends();
+    const { blueprint } = loadBlueprintFromFile(resolve('coding')!, resolve);
+    return {
+      ...actual,
+      derivePackCatalog: async () => actual.assemblePackCatalog({
+        installed: [],
+        projectedTools: [],
+        legacyCatalogNames: blueprint.dependencies?.tools ?? [],
+        cupboardUnits: [],
+        cupboardReachable: true,
+      }),
+    };
+  });
   vi.doMock('../../../workspace-registry', async (importOriginal) => ({
     ...(await importOriginal<typeof import('../../../workspace-registry')>()),
     activeWorkspaceId: () => 'ws-test',
@@ -92,6 +112,7 @@ afterEach(() => {
   vi.doUnmock('../../../harness-registry');
   vi.doUnmock('../../../scaffold-harness-schema');
   vi.doUnmock('../../../blueprint/materialize-triggers');
+  vi.doUnmock('../../../cupboard/pack-catalog');
   vi.doUnmock('../../../workspace-registry');
   vi.doUnmock('../../../harness/git-sync/git-sync-routine');
   vi.doUnmock('../../../harness/docs/seed-doc-tracking');
@@ -114,7 +135,7 @@ describe('harness:create { hive } — B-01 git-sync seeding', () => {
         blueprint: { id: 'member-x', extends: 'coding', dependencies: { tools: [], packs: [], plugins: [] } },
         pot: 'my-hive',
       });
-      expect(payload.ok).toBe(true);
+      expect(payload).toMatchObject({ ok: true });
       // WI-3646 class-bug, instance #3 (found live while validating the .strict()
       // schema fix on harness/create.ts): this assertion pinned the WRONG output
       // key — the handler's success payload names the field `pot` (create.ts
@@ -148,7 +169,7 @@ describe('harness:create { hive } — B-01 git-sync seeding', () => {
         path: dir,
         blueprint: { id: 'standalone-x', extends: 'coding', dependencies: { tools: [], packs: [], plugins: [] } },
       });
-      expect(payload.ok).toBe(true);
+      expect(payload).toMatchObject({ ok: true });
       expect(seedCalls).toEqual([]);
       expect(payload).not.toHaveProperty('gitSync');
     } finally {
@@ -168,7 +189,7 @@ describe('harness:create { hive } — B-01 git-sync seeding', () => {
         blueprint: { id: 'member-err', extends: 'coding', dependencies: { tools: [], packs: [], plugins: [] } },
         pot: 'my-hive',
       });
-      expect(payload.ok).toBe(true);
+      expect(payload).toMatchObject({ ok: true });
       expect(payload.gitSync).toEqual({ seeded: false, reason: 'error', message: 'routines pg down' });
     } finally {
       await fs.rm(dir, { recursive: true, force: true });

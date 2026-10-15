@@ -20,6 +20,7 @@ import { renderDigest } from './lenses';
 import type { CorpusDigest } from './types';
 
 vi.mock('./tick-ledger', () => ({ readScoutTicks: vi.fn() }));
+vi.mock('../degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
 
 function ran(generated: number, deduped: number, routed = 0): DedupBurnTick {
   return { status: 'ran', ideasGenerated: generated, ideasDeduped: deduped, ideasRouted: routed };

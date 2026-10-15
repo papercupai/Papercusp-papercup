@@ -108,10 +108,12 @@ vi.mock('./issues-engineer', () => ({
   issuesSupersededByRevision: (ids: string[]) => issuesSupersededByRevision(ids),
 }));
 
-vi.mock('./rubrics', () => ({
+vi.mock('./rubrics', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./rubrics')>()),
   // Unresolved rubric → the built-in key fallback; irrelevant to the link decision and
   // keeps this a pure unit test (no rubric store).
   getRubric: async () => null,
+  getRubricWithoutSeeding: async () => null,
   rubricInstrumentContract: () => null,
 }));
 
@@ -154,6 +156,41 @@ describe('listScorecards — outbound links are OPT-IN (WI-6124)', () => {
 });
 
 describe('the aggregate readers stay cheap (WI-6124)', () => {
+  it('can project required card evidence without waiting for an unused generation probe', async () => {
+    const { listScorecards } = await import('./scorecards');
+    const observation = DB_ROWS[0].payload.observation as Record<string, unknown>;
+    observation.gradedGeneration = { sha: 'abc1234', hostStartedAt: '2026-07-14T18:08:24.000Z' };
+    const readBgHostActiveEnterMs = vi.fn(() => new Promise<number | null>(() => {}));
+    try {
+      const rows = await listScorecards({ rubricRef: 'test-rubric', includeGeneration: false,
+        deps: { readBgHostActiveEnterMs } });
+
+      expect(readBgHostActiveEnterMs).not.toHaveBeenCalled();
+      expect(rows).toHaveLength(2);
+      expect(rows[0].gradedGeneration?.hostStartedAt).toBe('2026-07-14T18:08:24.000Z');
+      expect(rows[0].generationFreshness).toBeUndefined();
+      expect(rows[0].rubricCurrentness?.state).toBe('unknown');
+      expect(rows[0].ratings.alpha.rating).toBe('healthy');
+    } finally {
+      delete observation.gradedGeneration;
+    }
+  });
+
+  it('keeps live generation freshness enabled by default for stamped cards', async () => {
+    const { listScorecards } = await import('./scorecards');
+    const observation = DB_ROWS[0].payload.observation as Record<string, unknown>;
+    observation.gradedGeneration = { sha: 'abc1234', hostStartedAt: '2026-07-14T18:08:24.000Z' };
+    const readBgHostActiveEnterMs = vi.fn(async () => Date.parse('2026-07-15T18:08:24.000Z'));
+    try {
+      const rows = await listScorecards({ rubricRef: 'test-rubric', deps: { readBgHostActiveEnterMs } });
+
+      expect(readBgHostActiveEnterMs).toHaveBeenCalledTimes(1);
+      expect(rows[0].generationFreshness?.status).toBe('stale');
+    } finally {
+      delete observation.gradedGeneration;
+    }
+  });
+
   it('scorecardTrend rolls up ratings without ever resolving links', async () => {
     const { scorecardTrend } = await import('./scorecards');
     const trend = await scorecardTrend({ rubricRef: 'test-rubric' });

@@ -1,0 +1,447 @@
+{
+  "schemaVersion": 1,
+  "kind": "original-native-command-receipts",
+  "workItemId": "WI-6554700010010682",
+  "planSlug": "green-main-cycle-time-2026-10-08",
+  "status": "astro-diagnostics-passed-source-census-matched-no-operational-acceptance",
+  "referencePathConvention": "Home references use ~; originals remain unchanged.",
+  "currentOriginalParent20261015": {
+    "workItemId": "EI-26014381871948402",
+    "status": "original-parent-passed-locally-after-config-fix",
+    "cwd": "apps/papercusp-docs",
+    "command": ["npm", "run", "test"],
+    "originalScript": "astro check && vitest run",
+    "rootCause": "The app declared provide before spreading gateParticipationConfig, which now supplies the same unit provider. Astro rejected the duplicate with TS2783 before Vitest could start.",
+    "fix": "Remove the redundant app provide declaration; retain the shared gate fragment and existing injected-unit-layer assertion.",
+    "sourceAtBothRuns": "2b186d70945293fb00622e56bc252db085c6abb1",
+    "sourceProvenance": "The config fix was local at the successful run; HEAD and the 35 declared input pins were recorded, not a complete imported/runtime source population.",
+    "configBeforeSha256": "18ac79017161e9dd04f11a105e4ccd7af3748089c3672d08d916426ac0a57c0e",
+    "configAfterSha256": "abba2da7565099e2537f8d847a8b4fb0167f322168a4d7c88090f9acc1a5ddb9",
+    "declaredInputsStableWithinBothRuns": true,
+    "declaredInputDeltaBetweenRuns": ["apps/papercusp-docs/vitest.config.ts"],
+    "failedRun": {
+      "receipt": {"ref": "~/.papercusp/scratch/c0523-public-docs-original-chain-20261015-v1.json", "sha256": "bdd11ab633f64a84f0b9d2795fb11e5b7a55905b5d24c99177056761cc1b4047"},
+      "stdout": {"ref": "~/.papercusp/scratch/c0523-public-docs-original-chain-20261015-v1.log", "sha256": "bde2c0603e93c1a1d5d025dbc09b755d5d92c770320dae54b500c35de21cbd28"},
+      "stderr": {"ref": "~/.papercusp/scratch/c0523-public-docs-original-chain-20261015-v1.err", "sha256": "9e94065380e49ee06b22df96b512d0f64671b05fa9ac770d0527bc056d5a8470"},
+      "exitCode": 1,
+      "parentWallMs": 8830,
+      "astroFiles": 9,
+      "astroErrors": 1,
+      "vitestStarted": false
+    },
+    "successfulRun": {
+      "receipt": {"ref": "~/.papercusp/scratch/c0523-public-docs-original-chain-20261015-v2.json", "sha256": "a192c30a142cf6eb560b5cddcd66ddf1ea6badd578bb910b876383708f17eef5"},
+      "stdout": {"ref": "~/.papercusp/scratch/c0523-public-docs-original-chain-20261015-v2.log", "sha256": "361173aa5e7a15b3370272d362b4688313ae664dd03e1f55049013df5b50f7e2"},
+      "stderr": {"ref": "~/.papercusp/scratch/c0523-public-docs-original-chain-20261015-v2.err", "sha256": "c8e66dbcdfdd47f3820ed2c5c0192dc507728e69d500f503380568f42de2fed5"},
+      "sourceMap": {"ref": "~/.papercusp/scratch/c0523-public-docs-original-chain-20261015-v2-sources.json", "sha256": "f5628ae42119336bc64bf44b97df7ad799930b9362920162080a41cdd282bac2"},
+      "exitCode": 0,
+      "parentWallMs": 13850,
+      "astroFiles": 9,
+      "astroErrors": 0,
+      "astroWarnings": 0,
+      "astroHints": 0,
+      "vitestFilesPassed": 3,
+      "vitestTestsPassed": 10,
+      "skippedTests": 0,
+      "reporterTerminalHook": "onTestRunEnd",
+      "reporterReason": "passed",
+      "reporterUnhandledErrors": 0,
+      "reporterModulePopulationMatched": true,
+      "reporterGaps": [],
+      "persistedReusableRows": false,
+      "processArtifactDirectory": "~/.papercusp/scratch/c0523-public-docs-original-chain-20261015-v2-sources.json.processes",
+      "processArtifactPins": [
+        {"file": "439570-0.json", "sha256": "91b65970bfd0990c430d2289913573f5955bd9202ea61c31b6ed425c8e002cd3"},
+        {"file": "439924-0.json", "sha256": "bb518f836534415f0f18138693f52faf05552ccdef5aac1c4aa9c857a23f7933"},
+        {"file": "443719-0.json", "sha256": "226cd861f552ce466a9f409cec91c8511ac555f5c37cb9193add12419ef84466"},
+        {"file": "444574-0.json", "sha256": "f19a9b721a2e329eb240cacdd2bee5427d298705aa330634d8cf1c8b746a4277"},
+        {"file": "446748-0.json", "sha256": "67d0d92b8b3d9d09b18cc3856cc23415bd38f9b62116fbc128dd0e7de3c8c05f"},
+        {"file": "446769-0.json", "sha256": "e62e807c840dfc7106df67fe46cb94550e813ab0bd8bc5d37bacd410026505c7"},
+        {"file": "446775-0.json", "sha256": "55d1f64ff11d22e9cd5cf4dd9c72d6e58a56d2954f068f1d684489ae232aa735"}
+      ]
+    },
+    "recurrenceGuards": [
+      "The original npm test runs Astro checking before Vitest and rejects the duplicate configuration.",
+      "apps/papercusp-docs/lib/first-task.test.ts verifies that the executing project still injects the unit test layer."
+    ],
+    "limits": [
+      "This is an observed original parent command with native reporter/process diagnostics, not independently qualified per-step ordered-chain receipts.",
+      "The existing collectors leave bootstrap/population, engine URL to original source association, descendants, external/native inputs and loader-chain closure unmeasured.",
+      "No actual cgroup containment or independent parent-observed worker termination agreement is established by these source receipts.",
+      "Parent wall time includes capture overhead and is not a same-input performance comparison or R12 acceptance."
+    ],
+    "orderedChainQualified": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "fullPlan": "unshipped"
+  },
+  "commands": [
+    {
+      "task": "@papercupai/operator-docs :: test",
+      "step": null,
+      "nativeReceipt": {
+        "kind": "original-native-command-execution",
+        "workItemId": "WI-6554700010010682",
+        "cwd": "apps/operator-docs",
+        "originalCommand": [
+          "astro",
+          "check"
+        ],
+        "wrapperCommand": [
+          "npm",
+          "run",
+          "check"
+        ],
+        "runtimeClosure": "unmeasured",
+        "operationalAcceptance": false,
+        "before": {
+          "command": [
+            "~/.local/node25/bin/node",
+            "scripts/resolve-vitest-config-contracts.mjs",
+            "--astro-selection-child"
+          ],
+          "startedAt": "2026-10-14T17:31:37.960Z",
+          "completedAt": "2026-10-14T17:32:07.873Z",
+          "exitCode": 0,
+          "signal": null,
+          "error": null,
+          "stdout": "~/.papercusp/scratch/c0523-astro-operator-native-v1-before.log",
+          "stderr": "~/.papercusp/scratch/c0523-astro-operator-native-v1-before.err"
+        },
+        "execution": {
+          "command": [
+            "npm",
+            "run",
+            "check"
+          ],
+          "startedAt": "2026-10-14T17:32:07.873Z",
+          "completedAt": "2026-10-14T17:32:28.729Z",
+          "exitCode": 0,
+          "signal": null,
+          "error": null,
+          "stdout": "~/.papercusp/scratch/c0523-astro-operator-native-v1-result.log",
+          "stderr": "~/.papercusp/scratch/c0523-astro-operator-native-v1-result.err"
+        },
+        "after": {
+          "command": [
+            "~/.local/node25/bin/node",
+            "scripts/resolve-vitest-config-contracts.mjs",
+            "--astro-selection-child"
+          ],
+          "startedAt": "2026-10-14T17:32:28.729Z",
+          "completedAt": "2026-10-14T17:32:44.738Z",
+          "exitCode": 0,
+          "signal": null,
+          "error": null,
+          "stdout": "~/.papercusp/scratch/c0523-astro-operator-native-v1-after.log",
+          "stderr": "~/.papercusp/scratch/c0523-astro-operator-native-v1-after.err"
+        }
+      },
+      "files": [
+        "apps/operator-docs/.astro/types.d.ts",
+        "apps/operator-docs/astro.config.mjs",
+        "apps/operator-docs/preview-libs.mjs",
+        "apps/operator-docs/scripts/emit-md-twins.ts",
+        "apps/operator-docs/src/content.config.ts"
+      ],
+      "inputs": [
+        {
+          "path": "apps/operator-docs/.astro/types.d.ts",
+          "sha256": "38ea3df3779cce222cd51ba2c9dc9ac053a859208d3097aa3165f70c71517736"
+        },
+        {
+          "path": "apps/operator-docs/astro.config.mjs",
+          "sha256": "6993472fdbf21ab9bbcda9345a33613dc545263ac1a495a468dbd41fd3b33f61"
+        },
+        {
+          "path": "apps/operator-docs/package.json",
+          "sha256": "12b11ef288855eda499eb22d0ecbb173e9dd76a71bf4f757397887f6fdbb739a"
+        },
+        {
+          "path": "apps/operator-docs/preview-libs.mjs",
+          "sha256": "9d51db24d777db4f8e15511fde4986988587bdf2cdbe87c036a9d92e5766d792"
+        },
+        {
+          "path": "apps/operator-docs/scripts/emit-md-twins.ts",
+          "sha256": "bf6c2985def802869f4abccecc5135d6712997f611fa8d263f0e3cc5fec0830e"
+        },
+        {
+          "path": "apps/operator-docs/src/content.config.ts",
+          "sha256": "008b96738e944d342ff4509b61b2c642ba6e65856be5333f33c77b4cf4445e9a"
+        },
+        {
+          "path": "apps/operator-docs/tsconfig.json",
+          "sha256": "b5b0a5b04a14cddd7713c5e1c82e86c79c17c2f86b170e26e9b170b3d5e01cd9"
+        },
+        {
+          "path": "node_modules/@astrojs/check/dist/index.js",
+          "sha256": "b05f1c9b260328d1346e181692b129b6b0857242a280ed4c9adee91a9a86120a"
+        },
+        {
+          "path": "node_modules/@astrojs/language-server/dist/check.js",
+          "sha256": "976e0f5ec338819176946d70540b30e849c991f38628f8a2dc7f3ffeeedb5575"
+        },
+        {
+          "path": "node_modules/@astrojs/language-server/dist/index.js",
+          "sha256": "fcb349a2e8cfc8b1d41a069ab5aecd7d3f5cfcacfdec627b8a04c61c6043c5ab"
+        },
+        {
+          "path": "node_modules/astro/dist/cli/check/index.js",
+          "sha256": "b94135f773271f3c1b1d3a88b91bd99b106da53f896c18727c8275a7b8409671"
+        },
+        {
+          "path": "node_modules/astro/dist/core/sync/index.js",
+          "sha256": "cea429c3c942636b37eb206665883200289cd1f54df3129a987fae84519a86da"
+        },
+        {
+          "path": "node_modules/astro/package.json",
+          "sha256": "2103538a5b3908590beef260c7e7831eb635b05d0e7aa7dafac367982f7820a7"
+        },
+        {
+          "path": "node_modules/typescript/lib/typescript.js",
+          "sha256": "d3f3cd2b04b7f466f4484df921b744223f7bd1f3e353ec9110bdf52695b983d5"
+        }
+      ],
+      "beforeAfterInputsIdentical": true,
+      "inputHashesMatchCurrent": true,
+      "diagnostics": {
+        "filesChecked": 5,
+        "errors": 0,
+        "warnings": 0,
+        "hints": 23,
+        "nativeCommandExitCode": 0
+      },
+      "logs": [
+        {
+          "path": "~/.papercusp/scratch/c0523-astro-operator-native-v1-after.err",
+          "sha256": "292a6ab834df5b165dfba44aa106f075edf4ee47881a0013ed6821daa8542c16"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-astro-operator-native-v1-after.log",
+          "sha256": "19dd3b3aed5893b28fdba07e7478936d94ea357286f094d017e6b289b8c09cf4"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-astro-operator-native-v1-before.err",
+          "sha256": "292a6ab834df5b165dfba44aa106f075edf4ee47881a0013ed6821daa8542c16"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-astro-operator-native-v1-before.log",
+          "sha256": "71d156eaa5c1dc1ff74dbb30b28f511d5caa94ea722ed549c68e90507442f6f0"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-astro-operator-native-v1-command.json",
+          "sha256": "2c98b3e76b6bca7a49843125a38e710244d38c90b6136acf56ed87e6c827a719"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-astro-operator-native-v1-result.err",
+          "sha256": "292a6ab834df5b165dfba44aa106f075edf4ee47881a0013ed6821daa8542c16"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-astro-operator-native-v1-result.log",
+          "sha256": "f7642c732d2a7a72698c498614e6a166ea4ce12ec7484ae91ee578f1c1b3c1cc"
+        }
+      ],
+      "nativeExecution": {
+        "sessionId": "01a13b71-759c-7192-98f5-ca4bdfee73ff",
+        "rolloutOrdinal": 224,
+        "eventId": "ctc_08ed965a4ff96608016acfbc735ed081968ea8160b019f6464"
+      },
+      "scope": "Original Astro check step and maintained post-sync direct input census. Public docs Vitest step remains unexecuted here. Installed import and final transformed runtime closure are unmeasured."
+    },
+    {
+      "task": "@papercupai/papercusp-docs :: test",
+      "step": 0,
+      "nativeReceipt": {
+        "kind": "original-native-command-execution",
+        "workItemId": "WI-6554700010010682",
+        "cwd": "apps/papercusp-docs",
+        "originalCommand": [
+          "astro",
+          "check"
+        ],
+        "wrapperCommand": [
+          "npm",
+          "run",
+          "check"
+        ],
+        "runtimeClosure": "unmeasured",
+        "operationalAcceptance": false,
+        "before": {
+          "command": [
+            "~/.local/node25/bin/node",
+            "scripts/resolve-vitest-config-contracts.mjs",
+            "--astro-selection-child"
+          ],
+          "startedAt": "2026-10-14T17:32:44.742Z",
+          "completedAt": "2026-10-14T17:33:01.789Z",
+          "exitCode": 0,
+          "signal": null,
+          "error": null,
+          "stdout": "~/.papercusp/scratch/c0523-astro-public-native-v1-before.log",
+          "stderr": "~/.papercusp/scratch/c0523-astro-public-native-v1-before.err"
+        },
+        "execution": {
+          "command": [
+            "npm",
+            "run",
+            "check"
+          ],
+          "startedAt": "2026-10-14T17:33:01.790Z",
+          "completedAt": "2026-10-14T17:33:16.934Z",
+          "exitCode": 0,
+          "signal": null,
+          "error": null,
+          "stdout": "~/.papercusp/scratch/c0523-astro-public-native-v1-result.log",
+          "stderr": "~/.papercusp/scratch/c0523-astro-public-native-v1-result.err"
+        },
+        "after": {
+          "command": [
+            "~/.local/node25/bin/node",
+            "scripts/resolve-vitest-config-contracts.mjs",
+            "--astro-selection-child"
+          ],
+          "startedAt": "2026-10-14T17:33:16.934Z",
+          "completedAt": "2026-10-14T17:33:27.739Z",
+          "exitCode": 0,
+          "signal": null,
+          "error": null,
+          "stdout": "~/.papercusp/scratch/c0523-astro-public-native-v1-after.log",
+          "stderr": "~/.papercusp/scratch/c0523-astro-public-native-v1-after.err"
+        }
+      },
+      "files": [
+        "apps/papercusp-docs/.astro/types.d.ts",
+        "apps/papercusp-docs/astro.config.mjs",
+        "apps/papercusp-docs/lib/first-task.test.ts",
+        "apps/papercusp-docs/lib/pagefind-output.test.ts",
+        "apps/papercusp-docs/lib/public-build-parity.test.ts",
+        "apps/papercusp-docs/scripts/source-contract.d.mts",
+        "apps/papercusp-docs/src/components/Search.astro",
+        "apps/papercusp-docs/src/content.config.ts",
+        "apps/papercusp-docs/vitest.config.ts"
+      ],
+      "inputs": [
+        {
+          "path": "apps/papercusp-docs/.astro/types.d.ts",
+          "sha256": "38ea3df3779cce222cd51ba2c9dc9ac053a859208d3097aa3165f70c71517736"
+        },
+        {
+          "path": "apps/papercusp-docs/astro.config.mjs",
+          "sha256": "b49c893ae431be4c762d5bff4811f39ed199a310ec60c8e9ace1eb621cc4018e"
+        },
+        {
+          "path": "apps/papercusp-docs/lib/first-task.test.ts",
+          "sha256": "59af0c1a8b674e122780983e787b6a8f024863e69b6b697745f4d3a5ad7c1092"
+        },
+        {
+          "path": "apps/papercusp-docs/lib/pagefind-output.test.ts",
+          "sha256": "42fb06afa19b1591fc2009cbfa5db95b0b7216215237326457e658b79a25cb0b"
+        },
+        {
+          "path": "apps/papercusp-docs/lib/public-build-parity.test.ts",
+          "sha256": "d6ef273beb90ae21c1133221310783800847147265d92938d72c4bf5e7e3eb60"
+        },
+        {
+          "path": "apps/papercusp-docs/package.json",
+          "sha256": "c89117fe9e0380b1858e930d6e494c47019e6211a763f2eb60f81725271c0462"
+        },
+        {
+          "path": "apps/papercusp-docs/scripts/source-contract.d.mts",
+          "sha256": "505422ddfd98051a3605eef8d8b74d5a0cc119b18b2fb4a2e0407fe93f10627a"
+        },
+        {
+          "path": "apps/papercusp-docs/src/components/Search.astro",
+          "sha256": "03b3df097b9f30d82446fcf9a7ae0cd9d68bdba7dec5a29bcf915017a2f2af0d"
+        },
+        {
+          "path": "apps/papercusp-docs/src/content.config.ts",
+          "sha256": "ee756dfba4122d2acc94a39b2555d9f200fff56a87a8c0b10f9cd01df26a8b62"
+        },
+        {
+          "path": "apps/papercusp-docs/tsconfig.json",
+          "sha256": "b5b0a5b04a14cddd7713c5e1c82e86c79c17c2f86b170e26e9b170b3d5e01cd9"
+        },
+        {
+          "path": "apps/papercusp-docs/vitest.config.ts",
+          "sha256": "18ac79017161e9dd04f11a105e4ccd7af3748089c3672d08d916426ac0a57c0e"
+        },
+        {
+          "path": "node_modules/@astrojs/check/dist/index.js",
+          "sha256": "b05f1c9b260328d1346e181692b129b6b0857242a280ed4c9adee91a9a86120a"
+        },
+        {
+          "path": "node_modules/@astrojs/language-server/dist/check.js",
+          "sha256": "976e0f5ec338819176946d70540b30e849c991f38628f8a2dc7f3ffeeedb5575"
+        },
+        {
+          "path": "node_modules/@astrojs/language-server/dist/index.js",
+          "sha256": "fcb349a2e8cfc8b1d41a069ab5aecd7d3f5cfcacfdec627b8a04c61c6043c5ab"
+        },
+        {
+          "path": "node_modules/astro/dist/cli/check/index.js",
+          "sha256": "b94135f773271f3c1b1d3a88b91bd99b106da53f896c18727c8275a7b8409671"
+        },
+        {
+          "path": "node_modules/astro/dist/core/sync/index.js",
+          "sha256": "cea429c3c942636b37eb206665883200289cd1f54df3129a987fae84519a86da"
+        },
+        {
+          "path": "node_modules/astro/package.json",
+          "sha256": "2103538a5b3908590beef260c7e7831eb635b05d0e7aa7dafac367982f7820a7"
+        },
+        {
+          "path": "node_modules/typescript/lib/typescript.js",
+          "sha256": "d3f3cd2b04b7f466f4484df921b744223f7bd1f3e353ec9110bdf52695b983d5"
+        }
+      ],
+      "beforeAfterInputsIdentical": true,
+      "inputHashesMatchCurrent": true,
+      "diagnostics": {
+        "filesChecked": 9,
+        "errors": 0,
+        "warnings": 0,
+        "hints": 0,
+        "nativeCommandExitCode": 0
+      },
+      "logs": [
+        {
+          "path": "~/.papercusp/scratch/c0523-astro-public-native-v1-after.err",
+          "sha256": "99e3e08fbded5a1b204c0bd6a37ca1573cfa88830126713f6bb76f628ac76131"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-astro-public-native-v1-after.log",
+          "sha256": "cafd796f9dfe4054f8995a1d3e20c98b2cc11ea34fad9e3eeb8710a60eeab28b"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-astro-public-native-v1-before.err",
+          "sha256": "99e3e08fbded5a1b204c0bd6a37ca1573cfa88830126713f6bb76f628ac76131"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-astro-public-native-v1-before.log",
+          "sha256": "a239593e37abeb204d1bd9c0345469430c3777197a9ff9bb41b4cbc081079308"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-astro-public-native-v1-command.json",
+          "sha256": "a8ba3dfc03ce53c8cf264788183c2891820772ad3d698e034e84578a22e493c0"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-astro-public-native-v1-result.err",
+          "sha256": "99e3e08fbded5a1b204c0bd6a37ca1573cfa88830126713f6bb76f628ac76131"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-astro-public-native-v1-result.log",
+          "sha256": "f9ed97ca773dbd1c37d661daeb017d5c0617f523713381de576b7aedb45e88e5"
+        }
+      ],
+      "nativeExecution": {
+        "sessionId": "01a13b71-759c-7192-98f5-ca4bdfee73ff",
+        "rolloutOrdinal": 224,
+        "eventId": "ctc_08ed965a4ff96608016acfbc735ed081968ea8160b019f6464"
+      },
+      "scope": "Original Astro check step and maintained post-sync direct input census. Public docs Vitest step remains unexecuted here. Installed import and final transformed runtime closure are unmeasured."
+    }
+  ],
+  "runtimeClosure": "unmeasured",
+  "operationalAcceptance": false,
+  "fullPlan": "unshipped"
+}

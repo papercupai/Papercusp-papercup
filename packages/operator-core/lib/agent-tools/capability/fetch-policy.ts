@@ -127,6 +127,8 @@ export interface PolicyFetchInput {
   signal: AbortSignal;
   profile: OperationBoundaryProfile;
   maxRedirects?: number;
+  /** Browser adapters follow redirects themselves; every hop still enters this policy. */
+  redirectMode?: 'follow' | 'manual';
 }
 
 export interface PolicyFetchResult {
@@ -228,7 +230,7 @@ export function isNonPublicFetchAddress(addressInput: string): boolean {
   );
 }
 
-function parseAndValidateUrl(raw: string): URL {
+export function parseAndValidateUrl(raw: string): URL {
   const url = new URL(raw);
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new CapabilityFetchPolicyError(
@@ -395,6 +397,19 @@ export async function fetchWithCapabilityPolicy(
     }
 
     const location = response.headers.get('location');
+    if (input.redirectMode === 'manual') {
+      try {
+        if (!location) throw new CapabilityFetchPolicyError('redirect_location_missing', 'redirect has no Location');
+        const next = parseAndValidateUrl(new URL(location, url).toString());
+        redirectedRequest(response.status, url, next, method, headers, body);
+        return { response, finalUrl: url.toString(), finalMethod: method, redirectCount,
+          resolvedAddress: selected, release: pinned.close };
+      } catch (error) {
+        await cancelResponse(response);
+        await pinned.close();
+        throw error;
+      }
+    }
     await cancelResponse(response);
     await pinned.close();
     if (!location) {

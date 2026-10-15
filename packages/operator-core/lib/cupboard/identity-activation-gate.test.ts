@@ -1,17 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import {
+import type {
+  FundingChannelView,
+  IdentityOfferView,
+  IdentityPricingVerdict,
+  InstalledIdentityReleaseLayer,
+  PrepaidBalanceView,
+  Readout,
+} from './identity-activation-gate';
+import { identityPerUseOfferTerms } from './identity-per-use-offer';
+
+// The supported copy-out mutation runner points this suite at isolated source.
+// Production imports keep using the canonical module.
+const {
   evaluateIdentityActivation,
   identityReleasePricing,
   IdentityActivationRefusedError,
   isIdentityActivationRefusedError,
-  type FundingChannelView,
-  type IdentityOfferView,
-  type IdentityPricingVerdict,
-  type InstalledIdentityReleaseLayer,
-  type PrepaidBalanceView,
-  type Readout,
-} from './identity-activation-gate';
-import { identityPerUseOfferTerms } from './identity-per-use-offer';
+} = (await import(process.env.IDENTITY_ACTIVATION_GATE_MODULE_PATH ?? './identity-activation-gate')) as typeof import('./identity-activation-gate');
 
 function release(id: string, version = '1.0.0'): { layer: InstalledIdentityReleaseLayer; offer: IdentityOfferView } {
   const derived = identityPerUseOfferTerms({ identity: { id, version } });

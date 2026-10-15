@@ -11,6 +11,59 @@ export function resolveTarget(name?: string): Target;
  * @param {Target} target @param {string} remote
  */
 export function assertRemoteMatchesTarget(target: Target, remote: string): void;
+/**
+ * R13: inspect the current public population and actual default-branch license bytes.
+ * Reuses the public export's canonical ELv2 and the maintained Apache library text.
+ * Unknown text, an API failure, incomplete pagination or a changed population refuses.
+ * GitHub's license metadata is supplementary; it is never the license oracle.
+ * @typedef {{ path: string, gitBlob: string, sha256: string, license: string | null, url: string }} PublicRepositoryLicense
+ * @typedef {{ repo: string, defaultBranch: string, metadataSpdx: string | null, head: string | null, licenses: PublicRepositoryLicense[], errors: string[] }} PublicRepositoryLicenseRow
+ */
+/**
+ * @param {{ api?: (endpoint: string) => Promise<{ headers: Record<string, string>, body: any }> | { headers: Record<string, string>, body: any }, licenseHashes?: Record<string, string>, libraryRepositories?: string[], log?: Log }} [options]
+ */
+export function auditPublicRepositoryLicenses({ api, licenseHashes, libraryRepositories, log }?: {
+    api?: (endpoint: string) => Promise<{
+        headers: Record<string, string>;
+        body: any;
+    }> | {
+        headers: Record<string, string>;
+        body: any;
+    };
+    licenseHashes?: Record<string, string>;
+    libraryRepositories?: string[];
+    log?: Log;
+}): Promise<{
+    schemaVersion: number;
+    kind: string;
+    name: string;
+    framework: string;
+    command: string[];
+    startedAt: string;
+    finishedAt: string;
+    exitCode: number;
+    evidencePlane: string;
+    summary: string;
+    assertions: {
+        id: string;
+        passed: boolean;
+        evidence: string;
+    }[];
+    pagination: {
+        first: {
+            endpoint: string;
+            size: number;
+            next: string | null;
+        }[];
+        last: {
+            endpoint: string;
+            size: number;
+            next: string | null;
+        }[];
+    };
+    rows: PublicRepositoryLicenseRow[];
+    licenseTexts: Record<string, string>;
+}>;
 /** Resolve a ref to a full commit SHA in `repo`. */
 export function resolveCommit(repo: any, ref: any): string;
 /** Every gitlink (submodule pin) recorded in `sha`'s tree: [{ path, sha }]. */
@@ -20,6 +73,16 @@ export function listGitlinks(repo: any, sha: any): {
 }[];
 /** The shared top-level allowlist, read from the selection library itself. */
 export function allowlistTops(selectionLib?: string): Set<string>;
+/** Conservative allocated source bytes for the exact recursive verifier export.
+ * Count committed blobs, including desktop and private gitlinks, before creating
+ * any destination. Per-file block rounding covers small-file allocation; the
+ * existing disk reservation adds its separate dependency/metadata allowance.
+ * export-ignore can only make the actual archive smaller than this census.
+ */
+export function measureVerifierSourceBytes({ repo, ref }: {
+    repo: any;
+    ref: any;
+}): number;
 /**
  * Materialize `sha` of `repo` into `dest` from git objects only (no working-tree
  * files), recursing into every submodule whose top-level entry the allowlist ships.
@@ -37,6 +100,218 @@ export function materializeCommit({ repo, sha, dest, allow, prefix }: {
     path: string;
     sha: string;
 }[];
+/** Validate the explicit tested source population against its pinned commit.
+ * @param {{ repo: string, ref: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean }} options
+ */
+export function validateVerifierInputs({ repo, ref, inputs, inputsFile, tauriInputs }: {
+    repo: string;
+    ref: string;
+    inputs?: string[];
+    inputsFile?: string;
+    tauriInputs?: boolean;
+}): Promise<{
+    sha: string;
+    paths: string[];
+}>;
+/** Prepare a source snapshot only after all declared inputs match their pin.
+ * @param {{ repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean, tauriInputs?: boolean, operatorApi?: { root: string, sourceReceiptPath: string, sourceReceiptSha256: string, inputReceiptPath: string, inputReceiptSha256: string, outputPath: string } }} options
+ */
+export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, gitCheckout, tauriInputs, operatorApi }: {
+    repo: string;
+    ref: string;
+    dest: string;
+    inputs?: string[];
+    inputsFile?: string;
+    gitCheckout?: boolean;
+    tauriInputs?: boolean;
+    operatorApi?: {
+        root: string;
+        sourceReceiptPath: string;
+        sourceReceiptSha256: string;
+        inputReceiptPath: string;
+        inputReceiptSha256: string;
+        outputPath: string;
+    };
+}): Promise<{
+    testedInputs: {
+        path: string;
+        sha256: string;
+    }[];
+    files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+    gitCheckout?: {
+        parentCommit: string;
+        trackedFilesHash: string;
+    } | undefined;
+    schemaVersion: string;
+    sourceCommit: string;
+    submodules: any[];
+} & {
+    operatorApiInputs?: {
+        path: string;
+        sha256: string;
+    };
+}>;
+/** Attach dependencies to the independently invoked tree before its first Node
+ * command. Reuse the release helper's donor install mutex and private snapshot.
+ * @param {{ donor: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, runPhase?: VerifierPhaseRunner }} options
+ */
+export function prepareVerifierDependencies({ donor, dest, receipt, runPhase }: {
+    donor: string;
+    dest: string;
+    receipt: Awaited<ReturnType<typeof prepareVerifierSource>>;
+    runPhase?: VerifierPhaseRunner;
+}): Promise<{
+    schemaVersion: string;
+    scope: string;
+    root: string;
+    sourceCommit: string;
+    policy: {
+        path: string;
+        sha256: string;
+    };
+    sourceReceiptSha256: string;
+    trees: {
+        path: string;
+        files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+    }[];
+}>;
+/** Measure installed bytes, not lockfile intent. Reuse the release helper's
+ * product-owned tree population and the source verifier's exact file census.
+ * Workspace link targets still need source verification; this receipt does
+ * not claim final transformed code or a complete runtime import closure.
+ * @param {{ dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>> }} options
+ */
+export function captureVerifierDependencies({ dest, receipt }: {
+    dest: string;
+    receipt: Awaited<ReturnType<typeof prepareVerifierSource>>;
+}): {
+    schemaVersion: string;
+    scope: string;
+    root: string;
+    sourceCommit: string;
+    policy: {
+        path: string;
+        sha256: string;
+    };
+    sourceReceiptSha256: string;
+    trees: {
+        path: string;
+        files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+    }[];
+};
+/** Freeze source and dependencies before invoking a command that allocates fixtures.
+ * The receipt survives outside the owned tree; only this invocation's tree is removed.
+ * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number }} options
+ * @returns {Promise<number>}
+ */
+export function runVerifierCommand({ repo, ref, receiptPath, inputs, inputsFile, tauriInputs, command, env, budgetFrom, childEstimateMs }: {
+    repo: string;
+    ref: string;
+    receiptPath: string;
+    inputs?: string[];
+    inputsFile?: string;
+    tauriInputs?: boolean;
+    command: string[];
+    env?: NodeJS.ProcessEnv;
+    budgetFrom?: string;
+    childEstimateMs?: number;
+}): Promise<number>;
+/** Fail closed on absent/changed provenance or any modified/extra/missing source byte.
+ * @param {string} dest
+ * @param {Awaited<ReturnType<typeof prepareVerifierSource>>} expected
+ * @param {{ runtimeArtifacts?: boolean }} [options] Source-only runtime mode permits
+ * named untracked build outputs and materialized dependency directories, not source edits.
+ */
+export function verifyVerifierSource(dest: string, expected: Awaited<ReturnType<typeof prepareVerifierSource>>, options?: {
+    runtimeArtifacts?: boolean;
+}): Promise<{
+    testedInputs: {
+        path: string;
+        sha256: string;
+    }[];
+    files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+    gitCheckout?: {
+        parentCommit: string;
+        trackedFilesHash: string;
+    } | undefined;
+    schemaVersion: string;
+    sourceCommit: string;
+    submodules: any[];
+} & {
+    operatorApiInputs?: {
+        path: string;
+        sha256: string;
+    };
+}>;
+/** Synchronous boundary for hooks such as Playwright onBegin, whose return
+ * value is not awaited. Uses the same source population and receipt checks.
+ * @param {string} dest
+ * @param {Awaited<ReturnType<typeof prepareVerifierSource>>} expected
+ * @param {{ runtimeArtifacts?: boolean }} [options]
+ */
+export function verifyVerifierSourceSync(dest: string, expected: Awaited<ReturnType<typeof prepareVerifierSource>>, options?: {
+    runtimeArtifacts?: boolean;
+}): {
+    testedInputs: {
+        path: string;
+        sha256: string;
+    }[];
+    files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+    gitCheckout?: {
+        parentCommit: string;
+        trackedFilesHash: string;
+    } | undefined;
+    schemaVersion: string;
+    sourceCommit: string;
+    submodules: any[];
+} & {
+    operatorApiInputs?: {
+        path: string;
+        sha256: string;
+    };
+};
+/** Transport the independently verified archive receipt into native reporters.
+ * A successful parent preflight alone does not give a child source provenance.
+ * @param {{ root: string, receiptPath: string, env?: NodeJS.ProcessEnv }} options
+ */
+export function verifierSourceChildEnv({ root, receiptPath, env }: {
+    root: string;
+    receiptPath: string;
+    env?: NodeJS.ProcessEnv;
+}): {
+    VERIFY_TAURI_SOURCE_RECEIPT: string;
+    VERIFY_TAURI_SOURCE_REF: any;
+};
+/** Read observations only, never acceptance evidence. A killed phase is not a duration.
+ * @param {string} path @returns {Record<string, number>}
+ */
+export function readVerifierPhaseMeasurements(path: string): Record<string, number>;
+/** Reserve both complete final censuses and cleanup, using this run's observations or an
+ * explicitly selected earlier phase receipt. Estimates are prognoses, not guarantees;
+ * an omitted child estimate remains explicitly unknown. No source/dependency scope changes.
+ * @param {Record<string, number>} measurements @param {number} [childEstimateMs]
+ */
+export function estimateVerifierCommandBudget(measurements: Record<string, number>, childEstimateMs?: number): {
+    preparationMs: number;
+    sourceCheckMs: number;
+    dependencyCheckMs: number;
+    cleanupMs: number;
+    childEstimateMs: number;
+    unknownChild: boolean;
+    remainingMs: number;
+    totalMs: number;
+};
+/** Reuse the launcher's absolute deadline and the scheduler's attributable refusal. */
+export function admitVerifierCommandBudget(estimate: any, { env, nowMs, preparation }?: {
+    env?: NodeJS.ProcessEnv | undefined;
+    nowMs?: number | undefined;
+    preparation?: boolean | undefined;
+}): {
+    deadlineEpochMs: number | null;
+    remainingMs: number | null;
+    knownEstimateMs: any;
+    estimate: any;
+};
 export function noticeText(manifest: any): string;
 /**
  * The releases page README.md links to: `${PAPERCUSP_UPDATE_BASE_URL}/index.html`.
@@ -169,6 +444,42 @@ export function runGate(dir: string, { env, auditScript, allowlistPath }?: {
     auditScript?: string;
     allowlistPath?: string;
 }): Promise<GateVerdict>;
+/**
+ * The public cut's own typecheck — WI-10006584. Public CI on Papercusp/papercusp-app runs
+ * `npm ci` then `npm run lint:tsc` on every pushed commit, and the cut can fail it while the
+ * internal tree passes: the cut drops files (tests, closed-layer packages) whose ambient type
+ * augmentations other files relied on (5eb41d7e went red that way). Nothing before the push
+ * saw it, and an append-only push cannot be taken back. This leg runs the CUT's own lint
+ * script over a COPY of the export (the export itself is what gets committed, so nothing may
+ * be added to it), with the internal tree's installed dependencies standing in for `npm ci`.
+ * Fail-closed like the gate: a type regression is a finding (exit 1); a run that cannot
+ * complete or reports no verdict is cannot-check (exit 2).
+ * @param {string} dir
+ * @param {{ env?: NodeJS.ProcessEnv, modulesRoot?: string, script?: string, timeoutMs?: number }} [opts]
+ * @returns {Promise<GateResult>}
+ */
+export function runCutTypecheck(dir: string, { env, modulesRoot, script, timeoutMs }?: {
+    env?: NodeJS.ProcessEnv;
+    modulesRoot?: string;
+    script?: string;
+    timeoutMs?: number;
+}): Promise<GateResult>;
+/**
+ * The public target's gate: the detector gate, then the cut typecheck. The typecheck takes
+ * minutes, so it runs only when the detectors are clean (a refusal is a refusal either way).
+ * @param {string} dir
+ * @param {{ env?: NodeJS.ProcessEnv, gate?: Gate, typecheck?: (dir: string, opts: { env?: NodeJS.ProcessEnv }) => Promise<GateResult> }} [opts]
+ * @returns {Promise<GateVerdict>}
+ */
+export function runPublicGate(dir: string, { env, gate, typecheck }?: {
+    env?: NodeJS.ProcessEnv;
+    gate?: Gate;
+    typecheck?: (dir: string, opts: {
+        env?: NodeJS.ProcessEnv;
+    }) => Promise<GateResult>;
+}): Promise<GateVerdict>;
+/** The gate a target's push uses unless the caller injects one. @param {Target} target @returns {Gate} */
+export function defaultGateFor(target: Target): Gate;
 /**
  * Reviewed false positives of the ADDITIONAL detectors (gitleaks, trufflehog) —
  * never of the release audit, whose BENIGN_ERE stays the one vendor-key rule.
@@ -349,8 +660,41 @@ export class PreviewError extends Error {
     constructor(message: string, exitCode?: number);
     exitCode: number;
 }
+/** Internal verification export: no public selection, scrub, publish or working-tree overlay.
+ * The caller retains this receipt outside the export, then verifies it before execution.
+ * @param {{repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean}} options
+ */
+export const TAURI_VERIFIER_INPUTS: readonly string[];
 export const ALLOWLIST_PATH: string;
 export { main as runCli };
+/**
+ * R13: inspect the current public population and actual default-branch license bytes.
+ * Reuses the public export's canonical ELv2 and the maintained Apache library text.
+ * Unknown text, an API failure, incomplete pagination or a changed population refuses.
+ * GitHub's license metadata is supplementary; it is never the license oracle.
+ */
+export type PublicRepositoryLicense = {
+    path: string;
+    gitBlob: string;
+    sha256: string;
+    license: string | null;
+    url: string;
+};
+/**
+ * R13: inspect the current public population and actual default-branch license bytes.
+ * Reuses the public export's canonical ELv2 and the maintained Apache library text.
+ * Unknown text, an API failure, incomplete pagination or a changed population refuses.
+ * GitHub's license metadata is supplementary; it is never the license oracle.
+ */
+export type PublicRepositoryLicenseRow = {
+    repo: string;
+    defaultBranch: string;
+    metadataSpdx: string | null;
+    head: string | null;
+    licenses: PublicRepositoryLicense[];
+    errors: string[];
+};
+export type VerifierPhaseRunner = <T>(phase: string, operation: () => T | Promise<T>) => Promise<T>;
 /**
  * Where an export is published (plan open-source-release-2026-09-29 P-002/P-003).
  * - preview: the private, invite-only evaluation snapshot. Replaced WHOLESALE by one

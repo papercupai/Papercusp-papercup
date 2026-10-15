@@ -1,0 +1,56 @@
+{
+ "schemaVersion": 1,
+ "kind": "operational-test-evidence",
+ "framework": "operational",
+ "name": "R-18 fresh-machine README-only build at public head 1a3db574 (2026-10-06 re-run): builds and boots",
+ "specId": "R-18",
+ "plan": "open-source-release-2026-09-29",
+ "workItemId": "WI-10003960",
+ "evidencePlane": "live",
+ "subjectCommit": "1a3db574b837954299168af89caecf5cb14706e8",
+ "sourceCommit": "8cb8de85071d7c131e9c8dddb27742216cab5c39",
+ "command": [
+  "Host: .papercusp/scratch/osr/r18/host-r18c.sh created a NEW overlay osr18c off the linux-test-vm golden image (150G disk) and ran guest-r18c.sh, the README-only toolchain pass (09:46-09:53Z).",
+  "Guest: .papercusp/scratch/osr/r18/guest-r18c2.sh with EXPECTED=1a3db574b837954299168af89caecf5cb14706e8. Re-run from the clone step on the same fresh VM: rm -rf ~/papercusp-app; git clone https://github.com/Papercusp/papercusp-app.git; assert HEAD == EXPECTED; nvm install; npm ci; npm run lint:tsc; npm --workspace @papercusp/operator-vite run build; (cd papercusp-desktop && npm ci); DISPLAY=:0 npm run dev (background).",
+  "Capture at 10:41Z: curl 127.0.0.1:3270/api/health (start and end), curl 127.0.0.1:3270/ (SPA), xwininfo -root -tree, scrot, grep 'exited code' desktop-dev.log, LINT_TSC_RESULT line."
+ ],
+ "startedAt": "2026-10-06T10:30:14Z",
+ "finishedAt": "2026-10-06T10:41:50Z",
+ "exitCode": 0,
+ "summary": "Public head 1a3db574b837954299168af89caecf5cb14706e8 (pushed 10:29Z from Papercusp/papercup@8cb8de85) was cloned on fresh VM osr18c and built from the README alone. Every step returned 0, including npm run lint:tsc, which failed (rc=1) on the previous head 5eb41d7e. npm run dev booted the desktop shell: the operator sidecar answered /api/health with sha 1a3db574 at 10:41:18Z and 10:41:50Z, the SPA root returned 200 text/html; charset=utf-8 39465 <title>Papercusp Operator</title>, and a 'Papercusp' top-level window (1278x775) is mapped on the VM's X display. The dev log shows 0 sidecar restarts.",
+ "assertions": [
+  {
+   "id": "fresh-machine",
+   "passed": true,
+   "evidence": "steps.log first pass on the new overlay: toolchain-absent rc=0, apt-prereqs rc=0, pgvector rc=0, rustup rc=0, nvm rc=0 (09:46:03Z-09:52:52Z). The toolchain was absent and was installed from the README prerequisites. The re-run starts from rm -rf + git clone on that same VM."
+  },
+  {
+   "id": "subject-is-public-head",
+   "passed": true,
+   "evidence": "steps.log 'CLONED-HEAD 1a3db574b837954299168af89caecf5cb14706e8' at 10:31:12Z; git ls-remote https://github.com/Papercusp/papercusp-app.git refs/heads/main = 1a3db574b837954299168af89caecf5cb14706e8 (re-read 10:45Z)."
+  },
+  {
+   "id": "readme-build-steps",
+   "passed": true,
+   "evidence": "re-run steps: clone rc=0, node rc=0, npm-ci rc=0, lint-tsc rc=0, ui-build rc=0, desktop-ci rc=0. LINT_TSC_RESULT label=operator-core scope=all exit=0 status=clean at=2026-10-06T10:34:17.620Z head=1a3db574b8"
+  },
+  {
+   "id": "app-boots",
+   "passed": true,
+   "evidence": "/api/health on the sidecar port 3270: {\"ok\": true, \"service\": \"papercusp-operator\", \"sha\": \"1a3db574\", \"version\": \"0.0.1\", \"ts\": \"2026-10-06T10:41:18.522Z\"} and 32s later {\"ok\": true, \"service\": \"papercusp-operator\", \"sha\": \"1a3db574\", \"version\": \"0.0.1\", \"ts\": \"2026-10-06T10:41:50.472Z\"}; 'exited code' restarts in desktop-dev.log: 0; the only 'fatal' line is the host-bootstrap boot-gate message that reads 'non-fatal' (desktop-dev.fatal-lines.log)."
+  },
+  {
+   "id": "ui-renders",
+   "passed": true,
+   "evidence": "GET 127.0.0.1:3270/ -> 200 text/html; charset=utf-8 39465 <title>Papercusp Operator</title>; xwininfo: 0xa00001 \"papercusp-desktop\": (\"papercusp-desktop\" \"Papercusp-desktop\")  10x10+10+10  +10+10 |         0xa00003 \"Papercusp\": (\"papercusp-desktop\" \"Papercusp-desktop\")  1278x775+1+20  +1+20; scrot screen.png (157840 bytes)."
+  }
+ ],
+ "limitations": [
+  "The toolchain pass and the build pass ran on the same fresh VM about 40 minutes apart. Between them, an aborted 3c1ed9a1 clone and a completed 5eb41d7e run happened (steps.log). The archived prior run is under ~/r18/run-5eb41d7e-103014 on the VM. The public README prerequisites did not change between those heads.",
+  "The screenshot content was not inspected programmatically (no image library on the host); the window's presence comes from xwininfo."
+ ],
+ "artifacts": {
+  "dir": "docs/evidence/osr-r18-live-2026-10-06b",
+  "sha256sumsFile": "docs/evidence/osr-r18-live-2026-10-06b/SHA256SUMS"
+ }
+}

@@ -18,6 +18,10 @@
  *    box, worse under checkpoint load) while the tests themselves looked fine.
  *
  * Any stdin error OTHER than EPIPE is real and still rejects.
+ *
+ * Probing a RELOCATED or HISTORICAL copy of a hook (A/B a pre-fix version)? Do not `cp` one file to
+ * /tmp: the hook's sibling imports die, fail-open turns the crash into empty stdout, and every case
+ * reads ALLOW. Use `./hook-probe` (whole-directory copy + positive control + CRASHED verdict).
  */
 import { spawn } from 'node:child_process';
 

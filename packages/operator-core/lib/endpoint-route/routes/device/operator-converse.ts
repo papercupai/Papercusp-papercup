@@ -15,11 +15,10 @@
  * turn. That keeps the three surfaces in lock-step: a turn typed on the
  * phone shows up on the desktop and vice-versa.
  *
- * The conversation is keyed to the ACTIVE workspace (getOrCreate uses
- * activeWorkspaceId) — that is the whole point of a *shared* thread. A
- * paired device's JWT carries the workspace it paired into; on the
- * single-active-workspace desktop these coincide. The device JWT gate is
- * the access control.
+ * The conversation is keyed to the paired device's verified workspace.
+ * A shared operator may serve several workspaces, so the process's active
+ * desktop workspace is not the phone's scope. Reads and writes use the
+ * device principal rather than an ambient selection or caller header.
  */
 import { sseResponse } from '@papercusp/sse';
 import {
@@ -31,9 +30,9 @@ import {
 } from '@papercusp/agent-mcp';
 import '../../../agent-tools/index';
 import { DEVICE_AUTH, devicePrincipal } from './_shared';
-import { activeWorkspaceId } from '../../../workspace-registry';
 import {
   getOrCreateActiveConversation,
+  getConversationById,
   appendTurn,
   listTurnsRecent,
   type TurnRole,
@@ -53,8 +52,8 @@ const conversationRead = defineTool({
   path: '/device/operator/conversation',
   auth: DEVICE_AUTH,
   cors: true,
-  async handler(req) {
-    const conversation = await getOrCreateActiveConversation();
+  async handler(req, ctx) {
+    const conversation = await getOrCreateActiveConversation(devicePrincipal(ctx).workspaceId);
     const limitRaw = new URL(req.url).searchParams.get('limit');
     const limit = Math.max(1, Math.min(Number(limitRaw) || 50, 500));
     const page = await listTurnsRecent({ conversationId: conversation.id, limit });
@@ -77,11 +76,14 @@ const conversationTurns = defineTool({
   path: '/device/operator/conversation/turns',
   auth: DEVICE_AUTH,
   cors: true,
-  async handler(req) {
+  async handler(req, ctx) {
     const url = new URL(req.url);
     const conversationId = url.searchParams.get('conversationId');
     if (!conversationId) {
       return Response.json({ error: 'missing conversationId' }, { status: 400 });
+    }
+    if (!await getConversationById(conversationId, devicePrincipal(ctx).workspaceId)) {
+      return Response.json({ error: 'conversation not found' }, { status: 404 });
     }
     const beforeRaw = url.searchParams.get('beforeSeq');
     const beforeSeq = beforeRaw === null || beforeRaw === '' ? null : Number(beforeRaw);
@@ -151,8 +153,8 @@ const converse = defineTool({
       return new Response(`${converseToolName} tool not registered`, { status: 500 });
     }
 
-    const conversation = await getOrCreateActiveConversation();
-    const workspaceId = activeWorkspaceId();
+    const workspaceId = principal.workspaceId;
+    const conversation = await getOrCreateActiveConversation(workspaceId);
 
     // Build the brain's context from the shared thread's recent turns,
     // then persist this phone turn so it is part of that same history.

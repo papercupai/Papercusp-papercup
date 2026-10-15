@@ -33,13 +33,17 @@ export function settleVoucherBatch(input: {
 }): BatchSettlementResult {
   if (input.disputed) return { ok: false, code: 'dispute', detail: 'settlement is frozen while a voucher dispute or chain reorg is unresolved' };
   if (input.vouchers.length === 0) return { ok: false, code: 'empty-batch', detail: 'at least one voucher is required' };
-  const verify = input.verifySignature ?? ((v: CumulativePaymentVoucher) => v.signature.trim().length > 0);
+  // This callback is a trusted host dependency; it must not arrive over the wire.
+  const verify = input.verifySignature;
   let cumulative = input.channel.lastCumulativeMicros;
   const digests: string[] = [];
   for (const voucher of input.vouchers) {
     if (voucher.channelId !== input.channel.channelId) return { ok: false, code: 'channel-mismatch', detail: 'voucher belongs to a different payment channel' };
-    if (!Number.isFinite(input.nowMs) || input.nowMs > voucher.expiresAtMs) return { ok: false, code: 'expired', detail: `voucher '${voucher.usageNonce}' is expired` };
-    if (!verify(voucher)) return { ok: false, code: 'invalid-signature', detail: `voucher '${voucher.usageNonce}' signature failed verification` };
+    if (!Number.isSafeInteger(input.nowMs) || input.nowMs < 0 || !Number.isSafeInteger(voucher.expiresAtMs) ||
+        voucher.expiresAtMs < 0 || input.nowMs > voucher.expiresAtMs) return { ok: false, code: 'expired', detail: `voucher '${voucher.usageNonce}' expiry is invalid or expired` };
+    let authenticated = false;
+    try { authenticated = verify?.(voucher) === true; } catch { /* verifier failure refuses payment */ }
+    if (!authenticated) return { ok: false, code: 'invalid-signature', detail: `voucher '${voucher.usageNonce}' signature failed verification` };
     const digest = paymentVoucherDigest(unsignedVoucher(voucher));
     if (input.channel.claimedVoucherDigests.includes(digest) || digests.includes(digest)) return { ok: false, code: 'duplicate-claim', detail: `voucher '${voucher.usageNonce}' was already claimed` };
     if (voucher.cumulativeClaimMicros <= cumulative) return { ok: false, code: 'non-monotonic', detail: 'batch vouchers must advance cumulative claims monotonically' };

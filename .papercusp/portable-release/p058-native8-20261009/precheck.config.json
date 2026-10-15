@@ -1,0 +1,33 @@
+{
+  "imageId": "sha256:db4fe47b038ae72b37cdc2abf1dd072d0f0253941b38a7d85db3889d78c24ea3",
+  "platform": "linux/arm64",
+  "args": [
+    "--user", "1001:1001", "--workdir", "/product", "--read-only",
+    "--network", "none", "--tmpfs", "/tmp:rw,exec,size=256m",
+    "--volume", "/home/marsh-office/p058-armbuild8/sources/product:/product:ro",
+    "--volume", "/home/marsh-office/p058-armbuild8/tooling-epoch2/producer:/producer:ro",
+    "--volume", "/home/marsh-office/p058-armbuild8/build-home:/build-home",
+    "--volume", "/home/marsh-office/p058-armbuild8/output:/output",
+    "--env", "HOME=/build-home",
+    "--env", "XDG_STATE_HOME=/build-home/.local/state",
+    "--env", "GIT_OPTIONAL_LOCKS=0",
+    "--env", "SIDECAR_STAGE_REPO_ROOT=/product",
+    "--env", "SIDECAR_STAGE_DESKTOP_ROOT=/product/papercusp-desktop",
+    "--env", "SIDECAR_STAGE_HELPER_ROOT=/producer/papercusp-desktop/bin",
+    "--env", "SIDECAR_STAGE_FAILED_ROOT=/build-home/.local/state/papercusp/sidecar-failed-stages/input8",
+    "--env", "SIDECAR_STAGE_FINAL_DIR=/output/native-arm64-release",
+    "--env", "SIDECAR_STAGE_TARGET_OS=linux",
+    "--env", "SIDECAR_STAGE_TARGET_ARCH=arm64",
+    "--env", "PAPERCUSP_DISTRIBUTION_PROFILE=dogfood",
+    "--env", "PAPERCUSP_DESKTOP_VERSION=0.0.26",
+    "--env", "PAPERCUSP_BUILD_SHA=58d5a1c744632d7bf72772a0f97e4c338ef0d04b",
+    "--env", "PROVENANCE_SOURCE_GIT_HEAD=58d5a1c744632d7bf72772a0f97e4c338ef0d04b",
+    "--env", "PROVENANCE_SOURCE_GIT_DIRTY=false",
+    "--env", "PAPERCUSP_RELEASE_AUDIT=1",
+    "--env", "PAPERCUSP_STAGE_SCRUB=1",
+    "--env", "PAPERCUSP_SPA_SNAPSHOT_FROM=/output/vite-cli-diagnostic3-snapshot"
+  ],
+  "command": ["/opt/build-node/bin/node", "/producer/papercusp-desktop/bin/lib/sidecar-stage-state.js", "capture", "/output/native8-precheck-identity.json"],
+  "out": "/home/marsh-office/p058-armbuild8/output/native8-precheck-owner",
+  "timeoutMs": 300000
+}

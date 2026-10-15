@@ -91,6 +91,22 @@ describe('SupervisionEntry.episodic — what "down" means for a timer-driven uni
     ).toEqual([]);
   });
 
+  it('EI-24811958626062774 INVARIANT: notifyAfterDownMs is only set on report-only entries', () => {
+    // A restart-capable entry pages on its own ladder (failed restart, give-up); delaying that
+    // page would hide a dead service behind a quiet window.
+    const violations = SUPERVISED_PROCESSES.filter((e) => e.notifyAfterDownMs !== undefined && e.autoRestart).map((e) => e.name);
+    expect(violations, `notifyAfterDownMs on an autoRestart entry:\n  - ${violations.join('\n  - ')}`).toEqual([]);
+  });
+
+  it('EI-24811958626062774: papercup-staging-sync is supervised as an episodic, delayed-alarm, report-only unit', () => {
+    // It ran FATAL for 5+ hours on 2026-10-01 with no alarm while :3170 served a stale build.
+    const row = SUPERVISED_PROCESSES.find((e) => e.unit === 'papercup-staging-sync');
+    expect(row, 'papercup-staging-sync must be in SUPERVISED_PROCESSES').toBeDefined();
+    expect(row?.episodic, 'Type=oneshot on a ~5min timer: idle inactive is healthy').toBe(true);
+    expect(row?.autoRestart, 're-running a failed sync repeats the same FATAL').toBe(false);
+    expect(row?.notifyAfterDownMs, 'short single-run streaks must not page').toBeGreaterThanOrEqual(15 * 60_000);
+  });
+
   it('live-federation-gate is marked episodic, and its .timer is NOT', () => {
     // The specific unit the defect was found on, asserted by name so the
     // regression cannot return silently. The distinction is real: the SERVICE is

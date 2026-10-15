@@ -147,6 +147,36 @@ describe('ledger chain on D1', () => {
     expect(report.verdict.ok === false && report.verdict.firstBreak).toMatchObject({ seq: 1, reason: 'entry-mismatch' });
   });
 
+  it.each(['commerce.ledger', 'treasury.transfers'] as const)(
+    'reports the earliest altered or deleted entry in %s, even with a later break',
+    async (streamId) => {
+      const { db, raw } = makeSqliteDb();
+      for (let i = 1; i <= 4; i += 1) {
+        if (streamId === 'commerce.ledger') insertLedgerEvent(raw, `le${i}`, i);
+        else insertTransfer(raw, `t${i}`, i);
+      }
+      expect((await witnessLedgerStream(db, streamId, 10)).appended).toBe(4);
+      expect(await verifyLedgerStream(db, streamId)).toMatchObject({ ok: true, verdict: { length: 4 } });
+
+      if (streamId === 'commerce.ledger') {
+        raw.prepare("UPDATE commerce_ledger_events SET payload_json = '{}' WHERE ledger_event_id = 'le2'").run();
+        raw.prepare("DELETE FROM commerce_ledger_events WHERE ledger_event_id = 'le4'").run();
+      } else {
+        raw.prepare("UPDATE treasury_transfers SET recipient = '0xattacker' WHERE transfer_id = 't2'").run();
+        raw.prepare("DELETE FROM treasury_transfers WHERE transfer_id = 't4'").run();
+      }
+      const altered = await verifyLedgerStream(db, streamId);
+      expect(altered).toMatchObject({ ok: false });
+      expect(altered.verdict.ok === false && altered.verdict.firstBreak).toMatchObject({ seq: 1, reason: 'entry-mismatch' });
+
+      if (streamId === 'commerce.ledger') raw.prepare("DELETE FROM commerce_ledger_events WHERE ledger_event_id = 'le1'").run();
+      else raw.prepare("DELETE FROM treasury_transfers WHERE transfer_id = 't1'").run();
+      const deleted = await verifyLedgerStream(db, streamId);
+      expect(deleted).toMatchObject({ ok: false });
+      expect(deleted.verdict.ok === false && deleted.verdict.firstBreak).toMatchObject({ seq: 0, reason: 'entry-missing' });
+    },
+  );
+
   it('keeps every Safe deployment record in a chained log, including values a re-record overwrote', async () => {
     const { db, raw } = makeSqliteDb();
     const deployment = {
@@ -205,13 +235,23 @@ describe('ledger chain on D1', () => {
     });
   });
 
-  it('exports in the stable format, round-trips, and verifies offline', async () => {
-    const { db } = await seeded();
-    const text = await exportLedgerStream(db, 'commerce.ledger');
-    const parsed = parseChainExport(text);
-    expect(parsed.header).toMatchObject({ streamId: 'commerce.ledger', length: 4 });
-    expect(exportChain('commerce.ledger', parsed.records)).toBe(text);
-    expect(verifyChainExport(text)).toMatchObject({ ok: true, length: 4 });
-    expect(parsed.records[0]!.entry).toMatchObject({ ledger_event_id: 'le1', provider: 'stripe' });
-  });
+  it.each(['commerce.ledger', 'treasury.transfers'] as const)(
+    'exports %s in the stable format, round-trips byte-exactly, and verifies offline',
+    async (streamId) => {
+      const { db, raw } = makeSqliteDb();
+      for (let i = 1; i <= 4; i += 1) {
+        if (streamId === 'commerce.ledger') insertLedgerEvent(raw, `le${i}`, i);
+        else insertTransfer(raw, `t${i}`, i);
+      }
+      await witnessLedgerStream(db, streamId, 10);
+      const text = await exportLedgerStream(db, streamId);
+      const parsed = parseChainExport(text);
+      expect(parsed.header).toMatchObject({ streamId, length: 4 });
+      expect(exportChain(streamId, parsed.records)).toBe(text);
+      expect(verifyChainExport(text)).toMatchObject({ ok: true, length: 4 });
+      expect(parsed.records[0]!.entry).toMatchObject(
+        streamId === 'commerce.ledger' ? { ledger_event_id: 'le1', provider: 'stripe' } : { transfer_id: 't1', recipient: '0xdao' },
+      );
+    },
+  );
 });

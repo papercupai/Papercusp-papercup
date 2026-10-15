@@ -88,6 +88,13 @@ export interface BackupHost {
    */
   getHarnessAdminUrl: () => { url: string; source: string };
   /**
+   * Lease over the complete database included in the dump. The host must read
+   * active holds after serializing against every hold writer, and retain that
+   * lease until the callback finishes. Unknown/unreadable state must throw.
+   * Used only for expiry; snapshot capture stays outside the lease.
+   */
+  withRetentionLease?: <T>(fn: (activeHoldIds: readonly string[]) => Promise<T>) => Promise<T>;
+  /**
    * Optional direct-session advisory rendezvous shared with migration appliers.
    * The returned handle owns its session and must be released after the whole
    * snapshot (including its metadata row and final status) completes. Absent ⇒

@@ -12,7 +12,13 @@ import { defineTool } from '@papercusp/agent-mcp';
 import type { CoordEnvelope } from '@papercusp/coordination/core';
 import { WORK_ITEM_LIFECYCLE_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { releaseWorkItem, setWorkItemClaimHold, getWorkItem, commentWorkItem } from '../../work-items';
+import {
+  releaseWorkItem,
+  setWorkItemClaimHold,
+  getWorkItem,
+  commentWorkItem,
+  isClaimHoldParked,
+} from '../../work-items';
 import { runBulk, bulkContent, bulkEnvelopeSchema } from '../_bulk';
 import {
   assessForceRelease,
@@ -33,6 +39,7 @@ import { clampText, softText } from '../limits';
 import { buildDurableParkReleaseContract } from '../../durable-park-release-contract';
 import type { DurableParkReleaseContract } from '../../work-items-durable-park-audit';
 import { PREMISE_STAMPS_FIELD } from '../coordination/premise-resolve';
+import { healOwnNodeIssueOrigin as healOwnNodeOrigin } from '../../issues-engineer';
 
 const RELEASE_REASON_MAX_CHARS = 500;
 const releaseReasonSchema = () =>
@@ -70,8 +77,11 @@ const CLAIM_HOLD_RELEASE_CONSTRAINT =
 async function buildClaimHoldReleaseContract(
   input: ClaimHoldReleaseInput,
   defaultOwner: string,
+  parkId: string,
 ): Promise<DurableParkReleaseContract> {
-  return buildDurableParkReleaseContract(input, defaultOwner);
+  // parkId lets the shared writer stamp a self-release trigger (the park's own
+  // work-item:done) as unverified instead of reachable.
+  return buildDurableParkReleaseContract({ ...input, parkId }, defaultOwner);
 }
 
 /**
@@ -97,6 +107,12 @@ const NON_COMPLETION_PATTERNS = [
   /\b(?:still|currently|actively)\s+(?:working|running|investigating|in progress)\b/i,
   /\b(?:will|would|should|might|may|could)\s+(?:be\s+)?(?:complete|completed|done|finished|resolved|closed)\b/i,
 ] as const;
+
+// These are bounded activities a holder can finish while the referenced work-item
+// remains open. Only match them as the subject immediately before the completion
+// predicate; a later explicit "<item> is complete" in the same clause must still warn.
+const BOUNDED_ACTIVITY_SUBJECT_PATTERN =
+  /^(?:['’]s\s+)?(?:(?:the|a|an|bounded|brief|initial|targeted)\s+)*(?:observation|investigation|analysis|research|evidence[- ](?:collection|gathering)|lookup|search|scan|probe|check|test(?:\s+run)?|verification|review|inspection|audit|monitoring|triage|diagnosis|reproduction|experiment|validation|measurement|assessment|query|read|fetch)(?:\s+(?:of|for|into|on)\s+(?:(?:the|a|an)\s+)?(?:root[- ]cause|blocker|record|repository|evidence|work[- ]item|item))?\s*$/i;
 
 function escapedRegExp(value: string): RegExp {
   return new RegExp(`(?:^|[^A-Za-z0-9])${value.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}(?:$|[^A-Za-z0-9])`, 'i');
@@ -204,7 +220,8 @@ function hasStructuredCompletionPremise(message: unknown, itemId: string): boole
  * Keep an affirmative completion phrase attached to the clause that names the
  * item. A message can legitimately contain both "consolidation is complete"
  * and a still-open item that is being released; treating the whole message as
- * one segment makes the former look like a claim about the latter.
+ * one segment makes the former look like a claim about the latter. When one
+ * clause names multiple work items, the nearest reference owns each phrase.
  */
 function completionClauses(segment: string): string[] {
   return segment
@@ -213,14 +230,64 @@ function completionClauses(segment: string): string[] {
     .filter(Boolean);
 }
 
+type TextRange = { start: number; end: number };
+
+function rangeDistance(left: TextRange, right: TextRange): number {
+  if (left.end <= right.start) return right.start - left.end;
+  if (right.end <= left.start) return left.start - right.end;
+  return 0;
+}
+
+function hasItemScopedPattern(
+  clause: string,
+  itemId: string,
+  patterns: readonly RegExp[],
+  ignoreBoundedActivitySubject = false,
+): boolean {
+  const references = [...clause.matchAll(/\b(?:WI|EI|F)-\d+\b/gi)].map((match) => ({
+    value: match[0],
+    start: match.index ?? 0,
+    end: (match.index ?? 0) + match[0].length,
+  }));
+  const targetRef = escapedRegExp(itemId);
+  const targetReferences = references.filter(({ value }) => targetRef.test(value));
+  const otherReferences = references.filter(({ value }) => !targetRef.test(value));
+  if (!targetReferences.length) return false;
+
+  const matches = patterns.flatMap((pattern) => {
+    const matcher = new RegExp(pattern.source, `${pattern.flags}g`);
+    return [...clause.matchAll(matcher)].map((match) => ({
+      start: match.index ?? 0,
+      end: (match.index ?? 0) + match[0].length,
+    }));
+  });
+
+  return matches.some((match) => {
+    const nearestTargetReference = targetReferences.reduce((nearest, reference) =>
+      rangeDistance(match, reference) < rangeDistance(match, nearest) ? reference : nearest,
+    );
+    const targetDistance = rangeDistance(match, nearestTargetReference);
+    const otherDistance = otherReferences.length
+      ? Math.min(...otherReferences.map((reference) => rangeDistance(match, reference)))
+      : Number.POSITIVE_INFINITY;
+    // A tie is ambiguous. Keep the warning conservative and do not attribute a
+    // sibling's status to this item just because both occur in one clause.
+    if (targetDistance >= otherDistance) return false;
+
+    if (ignoreBoundedActivitySubject && nearestTargetReference.end <= match.start) {
+      const subject = clause.slice(nearestTargetReference.end, match.start).trim();
+      if (BOUNDED_ACTIVITY_SUBJECT_PATTERN.test(subject)) return false;
+    }
+    return true;
+  });
+}
+
 function assertsCompletionForItem(message: unknown, itemId: string): boolean {
   if (hasStructuredCompletionPremise(message, itemId)) return true;
-  const itemRef = escapedRegExp(itemId);
   return coordMessageText(message).some((segment) => {
     return completionClauses(segment).some((clause) => {
-      if (!itemRef.test(clause)) return false;
-      if (!COMPLETION_ASSERTION_PATTERNS.some((pattern) => pattern.test(clause))) return false;
-      return !NON_COMPLETION_PATTERNS.some((pattern) => pattern.test(clause));
+      if (!hasItemScopedPattern(clause, itemId, COMPLETION_ASSERTION_PATTERNS, true)) return false;
+      return !hasItemScopedPattern(clause, itemId, NON_COMPLETION_PATTERNS);
     });
   });
 }
@@ -451,7 +518,7 @@ export default defineTool({
         const claimHoldReleaseInput = it.claimHoldRelease ?? args.claimHoldRelease;
         const releaseContract =
           claimHold === true && claimHoldReleaseInput
-            ? await buildClaimHoldReleaseContract(claimHoldReleaseInput, ident.ownerId)
+            ? await buildClaimHoldReleaseContract(claimHoldReleaseInput, ident.ownerId, it.id)
             : undefined;
         // WI-4198: force is a CHECKED override, not a bypass. Before releasing,
         // identify the holder; a cross-holder force must pass the authority/liveness
@@ -534,8 +601,13 @@ export default defineTool({
         // or one already held by `ident.ownerId` (unless `force`), so a peer's live claim
         // can never be silently cleared. A null return here is either "not found" or "held
         // by someone else" — re-read to tell them apart and report an honest error.
-        const workItem = await releaseWorkItem(it.id, {
+        const releaseOpts: NonNullable<Parameters<typeof releaseWorkItem>[1]> = {
           harness,
+          // The durable claim hold is applied after releaseWorkItem returns. Suppress its
+          // broad pool announcement here so the pre-hold snapshot cannot advertise work
+          // that this same release is about to park. The targeted claim:released:<id> event
+          // remains available to agents already waiting on this exact item.
+          ...(claimHold === true ? { announceClaimable: false } : {}),
           // Every cross-holder force is authorized against one exact pre-read holder.
           // Preserve that holder as the mutation CAS so a successor claim that races
           // the authorization can never be cleared.
@@ -545,7 +617,25 @@ export default defineTool({
             prior.assignee = p.assignee;
             prior.wasClaimed = p.wasClaimed;
           },
-        });
+        };
+        let workItem = await releaseWorkItem(it.id, releaseOpts);
+        // WI-10006515: a null release on an OWN-NODE issue row stranded at origin='remote' is
+        // the view trigger no-op'ing a write this node is entitled to make (`origin` records how
+        // the row arrived, not who wrote it). Heal it and retry ONCE. The heal's WHERE clause is
+        // the identity check, so a true peer row is untouched and falls through to the refusal
+        // below; a row a peer holds is never healed here (that is the not_holder answer).
+        if (!workItem) {
+          const probe = await getWorkItem(it.id, harness);
+          const probeHolder = probe?.assignee?.trim();
+          if (
+            probe?.family === 'issue' &&
+            probe.origin === 'remote' &&
+            (!probeHolder || probeHolder === ident.ownerId || (forced !== null && forced !== undefined && probeHolder === forced.holder)) &&
+            (await healOwnNodeOrigin(it.id, probe.harness))
+          ) {
+            workItem = await releaseWorkItem(it.id, releaseOpts);
+          }
+        }
         // The force path read the row a moment earlier for the authority guard; prefer the
         // library's read (it is the one the UPDATE acted on) and fall back to that read only
         // if the row vanished before it.
@@ -847,21 +937,28 @@ export default defineTool({
         //
         // Do NOT infer that every checkpoint means deferral: work_items:park deliberately
         // writes a checkpoint for a NORMAL resumable handoff. Surface the semantic delta at
-        // the decision point instead. A second release on the now-unassigned row can still
-        // apply claimHold:true, so this is actionable after the plain release rather than a
-        // dead-end warning. Explicit claimHold:false is the caller's deliberate "re-pool"
-        // signal and therefore suppresses the nudge. Forced reclaims carry mandatory audit
-        // reasons with unrelated semantics, so they are excluded too.
+        // the decision point instead. A follow-up release can still park the row if it remains
+        // unassigned, but the first release has returned it to the pool; a peer may claim it
+        // before that second call. Point future deferrals at claimHold:true on the original
+        // release, and make the after-the-fact path check current ownership. Explicit
+        // claimHold:false is the caller's deliberate "re-pool" signal and therefore suppresses
+        // the nudge. Forced reclaims carry mandatory audit reasons with unrelated semantics,
+        // so they are excluded too.
+        const alreadyClaimHeld = isClaimHoldParked(workItem.payload);
         const claimHoldNudge =
-          !force && claimHold === undefined && wasHeld && (releaseCheckpoint || reason)
+          !force && claimHold === undefined && wasHeld && !alreadyClaimHeld && (releaseCheckpoint || reason)
             ? {
                 claimHoldNudge:
                   `Plain release left '${it.id}' self-selectable by other agents immediately (only your own short ` +
                   `re-claim cooldown was applied). ${releaseCheckpoint ? 'Its checkpoint remains resume context, not a queue disposition.' : 'Its release reason was recorded, but does not change selectability.'} ` +
-                  `If this means "defer / not now / do not self-select", apply the durable disposition now with ` +
-                  `work_items:release { id:'${it.id}', claimHold:true, reason:'<unpark condition>', ` +
-                  `claimHoldRelease:{ condition:'<what changes>', trigger:'<exact event key>' } }; that follow-up ` +
-                  `works while the item is unassigned. If this is an ordinary handoff, no action is needed.`,
+                  `If this means "defer / not now / do not self-select", use this as the original ` +
+                  `work_items:release call: work_items:release { id:'${it.id}', claimHold:true, ` +
+                  `reason:'<why it is deferred>', claimHoldRelease:{ condition:'<what changes>', ` +
+                  `trigger:'<exact event key>' } }; it suppresses the broad claimable wake and avoids a ` +
+                  `separate post-release round trip. Since this release already happened, ` +
+                  `re-read work_items:get before following up. A peer may have claimed the item since the last ` +
+                  `check. A not_holder result means another agent currently holds it; coordinate with them ` +
+                  `instead of forcing. If this is an ordinary handoff, no action is needed.`,
               }
             : {};
         // EI-21352358541526229: the fully-blind release — no checkpoint AND no reason — was
@@ -875,7 +972,7 @@ export default defineTool({
         // also driven by paths with no disposition to give (stale-claim reaping, handoffs,
         // a release of work genuinely never started), and refusing those would block the queue
         // to buy a field that is often honestly empty. Nudge the human-ish path instead, and
-        // make the remedy a call that still works after the fact.
+        // make the after-the-fact remedy explicit about a possible peer re-claim.
         const blindReleaseNudge =
           !force && claimHold === undefined && wasHeld && !releaseCheckpoint && !reason
             ? {
@@ -883,11 +980,12 @@ export default defineTool({
                   `You released '${it.id}' with neither a checkpoint nor a reason, so it returns to the queue looking ` +
                   `UNSTARTED. The next claimant is told only that somebody held it and left nothing behind ` +
                   `(priorWork hasCheckpoint:false) and has to re-derive whatever you already know — measured at 6–10 ` +
-                  `tool calls of Postgres forensics and repo greps per item. If you built, landed, or SETTLED ` +
-                  `anything — a migration, a commit, a conclusion, even "this turned out to be already done" — record ` +
-                  `it now with work_items:release { id:'${it.id}', reason:'<one line: what exists, what is left>' }; ` +
-                  `that follow-up works while the item is unassigned and is stored as the next claimant's starting ` +
-                  `context. If you genuinely did nothing to this item, no action is needed.`,
+                  `tool calls of Postgres forensics and repo greps per item. For future releases, record any work ` +
+                  `in the original work_items:release call with a reason. Since this release already happened, ` +
+                  `re-read work_items:get before following up with work_items:release { id:'${it.id}', ` +
+                  `reason:'<one line: what exists, what is left>' }; a peer may have claimed the item since the ` +
+                  `last check. A not_holder result means another agent currently holds it; coordinate with them ` +
+                  `instead of forcing. If you genuinely did nothing to this item, no action is needed.`,
               }
             : {};
         if (claimHold === undefined) {

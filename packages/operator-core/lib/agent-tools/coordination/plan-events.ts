@@ -34,6 +34,9 @@ export interface EmitPlanEventOpts {
   before?: unknown;
   after?: unknown;
   detail?: string;
+  /** Pre-allocated envelope id. plans:set-now mints it before the locked note
+   *  write so the stored note names its own event (P-004); default: a fresh id. */
+  msgId?: string;
 }
 
 /** Plan mutations that can change the canonical acceptance verdict. Goal-only
@@ -50,12 +53,13 @@ export function planEventChangesAcceptance(event: PlanEventType): boolean {
   );
 }
 
-/** Append one plan_event line. Throws on fs failure — prefer
- *  emitPlanEventForCaller() from a plans:* write verb. */
-export async function emitPlanEvent(opts: EmitPlanEventOpts): Promise<void> {
+/** Append one plan_event line and return its `msg_id` (the event's position in
+ *  the plan-event log — plans:set-now stores it on the Now note, P-004). Throws on
+ *  fs failure — prefer emitPlanEventForCaller() from a plans:* write verb. */
+export async function emitPlanEvent(opts: EmitPlanEventOpts): Promise<string> {
   const env: CoordEnvelope = {
     ts: new Date().toISOString(),
-    msg_id: newMsgId(),
+    msg_id: opts.msgId ?? newMsgId(),
     from: opts.identity?.ownerId ?? 'system',
     to: ['*'],
     kind: 'plan_event',
@@ -66,30 +70,33 @@ export async function emitPlanEvent(opts: EmitPlanEventOpts): Promise<void> {
   if (opts.after !== undefined) env.after = opts.after;
   if (opts.detail !== undefined) env.detail = opts.detail;
   await coordLog.appendLine('plan-events', env.from, env);
+  return env.msg_id;
 }
 
 /**
  * Best-effort emit used by `plans:*` write verbs. Resolves the caller's
  * identity (falling back to 'system' if unresolvable) and swallows any
- * error — emission must NEVER break a plan write.
+ * error — emission must NEVER break a plan write. Returns the emitted event's
+ * `msg_id`, or null when the emit failed.
  */
 export async function emitPlanEventForCaller(
   ctx: ResolveIdentityCtx,
   details: Omit<EmitPlanEventOpts, 'identity'>,
-): Promise<void> {
+): Promise<string | null> {
   let identity: AgentIdentity | null = null;
+  let msgId: string | null = null;
   try {
     try {
       identity = resolveAgentIdentity(ctx);
     } catch {
       identity = null;
     }
-    await emitPlanEvent({ ...details, identity });
+    msgId = await emitPlanEvent({ ...details, identity });
   } catch {
     // Best-effort. Observability, not state.
   }
 
-  if (!planEventChangesAcceptance(details.event)) return;
+  if (!planEventChangesAcceptance(details.event)) return msgId;
   try {
     const [{ emitAwaitedEvent }, { planAcceptanceChangedKey }] = await Promise.all([
       import('../../events/await/engine'),
@@ -110,6 +117,7 @@ export async function emitPlanEventForCaller(
   } catch {
     // The plan event/write is durable truth; this is only its push hint.
   }
+  return msgId;
 }
 
 /** The newest-N storage bound on every plan-events read (EI-1737 /

@@ -1,7 +1,83 @@
-import { describe, expect, it } from 'vitest';
-import { distribution, gradePairedBenchmark, runPairedBenchmark, type BenchmarkArm, type Trial } from './_paired-operation-benchmark';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  chunkSizes, distribution, gradePairedBenchmark, runPairedBenchmark, type BenchmarkArm, type Trial,
+} from './_paired-operation-benchmark';
 
 describe('P-013 paired benchmark protocol', () => {
+  it('D-050: splits samples into near-equal nonempty chunks', () => {
+    expect(chunkSizes(7, 3)).toEqual([3, 2, 2]);
+    expect(chunkSizes(200, 5)).toEqual([40, 40, 40, 40, 40]);
+    expect(chunkSizes(2, 5)).toEqual([1, 1]);
+    expect(chunkSizes(7, 1)).toEqual([7]);
+  });
+
+  it('D-050: alternates arms chunk by chunk (ABBA) and assembles each arm from its own chunks', async () => {
+    // A fake clock the fixtures advance: control costs 10 ms per sample, candidate 30 ms, so
+    // each arm's wall time (and so its throughput) is only right if it sums ITS OWN chunks.
+    let clock = 0;
+    const now = vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    try {
+      const calls: string[] = [];
+      let candidateCalls = 0;
+      const control: BenchmarkArm = {
+        warmup: async () => {},
+        run: async () => {
+          calls.push('control');
+          clock += 10;
+          return { ingress: 1, accepted: 2, dispatched: 3, terminal: 4, businessEvent: 5,
+            dbRoundTrips: 2, dbBytes: 4 };
+        },
+      };
+      const candidate: BenchmarkArm = {
+        warmup: async () => {},
+        run: async () => {
+          calls.push('candidate');
+          clock += 30;
+          candidateCalls += 1;
+          // Every 7th candidate sample (its last one in each repetition) has no byte counter.
+          return { ingress: 1, accepted: 2, dispatched: 3, terminal: 4, businessEvent: 5,
+            dbRoundTrips: 1, dbBytes: candidateCalls % 7 === 0 ? undefined : 5 };
+        },
+      };
+      const protocol = { warmups: 0, repetitions: 2, warmSamples: 7, coldSamples: 1,
+        concurrencies: [1] as const, modes: ['warm'] as const, interleaveChunks: 3 };
+      const trials = await runPairedBenchmark({ control, candidate }, protocol);
+
+      const seq = (chunks: Array<[string, number]>) =>
+        chunks.flatMap(([name, n]) => Array.from({ length: n }, () => name));
+      // Sizes [3, 2, 2]. Rep 0 leads with control, rep 1 with candidate; within a repetition
+      // the leading arm opens chunks 0 and 2 and trails in chunk 1.
+      expect(calls).toEqual([
+        ...seq([['control', 3], ['candidate', 3], ['candidate', 2], ['control', 2], ['control', 2], ['candidate', 2]]),
+        ...seq([['candidate', 3], ['control', 3], ['control', 2], ['candidate', 2], ['candidate', 2], ['control', 2]]),
+      ]);
+      expect(trials.map((trial) => [trial.repetition, trial.arm])).toEqual([
+        [0, 'control'], [0, 'candidate'], [1, 'candidate'], [1, 'control'],
+      ]);
+      for (const trial of trials) {
+        expect(trial.samples).toBe(7);
+        expect(trial.phasesMs.total.count).toBe(7);
+        if (trial.arm === 'control') {
+          expect(trial.wallMs).toBe(70);
+          expect(trial.throughputPerSec).toBe(100);
+          expect(trial.persistence).toEqual({ dbRoundTrips: 14, dbBytes: 28, durableSteps: null });
+        } else {
+          expect(trial.wallMs).toBe(210);
+          expect(trial.throughputPerSec).toBeCloseTo(7000 / 210, 9);
+          // A counter missing from any one chunk's sample makes the whole trial's sum unknown.
+          expect(trial.persistence).toEqual({ dbRoundTrips: 7, dbBytes: null, durableSteps: null });
+        }
+      }
+
+      // interleaveChunks: 1 is the pre-D-050 whole-block order.
+      calls.length = 0;
+      await runPairedBenchmark({ control, candidate }, { ...protocol, repetitions: 1, interleaveChunks: 1 });
+      expect(calls).toEqual(seq([['control', 7], ['candidate', 7]]));
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it('interleaves matched arms at both concurrencies and keeps unknown counters unknown', async () => {
     const calls: string[] = [];
     const arm = (name: string): BenchmarkArm => {

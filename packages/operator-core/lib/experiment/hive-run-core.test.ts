@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { BASELINE_ID, type BatteryCellResult, type BatteryRubric, type BatteryScore, type JudgeLlmCall } from '@papercusp/eval-battery';
-import type { HiveRunHandle, HiveRunPorts, HiveScenarioCell } from '../pot-eval/run-harness';
+import { makeFakeHivePorts, type HiveRunHandle, type HiveRunPorts, type HiveScenarioCell } from '../pot-eval/run-harness';
+import { GYM_JUDGE_RUBRIC_V1 } from '../gym/judge-scoring';
 import type { HiveScenario } from '../pot-eval/scenario';
 import {
   armToHiveCells,
@@ -57,6 +58,32 @@ describe('armToHiveCells', () => {
 });
 
 describe('hiveResultsToExperimentResult', () => {
+  it('withholds winner and scorecard when a judge charge is unknown', () => {
+    const row = (instanceId: string, composite: number, measured: boolean): BatteryCellResult<HiveScenarioCell, HiveRunHandle, unknown> => ({
+      runId: instanceId, cell: { instanceId } as HiveScenarioCell, handle: { costUsd: 0.2 } as HiveRunHandle,
+      score: mkScore(composite), status: 'scored', judgeCostUsd: 0.03, judgeCostMeasured: measured, elapsedMs: 0,
+    });
+    const out = hiveResultsToExperimentResult([{ armId: BASELINE_ID, label: 'base' }, { armId: 'cand', label: 'cand' }], new Map([[BASELINE_ID, [row(BASELINE_ID, 4, true)]], ['cand', [row('cand', 9, false)]]]));
+    expect(out.totalCostUsd).toBeCloseTo(0.46);
+    expect(out.costMeasured).toBe(false);
+    expect(out.winner).toBeNull();
+    expect(out.comparison).toBeNull();
+    expect(Object.values(out.scorecardScores!)).toEqual([null, null, null]);
+  });
+
+  it('includes measured failed-judge charges in the arm and total cost', () => {
+    const failed: BatteryCellResult<HiveScenarioCell, HiveRunHandle, unknown> = {
+      runId: 'failed', cell: { instanceId: BASELINE_ID } as HiveScenarioCell,
+      handle: { costUsd: 0.2 } as HiveRunHandle, status: 'errored', error: 'invalid judge output',
+      judgeCostUsd: 0.04, judgeCostMeasured: true, elapsedMs: 0,
+    };
+    const out = hiveResultsToExperimentResult([{ armId: BASELINE_ID, label: 'baseline' }], new Map([[BASELINE_ID, [failed]]]));
+    expect(out.arms[0].costUsd).toBeCloseTo(0.24);
+    expect(out.totalCostUsd).toBeCloseTo(0.24);
+    expect(out.arms[0].scored).toBe(0);
+    expect(out.winner).toBeNull();
+  });
+
   it('groups per-arm cells → mean composite + compareArms verdict + summed cost', () => {
     const cell = (instanceId: string): HiveScenarioCell => ({ instanceId, scenario: scenario(), repeat: 0, seed: 1, budgetUsdCap: 1, beeCap: 1 });
     const row = (armId: string, composite: number): BatteryCellResult<HiveScenarioCell, HiveRunHandle, unknown> => ({
@@ -65,6 +92,8 @@ describe('hiveResultsToExperimentResult', () => {
       handle: { costUsd: 0.2 } as HiveRunHandle,
       score: mkScore(composite),
       status: 'scored',
+      judgeCostUsd: 0.05,
+      judgeCostMeasured: true,
       elapsedMs: 0,
     });
     const byArm = new Map<string, BatteryCellResult<HiveScenarioCell, HiveRunHandle, unknown>[]>([
@@ -87,6 +116,24 @@ describe('hiveResultsToExperimentResult', () => {
 });
 
 describe('hiveRunCore', () => {
+  it('uses actual fake-provider charges across failed repairs and stops booting on unknown spend', async () => {
+    const fake = makeFakeHivePorts(() => ({ costUsd: 0.2 }));
+    let calls = 0;
+    const llmCall: JudgeLlmCall = async () => {
+      if (++calls === 3) throw new Error('charge unavailable');
+      return { text: 'invalid judge output', costUsd: 0.02, inputTokens: 10, outputTokens: 5 };
+    };
+    const out = await hiveRunCore(req({ repeats: 2, payload: payload({ rubric: GYM_JUDGE_RUBRIC_V1 }) }), { workspaceId: 'ws', now: fake.ports.now, ports: fake.ports, llmCall });
+    expect(calls).toBe(3);
+    expect(fake.booted).toHaveLength(2);
+    expect(fake.tornDown).toHaveLength(2);
+    expect(out.totalCostUsd).toBeCloseTo(0.44);
+    expect(out.arms[0].costUsd).toBeCloseTo(0.44);
+    expect(out.arms[1].cells).toBe(0);
+    expect(out.costMeasured).toBe(false);
+    expect(out.winner).toBeNull();
+  });
+
   it('refuses (staged) with NO spend when ctx.hive.ports is absent', async () => {
     const runBattery = vi.fn();
     await expect(
@@ -103,6 +150,8 @@ describe('hiveRunCore', () => {
         handle: { costUsd: 0.2 } as HiveRunHandle,
         score: mkScore(c.runId.startsWith(BASELINE_ID) ? 5 : 8),
         status: 'scored' as const,
+        judgeCostUsd: 0.05,
+        judgeCostMeasured: true,
         elapsedMs: 0,
       })),
     );
@@ -112,6 +161,7 @@ describe('hiveRunCore', () => {
       { runBattery } as unknown as HiveRunCoreDeps,
     );
     expect(runBattery).toHaveBeenCalledTimes(1);
+    expect(runBattery.mock.calls[0]![0]).toMatchObject({ stopOnUnmeasuredJudgeCost: true });
     // baseline auto-prepended + cand, each 1 repeat = 2 cells in one battery
     const passedCells = (runBattery.mock.calls[0]![0] as { cells: unknown[] }).cells;
     expect(passedCells).toHaveLength(2);

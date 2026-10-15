@@ -192,9 +192,19 @@ describe('D-186 — a vm-release cut skips dependency generation', () => {
   describe('the producer sets it, so no caller has to remember D-186', () => {
     it('exports it inside the vm-release branch, in code rather than a comment', () => {
       const lines = producer.split('\n');
-      const gateAt = lines.findIndex((l) =>
-        /^if \[\[ "\$DISTRIBUTION_PROFILE" == "vm-release" \]\]; then/.test(l),
-      );
+      const exportLine = firstCodeIndex(producer, new RegExp(`export ${SKIP_VAR}=`));
+      // The producer has several top-level vm-release blocks; the export must sit
+      // in the one that encloses it. An opener may WIDEN the condition with a
+      // `||` continuation (94f1495b: `|| PAPERCUSP_RELEASE_AUDIT == 1`), never
+      // narrow it with `&&`, so every vm-release cut still exports the skip.
+      const isVmReleaseOpener = (i: number) =>
+        /^if \[\[ "\$DISTRIBUTION_PROFILE" == "vm-release" \]\]; then/.test(lines[i]) ||
+        (/^if \[\[ "\$DISTRIBUTION_PROFILE" == "vm-release" \\$/.test(lines[i]) &&
+          /^\s+\|\| .*\]\]; then\s*$/.test(lines[i + 1] ?? ''));
+      let gateAt = -1;
+      for (let i = 0; i < lines.length && (exportLine < 0 || i < exportLine); i++) {
+        if (isVmReleaseOpener(i)) gateAt = i;
+      }
       expect(gateAt, 'vm-release gate block not found').toBeGreaterThan(-1);
 
       // The top-level block closes at the next column-0 `fi`.
@@ -229,7 +239,22 @@ describe('D-186 — a vm-release cut skips dependency generation', () => {
 
     it('sets it before the first npm-install-safe invocation, which is what would produce one', () => {
       const exportAt = firstCodeIndex(producer, new RegExp(`export ${SKIP_VAR}=`));
-      const installAt = firstCodeIndex(producer, /npm-install-safe\.mjs/);
+      // A shell function DEFINITION that mentions the installer runs nothing at
+      // its definition site; only top-level code (including call lines that
+      // pass npm-install-safe.mjs to such a function) can publish a generation.
+      const srcLines = producer.split('\n');
+      const inFunctionBody = new Set<number>();
+      for (let i = 0; i < srcLines.length; i++) {
+        if (/^[A-Za-z_][A-Za-z0-9_]*\(\)\s*\{\s*$/.test(srcLines[i])) {
+          let j = i + 1;
+          while (j < srcLines.length && !/^\}\s*$/.test(srcLines[j])) inFunctionBody.add(j++);
+          i = j;
+        }
+      }
+      const installAt =
+        codeOnlyLines(producer).find(
+          ({ line, index }) => !inFunctionBody.has(index) && /npm-install-safe\.mjs/.test(line),
+        )?.index ?? -1;
 
       expect(installAt, 'producer never invokes npm-install-safe.mjs').toBeGreaterThan(-1);
       expect(

@@ -1,4 +1,0 @@
-ox-alpha canary marker 2026-08-23
-This file exists solely for the Ox Alpha (P-002) canary.
-It is deliberately NON-CONFIDENTIAL: no repository source, secrets, or personal data.
-If you can read this line, repository read access works.

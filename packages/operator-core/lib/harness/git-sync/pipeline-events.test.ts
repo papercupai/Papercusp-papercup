@@ -5,7 +5,48 @@
  * pipeline-events.integration.test.ts (real Postgres).
  */
 import { describe, expect, it } from 'vitest';
-import { foldPipelineWindow, emptyWindow, candidatePrefixMatches } from './pipeline-events';
+import { foldPipelineWindow, emptyWindow, candidatePrefixMatches, readGatePipelineWindow } from './pipeline-events';
+
+describe('readGatePipelineWindow — complete historical population', () => {
+  const target = { workspaceId: 'ws', installSlug: 'install' };
+  const window = { windowStartMs: 100, windowEndMs: 200, nonTerminalStatuses: ['decision-pending'] };
+  const row = { id: '1', kind: 'green_checkpoint', status: 'advanced', detail: { gateFireId: 'fire' },
+    created_at: new Date(150), population_count: '1' };
+  const sql = (rows: unknown[]) => (async () => rows) as unknown as import('postgres').Sql;
+
+  it('distinguishes an empty successful read from a failed read', async () => {
+    expect(await readGatePipelineWindow(target, window, sql([])))
+      .toMatchObject({ status: 'complete', total: 0, rows: [] });
+    const failed = (async () => { throw new Error('read failed'); }) as unknown as import('postgres').Sql;
+    expect(await readGatePipelineWindow(target, window, failed))
+      .toMatchObject({ status: 'unavailable', total: null, rows: [], reason: 'read failed' });
+  });
+
+  it('returns explicit incomplete coverage when the exact population is capped', async () => {
+    expect(await readGatePipelineWindow(target, { ...window, maxRows: 1 },
+      sql([{ ...row, population_count: 2 }, { ...row, id: '2', population_count: 2 }])))
+      .toMatchObject({ status: 'capped', total: 2, rows: [expect.objectContaining({ id: '1' })] });
+  });
+
+  it.each(['not-a-count', '0', '2'])('rejects an inconsistent population count %s', async (population_count) => {
+    expect((await readGatePipelineWindow(target, window, sql([{ ...row, population_count }]))).status)
+      .toBe('unavailable');
+  });
+
+  it('keeps source detail and exact event timestamp', async () => {
+    expect(await readGatePipelineWindow(target, window, sql([row])))
+      .toMatchObject({ status: 'complete', total: 1,
+        rows: [{ id: '1', createdAtMs: 150, detail: { gateFireId: 'fire' } }] });
+  });
+
+  it('refuses invalid scope/windows before querying', async () => {
+    let calls = 0;
+    const query = (async () => { calls++; return []; }) as unknown as import('postgres').Sql;
+    expect((await readGatePipelineWindow(target, { ...window, windowEndMs: 100 }, query)).status).toBe('invalid');
+    expect((await readGatePipelineWindow({ ...target, workspaceId: '' }, window, query)).status).toBe('invalid');
+    expect(calls).toBe(0);
+  });
+});
 
 describe('foldPipelineWindow', () => {
   it('folds (kind,status,count) rows into the typed per-kind summary', () => {

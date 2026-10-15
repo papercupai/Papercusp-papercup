@@ -31,4 +31,9 @@ export default class FixtureRfb {
     if (type === 'connect') queueMicrotask(listener);
   }
   disconnect() { this.canvas.remove(); }
+  // The viewers wrap every RFB class in kasmvncRfbClass (cloud-workspaces/kasmvnc-rfb.ts),
+  // which REFUSES a base without noVNC's internal `_sendMouse` — so a fixture lacking it
+  // renders "Desktop stream failed" instead of a framebuffer. There is no input transport
+  // here, so the base is a no-op; the 11-byte wire form is covered by kasmvnc-rfb.test.ts.
+  _sendMouse(_x: number, _y: number, _mask: number): void {}
 }

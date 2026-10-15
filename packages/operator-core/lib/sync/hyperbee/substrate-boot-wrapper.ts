@@ -45,6 +45,7 @@ import {
 } from './substrate-outbox-keepalive';
 import { createPgMergeCursorStore } from './pg-merge-cursor-store';
 import type { BootedAnnounceIdentity, BootHarnessOpts } from './boot';
+import { observeFallback } from '../../degradation/fallback-observations';
 
 export interface BootSubstrateOpts {
   perHarnessTimeoutMs?: number;
@@ -286,8 +287,10 @@ export async function bootSubstrateWithFallback(
       skipSendSideWiring: true,
       bootHarness: sidecarBootHarness,
     });
+    observeFallback('substrate-sidecar-boot', { eligible: 1, applied: 1, reason: 'applied' });
     return finish(result, true);
   } catch (err) {
+    observeFallback('substrate-sidecar-boot', { eligible: 1, applied: 0, reason: 'sidecar-boot-failed' });
     const msg = err instanceof Error ? err.message : String(err);
     console.warn('[substrate-boot] sidecar spawn failed, falling back to in-process:', msg);
     // WI-900 (M4): this catch also covers a PARTIAL mid-boot failure — the sidecar
@@ -302,12 +305,16 @@ export async function bootSubstrateWithFallback(
     // NEITHER process. Stop the sidecar (idempotent no-op if it never spawned /
     // already exited) so it releases every lock it holds BEFORE the in-process
     // fallback tries to reacquire them.
-    await stopSubstrateSidecar().catch((e) => {
+    try {
+      await stopSubstrateSidecar();
+      observeFallback('substrate-sidecar-cleanup', { eligible: 1, applied: 1, reason: 'applied' });
+    } catch (e) {
+      observeFallback('substrate-sidecar-cleanup', { eligible: 1, applied: 0, reason: 'sidecar-stop-failed' });
       console.warn(
         '[substrate-boot] stopSubstrateSidecar during fallback failed (continuing anyway):',
         e instanceof Error ? e.message : String(e),
       );
-    });
+    }
     // Sidecar unavailable → clear the defaults so standalone boots use in-process.
     setSubstrateBootDefaults({ bootHarness: null, skipSendSideWiring: false, mergeCursorStoreFactory });
     const result = await bootAllHarnessesForActiveWorkspace(opts);

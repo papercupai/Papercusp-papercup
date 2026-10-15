@@ -10,7 +10,8 @@
  * The PG-touching seams (presence, plan row read, reconcile) are mocked at
  * their modules; planItemsForRow + the zod schema run real.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ReconcileDeclaredClaimsResult } from '../../../plan-items/claim-discipline';
 
 // ── module-seam mocks (arrow-deref so the hoisted vi.mock factory sees them) ──
 const writePresence = vi.fn(async () => 'x' as string | null);
@@ -38,16 +39,18 @@ vi.mock('../../plans/source', async (importOriginal) => ({
 }));
 
 const reconcileDeclaredClaims = vi.fn(
-  async (opts: { items: string[] }) => ({
+  async (opts: { items: string[] }): Promise<ReconcileDeclaredClaimsResult> => ({
     claimed: [...opts.items],
     alreadyHeld: [],
     conflicts: [],
     released: [],
   }),
 );
+const releaseOwnClaim = vi.fn(async () => true);
 vi.mock('../../../plan-items/claim-discipline', () => ({
   reconcileDeclaredClaims: (...a: unknown[]) =>
     reconcileDeclaredClaims(...(a as [{ items: string[] }])),
+  releaseOwnClaim: (...a: unknown[]) => releaseOwnClaim(...(a as [])),
 }));
 vi.mock('../../../plan-items/agent-names', () => ({
   resolveAdoptedName: async () => null,
@@ -58,8 +61,11 @@ vi.mock('../../../plan-items/agent-names', () => ({
 // path, PLAN_ITEM_CLAIM_AUTO_CONVERT). These tests assert claim RECONCILIATION,
 // not the convert loop — stub it so an ON flag doesn't drive a real PG write
 // (which warns on ECONNREFUSED and trips vitest-fail-on-console) in a unit test.
+// Top-level handle (arrow-deref) so the WI-10008206 refusal tests can script a
+// result and survive the later vi.resetModules() block re-running this factory.
+const convertPlanItem = vi.fn(async (): Promise<Record<string, unknown> | null> => ({}));
 vi.mock('../../../plan-items/convert', () => ({
-  convertPlanItem: vi.fn(async () => ({})),
+  convertPlanItem: (...a: unknown[]) => convertPlanItem(...(a as [])),
 }));
 
 // ── EI-9484 enrichment seams (bounded in the handler) ──
@@ -84,6 +90,9 @@ vi.mock('../presence-fleet', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   fetchPresenceFleet: (...a: unknown[]) => fetchPresenceFleet(...(a as [])),
 }));
+
+import { FLAGS } from '@papercusp/flags';
+import { setFlagOverridesForTest } from '@papercusp/flags/test';
 
 // SUT imported AFTER the seams are wired.
 import declareIntentTool from './declare-intent';
@@ -325,7 +334,7 @@ describe('coord:declare-intent conflict surfacing (the DOUBLE-PLACEMENT invarian
       conflicts: [{ item: 'P-002', reason: 'claimed by su · peer — coordinate', holder: 'su-peer' }],
       released: [],
       alreadyHeld: [],
-    } as never);
+    });
 
     const res = parse(
       await tool.handler(
@@ -353,7 +362,7 @@ describe('coord:declare-intent conflict surfacing (the DOUBLE-PLACEMENT invarian
       conflicts: [{ item: 'P-002', reason: 'claimed by su · peer — coordinate', holder: 'su-peer' }],
       released: [],
       alreadyHeld: [],
-    } as never);
+    });
 
     const res = parse(
       await tool.handler(
@@ -578,6 +587,86 @@ describe('ambient_excluded_refs pass-through (EI-21096338043071922)', () => {
       ctx,
     );
     expect(ambientExcludedRefsArg()).toEqual(['WI-40293', 'EI-21096338043071922']);
+  });
+});
+
+describe('coord:declare-intent — WI-10008206: a gate-refused pickup is reported and releases only the lease this call took', () => {
+  // WI-10008137 made a CODED convertPlanItem refusal (activation_audit_required on an
+  // unaudited draft plan) come back as claims.notConverted instead of being dropped.
+  // WI-10008206 releases the lease when the gate refuses an item THIS call just
+  // claimed, so a refused start leaves no claim behind; a lease held from before the
+  // call is left alone. The flag is forced ON so the convert loop runs regardless of
+  // the environment's flag state.
+  const REASON = 'plan my-plan has no activation audit — record plans:audit { phase:"activation" } first';
+  const lane = { intent: 'work', current_plan_slug: 'my-plan', items: ['P-001'] };
+
+  beforeEach(() => {
+    setFlagOverridesForTest({ [FLAGS.PLAN_ITEM_CLAIM_AUTO_CONVERT]: true });
+    getPlanRow.mockResolvedValue(rowWithItems(['P-001']));
+  });
+  afterEach(() => {
+    setFlagOverridesForTest(null);
+  });
+
+  it('a just-claimed item refused with activation_audit_required is listed with leaseReleased:true and dropped from claimed', async () => {
+    convertPlanItem.mockResolvedValueOnce({ status: 'refused', code: 'activation_audit_required', reason: REASON });
+
+    const res = parse(await tool.handler(lane, ctx));
+
+    expect(convertPlanItem).toHaveBeenCalledTimes(1); // precondition: the convert loop actually ran
+    expect(res.ok).toBe(true);
+    const claims = res.claims as Record<string, unknown>;
+    expect(claims.notConverted).toEqual([
+      { item: 'P-001', code: 'activation_audit_required', reason: REASON, leaseReleased: true },
+    ]);
+    expect(releaseOwnClaim).toHaveBeenCalledTimes(1);
+    expect(releaseOwnClaim).toHaveBeenCalledWith('ws-test', 'papercup', 'my-plan', 'P-001', 'su-test');
+    expect(claims.claimed).toEqual([]); // the released item is no longer reported as claimed
+  });
+
+  it('a refusal with NO code is not listed and releases nothing (control)', async () => {
+    convertPlanItem.mockResolvedValueOnce({ status: 'refused', reason: 'transient' });
+
+    const res = parse(await tool.handler(lane, ctx));
+
+    expect(convertPlanItem).toHaveBeenCalledTimes(1);
+    const claims = res.claims as Record<string, unknown>;
+    expect(claims.notConverted).toBeUndefined();
+    expect(releaseOwnClaim).not.toHaveBeenCalled();
+    expect(claims.claimed).toEqual(['P-001']);
+  });
+
+  it('an item held BEFORE this call is reported but its lease is kept (leaseReleased:false)', async () => {
+    reconcileDeclaredClaims.mockResolvedValueOnce({
+      claimed: [],
+      alreadyHeld: ['P-001'],
+      conflicts: [],
+      released: [],
+    });
+    convertPlanItem.mockResolvedValueOnce({ status: 'refused', code: 'activation_audit_required', reason: REASON });
+
+    const res = parse(await tool.handler(lane, ctx));
+
+    expect(convertPlanItem).toHaveBeenCalledTimes(1);
+    const claims = res.claims as Record<string, unknown>;
+    expect(claims.notConverted).toEqual([
+      { item: 'P-001', code: 'activation_audit_required', reason: REASON, leaseReleased: false },
+    ]);
+    expect(releaseOwnClaim).not.toHaveBeenCalled();
+    expect(claims.alreadyHeld).toEqual(['P-001']);
+  });
+
+  it('a different coded refusal is reported but does not release the lease', async () => {
+    convertPlanItem.mockResolvedValueOnce({ status: 'refused', code: 'some_other_gate', reason: 'other' });
+
+    const res = parse(await tool.handler(lane, ctx));
+
+    const claims = res.claims as Record<string, unknown>;
+    expect(claims.notConverted).toEqual([
+      { item: 'P-001', code: 'some_other_gate', reason: 'other', leaseReleased: false },
+    ]);
+    expect(releaseOwnClaim).not.toHaveBeenCalled();
+    expect(claims.claimed).toEqual(['P-001']);
   });
 });
 

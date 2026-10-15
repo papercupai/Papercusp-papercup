@@ -1,0 +1,1917 @@
+{
+  "schemaVersion": 2,
+  "plane": "isolated-current-build-operator-api",
+  "incomplete": false,
+  "workload": {
+    "population": 256,
+    "bodyCodeUnits": 32768,
+    "variants": 8,
+    "windows": 3,
+    "idleMs": 1000,
+    "concurrency": 8
+  },
+  "cohorts": [
+    {
+      "arm": 0,
+      "mode": "shared",
+      "bundleSha256": "170d7ab4351dce4d096ee995b31292fb706bda8f0d70f22a10c937261059ce84",
+      "samples": [
+        {
+          "phase": "before",
+          "pid": 3007495,
+          "at": 1791221344385,
+          "uptime": 10.030293924,
+          "memory": {
+            "rss": 986091520,
+            "heapTotal": 681353216,
+            "heapUsed": 584366496,
+            "external": 168266104,
+            "arrayBuffers": 90927617
+          },
+          "heap": {
+            "total_heap_size": 681353216,
+            "total_heap_size_executable": 6455296,
+            "total_physical_size": 681353216,
+            "total_available_size": 137055099616,
+            "used_heap_size": 584371384,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119784152,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 127048,
+            "used_global_handles_size": 112896,
+            "external_memory": 168266144,
+            "total_allocated_bytes": 1937883744
+          },
+          "os": {
+            "pid": 3007495,
+            "startTicks": "1030783",
+            "parentPid": 3007220,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 958860288,
+            "rssBytes": 1035587584,
+            "anonymousBytes": 955842560
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 0,
+            "rows": [],
+            "keyDigests": []
+          },
+          "observerMs": 212.30180899999868
+        },
+        {
+          "phase": "idle-0-start",
+          "pid": 3007495,
+          "at": 1791221344598,
+          "uptime": 10.242885853,
+          "memory": {
+            "rss": 986091520,
+            "heapTotal": 681353216,
+            "heapUsed": 584473424,
+            "external": 168291105,
+            "arrayBuffers": 90952578
+          },
+          "heap": {
+            "total_heap_size": 681353216,
+            "total_heap_size_executable": 6455296,
+            "total_physical_size": 681353216,
+            "total_available_size": 137054997352,
+            "used_heap_size": 584473648,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119784152,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 127048,
+            "used_global_handles_size": 112896,
+            "external_memory": 168291105,
+            "total_allocated_bytes": 1938242104
+          },
+          "os": {
+            "pid": 3007495,
+            "startTicks": "1030783",
+            "parentPid": 3007220,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 958865408,
+            "rssBytes": 1035591680,
+            "anonymousBytes": 955846656
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 0,
+            "rows": [],
+            "keyDigests": []
+          },
+          "observerMs": 207.29372200000034
+        },
+        {
+          "phase": "idle-0-end",
+          "pid": 3007495,
+          "at": 1791221345809,
+          "uptime": 11.453917904,
+          "memory": {
+            "rss": 986091520,
+            "heapTotal": 681496576,
+            "heapUsed": 584656888,
+            "external": 168291105,
+            "arrayBuffers": 90952578
+          },
+          "heap": {
+            "total_heap_size": 681496576,
+            "total_heap_size_executable": 6455296,
+            "total_physical_size": 681496576,
+            "total_available_size": 137054810024,
+            "used_heap_size": 584657112,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119784152,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 127048,
+            "used_global_handles_size": 112832,
+            "external_memory": 168291105,
+            "total_allocated_bytes": 1938790792
+          },
+          "os": {
+            "pid": 3007495,
+            "startTicks": "1030783",
+            "parentPid": 3007220,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 959057920,
+            "rssBytes": 1035849728,
+            "anonymousBytes": 956039168
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 0,
+            "rows": [],
+            "keyDigests": []
+          },
+          "observerMs": 200.5040259999987
+        },
+        {
+          "phase": "workload-0-end",
+          "pid": 3007495,
+          "at": 1791221346483,
+          "uptime": 12.128788928,
+          "memory": {
+            "rss": 921833472,
+            "heapTotal": 684642304,
+            "heapUsed": 434794280,
+            "external": 87055770,
+            "arrayBuffers": 9718496
+          },
+          "heap": {
+            "total_heap_size": 684642304,
+            "total_heap_size_executable": 6455296,
+            "total_physical_size": 684642304,
+            "total_available_size": 137087686224,
+            "used_heap_size": 434821784,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4572472,
+            "peak_malloced_memory": 119784152,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 127048,
+            "used_global_handles_size": 113216,
+            "external_memory": 87055770,
+            "total_allocated_bytes": 1990729192
+          },
+          "os": {
+            "pid": 3007495,
+            "startTicks": "1030783",
+            "parentPid": 3007220,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 897597440,
+            "rssBytes": 974393344,
+            "anonymousBytes": 894582784
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 1,
+            "rows": [
+              256
+            ],
+            "keyDigests": [
+              "6a7aacf0ef6fc13cb1266cea5f1029e1b0d6d4c61bb84e60e984f0be2ba12145"
+            ]
+          },
+          "observerMs": 211.7193559999996
+        },
+        {
+          "phase": "idle-1-start",
+          "pid": 3007495,
+          "at": 1791221346695,
+          "uptime": 12.340759398,
+          "memory": {
+            "rss": 921833472,
+            "heapTotal": 684642304,
+            "heapUsed": 435400816,
+            "external": 87213307,
+            "arrayBuffers": 9876033
+          },
+          "heap": {
+            "total_heap_size": 684642304,
+            "total_heap_size_executable": 6455296,
+            "total_physical_size": 684642304,
+            "total_available_size": 137090298048,
+            "used_heap_size": 435401040,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119784152,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 127048,
+            "used_global_handles_size": 113248,
+            "external_memory": 87213307,
+            "total_allocated_bytes": 1991699728
+          },
+          "os": {
+            "pid": 3007495,
+            "startTicks": "1030783",
+            "parentPid": 3007220,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 897597440,
+            "rssBytes": 974393344,
+            "anonymousBytes": 894582784
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 1,
+            "rows": [
+              256
+            ],
+            "keyDigests": [
+              "6a7aacf0ef6fc13cb1266cea5f1029e1b0d6d4c61bb84e60e984f0be2ba12145"
+            ]
+          },
+          "observerMs": 214.23322799999914
+        },
+        {
+          "phase": "idle-1-end",
+          "pid": 3007495,
+          "at": 1791221347914,
+          "uptime": 13.559448516,
+          "memory": {
+            "rss": 921833472,
+            "heapTotal": 684642304,
+            "heapUsed": 435539272,
+            "external": 87213752,
+            "arrayBuffers": 9876478
+          },
+          "heap": {
+            "total_heap_size": 684642304,
+            "total_heap_size_executable": 6455296,
+            "total_physical_size": 684642304,
+            "total_available_size": 137090159592,
+            "used_heap_size": 435539496,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119784152,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 127048,
+            "used_global_handles_size": 113280,
+            "external_memory": 87213752,
+            "total_allocated_bytes": 1992314232
+          },
+          "os": {
+            "pid": 3007495,
+            "startTicks": "1030783",
+            "parentPid": 3007220,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 897602560,
+            "rssBytes": 974397440,
+            "anonymousBytes": 894586880
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 1,
+            "rows": [
+              256
+            ],
+            "keyDigests": [
+              "6a7aacf0ef6fc13cb1266cea5f1029e1b0d6d4c61bb84e60e984f0be2ba12145"
+            ]
+          },
+          "observerMs": 205.62722700000086
+        },
+        {
+          "phase": "workload-1-end",
+          "pid": 3007495,
+          "at": 1791221348352,
+          "uptime": 13.996923062,
+          "memory": {
+            "rss": 921833472,
+            "heapTotal": 684642304,
+            "heapUsed": 467982992,
+            "external": 107022016,
+            "arrayBuffers": 29684742
+          },
+          "heap": {
+            "total_heap_size": 684642304,
+            "total_heap_size_executable": 6455296,
+            "total_physical_size": 684642304,
+            "total_available_size": 137176493696,
+            "used_heap_size": 467983216,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119784152,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 127048,
+            "used_global_handles_size": 113312,
+            "external_memory": 107022016,
+            "total_allocated_bytes": 2025778064
+          },
+          "os": {
+            "pid": 3007495,
+            "startTicks": "1030783",
+            "parentPid": 3007220,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 897598464,
+            "rssBytes": 974397440,
+            "anonymousBytes": 894586880
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 1,
+            "rows": [
+              256
+            ],
+            "keyDigests": [
+              "6a7aacf0ef6fc13cb1266cea5f1029e1b0d6d4c61bb84e60e984f0be2ba12145"
+            ]
+          },
+          "observerMs": 205.07605200000035
+        },
+        {
+          "phase": "idle-2-start",
+          "pid": 3007495,
+          "at": 1791221348557,
+          "uptime": 14.202497416,
+          "memory": {
+            "rss": 921833472,
+            "heapTotal": 684642304,
+            "heapUsed": 468274232,
+            "external": 107205505,
+            "arrayBuffers": 29868231
+          },
+          "heap": {
+            "total_heap_size": 684642304,
+            "total_heap_size_executable": 6455296,
+            "total_physical_size": 684642304,
+            "total_available_size": 137176202456,
+            "used_heap_size": 468274456,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119784152,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 127048,
+            "used_global_handles_size": 113408,
+            "external_memory": 107205505,
+            "total_allocated_bytes": 2026390592
+          },
+          "os": {
+            "pid": 3007495,
+            "startTicks": "1030783",
+            "parentPid": 3007220,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 897598464,
+            "rssBytes": 974397440,
+            "anonymousBytes": 894586880
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 1,
+            "rows": [
+              256
+            ],
+            "keyDigests": [
+              "6a7aacf0ef6fc13cb1266cea5f1029e1b0d6d4c61bb84e60e984f0be2ba12145"
+            ]
+          },
+          "observerMs": 197.1040639999992
+        },
+        {
+          "phase": "idle-2-end",
+          "pid": 3007495,
+          "at": 1791221349759,
+          "uptime": 15.403893307,
+          "memory": {
+            "rss": 921833472,
+            "heapTotal": 684642304,
+            "heapUsed": 468288304,
+            "external": 107205505,
+            "arrayBuffers": 29868231
+          },
+          "heap": {
+            "total_heap_size": 684642304,
+            "total_heap_size_executable": 6455296,
+            "total_physical_size": 684642304,
+            "total_available_size": 137176188152,
+            "used_heap_size": 468288760,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119784152,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 127048,
+            "used_global_handles_size": 113440,
+            "external_memory": 107205505,
+            "total_allocated_bytes": 2026687056
+          },
+          "os": {
+            "pid": 3007495,
+            "startTicks": "1030783",
+            "parentPid": 3007220,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 897602560,
+            "rssBytes": 974401536,
+            "anonymousBytes": 894590976
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 1,
+            "rows": [
+              256
+            ],
+            "keyDigests": [
+              "6a7aacf0ef6fc13cb1266cea5f1029e1b0d6d4c61bb84e60e984f0be2ba12145"
+            ]
+          },
+          "observerMs": 206.23199399999976
+        },
+        {
+          "phase": "workload-2-end",
+          "pid": 3007495,
+          "at": 1791221350189,
+          "uptime": 15.834058836,
+          "memory": {
+            "rss": 921833472,
+            "heapTotal": 684642304,
+            "heapUsed": 481860024,
+            "external": 107942390,
+            "arrayBuffers": 30605116
+          },
+          "heap": {
+            "total_heap_size": 684642304,
+            "total_heap_size_executable": 6455296,
+            "total_physical_size": 684642304,
+            "total_available_size": 137162616608,
+            "used_heap_size": 481860168,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119784152,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 127048,
+            "used_global_handles_size": 113536,
+            "external_memory": 107942390,
+            "total_allocated_bytes": 2041146048
+          },
+          "os": {
+            "pid": 3007495,
+            "startTicks": "1030783",
+            "parentPid": 3007220,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 897624064,
+            "rssBytes": 974422016,
+            "anonymousBytes": 894611456
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 1,
+            "rows": [
+              256
+            ],
+            "keyDigests": [
+              "6a7aacf0ef6fc13cb1266cea5f1029e1b0d6d4c61bb84e60e984f0be2ba12145"
+            ]
+          },
+          "observerMs": 190.5111679999991
+        },
+        {
+          "phase": "completion-idle",
+          "pid": 3007495,
+          "at": 1791221351381,
+          "uptime": 17.026498393,
+          "memory": {
+            "rss": 921833472,
+            "heapTotal": 684642304,
+            "heapUsed": 486881688,
+            "external": 109740856,
+            "arrayBuffers": 32403582
+          },
+          "heap": {
+            "total_heap_size": 684642304,
+            "total_heap_size_executable": 6455296,
+            "total_physical_size": 684642304,
+            "total_available_size": 137157594552,
+            "used_heap_size": 486882120,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119784152,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 127048,
+            "used_global_handles_size": 113632,
+            "external_memory": 109740856,
+            "total_allocated_bytes": 2047018864
+          },
+          "os": {
+            "pid": 3007495,
+            "startTicks": "1030783",
+            "parentPid": 3007220,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 897723392,
+            "rssBytes": 974520320,
+            "anonymousBytes": 894709760
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 1,
+            "rows": [
+              256
+            ],
+            "keyDigests": [
+              "6a7aacf0ef6fc13cb1266cea5f1029e1b0d6d4c61bb84e60e984f0be2ba12145"
+            ]
+          },
+          "observerMs": 190.19482900000003
+        }
+      ],
+      "windows": [
+        {
+          "window": 0,
+          "startedAtMs": 11886.763647,
+          "endedAtMs": 12360.590232,
+          "requests": [
+            {
+              "variant": 0,
+              "pid": 3007495,
+              "startTicks": "1030783",
+              "startedAtMs": 11886.897265,
+              "endedAtMs": 12355.514735
+            },
+            {
+              "variant": 1,
+              "pid": 3007495,
+              "startTicks": "1030783",
+              "startedAtMs": 11887.413391,
+              "endedAtMs": 12354.919806
+            },
+            {
+              "variant": 2,
+              "pid": 3007495,
+              "startTicks": "1030783",
+              "startedAtMs": 11887.610752,
+              "endedAtMs": 12356.150462
+            },
+            {
+              "variant": 3,
+              "pid": 3007495,
+              "startTicks": "1030783",
+              "startedAtMs": 11887.847559,
+              "endedAtMs": 12353.722976
+            },
+            {
+              "variant": 4,
+              "pid": 3007495,
+              "startTicks": "1030783",
+              "startedAtMs": 11888.04476,
+              "endedAtMs": 12352.810725
+            },
+            {
+              "variant": 5,
+              "pid": 3007495,
+              "startTicks": "1030783",
+              "startedAtMs": 11888.215339,
+              "endedAtMs": 12354.276474
+            },
+            {
+              "variant": 6,
+              "pid": 3007495,
+              "startTicks": "1030783",
+              "startedAtMs": 11888.389686,
+              "endedAtMs": 12351.457403
+            },
+            {
+              "variant": 7,
+              "pid": 3007495,
+              "startTicks": "1030783",
+              "startedAtMs": 11888.579622,
+              "endedAtMs": 12360.5839
+            }
+          ],
+          "outcomes": [
+            {
+              "variant": 0,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 1
+            },
+            {
+              "variant": 1,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 2
+            },
+            {
+              "variant": 2,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 3
+            },
+            {
+              "variant": 3,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 4
+            },
+            {
+              "variant": 4,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 5
+            },
+            {
+              "variant": 5,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 6
+            },
+            {
+              "variant": 6,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 7
+            },
+            {
+              "variant": 7,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-249",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 8
+            }
+          ],
+          "wallMs": 473.8265850000007
+        },
+        {
+          "window": 1,
+          "startedAtMs": 13997.448479,
+          "endedAtMs": 14228.986211,
+          "requests": [
+            {
+              "variant": 0,
+              "pid": 3007495,
+              "startTicks": "1030783",
+              "startedAtMs": 13997.456324,
+              "endedAtMs": 14225.979557
+            },
+            {
+              "variant": 1,
+              "pid": 3007495,
+              "startTicks": "1030783",
+              "startedAtMs": 13997.908887,
+              "endedAtMs": 14215.405586
+            },
+            {
+              "variant": 2,
+              "pid": 3007495,
+              "startTicks": "1030783",
+              "startedAtMs": 13998.093263,
+              "endedAtMs": 14216.942863
+            },
+            {
+              "variant": 3,
+              "pid": 3007495,
+              "startTicks": "1030783",
+              "startedAtMs": 13998.232542,
+              "endedAtMs": 14215.07112
+            },
+            {
+              "variant": 4,
+              "pid": 3007495,
+              "startTicks": "1030783",
+              "startedAtMs": 13998.352103,
+              "endedAtMs": 14215.648855
+            },
+            {
+              "variant": 5,
+              "pid": 3007495,
+              "startTicks": "1030783",
+              "startedAtMs": 13998.475782,
+              "endedAtMs": 14216.137439
+            },
+            {
+              "variant": 6,
+              "pid": 3007495,
+              "startTicks": "1030783",
+              "startedAtMs": 13998.58889,
+              "endedAtMs": 14215.922694
+            },
+            {
+              "variant": 7,
+              "pid": 3007495,
+              "startTicks": "1030783",
+              "startedAtMs": 13998.713952,
+              "endedAtMs": 14228.978867
+            }
+          ],
+          "outcomes": [
+            {
+              "variant": 0,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 1
+            },
+            {
+              "variant": 1,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 2
+            },
+            {
+              "variant": 2,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 3
+            },
+            {
+              "variant": 3,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 4
+            },
+            {
+              "variant": 4,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 5
+            },
+            {
+              "variant": 5,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 6
+            },
+            {
+              "variant": 6,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 7
+            },
+            {
+              "variant": 7,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-249",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 8
+            }
+          ],
+          "wallMs": 231.53773199999887
+        },
+        {
+          "window": 2,
+          "startedAtMs": 15842.693125,
+          "endedAtMs": 16066.097077,
+          "requests": [
+            {
+              "variant": 0,
+              "pid": 3007495,
+              "startTicks": "1030783",
+              "startedAtMs": 15842.7059,
+              "endedAtMs": 16021.729012
+            },
+            {
+              "variant": 1,
+              "pid": 3007495,
+              "startTicks": "1030783",
+              "startedAtMs": 15843.240411,
+              "endedAtMs": 16024.601537
+            },
+            {
+              "variant": 2,
+              "pid": 3007495,
+              "startTicks": "1030783",
+              "startedAtMs": 15843.398517,
+              "endedAtMs": 16066.089012
+            },
+            {
+              "variant": 3,
+              "pid": 3007495,
+              "startTicks": "1030783",
+              "startedAtMs": 15843.543767,
+              "endedAtMs": 16025.000087
+            },
+            {
+              "variant": 4,
+              "pid": 3007495,
+              "startTicks": "1030783",
+              "startedAtMs": 15843.667736,
+              "endedAtMs": 16049.664216
+            },
+            {
+              "variant": 5,
+              "pid": 3007495,
+              "startTicks": "1030783",
+              "startedAtMs": 15843.801314,
+              "endedAtMs": 16021.335723
+            },
+            {
+              "variant": 6,
+              "pid": 3007495,
+              "startTicks": "1030783",
+              "startedAtMs": 15843.931205,
+              "endedAtMs": 16027.002823
+            },
+            {
+              "variant": 7,
+              "pid": 3007495,
+              "startTicks": "1030783",
+              "startedAtMs": 15844.041628,
+              "endedAtMs": 16024.325174
+            }
+          ],
+          "outcomes": [
+            {
+              "variant": 0,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 1
+            },
+            {
+              "variant": 1,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 2
+            },
+            {
+              "variant": 2,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 3
+            },
+            {
+              "variant": 3,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 4
+            },
+            {
+              "variant": 4,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 5
+            },
+            {
+              "variant": 5,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 6
+            },
+            {
+              "variant": 6,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 7
+            },
+            {
+              "variant": 7,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-249",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 8
+            }
+          ],
+          "wallMs": 223.40395200000057
+        }
+      ],
+      "pauses": 0,
+      "descendants": [],
+      "reaped": true,
+      "forcedCleanup": false,
+      "pid": 3007495,
+      "loadedHealth": {
+        "sha": "104d783282",
+        "version": "0.0.1"
+      },
+      "identity": {
+        "pid": 3007495,
+        "entry": "/tmp/pcv/papercusp-inbox-pair-U6bT7A/current/hono-host.mjs",
+        "startTicks": "1030783",
+        "parentPid": 3007220,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "pssBytes": 957552640,
+        "rssBytes": 1034276864,
+        "anonymousBytes": 954531840
+      },
+      "ownerId": "loopback",
+      "fixture": {
+        "rows": 256,
+        "stringCodeUnits": 8388608,
+        "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da"
+      },
+      "warmCacheEntries": 1,
+      "cachePreflight": {
+        "enabled": true,
+        "entries": 0
+      },
+      "content": [
+        {
+          "rows": 256,
+          "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da",
+          "stringCodeUnits": 8388608,
+          "keyDigest": "6a7aacf0ef6fc13cb1266cea5f1029e1b0d6d4c61bb84e60e984f0be2ba12145"
+        }
+      ],
+      "cacheHeap": {
+        "pid": 3007495,
+        "inspector": {
+          "pid": 3007495
+        },
+        "profilerOperations": [
+          "HeapProfiler.enable (object IDs)",
+          "v8.writeHeapSnapshot (forced GC/synchronous pause)",
+          "HeapProfiler.disable (object IDs)"
+        ],
+        "nativeAdapterPreflight": {
+          "version": "papercusp-heap-retainers 0.1.0",
+          "sha256": "dfa7a07393597b99fc2c92e3587930ea0e6f7c406bb8c534c786d4fe76a69f02"
+        },
+        "nativeDecoderPreflight": {
+          "version": "v8-heap-cli 0.1.0",
+          "sha256": "2697f0cf15785272b24e08e0bcec0a43c8fd5f2ba4fec8a4ffda1d89d8f7ff24"
+        },
+        "snapshotStartedAt": 1791221351581,
+        "cacheBeforeSnapshot": {
+          "owner": "@papercusp/operator-core.operatorCache",
+          "path": "cache.l1.map",
+          "status": "selected",
+          "population": 1,
+          "scanned": 1,
+          "scanComplete": true,
+          "undigestibleKeys": 0,
+          "limits": {
+            "maxScanned": 8192,
+            "maxKeyCodeUnits": 16384
+          },
+          "records": [
+            {
+              "keyDigest": "6a7aacf0ef6fc13cb1266cea5f1029e1b0d6d4c61bb84e60e984f0be2ba12145",
+              "status": "selected"
+            }
+          ]
+        },
+        "heapSnapshotWriteMs": 11282,
+        "heapOwnerBinding": {
+          "pid": 3007495,
+          "roots": [
+            {
+              "owner": "@papercusp/operator-core.operatorCache",
+              "status": "found",
+              "id": 2107013
+            }
+          ],
+          "cacheEntries": {
+            "owner": "@papercusp/operator-core.operatorCache",
+            "path": "cache.l1.map",
+            "status": "observed",
+            "population": 1,
+            "scanned": 1,
+            "scanComplete": true,
+            "undigestibleKeys": 0,
+            "limits": {
+              "maxScanned": 8192,
+              "maxKeyCodeUnits": 16384
+            },
+            "records": [
+              {
+                "keyDigest": "6a7aacf0ef6fc13cb1266cea5f1029e1b0d6d4c61bb84e60e984f0be2ba12145",
+                "status": "selected",
+                "objects": [
+                  {
+                    "phase": "entry",
+                    "status": "found",
+                    "id": 8445179
+                  },
+                  {
+                    "phase": "value",
+                    "status": "found",
+                    "id": 8921953
+                  }
+                ]
+              }
+            ],
+            "selectionStatus": "selected",
+            "definition": "Exact L1 entry/payload snapshot IDs with post-read membership fence; shared IDs overlap, not physical/native bytes."
+          },
+          "definition": "Numeric IDs bind existing singleton values to preceding snapshot nodes; no physical memory estimate."
+        },
+        "sessionLifecycle": {
+          "trace": {
+            "pid": 3007495,
+            "startedAt": 1791221352546,
+            "until": 1791221382546,
+            "total": 0,
+            "observerMs": 0,
+            "calls": {
+              "inspector.Session.disconnect": {
+                "calls": 0,
+                "stacks": []
+              }
+            },
+            "endedAt": 1791221364665,
+            "limited": false
+          },
+          "limits": {
+            "durationMs": 30000,
+            "maxCalls": 64,
+            "maxStacks": 8,
+            "maxStackChars": 4096
+          }
+        },
+        "postSnapshotRowsPreserved": true,
+        "snapshotRemoved": true
+      },
+      "unreaped": []
+    }
+  ],
+  "limitations": [
+    "Independent private request-only hosts; no production worker, background or historical recovery claim.",
+    "Baseline is the same candidate bundle with one guarded historical cache-key intervention.",
+    "Unforced heap/PSS windows include transient allocations; no GC, profiler or total native residual estimate.",
+    "Eight controlled full-read display variants are a counterexample workload, not measured production frequency.",
+    "Exact raw-cache content fingerprints are inspected after the resource windows.",
+    "One shared arm traces only snapshot/ID lifetime; no matched resource or retainer acceptance.",
+    "Cache snapshots force GC after every unforced resource window; exact V8 nodes do not establish native physical ownership or production savings."
+  ],
+  "traceOnly": true,
+  "nativeAdapterPreflight": {
+    "version": "papercusp-heap-retainers 0.1.0",
+    "sha256": "dfa7a07393597b99fc2c92e3587930ea0e6f7c406bb8c534c786d4fe76a69f02"
+  },
+  "nativeDecoderPreflight": {
+    "version": "v8-heap-cli 0.1.0",
+    "sha256": "2697f0cf15785272b24e08e0bcec0a43c8fd5f2ba4fec8a4ffda1d89d8f7ff24"
+  },
+  "privateContainment": {
+    "workspace": "test-runtime-ff40c82b-559",
+    "backgroundWorkers": 0,
+    "loopbackDatabase": true,
+    "ownedPgPort": 43101,
+    "ambientOperatorPortsExcluded": true,
+    "disposableHome": true
+  },
+  "database": "papercusp",
+  "schema": {
+    "filename": "1356-hosted-budget-exact-micros.sql",
+    "sha256": "f2b4a2f3fb67991349bb73d81f784306c45532eb9524155d901c4b2819902d19"
+  },
+  "variants": [
+    {
+      "directed": true,
+      "limit": 1,
+      "include_ambient": false,
+      "include_intents": false,
+      "max_body_chars": 1
+    },
+    {
+      "directed": true,
+      "limit": 2,
+      "include_ambient": true,
+      "include_intents": false,
+      "max_body_chars": 1
+    },
+    {
+      "directed": true,
+      "limit": 3,
+      "include_ambient": false,
+      "include_intents": true,
+      "max_body_chars": 1
+    },
+    {
+      "directed": true,
+      "limit": 4,
+      "include_ambient": true,
+      "include_intents": true,
+      "max_body_chars": 1
+    },
+    {
+      "directed": true,
+      "limit": 5,
+      "include_ambient": false,
+      "include_intents": false,
+      "max_body_chars": 1
+    },
+    {
+      "directed": true,
+      "limit": 6,
+      "include_ambient": true,
+      "include_intents": false,
+      "max_body_chars": 1
+    },
+    {
+      "directed": true,
+      "limit": 7,
+      "include_ambient": false,
+      "include_intents": true,
+      "max_body_chars": 1
+    },
+    {
+      "directed": true,
+      "limit": 8,
+      "include_ambient": true,
+      "include_intents": true,
+      "max_body_chars": 1
+    }
+  ],
+  "runner": {
+    "status": 0,
+    "signal": null,
+    "stdoutBytes": 0,
+    "stderrBytes": 4000
+  },
+  "sources": {
+    "before": {
+      "packages/operator-core/lib/agent-tools/coordination/tools/inbox.ts": "8272570263716ed414d1b03186067b018d31acb383dcfe7fe1aec113336cf0ae",
+      "packages/operator-core/lib/agent-tools/coordination/messages.ts": "0ef78e175aeb73044067982de38e8e5f1a9c61c65a8f2aed501660436ec61265",
+      "packages/operator-core/lib/cache/cached-read.ts": "73b09e7f3c4b5a53511fd8c51d9cf81a4cc7eff6b2d21e774eeec049dbfc39c9",
+      "packages/operator-core/lib/cache/instance.ts": "19a7a63ec772ae7c35c914eacf07128678b1ca276df9a7e871fd1e9f566f7992",
+      "libs/generic/cache/src/cache.ts": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+      "libs/generic/cache/src/l1.ts": "89ac9e14aeed616e2ba82060f9e153d62975d9c9806a4587f831d8700ad84977",
+      "scripts/cdp-inspector.mjs": "465318098afcd445483150edc4fc5d0b40ed458ce96d4e0a7573f0293f1b7a19",
+      "apps/operator/bin/bundle-host.sh": "1cde03f470f8cc216e90ec26676f5f88546485c444b7226059b33a13880265c8",
+      "packages/operator-core/lib/service-memory-attribution.integration.test.ts": "fda5f7ffe3550acf96df8b963216b69791ff1440b711fef09e5c4b974417e64c",
+      "packages/operator-core/lib/event-loop-cpu-recorder.ts": "496812aee19fe61c96956ed24e3f3dc3975844bd92af9c688e1b7ae7ef9ffcd9",
+      "packages/operator-core/lib/event-loop-lag-monitor.ts": "d361d749d586cee97838afd97ce796e5695aba9c8eec5e8dedd15119e99c06df",
+      "scripts/analyze-heap-snapshots.mjs": "a444859c0bcee15f84981f3c4f1c9ab063c2284d1b0fbc7c1bb382e55bbfec29",
+      "scripts/heap-retainers-native/src/main.rs": "6973dd79ab804b10abebcba524b97251654a67e2f8020f4a67131fc16f6f07a9",
+      "scripts/heap-retainers-native/Cargo.lock": "5e9b7d3b91540a97a9bccb4ee3c5cf6e246454d61f0e1203684ee607bf9c2ded",
+      "nativeAdapterExecutable": "dfa7a07393597b99fc2c92e3587930ea0e6f7c406bb8c534c786d4fe76a69f02",
+      "nativeDecoderExecutable": "2697f0cf15785272b24e08e0bcec0a43c8fd5f2ba4fec8a4ffda1d89d8f7ff24"
+    },
+    "after": {
+      "packages/operator-core/lib/agent-tools/coordination/tools/inbox.ts": "8272570263716ed414d1b03186067b018d31acb383dcfe7fe1aec113336cf0ae",
+      "packages/operator-core/lib/agent-tools/coordination/messages.ts": "0ef78e175aeb73044067982de38e8e5f1a9c61c65a8f2aed501660436ec61265",
+      "packages/operator-core/lib/cache/cached-read.ts": "73b09e7f3c4b5a53511fd8c51d9cf81a4cc7eff6b2d21e774eeec049dbfc39c9",
+      "packages/operator-core/lib/cache/instance.ts": "19a7a63ec772ae7c35c914eacf07128678b1ca276df9a7e871fd1e9f566f7992",
+      "libs/generic/cache/src/cache.ts": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+      "libs/generic/cache/src/l1.ts": "89ac9e14aeed616e2ba82060f9e153d62975d9c9806a4587f831d8700ad84977",
+      "scripts/cdp-inspector.mjs": "465318098afcd445483150edc4fc5d0b40ed458ce96d4e0a7573f0293f1b7a19",
+      "apps/operator/bin/bundle-host.sh": "1cde03f470f8cc216e90ec26676f5f88546485c444b7226059b33a13880265c8",
+      "packages/operator-core/lib/service-memory-attribution.integration.test.ts": "fda5f7ffe3550acf96df8b963216b69791ff1440b711fef09e5c4b974417e64c",
+      "packages/operator-core/lib/event-loop-cpu-recorder.ts": "496812aee19fe61c96956ed24e3f3dc3975844bd92af9c688e1b7ae7ef9ffcd9",
+      "packages/operator-core/lib/event-loop-lag-monitor.ts": "d361d749d586cee97838afd97ce796e5695aba9c8eec5e8dedd15119e99c06df",
+      "scripts/analyze-heap-snapshots.mjs": "a444859c0bcee15f84981f3c4f1c9ab063c2284d1b0fbc7c1bb382e55bbfec29",
+      "scripts/heap-retainers-native/src/main.rs": "6973dd79ab804b10abebcba524b97251654a67e2f8020f4a67131fc16f6f07a9",
+      "scripts/heap-retainers-native/Cargo.lock": "5e9b7d3b91540a97a9bccb4ee3c5cf6e246454d61f0e1203684ee607bf9c2ded",
+      "nativeAdapterExecutable": "dfa7a07393597b99fc2c92e3587930ea0e6f7c406bb8c534c786d4fe76a69f02",
+      "nativeDecoderExecutable": "2697f0cf15785272b24e08e0bcec0a43c8fd5f2ba4fec8a4ffda1d89d8f7ff24"
+    },
+    "fullGraph": "unknown"
+  },
+  "build": {
+    "path": ".papercusp/logs/cohort-3f78b74db67af71b60079836fd59cd97996f03559d84def1c5268c0eb782ffbb.log",
+    "bytes": 2487,
+    "sha256": "3f78b74db67af71b60079836fd59cd97996f03559d84def1c5268c0eb782ffbb"
+  },
+  "runtimeLog": {
+    "path": ".papercusp/logs/cohort-0f446f4d46ff939e1270dcd2b329a31d350f0186899f76ec58dcc6f78bdc9cca.log",
+    "bytes": 626110,
+    "sha256": "0f446f4d46ff939e1270dcd2b329a31d350f0186899f76ec58dcc6f78bdc9cca"
+  },
+  "intervention": {
+    "offset": 27883168,
+    "before": "...boundedInbox ? {\n                  limit,\n                  ambient: includeAmbient,\n                  intents: !!args27.include_intents\n                } : {}",
+    "after": "limit,\n                  ambient: includeAmbient,\n                  intents: !!args27.include_intents"
+  },
+  "preflight": {
+    "build": {
+      "path": ".papercusp/logs/cohort-3f78b74db67af71b60079836fd59cd97996f03559d84def1c5268c0eb782ffbb.log",
+      "bytes": 2487,
+      "sha256": "3f78b74db67af71b60079836fd59cd97996f03559d84def1c5268c0eb782ffbb",
+      "tail": "NPM_INSTALL_SAFE mutex already held; running nested reader directly: /home/builduser/papercupai-workspace/papercusp/apps/operator/bin/bundle-host.sh bin/hono-host.ts /tmp/pcv/papercusp-inbox-pair-U6bT7A/current/hono-host.mjs (root=/home/builduser/papercupai-workspace/papercusp, lock=npm-install-79e418157b6a)\n→ restricted-hold gate: snapshotted 0/14 last-known-good artifact(s)\n→ esbuild-bundling bin/hono-host.ts → /tmp/pcv/papercusp-inbox-pair-U6bT7A/current/hono-host.mjs (plain-node host entry, no tsx loader)\n\n  ...v/papercusp-inbox-pair-U6bT7A/current/hono-host.mjs.tmp.2949670  67.4mb ⚠️\n\n⚡ Done in 6071ms\n✓ bundled CLI-entry guard check passed: no repo-owned raw ESM self-exec guard reached the bundle graph.\n✓ bundled top-level-await check passed: no repo-owned bundled input uses top-level await.\n→ ascii-escape: 13,249 non-ASCII chars escaped (67.4 MB → 67.4 MB on disk; the win is in-memory: the source string stays one-byte in every host process)\n✓ bundled: 68M /tmp/pcv/papercusp-inbox-pair-U6bT7A/current/hono-host.mjs\n✓ bundled systemd scope environment runner beside the host entry\n✓ bundled pot-git ext bridge beside the host entry\n→ bundling @papercusp/harness blueprints → /tmp/pcv/papercusp-inbox-pair-U6bT7A/current/blueprints\n    ✓ bundled @papercusp/harness blueprints include base/blueprint.yaml\n→ bundling @papercusp/locks DDL → /tmp/pcv/papercusp-inbox-pair-U6bT7A/current/sql\n    ✓ bundled @papercusp/locks DDL matches the tree (highest migration 931, 31 files)\n\n  ...air-U6bT7A/current/event-loop-sentinel.worker.mjs.new.2949670.mjs  29.3kb\n\n⚡ Done in 13ms\n\n  ...nbox-pair-U6bT7A/current/snapshot-fold.worker.mjs.new.2949670.mjs  26.3kb\n\n⚡ Done in 34ms\n\n  ...U6bT7A/current/mutation-probe-closure.worker.mjs.new.2949670.mjs  9.6mb ⚠️\n\n⚡ Done in 600ms\n\n  ...box-pair-U6bT7A/current/admission-jobs.worker.mjs.new.2949670.mjs  65.3kb\n\n⚡ Done in 21ms\n\n  ...rcusp-inbox-pair-U6bT7A/current/spawner-sidecar.mjs.new.2949670  64.8mb ⚠️\n\n⚡ Done in 2186ms\n✓ bundled CLI-entry guard check passed: no repo-owned raw ESM self-exec guard reached the bundle graph.\n✓ bundled top-level-await check passed: no repo-owned bundled input uses top-level await.\n→ ascii-escape: 12,874 non-ASCII chars escaped (64.8 MB → 64.8 MB on disk; the win is in-memory: the source string stays one-byte in every host process)\n✓ restricted-hold gate: 9237 bundle inputs checked, none is a held restricted write (D-012)\n"
+    },
+    "currentBundleSha256": "170d7ab4351dce4d096ee995b31292fb706bda8f0d70f22a10c937261059ce84",
+    "emittedKey": "bounded: boundedInbox,\n                // Windowed reads depend on the stopping rule. Full reads depend only\n                // on owner/floor/kinds: display limits and visibility filters run below.\n                // Share that raw graph across selective callers rather than retaining\n                // another decoded full inbox for each post-read option combination.\n                ...boundedInbox ? {\n                  limit,\n                  ambient: includeAmbient,\n                  intents: !!args27.include_intents\n                } : {}\n              },\n              tags: [\"coord_event_log\"],\n              softTtlMs: COORD_INBOX_SOFT_TTL_MS\n            },\n            () => (\n              // WI-6939: the unbounded readInbox matches ~99.8% BROADCAST rows \\u2014 ~20k\n              // rows / ~10MB transferred per call to return `limi",
+    "artifacts": [
+      {
+        "path": "admission-jobs.worker.mjs",
+        "bytes": 66856,
+        "sha256": "97829f5dbd96aeeab6619db119ff8f397b1f477f764dfd5bf2d62c139950c070"
+      },
+      {
+        "path": "blueprints/base/prompts/infra-reviewer.role.json",
+        "bytes": 616,
+        "sha256": "9b3bddbf5b0cfdfbf434b19d95871a6fe694e7c4fb4043483b2a65cdf84368e3"
+      },
+      {
+        "path": "blueprints/base/prompts/security-reviewer.role.json",
+        "bytes": 578,
+        "sha256": "69736020a98a34536e5ce14ceb9ddd1a1ab00ca0fb8ccb878eac7a3b196480d9"
+      },
+      {
+        "path": "cpu-task-worker.script.mjs",
+        "bytes": 1948,
+        "sha256": "c80dc061f99a983f05b3b7e05833fc949fdd61b4fba858c681dbd13c6f2b56b2"
+      },
+      {
+        "path": "event-loop-sentinel.worker.mjs",
+        "bytes": 30008,
+        "sha256": "d98a36c766bc2c4a36aaf5b34c3b547145470bf5e6ab74d8407ddf0dcee04cc8"
+      },
+      {
+        "path": "git-ext-bridge.mjs",
+        "bytes": 3169,
+        "sha256": "0a11a7fc2e1f0eff6d0329a5cad6176bd5859f7e2f30907f8361a8c919259ea9"
+      },
+      {
+        "path": "hono-host.mjs",
+        "bytes": 70678584,
+        "sha256": "170d7ab4351dce4d096ee995b31292fb706bda8f0d70f22a10c937261059ce84"
+      },
+      {
+        "path": "local-embedder-worker.script.mjs",
+        "bytes": 31426,
+        "sha256": "dca0a08083be22913cbbc46dcd0fb115f84d3cc16279f2e1465ec8ecafbb2e39"
+      },
+      {
+        "path": "local-reranker-worker.script.mjs",
+        "bytes": 6099,
+        "sha256": "6e0f04cad0090aa94106e694b88811f6f0f0ea349f93dce7ab2ebfaee162aab6"
+      },
+      {
+        "path": "mutation-probe-closure.worker.mjs",
+        "bytes": 10081512,
+        "sha256": "fc4febf9df144a3a704fb29d5dd3dc6a7e4350bda29d17511bfcc0819187fb00"
+      },
+      {
+        "path": "snapshot-fold.worker.mjs",
+        "bytes": 26918,
+        "sha256": "671227c52fa06735ded1c444022e3dd8d4fc2384077e25f30017ca0ce1b377a7"
+      },
+      {
+        "path": "spawner-sidecar.mjs",
+        "bytes": 67946627,
+        "sha256": "d25636b151bd865a9c761fdf19b53394fda9a4886b58ae0d507713f4643a170c"
+      },
+      {
+        "path": "spawner-sidecar.mjs.meta.json",
+        "bytes": 9617454,
+        "sha256": "694613f30d24439ea754f6ce139ca795ec3546e8030ddf0580bb6b506914261b"
+      },
+      {
+        "path": "sql/001-bootstrap.sql",
+        "bytes": 978,
+        "sha256": "7c98b4420c3e621be411fc9843e5f2e65c233fc3c32ed7407f31afa84863bfab"
+      },
+      {
+        "path": "sql/002-tables.sql",
+        "bytes": 6173,
+        "sha256": "4fd64a490477d239a3682ee80a7ba329ee77f6bbdaaf8dffe70f60b5ac6eb43b"
+      },
+      {
+        "path": "sql/003-grant-cascade.sql",
+        "bytes": 3271,
+        "sha256": "3b0dba1bcc4ba89158509ca0f6fcbafecb5e0783f15cb37e350140b553a0104f"
+      },
+      {
+        "path": "sql/004-rename-coordination-domain.sql",
+        "bytes": 4872,
+        "sha256": "75a7bc4ef3b9db42197064839276e8913babe95f052e9be38d88adbc5cc01f71"
+      },
+      {
+        "path": "sql/005-named-resource-locks.sql",
+        "bytes": 7712,
+        "sha256": "f8cf9b85cd9ba5e6be453c77332bf086510cb1e780b063c0fa100a964ac0b4ae"
+      },
+      {
+        "path": "sql/006-dev-server-enforced.sql",
+        "bytes": 590,
+        "sha256": "90a550ec9bb14c2ca22750a75424a18ba8777892f0d08efd11849dd05d2c4b39"
+      },
+      {
+        "path": "sql/007-register-more-resources.sql",
+        "bytes": 2452,
+        "sha256": "7c8da3f292f85d05f014c3ceed7235da70057bcd8c451c12c1858b2b90986cc7"
+      },
+      {
+        "path": "sql/008-register-git-sync-resource.sql",
+        "bytes": 1219,
+        "sha256": "ed826ab9949546392519d6450f0a0b37fda5267a964de0a4cfdc87b4135925de"
+      },
+      {
+        "path": "sql/009-resource-waiters.sql",
+        "bytes": 1088,
+        "sha256": "9b027d2845308e9adc2261767f49e3f874c47dacbbb312e348bc35c50014e501"
+      },
+      {
+        "path": "sql/010-resource-fencing.sql",
+        "bytes": 6131,
+        "sha256": "2664537a880ece7998e24e662d209bf80d290ceded58b63dc498778d1e05a79f"
+      },
+      {
+        "path": "sql/011-granular-locks.sql",
+        "bytes": 2232,
+        "sha256": "9bd446fb6e4e7c1fddae2fc13502ee7dc87f7e950fa68bdca6e5a34d86d584cd"
+      },
+      {
+        "path": "sql/012-resource-max-holders.sql",
+        "bytes": 1106,
+        "sha256": "f79d759e8a8dabaf2c84bbc9683269ca4ea76648e93461ec882ee65702de9a93"
+      },
+      {
+        "path": "sql/013-bounded-notify-channel.sql",
+        "bytes": 7458,
+        "sha256": "4a9c14320afd2e9853925da32d938c0f0ea55d7fd31f6628a71a70b76dca7ee2"
+      },
+      {
+        "path": "sql/014-grant-cascade-expired-steal.sql",
+        "bytes": 6476,
+        "sha256": "46c84999c2dc1dc013ebab12f13b6918a782e51a32dfed3dc75e234144bc68be"
+      },
+      {
+        "path": "sql/015-git-sync-per-slug-naming.sql",
+        "bytes": 2398,
+        "sha256": "b9021b63db15145e317c1e5576ad6578224957c5b9416c01d0551d9a4dc1322e"
+      },
+      {
+        "path": "sql/016-register-hetzner-federation-quota.sql",
+        "bytes": 1909,
+        "sha256": "4438adc17f82b8e4658503f004d5055245b494d17883713c33fa525e48df4114"
+      },
+      {
+        "path": "sql/017-lock-waiter-pending-edit.sql",
+        "bytes": 1041,
+        "sha256": "d42d372cf2bbfe46154edc01e5db9f2bfb3f14c99cc3f0d61d14ddd4926452a9"
+      },
+      {
+        "path": "sql/018-register-staging-server-resource.sql",
+        "bytes": 3004,
+        "sha256": "955fc3be3863b6000769b2379a8a69fbc3264ee7f561d908a19303bafaee41f3"
+      },
+      {
+        "path": "sql/019-register-windows-vm-build.sql",
+        "bytes": 1524,
+        "sha256": "e06fef29f42a27e71a2ca8f10fae731cdc580c9acdfd80a8ec4b7c1cb0093563"
+      },
+      {
+        "path": "sql/020-register-shared-service-restart-resources.sql",
+        "bytes": 2771,
+        "sha256": "0abf8ef5ba3c061653e9fabbff872de7fe654aadd87397058a183cc5714726f4"
+      },
+      {
+        "path": "sql/021-register-release-deploy-resource.sql",
+        "bytes": 2720,
+        "sha256": "15bfb0acf542eddc6e96800b4827998dd2d3af06b6c9fa985d1ae7a8436059cb"
+      },
+      {
+        "path": "sql/022-grant-cascade-path-locks.sql",
+        "bytes": 5293,
+        "sha256": "be2e8000775422fa9e313833eba8f8da76a7b397dc3a28e5890ede3192e28aa0"
+      },
+      {
+        "path": "sql/023-goal-ref-lock-association.sql",
+        "bytes": 4325,
+        "sha256": "2f66183281975dddb8249bc2b1de1d09a7419e6e5bdbb64f7cfcc51bdbbab973"
+      },
+      {
+        "path": "sql/024-register-desktop-dev-server-resource.sql",
+        "bytes": 1279,
+        "sha256": "55308ed2543af84a2d12e5f9920cd542c002d3334a56fe212673526acc4ccaed"
+      },
+      {
+        "path": "sql/025-register-mcp-proxy-restart-resource.sql",
+        "bytes": 1107,
+        "sha256": "5a180ceed800eea5f28fcfd76b8a4fe7c66500574db61a908f4678fc676630c8"
+      },
+      {
+        "path": "sql/026-resource-exclusive-queue.sql",
+        "bytes": 6412,
+        "sha256": "4db2ff93d8f51071f3a880dcbe7019f54356480cfa6fecfe32650c7b1b776c3a"
+      },
+      {
+        "path": "sql/027-resource-coordination-domain-kind.sql",
+        "bytes": 3032,
+        "sha256": "1e900d4e20c694a75ff96fa9ab7103fa135502693b3d33e9e2626dfab6556a58"
+      },
+      {
+        "path": "sql/028-git-sync-registry-prose.sql",
+        "bytes": 1498,
+        "sha256": "6eafebb8f245112d71eaea64a4a4a36ce652d55658a0476899566f0a4ab7d227"
+      },
+      {
+        "path": "sql/029-register-app-sidecar-restart-resources.sql",
+        "bytes": 2138,
+        "sha256": "c94fefc6bc0ee95a0e87a0ca8af55e7b10a9c1360564544f2ba3d54a5ace7701"
+      },
+      {
+        "path": "sql/030-resource-scoped-shared-ops.sql",
+        "bytes": 16347,
+        "sha256": "ef79ffdcd1062f5874817fac6f7030b7c0115d6945586db464e717b94542c0b6"
+      },
+      {
+        "path": "sql/931-locks-recursive-path-overlap.sql",
+        "bytes": 5453,
+        "sha256": "a246d5310e79c31b3369def79f31bb3ea1dfaccc6f439f8c1cff954338bc8d7a"
+      },
+      {
+        "path": "systemd-scope-env-runner.mjs",
+        "bytes": 16326,
+        "sha256": "4705c4d70a86b101b8a5d66560a6d5cb907f22f29ec90309f7a951ac2139ea08"
+      }
+    ]
+  }
+}

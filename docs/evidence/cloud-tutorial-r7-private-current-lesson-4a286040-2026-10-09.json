@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Retained R7 current-lesson mutation control from disposable private Postgres",
+  "framework": "shell",
+  "command": [
+    "scripts/mutation-probe.sh",
+    "--file", "packages/operator-core/lib/endpoint-route/routes/hosted-tutorial-progress.ts",
+    "--mutate", "s/record[.]currentLessonId !== input[.]context[.]step/false/g",
+    "--test", "test -f {} && node scripts/test-files.mjs packages/operator-core/lib/onboarding/cloud-tutorial-help.integration.test.ts -t \"checks the account-owned current lesson before AI Help\"",
+    "--expect", "caught",
+    "--relocation", "overlay"
+  ],
+  "startedAt": "2026-10-09T15:54:34.225Z",
+  "finishedAt": "2026-10-09T15:56:51.378Z",
+  "exitCode": 0,
+  "summary": "Archive of a completed, selected current-lesson mutation control at immutable operator 4a2860402948d749e58193d8bcc5736a6f24fd65. Both original and unmutated-copy guards passed one case; the mutant failed that same assertion (expected 409, received 200). Each phase collected but did not execute thirteen other cases. The wrapper caught the mutant, verified source restoration and shut down its private Postgres. This records the shell control only: private test_runs:3 was in a disposable database and is not a shared Vitest receipt. No execution layer, shared mutant receipt, whole-suite pass or shipment is asserted; no test was rerun for this archive.",
+  "assertions": [
+    {
+      "id": "original-selected-baseline-passed",
+      "passed": true,
+      "evidence": "Retained TEST_FILE_RESULT: requested=1 executed=1 matched=1 status=passed head=4a28604029 uncommittedPaths=0/1 provenance=stamped startedAt=2026-10-09T15:54:34.225Z skippedTests=13; Vitest summary one passed, thirteen skipped."
+    },
+    {
+      "id": "unmutated-copy-selected-baseline-passed",
+      "passed": true,
+      "evidence": "Retained TEST_FILE_RESULT: requested=1 executed=1 matched=1 status=passed head=4a28604029 uncommittedPaths=0/1 provenance=stamped startedAt=2026-10-09T15:56:03.629Z skippedTests=13; Vitest summary one passed, thirteen skipped."
+    },
+    {
+      "id": "current-lesson-mutation-caught",
+      "passed": true,
+      "evidence": "TEST_FILE_ASSERTION_FAILURE names hosted lesson assistance boundary checks the account-owned current lesson before AI Help without granting workspace or speech authority; expected 200 to be 409. MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evidence=test-file-assertion-failure relocation=overlay."
+    },
+    {
+      "id": "source-restored",
+      "passed": true,
+      "evidence": "The runner verified hosted-tutorial-progress.ts byte-identical to its pre-probe state. Mutation used a private overlay; the original tracked source remained unchanged."
+    },
+    {
+      "id": "private-postgres-stopped",
+      "passed": true,
+      "evidence": "The retained wrapper log reports fast shutdown at 2026-10-09 11:56:51.216 EDT and database system is shut down at 11:56:51.378 EDT; native execution returned exit 0 and its terminal handle was drained before compaction."
+    }
+  ],
+  "mutationProbes": [
+    {
+      "schemaVersion": 1,
+      "runnerPath": "scripts/mutation-probe.sh",
+      "runnerCommit": "4a2860402948d749e58193d8bcc5736a6f24fd65",
+      "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e",
+      "cwd": ".",
+      "argv": [
+        "--file", "packages/operator-core/lib/endpoint-route/routes/hosted-tutorial-progress.ts",
+        "--mutate", "s/record[.]currentLessonId !== input[.]context[.]step/false/g",
+        "--test", "test -f {} && node scripts/test-files.mjs packages/operator-core/lib/onboarding/cloud-tutorial-help.integration.test.ts -t \"checks the account-owned current lesson before AI Help\"",
+        "--expect", "caught",
+        "--relocation", "overlay"
+      ],
+      "result": {
+        "baselineExit": 0,
+        "relocation": "overlay",
+        "expected": "caught",
+        "verdict": "caught",
+        "guardExit": 1,
+        "assertionEvidence": "test-file-assertion-failure",
+        "mutantParse": "unchecked",
+        "target": "copy-out"
+      }
+    }
+  ],
+  "currentSharedLedgerRound": {
+    "sourceCommit": "405947bc4cfff1ed3b721daa4af027d64d71e970",
+    "root": "/dev/shm/pcv/papercusp-lint-as-committed-405947bc4c-edpqzo",
+    "selectedCase": "hosted lesson assistance boundary > checks the account-owned current lesson before AI Help without granting workspace or speech authority",
+    "baselineRunId": 20964691,
+    "copyBaselineRunId": 20964693,
+    "mutantRunId": 20964695,
+    "workspaceId": "papercusp-workspace",
+    "harnessSlug": "papercusp",
+    "startedAt": "2026-10-09T23:54:07.182Z",
+    "finishedAt": "2026-10-09T23:54:47.183Z",
+    "summary": "Fresh selected current-lesson control with shared-ledger attribution. Original and unmutated-copy controls each passed one case; removing the account-owned current-lesson comparison caused the same case to fail with expected 409, received 200. Thirteen unselected cases in each phase produced no evidence. The retained source remained byte-identical and clean. Private Postgres shut down at 23:54:48.461Z; native execution completed exit 0 and its handle was drained.",
+    "subjectSha256": "f40e2368f7f046462ab1dbf701da424be6af2d10b47fb9dbee87ccc0b3c822f2",
+    "mutantSha256": "b22b7cbebefcc1a6fbec0e97578b1fb8ff1facc8763d9b08c805bce7afb86f0b",
+    "mutation": "s/record[.]currentLessonId !== input[.]context[.]step/false/g",
+    "replacementCount": 1,
+    "relocation": "overlay",
+    "runnerMutantParse": "unchecked",
+    "independentParseCheck": { "tool": "esbuild.transformSync", "loader": "ts", "warnings": 0 },
+    "log": {
+      "path": "/dev/shm/tutorial-r7-shared-currentlesson-20261009T2355.log",
+      "bytes": 856439,
+      "sha256": "badf51c12555c94472ac095abe371cdf46d6240e96aeab57b93b08651b92f631"
+    },
+    "limitations": [
+      "Selected mutation comparison only; the historical full fourteen-case pass is preserved as shared run 20958063 and was not replayed.",
+      "Typed provider and progress-store seams; protected voice, native review and exact production shipment remain separate acceptance work.",
+      "The original private-ledger archive and its unavailable local id 3 remain unchanged."
+    ]
+  },
+  "archiveProvenance": {
+    "workItemId": "WI-10007744",
+    "plan": "cloud-app-live-tutorial-2026-10-01",
+    "specId": "AUTO-BAR-R-7-P-016",
+    "specRevision": 2,
+    "sourceCommit": "4a2860402948d749e58193d8bcc5736a6f24fd65",
+    "testFile": "packages/operator-core/lib/onboarding/cloud-tutorial-help.integration.test.ts",
+    "selectedCase": "hosted lesson assistance boundary checks the account-owned current lesson before AI Help without granting workspace or speech authority",
+    "rawLog": {
+      "originalPath": "/tmp/tutorial-r7-current-lesson-probe-4a286040-privateadmin-20261009T1600.log",
+      "bytes": 857970,
+      "sha256": "96bf651747b85ebb3cd00c8cb319c35ecf6fb91984a30c4e4016e0aa3c9be564"
+    },
+    "privateLedger": {
+      "database": "disposable private Postgres; shut down and removed",
+      "mutantLocalId": 3,
+      "bindableInSharedLedger": false
+    },
+    "preservedCurrentFullSuiteBinding": 33036,
+    "staleCurrentLessonBindings": [33064, 32147],
+    "limitations": [
+      "The archived operational assertions are not the original Vitest case receipts.",
+      "The recorder must not invent a required integration layer or mutate the private receipt into a shared receipt.",
+      "The source log's mutantParse=unchecked is preserved; its assertion failure independently establishes test execution but is not a general parse check.",
+      "Historical current full fourteen-case help proof remains unchanged and was not replayed."
+    ]
+  }
+}

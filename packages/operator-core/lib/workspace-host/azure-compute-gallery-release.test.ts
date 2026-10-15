@@ -337,6 +337,7 @@ function bootcBakeManifest(): WorkspaceHostBootcBakeManifest {
     digest: `sha256:${BOOTC_SHA}`,
     pinnedRef: `${image}@sha256:${BOOTC_SHA}`,
     registryNamespace: 'registry.example.com/papercusp',
+    release: { version: RELEASE_VERSION },
     clouds: [
       { cloud: 'gcp', type: 'gce', artifact: '/release/gcp/disk.raw', sha256: '1'.repeat(64), sizeBytes: 101 },
       { cloud: 'aws', type: 'ami', artifact: '/release/aws/disk.raw', sha256: '2'.repeat(64), sizeBytes: 102 },
@@ -546,9 +547,9 @@ describe('Azure Compute Gallery workspace-host release', () => {
 
   it('fails closed before pinning when guest tools, replica policy, or explicit reader access drift', async () => {
     const missingTool = new FakeAdapter();
-    missingTool.missingTool = 'walinuxagent';
+    missingTool.missingTool = 'WALinuxAgent';
     await expect(executeAzureComputeGalleryRelease(request(), missingTool)).rejects.toThrow(
-      'missing guest tool walinuxagent',
+      'missing guest tool WALinuxAgent',
     );
     expect(missingTool.calls).not.toContain('publish-manifest');
 

@@ -1,0 +1,63 @@
+START 2026-10-06T20:49:47Z
+PRE sidecar=2121735|1|Tue 2026-10-06 05:47:41 EDT|active|running
+PRE kokoro_start=Tue 2026-10-06 00:30:47 EDT
+PRE embed_device={"workspace_id":"papercusp-workspace","payload":{"updatedBy": "settings", "preference": "auto"},"updated_at":1791261047327}
+PRE gpu=16674 MiB, 7445 MiB
+PRE_GPU_APP 8737, /home/builduser/.local/node25/bin/node, 1818 MiB
+PRE_GPU_APP 3351172, /home/builduser/.voicemode/services/kokoro/.venv/bin/python, 1302 MiB
+PRE_GPU_APP 2121735, node, 6312 MiB
+PRE_GPU_APP 3559339, /home/builduser/.local/node25/bin/node, 4654 MiB
+PRE_GPU_APP 3564133, /home/builduser/.local/node25/bin/node, 1818 MiB
+SKIP_STOP_ORNITH: service was already inactive
+bash: line 109: no: command not found
+PRE ornith_after_stop=inactive
+COMPLETION_HTTP=200 after 538s at 20:58:55Z
+COMPLETION_MODEL="model":"maxwell1500/ornith-35b:IQ3_M"
+POST sidecar=2121735|1|Tue 2026-10-06 05:47:41 EDT|active|running
+POST kokoro_start=Tue 2026-10-06 00:30:47 EDT
+POST ornith=active
+POST gpu=19353 MiB, 4766 MiB
+POST_GPU_APP 8737, /home/builduser/.local/node25/bin/node, 1818 MiB
+POST_GPU_APP 3351172, /home/builduser/.voicemode/services/kokoro/.venv/bin/python, 1302 MiB
+POST_GPU_APP 2121735, node, 6312 MiB
+POST_GPU_APP 3559339, /home/builduser/.local/node25/bin/node, 4654 MiB
+POST_GPU_APP 4107981, /usr/local/lib/ollama/llama-server, 4640 MiB
+SAMPLES_TOTAL=354
+SAMPLES_NON200=0
+SAMPLES_BAD_ACCOUNTING=0
+SAMPLES_OVER_15S=0
+SAMPLES_MAX_LATENCY_S=4.43731
+SAMPLES_P50_LATENCY_S=0.058129
+PRESSURE_SAMPLES_TOTAL=366
+PRESSURE_IO_SOME_AVG10_MAX=68.89
+PRESSURE_IO_FULL_AVG10_MAX=50.02
+PRESSURE_MEM_SOME_AVG10_MAX=43.89
+PRESSURE_GLOBAL_PGMAJFAULT_DELTA=3329103
+PRESSURE_GLOBAL_REFAULT_FILE_DELTA=41603892
+PRESSURE_SIDECAR_PGMAJFAULT_DELTA=0
+PRESSURE_SIDECAR_REFAULT_FILE_DELTA=0
+PRESSURE_DATA_READ_SECTORS_DELTA=99705722
+PRESSURE_GPU_USED_MIB_MAX=24087
+--- slowest 8 samples
+20:55:20	200 4.437308	ok
+21:01:44	200 2.790190	ok
+20:55:36	200 1.409471	ok
+21:01:17	200 1.209183	ok
+21:02:14	200 0.556483	ok
+21:02:23	200 0.439765	ok
+21:01:20	200 0.401633	ok
+20:58:01	200 0.339130	ok
+--- watchdog journal since 2026-10-06T20:49:47Z
+--- gateway journal since 2026-10-06T20:49:47Z (ornith/audit/fail)
+2026-10-06T16:49:58-04:00 buildhost env[2010253]: [inference-gateway:info] inference-gateway: local backend 'ornith-llamaserver' (llama-ornith.service) is not answering — starting it on demand
+2026-10-06T16:49:58-04:00 buildhost env[2010253]: [inference-gateway:info] inference-gateway: unit audit clean for 'ornith-llamaserver' — unit matches catalog 'ornith-35b-iq3m-llama-server' (para
+2026-10-06T16:53:44-04:00 buildhost env[2010253]: [inference-gateway:warn] inference-gateway: pinned 'aviynw9' UNSERVICEABLE (paused/exhausted/all-IPs-cooled; inflight=1) → soft-pin failover to l
+2026-10-06T16:53:48-04:00 buildhost env[2010253]: [inference-gateway:warn] inference-gateway: pinned 'aviynw9' UNSERVICEABLE (paused/exhausted/all-IPs-cooled; inflight=0) → soft-pin failover to l
+2026-10-06T16:58:23-04:00 buildhost env[2010253]: [inference-gateway:info] inference-gateway: local backend 'ornith-llamaserver' started on demand and is answering — routing resumed
+2026-10-06T16:59:24-04:00 buildhost env[2010253]: [inference-gateway:warn] inference-gateway: pinned 'aviynw3_claude' UNSERVICEABLE (paused/exhausted/all-IPs-cooled; inflight=0) → soft-pin failov
+2026-10-06T17:00:47-04:00 buildhost env[2010253]: [inference-gateway:warn] inference-gateway: Codex OAuth account aviynw5_codex rejected refresh credentials; quarantined for 900s and failing over t
+2026-10-06T17:00:47-04:00 buildhost env[2010253]: [inference-gateway:error] inference-gateway: codex OAuth upstream failed request=a8e2b63a-dba4-4798-b659-da92e0e1be47:93329 code=upstream-error on 
+2026-10-06T17:02:47-04:00 buildhost env[2010253]: [inference-gateway:warn] inference-gateway: pinned 'aviynw10' UNSERVICEABLE (paused/exhausted/all-IPs-cooled; inflight=1) → soft-pin failover to 
+2026-10-06T17:02:51-04:00 buildhost env[2010253]: [inference-gateway:warn] inference-gateway: pinned 'aviynw10' UNSERVICEABLE (paused/exhausted/all-IPs-cooled; inflight=0) → soft-pin failover to 
+2026-10-06T17:02:53-04:00 buildhost env[2010253]: [inference-gateway:warn] inference-gateway: pinned 'aviynw10' UNSERVICEABLE (paused/exhausted/all-IPs-cooled; inflight=1) → soft-pin failover to 
+END 2026-10-06T21:02:58Z

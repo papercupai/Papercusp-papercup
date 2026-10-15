@@ -241,6 +241,13 @@ export function chunkOverCapMessage<M extends ChunkableMessage>(
     for (const field of CONTINUATION_FIELDS) {
       if (record[field] !== undefined) continuation[field] = record[field];
     }
+    // A continuation is not itself a reply-thread row, but it still needs the
+    // original reference to authorize the narrow "replying to a departed sender"
+    // recipient exception. Keep that context internal so sendOne can validate
+    // the recipient without persisting related_msg_id or firing reply wakes.
+    if (typeof record.related_msg_id === 'string' && record.related_msg_id.length > 0) {
+      continuation.recipientAuthRelatedMsgId = record.related_msg_id;
+    }
     return { message: continuation as unknown as M, meta: { group, part, of } };
   });
 

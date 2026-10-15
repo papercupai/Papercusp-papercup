@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "kind": "supplementary-native-source-boundary-observation",
+  "planSlug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemRef": "WI-10007521",
+  "decisionRef": "get-feedback-reliability-usefulness-adoption-2026-10-03#D-017",
+  "status": "ended-source fork and substantive answer observed; live-source acceptance and shipment remain open",
+  "conversationId": "conv-request-0584bfd6a319a96216f223fec06daaf4a6926ee5cadf9ea7e3d8c5f31e7db770",
+  "requestKey": "get-feedback-live-source-boundary-20261010-e16e0-1",
+  "requesterId": "su-e16e0da4-f858-4e10-9665-55116edbc36b",
+  "source": {
+    "advSessionId": 35144,
+    "ownerId": "su-89413428-d12b-49c8-a378-92c79940ccf9",
+    "nativeSessionId": "68806532-f325-4e72-82d3-9f2e128aa765",
+    "backend": "claude",
+    "endedAt": "2026-10-06T12:32:48.314774Z",
+    "completeBytes": 2980785,
+    "sha256": "c5da29a5142fd66d6a5849c024530b27d548912aca564aa28ebf44b1fb8ec809",
+    "inode": 51789579,
+    "device": 66307,
+    "nlink": 1
+  },
+  "answerer": {
+    "advSessionId": 39679,
+    "ownerId": "su-81ffb8ce-24d2-4e77-ad7c-fe5afe43e39a",
+    "nativeSessionId": "ad9967b8-af57-4a07-9cdf-bdfc7c9f2708",
+    "backend": "claude",
+    "operation": "fork",
+    "portId": null,
+    "launchParentOwner": "su-e16e0da4-f858-4e10-9665-55116edbc36b",
+    "seedCopy": {
+      "completeBytes": 2980785,
+      "sha256": "c5da29a5142fd66d6a5849c024530b27d548912aca564aa28ebf44b1fb8ec809",
+      "inode": 51789767,
+      "device": 66307,
+      "nlink": 1
+    },
+    "nativeSnapshot": {
+      "bytes": 3562917,
+      "sha256": "e2c59f5e4c6ac1eb476cb428b1e0c778b60b077a2a3c43f0c205529db77eb2aa"
+    }
+  },
+  "substantiveReply": {
+    "postId": 1171935,
+    "nativeToolUseLine": 321,
+    "nativeToolResultLine": 327,
+    "nativeToolUseId": "toolu_01G1XRRv9wFH7GVxJ2yUJvvB",
+    "nativeToolUseIdSha256": "7802db162c12c1a544d5c922b88bf522a1e53943010ce73e3064fbe510b7a76b",
+    "nativeThreadSha256": "74afe33ed5644a07c0983502b0209524b105754060fe28e06f61d7512b0cea97",
+    "toolInvocationId": 35363806,
+    "servingBuildSha": "f9fe9b59c4",
+    "servingEndpoint": "http://127.0.0.1:3170",
+    "identityLaunchRecord": {
+      "advSessionId": "39679",
+      "xmin": "840646601",
+      "selection": "owner-workspace-fallback"
+    },
+    "nativePerCallBinding": "unmeasured: requestOrigin contains no nativeSession carrier; fallback launch selection is not caller-row or OS process identity"
+  },
+  "closure": {
+    "state": "closed_answered",
+    "postId": 1171946,
+    "decision": "Use canonical-source completeBytes prefix equality, observed inode/device/link facts, disjoint native identities and D006 actor evidence as a bounded preservation check; permit legitimate appends above the prefix."
+  },
+  "retainedRawEvidence": [
+    {
+      "path": "/dev/shm/get-feedback-live-source-native-20261010-1320.json",
+      "sha256": "75d0dd97abf2723a1e389c34328f793082db196af4f07a012a87e83ad07d1004"
+    },
+    {
+      "path": "/dev/shm/get-feedback-live-source-audit-20261010-1323.json",
+      "sha256": "53ce566477bd45f0b2e21887dc9c40e37f52a95cdffa1a056c078f906e288916"
+    },
+    {
+      "path": "/dev/shm/get-feedback-live-source-close-20261010-1318.json",
+      "sha256": "2dbc9e7de18d2ac0e218212ebbf1cd836f3dd4ff862868d5c27ede2ab96414b0"
+    }
+  ],
+  "limitations": [
+    "Source ended before the trial; this is not live-source preservation acceptance.",
+    "Source/seed hashes and inode facts were observed after launch, not attested by a maintained pre-fork snapshot writer.",
+    "Native reply/result and matching owner/post audit are positive evidence; exact native-call audit carrier binding is unmeasured.",
+    "No authorship of later source appends, universal same-UID process immutability or mutation-then-revert exclusion is asserted.",
+    "Original quality cohort remains four with shortfall four; supplementary requester48ca review cut12:34 is separate and its matrix coupling remains open.",
+    "Current-build evidence does not establish independent acceptance, ordinary ship transition or exact final release shipment."
+  ]
+}

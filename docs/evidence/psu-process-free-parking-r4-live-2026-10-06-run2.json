@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "AUTO-BAR-R-4-P-018 live drill, run 2 (after the WI-10006598 psu-pty-host.mjs change): whole-tree park, presence while parked, keystroke + coord-wake resume on one conversation (psu process-free parking)",
+  "framework": "operational",
+  "command": ["node", ".papercusp/scratch/park-r4-orphan-driver.mjs"],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T11:29:58Z",
+  "finishedAt": "2026-10-06T11:37:18Z",
+  "summary": "Live re-run on a real psu Claude session (su-9e32c5b7, idle threshold 60 s) against the current psu-pty-host.mjs (blob a37a17e2, the WI-10006598 change included). Three parks each stopped the whole CLI tree; the two scanned parks found no survivors and no PAPERCUSP_SID holders. Presence stayed live and wakeable while parked. A keystroke resume and a coord-wake resume both reused native conversation f461ee99 and the sessions index holds exactly one Claude session for the owner. No session-end lifecycle row was written at any park; the real exit wrote one.",
+  "assertions": [
+    {
+      "id": "park-stops-whole-cli-tree",
+      "passed": true,
+      "evidence": "Baseline positive control 11:30:25.869Z: CLI pid 3349494 (parent host 3338999) was the only PAPERCUSP_SID holder; CLI tree RSS ~307 MB. Park 1 child-parked 11:31:34.340Z childPid 3349494 exited:true idleForMs 73222; park-scan 11:31:38.246Z pre-park tree [3349494 claude], survivors [], sid holders [], CLI tree RSS 0. Park 2 child-parked 11:33:19.401Z childPid 3438973 exited:true; park-scan 11:33:23.434Z survivors [], sid holders []. Park 3 child-parked 11:35:05.406Z childPid 3535093 exited:true. Host pid 3338999 stayed up throughout (RSS ~118 MB)."
+    },
+    {
+      "id": "presence-live-and-wakeable-while-parked",
+      "passed": true,
+      "evidence": "coord:presence { owner: su-9e32c5b7-b1d4-4d3d-b2e9-b8346ed71e42 } as_of 11:33:25.473Z, while parked after park 2: byState live 1, wakeable 1, ended 0."
+    },
+    {
+      "id": "keystroke-resume-same-conversation",
+      "passed": true,
+      "evidence": "Driver typed 'Reply with only the token KEYOK-5180.' one key at a time from 11:31:39.495Z while parked. Host event child-unparked trigger owner-input 11:31:41.620Z, latency 2122 ms, nativeId f461ee99-aefe-41f6-8f09-ab79b7b03399 (same as park 1), new childPid 3438973. The token is in the transcript: session_turn:claude:f461ee99-aefe-41f6-8f09-ab79b7b03399:2 (user) and :3 (assistant)."
+    },
+    {
+      "id": "coord-wake-resume-same-conversation",
+      "passed": true,
+      "evidence": "coord:send wake:required at 11:33:33.260Z (msg coord-send-221296391d75bbef89f90b1fa39a27be1ff6f6647a1cdf642cb6b8bb31b5dc33, woken 1) -> child-unparked trigger control:turn 11:33:35.321Z, latency 1977 ms, same nativeId f461ee99, childPid 3535093. Reply WAKEOK-7731 came back over coord; transcript turns :4 (user) and :5 (assistant)."
+    },
+    {
+      "id": "single-transcript",
+      "passed": true,
+      "evidence": "sessions:list { owner: su-9e32c5b7-b1d4-4d3d-b2e9-b8346ed71e42 } returns exactly one Claude session, f461ee99-aefe-41f6-8f09-ab79b7b03399 (cwd = canonical tree, 3 prompts: kickoff, keystroke, wake). Method change from run 1: ~/.claude/projects is masked from both capability:bash and the operator's capability:read in this run (a positive control, this session's own live transcript, also read ENOENT), so the index that ingests the real transcripts is the reader here."
+    },
+    {
+      "id": "no-session-end-at-park",
+      "passed": true,
+      "evidence": "harness_shared.tool_invocations, tool_name activity:report, coord_owner_id su-9e32c5b7: '▶ session started' at 11:30:08.899 (launch), 11:31:41.937 (keystroke resume) and 11:33:35.648 (wake resume); no lifecycle row near the park times 11:31:34, 11:33:19 or 11:35:05. The drill exit wrote '▶ session started' 11:37:14.55 (the /exit keys resumed the park-3 stand-in) then '■ session ended' 11:37:15.66, so a real exit is still recorded."
+    }
+  ],
+  "drillKind": "live-whole-tree",
+  "plan": "psu-process-free-parking-2026-10-06",
+  "rubricRef": "acceptance-psu-process-free-parking-2026-10-06",
+  "bar": "R-4",
+  "specId": "AUTO-BAR-R-4-P-018",
+  "evidencePlane": "live",
+  "window": { "from": "2026-10-06T11:29:58Z", "to": "2026-10-06T11:37:18Z" },
+  "session": {
+    "ownerId": "su-9e32c5b7-b1d4-4d3d-b2e9-b8346ed71e42",
+    "label": "park-r4-verify",
+    "nativeId": "f461ee99-aefe-41f6-8f09-ab79b7b03399",
+    "hostPid": 3338999,
+    "idleMs": 60000,
+    "launch": "psu --agent=claude --account=auto --no-picker --no-plan, PAPERCUSP_CANONICAL_TREE=<the canonical staging tree>"
+  },
+  "sources": [
+    { "path": "apps/operator/scripts/psu-pty-host.mjs", "blob": "a37a17e2e36e82a594809543ca25c729b430a0b1", "commit": "cd0e2b668e450a325fe18c020d6bda06d9dda82e", "lastModified": "2026-10-06T11:17:35Z" },
+    { "path": "apps/operator/scripts/psu-launcher.mjs", "blob": "8b8a8d0d32f6f301174e07ac1d16c89fbcf7ec40", "commit": "6e5179874104e97720c7e781d80b247f53eae6e1", "lastModified": "2026-10-06T08:40:02Z" }
+  ],
+  "driver": ".papercusp/scratch/park-r4-orphan-driver.mjs",
+  "rawCopies": [
+    ".papercusp/scratch/park-r4-run2/status.jsonl",
+    ".papercusp/scratch/park-r4-run2/su-9e32c5b7-b1d4-4d3d-b2e9-b8346ed71e42.events.jsonl"
+  ],
+  "supersedes": "docs/evidence/psu-process-free-parking-r4-live-2026-10-06.json (run 1, 10:14-10:20Z, measured psu-pty-host.mjs before the WI-10006598 change)",
+  "observations": [
+    "Teardown, outside R-4's scope: the driver typed /exit while the session was parked (park 3). The keys resumed the CLI (owner-input, latency 3301 ms), the CLI exited, the host tore down on SIGTERM at 11:37:15.679Z, and the outer psu process exited 137. Run 1 sent /exit to a live CLI and the outer process exited 0. The session-end row was written in both runs. Filed separately as a follow-up."
+  ],
+  "verdict": "pass",
+  "verdictBasis": "All six assertions passed on the current psu-pty-host.mjs blob; each maps to a requiredScope entry of AUTO-BAR-R-4-P-018 (park on a real Claude CLI, memory freed, presence while parked, keystroke resume, coord wake resume, no session-end at park)."
+}

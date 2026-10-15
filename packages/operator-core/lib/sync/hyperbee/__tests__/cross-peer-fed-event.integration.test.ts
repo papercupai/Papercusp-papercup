@@ -36,7 +36,9 @@ import {
   pollUntil,
   federateTwoPeerPresence,
 } from './_cross-peer-rig';
+import { stubHivePolicyReadsForSuite } from './_hive-policy-read-stubs';
 import { type CoordMessageRow } from '../projections/coord-message';
+import { createFreshPgDb } from '../../../../test/_pg-helpers';
 
 // getOrgPg → routed through the rig's per-"machine" holder (rebound around each
 // op below), exactly as cross-peer-coordination.integration.test.ts does.
@@ -61,6 +63,9 @@ vi.mock('@papercusp/flags/server', async () => {
   };
 });
 
+// Registered BEFORE the file's own hooks so the stub outlives substrate teardown,
+// which can still run a merge pass (WI-6554700010008561 / WI-10007530).
+stubHivePolicyReadsForSuite();
 afterEach(rigAfterEach);
 
 // FAITHFUL to migrations 163 + 175 (once/min_sleep_sec/urgency/coalesced_count) +
@@ -68,7 +73,8 @@ afterEach(rigAfterEach);
 // exact-one-shot retire path filters on `root_id IS NULL`, so it's load-bearing
 // even though this suite never composes a tree; also superseded_at, filtered by
 // the same retire path) + 825 (producer_health — registerAwait's INSERT always
-// lists this column, boundTo or not) — the same
+// lists this column, boundTo or not) + 941 (cancel_reason — exact-key registration
+// retires prior pending rows with an accountable cancellation reason) — the same
 // hand-rolled subset store.integration.test.ts stands up (no RLS/grants; a
 // throwaway test DB has no harness_app/harness_zero roles). This is a MINIMAL
 // subset, not a schema mirror: harness_shared.event_awaits carries 34 columns
@@ -84,7 +90,7 @@ const EVENT_AWAITS_DDL = `
     note text, wake_handle jsonb,
     timeout_behavior text NOT NULL DEFAULT 'expire' CHECK (timeout_behavior IN ('expire','wake')),
     expires_ts timestamptz, created_at timestamptz NOT NULL DEFAULT now(),
-    fired_at timestamptz, fired_reason text, cancelled_at timestamptz,
+    fired_at timestamptz, fired_reason text, cancelled_at timestamptz, cancel_reason text,
     fired_by text, fired_payload jsonb, fired_delivery_intent_at timestamptz,
     once boolean NOT NULL DEFAULT true, min_sleep_sec integer, urgency boolean NOT NULL DEFAULT false,
     payload_filter jsonb, node_id bigint, root_id bigint, producer_health jsonb, superseded_at timestamptz
@@ -104,6 +110,34 @@ const EVENT_AWAITS_DDL = `
 `;
 
 describe('cross-peer coordination on a shared Hive — fed_event surfacing over the real wire (P-009 / WI-1729 P-102)', () => {
+  it('exact-key registration requires the cancellation column and stamps superseded watches after restoration', async () => {
+    const db = await createFreshPgDb('fed_event_await_schema');
+    cleanups.push(db.cleanup);
+    await db.sql.unsafe(EVENT_AWAITS_DDL);
+    orgSqlHolder.sql = db.sql;
+    const { registerAwait, listActiveAwaitsForKey, AWAIT_SUPERSEDED_BY_REGISTRATION } =
+      await import('../../../events/await/store');
+    const input = { subscriberId: 'su-B-schema-control', eventKey: 'p2p-git:await-schema-control', once: true };
+
+    // Remove exactly the fixture omission from the original D006 failure. Even
+    // without an existing row, PostgreSQL rejects the explicit UPDATE column.
+    await db.sql`ALTER TABLE harness_shared.event_awaits DROP COLUMN cancel_reason`;
+    await expect(registerAwait(input)).rejects.toMatchObject({ code: '42703' });
+    expect(await listActiveAwaitsForKey(input.eventKey)).toHaveLength(0);
+
+    await db.sql`ALTER TABLE harness_shared.event_awaits ADD COLUMN cancel_reason text`;
+    const prior = await registerAwait(input);
+    const replacement = await registerAwait(input);
+    expect(replacement.id).not.toBe(prior.id);
+    const active = await listActiveAwaitsForKey(input.eventKey);
+    expect(active.map((row) => row.id)).toEqual([replacement.id]);
+    const retired = await db.sql<Array<{ cancelled_at: Date | null; cancel_reason: string | null }>>`
+      SELECT cancelled_at, cancel_reason FROM harness_shared.event_awaits WHERE id = ${prior.id}
+    `;
+    expect(retired[0].cancelled_at).not.toBeNull();
+    expect(retired[0].cancel_reason).toBe(AWAIT_SUPERSEDED_BY_REGISTRATION);
+  });
+
   it(
     "a coord-message with body.fed_event federates A→B over the actual swarm; B's projection both (1) lands the row in coord_event_log AND (2) re-fires B's registered events:await watch",
     async () => {

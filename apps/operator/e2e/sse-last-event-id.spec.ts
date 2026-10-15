@@ -11,10 +11,11 @@
  *   - POST returns 405
  */
 import { test, expect } from './_egress';
+import { onAppOrigin } from './_app-origin';
 
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
-  `http://127.0.0.1:${Number(process.env.OPERATOR_E2E_PORT ?? process.env.PORT) || 3055}`;
+  `http://localhost:${Number(process.env.OPERATOR_E2E_PORT ?? process.env.PORT) || 3055}`;
 
 const SSE_ROUTES = [
   '/api/zero-harness/sse',
@@ -35,6 +36,7 @@ async function readFirstChunk(
   headers: Record<string, string> = {},
   opts: { readBody?: boolean } = { readBody: true },
 ): Promise<FirstChunk> {
+  await onAppOrigin(page, url);
   return page.evaluate(
     async ({ u, h, readBody }) => {
       const ctrl = new AbortController();

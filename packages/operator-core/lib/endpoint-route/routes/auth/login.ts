@@ -8,6 +8,7 @@
  * jar); request headers come from `req.headers` (no `next/headers`).
  */
 import { login, SESSION_COOKIE, DEFAULT_SESSION_TTL_MS } from '../../../auth';
+import { safeCloudError } from '../../../cloud-telemetry';
 import {
   checkSoftGlobal,
   refundSoftGlobal,
@@ -176,7 +177,7 @@ export default defineTool({
         ? 401
         // WI-10003621: a foreign loopback peer on a hosted host may not log in at all.
         : code === 'foreign_loopback_peer' ? 403 : 400;
-      if (status >= 500) console.error('[auth/login]', code, (e as Error).stack);
+      if (status >= 500) console.error('[auth/login]', safeCloudError('request_failure', e));
       // Failure burns both hard counters. (Soft buckets are already burned
       // by checkSoftGlobal/checkSoftPerIp.)
       await burnHardPerAccount(username).catch(() => { /* best-effort */ });

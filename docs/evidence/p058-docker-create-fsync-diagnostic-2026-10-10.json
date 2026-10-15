@@ -1,0 +1,240 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "name": "P-058 create-only Docker fsync phase diagnosis",
+  "command": [
+    "$HOME/.local/node25/bin/node",
+    "--input-type=module"
+  ],
+  "commandProvenance": {
+    "taskId": "0mv2lfwlms8lobi13ek",
+    "purpose": "One create-only request using runOwnedContainer with a run override that throws before dispatching Docker start; inline command retained by durable task and session."
+  },
+  "cwd": ".",
+  "startedAt": "2026-10-10T16:13:29.974Z",
+  "finishedAt": "2026-10-10T16:13:41.054Z",
+  "exitCode": 0,
+  "summary": "Exact retained ARM image create returned in10984ms. Two contemporaneous daemon stack snapshots caught synchronous fsync during per-layer link and parent committed metadata writes. The guest was intentionally never started; exact owned container was removed. This establishes measured create-phase mechanism only, not the underlying device cause or the historical60s failures.",
+  "workItemId": "EI-25608208328004035",
+  "relatedWorkItemIds": [
+    "EI-25604028797058995",
+    "EI-25500068013952985"
+  ],
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "candidateAccepted": false,
+  "evidencePlane": "create-only-daemon-diagnostic",
+  "imageId": "sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921",
+  "platform": "linux/arm64",
+  "sourceHashes": {
+    "papercusp-desktop/bin/lib/server-container.mjs": "ce13dae9ad5c25e185a955338d325488f0fbe0791d5b9d75cb9fd20e89334026"
+  },
+  "budgets": {
+    "createMs": 30000,
+    "cleanupMs": 30000,
+    "outerJobMs": 90000,
+    "canonicalServerDeadlineMs": 60000,
+    "canonicalServerAttempted": false
+  },
+  "create": {
+    "phase": "end",
+    "verb": "create",
+    "elapsedMs": 10984,
+    "ok": true,
+    "at": "2026-10-10T16:13:40.962Z"
+  },
+  "guestStarted": false,
+  "ownership": {
+    "containerName": "papercusp-native-447bf786-f8aa-407b-8f08-f33f6dd80535",
+    "containerId": "27439192663be507cd16a1eaf18793ec4a97b1b6e5bab37fb87810ffadf6eb91",
+    "ownerToken": "5c3ad9dc-e643-442d-928e-d9d2b59c0816",
+    "removed": true,
+    "cleanupPending": false,
+    "status": "failed",
+    "error": "CREATE_ONLY_STOP_BEFORE_GUEST"
+  },
+  "samples": [
+    {
+      "plannedMs": 500,
+      "at": "2026-10-10T16:13:31.847Z",
+      "file": ".papercusp/scratch/p058-docker-create-diagnosis-20261010/create-only1/stack-500ms.txt",
+      "sha256": "95479d22bfc9f1ded83144152c4bb0385235f96036db33dee499039d0becea58",
+      "goroutine": "goroutine 41640258 [syscall]:",
+      "frames": [
+        {
+          "function": "syscall.Syscall",
+          "location": "/usr/local/go/src/syscall/syscall_linux.go:74"
+        },
+        {
+          "function": "syscall.Fsync",
+          "location": "/usr/local/go/src/syscall/zsyscall_linux_amd64.go:463"
+        },
+        {
+          "function": "internal/poll.(*FD).Fsync.func1",
+          "location": "/usr/local/go/src/internal/poll/fd_fsync_posix.go:18"
+        },
+        {
+          "function": "internal/poll.ignoringEINTR",
+          "location": "/usr/local/go/src/internal/poll/fd_posix.go:74"
+        },
+        {
+          "function": "internal/poll.(*FD).Fsync",
+          "location": "/usr/local/go/src/internal/poll/fd_fsync_posix.go:17"
+        },
+        {
+          "function": "os.(*File).Sync",
+          "location": "/usr/local/go/src/os/file_posix.go:166"
+        },
+        {
+          "function": "github.com/moby/sys/atomicwriter.(*atomicFileWriter).Close",
+          "location": "/root/build-deb/engine/vendor/github.com/moby/sys/atomicwriter/atomicwriter.go:144"
+        },
+        {
+          "function": "github.com/moby/sys/atomicwriter.WriteFile",
+          "location": "/root/build-deb/engine/vendor/github.com/moby/sys/atomicwriter/atomicwriter.go:115"
+        },
+        {
+          "function": "github.com/moby/moby/v2/daemon/graphdriver/overlay2.(*Driver).create",
+          "location": "/root/build-deb/engine/daemon/graphdriver/overlay2/overlay.go:389"
+        },
+        {
+          "function": "github.com/moby/moby/v2/daemon/graphdriver/overlay2.(*Driver).CreateReadWrite",
+          "location": "/root/build-deb/engine/daemon/graphdriver/overlay2/overlay.go:332"
+        },
+        {
+          "function": "github.com/moby/moby/v2/daemon/internal/layer.(*layerStore).initMount",
+          "location": "/root/build-deb/engine/daemon/internal/layer/layer_store.go:663"
+        },
+        {
+          "function": "github.com/moby/moby/v2/daemon/internal/layer.(*layerStore).CreateRWLayer",
+          "location": "/root/build-deb/engine/daemon/internal/layer/layer_store.go:523"
+        },
+        {
+          "function": "github.com/moby/moby/v2/daemon/images.(*ImageService).CreateLayerFromImage",
+          "location": "/root/build-deb/engine/daemon/images/service.go:153"
+        }
+      ]
+    },
+    {
+      "plannedMs": 5000,
+      "at": "2026-10-10T16:13:36.348Z",
+      "file": ".papercusp/scratch/p058-docker-create-diagnosis-20261010/create-only1/stack-5000ms.txt",
+      "sha256": "dd562b01446979dd3a1c09b188710871f1c390fe58bd05ff3c50dc8fda90a510",
+      "goroutine": "goroutine 41640258 [syscall]:",
+      "frames": [
+        {
+          "function": "syscall.Syscall",
+          "location": "/usr/local/go/src/syscall/syscall_linux.go:74"
+        },
+        {
+          "function": "syscall.Fsync",
+          "location": "/usr/local/go/src/syscall/zsyscall_linux_amd64.go:463"
+        },
+        {
+          "function": "internal/poll.(*FD).Fsync.func1",
+          "location": "/usr/local/go/src/internal/poll/fd_fsync_posix.go:18"
+        },
+        {
+          "function": "internal/poll.ignoringEINTR",
+          "location": "/usr/local/go/src/internal/poll/fd_posix.go:74"
+        },
+        {
+          "function": "internal/poll.(*FD).Fsync",
+          "location": "/usr/local/go/src/internal/poll/fd_fsync_posix.go:17"
+        },
+        {
+          "function": "os.(*File).Sync",
+          "location": "/usr/local/go/src/os/file_posix.go:166"
+        },
+        {
+          "function": "github.com/moby/sys/atomicwriter.(*atomicFileWriter).Close",
+          "location": "/root/build-deb/engine/vendor/github.com/moby/sys/atomicwriter/atomicwriter.go:144"
+        },
+        {
+          "function": "github.com/moby/sys/atomicwriter.WriteFile",
+          "location": "/root/build-deb/engine/vendor/github.com/moby/sys/atomicwriter/atomicwriter.go:115"
+        },
+        {
+          "function": "github.com/moby/moby/v2/daemon/graphdriver/overlay2.(*Driver).create",
+          "location": "/root/build-deb/engine/daemon/graphdriver/overlay2/overlay.go:402"
+        },
+        {
+          "function": "github.com/moby/moby/v2/daemon/graphdriver/overlay2.(*Driver).CreateReadWrite",
+          "location": "/root/build-deb/engine/daemon/graphdriver/overlay2/overlay.go:332"
+        },
+        {
+          "function": "github.com/moby/moby/v2/daemon/internal/layer.(*layerStore).initMount",
+          "location": "/root/build-deb/engine/daemon/internal/layer/layer_store.go:663"
+        },
+        {
+          "function": "github.com/moby/moby/v2/daemon/internal/layer.(*layerStore).CreateRWLayer",
+          "location": "/root/build-deb/engine/daemon/internal/layer/layer_store.go:523"
+        },
+        {
+          "function": "github.com/moby/moby/v2/daemon/images.(*ImageService).CreateLayerFromImage",
+          "location": "/root/build-deb/engine/daemon/images/service.go:153"
+        }
+      ]
+    }
+  ],
+  "enginePhases": {
+    "file": ".papercusp/scratch/p058-docker-create-diagnosis-20261010/create-only1/engine-phases.jsonl",
+    "sha256": "408024999eeb745a175e41e60c78f5f493e2b659c9259031e576197449e773ce"
+  },
+  "localResult": {
+    "file": ".papercusp/scratch/p058-docker-create-diagnosis-20261010/create-only1/result.json",
+    "sha256": "1fa53e358b0a1b04a58aa527f6016f2862fb645a968a4f6577b822d4138af8b8"
+  },
+  "primarySource": {
+    "daemonVersion": "29.4.0",
+    "gitCommit": "daa0cb7",
+    "url": "https://raw.githubusercontent.com/moby/moby/daa0cb7/daemon/graphdriver/overlay2/overlay.go",
+    "sha256": "7d9692d73fe001f200a74c1bbdc8d837d6ff2b5ea30fdb33ff4b687b61624b9a",
+    "sourceReadTaskId": "0mv2llxj71pha8u61s6",
+    "matchedCallsites": [
+      {
+        "line": 389,
+        "metadata": "layer link"
+      },
+      {
+        "line": 402,
+        "metadata": "parent committed"
+      }
+    ]
+  },
+  "assertions": [
+    {
+      "id": "exact-create-returned",
+      "passed": true,
+      "evidence": "Immutable27439192663be507cd16a1eaf18793ec4a97b1b6e5bab37fb87810ffadf6eb91 returned after10984ms."
+    },
+    {
+      "id": "contemporaneous-fsync-stacks",
+      "passed": true,
+      "evidence": "Both saved raw hashes re-read matching. Each has exactly one active create stack with fsync and CreateRWLayer; exact installed upstream source binds389/402."
+    },
+    {
+      "id": "guest-not-started",
+      "passed": true,
+      "evidence": "Engine trace intentional stop occurs before calling start; no producer or guest command executes."
+    },
+    {
+      "id": "owned-cleanup",
+      "passed": true,
+      "evidence": "Original maintained helper receipt records removed=true, cleanupPending=false; no blanket container-absence claim."
+    },
+    {
+      "id": "unchanged-helper",
+      "passed": true,
+      "evidence": "Exact helperce13 hash matched before and after diagnostic."
+    }
+  ],
+  "limitations": [
+    "Earlier60s failures lack contemporaneous stacks; no causal equivalence asserted.",
+    "Underlying filesystem/device flush latency cause remains unmeasured.",
+    "UID1000 proc syscall,stack,fd reads denied; no elevated caller or daemon reconfiguration used.",
+    "No ARM cold-profiler, server startup, native install, signing/publication, detector or instance-transfer acceptance.",
+    "The operational PASS means diagnostic and cleanup succeeded; intentional helper failed status is not a guest test failure or release success."
+  ]
+}

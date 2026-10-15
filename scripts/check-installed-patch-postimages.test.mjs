@@ -31,12 +31,13 @@ function makeFixture(t) {
 
   const patchPath = 'patches/example+1.0.0.patch';
   const customPatchPath =
-    'patches/gitnexus-vendor+1.6.9-embedding-upsert.patch';
+    'vendor-patches/gitnexus-vendor+1.6.9-embedding-upsert.patch';
   const targetPath = 'node_modules/example/index.js';
   const patchFile = join(repoRoot, patchPath);
   const customPatchFile = join(repoRoot, customPatchPath);
   const targetFile = join(repoRoot, targetPath);
   mkdirSync(join(repoRoot, 'patches'), { recursive: true });
+  mkdirSync(join(repoRoot, 'vendor-patches'), { recursive: true });
   mkdirSync(join(targetFile, '..'), { recursive: true });
   writeFileSync(targetFile, 'before\n');
   const oldHash = execFileSync('git', [
@@ -199,4 +200,51 @@ test('rejects untracked patch-package inputs', (t) => {
   assert.equal(result.ok, false);
   assert.match(result.errors.join('\n'), /untracked patch-package inputs/);
   assert.match(result.errors.join('\n'), /local\+1\.0\.0\.patch/);
+});
+
+const VENDOR_STYLE_PATCH = [
+  '--- a/dist/core/index.js',
+  '+++ b/dist/core/index.js',
+  '@@ -1 +1 @@',
+  '-before',
+  '+after',
+  '',
+].join('\n');
+
+// WI-10006890: patch-package refuses (fatally under CI=true) a patches/ entry whose package is
+// absent from node_modules, so an out-of-repo vendor patch there breaks every CI `npm ci`.
+test('rejects a tracked patch under patches/ with no node_modules target', (t) => {
+  const fixture = makeFixture(t);
+  const vendorPath = 'patches/vendored+1.0.0.patch';
+  writeFileSync(join(fixture.repoRoot, vendorPath), VENDOR_STYLE_PATCH);
+  execFileSync('git', ['-C', fixture.repoRoot, 'add', '--', vendorPath]);
+  execFileSync('git', [
+    '-C',
+    fixture.repoRoot,
+    '-c',
+    'user.name=Patch test',
+    '-c',
+    'user.email=patch-test@example.invalid',
+    'commit',
+    '--quiet',
+    '-m',
+    'vendor patch in patches/',
+  ]);
+
+  const result = checkInstalledPatchPostimages({ repoRoot: fixture.repoRoot });
+
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join('\n'), /no node_modules\/ target/);
+  assert.match(result.errors.join('\n'), /vendored\+1\.0\.0\.patch/);
+});
+
+test('rejects an untracked patch under patches/ with no node_modules target', (t) => {
+  const fixture = makeFixture(t);
+  writeFileSync(join(fixture.repoRoot, 'patches', 'stray+1.0.0.patch'), VENDOR_STYLE_PATCH);
+
+  const result = checkInstalledPatchPostimages({ repoRoot: fixture.repoRoot });
+
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join('\n'), /no node_modules\/ target/);
+  assert.match(result.errors.join('\n'), /stray\+1\.0\.0\.patch/);
 });

@@ -9,9 +9,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { listReports } from '../../hive-reports-store';
 
-const text = (payload: Record<string, unknown>) => ({
-  content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
-});
+const text = (payload: Record<string, unknown>) => ({ data: payload });
 
 export default defineTool({
   name: 'pot:moderation_queue',

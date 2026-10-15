@@ -45,15 +45,17 @@ export type RefusedOpReason =
   | 'not-federatable'
   | 'rate-capped'
   | 'demux-mismatch'
-  | 'home-log-excluded';
+  | 'home-log-excluded'
+  | 'resident-row-collision'
+  | 'distinct-entity-collision';
 
 export interface BumpRefusedOpArgs {
   /** The receiving operator's workspace partition. */
   workspaceId: string;
   /** The receiving hive HOME slug (the projection's guard key). */
   harnessSlug: string;
-  /** Receiver-stamped source-log identity (provenance.authorPubkey for a remote
-   *  op). Empty/absent is normalized to 'unknown-remote' (the table forbids ''). */
+  /** Receiver-stamped source-log identity (sourceLogKeyHex, with authorPubkey
+   *  fallback). Empty/absent is normalized to 'unknown-remote' (the table forbids ''). */
   sourceHive: string | null | undefined;
   /** The federated content table's projection tableTag (e.g. 'agent-facts-by-key'). */
   tableTag: string;
@@ -69,6 +71,8 @@ export interface BumpRefusedOpArgs {
 export async function bumpFederationRefusedOp(
   args: BumpRefusedOpArgs,
   sqlOverride?: OrgSql,
+  /** A batch caller must restore its savepoint after a caught statement error. */
+  recoverAfterError?: () => Promise<void>,
 ): Promise<void> {
   const workspaceId = args.workspaceId?.trim();
   const harnessSlug = args.harnessSlug?.trim();
@@ -88,6 +92,7 @@ export async function bumpFederationRefusedOp(
         count = harness_shared.federation_refused_op_counters.count + 1,
         updated_at = now()`;
   } catch (err) {
+    await recoverAfterError?.();
     // Observability is not load-bearing — never break op apply on a counter miss.
     console.warn(
       `[federation-refused-op] counter bump failed (${tableTag}/${args.reason}): ${String(err)}`,

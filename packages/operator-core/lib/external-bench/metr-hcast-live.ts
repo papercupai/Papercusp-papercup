@@ -11,7 +11,7 @@
  *     local_research/atari_epochs (start→Success, setup→instructions, score→float).
  *
  *  2. The two ARM drivers — both run an in-container ReAct loop as the unprivileged `agent` user, routed to
- *     opus-4.8 through our gateway. {@link singleOpusDriveArm} is one flat loop (the `baseline-a-ablation`
+ *     the evaluated model through our gateway. {@link singleOpusDriveArm} is one flat loop (the `baseline-a-ablation`
  *     arm); {@link hiveDriveArm} wraps the SAME loop with a planner + a `delegate` sub-agent tool (the
  *     `papercusp` arm). Identical container/model/budget/scoring → the only delta is the orchestration, so
  *     the horizon difference is causal (D-002).
@@ -35,6 +35,7 @@ import type {
 } from './metr-hcast-runner';
 import type { BenchTask } from './types';
 import { gatewayPort } from '../inference-gateway/spawn-env';
+import { benchDefaultModelId } from './model-registry-snapshot';
 
 /** The taskhelper output separator (taskhelper.py prints this line, then the JSON result). */
 const TASKHELPER_SEP = 'SEP_MUfKWkpuVDn9E';
@@ -471,7 +472,7 @@ export interface GatewayModelCfg {
   retryBaseMs?: number;
   /** Per-request timeout (ms) — the shared gateway hangs under load, so fail fast + retry rather than block. Default 90000. */
   requestTimeoutMs?: number;
-  /** Extended-thinking budget (tokens) = the plan's "opus-4.8 @ xhigh" elicitation. >0 enables thinking;
+  /** Extended-thinking budget (tokens) = the plan's xhigh elicitation. >0 enables thinking;
    *  max_tokens is forced above it. Default 0 (off). xhigh ≈ 16000 (matches the gaia/competitor arms). */
   thinkingBudget?: number;
   /** Sleep seam (injected in tests so retries don't actually wait). */
@@ -531,10 +532,11 @@ interface AnthropicMessageResponse {
 /**
  * The LIVE {@link ModelCall} binding — the @anthropic-ai/sdk pointed at our gateway (the same routing every
  * arm uses → fair). The gateway strips + reinjects real creds, so the api key need only be SET. Routes to
- * opus-4.8 by default. Lazily imports the SDK so the module loads without it (tests pass a fake).
+ * the registry-resolved benchmark default by default. Lazily imports the SDK so the module loads without it
+ * (tests pass a fake).
  */
 export function gatewayModelCall(cfg: GatewayModelCfg = {}): ModelCall {
-  const model = cfg.model ?? 'claude-opus-4-8';
+  const model = cfg.model ?? benchDefaultModelId();
   const baseURL = cfg.baseUrl ?? metrGatewayBaseUrl();
   const apiKey = cfg.apiKey ?? process.env.ANTHROPIC_API_KEY ?? 'sk-papercusp-gateway';
   const accountId = cfg.accountId ?? process.env.PAPERCUSP_METR_ACCOUNT;

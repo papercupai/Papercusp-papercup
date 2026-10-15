@@ -3189,13 +3189,20 @@ impl OperatorClient {
     /// operator's voice prefs server-side. Returns the decoded audio bytes
     /// (wav from kokoro, mp3 from the cloud engines) for `rodio` playback.
     pub async fn tts_speak(&self, text: &str) -> Result<Vec<u8>> {
+        self.tts_speak_with_engine(text, None).await
+    }
+
+    /// [`Self::tts_speak`] with an explicit engine (`kokoro`, `elevenlabs`, …)
+    /// instead of the operator's voice-pref engine. The release smokes use it to
+    /// cover each engine's audio format (Kokoro wav, ElevenLabs mp3) through the
+    /// PUI player without changing the shared voice prefs.
+    pub async fn tts_speak_with_engine(&self, text: &str, engine: Option<&str>) -> Result<Vec<u8>> {
         use base64::Engine as _;
-        let v = self
-            .post_json(
-                "/api/agent-mcp/operator-tts",
-                serde_json::json!({ "text": text }),
-            )
-            .await?;
+        let mut body = serde_json::json!({ "text": text });
+        if let Some(engine) = engine {
+            body["engine"] = serde_json::Value::String(engine.to_string());
+        }
+        let v = self.post_json("/api/agent-mcp/operator-tts", body).await?;
         if v.get("ok").and_then(|x| x.as_bool()) != Some(true) {
             let err = v
                 .get("error")

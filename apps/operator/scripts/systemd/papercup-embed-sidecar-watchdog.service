@@ -1,40 +1,21 @@
-# papercup-embed-sidecar-watchdog.service — WI-4021 (su-efc53, 2026-07-11)
-# Oneshot fired by papercup-embed-sidecar-watchdog.timer (60s cadence):
-# healthz is answered directly by the sidecar's HTTP handler and can stay green
-# while the actual worker is wedged. Exercise the real /embed path, bypass the
-# LRU, and require one returned vector plus exact per-request inference
-# accounting. Clients retry within their budget, so a restart window is
-# seconds; writes park in the memory write journal in the worst case.
+# papercup-embed-sidecar-watchdog.service — WI-4021 (su-efc53, 2026-07-11);
+# startup grace, non-blocking restart and consecutive-failure threshold added
+# by EI-25222670171204378 (2026-10-06).
 #
-# A failed probe is ambiguous under host pressure: it can mean a dead worker,
-# or a live worker whose bounded queue is already saturated and whose probe was
-# forced to wait behind real work. Before restarting, consult /healthz. Defer
-# only when it proves the sidecar is healthy, the embed worker is alive, and
-# there is an explicitly saturated backlog; restart for every other failure.
+# Oneshot fired by papercup-embed-sidecar-watchdog.timer (60s cadence). The
+# probe logic lives in papercup-embed-sidecar-watchdog.sh beside this unit so
+# it can be exercised with stubs; read that file's header for the rules. In
+# short: /healthz can stay green while the worker is wedged, so the script
+# exercises the real /embed path (cache bypassed, exact accounting required);
+# it skips a unit that is not yet active or is inside its startup grace, defers
+# when /healthz proves a saturated live queue, and restarts (without blocking
+# on the start job) only after consecutive failed probes.
+#
+# Run through papercusp-script-snapshot.sh so an edit to the script that lands
+# while a probe is running cannot change the program mid-read.
 [Unit]
 Description=Papercusp embed-sidecar worker probe (restart on failed /embed)
 
 [Service]
 Type=oneshot
-# Keep the systemd command string double-quoted so the JSON's inner quotes reach
-# bash intact. The previous single-quoted systemd command used `\"` escapes,
-# which systemd consumed before bash parsed the script; every watchdog request
-# then arrived as `{model:gemma,...}` and got HTTP 400 (EI-22723128990468427).
-ExecStart=/usr/bin/bash -c "\
-  set -o pipefail; \
-  if systemctl --user is-active --quiet papercup-embed-sidecar.service; then \
-    curl -fsS --max-time 15 \
-      -H 'Content-Type: application/json' \
-      --data-binary '{\"model\":\"gemma\",\"kind\":\"query\",\"texts\":[\"papercup-embed-sidecar-watchdog\"],\"bypassCache\":true}' \
-      http://127.0.0.1:3384/embed \
-      | jq -e '(.vectors | arrays | length == 1 and (.[0] | arrays | length > 0)) and (.cache | .hits == 0 and .coalesced == 0 and .inferred == 1)' >/dev/null \
-      || { \
-        if curl -fsS --max-time 2 http://127.0.0.1:3384/healthz \
-          | jq -e '(.ok == true) and (.workers.embedder.alive == true) and (.queue.saturated == true) and (.queue.depth > 0)' >/dev/null; then \
-          echo 'embed worker probe failed while the live queue is saturated — deferring restart'; \
-        else \
-          echo 'embed worker probe failed — restarting papercup-embed-sidecar'; \
-          systemctl --user restart papercup-embed-sidecar.service; \
-        fi; \
-      }; \
-  fi"
+ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercup-embed-sidecar-watchdog.sh

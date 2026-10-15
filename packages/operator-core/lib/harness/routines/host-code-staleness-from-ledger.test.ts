@@ -7,13 +7,19 @@
  * healthy verdict and the vacuous one are the same shape, the same `stale: []`, and
  * differ only in whether anything was measured. So they get controls of their own.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const { execFileViaSidecarMock } = vi.hoisted(() => ({ execFileViaSidecarMock: vi.fn() }));
+vi.mock('../../fleet/git-via-sidecar', () => ({ execFileViaSidecar: execFileViaSidecarMock }));
+
 import {
+  _resetCommitTimeCacheForTests,
   evaluateLedgerHostStaleness,
   hostCodeStalenessFromLedgerSweep,
   ledgerAttributionFloor,
   ledgerHostWindowSec,
   ledgerStaleCodeMaxAgeSec,
+  resolveCommitTimeMs,
   type LedgerHostObservation,
 } from './host-code-staleness-from-ledger';
 
@@ -33,6 +39,27 @@ const obs = (over: Partial<LedgerHostObservation> = {}): LedgerHostObservation =
 
 const never = () => null;
 const at = (map: Record<string, number>) => (sha: string) => map[sha] ?? null;
+
+afterEach(() => {
+  _resetCommitTimeCacheForTests();
+  execFileViaSidecarMock.mockReset();
+});
+
+describe('commit timestamp reads', () => {
+  it('uses the governed sidecar seam and preserves cwd, env, and timeout', async () => {
+    execFileViaSidecarMock.mockResolvedValue({ stdout: '123\n', stderr: '' });
+    expect(await resolveCommitTimeMs('deadbeef')).toBe(123_000);
+    expect(await resolveCommitTimeMs('deadbeef')).toBe(123_000);
+
+    expect(execFileViaSidecarMock).toHaveBeenCalledTimes(1);
+    expect(execFileViaSidecarMock).toHaveBeenCalledWith('git', ['show', '-s', '--format=%ct', 'deadbeef'], {
+      timeoutMs: 5_000,
+      subsystem: 'host-code-staleness-from-ledger',
+      cwd: process.cwd(),
+      env: process.env,
+    });
+  });
+});
 
 describe('tunables and the kill switch', () => {
   const saved = { ...process.env };

@@ -3,6 +3,7 @@ import {
   AZURE_WORKSPACE_HOST_PERMISSION_ACTIONS,
   AZURE_WORKSPACE_HOST_REQUIRED_RESOURCE_TYPES,
   buildAzureWorkspaceHostProviderConnection,
+  buildAzureWorkspaceHostRoleDefinitions,
   planAzureCredentialProvider,
   preflightAzureWorkspaceHostConnection,
   type AzureProviderRegistrationEvidence,
@@ -146,6 +147,81 @@ function client(
     ...overrides,
   };
 }
+
+describe('Azure customer-run workspace-host role definitions', () => {
+  it('covers preflight permissions exactly, with subscription and resource-group scope boundaries', () => {
+    const roles = buildAzureWorkspaceHostRoleDefinitions({ subscriptionId, resourceGroup: 'workspaces' });
+    expect(roles.subscription.AssignableScopes).toEqual([`/subscriptions/${subscriptionId}`]);
+    expect(roles.resourceGroup.AssignableScopes).toEqual([
+      `/subscriptions/${subscriptionId}/resourceGroups/workspaces`,
+    ]);
+    expect(roles.subscription.Actions).toEqual([
+      'Microsoft.Resources/subscriptions/read',
+      'Microsoft.Resources/subscriptions/providers/read',
+      'Microsoft.Resources/subscriptions/providers/register/action',
+      'Microsoft.Compute/locations/usages/read',
+      'Microsoft.Compute/skus/read',
+    ]);
+    expect(roles.subscription.DataActions).toEqual([]);
+    expect(roles.resourceGroup.DataActions).toEqual([
+      'Microsoft.KeyVault/vaults/keys/read',
+      'Microsoft.KeyVault/vaults/keys/wrap/action',
+      'Microsoft.KeyVault/vaults/keys/unwrap/action',
+    ]);
+    const permissions = Object.values(roles).flatMap((role) => [...role.Actions, ...role.DataActions]);
+    expect([...permissions].sort()).toEqual([...AZURE_WORKSPACE_HOST_PERMISSION_ACTIONS].sort());
+    expect(new Set(permissions).size).toBe(permissions.length);
+    expect(permissions.some((action) => action.includes('*') || action.includes('/secrets/'))).toBe(false);
+    expect(roles.resourceGroup.Actions).toContain('Microsoft.Authorization/roleAssignments/write');
+    expect(roles.resourceGroup.Description).toContain('privileged');
+    for (const role of Object.values(roles)) {
+      expect(role.IsCustom).toBe(true);
+      expect(role.NotActions).toEqual([]);
+      expect(role.NotDataActions).toEqual([]);
+    }
+  });
+
+  it('adds only image read access for a separate image resource group', () => {
+    const input = { subscriptionId, resourceGroup: 'workspaces', imageResourceGroup: 'images' };
+    const roles = buildAzureWorkspaceHostRoleDefinitions(input);
+    expect(roles.imageResourceGroup).toMatchObject({
+      Actions: ['Microsoft.Compute/images/read', 'Microsoft.Compute/galleries/images/versions/read'],
+      DataActions: [],
+      AssignableScopes: [`/subscriptions/${subscriptionId}/resourceGroups/images`],
+    });
+    expect(buildAzureWorkspaceHostRoleDefinitions({ ...input, imageResourceGroup: 'WORKSPACES' })
+      .imageResourceGroup).toBeUndefined();
+  });
+
+  it.each(['', '/', '*', 'bad/group', 'bad\\group', 'bad.', 'a'.repeat(91), ' group', 'group\n'])
+    ('rejects an invalid resource-group scope %j', (resourceGroup) => {
+      expect(() => buildAzureWorkspaceHostRoleDefinitions({ subscriptionId, resourceGroup }))
+        .toThrow('resourceGroup must be a valid Azure resource-group name');
+      expect(() => buildAzureWorkspaceHostRoleDefinitions({
+        subscriptionId, resourceGroup: 'workspaces', imageResourceGroup: resourceGroup,
+      })).toThrow('imageResourceGroup must be a valid Azure resource-group name');
+    });
+
+  it.each(['', '*', '/subscriptions/' + subscriptionId, subscriptionId + '/resourceGroups/other', 'not-a-uuid'])
+    ('rejects an invalid subscription scope %j', (subscriptionId) => {
+      expect(() => buildAzureWorkspaceHostRoleDefinitions({ subscriptionId, resourceGroup: 'workspaces' }))
+        .toThrow('subscriptionId must be an Azure UUID');
+    });
+
+  it('returns fresh non-secret JSON and refuses secret-shaped input', () => {
+    const input = { subscriptionId, resourceGroup: 'workspaces' };
+    const roles = buildAzureWorkspaceHostRoleDefinitions(input);
+    expect(Object.keys(roles.resourceGroup).sort()).toEqual([
+      'Actions', 'AssignableScopes', 'DataActions', 'Description', 'IsCustom', 'Name', 'NotActions', 'NotDataActions',
+    ]);
+    expect(JSON.parse(JSON.stringify(roles))).toEqual(roles);
+    expect(() => buildAzureWorkspaceHostRoleDefinitions({ ...input, clientSecret: 'forbidden' } as never))
+      .toThrow('Secret-shaped field');
+    roles.resourceGroup.Actions.length = 0;
+    expect(buildAzureWorkspaceHostRoleDefinitions(input).resourceGroup.Actions.length).toBeGreaterThan(0);
+    expect(AZURE_WORKSPACE_HOST_PERMISSION_ACTIONS).toContain('Microsoft.Compute/virtualMachines/write');
+  });
+});
 
 describe('Azure workspace-host credential onboarding', () => {
   it('plans local DefaultAzureCredential/Azure CLI and both hosted secretless contracts', () => {

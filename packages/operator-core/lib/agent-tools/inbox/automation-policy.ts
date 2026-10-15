@@ -29,7 +29,7 @@ export default defineTool({
   name: 'inbox:automation-policy',
   profile: 'engineer',
   description:
-    'Read or set the standing workspace Inbox automation policy. `level` (L0 review-all, L1 delegable, L2 owner-by-right) and `minConfidence` are independent axes. L0 is the conservative default; never-auto remains unreachable. Per-run automationPolicy values are launch receipts, not this source of truth.',
+    'Read or set the standing workspace Inbox automation policy. riskLevels controls review or automatic application for low (delegable), medium (owner decisions), and high (protected) risk. Explicit high automatic is an owner grant. Confidence and live action checks remain independent. Legacy level L0/L1/L2 remains supported.',
   capability: 'operator:write',
   guidance: {
     when: 'Changing the workspace-wide authority ladder or confidence floor for future unattended Inbox runs.',
@@ -46,12 +46,17 @@ export default defineTool({
       op: z.literal('set'),
       level: z.enum(BULK_AUTOMATION_LEVELS).optional(),
       minConfidence: z.enum(BULK_CONFIDENCE_LEVELS).optional(),
+      riskLevels: z.object({
+        low: z.enum(['review', 'automatic']),
+        medium: z.enum(['review', 'automatic']),
+        high: z.enum(['review', 'automatic']),
+      }).optional(),
       dryRun: z.boolean().optional(),
     }),
     z.object({ op: z.literal('reset'), dryRun: z.boolean().optional() }),
   ]),
   async handler(args, ctx) {
-    if (args.op === 'get') return json({ policy: await readStandingBulkAutomationPolicy() });
+    if (args.op === 'get') return json({ policy: await readStandingBulkAutomationPolicy(undefined, { strict: true }) });
     if (!isOperatorConfigWriteRole(ctx.role)) {
       throw new Error('inbox:automation-policy writes require operator, architect, or mug role');
     }
@@ -60,23 +65,25 @@ export default defineTool({
       : {
           ...(args.level !== undefined ? { level: args.level } : {}),
           ...(args.minConfidence !== undefined ? { minConfidence: args.minConfidence } : {}),
+          ...(args.riskLevels !== undefined ? { riskLevels: args.riskLevels } : {}),
         };
     if (args.op === 'set' && patch && Object.keys(patch).length === 0) {
-      throw new Error('set requires at least one of level / minConfidence');
+      throw new Error('set requires at least one of level / minConfidence / riskLevels');
     }
     const outcome = await runControlMutation<StandingBulkAutomationPolicy>(
       {
         action: 'inbox:automation-policy',
         subject: 'workspace-standing-policy',
         actor: `role:${ctx.role}`,
-        capturePrev: () => readStandingBulkAutomationPolicy(),
+        capturePrev: () => readStandingBulkAutomationPolicy(undefined, { strict: true }),
         apply: () => args.op === 'reset'
           ? resetStandingBulkAutomationPolicy()
           : writeStandingBulkAutomationPolicy(patch!),
         revertTo: (prev) => writeStandingBulkAutomationPolicy(prev).then(() => {}),
         verify: async (next) => ({
           ok: next.level === (args.op === 'reset' ? 'L0' : (patch!.level ?? next.level)) &&
-            next.minConfidence === (args.op === 'reset' ? 'high' : (patch!.minConfidence ?? next.minConfidence)),
+            next.minConfidence === (args.op === 'reset' ? 'high' : (patch!.minConfidence ?? next.minConfidence)) &&
+            (!patch?.riskLevels || JSON.stringify(next.riskLevels) === JSON.stringify(patch.riskLevels)),
         }),
         describe: (prev) => ({ current: prev, proposed: args.op === 'reset' ? { level: 'L0', minConfidence: 'high' } : { ...prev, ...patch } }),
       },

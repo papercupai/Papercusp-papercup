@@ -1,0 +1,308 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Actual exported Android source debug APK compilation with explicit external configuration",
+  "framework": "shell",
+  "command": [
+    "tools/build-scripts/android-release-provenance.sh",
+    "source-verify-build",
+    "android-apk"
+  ],
+  "workingDirectory": "papercup-rust-mobile",
+  "startedAt": "2026-10-03T02:28:32.444920+00:00",
+  "finishedAt": "2026-10-03T02:43:53.102682+00:00",
+  "exitCode": 0,
+  "sourceCommit": "68bc889325937c16c7b299146beb093858dd51d4",
+  "summary": "Actual delivered mobile source and locked Rust supplement compiled a complete Android debug APK. Early real Gradle init/plugin/dependency preflight passed, then all four Rust ABI libraries were rebuilt from empty targets with frozen offline Cargo, Kotlin bindings were regenerated, the existing UniFFI verifier checked 55 symbols on all four libraries, and Gradle assembled the APK with offline dependency resolution and isolated personal configuration. Packaged Rust bytes were checked against this build and retained output/config/source/log digests were verified. Debug compilation does not establish signed candidate, licensing, recipient or release acceptance.",
+  "sourceFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/build-scripts/android-release-provenance.sh",
+      "sha256": "d25e4ae7bf2f3acfe4dbb0f65aa87b44d83471a8fc9d2f2581ae1be93d993cdf"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-release-provenance-test.sh",
+      "sha256": "32b03f6375a7169d301b3f8299d5e67d35ce063889a764fae0acac2f5873d505"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/build-scripts/verify-android-uniffi-abi.sh",
+      "sha256": "c48d7550aa3a0bb60c0365c027ab303d6299a8336e7f4710180bf7424f8d3fdd"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/build-scripts/resolve-java-home.sh",
+      "sha256": "da8d94acbea98a4dcd087d0217ad4185f94b63111614f678a69101c99ce91994"
+    },
+    {
+      "path": "papercup-rust-mobile/Cargo.lock",
+      "sha256": "389f43b2d8d5fec43b35c2dc71246e0fd395a598ec9517516b54c8e8c6746c81"
+    },
+    {
+      "path": "papercup-rust-mobile/Cargo.toml",
+      "sha256": "665012b764bacfaa1587413645e560a69cd12f82c6eb2815974d952be57b46ad"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build.gradle.kts",
+      "sha256": "0f3517b0b3668789876e7d5dea15c6b5543222836dbce9177547b8550ec3e5f4"
+    },
+    {
+      "path": "papercup-rust-mobile/android/build.gradle.kts",
+      "sha256": "66464247166c6a043f92c6feed6314e4802bc700174015c620ec1c05f453eb96"
+    },
+    {
+      "path": "papercup-rust-mobile/android/gradle/wrapper/gradle-wrapper.properties",
+      "sha256": "5f8448f8760a88f7dfa64fad849012828706c6ce8e11041bb0640faa1e230f0e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/gradle/wrapper/gradle-wrapper.jar",
+      "sha256": "e996d452d2645e70c01c11143ca2d3742734a28da2bf61f25c82bdc288c9e637"
+    },
+    {
+      "path": "papercup-rust-mobile/store/APP-STORE-REVIEW.md",
+      "sha256": "ff3783f01b011bc5805ca94b1db7f8a9d6a7b2745a94182def8f72c14493700a"
+    }
+  ],
+  "testFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-release-provenance-test.sh",
+      "sha256": "32b03f6375a7169d301b3f8299d5e67d35ce063889a764fae0acac2f5873d505"
+    }
+  ],
+  "commands": [
+    [
+      "android/gradlew",
+      "-p",
+      "android",
+      "--offline",
+      "--no-daemon",
+      "--console=plain",
+      "--init-script",
+      "source-build-inputs.gradle",
+      "-x",
+      ":app:generateUniFfiKotlin",
+      ":app:papercupSourceBuildInputs"
+    ],
+    [
+      "cargo",
+      "ndk",
+      "-t",
+      "arm64-v8a",
+      "-t",
+      "armeabi-v7a",
+      "-t",
+      "x86",
+      "-t",
+      "x86_64",
+      "-o",
+      "android/app/src/main/jniLibs",
+      "build",
+      "--frozen",
+      "--release",
+      "--lib",
+      "-p",
+      "papercup-bindings"
+    ],
+    [
+      "cargo",
+      "run",
+      "--frozen",
+      "--quiet",
+      "--bin",
+      "uniffi-bindgen",
+      "--",
+      "generate",
+      "crates/papercup-bindings/src/papercup.udl",
+      "--language",
+      "kotlin",
+      "--out-dir",
+      "android/app/src/main/kotlin"
+    ],
+    [
+      "bash",
+      "tools/build-scripts/verify-android-uniffi-abi.sh",
+      "android/app/src/main/kotlin/uniffi/papercup/papercup.kt",
+      "android/app/src/main/jniLibs/arm64-v8a/libpapercup.so",
+      "android/app/src/main/jniLibs/armeabi-v7a/libpapercup.so",
+      "android/app/src/main/jniLibs/x86/libpapercup.so",
+      "android/app/src/main/jniLibs/x86_64/libpapercup.so"
+    ],
+    [
+      "android/gradlew",
+      "-p",
+      "android",
+      "--offline",
+      "--no-daemon",
+      "--console=plain",
+      "--init-script",
+      "source-build-inputs.gradle",
+      "-x",
+      ":app:generateUniFfiKotlin",
+      ":app:assembleDebug",
+      ":app:papercupSourceBuildInputs"
+    ]
+  ],
+  "inputSha256": {
+    "android/app/build/outputs/papercusp-mobile-source.tar.gz": "f2d39bcf8a582003dd03c8cffa83c48918b988d870ad78d09fcb58b5a62d638d",
+    "android/app/build/outputs/papercusp-rust-dependencies.tar.gz": "c3e3ef5c280b270deb739ba1341443d47cbd3fe3afb7693b14c74df0ee570f8d"
+  },
+  "cargoLockSha256": "389f43b2d8d5fec43b35c2dc71246e0fd395a598ec9517516b54c8e8c6746c81",
+  "verifiedRegistryPackages": 249,
+  "verifiedVendorFiles": 12321,
+  "compiledArtifacts": [
+    {
+      "target": "aarch64-linux-android",
+      "sha256": "0add010f35e53b3086078c9d8325fd9d04f9f06f29d1b509a02bd415fe60152c",
+      "size": 3735744
+    },
+    {
+      "target": "armv7-linux-androideabi",
+      "sha256": "b8cda858c5867e1a07f6fb9bf65b728d32a42d7cff922b19b22b6dd16bf41ce2",
+      "size": 2501140
+    },
+    {
+      "target": "i686-linux-android",
+      "sha256": "e04ecdaea8c92476e8f952a43f4fe95ff8c17f63cdcf2bc2c77141f57c725e9f",
+      "size": 4104608
+    },
+    {
+      "target": "x86_64-linux-android",
+      "sha256": "2598da12cc90f6cd95168f9bcfec34f17bd6bd97aff1d9bc3d23cde260d4730d",
+      "size": 4147480
+    },
+    {
+      "target": "android-debug-apk",
+      "path": "android/app/build/outputs/papercusp-exported-app-debug-3c5c6ce622404f7faf827f30ecb5fec6.apk",
+      "sha256": "81bfbe9ff235dfc8480211b8974041c30a293b1629d85d6617d3bbab9bb8a3db",
+      "size": 114185398
+    }
+  ],
+  "externalInputs": {
+    "googleServices": {
+      "reference": "PAPERCUP_SOURCE_GOOGLE_SERVICES",
+      "sha256": "6969523a9bb9222bd11f2c1a8ae56cf5b82ffc0563a4b36e616aa10f97393a7d",
+      "size": 695
+    },
+    "environment": {
+      "removedOverrides": [],
+      "personalGradleConfigLoaded": false,
+      "gradleDependencies": "existing cache; Gradle offline resolution"
+    },
+    "sdkPackages": [
+      {
+        "package": "platforms/android-36",
+        "sourcePropertiesSha256": "72291ff6611dbfc46fdfb6de2821c4a62c87befa5200713847eda426e3a501c2"
+      },
+      {
+        "package": "ndk",
+        "sourcePropertiesSha256": "1c4a54b31c5ed242a901b4a472d412819b5e08405df1c58066bd555f9dd52515"
+      }
+    ],
+    "javaVersion": "openjdk version \"17.0.20.1\" 2026-08-18\nOpenJDK Runtime Environment (build 17.0.20.1+1-1-24.04-Ubuntu)\nOpenJDK 64-Bit Server VM (build 17.0.20.1+1-1-24.04-Ubuntu, mixed mode, sharing)",
+    "rustVersion": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6",
+    "generatedKotlinSha256": "b73af41412d3f1a22e2c76c8582e31440b357e6b706df796f3206933ab9772e3",
+    "packagedRustLibraries": [
+      {
+        "abi": "arm64-v8a",
+        "sha256": "a75019859fbb56903092e41fd9d4caede2a58fd56ed8aa52f867e57a16653f7d"
+      },
+      {
+        "abi": "armeabi-v7a",
+        "sha256": "5e5692b6a01d4a0e69ee4cbee9427ce17966faacefbed917c3cf7d1c946c840a"
+      },
+      {
+        "abi": "x86",
+        "sha256": "ac19a2aee719c4d91c8c8749cb5e29d93ae9e0ba2195f01266e0732448999cde"
+      },
+      {
+        "abi": "x86_64",
+        "sha256": "1bcdc627ff9db993a80b694aacf6f63944070d61cf5c4fd178171b6fd50f874b"
+      }
+    ]
+  },
+  "resolvedGradleArtifactInventory": {
+    "artifactOccurrences": 491,
+    "distinctModuleFileDigestTuples": 335,
+    "configurations": [
+      "::buildscript",
+      "coreLibraryDesugaring",
+      "debugCompileClasspath",
+      "debugRuntimeClasspath"
+    ],
+    "completeInventory": {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-source-build-android-apk-c0adc01280f54ac1.json",
+      "sha256": "c0adc01280f54ac134518efd6a2fe27a6a4bafa847feee59fea08c052624bb52"
+    },
+    "scope": "Resolved debug runtime/compile, desugaring and project buildscript artifacts. Not a complete hermetic toolchain or dependency-source delivery census."
+  },
+  "assertions": [
+    {
+      "id": "delivered-source-and-offline-vendor-verified",
+      "passed": true,
+      "evidence": "Current root archive, locked dependency archive, Cargo.lock, 249 registry packages and 12321 vendored files verified; registry metadata paths stayed under delivered vendor source. Input hashes and clean source HEAD rechecked after compilation."
+    },
+    {
+      "id": "real-gradle-preflight-and-path-repair",
+      "passed": true,
+      "evidence": "Actual project-relative init script task passed in 22s before native compilation; same init/offline/isolated-user-home route used for final assembly. Prior failed receipt and separate maintained original-path mutant proof retained."
+    },
+    {
+      "id": "four-abis-and-frozen-kotlin-compiled",
+      "passed": true,
+      "evidence": "All four cargo-ndk release targets exited0 from empty extracted targets. Frozen Kotlin generation passed; existing ABI guard verified55 UniFFI checksum exports on four compiled libraries."
+    },
+    {
+      "id": "actual-apk-and-packaged-rust-bound",
+      "passed": true,
+      "evidence": "Actual assembleDebug passed; APK has DEX/manifest, four expected native ABI directories and packaged Rust digests equal this Gradle build stripped outputs. Retained APK hash independently reread after temporary build tree cleanup."
+    },
+    {
+      "id": "external-inputs-and-resolved-dependencies-bound",
+      "passed": true,
+      "evidence": "Explicit Firebase config SHA/size recorded without content or private path. API36SDK/NDK source metadata and Java/Rust versions recorded; personal Gradle configuration and relevant overrides excluded.491 resolved artifact occurrences retained in raw receipt; no complete hermetic-source claim."
+    },
+    {
+      "id": "retained-evidence-and-cleanup",
+      "passed": true,
+      "evidence": "Unique APK/log/raw receipt and current source archive retained, all accessible hashes reread, no .source-build-* extraction remains."
+    }
+  ],
+  "evidenceFiles": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-source-build-android-apk-c0adc01280f54ac1.json",
+      "sha256": "c0adc01280f54ac134518efd6a2fe27a6a4bafa847feee59fea08c052624bb52"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-source-build-3c5c6ce622404f7faf827f30ecb5fec6.log",
+      "sha256": "7c6b5ef84d6da4a69c4af90fdf4d375f331d3ce4a487b3b84ad3cca3842b230d"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-mobile-source-preserved-f2d39bcf8a582003.tar.gz",
+      "sha256": "f2d39bcf8a582003dd03c8cffa83c48918b988d870ad78d09fcb58b5a62d638d"
+    },
+    {
+      "target": "android-debug-apk",
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-exported-app-debug-3c5c6ce622404f7faf827f30ecb5fec6.apk",
+      "sha256": "81bfbe9ff235dfc8480211b8974041c30a293b1629d85d6617d3bbab9bb8a3db",
+      "size": 114185398
+    }
+  ],
+  "postBuildApkInspection": {
+    "tool": "Android SDK cmdline-tools apkanalyzer",
+    "values": {
+      "application-id": "com.papercuspai.operator.mobile",
+      "target-sdk": "36",
+      "min-sdk": "24",
+      "version-name": "0.1.0",
+      "version-code": "100"
+    },
+    "scope": "Exact retained debug APK manifest read; signed-candidate acceptance remains separate."
+  },
+  "regressionProof": {
+    "path": "docs/evidence/android-exported-gradle-init-path-regression-2026-10-03.json",
+    "sha256": "caecdd7830cfa383b67ae264fbf78300c680ccaa90cbcaf78f25fce6702678f7",
+    "testRunId": 20611470
+  },
+  "relatedWorkItems": [
+    "WI-10004774",
+    "EI-24923096025042354"
+  ],
+  "scope": "Actual local exported-source debug app compilation only. Signed APK/AAB candidate equivalence, complete notices/rights, recipient retrieval, provider/reviewer/full native journeys, current paired automatic hosted CI, physical-phone and Play/public installation evidence remain open."
+}

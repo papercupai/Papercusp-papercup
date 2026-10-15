@@ -1,0 +1,213 @@
+---
+title: Common questions
+description: Short answers about your first task, workspaces, costs, permissions and recovery.
+documents:
+  - packages/operator-core/lib/auth/hosted/self-signup.ts
+  - packages/operator-core/lib/auth/hosted/billing/entitlement-seam.ts
+  - packages/operator-core/lib/agent-tools/mode/set.ts
+  - packages/operator-core/lib/workspace-host/hosted-provider-delegation.ts
+  - packages/operator-core/lib/agent-tools/access/create.ts
+  - packages/operator-core/lib/agent-tools/backup/snapshot_create.ts
+  - packages/operator-core/lib/agent-tools/backup/restore.ts
+---
+
+Start here for a short explanation, then follow the linked guide for steps.
+For your account's current price, permissions or workspace status, check the
+app or ask Papercup to look it up with your authorization. Available options
+depend on your installation and account.
+
+## What is Papercusp?
+
+Also asked as: What does this app do? How do I use Papercusp?
+
+Papercusp helps you plan work, run agents in a connected workspace and inspect
+their results. Start with one small task you can check, such as improving a
+README. A completion label alone does not prove that a result works or has
+been published. [Try your first task](/docs/quickstart).
+
+## What is Papercup?
+
+Also asked as: Who is the assistant? Can I ask the chat for help?
+
+Papercup is the assistant you can ask for explanations and help with work.
+Tell it which workspace and project you mean and what result you want.
+Its ability to act depends on the access and tools available to that session.
+[Learn how to ask for a task](/docs/using-the-app).
+
+## What is a workspace?
+
+Also asked as: Where does my work run? Is a workspace the same as a project?
+
+A workspace is the connected environment where agents do their work. A
+project is the body of work you select within that environment. Check both
+names before approving changes; selecting a different workspace does not
+automatically move your project there.
+[Understand workspaces and agents](/docs/workspaces-and-agents).
+
+## Do I need the desktop app?
+
+Also asked as: Can I use a browser? Should I install Papercusp on my computer?
+
+The portal lets you access the options offered by your account in a browser.
+Local work needs a connected computer with Papercusp installed. Use the
+installation or download flow offered by your account; portal and desktop
+controls may differ. [Choose your way to use the app](/docs/using-the-app).
+
+## Does closing the browser stop my agents?
+
+Also asked as: Can I close this tab? Will remote work stop when I disconnect?
+
+Closing a browser tab does not itself stop work running on another machine.
+Ask explicitly to pause or stop and check the acknowledgment and current
+state. Local work also depends on its computer staying on and connected.
+[Follow and stop work](/docs/using-the-app).
+
+## Which cloud option should I choose?
+
+Also asked as: What is managed hosting? What does bring your own cloud mean?
+
+**Use Papercusp's cloud** means Papercusp manages the host. **Bring your own
+cloud** uses your Google Cloud project or AWS account and requires provider
+setup. Compare responsibility and charges before choosing; an option being
+described here does not mean it is enabled for every account.
+[Compare cloud workspaces](/docs/cloud-workspaces).
+
+## Is my workspace ready when its card appears?
+
+Also asked as: Why can I see a workspace but not use it? Is provisioning finished?
+
+A card appearing is not proof that its host is connected and ready. Read
+the current provisioning and connection status before starting work. If an
+attempt reports an error, inspect it rather than creating duplicate hosts.
+[Recover from connection problems](/docs/troubleshooting).
+
+## Do I create an account every time?
+
+Also asked as: My identity already exists; what now? How do I sign in again?
+
+Create your account once, then use **Sign in** with the same identity provider.
+If the identity is already registered, repeatedly choosing **Create account**
+will not repair access. Connecting Gmail or Calendar is a separate operation.
+[Sign in and check account access](/docs/accounts-and-billing).
+
+## Why can I not see my organization's workspace?
+
+Also asked as: Where is my team's project? Does signing in give me access to everything?
+
+Check that you are using the intended account and organization. Signing in
+does not grant access to another organization's machines or every project.
+If the expected access is missing, ask the organization administrator to
+check your role; do not borrow someone else's credentials.
+[Understand account and organization access](/docs/accounts-and-billing).
+
+## What can I be charged for?
+
+Also asked as: Does a subscription include cloud costs? Who pays for model use?
+
+Papercusp subscriptions, model use and cloud-provider resources are separate
+things to check. Read the current price, any model-use allowance shown, and
+billing responsibility for your account and chosen hosting route. An absent
+allowance does not mean unlimited use. Your own cloud resources
+are billed through your provider account; this guide promises no fixed price
+or unlimited allowance. [Check accounts and billing](/docs/accounts-and-billing)
+and [cloud costs](/docs/cloud-workspaces).
+
+## Does returning from checkout mean payment is confirmed?
+
+Also asked as: I paid but access is still restricted; why? Is the checkout success page enough?
+
+Wait for the portal's subscription confirmation and read its current status.
+Returning from checkout alone does not prove that payment and entitlements
+have been confirmed. Preserve the non-secret reference and time if something
+looks wrong; avoid starting duplicate subscriptions.
+[Resolve payment or access problems](/docs/accounts-and-billing).
+
+## Does stopping a workspace make it free?
+
+Also asked as: Will stop remove all charges? Do stopped disks still cost money?
+
+Stopping and deleting are different actions. A stopped host may still leave
+billable disks, snapshots or networking resources. Check the provider's
+current resource list and charges; do not assume that a stopped state means
+zero cost. [Understand stopping and cloud costs](/docs/cloud-workspaces).
+
+## What should I check before deleting a workspace?
+
+Also asked as: Can I recover after deletion? Is deleting the same as stopping?
+
+Identify exactly what will be deleted, what may remain and who can perform
+the action. Establish a completed backup and its applicable restore procedure
+before relying on recovery. Do not assume that deleting a host cancels a
+subscription or removes every provider resource.
+[Review cloud lifecycle actions](/docs/cloud-workspaces) and
+[prepare a backup](/docs/harness-snapshots).
+
+## Who can access my data?
+
+Also asked as: Can other people read my project? Where is my work stored?
+
+Start by identifying the workspace and computer running the task, then check
+its organization membership, connected apps and access scopes. Access and
+storage depend on that installation and its configured services; this answer
+cannot establish your current permissions or a universal retention policy.
+Ask for an authorized current explanation before sharing sensitive material.
+[Review remote access](/docs/remote-access).
+
+## Where should I enter credentials?
+
+Also asked as: Can I paste an API key into chat? Should I send my token to Support?
+
+Use the installation's supported credential or connection setup. Keep secrets
+in secure configuration, outside public repositories and reports. Do not
+paste passwords, tokens, session cookies or verification links into chat or
+support messages. A limited app key should not be replaced with an owner key
+to bypass a refusal. [Set up scoped access](/docs/remote-access).
+
+## What does AUTO let an agent do?
+
+Also asked as: Can an agent act without asking me? Does AUTO remove permission checks?
+
+AUTO lets an agent continue within your approved scope without asking at
+each ordinary step. It does not remove permissions, security boundaries or
+the requirement to verify its result. State the task and publication limits
+clearly, and ask explicitly to pause or stop when you need to reconsider.
+[Understand agent modes](/docs/agent-modes-and-fleets).
+
+## How do I know a task is finished?
+
+Also asked as: What does done mean? Is a passing test proof that my change is live?
+
+Open the actual result and compare it with the agreed acceptance conditions.
+Read what changed, what was checked and what remains unverified. Implemented,
+verified and shipped are different claims; publication needs verification
+at the destination you requested. [Review plans and work](/docs/plans-and-work).
+
+## What if an agent makes a mistake or gets stuck?
+
+Also asked as: How do I interrupt an agent? Why has progress stopped?
+
+Ask it to pause or stop and confirm that it has done so. Request its work-item
+reference, next concrete action and blocker, then answer any outstanding
+approval in the same session. Inspect the affected result before choosing
+recovery; do not make a destructive restore merely to clear an error.
+[Troubleshoot stalled work](/docs/troubleshooting).
+
+## Is my conversation a backup?
+
+Also asked as: Can I restore from the chat history? Does a snapshot protect everything?
+
+A conversation is not a project or workspace backup. Source-control history,
+workspace backups and cloud snapshots protect different things. Check what
+was included, that creation completed and how the chosen backup will be
+restored; a restore may overwrite newer work. Test a supported separate
+restore destination when possible. [Plan backups and recovery](/docs/harness-snapshots).
+
+## How do I get help safely?
+
+Also asked as: What should a support report include? What do I do if setup fails?
+
+Use the help destination offered by your installation. Include what you
+tried, the error, its time and a non-secret reference. Remove credentials,
+verification links and private project or tenant content. For cloud setup,
+inspect the failed attempt before creating more resources.
+[Find the relevant recovery steps](/docs/troubleshooting).

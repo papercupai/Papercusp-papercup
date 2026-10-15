@@ -6,7 +6,13 @@
  */
 import { describe, expect, it } from 'vitest';
 import { MODEL_CAPACITY_RE } from '@papercusp/papercusp-shared/agent';
-import { classifySessionEnd, classifyWedgeText, isMachineModelErrorText, isWedged } from './session-end-reason';
+import {
+  classifySessionEnd,
+  classifyWedgeText,
+  isMachineModelErrorText,
+  isMachineUsageLimitText,
+  isWedged,
+} from './session-end-reason';
 
 const NOW = Date.UTC(2026, 6, 13, 12, 0, 0);
 const minsAgo = (m: number) => NOW - m * 60_000;
@@ -146,6 +152,15 @@ describe('classifyWedgeText', () => {
     expect(r?.evidence).toContain('Insufficient credits');
   });
 
+  it('keeps machine-shaped usage-limit detection and rejects a quoted reset sentence', () => {
+    const providerText = "You've hit your weekly limit · resets Sep 10, 7am (America/New_York)";
+    expect(classifyWedgeText(providerText)?.reason).toBe('usage_limit');
+    expect(
+      classifyWedgeText(`The prior reply quoted “${providerText}” while discussing a healthy loop.`),
+    ).toBeNull();
+    expect(classifyWedgeText('You have exceeded your usage limit · resets 5:40am')?.reason).toBe('usage_limit');
+  });
+
   it('does NOT trip on ordinary text that merely mentions rate limits (the model_error clause is excluded)', () => {
     expect(classifyWedgeText('discussed the rate limit fix')).toBeNull();
     expect(classifyWedgeText('API Error: 400 This model does not support effort level xhigh')).toBeNull();
@@ -194,6 +209,26 @@ describe('isMachineModelErrorText (EI-22102700164999066)', () => {
       activeWithinMs: 0,
     });
     expect(loose.reason).toBe('model_error');
+  });
+});
+
+describe('isMachineUsageLimitText', () => {
+  const WEEKLY_LIMIT = "You've hit your weekly limit · resets Sep 10, 7am (America/New_York)";
+
+  it('accepts provider-shaped usage-limit openings', () => {
+    expect(isMachineUsageLimitText(WEEKLY_LIMIT)).toBe(true);
+    expect(isMachineUsageLimitText("You've hit your session limit · resets 4am")).toBe(true);
+    expect(isMachineUsageLimitText('You have exceeded your usage limit · resets 5:40am')).toBe(true);
+    expect(isMachineUsageLimitText('hit your usage limit · resets now')).toBe(true);
+    expect(isMachineUsageLimitText('Usage limit reached · please retry after reset')).toBe(true);
+  });
+
+  it('rejects a quoted provider sentence and loose reset wording in ordinary prose', () => {
+    expect(isMachineUsageLimitText(`The report quoted “${WEEKLY_LIMIT}” while describing a healthy loop.`)).toBe(false);
+    expect(isMachineUsageLimitText(`“${WEEKLY_LIMIT}”`)).toBe(false);
+    expect(isMachineUsageLimitText('weekly limit · resets Sep 10, 7am')).toBe(false);
+    expect(isMachineUsageLimitText(null)).toBe(false);
+    expect(isMachineUsageLimitText('   ')).toBe(false);
   });
 });
 

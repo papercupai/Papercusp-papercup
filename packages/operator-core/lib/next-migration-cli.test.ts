@@ -28,10 +28,69 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build, transform } from 'esbuild';
 // eslint-disable-next-line import/no-relative-packages
-import { armMigration, buildAllocationResult } from '../../../scripts/next-migration.mjs';
+import {
+  armMigration,
+  buildAllocationResult,
+  describeReservationTarget,
+  resolveReservationTarget,
+  verifyConnectedDatabaseName,
+} from '../../../scripts/next-migration.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const temporarySqlDirs: string[] = [];
+
+/** The resolver `resolveReservationTarget` injects — i.e. `resolveScriptPgUrl`'s shape. */
+type PgUrlResolution = ReturnType<NonNullable<Parameters<typeof resolveReservationTarget>[0]>>;
+
+describe('migration reservation target binding (EI-25452541884750444)', () => {
+  const discovered: PgUrlResolution = {
+    url: 'postgresql://harness_admin:private-secret@127.0.0.1:23325/papercusp',
+    source: 'discovery',
+    envLocal: { file: join(REPO_ROOT, 'apps/operator/.env.local'), exists: false, present: [], applied: [], skipped: null },
+  };
+
+  it('uses the operator env root and refuses discovery-only targets', () => {
+    let root: string | undefined;
+    expect(() => resolveReservationTarget((opts) => {
+      root = opts?.root;
+      return discovered;
+    })).toThrow(/explicitly configured operator database target/);
+    expect(root).toBe(join(REPO_ROOT, 'apps/operator'));
+  });
+
+  it('accepts explicit operator env pins and an isolated PG port', () => {
+    expect(() => resolveReservationTarget(() => ({
+      ...discovered,
+      source: 'env',
+      via: 'DATABASE_URL',
+    }))).not.toThrow();
+    expect(() => resolveReservationTarget(() => ({
+      ...discovered,
+      source: 'isolated-pg-port',
+    }))).not.toThrow();
+  });
+
+  it('checks the connected database name and reports the redacted endpoint', () => {
+    expect(verifyConnectedDatabaseName(discovered.url, 'papercusp')).toBe(true);
+    expect(() => verifyConnectedDatabaseName(discovered.url, 'wrong-db')).toThrow(/database mismatch/);
+    const line = describeReservationTarget({ ...discovered, source: 'env', via: 'DATABASE_URL' }, {
+      db: 'papercusp',
+      port: 5432,
+    });
+    expect(line).toContain('127.0.0.1:23325/papercusp');
+    expect(line).toContain('connected db=papercusp port=5432');
+    expect(line).not.toContain('private-secret');
+  });
+
+  it('runs the target check before the reservation transaction', () => {
+    const source = readFileSync(join(REPO_ROOT, 'scripts/next-migration.mjs'), 'utf8');
+    expect(source).toContain('target = resolveReservationTarget();');
+    const check = source.indexOf('verifyConnectedDatabaseName(target.url, connected?.db)');
+    const reserve = source.indexOf('const allocated = await sql.begin(async (tx) =>');
+    expect(check).toBeGreaterThanOrEqual(0);
+    expect(check).toBeLessThan(reserve);
+  });
+});
 
 function makeSqlDir(): string {
   const dir = mkdtempSync(join(tmpdir(), 'next-migration-arm-'));

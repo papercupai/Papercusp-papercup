@@ -9,6 +9,7 @@ import {
   ISSUE_TERMINAL_STATUSES,
   isReady,
   partitionReady,
+  planDependencyBlockedClear,
   readSettleEdges,
   toReadinessNodes,
   type BlockingNode,
@@ -16,6 +17,57 @@ import {
 } from './work-item-blocking';
 
 const DISPATCHABLE = new Set(['todo']);
+
+describe('cleared dependency status reconciliation', () => {
+  const clear = { hasLiveDependency: false, hasActiveExternalBlocker: false };
+  const row = (payload: Record<string, unknown> = {}) => ({
+    state: 'blocked', takenBy: null, updatedTs: 100, payload, origin: 'local',
+  });
+
+  it('clears only the generated blocked lease and preserves review/readiness evidence', () => {
+    const held = row({ _claimHold: true, held_open_by: 'su-1', held_open_at: 'then', held_open_reason: 'blocked',
+      agentReview: { status: 'pending' }, implementationReadiness: { status: 'unknown' } });
+    expect(planDependencyBlockedClear(held, held, clear)).toEqual({ outcome: 'cleared', nextPayload: {
+      agentReview: { status: 'pending' }, implementationReadiness: { status: 'unknown' },
+    } });
+  });
+
+  it('preserves a durable park coexisting with the generated lease', () => {
+    const held = row({ _claimHold: true, held_open_by: 'su-1', held_open_reason: 'blocked',
+      claim_hold_by: 'su-parker', claim_hold_reason: 'credential', claim_hold_release: { condition: 'key supplied' } });
+    expect(planDependencyBlockedClear(held, held, clear).nextPayload).toEqual({
+      _claimHold: true, claim_hold_by: 'su-parker', claim_hold_reason: 'credential',
+      claim_hold_release: { condition: 'key supplied' },
+    });
+  });
+
+  it.each([
+    { payload: { _claimHold: true, claim_hold_by: 'su-parker' }, outcome: 'reserved' },
+    { payload: { _claimHold: true, held_open_reason: 'deliberate hold' }, outcome: 'reserved' },
+    { payload: { needsOwnerAction: true }, outcome: 'reserved' },
+    { payload: { externalBlockers: [{ kind: 'human', ref: 'key', status: 'active', capability: 'credential' }] }, outcome: 'external-blocker' },
+  ])('retains independent hold $outcome', ({ payload, outcome }) => {
+    const held = row(payload);
+    expect(planDependencyBlockedClear(held, held, { ...clear, hasActiveExternalBlocker: outcome === 'external-blocker' }).outcome).toBe(outcome);
+  });
+
+  // WI-10007634: `origin` records how a row ARRIVED, not who wrote it (WI-10003565).
+  it('reserves a true peer row but clears our own row stranded at origin=remote', () => {
+    const remote = { ...row({ _claimHold: true, held_open_reason: 'blocked' }), origin: 'remote' };
+    expect(planDependencyBlockedClear(remote, remote, clear).outcome).toBe('reserved');
+    expect(planDependencyBlockedClear(remote, remote, { ...clear, ownNodeAuthored: false }).outcome).toBe('reserved');
+    expect(planDependencyBlockedClear(remote, remote, { ...clear, ownNodeAuthored: true }).outcome).toBe('cleared');
+  });
+
+  it('retains live dependencies and refuses assignment, payload or time drift', () => {
+    const held = row();
+    expect(planDependencyBlockedClear(held, held, { ...clear, hasLiveDependency: true }).outcome).toBe('live-dependency');
+    for (const changed of [{ ...held, takenBy: 'new-peer' }, { ...held, updatedTs: 101 },
+      { ...held, payload: { needsOwnerAction: true } }]) {
+      expect(planDependencyBlockedClear(held, changed, clear).outcome).toBe('stale-control');
+    }
+  });
+});
 
 // One scenario exercising every satisfaction case. Blockers themselves are present (so their
 // status is known) but not 'todo', so they aren't candidates — only the F* items are.
@@ -88,6 +140,24 @@ describe('partitionReady', () => {
     ];
     expect(isReady('X', items, new Map([['X', ['A', 'B']]]), DISPATCHABLE)).toBe(true);
     expect(isReady('X', items, new Map([['X', ['A', 'C']]]), DISPATCHABLE)).toBe(false);
+  });
+});
+
+describe('P-003 independent preparation', () => {
+  it.each(['credential', 'owner pause', 'destructive permission'])('keeps preparation ready while %s blocks dependent execution', (prerequisite) => {
+    const nodes: BlockingNode[] = [
+      { id: prerequisite, status: 'needs-human' },
+      { id: 'execution', status: 'todo' },
+      { id: 'preparation', status: 'todo' },
+    ];
+    const before = structuredClone(nodes);
+    const dependencies = new Map([['execution', [prerequisite]]]);
+    const result = partitionReady(nodes, dependencies, DISPATCHABLE);
+    expect(result.ready.map((node) => node.id)).toEqual(['preparation']);
+    expect(result.blocked.map((node) => node.id)).toEqual(['execution']);
+    expect(isReady('execution', nodes, dependencies, DISPATCHABLE)).toBe(false);
+    expect(isReady('preparation', nodes, dependencies, DISPATCHABLE, new Set(['preparation']))).toBe(false);
+    expect(nodes).toEqual(before);
   });
 });
 

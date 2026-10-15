@@ -57,6 +57,11 @@ const ALLOWED: { file: string; count: number; why: string }[] = [
     count: 1,
     why: 'DELIBERATE fail-open (documented at the site): the harness derive only NARROWS an assumption selector, so a blip degrades to "no harness selector" — the pre-existing behaviour — rather than refusing a close. Nothing asserts absence from it',
   },
+  {
+    file: 'harness/improvements/capture-core.ts',
+    count: 1,
+    why: 'withPromotionReviewEnrolment refreshes a known committed promotion after review enrolment. A missing or unreadable optional refresh returns that promoted issue, never absence; capture-core.test.ts exercises both outcomes through the real promotion path.',
+  },
 ];
 
 /** Every .ts file under operator-core/lib, excluding tests. */

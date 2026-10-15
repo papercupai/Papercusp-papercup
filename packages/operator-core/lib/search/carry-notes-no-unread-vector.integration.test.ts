@@ -16,6 +16,7 @@ import { afterAll, beforeAll, describe, expect, it, inject } from 'vitest';
 import postgres from 'postgres';
 import { assertPgReachable } from '@papercusp/test-config/pg';
 import { TARGETS } from './embed-backfill';
+import { PROSE_VECTOR_COLUMNS } from './prose-vector-dims';
 
 describe('carry notes carry no unread vector (generic-rag-chunking P-014 / D-020)', () => {
   let sql: postgres.Sql | undefined;
@@ -55,5 +56,15 @@ describe('carry notes carry no unread vector (generic-rag-chunking P-014 / D-020
     // TARGETS (a broken import) cannot pass this vacuously.
     expect(TARGETS.length).toBeGreaterThan(0);
     expect(TARGETS.map((t) => t.table)).not.toContain('harness_shared.carry_notes');
+  });
+
+  it('the prose-width dims registration has no carry_notes column', () => {
+    // A PROSE_VECTOR_COLUMNS entry is what the next width migration ALTERs, so a
+    // carry_notes entry would re-create the dropped vector's upkeep. Positive
+    // control: the list is the real, populated registration (an empty list from a
+    // broken import cannot pass vacuously).
+    expect(PROSE_VECTOR_COLUMNS.length).toBeGreaterThan(0);
+    expect(PROSE_VECTOR_COLUMNS).toContainEqual({ table: 'harness_shared.session_turns', column: 'text_embedding' });
+    expect(PROSE_VECTOR_COLUMNS.map((c) => c.table)).not.toContain('harness_shared.carry_notes');
   });
 });

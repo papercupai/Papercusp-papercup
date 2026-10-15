@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { candidateProfile, canonicalCandidateBackend, calibratedFloor, validateHeldout,
-  selectCandidateSources, candidateSourcePartition, candidateMemoryEntry, type HeldoutQuery } from './candidate-hybrid-bench';
+  selectCandidateSources, candidateSourcePartition, candidateMemoryEntry, accountIndependentSources, type HeldoutQuery, type Snapshot } from './candidate-hybrid-bench';
 import { validateEmbedderProfile, validateMemoryStorageCompatibility, MEMORY_VECTOR_STORAGE_PROFILES,
   mdenseOnPrompt, embedRequestedExecution } from '@papercusp/memory';
 import { ORT_SESSION_OPTIONS } from '../../../../../libs/generic/memory/src/local-embedder-worker';
@@ -21,6 +21,68 @@ const queries: HeldoutQuery[] = [
   { id: 'c', class: 'lexical-gap', query: 'question a', expected: ['a'], partition: 'calibration', group: 'a' },
   { id: 't', class: 'exact-identifier', query: 'question b', expected: ['b'], partition: 'test', group: 'b' },
 ];
+describe('independent accessible-source accounting', () => {
+  const fixture = () => {
+    const seed = 'source-accounting', snapshotAt = '2026-10-02T00:00:00Z';
+    const memory = Array.from({ length: 12 }, (_, i) => candidateMemoryEntry({ id: String(i), text: `frozen ${i}`,
+      source_session: i === 11 ? null : `origin-${Math.floor(i / 2)}` }));
+    const prose = memory.map((e, i) => ({ key: `doc-${i}`, text: `prose ${i}`, kind: 'doc', metadata: { cluster: `page-${Math.floor(i / 2)}` } }));
+    const population: Snapshot['suites'] = { memory: { entries: memory }, prose: { entries: prose } };
+    const suites = selectCandidateSources(population, { seed, memoryLimit: 8, proseBudget: 8, maxClusterRows: 2, requireMemorySource: true });
+    const snapshot = { formatVersion: 1 as const, snapshotAt, seed, suites };
+    const selectedKeys = { memory: suites.memory.entries.map((e) => e.key), prose: suites.prose.entries.map((e) => e.key) };
+    const authored = Object.fromEntries((['memory', 'prose'] as const).map((corpus) => {
+      const group = String(suites[corpus].entries[0].metadata!.cluster);
+      const positive = suites[corpus].entries.find((e) => e.metadata!.cluster === group)!.key;
+      return [corpus, ['exact-identifier', 'lexical-gap', 'session-start-intent', 'hard-negative'].map((cls) => ({
+        id: `${corpus}-${cls}`, class: cls, query: `frozen ${cls}`, group, partition: candidateSourcePartition(group, seed),
+        expected: cls === 'hard-negative' ? [] : [positive] }))];
+    })) as Record<'memory' | 'prose', HeldoutQuery[]>;
+    return { census: { snapshotAt, seed, population, selectedKeys }, snapshot, authored,
+      accepted: { memory: structuredClone(authored.memory), prose: [] as HeldoutQuery[] } };
+  };
+  it('distinguishes census, snapshot, authored and accepted populations without counting unknown memory provenance', () => {
+    const f = fixture(), report = accountIndependentSources(f.census, f.snapshot, f.authored, f.accepted);
+    expect(report.memory).toMatchObject({ populationRows: 12, eligibleRows: 11, provenanceExcludedRows: 1, snapshotRows: 8,
+      allEligibleRowsInSnapshot: false, allEligibleSourcesAuthored: false });
+    expect(report.prose.dispositions.filter((r) => r.status === 'authored-without-accepted-labels')).toHaveLength(1);
+    expect(report.memory.dispositions.filter((r) => r.status === 'accepted')).toHaveLength(1);
+    for (const corpus of ['memory', 'prose'] as const) {
+      for (const p of Object.values(report[corpus].partitions)) {
+        expect(p.accessibleSources).toBe(p.outsideSnapshot + p.unattemptedInSnapshot + p.authoredWithoutAcceptedLabels + p.acceptedSources);
+        expect(p.authoredSources).toBe(p.authoredWithoutAcceptedLabels + p.acceptedSources);
+      }
+    }
+    const reordered = structuredClone(f); reordered.census.population.memory.entries.reverse(); reordered.authored.memory.reverse();
+    expect(accountIndependentSources(reordered.census, reordered.snapshot, reordered.authored, reordered.accepted)).toEqual(report);
+  });
+  it('cannot call a fully authored sample an exhausted accessible population', () => {
+    const f = fixture();
+    f.census.population = structuredClone(f.snapshot.suites);
+    const all = Object.fromEntries((['memory', 'prose'] as const).map((corpus) => [corpus,
+      [...new Set(f.snapshot.suites[corpus].entries.map((e) => String(e.metadata!.cluster)))].flatMap((group) => f.authored[corpus].map((q) => ({
+        ...q, id: `${group}-${q.id}`, group, partition: candidateSourcePartition(group, f.snapshot.seed),
+        expected: q.class === 'hard-negative' ? [] : [f.snapshot.suites[corpus].entries.find((e) => e.metadata!.cluster === group)!.key] })))
+    ])) as typeof f.authored;
+    const full = accountIndependentSources(f.census, f.snapshot, all, all);
+    expect(full.memory.allEligibleRowsInSnapshot).toBe(true); expect(full.memory.allEligibleSourcesAuthored).toBe(true);
+    f.census.population.memory.entries = [...f.census.population.memory.entries, candidateMemoryEntry({ id: 'outside', text: 'outside', source_session: 'outside-source' })];
+    expect(accountIndependentSources(f.census, f.snapshot, all, all).memory.allEligibleSourcesAuthored).toBe(false);
+  });
+  it.each(['seed', 'selected', 'text', 'source', 'partition', 'bundle', 'duplicate', 'foreign', 'label'] as const)('refuses a %s census/cohort mismatch', (fault) => {
+    const f = structuredClone(fixture());
+    if (fault === 'seed') f.census.seed = 'foreign';
+    if (fault === 'selected') f.census.selectedKeys.memory.pop();
+    if (fault === 'text') f.snapshot.suites.memory.entries[0].text = 'changed';
+    if (fault === 'source') f.census.population.memory.entries[0].metadata!.sourceSession = 'foreign';
+    if (fault === 'partition') f.authored.memory[0].partition = f.authored.memory[0].partition === 'test' ? 'calibration' : 'test';
+    if (fault === 'bundle') f.authored.memory.pop();
+    if (fault === 'duplicate') f.authored.memory.push(f.authored.memory[0]);
+    if (fault === 'foreign') f.authored.memory[0].group = 'foreign';
+    if (fault === 'label') f.accepted.memory[0].query = 'different accepted query';
+    expect(() => accountIndependentSources(f.census, f.snapshot, f.authored, f.accepted)).toThrow('source census');
+  });
+});
 describe('candidate hybrid fairness guards', () => {
   it('keeps distinct facts from one recorded session together and excludes unknown provenance for blind labels', () => {
     const facts = Array.from({ length: 64 }, (_, i) => candidateMemoryEntry({ id: String(i), text: `fact ${i}`,

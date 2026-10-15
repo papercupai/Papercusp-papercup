@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "gateway-admission-congestion-only live admission sample (Codex queueWait, Claude unchanged, R-3 slots)",
+  "framework": "operational",
+  "command": [
+    "curl",
+    "-s",
+    "http://127.0.0.1:8788/admin/stats",
+    "# distilled by .papercusp/scratch/gw-live-evidence.mts: per-provider durationsMs.queueWait percentiles over requestStages.recent; codexAimd/aimd/codexAdmission read directly"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-14T04:33:47.906Z",
+  "finishedAt": "2026-10-14T04:33:48.004Z",
+  "summary": "Live sample of papercup-inference-gateway.service (/admin/stats) at 2026-10-14T04:33:48.004Z, process up 149 min. Codex queueWait p50 204ms (n=180); Codex window 875 (floor 4); Claude window 586/586 with 0 decreases. Account identities omitted.",
+  "assertions": [
+    {
+      "id": "GW-LIVE-QUEUEWAIT codex queueWait p50 < 2000ms",
+      "passed": true,
+      "evidence": "Codex queueWait over the last 180 retained Codex requests: p50 204ms, p95 1294ms, max 5881ms (bar: p50 < 2000ms, n >= 20)."
+    },
+    {
+      "id": "GW-LIVE-QUEUEWAIT codex window not collapsed to floor",
+      "passed": true,
+      "evidence": "Codex admission window effective 875, floor 4, cap 1389, decreases 11 since process start 2026-10-14T02:05:09.999Z."
+    },
+    {
+      "id": "Claude lane unchanged (window at cap, no contractions)",
+      "passed": true,
+      "evidence": "Claude admission window effective 586 = cap 586, decreases 0; Claude queueWait p50 689ms over 76 requests."
+    },
+    {
+      "id": "R-3 in-flight streams do not exhaust Codex admission slots",
+      "passed": true,
+      "evidence": "Codex admission running 9 of maxConcurrent 875, queued 0; gateway inFlight 10, queueDepth 0."
+    }
+  ],
+  "plan": "gateway-admission-congestion-only-2026-10-13",
+  "clauses": [
+    "GW-LIVE-QUEUEWAIT@2",
+    "AUTO-BAR-R-3-P-003@3",
+    "GW-R-3-ATOMIC@1"
+  ],
+  "distilled": {
+    "processStartedAtMs": 1791943509999,
+    "processUptimeMin": 148.6,
+    "queueDepth": 0,
+    "inFlight": 10,
+    "codex": {
+      "window": {
+        "effective": 875,
+        "floor": 4,
+        "cap": 1389,
+        "decreases": 11
+      },
+      "admission": {
+        "running": 9,
+        "queued": 0,
+        "maxConcurrent": 875
+      },
+      "recent": {
+        "n": 180,
+        "queueWaitMs": {
+          "n": 180,
+          "p50": 204,
+          "p95": 1294,
+          "max": 5881
+        },
+        "totalMs": {
+          "n": 180,
+          "p50": 17029,
+          "p95": 48380
+        }
+      }
+    },
+    "claude": {
+      "window": {
+        "effective": 586,
+        "floor": 4,
+        "cap": 586,
+        "decreases": 0
+      },
+      "recent": {
+        "n": 76,
+        "queueWaitMs": {
+          "n": 76,
+          "p50": 689,
+          "p95": 4402,
+          "max": 9447
+        },
+        "totalMs": {
+          "n": 76,
+          "p50": 10380,
+          "p95": 33993
+        }
+      }
+    },
+    "allLanesQueueWaitMs": {
+      "count": 22613,
+      "retained": 4096,
+      "p50": 559,
+      "p95": 16637,
+      "p99": 47323
+    }
+  }
+}

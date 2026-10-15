@@ -56,9 +56,10 @@
  */
 import { spawnSync } from "node:child_process";
 import { existsSync as fsExistsSync, readdirSync, readFileSync } from 'node:fs';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { dirname, join, matchesGlob, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { satisfies, UnsupportedRange } from './check-peer-dep-conflicts.mjs';
+import { expandWorkspaces } from './assert-workspace-links.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -105,8 +106,6 @@ export function resolveRuntimeContentProbes(repoRoot = REPO_ROOT, probes = RUNTI
 /** Expand the root package.json "workspaces" globs into repo-relative dirs. */
 export function resolveWorkspaceDirs(repoRoot = REPO_ROOT, deps = {}) {
   const readJson = deps.readJson ?? ((p) => JSON.parse(readFileSync(p, 'utf8')));
-  const readDir = deps.readDir ?? ((p) => readdirSync(p, { withFileTypes: true }).map((e) => ({ name: e.name, isDir: e.isDirectory() })));
-  const exists = deps.existsSync ?? fsExistsSync;
 
   let globs;
   try {
@@ -116,22 +115,31 @@ export function resolveWorkspaceDirs(repoRoot = REPO_ROOT, deps = {}) {
   }
   if (!Array.isArray(globs)) globs = globs.packages ?? [];
 
-  const out = [];
-  for (const glob of globs) {
-    if (!glob.includes('*')) {
-      if (exists(join(repoRoot, glob, 'package.json'))) out.push(glob);
-      continue;
+  // Keep the existing injected-filesystem seam for hermetic callers. Real
+  // filesystem expansion below always uses the canonical glob implementation.
+  if (!deps.expandWorkspaces && (deps.readDir || deps.existsSync)) {
+    const exists = deps.existsSync ?? fsExistsSync;
+    const readDir = deps.readDir ?? ((p) => readdirSync(p, { withFileTypes: true }).map(e => ({ name: e.name, isDir: e.isDirectory() })));
+    const excludes = globs.filter(p => p.startsWith('!')).map(p => p.slice(1));
+    const dirs = [];
+    for (const pattern of globs.filter(p => !p.startsWith('!'))) {
+      if (!pattern.includes('*')) {
+        if (exists(join(repoRoot, pattern, 'package.json'))) dirs.push(pattern);
+      } else if (pattern.endsWith('/*')) {
+        const parent = pattern.slice(0, -2);
+        if (!exists(join(repoRoot, parent))) continue;
+        for (const e of readDir(join(repoRoot, parent))) {
+          const dir = `${parent}/${e.name}`;
+          if (e.isDir && !e.name.startsWith('.') && exists(join(repoRoot, dir, 'package.json'))) dirs.push(dir);
+        }
+      }
     }
-    // Only the trailing-`*` shape is used in this repo ("apps/*", "packages/*").
-    const parent = glob.slice(0, glob.lastIndexOf('/'));
-    if (!glob.endsWith('/*') || !exists(join(repoRoot, parent))) continue;
-    for (const entry of readDir(join(repoRoot, parent))) {
-      if (!entry.isDir || entry.name.startsWith('.')) continue;
-      const rel = `${parent}/${entry.name}`;
-      if (exists(join(repoRoot, rel, 'package.json'))) out.push(rel);
-    }
+    return [...new Set(dirs)].filter(dir => !excludes.some(pattern => matchesGlob(dir, pattern))).sort();
   }
-  return [...new Set(out)].sort();
+
+  // Reuse the link guard's npm-compatible population, including ! exclusions.
+  // Otherwise a root repair tries to reinstall explicitly excluded fixtures.
+  return (deps.expandWorkspaces ?? expandWorkspaces)(globs, repoRoot).sort();
 }
 
 function packageDirEntries(nodeModulesDir, deps = {}) {
@@ -231,6 +239,30 @@ export function declaredVersionRange(spec) {
   return separator > 'npm:'.length ? raw.slice(separator + 1) : null;
 }
 
+// Unqualified root overrides replace a direct workspace declaration too. Only
+// the override's own value (or ".") applies here; child rules are scoped to
+// that package's dependency tree and must not leak into unrelated workspaces.
+function effectiveDirectDeclaration(rootManifest, packageName, declared) {
+  const rule = rootManifest?.overrides?.[packageName];
+  const replacement = typeof rule === 'string' ? rule : rule?.['.'];
+  if (typeof replacement !== 'string') return declared;
+  if (!replacement.startsWith('$')) return replacement;
+  const reference = replacement.slice(1);
+  for (const field of LOCAL_VERSION_FIELDS) {
+    const spec = rootManifest?.[field]?.[reference];
+    if (typeof spec === 'string') return spec;
+  }
+  return replacement; // invalid references are outside the matcher's grammar
+}
+
+function rootManifestForOverrides(repoRoot, readJson) {
+  try {
+    return readJson(join(repoRoot, 'package.json'));
+  } catch {
+    return null; // manifest integrity is owned by the existing manifest guards
+  }
+}
+
 /**
  * Find readable workspace-local installs whose version violates the workspace's
  * direct declaration. Transitive local packages and peers are deliberately ignored:
@@ -245,6 +277,7 @@ export function findInvalidWorkspacePackageVersions({
   const readJson =
     deps.readJson ?? ((p) => JSON.parse(readFileSync(p, 'utf8')));
   const dirs = workspaceDirs ?? resolveWorkspaceDirs(repoRoot, deps);
+  const rootManifest = rootManifestForOverrides(repoRoot, readJson);
   const invalid = [];
 
   for (const workspace of dirs) {
@@ -257,7 +290,7 @@ export function findInvalidWorkspacePackageVersions({
     const declaredSpec = (packageName) => {
       for (const field of LOCAL_VERSION_FIELDS) {
         const spec = workspaceManifest?.[field]?.[packageName];
-        if (typeof spec === 'string') return spec;
+        if (typeof spec === 'string') return effectiveDirectDeclaration(rootManifest, packageName, spec);
       }
       return null;
     };
@@ -360,6 +393,7 @@ export function findUnsatisfiedDeclaredDepRanges({
   const readJson = deps.readJson ?? ((p) => JSON.parse(readFileSync(p, 'utf8')));
   const exists = deps.existsSync ?? fsExistsSync;
   const dirs = workspaceDirs ?? resolveWorkspaceDirs(repoRoot, deps);
+  const rootManifest = rootManifestForOverrides(repoRoot, readJson);
 
   const invalid = [];
   for (const rel of dirs) {
@@ -369,7 +403,8 @@ export function findUnsatisfiedDeclaredDepRanges({
     } catch {
       continue;
     }
-    for (const [dep, declared] of Object.entries(pkg.dependencies ?? {})) {
+    for (const [dep, spec] of Object.entries(pkg.dependencies ?? {})) {
+      const declared = effectiveDirectDeclaration(rootManifest, dep, spec);
       const range = declaredVersionRange(declared);
       if (range === null) continue;
       const dir = resolvedDepDir(repoRoot, join(repoRoot, rel), dep, exists);

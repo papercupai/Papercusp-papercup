@@ -24,6 +24,7 @@ export type RestartTargetName =
   | 'embed-sidecar'
   | 'mcp-proxy'
   | 'mcp-proxy-staging'
+  | 'mcp-proxy-bg-host'
   | 'email-sidecar'
   | 'calendar-sidecar';
 
@@ -35,6 +36,7 @@ export const RESTART_TARGET_UNITS: Record<RestartTargetName, string> = {
   'embed-sidecar': 'papercup-embed-sidecar.service',
   'mcp-proxy': 'papercup-mcp-proxy.service',
   'mcp-proxy-staging': 'papercup-mcp-proxy-staging.service',
+  'mcp-proxy-bg-host': 'papercup-mcp-proxy-bg-host.service',
   // App sidecars (WI-10001633): `npx tsx apps/sidecar/src/index.ts` straight
   // from ~/papercupai-workspace/<app> — no build, no restart-on-change, so a
   // restart is the ONLY thing that loads a tree edit into them.

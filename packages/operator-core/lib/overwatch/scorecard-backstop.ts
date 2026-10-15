@@ -42,13 +42,8 @@ import { checkScorecardFreshness } from '../scorecard-freshness';
 import { computeSystemHealth } from '../system-health/compute';
 import { captureImprovement } from '../harness/improvements/capture-core';
 import { findIssuesByWatchdogKeys, mergeIssuePayload } from '../issues-engineer';
-import type { SystemHealth } from '../system-health/types';
-import {
-  readCodeRunAdoption,
-  rollupAdoption,
-  gradeToolUtilization,
-  type RunQuery,
-} from '../code-run-adoption';
+import type { SystemHealth, ToolEfficiencyHealth } from '../system-health/types';
+import type { DerivedSnapshotResult } from '../derived-reads/registry';
 
 /**
  * Stable cross-turn dedup key for this hive's turn-end synthesized floor (WI-3064 —
@@ -413,19 +408,24 @@ async function recordScorecardFire(workspaceId: string, installSlug: string, rea
 }
 
 /**
- * Default `tool-utilization` grade: read the fleet code:run adoption rollup (last 7 days) from PG
- * and grade it. Best-effort — any failure (no table, slow query) returns undefined so the floor
- * falls back to honest 'unknown' rather than breaking the backstop. Mirrors the RunQuery prod
- * wiring (sql.unsafe(query, params)). Exported for the scheduled emission pulse
- * (scorecard-emission-pulse.ts), which grounds the same criterion the same way.
+ * Reuse the existing workspace-wide health.toolEfficiency producer's seven-day
+ * grade. A per-process adoption memo still lets every worker run its own large
+ * scan; this reader must not rebuild on a cold/stale snapshot. Missing evidence
+ * stays unknown while the maintained producer refreshes it. Exported for the
+ * scheduled emission pulse, which uses the same grade.
  */
-export async function defaultToolUtilizationGrade(): Promise<ScorecardRating | undefined> {
+export async function defaultToolUtilizationGrade(
+  readSnapshot: () => Promise<DerivedSnapshotResult<ToolEfficiencyHealth>> = async () => {
+    const { readDerivedSnapshot } = await import('../derived-reads/registry');
+    await import('../derived-reads/producers');
+    return readDerivedSnapshot<ToolEfficiencyHealth>('health.toolEfficiency');
+  },
+): Promise<ScorecardRating | undefined> {
   try {
-    const { sql } = getOrgPg();
-    const runQuery: RunQuery = async <T = unknown>(query: string, params: unknown[]) =>
-      (await sql.unsafe(query, params as never)) as unknown as T[];
-    const summaries = await readCodeRunAdoption(runQuery, { sinceDays: 7 });
-    return gradeToolUtilization(rollupAdoption(summaries));
+    const snapshot = await readSnapshot();
+    if (!snapshot.payload || snapshot.meta.missing || snapshot.meta.stale || snapshot.meta.error) return undefined;
+    const grade = snapshot.payload.codeRunAdoption;
+    return { rating: grade.rating, evidence: grade.evidence };
   } catch (e) {
     console.warn(`[overwatch-scorecard-backstop] adoption grade failed: ${e instanceof Error ? e.message : e}`);
     return undefined;

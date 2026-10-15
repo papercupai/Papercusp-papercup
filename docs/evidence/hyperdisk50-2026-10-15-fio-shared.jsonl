@@ -1,0 +1,5 @@
+{"t": 1792029273.0460882, "kind": "fio", "device": "hyperdisk-32000", "job": "randread-4k-qd1", "iops": 2091, "mbps": 8.6, "clatP50us": 428.0, "clatP99us": 1269.8}
+{"t": 1792029283.3340323, "kind": "fio", "device": "hyperdisk-32000", "job": "randread-4k-qd32", "iops": 32511, "mbps": 133.2, "clatP50us": 962.6, "clatP99us": 1613.8}
+{"t": 1792029293.620679, "kind": "fio", "device": "hyperdisk-32000", "job": "randread-32k-qd16", "iops": 25943, "mbps": 850.1, "clatP50us": 577.5, "clatP99us": 1220.6}
+{"t": 1792029303.914805, "kind": "fio", "device": "hyperdisk-32000", "job": "randwrite-4k-qd32", "iops": 32477, "mbps": 133.0, "clatP50us": 962.6, "clatP99us": 1597.4}
+{"t": 1792029314.2020922, "kind": "fio", "device": "hyperdisk-32000", "job": "seqread-1m-qd8", "iops": 812, "mbps": 851.9, "clatP50us": 9895.9, "clatP99us": 13434.9}

@@ -52,6 +52,8 @@ export interface DiskEntry {
   mtimeMs: number;
   /** recursive size in bytes (best-effort; see dirSizeBytes). */
   sizeBytes: number;
+  /** The recursive size is a lower bound because this child's scan was incomplete. */
+  sizeTruncated?: boolean;
   /** session-dir protected-set key (owner id / session key); undefined for plain stores. */
   protectKey?: string;
   /** which protected dimension `protectKey` matches. */
@@ -62,7 +64,7 @@ export interface DiskEntry {
 export interface DiskRootChildScan {
   /** One snapshot per immediate child of the requested roots. */
   entries: DiskEntry[];
-  /** TRUE when the wall-clock or child-count bound stopped the sweep early. */
+  /** TRUE when the sweep or any individual child's size is incomplete. */
   truncated: boolean;
 }
 
@@ -75,10 +77,17 @@ export interface DiskRootChildScanOptions {
   registeredPaths?: readonly string[];
   /** Maximum number of immediate children returned across all roots. */
   maxChildren?: number;
+  /** Bound each child independently so one large tree cannot hide later siblings. */
+  maxEntriesPerChild?: number;
+  /** Per-child time slice, still bounded by the shared deadline. Defaults to 250ms. */
+  maxChildScanMs?: number;
+  /** False for attribution: do not traverse symlinked checkouts or cycles. */
+  followSymlinks?: boolean;
 }
 
 const DEFAULT_UNDECLARED_DISK_SCAN_MS = 20_000;
 const DEFAULT_ROOT_CHILD_LIMIT = 10_000;
+const DEFAULT_CHILD_SCAN_MS = 250;
 
 function newDiskScanBudget(): DiskWalkBudget {
   return { deadlineMs: Date.now() + DEFAULT_UNDECLARED_DISK_SCAN_MS };
@@ -173,7 +182,7 @@ function globRoot(rootKind: 'papercusp-home'): string {
  * acceptable for a usage display. A single file returns its own size.
  *
  * With a `budget` the walk is ALSO wall-clock bounded (EI-6045): the deadline is
- * checked cheaply every few thousand iterations, and once it passes the walk
+ * checked before each filesystem entry, and once it passes the walk
  * stops early (returning the partial total) and marks `budget.truncated`. The
  * budget is shared across a whole `computeStorageUsage` pass, so a box with
  * thousands of session dirs can never block the event loop past the deadline.
@@ -181,14 +190,11 @@ function globRoot(rootKind: 'papercusp-home'): string {
 export function dirSizeBytes(path: string, maxEntries = 400_000, budget?: DiskWalkBudget): number {
   let total = 0;
   let seen = 0;
-  let iters = 0;
   const stack: string[] = [path];
   while (stack.length > 0) {
-    if (seen >= maxEntries) break;
-    // Wall-clock bound. Checked before any syscall, and only every 4096 iters so
-    // the Date.now() cost is negligible; an already-elapsed shared deadline makes
-    // this dir (and every later one) return near-instantly.
-    if (budget && (iters++ & 0xfff) === 0 && Date.now() >= budget.deadlineMs) {
+    if (seen >= maxEntries) { if (budget) budget.truncated = true; break; }
+    // Check every entry so the per-child time slice can yield to later siblings.
+    if (budget && Date.now() >= budget.deadlineMs) {
       budget.truncated = true;
       break;
     }
@@ -237,17 +243,15 @@ export function dirSizeBytes(path: string, maxEntries = 400_000, budget?: DiskWa
  * routine ticker — the periodic `setImmediate` macrotask hop guarantees it runs
  * (and the gate yields EVERY iteration once loop pressure is already elevated).
  */
-export async function dirSizeBytesAsync(path: string, maxEntries = 400_000, budget?: DiskWalkBudget): Promise<number> {
+export async function dirSizeBytesAsync(path: string, maxEntries = 400_000, budget?: DiskWalkBudget, followSymlinks = true): Promise<number> {
   let total = 0;
   let seen = 0;
-  let iters = 0;
   let yielded = 0;
   const stack: string[] = [path];
   while (stack.length > 0) {
-    if (seen >= maxEntries) break;
-    // Wall-clock bound (EI-6045) — identical to the sync twin: checked only every
-    // 4096 iters so the Date.now() cost is negligible.
-    if (budget && (iters++ & 0xfff) === 0 && Date.now() >= budget.deadlineMs) {
+    if (seen >= maxEntries) { if (budget) budget.truncated = true; break; }
+    // Check every entry: a diagnostic must not overrun its shared deadline.
+    if (budget && Date.now() >= budget.deadlineMs) {
       budget.truncated = true;
       break;
     }
@@ -255,21 +259,23 @@ export async function dirSizeBytesAsync(path: string, maxEntries = 400_000, budg
     const cur = stack.pop()!;
     let st: Awaited<ReturnType<typeof fsp.stat>>;
     try {
-      st = await fsp.stat(cur);
+      st = followSymlinks ? await fsp.stat(cur) : await fsp.lstat(cur);
     } catch {
+      if (budget) budget.truncated = true;
       continue; // raced removal / permission — skip
     }
+    seen++;
     if (st.isDirectory()) {
       let names: string[];
       try {
         names = await fsp.readdir(cur);
       } catch {
+        if (budget) budget.truncated = true;
         continue;
       }
       for (const n of names) stack.push(join(cur, n));
     } else if (st.isFile()) {
       total += st.size;
-      seen += 1;
     }
   }
   return total;
@@ -279,6 +285,10 @@ function scanBudgetExpired(budget: DiskWalkBudget): boolean {
   if (Date.now() < budget.deadlineMs) return false;
   budget.truncated = true;
   return true;
+}
+
+function childScanBudget(budget: DiskWalkBudget, options: DiskRootChildScanOptions): DiskWalkBudget {
+  return { deadlineMs: Math.min(budget.deadlineMs, Date.now() + Math.max(1, options.maxChildScanMs ?? DEFAULT_CHILD_SCAN_MS)) };
 }
 
 /**
@@ -319,9 +329,10 @@ export function listDiskRootChildren(options: DiskRootChildScanOptions = {}): Di
         continue; // raced removal / permission — skip
       }
       const registered = isRegisteredDiskPath(path, registeredPaths);
-      const sizeBytes = registered ? (st.isFile() ? st.size : 0) : dirSizeBytes(path, 400_000, budget);
-      entries.push({ path, mtimeMs: st.mtimeMs, sizeBytes });
-      if (budget.truncated) break rootsLoop;
+      const childBudget = childScanBudget(budget, options);
+      const sizeBytes = registered ? (st.isFile() ? st.size : 0) : dirSizeBytes(path, options.maxEntriesPerChild ?? 400_000, childBudget);
+      entries.push({ path, mtimeMs: st.mtimeMs, sizeBytes, ...(childBudget.truncated ? { sizeTruncated: true } : {}) });
+      if (childBudget.truncated) budget.truncated = true;
     }
   }
 
@@ -342,6 +353,7 @@ export async function listDiskRootChildrenAsync(options: DiskRootChildScanOption
     try {
       names = await fsp.readdir(root);
     } catch {
+      budget.truncated = true;
       continue; // missing / unreadable root
     }
     for (const name of names) {
@@ -354,14 +366,16 @@ export async function listDiskRootChildrenAsync(options: DiskRootChildScanOption
       seen.add(path);
       let st: Awaited<ReturnType<typeof fsp.stat>>;
       try {
-        st = await fsp.stat(path);
+        st = options.followSymlinks === false ? await fsp.lstat(path) : await fsp.stat(path);
       } catch {
+        budget.truncated = true;
         continue; // raced removal / permission — skip
       }
       const registered = isRegisteredDiskPath(path, registeredPaths);
-      const sizeBytes = registered ? (st.isFile() ? st.size : 0) : await dirSizeBytesAsync(path, 400_000, budget);
-      entries.push({ path, mtimeMs: st.mtimeMs, sizeBytes });
-      if (budget.truncated) break rootsLoop;
+      const childBudget = childScanBudget(budget, options);
+      const sizeBytes = registered ? (st.isFile() ? st.size : 0) : await dirSizeBytesAsync(path, options.maxEntriesPerChild ?? 400_000, childBudget, options.followSymlinks);
+      entries.push({ path, mtimeMs: st.mtimeMs, sizeBytes, ...(childBudget.truncated ? { sizeTruncated: true } : {}) });
+      if (childBudget.truncated) budget.truncated = true;
     }
   }
 
@@ -518,6 +532,7 @@ export async function gatherProtectedSessionIdentity(
 ): Promise<ProtectedGatherResult> {
   const ownerIds = new Set<string>();
   const sessionKeys = new Set<string>();
+  const owned = { ownerIds: new Set<string>(), sessionKeys: new Set<string>() };
   try {
     const presence = await sql`
       SELECT owner_id FROM harness_shared.coord_presence
@@ -541,9 +556,28 @@ export async function gatherProtectedSessionIdentity(
       SELECT subscriber_id FROM harness_shared.event_awaits
        WHERE fired_at IS NULL AND cancelled_at IS NULL`;
     for (const r of awaits) if (r.subscriber_id) ownerIds.add(String(r.subscriber_id));
+
+    // OWNERSHIP (WI-6554700010010238): every identity THIS database launched, in
+    // any state. planSessionDirGc keeps a dir absent from it (`keptForeign`), so a
+    // second install sharing $HOME cannot prune the other install's sessions. The
+    // archive table is deliberately NOT a source (a foreign install that already
+    // swept a dir would then "own" every owner it stole from).
+    const launched = await sql`SELECT id, coord_owner_id FROM harness_shared.adv_sessions`;
+    for (const r of launched) {
+      if (r.coord_owner_id) owned.ownerIds.add(String(r.coord_owner_id));
+      if (r.id != null) owned.sessionKeys.add(String(r.id));
+    }
+    const spawned = await sql`SELECT spawn_id, session_owner FROM harness_shared.spawned_agents`;
+    for (const r of spawned) {
+      if (r.spawn_id) owned.ownerIds.add(String(r.spawn_id));
+      if (r.session_owner) owned.ownerIds.add(String(r.session_owner));
+    }
   } catch {
     return { ok: false, identity: { ownerIds, sessionKeys } };
   }
   const identity = protectLivePtyHostHomes({ ownerIds, sessionKeys }, await listLiveHostsAsync());
-  return { ok: true, identity };
+  // Anything live/protected was launched here too (a live PTY host, a wake).
+  for (const id of identity.ownerIds) owned.ownerIds.add(id);
+  for (const k of identity.sessionKeys) owned.sessionKeys.add(k);
+  return { ok: true, identity: { ...identity, owned } };
 }

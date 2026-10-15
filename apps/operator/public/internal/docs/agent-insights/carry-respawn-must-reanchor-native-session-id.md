@@ -1,7 +1,7 @@
 # A carry-respawn/recycle rotates the native session id — every owner→native consumer must re-anchor (the WI-5075 kill loop)
 URL: /internal/docs/agent-insights/carry-respawn-must-reanchor-native-session-id
 
->
+psu-pty-host's recycleChild mints a fresh --session-id for the successor, but harness_shared.adv_sessions.session_id kept naming the dead predecessor. The compaction watchdog's context estimate stayed pinned to the predecessor's over-limit transcript and re-killed every successor at each retry-grace expiry — 193 CARRY-RESPAWN firings in the two days after the D-014 cutover. Root cause, fix seams, containment, and the debugging signature.
 
 ## The signature (recognize it fast)
 
@@ -75,8 +75,10 @@ respawns left ZERO durable trace — is why the loop ran for two days invisibly.
 
 1. Confirm the mismatch: child argv `--session-id` vs
    `SELECT session_id FROM harness_shared.adv_sessions WHERE coord_owner_id = ...`.
-2. Heal the live row(s): `UPDATE harness_shared.adv_sessions SET session_id =
-   '<live native id>', ended_at = NULL, exit_code = NULL WHERE id = <adv id>`.
+2. Recover through the maintained launcher `reportSessionRespawned` helper using
+   this session's exact adv ID, coord owner ID and verified live native ID.
+   Confirm the authoritative reanchor before resuming; never substitute an ID,
+   bypass the foreign-session guard or raw-SQL the binding.
 3. Check whether the respawn report path broke again (launcher `onRespawn` →
    `session-respawned` endpoint → `reanchorAdvSessionNativeId`), and whether
    the owner's host predates the fix.
@@ -87,3 +89,11 @@ respawns left ZERO durable trace — is why the loop ran for two days invisibly.
 Related: `deterministic-context-carry-2026-07-14` (P-017/P-018/P-020),
 WI-3532 (why deterministic carry replaced the LLM summarizer),
 EI-12655/EI-12754 (drill-side silent-vanish fixes this generalized).
+
+## Late Codex native ID after the binding deadline (EI-25344556501316035)
+
+A successor can become ready after its first bounded native-ID discovery attempt has expired. In the measured 2026-10-07 incident, the host recorded `respawn-binding-unconfirmed` with `successor-native-id-missing`, observed the backend frame 19 seconds later, delivered a later wake, and then the successor's first MCP calls were rejected as `superuser_foreign_native_session`. The failed carry did not mean the child had exited. A healthy current host or passing within-budget carry tests cannot establish the cause of that earlier failure.
+
+`prepareCurrentCarryBinding` retains the exact child that still owes a binding. Both direct turn/reset writes and rearmed turns call the existing `prepareCarryBinding` before input. If the exact-child resolver now finds an ID, the maintained `onRespawn` callback must confirm it before work is submitted. A refused or unconfirmed report writes no input; foreign-session guards remain enforced. This also retains an already discovered ID for the same child instead of inventing or selecting a different native session.
+
+The conventional regression lives in `apps/operator/lib/psu-pty-host-turn.integration.test.ts`: expose the native ID only after the initial discovery deadline, then send a later wake. Confirmed reanchor permits input; an unconfirmed report must produce a terminal binding refusal without writing the wake. Socket `accepted` is a queued-processing receipt, so inspect binding events and actual child input rather than treating it as turn delivery.

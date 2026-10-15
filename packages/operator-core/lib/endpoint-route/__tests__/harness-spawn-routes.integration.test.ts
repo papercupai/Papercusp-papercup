@@ -44,7 +44,7 @@ const buildInvokeOnce = vi.fn((..._args: unknown[]) => ({
   args: ['invoke-once.js', '--role', 'worker'],
   env: { PAPERCUSP_TEST: '1' },
 }));
-const resolveSpawnBackendModel = vi.fn(() => ({ backend: 'omp', model: '' }));
+const resolveSpawnBackendModel = vi.fn((): { backend: string; model: string; effort?: string | null } => ({ backend: 'omp', model: '' }));
 vi.mock('../../harness-invoke-once', () => ({
   buildInvokeOnce: (...a: unknown[]) => (buildInvokeOnce as (...args: unknown[]) => unknown)(...a),
   // The invoke route's spawn path (orchestrator-runner) also imports
@@ -65,6 +65,18 @@ vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('.
 const { heartbeatSpawns, recordSpawnPid } = vi.hoisted(() => ({
   heartbeatSpawns: vi.fn(async () => {}),
   recordSpawnPid: vi.fn(async () => {}),
+}));
+const recordSpawnAccountRoute = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => {}));
+vi.mock('../../fleet/spawn-tree', async (orig) => ({
+  ...(await orig<typeof import('../../fleet/spawn-tree')>()),
+  recordSpawnAccountRoute,
+}));
+vi.mock('../../inference-gateway/spawn-env', async (orig) => ({
+  ...(await orig<typeof import('../../inference-gateway/spawn-env')>()),
+  resolveSpawnGatewayEnv: vi.fn(async (input: { onResolvedAccounts?: (ids: string[]) => void }) => {
+    input.onResolvedAccounts?.(['pool-a']);
+    return {};
+  }),
 }));
 vi.mock('../../fleet/spawn-reclaim', async (orig) => ({
   ...(await orig<typeof import('../../fleet/spawn-reclaim')>()),
@@ -170,29 +182,31 @@ vi.mock('../../harness/merge-resolver-cleanup', () => ({
     cleanupMergeResolverAfterFailure(...a),
 }));
 
-// fs: existsSync→false so the actions-dispatch path short-circuits; readFileSync
-// throws so the SU-bearer read falls back to undefined; writes are no-ops.
+// Mock only the fake product paths. Node's lazy CJS/TS imports need real reads,
+// stat and realpath together; a blanket mock breaks module loading first.
 vi.mock('node:fs', async (orig) => {
   const actual = await orig<typeof import('node:fs')>();
+  const fixturePath = (p: unknown) => /^\/(?:proj|fake)(?:\/|$)/.test(String(p));
   return {
     ...actual,
     // The frozen-repair cwd validator reads a linked worktree's .git pointer.
     // Keep every unrelated path absent so the existing action-log/token branches
     // retain their prior behavior.
-    existsSync: vi.fn((p: unknown) => String(p).endsWith('/.git')),
-    readdirSync: vi.fn(() => []),
-    readFileSync: vi.fn((p: unknown) => {
+    existsSync: vi.fn((p: unknown) => fixturePath(p) ? String(p).endsWith('/.git') : Reflect.apply(actual.existsSync, null, [p])),
+    readdirSync: vi.fn((p: unknown, ...args: unknown[]) => fixturePath(p) ? [] : Reflect.apply(actual.readdirSync, null, [p, ...args])),
+    readFileSync: vi.fn((p: unknown, ...args: unknown[]) => {
+      if (!fixturePath(p)) return Reflect.apply(actual.readFileSync, null, [p, ...args]);
       if (String(p).endsWith('/.git')) {
         return 'gitdir: /proj/.git/worktrees/repair-1\n';
       }
-      throw new Error('no file (mocked)');
+      throw new Error(`no file (mocked): ${String(p)}`);
     }),
-    realpathSync: vi.fn((p: unknown) => String(p)),
-    statSync: vi.fn((p: unknown) => ({
+    realpathSync: vi.fn((p: unknown, ...args: unknown[]) => fixturePath(p) ? String(p) : Reflect.apply(actual.realpathSync, null, [p, ...args])),
+    statSync: vi.fn((p: unknown, ...args: unknown[]) => fixturePath(p) ? ({
       mtimeMs: 0,
       isDirectory: () => !String(p).endsWith('/.git'),
       isFile: () => String(p).endsWith('/.git'),
-    })),
+    }) : Reflect.apply(actual.statSync, null, [p, ...args])),
     writeFileSync: vi.fn(),
     mkdirSync: vi.fn(),
     rmSync: vi.fn(),
@@ -386,6 +400,25 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
     expect(outputWrite[1]).toEqual([spawnRecordId]);
     expect(outputWrite[2]).toBeInstanceOf(Map);
     expect(outputWrite[2].get(spawnRecordId)).toEqual(expect.any(Number));
+  }, 30_000);
+
+  it.each([
+    ['codex', 'gpt-6.1-sol:high', 'gpt-6.1-sol', 'xhigh', 'high'],
+    ['claude-code', 'opus:xhigh', 'opus[1m]', 'max', 'xhigh'],
+  ])('persists the actual %s effort separately from the requested effort', async (backend, requested, model, effort, requestedEffort) => {
+    resolveSpawnBackendModel.mockReturnValue({ backend, model, effort });
+    const spawnRecordId = 's-blueprint-effort-metadata';
+    const res = await appWith(invoke).request('/harness/papercup/invoke?role=worker', post({
+      spawnRecordId, spawnModel: requested, spawnBackend: backend, account: 'auto',
+    }));
+
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(recordSpawnAccountRoute).toHaveBeenCalledWith(expect.anything(), spawnRecordId, expect.objectContaining({
+      ownerId: spawnRecordId, accountRoute: 'auto', requestedEffort,
+      launchedBackend: backend, launchedModel: model, launchedEffort: effort,
+      resolvedAccountIds: ['pool-a'],
+    }));
+    expect(spawnMock).toHaveBeenCalledTimes(1);
   }, 30_000);
 
   it('uses the same validated repair cwd in the tracked session row and child spawn', async () => {

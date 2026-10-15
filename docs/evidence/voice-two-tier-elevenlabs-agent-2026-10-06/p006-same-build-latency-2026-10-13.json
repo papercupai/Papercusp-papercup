@@ -1,0 +1,110 @@
+{
+  "workItem": "WI-10006879",
+  "planItem": "voice-two-tier-elevenlabs-agent-2026-10-06#P-006",
+  "specBinding": { "id": 42079, "previousPositiveBinding": 42008, "specId": "SPEC-P-006", "revision": 1, "testRunId": 21216390, "targeted": "SPEC-P-006", "executionResult": "failed" },
+  "closureStatus": {
+    "observedAt": "2026-10-13T19:45:45Z",
+    "runtime": "Frozen test source f280e20310; final evaluator replay on release reader d740fc3802 after current-build verifier failures",
+    "verdict": "fail",
+    "scorecard": "EI-25894735921190940",
+    "scorecardStaleHost": true,
+    "previousPositiveBindingRetracted": 42008,
+    "correctLayer": "pass",
+    "pending": ["falsifiability", "execution-integrity", "freshness", "plan-class-risk-floor", "disclosed-gap"],
+    "note": "A later clean frozen baseline failed the unchanged latency assertion. Historical wins below remain recorded; P-006 is not accepted or closed."
+  },
+  "selectorRegressionProbe": {
+    "subject": "packages/operator-core/lib/agent-tools/operator/converse-toolset.ts",
+    "mutation": "Invert the slim analytical-tool filter in a copy-out overlay",
+    "baselineTestRunId": 21216249,
+    "copyBaselineTestRunId": 21216254,
+    "mutantTestRunId": 21216257,
+    "result": "caught; tracked subject byte-identical after probe",
+    "scope": "Catalog guard only; not the SPEC-P-006 latency falsifier. Default old-release reader withheld mutation descriptor linkage."
+  },
+  "scope": "Local current-build brain text stream; no acoustic, release or deployed-main claim",
+  "runtime": {
+    "healthSha": "1688a36c8c",
+    "bundleSha256": "61b570c6329798cc3d3fdbdd71ee7ce8ed93be4d9d18c36a4d2eef13fb15dd6e",
+    "buildSource": "Working tree, compiled by maintained apps/operator/bin/bundle-host.sh",
+    "entry": "packages/operator-core/lib/agent-tools/operator/__tests__/voice-latency-host.fixture.mts",
+    "handler": "apps/operator/bin/host-handler.ts",
+    "bootstrap": false,
+    "ui": false,
+    "model": "gpt-5.6-luna:low",
+    "backend": "codex",
+    "observedFailovers": 0
+  },
+  "method": {
+    "testFile": "packages/operator-core/lib/agent-tools/operator/__tests__/voice-converse-latency.integration.test.ts",
+    "runner": "npm run test:file",
+    "question": "Can you hear me? Answer in one short sentence.",
+    "order": ["standard", "slim", "slim", "standard", "standard", "slim"],
+    "samplesPerProfilePerRun": 3,
+    "timer": "External client performance.now; actual model delta, then shared SayStreamProjector for first word",
+    "identityCheck": "Health SHA checked before each request and after the run; both profiles use one immutable bundle",
+    "baseline": "Standard retains the full voice-admitted tool set and configured history budget. Both profiles enforce the same trust/modality boundary. The original unfiltered owner set failed admission at 131211 bytes > 128000 and emitted no model text."
+  },
+  "runs": [
+    {
+      "startedAt": "2026-10-13T18:08:13.569Z",
+      "suiteResult": "1 passed, 1 failed; timing passed, incorrect owner-result-frame expectation failed",
+      "firstWordMs": { "standard": [10049, 5168, 7851], "slim": [7771, 7109, 5979] },
+      "medianFirstWordMs": { "standard": 7851, "slim": 7109 },
+      "reportedCostUsd": { "standard": [0.01060948, 0.01107268, 0.01108568], "slim": [0.00973388, 0.00973608, 0.01018948] },
+      "correction": "Owner/private result bodies are deliberately withheld. The false defect was retracted and EI-25888752578883415 dropped; the test now guards that privacy boundary."
+    },
+    {
+      "startedAt": "2026-10-13T18:16:20.206Z",
+      "testRunId": 21216086,
+      "suiteResult": "2 passed, 0 failed, 0 skipped",
+      "testRunnerHead": "bc6349373b1eeefc73be5cba08e81615809b180e",
+      "testRunnerProvenance": "Local working tree; test was untracked at execution, not commit-pinned proof",
+      "firstTextMs": { "standard": [5162, 6004, 5082], "slim": [5239, 4209, 4987] },
+      "firstWordMs": { "standard": [5162, 6004, 5082], "slim": [5239, 4209, 4987] },
+      "medianFirstWordMs": { "standard": 5162, "slim": 4987 },
+      "doneMs": { "standard": [6172, 7276, 5805], "slim": [5922, 5035, 5804] },
+      "reportedCostUsd": { "standard": [0.01094648, 0.01133648, 0.01136048], "slim": [0.01020448, 0.01047028, 0.01053568] }
+    },
+    {
+      "startedAt": "2026-10-13T19:26:29.334Z",
+      "testRunId": 21216390,
+      "suiteResult": "1 failed, 1 skipped; only the exact latency case selected",
+      "sourceCommit": "f280e203102351cd018178f69cd1acdf5a9a0b10",
+      "worktreeDirty": false,
+      "bundleSha256": "acc04e27db09b627455c110d5d6ff9cf6951f52c994b04d259069b66295f94fb",
+      "firstTextMs": { "standard": [11540, 5630, 4659], "slim": [9871, 5765, 5852] },
+      "firstWordMs": { "standard": [11540, 5630, 4659], "slim": [9871, 5765, 5852] },
+      "medianFirstWordMs": { "standard": 5630, "slim": 5852 },
+      "doneMs": { "standard": [12303, 7528, 6546], "slim": [11154, 8337, 6624] },
+      "reportedCostUsd": { "standard": [0.010574080000000001, 0.011093080000000002, 0.011093080000000002], "slim": [0.009667080000000002, 0.010226280000000003, 0.010264480000000001] },
+      "canonicalProbe": {
+        "invocationId": "bf35bb13-0ecb-4cb3-ad19-5fb3d806a1aa",
+        "leg": "baseline",
+        "result": "harness-error: unmutated baseline failed; mutant was not scored",
+        "trackedFixtureIntegrity": "verified byte-identical",
+        "log": "/tmp/p006-latency-mutation-proof.log"
+      },
+      "interpretation": "This clean sample does not satisfy SPEC-P-006. The captured phase timings do not establish why the profile medians reversed; no cause or universal latency guarantee is asserted."
+    }
+  ],
+  "liveToolEvidence": [
+    { "traceId": "69a1756d-1c71-4439-8852-2581284e74d0", "toolName": "harness:status", "stage": "inner_dispatch_settled", "outcome": "success", "elapsedMs": 83 },
+    { "traceId": "51f0e890-ac4d-4a9d-8f8a-53e290c1b296", "toolName": "harness:status", "stage": "inner_dispatch_settled", "outcome": "success", "elapsedMs": 425 }
+  ],
+  "unitVerification": {
+    "focusedSuites": "converse-toolset, converse-prompt-surface, converse: 63 passed locally",
+    "voiceSchemaTestRunId": 21215717,
+    "voiceSchemaResult": "2 voice checks passed; 7 unrelated global checks not selected",
+    "papercup": { "standardTools": 103, "slimTools": 87, "standardSchemaBytes": 108369, "slimSchemaBytes": 91697 },
+    "operator": { "standardTools": 102, "slimTools": 86, "standardSchemaBytes": 107598, "slimSchemaBytes": 90926 }
+  },
+  "limitations": [
+    "Small live-provider sample with overlapping ranges; this demonstrates measured medians, not a universal latency guarantee.",
+    "First word is model text available to speech, not acoustic output or ElevenLabs front latency.",
+    "Tool completion is corroborated by private MCP traces; owner SSE deliberately withholds private results.",
+    "No manual commit, push, checkpoint, deploy or live-gate operation.",
+    "Voice-final real-microphone acceptance and D010 remain open."
+  ],
+  "ownedFollowups": ["EI-25885942304513412", "EI-25886603349503259"]
+}

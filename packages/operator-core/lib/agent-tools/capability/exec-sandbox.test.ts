@@ -10,7 +10,7 @@
  * fail-CLOSES under the ro-root), the deny-all-egress lever, and credential-list
  * parity with the fleet sandbox.
  */
-import { mkdtempSync, mkdirSync, readFileSync, symlinkSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, symlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, afterAll, beforeEach, vi } from 'vitest';
@@ -18,6 +18,7 @@ import { FLEET_SANDBOX_DENY_READ } from '@papercusp/orchestrator';
 import {
   buildCapabilitySandboxCommand,
   capabilityBuildCacheWritePaths,
+  capabilityHeavySchedulerWritePath,
   capabilitySrtSettingsPathForCwd,
   __resetCapabilitySrtSettings,
   CAPABILITY_SANDBOX_MASK_DIRS,
@@ -27,6 +28,43 @@ import {
   scrubExecEnv,
   type BuildSandboxOpts,
 } from './exec-sandbox';
+
+describe('shared heavy scheduler metadata in capability sandboxes', () => {
+  it('binds only the real shared metadata directory while retaining root and network containment', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'pc-scheduler-sandbox-')));
+    const runtime = join(root, 'runtime');
+    const slots = join(runtime, 'pc-heavy-slots');
+    mkdirSync(slots, { recursive: true });
+    const cwd = join(root, 'work');
+    mkdirSync(cwd);
+    vi.stubEnv('PC_HEAVY_DIR', undefined);
+    vi.stubEnv('XDG_RUNTIME_DIR', runtime);
+    try {
+      expect(capabilityHeavySchedulerWritePath()).toBe(slots);
+      const d = buildCapabilitySandboxCommand({ cmd: ['bash', '-c', 'true'], cwd }, {
+        enabled: true, required: true, bwrapWorks: true, srtBin: null,
+        denyAllEgress: true, homeDir: join(root, 'home'), maskExists: () => false,
+      });
+      const i = d.argv.indexOf(slots);
+      expect(d.argv.slice(i - 1, i + 2)).toEqual(['--bind', slots, slots]);
+      expect(d.argv.slice(0, 3)).toEqual(['--ro-bind', '/', '/']);
+      expect(d.argv).toContain('--unshare-net');
+      expect(d.argv).not.toContain(runtime);
+      const alias = join(root, 'slot-alias');
+      symlinkSync(slots, alias);
+      expect(capabilityHeavySchedulerWritePath({ PC_HEAVY_DIR: alias })).toBe(slots);
+      const freshRuntime = join(root, 'absent');
+      expect(capabilityHeavySchedulerWritePath({ XDG_RUNTIME_DIR: freshRuntime })).toBe(join(freshRuntime, 'pc-heavy-slots'));
+      const file = join(root, 'not-a-directory');
+      writeFileSync(file, 'blocked');
+      expect(() => capabilityHeavySchedulerWritePath({ PC_HEAVY_DIR: file }))
+        .toThrow(`Shared heavy scheduler metadata is unavailable at ${file}`);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 const CMD = ['/usr/bin/bash', '-c', 'echo hi'];
 const CWD = '/proj/work';
@@ -263,6 +301,18 @@ describe('buildCapabilitySandboxCommand — wrapped argv (flag ON + bwrap works)
     expect(tmpfsIdx).toBeGreaterThanOrEqual(0);
     expect(bindIdx).toBeGreaterThanOrEqual(0);
     expect(tmpfsIdx).toBeLessThan(bindIdx);
+  });
+
+  it('orders `--proc` and `--dev` BEFORE the cwd bind (else a cwd under /dev/shm is shadowed, WI-10006742)', () => {
+    const shmCwd = '/dev/shm/pcv/work';
+    const shm = buildCapabilitySandboxCommand({ cmd: CMD, cwd: shmCwd }, { ...base, enabled: true });
+    const bindIdx = seqIndex(shm.argv, ['--bind', shmCwd, shmCwd]);
+    expect(bindIdx).toBeGreaterThanOrEqual(0);
+    for (const mount of [['--proc', '/proc'], ['--dev', '/dev'], ['--tmpfs', '/tmp']]) {
+      const i = seqIndex(shm.argv, mount);
+      expect(i).toBeGreaterThanOrEqual(0);
+      expect(i).toBeLessThan(bindIdx);
+    }
   });
 
   it('isolates process namespaces + dies with the parent (foreground: background unset)', () => {

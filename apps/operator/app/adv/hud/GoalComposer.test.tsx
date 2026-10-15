@@ -148,4 +148,46 @@ describe('EI-20049126246088530 — GoalComposer forwards the spawned agent owner
     // those prove onStarted CAN fire from this fixture.
     expect(onStarted).not.toHaveBeenCalled();
   });
+
+  it('reuses the same request key after a failed response when the validated draft is unchanged', async () => {
+    postGoalStart
+      .mockResolvedValueOnce({ ok: false, error: 'operator timeout' })
+      .mockResolvedValueOnce({ ok: true, goalId: 'g-1', agentOwnerId: 'su-g1' });
+    mount(vi.fn());
+
+    fillAndSubmit();
+    await waitFor(() => expect(postGoalStart).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect((screen.getByTestId('goal-composer-submit') as HTMLButtonElement).disabled).toBe(false),
+    );
+
+    fillAndSubmit();
+    await waitFor(() => expect(postGoalStart).toHaveBeenCalledTimes(2));
+
+    const first = postGoalStart.mock.calls[0]?.[1] as { requestKey?: string };
+    const retry = postGoalStart.mock.calls[1]?.[1] as { requestKey?: string };
+    expect(first.requestKey).toBeTruthy();
+    expect(retry.requestKey).toBe(first.requestKey);
+  });
+
+  it('rotates the request key after the normalized draft changes', async () => {
+    postGoalStart
+      .mockResolvedValueOnce({ ok: false, error: 'operator timeout' })
+      .mockResolvedValueOnce({ ok: false, error: 'operator timeout' });
+    mount(vi.fn());
+
+    fillAndSubmit();
+    await waitFor(() => expect(postGoalStart).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect((screen.getByTestId('goal-composer-submit') as HTMLButtonElement).disabled).toBe(false),
+    );
+
+    fireEvent.change(screen.getByTestId('goal-composer-title'), { target: { value: 'Ship a different app' } });
+    fireEvent.click(screen.getByTestId('goal-composer-submit'));
+    await waitFor(() => expect(postGoalStart).toHaveBeenCalledTimes(2));
+
+    const first = postGoalStart.mock.calls[0]?.[1] as { requestKey?: string };
+    const changed = postGoalStart.mock.calls[1]?.[1] as { requestKey?: string };
+    expect(changed.requestKey).not.toBe(first.requestKey);
+  });
 });

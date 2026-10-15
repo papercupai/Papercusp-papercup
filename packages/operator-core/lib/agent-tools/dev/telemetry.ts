@@ -8,7 +8,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { flagPollSuspects, telemetryRollup } from '../../dev-data';
+import { flagPollSuspects, handlerPhaseRollup, telemetryRollup } from '../../dev-data';
 
 export default defineTool({
   name: 'dev:telemetry',
@@ -34,15 +34,22 @@ export default defineTool({
       .nullable().optional(),
     hours: z.number().int().positive().max(168).optional(),
     limit: z.number().int().positive().max(500).optional(),
+    phasesFor: z.string().min(1).optional()
+      .describe('Tool name: also return its per-phase timing (handlerPhases) and phase coverage of wall time.'),
   }),
   async handler(args) {
     const hours = args.hours ?? 24;
-    const result = await telemetryRollup({
-      workspaceIds: args.workspaceIds ?? null,
-      transports: args.transports ?? null,
-      hours,
-      limit: args.limit,
-    });
+    const [result, handlerPhases] = await Promise.all([
+      telemetryRollup({
+        workspaceIds: args.workspaceIds ?? null,
+        transports: args.transports ?? null,
+        hours,
+        limit: args.limit,
+      }),
+      args.phasesFor
+        ? handlerPhaseRollup({ toolName: args.phasesFor, workspaceIds: args.workspaceIds ?? null, hours })
+        : Promise.resolve(null),
+    ]);
     // Poll-detector guard (EI-7029): surface polling-shaped tools UP FRONT so a
     // new storm is flagged on the next telemetry read, not discovered from a
     // bandwidth bill. Empty array = nothing suspect.
@@ -54,6 +61,7 @@ export default defineTool({
           text: JSON.stringify({
             count: result.entries.length,
             poll_suspects: pollSuspects,
+            ...(handlerPhases ? { handler_phases: handlerPhases } : {}),
             entries: result.entries,
           }),
         },

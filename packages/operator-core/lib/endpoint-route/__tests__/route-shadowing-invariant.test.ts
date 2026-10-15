@@ -14,9 +14,17 @@
  * a literal route it would shadow. It fails if anyone removes the
  * specificity sort or adds a colliding route the sort can't separate.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Hono } from 'hono';
+// A route can load before the registry in a shared fork. Exercise that entry
+// order: the plugin catch-all imports the 405 resolver, which reads the registry.
+import pluginCatchall from '../routes/plugins/catchall';
+import { ALL_ROUTES } from '../routes';
 import { routeRegistrationOrder, registerAllRoutes } from '../register';
+
+// The route stack records PostgreSQL telemetry in its finally block. This
+// invariant test exercises real route responses but must not open a real DB write.
+vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
 
 /** Path → segment list (basePath-relative). */
 function segs(p: string): string[] {
@@ -47,6 +55,12 @@ function shadows(a: string, b: string): boolean {
 }
 
 describe('route registration order — no parametric route shadows a literal sibling', () => {
+  it('retains the plugin catch-all when its module loads before the registry', () => {
+    const catchalls = Array.isArray(pluginCatchall) ? pluginCatchall : [pluginCatchall];
+    for (const route of catchalls) expect(ALL_ROUTES).toContain(route);
+    expect(ALL_ROUTES.every((route) => route != null)).toBe(true);
+  });
+
   it('every literal route registers before any parametric route that would swallow it', () => {
     const order = routeRegistrationOrder();
     const violations: string[] = [];
@@ -76,5 +90,15 @@ describe('route registration order — no parametric route shadows a literal sib
   it('registerAllRoutes mounts cleanly (no duplicate-route throw)', () => {
     const app = new Hono().basePath('/api');
     expect(() => registerAllRoutes(app)).not.toThrow();
+  });
+
+  it('resolves wrong plugin methods after loading the registry and preserves unknown-path 404s', async () => {
+    const app = new Hono().basePath('/api');
+    registerAllRoutes(app);
+    const wrongMethod = await app.request('/api/plugins/global', { method: 'DELETE' });
+    expect(wrongMethod.status).toBe(405);
+    expect(wrongMethod.headers.get('allow')?.split(', ')).toContain('GET');
+    const unknownPath = await app.request('/api/plugins/__route_invariant_missing__', { method: 'DELETE' });
+    expect(unknownPath.status).toBe(404);
   });
 });

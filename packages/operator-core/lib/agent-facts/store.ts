@@ -36,6 +36,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import { GUARD_RAIL_TAG } from '@papercusp/verification-harness';
 import { activeWorkspaceId } from '../workspace-registry';
 import { boundedOrgTxn } from '../pg-bounded-txn';
+import { SEALED_FIELD_STUB, sealSharedTextInTxOrRefuse } from '../personal-vault/shared-store-seal';
 // P-008 (b): the unknown vocabulary a failed dependency read records. Imported,
 // never re-declared — cell-contract.ts declares itself the canonical home and
 // forbids a local copy, and a second enumeration is precisely how a caller's
@@ -456,19 +457,18 @@ export const DEAD_END_KEY_PREFIX = 'dead-end:';
  * `facts:assert { slot:'wall' }` (facts/assert.ts normalizeWallSlot) keys the
  * fact under this prefix — machine-greppable (`key LIKE 'wall:%'`), same
  * convention as {@link DEAD_END_KEY_PREFIX} — and defaults its TTL to
- * {@link WALL_DEFAULT_TTL_SEC}; unlike an ordinary fact, this typed slot has
- * an explicit store-owned lifetime so a routine decay window can't silently
- * clear it. {@link listLapsedWallFacts}
- * is the read leg the wall-lapse watchdog sweeps so an eventual lapse is LOUD
- * (an escalation), never silent.
+ * {@link WALL_DEFAULT_TTL_SEC}. The TTL is a review deadline, not a clearance:
+ * an unretracted current wall remains in folds after expiry until explicit
+ * retraction or supersession. {@link listLapsedWallFacts} is the read leg the
+ * wall-lapse watchdog sweeps so an eventual lapse is LOUD (an escalation),
+ * never silent.
  */
 export const WALL_KEY_PREFIX = 'wall:';
 /** Default TTL applied to a `slot:'wall'` assert when the caller omits
  *  `ttlSec` — the schema's own max (90d, no schema change needed). Long
  *  enough that a shorter ordinary lifetime cannot silently clear an
- *  unremediated risk;
- *  the wall-lapse watchdog is the loud backstop for when even 90d elapses
- *  without a re-assert or an explicit retract. */
+ *  unremediated risk. Expiry raises the wall-lapse alert and keeps the fact
+ *  folded until explicit retraction or supersession. */
 export const WALL_DEFAULT_TTL_SEC = 90 * 24 * 3600;
 
 /**
@@ -490,7 +490,8 @@ export const GUARD_RAIL_KEY_PREFIX = 'guard-rail:';
  * with zero extra reads. NULL/absent for free-text sourceRefs + legacy rows.
  */
 export interface FactSourceProvenance {
-  kind: 'msg' | 'work-item' | 'owner-turn';
+  kind: 'msg' | 'work-item' | 'owner-turn' | 'promotion';
+  promotedFrom?: Array<{ kind: 'memory' | 'session-turn' | 'work-item' | 'report' | 'fact' | 'decision'; ref: string }>;
   /** Did the ref resolve against the platform's own store at assert time? */
   verified: boolean;
   /** Bounded verbatim quote of the source (msg summary/body, WI title, the
@@ -608,6 +609,33 @@ export const FACT_MAX_DEPENDENCIES = 12;
 export const FACT_MAX_SUPERSEDES = 12;
 /** Bound for {@link FactDependency.observed} — a label, not a payload. */
 export const FACT_DEPENDENCY_OBSERVED_CHARS = 120;
+
+/**
+ * P-012 (derived-status-not-hand-written-2026-10-12) — a `dependsOn` entry spelled
+ * `file:<repo-relative path>` is a FILE ANCHOR rather than a registered cell. It is
+ * observed through the same `file:` content-hash resolver `work_items:checkpoint`
+ * uses (`freshness/resolvers.ts`), so its stored `digest` IS the file's blob token
+ * (`sha256:<16 hex>`) at assert time, and a later read reports the fact stale the
+ * moment that blob changes.
+ */
+export const FACT_FILE_ANCHOR_PREFIX = 'file:';
+
+/** True when a declared dependency is a file anchor (see {@link FACT_FILE_ANCHOR_PREFIX}). PURE. */
+export function isFactFileAnchor(cell: string): boolean {
+  const c = (cell ?? '').trim();
+  return c.startsWith(FACT_FILE_ANCHOR_PREFIX) && c.length > FACT_FILE_ANCHOR_PREFIX.length;
+}
+
+/**
+ * P-012 — the stored lifetime of a file-anchored fact that declared no `ttlSec`.
+ *
+ * The anchor, not the clock, is what tells a reader the fact went stale, so the
+ * caller may omit `ttlSec`. The row still gets a FINITE bound rather than
+ * `infinity`: an unbounded row has the maximal remaining-TTL fraction and would be
+ * the least evictable row in the capped population (the reason `permanent:true` is
+ * refused outside the cap-exempt kinds). 90 days is the schema's own `ttlSec` max.
+ */
+export const FILE_ANCHORED_DEFAULT_TTL_SEC = 90 * 24 * 3600;
 
 export interface AgentFact {
   scope: FactScope;
@@ -944,6 +972,13 @@ export interface AssertFactInput {
   recheck?: FactRecheck | null;
   createdBy: string;
   /**
+   * personal-data-reader-set-labels P-012 / D-006: the agent identity that
+   * authored the body. While it holds a restricted Personal Vault disclosure the
+   * stored body is a sealed stub (personal:open-sealed opens it). Omit for
+   * system writers, which hold no disclosures.
+   */
+  writerOwnerId?: string | null;
+  /**
    * P-001 (facts-require-explicit-expiry-2026-09-02) — one half of the REQUIRED
    * lifetime declaration; see {@link validateFactLifetime}. There is no silent 7d
    * fallback any more: a write that declares no lifetime AT ALL is refused. A
@@ -1013,6 +1048,13 @@ export interface FactLifetimeInput {
   permanent?: boolean;
   confidence?: FactConfidence | null;
   subjectVolatile?: boolean;
+  /**
+   * P-012 — the fact carries at least one RESOLVED file anchor (a `file:` dependency
+   * with a stored blob digest). Such a fact may omit `ttlSec`: its staleness is
+   * detected by the anchor. An anchor that did not resolve does not count, because
+   * it can never report the fact stale.
+   */
+  fileAnchored?: boolean;
 }
 
 /**
@@ -1098,12 +1140,16 @@ export function validateFactLifetime(input: FactLifetimeInput): string | null {
   // null kind is exactly the "is this a wall:/dead-end:/guard-rail: key" question.
   if (isFactCapExempt({ key, kind: null })) return null;
   if (input.confidence === 'provisional' || input.confidence === 'suspected') return null;
+  // P-012 — a resolved file anchor declares the fact's lifetime by content: it goes
+  // stale when the anchored blob changes (resolveFactLifetime gives it a finite GC bound).
+  if (input.fileAnchored === true) return null;
 
   return (
     'facts:assert — state how long this fact should live; there is no default any more. Pass ttlSec:<seconds> ' +
     "for a bounded fact, or permanent:true for a standing one (accepted for kind:'convention' and the " +
     "wall:/dead-end:/guard-rail: slots). Declaring kind:'convention' makes it permanent on its own, and " +
-    "confidence:'provisional'|'suspected' already implies a short TTL. The silent 7-day default was removed " +
+    "confidence:'provisional'|'suspected' already implies a short TTL. A dependsOn 'file:<path>' anchor also " +
+    'counts, but only when that file resolves to a blob. The silent 7-day default was removed ' +
     'because it was being applied to facts whose lifetime nobody had chosen, which then expired unread.'
   );
 }
@@ -1159,6 +1205,11 @@ export function resolveFactLifetime(
 
   const byConfidence = defaultTtlSecForConfidence(input.confidence);
   if (byConfidence != null) return { permanent: false, ttlSec: byConfidence };
+
+  // P-012 — BELOW the confidence branch on purpose: a hedged (provisional/suspected)
+  // file-anchored fact keeps its short hedge TTL, so a hunch cannot calcify for 90d
+  // merely because it also named a file.
+  if (input.fileAnchored === true) return { permanent: false, ttlSec: FILE_ANCHORED_DEFAULT_TTL_SEC };
 
   // UNREACHABLE while validateFactLifetime runs first — pinned from BOTH directions by
   // describe('the two functions AGREE — resolve is only ever reached past validate') in
@@ -1422,13 +1473,16 @@ export function parseFactSourceProvenance(raw: unknown): FactSourceProvenance | 
   }
   if (!raw || typeof raw !== 'object') return null;
   const s = raw as Record<string, unknown>;
-  if (s.kind !== 'msg' && s.kind !== 'work-item' && s.kind !== 'owner-turn') return null;
+  if (s.kind !== 'msg' && s.kind !== 'work-item' && s.kind !== 'owner-turn' && s.kind !== 'promotion') return null;
   if (typeof s.verified !== 'boolean') return null;
   if (typeof s.verifiedAt !== 'string' || !s.verifiedAt) return null;
   return {
     kind: s.kind,
     verified: s.verified,
     verifiedAt: s.verifiedAt,
+    ...(Array.isArray(s.promotedFrom) ? { promotedFrom: s.promotedFrom.filter((v): v is NonNullable<FactSourceProvenance['promotedFrom']>[number] =>
+      !!v && typeof v === 'object' && typeof v.ref === 'string' &&
+      ['memory', 'session-turn', 'work-item', 'report', 'fact', 'decision'].includes(v.kind)) } : {}),
     ...(typeof s.quote === 'string' && s.quote ? { quote: s.quote } : {}),
     ...(s.quoteRedacted === true ? { quoteRedacted: true } : {}),
     ...(typeof s.label === 'string' && s.label ? { label: s.label } : {}),
@@ -1801,6 +1855,11 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // absorbed), and it refuses here in the store rather than only in the tool so a
   // routine or a backfill cannot slip past it — the same reasoning that puts
   // validateUndecidableSettledBy and validateConventionEnforcement on this side.
+  // P-012 — only a RESOLVED anchor (a stored blob digest) counts as a lifetime: an
+  // anchor recorded as `unknown` can never report the fact stale.
+  const fileAnchored = (input.dependsOn ?? []).some(
+    (d) => isFactFileAnchor(d?.cell ?? '') && typeof d.digest === 'string' && d.digest.length > 0,
+  );
   const lifetimeError = validateFactLifetime({
     key: input.key,
     kind: input.kind ?? null,
@@ -1808,6 +1867,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
     permanent: input.permanent,
     confidence: input.confidence ?? null,
     subjectVolatile,
+    fileAnchored,
   });
   if (lifetimeError) throw new InvalidInputError(lifetimeError);
   const lifetime = resolveFactLifetime({
@@ -1817,6 +1877,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
     confidence: input.confidence ?? null,
     subjectVolatile,
     effectiveTtlSec,
+    fileAnchored,
   });
   const permanentFact = lifetime.permanent;
   const ttl = lifetime.ttlSec;
@@ -1852,6 +1913,33 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   const recheck = normalizeFactRecheck(input.recheck);
   const dependsOn = normalizeFactDependencies(input.dependsOn);
   const claim = input.claim && typeof input.claim === 'object' ? input.claim : null;
+  const sourceRef = input.sourceRef ?? null;
+
+  // personal-data-reader-set-labels P-012 / D-006, R-8: a writer holding a
+  // restricted Personal Vault disclosure stores a sealed stub. The body AND every
+  // other authored field (settledBy, recheck, claim, sourceRef — WI-10005549) move
+  // to ONE sealed row in THIS transaction, so none lands on the shared row in the
+  // clear. Sealed after validation, so the sealed row holds the normalized values.
+  // Not sealed: the key (it is the row's identity), measurement/enforcement/
+  // dependsOn (structured metadata, not prose) and sourceProvenance (its quote is
+  // captured server-side from the cited source, never authored by the writer).
+  const seal = input.writerOwnerId?.trim()
+    ? await sealSharedTextInTxOrRefuse(sql, {
+        workspaceId: ws,
+        writerOwnerId: input.writerOwnerId,
+        store: 'fact',
+        text: body,
+        context: { scope: input.scope, scopeRef: ref, key },
+        fields: { settledBy, recheck, claim, sourceRef },
+      })
+    : null;
+  const sealed = seal?.sealed === true;
+  const storedBody = seal ? seal.text : body;
+  // settledBy keeps a placeholder so an undecidable fact still reads as having an exit.
+  const storedSettledBy = sealed && settledBy ? SEALED_FIELD_STUB : settledBy;
+  const storedRecheck = sealed ? null : recheck;
+  const storedClaim = sealed ? null : claim;
+  const storedSourceRef = sealed ? null : sourceRef;
 
   // EI-21488671343297100: serialize one cap population's complete seat
   // decision. This MUST be its own statement: under READ COMMITTED PostgreSQL
@@ -1977,21 +2065,21 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
        -- it (never NULL it back out) — carried forward off the superseded row,
        -- since there is no longer an UPDATE branch to COALESCE against.
        COALESCE(${input.potHomeSlug ?? null}, (SELECT harness_slug FROM superseded)),
-       ${input.scope}, ${ref}, ${key}, ${body},
-       ${input.sourceRef ?? null}, ${input.createdBy ?? null},
+       ${input.scope}, ${ref}, ${key}, ${storedBody},
+       ${storedSourceRef}, ${input.createdBy ?? null},
        ${permanentFact ? sql`'infinity'::timestamptz` : sql`now() + make_interval(secs => ${ttl})`},
        ${input.shareable === true},
        ${audienceScope},
        ${input.sourceProvenance ? JSON.stringify(input.sourceProvenance) : null}::text::jsonb,
        ${confidence},
        ${measurement ? JSON.stringify(measurement) : null}::text::jsonb,
-       ${recheck ? JSON.stringify(recheck) : null}::text::jsonb,
+       ${storedRecheck ? JSON.stringify(storedRecheck) : null}::text::jsonb,
        (SELECT id FROM superseded),
        ${kind},
        ${dependsOn ? JSON.stringify(dependsOn) : null}::text::jsonb,
-       ${claim ? JSON.stringify(claim) : null}::text::jsonb,
+       ${storedClaim ? JSON.stringify(storedClaim) : null}::text::jsonb,
        ${enforcement ? JSON.stringify(enforcement) : null}::text::jsonb,
-       ${settledBy})
+       ${storedSettledBy})
       RETURNING id, superseded_at::text, supersedes_id,
                 scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
                 confidence, measurement, recheck, kind, depends_on, claim, enforcement, settled_by, created_by, updated_at::text, expires_at::text
@@ -2398,7 +2486,74 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
       scopeRef: ref,
     });
   }
+
+  // P-003 (R-3): a re-assert that REPLACED a prior version cascades to every closed
+  // work item whose completion assumptions pinned that version; keys this write
+  // retired are retractions of their own. A re-assert of an unchanged body is a
+  // refresh, not a supersession (see retraction-cascade.ts). Never throws.
+  await cascadeAssertSupersession(sql, {
+    workspaceId: ws,
+    scope: input.scope,
+    scopeRef: ref,
+    key: row.key ?? key,
+    supersedesId: row.supersedes_id,
+    newId: writtenId,
+    newBody: typeof row.body === 'string' ? row.body : null,
+    retiredKeys: row.retired_keys ?? [],
+    by: input.createdBy ?? null,
+  });
   return fact;
+}
+
+async function cascadeAssertSupersession(
+  sql: Sql,
+  a: {
+    workspaceId: string;
+    scope: FactScope;
+    scopeRef: string | null;
+    key: string;
+    supersedesId: string | number | null | undefined;
+    newId: string | number | null | undefined;
+    newBody: string | null;
+    retiredKeys: readonly string[];
+    by: string | null;
+  },
+): Promise<void> {
+  try {
+    if (a.supersedesId == null && a.retiredKeys.length === 0) return;
+    const { cascadeFactChange, supersessionChangedBody } = await import('./retraction-cascade');
+    if (a.supersedesId != null) {
+      const oldId = Number(a.supersedesId);
+      if (await supersessionChangedBody(sql, oldId, a.newBody)) {
+        const newId = a.newId != null ? Number(a.newId) : null;
+        await cascadeFactChange(sql, {
+          kind: 'superseded',
+          workspaceId: a.workspaceId,
+          scope: a.scope,
+          scopeRef: a.scopeRef,
+          key: a.key,
+          versionId: oldId,
+          supersededBy: newId,
+          reason: `superseded by version ${newId ?? '?'}`,
+          by: a.by,
+        });
+      }
+    }
+    for (const retired of a.retiredKeys) {
+      await cascadeFactChange(sql, {
+        kind: 'retracted',
+        workspaceId: a.workspaceId,
+        scope: a.scope,
+        scopeRef: a.scopeRef,
+        key: retired,
+        versionId: null,
+        reason: `superseded by ${a.key}`,
+        by: a.by,
+      });
+    }
+  } catch (err) {
+    console.warn(`[retraction-cascade] assert hook failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 /** Soft-retract by identity. Returns whether a live fact was retracted. */
@@ -2427,7 +2582,7 @@ export async function retractFact(
   // P-008 (a): retract the CURRENT version. A retraction is a state change on
   // the live value, not a new version — it does not fork the chain, and the
   // superseded tail must stay untouched or history would be rewritten by it.
-  const rows = await sql<{ key: string }[]>`
+  const rows = await sql<{ key: string; id: string | number }[]>`
     UPDATE harness_shared.agent_facts
        SET retracted_at = now(), retracted_by = ${retractedBy}, retraction_reason = ${reason}
      WHERE workspace_id = ${ws} AND scope = ${args.scope}
@@ -2435,8 +2590,23 @@ export async function retractFact(
        AND source_hive IS NULL
        AND superseded_at IS NULL
        AND retracted_at IS NULL
-    RETURNING key`;
-  return rows.length > 0;
+    RETURNING key, id`;
+  if (rows.length === 0) return false;
+  // P-003 (R-3): flag every closed work item whose completion assumptions cited
+  // this fact, and tell its terminal owner. Awaited (deterministic delivery) and
+  // never throws — a cascade failure cannot fail the retraction it follows.
+  const { cascadeFactChange } = await import('./retraction-cascade');
+  await cascadeFactChange(sql, {
+    kind: 'retracted',
+    workspaceId: ws,
+    scope: args.scope,
+    scopeRef: ref || null,
+    key: args.key.trim(),
+    versionId: rows[0].id != null ? Number(rows[0].id) : null,
+    reason,
+    by: retractedBy,
+  });
+  return true;
 }
 
 export type FactKeyState = 'live' | 'already-retracted' | 'already-superseded' | 'not-found';
@@ -2969,7 +3139,11 @@ function liveFactPredicate(
          -- would serve an agent both the corrected value and the value it
          -- corrected, as peers.
          AND superseded_at IS NULL
-         AND retracted_at IS NULL AND expires_at > now()
+         AND retracted_at IS NULL
+         -- A wall's TTL is a review deadline, not evidence that its owner-gated
+         -- blocker cleared. Keep the current unretracted wall in every fold;
+         -- listLapsedWallFacts separately drives the expiry escalation.
+         AND (expires_at > now() OR key LIKE ${`${WALL_KEY_PREFIX}%`})
          AND ${
            keyPrefixes.length > 0
              ? sql`key LIKE ANY(${keyPrefixes.map((p) => p + '%')})`
@@ -3199,6 +3373,9 @@ export interface LapsedWallFact {
   body: string;
   createdBy: string;
   expiresAt: string;
+  sourceHive?: string | null;
+  /** Set only by an exact recovery read; absence is never recovery evidence. */
+  recovered?: boolean;
 }
 
 /**
@@ -3211,11 +3388,17 @@ export interface LapsedWallFact {
  * ever touch it.
  */
 export async function listLapsedWallFacts(
-  opts: { limit?: number } = {},
+  opts: { limit?: number; recoveryFor?: Array<Pick<LapsedWallFact,
+    'workspaceId' | 'scope' | 'scopeRef' | 'key' | 'sourceHive'>> } = {},
   inject?: Sql,
 ): Promise<LapsedWallFact[]> {
+  if (opts.recoveryFor?.length === 0) return [];
   const sql = sqlOf(inject);
-  const limit = opts.limit ?? 200;
+  const recovery = opts.recoveryFor !== undefined;
+  const identities = (opts.recoveryFor ?? []).map((fact) => ({
+    ...fact, scopeRef: fact.scopeRef ?? '', sourceHive: fact.sourceHive ?? '',
+  }));
+  const limit = opts.limit ?? (recovery ? opts.recoveryFor!.length : 200);
   const rows = await sql<Array<{
     workspace_id: string;
     scope: FactScope;
@@ -3224,15 +3407,26 @@ export async function listLapsedWallFacts(
     body: string;
     created_by: string;
     expires_at: string;
+    source_hive: string | null;
+    recovered: boolean;
   }>>`
-    SELECT workspace_id, scope, scope_ref, key, body, created_by, expires_at::text
+    SELECT workspace_id, scope, scope_ref, key, body, created_by, expires_at::text,
+           source_hive,
+           ((retracted_at IS NOT NULL AND evicted_at IS NULL)
+             OR (retracted_at IS NULL AND expires_at > now())) AS recovered
       FROM harness_shared.agent_facts
      WHERE key LIKE ${WALL_KEY_PREFIX + '%'}
        -- P-008 (a): only the CURRENT version of a wall can be lapsed. A
        -- superseded version's expiry is a historical fact, not a page.
        AND superseded_at IS NULL
-       AND retracted_at IS NULL
-       AND expires_at < now()
+       AND (${recovery} OR (retracted_at IS NULL AND expires_at < now()))
+       AND (NOT ${recovery} OR EXISTS (
+         SELECT 1 FROM jsonb_to_recordset(${sql.json(identities)}::jsonb)
+           AS target("workspaceId" text, scope text, "scopeRef" text, key text, "sourceHive" text)
+          WHERE target."workspaceId" = workspace_id AND target.scope = agent_facts.scope
+            AND target."scopeRef" = coalesce(scope_ref, '') AND target.key = agent_facts.key
+            AND target."sourceHive" = coalesce(source_hive, '')
+       ))
      ORDER BY expires_at ASC
      LIMIT ${limit}`;
   return rows.map((r) => ({
@@ -3243,6 +3437,8 @@ export async function listLapsedWallFacts(
     body: r.body,
     createdBy: r.created_by,
     expiresAt: r.expires_at,
+    sourceHive: r.source_hive,
+    ...(recovery ? { recovered: r.recovered } : {}),
   }));
 }
 
@@ -3551,13 +3747,18 @@ export async function sweepExpiredFacts(inject?: Sql): Promise<number> {
   const sql = sqlOf(inject);
   const rows = await sql<{ key: string }[]>`
     DELETE FROM harness_shared.agent_facts
-     WHERE expires_at < now() - interval '30 days'
+     WHERE (expires_at < now() - interval '30 days'
         OR retracted_at < now() - interval '30 days'
         -- P-008 (a): bound the version tail on the SUPERSEDE date, not on the
         -- version's own expiry. A long-TTL fact (a 90d wall) corrected on day
         -- one leaves a version whose expires_at is still months out; without
         -- this clause the tail would outlive the value it was corrected to.
-        OR superseded_at < now() - interval '30 days'
+        OR superseded_at < now() - interval '30 days')
+       -- Keep the current unretracted wall as durable blocker state after its
+       -- TTL lapse. Expiry alerts for review; only explicit retraction or a
+       -- newer version retires the blocker and allows history cleanup.
+       AND NOT (key LIKE ${`${WALL_KEY_PREFIX}%`}
+                AND retracted_at IS NULL AND superseded_at IS NULL)
     RETURNING key`;
   return rows.length;
 }
@@ -3641,9 +3842,12 @@ export function renderFactsFold(
   const lines = facts.map((f) => {
     const scope = f.scopeRef ? `${f.scope}:${f.scopeRef}` : f.scope;
     const aud = f.audienceScope ? ` ⊸${f.audienceScope}` : '';
+    const expiresAt = Date.parse(f.expiresAt);
     const expiry = isPermanentFactExpiry(f.expiresAt)
       ? 'permanent'
-      : `expires ~${Math.max(0, Math.round((Date.parse(f.expiresAt) - now) / 86_400_000))}d`;
+      : f.key.startsWith(WALL_KEY_PREFIX) && Number.isFinite(expiresAt) && expiresAt <= now
+        ? 'TTL lapsed — remains active until retracted'
+        : `expires ~${Math.max(0, Math.round((expiresAt - now) / 86_400_000))}d`;
     const age = renderFactAge(f.updatedAt, now);
     const rendered = renderFactSrc(f);
     const src = rendered ? `, src ${rendered}` : '';

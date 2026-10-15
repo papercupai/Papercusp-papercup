@@ -44,17 +44,19 @@
 
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { open, readdir, stat } from 'node:fs/promises';
+import { open, readFile, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, basename } from 'node:path';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { listAllProjectedTools } from '@papercusp/tooldef';
+import { PAPERCUSP_MCP_SERVER_NAMES } from '../papercusp-mcp-servers';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { cooperativeYield } from '../event-loop-lag-monitor';
 import { blockPayloadText, codexToolCallArgsRaw, CLAUDE_OWNER_DIALOG_RESULT_PREFIXES } from '../transcript-wire';
 import { classifyRecordedTurn, OWNER_DIALOG_TURN_MARKER } from '../turn-provenance/turn-ref';
+import { closeTruncatedWholePaste } from '../turn-provenance/envelope-grammar';
 import {
   MACHINE_SURFACE_CATALOGUE_VERSION,
   CLASSIFY_HEAD_CHARS,
@@ -77,11 +79,13 @@ import { capWithMarker, partTextCapFor } from '../transcript-text-caps';
 
 // Backward-compatible export for the session-part security tests and archive readers.
 export { redactKeyDirectedSecrets as redactPartSecrets } from '../sensitive-text';
+import { SESSION_TURN_PART_RETENTION_DAYS, SESSION_TURN_RETENTION_DAYS } from './session-retention';
 
 /** How far back a source file's mtime may be and still get ingested. */
 const INGEST_WINDOW_DAYS = 45;
-/** Retention for indexed turns (the JSONL remains the archive past this). */
-const RETENTION_DAYS = 45;
+/** Retention for indexed turns (the JSONL remains the archive past this).
+ *  Shared with the storage-growth alarm's retention-lag leg. */
+const RETENTION_DAYS = SESSION_TURN_RETENTION_DAYS;
 /** Per-tick caps — the tailer converges across ticks, never gulps. */
 const MAX_FILES_PER_TICK = 200;
 const MAX_TURNS_PER_TICK = 4000;
@@ -100,8 +104,9 @@ const MAX_COUNT_BACKFILL_BYTES_PER_TICK = 50 * 1024 * 1024;
 const MAX_PART_BACKFILL_FILES_PER_TICK = 25;
 const MAX_PART_BACKFILL_BYTES_PER_TICK = 50 * 1024 * 1024;
 /** Per-turn text cap (chars). */
-const TEXT_CAP = 8000;
-/** Skip micro-turns ("ok", "y") — noise for recall. */
+export const SESSION_TURN_TEXT_CAP = 8000;
+const TEXT_CAP = SESSION_TURN_TEXT_CAP;
+/** Short assistant acknowledgements are recall noise; short USER decisions are not. */
 const MIN_TEXT_LEN = 3;
 /**
  * Per-PART text caps (chars) — session_turn_parts, the faithful-render
@@ -120,8 +125,9 @@ const MIN_TEXT_LEN = 3;
 export { PART_TEXT_CAP_PROSE, PART_TEXT_CAP_TOOL, partTextCapFor } from '../transcript-text-caps';
 /** Retention for faithful parts — SHORTER than RETENTION_DAYS by design
  * (D-002): recent sessions render faithfully, older ones degrade to the text
- * turns in session_turns, older still to session_archives. */
-const PART_RETENTION_DAYS = 14;
+ * turns in session_turns, older still to session_archives. Shared with the
+ * storage-growth alarm's retention-lag leg. */
+const PART_RETENTION_DAYS = SESSION_TURN_PART_RETENTION_DAYS;
 
 export type SourceKind = 'claude' | 'omp' | 'codex' | 'agent_chat';
 
@@ -189,8 +195,8 @@ export interface ParsedPart {
  * session take" when it only ever counted a filtered subset.
  */
 export interface LineSignal {
-  /** A real user-typed prompt — same filter session_turns applies for a
-   *  stored speaker='user' row (non-boilerplate, >= MIN_TEXT_LEN chars). */
+  /** A non-empty user prompt, including one-character decisions; the origin
+   *  classifier separately establishes whether its authorship is authenticated. */
   isPrompt: boolean;
   /** This line carries genuine model-response payload (real text and/or a
    *  tool call) — a candidate RESPONSE boundary, as opposed to a pure
@@ -236,11 +242,16 @@ export interface IngestStats {
   phaseMs?: Record<'setup' | 'history' | 'discovery' | 'state' | 'metadata' | 'decode' | 'writes' | 'metadataBackfill' | 'chats' | 'other', number>;
   /** One receipt per nonempty adapter/repair operation, not per file or row.
    * Wall spans include database and scheduling waits; they do not measure CPU.
-   * Counts/spans identify the operation without retaining session IDs or SQL. */
+   * Counts/spans and input hashes identify the operation without retaining
+   * session IDs, owner IDs or SQL. */
   metadataBackfills?: Array<{
     sourceKind: SourceKind;
-    operation: 'sessionOwners' | 'codexAdvSessions';
+    operation: 'sessionOwners' | 'partOwners' | 'codexAdvSessions';
     requested: number;
+    /** Owner repair: SHA-256 of JSON.stringify([sessionIds, owners]) in the
+     * exact UNNEST parameter order. Captured before execution, even on failure;
+     * a fingerprint supports comparison but cannot reconstruct the values. */
+    inputSha256?: string;
     updated?: number;
     startedAtMs: number;
     durationMs: number;
@@ -279,14 +290,37 @@ const BOILERPLATE_PREFIXES = [
  *  bound locally for use inside this file's own parseClaudeLine, below. */
 export { CLAUDE_OWNER_DIALOG_RESULT_PREFIXES };
 
-/** Exported for the archive fall-through reader (session-archive-read.ts,
- *  P-009): archived bytes are VERBATIM, so anything surfaced to agents must
- *  pass the SAME cap+redaction the index applies at ingest. */
-export function cleanTurnText(raw: string): string | null {
+/** Exported for the archive reader (session-archive-read.ts, P-009): archived
+ *  bytes are VERBATIM, so anything surfaced to agents must retain the same
+ *  secret redaction as the index, with an opt-in to recover past its cap. */
+export interface TurnTextParseOptions {
+  /** Return all parsed turn text while retaining the normal secret redaction. */
+  fullSource?: boolean;
+  /** False only while replaying a legacy prefix whose accepted turn indexes are fixed. */
+  retainShortUserTurns?: boolean;
+}
+
+export function cleanTurnText(raw: string, options: TurnTextParseOptions = {}): string | null {
   const t = raw.trim();
-  if (t.length < MIN_TEXT_LEN) return null;
+  if (t.length < (options.retainShortUserTurns ? 1 : MIN_TEXT_LEN)) return null;
   for (const p of BOILERPLATE_PREFIXES) if (t.startsWith(p)) return null;
-  return redactSelfIdentifyingSecrets(t.slice(0, TEXT_CAP));
+  if (options.fullSource || t.length <= TEXT_CAP) return redactSelfIdentifyingSecrets(t);
+  // The cap cuts a whole-prompt paste's closing tag, so a PTY-typed machine
+  // kickoff over the cap would lose the evidence that it is ONE paste and fall
+  // to the unenrolled residual (WI-6554700010009878). Re-close it from the raw
+  // end HERE, in the stored text itself, so insert-time stamping and every
+  // later head+tail re-derivation (rederiveProvenanceWindow) see the same
+  // whole paste. Owner words before or after the paste still fail the test.
+  return redactSelfIdentifyingSecrets(
+    closeTruncatedWholePaste(t.slice(0, TEXT_CAP), t.slice(-PROVENANCE_PASTE_TAIL_CHARS)),
+  );
+}
+
+function cleanMessageText(raw: string, speaker: string, options: TurnTextParseOptions = {}): string | null {
+  return cleanTurnText(raw, {
+    ...options,
+    retainShortUserTurns: speaker === 'user' && options.retainShortUserTurns !== false,
+  });
 }
 
 /**
@@ -342,7 +376,10 @@ export function promptOriginHash(raw: string): string {
  * human-authored prompt variant belongs in the recall index: other queued
  * commands are client plumbing and must keep the existing skip behavior.
  */
-function parseClaudeQueuedCommand(obj: Record<string, unknown>): ParsedTurn | null {
+function parseClaudeQueuedCommand(
+  obj: Record<string, unknown>,
+  options: TurnTextParseOptions = {},
+): ParsedTurn | null {
   if (obj.type !== 'attachment') return null;
   const attachment = obj.attachment as {
     type?: unknown;
@@ -360,7 +397,7 @@ function parseClaudeQueuedCommand(obj: Record<string, unknown>): ParsedTurn | nu
   ) {
     return null;
   }
-  const text = cleanTurnText(attachment.prompt);
+  const text = cleanMessageText(attachment.prompt, 'user', options);
   if (!text) return null;
   return {
     ts: parseTs(attachment.timestamp) ?? parseTs(obj.timestamp),
@@ -383,14 +420,14 @@ function parseClaudeQueuedCommand(obj: Record<string, unknown>): ParsedTurn | nu
 
 /** Claude Code line → turn. Lines include normal user/assistant messages and
  * the narrowly gated human `attachment.type='queued_command'` prompt shape. */
-export function parseClaudeLine(line: string): ParsedTurn | null {
+export function parseClaudeLine(line: string, options: TurnTextParseOptions = {}): ParsedTurn | null {
   let obj: Record<string, unknown>;
   try {
     obj = JSON.parse(line) as Record<string, unknown>;
   } catch {
     return null;
   }
-  const queuedCommand = parseClaudeQueuedCommand(obj);
+  const queuedCommand = parseClaudeQueuedCommand(obj, options);
   if (queuedCommand) return queuedCommand;
   if (obj.type !== 'user' && obj.type !== 'assistant') return null;
   const message = obj.message as { role?: string; content?: unknown; stop_reason?: unknown } | undefined;
@@ -414,7 +451,7 @@ export function parseClaudeLine(line: string): ParsedTurn | null {
       break;
     }
   }
-  const text = cleanTurnText(rawText);
+  const text = cleanMessageText(rawText, speaker, options);
   if (!text) return null;
   const messageId = typeof obj.uuid === 'string' ? obj.uuid : null;
   const parentMessageId = typeof obj.parentUuid === 'string' ? obj.parentUuid : null;
@@ -546,7 +583,7 @@ export function parseClaudeParts(line: string): ParsedPart[] {
 }
 
 /** OMP line → turn. Lines: {type:'message', timestamp, message:{role, content:[{type:'text',text}]}}. */
-export function parseOmpLine(line: string): ParsedTurn | null {
+export function parseOmpLine(line: string, options: TurnTextParseOptions = {}): ParsedTurn | null {
   let obj: Record<string, unknown>;
   try {
     obj = JSON.parse(line) as Record<string, unknown>;
@@ -563,7 +600,8 @@ export function parseOmpLine(line: string): ParsedTurn | null {
   if (!message) return null;
   const speaker = message.role === 'user' ? 'user' : message.role === 'assistant' ? 'assistant' : null;
   if (!speaker) return null;
-  const text = cleanTurnText(textFromContent(message.content));
+  const rawText = textFromContent(message.content);
+  const text = cleanMessageText(rawText, speaker, options);
   if (!text) return null;
   const messageId = typeof obj.id === 'string' ? obj.id : null;
   const parentMessageId = typeof obj.parentId === 'string' ? obj.parentId : null;
@@ -586,11 +624,12 @@ export function parseOmpLine(line: string): ParsedTurn | null {
     messageId,
     parentMessageId,
     responseDisposition,
+    promptHash: speaker === 'user' ? promptOriginHash(rawText) : null,
   };
 }
 
 /** Codex rollout line → turn. Lines: {timestamp, type:'response_item', payload:{type:'message', role, content:[{type:'input_text'|'output_text', text}]}}. */
-export function parseCodexLine(line: string): ParsedTurn | null {
+export function parseCodexLine(line: string, options: TurnTextParseOptions = {}): ParsedTurn | null {
   let obj: Record<string, unknown>;
   try {
     obj = JSON.parse(line) as Record<string, unknown>;
@@ -604,13 +643,13 @@ export function parseCodexLine(line: string): ParsedTurn | null {
     typeof obj.text === 'string' &&
     (typeof obj.ts === 'number' || typeof obj.ts === 'string')
   ) {
-    const text = cleanTurnText(obj.text);
+    const text = cleanMessageText(obj.text, 'user', options);
     if (!text) return null;
     const rawTs = obj.ts;
     const ts = typeof rawTs === 'number' && rawTs < 10_000_000_000
       ? new Date(rawTs * 1000)
       : parseTs(rawTs);
-    return { ts, speaker: 'user', text, sessionId: obj.session_id };
+    return { ts, speaker: 'user', text, sessionId: obj.session_id, promptHash: promptOriginHash(obj.text) };
   }
   if (obj.type !== 'response_item') return null;
   const payload = obj.payload as {
@@ -624,7 +663,8 @@ export function parseCodexLine(line: string): ParsedTurn | null {
   if (!payload || payload.type !== 'message') return null;
   const speaker = payload.role === 'user' ? 'user' : payload.role === 'assistant' ? 'assistant' : null;
   if (!speaker) return null; // 'developer'/'system' = injected instructions, skip
-  const text = cleanTurnText(textFromContent(payload.content));
+  const rawText = textFromContent(payload.content);
+  const text = cleanMessageText(rawText, speaker, options);
   if (!text) return null;
   const metadata =
     payload.internal_chat_message_metadata_passthrough != null &&
@@ -650,6 +690,8 @@ export function parseCodexLine(line: string): ParsedTurn | null {
     messageId: typeof payload.id === 'string' ? payload.id : null,
     parentMessageId: null,
     responseDisposition,
+    // Correlate the hook's original prompt, before display cleanup/truncation.
+    promptHash: speaker === 'user' ? promptOriginHash(rawText) : null,
   };
 }
 
@@ -796,7 +838,7 @@ export function classifyClaudeLine(line: string): LineSignal | null {
       Array.isArray(content) &&
       content.some((p) => p && typeof p === 'object' && (p as { type?: string }).type === 'tool_result');
     if (isToolResultCarrier) return NULL_SIGNAL;
-    const text = cleanTurnText(textFromContent(content));
+    const text = cleanMessageText(textFromContent(content), 'user');
     return text ? { ...NULL_SIGNAL, isPrompt: true } : NULL_SIGNAL;
   }
 
@@ -841,7 +883,7 @@ export function classifyOmpLine(line: string): LineSignal | null {
   if (!message) return null;
 
   if (message.role === 'user') {
-    const text = cleanTurnText(textFromContent(message.content));
+    const text = cleanMessageText(textFromContent(message.content), 'user');
     return text ? { ...NULL_SIGNAL, isPrompt: true } : NULL_SIGNAL;
   }
   if (message.role === 'toolResult') return NULL_SIGNAL;
@@ -882,7 +924,7 @@ export function classifyCodexLine(line: string): LineSignal | null {
     return null;
   }
   if (typeof obj.session_id === 'string' && typeof obj.text === 'string') {
-    return cleanTurnText(obj.text) ? { ...NULL_SIGNAL, isPrompt: true } : NULL_SIGNAL;
+    return cleanMessageText(obj.text, 'user') ? { ...NULL_SIGNAL, isPrompt: true } : NULL_SIGNAL;
   }
   if (obj.type !== 'response_item') return null;
   const payload = obj.payload as { type?: string; role?: string; content?: unknown; id?: string } | undefined;
@@ -894,7 +936,7 @@ export function classifyCodexLine(line: string): LineSignal | null {
   if (payload.type !== 'message') return null;
 
   if (payload.role === 'user') {
-    const text = cleanTurnText(textFromContent(payload.content));
+    const text = cleanMessageText(textFromContent(payload.content), 'user');
     return text ? { ...NULL_SIGNAL, isPrompt: true } : NULL_SIGNAL;
   }
   if (payload.role === 'assistant') {
@@ -1224,6 +1266,11 @@ interface TurnRow {
  */
 export const UNENROLLED_ORIGIN_VERDICT = 'unenrolled-origin';
 
+/** Durable identity of a successful exact hook-receipt correlation. Unlike
+ * the old owner-typed text residual, this survives receipt expiry and lets
+ * the classifier backfill preserve positive evidence without guessing. */
+export const HOOK_AUTHENTICATED_PROMPT_ORIGIN = 'hook-authenticated-prompt';
+
 /**
  * Source kinds whose `speaker='user'` rows may arrive without an enrollment
  * envelope, and whose uncorrelated `owner-typed` residual is therefore
@@ -1249,13 +1296,41 @@ export interface PromptOriginStamp {
   session_id: string;
   prompt_hash: string;
   submitted_at: Date | string;
+  /** Validity is anchored to the TURN it authenticates, never to ingest time
+   *  (WI-10006568): a stamp vouches for a prompt typed before it expired. */
+  expires_at?: Date | string | null;
+}
+
+export interface CorrelatePromptOriginOptions {
+  /** Rows that must keep a stamp before any other row may take one. Replay
+   *  (WI-10008183) passes the already-promoted rows here: each consumed a
+   *  stamp when it was promoted, and a nearer candidate must not take it. */
+  priority?: ReadonlySet<TurnRow>;
 }
 
 /** Upgrade only the exact v5 uncertainty state. An authenticated stamp can
- * never override an envelope or catalogue machine verdict. */
-export function correlatePromptOriginStamps(rows: TurnRow[], stamps: PromptOriginStamp[]): number {
-  const used = new Set<number>();
-  let matched = 0;
+ * never override an envelope or catalogue machine verdict.
+ *
+ * Each stamp vouches for at most one turn and each turn takes at most one
+ * stamp. Rows and stamps are matched per (source, session, prompt hash)
+ * cluster, because only identical prompts can compete for a stamp. Inside a
+ * cluster the matching is chosen by time, never by the order rows arrive in
+ * (WI-10008184: an earlier identical turn took the stamp of a later one). The
+ * chosen matching maximises, in this order: priority rows matched, rows
+ * matched, then closeness (smallest total |turn − stamp| delta).
+ *
+ * The search is over order-preserving matchings of the time-sorted rows and
+ * stamps. For a distance cost with a symmetric window that loses nothing: any
+ * crossing pair can be uncrossed without leaving the window or adding
+ * distance. Expiry is a per-pair check against the turn's own time. */
+export function correlatePromptOriginStamps(
+  rows: TurnRow[],
+  stamps: PromptOriginStamp[],
+  options: CorrelatePromptOriginOptions = {},
+): number {
+  const clusterKey = (sourceKind: string, sessionId: string, hash: string) =>
+    [sourceKind, sessionId, hash].join('\u0000');
+  const rowsByCluster = new Map<string, Array<{ row: TurnRow; ms: number }>>();
   for (const row of rows) {
     if (
       row.turn_origin_classifier_version !== MACHINE_SURFACE_CATALOGUE_VERSION ||
@@ -1263,32 +1338,128 @@ export function correlatePromptOriginStamps(rows: TurnRow[], stamps: PromptOrigi
       !row.prompt_hash ||
       !row.ts
     ) continue;
-    const rowMs = Date.parse(row.ts);
-    if (!Number.isFinite(rowMs)) continue;
-    let best = -1;
-    let bestDelta = Number.POSITIVE_INFINITY;
-    for (let i = 0; i < stamps.length; i += 1) {
-      if (used.has(i)) continue;
-      const stamp = stamps[i];
-      if (
-        stamp.source_kind !== row.source_kind ||
-        stamp.session_id !== row.session_id ||
-        stamp.prompt_hash !== row.prompt_hash
-      ) continue;
-      const submittedMs = new Date(stamp.submitted_at).getTime();
-      const delta = Math.abs(rowMs - submittedMs);
-      if (Number.isFinite(delta) && delta <= PROMPT_ORIGIN_MATCH_WINDOW_MS && delta < bestDelta) {
-        best = i;
-        bestDelta = delta;
+    const ms = Date.parse(row.ts);
+    if (!Number.isFinite(ms)) continue;
+    const key = clusterKey(row.source_kind, row.session_id, row.prompt_hash);
+    rowsByCluster.set(key, [...(rowsByCluster.get(key) ?? []), { row, ms }]);
+  }
+  if (!rowsByCluster.size) return 0;
+  const stampsByCluster = new Map<string, Array<{ ms: number; expiresMs: number | null }>>();
+  for (const stamp of stamps) {
+    const key = clusterKey(stamp.source_kind, stamp.session_id, stamp.prompt_hash);
+    if (!rowsByCluster.has(key)) continue;
+    const ms = new Date(stamp.submitted_at).getTime();
+    if (!Number.isFinite(ms)) continue;
+    const expiresMs = stamp.expires_at == null ? null : new Date(stamp.expires_at).getTime();
+    stampsByCluster.set(key, [...(stampsByCluster.get(key) ?? []), { ms, expiresMs }]);
+  }
+  const priority = options.priority;
+  let matched = 0;
+  for (const [key, clusterRows] of rowsByCluster) {
+    const clusterStamps = stampsByCluster.get(key);
+    if (!clusterStamps?.length) continue;
+    clusterRows.sort((a, b) => a.ms - b.ms);
+    clusterStamps.sort((a, b) => a.ms - b.ms);
+    const deltaOf = (r: { ms: number }, s: { ms: number; expiresMs: number | null }): number | null => {
+      // An expired stamp cannot vouch for a prompt typed after it expired. It
+      // is compared with the TURN's own time, not with now(): measuring it
+      // against ingest time lost every owner turn ingested more than one TTL
+      // late (WI-10006568, 58 rows measured). A NaN expiry fails closed.
+      if (s.expiresMs != null && !(s.expiresMs > r.ms)) return null;
+      const delta = Math.abs(r.ms - s.ms);
+      return delta <= PROMPT_ORIGIN_MATCH_WINDOW_MS ? delta : null;
+    };
+    // No pair can span a gap wider than the window, so each run of events
+    // between such gaps is matched on its own. That keeps the table small for
+    // a prompt repeated all session long ("continue").
+    for (const [rowSlice, stampSlice] of splitAtWindowGaps(clusterRows, clusterStamps)) {
+      for (const index of matchCluster(rowSlice, stampSlice, deltaOf, (r) => priority?.has(r.row) ?? false)) {
+        const row = rowSlice[index].row;
+        row.turn_origin = HOOK_AUTHENTICATED_PROMPT_ORIGIN;
+        row.turn_origin_verdict = 'owner-typed';
+        matched += 1;
       }
     }
-    if (best < 0) continue;
-    used.add(best);
-    row.turn_origin = null;
-    row.turn_origin_verdict = 'owner-typed';
-    matched += 1;
   }
   return matched;
+}
+
+/** Split time-sorted rows and stamps wherever consecutive events (of either
+ * kind) are more than the match window apart. Segments without both a row and
+ * a stamp are dropped. */
+function splitAtWindowGaps<R extends { ms: number }, S extends { ms: number }>(rows: R[], stamps: S[]): Array<[R[], S[]]> {
+  const segments: Array<[R[], S[]]> = [];
+  let current: [R[], S[]] = [[], []];
+  let lastMs = Number.NEGATIVE_INFINITY;
+  let i = 0;
+  let j = 0;
+  while (i < rows.length || j < stamps.length) {
+    const takeRow = j >= stamps.length || (i < rows.length && rows[i].ms <= stamps[j].ms);
+    const ms = takeRow ? rows[i].ms : stamps[j].ms;
+    if (ms - lastMs > PROMPT_ORIGIN_MATCH_WINDOW_MS) {
+      if (current[0].length && current[1].length) segments.push(current);
+      current = [[], []];
+    }
+    if (takeRow) current[0].push(rows[i++]);
+    else current[1].push(stamps[j++]);
+    lastMs = ms;
+  }
+  if (current[0].length && current[1].length) segments.push(current);
+  return segments;
+}
+
+/** Order-preserving matching of time-sorted rows to time-sorted stamps by
+ * dynamic programming over prefixes. Returns the indices of matched rows.
+ * Score compared lexicographically: priority matched, matched, −total delta.
+ * Ties keep the earlier row, which is what the row-order rule used to do. */
+function matchCluster<R, S>(
+  rows: R[],
+  stamps: S[],
+  deltaOf: (row: R, stamp: S) => number | null,
+  isPriority: (row: R) => boolean,
+): number[] {
+  const n = rows.length;
+  const m = stamps.length;
+  const width = m + 1;
+  const cells = (n + 1) * width;
+  const prio = new Int32Array(cells);
+  const count = new Int32Array(cells);
+  const cost = new Float64Array(cells);
+  // 0 = skip row, 1 = skip stamp, 2 = match row with stamp
+  const step = new Uint8Array(cells);
+  const better = (p: number, c: number, d: number, at: number) =>
+    p !== prio[at] ? p > prio[at] : c !== count[at] ? c > count[at] : d < cost[at];
+  const set = (at: number, from: number, move: number) => {
+    prio[at] = prio[from]; count[at] = count[from]; cost[at] = cost[from]; step[at] = move;
+  };
+  for (let j = 1; j <= m; j += 1) step[j] = 1;
+  for (let i = 1; i <= n; i += 1) {
+    const priority = isPriority(rows[i - 1]) ? 1 : 0;
+    for (let j = 1; j <= m; j += 1) {
+      const at = i * width + j;
+      set(at, (i - 1) * width + j, 0);
+      const skipStamp = i * width + j - 1;
+      if (better(prio[skipStamp], count[skipStamp], cost[skipStamp], at)) set(at, skipStamp, 1);
+      const delta = deltaOf(rows[i - 1], stamps[j - 1]);
+      if (delta != null) {
+        const prev = (i - 1) * width + j - 1;
+        const p = prio[prev] + priority;
+        const c = count[prev] + 1;
+        const d = cost[prev] + delta;
+        if (better(p, c, d, at)) { prio[at] = p; count[at] = c; cost[at] = d; step[at] = 2; }
+      }
+    }
+  }
+  const matchedRows: number[] = [];
+  let i = n;
+  let j = m;
+  while (i > 0 && j > 0) {
+    const move = step[i * width + j];
+    if (move === 2) { matchedRows.push(i - 1); i -= 1; j -= 1; }
+    else if (move === 1) j -= 1;
+    else i -= 1;
+  }
+  return matchedRows;
 }
 
 function isUnenrolledFileRow(row: Pick<TurnRow, 'source_kind' | 'speaker'>): boolean {
@@ -1313,6 +1484,54 @@ async function listCandidateFiles(
     }
   }
   return out;
+}
+
+/** A managed fork can leave a seed copy with the source session's native id in
+ * the fork owner's directory, including after the original file is archived.
+ * Resolve path owners from psu's first-write-wins birth index before decoding
+ * or repairing indexed turns. An absent index preserves the path fallback. */
+async function indexedClaudeOwnersForCandidates(
+  adapter: FileAdapter,
+  candidates: ReadonlyArray<{ path: string }>,
+): Promise<Map<string, string>> {
+  const sessionIds = new Set<string>();
+  for (const candidate of candidates) {
+    const { sessionId, owner } = adapter.meta(candidate.path);
+    if (owner) sessionIds.add(sessionId);
+  }
+  const resolved = new Map<string, string>();
+  const ids = [...sessionIds];
+  for (let start = 0; start < ids.length; start += 32) {
+    await Promise.all(ids.slice(start, start + 32).map(async (sessionId) => {
+      const indexed = await indexedClaudeOwner(sessionId);
+      if (indexed) resolved.set(sessionId, indexed);
+    }));
+  }
+  return resolved;
+}
+
+const indexedClaudeOwnerCache = pinModuleState<Map<string, { owner: string | null; at: number }>>(
+  '@papercusp/operator-core.indexedClaudeOwners', () => new Map(),
+);
+
+async function indexedClaudeOwner(sessionId: string): Promise<string | null> {
+  if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(sessionId)) return null;
+  const cached = indexedClaudeOwnerCache.get(sessionId);
+  if (cached && (cached.owner || Date.now() - cached.at < 60_000)) return cached.owner;
+  let owner: string | null = null;
+  try {
+    const indexed = JSON.parse(await readFile(
+      join(HOME, '.papercusp', 'psu-session-owners', sessionId), 'utf8',
+    )) as { ownerId?: unknown };
+    owner = typeof indexed.ownerId === 'string' && indexed.ownerId ? indexed.ownerId : null;
+  } catch { /* older/untracked sessions have no birth index */ }
+  indexedClaudeOwnerCache.delete(sessionId);
+  indexedClaudeOwnerCache.set(sessionId, { owner, at: Date.now() });
+  if (indexedClaudeOwnerCache.size > 20_000) {
+    const oldest = indexedClaudeOwnerCache.keys().next().value;
+    if (oldest) indexedClaudeOwnerCache.delete(oldest);
+  }
+  return owner;
 }
 
 /** Read complete lines from `filePath` starting at `offset`, bounded. Returns
@@ -1569,11 +1788,12 @@ export function stampTurnProvenance(row: TurnRow): void {
   row.turn_origin_verdict = verdict;
 }
 
-async function insertTurns(sql: Sql, rows: TurnRow[]): Promise<number> {
+export async function insertTurns(sql: Sql, rows: TurnRow[]): Promise<number> {
   if (!rows.length) return 0;
   for (const row of rows) stampTurnProvenance(row);
   const candidates = rows.filter((row) => row.prompt_hash && row.ts && row.turn_origin_verdict === UNENROLLED_ORIGIN_VERDICT);
   if (candidates.length) {
+    const sourceKinds = [...new Set(candidates.map((row) => row.source_kind))];
     const sessionIds = [...new Set(candidates.map((row) => row.session_id))];
     const promptHashes = [...new Set(candidates.map((row) => row.prompt_hash!))];
     const times = candidates.map((row) => Date.parse(row.ts!)).filter(Number.isFinite);
@@ -1581,15 +1801,17 @@ async function insertTurns(sql: Sql, rows: TurnRow[]): Promise<number> {
       const from = new Date(Math.min(...times) - PROMPT_ORIGIN_MATCH_WINDOW_MS);
       const to = new Date(Math.max(...times) + PROMPT_ORIGIN_MATCH_WINDOW_MS);
       const stamps = await sql<PromptOriginStamp[]>`
-        SELECT source_kind, session_id, prompt_hash, submitted_at
+        SELECT source_kind, session_id, prompt_hash, submitted_at, expires_at
           FROM harness_shared.session_prompt_origin_stamps
          WHERE workspace_id = ${activeWorkspaceId()}
-           AND source_kind = 'claude'
+           AND source_kind = ANY(${sql.array(sourceKinds)}::text[])
            AND session_id = ANY(${sql.array(sessionIds)}::text[])
            AND prompt_hash = ANY(${sql.array(promptHashes)}::text[])
            AND submitted_at BETWEEN ${from} AND ${to}
-           AND expires_at > now()
       `;
+      // Expiry is checked per row inside correlatePromptOriginStamps, against
+      // the turn's own timestamp. An `expires_at > now()` filter here made
+      // the verdict depend on ingest lag (WI-10006568).
       correlatePromptOriginStamps(rows, stamps);
     }
   }
@@ -1651,8 +1873,9 @@ function addSessionPartToolAlias(
 }
 
 /**
- * Resolve the two client-mangled Papercusp MCP spellings persisted by Codex
- * and Claude to the live projected catalog's canonical `group:verb` name.
+ * Resolve the client-mangled Papercusp MCP spellings persisted by Codex and
+ * Claude (one each per server name in `PAPERCUSP_MCP_SERVER_NAMES`) to the
+ * live projected catalog's canonical `group:verb` name.
  *
  * This is intentionally NOT `normalizeMcpName`: that helper is tolerant for
  * dispatch and can turn an unknown or separator-ambiguous transcript value
@@ -1682,25 +1905,29 @@ function sessionPartToolAliases(
   const ambiguous = new Set<string>();
   for (const entry of catalog) {
     const canonical = entry.expose?.mcp?.name;
-    // Plugin projections use their own namespaced forms; the two aliases this
+    // Plugin projections use their own namespaced forms; the aliases this
     // repair covers are the core `group:verb` MCP projections only.
     if (typeof canonical !== 'string' || !canonical.includes(':')) continue;
 
-    // Claude's mcp wrapper removes `:` but preserves `-`; Codex's function
-    // name sanitizer removes both separators before parseCodexParts joins the
-    // namespace and function with a dot.
-    addSessionPartToolAlias(
-      aliases,
-      ambiguous,
-      `mcp__papercusp-su__${canonical.replace(/:/g, '_')}`,
-      canonical,
-    );
-    addSessionPartToolAlias(
-      aliases,
-      ambiguous,
-      `mcp__papercusp_su.${canonical.replace(/[:-]/g, '_')}`,
-      canonical,
-    );
+    // One Claude and one Codex spelling per server name the writers register
+    // under (`papercusp` for spawned agents, `papercusp-su` for interactive su).
+    // Claude's mcp wrapper removes `:` but preserves `-` in both server and
+    // tool; Codex's sanitizer turns `-` into `_` in both before
+    // parseCodexParts joins namespace and function with a dot.
+    for (const server of PAPERCUSP_MCP_SERVER_NAMES) {
+      addSessionPartToolAlias(
+        aliases,
+        ambiguous,
+        `mcp__${server}__${canonical.replace(/:/g, '_')}`,
+        canonical,
+      );
+      addSessionPartToolAlias(
+        aliases,
+        ambiguous,
+        `mcp__${server.replace(/-/g, '_')}.${canonical.replace(/[:-]/g, '_')}`,
+        canonical,
+      );
+    }
   }
   return aliases;
 }
@@ -1759,10 +1986,12 @@ async function backfillSessionOwners(
   sql: Sql,
   sourceKind: SourceKind,
   ownersBySession: Map<string, string>,
+  onInput: (inputSha256: string) => void,
 ): Promise<number> {
   if (!ownersBySession.size) return 0;
   const sessionIds = [...ownersBySession.keys()];
   const owners = sessionIds.map((sessionId) => ownersBySession.get(sessionId)!);
+  onInput(createHash('sha256').update(JSON.stringify([sessionIds, owners])).digest('hex'));
   const repaired = await sql`
     UPDATE harness_shared.session_turns AS turns
        SET owner = resolved.owner
@@ -1772,6 +2001,31 @@ async function backfillSessionOwners(
        AND turns.source_kind = ${sourceKind}
        AND turns.session_id = resolved.session_id
        AND turns.owner IS DISTINCT FROM resolved.owner
+  `;
+  return repaired.count ?? 0;
+}
+
+/** Repair faithful-part owner stamps only for Claude ids whose candidate path
+ * conflicts with the launcher's birth index. Most sessions never enter this
+ * UPDATE, preserving the existing no-op cost for ordinary sweeps. */
+async function backfillClaudePartOwners(
+  sql: Sql,
+  ownersBySession: Map<string, string>,
+  onInput: (inputSha256: string) => void,
+): Promise<number> {
+  if (!ownersBySession.size) return 0;
+  const sessionIds = [...ownersBySession.keys()];
+  const owners = sessionIds.map((sessionId) => ownersBySession.get(sessionId)!);
+  onInput(createHash('sha256').update(JSON.stringify([sessionIds, owners])).digest('hex'));
+  const repaired = await sql`
+    UPDATE harness_shared.session_turn_parts AS parts
+       SET owner = resolved.owner
+      FROM UNNEST(${sql.array(sessionIds)}::text[], ${sql.array(owners)}::text[])
+           AS resolved(session_id, owner)
+     WHERE parts.workspace_id = 'default'
+       AND parts.source_kind = 'claude'
+       AND parts.session_id = resolved.session_id
+       AND parts.owner IS DISTINCT FROM resolved.owner
   `;
   return repaired.count ?? 0;
 }
@@ -1866,17 +2120,79 @@ async function backfillCodexAdvSessions(
 }
 
 /**
- * Rows re-classified per sweep. Bounded like every other pass in this file —
- * the corpus is millions of turns, so the sweep converges across ticks rather
- * than trying to swallow history in one go.
+ * Most rows rewritten per statement. This is what bounds how long the pass
+ * holds row locks (WI-10006752).
+ *
+ * Since migration 1405 none of the columns this pass writes is indexed
+ * (WI-10006788), so a rewrite whose new tuple fits on the same heap page is a
+ * HOT update and touches no index. When the page is full Postgres falls back to
+ * a non-HOT update, which re-inserts into every session_turns index, the
+ * 5.5 GB HNSW included. Measured 2026-10-06 while every update was non-HOT:
+ * 100-row statements averaged 84.6 s (~700 shared blocks read per row), and
+ * 5,000-row statements averaged 124.7 s with a 711 s maximum. This cap keeps
+ * that fallback bounded.
  */
-export const PROVENANCE_BACKFILL_BATCH = 5_000;
+export const PROVENANCE_BACKFILL_BATCH = 100;
+
+/**
+ * Heap pages one window examines. The pass walks session_turns in physical
+ * order with a TID range scan, so a window reads at most this many pages,
+ * whatever the backlog looks like.
+ */
+export const PROVENANCE_LAP_WINDOW_PAGES = 64;
+
+/**
+ * Most heap pages one call walks while looking for stale rows. A call stops at
+ * the first window that yields rows, so this only bounds the clean stretches.
+ */
+export const PROVENANCE_PASS_PAGE_BUDGET = 1_024;
+
+/**
+ * How long a lap that found nothing stale stays authoritative. Rows are stamped
+ * at insert (migration 794), so new staleness only appears when
+ * MACHINE_SURFACE_CATALOGUE_VERSION changes, and that restarts the lap. The
+ * daily re-walk is a backstop for an insert path that skips the stamp.
+ */
+export const PROVENANCE_CLEAN_LAP_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Progress of one walk over the session_turns heap ("lap").
+ */
+export interface ProvenanceLap {
+  /** Catalogue version this lap re-derives to; a different one restarts it. */
+  version: number | null;
+  /** First heap page not yet walked. */
+  nextPage: number;
+  /** Relation size in pages when the lap started. */
+  endPage: number;
+  /** Rows found needing a new verdict so far this lap, written or not. */
+  needed: number;
+  /** When a whole lap found nothing to change; null while a lap is in progress. */
+  cleanAt: number | null;
+}
+
+export function newProvenanceLap(): ProvenanceLap {
+  return { version: null, nextPage: 0, endPage: 0, needed: 0, cleanAt: null };
+}
+
+/**
+ * This process's lap. It lives in memory on purpose: it is a progress hint
+ * that nothing depends on for correctness. The cost of losing it is one lap per
+ * restart: a sequential read of the heap (~190,000 pages, ~1.5 GB on
+ * 2026-10-06) plus re-classifying the rows below the current version, spread
+ * over ~15 ticks. Two hosts walking at once only duplicate that work, because
+ * every write is claimed SKIP LOCKED and guarded on the values it read.
+ */
+const processProvenanceLap = pinModuleState<ProvenanceLap>(
+  '@papercusp/operator-core.session-ingest.provenance-lap',
+  newProvenanceLap,
+);
 
 export interface ProvenanceBackfillResult {
   scanned: number;
   updated: number;
-  /** True while rows remain below the current catalogue version — the caller
-   *  can keep sweeping, or simply wait for the next tick. */
+  /** True until a whole lap over the heap claims nothing. The caller can keep
+   *  sweeping, or simply wait for the next tick. */
   more: boolean;
 }
 
@@ -1899,11 +2215,115 @@ export interface ProvenanceBackfillResult {
  * Only the HEAD is fetched — the classifier bounds itself to
  * CLASSIFY_HEAD_CHARS anyway, so pulling whole turn bodies (up to 8k each)
  * would be pure bandwidth.
+ *
+ * FIND THE BACKLOG BY WALKING THE HEAP, NOT BY AN INDEX (WI-10006788). The
+ * pass used to take `ORDER BY turn_origin_classifier_version ... LIMIT n` off
+ * an index on that column. That index is what made every rewrite non-HOT:
+ * Postgres can only update a row in place when no indexed column changes, so
+ * each rewritten row inserted a new entry into all session_turns indexes,
+ * the 5.5 GB HNSW included (measured 2026-10-06: ~700 shared blocks read per
+ * row, 84.6 s per 100-row statement, 0.3% of updates HOT). Migration 1405
+ * dropped the index. The pass now walks the heap in physical order, one window
+ * of PROVENANCE_LAP_WINDOW_PAGES pages at a time, with a TID range scan, and
+ * keeps its place in a ProvenanceLap. Every page is visited once per lap, so
+ * NULL rows and stale-version rows are both reached in a bounded time and
+ * neither population can starve the other. (The old ORDER BY existed because
+ * a plain LIMIT had served 20,000 NULL rows while 2,435 stale-version rows
+ * waited.) A lap that finds nothing to change marks the table clean, and the
+ * pass then idles until the catalogue version changes or
+ * PROVENANCE_CLEAN_LAP_TTL_MS passes.
+ *
+ * WRITE ONLY WHAT CHANGES (WI-10006788). Every stale row in a window is
+ * re-classified, but a row is rewritten only when its verdict or origin
+ * actually changes, or when it has never been classified (version NULL).
+ * Measured 2026-10-06 on a 5,069-row sample of the 1,347,175 rows below
+ * catalogue 7: 11 (0.22%) re-derive to a different verdict. Rewriting the
+ * other 99.8% only to bump the version cost one full-index row rewrite each.
+ * So turn_origin_classifier_version records the catalogue that last WROTE the
+ * verdict, and a row a newer catalogue left unchanged keeps its older number.
+ * Such rows are re-classified, without being written, on every lap.
+ *
+ * CLAIM, DON'T QUEUE (WI-10006752). Rows to rewrite are claimed with
+ * `FOR NO KEY UPDATE SKIP LOCKED`, guarded on the exact values that were
+ * classified, and rewritten in the same statement. A concurrent run of this
+ * pass (an overlapping tick, a second host) or any other writer holding one of
+ * these rows is stepped around, never waited on, and a row that changed since
+ * it was read is left for the next lap. Without the claim the second of two
+ * runs queued behind the first one's row locks until lock_timeout aborted it:
+ * measured 2026-10-06, every one of 25 sampled session_turns lock waits was
+ * this UPDATE waiting on itself. A skipped row still counts as needed, so that
+ * lap is not clean and the next one picks the row up.
+ *
+ * `lap` defaults to this process's lap. Tests pass their own
+ * (`newProvenanceLap()`) to start from page 0 regardless of earlier calls.
  */
 export async function backfillTurnProvenanceOnce(
   sql: Sql,
   limit = PROVENANCE_BACKFILL_BATCH,
+  lap: ProvenanceLap = processProvenanceLap,
+  now: () => number = Date.now,
 ): Promise<ProvenanceBackfillResult> {
+  const version = MACHINE_SURFACE_CATALOGUE_VERSION;
+  if (lap.version !== version) Object.assign(lap, newProvenanceLap(), { version });
+  if (lap.cleanAt !== null) {
+    if (now() - lap.cleanAt < PROVENANCE_CLEAN_LAP_TTL_MS) return { scanned: 0, updated: 0, more: false };
+    Object.assign(lap, newProvenanceLap(), { version });
+  }
+
+  let pagesWalked = 0;
+  while (pagesWalked < PROVENANCE_PASS_PAGE_BUDGET) {
+    if (lap.nextPage >= lap.endPage) {
+      // A lap just ended (or none has started). A lap that found nothing to
+      // change proves the table clean. One that found rows is walked again,
+      // because a row it had to skip (held by another writer, or changed after
+      // it was read) still carries its old verdict.
+      if (lap.endPage > 0 && lap.needed === 0) {
+        lap.cleanAt = now();
+        return { scanned: 0, updated: 0, more: false };
+      }
+      lap.nextPage = 0;
+      lap.needed = 0;
+      lap.endPage = await sessionTurnsHeapPages(sql);
+      if (lap.endPage === 0) {
+        lap.cleanAt = now();
+        return { scanned: 0, updated: 0, more: false };
+      }
+    }
+    const fromPage = lap.nextPage;
+    const toPage = Math.min(fromPage + PROVENANCE_LAP_WINDOW_PAGES, lap.endPage);
+    const window = await rederiveProvenanceWindow(sql, limit, fromPage, toPage);
+    lap.needed += window.needed;
+    lap.nextPage = toPage;
+    pagesWalked += toPage - fromPage;
+    if (window.examined > 0) return { scanned: window.examined, updated: window.updated, more: true };
+  }
+  return { scanned: 0, updated: 0, more: true };
+}
+
+/** Pages in session_turns' main fork: where a lap ends. */
+async function sessionTurnsHeapPages(sql: Sql): Promise<number> {
+  const [row] = await sql<Array<{ pages: number }>>`
+    SELECT (pg_relation_size('harness_shared.session_turns')
+            / current_setting('block_size')::int)::int AS pages
+  `;
+  return row?.pages ?? 0;
+}
+
+/**
+ * Re-classify every stale row on heap pages [fromPage, toPage) and rewrite the
+ * ones whose verdict changes, `limit` rows per statement. The read takes no
+ * locks; only the rewrite claims rows (see writeProvenanceChanges).
+ */
+/** Enough of a turn's END to see a whole-prompt paste's closing tag (the id
+ * is at most 64 chars) plus trailing whitespace. Mirrors TURN_ORIGIN_TAIL_CHARS. */
+export const PROVENANCE_PASTE_TAIL_CHARS = 256;
+
+async function rederiveProvenanceWindow(
+  sql: Sql,
+  limit: number,
+  fromPage: number,
+  toPage: number,
+): Promise<{ examined: number; needed: number; updated: number }> {
   const rows = await sql<
     Array<{
       workspace_id: string;
@@ -1912,91 +2332,182 @@ export async function backfillTurnProvenanceOnce(
       turn_idx: number;
       speaker: string;
       head: string | null;
+      tail: string | null;
+      turn_origin: string | null;
+      turn_origin_verdict: string | null;
+      version: number | null;
     }>
   >`
     SELECT workspace_id, source_kind, session_id, turn_idx, speaker,
-           left(text, ${CLASSIFY_HEAD_CHARS}) AS head
+           left(text, ${CLASSIFY_HEAD_CHARS}) AS head,
+           right(text, ${PROVENANCE_PASTE_TAIL_CHARS}) AS tail,
+           turn_origin, turn_origin_verdict,
+           turn_origin_classifier_version AS version
       FROM harness_shared.session_turns
-     WHERE turn_origin_classifier_version IS NULL
-        OR turn_origin_classifier_version < ${MACHINE_SURFACE_CATALOGUE_VERSION}
-     -- STALE-VERSION ROWS FIRST, never-classified rows after. The two
-     -- populations are NOT equally harmful, and a plain LIMIT serves them in
-     -- physical order, which starves the harmful one: measured on the first
-     -- real sweep, 20,000 rows drained entirely from the NULL backlog while all
-     -- 2,435 version-below-current rows sat untouched behind it.
-     --
-     -- A NULL row is HONEST - it asserts nothing, and every reader is told NULL
-     -- means "never classified". A stale-version row carries a CONCRETE verdict
-     -- with a stored column's authority, and that stale verdict is
-     -- disproportionately the owner-typed RESIDUAL, precisely because the
-     -- residual is what each newer catalogue is written to stop over-assigning.
-     -- So the rows that actively misattribute machine text to the owner drain
-     -- first; the ones that merely say nothing wait.
-     --
-     -- DESC NULLS LAST orders non-NULL versions ahead of NULLs and is served by
-     -- session_turns_provenance_version_idx rather than a sort of the backlog.
-     ORDER BY turn_origin_classifier_version DESC NULLS LAST
-     LIMIT ${limit}
+     -- A TID range scan: reads exactly the pages [fromPage, toPage).
+     WHERE ctid >= ${`(${fromPage},0)`}::tid
+       AND ctid < ${`(${toPage},0)`}::tid
+       AND (turn_origin_classifier_version IS NULL
+            OR turn_origin_classifier_version < ${MACHINE_SURFACE_CATALOGUE_VERSION})
   `;
-  if (!rows.length) return { scanned: 0, updated: 0, more: false };
+  if (!rows.length) return { examined: 0, needed: 0, updated: 0 };
 
-  const wsIds: string[] = [];
-  const kinds: string[] = [];
-  const sessionIds: string[] = [];
-  const turnIdxs: number[] = [];
-  const origins: (string | null)[] = [];
-  const verdicts: string[] = [];
-
+  const changes: ProvenanceChange[] = [];
   for (const r of rows) {
     // Reuse the ONE stamp path rather than re-deriving the rules here — a
     // second copy of this logic is how the four divergent classifiers arose.
+    // The head alone cuts off a long paste's closing tag, so a paste-wrapped
+    // machine envelope (every PTY-typed kickoff/wake) fell to the owner-typed
+    // residual and was stored `unenrolled-origin` (WI-6554700010009707). The
+    // tail lets the shared helper restore a WHOLE-prompt paste exactly as the
+    // full-text ingest path sees it; owner words around a paste still fail it.
     const staged = {
       source_kind: r.source_kind,
       speaker: r.speaker,
-      text: r.head ?? '',
+      text: closeTruncatedWholePaste(r.head ?? '', r.tail),
     } as TurnRow;
     stampTurnProvenance(staged);
 
-    wsIds.push(r.workspace_id);
-    kinds.push(r.source_kind);
-    sessionIds.push(r.session_id);
-    turnIdxs.push(r.turn_idx);
-    origins.push(staged.turn_origin ?? null);
-    verdicts.push(staged.turn_origin_verdict!);
+    // Only the insert-time exact hook correlation writes this identity.
+    // Preserve that positive evidence after ephemeral receipt expiry, but
+    // let every current machine/envelope/speaker verdict win. Untagged old
+    // owner-typed residuals still downgrade, so this cannot retroactively
+    // authenticate historical rows from clean text alone.
+    if (
+      staged.turn_origin_verdict === UNENROLLED_ORIGIN_VERDICT &&
+      r.turn_origin_verdict === 'owner-typed' &&
+      r.turn_origin === HOOK_AUTHENTICATED_PROMPT_ORIGIN
+    ) {
+      staged.turn_origin = HOOK_AUTHENTICATED_PROMPT_ORIGIN;
+      staged.turn_origin_verdict = 'owner-typed';
+    }
+
+    const origin = staged.turn_origin ?? null;
+    const verdict = staged.turn_origin_verdict!;
+    // An unchanged verdict is not written (see the docstring above
+    // backfillTurnProvenanceOnce). A NULL version always is: that row has never
+    // been classified, and writing it is what takes it out of the backlog.
+    if (r.version !== null && origin === (r.turn_origin ?? null) && verdict === r.turn_origin_verdict) {
+      continue;
+    }
+    changes.push({
+      workspace_id: r.workspace_id,
+      source_kind: r.source_kind,
+      session_id: r.session_id,
+      turn_idx: r.turn_idx,
+      old_origin: r.turn_origin ?? null,
+      old_verdict: r.turn_origin_verdict ?? null,
+      old_version: r.version,
+      turn_origin: origin,
+      turn_origin_verdict: verdict,
+    });
   }
 
-  const res = await sql`
-    UPDATE harness_shared.session_turns AS turns
-       SET turn_origin = resolved.turn_origin,
-           turn_origin_verdict = resolved.turn_origin_verdict,
-           turn_origin_classifier_version = ${MACHINE_SURFACE_CATALOGUE_VERSION}
-      FROM UNNEST(
-             ${sql.array(wsIds)}::text[], ${sql.array(kinds)}::text[],
-             ${sql.array(sessionIds)}::text[], ${sql.array(turnIdxs)}::int[],
-             ${sql.array(origins as string[])}::text[], ${sql.array(verdicts)}::text[]
-           ) AS resolved(workspace_id, source_kind, session_id, turn_idx,
-                         turn_origin, turn_origin_verdict)
-     WHERE turns.workspace_id = resolved.workspace_id
-       AND turns.source_kind = resolved.source_kind
-       AND turns.session_id = resolved.session_id
-       AND turns.turn_idx = resolved.turn_idx
-  `;
+  let updated = 0;
+  for (let i = 0; i < changes.length; i += limit) {
+    updated += await writeProvenanceChanges(sql, changes.slice(i, i + limit));
+  }
+  return { examined: rows.length, needed: changes.length, updated };
+}
 
-  return {
-    scanned: rows.length,
-    updated: res.count ?? rows.length,
-    more: rows.length === limit,
-  };
+interface ProvenanceChange {
+  workspace_id: string;
+  source_kind: string;
+  session_id: string;
+  turn_idx: number;
+  old_origin: string | null;
+  old_verdict: string | null;
+  old_version: number | null;
+  turn_origin: string | null;
+  turn_origin_verdict: string;
 }
 
 /**
- * Sweep passes per tick. One pass is PROVENANCE_BACKFILL_BATCH rows, so this
- * caps a tick's write volume while still converging: the measured backlog when
- * this lane was first wired was 370,478 never-classified rows (96% of the
- * table), which drains in a couple of hours at this rate rather than pinning
- * the pool for one enormous transaction.
+ * Rewrite `changes` in one statement. Each row is claimed
+ * `FOR NO KEY UPDATE SKIP LOCKED` and only if it still holds the values it was
+ * classified from, so a row another writer holds or has changed is skipped,
+ * never waited on and never overwritten. Returns the number of rows written.
  */
-export const PROVENANCE_BACKFILL_PASSES_PER_TICK = 4;
+async function writeProvenanceChanges(sql: Sql, changes: ProvenanceChange[]): Promise<number> {
+  const col = <K extends keyof ProvenanceChange>(k: K) => changes.map((c) => c[k]);
+  const res = await sql`
+    WITH wanted AS (
+      SELECT * FROM UNNEST(
+        ${sql.array(col('workspace_id'))}::text[], ${sql.array(col('source_kind'))}::text[],
+        ${sql.array(col('session_id'))}::text[], ${sql.array(col('turn_idx'))}::int[],
+        ${sql.array(col('old_origin') as string[])}::text[],
+        ${sql.array(col('old_verdict') as string[])}::text[],
+        ${sql.array(col('old_version') as number[])}::int[],
+        ${sql.array(col('turn_origin') as string[])}::text[],
+        ${sql.array(col('turn_origin_verdict'))}::text[]
+      ) AS w(workspace_id, source_kind, session_id, turn_idx, old_origin, old_verdict,
+             old_version, turn_origin, turn_origin_verdict)
+    ), claimed AS (
+      SELECT t.workspace_id, t.source_kind, t.session_id, t.turn_idx,
+             w.turn_origin, w.turn_origin_verdict
+        FROM harness_shared.session_turns AS t
+        JOIN wanted AS w
+          ON t.workspace_id = w.workspace_id AND t.source_kind = w.source_kind
+         AND t.session_id = w.session_id AND t.turn_idx = w.turn_idx
+       WHERE t.turn_origin IS NOT DISTINCT FROM w.old_origin
+         AND t.turn_origin_verdict IS NOT DISTINCT FROM w.old_verdict
+         AND t.turn_origin_classifier_version IS NOT DISTINCT FROM w.old_version
+         FOR NO KEY UPDATE OF t SKIP LOCKED
+    )
+    UPDATE harness_shared.session_turns AS turns
+       SET turn_origin = claimed.turn_origin,
+           turn_origin_verdict = claimed.turn_origin_verdict,
+           turn_origin_classifier_version = ${MACHINE_SURFACE_CATALOGUE_VERSION}
+      FROM claimed
+     WHERE turns.workspace_id = claimed.workspace_id
+       AND turns.source_kind = claimed.source_kind
+       AND turns.session_id = claimed.session_id
+       AND turns.turn_idx = claimed.turn_idx
+  `;
+  return res.count ?? 0;
+}
+
+/**
+ * Upper bound on sweep passes per tick. One pass is PROVENANCE_BACKFILL_BATCH
+ * rows, so this caps a tick's write volume at 20,000 rows, the same as the old
+ * 4 × 5,000, while each statement stays short.
+ */
+export const PROVENANCE_BACKFILL_PASSES_PER_TICK = 200;
+
+/**
+ * Wall-clock budget for one tick's passes (WI-10006752). The tick fires every
+ * 5 minutes; a tick that outlives its interval overlaps the next one, which
+ * doubles the write load on a table whose every update is non-HOT. Measured
+ * 2026-10-06 at 4 × 5,000 rows: one statement alone averaged 124.7 s, so a
+ * tick routinely ran past the next fire. The budget is checked between passes,
+ * so a tick ends at most one (short) pass after it.
+ */
+export const PROVENANCE_BACKFILL_TICK_BUDGET_MS = 120_000;
+
+/**
+ * Run `pass` until the backlog is drained, `maxPasses` is reached, or
+ * `budgetMs` has elapsed (checked between passes). Exported for tests.
+ */
+export async function runProvenancePasses(
+  pass: () => Promise<ProvenanceBackfillResult>,
+  opts: { maxPasses: number; budgetMs: number; now?: () => number },
+): Promise<ProvenanceBackfillResult & { passes: number }> {
+  const now = opts.now ?? Date.now;
+  const started = now();
+  let scanned = 0;
+  let updated = 0;
+  let more = false;
+  let passes = 0;
+  while (passes < opts.maxPasses) {
+    const r = await pass();
+    passes += 1;
+    scanned += r.scanned;
+    updated += r.updated;
+    more = r.more;
+    if (!r.more || now() - started >= opts.budgetMs) break;
+  }
+  return { scanned, updated, more, passes };
+}
 
 /**
  * Run the provenance re-derivation lane for one tick.
@@ -2013,17 +2524,286 @@ export const PROVENANCE_BACKFILL_PASSES_PER_TICK = 4;
  */
 export async function runTurnProvenanceBackfillOnce(): Promise<ProvenanceBackfillResult> {
   const { sql } = getOrgPg();
-  let scanned = 0;
-  let updated = 0;
-  let more = false;
-  for (let pass = 0; pass < PROVENANCE_BACKFILL_PASSES_PER_TICK; pass += 1) {
-    const r = await backfillTurnProvenanceOnce(sql);
-    scanned += r.scanned;
-    updated += r.updated;
-    more = r.more;
-    if (!r.more) break;
+  const { scanned, updated, more } = await runProvenancePasses(
+    () => backfillTurnProvenanceOnce(sql),
+    { maxPasses: PROVENANCE_BACKFILL_PASSES_PER_TICK, budgetMs: PROVENANCE_BACKFILL_TICK_BUDGET_MS },
+  );
+  // After the re-derivation above, so rows it just moved to the current
+  // catalogue version are eligible for their hook stamp in the same tick.
+  const recorrelated = await recorrelatePromptOriginStampsOnce(sql);
+  return {
+    scanned: scanned + recorrelated.scanned,
+    updated: updated + recorrelated.promoted,
+    more: more || recorrelated.more,
+  };
+}
+
+/**
+ * Stamp/turn pairs examined per recorrelation tick. Separate from
+ * PROVENANCE_BACKFILL_BATCH since WI-10006752 shrank that one to 100: this pass
+ * runs once per tick and only rewrites the rows it promotes, so it can take a
+ * larger window, but its UPDATE still holds row locks on every promoted
+ * non-HOT row until it commits, so it stays bounded.
+ */
+export const PROMPT_ORIGIN_RECORRELATE_BATCH = 500;
+
+export interface PromptOriginRecorrelationResult {
+  /** Distinct unenrolled rows the prefilter paired with a stamp. */
+  scanned: number;
+  /** Rows the shared correlation rule upgraded to owner-typed. */
+  promoted: number;
+  more: boolean;
+}
+
+/**
+ * Re-apply the hook-stamp correlation to rows ALREADY stored as
+ * `unenrolled-origin` (WI-10006568).
+ *
+ * insertTurns correlates once, at insert, and writes ON CONFLICT DO NOTHING,
+ * so a row that missed its stamp was never revisited: ingest that ran before
+ * the hook's stamp landed, ingest that ran more than one stamp TTL late (the
+ * old `expires_at > now()` filter), and every row ingested before correlation
+ * shipped. Measured 2026-10-06: 1,508 owner turns in 648 sessions, including
+ * owner directive #1459, which then failed plans:audit's owner-provenance check.
+ *
+ * The SQL is a PREFILTER only. Its normalised-text hash keeps permanent
+ * non-matches out of the LIMIT window so they cannot starve real matches.
+ * correlatePromptOriginStamps, the same function insertTurns uses, decides
+ * every upgrade: same session, same hash, ±PROMPT_ORIGIN_MATCH_WINDOW_MS,
+ * turn-anchored expiry, one row per stamp. The hash is recomputed from the
+ * STORED text, so a row whose stored text differs from the raw prompt (for
+ * example a truncated body) stays unmatched. This pass can miss a row; it
+ * cannot attribute text the owner did not type.
+ *
+ * OLDER-VERSION ROWS ARE ELIGIBLE (WI-10008182). The provenance backfill does
+ * not rewrite a row whose verdict a newer catalogue leaves unchanged
+ * (WI-10006788), so an `unenrolled-origin` row keeps the version that first
+ * wrote it, indefinitely. Requiring version == current here stranded every such
+ * owner turn: owner directive #1594 sat at v6 and failed plans:audit. Each
+ * candidate is therefore re-derived with the CURRENT catalogue
+ * (stampTurnProvenance) before correlation, so a row the current catalogue
+ * calls machine or agent output is never promoted, and a promoted row is
+ * written at the current version. Rows a NEWER catalogue wrote are left to a
+ * build that carries it.
+ */
+export async function recorrelatePromptOriginStampsOnce(
+  sql: Sql,
+  limit = PROMPT_ORIGIN_RECORRELATE_BATCH,
+): Promise<PromptOriginRecorrelationResult> {
+  const workspace = activeWorkspaceId();
+  const windowMs = PROMPT_ORIGIN_MATCH_WINDOW_MS;
+  const pairs = await sql<
+    Array<{
+      workspace_id: string;
+      source_kind: string;
+      session_id: string;
+      turn_idx: number;
+      ts: Date | string;
+      speaker: string;
+      text: string;
+      version: number;
+      prompt_hash: string;
+      submitted_at: Date | string;
+      expires_at: Date | string;
+    }>
+  >`
+    SELECT turns.workspace_id, turns.source_kind, turns.session_id, turns.turn_idx,
+           turns.ts, turns.speaker, turns.text,
+           turns.turn_origin_classifier_version AS version,
+           stamps.prompt_hash, stamps.submitted_at, stamps.expires_at
+      FROM harness_shared.session_prompt_origin_stamps AS stamps
+      JOIN harness_shared.session_turns AS turns
+        ON turns.workspace_id IN ('default', ${workspace})
+       AND turns.source_kind = stamps.source_kind
+       AND turns.session_id = stamps.session_id
+       AND turns.ts BETWEEN stamps.submitted_at - (${windowMs}::int * interval '1 millisecond')
+                        AND stamps.submitted_at + (${windowMs}::int * interval '1 millisecond')
+     WHERE stamps.workspace_id = ${workspace}
+       AND turns.speaker = 'user'
+       AND turns.turn_origin_verdict = ${UNENROLLED_ORIGIN_VERDICT}
+       -- Older versions included: the verdict is re-derived below (WI-10008182).
+       AND turns.turn_origin_classifier_version <= ${MACHINE_SURFACE_CATALOGUE_VERSION}
+       -- Mirrors promptOriginHash (CRLF -> LF, trim). Prefilter only; a drift
+       -- between the two makes rows MISS, which the integration test catches.
+       AND encode(sha256(convert_to(
+             regexp_replace(regexp_replace(turns.text, E'\\r\\n?', E'\\n', 'g'), '^\\s+|\\s+$', '', 'g'),
+             'UTF8')), 'hex') = stamps.prompt_hash
+       -- A stamp already spent on a hook-authenticated row stays spent. A
+       -- promoted row spends only the stamp NEAREST to it (WI-10008183): an
+       -- identical prompt the owner repeated within the window has its own
+       -- stamp, which the earlier promoted turn must not mask. Prefilter only;
+       -- replayPromptOriginClusters decides.
+       AND NOT EXISTS (
+         SELECT 1
+           FROM harness_shared.session_turns AS spent
+          WHERE spent.workspace_id = turns.workspace_id
+            AND spent.source_kind = stamps.source_kind
+            AND spent.session_id = stamps.session_id
+            AND spent.turn_origin = ${HOOK_AUTHENTICATED_PROMPT_ORIGIN}
+            AND spent.ts BETWEEN stamps.submitted_at - (${windowMs}::int * interval '1 millisecond')
+                             AND stamps.submitted_at + (${windowMs}::int * interval '1 millisecond')
+            AND encode(sha256(convert_to(
+                  regexp_replace(regexp_replace(spent.text, E'\\r\\n?', E'\\n', 'g'), '^\\s+|\\s+$', '', 'g'),
+                  'UTF8')), 'hex') = stamps.prompt_hash
+            AND NOT EXISTS (
+              SELECT 1
+                FROM harness_shared.session_prompt_origin_stamps AS closer
+               WHERE closer.workspace_id = stamps.workspace_id
+                 AND closer.source_kind = stamps.source_kind
+                 AND closer.session_id = stamps.session_id
+                 AND closer.prompt_hash = stamps.prompt_hash
+                 AND abs(extract(epoch FROM (spent.ts - closer.submitted_at)))
+                     < abs(extract(epoch FROM (spent.ts - stamps.submitted_at)))
+            )
+       )
+     ORDER BY turns.ts, turns.session_id, turns.turn_idx
+     LIMIT ${limit}
+  `;
+  if (!pairs.length) return { scanned: 0, promoted: 0, more: false };
+
+  const rowsByKey = new Map<string, TurnRow>();
+  const storedVersion = new Map<TurnRow, number>();
+  for (const p of pairs) {
+    const rowKey = [p.workspace_id, p.source_kind, p.session_id, p.turn_idx].join('\u0000');
+    if (!rowsByKey.has(rowKey)) {
+      const row: TurnRow = {
+        workspace_id: p.workspace_id,
+        source_kind: p.source_kind,
+        session_id: p.session_id,
+        turn_idx: Number(p.turn_idx),
+        ts: new Date(p.ts).toISOString(),
+        owner: null,
+        harness_slug: null,
+        cwd: null,
+        speaker: p.speaker,
+        text: p.text,
+        prompt_hash: promptOriginHash(p.text),
+      };
+      // The stored verdict may come from an older catalogue. Judge the row with
+      // the current one; correlation then only considers it if the current
+      // catalogue still finds no machine or agent origin.
+      stampTurnProvenance(row);
+      rowsByKey.set(rowKey, row);
+      storedVersion.set(row, Number(p.version));
+    }
   }
-  return { scanned, updated, more };
+  const rows = [...rowsByKey.values()];
+  await replayPromptOriginClusters(sql, workspace, rows);
+  const promoted = rows.filter((row) => row.turn_origin === HOOK_AUTHENTICATED_PROMPT_ORIGIN);
+  if (promoted.length) {
+    await sql`
+      UPDATE harness_shared.session_turns AS turns
+         SET turn_origin = ${HOOK_AUTHENTICATED_PROMPT_ORIGIN},
+             turn_origin_verdict = 'owner-typed',
+             turn_origin_classifier_version = ${MACHINE_SURFACE_CATALOGUE_VERSION}
+        FROM UNNEST(
+               ${sql.array(promoted.map((row) => row.workspace_id))}::text[],
+               ${sql.array(promoted.map((row) => row.source_kind))}::text[],
+               ${sql.array(promoted.map((row) => row.session_id))}::text[],
+               ${sql.array(promoted.map((row) => row.turn_idx))}::int[],
+               ${sql.array(promoted.map((row) => storedVersion.get(row)!))}::int[]
+             ) AS hit(workspace_id, source_kind, session_id, turn_idx, version)
+       WHERE turns.workspace_id = hit.workspace_id
+         AND turns.source_kind = hit.source_kind
+         AND turns.session_id = hit.session_id
+         AND turns.turn_idx = hit.turn_idx
+         -- Only the exact state that was judged: a row another writer
+         -- re-derived in the meantime is left for the next tick.
+         AND turns.turn_origin_verdict = ${UNENROLLED_ORIGIN_VERDICT}
+         AND turns.turn_origin_classifier_version = hit.version
+    `;
+  }
+  return { scanned: rows.length, promoted: promoted.length, more: pairs.length === limit };
+}
+
+/**
+ * Decide recorrelation per (source, session, prompt hash) cluster
+ * (WI-10008183).
+ *
+ * The SQL prefilter cannot know which stamp an already-promoted row consumed,
+ * so it can pass a candidate whose only stamp really belongs to a promoted
+ * sibling. Here the cluster is replayed through correlatePromptOriginStamps,
+ * the same one-row-per-stamp rule insertTurns uses, with the already-promoted
+ * rows passed as `priority`: they keep stamps first, and candidates receive
+ * only stamps the promoted rows can do without. If
+ * the promoted rows alone already over-subscribe the cluster's stamps, no
+ * candidate in it is promoted. The pass may still miss a row; it never
+ * promotes more rows in a cluster than the hook stamped.
+ *
+ * Mutates `rows`: a candidate that loses keeps its unenrolled verdict.
+ */
+async function replayPromptOriginClusters(sql: Sql, workspace: string, rows: TurnRow[]): Promise<void> {
+  const clusterKey = (sourceKind: string, sessionId: string, hash: string) =>
+    [sourceKind, sessionId, hash].join('\u0000');
+  const candidatesByCluster = new Map<string, TurnRow[]>();
+  for (const row of rows) {
+    if (row.turn_origin_verdict !== UNENROLLED_ORIGIN_VERDICT || !row.prompt_hash) continue;
+    const key = clusterKey(row.source_kind, row.session_id, row.prompt_hash);
+    const list = candidatesByCluster.get(key) ?? [];
+    list.push(row);
+    candidatesByCluster.set(key, list);
+  }
+  if (!candidatesByCluster.size) return;
+  const clusters = [...candidatesByCluster.values()].map((list) => list[0]);
+  const kinds = sql.array(clusters.map((row) => row.source_kind));
+  const sessions = sql.array(clusters.map((row) => row.session_id));
+  const hashes = sql.array(clusters.map((row) => row.prompt_hash!));
+  const windowMs = PROMPT_ORIGIN_MATCH_WINDOW_MS;
+  const stamps = await sql<PromptOriginStamp[]>`
+    SELECT s.source_kind, s.session_id, s.prompt_hash, s.submitted_at, s.expires_at
+      FROM UNNEST(${kinds}::text[], ${sessions}::text[], ${hashes}::text[]) AS c(source_kind, session_id, prompt_hash)
+      JOIN harness_shared.session_prompt_origin_stamps AS s
+        ON s.workspace_id = ${workspace}
+       AND s.source_kind = c.source_kind AND s.session_id = c.session_id AND s.prompt_hash = c.prompt_hash
+  `;
+  const spent = await sql<Array<{ source_kind: string; session_id: string; turn_idx: number; ts: Date | string; prompt_hash: string }>>`
+    SELECT DISTINCT t.source_kind, t.session_id, t.turn_idx, t.ts, c.prompt_hash
+      FROM UNNEST(${kinds}::text[], ${sessions}::text[], ${hashes}::text[]) AS c(source_kind, session_id, prompt_hash)
+      JOIN harness_shared.session_prompt_origin_stamps AS s
+        ON s.workspace_id = ${workspace}
+       AND s.source_kind = c.source_kind AND s.session_id = c.session_id AND s.prompt_hash = c.prompt_hash
+      JOIN harness_shared.session_turns AS t
+        ON t.workspace_id IN ('default', ${workspace})
+       AND t.source_kind = c.source_kind AND t.session_id = c.session_id
+       AND t.ts BETWEEN s.submitted_at - (${windowMs}::int * interval '1 millisecond')
+                    AND s.submitted_at + (${windowMs}::int * interval '1 millisecond')
+     WHERE t.speaker = 'user'
+       AND t.turn_origin = ${HOOK_AUTHENTICATED_PROMPT_ORIGIN}
+       AND encode(sha256(convert_to(
+             regexp_replace(regexp_replace(t.text, E'\\r\\n?', E'\\n', 'g'), '^\\s+|\\s+$', '', 'g'),
+             'UTF8')), 'hex') = c.prompt_hash
+  `;
+  const stampsByCluster = new Map<string, PromptOriginStamp[]>();
+  for (const stamp of stamps) {
+    const key = clusterKey(stamp.source_kind, stamp.session_id, stamp.prompt_hash);
+    stampsByCluster.set(key, [...(stampsByCluster.get(key) ?? []), stamp]);
+  }
+  const spentByCluster = new Map<string, TurnRow[]>();
+  for (const s of spent) {
+    const key = clusterKey(s.source_kind, s.session_id, s.prompt_hash);
+    // A stand-in in the exact state correlation accepts, so it can claim the
+    // stamp it consumed when it was promoted.
+    const standIn: TurnRow = {
+      workspace_id: workspace, source_kind: s.source_kind, session_id: s.session_id,
+      turn_idx: Number(s.turn_idx), ts: new Date(s.ts).toISOString(),
+      owner: null, harness_slug: null, cwd: null, speaker: 'user', text: '',
+      turn_origin: null, turn_origin_verdict: UNENROLLED_ORIGIN_VERDICT,
+      turn_origin_classifier_version: MACHINE_SURFACE_CATALOGUE_VERSION, prompt_hash: s.prompt_hash,
+    };
+    spentByCluster.set(key, [...(spentByCluster.get(key) ?? []), standIn]);
+  }
+  for (const [key, candidates] of candidatesByCluster) {
+    const already = (spentByCluster.get(key) ?? []).sort((a, b) => Date.parse(a.ts!) - Date.parse(b.ts!));
+    correlatePromptOriginStamps([...already, ...candidates], stampsByCluster.get(key) ?? [], {
+      priority: new Set(already),
+    });
+    if (already.some((row) => row.turn_origin !== HOOK_AUTHENTICATED_PROMPT_ORIGIN)) {
+      for (const row of candidates) {
+        row.turn_origin = null;
+        row.turn_origin_verdict = UNENROLLED_ORIGIN_VERDICT;
+      }
+    }
+  }
 }
 
 interface IngestState {
@@ -2045,6 +2825,8 @@ interface IngestState {
    * reached EOF before session_turn_parts existed or was wired. */
   parts_backfill_offset?: number;
   parts_backfilled_at?: string | null;
+  /** First byte parsed with short user decisions retained; legacy prefix indexes never move. */
+  short_user_turns_offset?: number | null;
 }
 
 const EMPTY_STATE: IngestState = {
@@ -2060,6 +2842,7 @@ const EMPTY_STATE: IngestState = {
   counts_backfilled_at: null,
   parts_backfill_offset: 0,
   parts_backfilled_at: null,
+  short_user_turns_offset: null,
 };
 
 async function readState(sql: Sql, sourceKind: string, filePath: string): Promise<IngestState> {
@@ -2069,10 +2852,11 @@ async function readState(sql: Sql, sourceKind: string, filePath: string): Promis
     counts_backfill_offset: string | number; counts_backfill_last_inference_id: string | null;
     counts_backfilled_at: string | null;
     parts_backfill_offset: string | number; parts_backfilled_at: string | null;
+    short_user_turns_offset: string | number | null;
   }>>`
     SELECT byte_offset, turn_count, part_count, prompt_count, response_count, tool_call_count, last_inference_id,
            counts_backfill_offset, counts_backfill_last_inference_id, counts_backfilled_at
-           , parts_backfill_offset, parts_backfilled_at
+           , parts_backfill_offset, parts_backfilled_at, short_user_turns_offset
       FROM harness_shared.session_ingest_state
      WHERE source_kind = ${sourceKind} AND file_path = ${filePath}
   `;
@@ -2091,6 +2875,7 @@ async function readState(sql: Sql, sourceKind: string, filePath: string): Promis
     counts_backfilled_at: r.counts_backfilled_at ?? null,
     parts_backfill_offset: Number(r.parts_backfill_offset ?? 0),
     parts_backfilled_at: r.parts_backfilled_at ?? null,
+    short_user_turns_offset: r.short_user_turns_offset == null ? null : Number(r.short_user_turns_offset),
   };
 }
 
@@ -2100,18 +2885,18 @@ async function writeState(
   filePath: string,
   st: Pick<IngestState, 'byte_offset' | 'turn_count'> &
     Partial<Pick<IngestState, 'part_count' | 'prompt_count' | 'response_count' | 'tool_call_count' | 'last_inference_id' | 'counts_backfill_offset' | 'counts_backfill_last_inference_id' | 'counts_backfilled_at'>> &
-    Partial<Pick<IngestState, 'parts_backfill_offset' | 'parts_backfilled_at'>> &
+    Partial<Pick<IngestState, 'parts_backfill_offset' | 'parts_backfilled_at' | 'short_user_turns_offset'>> &
     { sessionId?: string | null; mtimeMs?: number; lastError?: string | null },
 ): Promise<void> {
   await sql`
     INSERT INTO harness_shared.session_ingest_state
       (source_kind, file_path, byte_offset, turn_count, part_count, prompt_count, response_count,
        tool_call_count, last_inference_id, counts_backfill_offset, counts_backfill_last_inference_id, counts_backfilled_at,
-       parts_backfill_offset, parts_backfilled_at, session_id, mtime_ms, last_error, updated_at)
+       parts_backfill_offset, parts_backfilled_at, short_user_turns_offset, session_id, mtime_ms, last_error, updated_at)
     VALUES (${sourceKind}, ${filePath}, ${st.byte_offset}, ${st.turn_count}, ${st.part_count ?? 0},
             ${st.prompt_count ?? 0}, ${st.response_count ?? 0}, ${st.tool_call_count ?? 0}, ${st.last_inference_id ?? null},
             ${st.counts_backfill_offset ?? st.byte_offset}, ${st.counts_backfill_last_inference_id ?? null}, ${st.counts_backfilled_at ?? null},
-            ${st.parts_backfill_offset ?? 0}, ${st.parts_backfilled_at ?? null},
+            ${st.parts_backfill_offset ?? 0}, ${st.parts_backfilled_at ?? null}, ${st.short_user_turns_offset ?? null},
             ${st.sessionId ?? null}, ${st.mtimeMs != null ? Math.round(st.mtimeMs) : null}, ${st.lastError ?? null}, now())
     ON CONFLICT (source_kind, file_path) DO UPDATE SET
       byte_offset       = EXCLUDED.byte_offset,
@@ -2133,6 +2918,7 @@ async function writeState(
       counts_backfilled_at = COALESCE(EXCLUDED.counts_backfilled_at, harness_shared.session_ingest_state.counts_backfilled_at),
       parts_backfill_offset = COALESCE(${st.parts_backfill_offset ?? null}, harness_shared.session_ingest_state.parts_backfill_offset),
       parts_backfilled_at = COALESCE(${st.parts_backfilled_at ?? null}, harness_shared.session_ingest_state.parts_backfilled_at),
+      short_user_turns_offset = COALESCE(harness_shared.session_ingest_state.short_user_turns_offset, EXCLUDED.short_user_turns_offset),
       session_id        = COALESCE(EXCLUDED.session_id, harness_shared.session_ingest_state.session_id),
       mtime_ms          = EXCLUDED.mtime_ms,
       last_error        = EXCLUDED.last_error,
@@ -2253,6 +3039,9 @@ async function backfillFileParts(
 ): Promise<boolean> {
   if (budget.files <= 0 || budget.bytes <= 0 || !adapter.parseParts) return false;
   const meta = adapter.meta(row.file_path);
+  const owner = adapter.sourceKind === 'claude'
+    ? await indexedClaudeOwner(meta.sessionId) ?? meta.owner
+    : meta.owner;
   let sourceSize: number;
   try {
     const source = await stat(row.file_path);
@@ -2298,7 +3087,7 @@ async function backfillFileParts(
     await insertParts(sql, partRowsFrom(result.parts, {
       sourceKind: adapter.sourceKind,
       sessionId: row.session_id ?? meta.sessionId,
-      owner: meta.owner,
+      owner,
       partCount,
     }));
 
@@ -2499,6 +3288,9 @@ export async function ingestFileNow(
   const { sql } = getOrgPg();
   let inserted = 0;
   const meta = adapter.meta(filePath);
+  const owner = opts.owner ?? (adapter.sourceKind === 'claude'
+    ? await indexedClaudeOwner(meta.sessionId) ?? meta.owner
+    : meta.owner);
   if (adapter.sourceKind === 'codex') {
     // Run this even when the file has no new bytes: read-time freshness is
     // also the repair path for a paused session whose process interval still
@@ -2526,7 +3318,7 @@ export async function ingestFileNow(
       session_id: t.sessionId ?? opts.sessionId ?? meta.sessionId,
       turn_idx: st.turn_count + i,
       ts: t.ts ? t.ts.toISOString() : null,
-      owner: opts.owner ?? meta.owner,
+      owner,
       harness_slug: null,
       cwd: t.cwd ?? null,
       speaker: t.speaker,
@@ -2540,7 +3332,7 @@ export async function ingestFileNow(
       await insertParts(sql, partRowsFrom(parts, {
         sourceKind: adapter.sourceKind,
         sessionId: opts.sessionId ?? meta.sessionId,
-        owner: opts.owner ?? meta.owner,
+        owner,
         partCount: st.part_count,
       }));
     } catch (err) {
@@ -2550,6 +3342,7 @@ export async function ingestFileNow(
       byte_offset: newOffset,
       turn_count: st.turn_count + turns.length,
       part_count: st.part_count + parts.length,
+      short_user_turns_offset: st.short_user_turns_offset ?? st.byte_offset,
       prompt_count: st.prompt_count + promptCount,
       response_count: st.response_count + responseCount,
       tool_call_count: st.tool_call_count + toolCallCount,
@@ -2664,24 +3457,125 @@ async function syncAgentChats(sql: Sql, budget: { turns: number }): Promise<numb
 /* Retention                                                            */
 /* ------------------------------------------------------------------ */
 
+/** Rows per retention DELETE statement. Each statement stays short, so the
+ * daily tick never holds one long lock over the bulkiest tables. */
+const PRUNE_BATCH_ROWS = 5000;
+/** Wall-clock budget per table per tick. This REPLACES a fixed 40-batch
+ * ceiling (40 x 5000 = 200k rows/run): session_turn_parts takes ~470k rows/day
+ * (sampled 2026-10-13, ingest days 10-01..10-12), so that ceiling deleted
+ * exactly 200k every day and the 14-day window was never reached — 1.37M rows
+ * past it accumulated while the workflow reported SUCCESS (WI-6554700010009718).
+ * A budget bounds the tick's duration without bounding its throughput below
+ * the inflow. */
+const PRUNE_TABLE_BUDGET_MS = 10 * 60_000;
+
+/** What one table's prune did. `exhausted` = the budget ran out while batches
+ * were still full, i.e. rows past the window REMAIN — the signal a capped
+ * prune never gave. */
+export interface PruneTableReport {
+  deleted: number;
+  batches: number;
+  exhausted: boolean;
+}
+
+/** One table's two-pass prune. `tailDeleted` = rows only the exact,
+ * seq-scanning tail pass removed. It is normally the handful ingested late; a
+ * large value means the indexed bulk pass stopped short and the slow pass did
+ * its work. */
+export interface PrunePassesReport extends PruneTableReport {
+  tailDeleted: number;
+}
+
+export interface SessionTurnsPruneReport {
+  deleted: number;
+  partsDeleted: number;
+  turns: PrunePassesReport;
+  parts: PrunePassesReport;
+}
+
+export interface PruneSessionTurnsOptions {
+  batchRows?: number;
+  budgetMs?: number;
+  now?: () => number;
+}
+
+/** Run `deleteBatch` until a short batch proves nothing is left, or the
+ * deadline passes. Never stops on an iteration count. */
+export async function drainInBatches(
+  deleteBatch: (limit: number) => Promise<number>,
+  opts: { batchRows: number; deadline: number; now: () => number },
+): Promise<PruneTableReport> {
+  let deleted = 0;
+  let batches = 0;
+  for (;;) {
+    if (opts.now() >= opts.deadline) return { deleted, batches, exhausted: true };
+    const n = await deleteBatch(opts.batchRows);
+    deleted += n;
+    batches += 1;
+    if (n < opts.batchRows) return { deleted, batches, exhausted: false };
+  }
+}
+
+/** Two passes against one table, sharing one deadline:
+ *  1. BULK, through the table's `ingested_at` btree. `COALESCE(ts, ingested_at)`
+ *     cannot use an index, so the old single pass seq-scanned for every batch
+ *     (measured 2026-10-13: 1,219 ms per 5,000-row candidate scan on
+ *     session_turn_parts, 17 s mean on session_turns; the indexed form is 15 ms
+ *     and 42 ms). The exact predicate is kept as a filter, so this pass only
+ *     ever deletes rows the contract says are expired.
+ *  2. TAIL, the exact predicate alone: rows ingested recently whose own `ts`
+ *     is already past the window (2,338 of 1.37M when measured). One seq scan,
+ *     normally a single short batch. Together the passes delete exactly
+ *     `COALESCE(ts, ingested_at) < now() - window`. */
+async function prunePastWindow(
+  bulk: (limit: number) => Promise<number>,
+  tail: (limit: number) => Promise<number>,
+  opts: { batchRows: number; budgetMs: number; now: () => number },
+): Promise<PrunePassesReport> {
+  const deadline = opts.now() + opts.budgetMs;
+  const first = await drainInBatches(bulk, { ...opts, deadline });
+  if (first.exhausted) return { ...first, tailDeleted: 0 };
+  const second = await drainInBatches(tail, { ...opts, deadline });
+  return {
+    deleted: first.deleted + second.deleted,
+    batches: first.batches + second.batches,
+    exhausted: second.exhausted,
+    tailDeleted: second.deleted,
+  };
+}
+
 /** Batched retention prune — the index stays bounded; the JSONL stays the
  * archive. Called from the daily retention tick (periodic-workflows.ts). */
-export async function pruneSessionTurnsOnce(): Promise<{ deleted: number; partsDeleted: number }> {
+export async function pruneSessionTurnsOnce(
+  options: PruneSessionTurnsOptions = {},
+): Promise<SessionTurnsPruneReport> {
   const { sql } = getOrgPg();
-  let deleted = 0;
-  let partsDeleted = 0;
-  for (let i = 0; i < 40; i += 1) {
-    const r = await sql`
+  const opts = {
+    batchRows: options.batchRows ?? PRUNE_BATCH_ROWS,
+    budgetMs: options.budgetMs ?? PRUNE_TABLE_BUDGET_MS,
+    now: options.now ?? Date.now,
+  };
+  const turns = await prunePastWindow(
+    async (limit) => (await sql`
+      DELETE FROM harness_shared.session_turns
+       WHERE ctid IN (
+         SELECT ctid FROM harness_shared.session_turns
+          WHERE ingested_at < now() - make_interval(days => ${RETENTION_DAYS})
+            AND COALESCE(ts, ingested_at) < now() - make_interval(days => ${RETENTION_DAYS})
+          ORDER BY ingested_at
+          LIMIT ${limit}
+       )
+    `).count ?? 0,
+    async (limit) => (await sql`
       DELETE FROM harness_shared.session_turns
        WHERE ctid IN (
          SELECT ctid FROM harness_shared.session_turns
           WHERE COALESCE(ts, ingested_at) < now() - make_interval(days => ${RETENTION_DAYS})
-          LIMIT 5000
+          LIMIT ${limit}
        )
-    `;
-    deleted += r.count ?? 0;
-    if ((r.count ?? 0) < 5000) break;
-  }
+    `).count ?? 0,
+    opts,
+  );
   // Bookkeeping rows for files idle past the window are dead weight.
   await sql`
     DELETE FROM harness_shared.session_ingest_state
@@ -2701,20 +3595,30 @@ export async function pruneSessionTurnsOnce(): Promise<{ deleted: number; partsD
   // this window the pane degrades to text turns, then to session_archives —
   // each tier strictly cheaper and lossier, and none of them a dead click.
   // Batched exactly like the turns prune above: one unbounded DELETE over the
-  // bulkiest table in the corpus is a long lock on the daily tick.
-  for (let i = 0; i < 40; i += 1) {
-    const r = await sql`
+  // bulkiest table in the corpus is a long lock on the daily tick. Its own
+  // budget, so a slow session_turns pass can never starve this one.
+  const parts = await prunePastWindow(
+    async (limit) => (await sql`
+      DELETE FROM harness_shared.session_turn_parts
+       WHERE ctid IN (
+         SELECT ctid FROM harness_shared.session_turn_parts
+          WHERE ingested_at < now() - make_interval(days => ${PART_RETENTION_DAYS})
+            AND COALESCE(ts, ingested_at) < now() - make_interval(days => ${PART_RETENTION_DAYS})
+          ORDER BY ingested_at
+          LIMIT ${limit}
+       )
+    `).count ?? 0,
+    async (limit) => (await sql`
       DELETE FROM harness_shared.session_turn_parts
        WHERE ctid IN (
          SELECT ctid FROM harness_shared.session_turn_parts
           WHERE COALESCE(ts, ingested_at) < now() - make_interval(days => ${PART_RETENTION_DAYS})
-          LIMIT 5000
+          LIMIT ${limit}
        )
-    `;
-    partsDeleted += r.count ?? 0;
-    if ((r.count ?? 0) < 5000) break;
-  }
-  return { deleted, partsDeleted };
+    `).count ?? 0,
+    opts,
+  );
+  return { deleted: turns.deleted, partsDeleted: parts.deleted, turns, parts };
 }
 
 /* ------------------------------------------------------------------ */
@@ -2760,7 +3664,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
     sourceKind: SourceKind,
     operation: NonNullable<IngestStats['metadataBackfills']>[number]['operation'],
     requested: number,
-    work: () => Promise<number>,
+    work: (receipt: NonNullable<IngestStats['metadataBackfills']>[number]) => Promise<number>,
   ): Promise<void> {
     if (!requested) return;
     const startedAtMs = Date.now();
@@ -2769,7 +3673,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
       sourceKind, operation, requested, startedAtMs, durationMs: 0, status: 'failed',
     };
     try {
-      receipt.updated = await measure('metadataBackfill', work);
+      receipt.updated = await measure('metadataBackfill', () => work(receipt));
       receipt.status = 'completed';
     } catch (err) {
       // Metadata repair must not discard successful tail/offset progress or
@@ -2777,7 +3681,8 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
       // on the next ordinary sweep, including unchanged transcripts.
       stats.errors += 1;
       if ((stats.errorSample ??= []).length < 3) {
-        const label = operation === 'sessionOwners' ? 'owner backfill' : 'adv metadata';
+        const label = operation === 'sessionOwners' ? 'owner backfill'
+          : operation === 'partOwners' ? 'part owner backfill' : 'adv metadata';
         stats.errorSample.push(`${sourceKind} ${label}: ${(err as Error).message.slice(0, 200)}`);
       }
     } finally {
@@ -2846,19 +3751,25 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
       }
       // Newest first: recent sessions index first; history back-fills over ticks.
       candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+      if (candidates.length === 0) continue;
       // Bulk-load this adapter's ingest state ONCE — a per-file SELECT at ~23k
       // candidate files was minutes of serial round-trips (perf anti-pattern
       // A1: per-item queries in a loop; observed live 2026-07-05).
+      // Only discovered files can consume these cursors. Reading the adapter's
+      // entire history returned 123k rows per sweep (WI-10008237), including
+      // archived and removed files. Historical repair has separate bounded reads.
       const stateRows = await measure('state', () => sql<Array<{
         file_path: string; byte_offset: string | number; turn_count: number; part_count: number | null;
         prompt_count: number; response_count: number; tool_call_count: number; last_inference_id: string | null;
         counts_backfill_offset: string | number; counts_backfill_last_inference_id: string | null;
         counts_backfilled_at: string | null;
+        short_user_turns_offset: string | number | null;
       }>>`
         SELECT file_path, byte_offset, turn_count, part_count, prompt_count, response_count, tool_call_count, last_inference_id,
-               counts_backfill_offset, counts_backfill_last_inference_id, counts_backfilled_at
+               counts_backfill_offset, counts_backfill_last_inference_id, counts_backfilled_at, short_user_turns_offset
           FROM harness_shared.session_ingest_state
          WHERE source_kind = ${adapter.sourceKind}
+           AND file_path = ANY(${sql.array(candidates.map((candidate) => candidate.path))}::text[])
       `);
       const stateMap = new Map<string, IngestState>(
         stateRows.map((r) => [r.file_path, {
@@ -2872,10 +3783,27 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
           counts_backfill_offset: Number(r.counts_backfill_offset ?? r.byte_offset),
           counts_backfill_last_inference_id: r.counts_backfill_last_inference_id ?? null,
           counts_backfilled_at: r.counts_backfilled_at ?? null,
+          short_user_turns_offset: r.short_user_turns_offset == null ? null : Number(r.short_user_turns_offset),
         }]),
       );
       let filesThisAdapter = 0;
       const ownerBackfill = new Map<string, string>();
+      const indexedClaudeOwners = adapter.sourceKind === 'claude'
+        ? await measure('state', () => indexedClaudeOwnersForCandidates(adapter, candidates))
+        : new Map<string, string>();
+      const conflictingClaudePartOwners = new Map<string, string>();
+      if (adapter.sourceKind === 'claude') {
+        for (const candidate of candidates) {
+          const { sessionId, owner } = adapter.meta(candidate.path);
+          const indexed = indexedClaudeOwners.get(sessionId);
+          // The turn budget can stop the ingest loop before it visits every
+          // candidate. Build the repair map from the complete discovery set so
+          // a partial sweep cannot revert owners repaired by a full sweep.
+          const selected = indexed ?? owner;
+          if (selected) ownerBackfill.set(sessionId, selected);
+          if (owner && indexed && owner !== indexed) conflictingClaudePartOwners.set(sessionId, indexed);
+        }
+      }
       const codexMetadataBackfill = new Map<number, CodexAdvSessionMetadata>();
       let ompOwnersByAdvSession = new Map<number, string>();
       if (adapter.sourceKind === 'omp') {
@@ -2898,12 +3826,12 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
           const metadataStarted = performance.now();
           const st = stateMap.get(cand.path) ?? { ...EMPTY_STATE };
           const meta = adapter.meta(cand.path);
-          const owner = meta.owner ?? (
+          const owner = indexedClaudeOwners.get(meta.sessionId) ?? meta.owner ?? (
             adapter.sourceKind === 'omp' && meta.advSessionId != null
               ? ompOwnersByAdvSession.get(meta.advSessionId) ?? null
               : null
           );
-          if (owner) ownerBackfill.set(meta.sessionId, owner);
+          if (owner && adapter.sourceKind !== 'claude') ownerBackfill.set(meta.sessionId, owner);
           // Collect metadata BEFORE the byte-offset short circuit. A paused
           // session commonly has no late transcript turn, but its already
           // indexed rollout still carries the native id/config needed to repair
@@ -2961,6 +3889,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
             byte_offset: newOffset,
             turn_count: st.turn_count + turns.length,
             part_count: st.part_count + parts.length,
+            short_user_turns_offset: st.short_user_turns_offset ?? st.byte_offset,
             prompt_count: st.prompt_count + promptCount,
             response_count: st.response_count + responseCount,
             tool_call_count: st.tool_call_count + toolCallCount,
@@ -3000,7 +3929,13 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
         }
       }
       await measureMetadataBackfill(adapter.sourceKind, 'sessionOwners', ownerBackfill.size,
-        () => backfillSessionOwners(sql, adapter.sourceKind, ownerBackfill));
+        (receipt) => backfillSessionOwners(sql, adapter.sourceKind, ownerBackfill,
+          (inputSha256) => { receipt.inputSha256 = inputSha256; }));
+      if (adapter.sourceKind === 'claude') {
+        await measureMetadataBackfill(adapter.sourceKind, 'partOwners', conflictingClaudePartOwners.size,
+          (receipt) => backfillClaudePartOwners(sql, conflictingClaudePartOwners,
+            (inputSha256) => { receipt.inputSha256 = inputSha256; }));
+      }
       if (adapter.sourceKind === 'codex') {
         await measureMetadataBackfill(adapter.sourceKind, 'codexAdvSessions', codexMetadataBackfill.size,
           () => backfillCodexAdvSessions(sql, codexMetadataBackfill));

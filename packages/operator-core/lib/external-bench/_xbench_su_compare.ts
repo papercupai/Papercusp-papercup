@@ -27,7 +27,7 @@
  * The `external-bench` spine drives the PIPELINE roles (director / scoper / architect / worker /
  * validator / reviewer / documenter) whose committed floors are sonnet/haiku — NOT just `bee`. So the
  * caller MUST export AGENT_MODELS pinning EVERY pipeline role to opus:xhigh; an incomplete pin = a
- * degenerate non-xhigh run. VERIFY `agent_usage_samples.model = claude-opus-4-8` on a 1-task probe before
+ * degenerate non-xhigh run. VERIFY `agent_usage_samples.model` = the pinned evaluated model on a 1-task probe before
  * any big spend (the same protocol as the hive arms).
  *
  * NOT a committed test (spends real model budget) — a throwaway launcher under lib/external-bench so the
@@ -355,7 +355,11 @@ async function main() {
   // run_minisweagent.py:update_preds + the PG upsertBenchRunTask idempotency). taskCount/totals/nonEmptyDiffs
   // are recomputed from the merged set by writeArmSnapshotMerged.
   const { writeArmSnapshotMerged } = await import('./arm-snapshot');
-  writeArmSnapshotMerged(`${OUT_DIR}/${ARM}.json`, out);
+  const { pinEvaluatedModel } = await import('./model-registry-snapshot');
+  // R-9: record the model-registry snapshot the evaluated model resolves from (XBENCH_MODEL overrides the
+  // default alias). A rerun under a moved registry is refused by the merge instead of pooling two models.
+  const pin = pinEvaluatedModel(process.env.XBENCH_MODEL);
+  writeArmSnapshotMerged(`${OUT_DIR}/${ARM}.json`, { ...out, modelRegistry: pin.snapshot, evaluatedModel: pin.model });
 
   console.log('\n===== ARM RUN SUMMARY =====');
   console.log(JSON.stringify({

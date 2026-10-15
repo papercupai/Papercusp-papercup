@@ -1,0 +1,2 @@
+     0xa00001 "papercusp-desktop": ("papercusp-desktop" "Papercusp-desktop")  10x10+10+10  +10+10
+        0xa00003 "Papercusp": ("papercusp-desktop" "Papercusp-desktop")  1278x775+1+20  +1+20

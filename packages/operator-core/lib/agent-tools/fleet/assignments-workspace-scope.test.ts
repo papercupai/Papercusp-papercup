@@ -24,7 +24,10 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   defineTool: (def: unknown) => def,
   readJsonResult: () => undefined,
 }));
-vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'] }));
+vi.mock('../coordination/roles', () => ({
+  COORD_ROLES: ['operator'],
+  COORD_READ_ROLES: ['operator', 'judge'],
+}));
 vi.mock('../coordination/identity', () => ({
   // The EI-9013 shape: an unscoped su session's identity echoes ctx.workspaceId
   // verbatim, and that is the literal '*' sentinel — never a real workspace.
@@ -51,7 +54,7 @@ vi.mock('../coordination/self-marker', () => ({
 vi.mock('../coordination/presence-wakeability', () => ({ fetchWakeability: vi.fn(async () => new Map()) }));
 vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../adv-sessions')>()), recordedLiveOwnerIds: vi.fn(async () => new Set()) }));
 vi.mock('../coordination/wake-mode', () => ({
-  getAllWakeModeOverrides: vi.fn(async () => new Map()),
+  getWakeModeOverridesFor: vi.fn(async () => new Map()),
   getDefaultWakeMode: vi.fn(async () => 'auto'),
   resolveWakeModeFrom: vi.fn(() => 'auto'),
 }));
@@ -181,6 +184,39 @@ describe('fleet:assignments — EI-13820 workspace-scope regression', () => {
   it('an explicit { workspace } still wins over the sentinel', async () => {
     await fleetAssignmentsTool.handler({ workspace: 'ws-explicit' } as never, ctx);
     expect(capturedWorkspaceId).toBe('ws-explicit');
+  });
+});
+
+describe('fleet:assignments — judge self-only recovery scope', () => {
+  const judgeCtx = { ...ctx, role: 'judge' } as typeof ctx;
+
+  it('allows an explicit judge self read to target the resolved caller row', async () => {
+    vi.mocked(resolveSelfRef).mockReturnValueOnce({
+      ownerId: 'su-leader',
+      ownerLabel: 'l',
+    } as unknown as ReturnType<typeof resolveSelfRef>);
+
+    await fleetAssignmentsTool.handler({ agent: 'self' } as never, judgeCtx);
+
+    expect(capturedAgent).toBe('su-leader');
+  });
+
+  it('does not let a judge select another agent row', async () => {
+    const result = await fleetAssignmentsTool.handler({ agent: 'su-someone-else' } as never, judgeCtx);
+
+    expect(capturedAgent).toBeUndefined();
+    expect(result).toMatchObject({
+      data: { ok: false, error: 'judge_assignment_scope_only' },
+    });
+  });
+
+  it('does not let a judge read the unfiltered assignment population', async () => {
+    const result = await fleetAssignmentsTool.handler({} as never, judgeCtx);
+
+    expect(capturedAgent).toBeUndefined();
+    expect(result).toMatchObject({
+      data: { ok: false, error: 'judge_assignment_scope_only' },
+    });
   });
 });
 

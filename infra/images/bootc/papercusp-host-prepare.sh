@@ -81,6 +81,27 @@ if [[ ! -d "$RUNTIME_ROOT" ]]; then
 fi
 say "runtime-root-is-image-content PASS ($RUNTIME_ROOT present, /opt is a real directory)"
 
+# ── 0.5. OS Login SELinux policy — the RPM %post cannot commit it in the image overlay ──
+# Keep the package scriptlets enabled in the Containerfile: they still enable the cache timer,
+# refresh ldconfig and perform their restorecon passes. Buildah's image overlay rejects the
+# scriptlet's semodule rename, so install the shipped policy against the booted host's persistent
+# policy store, then replay the scriptlet's labels after the OS Login file contexts are available.
+OSLOGIN_POLICY=/usr/share/selinux/packages/oslogin.pp
+[[ -r "$OSLOGIN_POLICY" ]] || die "OS Login SELinux policy is absent or unreadable: $OSLOGIN_POLICY"
+command -v semodule >/dev/null 2>&1 || die "semodule is missing; cannot install OS Login SELinux policy"
+say "oslogin-policy install start"
+semodule -i "$OSLOGIN_POLICY" || die "semodule failed to install OS Login SELinux policy"
+if ! semodule -lfull | awk '$2 == "oslogin" { found = 1 } END { exit !found }'; then
+  die "OS Login SELinux policy is not present after semodule install"
+fi
+for path in /var/google-sudoers.d /var/google-users.d; do
+  if [[ -e "$path" ]]; then restorecon -r "$path"; fi
+done
+for path in /etc/oslogin_passwd.cache.bin /etc/oslogin_group.cache; do
+  if [[ -e "$path" ]]; then restorecon "$path"; fi
+done
+say "oslogin-policy PASS (module installed and RPM restorecon effects applied)"
+
 # ── 1. Machine-local roots ────────────────────────────────────────────────────
 # Baked equivalents would be discarded: /var is machine-local state on a bootc
 # host and /srv + /home are symlinks into it.

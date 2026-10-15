@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "name": "P-058 retained ARM inspector profiler with kernel identity",
+  "command": [
+    "$HOME/.local/node25/bin/node",
+    "--input-type=module"
+  ],
+  "commandPathNormalization": "Host Node home prefix is $HOME; inline program is retained by durable producer task 0mv2jnq6g6f2l67mtlj and pinned separately by SHA256.",
+  "cwd": ".",
+  "startedAt": "2026-10-10T15:23:37.388Z",
+  "finishedAt": "2026-10-10T15:23:54.262Z",
+  "exitCode": 0,
+  "summary": "Retained ARM64 Node24.18.1 as UID1001 captured the exact busy target source through kernel-bound inspector identity, rejected wrong PID and required argument, preserved profile before SIGTERM, and removed its owned container. This is collector preflight proof only.",
+  "workItemId": "EI-25604028797058995",
+  "parentWorkItemId": "WI-10007352",
+  "relatedWorkItemIds": [
+    "EI-25500068013952985"
+  ],
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "evidencePlane": "retained-arm-collector-preflight",
+  "candidateAccepted": false,
+  "freshSourceBootMeasured": false,
+  "producerTaskId": "0mv2jnq6g6f2l67mtlj",
+  "assertions": [
+    {
+      "id": "retained-runtime",
+      "passed": true,
+      "evidence": "Exact immutable image executes ARM64 Node24.18.1 as UID1001 with network none and read-only filesystem."
+    },
+    {
+      "id": "exact-busy-source-profile",
+      "passed": true,
+      "evidence": "958 samples, four V8 nodes,1000ms requested capture; at least one sampled frame has the exact fixture source URL. Raw profile SHA256 is pinned."
+    },
+    {
+      "id": "wrong-pid-refusal",
+      "passed": true,
+      "evidence": "Parent PID cannot adopt the child listener even when the expected entry/argument match."
+    },
+    {
+      "id": "wrong-argument-refusal",
+      "passed": true,
+      "evidence": "Unknown-PID discovery rejects the exact entry with a different required argument."
+    },
+    {
+      "id": "preserved-before-sigterm",
+      "passed": true,
+      "evidence": "Profiler.stop returned a nonempty profile before the target was killed with SIGTERM; target exit remained signal-based."
+    },
+    {
+      "id": "input-stability",
+      "passed": true,
+      "evidence": "Nineteen frozen source inputs, frozen server bundle and four collector files remained byte-identical during the probe."
+    },
+    {
+      "id": "owned-cleanup",
+      "passed": true,
+      "evidence": "Exact recorded immutable container removed; cleanupPending=false."
+    }
+  ],
+  "rawResultFile": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/inspector-proc-precheck2-6mNzAP/result.json",
+  "rawResultSha256": "0f537e19d4052684617caa51b398c3425db9cce8f5ec51a24809d70f96f788fa",
+  "rawProfileFile": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/inspector-proc-precheck2-6mNzAP/profile.cpuprofile",
+  "rawProfileSha256": "fab2948044c4d23cfb7acb33e1012b7250fd65465b32257f83d95cbb8d1e026a",
+  "sourceHashes": {
+    "scripts/cpu-sample.mjs": "a23339a5da4d2e33b9e12c396f8b42bac5507abfb9f69df9c8a8bc042782053c",
+    "scripts/cdp-inspector.mjs": "bb15dc2ac1ec9cb60d26d62d0790610f2cd097a9171b37c39465c8f5a7d22112",
+    "scripts/lib/cpu-profile.mjs": "b77446b36ee55d5670eb7bcd74955bef10f23e804be9672eeb25aef9f7ba9fc3",
+    "scripts/proc-guard.mjs": "5eb8c0c9ca8a2d39aef88e4840e14e4832f808450e13977b6c628fadd7677cda"
+  },
+  "observation": {
+    "node": "v24.18.1",
+    "arch": "arm64",
+    "uid": 1001,
+    "target": {
+      "pid": 24,
+      "entry": "/tmp/p058-busy.mjs",
+      "argv": [
+        "--probe-target"
+      ],
+      "startTicks": "43480228",
+      "listenerInode": "473364472",
+      "identity": "proc"
+    },
+    "captureMs": 1000,
+    "samples": 958,
+    "nodes": 4,
+    "targetSourceSampled": true,
+    "wrongPidRefused": true,
+    "wrongArgRefused": true,
+    "termination": {
+      "code": null,
+      "signal": "SIGTERM"
+    }
+  },
+  "imageId": "sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921",
+  "sourceCommit": "dd07170622dbe1000a0e97a38c940af1a9da7403",
+  "cleanup": {
+    "containerId": "7d8a2894eaf9866e90b85daca7edc5795fa56f1c3cfa293860ef3e33162c8c22",
+    "removed": true,
+    "cleanupPending": false
+  },
+  "conventionalRegression": {
+    "path": "packages/operator-core/lib/cpu-sample.test.ts",
+    "sha256": "139e50c95516cd01df999c95b6ef064ecabaefd37164a5a291eabef6874d8fce",
+    "testRunId": 20986810,
+    "taskId": "0mv2ji2ji16kt4ny4sp",
+    "passed": 6,
+    "failed": 0,
+    "skipped": 0,
+    "evidenceCurrentness": "local dirty-origin run; exact source/test bytes subsequently confirmed committed; no global clean-worktree currentness claim"
+  },
+  "limitations": [
+    "Preflight profiles a small synchronous busy fixture; it does not establish a frozen server boot or original startup root cause.",
+    "No installed-native, trusted signing, registry publication, paired release or instance-transfer acceptance claim."
+  ],
+  "hostStdinScriptSha256": "c87d354e3c71d38adbc69e5ec7fd5165a64a91c5df8d3d0e46e40b98ed7c994e"
+}

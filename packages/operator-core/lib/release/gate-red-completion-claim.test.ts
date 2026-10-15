@@ -271,9 +271,26 @@ describe('gateRedCompletionClaimVerdict (P-022)', () => {
     expect(v.unadmittedPaths).toEqual(['a/failing.test.ts']);
   });
 
-  it('the gate-red CONDITION item closes once every leg is admitted or green', () => {
+  // green-main-cycle-time-2026-10-08 P-013 / D-028 (owner-approved D-021 fix 2): every leg
+  // admitted or green is NOT main green — the marker exists only while the frozen queue holds.
+  it('the gate-red CONDITION item is refused while the frozen queue still holds, even with every leg admitted or green', () => {
     const done = legs.map((l, i) => ({ ...l, status: i === 0 ? ('green' as const) : ('admitted' as const) }));
     const v = gateRedCompletionClaimVerdict({ summary: 'closing the streak item' }, { gateRedConditionItem: true, marker: withLedger(['lib/x.ts'], done) });
+    expect(v.refuse).toBe(true);
+    if (!v.refuse) throw new Error('unreachable');
+    expect(v.reason).toBe('main-still-red');
+    expect(v.detail).toContain('main is still red');
+    expect(v.admitCommand).toBeNull();
+  });
+
+  it('the gate-red CONDITION item closes once the frozen queue has cleared (main green: no marker)', () => {
+    const v = gateRedCompletionClaimVerdict({ summary: 'closing the streak item' }, { gateRedConditionItem: true, marker: null });
+    expect(v).toEqual({ refuse: false, reason: 'no-frozen-queue' });
+  });
+
+  it('an administrative settlement of the condition item is still allowed while the queue holds with every leg admitted', () => {
+    const done = legs.map((l) => ({ ...l, status: 'admitted' as const }));
+    const v = gateRedCompletionClaimVerdict({ summary: 'duplicate of the live streak item' }, { gateRedConditionItem: true, administrativeSettlement: true, marker: withLedger(['lib/x.ts'], done) });
     expect(v.refuse).toBe(false);
   });
 

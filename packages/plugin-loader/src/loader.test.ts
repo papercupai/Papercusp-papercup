@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadPluginFromDir, loadPlugins } from './index.ts';
 
 const ROOT = join(tmpdir(), `papercusp-loader-test-${process.pid}`);
@@ -523,5 +524,50 @@ describe('loadPlugins', () => {
     // Project wins.
     assert.equal(r.loaded[0].plugin.version, '1.0.0');
     assert.equal(r.loaded[0].source, 'project');
+  });
+});
+
+// cupboard-distributable-integrations-2026-10-10 D-015: a `distribution: "cupboard"` package is
+// never loaded from the bundled (project) root, and that copy never shadows the installed one.
+describe('distribution: "cupboard"', () => {
+  async function cupboardPlugin(dir: string, name: string, version: string) {
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(
+      join(dir, 'papercusp.json'),
+      JSON.stringify({ name, version, distribution: 'cupboard' }),
+      'utf8',
+    );
+    await fs.writeFile(
+      join(dir, 'index.mjs'),
+      `export default { name: ${JSON.stringify(name)}, version: ${JSON.stringify(version)}, papercusp: '^0.1.0', capabilities: [] };`,
+      'utf8',
+    );
+  }
+
+  it('skips the bundled copy and loads the installed (global) one', async () => {
+    const projectDir = join(ROOT, 'cupboard-project');
+    const globalDir = join(ROOT, 'cupboard-global');
+    await cupboardPlugin(join(projectDir, 'plugins', 'chat-pkg'), 'chat-pkg', '9.0.0');
+    const plain = await makePlugin({ name: 'plain-bundled' });
+    await fs.cp(plain, join(projectDir, 'plugins', 'plain-bundled'), { recursive: true });
+    await fs.mkdir(globalDir, { recursive: true });
+
+    const before = await loadPlugins({ projectDir, globalPluginsDir: globalDir });
+    assert.deepEqual(before.errors, []);
+    assert.deepEqual(before.loaded.map((l) => l.plugin.name), ['plain-bundled']);
+
+    await cupboardPlugin(join(globalDir, 'chat-pkg'), 'chat-pkg', '1.0.0');
+    const after = await loadPlugins({ projectDir, globalPluginsDir: globalDir });
+    const pkg = after.loaded.find((l) => l.plugin.name === 'chat-pkg');
+    assert.equal(pkg?.source, 'global');
+    assert.equal(pkg?.plugin.version, '1.0.0');
+  });
+
+  it('the real slack and bug-triage packages are excluded from the bundled root', async () => {
+    const plugins = fileURLToPath(new URL('../../../libs/papercusp/plugins/', import.meta.url));
+    for (const name of ['slack', 'bug-triage']) {
+      const r = await loadPluginFromDir(join(plugins, name), 'project');
+      assert.ok('skipped' in r && r.skipped === 'excluded', `${name}: ${JSON.stringify(r)}`);
+    }
   });
 });

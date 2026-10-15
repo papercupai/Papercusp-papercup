@@ -14,6 +14,8 @@ import {
   type BlueprintOperationInputReceipt,
   type BlueprintOperationResult,
   type BlueprintOperationStatus,
+  type BlueprintOperationReviewAccess,
+  type BusinessReviewDecision,
   type SubmitBlueprintOperationInput,
 } from './operation-service';
 import {
@@ -28,14 +30,14 @@ import {
 
 export interface BlueprintOperationPort {
   submit(input: SubmitBlueprintOperationInput): Promise<BlueprintOperationHandle>;
-  status(handle: BlueprintOperationHandle, callerId: string): Promise<BlueprintOperationStatus>;
-  result(handle: BlueprintOperationHandle, callerId: string): Promise<BlueprintOperationResult>;
-  events(handle: BlueprintOperationHandle, callerId: string, options?: { cursor?: string; limit?: number }):
+  status(handle: BlueprintOperationHandle, callerId: string, reviewAccess?: BlueprintOperationReviewAccess): Promise<BlueprintOperationStatus>;
+  result(handle: BlueprintOperationHandle, callerId: string, reviewAccess?: BlueprintOperationReviewAccess): Promise<BlueprintOperationResult>;
+  events(handle: BlueprintOperationHandle, callerId: string, options?: { cursor?: string; limit?: number; reviewAccess?: BlueprintOperationReviewAccess }):
     ReturnType<typeof getBlueprintOperationEvents>;
   cancel(handle: BlueprintOperationHandle, callerId: string, input: { requestKey: string; reason: string }):
     Promise<BlueprintOperationInputReceipt & { effected: boolean }>;
   signal(handle: BlueprintOperationHandle, callerId: string,
-    input: { channel: string; payload: unknown; requestKey: string }): Promise<BlueprintOperationInputReceipt>;
+    input: { channel: string; payload: unknown; requestKey: string }, reviewAccess?: BlueprintOperationReviewAccess): Promise<BlueprintOperationInputReceipt>;
   resume(handle: BlueprintOperationHandle, callerId: string,
     input: { token: string; response: unknown; requestKey: string }): Promise<BlueprintOperationInputReceipt>;
 }
@@ -43,11 +45,11 @@ export interface BlueprintOperationPort {
 export function createPgBlueprintOperationPort(sql: Sql): BlueprintOperationPort {
   return {
     submit: (input) => submitBlueprintOperation(sql, input),
-    status: (handle, callerId) => getBlueprintOperationStatus(sql, handle, callerId),
-    result: (handle, callerId) => getBlueprintOperationResult(sql, handle, callerId),
+    status: (handle, callerId, access) => getBlueprintOperationStatus(sql, handle, callerId, access),
+    result: (handle, callerId, access) => getBlueprintOperationResult(sql, handle, callerId, access),
     events: (handle, callerId, options) => getBlueprintOperationEvents(sql, handle, callerId, options),
     cancel: (handle, callerId, input) => cancelBlueprintOperation(sql, handle, callerId, input),
-    signal: (handle, callerId, input) => signalBlueprintOperation(sql, handle, callerId, input),
+    signal: (handle, callerId, input, access) => signalBlueprintOperation(sql, handle, callerId, input, access),
     resume: (handle, callerId, input) => resumeBlueprintOperation(sql, handle, callerId, input),
   };
 }
@@ -69,15 +71,17 @@ export function createProjectedBlueprintOperationPort(invoke: ProjectedToolInvok
     submit: async (input) => (await call<{ handle: BlueprintOperationHandle }>('submit', {
       harness: input.harnessSlug, operationId: input.operationId, requestKey: input.requestKey,
       input: input.input,
+      ...(input.expectedSpecificationRevision === undefined ? {} : { expectedSpecificationRevision: input.expectedSpecificationRevision }),
       ...(input.title === undefined ? {} : { title: input.title }),
       ...(input.summary === undefined ? {} : { summary: input.summary }),
     }, SubmitResultSchema)).handle,
-    status: (handle) => call('status', { handle }, BlueprintOperationStatusSchema),
-    result: (handle) => call('result', { handle }, BlueprintOperationResultSchema),
+    status: (handle, _callerId, access) => call('status', { handle, ...(access ? { review: true } : {}) }, BlueprintOperationStatusSchema),
+    result: (handle, _callerId, access) => call('result', { handle, ...(access ? { review: true } : {}) }, BlueprintOperationResultSchema),
     events: (handle, _callerId, options) => call('events', {
       handle,
       ...(options?.cursor === undefined ? {} : { cursor: options.cursor }),
       ...(options?.limit === undefined ? {} : { limit: options.limit }),
+      ...(options?.reviewAccess ? { review: true } : {}),
     }, BlueprintOperationEventsPageSchema),
     cancel: (handle, _callerId, input) => call('cancel', { handle, ...input }, BlueprintOperationCancelReceiptSchema),
     signal: (handle, _callerId, input) => call('signal', { handle, ...input }, BlueprintOperationInputReceiptSchema),
@@ -101,7 +105,7 @@ type OperationTypeMap = Record<string, {
 export class BlueprintOperationClient<Operations extends OperationTypeMap> {
   constructor(
     private readonly port: BlueprintOperationPort,
-    private readonly scope: { workspaceId: string; harnessSlug: string; callerId: string },
+    private readonly scope: { workspaceId: string; harnessSlug: string; callerId: string; principalId?: string },
   ) {
     if (!scope.workspaceId.trim() || !scope.harnessSlug.trim() || !scope.callerId.trim()) {
       throw new Error('blueprint operation client requires workspace, harness and caller');
@@ -118,6 +122,7 @@ export class BlueprintOperationClient<Operations extends OperationTypeMap> {
     operationId: K;
     input: Operations[K]['input'];
     requestKey: string;
+    expectedSpecificationRevision?: string;
     title?: string;
     summary?: string;
   }): Promise<TypedBlueprintOperationHandle<K>> {
@@ -139,6 +144,22 @@ export class BlueprintOperationClient<Operations extends OperationTypeMap> {
   ): Promise<TypedBlueprintOperationResult<Operations[K]['output']>> {
     this.checkHandle(handle);
     return await this.port.result(handle, this.scope.callerId) as TypedBlueprintOperationResult<Operations[K]['output']>;
+  }
+
+  /** In the projected port the server supplies the authenticated principal;
+   * the PG port requires this trusted identity explicitly in the client scope. */
+  reviewResult<K extends keyof Operations & string>(handle: TypedBlueprintOperationHandle<K>) {
+    this.checkHandle(handle);
+    return this.port.result(handle, this.scope.callerId, { principalId: this.scope.principalId ?? this.scope.callerId });
+  }
+
+  review<K extends keyof Operations & string>(handle: TypedBlueprintOperationHandle<K>, input: {
+    decision: BusinessReviewDecision; reason: string; resultFingerprint: string; requestKey: string;
+  }) {
+    this.checkHandle(handle);
+    const { requestKey, ...payload } = input;
+    return this.port.signal(handle, this.scope.callerId, { channel: 'business-review', payload, requestKey },
+      { principalId: this.scope.principalId ?? this.scope.callerId });
   }
 
   events<K extends keyof Operations & string>(

@@ -114,6 +114,7 @@ async function defaultPlanTemplateSeeder({
     },
   );
   if (result.kind === 'busy') return { seeded: false, reason: 'busy' };
+  if (result.kind === 'refused') return { seeded: false, reason: `${result.value.code}: ${result.value.message}` };
   return result.value;
 }
 

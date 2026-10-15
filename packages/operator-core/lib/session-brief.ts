@@ -24,9 +24,11 @@
  * the bootstrap-su adv row that records the Claude session UUID).
  */
 
+import { randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
+import { buildConsumerView, type ConsumerView } from './consumer-view';
 
 /** The subset of presence input that forms the durable brief. */
 export interface SessionBriefInput {
@@ -82,9 +84,18 @@ export interface SessionBriefPoisonMarker {
   evidence: string;
 }
 
+/** Owner-accepted managed shutdown is a durable wake cutoff, not a fleet
+ * release. Keep it across successor/reactivation writes: older deliveries must
+ * never become new work just because their in-memory host dedup disappeared. */
+export interface SessionBriefShutdownMarker {
+  at: string;
+  by: string;
+}
+
 export interface SessionBriefLifecycle {
   released?: SessionBriefReleaseMarker;
   poisoned?: SessionBriefPoisonMarker;
+  shutdown?: SessionBriefShutdownMarker;
 }
 
 export interface SessionBriefRecord {
@@ -105,6 +116,156 @@ export interface SessionBriefRecord {
   controlState?: unknown | null;
   firstSeenAt: string;
   updatedAt: string;
+}
+
+/** One-shot payload used when a queued compaction respawn opens a fresh bootstrap. */
+export interface PendingCarryRespawn {
+  nonce: string;
+  createdAtMs: number;
+  expiresAtMs: number;
+  firstPrompt: string;
+  systemPromptAddendum: string;
+}
+
+export const PENDING_CARRY_RESPAWN_TTL_MS = 15 * 60_000;
+
+type PendingCarryRespawnSqlOptions = { sql?: Sql; nowMs?: number };
+
+function parsePendingCarryRespawn(value: unknown, nowMs: number): PendingCarryRespawn | null {
+  let parsed = value;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return null;
+    }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const row = parsed as Record<string, unknown>;
+  if (
+    typeof row.nonce !== 'string' || !row.nonce.trim() ||
+    typeof row.createdAtMs !== 'number' || !Number.isSafeInteger(row.createdAtMs) ||
+    typeof row.expiresAtMs !== 'number' || !Number.isSafeInteger(row.expiresAtMs) ||
+    row.expiresAtMs <= row.createdAtMs || row.expiresAtMs <= nowMs ||
+    typeof row.firstPrompt !== 'string' || !row.firstPrompt.trim() ||
+    typeof row.systemPromptAddendum !== 'string' || !row.systemPromptAddendum.trim()
+  ) return null;
+  return {
+    nonce: row.nonce,
+    createdAtMs: row.createdAtMs,
+    expiresAtMs: row.expiresAtMs,
+    firstPrompt: row.firstPrompt,
+    systemPromptAddendum: row.systemPromptAddendum,
+  };
+}
+
+/**
+ * Persist before the host socket accepts a carry-respawn. A missing brief row is
+ * created without overwriting its lane/control fields; a newer request replaces
+ * the prior slot and receives a distinct nonce for conditional cleanup.
+ */
+export async function savePendingCarryRespawn(
+  identity: Pick<AgentIdentity, 'ownerId' | 'workspaceId'>,
+  input: { firstPrompt: string; systemPromptAddendum: string },
+  options: PendingCarryRespawnSqlOptions & { nonce?: string } = {},
+): Promise<PendingCarryRespawn | null> {
+  const ownerId = identity?.ownerId?.trim();
+  if (!ownerId || !input.firstPrompt.trim() || !input.systemPromptAddendum.trim()) return null;
+  const nowMs = options.nowMs ?? Date.now();
+  const slot: PendingCarryRespawn = {
+    nonce: options.nonce ?? randomUUID(),
+    createdAtMs: nowMs,
+    expiresAtMs: nowMs + PENDING_CARRY_RESPAWN_TTL_MS,
+    firstPrompt: input.firstPrompt,
+    systemPromptAddendum: input.systemPromptAddendum,
+  };
+  const workspaceId = identity.workspaceId?.trim() || 'default';
+  const sql = options.sql ?? getOrgPg().sql;
+  const rows = await sql<Array<{ pending_carry_respawn: unknown }>>`
+    INSERT INTO harness_shared.session_briefs
+      (owner_id, workspace_id, pending_carry_respawn, first_seen_at, updated_at)
+    VALUES (${ownerId}, ${workspaceId}, ${JSON.stringify(slot)}::text::jsonb, now(), now())
+    ON CONFLICT (owner_id) DO UPDATE SET
+      pending_carry_respawn = EXCLUDED.pending_carry_respawn,
+      updated_at = now()
+    RETURNING pending_carry_respawn
+  `;
+  return parsePendingCarryRespawn(rows[0]?.pending_carry_respawn, nowMs);
+}
+
+/** Clear only the exact request that a host refused, preserving a newer retry. */
+export async function clearPendingCarryRespawn(
+  ownerId: string,
+  nonce: string,
+  options: PendingCarryRespawnSqlOptions = {},
+): Promise<boolean> {
+  if (!ownerId.trim() || !nonce.trim()) return false;
+  const sql = options.sql ?? getOrgPg().sql;
+  const rows = await sql<Array<{ owner_id: string }>>`
+    UPDATE harness_shared.session_briefs
+       SET pending_carry_respawn = NULL, updated_at = now()
+     WHERE owner_id = ${ownerId}
+       AND pending_carry_respawn->>'nonce' = ${nonce}
+    RETURNING owner_id
+  `;
+  return rows.length > 0;
+}
+
+/**
+ * Atomically lock the pending row, clear it, and return the locked pre-update
+ * value. A bare UPDATE ... RETURNING pending_carry_respawn returns the new NULL
+ * value, which would silently discard every consumed payload. Concurrent
+ * bootstrap workers cannot both receive the same payload; expired or malformed
+ * payloads are still cleared so they cannot leak into a later ordinary launch.
+ */
+export async function consumePendingCarryRespawn(
+  ownerId: string,
+  options: PendingCarryRespawnSqlOptions = {},
+): Promise<PendingCarryRespawn | null> {
+  if (!ownerId.trim()) return null;
+  const nowMs = options.nowMs ?? Date.now();
+  const sql = options.sql ?? getOrgPg().sql;
+  const rows = await sql<Array<{ pending_carry_respawn: unknown }>>`
+    WITH pending AS MATERIALIZED (
+      SELECT owner_id, pending_carry_respawn
+        FROM harness_shared.session_briefs
+       WHERE owner_id = ${ownerId}
+         AND pending_carry_respawn IS NOT NULL
+       FOR UPDATE
+    )
+    UPDATE harness_shared.session_briefs AS brief
+       SET pending_carry_respawn = NULL, updated_at = now()
+      FROM pending
+     WHERE brief.owner_id = pending.owner_id
+    RETURNING pending.pending_carry_respawn
+  `;
+  return parsePendingCarryRespawn(rows[0]?.pending_carry_respawn, nowMs);
+}
+
+/** Restore a consumed slot if bootstrap fails; never overwrite a newer request. */
+export async function restorePendingCarryRespawn(
+  ownerId: string,
+  workspaceId: string,
+  slot: PendingCarryRespawn,
+  options: PendingCarryRespawnSqlOptions = {},
+): Promise<boolean> {
+  const nowMs = options.nowMs ?? Date.now();
+  const valid = parsePendingCarryRespawn(slot, nowMs);
+  if (!ownerId.trim() || !workspaceId.trim() || !valid) return false;
+  const sql = options.sql ?? getOrgPg().sql;
+  const rows = await sql<Array<{ pending_carry_respawn: unknown }>>`
+    INSERT INTO harness_shared.session_briefs
+      (owner_id, workspace_id, pending_carry_respawn, first_seen_at, updated_at)
+    VALUES (${ownerId}, ${workspaceId}, ${JSON.stringify(valid)}::text::jsonb, now(), now())
+    ON CONFLICT (owner_id) DO UPDATE SET
+      pending_carry_respawn = COALESCE(
+        harness_shared.session_briefs.pending_carry_respawn,
+        EXCLUDED.pending_carry_respawn
+      ),
+      updated_at = now()
+    RETURNING pending_carry_respawn
+  `;
+  return parsePendingCarryRespawn(rows[0]?.pending_carry_respawn, nowMs)?.nonce === valid.nonce;
 }
 
 /**
@@ -264,7 +425,15 @@ function parseSessionBriefLifecycle(value: unknown): SessionBriefLifecycle | nul
   if (!lifecycle || typeof lifecycle !== 'object' || Array.isArray(lifecycle)) return null;
   const released = (lifecycle as { released?: unknown }).released;
   const poisoned = (lifecycle as { poisoned?: unknown }).poisoned;
+  const shutdown = (lifecycle as { shutdown?: unknown }).shutdown;
   const result: SessionBriefLifecycle = {};
+  if (shutdown && typeof shutdown === 'object' && !Array.isArray(shutdown)) {
+    const marker = shutdown as Partial<SessionBriefShutdownMarker>;
+    if (
+      typeof marker.at === 'string' && Number.isFinite(Date.parse(marker.at)) &&
+      typeof marker.by === 'string' && marker.by.trim()
+    ) result.shutdown = { at: marker.at, by: marker.by };
+  }
   if (released && typeof released === 'object' && !Array.isArray(released)) {
     const marker = released as Partial<SessionBriefReleaseMarker>;
     if (
@@ -300,6 +469,47 @@ function parseSessionBriefLifecycle(value: unknown): SessionBriefLifecycle | nul
   return Object.keys(result).length > 0 ? result : null;
 }
 
+export type SessionBriefLifecycleMarkerKind = 'released' | 'poisoned' | 'shutdown';
+
+/**
+ * Consumer attestation for a lifecycle-marker write (WI-10005195, generalizing
+ * EI-23770243810745552). The upsert only proves a row was WRITTEN; the wake
+ * executor's stop gate reads `control_state` through `parseSessionBriefLifecycle`,
+ * which silently drops a marker that fails its shape checks — so a write can
+ * return `ok` while the consumer sees no marker and reanimates the session.
+ * This compares the marker the writer meant to store with what that exact parser
+ * returns from the row the upsert produced (`RETURNING control_state`).
+ */
+export function attestLifecycleConsumerView<K extends SessionBriefLifecycleMarkerKind>(
+  kind: K,
+  written: NonNullable<SessionBriefLifecycle[K]>,
+  controlStateAfterWrite: unknown,
+): ConsumerView<SessionBriefLifecycle[K] | null> {
+  return buildConsumerView({
+    readPath: `session_briefs.control_state -> parseSessionBriefLifecycle().${kind}`,
+    written,
+    consumed: parseSessionBriefLifecycle(controlStateAfterWrite)?.[kind] ?? null,
+  });
+}
+
+/**
+ * Exception-only: an agreeing consumer read adds nothing; a diverging one is
+ * logged with its view and makes the write report failure, because a marker the
+ * consumer cannot read is not a marker (poison callers then leave the session
+ * retryable instead of declaring it stopped).
+ */
+function lifecycleWriteReadByConsumer(
+  kind: SessionBriefLifecycleMarkerKind,
+  ownerId: string,
+  view: ConsumerView<unknown>,
+): boolean {
+  if (!view.divergedFromWrite) return true;
+  console.warn(
+    `[session-brief] ${kind} marker write for ${ownerId} landed but the consumer read diverged: ${JSON.stringify(view)}`,
+  );
+  return false;
+}
+
 /**
  * Read the durable lifecycle markers used by the wake executor. Fail-soft by
  * design: a temporary brief-store outage must not turn every ordinary wake
@@ -321,12 +531,69 @@ export async function getSessionBriefLifecycle(ownerId: string): Promise<Session
 }
 
 /**
- * Mark one live fleet member as released before its typed wind-down cue is
- * sent. The upsert also covers a member whose brief has not been written yet.
- * Existing control-anchor fields are preserved; a marker change advances the
- * anchor generation and clears its transition so the next consumer performs a
- * full resync from the authoritative row.
+ * Record the owner's positively accepted managed shutdown in the existing
+ * lifecycle envelope. Preserve control fields and sibling lifecycle markers,
+ * including when the brief exists but has no lifecycle object yet.
  */
+export async function markSessionBriefShutdown(
+  ownerId: string,
+  workspaceId: string,
+  marker: SessionBriefShutdownMarker,
+  options: Pick<PendingCarryRespawnSqlOptions, 'sql'> = {},
+): Promise<boolean> {
+  try {
+    if (!ownerId || !workspaceId || marker.by !== ownerId || !Number.isFinite(Date.parse(marker.at))) return false;
+    const markerJson = JSON.stringify({ at: marker.at, by: marker.by });
+    const sql = options.sql ?? getOrgPg().sql;
+    const rows = await sql<Array<{ control_state: unknown }>>`
+      INSERT INTO harness_shared.session_briefs
+        (owner_id, workspace_id, control_state, control_generation, control_updated_at)
+      VALUES (
+        ${ownerId}, ${workspaceId},
+        jsonb_build_object('lifecycle', jsonb_build_object('shutdown', ${markerJson}::text::jsonb)),
+        1, now()
+      )
+      ON CONFLICT (owner_id) DO UPDATE SET
+        control_state = jsonb_set(
+          COALESCE(harness_shared.session_briefs.control_state, '{}'::jsonb),
+          '{lifecycle}',
+          COALESCE(harness_shared.session_briefs.control_state->'lifecycle', '{}'::jsonb)
+            || (EXCLUDED.control_state->'lifecycle'),
+          true
+        ),
+        control_generation = CASE
+          WHEN harness_shared.session_briefs.control_state #> '{lifecycle,shutdown}'
+               IS DISTINCT FROM EXCLUDED.control_state #> '{lifecycle,shutdown}'
+            THEN harness_shared.session_briefs.control_generation + 1
+          ELSE harness_shared.session_briefs.control_generation
+        END,
+        control_updated_at = CASE
+          WHEN harness_shared.session_briefs.control_state #> '{lifecycle,shutdown}'
+               IS DISTINCT FROM EXCLUDED.control_state #> '{lifecycle,shutdown}'
+            THEN now()
+          ELSE harness_shared.session_briefs.control_updated_at
+        END,
+        control_transition = CASE
+          WHEN harness_shared.session_briefs.control_state #> '{lifecycle,shutdown}'
+               IS DISTINCT FROM EXCLUDED.control_state #> '{lifecycle,shutdown}'
+            THEN NULL
+          ELSE harness_shared.session_briefs.control_transition
+        END,
+        updated_at = now()
+      RETURNING control_state
+    `;
+    // Reuse the existing lifecycle consumer attestation: a successful SQL
+    // receipt whose marker the wake parser cannot read is NOT a recorded guard.
+    return lifecycleWriteReadByConsumer(
+      'shutdown', ownerId, attestLifecycleConsumerView('shutdown', marker, rows[0]?.control_state),
+    );
+  } catch (error) {
+    console.warn(`[session-brief] shutdown cutoff persistence failed for ${ownerId}: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+}
+
+/** Mark a fleet release before wind-down, preserving existing control fields. */
 export async function markSessionBriefReleased(
   ownerId: string,
   workspaceId: string,
@@ -335,7 +602,7 @@ export async function markSessionBriefReleased(
   try {
     if (!ownerId || !workspaceId || !marker.fleet || !marker.at || !marker.by) return false;
     const markerJson = JSON.stringify(marker);
-    await getOrgPg().sql`
+    const rows = await getOrgPg().sql<Array<{ control_state: unknown }>>`
       INSERT INTO harness_shared.session_briefs
         (owner_id, workspace_id, control_state, control_generation, control_updated_at)
       VALUES (
@@ -375,8 +642,18 @@ export async function markSessionBriefReleased(
           ELSE harness_shared.session_briefs.control_transition
         END,
         updated_at = now()
+      RETURNING control_state
     `;
-    return true;
+    // Attest what the stop gate will READ, not just that the upsert ran.
+    return lifecycleWriteReadByConsumer(
+      'released',
+      ownerId,
+      attestLifecycleConsumerView(
+        'released',
+        { fleet: marker.fleet, at: marker.at, by: marker.by },
+        rows[0]?.control_state,
+      ),
+    );
   } catch {
     return false;
   }
@@ -404,7 +681,7 @@ export async function markSessionBriefPoisoned(
       evidence: marker.evidence.slice(0, 400),
     };
     const markerJson = JSON.stringify(boundedMarker);
-    await getOrgPg().sql`
+    const rows = await getOrgPg().sql<Array<{ control_state: unknown }>>`
       INSERT INTO harness_shared.session_briefs
         (owner_id, workspace_id, control_state, control_generation, control_updated_at)
       VALUES (
@@ -444,8 +721,26 @@ export async function markSessionBriefPoisoned(
           ELSE harness_shared.session_briefs.control_transition
         END,
         updated_at = now()
+      RETURNING control_state
     `;
-    return true;
+    // Attest what the wake executor's stop gate will READ, not just that the upsert ran.
+    return lifecycleWriteReadByConsumer(
+      'poisoned',
+      ownerId,
+      attestLifecycleConsumerView(
+        'poisoned',
+        {
+          advSessionId: boundedMarker.advSessionId,
+          sessionId: boundedMarker.sessionId,
+          startedAt: boundedMarker.startedAt,
+          at: boundedMarker.at,
+          by: boundedMarker.by,
+          reason: boundedMarker.reason,
+          evidence: boundedMarker.evidence,
+        },
+        rows[0]?.control_state,
+      ),
+    );
   } catch {
     return false;
   }

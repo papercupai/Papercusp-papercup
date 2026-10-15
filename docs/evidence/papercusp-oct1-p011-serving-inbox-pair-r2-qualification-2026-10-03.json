@@ -1,0 +1,138 @@
+{
+  "schemaVersion": "p011-serving-inbox-pair-qualification-v1",
+  "workItem": "WI-10005921",
+  "parent": "WI-10004890",
+  "nativeSession": "01a1012e-eed0-75a2-b025-6dab392cb281",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "spec": {
+    "id": "PERF-OCT1-P011-MEMORY",
+    "revision": 2,
+    "fingerprint": "6059e251ea51a61458afd5075a8190a60e1f1139d28c55784b4ff12d2c624010"
+  },
+  "status": "scoped-serving-generation-resource-comparison-passed-full-clause-open",
+  "purpose": "New necessary forward acceptance after the persistence and transport class repairs. This is not a recovery replay or a retrospective repair of the failed R1 receipt.",
+  "rawReceipt": {
+    "path": "docs/evidence/papercusp-oct1-p011-serving-inbox-pair-r2-2026-10-03.json",
+    "bytes": 203412,
+    "sha256": "2d6dd17b3236aed7e6d5cfd993f8fea4641cc8bb2540ca29e999d0ca2a35700c",
+    "plane": "isolated-serving-generation-operator-api",
+    "runnerStatus": 0,
+    "incomplete": false,
+    "verificationError": null
+  },
+  "sourceReceipt": {
+    "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+    "bytes": 188073,
+    "sha256": "fdccb9e6df40568b44ec7b25174ce9d36ee486a756ddd923674c18c7180391e9",
+    "namedSourceCount": 9,
+    "beforeAfterEqual": true,
+    "fullExecutedSourceGraph": "unknown",
+    "ledgerCommitSha": "3dde3a3bf7a7eff3c086aafce6e8edf056cfbfb5",
+    "ledgerWorktreeDirty": true,
+    "cohortRouterFinalHead": "cedbf124c2",
+    "cohortRouterProvenance": "unknown",
+    "qualification": "Named test/source hashes are measured separately from the ledger and router HEADs. Their different snapshots do not establish complete executed-source currentness."
+  },
+  "runs": {
+    "cohort": {
+      "testRunId": 20675310,
+      "status": "pass",
+      "harness": "papercusp",
+      "nativeHandle": 19481,
+      "nativeExitCode": 0,
+      "passed": 1,
+      "filtered": 130,
+      "log": {
+        "path": "/tmp/su-7db4f-p011-serving-inbox-pair-r2.log",
+        "bytes": 56410,
+        "sha256": "ea2f56792b0711e34ca718bfbb956771293cde0640ba05de3783a7f8c9d93341"
+      }
+    },
+    "rawAudit": {
+      "testRunId": 20675320,
+      "status": "pass",
+      "nativeExitCode": 0,
+      "passed": 1,
+      "filtered": 130,
+      "method": "Separate canonical test regenerates complete fixture contents, derives both resource differences from raw PID-bound counters, requires observed request overlap and rejects a corrupted request interval. It ignores fabricated summary headlines, and shares maintained assertion helpers with the cohort.",
+      "log": {
+        "path": "/tmp/su-7db4f-p011-serving-inbox-raw-oracle-r2.log",
+        "bytes": 51647,
+        "sha256": "a656c7699c202dcc3dee7ac0ed2bd5ed58a7c1c4a5ae3ec1922c680964d18dda"
+      }
+    }
+  },
+  "preRunClassAudit": {
+    "metadataPersistence": "EI-24947550723835470 done/committed; completed raw rows and runner/build/intervention metadata persist before final health pin. Saved 44-guard proof was not replayed.",
+    "transport": "EI-24949783691926480 done/committed; Connection:close pins use the unchanged 10-second timeout. Exact current test bytes match its saved 32-guard proof; no recovery replay.",
+    "isolation": "Maintained throwaway PostgreSQL, disposable home, private request-only identity, launcher-owned PG port and ambient operator port exclusion.",
+    "copy": "46 executable/data artifacts pinned; exactly one guarded historical full-cache-key intervention. Candidate and companion bytes are checked before and after.",
+    "runnerScope": "PAPERCUSP_TEST_RUN_HARNESS=papercusp; both authoritative ledger rows are local integration proof.",
+    "runtimeLease": "Shared staging-server lease acquired and released; no restart or runtime mutation by this session. Staging refreshed before launch, so the obsolete preflight process was replaced before any cohort."
+  },
+  "servingIdentity": {
+    "loadedBuild": "2af2bbdd4d",
+    "version": "0.0.0",
+    "pid": 2233169,
+    "startTicks": "6919223",
+    "beforeAfterPinEqual": true,
+    "copyRoute": "immutable-serving-generation-copy",
+    "scope": "Same health identity, socket-owning PID/startTicks/executable and read-only artifact bytes through the run. Resources and fixture HTTP calls belong to disposable copies; staging request allocation is unmeasured."
+  },
+  "pairedObservation": {
+    "arms": ["baseline", "shared", "shared", "baseline"],
+    "samples": 44,
+    "windows": 12,
+    "clientRequests": 96,
+    "fixtureRowsPerArm": 256,
+    "preservedBodyStringCodeUnitsPerArm": 8388608,
+    "rawCacheCopies": [8, 1, 1, 8],
+    "pairs": [
+      {
+        "baselineArm": 0,
+        "candidateArm": 1,
+        "pssGrowthDifferenceBytes": 429262848,
+        "cumulativeV8AllocationGrowthDifferenceBytes": 244198624
+      },
+      {
+        "baselineArm": 3,
+        "candidateArm": 2,
+        "pssGrowthDifferenceBytes": 134367232,
+        "cumulativeV8AllocationGrowthDifferenceBytes": 263644248
+      }
+    ],
+    "functionality": "Complete raw body digests, IDs, summaries and total/returned counts match the independently regenerated fixture in every arm.",
+    "concurrency": "Eight client requests overlap in each of twelve windows. Parallel server execution is unmeasured.",
+    "definitions": "PSS is one PID/startTicks-bound smaps_rollup Pss kB counter multiplied by 1024. Each growth difference subtracts the candidate final-minus-initial trajectory from its baseline trajectory. Allocation is cumulative V8 total_allocated_bytes, not uniquely retained or native bytes. Unforced collection changes are visible in the raw trajectories; collection events were not recorded.",
+    "cleanup": "All four private hosts reaped gracefully, zero forced cleanup, zero unreaped or observed descendants, zero debugger pauses. Disposable runtime and fixture data removed."
+  },
+  "runtimeLogRetentionGap": {
+    "ownedFollowUp": "EI-24952484103642665",
+    "recordedPath": "/tmp/pcv/papercusp-inbox-pair-artT5s/runtime.log",
+    "recordedBytes": 634300,
+    "recordedSha256": "6dd4da55f619cd3aea9494a5e3c72f16b2c29674e2a6fe2bc4b6e114110572bb",
+    "resolvesAfterCleanup": false,
+    "rootCause": "runCohortWithLog returns an identity for a log inside the disposable cohort directory; the enclosing finally removes that directory.",
+    "qualification": "Recorded runner status, exact raw resource rows and retained outer canonical runner logs survive. The missing inner log cannot be recovered or treated as re-resolved. Preserve this receipt as measured and repair the persistence class for future runs without replaying R2 for recovery."
+  },
+  "preservedHistoricalEvidence": {
+    "rawPath": "docs/evidence/papercusp-oct1-p011-serving-inbox-pair-r1-2026-10-03.json",
+    "rawSha256": "1c2ca8fd2d1d68b2701d8e8a35409eef0e72a8fbd3793d0b796660805b7439b8",
+    "qualificationPath": "docs/evidence/papercusp-oct1-p011-serving-inbox-pair-r1-qualification-2026-10-03.json",
+    "qualificationSha256": "f142d081765fdf844d2bda8f0fee3cfed2441416410aa5988ac5d3c5322c16db",
+    "failedRuns": [20667339, 20667361],
+    "historicalSocketCause": "unknown",
+    "retrospectiveRunnerOrSavingsInference": false
+  },
+  "remainingAcceptance": {
+    "censusPath": "docs/evidence/papercusp-oct1-p011-proof-census-2026-10-02.json",
+    "censusSha256": "ce7f942025573298f90a487a65775c63ec48861b20bde6eb2bcb82a0d6efb950",
+    "allEightOriginalSourceDispositionsPreserved": true,
+    "selectedInbox": "Scoped paired resources/functionality and exact raw cache ownership observed on private serving-artifact copies. Live serving-request allocation, unique retained/native ownership and complete executed-source provenance remain unmeasured.",
+    "wholeClause": "Open under D-021; neither child nor parent has scoped-contribution terminal acceptance.",
+    "independentPlanAcceptance": "open",
+    "shipment": "unverified",
+    "authority": "Original approval provenance and pending native owner affirmation remain unchanged; no duplicate ask or contract change.",
+    "excludedWork": "No P017, LIVE_GATE_OPS, peer monitoring, native agent launch, profiler, forced GC or restart."
+  }
+}

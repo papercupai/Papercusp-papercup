@@ -44,7 +44,7 @@ import { withBoundedTimeout } from '../../../bounded-timeout';
 import { FOREGROUND_TIMEOUT_CEILING_MS } from '../../capability/foreground-transport-cap';
 import { getHostSnapshot, type HostSnapshot } from '../../../host-snapshot';
 import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from '../compaction-recovery';
-import { shapeOrient } from './orient-shape';
+import { inboxRecentPointer, shapeOrient } from './orient-shape';
 import { shapeLeaderBrief } from '../../fleet/leader-brief-shape';
 import { ORIENT_CORE_RESULT_KEYS, ORIENT_OPTIONAL_PRIORITY } from './orient-priority';
 // Type-only: the runtime half (interestFold) is dynamically imported at its use site,
@@ -83,6 +83,7 @@ import { fingerprintIdList, idListUnchanged, rowKey } from './orient-list-delta'
 import { collectOrientDisclosures, recordOrientDisclosures } from '../../../agent-orient-disclosures';
 import type { ClaimableHarnessScope } from '../../work_items/claimable';
 import type { ControlAnchor } from '../control-anchor';
+import { createPhaseTracker } from '@papercusp/tooldef';
 
 type ControlAnchorFleetRoute = Extract<ControlAnchor['state']['route'], { kind: 'fleet' }>;
 type ControlAnchorRouteState = Pick<ControlAnchor['state'], 'route'>;
@@ -196,17 +197,51 @@ const ORIENT_COMPACTION_RECOVERY_TIMEOUT_MS = 15_000;
  * sequential sum of composeOrient plus the handler-owned enrichment folds. The aggregate
  * fence must beat the MCP transport cap, not merely the server's 120s dispatch budget;
  * otherwise a direct coord:orient caller gets an opaque -32001 before this honest unknown
- * fallback can be serialized. Reuse the shared 50s foreground ceiling, which carries the
- * transport's required response-serialization headroom.
+ * fallback can be serialized. Reuse the shared foreground ceiling, which leaves the
+ * transport's required cleanup and response-serialization headroom.
  */
 export const ORIENT_AGGREGATE_TIMEOUT_MS = FOREGROUND_TIMEOUT_CEILING_MS;
+/** Leave the orchestration worker time to consume and return the degraded snapshot. */
+const ORIENT_PARENT_DEADLINE_HEADROOM_MS = 1_000;
 
-export function withOrientAggregateTimeout<T>(work: Promise<T> | (() => Promise<T>), fallback: T): Promise<T> {
-  return withBoundedTimeout(work, {
+export function withOrientAggregateTimeout<T>(
+  work: Promise<T> | ((aggregateDeadlineAtMs: number) => Promise<T>),
+  fallback: T,
+  onTimeout?: (elapsedMs: number) => void,
+  callerDeadlineAtMs?: number,
+): Promise<T> {
+  const startedAtMs = Date.now();
+  // A nested code:run may have only 30s (or a reduced post-preflight budget). Its worker
+  // cannot consume our flat 45s fallback after it dies. Honor the remaining absolute budget
+  // without widening either deadline, preserving the same honest unknown/partial snapshot.
+  const timeoutMs = typeof callerDeadlineAtMs === 'number' && Number.isFinite(callerDeadlineAtMs)
+    ? Math.max(0, Math.min(ORIENT_AGGREGATE_TIMEOUT_MS,
+      callerDeadlineAtMs - startedAtMs - ORIENT_PARENT_DEADLINE_HEADROOM_MS))
+    : ORIENT_AGGREGATE_TIMEOUT_MS;
+  if (timeoutMs === 0) {
+    try {
+      onTimeout?.(0);
+    } catch {
+      /* diagnostics must never make the aggregate fallback less available */
+    }
+    return Promise.resolve(fallback);
+  }
+  const aggregateDeadlineAtMs = startedAtMs + timeoutMs;
+  const boundedWork = typeof work === 'function' ? () => work(aggregateDeadlineAtMs) : work;
+  return withBoundedTimeout(boundedWork, {
     fallback,
-    timeoutMs: ORIENT_AGGREGATE_TIMEOUT_MS,
+    timeoutMs,
     label: 'orient:aggregate',
-  }).then(({ value }) => value);
+  }).then(({ value, reason, elapsedMs }) => {
+    if (reason === 'timeout') {
+      try {
+        onTimeout?.(elapsedMs);
+      } catch {
+        /* diagnostics must never make the aggregate fallback less available */
+      }
+    }
+    return value;
+  });
 }
 
 /**
@@ -409,10 +444,9 @@ export interface OrientResult {
    *  fabricated total is worse than an admitted bound. EI-20113865649946366. */
   claimableTruncated?: OrientClaimableTruncated;
   /** coord:inbox folded down to its summary + the most-recent bounded entries.
-   *  EI-18667514339699744: `entries` is aliased alongside `recent` (same array,
-   *  same reference) so a caller reading either coord:orient's or coord:inbox's
-   *  key name gets the real rows instead of a silent [] on a mismatched read. */
-  inbox: { summary?: unknown; recent?: unknown; entries?: unknown };
+   *  The rows live under `entries` (coord:inbox's own key); `recent` is a pointer
+   *  to them (inboxRecentPointer, EI-18667514339699744 root fix) — not a copy. */
+  inbox: { summary?: unknown; entries?: unknown; recent?: { movedTo: 'inbox.entries'; length: number } };
   /** Bounded capless-governor state; never includes per-request or per-queue rows. */
   governor?: import('../../../resource-governor/state-snapshot').GovernorOrientSummary | null;
   /** memory:search recall for `intent`/`memoryQuery` — bounded hits; null if the
@@ -692,11 +726,12 @@ export interface OrientResult {
    *  null means the caller is a GOAL holder but the portfolio read degraded. */
   goalPortfolio?: import('../../../goal-launch-settings').GoalPortfolioBrief | null;
   /** P-007 (shared-agent-obligations-and-briefs): the canonical complete
-   *  obligation agenda for a resolved GOAL holder. The embedded turn-start
+   *  obligation agenda for every attributable session. The embedded turn-start
    *  projection remains bounded, while `primary` and `evaluations` are the
-   *  complete recovery payload promised by its detailRef. Absent for a
-   *  non-GOAL caller; null means the canonical read degraded — or, when
-   *  `obligationsWithheldBy` is present, that an experiment arm withheld it. */
+   *  complete recovery payload promised by its detailRef. A non-GOAL session
+   *  still has owner-directive, waiting-on, fleet-staffing, and plan-context
+   *  obligations; null means the canonical read degraded or, when
+   *  `obligationsWithheldBy` is present, an experiment arm withheld it. */
   obligations?: import('../../../agent-obligation-reader').AgentObligationBrief | null;
   /** R-4 / D-032 / D-047: the goal's 'baseline' or 'brief-only' arm withheld the
    *  agenda. Same contract as the turn-start orientation: recovery through
@@ -840,11 +875,11 @@ export type OrientObligationsFold = () => Promise<
  * Overlay the effective membership onto the caller's own fleet-assignment row.
  *
  * `fleet:assignments` is a separate projection from the registry-backed
- * leadership check. During the projection lag that caused EI-20201050911711528,
- * the same orient could therefore say `fleetRole:'member'` in `me` while omitting
- * `leaderBrief` because the registry already knew the caller was the leader. Keep
- * this narrow: only the row belonging to `ownerId` is changed, and an absent or
- * malformed assignments payload is passed through unchanged.
+ * membership check. During projection lag, orient can know the caller's fleet
+ * and role while the assignment roster is unavailable. In that explicitly
+ * degraded case, preserve only the authoritative self-membership fields; never
+ * synthesize claims, activity, or a roster count. Malformed payloads and
+ * non-degraded successful results without a self row pass through unchanged.
  */
 function overlaySelfFleetMembership(
   me: unknown,
@@ -853,18 +888,29 @@ function overlaySelfFleetMembership(
 ): unknown {
   if (!ownerId || !membership?.fleetSlug || !membership.fleetRole) return me;
   if (!me || typeof me !== 'object' || Array.isArray(me)) return me;
-  const record = me as { agents?: unknown[] };
+  const record = me as { agents?: unknown[]; degraded?: unknown };
   if (!Array.isArray(record.agents)) return me;
   let changed = false;
+  let foundSelf = false;
   const agents = record.agents.map((agent) => {
     if (!agent || typeof agent !== 'object' || Array.isArray(agent)) return agent;
     const row = agent as Record<string, unknown>;
     const rowOwnerId = row.agentId ?? row.ownerId;
     if (rowOwnerId !== ownerId) return agent;
+    foundSelf = true;
     if (row.fleetSlug === membership.fleetSlug && row.fleetRole === membership.fleetRole) return agent;
     changed = true;
     return { ...row, fleetSlug: membership.fleetSlug, fleetRole: membership.fleetRole };
   });
+  if (!foundSelf && record.degraded === true) {
+    agents.push({
+      agentId: ownerId,
+      isSelf: true,
+      fleetSlug: membership.fleetSlug,
+      fleetRole: membership.fleetRole,
+    });
+    changed = true;
+  }
   return changed ? { ...record, agents } : me;
 }
 
@@ -1048,10 +1094,14 @@ export async function composeOrient(
    *  injects this closure over that in-flight promise. Undefined means the
    *  caller is not a resolved GOAL holder. */
   goalPortfolioFold?: OrientGoalPortfolioFold,
-  /** P-007: complete obligation-agenda recovery for a GOAL holder. The handler
-   *  starts the canonical reader beside the portfolio read and injects this
-   *  closure so composition remains IO-free and the two waits overlap. */
+  /** P-007: complete obligation-agenda recovery for any attributable session.
+   *  The handler starts the canonical reader beside the other core folds and
+   *  injects this closure so composition remains IO-free and the waits overlap. */
   obligationsFold?: OrientObligationsFold,
+  /** Absolute deadline for the composed response, with handler serialization
+   *  headroom already reserved. The final declaration leg must not claim a fresh
+   *  full 8s after preceding sequential folds consumed most of the response budget. */
+  aggregateDeadlineAtMs?: number,
 ): Promise<OrientResult> {
   const monitor = args.mode === 'monitor';
   const reportProgress = (snapshot: OrientResult): void => {
@@ -1158,9 +1208,7 @@ export async function composeOrient(
           note:
             `RECOVERED FLEET SCOPE: the post-compaction control anchor named fleet ` +
             `'${recovered.fleetSlug}' (role '${recovered.fleetRole ?? 'unknown'}'). ` +
-            `Used fleet-scoped assignments for THIS call because the presence-derived ` +
-            `self scope may be stale; corroborate with fleet:assignments { fleet } / ` +
-            `fleet:status before acting on peer liveness.`,
+            "Assignment visibility follows the caller's role-specific scope; self-only readers remain self-scoped.",
         };
       }
     } catch {
@@ -1178,7 +1226,11 @@ export async function composeOrient(
   // on settlement even if the backlog chain is still waiting.
   const mePromise = withBoundedTimeout(
     call('fleet:assignments', {
-      ...(recoveredFleetMembership ? { fleet: recoveredFleetMembership.fleetSlug } : ownerId ? { agent: ownerId } : {}),
+      ...(recoveredFleetMembership
+        ? { fleet: recoveredFleetMembership.fleetSlug, detail: 'snapshot' }
+        : ownerId
+          ? { agent: ownerId }
+          : {}),
       ...(args.harness ? { harness: args.harness } : {}),
     }),
     {
@@ -1187,9 +1239,10 @@ export async function composeOrient(
       label: 'orient:fleet:assignments',
     },
   ).then((meResult) => {
-    const me = annotateDegradedFleetAssignments(
-      overlaySelfFleetMembership(meResult.value, ownerId, effectiveFleetMembership),
-      meResult,
+    const me = overlaySelfFleetMembership(
+      annotateDegradedFleetAssignments(meResult.value, meResult),
+      ownerId,
+      effectiveFleetMembership,
     );
     // EI-21589715378243224: retain useful reconciliation in the aggregate
     // fallback even when a slower backlog/inbox/fold exhausts its budget.
@@ -1460,10 +1513,13 @@ export async function composeOrient(
     claimable,
     ...(claimableHarnessScope ? { claimableHarnessScope } : {}),
     ...(claimableTruncated ? { claimableTruncated } : {}),
-    // EI-18667514339699744: alias `entries` alongside `recent` — coord:inbox's own
-    // key name — so a caller who reads either name off this fold gets real rows
-    // instead of a silent empty array on a mismatched accessor.
-    inbox: { summary: inbox?.summary, recent: inbox?.entries, entries: inbox?.entries },
+    // EI-18667514339699744: the rows live under `entries` — coord:inbox's own key — and
+    // `recent` is a loud pointer to them, never a second serialized copy (P-006).
+    inbox: {
+      summary: inbox?.summary,
+      entries: inbox?.entries,
+      ...(Array.isArray(inbox?.entries) ? { recent: inboxRecentPointer(inbox.entries.length) } : {}),
+    },
     // P-026/P-027: the shell-out-avoidance scalars. Unconditional and in-process
     // (no await, no round-trip) — the whole point is that the answer has already
     // arrived by the time an agent would have thought to run `date` or `uptime`.
@@ -2629,24 +2685,34 @@ export async function composeOrient(
     // timeout degrades identically to the pre-existing catch-based failure contract
     // (`intentDeclared: false`), so a caller must still re-verify the lane rather than
     // assume the write landed.
-    const declareResult = await withBoundedTimeout(
-      call('coord:declare-intent', {
-        intent: args.intent,
-        ...(args.planSlug ? { current_plan_slug: args.planSlug } : {}),
-        ...(planItemsForDeclaration !== undefined &&
-        (planItemsForDeclaration.length > 0 || args.planItems?.length === 0)
-          ? { items: planItemsForDeclaration }
-          : {}),
-        ...(args.harness ? { harness: args.harness } : {}),
-        ...(args.declared_goal_refs ? { declared_goal_refs: args.declared_goal_refs } : {}),
-      }),
-      { fallback: undefined, timeoutMs: ORIENT_CORE_LEG_TIMEOUT_MS, label: 'orient:coord:declare-intent' },
-    );
-    if (declareResult.degraded) {
+    const remainingAggregateMs = Number.isFinite(aggregateDeadlineAtMs)
+      ? aggregateDeadlineAtMs! - Date.now()
+      : ORIENT_CORE_LEG_TIMEOUT_MS;
+    const declareTimeoutMs = Math.min(ORIENT_CORE_LEG_TIMEOUT_MS, remainingAggregateMs);
+    if (declareTimeoutMs <= 0) {
+      // The parent response fence is closer than this final best-effort write's
+      // ordinary leg budget. Do not start a write that cannot be observed in time.
       result.intentDeclared = false;
     } else {
-      declared = declareResult.value as { claims?: unknown } | undefined;
-      result.intentDeclared = true;
+      const declareResult = await withBoundedTimeout(
+        call('coord:declare-intent', {
+          intent: args.intent,
+          ...(args.planSlug ? { current_plan_slug: args.planSlug } : {}),
+          ...(planItemsForDeclaration !== undefined &&
+          (planItemsForDeclaration.length > 0 || args.planItems?.length === 0)
+            ? { items: planItemsForDeclaration }
+            : {}),
+          ...(args.harness ? { harness: args.harness } : {}),
+          ...(args.declared_goal_refs ? { declared_goal_refs: args.declared_goal_refs } : {}),
+        }),
+        { fallback: undefined, timeoutMs: declareTimeoutMs, label: 'orient:coord:declare-intent' },
+      );
+      if (declareResult.degraded) {
+        result.intentDeclared = false;
+      } else {
+        declared = declareResult.value as { claims?: unknown } | undefined;
+        result.intentDeclared = true;
+      }
     }
     // EI-20013545515660920: surface the lane-claim OUTCOME instead of dropping it.
     // declare-intent already computed it; discarding it here is what made a failed
@@ -2963,6 +3029,7 @@ export const ORIENT_CROSS_WORKSPACE_FOLD_TOOL_NAMES = ['memory:search'] as const
 export async function composeSelectedOrientModes(
   rows: readonly { mode: string; reason: string; setBy: string; ownerDirected: boolean; setAt: unknown }[],
   resolver?: typeof import('../../../agent-identities/source').getSelectedModeDefinitions,
+  contextContains?: (contracts: readonly string[]) => Promise<boolean>,
 ) {
   const active = rows.map((row) => ({
     mode: row.mode, reason: row.reason, setBy: row.setBy,
@@ -2974,9 +3041,22 @@ export async function composeSelectedOrientModes(
     const selected = await resolve(known);
     const missing = known.find((id) => !selected.has(id));
     if (missing) throw new Error('selected definition missing for ' + missing);
+    const contracts = rows.map((row) => selected.get(row.mode)?.contract).filter((s): s is string => Boolean(s));
+    // WI-6554700010009954: applied authority alone is not proof that the text
+    // survived a context wipe. The reader below also checks incarnation, epoch
+    // and exact rendered bytes. Any failed proof keeps the full contracts.
+    let inPrompt = false;
+    if (contracts.length && contextContains) {
+      try { inPrompt = await contextContains(contracts); } catch { /* deliver in full */ }
+    }
+    const pointer = { contractsInPrompt: true as const, contractsRefetch: 'mode:get { contracts: true }' };
+    if (Buffer.byteLength(JSON.stringify(pointer), 'utf8') >= Buffer.byteLength(JSON.stringify(contracts.join('\n\n')), 'utf8')) {
+      inPrompt = false;
+    }
     return {
       active,
-      contracts: rows.map((row) => selected.get(row.mode)?.contract).filter(Boolean).join('\n\n'),
+      contracts: inPrompt ? '' : contracts.join('\n\n'),
+      ...(inPrompt ? pointer : {}),
       definitionRevisions: Object.fromEntries(rows.flatMap((row) => {
         const entry = selected.get(row.mode);
         return entry ? [[row.mode, {
@@ -2986,10 +3066,88 @@ export async function composeSelectedOrientModes(
     };
   } catch (error) {
     return {
-      active, contracts: '',
+      active, contracts: '', definitionRevisions: undefined,
       definitionUnavailable: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200),
     };
   }
+}
+
+export interface OrientModeContextProof {
+  status: string;
+  specificationRevision: string;
+  stateRevision: string;
+  desiredSpecificationRevision: string;
+  desiredStateRevision: string;
+  nativeSessionId: string;
+  appliedNativeSessionId: string;
+  appliedAt: string | Date;
+  epochBumpedAt: string | Date;
+}
+
+/** Reuse the activation flight record and context-epoch ledger; no second
+ * delivery store. A native compact advances the epoch without a new applied
+ * receipt, so it cannot authorize omission. Explicit recovery reads bypass
+ * this proof even when a managed respawn has already applied a fresh prompt. */
+export async function orientModeContractsInContext(
+  ownerId: string,
+  workspaceId: string,
+  contracts: readonly string[],
+  deps: {
+    readProof?: () => Promise<OrientModeContextProof | null>;
+    readPrompt?: (revision: { specificationRevision: string; stateRevision: string }) => Promise<string | null>;
+  } = {},
+): Promise<boolean> {
+  try {
+    const readProof = deps.readProof ?? (async () => {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const rows = await getOrgPg().sql<OrientModeContextProof[]>`
+        SELECT b.control_state->'activation'->>'status' AS status,
+               b.control_state #>> '{activation,applied,specificationRevision}' AS "specificationRevision",
+               b.control_state #>> '{activation,applied,stateRevision}' AS "stateRevision",
+               b.control_state #>> '{activation,desired,specificationRevision}' AS "desiredSpecificationRevision",
+               b.control_state #>> '{activation,desired,stateRevision}' AS "desiredStateRevision",
+               n.session_id AS "nativeSessionId", a.native_session_id AS "appliedNativeSessionId",
+               a.recorded_at AS "appliedAt", e.bumped_at AS "epochBumpedAt"
+          FROM harness_shared.session_briefs b
+          JOIN harness_shared.memory_session_epochs e ON e.session_id = b.owner_id
+          JOIN LATERAL (
+            SELECT session_id FROM harness_shared.adv_sessions
+             WHERE coord_owner_id = b.owner_id AND workspace_id = b.workspace_id
+             ORDER BY id DESC LIMIT 1
+          ) n ON true
+          JOIN LATERAL (
+            SELECT native_session_id, recorded_at
+              FROM harness_shared.session_identity_activation_events
+             WHERE owner_id = b.owner_id AND workspace_id = b.workspace_id AND phase = 'applied'
+               AND specification_revision = b.control_state #>> '{activation,applied,specificationRevision}'
+               AND state_revision = b.control_state #>> '{activation,applied,stateRevision}'
+             ORDER BY id DESC LIMIT 1
+          ) a ON true
+         WHERE b.owner_id = ${ownerId} AND b.workspace_id = ${workspaceId}
+         LIMIT 1`;
+      return rows[0] ?? null;
+    });
+    const proof = await readProof();
+    if (!proof || proof.status !== 'applied' || !proof.specificationRevision || !proof.stateRevision ||
+      proof.specificationRevision !== proof.desiredSpecificationRevision ||
+      proof.stateRevision !== proof.desiredStateRevision || !proof.nativeSessionId ||
+      proof.nativeSessionId !== proof.appliedNativeSessionId) return false;
+    const millis = (value: string | Date) => value instanceof Date ? value.getTime() : Date.parse(value);
+    const appliedAt = millis(proof.appliedAt), bumpedAt = millis(proof.epochBumpedAt);
+    if (!Number.isFinite(appliedAt) || !Number.isFinite(bumpedAt) || appliedAt < bumpedAt) return false;
+    const readPrompt = deps.readPrompt ?? (async (revision) => {
+      const [{ getOrgPg }, { readGateSelectedLaunchSpec }, { appliedOrCurrentIdentityArtifact }, { specificationPrompt }] =
+        await Promise.all([
+          import('@papercusp/db-org'), import('../control-anchor'),
+          import('../../../capability-envelope/identity-grants-port'), import('@papercusp/orchestrator/blueprint'),
+        ]);
+      const artifact = appliedOrCurrentIdentityArtifact(
+        await readGateSelectedLaunchSpec(getOrgPg().sql, ownerId, workspaceId, [revision]), revision);
+      return artifact ? specificationPrompt(artifact) : null;
+    });
+    const prompt = await readPrompt({ specificationRevision: proof.specificationRevision, stateRevision: proof.stateRevision });
+    return typeof prompt === 'string' && contracts.length > 0 && contracts.every((contract) => contract.length > 0 && prompt.includes(contract));
+  } catch { return false; }
 }
 
 export async function bindOrientOutputResult<T extends Record<string, unknown>>(
@@ -3278,7 +3436,11 @@ export default defineTool({
     .object({
       ok: z.boolean().optional(),
       status: z.string().optional(),
+      // These roots are emitted by the handler and read by continuation
+      // recovery recipes. Declare them here so recipe preflight can validate
+      // those reads against the same contract the live response provides.
       self: z.unknown().optional(),
+      host: z.unknown().optional(),
       assignments: z.unknown().optional(),
       claimable: z.unknown().optional(),
       inbox: z.unknown().optional(),
@@ -3288,6 +3450,10 @@ export default defineTool({
       fleet: z.unknown().optional(),
       leaderBrief: z.unknown().optional(),
       recovery: z.unknown().optional(),
+      // The GOAL recovery recipes read this best-effort fold. Passthrough accepts
+      // it at runtime but recipe preflight needs an explicit optional declaration.
+      obligations: z.unknown().optional(),
+      obligationsWithheldBy: z.literal('experiment-arm').optional(),
       warning: z.string().optional(),
     })
     .passthrough(),
@@ -3339,12 +3505,20 @@ export default defineTool({
   // Deleting them to "finish" the uncapping would remove the degradation path
   // and re-open the 2026-07-01 43k-token incident (P-012).
   ignoreSessionPayloadTier: true,
-  // Keep the existing handler body byte-stable; the aggregate fence is the only wrapper change.
+  // The outer response fence and compose deadline share one clock so late best-effort
+  // writes cannot silently consume a fresh leg budget at the end of the call.
   // prettier-ignore
   async handler(args, ctx) {
     const aggregateFallback = createOrientAggregateFallback();
+    // The dispatcher's per-call tracker (ctx.phases) persists these phases into
+    // tool_invocations.metadata_json.handlerPhases on every call; the local fallback
+    // only serves direct handler calls (tests) that bypass the dispatcher.
+    const phaseTracker = ctx.phases ?? createPhaseTracker({ historyCap: 32 });
     const aggregate = await withOrientAggregateTimeout(
-      async () => {
+      async (aggregateResponseDeadlineAtMs) => {
+    // Leave one more second between composition and the stable aggregate fallback
+    // so the handler can serialize an honest partial result if another fold uses the window.
+    const composeDeadlineAtMs = aggregateResponseDeadlineAtMs - ORIENT_PARENT_DEADLINE_HEADROOM_MS;
     // Soft identity resolve — orient is a READ; a bare loopback caller without an
     // attributable coord identity still gets a (fleet-wide) orientation.
     let ownerId: string | undefined;
@@ -3383,7 +3557,17 @@ export default defineTool({
                 timeoutMs: ORIENT_COMPACTION_RECOVERY_TIMEOUT_MS,
                 label: 'orient:buildCompactionRecovery',
               });
-              return recoveryResult.value;
+              const built = recoveryResult.value;
+              if (!built) return built;
+              // D-006 (oversized-tool-results-reduction-2026-10-12): replace legs this
+              // session's carry document already delivered, when that document is
+              // provably still in context. Bounded and fail-soft to the full recovery.
+              const { applyCarryDeliveredStubs } = await import('../recovery-delivery');
+              const stubbedResult = await withBoundedTimeout(
+                applyCarryDeliveredStubs(ownerId, built).then((r) => r.recovery),
+                { fallback: built, timeoutMs: ORIENT_PREFLIGHT_LEG_TIMEOUT_MS, label: 'orient:recoveryDeliveryStubs' },
+              );
+              return stubbedResult.value ?? built;
             } catch {
               return undefined;
             }
@@ -3455,14 +3639,14 @@ export default defineTool({
           ).then((r) => r.value)
         : Promise.resolve(false);
     const [driveMode, ownerPresent, fleetMembership, monitorDeltaOn, fullDeltaOn, runtimeModeRows] =
-      await Promise.all([
+      await phaseTracker.track('handler:preflight', () => Promise.all([
         driveModePromise,
         ownerPresentPromise,
         fleetMembershipPromise,
         monitorDeltaFlagPromise,
         fullDeltaFlagPromise,
         runtimeModesPromise,
-      ]);
+      ]));
     // P-004 (fleet-deltas-leader-primitives): resolve the monitor fleet-delta seam —
     // an attributable caller in monitor mode, with the flag ON, gets the
     // (owner,'fleet:monitor') server-side cursor closure. Fail-open: a flag-read
@@ -3624,41 +3808,65 @@ export default defineTool({
     // ordinary AUTO/fleet/plan agents therefore pay no portfolio projection.
     // Start before composeOrient so the DB work overlaps its sequential folds.
     const goalSubject = goalIdFromModes(runtimeModeRows);
-    const goalPortfolioReadPromise = goalSubject
-      ? (async () => {
-          const { readGoalPortfolioBrief } = await import('../../../goal-launch-settings');
-          return readGoalPortfolioBrief({
+    // ONE snapshot, two stages (EI-25191349922959563): the obligation fold gets the
+    // snapshot BEFORE the per-id claim-floor count, which it never reads and which
+    // alone pushed the shared read past AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS on
+    // every holder wake; the display fold gets the same snapshot with the count.
+    const goalPortfolioStagedPromise = goalSubject
+      ? import('../../../goal-launch-settings').then(({ readGoalPortfolioBriefStaged }) =>
+          readGoalPortfolioBriefStaged({
             workspaceId: orientWorkspaceId,
             goalId: goalSubject,
             attestOwnerId: ownerId,
-          });
-        })()
+          }))
       : undefined;
+    const goalPortfolioReadPromise = goalPortfolioStagedPromise?.then((staged) => staged.counted);
+    const goalPortfolioSnapshotPromise = goalPortfolioStagedPromise?.then((staged) => staged.snapshot);
+    void goalPortfolioSnapshotPromise?.catch(() => undefined);
     // Display can degrade to null, but the obligation provider must receive the
     // original rejection: a fulfilled null means a measured absence of a goal.
     const goalPortfolioPromise = goalPortfolioReadPromise?.catch(() => null);
     const goalObligationsPromise =
-      goalSubject && ownerId
+      ownerId
         ? (async () => {
             try {
               // R-4 / D-047: an experiment arm that withholds the per-turn agenda
               // withholds it here too, or a full orient re-delivers the treatment.
-              const { goalWithholdsTurnStartReminders } = await import('../../../goal-launch-settings');
-              if (await goalWithholdsTurnStartReminders(goalSubject)) return { withheldBy: 'experiment-arm' } as const;
+              // This applies only to a resolved GOAL subject; non-GOAL sessions
+              // must still receive their ordinary obligation agenda.
+              if (goalSubject) {
+                const { goalWithholdsTurnStartReminders } = await import('../../../goal-launch-settings');
+                if (await goalWithholdsTurnStartReminders(goalSubject)) return { withheldBy: 'experiment-arm' } as const;
+              }
               const { readAgentObligationAgenda, projectAgentTurnStartObligationBrief } = await import(
                 '../../../agent-obligation-reader'
               );
               const read = await readAgentObligationAgenda({
                 workspaceId: orientWorkspaceId,
                 ownerId,
-                goalId: goalSubject,
+                // A failed handler mode preflight is not a measured absence of a
+                // goal. Let the canonical reader re-resolve that subject then;
+                // otherwise pass null explicitly and avoid a duplicate lookup.
+                goalId: runtimeModeRows === null ? undefined : goalSubject,
                 // Reuse the already-started canonical portfolio read so orient's
                 // two GOAL core folds describe one snapshot rather than racing
-                // independent reads of the same mutable state.
-                deps: {
-                  goalPortfolio: async () => (goalPortfolioReadPromise ? await goalPortfolioReadPromise : null),
-                },
+                // independent reads of the same mutable state. Take its UNCOUNTED
+                // stage: obligations never read queue.claimable (EI-25191349922959563).
+                ...(goalSubject
+                  ? {
+                      deps: {
+                        goalPortfolio: async () => (goalPortfolioSnapshotPromise ? await goalPortfolioSnapshotPromise : null),
+                      },
+                    }
+                  : {}),
               });
+              // When the handler could not resolve modes, the canonical reader
+              // may still discover a GOAL subject. Preserve that subject's
+              // experiment-arm withholding after the authoritative lookup.
+              if (!goalSubject && runtimeModeRows === null && read.goalId) {
+                const { goalWithholdsTurnStartReminders } = await import('../../../goal-launch-settings');
+                if (await goalWithholdsTurnStartReminders(read.goalId)) return { withheldBy: 'experiment-arm' } as const;
+              }
               return projectAgentTurnStartObligationBrief(read.agenda);
             } catch {
               return null;
@@ -3715,7 +3923,18 @@ export default defineTool({
             }
           })()
         : undefined;
-    const orientInnerCall = inProcessCall(ctx, { telemetrySurface: 'orient', ignoreSessionPayloadTier: true });
+    const orientInnerCallBase = inProcessCall(ctx, { telemetrySurface: 'orient', ignoreSessionPayloadTier: true });
+    const orientInnerCall: InnerCall = async (name, callArgs) =>
+      phaseTracker.track(`inner:${name}`, async () => {
+        if (ctx.role === 'judge' && name === 'fleet:assignments') {
+          const requestedHarness = (callArgs as Record<string, unknown>).harness;
+          return orientInnerCallBase(name, {
+            agent: 'self',
+            ...(typeof requestedHarness === 'string' ? { harness: requestedHarness } : {}),
+          });
+        }
+        return orientInnerCallBase(name, callArgs);
+      });
     const fleetSummariesFold = readLedFleets
       ? async (homeFleetSlug: string, homeBrief: unknown | null | undefined) => {
           const led = await readLedFleets();
@@ -3756,7 +3975,7 @@ export default defineTool({
           );
         }
       : undefined;
-    const result = await composeOrient(
+    const result = await phaseTracker.track('composeOrient', () => composeOrient(
       args,
       // P-001 (orient-recall-quality-2026-07-12): the folded memory:search records
       // its recall telemetry under surface 'orient' (not generic 'search') so
@@ -3825,19 +4044,26 @@ export default defineTool({
       (snapshot) => snapshotOrientAggregate(aggregateFallback, snapshot),
       goalPortfolioPromise ? () => goalPortfolioPromise : undefined,
       goalObligationsPromise ? () => goalObligationsPromise : undefined,
-    );
+      composeDeadlineAtMs,
+    ));
     // Await the already-running recovery only after composeOrient completes;
     // this preserves the existing fold output while keeping the two budgets
     // overlapped rather than serial.
-    const recovery = compactionRecoveryPromise ? await compactionRecoveryPromise : undefined;
-    const continuityProbes = continuityProbesPromise ? await continuityProbesPromise : undefined;
+    const recovery = compactionRecoveryPromise
+      ? await phaseTracker.track('handler:compactionRecovery', () => compactionRecoveryPromise)
+      : undefined;
+    const continuityProbes = continuityProbesPromise
+      ? await phaseTracker.track('handler:continuityProbes', () => continuityProbesPromise)
+      : undefined;
     // capless-adaptive-resource-governor P-011: bounded, best-effort shared state.
     // Read after composition so governor availability cannot delay the core orient legs.
     try {
-      const { readGovernorStateSnapshot, buildGovernorOrientSummary } = await import('../../../resource-governor/state-snapshot');
-      const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
-      const governor = await readGovernorStateSnapshot(ws);
-      result.governor = governor ? buildGovernorOrientSummary(governor.payload) : null;
+      await phaseTracker.track('handler:governor', async () => {
+        const { readGovernorStateSnapshot, buildGovernorOrientSummary } = await import('../../../resource-governor/state-snapshot');
+        const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
+        const governor = await readGovernorStateSnapshot(ws);
+        result.governor = governor ? buildGovernorOrientSummary(governor.payload) : null;
+      });
     } catch {
       result.governor = null;
     }
@@ -3867,29 +4093,33 @@ export default defineTool({
     // as the agent's — coming back clean nearly always, which reads as "nothing
     // was withheld". See agent-orient-disclosures.ts for the full argument.
     //
-    // Awaited, not fire-and-forget: it is one bounded upsert that no-ops when
-    // the markers are unchanged, and its own catch turns any failure into "no
-    // recording" — which renders as nothing, never as a false clean.
+    // This optional presentation record must not hold orientation open. Snapshot
+    // the markers after composition and persist them in the background; the
+    // recorder handles storage and push failures without changing the orient result.
     if (ownerId) {
       const ws = (ctx as { workspaceId?: string | null }).workspaceId ?? 'default';
-      await recordOrientDisclosures(ownerId, ws, collectOrientDisclosures(result));
+      const disclosures = collectOrientDisclosures(result);
+      void phaseTracker
+        .track('background:recordOrientDisclosures', () =>
+          recordOrientDisclosures(ownerId, ws, disclosures),
+        )
+        .catch(() => {});
     }
     // Fold in the caller's own identity so the orientation states YOUR ownerId
     // explicitly (the roster/assignments it composes are about peers; `self` is
     // the "and this is you" anchor). Best-effort — omitted for an unattributable
     // caller. See self-marker.ts for why this is a response-layer overlay.
     const self = resolveSelfRef(ctx);
-    // modes-and-intake-ux-2026-07-05 P-008: re-inject the caller's ACTIVE mode
-    // contracts each orient — the always-present prompt carries only the one-line
-    // mode index; orient (the mandated bootstrap read, run every wake) is the
-    // activation-scoped carry surface, same pattern as checkpoint re-injection.
-    // A peer-set mode thus takes effect at the target's next turn boundary.
-    // Best-effort: a mode-read failure never breaks orientation.
+    // Keep selected mode attribution/revisions on every orient. Full contract
+    // prose is needed until its exact bytes are proven in the current context;
+    // recovery and explicit full requests always retain it.
     let modes:
       | {
           active: Array<Record<string, unknown>>;
           contracts: string;
           definitionRevisions?: Record<string, { sourceRevision: string; definitionRevision: string }>;
+          contractsInPrompt?: boolean;
+          contractsRefetch?: string;
           definitionUnavailable?: string;
           /** WI-2140700: GOAL holders only — the every-wake owner-report verdict
            *  (null = read failed / no active goal-mode row; absent = not a GOAL caller). */
@@ -3900,8 +4130,20 @@ export default defineTool({
     if (runtimeModeRows) {
       runtimeModeIds = runtimeModeRows.map((row) => row.mode);
       if (runtimeModeRows.length) {
-        modes = await composeSelectedOrientModes(runtimeModeRows);
-        if (goalOwnerReportPromise) modes.ownerReport = await goalOwnerReportPromise;
+        const fullContracts = args.afterCompaction ||
+          (ctx.payloadTierOverride === 'full' && ctx.sourceMaterialization?.promotedToFull !== true);
+        modes = await phaseTracker.track('handler:modeContracts', () => composeSelectedOrientModes(
+          runtimeModeRows, undefined,
+          ownerId && !fullContracts ? async (contracts) => {
+            const proof = await withBoundedTimeout(orientModeContractsInContext(
+              ownerId, resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId), contracts,
+            ), { fallback: false, timeoutMs: ORIENT_PREFLIGHT_LEG_TIMEOUT_MS, label: 'orient:modeContextProof' });
+            return proof.value;
+          } : undefined,
+        ));
+        if (goalOwnerReportPromise) {
+          modes.ownerReport = await phaseTracker.track('handler:goalOwnerReport', () => goalOwnerReportPromise);
+        }
       }
     }
     // P-022: the structured counterpart of the prose mode contracts. Resolve
@@ -3912,34 +4154,36 @@ export default defineTool({
     // requires a full coord:orient replacement, never a partial merge.
     let instructionPrecedence: unknown;
     if (ownerId && runtimeModeIds) {
-      try {
-        const [{ buildInstructionPrecedenceTrace }, { getSessionBrief }] = await Promise.all([
-          import('../../../instruction-lint'),
-          import('../../../session-brief'),
-        ]);
-        const brief = await getSessionBrief({ ownerId });
-        const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
-        instructionPrecedence = buildInstructionPrecedenceTrace({
-          source: 'coord:orient',
-          ownerId,
-          modes: runtimeModeIds,
-          route: fleetMembership?.fleetSlug
-            ? {
-                kind: 'fleet',
-                fleet: fleetMembership.fleetSlug,
-                role: fleetMembership.fleetRole,
-              }
-            : { kind: 'self' },
-          scope: {
-            workspace: ws,
-            harness: args.harness ?? brief?.harnessSlug ?? null,
-            plan: args.planSlug ?? brief?.currentPlanSlug ?? null,
-            items: args.planItems ?? [],
-          },
-        });
-      } catch {
-        /* fail-soft */
-      }
+      await phaseTracker.track('handler:instructionPrecedence', async () => {
+        try {
+          const [{ buildInstructionPrecedenceTrace }, { getSessionBrief }] = await Promise.all([
+            import('../../../instruction-lint'),
+            import('../../../session-brief'),
+          ]);
+          const brief = await getSessionBrief({ ownerId });
+          const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
+          instructionPrecedence = buildInstructionPrecedenceTrace({
+            source: 'coord:orient',
+            ownerId,
+            modes: runtimeModeIds,
+            route: fleetMembership?.fleetSlug
+              ? {
+                  kind: 'fleet',
+                  fleet: fleetMembership.fleetSlug,
+                  role: fleetMembership.fleetRole,
+                }
+              : { kind: 'self' },
+            scope: {
+              workspace: ws,
+              harness: args.harness ?? brief?.harnessSlug ?? null,
+              plan: args.planSlug ?? brief?.currentPlanSlug ?? null,
+              items: args.planItems ?? [],
+            },
+          });
+        } catch {
+          /* fail-soft */
+        }
+      });
     }
     // su-ideate-learning-substrate-2026-07-10 P-011: when the caller's active
     // modes include 'ideate', fold ONE line telling them whether they are OVERDUE
@@ -3948,13 +4192,15 @@ export default defineTool({
     // Same handler-side best-effort IO pattern as the modes fold above.
     let ideate: import('./orient-ideate-hint').IdeateHint | undefined;
     if (ownerId && modes?.active?.some((m) => m.mode === 'ideate')) {
-      try {
-        const { computeIdeateOverdue } = await import('./orient-ideate-hint');
-        const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
-        ideate = await computeIdeateOverdue({ ownerId, workspaceId: ws });
-      } catch {
-        /* fail-soft */
-      }
+      await phaseTracker.track('handler:ideateHint', async () => {
+        try {
+          const { computeIdeateOverdue } = await import('./orient-ideate-hint');
+          const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
+          ideate = await computeIdeateOverdue({ ownerId, workspaceId: ws });
+        } catch {
+          /* fail-soft */
+        }
+      });
     }
     // su-ideate-learning-substrate-2026-07-10 P-022(a): the capture-MISS advisory
     // (D-017). A high-signal turn — an error-retry cluster / EI-* reference /
@@ -3965,12 +4211,14 @@ export default defineTool({
     // (a healthy session sees nothing).
     let captureMiss: import('./orient-capture-miss-hint').CaptureMissHint | undefined;
     if (ownerId) {
-      try {
-        const { resolveCaptureMissHint } = await import('./orient-capture-miss-hint');
-        captureMiss = await resolveCaptureMissHint({ ownerId, harness: args.harness });
-      } catch {
-        /* fail-soft */
-      }
+      await phaseTracker.track('handler:captureMissHint', async () => {
+        try {
+          const { resolveCaptureMissHint } = await import('./orient-capture-miss-hint');
+          captureMiss = await resolveCaptureMissHint({ ownerId, harness: args.harness });
+        } catch {
+          /* fail-soft */
+        }
+      });
     }
     // WI-4562: a Claude Code config save (/model, /effort, theme) REWRITES the session's
     // settings.json from its own in-memory keys and drops every psu key — silently
@@ -3985,59 +4233,55 @@ export default defineTool({
     // of file reads and adds no key.
     let configIntegrity: unknown;
     if (ownerId) {
-      try {
-        const { loadSessionConfigState, checkSessionConfigIntegrityForClient, repairSessionConfigOnDisk } =
-          await import('../../../session-config-integrity');
-        const advRow = await (await import('../../../adv-sessions')).latestAdvSessionByCoordOwner(ownerId);
-        const recordedClient = advRow?.agent;
-        // WI-38349: WHERE this session's config dir is is an OBSERVATION, not the
-        // `session-claude/<ownerId>` formula — several launch paths key it by spawn
-        // id instead, and reading the formula's path found nothing for ~80% of
-        // active sessions, which the checker then reported as de-enrollment. The
-        // live process is the ground truth; coord_presence.pid is the anchor that
-        // finds it (it records the psu-launcher, whose child is the claude CLI).
-        const pidHint = await readSessionPidHint(ownerId);
-        const locator = { pidHint, sessionId: advRow?.sessionId ?? null };
-        const state = loadSessionConfigState(ownerId, undefined, locator);
-        const verdict = checkSessionConfigIntegrityForClient(state, recordedClient);
-        if (verdict?.unknown) {
-          // Deliberately NOT a de-enrollment claim: nothing was checked. Reported so
-          // the gap is visible rather than silently swallowed — and worded so it can
-          // never be mistaken for the alarm below.
-          configIntegrity = {
-            status: 'unknown',
-            checked: false,
-            reason: verdict.unknownReason,
-            resolutionTried: state.configDirUnresolvedReason,
-            warning:
-              "CONFIG INTEGRITY NOT CHECKED (WI-38349): this session's real CLAUDE_CONFIG_DIR could not be located, so the WI-4562 de-enrollment check did not run. This says NOTHING about your hooks, edit-locks, inbox or MCP — do not read it as damage. If you want certainty, check that your live process's CLAUDE_CONFIG_DIR holds a settings.json carrying the global hook block.",
-          };
-        } else if (verdict && !verdict.ok) {
-          const repair = repairSessionConfigOnDisk(ownerId, undefined, recordedClient, locator);
-          const repairedCleanly = repair.repaired && repair.stillBroken.length === 0;
-          configIntegrity = {
-            ...verdict,
-            configDir: state.configDir,
-            configDirSource: state.configDirSource,
-            repaired: repair.repaired,
-            fixed: repair.fixed,
-            wrote: repair.wrote,
-            stillBroken: repair.stillBroken,
-            skipped: repair.skipped,
-            residualCaveats: repair.residualCaveats,
-            warning: repairedCleanly
-              ? 'YOUR SESSION WAS DE-ENROLLED (WI-4562) and has just been AUTO-REPAIRED. Claude Code had rewritten this session config and dropped psu-owned keys; orient restored them on disk. Hook registrations are re-read from the file, so delivery (edit-locks, coord inbox, turn-start recall) resumes WITHOUT a relaunch — verified live on su-5d6764f9, where the coord inbox delivered a 40+ message backlog immediately after repair. See residualCaveats for the two things a disk write cannot undo.'
-              : // WI-38349: never point at `stillBroken` when it is EMPTY — the old
-                // wording told the reader to "see stillBroken" and handed them an
-                // empty list. When the repair did not RUN, `skipped` says why.
-                repair.skipped
-                ? `YOUR SESSION IS RUNNING DE-ENROLLED (WI-4562) and auto-repair did NOT run: ${repair.skipped}. The capabilities listed in consequences remain OFF. Relaunch the session, or repair its real config dir (${state.configDir ?? 'unresolved'}) by hand.`
-                : 'YOUR SESSION IS RUNNING DE-ENROLLED (WI-4562) and auto-repair did NOT fully succeed — see stillBroken. Claude Code rewrote this session config and dropped psu-owned keys, so some capabilities above remain OFF. Repair manually via session-config-integrity.repairSessionConfigOnDisk, or relaunch.',
-          };
+      await phaseTracker.track('handler:sessionConfigIntegrity', async () => {
+        try {
+          const { loadSessionConfigState, checkSessionConfigIntegrityForClient, repairSessionConfigOnDisk } =
+            await import('../../../session-config-integrity');
+          const advRow = await (await import('../../../adv-sessions')).latestAdvSessionByCoordOwner(ownerId);
+          const recordedClient = advRow?.agent;
+          // WI-38349: WHERE this session's config dir is is an OBSERVATION, not the
+          // `session-claude/<ownerId>` formula — several launch paths key it by spawn
+          // id instead, and reading the formula's path found nothing for ~80% of
+          // active sessions, which the checker then reported as de-enrollment. The
+          // live process is the ground truth; coord_presence.pid is the anchor that
+          // finds it (it records the psu-launcher, whose child is the claude CLI).
+          const pidHint = await readSessionPidHint(ownerId);
+          const locator = { pidHint, sessionId: advRow?.sessionId ?? null };
+          const state = loadSessionConfigState(ownerId, undefined, locator);
+          const verdict = checkSessionConfigIntegrityForClient(state, recordedClient);
+          if (verdict?.unknown) {
+            configIntegrity = {
+              status: 'unknown',
+              checked: false,
+              reason: verdict.unknownReason,
+              resolutionTried: state.configDirUnresolvedReason,
+              warning:
+                "CONFIG INTEGRITY NOT CHECKED (WI-38349): this session's real CLAUDE_CONFIG_DIR could not be located, so the WI-4562 de-enrollment check did not run. This says NOTHING about your hooks, edit-locks, inbox or MCP — do not read it as damage. If you want certainty, check that your live process's CLAUDE_CONFIG_DIR holds a settings.json carrying the global hook block.",
+            };
+          } else if (verdict && !verdict.ok) {
+            const repair = repairSessionConfigOnDisk(ownerId, undefined, recordedClient, locator);
+            const repairedCleanly = repair.repaired && repair.stillBroken.length === 0;
+            configIntegrity = {
+              ...verdict,
+              configDir: state.configDir,
+              configDirSource: state.configDirSource,
+              repaired: repair.repaired,
+              fixed: repair.fixed,
+              wrote: repair.wrote,
+              stillBroken: repair.stillBroken,
+              skipped: repair.skipped,
+              residualCaveats: repair.residualCaveats,
+              warning: repairedCleanly
+                ? 'YOUR SESSION WAS DE-ENROLLED (WI-4562) and has just been AUTO-REPAIRED. Claude Code had rewritten this session config and dropped psu-owned keys; orient restored them on disk. Hook registrations are re-read from the file, so delivery (edit-locks, coord inbox, turn-start recall) resumes WITHOUT a relaunch — verified live on su-5d6764f9, where the coord inbox delivered a 40+ message backlog immediately after repair. See residualCaveats for the two things a disk write cannot undo.'
+                : repair.skipped
+                  ? `YOUR SESSION IS RUNNING DE-ENROLLED (WI-4562) and auto-repair did NOT run: ${repair.skipped}. The capabilities listed in consequences remain OFF. Relaunch the session, or repair its real config dir (${state.configDir ?? 'unresolved'}) by hand.`
+                  : 'YOUR SESSION IS RUNNING DE-ENROLLED (WI-4562) and auto-repair did NOT fully succeed — see stillBroken. Claude Code rewrote this session config and dropped psu-owned keys, so some capabilities above remain OFF. Repair manually via session-config-integrity.repairSessionConfigOnDisk, or relaunch.',
+            };
+          }
+        } catch {
+          /* fail-soft — never break orientation over a config read/repair */
         }
-      } catch {
-        /* fail-soft — never break orientation over a config read/repair */
-      }
+      });
     }
     // EI-11408 / P-004: Codex's lock policy is a RUNTIME verdict, not a
     // static client assumption. Hooks merely present on disk remain manual
@@ -4046,23 +4290,25 @@ export default defineTool({
     // after-launch authority and carries one effective instruction only.
     let codexLocks: unknown;
     if (ownerId) {
-      try {
-        const session = await (await import('../../../adv-sessions')).latestAdvSessionByCoordOwner(ownerId);
-        if (session?.agent === 'codex') {
-          const [{ readCodexHomeDiagnostics }, { readCodexLockRuntimeVerdict }] = await Promise.all([
-            import('../../../role-codex-home'),
-            import('../../../codex-lock-runtime'),
-          ]);
-          const home = readCodexHomeDiagnostics(session.id);
-          const hooksConfigured =
-            home.hooksExists &&
-            home.diagnostics?.lockEnforcement === 'hooks-configured' &&
-            (!home.diagnostics.lockOwnerSid || home.diagnostics.lockOwnerSid === ownerId);
-          codexLocks = readCodexLockRuntimeVerdict({ ownerId, hooksConfigured });
+      await phaseTracker.track('handler:codexLocks', async () => {
+        try {
+          const session = await (await import('../../../adv-sessions')).latestAdvSessionByCoordOwner(ownerId);
+          if (session?.agent === 'codex') {
+            const [{ readCodexHomeDiagnostics }, { readCodexLockRuntimeVerdictAsync }] = await Promise.all([
+              import('../../../role-codex-home'),
+              import('../../../codex-lock-runtime'),
+            ]);
+            const home = await readCodexHomeDiagnostics(session.id);
+            const hooksConfigured =
+              home.hooksExists &&
+              home.diagnostics?.lockEnforcement === 'hooks-configured' &&
+              (!home.diagnostics.lockOwnerSid || home.diagnostics.lockOwnerSid === ownerId);
+            codexLocks = await readCodexLockRuntimeVerdictAsync({ ownerId, hooksConfigured });
+          }
+        } catch {
+          /* fail-soft: prompt snapshot remains conservative/manual */
         }
-      } catch {
-        /* fail-soft: prompt snapshot remains conservative/manual */
-      }
+      });
     }
     // P-006 / EI-11409: derive the small tool set this task actually needs
     // from the active modes + declared scope + surfaced recipe context, then
@@ -4074,52 +4320,54 @@ export default defineTool({
     // reconstructs the same pack. Fail-soft: orientation remains usable if the
     // registry or client activation seam is unavailable during a rolling deploy.
     let taskToolSchemaPack: OrientResult['taskToolSchemaPack'];
-    try {
-      const { buildTaskToolSchemaPack } = await import('./orient-task-schema-pack');
-      const pack = buildTaskToolSchemaPack({
-        intent: args.intent ?? args.memoryQuery,
-        modes: runtimeModeIds ?? [],
-        harness: args.harness ?? (ctx as { harnessSlug?: string | null }).harnessSlug ?? null,
-        plan: args.planSlug ?? null,
-        planItems: args.planItems ?? [],
-        recipeTitles: Array.isArray(result.recipes)
-          ? result.recipes.flatMap((recipe) => (typeof recipe.title === 'string' ? [recipe.title] : []))
-          : args.intent
-            ? []
-            : undefined,
-      });
-      const activationRequested = shouldActivateOrientToolSurface(
-        (ctx as { callerAgent?: string | null }).callerAgent,
-      );
-      let surfaceChanged: boolean | null = null;
-      if (activationRequested) {
-        try {
-          surfaceChanged = ctx.activateTools?.(pack.toolNames) ?? null;
-        } catch {
-          surfaceChanged = null;
+    await phaseTracker.track('handler:taskToolSchemaPack', async () => {
+      try {
+        const { buildTaskToolSchemaPack } = await import('./orient-task-schema-pack');
+        const pack = buildTaskToolSchemaPack({
+          intent: args.intent ?? args.memoryQuery,
+          modes: runtimeModeIds ?? [],
+          harness: args.harness ?? (ctx as { harnessSlug?: string | null }).harnessSlug ?? null,
+          plan: args.planSlug ?? null,
+          planItems: args.planItems ?? [],
+          recipeTitles: Array.isArray(result.recipes)
+            ? result.recipes.flatMap((recipe) => (typeof recipe.title === 'string' ? [recipe.title] : []))
+            : args.intent
+              ? []
+              : undefined,
+        });
+        const activationRequested = shouldActivateOrientToolSurface(
+          (ctx as { callerAgent?: string | null }).callerAgent,
+        );
+        let surfaceChanged: boolean | null = null;
+        if (activationRequested) {
+          try {
+            surfaceChanged = ctx.activateTools?.(pack.toolNames) ?? null;
+          } catch {
+            surfaceChanged = null;
+          }
         }
+        taskToolSchemaPack = {
+          ...pack,
+          activation: { requested: activationRequested, surfaceChanged },
+        };
+      } catch {
+        /* fail-soft */
       }
-      taskToolSchemaPack = {
-        ...pack,
-        activation: { requested: activationRequested, surfaceChanged },
-      };
-    } catch {
-      /* fail-soft */
-    }
+    });
     // EI-11484: OPEN OWNER DIRECTIVES fold — every orient (full AND monitor;
     // orient is the mandated bootstrap, so this is how a SUCCESSOR session in
     // the workspace inherits an order whose recording session died). Rendered
     // by the shared budgeted renderer; fail-soft, absent when none are open.
     let ownerDirectives: string | undefined;
-    try {
-      const { renderOpenOwnerDirectivesBlock } = await import('../../../owner-directives');
-      const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
-      // Rendered FOR the orienting session (P-008 / D-008): rows it cleared off
-      // its own agenda drop out here and stay open for every other session.
-      ownerDirectives = (await renderOpenOwnerDirectivesBlock(ws, { viewerOwnerId: ownerId })) ?? undefined;
-    } catch {
-      /* fail-soft */
-    }
+    await phaseTracker.track('handler:ownerDirectives', async () => {
+      try {
+        const { renderOpenOwnerDirectivesBlock } = await import('../../../owner-directives');
+        const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
+        ownerDirectives = (await renderOpenOwnerDirectivesBlock(ws, { viewerOwnerId: ownerId })) ?? undefined;
+      } catch {
+        /* fail-soft */
+      }
+    });
     const out = assembleOrientOutput({
       self,
       recovery,
@@ -4143,27 +4391,31 @@ export default defineTool({
     // loop wake inject the same stale generation as if it were new. Keep the
     // acknowledgement fail-soft: if its write fails, the pending generation is
     // intentionally retried on the next turn.
+    const recoveryControl = recovery?.control;
     if (
       args.afterCompaction === true &&
       ownerId &&
-      recovery?.control &&
-      Number.isSafeInteger(recovery.control.generation)
+      recoveryControl &&
+      Number.isSafeInteger(recoveryControl.generation)
     ) {
-      try {
-        const { acknowledgeControlTransition } = await import('../control-anchor');
-        await acknowledgeControlTransition(ownerId, orientWorkspaceId, recovery.control.generation);
-      } catch {
-        /* preserve the assembled orient; the generation remains pending */
-      }
+      const controlGeneration = recoveryControl.generation;
+      await phaseTracker.track('handler:acknowledgeControlTransition', async () => {
+        try {
+          const { acknowledgeControlTransition } = await import('../control-anchor');
+          await acknowledgeControlTransition(ownerId, orientWorkspaceId, controlGeneration);
+        } catch {
+          /* preserve the assembled orient; the generation remains pending */
+        }
+      });
     }
     // EI-9130: stamp the generic delta-served breadcrumb when at least one of orient's
     // bespoke cursor-delta legs actually narrowed/unchanged its response — see
     // orientServedDelta's doc comment + dispatch-stack.ts's recordTelemetry. Never
     // stamped `false`: absence already reads as "no delta mechanism engaged" (flag off,
     // no cursor, or a baseline/first read), same convention as the formal protocol.
-    await bindOrientOutputResult(out, {
+    await phaseTracker.track('handler:bindOutputResult', () => bindOrientOutputResult(out, {
       ownerId: ownerId ?? null, workspaceId: orientWorkspaceId, harness: args.harness ?? null,
-    }, orientServedDelta(result), ctx.metadata, undefined, runtimeModeRows);
+    }, orientServedDelta(result), ctx.metadata, undefined, runtimeModeRows));
     // `{ data }` envelope (tool-data-shape ratchet P-003) so payload-tier
     // shaping + format-aware serialization apply. On the MCP transport this is
     // behavior-equivalent to the prior raw-JSON text (the re-encode path
@@ -4173,6 +4425,13 @@ export default defineTool({
       {
         ...aggregateFallback,
       },
+      (aggregateElapsedMs) => {
+        aggregateFallback.data.phaseDiagnostics = {
+          aggregateElapsedMs,
+          ...phaseTracker.snapshot(),
+        };
+      },
+      ctx.deadlineAtMs,
     );
     return aggregate;
   },

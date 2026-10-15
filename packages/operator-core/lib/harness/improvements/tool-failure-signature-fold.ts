@@ -11,9 +11,11 @@
  * mints a legacy-keyed automatic row any more, so the query empties.
  *
  * Scope is deliberately narrow. The default (`probation`) pass reads open,
- * observation-lane rows still in probation that the AUTOMATIC path filed
- * (`payload.toolInvocation`); agent-authored captures carry no `toolInvocation`
- * and are out of scope. The `promoted` pass (WI-10004648) additionally folds
+ * observation-lane rows still in probation with a structured legacy failure
+ * report. Older automatic failures submitted through `improvements:capture`
+ * did not persist `payload.toolInvocation`, so the class and report fields are
+ * the durable migration selector. Ordinary observations without that structured
+ * failure identity remain out of scope. The `promoted` pass (WI-10004648) additionally folds
  * pre-D-010 rows that were PROMOTED and then never worked — and only while
  * they are still unworked (see SignatureFoldScope); a promoted row anyone has
  * claimed, held or put under review keeps its own disposition.
@@ -134,8 +136,9 @@ const PROBATION_CANDIDATES_SQL = `
        AND item_kind IN ('bug', 'change')
        AND (status IS NULL OR status <> ALL ($2::text[]))
        AND payload->>'lane' = 'observation'
-       AND payload ? 'toolInvocation'
        AND payload->'toolFailureProbation'->>'state' = 'probation'
+       AND payload->'toolFailureProbation'->>'class' IS NOT NULL
+       AND payload->'toolFailureProbation'->'report'->>'toolName' IS NOT NULL
        AND payload->>'watchdogKey' IS NOT NULL
        AND payload->>'watchdogKey' NOT LIKE 'tool-failure-signature:%'
      ORDER BY updated_ts DESC NULLS LAST, feature_id
@@ -160,6 +163,7 @@ const PROMOTED_CANDIDATES_SQL = `
        AND payload->>'watchdogKey' IS NOT NULL
        AND payload->>'watchdogKey' NOT LIKE 'tool-failure-signature:%'
        AND COALESCE(admission, '') <> 'pending'
+       AND COALESCE(payload->'admissionReview'->>'state', '') <> 'pending'
        AND COALESCE(payload->'agentReview'->>'status', '') NOT IN ('pending', 'revision-requested')
      ORDER BY updated_ts DESC NULLS LAST, feature_id
      LIMIT $2`;

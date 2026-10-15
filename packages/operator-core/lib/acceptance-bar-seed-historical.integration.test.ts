@@ -18,6 +18,8 @@ vi.mock('@papercusp/db-org', async (orig) => {
 const { createOrgTestDb } = await import('../test/_org-test-db');
 const { hashPlanContent } = await import('./agent-tools/plans/content-hash');
 const { seedAcceptanceBarsInTransaction } = await import('./acceptance-bar-seed');
+const { getRubric, inspectRubricRevisionSnapshot } = await import('./rubrics');
+const { runWithWorkspace } = await import('./workspace-als');
 import { setSpecClause, type SpecClauseSql } from './agent-tools/plans/spec-clauses-store';
 
 const WORKSPACE = 'acceptance-bar-seed-historical-test';
@@ -93,6 +95,36 @@ function seedInput(planSlug: string, planContent: string, actorId: string) {
 }
 
 describe('historical deterministic acceptance BAR rubric collision', () => {
+  it('resolves the exact seeded rubric version after a later version becomes current', async () => {
+    const planSlug = 'seeded-rubric-immutable-history';
+    const planContent = contentFor(planSlug);
+    await insertSubject(planSlug, planContent);
+    const first = await db.adminSql.begin((tx) => seedAcceptanceBarsInTransaction({
+      ...seedInput(planSlug, planContent, 'su-seeder'),
+      executor: tx as unknown as SpecClauseSql,
+    }));
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw new Error(first.message);
+    const [snapshot] = await db.adminSql<{ content_snapshot: string }[]>`
+      SELECT content_snapshot FROM harness_shared.plan_revisions
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+         AND plan_slug = ${first.rubricSlug}`;
+    expect(inspectRubricRevisionSnapshot(snapshot!.content_snapshot)).toMatchObject({
+      kind: 'enriched', rubricRevision: 1,
+    });
+    // Decouple the current plan version from the audit sequence. The immutable
+    // seed must remain addressable even after current structured data changes.
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans SET version = 7,
+        template_data = jsonb_set(template_data, '{criteria,0,method}', '"Later method"')
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+         AND plan_slug = ${first.rubricSlug}`;
+    const historical = await runWithWorkspace(WORKSPACE, () => getRubric(first.rubricSlug, 1));
+    expect(historical).toMatchObject({ revision: 1, barSetHash: first.barSetHash });
+    expect(historical!.criteria[0]!.method).not.toBe('Later method');
+    expect(await runWithWorkspace(WORKSPACE, () => getRubric(first.rubricSlug, 2))).toBeNull();
+  });
+
   it('reuses a superseded subject acceptance rubric during a later re-audit', async () => {
     const planSlug = 'historical-bar-reaudit';
     const planContent = contentFor(planSlug);
@@ -154,7 +186,7 @@ describe('historical deterministic acceptance BAR rubric collision', () => {
   });
 
   it.each(['PUI-TASK-ADD', 'AUTO-BAR-R-1-P-001-REFUSAL-ATOMICITY'])(
-    'preserves additive plan-specific clause %s pinned to a BAR during re-audit',
+    'preserves clause revision and provenance for additive clause %s on a provenance-only re-audit',
     async (customSpecId) => {
     const planSlug = `additive-pinned-clause-reaudit-${customSpecId.toLowerCase()}`;
     const planContent = contentFor(planSlug);
@@ -265,9 +297,13 @@ describe('historical deterministic acceptance BAR rubric collision', () => {
       rubricChanged: true,
     });
 
+    // Clause revisions are immutable snapshots. The source rubric revision on
+    // each clause records where that clause's meaning came from; a plan-only
+    // re-audit must not rewrite that pin or mint a provenance-only clause revision.
     await expect(db.adminSql`
       SELECT c.current_revision::int AS current_revision, r.lifecycle_status,
              r.source_bar_key, r.source_rubric_revision::int AS source_rubric_revision,
+             r.source_rubric_slug, r.source_bar_set_hash, r.acceptance_ref,
              r.required_test_layers, r.behavior
         FROM harness_shared.plan_spec_clauses c
         JOIN harness_shared.plan_spec_clause_revisions r
@@ -280,17 +316,23 @@ describe('historical deterministic acceptance BAR rubric collision', () => {
          AND c.spec_id = ANY(${['AUTO-BAR-R-1-P-001', customSpecId]}::text[])
        ORDER BY c.spec_id
     `).resolves.toEqual([{
-      current_revision: 3,
-      lifecycle_status: 'accepted',
-      source_bar_key: 'R-1',
-      source_rubric_revision: 2,
-      required_test_layers: ['integration'],
-      behavior: 'The canonical store contains the submitted outcome exactly once.',
-    }, {
       current_revision: 2,
       lifecycle_status: 'accepted',
       source_bar_key: 'R-1',
-      source_rubric_revision: 2,
+      source_rubric_revision: 1,
+      source_rubric_slug: managed.source_rubric_slug,
+      source_bar_set_hash: managed.source_bar_set_hash,
+      acceptance_ref: `${managed.source_rubric_slug}@${managed.source_rubric_revision}:${managed.source_bar_key}`,
+      required_test_layers: ['integration'],
+      behavior: 'The canonical store contains the submitted outcome exactly once.',
+    }, {
+      current_revision: 1,
+      lifecycle_status: 'accepted',
+      source_bar_key: 'R-1',
+      source_rubric_revision: 1,
+      source_rubric_slug: managed.source_rubric_slug,
+      source_bar_set_hash: managed.source_bar_set_hash,
+      acceptance_ref: `${managed.source_rubric_slug}@${managed.source_rubric_revision}:${managed.source_bar_key}`,
       required_test_layers: ['integration'],
       behavior: 'The task editor adds one owner-authored task to the canonical store.',
     }]);

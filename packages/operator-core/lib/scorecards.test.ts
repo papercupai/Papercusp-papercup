@@ -7,9 +7,115 @@
  * excluded as unassessable.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { classifyGradingAuditCurrentness, classifySubjectRubricCurrentness, computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, evaluateScorecardReleaseGateBinding, isCurrentSourceAuditResponder, isIdleUnknown, markGradingAuditAwaitingReemit, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, recordGradingAudit, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale, settlePendingGradingAuditAtomically } from './scorecards';
+import { cancelStaleEvidencePendingGradingAuditAtomically, cancelSupersededPendingGradingAuditAtomically, classifyGradingAuditCurrentness, classifyScorecardGenerationFreshness, classifySubjectRubricCurrentness, computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, evaluateScorecardReleaseGateBinding, isCurrentSourceAuditResponder, isIdleUnknown, markGradingAuditAwaitingReemit, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, recordGradingAudit, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale, settlePendingGradingAuditAtomically } from './scorecards';
 import type { Rubric } from './rubrics';
+import { effectiveCriterionInstrumentKey } from './rubrics';
 import type { CriterionTrend, ScorecardReleaseGateSnapshot } from './scorecards';
+import type { SpecTestAdequacyRerunRecipe } from './harness/improvements/observation-types';
+
+describe('superseding a pending grading-audit target', () => {
+  it('atomically cancels the pending stamp and clears its live reservation only for the matching superseder', async () => {
+    const statements: Array<{ text: string; values: unknown[] }> = [];
+    const tx = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      statements.push({ text, values });
+      return [{ feature_id: 'EI-TARGET' }];
+    }) as never;
+    const transact = (async (fn: (client: never) => Promise<unknown>) => fn(tx)) as never;
+    const notifySyncInvalidate = vi.fn();
+
+    await expect(cancelSupersededPendingGradingAuditAtomically(
+      'EI-TARGET',
+      'EI-SUPERSEDER',
+      { workspaceId: 'ws-test', transact, notifySyncInvalidate },
+    )).resolves.toBe(true);
+
+    const write = statements.find((statement) => statement.text.includes('UPDATE harness_shared.work_items'))!;
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->>'state' = 'pending'");
+    expect(write.text).toContain("target.payload->'observation'->'gradingAudit'");
+    expect(write.text).toContain("jsonb_build_object('state', 'cancelled')");
+    expect(write.text).toContain("#- '{dispatchReservation}'");
+    expect(write.text).toContain("#- '{dispatchBackoff}'");
+    expect(write.text).toContain("payload->'observation'->>'supersedes'");
+    expect(write.text).toContain("superseder.payload->'observation'->>'rubricRef' = target.payload->'observation'->>'rubricRef'");
+    expect(write.text).toContain("superseder.payload->'observation'->>'sourceHive' IS NOT DISTINCT FROM target.payload->'observation'->>'sourceHive'");
+    expect(write.values).toContain('ws-test');
+    expect(write.values).toContain('EI-TARGET');
+    expect(write.values).toContain('EI-SUPERSEDER');
+    expect(notifySyncInvalidate).toHaveBeenCalledWith('scorecards.list');
+    expect(notifySyncInvalidate).toHaveBeenCalledWith('rubrics.trend');
+    expect(notifySyncInvalidate).toHaveBeenCalledWith('learning.releaseReadiness');
+  });
+
+  it('leaves a settled or unrelated target untouched', async () => {
+    const tx = (async () => []) as never;
+    const transact = (async (fn: (client: never) => Promise<unknown>) => fn(tx)) as never;
+    const notifySyncInvalidate = vi.fn();
+
+    await expect(cancelSupersededPendingGradingAuditAtomically(
+      'EI-TARGET',
+      'EI-OTHER',
+      { workspaceId: 'ws-test', transact, notifySyncInvalidate },
+    )).resolves.toBe(false);
+    expect(notifySyncInvalidate).not.toHaveBeenCalled();
+  });
+});
+
+describe('cancelling a pending audit after its exact evidence binding goes stale', () => {
+  it('fences the cancellation by audit stamp, evidence identity, binding selector and live binding currentness', async () => {
+    const statements: Array<{ text: string; values: unknown[] }> = [];
+    const tx = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      statements.push({ text, values });
+      return [{ feature_id: 'EI-TARGET' }];
+    }) as never;
+    const transact = (async (fn: (client: never) => Promise<unknown>) => fn(tx)) as never;
+    const notifySyncInvalidate = vi.fn();
+
+    await expect(cancelStaleEvidencePendingGradingAuditAtomically(
+      'EI-TARGET',
+      {
+        stampedAt: '2026-10-08T08:27:23.775Z',
+        evidenceFingerprint: 'scorecard-evidence-v1',
+        harnessSlug: 'papercusp',
+        bindingIds: [30308, 30309],
+      },
+      { workspaceId: 'ws-test', transact, notifySyncInvalidate },
+    )).resolves.toBe(true);
+
+    const write = statements.find((statement) => statement.text.includes('UPDATE harness_shared.work_items'))!;
+    expect(write.text).toContain("gradingAudit'->>'state' = 'pending'");
+    expect(write.text).toContain("gradingAudit'->>'stampedAt' = ?");
+    expect(write.text).toContain("observation'->>'evidenceFingerprint' IS NOT DISTINCT FROM ?");
+    expect(write.text).toContain("'rerunRecipe'->'selection'->'bindingIds'");
+    expect(write.text).toContain('jsonb_array_elements_text');
+    expect(write.text).toContain('binding.retracted_at IS NOT NULL');
+    expect(write.text).toContain("jsonb_build_object('state', 'cancelled')");
+    expect(write.text).toContain("#- '{dispatchReservation}'");
+    expect(write.text).toContain("#- '{dispatchBackoff}'");
+    expect(write.values).toEqual(expect.arrayContaining([
+      'ws-test', 'EI-TARGET', '2026-10-08T08:27:23.775Z', 'scorecard-evidence-v1', 'papercusp', '[30308,30309]',
+    ]));
+    expect(notifySyncInvalidate).toHaveBeenCalledWith('scorecards.list');
+    expect(notifySyncInvalidate).toHaveBeenCalledWith('rubrics.trend');
+    expect(notifySyncInvalidate).toHaveBeenCalledWith('learning.releaseReadiness');
+  });
+
+  it('refuses malformed or empty binding selectors before writing', async () => {
+    const transact = vi.fn() as never;
+    await expect(cancelStaleEvidencePendingGradingAuditAtomically(
+      'EI-TARGET',
+      { stampedAt: 'audit-stamp', bindingIds: [0] },
+      { workspaceId: 'ws-test', transact },
+    )).resolves.toBe(false);
+    await expect(cancelStaleEvidencePendingGradingAuditAtomically(
+      'EI-TARGET',
+      { stampedAt: 'audit-stamp', bindingIds: [] },
+      { workspaceId: 'ws-test', transact },
+    )).resolves.toBe(false);
+    expect(transact).not.toHaveBeenCalled();
+  });
+});
 
 describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', () => {
   it('settles only the exact pending stamp and excludes a retraction in the atomic write', async () => {
@@ -18,6 +124,7 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
       const text = strings.join('?');
       statements.push({ text, values });
       if (text.includes('FROM harness_shared.consult_state')) return [];
+      if (text.includes('FROM harness_shared.task_ledger')) return [{ coord_owner_id: 'su-auditor' }];
       return [{ feature_id: 'EI-TARGET' }];
     }) as never;
     const transact = (async (fn: (client: never) => Promise<unknown>) => fn(tx)) as never;
@@ -28,6 +135,10 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
       rubricRevision: 7,
       criteriaHash: 'hash-v7',
       dispatchReservation: {
+        key: 'grading-audit:EI-TARGET',
+        reservedAt: '2026-09-20T04:02:01.600Z',
+      },
+      lastDispatchReservation: {
         key: 'grading-audit:EI-TARGET',
         reservedAt: '2026-09-20T04:02:01.600Z',
       },
@@ -55,8 +166,10 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
     expect(write.text).toContain("payload->'observation'->'gradingAudit'->>'state' = 'pending'");
     expect(write.text).toContain("payload->'observation'->'gradingAudit'->>'stampedAt' = ?");
     expect(write.text).toContain("payload->'observation'->'gradingAudit'->>'criteriaHash' IS NOT DISTINCT FROM ?");
-    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' IS NOT DISTINCT FROM ?");
-    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' IS NOT DISTINCT FROM ?");
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' = ?");
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' = ?");
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'lastDispatchReservation'->>'key' = ?");
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'lastDispatchReservation'->>'reservedAt' = ?");
     expect(write.values).toContain('ws-test');
     expect(write.values).toContain('EI-TARGET');
     expect(write.values).toContain('grading-audit:EI-TARGET');
@@ -70,6 +183,7 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
       const text = strings.join('?');
       statements.push({ text, values });
       if (text.includes('FROM harness_shared.consult_state')) return [];
+      if (text.includes('FROM harness_shared.task_ledger')) return [{ coord_owner_id: 'su-auditor' }];
       return [{ feature_id: 'EI-TARGET' }];
     }) as never;
     const transact = (async (fn: (client: never) => Promise<unknown>) => fn(tx)) as never;
@@ -90,7 +204,11 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
       markGradingAuditAwaitingReemit(
         'EI-TARGET',
         expected,
-        { reason: 'evaluator revision 2 changed falsifiability from pass to unknown', at: '2026-09-20T04:03:00.000Z' },
+        {
+          reason: 'evaluator revision 2 changed falsifiability from pass to unknown',
+          at: '2026-09-20T04:03:00.000Z',
+          responderOwnerId: 'su-auditor',
+        },
         { resolveWorkspace: async () => 'ws-test', transact, notifySyncInvalidate },
       ),
     ).resolves.toBe(true);
@@ -99,8 +217,10 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
     expect(notifySyncInvalidate).toHaveBeenCalledWith('rubrics.trend');
     const write = statements.find((statement) => statement.text.includes('UPDATE harness_shared.work_items'))!;
     expect(write.text).toContain("payload->'observation'->'gradingAudit'->>'state' = 'pending'");
-    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' IS NOT DISTINCT FROM ?");
-    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' IS NOT DISTINCT FROM ?");
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' = ?");
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' = ?");
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'lastDispatchReservation'->>'key' = ?");
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'lastDispatchReservation'->>'reservedAt' = ?");
     expect(write.values).toContain('grading-audit:EI-TARGET');
     expect(write.values).toContain('2026-09-20T04:02:01.600Z');
     const stamp = write.values.find((value): value is string => typeof value === 'string' && value.includes('"awaiting-reemit"'));
@@ -114,6 +234,17 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
       },
     });
     expect(JSON.parse(stamp!)).not.toHaveProperty('dispatchReservation');
+
+    const updateCount = statements.filter((statement) => statement.text.includes('UPDATE harness_shared.work_items')).length;
+    await expect(
+      settlePendingGradingAuditAtomically(
+        'EI-TARGET',
+        expected,
+        { ...expected, state: 'awaiting-reemit' },
+        { resolveWorkspace: async () => 'ws-test', transact },
+      ),
+    ).resolves.toBe(false);
+    expect(statements.filter((statement) => statement.text.includes('UPDATE harness_shared.work_items'))).toHaveLength(updateCount);
   });
 
   it('refuses atomic settlement when the consult cascade has moved to another answerer', async () => {
@@ -157,11 +288,15 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
     let activeRows: Array<{ answering_owner_id: string | null }> = [
       { answering_owner_id: 'su-current-answerer' },
     ];
+    let taskRows: Array<{ coord_owner_id: string | null }> = [
+      { coord_owner_id: 'su-fallback-auditor' },
+    ];
     const tx = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const text = strings.join('?');
       statements.push({ text, values });
-      if (!text.includes('FROM harness_shared.consult_state')) return [];
-      return activeRows;
+      if (text.includes('FROM harness_shared.consult_state')) return activeRows;
+      if (text.includes('FROM harness_shared.task_ledger')) return taskRows;
+      return [];
     }) as never;
     const transact = (async (fn: (client: never) => Promise<unknown>) => fn(tx)) as never;
     const deps = { resolveWorkspace: async () => 'ws-test', transact };
@@ -177,10 +312,14 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
       '2026-09-20T04:02:01.600Z',
     ]);
 
-    // A direct launch fallback has no active consult cursor, so it remains on
-    // the dispatcher's existing single-task idempotency path.
+    // A direct launch fallback has no active consult cursor. Its live task row,
+    // rather than the shared lease string alone, identifies the authorized owner.
     activeRows = [];
     await expect(isCurrentSourceAuditResponder('EI-TARGET', reservation, 'su-fallback-auditor', deps)).resolves.toBe(true);
+    await expect(isCurrentSourceAuditResponder('EI-TARGET', reservation, 'su-unrelated-session', deps)).resolves.toBe(false);
+    expect(statements.some((statement) => statement.text.includes('FROM harness_shared.task_ledger'))).toBe(true);
+    taskRows = [];
+    await expect(isCurrentSourceAuditResponder('EI-TARGET', reservation, 'su-fallback-auditor', deps)).resolves.toBe(false);
   });
 
   it('refuses to settle after the dispatch reservation epoch changes', async () => {
@@ -492,9 +631,14 @@ describe('graded subject rubric currentness (EI-23978920367779836)', () => {
     });
   });
 
-  it('preserves BAR meaning across a method-only edit', () => {
+  it('explains currentness when BAR meaning is unchanged across a method-only edit', () => {
     expect(classifySubjectRubricCurrentness('acceptance-rubric', { ...recorded, meaningRevision: 2 }, {
       ...live, barContract: { meaningRevision: 2 },
+    } as never)).toMatchObject({ state: 'current', reason: 'meaning-unchanged' });
+    expect(classifySubjectRubricCurrentness('acceptance-rubric', {
+      ...recorded, criteriaHash: 'same', meaningRevision: 2,
+    }, {
+      ...live, criteriaHash: 'same', barContract: { meaningRevision: 2 },
     } as never)).toMatchObject({ state: 'current', reason: 'current' });
   });
 });
@@ -537,6 +681,16 @@ describe('parseGradedGeneration (EI-12147, widened WI-5397)', () => {
       hostStartedAt: null,
     });
   });
+  it('preserves staleHost null as an explicitly unknown comparison', () => {
+    expect(
+      parseGradedGeneration({
+        deployedSha: 'abc1234',
+        hostStartedAt: null,
+        bootHeadSha: null,
+        staleHost: null,
+      }),
+    ).toEqual({ deployedSha: 'abc1234', hostStartedAt: null, staleHost: null });
+  });
   it('an all-null/absent stamp carries no identity — null, so pre-stamp and unresolved rows read the same', () => {
     expect(parseGradedGeneration({ sha: null, hostStartedAt: null })).toBeNull();
     expect(parseGradedGeneration({})).toBeNull();
@@ -547,6 +701,80 @@ describe('parseGradedGeneration (EI-12147, widened WI-5397)', () => {
     expect(parseGradedGeneration('abc1234')).toBeNull();
     expect(parseGradedGeneration(['abc1234'])).toBeNull();
     expect(parseGradedGeneration({ sha: 42, hostStartedAt: false })).toBeNull();
+  });
+});
+
+describe('scorecard generation freshness evidence plane (EI-25738206826588439)', () => {
+  const makeTreeOnlyRecipe = (): SpecTestAdequacyRerunRecipe => {
+    const fingerprints = Array.from({ length: 4 }, (_, index) => ({
+      planSlug: 'tree-only-plan',
+      specId: 'SPEC-1',
+      specRevision: 3,
+      specFingerprint: 'sha256:spec',
+      evidenceKind: 'test/mutation',
+      evidenceRef: `run:${index + 1}`,
+      sourceFingerprint: `sha256:source-${index + 1}`,
+      testFingerprint: `sha256:test-${index + 1}`,
+      fixtureFingerprint: null,
+      rubricFingerprint: null,
+      environmentFingerprint: null,
+    }));
+    return {
+      schemaVersion: 1,
+      evaluator: 'plans:evaluate-spec-test-adequacy',
+      classRef: 'unit-test',
+      args: {
+        slug: 'tree-only-plan',
+        classRef: 'unit-test',
+        specIds: ['SPEC-1'],
+        includeDraft: true,
+        current: fingerprints,
+      },
+      selection: {
+        planSlug: 'tree-only-plan',
+        specId: 'SPEC-1',
+        specRevision: 3,
+        specFingerprint: 'sha256:spec',
+        evidence: fingerprints.map(({ evidenceKind, evidenceRef }) => ({ evidenceKind, evidenceRef })),
+      },
+      current: { supplied: true, fingerprints },
+      derivation: {
+        kind: 'listSpecEvidence.currentness',
+        classifier: 'classifySpecEvidenceCurrentness',
+        unknownWhenMissing: true,
+      },
+    };
+  };
+
+  it('does not mark a complete matched tree-only recipe stale after the host boundary changes', () => {
+    expect(
+      classifyScorecardGenerationFreshness(
+        '2026-07-14T00:00:00.000Z',
+        makeTreeOnlyRecipe(),
+        Date.parse('2026-07-15T00:00:00.000Z'),
+      ),
+    ).toMatchObject({ status: 'not-applicable' });
+  });
+
+  it('keeps incomplete, mismatched, and runtime-bound recipes on the live host comparison', () => {
+    const treeOnly = makeTreeOnlyRecipe();
+    const incomplete = structuredClone(treeOnly);
+    incomplete.args.current?.pop();
+    const mismatched = structuredClone(treeOnly);
+    mismatched.selection.evidence[0]!.evidenceRef = 'run:wrong';
+    const runtimeBound = makeTreeOnlyRecipe();
+    runtimeBound.current.fingerprints[0]!.environmentFingerprint = 'sha256:environment';
+    runtimeBound.args.current![0]!.environmentFingerprint = 'sha256:environment';
+
+    for (const recipe of [undefined, incomplete, mismatched, runtimeBound]) {
+      expect(
+        classifyScorecardGenerationFreshness(
+          '2026-07-14T00:00:00.000Z',
+          recipe,
+          Date.parse('2026-07-15T00:00:00.000Z'),
+        ),
+      ).toMatchObject({ status: 'stale' });
+    }
   });
 });
 
@@ -563,6 +791,16 @@ describe('parseCriterionInstrumentKey (WI-4607)', () => {
   });
   it('returns null when the model carries no token', () => {
     expect(parseCriterionInstrumentKey('good fresh ideas keep flowing')).toBeNull();
+  });
+  it('binds a dotted registered key (woe.*, goal-mode.*) in BOTH readers — the old [a-z0-9-]+ copies dropped it', () => {
+    expect(parseCriterionInstrumentKey('never edits [instrumentKey: goal-mode.never-implements]')).toBe(
+      'goal-mode.never-implements',
+    );
+    expect(effectiveCriterionInstrumentKey({ model: 'ideas land [instrumentKey: woe.ideation-yield]' })).toBe(
+      'woe.ideation-yield',
+    );
+    // A key must still start with a letter or digit, so a stray separator does not bind.
+    expect(parseCriterionInstrumentKey('x [instrumentKey: .hidden]')).toBeNull();
   });
   it('binds only a TRAILING token — a mid-prose mention does NOT bind', () => {
     expect(parseCriterionInstrumentKey('the [instrumentKey: foo] is discussed but not bound here')).toBeNull();
@@ -639,10 +877,13 @@ describe('scorecardEvidenceFingerprint (EI-12459)', () => {
     const recipe = {
       schemaVersion: 1 as const,
       evaluator: 'plans:evaluate-spec-test-adequacy' as const,
+      evaluatorRevision: 12,
+      evaluatorBuild: { sha: 'build-a', version: '0.0.0' },
       classRef: 'plan-class-feature-ship',
       args: {
         slug: 'p',
         classRef: 'plan-class-feature-ship',
+        evaluatorBuild: { sha: 'build-a', version: '0.0.0' },
         specIds: ['s'],
         includeDraft: true as const,
       },
@@ -664,6 +905,16 @@ describe('scorecardEvidenceFingerprint (EI-12459)', () => {
     const withRecipe = scorecardEvidenceFingerprint({ rubricRef: 'r', ratings, rerunRecipe: recipe });
     expect(withRecipe).not.toBe(legacy);
     expect(scorecardEvidenceFingerprint({ rubricRef: 'r', ratings, rerunRecipe: recipe })).toBe(withRecipe);
+
+    const nextBuildRecipe = {
+      ...recipe,
+      evaluatorBuild: { sha: 'build-b', version: '0.0.0' },
+      args: { ...recipe.args, evaluatorBuild: { sha: 'build-b', version: '0.0.0' } },
+    };
+    expect(scorecardEvidenceFingerprint({ rubricRef: 'r', ratings, rerunRecipe: nextBuildRecipe })).toBe(withRecipe);
+    expect(scorecardEvidenceFingerprint({
+      rubricRef: 'r', ratings, rerunRecipe: { ...nextBuildRecipe, evaluatorRevision: 13 },
+    })).not.toBe(withRecipe);
   });
 
   it('includes testedSha in release evidence identity while preserving legacy hashes when absent', () => {
@@ -836,6 +1087,7 @@ describe('evaluateScorecardInstrumentContract (rubric/instrument contract)', () 
     });
     expect(missing.valid).toBe(false);
     expect(missing.missingSnapshots).toEqual(['metrics.cycle']);
+    expect(missing.positiveClaimsWithoutSnapshots).toEqual(['metrics.cycle']);
 
     const bad = evaluateScorecardInstrumentContract({
       rubric: rubric(),
@@ -850,6 +1102,24 @@ describe('evaluateScorecardInstrumentContract (rubric/instrument contract)', () 
     expect(bad.staleSnapshots).toEqual(['metrics.cycle']);
     expect(bad.extraSnapshots).toEqual(['extra']);
     expect(bad.verdictMismatches).toEqual(['metrics.cycle']);
+  });
+
+  it('identifies unsupported positive ratings on non-release-gating instrument bindings', () => {
+    const nonRelease = rubric({ releaseGating: false });
+    const positive = evaluateScorecardInstrumentContract({
+      rubric: nonRelease,
+      ratings: { cycle: { rating: 'healthy', evidence: 'The report looks healthy.' } },
+      nowMs: Date.parse('2026-07-15T00:01:00Z'),
+    });
+    expect(positive.valid).toBe(false);
+    expect(positive.positiveClaimsWithoutSnapshots).toEqual(['metrics.cycle']);
+
+    const negative = evaluateScorecardInstrumentContract({
+      rubric: nonRelease,
+      ratings: { cycle: { rating: 'fail', evidence: 'The report shows a failure.' } },
+      nowMs: Date.parse('2026-07-15T00:01:00Z'),
+    });
+    expect(negative.positiveClaimsWithoutSnapshots).toEqual([]);
   });
 
   it('pins post-watermark snapshots to the declared watermark', () => {
@@ -921,9 +1191,13 @@ const critIdle = (criterion: string, idleCount: number, ...ratings: string[]): C
     count: ratings.length,
     distribution,
     idleCount,
+    notAssessedCount: 0,
+    unknownReasons: {},
     first: { rating: ratings[0] ?? 'unknown', at: '2026-06-20T00:00:00.000Z' },
     latest: { rating: ratings[ratings.length - 1] ?? 'unknown', at: '2026-06-20T01:00:00.000Z' },
     direction: 'unknown',
+    // CriterionTrend gained a required scale-aware mean; these direction fixtures do not read it.
+    mean10: null,
   };
 };
 
@@ -1154,6 +1428,7 @@ describe('numeric 0–10 read-time projection (rubrics-tab-scorecard-ui P-004 / 
   it('ratingScore10 maps both shared vocabularies; unknown/custom → null', () => {
     expect(ratingScore10('pass')).toBe(10);
     expect(ratingScore10('Partial')).toBe(5); // case-insensitive
+    expect(ratingScore10('weak')).toBe(5);
     expect(ratingScore10('fail')).toBe(0);
     expect(ratingScore10('healthy')).toBe(10);
     expect(ratingScore10('degraded')).toBe(5);
@@ -1176,6 +1451,18 @@ describe('numeric 0–10 read-time projection (rubrics-tab-scorecard-ui P-004 / 
       d: { rating: 'unknown' }, // excluded
     });
     expect(score).toBe(5); // (10+5+0)/3, NOT /4
+  });
+
+  it('counts weak-rated criteria at the midpoint instead of excluding them from the mean', () => {
+    const score = scorecardScore10({
+      pass1: { rating: 'pass' },
+      pass2: { rating: 'pass' },
+      pass3: { rating: 'pass' },
+      pass4: { rating: 'pass' },
+      weak1: { rating: 'weak' },
+      weak2: { rating: 'weak' },
+    });
+    expect(score).toBe(8.3); // (4×10 + 2×5) / 6
   });
 
   it('scorecardScore10 rounds to 1 decimal and is null for an all-unknown scorecard', () => {

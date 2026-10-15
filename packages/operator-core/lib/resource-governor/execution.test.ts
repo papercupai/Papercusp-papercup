@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Governor } from './admission';
 import { PgAdmissionCutoverQueueStore } from './admission-cutover-store';
-import { WorkItemAdmissionQueueDriver, type DurableAdmissionQueueStore } from './queue';
+import { WorkItemAdmissionQueueDriver, type DurableAdmissionQueueStore, type StoredAdmissionRecord } from './queue';
+import { runGovernedTestProcess } from '../../../../scripts/lib/governed-test-process.mjs';
 import {
   admissionContextFromEnvironment,
   beginGovernedExecution,
@@ -161,7 +162,8 @@ describe('governed execution lifecycle', () => {
 
   it('cancels a queued receipt even when the lease driver throws', async () => {
     const d = deps();
-    vi.spyOn(d.driver, 'leaseReceipt').mockRejectedValue(new Error('lease store unavailable'));
+    const error = Object.assign(new Error('lease store unavailable'), { pgCode: '57014' });
+    vi.spyOn(d.driver, 'leaseReceipt').mockRejectedValue(error);
 
     await expect(
       beginGovernedExecution(
@@ -169,10 +171,68 @@ describe('governed execution lifecycle', () => {
         { owner: 'bounded-runner', leaseTtlMs: 6_000 },
         d,
       ),
-    ).rejects.toThrow('lease store unavailable');
+    ).rejects.toBe(error);
+    expect(error).toMatchObject({
+      pgCode: '57014',
+      governedAdmissionStartFailure: {
+        contractVersion: 1,
+        idempotencyKey: 'lease-throw',
+        receiptId: 'WI-R1',
+        state: 'cancelled',
+        cancellationVerified: true,
+      },
+    });
     expect(d.current()).toMatchObject({
       state: 'cancelled',
       cancellationReason: expect.stringContaining('lease acquisition'),
+    });
+  });
+
+  it.each(['throws', 'unknown', 'completed', 'wrong-key'])(
+    'does not confirm cancellation when cleanup %s',
+    async (mode) => {
+      const d = deps();
+      const error = Object.assign(new Error('lease timeout'), { pgCode: '57014' });
+      vi.spyOn(d.driver, 'leaseReceipt').mockRejectedValue(error);
+      const cancel = vi.spyOn(d.governor, 'cancel');
+      if (mode === 'throws') cancel.mockRejectedValue(new Error('cleanup unavailable'));
+      else cancel.mockResolvedValue({
+        idempotencyKey: mode === 'wrong-key' ? 'other' : 'unconfirmed',
+        cancelled: false,
+        state: mode === 'wrong-key' ? 'cancelled' : mode === 'completed' ? 'completed' : 'unknown',
+      });
+      await expect(beginGovernedExecution(
+        { idempotencyKey: 'unconfirmed', admissionClass: 'process' },
+        { owner: 'bounded-runner' },
+        d,
+      )).rejects.toBe(error);
+      expect(error).toMatchObject({ governedAdmissionStartFailure: { cancellationVerified: false } });
+    },
+  );
+
+  it('confirms an already-cancelled receipt without requiring a new transition', async () => {
+    const d = deps();
+    const error = Object.assign(new Error('lease timeout'), { pgCode: '57014' });
+    vi.spyOn(d.driver, 'leaseReceipt').mockRejectedValue(error);
+    vi.spyOn(d.governor, 'cancel').mockResolvedValue({
+      idempotencyKey: 'already-cancelled', cancelled: false, state: 'cancelled',
+    });
+    await expect(beginGovernedExecution(
+      { idempotencyKey: 'already-cancelled', admissionClass: 'process' },
+      { owner: 'bounded-runner' }, d,
+    )).rejects.toMatchObject({ governedAdmissionStartFailure: { cancellationVerified: true } });
+  });
+
+  it('preserves frozen pre-start errors as a retryable cause with cleanup evidence', async () => {
+    const d = deps();
+    const error = Object.freeze(Object.assign(new Error('frozen lease timeout'), { pgCode: '57014' }));
+    vi.spyOn(d.driver, 'leaseReceipt').mockRejectedValue(error);
+    await expect(beginGovernedExecution(
+      { idempotencyKey: 'frozen-error', admissionClass: 'process' },
+      { owner: 'bounded-runner' }, d,
+    )).rejects.toMatchObject({
+      cause: error,
+      governedAdmissionStartFailure: { idempotencyKey: 'frozen-error', cancellationVerified: true },
     });
   });
 
@@ -190,6 +250,71 @@ describe('governed execution lifecycle', () => {
     ).rejects.toThrow("'WI-R1' could not enter running state");
     expect(releaseLease).toHaveBeenCalledWith('WI-R1', 'lease-1');
     expect(d.current()).toMatchObject({ state: 'cancelled' });
+  });
+
+  it('retries the real execution seam without re-leasing its cancelled receipt', async () => {
+    // Preserve idempotent tombstones as the durable store does. A same-key
+    // retry returns the cancelled row and cannot lease it, reproducing EI-25713586716473636.
+    const rows = new Map<string, StoredAdmissionRecord>();
+    const byReceipt = (id: string) => [...rows.values()].find((row) => row.receiptId === id);
+    const update = (row: StoredAdmissionRecord, record: StoredAdmissionRecord['record']) => {
+      const next = { ...row, record };
+      rows.set(record.idempotencyKey, next);
+      return { ...next, changed: true };
+    };
+    const store: DurableAdmissionQueueStore = {
+      ...deps().store,
+      async enqueue(record) {
+        const existing = rows.get(record.idempotencyKey);
+        if (existing) return { ...existing, created: false };
+        const row = { receiptId: `receipt-${rows.size + 1}`, record };
+        rows.set(record.idempotencyKey, row);
+        return { ...row, created: true };
+      },
+      async find(_namespace, key) { return rows.get(key) ?? null; },
+      async cancel(_namespace, key, reason, nowMs) {
+        const row = rows.get(key);
+        return row ? update(row, {
+          ...row.record, state: 'cancelled', cancellationReason: reason, updatedAtMs: nowMs, lease: undefined,
+        }) : null;
+      },
+      async leaseReceipt(_namespace, id, owner, leaseId, ttlMs, nowMs) {
+        const row = byReceipt(id);
+        if (!row || row.record.state !== 'queued') return null;
+        return update(row, { ...row.record, state: 'leased', lease: {
+          owner, leaseId, generation: 1, expiresAtMs: nowMs + ttlMs,
+        } });
+      },
+      async markRunning(id) {
+        const row = byReceipt(id);
+        return row ? update(row, { ...row.record, state: 'running' }) : null;
+      },
+      async releaseClaim(id, _leaseId, actualDemand, nowMs) {
+        const row = byReceipt(id);
+        return row ? update(row, {
+          ...row.record, state: 'completed', actualDemand, releasedAtMs: nowMs, lease: undefined,
+        }) : null;
+      },
+    };
+    const driver = new WorkItemAdmissionQueueDriver(store, { namespace: 'test-process' });
+    const governor = new Governor(driver);
+    const lease = vi.spyOn(driver, 'leaseReceipt').mockRejectedValueOnce(
+      Object.assign(new Error('lease transaction timed out'), { pgCode: '57014' }),
+    );
+    const child = vi.fn(async () => 'one child result');
+    const result = await runGovernedTestProcess({
+      workspaceId: 'ws', owner: 'test-runner', env: {}, idempotencyKey: 'initial-key',
+      sleep: async () => {}, log: () => {},
+      executionApi: { runGovernedOperation: (input: Parameters<typeof runGovernedOperation>[0], run: any) =>
+        withGovernedExecution({ ...input, idempotencyKey: input.idempotencyKey! },
+          { owner: input.owner }, { governor, driver }, run) },
+    }, child);
+    expect(result).toBe('one child result');
+    expect(child).toHaveBeenCalledTimes(1);
+    expect(lease).toHaveBeenCalledTimes(2);
+    expect(rows.get('initial-key')!.record.state).toBe('cancelled');
+    expect([...rows.values()].map((row) => row.record.state)).toEqual(['cancelled', 'completed']);
+    expect(lease.mock.calls.map(([input]) => input.receiptId)).toEqual(['receipt-1', 'receipt-2']);
   });
 
   it('serializes concurrent terminal callbacks and accepts measured demand', async () => {

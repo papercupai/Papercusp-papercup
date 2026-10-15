@@ -1,0 +1,154 @@
+{
+  "schemaVersion": 1,
+  "id": "public-manual-freshness-integration-20261008",
+  "workItem": "WI-10006921",
+  "stage": "committed-isolated-pass",
+  "acceptanceStatus": "unverified",
+  "observedAt": "2026-10-08T23:04:00Z",
+  "testFile": "packages/operator-core/lib/harness/docs/public-manual-freshness.integration.test.ts",
+  "command": "node scripts/with-test-pg.mjs --isolated-runtime -- env PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/harness/docs/public-manual-freshness.integration.test.ts",
+  "result": {
+    "exitCode": 0,
+    "passed": 2,
+    "failed": 0,
+    "skipped": 0,
+    "headBefore": "d0fd6d1b80",
+    "headAfter": "36e98f37c2",
+    "provenance": "unknown",
+    "uncommittedPaths": "1/1",
+    "canonicalTestRunIds": []
+  },
+  "passedCases": [
+    "canonical public manual post-sync review lifecycle > dispatches FAQ and guide canonical files and keeps refreshed content unapproved",
+    "canonical public manual post-sync review lifecycle > retains accountable review without spending a dispatch attempt when the steward is disabled"
+  ],
+  "observations": [
+    "Real migrated OrgTestDb, after-sync sweep, persisted review records, dispatcher policy and public reader executed.",
+    "FAQ and quickstart drift dispatch carried their canonical public sourceFile paths; unrelated harness-templates stayed fresh.",
+    "Public revision and rendered section content changed after FAQ mutation; persisted review status and old verified baseline were retained.",
+    "Repeated sweep did not launch another steward and sent one notification.",
+    "Disabled steward retained review status and charged zero dispatch attempts."
+  ],
+  "controlledSeams": [
+    "Git source-change signal and harness source paths use disposable fixture values.",
+    "Outbound agent launch and coordination notification are intercepted; no agent or model is launched.",
+    "Doc-steward feature flag is controlled; no live flag is changed."
+  ],
+  "harnessAudit": [
+    {
+      "log": "/tmp/su73-manual-freshness-integration-2254.log",
+      "outcome": "1 passed, 1 failed, 0 skipped",
+      "correction": "Select heading so the appended section is inside the docs:get window."
+    },
+    {
+      "log": "/tmp/su73-manual-freshness-integration-2300.log",
+      "outcome": "1 passed, 1 failed, 0 skipped",
+      "correction": "Assert returned content directly using plain text; renderer escaped raw underscores."
+    }
+  ],
+  "postRunSnapshot": {
+    "capturedAt": "2026-10-08T23:08:16.389764+00:00",
+    "files": {
+      "packages/operator-core/lib/harness/docs/public-manual-freshness.integration.test.ts": "7e83381222eca17554828e0f7bdc2939657c25738dd51514141fafd3543113c1",
+      "packages/operator-core/lib/harness/docs/sweep-after-sync.ts": "7c7901c2bbd33523368d88b763142aed7bfe30f4f5ad44d63beaa8c00bbac513",
+      "packages/operator-core/lib/harness/docs/doc-steward-dispatch.ts": "99886e0bd6f17a9d27508257ed58458278bbf55a0b67c12415e655abf33f1ab0",
+      "packages/operator-core/lib/harness/docs/doc-record.ts": "b0c6fe22b7a6aa5a0b91de270cd744a6d66965eb04939f961fe33c096e9affd0",
+      "packages/operator-core/lib/agent-tools/docs/_public-manual.ts": "302eb757e44f02da9f3f36d52da57f91713c22c4ac2f3132f838162fa86bced1",
+      "apps/papercusp-docs/src/content/docs/faq.mdx": "908687ae99d490db965919cb6f1297d409754453666e733027d505b7cbd2205a",
+      "apps/papercusp-docs/src/content/docs/quickstart.mdx": "a0d5ebcd5aef3414660f142d9b9d4578c9a64c88abce936797686d6d2234d5bc",
+      "apps/papercusp-docs/src/content/docs/harness-templates.mdx": "cd81bb77d95d41e7ef397c85bd1aa7d9ab84d0b403d3fd039a573b49c7fd37b1",
+      "packages/docs-engine/src/get.ts": "2f3a925dac38c9620650e376725440510ad11f8e0e363b236a3e5fc755890380"
+    },
+    "logs": {
+      "/tmp/su73-manual-freshness-integration-2254.log": "89eb8ffc5a5179126c159a21cea05722e382503c8c35d1100c1c01a79daca594",
+      "/tmp/su73-manual-freshness-integration-2300.log": "6a259ba18476f062d9c913237492e8982a4a3e0c5942955aa7186a43f54852c3",
+      "/tmp/su73-manual-freshness-integration-2303.log": "44ba8900feed411d40968c1e0b2e61885f3641d058da29e7f02d43184fd5f6bc"
+    },
+    "scope": "Hashes measured after the run, not an executed import-map or immutable-source certificate."
+  },
+  "ledger": {
+    "status": "not-recorded-in-canonical-ledger",
+    "checkedEndpoints": [
+      "default operator",
+      "http://127.0.0.1:3170"
+    ],
+    "checkedFile": "public-manual-freshness.integration.test.ts",
+    "checkedSince": "2026-10-08T22:50:00Z",
+    "writer": "libs/test-config/src/admin-test-runs-reporter.ts",
+    "explanation": "Writer prefers PAPERCUSP_TEST_RUNS_DB_URL and otherwise uses HARNESS_ADMIN_DATABASE_URL; isolated runtime strips inherited PAPERCUSP_/HARNESS_ variables. No shared ledger destination was restored inside this run."
+  },
+  "committedVerification": {
+    "sourceCommit": "1a9fbcfba1eefb90b4f4d6544144a9cd8907b9cc",
+    "startedAt": "2026-10-08T23:17:53.741Z",
+    "finishedAt": "2026-10-08T23:21:20.094Z",
+    "command": "node scripts/with-test-pg.mjs --isolated-runtime -- env <ledger-only overrides> node scripts/lint-as-committed.mjs test:file --any --ref=1a9fbcfba1eefb90b4f4d6544144a9cd8907b9cc -- packages/operator-core/lib/harness/docs/public-manual-freshness.integration.test.ts",
+    "result": {
+      "exitCode": 0,
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0,
+      "requestedFiles": 1,
+      "executedFiles": 1,
+      "matchedFiles": 1,
+      "uncommittedPaths": "0/1",
+      "provenance": "stamped"
+    },
+    "ledger": {
+      "testRunIds": [20940593],
+      "runGroup": "1d05d504-74be-4ffd-857b-ddac906b05da",
+      "workspace": "papercusp-workspace",
+      "harness": "papercusp",
+      "status": "pass",
+      "worktreeDirty": false,
+      "receiptOutcome": "inserted",
+      "readBack": "testing:runs exact testRunIds, workspace and harness returned the matching committed row",
+      "resolutionSource": "default",
+      "scope": "Reporter and execution-map writer use the existing dedicated shared-ledger seam; product/test SQL stays on isolated PG."
+    },
+    "childOverrides": [
+      "PAPERCUSP_TEST_RUNS_DB_URL",
+      "PAPERCUSP_TEST_RUN_HARNESS",
+      "PAPERCUSP_TEST_RUN_WORKSPACE",
+      "PAPERCUSP_TEST_RUN_GROUP",
+      "PAPERCUSP_TEST_RUN_RECEIPT_FILE"
+    ],
+    "retainedEvidence": {
+      "log": "/tmp/su73-manual-freshness-committed-2320.log",
+      "metadata": "/tmp/su73-manual-freshness-committed-2320-meta.json",
+      "receipts": "/tmp/su73-manual-freshness-committed-2320-receipts.jsonl"
+    },
+    "sourceComparison": "All nine postRunSnapshot source files equal this commit and the earlier local-run snapshot. Earlier local result and ledger absence remain historical, not relabeled."
+  },
+  "maintenanceProcedure": {
+    "canonicalDoc": "agent-insights/docs-drift-tracking-how-it-works",
+    "authorReceipt": "/tmp/su73-docs-drift-author-2324-receipt.json",
+    "readBack": "/tmp/su73-docs-drift-source-2325.json",
+    "verification": "Canonical source read contains the exact full replacement body and five added source anchors; manual projection lock released.",
+    "addedGuidance": "Maintained integration coverage and child-scoped ledger-only environment restoration under committed-source isolation."
+  },
+  "currentMaintenanceReview": {
+    "observedAt": "2026-10-08T23:56:15.034Z",
+    "reviewer": "su-73f621d7-bae1-4bbb-b045-a11b5c47a384",
+    "scope": "Author maintenance-baseline renewal of the unchanged FAQ and the seven exact source hashes in faq-review.md; no new independent sensitive-guide or runtime approval.",
+    "faqSha256": "908687ae99d490db965919cb6f1297d409754453666e733027d505b7cbd2205a",
+    "sourceComparison": "All seven source SHA-256 values equal the previously recorded semantic reconciliation; unchanged FAQ retains thread-post:1160798 source approval.",
+    "endpoint": "http://127.0.0.1:3170",
+    "docId": "public-manual/faq.mdx",
+    "verifiedSha": "2270e06a88608ef987d3ae8bd0f7f1cce12eded0",
+    "readBack": {
+      "status": "fresh",
+      "statusDetail": null,
+      "bodyMissing": false,
+      "anchorCount": 7,
+      "lastVerifiedSha": "2270e06a88608ef987d3ae8bd0f7f1cce12eded0"
+    },
+    "receipt": "/tmp/su73-faq-current-review-0002.json",
+    "readBackReceipt": "/tmp/su73-faq-current-review-0002-readback.json",
+    "packagedSourceComparison": "All fifteen canonical public pages equal apps/operator/public/manual-source; this is byte parity, not installed execution or Pagefind invalidation."
+  },
+  "remaining": [
+    "Independent sensitive-guide review after the documented guide edits; future FAQ/source changes require their applicable renewed review.",
+    "Actual installed public retriever and published index revision propagation.",
+    "Actual product journeys, real novices, independent final acceptance and exact shipment."
+  ]
+}

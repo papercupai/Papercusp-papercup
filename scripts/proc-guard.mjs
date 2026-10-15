@@ -149,6 +149,17 @@ const DEFAULT_INTERPRETER_BASENAMES = new Set([
   "gitnexus.js",
 ]);
 const DEFAULT_PROCESS_CMDLINE_MAX_CHARS = 200;
+const SHELL_EXECUTABLES = new Set(["sh", "bash", "dash", "zsh", "ksh", "fish"]);
+const INLINE_CODE_OPTIONS = new Map([
+  ["node", new Set(["-e", "--eval", "-p", "--print"])],
+  ["bun", new Set(["-e", "--eval", "-p", "--print"])],
+  ["python", new Set(["-c"])],
+  ["python2", new Set(["-c"])],
+  ["python3", new Set(["-c"])],
+  ["ruby", new Set(["-e"])],
+  ["perl", new Set(["-e"])],
+  ["php", new Set(["-r"])],
+]);
 
 /**
  * Parse a NUL-separated /proc/<pid>/cmdline buffer into a display string (space-joined args).
@@ -177,12 +188,23 @@ export function parseArgv(raw) {
  * Format a process command line for human-facing output without flooding a
  * terminal with a launcher's embedded work-item brief.
  *
- * @param {string} cmdline
+ * @param {string | string[]} cmdline
  * @param {{ verbose?: boolean }} [opts]
  * @returns {string}
  */
 export function formatProcessCmdline(cmdline, opts = {}) {
-  const text = String(cmdline);
+  const argv = Array.isArray(cmdline)
+    ? cmdline.map(String)
+    : String(cmdline).split(/\s+/).filter(Boolean);
+  const inlinePayloadIndexes = findInlineCodePayloadIndexes(argv);
+  const text = argv
+    .map((arg, index) => {
+      if (inlinePayloadIndexes.has(index)) return "[inline command redacted]";
+      if (index > 0 && (isPromptPayloadArg(arg) || isStructuredPayloadArg(arg)))
+        return "[payload redacted]";
+      return arg;
+    })
+    .join(" ");
   if (opts.verbose || text.length <= DEFAULT_PROCESS_CMDLINE_MAX_CHARS)
     return text;
   return `${text.slice(0, DEFAULT_PROCESS_CMDLINE_MAX_CHARS - 1)}…`;
@@ -227,6 +249,63 @@ function isPromptPayloadArg(arg) {
 }
 
 /**
+ * Return argv positions that contain source text passed directly to an
+ * interpreter. That text is neither a process name nor safe diagnostic output:
+ * shell `-c` wrappers commonly carry complete ptool heredoc payloads there.
+ * The launched child remains independently visible in /proc with its own argv.
+ *
+ * @param {string[]} argv
+ * @returns {Set<number>}
+ */
+function findInlineCodePayloadIndexes(argv) {
+  const indexes = new Set();
+  if (argv.length < 2) return indexes;
+
+  const executable = argvBasename(argv[0]).toLowerCase();
+  if (SHELL_EXECUTABLES.has(executable)) {
+    for (let index = 1; index < argv.length; index += 1) {
+      const arg = argv[index];
+      if (arg === "--") break;
+      if (arg === "--command") {
+        if (index + 1 < argv.length) indexes.add(index + 1);
+        break;
+      }
+      if (arg.startsWith("--command=")) {
+        indexes.add(index);
+        break;
+      }
+      if (/^-[^-]*c[^-]*$/.test(arg)) {
+        if (index + 1 < argv.length) indexes.add(index + 1);
+        break;
+      }
+      if (["-o", "--option", "--rcfile", "--init-file"].includes(arg)) {
+        index += 1;
+        continue;
+      }
+      if (!arg.startsWith("-") || arg === "-") break;
+    }
+    return indexes;
+  }
+
+  const options = INLINE_CODE_OPTIONS.get(executable);
+  if (!options) return indexes;
+  for (let index = 1; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--") break;
+    if (options.has(arg)) {
+      if (index + 1 < argv.length) indexes.add(index + 1);
+      break;
+    }
+    if ([...options].some((option) => option.startsWith("--") && arg.startsWith(`${option}=`))) {
+      indexes.add(index);
+      break;
+    }
+    if (!arg.startsWith("-") || arg === "-") break;
+  }
+  return indexes;
+}
+
+/**
  * Remove agent prompt payloads and peers' structured (JSON) payloads from argv
  * before process matching. The executable and every real argument remain
  * eligible, so commands such as `qemu-system-x86_64 ... mac_hdd_ng.img` retain
@@ -239,9 +318,13 @@ function isPromptPayloadArg(arg) {
  * @returns {string[]}
  */
 export function getOperationalArgv(argv) {
+  const inlinePayloadIndexes = findInlineCodePayloadIndexes(argv);
   return argv.filter(
     (arg, index) =>
-      index === 0 || (!isPromptPayloadArg(arg) && !isStructuredPayloadArg(arg)),
+      index === 0 ||
+      (!inlinePayloadIndexes.has(index) &&
+        !isPromptPayloadArg(arg) &&
+        !isStructuredPayloadArg(arg)),
   );
 }
 
@@ -839,6 +922,47 @@ export function parseCgroupPath(raw) {
 }
 
 /**
+ * Assert the managed test's actual cgroup before measuring worker demand.
+ * Attribution alone is insufficient: test-files needs both the run group and
+ * the real inherited deadline to retain Vitest in its caller's bounded scope.
+ * A Node preload calls this in each fork, so a sibling scope cannot silently
+ * produce passing tests alongside parent-only memory observations.
+ * @param {{ env?: NodeJS.ProcessEnv | undefined; pid?: number | undefined; now?: number | undefined; procRoot?: string | undefined; readFile?: ((path: string, encoding: "utf8") => string) | undefined }} [opts]
+ *   `readFile` is a test seam; it is only ever called as `readFile(path, "utf8")`.
+ */
+export function assertManagedTestCgroup({
+  env = process.env,
+  pid = process.pid,
+  now = Date.now(),
+  procRoot = "/proc",
+  readFile = readFileSync,
+} = {}) {
+  const refuse = (reason) => {
+    throw new Error(`PAPERCUSP_TEST_CGROUP_CONTAINMENT: ${reason}`);
+  };
+  const runGroup = env.PAPERCUSP_TEST_RUN_GROUP?.trim();
+  const deadlineRaw = env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS;
+  const deadlineEpochMs = Number(deadlineRaw);
+  if (!runGroup) refuse("missing managed test run group");
+  if (!/^\d+$/.test(deadlineRaw ?? "") || !Number.isSafeInteger(deadlineEpochMs) || deadlineEpochMs <= now) {
+    refuse("missing, invalid or expired inherited task deadline");
+  }
+  const expected = env.PAPERCUSP_EXPECTED_TEST_CGROUP;
+  if (!expected || expected === "/" || !expected.startsWith("/") || path.posix.normalize(expected) !== expected) {
+    refuse("missing or invalid bounded parent cgroup");
+  }
+  let cgroupPath;
+  try {
+    cgroupPath = parseCgroupPath(readFile(path.join(procRoot, String(pid), "cgroup"), "utf8"));
+  } catch {
+    refuse(`unreadable cgroup for pid ${pid}`);
+  }
+  if (!cgroupPath) refuse(`unknown cgroup-v2 membership for pid ${pid}`);
+  if (cgroupPath !== expected) refuse(`pid ${pid} escaped ${expected} into ${cgroupPath}`);
+  return { pid, cgroupPath, runGroup, deadlineEpochMs };
+}
+
+/**
  * Parse `usage_usec <n>` out of a cgroup `cpu.stat` body. This counter is
  * MONOTONIC, which is what makes a two-sample delta a true rate even as
  * children spawn and exit between the samples.
@@ -1110,7 +1234,7 @@ async function main(argv) {
     }
     for (const row of tree.rows)
       console.log(
-        `${"  ".repeat(row.depth)}${row.pid}  ${formatProcessCmdline(row.cmdline, { verbose })}`,
+        `${"  ".repeat(row.depth)}${row.pid}  ${formatProcessCmdline(row.argv, { verbose })}`,
       );
     if (tree.truncated)
       console.log(`proc-guard: tree truncated (${tree.reason})`);
@@ -1202,7 +1326,7 @@ async function main(argv) {
     ? await sampleBusyMatches(matches, { sampleMs, budgetMs })
     : [];
   for (const [index, m] of matches.entries()) {
-    console.log(`  ${m.pid}  ${formatProcessCmdline(m.cmdline, { verbose })}`);
+    console.log(`  ${m.pid}  ${formatProcessCmdline(m.argv, { verbose })}`);
     if (identityMatches.some((identityMatch) => identityMatch.pid === m.pid)) {
       console.log(
         matchesOwnerIdentity(pattern, m)

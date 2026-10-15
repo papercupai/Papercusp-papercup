@@ -7,11 +7,11 @@
 
 import { pinModuleState } from "@papercusp/module-singleton";
 import { PostHog } from "posthog-node";
+import { envFlagOverride, platformModeOverride } from "./env-resolution";
 import { resolveTestOverrides } from "./test";
 import {
   ALL_FLAG_KEYS,
   FLAG_DEFAULTS,
-  FLAGS,
   type FlagKey,
   type FlagPayload,
   type FlagValues,
@@ -139,6 +139,13 @@ export interface FlagOverrideReadAttestation {
   cacheAgeMs: number | null;
   ttlMs: number;
   ttlRemainingMs: number;
+  /**
+   * Why the store load failed — `store-error` / `stale-cache-fallback` only, null
+   * otherwise. Without it a degraded read cannot say whether the store timed out,
+   * refused, or was forbidden by policy (WI-10006242: the unit-layer no-real-PG rail
+   * made every read in a unit test process degrade, and the warn could not say so).
+   */
+  loadError: string | null;
 }
 
 /** What this exact process resolved, through the same precedence path as getFlag(). */
@@ -275,6 +282,7 @@ function overrideReadAttestation(
   cacheKey: string,
   entry: OverrideCacheEntry | undefined,
   now: number,
+  loadError: string | null = null,
 ): FlagOverrideReadAttestation {
   const ttlMs = overrideCacheTtlMs();
   const ageMs = entry ? Math.max(0, now - entry.ts) : null;
@@ -287,7 +295,14 @@ function overrideReadAttestation(
     cacheAgeMs: ageMs,
     ttlMs,
     ttlRemainingMs: ageMs === null ? 0 : Math.max(0, ttlMs - ageMs),
+    loadError,
   };
+}
+
+/** One line naming a failed store load, for FlagOverrideReadAttestation.loadError. */
+function describeLoadError(err: unknown): string {
+  if (err instanceof Error) return `${err.name}: ${err.message}`;
+  return String(err);
 }
 
 function inspectOverrideReadWithoutLoading(
@@ -340,9 +355,10 @@ async function loadStoredOverridesWithAttestation(): Promise<StoredOverrideRead>
       flags,
       attestation: overrideReadAttestation("store-load", ck, entry, Date.now()),
     };
-  } catch {
+  } catch (err) {
     // Store unreachable OR too slow — serve the last good map for THIS scope (or
-    // none); never block flag evaluation on the override layer.
+    // none); never block flag evaluation on the override layer. The cause rides on
+    // the attestation so a caller that reports a degraded read can say WHY.
     const stale = overrideCache.get(ck);
     return {
       flags: stale?.flags ?? {},
@@ -351,6 +367,7 @@ async function loadStoredOverridesWithAttestation(): Promise<StoredOverrideRead>
         ck,
         stale,
         Date.now(),
+        describeLoadError(err),
       ),
     };
   }
@@ -447,10 +464,9 @@ export function getBackendConfig(): PostHogConfig | null {
  * The key is uppercased and `-` is converted to `_`.
  */
 function resolveEnvOverride(key: FlagKey): boolean | undefined {
-  const envKey = `PAPERCUSP_FLAG_${key.toUpperCase().replace(/-/g, "_")}`;
-  const raw = process.env[envKey];
-  if (raw === undefined) return undefined;
-  return raw === "1" || raw.toLowerCase() === "true";
+  // Single source of the env precedence (env-resolution.ts), shared with the
+  // after-the-fact resolution of a recorded test-run configuration snapshot (P-011).
+  return envFlagOverride(key, process.env);
 }
 
 /**
@@ -468,13 +484,7 @@ function resolveEnvOverride(key: FlagKey): boolean | undefined {
  * constant lands, gate the default on it instead of this env var.
  */
 function resolvePlatformModeOverride(key: FlagKey): boolean | undefined {
-  if (key !== FLAGS.PLATFORM_IMPROVEMENT_LOOPS) return undefined;
-  const raw = process.env.PAPERCUSP_PLATFORM_MODE;
-  if (raw === undefined) return undefined;
-  const v = raw.trim().toLowerCase();
-  if (v === "off" || v === "0" || v === "false") return false;
-  if (v === "on" || v === "1" || v === "true") return true;
-  return undefined;
+  return platformModeOverride(key, process.env);
 }
 
 /**

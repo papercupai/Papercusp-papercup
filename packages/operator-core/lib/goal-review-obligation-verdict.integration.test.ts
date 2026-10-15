@@ -17,7 +17,7 @@ import { seedPlan, cleanupPlans } from './agent-tools/plans/__tests__/_pg-tool-f
 import { deriveIndexFromContent } from './agent-tools/plans/derive-index';
 import { writePlanIndexRows } from './agent-tools/plans/plan-index-rows';
 import recordTool, { ideatePassRecordArgs } from './agent-tools/scout/ideate-pass-record';
-import { recordGoalPlacementTurnEnd } from './goal-placement-turn-receipts';
+import { readGoalHarness, recordGoalPlacementTurnEnd } from './goal-placement-turn-receipts';
 import { readVerbatimTail } from './turn-journal';
 import { createPgTelemetryStore } from './activity-pg-store';
 import { preflightExactPlanAdmission, type ExactPlanAdmission } from './agent-tools/plans/plan-admission-preflight';
@@ -82,6 +82,9 @@ async function record(disposition: 'existing-plans-sufficient' | 'plan-needed') 
       ? 'The existing plan covers documenting retries, but not reconciliation.'
       : 'The existing plan covers the goal outcome of documenting the retry contract.',
     ...(disposition === 'plan-needed' ? { uncoveredOutcome: 'Reconcile failed payments.' } : {}),
+    // P-003: a real coverage planRef, resolved against harness_plans by the live handler.
+    ...(disposition === 'existing-plans-sufficient'
+      ? { coverage: [{ need: 'retry contract', itemRefs: ['WI-fixture-1', 'WI-fixture-2', 'WI-fixture-3'], planRef: PLAN }] } : {}),
   } }), { isSuperuser: true, uiClientId: OWNER, workspaceId: WS, harnessSlug: 'papercusp',
     metadata: vi.fn(), log: vi.fn(), progress: vi.fn(), signal: new AbortController().signal,
     emit: vi.fn(async () => {}),
@@ -94,7 +97,9 @@ async function readAgenda(refusal: GoalLaunchRefusal | null = null, admission: '
     // Real mode/goal/portfolio/tick/authority/obligation reads. Unrelated admission
     // and final acceptance are controlled for review/budget cases. The canonical
     // admission cases below opt into the production preflight explicitly.
-    deps: { planSlugs: async () => [], ownerDirectives: async () => [], waitingOn: async () => [],
+    deps: { planSlugs: async () => [], ownerDirectives: async () => [], waitingOn: async () => [], 
+      fleetStaffing: async () => [],
+      strandedGoalWork: async (_ws: string, goalId: string) => ({ goalId, thresholdMs: 0, total: 0, refusedCount: 0, sample: [], truncatedByLimit: false }),
       ownerReport: async () => null,
       planAcceptance: async () => ({ satisfied: true, buildProvenance: { sha: null, version: 'fixture' } }),
       ...(admission === 'controlled-ready' ? { planAdmission: async () => ({
@@ -138,6 +143,7 @@ describe('native turn-end policy observation from canonical goal sources', () =>
         nativeSessionId: native.sessionId, sourceKind: 'codex' }, {
         current: async () => native,
         goalSubject: (ownerId, workspaceId) => defaultAgentObligationReaderDeps().goalSubject(workspaceId, ownerId),
+        goalHarness: readGoalHarness,
         tail: (source) => readVerbatimTail(source.filePath, source.sourceKind, 50),
         agenda: async () => readAgenda(), append: createPgTelemetryStore().append, now: Date.now,
       });

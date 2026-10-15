@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "P-008 native protected public HTTPS and visible pairing",
+  "command": [
+    "/Applications/Xcode-16.4.0.app/Contents/Developer/usr/bin/xcodebuild",
+    "test-without-building",
+    "-project",
+    "ios/Papercup.xcodeproj",
+    "-scheme",
+    "Papercup",
+    "-destination",
+    "platform=iOS Simulator,id=D80BA4DF-0C1D-40C2-A6D1-F681B98B8DCB",
+    "-derivedDataPath",
+    "ios/build/dd",
+    "-resultBundlePath",
+    "/Volumes/BuildDataNew/native-iphone/evidence-WI-10004735-public-https-20261014T1257Z/public-https-ui.xcresult",
+    "-only-testing:PapercupUITests/PairFlowUITests/testPublicHTTPSPairAndAuthorizedAttention"
+  ],
+  "startedAt": "2026-10-14T13:00:53.394331+00:00",
+  "finishedAt": "2026-10-14T13:02:05.138879+00:00",
+  "exitCode": 0,
+  "summary": "One maintained XCUITest passed with zero failures or skips. Actual iOS URLSession requests over public HTTPS verified protected health/workspaces/desktop mint routes return 404 and unauthenticated device heartbeat returns 401. The real app visibly pasted a fresh one-shot pairing payload and loaded authorized Inbox data from an isolated current-source operator through its temporary protected Cloudflare tunnel. No local forwarding route or controlled HTTP responder was used. Screenshot reviewed; 43 native artifact hashes and sizes verified locally. The temporary owned tunnel/DNS, processes, pairing input, private HOME and PostgreSQL data were removed, and the Mac VM lease was released. No prior passed native tests were rerun.",
+  "assertions": [
+    {
+      "id": "PapercupUITests/PairFlowUITests/testPublicHTTPSPairAndAuthorizedAttention",
+      "passed": true,
+      "evidence": "Retained public-https-ui-summary.json: 1 passed, 0 failed, 0 skipped; SHA256 83e308c2da9dbfe4ba28bb9ab8b9309f3cdb5a4fa18207f773150c96abfd62c2. The maintained test asserts actual public HTTP statuses and native authorized attention UI; exact screenshot retained."
+    }
+  ],
+  "workItemId": "WI-10004735",
+  "planSlug": "iphone-public-release-2026-08-11",
+  "spec": "AUTO-REQ-M-001-P-008@2",
+  "repository": "papercup-rust-mobile (canonical independent mobile repository)",
+  "sourceCommitAtExecution": "b264f57cbdaaafa0f7e2c7ca7f7e547b4a2275a8",
+  "sourceDirtyAtExecution": false,
+  "sourceFingerprint": "1038f28b436acd0361508fcfefa1fe8067c2bfac0faa728b5f317e5bed8bdacf",
+  "testPath": "ios/PapercupUITests/PairFlowUITests.swift",
+  "testSha256": "11c2f2edcc8e8b7453aa8f2ed5f1a740c37cd843df39450ff3919ae87171400a",
+  "runnerPath": "tools/ios-ci.py",
+  "runnerSha256": "5e27183cd91dfbf1d7b97642c280a5952202a77f0b60f393e6cc5b6715d91661",
+  "resultGuardPath": "tools/build-scripts/check-xctest-summary.py",
+  "resultGuardSha256": "8093276f7f5d3526ec173784dce32dea8242782d80cbcb9865ede684e2d1d898",
+  "toolchain": {
+    "xcode": "Xcode 16.4 Build 16F6",
+    "simulatorSDK": "18.5",
+    "simulatorRuntime": "iOS 18.6",
+    "device": "iPhone 16 Pro x86_64",
+    "simulatorUDID": "D80BA4DF-0C1D-40C2-A6D1-F681B98B8DCB"
+  },
+  "retainedEvidence": {
+    "verificationFile": ".papercusp/evidence/WI-10004735-public-https-20261014T1257Z/local-artifact-verification.json",
+    "archive": ".papercusp/evidence/WI-10004735-public-https-20261014T1257Z/native-artifacts.tar.gz",
+    "pathBase": "Operating account home directory; these retained evidence paths are outside the staging checkout.",
+    "archiveSha256": "688ba38ae78579e9cbdac7fe8b314053e43e6ea2a780fb6e54ad876ab1d4fec0",
+    "archiveBytes": 737280,
+    "verifiedArtifactCount": 43,
+    "integrityProcedure": "Verify archive SHA256, then read each declared result artifact directly from the tar and compare byte length and SHA256. This does not execute native tests.",
+    "resultPath": "result.json",
+    "resultSha256": "f8c13be9d2ac9f2ca24c49758ea20a7e94e0d29a04aeb85292da6d2443173b5e",
+    "summaryPath": "public-https-ui-summary.json",
+    "summarySha256": "83e308c2da9dbfe4ba28bb9ab8b9309f3cdb5a4fa18207f773150c96abfd62c2",
+    "nativeJobId": "0mv84bku37wnijppyo5",
+    "compileJobId": "0mv848gld1v5z6pp185",
+    "fixtureJobId": "0mv840t8118dm5vt1hc",
+    "retentionJobId": "0mv84egv7hia0jem0cn",
+    "jobs": "These jobs are terminal exit0; do not rerun."
+  },
+  "screenshots": [
+    {
+      "label": "public-https-authorized-attention",
+      "file": "9521967D-CD00-455A-8FB0-01C18F58705F.png",
+      "sha256": "1daf8dd57d10058c9eb41848dc61a7bc8dbb8b2554e419645a5da2f1c0797bed",
+      "review": "The actual paired disposable workspace renders Inbox attention data. Its paused private release pipeline card is fixture content; this screenshot does not establish the live release gate verdict."
+    }
+  ],
+  "fixture": {
+    "sourceSha256": "813764d519fc131f5f477ab65a0206ee743c65d9b0add2196abcc472304044b9",
+    "dnsPublishedAt": "2026-10-14T12:53:43.703Z",
+    "boundary": {
+      "/api/health": 404,
+      "/api/workspaces": 404,
+      "/api/device/desktop/mint-pair-token": 404,
+      "/api/device/heartbeat": 401
+    },
+    "cleanupVerified": true,
+    "finishedAt": "2026-10-14T13:03:31.431Z"
+  },
+  "disclosedGaps": [
+    "This temporary hostname does not repair or certify the existing production hostname/tunnel configuration on EI-25946131547854574.",
+    "No supported hosted-account, entitlement or paid-mode acceptance claim is made.",
+    "This is a Mac VM simulator public HTTPS result; it does not establish physical cellular radio or APNs delivery.",
+    "No signed IPA, App Store, TestFlight or final shipment acceptance claim is made.",
+    "Other P-008 R-2 requirements and P-016 BYOC target/custody dependencies remain open.",
+    "The original earlier generic fetch failure's network cause remains unknown; the new retained DNS diagnostics do not retroactively prove it."
+  ]
+}

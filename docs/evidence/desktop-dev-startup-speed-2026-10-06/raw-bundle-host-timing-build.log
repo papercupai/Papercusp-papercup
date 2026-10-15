@@ -1,0 +1,47 @@
+load_start 124.73 119.75 107.05 59/49550 932474
+    1.4 → restricted-hold gate: snapshotted 15/15 last-known-good artifact(s)
+    1.4 → esbuild-bundling bin/hono-host.ts → ~/papercupai-workspace/papercusp/apps/operator/dist-devhost/hono-host.mjs (plain-node host entry, no tsx loader)
+   47.7 
+   47.7   dist-devhost/hono-host.mjs.tmp.932852  65.9mb ⚠️
+   47.7 
+   47.7 ⚡ Done in 4857ms
+   47.7 ✓ bundled CLI-entry guard check passed: no repo-owned raw ESM self-exec guard reached the bundle graph.
+   47.7 ✓ bundled top-level-await check passed: no repo-owned bundled input uses top-level await.
+   47.7 BUNDLE_FREE_REFS_RESULT status=clean selection=changed-since-baseline inputs=6562 checked=0 findings=0 unparsed=0 ms=1
+   47.7 → ascii-escape: 13,332 non-ASCII chars escaped (65.9 MB → 66.0 MB on disk; the win is in-memory: the source string stays one-byte in every host process)
+   47.7 ✓ bundled: 66M ~/papercupai-workspace/papercusp/apps/operator/dist-devhost/hono-host.mjs
+   47.7 ✓ bundled systemd scope environment runner beside the host entry
+   47.8 ✓ bundled pot-git ext bridge beside the host entry
+   47.9 → bundling @papercusp/harness blueprints → ~/papercupai-workspace/papercusp/apps/operator/dist-devhost/blueprints
+   48.1     ✓ bundled @papercusp/harness blueprints include base/blueprint.yaml
+   48.1 → bundling @papercusp/locks DDL → ~/papercupai-workspace/papercusp/apps/operator/dist-devhost/sql
+   48.3     ✓ bundled @papercusp/locks DDL matches the tree (highest migration 931, 33 files)
+   75.0 
+   75.0   dist-devhost/event-loop-sentinel.worker.mjs.new.932852.mjs  30.4kb
+   75.0 
+   75.0 ⚡ Done in 21ms
+   75.0 
+   75.0   dist-devhost/snapshot-fold.worker.mjs.new.932852.mjs  27.2kb
+   75.0 
+   75.0 ⚡ Done in 32ms
+   75.0 
+   75.0   dist-devhost/mutation-probe-closure.worker.mjs.new.932852.mjs  18.2kb
+   75.0 
+   75.0 ⚡ Done in 16ms
+   75.0 
+   75.0   dist-devhost/admission-jobs.worker.mjs.new.932852.mjs  72.6kb
+   75.0 
+   75.0 ⚡ Done in 39ms
+   75.0 
+   75.0   dist-devhost/precision-bench-worker.mjs.new.932852.mjs  430.8kb
+   75.0 
+   75.0 ⚡ Done in 63ms
+   99.5 
+   99.5   dist-devhost/spawner-sidecar.mjs.new.932852  63.3mb ⚠️
+   99.5 
+   99.5 ⚡ Done in 4828ms
+   99.5 ✓ bundled CLI-entry guard check passed: no repo-owned raw ESM self-exec guard reached the bundle graph.
+   99.5 ✓ bundled top-level-await check passed: no repo-owned bundled input uses top-level await.
+   99.5 → ascii-escape: 12,970 non-ASCII chars escaped (63.3 MB → 63.4 MB on disk; the win is in-memory: the source string stays one-byte in every host process)
+  105.4 ✓ restricted-hold gate: 9301 bundle inputs checked, none is a held restricted write (D-012)
+rc=0 total=105.760375 load_end 121.86 120.01 108.54 83/49644 1012715

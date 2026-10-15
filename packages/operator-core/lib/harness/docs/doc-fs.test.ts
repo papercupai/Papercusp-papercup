@@ -4,10 +4,10 @@
  *   cd packages/operator-core && npx vitest run lib/harness/docs/doc-fs.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve as resolvePath } from 'node:path';
-import { listDocBodies, safeJoinUnderRoot, readDocBody, chooseDefaultDoc } from './doc-fs';
+import { listDocBodies, safeJoinUnderRoot, readDocBody, chooseDefaultDoc, docFilePath, docIdForRepoPath } from './doc-fs';
 
 describe('safeJoinUnderRoot (traversal guard)', () => {
   const root = '/srv/harness/docs';
@@ -98,5 +98,22 @@ describe('listDocBodies / readDocBody (real fs)', () => {
 
   it('returns null for a traversal attempt rather than reading outside the root', async () => {
     expect(await readDocBody(root, '../../../etc/passwd')).toBeNull();
+  });
+  it('namespaces a second file-authoritative corpus without copying or hiding the primary', async () => {
+    const publicRoot = join(root, '.public-source');
+    await mkdir(publicRoot);
+    await writeFile(join(publicRoot, 'quickstart.mdx'), '# Public quickstart');
+    const roots = { docsRoot: root, sources: { 'public-manual': publicRoot } };
+    expect(await listDocBodies(roots)).toEqual(['guide/intro.mdx', 'index.md', 'public-manual/quickstart.mdx']);
+    expect(await readDocBody(roots, 'public-manual/quickstart.mdx')).toBe('# Public quickstart');
+    expect(await readDocBody(roots, 'index.md')).toBe('# Index');
+    expect(docFilePath(roots, 'public-manual/quickstart.mdx')).toBe(join(publicRoot, 'quickstart.mdx'));
+    expect(docIdForRepoPath(root, roots, '.public-source/quickstart.mdx')).toBe('public-manual/quickstart.mdx');
+    expect(docIdForRepoPath(root, roots, 'index.md')).toBe('index.md');
+    expect(await readDocBody(roots, 'public-manual/../index.md')).toBeNull();
+    expect(await readDocBody(roots, 'constructor/index.md')).toBeNull();
+    await symlink(join(root, 'index.md'), join(publicRoot, 'escape.mdx'));
+    expect(await readDocBody(roots, 'public-manual/escape.mdx')).toBeNull();
+    await rm(publicRoot, { recursive: true, force: true });
   });
 });

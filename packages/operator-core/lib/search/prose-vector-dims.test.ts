@@ -328,7 +328,7 @@ describe('the prose column width contract', () => {
   it('keeps Personal Vault on its dedicated local-only refill path', () => {
     const key = `${PERSONAL_EMBED_TARGET.table}.${PERSONAL_EMBED_TARGET.embedCol}`;
     expect(TARGETS.some((t) => `${t.table}.${t.embedCol}` === key)).toBe(false);
-    expect(key).toBe('harness_shared.personal_documents.embedding');
+    expect(key).toBe('harness_shared.documents.embedding');
   });
 
   /**

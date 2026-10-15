@@ -59,4 +59,64 @@ describe('sessions:ingest-gate-event', () => {
     const res = await callTool({ sessionId: 's1', client: 'claude', kind: 'cleared', refId: 'ref-missing' });
     expect(res.data.state).toBe('not_found');
   });
+
+  describe("kind:'suppressed_ask' admission (WI-10005039)", () => {
+    const DECIDE_BY = '2026-10-09T12:00:00.000Z';
+    const valid = {
+      sessionId: 's1',
+      client: 'claude',
+      kind: 'suppressed_ask',
+      refId: 'sup-1',
+      question: 'Ship the migration now, or hold for the owner window?',
+      decideBy: DECIDE_BY,
+      defaultIfUnanswered: 'ship it at the deadline',
+    };
+
+    it('admits a complete suppressed ask as source:agent with a parsed decideBy Date + the default', async () => {
+      openOrTouchGate.mockResolvedValue({ id: '77', outcome: 'opened' });
+      const res = await callTool(valid);
+      expect(res.data).toEqual({ ok: true, gateId: '77', state: 'opened' });
+      expect(openOrTouchGate).toHaveBeenCalledTimes(1);
+      const arg = openOrTouchGate.mock.calls[0]![0] as Record<string, unknown>;
+      expect(arg).toMatchObject({
+        kind: 'suppressed_ask',
+        source: 'agent',
+        refId: 'sup-1',
+        question: valid.question,
+        defaultIfUnanswered: 'ship it at the deadline',
+      });
+      expect(arg.decideBy).toBeInstanceOf(Date);
+      expect((arg.decideBy as Date).toISOString()).toBe(DECIDE_BY);
+    });
+
+    it.each([
+      ['decideBy', { decideBy: undefined }],
+      ['defaultIfUnanswered', { defaultIfUnanswered: undefined }],
+      ['question', { question: undefined }],
+    ])('REFUSES a suppressed ask missing %s, and opens no gate', async (field, over) => {
+      const res = await callTool({ ...valid, ...over });
+      expect(res.data).toMatchObject({ ok: false, gateId: null, state: 'refused' });
+      expect(String(res.data.reason)).toContain(field);
+      expect(openOrTouchGate).not.toHaveBeenCalled();
+    });
+
+    it('REFUSES an unparseable decideBy rather than persisting an Invalid Date', async () => {
+      const res = await callTool({ ...valid, decideBy: 'next tuesday-ish' });
+      expect(res.data).toMatchObject({ ok: false, state: 'refused' });
+      expect(String(res.data.reason)).toContain('not a parseable ISO-8601');
+      expect(openOrTouchGate).not.toHaveBeenCalled();
+    });
+
+    it('CONTROL: a plain ask needs neither deadline nor default, and is still source:hook', async () => {
+      // If the suppressed_ask requirements ever leaked onto the plain ask path this would refuse,
+      // and the refusals above would be indistinguishable from a handler that refuses everything.
+      openOrTouchGate.mockResolvedValue({ id: '78', outcome: 'opened' });
+      const res = await callTool({ sessionId: 's1', client: 'claude', kind: 'ask', refId: 'plain-1', question: 'Q?' });
+      expect(res.data).toMatchObject({ ok: true, state: 'opened' });
+      const arg = openOrTouchGate.mock.calls[0]![0] as Record<string, unknown>;
+      expect(arg.source).toBe('hook');
+      expect(arg.decideBy).toBeNull();
+      expect(arg.defaultIfUnanswered).toBeUndefined();
+    });
+  });
 });

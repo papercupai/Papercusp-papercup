@@ -169,8 +169,8 @@ export async function runScoutRevisionCycle(
         newBody: null,
         value: current,
       }));
-      if (read.kind === 'busy') {
-        outcomes.push({ ...base, status: 'error', costUsd: 0, note: 'plan busy (concurrent writer) on read' });
+      if (read.kind !== 'applied') {
+        outcomes.push({ ...base, status: 'error', costUsd: 0, note: read.kind === 'refused' ? `${read.value.code}: ${read.value.message}` : 'plan busy (concurrent writer) on read' });
         continue;
       }
       const current = read.value;
@@ -210,8 +210,8 @@ export async function runScoutRevisionCycle(
         if (cur === null) return { newBody: null, value: 'missing' as RevisionStatus };
         return { newBody, value: 'revised' as RevisionStatus };
       });
-      if (write.kind === 'busy') {
-        outcomes.push({ ...base, status: 'error', costUsd: cost, note: 'plan busy (concurrent writer) on write' });
+      if (write.kind !== 'applied') {
+        outcomes.push({ ...base, status: 'error', costUsd: cost, note: write.kind === 'refused' ? `${write.value.code}: ${write.value.message}` : 'plan busy (concurrent writer) on write' });
         continue;
       }
       outcomes.push({

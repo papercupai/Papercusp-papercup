@@ -112,22 +112,31 @@ export async function buildHiveRekeyBootDeps(opts: {
   // Steps 2-4 are fail-closed for ambiguity. POT_REKEY is default-ON, so a transient PG /
   // identity / keychain failure cannot mean "plaintext is allowed". The two explicit null
   // paths are the only safe off-paths: flag OFF, or a definitive non-Hive lookup.
+  // seed-57-drop diagnostic (env-gated, off by default): the gate keys on the
+  // workspace-resolved potHomeSlug — a fresh packaged install booting under the
+  // 'default' workspace while the hive lives in 'papercusp-workspace' resolves null →
+  // NO gate → encrypted content never decrypts → only plaintext rows project (the 57).
+  // Set PAPERCUSP_EPOCH_BOOT_DEBUG=1 to dump the exact branch to stderr/serve.log.
+  const dbg = process.env.PAPERCUSP_EPOCH_BOOT_DEBUG
+    ? (msg: string, o?: unknown) => console.error('[epoch-boot]', msg, o ?? '')
+    : () => {};
+  // 2. The re-key applies only to a hive harness. This lookup is its OWN fail-closed phase:
+  //    when it throws, NO Hive has been confirmed yet, so labelling the failure "compose
+  //    confirmed Hive dependencies" sent readers after the wrong step (WI-6554700010008455:
+  //    an integration test's live-PG refusal inside the registry read was diagnosed as a
+  //    compose-step fault).
+  let potHomeSlug: string | null;
   try {
-    // seed-57-drop diagnostic (env-gated, off by default): the gate keys on the
-    // workspace-resolved potHomeSlug — a fresh packaged install booting under the
-    // 'default' workspace while the hive lives in 'papercusp-workspace' resolves null →
-    // NO gate → encrypted content never decrypts → only plaintext rows project (the 57).
-    // Set PAPERCUSP_EPOCH_BOOT_DEBUG=1 to dump the exact branch to stderr/serve.log.
-    const dbg = process.env.PAPERCUSP_EPOCH_BOOT_DEBUG
-      ? (msg: string, o?: unknown) => console.error('[epoch-boot]', msg, o ?? '')
-      : () => {};
-    // 2. The re-key applies only to a hive harness.
-    const potHomeSlug = await potHomeSlugForHarness(opts.workspaceId, opts.harnessSlug);
-    dbg('resolved', { workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, potHomeSlug });
-    if (!potHomeSlug) {
-      dbg('GATE NOT BUILT: potHomeSlugForHarness → null (harness not a registered hive in this workspace)');
-      return null;
-    }
+    potHomeSlug = await potHomeSlugForHarness(opts.workspaceId, opts.harnessSlug);
+  } catch (e) {
+    throwRekeyBootUnavailable(opts, 'resolve Hive scope', e);
+  }
+  dbg('resolved', { workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, potHomeSlug });
+  if (!potHomeSlug) {
+    dbg('GATE NOT BUILT: potHomeSlugForHarness → null (harness not a registered hive in this workspace)');
+    return null;
+  }
+  try {
     // WI-3232 (offline pot): a BUNDLED seed epoch key is an OFFLINE key source needing NO
     // device identity / PG-wrapped row. Attached (as the chain's FALLBACK) whenever a seed
     // ships this hive's key, so a fresh NO-ADMISSION install decrypts the restored corestore
@@ -164,8 +173,16 @@ export async function buildHiveRekeyBootDeps(opts: {
       // per-boot regenerate). Record what the epoch tier ACTUALLY resolved + which
       // keychain tier(s) hold the id, so a mismatch is diagnosable from boot-history.
       try {
-        const { keychainProbeTiers } = await import('../../identity/keychain');
-        const tiers = await keychainProbeTiers(localDevice.keychainId);
+        // Cached per keychainId (WI-10004975): this diagnostic used to re-spawn secret-tool
+        // per harness on every rekey refresh — ~34% of a 13 GB bg-host's spawn samples.
+        const [{ keychainProbeTiersCached }, { installKeychainSidecarExec }] = await Promise.all([
+          import('../../identity/keychain'),
+          // Host-side wiring of keychain's secret-tool seam: keychain.ts itself must not
+          // import the sidecar module — it sits inside a bundled runtime worker's graph.
+          import('../../fleet/keychain-sidecar-exec'),
+        ]);
+        installKeychainSidecarExec();
+        const tiers = await keychainProbeTiersCached(localDevice.keychainId);
         recordBootEvent(
           opts.workspaceId,
           opts.harnessSlug,

@@ -1,0 +1,245 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "D-047 exact hosted tutorial artifact, full nine-case acceptance",
+  "plan": "cloud-app-live-tutorial-2026-10-01",
+  "workItem": "WI-10007170",
+  "layerWorkItem": "WI-10007744",
+  "decision": "D-047",
+  "activationAudit": {
+    "sequence": 29,
+    "revision": 137,
+    "contentHash": "617585b29f3cb69a7014b1ba09ab0b2c5878d4af03c5958471ea9dec772b5b25",
+    "mapping": "M-038"
+  },
+  "framework": "playwright",
+  "testFile": "e2e/portal-product-tutorial-served.spec.ts",
+  "startedAt": "2026-10-11T10:37:38.380Z",
+  "finishedAt": "2026-10-11T10:41:25.150Z",
+  "exitCode": 0,
+  "passed": 9,
+  "failed": 0,
+  "skipped": 0,
+  "retries": 0,
+  "admission": "WorkOS TEST",
+  "origin": "https://localhost:4432",
+  "summary": "The actual isolated hosted artifact passed real narration and answer replay, both authorized-workspace catalogue states, two persisted non-Cloud preference tasks including Tab/arrow traversal at 200 percent text, preassigned-account entry, real current-lesson Help, Billing Help/resume, and new-account entry. This is private exact-artifact acceptance, not production shipment.",
+  "source": {
+    "coreCommit": "9d60d682b3e67e78074e2b842aeee43d2c472b8e",
+    "portalCommit": "0e88e2e67bb9ff2e214bc74c95320dc39af65da7",
+    "coreRoot": "/dev/shm/pcv/papercusp-lint-as-committed-9d60d682b3-DFgZeU",
+    "portalRoot": "/dev/shm/pcv/papercusp-lint-as-committed-0e88e2e67b-2lSWTE",
+    "manifest": {
+      "path": "${PAPERCUSP_USER_HOME}/.papercusp/launch-context/tutorial-candidate-20261011T1024.manifest.json",
+      "sha256": "3750b0b50b335b07c3fe118ba2d5608322f851d0b6b28cd160ab27dc81d1c866"
+    },
+    "coreInputs": [
+      { "path": "packages/operator-core/lib/onboarding/product-tutorial-lesson.ts", "sha256": "b91a3ea0338f77ad37f990f63cb8e5f7406dda731373e457684a471841a51ea4" },
+      { "path": "packages/operator-ui/src/onboarding/product-tutorial.tsx", "sha256": "cd741196a73abd62f1b5f57108524b7fea0455045657891ceeb035a4a97bf512" },
+      { "path": "packages/operator-ui/src/browser-telemetry.tsx", "sha256": "02273e39a12546a75e2c5a8081e5f10a5a093cbb681f84d5cbcf2b36ead18cb0" }
+    ],
+    "portalInputs": [
+      { "path": "packages/ui/src/shell.tsx", "sha256": "0477784fbbae1dc88523f309b926104d752d9ff3f462ac6c799bbe99a370e470" },
+      { "path": "packages/ui/src/auth.tsx", "sha256": "7aef72afb0a431396db5f004bb55f10a19f664e0f948434fc7a61c05cbeefaa4" },
+      { "path": "packages/ui/src/shell-model.ts", "sha256": "92bb9a49f04ae9da8c27299e60afb316997a18efde6042910a41256d2fcc6a6f" },
+      { "path": "app/tokens.css", "sha256": "956a7e727acee15f2bfcff0d58eb3288bf5f4ee7da3ec2692a4499a7c421b9b6" },
+      { "path": "app/globals.css", "sha256": "27442a1d1d012f7fc945d0bed94f821ce463c2fc64eff10869186baf654c5548" },
+      { "path": "playwright.config.ts", "sha256": "7f282f66b2706f5f2cbe4f13ec4bda1059f506bc351f0db6af5e63d205710887" },
+      { "path": "e2e/portal-product-tutorial-served.spec.ts", "sha256": "332d9ca73db460eb3b6312bee9e5fd188511508b1de14b1d2623d77ddb114cc8" },
+      { "path": "e2e/served-artifact.ts", "sha256": "d45a3504255538a49ea335e4ef366713d0a61a568b901b889ac0fbffbb8f750d" },
+      { "path": "e2e/hosted-test-user.ts", "sha256": "ab2c4f7c2b30e26b795db1fc28f122ac16952fdfd3242c92351868a2af9c4480" },
+      { "path": "e2e/guide-write-observer.ts", "sha256": "31fb6d5344a6fea09fef844419d8a03baa55cba30842f3e74b83bfff3354a717" },
+      { "path": "e2e/guide-destination-observer.ts", "sha256": "256392f7759cc1694497b34fe7c451e6813f7569f296d29c3197facc0ec3ea2a" }
+    ]
+  },
+  "verifier": {
+    "root": "/dev/shm/pcv/tutorial-verifier-0e88-9d60-20261011T1024",
+    "receipt": "/dev/shm/tutorial-verifier-0e88-9d60-20261011T1024.receipt.json",
+    "receiptSha256": "3c95b844aba2fb825b143c626194f6563334e401c57dc29b6af16dd4849da32e",
+    "schemaVersion": "verifier-source-v1",
+    "sourceCommit": "0e88e2e67bb9ff2e214bc74c95320dc39af65da7",
+    "archiveFileEntries": 587,
+    "testedInputEntries": 11,
+    "recoveryCustodyVerification": "All eleven tested input hashes match the archive; all three core and eleven Portal manifest inputs match the retained source roots. Recovery did not replay any settled test."
+  },
+  "artifact": {
+    "buildId": "1DHsq9zazhmCtWqHAHyaP",
+    "release": "/dev/shm/tutorial-candidate-runtime-0e88-9d60-20261011T1031/releases/1DHsq9zazhmCtWqHAHyaP-20261011103425643-4056354-aa8048b0",
+    "releaseMetadata": {
+      "schemaVersion": 2,
+      "buildId": "1DHsq9zazhmCtWqHAHyaP",
+      "release": "1DHsq9zazhmCtWqHAHyaP-20261011103425643-4056354-aa8048b0",
+      "sourceRoot": "/dev/shm/pcv/papercusp-lint-as-committed-0e88e2e67b-2lSWTE",
+      "publishedAt": "2026-10-11T10:34:25.643Z",
+      "sourceRootDigest": "37e01dacde909d62046081e9579874dc859477aead6195c8cb3910fa70c7a5a0"
+    }
+  },
+  "ledger": {
+    "id": 21055793,
+    "status": "pass",
+    "source": "local",
+    "workspace": "papercusp-workspace",
+    "harness": "papercusp",
+    "runGroup": "tutorial-full-served-0e88-9d60-20261011T1041",
+    "recordedCommitSha": null,
+    "recordedRoot": null,
+    "recordedWorktreeDirty": true,
+    "executionRoot": "/dev/shm/pcv/tutorial-verifier-0e88-9d60-20261011T1024",
+    "qualification": "Archive verifier run recorded without Git identity. This row is not clean-committed ledger evidence. Retained source, verifier inputs, release metadata and exact test log establish separate custody; do not rewrite, re-register or replay it to change its recorded lineage."
+  },
+  "passedCaseTitles": [
+    "served account-first product guide > real full-product lesson narration and answer replay stop without capture or progress writes",
+    "served account-first product guide > real catalogue destinations and recovery with authorized workspace=false",
+    "served account-first product guide > real catalogue destinations and recovery with authorized workspace=true",
+    "served account-first product guide > a real hosted non-Cloud preference task saves and survives reload with narrow enlarged text, reduced motion and keyboard activation",
+    "served account-first product guide > a real hosted non-Cloud preference task saves and survives reload using only Tab and arrow traversal at 200 percent text",
+    "served account-first product guide > a hosted account with a preassigned authorized workspace enters the guide before domain bootstrap",
+    "served account-first product guide > an explicit current-lesson question receives a real hosted answer without changing progress",
+    "served account-first product guide > the real Billing destination retains contextual guide Help and resume without billing writes",
+    "served account-first product guide > new hosted account persists guide and opens the real account panel with contextual Help"
+  ],
+  "rawEvidence": [
+    { "path": "/dev/shm/tutorial-full-served-0e88-9d60-20261011T1041.log", "sha256": "f306b5a51e77820b2d417e5ee17fac9da2a2ee64cc5f88d92b8481c579bddf0a" },
+    { "path": "/dev/shm/tutorial-full-served-0e88-9d60-20261011T1041.receipts.jsonl", "sha256": "978ed93ec1c2712c714afc261be676926d58a5780670049c07d93e7ecc3005ac" }
+  ],
+  "sourceCustodyRecovery": {
+    "schemaVersion": 1,
+    "workItem": "EI-25707158668505432",
+    "observedAt": "2026-10-11T18:16:36Z",
+    "originalSourceRoots": "Both original recorded roots were absent at the 18:04 custody preflight. The original source and artifact records above remain historical and unchanged.",
+    "restoredCoreRoot": "/dev/shm/tutorial-candidate-runtime-0e88-9d60-20261011T1031/sources/papercusp-lint-as-committed-9d60d682b3-F4Qe2B",
+    "restoredPortalRoot": "/dev/shm/tutorial-candidate-runtime-0e88-9d60-20261011T1031/sources/papercusp-lint-as-committed-0e88e2e67b-02CSKO",
+    "completePortalFingerprint": {
+      "procedure": "Remap the restored Portal workspace links to retained core9d60 with maintained remapRetainedWorkspaceLinks; copy the existing exact release's public docs through copyPublicDocsBundle without rebuilding. Compute the maintained fingerprintReleaseSource rootManifest, normalizing only restored core/Portal symlink targets to their recorded original path geometry.",
+      "remappedCoreLinks": 299,
+      "rootRecords": 493,
+      "publicDocsRecords": 62,
+      "restoredRootDigest": "47dc19c350c62de08f2981f91c1ab75312eb9a9ff4561f6a4077dcbed4b362dc",
+      "originalGeometryDigest": "37e01dacde909d62046081e9579874dc859477aead6195c8cb3910fa70c7a5a0",
+      "matchesOriginalArtifactSourceRootDigest": true,
+      "scope": "Complete Portal root-local content matches under documented path relocation. This does not assert equality of out-of-root dependency fingerprints or restore original directory identity."
+    },
+    "restoredVerifier": {
+      "root": "/dev/shm/tutorial-candidate-runtime-0e88-9d60-20261011T1031/sources/tutorial-verifier-0e88-9d60-recovered-20261011T1828",
+      "procedure": "Maintained prepareVerifierSource from the restored original Portal commit, followed by verifyVerifierSource against the original receipt. Every receipt field and all 587 archived file records match. No test was run.",
+      "filesMatched": 587,
+      "recoveryReceipt": "/tmp/tutorial-d047-verifier-source-recovery-20261011T1828.json",
+      "log": "/tmp/tutorial-d047-verifier-source-recovery-20261011T1828.log"
+    },
+    "dependencyPreflight": {
+      "observedAt": "2026-10-12T01:23:50.878Z",
+      "workItem": "WI-10007170",
+      "receipt": "/tmp/tutorial-d047-restored-custody-preflight-20261012T0124.json",
+      "receiptSha256": "a3b0b1fb1dd615ad4480df0985eaf04cfd37a3a98ab97b6e6c129f02e4ec58d3",
+      "log": "/tmp/tutorial-d047-restored-custody-preflight-20261012T0124.log",
+      "logSha256": "6252205be9cf2b5ab3a3c162d3c6c2b5d854c68bbef7f9f90f517b7bac8ec166",
+      "procedure": "Recover the original verifier preparation command from rollout 01a12a77 at 2026-10-11T10:24:40.541Z. Reuse maintained linkNodeModulesShadow from the restored Portal root, then verifyVerifierSource with runtimeArtifacts:true and assertTutorialSourceCustody with an explicit restored sourceRoot in a transient metadata view. No archived source or release metadata is edited.",
+      "result": "All 587 archived file records remain verified. Four consumed core imports resolve inside retained core 9d60 and match the restored Portal's consumed bytes; all seven Portal paths pass the maintained custody assertion. The dependency shadow reports 815 entries, seven remapped workspaces and zero fallbacks.",
+      "historicalMetadataSha256": "c10f542d98fc5b0fb749acbbe41642daf2e0a4b848648eb6c6773aca9ffdfc18",
+      "historicalSourceRootExists": false,
+      "testsRun": 0,
+      "modelCalls": 0,
+      "qualification": "Current retained source equality under documented relocation only. The original release sourceRoot remains absent. This does not establish historical out-of-root dependency equality, restore original directory identity, pass an unmodified served journey's historical sourceRoot lookup, renew runtime acceptance or prove shipment. The compiled artifact and prior test lineage remain unchanged."
+    },
+    "fixtureRelocationSupport": {
+      "observedAt": "2026-10-12T03:13:00Z",
+      "workItems": ["WI-10007170", "WI-10007744"],
+      "surface": "Portal e2e/served-artifact.ts assertTutorialSourceCustody",
+      "configuration": "Set PORTAL_TUTORIAL_SOURCE_CUSTODY to this evidence document for a new served journey. The fixture attaches tutorial-source-custody separately from the original release metadata.",
+      "procedure": "Validate the evidence document's buildId, release, publishedAt, sourceRoot and sourceRootDigest against the captured immutable release. Require original sourceRoot to remain absent. Reuse fingerprintReleaseSource on restoredPortalRoot, normalize only declared restored Portal/core symlink targets to original path geometry, compare the complete root-local digest with the original sourceRootDigest, then compare all four consumed imports and seven Portal paths with the fixture.",
+      "regression": {
+        "path": "tests/served-artifact.test.ts",
+        "log": "/tmp/tutorial-source-custody-relocation-20261012T0313.log",
+        "result": "Complete conventional Vitest suite passed 21 tests with zero skips, including successful relocation without metadata mutation, refusal of another build identity, added root-local source, changed consumed fixture source and a reappearing original path.",
+        "scope": "Working-tree fixture repair. Clean committed verifier and hosted browser acceptance are pending."
+      },
+      "exactArtifactPreflight": {
+        "log": "/tmp/tutorial-source-custody-relocation-d047-20261012T0313.log",
+        "result": "The maintained helper verifies originalGeometryDigest 37e01dacde909d62046081e9579874dc859477aead6195c8cb3910fa70c7a5a0 and current restoredRootDigest 47dc19c350c62de08f2981f91c1ab75312eb9a9ff4561f6a4077dcbed4b362dc against the retained verifier. Historical metadata remains byte-identical SHA256 c10f542d98fc5b0fb749acbbe41642daf2e0a4b848648eb6c6773aca9ffdfc18. No browser case or model call ran."
+      },
+      "qualification": "Explicit current source equality under relocation. Historical source paths and external dependency equality are not restored or claimed; original artifact, metadata and prior test lineage are unchanged. New fixture source must retain its own lineage."
+    },
+    "procedure": "Maintained lint-as-committed --materialize-only at the original full core and Portal commits, with --retain-for set to the existing exact release. verifyCommittedWorkRoot checked each commit, all required manifest paths and the exact dependent artifact hold; every manifest input SHA256 matched and both Git trees were clean.",
+    "taskId": "0mv456110481ijyrlpq",
+    "log": "/tmp/tutorial-d047-source-rematerialize-20261011T1817.log",
+    "result": "Source-only restoration completed with exit 0. No artifact rebuild or test replay occurred. The existing .papercusp-release.json exactly matches the original releaseMetadata record above.",
+    "limits": "This restores retained committed inputs for subsequent work; it does not identify the historical deletion actor, reproduce the original checkout identity, prove current runtime acceptance, or establish shipment. The deletion cause remains open on the owned work item.",
+    "scratchCleanupGuard": {
+      "observedAt": "2026-10-11T18:48:22Z",
+      "rootCause": "The generic age-only cleanup invoked by test startup bypassed the maintained committed-source collector and its dependent-artifact holds. Verifier source receipts were also ignored.",
+      "historicalAttribution": "The regression proves this cleanup can delete retained sources. It does not identify the process that deleted the original candidate directories.",
+      "fix": "Leave the existing committed-source namespace and verifier-source directories to their maintained custody mechanisms. Preserve clones before their owner marker is written; continue collecting expired ordinary scratch and symlinks.",
+      "source": {
+        "path": "libs/test-config/src/hermetic-tmpdir.ts",
+        "sha256": "2eeaf35cc427e9a98c06819f60e4f424371baf807c4ebb76be5fef34284b0c12"
+      },
+      "regression": {
+        "path": "libs/test-config/src/hermetic-tmpdir.test.ts",
+        "sha256": "25945aa85d71f755948f4d45aaa2e9ac271bed0377722b13b6c69c894cfa5ab6"
+      },
+      "before": {
+        "log": "/tmp/tutorial-custody-sweep-before-20261011T1841.log",
+        "sha256": "61ecc5f0610c352cbc394566783d610dddea01f6cc7fe1eb9054c5080de1bebd",
+        "result": "Selected regression failed: three directories removed where only one unowned scratch directory should have been removed. Both retained source directories were deleted. The other 34 cases were unselected."
+      },
+      "after": {
+        "log": "/tmp/tutorial-custody-sweep-final-20261011T1848.log",
+        "sha256": "2fae6e0da7ddd79049ccfda4ec953ee1002a5b49d3addcc7b05c2c1247d48c92",
+        "result": "Complete conventional suite passed 35 tests with zero skips, including source custody, clone-before-marker, expired symlink cleanup and native Node import.",
+        "qualification": "Working-tree test proof with uncommitted source changes; no immutable commit, full affected-suite or shipment proof is claimed."
+      }
+    }
+  },
+  "compiledPreflight": {
+    "observedAt": "2026-10-11T20:12:59Z",
+    "workItem": "WI-10007170",
+    "buildId": "1DHsq9zazhmCtWqHAHyaP",
+    "static": {
+      "taskId": "0mv499zwh7eugb016ev",
+      "exitCode": 0,
+      "receipt": "/tmp/tutorial-d047-compiled-preflight-corrected-20261011T2009.json",
+      "receiptSha256": "4a3a43440977fb343d12775f59c07edaa38407190245b57bcca0358e4b4a081b",
+      "log": "/tmp/tutorial-d047-compiled-preflight-corrected-20261011T2009.log",
+      "procedure": "Read unchanged exact release metadata; resolve the published standalone entry; run maintained assertStandaloneBootstrapModules, assertTracedServerChunksPresent and assertPublicDocsBundle against the compiled artifact.",
+      "result": "Four bootstrap modules resolve inside the release; twelve traced relative chunk requires exist; the route-selected public/papercusp-docs bundle passes validation and all sixty-two file hashes are retained.",
+      "priorCallerFailure": "/tmp/tutorial-d047-compiled-preflight-20261011T2007.log assumed public/docs rather than reading the compiled route's public/papercusp-docs path. It is not evidence that the bundle was missing."
+    },
+    "anonymousRuntime": {
+      "taskId": "0mv49f05o1o7fzsy1fj",
+      "exitCode": 0,
+      "receipt": "/tmp/tutorial-d047-runtime-preflight-20261011T2012.json",
+      "receiptSha256": "de007dd28d6e086945d7202afe7fdf2e4392869d3b61a52df2d6422caddfe152",
+      "log": "/tmp/tutorial-d047-runtime-preflight-20261011T2012.log",
+      "configuration": "The same exact standalone release booted on an ephemeral loopback port inside maintained with-test-pg --isolated-runtime with private local-mode composition and no model credentials or requests.",
+      "result": "Anonymous /docs, Pagefind JavaScript and sitemap returned HTTP 200 with expected content types; a missing document returned HTTP 404. The Portal shut down its own Postgres and the outer wrapper verified runtimeRemoved and pgDataRemoved before exit 0.",
+      "modelCalls": 0
+    },
+    "chatProjection": {
+      "observedAt": "2026-10-11T20:39:58.144Z",
+      "taskId": "0mv4adx7w1passrh1y8",
+      "exitCode": 0,
+      "receipt": "/tmp/tutorial-d047-chat-projection-20261011T2040.json",
+      "receiptSha256": "8f0667994c56a322fc9fdd50b5d230a971b39555b79e6c7416deae25845bf5f8",
+      "log": "/tmp/tutorial-d047-chat-projection-20261011T2040.log",
+      "procedure": "Boot the unchanged standalone-entry.mjs inside maintained with-test-pg --isolated-runtime. Use the maintained PORTAL_OPERATOR_ORIGIN seam with a private deterministic loopback operator. Create an owned conversation through /api/papercup-chat/conversations, then send three turns through the compiled proxy. Assert validated granted/unavailable toolContext survives, invalid assumed authorization is dropped, tool_call/result retain only public correlation/status, and synthetic private grant, workspace, input and return fields never reach the stream.",
+      "configuration": {
+        "PORTAL_LOCAL_MODE": "1",
+        "PORTAL_LOCAL_OWNER_ID": "zero-model-chat-projection",
+        "PORTAL_OPERATOR_ORIGIN": "ephemeral deterministic loopback HTTP upstream",
+        "PORT": "ephemeral loopback port",
+        "HOSTNAME": "127.0.0.1"
+      },
+      "modelCalls": 0,
+      "result": "All three authorization variants passed on build 1DHsq9zazhmCtWqHAHyaP with unchanged sourceRootDigest 37e01dacde909d62046081e9579874dc859477aead6195c8cb3910fa70c7a5a0. Both private databases shut down; the outer wrapper verified runtimeRemoved and pgDataRemoved in 1122ms before exit 0.",
+      "qualification": "Compiled Portal projection with a deterministic upstream only. This does not establish hosted authentication, real model authorization, paid FAQ/cohort/history/live-state acceptance or production shipment."
+    },
+    "qualification": "Artifact-local compiled dependencies, public bundle, anonymous runtime and compiled chat projection are verified within their stated scopes. These receipts do not prove historical out-of-root dependency equality, hosted authentication, paid FAQ/cohort/history/live-state acceptance, human acceptance or production shipment. Original artifact, source and test lineage remain unchanged."
+  },
+  "limitations": [
+    "The private runtime and databases were shut down after acceptance. A new functional run needs freshly prepared private configuration.",
+    "Catalogue observation attachments retain partial-onfailure diagnostic scope even on PASS; final verdict and actual assertions are the acceptance evidence.",
+    "Expected no-workspace refusal and unavailable Mail/Calendar explanations do not establish those providers' domain-task success.",
+    "No human-heard audio, novice-human review, protected native microphone-question acceptance, pilot baseline, required current affected-suite PASS or app.papercusp.com shipment is asserted.",
+    "Historical proofs, failures and older artifacts retain their original scope and lineage. Owner directive 1534 remains open until verified shipment."
+  ]
+}

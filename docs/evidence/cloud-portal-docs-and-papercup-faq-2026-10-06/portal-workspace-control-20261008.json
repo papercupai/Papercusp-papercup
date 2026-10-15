@@ -1,0 +1,102 @@
+{
+  "schemaVersion": 1,
+  "observedAt": "2026-10-08T22:19:00Z",
+  "workItem": "EI-25441313743672037",
+  "implementationItem": "WI-10007589",
+  "scope": "Authenticated private hosted workspace control API comparison; excludes browser journey, provider readiness and shipment",
+  "verdict": "pass-within-scope",
+  "portal": {
+    "buildId": "6Avr3UKWpC7WkTO1D8XcA",
+    "release": "/dev/shm/pcv/.portal-runtime/papercusp-lint-as-committed-7ab8d41d63-T1lANC/releases/6Avr3UKWpC7WkTO1D8XcA-20261008212650600-1656908-0cbc61a1",
+    "sourceRoot": "/dev/shm/pcv/papercusp-lint-as-committed-7ab8d41d63-T1lANC",
+    "sourceRootDigest": "cbb7c257839f1110502775201f964e4f6f80355d332d2e21dee8d741deac1feb",
+    "manifestRead": true,
+    "artifactModified": false,
+    "promoted": false
+  },
+  "operator": {
+    "sourceRoot": "/tmp/pcv/papercusp-lint-as-committed-c19484fc98-dZs3my",
+    "commit": "c19484fc98aa929a8596441a0ff1e52b0fe7315e",
+    "healthSha": "c19484fc98",
+    "healthStatus": 200,
+    "composition": "createHostedHandlerFromEnvironment",
+    "controlRouteMounted": true,
+    "isolation": "maintained with-test-pg.mjs operator-api route; private database/home, background workers disabled"
+  },
+  "admission": {
+    "provider": "WorkOS TEST",
+    "genuineSession": true,
+    "sameCookieWithinComparison": true,
+    "selectedWorkspaceMatchesAdmission": true,
+    "provisioningTransport": "inert fixture; database admission and ownership checks are real",
+    "cleanupCompleted": true,
+    "fixtureModule": "/dev/shm/pcv/papercusp-lint-as-committed-7ab8d41d63-T1lANC/e2e/hosted-test-user.ts",
+    "kitDependencyRoot": "/tmp/pcv/papercusp-lint-as-committed-c19484fc98-dZs3my",
+    "rootSelection": "existing loadHostedTestUserKit argument explicitly selects frozen operator dependencies"
+  },
+  "results": [
+    {
+      "label": "portal-session",
+      "status": 200,
+      "error": null,
+      "sessionWorkspaceMatches": true
+    },
+    {
+      "label": "portal-control",
+      "status": 200,
+      "error": null,
+      "rowsPresent": true,
+      "rowKinds": [
+        "connection",
+        "workspace"
+      ]
+    },
+    {
+      "label": "operator-control-no-workspace-header",
+      "status": 200,
+      "error": null,
+      "rowsPresent": true,
+      "rowKinds": [
+        "connection",
+        "workspace"
+      ]
+    },
+    {
+      "label": "operator-control-selected-workspace-header",
+      "status": 200,
+      "error": null,
+      "rowsPresent": true,
+      "rowKinds": [
+        "connection",
+        "workspace"
+      ]
+    }
+  ],
+  "evidence": {
+    "safeReceipt": "/tmp/su73-workspace-route-probe-2219.json",
+    "safeReceiptSha256": "4890c1760ce899b4cf000a28b44d2fe7faf12432c08b1cf96b0365c99058fa34",
+    "portalLog": "/tmp/su73-r2-hosted-served-2219.log",
+    "operatorLog": "/tmp/su73-r2-hosted-operator-2212.log",
+    "probeAndPortalExitCode": 0,
+    "portalShutdownObserved": true,
+    "priorComparison": "/tmp/su73-workspace-route-probe-2055.json",
+    "priorComparisonSha256": "95037e7e09b8d7defa27e3f0732e75d3dfd862c72ebd14eb40b9cc9ed09ffe05",
+    "comparisonLimit": "Old EJhq and corrected 6Avr use distinct fresh TEST sessions; each compares Portal and direct controls with the same cookie and frozen operator source. This is isolated routing evidence."
+  },
+  "fixtureFailure": {
+    "log": "/tmp/su73-r2-hosted-served-2212.log",
+    "exitCode": 1,
+    "stage": "before external TEST admission",
+    "rootCause": "Default kit infers integration root from a symlink layout. Immutable Portal contains copied operator-core, so the kit selects node_modules and cannot import the operator launcher.",
+    "durableRepairItem": "WI-10007623",
+    "assignee": "su-7a94555d-4fbb-42b8-a39d-ff28fade9e0f",
+    "browserDefaultInferenceResolved": false
+  },
+  "notVerified": [
+    "Actual workspace browser resource listing",
+    "Workspace creation or connected host readiness",
+    "Full R-1/R-2 manual journeys",
+    "Real novice validation and independent final acceptance",
+    "Promotion or production shipment"
+  ]
+}

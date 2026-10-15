@@ -249,6 +249,17 @@ export const SEARCH_SURFACES: readonly SearchSurface[] = [
       'has neither the vault grant boundary nor its scope/participant/time filters.',
   },
   {
+    id: 'documents:search',
+    entry: 'agent-tools/documents/search.ts',
+    engine: 'none',
+    whyNotEngine:
+      'Federates the Personal Vault, source-ACL organization corpus, presence-scoped pot corpus ' +
+      'and live provider queries through their existing authorized readers. Each leg enforces ' +
+      'its own grants, identity mapping and disclosure labels before returning documents. ' +
+      'The workspace search engine does not implement those per-corpus authorization boundaries ' +
+      'or provider live-query contracts; the handler deliberately delegates to those readers.',
+  },
+  {
     id: 'social:search',
     entry: 'agent-tools/social/search.ts',
     engine: 'none',
@@ -258,6 +269,16 @@ export const SEARCH_SURFACES: readonly SearchSurface[] = [
       'off the workspace @papercusp/search engine for the same reason as personal:search: that ' +
       'engine has neither the owner-private grant boundary nor the social scope, participant and ' +
       'time filters. This is hybrid retrieval by contract, but through the private-vault engine.',
+  },
+  {
+    id: 'people:search',
+    entry: 'agent-tools/people/search.ts',
+    engine: 'none',
+    whyNotEngine:
+      'Delegates to the workspace relationship graph\'s bounded identity lookup. Exact email ' +
+      'and phone identity matches rank first, followed by name; text filters match names and ' +
+      'contact fields. It returns canonical persons without interaction content, so prose ' +
+      'similarity ranking through the workspace search engine does not fit this contract.',
   },
   {
     id: 'reports:search',
@@ -423,6 +444,9 @@ export const UNRELATED_ENGINE_MODULE_CEILING = 3;
  * Keyed by path relative to `packages/operator-core/lib`.
  */
 export const CENSUS_EXCLUSIONS: Readonly<Record<string, string>> = {
+  'search/bench/bm25-hybrid-recall-cli.ts':
+    'A read-only paired BM25-versus-legacy retrieval benchmark, invoked as a CLI. Its engine ' +
+    'results measure recall and latency for an experiment, rather than serving a product query.',
   'endpoint-route/routes/github/search-repos.ts':
     'Proxies the GitHub Search API server-side (so the browser never holds the token). It searches ' +
     "GitHub's corpus, not ours — there is no local index to rank and no floor to inherit.",

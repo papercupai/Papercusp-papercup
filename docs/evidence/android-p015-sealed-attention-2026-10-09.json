@@ -1,0 +1,99 @@
+{
+  "workItem": "WI-10006956",
+  "defect": "EI-25338280978263840",
+  "plan": "android-public-release-2026-10-01#P-015",
+  "observedDate": "2026-10-09",
+  "hostId": "host-3daf37098c8096b5d9e0ac72",
+  "workspaceId": "ws-3daf37098c8096b5d9e0ac72",
+  "publicServer": "https://app.papercusp.com/api/workspaces/ws-3daf37098c8096b5d9e0ac72",
+  "runtime": {
+    "reader": "packages/operator-core/lib/workspace-host/soak-store.ts:readWorkspaceHostRuntimeRelease",
+    "measuredAt": "2026-10-09T13:55:51.205Z",
+    "version": "0.0.21-p318r69",
+    "schemaVersion": "schema-1415",
+    "bundleSha256": "81b87e9e15dd9a16734143d1409bfa718fd3d3ad90887c0cbbaa8826c60cf803",
+    "sourceBinding": {
+      "authority": "leader-emitted adoption event",
+      "event": "fleet:android-release:android-r69-attention-runtime-adopted",
+      "generation": 1,
+      "firedAt": "2026-10-07T20:05:40.291Z",
+      "sourceSha": "f0f67adb154dee54ad59a79c5ae6f7704fa2da62",
+      "expectedVerdict": "matched",
+      "runtimeRowIncludesSourceSha": false
+    }
+  },
+  "verification": {
+    "runner": "cargo test -p papercup-core --test live_smoke live_sealed_attention_preflight -- --ignored --nocapture",
+    "workingDirectory": "papercup-rust-mobile harness repository",
+    "testSource": "crates/papercup-core/tests/live_smoke.rs",
+    "testSourceSha256": "10827d512a75577030cf9f4f9efce7095250d8a73b59bf47b0fcb7dc8acaa33b",
+    "exactMobileDependencyCommitAtExecution": "not measured; no exact whole-mobile-commit claim",
+    "exitCode": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "filteredOut": 10,
+    "paired": true,
+    "attention": true,
+    "reconnected": true,
+    "workspaceScope": true,
+    "revoked": true,
+    "originalLog": "/tmp/android-p015-preflight-20261009-SxZzbz/preflight.log",
+    "originalLogSha256": "5a3056e20410632eb1d047096091c224eab740c4228ce36b610934fc00757905",
+    "log": "    Finished `test` profile [optimized + debuginfo] target(s) in 0.65s\n     Running tests/live_smoke.rs (/mnt/data/cargo-target/debug/deps/live_smoke-2a2d15e4cdf08f95)\n\nrunning 1 test\nsealed preflight: paired=true attention=true reconnected=true scope=true\nsealed preflight: revoked=true\ntest live_sealed_attention_preflight ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 2.56s\n\n"
+  },
+  "recoveredEarlierRun": {
+    "nativeSession": "01a11791-1a4e-7822-81b8-818c226d33f1",
+    "mintToolCallAt": "2026-10-09T13:41:30.528Z",
+    "preflightToolCallAt": "2026-10-09T13:41:56.864Z",
+    "completedLogMtime": "2026-10-09T13:42:35.982096407Z",
+    "log": "/tmp/android-p015-r69-sealed-preflight-20261009.log",
+    "logSha256": "a8a221702ead93c8165dbe355f166f24e635a2699110527b6df757bcfd033357",
+    "result": "PASS; paired, attention, reconnect, scope, revoked true",
+    "privateQrAndMintFilesRemoved": true,
+    "recoveryLimitation": "The carried checkpoint omitted this completed run. The continuation independently repeated the bounded test with another fresh QR before recovering the native tool transcript. Both devices were revoked."
+  },
+  "cleanup": {
+    "freshQrMode": "0600",
+    "freshQrRemoved": true,
+    "privateMintResponseRemoved": true,
+    "reusedHistoricalQr": false,
+    "deviceRevoked": true
+  },
+  "sourceQualification": {
+    "sourceSha": "f0f67adb154dee54ad59a79c5ae6f7704fa2da62",
+    "runner": "npm run lint:as-committed -- test:file --any --ref=f0f67adb154dee54ad59a79c5ae6f7704fa2da62 -- apps/operator/bin/hosted-handler.test.ts packages/operator-core/lib/workspace-host/hosted-device-relay.integration.test.ts packages/operator-core/lib/workspace-host/hosted-app-relay.test.ts packages/operator-core/lib/endpoint-route/hosted-workspace-session.test.ts",
+    "startedAt": "2026-10-09T14:16:54.166Z",
+    "exitCode": 0,
+    "passedAssertions": 104,
+    "skippedTests": 0,
+    "requestedFiles": 4,
+    "executedFiles": 4,
+    "provenance": "stamped as committed with pinned submodules",
+    "log": "/tmp/android-d021-r69-pinned-20261009.log",
+    "logSha256": "64921212fed6d21c2895ad2ad0bed58da9404e7da3f0ce3cdf98b8b5734cbf77",
+    "testRuns": [
+      { "id": 20958702, "file": "apps/operator/bin/hosted-handler.test.ts", "status": "pass" },
+      { "id": 20958703, "file": "packages/operator-core/lib/workspace-host/hosted-device-relay.integration.test.ts", "status": "pass" },
+      { "id": 20958704, "file": "packages/operator-core/lib/endpoint-route/hosted-workspace-session.test.ts", "status": "pass" },
+      { "id": 20958705, "file": "packages/operator-core/lib/workspace-host/hosted-app-relay.test.ts", "status": "pass" }
+    ],
+    "ledgerVerified": { "source": "local", "harness": "papercusp", "worktreeDirty": false, "isScratchConfig": false }
+  },
+  "customerRootCauseDiagnostic": {
+    "vmInstanceId": "7419102153377783583",
+    "transport": "controller IAP SSH with strict incarnation-bound host-key verification",
+    "windowStart": "2026-10-09T13:30:00Z",
+    "windowEnd": "2026-10-09T14:05:00Z",
+    "privilegedJournalRead": "refused: sudo requires a password",
+    "customerJournalRead": "system and other-user journal messages are outside this account's readable scope",
+    "strictCheckpointAbsence": "unknown",
+    "alternativeConfiguredReaderRecovery": "not excluded",
+    "stateChanged": false
+  },
+  "limitations": [
+    "Hosted shared-client preflight only; no current native APK or UI acceptance",
+    "Full-operation, camera, and genuine BYOC acceptance remain open on WI-10006956",
+    "Customer service journal is outside the existing account's readable scope; strict routine absence remains unproved"
+  ]
+}

@@ -251,7 +251,7 @@ export function unwrapToolsInvoke(toolName: string, toolInput: unknown): { toolN
   if (!toolInput || typeof toolInput !== 'object') return null;
   const envelope = toolInput as Record<string, unknown>;
   const inner = asString(envelope.name);
-  if (!inner || !/^capability:(edit|write|multi_?edit)$/i.test(inner)) return null;
+  if (!inner || !/^capability:(edit|write|multi_?edit|patch)$/i.test(inner)) return null;
   return { toolName: inner.replace(':', '_'), toolInput: envelope.args };
 }
 
@@ -264,11 +264,12 @@ export function hunksFromToolCall(toolName: string, toolInput: unknown): FrozenR
   }
   if (!toolInput || typeof toolInput !== 'object') return [];
   const input = toolInput as Record<string, unknown>;
-  const isMulti = /multi_?edit/.test(name);
+  const isPatch = /(^|_)capability_patch$/.test(name);
+  const isMulti = /multi_?edit/.test(name) || isPatch;
   const isEdit = !isMulti && /(^|_)edit(?:_file)?$/.test(name);
   const isWrite = /(^|_)write(_file)?$/.test(name);
   const filePath = asString(input.file_path) ?? asString(input.path);
-  if (!filePath) return [];
+  if (!filePath && !isMulti) return [];
 
   if (isMulti) {
     const edits = Array.isArray(input.edits) ? input.edits : [];
@@ -279,8 +280,10 @@ export function hunksFromToolCall(toolName: string, toolInput: unknown): FrozenR
       const oldStr = asString(e.old_string);
       const newStr = asString(e.new_string);
       if (oldStr === null || newStr === null) return;
+      const editPath = asString(e.file_path) ?? filePath;
+      if (!editPath) return;
       out.push({
-        path: asString(e.file_path) ?? filePath,
+        path: editPath,
         hunk: { kind: 'edit', old: oldStr, new: newStr, replaceAll: e.replace_all === true },
         editIndex: index,
       });

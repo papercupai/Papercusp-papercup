@@ -63,6 +63,20 @@ describe('pgReadQuery (real PG)', () => {
     expect(r.rows[0]?.ro).toBe('on');
   });
 
+  // papercusp-performance-audit-2026-10-12 P-003: agent-authored reads were 41% of
+  // pg_stat_statements' 20,000 entries. The read must run with tracking off, and
+  // the setting must stay inside its own transaction (pooled connections).
+  it('runs with pg_stat_statements tracking off, scoped to its own transaction', async () => {
+    const r = await pgReadQuery("SELECT current_setting('pg_stat_statements.track', true) AS track", {
+      client: db.adminSql,
+    });
+    expect(r.rows[0]?.track).toBe('none');
+    const [after] = await db.adminSql.begin((tx) =>
+      tx.unsafe("SELECT current_setting('pg_stat_statements.track', true) AS track"),
+    );
+    expect(after?.track).not.toBe('none');
+  });
+
   it('blocks a data-modifying CTE that sneaks past the regex (guard 2 and/or 3)', async () => {
     // Starts with WITH → passes the regex, but the write must NOT happen: the
     // subquery-wrap forbids a data-modifying CTE in a subquery, and the READ
@@ -509,6 +523,21 @@ describe('describeRelation / listRelations (real PG)', () => {
     // A table with a primary key must report it as a constraint.
     expect(d!.constraints.some((c) => c.type === 'PRIMARY KEY')).toBe(true);
     expect(d!.indexes.length).toBeGreaterThan(0);
+  });
+
+  it('uses two catalog round-trips per describe to keep concurrent calls within their deadline (EI-25597414544524089)', async () => {
+    let queryCount = 0;
+    const countingClient = new Proxy(db.adminSql, {
+      apply(target, thisArg, args) {
+        queryCount += 1;
+        return Reflect.apply(target, thisArg, args);
+      },
+    });
+
+    const d = await describeRelation('harness_shared.harness_plans', { client: countingClient });
+
+    expect(d?.relation).toBe('harness_shared.harness_plans');
+    expect(queryCount).toBe(2);
   });
 
   it('resolves a BARE table name to the same relation a query would use', async () => {

@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "reboot-residue R-001 live (rubric rev15 wording): agenticmail.service stable, API entry under the exec'd node's global root, health route /api/agenticmail/health 200",
+  "framework": "operational",
+  "command": ["bash", "docs/evidence/reboot-residue-live-probes-2026-10-06/r001-live-probe.sh"],
+  "commandCwd": ".",
+  "exitCode": 0,
+  "startedAt": "2026-10-06T10:07:59Z",
+  "finishedAt": "2026-10-06T10:09:00Z",
+  "summary": "Re-run of the R-001 live probe after AUTO-BAR-R-001-P-001 was amended (rubric revision 15, approved by outside-lineage reviewer su-c044d7ba in thread-post:1159579) to name the route the AgenticMail API actually serves. agenticmail.service active/running, MainPID 3758554 and NRestarts 0 unchanged across a 60s window; the unit's exec line names the @agenticmail/api dist under `npm root -g` of the node it runs; GET http://127.0.0.1:3150/api/agenticmail/health (host:port from ~/.agenticmail/config.json) -> HTTP 200 {status:ok, version:0.5.62, services:{api:ok, stalwart:ok}}.",
+  "scope": "Live host plane, read-only observation; nothing reinstalled or restarted. GET /api/health on the same host:port still returns 404 and is recorded as a disclosure: the server mounts its health router only under /api/agenticmail. The health body's version 0.5.62 is the @agenticmail/api package version; the top-level agenticmail package is 0.5.54 (both read from the installed package.json files), which answers the grader's open version question in EI-25223052791034587.",
+  "repository": "papercusp",
+  "headAtExecution": "cb0ef99c603c9dc1b7265c89b5e688945fec8d30",
+  "workItems": ["WI-10005991", "WI-10006401"],
+  "spec": {
+    "planSlug": "reboot-residue-service-repairs-2026-10-03",
+    "specId": "AUTO-BAR-R-001-P-001",
+    "specRevision": 6,
+    "evidencePlane": "live"
+  },
+  "oracle": "Independent of the repair: systemd unit properties, the unit's own exec script, the exec'd node's npm root -g, /proc/<MainPID>/cmdline and an HTTP GET against the configured API host:port.",
+  "redaction": "The operator's home directory is rendered as ~ in the retained log (one unit_execstart line was redacted by hand at 10:31Z after git-sync quarantined the raw capture for an identity leak; no other byte changed).",
+  "sourceFiles": [
+    {
+      "path": "docs/evidence/reboot-residue-live-probes-2026-10-06/r001-live-probe.sh",
+      "sha256": "ca564efa54371df330d2f51509c3e9ea0abb76fe9b292b9e8cd6a07f1e9afb94"
+    }
+  ],
+  "rawEvidence": [
+    {
+      "path": "docs/evidence/reboot-residue-live-probes-2026-10-06/r001-live-probe-rubric-rev15.txt",
+      "sha256": "19833de89354c45fc2e8726b926138157fd330b97835b6f59ef69ac279aff1f7"
+    }
+  ],
+  "hostObservations": {
+    "unit": "agenticmail.service (user)",
+    "mainPid": 3758554,
+    "nRestartsT0": 0,
+    "nRestartsT1": 0,
+    "windowSeconds": 60,
+    "execNode": "/home/linuxbrew/.linuxbrew/bin/node",
+    "execEntry": "/home/linuxbrew/.linuxbrew/lib/node_modules/agenticmail/node_modules/@agenticmail/api/dist/index.js",
+    "npmRootG": "/home/linuxbrew/.linuxbrew/lib/node_modules",
+    "packageVersions": { "agenticmail": "0.5.54", "@agenticmail/api": "0.5.62" },
+    "configuredApi": "127.0.0.1:3150",
+    "healthUrl": "http://127.0.0.1:3150/api/agenticmail/health",
+    "healthHttp": 200,
+    "literalApiHealthHttp": 404
+  },
+  "assertions": [
+    { "id": "unit-active-stable", "passed": true, "evidence": "ActiveState=active SubState=running, MainPID 3758554 and NRestarts 0 at T0 and T1 (60s apart)." },
+    { "id": "exec-entry-under-global-root", "passed": true, "evidence": "start-server.sh exec line names /home/linuxbrew/.linuxbrew/lib/node_modules/agenticmail/node_modules/@agenticmail/api/dist/index.js, which exists and lies under `npm root -g` (/home/linuxbrew/.linuxbrew/lib/node_modules) of /home/linuxbrew/.linuxbrew/bin/node." },
+    { "id": "health-route-200", "passed": true, "evidence": "GET http://127.0.0.1:3150/api/agenticmail/health -> 200 {\"status\":\"ok\",\"version\":\"0.5.62\",\"services\":{\"api\":\"ok\",\"stalwart\":\"ok\"}}." },
+    { "id": "disclosed-literal-route-404", "passed": true, "evidence": "Disclosure, not a failure: GET /api/health returns 404 because the server never mounts that path." }
+  ]
+}

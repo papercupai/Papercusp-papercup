@@ -18,6 +18,8 @@ import {
   screen,
 } from "@testing-library/react";
 import type { ReactNode } from "react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { nuqsParsers } from "@papercusp/test-config/nuqs-mock";
 
 /* ── Mocks ─────────────────────────────────────────────────────────── */
@@ -138,6 +140,21 @@ afterEach(() => {
 });
 
 describe("OperatorChat (operator sidebar chat wrapper)", () => {
+  it("loads host bubble tokens without requiring a session-popup ancestor", () => {
+    render(<OperatorChat {...baseProps()} />);
+    expect(lastProps.className).toBe("op-chat-shared");
+    const source = readFileSync(resolve(__dirname, "OperatorChat.tsx"), "utf8");
+    expect(source).toContain('import "./operator-chat.css"');
+    const css = readFileSync(resolve(__dirname, "operator-chat.css"), "utf8");
+    const hostTokens = css.split("}").find((block) => block.includes(".op-chat-shared {"));
+    expect(hostTokens).toMatch(/--pc-chat-bubble-assistant:\s*var\(--bg-2\)/);
+    expect(hostTokens).toMatch(/--pc-chat-bubble-assistant-fg:\s*var\(--fg\)/);
+    expect(hostTokens).toMatch(/--pc-chat-bubble-user:\s*var\(--bg-popover,\s*var\(--bg\)\)/);
+    expect(hostTokens).toMatch(/--pc-chat-bubble-user-fg:\s*var\(--fg\)/);
+    expect(hostTokens).toMatch(/--pc-chat-link:\s*var\(--accent\)/);
+    expect(hostTokens).not.toMatch(/\.session-chat\s+\.op-chat-shared|#f7f7f8|#eef2ff/);
+  });
+
   it("renders the active-mode empty-state body", () => {
     render(<OperatorChat {...baseProps({ passive: false })} />);
     expect(screen.getByTestId("empty-body").textContent).toMatch(

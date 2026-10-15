@@ -1,0 +1,169 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Independent Android CI actual replacement execution: retained native rejection",
+  "framework": "operational",
+  "command": [
+    "systemctl",
+    "--user",
+    "start",
+    "papercusp-android-ci.service"
+  ],
+  "startedAt": "2026-10-07T18:59:31.021610+00:00",
+  "finishedAt": "2026-10-07T19:35:45.320963+00:00",
+  "exitCode": 1,
+  "summary": "The independent executor ran real host, owned API36/16KB emulator connected checks and isolated paired native instrumentation. Host/connected passed; the six-feature native journey timed out at the Fleet activity assertion. The executor retained artifacts, removed passing CI/cache admission and verified owned emulator/operator cleanup. This records a failed native verdict, not a completed migration, signed candidate, physical-phone or Play acceptance.",
+  "sourceCommit": "6054f3b9c428a359d7025c135831fb40e07b39a8",
+  "sourceDirty": false,
+  "sourceFingerprint": "0d365854e7321d2329f304540663464797ac80ffae75c284b244594a4fcbfad8",
+  "operatorCommit": "21294322320d9ca67ca3e746ecfc2c4e01d3a581",
+  "execution": {
+    "executor": "local-systemd",
+    "attemptId": "20261007T185931Z-7894cbc9",
+    "retainedReceipt": "$PAPERCUP_ANDROID_CI_STATE/attempts/20261007T185931Z-7894cbc9/result.json",
+    "defaultState": "$HOME/.local/state/papercusp/android-ci",
+    "status": "failed",
+    "nativeSourceCommit": "d8a1581853cc3d9cfecb2ac24b760c0e64f928ac",
+    "nativeSourceDirty": true
+  },
+  "phases": [
+    {
+      "name": "operator-freshness",
+      "exitCode": 0,
+      "sha256": "ee7316125938c2c3c8d5e230eb5821c1a9243e0e7a02cd6fdab0266a628f0653"
+    },
+    {
+      "name": "rust-preflight",
+      "exitCode": 0,
+      "sha256": "71898dff3c6432efdb734448f5be423843b12dd8075283501aad41600c41899c"
+    },
+    {
+      "name": "emulator-preflight",
+      "exitCode": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "avd-space-preflight",
+      "exitCode": 0,
+      "sha256": "aaac5e906bb0eeadccbed31fa36602e16ba06fba394a42aae604be376076f3a7"
+    },
+    {
+      "name": "host",
+      "exitCode": 0,
+      "sha256": "3237a37ff6aaa50245d06e1a3289412a1b1cfae46f911f2b59820b792f110919"
+    },
+    {
+      "name": "boot",
+      "exitCode": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "connected",
+      "exitCode": 0,
+      "sha256": "b3f64d08840e6aba2136a78598576ffb186cc15ee1ed40817d7c7716ec0397ed"
+    },
+    {
+      "name": "paired",
+      "exitCode": 1,
+      "sha256": "7562eac15c580682a8ad93e5b096a17174489c41f714c89ff754f40dd24a8582"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "host-checks",
+      "passed": true,
+      "evidence": "host phase exit0"
+    },
+    {
+      "id": "unpaired-connected-checks",
+      "passed": true,
+      "evidence": "connected exit0; retained log reports31 executed with no failure or skip"
+    },
+    {
+      "id": "paired-native-six-features",
+      "passed": false,
+      "evidence": "ComposeTimeoutException after30000ms at verifyOwnedFeatures:498 waiting fleetAvailabilityText; pairing/JNI/recreation/chat/plans completed first"
+    },
+    {
+      "id": "failure-closed-ci-admission",
+      "passed": true,
+      "evidence": "CI admission and cached passing proof absent after failed attempt"
+    },
+    {
+      "id": "owned-runtime-cleanup",
+      "passed": true,
+      "evidence": "executor emulatorCleanupVerified and paired runtime host/native cleanup flags true"
+    }
+  ],
+  "nativeWitness": {
+    "currentStage": "six-features",
+    "failedStage": "six-features",
+    "failureClass": "androidx.compose.ui.test.ComposeTimeoutException",
+    "journeyCompleted": false,
+    "chatStatePassed": true,
+    "plansStatePassed": true,
+    "credentialsCleared": true
+  },
+  "retainedEvidence": [
+    {
+      "path": "$PAPERCUP_ANDROID_CI_STATE/attempts/20261007T185931Z-7894cbc9/result.json",
+      "size": 36080,
+      "sha256": "a1c817cf062e153d9d42c4ef80cba783790ec7c98ef26090fd048eda6adc3caa"
+    },
+    {
+      "path": "$PAPERCUP_ANDROID_CI_STATE/attempts/20261007T185931Z-7894cbc9/host.log",
+      "size": 58940,
+      "sha256": "3237a37ff6aaa50245d06e1a3289412a1b1cfae46f911f2b59820b792f110919"
+    },
+    {
+      "path": "$PAPERCUP_ANDROID_CI_STATE/attempts/20261007T185931Z-7894cbc9/connected.log",
+      "size": 647,
+      "sha256": "b3f64d08840e6aba2136a78598576ffb186cc15ee1ed40817d7c7716ec0397ed"
+    },
+    {
+      "path": "$PAPERCUP_ANDROID_CI_STATE/attempts/20261007T185931Z-7894cbc9/paired.log",
+      "size": 646944,
+      "sha256": "7562eac15c580682a8ad93e5b096a17174489c41f714c89ff754f40dd24a8582"
+    },
+    {
+      "path": "$PAPERCUP_ANDROID_CI_STATE/attempts/20261007T185931Z-7894cbc9/paired/result.json",
+      "size": 8156,
+      "sha256": "88eb7b05d67277ad501a94d308f8adc2178cd119233c7853aa6bc159e4a8662f"
+    },
+    {
+      "path": "$PAPERCUP_ANDROID_CI_STATE/attempts/20261007T185931Z-7894cbc9/paired-runtime/result.json",
+      "size": 790,
+      "sha256": "57d45c1ad098e8a174fe7a91b50eed963f3df8e79e4655f69baff0d135366115"
+    },
+    {
+      "path": "$PAPERCUP_ANDROID_CI_STATE/attempts/20261007T185931Z-7894cbc9/paired/native-pairing-failure.png",
+      "size": 36495,
+      "sha256": "8bcbd639268656675cae3c210c6dc9af868b33d4c128c2955b4ea6e79e0a7ced"
+    },
+    {
+      "path": "$PAPERCUP_ANDROID_CI_STATE/attempts/20261007T185931Z-7894cbc9/paired/native-results/TEST-papercusp-ci-431b5b668d1c(AVD) - 16-_app-.xml",
+      "size": 1382,
+      "sha256": "a15059ae142bd8f8d48efa52f3b26e210302f6b3ee12ba0c5c9ab17bcd0dbc17"
+    }
+  ],
+  "acceptanceBoundary": {
+    "fullNativePass": false,
+    "publishableAdmission": false,
+    "migrationComplete": false,
+    "signedCandidate": false,
+    "physicalPhone": false,
+    "googlePlay": false
+  },
+  "followUp": {
+    "nativeRepairWorkItem": "WI-10004770",
+    "nativeRepairOwner": "su-2a43c94b-24cd-4d86-b11f-a4b3ca3edd10",
+    "retryHold": "Independent timer is temporarily stopped pending owned native navigation repair and recurrence guard; remains enabled. WI-10007209 owns re-enable and actual replacement verification.",
+    "nativeRepairStatus": "P-003 owner verified missing Fleet overview-to-activity navigation and added the chip click/detail-header assertion; focused native verification is active. No successful repair verdict claimed yet.",
+    "rootCauseEvidence": "SmokeTest496-498 clicked bottom Fleet and waited fleetAvailabilityText without opening the overview's fleet activity chip. MainActivity1293-1297 routes that chip to RunningScreen; RunningScreen71 renders availability. Retained screenshot shows overview."
+  },
+  "migrationRefs": [
+    "WI-10007209",
+    "android-public-release-2026-10-01#P-016",
+    "android-public-release-2026-10-01#D-022"
+  ]
+}

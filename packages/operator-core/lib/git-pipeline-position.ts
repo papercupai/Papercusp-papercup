@@ -30,10 +30,15 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as path from 'node:path';
 import { hostname } from 'node:os';
+import { createHash } from 'node:crypto';
+import { isTurnHoldIntent } from './personal-vault/git-sync-hold';
+import { isCommitOnlyMember } from './harness/git-sync/decide-git-sync-push';
+export { isCommitOnlyMember } from './harness/git-sync/decide-git-sync-push';
 import { devDeployState, type DevDeployState } from './dev-deploy-state';
 import {
   gitPipelineSnapshot,
   projectGreenCheckpointPause,
+  type GitSyncContentError,
   type GateFailingTestsProvenance,
   type GitPipelineSnapshot,
 } from './git-pipeline-stats';
@@ -41,10 +46,11 @@ import type { GitSyncSkippedPath } from './harness/git-sync/run-git-sync';
 // EI-19447523039740352. Safe direction: release-deploy-launch imports git-pipeline-STATS,
 // never git-pipeline-POSITION, so this does not close an import cycle.
 import { readDeployInFlight, type DeployInFlight } from './release-deploy-launch';
-import { probeServiceStart, resolveServiceStartMs } from './agent-tools/dev/systemd-service-probe';
+import { probeServiceStart, readProcStartMs, resolveServiceStartMs } from './agent-tools/dev/systemd-service-probe';
 import { RESTART_TARGET_UNITS } from './agent-tools/dev/restart-target-units';
 import {
   classifyPathsAgainstCandidate,
+  blobAtCommit,
   markerAtCandidateForPath,
   gitReadForRepo,
   markerAtCommit,
@@ -53,6 +59,7 @@ import {
   type PathContainment,
 } from './candidate-contains';
 import { cellUnknown, formatCellUnknown, type CellUnknown } from './cell-contract';
+import { gitRefContains } from './git-ref-contains';
 import { describeRefusal, refuseAnswer, type RefusedAnswer } from './field-reliability';
 import {
   describeRefireBudget,
@@ -98,8 +105,12 @@ import {
   resolveServingRuntimes,
   selectServingRuntimes,
   servingRuntimesLead,
+  type ServingRuntimeBundleState,
   type ServingRuntimeEntry,
 } from './serving-runtimes';
+
+import { createCache } from '@papercusp/cache';
+import { pinModuleState } from '@papercusp/module-singleton';
 
 const pexec = promisify(execFile);
 
@@ -119,6 +130,9 @@ export function gitPipelinePositionSidecarEnabled(env: NodeJS.ProcessEnv = proce
 
 export const realGit: GitRunner = async (repo, args) => {
   const argv = ['-C', repo, ...args];
+  const env = args[0] === 'status'
+    ? { ...process.env, GIT_OPTIONAL_LOCKS: '0' }
+    : process.env;
   // EI-22737582656157929: a decisive bg-host CPU profile attributed 23.9% of real sampled CPU
   // to this runner's native spawn calls. Reuse the existing small-process git sidecar rather
   // than forking from the multi-GB bg host. A real non-zero git result remains a fail-soft null;
@@ -130,7 +144,7 @@ export const realGit: GitRunner = async (repo, args) => {
         argv,
         process.cwd(),
         GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS,
-        process.env,
+        env,
       );
       return result.code === 0 ? result.stdout.trim() : null;
     } catch (error) {
@@ -141,6 +155,7 @@ export const realGit: GitRunner = async (repo, args) => {
     const { stdout } = await pexec('git', argv, {
       maxBuffer: 16 * 1024 * 1024,
       timeout: GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS,
+      ...(args[0] === 'status' ? { env } : {}),
     });
     return stdout.trim();
   } catch {
@@ -216,19 +231,13 @@ export function withGitReadBudget(
 
 /** Is `sha` an ancestor-or-equal of `ref` (i.e. does ref's history contain it)? */
 async function refContains(git: GitRunner, repo: string, ref: string, sha: string): Promise<boolean | null> {
-  // `${ref}..${sha}` = commits reachable from sha but NOT from ref. Zero of them
-  // means ref's history already contains sha (sha is an ancestor-or-equal of ref).
-  // rev-list prints a count on success, so this works through the plain GitRunner —
-  // unlike `merge-base --is-ancestor`, whose 0/1 exit a stdout-only runner swallows.
-  const contained = await git(repo, ['rev-list', '--count', `${ref}..${sha}`]);
-  // D-038 axis 2 — NEVER derive a verdict from an absence. GitRunner returns null
-  // on ANY failure, and the old `return contained === '0'` turned that into
-  // `false`: byte-IDENTICAL to the honest "this ref genuinely does not contain the
-  // commit". So a failed git read reported "your change has not reached this
-  // stage", and an agent waits for a stage it already passed. Exactly the
-  // `systemctl is-active` phantom-unit shape, in the pipeline's headline leg.
-  if (contained === null) return null;
-  return contained === '0';
+  // Ancestor-or-equal via `merge-base` (git-ref-contains.ts): the earlier
+  // `rev-list --count ${ref}..${sha}` read miscounted whenever `ref` headed a run of
+  // repair-queue admission commits (dated 2000-01-01), so every path read
+  // `inMain:false, deployed:false` on a release that contained it.
+  // D-038 axis 2 — NEVER derive a verdict from an absence: a failed read stays null,
+  // never `false`, or an agent waits for a stage it already passed.
+  return gitRefContains((args) => git(repo, args), ref, sha);
 }
 
 /**
@@ -328,6 +337,8 @@ async function isRemoteTipContaining(
 export interface PipelinePositionInput {
   path?: string;
   sha?: string;
+  /** Frozen SHA256 of the accepted file bytes; requires a concrete path. */
+  expectedSourceSha256?: string;
   /**
    * EI-18797292094433710 — a distinctive literal string from the CALLER'S OWN change.
    * Supplying it upgrades `changeInCandidate` from "does the candidate carry this file
@@ -613,21 +624,6 @@ const RUNTIME_OWNERS: RuntimeOwnerEntry[] = [
           'This package is ALSO called directly by operator-served surfaces: the `backup:*` MCP tools (agent-tools/backup/*.ts), the `/api/backups/*` HTTP routes, and boot-time migration guards (db-boot-migrate.ts / db:migrate). For THOSE consumers the ordinary staging→green-gate→deploy pipeline is the activation path (or dev:restart { target: "staging", confirm: true } to exercise it now on :3170).',
       },
     ],
-  },
-  // EI-21458114771988888: Google Pub/Sub provisioning/pull/ack helpers are
-  // imported only by the `google-gmail-poll` system action below the routine
-  // boundary. The action is dispatched by routinesTick in bg-host, so this
-  // dependency must receive the same activation verdict even though it lives
-  // under external-triggers rather than harness/routines.
-  {
-    match: /^packages\/operator-core\/lib\/external-triggers\/google-pubsub\.ts$/,
-    own: {
-      host: 'bg-host',
-      releasePipelineApplies: false,
-      restartTarget: 'bg-host',
-      activation:
-        'Google Pub/Sub Gmail polling imports this module from the `google-gmail-poll` system action, dispatched by routinesTick only when PAPERCUSP_BACKGROUND_WORKERS=1 (bg-host). It loads on RESTART: dev:restart { target: "bg-host", confirm: true }. A deploy does not carry it.',
-    },
   },
   // EI-22090053297465523: fleet-transition-sweep-action.ts dynamically imports
   // this helper from a registered system action. It is therefore executed by
@@ -1266,6 +1262,8 @@ export function assessMainBehindStaging(input: {
 
 export interface PipelinePosition {
   input: { path: string | null; sha: string | null };
+  /** Present only for a caller-supplied accepted-source fingerprint. */
+  acceptedSource?: AcceptedSourceContainment;
   repoRoot: string;
   /** Set when the path resolved inside a submodule. */
   submodule: string | null;
@@ -1459,6 +1457,8 @@ export interface PipelinePosition {
       /** EI-210996: systemd-owned abnormal-terminal evidence for that finished run. */
       terminalEvidence?: {
         source: 'systemd-exec-stop-post';
+        /** Manual log vintage, distinct from this snapshot's observation time. */
+        observedAtMs?: number | null;
         candidate: string | null;
         serviceResult: string;
         exitCode: string;
@@ -1973,6 +1973,8 @@ export interface GitSyncLegs {
   consecutiveErrorTicks: number;
   /** Dirty paths whose live edit locks deferred their entire repo commit group. */
   skippedPaths: GitSyncSkippedPath[];
+  /** Files excluded from the last pass's commit by a content detector. */
+  contentErrors?: GitSyncContentError[];
   /**
    * Repos the last tick actually PUSHED. Empty with status 'synced' is the trap —
    * BUT only when this member is supposed to push at all. Read `pushMode` first:
@@ -2014,16 +2016,6 @@ export interface GitSyncLegs {
     /** The worktree head this leg judged on its last tick. */
     sha: string | null;
   } | null;
-}
-
-/**
- * True when this member does not push to origin at all, by design — so an empty
- * `pushedRepos` / a lagging origin is NOT evidence of a fault, and no forced sync
- * can help. `null` (unknown, pre-record rows) is deliberately NOT treated as
- * commit-only: absent evidence must not silently suppress a real push fault.
- */
-export function isCommitOnlyMember(legs: Pick<GitSyncLegs, 'pushMode'>): boolean {
-  return typeof legs.pushMode === 'string' && legs.pushMode.startsWith('commit-only');
 }
 
 /**
@@ -3005,17 +2997,21 @@ export function frozenQueueCandidate(queue: FrozenQueueForReconcile | null | und
 export function reconcileGateCandidates(
   candidates: GateCandidates,
   inFlight:
-    | { candidate: string | null; candidateSource?: 'retriage-marker' | 'in-flight-candidate' | 'run-probe' }
+    | {
+        active?: boolean;
+        candidate: string | null;
+        candidateSource?: 'retriage-marker' | 'in-flight-candidate' | 'run-probe';
+      }
     | null
     | undefined,
   /**
    * main-green-status-visible-2026-09-03 P-011 follow-up: the frozen repair queue, when one
-   * is live. Precedence is marker > repair-queue > run-probe. The queue outranks the probe
-   * because under freeze-and-converge a live run RESUMES the frozen candidate by
-   * construction, while the probe on a CRON run is the checkout's HEAD — an inference the
-   * refusal below already declines to answer containment from. It ranks BELOW the run's own
-   * markers because those are observations of THIS run, and a re-fire can legitimately move
-   * the run onto a newer candidate before the queue row learns of it.
+   * is live. The run's own markers outrank the probe. The repair queue is authoritative
+   * only when `inFlight.active === false`: its repairHead is the sha the NEXT run resumes.
+   * While a run is active, an admission may move repairHead without changing that run's
+   * candidate; with no run marker, the checkout probe is the only available candidate and
+   * remains non-authoritative. Missing liveness is unknown, not proof the queue is safe to
+   * promote.
    */
   repairQueue?: FrozenQueueForReconcile | null,
 ): GateCandidates {
@@ -3041,11 +3037,11 @@ export function reconcileGateCandidates(
     return { ...candidates, judgingSha: markerSha, judgingShaSource: markerSource };
   }
   /**
-   * No marker, but a frozen repair queue: its candidate is the sha the recorded verdict was
-   * computed on and the sha the next run resumes, so it is the judged subject whether or
-   * not a run happens to be alive at the instant of the read.
+   * No marker. A queue row is authoritative only after the run-liveness leg measured idle.
+   * A moved repairHead cannot identify an active run's old candidate, and an unmeasured
+   * liveness read is not proof of idleness.
    */
-  const frozen = frozenQueueCandidate(repairQueue);
+  const frozen = inFlight?.active === false ? frozenQueueCandidate(repairQueue) : null;
   if (frozen) {
     return { ...candidates, judgingSha: frozen, judgingShaSource: 'repair-queue' };
   }
@@ -3056,7 +3052,7 @@ export function reconcileGateCandidates(
    * a real, merely-untrusted candidate.
    */
   return candidates.judgingSha
-    ? { ...candidates, judgingShaSource: candidates.judgingShaSource ?? 'run-probe' }
+    ? { ...candidates, judgingShaSource: 'run-probe' }
     : candidates;
 }
 
@@ -3417,6 +3413,12 @@ export interface SweepExposure {
   /** ms until git-sync's next scheduled tick; null when the routine's next fire is unknown. */
   nextSweepInMs: number | null;
   detail: string | null;
+  /**
+   * Present only when the LAST COMPLETED sweep held this path under the turn-scoped hold
+   * (plan git-sync-turn-scoped-commit-hold-2026-10-11 P-003): its editor's turn had not
+   * ended, so the path is not swept until it does. Last-sweep evidence — it may have lifted.
+   */
+  turnHeld?: { holder: string; heldSince: string | null };
 }
 
 /** Nothing to be exposed to — a clean path, or a sha-only probe. */
@@ -3443,11 +3445,31 @@ export function evaluateSweepExposure(args: {
   /** git-sync's next scheduled fire (epoch ms), from the routine row. */
   nextSweepAtMs: number | null;
   nowMs?: number;
+  /** The probed path's turn hold in the last completed sweep, from `turnHoldFor`. */
+  turnHold?: { holder: string; heldSince: string | null } | null;
 }): SweepExposure {
   const { dirtyUncommitted, dirtyPaths, nextSweepAtMs } = args;
   if (!dirtyUncommitted) return NO_SWEEP_EXPOSURE;
 
   const now = args.nowMs ?? Date.now();
+  if (args.turnHold) {
+    // The hold is the answer: the next tick leaves this path out, so warning that it will
+    // be swept mid-edit would be false. The rest of the tree is still swept as usual.
+    const { holder, heldSince } = args.turnHold;
+    const sinceMs = heldSince ? Date.parse(heldSince) : Number.NaN;
+    const age = Number.isFinite(sinceMs) ? ` for ~${Math.max(0, Math.round((now - sinceMs) / 60_000))} min` : '';
+    return {
+      exposed: false,
+      dirtyPathCount: dirtyPaths ? dirtyPaths.length : null,
+      dirtyPathSample: (dirtyPaths ?? []).slice(0, SWEEP_SAMPLE_LIMIT),
+      nextSweepInMs: Number.isFinite(nextSweepAtMs) ? Math.max(0, (nextSweepAtMs as number) - now) : null,
+      detail:
+        `TURN-HELD: the last git-sync sweep left this file out because ${holder} edited it during a turn that had not ended` +
+        `${age}. It is committed, together with that turn's other edits, on the first sweep after the turn ends, the ` +
+        `session ends, or 60 min after the edit. locks:release does not lift it; use locks:acquire to hold a change across turns.`,
+      turnHeld: { holder, heldSince },
+    };
+  }
   // Never `=== null` a timestamp that came from free-form routine state: `undefined`
   // slips straight through and renders as "NaN min" (the carry note from P-003).
   // A next-fire already in the past means the tick is DUE, not negative — clamp to 0.
@@ -3499,6 +3521,25 @@ export function evaluateSweepExposure(args: {
       `You cannot make this atomic — git-sync owns commit — so either finish the set before the tick, or read a red ` +
       `landing in this window against the candidate sha before believing it (dev:pipeline_position reports containment).`,
   };
+}
+
+/**
+ * P-003: the probed path's turn hold in the last completed sweep, or null. `skippedPaths`
+ * entries are repo-relative within their `scope`, joined to the superproject-relative
+ * probed path exactly as `gitSyncDeferralFor` does. Pure.
+ */
+export function turnHoldFor(
+  path: string | null | undefined,
+  skippedPaths: readonly GitSyncSkippedPath[] | null | undefined,
+): { holder: string; heldSince: string | null } | null {
+  if (!path) return null;
+  const want = path.replace(/^\.\//, '');
+  for (const s of skippedPaths ?? []) {
+    if (!('owner' in s) || !isTurnHoldIntent(s.intent)) continue;
+    const full = !s.scope || s.scope === 'superproject' ? s.path : `${s.scope}/${s.path}`;
+    if (full === want) return { holder: s.owner, heldSince: s.heldSince ?? null };
+  }
+  return null;
 }
 
 /** A diagnostic stage. Delivery stages are ordered source->live; publish is a side leg. */
@@ -3689,6 +3730,103 @@ export function mainBufferIsStale(
 }
 
 /**
+ * WI-10006493: the last git-sync pass's deliberate deferral of the queried path, if any.
+ *
+ * git-sync defers a dirty path for three reasons: a live edit lock (`owner` + `intent`), a
+ * migration whose number reservation was refused (`migration-reservation`), or a superproject
+ * path held back with such a migration by the dependency fence (`migration-dependency-fence`).
+ * In all three a forced sync defers the path again, so `git-sync:run` is not a lever. The
+ * returned `lever` names what actually unblocks the path, and deliberately does NOT contain
+ * the `git-sync:run` token, because callers copy the lever verbatim.
+ *
+ * `skippedPaths` entries are repo-relative within their `scope` (a submodule path, or
+ * `superproject`); the queried path is superproject-relative, so the two are joined first.
+ * Pure: matches against the snapshot the resolver already read.
+ */
+export function gitSyncDeferralFor(
+  path: string | null,
+  gitSync: Pick<GitSyncLegs, 'skippedPaths' | 'syncAgeMs'>,
+): {
+  reason: 'edit-lock' | 'turn-hold' | 'migration-reservation' | 'migration-dependency-fence';
+  detail: string;
+  lever: string;
+} | null {
+  if (!path) return null;
+  const want = path.replace(/^\.\//, '');
+  const entry = (gitSync.skippedPaths ?? []).find((s) => {
+    const full = !s.scope || s.scope === 'superproject' ? s.path : `${s.scope}/${s.path}`;
+    return full === want;
+  });
+  if (!entry) return null;
+  const when =
+    gitSync.syncAgeMs === null || gitSync.syncAgeMs === undefined
+      ? 'The last git-sync pass'
+      : `The last git-sync pass (~${Math.max(0, Math.round(gitSync.syncAgeMs / 60_000))} min ago)`;
+  const listOr = (xs: readonly string[] | undefined, none: string): string =>
+    xs && xs.length > 0 ? xs.join(', ') : none;
+
+  if ('owner' in entry && isTurnHoldIntent(entry.intent)) {
+    return {
+      reason: 'turn-hold',
+      detail:
+        `${when} held this path under the turn-scoped hold: ${entry.owner} edited it during a turn that had not ended. ` +
+        'Forcing git-sync:run holds it again until that turn ends, the session ends, or 60 min pass since the edit.',
+      lever: `none needed — it commits with ${entry.owner}'s other edits on the first sweep after that turn ends; locks:release does not lift it`,
+    };
+  }
+  if ('owner' in entry) {
+    return {
+      reason: 'edit-lock',
+      detail:
+        `${when} deferred this path because a live edit lock covers it (held by ${entry.owner}: "${entry.intent}"). ` +
+        'git-sync excludes locked paths from every commit, so forcing git-sync:run skips it again until the lock is released or expires.',
+      lever: `release the edit lock on this path (held by ${entry.owner}) — check locks:queue first: if it is already released, the next sweep commits the path`,
+    };
+  }
+  if (entry.reason === 'migration-reservation') {
+    return {
+      reason: 'migration-reservation',
+      detail:
+        `${when} deferred this migration because its number reservation was refused: ${entry.detail}. ` +
+        'git-sync re-checks the reservation on every pass, so forcing git-sync:run defers it again until the reservation is valid.',
+      lever:
+        'reserve a migration number with node scripts/next-migration.mjs --name <slug> --intent "..." and rename this file to the printed path; it commits on the next sweep after that',
+    };
+  }
+  const migrations = listOr(entry.blockingMigrations, 'an unidentified migration');
+  const authors = listOr(entry.blockingAgents, 'unattributed');
+  const workItems = listOr(entry.blockingWorkItems, 'none recorded');
+  return {
+    reason: 'migration-dependency-fence',
+    detail:
+      `${when} held this path behind the migration dependency fence: ${entry.detail}. ` +
+      `Blocking migration(s): ${migrations}; author(s): ${authors}; work-item(s): ${workItems}. ` +
+      'The fence holds the path for as long as that migration\'s reservation is refused, so forcing git-sync:run defers it again.',
+    lever:
+      `unblock the migration first — ${migrations} (author: ${authors}; work-item: ${workItems}) needs a valid reservation ` +
+      '(node scripts/next-migration.mjs, then rename it); this path commits with it on the next sweep after that',
+  };
+}
+
+/** A content-quarantined file cannot be committed by simply repeating the sync. */
+export function gitSyncContentQuarantineFor(
+  path: string | null,
+  gitSync: Pick<GitSyncLegs, 'contentErrors'>,
+): { reason: 'content-quarantine'; detail: string; lever: string } | null {
+  if (!path) return null;
+  const want = path.replace(/^\.\//, '');
+  const entry = (gitSync.contentErrors ?? []).find((error) => error.path === want);
+  if (!entry) return null;
+  return {
+    reason: 'content-quarantine',
+    detail:
+      `The last git-sync pass quarantined this path because the ${entry.detector} content check flagged it. ` +
+      'Repeating the sync cannot commit it until that finding is fixed.',
+    lever: `fix this path's ${entry.detector} content-check finding; git-sync will retry it on the next pass`,
+  };
+}
+
+/**
  * Derive the stage table from state the caller ALREADY computed — this function
  * makes no git calls and adds no measurement, so it is pure and unit-testable.
  * P-002/P-003/P-004 replace the `unknown` healths with real signals.
@@ -3712,6 +3850,11 @@ export function computeStages(
      * The resolver always passes it; a caller that omits it has no failed legs to report.
      */
     positionsUnknown?: readonly string[];
+    /**
+     * WI-10006493: the queried path, read only to match it against the last git-sync pass's
+     * `skippedPaths`. The resolver always passes it; a caller that omits it gets no deferral match.
+     */
+    input?: { path: string | null };
   },
   /**
    * WI-6525: set when there is genuinely nothing to measure a position for — no
@@ -3777,6 +3920,12 @@ export function computeStages(
   // EI-24049239243821100: an unreadable working tree cannot put this stage behind us —
   // "committed" is exactly the question the failed `git status` could not answer.
   const workingTreeUnknown = !p.dirtyUncommitted && (p.positionsUnknown?.includes('workingTree') ?? false);
+  // WI-10006493: git-sync:run is only the lever when a sync CAN commit this path. When the last
+  // pass deliberately deferred it (a migration guard, or a live edit lock), forcing another pass
+  // defers it again, so the blocker and its owner are named instead.
+  const deferral = p.dirtyUncommitted
+    ? gitSyncContentQuarantineFor(p.input?.path ?? null, p.gitSync) ?? gitSyncDeferralFor(p.input?.path ?? null, p.gitSync)
+    : null;
   stages.push({
     name: 'committed',
     plane: 'delivery',
@@ -3788,13 +3937,17 @@ export function computeStages(
         : targetUnresolvedDetail
           ? 'stalled'
           : 'advancing',
-    detail: p.dirtyUncommitted
+    detail: deferral
+      ? deferral.detail
+      : p.dirtyUncommitted
       ? 'Uncommitted edits in the working tree. The release gate checks out a COMMITTED candidate and cannot see the tree, so this change is invisible to it until git-sync commits. Force it now: git-sync:run.' +
         (sweep.detail ? ` ${sweep.detail}` : '')
       : workingTreeUnknown
         ? 'The working-tree status read failed, so whether this path has uncommitted edits is unknown. Treat nothing past this stage as proof the edit on disk is live.'
         : targetUnresolvedDetail,
-    lever: p.dirtyUncommitted
+    lever: deferral
+      ? deferral.lever
+      : p.dirtyUncommitted
       ? multiFileSweep
         ? `git-sync:run (commit the working tree — the gate cannot see it) — ⚠ this sweeps ALL ${sweep.dirtyPathCount} dirty paths in the tree, not just yours; only fire it once the set is complete`
         : 'git-sync:run (commit the working tree — the gate cannot see it)'
@@ -4526,6 +4679,8 @@ export interface PipelinePositionDeps {
   localRuntimeHost?: string;
   /** P-001 (acceptance-runtime-plane): per-port `/api/health` sha for servingRuntimes. */
   probeHealthSha?: (port: number) => Promise<string | null>;
+  /** WI-10005936: a bundling host's `/api/health` report of the bundle it booted. */
+  probeHealthBundle?: (port: number) => Promise<ServingRuntimeBundleState | null>;
   /** P-001: `/proc/<pid>/cgroup`, to join a unit's child process to its runtime-vintage row. */
   readCgroup?: (pid: number) => Promise<string | null>;
   /** P-001: live psu sessions (each loaded psu-pty-host.mjs at its own launch). */
@@ -4940,30 +5095,35 @@ export function mapCheckpointRunInFlight(
 export const realResolveGateCandidates = async (root: string): Promise<GateCandidates> => {
   try {
     const { checkActiveCheckpointRun, currentCheckpointCandidate } = await import('./release-checkpoint-launch');
-    const { spawnSync } = await import('node:child_process');
-    const execFn = (cmd: string, args: string[]) => {
-      const r = spawnSync(cmd, args, {
-        encoding: 'utf8',
-        timeout: GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS,
-      });
-      return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
-    };
-    const active = checkActiveCheckpointRun(root, execFn);
-    // checkActiveCheckpointRun ALREADY resolves the quiet-cut candidate internally (it
-    // spreads `...current` into its result) whenever a run is active — only pay for the
-    // second resolution when it did not, or this hot path (CLAUDE.md points agents here
-    // for "is my edit live") runs the same 4-5 git reads twice per call.
-    const nextCandidateSha =
-      active.current_candidate !== undefined
-        ? active.current_candidate
-        : currentCheckpointCandidate(root, execFn).current_candidate;
-    return {
-      // Only a genuinely ACTIVE run has a judging sha. `current_candidate` describes a
-      // HYPOTHETICAL fresh launch and must never be reported as "what is being judged"
-      // (EI-18695275971973546 cost a wrong fleet-wide broadcast to that exact conflation).
-      judgingSha: active.active ? (active.candidate ?? null) : null,
-      nextCandidateSha,
-    };
+    const { runSyncWithAsyncExec, execFileResultShared } = await import('./sync-exec-replay');
+    // WI-10005261: these probes are sync and exec-injected. A spawnSync exec here blocked the
+    // operator main thread (98.6% of a measured sentinel stall), so they run under
+    // record/replay: every git/systemctl call goes through async execFile, and the final pass
+    // is a faithful re-execution against the fetched results.
+    const { value } = await runSyncWithAsyncExec(
+      (execFn) => {
+        const active = checkActiveCheckpointRun(root, execFn);
+        // checkActiveCheckpointRun ALREADY resolves the quiet-cut candidate internally (it
+        // spreads `...current` into its result) whenever a run is active — only pay for the
+        // second resolution when it did not, or this hot path (CLAUDE.md points agents here
+        // for "is my edit live") runs the same 4-5 git reads twice per call.
+        const nextCandidateSha =
+          active.current_candidate !== undefined
+            ? active.current_candidate
+            : currentCheckpointCandidate(root, execFn).current_candidate;
+        return {
+          // Only a genuinely ACTIVE run has a judging sha. `current_candidate` describes a
+          // HYPOTHETICAL fresh launch and must never be reported as "what is being judged"
+          // (EI-18695275971973546 cost a wrong fleet-wide broadcast to that exact conflation).
+          judgingSha: active.active ? (active.candidate ?? null) : null,
+          nextCandidateSha,
+        };
+      },
+      // EI-24852529885337741: concurrent callers repeat these exact git reads in ~1 s bursts;
+      // the shared memo gives each argv one child per 2 s.
+      (cmd, args) => execFileResultShared(cmd, args, { timeout: GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS }),
+    );
+    return value;
   } catch {
     return { judgingSha: null, nextCandidateSha: null };
   }
@@ -4972,7 +5132,38 @@ export const realResolveGateCandidates = async (root: string): Promise<GateCandi
 /** Default unit-start probe: the shared systemd probe, mapped into ms. */
 /** EI-19447523039740352. Never throws: an unreadable systemd degrades to
  *  `source:'systemd-unavailable'`, which evaluateServing reads as UNKNOWN (keeps the lever). */
-const realReadDeployInFlight = (): Promise<DeployInFlight> => readDeployInFlight();
+const realReadDeployInFlight = (): Promise<DeployInFlight> => readDeployInFlightShared();
+
+/**
+ * WI-10008286: the same defect class as the unit-start probe below. readDeployInFlight
+ * forks `systemctl show` on EVERY call, and one evidence read runs gitPipelinePosition
+ * for up to 12 paths in parallel, so an operator-release read paid up to 12 forks of a
+ * multi-GB process. It was 8.1% of the 2026-10-11T00:10Z papercusp-bg-host
+ * loop-saturation profile (p95 lag 605 ms). One read per window, shared by every
+ * concurrent caller. A deploy runs for minutes, so a 2 s window cannot hide one; it can
+ * only report a just-started deploy up to 2 s late, as the uncached read could already.
+ */
+export const DEPLOY_IN_FLIGHT_TTL_MS = 2_000;
+
+const deployInFlightRead = pinModuleState('@papercusp/operator-core.git-pipeline-position.deploy-in-flight', () => ({
+  cache: createCache(),
+}));
+
+/** Memoized deploy-in-flight read; `uncached` is injectable for tests. */
+export function readDeployInFlightShared(
+  uncached: () => Promise<DeployInFlight> = readDeployInFlight,
+): Promise<DeployInFlight> {
+  return deployInFlightRead.cache.getOrSet('host-local', 'deploy-in-flight', () => uncached(), {
+    softTtlMs: DEPLOY_IN_FLIGHT_TTL_MS,
+    hardTtlMs: DEPLOY_IN_FLIGHT_TTL_MS,
+    cacheEmpty: true,
+  });
+}
+
+/** Test-only: drop the memoized deploy-in-flight read. */
+export function resetDeployInFlightCacheForTest(): void {
+  deployInFlightRead.cache = createCache();
+}
 
 // WI-10550: `resolveServiceStartMs` prefers the probe's MEASURED /proc start over
 // the `etimes`-derived one. That derivation is biased LATE (whole-second truncation
@@ -4981,12 +5172,92 @@ const realReadDeployInFlight = (): Promise<DeployInFlight> => readDeployInFlight
 // codeAsOfMs` more likely TRUE. This detector exists to refuse exactly that
 // unearned YES, so the derivation is a fallback for hosts without /proc, never a
 // preference. Preference order + rationale live on the helper.
-const realProbeUnitStart = async (unit: string): Promise<{ pid: number | null; startedAtMs: number | null } | null> =>
+const probeUnitStartUncached = async (unit: string): Promise<{ pid: number | null; startedAtMs: number | null } | null> =>
   // EI-24356772206513832: this diagnostic already keeps its release Git reads
   // local. A failed spawner-sidecar startup otherwise adds its 10s timeout to
   // the systemd probe before it falls back to the same local command. Several
   // unit probes share this read, so use the bounded local exec path directly.
   resolveServiceStartMs(await probeServiceStart(unit, (command, args, options) => pexec(command, args, options)), Date.now());
+
+/**
+ * jev-memory-timeouts-to-zero-2026-10-01 D-001: ONE unit-start probe per unit per
+ * {@link UNIT_START_PROBE_TTL_MS}, shared by every concurrent caller.
+ *
+ * One `gitPipelinePosition({ path })` probes the serving unit, every
+ * GENERATION_HOSTS unit, and the serving-runtime census, and
+ * `deploymentPositionForEvidence` runs up to 12 paths in parallel. Unmemoized,
+ * that was ~10 local forks per path (systemctl + ps per unit). Each fork froze a
+ * 1.5-4 GB operator's event loop for 16-55 ms (bpftrace 2026-10-01: 30 systemctl
+ * + 30 ps in 30 s on :3170, 6.0 s of a 60 s window frozen in one :3070 worker).
+ * Soft TTL = hard TTL, so an expired entry is re-probed BLOCKING and is never
+ * served stale. Within the 2 s window a just-restarted unit can still read its
+ * previous start, which errs toward "not yet running your code", the
+ * conservative direction for this detector. Null results are cached too
+ * (`cacheEmpty`), so an unreadable systemd is not re-forked per path.
+ */
+export const UNIT_START_PROBE_TTL_MS = 2_000;
+
+/**
+ * WI-10008286: the longest a probed unit start is re-served WITHOUT a fork, and only
+ * while the fork-free identity check below still matches.
+ *
+ * The 2 s TTL alone still forked `systemctl` once per unit every 2 s in every process
+ * that answers pipeline reads. On papercusp-bg-host (multi-GB, serving ~77 agents) the
+ * loop-saturation profile of 2026-10-11T00:10Z (p95 lag 605 ms) spent 19.8% of its
+ * samples in probeUnitStartUncached, and the 22:54Z profile 13.9% in spawn under the
+ * same caller. The fork itself freezes the loop, so every re-fork is paid in lag.
+ *
+ * A unit's start only changes when its MainPID changes, and a changed MainPID is
+ * visible without a fork: the old `/proc/<pid>` disappears, or a recycled pid carries
+ * a different `/proc/<pid>` start (the same mtime `probeServiceStart` records as
+ * `startedAtMs`). So past the TTL a cached `{pid, startedAtMs}` is re-served only after
+ * that one `stat`, and any mismatch falls through to the normal probe. The backstop
+ * bounds what the identity check cannot see (a MainPID handed to another live
+ * process); null and pid-less results cannot be identity-checked and keep the 2 s TTL.
+ */
+export const UNIT_START_IDENTITY_MAX_MS = 60_000;
+
+type UnitStartProbe = { pid: number | null; startedAtMs: number | null } | null;
+
+/** Fork-free read of `/proc/<pid>`'s start (epoch ms); null when the pid is gone. Injectable for tests. */
+export type ProcStartReader = (pid: number) => Promise<number | null>;
+
+const unitStartProbe = pinModuleState('@papercusp/operator-core.git-pipeline-position.unit-start-probe', () => ({
+  cache: createCache(),
+  /** Last probed value per unit, with the time its probe (or cache read) returned. */
+  identified: new Map<string, { value: UnitStartProbe; probedAtMs: number }>(),
+}));
+
+/** Memoized unit-start probe; `uncached` and `readStart` are injectable for tests. */
+export async function probeUnitStartShared(
+  unit: string,
+  uncached: (unit: string) => Promise<UnitStartProbe> = probeUnitStartUncached,
+  readStart: ProcStartReader = readProcStartMs,
+): Promise<UnitStartProbe> {
+  const known = unitStartProbe.identified.get(unit);
+  if (known && Date.now() - known.probedAtMs < UNIT_START_IDENTITY_MAX_MS) {
+    const { value } = known;
+    if (value?.pid && value.pid > 0 && value.startedAtMs !== null && (await readStart(value.pid)) === value.startedAtMs) {
+      return value;
+    }
+  }
+  const value = await unitStartProbe.cache.getOrSet('host-local', `unit-start:${unit}`, () => uncached(unit), {
+    softTtlMs: UNIT_START_PROBE_TTL_MS,
+    hardTtlMs: UNIT_START_PROBE_TTL_MS,
+    cacheEmpty: true,
+  });
+  unitStartProbe.identified.set(unit, { value, probedAtMs: Date.now() });
+  return value;
+}
+
+const realProbeUnitStart = (unit: string): Promise<{ pid: number | null; startedAtMs: number | null } | null> =>
+  probeUnitStartShared(unit);
+
+/** Test-only: drop memoized unit-start probes. */
+export function resetUnitStartProbeCacheForTest(): void {
+  unitStartProbe.cache = createCache();
+  unitStartProbe.identified.clear();
+}
 
 /**
  * WI-2141731 — the release operator's own `/api/health` origin.
@@ -5084,6 +5355,34 @@ export function evaluateReleaseContentDrift(args: { workingBytes: Buffer | null;
   const { workingBytes, releaseBytes } = args;
   if (workingBytes === null || releaseBytes === null) return { differs: null };
   return { differs: !workingBytes.equals(releaseBytes) };
+}
+
+export interface AcceptedSourceContainment {
+  expectedSha256: string;
+  observedSha256: string | null;
+  matches: boolean | null;
+  /** Content at the exact deployed artifact, independent of latest-path ancestry. */
+  deployedContains: boolean | null;
+  /** Only applicable runtimes. PTY containment retains its at-least-one-current-instance meaning. */
+  runtimeContainment: Record<string, boolean | null>;
+}
+
+export function evaluateAcceptedSourceContainment(
+  expectedSha256: string,
+  observedBytes: Buffer | null,
+  deployedContains: boolean | null,
+  runtimes: readonly ServingRuntimeEntry[],
+): AcceptedSourceContainment {
+  const observedSha256 = observedBytes === null ? null : createHash('sha256').update(observedBytes).digest('hex');
+  const matches = observedSha256 === null ? null : observedSha256 === expectedSha256;
+  const bound = (contains: boolean | null): boolean | null => matches === true ? contains : matches;
+  return {
+    expectedSha256,
+    observedSha256,
+    matches,
+    deployedContains: bound(deployedContains),
+    runtimeContainment: Object.fromEntries(runtimes.map((runtime) => [runtime.runtime, bound(runtime.containsChange)])),
+  };
 }
 
 /**
@@ -5444,13 +5743,10 @@ export async function gitPipelinePosition(
   deps: PipelinePositionDeps = {},
 ): Promise<PipelinePosition> {
   const baseGit = deps.git ?? realGit;
-  // This is a read-only diagnostic hot path.  Do not lazily boot or queue behind
-  // the host spawner sidecar while resolving the release refs: when the checkpoint
-  // gate is already stalled, that IPC hop can hold the whole pipeline-position read
-  // until the MCP deadline.  The release status/trace readers use the same local-git
-  // policy; keep the defaults here aligned so the primary diagnostic cannot wedge
-  // while reporting on the wedge (EI-21306970701615848).
-  const loadDeploy = deps.loadDeploy ?? (() => devDeployState({ useSpawnerSidecar: false }));
+  // Keep the wider pipeline snapshot on local Git so this diagnostic never has to
+  // lazily boot the sidecar for gate state. The mapped dev-deploy batch is a
+  // separate read-only path with a 2s child deadline and a bounded RPC.
+  const loadDeploy = deps.loadDeploy ?? (() => devDeployState({ useSpawnerSidecar: true }));
   const loadSnapshot =
     deps.loadSnapshot ?? (() => gitPipelineSnapshot(undefined, { useSpawnerSidecar: false }));
 
@@ -5795,9 +6091,43 @@ export async function gitPipelinePosition(
         // before the current path tip. A later same-path commit may make that
         // baseline already contain the caller's marker; each ref can then fall back
         // to its own earlier path commit's parent below.
-        const targetMarkerBaseline = marker
-          ? await markerAtCommit(gitReadForMarker, `${targetSha}~1`, relPath, marker)
-          : null;
+        type MarkerLeg = 'onStaging' | 'inMain' | 'deployed';
+        type MarkerLegRead = {
+          earlier: Awaited<ReturnType<typeof newestTouchingInRef>>;
+          verdict: MarkerContainment;
+          refInternalBaselineSha: string | null;
+          refInternalBaseline: MarkerContainment | null;
+        };
+        const markerLegsToRead = legs.flatMap(([leg, ref]) =>
+          ref && !positions[leg] && !positionsUnknown.includes(leg) ? [{ leg, ref }] : [],
+        );
+        const markerReadByLeg = new Map<MarkerLeg, MarkerLegRead>();
+        let targetMarkerBaseline: MarkerContainment | null = null;
+        if (marker && markerLegsToRead.length > 0) {
+          // EI-25387349658325956: these are at most three fixed release refs. Read each
+          // ref's marker verdict and path tip together, then its ref-local baseline,
+          // concurrently across refs. The old loop serialized those independent chains;
+          // a marker-aware call measured 55s while the same call without a marker took 17s.
+          const [baseline, markerReadEntries] = await Promise.all([
+            markerAtCommit(gitReadForMarker, `${targetSha}~1`, relPath, marker),
+            Promise.all(
+              markerLegsToRead.map(async ({ leg, ref }) => {
+                const [earlier, verdict] = await Promise.all([
+                  newestTouchingInRef(git, root, ref, relPath),
+                  markerAtCommit(gitReadForMarker, ref, relPath, marker),
+                ]);
+                const refInternalBaselineSha =
+                  earlier?.sha && earlier.sha !== targetSha ? `${earlier.sha}~1` : null;
+                const refInternalBaseline: MarkerContainment | null = refInternalBaselineSha
+                  ? await markerAtCommit(gitReadForMarker, refInternalBaselineSha, relPath, marker)
+                  : null;
+                return [leg, { earlier, verdict, refInternalBaselineSha, refInternalBaseline }] as const;
+              }),
+            ),
+          ]);
+          targetMarkerBaseline = baseline;
+          for (const [leg, read] of markerReadEntries) markerReadByLeg.set(leg, read);
+        }
         const targetMarkerBaselineCount =
           typeof targetMarkerBaseline?.count === 'number' ? targetMarkerBaseline.count : null;
 
@@ -5811,14 +6141,17 @@ export async function gitPipelinePosition(
           // with a confident wrong story about why.
           if (positionsUnknown.includes(leg)) continue;
 
-          // Read this before the marker branch so a later same-path commit can supply
-          // the candidate's own parent as a second, change-specific baseline. The
-          // target's parent is no longer the caller's pre-change state once a peer has
-          // committed to the path after the caller's change.
-          const earlier = await newestTouchingInRef(git, root, ref, relPath);
+          const markerRead = marker ? markerReadByLeg.get(leg) : undefined;
+          if (marker && !markerRead) {
+            notes.push(`${leg}: marker reads did not settle; no marker correction was applied.`);
+            continue;
+          }
+          // The marker path pre-read this with its other ref reads. Without a marker,
+          // keep the original single read here.
+          const earlier = markerRead ? markerRead.earlier : await newestTouchingInRef(git, root, ref, relPath);
 
-          if (marker) {
-            const verdict = await markerAtCommit(gitReadForMarker, ref, relPath, marker);
+          if (marker && markerRead) {
+            const verdict = markerRead.verdict;
             markerLegs[leg] = verdict;
             /* ------------------------------------------------------------------ *
              * EI-21443291930356119 — the two available baselines answer DIFFERENT
@@ -5844,11 +6177,7 @@ export async function gitPipelinePosition(
              * So: measure the ref-internal baseline whenever one exists and prefer
              * it; let the target-parent baseline settle the ADDED direction alone.
              * ------------------------------------------------------------------ */
-            const refInternalBaselineSha =
-              earlier?.sha && earlier.sha !== targetSha ? `${earlier.sha}~1` : null;
-            const refInternalBaseline: MarkerContainment | null = refInternalBaselineSha
-              ? await markerAtCommit(gitReadForMarker, refInternalBaselineSha, relPath, marker)
-              : null;
+            const { refInternalBaselineSha, refInternalBaseline } = markerRead;
             // `markerNetChange` owns the two rules a strict count comparison needs —
             // never bare presence, and never a count from a tree that does not have
             // the file at all. It is unit-tested against a deliberately-wrong control;
@@ -6561,6 +6890,7 @@ export async function gitPipelinePosition(
 
   let runtimeGenerations: RuntimeGeneration[] = [];
   let servingRuntimes: ServingRuntimeEntry[] = [];
+  let acceptedSource: AcceptedSourceContainment | undefined;
   if (inp.path) {
     const probeUnit = deps.probeUnitStart ?? realProbeUnitStart;
     const mtimeOf = deps.fileMtimeMs ?? realFileMtimeMs;
@@ -6592,27 +6922,72 @@ export async function gitPipelinePosition(
     // each runtime measured against ITS OWN build identity — never the :3070 flag.
     const servingPath = superRelPath ?? inp.path.replace(/^\.?\//, '');
     const servingGitRead = gitReadForRepo(git, root);
+    const expectedSource = inp.expectedSourceSha256;
+    const readBytes = deps.readFileBytes ?? realReadFileBytes;
+    const sourcePath = path.join(root, inp.path.replace(/^\.?\//, ''));
+    const frozenBytes = expectedSource ? await readBytes(sourcePath) : null;
+    // Freeze the comparison's tree side. Reuse the existing blob reader and
+    // gitlink resolver; a concurrent edit must never replace the accepted subject.
+    const objectFormat = expectedSource ? await git(gitDir, ['rev-parse', '--show-object-format']) : null;
+    const frozenBlob = frozenBytes !== null && objectFormat === 'sha1'
+      ? createHash('sha1').update(`blob ${frozenBytes.length}\0`).update(frozenBytes).digest('hex')
+      : null;
     const servingSubmodules = { submodules: submodule ? [submodule] : [] };
     const containmentBySha = new Map<string, Promise<{ contains: boolean | null; unknown: CellUnknown | null }>>();
+    const blobContainsAt = (sha: string) => {
+      let pending = containmentBySha.get(sha);
+      if (!pending) {
+        pending = expectedSource ? (async () => {
+          const unknown = cellUnknown('resolver-failed', 'Could not read the frozen accepted blob or artifact blob; containment is unknown.');
+          if (!frozenBlob) return { contains: null, unknown };
+          const pin = submodule ? await readSubmodulePin(git, root, sha, submodule) : null;
+          if (submodule && !pin) return { contains: null, unknown };
+          const candidateBlob = await blobAtCommit(
+            submodule ? gitReadForRepo(git, gitDir) : servingGitRead,
+            pin?.sha ?? sha,
+            submodule ? relPath! : servingPath,
+          );
+          // blobAtCommit deliberately returns null for absent OR failed reads.
+          // Neither is proof of a mismatch, so exact accepted proof stays unknown.
+          return candidateBlob === null ? { contains: null, unknown } : { contains: candidateBlob === frozenBlob, unknown: null };
+        })() : classifyPathsAgainstCandidate(servingGitRead, sha, [servingPath], 'HEAD', servingSubmodules).then(
+          ([row]) => ({ contains: row?.inCandidate ?? null, unknown: row?.unknownReason ?? null }),
+        );
+        containmentBySha.set(sha, pending);
+      }
+      return pending;
+    };
     servingRuntimes = await resolveServingRuntimes(selectServingRuntimes(servingPath, runtimes), {
       probeUnitStart: probeUnit,
       probeHealthSha: deps.probeHealthSha,
+      probeHealthBundle: deps.probeHealthBundle,
       vintageRows,
       localHost: deps.localRuntimeHost ?? hostname(),
       readCgroup: deps.readCgroup,
       fileMtimeMs: workingTreeMtimeMs,
       listPtyHostInstances: deps.listPtyHostInstances ?? realListPtyHostInstances,
-      blobContainsAt: (sha) => {
-        let pending = containmentBySha.get(sha);
-        if (!pending) {
-          pending = classifyPathsAgainstCandidate(servingGitRead, sha, [servingPath], 'HEAD', servingSubmodules).then(
-            ([row]) => ({ contains: row?.inCandidate ?? null, unknown: row?.unknownReason ?? null }),
-          );
-          containmentBySha.set(sha, pending);
-        }
-        return pending;
-      },
+      blobContainsAt,
     }).catch(() => []);
+    if (expectedSource) {
+      const deployedContains = deployedSha ? (await blobContainsAt(deployedSha)).contains : null;
+      const observedBytes = await readBytes(sourcePath);
+      const observedMtimeMs = await mtimeOf(sourcePath);
+      const frozenMatches = frozenBytes !== null && createHash('sha256').update(frozenBytes).digest('hex') === expectedSource;
+      // Time-based load evidence must describe the same file observation. Blob
+      // evidence is already bound to the frozen bytes and needs no mtime equality.
+      const boundRuntimes = servingRuntimes.map((runtime) => ({
+        ...runtime,
+        containsChange: frozenMatches && (runtime.method === 'blob' || observedMtimeMs === workingTreeMtimeMs)
+          ? runtime.containsChange : null,
+      }));
+      acceptedSource = evaluateAcceptedSourceContainment(
+        expectedSource,
+        // A failed initial snapshot is unknown even if the final read recovers.
+        frozenBytes === null ? null : observedBytes,
+        frozenMatches ? deployedContains : null,
+        boundRuntimes,
+      );
+    }
   }
 
   if (serving.startedSinceCodeChange === false) {
@@ -6827,9 +7202,12 @@ export async function gitPipelinePosition(
     dirtyUncommitted,
     dirtyPaths,
     nextSweepAtMs: snap.routines?.gitSync?.nextFireAtMs ?? null,
+    turnHold: turnHoldFor(inp.path, snap.gitSync?.skippedPaths),
   });
   if (sweepExposure.exposed && (sweepExposure.dirtyPathCount ?? 0) > 1) {
     notes.push(`SWEEP-EXPOSED: ${sweepExposure.detail}`);
+  } else if (sweepExposure.turnHeld) {
+    notes.push(sweepExposure.detail ?? 'TURN-HELD');
   }
 
   const verdictUnknownLegs = verdictUnknown.map((v) => v.leg);
@@ -6913,6 +7291,7 @@ export async function gitPipelinePosition(
       conflicts: snap.gitSync?.lastConflicts ?? [],
       errors: snap.gitSync?.lastErrors ?? [],
       skippedPaths: snap.gitSync?.skippedPaths ?? [],
+      contentErrors: snap.gitSync?.contentErrors ?? [],
       pushMode: snap.gitSync?.pushMode ?? null,
       ownHeadPublish: snap.gitSync?.ownHeadPublish ?? null,
     },
@@ -6921,6 +7300,7 @@ export async function gitPipelinePosition(
     serving,
     runtimeGenerations,
     servingRuntimes,
+    ...(acceptedSource ? { acceptedSource } : {}),
     changeInCandidate,
     sweepExposure,
     notes,

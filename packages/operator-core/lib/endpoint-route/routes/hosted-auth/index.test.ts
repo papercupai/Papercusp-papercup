@@ -96,6 +96,7 @@ function setup(
     permissionVersion: 7,
   }),
   selfSignup?: HostedSelfSignupAdmission,
+  onSessionEstablished?: HostedAuthRouteDependencies['onSessionEstablished'],
 ) {
   const flowStore = new MemoryFlowStore();
   const sessionStore = new MemorySessionStore();
@@ -107,6 +108,7 @@ function setup(
     sessionCookieCodec: codec,
     bindIdentity,
     ...(selfSignup ? { selfSignup } : {}),
+    ...(onSessionEstablished ? { onSessionEstablished } : {}),
     publicOrigin: ORIGIN,
     clock: () => NOW,
     randomBytes: fixedEntropy(),
@@ -258,6 +260,20 @@ describe('hosted auth route contract', () => {
     expect(await replay.json()).toMatchObject({ error: { code: 'invalid_state_already-consumed' } });
   });
 
+  it('observes only a persisted authenticated session and never waits on analytics', async () => {
+    const observer = vi.fn<NonNullable<HostedAuthRouteDependencies['onSessionEstablished']>>(() => new Promise(() => {}));
+    const s = setup(undefined, undefined, undefined, observer);
+    const started = await begin(s);
+    const callback = () => invoke(s.route('GET', '/hosted/auth/callback'),
+      new Request(`${ORIGIN}${HOSTED_AUTH_CALLBACK_PATH}?code=code-1&state=${started.state}`, {
+        headers: { cookie: `${HOSTED_AUTH_FLOW_COOKIE}=${encodeURIComponent(started.flowCookie)}` } }));
+    expect((await callback()).status).toBe(303);
+    expect(observer).toHaveBeenCalledTimes(1);
+    expect(observer.mock.calls[0]![0]).toBe(s.sessionStore.current);
+    expect((await callback()).status).toBe(400);
+    expect(observer).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps explicit sign-up separate from read-only sign-in binding', async () => {
     const bindIdentity = vi.fn(async () => {
       throw new Error('sign-in binder must not run for sign-up');
@@ -324,6 +340,40 @@ describe('hosted auth route contract', () => {
     );
     expect(s.sessionStore.created).toHaveLength(0);
   });
+
+  it.each(['signup', 'binding', 'session'] as const)(
+    'keeps customer data and credentials out of %s failure logs',
+    async (stage) => {
+      const email = 'log-canary@example.test';
+      const displayName = 'Private Customer Canary';
+      const credential = 'opaque-provider-credential-canary';
+      const cause = Object.assign(new Error(`constraint failed for ${email}: ${displayName} ${credential}`), {
+        detail: { primary_email: email, sealed_session: credential },
+      });
+      cause.stack = `${cause.message}\nprivate provider response`;
+      const s = setup(
+        createFakeHostedIdentityProvider(),
+        stage === 'binding' ? async () => { throw cause; } : undefined,
+        stage === 'signup' ? { complete: async () => { throw cause; } } : undefined,
+      );
+      if (stage === 'session') vi.spyOn(s.sessionStore, 'create').mockRejectedValue(cause);
+      const started = await beginWithIntent(s, stage === 'signup' ? 'sign-up' : 'sign-in');
+      const response = await invoke(
+        s.route('GET', '/hosted/auth/callback'),
+        new Request(`${ORIGIN}${HOSTED_AUTH_CALLBACK_PATH}?code=private-code&state=${started.state}`, {
+          headers: { cookie: `${HOSTED_AUTH_FLOW_COOKIE}=${encodeURIComponent(started.flowCookie)}` },
+        }),
+      );
+      expect(response.status).toBe(503);
+      const logs = JSON.stringify(vi.mocked(console.warn).mock.calls);
+      for (const value of [email, displayName, credential, 'private-code', 'private provider response']) {
+        expect(logs).not.toContain(value);
+      }
+      expect(logs).toContain(stage === 'signup' ? 'signup_unavailable'
+        : stage === 'binding' ? 'identity_binding_unavailable' : 'session_create_failed');
+      expect(logs).toContain('fingerprint');
+    },
+  );
 
   it('signs in a returning user whose sign-up admission reports duplicate_identity', async () => {
     const bindIdentity = vi.fn(async () => ({

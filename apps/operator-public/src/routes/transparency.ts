@@ -6,27 +6,65 @@
  *   PUT TRANSPARENCY_STATEMENT_PATH  a signed monthly statement; the Worker checks its
  *                                    digest and EIP-191 signature, then stores it
  *                                    IMMUTABLY (first publication wins, 409 on drift)
+ *   PUT TRANSPARENCY_ATTESTATION_PATH an outside accountant's attestation record of a
+ *                                    published statement (P-047, D-031), with its
+ *                                    anchored inclusion proof once one exists. The
+ *                                    record must name the published statement's
+ *                                    digest; the proof is checked offline. Both are
+ *                                    kept as first stored (record 409 on drift).
  * Public reads, no auth:
- *   GET /transparency/:workspaceId                     live report + statement index
+ *   GET /transparency/:workspaceId                     live report + statement index,
+ *                                                      each month with its attestation status
  *   GET /transparency/:workspaceId/statements/:month   one signed statement
+ *   GET /transparency/:workspaceId/attestations/:month/:documentSha256/proof
+ *                                                      one attestation's inclusion proof
  */
 import { Hono } from 'hono';
 import {
   RECONCILIATION_SIGNATURE_HEADER,
   RECONCILIATION_SIGNATURE_TOLERANCE_MS,
+  TRANSPARENCY_ATTESTATION_PATH,
   TRANSPARENCY_LIVE_PATH,
   TRANSPARENCY_STATEMENT_PATH,
   verifyReconciliationRequest,
 } from '@papercusp/operator-core/lib/cupboard/reconciliation-hmac.ts';
 import {
+  parseStatementAttestationPush,
+  publicAttestationSummary,
+  statementAttestationProofProblem,
+  type PublicAttestationStatus,
+} from '@papercusp/operator-core/lib/cupboard/statement-attestation-push.ts';
+import {
   parseLiveTransparencyPush,
+  hasLiveDisclosure,
+  liveDisclosureUpdateProblem,
   parseSignedStatement,
   verifySignedStatement,
 } from '@papercusp/operator-core/lib/cupboard/transparency-statement.ts';
 import type { Env } from '../env.ts';
-import { listStatements, publishStatement, readLiveReport, readStatement, recordLiveReport } from '../transparency-store.ts';
+import {
+  listAttestations,
+  listStatements,
+  publishStatement,
+  publishedStatementDigest,
+  readAttestationProof,
+  readLiveReport,
+  readStatement,
+  recordAttestation,
+  recordLiveReport,
+  type StoredAttestation,
+} from '../transparency-store.ts';
 
 const MONTH = /^\d{4}-\d{2}$/;
+const HEX64 = /^[0-9a-f]{64}$/;
+
+const NOT_ATTESTED: PublicAttestationStatus = { status: 'not-attested' };
+
+function attestationStatus(stored: readonly StoredAttestation[] | undefined, statementDigest: string): PublicAttestationStatus {
+  // Only records of the statement readers see count; the PUT route refuses any other.
+  const mine = (stored ?? []).filter((s) => s.record.statementDigest === statementDigest);
+  return mine.length === 0 ? NOT_ATTESTED : { status: 'attested', attestations: mine.map((s) => publicAttestationSummary(s.record, s.hasProof)) };
+}
 
 export function transparencyRoute(options: { now?: () => number } = {}): Hono<{ Bindings: Env }> {
   const route = new Hono<{ Bindings: Env }>();
@@ -64,7 +102,12 @@ export function transparencyRoute(options: { now?: () => number } = {}): Hono<{ 
     if (push.generatedAtMs > nowMs + RECONCILIATION_SIGNATURE_TOLERANCE_MS) {
       return c.json({ error: 'invalid_request', detail: 'generatedAtMs is in the future' }, 400);
     }
-    const stored = await recordLiveReport(c.env.DB, push, nowMs);
+    const previous = await readLiveReport(c.env.DB, push.workspaceId);
+    // A delayed push remains a no-op; it must not be compared as a new disclosure.
+    if (previous && push.generatedAtMs < previous.generatedAtMs) return c.json({ ok: true, stored: 'stale' });
+    const problem = liveDisclosureUpdateProblem(previous?.report ?? null, push.report);
+    if (problem) return c.json({ error: 'sparse_payment_window', detail: problem }, 409);
+    const stored = await recordLiveReport(c.env.DB, push, nowMs, previous);
     return c.json({ ok: true, stored });
   });
 
@@ -82,11 +125,53 @@ export function transparencyRoute(options: { now?: () => number } = {}): Hono<{ 
     return c.json({ ok: true, published: write, digest: signed.digest });
   });
 
+  route.put(TRANSPARENCY_ATTESTATION_PATH, async (c) => {
+    const r = await signedJson(c, TRANSPARENCY_ATTESTATION_PATH);
+    if ('error' in r) return c.json(r.error, r.status);
+    const push = parseStatementAttestationPush(r.json);
+    if (!push) return c.json({ error: 'invalid_request', detail: 'not a statement attestation push' }, 400);
+    const { attestation, proof } = push;
+    const published = await publishedStatementDigest(c.env.DB, push.workspaceId, attestation.month);
+    if (published === null) {
+      return c.json({ error: 'statement_not_published', detail: `no statement is published for ${attestation.month}` }, 409);
+    }
+    if (published !== attestation.statementDigest) {
+      return c.json(
+        { error: 'statement_digest_mismatch', detail: `the record attests ${attestation.statementDigest}; the published ${attestation.month} statement is ${published}` },
+        409,
+      );
+    }
+    if (proof) {
+      const problem = await statementAttestationProofProblem(attestation, proof);
+      if (problem) return c.json({ error: 'invalid_proof', detail: problem }, 400);
+    }
+    const write = await recordAttestation(c.env.DB, attestation, proof, now());
+    if (typeof write === 'object') return c.json({ error: 'attestation_exists', detail: write.conflict }, 409);
+    return c.json({ ok: true, published: write });
+  });
+
   route.get('/transparency/:workspaceId', async (c) => {
     const workspaceId = c.req.param('workspaceId');
-    const [live, statements] = await Promise.all([readLiveReport(c.env.DB, workspaceId), listStatements(c.env.DB, workspaceId)]);
-    if (!live && statements.length === 0) return c.json({ error: 'not_found', detail: `no transparency report for '${workspaceId}'` }, 404);
-    return c.json({ workspaceId, live, statements });
+    const [live, listed, attestations] = await Promise.all([
+      readLiveReport(c.env.DB, workspaceId),
+      listStatements(c.env.DB, workspaceId),
+      listAttestations(c.env.DB, workspaceId),
+    ]);
+    if (!live && listed.length === 0) return c.json({ error: 'not_found', detail: `no transparency report for '${workspaceId}'` }, 404);
+    // Beside each published month: whether an outside accountant attested it, who, against what, and the proof.
+    const statements = listed.map((s) => ({ ...s, attestation: attestationStatus(attestations.get(s.month), s.digest) }));
+    // Legacy stored figures predate the guard. They are not safe to publish while awaiting a rebuilt push.
+    return c.json({ workspaceId, live: live && hasLiveDisclosure(live.report) ? live : null, statements });
+  });
+
+  route.get('/transparency/:workspaceId/attestations/:month/:documentSha256/proof', async (c) => {
+    const month = c.req.param('month');
+    const documentSha256 = c.req.param('documentSha256');
+    if (!MONTH.test(month) || !HEX64.test(documentSha256)) {
+      return c.json({ error: 'invalid_request', detail: 'month is YYYY-MM and documentSha256 is 64 lowercase hex' }, 400);
+    }
+    const proof = await readAttestationProof(c.env.DB, c.req.param('workspaceId'), month, documentSha256);
+    return proof ? c.json(proof) : c.json({ error: 'not_found', detail: `no anchored attestation proof for ${month} ${documentSha256}` }, 404);
   });
 
   route.get('/transparency/:workspaceId/statements/:month', async (c) => {

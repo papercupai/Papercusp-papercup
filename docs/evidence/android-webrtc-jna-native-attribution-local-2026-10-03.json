@@ -1,0 +1,146 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Pinned WebRTC third-party attribution delivery and JNA native reference census",
+  "framework": "operational",
+  "command": [
+    "make test-android-library-notices",
+    "JAVA_HOME=\"$(tools/build-scripts/resolve-java-home.sh)\" android/gradlew -p android --console=plain :app:compileDebugAndroidTestKotlin :app:generateReleaseResources :app:mergeReleaseResources -x :app:generateUniFfiKotlin"
+  ],
+  "workingDirectory": "papercup-rust-mobile",
+  "startedAt": "2026-10-03T03:00:38.673548-04:00",
+  "finishedAt": "2026-10-03T07:01:47.164628+00:00",
+  "timestampSource": "First retained test log filesystem birth time to last retained Gradle log modification time; both actual shell envelopes exited0. JNA read-only reference retrieval followed these checks.",
+  "exitCode": 0,
+  "summary": "Existing collector delivers ninth offline text: complete pinned788358-byte WebRTC Markdown notice reference with30component headings; exact Gitblob/source/content hashes. Maintained check passes39rejecting controls pervariant/phase,release221/222/221 debug227/228/227 and249lockedRust/162texts. Native guard compiled; compiled release rawJSON byte-identical. JNA449native blobs verified,66Java sourceGitblobs match,4upstreamnative/AAR comparisons equal; bounded38source-header census retained.",
+  "scope": "Local selected upstream attribution delivery, source/reference comparisons, actual metadata/resource production and native-test compilation only. No new APK or native test execution, exact native source/build equivalence, complete native/model rights/notices, source-recipient retrieval/build, signed candidate, current paired hosted CI, phone or Play acceptance.",
+  "mobileCommitAtCapture": "1aabd4dc426ca3b7447ac2104da399c80a4e5f2a",
+  "sourceFiles": [
+    {
+      "path": "papercup-rust-mobile/android/config/SOURCES.json",
+      "sha256": "744511e899d36b48d9739bef3813a13b3284f05573e8810859d0432dc8af1bad"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/webrtc-third-party.json",
+      "sha256": "a278bd4d8b79fd5ad3c676d0ae3f41e5515f231ca4d15f8e1946c1c4669c5c97"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/webrtc-third-party.json",
+      "sha256": "7b61ba166fe5a6b2f1eefe83c831b257ca5e9790cd4798ca9fa29681eec3f6ac"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-library-notices-test.sh",
+      "sha256": "043a95297ed5614d6c6154dd6eead1c29efe23eddecefbdcde9a154097834047"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/LibraryNoticesScreenTest.kt",
+      "sha256": "a92eda7201522e13acd409b62bce1528da9c39c22a4fa361b446f49d9f1c0bca"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build.gradle.kts",
+      "sha256": "f90d3fcc825baabd815b92dd822a7449b5a066fd072831021af8564629f8cb13"
+    }
+  ],
+  "testFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-library-notices-test.sh",
+      "sha256": "043a95297ed5614d6c6154dd6eead1c29efe23eddecefbdcde9a154097834047"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "pinned-full-webrtc-notice",
+      "passed": true,
+      "evidence": "Complete788358bytes/SHA d1f9382c/Gitblobf371735b;30top-level component headings; originalBSDreference preserved."
+    },
+    {
+      "id": "actual-variant-graphs-and-negative-controls",
+      "passed": true,
+      "evidence": "Six actual variant/phase successes,39rejecting controls each;release221/222/221 debug227/228/227 plus249Rust/162texts;isolatedcachedadd/remove and staleCargo.lock rejection passed."
+    },
+    {
+      "id": "compiled-release-resource",
+      "passed": true,
+      "evidence": "Rawrelease ec77c6c1 complete byte sequence occurs once in compiledflat222060dd atoffset132."
+    },
+    {
+      "id": "native-guard-compile",
+      "passed": true,
+      "evidence": "compileDebugAndroidTestKotlin exited0 with ninthcomplete-text fingerprint; no native execution."
+    },
+    {
+      "id": "jna-pinned-source-reference",
+      "passed": true,
+      "evidence": "449native files verifiedagainst upstreamGitblobs/nontruncatedtree;66MavenJava entries matchsourceGitblobs. Not an exact candidatebuild-input census."
+    },
+    {
+      "id": "jna-native-prebuilt-reference",
+      "passed": true,
+      "evidence": "4native distJAR entries byte-match exactcachedAARb57125cb in4supportedABIs. No source-build equivalence."
+    }
+  ],
+  "retainedLogs": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-webrtc-third-party-notices-20261003.log",
+      "sha256": "f5ed493426afa3c2446ffc4fe94c22536e797e60ae3fa37edae2a7ef2c35b8a3"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-webrtc-third-party-resources-20261003.log",
+      "sha256": "6a321d8ef8d9c89b06089ddc49292cbf63117f5e856dcc6fbffd71fb719b1676"
+    }
+  ],
+  "generatedResources": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-webrtc-third-party-ec77c6c1d7c540e5-aboutlibraries.json",
+      "sha256": "ec77c6c1d7c540e578d5a58908b3374407ba66e0787f99d05d12d42feb1e7e56"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-webrtc-third-party-222060ddc9002802-raw_aboutlibraries.json.flat",
+      "sha256": "222060ddc900280282409fc50c43474f2a5b073b0bf1ef655cefbdaeea813650"
+    }
+  ],
+  "upstreamEvidence": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-android-dependency-sources/webrtc-THIRD-PARTY.md",
+      "sha256": "d1f9382c6878ac024155fd6d44a5977329108bb8b0a01cea40e4a2f1d7de252e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-android-dependency-sources/webrtc-THIRD-PARTY-REFERENCE.json",
+      "sha256": "b02a1306cb0acefce733756f606b2da3c9b203076b80c2603d3f7b92aeda1160"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-android-dependency-sources/jna-NATIVE-TREE.json",
+      "sha256": "f6f599aed8687c8aa01563358d03b39ea39e1c663a7e0102a78af0b11a080707"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-android-dependency-sources/jna-NATIVE-SOURCE-REFERENCE.json",
+      "sha256": "f3ae73b8284fa99287b286d7af49114f901f5ef63baefe7bf49e21351d035101"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-android-dependency-sources/jna-JAVA-SOURCE-REFERENCE.json",
+      "sha256": "bad894467d0fe5de144df732ec13eaba96322e2735967f9e1c9807defd5bd2f2"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-android-dependency-sources/jna-NATIVE-BINARY-REFERENCE.json",
+      "sha256": "d0712603bfc4497113479896163c5753ccbea8639d0520bc1e42155024673c20"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-android-dependency-sources/jna-SELECTED-NATIVE-HEADERS.json",
+      "sha256": "089fc780fc1352ba32a6f595ee95084086cf4c2a1ccb59e85016590825192924"
+    }
+  ],
+  "variantTransitions": {
+    "release": [
+      221,
+      222,
+      221
+    ],
+    "debug": [
+      227,
+      228,
+      227
+    ]
+  },
+  "nativeExecution": false,
+  "signedCandidateAcceptance": false
+}

@@ -107,13 +107,8 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     defaultCombo: 'mod+shift+i',
     category: 'global',
   },
-  {
-    id: 'editor.save',
-    description: 'Save the current editor (prompts, memory, etc.)',
-    defaultCombo: 'mod+s',
-    category: 'editor',
-    options: { enableOnFormTags: ['INPUT', 'TEXTAREA'] },
-  },
+  // editor.save belonged to the retired harness-dashboard prompt and memory
+  // editors. No current editor registers it, so it must not be offered for remap.
 
   // ── Voice / video (Discord-parity; universal-voice session bus) ───
   // Mute is a BUS control: it applies once at the session host and the
@@ -264,6 +259,14 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     id: 'search.global',
     description: 'Search everywhere (plans, docs, turns, decisions)',
     defaultCombo: 'mod+shift+f', // Discord: search all channels
+    category: 'global',
+    options: { enableOnFormTags: ['INPUT', 'TEXTAREA'] },
+  },
+  {
+    // unified-bug-pipeline P-014 / D-048 pt 1: opens ReportProblemDialog (?report=true).
+    id: 'report.problem',
+    description: 'Report a problem',
+    defaultCombo: 'mod+shift+b',
     category: 'global',
     options: { enableOnFormTags: ['INPUT', 'TEXTAREA'] },
   },

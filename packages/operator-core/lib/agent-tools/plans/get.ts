@@ -2,10 +2,11 @@
  * plans:get — full parsed structure for one plan.
  *
  * Per agent-plan-tracking-2026-05-20.md §4.1.
- * Returns frontmatter, ## Now, items (with both storedStatus AND
- * effectiveStatus), decisions, and (mode=full) the prose body. Resolves
- * both docs/plans/ and docs/plans/archive/ — archived doesn't make a plan
- * unreachable.
+ * Plans are PG-canonical (`harness_plans`); this reader resolves plan slugs
+ * from that store and never looks up a filesystem path. Returns frontmatter,
+ * ## Now, items (with both storedStatus AND effectiveStatus), decisions, and
+ * (mode=full) the prose body. Use plans:export for an on-demand Markdown copy;
+ * an on-disk mirror is optional and may be absent.
  *
  * Payload diet (token-usage-reduction-audit-2026-06-09 P-008): plans:get was
  * the #3 tool-result payload fleet-wide (mean 13.9KB/call). `full` no longer
@@ -26,21 +27,23 @@ import { resolveEffectiveStatus } from './effective-status';
 import { reconcileStartStatus } from './plan-start-state';
 import { hashPlanContent } from './content-hash';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
-import { computePlanItemTestStatus, type PlanItemTestStatus } from '../../harness-test-rollup';
 import { overlayIssueBlocksForPlan } from '../../issue-blocks-merge';
 import { planItemProvenanceFromRow } from '../../plan-item-provenance';
+import { linkedWorkItemFields, type LinkedWorkItemCandidate } from '../../plan-item-linked-work-item';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { boundRowField } from '../_bound-output';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { cachedRead, type CachedReadCtx } from '../../cache';
 import { shapePlansGet } from './get-shape';
 import { decoratePlanNowBlock } from './liveness-decoration';
-import { reconcileNowNext } from './now-next-derivation';
+import { reconcileNowNext, reconcileNowState, type NowStateReconciliation } from './now-next-derivation';
 import { derivePlanLifecycleForRead, normalizeActivityTimestamp } from './plan-lifecycle-derivation';
 import { markGrindingItems, readGrindingItems } from '../../verification-attempts/plan-grinding';
 import { readIterationMetrics } from '../../verification-attempts/plan-iteration-metrics';
 import type { PlanLifecycleReconciliation } from '@papercusp/plan-parser';
+import { summarizePlanStatus, type PlanItemHolder } from '@papercusp/plan-parser';
 import { getAcceptanceRubricForPlan } from '../../rubrics';
-import { getLatestPlanAudit } from '../../plan-audits';
+import { getLatestActivationAudit, getLatestPlanAudit } from '../../plan-audits';
 import { splitPlanSections } from './plan-sections';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { getDoorConstantsSync } from '../../context-doors-config';
@@ -58,7 +61,7 @@ import { getBuildInfo } from '../../build-info';
  * trigger-covered, so any plan write auto-invalidates the entry via the cache-ECA;
  * this short soft TTL only bounds staleness for the un-triggered DECORATIONS the
  * per-slug read folds in (issue-block overlay via coord_links, linkedFeatures via
- * harness_features_consolidated, planItemTests via harness_plan_assertions/tests).
+ * harness_features_consolidated).
  * The read is PURE + non-principal-scoped (depends only on workspace+harness+slug+mode).
  */
 const PLANS_GET_SOFT_TTL_MS = 45_000;
@@ -86,8 +89,9 @@ const PLANS_GET_SOFT_TTL_MS = 45_000;
 // progress" on a checkbox-style roadmap plan had no read path at all — plans:set-status
 // only flips the structured `- **P-NNN** \`status\`` line format, and plans:set-content
 // needs the current version/contentHash from plans:get for its CAS, so a bee blind to
-// this tool risked clobbering a peer's plan edit or hand-copying an untracked docs/plans
-// mirror that lags PG. Read-only (capability: plans:read) — never grants a write path.
+// this tool risked clobbering a peer's plan edit or hand-copying an optional,
+// untracked apps/operator/docs/plans mirror that lags PG. Read-only (capability:
+// plans:read) — never grants a write path.
 // The evidence-only gym judge also needs the plan itself to evaluate accepted specs;
 // keep that role on the explicit allowlist rather than broadening the SU role set.
 // `release-fixer` is on this allowlist because its runbook's attribution procedure
@@ -107,7 +111,7 @@ const argsSchema = z
       .string()
       .min(1)
       .optional()
-      .describe('Plan slug (filename without .md). Resolves both docs/plans/ and docs/plans/archive/.'),
+      .describe('Plan slug as returned by plans:list or plans:search. Plans are resolved from the PG-canonical store, not from a filename.'),
     slugs: z
       .array(z.string().min(1))
       .min(1)
@@ -199,7 +203,7 @@ const argsSchema = z
       .boolean()
       .optional()
       .describe(
-        'Also return the EXACT raw markdown file bytes as `raw` (full mode only). Off by default — the payload diet (P-008) drops `raw` because it duplicates `prose`+structured frontmatter, doubling agent tool-output. The plans admin UI sets this because it round-trips the whole document through plans:set-content (whose CAS hashes the raw bytes) and reconstructing raw from prose+frontmatter would not byte-match. Agents that just need the body should use `prose`; for a standalone dump use plans:export.',
+        'Also return the EXACT raw Markdown content stored for the plan as `raw` (full mode only). Off by default — the payload diet (P-008) drops `raw` because it duplicates `prose`+structured frontmatter, doubling agent tool-output. The plans admin UI sets this because it round-trips the whole content through plans:set-content (whose CAS hashes those exact bytes), and reconstructing raw from prose+frontmatter would not byte-match. Agents that just need the body should use `prose`; for a standalone dump use plans:export.',
       ),
     // EI-21913230259449717: a caller reached for the generic `include` (the
     // shape other read tools use for a boolean opt-in) instead of this tool's
@@ -390,12 +394,18 @@ export function findSection(
  * now.raw ≈ section.body). Three of three heading reads blew the ~1500-token
  * result door and spilled to scratch.
  *
+ * A heading read can also inherit `lifecycle.liveItemsTruncated`. That
+ * unrelated advisory marker makes the outer result door label the whole JSON
+ * result incomplete, so its spill cursor refuses to recover the selected
+ * section body. Drop lifecycle metadata from this narrow read; an oversized
+ * body can then use the existing recoverable result-door cursor.
+ *
  * The perverse part, and the reason this is a real bug rather than a diet: the
  * `heading` form exists to AVOID a big read, so it is reached for exactly when a
  * plan is large — and a large plan has a large `## Now`, so the fixed envelope
  * was heaviest precisely in the case the feature exists to serve.
  */
-const HEADING_DROPPED_FIELDS = new Set(['now', 'promotePolicy']);
+const HEADING_DROPPED_FIELDS = new Set(['now', 'promotePolicy', 'lifecycle']);
 
 /**
  * Build the `heading`-narrowed payload from the meta base. Shared by the legacy
@@ -425,7 +435,14 @@ export function narrowHeadingPayload(
     out[key] = value;
   }
   out.heading = heading;
-  out.section = sec ? { heading: sec.heading, level: sec.level, body: sec.body } : null;
+  // A heading read omits `now`, so its raw Now section would otherwise bypass
+  // the same current-item warning that protects the structured read. Preserve
+  // the requested section verbatim beneath the warning and keep CAS unchanged.
+  const now = base.now as { stateDerivation?: Omit<NowStateReconciliation, 'state'> } | null | undefined;
+  const warning = sec?.heading.toLowerCase() === 'now' ? now?.stateDerivation?.warning : null;
+  out.section = sec
+    ? { heading: sec.heading, level: sec.level, body: warning ? `${warning}\n\n${sec.body}` : sec.body }
+    : null;
   return out;
 }
 
@@ -508,7 +525,6 @@ interface NarrowDecisionItemPayload {
     missing: string[];
   };
   linkedFeatures: Record<string, unknown>;
-  planItemTests: Record<string, unknown>;
   blockingIssues: Record<string, unknown>;
 }
 
@@ -591,7 +607,6 @@ export function narrowDecisionPayload<T extends { id: string }>(
     out.items = itemPayload.items;
     out.itemSelection = itemPayload.itemSelection;
     out.linkedFeatures = itemPayload.linkedFeatures;
-    out.planItemTests = itemPayload.planItemTests;
     out.blockingIssues = itemPayload.blockingIssues;
   }
   // Page AFTER the complete narrow envelope is built, so the budget is measured
@@ -627,18 +642,29 @@ export function narrowDecisionPayload<T extends { id: string }>(
 
 export default defineTool({
   name: 'plans:get',
+  // EI-21665387998856992: the optional ship-readiness resolver can outlive the
+  // transport's flat 55s nested-call deadline. Keep the tool's own abort budget
+  // at 120s so both direct calls and tools:invoke get the same bounded window.
+  timeoutSec: 120,
   description:
-    "Fetch the full parsed structure of one plan by slug: frontmatter, ## Now (state + next), items with effectiveStatus, decisions. Resolves archived plans too. An exact slug can auto-resolve its owning harness within the caller's workspace ONLY from an unscoped (operator/superuser) session; a session already scoped to a concrete harness stays scoped to it and reports which harness actually owns the slug on a miss. Pass a concrete `harness` (for example, 'papercusp') to disambiguate, constrain, or escape the ambient scope. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
+    "Fetch the full parsed structure of one plan by slug: frontmatter, ## Now (state + next), items with effectiveStatus, decisions. Resolves archived plans too. Judge callers also receive the exact latest activation-audit record and requirement mappings as `latestActivationAudit`. An exact slug can auto-resolve its owning harness within the caller's workspace ONLY from an unscoped (operator/superuser) session; a session already scoped to a concrete harness stays scoped to it and reports which harness actually owns the slug on a miss. Pass a concrete `harness` (for example, 'papercusp') to disambiguate, constrain, or escape the ambient scope. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
   guidance: {
     when: "You have an exact slug and need the plan contents. In operator/superuser scope, the slug auto-resolves its owning harness within the caller's workspace; pass a concrete `harness` (for example, 'papercusp') when you need to constrain or disambiguate that lookup. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
     notWhen: "You don't know the slug — call plans:list first. Item-only queries across plans should use plans:items.",
     chaining:
       'plans:list → plans:get { slug } (or { slug, harness } to constrain scope) → optionally plans:items for cross-plan picks.',
+    argRedirects: {
+      sections: {
+        drop: true,
+        note: 'For one section, pass its exact heading with `heading`; multiple section headings are not supported in one call.',
+      },
+    },
   },
   capability: 'plans:read',
   requirePrincipal: false,
   skipWorkspaceTx: true,
-  agentRoles: [...ALL_ROLES],
+  // Research operations read plan context through this same read-only surface.
+  agentRoles: [...ALL_ROLES, 'researcher'],
   modality: ['text'],
   args: argsSchema,
   // Freshness negotiation (agent-tool-delta-client-rollout-2026-06-23, P-002): plans:get
@@ -694,10 +720,7 @@ export default defineTool({
       const decision = await recoverHarnessFromSlugs(ctx, slugs);
       if (decision.status !== 'resolved') return slugScopeErrorResult('plans:get', decision);
       sctx = { ...ctx, harnessSlug: decision.harnessSlug };
-      ctxAny.metadata?.({
-        harnessAutoResolved: decision.bySlug,
-        ...(Object.keys(decision.ambiguous).length > 0 ? { harnessAmbiguous: decision.ambiguous } : {}),
-      });
+      ctxAny.metadata?.({ harnessAutoResolved: decision.bySlug });
     } else {
       sctx = harnessScopedCtx(args.harness, ctx);
     }
@@ -723,6 +746,9 @@ export default defineTool({
     // Stage times include awaited IO and synchronous work since the prior mark;
     // they are wall time, not database-only or CPU time.
     const readTimings: Array<Record<string, unknown>> = [];
+    // The evidence-only judge's activation audit is also outside cachedRead. Keep
+    // its wall time separate so a fast cached plan factory cannot hide a slow audit.
+    const activationAuditTimings: Array<{ slug: string; elapsedMs: number }> = [];
     const env = await runBulk(
       slugs,
       async (slug) => {
@@ -908,9 +934,21 @@ export default defineTool({
             // P-006: Build a map of plan-item-id → { featureId, status } so the UI
             // can show live feature status badges next to each P-NNN item.
             const harnessSlug = resolveEffectiveHarnessSlug(sctx);
+            // scope-unique-identifiers P-003: the enrichment reads below are scoped to the
+            // PLAN's workspace. They were pinned to DEFAULT_WORKSPACE_ID ('default'), so in
+            // any other workspace linkedFeatures was always empty
+            // (measured 2026-10-11: linkedFeatures {} on a plan whose 13 items all had a
+            // linked work-item in papercusp-workspace).
+            const planWorkspaceId = row.workspaceId ?? DEFAULT_WORKSPACE_ID;
             const linkedFeaturesRead = includeEnrichments
               ? timeStage('linkedFeatures', async () => {
                   let linkedFeatures: Record<string, { featureId: string; status: string; harnessSlug: string }> = {};
+                  // P-003: every linked work-item per plan item, folded into workItemId /
+                  // workItemIds on each item by the shared report-don't-guess rule.
+                  const linkedWorkItems: Record<string, LinkedWorkItemCandidate[]> = {};
+                  // derived-status-not-hand-written-2026-10-12 P-001: who holds each item's
+                  // linked work-item, for `derivedStatus` — read from the same rows, no extra query.
+                  const linkedHolders: Record<string, PlanItemHolder[]> = {};
                   // P-003: the newest transition across work-items linked to this
                   // plan — one of the two measurable freshness sources. Taken from
                   // the query below rather than a second one: it already selects
@@ -922,7 +960,7 @@ export default defineTool({
                     let beganAt: number | null = null;
                     let callbackEndedAt: number | null = null;
                     const rows = await withWorkspace(
-                      DEFAULT_WORKSPACE_ID,
+                      planWorkspaceId,
                       async (tx) => {
                         try {
                           return await timeDetail(
@@ -937,14 +975,15 @@ export default defineTool({
                                 stamped_item_id: string | null;
                                 harness_slug: string;
                                 updated_ts: string | number | null;
+                                taken_by: string | null;
                               }[]
                             >`
                 SELECT feature_id, status, source_plan_slug, source_plan_item_ids,
                        payload -> 'plan_item' ->> 'plan_slug' AS stamped_plan_slug,
                        payload -> 'plan_item' ->> 'item_id'   AS stamped_item_id,
-                       harness_slug, updated_ts
+                       harness_slug, updated_ts, taken_by
                   FROM harness_shared.harness_features_consolidated
-                 WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
+                 WHERE workspace_id = ${planWorkspaceId}
                    AND (source_plan_slug = ${slug}
                         OR payload -> 'plan_item' ->> 'plan_slug' = ${slug})
               `,
@@ -990,89 +1029,43 @@ export default defineTool({
                       // nothing and this badge map was always empty. Resolve via the shared
                       // precedence rule instead.
                       for (const itemId of planItemProvenanceFromRow(row).itemIds) {
-                        linkedFeatures[itemId] = {
+                        (linkedWorkItems[itemId] ??= []).push({
+                          id: row.feature_id,
+                          terminal: ANY_FAMILY_TERMINAL_STATES.includes(row.status),
+                        });
+                        (linkedHolders[itemId] ??= []).push({
+                          workItemId: row.feature_id,
+                          holder: row.taken_by,
+                          state: row.status,
+                        });
+                        const candidate = {
                           featureId: row.feature_id,
                           status: row.status,
                           harnessSlug: row.harness_slug,
                         };
+                        // The badge shows the item's resolvable work-item when there is
+                        // one; otherwise the first row seen keeps its place (P-003).
+                        const prior = linkedFeatures[itemId];
+                        if (!prior || linkedWorkItemFields(linkedWorkItems[itemId]!).workItemId === row.feature_id) {
+                          linkedFeatures[itemId] = candidate;
+                        }
                       }
                     }
                   } catch {
                     // Non-fatal — UI degrades to no badges.
                   }
-                  return { linkedFeatures, linkedWorkItemUpdatedAt };
+                  return { linkedFeatures, linkedWorkItemUpdatedAt, linkedWorkItems, linkedHolders };
                 })
-              : Promise.resolve({ linkedFeatures: {}, linkedWorkItemUpdatedAt: null });
-            // P-083: per-plan-item test coverage (the plan↔test rollup, through the
-            // VAL). Mirrors linkedFeatures — computed server-side, decorated client-
-            // side by decoratePlanItemTestBadges. Skips the tests query when the plan
-            // has no inline-VAL assertions. Non-fatal.
-            const testCoverageRead = includeEnrichments
-              ? timeStage('testCoverage', async () => {
-                  let planItemTests: Record<string, PlanItemTestStatus> = {};
-                  try {
-                    const acquisitionStarted = performance.now();
-                    let beganAt: number | null = null;
-                    let callbackEndedAt: number | null = null;
-                    planItemTests = await withWorkspace(
-                      DEFAULT_WORKSPACE_ID,
-                      async (tx) => {
-                        try {
-                          const assertions = await timeDetail(
-                            'testCoverage.assertionsQuery',
-                            () => tx<
-                              {
-                                val_id: string;
-                                item_id: string;
-                                requires_test: boolean;
-                              }[]
-                            >`
-                SELECT val_id, item_id, requires_test FROM harness_shared.harness_plan_assertions
-                 WHERE workspace_id = ${DEFAULT_WORKSPACE_ID} AND harness_slug = ${harnessSlug} AND plan_slug = ${slug}
-              `,
-                          );
-                          if (assertions.length === 0) return {};
-                          const testRows = await timeDetail(
-                            'testCoverage.testsQuery',
-                            () => tx<{ status: string; payload: { coversVALs?: unknown } }[]>`
-                SELECT status, payload FROM harness_shared.harness_tests
-                 WHERE workspace_id = ${DEFAULT_WORKSPACE_ID} AND harness_slug = ${harnessSlug}
-              `,
-                          );
-                          return computePlanItemTestStatus(
-                            assertions,
-                            testRows.map((r) => ({
-                              status: r.status,
-                              coversVALs: Array.isArray(r.payload?.coversVALs)
-                                ? (r.payload.coversVALs as unknown[]).filter((v): v is string => typeof v === 'string')
-                                : [],
-                            })),
-                          );
-                        } finally {
-                          callbackEndedAt = performance.now();
-                        }
-                      },
-                      {
-                        onAcquisitionPhase: (phase) => {
-                          const at = performance.now();
-                          if (phase === 'begin') {
-                            beganAt = at;
-                            detailMs['testCoverage.waitForBegin'] = Math.max(0, at - acquisitionStarted);
-                          } else {
-                            detailMs['testCoverage.workspaceSetup'] = Math.max(0, at - (beganAt ?? acquisitionStarted));
-                          }
-                        },
-                      },
-                    );
-                    if (callbackEndedAt !== null) {
-                      detailMs['testCoverage.finishTransaction'] = Math.max(0, performance.now() - callbackEndedAt);
-                    }
-                  } catch {
-                    // Non-fatal — UI degrades to no coverage badges.
-                  }
-                  return planItemTests;
-                })
-              : Promise.resolve({});
+              : Promise.resolve({
+                  linkedFeatures: {},
+                  linkedWorkItemUpdatedAt: null,
+                  linkedWorkItems: {} as Record<string, LinkedWorkItemCandidate[]>,
+                  // Not measured on a body-first read — summarizePlanStatus reports holdersMeasured:false.
+                  linkedHolders: undefined as Record<string, PlanItemHolder[]> | undefined,
+                });
+            // The P-083 per-item test-coverage stage (planItemTests) is retired with
+            // inline VAL-* assertions (verification-system-improvements-2026-10-10
+            // P-003); per-item verification now lives in the requirement contract.
             const sections = splitSections(parsed.prose);
             // WI-1442 fix (a): read-time liveness decoration — annotate any
             // su-* agent-id mention in the ## Now prose with its CURRENT
@@ -1082,15 +1075,23 @@ export default defineTool({
             const nowRead = timeStage('nowDecoration', () => decoratePlanNowBlock(parsed.now));
             const [
               { items: resolvedItems, blockingIssues },
-              { linkedFeatures, linkedWorkItemUpdatedAt },
-              planItemTests,
+              { linkedFeatures, linkedWorkItemUpdatedAt, linkedWorkItems, linkedHolders },
               decoratedNow,
               [acceptanceRubric, latestAudit],
-            ] = await Promise.all([issueBlocksRead, linkedFeaturesRead, testCoverageRead, nowRead, rubricAndAuditRead]);
+            ] = await Promise.all([issueBlocksRead, linkedFeaturesRead, nowRead, rubricAndAuditRead]);
             stageStarted = performance.now();
-            const responseItems = requestedItemIdSet
-              ? resolvedItems.filter((item) => requestedItemIdSet.has(item.id))
-              : resolvedItems;
+            // P-003: every item carries the workspace-unique work-item id it resolves
+            // through (null when unlinked or several qualify; workItemIds then names them).
+            const responseItems = (
+              requestedItemIdSet ? resolvedItems.filter((item) => requestedItemIdSet.has(item.id)) : resolvedItems
+            ).map((item) => {
+              const linked = linkedWorkItemFields(linkedWorkItems[item.id] ?? []);
+              return {
+                ...item,
+                workItemId: linked.workItemId,
+                ...(linked.workItemIds.length > 1 ? { workItemIds: linked.workItemIds } : {}),
+              };
+            });
             const responseItemIds = new Set(responseItems.map((item) => item.id));
             const itemSelection = requestedItemIds
               ? {
@@ -1116,10 +1117,17 @@ export default defineTool({
             // that jurisdiction rule is narrow. `now.raw` still carries the
             // stored bytes verbatim, and nothing here mutates the plan.
             const nowNext = decoratedNow ? reconcileNowNext(decoratedNow.next, parsed.items, row.planSlug) : null;
+            const nowState = decoratedNow ? reconcileNowState(decoratedNow.state, parsed.items, row.planSlug) : null;
             const nowWithDerivedNext =
-              decoratedNow && nowNext
+              decoratedNow && nowNext && nowState
                 ? {
                     ...decoratedNow,
+                    state: nowState.state,
+                    stateDerivation: {
+                      storedState: nowState.storedState,
+                      contradictions: nowState.contradictions,
+                      warning: nowState.warning,
+                    },
                     next: nowNext.next,
                     nextDerivation: {
                       disposition: nowNext.disposition,
@@ -1191,6 +1199,28 @@ export default defineTool({
               // documents as distinct from any verdict.
             }
             markStage('lifecycle');
+            // derived-status-not-hand-written-2026-10-12 P-001 (D-001): the plan's
+            // current status, DERIVED at read time from the item graph — counts by
+            // effective status, the ranked actionable list, blocked items with their
+            // blockers, holders, the latest decision — instead of hand-written Now
+            // prose. It COMPOSES what this read already computed (the lifecycle verdict
+            // and last activity above; the next-pointer's ranking) rather than
+            // re-deriving any of it. `parsed.items`, not the caller's narrowed
+            // selection, for the same census reason as the lifecycle above.
+            const derivedStatus = summarizePlanStatus({
+              items: parsed.items,
+              // Blind review #14 G-1: the open-issue blocks overlaid on the returned items
+              // above, so the summary and its next pointer agree with them.
+              externalBlocks: blockingIssues,
+              decisions: parsed.decisions,
+              holders: linkedHolders,
+              lifecycle: lifecycle
+                ? {
+                    verdict: lifecycle.derived.verdict,
+                    lastActivityAt: lifecycle.derived.freshness?.lastActivityAt ?? null,
+                  }
+                : null,
+            });
             // `meta`: frontmatter + ## Now + counts + section index. Never the body.
             const base = {
               // WI-7259 (sibling of WI-7246): a scheduled-run snapshot copies its
@@ -1232,8 +1262,17 @@ export default defineTool({
                     },
                   }
                 : {}),
+              derivedStatus,
               frontmatter: parsed.frontmatter,
-              now: nowWithDerivedNext,
+              // Blind review #14 G-2: the displayed note's identity, so its staleness is
+              // measured from this note's own write time (attachNoteStaleness).
+              now:
+                nowWithDerivedNext && row.nowNote
+                  ? {
+                      ...nowWithDerivedNext,
+                      note: { writtenAt: row.nowNote.writtenAt, eventId: row.nowNote.eventId, source: row.nowNote.source },
+                    }
+                  : nowWithDerivedNext,
               contentHash: hashPlanContent(parsed.raw),
               version: row.version,
               // v2 P-001: the structured promote-policy ({ policy, warnings }) read from the row column —
@@ -1276,7 +1315,6 @@ export default defineTool({
                           mode === 'full' ? responseItems : responseItems.map(({ rawLine: _rawLine, ...rest }) => rest),
                         itemSelection,
                         linkedFeatures: selectItemMap(linkedFeatures),
-                        planItemTests: selectItemMap(planItemTests),
                         blockingIssues: selectItemMap(blockingIssues),
                       }
                     : undefined,
@@ -1347,7 +1385,6 @@ export default defineTool({
               missingRefs: resolved.missingRefs,
               cycleMembers: resolved.cycleMembers,
               linkedFeatures: selectItemMap(linkedFeatures),
-              planItemTests: selectItemMap(planItemTests),
               blockingIssues: selectItemMap(blockingIssues),
             };
             const payload =
@@ -1473,6 +1510,29 @@ export default defineTool({
         }
       }
     }
+    // derived-status-not-hand-written-2026-10-12 P-002: once every item of an unshipped plan
+    // is terminal, `derivedStatus.shipGate` names what refuses the ship — from the SAME
+    // resolver as shipReadiness above (reused when the caller asked for it, so the gate is
+    // evaluated once), outside cachedRead for the same staleness reason, and fail-soft.
+    // Default-on but bounded: a plan with live items, or a shipped one, never pays for it.
+    if (!args.heading && !requestedDecisionIds) {
+      const { attachDerivedShipGates } = await import('./derived-ship-gate');
+      await attachDerivedShipGates(env.results as Array<Record<string, unknown>>, {
+        resolve: async (gateArgs) => {
+          const { resolvePlanAcceptanceGateVerdict } = await import('../../sync-resolver/plan-acceptance-gate-verdict');
+          return resolvePlanAcceptanceGateVerdict(gateArgs);
+        },
+        ...(args.current ? { current: args.current } : {}),
+      });
+      // derived-status-not-hand-written-2026-10-12 P-003: `now.staleness` — how many status
+      // changes the plan-event log recorded after the latest `now_updated`, never estimated
+      // from the note's text. Time-varying, so outside cachedRead; fail-soft into
+      // basis:'unavailable'; only results that carry a Now note pay the bounded read.
+      const { attachNoteStaleness } = await import('./now-note-staleness');
+      await attachNoteStaleness(
+        (env.results as Array<Record<string, unknown>>).filter((result) => result.ok === true),
+      );
+    }
     // review-system-rework-reduction-2026-09-23 P-032: the opt-in per-plan efficiency read.
     // Time-varying (it reads the call ledger), so like shipReadiness it stays outside cachedRead,
     // and it fails soft into an explicit unavailableReason rather than an absent field.
@@ -1505,7 +1565,11 @@ export default defineTool({
       const { projectPlanOperationalBrief, renderOperationalBrief } = await import('../../operational-brief');
       for (const result of env.results as Array<Record<string, unknown>>) {
         if (result.ok !== true) continue;
-        const brief = projectPlanOperationalBrief(result, { itemsComplete: !requestedItemIds });
+        const brief = projectPlanOperationalBrief(result, {
+          itemsComplete: !requestedItemIds,
+          acceptanceIncluded: includeEnrichments && !requestedDecisionIds && !args.heading,
+          auditIncluded: includeEnrichments && !requestedDecisionIds && !args.heading && mode !== 'meta',
+        });
         result.operationalBrief = { ...brief, text: renderOperationalBrief(brief) };
       }
     }
@@ -1570,6 +1634,34 @@ export default defineTool({
         result.harness = explicitCallerHarness;
         result.harnessMismatch = mismatch;
       }
+    }
+    // EI-25658389474245350: an evidence-only judge needs the canonical activation
+    // audit sequence and source-turn mappings to verify citations. Keep this
+    // role-scoped read outside cachedRead: the ordinary plan cache is deliberately
+    // principal-independent, and must never share judge-only audit evidence.
+    if (ctx.role === 'judge' || ctx.principal?.slug === 'system:judge') {
+      for (const result of env.results as Array<Record<string, unknown>>) {
+        if (result.ok !== true) continue;
+        const slug = typeof result.slug === 'string' ? result.slug : null;
+        if (!slug) continue;
+        const auditStartedAt = performance.now();
+        result.latestActivationAudit = await getLatestActivationAudit(slug, {
+          ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
+        });
+        activationAuditTimings.push({
+          slug,
+          elapsedMs: Math.max(0, performance.now() - auditStartedAt),
+        });
+      }
+    }
+    if (activationAuditTimings.length) {
+      ctxAny.metadata?.({
+        plansGetActivationAudit: {
+          unit: 'ms',
+          timing: 'wall-time-per-plan',
+          reads: activationAuditTimings,
+        },
+      });
     }
     ctxAny.metadata?.({ plansGetRead: { unit: 'ms', timing: 'wall-time-per-stage-overlapping', reads: readTimings } });
     return bulkContent(env);

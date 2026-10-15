@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Local Android native launcher and pairing rejection checks on cc611",
+  "framework": "operational",
+  "command": [
+    "ANDROID_SERIAL=emulator-5556",
+    "android/gradlew",
+    "-p",
+    "android",
+    ":app:connectedDebugAndroidTest",
+    "--rerun-tasks",
+    "--console=plain"
+  ],
+  "startedAt": "2026-10-02T06:37:32.477Z",
+  "finishedAt": "2026-10-02T06:39:35.009Z",
+  "timestampBasis": "Task ledger deadline minus requested600000ms execution budget; durable transient-service completion marker",
+  "exitCode": 0,
+  "summary": "Three maintained Android instrumentation tests executed on owned API36/16KB emulator, zero failures/errors/skips. Invalid pasted data and non-loopback HTTP remain unpaired. This is local fresh debug pairing validation, not authenticated journeys, signed-candidate, physical phone, automatic CI or Play acceptance.",
+  "repository": "papercup-rust-mobile",
+  "sourceCommit": "cc611e2fcc6121f03429f80bcc666c7be935df92",
+  "sourceFingerprints": {
+    "android/app/build.gradle.kts": "96bb9f615c15655036a8bb6bbdbba4e9931faef9061abde1e732c7168fe48d05",
+    "android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/PapercupAppSmokeTest.kt": "92fcff5f4f1abdee67c1971236df6e6b63e83bfafafd41d12a5e493cffc3f852",
+    "android/app/src/main/kotlin/com/papercuspai/operator/mobile/PairScreen.kt": "13c4b5d73dab2782d6fbe560cdcb7843f46ddb3af2699b4f11867ba68ffcb3c2",
+    "android/app/src/main/kotlin/com/papercuspai/operator/mobile/EndpointSecurity.kt": "e65c04b98f73ae1d436b23df52edef24c613b17689e74f04267db70ac365439e",
+    "crates/papercup-bindings/src/lib.rs": "a3278b6c4683a9168154aa6d591b809cd5c94b15fbcba97f17438e3cb60bfe6c",
+    "tools/run-android-checks.sh": "d35c43fb29fd46137db380c374d7c0d7f36b686a38eec18b32f8713d2ed8d01f"
+  },
+  "testCounts": {
+    "native": {
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  "testCases": [
+    {
+      "name": "invalidPastedPayloadStaysUnpairedAndReturnsToChoice",
+      "class": "com.papercuspai.operator.mobile.PapercupAppSmokeTest",
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "launcherActivityStarts",
+      "class": "com.papercuspai.operator.mobile.PapercupAppSmokeTest",
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "insecureNonLoopbackPayloadIsRejectedWithoutPersistingCredentials",
+      "class": "com.papercuspai.operator.mobile.PapercupAppSmokeTest",
+      "failed": false,
+      "skipped": false
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/native-pairing-cc611-20261002-0637/app-debug.apk",
+      "sha256": "2bac70e0b66e39528b3cefbe03d3040ecf4c1bec5fce73d2d63608d044735e10",
+      "bytes": 114184245
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/native-pairing-cc611-20261002-0637/app-debug-androidTest.apk",
+      "sha256": "b207ffce6a2d60bd2445ca0ebcbacd7a7df3a606c81f87a0d1d42c0307991bfe",
+      "bytes": 1015482
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/native-pairing-cc611-20261002-0637/native-results.xml",
+      "sha256": "c985b55d825fc77c665fde1074688241c9c239e9cfed782c702508a6474756af",
+      "bytes": 861
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/native-pairing-cc611-20261002-0637/native-run.log",
+      "sha256": "2d14552f5fdc077360995de5f6e5fb4f50fdd95d444cb0e1493eef535f0cd53c",
+      "bytes": 4882
+    }
+  ],
+  "xmlTimestamp": "2026-10-02T06:39:33",
+  "runtime": {
+    "kind": "owned emulator",
+    "api": 36,
+    "pageSize": 16384,
+    "serial": "emulator-5556"
+  },
+  "cleanup": {
+    "cleanupVerified": true,
+    "serviceInactive": true,
+    "transportAbsent": true,
+    "fixtureRootDeleted": true
+  },
+  "executionTaskId": "0muqlcfb6na0rdo5z7c",
+  "cleanupTaskId": "0muqloapn1l0dsedrm7",
+  "assertions": [
+    {
+      "id": "invalidPastedPayloadStaysUnpairedAndReturnsToChoice",
+      "passed": true,
+      "evidence": "Retained native-results.xml SHA256 c985b55d825fc77c665fde1074688241c9c239e9cfed782c702508a6474756af; recorded testcase passes with no failure/error/skip."
+    },
+    {
+      "id": "launcherActivityStarts",
+      "passed": true,
+      "evidence": "Retained native-results.xml SHA256 c985b55d825fc77c665fde1074688241c9c239e9cfed782c702508a6474756af; recorded testcase passes with no failure/error/skip."
+    },
+    {
+      "id": "insecureNonLoopbackPayloadIsRejectedWithoutPersistingCredentials",
+      "passed": true,
+      "evidence": "Retained native-results.xml SHA256 c985b55d825fc77c665fde1074688241c9c239e9cfed782c702508a6474756af; recorded testcase passes with no failure/error/skip."
+    },
+    {
+      "id": "owned-fixture-cleanup",
+      "passed": true,
+      "evidence": "cleanup.json SHA25624ce69aa295e3797a0a162d901fe84aadb9063bb5479a70e0742a2c15c651163; service inactive, transport absent and owned AVD root deleted."
+    }
+  ]
+}

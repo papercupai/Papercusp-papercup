@@ -370,6 +370,31 @@ describe('GET + PATCH /auth/me', () => {
     expect(await res.json()).toMatchObject({ autoLogin: true });
   });
 
+  it('GET keeps database exception values out of the degraded response and log', async () => {
+    const email = 'auth-me-private@example.test';
+    const sealed = 'never-emit-me';
+    const error = new Error(`database failed for ${email} (${sealed})`);
+    error.stack = `${error.message}\nprivate database stack`;
+    vi.mocked(getSessionUserOrDefault).mockRejectedValue(error);
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await app.request('/auth/me');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        degraded: true,
+        degradedReason: 'authentication_unavailable',
+        pgUnavailable: true,
+      });
+      const calls = JSON.stringify(logged.mock.calls);
+      expect(calls).not.toContain(email);
+      expect(calls).not.toContain(sealed);
+      expect(calls).not.toContain('private database stack');
+      expect(calls).toContain('fingerprint');
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
   it('GET never exposes or auto-mints the local default user remotely', async () => {
     vi.mocked(isRemoteRequest).mockReturnValue(true);
     const res = await app.request('https://app.example.com/auth/me');

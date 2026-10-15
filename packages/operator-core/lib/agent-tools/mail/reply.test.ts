@@ -6,12 +6,12 @@ describe('mail:reply personal authorization refusal', () => {
     expect(mailPersonalAccessRefusal('no_live_grant')).toEqual({
       allowed: false,
       refusal: 'no_live_grant',
-      requiredScope: 'personal:gmail',
+      requiredScope: 'personal:mail',
       autoAuthoritySufficient: false,
       draftAvailable: false,
       guidance:
         'Owner-directed AUTO authorizes execution posture but is not a personal-vault grant. ' +
-        'Establish a live principal-bound personal:gmail grant first; both draft and send modes require it.',
+        'Establish a live principal-bound personal:mail grant first; both draft and send modes require it.',
     });
   });
 

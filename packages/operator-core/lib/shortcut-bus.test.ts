@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Coverage for shortcut-bus: registerAction stacking/unregister, refreshKeymap
  * resolution, and dispatchKeydown's match → run pipeline incl. the form-tag
@@ -30,7 +31,7 @@ vi.mock('./shortcut-registry', () => {
 
 import { registerAction, refreshKeymap, getResolvedKeymap, dispatchKeydown, _resetActions } from './shortcut-bus';
 
-type EvInit = { ctrlKey?: boolean; target?: { tagName?: string; isContentEditable?: boolean } | null };
+type EvInit = { ctrlKey?: boolean; target?: Element | { tagName?: string; isContentEditable?: boolean } | null };
 const ev = (key: string, init: EvInit = {}): KeyboardEvent =>
   ({
     key,
@@ -110,6 +111,44 @@ describe('dispatchKeydown — guards', () => {
     registerAction({ id: 'nav.next', run, options: {} });
     dispatchKeydown(ev('j', { target: { tagName: 'DIV', isContentEditable: true } }));
     expect(run).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    '<button role="combobox"><span>All Pots</span></button>',
+    '<div role="listbox"><div role="option"><span>All Pots</span></div></div>',
+  ])('guards custom selector descendants: %s', (markup) => {
+    const root = document.createElement('div');
+    root.innerHTML = markup;
+    const run = vi.fn();
+    registerAction({ id: 'nav.next', run, options: {} });
+
+    dispatchKeydown(ev('j', { target: root.querySelector('span')! }));
+    expect(run).not.toHaveBeenCalled();
+    dispatchKeydown(ev('j', { target: document.createElement('button') }));
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it.each(['combobox', 'listbox'])('allows a custom %s only with SELECT opt-in', (role) => {
+    const target = document.createElement('div');
+    target.setAttribute('role', role);
+    const inputOnly = vi.fn();
+    const selector = vi.fn();
+    registerAction({ id: 'nav.next', run: selector, options: { enableOnFormTags: ['SELECT'] } });
+    registerAction({ id: 'nav.next', run: inputOnly, options: { enableOnFormTags: ['INPUT'] } });
+
+    dispatchKeydown(ev('j', { target }));
+    expect(inputOnly).not.toHaveBeenCalled();
+    expect(selector).toHaveBeenCalledOnce();
+  });
+
+  it.each(['INPUT', 'TEXTAREA'] as const)('preserves %s opt-in for an editable combobox', (formTag) => {
+    const target = document.createElement(formTag === 'INPUT' ? 'input' : 'div');
+    if (formTag === 'TEXTAREA') Object.defineProperty(target, 'isContentEditable', { value: true });
+    target.setAttribute('role', 'combobox');
+    const run = vi.fn();
+    registerAction({ id: 'nav.next', run, options: { enableOnFormTags: [formTag] } });
+    dispatchKeydown(ev('j', { target }));
+    expect(run).toHaveBeenCalledOnce();
   });
 
   it('skips when ignoreEventWhen returns true', () => {

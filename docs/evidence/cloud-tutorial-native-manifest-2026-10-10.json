@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "kind": "native-review-source-manifest",
+  "workItemId": "WI-10007744",
+  "planSlug": "cloud-app-live-tutorial-2026-10-01",
+  "profile": "cloud",
+  "root": "/dev/shm/pcv/papercusp-lint-as-committed-e6e50c21f6-i4Pyj1",
+  "sourceRoot": "$HOME/papercupai-workspace/papercusp",
+  "rootCommit": "e6e50c21f60369bd961e8270f63914a80961e6d1",
+  "files": [
+    {
+      "path": "apps/operator/app/cloud-workspaces/ConfigureStage.tsx",
+      "sha256": "3cf3636ebe6cd7c9105ca0ad58cec3ef0ebbb7fdd1f036be316130902023e9dc"
+    },
+    {
+      "path": "apps/operator/app/cloud-workspaces/ConnectStage.tsx",
+      "sha256": "41fa7be43c7d8490356a3c2eb23f72dd6049e374ee02c0f9bbd7d8eeb690a7eb"
+    },
+    {
+      "path": "apps/operator/app/cloud-workspaces/HostedWorkspaceSession.tsx",
+      "sha256": "ad3bc4d416b33d1e668bd5dd693e8466a8eed1e1815200225947fb260a58d755"
+    },
+    {
+      "path": "apps/operator/lib/onboarding/cloud-tutorial-adapter.tsx",
+      "sha256": "79a2aa82872981734a9511431becd83e050efda3eff9ae8eba7ee4eaa08f0e8c"
+    },
+    {
+      "path": "apps/operator/lib/onboarding/cloud-tutorial-assistance.tsx",
+      "sha256": "1588f204f562e4c3f9d28bff318d533037f07100c3a796db1d200350cc7d4112"
+    },
+    {
+      "path": "apps/operator/lib/onboarding/cloud-tutorial-guide.tsx",
+      "sha256": "4cf71289dd180044a434752a76052f41eb4e0aafb1db0540078927f771acff57"
+    },
+    {
+      "path": "apps/operator/lib/onboarding/cloud-tutorial-session.tsx",
+      "sha256": "9da7999eb5277bc27038615c04b5de6167915abf81219adbbc30423f60c1f9a5"
+    }
+  ],
+  "fixture": {
+    "path": "apps/operator/e2e/cloud-tutorial.spec.ts",
+    "sha256": "1f15d54cc6603ac362d153a72b83e50ebc9619bd6b09aa19ee9bba51cedaeac4"
+  },
+  "limitations": [
+    "Readiness and source custody only; current native controls/task/answer review remains pending."
+  ]
+}

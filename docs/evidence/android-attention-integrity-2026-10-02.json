@@ -1,0 +1,241 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Android P003 attention parsing and badge regression verification",
+  "framework": "operational",
+  "command": [
+    "android/gradlew",
+    "-p",
+    "android",
+    ":app:testDebugUnitTest",
+    ":app:testReleaseUnitTest",
+    ":app:lintRelease",
+    "--console=plain"
+  ],
+  "startedAt": "2026-10-02T01:34:19.349Z",
+  "finishedAt": "2026-10-02T01:35:07.841989Z",
+  "timestampScope": "Earliest retained XML execution timestamp through completed Gradle log write; not process admission.",
+  "exitCode": 0,
+  "summary": "Debug and release compiled Android JUnit suites33 each, zero failures/errors/skips; CompanionFeed10 cases exercise real JSON, system-only badge and partial/unknown feeds. Release lint passed, Fatal0/Error0/Warning114. Complementary canonical endpoint suite14/0/0 is ledger20462057. No paired/nativeUI/signed-candidate/phone/Play acceptance.",
+  "repository": "papercup-rust-mobile",
+  "sourceCommit": "398013c781660b4144b9669231a92d0d38a0f547",
+  "sourceCommitMeaning": "Containing committed source blobs verified identical after automatic sync; not clean signed-candidate build provenance.",
+  "sourceFiles": [
+    {
+      "path": "android/app/build.gradle.kts",
+      "sha256": "299cc19ed7f8b2e4f0b7c261bcd00c5c8d5ee0d81c9b576681d9f7470446f814"
+    },
+    {
+      "path": "android/app/src/main/kotlin/com/papercuspai/operator/mobile/CompanionFeed.kt",
+      "sha256": "45715903c679d2e1ac2bc5c548ea27bfb401942107177d439550f2b4738baa41"
+    },
+    {
+      "path": "android/app/src/main/kotlin/com/papercuspai/operator/mobile/InboxScreen.kt",
+      "sha256": "1d6e8b64f543ddb9bd20f14e36415ee07c3c87f758adb363f7c2ccf48252e698"
+    },
+    {
+      "path": "android/app/src/main/kotlin/com/papercuspai/operator/mobile/MainActivity.kt",
+      "sha256": "745aa0a035af0f6bf9737cbc7af05402fd7dbaba725fb1456be36788997b100a"
+    },
+    {
+      "path": "android/app/src/test/kotlin/com/papercuspai/operator/mobile/CompanionFeedTest.kt",
+      "sha256": "fa81b3d1d02689b9883154a542c4ac8ab12ee3fbfc502477482089c5f8dcdbe1"
+    }
+  ],
+  "serverSourceCommit": "abf0415fe92e92487fe5a3af1d6d22ea0fca3525",
+  "serverSourceFiles": [
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/device/attention.ts",
+      "sha256": "af059f40f332ad4378473e4408d958494d6c782435001d431c868442851d6e95"
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/device/attention.test.ts",
+      "sha256": "35e346fc94e75be0c782c11d1e37129f61cbe99c789fadfb606bf1b1da692cb7"
+    }
+  ],
+  "serverTestRunIds": [
+    20462057
+  ],
+  "testCounts": {
+    "debug": 33,
+    "release": 33,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "xmlResults": [
+    {
+      "path": "android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml",
+      "sha256": "5f980fe17975377ac8a65b3509ed8d7bb0acadd2c62b194bb647baaf03497d90",
+      "variant": "testDebugUnitTest",
+      "suite": "com.papercuspai.operator.mobile.CompanionFeedTest",
+      "timestamp": "2026-10-02T01:34:19.349Z",
+      "tests": 10,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.EndpointSecurityTest.xml",
+      "sha256": "236c76f0031809a795aa9b4c006d7f3a40cfb41cfaeca0deebdd79d1c23cbbd6",
+      "variant": "testDebugUnitTest",
+      "suite": "com.papercuspai.operator.mobile.EndpointSecurityTest",
+      "timestamp": "2026-10-02T01:34:19.401Z",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml",
+      "sha256": "1c36fdafc5e7bd870720da38374232615b6431565263f21728fc5405129cb05e",
+      "variant": "testDebugUnitTest",
+      "suite": "com.papercuspai.operator.mobile.HumanErrorTest",
+      "timestamp": "2026-10-02T01:34:19.413Z",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.VoiceMicDenialTest.xml",
+      "sha256": "3e45cb02c03e5ca87b9383df9184b5b3e592bb680a65e614a0d7326773c597a5",
+      "variant": "testDebugUnitTest",
+      "suite": "com.papercuspai.operator.mobile.VoiceMicDenialTest",
+      "timestamp": "2026-10-02T01:34:19.426Z",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.VoicePrivacyConsentTest.xml",
+      "sha256": "1e2bd52c9174dd3189fe1be3755cfa95484c63ed56a03b17900c94943a7a367c",
+      "variant": "testDebugUnitTest",
+      "suite": "com.papercuspai.operator.mobile.VoicePrivacyConsentTest",
+      "timestamp": "2026-10-02T01:34:19.442Z",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml",
+      "sha256": "d7262b8eaf918c735cdca4d049a1520d95ca5174d8ce8fe8a827e06b7f2f3152",
+      "variant": "testDebugUnitTest",
+      "suite": "com.papercuspai.operator.mobile.WorkspaceSwitchTest",
+      "timestamp": "2026-10-02T01:34:19.447Z",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml",
+      "sha256": "c4c0674b378b8f18d00326b60aa0d814969458934a0c160a07f03bb1d0da7c81",
+      "variant": "testReleaseUnitTest",
+      "suite": "com.papercuspai.operator.mobile.CompanionFeedTest",
+      "timestamp": "2026-10-02T01:34:21.830Z",
+      "tests": 10,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.EndpointSecurityTest.xml",
+      "sha256": "7877e5a25564d8388847cbd9b4f3749dfec7f2cccf616f1b782543833a265d41",
+      "variant": "testReleaseUnitTest",
+      "suite": "com.papercuspai.operator.mobile.EndpointSecurityTest",
+      "timestamp": "2026-10-02T01:34:21.887Z",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml",
+      "sha256": "9ca2ee616b84098d3aa223020438400779b7c55eada24ee1d519952a59666aab",
+      "variant": "testReleaseUnitTest",
+      "suite": "com.papercuspai.operator.mobile.HumanErrorTest",
+      "timestamp": "2026-10-02T01:34:21.899Z",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.VoiceMicDenialTest.xml",
+      "sha256": "acd0e766aab531ed8e6941e12280f8473a883a0a54e7ed553f9ee318116068db",
+      "variant": "testReleaseUnitTest",
+      "suite": "com.papercuspai.operator.mobile.VoiceMicDenialTest",
+      "timestamp": "2026-10-02T01:34:21.913Z",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.VoicePrivacyConsentTest.xml",
+      "sha256": "80c5a7ebf9c33022ad822810376ec57392f5044b93a9a441ded766a8e8520c0d",
+      "variant": "testReleaseUnitTest",
+      "suite": "com.papercuspai.operator.mobile.VoicePrivacyConsentTest",
+      "timestamp": "2026-10-02T01:34:21.924Z",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "path": "android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml",
+      "sha256": "70c12885d1445920d43ec0090b86c2d4e75fe839b59b61f7aad9101c6e180647",
+      "variant": "testReleaseUnitTest",
+      "suite": "com.papercuspai.operator.mobile.WorkspaceSwitchTest",
+      "timestamp": "2026-10-02T01:34:21.928Z",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "rawEvidence": {
+    "path": "papercup-rust-mobile/android/app/build/ci-evidence/p003-attention-20261002.log",
+    "sha256": "67c7e51bb435bc1659048181015815ce751a25921f36838512b69a3f02b2beae"
+  },
+  "lint": {
+    "path": "android/app/build/reports/lint-results-release.xml",
+    "sha256": "7cf1c3bb7b13c5e256507e84eccbf17aac687bcb53fe0dbde9111b9befaf6a1f",
+    "severityCounts": {
+      "Fatal": 0,
+      "Error": 0,
+      "Warning": 114,
+      "Information": 0
+    }
+  },
+  "assertions": [
+    {
+      "id": "android-junit",
+      "passed": true,
+      "evidence": "Twelve executed XML suites total66 testcases, zero skips/errors/failures."
+    },
+    {
+      "id": "release-lint",
+      "passed": true,
+      "evidence": "BUILD SUCCESSFUL and lint XML with no Fatal/Error."
+    },
+    {
+      "id": "endpoint-regressions",
+      "passed": true,
+      "evidence": "Canonical Vitest ledger20462057:14passed/0failed/0skipped."
+    },
+    {
+      "id": "committed-source",
+      "passed": true,
+      "evidence": "Named mobile/server source and regression files match containing committed blobs."
+    }
+  ],
+  "disclosedGaps": [
+    "Working-runtime route lookup timed out; live source containment and paired UI remain unmeasured.",
+    "Not exact signed-candidate, physical-phone or Play-install proof.",
+    "P003/P002/P006 and public-release acceptance remain nonterminal."
+  ]
+}

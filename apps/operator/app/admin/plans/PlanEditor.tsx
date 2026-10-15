@@ -30,7 +30,7 @@ import {
 } from '@/app/_components/MarkdownEditor';
 import { endInteraction, markInteractionPhase, PERF_INTERACTIONS } from '@/app/_components/perf/perf-marks';
 import type { PlanItem } from './plans-api';
-import { decoratePromotedBlock, decoratePlanItemBadges, decoratePlanItemTestBadges, attachFeatureBadgeClickHandler, type PromotedFeature } from './plan-renderers';
+import { decoratePromotedBlock, decoratePlanItemBadges, attachFeatureBadgeClickHandler, type PromotedFeature } from './plan-renderers';
 import {
   attachStatusClickHandler,
   buildPlanIRRenderers,
@@ -59,9 +59,6 @@ export interface PlanEditorProps {
   /** P-006: map of P-NNN → { featureId, status } from plans:get — drives
    *  inline feature status badges next to each linked plan item. */
   linkedFeatures?: Record<string, { featureId: string; status: string }>;
-  /** P-083: map of P-NNN → test-coverage counts from plans:get — drives the
-   *  inline `✓ pass/required` test-coverage badge next to each item. */
-  planItemTests?: Record<string, { valsRequiringTest: number; valsCovered: number; valsPassing: number }>;
   /** Optional P-203 hook: invoked when a `[data-plan-status]` pill is
    *  clicked in either mode. Receives the target element + the current
    *  status token. The consumer opens the status-flip popover. */
@@ -87,7 +84,6 @@ export default function PlanEditor({
   items,
   promotedFeatures,
   linkedFeatures,
-  planItemTests,
   onStatusClick,
   onFeatureClick,
 }: PlanEditorProps) {
@@ -107,8 +103,6 @@ export default function PlanEditor({
   promotedFeaturesRef.current = promotedFeatures;
   const linkedFeaturesRef = useRef(linkedFeatures);
   linkedFeaturesRef.current = linkedFeatures;
-  const planItemTestsRef = useRef(planItemTests);
-  planItemTestsRef.current = planItemTests;
 
   const handleParsed = useCallback(
     (root: HTMLElement) => {
@@ -122,9 +116,6 @@ export default function PlanEditor({
       }
       if (linkedFeaturesRef.current && Object.keys(linkedFeaturesRef.current).length > 0) {
         decoratePlanItemBadges(root, linkedFeaturesRef.current);
-      }
-      if (planItemTestsRef.current && Object.keys(planItemTestsRef.current).length > 0) {
-        decoratePlanItemTestBadges(root, planItemTestsRef.current);
       }
       // Vditor.preview re-renders the container's children on every value
       // change — detach the previous handlers before re-attaching so each

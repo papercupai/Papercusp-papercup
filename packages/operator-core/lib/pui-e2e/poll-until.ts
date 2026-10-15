@@ -39,6 +39,8 @@ export interface PollOptions {
   timeoutMs: number;
   /** Sleep between checks. Default 60ms. */
   intervalMs?: number;
+  /** Checks evidence that disqualifies the wait, even when its predicate succeeds. */
+  beforeCheck?: () => void;
   /** Runs after each failed check, before the sleep. */
   onMiss?: () => void;
 }
@@ -57,6 +59,7 @@ export async function pollUntil(
     // and the final check always follows the final I/O turn, so bytes that
     // arrived during a block are read before the verdict.
     const expired = Date.now() >= deadline;
+    opts.beforeCheck?.();
     if (await check()) return { ok: true, maxLateMs };
     if (expired) return { ok: false, maxLateMs };
     opts.onMiss?.();

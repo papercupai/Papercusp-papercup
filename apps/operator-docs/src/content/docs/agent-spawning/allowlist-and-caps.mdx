@@ -4,28 +4,26 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Admission & the concurrency ceiling
-description: >-
-  Who may spawn, how a spawn is admitted (brain judgment, not a rules budget), the one
-  fleet-wide cap, and how a rejected spawn fails. NOTE: the admission MECHANISM is live and
-  unchanged, but the roster it is illustrated with is not — `mug`/`kettle`/`cup` are retired
-  roles as of 2026-08-09 and `cup:spawn` refuses.
+title: "Admission & the concurrency ceiling"
+description: "Who may spawn, how a spawn is admitted (brain judgment, not a rules budget), the one fleet-wide cap, and how a rejected spawn fails. NOTE: the admission MECHANISM is live and unchanged, but the roster it is illustrated with is not — `mug`/`kettle`/`cup` are retired roles as of 2026-08-09 and `cup:spawn` refuses."
+type: Insight
+discovered: 2026-10-13
+status: active
+documents:
+  - "packages/operator-core/lib/fleet/operator-spawn.ts"
+  - "packages/operator-core/lib/rate-limit-config.ts"
+  - "packages/agent-mcp/src/role-config.ts"
+plans:
+  - "unify-agent-spawn-chokepoint-2026-06-06"
+  - "rate-limit-layer-v2-2026-06-05"
+  - "operator-scalability-event-loop-2026-06-16"
+  - "cup-capability-expansion-2026-06-08"
+  - "fleet-as-supervised-blackboard-2026-06-04"
+  - "unify-launch-mechanics-2026-06-09"
+  - "overwatch-role-2026-06-15"
+  - "mug-steering-panel-2026-06-15"
 sidebar:
   order: 3
-plans:
-  - unify-agent-spawn-chokepoint-2026-06-06
-  - rate-limit-layer-v2-2026-06-05
-  - operator-scalability-event-loop-2026-06-16
-  - cup-capability-expansion-2026-06-08
-  - fleet-as-supervised-blackboard-2026-06-04
-  - unify-launch-mechanics-2026-06-09
-  - overwatch-role-2026-06-15
-  - mug-steering-panel-2026-06-15
-documents:
-  - packages/operator-core/lib/fleet/operator-spawn.ts
-  - packages/operator-core/lib/rate-limit-config.ts
-  - packages/operator-core/lib/agent-tools/fleet/spawn.ts
-  - packages/agent-mcp/src/role-config.ts
 ---
 
 :::caution[The role gate below still runs — but `mug` / `cup` / `kettle` are retired roles]

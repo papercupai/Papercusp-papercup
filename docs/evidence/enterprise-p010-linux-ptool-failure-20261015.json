@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Enterprise P-010 Linux candidate: installed ptool authenticated access fails",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "isolated-candidate",
+  "command": ["Installed /usr/bin/ptool --help", "Installed /usr/bin/ptool coord:whoami with authenticated candidate operator discovery"],
+  "startedAt": "2026-10-15T08:59:00Z",
+  "finishedAt": "2026-10-15T09:14:00Z",
+  "exitCode": 1,
+  "summary": "Manifest e20f8391 ptool help passes but the actual authenticated CLI fails before operator connection. Root cause is SDK bootstrap importing bundled optional npm-install-safe CLI code, which evaluates repoLockName with an undefined path. Source now reuses the side-effect-free install-lock-name library and the actual CLI build guard catches this candidate. A fresh recut and installed authenticated read are still required; source tests do not accept the old artifact.",
+  "workItems": ["WI-6554700010012487", "EI-26035448489645024"],
+  "parentWorkItem": "WI-10007905",
+  "candidateManifestSha256": "e20f839152a048fd91f558cd228917ec08a3ec3fdf49bc4b9acc1c3543acb46b",
+  "assertions": [
+    {"id": "installed-cli-help", "passed": true, "evidence": "Task0mv9b5wz41mev66m1ch prints PTOOL_HELP PASS, then exits1 on the authenticated call. .papercusp/scratch/bash-b3f96f64-df7.log."},
+    {"id": "installed-cli-authenticated-read", "passed": false, "evidence": "Actual coord:whoami fails during SDK bootstrap before operator connection: TypeError paths[0] undefined. Sanitized diagnostic task0mv9b7lh71t9n0so101, follow-up EI-26035448489645024. The candidate operator was healthy at discovered port15022."},
+    {"id": "old-candidate-rejected-by-new-build-guard", "passed": true, "evidence": "New actual-CLI regression guard rejects this exact old candidate; .papercusp/scratch/p010-old-ptool-recurrence.log. New guard tests6/6 and existing ptool unit run77f0205b-cd06-4482-9d6b-f54b623f87a8 oktrue; these are source proof only."}
+  ],
+  "repair": {
+    "reuse": "apps/operator/scripts/ptool.mjs now imports the existing side-effect-free lib/install-lock-name helper instead of the optional npm CLI module",
+    "desktopGuardCommit": "d35f632f0757c86bc2651b6dfa073777e96c06fe",
+    "builderAcknowledged": "Current builder su-respawn-940e15e8295ae9c36b5eff70110316ec acknowledged inclusion in next WI-6554700010012560 recut",
+    "remaining": "Admit new manifest containing repair; acquire isolated target lease; execute installed ptool authenticated read. No install replay of e20f8391 is needed."
+  },
+  "limitations": ["MIXED handback, not four-of-four PASS", "No parent P-010 acceptance, candidate GO or shipment claim"]
+}

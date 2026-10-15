@@ -1,14 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { emitTaskTerminalEvent, taskTerminalEventKey } from './task-terminal-events';
 
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
-
 describe('task terminal awaited events', () => {
   it('builds the task-scoped key and emits the complete observed terminal tuple', async () => {
     const emit = vi.fn(async () => ({ ok: true }));
     expect(taskTerminalEventKey('tsk-123')).toBe('task:terminal:tsk-123');
 
-    emitTaskTerminalEvent(
+    await emitTaskTerminalEvent(
       {
         taskId: 'tsk-123',
         workspaceId: 'workspace-a',
@@ -21,8 +19,6 @@ describe('task terminal awaited events', () => {
       },
       { emit },
     );
-    await flush();
-
     expect(emit).toHaveBeenCalledOnce();
     expect(emit).toHaveBeenCalledWith({
       key: 'task:terminal:tsk-123',
@@ -41,9 +37,33 @@ describe('task terminal awaited events', () => {
     });
   });
 
+  it('preserves the original error stack when terminal delivery fails during module initialization', async () => {
+    const cause = new ReferenceError('Cannot access event module before initialization');
+    cause.stack = `${cause.name}: ${cause.message}\n    at initializeEventModule (/source/events/await/engine.ts:42:7)`;
+    const warn = vi.fn();
+
+    await emitTaskTerminalEvent(
+      {
+        taskId: 'tsk-import-failed',
+        workspaceId: 'workspace-a',
+        harnessSlug: null,
+        taskClass: 'bash-job',
+        launchedBy: 'su-a',
+        state: 'killed',
+        exitCode: 137,
+        exitReason: 'oom-kill',
+      },
+      { emit: async () => { throw cause; }, warn },
+    );
+
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('terminal event failed for tsk-import-failed'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(cause.stack));
+  });
+
   it('fails soft when wake delivery is unavailable', async () => {
     const warn = vi.fn();
-    emitTaskTerminalEvent(
+    await emitTaskTerminalEvent(
       {
         taskId: 'tsk-failed',
         workspaceId: 'workspace-a',
@@ -56,7 +76,6 @@ describe('task terminal awaited events', () => {
       },
       { emit: async () => { throw new Error('wake backend down'); }, warn },
     );
-    await flush();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('wake backend down'));
   });
 });

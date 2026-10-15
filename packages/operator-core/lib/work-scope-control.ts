@@ -10,12 +10,14 @@
  * revert-on-failure, audit id).
  */
 import { z } from 'zod';
+import { isDeepStrictEqual } from 'node:util';
 import { runControlMutation } from './gateway-control/control-harness';
 import { writePotControlPolicy } from './pot-control-policy';
 import {
   clearWorkScopePolicy,
   readWorkScopePolicy,
   setWorkScopePolicy,
+  workScopeExceptionExpirySchema,
   type WorkScopeException,
   type WorkScopePolicy,
 } from './work-scope-policy';
@@ -27,6 +29,7 @@ export const workScopeExceptionSchema = z
     plan: z.string().min(1).max(200).optional(),
     goal: z.string().min(1).max(200).optional(),
     workItem: z.string().min(1).max(120).optional(),
+    expiresAt: workScopeExceptionExpirySchema.optional(),
     reason: z.string().min(3).max(500),
   })
   .refine((e) => !!(e.harness || e.plan || e.goal || e.workItem), {
@@ -78,12 +81,17 @@ export async function applyWorkScopeSet(
       revertTo: async (prev) => {
         await writePotControlPolicy({ workScope: prev ?? undefined });
       },
-      verify: async (stored) => {
+      verify: async () => {
+        const stored = await readWorkScopePolicy();
+        // JSONB omits undefined properties and may reorder object keys.
+        const expectedExceptions = JSON.parse(JSON.stringify(next.exceptions ?? []));
         const ok =
           !!stored &&
           stored.mode === next.mode &&
           stored.allowHarnesses.length === next.allowHarnesses.length &&
-          stored.allowHarnesses.every((h, i) => h === next.allowHarnesses[i]!.trim());
+          stored.allowHarnesses.every((h, i) => h === next.allowHarnesses[i]!.trim()) &&
+          isDeepStrictEqual(stored.exceptions ?? [], expectedExceptions) &&
+          stored.setBy === next.setBy && stored.reason === next.reason;
         return { ok, detail: ok ? undefined : 'policy did not persist as written' };
       },
       describe: (prev) => ({ current: prev, patch: next }),

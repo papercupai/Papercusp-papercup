@@ -215,3 +215,42 @@ export function createPreemptMarkerExclusive(marker) {
     return 'reclaimed';
   }
 }
+
+/**
+ * The two marker paths pc-heavy exports for exactly ONE process: the runner it
+ * launched. They name that runner's barrier, never a descendant's.
+ */
+export const PREEMPT_MARKER_ENV_KEYS = Object.freeze([
+  'PC_HEAVY_PREEMPT_READY_FILE',
+  'PC_HEAVY_PSI_FINALIZATION_FILE',
+]);
+
+/**
+ * Take this runner's marker paths and REMOVE them from `env`, so nothing it
+ * spawns inherits them.
+ *
+ * WHY (EI-25671809770924720). A runner hands `process.env` to every child it
+ * spawns. A test that itself spawns a runner therefore gave that nested runner
+ * the PARENT's unique marker path. The nested runner then either refused with
+ * EEXIST against its live parent, before running a single assertion, or (for
+ * the finalization marker) could publish the parent's barrier before the parent
+ * had finished. The boundary was being re-drawn by hand at each spawn site:
+ * affected-tests.mjs, testing:run, and every integration test that runs a
+ * runner deleted the same two keys. Consuming them once, at the runner's entry,
+ * puts the boundary where the paths are received, so a new spawn site cannot
+ * reopen the leak.
+ *
+ * @param {NodeJS.ProcessEnv} [env] mutated in place
+ * @returns {{ readyFile: string|null, finalizationFile: string|null }}
+ */
+export function consumePreemptMarkerEnv(env = process.env) {
+  const take = (key) => {
+    const value = env[key]?.trim() || null;
+    delete env[key];
+    return value;
+  };
+  return {
+    readyFile: take('PC_HEAVY_PREEMPT_READY_FILE'),
+    finalizationFile: take('PC_HEAVY_PSI_FINALIZATION_FILE'),
+  };
+}

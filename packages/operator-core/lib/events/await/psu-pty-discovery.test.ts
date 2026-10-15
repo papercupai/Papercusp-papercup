@@ -11,18 +11,52 @@ import {
   unlinkSync,
   existsSync,
   readFileSync,
+  utimesSync,
+  promises as fsPromises,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import net from 'node:net';
+import { qualifyHooksObservationAck } from './psu-pty-discovery';
+
+describe('hook observation capability gate', () => {
+  it('accepts only exact generation-bound viewport evidence after confirmed cleanup', () => {
+    const request = { ownerId: 'su-observe', expectedAdvSessionId: '42', expectedNativeSessionId: 'native',
+      expectedHostStartedAt: 100, expectedChildGeneration: 3, expectedHostCodeVersion: 'sha' };
+    const receipt = { ok: true, inputReleased: true, identity: { ownerId: 'su-observe', advSessionId: '42',
+      nativeSessionId: 'native', hostStartedAt: 100, childGeneration: 3, hostCodeVersion: 'sha' },
+      coverage: { scope: 'fresh-hook-browser-viewport', complete: false }, visibleRows: ['Hooks'] };
+    expect(qualifyHooksObservationAck(request, receipt)).toBe(true);
+    expect(qualifyHooksObservationAck(request, { ok: true })).toBe(false);
+    expect(qualifyHooksObservationAck(request, { ...receipt, inputReleased: false })).toBe(false);
+    expect(qualifyHooksObservationAck(request, { ...receipt, coverage: { ...receipt.coverage, complete: true } })).toBe(false);
+    expect(qualifyHooksObservationAck(request, { ...receipt, identity: { ...receipt.identity, childGeneration: 4 } })).toBe(false);
+  });
+  it('never opens a socket for an old, absent, or unqualified host', async () => {
+    const connect = vi.spyOn(net, 'createConnection');
+    try {
+      expect(await injectIntoHostWithConfirmation('/tmp/never-hook-observation.sock', {
+        mode: 'hooks-observe', data: '', observationVersion: 1,
+        ownerId: `su-missing-observation-${process.pid}`, expectedNativeSessionId: 'native',
+        expectedAdvSessionId: '42', expectedHostStartedAt: 1, expectedChildGeneration: 1,
+        expectedHostCodeVersion: 'host-sha',
+      })).toMatchObject({ ok: false, reason: 'observation-capability-or-custody-unavailable' });
+      expect(connect).not.toHaveBeenCalled();
+    } finally { connect.mockRestore(); }
+  });
+});
 import {
   findLiveHost,
+  findLiveHostAsync,
   hostSupports,
   hostIsAgentLaunched,
   hostCodeVersionMatches,
   shutdownViaPty,
   latestRespawnNativeId,
   latestRespawnNativeSession,
+  latestRespawnNativeSessionAsync,
+  hostStartedAt,
+  hostStartedAtAsync,
   mcpReconnectViaPty,
   injectIntoHost,
   injectIntoHostWithConfirmation,
@@ -34,6 +68,8 @@ import {
   sanitizeKey,
   sockOwnerIdFromPath,
   auditInjectOwnerBinding,
+  _flushInjectAuditForTest,
+  rotateInjectAuditIfFull,
   PSU_PTY_DIR,
   MAX_CONTROL_PAYLOAD_BYTES,
   type PsuPtyHost,
@@ -145,6 +181,37 @@ describe('findLiveHost', () => {
   });
 });
 
+describe('findLiveHostAsync', () => {
+  it('returns the keyed host after async socket and identity validation', async () => {
+    const dir = tmpDir();
+    const { sock } = startSocket(dir, 'su-async-live');
+    writeMeta(dir, 'su-async-live', {
+      pid: process.pid,
+      ptyPid: process.pid,
+      sock,
+      command: 'claude-su',
+      startedAt: 1,
+    });
+    const verifyIdentity = vi.fn(async () => true);
+
+    const host = await findLiveHostAsync('su-async-live', dir, { verifyIdentity });
+
+    expect(host).toMatchObject({ ownerId: 'su-async-live', sock });
+    expect(verifyIdentity).toHaveBeenCalledWith(process.pid);
+  });
+
+  it('rejects a sanitize-key collision even when the async liveness probe passes', async () => {
+    const dir = tmpDir();
+    const { sock } = startSocket(dir, 'su-async-owner-a');
+    writeFileSync(
+      join(dir, `${sanitizeKey('su-async-owner-a')}.json`),
+      JSON.stringify({ ownerId: 'su-async-owner-b', pid: process.pid, sock }),
+    );
+
+    await expect(findLiveHostAsync('su-async-owner-a', dir, { verifyIdentity: async () => true })).resolves.toBeNull();
+  });
+});
+
 describe('pidIsPsuHost (WI-2339 defect #2 — process-identity gate)', () => {
   // The DEFAULT reads /proc; these inject readCmdline to test the marker logic
   // deterministically. Marker strings mirror the REAL launcher cmdline verified
@@ -215,6 +282,27 @@ describe('pruneDeadDiscoveryFiles (WI-2510 — standing janitor hygiene sweep)',
     writeMeta(dir, 'su-consistent', { pid: process.pid, ptyPid: process.pid, sock, command: 'x', startedAt: 1 });
     expect(await pruneDeadDiscoveryFilesAsync(dir, ID_OK)).toBe(0);
     expect(findLiveHost('su-consistent', dir, ID_OK)).not.toBeNull();
+  });
+
+  it('WI-10004784: reaps abandoned <target>.<pid>.tmp staging files past the age gate, keeps fresh ones and the ledgers', async () => {
+    const dir = tmpDir();
+    const nowMs = Date.now();
+    const staleMeta = join(dir, `${sanitizeKey('su-crashed')}.json.12345.tmp`);
+    const staleTrim = join(dir, `${sanitizeKey('su-crashed')}.events.jsonl.12345.tmp`);
+    const freshMeta = join(dir, `${sanitizeKey('su-writing')}.json.67890.tmp`);
+    const oldLedger = join(dir, `${sanitizeKey('su-crashed')}.events.jsonl`);
+    const notStaging = join(dir, 'notes.tmp'); // no <pid> segment — not the host's staging name
+    for (const p of [staleMeta, staleTrim, freshMeta, oldLedger, notStaging]) writeFileSync(p, '{}');
+    const twoHoursAgoSec = (nowMs - 2 * 60 * 60 * 1000) / 1000;
+    for (const p of [staleMeta, staleTrim, oldLedger, notStaging]) utimesSync(p, twoHoursAgoSec, twoHoursAgoSec);
+
+    expect(await pruneDeadDiscoveryFilesAsync(dir, { ...ID_OK, nowMs })).toBe(2);
+
+    expect(existsSync(staleMeta)).toBe(false);
+    expect(existsSync(staleTrim)).toBe(false);
+    expect(existsSync(freshMeta)).toBe(true); // a writer may still be mid-rename
+    expect(existsSync(oldLedger)).toBe(true); // the events-ingest routine owns ledger retention
+    expect(existsSync(notStaging)).toBe(true);
   });
 });
 
@@ -331,6 +419,18 @@ describe('injectIntoHost — application-level ACK (EI-18676244363359331 / WI-58
 });
 
 describe('injectIntoHostWithConfirmation — WHY a true happened (WI-6862)', () => {
+  it.each([
+    { expectedStartedAt: 100, requireNativeTurnStart: true, expectedChildGeneration: 2,
+      expectedHostStartedAt: 200, provenanceIssuedAtMs: 300 },
+    { expectedStartedAt: 0, requireNativeTurnStart: false, expectedChildGeneration: 0,
+      expectedHostStartedAt: 0, provenanceIssuedAtMs: 0 },
+    {},
+  ])('preserves optional native proof and generation fences on the real socket: %j', async fields => {
+    const { sock, received } = startSocket(tmpDir(), 'native-fences');
+    await injectIntoHostWithConfirmation(sock, { mode: 'turn', data: 'continue', ...fields });
+    expect(JSON.parse(await received)).toEqual({ v: 1, mode: 'turn', data: 'continue', ...fields });
+  });
+
   it('reports an explicit {ok:true} ack as CONFIRMED by the host', async () => {
     const dir = tmpDir();
     const { sock } = startAckingSocket(dir, 'conf-ok', { ok: true, reason: 'delivered' });
@@ -386,6 +486,105 @@ describe('injectIntoHostWithConfirmation — WHY a true happened (WI-6862)', () 
     );
     expect(res.ok).toBe(false);
     expect(res.confirmation).toBe('error');
+  });
+});
+
+describe('failed wake confirmation audit retention', () => {
+  let auditPath: string;
+  let previousAuditPath: string | undefined;
+
+  beforeEach(() => {
+    previousAuditPath = process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_PATH;
+    auditPath = join(tmpDir(), 'sender-audit.jsonl');
+    process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_PATH = auditPath;
+  });
+
+  afterEach(async () => {
+    await _flushInjectAuditForTest();
+    if (previousAuditPath === undefined) delete process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_PATH;
+    else process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_PATH = previousAuditPath;
+  });
+
+  const failures = async (): Promise<Array<Record<string, unknown>>> => {
+    await _flushInjectAuditForTest();
+    return existsSync(auditPath)
+      ? readFileSync(auditPath, 'utf8').trim().split('\n')
+          .map((line) => JSON.parse(line) as Record<string, unknown>)
+          .filter((row) => row.kind === 'inject-host-failed')
+      : [];
+  };
+
+  it('retains the host refusal after the same delivery succeeds on retry', async () => {
+    const ownerId = `su-wake-audit-${process.pid}`;
+    const msg = { mode: 'turn' as const, ownerId, deliveryId: 'test-wake-retained', data: 'private wake body' };
+    const failed = startAckingSocket(tmpDir(), ownerId, { ok: false, reason: 'deferred-busy-gate' });
+    expect(await injectIntoHostWithConfirmation(failed.sock, msg)).toEqual({
+      ok: false, confirmation: 'acked', reason: 'deferred-busy-gate',
+    });
+
+    const recovered = startAckingSocket(tmpDir(), ownerId, { ok: true, reason: 'delivered' });
+    expect(await injectIntoHostWithConfirmation(recovered.sock, msg)).toEqual({
+      ok: true, confirmation: 'acked', reason: 'delivered',
+    });
+    expect(await failures()).toEqual([expect.objectContaining({
+      ownerId, deliveryId: msg.deliveryId, mode: 'turn',
+      confirmation: 'acked', reason: 'deferred-busy-gate', transportErrorCode: null,
+    })]);
+    expect(readFileSync(auditPath, 'utf8')).not.toContain(msg.data);
+  });
+
+  it('distinguishes a socket error from a host refusal without losing delivery identity', async () => {
+    const ownerId = `su-wake-error-${process.pid}`;
+    const msg = { mode: 'turn' as const, ownerId, deliveryId: 'test-wake-socket-error', data: 'private wake body' };
+    const result = await injectIntoHostWithConfirmation(join(tmpDir(), `${ownerId}.sock`), msg, 500);
+    expect(result).toEqual({ ok: false, confirmation: 'error' });
+    expect(await failures()).toEqual([expect.objectContaining({
+      ownerId, deliveryId: msg.deliveryId, confirmation: 'error',
+      reason: null, transportErrorCode: 'ENOENT',
+    })]);
+  });
+
+  it('preserves the transport verdict when its diagnostic file cannot be written', async () => {
+    process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_PATH = tmpDir();
+    const ownerId = `su-wake-audit-fail-${process.pid}`;
+    const result = await injectIntoHostWithConfirmation(join(tmpDir(), `${ownerId}.sock`), {
+      mode: 'turn', ownerId, deliveryId: 'test-wake-unwritable-audit', data: 'x',
+    }, 500);
+    expect(result).toEqual({ ok: false, confirmation: 'error' });
+  });
+
+  it('retains a timeout when the socket accepts but the host never acknowledges', async () => {
+    const ownerId = `su-wake-timeout-${process.pid}`;
+    const sock = join(tmpDir(), `${ownerId}.sock`);
+    const connections: net.Socket[] = [];
+    const server = net.createServer({ allowHalfOpen: true }, (conn) => {
+      connections.push(conn);
+      conn.on('data', () => {});
+    });
+    cleanups.push(() => {
+      for (const conn of connections) conn.destroy();
+      server.close();
+    });
+    await new Promise<void>((resolve) => server.listen(sock, resolve));
+    const result = await injectIntoHostWithConfirmation(sock, {
+      mode: 'turn', ownerId, deliveryId: 'test-wake-timeout', data: 'x',
+    }, 100);
+    expect(result).toEqual({ ok: false, confirmation: 'timeout' });
+    expect(await failures()).toEqual([expect.objectContaining({
+      ownerId, deliveryId: 'test-wake-timeout', confirmation: 'timeout',
+    })]);
+  });
+
+  it('retains an oversized wake rejection before attempting to connect', async () => {
+    const ownerId = `su-wake-oversize-${process.pid}`;
+    const result = await injectIntoHostWithConfirmation(join(tmpDir(), `${ownerId}.sock`), {
+      mode: 'turn', ownerId, deliveryId: 'test-wake-oversize',
+      data: 'x'.repeat(MAX_CONTROL_PAYLOAD_BYTES),
+    });
+    expect(result).toEqual({ ok: false, confirmation: 'oversize' });
+    expect(await failures()).toEqual([expect.objectContaining({
+      ownerId, deliveryId: 'test-wake-oversize', confirmation: 'oversize',
+    })]);
   });
 });
 
@@ -810,12 +1009,12 @@ describe('shutdownViaPty (WI-6638 — ask a finished agent session to close its 
       });
     });
     await new Promise<void>((r) => server.listen(sock, r));
-    const writeMeta = (caps: string[] | undefined) =>
+    const writeMeta = (caps: string[] | undefined, advSessionId: string | null = null) =>
       writeFileSync(
         meta,
         JSON.stringify({
           ownerId,
-          advSessionId: null,
+          advSessionId,
           pid: process.pid,
           ptyPid: process.pid,
           sock,
@@ -862,9 +1061,12 @@ describe('shutdownViaPty (WI-6638 — ask a finished agent session to close its 
       ['shutdown-refused:not-agent-launched', 'refused-not-agent-launched'],
       ['shutdown-refused:human-attended', 'refused-human-attended'],
       ['shutdown-refused:agent-busy', 'refused-agent-busy'],
+      ['shutdown-refused:stale-host', 'refused-stale-host'],
     ] as const) {
+      recv.length = 0;
       ack = { v: 1, ok: false, reason: hostReason };
       expect(await shutdownViaPty(ownerId, { verifyIdentity: () => true })).toBe(expected);
+      expect(recv).toHaveLength(1); // an acknowledged refusal is never retried
     }
 
     // An ok:false the caller does not recognise stays a plain send-failure rather
@@ -878,6 +1080,131 @@ describe('shutdownViaPty (WI-6638 — ask a finished agent session to close its 
     expect(await shutdownViaPty(ownerId, { force: true, verifyIdentity: () => true })).toBe('sent');
     await new Promise((r) => setTimeout(r, 100));
     expect(JSON.parse(recv[recv.length - 1])).toMatchObject({ mode: 'shutdown', force: true });
+    recv.length = 0;
+    writeMeta(['shutdown'], '7');
+    expect(await shutdownViaPty(ownerId, { expectedHost: { startedAt: 1, advSessionId: '7' }, verifyIdentity: () => true })).toBe('no-cap');
+    writeMeta(['shutdown', 'shutdown-identity'], '7');
+    expect(await shutdownViaPty(ownerId, { expectedHost: { startedAt: 2, advSessionId: '7' }, verifyIdentity: () => true })).toBe('refused-stale-host');
+    expect(await shutdownViaPty(ownerId, { expectedHost: { startedAt: 1, advSessionId: '8' }, verifyIdentity: () => true })).toBe('refused-stale-host');
+    expect(recv).toEqual([]);
+    expect(await shutdownViaPty(ownerId, { expectedHost: { startedAt: 1, advSessionId: '7' }, verifyIdentity: () => true })).toBe('sent');
+    expect(JSON.parse(recv.at(-1)!)).toMatchObject({ mode: 'shutdown', expectedStartedAt: 1, ownerId });
+  });
+
+  it('re-discovers and retries a transport miss only while the same host incarnation remains live', async () => {
+    mkdirSync(PSU_PTY_DIR, { recursive: true, mode: 0o700 });
+    const ownerId = `su-shutdown-rebound-${process.pid}-${Math.floor(performance.now())}`;
+    const key = sanitizeKey(ownerId);
+    const staleSock = join(PSU_PTY_DIR, `${key}.sock`);
+    const reboundSock = join(PSU_PTY_DIR, `${key}-rebound.sock`);
+    const meta = join(PSU_PTY_DIR, `${key}.json`);
+    const received: Record<string, unknown>[] = [];
+    let resolveInitialVerification!: () => void;
+    const initialVerification = new Promise<void>((resolve) => { resolveInitialVerification = resolve; });
+    let verificationCalls = 0;
+    const verifyIdentity = async () => {
+      verificationCalls += 1;
+      if (verificationCalls === 1) resolveInitialVerification();
+      return true;
+    };
+    const writeMeta = (sock: string, startedAt: number, advSessionId: string) => writeFileSync(
+      meta,
+      JSON.stringify({
+        ownerId,
+        advSessionId,
+        pid: process.pid,
+        ptyPid: process.pid,
+        sock,
+        command: 'claude-su',
+        startedAt,
+        caps: ['shutdown', 'shutdown-identity'],
+      }),
+    );
+
+    // The first discovery sees a present but unbound socket path. The host then
+    // rebinds to another path without changing its launch incarnation.
+    writeFileSync(staleSock, '');
+    writeMeta(staleSock, 1, '7');
+    const server = net.createServer((conn) => {
+      const chunks: Buffer[] = [];
+      conn.on('data', (d) => chunks.push(d));
+      conn.on('end', () => {
+        received.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+        conn.end(`${JSON.stringify({ v: 1, ok: true, reason: 'shutdown-accepted' })}\n`);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(reboundSock, resolve));
+    cleanups.push(() => {
+      server.close();
+      for (const path of [staleSock, reboundSock, meta]) if (existsSync(path)) unlinkSync(path);
+    });
+
+    const pending = shutdownViaPty(ownerId, {
+      expectedHost: { startedAt: 1, advSessionId: '7' },
+      verifyIdentity,
+    });
+    await initialVerification; // guarantees the first call captured the stale record
+    writeMeta(reboundSock, 1, '7');
+
+    expect(await pending).toBe('sent');
+    expect(received).toHaveLength(1);
+    expect(received[0]).toMatchObject({
+      mode: 'shutdown',
+      ownerId,
+      expectedStartedAt: 1,
+    });
+  });
+
+  it('does not carry a missed shutdown onto a replacement host incarnation', async () => {
+    mkdirSync(PSU_PTY_DIR, { recursive: true, mode: 0o700 });
+    const ownerId = `su-shutdown-replaced-${process.pid}-${Math.floor(performance.now())}`;
+    const key = sanitizeKey(ownerId);
+    const staleSock = join(PSU_PTY_DIR, `${key}.sock`);
+    const replacementSock = join(PSU_PTY_DIR, `${key}-replacement.sock`);
+    const meta = join(PSU_PTY_DIR, `${key}.json`);
+    const received: string[] = [];
+    let resolveInitialVerification!: () => void;
+    const initialVerification = new Promise<void>((resolve) => { resolveInitialVerification = resolve; });
+    let verificationCalls = 0;
+    const verifyIdentity = async () => {
+      verificationCalls += 1;
+      if (verificationCalls === 1) resolveInitialVerification();
+      return true;
+    };
+    const writeMeta = (sock: string, startedAt: number, advSessionId: string) => writeFileSync(
+      meta,
+      JSON.stringify({
+        ownerId,
+        advSessionId,
+        pid: process.pid,
+        ptyPid: process.pid,
+        sock,
+        command: 'claude-su',
+        startedAt,
+        caps: ['shutdown', 'shutdown-identity'],
+      }),
+    );
+
+    writeFileSync(staleSock, '');
+    writeMeta(staleSock, 1, '7');
+    const server = net.createServer((conn) => {
+      conn.on('data', (d) => received.push(d.toString('utf8')));
+    });
+    await new Promise<void>((resolve) => server.listen(replacementSock, resolve));
+    cleanups.push(() => {
+      server.close();
+      for (const path of [staleSock, replacementSock, meta]) if (existsSync(path)) unlinkSync(path);
+    });
+
+    const pending = shutdownViaPty(ownerId, {
+      expectedHost: { startedAt: 1, advSessionId: '7' },
+      verifyIdentity,
+    });
+    await initialVerification;
+    writeMeta(replacementSock, 2, '8');
+
+    expect(await pending).toBe('refused-stale-host');
+    expect(received).toEqual([]);
   });
 });
 
@@ -1017,6 +1344,80 @@ describe('latestRespawnNativeId (WI-5075 rung 3: reconcile a stale adv_sessions 
     // superseded 'old-1' would re-pin the estimate to a dead predecessor.
     expect(latestRespawnNativeId(owner, dir)).toBeNull();
   });
+
+  // WI-10005220: per-owner sweeps must read the ledger off the event loop. The async
+  // form shares the decision with the sync one; this pins that they agree on EVERY
+  // fixture shape above (a divergence would silently re-pin a session on bg-host only).
+  it('latestRespawnNativeSessionAsync agrees with the sync form on every fixture shape', async () => {
+    type Case = {
+      name: string;
+      lines: unknown[] | string | null;
+      startedAt: number | null;
+      meta?: Record<string, unknown>;
+      allowWithoutHost?: boolean;
+    };
+    const cases: Case[] = [
+      { name: 'newest wins', lines: [
+        { ts: at(1), kind: 'respawned', nativeId: 'old-1' },
+        { ts: at(3), kind: 'respawned', nativeId: 'newest-2' },
+      ], startedAt: HOST_START },
+      { name: 'drill', lines: [{ ts: at(1), kind: 'carry-drill-respawned', nativeId: 'drill-1' }], startedAt: HOST_START },
+      { name: 'never respawned', lines: [{ ts: at(1), kind: 'compact-submitted' }], startedAt: HOST_START },
+      { name: 'no log', lines: null, startedAt: HOST_START },
+      { name: 'partial first line', lines:
+        'ativeId":"garbage"}\n' + JSON.stringify({ ts: at(2), kind: 'respawned', nativeId: 'good-2' }) + '\n',
+        startedAt: HOST_START },
+      { name: 'previous host', lines: [{ ts: at(-30), kind: 'respawned', nativeId: 'prev' }], startedAt: HOST_START },
+      { name: 'no discovery file', lines: [{ ts: at(1), kind: 'respawned', nativeId: 'orphan' }], startedAt: null },
+      { name: 'hostless self-relaunch allowed', lines: [
+        { ts: at(1), kind: 'respawned', mode: 'self-relaunch', nativeId: 'recovered' },
+      ], startedAt: null, allowWithoutHost: true },
+      { name: 'hostless carry rejected', lines: [
+        { ts: at(1), kind: 'respawned', mode: 'carry-respawn', nativeId: 'stale' },
+      ], startedAt: null, allowWithoutHost: true },
+      { name: 'foreign discovery file', lines: [{ ts: at(1), kind: 'respawned', nativeId: 'x-1' }],
+        startedAt: null, meta: { ownerId: 'su-someone-else', startedAt: HOST_START } },
+      { name: 'unparseable ts', lines: [{ ts: 'not-a-date', kind: 'respawned', nativeId: 'u' }], startedAt: HOST_START },
+      { name: 'recycle without id', lines: [
+        { ts: at(1), kind: 'respawned', nativeId: 'old-1' },
+        { ts: at(2), kind: 'respawned', mode: 'recycle', nativeId: null },
+      ], startedAt: HOST_START },
+    ];
+    let nonNull = 0;
+    for (const c of cases) {
+      const dir = tmpDir();
+      if (c.lines !== null) {
+        writeFileSync(
+          join(dir, `${sanitizeKey(owner)}.events.jsonl`),
+          typeof c.lines === 'string' ? c.lines : c.lines.map((l) => JSON.stringify(l)).join('\n') + '\n',
+        );
+      }
+      if (c.startedAt !== null) writeMeta(dir, owner, { startedAt: c.startedAt });
+      if (c.meta) writeFileSync(join(dir, `${sanitizeKey(owner)}.json`), JSON.stringify(c.meta));
+      const opts = c.allowWithoutHost ? { allowWithoutHost: true } : {};
+      const sync = latestRespawnNativeSession(owner, dir, opts);
+      expect({ name: c.name, got: await latestRespawnNativeSessionAsync(owner, dir, opts) }).toEqual({
+        name: c.name,
+        got: sync,
+      });
+      expect({ name: c.name, got: await hostStartedAtAsync(owner, dir) }).toEqual({
+        name: c.name,
+        got: hostStartedAt(owner, dir),
+      });
+      if (sync) nonNull++;
+    }
+    // Calibration: the table must exercise BOTH outcomes, or "they agree" is vacuous.
+    expect(nonNull).toBeGreaterThanOrEqual(4);
+    expect(nonNull).toBeLessThan(cases.length);
+  });
+
+  // WI-10005220 recurrence guard: resolveSessionRefReconciled runs per owner on bg-host
+  // sweeps, so its DEFAULT rung-3 read must stay on the async form.
+  it('resolveSessionRefReconciled reads the respawn ledger with the ASYNC form', () => {
+    const src = readFileSync(resolve(__dirname, '../../compaction-usage.ts'), 'utf8');
+    expect(src).toMatch(/\blatestRespawnNativeSessionAsync\(ownerId\b/);
+    expect(src).not.toMatch(/\blatestRespawnNativeSession\(ownerId\b/);
+  });
 });
 
 describe('hostCodeVersionMatches (WI-38292 — which build is this LIVE host running)', () => {
@@ -1098,20 +1499,23 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
     warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await _flushInjectAuditForTest();
     delete process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_PATH;
     warn.mockRestore();
     rmSync(auditDir, { recursive: true, force: true });
     for (const p of planted.splice(0)) if (existsSync(p)) unlinkSync(p);
   });
 
-  const rows = (): Array<Record<string, unknown>> =>
-    existsSync(auditPath)
+  const rows = async (): Promise<Array<Record<string, unknown>>> => {
+    await _flushInjectAuditForTest();
+    return existsSync(auditPath)
       ? readFileSync(auditPath, 'utf8')
           .split('\n')
           .filter(Boolean)
           .map((l) => JSON.parse(l) as Record<string, unknown>)
       : [];
+  };
 
   describe('sockOwnerIdFromPath — the caller-independent witness', () => {
     it('reads the owner out of the socket path the host actually writes', () => {
@@ -1125,18 +1529,18 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
     });
   });
 
-  it('passes a correctly-bound delivery silently', () => {
+  it('passes a correctly-bound delivery silently', async () => {
     const verdict = auditInjectOwnerBinding(join(PSU_PTY_DIR, `${OWNER_A}.sock`), {
       mode: 'turn',
       ownerId: OWNER_A,
     });
     expect(verdict).toBe('match');
-    expect(rows().filter((r) => r.kind === 'inject-owner-mismatch')).toHaveLength(0);
+    expect((await rows()).filter((r) => r.kind === 'inject-owner-mismatch')).toHaveLength(0);
   });
 
   // THE load-bearing case: the failure the receiving host's EI-153 guard structurally
   // cannot see, because envelope ownerId and socket owner agree from ITS point of view.
-  it('catches text addressed to one owner being written to ANOTHER owner’s socket', () => {
+  it('catches text addressed to one owner being written to ANOTHER owner’s socket', async () => {
     const sockB = plantHost(OWNER_B);
     const verdict = auditInjectOwnerBinding(sockB, {
       mode: 'turn',
@@ -1145,7 +1549,7 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
     });
     expect(verdict).toBe('mismatch');
 
-    const hits = rows().filter((r) => r.kind === 'inject-owner-mismatch');
+    const hits = (await rows()).filter((r) => r.kind === 'inject-owner-mismatch');
     expect(hits).toHaveLength(1);
     expect(hits[0]).toMatchObject({
       mode: 'turn',
@@ -1160,16 +1564,16 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
   // CONVENTION, not the binding: `interruptViaPty` legitimately retries against a
   // rebound socket whose filename no longer matches its owner. The filename
   // disagreeing is a reason to consult the host's own record — never a verdict.
-  it('does NOT accuse a correctly-bound delivery whose socket path is non-canonical', () => {
+  it('does NOT accuse a correctly-bound delivery whose socket path is non-canonical', async () => {
     const reboundSock = join(PSU_PTY_DIR, `${sanitizeKey(OWNER_A)}-rebound.sock`);
     plantHost(OWNER_A, reboundSock);
 
     expect(auditInjectOwnerBinding(reboundSock, { mode: 'turn', ownerId: OWNER_A })).toBe('match');
-    expect(rows().filter((r) => r.kind === 'inject-owner-mismatch')).toHaveLength(0);
+    expect((await rows()).filter((r) => r.kind === 'inject-owner-mismatch')).toHaveLength(0);
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it('reports indeterminate when no discovery record explains the disagreement — and COUNTS it', () => {
+  it('reports indeterminate when no discovery record explains the disagreement — and COUNTS it', async () => {
     // Filenames disagree and there is no record binding this socket to anyone. That is
     // an ABSENCE of evidence; calling it a misroute would be inventing one — so the
     // verdict stays `indeterminate` and nobody is accused.
@@ -1183,11 +1587,11 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
     expect(auditInjectOwnerBinding(orphan, { mode: 'turn', ownerId: OWNER_A })).toBe('indeterminate');
 
     // NOT accused: no mismatch row, no operator-facing warning.
-    expect(rows().filter((r) => r.kind === 'inject-owner-mismatch')).toHaveLength(0);
+    expect((await rows()).filter((r) => r.kind === 'inject-owner-mismatch')).toHaveLength(0);
     expect(warn).not.toHaveBeenCalled();
 
     // ...but no longer invisible.
-    const seen = rows().filter((r) => r.kind === 'inject-owner-indeterminate');
+    const seen = (await rows()).filter((r) => r.kind === 'inject-owner-indeterminate');
     expect(seen).toHaveLength(1);
     // `sockOwnerId` is the FILENAME-DERIVED witness, verbatim — the whole `.sock` stem,
     // not an owner id parsed out of it. That is the point of the field: it records what
@@ -1201,39 +1605,39 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
     });
   });
 
-  it('keeps the NO-WITNESS path silent — only an unadjudicable DISAGREEMENT is censused', () => {
+  it('keeps the NO-WITNESS path silent — only an unadjudicable DISAGREEMENT is censused', async () => {
     // The discriminator that keeps the new census row honest. A path carrying no owner
     // witness at all never observed a disagreement in the first place, so it must not
     // inflate the indeterminate census; it returns before the counter even increments.
     expect(auditInjectOwnerBinding('/tmp/not-a-socket', { mode: 'turn', ownerId: OWNER_A })).toBe(
       'indeterminate',
     );
-    expect(rows()).toHaveLength(0);
+    expect(await rows()).toHaveLength(0);
   });
 
-  it('records an unlabelled TURN-class inject — the guard’s fail-open exemption', () => {
+  it('records an unlabelled TURN-class inject — the guard’s fail-open exemption', async () => {
     // An envelope with no ownerId decodes host-side to a legacy mode:'turn' the EI-153
     // guard abstains on entirely, so this is the one shape that reaches a pty with no
     // identity check anywhere. It must not be silent here too.
     const verdict = auditInjectOwnerBinding(join(PSU_PTY_DIR, `${OWNER_A}.sock`), { mode: 'turn' });
     expect(verdict).toBe('unlabelled');
-    expect(rows().filter((r) => r.kind === 'inject-owner-unlabelled')).toHaveLength(1);
+    expect((await rows()).filter((r) => r.kind === 'inject-owner-unlabelled')).toHaveLength(1);
   });
 
-  it('does not itemise unlabelled CONTROL-BYTE modes, which are legitimately unaddressed', () => {
+  it('does not itemise unlabelled CONTROL-BYTE modes, which are legitimately unaddressed', async () => {
     for (const mode of ['raw', 'osc', 'mcp-reconnect']) {
       expect(auditInjectOwnerBinding(join(PSU_PTY_DIR, `${OWNER_A}.sock`), { mode })).toBe('unlabelled');
     }
-    expect(rows().filter((r) => r.kind === 'inject-owner-unlabelled')).toHaveLength(0);
+    expect((await rows()).filter((r) => r.kind === 'inject-owner-unlabelled')).toHaveLength(0);
   });
 
-  it('reports indeterminate — never a mismatch — when the path carries no witness', () => {
+  it('reports indeterminate — never a mismatch — when the path carries no witness', async () => {
     // A test double or an injected absolute path is an ABSENCE of evidence. Reporting it
     // as a mismatch would manufacture exactly the false positive that discredits a detector.
     expect(auditInjectOwnerBinding('/tmp/not-a-socket', { mode: 'turn', ownerId: OWNER_A })).toBe(
       'indeterminate',
     );
-    expect(rows()).toHaveLength(0);
+    expect(await rows()).toHaveLength(0);
   });
 
   // The heartbeat is the detector's positive control, but `injectsChecked` is
@@ -1243,14 +1647,14 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
   // whole audit population was 9 short-lived pids reaching ~25 checks apiece, so the
   // control was unreachable by construction. The override turns a falsifier you WAIT
   // on into one you can PROBE.
-  it('honours a heartbeat-interval override, so the positive control is reachable in a probe', () => {
+  it('honours a heartbeat-interval override, so the positive control is reachable in a probe', async () => {
     process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_HEARTBEAT_EVERY = '1';
     try {
       auditInjectOwnerBinding(join(PSU_PTY_DIR, `${OWNER_A}.sock`), {
         mode: 'turn',
         ownerId: OWNER_A,
       });
-      const beats = rows().filter((r) => r.kind === 'inject-audit-heartbeat');
+      const beats = (await rows()).filter((r) => r.kind === 'inject-audit-heartbeat');
       expect(beats.length).toBeGreaterThanOrEqual(1);
       expect(beats[0]).toMatchObject({ pid: process.pid });
       expect(typeof beats[0].checked).toBe('number');
@@ -1259,7 +1663,7 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
     }
   });
 
-  it('ignores a junk or non-positive heartbeat override rather than beating on every inject', () => {
+  it('ignores a junk or non-positive heartbeat override rather than beating on every inject', async () => {
     for (const bad of ['0', '-5', 'banana', '']) {
       process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_HEARTBEAT_EVERY = bad;
       try {
@@ -1272,12 +1676,92 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
       }
     }
     // Default interval (500) is far above the handful of checks this test performed.
-    expect(rows().filter((r) => r.kind === 'inject-audit-heartbeat')).toHaveLength(0);
+    expect((await rows()).filter((r) => r.kind === 'inject-audit-heartbeat')).toHaveLength(0);
   });
 
   it('never throws, and never blocks a delivery, on a hostile audit path', () => {
     const sockB = plantHost(OWNER_B);
     process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_PATH = join(auditDir, 'no', 'such', 'dir', 'a.jsonl');
     expect(() => auditInjectOwnerBinding(sockB, { mode: 'turn', ownerId: OWNER_A })).not.toThrow();
+  });
+
+  it('returns while the async audit append is still pending', async () => {
+    const append = vi.spyOn(fsPromises, 'appendFile');
+    let release!: () => void;
+    append.mockReturnValue(new Promise<void>((resolve) => { release = resolve; }));
+    try {
+      expect(auditInjectOwnerBinding(join(PSU_PTY_DIR, `${OWNER_A}.sock`), { mode: 'turn' })).toBe('unlabelled');
+      await vi.waitFor(() => expect(append).toHaveBeenCalledOnce());
+      expect(append).toHaveBeenCalledOnce();
+    } finally {
+      release();
+      append.mockRestore();
+      await _flushInjectAuditForTest();
+    }
+  });
+
+  // WI-10004854: the log had no cap (1.6 MB in a month). Driven through the real write
+  // path: a full log rotates to `.1` (replacing the old generation) before the next row.
+  it('rotates a full audit log to .1 before writing, replacing the previous generation', async () => {
+    writeFileSync(`${auditPath}.1`, 'OLDEST-GENERATION\n');
+    writeFileSync(auditPath, 'FULL-GENERATION\n');
+    process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_MAX_BYTES = '8';
+    try {
+      expect(auditInjectOwnerBinding(join(PSU_PTY_DIR, `${OWNER_A}.sock`), { mode: 'turn' })).toBe('unlabelled');
+    } finally {
+      delete process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_MAX_BYTES;
+    }
+    await _flushInjectAuditForTest();
+    expect(readFileSync(`${auditPath}.1`, 'utf8')).toBe('FULL-GENERATION\n');
+    const fresh = await rows();
+    expect(fresh).toHaveLength(1);
+    expect(fresh[0]).toMatchObject({ kind: 'inject-owner-unlabelled' });
+  });
+
+  it('does not rotate a log under the default cap', async () => {
+    writeFileSync(auditPath, 'SMALL\n');
+    auditInjectOwnerBinding(join(PSU_PTY_DIR, `${OWNER_A}.sock`), { mode: 'turn' });
+    await _flushInjectAuditForTest();
+    expect(existsSync(`${auditPath}.1`)).toBe(false);
+    expect(readFileSync(auditPath, 'utf8').startsWith('SMALL\n')).toBe(true);
+  });
+});
+
+describe('rotateInjectAuditIfFull (WI-10004854)', () => {
+  let dir: string;
+  let path: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'inject-audit-rotate-'));
+    path = join(dir, 'audit.jsonl');
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('treats a missing log as the normal first-write case', async () => {
+    expect(await rotateInjectAuditIfFull(path, 1)).toBe(false);
+    expect(existsSync(`${path}.1`)).toBe(false);
+  });
+
+  it('leaves a log one byte under the cap alone', async () => {
+    writeFileSync(path, 'x'.repeat(9));
+    expect(await rotateInjectAuditIfFull(path, 10)).toBe(false);
+    expect(readFileSync(path, 'utf8')).toBe('x'.repeat(9));
+  });
+
+  it('rotates a log exactly at the cap', async () => {
+    writeFileSync(path, 'x'.repeat(10));
+    expect(await rotateInjectAuditIfFull(path, 10)).toBe(true);
+    expect(existsSync(path)).toBe(false);
+    expect(readFileSync(`${path}.1`, 'utf8')).toBe('x'.repeat(10));
+  });
+});
+
+// WI-10004854: several tests above write sockets and discovery records into PSU_PTY_DIR
+// because the functions they exercise take no dir parameter. Killed runs left that
+// debris in the LIVE ~/.papercusp/psu-pty. setup-hermetic-env now redirects the dir for
+// every test process; this pins it from the consumer side.
+describe('test isolation of PSU_PTY_DIR (WI-10004854)', () => {
+  it('points at a hermetic dir, never the live ~/.papercusp/psu-pty', () => {
+    expect(resolve(PSU_PTY_DIR)).not.toBe(resolve(join(homedir(), '.papercusp', 'psu-pty')));
+    expect(PSU_PTY_DIR).toBe(process.env.PAPERCUSP_PSU_PTY_DIR);
   });
 });

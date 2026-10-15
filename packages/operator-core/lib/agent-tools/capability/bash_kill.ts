@@ -38,6 +38,24 @@ function errorResult(payload: Record<string, unknown>) {
   };
 }
 
+const bashKillHandleSchemas = {
+  bash_id: z
+    .string()
+    .min(1)
+    .describe('The process-local id returned by capability:bash (run_in_background). Use only in the launching context.'),
+  task_id: z
+    .string()
+    .min(1)
+    .describe('The durable task id returned by capability:bash. Preferred after compaction/carry.'),
+};
+
+// Publish the at-least-one handle requirement as a root union; a runtime-only
+// superRefine left both fields looking optional in discovery results.
+const bashKillArgsSchema = z.union([
+  z.object({ bash_id: bashKillHandleSchemas.bash_id, task_id: bashKillHandleSchemas.task_id.optional() }),
+  z.object({ bash_id: bashKillHandleSchemas.bash_id.optional(), task_id: bashKillHandleSchemas.task_id }),
+]);
+
 export default defineTool({
   name: 'capability:bash_kill',
   description:
@@ -58,35 +76,7 @@ export default defineTool({
   // transaction, matching capability:bash_output's carry-safe lookup path.
   skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
-  args: z
-    .object({
-      bash_id: z
-        .string()
-        .min(1)
-        .optional()
-        .describe('The process-local id returned by capability:bash (run_in_background). Use only in the launching context.'),
-      task_id: z
-        .string()
-        .min(1)
-        .optional()
-        .describe('The durable task id returned by capability:bash. Preferred after compaction/carry.'),
-    })
-    .superRefine((args, refinementCtx) => {
-      // EI-21240465530065342 (same defect as bash_output): capability:bash
-      // returns BOTH ids, so sending both back is the natural call — and the
-      // worker-local JOBS map makes the durable handle the one that actually
-      // resolves. Only a call with NO handle is a real caller error; two
-      // handles that disagree are adjudicated in the handler against the
-      // ledger, which matters more here than for a read: resolving the wrong
-      // handle would kill the wrong job.
-      if (!args.bash_id && !args.task_id) {
-        refinementCtx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'Pass at least one of bash_id or task_id.',
-          path: ['bash_id'],
-        });
-      }
-    }),
+  args: bashKillArgsSchema,
   async handler(args, ctx) {
     const workspaceId = workspaceIdForContext(ctx);
     let bashId = args.bash_id;

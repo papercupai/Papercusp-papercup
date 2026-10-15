@@ -13,13 +13,10 @@ import {
   loadExternalTriggerAdminSnapshot,
   loadExternalTriggerPlanAdminSnapshot,
   setExternalTriggerBindingArmed,
+  TriggerPackReviewRequiredError,
   updateExternalTriggerBindingStormPolicy,
 } from '../../../external-triggers/admin';
-import { connectOwnedSlackSource, SLACK_APP_MANIFEST_TEMPLATE } from '../../../external-triggers/slack';
-import {
-  ensureSlackRespondInThreadBinding,
-  SLACK_RESPOND_IN_THREAD_PLAN,
-} from '../../../external-triggers/slack-flagship';
+import { armTriggerPack, buildTriggerPackReview } from '../../../cupboard/trigger-pack-lifecycle';
 import { notifySyncInvalidate } from '../../../sync-sse';
 import { requireAllowedOriginOr403 } from '../../cors';
 
@@ -42,6 +39,9 @@ const attachExternalCommon = {
   // stated policy.
   maxRuns: z.number().int().positive().max(1_000_000).nullable().optional(),
   windowSeconds: z.number().int().positive().max(31 * 24 * 60 * 60).optional(),
+  // Dispatch validity window (WI-10004920): a run never dispatched within it is
+  // closed as stale instead of firing late. Omitted = the engine's bounded default.
+  maxAgeSeconds: z.number().int().positive().max(31 * 24 * 60 * 60).optional(),
 } as const;
 
 const attachPlanSchema = z.object({
@@ -65,6 +65,9 @@ const mutationSchema = z.union([
   attachPlanSchema,
   attachGoalSchema,
   attachDirectWorkItemSchema,
+  // Slack bug triage is the Cupboard `bug-triage` trigger pack, set up on
+  // Settings → Integrations (cupboard-distributable-integrations-2026-10-10#D-019);
+  // this route no longer carries a Slack-specific configure op.
   z
     .object({
       op: z.literal('detach-external'),
@@ -80,6 +83,17 @@ const mutationSchema = z.union([
       confirm: z.boolean().optional(),
     })
     .strict(),
+  // Trigger packs (P-013, D-016 §7): a pack-owned binding arms through its pack's
+  // review on this same route, never through a second surface.
+  z.object({ op: z.literal('pack-review'), installationId: z.string().uuid() }).strict(),
+  z
+    .object({
+      op: z.literal('pack-arm'),
+      installationId: z.string().uuid(),
+      fingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+      confirm: z.boolean().optional(),
+    })
+    .strict(),
   z
     .object({
       op: z.literal('set-storm-policy'),
@@ -90,6 +104,8 @@ const mutationSchema = z.union([
         .int()
         .positive()
         .max(31 * 24 * 60 * 60),
+      // Omitted = keep the binding's stored window (admin.ts merges, never resets).
+      maxAgeSeconds: z.number().int().positive().max(31 * 24 * 60 * 60).optional(),
     })
     .strict(),
 ]);
@@ -185,13 +201,18 @@ const mutate = defineTool({
           // default (social per-platform, else the bounded generic one) still
           // applies. A stated policy still wins.
           stormPolicy:
-            parsed.data.maxRuns == null && parsed.data.windowSeconds === undefined
+            parsed.data.maxRuns == null &&
+            parsed.data.windowSeconds === undefined &&
+            parsed.data.maxAgeSeconds === undefined
               ? undefined
               : {
                   ...(parsed.data.maxRuns == null ? {} : { maxRuns: parsed.data.maxRuns }),
                   ...(parsed.data.windowSeconds === undefined
                     ? {}
                     : { windowSeconds: parsed.data.windowSeconds }),
+                  ...(parsed.data.maxAgeSeconds === undefined
+                    ? {}
+                    : { maxAgeSeconds: parsed.data.maxAgeSeconds }),
                 },
           createdBy: `owner:${user.id}`,
         });
@@ -234,15 +255,59 @@ const mutate = defineTool({
           { status: 409 },
         );
       }
-      const binding = await setExternalTriggerBindingArmed(sql, workspaceId, parsed.data.id, parsed.data.armed);
+      let binding: Awaited<ReturnType<typeof setExternalTriggerBindingArmed>>;
+      try {
+        binding = await setExternalTriggerBindingArmed(sql, workspaceId, parsed.data.id, parsed.data.armed);
+      } catch (error) {
+        if (!(error instanceof TriggerPackReviewRequiredError)) throw error;
+        return Response.json(
+          {
+            ok: false,
+            error: error.code,
+            detail: error.message,
+            pack: { installationId: error.installationId, pluginName: error.pluginName },
+          },
+          { status: 409 },
+        );
+      }
       if (!binding) return Response.json({ ok: false, error: 'not_found' }, { status: 404 });
       void notifySyncInvalidate('externalTriggers.admin', { workspaceId }).catch(() => {});
       return Response.json({ ok: true, binding });
+    }
+    if (parsed.data.op === 'pack-review') {
+      const review = await buildTriggerPackReview(sql, workspaceId, parsed.data.installationId);
+      if (!review) return Response.json({ ok: false, error: 'not_found' }, { status: 404 });
+      return Response.json({ ok: true, review });
+    }
+    if (parsed.data.op === 'pack-arm') {
+      if (parsed.data.confirm !== true) {
+        return Response.json(
+          {
+            ok: false,
+            error: 'owner_confirmation_required',
+            detail: 'arming a trigger pack requires an explicit owner confirmation',
+            gate: { category: 'schedule-arm', authority: 'owner', reversible: true },
+          },
+          { status: 409 },
+        );
+      }
+      const user = await getSessionUserOrDefault(req.headers);
+      const result = await armTriggerPack(sql, workspaceId, {
+        installationId: parsed.data.installationId,
+        fingerprint: parsed.data.fingerprint,
+        reviewedBy: `owner:${user.id}`,
+      });
+      if (!result.ok) {
+        return Response.json(result, { status: result.error === 'not_found' ? 404 : 409 });
+      }
+      void notifySyncInvalidate('externalTriggers.admin', { workspaceId }).catch(() => {});
+      return Response.json(result);
     }
 
     const binding = await updateExternalTriggerBindingStormPolicy(sql, workspaceId, parsed.data.id, {
       maxRuns: parsed.data.maxRuns,
       windowSeconds: parsed.data.windowSeconds,
+      ...(parsed.data.maxAgeSeconds === undefined ? {} : { maxAgeSeconds: parsed.data.maxAgeSeconds }),
     });
     if (!binding) return Response.json({ ok: false, error: 'not_found' }, { status: 404 });
     void notifySyncInvalidate('externalTriggers.admin', { workspaceId }).catch(() => {});
@@ -250,83 +315,7 @@ const mutate = defineTool({
   },
 });
 
-const slackManifest = defineTool({
-  method: 'GET',
-  path: '/admin/triggers/slack/manifest',
-  // Provider-token setup stays behind the admin contract's verified/trusted
-  // gate; it must not inherit the parent route's cookie-less fallback.
-  auth: { trust: ['verified', 'trusted'] },
-  async handler(): Promise<Response> {
-    return Response.json({ ok: true, manifest: SLACK_APP_MANIFEST_TEMPLATE });
-  },
-});
-
-const slackConnectSchema = z
-  .object({
-    appToken: z.string().min(6).max(2_000),
-    botToken: z.string().min(6).max(2_000),
-    installSlug: z.string().min(1).max(120).default('papercusp'),
-    field: z.string().min(1).max(128).optional(),
-    channels: z.array(z.string().min(1).max(80)).max(500).optional(),
-  })
-  .strict();
-
-const slackConnect = defineTool({
-  method: 'POST',
-  path: '/admin/triggers/slack/connect',
-  // Provider-token setup stays behind the admin contract's verified/trusted
-  // gate; it must not inherit the parent route's cookie-less fallback.
-  auth: { trust: ['verified', 'trusted'] },
-  async handler(req): Promise<Response> {
-    const csrf = requireAllowedOriginOr403(req);
-    if (csrf) return csrf;
-    if (!(await enabled('admin:triggers:write'))) {
-      return Response.json({ ok: false, error: 'disabled' }, { status: 409 });
-    }
-    let raw: unknown;
-    try {
-      raw = await req.json();
-    } catch {
-      return Response.json({ ok: false, error: 'bad_request', detail: 'body must be JSON' }, { status: 400 });
-    }
-    const parsed = slackConnectSchema.safeParse(raw);
-    if (!parsed.success) {
-      return Response.json(
-        {
-          ok: false,
-          error: 'bad_request',
-          detail: parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; '),
-        },
-        { status: 400 },
-      );
-    }
-    try {
-      const user = await getSessionUserOrDefault(req.headers);
-      const workspaceId = activeWorkspaceId();
-      const createdBy = `owner:${user.id}`;
-      const source = await connectOwnedSlackSource(getOrgPg().sql, {
-        workspaceId,
-        ownerUserId: user.id,
-        createdBy,
-        ...parsed.data,
-      });
-      const flagship = await ensureSlackRespondInThreadBinding(getOrgPg().sql, workspaceId, source, createdBy);
-      void notifySyncInvalidate('externalTriggers.admin', { workspaceId }).catch(() => {});
-      return Response.json({
-        ok: true,
-        source,
-        binding: flagship.binding,
-        plan: {
-          slug: SLACK_RESPOND_IN_THREAD_PLAN,
-          created: flagship.plan.created,
-          armed: flagship.binding.armed,
-        },
-      });
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      return Response.json({ ok: false, error: 'slack_connect_failed', detail }, { status: 400 });
-    }
-  },
-});
-
-export default [read, mutate, slackManifest, slackConnect];
+// Slack setup (manifest, token connect, organization connect) moved into the
+// slack provider package: Settings → Integrations renders its declared setup
+// generically (cupboard-distributable-integrations-2026-10-10#D-025, #D-026).
+export default [read, mutate];

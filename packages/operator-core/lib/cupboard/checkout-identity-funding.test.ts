@@ -41,10 +41,28 @@ describe('bindPreflightFunding', () => {
     }]);
   });
 
-  it('records nothing for a non-identity release or without a workspace', async () => {
+  it('binds an opaque installed tool SKU without changing its bytes', async () => {
     const r = recorder();
-    expect(await bindPreflightFunding(preflight('sku-1'), { workspaceId: 'ws-1', bindFunding: r.bindFunding })).toBeUndefined();
+    const out = await bindPreflightFunding(preflight('plugin:acme/tool@2'), {
+      workspaceId: 'ws-1', actorId: 'user-1', bindFunding: r.bindFunding,
+    });
+    expect(out).toEqual({ ok: true, skuRef: 'plugin:acme/tool@2', channelId: 'ch_1' });
+    expect(r.writes).toEqual([{
+      workspaceId: 'ws-1', skuRef: 'plugin:acme/tool@2', channelId: 'ch_1', boundBy: 'user-1',
+    }]);
+  });
+
+  it.each(['', ' ', ' sku-1', 'sku-1 ', 'sku\n1', 'x'.repeat(301)])('refuses malformed hosted SKU %j before a local write', async (sku) => {
+    const r = recorder();
+    expect(await bindPreflightFunding(preflight(sku), { workspaceId: 'ws-1', bindFunding: r.bindFunding }))
+      .toMatchObject({ ok: false, skuRef: sku, channelId: 'ch_1' });
+    expect(r.writes).toEqual([]);
+  });
+
+  it('records nothing without a workspace', async () => {
+    const r = recorder();
     expect(await bindPreflightFunding(preflight('identity-release:x@1.0.0'), { bindFunding: r.bindFunding })).toBeUndefined();
+    expect(await bindPreflightFunding(preflight('sku-1'), { bindFunding: r.bindFunding })).toBeUndefined();
     expect(r.writes).toEqual([]);
   });
 

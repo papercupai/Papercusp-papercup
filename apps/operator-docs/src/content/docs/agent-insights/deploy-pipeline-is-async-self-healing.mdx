@@ -96,7 +96,8 @@ state:read { cell: 'gate.greenCheckpoint.ownership' }
 
 Apply the result to the correct lane:
 
-- **Held by a live agent:** stop only your `LIVE_GATE_OPS`. Send useful current-gate evidence once, then do not claim the live gate item, arm a fallback monitor, or keep rereading gate status. Continue every independently registered `GATE_SYSTEM_DEV` step.
+- **Held by you:** compare `gate.ownership.takenBy` with your verified owner identity. If they match, continue `LIVE_GATE_OPS` on the existing owning work-item: diagnose stopped or stalled runners and drive the gate to a verified verdict. Do not stand down because your own claim is held-live. If several native continuations share the identity, verify the elected execution continuation; it continues and the others hand off to it.
+- **Held by another live agent:** stop only your `LIVE_GATE_OPS`. Send useful current-gate evidence once, then do not claim the live gate item, arm a fallback monitor, or keep rereading gate status. Continue every independently registered `GATE_SYSTEM_DEV` step.
 - **Claimable but your claim is refused:** treat the refusal as authoritative evidence that `LIVE_GATE_OPS` is held, even if the cell under-reported it. This still does not reserve generic source development.
 - **Genuinely unowned:** claim the live gate item and become its one fixer. Query the test-run ledger for the actual failing checks, diagnose the root cause, fix it durably, add the recurrence guard that should have caught the class, and verify locally.
 - **Owned by a dead or non-progressing holder:** wake the holder directly and verify pickup; if the live-operation lane remains stranded, take it over rather than sleeping on it.

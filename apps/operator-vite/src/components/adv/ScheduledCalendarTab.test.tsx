@@ -16,6 +16,8 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
 const H = vi.hoisted(() => ({
   occurrences: [] as unknown[],
+  occurrenceError: null as Error | null,
+  invalidateOccurrences: vi.fn(),
   planList: [] as unknown[],
   queries: [] as Array<{ queryName: string; args: unknown }>,
   nuqs: { calView: 'dayGridMonth', calPlan: null } as Record<string, unknown>,
@@ -45,7 +47,7 @@ vi.mock('@papercusp/sync', () => ({
   useSyncQuery: (opts: { queryName: string; args: unknown }) => {
     H.queries.push({ queryName: opts.queryName, args: opts.args });
     if (opts.queryName === 'plans.scheduledOccurrences')
-      return { data: H.occurrences, loading: false, invalidate: vi.fn() };
+      return { data: H.occurrences, loading: false, error: H.occurrenceError, invalidate: H.invalidateOccurrences };
     if (opts.queryName === 'plans.list') return { data: H.planList, loading: false, invalidate: vi.fn() };
     if (opts.queryName === 'plans.schedule') return { data: [], loading: false, invalidate: vi.fn() };
     return { data: [], loading: false, invalidate: vi.fn() };
@@ -83,11 +85,47 @@ function occ(over: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   H.occurrences = [];
+  H.occurrenceError = null;
+  H.invalidateOccurrences.mockReset();
   H.planList = [];
   H.queries = [];
   H.nuqs = { calView: 'dayGridMonth', calPlan: null };
 });
 afterEach(cleanup);
+
+describe('<ScheduledCalendarTab> occurrence read recovery', () => {
+  it('shows a denied read instead of healthy counts or stale selected-plan details', () => {
+    H.occurrenceError = new Error('read denied');
+    H.occurrences = [occ()];
+    H.nuqs.calPlan = 'plan-a';
+    render(<ScheduledCalendarTab />);
+    expect(screen.getByRole('alert').textContent).toContain('Calendar is unavailable.');
+    expect(screen.queryByLabelText('Calendar occurrence summary')).toBeNull();
+    expect(screen.queryByLabelText('Close selected plan')).toBeNull();
+    expect(screen.getByTestId('fullcalendar')).toBeTruthy();
+  });
+
+  it('retries the occurrence read and restores counts and selection after recovery', () => {
+    H.occurrenceError = new Error('read denied');
+    H.nuqs.calPlan = 'plan-a';
+    const view = render(<ScheduledCalendarTab />);
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(H.invalidateOccurrences).toHaveBeenCalledTimes(1);
+    H.occurrenceError = null;
+    H.occurrences = [occ()];
+    view.rerender(<ScheduledCalendarTab />);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByLabelText('Calendar occurrence summary').textContent).toContain('1 in view');
+    expect(screen.getByLabelText('Close selected plan')).toBeTruthy();
+  });
+
+  it('keeps a successful empty occurrence result distinct from a failed read', () => {
+    render(<ScheduledCalendarTab />);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByLabelText('Calendar occurrence summary').textContent).toContain('0 in view');
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+  });
+});
 
 describe('<ScheduledCalendarTab> masthead + frame', () => {
   it('renders the masthead, legend, routines pane and the stubbed calendar', () => {

@@ -20,7 +20,11 @@
  */
 import type postgres from 'postgres';
 import { getDatatype, upsertDatatype, type DatatypeRow } from '../datatype-registry-store';
-import type { TypedPropertyDefinition } from '../typed-properties';
+import {
+  ORDERED_SELECTION_POLICY_DATATYPE,
+  orderedSelectionPolicyPayloadSchema,
+  type TypedPropertyDefinition,
+} from '../typed-properties';
 
 /** The datatype ref the work-on-everything `worklist` property declares (P-025). */
 export const PLAN_REF_LIST_DATATYPE = 'plan-ref-list';
@@ -69,8 +73,31 @@ export async function ensurePlanRefListDatatype(
       '(`plan:<slug>` or `plan:<harness>/<slug>`). List order is priority. ' +
       "The type of a goal's `worklist` property (work-on-everything-goal-2026-08-23 P-025).",
     tier: 'first-class',
+    // P-008 / D-013 §3: a plan-ref list is entity state, never work.
+    nature: 'record',
     payloadSchema: planRefListPayloadSchema(),
     createdBy: 'goal-package-seed',
+  });
+  return { created: true };
+}
+
+/** Reuse the registry seed for a generic policy; the primitive record cannot enforce unique ids. */
+export async function ensureOrderedSelectionPolicyDatatype(
+  sql: postgres.Sql,
+  workspaceId: string,
+  deps: EnsurePlanRefListDeps = DEFAULT_DEPS,
+): Promise<{ created: boolean }> {
+  if (await deps.get(sql, workspaceId, ORDERED_SELECTION_POLICY_DATATYPE)) return { created: false };
+  await deps.upsert(sql, {
+    id: ORDERED_SELECTION_POLICY_DATATYPE,
+    workspaceId,
+    title: 'Ordered selection policy',
+    description: 'Persistent owner order and exclusions for an opt-in typed-property collection. Dormant item ids retain their preferences.',
+    tier: 'first-class',
+    nature: 'record',
+    payloadSchema: orderedSelectionPolicyPayloadSchema(),
+    display: { widget: 'record', summary: '{{order.length}} priorities · {{excluded.length}} excluded' },
+    createdBy: 'typed-property-seed',
   });
   return { created: true };
 }

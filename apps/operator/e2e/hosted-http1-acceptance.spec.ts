@@ -29,7 +29,7 @@ const REST_QUERY_PATH = '/api/hosted/browser/rest-query';
 const HIDDEN_TIMER_PRODUCTION_MS = 5 * 60_000;
 const HIDDEN_TIMER_ACCEPTANCE_MS = 1_000;
 const execFileAsync = promisify(execFile);
-const REPO_ROOT = resolve(__dirname, '../../..');
+const REPO_ROOT = resolve(import.meta.dirname, '../../..');
 const TSX_BIN = resolve(REPO_ROOT, 'node_modules/.bin/tsx');
 
 interface SyncSnapshot {

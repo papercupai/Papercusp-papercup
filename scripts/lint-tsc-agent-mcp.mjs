@@ -12,16 +12,20 @@
 
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { runTscBaselineGate } from './lib/tsc-baseline-gate.mjs';
+import { runTscBaselineGate, TOOLCHAIN_FAILURE_EXIT_CODE } from './lib/tsc-baseline-gate.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const baselineFile = resolve(ROOT, 'packages/agent-mcp/.tsc-baseline.json');
 
 // A fresh compiler run is required: a warm tsbuildinfo can under-report errors and silently
 // ratchet a baseline down (EI-487).
+// --allowImportingTsExtensions matches operator-core's own tsconfig: the operator-core files this
+// graph follows are judged against operator-core's baseline, so they must compile under its
+// import rules (mutation-probe-closure.ts imports `.ts` because its worker is forked under raw
+// Node). It is legal here only because of --noEmit; tsconfig.build.json is unaffected.
 /** @type {string} */
 export const TSC_COMMAND =
-  'npx tsc -p packages/agent-mcp/tsconfig.json --noEmit --incremental false';
+  'npx tsc -p packages/agent-mcp/tsconfig.json --noEmit --incremental false --allowImportingTsExtensions';
 
 /** @type {{prefix:string, baselineFile:string, label:string}[]} */
 export const FOREIGN_BASELINES = [
@@ -45,8 +49,9 @@ async function main() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   main().catch((err) => {
-    // A failed or interrupted measurement is never a typecheck pass.
+    // A failed or interrupted measurement is never a typecheck pass — and never a regression
+    // either: exit 1 prints status=regressed, so a crash exits EX_SOFTWARE (EI-25816656568127078).
     console.error(err);
-    process.exit(1);
+    process.exit(TOOLCHAIN_FAILURE_EXIT_CODE);
   });
 }

@@ -2,6 +2,10 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   effectiveBackend,
   readAgentConfig,
+  writeAgentConfig,
+  parseRoleAccounts,
+  parseRoleBackups,
+  roleRoutingProblem,
   parseSurfaceModels,
   parseBackends,
   parseBulkResolverLaunchProfiles,
@@ -18,15 +22,41 @@ import { BULK_RUN_KINDS } from './attention/bulk-run-store';
 
 // Mock the PG-backed operator-state read so readAgentConfig exercises the
 // no-row fallback without touching a database.
-const { readOperatorStateMock } = vi.hoisted(() => ({ readOperatorStateMock: vi.fn() }));
+const { readOperatorStateMock, writeOperatorStateMock } = vi.hoisted(() => ({ readOperatorStateMock: vi.fn(), writeOperatorStateMock: vi.fn(async () => {}) }));
 vi.mock('./operator-state-pg', () => ({
   readOperatorState: readOperatorStateMock,
-  writeOperatorState: vi.fn(async () => {}),
+  writeOperatorState: writeOperatorStateMock,
 }));
 
 function cfg(partial: Partial<AgentConfig>): AgentConfig {
   return { backend: 'auto', cmd: '', models: {}, ...partial };
 }
+
+describe('R-3 persisted role routing', () => {
+  const backup = { backend: 'claude-code', model: 'sonnet', effort: 'high', account: 'auto' } as const;
+
+  it('reads saved route selectors and ordered backup records unchanged', async () => {
+    const roleAccounts = { worker: 'pin:fixture-account', external: null };
+    const roleBackups = { worker: [backup, { ...backup, model: 'haiku' }] };
+    readOperatorStateMock.mockResolvedValueOnce(cfg({ roleAccounts, roleBackups }));
+    const result = await readAgentConfig();
+    expect(result.roleAccounts).toEqual(roleAccounts);
+    expect(result.roleBackups).toEqual(roleBackups);
+  });
+
+  it('keeps lenient reads from leaking invalid selectors or backup records', () => {
+    expect(parseRoleAccounts({ good: 'auto', inherited: null, bad: 'contains spaces' })).toEqual({ good: 'auto', inherited: null });
+    expect(parseRoleBackups({ good: [backup], bad: [{ ...backup, backend: 'missing' }], duplicated: [backup, backup] })).toEqual({ good: [backup] });
+  });
+
+  it('checks configured primary against backups and rejects before the stored write', async () => {
+    const invalid = cfg({ models: { worker: 'sonnet:high' }, roleBackends: { worker: 'claude-code' }, roleBackups: { worker: [backup] } });
+    expect(roleRoutingProblem(invalid)).toMatch(/equal to primary/);
+    writeOperatorStateMock.mockClear();
+    await expect(writeAgentConfig(invalid)).rejects.toThrow(/role launch config rejected/);
+    expect(writeOperatorStateMock).not.toHaveBeenCalled();
+  });
+});
 
 describe('readAgentConfig default backend (no stored row)', () => {
   it('defaults an unconfigured workspace to claude-code, NOT omp', async () => {
@@ -56,8 +86,16 @@ describe('readAgentConfig default backend (no stored row)', () => {
 });
 
 describe('bulk resolver launch profiles', () => {
-  it('covers every generalized bulk-run kind', () => {
-    expect([...BULK_RESOLVER_PROFILE_KINDS]).toEqual([...BULK_RUN_KINDS]);
+  it('covers every generalized bulk-run kind, except the ones that deliberately inherit a pane profile', () => {
+    // observation-candidate plan D-021: the intake-triage drain has no settings pane,
+    // so it launches with the saved inbox-resolve profile (intake-triage-drain-action.ts).
+    // A NEW run kind must either get a profile here or be named in this map, never
+    // silently become unconfigurable.
+    const INHERITS_PROFILE: Record<string, (typeof BULK_RESOLVER_PROFILE_KINDS)[number]> = {
+      'intake-triage': 'inbox-resolve',
+    };
+    expect([...BULK_RESOLVER_PROFILE_KINDS]).toEqual(BULK_RUN_KINDS.filter((kind) => !(kind in INHERITS_PROFILE)));
+    for (const parent of Object.values(INHERITS_PROFILE)) expect(BULK_RESOLVER_PROFILE_KINDS).toContain(parent);
   });
 
   it('normalizes separate Inbox and Plans defaults with canonical launch values', () => {

@@ -28,10 +28,11 @@ import {
   type RecoveryLookup,
 } from './cold-boot-drill';
 import { resolveModelSpecForOwner } from './compaction-usage';
+import { tagTurnForInjection } from './turn-provenance/turn-provenance';
 import { runFlushGate, type FlushGateOutcome } from './enforcement-gate-io';
 import {
   PSU_PTY_DIR,
-  findLiveHost,
+  findLiveHostAsync,
   hostSupports,
   injectIntoHost,
   sanitizeKey,
@@ -90,6 +91,9 @@ export type ColdBootDrillLedgerKind =
   | 'carry-drill-respawn-failed'
   | 'carry-drill-carry-delivered'
   | 'carry-drill-carry-dropped'
+  // Busy-gate measurement rows are non-terminal drill diagnostics, correlated
+  // with the drill ID so the later verifier can inspect the exact defer.
+  | 'busy-gate-expired'
   // EI-12754: NON-terminal marker — a busy-gate-refused carry-respawn drill was
   // re-queued for exactly one deferred retry at the next settled turn. The
   // retry itself ends in a terminal delivered/dropped row; report/verify
@@ -105,12 +109,23 @@ export interface ColdBootDrillLedgerEvent {
   detail?: string;
   lookups?: RecoveryLookup[];
   transcriptPath?: string;
+  /** Caller that graded the sample; may differ from the host owner when the
+   * injected drill marker delegates grading to a role-scoped successor. */
+  gradedByOwnerId?: string;
   /** Host-mirrored terminal rows (EI-12655): why a carry was dropped / a respawn failed. */
   reason?: string;
+  /** Busy-gate measurement context for a correlated drill defer. */
+  mode?: string;
+  capMs?: number | null;
+  observedMaxQuietMs?: number | null;
   /** Host-mirrored respawn rows (EI-12655): the successor's fresh native session id. */
   nativeId?: string | null;
-  /** EI-12754: set on a terminal drop that came from the one-shot re-armed retry. */
+  /** EI-12754: set on a terminal drop from a bounded re-armed retry. */
   rearmed?: boolean;
+  /** Effective retry cap, final prompt quiet threshold, and verifier support reason. */
+  maxAttempts?: number | null;
+  quietMs?: number | null;
+  verifier?: string | null;
 }
 
 export interface ColdBootDrillHostEvent {
@@ -126,6 +141,16 @@ export interface ColdBootDrillHostEvent {
    *  carry-respawn-outcome to decide when a `pending` attempt is past the window
    *  in which it could still fire (see isOrphanedPendingRespawn). */
   capMs?: number | null;
+  /** Longest observed quiet window before the busy gate deferred this event. */
+  observedMaxQuietMs?: number | null;
+  /** Effective retry cap, final prompt quiet threshold, and verifier support reason. */
+  maxAttempts?: number | null;
+  quietMs?: number | null;
+  verifier?: string | null;
+  /** Set by the host on a terminal row that came from a re-armed (re-polled) attempt,
+   *  e.g. `respawn-carry-dropped {reason:'superseded', rearmed:true}`. Not read by the
+   *  outcome derivation; declared so fixtures copied from a real log type-check. */
+  rearmed?: boolean;
 }
 
 export function coldBootDrillLedgerPath(dir: string = PSU_PTY_DIR): string {
@@ -136,14 +161,20 @@ export function ownerHostEventPath(ownerId: string, dir: string = PSU_PTY_DIR): 
   return join(dir, `${sanitizeKey(ownerId)}.events.jsonl`);
 }
 
-function parseJsonl<T>(body: string): T[] {
+function parseJsonl<T>(body: string, requireComplete = false): T[] {
+  if (requireComplete && body && !body.endsWith('\n')) throw new Error('Incomplete carry ledger final row');
   const out: T[] = [];
   for (const line of body.split('\n')) {
     if (!line.trim()) continue;
     try {
       const row = JSON.parse(line);
+      if (requireComplete && (!row || typeof row !== 'object' || Array.isArray(row) ||
+          typeof row.kind !== 'string' || typeof row.ts !== 'string' || !Number.isFinite(Date.parse(row.ts)))) {
+        throw new Error('Invalid carry ledger row');
+      }
       if (row && typeof row === 'object') out.push(row as T);
-    } catch {
+    } catch (error) {
+      if (requireComplete) throw error;
       // A host can be appending while the reader snapshots the file. A partial
       // final row is not a drill failure; the next grade/report sees it.
     }
@@ -151,10 +182,13 @@ function parseJsonl<T>(body: string): T[] {
   return out;
 }
 
-export async function readColdBootDrillLedger(dir: string = PSU_PTY_DIR): Promise<ColdBootDrillLedgerEvent[]> {
+export async function readColdBootDrillLedger(
+  dir: string = PSU_PTY_DIR, opts: { requireComplete?: boolean } = {},
+): Promise<ColdBootDrillLedgerEvent[]> {
   try {
-    return parseJsonl<ColdBootDrillLedgerEvent>(await fs.readFile(coldBootDrillLedgerPath(dir), 'utf8'));
-  } catch {
+    return parseJsonl<ColdBootDrillLedgerEvent>(await fs.readFile(coldBootDrillLedgerPath(dir), 'utf8'), opts.requireComplete);
+  } catch (error) {
+    if (opts.requireComplete) throw error;
     return [];
   }
 }
@@ -162,10 +196,12 @@ export async function readColdBootDrillLedger(dir: string = PSU_PTY_DIR): Promis
 export async function readOwnerHostEvents(
   ownerId: string,
   dir: string = PSU_PTY_DIR,
+  opts: { requireComplete?: boolean } = {},
 ): Promise<ColdBootDrillHostEvent[]> {
   try {
-    return parseJsonl<ColdBootDrillHostEvent>(await fs.readFile(ownerHostEventPath(ownerId, dir), 'utf8'));
-  } catch {
+    return parseJsonl<ColdBootDrillHostEvent>(await fs.readFile(ownerHostEventPath(ownerId, dir), 'utf8'), opts.requireComplete);
+  } catch (error) {
+    if (opts.requireComplete) throw error;
     return [];
   }
 }
@@ -258,7 +294,7 @@ export interface StartColdBootDrillInput {
 export interface StartColdBootDrillDeps {
   now: () => number;
   newId: () => string;
-  findHost: (ownerId: string) => PsuPtyHost | null;
+  findHost: (ownerId: string) => Promise<PsuPtyHost | null>;
   resolveTranscript: (ownerId: string) => Promise<SelfSession | null>;
   resolveEffectiveWindow: (ownerId: string) => Promise<number>;
   buildBrief: (ownerId: string, workspaceId?: string) => Promise<CarryBrief | null>;
@@ -268,6 +304,7 @@ export interface StartColdBootDrillDeps {
     input: Parameters<typeof buildOwnerRespawnLaunchSpec>[1],
   ) => Promise<RespawnLaunchSpec | null>;
   inject: typeof injectIntoHost;
+  tagTurn: typeof tagTurnForInjection;
   readLedger: () => Promise<ColdBootDrillLedgerEvent[]>;
   appendLedger: (event: ColdBootDrillLedgerEvent) => Promise<boolean>;
 }
@@ -276,7 +313,7 @@ function startDeps(overrides: Partial<StartColdBootDrillDeps>): StartColdBootDri
   return {
     now: Date.now,
     newId: randomUUID,
-    findHost: findLiveHost,
+    findHost: findLiveHostAsync,
     resolveTranscript: defaultTranscript,
     resolveEffectiveWindow: defaultEffectiveWindow,
     buildBrief: async (ownerId, workspaceId) => {
@@ -285,6 +322,7 @@ function startDeps(overrides: Partial<StartColdBootDrillDeps>): StartColdBootDri
     flushGate: runFlushGate,
     buildSpec: buildOwnerRespawnLaunchSpec,
     inject: injectIntoHost,
+    tagTurn: tagTurnForInjection,
     readLedger: readColdBootDrillLedger,
     appendLedger: appendColdBootDrillLedgerEvent,
     ...overrides,
@@ -319,7 +357,7 @@ export async function startColdBootDrill(
   const interval = Math.max(60_000, input.minIntervalMs ?? DEFAULT_COLD_BOOT_DRILL_INTERVAL_MS);
   if (!ownerId) return { ok: false, error: 'owner_required', note: 'A drill must target the calling session owner.' };
 
-  const host = deps.findHost(ownerId);
+  const host = await deps.findHost(ownerId);
   if (!host || !hostSupports(host, 'carry-respawn')) {
     return {
       ok: false,
@@ -434,9 +472,14 @@ export async function startColdBootDrill(
     'Do not search/read your prior self session unless the carry is actually insufficient; ordinary source reads are fine.',
     `At the next clean boundary call session:carry-drill { op: "grade", drillId: "${drillId}" } exactly once.`,
   ].join('\n');
+  const taggedFirstPrompt = (await deps.tagTurn({
+    sid: ownerId,
+    origin: 'watchdog',
+    text: firstPrompt,
+  })).taggedText;
   const injected = await deps.inject(host.sock, {
     mode: 'carry-respawn',
-    data: firstPrompt,
+    data: taggedFirstPrompt,
     // EI-153 addressing: a carry-respawn RE-EXECS the receiving CLI on someone
     // else's carry document, so an UNADDRESSED one is the highest-severity
     // unowned write in this path — the host guard is predicated on `ownerId`
@@ -635,17 +678,35 @@ export type GradeColdBootDrillResult =
   | { ok: false; error: string; note: string };
 
 export async function gradeColdBootDrill(
-  ownerId: string,
+  graderOwnerId: string,
   drillId: string,
   overrides: Partial<GradeColdBootDrillDeps> = {},
 ): Promise<GradeColdBootDrillResult> {
   const deps = gradeDeps(overrides);
   const ledger = await deps.readLedger();
-  const requested = ledger.find((event) => event.drillId === drillId && event.ownerId === ownerId);
-  if (!requested) return { ok: false, error: 'unknown_drill', note: 'No durable drill request matches this owner and id.' };
+  // startColdBootDrill creates drillId with randomUUID() and embeds it in the
+  // injected successor prompt. That opaque marker is the one-drill delegation
+  // capability: the successor may run under a role-scoped principal whose
+  // ownerId differs from the host that owns the transcript. Keep all storage
+  // reads and attribution anchored to the recorded source owner.
+  const drillRows = ledger.filter((event) => event.drillId === drillId);
+  const ownerIds = [...new Set(drillRows.map((event) => event.ownerId))];
+  if (ownerIds.length === 0) {
+    return { ok: false, error: 'unknown_drill', note: 'No durable drill request matches this id.' };
+  }
+  if (ownerIds.length !== 1) {
+    return { ok: false, error: 'ambiguous_drill', note: 'The drill id is recorded under multiple owners; refusing to select a transcript.' };
+  }
+  const drillOwnerId = ownerIds[0];
+  const requested = drillRows.find(
+    (event) => event.ownerId === drillOwnerId && (event.kind === 'carry-drill-requested' || event.kind === 'carry-drill-queued'),
+  ) ?? drillRows.find((event) => event.ownerId === drillOwnerId);
+  if (!requested) {
+    return { ok: false, error: 'unknown_drill', note: 'No durable drill request matches this id.' };
+  }
 
   const existing = ledger.find(
-    (event) => event.drillId === drillId && event.ownerId === ownerId && event.kind === 'carry-drill-graded',
+    (event) => event.drillId === drillId && event.ownerId === drillOwnerId && event.kind === 'carry-drill-graded',
   );
   if (existing?.lookups) {
     const sample = { sessionClass: existing.sessionClass, lookups: existing.lookups };
@@ -659,7 +720,7 @@ export async function gradeColdBootDrill(
     };
   }
 
-  const hostEvents = await deps.readHostEvents(ownerId);
+  const hostEvents = await deps.readHostEvents(drillOwnerId);
   const respawn = [...hostEvents].reverse().find(
     (event) => event.kind === 'carry-drill-respawned' && event.drillId === drillId,
   );
@@ -683,7 +744,7 @@ export async function gradeColdBootDrill(
   if (carryText == null) {
     return { ok: false, error: 'carry_unreadable', note: 'The recorded carry file is absent, unsafe, or unreadable.' };
   }
-  const transcript = await deps.loadTranscript(ownerId, respawn.nativeId ?? null);
+  const transcript = await deps.loadTranscript(drillOwnerId, respawn.nativeId ?? null);
   if (!transcript) {
     return { ok: false, error: 'successor_transcript_unavailable', note: 'The fresh native transcript is not readable yet; grade at the next clean boundary.' };
   }
@@ -706,7 +767,8 @@ export async function gradeColdBootDrill(
     ts: new Date(deps.now()).toISOString(),
     kind: 'carry-drill-graded',
     drillId,
-    ownerId,
+    ownerId: drillOwnerId,
+    gradedByOwnerId: graderOwnerId,
     sessionClass: requested.sessionClass,
     lookups: sample.lookups,
     transcriptPath: transcript.ref,
@@ -758,7 +820,8 @@ function verifyDeps(overrides: Partial<VerifyColdBootDrillDeps>): VerifyColdBoot
     readHostEvents: readOwnerHostEvents,
     socketExists: async (ownerId) => {
       try {
-        return (await fs.stat(join(PSU_PTY_DIR, `${sanitizeKey(ownerId)}.sock`))).isSocket();
+        const host = await findLiveHostAsync(ownerId);
+        return !!host && (await fs.stat(host.sock)).isSocket();
       } catch {
         return false;
       }

@@ -513,6 +513,29 @@ describe('frozen carry artifact bindings', () => {
     await expect(recheckCarryArtifactManifest(manifest, peer)).rejects.toThrow('manifest metadata');
   });
 
+  it('separates same-byte artifact metadata drift from content changes', async () => {
+    const { input, peer } = await fixture();
+    const artifactPath = input.artifacts[0].filePath;
+    const beforeStat = await fsPromises.stat(artifactPath);
+    const content = await readFile(artifactPath, 'utf8');
+    const manifest = await captureCarryArtifactManifest(input);
+    await fsPromises.chmod(artifactPath, (beforeStat.mode ^ 0o200) & 0o7777);
+    try {
+      const failure = await recheckCarryArtifactManifest(manifest, peer).catch(error => error);
+      expect(failure).toBeInstanceOf(Error);
+      const message = (failure as Error).message;
+      const observationsStart = message.indexOf('observations=') + 'observations='.length;
+      const observations = JSON.parse(message.slice(observationsStart, message.lastIndexOf(')')));
+      expect(observations).toHaveLength(1);
+      expect(observations[0]).toMatchObject({ id: 'task', fields: ['identity'],
+        before: { sha256: manifest.artifacts[0].sha256 }, after: { sha256: manifest.artifacts[0].sha256 } });
+      expect(observations[0].before.identity).not.toEqual(observations[0].after.identity);
+      expect(await readFile(artifactPath, 'utf8')).toBe(content);
+    } finally {
+      await fsPromises.chmod(artifactPath, beforeStat.mode & 0o7777);
+    }
+  });
+
   it.each([[], ['entry', 'entry'], ['leaf'], ['absent']].map(relativeScriptRoots => ({ relativeScriptRoots })))
     ('refuses invalid relative traversal roots $relativeScriptRoots', async ({ relativeScriptRoots }) => {
       const { input } = await scriptFixture();

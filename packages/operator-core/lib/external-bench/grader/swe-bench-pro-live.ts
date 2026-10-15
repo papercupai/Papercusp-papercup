@@ -12,7 +12,10 @@
  *   PAPERCUSP_SWEBENCH_VERSION    — the grader version pin for pre-registration (image-set tag / repo commit)
  *   PAPERCUSP_SWEBENCH_DOCKERHUB_USER (default jefzda) · PAPERCUSP_SWEBENCH_NUM_WORKERS
  */
+import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { access } from 'node:fs/promises';
+import { SWE_BENCH_PRO_V1_PIN, type SweBenchProPopulationPin } from '../swe-bench-pro-pin';
 import type { OfficialGrader } from '../types';
 import type { ProcExec, SweBenchProGraderConfig } from './swe-bench-pro';
 import { getOfficialGrader, liveGraderFs, liveProcExec } from './index';
@@ -46,11 +49,23 @@ export function buildLiveSweBenchProGrader(cfg: SweBenchProGraderConfig = resolv
 }
 
 export interface SweBenchProPreflight {
-  /** True iff Docker is reachable AND the eval checkout + CSV are present — safe to run the grader. */
+  /**
+   * True iff Docker is reachable AND the eval checkout is present AND the raw CSV is present and is
+   * byte-identical to the pinned population — safe to run the grader.
+   */
   ready: boolean;
   docker: { available: boolean; detail: string };
   evalScript: { present: boolean; path: string };
-  rawSampleCsv: { present: boolean; path: string };
+  rawSampleCsv: {
+    present: boolean;
+    path: string;
+    /** sha256 of the CSV bytes, or null when the file is absent or could not be read. */
+    sha256: string | null;
+    /** True iff sha256 equals the pinned population's csvSha256. */
+    matchesPin: boolean;
+    /** The population the CSV is checked against (WI-6554700010008394). */
+    pin: { population: string; taskCount: number; csvSha256: string };
+  };
   /** Human-actionable gaps (provisioning steps the owner runs before the bounded smoke). */
   issues: string[];
 }
@@ -58,13 +73,31 @@ export interface SweBenchProPreflight {
 export interface PreflightDeps {
   exec?: ProcExec;
   pathExists?: (p: string) => Promise<boolean>;
+  /** sha256 hex of a file's bytes. Defaults to a streaming hash of the real file. */
+  fileSha256?: (p: string) => Promise<string>;
+  /** Population the CSV must match. Defaults to SWE_BENCH_PRO_V1_PIN. */
+  pin?: SweBenchProPopulationPin;
+}
+
+/** Streaming sha256 of a file (the raw CSV is ~24 MB; never buffer it whole). */
+export function sha256OfFile(p: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = createHash('sha256');
+    createReadStream(p)
+      .on('error', reject)
+      .on('data', (chunk) => hash.update(chunk))
+      .on('end', () => resolve(hash.digest('hex')));
+  });
 }
 
 /**
- * Check readiness WITHOUT spending: Docker daemon reachable + the eval checkout + the raw CSV present. Never
- * pulls an image / runs the eval. `issues` lists exactly what to provision (clone the checkout, fetch the CSV).
+ * Check readiness WITHOUT spending: Docker daemon reachable + the eval checkout + the raw CSV present and
+ * matching the pinned population. Never pulls an image / runs the eval. `issues` lists exactly what to
+ * provision (clone the checkout, fetch the CSV, or restore the pinned CSV).
  */
 export async function preflightSweBenchPro(cfg: SweBenchProGraderConfig, deps: PreflightDeps = {}): Promise<SweBenchProPreflight> {
+  const pin = deps.pin ?? SWE_BENCH_PRO_V1_PIN;
+  const fileSha256 = deps.fileSha256 ?? sha256OfFile;
   const exec = deps.exec ?? liveProcExec;
   const pathExists =
     deps.pathExists ??
@@ -85,15 +118,39 @@ export async function preflightSweBenchPro(cfg: SweBenchProGraderConfig, deps: P
   const csvPresent = await pathExists(cfg.rawSamplePath);
 
   const issues: string[] = [];
+  let csvSha256: string | null = null;
+  if (csvPresent) {
+    try {
+      csvSha256 = await fileSha256(cfg.rawSamplePath);
+    } catch (err) {
+      issues.push(`raw sample CSV at ${cfg.rawSamplePath} could not be read to verify its pin: ${String(err).slice(0, 200)}`);
+    }
+  }
+  const matchesPin = csvSha256 === pin.csvSha256;
+
   if (!dockerAvailable) issues.push(`Docker daemon not reachable (docker version exit ${ver.code}: ${ver.stderr.slice(0, 200)})`);
   if (!evalPresent) issues.push(`eval harness missing — clone scaleapi/SWE-bench_Pro-os into ${cfg.evalRepoDir} (expects swe_bench_pro_eval.py + run_scripts/)`);
-  if (!csvPresent) issues.push(`raw sample CSV missing at ${cfg.rawSamplePath} (the swe_bench_pro_full.csv / ScaleAI/SWE-bench_Pro export)`);
+  if (!csvPresent) issues.push(`raw sample CSV missing at ${cfg.rawSamplePath} (the ${pin.csvFile} for the ${pin.taskCount}-task ${pin.hfDataset} config '${pin.hfConfig}' population)`);
+  if (csvSha256 !== null && !matchesPin) {
+    issues.push(
+      `raw sample CSV at ${cfg.rawSamplePath} is not the pinned ${pin.population} population ` +
+        `(sha256 ${csvSha256.slice(0, 16)}…, pinned ${pin.csvSha256.slice(0, 16)}…, ${pin.taskCount} tasks). ` +
+        `The ${pin.hfDataset} HF default config is now the 642-task v2 set, so a fresh export changes the population; ` +
+        `restore the pinned CSV (HF config '${pin.hfConfig}'), or migrate the adapter and this pin together.`,
+    );
+  }
 
   return {
-    ready: dockerAvailable && evalPresent && csvPresent,
+    ready: dockerAvailable && evalPresent && csvPresent && matchesPin,
     docker: { available: dockerAvailable, detail: dockerAvailable ? `Server ${ver.stdout.trim()}` : ver.stderr.slice(0, 200) || `exit ${ver.code}` },
     evalScript: { present: evalPresent, path: evalScriptPath },
-    rawSampleCsv: { present: csvPresent, path: cfg.rawSamplePath },
+    rawSampleCsv: {
+      present: csvPresent,
+      path: cfg.rawSamplePath,
+      sha256: csvSha256,
+      matchesPin,
+      pin: { population: pin.population, taskCount: pin.taskCount, csvSha256: pin.csvSha256 },
+    },
     issues,
   };
 }

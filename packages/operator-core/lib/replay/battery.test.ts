@@ -171,6 +171,36 @@ describe('runReplayBattery — historical case with baseline anchor', () => {
     // Default run ids are deterministic too (resume-friendly).
     expect(a.outcomes.map((o) => o.runId)).toEqual(['bat-1:baseline:case-auth:r0', 'bat-1:candidate-1:case-auth:r0']);
   });
+
+  it('matched historical comparisons run both arms on the same student/context and charge both', async () => {
+    const runnerCalls: Array<{ systemPrompt: string; contextText: string }> = [];
+    const events: StoreEvent[] = [];
+    const result = await runReplayBattery(config({ baselineMode: 'matched' }), {
+      runner: fakeRunner(runnerCalls), llmCall: fakeJudge, store: memoryStore(events), now: () => 1000,
+    });
+    expect(runnerCalls).toHaveLength(2);
+    expect(runnerCalls[0].contextText).toBe(runnerCalls[1].contextText);
+    expect(runnerCalls[0].systemPrompt).toBe(buildReplaySystemPrompt(REPLAY_BASELINE_VARIANT));
+    expect(runnerCalls[1].systemPrompt).toBe(buildReplaySystemPrompt(candidate));
+    expect(result.outcomes.map((outcome) => [outcome.variantId, outcome.status, outcome.replayed]))
+      .toEqual([[BASELINE_ID, 'scored', true], ['candidate-1', 'scored', true]]);
+    expect(result.totalCostUsd).toBeCloseTo(0.12);
+    expect(events.filter((event) => event.kind === 'score')).toHaveLength(2);
+    expect(result.comparison?.selected).toBe(candidate.variantId);
+  });
+
+  it('matched baseline spending respects the existing cap and leaves a refused challenger unscored', async () => {
+    const runnerCalls: Array<{ systemPrompt: string; contextText: string }> = [];
+    const result = await runReplayBattery(config({ baselineMode: 'matched', maxSpendUsd: 0.06 }), {
+      runner: fakeRunner(runnerCalls), llmCall: fakeJudge, now: () => 1000,
+    });
+    expect(runnerCalls).toHaveLength(1);
+    expect(result.outcomes[0]).toMatchObject({ variantId: BASELINE_ID, status: 'scored', replayed: true });
+    expect(result.outcomes[1]).toMatchObject({ variantId: candidate.variantId, status: 'errored' });
+    expect(result.budgetExhausted).toBe(true);
+    expect(result.perVariant.find((variant) => variant.variantId === candidate.variantId)?.scored).toBe(0);
+    expect(result.comparison?.selected).toBeUndefined();
+  });
 });
 
 describe('runReplayBattery — synthetic case', () => {
@@ -206,6 +236,30 @@ describe('runReplayBattery — synthetic case', () => {
 });
 
 describe('runReplayBattery — budget cutoff', () => {
+  it('counts failed judge repairs against the next cell budget', async () => {
+    const calls: Array<{ systemPrompt: string; contextText: string }> = [];
+    const result = await runReplayBattery(config({ variants: [candidate], cases: [syntheticCase], repeats: 2, maxSpendUsd: 0.06 }), {
+      runner: fakeRunner(calls), now: () => 1000,
+      llmCall: async () => ({ text: 'invalid', costUsd: 0.01, inputTokens: 1, outputTokens: 1 }),
+    });
+    expect(calls).toHaveLength(1);
+    expect(result.totalCostUsd).toBeCloseTo(0.07);
+    expect(result.costMeasured).toBe(true);
+    expect(result.outcomes[1].error).toContain('replay budget cap reached');
+  });
+
+  it('refuses further spending after an unmeasured judge charge', async () => {
+    const calls: Array<{ systemPrompt: string; contextText: string }> = [];
+    const result = await runReplayBattery(config({ variants: [candidate], cases: [syntheticCase], repeats: 2 }), {
+      runner: fakeRunner(calls), now: () => 1000,
+      llmCall: async () => { throw new Error('unknown transport charge'); },
+    });
+    expect(calls).toHaveLength(1);
+    expect(result.totalCostUsd).toBe(0.05);
+    expect(result.costMeasured).toBe(false);
+    expect(result.outcomes[1].error).toContain('remaining cells refused before spending');
+  });
+
   it('refuses cells past the high-water cap before spending, records them errored', async () => {
     const runnerCalls: Array<{ systemPrompt: string; contextText: string }> = [];
     const events: StoreEvent[] = [];

@@ -19,6 +19,8 @@ function status(ownerIsContentOrigin: boolean): IpcStatusRead {
       lastError: null,
       connectedPath: "/run/user/1000/papercusp.sock",
       ownerIsContentOrigin,
+      snapshotStartedAtUnixMs: 1_700_000_000_000,
+      snapshotDurationMs: 0.5,
     },
   };
 }

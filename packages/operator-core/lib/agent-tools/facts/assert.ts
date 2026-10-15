@@ -1,7 +1,8 @@
 /**
  * facts:assert — upsert a standing fact: a deterministic, scoped CONCLUSION
  * that will be folded VERBATIM into every relevant future brief / dossier /
- * orient until it expires or is retracted. Every ordinary write must declare
+ * orient until it expires or is retracted (an unretracted `wall:` remains folded
+ * after TTL expiry until explicit retraction or supersession). Every ordinary write must declare
  * a lifetime; conventions, typed safety slots, and confidence tiers have their
  * documented lifetime rules, and there is no silent ordinary 7-day default.
  * (queen-memory-hybrid-2026-07-02 L1b; D-001: harness/work_item scopes optional).
@@ -16,6 +17,7 @@
 import { z } from 'zod';
 import { InvalidInputError } from '@papercusp/tooldef';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { GUARD_RAIL_TAG } from '@papercusp/verification-harness';
 import {
   assertFact,
   resolveFactScopeRef,
@@ -35,6 +37,8 @@ import {
   GUARD_RAIL_KEY_PREFIX,
   FACT_VOLATILE_MAX_TTL_SEC,
   validateFactLifetime,
+  isFactFileAnchor,
+  validateConventionEnforcement,
   type AgentFact,
   type FactDependency,
   type FactSourceProvenance,
@@ -47,6 +51,8 @@ import {
   detectSafetySlotKeyIntent,
 } from './safety-slot-key-intent';
 import { detectUndeliverableGuardRail } from './undeliverable-guard-rail';
+import { detectWallPlanStateGap, readWalledItemStatusesPg } from './wall-plan-state';
+import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import {
   carryProvenanceFields,
@@ -61,16 +67,24 @@ import { cellReaderFromCtx } from '../cell-reader-ctx';
 import {
   suggestDependsOnCells,
   type DependsOnSuggestion,
+  type DetectOptions,
 } from '../../cell-transcription-detector';
+import { resolveCellTranscriptionCommits } from '../../git-commit-resolver';
 import { boundedOrgTxn } from '../../pg-bounded-txn';
 import { acquireWithContentionRetry } from '../locks/contention-retry';
 import {
   evaluateFrozenLineageCarryText,
   frozenLineageCarryViolationPayload,
 } from '../../release/frozen-lineage-execution-policy';
+import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target';
+import { promotedFromSchema, validatePromotedFrom } from '../../promotion-lineage';
 
 const FACT_LIFETIME_CALL_CONSTRAINT =
   "Declare exactly one lifetime: ordinary facts, including verified conclusions, require ttlSec; omit it only for kind:'convention', wall:/dead-end:/guard-rail: keys, or confidence:'provisional'|'suspected'. permanent:true is allowed only for conventions/typed keys; never combine it with ttlSec or a volatile measurement.";
+const FACT_SETTLED_BY_CALL_CONSTRAINT =
+  "required when kind:'undecidable'; refused for every other kind.";
+const FACT_VOLATILE_TTL_CALL_CONSTRAINT =
+  `when subjectVolatile:true or measuredAt is supplied, ttlSec>${FACT_VOLATILE_MAX_TTL_SEC} is clamped to ${FACT_VOLATILE_MAX_TTL_SEC} and disclosed as ttlClampedFrom; the ordinary ttlSec ceiling still applies.`;
 
 /**
  * EI-10952: the disclosure for a truncated body. Returns undefined on the clean
@@ -114,7 +128,20 @@ const FACT_RECHECK_SCHEMA = z
         command: z.string().min(1).max(FACT_RECHECK_FIELD_MAX_CHARS),
         expectExitCode: z.number().int().min(0).max(255),
         stdoutIncludes: z.string().min(1).max(FACT_RECHECK_FIELD_MAX_CHARS).optional(),
-        scope: z.array(z.string()).min(1).max(FACT_RECHECK_EXEC_MAX_SCOPE_TAGS),
+        scope: z
+          .array(
+            z
+              .string()
+              .regex(
+                GUARD_RAIL_TAG,
+                'Expected a compact scope tag: lowercase letters, digits, :, ., _, or -; max 64 characters. Put file paths in command/evidence, not scope.',
+              )
+              .describe(
+                'Compact guard-rail scope tag (lowercase letters, digits, :, ., _, or -; max 64 characters). File paths belong in command/evidence, not scope.',
+              ),
+          )
+          .min(1)
+          .max(FACT_RECHECK_EXEC_MAX_SCOPE_TAGS),
       })
       .strict()
       .optional()
@@ -306,13 +333,14 @@ export function dependsOnSuggestionField(
   body: string,
   declaredDependencies: readonly DependsOnInput[],
   reader: CellReader = EMPTY_CELL_READER,
+  options: DetectOptions = {},
 ): DependsOnSuggestionField | null {
   const declaredCells = declaredDependencies.map((dependency) =>
     typeof dependency === 'string' ? dependency : dependency.cell,
   );
   let suggested: DependsOnSuggestion[] = [];
   try {
-    suggested = suggestDependsOnCells(body, declaredCells);
+    suggested = suggestDependsOnCells(body, declaredCells, options);
   } catch {
     return null;
   }
@@ -358,6 +386,17 @@ export function dependsOnSuggestionField(
       'NOTHING was attached or changed by this suggestion; ' +
       'if you are deliberately recording HISTORICAL state, ignore it.',
   };
+}
+
+/** The facts receipt uses the same bounded commit verification as coord hints. */
+export async function dependsOnSuggestionFieldResolvingCommits(
+  body: string,
+  declaredDependencies: readonly DependsOnInput[],
+  reader: CellReader = EMPTY_CELL_READER,
+  resolve?: Parameters<typeof resolveCellTranscriptionCommits>[1],
+): Promise<DependsOnSuggestionField | null> {
+  const options = await resolveCellTranscriptionCommits(body, resolve);
+  return dependsOnSuggestionField(body, declaredDependencies, reader, options);
 }
 
 export function truncationField(
@@ -457,15 +496,20 @@ type FactSafetySlot = 'dead-end' | 'wall' | 'guard-rail';
  * prefixes and tool-call neutralization. Shared by schema preflight and the
  * handler so a caller cannot pass validation and then discover a different
  * length contract at the write boundary. */
-function normalizeFactInput(key: string, body: string, slot?: FactSafetySlot): { key: string; body: string } {
+function normalizeFactInput(
+  key: string,
+  body: string,
+  slot?: FactSafetySlot,
+): { key: string; body: string; authoredBody: string } {
   const safeBody = neutralizeToolCallTags(body);
-  return slot === 'dead-end'
+  const normalized = slot === 'dead-end'
     ? normalizeDeadEndSlot(key, safeBody)
     : slot === 'wall'
       ? normalizeWallSlot(key, safeBody)
       : slot === 'guard-rail'
         ? normalizeGuardRailSlot(key, safeBody)
         : { key, body: safeBody };
+  return { ...normalized, authoredBody: safeBody };
 }
 
 /** The actionable pre-write refusal shared by args validation and the handler's
@@ -531,6 +575,7 @@ export default defineTool({
     // callers believe `settledBy` is valid for every kind, even though the
     // store correctly rejects it outside `undecidable` (EI-20194111544678291).
     const base = {
+    promotedFrom: promotedFromSchema.optional(),
     scope: z.enum(FACT_SCOPES).describe('workspace (global, no ref) | role | owner | harness | work_item'),
     scopeRef: z.string().max(120).optional().describe('Required for every scope except workspace: role name / ownerId / harness slug / WI id.'),
     scope_ref: z.string().max(120).optional().describe('Alias for scopeRef (EI-7371) — prefer scopeRef; accepted so a snake_case call still resolves the ref instead of silently dropping it.'),
@@ -627,7 +672,7 @@ export default defineTool({
       .max(FACT_MAX_DEPENDENCIES)
       .optional()
       .describe(
-        `P-008: the CELL ids this fact rests on (max ${FACT_MAX_DEPENDENCIES}) — either a bare id ("deploy.3070.sha") or { cell, as } when the cell is caller-relative ({ cell: "git.pipelinePosition", as: "packages/operator-core/lib/x.ts" }). Each is READ AND DIGESTED NOW, so a later reader is told mechanically that "the cell you relied on changed from X to Y" instead of guessing from the fact's age. This is what makes an assumption auto-invalidate (D-007) — without it, an assumption is just a conclusion with a weaker badge. A cell that cannot be read is recorded as such and never later reported fresh; it never blocks the write. Run state:read { } to see the cells you may declare.`,
+        `P-008: the CELL ids this fact rests on (max ${FACT_MAX_DEPENDENCIES}) — either a bare id ("deploy.3070.sha") or { cell, as } when the cell is caller-relative ({ cell: "git.pipelinePosition", as: "packages/operator-core/lib/x.ts" }). Each is READ AND DIGESTED NOW, so a later reader is told mechanically that "the cell you relied on changed from X to Y" instead of guessing from the fact's age. This is what makes an assumption auto-invalidate (D-007) — without it, an assumption is just a conclusion with a weaker badge. A cell that cannot be read is recorded as such and never later reported fresh; it never blocks the write. Run state:read { } to see the cells you may declare. "file:<repo path>" anchors the fact to that file's blob: reads report it stale when the file changes, and ttlSec may be omitted.`,
       ),
     claim: z
       .record(z.string(), z.unknown())
@@ -660,7 +705,8 @@ export default defineTool({
           `own durable default, and confidence:'provisional'|'suspected' already means a short TTL. ` +
           `⚠ CONDITIONAL MAX: a volatile fact's ttlSec is CLAMPED, never refused (D-011) — anything over ` +
           `${FACT_VOLATILE_MAX_TTL_SEC}s (15 minutes) is shortened to it and disclosed back as ttlClampedFrom.`,
-      ),
+      )
+      .meta({ 'x-papercusp-call-constraint': FACT_VOLATILE_TTL_CALL_CONSTRAINT }),
     permanent: z
       .boolean()
       .optional()
@@ -754,17 +800,50 @@ export default defineTool({
         .enum(['conclusion', 'assumption', 'convention', 'undecidable'])
         .optional()
         .describe(kindDescription),
-      settledBy: z.string().min(1).max(500).optional().describe(settledByDescription),
+      settledBy: z
+        .string()
+        .min(1)
+        .max(500)
+        .optional()
+        .describe(settledByDescription)
+        .meta({ 'x-papercusp-call-constraint': FACT_SETTLED_BY_CALL_CONSTRAINT }),
       shareable: z.boolean().optional().describe(shareableDescription),
     });
 
-    return flatArgs
+    /**
+     * WI-10005668 — `value` is the one wrong spelling of `body` callers reach for
+     * overwhelmingly (measured 2026-10-02: 32 refusals / 14 distinct owners in 24h on
+     * `facts:assert`, the same contract shape as the `memory:remember`/`work_items:*`
+     * families). The refusal was a dead end for them, so accept it as an ALIAS: when the
+     * caller supplied a string `value` and NO `body`, treat the string as the body.
+     *
+     * Deliberately narrow: only `value` (not `claim`, 8 refusals/5 owners — too ambiguous
+     * with the claim/evidence vocabulary elsewhere), only a string, and never when `body`
+     * is present — so a call that names both still reaches the strict-object refusal for the
+     * stray key instead of silently choosing one. A `z.preprocess` wrapper is transparent to
+     * the published JSON Schema (the alias is NOT advertised — the canonical field is still
+     * `body`, so the tool prompt does not grow), and it adds no `ctx.addIssue`, so it cannot
+     * mask sibling field issues the way an issue-raising preprocess does.
+     */
+    const foldValueAliasIntoBody = (data: unknown): unknown => {
+      if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
+      const record = data as Record<string, unknown>;
+      if (typeof record.value !== 'string' || record.body !== undefined) return data;
+      const { value, ...rest } = record;
+      return { ...rest, body: value };
+    };
+
+    return z
+      .preprocess(
+        foldValueAliasIntoBody,
+        flatArgs
       .superRefine((value, ctx) => {
         if (!value || typeof value !== 'object') return;
         const v = value as {
           kind?: unknown;
           settledBy?: unknown;
           shareable?: unknown;
+          enforcement?: Parameters<typeof validateConventionEnforcement>[1];
           scope?: unknown;
           scopeRef?: unknown;
           harness?: unknown;
@@ -791,6 +870,23 @@ export default defineTool({
               `facts:assert — settledBy is only valid with kind:'undecidable'; on a settled claim it has no referent` +
               `${v.kind === undefined ? ' (you declared no kind, which is treated as settled)' : ` (you declared kind:'${String(v.kind)}')`}. ` +
               "Either remove settledBy, or set kind:'undecidable' if this really is not determinable from the available evidence.",
+          });
+        }
+
+        // P-018 / D-016: the fields are structurally optional because the
+        // structural tier takes neither, but gate/detector require both. Keep
+        // this conditional contract in the input schema as well as assertFact:
+        // otherwise the tool schema accepts an input the write later refuses,
+        // and dryRun can forecast a write that cannot succeed.
+        const enforcementError = validateConventionEnforcement(
+          v.kind as 'conclusion' | 'assumption' | 'convention' | 'undecidable' | undefined,
+          v.enforcement,
+        );
+        if (enforcementError) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['enforcement'],
+            message: `facts:assert — ${enforcementError}`,
           });
         }
 
@@ -842,6 +938,7 @@ export default defineTool({
           subjectVolatile?: unknown;
           measuredAt?: unknown;
           measurement?: { measuredAt?: unknown } | null;
+          dependsOn?: unknown;
         };
         if (
           typeof candidate.key === 'string' &&
@@ -898,13 +995,21 @@ export default defineTool({
           permanent: candidate.permanent,
           confidence: candidate.confidence,
           subjectVolatile: candidate.subjectVolatile === true || hasMeasuredAt,
+          // P-012 — a DECLARED `file:` anchor passes preflight; the store re-checks
+          // that it actually resolved to a blob before accepting a missing ttlSec.
+          fileAnchored:
+            Array.isArray(candidate.dependsOn) &&
+            candidate.dependsOn.some((d: unknown) =>
+              isFactFileAnchor(typeof d === 'string' ? d : String((d as { cell?: unknown } | null)?.cell ?? '')),
+            ),
         });
         if (lifetimeError) {
           const path = lifetimeError.includes('permanent:true') ? ['permanent'] : ['ttlSec'];
           ctx.addIssue({ code: 'custom', path, message: lifetimeError });
         }
       })
-      .meta({ 'x-papercusp-call-constraint': FACT_LIFETIME_CALL_CONSTRAINT });
+      .meta({ 'x-papercusp-call-constraint': FACT_LIFETIME_CALL_CONSTRAINT }),
+      );
   })(),
   async handler(args, ctx) {
     const { resolveAgentIdentity, deriveAgentRole } = await import('../coordination/identity');
@@ -987,7 +1092,8 @@ export default defineTool({
           ...(args.recheck.exec ? { exec: args.recheck.exec } : {}),
         }
       : null;
-    const slotted = normalizeFactInput(args.key, args.body, args.slot);
+    const normalizedInput = normalizeFactInput(args.key, args.body, args.slot);
+    const slotted = { key: normalizedInput.key, body: normalizedInput.body };
     // frozen-candidate-carry-and-launch-fail-closed P-002: a standing fact is
     // injected verbatim into every future orient, so persisting a positive
     // instruction to recut the judged candidate from a moving source is already
@@ -996,6 +1102,7 @@ export default defineTool({
     const frozenCarryVerdict = evaluateFrozenLineageCarryText({
       surface: 'fact',
       text: slotted.body,
+      target: resolveHomeGateVerdictTarget(),
     });
     if (!frozenCarryVerdict.allowed) {
       return {
@@ -1062,7 +1169,11 @@ export default defineTool({
     // structurally invisible to it. Absence is the claim most worth expiring —
     // it is read as "already checked" and suppresses the next check — so it gets
     // its own advisory on the same fail-soft write-boundary channel.
-    const absenceWarning = factAbsenceHint(slotted.body);
+    // Scan the neutralized caller-authored text. Safety-slot prefixes are
+    // serialized storage boilerplate, not claims the author made; in
+    // particular, "do not repeat" must not turn nearby positive result prose
+    // into an absence warning. Persist the normalized slot body unchanged.
+    const absenceWarning = factAbsenceHint(normalizedInput.authoredBody);
     // EI-18685042986450096 (owner-flagged): the old behavior wrote the
     // clipped body UNCONDITIONALLY and only disclosed the loss AFTER the write
     // (truncationField below) — silently dropping the OPERATIVE clause 3x,
@@ -1121,6 +1232,11 @@ export default defineTool({
     // whole multi-query write must share one bounded transaction. Retry that
     // complete unit on transient PG contention; retrying individual statements
     // could leave a partial append/eviction behind.
+    const promotedFrom = await validatePromotedFrom(args.promotedFrom, ctx.workspaceId);
+    if (promotedFrom !== undefined) sourceProvenance = {
+      ...(sourceProvenance ?? { kind: 'promotion' as const, verified: true, verifiedAt: new Date().toISOString() }),
+      promotedFrom,
+    };
     const factInput = {
       scope: args.scope,
       scopeRef: scopeRef ?? null,
@@ -1147,6 +1263,8 @@ export default defineTool({
       // enforcement above.
       ...(args.permanent !== undefined ? { permanent: args.permanent } : {}),
       createdBy: identity.ownerId,
+      // P-012 / D-006: a writer holding a restricted disclosure stores a sealed stub.
+      writerOwnerId: identity.ownerId,
       ...(args.shareable !== undefined ? { shareable: args.shareable } : {}),
       ...(potHomeSlug ? { potHomeSlug } : {}),
     };
@@ -1177,6 +1295,18 @@ export default defineTool({
     const fact = await acquireWithContentionRetry(() =>
       boundedOrgTxn((tx) => assertFact(factInput, tx)),
     );
+    // WI-10005685: a wall: fact that names a plan item does not bind placement —
+    // goal placement obligations, launch admission and claims read plan STATE.
+    // Name every cited item still marked placeable, with the write that binds it.
+    // Fail-soft: a read error leaves the receipt without the field.
+    const wallPlanState = slotted.key.startsWith('wall:')
+      ? await detectWallPlanStateGap(
+          slotted.key,
+          slotted.body,
+          identity.workspaceId?.trim() || activeWorkspaceId(),
+          readWalledItemStatusesPg,
+        )
+      : null;
     // P-009 / D-011: an ASSUMPTION advances this agent's assumption watermark,
     // which every subsequent tool call is stamped with. `fact.id` is the
     // append-versioned row id P-008(a) made immutable — that immutability is
@@ -1240,7 +1370,10 @@ export default defineTool({
     // warn-only: no field at all on the clean case.
     const unresolvedDeps = fact.dependsOn.filter((d) => !d.digest);
     const droppedDeps = declaredCells.filter((c) => !fact.dependsOn.some((d) => d.cell === c.trim()));
-    const dependsOnSuggestion = dependsOnSuggestionField(slotted.body, args.dependsOn ?? [], cellReader);
+    // Coordination already verifies SHA-shaped tokens against the integration
+    // tree. Reuse its bounded, fail-soft resolver so message/artifact IDs cannot
+    // become Git dependencies merely because nearby prose says "live".
+    const dependsOnSuggestion = await dependsOnSuggestionFieldResolvingCommits(slotted.body, args.dependsOn ?? [], cellReader);
     const dependencyWarning =
       unresolvedDeps.length > 0 || droppedDeps.length > 0
         ? {
@@ -1395,6 +1528,7 @@ export default defineTool({
             ...(truncation ? { truncated: truncation } : {}),
             ...(sourceQuoteRedacted ? { sourceQuoteRedacted } : {}),
             ...(slotIntentWarning ? { slotIntentWarning } : {}),
+            ...(wallPlanState ? { wallPlanState } : {}),
             ...(undeliverableGuardRail ? { undeliverableGuardRail } : {}),
             ...(dependencyWarning ? { dependenciesUnresolved: dependencyWarning } : {}),
             ...(dependsOnSuggestion ? { dependsOnSuggestion } : {}),

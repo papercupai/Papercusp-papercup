@@ -643,7 +643,10 @@ async function clearStaleLaneHold(wi: WorkItem, laneRef: string): Promise<void> 
         { kind: PLAN_LANE_BLOCKER_KIND, ref: laneRef, clear: true },
         PLAN_LANE_SYNC_ACTOR,
       );
-      await mergeWorkItemPayload(wi.id, { externalBlockers: blockers }, { harness });
+      const cleared = await mergeWorkItemPayload(wi.id, { externalBlockers: blockers }, {
+        harness, expectedExternalBlockers: (wi.payload as { externalBlockers?: unknown } | null)?.externalBlockers,
+      });
+      if (!cleared) return;
     }
     const heldOpen = readWorkItemHeldOpenBy(wi.payload);
     if (heldOpen?.by === PLAN_LANE_SYNC_ACTOR) {
@@ -884,7 +887,18 @@ export function decideLaneGate(
   };
 }
 
-type LaneGateAction = 'gated' | 'ungated' | 'skipped-in-flight' | 'skipped-terminal' | 'noop';
+type LaneGateAction =
+  | 'gated'
+  | 'ungated'
+  | 'skipped-in-flight'
+  | 'skipped-terminal'
+  | 'noop'
+  | { failure: string };
+
+function laneSyncFailureMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.slice(0, 1000) || 'unknown_error';
+}
 
 /** Direct-execution contract stamped by canonical plan-run promotion, if this
  * unassigned row belongs to one. Kept on the shared payload reader so settle
@@ -966,11 +980,15 @@ async function applyLaneGateToWorkItem(
       // natively post-unify (work-item-status-full-unify P-003) — the issue family ALSO
       // picks up setWorkItemStateWithAliasInfo's auto claim-hold, so the un-park owes a
       // state restore AND a hold release, not just the hold.
-      await mergeWorkItemPayload(
+      const gated = await mergeWorkItemPayload(
         wi.id,
         { externalBlockers: blockers, [PLAN_LANE_PARKED_FROM_KEY]: wi.state },
-        { harness },
+        {
+          harness, expectedExternalBlockers: (wi.payload as { externalBlockers?: unknown } | null)?.externalBlockers,
+          requireNonTerminal: true,
+        },
       );
+      if (!gated) throw new Error('blocker history changed before lane gate write');
       await setWorkItemStateWithAliasInfo(wi.id, 'blocked', { harness, by: PLAN_LANE_SYNC_ACTOR });
       return 'gated';
     }
@@ -997,11 +1015,16 @@ async function applyLaneGateToWorkItem(
         ).blockers;
       }
       const stillActive = blockers.filter((blocker) => blocker.status === 'active');
-      await mergeWorkItemPayload(
+      const repaired = await mergeWorkItemPayload(
         wi.id,
         { externalBlockers: blockers },
-        { harness, unset: ['needsOwnerAction', 'needsHuman'] },
+        {
+          harness, unset: ['needsOwnerAction', 'needsHuman'],
+          expectedExternalBlockers: (wi.payload as { externalBlockers?: unknown } | null)?.externalBlockers,
+          requireNonTerminal: true,
+        },
       );
+      if (!repaired) throw new Error('blocker history changed before owner-hold repair');
       const restored = stillActive.length > 0 ? 'blocked' : wi.family === 'feature' ? 'todo' : 'open';
       const execution = stillActive.length === 0 ? await agenticExecutionForUngate(wi) : null;
       await setWorkItemStateWithAliasInfo(wi.id, restored, {
@@ -1072,17 +1095,30 @@ async function applyLaneGateToWorkItem(
       }
       // Clear the blocker only after the lifecycle restore succeeds. On the repair
       // path `changed` is false because the history already records our clear.
-      if (changed) await mergeWorkItemPayload(wi.id, { externalBlockers: blockers }, { harness });
+      if (changed) {
+        const cleared = await mergeWorkItemPayload(wi.id, { externalBlockers: blockers }, {
+          harness, expectedExternalBlockers: (wi.payload as { externalBlockers?: unknown } | null)?.externalBlockers,
+          requireNonTerminal: true,
+        });
+        if (!cleared) throw new Error('blocker history changed before lane ungate write');
+      }
       // Drop the stash — it describes a park that no longer exists, and leaving it
       // would let a LATER un-park restore a state from the wrong era.
       await mergeWorkItemPayload(wi.id, { [PLAN_LANE_PARKED_FROM_KEY]: null }, { harness });
       await dispatchUngatedAgenticWorkItem(wi, execution, laneItem);
     }
     return 'ungated';
-  } catch {
-    // Best-effort — a per-item lifecycle hiccup must never break the sweep.
-    return 'noop';
+  } catch (error) {
+    // Keep the sweep fail-soft, but let its caller distinguish a failed write from
+    // an intentional no-op decision. The caller records and warns on this result.
+    return { failure: laneSyncFailureMessage(error) };
   }
+}
+
+export interface PlanLaneSyncFailure {
+  stage: 'linked-work-item-read' | 'apply-gate';
+  workItemId?: string;
+  message: string;
 }
 
 export interface PlanLaneSyncResult {
@@ -1103,6 +1139,8 @@ export interface PlanLaneSyncResult {
   skippedDuplicates: string[];
   /** Gated lanes whose linked canonical row was named as their own prerequisite. */
   circularPrerequisites: CircularPrerequisiteFinding[];
+  /** Fail-soft sync errors that used to disappear as empty arrays or `noop`. */
+  failures?: PlanLaneSyncFailure[];
 }
 
 /**
@@ -1126,6 +1164,17 @@ export async function syncLinkedWorkItemsToPlanLane(
     skippedDuplicates: [],
     circularPrerequisites: [],
   };
+  const recordFailure = (failure: PlanLaneSyncFailure) => {
+    (out.failures ??= []).push(failure);
+    console.warn(
+      `[plan-lane-sync] ${JSON.stringify({
+        event: 'plan_lane_sync_failure',
+        planSlug: item.planSlug,
+        itemId: item.itemId,
+        ...failure,
+      })}`,
+    );
+  };
   try {
     const laneRef = planLaneBlockerRef(item.planSlug, item.itemId);
     const linked = await findAllLinkedWorkItems(item.planSlug, item.itemId);
@@ -1148,17 +1197,29 @@ export async function syncLinkedWorkItemsToPlanLane(
           continue;
         }
       }
-      const action = await applyLaneGateToWorkItem(wi, laneStatus, laneRef, {
-        planSlug: item.planSlug,
-        itemId: item.itemId,
-      });
+      let action: LaneGateAction;
+      try {
+        action = await applyLaneGateToWorkItem(wi, laneStatus, laneRef, {
+          planSlug: item.planSlug,
+          itemId: item.itemId,
+        });
+      } catch (error) {
+        // An unexpected throw still remains isolated to this linked row.
+        recordFailure({ stage: 'apply-gate', workItemId: wi.id, message: laneSyncFailureMessage(error) });
+        continue;
+      }
+      if (typeof action !== 'string') {
+        recordFailure({ stage: 'apply-gate', workItemId: wi.id, message: action.failure });
+        continue;
+      }
       if (action === 'gated') out.gated.push(wi.id);
       else if (action === 'ungated') out.ungated.push(wi.id);
       else if (action === 'skipped-in-flight') out.skippedInFlight.push(wi.id);
       else if (action === 'skipped-terminal') out.skippedAlreadyTerminal.push(wi.id);
     }
-  } catch {
-    // A DB hiccup — this is a best-effort sweep, never a hard dependency.
+  } catch (error) {
+    // A lookup-level DB hiccup remains best-effort, but is no longer invisible.
+    recordFailure({ stage: 'linked-work-item-read', message: laneSyncFailureMessage(error) });
   }
   return out;
 }
@@ -1293,8 +1354,8 @@ export interface PlanDependencyReconcileResult {
  * Reconcile ONE plan item's promoted dependency edges onto its canonical linked
  * work-item, per D-050. Fresh-reads the plan (never trusts a caller snapshot), resolves
  * each still-open `blockedBy` plan item to ITS canonical linked feature-family row, and
- * writes the replace-set through `syncFeatureBlockEdges` — the authoritative coord_links
- * writer with the work_item_deps mirror — even when the set is EMPTY, so removed plan
+ * writes only the prior owned subset through `syncFeatureBlockEdges` and canonical
+ * work_item_deps admission — even when the set is EMPTY, so removed plan
  * edges actually clear. The `_planAuthoredBlockers` marker is written ONLY after the
  * edge sync succeeds (a failed sync must not advance provenance). Null = nothing to do
  * (no plan/item, no canonical feature-family row) or the edge sync was refused (cycle) —
@@ -1313,9 +1374,8 @@ export async function reconcilePlanAuthoredDependenciesNow(
     if (!item) return null;
 
     // The canonical promoted row for THIS lane. Only feature-family rows participate:
-    // getFeatureBlockers/syncFeatureBlockEdges are the feature→feature seam, which is
-    // also what automatically preserves issue-family blockers (they live on edges this
-    // writer never touches).
+    // The reader is feature-only, but the canonical writer knows every endpoint family.
+    // Pass the prior owned subset below rather than replacing all of the target's edges.
     const { canonical } = selectCanonicalLinkedWorkItem(await findAllLinkedWorkItems(planSlug, itemId));
     if (!canonical || canonical.family !== 'feature' || !canonical.harness) return null;
     const harness = canonical.harness;
@@ -1349,7 +1409,10 @@ export async function reconcilePlanAuthoredDependenciesNow(
     // Write even an EMPTY set — that is exactly how a removed plan edge clears. A cycle
     // refusal (syncFeatureBlockEdges throws) aborts BEFORE the marker write below, so a
     // refused sync never advances provenance.
-    await syncFeatureBlockEdges(harness, canonical.id, desired);
+    // No marker (prior === null) means this sync owns NO edges yet, so it removes none: pass
+    // [] (add-only), never undefined, which would fall back to the full-replace contract and
+    // drop blocker edges outside `live` (other families / harnesses) that this plan never wrote.
+    await syncFeatureBlockEdges(harness, canonical.id, desired, { priorBlockerIds: prior ?? [] });
     await mergeWorkItemPayload(
       canonical.id,
       { [PLAN_AUTHORED_BLOCKERS_KEY]: { planSlug, itemId, blockerWorkItemIds: resolved } },

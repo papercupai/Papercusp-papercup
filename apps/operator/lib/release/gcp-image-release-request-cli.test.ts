@@ -2,7 +2,7 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT,
@@ -16,12 +16,19 @@ import {
   buildWorkspaceHostCredentialReference,
   buildWorkspaceHostCredentialRevocationReference,
 } from "@papercusp/deployment-driver";
+import {
+  gcpBaseImageIdentity,
+  gcpBaseImageIdentityDigest,
+  measureGcpBaseImage,
+} from "@papercusp/operator-core/lib/workspace-host/gcp-base-image-identity";
 import { evaluateWorkspaceHostReleaseGate } from "@papercusp/operator-core/lib/workspace-host/workspace-host-release-gate";
 
 import {
   buildImageArtifact,
   composeRequest,
+  main,
   parseGcpImageReleaseRequestCliArgs,
+  type GcpImageReleaseRequestDeps,
 } from "./gcp-image-release-request-cli";
 
 /**
@@ -40,10 +47,40 @@ const BUNDLE_SHA =
   "a070057f2a892fbd9b7f353d58745d8a7ee591c838ae20417966401815cc7e07";
 const KEY_SHA =
   "66bad893ed3a4140ea848787d1fd19d3673d5d1fdd92ae3434d67db5b6999bf8";
-const BASE_SHA =
-  "01af466feb100306498c86aa6bad1815e33036019aa34d4362c20f374ea5c829";
 const BASE_IMAGE =
   "projects/ubuntu-os-cloud/global/images/ubuntu-2404-noble-amd64-v20260826";
+/** The GCE resource the Compute API returns for BASE_IMAGE (fixture values, real shape). */
+const BASE_IMAGE_RESOURCE = {
+  name: "ubuntu-2404-noble-amd64-v20260826",
+  id: "4405532451318052745",
+  creationTimestamp: "2026-08-26T10:12:03.517-07:00",
+  status: "READY",
+};
+/** Derived through the real measurement code, so the fixture cannot drift from it. */
+const BASE_SHA = gcpBaseImageIdentityDigest(
+  gcpBaseImageIdentity(BASE_IMAGE, BASE_IMAGE_RESOURCE),
+);
+const MEASURE_CALLS: Array<{ reference: string; credentialRef: string }> = [];
+/** Measures through `measureGcpBaseImage` against a fake Compute API holding BASE_IMAGE only. */
+function measuringDeps(
+  images: Record<string, typeof BASE_IMAGE_RESOURCE> = {
+    [BASE_IMAGE]: BASE_IMAGE_RESOURCE,
+  },
+): GcpImageReleaseRequestDeps {
+  return {
+    measureBaseImage: (reference, credentialRef) => {
+      MEASURE_CALLS.push({ reference, credentialRef });
+      return measureGcpBaseImage(
+        {
+          getImage: async (projectId, imageName) =>
+            images[`projects/${projectId}/global/images/${imageName}`],
+        },
+        reference,
+      );
+    },
+  };
+}
+const MEASURED = measuringDeps();
 const PUBLISHED_AT = "2026-08-30T02:14:40.345Z";
 const TEMPLATE_BODY = "packer {\n  required_plugins {}\n}\n";
 /**
@@ -235,7 +272,6 @@ function inputDocument(
     baseImage: {
       reference: BASE_IMAGE,
       architecture: "x86_64",
-      sha256: BASE_SHA,
     },
     builder: { templatePath: "infra/images/workspace-host.pkr.hcl" },
     materials: [
@@ -470,9 +506,31 @@ describe("parseGcpImageReleaseRequestCliArgs", () => {
 });
 
 describe("buildImageArtifact", () => {
+  it("rejects secret-shaped readiness fields even for a pre-build artifact", async () => {
+    const { args } = await fixture(
+      inputDocument({ readiness: { accessToken: "fixture-only" } }),
+      publicationManifest(),
+    );
+    await expect(buildImageArtifact(args, MEASURED)).rejects.toThrow(
+      /authorization|secret|accessToken/i,
+    );
+  });
+
+  it("constructs the image artifact before release readiness exists", async () => {
+    const input = inputDocument();
+    delete input.readiness;
+    const { args } = await fixture(input, publicationManifest());
+    const { artifact } = await buildImageArtifact(args, MEASURED);
+    expect(artifact.image.id).toBe(
+      `projects/${PROJECT}/global/images/papercusp-workspace-host-0-0-18`,
+    );
+    expect(artifact.release.bundleSha256).toBe(BUNDLE_SHA);
+    expect(artifact.buildManifest.baseImage.sha256).toBe(BASE_SHA);
+  });
+
   it("pins the packer builder kind and MEASURES the template digest", async () => {
     const { args } = await fixture();
-    const { artifact } = await buildImageArtifact(args);
+    const { artifact } = await buildImageArtifact(args, MEASURED);
     const expected = "sha256";
     expect(artifact.buildManifest.builder.kind).toBe("hashicorp-packer");
     expect(artifact.buildManifest.builder.templatePath).toBe(
@@ -487,7 +545,7 @@ describe("buildImageArtifact", () => {
 
   it("emits the immutable image id rather than the publication manifest's bare product name", async () => {
     const { args } = await fixture();
-    const { artifact } = await buildImageArtifact(args);
+    const { artifact } = await buildImageArtifact(args, MEASURED);
     expect(artifact.image.id).toBe(
       `projects/${PROJECT}/global/images/papercusp-workspace-host-0-0-18`,
     );
@@ -495,7 +553,7 @@ describe("buildImageArtifact", () => {
 
   it("transcribes the bundle digest instead of letting the caller restate it", async () => {
     const { args } = await fixture();
-    const { artifact } = await buildImageArtifact(args);
+    const { artifact } = await buildImageArtifact(args, MEASURED);
     expect(artifact.release.bundleSha256).toBe(BUNDLE_SHA);
     expect(artifact.buildManifest.releaseArtifact.sha256).toBe(BUNDLE_SHA);
   });
@@ -505,7 +563,7 @@ describe("buildImageArtifact", () => {
     // emits an artifact whose signingKeySha256 no longer matches its own key. The gate rejects it,
     // but names the digest rather than the trim — so the guard belongs here.
     const { args } = await fixture();
-    const { artifact } = await buildImageArtifact(args);
+    const { artifact } = await buildImageArtifact(args, MEASURED);
     expect(artifact.release.signingPublicKey).toBe(SIGNING_PUBLIC_KEY);
     expect(artifact.release.signingPublicKey.endsWith("\n")).toBe(true);
     const { createHash } = await import("node:crypto");
@@ -521,7 +579,7 @@ describe("buildImageArtifact", () => {
     const artifactBlock = broken.artifact as Record<string, unknown>;
     (artifactBlock.release as Record<string, unknown>).bundleSha256 = BASE_SHA;
     const { args } = await fixture(inputDocument(), broken);
-    await expect(buildImageArtifact(args)).rejects.toThrow(
+    await expect(buildImageArtifact(args, MEASURED)).rejects.toThrow(
       /internally inconsistent/,
     );
   });
@@ -530,7 +588,7 @@ describe("buildImageArtifact", () => {
     const untrusted = publicationManifest();
     (untrusted.trustReport as Record<string, unknown>).trusted = false;
     const { args } = await fixture(inputDocument(), untrusted);
-    await expect(buildImageArtifact(args)).rejects.toThrow(/not trusted/);
+    await expect(buildImageArtifact(args, MEASURED)).rejects.toThrow(/not trusted/);
   });
 
   it("refuses a base image that is a family alias rather than an immutable id", async () => {
@@ -539,13 +597,58 @@ describe("buildImageArtifact", () => {
         baseImage: {
           reference: "ubuntu-2404-lts-amd64",
           architecture: "x86_64",
-          sha256: BASE_SHA,
         },
       }),
     );
-    await expect(buildImageArtifact(args)).rejects.toThrow(
+    await expect(buildImageArtifact(args, MEASURED)).rejects.toThrow(
       /family aliases are forbidden/,
     );
+  });
+
+  it("MEASURES baseImage.sha256 from the GCE image, through --credential-ref (WI-10005746)", async () => {
+    const { args } = await fixture();
+    MEASURE_CALLS.length = 0;
+    const { artifact } = await buildImageArtifact(args, MEASURED);
+    expect(artifact.buildManifest.baseImage).toEqual({
+      reference: BASE_IMAGE,
+      architecture: "x86_64",
+      sha256: BASE_SHA,
+    });
+    expect(MEASURE_CALLS).toEqual([
+      { reference: BASE_IMAGE, credentialRef: args.credentialRef },
+    ]);
+  });
+
+  it("refuses an input that SUPPLIES baseImage.sha256 instead of letting it be measured", async () => {
+    // The hole this closes: the r18/r19 inputs carried a digest of unknown derivation that every
+    // layer validated for format only and Packer then recorded as image provenance.
+    const { args } = await fixture(
+      inputDocument({
+        baseImage: { reference: BASE_IMAGE, architecture: "x86_64", sha256: BASE_SHA },
+      }),
+    );
+    await expect(buildImageArtifact(args, MEASURED)).rejects.toThrow(
+      /baseImage\.sha256 must not be supplied/,
+    );
+  });
+
+  it("refuses a base image the Compute API cannot find rather than attesting a digest for it", async () => {
+    const { args } = await fixture();
+    await expect(buildImageArtifact(args, measuringDeps({}))).rejects.toThrow(
+      /was not found; refusing to attest/,
+    );
+  });
+
+  it("measures a recreated image under the same name as a DIFFERENT base", async () => {
+    // Delete-and-recreate keeps the name and changes the server-assigned id.
+    const { args } = await fixture();
+    const { artifact } = await buildImageArtifact(
+      args,
+      measuringDeps({
+        [BASE_IMAGE]: { ...BASE_IMAGE_RESOURCE, id: "4405532451318052746" },
+      }),
+    );
+    expect(artifact.buildManifest.baseImage.sha256).not.toBe(BASE_SHA);
   });
 
   it("refuses a template path that escapes the repository root", async () => {
@@ -557,7 +660,7 @@ describe("buildImageArtifact", () => {
     ) as Record<string, unknown>;
     doc.builder = { templatePath: "../outside.pkr.hcl" };
     await write(escaping.inputFile, JSON.stringify(doc), "utf8");
-    await expect(buildImageArtifact(escaping)).rejects.toThrow(
+    await expect(buildImageArtifact(escaping, MEASURED)).rejects.toThrow(
       /repository-relative POSIX path/,
     );
   });
@@ -566,10 +669,13 @@ describe("buildImageArtifact", () => {
     const { root, args } = await fixture(
       inputDocument({ materials: [{ path: "template.pkr.hcl" }] }),
     );
-    const { artifact } = await buildImageArtifact({
-      ...args,
-      sourceRoot: root,
-    });
+    const { artifact } = await buildImageArtifact(
+      {
+        ...args,
+        sourceRoot: root,
+      },
+      MEASURED,
+    );
     const { createHash } = await import("node:crypto");
     expect(artifact.buildManifest.materials[0]).toMatchObject({
       path: "template.pkr.hcl",
@@ -583,7 +689,7 @@ describe("buildImageArtifact", () => {
       inputDocument({ materials: [{ path: "template.pkr.hcl" }] }),
     );
     const { sourceRoot: _dropped, ...withoutSourceRoot } = args;
-    await expect(buildImageArtifact(withoutSourceRoot)).rejects.toThrow(
+    await expect(buildImageArtifact(withoutSourceRoot, MEASURED)).rejects.toThrow(
       /no --source-root was given to measure it/,
     );
   });
@@ -611,7 +717,7 @@ describe("buildImageArtifact", () => {
       }),
       publication,
     );
-    const { artifact } = await buildImageArtifact(args);
+    const { artifact } = await buildImageArtifact(args, MEASURED);
     expect(artifact.buildManifest.materials).toContainEqual({
       path: INITIALIZER_PATH,
       sha256: "d".repeat(64),
@@ -629,16 +735,52 @@ describe("buildImageArtifact", () => {
         ],
       }),
     );
-    await expect(buildImageArtifact(args)).rejects.toThrow(
+    await expect(buildImageArtifact(args, MEASURED)).rejects.toThrow(
       /records no material at that path/,
     );
   });
 
   it("refuses a manifest that names no build inputs at all", async () => {
     const { args } = await fixture(inputDocument({ materials: [] }));
-    await expect(buildImageArtifact(args)).rejects.toThrow(
+    await expect(buildImageArtifact(args, MEASURED)).rejects.toThrow(
       /at least one build input/,
     );
+  });
+});
+
+describe("pre-build CLI pairing", () => {
+  it("emits the same measured artifact and clean-room input without release readiness", async () => {
+    const input = inputDocument();
+    delete input.readiness;
+    const { args } = await fixture(input, publicationManifest());
+    const output: string[] = [];
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      output.push(String(chunk));
+      return true;
+    });
+    try {
+      const argv = [
+        "--input-file", args.inputFile,
+        "--repo-root", args.repoRoot,
+        "--source-root", args.sourceRoot!,
+      ];
+      await main([...argv, "--emit", "artifact"], MEASURED);
+      await main([...argv, "--emit", "clean-room-input"], MEASURED);
+    } finally {
+      stdout.mockRestore();
+    }
+    expect(output).toHaveLength(2);
+    const artifact = JSON.parse(output[0]!).artifact;
+    const cleanRoom = JSON.parse(output[1]!);
+    expect(cleanRoom.artifact).toEqual(artifact);
+    expect(cleanRoom.placement).toEqual(input.placement);
+    expect(cleanRoom.spec).toEqual(input.spec);
+    expect(artifact.image.id).toBe(
+      `projects/${PROJECT}/global/images/papercusp-workspace-host-0-0-18`,
+    );
+    expect(artifact.release.bundleSha256).toBe(BUNDLE_SHA);
+    expect(artifact.buildManifest.baseImage.sha256).toBe(BASE_SHA);
+    expect(artifact.buildManifest.builder.kind).toBe("hashicorp-packer");
   });
 });
 
@@ -650,7 +792,7 @@ describe("composeRequest", () => {
       publicationManifest(),
       cleanRoomReport("papercusp-workspace-host"),
     );
-    await expect(composeRequest(args)).rejects.toThrow(
+    await expect(composeRequest(args, MEASURED)).rejects.toThrow(
       /Re-run the clean-room against/,
     );
   });
@@ -664,7 +806,7 @@ describe("composeRequest", () => {
         { passed: false },
       ),
     );
-    await expect(composeRequest(args)).rejects.toThrow(/did not pass/);
+    await expect(composeRequest(args, MEASURED)).rejects.toThrow(/did not pass/);
   });
 
   it("binds the connection to the gcloud active-user credential, never a service-account key", async () => {
@@ -675,7 +817,7 @@ describe("composeRequest", () => {
         `projects/${PROJECT}/global/images/papercusp-workspace-host-0-0-18`,
       ),
     );
-    const composed = await composeRequest(args);
+    const composed = await composeRequest(args, MEASURED);
     // Typed reference, not a bare string — the composition seam reads `.ref`, so a string reads as
     // a MISSING credential and kills the release at the connection parse.
     expect(composed.connection).toMatchObject({
@@ -709,7 +851,7 @@ describe("composeRequest", () => {
         `projects/${PROJECT}/global/images/papercusp-workspace-host-0-0-18`,
       ),
     );
-    const composed = await composeRequest(args);
+    const composed = await composeRequest(args, MEASURED);
     expect(composed.readiness).toMatchObject({
       expected: { username: userInfo().username, cwd: root },
     });
@@ -725,7 +867,7 @@ describe("composeRequest", () => {
         `projects/${PROJECT}/global/images/papercusp-workspace-host-0-0-18`,
       ),
     );
-    await expect(composeRequest(args)).rejects.toThrow(
+    await expect(composeRequest(args, MEASURED)).rejects.toThrow(
       /readiness input must be an object/,
     );
   });
@@ -743,7 +885,7 @@ describe("composeRequest", () => {
       ),
       "adc://default",
     );
-    const composed = await composeRequest(args);
+    const composed = await composeRequest(args, MEASURED);
     expect(composed.connection).toMatchObject({
       target: "gcp",
       cloudCredentialRef: { kind: "cloud", ref: "adc://default" },
@@ -759,7 +901,7 @@ describe("composeRequest", () => {
         `projects/${PROJECT}/global/images/papercusp-workspace-host-0-0-18`,
       ),
     );
-    const composed = (await composeRequest(args)) as {
+    const composed = (await composeRequest(args, MEASURED)) as {
       request: {
         releaseGate: Parameters<typeof evaluateWorkspaceHostReleaseGate>[0];
       };
@@ -782,7 +924,7 @@ describe("composeRequest", () => {
         `projects/${PROJECT}/global/images/papercusp-workspace-host-0-0-18`,
       ),
     );
-    const composed = (await composeRequest(args)) as {
+    const composed = (await composeRequest(args, MEASURED)) as {
       request: {
         releaseGate: Parameters<typeof evaluateWorkspaceHostReleaseGate>[0];
       };

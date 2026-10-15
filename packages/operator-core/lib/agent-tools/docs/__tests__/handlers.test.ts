@@ -55,6 +55,15 @@ const searchDocs = vi.fn(
 const engineeringAdapterForSlugs = vi.hoisted(() =>
   vi.fn((slugs: readonly string[]) => ({ __adapter: 'engineering-request', slugs })),
 );
+const resolveDocsEmbedder = vi.hoisted(() =>
+  vi.fn(
+    async (): Promise<{
+      embedder: ((query: string) => Promise<number[]>) | null;
+      embeddingMode: string | null;
+    }> => ({ embedder: null, embeddingMode: null }),
+  ),
+);
+const docSectionsRanker = vi.hoisted(() => vi.fn());
 
 vi.mock('@papercusp/docs-engine', () => ({
   buildOutline,
@@ -85,6 +94,11 @@ vi.mock('../_engineering-adapter', () => ({
   engineeringAdapter: { __adapter: 'engineering-shared' },
   engineeringAdapterForSlugs,
   getEngineeringAdapterRevision: () => 0,
+}));
+
+vi.mock('../semantic-leg', () => ({
+  resolveDocsEmbedder,
+  docSectionsRanker,
 }));
 
 type RegistryProject = { slug: string; path: string };
@@ -121,6 +135,8 @@ beforeEach(() => {
   getDocs.mockClear();
   searchDocs.mockClear();
   engineeringAdapterForSlugs.mockClear();
+  resolveDocsEmbedder.mockReset().mockResolvedValue({ embedder: null, embeddingMode: null });
+  docSectionsRanker.mockReset().mockImplementation(() => async () => [] as never[]);
   delete process.env.PAPERCUSP_PROJECT_DOCS_ROOT;
 });
 
@@ -701,6 +717,78 @@ describe('docs:search handler', () => {
     // test above; asserting an exact count here only re-coupled this file to
     // engine internals it does not test.
     expect(searchDocs).toHaveBeenCalled();
+  });
+
+  it('records separate docs-search phase timings, including the semantic section query', async () => {
+    mockRegistry([{ slug: 'sheets', path: '/tmp/h' }]);
+    resolveDocsEmbedder.mockResolvedValueOnce({
+      embedder: async () => [0.1, 0.2],
+      embeddingMode: 'test',
+    });
+    docSectionsRanker.mockReturnValueOnce(async () => []);
+    const tool = (await import('../search')).default;
+    const metadata = vi.fn();
+
+    const res = await tool.handler(
+      { query: 'auth flow', limit: 8, semantic: true } as never,
+      { harnessSlug: 'sheets', metadata } as never,
+    );
+
+    expect(payloadOf(res).surface).toBe('harness');
+    const metadataCalls = metadata.mock.calls as Array<[Record<string, unknown>]>;
+    const timing = metadataCalls.at(-1)?.[0].docsSearchTiming as {
+      version: number;
+      active: unknown[];
+      completedMs: Record<string, number>;
+    };
+    expect(timing.version).toBe(1);
+    expect(timing.active).toEqual([]);
+    expect(timing.completedMs).toEqual(
+      expect.objectContaining({
+        adapterResolution: expect.any(Number),
+        embedderResolution: expect.any(Number),
+        lexicalSearch: expect.any(Number),
+        docSectionsQuery: expect.any(Number),
+        hybridSearch: expect.any(Number),
+        packageDocHits: expect.any(Number),
+        embedCoverage: expect.any(Number),
+      }),
+    );
+    expect(JSON.stringify(timing)).not.toContain('auth flow');
+  });
+
+  it('logs one query-free breadcrumb when a search phase stays pending past the diagnostic threshold', async () => {
+    vi.useFakeTimers();
+    try {
+      mockRegistry([{ slug: 'sheets', path: '/tmp/h' }]);
+      let releaseSearch: (() => void) | undefined;
+      searchDocs.mockImplementationOnce(
+        async () =>
+          await new Promise((resolve) => {
+            releaseSearch = () => resolve({ hits: [{ slug: 'p1', title: 'P1', excerpt: 'ex' }] });
+          }),
+      );
+      const tool = (await import('../search')).default;
+      const log = vi.fn();
+      const pending = tool.handler(
+        { query: 'private query text', limit: 8 } as never,
+        { harnessSlug: 'sheets', log } as never,
+      );
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(searchDocs).toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(log).toHaveBeenCalledWith(
+        '[docs:search timing] lexicalSearch still pending after at least 20000ms',
+      );
+
+      releaseSearch?.();
+      await pending;
+      expect(log).toHaveBeenCalledWith(expect.stringMatching(/lexicalSearch completed in \d+ms/));
+      expect(log.mock.calls.flat().join(' ')).not.toContain('private query text');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('project surface when PAPERCUSP_PROJECT_DOCS_ROOT is set and arg is "all"', async () => {

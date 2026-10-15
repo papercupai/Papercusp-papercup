@@ -110,7 +110,7 @@ describe('local-whisper-service', () => {
 
   it('provisioned box: spawns the cached binary, health-gates, and serves the managed url', async () => {
     const binPath = await provisionFakeWhisper(home);
-    let spawned: { cmd: string; args: string[] } | null = null;
+    let spawned: { cmd: string; args: string[]; cwd?: string } | null = null;
     const child = new FakeChild();
     let managedUp = false;
     const r = await ensureLocalWhisper({
@@ -121,8 +121,8 @@ describe('local-whisper-service', () => {
       detectHw: async () => linuxHw,
       healthIntervalMs: 5,
       healthTimeoutMs: 2000,
-      spawnFn: ((cmd: string, args: string[]) => {
-        spawned = { cmd, args };
+      spawnFn: ((cmd: string, args: string[], options: { cwd?: string }) => {
+        spawned = { cmd, args, cwd: options.cwd };
         managedUp = true; // "server boots instantly"
         return child as unknown as ChildProcess;
       }) as never,
@@ -133,6 +133,11 @@ describe('local-whisper-service', () => {
     expect(spawned!.cmd).toBe(binPath);
     expect(spawned!.args).toContain('--inference-path');
     expect(spawned!.args).toContain('/v1/audio/transcriptions');
+    const workingDirectory = join(home, '.papercusp', 'runtime', 'whisper');
+    expect(spawned!.cwd).toBe(workingDirectory);
+    expect((await stat(workingDirectory)).isDirectory()).toBe(true);
+    // Conversion output remains writable independently of the caller's checkout.
+    await writeFile(join(workingDirectory, 'conversion-control.wav'), 'fixture');
     expect(_registeredSidecarShutdownLabelsForTests()).toContain('local-whisper-service');
 
     // Second call: managed child reused, no new spawn.

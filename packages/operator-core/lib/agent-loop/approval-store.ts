@@ -172,6 +172,11 @@ export async function awaitLoopApprovalDecision(
   const timeoutMs = args.timeoutMs ?? LOOP_APPROVAL_TIMEOUT_MS;
   const pollMs = Math.max(50, args.pollMs ?? LOOP_APPROVAL_POLL_MS);
   const deadline = Date.now() + timeoutMs;
+  const lifecycleDenial = (): string | null => {
+    if (args.signal?.aborted) return 'approval aborted (run cancelled)';
+    if (Date.now() >= deadline) return 'approval timed out';
+    return null;
+  };
 
   const selfDeny = async (reason: string): Promise<LoopApprovalDecision> => {
     try {
@@ -180,8 +185,9 @@ export async function awaitLoopApprovalDecision(
            SET status = 'denied', reason = ${reason}, resolved_at = now(),
                resolved_by = 'loop:self'
          WHERE chat_id = ${args.chatId} AND call_id = ${args.callId}
+           AND workspace_id = ${args.workspaceId}
            AND status = 'pending'`;
-      await consume(sql, args.chatId, args.callId);
+      await consume(sql, args.chatId, args.callId, args.workspaceId);
     } catch {
       /* best-effort — the deny is returned regardless */
     }
@@ -194,7 +200,8 @@ export async function awaitLoopApprovalDecision(
     try {
       rows = await sql<Array<{ status: string; reason: string | null }>>`
         SELECT status, reason FROM harness_shared.agent_loop_approvals
-         WHERE chat_id = ${args.chatId} AND call_id = ${args.callId}`;
+         WHERE chat_id = ${args.chatId} AND call_id = ${args.callId}
+           AND workspace_id = ${args.workspaceId}`;
     } catch (e) {
       // FAIL CLOSED: an unreadable decision is a deny, never an approve.
       return {
@@ -204,17 +211,23 @@ export async function awaitLoopApprovalDecision(
     }
     const row = rows[0];
     if (!row) {
-      // Row vanished (age sweep / manual cleanup) — treat as denied.
+      // Missing, expired, or outside this workspace — treat as denied.
       return { approved: false, reason: 'approval request expired' };
     }
+    // A live row is not authorization after the waiter's own bounds close.
+    // Both cancellation and deadline can change while the PG read is in flight.
+    const readDenial = lifecycleDenial();
+    if (readDenial) return selfDeny(readDenial);
     if (row.status !== 'pending') {
-      await consume(sql, args.chatId, args.callId);
+      await consume(sql, args.chatId, args.callId, args.workspaceId);
+      // Cleanup is another async boundary before the decision reaches the loop.
+      const consumeDenial = lifecycleDenial();
+      if (consumeDenial) return { approved: false, reason: consumeDenial };
       return {
         approved: row.status === 'approved',
         ...(row.reason ? { reason: row.reason } : {}),
       };
     }
-    if (Date.now() >= deadline) return selfDeny('approval timed out');
     await new Promise<void>((resolve) => {
       const t = setTimeout(resolve, pollMs);
       (t as { unref?: () => void }).unref?.();
@@ -222,11 +235,12 @@ export async function awaitLoopApprovalDecision(
   }
 }
 
-async function consume(sql: Sql, chatId: string, callId: string): Promise<void> {
+async function consume(sql: Sql, chatId: string, callId: string, workspaceId: string): Promise<void> {
   try {
     await sql`
       DELETE FROM harness_shared.agent_loop_approvals
-       WHERE chat_id = ${chatId} AND call_id = ${callId}`;
+       WHERE chat_id = ${chatId} AND call_id = ${callId}
+         AND workspace_id = ${workspaceId}`;
   } catch {
     /* best-effort — the age sweep clears it eventually */
   }

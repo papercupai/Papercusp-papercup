@@ -1,0 +1,312 @@
+{
+  "schemaVersion": "p011-forward-baseline-qualification-v1",
+  "workItem": "WI-10005816",
+  "parent": "WI-10004890",
+  "spec": {
+    "id": "PERF-OCT1-P011-MEMORY",
+    "revision": 2,
+    "fingerprint": "6059e251ea51a61458afd5075a8190a60e1f1139d28c55784b4ff12d2c624010"
+  },
+  "receipts": [
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-forward-main-r1-2026-10-03.json",
+      "sha256": "7bbc9adf5296a8f56d17d094a7b95746dbb01738c9bccd17779f1643b1c7d8d5",
+      "bytes": 146018
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-forward-spawner-r1-2026-10-03.json",
+      "sha256": "2153ee1c110386749d39e2a03dd0e300e74c0594365d32c08a94eb782105a284",
+      "bytes": 146503
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-forward-baseline-oracle-r1-2026-10-03.json",
+      "sha256": "0f6d6665c86d6dcce269bd93febe05f104abb2f28b78012b45012c280fc86e55",
+      "bytes": 7890
+    }
+  ],
+  "sources": [
+    {
+      "path": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+      "sha256": "296552a8b44f09048c660c9289a1f4fad4bd38e1e42816cc1dc47b462b691ff7",
+      "afterSha256": "296552a8b44f09048c660c9289a1f4fad4bd38e1e42816cc1dc47b462b691ff7",
+      "stable": true
+    },
+    {
+      "path": "packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts",
+      "sha256": "991ba95873c50f305f282676662386c9089940d46f24554f96a57735ce62af4d",
+      "afterSha256": "991ba95873c50f305f282676662386c9089940d46f24554f96a57735ce62af4d",
+      "stable": true
+    },
+    {
+      "path": "scripts/cdp-inspector.mjs",
+      "sha256": "0fae03367aef907fa7b42b825b2482417b470d350a02d4a000075be35d04a1c1",
+      "afterSha256": "0fae03367aef907fa7b42b825b2482417b470d350a02d4a000075be35d04a1c1",
+      "stable": true
+    },
+    {
+      "path": "packages/operator-core/lib/fleet/spawner-ipc-client.ts",
+      "sha256": "fc9e1be790e7c5d176c181d9aec05bb531e44e0df4d1489a8e90370f38bc6c66",
+      "afterSha256": "fc9e1be790e7c5d176c181d9aec05bb531e44e0df4d1489a8e90370f38bc6c66",
+      "stable": true
+    },
+    {
+      "path": "packages/operator-core/lib/background-workers.ts",
+      "sha256": "2c4c31597075252183391b9a4b68ffb7bb2bde033448bc337c5ee5d59d2e1008",
+      "afterSha256": "2c4c31597075252183391b9a4b68ffb7bb2bde033448bc337c5ee5d59d2e1008",
+      "stable": true
+    },
+    {
+      "path": "apps/operator/bin/spawner-sidecar.ts",
+      "sha256": "b1c1827d9babbfaa51325e6004ecb0db359a8778f785c1603154b3dfd24f55f5",
+      "afterSha256": "b1c1827d9babbfaa51325e6004ecb0db359a8778f785c1603154b3dfd24f55f5",
+      "stable": true
+    }
+  ],
+  "route": {
+    "currentBuildTestRoute": {
+      "id": "operator-api",
+      "source": "origin/staging mirror, not the uncommitted edit tree",
+      "runtime": "staging-operator",
+      "route": "http://127.0.0.1:3170 after dev:pipeline_position containment check",
+      "routeFile": "apps/operator/scripts/systemd/papercup-staging-api.service.d/50-staging-checkout.conf",
+      "isolation": "Separate port, process and checkout; database and workspace are not isolated.",
+      "prerequisites": [
+        "Containing staging commit loaded",
+        "private test identity/data for writes"
+      ],
+      "verification": "Measured :3170 build identity plus request/response on that build.",
+      "readiness": "ready"
+    },
+    "servingRuntimes": [
+      {
+        "runtime": "release-operator",
+        "role": "owner",
+        "buildSha": "d740fc3802",
+        "buildShaSource": "health",
+        "containsChange": false,
+        "method": "blob",
+        "instances": null,
+        "unknownReason": null
+      },
+      {
+        "runtime": "staging-operator",
+        "role": "owner",
+        "buildSha": "46ab00ca41",
+        "buildShaSource": "health",
+        "containsChange": true,
+        "method": "blob",
+        "instances": null,
+        "unknownReason": null
+      }
+    ]
+  },
+  "testRuns": {
+    "guards": [
+      20631425,
+      20631426
+    ],
+    "main": 20631435,
+    "spawner": 20631439,
+    "oracle": 20631440
+  },
+  "testLedger": [
+    {
+      "id": 20631439,
+      "status": "pass",
+      "filePath": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+      "commitSha": "1ea1bb3108369c4cb55ecd63cc592edfb03941e9",
+      "source": "local",
+      "harnessSlug": "papercusp",
+      "root": "/home/builduser/papercupai-workspace/papercusp",
+      "startedAt": "2026-10-03T04:24:06.382Z",
+      "finishedAt": "2026-10-03T04:24:17.133Z",
+      "worktreeDirty": true
+    },
+    {
+      "id": 20631435,
+      "status": "pass",
+      "filePath": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+      "commitSha": "1ea1bb3108369c4cb55ecd63cc592edfb03941e9",
+      "source": "local",
+      "harnessSlug": "papercusp",
+      "root": "/home/builduser/papercupai-workspace/papercusp",
+      "startedAt": "2026-10-03T04:22:53.082Z",
+      "finishedAt": "2026-10-03T04:23:06.451Z",
+      "worktreeDirty": true
+    },
+    {
+      "id": 20631426,
+      "status": "pass",
+      "filePath": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+      "commitSha": "356ff32491b8f7bee3cfe800299a957b6f116745",
+      "source": "local",
+      "harnessSlug": "papercusp",
+      "root": "/home/builduser/papercupai-workspace/papercusp",
+      "startedAt": "2026-10-03T04:19:55.994Z",
+      "finishedAt": "2026-10-03T04:19:56.013Z",
+      "worktreeDirty": true
+    },
+    {
+      "id": 20631440,
+      "status": "pass",
+      "filePath": "packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts",
+      "commitSha": "1ea1bb3108369c4cb55ecd63cc592edfb03941e9",
+      "source": "local",
+      "harnessSlug": "papercusp",
+      "startedAt": "2026-10-03T04:25:15.076Z",
+      "finishedAt": "2026-10-03T04:25:15.119Z",
+      "worktreeDirty": true
+    }
+  ],
+  "logs": [
+    {
+      "path": "/tmp/su-7db4f-forward-baseline-guards-r1.log",
+      "sha256": "617e492df3d64838cd581f269b473c49fcb37a5b780865c683849811e1c93733",
+      "bytes": 4458,
+      "result": "TEST_FILE_RESULT requested=2 executed=2 matched=2 status=passed head=356ff32491 uncommittedPaths=0/2 provenance=stamped startedAt=2026-10-03T04:19:39.177Z skippedTests=2",
+      "counts": "Tests  34 passed | 2 skipped (36)"
+    },
+    {
+      "path": "/tmp/su-7db4f-forward-main-r1.log",
+      "sha256": "20d55042a08cc599c3b3f9bd4332d9bac5a4b3715142080231b14e54078239bb",
+      "bytes": 8074,
+      "result": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=356ff32491 uncommittedPaths=0/1 provenance=unknown startedAt=2026-10-03T04:22:34.931Z skippedTests=12",
+      "counts": "Tests  1 passed | 12 skipped (13)"
+    },
+    {
+      "path": "/tmp/su-7db4f-forward-spawner-r1.log",
+      "sha256": "111ac511f79f3d66c8beb8087b6a5bc24155fc2d4aa102c270355754e2483a20",
+      "bytes": 7598,
+      "result": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=1ea1bb3108 uncommittedPaths=0/1 provenance=stamped startedAt=2026-10-03T04:23:49.176Z skippedTests=12",
+      "counts": "Tests  1 passed | 12 skipped (13)"
+    },
+    {
+      "path": "/tmp/su-7db4f-forward-baseline-oracle-r1.log",
+      "sha256": "6256aa51b8b82ae4b8bd238e6994dbd18226e10b7b7f3b8debc12c42ec6411ed",
+      "bytes": 2874,
+      "result": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=1ea1bb3108 uncommittedPaths=0/1 provenance=stamped startedAt=2026-10-03T04:24:56.584Z skippedTests=0",
+      "counts": "Tests  23 passed (23)"
+    }
+  ],
+  "typecheck": {
+    "ok": true,
+    "project": "packages/operator-core/tsconfig.json",
+    "engine": "tsc-service",
+    "errorCount": 0,
+    "scopedToFiles": [
+      "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+      "packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts"
+    ],
+    "scopedVerdict": "requested-files-clean",
+    "scopedVerdictIncomplete": false,
+    "errorsInRequestedFiles": 0,
+    "totalErrorCount": 0,
+    "otherErrorCount": 0,
+    "otherErrors": [],
+    "otherErrorsTruncated": false,
+    "otherByFile": [],
+    "otherByFileTruncated": false,
+    "otherFilesWithErrors": 0,
+    "unattributedErrorCount": 0,
+    "compilerExitCode": 0,
+    "serviceScope": {
+      "checkedFiles": 2,
+      "named": 2,
+      "typeReferencing": 0,
+      "importers": 0,
+      "snapshotAgeMs": 1287,
+      "queuedMs": 3022,
+      "checkMs": 1287
+    },
+    "scopeCaveat": "SCOPED RUN (shared typecheck service) — ok/errorCount/errors/exitCode describe the requested files, checked inside the FULL project program. otherErrorCount/otherErrors cover files that reference their exported types or import them directly, and do not fail that requested-file verdict; missing requested paths make scopedVerdict incomplete instead. A TRANSITIVE importer whose error names none of those types is NOT covered, nor are project-global diagnostics. This is not the gate verdict.",
+    "errors": [],
+    "errorsTruncated": false,
+    "byFile": [],
+    "byFileTruncated": false,
+    "filesWithErrors": 0,
+    "syntaxBroken": [],
+    "semanticCheckIncomplete": false,
+    "durationMs": 4595,
+    "exitCode": 0
+  },
+  "runtime": {
+    "buildSha": "46ab00ca41",
+    "mainPid": 3051078,
+    "mainStartTicks": "4847209",
+    "spawnerPid": 3111272,
+    "spawnerStartTicks": "4854043",
+    "windowsPerTarget": 3,
+    "samplesPerTarget": 9,
+    "requestsPerTarget": 24,
+    "missedPerTarget": [
+      [
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    ],
+    "sameLoadedSocketGeneration": true,
+    "cleanup": [
+      {
+        "inspector": {
+          "closed": true
+        },
+        "processIdentityPreserved": true,
+        "counterIdentityPreserved": true
+      },
+      {
+        "inspector": {
+          "closed": true
+        },
+        "processIdentityPreserved": true,
+        "counterIdentityPreserved": true
+      }
+    ]
+  },
+  "scope": {
+    "plane": "live-current-build-operator-api",
+    "classification": "Fresh unforced baseline, not paired optimization acceptance",
+    "fullImportGraph": "unknown",
+    "allocationOwner": "unknown",
+    "requestAssignment": "unknown",
+    "physicalSavings": "unmeasured",
+    "observedConcurrency": "unmeasured; intended HTTP concurrency two"
+  },
+  "preservation": {
+    "priorCensus": {
+      "path": "docs/evidence/papercusp-oct1-p011-proof-census-2026-10-02.json",
+      "sha256": "13bc01434c4b473973b189dbcc131e3d35b4e23dcab46b889b3d41835eb93ba9",
+      "bytes": 41473
+    },
+    "completedChildren": [
+      "WI-10005810",
+      "WI-10005793"
+    ],
+    "oldBindings": "Preserved without retract or relabel. This new test change stales previous sampler test fingerprints.",
+    "eightSourceDispositions": "unchanged"
+  },
+  "independentOracle": "Raw OS/V8 rows, exact entries, PID/executable ancestry, socket fences, windows and HTTP records; no sampler import or inventory totals.",
+  "remaining": [
+    "Matched selected-optimization retained-memory/resource/functionality acceptance",
+    "Independent P010/R8/R9 acceptance",
+    "P009 activation-review repair",
+    "Final promotion and shipment"
+  ]
+}

@@ -14,6 +14,7 @@ import type { Rubric } from '../rubrics';
 
 const h = vi.hoisted(() => ({
   getRubric: vi.fn(),
+  getRubricWithoutSeeding: vi.fn(),
   listRubrics: vi.fn(),
   readRubricPlanRevision: vi.fn(),
   listScorecards: vi.fn(),
@@ -25,6 +26,7 @@ vi.mock('../rubrics', async (importOriginal) => {
   return {
     ...actual,
     getRubric: h.getRubric,
+    getRubricWithoutSeeding: h.getRubricWithoutSeeding,
     listRubrics: h.listRubrics,
     readRubricPlanRevision: h.readRubricPlanRevision,
   };
@@ -106,6 +108,10 @@ describe('rubric/scorecard caller workspace binding (EI-22577140653575153)', () 
       observed.push({ store: 'listRubrics', workspaceId: activeWorkspaceId() });
       return [rubric];
     });
+    h.getRubricWithoutSeeding.mockImplementation(async () => {
+      observed.push({ store: 'getRubricWithoutSeeding', workspaceId: activeWorkspaceId() });
+      return rubric;
+    });
     h.listScorecards.mockImplementation(async () => {
       observed.push({ store: 'listScorecards', workspaceId: activeWorkspaceId() });
       return [];
@@ -117,13 +123,14 @@ describe('rubric/scorecard caller workspace binding (EI-22577140653575153)', () 
 
     await getRubricTool.handler({ rubricRef: rubric.rubricId } as never, ctx as never);
     await listRubricsTool.handler({} as never, ctx as never);
-    await evaluateScorecardTool.handler({ rubricRef: rubric.rubricId } as never, ctx as never);
+    const evaluated = await evaluateScorecardTool.handler({ rubricRef: rubric.rubricId } as never, ctx as never);
+    expect(evaluated).toMatchObject({ data: { ok: true } });
     await listScorecardsTool.handler({} as never, ctx as never);
 
     expect(observed).toEqual([
       { store: 'getRubric', workspaceId: CALLER_WORKSPACE },
       { store: 'listRubrics', workspaceId: CALLER_WORKSPACE },
-      { store: 'getRubric', workspaceId: CALLER_WORKSPACE },
+      { store: 'getRubricWithoutSeeding', workspaceId: CALLER_WORKSPACE },
       { store: 'listScorecards', workspaceId: CALLER_WORKSPACE },
       { store: 'listScorecardPage', workspaceId: CALLER_WORKSPACE },
     ]);

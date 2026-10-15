@@ -411,6 +411,7 @@ describe("checkpoint:await sugar", () => {
       expect(input.certificate).toMatchObject({
         producer: { kind: "green-checkpoint" },
         details: { pipeline: "papercusp" },
+        expectedCadenceMs: 60_000,
       });
       return 4;
     });
@@ -425,6 +426,18 @@ describe("checkpoint:await sugar", () => {
       "snapshot",
       "attach",
     ]);
+  });
+
+  it("keeps a zero-timeout checkpoint probe immediate without attaching a health cadence", async () => {
+    await call({
+      pipeline: "papercusp",
+      candidateSha: "94c1234567890abcdef",
+      timeout_sec: 0,
+    });
+
+    expect(registerAwait).toHaveBeenCalledTimes(4);
+    expect(gitPipelineSnapshot).not.toHaveBeenCalled();
+    expect(attachProducerHealthCertificate).not.toHaveBeenCalled();
   });
 
   it("keeps registered awaits usable when producer observation fails", async () => {

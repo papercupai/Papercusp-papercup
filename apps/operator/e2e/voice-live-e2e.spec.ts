@@ -1,9 +1,11 @@
-import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
 import { expect, test } from './_egress';
+import {
+  FAKE_MIC_LAUNCH_ARGS,
+  assertLiveVoiceWhenRequired,
+  norm,
+  prepareLiveVoiceFixtures,
+  withLocalEnginePrefs,
+} from './_voice-live';
 
 /**
  * LIVE voice E2E through a real browser (voice-thorough-test-2026-07-09, WI-3527).
@@ -36,120 +38,19 @@ import { expect, test } from './_egress';
  *
  *   OPERATOR_E2E_REUSE_SERVER=1 OPERATOR_E2E_BASE_URL=http://127.0.0.1:3170 \
  *     npx playwright test e2e/voice-live-e2e.spec.ts
+ *
+ * The fixtures (Kokoro fake-mic WAV, operator engine-health preflight, prefs
+ * pinning) live in ./_voice-live.ts, shared with voice-synthetic-roundtrip.spec.ts.
  */
 
-const KOKORO_URL = process.env.KOKORO_URL ?? 'http://127.0.0.1:8880';
-// The browser exercises /api/agent-mcp/operator-stt, not a localhost Whisper
-// port. Resolve the same operator instance Playwright drives so the preflight
-// asks the canonical health route whether its external or managed Whisper leg
-// is ready. Keep the historical :3055 default for standalone local runs.
-const OPERATOR_BASE = (
-  process.env.OPERATOR_E2E_BASE_URL ??
-  process.env.OPERATOR_BASE ??
-  `http://127.0.0.1:${process.env.OPERATOR_E2E_PORT ?? '3055'}`
-).replace(/\/+$/, '');
-
-/** The sentence the fake microphone will "speak". A pangram: broad phoneme coverage. */
-const PHRASE = 'the quick brown fox jumps over the lazy dog';
-const FAKE_MIC_WAV = join(tmpdir(), 'papercusp-e2e-fakemic.wav');
-
-const curl = (args: string[]): void => {
-  execFileSync('curl', ['-sf', '--max-time', '30', ...args], { stdio: 'ignore' });
-};
-
-/**
- * Synthesize the fake-mic WAV with the real kokoro. Chrome's fake capture device
- * accepts kokoro's native 16-bit PCM mono @24kHz as-is, so there is no ffmpeg
- * dependency here. Returns false when the local services aren't up.
- */
-function prepareLiveFixtures(): boolean {
-  try {
-    curl(['-o', '/dev/null', `${KOKORO_URL}/health`]);
-    const health = JSON.parse(
-      execFileSync(
-        'curl',
-        ['-sf', '--max-time', '30', `${OPERATOR_BASE}/api/agent-mcp/operator-voice-engine-health`],
-        { encoding: 'utf8' },
-      ),
-    ) as { voicemode?: unknown };
-    if (health.voicemode !== true) return false;
-    if (!existsSync(FAKE_MIC_WAV)) {
-      curl([
-        '-X', 'POST', `${KOKORO_URL}/v1/audio/speech`,
-        '-H', 'content-type: application/json',
-        '-d', JSON.stringify({ model: 'kokoro', input: PHRASE, voice: 'af_bella', response_format: 'wav' }),
-        '-o', FAKE_MIC_WAV,
-      ]);
-    }
-    return existsSync(FAKE_MIC_WAV);
-  } catch {
-    return false;
-  }
-}
-
-const live = prepareLiveFixtures();
-const requireLive = process.env.PAPERCUSP_REQUIRE_LIVE_VOICE === '1';
-
-if (requireLive && !live) {
-  throw new Error(
-    `PAPERCUSP_REQUIRE_LIVE_VOICE=1 but the live voice fixtures could not be prepared ` +
-    `(Kokoro: ${KOKORO_URL}, operator health: ${OPERATOR_BASE}/api/agent-mcp/operator-voice-engine-health)`,
-  );
-}
-
-/** Lowercase, strip punctuation, collapse whitespace — STT formatting isn't under test. */
-const norm = (s: string): string =>
-  s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-
-/**
- * The live workspace may intentionally run a full-agent engine, which disables
- * the split STT/TTS controls. Pin the local pair for assertions that exercise
- * those controls, then restore every shared preference even when the test
- * fails. The workspace header mirrors the SPA's own resolution rule.
- */
-async function withLocalEnginePrefs<T>(
-  page: import('@playwright/test').Page,
-  run: () => Promise<T>,
-): Promise<T> {
-  const prefsUrl = '/api/agent-mcp/operator-voice-prefs';
-  const indexHtml = await (await page.request.get('/settings/voice')).text();
-  const workspace = /__PAPERCUSP_WS__\s*=\s*["']([^"']+)["']/.exec(indexHtml)?.[1] ?? 'default';
-  const headers = { 'x-papercusp-workspace': workspace };
-  const beforeResponse = await page.request.get(prefsUrl, { headers });
-  if (!beforeResponse.ok()) throw new Error(`prefs GET failed: ${beforeResponse.status()}`);
-  const before = await beforeResponse.json() as {
-    fullAgentEngine?: string;
-    sttEngine?: string;
-    ttsEngine?: string;
-  };
-  const put = async (data: Record<string, string>) => {
-    const response = await page.request.put(prefsUrl, { headers, data });
-    if (!response.ok()) throw new Error(`prefs PUT failed: ${response.status()}`);
-  };
-  await put({ fullAgentEngine: 'off', sttEngine: 'voicemode', ttsEngine: 'kokoro' });
-  try {
-    return await run();
-  } finally {
-    await put({
-      fullAgentEngine: before.fullAgentEngine ?? 'off',
-      sttEngine: before.sttEngine ?? 'voicemode',
-      ttsEngine: before.ttsEngine ?? 'kokoro',
-    });
-  }
-}
+const live = prepareLiveVoiceFixtures();
+assertLiveVoiceWhenRequired(live);
 
 // Must be top-level: `launchOptions` forces a new worker, so Playwright forbids
-// it inside a describe group. Chrome plays FAKE_MIC_WAV into getUserMedia.
+// it inside a describe group. Chrome plays the fake-mic WAV into getUserMedia.
 test.use({
   permissions: ['microphone'],
-  launchOptions: {
-    args: [
-      '--use-fake-device-for-media-stream',
-      '--use-fake-ui-for-media-stream',
-      `--use-file-for-fake-audio-capture=${FAKE_MIC_WAV}`,
-      '--autoplay-policy=no-user-gesture-required',
-    ],
-  },
+  launchOptions: { args: FAKE_MIC_LAUNCH_ARGS },
 });
 
 (live ? test.describe : test.describe.skip)('LIVE voice E2E (real browser, real kokoro + whisper)', () => {
@@ -240,9 +141,13 @@ test.use({
       return { status: res.status, text: await res.text() };
     });
     expect(r.status).not.toBe(502);
-    // 404 'no-key' = none configured; 401 = configured but rejected / out of credits.
-    expect([401, 404, 200]).toContain(r.status);
+    // 404 'no-key' = none configured; 401 = configured but rejected / out of credits;
+    // 400 = the engine is refused by the release-availability seam
+    // (voice-release-availability.ts, plan voice-final-public-release-2026-10-01
+    // D-005) before any provider call — still a clean, classified 4xx.
+    expect([400, 401, 404, 200]).toContain(r.status);
     if (r.status === 404) expect(r.text).toBe('no-key');
+    if (r.status === 400) expect(r.text).toContain('not available in this release');
   });
 
   test('settings UI exposes all 5 TTS engines and the local defaults are selected', async ({ page }) => {

@@ -299,7 +299,10 @@ function memberSlugForTask(homePrefix: string, instanceId: string): string {
  */
 function featureIdForTask(instanceId: string): string {
   const safe = instanceId.replace(/[^a-zA-Z0-9]+/g, '').toUpperCase().slice(0, 16) || 'TASK';
-  return `F-${safe}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+  // scope-unique-identifiers-2026-07-26 P-009 (D-004 writer #3): every run re-mints this id for
+  // the same instance, and an id names one row per workspace. Four base36 chars (~1.7M) made a
+  // cross-run collision a matter of time; 10 hex chars (~1.1e12) keeps it out of reach.
+  return `F-${safe}${globalThis.crypto.randomUUID().replace(/-/g, '').slice(0, 10).toUpperCase()}`;
 }
 
 /** Per-task live state the factory threads from enroll → place → collect → teardown (the clone handle,

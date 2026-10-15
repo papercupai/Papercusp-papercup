@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "kind": "halfvec-candidate-feasibility",
+  "judged": false,
+  "productionAdopted": false,
+  "planSlug": "bm25-lexical-search-evoke-adoption-2026-10-10",
+  "decisionRef": "D-057",
+  "decisionRecordedRevision": 85,
+  "workItem": "EI-25759777799016889",
+  "scope": "isolated deterministic fixture; not production corpus recall, physical-read reduction or cold latency acceptance",
+  "implementation": {
+    "reused": "chunkAwareVectorLegSql",
+    "option": "halfvecCandidates",
+    "selection": "halfvec expression HNSW candidates",
+    "scoring": "original stored vector cosine distance before per-leg truncation and minimum-distance pooling",
+    "filters": "reader/parent, vector profile and chunk surface predicates remain inside candidate selection",
+    "existingCallers": "unchanged"
+  },
+  "fixture": {
+    "dimensions": 768,
+    "parents": 256,
+    "itemChunks": 513,
+    "otherSurfaceChunks": 1,
+    "candidateLimit": 512,
+    "resultLimit": 8,
+    "efSearch": 1000,
+    "qualificationCaveat": "exhaustive fixture search does not establish production ANN recall at ef_search=40",
+    "indexBytes": [
+      { "name": "parents", "halfvec": 475136, "vector": 942080 },
+      { "name": "chunks", "halfvec": 1064960, "vector": 2113536 }
+    ],
+    "indexBytesWriter": "PostgreSQL pg_relation_size(index_oid)",
+    "guards": [
+      "halfvec distance ties rerank by original vector distances",
+      "gist and retrieve match independent exhaustive full-vector ranking",
+      "wrong parent eligibility, vector profile and chunk surface are excluded",
+      "margins, parent/chunk minimum pooling and anchors match the reference",
+      "generic plans use parent and scoped chunk halfvec expression indexes",
+      "typed chunk keys preserve the same rows, distances and declared anchors",
+      "invalid dimensions, undersized candidates and incompatible scan forms fail before query generation"
+    ]
+  },
+  "verification": {
+    "localFocusedInitial": { "unitTests": 20, "existingAnnIntegrationTests": 8, "initialHalfvecTests": 2, "passed": true, "skipped": 0, "provenance": "dirty named paths; HEAD moved; imported source identity unknown" },
+    "typedFixtureFailure": { "testRunId": 21169883, "status": "fail", "rootCause": "fixture metadata omitted anchorColumn although its typed table stored anchors; documented typed default returns NULL", "preserved": true },
+    "correctedHalfvec": { "testRunId": 21169901, "status": "pass", "tests": 3, "skipped": 0, "harness": "papercusp", "source": "local", "worktreeDirty": true },
+    "typecheck": { "command": "bash scripts/pc-heavy.sh node node_modules/.bin/tsc --project libs/generic/search/tsconfig.json --noEmit", "exitCode": 0 },
+    "diffCheck": { "command": "git -C libs/generic/search diff --check", "exitCode": 0 },
+    "executedSourceCapture": {
+      "status": "unknown",
+      "persistedRows": 0,
+      "reason": "standalone library config does not supply worker import records or original-source/config loader capture",
+      "failedExport": { "name": "d057-source-map-cont12.json", "sha256": "46fb763a1a0711ff13c3e6f5532a4b1a9b92237ab311d9217bcbae7b4ec71487" },
+      "passedExport": { "name": "d057-source-map-cont12-r2.json", "sha256": "43bde8af459cd22326d6cd0c389684e28aa3425cf168942df6a7b00d9d8da77a" },
+      "acceptance": "local fixture feasibility only; no source-qualified production acceptance"
+    }
+  },
+  "currentDiskPins": [
+    { "path": "libs/generic/search/src/chunks/vector-leg.ts", "sha256": "ff5f728d6155748c0a090b95c5e66cc119740343a4bb1cb8c1986f8830a544f5" },
+    { "path": "libs/generic/search/src/chunks/vector-leg.test.ts", "sha256": "8dfa9268f6876c1963b0244e5d800e3cf7635192aa900fc850162f9b616c0483" },
+    { "path": "libs/generic/search/src/chunks/vector-leg-halfvec.integration.test.ts", "sha256": "6ef6b841f4c8809e028597af1e6b38bfcc61d00d3689748dc72de5ca1bd092b7" }
+  ],
+  "failedQualification": {
+    "artifact": "bm25-r18-rubric11-frozen-b136f2da-20261013-1.json",
+    "sha256": "50a85edc29c7d44175991bd5084860edf4cdf1e160143c4ecb0958c4141bbd6a",
+    "recheckedUnchanged": true,
+    "count": 0,
+    "rerun": false
+  },
+  "remaining": [
+    "source-qualified current proof for the helper change",
+    "isolated production-derived workload comparison of candidate recall and page work at production search settings",
+    "production expression indexes and caller adoption only after measured qualification",
+    "separately declared prospective full-parent qualification sequence",
+    "current rubric vetting, activation audit, D054 full window, desktop1470 and final shipment"
+  ]
+}

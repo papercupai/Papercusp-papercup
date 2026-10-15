@@ -50,8 +50,8 @@ const productionFileUmbrella: DailyDigestUmbrellaFiler = async (input) => {
   });
   const canonical =
     result.issue?.id ??
-    result.possibleDuplicates.find((candidate) => candidate.state === 'open')?.id ??
-    result.possibleDuplicates[0]?.id;
+    result.possibleDuplicates?.find((candidate) => candidate.state === 'open')?.id ??
+    result.possibleDuplicates?.[0]?.id;
   if (!canonical) {
     throw new Error(
       `daily digest capture produced no linkable umbrella for '${input.proposal.title}' (${result.reason ?? 'unknown'})`,

@@ -84,7 +84,7 @@ const MAX_ROWS_PER_PAGE = 240;
  *        sections sat exactly at the 2000-char cap, their tails unembedded and
  *        therefore permanently unmatchable by the semantic leg).
  */
-const SPLITTER_VERSION = '2';
+const SPLITTER_VERSION = '4-complete-body-order';
 
 export interface DocSection {
   /** Heading anchor id ('' = page preamble); deduped within the page. */
@@ -141,7 +141,14 @@ export const DOC_MARKDOWN_SPLIT: MarkdownSplitOptions = {
  * context-free prose.
  */
 export function splitDocSections(pageTitle: string, body: string): DocSection[] {
-  return splitMarkdown(body, DOC_MARKDOWN_SPLIT).map((s) => ({
+  // A retained document is the search population; fixed heading/row limits
+  // would silently exclude late procedures and continuation chunks.
+  return splitMarkdown(body, {
+    ...DOC_MARKDOWN_SPLIT,
+    minChars: 0,
+    maxSections: Math.max(1, body.length + 1),
+    maxRows: Math.max(1, body.length + 1),
+  }).map((s) => ({
     anchor: s.anchor,
     title: s.headingPath.length === 0 ? pageTitle : `${pageTitle} › ${s.headingPath[s.headingPath.length - 1]}`,
     content: s.content,
@@ -173,25 +180,22 @@ async function upsertPageSections(
   const sha = pageSha(page.title, body);
   if (knownSha === sha) return null;
   const sections = splitDocSections(page.title, body);
-  await sql.unsafe(`DELETE FROM harness_shared.doc_sections WHERE source_key = $1 AND slug = $2`, [
-    sourceKey,
-    page.slug,
-  ]);
-  if (sections.length === 0) return 0;
-  const params: string[] = [];
-  const values = sections
-    .map((s, i) => {
-      params.push(sourceKey, page.slug, s.anchor, s.title, page.url, s.content, sha);
-      const b = i * 7;
-      return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7})`;
-    })
-    .join(', ');
-  await sql.unsafe(
-    `INSERT INTO harness_shared.doc_sections (source_key, slug, anchor, title, url, content, page_sha)
-     VALUES ${values}
-     ON CONFLICT (source_key, slug, anchor) DO NOTHING`,
-    params,
-  );
+  // One page replacement is atomic. Complete bodies may exceed PG's bind
+  // parameter limit, so insert bounded batches inside the same transaction.
+  await sql.begin(async tx => {
+    await tx.unsafe(`DELETE FROM harness_shared.doc_sections WHERE source_key = $1 AND slug = $2`, [sourceKey,page.slug]);
+    for (let offset = 0; offset < sections.length; offset += 1_000) {
+      const params: Array<string | number> = [];
+      const values = sections.slice(offset,offset + 1_000).map((s,i) => {
+        params.push(sourceKey,page.slug,s.anchor,s.title,page.url,s.content,sha,offset + i);
+        const b = i * 8;
+        return `($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},$${b+7},$${b+8})`;
+      }).join(', ');
+      await tx.unsafe(`INSERT INTO harness_shared.doc_sections
+        (source_key,slug,anchor,title,url,content,page_sha,section_idx) VALUES ${values}
+        ON CONFLICT (source_key,slug,anchor) DO NOTHING`,params);
+    }
+  });
   return sections.length;
 }
 
@@ -391,7 +395,21 @@ export async function runDocSectionsSyncOnce(): Promise<DocSyncStats[] | { skipp
       // must never cost the engineering corpus its sync.
       console.warn('[doc-embed-sync] guidance corpus sync failed:', (err as Error).message);
     }
-    __docSyncState.done = true;
+    // WI-10004455: fill the shipped corpora's NULL embeddings from the
+    // release's precomputed seed BEFORE the backfill sweep that follows this
+    // sync, so a fresh install does not spend hours embedding docs identical
+    // on every install. Rows match on page_sha, so only unchanged text gets a
+    // seeded vector. Fail-open: a bad seed costs only the saving, never the sync.
+    try {
+      const { applyShippedDocVectorSeed } = await import('./doc-vector-seed');
+      const { resolveDocVectorSeedDir } = await import('./doc-vector-seed-dir');
+      await applyShippedDocVectorSeed(sql, { seedDir: () => resolveDocVectorSeedDir() });
+    } catch (err) {
+      console.warn('[doc-embed-sync] doc vector seed failed:', (err as Error).message);
+    }
+    // A per-page error is not a completed corpus. The next existing sweep
+    // retries its unchanged page rather than latching an incomplete index.
+    __docSyncState.done = all.every(s => s.errors === 0);
     const changed = all.reduce((a, s) => a + s.changed, 0);
     if (changed > 0) {
       console.log(

@@ -115,6 +115,10 @@ function isFormTag(target: EventTarget | null): null | 'INPUT' | 'TEXTAREA' | 'S
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return tag;
   // contentEditable counts as a form tag for safety.
   if (el.isContentEditable) return 'TEXTAREA';
+  // The shared Radix Select renders a combobox trigger and a listbox of
+  // options. Keep shortcuts from escaping those controls as they would a
+  // native select, including events originating in their child labels.
+  if (el.closest?.('[role="combobox"], [role="listbox"]')) return 'SELECT';
   return null;
 }
 

@@ -56,7 +56,9 @@
 import { derivePlanLifecycle, derivePlanStatusTransition, parsePlan } from '@papercusp/plan-parser';
 import { flipPlanFrontmatterStatus } from './set-plan-status';
 import { withPlanLock } from './with-plan-lock';
-import { ensureAcceptanceDrainCarryInTransaction } from './acceptance-drain-filing';
+import { ensureAcceptanceDrainCarryInTransaction, type AcceptanceDrainCarryOutcome } from './acceptance-drain-filing';
+import { isPlanRunInstanceSlug } from './run-instance-slug';
+import { evaluateBlindReviewGate, type BlindReviewGateCode } from '../../blind-review-gate';
 
 /** Why a transition did not happen — every non-applied outcome is named, so a
  *  caller never has to read "false" and guess which of five reasons it was. */
@@ -77,7 +79,17 @@ export type PlanDrainTransitionSkip =
    *  `plans:set-status` event and this rule fires again on the far side of it
    *  with fresher bytes. Retrying here would queue behind a write whose result
    *  invalidates the decision we queued to make. */
-  | 'busy';
+  | 'busy'
+  /** The plan is a `<template>@run-<token>` run INSTANCE (WI-6554700010009790). Its
+   *  lifecycle belongs to the run reconciler, which retires a settled instance with a
+   *  guard on `status = 'active'`. Moving it to awaiting-acceptance here strands it
+   *  there forever and files an acceptance carry for a plan nobody authored. The
+   *  periodic sweep excludes instances for the same reason (plan-drain-sweep.ts). */
+  | 'plan_run_instance'
+  /** P-006 (D-006, D-039): the graph warrants awaiting-acceptance, but the blind gap
+   *  review door refused it. The plan stays where it is until a counted review is
+   *  recorded and every gap is dispositioned; the next item flip or sweep re-tries. */
+  | BlindReviewGateCode;
 
 export interface PlanDrainTransitionResult {
   applied: boolean;
@@ -87,14 +99,18 @@ export interface PlanDrainTransitionResult {
   reason?: string;
   skipped?: PlanDrainTransitionSkip;
   acceptanceCarry?: {
-    outcome: 'created' | 'already-open';
+    outcome: AcceptanceDrainCarryOutcome;
     id: string | null;
   };
+  /** Set when the blind gap review door withheld the move to awaiting-acceptance. */
+  blindReview?: { code: BlindReviewGateCode; message: string };
 }
 
 export interface PlanDrainTransitionOptions {
   /** Driver to receive the acceptance accountability task in the same tx. */
   accountableOwnerId?: string | null;
+  /** Workspace of the plan, for the blind gap review door. Defaults to the active one. */
+  workspaceId?: string;
 }
 
 /** Shared locked-body decision for direct item writes and the reaction/backstop. */
@@ -132,6 +148,49 @@ export function planDrainTransitionMutation(current: string | null): {
 }
 
 /**
+ * planDrainTransitionMutation plus the P-006 blind gap review door, for every writer
+ * that can move a plan to awaiting-acceptance (plans:set-status in its lock, and
+ * applyPlanDrainTransition). A refused move writes nothing and names the door's code.
+ * Template 'rubric' plans are skipped, like the acceptance carry filing.
+ * Plan-run INSTANCES are never moved at all: see the `plan_run_instance` skip.
+ *
+ * `scope` is REQUIRED and must be the scope the caller's plan lock resolved (the
+ * mutator's third argument). The gate re-reads the plan; left to default it used
+ * `activeWorkspaceId()`, which can differ from the plan's registered workspace, found
+ * no plan, and refused every move as `blind_review_unavailable` (WI-6554700010010577).
+ */
+export async function planDrainTransitionMutationGated(
+  current: string | null,
+  scope: { planSlug: string; harnessSlug: string; workspaceId: string },
+  deps: { evaluate?: typeof evaluateBlindReviewGate } = {},
+): Promise<{ newBody: string | null; value: PlanDrainTransitionResult }> {
+  if (isPlanRunInstanceSlug(scope.planSlug)) {
+    return { newBody: null, value: { applied: false, skipped: 'plan_run_instance' } };
+  }
+  const out = planDrainTransitionMutation(current);
+  if (!out.value.applied || out.value.to !== 'awaiting-acceptance' || out.newBody === null) return out;
+  if (parsePlan(out.newBody).frontmatter.template === 'rubric') return out;
+  const verdict = await (deps.evaluate ?? evaluateBlindReviewGate)({
+    planSlug: scope.planSlug,
+    harnessSlug: scope.harnessSlug,
+    workspaceId: scope.workspaceId,
+    planBody: out.newBody,
+  });
+  if (verdict.satisfied) return out;
+  const code = verdict.code ?? 'blind_review_missing';
+  return {
+    newBody: null,
+    value: {
+      applied: false,
+      from: out.value.from,
+      to: out.value.to,
+      skipped: code,
+      blindReview: { code, message: verdict.message ?? `plan '${scope.planSlug}' was refused by the blind gap review door (${code}).` },
+    },
+  };
+}
+
+/**
  * Move ONE plan's stored lifecycle status if — and only if — its item graph
  * warrants it (see `derivePlanStatusTransition` for the exact, deliberately
  * narrow, jurisdiction: never `draft`, never terminal, never `shipped`).
@@ -152,6 +211,7 @@ export async function applyPlanDrainTransition(
       slug: planSlug,
       intent: 'plan-drain-transition: reconcile plan status against a drained item graph',
       ...(harnessSlug ? { harnessSlug } : {}),
+      ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
       inTransaction: async (tx, writtenBody, scope, value) => {
         if (value.applied && value.to === 'awaiting-acceptance' &&
             parsePlan(writtenBody).frontmatter.template !== 'rubric') {
@@ -165,7 +225,11 @@ export async function applyPlanDrainTransition(
         }
       },
     },
-    async (current) => planDrainTransitionMutation(current),
+    async (current, _meta, scope) => planDrainTransitionMutationGated(current, {
+      planSlug,
+      harnessSlug: scope.harnessSlug,
+      workspaceId: scope.workspaceId,
+    }),
   );
 
   return locked.kind === 'applied' ? locked.value : { applied: false, skipped: 'busy' };

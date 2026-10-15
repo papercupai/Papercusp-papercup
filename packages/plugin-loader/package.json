@@ -33,7 +33,8 @@
     }
   },
   "scripts": {
-    "test": "vitest run"
+    "test": "vitest run",
+    "typecheck": "node ../../scripts/lint-tsc-plugin-loader.mjs"
   },
   "dependencies": {
     "@papercusp/agent-mcp": "*",

@@ -661,6 +661,11 @@ defineTestDomain({
     { id: 'freshness', label: 'Freshness + steward', globs: [
         'packages/operator-core/lib/harness/docs/**/*.test.ts',
       ] },
+    // The public manual's served build vs its source (WI-10006957): /docs serves a
+    // tracked copy that only a manual rebuild refreshes, so a guide can ship unbuilt.
+    { id: 'public-manual', label: 'Public manual build', globs: [
+        'apps/papercusp-docs/lib/**/*.test.ts',
+      ] },
   ],
 });
 
@@ -1133,12 +1138,17 @@ defineTestDomain({
         'scripts/lib/**/*.test.ts',
         'scripts/lib/**/*.test.mjs',
         'scripts/agent-capacity/**/*.test.ts',
+        'scripts/relay/**/*.test.ts',
+        'scripts/bench-host/**/*.test.ts',
       ] },
     { id: 'integration', label: 'Integration (test/)', globs: [
         'apps/operator/test/**/*.test.ts',
         'apps/operator/__tests__/**/*.test.ts',
       ] },
-    { id: 'e2e', label: 'E2E (all specs)', globs: ['apps/operator/e2e/*.spec.ts'] },
+    { id: 'e2e', label: 'E2E (all specs)', globs: [
+        'apps/operator/e2e/*.spec.ts',
+        'apps/operator/e2e/*.spec.mts',
+      ] },
     // Vitest UNIT tests co-located with the e2e helpers they cover (e.g. the
     // hosted-http1 acceptance config parser) — run by apps/operator's Vitest
     // config, which does not exclude e2e/, never by Playwright.
@@ -1173,6 +1183,12 @@ defineTestDomain({
         'libs/testing-shell/src/**/*.test.tsx',
         // The standalone publish worker (Cloudflare).
         'apps/papercusp-publish/src/**/*.test.ts',
+        // The slack-asana bug-drill fixture app: a SUBMODULE materialized from the
+        // papercusp-app template (listing.json ref 'papercusp-app'), and an npm
+        // workspace via the root `apps/*` glob. Its own vitest (package
+        // `@bug-drill/fixture`, TEMPLATE_CHECKS_CONFIG=template-checks.json) runs
+        // these: checks/, closure/*/checks/, src/ and tests/.
+        'apps/slack-asana-bug-drill/**/*.test.ts',
       ],
       // Live end-to-end smoke against `wrangler dev --local` (register → build
       // manifest → mint JWT → publish/start → upload → finalize).
@@ -1452,15 +1468,10 @@ defineTestDomain({
     'The adversarial, multi-session, real-seam coordination suite that closes the EI-152/EI-153 escape classes: cross-agent isolation, real-seam integration, multi-session concurrency, and the liveness matrix. Cross-subsystem view; files overlap their home domains by design.',
   tier: 'domain',
   sections: [
-    {
-      id: 'feature-change-reconciliation',
-      label: 'Feature-change reconciliation',
-      description:
-        'Durable aggregate validation for feature-change candidate settlement, terminal-shard coverage, and honest zero-state readiness.',
-      globs: [
-        'scratchpad/feature-change-reconciliation-and-zero-state-clarity-2026-09-05-p004-validation-aggregate.test.mjs',
-      ],
-    },
+    // No 'feature-change-reconciliation' section (WI-10005450): its only glob named an
+    // untracked file under the gitignored /scratchpad, so it existed only in the shared tree.
+    // Every clean checkout, including the green-checkpoint gate, failed lint:tests with
+    // STALE_GLOB + EMPTY_SECTION. A registry glob must name a tracked, canonical test.
     {
       id: 'wake-liveness',
       label: 'C4 liveness matrix + EI-152',
@@ -1487,9 +1498,9 @@ defineTestDomain({
     {
       id: 'resume-live',
       label: 'C5 real resume spawn (live)',
-      description: 'LIVE-SMOKE (needs claude/codex creds → not CI): a REAL claude/codex resume — built by the SAME wake-executor resumeCommandFor, run in the EI-155 isolated CLAUDE_CONFIG_DIR/CODEX_HOME — continues the EXACT session (transcript/rollout GROWS). Complements the injected-spawnDetached CI rung in wake-resume-isolation.test.',
+      description: 'LIVE-SMOKE (needs client credentials → not CI): real Claude/Codex/OMP resume through the maintained wake command builder, with private profiles and exact transcript continuity. Every client must pass; absent or unauthenticated clients fail this acceptance rung. Complements wake-resume-isolation.test.',
       runners: [
-        { kind: 'node', cmd: 'npx', args: ['tsx', 'apps/operator/scripts/resume-spawn-live.ts'], label: 'real claude/codex resume (live · needs creds)' },
+        { kind: 'node', cmd: 'npx', args: ['tsx', 'apps/operator/scripts/resume-spawn-live.ts', '--require-all'], label: 'real Claude/Codex/OMP resume (live · needs creds)' },
       ],
     },
     {
@@ -1607,6 +1618,7 @@ defineTestDomain({
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/rig-bank-logs.selftest.sh'], label: 'rig bank-logs' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/local-matrix-bank.selftest.sh'], label: 'local-matrix teardown evidence banking (EI-18660101091813036)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/vm-run-env.selftest.sh'], label: 'vm_run guest-env delivery (WI-6176)' },
+        { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/vm-boot-extra-drives.selftest.sh'], label: 'VM boot data disk and read-only share argv (WI-10006429)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/seat-offer-diag.selftest.sh'], label: 'seat-offer b→a failure discriminator (WI-6179)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/b9-attestation-precondition.selftest.sh'], label: 'LEG4 attestation precondition + both-frames restore (WI-5064)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/b3-revocation-kcut.selftest.sh'], label: 'revocation K-cut: the device-scoped absence assert resolves a KEY-BEARING device (never the synthetic att2dev one), and delivery is not classified as disclosure (EI-18712383368117845)' },

@@ -1,0 +1,290 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "JNA maintained ARM64 native source-consumer build and ELF validation",
+  "framework": "operational",
+  "command": [
+    "ANDROID_NDK_HOME=<ndk-27.0.12077973> tools/build-scripts/android-release-provenance.sh source-verify-build jna-native android/app/build/outputs arm64-v8a"
+  ],
+  "commandPathNotation": "The retained invocation receipt records the actual command; <ndk-27.0.12077973> is a portable path placeholder for the fingerprinted installed NDK. Private raw receipts retain exact executable paths.",
+  "workingDirectory": "papercup-rust-mobile",
+  "startedAt": "2026-10-03T11:12:29.378782+00:00",
+  "finishedAt": "2026-10-03T11:12:55.344630+00:00",
+  "exitCode": 0,
+  "summary": "The maintained consumer compiled the retained pinned configured JNA package for arm64-v8a with NDK27/API24 and verified an AArch64 shared ELF, four 16KB LOAD segments, required JNI exports and version/checksum. Real libffi configure compiler probe passed and makeinfo regenerated documentation normally. Both original failed attempts remain unchanged.",
+  "scope": "Local compilation and ELF verification for arm64-v8a only. No dispatcher execution, new APK, other-ABI build, original prebuilt invocation, license election, complete rights/notices, candidate equivalence, recipient retrieval/build, current hosted CI, provider/reviewer, physical-phone or Play acceptance.",
+  "mobileSourceCommit": "175d64894e6c643945dfeaf0a90a1f9eb012cfa2",
+  "sourceFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/build-scripts/android-release-provenance.sh",
+      "sha256": "2304a77b4dc3753a33710a38eb20d5a7992165050698a3293d93649f319bb488"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-release-provenance-test.sh",
+      "sha256": "dbe3b91a5bb9369401f74d1422cf0732b371244b6906f8a98ba17224363ba567"
+    },
+    {
+      "path": "papercup-rust-mobile/store/APP-STORE-REVIEW.md",
+      "sha256": "742174f4bfa108954fa9e1d63d875581da9903e55fb6b6b863f319205e3e6617"
+    }
+  ],
+  "selectedSourceIdentity": {
+    "sourceRevision": "1a91122853f6ab6f1fb2a4a284a6cf2ed8af0a4d",
+    "sourceTreeSha1": "fc89bf9afa33183da9d35028855f6648b7a8b07b",
+    "archiveSha256": "ab1f03bd9933411192f7f29518a04123b74626ce11960e84125dce46e6224038",
+    "referenceSha256": "32efcdba359c159502484fd2fd3ce0fa605692264571c13404ea53779faf19e8",
+    "inputTreeSha256": "f6f599aed8687c8aa01563358d03b39ea39e1c663a7e0102a78af0b11a080707",
+    "inputPinsSha256": "6a3f21147871b6a7663ed97d411543faa69800ec3b2ded8896fb298d35e7df1c"
+  },
+  "configurationReceiptSha256": "a4a5655a0278e36b7505d182e8332c1467aae885388272613c02e0a947e9431d",
+  "configuredAbiArchiveSha256": "8526062c252b1603719c47caa4864c8c8ed999ec539d47faedc5b886763c2539",
+  "ndk": {
+    "revision": "27.0.12077973",
+    "apiLevel": 24,
+    "sourcePropertiesSha256": "1c4a54b31c5ed242a901b4a472d412819b5e08405df1c58066bd555f9dd52515",
+    "jniHeaderSha256": "5df9074457c041b372f2c68ff646d6e8600cd673a223885e8df21c44c94ec667",
+    "toolchainInputs": [
+      {
+        "abi": "arm64-v8a",
+        "name": "clang",
+        "sha256": "2c82f72dd2090b3f3a1ac2aa84644fd8ebe2afdb4a4bb8700e430766e1acc368"
+      },
+      {
+        "abi": "arm64-v8a",
+        "name": "ar",
+        "sha256": "ba406b76a06eb3364dd051013d3797a573fb65f9ff833f83d627e57318b99a6b"
+      },
+      {
+        "abi": "arm64-v8a",
+        "name": "ranlib",
+        "sha256": "ba406b76a06eb3364dd051013d3797a573fb65f9ff833f83d627e57318b99a6b"
+      },
+      {
+        "abi": "arm64-v8a",
+        "name": "strip",
+        "sha256": "e0ea88a5ceb089d7e686f7083ba276f5dd1b89c94bfaa5edb6da8634dc9ebcce"
+      },
+      {
+        "abi": "arm64-v8a",
+        "name": "readelf",
+        "sha256": "7a3e3c79112efadf3482e114153bdacc594401784424ce409f9f70c1a5e873e5"
+      },
+      {
+        "abi": "arm64-v8a",
+        "name": "clang-backend",
+        "sha256": "d198ba068aba6f32168c53538f2f4b81553d005f58d58bb3d01afc771c1d4db9"
+      },
+      {
+        "abi": "arm64-v8a",
+        "name": "linker",
+        "sha256": "4b66d4c0d6bf3fcca62af6681d9ace76d037e0a5747f2185d633ca5e64d3a099"
+      },
+      {
+        "abi": "arm64-v8a",
+        "name": "api24-libc",
+        "sha256": "7a2116784004c3ab86297243ae88dd47b231a944e11a758b5eee1c31116f47a3"
+      }
+    ]
+  },
+  "hostTools": [
+    {
+      "name": "make",
+      "sha256": "d78b8f1d099fbcfb6f2f49ab87223b9b68fb3956642f92d6ec6de812e8afa965"
+    },
+    {
+      "name": "autoreconf",
+      "sha256": "d3e5d4d0a3a3e1e12c1a38dc0aeed5f3ec3e8b2b94729202ce0706daa67d6639"
+    },
+    {
+      "name": "autoconf",
+      "sha256": "6e1333c24e8f3bd9bd5e38c513cc47f9c8cc7dbb3dd30b0354b628ba0f4580dd"
+    },
+    {
+      "name": "automake",
+      "sha256": "d408da48b279eff2996bb9a4c298b76645fdc61770af8da0e8fff3b5c60c804b"
+    },
+    {
+      "name": "aclocal",
+      "sha256": "670008c585e9467c95f0fecad139f1dea483f2d32837389b699b7802ade38997"
+    },
+    {
+      "name": "autoheader",
+      "sha256": "81e0a70d884b3a2de197a8436bf683cd932d6b2af1adf1f407a3ac86f846bce8"
+    },
+    {
+      "name": "libtoolize",
+      "sha256": "bebbad0908353b59ecc29386e0fed1e0c5cb42df41687cc6f522fa9a01a13dc5"
+    },
+    {
+      "name": "m4",
+      "sha256": "426fbab900b6c676038cf71da51c3ae45a6d546c9580fff9372bc5b1bb81d576"
+    },
+    {
+      "name": "perl",
+      "sha256": "47bdc8a342556c1d140084417ef6cacd79a3362e4b6cc1e4754df55bdf1e3683"
+    },
+    {
+      "name": "makeinfo",
+      "sha256": "d32669d589032977bed764782edde6886e8df186c731458619e81a80af194a07"
+    },
+    {
+      "name": "sed",
+      "sha256": "23f70dd6496d75419823039e1cebf95a2fd0508c6dfec72ac2352f7e08391dd5"
+    },
+    {
+      "name": "awk",
+      "sha256": "3850bf893d3f4f8ec462c8b59d6d66fdbbe8ddc0715b3d404d9cc574526b781c"
+    },
+    {
+      "name": "grep",
+      "sha256": "20a35a4c18f2fe9e6305c1cbf866b9c0fcc3f957132ae66028c99ec353bb0a80"
+    },
+    {
+      "name": "patch",
+      "sha256": "a7ae8b838a75711c06f86a2a8293dcad85a20b564670a120717e704c436e6f3a"
+    }
+  ],
+  "library": {
+    "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-jna-native-w0b_tmxt/arm64-v8a/build/libjnidispatch.so",
+    "elfClass": 2,
+    "machine": 183,
+    "loadSegments": [
+      {
+        "offset": 0,
+        "address": 0,
+        "alignment": 16384
+      },
+      {
+        "offset": 32768,
+        "address": 49152,
+        "alignment": 16384
+      },
+      {
+        "offset": 132080,
+        "address": 164848,
+        "alignment": 16384
+      },
+      {
+        "offset": 133632,
+        "address": 182784,
+        "alignment": 16384
+      }
+    ],
+    "requiredExports": [
+      "JNI_OnLoad",
+      "Java_com_sun_jna_Native_getAPIChecksum",
+      "Java_com_sun_jna_Native_getNativeVersion"
+    ],
+    "sha256": "278d239e3db98c08eebc878668adbab5e0a791c828be44571f1644ec8bde4a3a",
+    "size": 145288
+  },
+  "assertions": [
+    {
+      "id": "committed-source-and-retained-inputs",
+      "passed": true,
+      "evidence": "Clean mobile175d648 HEAD, all three exact final5 source fingerprints and retained configuration identity validated; source/input snapshots unchanged through native consumer."
+    },
+    {
+      "id": "scoped-configure-and-native-make",
+      "passed": true,
+      "evidence": "Actual NDK ARM64 compiler conftest.c link returned0 and compiler works=result yes; FFI_ENV clears dispatcher LDFLAGS and MAKEOVERRIDES clears recursive overrides. Native make exit0 with log/config fingerprints retained."
+    },
+    {
+      "id": "normal-required-doc-tool",
+      "passed": true,
+      "evidence": "All14 host tools preflighted and fingerprinted including makeinfo7.1; normal makeinfo built native/libffi/doc/libffi.info39154bytes SHA bd0784d7a263ccb4347c8e6ddc9722943db2fc812d405e7675ecac4481ab34e7. No MAKEINFO=true bypass."
+    },
+    {
+      "id": "actual-android-arm64-elf",
+      "passed": true,
+      "evidence": "Actual ELF278d239e is ELF64 little-endian AArch64 DYN; all four LOAD segments align16384 with valid offset/address congruence. JNI_OnLoad/native version/API checksum exports and version7.0.4/checksum5fb98531302accd485c534c452dd952a embedded strings verified; separate llvm-readelf header/segment/dynamic-symbol read agrees."
+    },
+    {
+      "id": "original-failures-preserved",
+      "passed": true,
+      "evidence": "Original failed raw receipts remain exact371cdd66e1f5ddad619a9a2b1fa3d025a63a6a65a8f4e41f70dc436368321538 and5be2561982d8c1c324c65305dcd5153b7900068543175b55881375a64a382fd7."
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-jna-native-result.json",
+      "sha256": "ba149c604c15f8b7db4de83c5b5f09d8745c9b2b7c08fc0673c8277e09a3af60",
+      "size": 20902
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-jna-native-w0b_tmxt/native-build-result.json",
+      "sha256": "9d4af724363782dbeff77cf173ae22c6fe3a7e16f8e4a3d1fbce03948dcfd252",
+      "size": 16408
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-jna-native-arm64-consumer-20261003T111229Z-invocation.json",
+      "sha256": "07b550c2e992abc767041b3bc6489f09f81dc03230f1b4ab2aa830974471d36a",
+      "size": 959
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-jna-native-arm64-consumer-20261003T111229Z.log",
+      "sha256": "3c80ba6876b95c142ef347573d5e69ac453433bb849e1f76be203746290baeb9",
+      "size": 18438
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-jna-native-w0b_tmxt/arm64-v8a/native-build.log",
+      "sha256": "c1c8bb55a43a89110e76ffe98cf8c0196a490dec9f80e866349e5d5d0b56d9ea",
+      "size": 54283
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-jna-native-w0b_tmxt/arm64-v8a/build/libffi/config.log",
+      "sha256": "4a1fdf26a43acf8345e4139f1ef8c9083378471e6b59b875f6237d8b6a4fe064",
+      "size": 164149
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-jna-native-w0b_tmxt/arm64-v8a/build/libjnidispatch.so",
+      "sha256": "278d239e3db98c08eebc878668adbab5e0a791c828be44571f1644ec8bde4a3a",
+      "size": 145288
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-jna-native-w0b_tmxt/arm64-v8a/native/libffi/doc/libffi.info",
+      "sha256": "bd0784d7a263ccb4347c8e6ddc9722943db2fc812d405e7675ecac4481ab34e7",
+      "size": 39154
+    }
+  ],
+  "originalFailedAttempts": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-jna-native-arm64-5dr050tc/native-build-result.json",
+      "sha256": "371cdd66e1f5ddad619a9a2b1fa3d025a63a6a65a8f4e41f70dc436368321538",
+      "size": 2294
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-jna-native-arm64-scoped-8rcddvi9/native-build-result.json",
+      "sha256": "5be2561982d8c1c324c65305dcd5153b7900068543175b55881375a64a382fd7",
+      "size": 3032
+    }
+  ],
+  "recurrenceGuard": {
+    "evidenceFile": "docs/evidence/android-jna-native-preflight-guards-local-2026-10-03.json",
+    "sha256": "588c83496b1a1c84bb53421fb7f76e90c8834bc370af1410925d24bedc1c5988",
+    "commit": "40c85e15830d302f7a48d9bbb1efe94552450eee",
+    "testRunIds": [
+      20684219
+    ],
+    "status": "pass"
+  },
+  "executionFlags": {
+    "nativeExecutionPerformed": false,
+    "originalInvocationVerified": false,
+    "candidateComparisonPerformed": false,
+    "recipientRetrievalVerified": false
+  },
+  "remaining": [
+    "Other native ABIs and execution",
+    "Original prebuilt invocation and license election",
+    "Complete source/notice rights",
+    "Exact signed-candidate equivalence and product acceptance",
+    "Recipient retrieval/build",
+    "Current hosted CI/provider/reviewer/physical-phone/Play release floors"
+  ],
+  "relatedWorkItems": [
+    "WI-10004774",
+    "EI-24952681648561133",
+    "EI-24952973275355154"
+  ]
+}

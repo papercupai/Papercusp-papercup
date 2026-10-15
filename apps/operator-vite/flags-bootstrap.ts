@@ -46,11 +46,40 @@ export async function seedIndexHtmlWithFlags(html: string, fetchImpl: FetchLike 
   }
 }
 
+/** Match host-spa's pre-hydration workspace identity on the separate dev server. */
+export async function seedIndexHtmlWithWorkspace(
+  html: string,
+  requestUrl: string | undefined,
+  apiTarget: string,
+  fetchImpl: FetchLike = fetch,
+): Promise<string> {
+  let workspace = new URL(requestUrl ?? '/', 'http://localhost').searchParams.get('ws')?.trim();
+  if (!workspace) {
+    try {
+      const response = await fetchImpl(new URL('/api/workspaces', apiTarget).href);
+      if (response.ok) {
+        const registry = await response.json() as { current?: unknown };
+        if (typeof registry.current === 'string') workspace = registry.current.trim();
+      }
+    } catch {
+      // A disconnected host leaves identity to the existing browser fallback.
+    }
+  }
+  if (!workspace) return html;
+  const json = JSON.stringify(workspace).replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
+  const seed = `<script>window.__PAPERCUSP_WS__=${json};</script>`;
+  return html.includes('<head>') ? html.replace('<head>', `<head>${seed}`) : seed + html;
+}
+
 export const flagsBootstrapPlugin: Plugin = {
   name: 'papercusp-flags-bootstrap',
   apply: 'serve',
   transformIndexHtml: {
     order: 'pre',
-    handler: (html) => seedIndexHtmlWithFlags(html),
+    handler: async (html, context) => seedIndexHtmlWithWorkspace(
+      await seedIndexHtmlWithFlags(html),
+      context.originalUrl,
+      process.env.PAPERCUSP_API_TARGET ?? 'http://127.0.0.1:3070',
+    ),
   },
 };

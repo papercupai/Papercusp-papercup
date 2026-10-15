@@ -87,7 +87,9 @@ describe('mintPairToken', () => {
 
     expect(pairToken).toMatch(/^[A-Za-z0-9_-]+$/);
     expect(pairToken.length).toBeGreaterThan(20);
-    expect(expiresAt).toBeGreaterThanOrEqual(before + 5 * 60 * 1000 - 100);
+    const ttlMs = Number(process.env.MOBILE_PAIR_TOKEN_TTL_SECONDS ?? 60 * 60) * 1000;
+    expect(expiresAt).toBeGreaterThanOrEqual(before + ttlMs);
+    expect(expiresAt).toBeLessThanOrEqual(Date.now() + ttlMs);
 
     expect(ops).toContain('insert');
     expect(lastInsert).toMatchObject({

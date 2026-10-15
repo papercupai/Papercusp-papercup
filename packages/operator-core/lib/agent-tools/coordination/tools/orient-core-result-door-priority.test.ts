@@ -168,11 +168,19 @@ describe('coord:orient declares ALL THREE uncapping legs (WI-37843)', () => {
         state: 'open',
         payload: { plan_item: { item_id: 'P-001' }, blob: 'p'.repeat(2_000) },
       })),
-      inbox: { summary: { total: 80 }, recent: inbox },
+      inbox: { summary: { total: 80 }, entries: inbox },
     };
     const shaped = shapeOrient(source, 'trimmed') as Record<string, unknown>;
     expect(JSON.stringify(shaped).length).toBeLessThanOrEqual(SHAPER_BUDGET_CHARS);
-    expect((shaped.inbox as { recent: unknown[] }).recent.length).toBeGreaterThan(0);
+    const shapedInbox = shaped.inbox as {
+      entries: unknown[];
+      recent: { movedTo: string; length: number };
+    };
+    expect(shapedInbox.entries.length).toBeGreaterThan(0);
+    expect(shapedInbox.recent).toEqual({
+      movedTo: 'inbox.entries',
+      length: shapedInbox.entries.length,
+    });
     expect(shaped.inbox).toHaveProperty('recentTruncated');
 
     // Exercise the actual framework hard-ceiling path used by default/full orient

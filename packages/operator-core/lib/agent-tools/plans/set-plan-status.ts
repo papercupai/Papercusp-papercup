@@ -26,8 +26,6 @@ import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
-import { stampTerminalNowBlock } from './terminal-now-stamp';
-import { stampGreenlitNowBlock } from './greenlit-now-stamp';
 import { stampForcedPastWaiver, type ForcedPastRecord } from './forced-past-stamp';
 import {
   evaluateSupersedeItemGate,
@@ -38,10 +36,12 @@ import { emitDeprecateLearnings, type DeprecateLearnings } from '../../harness/i
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
 import {
   evaluatePlanAcceptanceGate,
+  messageWithAdditionalBlockers,
   type CitationDeployment,
+  type PlanAcceptanceGateVerdict,
   type PlanAcceptanceRepairAction,
 } from '../../plan-acceptance-gate';
-import { evidenceCurrentInputSchema } from './spec-evidence-store';
+import { evidenceCurrentInputSchema, type EvidenceCurrentInput } from './spec-evidence-store';
 import {
   ACCEPTANCE_GRADING_SWEEP_ACTOR,
   launchAcceptanceGrader,
@@ -54,8 +54,13 @@ import {
 } from '../../acceptance-grading-sweep-state';
 import { evaluateScoutRatificationGate } from '../../scout/ratification-gate';
 import { checkPlanAdmission } from './plan-admission-gate';
-import { resolvePlanScope } from './source';
+import { getPlanRow, resolvePlanScope } from './source';
 import { retireAcceptanceRubricForPlan } from '../../rubrics';
+import {
+  evaluateIndependentVerificationGate,
+  renderIndependentVerificationBrief,
+} from '../../independent-verification-gate';
+import { restoreHistoricalShipment } from './restore-historical-shipment';
 import {
   settleAcceptanceReviewReservationsForPlan,
   type AcceptanceReviewReservationSettlement,
@@ -71,7 +76,6 @@ import { propagatePlanScopeWrite, type PlanScopeCascadeResult } from './plan-sco
 import { defaultPlanScopeCascadeDeps } from './plan-scope-cascade-deps';
 import {
   recoverHarnessFromSlugs,
-  requireUnambiguousSlugScope,
   slugScopeErrorResult,
 } from './slug-scope';
 
@@ -85,15 +89,17 @@ const GUARDABLE = PLAN_STATUSES;
 /** Caller-DX (watchdog P-006): aliases agents reach for, mapped to the
  *  canonical settable status instead of being zod-rejected. `active` is the
  *  legacy synonym for `ready` (bucketOf treats it as approved). `done` is the
- *  ITEM-status word — at PLAN level a "done" plan is `shipped`. Accept + map
- *  (echo `mappedFrom`) so the confusing reject (vs plans:set-status) stops
- *  recurring. */
+ *  ITEM-status word — at PLAN level a "done" plan is `shipped`. `dropped` is
+ *  owner-facing plan disposition language and maps to the existing terminal
+ *  `superseded` status. Accept + map (echo `mappedFrom`) so these caller terms
+ *  do not leave a lifecycle transition unapplied. */
 const STATUS_ALIASES: Record<string, (typeof SETTABLE)[number]> = {
   active: 'ready',
   done: 'shipped',
+  dropped: 'superseded',
 };
 /** Accepted on the wire = canonical + the mapped aliases. */
-const ACCEPTED = ['draft', 'ready', 'shipped', 'superseded', 'active', 'done'] as const;
+const ACCEPTED = ['draft', 'ready', 'shipped', 'superseded', 'active', 'done', 'dropped'] as const;
 
 /** Pure (watchdog P-006): map an accepted status to its canonical settable form,
  *  reporting the alias that was mapped (for the `mappedFrom` echo). */
@@ -105,8 +111,9 @@ export function normalizePlanStatus(status: string): { status: string; mappedFro
 const argsSchema = z
   .object({
     harness: harnessArg,
-    current: z.array(evidenceCurrentInputSchema).max(2000).optional()
-      .describe('ship proof: freshly measured evidence fingerprints, as in plans:get-spec-evidence; missing currentness never establishes fulfillment'),
+    current: z.union([z.array(evidenceCurrentInputSchema).max(2000), z.boolean()])
+      .optional()
+      .describe('ship proof: freshly measured evidence fingerprints, as in plans:get-spec-evidence; boolean true/false omit caller fingerprints and use independent server measurement; missing currentness never establishes fulfillment'),
     slug: z.string().min(1).optional(),
     slugs: z
       .array(z.string().min(1))
@@ -117,7 +124,7 @@ const argsSchema = z
     status: z
       .enum(ACCEPTED)
       .describe(
-        "Target plan-level status. Canonical: draft | ready | shipped | superseded. Aliases accepted + mapped: 'active'→ready, 'done'→shipped (the item-status words agents reach for). For a P-NNN item's status use plans:set-status instead.",
+        "Target plan-level status. Canonical: draft | ready | shipped | superseded. Aliases accepted + mapped: 'active'→ready, 'done'→shipped, 'dropped'→superseded. For a P-NNN item's status use plans:set-status instead.",
       ),
     expectedCurrent: z
       .enum([...GUARDABLE] as [string, ...string[]])
@@ -131,6 +138,14 @@ const argsSchema = z
       .describe(
         'Optional note on why the lifecycle moved. Stored on the plan revision (D-009), not in the frontmatter.',
       ),
+    restoreShippedRevision: z.object({
+      seq: z.number().int().positive(),
+      contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+      expectedVersion: z.number().int().positive(),
+      expectedContentHash: z.string().regex(/^[a-f0-9]{64}$/),
+    }).optional().describe(
+      'Restore an exact previously shipped revision after an unrecorded remote rollback. Requires the latest revision to be that shipment, the current body to equal its immediate predecessor, a local shipment capture, and the original rubric retirement with shipment. Refuses authored reopenings or changed work; does not reopen acceptance or recruit a grader.',
+    ),
     // ── queen-scout-feedback-loop-2026-06-20 P-006 / B10: the DEPRECATE path.
     learnings: z
       .object({
@@ -174,6 +189,12 @@ const argsSchema = z
       .describe(
         "status='shipped' or 'superseded': pass the applicable gate with a reason recorded on the plan (`forcedPast`). A normal force reason retains the existing code-truth waiver and supersede unfinished-items waiver. Set acceptanceBarProofMetadata:true for a narrow ship waiver of only BAR proof inadequacy/staleness metadata; code-truth checks, other BAR codes, rubric gates, and independent gates still block.",
       ),
+    dryRun: z
+      .boolean()
+      .optional()
+      .describe(
+        "status='shipped' only: evaluate the ship gate and return every blocker (or wouldShip:true) without writing, recruiting a grader, or stamping anything.",
+      ),
   })
   .refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
     message: 'pass `slug` or `slugs`',
@@ -181,6 +202,19 @@ const argsSchema = z
   .refine((a) => !a.force?.acceptanceBarProofMetadata || normalizePlanStatus(a.status).status === 'shipped', {
     message: 'force.acceptanceBarProofMetadata is only valid for a shipped target',
     path: ['force', 'acceptanceBarProofMetadata'],
+  })
+  .refine((a) => !a.restoreShippedRevision || (
+    normalizePlanStatus(a.status).status === 'shipped' && Boolean(a.slug) && !a.slugs &&
+    Boolean(a.expectedCurrent) && !a.force
+  ), {
+    message: 'restoreShippedRevision requires one slug, status shipped, expectedCurrent, and no force',
+    path: ['restoreShippedRevision'],
+  })
+  .refine((a) => !a.dryRun || (
+    normalizePlanStatus(a.status).status === 'shipped' && !a.restoreShippedRevision && a.expectedCurrent !== 'shipped'
+  ), {
+    message: "dryRun is only valid for a shipped target (not restoreShippedRevision, not expectedCurrent:'shipped')",
+    path: ['dryRun'],
   });
 
 type SetPlanStatusValue =
@@ -189,14 +223,13 @@ type SetPlanStatusValue =
       oldStatus: string | null;
       newStatus: string;
       changed: boolean;
-      nowStamped?: boolean;
       /** True when this write appended a forced-ship waiver — see forced-past-stamp.ts. */
       forcedPastStamped?: boolean;
     }
   | { ok: false; code: 'not_found' | 'no_status_line' | 'unexpected_status'; current?: string | null };
 
-/** Frontmatter `status:` line, captured value in group 2, trailing ws in group 3. */
-const STATUS_LINE_RE = /^(status:[ \t]*)([A-Za-z][\w-]*)([ \t]*)$/m;
+/** Frontmatter status with matched YAML quotes; preserve its style and trailing whitespace. */
+const STATUS_LINE_RE = /^(status:[ \t]*)(["']?)([A-Za-z][\w-]*)\2([ \t]*\r?)$/m;
 
 /**
  * Pure decision function — flip the frontmatter `status:` line within
@@ -220,7 +253,7 @@ export function flipPlanFrontmatterStatus(
   const rest = body.slice(close);
   const m = STATUS_LINE_RE.exec(fm);
   if (!m) return { newBody: null, oldStatus: null, code: 'no_status_line' };
-  const oldStatus = m[2] ?? null;
+  const oldStatus = m[3] ?? null;
   if (expectedCurrent && oldStatus !== expectedCurrent) {
     return { newBody: null, oldStatus, code: 'unexpected_status' };
   }
@@ -228,62 +261,41 @@ export function flipPlanFrontmatterStatus(
     return { newBody: null, oldStatus, code: 'noop' };
   }
   // String replacement: `target` is an enum value (no `$` substitution
-  // sequences), trailing whitespace ($3) preserved.
-  const newFm = fm.replace(STATUS_LINE_RE, `$1${target}$3`);
+  // sequences), matched quote style ($2) and trailing whitespace ($4) preserved.
+  const newFm = fm.replace(STATUS_LINE_RE, `$1$2${target}$2$4`);
   return { newBody: newFm + rest, oldStatus };
 }
 
 /**
- * Apply a plan-level lifecycle target and the Now-block invariants as one pure
- * mutation. Unlike {@link flipPlanFrontmatterStatus}, an already-terminal (or
- * already-`ready`) target is not necessarily a no-op: it repairs an unstamped
- * `## Now` block. That makes the existing bulk status verb a safe, idempotent
- * backfill path for BOTH directions — a plan that closed while its Now still
- * read live, and a greenlit draft whose Now still reads "not active until
- * greenlit" (WI-39804).
+ * Apply a plan-level lifecycle target as one pure mutation: the frontmatter
+ * status line flips and nothing else in the body changes.
+ *
+ * derived-status-not-hand-written-2026-10-12 P-006: the terminal and greenlit
+ * Now stamps that used to ride on this flip are retired. The Now is a dated
+ * note, not a status claim — readers get the plan's lifecycle from
+ * `derivedStatus` (P-001) and see how many transitions a note predates (P-003)
+ * — so an already-at-target flip is a plain no-op, never a repair stamp.
  */
 export function applyPlanStatusBody(
   body: string,
   target: string,
   expectedCurrent?: string,
-  today: Date = new Date(),
 ): {
   newBody: string | null;
   oldStatus: string | null;
   code?: 'no_status_line' | 'unexpected_status' | 'noop';
   changed: boolean;
-  nowStamped: boolean;
 } {
   const flip = flipPlanFrontmatterStatus(body, target, expectedCurrent);
-  if (flip.code === 'no_status_line' || flip.code === 'unexpected_status') {
-    return { ...flip, changed: false, nowStamped: false };
-  }
-
-  const statusChanged = flip.code !== 'noop';
-  const candidate = flip.newBody ?? body;
-  // The two stamps are mutually exclusive by target — terminal covers
-  // shipped/superseded, greenlit covers ready — so the first non-null wins and
-  // neither can ever see a body the other rewrote.
-  const stamped =
-    stampTerminalNowBlock(candidate, target, today) ??
-    stampGreenlitNowBlock(candidate, target, today);
-  if (!statusChanged && stamped === null) {
-    return { ...flip, changed: false, nowStamped: false };
-  }
-  return {
-    newBody: stamped ?? flip.newBody,
-    oldStatus: flip.oldStatus,
-    changed: statusChanged,
-    nowStamped: stamped !== null,
-  };
+  return { ...flip, changed: flip.code === undefined && flip.newBody !== null };
 }
 
 /**
  * Whether the acceptance gate must run before a lifecycle write.
  *
- * A caller that supplies expectedCurrent:'shipped' is performing the
- * idempotent terminal-Now repair pass (WI-38303), not entering the shipped
- * state.  The CAS guard is enforced inside the plan lock, so skipping the
+ * A caller that supplies expectedCurrent:'shipped' is re-applying the status
+ * to a plan that is already shipped (an idempotent no-op since P-006 retired
+ * the terminal-Now repair stamp), not entering the shipped state.  The CAS guard is enforced inside the plan lock, so skipping the
  * preflight here is safe: a plan that is not already shipped simply refuses
  * with `unexpected_status` and is never mutated.  Without this distinction a
  * repair replay needlessly evaluates the completion gate (and may launch an
@@ -397,7 +409,30 @@ function resolveRatifierOwnerId(ctx: unknown): string | null {
 /** Exported so the acceptance-grading stall sweep can PIN its own copy of this set
  * against the definition the live gate actually uses, instead of the two drifting
  * apart silently (acceptance-grading-stall-sweep-2026-08-26 P-001). */
-export const ACCEPTANCE_GRADER_GATE_CODES = new Set(['acceptance_ungraded', 'self_graded_only']);
+// WI-6554700010008529: independent_verification_missing recruits too. A recruited grader is
+// outside the implementers' lineage by construction, which is the independence D-005 asks
+// of a verifier; its brief carries the re-observation step
+// (renderIndependentVerificationBrief) ahead of grading. Keep the literal comment-free:
+// acceptance-grading-sweep.test.ts pins it by parsing this array's text.
+export const ACCEPTANCE_GRADER_GATE_CODES = new Set([
+  'acceptance_ungraded',
+  'self_graded_only',
+  'independent_verification_missing',
+  'acceptance_rubric_vetted_after_grading',
+]);
+
+/** The codes where the gate itself found no admissible independent grading. */
+const GRADING_ABSENT_GATE_CODES = new Set([
+  'acceptance_ungraded',
+  'self_graded_only',
+  'acceptance_rubric_vetted_after_grading',
+]);
+
+/** Read the open IV gaps and render the verifier step; '' when none or unreadable. */
+async function defaultIndependentVerificationBrief(slug: string, harnessSlug: string, workspaceId: string): Promise<string> {
+  const verdict = await evaluateIndependentVerificationGate({ planSlug: slug, harnessSlug, workspaceId });
+  return verdict.satisfied ? '' : renderIndependentVerificationBrief(slug, harnessSlug, verdict.gaps);
+}
 
 /** D-006: a grading refusal recruits one grader. Keeping this decision in a
  * small exported seam makes the trigger independently testable and prevents
@@ -414,7 +449,24 @@ export async function launchAcceptanceGraderForGate(
   ctx: Parameters<typeof launchAcceptanceGrader>[1],
   harness: string | undefined,
   launch: typeof launchAcceptanceGrader = resolveAcceptanceGrader,
+  evaluateRecruitment: typeof evaluatePlanAcceptanceGate = evaluatePlanAcceptanceGate,
+  current?: EvidenceCurrentInput[] | boolean,
+  /** WI-6554700010008529: the re-observation step for an `independent_verification_missing` recruit. */
+  renderVerification: (slug: string, harnessSlug: string, workspaceId: string) => Promise<string> =
+    defaultIndependentVerificationBrief,
 ): Promise<AcceptanceGraderLifecycle | undefined> {
+  if (!gate.satisfied && gate.code === 'plan_items_unfinished') {
+    // The real ship gate stays strict. Its not-code ceremony tail can still
+    // need a grade before completion, so use the existing recruitment-only
+    // gate to decide whether the immediate retry may launch that judge.
+    gate = await evaluateRecruitment(slug, {
+      harnessSlug: harnessScopedCtx(harness, ctx).harnessSlug,
+      gradingRecruitment: true,
+      // Recruitment evaluates the same proof as the strict gate. Keep the exact
+      // comparison inputs; dropping opaque dimensions makes current proof unknown.
+      ...(Array.isArray(current) ? { current } : {}),
+    });
+  }
   if (gate.satisfied || !gate.code || !ACCEPTANCE_GRADER_GATE_CODES.has(gate.code)) return undefined;
   // The tool accepts a per-call harness override. Keep the scoping at this
   // launch seam so the acceptance grader cannot accidentally resolve the plan
@@ -454,15 +506,21 @@ export async function launchAcceptanceGraderForGate(
       ),
     ),
   ];
+  const verifyHarness = scopedCtx.harnessSlug?.trim();
+  const verificationBrief = gate.code === 'independent_verification_missing' && verifyHarness
+    ? await renderVerification(slug, verifyHarness, workspaceId)
+    : '';
   return launch(slug, {
     ...scopedCtx,
     acceptanceShipperOwnerId,
+    ...(verificationBrief ? { acceptanceIndependentVerificationBrief: verificationBrief } : {}),
     ...(gate.staleGradingScorecardId ? { acceptanceStaleGradingScorecardId: gate.staleGradingScorecardId } : {}),
     ...(staleIds.length > 0 ? { acceptanceStaleGradingScorecardIds: staleIds } : {}),
-    // WI-10003286: this seam only runs for ACCEPTANCE_GRADER_GATE_CODES, where the gate
-    // has already resolved identities and found no admissible independent grading. The
-    // recruiter's identity-free settlement read must not override that verdict.
-    acceptanceGateFoundNoAdmissibleGrading: true,
+    // WI-10003286: for the grading codes the gate has already resolved identities and
+    // found no admissible independent grading; the recruiter's identity-free settlement
+    // read must not override that verdict. independent_verification_missing says nothing
+    // about grading, so the recruiter's own settlement read decides there.
+    ...(GRADING_ABSENT_GATE_CODES.has(gate.code) ? { acceptanceGateFoundNoAdmissibleGrading: true } : {}),
     uiClientId: null,
     isSuperuser: false,
     isPowerUser: false,
@@ -579,16 +637,72 @@ export function acceptanceGraderRefusalFields(
   };
 }
 
+/**
+ * P-001 (plan-verification-friction-reduction-2026-10-11): the `dryRun` ship preflight's
+ * response. Pure — the handler returns it BEFORE grader recruitment, the forced-past
+ * stamp, and the frontmatter write, so a preflight can never change anything. A refusal
+ * carries the gate verbatim (every blocker with its own repairAction) and a message that
+ * names the other failing checks; a pass reports wouldShip plus any waiver the real ship
+ * would record.
+ */
+type ShipPreflightGuardBlocker = {
+  code: string;
+  message: string;
+  repairAction: PlanAcceptanceRepairAction;
+  current?: string | null;
+  detail?: string;
+  planRevisionHash?: string;
+  policyVersion?: number;
+  admissionCode?: string;
+};
+
+export function shipGatePreflightResult(
+  slug: string,
+  gate: PlanAcceptanceGateVerdict,
+  guards: ShipPreflightGuardBlocker[] = [],
+) {
+  if (!gate.satisfied || guards.length > 0) {
+    const acceptanceBlockers = !gate.satisfied
+      ? gate.blockers ?? [{
+          code: gate.code ?? 'acceptance_gate_failed',
+          message: gate.message,
+          repairAction: gate.repairAction ?? { kind: 'diagnostic' as const, instruction: gate.message ?? 'Inspect the acceptance gate.' },
+        }]
+      : [];
+    const blockers = [...acceptanceBlockers, ...guards];
+    const primaryGuard = gate.satisfied ? guards[0] : undefined;
+    return {
+      ...gate,
+      ...(primaryGuard ?? {}),
+      satisfied: false,
+      ok: false as const,
+      slug,
+      dryRun: true as const,
+      error: primaryGuard?.code ?? gate.code ?? 'acceptance_gate_failed',
+      blockers,
+      message: messageWithAdditionalBlockers(primaryGuard?.message ?? gate.message, blockers),
+    };
+  }
+  return {
+    ok: true as const,
+    slug,
+    dryRun: true as const,
+    wouldShip: true as const,
+    ...(gate.forcedPast ? { forcedPast: gate.forcedPast } : {}),
+    ...(gate.citationDeployment ? { citationDeployment: gate.citationDeployment } : {}),
+  };
+}
+
 export default defineTool({
   name: 'plans:set-plan-status',
   description:
-    "Change a plan's lifecycle status: draft→ready, ready→draft, →shipped, or →superseded. draft→ready/active requires `plans:audit { phase:'activation' }`; shipped/`done` is post-implementation: author the plan-specific rubric from as-built reality, run `plans:audit { phase:'completion' }`, then get a peer grade. Plan frontmatter, not item status.",
+    "Change a plan's lifecycle status: draft→ready, ready→draft, →shipped, or →superseded. `dropped` maps to the terminal `superseded` status. draft→ready/active requires `plans:audit { phase:'activation' }`; shipped/`done` is post-implementation: author the plan-specific rubric from as-built reality, run `plans:audit { phase:'completion' }`, then get a peer grade. Plan frontmatter, not item status.",
   guidance: {
     when: "Lifecycle changes. Before draft→ready/active, re-read the COMPLETE source conversation (not memory/summary), repair omissions, and record `plans:audit { phase:'activation' }`. Before shipped/`done`, author the acceptance rubric AFTER implementation from as-built outcomes, run `plans:audit { phase:'completion', items:[...] }`, then get a peer grade. Other moves: ready→draft or supersede.",
     notWhen:
       "Not for P-NNN item status (use plans:set-status) or legacy plans without frontmatter (use plans:set-frontmatter). `learnings` applies only to superseded; shipped has code-truth and rubric gates.",
     chaining:
-      "Activation: sessions:search/read → repair → `plans:audit { phase:'activation' }` → ready (`expectedCurrent:'draft'`). Completion: implementation → as-built acceptance rubric → `plans:audit { phase:'completion', items:[...] }` → peer grade → shipped/`done`. Re-audit after semantic edits, not cosmetic ones.",
+      "Activation: sessions:search/read → repair → `plans:audit { phase:'activation' }` → ready (`expectedCurrent:'draft'`). Completion: implementation → as-built acceptance rubric → `plans:audit { phase:'completion', items:[...] }` → peer grade → `status:'shipped', dryRun:true` for a read-only all-blockers preflight (no status write, forced-past stamp or grader recruitment) → repair → shipped/`done`. Re-audit after semantic edits, not cosmetic ones.",
   },
   capability: 'plans:write',
   // Idempotent-completion (backend-reliability-100pct-2026-07-03 W6/P-007):
@@ -608,22 +722,18 @@ export default defineTool({
   timeoutSec: 90,
   args: argsSchema,
   async handler(args, ctx) {
-    // Caller-DX (P-006): map a friendly alias (active→ready, done→shipped) to canonical.
+    // Caller-DX (P-006): map caller aliases to canonical plan lifecycle statuses.
     const { status, mappedFrom } = normalizePlanStatus(args.status);
     const slugs = mergeIds(args.slug, args.slugs);
     // EI-21405955283990151: lifecycle closeout already names exact plan slugs,
     // so reuse the PG-canonical recovery used by plans:get/items instead of
     // demanding a harness the caller cannot discover from a workspace-bound
-    // session. Writes are stricter than reads: a slug present in >1 harness is
-    // fail-loud rather than taking the most-recently-updated candidate.
+    // session. A slug present in >1 harness refuses rather than taking the
+    // most-recently-updated candidate (P-006: the decider itself refuses).
     const scope = resolveHarnessScope(args.harness, ctx);
     let sctx: typeof ctx & { harnessSlug: string };
     if (scope.kind === 'none') {
-      const recovered = await recoverHarnessFromSlugs(ctx, slugs);
-      const decision = requireUnambiguousSlugScope(
-        recovered,
-        ((ctx as { workspaceId?: string }).workspaceId ?? '').trim(),
-      );
+      const decision = await recoverHarnessFromSlugs(ctx, slugs);
       if (decision.status !== 'resolved') return slugScopeErrorResult('plans:set-plan-status', decision);
       sctx = { ...ctx, harnessSlug: decision.harnessSlug };
       (ctx as { metadata?: (d: Record<string, unknown>) => void }).metadata?.({
@@ -636,6 +746,15 @@ export default defineTool({
     const env = await runBulk(
       slugs,
       async (slug) => {
+        if (args.restoreShippedRevision) {
+          const restored = await restoreHistoricalShipment(sctx, {
+            slug,
+            harnessSlug,
+            expectedCurrent: args.expectedCurrent!,
+            ...args.restoreShippedRevision,
+          });
+          return { slug, ...restored };
+        }
         // Completion gate (acceptance-rubrics-on-every-plan-2026-08-11 P-004/P-005):
         // shipping requires a graded acceptance rubric — the refusal message IS the
         // authoring nudge (author it post-implementation, D-007; grader ≠ implementer,
@@ -665,7 +784,11 @@ export default defineTool({
           const gate = await evaluatePlanAcceptanceGate(slug, {
             harnessSlug: subjectScope.harnessSlug,
             probeCitationDeployment: true,
-            ...(args.current ? { current: args.current } : {}),
+            // P-001 (plan-verification-friction-reduction-2026-10-11): report EVERY
+            // independent pre-grading blocker in one refusal instead of one per attempt.
+            // The primary code/message are unchanged, so grader recruitment is too.
+            collectAllBlockers: true,
+            ...(Array.isArray(args.current) ? { current: args.current } : {}),
             ...(args.force ? { force: args.force } : {}),
             readGradingAuditDispatchSuppression: async (targetOwnerId) => {
               const { readGradingAuditDispatchSuppression } = await import('../../grading-integrity');
@@ -681,8 +804,56 @@ export default defineTool({
               forcedBy: { ownerId: actor.ownerId, ownerLabel: actor.ownerLabel },
             };
           }
+          // P-001 preflight: report and return BEFORE any side effect — no grader
+          // recruitment, no forced-past stamp, no frontmatter write.
+          if (args.dryRun) {
+            // Admission and frontmatter/CAS are independent of acceptance. Read them
+            // even on an acceptance refusal; otherwise each retry reveals one more
+            // blocker, or a passing acceptance check falsely promises wouldShip.
+            const guards: ShipPreflightGuardBlocker[] = [];
+            const diagnostic = (instruction: string): PlanAcceptanceRepairAction => ({
+              kind: 'diagnostic', instruction,
+              nextVerb: { name: 'plans:get', args: { slug, harness: subjectScope.harnessSlug } },
+            });
+            try {
+              const admission = await checkPlanAdmission({ slug, door: 'promotion', opts: subjectScope, readOnly: true });
+              if (!admission.admitted) {
+                guards.push({
+                  code: admission.refusal.error,
+                  admissionCode: admission.refusal.code,
+                  message: admission.refusal.hint,
+                  detail: admission.refusal.detail,
+                  planRevisionHash: admission.refusal.planRevisionHash,
+                  policyVersion: admission.refusal.policyVersion,
+                  repairAction: diagnostic(admission.refusal.hint),
+                });
+              }
+            } catch (error) {
+              const message = `Promotion admission could not be read: ${error instanceof Error ? error.message : String(error)}`;
+              guards.push({ code: 'plan_admission_unavailable', message, repairAction: diagnostic(message) });
+            }
+            try {
+              const row = await getPlanRow(slug, subjectScope);
+              const flip = row ? flipPlanFrontmatterStatus(row.content, status, args.expectedCurrent) : null;
+              const code = !row ? 'not_found' : flip?.code;
+              if (code === 'not_found' || code === 'no_status_line' || code === 'unexpected_status') {
+                const message = code === 'unexpected_status'
+                  ? `Expected plan status '${args.expectedCurrent}', but current frontmatter status is '${flip?.oldStatus}'. Read the plan and supply its current status before retrying.`
+                  : code === 'no_status_line'
+                    ? 'Plan has no frontmatter status line. Inspect the plan and repair its frontmatter before shipping.'
+                    : 'Plan was not found in the resolved subject scope.';
+                guards.push({ code, message, current: flip?.oldStatus ?? null, repairAction: diagnostic(message) });
+              }
+            } catch (error) {
+              const message = `Plan frontmatter could not be read: ${error instanceof Error ? error.message : String(error)}`;
+              guards.push({ code: 'plan_source_unavailable', message, repairAction: diagnostic(message) });
+            }
+            return shipGatePreflightResult(slug, gate, guards);
+          }
           if (!gate.satisfied) {
-            const acceptanceGrader = await launchAcceptanceGraderForGate(slug, gate, ctx, harnessSlug);
+            const acceptanceGrader = await launchAcceptanceGraderForGate(
+              slug, gate, ctx, harnessSlug, undefined, undefined, args.current,
+            );
             // EI-24032136322947460: say whether a stall will be recovered
             // automatically. Read only when a grader is in play and unsettled.
             const sweep = acceptanceGrader && acceptanceGrader.state !== 'settled'
@@ -696,6 +867,7 @@ export default defineTool({
               ok: false as const,
               slug,
               error: gate.code ?? 'acceptance_gate_failed',
+              message: messageWithAdditionalBlockers(gate.message, gate.blockers),
               ...acceptanceGraderRefusalFields(gate.repairAction, acceptanceGrader, sweep),
             };
           }
@@ -712,6 +884,8 @@ export default defineTool({
         if (shouldEvaluateSupersedeItemGate(status, args.expectedCurrent)) {
           const gate = await evaluateSupersedeItemGate(slug, {
             ...(args.force ? { force: args.force } : {}),
+            // A candidate only — the gate confirms the plan's home harness (WI-10005174).
+            harnessSlug,
           });
           if (gate.forcedPast) {
             const actor = resolveAgentIdentity(ctx);
@@ -846,8 +1020,8 @@ export default defineTool({
             const waived = stampForcedPastWaiver(mutation.newBody ?? current, forcedPast);
             const finalBody = waived ?? mutation.newBody;
             if (finalBody === null) {
-              // Already at the target and already stamped (or non-terminal),
-              // with no waiver to record — success, nothing written.
+              // Already at the target with no waiver to record — success,
+              // nothing written.
               return {
                 newBody: null,
                 value: {
@@ -855,28 +1029,24 @@ export default defineTool({
                   oldStatus: mutation.oldStatus,
                   newStatus: status,
                   changed: false,
-                  nowStamped: false,
                   forcedPastStamped: false,
                 },
               };
             }
             return {
-              // A terminal flip — or an idempotent re-application to an old
-              // terminal plan — stamps the cold-resume anchor in this SAME
-              // locked write. See terminal-now-stamp.ts / WI-38303.
               newBody: bumpUpdatedDate(finalBody),
               value: {
                 ok: true,
                 oldStatus: mutation.oldStatus,
                 newStatus: status,
                 changed: mutation.changed,
-                nowStamped: mutation.nowStamped,
                 forcedPastStamped: waived !== null,
               },
             };
           },
         );
 
+        if (result.kind === 'refused') return { slug, error: result.value.code, ...result.value };
         if (result.kind === 'busy') {
           return {
             ok: false as const,

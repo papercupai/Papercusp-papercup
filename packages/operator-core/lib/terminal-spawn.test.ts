@@ -8,6 +8,13 @@
  */
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Native GSettings is exercised under a private bus in psu-gnome-renderer.test.ts.
+// These process mocks must never read or write the host desktop's profiles.
+const prepareProfileMock = vi.hoisted(() => vi.fn(async (terminal: { bin: string; args: string[] }) => terminal));
+vi.mock('./gnome-terminal-profile.mjs', () => ({
+  prepareGnomeTerminal: prepareProfileMock,
+}));
+
 const existsSyncMock = vi.hoisted(() => vi.fn((_p: string): boolean => false));
 vi.mock('node:fs', async () => {
   const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
@@ -258,6 +265,17 @@ describe('spawnInTerminal early-exit probe', () => {
     vi.restoreAllMocks();
   });
 
+  it('forwards the prepared GNOME profile to the new window', async () => {
+    prepareProfileMock.mockImplementationOnce(async (terminal) => ({
+      ...terminal, args: ['--profile=test-bounded', ...terminal.args],
+    }));
+    const result = await spawnInTerminal({
+      oneliner: 'exec true', earlyExitProbeMs: 0, desktopEnvProbes: NO_DESKTOP_PROBES,
+    });
+    expect(result.ok).toBe(true);
+    expect(spawnMock.mock.calls[0][1]).toContain('--profile=test-bounded');
+  });
+
   it('reports likelyOpened:true when the child outlives the probe window', async () => {
     const resultPromise = spawnInTerminal({
       oneliner: 'exec true',
@@ -277,6 +295,7 @@ describe('spawnInTerminal early-exit probe', () => {
       earlyExitProbeMs: 400,
       desktopEnvProbes: NO_DESKTOP_PROBES,
     });
+    await vi.advanceTimersByTimeAsync(0); // profile preflight finishes before the child exists
     child.emit('exit', 1, null);
     const result = await resultPromise;
     expect(result.ok).toBe(true);
@@ -300,6 +319,7 @@ describe('spawnInTerminal early-exit probe', () => {
     });
     await vi.advanceTimersByTimeAsync(400); // the old probe fired here and said "alive"
     await vi.advanceTimersByTimeAsync(470); // ~870ms: the client actually dies
+    await vi.advanceTimersByTimeAsync(0); // profile preflight finishes before the child exists
     child.emit('exit', 1, null);
     const result = await resultPromise;
     expect(result.ok).toBe(true);
@@ -318,6 +338,7 @@ describe('spawnInTerminal early-exit probe', () => {
       earlyExitProbeMs: 400,
       desktopEnvProbes: NO_DESKTOP_PROBES,
     });
+    await vi.advanceTimersByTimeAsync(0); // profile preflight finishes before the child exists
     child.emit('error', Object.assign(new Error('spawn gnome-terminal ENOENT'), { code: 'ENOENT' }));
     const result = await resultPromise;
     expect(result.ok).toBe(true);
@@ -376,10 +397,12 @@ describe('spawnInTerminal early-exit probe', () => {
       earlyExitProbeMs: 400,
       desktopEnvProbes: NO_DESKTOP_PROBES,
     });
+    await vi.advanceTimersByTimeAsync(0); // profile preflight finishes before the child exists
     child.stderr?.emit(
       'data',
       '# Error creating terminal: Failed to get screen from object path /org/gnome/Terminal/screen/dead\n',
     );
+    await vi.advanceTimersByTimeAsync(0); // profile preflight finishes before the child exists
     child.emit('exit', 0, null);
     await vi.advanceTimersByTimeAsync(STDERR_FLUSH_GRACE_MS);
     const result = await resultPromise;
@@ -403,12 +426,15 @@ describe('spawnInTerminal early-exit probe', () => {
       earlyExitProbeMs: 400,
       desktopEnvProbes: NO_DESKTOP_PROBES,
     });
+    await vi.advanceTimersByTimeAsync(0); // profile preflight finishes before the child exists
     child.emit('exit', 1, null);
     // Let the awaiting code resume so the flush listener is actually attached —
     // an 'end' emitted before that would be missed and the flush would sit out
     // its full grace instead (which is what this test caught the first time).
     await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(0); // profile preflight finishes before the child exists
     child.stderr?.emit('data', 'Cannot open display: :99\n');
+    await vi.advanceTimersByTimeAsync(0); // profile preflight finishes before the child exists
     child.stderr?.emit('end');
     // Backstop: even if the fast path were missed, the bounded grace must end
     // the wait — this assertion must never be able to hang.
@@ -446,6 +472,7 @@ describe('spawnInTerminal early-exit probe', () => {
       desktopEnvProbes: NO_DESKTOP_PROBES,
       env: { PATH: '/usr/bin', TERMINAL: 'konsole' },
     });
+    await vi.advanceTimersByTimeAsync(0); // profile preflight finishes before the child exists
     child.emit('exit', 0, null);
     const result = await resultPromise;
     expect(result.ok).toBe(true);
@@ -461,6 +488,7 @@ describe('spawnInTerminal early-exit probe', () => {
     const resultPromise = spawnInTerminal({ oneliner: 'exec true', desktopEnvProbes: NO_DESKTOP_PROBES });
     // One tick short of the shared window: still watching, nothing concluded.
     await vi.advanceTimersByTimeAsync(EARLY_EXIT_PROBE_MS - 1);
+    await vi.advanceTimersByTimeAsync(0); // profile preflight finishes before the child exists
     child.emit('exit', 1, null);
     const result = await resultPromise;
     expect(result.ok).toBe(true);

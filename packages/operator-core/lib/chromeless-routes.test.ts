@@ -34,6 +34,16 @@ describe('route presentation predicates', () => {
     expect(routeHasSteeringSidebar('/tasks-roster')).toBe(false);
   });
 
+  it('gives DAO Management the full page while preserving operations and other routes', () => {
+    for (const path of ['/daos', '/daos/detail', '/dao', '/dao/review']) {
+      expect(routeHasSteeringSidebar(path)).toBe(false);
+      expect(isChromelessPath(path)).toBe(false);
+    }
+    for (const path of ['/adv', '/daos-other', '/dao-unrelated', '/settings']) {
+      expect(routeHasSteeringSidebar(path)).toBe(true);
+    }
+  });
+
   it('drops the steering sidebar from a PORTAL-EMBEDDED /adv — the portal frames it as its own sidebar', () => {
     // Owner ask 2026-09-01: the Accounts rail and the Papercup chat are sidebars
     // of the outer cloud-portal page, framed from /portal-panes/*. An embedded

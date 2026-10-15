@@ -16,22 +16,22 @@
  * `store.integration.test.ts` red on `column "root_id" does not exist"`, from
  * migration 572, landed weeks after the fixture — EI-19359711978838614.)
  *
- * WHY THIS IS A TRIGGER, NOT A FULL SCHEMA-DIFF LINT:
+ * WHY THIS IS AN ADVISORY TRIGGER, NOT A GATE:
  *   A large fraction of these fixtures are INTENTIONALLY partial stubs by
  *   design — e.g. the hive-eval fixture hand-writes "only the columns the live
  *   reads query", forever, on purpose. A blanket "every migrated column must
  *   appear in every fixture" check would be close to 100% false-positive on
- *   this tree and could never be wired in as a gate (mirrors the caution in
- *   check-required-field-strands.mjs's own header: the class here is common and
- *   usually intentional). So this only fires on the DIFF a migration itself
- *   introduces: does the column you just added to a table already appear in
- *   some OTHER fixture that constructs that exact table? If so, that fixture
- *   used to be schema-complete for every column it names and just silently
- *   fell one column behind — a precise, low-noise signal, independent of
- *   whether the fixture is a deliberate stub (a deliberate stub was ALREADY
- *   missing unrelated columns before this migration ran, so it never matches:
- *   the table has to already appear with a full column list, sans exactly the
- *   new one).
+ *   this tree (mirrors the caution in check-required-field-strands.mjs's own
+ *   header: the class here is common and usually intentional). This check
+ *   narrows only by SCOPE: it looks at the columns a migration itself
+ *   introduces, never the whole schema. It does NOT tell a deliberate stub
+ *   apart from a fixture that fell one column behind: findFixtureGaps()
+ *   reports EVERY fixture that builds the table without the new column
+ *   (EI-25794636390257047). Read each hit as "review this file", not as proven
+ *   drift. That noise is why it stays advisory; its gate script
+ *   (lint:migration-fixture-drift:check) was retired in WI-6554700010009165.
+ *   Telling the two cases apart would need the table's full pre-migration
+ *   column list, which this script does not compute.
  *
  * Advisory by default (never blocks); --check exits 1 on any structural gap
  * found. No DB connection required — a fixture literally omitting a column the
@@ -57,6 +57,7 @@ import { fileURLToPath } from 'node:url';
 
 import { isRepositoryIndexFault, runGuardWithIndexFaultGuard, withGitIndexFaultRetry } from './lib/git-index-fault.mjs';
 import { stripCommentsAndStrings, stripCommentsOnly, stripSqlComments } from './lib/strip-comments-and-strings.mjs';
+import { parseExplicitFiles } from './lib/tsc-baseline-gate.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SQL_DIR_REL = 'libs/papercusp/libs/db/sql';
@@ -484,12 +485,17 @@ async function main() {
   const json = argv.includes('--json');
   const check = argv.includes('--check');
   const baseIdx = argv.indexOf('--base');
-  const explicitFiles = argv.filter((a) => !a.startsWith('--') && argv[argv.indexOf(a) - 1] !== '--base');
+  const forwardedFiles = parseExplicitFiles(argv);
+  const explicitFiles = forwardedFiles == null
+    ? argv.filter((a, i) => !a.startsWith('--') && argv[i - 1] !== '--base')
+    : [...forwardedFiles];
 
   let files = explicitFiles;
   if (baseIdx >= 0) {
     const base = argv[baseIdx + 1];
-    files = changedSqlFilesSince(base);
+    files = changedSqlFilesSince(base, {
+      files: forwardedFiles == null && !explicitFiles.length ? null : explicitFiles,
+    });
   }
 
   if (!files.length) {
@@ -527,28 +533,34 @@ async function main() {
  * So only the index-fault class is promoted to a throw; every other failure keeps the quiet
  * `[]`. Both git calls are wrapped, because either can be the one that hits the torn index.
  */
-function changedSqlFilesSince(base) {
+export function changedSqlFilesSince(base, { root = ROOT, files = null } = {}) {
   try {
-    const out = withGitIndexFaultRetry(() =>
-      execFileSync(
-        'git',
-        ['diff', '--name-only', '--diff-filter=ACM', base, '--', SQL_DIR_REL + '/*.sql'],
-        { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-      ),
-    );
+    const git = (args, cwd) => withGitIndexFaultRetry(() => execFileSync('git', args, {
+      cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    })).trim();
+    // A superproject diff sees the gitlink, not SQL inside it. Ask the actual
+    // owning repository and translate the runner's base to its recorded gitlink.
+    const sqlDir = resolve(root, SQL_DIR_REL);
+    const ownerRoot = git(['rev-parse', '--show-toplevel'], sqlDir);
+    const ownerPrefix = relative(root, ownerRoot).split(sep).join('/');
+    const ownerBase = ownerPrefix
+      ? git(['rev-parse', '--verify', '--end-of-options', `${base}:${ownerPrefix}`], root)
+      : base;
+    const sqlPrefix = relative(ownerRoot, sqlDir).split(sep).join('/');
+    const pathspec = `${sqlPrefix}/*.sql`;
+    const out = git(['diff', '--name-only', '--diff-filter=ACM', ownerBase, '--', pathspec], ownerRoot);
     const tracked = out.split('\n').filter(Boolean);
     // Untracked-but-new migration files (the common case right after `db:next-migration`,
     // before git-sync's next commit) don't show up in a base-diff at all — pick them up too.
-    const untracked = withGitIndexFaultRetry(() =>
-      execFileSync(
-        'git',
-        ['ls-files', '--others', '--exclude-standard', '--', SQL_DIR_REL + '/*.sql'],
-        { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-      ),
-    )
+    const untracked = git(['ls-files', '--others', '--exclude-standard', '--', pathspec], ownerRoot)
       .split('\n')
       .filter(Boolean);
-    return [...new Set([...tracked, ...untracked])];
+    const candidates = [...new Set([...tracked, ...untracked])]
+      .map((file) => ownerPrefix ? `${ownerPrefix}/${file}` : file);
+    // Preserve exact forwarded paths; a gitlink path expands to its internal diff.
+    return files !== null
+      ? candidates.filter((file) => files.some((selected) => file === selected || file.startsWith(`${selected}/`)))
+      : candidates;
   } catch (error) {
     if (isRepositoryIndexFault(error)) throw error;
     return [];

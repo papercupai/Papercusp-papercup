@@ -50,6 +50,7 @@ const mkRow = (over: Partial<GoalRowForPackageUpdate> = {}): GoalRowForPackageUp
   launch_settings: null,
   input_schema: null,
   output_schema: null,
+  property_schema: null,
   metadata: { goalPackageRef: 'work-on-everything', packageVersion: '0.1.0' },
   ...over,
 });
@@ -66,6 +67,7 @@ function mkDeps(o: {
     deps: {
       resolvePackage: () => (o.pkg === undefined ? mkPkg() : o.pkg),
       readRow: async () => (o.row === undefined ? mkRow() : o.row),
+      validatePropertySchema: async () => ({ ok: true }),
       writeStubRefresh: async (_s, w) => {
         writes.push({ kind: 'stub', ...w });
       },
@@ -227,6 +229,61 @@ describe('planGoalPackageUpdate modes', () => {
 });
 
 describe('applyGoalPackageUpdate', () => {
+  it.each(['paused', 'killed'])('preserves paused/killed started lifecycle status without resurrection (%s)', async (status) => {
+    const row = mkRow({ status, metadata: { goalPackageRef: 'work-on-everything',
+      packageVersion: '0.1.0', agentOwnerId: 'prior-holder' } });
+    const before = row.status;
+    const { deps, writes } = mkDeps({ row });
+    const plan = await planGoalPackageUpdate(sql, { workspaceId: 'w', goalId: 'g-1' }, deps);
+    const applied = await applyGoalPackageUpdate(sql, { workspaceId: 'w', goalId: 'g-1' }, deps);
+    if (status === 'killed') {
+      expect(plan).toMatchObject({ ok: false, reason: 'terminal-instance' });
+      expect(applied).toMatchObject({ ok: false, reason: 'terminal-instance' });
+      expect(writes).toEqual([]);
+    } else {
+      expect(plan).toMatchObject({ ok: true, mode: 'live-contract' });
+      expect(applied).toMatchObject({ ok: true, mode: 'live-contract' });
+      expect(writes).toHaveLength(1);
+      expect(writes[0]).not.toHaveProperty('status');
+    }
+    expect(row.status).toBe(before);
+  });
+
+  it.each(['active', 'paused'])('merges package declarations without losing instance keys or owner policy (%s)', async (status) => {
+    const worklist = { datatype: 'plan-ref-list', default: [], editable_by: 'both' };
+    const instanceOnly = { datatype: 'string', editable_by: 'owner' };
+    const declaration = { ...worklist, collection: { source: 'active-workspace-plans',
+      policy: 'worklist_policy', order: 'priority', selectable: true, defaultSelected: true } };
+    const schema = { worklist: declaration, worklist_policy: { datatype: 'ordered-selection-policy',
+      default: { order: [], excluded: [] }, editable_by: 'owner' } };
+    const metadata = { goalPackageRef: 'work-on-everything', packageVersion: '0.1.0',
+      ...(status === 'active' ? { agentOwnerId: 'su-x' } : {}), marker: { keep: true } };
+    const { deps, writes } = mkDeps({ row: mkRow({ status, metadata,
+      property_schema: { worklist, instance_only: instanceOnly } }), pkg: mkPkg({ propertySchema: schema }) });
+    const plan = await planGoalPackageUpdate(sql, { workspaceId: 'w', goalId: 'g-1' }, deps);
+    expect(plan.ok && plan.changes.find((c) => c.field === 'propertySchema')?.to)
+      .toEqual({ ...schema, instance_only: instanceOnly });
+    expect(writes).toEqual([]);
+    const applied = await applyGoalPackageUpdate(sql, { workspaceId: 'w', goalId: 'g-1' }, deps);
+    expect(applied.ok && applied.applied).toContain('propertySchema');
+    expect(writes[0].propertySchema).toEqual({ ...schema, instance_only: instanceOnly });
+    expect(writes[0].metadata).toEqual({ ...metadata, packageVersion: '0.2.0' });
+    expect(writes[0]).not.toHaveProperty('properties');
+  });
+
+  it('refuses invalid collection declarations and unresolved datatypes before a goal write', async () => {
+    const invalid = mkDeps({ pkg: mkPkg({ propertySchema: { list: { datatype: 'string',
+      collection: { source: 'manual', policy: 'missing', order: 'priority', selectable: true, defaultSelected: true } } } }) });
+    expect(await applyGoalPackageUpdate(sql, { workspaceId: 'w', goalId: 'g-1' }, invalid.deps))
+      .toMatchObject({ ok: false, reason: 'contract-problem' });
+    expect(invalid.writes).toEqual([]);
+    const unknown = mkDeps({ pkg: mkPkg({ propertySchema: { list: { datatype: 'not-installed', editable_by: 'both' } } }) });
+    unknown.deps.validatePropertySchema = async () => ({ ok: false, issues: ['unknown datatype'] });
+    expect(await applyGoalPackageUpdate(sql, { workspaceId: 'w', goalId: 'g-1' }, unknown.deps))
+      .toMatchObject({ ok: false, reason: 'contract-problem', detail: expect.stringContaining('unknown datatype') });
+    expect(unknown.writes).toEqual([]);
+  });
+
   it('stub-refresh writes the full package and re-stamps ONLY packageVersion in metadata', async () => {
     const { deps, writes } = mkDeps({
       row: mkRow({ metadata: { goalPackageRef: 'work-on-everything', packageVersion: '0.1.0', pause: { by: 'cupboard:install-goal' } } }),

@@ -6,8 +6,10 @@
  * unconditionally, or settles on a self-audit, fails one of them in each direction.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { scorecardRatingEntrySchema } from './evaluate';
 
 const getRubric = vi.fn();
+const getRubricEvidenceIdentity = vi.fn();
 const listScorecards = vi.fn();
 const captureImprovement = vi.fn();
 const getIssue = vi.fn();
@@ -19,12 +21,28 @@ vi.mock('../../grading-audit-routing', () => ({ closeSourceAuditConsults }));
 const gateEnabled = vi.fn();
 const dispatchPendingGradingAudits = vi.fn();
 const readRunningGeneration = vi.fn();
+const replaySpecTestAdequacyForHistoricalAudit = vi.fn();
+
+vi.mock('../plans/evaluate-spec-test-adequacy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../plans/evaluate-spec-test-adequacy')>();
+  return {
+    ...actual,
+    replaySpecTestAdequacyForHistoricalAudit: (...args: unknown[]) => replaySpecTestAdequacyForHistoricalAudit(...args),
+  };
+});
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../rubrics')>();
   return {
     ...real,
     getRubric: (...a: unknown[]) => getRubric(...a),
+    // scorecards:emit now uses the failure-aware writer read; keep this unit
+    // suite on the same mocked rubric fixtures instead of falling through to PG.
+    readRubric: async (rubricId: string) => {
+      const rubric = await getRubric(rubricId);
+      return rubric ? { kind: 'found' as const, rubric } : { kind: 'missing' as const };
+    },
+    getRubricEvidenceIdentity: (...a: unknown[]) => getRubricEvidenceIdentity(...a),
     // EI-21828643965337454 put the acceptance path behind a FAIL-CLOSED revision
     // read. Unstubbed, it reached the real PG-backed read, returned `ok:false`, and
     // the acceptance-kind case below refused with `..._revision_unreadable` — which
@@ -56,7 +74,8 @@ vi.mock('../../harness/improvements/capture-core', () => ({
 // Keep scorecard writes inside the unit tier: these push notifications are
 // database-backed in production and are covered by their own integration tests.
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
-vi.mock('../../scorecard-emitted-events', () => ({ emitScorecardEmitted: async () => {} }));
+const emitScorecardEmitted = vi.hoisted(() => vi.fn());
+vi.mock('../../scorecard-emitted-events', () => ({ emitScorecardEmitted }));
 vi.mock('../../scout/generation-watermark', () => ({
   readRunningGeneration: (...args: unknown[]) => readRunningGeneration(...args),
 }));
@@ -123,7 +142,12 @@ const RE_RUN_UNKNOWN_RATINGS: ObservationRatings = {
 };
 const REPLAY_SPLIT_RATINGS: ObservationRatings = {
   're-runnable-evidence': { rating: 'pass', evidence: 'exact target recipe executed' },
-  'degenerate-distribution': { rating: 'fail', evidence: 'spot replay contradicted the uniform target card' },
+  'degenerate-distribution': {
+    rating: 'fail',
+    evidence: 'spot replay contradicted the uniform target card',
+    evidenceKind: 'test',
+    evidenceRef: 'surface:reconnect',
+  },
 };
 
 const RERUN_RECIPE = {
@@ -168,6 +192,7 @@ const RERUN_RECIPE = {
 
 const GRADED_CARD = {
   id: 'EI-CARD',
+  createdAt: '2026-10-02T00:14:36.135Z',
   createdBy: 'su-grader-author',
   payload: {
     observation: {
@@ -177,6 +202,8 @@ const GRADED_CARD = {
         state: 'pending',
         metaRubricRef: 'grading-integrity',
         stampedAt: '2026-08-17T12:00:00.000Z',
+        rubricRevision: 1,
+        criteriaHash: 'rubric-hash-v1',
       },
     },
   },
@@ -230,6 +257,30 @@ const replayConsistencyGradedCard = () => ({
   },
 });
 
+const legacyReplayConsistencyGradedCard = () => ({
+  ...replayConsistencyGradedCard(),
+  payload: {
+    observation: {
+      ...replayConsistencyGradedCard().payload.observation,
+      rerunRecipe: {
+        ...RERUN_RECIPE,
+        args: {
+          ...RERUN_RECIPE.args,
+          evidenceRefs: ['surface:reconnect'],
+          specRevision: 1,
+          specFingerprint: 'sha256:spec-v1',
+          replaySnapshot: true,
+          current: RERUN_RECIPE.current.fingerprints,
+        },
+        selection: {
+          ...RERUN_RECIPE.selection,
+          evidence: [{ evidenceKind: 'test', evidenceRef: 'surface:reconnect' }],
+        },
+      },
+    },
+  },
+});
+
 const targetReplay = (
   rating: 'pass' | 'fail',
   evaluatorBuild = RERUN_RECIPE.evaluatorBuild,
@@ -248,9 +299,68 @@ const targetReplay = (
   ],
 });
 
+const historicalTargetReplay = (
+  rating: 'pass' | 'fail',
+  evaluatorBuild = RERUN_RECIPE.evaluatorBuild,
+) => ({
+  ...targetReplay(rating, evaluatorBuild),
+  historicalAuditOnly: {
+    provenance: 'historical-audit-only',
+    asOf: GRADED_CARD.createdAt,
+    freshness: 'historical-snapshot',
+    bindings: [{
+      id: 19999,
+      evidenceKind: 'test',
+      evidenceRef: 'surface:reconnect',
+      createdAt: '2026-10-01T23:00:00.000Z',
+      withdrawal: { at: '2026-10-02T01:00:00.000Z', reason: 'superseded by binding 21019' },
+    }],
+  },
+});
+
+const exactReplayConsistencyGradedCard = () => {
+  const card = replayConsistencyGradedCard();
+  const current = [{
+    planSlug: 'reconnect-plan',
+    specId: 'SPEC-003-01',
+    specRevision: 1,
+    specFingerprint: 'sha256:spec-v1',
+    evidenceKind: 'test',
+    evidenceRef: 'surface:reconnect',
+    sourceFingerprint: 'git:graded',
+    testFingerprint: 'sha256:test-graded',
+  }];
+  return {
+    ...card,
+    payload: {
+      observation: {
+        ...card.payload.observation,
+        rerunRecipe: {
+          ...RERUN_RECIPE,
+          args: {
+            ...RERUN_RECIPE.args,
+            evidenceRefs: ['surface:reconnect'],
+            bindingIds: [19999],
+            specRevision: 1,
+            specFingerprint: 'sha256:spec-v1',
+            replaySnapshot: true,
+          },
+          selection: { ...RERUN_RECIPE.selection, bindingIds: [19999] },
+          current: { supplied: true, fingerprints: current },
+        },
+      },
+    },
+  };
+};
+
 beforeEach(() => {
+  emitScorecardEmitted.mockReset().mockResolvedValue(undefined);
   closeSourceAuditConsults.mockReset().mockResolvedValue(undefined);
   getRubric.mockReset().mockResolvedValue(mkRubric('goal-mode-e2e', 'standard'));
+  getRubricEvidenceIdentity.mockReset().mockImplementation(async (id: string) => {
+    const rubric = await getRubric(id);
+    return { revision: rubric?.revision ?? null, criteriaHash: rubric?.criteriaHash ?? null, meaningRevision: null };
+  });
   listScorecards.mockReset().mockResolvedValue([]);
   captureImprovement.mockReset().mockResolvedValue({ created: true, issue: { id: 'EI-AUDIT-1' } });
   getIssue.mockReset().mockResolvedValue(null);
@@ -264,6 +374,183 @@ beforeEach(() => {
   gateEnabled.mockReset().mockResolvedValue(true);
   dispatchPendingGradingAudits.mockReset().mockResolvedValue({ requestedTargetIds: [], receipts: [] });
   readRunningGeneration.mockReset().mockResolvedValue(null);
+  replaySpecTestAdequacyForHistoricalAudit.mockReset().mockResolvedValue(historicalTargetReplay('pass'));
+});
+
+describe('CRM canonical producer independence (P-012)', () => {
+  const args = { rubricRef: 'crm-interaction-quality', rubricRevision: 1, criteriaHash: 'a'.repeat(64),
+    ratings: { c1: { ...RATINGS.c1, evidenceRef: 'source:42' } },
+    subject: { kind: 'work-item' as const, ref: 'WI-42' }, terminal: true,
+    interactionReviewerHandle: { workspaceId: 'ws', harnessSlug: 'crm', receiptId: 43,
+      operationId: 'call-review', specificationRevision: 'b'.repeat(64), target: { kind: 'work-item' as const, id: 'WI-43' } } };
+  const input = { createdBy: 'su-reviewer', workspaceId: 'ws', ctxHarness: 'crm' };
+  const producer = { state: 'done', terminalOwner: 'su-producer', terminalCompletionRef: 'completion:42' };
+  const reader = (value: unknown = producer) => vi.fn(async () => value) as never;
+  const reviewer = (ownerId = 'su-reviewer') => vi.fn(async () => ({ ownerId, completionRef: 'completion:43',
+    output: { interactionGrade: { gradedWorkItemRef: 'WI-42', rubricRef: args.rubricRef,
+      rubricRevision: args.rubricRevision, criteriaHash: args.criteriaHash,
+      ratings: [{ key: 'c1', ...args.ratings.c1 }] } }, evidenceRef: 'operation-output:43',
+    input: { reviewBinding: { gradedWorkItemRef: 'WI-42', rubricRef: args.rubricRef,
+      rubricRevision: args.rubricRevision, criteriaHash: args.criteriaHash } } }));
+
+  beforeEach(() => getRubric.mockResolvedValue({ ...mkRubric('crm-interaction-quality', 'standard'), criteriaHash: 'a'.repeat(64) }));
+
+  it('refuses a changed review instrument before reading the producer or writing', async () => {
+    const read = reader();
+    for (const pin of [{ rubricRevision: 2 }, { criteriaHash: 'b'.repeat(64) }]) {
+      expect(await emitScorecard({ ...args, ...pin }, input, { readInteractionProducer: read }))
+        .toMatchObject({ ok: false, code: 'scorecard_rubric_identity_mismatch' });
+    }
+    expect(read).not.toHaveBeenCalled();
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('refuses instrument drift or failed identity reads after the independence check', async () => {
+    for (const identity of [{ revision: 2, criteriaHash: 'a'.repeat(64), meaningRevision: null },
+      { revision: null, criteriaHash: null, meaningRevision: null }]) {
+      getRubricEvidenceIdentity.mockResolvedValueOnce(identity);
+      expect(await emitScorecard(args, input, { readInteractionProducer: reader(), readInteractionReviewer: reviewer(), lineageRelated: async () => false }))
+        .toMatchObject({ ok: false, code: 'scorecard_rubric_identity_mismatch' });
+    }
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it.each(['su-producer', 'su-child'])('refuses producer or producer lineage %s before a ledger write', async (createdBy) => {
+    const related = vi.fn(async () => true);
+    const result = await emitScorecard(args, { ...input, createdBy }, {
+      readInteractionProducer: reader(), readInteractionReviewer: reviewer(), lineageRelated: related,
+    });
+    expect(result).toMatchObject({ ok: false, code: 'interaction_grader_in_producer_lineage' });
+    expect(related).toHaveBeenCalledWith('su-producer', createdBy);
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('permits an unrelated reviewer through the canonical writer', async () => {
+    const read = reader();
+    const result = await emitScorecard(args, input, { readInteractionProducer: read,
+      readInteractionReviewer: reviewer(), lineageRelated: async () => false });
+    expect(result.ok).toBe(true);
+    expect(read).toHaveBeenCalledWith('ws', 'WI-42', { includeBody: false });
+    expect(captureImprovement).toHaveBeenCalledOnce();
+    expect(captureImprovement.mock.calls[0][0].payloadExtra.observation.interactionReviewer)
+      .toEqual({ ownerId: 'su-reviewer', completionRef: 'completion:43', outputEvidenceRef: 'operation-output:43', handle: args.interactionReviewerHandle });
+  });
+
+  it.each([{ rating: 'fail' }, { evidence: 'invented evidence' }, { evidenceRef: 'different-source' }])
+    ('refuses ratings changed by the transport caller %j', async (patch) => {
+      expect(await emitScorecard({ ...args, ratings: { c1: { ...args.ratings.c1, ...patch } } }, input,
+        { readInteractionProducer: reader(), readInteractionReviewer: reviewer(), lineageRelated: async () => false }))
+        .toMatchObject({ ok: false, code: 'interaction_reviewer_output_mismatch' });
+      expect(captureImprovement).not.toHaveBeenCalled();
+    });
+
+  it.each([null, {}, { interactionGrade: { ratings: [] } }])
+    ('refuses missing or incomplete canonical reviewer output %j', async (output) => {
+      const readReview = async () => ({ ...await reviewer()(), output });
+      expect(await emitScorecard(args, input,
+        { readInteractionProducer: reader(), readInteractionReviewer: readReview, lineageRelated: async () => false }))
+        .toMatchObject({ ok: false, code: 'interaction_reviewer_output_mismatch' });
+      expect(captureImprovement).not.toHaveBeenCalled();
+    });
+
+  it.each(['su-producer', 'su-child'])('refuses actual reviewer %s behind an unrelated app caller', async (ownerId) => {
+    const related = vi.fn(async (_producer: string | null | undefined, candidate: string | null | undefined) => candidate === ownerId);
+    expect(await emitScorecard(args, { ...input, createdBy: 'app:crm' }, {
+      readInteractionProducer: reader(), readInteractionReviewer: reviewer(ownerId), lineageRelated: related,
+    })).toMatchObject({ code: 'interaction_grader_in_producer_lineage' });
+    expect(related).toHaveBeenCalledWith('su-producer', ownerId);
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('refuses a missing reviewer receipt and failed canonical receipt read', async () => {
+    expect(await emitScorecard({ ...args, interactionReviewerHandle: undefined }, input,
+      { readInteractionProducer: reader() })).toMatchObject({ code: 'interaction_reviewer_required' });
+    expect(await emitScorecard(args, input, { readInteractionProducer: reader(),
+      readInteractionReviewer: vi.fn().mockRejectedValue(new Error('handle_mismatch')) }))
+      .toMatchObject({ code: 'interaction_producer_unreadable' });
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('permits a distinct terminal reviewer through an unrelated app transport', async () => {
+    const readReview = reviewer('su-independent');
+    expect((await emitScorecard(args, { ...input, createdBy: 'app:crm' }, {
+      readInteractionProducer: reader(), readInteractionReviewer: readReview, lineageRelated: async () => false,
+    })).ok).toBe(true);
+    expect(readReview).toHaveBeenCalledWith(args.interactionReviewerHandle, 'app:crm');
+    expect(captureImprovement.mock.calls[0][0].payloadExtra.observation.interactionReviewer.ownerId).toBe('su-independent');
+  });
+
+  it('verifies the retained binding after private source cleanup without requiring a public source packet', async () => {
+    const proof = await reviewer('su-independent')();
+    expect(proof.input).not.toHaveProperty('reviewContext');
+    expect(proof.input.reviewBinding).not.toHaveProperty('sourceContent');
+    expect((await emitScorecard(args, { ...input, createdBy: 'app:crm' }, {
+      readInteractionProducer: reader(), readInteractionReviewer: async () => proof,
+      lineageRelated: async () => false,
+    })).ok).toBe(true);
+  });
+
+  it.each([{ gradedWorkItemRef: 'WI-99' }, { rubricRef: 'other' }, { rubricRevision: 2 },
+    { criteriaHash: 'c'.repeat(64) }])('refuses a changed retained review binding %j', async (patch) => {
+    const proof = await reviewer()();
+    proof.input.reviewBinding = { ...proof.input.reviewBinding, ...patch };
+    expect(await emitScorecard(args, input, { readInteractionProducer: reader(),
+      readInteractionReviewer: async () => proof, lineageRelated: async () => false,
+    })).toMatchObject({ ok: false, code: 'interaction_reviewer_mismatch' });
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unbound public source packet as a replacement for retained review identity', async () => {
+    const proof = await reviewer()();
+    expect(await emitScorecard(args, input, { readInteractionProducer: reader(),
+      readInteractionReviewer: async () => ({ ...proof, input: { reviewContext: proof.input.reviewBinding } }),
+      lineageRelated: async () => false,
+    })).toMatchObject({ ok: false, code: 'interaction_reviewer_mismatch' });
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it.each([{ workspaceId: 'other' }, { harnessSlug: 'other' }, { operationId: 'send-email' },
+    { target: { kind: 'work-item' as const, id: 'WI-42' } }])('refuses an out-of-scope reviewer handle %j', async (patch) => {
+    const readReview = reviewer();
+    expect(await emitScorecard({ ...args, interactionReviewerHandle: { ...args.interactionReviewerHandle, ...patch } }, input,
+      { readInteractionProducer: reader(), readInteractionReviewer: readReview }))
+      .toMatchObject({ code: 'interaction_reviewer_required' });
+    expect(readReview).not.toHaveBeenCalled();
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('refuses a review of a different producing task', async () => {
+    expect(await emitScorecard(args, input, { readInteractionProducer: reader(),
+      readInteractionReviewer: async () => ({ ownerId: 'reviewer', completionRef: 'completion:43',
+        output: null, evidenceRef: 'operation-output:43',
+        input: { reviewBinding: { gradedWorkItemRef: 'WI-99' } } }) }))
+      .toMatchObject({ code: 'interaction_reviewer_mismatch' });
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it.each([null, { ...producer, state: 'open' }, { ...producer, terminalOwner: null },
+    { ...producer, terminalCompletionRef: null }])('fails closed on unresolved producer %j', async (row) => {
+    const result = await emitScorecard(args, input, { readInteractionProducer: reader(row) });
+    expect(result).toMatchObject({ ok: false, code: 'interaction_producer_unresolved' });
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('refuses missing subject and failed identity reads', async () => {
+    expect(await emitScorecard({ ...args, rubricRevision: undefined }, input)).toMatchObject({ code: 'interaction_producer_required' });
+    expect(await emitScorecard({ ...args, subject: undefined }, input)).toMatchObject({ code: 'interaction_producer_required' });
+    expect(await emitScorecard(args, input, { readInteractionProducer: vi.fn().mockRejectedValue(new Error('read failed')) }))
+      .toMatchObject({ code: 'interaction_producer_unreadable' });
+    expect(await emitScorecard(args, input, { readInteractionProducer: reader(), readInteractionReviewer: reviewer(), lineageRelated: async () => { throw new Error('identity failed'); } }))
+      .toMatchObject({ code: 'interaction_producer_unreadable' });
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('refuses the proposed instrument before grading', async () => {
+    getRubric.mockResolvedValue({ ...mkRubric('crm-interaction-quality', 'standard'),
+      status: 'proposed', criteriaHash: 'a'.repeat(64) });
+    expect(await emitScorecard(args, input)).toMatchObject({ ok: false, code: 'interaction_rubric_not_active' });
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
 });
 
 describe('scorecards:emit audit-pending stamp (P-013)', () => {
@@ -392,6 +679,18 @@ describe('scorecards:emit grading audit path (P-013)', () => {
       },
     },
   });
+  const gradedCardWithLapsedReservation = () => ({
+    ...GRADED_CARD,
+    payload: {
+      observation: {
+        ...GRADED_CARD.payload.observation,
+        gradingAudit: {
+          ...GRADED_CARD.payload.observation.gradingAudit,
+          lastDispatchReservation: activeReservation,
+        },
+      },
+    },
+  });
   beforeEach(() => {
     getRubric.mockResolvedValue(mkRubric('grading-integrity', 'standard'));
     getIssue.mockResolvedValue(GRADED_CARD);
@@ -422,7 +721,30 @@ describe('scorecards:emit grading audit path (P-013)', () => {
 
     expect(res.ok).toBe(false);
     expect((res as { code?: string }).code).toBe('grading_audit_reservation_mismatch');
-    expect((res as { error?: string }).error).toContain('does not match its current active dispatch reservation');
+    expect((res as { error?: string }).error).toContain('does not match its latest dispatch reservation epoch');
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
+  it('refuses a stale grading-audit stamp before filing an unrecordable audit card', async () => {
+    getIssue.mockResolvedValue({
+      ...GRADED_CARD,
+      payload: {
+        observation: {
+          ...GRADED_CARD.payload.observation,
+          gradingAudit: {
+            ...GRADED_CARD.payload.observation.gradingAudit,
+            rubricRevision: 1,
+            criteriaHash: 'hash-before-edit',
+          },
+        },
+      },
+    });
+
+    const res = await emitScorecard(auditArgs, { createdBy: 'su-auditor', ctxHarness: 'papercusp' });
+
+    expect(res).toMatchObject({ ok: false });
+    expect((res as { error?: string }).error).toContain('stale gradingAudit stamp (criteria-hash-mismatch)');
     expect(captureImprovement).not.toHaveBeenCalled();
     expect(recordGradingAudit).not.toHaveBeenCalled();
   });
@@ -458,6 +780,42 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(recordGradingAudit).not.toHaveBeenCalled();
   });
 
+  // EI-25246208524832409: a long audit can outlive the 15-min active lease. The
+  // retained latest epoch proves this is still the dispatched auditor's lease.
+  it('admits the dispatched auditor whose lease lapsed and carries the retained epoch into settlement', async () => {
+    getIssue.mockResolvedValue(gradedCardWithLapsedReservation());
+    const res = await emitScorecard(
+      { ...auditArgs, gradingAuditReservation: activeReservation },
+      { createdBy: 'su-lapsed-auditor', ctxHarness: 'papercusp' },
+    );
+
+    expect(res.ok).toBe(true);
+    expect(isCurrentSourceAuditResponder).toHaveBeenCalledWith('EI-CARD', activeReservation, 'su-lapsed-auditor');
+    expect(recordGradingAudit).toHaveBeenCalledTimes(1);
+    // The lapsed token must reach the settle CAS so a newer claim-and-release cannot win
+    // between the pre-emit read and the atomic update.
+    const [subject, settled] = recordGradingAudit.mock.calls[0] as [string, Record<string, unknown>];
+    expect(subject).toBe('EI-CARD');
+    expect(settled).toMatchObject({ dispatchReservation: activeReservation });
+    expect(settled).toMatchObject({ auditor: 'su-lapsed-auditor' });
+  });
+
+  it('refuses a lapsed lease presented by a session that is not its consult answerer', async () => {
+    getIssue.mockResolvedValue(gradedCardWithLapsedReservation());
+    isCurrentSourceAuditResponder.mockResolvedValue(false);
+
+    const res = await emitScorecard(
+      { ...auditArgs, gradingAuditReservation: activeReservation },
+      { createdBy: 'su-other-answerer', ctxHarness: 'papercusp' },
+    );
+
+    expect(res.ok).toBe(false);
+    expect((res as { code?: string }).code).toBe('grading_audit_reservation_unavailable');
+    expect(isCurrentSourceAuditResponder).toHaveBeenCalledWith('EI-CARD', activeReservation, 'su-other-answerer');
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
   it('a NON-AUTHOR audit files, settles the subject, and is itself never stamped pending (one level)', async () => {
     const res = await emitScorecard(auditArgs, { createdBy: 'su-auditor', ctxHarness: 'papercusp' });
     expect(res.ok).toBe(true);
@@ -484,6 +842,50 @@ describe('scorecards:emit grading audit path (P-013)', () => {
   it('a failing rating settles the subject as failed', async () => {
     await emitScorecard({ ...auditArgs, ratings: FAIL_RATINGS }, { createdBy: 'su-auditor', ctxHarness: 'papercusp' });
     expect(recordGradingAudit).toHaveBeenCalledWith('EI-CARD', expect.objectContaining({ verdict: 'failed' }));
+  });
+
+  it.each([[true, false], [true, true], [false, false]])('an identical retry finishes only the existing audit settlement (success=%s, cleanupFails=%s)', async (success, cleanupFails) => {
+    getIssue.mockResolvedValue(gradedCardWithReservation());
+    recordGradingAudit.mockRejectedValueOnce(new Error('connection closed after audit insert'));
+    const args = { ...auditArgs, gradingAuditReservation: activeReservation };
+    const input = { createdBy: 'su-auditor', ctxHarness: 'papercusp' };
+    await expect(emitScorecard(args, input)).rejects.toThrow('connection closed after audit insert');
+    const stored = captureImprovement.mock.calls[0][0].payloadExtra.observation;
+    listScorecards.mockResolvedValue([{ ...stored, issueId: 'EI-AUDIT-1', createdBy: input.createdBy }]);
+    recordGradingAudit.mockResolvedValueOnce(success
+      ? { ok: true, gradingAudit: { state: 'passed', auditIssueId: 'EI-AUDIT-1', auditor: input.createdBy } }
+      : { ok: false, error: 'dispatch reservation changed' });
+    if (cleanupFails) closeSourceAuditConsults.mockRejectedValueOnce(new Error('consult cleanup unavailable'));
+
+    const retry = await emitScorecard(args, input);
+    expect(retry).toMatchObject({ created: false, reason: 'unchanged-evidence', previousIssueId: 'EI-AUDIT-1', gradingAuditRecorded: success });
+    expect(captureImprovement).toHaveBeenCalledTimes(1);
+    expect(recordGradingAudit).toHaveBeenLastCalledWith('EI-CARD', expect.objectContaining({
+      auditIssueId: 'EI-AUDIT-1', auditor: input.createdBy, dispatchReservation: activeReservation, requireCurrentIdentity: true,
+    }));
+    if (success) {
+      if (cleanupFails) expect(retry).toMatchObject({ gradingAuditCleanupError: 'consult cleanup unavailable' });
+      expect(closeSourceAuditConsults).toHaveBeenCalledOnce();
+      expect(emitScorecardEmitted).toHaveBeenCalledWith(expect.objectContaining({ issueId: 'EI-AUDIT-1' }),
+        expect.objectContaining({ filed: false, settledAudit: expect.objectContaining({ issueId: 'EI-CARD', state: 'passed' }) }));
+    } else {
+      expect(retry).toMatchObject({ gradingAuditError: 'dispatch reservation changed' });
+      expect(closeSourceAuditConsults).not.toHaveBeenCalled();
+      expect(emitScorecardEmitted).not.toHaveBeenCalled();
+    }
+  });
+
+  it('does not attribute an identical stored audit to a different retrying auditor', async () => {
+    getIssue.mockResolvedValue(GRADED_CARD);
+    recordGradingAudit.mockRejectedValueOnce(new Error('settlement interrupted'));
+    await expect(emitScorecard(auditArgs, { createdBy: 'su-original', ctxHarness: 'papercusp' })).rejects.toThrow();
+    const stored = captureImprovement.mock.calls[0][0].payloadExtra.observation;
+    listScorecards.mockResolvedValue([{ ...stored, issueId: 'EI-AUDIT-1', createdBy: 'su-original' }]);
+    recordGradingAudit.mockClear();
+    const retry = await emitScorecard({ ...auditArgs, acknowledgeExisting: true }, { createdBy: 'su-other', ctxHarness: 'papercusp' });
+    expect(retry).toMatchObject({ created: false, reason: 'unchanged-evidence' });
+    expect(recordGradingAudit).not.toHaveBeenCalled();
+    expect(captureImprovement).toHaveBeenCalledTimes(1);
   });
 
   it('refuses unknown audit ratings before filing an orphan audit card', async () => {
@@ -550,6 +952,47 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(recordGradingAudit).not.toHaveBeenCalled();
   });
 
+  it('dedupes an identical same-author terminal replay before checking its pending audit', async () => {
+    getRubric.mockResolvedValue(mkRubric('goal-mode-e2e', 'standard'));
+    getIssue.mockResolvedValue(null);
+    const args = {
+      rubricRef: 'goal-mode-e2e',
+      ratings: RATINGS,
+      terminal: true,
+      subject: { kind: 'plan' as const, ref: 'plan-x' },
+    };
+    const input = { createdBy: 'su-subject-author', ctxHarness: 'papercusp' };
+    const original = await emitScorecard(args, input);
+    expect(original).toMatchObject({ ok: true, created: true, gradingAuditPending: true });
+
+    const observation = captureImprovement.mock.calls[0]?.[0].payloadExtra.observation;
+    const pendingCard = {
+      ...observation,
+      issueId: 'EI-PENDING-IDENTICAL-REPLAY',
+      createdBy: input.createdBy,
+      rubricRef: args.rubricRef,
+      subject: args.subject,
+      gradingAudit: { state: 'pending', metaRubricRef: 'grading-integrity' },
+    };
+    listScorecards.mockImplementation(async (filter: { rubricRef?: string; limit?: number }) => {
+      if (filter.rubricRef === 'grading-integrity') return [];
+      return filter.limit === 1 || filter.limit === 100 ? [pendingCard] : [];
+    });
+    captureImprovement.mockClear();
+    dispatchPendingGradingAudits.mockClear();
+
+    const retry = await emitScorecard(args, input);
+
+    expect(retry).toMatchObject({
+      ok: true,
+      created: false,
+      reason: 'unchanged-evidence',
+      previousIssueId: pendingCard.issueId,
+    });
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(dispatchPendingGradingAudits).not.toHaveBeenCalled();
+  });
+
   it('refuses a same-author re-emit while the subject still has a live pending audit', async () => {
     getRubric.mockResolvedValue(mkRubric('goal-mode-e2e', 'standard'));
     getIssue.mockResolvedValue(null);
@@ -591,6 +1034,101 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect((res as { error?: string }).error).toContain('EI-PENDING-SAME-AUTHOR');
     expect(captureImprovement).not.toHaveBeenCalled();
     expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
+  describe('a RE-OPENED audit (WI-10005211)', () => {
+    // A grading-integrity revision re-opens every settled audit, so a windowed
+    // grader's earlier cards all read pending again at once. The card already
+    // carries an independent verdict; it must not block its own author's next card.
+    const reopenedCard = {
+      issueId: 'EI-REOPENED',
+      createdAt: '2026-10-01T12:38:00.000Z',
+      createdBy: 'su-subject-author',
+      subject: { kind: 'plan', ref: 'plan-x' },
+      rubricRef: 'goal-mode-e2e',
+      ratings: RATINGS,
+      nKeys: 1,
+      missingKeys: [],
+      extraKeys: [],
+      rubricResolved: true,
+      gradingAudit: {
+        state: 'pending',
+        metaRubricRef: 'grading-integrity',
+        rubricRevision: 10,
+        stampedAt: '2026-10-02T01:38:32.000Z',
+      },
+      synthesized: false,
+      score10: 10,
+      linkedItems: [],
+    };
+    const priorAudit = (retracted?: object) => ({
+      issueId: 'EI-PRIOR-AUDIT',
+      createdAt: '2026-10-01T14:19:00.000Z',
+      createdBy: 'su-auditor',
+      subject: { kind: 'scorecard', ref: 'EI-REOPENED' },
+      rubricRef: 'grading-integrity',
+      ratings: RATINGS,
+      nKeys: 1,
+      missingKeys: [],
+      extraKeys: [],
+      rubricResolved: true,
+      synthesized: false,
+      score10: 10,
+      linkedItems: [],
+      ...(retracted ? { retracted } : {}),
+    });
+    const withAudits = (audits: object[]) =>
+      listScorecards.mockImplementation(async (filter: { rubricRef?: string }) =>
+        filter.rubricRef === 'grading-integrity' ? audits : [reopenedCard],
+      );
+    const emitNext = (createdBy: string) =>
+      emitScorecard(
+        {
+          rubricRef: 'goal-mode-e2e',
+          ratings: RATINGS,
+          terminal: true,
+          force: true,
+          subject: { kind: 'plan', ref: 'plan-x' },
+        },
+        { createdBy, ctxHarness: 'papercusp' },
+      );
+
+    beforeEach(() => {
+      getRubric.mockResolvedValue(mkRubric('goal-mode-e2e', 'standard'));
+      getIssue.mockResolvedValue(null);
+    });
+
+    it("files the author's next same-subject card instead of refusing on its own re-opened card", async () => {
+      withAudits([priorAudit()]);
+
+      const res = await emitNext('su-subject-author');
+
+      expect(res.ok).toBe(true);
+      expect(captureImprovement).toHaveBeenCalledOnce();
+      expect(listScorecards).toHaveBeenCalledWith(
+        expect.objectContaining({ rubricRef: 'grading-integrity', subjectRefs: ['EI-REOPENED'] }),
+      );
+    });
+
+    it('control: a RETRACTED prior audit is not a verdict, so the card still blocks', async () => {
+      withAudits([priorAudit({ reason: 'withdrawn', at: '2026-10-01T15:00:00.000Z' })]);
+
+      const res = await emitNext('su-subject-author');
+
+      expect(res).toMatchObject({ ok: false, code: 'grading_audit_required' });
+      expect((res as { error?: string }).error).toContain('EI-REOPENED');
+      expect(captureImprovement).not.toHaveBeenCalled();
+    });
+
+    it('control: a NON-AUTHOR is still taught the audit shape on a re-opened card', async () => {
+      withAudits([priorAudit()]);
+
+      const res = await emitNext('su-other-grader');
+
+      expect(res).toMatchObject({ ok: false, code: 'grading_audit_required' });
+      expect((res as { error?: string }).error).toContain("subject:{ kind:'scorecard', ref:'EI-REOPENED' }");
+      expect(captureImprovement).not.toHaveBeenCalled();
+    });
   });
 
   it('control (THE mirror rule): a SELF-audit is refused and nothing is filed or settled', async () => {
@@ -663,7 +1201,7 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(recordGradingAudit).not.toHaveBeenCalled();
   });
 
-  it('refuses a degenerate-distribution failure when the exact server replay reproduces every target rating', async () => {
+  it('refuses a degenerate-distribution failure when the historical replay reproduces every target rating', async () => {
     getRubric.mockResolvedValue(replayConsistencyAuditRubric());
     getIssue.mockResolvedValue(replayConsistencyGradedCard());
     const dispatchTool = vi.fn().mockResolvedValue(targetReplay('pass'));
@@ -676,24 +1214,166 @@ describe('scorecards:emit grading audit path (P-013)', () => {
 
     expect(res).toMatchObject({ ok: false, code: 'grading_audit_replay_consistent' });
     expect((res as { error?: string }).error).toContain('reproduced every applicable rating');
-    expect(dispatchTool).toHaveBeenCalledWith(
-      'plans:evaluate-spec-test-adequacy',
-      expect.objectContaining({
-        slug: 'reconnect-plan',
-        detail: 'summary',
-        includeDraft: false,
-        payloadTier: 'full',
-      }),
-    );
+    expect(dispatchTool).not.toHaveBeenCalled();
+    expect(replaySpecTestAdequacyForHistoricalAudit).toHaveBeenCalledOnce();
     expect(captureImprovement).not.toHaveBeenCalled();
     expect(recordGradingAudit).not.toHaveBeenCalled();
   });
 
-  it('allows the same audit split when the exact server replay really contradicts a target rating', async () => {
+  it('passes exact binding ids and the graded fingerprint tuple to the historical replay', async () => {
+    getRubric.mockResolvedValue(replayConsistencyAuditRubric());
+    getIssue.mockResolvedValue(exactReplayConsistencyGradedCard());
+    const dispatchTool = vi.fn();
+
+    const res = await emitScorecard(
+      { ...auditArgs, ratings: REPLAY_SPLIT_RATINGS },
+      { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
+      { dispatchTool },
+    );
+
+    expect(res).toMatchObject({ ok: false, code: 'grading_audit_replay_consistent' });
+    expect(dispatchTool).not.toHaveBeenCalled();
+    expect(replaySpecTestAdequacyForHistoricalAudit).toHaveBeenCalledWith(expect.objectContaining({
+      args: expect.objectContaining({
+        replaySnapshot: true,
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-v1',
+        evidenceRefs: ['surface:reconnect'],
+        bindingIds: [19999],
+        current: [expect.objectContaining({
+          sourceFingerprint: 'git:graded',
+          testFingerprint: 'sha256:test-graded',
+        })],
+      }),
+      selection: expect.objectContaining({ bindingIds: [19999] }),
+      auditAsOf: new Date(GRADED_CARD.createdAt),
+    }));
+  });
+
+  it('refuses a replay-consistent audit challenge without a structured evidence citation', async () => {
+    getRubric.mockResolvedValue(replayConsistencyAuditRubric());
+    getIssue.mockResolvedValue(replayConsistencyGradedCard());
+    const dispatchTool = vi.fn().mockResolvedValue(targetReplay('pass'));
+
+    const res = await emitScorecard(
+      {
+        ...auditArgs,
+        ratings: {
+          ...REPLAY_SPLIT_RATINGS,
+          'degenerate-distribution': {
+            rating: 'fail',
+            evidence: 'the spec may be checking the wrong behavior',
+          },
+        },
+      },
+      { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
+      { dispatchTool },
+    );
+
+    expect(res).toMatchObject({ ok: false, code: 'grading_audit_replay_consistent' });
+    expect(scorecardRatingEntrySchema.shape.evidenceKind.description).toContain('both fields are required');
+    expect(scorecardRatingEntrySchema.shape.evidenceRef.description).toContain('selection membership');
+    expect((res as { error?: string }).error).toContain("ratings['degenerate-distribution'].evidenceKind");
+    expect((res as { error?: string }).error).toContain("ratings['degenerate-distribution'].evidenceRef");
+    expect((res as { error?: string }).error).toContain('outside the replay selection');
+    expect((res as { error?: string }).error).toContain('does not parse it to establish selection membership');
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
+  it('allows a replay-consistent audit challenge when it cites evidence outside the graded selection', async () => {
     getRubric.mockResolvedValue(replayConsistencyAuditRubric());
     getIssue.mockResolvedValue(replayConsistencyGradedCard());
     readRunningGeneration.mockResolvedValue(runningGeneration('a'.repeat(40)));
-    const dispatchTool = vi.fn().mockResolvedValue(targetReplay('fail'));
+    const dispatchTool = vi.fn().mockResolvedValue(targetReplay('pass'));
+
+    const res = await emitScorecard(
+      {
+        ...auditArgs,
+        ratings: {
+          ...REPLAY_SPLIT_RATINGS,
+          'degenerate-distribution': {
+            ...REPLAY_SPLIT_RATINGS['degenerate-distribution'],
+            evidence: 'the bound run killed a tracker-only case; the spec falsifier is auto-open plus Retry',
+            evidenceKind: 'test-run',
+            evidenceRef: '20852939',
+          },
+        },
+      },
+      { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
+      { dispatchTool },
+    );
+
+    expect(res.ok).toBe(true);
+    expect(captureImprovement).toHaveBeenCalledOnce();
+    expect(recordGradingAudit).toHaveBeenCalledWith('EI-CARD', expect.objectContaining({ verdict: 'failed' }));
+  });
+
+  it.each(['test-run:20852939', '20852939'])(
+    'refuses a test-run citation alias for a run already in the graded selection (%s)',
+    async (evidenceRef) => {
+      const card = exactReplayConsistencyGradedCard();
+      const observation = card.payload.observation;
+      const recipe = observation.rerunRecipe;
+      const selectedMutationRef =
+        'test-run 20852939 mutation-probe mutant fail papercusp-desktop/src-tauri/src/main.rs @bbc63f74e66e';
+      const selectedSourceRef = 'papercusp-desktop/src-tauri/src/main.rs';
+      getRubric.mockResolvedValue(replayConsistencyAuditRubric());
+      getIssue.mockResolvedValue({
+        ...card,
+        payload: {
+          observation: {
+            ...observation,
+            rerunRecipe: {
+              ...recipe,
+              args: {
+                ...recipe.args,
+                evidenceRefs: [selectedSourceRef, selectedMutationRef],
+                bindingIds: [27284, 27285],
+              },
+              selection: {
+                ...recipe.selection,
+                evidence: [
+                  { evidenceKind: 'mutation', evidenceRef: selectedMutationRef },
+                  { evidenceKind: 'test', evidenceRef: selectedSourceRef },
+                ],
+                bindingIds: [27284, 27285],
+              },
+            },
+          },
+        },
+      });
+      const dispatchTool = vi.fn().mockResolvedValue(targetReplay('pass'));
+
+      const res = await emitScorecard(
+        {
+          ...auditArgs,
+          ratings: {
+            ...REPLAY_SPLIT_RATINGS,
+            'degenerate-distribution': {
+              ...REPLAY_SPLIT_RATINGS['degenerate-distribution'],
+              evidenceKind: 'test-run',
+              evidenceRef,
+            },
+          },
+        },
+        { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
+        { dispatchTool },
+      );
+
+      expect(res).toMatchObject({ ok: false, code: 'grading_audit_replay_consistent' });
+      expect(dispatchTool).not.toHaveBeenCalled();
+      expect(captureImprovement).not.toHaveBeenCalled();
+      expect(recordGradingAudit).not.toHaveBeenCalled();
+    },
+  );
+
+  it('allows the same audit split when the historical replay contradicts a target rating', async () => {
+    getRubric.mockResolvedValue(replayConsistencyAuditRubric());
+    getIssue.mockResolvedValue(replayConsistencyGradedCard());
+    readRunningGeneration.mockResolvedValue(runningGeneration('a'.repeat(40)));
+    replaySpecTestAdequacyForHistoricalAudit.mockResolvedValue(historicalTargetReplay('fail'));
+    const dispatchTool = vi.fn();
 
     const res = await emitScorecard(
       { ...auditArgs, ratings: REPLAY_SPLIT_RATINGS },
@@ -706,14 +1386,75 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(recordGradingAudit).toHaveBeenCalledWith('EI-CARD', expect.objectContaining({ verdict: 'failed' }));
   });
 
+  it('replays a legacy card from its historical snapshot even when live bindings are unavailable', async () => {
+    getRubric.mockResolvedValue(replayConsistencyAuditRubric());
+    getIssue.mockResolvedValue(legacyReplayConsistencyGradedCard());
+    const dispatchTool = vi.fn().mockResolvedValue({ ok: false, error: 'selection_empty', count: 0 });
+    replaySpecTestAdequacyForHistoricalAudit.mockResolvedValue({
+      ok: true,
+      evaluatorBuild: RERUN_RECIPE.evaluatorBuild,
+      rows: targetReplay('pass').rows,
+      historicalAuditOnly: {
+        provenance: 'historical-audit-only',
+        asOf: GRADED_CARD.createdAt,
+        freshness: 'historical-snapshot',
+        bindings: [
+          {
+            id: 19999,
+            evidenceKind: 'test',
+            evidenceRef: 'surface:reconnect',
+            withdrawal: { at: '2026-10-02T01:00:00.000Z', reason: 'superseded by binding 21019' },
+          },
+        ],
+      },
+    });
+
+    const res = await emitScorecard(
+      { ...auditArgs, ratings: REPLAY_SPLIT_RATINGS },
+      { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
+      { dispatchTool },
+    );
+
+    expect(res).toMatchObject({ ok: false, code: 'grading_audit_replay_consistent' });
+    expect(dispatchTool).not.toHaveBeenCalled();
+    expect(replaySpecTestAdequacyForHistoricalAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: expect.any(String),
+        auditAsOf: new Date(GRADED_CARD.createdAt),
+        selection: expect.objectContaining({ specId: 'SPEC-003-01', specRevision: 1 }),
+      }),
+    );
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when a legacy historical replay has no graded-card creation time', async () => {
+    getRubric.mockResolvedValue(replayConsistencyAuditRubric());
+    getIssue.mockResolvedValue({ ...legacyReplayConsistencyGradedCard(), createdAt: undefined });
+    const dispatchTool = vi.fn().mockResolvedValue({ ok: false, error: 'selection_empty', count: 0 });
+
+    const res = await emitScorecard(
+      { ...auditArgs, ratings: REPLAY_SPLIT_RATINGS },
+      { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
+      { dispatchTool },
+    );
+
+    expect(res).toMatchObject({ ok: false, code: 'grading_audit_replay_uncorroborated' });
+    expect((res as { error?: string }).error).toContain('creation time or workspace scope is unavailable');
+    expect(dispatchTool).not.toHaveBeenCalled();
+    expect(replaySpecTestAdequacyForHistoricalAudit).not.toHaveBeenCalled();
+    expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
   it('defers the grading audit when the exact evaluator replay reports build drift', async () => {
     getRubric.mockResolvedValue(replayConsistencyAuditRubric());
     getIssue.mockResolvedValue(replayConsistencyGradedCard());
     const liveEvaluatorBuild = { sha: 'current-evaluator-sha', version: '1.2.3' };
-    const dispatchTool = vi.fn().mockResolvedValue({
-      ...targetReplay('fail', liveEvaluatorBuild),
+    replaySpecTestAdequacyForHistoricalAudit.mockResolvedValue({
+      ...historicalTargetReplay('fail', liveEvaluatorBuild),
       evaluatorBuildDrift: { recorded: RERUN_RECIPE.evaluatorBuild, live: liveEvaluatorBuild },
     });
+    const dispatchTool = vi.fn();
 
     const res = await emitScorecard(
       { ...auditArgs, ratings: REPLAY_SPLIT_RATINGS },
@@ -723,16 +1464,7 @@ describe('scorecards:emit grading audit path (P-013)', () => {
 
     expect(res).toMatchObject({ ok: false, code: 'grading_audit_evaluator_changed' });
     expect((res as { error?: string }).error).toContain('evaluator-build-drift');
-    expect(dispatchTool).toHaveBeenCalledWith(
-      'plans:evaluate-spec-test-adequacy',
-      expect.objectContaining({
-        slug: 'reconnect-plan',
-        evaluatorBuild: RERUN_RECIPE.evaluatorBuild,
-        detail: 'summary',
-        includeDraft: false,
-        payloadTier: 'full',
-      }),
-    );
+    expect(dispatchTool).not.toHaveBeenCalled();
     expect(captureImprovement).not.toHaveBeenCalled();
     expect(recordGradingAudit).not.toHaveBeenCalled();
   });
@@ -741,7 +1473,8 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     getRubric.mockResolvedValue(replayConsistencyAuditRubric());
     getIssue.mockResolvedValue(replayConsistencyGradedCard());
     const liveEvaluatorBuild = { sha: 'current-evaluator-sha', version: '1.2.3' };
-    const dispatchTool = vi.fn().mockResolvedValue(targetReplay('fail', liveEvaluatorBuild));
+    replaySpecTestAdequacyForHistoricalAudit.mockResolvedValue(historicalTargetReplay('fail', liveEvaluatorBuild));
+    const dispatchTool = vi.fn();
 
     const res = await emitScorecard(
       { ...auditArgs, ratings: REPLAY_SPLIT_RATINGS },
@@ -781,8 +1514,8 @@ describe('scorecards:emit grading audit path (P-013)', () => {
       },
     });
     const exactReplay = targetReplay('pass');
-    const dispatchTool = vi.fn().mockResolvedValue({
-      ...exactReplay,
+    replaySpecTestAdequacyForHistoricalAudit.mockResolvedValue({
+      ...historicalTargetReplay('pass'),
       rows: [
         {
           ...exactReplay.rows[0],
@@ -794,6 +1527,7 @@ describe('scorecards:emit grading audit path (P-013)', () => {
         },
       ],
     });
+    const dispatchTool = vi.fn();
 
     const res = await emitScorecard(
       { ...auditArgs, gradingAuditReservation: reservation, ratings: REPLAY_SPLIT_RATINGS },
@@ -926,7 +1660,13 @@ describe('scorecards:emit grading audit path (P-013)', () => {
       payload: {
         observation: {
           ...GRADED_CARD.payload.observation,
-          gradingAudit: { state: 'passed', metaRubricRef: 'grading-integrity', stampedAt: 'x' },
+          gradingAudit: {
+            state: 'passed',
+            metaRubricRef: 'grading-integrity',
+            stampedAt: 'x',
+            rubricRevision: 1,
+            criteriaHash: 'rubric-hash-v1',
+          },
         },
       },
     });
@@ -947,6 +1687,8 @@ describe('scorecards:emit grading audit path (P-013)', () => {
             auditIssueId: 'EI-AUDIT-OLD',
             auditor: 'su-old-auditor',
             stampedAt: '2026-08-17T12:00:00.000Z',
+            rubricRevision: 1,
+            criteriaHash: 'rubric-hash-v1',
           },
         },
       },

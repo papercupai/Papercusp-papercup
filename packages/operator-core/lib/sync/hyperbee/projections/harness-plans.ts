@@ -13,8 +13,9 @@
  * the `op_*` operational dispatch state (started/paused/priority — each machine
  * manages its own started set), and `created_at`/`updated_at`/`_search`.
  *
- * harness_plans has NO jsonb columns (content is TEXT, supersedes is text[]), so
- * no jsonb-binding dance is needed — unlike features/issues.
+ * Current readers still use the legacy items/decisions JSONB arrays. This
+ * projection derives and writes them from canonical markdown alongside the
+ * normalized rows; other structured JSONB fields remain opaque here.
  */
 
 import { getOrgPg } from '@papercusp/db-org';
@@ -33,7 +34,14 @@ import { guardAcceptanceBarTemplateDataWrite } from '../../../agent-tools/plans/
 // module top level and kills the child before it can emit `ready`.
 import { deriveIndexFromContent } from '../../../agent-tools/plans/derive-index';
 import { writePlanIndexRows } from '../../../agent-tools/plans/plan-index-rows';
+import { applyFederatedNowNote, type NowNoteSql } from '../../../agent-tools/plans/now-note-store';
 import { withPlanDependencyAdmissionTransaction } from '../../../agent-tools/plans/plan-dependency-admission-transaction';
+import {
+  FEDERATED_BOOTSTRAP_REVISION_AUTHOR,
+  FEDERATED_WHOLE_BLOB_REVISION_AUTHOR,
+  recordSystemPlanRevisionInTransaction,
+  type PlanRevisionSql,
+} from '../../../agent-tools/plans/revisions';
 import {
   decideContentWriteAuthority,
   resolveContentWriteMode,
@@ -108,6 +116,11 @@ export interface HarnessPlanRow {
   /** Optional redundant wire value from post-861 peers. It is deliberately
    *  opaque and ignored: receivers recompute the index from canonical content. */
   forced_past?: unknown;
+  /** derived-status-not-hand-written-2026-10-12 P-004 (D-008): the plan's
+   *  structured Now note. OPTIONAL and opaque on the wire (a peer predating
+   *  migration 1480 omits it); applied by applyFederatedNowNote under the note's
+   *  own writtenAt/eventId last-writer-wins, never by the row clock alone. */
+  now_note?: unknown;
   supersedes: string[];
   superseded_by: string | null;
   archived: boolean;
@@ -186,14 +199,11 @@ export interface HarnessPlansProjectionOpts {
  *  Absent potHomeSlug (non-hive harness) or no policy ⇒ 'member' (today's behavior). */
 async function defaultResolveWriteMode(opts: HarnessPlansProjectionOpts): Promise<ContentWriteMode> {
   if (!opts.potHomeSlug) return 'member';
-  try {
-    const { getHivePolicy } = await import('../../../hive-policy-store');
-    const resolved = await getHivePolicy(opts.workspaceId, opts.potHomeSlug, opts.sql);
-    return resolveContentWriteMode(resolved?.policy ?? null);
-  } catch {
-    // Fail-safe to today's behavior on any read error — never break federation over a policy read.
-    return 'member';
-  }
+  const { getHivePolicy } = await import('../../../hive-policy-store');
+  // An unavailable policy is not a permissive policy. Let the error abort the
+  // projection before either an overwrite or a delete can bypass ownership.
+  const resolved = await getHivePolicy(opts.workspaceId, opts.potHomeSlug, opts.sql);
+  return resolveContentWriteMode(resolved?.policy ?? null);
 }
 
 /**
@@ -353,6 +363,7 @@ async function writeToPg(
   // content. Recomputing once at projection time keeps the bounded column true
   // without making every plans:get/list call parse the document.
   const forcedPast = summarizeForcedPast(row.content);
+  const planIndex = deriveIndexFromContent(row.content);
   // P-018 / D-012 — author-scoped write authority. Only a cross-member REMOTE op is gated (a local
   // op is the operator's own write; own-slug is already 'apply'). In a trusted hive the mode is
   // 'member' → always ok, owner never bound (byte-identical to today). In an open/author-scoped
@@ -380,17 +391,24 @@ async function writeToPg(
       // stored contract before the upsert. Per-part bootstrap inserts have no
       // existing row to overwrite and remain no-clobber.
       let templateDataForWrite = row.template_data;
-      if (!partFederationOn && row.template_data !== undefined) {
-        const currentRows = await tx<Array<{ template_data: unknown }>>`
-          SELECT template_data
+      // WI-10006313: the flag-OFF upsert below rewrites content, so read whether the
+      // prior row exists and whether its bytes differ. The admission transaction
+      // already holds this plan's advisory lock, so no writer can move it between
+      // this read and the upsert. `null` = no prior row (the upsert inserts).
+      let prior: { content_differs: boolean } | null = null;
+      if (!partFederationOn) {
+        const currentRows = await tx<Array<{ template_data: unknown; content_differs: boolean }>>`
+          SELECT template_data,
+                 content IS DISTINCT FROM ${row.content} AS content_differs
             FROM harness_shared.harness_plans
            WHERE workspace_id = ${opts.workspaceId}
              AND harness_slug = ${row.harness_slug}
              AND plan_slug = ${row.plan_slug}
            LIMIT 1
         `;
+        prior = currentRows[0] ? { content_differs: currentRows[0].content_differs } : null;
         const currentTemplateData = currentRows[0]?.template_data;
-        if (currentTemplateData !== undefined && currentTemplateData !== null) {
+        if (row.template_data !== undefined && currentTemplateData !== undefined && currentTemplateData !== null) {
           const guarded = guardAcceptanceBarTemplateDataWrite({
             slug: row.plan_slug,
             storedTemplateData: currentTemplateData,
@@ -408,7 +426,7 @@ async function writeToPg(
             (workspace_id, harness_slug, plan_slug, content, content_hash, version,
              title, status, created, updated, owner, initiative, template, template_data, promote_policy, input_schema,
              output_schema, property_schema, properties, forced_past, supersedes, superseded_by,
-             archived, is_legacy, author_pubkey, owner_author_pubkey, origin, fed_ts, fed_hlc)
+             archived, is_legacy, items, decisions, author_pubkey, owner_author_pubkey, origin, fed_ts, fed_hlc)
           VALUES
             (${opts.workspaceId}, ${row.harness_slug}, ${row.plan_slug}, ${row.content}, ${row.content_hash}, 0,
              ${row.title}, ${row.status}, ${row.created}, ${row.updated}, ${row.owner}, ${row.initiative ?? null},
@@ -419,7 +437,9 @@ async function writeToPg(
              COALESCE(${row.properties == null ? null : JSON.stringify(row.properties)}::text::jsonb, '{}'::jsonb),
              ${forcedPast == null ? null : JSON.stringify(forcedPast)}::text::jsonb,
              ${row.supersedes}, ${row.superseded_by},
-             ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${ownerToBind}, ${origin}, ${fedTs}, ${fedHlc})
+             ${row.archived}, ${row.is_legacy},
+             ${JSON.stringify(planIndex.items)}::text::jsonb, ${JSON.stringify(planIndex.decisions)}::text::jsonb,
+             ${authorPubkey}, ${ownerToBind}, ${origin}, ${fedTs}, ${fedHlc})
           ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING
           RETURNING plan_slug
         `;
@@ -431,10 +451,35 @@ async function writeToPg(
           await writePlanIndexRows(
             tx as unknown as Parameters<typeof writePlanIndexRows>[0],
             { workspaceId: opts.workspaceId, harnessSlug: row.harness_slug, planSlug: row.plan_slug },
-            deriveIndexFromContent(row.content),
+            planIndex,
           );
-          if (origin === 'remote') await reseedAcceptanceBarsAfterRemoteApply(tx, opts.workspaceId, row, templateDataForWrite);
+          if (origin === 'remote') {
+            // WI-10006275: a remote bootstrap creates this node's copy of the plan
+            // outside withPlanLock; record its first revision in the same tx so the
+            // live bytes always have a revision row (plans:audit / plans:revisions).
+            await recordSystemPlanRevisionInTransaction(tx as unknown as PlanRevisionSql, {
+              workspaceId: opts.workspaceId,
+              harnessSlug: row.harness_slug,
+              planSlug: row.plan_slug,
+              content: row.content,
+              rationale:
+                `federated whole-blob bootstrap (writer=${provenance?.authorPubkey || 'unknown'}, ` +
+                `fed_ts=${provenance?.ts ?? 'none'})`,
+              authorId: FEDERATED_BOOTSTRAP_REVISION_AUTHOR,
+            });
+            await reseedAcceptanceBarsAfterRemoteApply(tx, opts.workspaceId, row, templateDataForWrite);
+          }
         }
+        // P-004 (D-008 §2): the bootstrap insert above does nothing for an existing
+        // row, and per-part recomposition never carries the note, so the note is
+        // applied here under its own last-writer-wins (a fresh bootstrap row has no
+        // note yet, so a peer's note lands on it the same way).
+        await applyFederatedNowNote(
+          tx as unknown as NowNoteSql,
+          { workspaceId: opts.workspaceId, harnessSlug: row.harness_slug, planSlug: row.plan_slug },
+          row.now_note,
+          { origin },
+        );
         return;
       }
 
@@ -445,7 +490,7 @@ async function writeToPg(
           (workspace_id, harness_slug, plan_slug, content, content_hash, version,
            title, status, created, updated, owner, initiative, template, template_data, promote_policy, input_schema,
            output_schema, property_schema, properties, forced_past, supersedes, superseded_by,
-           archived, is_legacy, author_pubkey, owner_author_pubkey, origin, fed_ts, fed_hlc)
+           archived, is_legacy, items, decisions, author_pubkey, owner_author_pubkey, origin, fed_ts, fed_hlc)
         VALUES
           (${opts.workspaceId}, ${row.harness_slug}, ${row.plan_slug}, ${row.content}, ${row.content_hash}, 0,
            ${row.title}, ${row.status}, ${row.created}, ${row.updated}, ${row.owner}, ${row.initiative ?? null},
@@ -456,7 +501,9 @@ async function writeToPg(
            COALESCE(${row.properties == null ? null : JSON.stringify(row.properties)}::text::jsonb, '{}'::jsonb),
            ${forcedPast == null ? null : JSON.stringify(forcedPast)}::text::jsonb,
            ${row.supersedes}, ${row.superseded_by},
-           ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${ownerToBind}, ${origin}, ${fedTs}, ${fedHlc})
+           ${row.archived}, ${row.is_legacy},
+           ${JSON.stringify(planIndex.items)}::text::jsonb, ${JSON.stringify(planIndex.decisions)}::text::jsonb,
+           ${authorPubkey}, ${ownerToBind}, ${origin}, ${fedTs}, ${fedHlc})
         ON CONFLICT (workspace_id, harness_slug, plan_slug) DO UPDATE SET
           content       = EXCLUDED.content,
           content_hash  = EXCLUDED.content_hash,
@@ -483,6 +530,8 @@ async function writeToPg(
           superseded_by = EXCLUDED.superseded_by,
           archived      = EXCLUDED.archived,
           is_legacy     = EXCLUDED.is_legacy,
+          items         = EXCLUDED.items,
+          decisions     = EXCLUDED.decisions,
           author_pubkey = EXCLUDED.author_pubkey,
           origin        = EXCLUDED.origin,
           fed_ts        = EXCLUDED.fed_ts,
@@ -494,10 +543,39 @@ async function writeToPg(
         await writePlanIndexRows(
           tx as unknown as Parameters<typeof writePlanIndexRows>[0],
           { workspaceId: opts.workspaceId, harnessSlug: row.harness_slug, planSlug: row.plan_slug },
-          deriveIndexFromContent(row.content),
+          planIndex,
         );
+        // WI-10006313: this upsert writes harness_plans.content outside withPlanLock,
+        // so when it changes the bytes it records the revision in the same tx (bytes
+        // and revision commit together). An UPDATE records only when the content
+        // actually differs: the local echo of an own write, or a replay of equal
+        // bytes, already has its revision. An INSERT records only for a remote
+        // origin, matching the flag-ON bootstrap above.
+        const recordRevision = prior ? prior.content_differs : origin === 'remote';
+        if (recordRevision) {
+          await recordSystemPlanRevisionInTransaction(tx as unknown as PlanRevisionSql, {
+            workspaceId: opts.workspaceId,
+            harnessSlug: row.harness_slug,
+            planSlug: row.plan_slug,
+            content: row.content,
+            rationale:
+              `federated whole-blob ${prior ? 'apply' : 'bootstrap'} (origin=${origin}, ` +
+              `writer=${provenance?.authorPubkey || 'unknown'}, fed_ts=${provenance?.ts ?? 'none'})`,
+            authorId: prior ? FEDERATED_WHOLE_BLOB_REVISION_AUTHOR : FEDERATED_BOOTSTRAP_REVISION_AUTHOR,
+          });
+        }
         if (origin === 'remote') await reseedAcceptanceBarsAfterRemoteApply(tx, opts.workspaceId, row, templateDataForWrite);
       }
+      // P-004 (D-008 §2): the same note last-writer-wins as the flag-ON branch,
+      // in the same transaction as the whole-blob upsert. It runs whether or not
+      // the upsert's row-clock guard admitted the op: a newer note wins on its own
+      // clock.
+      await applyFederatedNowNote(
+        tx as unknown as NowNoteSql,
+        { workspaceId: opts.workspaceId, harnessSlug: row.harness_slug, planSlug: row.plan_slug },
+        row.now_note,
+        { origin },
+      );
     },
   );
   if (!admission.admitted) {

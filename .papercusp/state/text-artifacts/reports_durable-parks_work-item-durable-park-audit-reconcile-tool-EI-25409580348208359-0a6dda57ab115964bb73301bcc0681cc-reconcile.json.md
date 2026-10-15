@@ -1,0 +1,31 @@
+---
+rel_path: "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-EI-25409580348208359-0a6dda57ab115964bb73301bcc0681cc-reconcile.json"
+updated_at: 1791670628724
+_body: "content"
+---
+
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:EI-25409580348208359:0a6dda57ab115964bb73301bcc0681cc",
+  "inputSha256": "0a6dda57ab115964bb73301bcc0681ccde8c38879ac9fcc3609ecc45c80608f6",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-10-10T22:17:08.724Z",
+  "actor": "su-6baa8b9a-8d72-4223-b6d2-bf9f687dcfcb",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "EI-25409580348208359",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "3f521f509ad52707c0bf999756c6bc362eb3a424235895b23ae37be483f22430",
+      "observedParkFingerprint": "3f521f509ad52707c0bf999756c6bc362eb3a424235895b23ae37be483f22430",
+      "reasonCode": "condition-satisfied",
+      "evidence": "Park release trigger is work-item:done:EI-25397948068488849 (condition: 'Reassess the docs:search trace after the active result-door owner completes and records settlement evidence relevant to invocation 33890990.'). Re-read 2026-10-10T22:15Z (su-6baa8, psql on harness_shared.work_items, workspace papercusp-workspace): EI-25397948068488849 status=done, taken_by none; EI-25409580348208359 status=open, taken_by null. The trigger target is terminal, so the release condition is met. The re-evaluation the condition describes is the next claimant's work and travels with the row. Settled under plan bug-queue-legitimacy-and-actionable-validation-2026-10-10 P-004 / D-009.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-EI-25409580348208359-0a6dda57ab115964bb73301bcc0681cc-reconcile.json"
+}

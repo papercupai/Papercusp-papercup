@@ -235,6 +235,8 @@ export default defineTool({
           recipient_dormant_scheduled?: DormantScheduledInfo[];
           /** FF#3: each missed addressee's FRESH session state at the open moment. */
           recipient_liveness?: MissedRecipientLiveness[];
+          deferred?: number;
+          deferredTargets?: string[];
           note?: string;
         }
       | undefined;
@@ -245,11 +247,16 @@ export default defineTool({
         workspaceId: identity.workspaceId ?? undefined,
       });
       wake = { targets: fan.targets, woken: fan.woken };
+      if (fan.deferred) {
+        wake.deferred = fan.deferred;
+        wake.deferredTargets = fan.deferredTargets;
+        wake.note = 'Bulk wake(s) durably DEFERRED for pacing; deferred targets are not dead or absent and must not be relaunched.';
+      }
       if (fan.staged > 0) wake.staged = fan.staged;
       // A handoff aimed at concrete, wakeable addressee(s) that woke nobody AND
       // staged nobody is a loud miss (mirrors coord:send wake:'required'): the
       // handoff injected to their inbox, but no session was re-invoked to accept it.
-      if (fan.targets.length > 0 && fan.woken === 0 && fan.staged === 0) {
+      if (fan.targets.length > 0 && fan.woken === 0 && !fan.deferred && fan.staged === 0) {
         wake.recipient_absent = true;
         // FF#2/FF#3: classify the dead ones + force their fresh session state into the
         // result, so a handoff to a long-ended agent isn't read as "offered, all good".

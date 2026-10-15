@@ -39,7 +39,7 @@ import { operatorResolveExtends } from './installed-blueprints';
 import { loopbackFetch, describeFetchError } from '../loopback-fetch';
 import { dbosOrchestratorActive } from '../dbos/dbos-flags';
 import { operatorApiBase } from '../operator-api-base';
-import { recordSpawn, finishSpawn } from '../fleet/spawn-tree';
+import { recordSpawn, finishSpawn, recordSpawnAccountRoute, spawnAccountRouteFromLaunch } from '../fleet/spawn-tree';
 import { agentProducedTurn } from '../fleet/invoke-outcome';
 import {
   isReleaseFixerNoTurnFailure,
@@ -50,6 +50,10 @@ import { heartbeatSpawns, recordSpawnPid, SPAWN_HEARTBEAT_INTERVAL_MS } from '..
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import type { DurableSpawnFireInput } from '../dbos/durable-spawn';
 import type { Db } from '../fleet/pg-stores';
+import { observeFallback } from '../degradation/fallback-observations';
+import { composeLaunchModelSpec, backendForModelSpec, type AgentBackend } from '../agent-config-constants';
+import { accountProviderForInteractiveBackend, interactiveBackendFromSpawnBackend } from '../backend-feature-capabilities';
+import { accountRoutingMode, resolveSpawnRouteAccounts } from '../inference-gateway/spawn-env';
 
 // The invoke route is a Hono API route on the operator's API port — derive the base from
 // the shared helper (operator-api-base.ts), never the stale `:3055` Vite SPA default.
@@ -388,6 +392,83 @@ function buildInvokeBody(
   return body;
 }
 
+/** Both direct fires and durable requests resolve the same declared role route. */
+async function resolveLaunchInput(target: LaunchTarget, input: FireLaunchInput): Promise<FireLaunchInput> {
+  const { resolveRoleLaunchLive } = await import('../fleet/role-launch');
+  const blueprint = await _resolver(target.blueprintId);
+  const account = input.bodyExtra?.account;
+  if (account !== undefined && account !== null && typeof account !== 'string') {
+    throw new Error('launch account route must be a string or null');
+  }
+  const launch = await resolveRoleLaunchLive(target.role, {
+    workspaceId: input.workspaceId,
+    installSlug: input.installSlug,
+    blueprintRole: blueprint.roles.find((entry) => entry.id === target.role),
+    account,
+  });
+  const bodyExtra = { ...input.bodyExtra };
+  if (bodyExtra.spawnModel == null && launch.spawnModel) bodyExtra.spawnModel = launch.spawnModel;
+  if (bodyExtra.spawnBackend == null && launch.backend) bodyExtra.spawnBackend = launch.backend;
+  if (bodyExtra.account === undefined && launch.account !== null) bodyExtra.account = launch.account;
+  if (launch.conflict) console.warn(`[backend-conflict] launch-blueprint role '${target.role}': ${launch.conflict.note}`);
+  // Capacity may substitute only on a measured wall. An unreadable, missing or
+  // stale account reading is unknown and keeps the candidate launchable.
+  const route = typeof bodyExtra.account === 'string' ? bodyExtra.account.trim() : '';
+  if (route && accountRoutingMode(route) !== 'default') {
+    const { accountStatus, poolVerdictByProvider } = await import('../deployment/account-pool-store');
+    const rows = await accountStatus(input.workspaceId).catch(() => []);
+    const primary = { backend: bodyExtra.spawnBackend as AgentBackend | undefined, account: route,
+      model: typeof bodyExtra.spawnModel === 'string' ? bodyExtra.spawnModel : launch.model };
+    primary.backend ??= backendForModelSpec(primary.model)?.backend;
+    const candidates = [primary, ...launch.backups.map(backup => ({ backend: backup.backend,
+      account: typeof input.bodyExtra?.account === 'string' ? input.bodyExtra.account.trim() : backup.account ?? route,
+      model: composeLaunchModelSpec(backup.model, backup.effort)! }))];
+    const walls: string[] = [];
+    let selected = -1;
+    for (const [index, candidate] of candidates.entries()) {
+      const candidateRoute = candidate.account;
+      if (!candidateRoute || accountRoutingMode(candidateRoute) === 'default') { selected = index; break; }
+      const backend = candidate.backend ?? backendForModelSpec(candidate.model)?.backend;
+      const provider = backend === 'omp'
+        ? (await import('../inference-gateway/omp-models-config')).ompGatewayModelFromSpec(candidate.model)?.accountProvider
+        : backend ? accountProviderForInteractiveBackend(interactiveBackendFromSpawnBackend(backend)) : null;
+      if (!provider || !rows.length) { selected = index; break; }
+      // An explicit pin cannot be silently moved to another provider.
+      if (accountRoutingMode(candidateRoute) === 'pin' && rows.some(row => row.id === candidateRoute && row.provider !== provider)) {
+        walls.push(`${backend}: account '${candidateRoute}' belongs to another provider`);
+        continue;
+      }
+      // A read failure supplies no evidence for skipping this candidate.
+      const accounts = await resolveSpawnRouteAccounts(input.workspaceId, provider, candidateRoute).catch(() => null);
+      if (!accounts) { selected = index; break; }
+      const ids = new Set(accounts.map(account => account.id));
+      const allowed = rows.filter(row => ids.has(row.id));
+      const verdict = poolVerdictByProvider(allowed).find(row => row.provider === provider);
+      if (allowed.length !== ids.size || !verdict?.atCapacity) { selected = index; break; }
+      walls.push(`${backend}/${candidate.model}: ${verdict.reason}`);
+    }
+    if (selected < 0) {
+      throw new Error(`Launch withheld: every declared route is unavailable. ${walls.join('; ')}`);
+    }
+    if (selected > 0) {
+      const candidate = candidates[selected]!;
+      bodyExtra.requestedSpawnBackend = primary.backend;
+      bodyExtra.requestedSpawnModel = primary.model;
+      bodyExtra.spawnBackend = candidate.backend;
+      bodyExtra.spawnModel = candidate.model;
+      bodyExtra.account = candidate.account;
+      bodyExtra.spawnFallbackReason = 'capacity';
+      observeFallback('blueprint-launch', { eligible: 1, applied: 0, reason: 'capacity', scope: target.role }, { workspaceId: input.workspaceId });
+      const { sendMessage } = await import('../agent-tools/coordination/messages');
+      await sendMessage({ ownerId: 'system-blueprint-launch', ownerLabel: 'blueprint-launch', source: 'principal',
+        workspaceId: input.workspaceId, userId: null }, { to: ['human'], kind: 'message', harnessSlug: input.installSlug,
+        summary: `${target.role}: capacity fallback ${primary.backend}/${primary.model} → ${candidate.backend}/${candidate.model}`,
+        body: walls.join('; '), extra: { expects: 'none', reason: 'capacity' } });
+    }
+  }
+  return { ...input, bodyExtra };
+}
+
 /**
  * Resolve a launch blueprint + build its /invoke fire as a DURABLE-SPAWN REQUEST,
  * WITHOUT firing it (EI-403-A). The auto-implement lane uses this from inside its
@@ -404,16 +485,17 @@ export async function buildLaunchSpawnRequest(
   idempotencyKey: string,
 ): Promise<DurableSpawnFireInput> {
   const target = await resolveLaunchTarget(blueprintId, input);
-  const effectiveInput = withDefaultLaunchTimeout(input, target.role);
+  const effectiveInput = await resolveLaunchInput(target, withDefaultLaunchTimeout(input, target.role));
   // EI-403 round-2: the durable path otherwise records NO spawned_agents row, so the
   // implement worker ran invisibly (round 1's fire-and-forget fallback DID record it,
   // via the WI-108 fix below). Opt INTO recordSpawn so the durably-fired worker shows
   // in fleet:tree — `durableSpawnFireImpl` writes/finishes the row (stable id =
   // durable-spawn:<key>). The implement lane's itemId rides bodyExtra.improvementDispatch.
   const dispatch = (input.bodyExtra?.improvementDispatch ?? undefined) as { itemId?: string } | undefined;
+  const body = buildInvokeBody(target.blueprintId, effectiveInput);
   return {
     url: target.url,
-    body: buildInvokeBody(target.blueprintId, effectiveInput),
+    body,
     idempotencyKey,
     label: `${input.installSlug}/${target.role}`,
     spawnRecord: {
@@ -423,6 +505,7 @@ export async function buildLaunchSpawnRequest(
       parentRole: input.parent?.role ?? 'operator',
       parentSpawnId: input.parent?.spawnId ?? null,
       itemId: dispatch?.itemId ?? null,
+      accountRoute: spawnAccountRouteFromLaunch(body, `durable-spawn:${idempotencyKey}`) ?? undefined,
     },
   };
 }
@@ -470,13 +553,16 @@ const defaultFire = async (
             parentRole: parent?.role ?? 'operator',
             parentSpawnId: parent?.spawnId ?? null,
             itemId: dispatch?.itemId ?? null,
+            accountRoute: spawnAccountRouteFromLaunch(body, `durable-spawn:${idempotencyKey}`) ?? undefined,
           },
         })
       ) {
+        observeFallback('blueprint-launch', { eligible: 1, applied: 1, reason: 'applied', scope: 'durable-enqueue' }, { workspaceId });
         // The workflow id IS the durable correlation for this fire.
         return { spawnId: `durable-spawn:${idempotencyKey}`, runId: idempotencyKey, durable: true };
       }
     } catch (e) {
+      observeFallback('blueprint-launch', { eligible: 1, applied: 0, reason: 'durable-enqueue-failed', scope: 'durable-enqueue' }, { workspaceId });
       // DBOS may have committed the workflow before the enqueue response was
       // lost. A direct /invoke fallback here would create a second child.
       if (e instanceof Error && e.name === 'DurableSpawnEnqueueUncertainError') throw e;
@@ -508,6 +594,8 @@ const defaultFire = async (
         runId,
         status: 'running',
       });
+      const accountRoute = spawnAccountRouteFromLaunch(body, spawnId);
+      if (accountRoute) await recordSpawnAccountRoute(db, spawnId, accountRoute);
       // EI-21144257978207759: a release-fixer can be fired by the short-lived
       // green-checkpoint CLI.  Without pre-handoff provenance that CLI could exit before
       // its fire-and-forget /invoke request admitted a child, leaving a fresh-heartbeat
@@ -556,6 +644,7 @@ const defaultFire = async (
         },
       );
       if (!admission.admitted) {
+        observeFallback('blueprint-launch', { eligible: 1, applied: 1, reason: 'applied', scope: 'spawn-record' }, { workspaceId });
         console.warn(
           `[launch-blueprint] skipped duplicate Mug launch (${installSlug}/${role}); ` +
             `workspace ${workspaceId} already has active Mug ${admission.activeSpawnId}` +
@@ -566,7 +655,9 @@ const defaultFire = async (
     } else {
       await writeRecord(sql);
     }
+    observeFallback('blueprint-launch', { eligible: 1, applied: 1, reason: 'applied', scope: 'spawn-record' }, { workspaceId });
   } catch (e) {
+    observeFallback('blueprint-launch', { eligible: 1, applied: 0, reason: 'spawn-record-failed', scope: 'spawn-record' }, { workspaceId });
     console.warn(
       `[launch-blueprint] fallback spawn record failed (${installSlug}/${role}): ${e instanceof Error ? e.message : e}`,
     );
@@ -612,6 +703,7 @@ const defaultFire = async (
   // /invoke route. The route uses this internal field only to stamp the actual
   // invoke-once child pid + launcher boot after admission.
   const invokeBody = { ...body, spawnRecordId: spawnId };
+  let invokeObserved = false;
 
   void loopbackFetch(
     url,
@@ -628,7 +720,6 @@ const defaultFire = async (
   )
     .then(async (r) => {
       stopHeartbeat();
-      if (!pg) return;
       // HTTP 200 ≠ the agent ran. Judge the invoke body with the SHARED rule
       // (fleet/invoke-outcome), same as durable-spawn: a fire that returns ok-shaped
       // while the agent never emitted a turn (a 429-killed / dead-launcher spawn) is
@@ -690,6 +781,10 @@ const defaultFire = async (
       if (status === 'failed') {
         console.warn(`[launch-blueprint] fire not green (${installSlug}/${role}): ${errorMessage}`);
       }
+      invokeObserved = true;
+      observeFallback('blueprint-launch', { eligible: 1, applied: status === 'done' ? 1 : 0,
+        reason: status === 'done' ? 'applied' : r?.ok === false ? 'invoke-http-failed' : 'invoke-no-turn', scope: 'invoke-run' }, { workspaceId });
+      if (!pg) return;
       // A release-fixer that returns no turn is not merely a failed child row: it left the
       // red gate without a diagnosis. Reuse the durable escalation table so the next reader
       // sees the failure immediately, while the liveness-aware dispatcher remains the retry
@@ -745,6 +840,7 @@ const defaultFire = async (
           releaseFixerRetryCount + 1,
           false,
         ).catch((retryError) => {
+          observeFallback('blueprint-launch', { eligible: 1, applied: 0, reason: 'retry-start-failed', scope: 'invoke-run' }, { workspaceId });
           console.warn(
             `[launch-blueprint] release-fixer fallback retry failed to start (${installSlug}): ${
               retryError instanceof Error ? retryError.message : String(retryError)
@@ -755,6 +851,10 @@ const defaultFire = async (
     })
     .catch((e) => {
       stopHeartbeat();
+      if (!invokeObserved) {
+        invokeObserved = true;
+        observeFallback('blueprint-launch', { eligible: 1, applied: 0, reason: 'invoke-request-failed', scope: 'invoke-run' }, { workspaceId });
+      }
       // describeFetchError surfaces undici's hidden cause code (e.g. UND_ERR_SOCKET)
       // so the persisted error_message + watchdog signal are self-diagnosing (EI-390).
       const detail = describeFetchError(e);
@@ -846,32 +946,7 @@ export async function fireLaunchBlueprint(
   //
   // Explicit caller / bench pins still win: each field is written only when the
   // caller left it unset.
-  if (fireInput.bodyExtra?.spawnModel == null || fireInput.bodyExtra?.spawnBackend == null) {
-    try {
-      const { resolveRoleLaunchLive } = await import('../fleet/role-launch');
-      const launch = await resolveRoleLaunchLive(target.role, {
-        workspaceId: input.workspaceId,
-        installSlug: input.installSlug,
-      });
-      const bodyExtra = { ...fireInput.bodyExtra };
-      if (bodyExtra.spawnModel == null && launch.spawnModel) bodyExtra.spawnModel = launch.spawnModel;
-      if (bodyExtra.spawnBackend == null && launch.backend) bodyExtra.spawnBackend = launch.backend;
-      fireInput = { ...fireInput, bodyExtra };
-
-      // P-005: a contradiction is reported, never silently resolved. WARN rather
-      // than throw — this runs on every autonomous launch, and a hard refusal would
-      // take the fleet down over a config disagreement the caller cannot fix
-      // mid-flight. The precedence itself is deliberate (WI-4640); this only makes
-      // the losing side visible, which is the half that was missing when nine
-      // release-fixers (2026-09-03 00:32Z→01:27Z) spawned onto a usage-walled codex
-      // account while `roleBackends['release-fixer']` said 'claude-code'.
-      if (launch.conflict) {
-        console.warn(`[backend-conflict] launch-blueprint role '${target.role}': ${launch.conflict.note}`);
-      }
-    } catch {
-      /* fail-soft: leave the role on its committed default if config is unreadable */
-    }
-  }
+  fireInput = await resolveLaunchInput(target, fireInput);
 
   const fire = _fire ?? defaultFire;
   const fired = (await fire({ ...fireInput, ...target })) as LaunchSpawnInfo | undefined;

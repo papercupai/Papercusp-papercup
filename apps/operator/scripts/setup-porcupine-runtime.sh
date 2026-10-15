@@ -30,6 +30,15 @@
 # usable identity check here. The checksum is.
 set -euo pipefail
 
+SOURCE_MODEL=""
+if [ "$#" -gt 0 ]; then
+  if [ "$#" -ne 2 ] || [ "$1" != "--source" ]; then
+    echo "usage: setup-porcupine-runtime.sh [--source <model-file>]" >&2
+    exit 2
+  fi
+  SOURCE_MODEL="$2"
+fi
+
 cd "$(dirname "$0")/.."
 
 # Immutable commit for lib/common/porcupine_params.pv (authored 2025-12-11).
@@ -53,6 +62,17 @@ mkdir -p "$DEST_DIR"
 TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
 
+# Immutable test snapshots may borrow cached bytes, but the COMMITTED pin
+# decides whether they are usable. Verify the copied bytes to avoid a race
+# with a source refresh; never link a mutable shared asset into the snapshot.
+if [ -n "$SOURCE_MODEL" ] && [ -f "$SOURCE_MODEL" ] && cp "$SOURCE_MODEL" "$TMP" && verify "$TMP"; then
+  mv "$TMP" "$DEST"
+  chmod 644 "$DEST"
+  trap - EXIT
+  echo "porcupine-runtime: reused cached model (sha256 verified)"
+  exit 0
+fi
+
 if curl -fsSL --max-time 120 "$URL" -o "$TMP" 2>/dev/null && verify "$TMP"; then
   mv "$TMP" "$DEST"
   # mktemp creates 0600 and mv preserves it; a static asset the webview fetches
@@ -68,7 +88,7 @@ fi
 # previously-verified copy is already on disk. With no copy at all, wake-word
 # would 404 at runtime, and a silent "install succeeded" is exactly how that
 # reaches a user; so that case fails loudly here instead.
-if [ -f "$DEST" ]; then
+if verify "$DEST"; then
   echo "WARN: porcupine-runtime: could not refresh the model (network or checksum) — keeping the existing copy at $DEST" >&2
   exit 0
 fi

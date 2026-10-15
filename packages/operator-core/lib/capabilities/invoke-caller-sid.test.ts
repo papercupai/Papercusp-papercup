@@ -63,6 +63,33 @@ beforeEach(() => {
 });
 
 describe('invokeServerCapability — EI-1751 callerSid attribution', () => {
+  const employee = { kind: 'user' as const, slug: 'employee-id', workspaceId: 'ws1',
+    authMethod: 'cookie-session' as const, trust: 'verified' as const, capabilities: new Set(['blueprint:submit']) };
+
+  it('preserves the server-resolved actor and enforces its capabilities on direct and nested calls', async () => {
+    await invokeServerCapability({ name: 'tools:invoke', harness: 'desktop-pot', authenticatedPrincipal: employee });
+    expect(capturedCtx?.principal).toEqual(employee);
+    expect(capturedCtx?.gateBypass?.capability).not.toBe(true);
+    const dispatch = capturedCtx?.dispatchTool;
+    await dispatch!('t:x', {});
+    expect(capturedCtx?.principal).toEqual(employee);
+    expect(capturedCtx?.gateBypass?.capability).not.toBe(true);
+  });
+
+  it('rejects a cookie actor from another workspace before dispatch', async () => {
+    const result = await invokeServerCapability({ name: 't:x',
+      authenticatedPrincipal: { ...employee, workspaceId: 'other-workspace' } });
+    expect(result).toMatchObject({ ok: false, status: 403, code: 'invalid_authenticated_principal' });
+    expect(capturedCtx).toBeNull();
+  });
+
+  it('rejects a system identity passed as a cookie actor', async () => {
+    const result = await invokeServerCapability({ name: 't:x',
+      authenticatedPrincipal: { ...employee, kind: 'system', trust: 'trusted' } });
+    expect(result).toMatchObject({ ok: false, status: 403, code: 'invalid_authenticated_principal' });
+    expect(capturedCtx).toBeNull();
+  });
+
   it('no callerSid ⇒ ctx.uiClientId stays null (today\'s behavior)', async () => {
     const r = await invokeServerCapability({ name: 't:x' });
     expect(r.ok).toBe(true);

@@ -10,13 +10,15 @@ import { EventEmitter } from 'node:events';
 // spread — only `spawn` is stubbed, so this execFileSync is the real one
 // (used to prove one-liners parse/execute under actual bash).
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, join, sep } from 'node:path';
 import * as nodePty from '@lydell/node-pty';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { controlPlaneTempRoot } from './control-plane-temp.mjs';
 import {
   buildConsoleOneliner,
+  keepWindowOpenOnFailure,
   advSessionTitleTag,
   macConsoleInvocation,
   macHasGuiSession,
@@ -29,6 +31,9 @@ import {
   buildConsoleScopedSpawnCommand,
   normalizeHeadlessAgentEnv,
   normalizeHeadlessAgentTerm,
+  KICKOFF_PROOF_PATH_ENV,
+  KICKOFF_PROOF_TOKEN_ENV,
+  KICKOFF_PROOF_WINDOW_MS,
   _resetTerminalCacheForTests,
   pickLinuxTerminal,
   resolveTerminalPreference,
@@ -38,8 +43,18 @@ import {
   type DesktopEnvProbes,
 } from './console-spawn';
 import type { ConsoleEnvelope } from './console-launcher';
+
+const prepareProfileMock = vi.hoisted(() => vi.fn(async (terminal: { bin: string; args: string[] }) => terminal));
+vi.mock('./gnome-terminal-profile.mjs', () => ({
+  prepareGnomeTerminal: prepareProfileMock,
+}));
+import { consumeKickoffPromptFile, KICKOFF_PROMPT_FILE_ENV } from './agent-kickoff/prompt-transport.mjs';
 import { isWindowsDesktopHost } from './windows-desktop-windows';
 import { requestDesktopConsoleLaunch } from './console-launch-bridge';
+import {
+  headlessRoleMcpVerifyWorstCaseMs,
+  publishKickoffProofReceipt,
+} from '../../../apps/operator/scripts/psu-pty-host.mjs';
 
 // WI-1882: make the WSL2/Windows-desktop signal deterministic on the Linux CI
 // host (where process.platform is already 'linux'). console-spawn consumes only
@@ -273,6 +288,16 @@ describe('spawnConsole early-exit probe — WI-1886(b)', () => {
     expect(r.status).toBe('ok');
     expect((r as { pid: number | null }).pid).toBe(3333);
   }, 10_000);
+
+  it('forwards the prepared profile through the scoped terminal command', async () => {
+    prepareProfileMock.mockImplementationOnce(async (terminal) => ({
+      ...terminal, args: ['--profile=test-bounded', ...terminal.args],
+    }));
+    spawnMock.mockImplementation(() => fakeChild(3333));
+    const result = await spawnConsole({ envelope, desktopEnvProbes: FAKE_DESKTOP_PROBES });
+    expect(result.status).toBe('ok');
+    expect(spawnMock.mock.calls[0][1]).toContain('--profile=test-bounded');
+  }, 10_000);
 });
 
 describe('spawnConsole boot receipt — the visible-path phantom-ok (EI-19330040718883562)', () => {
@@ -345,6 +370,31 @@ describe('spawnConsole boot receipt — the visible-path phantom-ok (EI-19330040
     expect((r as { pid: number | null }).pid).toBe(7003);
   }, 10_000);
 
+  it('retains a private failed receipt and returns its addressable cause', async () => {
+    spawnMock.mockImplementation(() => fakeChild(7005));
+    let path = '';
+    try {
+      const r = await spawnConsole({
+        envelope, desktopEnvProbes: FAKE_DESKTOP_PROBES, verifyBootReceipt: true,
+        bootProbes: {
+          readLog: (receipt) => {
+            path = receipt;
+            writeFileSync(receipt, `PSU_ACTUAL_REFUSAL\n${AUTH_DEATH}`, { mode: 0o600 });
+            return readFileSync(receipt, 'utf8');
+          },
+          sleep: TICK, windowMs: 60,
+        },
+      });
+      expect(r.status).toBe('error');
+      expect((r as { error: string }).error).toContain('PSU_ACTUAL_REFUSAL');
+      expect((r as { error: string }).error).toContain(`boot receipt retained: ${path}`);
+      expect(existsSync(path)).toBe(true);
+      expect(path).toMatch(/papercup-console-receipt-.*\.log$/);
+    } finally {
+      if (path) rmSync(path, { force: true });
+    }
+  }, 10_000);
+
   it('verifyBootReceipt:true — the sentinel appearing LATE (after the early-exit probe) is still caught', async () => {
     spawnMock.mockImplementation(() => fakeChild(7004));
     let reads = 0;
@@ -364,6 +414,85 @@ describe('spawnConsole boot receipt — the visible-path phantom-ok (EI-19330040
 });
 
 describe('buildConsoleOneliner boot-receipt tee (EI-19330040718883562)', () => {
+  it('captures the actual boot refusal before the sentinel, without changing the exit status', () => {
+    const root = mkdtempSync(join(tmpdir(), 'console-boot-detail-'));
+    const receipt = join(root, "quote's boot.log");
+    try {
+      // Delay the receipt consumer so nested process-substitution races cannot
+      // hide behind a fast tail process. The footer must wait for this flush.
+      const tail = join(root, 'tail');
+      writeFileSync(tail, '#!/bin/bash\nsleep 0.1\nexec /usr/bin/tail "$@"\n');
+      chmodSync(tail, 0o700);
+      const script = interactiveRcScript(keepWindowOpenOnFailure(
+        "printf 'PSU_REAL_BOOT_REFUSAL\\n' >&2; exit 2", { receiptPath: receipt },
+      ));
+      const result = spawnSync('bash', ['-c', script], {
+        env: { ...process.env, PATH: `${root}${delimiter}${process.env.PATH ?? ''}`, SHELL: '/bin/true' },
+        encoding: 'utf8', timeout: 5000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0); // the inspection shell still opens
+      expect(result.stderr).toContain('PSU_REAL_BOOT_REFUSAL');
+      const captured = readFileSync(receipt, 'utf8');
+      expect(captured).toContain('PSU_REAL_BOOT_REFUSAL');
+      expect(captured).toContain('exited with status 2');
+      expect(captured.indexOf('PSU_REAL_BOOT_REFUSAL')).toBeLessThan(captured.indexOf('exited with status 2'));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds verbose boot stderr and retains the late failure, rather than only its footer', () => {
+    const root = mkdtempSync(join(tmpdir(), 'console-boot-tail-'));
+    const receipt = join(root, 'boot.log');
+    try {
+      const script = interactiveRcScript(keepWindowOpenOnFailure(
+        "printf '%25000s' '' >&2; printf '\\nLATE_BOOT_REFUSAL\\n' >&2; exit 2", { receiptPath: receipt },
+      ));
+      const result = spawnSync('bash', ['-c', script], {
+        env: { ...process.env, SHELL: '/bin/true' }, encoding: 'utf8', timeout: 5000,
+      });
+      expect(result.error).toBeUndefined();
+      const captured = readFileSync(receipt, 'utf8');
+      expect(Buffer.byteLength(captured)).toBeLessThan(17000);
+      expect(captured).toContain('LATE_BOOT_REFUSAL');
+      expect(captured).toContain('exited with status 2');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps greeting stdin/stdout on the real PTY while copying only its stderr', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'console-boot-tty-'));
+    const receipt = join(root, 'boot.log');
+    let terminal: ReturnType<typeof nodePty.spawn> | undefined;
+    try {
+      const script = interactiveRcScript(keepWindowOpenOnFailure(
+        '[ -t 0 ] && [ -t 1 ] || { echo TTY_LOST >&2; exit 3; }; ' +
+        'printf "TTY_PRESERVED\\n"; printf "ACTUAL_REFUSAL\\n" >&2; exit 2',
+        { receiptPath: receipt },
+      ));
+      let output = '';
+      terminal = nodePty.spawn('bash', ['-c', script], {
+        cwd: root, env: { ...process.env, SHELL: '/bin/true' }, name: 'xterm-256color',
+      });
+      terminal.onData((data) => { output += data; });
+      const code = await new Promise<number>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('receipt PTY fixture did not exit')), 5000);
+        terminal!.onExit((event) => { clearTimeout(timeout); resolve(event.exitCode); });
+      });
+      expect(code).toBe(0);
+      expect(output).toContain('TTY_PRESERVED');
+      expect(output).not.toContain('TTY_LOST');
+      const captured = readFileSync(receipt, 'utf8');
+      expect(captured).toContain('ACTUAL_REFUSAL');
+      expect(captured).not.toContain('TTY_PRESERVED');
+    } finally {
+      try { terminal?.kill(); } catch { /* already exited */ }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('omitting bootReceiptPath is byte-identical to the pre-fix banner', () => {
     const out = buildConsoleOneliner('/x', {}, 'false', APPEARANCE);
     expect(out).not.toContain('tee -a');
@@ -376,8 +505,10 @@ describe('buildConsoleOneliner boot-receipt tee (EI-19330040718883562)', () => {
     const withoutScript = interactiveRcScript(without);
     expect(withReceiptScript).toContain("| tee -a '/tmp/receipt.log'");
     expect(withReceiptScript).toContain('initial terminal command exited with status %s');
-    // Stripping the tee clause should recover the exact unmodified banner.
-    expect(withReceiptScript.replace(" | tee -a '/tmp/receipt.log'", '')).toBe(withoutScript);
+    // The greeting now captures stderr, but the failure banner itself is unchanged.
+    const banner = '__papercusp_greeting_rc=$?';
+    expect(withReceiptScript.slice(withReceiptScript.indexOf(banner)).replace(" | tee -a '/tmp/receipt.log'", ''))
+      .toBe(withoutScript.slice(withoutScript.indexOf(banner)));
   });
 });
 
@@ -466,8 +597,9 @@ describe('headlessLogPath — per-session log filename (headless-fleet-launch P-
     expect(base).not.toMatch(/[\s·()]/);
     expect(base).toBe('my-fleet-member-1-3-plan-42-1000.log');
   });
-  it('falls back to tmpdir when no dir given, and never yields an empty base name', () => {
+  it('uses the control-plane runtime root when no log directory is given', () => {
     const p = headlessLogPath({ logDir: null, label: '···', pid: 1, nowMs: 2 });
+    expect(p.startsWith(controlPlaneTempRoot('log') + sep)).toBe(true);
     expect(p).toMatch(/headless-1-2\.log$/);
   });
 });
@@ -497,16 +629,60 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     sessionId: 'test-sid',
   };
   beforeEach(() => {
+    // A fleet-launched test runner carries its own launcher provenance. Keep
+    // this suite's "not supplied" cases independent of the invoking session.
+    vi.stubEnv('PAPERCUSP_LAUNCHED_BY', undefined);
     spawnMock.mockReset();
     taskEnrolment.begin.mockClear();
     taskEnrolment.complete.mockClear();
     taskControl.kill.mockClear();
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('keeps the default kickoff-proof budget beyond the headless MCP verification worst case', () => {
+    expect(KICKOFF_PROOF_WINDOW_MS).toBeGreaterThanOrEqual(headlessRoleMcpVerifyWorstCaseMs());
   });
 
   // No-systemd-run fallback path — pin hasSystemdRun:false so these don't flake
   // with whichever host/CI runner actually runs the suite (same class of bug
   // findLinuxTerminal's _resetTerminalCacheForTests exists for).
   const noSystemdRun = { spawnCommandProbes: { hasSystemdRun: () => false } };
+
+  it('establishes kickoff proof on the private runtime mount when scratch is unusable', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'kickoff-runtime-'));
+    const runtime = join(root, 'runtime');
+    const scratch = join(root, 'unusable-scratch');
+    mkdirSync(runtime, { mode: 0o700 });
+    writeFileSync(scratch, 'not a directory');
+    vi.stubEnv('XDG_RUNTIME_DIR', runtime);
+    vi.stubEnv('TMPDIR', scratch);
+    spawnMock.mockImplementation(() => fakeChild(7794));
+    let receiptPath = '';
+    try {
+      const result = await spawnHeadless({
+        envelope,
+        label: 'runtime-proof',
+        logDir: join(root, 'logs'),
+        kickoffProof: true,
+        kickoffProofProbes: {
+          windowMs: 0,
+          readReceipt: (path, token) => {
+            receiptPath = path;
+            expect(path.startsWith(runtime + '/')).toBe(true);
+            return JSON.stringify({ token, persisted: true, nativeRef: 'native:runtime', reason: null });
+          },
+        },
+        bootProbes: { readLog: () => '', sleep: async () => {}, windowMs: 0 },
+        ...noSystemdRun,
+      });
+      expect(result).toMatchObject({ status: 'ok', kickoffProof: { persisted: true } });
+      expect(receiptPath).not.toBe('');
+      expect(existsSync(receiptPath)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   it('cleans an idle task when the host proves the kickoff was never submitted', async () => {
     spawnMock.mockImplementation(() => fakeChild(7790));
@@ -542,6 +718,155 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     });
     expect(taskControl.kill).not.toHaveBeenCalled();
     expect(r).toMatchObject({ status: 'ok', kickoffProof: { persisted: false, reason: 'kickoff-proof-timeout' } });
+    // The retained child owns the placeholder until its exit; do not leak it
+    // from the fixture now that the parent's timeout correctly preserves it.
+    (r as { child: EventEmitter }).child.emit('exit', 0, null);
+    await (r as { childExit: Promise<unknown> }).childExit;
+  });
+
+  it.each([
+    { label: 'refusal', event: 'exit', args: [1, null], diagnostic: 'exit 1' },
+    { label: 'clean exit without proof', event: 'exit', args: [0, null], diagnostic: 'exit 0' },
+    { label: 'signal', event: 'exit', args: [null, 'SIGTERM'], diagnostic: 'signal SIGTERM' },
+    { label: 'spawn error', event: 'error', args: [new Error('launcher refused')], diagnostic: 'launcher refused' },
+  ])('kickoff child exit: reports $label during proof polling rather than timeout', async ({ event, args, diagnostic }) => {
+    const child = fakeChild(7795);
+    spawnMock.mockImplementation(() => child);
+    let reads = 0;
+    let sleeps = 0;
+    let receiptPath = '';
+    const result = await spawnHeadless({
+      envelope,
+      label: 'terminal-kickoff',
+      kickoffProof: true,
+      kickoffProofProbes: {
+        windowMs: 1000,
+        pollMs: 250,
+        readReceipt: (path) => { receiptPath = path; reads++; return ''; },
+        sleep: async () => { sleeps++; child.emit(event, ...args); },
+      },
+      bootProbes: { readLog: () => '', sleep: async () => {}, windowMs: 0 },
+      ...noSystemdRun,
+    });
+    expect(result).toMatchObject({ status: 'error', code: 502 });
+    expect(result).toHaveProperty('error', expect.stringContaining(diagnostic));
+    expect(result).toHaveProperty('logPath', expect.any(String));
+    expect(reads).toBe(2);
+    expect(sleeps).toBe(1);
+    expect(existsSync(receiptPath)).toBe(false);
+    expect(taskControl.kill).not.toHaveBeenCalled();
+  });
+
+  it('kickoff child exit: detects a child already ended after the early boot probe', async () => {
+    const child = fakeChild(7796);
+    spawnMock.mockImplementation(() => child);
+    const result = await spawnHeadless({
+      envelope,
+      label: 'already-terminal-kickoff',
+      kickoffProof: true,
+      kickoffProofProbes: { windowMs: 0, readReceipt: () => '' },
+      bootProbes: {
+        readLog: () => { child.emit('exit', 1, null); return ''; },
+        sleep: async () => {}, windowMs: 0,
+      },
+      ...noSystemdRun,
+    });
+    expect(result).toMatchObject({ status: 'error', code: 502 });
+    expect(result).toHaveProperty('error', expect.stringContaining('exit 1'));
+  });
+
+  it.each([
+    'tracked fork is unavailable for codex source; refusing untracked fork',
+    'psu: --account auto could not be honored: inference gateway off / no pool',
+  ])('kickoff child exit: retains the launcher refusal instead of a timeout: %s', async (refusal) => {
+    const child = fakeChild(7798);
+    spawnMock.mockImplementation(() => child);
+    const logs = mkdtempSync(join(tmpdir(), 'kickoff-exit-log-'));
+    try {
+      const result = await spawnHeadless({
+        envelope,
+        label: 'refused-kickoff',
+        logDir: logs,
+        kickoffProof: true,
+        kickoffProofProbes: {
+          windowMs: 1000,
+          readReceipt: () => '',
+          sleep: () => {
+            const log = readdirSync(logs).find((name) => name.endsWith('.log'))!;
+            writeFileSync(join(logs, log), refusal);
+            queueMicrotask(() => child.emit('exit', 1, null));
+            return new Promise<void>(() => {});
+          },
+        },
+        bootProbes: { readLog: () => '', sleep: async () => {}, windowMs: 0 },
+        ...noSystemdRun,
+      });
+      expect(result).toMatchObject({ status: 'error', code: 502 });
+      expect(result).toHaveProperty('error', expect.stringContaining(refusal));
+      expect(readFileSync((result as { logPath: string }).logPath, 'utf8')).toBe(refusal);
+    } finally {
+      rmSync(logs, { recursive: true, force: true });
+    }
+  });
+
+  it('kickoff child exit: preserves a valid native receipt when the child also exits', async () => {
+    const child = fakeChild(7797);
+    spawnMock.mockImplementation(() => child);
+    const result = await spawnHeadless({
+      envelope,
+      label: 'proved-terminal-kickoff',
+      kickoffProof: true,
+      kickoffProofProbes: {
+        windowMs: 0,
+        readReceipt: (_path, token) => {
+          child.emit('exit', 0, null);
+          return JSON.stringify({ token, persisted: true, nativeRef: 'native:completed', reason: null });
+        },
+      },
+      bootProbes: { readLog: () => '', sleep: async () => {}, windowMs: 0 },
+      ...noSystemdRun,
+    });
+    expect(result).toMatchObject({
+      status: 'ok', kickoffProof: { persisted: true, nativeRef: 'native:completed', reason: null },
+    });
+    expect(taskControl.kill).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: 'late proof', proof: { persisted: true, nativeRef: 'native:late', reason: null } },
+    { label: 'late refusal', proof: { persisted: false, nativeRef: null, reason: 'kickoff-not-submitted:successor-reanchor-unconfirmed' } },
+  ])('preserves the secure rendezvous for $label after the parent deadline', async ({ proof }) => {
+    const child = fakeChild(7793);
+    spawnMock.mockImplementation(() => child);
+    let receiptPath = '';
+    let receiptToken = '';
+    try {
+      const r = await spawnHeadless({
+        envelope, label: 'late-kickoff', kickoffProof: true,
+        kickoffProofProbes: {
+          windowMs: 0,
+          readReceipt: (path, token) => { receiptPath = path; receiptToken = token; return ''; },
+        },
+        bootProbes: { readLog: () => '', sleep: async () => {}, windowMs: 0 },
+        ...noSystemdRun,
+      });
+      expect(r).toMatchObject({ status: 'ok', kickoffProof: { persisted: false, reason: 'kickoff-proof-timeout' } });
+      expect(readFileSync(receiptPath, 'utf8')).toBe('');
+      // Use the real host writer, including its same-UID/0600/no-symlink and
+      // atomic-replacement checks, after the parent has returned uncertainty.
+      expect(publishKickoffProofReceipt(proof, {
+        [KICKOFF_PROOF_PATH_ENV]: receiptPath,
+        [KICKOFF_PROOF_TOKEN_ENV]: receiptToken,
+      })).toEqual({ published: true });
+      expect(JSON.parse(readFileSync(receiptPath, 'utf8'))).toMatchObject({ token: receiptToken, ...proof });
+      expect(taskControl.kill).not.toHaveBeenCalled();
+      child.emit('exit', 0, null);
+      await (r as { childExit: Promise<unknown> }).childExit;
+      expect(existsSync(receiptPath)).toBe(false);
+    } finally {
+      child.emit('exit', 0, null);
+      if (receiptPath) rmSync(receiptPath, { force: true });
+    }
   });
 
   it('preserves a partial launch when cleanup of an unsubmitted kickoff fails', async () => {
@@ -644,6 +969,65 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     }
   }, 10_000);
 
+  // WI-10005243: the write path went async (fs/promises). Pin the user-visible
+  // contract it must keep: an existing user .mcp.json is moved to the one-shot
+  // backup, a READ-ONLY stale .mcp.json is still replaced (rename needs only the
+  // directory's write bit), and no temp file is left behind.
+  it('backs up the user .mcp.json once, replaces a read-only one, and leaves no temp file', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'papercup-headless-mcp-bak-'));
+    const mcpJsonContents = '{"mcpServers":{"papercusp":{"url":"http://127.0.0.1"}}}';
+    spawnMock.mockImplementation(() => fakeChild(7779));
+    const run = () =>
+      spawnHeadless({
+        envelope: { ...envelope, cwd, mcpJsonContents },
+        label: 'hl',
+        logDir: null,
+        writeMcpJson: true,
+        bootProbes: { readLog: () => '', sleep: async () => {}, windowMs: 0 },
+        ...noSystemdRun,
+      });
+
+    try {
+      writeFileSync(join(cwd, '.mcp.json'), '{"user":true}');
+      expect((await run()).status).toBe('ok');
+      expect(readFileSync(join(cwd, '.mcp.json.papercusp.bak'), 'utf8')).toBe('{"user":true}');
+      expect(readFileSync(join(cwd, '.mcp.json'), 'utf8')).toBe(mcpJsonContents);
+
+      // Second launch: the backup already exists, so the stale file is NOT moved
+      // aside. Make it read-only to reproduce the 2026-07-11 EACCES regression.
+      chmodSync(join(cwd, '.mcp.json'), 0o444);
+      expect((await run()).status).toBe('ok');
+      expect(readFileSync(join(cwd, '.mcp.json'), 'utf8')).toBe(mcpJsonContents);
+      expect(readFileSync(join(cwd, '.mcp.json.papercusp.bak'), 'utf8')).toBe('{"user":true}');
+
+      expect(readdirSync(cwd).filter((f) => f.startsWith('.mcp.json.tmp-'))).toEqual([]);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  // WI-10005227 / WI-10005243 recurrence guard: spawnConsole/spawnHeadless run on
+  // the operator's and bg-host's event loop, and a sync rename over an existing
+  // .mcp.json blocked bg-host's main thread 22-156 ms (ext4 flushes the replaced
+  // file's data at rename). The .mcp.json writer must stay on fs/promises.
+  it('keeps the .mcp.json writer off the event loop (no *Sync fs calls)', () => {
+    const src = readFileSync(join(__dirname, 'console-spawn.ts'), 'utf8');
+    const start = src.indexOf('async function writeMcpJsonFile(');
+    expect(start).toBeGreaterThan(-1);
+    const end = src.indexOf('\n}\n', start);
+    expect(end).toBeGreaterThan(start);
+    // Strip comments first: the function's own rationale mentions
+    // `writeFileSync(mcpPath, …)` as history, and must not trip the guard.
+    const code = src
+      .slice(start, end)
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    // The slice must contain the write it guards, or the guard passes vacuously.
+    expect(code).toMatch(/\bawait fsp\.rename\(tmp, mcpPath\)/);
+    expect(code).toMatch(/\bawait fsp\.writeFile\(tmp, /);
+    expect(code).not.toMatch(/\b\w+Sync\(/);
+  });
+
   it('falls back to bash -lc (no terminal emulator, no systemd-run) detached with a log fd, and reports ok+pid when the session outlives the probe', async () => {
     spawnMock.mockImplementation(() => fakeChild(7777)); // never exits = a live agent
     const r = await spawnHeadless({ envelope, label: 'hl', logDir: null, ...noSystemdRun });
@@ -661,6 +1045,72 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     expect(args[1]).toContain('psu --headless');
     expect(args[1]).toContain('export PAPERCUSP_PSU_HEADLESS_NORMALIZED_LOG=');
     expect(args[1]).toContain((r as { normalizedLogPath: string }).normalizedLogPath);
+  }, 10_000);
+
+  it('forwards a known launcher into the pty host environment without inventing one', async () => {
+    spawnMock.mockImplementation(() => fakeChild(7780));
+    // Two production boot windows require at least 14.4 seconds, exceeding
+    // this test's 10-second budget. This fixture checks environment provenance;
+    // the separate boot-receipt suite exercises the actual polling windows.
+    const bootProbes = { readLog: () => '', sleep: async () => {}, windowMs: 0 };
+    await spawnHeadless({
+      envelope,
+      label: 'launched',
+      launchedBy: '  su-launching-agent  ',
+      bootProbes,
+      ...noSystemdRun,
+    });
+    let [, , options] = spawnMock.mock.calls[0] as [
+      string,
+      string[],
+      { env?: Record<string, string | undefined> },
+    ];
+    expect(options.env?.PAPERCUSP_LAUNCHED_BY).toBe('su-launching-agent');
+
+    spawnMock.mockReset();
+    spawnMock.mockImplementation(() => fakeChild(7781));
+    await spawnHeadless({ envelope, label: 'unmarked', bootProbes, ...noSystemdRun });
+    [, , options] = spawnMock.mock.calls[0] as [
+      string,
+      string[],
+      { env?: Record<string, string | undefined> },
+    ];
+    expect(options.env?.PAPERCUSP_LAUNCHED_BY).toBeUndefined();
+  }, 10_000);
+
+  it('passes the kickoff proof token through the child environment without putting it in argv', async () => {
+    const routes = [
+      { label: 'direct-bash', expectedBin: 'bash', spawnCommandProbes: { hasSystemdRun: () => false } },
+      {
+        label: 'systemd-run',
+        expectedBin: 'systemd-run',
+        spawnCommandProbes: { platform: 'linux' as const, hasSystemdRun: () => true },
+      },
+    ];
+    for (const [index, route] of routes.entries()) {
+      spawnMock.mockReset();
+      spawnMock.mockImplementation(() => fakeChild(7781 + index));
+      await spawnHeadless({
+        envelope,
+        label: route.label,
+        kickoffProof: true,
+        kickoffProofProbes: { windowMs: 0, readReceipt: () => '' },
+        bootProbes: { readLog: () => '', sleep: async () => {}, windowMs: 0 },
+        spawnCommandProbes: route.spawnCommandProbes,
+      });
+
+      const [bin, args, options] = spawnMock.mock.calls[0] as [
+        string,
+        string[],
+        { env?: Record<string, string | undefined> },
+      ];
+      const token = options.env?.[KICKOFF_PROOF_TOKEN_ENV];
+      const argv = [bin, ...args].join('\0');
+      expect(bin).toBe(route.expectedBin);
+      expect(typeof token === 'string' && /^[a-f0-9]{48}$/i.test(token)).toBe(true);
+      expect(typeof token === 'string' && argv.includes(token)).toBe(false);
+      expect(argv.includes(KICKOFF_PROOF_TOKEN_ENV)).toBe(false);
+    }
   }, 10_000);
 
   it('stamps a known trimmed coord owner only into the agent-session ledger detail', async () => {
@@ -694,6 +1144,26 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     expect((r as { code: number }).code).toBe(502);
     expect((r as { error: string }).error).toMatch(/died at boot/i);
   });
+
+  it('keeps a large kickoff out of both headless shell argv and inherited env', async () => {
+    vi.stubEnv('PAPERCUSP_KICKOFF_PROMPT', 'parent recovery note must never be inherited');
+    spawnMock.mockImplementation(() => fakeChild(7789));
+    const prompt = 'Full independent review — preserve every condition.\n'.repeat(6000);
+    try {
+      const result = await spawnHeadless({
+        envelope: { ...envelope, env: { ...envelope.env, PAPERCUSP_KICKOFF_PROMPT: prompt } },
+        label: 'large-kickoff',
+        logDir: null,
+        ...noSystemdRun,
+      });
+      expect(result.status).toBe('ok');
+      const [, argv, options] = spawnMock.mock.calls[0];
+      expect(argv.every((arg: string) => Buffer.byteLength(arg) < 32 * 1024)).toBe(true);
+      expect(options.env.PAPERCUSP_KICKOFF_PROMPT).toBeUndefined();
+      expect(argv.join(' ')).not.toContain('Full independent review');
+      expect(consumeKickoffPromptFile(options.env[KICKOFF_PROMPT_FILE_ENV])).toBe(prompt);
+    } finally { vi.unstubAllEnvs(); }
+  }, 10_000);
 
   it('EI-9748: installs a TERM trap ahead of the greeting so a cgroup-restart kill logs a diagnostic instead of dying silently', async () => {
     spawnMock.mockImplementation(() => fakeChild(7778));
@@ -1280,15 +1750,23 @@ describe('buildConsoleOneliner', () => {
     'keeps the interactive supervisor alive when Ctrl+C interrupts the greeting',
     async () => {
       const dir = mkdtempSync(join(tmpdir(), 'papercup-console-sigint-'));
+      const home = join(dir, 'home');
+      mkdirSync(home);
+      const survivedMarker = 'TERMINAL_SURVIVED_SIGINT';
       const out = buildConsoleOneliner(
         dir,
-        { SHELL: '/bin/bash', PS1: 'PAPERCUSP-SURVIVED> ' },
+        {
+          HOME: home,
+          SHELL: '/bin/bash',
+          PS1: 'PAPERCUSP-SURVIVED> ',
+          PAPERCUSP_TEST_SURVIVED_SIGINT: survivedMarker,
+        },
         "printf 'GREETING_STARTED\\n'; sleep 30",
         APPEARANCE,
       );
       const terminal = nodePty.spawn('bash', ['--noprofile', '--norc', '-lc', out], {
         cwd: dir,
-        env: { ...process.env, TERM: 'xterm-256color' },
+        env: { ...process.env, HOME: home, TERM: 'xterm-256color' },
         cols: 100,
         rows: 30,
       });
@@ -1296,10 +1774,14 @@ describe('buildConsoleOneliner', () => {
       terminal.onData((data) => {
         captured += data;
       });
-      const exited = new Promise<void>((resolve) => terminal.onExit(() => resolve()));
-      const waitForOutput = async (needle: string) => {
+      let exitEvent: unknown = null;
+      const exited = new Promise<void>((resolve) => terminal.onExit((event) => {
+        exitEvent = event;
+        resolve();
+      }));
+      const waitForOutput = async (needle: string, fromOffset = 0) => {
         const deadline = Date.now() + 3_000;
-        while (!captured.includes(needle)) {
+        while (captured.indexOf(needle, fromOffset) === -1) {
           if (Date.now() >= deadline) {
             throw new Error(`timed out waiting for ${needle}; output=${JSON.stringify(captured)}`);
           }
@@ -1309,20 +1791,39 @@ describe('buildConsoleOneliner', () => {
 
       try {
         await waitForOutput('GREETING_STARTED');
+        const interruptOffset = captured.length;
         terminal.write('\x03');
-        await waitForOutput('^C');
-        terminal.write('echo TERMINAL_SURVIVED_SIGINT\n');
-        await waitForOutput('TERMINAL_SURVIVED_SIGINT');
+        await waitForOutput('^C', interruptOffset);
+
+        // The login shell's system profile can override inherited PS1. Set a
+        // controlled prompt after Ctrl+C, then require command output (not PTY
+        // echo of the input line) and the following prompt before sending exit.
+        const markerOffset = captured.length;
+        terminal.write("PS1='PAPERCUSP-SURVIVED> '; printf '%s\\n' \"$PAPERCUSP_TEST_SURVIVED_SIGINT\"\n");
+        await waitForOutput(survivedMarker, markerOffset);
+        const outputOffset = captured.indexOf(survivedMarker, markerOffset) + survivedMarker.length;
+        await waitForOutput('PAPERCUSP-SURVIVED> ', outputOffset);
+
         terminal.write('exit\n');
         await Promise.race([
           exited,
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error(`terminal did not exit; output=${JSON.stringify(captured)}`)), 3_000),
-          ),
+          new Promise<void>((_, reject) => setTimeout(() => {
+            let pidState = 'alive';
+            try {
+              process.kill(terminal.pid, 0);
+            } catch (error) {
+              const code = (error as NodeJS.ErrnoException).code;
+              pidState = code === 'ESRCH' ? 'exited' : `unknown (${code ?? String(error)})`;
+            }
+            reject(new Error(
+              `terminal did not exit (ptyPid=${terminal.pid}, pidState=${pidState}, ` +
+              `onExit=${JSON.stringify(exitEvent)}); output=${JSON.stringify(captured)}`,
+            ));
+          }, 3_000)),
         ]);
 
         expect(captured).toContain('^C');
-        expect(captured).toContain('TERMINAL_SURVIVED_SIGINT');
+        expect(captured).toContain(survivedMarker);
       } finally {
         try {
           terminal.kill();
@@ -2026,6 +2527,7 @@ describe('spawnHeadless boot receipt — a member that dies AFTER the probe (EI-
     expect(r.status).toBe('error');
     expect((r as { code: number }).code).toBe(502);
     expect((r as { error: string }).error).toMatch(/died at boot \(exit 1\)/);
+    expect((r as { logPath?: string }).logPath).toBeTruthy();
     // The operator error must carry the member's own words, or the next person
     // debugging this has to go find the log themselves.
     expect((r as { error: string }).error).toMatch(/disabled Claude subscription access/);

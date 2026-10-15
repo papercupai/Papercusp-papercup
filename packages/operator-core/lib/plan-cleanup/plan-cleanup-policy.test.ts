@@ -23,6 +23,7 @@ const h = vi.hoisted(() => {
     markCleanupFindingAccepted: vi.fn(),
     markCleanupFindingDismissed: vi.fn(),
     getRunFindings: vi.fn(),
+    getCleanupReviewRuns: vi.fn(),
     notifyPlanCleanupRunChanged: vi.fn(),
     requireAllowedOriginOr403: vi.fn(),
     gateApiRoute: vi.fn(),
@@ -51,6 +52,7 @@ vi.mock('./run-store', () => ({
   markCleanupFindingAccepted: h.markCleanupFindingAccepted,
   markCleanupFindingDismissed: h.markCleanupFindingDismissed,
   getRunFindings: h.getRunFindings,
+  getCleanupReviewRuns: h.getCleanupReviewRuns,
 }));
 vi.mock('./deterministic-runner', () => ({
   runDeterministicPlanCleanup: h.runDeterministicPlanCleanup,
@@ -83,7 +85,8 @@ vi.mock('../endpoint-route/routes/admin/attention-bulk-resolve', async (importOr
   };
 });
 
-import { MAX_RUN_PLANS, parsePlanSlugs, planCleanupHandler } from '../endpoint-route/routes/admin/plan-cleanup';
+import { planCleanupHandler } from '../endpoint-route/routes/admin/plan-cleanup';
+import { MAX_RUN_PLANS, normalizePlanSlugs, selectPlansForRun } from './start-run';
 import { getRegistryEntryV2 } from '../sync-resolver/index';
 
 const run = {
@@ -143,16 +146,19 @@ beforeEach(() => {
   h.spawnHeadless.mockResolvedValue({ status: 'ok', child: h.child });
   h.resolverSpawnOutcome.mockReturnValue({ ok: true, sessionId: 'su-resolver', child: h.child });
   h.getRunFindings.mockResolvedValue([{ findingId: 'f-1' }]);
+  h.getCleanupReviewRuns.mockResolvedValue({ runs: [], total: 0 });
   h.scanCleanupRun.mockResolvedValue([]);
 });
 
 describe('plan-cleanup route policy', () => {
-  it('dedupes and caps the click-time plan snapshot', () => {
+  it('dedupes the click-time plan snapshot and REPORTS the cap instead of silently cutting', () => {
     const input = [' plan-a ', 'plan-a', ...Array.from({ length: MAX_RUN_PLANS + 10 }, (_, i) => `p-${i}`)];
-    const parsed = parsePlanSlugs(input);
+    const parsed = normalizePlanSlugs(input);
     expect(parsed[0]).toBe('plan-a');
-    expect(parsed).toHaveLength(MAX_RUN_PLANS);
     expect(new Set(parsed).size).toBe(parsed.length);
+    const selection = selectPlansForRun(parsed, new Map());
+    expect(selection.planSlugs).toHaveLength(MAX_RUN_PLANS);
+    expect(selection).toMatchObject({ requested: MAX_RUN_PLANS + 11, accepted: MAX_RUN_PLANS, truncated: 11 });
   });
 
   it('creates a plan-kind run and launches a supervised resolver with the run brief', async () => {
@@ -161,7 +167,15 @@ describe('plan-cleanup route policy', () => {
       {} as never,
     );
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ ok: true, runId: run.runId, launched: true });
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      runId: run.runId,
+      launched: true,
+      // P-005: the start response reports coverage, so a cap is never silent.
+      requested: 2,
+      accepted: 2,
+      truncated: 0,
+    });
     expect(h.createRun).toHaveBeenCalledWith(
       expect.objectContaining({
         items: [],
@@ -189,6 +203,7 @@ describe('plan-cleanup route policy', () => {
       runId: run.runId,
       phase: 'running',
       resolverOwner: pending.resolverOwner,
+      workspaceId: run.workspaceId,
     });
     expect(h.spawnHeadless).toHaveBeenCalledWith(expect.objectContaining({ coordOwnerId: pending.resolverOwner }));
   });
@@ -208,6 +223,7 @@ describe('plan-cleanup route policy', () => {
       runId: run.runId,
       phase: 'failed',
       error: 'psu boot failed',
+      workspaceId: run.workspaceId,
     });
   });
 
@@ -316,13 +332,22 @@ describe('plan-cleanup route policy', () => {
 
 describe('plans.cleanupRun sync resolver', () => {
   it('returns an explicit idle row and filters the latest read to plan-cleanup', async () => {
+    h.getActiveRun.mockResolvedValue(null);
     h.getLatestRun.mockResolvedValue(null);
     const rows = await getRegistryEntryV2('plans.cleanupRun')!.resolve!({} as never);
+    // WI-10004730: an open run outranks a newer terminal one — active first.
+    expect(h.getActiveRun).toHaveBeenCalledWith(undefined, 'plan-cleanup');
     expect(h.getLatestRun).toHaveBeenCalledWith(undefined, 'plan-cleanup');
-    expect(rows).toEqual([{ run: null, findings: [] }]);
+    expect(rows).toEqual([{ run: null, findings: [], reviewInventory: { runs: [], total: 0 } }]);
+    expect(h.getCleanupReviewRuns).toHaveBeenCalledOnce();
   });
 
   it('returns one run with its findings and rejects an explicit inbox-kind run', async () => {
+    const reviewInventory = {
+      runs: [{ runId: 'older-review', createdAt: '2026-10-06T12:00:00Z', unresolved: 2 }],
+      total: 1,
+    };
+    h.getCleanupReviewRuns.mockResolvedValue(reviewInventory);
     h.getRun.mockResolvedValue({ ...run, phase: 'review' });
     expect(await getRegistryEntryV2('plans.cleanupRun')!.resolve!({ runId: run.runId } as never)).toEqual([
       {
@@ -332,12 +357,14 @@ describe('plans.cleanupRun sync resolver', () => {
           liveness: { state: 'not-executing', phase: 'review' },
         },
         findings: [{ findingId: 'f-1' }],
+        reviewInventory,
       },
     ]);
 
     h.getRun.mockResolvedValue({ ...run, runKind: 'inbox-resolve' });
     expect(await getRegistryEntryV2('plans.cleanupRun')!.resolve!({ runId: 'inbox-1' } as never)).toEqual([
-      { run: null, findings: [] },
+      { run: null, findings: [], reviewInventory },
     ]);
+    expect(h.getCleanupReviewRuns).toHaveBeenCalledTimes(2);
   });
 });

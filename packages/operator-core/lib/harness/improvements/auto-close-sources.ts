@@ -58,6 +58,11 @@ export const AUTO_CLOSE_ELIGIBLE_SOURCES: ReadonlySet<string> = new Set([
   // benchmark hive's saturation/orphan/stuck signal simply stops). Added so auto-close
   // retires the full benchmark-debris set (governor-starvation was the gap — 27 EIs).
   'governor-starvation',
+  // P-009 (producer-silence.ts): re-derived from PG every tick, latches nothing — a quiet
+  // tick means the producer produced again, or was switched off on purpose (both genuine
+  // resolutions). A failed output read makes the collector THROW (learning-slo.ts
+  // producerSilenceCollector), so an unmeasured tick is never counted as an absent one.
+  'producer-silence',
   'orphaned-spawn',
   'stuck-plan',
   'ship-link-stuck',

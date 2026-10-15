@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Legacy Inno registry probes reject instrument failures",
+  "framework": "shell",
+  "command": [
+    "bash",
+    "-c",
+    "bash -n bin/lib/inno-legacy-reaper.selftest.sh\nBASH_XTRACEFD=3 timeout 600 bash -x bin/lib/inno-legacy-reaper.selftest.sh 3> \"$HOME/.papercusp/scratch/c0523-inno-legacy-registry-v3.trace\" > \"$HOME/.papercusp/scratch/c0523-inno-legacy-registry-v3.log\" 2>&1"
+  ],
+  "cwd": "papercusp-desktop",
+  "exitCode": 0,
+  "startedAt": "2026-10-14T17:32:41.648Z",
+  "finishedAt": "2026-10-14T17:35:39.205Z",
+  "summary": "The maintained shell test passed exact present/absent-key/absent-key-or-value, denied, timeout, unreadable-success and wrong-key controls, existing lifecycle controls, and real quoted/unquoted ghost/live Inno cases; no SKIP. Local scoped verification only; full aggregate and plan shipment remain unmeasured.",
+  "assertions": [
+    {
+      "id": "registry-fault-controls",
+      "passed": true,
+      "evidence": "Actual key_exists, seed precondition and ghost assertion reject denied access, timeout even with absence text, unreadable success and wrong-key output. Both Wine and key-or-value absence diagnostics pass only on exit1."
+    },
+    {
+      "id": "measured-product-counterexamples",
+      "passed": true,
+      "evidence": "Confirmed missing live key and surviving ghost key set RC=1; instrument failures terminate with case measured nothing and never emit ghost reaped or GHOST NOT REAPED."
+    },
+    {
+      "id": "private-lifecycle-controls",
+      "passed": true,
+      "evidence": "Existing maintained negative controls reject nonpersistent Wine server and failed wait; positive control checks one display across clients and scoped shutdown/wait."
+    },
+    {
+      "id": "quoted-ghost-and-live",
+      "passed": true,
+      "evidence": "Original v3 native log: [quoted] ghost reaped and live entry spared."
+    },
+    {
+      "id": "unquoted-ghost-and-live",
+      "passed": true,
+      "evidence": "Original v3 native log: [unquoted] ghost reaped and live entry spared; terminal PASS, native exit0, no skip."
+    }
+  ],
+  "workItemId": "EI-25975181569416624",
+  "nativeExecution": {
+    "sessionId": "01a13b71-759c-7192-98f5-ca4bdfee73ff",
+    "rolloutOrdinal": 255,
+    "eventId": "ctc_08ed965a4ff96608016acfbcae77b481969d5b6f1f9892a504",
+    "startChunk": "c0466f",
+    "terminalChunk": "2c3bb2",
+    "timestampScope": "Enclosing native exec batch start through terminal result readback; not a child-wall performance measurement."
+  },
+  "source": {
+    "path": "papercusp-desktop/bin/lib/inno-legacy-reaper.selftest.sh",
+    "sha256": "61b2f5120a1ac12570ded20b757a21202e0c5cf0626ab97b3871f276e9527285",
+    "desktopHeadAtRead": "568a382e8d2f921f1698b9c5e5000882186325c8",
+    "inputs": [
+      {
+        "path": "papercusp-desktop/bin/lib/inno-legacy-reaper.selftest.sh",
+        "sha256": "61b2f5120a1ac12570ded20b757a21202e0c5cf0626ab97b3871f276e9527285"
+      },
+      {
+        "path": "papercusp-desktop/src-tauri/windows/inno/papercusp.iss",
+        "sha256": "d26fead6e17aba321701b8f53281c475e488ad744c9bd750cec2b0d5b20e0217"
+      }
+    ]
+  },
+  "logs": [
+    {
+      "path": "~/.papercusp/scratch/c0523-inno-legacy-registry-v3.log",
+      "sha256": "5f88a96ffddc2cdde8518cf1554adcf0f92390ad1002a9683fa6974a25a58b8b"
+    },
+    {
+      "path": "~/.papercusp/scratch/c0523-inno-legacy-registry-v3.trace",
+      "sha256": "19ae1dd4bf4d17923d1bf2ef38b0c1ec64ec649262b02ad3512557d04f725059"
+    },
+    {
+      "path": "~/.papercusp/scratch/c0523-inno-legacy-registry-v2.log",
+      "sha256": "8734ad8195063d7df49d94a9495164300cdf4af7d44d2656dd19ff288767cef5"
+    },
+    {
+      "path": "~/.papercusp/scratch/c0523-inno-legacy-registry-v2.trace",
+      "sha256": "b6a23a8478c3f478138480a61738eb95d50d9255cfad8bdc03e6eb3c0697c094"
+    }
+  ],
+  "historicalAttempt": {
+    "version": "v2",
+    "exitCode": 1,
+    "reason": "Initial classifier refused Wine confirmed-absence wording; output preserved and corrected in v3. No product-failure claim."
+  },
+  "referencePathConvention": "Home references use ~ or $HOME; original native logs remain unchanged.",
+  "runtimeClosure": "unmeasured",
+  "operationalAcceptance": false,
+  "requirementDisposition": {
+    "registry-query-failure-classification": "verified-local",
+    "real-quoted-unquoted-ghost-live-behavior": "verified-local",
+    "full-plan": "unshipped"
+  }
+}

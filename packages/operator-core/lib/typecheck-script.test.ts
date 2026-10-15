@@ -11,7 +11,7 @@
  * only on NEW errors (ratchet-only-down). This test fails if the alias is
  * removed — i.e. if the repo regresses back to the silent-no-op state.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -130,5 +130,23 @@ describe('EI-6479 — typecheck script exists and runs the real baseline gate', 
       readFileSync(resolve(REPO_ROOT, 'packages/agent-mcp/.tsc-baseline.json'), 'utf-8'),
     );
     expect(baseline.files, 'agent-mcp baseline must have a files map').toBeTypeOf('object');
+  });
+
+  // WI-10006237: plugin-loader had no tsconfig and no typecheck script, so no leg compiled it and the
+  // type half of its guards (manifest-validate.test.ts's Required<ProviderDescriptor> fixture) never fired.
+  it('plugin-loader declares the baseline-gated typecheck that lint:tsc:workspaces discovers', () => {
+    const s = scripts('packages/plugin-loader/package.json');
+    expect(s.typecheck, 'packages/plugin-loader must expose a real typecheck script').toBeTruthy();
+    expect(s.typecheck).toMatch(/lint-tsc-plugin-loader\.mjs/);
+    expect(existsSync(resolve(REPO_ROOT, 'packages/plugin-loader/tsconfig.json'))).toBe(true);
+  });
+
+  it('plugin-loader baseline exists and starts with no own-file diagnostics', () => {
+    const baseline = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'packages/plugin-loader/.tsc-baseline.json'), 'utf-8'),
+    );
+    expect(baseline.files, 'plugin-loader baseline must have a files map').toBeTypeOf('object');
+    const own = Object.keys(baseline.files).filter((f) => f.startsWith('packages/plugin-loader/'));
+    expect(own, 'plugin-loader files must not be baselined: fix the error instead').toEqual([]);
   });
 });

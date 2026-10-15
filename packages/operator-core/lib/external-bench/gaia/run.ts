@@ -12,6 +12,8 @@
 import { cp, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { estimateCost } from '@papercusp/model-pricing';
+import { benchDefaultModelId } from '../model-registry-snapshot';
 import { gradeGaia, type GaiaLevel, type GaiaPrediction, type GaiaReport } from '../grader/gaia';
 import { runGaiaAgent, type GaiaAgentConfig, type GaiaAgentResult, type GaiaAgentStopReason, type LlmFn } from './agent';
 import type { GaiaTask } from './dataset';
@@ -39,7 +41,7 @@ export interface GaiaRunTotals {
   tasks: number;
   tokensIn: number;
   tokensOut: number;
-  /** Ballpark $ from {@link OPUS_PRICE} — informational; the canonical cost layer (bench-metrics priceRun) owns the real number. */
+  /** Estimate for {@link GaiaRunConfig.modelId} from @papercusp/model-pricing — informational; the canonical cost layer (bench-metrics priceRun) owns the real number. */
   estCostUsd: number;
   wallClockMs: number;
   /** Tasks excluded from accuracy because the agent hit an infra error (stopReason==='error'). */
@@ -54,8 +56,6 @@ export interface GaiaRunResult {
   totals: GaiaRunTotals;
 }
 
-/** Ballpark opus-4.8 price ($/token) for the informational `estCostUsd` only. */
-export const OPUS_PRICE = { inPerTok: 15 / 1_000_000, outPerTok: 75 / 1_000_000 } as const;
 
 export interface GaiaRunDeps {
   /** Run the agent for one task → its result. Injected (fake in tests; {@link makeLiveRunAgent} in prod). */
@@ -83,6 +83,8 @@ export interface GaiaRunConfig {
    * {@link priorPredictions} for crash-safe long runs.
    */
   onRecord?: (record: GaiaPredictionRecord) => void;
+  /** The evaluated model id, used only to price `estCostUsd` (default: the registry-resolved benchmark default). */
+  modelId?: string;
 }
 
 /** Build the predictions record for one freshly-run task. */
@@ -194,7 +196,7 @@ export async function runGaiaSuite(
     tasks: tasks.length,
     tokensIn,
     tokensOut,
-    estCostUsd: tokensIn * OPUS_PRICE.inPerTok + tokensOut * OPUS_PRICE.outPerTok,
+    estCostUsd: estimateCost(config.modelId ?? benchDefaultModelId(), tokensIn, tokensOut),
     wallClockMs: now() - startedAt,
     infraErrors,
     reused,

@@ -137,6 +137,24 @@ describe('selectCitedFacts — resolution', () => {
     }
   });
 
+  it('treats an expired current wall as active until it is retracted or superseded', () => {
+    const [active] = selectCitedFacts(['wall:owner-action'], [row({
+      key: 'wall:owner-action', expired: true, body: 'rotation still pending',
+    })]);
+    expect(active.condition).toBe('live');
+    expect(active.excerpt).toBe('rotation still pending');
+
+    const [retracted] = selectCitedFacts(['wall:owner-action'], [row({
+      key: 'wall:owner-action', expired: true, retracted: true,
+    })]);
+    expect(retracted.condition).toBe('retracted');
+
+    const [superseded] = selectCitedFacts(['wall:owner-action'], [row({
+      key: 'wall:owner-action', expired: true, superseded: true,
+    })]);
+    expect(superseded.condition).toBe('superseded');
+  });
+
   it('prefers a LIVE row in a broad scope over a decayed row in a specific one', () => {
     // This is the whole reason this module does not reuse resolveAssumptions,
     // which is specific-scope-first by design (D-079 R2).

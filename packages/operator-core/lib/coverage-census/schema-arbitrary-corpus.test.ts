@@ -23,7 +23,7 @@
  * fails both when the converter lies and when it quietly stops doing any work.
  * ────────────────────────────────────────────────────────────────────────────────────────────
  */
-import Ajv2020 from 'ajv/dist/2020';
+import Ajv2020 from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 import fc from 'fast-check';
 import { fileURLToPath } from 'node:url';

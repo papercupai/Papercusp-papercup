@@ -10,6 +10,9 @@
  * emits here.
  */
 
+// Type-only: turn-proof.ts imports a VALUE from this module, so a value import back would cycle.
+import type { TurnProof } from './turn-proof';
+
 /** How a fired event reaches a subscriber (plan D-002). `announce` (EI-9270) is
  *  NOT a delivery policy: it marks an emitter-side DECLARATION row ("this gate
  *  key WILL fire — await it") that never wakes anyone itself; every delivery
@@ -276,6 +279,16 @@ export interface DeliveryRow {
    *  so the async resume-turn-exit handler can attribute a turn DEATH to its source (the
    *  loop-wake-rate-limit-robustness fix). null = unattributed. */
   source: string | null;
+  /** P-006 / D-004 (migration 1441): did this delivery START A TURN — a question `status` does not
+   *  answer (`delivered` only means the delivery reached its channel). `host-attested` / `observed`
+   *  prove a turn; `awaiting` is unresolved until `pickupDeadlineAt`; `not-picked-up` is the
+   *  measured failure; `superseded` rode another delivery. null = booked before migration 1441:
+   *  UNKNOWN, never to be read as either outcome. */
+  turnProof: TurnProof | null;
+  /** When the turn-start proof was established (host attestation or first observed turn signal). */
+  turnStartedAt: string | null;
+  /** An `awaiting` delivery resolves to `not-picked-up` after this instant. */
+  pickupDeadlineAt: string | null;
 }
 
 /** EI-13705: the unconditional per-key "did this ever genuinely fire" latch
@@ -294,9 +307,18 @@ export interface KeyFireRow {
 }
 
 /** A delivery row joined with its await's wake handle + note (the pump's unit). */
+export interface HostDeliveryCancellation {
+  /** Existing host delivery IDs that are still pending behind the host's gates. */
+  deliveryIds: string[];
+  /** Every inbox msg_id represented by the pending wake text. */
+  handledMsgIds: string[];
+}
+
 export interface DeliveryWork extends DeliveryRow {
   wakeHandle: WakeHandle | null;
   note: string | null;
+  /** Ephemeral proof-gated cancellation request; never persisted to the delivery row. */
+  hostCancellation?: HostDeliveryCancellation;
   /** Ambient-push delivery rail (ambient-semantic-push P-003): a pre-rendered,
    *  already-injection-door-capped teaser block that rides THIS wake's injection.
    *  Populated ONLY when PAPERCUSP_AMBIENT_CURSOR is on (fail-soft, best-effort);
@@ -315,10 +337,18 @@ export interface DeliveryWork extends DeliveryRow {
 
 /** The wake executor's verdict for one delivery attempt. */
 export type WakeOutcome =
-  | { kind: 'delivered'; channel: WakeChannel }
+  /** `turnProof` is set ONLY when the delivery itself proved a turn started (P-006/D-004):
+   *  the psu host's native-turn-start confirmation, or a confirmed quota-recovery pickup.
+   *  Absent ⇒ the delivery reached its channel and the pump must still observe the turn. */
+  | { kind: 'delivered'; channel: WakeChannel; turnProof?: 'host-attested' }
   /** Recipient alive but uninjectable (detached terminal) — re-check later;
    *  converts to a resume when the process exits. */
-  | { kind: 'park'; reason: string }
+  | {
+      kind: 'park';
+      reason: string;
+      /** The psu host accepted this delivery id and still owns its detached gate pipeline. */
+      hostCommitPending?: true;
+    }
   /** Dead waiter (D-004 net #2) — no liveness, nothing resumable. Visible. */
   | { kind: 'drop'; reason: string }
   | { kind: 'error'; error: string };

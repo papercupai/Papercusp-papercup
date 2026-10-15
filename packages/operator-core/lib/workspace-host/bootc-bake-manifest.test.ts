@@ -5,6 +5,7 @@ import {
   WORKSPACE_HOST_BOOTC_BAKE_CONTRACT_VERSION,
   parseWorkspaceHostBootcBakeManifest,
   validateWorkspaceHostBootcBakeManifest,
+  workspaceHostBootcBakeReleaseMismatch,
   workspaceHostBootcCloudArtifact,
   workspaceHostReleaseSubjectSha256,
   type WorkspaceHostBootcBakeManifest,
@@ -85,6 +86,34 @@ describe('bootc bake manifest', () => {
         'clouds[2].sha256 must be a lowercase SHA-256 digest',
         'clouds[2].sizeBytes must be a positive safe integer',
       ]),
+    );
+  });
+
+  // WI-10005761: the bake records the release its image carries, derived from the image.
+  it('accepts a recorded release, null for OS-only, or no key (pre-WI-10005761); refuses a malformed one', () => {
+    const candidate = manifest();
+    expect(validateWorkspaceHostBootcBakeManifest({ ...candidate, release: { version: '0.0.21-p318r62b' } })).toEqual([]);
+    expect(validateWorkspaceHostBootcBakeManifest({ ...candidate, release: null })).toEqual([]);
+    expect(validateWorkspaceHostBootcBakeManifest(candidate)).toEqual([]);
+    expect(parseWorkspaceHostBootcBakeManifest({ ...candidate, release: { version: '1.2.3' } }).release).toEqual({ version: '1.2.3' });
+    expect(validateWorkspaceHostBootcBakeManifest({ ...candidate, release: 'r62b' })).toContain('release must be an object or null');
+    for (const version of ['', '../r62b', 'a b', '-lead', 'x'.repeat(129), 7]) {
+      expect(validateWorkspaceHostBootcBakeManifest({ ...candidate, release: { version } })).toContain(
+        'release.version must be a safe release version',
+      );
+    }
+  });
+
+  it('refuses a release that names a version the bake does not carry, naming both', () => {
+    const candidate = manifest();
+    // Calibration: the matching release is accepted.
+    expect(workspaceHostBootcBakeReleaseMismatch({ ...candidate, release: { version: '0.0.21-p318r63' } }, '0.0.21-p318r63')).toBeUndefined();
+    expect(workspaceHostBootcBakeReleaseMismatch({ ...candidate, release: null }, '0.0.21-p318r63')).toMatch(
+      /^bake 2026\.9\.4-1 is OS-only \(it carries no release\), but the release names 0\.0\.21-p318r63; re-bake with .*--release-version 0\.0\.21-p318r63$/,
+    );
+    expect(workspaceHostBootcBakeReleaseMismatch(candidate, '0.0.21-p318r63')).toContain('records no baked release');
+    expect(workspaceHostBootcBakeReleaseMismatch({ ...candidate, release: { version: '0.0.21-p318r62b' } }, '0.0.21-p318r63')).toContain(
+      'carries release 0.0.21-p318r62b, but the release names 0.0.21-p318r63',
     );
   });
 });

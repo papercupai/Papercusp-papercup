@@ -19,9 +19,11 @@ import { getLoopStatus, type LoopStatus } from '../../harness/routines/loop';
 import { latestFleetMembership } from '../../fleet-membership-store';
 import { getSessionBrief, type SessionBriefLifecycle } from '../../session-brief';
 import { notifyAgentOrdersChanged } from '../../agent-orders-notify';
+import { buildConsumerView, type ConsumerView } from '../../consumer-view';
 import { fetchSelfWake, type SelfWakeSignals, type SelfWakeSource } from './presence-selfwake';
 import { stackRefsForSession } from '../../stack-binding-channel';
 import { trackDetached } from '../../detached-imports';
+import { narrowedLaunchSpecSql } from '../../capability-envelope/identity-receipt-narrowing';
 import {
   carryIdentityReceiptForControlActivation,
   parseSuLaunchSpecRecord,
@@ -154,6 +156,12 @@ export interface ControlAnchor {
      */
     overBudget?: true;
   };
+  /**
+   * EI-23770243810745552: present ONLY when the enforcement port's read of the activation
+   * differs from what this write intended. Absence means the read agreed (or this anchor
+   * did not come from a write) — it is an exception report, not a per-write receipt.
+   */
+  consumerView?: ActivationConsumerView;
 }
 
 export type ControlTransitionOrigin = 'owner' | 'agent' | 'system';
@@ -209,11 +217,27 @@ export interface ControlTransitionDelivery extends ControlTransition {
   };
 }
 
+/**
+ * The path the identity-activation ENFORCEMENT port reads (see the activation CAS
+ * predicates below: `control_state->'activation'`). It is NOT the transition snapshot
+ * `control_transition->'state'->'activation'`, which holds the activation as of the
+ * last REAL change and goes stale across a no-op write (WI-10002021).
+ */
+export const ACTIVATION_CONSUMER_READ_PATH = 'harness_shared.session_briefs.control_state->activation';
+
+type ActivationConsumerView = ConsumerView<SessionActivation | null>;
+
 interface PersistedControlAnchor {
   generation: number;
   state: ControlAnchorState;
   updatedAt: string;
   transition: ControlTransition | null;
+  /**
+   * Consumer-attested write (EI-23770243810745552): what the enforcement port's read
+   * path returned for the activation this write intended. Always present here;
+   * `renderControlAnchor` surfaces it only when `divergedFromWrite` is true.
+   */
+  consumerView: ActivationConsumerView;
 }
 
 interface ScopeClaimRow {
@@ -498,6 +522,7 @@ export function renderControlAnchor(input: {
   generation: number;
   state: ControlAnchorState;
   updatedAt: string;
+  consumerView?: ActivationConsumerView;
 }): ControlAnchor {
   const state = normalizeControlAnchorState(input.state);
   const base = {
@@ -539,6 +564,8 @@ export function renderControlAnchor(input: {
       maxTokens: CONTROL_ANCHOR_MAX_TOKENS,
       ...(overBudget ? { overBudget: true as const } : {}),
     },
+    // Exception-only (see ControlAnchor.consumerView): an agreeing read adds zero bytes.
+    ...(input.consumerView?.divergedFromWrite ? { consumerView: input.consumerView } : {}),
   };
 }
 
@@ -628,11 +655,21 @@ export async function persistControlAnchor(
   // `generation` equals `control_generation` in BOTH cases.
   const persistedAt = row.control_transition?.provenance?.recordedAt;
   if (persistedAt === provenance.recordedAt) await notifyAgentOrdersChanged(input.ownerId);
+  const persistedState = normalizeControlAnchorState(row.control_state);
   return {
     generation: Number(row.control_generation),
-    state: normalizeControlAnchorState(row.control_state),
+    state: persistedState,
     updatedAt: new Date(row.control_updated_at).toISOString(),
     transition: row.control_transition ?? null,
+    // EI-23770243810745552: attest the CONSUMER's read, not just the write. RETURNING
+    // hands back the row exactly as the enforcement port will read it, so this costs no
+    // extra query — and a write that lands on a different path than the one consumers
+    // read (the WI-10002021 decoy-column class) now says so instead of reporting ok.
+    consumerView: buildConsumerView({
+      readPath: ACTIVATION_CONSUMER_READ_PATH,
+      written: state.activation ?? null,
+      consumed: persistedState.activation ?? null,
+    }),
   };
 }
 
@@ -789,15 +826,33 @@ export const consumePendingControlTransition = preparePendingControlTransition;
  * Every writer of `activation.applied` vets against THIS row — vetting against any
  * other is how an acknowledgement wedged a session (EI-23703586803892464).
  */
-/** Exported for the turn-start guide target (portable-identity P-003) — the SAME record selection the activation gate uses. */
-export async function readGateSelectedLaunchSpec(tx: Sql, ownerId: string, workspaceId: string): Promise<unknown> {
+/**
+ * Exported for the turn-start guide target (portable-identity P-003) — the SAME record selection the activation gate uses.
+ *
+ * `receipts` (WI-10004801, #1155): narrow `identityHistory` in PostgreSQL to the
+ * receipts for these revision pairs (identity-receipt-narrowing.ts). A full
+ * record reaches 13 MB, most of it history, and every call shipped it to a
+ * request worker to be JSON-parsed. Pass it ONLY when everything the caller
+ * does with the record selects by exactly these pairs (`selectAppliedReceipt`,
+ * then the record's top level): a narrowed record answers those identically
+ * and nothing else. Omit it to read the record whole.
+ */
+export async function readGateSelectedLaunchSpec(
+  tx: Sql,
+  ownerId: string,
+  workspaceId: string,
+  receipts?: readonly unknown[],
+): Promise<unknown> {
   const rows = await tx<Array<{ launch_spec: unknown }>>`
-    SELECT to_jsonb(s)->'launch_spec' AS launch_spec
-      FROM harness_shared.adv_sessions s
-     WHERE s.coord_owner_id = ${ownerId}
-       AND s.workspace_id = ${workspaceId}
-     ORDER BY (s.ended_at IS NULL AND s.ended_by IS NULL) DESC, s.started_at DESC, s.id DESC
-     LIMIT 1
+    SELECT ${narrowedLaunchSpecSql(tx, receipts ?? null)} AS launch_spec
+      FROM (
+        SELECT s.launch_spec
+          FROM harness_shared.adv_sessions s
+         WHERE s.coord_owner_id = ${ownerId}
+           AND s.workspace_id = ${workspaceId}
+         ORDER BY s.id DESC
+         LIMIT 1
+      ) AS n
   `;
   return rows[0]?.launch_spec;
 }
@@ -835,7 +890,7 @@ export async function acknowledgeControlTransition(
     // after it commits, so a rollback never deletes rows the wearer still sees.
     let superseded: SessionPackageFence[] = [];
     const acknowledged = await sql.begin(async (tx) => {
-      const launchSpec = await readGateSelectedLaunchSpec(tx as unknown as Sql, ownerId, workspaceId);
+      const launchSpec = await readGateSelectedLaunchSpec(tx as unknown as Sql, ownerId, workspaceId, [activationRevision]);
       if (!launchRecordAdmitsApplied(launchSpec, activationRevision)) return false;
       const rows = await tx<Array<{ control_delivered_generation: number | string }>>`
         UPDATE harness_shared.session_briefs
@@ -1015,7 +1070,7 @@ export async function applyRelaunchedActivation(
       latest.specification_revision !== revision.specificationRevision ||
       latest.state_revision !== revision.stateRevision
     ) return false;
-    const launchSpec = await readGateSelectedLaunchSpec(tx as unknown as Sql, ownerId, workspaceId);
+    const launchSpec = await readGateSelectedLaunchSpec(tx as unknown as Sql, ownerId, workspaceId, [revision]);
     const launched = launchSpec && typeof launchSpec === 'object'
       ? launchSpec as { specificationRevision?: unknown; stateRevision?: unknown }
       : null;
@@ -1226,7 +1281,7 @@ export async function buildControlAnchorState(
            WHERE workspace_id = ${workspaceId}
              AND coord_owner_id = ${ownerId}
              AND launch_spec->>'v' = '1'
-           ORDER BY (ended_at IS NULL AND ended_by IS NULL) DESC, started_at DESC, id DESC
+           ORDER BY id DESC
            LIMIT 1
         `.then((rows) => {
           const raw = rows[0]?.stack_refs;
@@ -1416,10 +1471,11 @@ export async function requestSessionIdentityActivationInTransaction(input: {
  * at all — and the fail-closed rules that govern it — is decided entirely by
  * `carryIdentityReceiptForControlActivation`; this function only does the I/O.
  *
- * Returns what it did rather than throwing: a session with no launch record is
- * the ordinary legacy path, and a losing CAS means a concurrent writer already
- * rewrote the record (the next transition re-carries). Neither is a reason to
- * fail the mode/loop/route write this receipt is merely accompanying.
+ * The row lock serializes this read/merge/write with recordSuLaunchSpec, which
+ * also locks its selected adv_sessions row. Keep the compare-and-set as a
+ * defensive guard; an ordinary concurrent launch rewrite must resume this read
+ * with the newly committed record instead of making receipt carry lose its CAS.
+ * A session with no launch record remains the ordinary legacy path.
  */
 async function carryControlActivationIdentityReceipt(input: {
   ownerId: string;
@@ -1431,8 +1487,13 @@ async function carryControlActivationIdentityReceipt(input: {
     SELECT a.id, to_jsonb(a)->'launch_spec' AS launch_spec
       FROM harness_shared.adv_sessions a
      WHERE a.workspace_id = ${input.workspaceId} AND a.coord_owner_id = ${input.ownerId}
-     ORDER BY (a.ended_at IS NULL AND a.ended_by IS NULL) DESC, a.started_at DESC, a.id DESC
+       AND a.ended_at IS NULL AND a.ended_by IS NULL
+     -- session_briefs is owner-scoped, but tool preflight evaluates the
+     -- caller's live adv_sessions row. Never carry its receipt onto a newer
+     -- ended sibling and leave the live caller stale.
+     ORDER BY a.started_at DESC, a.id DESC
      LIMIT 1
+     FOR UPDATE OF a
   `;
   const row = rows[0];
   const record = parseSuLaunchSpecRecord(row?.launch_spec);

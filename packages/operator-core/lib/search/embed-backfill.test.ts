@@ -1014,8 +1014,9 @@ describe('embed-backfill drain policy (P-005)', () => {
   // at the call site and then fails at every `.params!` on the RESULT (P-005 shipped it
   // that way — `lint:tsc --files` only sees files you NAME, and naming the source without
   // its test hides exactly this).
+  // STARTS with SELECT: the guarded UPDATE carries a SELECT subquery (WI-10006735).
   const selects = (calls: Array<{ q: string; params?: unknown[] }>) =>
-    calls.filter((c) => c.q.includes('SELECT'));
+    calls.filter((c) => c.q.trimStart().startsWith('SELECT'));
 
   it('pulls FRESHEST-FIRST when the target declares an order', async () => {
     const { sql, calls } = fakeSql([[{ k0: 'r1', body: 'x' }], [], []]);

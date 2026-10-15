@@ -5,8 +5,9 @@
  *
  * The store owns its OWN postgres pool built from getHarnessAdminUrl() (admin /
  * RLS-bypass; the table IS RLS-enabled but the store scopes by the explicit PK
- * columns in every WHERE), so we mock ./embedded-pg-discovery to hand it the
- * fixture's admin DSN. We exercise the durable SQL directly via the
+ * columns in every WHERE). The maintained baseline fixture routes discovery and db-org's
+ * notification pool to that SAME database; mocking discovery alone leaves
+ * getOrgPg on the ambient store. We exercise the durable SQL directly via the
  * (workspaceId, userId) principal — NOT getUserIdForLayouts, which needs a live
  * session/cookie.
  *
@@ -24,16 +25,12 @@
  * builders) are no-PG and belong to the unit tier; this file exercises only the
  * durable paths.
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import type { OrgTestDb } from '../test/_org-test-db';
-
-const h = vi.hoisted(() => ({ dsn: '' }));
-
-vi.mock('./embedded-pg-discovery', () => ({
-  getHarnessAdminUrl: () => h.dsn,
-  getHarnessAdminUrlWithSource: () => ({ url: h.dsn, source: 'test' }),
-}));
+import { getOrgPg, parseStoreIdentity, STORE_IDENTITY_SQL } from '@papercusp/db-org';
+import { setupBaselineCoordFixture, type BaselineCoordFixture } from './_baseline-coord-fixture';
+import { getLongLivedAdminPool, _resetLongLivedAdminPoolsForTests } from './long-lived-admin-pool';
 
 const mod = await import('./dock-layouts');
 const {
@@ -62,15 +59,24 @@ function simpleLayout(): import('./dock-layouts').LayoutDoc {
 
 describe('dock-layouts store (real PG)', () => {
   let db: OrgTestDb;
+  let route: BaselineCoordFixture;
 
   beforeAll(async () => {
     db = await createOrgTestDb();
-    h.dsn = db.adminDsn;
+    route = await setupBaselineCoordFixture({ dsn: db.adminDsn });
   }, 120_000);
 
   afterAll(async () => {
-    await db?.cleanup();
-  });
+    try {
+      if (route) {
+        await getLongLivedAdminPool('dock-layouts').end({ timeout: 5 });
+        _resetLongLivedAdminPoolsForTests();
+      }
+    } finally {
+      try { await route?.dispose(); }
+      finally { await db?.cleanup(); }
+    }
+  }, 30_000);
 
   it('getLayout seeds + persists the default on a read miss, then reads the same row back', async () => {
     const p = principal();
@@ -97,6 +103,32 @@ describe('dock-layouts store (real PG)', () => {
        WHERE workspace_id = ${p.workspaceId} AND user_id = ${p.userId} AND layout_name = 'default'
     `;
     expect(kind).toBe('object');
+  });
+
+  it('uses the isolated layout store for the real notification pool and delivery', async () => {
+    const expected = parseStoreIdentity(await db.adminSql.unsafe(STORE_IDENTITY_SQL));
+    expect(expected?.database).toBe(db.dbName);
+    const layoutStore = parseStoreIdentity(await getLongLivedAdminPool('dock-layouts').unsafe(STORE_IDENTITY_SQL));
+    const notificationStore = parseStoreIdentity(await getOrgPg().sql.unsafe(STORE_IDENTITY_SQL));
+    expect(layoutStore).toEqual(expected);
+    expect(notificationStore).toEqual(expected);
+
+    const p = principal();
+    const notifications: Array<{ name: string; args?: { workspaceId?: string; name?: string } }> = [];
+    const listener = await db.adminSql.listen('sync_invalidate', (payload) => {
+      notifications.push(JSON.parse(payload));
+    });
+    try {
+      await saveLayout(p, 'notification-control', simpleLayout());
+      await expect.poll(() => notifications.some((event) =>
+        event.name === 'dockLayouts.byName'
+        && event.args?.workspaceId === p.workspaceId
+        && event.args?.name === 'notification-control',
+      )).toBe(true);
+      expect((await getLayout(p, 'notification-control')).layoutJson).toEqual(simpleLayout());
+    } finally {
+      await listener.unlisten();
+    }
   });
 
   it('saveLayout ON CONFLICT upserts (same PK overwrites, created_ts preserved)', async () => {

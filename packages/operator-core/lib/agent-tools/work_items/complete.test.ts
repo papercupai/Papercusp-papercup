@@ -28,6 +28,16 @@ const contentionMocks = vi.hoisted(() => ({
 const hiveMocks = vi.hoisted(() => ({
   potHomeSlugForHarness: vi.fn(),
 }));
+const parkReachability = vi.hoisted(() => ({ read: vi.fn() }));
+const conformanceClosure = vi.hoisted(() => ({
+  read: vi.fn(async (..._args: unknown[]): Promise<unknown> => null),
+}));
+vi.mock('../../spec-conformance/closure-guard', () => ({
+  conformanceClosureRefusal: (...args: unknown[]) => conformanceClosure.read(...args),
+}));
+vi.mock('../../external-condition-reachability', () => ({
+  readEventConditionReachability: (...args: unknown[]) => parkReachability.read(...args),
+}));
 vi.mock('../locks/contention-retry', () => ({
   acquireWithContentionRetry: (...args: unknown[]) => contentionMocks.acquireWithContentionRetry(...args),
 }));
@@ -100,6 +110,9 @@ vi.mock('../../work-items', () => ({
   resolveWorkItemRef: (...a: unknown[]) => resolveWorkItemRef(...a),
   linkWorkItem: (...a: unknown[]) => linkWorkItem(...a),
   subscribeWorkItem: (...a: unknown[]) => subscribeWorkItem(...a),
+  // D-035 agent-work door gate (work-nature/agent-work-door-gate): null = the row IS agent
+  // work, so every existing completion case reaches its own write path unchanged.
+  readNonAgentWorkCategory: vi.fn(async () => null),
   // Real constant (not a spy) — complete.ts sources its terminal-state check from this
   // single source of truth (EI-18127483322976472); mirrors work-items.ts's actual value.
   SETTLED_WORK_ITEM_STATES: ['passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped'],
@@ -123,6 +136,19 @@ const fireReactionInProcess = vi.fn();
 vi.mock('../../events', () => ({
   fireReactionInProcess: (...a: unknown[]) => fireReactionInProcess(...a),
 }));
+// P-007 Phase C (D-028): complete.ts lazily imports the completion-verification store after a
+// terminal close. Hermetic spies: by default nothing is spawned, applied or accepted, and an
+// unset (reset) spy still resolves to that default so no other case grows a warning.
+const cvStore = vi.hoisted(() => ({
+  spawn: vi.fn(),
+  applyVerdict: vi.fn(),
+  acceptOnSettlement: vi.fn(),
+}));
+vi.mock('../../harness/improvements/completion-verification-store', () => ({
+  spawnCompletionVerificationForClose: async (...a: unknown[]) => (await cvStore.spawn(...a)) ?? { outcome: 'no-dependents' },
+  applyCompletionVerdictForClose: async (...a: unknown[]) => (await cvStore.applyVerdict(...a)) ?? null,
+  acceptCompletionOnSettlementForSubject: async (...a: unknown[]) => (await cvStore.acceptOnSettlement(...a)) ?? null,
+}));
 
 // TEST-COMPLETION GATE (P-006): the flag + the gate helper are mocked so these unit tests
 // exercise the gate WIRING in completeOne (flag-off skips, flag-on consults, refusal blocks)
@@ -136,13 +162,18 @@ vi.mock('@papercusp/flags/server', () => ({
   getFlag: (...a: unknown[]) => getFlag(...a),
   onFlagChange: () => {},
 }));
-const itemTestGate = vi.fn();
-vi.mock('../../harness-test-gate', () => ({
-  itemTestGate: (...a: unknown[]) => itemTestGate(...a),
-}));
 const specTestAdequacyCompletionGate = vi.fn();
 vi.mock('./spec-test-adequacy-gate', () => ({
   specTestAdequacyCompletionGate: (...a: unknown[]) => specTestAdequacyCompletionGate(...a),
+}));
+// P-008 (derived-status-not-hand-written-2026-10-12): the completion prefill reads the
+// holder's read-time mechanics. Default null = no ledger evidence, so every other case in
+// this file keeps the completion exactly as supplied.
+const readWorkItemMechanicsMock = vi.hoisted(() => vi.fn(async (..._a: unknown[]): Promise<unknown> => null));
+vi.mock('./_mechanics', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./_mechanics')>()),
+  readWorkItemMechanics: (...a: unknown[]) => readWorkItemMechanicsMock(...a),
+  pgMechanicsLedger: () => ({}),
 }));
 const dispatchPendingGradingAudits = vi.hoisted(() => vi.fn());
 vi.mock('../../grading-integrity', () => ({
@@ -187,15 +218,20 @@ import {
   COMPLETION_OBJECT_EXAMPLE,
   COMPLETION_STRING_REJECTION,
   coerceCompletionShape,
+  describeUnparseableCompletionJsonString,
   gatherFlatCompletion,
   hoistMisplacedCompletionFields,
 } from './completion-coerce';
 import { BUDGET, promptWeight } from '../tool-guidance-budget';
 import {
-  CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS,
   COMPLETION_SETTLEMENT_MANIFEST_CONTRACT,
   hasEnumeratedVerificationCoverage,
 } from '../../coord-lifecycle/records';
+
+vi.mock('../../blueprint/phone-producer-admission', () => ({
+  configuredPhoneProducerCompletionAttempt: vi.fn(async () => ({ binding: { kind: 'external-runtime-producer' },
+    updatedTs: 1, readStoredOutcome: async () => ({}) })),
+}));
 
 const ctx = { uiClientId: 'su-tester', isSuperuser: true, workspaceId: 'default' } as never;
 
@@ -219,6 +255,8 @@ describe('work_items:complete — prompt budget (EI-20189722405308981)', () => {
     expect(complete.guidance?.when).toContain('each entry exactly once across checked/notChecked/notApplicable');
     expect(complete.guidance?.when).toContain('residue is separate (`[]` or `["none"]` means zero)');
     expect(complete.guidance?.when).toContain('required `assumptions`');
+    expect(complete.guidance?.when).toContain('`testsRun`, `testResult`, `verifiedHow`, and `filesChanged` at the root of `completion`');
+    expect(complete.guidance?.when).toContain('single-item call also accepts those fields at the argument root as legacy aliases');
     expect(complete.guidance?.when).not.toContain('testFingerprint?');
   });
 });
@@ -317,10 +355,17 @@ function okState(workItem: Record<string, unknown>) {
 }
 
 beforeEach(() => {
+  conformanceClosure.read.mockReset();
+  conformanceClosure.read.mockResolvedValue(null);
+  parkReachability.read.mockResolvedValue({
+    verdict: 'reachable', basis: 'catalogued', evidence: 'catalogued unblocked producer is live',
+  });
   resolveAdoptedName.mockReset();
   resolveAdoptedName.mockResolvedValue(null);
   dbMocks.planItemStatusRows.mockReset();
-  dbMocks.planItemStatusRows.mockResolvedValue([{ status: 'done' }]);
+  dbMocks.planItemStatusRows.mockImplementation(async (strings: TemplateStringsArray) =>
+    strings.join('').includes('SELECT 1 AS one FROM harness_shared.work_items wi') ? [] : [{ status: 'done' }],
+  );
   contentionMocks.acquireWithContentionRetry.mockReset();
   contentionMocks.acquireWithContentionRetry.mockImplementation(async (run: () => Promise<unknown>) => run());
   hiveMocks.potHomeSlugForHarness.mockReset();
@@ -334,8 +379,6 @@ beforeEach(() => {
   // flag mock MUST resolve a promise so the `.catch(() => false)` guard in completeOne works.
   getFlag.mockReset();
   getFlag.mockResolvedValue(false);
-  itemTestGate.mockReset();
-  itemTestGate.mockResolvedValue({ ok: true });
   specTestAdequacyCompletionGate.mockReset();
   specTestAdequacyCompletionGate.mockResolvedValue({ ok: true, applicable: false, checked: [] });
   dispatchPendingGradingAudits.mockReset();
@@ -498,6 +541,207 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
     expect(missingLeaf.success).toBe(false);
     expect(String(missingLeaf.error)).toContain('Missing required fields: testResult');
     expect(String(missingLeaf.error)).not.toContain('expected string, received undefined');
+  });
+
+  // EI-24866603915783845: a complete, well-formed close whose ONLY defect is a wrong-typed
+  // completion field used to fall through to the generic close-shape message, which tells
+  // the caller to pass `state` and `assumptions` they had already passed.
+  it('names a wrong-typed completion field instead of the generic close-shape message', () => {
+    const safeParse = (
+      complete.args as { safeParse: (value: unknown) => { success: boolean; error?: unknown } }
+    ).safeParse;
+    const closeShape = /to CLOSE a work-item, pass \{ id, state, assumptions/;
+
+    const single = safeParse({
+      id: 'WI-typed',
+      state: 'done',
+      assumptions: 'none',
+      completion: {
+        summary: 'fixed the ramp printer',
+        testsRun: 'p005-ramp.test.ts',
+        addedTests: ['p005-ramp.test.ts: prints na for a null slowdown'],
+      },
+    });
+    expect(single.success).toBe(false);
+    expect(String(single.error)).toContain('completion.addedTests');
+    expect(String(single.error)).toMatch(/boolean/);
+    expect(String(single.error)).not.toMatch(closeShape);
+
+    const bulk = safeParse({
+      state: 'done',
+      items: [
+        {
+          id: 'WI-typed',
+          assumptions: 'none',
+          completion: { summary: 'fixed it', addedTests: ['a.test.ts'] },
+        },
+      ],
+    });
+    expect(bulk.success).toBe(false);
+    expect(String(bulk.error)).toContain('addedTests');
+    expect(String(bulk.error)).not.toMatch(closeShape);
+
+    // Calibration: a payload genuinely missing `completion` still gets the full close shape.
+    const missingCompletion = safeParse({ id: 'WI-typed', state: 'done', assumptions: 'none' });
+    expect(missingCompletion.success).toBe(false);
+    expect(String(missingCompletion.error)).toMatch(closeShape);
+  });
+
+  it('names each historically wrong-typed nested verification field', () => {
+    const safeParse = (
+      complete.args as { safeParse: (value: unknown) => { success: boolean; error?: unknown } }
+    ).safeParse;
+    const closeShape = /to CLOSE a work-item, pass \{ id, state, assumptions/;
+    const invalidFields = [
+      ['testsRun', { suite: 'targeted real-PostgreSQL integration tests', runs: [] }],
+      ['testResult', { total: 18, passed: 18, status: 'passed' }],
+      ['verifiedHow', { method: 'recorded real-PostgreSQL runs' }],
+    ] as const;
+
+    for (const [field, value] of invalidFields) {
+      const parsed = safeParse({
+        id: 'WI-typed',
+        state: 'done',
+        assumptions: 'none',
+        completion: { summary: 'recorded the verification result', [field]: value },
+      });
+      const diagnostic = String(parsed.error);
+
+      expect(parsed.success).toBe(false);
+      expect(diagnostic).toContain(`completion.${field}`);
+      expect(diagnostic).not.toMatch(closeShape);
+    }
+  });
+
+  it('names the wrong type on the legacy top-level verification alias', () => {
+    const safeParse = (
+      complete.args as { safeParse: (value: unknown) => { success: boolean; error?: unknown } }
+    ).safeParse;
+    const parsed = safeParse({
+      id: 'WI-typed',
+      state: 'done',
+      assumptions: 'none',
+      completion: { summary: 'fixed it' },
+      verification: 'a plain string',
+    });
+    const diagnostic = String(parsed.error);
+
+    expect(parsed.success).toBe(false);
+    expect(diagnostic).toContain('completion.verification');
+    expect(diagnostic).toMatch(/record|object/i);
+    expect(diagnostic).not.toMatch(/to CLOSE a work-item, pass \{ id, state, assumptions/);
+  });
+
+  // EI-25240542476501298: the union message is lifted from a NESTED unrecognized-key issue
+  // and the union node sits at the root, so without its path the refusal read like a stray
+  // top-level arg (and the dispatcher listed top-level keys the caller had right).
+  it('names WHERE a nested unrecognized key was rejected', () => {
+    const safeParse = (
+      complete.args as { safeParse: (value: unknown) => { success: boolean; error?: unknown } }
+    ).safeParse;
+    const entryKey = safeParse({
+      id: 'WI-nested',
+      state: 'done',
+      assumptions: 'none',
+      completion: {
+        summary: 'did it',
+        verification: {
+          requirementDisposition: [
+            { requirement: 'a verbatim requirement quote', disposition: 'implemented', citations: ['a.ts'], bogus: 1 },
+          ],
+        },
+      },
+    });
+    expect(entryKey.success).toBe(false);
+    expect(String(entryKey.error)).toContain('completion.verification.requirementDisposition.0: Unrecognized key: \\"bogus\\"');
+
+    const misplaced = safeParse({
+      id: 'WI-nested',
+      state: 'done',
+      assumptions: 'none',
+      completion: {
+        summary: 'did it',
+        requirementDisposition: [{ requirement: 'a verbatim requirement quote', disposition: 'implemented' }],
+      },
+    });
+    expect(misplaced.success).toBe(false);
+    expect(String(misplaced.error)).toContain('completion: Unrecognized key: \\"requirementDisposition\\"');
+
+    // Calibration: a stray TOP-LEVEL key keeps its pathless message.
+    const top = safeParse({ id: 'WI-nested', state: 'done', assumptions: 'none', completion: { summary: 's' }, strayTop: 1 });
+    expect(top.success).toBe(false);
+    expect(String(top.error)).toContain('"message": "Unrecognized key: \\"strayTop\\""');
+  });
+
+  it('names the path and allowed values for an invalid requirement disposition', () => {
+    const safeParse = (
+      complete.args as { safeParse: (value: unknown) => { success: boolean; error?: unknown } }
+    ).safeParse;
+    const parsed = safeParse({
+      id: 'WI-enum',
+      state: 'done',
+      assumptions: 'none',
+      completion: {
+        summary: 'did it',
+        verification: {
+          requirementDisposition: [
+            { requirement: 'a verbatim requirement quote', disposition: 'delivered' },
+          ],
+        },
+      },
+    });
+    const diagnostic = String(parsed.error);
+    expect(parsed.success).toBe(false);
+    expect(diagnostic).toContain('completion.verification.requirementDisposition.0.disposition');
+    expect(diagnostic).toContain('implemented');
+    expect(diagnostic).toContain('not-applicable');
+    expect(diagnostic).toContain('deferred');
+    expect(diagnostic).toContain('rejected');
+    expect(diagnostic).not.toMatch(/to CLOSE a work-item, pass \\{ id, state, assumptions/);
+  });
+
+  // EI-25789682554301541: an unknown key and known fields with invalid types can
+  // coexist in one completion. The matching union branch must still expose the
+  // concrete schema failure instead of asking for state/assumptions already sent.
+  it('keeps a useful diagnostic when unknown and mistyped completion fields coexist', () => {
+    const safeParse = (
+      complete.args as { safeParse: (value: unknown) => { success: boolean; error?: unknown } }
+    ).safeParse;
+    const parsed = safeParse({
+      id: 'WI-mixed-shape',
+      state: 'done',
+      assumptions: 'none',
+      completion: {
+        summary: 'completed a mixed-shape close',
+        testsRun: 'focused test passed',
+        testResult: '1/1 passed',
+        addedTests: ['this field must be boolean'],
+        verification: { tests: 'this key is not part of verification evidence' },
+        rootCauseVerification: 'this field must be a record',
+        selfReview: 'this field must be a record',
+      },
+    });
+    const typedOnly = safeParse({
+      id: 'WI-typed-shape',
+      state: 'done',
+      assumptions: 'none',
+      completion: {
+        summary: 'completed with the recorded wrong-typed fields',
+        status: 'resolved',
+        rootCauseVerification: 'this field must be a record',
+        selfReview: 'this field must be a record',
+      },
+    });
+    const diagnostic = String(parsed.error);
+    const typedDiagnostic = String(typedOnly.error);
+
+    expect(parsed.success).toBe(false);
+    expect(diagnostic).toContain('completion.verification');
+    expect(diagnostic).toMatch(/Unrecognized key|not valid|invalid/i);
+    expect(diagnostic).not.toContain('to CLOSE a work-item');
+    expect(typedOnly.success).toBe(false);
+    expect(typedDiagnostic).toContain('completion.rootCauseVerification');
+    expect(typedDiagnostic).not.toContain('to CLOSE a work-item');
   });
 
   it('rejects a block whose structured predictions name the same observable', () => {
@@ -700,6 +944,9 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
     expect(realClose.completionAuthority).toBe(validation.completionAuthority);
     expect(realClose.countsTowardBurnDown).toBe(validation.countsTowardBurnDown);
     expect(realClose.authorityWarning).toMatch(/authority:'proposed'/);
+    expect(realClose.requirementShortfallWarning).toContain(
+      'each `implemented` entry passes `citations: ["repo/relative/path.ts"]`',
+    );
     expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledTimes(1);
   });
 
@@ -885,7 +1132,8 @@ describe('work_items:complete (keyed-array)', () => {
         'F-12',
         'successor: continue from the verified staging result',
         'su-tester',
-        { workspaceId: 'default', harness: 'papercup' },
+        // P-012 / D-006: the closer's own note is sealed while it holds a restricted disclosure.
+        { workspaceId: 'default', harness: 'papercup', writerOwnerId: 'su-tester' },
       );
       expect(commentWorkItem.mock.invocationCallOrder[0]).toBeGreaterThan(
         setWorkItemCheckpoint.mock.invocationCallOrder[0],
@@ -990,8 +1238,8 @@ describe('work_items:complete (keyed-array)', () => {
     expect(carried).toContain('checkpointProseSnapshot');
   });
 
-  it('carries a bounded prose checkpoint snapshot before terminal cleanup', async () => {
-    const prose = `## Did\nnamed prose survives the clear\n\n## Baseline\nbaseline prose survives the clear\n${'x'.repeat(CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS + 200)}`;
+  it('retains complete long checkpoint prose before terminal cleanup', async () => {
+    const prose = `## Did\n${'x'.repeat(26_950)}\n\n## Rollback\nrestore from the verified backup\n\n## Final evidence\nsource sha=0123456789abcdef`;
     getWorkItem.mockResolvedValue({ ...item, state: 'passed' });
     getWorkItemCheckpoint.mockResolvedValue(prose);
 
@@ -1003,11 +1251,9 @@ describe('work_items:complete (keyed-array)', () => {
       { completionEvidence?: Record<string, unknown> },
     ];
     const snapshot = options.completionEvidence?.checkpointProseSnapshot;
-    expect(snapshot).toEqual(expect.stringContaining('named prose survives the clear'));
-    expect(snapshot).toEqual(expect.stringContaining('baseline prose survives the clear'));
-    expect(typeof snapshot).toBe('string');
-    expect((snapshot as string).length).toBe(CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS);
-    expect((snapshot as string).endsWith('…[truncated]')).toBe(true);
+    expect(snapshot).toBe(prose);
+    expect(snapshot).toEqual(expect.stringContaining('restore from the verified backup'));
+    expect(snapshot).toEqual(expect.stringContaining('source sha=0123456789abcdef'));
   });
 
   it('writes no checkpointChecksCarried when the checkpoint is empty or absent', async () => {
@@ -1015,6 +1261,50 @@ describe('work_items:complete (keyed-array)', () => {
     await one({ id: 'F-12', completion: { summary: 'shipped' } });
     expect(attachCompletionEvidenceToSettledItem).toHaveBeenCalled();
     expect(JSON.stringify(attachCompletionEvidenceToSettledItem.mock.calls)).not.toContain('checkpointChecksCarried');
+  });
+
+  it('forwards linked requirements to conformance preflight and persists the declarations', async () => {
+    const linked = { ...item, sourcePlanSlug: 'requirement-plan', sourcePlanItemIds: ['P-001'] };
+    getWorkItem.mockResolvedValue(linked);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...linked, state: 'passed' }));
+    const completion = { summary: 'R-1 delivered', discharges: ['R-1'], contributesTo: ['R-2'], tests: 'focused checks pass' };
+    const r = await one({ id: 'F-12', state: 'passed', completion });
+    expect(r.ok).toBe(true);
+    expect(conformanceClosure.read).toHaveBeenCalledWith(expect.objectContaining({
+      planSlug: 'requirement-plan', planItemIds: ['P-001'],
+      completion: expect.objectContaining({ discharges: ['R-1'], contributesTo: ['R-2'] }),
+    }));
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('F-12', 'passed', expect.objectContaining({
+      completionEvidence: expect.objectContaining({ discharges: ['R-1'], contributesTo: ['R-2'] }),
+    }));
+  });
+
+  it('refuses conformance violations before writing or emitting a linked completion', async () => {
+    getWorkItem.mockResolvedValue({ ...item, sourcePlanSlug: 'requirement-plan', sourcePlanItemIds: ['P-001'] });
+    conformanceClosure.read.mockResolvedValue({
+      code: 'conformance_done_when_not_passing', error: 'R-1 failed.', requirements: ['R-1'],
+    });
+    const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'R-1 delivered', discharges: ['R-1'] } });
+    expect(r).toMatchObject({ ok: false, specConformanceRefusal: { code: 'conformance_done_when_not_passing' } });
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    expect(fireReactionInProcess).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unavailable conformance read without writing a completion', async () => {
+    getWorkItem.mockResolvedValue({ ...item, sourcePlanSlug: 'requirement-plan', sourcePlanItemIds: ['P-001'] });
+    conformanceClosure.read.mockRejectedValue(new Error('ledger unavailable'));
+    const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'R-1 delivered', discharges: ['R-1'] } });
+    expect(r).toMatchObject({ ok: false, specConformanceRefusal: { code: 'conformance_check_unavailable', retryable: true } });
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it('keeps conformance preflight out of record-only and discard paths', async () => {
+    const linked = { ...item, sourcePlanSlug: 'requirement-plan', sourcePlanItemIds: ['P-001'] };
+    getWorkItem.mockResolvedValue(linked);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...linked, state: 'dropped' }));
+    await one({ id: 'F-12', recordOnly: true, completion: { summary: 'progress' } });
+    await one({ id: 'F-12', state: 'dropped', completion: { summary: 'Superseded work' } });
+    expect(conformanceClosure.read).not.toHaveBeenCalled();
   });
 
   it('synchronously converges a linked plan item and claim release before reporting success', async () => {
@@ -1073,7 +1363,10 @@ describe('work_items:complete (keyed-array)', () => {
 
     expect(r.ok).toBe(true);
     expect(r.finish).toMatchObject({ complete: true, planItem: 'wip' });
-    expect(dbMocks.planItemStatusRows).toHaveBeenCalledOnce();
+    const planStatusReads = dbMocks.planItemStatusRows.mock.calls.filter(([strings]) =>
+      strings.join('').includes('FROM harness_shared.plan_items'),
+    );
+    expect(planStatusReads).toHaveLength(1);
   });
 
   it('fails loudly after a partial finish and tells the caller the same call is retry-safe', async () => {
@@ -1100,6 +1393,11 @@ describe('work_items:complete (keyed-array)', () => {
   });
 
   it('refuses terminal completion of a remote-authored issue before emitting a false completion', async () => {
+    // The shared DB stub defaults to a non-empty plan-item result. This early
+    // remote-origin guard also asks whether this row is own-node authored, so
+    // give that query an explicit non-match instead of letting the unrelated
+    // default fixture bypass the refusal.
+    dbMocks.planItemStatusRows.mockResolvedValueOnce([]);
     getWorkItem.mockResolvedValue({
       id: 'WI-remote',
       kind: 'bug',
@@ -1185,13 +1483,36 @@ describe('work_items:complete (keyed-array)', () => {
           harness: 'papercup',
           parkedBy: expect.any(String),
           parkedReason: 'terminal completion refused by the linked plan-item gate',
+          releaseContract: {
+            condition: 'the linked plan-item gate for WI-1 is no longer effectively blocked',
+            trigger: 'work-item:unblocked:WI-1',
+            owner: expect.any(String),
+            reachability: 'reachable',
+            evidence: 'catalogued unblocked producer is live',
+          },
         }),
       );
+      expect(parkReachability.read).toHaveBeenCalledWith('work-item:unblocked:WI-1', { requireSpecificCondition: true });
       expect(r.planGateParkWarning).toMatch(/DURABLY PARKED out of scheduler:get_next/);
       expect(r.stateWarning).toMatch(/durably parked out of scheduler:get_next/);
       expect(r.stateWarning).not.toMatch(/stays claimable/);
       expect(r.error).toMatch(/DID NOT CLOSE/);
       expect(r.completion).toMatchObject({ summary: 'fixed it' });
+    });
+
+    it('does not create an untracked park when the release-condition read fails', async () => {
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockRejectedValue(
+        new Error("linked plan-item a-plan#P-002 is STILL effectively 'blocked'"),
+      );
+      parkReachability.read.mockRejectedValueOnce(new Error('event ledger unavailable'));
+
+      const r = await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'fixed it', tests: '5 green' } });
+
+      expect(r.ok).toBe(false);
+      expect(setWorkItemClaimHold).not.toHaveBeenCalled();
+      expect(r.planGateParkWarning).toContain('event ledger unavailable');
+      expect(r.planGateParkWarning).toContain('it remains claimable');
     });
 
     it('does not claim a plan-gated close was parked when the claim hold write fails', async () => {
@@ -2137,69 +2458,20 @@ describe('work_items:complete (keyed-array)', () => {
     expect(out.results[0]).toMatchObject({ ok: true, id: 'F-1', completion: { summary: 'a' } });
   });
 
-  // ── TEST-COMPLETION GATE (enforce-system-on-generic-work-2026-06-29 P-006) ──────────────
-  describe('test-completion gate (P-006, flag default OFF)', () => {
-    it('flag OFF: a terminal feature completion proceeds unchanged; the gate is never consulted', async () => {
-      getFlag.mockResolvedValue(false); // explicit (also the beforeEach default)
+  // ── RETIRED LEGACY VAL TEST-COMPLETION GATE (verification-system-improvements-2026-10-10 P-003) ──
+  describe('retired VAL test-completion gate', () => {
+    it('a terminal feature completion is not refused by any VAL/harness_tests rollup, even with every flag ON', async () => {
+      getFlag.mockResolvedValue(true);
       getWorkItem.mockResolvedValue(item); // family:'feature', harness:'papercup'
       setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
-      const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'shipped' } });
-      expect(itemTestGate).not.toHaveBeenCalled();
+      const out = await env({ id: 'F-12', state: 'passed', completion: { summary: 'shipped' } });
+      expect(out.counts).toEqual({ ok: 1, failed: 0 });
+      expect(String(out.results[0].error ?? '')).not.toMatch(/VAL/);
       expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
         'F-12',
         'passed',
         expect.objectContaining({ by: expect.any(String) }),
       );
-      expect(r.ok).toBe(true);
-      expect(r.workItem.state).toBe('passed');
-    });
-
-    it('flag ON + gate PASSES: completes + transitions normally (gate consulted with harness+id)', async () => {
-      getFlag.mockResolvedValue(true);
-      itemTestGate.mockResolvedValue({ ok: true });
-      getWorkItem.mockResolvedValue(item);
-      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
-      const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'shipped' } });
-      expect(itemTestGate).toHaveBeenCalledWith('papercup', 'F-12');
-      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
-      expect(r.ok).toBe(true);
-      expect(r.workItem.state).toBe('passed');
-    });
-
-    it('flag ON + gate FAILS: refuses with {ok:false,id,error}, NO completion, setWorkItemStateWithAliasInfo NOT called', async () => {
-      getFlag.mockResolvedValue(true);
-      itemTestGate.mockResolvedValue({ ok: false, reason: 'test-requiring VAL(s) not yet passing: VAL-3' });
-      getWorkItem.mockResolvedValue(item);
-      const out = await env({ id: 'F-12', state: 'passed', completion: { summary: 'shipped' } });
-      expect(out.counts).toEqual({ ok: 0, failed: 1 });
-      expect(out.results[0]).toEqual({
-        ok: false,
-        id: 'F-12',
-        error: 'refusing to complete F-12: test-requiring VAL(s) not yet passing: VAL-3',
-      });
-      // No completion record on a refusal ⇒ the emit rule (keys on result.completion) fires nothing.
-      expect(out.results[0].completion).toBeUndefined();
-      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
-    });
-
-    it('flag ON but record-only (no `state`): the gate is NOT consulted — only terminal transitions gate', async () => {
-      getFlag.mockResolvedValue(true);
-      getWorkItem.mockResolvedValue(item);
-      const r = await one({ id: 'F-12', completion: { summary: 'progress note' } });
-      expect(itemTestGate).not.toHaveBeenCalled();
-      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
-      expect(r.ok).toBe(true);
-    });
-
-    it('flag ON but an ISSUE-family item: the gate is NOT consulted (feature-only)', async () => {
-      getFlag.mockResolvedValue(true);
-      getWorkItem.mockResolvedValue({ ...item, id: 'WI-9', kind: 'bug', family: 'issue' });
-      setWorkItemStateWithAliasInfo.mockResolvedValue(
-        okState({ ...item, id: 'WI-9', family: 'issue', state: 'resolved' }),
-      );
-      const r = await one({ id: 'WI-9', state: 'resolved', completion: { summary: 'fixed' } });
-      expect(itemTestGate).not.toHaveBeenCalled();
-      expect(r.ok).toBe(true);
     });
   });
 
@@ -2321,6 +2593,7 @@ describe('work_items:complete (keyed-array)', () => {
     });
 
     it('publishes a strict single and per-item bulk attestation shape', () => {
+      expect(complete.args.safeParse({ id: 'WI-101', state: 'done', assumptions: 'none', completion: { summary: 'fixed' }, specAdequacy: {} }).success).toBe(true);
       expect(
         (complete.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse({
           id: 'WI-101',
@@ -2423,6 +2696,55 @@ describe('work_items:complete (keyed-array)', () => {
           specAdequacy: { ...specAdequacy, replaySnapshot: true },
         }).success,
       ).toBe(false);
+    });
+
+    it.each([
+      {
+        label: 'single-item',
+        input: {
+          id: 'WI-101',
+          state: 'resolved',
+          assumptions: 'none',
+          completion: { summary: 'fixed' },
+          specAdequacy: { ...specAdequacy, classRef: 'certify-spec-clauses' },
+        },
+      },
+      {
+        label: 'bulk-item',
+        input: {
+          items: [
+            {
+              id: 'WI-101',
+              state: 'resolved',
+              assumptions: 'none',
+              completion: { summary: 'fixed' },
+              specAdequacy: { ...specAdequacy, classRef: 'certify-spec-clauses' },
+            },
+          ],
+        },
+      },
+    ])('reports invalid specAdequacy.classRef from the matching $label branch', ({ input }) => {
+      const parsed = (
+        complete.args as {
+          safeParse: (
+            value: unknown,
+          ) => { success: true } | { success: false; error: { issues: Array<{ message: string }> } };
+        }
+      ).safeParse(input);
+      expect(parsed.success).toBe(false);
+      if (parsed.success) return;
+
+      const message = parsed.error.issues.map((issue) => issue.message).join('\n');
+      expect(message).toContain('specAdequacy.classRef');
+      for (const ref of [
+        'plan-class-feature-ship',
+        'plan-class-bugfix',
+        'plan-class-migration',
+        'plan-class-investigation',
+      ]) {
+        expect(message).toContain(ref);
+      }
+      expect(message).not.toContain('Unrecognized key: "specAdequacy"');
     });
 
     it('documents specAdequacy/outputPayload as top-level siblings and auto-hoists a nested specAdequacy (EI-22073105984724419, was EI-21709695952126373)', () => {
@@ -2563,6 +2885,7 @@ describe('work_items:complete (keyed-array)', () => {
       expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith({
         workItem: linkedFeature,
         attestation: specAdequacy,
+        changedPaths: [behaviorChangePath],
       });
       expect(dispatchPendingGradingAudits).toHaveBeenCalledWith({
         targetIds: pendingTargets,
@@ -2666,6 +2989,7 @@ describe('work_items:complete (keyed-array)', () => {
       expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith({
         workItem: linkedFeature,
         attestation: specAdequacy,
+        changedPaths: [],
       });
       expect(dispatchPendingGradingAudits).toHaveBeenCalledWith({
         targetIds: pendingTargets,
@@ -2677,6 +3001,38 @@ describe('work_items:complete (keyed-array)', () => {
         specAdequacy: { gradingAuditDispatch: dispatchResult },
       });
       expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it('forwards documentation inventory paths and surfaces the registered exemption on feature close', async () => {
+      getWorkItem.mockResolvedValue(linkedFeature);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...linkedFeature, state: 'passed' }));
+      const exempted = [
+        'AUTO-BAR-R-1-P-004@1 — exempt (registered non-code inventory scope INVENTORY-P-004@1; item completion only, final shipment BAR proof remains required)',
+      ];
+      specTestAdequacyCompletionGate.mockResolvedValue({
+        ok: true,
+        applicable: false,
+        checked: [],
+        exempted,
+      });
+      const inventoryPath = 'docs/evidence/inventory.json';
+
+      const r = await one({
+        id: 'F-101',
+        state: 'passed',
+        completion: { summary: 'read-only inventory complete', filesChanged: [inventoryPath] },
+      });
+
+      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith({
+        workItem: linkedFeature,
+        attestation: undefined,
+        changedPaths: [inventoryPath],
+      });
+      expect(r).toMatchObject({
+        ok: true,
+        specAdequacy: { applicable: false, checked: [], exempted },
+      });
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
     });
 
     it('keeps a deprecated feature close outside the spec-adequacy gate', async () => {
@@ -2925,7 +3281,8 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r.completion.status).toBe('done'); // reads as done…
       expect(r.stateWarning).toMatch(/NOT closed/); // …but the item is not closed
       expect(r.stateWarning).toContain('F-12');
-      expect(r.stateWarning).toMatch(/passed'\|'deprecated'/); // points at the terminal states
+      // Points at the terminal states, split by intent (EI-25189121547866671).
+      expect(r.stateWarning).toMatch(/success: 'passed', discard: 'deprecated'/);
     });
 
     it('does NOT warn when a terminal `state` closed the item', async () => {
@@ -2954,7 +3311,7 @@ describe('work_items:complete (keyed-array)', () => {
       const issue = { ...item, id: 'WI-7', kind: 'bug', family: 'issue', state: 'open' };
       getWorkItem.mockResolvedValue(issue);
       const open = await one({ id: 'WI-7', completion: { summary: 'fixed in tree' } });
-      expect(open.stateWarning).toMatch(/resolved'\|'closed'/);
+      expect(open.stateWarning).toMatch(/success: 'resolved'\/'done', discard: 'closed'\/'dropped'/);
 
       getWorkItem.mockResolvedValue(issue);
       setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...issue, state: 'resolved' }));
@@ -3287,6 +3644,27 @@ describe('work_items:complete (keyed-array)', () => {
   // when the caller is not its current assignee; terminal calls refuse before they can mutate
   // someone else's active work.
   describe('assigneeMismatchWarning — wrong-id-grab footgun (EI-7264)', () => {
+    it.each([
+      ['spawn-url', 'trusted', true],
+      ['bearer', 'trusted', false],
+      ['spawn-url', 'untrusted', false],
+    ])('checks a role session holder using authenticated %s/%s provenance', async (authMethod, trust, allowed) => {
+      const session = 'su-851c1a7a-8ea6-4c70-afeb-472e957fd3d8';
+      const roleCtx = { uiClientId: session, workspaceId: 'default',
+        principal: { slug: 'system:judge', kind: 'system', authMethod, trust, workspaceId: 'default' } };
+      getWorkItem.mockResolvedValue({ ...item, assignee: session });
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+      const result = ((await complete.handler(parse({ id: 'F-12', state: 'passed',
+        completion: { summary: 'signed reviewer closes its own review', tests: 'holder guard' } }) as never,
+      roleCtx as never)) as Out).data.results[0];
+      expect(result.ok).toBe(allowed);
+      if (allowed) expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+      else {
+        expect(result.error).toMatch(/refusing terminal completion/);
+        expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      }
+    });
+
     it('warns when the item is currently assigned to someone else', async () => {
       getWorkItem.mockResolvedValue({ ...item, assignee: 'su-someone-else' });
       const r = await one({ id: 'F-12', completion: { summary: 'noting it' } });
@@ -3606,6 +3984,38 @@ describe('work_items:complete (keyed-array)', () => {
           verifiedHow: 'unit',
           testsRun: 'npm run lint:tsc -- --files=lib/a.ts ; vitest',
           testResult: 'tsc clean, 8 passed',
+          filesChanged: ['lib/a.ts'],
+        },
+      });
+      expect(r.typeEvidenceWarning).toBeUndefined();
+    });
+
+    it('stays silent when testsRun cites plural typechecks', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 's',
+          verifiedHow: 'integration',
+          testsRun: 'operator-vite and scoped operator-core typechecks',
+          testResult: 'both checks clean',
+          filesChanged: ['lib/a.ts'],
+        },
+      });
+      expect(r.typeEvidenceWarning).toBeUndefined();
+    });
+
+    it('stays silent when testResult cites plural typechecks', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 's',
+          verifiedHow: 'integration',
+          testsRun: 'operator-vite integration tests',
+          testResult: 'both scoped typechecks clean',
           filesChanged: ['lib/a.ts'],
         },
       });
@@ -4295,6 +4705,56 @@ describe('work_items:complete (keyed-array)', () => {
       expect(message).toContain(COMPLETION_OBJECT_EXAMPLE);
     });
 
+    // WI-10005684 (EI-24822105308825949): the caller's JSON-encoded completion carried one extra `}`;
+    // the old rejection said "bare string" and sent them hunting a door bug that did not exist.
+    describe('WI-10005684: a malformed JSON-encoded completion string', () => {
+      type Safe = {
+        success: boolean;
+        data?: unknown;
+        error?: { issues: Array<{ message: string }> };
+      };
+      const safeParse = (completion: unknown): Safe =>
+        (complete.args as { safeParse: (x: unknown) => Safe }).safeParse({
+          id: 'F-12',
+          state: 'passed',
+          assumptions: 'none',
+          completion,
+        });
+      const evidence = {
+        summary: 'closed with evidence',
+        testsRun: 'npm run test:file -- complete.test.ts',
+        testResult: 'passed',
+        verifiedHow: 'unit',
+        filesChanged: [] as string[],
+      };
+
+      it('an extra trailing } is repaired: the string validates exactly like the same object', () => {
+        const fromObject = safeParse(evidence);
+        const fromString = safeParse(`${JSON.stringify(evidence)}}`);
+        expect(fromObject.success).toBe(true);
+        expect(fromString.success).toBe(true);
+        expect(fromString.data).toEqual(fromObject.data);
+      });
+
+      it('unrepairable brace-delimited junk is refused with the JSON-parse reason PREPENDED to the shared repair text', () => {
+        const result = safeParse('{fixed the thing, verified it works}');
+        expect(result.success).toBe(false);
+        const messages = result.error?.issues.map((issue) => issue.message) ?? [];
+        const rejection = messages.find((m) => m.endsWith(COMPLETION_STRING_REJECTION));
+        expect(rejection).toBeDefined();
+        expect(rejection).toMatch(/looks like a JSON object but is NOT valid JSON/);
+        expect(rejection).toContain(COMPLETION_OBJECT_EXAMPLE);
+      });
+
+      it('genuine prose keeps the generic rejection with NO JSON-parse prefix', () => {
+        const result = safeParse('shipped it, all green');
+        expect(result.success).toBe(false);
+        const messages = result.error?.issues.map((issue) => issue.message) ?? [];
+        expect(messages).toContain(COMPLETION_STRING_REJECTION);
+        expect(messages.join(' ')).not.toMatch(/NOT valid JSON/);
+      });
+    });
+
     it('does not invoke the work-item reader or state writer after refusal', () => {
       const result = (
         complete.args as {
@@ -4366,9 +4826,9 @@ describe('work_items:complete (keyed-array)', () => {
 });
 
 describe('work_items:complete ephemeral terminal-deliverable warning (EI-20268156880922192)', () => {
-  it('suppresses a scratch reference only when Git definitely tracks the repo-relative file', () => {
-    const isTracked = vi.fn((_root: string, relativePath: string) => relativePath.endsWith('/tracked-report.md'));
-    const references = completionEphemeralDeliverableReferences(
+  it('suppresses a scratch reference only when Git definitely tracks the repo-relative file', async () => {
+    const isTracked = vi.fn(async (_root: string, relativePath: string) => relativePath.endsWith('/tracked-report.md'));
+    const references = await completionEphemeralDeliverableReferences(
       {
         summary:
           'Tracked source .papercusp/scratch/tracked-report.md; untracked source .papercusp/scratch/untracked-report.md.',
@@ -4384,8 +4844,8 @@ describe('work_items:complete ephemeral terminal-deliverable warning (EI-2026815
     expect(isTracked).toHaveBeenCalledWith('/repo', '.papercusp/scratch/untracked-report.md');
   });
 
-  it.each(['untracked', 'ignored'])('keeps a definitely %s scratch path warning', (ownership) => {
-    const references = completionEphemeralDeliverableReferences(
+  it.each(['untracked', 'ignored'])('keeps a definitely %s scratch path warning', async (ownership) => {
+    const references = await completionEphemeralDeliverableReferences(
       { summary: `The ${ownership} report is at .papercusp/scratch/${ownership}-report.md.` },
       undefined,
       { repoRoot: '/repo', isTracked: () => false },
@@ -4396,13 +4856,13 @@ describe('work_items:complete ephemeral terminal-deliverable warning (EI-2026815
     ]);
   });
 
-  it('keeps the warning when ownership is unknown or the trackedness probe throws', () => {
-    const unknown = completionEphemeralDeliverableReferences(
+  it('keeps the warning when ownership is unknown or the trackedness probe throws', async () => {
+    const unknown = await completionEphemeralDeliverableReferences(
       { summary: 'The report is at .papercusp/scratch/unknown-report.md.' },
       undefined,
       { repoRoots: ['/repo'], isTracked: () => undefined },
     );
-    const throwing = completionEphemeralDeliverableReferences(
+    const throwing = await completionEphemeralDeliverableReferences(
       { summary: 'The report is at .papercusp/scratch/throwing-report.md.' },
       undefined,
       {
@@ -4417,9 +4877,9 @@ describe('work_items:complete ephemeral terminal-deliverable warning (EI-2026815
     expect(throwing).toEqual([{ kind: 'scratch-path', reference: '.papercusp/scratch/throwing-report.md' }]);
   });
 
-  it('suppresses an artifact URL when a declared repository path has matching server blob identities', () => {
+  it('suppresses an artifact URL when a declared repository path has matching server blob identities', async () => {
     const blobSha = 'b'.repeat(40);
-    const references = completionEphemeralDeliverableReferences(
+    const references = await completionEphemeralDeliverableReferences(
       {
         summary: 'Copied the report from https://claude.ai/artifacts/durable-source.',
         filesChanged: ['docs/report.md'],
@@ -4444,9 +4904,9 @@ describe('work_items:complete ephemeral terminal-deliverable warning (EI-2026815
     expect(references).toEqual([]);
   });
 
-  it('keeps an artifact URL when the matching identity belongs to a different declared path', () => {
+  it('keeps an artifact URL when the matching identity belongs to a different declared path', async () => {
     const blobSha = 'b'.repeat(40);
-    const references = completionEphemeralDeliverableReferences(
+    const references = await completionEphemeralDeliverableReferences(
       {
         summary: 'The source artifact is https://claude.ai/artifacts/unrelated-source.',
         filesChanged: ['docs/report.md'],
@@ -4496,8 +4956,8 @@ describe('work_items:complete ephemeral terminal-deliverable warning (EI-2026815
     ['mismatched blobs', { workingTreeBlobSha: 'b'.repeat(40), headBlobSha: 'c'.repeat(40) }],
     ['missing working-tree blob', { workingTreeBlobSha: null, headBlobSha: 'b'.repeat(40) }],
     ['deleted path', { workingTreeBlobSha: null, headBlobSha: null, deletion: true as const }],
-  ])('keeps an artifact URL when the server cannot prove a durable changed path (%s)', (_name, identity) => {
-    const references = completionEphemeralDeliverableReferences(
+  ])('keeps an artifact URL when the server cannot prove a durable changed path (%s)', async (_name, identity) => {
+    const references = await completionEphemeralDeliverableReferences(
       {
         summary: 'The source artifact is https://claude.ai/artifacts/unproven-source.',
         filesChanged: ['docs/report.md'],
@@ -4764,6 +5224,45 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         'src/na/config.ts',
         'packages/operator-core/lib/none-of-the-above.ts',
       ]);
+    });
+
+    // WI-10005684 (EI-23774140426573307): the sentinel set only matches a WHOLE string, so a
+    // truthful negation written as a SENTENCE was comma-split into fabricated "paths" and the
+    // close landed authority:'proposed'. A negation LEAD with NO path-shaped token is the empty set.
+    it.each([
+      'None. This is a not-a-defect close, no source, test, or config file was modified.',
+      'none - investigation only, nothing was edited',
+      'No files changed; this was a verification-only close.',
+      'No changes were needed, the item was already fixed at HEAD.',
+      'N/A, read-only audit',
+    ])('WI-10005684: a path-free negation sentence %j normalizes to an empty filesChanged array', (sentence) => {
+      const out = coerceCompletionShape({ summary: 's', filesChanged: sentence }) as { filesChanged: unknown };
+      expect(out.filesChanged).toEqual([]);
+      const nested = coerceCompletionShape({
+        summary: 's',
+        verification: { filesChanged: sentence, testsRun: 'unit', testResult: 'passed' },
+      }) as { verification: { filesChanged: unknown } };
+      expect(nested.verification.filesChanged).toEqual([]);
+    });
+
+    it.each([
+      // The control that stops the lead-word match from swallowing real evidence: it names a path.
+      ['None, but I did edit src/a.ts', ['None', 'but I did edit src/a.ts']],
+      ['no changes to docs, only packages/operator-core/lib/x.ts', ['no changes to docs', 'only packages/operator-core/lib/x.ts']],
+      // No negation lead at all — an ordinary comma-separated path list is untouched.
+      ['src/a.ts, src/b.ts', ['src/a.ts', 'src/b.ts']],
+      // A dotted extension alone (no separator) is path-shaped.
+      ['none, edited a.ts', ['none', 'edited a.ts']],
+    ])('WI-10005684: %j names a path, so it is NOT a negation and keeps the list rescue', (value, expected) => {
+      const out = coerceCompletionShape({ summary: 's', filesChanged: value }) as { filesChanged: unknown };
+      expect(out.filesChanged).toEqual(expected);
+    });
+
+    it('WI-10005684: a negation lead that is only a PREFIX of a word is not a negation (nonexistent.ts-style paths survive)', () => {
+      const out = coerceCompletionShape({ summary: 's', filesChanged: 'nothingness-config, notes' }) as {
+        filesChanged: unknown;
+      };
+      expect(out.filesChanged).toEqual(['nothingness-config', 'notes']);
     });
 
     it('accepts server-generated root treeStamp and settlementManifest on a read→retry (EI-21599866958764530)', () => {
@@ -5242,6 +5741,42 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       const jsonString = JSON.stringify({ summary: 's', tests: '5 green' });
       const out = coerceCompletionShape(jsonString) as { __shapeCoercedFrom?: unknown };
       expect(out.__shapeCoercedFrom).toBeUndefined();
+    });
+
+    // WI-10005684 (EI-24822105308825949): the measured ledger row (tool_invocations 30937604)
+    // was a JSON string with ONE EXTRA trailing `}` — malformed by the caller, not mangled by
+    // the door. Extra closers carry no data, so the peel is lossless and carries NO marker.
+    it('WI-10005684: a JSON string with extra trailing closers is recovered LOSSLESSLY and is NOT marked truncated', () => {
+      const body = { summary: 'closed', tests: '5 green', filesChanged: ['src/a.ts'] };
+      for (const suffix of ['}', '}}', ' }\n', ']}']) {
+        const out = coerceCompletionShape(JSON.stringify(body) + suffix) as Record<string, unknown>;
+        expect(out.summary).toBe('closed');
+        expect(out.tests).toBe('5 green');
+        expect(out.filesChanged).toEqual(['src/a.ts']);
+        expect(out.__shapeCoercedFrom).toBeUndefined();
+      }
+    });
+
+    it('WI-10005684: peeling never turns a TRUNCATED object (a closer MISSING) into a clean one — that still takes the marked truncation repair', () => {
+      const whole = JSON.stringify({ summary: 'closed', nested: { a: [1, 2] } });
+      const truncated = whole.slice(0, -1); // drop the final `}` only
+      const out = coerceCompletionShape(truncated) as Record<string, unknown>;
+      expect(out.summary).toBe('closed');
+      expect(out.__shapeCoercedFrom).toBe('truncated-json');
+    });
+
+    it('WI-10005684: excess closers on a string with NO completion key are not rescued (prose in braces stays a string)', () => {
+      const notCompletion = '{"foo":"bar"}}';
+      expect(coerceCompletionShape(notCompletion)).toBe(notCompletion);
+    });
+
+    it('WI-10005684: describeUnparseableCompletionJsonString names the parser reason for brace-delimited junk and stays silent for prose / valid JSON', () => {
+      const reason = describeUnparseableCompletionJsonString('{fixed the thing, verified it works}');
+      expect(reason).toMatch(/NOT valid JSON/);
+      expect(reason).toMatch(/structured object value/);
+      expect(describeUnparseableCompletionJsonString('shipped it, all green')).toBeUndefined();
+      expect(describeUnparseableCompletionJsonString(JSON.stringify({ summary: 's' }))).toBeUndefined();
+      expect(describeUnparseableCompletionJsonString({ summary: 's' })).toBeUndefined();
     });
   });
 
@@ -6066,6 +6601,40 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       }
     });
 
+    // WI-10005648: this tool alone seats ~10 KB of the 100 KB tool-delivery floor. Four nested
+    // records (verification, rootCauseVerification, coverage, selfReview) were published TWICE —
+    // once inside the `completion` $defs record and again, in full, as flat root aliases —
+    // which pushed the floor 3,428 B over budget and reded psu-launcher's budgetOverrun gate.
+    // The root alias must stay a POINTER; the typed shape lives under `completion`.
+    it('publishes the heavy nested completion records once, under completion, not again as root aliases (WI-10005648)', () => {
+      const json = z.toJSONSchema(complete.args as never) as JsonSchemaDocument & {
+        anyOf?: Array<{ properties?: Record<string, unknown> }>;
+        oneOf?: Array<{ properties?: Record<string, unknown> }>;
+      };
+      const branches = json.anyOf ?? json.oneOf ?? [];
+      const single = branches.find((branch) => Boolean(branch.properties?.id));
+      expect(single).toBeDefined();
+
+      const record = resolveLocalSchemaRef(json, single?.properties?.completion) as {
+        properties?: Record<string, { properties?: unknown; $ref?: string }>;
+      };
+      for (const field of ['verification', 'rootCauseVerification', 'coverage', 'selfReview']) {
+        const alias = resolveLocalSchemaRef(json, single?.properties?.[field]) as {
+          type?: unknown;
+          properties?: unknown;
+        };
+        // Still a published, object-typed key (the single-item flat-alias contract) ...
+        expect(alias.type, `root alias ${field} must stay object-typed`).toBe('object');
+        // ... but a pointer, never a second copy of the record.
+        expect(alias.properties, `root alias ${field} must not re-publish its record`).toBeUndefined();
+        expect(JSON.stringify(alias).length, `root alias ${field} grew past a pointer`).toBeLessThan(300);
+
+        // The typed shape is still published exactly where the pointer says it is.
+        const typed = resolveLocalSchemaRef(json, record.properties?.[field]) as { properties?: unknown };
+        expect(typed.properties, `completion.${field} must carry the typed shape`).toBeDefined();
+      }
+    });
+
     it('publishes the single-item flat aliases that preprocessing accepts', () => {
       const json = z.toJSONSchema(complete.args as never) as {
         anyOf?: Array<{ properties?: Record<string, unknown> }>;
@@ -6154,7 +6723,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(d.error?.code).toBe('invalid_input');
       const message = d.error?.message ?? '';
       expect(message).toMatch(/corrected call/i);
-      const accepted = message.split('this tool accepts ONLY:')[1] ?? '';
+      const accepted = (message.split('this tool accepts ONLY:')[1] ?? '').split('. ')[0] ?? '';
       expect(accepted).toContain('tests');
       expect(accepted).toContain('verifiedHow');
       expect(accepted).not.toContain('workOutcome');
@@ -6177,24 +6746,39 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         }>;
       };
       const branches = json.anyOf ?? json.oneOf ?? [];
-      const completionRef = '#/$defs/work-items-completion-record-v1';
+      const completionRef = '#/$defs/wi-completion';
 
-      expect(json.$defs).toHaveProperty('work-items-completion-record-v1');
+      expect(json.$defs).toHaveProperty('wi-completion');
+      expect(json.$defs).toHaveProperty('wi-coverage');
+      expect(json.$defs!['wi-coverage']).toHaveProperty('x-papercusp-call-constraint');
+      expect(json.$defs).toHaveProperty('wi-assumptions');
+      const record = json.$defs!['wi-completion'] as {
+        properties: { coverage: { $ref: string }; verification: { properties: { coverage: { $ref: string } } } };
+      };
+      const coverageRef = '#/$defs/wi-coverage';
+      expect(record.properties.coverage.$ref).toBe(coverageRef);
+      expect(record.properties.verification.properties.coverage.$ref).toBe(coverageRef);
       expect(branches).toHaveLength(2);
       for (const branch of branches) expect(branch.properties?.completion?.$ref).toBe(completionRef);
       const bulkBranch = branches.find(
         (branch) => (branch.properties?.items as { type?: unknown } | undefined)?.type === 'array',
       );
       expect(bulkBranch?.properties?.items?.items?.properties?.completion?.$ref).toBe(completionRef);
+      for (const branch of branches) {
+        expect((branch.properties as Record<string, { $ref?: string }>).assumptions.$ref).toBe('#/$defs/wi-assumptions');
+      }
+      expect((bulkBranch?.properties?.items?.items?.properties as Record<string, { $ref?: string }>).assumptions.$ref)
+        .toBe('#/$defs/wi-assumptions');
     });
 
     it('documents that assumptions are required only for terminal closes', () => {
       const json = z.toJSONSchema(complete.args as never) as {
+        $defs?: Record<string, JsonSchemaNode>;
         anyOf?: Array<{ required?: string[]; properties?: Record<string, { description?: string }> }>;
         oneOf?: Array<{ required?: string[]; properties?: Record<string, { description?: string }> }>;
       };
       const branches = json.anyOf ?? json.oneOf ?? [];
-      const descriptions = branches.map((branch) => branch.properties?.assumptions?.description ?? '').join('\n');
+      const descriptions = branches.map((branch) => resolveLocalSchemaRef(json, branch.properties?.assumptions).description ?? '').join('\n');
       expect(descriptions).toContain('terminal close');
       expect(descriptions).toContain('record-only');
     });
@@ -6316,13 +6900,46 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       const text = `${description}\n${when}\n${JSON.stringify(completionSchema)}`;
 
       expect(text).toContain('completion.verification');
-      expect(text).toContain('top-level evidence fields are legacy aliases');
+      expect(text).toContain('`testsRun`, `testResult`, `verifiedHow`, and `filesChanged` at the root of `completion`');
+      expect(text).toContain('single-item call also accepts those fields at the argument root as legacy aliases');
       expect(text).toContain('verification.tests');
       expect(text).toContain('verification.typecheck');
       expect(text).toContain('verification.diff');
       expect(text).toContain('deferred');
       expect(text).toContain('coordNotes');
       expect(text).toContain('not inside');
+    });
+
+    it('publishes the flat coordNotes alias as a string and rejects object-shaped notes', () => {
+      const json = z.toJSONSchema(complete.args as never) as JsonSchemaDocument & {
+        anyOf?: Array<{ properties?: Record<string, unknown> }>;
+        oneOf?: Array<{ properties?: Record<string, unknown> }>;
+      };
+      const branches = json.anyOf ?? json.oneOf ?? [];
+      const single = branches.find((branch) => Boolean(branch.properties?.id));
+      const coordNotes = resolveLocalSchemaRef(json, single?.properties?.coordNotes);
+
+      expect(coordNotes.type).toBe('string');
+
+      const parse = complete.args as { safeParse: (value: unknown) => { success: boolean } };
+      const valid = parse.safeParse({
+        id: 'WI-1',
+        state: 'resolved',
+        assumptions: 'none',
+        summary: 'fixed',
+        coordNotes: 'this alias is free text',
+      });
+      expect(valid.success).toBe(true);
+
+      const invalid = parse.safeParse({
+        id: 'WI-1',
+        state: 'resolved',
+        assumptions: 'none',
+        summary: 'fixed',
+        coordNotes: { note: 'this alias is free text' },
+      });
+
+      expect(invalid.success).toBe(false);
     });
 
     it('documents that treeStamp is server-stamped and requires a full SHA when persisted (EI-21310406381433990)', () => {
@@ -6400,6 +7017,23 @@ describe('work_items:complete input coercion (EI-7031)', () => {
     /** The opts object complete.ts handed the state writer. */
     const stateOpts = () => setWorkItemStateWithAliasInfo.mock.calls[0]?.[2] as Record<string, unknown>;
 
+    it('routes an external producer close through the host attempt without overriding writer authority', async () => {
+      getWorkItem.mockResolvedValue({ ...item, id: 'WI-1', state: 'open', family: 'issue',
+        payload: { externalRuntimeProducer: { kind: 'external-runtime-producer' } } });
+      await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'Retained runtime checked',
+        verifiedHow: 'integration', testsRun: 'retained transcript probe', testResult: 'matched' } });
+      expect(stateOpts().externalRuntimeAttempt).toEqual(expect.objectContaining({ updatedTs: 1 }));
+      expect(stateOpts()).not.toHaveProperty('completionAuthority');
+    });
+
+    it('refuses an external producer close whose evidence verdict is only proposed', async () => {
+      getWorkItem.mockResolvedValue({ ...item, id: 'WI-1', state: 'open', family: 'issue',
+        payload: { externalRuntimeProducer: { kind: 'external-runtime-producer' } } });
+      const result = await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'finished' } });
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(result.stateError).toContain('completion evidence is not committed');
+    });
+
     it('a summary-only completion lands `proposed` and does NOT count toward burn-down', async () => {
       const r = await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'fixed it' } });
       expect(stateOpts().completionAuthority).toBe('proposed');
@@ -6430,6 +7064,13 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(remoteAdvice).not.toMatch(/WAITING SETTLES THIS/);
       expect(remoteAdvice).not.toMatch(/re-send this IDENTICAL completion/);
       expect(remoteAdvice).toContain('do not re-call `work_items:complete` locally');
+
+      // EI-24814178215040083: the reconciler's candidate query keys on a persisted
+      // settlementManifest, never on origin, so a remote-origin close that persisted one IS
+      // settled here (WI-10004437: origin 'remote', settled proposed -> committed). Naming
+      // a remote settler for it pointed the closer at nobody.
+      expect(contentIdentityAdviceForOrigin('remote', 'su-author', localAdvice, true)).toBe(localAdvice);
+      expect(contentIdentityAdviceForOrigin('remote', 'su-author', localAdvice, false)).toMatch(/REMOTE-AUTHORED/);
     });
 
     it('verifiedHow + testResult lands `committed` and DOES count toward burn-down', async () => {
@@ -6442,6 +7083,43 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(r.completionAuthority).toBe('committed');
       expect(r.countsTowardBurnDown).toBe(true);
       expect(r.authorityWarning).toBeUndefined();
+    });
+
+    it('binds the latest testing:run lookup to the exact closing work-item', async () => {
+      const closingItemId = 'WI-test-run-attribution';
+      const closingItem = {
+        ...item,
+        id: closingItemId,
+        kind: 'change',
+        family: 'issue',
+        state: 'open',
+        harness: 'papercup',
+      };
+      getWorkItem.mockResolvedValue(closingItem);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...closingItem, state: 'resolved' }));
+
+      let invocationQuery: { text: string; values: unknown[] } | undefined;
+      dbMocks.planItemStatusRows.mockImplementation(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const text = strings.join('');
+        if (text.includes('FROM harness_shared.tool_invocations')) {
+          invocationQuery = { text, values };
+          return [];
+        }
+        return text.includes('SELECT 1 AS one FROM harness_shared.work_items wi') ? [] : [{ status: 'done' }];
+      });
+
+      const result = await one({
+        id: closingItemId,
+        harness: 'papercup',
+        state: 'resolved',
+        completion: { summary: 'closed with focused verification', verifiedHow: 'unit', testResult: 'green' },
+      });
+
+      expect(result.completionAuthority).toBe('committed');
+      expect(invocationQuery).toBeDefined();
+      expect(invocationQuery?.text).toContain("args_json->>'work_item_id'");
+      expect(invocationQuery?.text).toContain("args_json #>> '{evidence,workItemId}'");
+      expect(invocationQuery?.values).toContain(closingItemId);
     });
 
     it('does not call an authority-changing replay idempotent', async () => {
@@ -6466,6 +7144,43 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         retrySafe: true,
         authorityChanged: true,
       });
+    });
+
+    // WI-10005199 — handler-level pair for the consumerView attestation. The leaf and the
+    // source-wiring pin live in complete-consumer-view.test.ts; THIS pair drives the real
+    // handler end to end so a regression anywhere between `reconcileStampedAuthority` and the
+    // response (a dropped spread, a wrong operand) fails here with the migration-972 shape:
+    // the call computes `committed`, the BEFORE trigger stores `proposed` on the re-read row.
+    it('WI-10005199: a floor-trigger downgrade surfaces as a consumerView on the close response', async () => {
+      const row = { ...item, id: 'WI-1', family: 'issue', state: 'open' };
+      getWorkItem.mockResolvedValue(row);
+      setWorkItemStateWithAliasInfo.mockResolvedValue({
+        ...okState({ ...row, state: 'done', completionAuthority: 'proposed' }),
+        workItem: { ...row, state: 'done', completionAuthority: 'proposed' },
+      });
+
+      const r = await one({
+        id: 'WI-1',
+        state: 'resolved',
+        completion: { summary: 'fixed it', verifiedHow: 'unit', testResult: '26/26 green' },
+      });
+
+      expect(stateOpts().completionAuthority).toBe('committed'); // what the call computed
+      expect(r.completionAuthority).toBe('proposed'); // what a consumer reads back
+      expect(r.consumerView).toMatchObject({
+        divergedFromWrite: true,
+        value: { completionAuthority: 'proposed' },
+      });
+    });
+
+    it('WI-10005199: an ordinary close that agrees with its read-back carries NO consumerView (exception-only)', async () => {
+      const r = await one({
+        id: 'WI-1',
+        state: 'resolved',
+        completion: { summary: 'fixed it', verifiedHow: 'unit', testResult: '26/26 green' },
+      });
+      expect(r.completionAuthority).toBe('committed');
+      expect(r).not.toHaveProperty('consumerView');
     });
 
     it('verifiedHow + testsRun also lands `committed` (either half of the test pair qualifies)', async () => {
@@ -6498,6 +7213,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(r.completionAuthority).toBe('proposed');
       expect(stateOpts().completionAuthority).toBe('proposed');
       expect(r.countsTowardBurnDown).toBe(true);
+      expect(r.authorityWarning).toBeUndefined();
     });
 
     // P-002 measured this exact shape on the live store: 4.2% of evidence-bearing rows
@@ -6621,12 +7337,80 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         key === 'papercusp-terminal-criteria-enforcement' ? value : false,
       );
 
+    // SPEC-BQL-P-009-RECEIPT: exercise the close handler and its persistence
+    // boundary, including accepted/non-reviewed controls and the honest drop exit.
+    it.each([
+      ['pending reproduction', 'revision-requested', 'reproduction'],
+      ['receipt accepted', 'accepted', undefined],
+      ['not reviewed', undefined, undefined],
+    ] as const)('records the right authority for %s across terminal dispositions', async (_label, reviewStatus, revisionKind) => {
+      enforcement(true);
+      const payload = reviewStatus ? {
+        agentReview: { status: reviewStatus, revisionKind, submittedBy: 'su-filer', ledgerIdeaId: 'WI-1', round: 2 },
+      } : {};
+      const bug = { ...item, id: 'WI-1', kind: 'bug', family: 'issue', state: 'open', payload };
+      getWorkItem.mockResolvedValue(bug);
+      setWorkItemStateWithAliasInfo.mockImplementation(async (_id: string, state: string) => okState({ ...bug, state }));
+
+      for (const state of ['done', 'resolved', 'dropped']) {
+        setWorkItemStateWithAliasInfo.mockClear();
+        const r = await one({
+          id: 'WI-1', state,
+          completion: {
+            summary: state === 'dropped' ? 'Current-build attempt did not reproduce; retain the attempt.' : 'Validated intervention recorded.',
+            verifiedHow: 'scripted reproduction on the current build; persisted request/response inspected',
+            testResult: 'Observed the recorded terminal disposition and authority.',
+          },
+        });
+        const pendingSuccessfulClose = reviewStatus === 'revision-requested' && state !== 'dropped';
+        const authority = pendingSuccessfulClose ? 'proposed' : 'committed';
+        expect(r.ok).toBe(true);
+        expect(r.completionAuthority).toBe(authority);
+        expect(stateOpts().completionAuthority).toBe(authority);
+        expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledTimes(1);
+        if (pendingSuccessfulClose) {
+          expect(r.countsTowardBurnDown).toBe(false);
+          expect(r.terminalCriteriaWarning).toContain('reproduction-receipt');
+          expect(r.authorityWarning).toContain("Authority landed 'proposed'");
+        } else {
+          expect(r.terminalCriteriaWarning ?? '').not.toContain('reproduction-receipt');
+        }
+      }
+    });
+
     it('ON (the shipped default): an unmet criterion downgrades the close to `proposed`', async () => {
       enforcement(true);
       const r = await one(downgradingClose);
       expect(stateOpts().completionAuthority).toBe('proposed');
       expect(r.completionAuthority).toBe('proposed');
       expect(r.countsTowardBurnDown).toBe(false);
+      expect(r.authorityWarning).toContain(String(r.terminalCriteriaWarning));
+      expect(r.authorityWarning).toMatch(/forbidden-evidence-mode.*already-passing/i);
+      expect(r.authorityWarning).not.toMatch(/requires `verifiedHow`|with those fields filled/i);
+    });
+
+    it('preview explains the same terminal criterion without writing the close', async () => {
+      enforcement(true);
+      const r = await one({ ...downgradingClose, validateOnly: true });
+      expect(r.validationOnly).toBe(true);
+      expect(r.completionAuthority).toBe('proposed');
+      expect(r.countsTowardBurnDown).toBe(false);
+      expect(r.terminalCriteriaWarning).toMatch(/forbidden-evidence-mode.*already-passing/i);
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(attachCompletionEvidenceToSettledItem).not.toHaveBeenCalled();
+      expect(commentWorkItem).not.toHaveBeenCalled();
+    });
+
+    it('keeps missing-field advice when a forbidden mode also omits its test evidence', async () => {
+      enforcement(true);
+      const r = await one({
+        ...downgradingClose,
+        completion: { summary: 'checked existing code', verifiedHow: 'already-passing' },
+      });
+      expect(r.completionAuthority).toBe('proposed');
+      expect(r.terminalCriteriaWarning).toMatch(/forbidden-evidence-mode/i);
+      expect(r.authorityWarning).toMatch(/requires `verifiedHow`.*testsRun/i);
+      expect(r.authorityWarning).not.toContain('evidence fields are complete');
     });
 
     it('OFF: the SAME close lands `committed` — the switch actually switches something off', async () => {
@@ -6861,5 +7645,215 @@ describe('D-041 — a close citing an UNOWNED follow-up is told so', () => {
     const r = await close();
     expect(r.ok).toBe(true);
     expect(r.residueUnownedWarning).toBeUndefined();
+  });
+});
+
+// P-007 Phase C (unified-bug-pipeline-and-honest-queue-2026-10-05, D-028): the call sites in
+// completeOne, behind the hermetic store spies declared with the module mocks above. The
+// store itself runs against real Postgres in
+// harness/improvements/completion-verification.integration.test.ts.
+describe('work_items:complete — completion verification wiring (P-007 Phase C, D-028)', () => {
+  const subject = { ...item, id: 'WI-CV-1', kind: 'bug', family: 'issue', state: 'open', title: 'rotate the export key' };
+  /** A completion task for WI-CV-1 whose verified completion was closed by `closer`. */
+  async function completionTask(closer: string) {
+    const { completionVerificationPayload } = await import('../../harness/improvements/completion-verification');
+    const payload = completionVerificationPayload(
+      { id: subject.id, title: subject.title, kind: 'bug', closer },
+      '2026-10-06T00:00:00.000Z',
+    );
+    return { ...item, id: 'WI-CV-TASK', kind: 'task', family: 'issue', state: 'open', title: `Verify completion of ${subject.id}`, payload };
+  }
+
+  beforeEach(() => {
+    cvStore.spawn.mockReset();
+    cvStore.applyVerdict.mockReset();
+    cvStore.acceptOnSettlement.mockReset();
+    setWorkItemStateWithAliasInfo.mockClear();
+  });
+
+  it('a successful proposed close spawns the verification task, naming the landed terminal owner as closer', async () => {
+    getWorkItem.mockResolvedValue(subject);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(
+      okState({ ...subject, state: 'resolved', completionAuthority: 'proposed', terminalOwner: 'su-closer' }),
+    );
+    cvStore.spawn.mockResolvedValue({ outcome: 'created', taskId: 'WI-CV-TASK', gated: ['WI-CV-DEP'], notGated: [] });
+    const r = await one({ id: subject.id, state: 'resolved', completion: { summary: 'rotated' } });
+    expect(cvStore.spawn).toHaveBeenCalledTimes(1);
+    expect(cvStore.spawn.mock.calls[0][0]).toMatchObject({ id: subject.id, closer: 'su-closer', kind: 'bug', title: subject.title });
+    expect(r.completionVerification).toMatchObject({ spawned: { outcome: 'created', taskId: 'WI-CV-TASK' } });
+    expect(r.completionVerificationWarning).toBeUndefined();
+  });
+
+  it('spawns nothing for a committed close or a discard close', async () => {
+    getWorkItem.mockResolvedValue(subject);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(
+      okState({ ...subject, state: 'resolved', completionAuthority: 'committed', terminalOwner: 'su-closer' }),
+    );
+    expect((await one({ id: subject.id, state: 'resolved', completion: { summary: 'rotated' } })).ok).toBe(true);
+    getWorkItem.mockResolvedValue(subject);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(
+      okState({ ...subject, state: 'dropped', completionAuthority: 'proposed', terminalOwner: 'su-closer' }),
+    );
+    expect((await one({ id: subject.id, state: 'closed', completion: { summary: 'wontfix', tests: 'n/a' } })).ok).toBe(true);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledTimes(2);
+    expect(cvStore.spawn).not.toHaveBeenCalled();
+  });
+
+  it('a re-close that upgrades a stored proposed completion accepts the open task instead of spawning one', async () => {
+    getWorkItem.mockResolvedValue({ ...subject, state: 'resolved', completionAuthority: 'proposed' });
+    setWorkItemStateWithAliasInfo.mockResolvedValue(
+      okState({ ...subject, state: 'resolved', completionAuthority: 'committed', terminalOwner: 'su-closer' }),
+    );
+    cvStore.acceptOnSettlement.mockResolvedValue({ accepted: 'WI-CV-TASK' });
+    const r = await one({ id: subject.id, state: 'resolved', completion: { summary: 'rotated, evidence now committed' } });
+    expect(cvStore.acceptOnSettlement).toHaveBeenCalledWith(subject.id, 'committed');
+    expect(cvStore.spawn).not.toHaveBeenCalled();
+    expect(r.completionVerification).toMatchObject({ acceptedBySettlement: { accepted: 'WI-CV-TASK' } });
+  });
+
+  it('a completion task refuses a terminal close without a verdict, and a reject without a reason', async () => {
+    getWorkItem.mockResolvedValue(await completionTask('su-closer'));
+    const bare = await one({ id: 'WI-CV-TASK', state: 'resolved', completion: { summary: 'looked at it' } });
+    expect(bare.ok).toBe(false);
+    expect(bare.error).toMatch(/requires completion\.verificationVerdict/);
+    const noReason = await one({
+      id: 'WI-CV-TASK',
+      state: 'resolved',
+      completion: { summary: 'not convinced', verificationVerdict: { verdict: 'reject' } },
+    });
+    expect(noReason.ok).toBe(false);
+    expect(noReason.error).toMatch(/requires completion\.verificationVerdict\.reason/);
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    expect(cvStore.applyVerdict).not.toHaveBeenCalled();
+  });
+
+  it('the closer of the verified completion cannot record the verdict', async () => {
+    getWorkItem.mockResolvedValue(await completionTask('su-tester'));
+    const r = await one({
+      id: 'WI-CV-TASK',
+      state: 'resolved',
+      completion: { summary: 'my own work is fine', verificationVerdict: { verdict: 'accept' } },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/^verifier_conflict/);
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it('an independent verifier closes it and the verdict is applied as that verifier', async () => {
+    const task = await completionTask('su-closer');
+    getWorkItem.mockResolvedValue(task);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...task, state: 'resolved', completionAuthority: 'committed' }));
+    cvStore.applyVerdict.mockResolvedValue({ applied: 'accept', subject: subject.id });
+    const r = await one({
+      id: 'WI-CV-TASK',
+      state: 'resolved',
+      completion: { summary: 'completion matches the item', verificationVerdict: { verdict: 'accept' } },
+    });
+    expect(r.ok).toBe(true);
+    expect(cvStore.applyVerdict).toHaveBeenCalledTimes(1);
+    const input = cvStore.applyVerdict.mock.calls[0][0] as { verifier: string; taskPayload: unknown; completion: unknown };
+    expect(input.verifier).toBe('su-tester');
+    expect(input.taskPayload).toEqual(task.payload);
+    expect(input.completion).toMatchObject({ verificationVerdict: { verdict: 'accept' } });
+    expect(r.completionVerification).toMatchObject({ verdict: { applied: 'accept', subject: subject.id } });
+  });
+});
+
+// P-008 / R-7 (derived-status-not-hand-written-2026-10-12): the call site in completeOne.
+// The merge rules themselves are pinned in completion-prefill.test.ts; this block pins
+// that a holder's successful close actually runs them, persists the result, discloses it,
+// and that every skip condition (no claim window, ledger failure) leaves the input intact.
+describe('work_items:complete — completion prefill wiring (P-008)', () => {
+  const held = { ...item, id: 'F-PRE', assignee: 'su-tester', takenAt: '2026-10-12T16:00:00.000Z' };
+  const mechanics = {
+    derived: 'read-time',
+    derivedAt: '2026-10-12T17:00:00.000Z',
+    holder: { ownerId: 'su-tester', claimedAt: '2026-10-12T16:00:00.000Z' },
+    filesWritten: {
+      paths: ['packages/operator-core/vitest.config.ts', 'packages/operator-core/lib/x.test.ts'],
+      total: 2,
+      truncated: false,
+      outsideRepo: 0,
+    },
+    tests: {
+      attribution: 'path-and-claim-window',
+      latest: [{
+        file: 'packages/operator-core/lib/x.test.ts',
+        status: 'pass',
+        at: '2026-10-12T16:30:00.000Z',
+        passed: 3,
+        failed: 0,
+        dirtyTree: false,
+        commitSha: 'ec4366d0843c68dc1ad481a9b86ab476186b6ca8',
+      }],
+      verdict: 'all-pass',
+    },
+    openBlockers: [],
+    sources: [],
+  };
+  const persistedEvidence = () =>
+    (setWorkItemStateWithAliasInfo.mock.calls.at(-1)?.[2] as { completionEvidence?: Record<string, unknown> } | undefined)
+      ?.completionEvidence;
+
+  beforeEach(() => {
+    readWorkItemMechanicsMock.mockReset();
+    readWorkItemMechanicsMock.mockResolvedValue(mechanics);
+    getWorkItem.mockResolvedValue(held);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...held, state: 'done' }));
+  });
+
+  it("a holder's close fills absent evidence from its claim window, persists it, and discloses it", async () => {
+    const r = await one({
+      id: 'F-PRE',
+      state: 'done',
+      completion: { summary: 'built the widget', verification: { verifiedHow: 'unit' } },
+    });
+    expect(r.ok).toBe(true);
+    expect(readWorkItemMechanicsMock).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'F-PRE', assignee: 'su-tester', takenAt: '2026-10-12T16:00:00.000Z' }),
+      expect.anything(),
+    );
+    expect(r.completionPrefill).toMatchObject({ fields: ['filesChanged', 'testsRun', 'testResult'] });
+    expect(persistedEvidence()).toMatchObject({
+      filesChanged: ['packages/operator-core/vitest.config.ts', 'packages/operator-core/lib/x.test.ts'],
+      testsRun: expect.stringContaining('packages/operator-core/lib/x.test.ts'),
+      testResult: expect.stringMatching(/^all passing/),
+      summary: 'built the widget',
+    });
+  });
+
+  it('a value the closer supplied is persisted unchanged; only the absent fields are filled', async () => {
+    const r = await one({
+      id: 'F-PRE',
+      state: 'done',
+      completion: { summary: 'built it', verification: { verifiedHow: 'unit', testResult: '12/12 green (my run)' } },
+    });
+    expect(r.ok).toBe(true);
+    expect(r.completionPrefill?.fields).not.toContain('testResult');
+    expect(persistedEvidence()).toMatchObject({ testResult: '12/12 green (my run)' });
+  });
+
+  it('an item with no claim window is never read and carries no prefill', async () => {
+    getWorkItem.mockResolvedValue({ ...held, takenAt: null });
+    const r = await one({
+      id: 'F-PRE',
+      state: 'done',
+      completion: { summary: 'built it', verification: { verifiedHow: 'unit', testsRun: 'x.test.ts', testResult: '1/1' } },
+    });
+    expect(r.ok).toBe(true);
+    expect(readWorkItemMechanicsMock).not.toHaveBeenCalled();
+    expect(r.completionPrefill).toBeUndefined();
+  });
+
+  it('a ledger failure is fail-soft: the close succeeds with the completion as supplied', async () => {
+    readWorkItemMechanicsMock.mockRejectedValue(new Error('pool exhausted'));
+    const r = await one({
+      id: 'F-PRE',
+      state: 'done',
+      completion: { summary: 'built it', verification: { verifiedHow: 'unit', testsRun: 'x.test.ts', testResult: '1/1' } },
+    });
+    expect(r.ok).toBe(true);
+    expect(r.completionPrefill).toBeUndefined();
+    expect(persistedEvidence()?.filesChanged).toBeUndefined();
   });
 });

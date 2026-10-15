@@ -26,6 +26,7 @@ import { describe, expect, it } from 'vitest';
 // removed directive.
 // eslint-disable-next-line prettier/prettier
 import { coverageOf, declaredSubmodules, describeUnscanned, listFilesIncludingUntracked, listTrackedFiles, presentOnDisk } from '../../../scripts/lib/tracked-files.mjs';
+import { firstLiveMatch, isLiveCodeAt, stripCommentsAndStrings, stripCommentsOnly } from '../../../scripts/lib/strip-comments-and-strings.mjs';
 
 describe('tracked-files helper (WI-6730)', () => {
   const scan = listTrackedFiles() as {
@@ -487,7 +488,7 @@ describe('enumerate-then-read guards tolerate index-lagged deletions (WI-1000417
   const SOURCE = /\.(?:[cm]?ts|tsx|[cm]?js)$/;
   const SKIP = /(?:^|\/)(?:node_modules|dist|\.vitest-tmp|env-sidecars|sidecar)\/|\.min\.js$|\.d\.[cm]?ts$/;
   /** An index-enumeration INVOCATION: argv starting with 'ls-files', git('ls-files', …), or a `git ls-files` shell string. */
-  const INVOKE = /\[\s*(['"`])ls-files\1|\bgit\s*\(\s*(['"`])ls-files\2|(['"`])git(?:\s+-C\s+\S+)?\s+ls-files\b/g;
+  const INVOKE = /\[\s*(['"`])ls-files\1|\bgit\s*\(\s*(['"`])ls-files\2|\b(?:execSync|exec|execFileSync|execFile|spawnSync|spawn)\s*\(\s*(['"`])git(?:\s+-C\s+\S+)?\s+ls-files\b/g;
   const READS = /\breadFileSync\s*\(|\breadFile\s*\(|\bcreateReadStream\s*\(/;
   const FILTERED =
     /\b(?:presentOnDisk|listTrackedFiles|listFilesIncludingUntracked)\b|\.filter\(\s*\(?\s*\w+\s*\)?\s*=>\s*(?:fs\.)?existsSync\(|(['"`])ls-files\1\s*,\s*(['"`])--deleted\2/;
@@ -496,23 +497,20 @@ describe('enumerate-then-read guards tolerate index-lagged deletions (WI-1000417
     (/--others/.test(invocation) && !/--cached/.test(invocation)) ||
     /(?:^|[\s'"`,])(?:-s|--stage|--deleted|--error-unmatch)(?=[\s'"`,]|$)/.test(invocation);
 
-  const stripCommentLines = (text: string): string =>
-    text
-      .split('\n')
-      .filter((line) => !/^\s*(?:\/\/|\*|\/\*)/.test(line))
-      .join('\n');
-
   /** 'unfiltered' | 'filtered' | null (not an enumerate-then-read file). */
   const classify = (text: string): 'unfiltered' | 'filtered' | null => {
     if (!text.includes('ls-files')) return null;
-    const code = stripCommentLines(text);
-    const invocations = [...code.matchAll(INVOKE)].map((m) => {
+    // Preserve quoted argv values, but require the invocation anchor to be live code.
+    // Shell-looking prose in a justification is not an index enumeration (WI-10005805).
+    const code = stripCommentsOnly(text);
+    const masked = stripCommentsAndStrings(text);
+    const invocations = [...code.matchAll(INVOKE)].filter((m) => isLiveCodeAt(text, masked, m.index)).map((m) => {
       const rest = code.slice(m.index, m.index + 240);
       const end = rest.search(/[\])]/);
       return end === -1 ? rest : rest.slice(0, end);
     });
-    if (invocations.length === 0 || invocations.every(indexFree) || !READS.test(code)) return null;
-    return FILTERED.test(code) ? 'filtered' : 'unfiltered';
+    if (invocations.length === 0 || invocations.every(indexFree) || !READS.test(masked)) return null;
+    return firstLiveMatch(text, masked, FILTERED) ? 'filtered' : 'unfiltered';
   };
 
   it('calibration: the detector separates the shapes it exists to judge', () => {
@@ -526,6 +524,24 @@ describe('enumerate-then-read guards tolerate index-lagged deletions (WI-1000417
     expect(classify(`if (args[0] === 'ls-files') return stub; readFileSync(x);`)).toBeNull();
     expect(classify(`// execFileSync('git', ['ls-files'])\nreadFileSync(x);`)).toBeNull();
     expect(classify(`const f = execFileSync('git', ['ls-files']);`)).toBeNull();
+  });
+
+  it('WI-10005805: command-shaped prose never supplies an executable enumeration', () => {
+    const read = `readFileSync(path, 'utf8');`;
+    expect(classify(`const reason = 'git ls-files plus file reads; executes nothing'; ${read}`)).toBeNull();
+    expect(classify('const reason = `git ls-files plus file reads`; ' + read)).toBeNull();
+    expect(classify('const docs = `execSync("git ls-files -z"); readFileSync(x);`; ' + read)).toBeNull();
+    expect(classify('const docs = `execFileSync("git", ["ls-files"]);`; ' + read)).toBeNull();
+    expect(classify(`/* execSync('git ls-files -z') */ ${read}`)).toBeNull();
+    expect(classify(`execSync('git ls-files -z'); const docs = 'readFileSync(x)';`)).toBeNull();
+    expect(classify(`execSync('git ls-files -z'); readFileSync(x); const docs = 'presentOnDisk';`)).toBe('unfiltered');
+  });
+
+  it('WI-10005805: ignores an earlier prose match while retaining a later live shell invocation', () => {
+    const docs = 'const docs = `execSync("git ls-files -z")`; ';
+    expect(classify(docs + `execSync('git ls-files -z'); readFileSync(x);`)).toBe('unfiltered');
+    expect(classify(docs + `execSync('git ls-files -z'); const kept = presentOnDisk(files, ROOT); readFileSync(x);`)).toBe('filtered');
+    expect(classify(`execSync(\`git -C /repo ls-files -z\`); readFileSync(x);`)).toBe('unfiltered');
   });
 
   const scanned = (listTrackedFiles(repoRoot) as { files: string[] }).files.filter(

@@ -63,7 +63,9 @@ async function planning() {
   const read = await readAgentObligationAgenda({ workspaceId: WS, ownerId: OWNER,
     // Real mode binding, portfolio, scoped review ledger and goal-pot authority.
     // No worker is launched; unrelated agenda sources alone are replaced.
-    deps: { planSlugs: async () => [], ownerDirectives: async () => [], waitingOn: async () => [],
+    deps: { planSlugs: async () => [], ownerDirectives: async () => [], waitingOn: async () => [], 
+      fleetStaffing: async () => [],
+      strandedGoalWork: async (_ws: string, goalId: string) => ({ goalId, thresholdMs: 0, total: 0, refusedCount: 0, sample: [], truncatedByLimit: false }),
       ownerReport: async () => null,
       goalLaunch: async () => ({ goalId: GOAL, settings: null, goalBrief: null, effective: {},
         ceilings: { maxAgents: null, maxPerFleet: null }, headcount: { total: 0, fleet: null },

@@ -51,6 +51,7 @@ function harness() {
     restorePlanItemStatus,
     reopenImprovement,
     restoreWorkItemOwnerGate,
+    compensateIntake: vi.fn(async () => ({ outcome: 'reversed' as const, note: 'reversed intake decision' })),
   };
   const sql = (async () => [{ triaged_by: 'resolver-1' }]) as unknown as TransactionSql;
   return {
@@ -207,6 +208,44 @@ describe('compensateAttentionBulkRunItem', () => {
       priorIdeaLifecycle: { state: 'open' },
       priorDecidedReason: null,
     });
+  });
+
+  // P-009 (D-019): an applied intake decision is inverted by intake-compensation,
+  // never by the generic improvement reopen, and a failed inverse is not hidden.
+  it('routes an apply-intake item to the intake inverse inside the receipt transaction', async () => {
+    const h = harness();
+    const decision = {
+      disposition: 'promote',
+      reason: 'reproduced',
+      decidedBy: 'su-reviewer',
+      owner: 'engineering',
+      targetRef: null,
+      missingInformation: null,
+      decidedAt: '2026-09-01T00:00:00.000Z',
+      workKind: 'fix',
+      acceptance: null,
+      sourceRevision: 'rev-1',
+    } as NonNullable<BulkRunItemRow['intakeDecision']>;
+    const row = { ...item('improvement', { issueId: 'EI-42', harnessSlug: 'papercusp' }), intakeDecision: decision };
+    row.actionId = 'apply-intake';
+
+    const note = await compensateAttentionBulkRunItem(row, 'ws-1', h.sql, h.deps);
+
+    expect(h.deps.compensateIntake).toHaveBeenCalledWith(
+      { sourceId: 'EI-42', harnessSlug: 'papercusp', runId: 'run-1', itemId: 'improvement:1', decision },
+      expect.objectContaining({ lockIntake: expect.any(Function), writePayload: expect.any(Function) }),
+    );
+    expect(h.reopenImprovement).not.toHaveBeenCalled();
+    expect(note).toContain('reversed intake decision');
+
+    const failing = harness();
+    failing.deps.compensateIntake = vi.fn(async () => {
+      throw new Error('intake reversal refused (source-changed): superseded');
+    });
+    await expect(compensateAttentionBulkRunItem(row, 'ws-1', failing.sql, failing.deps)).rejects.toThrow(
+      'source-changed',
+    );
+    expect(failing.reopenImprovement).not.toHaveBeenCalled();
   });
 
   it('restores the exact work-item lifecycle and owner-gate dialect', async () => {

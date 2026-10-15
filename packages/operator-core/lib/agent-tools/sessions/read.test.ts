@@ -8,10 +8,23 @@
  * for programmatic callers while ordinary model-facing text remains doored.
  */
 import { describe, expect, it, vi } from 'vitest';
+import { deferredSqlAnswer, isDisclosureLedgerSql } from '../../../test/_fake-sql';
 
 const refreshTargetSessionBeforeRead = vi.hoisted(() => vi.fn(async () => ({ attempted: 1, refreshed: 1 })));
 const resolveSearchFilters = vi.hoisted(() => vi.fn());
-const readArchivedSessionTurns = vi.hoisted(() => vi.fn(async () => null));
+const readArchivedSessionTurns = vi.hoisted(() => vi.fn(async () => null as null | {
+  sourceKind: string;
+  owner: string | null;
+  turns: Array<{
+    source_kind: string;
+    turn_idx: number;
+    speaker: string;
+    owner: string | null;
+    ts: string | null;
+    text: string;
+  }>;
+  errors: Array<{ path: string; error: string }>;
+}));
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-self', ownerLabel: 'su · self' })),
@@ -38,12 +51,43 @@ const readModule = await import('./read');
 type ReadArgsParseResult =
   | { success: true; data: unknown }
   | { success: false; error: { issues: unknown[] } };
-const readArgsSchema = readModule.default.args as { safeParse: (value: unknown) => ReadArgsParseResult };
+const readArgsSchema = readModule.default.args as {
+  safeParse: (value: unknown) => ReadArgsParseResult;
+  shape: { text_limit: { description?: string } };
+};
 const { dispatchProjectedTool, lookupByMcpName } = await import('@papercusp/agent-mcp');
 const projected = lookupByMcpName('sessions:read')!;
 
+describe('sessions:read role access', () => {
+  it('admits the evidence-only judge to predecessor transcript reads', () => {
+    expect(readModule.default.agentRoles).toContain('judge');
+    expect(readModule.default.capability).toBe('sessions:read');
+    expect(readModule.default.description).toContain(
+      'evidence-only judges may read only self.',
+    );
+  });
+
+  it.each([
+    { session: 'another-session' },
+    { ref: 'session_turn:codex:another-session:0' },
+  ])('refuses judge transcript selector $session $ref', async (selector) => {
+    const handler = readModule.default.handler as unknown as (
+      args: Record<string, unknown>,
+      ctx: Record<string, unknown>,
+    ) => Promise<{ isError?: boolean; content: Array<{ text: string }> }>;
+
+    const result = await handler(selector, { role: 'judge' });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0]!.text)).toMatchObject({
+      ok: false,
+      error: 'judge_session_scope_only',
+    });
+  });
+});
+
+/** Every awaited transcript query answers `rows`; the D-006 ledger reads answer "no disclosures". */
 function makeTx(rows: unknown[]) {
-  return vi.fn(async () => rows);
+  return vi.fn((...args: unknown[]) => deferredSqlAnswer(args, () => rows));
 }
 
 describe('sessions:read EI-20236684982538421 — structured large-window response', () => {
@@ -81,8 +125,17 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
 
   it('keeps the tail exclusivity rule in the compact discovery prefix', () => {
     expect(projected.description.slice(0, 320)).toContain(
-      "`tail:N` already means `order:'desc', limit:N`; do not combine `tail` with `order` or `limit`.",
+      "`tail:N` means `order:'desc', limit:N`; do not combine it with either.",
     );
+  });
+
+  it('documents Judge self scope and the multi-session self-window contract', () => {
+    expect(projected.description).toContain("`session:'self'` spans your respawn chain");
+    expect(projected.description).toContain('evidence-only judges may read only self.');
+    expect(projected.description).toContain('A multi-session self window has `session_id` null');
+    // toContain rejects an undefined receiver, so a missing guidance block still fails.
+    expect(readModule.default.guidance?.returns).toContain('session_ids? (sessions represented in a self window)');
+    expect(readModule.default.guidance?.returns).toContain('each turn ref identifies its source session');
   });
 
   it('advertises an object result and preserves all rows in structuredContent', async () => {
@@ -200,6 +253,97 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
     expect(turn.readMore).toBeUndefined();
   });
 
+  it('recovers an index-capped turn from the redacted archive and paginates the full source', async () => {
+    const ref = 'session_turn:codex:sess-capped:9';
+    const fullText = 'p'.repeat(9_572);
+    readArchivedSessionTurns.mockReset();
+    readArchivedSessionTurns.mockResolvedValue({
+      sourceKind: 'codex',
+      owner: 'su-peer',
+      turns: [{
+        source_kind: 'codex', turn_idx: 9, speaker: 'assistant', owner: 'su-peer',
+        ts: null, text: fullText,
+      }],
+      errors: [],
+    });
+    const dispatch = (offset: number) => dispatchProjectedTool(
+      projected,
+      'sessions:read',
+      { ref, text_offset: offset, text_limit: 4_000 },
+      {
+        log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
+        workspaceId: 'default', runId: `read-full-source-${offset}`, role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp', requestedFormat: 'json', requestedStructured: true,
+        tx: makeTx([{
+          source_kind: 'codex', session_id: 'sess-capped', turn_idx: 9,
+          speaker: 'assistant', owner: 'su-peer', ts: null,
+          text: offset < 8_000 ? fullText.slice(offset, Math.min(offset + 4_000, 8_000)) : '',
+          text_full_chars: 8_000, text_offset: offset,
+        }]),
+      },
+      {},
+    );
+
+    const middle = await dispatch(4_000);
+    expect(middle.ok, JSON.stringify(middle)).toBe(true);
+    const middleTurn = (middle.result?.structuredContent as { turns: Array<Record<string, unknown>> }).turns[0]!;
+    expect(middleTurn).toMatchObject({
+      text: fullText.slice(4_000, 8_000),
+      text_offset: 4_000,
+      text_truncated: true,
+      text_full_chars: 9_572,
+      source_completeness: 'complete',
+      readMore: { tool: 'sessions:read', args: { ref, text_offset: 8_000, text_limit: 4_000 } },
+    });
+
+    const tail = await dispatch(8_000);
+    expect(tail.ok, JSON.stringify(tail)).toBe(true);
+    const tailTurn = (tail.result?.structuredContent as { turns: Array<Record<string, unknown>> }).turns[0]!;
+    expect(tailTurn).toMatchObject({
+      text: fullText.slice(8_000),
+      text_offset: 8_000,
+      source_completeness: 'complete',
+    });
+    expect(tailTurn.text_truncated).toBeUndefined();
+    expect(tailTurn.readMore).toBeUndefined();
+    expect(readArchivedSessionTurns).toHaveBeenCalledWith(
+      'sess-capped', 'codex', undefined, { fullSource: true, turnIndices: [9] },
+    );
+  });
+
+  it('reports unknown source completeness when a cap-length index row has no archive', async () => {
+    const ref = 'session_turn:codex:sess-no-archive:3';
+    readArchivedSessionTurns.mockReset();
+    readArchivedSessionTurns.mockResolvedValue(null);
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'sessions:read',
+      { ref },
+      {
+        log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
+        workspaceId: 'default', runId: 'read-source-unknown-test', role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp', requestedFormat: 'json', requestedStructured: true,
+        tx: makeTx([{
+          source_kind: 'codex', session_id: 'sess-no-archive', turn_idx: 3,
+          speaker: 'assistant', owner: 'su-peer', ts: null,
+          text: 'x'.repeat(1_500), text_full_chars: 8_000, text_offset: 0,
+        }]),
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    const turn = (dispatched.result?.structuredContent as { turns: Array<Record<string, unknown>> }).turns[0]!;
+    expect(turn).toMatchObject({
+      text_full_chars: 8_000,
+      text_truncated: true,
+      source_completeness: 'unknown',
+      readMore: { tool: 'sessions:read', args: { ref, text_offset: 1_500, text_limit: 1_500 } },
+    });
+  });
+
   it('casts text-window bounds before PostgreSQL resolves substring overloads', async () => {
     const calls: unknown[][] = [];
     const tx = vi.fn(async (...args: unknown[]) => {
@@ -299,6 +443,12 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
     expect(readArgsSchema.safeParse({ session: 'sess', tail: 30, order: 'desc' }).success).toBe(false);
   });
 
+  it('advertises the enforced per-turn text chunk maximum', () => {
+    expect(readArgsSchema.safeParse({ session: 'sess', text_limit: 4_000 }).success).toBe(true);
+    expect(readArgsSchema.safeParse({ session: 'sess', text_limit: 4_001 }).success).toBe(false);
+    expect(readArgsSchema.shape.text_limit.description).toContain('Maximum 4000');
+  });
+
   it('rejects stale search-only mode/query arguments instead of silently accepting them', () => {
     const parsed = readArgsSchema.safeParse({
       session: 'sess-known',
@@ -348,10 +498,12 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
 
     expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
     expect(refreshTargetSessionBeforeRead).toHaveBeenCalledWith(tx, 'codex', 'sess-live');
-    expect(tx).toHaveBeenCalledTimes(1);
+    // One transcript query; the turn belongs to a peer, so the D-006 ledger is also read.
+    expect(tx.mock.calls.filter((call) => !isDisclosureLedgerSql(call))).toHaveLength(1);
+    expect(tx.mock.calls.filter((call) => isDisclosureLedgerSql(call))).toHaveLength(1);
   });
 
-  it("reads session:'self' across the caller's predecessor and successor sessions", async () => {
+  it("lets the evidence-only judge read session:'self' across predecessor and successor sessions", async () => {
     resolveSearchFilters.mockResolvedValueOnce({
       filters: { owners: ['su-self', 'su-predecessor'] },
       selfSession: {
@@ -385,7 +537,7 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
       { session: 'self', limit: 2, order: 'asc' },
       {
         log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
-        workspaceId: 'default', runId: 'read-self-chain-test', role: 'operator',
+        workspaceId: 'default', runId: 'read-self-chain-test', role: 'judge',
         gateBypass: { role: true, capability: true, quota: true },
         transport: 'mcp', requestedFormat: 'json', requestedStructured: true, tx,
       },

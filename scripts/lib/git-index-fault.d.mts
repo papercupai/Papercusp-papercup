@@ -2,6 +2,40 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // scripts/lib/git-index-fault.mjs and regenerate.
 /**
+ * EI-25949667985509297: enabled=1/lost=0 describes kernel intake, not persistence.
+ * Request a NEW daemon snapshot (the signal writes asynchronously), then prove persistence
+ * with a unique USER message read back from the log. Never resume/reconfigure auditd here.
+ * This explicit diagnostic shares the index-fault seam; normal guards do not signal auditd.
+ * All subprocesses, snapshot convergence and receipt reads share one finite time budget.
+ *
+ * @param {{ timeoutMs?: number, pollMs?: number,
+ *   run?: (args: string[], timeoutMs: number) => string,
+ *   readState?: (timeoutMs: number) => { text: string, updatedAtMs: number },
+ *   now?: () => number, sleep?: (ms: number) => void, marker?: string, auditLogPath?: string }} [options]
+ * @returns {{ status: 'live' | 'suspended' | 'unknown', reason: string,
+ *   marker: string, stateUpdatedAtMs?: number, eventId?: string, errorCode?: string }}
+ */
+export function probeIndexAuditSink({ timeoutMs, pollMs, run, readState, now, sleep, marker, auditLogPath, }?: {
+    timeoutMs?: number;
+    pollMs?: number;
+    run?: (args: string[], timeoutMs: number) => string;
+    readState?: (timeoutMs: number) => {
+        text: string;
+        updatedAtMs: number;
+    };
+    now?: () => number;
+    sleep?: (ms: number) => void;
+    marker?: string;
+    auditLogPath?: string;
+}): {
+    status: "live" | "suspended" | "unknown";
+    reason: string;
+    marker: string;
+    stateUpdatedAtMs?: number;
+    eventId?: string;
+    errorCode?: string;
+};
+/**
  * Is this error git telling us the repository index is unreadable?
  *
  * TRUE means "the instrument failed", never "the subject is in violation". Callers must convert
@@ -67,6 +101,23 @@ export function runGuardWithIndexFaultGuard<T>(main: () => T | Promise<T>, { gua
     guard?: string;
 }): T | Promise<T>;
 export { EXIT_NOT_CHECKED };
+/**
+ * The work-item that owns the still-UNDIAGNOSED torn-index writer (three recurrences:
+ * 2026-09-08 ×2, 2026-10-01; the earlier items closed without a cause). The banner names it so
+ * the agent who hits the NEXT recurrence posts evidence there instead of filing a fourth orphan.
+ */
+export const INDEX_FAULT_TRACKING_ITEM: "WI-10004911";
+/**
+ * Reads the auditd watch (key `papercusp-gitindex`, /etc/audit/rules.d/60-papercusp-gitindex.rules)
+ * that can record processes writing `.git/index` / `index.lock` while its sink is live.
+ * An empty search cannot establish that no writer exists. `--start recent` is the last 10
+ * minutes — the banner fires while the index is torn, so the write that tore it is in that window.
+ * Do NOT swap in an explicit `--start 'MM/DD/YYYY HH:MM:SS'`: on this box that form returned 0
+ * records for a window the raw log proved held thousands (measured 2026-10-01).
+ */
+export const INDEX_FAULT_CAPTURE_COMMAND: "sudo -n ausearch -k papercusp-gitindex -i --start recent | grep -E '^type=(SYSCALL|PATH|PROCTITLE)'";
+export const INDEX_AUDIT_SINK_STATE_PATH: "/run/auditd.state";
+export const INDEX_AUDIT_SINK_PROBE_COMMAND: "node scripts/lib/git-index-fault.mjs --audit-sink";
 /** Thrown when the index is still unreadable after every retry. */
 export class RepositoryIndexFaultError extends Error {
     constructor(message: any, { attempts, cause }?: {});

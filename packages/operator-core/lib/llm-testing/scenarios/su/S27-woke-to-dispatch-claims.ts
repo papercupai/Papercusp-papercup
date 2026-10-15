@@ -16,15 +16,16 @@
  * FAILURE = it reads the assignment, acknowledges, and re-parks (coord:await-inbox / ends the turn)
  * without claiming — the su-6ef6 read-and-repark.
  *
- * Load-bearing assert (ERROR): a claim verb fired. The text-forbids is a NARROW guard on the
- * explicit "I'll just wait / await further instructions / re-parking" repark language; the
- * SU_RUBRIC + description carry the behavioral judgment.
+ * Load-bearing asserts (ERROR): a claim verb fired. The text-forbids guard catches affirmative
+ * "I'll just wait / await further instructions / re-parking" language while allowing negative
+ * descriptions of the behavior, which can appear in a correct deliverable. The SU_RUBRIC +
+ * description carry the behavioral judgment.
  */
 import { PASS_THROUGH } from '@papercusp/testing-shell/llm';
 import type { Scenario, ToolCallEvent, ToolDispatchOverride } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
-import { assertTextForbids, assertToolCalledWithin, assertToolMatch } from './_asserts';
+import { assertTextForbidsAffirmed, assertToolCalledWithin, assertToolMatch } from './_asserts';
 
 function canonical(name: string): string {
   return name.replace(/^mcp__agentmcp__/, '').replace(/^mcp__[a-z0-9-]+__/i, '');
@@ -491,7 +492,7 @@ export const SU_S27_WOKE_TO_DISPATCH_CLAIMS: Scenario = {
         'Use the plan acceptance criteria and existing two playbook pages, then author the consolidated ' +
         'fleet-dispatch-wake-clarity page immediately.',
     }),
-    assertTextForbids(
+    assertTextForbidsAffirmed(
       /\b(i'?ll\s+(get to|pick (it|this) up|start)\b[^.?!]{0,40}\b(later|next turn|soon|after)|await(ing)?\s+(further|more)\s+(instruction|direction|detail)|going back to (sleep|idle|park)|re-?park(ing)?|let me know\b[^.?!]{0,40}\bwhen\b)/i,
       {
         name: 'no-read-and-repark',

@@ -45,6 +45,7 @@ import { broadcastSevereEvent, broadcastSevereEventResolvedMany } from '../sever
 import { readRoutineEngineLiveness } from './routine-engine-liveness';
 import type { IneligibleReason } from '../harness/git-sync/git-sync-eligibility';
 import { isLocalDiskFullError, localDiskFullClause } from '../harness/git-sync/git-fetch-headroom-refusal';
+import { gitSyncLegPhrase } from '../harness/git-sync/git-sync-escalation';
 
 /** Tree HEAD unchanged this long while the routine is active ⇒ commits aren't landing.
  *  EI-7531: the papercusp tree stranded 2622 dirty paths for 10.5h while git-sync looked
@@ -257,20 +258,19 @@ export function gitSyncStallDiagnosis(
   installSlug: string,
 ): { summary: string; title: string; why: string } {
   const cause = verdict.errorHeadline ? ` Cause: ${verdict.errorHeadline}` : '';
-  // WI-10004397: a full local disk strands commits too, but the engine is healthy. Naming the
-  // executor reaper here (as the generic stranding text does) sent readers after a wedge that
-  // did not exist while every superproject commit on the box was refused for want of space.
+  // EI-25439777241393921: stale progress and a disk refusal can coexist without
+  // the refusal causing the stall. Submodule fetch errors defer publication;
+  // the superproject's local commit still runs with its own guards.
   if (isStrandingVerdict(verdict) && isLocalDiskFullError(verdict.errorHeadline)) {
     return {
-      summary: `git-sync STALLED on ${installSlug} — LOCAL DISK FULL: fetches are refused below the headroom reserve, so nothing commits and code is stranding.${cause}`,
-      title: 'git-sync STALLED — local disk below the fetch-headroom reserve',
+      summary: `git-sync STALLED on ${installSlug} — ${gitSyncLegPhrase('disk-headroom')}.${cause}`,
+      title: 'git-sync STALLED — disk-space or headroom refusal also reported',
       why:
-        `Why it matters: a deploy ships only COMMITTED HEAD, and git-sync will not fetch or commit ` +
-        `while the filesystem named in the cause is at or under its critical write reserve. The ` +
-        `root cause is DISK SPACE, not the engine, the network or credentials: a restart, a lock ` +
-        `or a rescue-commit will not help. Free space on that filesystem (find the GROWER, not just ` +
-        `the biggest stock); git-sync resumes on its own at the next tick once free space clears ` +
-        `the reserve.`,
+        `Why it matters: commit or fire progress is stale, and a DISK SPACE / HEADROOM refusal ` +
+        `was also reported. Submodule fetch failures defer publication, while the local ` +
+        `superproject commit runs with separate guards. Inspect the exact blocked phase and ` +
+        `the named filesystem; verify the local commit outcome separately before attributing ` +
+        `the stall to disk space.`,
     };
   }
   if (isStrandingVerdict(verdict)) {

@@ -1,8 +1,17 @@
+import type { ToolResult } from '@papercusp/tooldef';
+import { projectBoundedPayload } from '@papercusp/tooldef';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { drainDetached } from '../../detached-imports';
+import { drainDetached, trackDetached } from '../../detached-imports';
 import { checkpointRootMirror } from '../../release-checkpoint-launch';
 import type { FrozenCandidateRepairQueue } from '../../release/frozen-candidate-repair-queue';
+import type { FrozenRepairEditLedgerRow } from '../../release/frozen-repair-edit-ledger';
 import { checkpointPidIdentity } from '../../release/checkpoint-qualification-transaction';
+import { AdmissionOffthreadTimeoutError } from '../../release/admission-offthread';
+import { precheckPopulation } from '../../release/admission-fix-precheck';
+import {
+  runAdmissionPrecheckWorker,
+  type AdmissionPrecheckWorkerInput,
+} from '../../release/admission-fix-precheck-managed';
 
 vi.mock('../../release/gate-action-receipt', () => ({
   executeWithGateActionReceipt: vi.fn(async (input: { run: () => Promise<unknown>; ownerId: string }) => ({
@@ -68,6 +77,8 @@ const mocks = vi.hoisted(() => ({
   alive: vi.fn(),
   audit: vi.fn(),
   admit: vi.fn(),
+  population: vi.fn(),
+  admissionJobOptions: vi.fn(),
   admissionGit: vi.fn(),
   retract: vi.fn(),
   containment: vi.fn(),
@@ -83,10 +94,15 @@ const mocks = vi.hoisted(() => ({
   // creates for the canonical root, and the root canonicalization it consults first.
   precheckFactory: vi.fn(),
   canonicalRoot: vi.fn(),
+  getTask: vi.fn(),
+  startPrecheckWorker: vi.fn(),
   transition: vi.fn(),
   gateOwnership: vi.fn(),
+  emitAwaitedEvent: vi.fn(),
   // WI-10004151 part 2: the admit door's dependency-generation prediction seam.
   predict: vi.fn(),
+  // P-004: the sole-editor fallback's tagged-template read of edit_attribution_ledger.
+  attributionSql: vi.fn(),
 }));
 vi.mock('../../release/dependency-admission-prediction', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../release/dependency-admission-prediction')>()),
@@ -96,6 +112,7 @@ vi.mock('../../coord/gate-ownership', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../coord/gate-ownership')>()),
   readGateOwnership: mocks.gateOwnership,
 }));
+vi.mock('../../events/await/engine', () => ({ emitAwaitedEvent: mocks.emitAwaitedEvent }));
 vi.mock('../../harness/routines/release-actions', () => ({
   applyFrozenCandidateRepairQueueTransition: mocks.transition,
   readFrozenCandidateRepairQueue: mocks.read,
@@ -105,6 +122,11 @@ vi.mock('../../harness/routines/release-actions', () => ({
 }));
 vi.mock('../../release/fixer-liveness', () => ({ releaseFixerSpawnAlive: mocks.alive }));
 vi.mock('../../release-deploy-launch', () => ({ integrationRoot: () => '/repo' }));
+vi.mock('../../harness/routines/hive-release-env', () => ({
+  resolvePotSuiteCommand: vi.fn(async () => 'npm test'),
+  resolveCheckpointRouting: vi.fn(async () => ({ root: '/tooling',
+    extraEnv: { PAPERCUSP_INTEGRATION_ROOT: '/drill' }, clearEnv: [] })),
+}));
 vi.mock('../../release/frozen-lineage-ledger-reconcile', () => ({
   reconcileFrozenRepairQueueWithLineageRef: (current: unknown) => ({
     status: 'in-sync',
@@ -118,16 +140,26 @@ vi.mock('../../release/admission-fix-precheck', async (importOriginal) => ({
   createCheckpointTreeFixPrecheckRunner: mocks.precheckFactory,
   resolveCanonicalIntegrationRoot: mocks.canonicalRoot,
 }));
+vi.mock('../../task-manager/store', () => ({ getTask: mocks.getTask }));
+vi.mock('../../release/admission-fix-precheck-managed', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../release/admission-fix-precheck-managed')>()),
+  startAdmissionPrecheckWorker: mocks.startPrecheckWorker,
+}));
 vi.mock('../../release/judged-sha-containment', () => ({
   integrationBranch: () => 'staging',
   containmentForPaths: mocks.containment,
 }));
-vi.mock('../../release/repair-head-admission', () => ({
+vi.mock('../../release/repair-head-admission', async (importOriginal) => ({
+  // Real pure helpers (normalizeAdmissionPath, used by the P-004 attribution verdict).
+  ...(await importOriginal<typeof import('../../release/repair-head-admission')>()),
   admitPathsOntoRepairHead: mocks.admit,
   realAdmissionGit: mocks.admissionGit,
   retractAdmission: mocks.retract,
 }));
-vi.mock('../../release/hunk-exact-admission', () => ({
+vi.mock('../../release/hunk-exact-admission', async (importOriginal) => ({
+  // The REAL attributeUnledgeredPaths + SOLE_EDITOR_WINDOW_MARGIN_MS: the P-004 fallback's verdict
+  // is exercised end-to-end through the door, not re-mocked.
+  ...(await importOriginal<typeof import('../../release/hunk-exact-admission')>()),
   buildHunkExactSource: mocks.hunkExact,
   buildCommittedPatchSource: mocks.committedPatch,
   summarizeForeignHunks: mocks.foreign,
@@ -139,12 +171,34 @@ vi.mock('../../release/frozen-repair-edit-ledger', async (importOriginal) => ({
 vi.mock('../../release/admission-import-completeness', () => ({
   importCompletenessPreflight: mocks.importPreflight,
 }));
+// WI-10005223: production runs these jobs on a worker thread, where vi.mock cannot reach.
+// Route them through the REAL job dispatcher inline, so the builder mocks above still apply
+// and the spec → preflight-closure rebuild (admissionPreflightFromSpec) is exercised too.
+// The worker path itself is covered by release/admission-offthread.test.ts.
+vi.mock('../../release/admission-offthread', async () => {
+  const { executeAdmissionJob } = await import('../../release/admission-jobs');
+  const original = await vi.importActual<typeof import('../../release/admission-offthread')>(
+    '../../release/admission-offthread',
+  );
+  return {
+    ...original,
+    runAdmissionJob: async (
+      job: Parameters<typeof executeAdmissionJob>[0],
+      options?: { timeoutMs?: number; stepName?: string },
+    ) => {
+      mocks.admissionJobOptions(job, options);
+      if (job.kind === 'precheck-population') return mocks.population(job.input);
+      return executeAdmissionJob(job);
+    },
+  };
+});
 /** P-020: what the hunk-exact builder returns for a clean single-path replay. */
 const HX_SOURCE = 'h'.repeat(40);
 const hunkExactOf = (paths = ['lib/red.test.ts']) => ({
   ok: true as const,
   sourceCommit: HX_SOURCE,
   tree: 'x'.repeat(40),
+  ledgerRowIds: [41],
   perPath: paths.map((path) => ({
     path,
     applied: 1,
@@ -215,17 +269,112 @@ const admissionOf = (published: boolean, paths = ['lib/red.test.ts'], commit = N
 });
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: { unsafe: mocks.audit } }),
+  getOrgPg: () => ({
+    sql: Object.assign((...a: unknown[]) => mocks.attributionSql(...a), { unsafe: mocks.audit }),
+  }),
 }));
 
 const repairQueueModule = await import('./repair-queue');
 const tool = repairQueueModule.default;
-const { assessFrozenRepairFixerAuthorization } = repairQueueModule;
+const { assessFrozenRepairFixerAuthorization, repairQueueAbortCompletionReceipt } = repairQueueModule;
+const { decisionFieldsFirst } = repairQueueModule;
 type Out = { data?: unknown; content?: { text: string }[] };
 const body = (value: unknown) => {
   const out = value as Out;
   return 'data' in out ? out.data : JSON.parse(out.content![0]!.text);
 };
+const toolResult = (payload: unknown): ToolResult => ({
+  content: [{ type: 'text', text: JSON.stringify({ data: payload }) }],
+});
+
+describe('release:repair-queue abort-completion receipts', () => {
+  const attempt = { callId: 'repair-queue-call-1', toolName: 'release:repair-queue' };
+
+  it('identifies completed admit, claim-leg, record-edit, and retire writes by their durable effect ids', () => {
+    const completedWrites = [
+      ['admit', 'release:repair-queue:admit:receipt-admit'],
+      ['claim-leg', 'release:repair-queue:claim-leg:receipt-claim'],
+      ['record-edit', 'release:repair-queue:record-edit:42'],
+      ['retire', 'release:repair-queue:retire:receipt-retire'],
+      ['admit-precheck', 'release:repair-queue:admit-precheck:operation-1'],
+    ] as const;
+
+    for (const [op, effectRef] of completedWrites) {
+      expect(repairQueueAbortCompletionReceipt({}, toolResult({
+        op,
+        completionReceipt: { status: 'recorded', effectRef },
+      }), attempt)).toEqual({ status: 'recorded', effectRef });
+    }
+  });
+
+  it('returns not-recorded only for explicit read, preview, no-op, or failed-CAS outcomes', () => {
+    const noEffects = [
+      { op: 'get', ok: true },
+      { op: 'admit', dryRun: true, admitted: false },
+      { op: 'admit', pending: true, verdict: 'precheck-running', dryRun: false },
+      { op: 'retire', alreadyClear: true, retired: false },
+      { op: 'claim-leg', verdict: 'no-frozen-queue', claimed: false },
+      { op: 'record-edit', recorded: true, inserted: false },
+      { op: 'retire', retired: false, casMiss: true },
+      { op: 'claim-leg', refused: true, effectMayHaveRun: false },
+    ];
+
+    for (const payload of noEffects) {
+      expect(repairQueueAbortCompletionReceipt({}, toolResult(payload), attempt).status).toBe('not-recorded');
+    }
+  });
+
+  it('fails closed when a write result lacks a durable receipt or its effect may have run', () => {
+    expect(repairQueueAbortCompletionReceipt(
+      {},
+      toolResult({ op: 'claim-leg', ok: true, claimed: true, persisted: true }),
+      attempt,
+    )).toMatchObject({ status: 'recovery-incomplete', failures: ['missing-completion-receipt'] });
+    expect(repairQueueAbortCompletionReceipt(
+      {},
+      toolResult({ op: 'admit', refused: false, effectMayHaveRun: true }),
+      attempt,
+    ).status).toBe('recovery-incomplete');
+    expect(repairQueueAbortCompletionReceipt(
+      {},
+      toolResult({ op: 'retire', completionReceipt: { status: 'recorded', effectRef: 'other:receipt' } }),
+      attempt,
+    ).status).toBe('recovery-incomplete');
+  });
+});
+
+describe('selected harness repair queue', () => {
+  it('predicts a foreign lockfile using operator tooling and the target checkout', async () => {
+    mocks.admit.mockReturnValue(admissionOf(false, ['package-lock.json']));
+    mocks.hunkExact.mockReturnValue(hunkExactOf(['package-lock.json']));
+    const ctx = { role: 'su', harnessSlug: 'slack-asana-bug-drill', workspaceId: 'ws-drill' } as never;
+    await tool.handler({ op: 'admit', paths: ['package-lock.json'] } as never, ctx);
+    expect(mocks.predict).toHaveBeenCalledWith({
+      integrationRoot: '/drill', toolingRoot: '/tooling', ref: NEW_HEAD, paths: ['package-lock.json'],
+    });
+  });
+
+  it('passes foreign source and operator tooling separately into the managed admission runner', async () => {
+    mocks.admit.mockImplementation((input: { dryRun: boolean; paths: string[] }) => admissionOf(!input.dryRun, input.paths));
+    mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue, admissionPrecheck: undefined } });
+    const ctx = { role: 'su', harnessSlug: 'slack-asana-bug-drill', workspaceId: 'ws-drill' } as never;
+    const result = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, ctx));
+    expect(result).toMatchObject({ verdict: 'precheck-running', admitted: false });
+    expect(mocks.startPrecheckWorker).toHaveBeenCalledWith(expect.objectContaining({
+      integrationRoot: '/drill', toolingRoot: '/tooling', testCommand: ['npm', 'test'],
+      queueTarget: { workspaceId: 'ws-drill', installSlug: 'slack-asana-bug-drill' },
+    }));
+  });
+  it('reads a foreign queue and previews its admission against that harness checkout', async () => {
+    mocks.admit.mockReturnValue(admissionOf(false));
+    const ctx = { role: 'su', harnessSlug: 'slack-asana-bug-drill', workspaceId: 'ws-drill' } as never;
+    const result = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'] } as never, ctx));
+    expect(mocks.readState).toHaveBeenCalledWith({ workspaceId: 'ws-drill', installSlug: 'slack-asana-bug-drill' });
+    expect(result).toMatchObject({ target: { workspaceId: 'ws-drill', installSlug: 'slack-asana-bug-drill' },
+      source: { root: '/drill', ref: 'staging' } });
+    expect(mocks.gateOwnership).toHaveBeenCalledWith({ harness: 'slack-asana-bug-drill' });
+  });
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -248,15 +397,34 @@ beforeEach(() => {
   mocks.retract.mockReturnValue(true);
   mocks.admissionGit.mockReturnValue({ status: 0, stdout: `${'f'.repeat(40)}\n`, stderr: '' });
   mocks.ledger.mockResolvedValue([]);
+  mocks.attributionSql.mockResolvedValue([]);
   mocks.foreign.mockReturnValue({ count: 0, agents: [], byPath: {} });
   mocks.importPreflight.mockReturnValue(() => null);
   mocks.hunkExact.mockReturnValue(hunkExactOf());
+  mocks.population.mockImplementation((input) => ({ ok: true, population: precheckPopulation(input) }));
   mocks.canonicalRoot.mockImplementation((root: string) => root);
   mocks.precheckFactory.mockReturnValue(async ({ commit, files }: { commit: string; files: readonly string[] }) => ({
     ran: true as const,
     commit,
     results: files.map((path) => ({ path, status: 'pass' as const })),
   }));
+  mocks.getTask.mockResolvedValue({ state: 'running', confined: true });
+  mocks.startPrecheckWorker.mockImplementation(async (input: AdmissionPrecheckWorkerInput) => {
+    const pending = mocks.write.mock.calls.at(-1)?.[1] as FrozenCandidateRepairQueue | undefined;
+    const worker = runAdmissionPrecheckWorker(input, {
+      getTask: (taskId) => mocks.getTask(taskId),
+      readQueue: async () => pending
+        ? { status: 'value', queue: pending }
+        : { status: 'absent' },
+      transition: (queueTarget, update) => mocks.transition(queueTarget, update),
+      createRunner: () => mocks.precheckFactory({
+        integrationRoot: input.integrationRoot,
+        checkpointRoot: input.checkpointRoot,
+      }),
+    });
+    void trackDetached(worker);
+    return { taskId: input.taskId, confined: true };
+  });
   mocks.containment.mockImplementation((paths: string[], judgedSha: string) =>
     paths.map((path) => ({ path, containedInJudgedSha: judgedSha === NEW_HEAD, judgedBlob: null, stagingBlob: null })),
   );
@@ -275,10 +443,12 @@ describe('release:repair-queue', () => {
     expect(mocks.write).not.toHaveBeenCalled();
   });
 
-  it('makes its workspace-global scope explicit to prevent caller harness arguments', () => {
-    expect(tool.description).toContain('Workspace-global');
-    expect(tool.description).toContain('omit harness/workspace');
-    expect(tool.guidance?.notWhen).toContain('never pass harness/workspace');
+  it('documents request scope without accepting target identity in the operation payload', () => {
+    // 32963fcf18 moved the "selected harness scope" sentence into guidance.notWhen; the
+    // description still names the request scope, so assert each where it actually lives.
+    expect(tool.description).toContain('for the selected harness (operator home if unscoped)');
+    expect(tool.guidance?.notWhen).toContain('Use the selected harness scope, not a harness/workspace key in the payload');
+    expect(tool.args.safeParse({ op: 'get', harness: 'other' }).success).toBe(false);
   });
 
   it('defaults an empty args object to get while preserving strict branch validation', () => {
@@ -347,6 +517,103 @@ describe('release:repair-queue', () => {
     expect(result.callerAuthorization).toMatchObject({
       status: 'not-applicable',
       authorized: null,
+    });
+  });
+
+  it('keeps delegated-fixer authorization visible when a large queue diagnostic is bounded', () => {
+    const callerAuthorization = {
+      status: 'authorized-delegate',
+      authorized: true,
+      callerSpawnId: 'fixer-1',
+      queueFixerSpawnId: 'fixer-1',
+      safeAction: 'Continue using this delegated fixer identity.',
+    };
+    const response = decisionFieldsFirst({
+      ok: true,
+      op: 'get',
+      target: { workspaceId: 'ws-1', installSlug: 'papercusp' },
+      repairQueue: Object.fromEntries(
+        Array.from({ length: 16 }, (_, i) => [`diagnostic${i}`, 'x'.repeat(2_000)]),
+      ),
+      repairQueueRead: { status: 'value', schemaVersion: 3 },
+      callerAuthorization,
+    });
+
+    const projected = projectBoundedPayload(response, {
+      toolName: 'release:repair-queue',
+      tier: 'trimmed',
+      targetChars: 1_500,
+    });
+
+    expect(projected).toMatchObject({
+      ok: true,
+      op: 'get',
+      callerAuthorization: {
+        status: 'authorized-delegate',
+        authorized: true,
+        callerSpawnId: 'fixer-1',
+        queueFixerSpawnId: 'fixer-1',
+      },
+    });
+    expect(JSON.stringify(projected)).toContain('authorized-delegate');
+  });
+
+  describe('WI-10007509: get marks same-head-contradicted signature entries', () => {
+    const leg = '@papercusp/operator-core :: test:lane-stateful';
+    const mixedQueue = { ...queue, failingTests: [leg, 'lib/red.test.ts'] };
+    const legsAt = (head: string, status: 'pass' | 'fail') => [{
+      legs: {
+        head: head.slice(0, 12),
+        atMs: 1_791_000_000_000,
+        ok: status === 'pass',
+        failingSignatures: status === 'pass' ? [] : [leg],
+        legs: [{ id: leg, status, durationMs: 1_159_000 }],
+      },
+    }];
+
+    it('marks a leg the tick passed at the live repairHead and keeps the signature whole', async () => {
+      mocks.readState.mockResolvedValue({ status: 'value', queue: mixedQueue });
+      mocks.audit.mockResolvedValueOnce(legsAt(queue.repairHead, 'pass'));
+      const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never));
+      expect(result.sameHeadContradicted).toMatchObject({
+        status: 'contradicted',
+        entries: [leg],
+        allContradicted: false,
+        measuredAtHead: queue.repairHead.slice(0, 12),
+      });
+      expect(result.sameHeadContradicted.note).toContain('fix the remaining entries');
+      const [sqlText, params] = mocks.audit.mock.calls[0]! as [string, unknown[]];
+      expect(sqlText).toContain("'repairTickLegs'");
+      expect(params).toEqual(['papercusp']);
+    });
+
+    it('says re-verify, not fix, when every entry is contradicted', async () => {
+      mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue, failingTests: [leg] } });
+      mocks.audit.mockResolvedValueOnce(legsAt(queue.repairHead, 'pass'));
+      const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never));
+      expect(result.sameHeadContradicted).toMatchObject({ entries: [leg], allContradicted: true });
+      expect(result.sameHeadContradicted.note).toContain('needs a re-verification, not a fix');
+    });
+
+    it.each([
+      ['a tick from an earlier head', () => legsAt('d'.repeat(40), 'pass')],
+      ['a tick that failed the leg', () => legsAt(queue.repairHead, 'fail')],
+      ['no tick measurement', () => []],
+    ])('omits the field for %s', async (_label, rows) => {
+      mocks.readState.mockResolvedValue({ status: 'value', queue: mixedQueue });
+      mocks.audit.mockResolvedValueOnce(rows());
+      const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never));
+      expect(result).not.toHaveProperty('sameHeadContradicted');
+    });
+
+    it('reports unknown, never "no contradiction", when the measurement read fails', async () => {
+      mocks.readState.mockResolvedValue({ status: 'value', queue: mixedQueue });
+      mocks.audit.mockRejectedValueOnce(new Error('pg down'));
+      const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never));
+      expect(result.sameHeadContradicted).toMatchObject({
+        status: 'unknown',
+        reason: 'repair-tick-legs-read-failed',
+      });
     });
   });
 
@@ -467,6 +734,22 @@ describe('release:repair-queue', () => {
 
   it('dry run: the primitive builds + proves with dryRun:true onto the CURRENT repairHead, and nothing is published or persisted', async () => {
     mocks.admit.mockReturnValue(admissionOf(false));
+    // The realistic hunk-exact world: the caller's edit reached the frozen ledger. (An empty ledger
+    // would make hunk-exact refuse `no-ledgered-hunks` and route through the P-004 sole-editor
+    // fallback instead, which is covered by its own tests.)
+    mocks.ledger.mockResolvedValueOnce([
+      {
+        id: 1,
+        candidate: queue.candidate,
+        agent: 'su-test',
+        path: 'lib/red.test.ts',
+        hunk: { kind: 'edit', old: 'a', new: 'b', replaceAll: false },
+        atMs: Date.now(),
+        toolUseId: 'toolu_dry',
+        editIndex: 0,
+        workItem: null,
+      },
+    ]);
     const result = body(
       await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'] } as never, { role: 'su' } as never),
     );
@@ -492,6 +775,145 @@ describe('release:repair-queue', () => {
       proof: { diff: ['lib/red.test.ts'], unchanged: [] },
     });
     expect(result.note).toMatch(/confirm:true/);
+    expect(mocks.write).not.toHaveBeenCalled();
+    expect(mocks.retract).not.toHaveBeenCalled();
+    // WI-6554700010009422: a bounded-payload door keeps LEADING fields, so the decision fields
+    // must precede the bulky queue echo, or a budget cut returns ok:true with no verdict.
+    const keys = Object.keys(result);
+    for (const decision of ['ok', 'admitted', 'verdict', 'judgedSha', 'proof']) {
+      expect(keys.indexOf(decision)).toBeGreaterThanOrEqual(0);
+      expect(keys.indexOf(decision)).toBeLessThan(keys.indexOf('repairQueue'));
+    }
+    expect(keys.indexOf('callerAuthorization')).toBeLessThan(keys.indexOf('repairQueue'));
+    expect(keys.slice(-5).sort()).toEqual(
+      ['repairQueue', 'repairQueueRead', 'source', 'target', 'timings'].sort(),
+    );
+    // WI-10005695: the response names where the admit spent its time, step by step.
+    expect(result.timings.inFlight).toEqual([]);
+    expect(result.timings.steps.map((s: { step: string }) => s.step)).toEqual([
+      'inspect-queue',
+      'ledger-read',
+      'hunk-exact',
+      'build-proof',
+      'containment',
+    ]);
+    expect(result.timings.steps.every((s: { ms: number; ok: boolean }) => s.ok && s.ms >= 0)).toBe(true);
+  });
+
+  describe('P-004 sole post-freeze editor fallback (EI-24313562050732849 / EI-24557368838482892)', () => {
+    const PIN = '7'.repeat(40);
+    const CUT_SEC = 1_700_000_000;
+    /** Route the fallback's git reads by argv; everything else keeps the suite default. */
+    const routeGit = () =>
+      mocks.admissionGit.mockImplementation((argv: string[]) => {
+        if (argv[0] === 'show' && argv.includes('--format=%ct')) return { status: 0, stdout: `${CUT_SEC}\n`, stderr: '' };
+        if (argv[0] === 'rev-parse' && (argv[2] === 'staging^{commit}' || argv[2] === `${PIN}^{commit}`)) {
+          return { status: 0, stdout: `${PIN}\n`, stderr: '' };
+        }
+        return { status: 0, stdout: `${'f'.repeat(40)}\n`, stderr: '' };
+      });
+    const attributionRow = (agent: string) => ({
+      file: 'lib/red.test.ts',
+      agent_id: agent,
+      ts: new Date(CUT_SEC * 1000 + 60_000),
+    });
+
+    it('nothing ledgered + only the caller in the edit attribution ledger ⇒ admits staging’s blob pinned to the tip read now, under a recorded auto reason', async () => {
+      routeGit();
+      mocks.attributionSql.mockResolvedValueOnce([attributionRow('su-test')]);
+      mocks.admit.mockReturnValue(admissionOf(false));
+      const result = body(
+        await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'] } as never, { role: 'su' } as never),
+      );
+      expect(mocks.attributionSql).toHaveBeenCalledTimes(1);
+      // Never the hunk replay: there is nothing ledgered to replay.
+      expect(mocks.hunkExact).not.toHaveBeenCalled();
+      expect(mocks.admit).toHaveBeenCalledTimes(1);
+      expect(mocks.admit.mock.calls[0]![0]).toMatchObject({
+        paths: ['lib/red.test.ts'],
+        source: { ref: PIN, recordAsRef: 'staging' },
+        dryRun: true,
+      });
+      expect(result).toMatchObject({ ok: true, verdict: 'would-admit', mode: 'whole-blob' });
+      expect(result.timings.steps.map((s: { step: string }) => s.step)).toEqual(
+        expect.arrayContaining(['sole-editor-candidate-time', 'sole-editor-pin']),
+      );
+    });
+
+    it('a peer in the edit attribution ledger ⇒ no whole-blob fallback; the hunk-exact refusal names the peer', async () => {
+      routeGit();
+      mocks.attributionSql.mockResolvedValueOnce([attributionRow('su-test'), attributionRow('su-peer')]);
+      mocks.hunkExact.mockReturnValueOnce({
+        ok: false,
+        code: 'no-ledgered-hunks',
+        detail: 'lib/red.test.ts has no ledgered hunk by su-test',
+        path: 'lib/red.test.ts',
+        exits: [],
+      });
+      const result = body(
+        await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'] } as never, { role: 'su' } as never),
+      );
+      expect(mocks.attributionSql).toHaveBeenCalledTimes(1);
+      expect(mocks.admit).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ ok: false, refused: true, reason: 'no-ledgered-hunks', mode: 'hunk-exact' });
+      expect(result.detail).toMatch(/edit attribution ledger: .*su-peer/);
+    });
+
+    it('a ledgered hunk on the path ⇒ the attribution ledger is never consulted', async () => {
+      mocks.ledger.mockResolvedValueOnce([
+        {
+          id: 1,
+          candidate: queue.candidate,
+          agent: 'su-test',
+          path: 'lib/red.test.ts',
+          hunk: { kind: 'edit', old: 'a', new: 'b', replaceAll: false },
+          atMs: Date.now(),
+          toolUseId: 'toolu_x',
+          editIndex: 0,
+          workItem: null,
+        },
+      ]);
+      mocks.admit.mockReturnValue(admissionOf(false));
+      await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'] } as never, { role: 'su' } as never);
+      expect(mocks.attributionSql).not.toHaveBeenCalled();
+      expect(mocks.hunkExact).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('returns a structured read-only timeout when a dry-run admission worker reaches its deadline', async () => {
+    mocks.admit.mockRejectedValueOnce(new AdmissionOffthreadTimeoutError('admit', 240_000, 'build-proof'));
+    const result = body(
+      await tool.handler(
+        {
+          op: 'admit',
+          paths: ['lib/red.test.ts'],
+          wholeBlob: true,
+          reason: 'verify the timeout result shape',
+        } as never,
+        { role: 'su' } as never,
+      ),
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      op: 'admit',
+      admitted: false,
+      refused: true,
+      dryRun: true,
+      verdict: 'timeout',
+      reason: 'admission-preview-timeout',
+      mode: 'whole-blob',
+      timedOutStep: 'build-proof',
+      timeoutMs: 240_000,
+      timings: {
+        inFlight: [],
+        steps: expect.arrayContaining([expect.objectContaining({ step: 'build-proof', ok: false })]),
+      },
+    });
+    expect(mocks.admissionJobOptions).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'admit', input: expect.objectContaining({ dryRun: true }) }),
+      { timeoutMs: 240_000, stepName: 'build-proof' },
+    );
     expect(mocks.write).not.toHaveBeenCalled();
     expect(mocks.retract).not.toHaveBeenCalled();
   });
@@ -559,6 +981,10 @@ describe('release:repair-queue', () => {
       verdict: 'admitted',
       persisted: true,
       auditRecorded: true,
+      completionReceipt: {
+        status: 'recorded',
+        effectRef: 'release:repair-queue:admit:test-repair-queue-receipt',
+      },
       judgedSha: NEW_HEAD,
       movedRepairHead: { from: queue.repairHead, to: NEW_HEAD },
       repairQueue: { repairHead: NEW_HEAD, phase: 'ready-to-verify' },
@@ -610,12 +1036,57 @@ describe('release:repair-queue', () => {
     );
   });
 
-  it('a queue-row write failure RETRACTS the published lineage ref so ref and row cannot disagree', async () => {
+  it('WI-10006866: a CAS miss because a concurrent read RECONCILED the row to this admission is persisted, never retracted', async () => {
+    // Measured 2026-10-06 19:12Z: a repair-queue read in the admit window rebuilt the row from
+    // the ref (provenance reconciled-from-ref, synthetic 2000-01-01 atMs), so the door's CAS
+    // missed. The old bare catch reported persist_failed and retracted the ref: ref-behind-row.
     mocks.admit.mockReturnValue(admissionOf(true));
-    mocks.write.mockRejectedValue(new Error('pg down'));
+    mocks.write.mockRejectedValueOnce(new Error('frozen repair queue write conflict: updatedAtMs moved'));
+    const door = admissionOf(true).entry;
+    const reconciledRow = {
+      ...queue,
+      repairHead: NEW_HEAD,
+      admissions: [{ ...door, atMs: 946_684_800_000, provenance: 'reconciled-from-ref' }],
+      updatedAtMs: queue.updatedAtMs + 1,
+    };
+    mocks.transition.mockImplementationOnce(async (_target, transition) => ({
+      status: 'written',
+      queue: transition(reconciledRow as typeof queue),
+      fresh: reconciledRow as typeof queue,
+      retries: 0,
+    }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const result = body(
       await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
     );
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/adopt-reconciled → persisted=true/));
+    warn.mockRestore();
+    expect(mocks.retract).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      ok: true,
+      admitted: true,
+      persisted: true,
+      judgedSha: NEW_HEAD,
+      persistError: expect.stringMatching(/write conflict/),
+      persistSettlement: 'adopt-reconciled',
+    });
+    // The door's richer entry replaced the reconciled rebuild (the synthetic date is gone).
+    const settled = await (mocks.transition.mock.results.at(-1)?.value as Promise<{ queue: typeof queue & { admissions: Array<{ atMs: number; provenance?: string }> } }>);
+    expect(settled.queue.admissions).toHaveLength(1);
+    expect(settled.queue.admissions[0]!.provenance).toBeUndefined();
+    expect(settled.queue.admissions[0]!.atMs).not.toBe(946_684_800_000);
+  });
+
+  it('a queue-row write failure whose fresh re-read ALSO fails RETRACTS the published lineage ref so ref and row cannot disagree', async () => {
+    mocks.admit.mockReturnValue(admissionOf(true));
+    mocks.write.mockRejectedValue(new Error('pg down'));
+    mocks.transition.mockRejectedValue(new Error('pg down'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = body(
+      await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+    );
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/settle-failed: pg down → persisted=false/));
+    warn.mockRestore();
     expect(mocks.retract).toHaveBeenCalledWith({
       root: '/repo',
       candidate: queue.candidate,
@@ -746,6 +1217,43 @@ describe('release:repair-queue', () => {
   describe('R6 admission pre-check wiring (P-006)', () => {
     const dryRuns = () => mocks.admit.mock.calls.map((c) => (c[0] as { dryRun: boolean }).dryRun);
     const queueWithoutPrecheck = () => ({ ...queue, admissionPrecheck: undefined });
+
+    it('WI-8351 runs the built gitlink population before publication and refuses a paired helper red', async () => {
+      const pairedFiles = ['component/paired.test.mjs', 'parent.test.mjs'];
+      const gitlinkQueue = { ...queueWithoutPrecheck(), signature: [{ kind: 'workspace-task' as const, id: 'component::test' }] };
+      mocks.readState.mockResolvedValue({ status: 'value', queue: gitlinkQueue });
+      mocks.hunkExact.mockReturnValue(hunkExactOf(['component']));
+      mocks.admit.mockReturnValue(admissionOf(false, ['component']));
+      mocks.population.mockImplementation((input) => ({ ok: true,
+        population: precheckPopulation({ ...input, affectedTestFiles: pairedFiles }) }));
+      mocks.precheckFactory.mockReturnValue(async ({ commit, files }: { commit: string; files: readonly string[] }) => ({
+        ran: true as const, commit, results: files.map((path) => ({ path, status: path.startsWith('component/') ? 'fail' : 'pass' })),
+      }));
+      const started = body(await tool.handler({ op: 'admit', paths: ['component'], confirm: true } as never, { role: 'su' } as never));
+      expect(started).toMatchObject({ pending: true, precheckOperation: { builtCommit: NEW_HEAD, files: pairedFiles } });
+      expect(mocks.population).toHaveBeenCalledWith({ root: '/repo', commit: NEW_HEAD, signature: gitlinkQueue.signature, admittedPaths: ['component'] });
+      expect(dryRuns()).toEqual([true]);
+      const settled = await settledPrecheckQueue();
+      expect(settled.admissionPrecheck).toMatchObject({ status: 'failed', verdict: {
+        code: 'admission-imports-red', importedRed: ['component/paired.test.mjs'], population: { canProveDoesNotFix: false },
+      } });
+      mocks.readState.mockResolvedValue({ status: 'value', queue: settled });
+      const refused = body(await tool.handler({ op: 'admit', paths: ['component'], confirm: true } as never, { role: 'su' } as never));
+      expect(refused).toMatchObject({ admitted: false, refused: true, reason: 'admission-imports-red' });
+      expect(dryRuns().every((dry) => dry === true)).toBe(true);
+    });
+
+    it('WI-8351 refuses unknown immutable inventory before launching or publishing', async () => {
+      mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithoutPrecheck() });
+      mocks.hunkExact.mockReturnValue(hunkExactOf(['component']));
+      mocks.admit.mockReturnValue(admissionOf(false, ['component']));
+      mocks.population.mockReturnValue({ ok: false, detail: 'pinned component object unavailable' });
+      const result = body(await tool.handler({ op: 'admit', paths: ['component'], confirm: true } as never, { role: 'su' } as never));
+      expect(result).toMatchObject({ refused: true, reason: 'admission-precheck-unavailable', builtCommit: NEW_HEAD });
+      expect(mocks.startPrecheckWorker).not.toHaveBeenCalled();
+      expect(mocks.write).not.toHaveBeenCalled();
+      expect(dryRuns()).toEqual([true]);
+    });
     const settledPrecheckQueue = async () => {
       await drainDetached();
       const transitionResult = mocks.transition.mock.results.at(-1)?.value as
@@ -829,6 +1337,48 @@ describe('release:repair-queue', () => {
       };
       expect(result.repairQueue.admissionPrecheck.status).toBe('failed');
       expect(mocks.transition).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps a live managed task running across host identity replacement and returns its persisted progress', async () => {
+      const liveIdentity = checkpointPidIdentity(process.pid);
+      expect(liveIdentity).not.toBeNull();
+      const updatedAtMs = Date.now() - 100;
+      const pending: FrozenCandidateRepairQueue = {
+        ...queueWithoutPrecheck(),
+        updatedAtMs,
+        admissionPrecheck: {
+          ...queue.admissionPrecheck,
+          status: 'running',
+          verdict: undefined,
+          runnerPid: process.pid,
+          runnerPidIdentity: `${liveIdentity}-replaced`,
+          runnerTaskId: 'managed-task-live',
+          startedAtMs: updatedAtMs - 1000,
+          updatedAtMs,
+          expiresAtMs: Date.now() + 60_000,
+          currentFile: 'lib/red.test.ts',
+          completedCount: 1,
+          totalCount: 1,
+          heartbeatAtMs: updatedAtMs,
+        },
+      };
+      mocks.getTask.mockResolvedValue({ state: 'running', confined: true });
+      mocks.readState.mockResolvedValue({ status: 'value', queue: pending });
+
+      const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never)) as {
+        repairQueue: { admissionPrecheck: { status: string; currentFile: string; completedCount: number; heartbeatAtMs: number } };
+      };
+
+      expect(mocks.getTask).toHaveBeenCalledWith('managed-task-live');
+      expect(result.repairQueue.admissionPrecheck).toMatchObject({
+        operationId: queue.admissionPrecheck.operationId,
+        runnerTaskId: 'managed-task-live',
+        status: 'running',
+        currentFile: 'lib/red.test.ts',
+        completedCount: 1,
+        heartbeatAtMs: updatedAtMs,
+      });
+      expect(mocks.transition).not.toHaveBeenCalled();
     });
 
     it('a live pre-check serializes the queue: another confirmed admission returns the same handle without building or launching', async () => {
@@ -956,6 +1506,10 @@ describe('release:repair-queue', () => {
         builtCommit: NEW_HEAD,
         precheckOperation: { status: 'running', builtCommit: NEW_HEAD, files: ['lib/red.test.ts'] },
       });
+      expect(started.completionReceipt).toEqual({
+        status: 'recorded',
+        effectRef: `release:repair-queue:admit-precheck:${started.precheckOperation.operationId}`,
+      });
       expect(dryRuns()).toEqual([true]);
       expect(mocks.write).toHaveBeenCalledWith(
         expect.anything(),
@@ -971,6 +1525,18 @@ describe('release:repair-queue', () => {
         { expectedUpdatedAtMs: queue.updatedAtMs },
       );
       expect(mocks.canonicalRoot).toHaveBeenCalledWith('/repo');
+      expect(mocks.startPrecheckWorker).toHaveBeenCalledTimes(1);
+      expect(mocks.startPrecheckWorker).toHaveBeenCalledWith(expect.objectContaining({
+        operationId: started.precheckOperation.operationId,
+        taskId: started.precheckOperation.runnerTaskId,
+        queueTarget: { workspaceId: 'ws-1', installSlug: 'papercusp' },
+        integrationRoot: '/canonical',
+        checkpointRoot: checkpointRootMirror('/canonical'),
+        expiresAtMs: started.precheckOperation.expiresAtMs,
+      }));
+      expect(mocks.write.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.startPrecheckWorker.mock.invocationCallOrder[0],
+      );
       expect(mocks.precheckFactory).toHaveBeenCalledTimes(1);
       expect(mocks.precheckFactory).toHaveBeenCalledWith({
         integrationRoot: '/canonical',
@@ -1255,6 +1821,65 @@ describe('release:repair-queue', () => {
       expect(JSON.stringify(result.precheck)).toContain('checkpoint-tree-busy');
     });
 
+    it('retryPrecheck:true refreshes a busy-tree deferral without publishing until the new measured pass', async () => {
+      mocks.admit.mockReturnValue(admissionOf(true));
+      const deferredOperationId = 'repair-precheck-deferred';
+      mocks.readState.mockResolvedValue({
+        status: 'value',
+        queue: {
+          ...queueWithoutPrecheck(),
+          admissionPrecheck: {
+            ...queue.admissionPrecheck,
+            operationId: deferredOperationId,
+            status: 'deferred' as const,
+            verdict: {
+              ok: true as const,
+              ran: false as const,
+              reason: 'checkpoint-tree-busy' as const,
+              detail: 'previous gate run held the checkpoint tree',
+              population: queue.admissionPrecheck.verdict.population,
+            },
+          },
+        },
+      });
+
+      const started = body(
+        await tool.handler(
+          { op: 'admit', paths: ['lib/red.test.ts'], confirm: true, retryPrecheck: true } as never,
+          { role: 'su' } as never,
+        ),
+      );
+
+      expect(started).toMatchObject({
+        ok: true,
+        admitted: false,
+        pending: true,
+        verdict: 'precheck-running',
+        precheckOperation: { status: 'running', builtCommit: NEW_HEAD },
+      });
+      expect(started.precheckOperation.operationId).not.toBe(deferredOperationId);
+      expect(dryRuns()).toEqual([true]);
+      expect(mocks.precheckFactory).toHaveBeenCalledTimes(1);
+      const settled = await settledPrecheckQueue();
+      expect(settled.admissionPrecheck).toMatchObject({
+        operationId: started.precheckOperation.operationId,
+        status: 'passed',
+        verdict: { ok: true, ran: true },
+      });
+      expect(dryRuns()).toEqual([true]);
+
+      mocks.readState.mockResolvedValue({ status: 'value', queue: settled });
+      const published = body(
+        await tool.handler(
+          { op: 'admit', paths: ['lib/red.test.ts'], confirm: true, retryPrecheck: true } as never,
+          { role: 'su' } as never,
+        ),
+      );
+      expect(published).toMatchObject({ ok: true, admitted: true, precheck: { ran: true } });
+      expect(dryRuns()).toEqual([true, true, false]);
+      expect(mocks.precheckFactory).toHaveBeenCalledTimes(1);
+    });
+
     it('a dry run never creates the runner', async () => {
       mocks.admit.mockReturnValue(admissionOf(false));
       body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'] } as never, { role: 'su' } as never));
@@ -1444,6 +2069,68 @@ describe('release:repair-queue', () => {
     expect(result).toMatchObject({ ok: true, retired: true, auditRecorded: true });
   });
 
+  it('emits exact-SHA inconclusive terminals after retiring an unjudged repairHead', async () => {
+    const result = body(await tool.handler({
+      op: 'retire',
+      expectedCandidate: queue.candidate,
+      expectedRepairHead: queue.repairHead,
+      expectedUpdatedAtMs: queue.updatedAtMs,
+      reason: 'terminal incident cleanup',
+      confirm: true,
+    } as never, { role: 'su' } as never)) as {
+      retired?: boolean;
+      inconclusiveTerminal?: { status: string; sha: string; emittedKeys: string[]; failedKeys: string[] };
+    };
+
+    expect(result.retired).toBe(true);
+    expect(mocks.retire).toHaveBeenCalledTimes(1);
+    expect(mocks.emitAwaitedEvent).toHaveBeenCalledTimes(2);
+    expect(mocks.retire.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.emitAwaitedEvent.mock.invocationCallOrder[0],
+    );
+    expect(mocks.emitAwaitedEvent).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      key: 'green-checkpoint:inconclusive',
+      payload: expect.objectContaining({
+        sha: queue.repairHead,
+        from: queue.candidate,
+        pipeline: 'papercusp',
+        reason: 'repair-queue-retired-before-verification',
+      }),
+      source: 'release:repair-queue-retire',
+    }));
+    expect(mocks.emitAwaitedEvent).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      key: 'green-checkpoint:inconclusive:papercusp',
+      payload: expect.objectContaining({ sha: queue.repairHead }),
+    }));
+    expect(result.inconclusiveTerminal).toEqual({
+      status: 'emitted',
+      sha: queue.repairHead,
+      emittedKeys: ['green-checkpoint:inconclusive', 'green-checkpoint:inconclusive:papercusp'],
+      failedKeys: [],
+    });
+  });
+
+  it('does not emit inconclusive when a successfully retired repairHead already has a red verdict', async () => {
+    const judgedQueue = {
+      ...queue,
+      convergenceRounds: [{ round: 1, head: queue.repairHead, failingCount: 1, atMs: 3 }],
+    };
+    mocks.readState.mockResolvedValue({ status: 'value', queue: judgedQueue as typeof queue });
+
+    const result = body(await tool.handler({
+      op: 'retire',
+      expectedCandidate: queue.candidate,
+      expectedRepairHead: queue.repairHead,
+      expectedUpdatedAtMs: queue.updatedAtMs,
+      reason: 'terminal incident cleanup',
+      confirm: true,
+    } as never, { role: 'su' } as never)) as { retired?: boolean; inconclusiveTerminal?: unknown };
+
+    expect(result.retired).toBe(true);
+    expect(result.inconclusiveTerminal).toBeUndefined();
+    expect(mocks.emitAwaitedEvent).not.toHaveBeenCalled();
+  });
+
   // WI-1105109 [owner 2026-08-30, OWNER-interactive]: "How can we make sure another
   // agent uses the frozen candidate system next and doesn't retire it like you did."
   //
@@ -1465,9 +2152,17 @@ describe('release:repair-queue', () => {
 
     const retired = body(await tool.handler({ ...args, confirm: true } as never, { role: 'su' } as never)) as {
       retired?: boolean;
+      completionReceipt?: {
+        status: 'recorded' | 'not-recorded' | 'recovery-incomplete';
+        effectRef?: string;
+      };
       nextStep?: string;
     };
     expect(retired.retired).toBe(true);
+    expect(retired.completionReceipt).toEqual({
+      status: 'recorded',
+      effectRef: 'release:repair-queue:retire:test-repair-queue-receipt',
+    });
     expect(
       retired.nextStep,
       'a successful retire must carry the next-step procedure, not leave it to guidance',
@@ -1621,6 +2316,10 @@ describe('release:repair-queue', () => {
         verdict: 'claimed',
         persisted: true,
         auditRecorded: true,
+        completionReceipt: {
+          status: 'recorded',
+          effectRef: 'release:repair-queue:claim-leg:test-repair-queue-receipt',
+        },
         paths: ['lib/red.test.ts'],
         presenceFiles: ['lib/red.test.ts'],
         admitCommand: manifestRow.admitCommand,
@@ -1734,6 +2433,7 @@ describe('release:repair-queue', () => {
         op: 'record-edit',
         recorded: true,
         inserted: true,
+        completionReceipt: { status: 'recorded', effectRef: 'release:repair-queue:record-edit:42' },
         oversize: false,
         ledgerId: 42,
         path: 'lib/red.test.ts',
@@ -1840,6 +2540,7 @@ describe('release:repair-queue', () => {
         { wholeBlob: true },
         { sourceCommit: '1'.repeat(40) },
         { includeHunksFrom: [] },
+        { ledgerRowIds: [41] },
       ]) {
         const args = { ...patchArgs, ...extra };
         expect(tool.args.safeParse(args).success).toBe(false);
@@ -1927,11 +2628,21 @@ describe('release:repair-queue', () => {
       expect(mocks.write).not.toHaveBeenCalled();
       mocks.admit.mockReturnValue(admissionOf(true));
       mocks.write.mockRejectedValueOnce(new Error('queue CAS moved'));
+      // WI-10006866: a CAS miss retracts only when the FRESH row genuinely lacks the admission —
+      // here it moved to an unrelated head, so the settlement is `diverged`.
+      mocks.transition.mockImplementationOnce(async (_target, transition) => {
+        const diverged = { ...queue, repairHead: '9'.repeat(40) };
+        return { status: 'unchanged', queue: transition(diverged as typeof queue), fresh: diverged, retries: 0 };
+      });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       expect(body(await tool.handler({ ...patchArgs, confirm: true } as never, ctx))).toMatchObject({
         ok: false,
         admitted: false,
         reason: 'persist_failed',
+        persistSettlement: expect.stringMatching(/^diverged: /),
       });
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/settled against the fresh row as diverged/));
+      warn.mockRestore();
       expect(mocks.retract).toHaveBeenCalledWith(
         expect.objectContaining({ published: NEW_HEAD, previousRepairHead: queue.repairHead }),
       );
@@ -1968,10 +2679,33 @@ describe('release:repair-queue', () => {
       const written = mocks.write.mock.calls[0]![1] as Written;
       expect(written.admissions[0]).toMatchObject({
         mode: 'hunk-exact',
+        ledgerRowIds: [41],
         hunks: { 'lib/red.test.ts': { applied: 1, agents: ['su-test'] } },
       });
       const auditDetails = JSON.parse(mocks.audit.mock.calls[0]![1][5]);
-      expect(auditDetails).toMatchObject({ mode: 'hunk-exact', hunks: { 'lib/red.test.ts': { applied: 1 } } });
+      expect(auditDetails).toMatchObject({ mode: 'hunk-exact', ledgerRowIds: [41], hunks: { 'lib/red.test.ts': { applied: 1 } } });
+    });
+
+    it('passes the exact reviewed selection and prior consumed ids independently of publication time', async () => {
+      const selectedQueue = { ...queue, admissions: [{ ...admissionOf(true).entry, ledgerRowIds: [40] }] };
+      mocks.readState.mockResolvedValue({ status: 'value', queue: selectedQueue });
+      mocks.admit.mockReturnValue(admissionOf(false));
+      const args = { op: 'admit', paths: ['lib/red.test.ts'], ledgerRowIds: [41] };
+      expect(tool.args.safeParse(args).success).toBe(true);
+      expect(tool.args.safeParse({ ...args, op: 'converge' }).success).toBe(true);
+      await tool.handler(args as never, ctx);
+      expect(mocks.readState).toHaveBeenCalled();
+      expect(queue).not.toHaveProperty('admissions');
+      expect(mocks.hunkExact.mock.calls[0]![0]).toMatchObject({
+        ledgerRowIds: [41], consumedLedgerRowIds: [40],
+      });
+    });
+
+    it('never widens an explicit hunk selection to a whole blob', async () => {
+      const result = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'],
+        ledgerRowIds: [41], wholeBlob: true, reason: 'reviewed whole blob' } as never, ctx));
+      expect(result).toMatchObject({ ok: false, reason: 'invalid-ledger-selection' });
+      expect(mocks.admit).not.toHaveBeenCalled();
     });
 
     it('includeHunksFrom is forwarded to the builder verbatim (the explicit widening, D-008 3a)', async () => {
@@ -2052,6 +2786,36 @@ describe('release:repair-queue', () => {
       });
       const auditDetails = JSON.parse(mocks.audit.mock.calls[0]![1][5]);
       expect(auditDetails).toMatchObject({ mode: 'whole-blob', foreignHunksAccepted: 2, foreignAgents: ['peer'] });
+    });
+
+    it('a whole-blob admission records the ledger rows its admitted blob carries, so a later hunk-exact admit treats them as consumed (WI-6554700010009991)', async () => {
+      const ledgerRow = (id: number, agent: string, hunk: FrozenRepairEditLedgerRow['hunk']): FrozenRepairEditLedgerRow => ({
+        id, candidate: 'a'.repeat(40), agent, path: 'lib/red.test.ts', hunk, atMs: 5, toolUseId: `t${id}`, editIndex: 0, workItem: null,
+      });
+      mocks.ledger.mockResolvedValueOnce([
+        ledgerRow(51, 'su-test', { kind: 'edit', old: 'x\n', new: 'x\ny\n', replaceAll: false }),
+        ledgerRow(52, 'peer', { kind: 'edit', old: 'a = 1', new: 'a = 2', replaceAll: false }),
+        // Edited after the admitted blob was cut: its post-image is absent, so it stays unconsumed.
+        ledgerRow(53, 'su-test', { kind: 'edit', old: 'z = 1', new: 'z = 9', replaceAll: false }),
+      ]);
+      mocks.foreign.mockReturnValue({ count: 1, agents: ['peer'], byPath: { 'lib/red.test.ts': 1 } });
+      mocks.admit.mockReturnValue(admissionOf(true));
+      mocks.admissionGit.mockImplementation((argv: string[]) =>
+        argv[0] === 'cat-file'
+          ? { status: 0, stdout: 'x\ny\na = 2\nz = 1\n', stderr: '' }
+          : { status: 0, stdout: `${'f'.repeat(40)}\n`, stderr: '' },
+      );
+      const result = body(
+        await tool.handler(
+          { op: 'admit', paths: ['lib/red.test.ts'], wholeBlob: true, reason: 'shared refactor reviewed', confirm: true } as never,
+          ctx,
+        ),
+      );
+      expect(mocks.admissionGit).toHaveBeenCalledWith(['cat-file', 'blob', 'f'.repeat(40)], { cwd: '/repo' });
+      expect(result).toMatchObject({ ok: true, admitted: true, mode: 'whole-blob', ledgerRowIds: [51, 52] });
+      const written = mocks.write.mock.calls[0]![1] as Written;
+      expect(written.admissions[0]).toMatchObject({ mode: 'whole-blob', ledgerRowIds: [51, 52] });
+      expect(JSON.parse(mocks.audit.mock.calls[0]![1][5])).toMatchObject({ mode: 'whole-blob', ledgerRowIds: [51, 52] });
     });
 
     it('wholeBlob sourceCommit pins the reviewed integration ancestor instead of rereading a moving staging tip', async () => {
@@ -2231,5 +2995,44 @@ describe('release:repair-queue', () => {
       expect(mocks.predict).not.toHaveBeenCalled();
       expect(plain).not.toHaveProperty('dependencyGeneration');
     });
+  });
+});
+
+describe('P-007 (#D-040) — precheckRecordOf persists the admission radius on every branch', () => {
+  const overCap = { status: 'skipped' as const, reason: 'over-cap(5572/40)', guarded: [], reportOnly: [], legs: {} };
+  const population = precheckPopulation({ signature: [], admittedPaths: ['lib/src.ts'], radius: overCap });
+  const ctx = { skipPrecheck: false, precheckReason: '', dryRun: false, population };
+  const expected = { status: 'skipped', reason: 'over-cap(5572/40)' };
+
+  it.each([
+    ['not run', null, ctx],
+    ['skipped by the caller', null, { ...ctx, skipPrecheck: true, precheckReason: 'operator override' }],
+    ['dry run', null, { ...ctx, dryRun: true }],
+    ['nothing to run', null, { ...ctx, population: { ...population, files: [] } }],
+    ['ran', { ok: true, ran: true, commit: 'abc', population, results: [], passing: [], failing: [], unmeasured: [], fixes: [] }, ctx],
+    ['busy', { ok: true, ran: false, reason: 'checkpoint-tree-busy', detail: 'gate holds the tree', population }, ctx],
+  ] as const)('%s', (_label, verdict, branchCtx) => {
+    const record = repairQueueModule.precheckRecordOf(verdict as never, branchCtx as never);
+    expect(record.radius).toEqual(expected);
+  });
+
+  it('keeps the measured radius files and their legs', () => {
+    const measured = precheckPopulation({
+      signature: [],
+      admittedPaths: ['lib/src.ts'],
+      radius: { status: 'measured', reason: 'ok', guarded: ['lib/a.test.ts'], reportOnly: ['lib/b.test.ts'], legs: { 'lib/a.test.ts': '@papercusp/x' } },
+    });
+    const record = repairQueueModule.precheckRecordOf(null, { ...ctx, population: measured });
+    expect(record.radius).toEqual({
+      status: 'measured',
+      reason: 'ok',
+      files: ['lib/a.test.ts', 'lib/b.test.ts'],
+      legs: { 'lib/a.test.ts': '@papercusp/x' },
+    });
+  });
+
+  it('carries no radius when the door computed none (gitlink or legacy population)', () => {
+    const none = precheckPopulation({ signature: [], admittedPaths: ['lib/src.ts'] });
+    expect(repairQueueModule.precheckRecordOf(null, { ...ctx, population: none })).not.toHaveProperty('radius');
   });
 });

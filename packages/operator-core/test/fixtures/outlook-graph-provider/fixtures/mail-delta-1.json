@@ -1,0 +1,33 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#Collection(message)",
+  "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta?$skiptoken=mail-page-2",
+  "value": [
+    {
+      "id": "AAMkAGI2-msg-1",
+      "conversationId": "AAQkAGI2-conv-quarterly",
+      "subject": "Quarterly numbers",
+      "bodyPreview": "Can you send the Q3 figures before Friday?",
+      "body": { "contentType": "text", "content": "Can you send the Q3 figures before Friday?" },
+      "from": { "emailAddress": { "name": "Ada Lovelace", "address": "ada@contoso.example" } },
+      "toRecipients": [{ "emailAddress": { "name": "Owner", "address": "owner@contoso.example" } }],
+      "ccRecipients": [{ "emailAddress": { "name": "Grace Hopper", "address": "grace@contoso.example" } }],
+      "receivedDateTime": "2026-10-05T09:15:00Z",
+      "internetMessageId": "<msg-1@contoso.example>",
+      "categories": ["Finance", "Follow up"],
+      "isRead": false
+    },
+    {
+      "id": "AAMkAGI2-msg-2",
+      "conversationId": "AAQkAGI2-conv-quarterly",
+      "subject": "RE: Quarterly numbers",
+      "bodyPreview": "Adding the board deck for context.",
+      "body": { "contentType": "html", "content": "<p>Adding the board deck for context.</p>" },
+      "from": { "emailAddress": { "name": "Grace Hopper", "address": "grace@contoso.example" } },
+      "toRecipients": [{ "emailAddress": { "name": "Owner", "address": "owner@contoso.example" } }],
+      "receivedDateTime": "2026-10-05T10:02:00Z",
+      "internetMessageId": "<msg-2@contoso.example>",
+      "categories": ["Finance"],
+      "isRead": true
+    }
+  ]
+}

@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Pinned selected JNA source package through existing Android provenance producer",
+  "framework": "operational",
+  "command": [
+    "make test-android-release-provenance",
+    "tools/build-scripts/android-release-provenance.sh source-archive jna"
+  ],
+  "workingDirectory": "papercup-rust-mobile",
+  "startedAt": "2026-10-03T07:58:20.175288+00:00",
+  "finishedAt": "2026-10-03T07:58:22.644779+00:00",
+  "timestampSource": "Actual JNA source-archive receipt timestamps. Maintained tests ran earlier and their final retained log is separately fingerprinted; these timestamps delimit the real packaging command only.",
+  "exitCode": 0,
+  "summary": "Real source-archive jna passed at committed mobile b8d2f278. Selected population: 536 files, 3766528 source bytes, comprising native449/src71/ant-tools8/root8. Independent archive read verified 537 regular entries including the matching per-file manifest; all536 source sizes, SHA-256 and Git blob identities passed. Maintained provenance tests passed, including deterministic JNA packaging and eleven rejecting controls.",
+  "scope": "Local selected pinned JNA source packaging and maintained fixture verification. Includes foreign architectures/tests and root Ant/Java inputs; excludes prebuilt library/tool JARs and generated headers. Does not establish exact Android compilation inputs, the original prebuilt invocation, license election, complete standalone toolchain, original full native/model rights or notices, recipient retrieval/build, signed candidate, current paired hosted CI, provider/reviewer, phone or Play acceptance. No new APK or native execution.",
+  "mobileSourceCommit": "b8d2f2781a8532bd621148bff7e8b18730d63324",
+  "upstreamSourceRevision": "1a91122853f6ab6f1fb2a4a284a6cf2ed8af0a4d",
+  "upstreamSourceTreeSha1": "fc89bf9afa33183da9d35028855f6648b7a8b07b",
+  "sourceFiles": [
+    {
+      "path": "papercup-rust-mobile/android/config/SOURCES.json",
+      "sha256": "493d565b27bb694733d80058308707af34b90b613019de197591a9ac45945a9f"
+    },
+    {
+      "path": "papercup-rust-mobile/store/APP-STORE-REVIEW.md",
+      "sha256": "0688005c631240f387dd0e632cba4e9b959d7237c88b2a27d2e5e9cb79acb47d"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/build-scripts/android-release-provenance.sh",
+      "sha256": "9389632c54480c3e4b8c8c870f6e6789fb7488a9fd2d4e8b0f09abaa0de3ef93"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-release-provenance-test.sh",
+      "sha256": "bf78e5a7f4bce36193a8127f9e10dc2bdd141be8e1b951623be3d17b9ff7863b"
+    }
+  ],
+  "testFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-release-provenance-test.sh",
+      "sha256": "bf78e5a7f4bce36193a8127f9e10dc2bdd141be8e1b951623be3d17b9ff7863b"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "committed-source-identity",
+      "passed": true,
+      "evidence": "All four changed source/test/review files were read and compared byte-for-byte with git show b8d2f278:path. Producer, input-pins and tree fingerprints match the actual retained receipt; mobile checkout was clean."
+    },
+    {
+      "id": "actual-selected-package",
+      "passed": true,
+      "evidence": "Real source-archive jna exited0. Receipt32efcdba records536 selectedfiles and upstream revision1a911228/treefc89bf9a. Archiveab1f03bd contains822116bytes and537 entries including SOURCE-PROVENANCE.json."
+    },
+    {
+      "id": "independent-archive-file-verification",
+      "passed": true,
+      "evidence": "Independent retained archive read compared its per-file manifest with the receipt and checked all536 source file sizes, SHA-256 values and Git blob identities. Source bytes total3766528; groups native449/src71/ant-tools8/root8."
+    },
+    {
+      "id": "maintained-regression-suite",
+      "passed": true,
+      "evidence": "Retained final make test-android-release-provenance log07da3707 and actual preceding shell exit0 show existing Rust notice/real offline compilation/APK orchestration fixtures plus deterministic JNA archive, Git-tree/blob and executable-mode checks passed. No Android compilation is claimed by these fixtures."
+    },
+    {
+      "id": "rejecting-controls-and-stale-receipt-guard",
+      "passed": true,
+      "evidence": "Maintained JNA fixture exercised eleven rejecting controls, including unsafe/substituted/incomplete tree/source inputs, symlink/FIFO and stale successful-receipt invalidation. Final retained log states all passed."
+    }
+  ],
+  "retainedLogs": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-jna-source-archive-tests-20261003-0755.log",
+      "sha256": "07da3707db6d6bf19e956da3e80a4d5bbb212a8bff4065e37c126929afd326c0"
+    }
+  ],
+  "rawReceipt": {
+    "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-jna-source-result.json",
+    "sha256": "32efcdba359c159502484fd2fd3ce0fa605692264571c13404ea53779faf19e8",
+    "verifiedFiles": 536
+  },
+  "inputTree": {
+    "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-android-dependency-sources/jna-NATIVE-TREE.json",
+    "sha256": "f6f599aed8687c8aa01563358d03b39ea39e1c663a7e0102a78af0b11a080707"
+  },
+  "archive": {
+    "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-jna-source.tar.gz",
+    "sha256": "ab1f03bd9933411192f7f29518a04123b74626ce11960e84125dce46e6224038",
+    "size": 822116,
+    "entries": 537,
+    "sourceFiles": 536,
+    "sourceBytes": 3766528,
+    "groups": { "native": 449, "src": 71, "ant-tools-src": 8, "root": 8 }
+  },
+  "nativeExecution": false,
+  "signedCandidateAcceptance": false,
+  "recipientRetrievalAcceptance": false
+}

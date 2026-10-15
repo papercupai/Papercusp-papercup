@@ -22,6 +22,7 @@ import type {
   ProgressCallback,
   EmitCallback,
 } from '@papercusp/tooldef';
+import { PROVIDER_OPTIONS_KEY, providerOptionSourceIssues } from './provider';
 
 /* ─────────────────────────────────────────────────────────────────────
  * Capabilities — declarative permission strings.
@@ -735,18 +736,44 @@ export interface PluginTriggerPackRecipeTarget {
 
 export type PluginTriggerPackTarget = PluginTriggerPackPlanTarget | PluginTriggerPackRecipeTarget;
 
-export type PluginTriggerPackSource =
+/**
+ * An external pack source names its provider in one of two ways
+ * (generalized-integrations D-013 §1):
+ *
+ * - provider-pinned: `sourceKind` (`gmail`, `slack`, `gcal`, ...). The pattern
+ *   starts `ext:<sourceKind>:`. First-party packs use this.
+ * - portable: `datatype` (+ optional `capabilities`). The pattern starts
+ *   `ext:*:`. At install the host binds it to an installer-chosen local data
+ *   source whose registered provider produces that datatype and serves every
+ *   listed capability, and rewrites the `*` to that source's kind. The pack
+ *   never names a provider, account or source id.
+ */
+export type PluginTriggerPackExternalSource = {
+  kind: 'external';
+  /**
+   * Optional configSchema property that acquires the source credential
+   * through OAuth. Cross-validation requires explicit secret/share/snapshot
+   * semantics plus matching inline/top-level provider + scopes.
+   */
+  oauthField?: string;
+} & (
   | {
-      kind: 'external';
       /** Canonical trigger-source kind (`gmail`, `slack`, `gcal`, ...). */
       sourceKind: string;
-      /**
-       * Optional configSchema property that acquires the source credential
-       * through OAuth. Cross-validation requires explicit secret/share/snapshot
-       * semantics plus matching inline/top-level provider + scopes.
-       */
-      oauthField?: string;
+      datatype?: never;
+      capabilities?: never;
     }
+  | {
+      sourceKind?: never;
+      /** Canonical datatype id the bound source must produce (`email-message`, ...). */
+      datatype: string;
+      /** Provider capabilities the bound source must serve (`mail.read`, ...). */
+      capabilities?: string[];
+    }
+);
+
+export type PluginTriggerPackSource =
+  | PluginTriggerPackExternalSource
   | { kind: 'internal'; event: 'binding-run-completed' | 'plan-completed' }
   /**
    * @deprecated Trigger packs do not consume schedules. Use a `manual` binding
@@ -826,6 +853,28 @@ function triggerPackScopes(value: unknown): string[] {
 }
 
 /**
+ * `x-options` on a pack input (cupboard-distributable-integrations-2026-10-10 P-004, D-005): the
+ * input's choices come from a connected provider's capability, so the input stores one choice
+ * (`type: 'string'`) or several (`type: 'array'` of strings), and the source itself is well formed.
+ */
+function triggerPackInputOptionIssues(inputs: unknown): string[] {
+  const properties = triggerPackObject(triggerPackObject(inputs).properties);
+  const issues: string[] = [];
+  for (const [name, raw] of Object.entries(properties)) {
+    const property = triggerPackObject(raw);
+    if (!(PROVIDER_OPTIONS_KEY in property)) continue;
+    const at = `triggerPack.inputs.properties.${name}.${PROVIDER_OPTIONS_KEY}`;
+    issues.push(...providerOptionSourceIssues(property[PROVIDER_OPTIONS_KEY], at));
+    const items = triggerPackObject(property.items);
+    const holdsChoices = property.type === 'string' || (property.type === 'array' && items.type === 'string');
+    if (!holdsChoices) {
+      issues.push(`${at} needs the input to be type "string" or an array of strings`);
+    }
+  }
+  return issues;
+}
+
+/**
  * Cross-field validation the JSON schema cannot express. The manifest schema
  * proves the local shapes; this proves the references agree, so a pack cannot
  * look installable while silently leaking its credential or requesting a
@@ -844,6 +893,7 @@ export function validateTriggerPackDeclaration(manifest: {
   if (manifest.kind === 'pack') {
     issues.push('triggerPack must ride kind "plugin" — kind "pack" is reserved for executable code-tool packs');
   }
+  issues.push(...triggerPackInputOptionIssues(pack.inputs));
 
   const targetById = new Map<string, PluginTriggerPackTarget>();
   for (const target of pack.targets ?? []) {
@@ -912,10 +962,30 @@ export function validateTriggerPackDeclaration(manifest: {
       continue;
     }
     if (binding.source.kind !== 'external') continue;
-    const sourceKind = binding.source.sourceKind.trim();
     const eventPattern = binding.eventPattern?.trim() ?? '';
-    if (!eventPattern.startsWith(`ext:${sourceKind}:`)) {
-      issues.push(`triggerPack binding "${binding.id}" eventPattern must start with "ext:${sourceKind}:"`);
+    const sourceKind = typeof binding.source.sourceKind === 'string' ? binding.source.sourceKind.trim() : '';
+    const datatype = typeof binding.source.datatype === 'string' ? binding.source.datatype.trim() : '';
+    if (Boolean(sourceKind) === Boolean(datatype)) {
+      issues.push(
+        `triggerPack binding "${binding.id}" external source must declare exactly one of sourceKind or datatype`,
+      );
+    } else if (sourceKind) {
+      if (!eventPattern.startsWith(`ext:${sourceKind}:`)) {
+        issues.push(`triggerPack binding "${binding.id}" eventPattern must start with "ext:${sourceKind}:"`);
+      }
+    } else if (!eventPattern.startsWith('ext:*:') || eventPattern.length <= 'ext:*:'.length) {
+      // A portable source names no provider: the host rewrites `*` to the
+      // installer-chosen local source's kind at install time.
+      issues.push(`triggerPack binding "${binding.id}" portable datatype source eventPattern must start with "ext:*:"`);
+    }
+    if (!sourceKind && binding.source.capabilities !== undefined) {
+      const capabilities = binding.source.capabilities;
+      if (
+        !Array.isArray(capabilities) ||
+        capabilities.some((capability) => typeof capability !== 'string' || capability.trim() === '')
+      ) {
+        issues.push(`triggerPack binding "${binding.id}" capabilities must be non-empty strings`);
+      }
     }
 
     const oauthField = binding.source.oauthField?.trim() ?? '';
@@ -1059,6 +1129,9 @@ export interface ActionDefinition {
   paramsSchema?: Record<string, unknown>;
 }
 
+/** How a running app obtains a package — see {@link Plugin.distribution}. */
+export type PluginDistribution = 'bundled' | 'cupboard';
+
 export interface Plugin {
   /**
    * Manifest discriminator. Mirrors the `kind` field in papercusp.json so
@@ -1141,6 +1214,15 @@ export interface Plugin {
    * smuggle their plugin into "no consent needed" status; both wrong.
    */
   bundled?: boolean;
+
+  /**
+   * How a running app obtains this package (cupboard-distributable-integrations-2026-10-10
+   * D-015). Absent or `'bundled'`: a copy in a bundled plugin dir loads at boot, as before.
+   * `'cupboard'`: the source may live in a bundled dir (tests, mirror export), but the package
+   * loads ONLY from a Cupboard install. The bundled (`project`) root skips it, so it is never
+   * hardcoded into the app and never shadows the installed copy.
+   */
+  distribution?: PluginDistribution;
 
   /** When true, the plugin is hidden from the marketplace listing UI. The
    *  plugin still loads, enables, and runs — this only suppresses its
@@ -1257,6 +1339,19 @@ export interface Plugin {
    * descriptor after install; arming remains an explicit trigger action.
    */
   triggerPack?: PluginTriggerPack;
+
+  /**
+   * Integration provider descriptor (pure data, validated at load/install).
+   * See `./provider` and plan generalized-integrations-…-2026-10-05 D-006.
+   */
+  provider?: import('./provider').ProviderDescriptor;
+
+  /**
+   * Adapter implementing the provider contract. `js` providers export it
+   * in-process; daemon providers serve the same three methods over JSON-RPC.
+   * Providers never receive tokens — network access goes through `host.fetch`.
+   */
+  providerAdapter?: import('./provider').ProviderAdapter;
 
   /** Full-route UI mounted at /harness/<slug>. */
   ui?: UiContribution;
@@ -1661,6 +1756,123 @@ export const PAPERCUSP_RUNTIME_VERSION = '0.1.1' as const;
 
 export { lookupTier, TIER_TABLE } from './tier-table';
 export type { CapabilityTier } from './tier-table';
+export {
+  PROVIDER_CONTRACT_VERSIONS,
+  PROVIDER_ID_PATTERN,
+  PROVIDER_DATATYPE_PATTERN,
+  PROVIDER_CAPABILITY_PATTERN,
+  PROVIDER_EGRESS_HOST_PATTERN,
+  providerEgressAllows,
+  validateProviderDescriptor,
+  validateProviderDeclaration,
+  isProviderAdapter,
+  PROVIDER_DAEMON_METHODS,
+  PROVIDER_SYNC_WAKE_CAPABILITY,
+  PROVIDER_SYNC_ADOPT_CAPABILITY,
+  PROVIDER_PUSH_SUBSCRIBE_CAPABILITY,
+  PROVIDER_PUSH_UNSUBSCRIBE_CAPABILITY,
+  PROVIDER_PUSH_HEADER_PATTERN,
+  PROVIDER_INGRESS_NORMALIZE_CAPABILITY,
+  PROVIDER_INGRESS_FIELD_PATTERN,
+  PROVIDER_INGRESS_PATH_PATTERN,
+  PROVIDER_DESTINATIONS,
+  PROVIDER_CREDENTIAL_KEY_PATTERN,
+  PROVIDER_CREDENTIAL_MAX_LENGTH,
+  providerCredentialValueIssue,
+  providerCredentialForHost,
+  providerPrincipalCredentialForHost,
+  PROVIDER_ACL_REF_PATTERN,
+  PROVIDER_SEARCH_LIVE_CAPABILITY,
+  providerLiveSearchResultIssue,
+  PROVIDER_APP_DEFINITION_PLACEHOLDER,
+  PROVIDER_APP_DEFINITION_MAX_LENGTH,
+  providerAppRegistrationUrl,
+  providerAppDefinitionText,
+  providerAppRegistrationView,
+  PROVIDER_OPTIONS_KEY,
+  PROVIDER_OPTIONS_MAX,
+  providerOptionSourceIssues,
+  providerOptionSourceOf,
+  normalizeProviderOptions,
+  PROVIDER_SYNC_ERROR_KINDS,
+  providerSyncErrorOf,
+  providerCoverageIssues,
+  providerSyncProgressIssues,
+  providerCursorFreshness,
+  PROVIDER_SOCIAL_POST_CAPABILITY,
+  PROVIDER_SOCIAL_REPLY_CAPABILITY,
+  PROVIDER_SOCIAL_DELETE_CAPABILITY,
+  providerSocialWriteResultIssue,
+  providerSocialDeleteResultIssue,
+} from './provider';
+export {
+  runProviderConformance,
+  formatProviderConformanceReport,
+  recordedHostFetch,
+  jsonResponse,
+  PROVIDER_CONFORMANCE_CHECKS,
+  CONFORMANCE_UNREADABLE_CURSOR,
+} from './provider-conformance';
+export type {
+  ProviderConformanceHarness,
+  ProviderConformanceInvocation,
+  ProviderConformanceReport,
+  ProviderConformanceFinding,
+  ProviderConformanceCheck,
+  RecordedExchange,
+  RecordedHostFetch,
+} from './provider-conformance';
+export type {
+  ProviderOptionSource,
+  ProviderOption,
+  ProviderOptionList,
+  ProviderDestination,
+  ProviderDaemonCallParams,
+  ProviderDaemonFetchParams,
+  ProviderContractVersion,
+  ProviderOAuthDescriptor,
+  ProviderOAuthIdentity,
+  ProviderOAuthResourceToken,
+  ProviderDescriptor,
+  ProviderSetupDescriptor,
+  ProviderIngressDescriptor,
+  ProviderSocketIngressDescriptor,
+  ProviderIngressNormalizeArgs,
+  ProviderIngressNormalizeResult,
+  ProviderCredentialField,
+  ProviderAppRegistration,
+  ProviderAppRegistrationView,
+  ProviderSyncRequest,
+  ProviderRecord,
+  ProviderSyncPage,
+  ProviderCatchUp,
+  ProviderLossRisk,
+  ProviderCursorFreshness,
+  ProviderCoverage,
+  ProviderMembershipDescriptor,
+  ProviderMembershipSnapshot,
+  ProviderMembershipContainer,
+  ProviderSourceScope,
+  ProviderLiveSearchArgs,
+  ProviderLiveSearchHit,
+  ProviderLiveSearchResult,
+  ProviderSyncError,
+  ProviderSocialWriteResult,
+  ProviderSocialDeleteResult,
+  ProviderInvokeRequest,
+  ProviderServiceCredential,
+  ProviderServices,
+  ProviderWakeResult,
+  ProviderAdoptResult,
+  ProviderPushDescriptor,
+  ProviderPushSubscription,
+  ProviderPushSubscribeResult,
+  HostFetchRequest,
+  HostFetchResponse,
+  HostFetch,
+  ProviderHost,
+  ProviderAdapter,
+} from './provider';
 
 
 /* ─────────────────────────────────────────────────────────────────────

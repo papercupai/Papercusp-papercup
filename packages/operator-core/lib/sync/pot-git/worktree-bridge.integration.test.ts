@@ -414,6 +414,41 @@ describe('worktree-bridge (G-7: announcement → fetch → accept → ff worktre
       expect(await git(['rev-parse', 'HEAD'], wt6)).toBe(localHead);
     });
 
+    // WI-10006476 / plan agent-capacity-and-cost-gcp-2026-09-30 D-055 (S6, P-525):
+    // a member whose own commit conflicts with the hive head stays forked forever,
+    // because the integrator parks it and this ff-only sweep cannot follow. The
+    // sweep must NAME the conflicting paths so git-sync can persist and log the fork.
+    async function divergedFromS2(name: string, file: string, body: string): Promise<{ wt: string; head: string }> {
+      const wt = join(root, name);
+      await initWorktree(wt);
+      const seeded = await catchUpWorktreeToWatermark(localMirror, wt, s2);
+      expect(seeded.outcome, 'detail' in seeded ? seeded.detail : undefined).toBe('advanced');
+      await writeFile(join(wt, file), body);
+      await git(['add', '.'], wt);
+      await git(['commit', '-q', '-m', `member edit ${file}`], wt);
+      return { wt, head: await git(['rev-parse', 'HEAD'], wt) };
+    }
+
+    it('D-055: a diverged worktree whose commit CONFLICTS with the hive head reports the conflicting paths', async () => {
+      const { wt, head } = await divergedFromS2('wt8', 'f.txt', 'member edit of the same line\n');
+      const r = await catchUpWorktreeToWatermark(localMirror, wt, s3);
+      expect(r.outcome).toBe('diverged-manual');
+      expect('conflictPaths' in r ? r.conflictPaths : undefined).toEqual(['f.txt']);
+      // The probe never touches the worktree: HEAD, index and file are as committed.
+      expect(await git(['rev-parse', 'HEAD'], wt)).toBe(head);
+      expect(await git(['status', '--porcelain'], wt)).toBe('');
+      expect(await readFile(join(wt, 'f.txt'), 'utf8')).toBe('member edit of the same line\n');
+    });
+
+    it('D-055: a diverged worktree that merges CLEANLY reports no conflicting paths (the integrator merges it)', async () => {
+      const { wt, head } = await divergedFromS2('wt9', 'own.txt', 'member-only file\n');
+      const r = await catchUpWorktreeToWatermark(localMirror, wt, s3);
+      expect(r.outcome).toBe('diverged-manual');
+      expect('conflictPaths' in r ? r.conflictPaths : undefined).toEqual([]);
+      expect(await git(['rev-parse', 'HEAD'], wt)).toBe(head);
+      expect(await git(['status', '--porcelain'], wt)).toBe('');
+    });
+
     it('a mirror without the canonical pin is a typed error, never a throw', async () => {
       const bare = join(root, 'empty-mirror.git');
       await mkdir(bare, { recursive: true });

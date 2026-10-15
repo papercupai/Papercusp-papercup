@@ -26,10 +26,12 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
+import ts from 'typescript';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
+import { RTK_SESSION_ENV } from './agent-tools/capability/rtk-rewrite';
 import {
   ensureInteractiveClaudeConfig,
   ensureOnboardingComplete,
@@ -108,47 +110,47 @@ afterAll(() => {
 describe('ensureOnboardingComplete (the first-run wizard blocks every interactive launch)', () => {
   const read = () => JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
 
-  it('repairs a global config whose onboarding flag flipped to false', () => {
+  it('repairs a global config whose onboarding flag flipped to false', async () => {
     seedHome(home);
     writeFileSync(
       join(home, '.claude.json'),
       JSON.stringify({ hasCompletedOnboarding: false, mcpServers: { 'papercusp-su': {} } }),
     );
 
-    expect(ensureOnboardingComplete(home)).toBe(true);
+    expect(await ensureOnboardingComplete(home)).toBe(true);
     expect(read().hasCompletedOnboarding).toBe(true);
     // Never a foreign value: the repair touches exactly the one key.
     expect(read().mcpServers).toEqual({ 'papercusp-su': {} });
   });
 
-  it('repairs a config that never carried the flag, and leaves a healthy one untouched', () => {
+  it('repairs a config that never carried the flag, and leaves a healthy one untouched', async () => {
     seedHome(home); // seeds a .claude.json with no onboarding key at all
-    expect(ensureOnboardingComplete(home)).toBe(true);
+    expect(await ensureOnboardingComplete(home)).toBe(true);
     expect(read().hasCompletedOnboarding).toBe(true);
 
     // Idempotent — already-true means no rewrite (peers rewrite this file constantly).
-    expect(ensureOnboardingComplete(home)).toBe(false);
+    expect(await ensureOnboardingComplete(home)).toBe(false);
   });
 
-  it('WI-4431: materializes a minimal onboarding-complete config when NONE exists at all', () => {
+  it('WI-4431: materializes a minimal onboarding-complete config when NONE exists at all', async () => {
     // No seedHome() — a box that has never run claude interactively (e.g. a
     // freshly provisioned headless fleet host). The mirror only symlinks
     // .claude.json in when one exists, so leaving this a no-op would still
     // wedge a headless launch at the first-run wizard by a different door.
     expect(existsSync(join(home, '.claude.json'))).toBe(false);
-    expect(ensureOnboardingComplete(home)).toBe(true);
+    expect(await ensureOnboardingComplete(home)).toBe(true);
     expect(read().hasCompletedOnboarding).toBe(true);
     // Deliberately bare: no mcpServers (psu supplies MCP via --mcp-config argv,
     // never this file) and no theme key (see the doc comment above).
     expect(read().mcpServers).toBeUndefined();
     expect(read().theme).toBeUndefined();
     // Idempotent on the next call — already-true means no rewrite.
-    expect(ensureOnboardingComplete(home)).toBe(false);
+    expect(await ensureOnboardingComplete(home)).toBe(false);
   });
 
-  it('fails open on an unparseable config — a launch never dies here', () => {
+  it('fails open on an unparseable config — a launch never dies here', async () => {
     writeFileSync(join(home, '.claude.json'), '{ not json');
-    expect(ensureOnboardingComplete(home)).toBe(false);
+    expect(await ensureOnboardingComplete(home)).toBe(false);
   });
 });
 
@@ -164,9 +166,9 @@ describe('ensureProjectTrust (EI-16574: a brand-new cwd wedges a headless launch
   const read = () => JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
   const cwd = '/home/someuser/.papercusp-workspaces/clones/fresh-clone';
 
-  it('adds a full trust entry for a cwd with NO prior projects[] entry at all', () => {
+  it('adds a full trust entry for a cwd with NO prior projects[] entry at all', async () => {
     seedHome(home); // seeds a .claude.json with mcpServers but no `projects` key
-    expect(ensureProjectTrust(home, cwd)).toBe(true);
+    expect(await ensureProjectTrust(home, cwd)).toBe(true);
     expect(read().projects[cwd]).toEqual({
       hasTrustDialogAccepted: true,
       hasClaudeMdExternalIncludesApproved: true,
@@ -177,7 +179,7 @@ describe('ensureProjectTrust (EI-16574: a brand-new cwd wedges a headless launch
     expect(read().mcpServers).toEqual({ 'papercusp-su': {}, playwright: {} });
   });
 
-  it('repairs a cwd entry that exists but is missing one of the trust flags — never clobbers its other fields', () => {
+  it('repairs a cwd entry that exists but is missing one of the trust flags — never clobbers its other fields', async () => {
     writeFileSync(
       join(home, '.claude.json'),
       JSON.stringify({
@@ -192,7 +194,7 @@ describe('ensureProjectTrust (EI-16574: a brand-new cwd wedges a headless launch
         },
       }),
     );
-    expect(ensureProjectTrust(home, cwd)).toBe(true);
+    expect(await ensureProjectTrust(home, cwd)).toBe(true);
     const p = read().projects[cwd];
     expect(p.hasClaudeMdExternalIncludesApproved).toBe(true);
     expect(p.hasClaudeMdExternalIncludesWarningShown).toBe(true);
@@ -204,7 +206,7 @@ describe('ensureProjectTrust (EI-16574: a brand-new cwd wedges a headless launch
     expect(read().projects['/some/other/project']).toEqual({ hasCompletedProjectOnboarding: true });
   });
 
-  it('is idempotent — a cwd already fully trusted is left untouched (no rewrite)', () => {
+  it('is idempotent — a cwd already fully trusted is left untouched (no rewrite)', async () => {
     writeFileSync(
       join(home, '.claude.json'),
       JSON.stringify({
@@ -218,34 +220,69 @@ describe('ensureProjectTrust (EI-16574: a brand-new cwd wedges a headless launch
         },
       }),
     );
-    expect(ensureProjectTrust(home, cwd)).toBe(false);
+    expect(await ensureProjectTrust(home, cwd)).toBe(false);
   });
 
-  it('WI-4431-style: materializes a minimal trusted config when NO .claude.json exists at all', () => {
+  it('WI-4431-style: materializes a minimal trusted config when NO .claude.json exists at all', async () => {
     expect(existsSync(join(home, '.claude.json'))).toBe(false);
-    expect(ensureProjectTrust(home, cwd)).toBe(true);
+    expect(await ensureProjectTrust(home, cwd)).toBe(true);
     expect(read().hasCompletedOnboarding).toBe(true);
     expect(read().projects[cwd].hasClaudeMdExternalIncludesApproved).toBe(true);
   });
 
-  it('fails open on an unparseable config — a launch never dies here', () => {
+  it('fails open on an unparseable config — a launch never dies here', async () => {
     writeFileSync(join(home, '.claude.json'), '{ not json');
-    expect(ensureProjectTrust(home, cwd)).toBe(false);
+    expect(await ensureProjectTrust(home, cwd)).toBe(false);
+  });
+
+  it('preserves every project when launches update trust concurrently', async () => {
+    const cwdPaths = [
+      '/workspaces/clone-a',
+      '/workspaces/clone-b',
+      '/workspaces/clone-c',
+      '/workspaces/clone-d',
+    ];
+    writeFileSync(
+      join(home, '.claude.json'),
+      JSON.stringify({
+        mcpServers: { 'papercusp-su': {} },
+        projects: { '/workspaces/existing': { marker: 'preserve' } },
+      }),
+    );
+
+    await expect(Promise.all(cwdPaths.map((path) => ensureProjectTrust(home, path)))).resolves.toEqual([
+      true,
+      true,
+      true,
+      true,
+    ]);
+
+    const cfg = read();
+    expect(cfg.mcpServers).toEqual({ 'papercusp-su': {} });
+    expect(cfg.projects['/workspaces/existing']).toEqual({ marker: 'preserve' });
+    for (const path of cwdPaths) {
+      expect(cfg.projects[path]).toEqual({
+        hasTrustDialogAccepted: true,
+        hasClaudeMdExternalIncludesApproved: true,
+        hasClaudeMdExternalIncludesWarningShown: true,
+        hasCompletedProjectOnboarding: true,
+      });
+    }
   });
 });
 
 describe('writeInteractiveClaudeConfig', () => {
-  it('keys the dir by sid via the shared helper (launch ↔ resume agree)', () => {
+  it('keys the dir by sid via the shared helper (launch ↔ resume agree)', async () => {
     seedHome(home);
-    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-abc', home });
+    const { configDir } = await writeInteractiveClaudeConfig({ sid: 'su-abc', home });
     // The same path the wake-executor resume leg computes from coord_owner_id.
     expect(configDir).toBe(sessionClaudeConfigDir('su-abc'));
     expect(configDir).toBe(join(root, 'su-abc'));
   });
 
-  it('symlinks the user config (creds / plugins / commands) — NOT a creds-only dir', () => {
+  it('symlinks the user config (creds / plugins / commands) — NOT a creds-only dir', async () => {
     seedHome(home);
-    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-1', home });
+    const { configDir } = await writeInteractiveClaudeConfig({ sid: 'su-1', home });
     for (const entry of ['.credentials.json', 'plugins', 'commands']) {
       const dest = join(configDir, entry);
       expect(lstatSync(dest).isSymbolicLink()).toBe(true);
@@ -263,13 +300,13 @@ describe('writeInteractiveClaudeConfig', () => {
     expect(readFileSync(join(configDir, 'plugins', 'config.json'), 'utf8')).toContain('verdict');
   });
 
-  it('WI-3278: the settings merge never writes THROUGH a pre-fix symlink into the global file', () => {
+  it('WI-3278: the settings merge never writes THROUGH a pre-fix symlink into the global file', async () => {
     seedHome(home);
-    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-relink', home });
+    const { configDir } = await writeInteractiveClaudeConfig({ sid: 'su-relink', home });
     // Simulate a pre-fix session dir: settings.json as a symlink to the global.
     rmSync(join(configDir, 'settings.json'));
     symlinkSync(join(home, '.claude', 'settings.json'), join(configDir, 'settings.json'));
-    writeInteractiveClaudeConfig({ sid: 'su-relink', home });
+    await writeInteractiveClaudeConfig({ sid: 'su-relink', home });
     // Session file is now real and carries the grant…
     expect(lstatSync(join(configDir, 'settings.json')).isSymbolicLink()).toBe(false);
     expect(readFileSync(join(configDir, 'settings.json'), 'utf8')).toContain('bypassPermissions');
@@ -277,9 +314,9 @@ describe('writeInteractiveClaudeConfig', () => {
     expect(readFileSync(join(home, '.claude', 'settings.json'), 'utf8')).not.toContain('bypassPermissions');
   });
 
-  it('EI-12086: bakes skipDangerousModePermissionPrompt so a headless member is not wedged on the claude 2.1.209 bypass-accept prompt', () => {
+  it('EI-12086: bakes skipDangerousModePermissionPrompt so a headless member is not wedged on the claude 2.1.209 bypass-accept prompt', async () => {
     seedHome(home);
-    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-skip', home });
+    const { configDir } = await writeInteractiveClaudeConfig({ sid: 'su-skip', home });
     const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'));
     // claude 2.1.209+ gates --dangerously-skip-permissions behind an interactive
     // "Bypass Permissions mode" accept prompt a headless member can never answer.
@@ -293,9 +330,32 @@ describe('writeInteractiveClaudeConfig', () => {
     ).not.toContain('skipDangerousModePermissionPrompt');
   });
 
-  it('WI-6603: bakes the fleet-policy setting defaults every psu session inherits', () => {
+  it('WI-6554700010009529: bakes the RTK hook-nag suppression into the session env, merged over the global env', async () => {
     seedHome(home);
-    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-policy', home });
+    // A user global env must survive the merge.
+    writeFileSync(
+      join(home, '.claude', 'settings.json'),
+      JSON.stringify({ hooks: { PreToolUse: [] }, env: { USER_KEEP: 'yes' } }),
+    );
+    const { configDir } = await writeInteractiveClaudeConfig({ sid: 'su-rtk-env', home });
+    const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'));
+    // The egress-guard hook rewrites native Bash to RTK; without this RTK tells
+    // the agent to run `rtk init -g`, which installs a competing hook.
+    expect(settings.env).toEqual({ USER_KEEP: 'yes', ...RTK_SESSION_ENV });
+    expect(settings.env.RTK_SUPPRESS_HOOK_WARNING).toBe('1');
+    expect(readFileSync(join(home, '.claude', 'settings.json'), 'utf8')).not.toContain('RTK_SUPPRESS_HOOK_WARNING');
+  });
+
+  it('WI-6554700010009529: a global settings.json with no env still yields the RTK session env', async () => {
+    seedHome(home);
+    const { configDir } = await writeInteractiveClaudeConfig({ sid: 'su-rtk-env-bare', home });
+    const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'));
+    expect(settings.env).toEqual({ ...RTK_SESSION_ENV });
+  });
+
+  it('WI-6603: bakes the fleet-policy setting defaults every psu session inherits', async () => {
+    seedHome(home);
+    const { configDir } = await writeInteractiveClaudeConfig({ sid: 'su-policy', home });
     const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'));
     // Claude Code's stock default (true) injects a "# Git … Commit or push only
     // when the user asks. If on the default branch, branch first." block into every
@@ -316,7 +376,7 @@ describe('writeInteractiveClaudeConfig', () => {
     expect(global).not.toContain('fileCheckpointingEnabled');
   });
 
-  it('WI-6603: the policy defaults OVERRIDE a conflicting value in the global settings', () => {
+  it('WI-6603: the policy defaults OVERRIDE a conflicting value in the global settings', async () => {
     seedHome(home);
     // A stale/personal global preference must not survive into a fleet session —
     // the policy layer is written after the global spread, so it wins.
@@ -324,16 +384,16 @@ describe('writeInteractiveClaudeConfig', () => {
       join(home, '.claude', 'settings.json'),
       JSON.stringify({ includeGitInstructions: true, fileCheckpointingEnabled: true }),
     );
-    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-policy-override', home });
+    const { configDir } = await writeInteractiveClaudeConfig({ sid: 'su-policy-override', home });
     const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'));
     expect(settings.includeGitInstructions).toBe(false);
     expect(settings.fileCheckpointingEnabled).toBe(false);
     expect(settings.showThinkingSummaries).toBe(true);
   });
 
-  it('does NOT mirror the personal global memory (CLAUDE.md / AGENTS.md) — the P-002 / D-001 leak fix', () => {
+  it('does NOT mirror the personal global memory (CLAUDE.md / AGENTS.md) — the P-002 / D-001 leak fix', async () => {
     seedHome(home);
-    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-iso', home });
+    const { configDir } = await writeInteractiveClaudeConfig({ sid: 'su-iso', home });
     // The psu session must load NO personal memory: neither the CLAUDE.md
     // global-memory entrypoint nor its `@AGENTS.md` include target is present in
     // the config dir, so claude has no `$CLAUDE_CONFIG_DIR/CLAUDE.md` to auto-load.
@@ -347,9 +407,9 @@ describe('writeInteractiveClaudeConfig', () => {
     expect(readFileSync(join(configDir, 'settings.json'), 'utf8')).toContain('PreToolUse');
   });
 
-  it('pui-chat-first-ux P-007: a coding-assistant chat gets the personal memory; switching back to psu removes only our links', () => {
+  it('pui-chat-first-ux P-007: a coding-assistant chat gets the personal memory; switching back to psu removes only our links', async () => {
     seedHome(home);
-    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-coding', home });
+    const { configDir } = await writeInteractiveClaudeConfig({ sid: 'su-coding', home });
     syncPersonalClaudeMemory(configDir, true, home);
     // Like stock `claude`: the CLAUDE.md entrypoint and its `@AGENTS.md` target.
     expect(readlinkSync(join(configDir, 'CLAUDE.md'))).toBe(join(home, '.claude', 'CLAUDE.md'));
@@ -370,18 +430,18 @@ describe('writeInteractiveClaudeConfig', () => {
     expect(readFileSync(join(home, '.claude', 'CLAUDE.md'), 'utf8')).toBe('@AGENTS.md\n');
   });
 
-  it('symlinks the sibling ~/.claude.json (user-level MCP + onboarding/trust carry through)', () => {
+  it('symlinks the sibling ~/.claude.json (user-level MCP + onboarding/trust carry through)', async () => {
     seedHome(home);
-    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-2', home });
+    const { configDir } = await writeInteractiveClaudeConfig({ sid: 'su-2', home });
     const dest = join(configDir, '.claude.json');
     expect(lstatSync(dest).isSymbolicLink()).toBe(true);
     expect(readlinkSync(dest)).toBe(join(home, '.claude.json'));
     expect(readFileSync(dest, 'utf8')).toContain('papercusp-su');
   });
 
-  it('isolates projects/: a REAL dir, and the shared store’s transcript is NOT visible', () => {
+  it('isolates projects/: a REAL dir, and the shared store’s transcript is NOT visible', async () => {
     seedHome(home);
-    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-3', home });
+    const { configDir } = await writeInteractiveClaudeConfig({ sid: 'su-3', home });
     const projects = join(configDir, 'projects');
     // A real directory, never a symlink to the shared store.
     expect(lstatSync(projects).isSymbolicLink()).toBe(false);
@@ -391,23 +451,23 @@ describe('writeInteractiveClaudeConfig', () => {
     expect(existsSync(join(projects, 'proj-hash', 'peer-uuid.jsonl'))).toBe(false);
   });
 
-  it('cross-agent isolation: two sids get distinct dirs with independent transcript stores', () => {
+  it('cross-agent isolation: two sids get distinct dirs with independent transcript stores', async () => {
     seedHome(home);
-    const a = writeInteractiveClaudeConfig({ sid: 'su-A', home }).configDir;
-    const b = writeInteractiveClaudeConfig({ sid: 'su-B', home }).configDir;
+    const a = (await writeInteractiveClaudeConfig({ sid: 'su-A', home })).configDir;
+    const b = (await writeInteractiveClaudeConfig({ sid: 'su-B', home })).configDir;
     expect(a).not.toBe(b);
     // A writes a transcript; B must never see it (no cross-session bleed).
     writeFileSync(join(a, 'projects', 'a-session.jsonl'), '{"a":1}');
     expect(existsSync(join(b, 'projects', 'a-session.jsonl'))).toBe(false);
   });
 
-  it('is idempotent — a re-materialize (the resume leg) never clobbers an existing transcript', () => {
+  it('is idempotent — a re-materialize (the resume leg) never clobbers an existing transcript', async () => {
     seedHome(home);
-    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-4', home });
+    const { configDir } = await writeInteractiveClaudeConfig({ sid: 'su-4', home });
     // The session wrote a transcript after launch.
     writeFileSync(join(configDir, 'projects', 'live.jsonl'), '{"turn":1}');
     // Resume re-materializes the SAME dir — must be a no-op for projects/.
-    const again = writeInteractiveClaudeConfig({ sid: 'su-4', home });
+    const again = await writeInteractiveClaudeConfig({ sid: 'su-4', home });
     expect(again.configDir).toBe(configDir);
     expect(readFileSync(join(configDir, 'projects', 'live.jsonl'), 'utf8')).toBe('{"turn":1}');
     // The merged settings file still resolves with the grant (WI-3278 rewrites
@@ -415,9 +475,9 @@ describe('writeInteractiveClaudeConfig', () => {
     expect(readFileSync(join(configDir, 'settings.json'), 'utf8')).toContain('bypassPermissions');
   });
 
-  it('degrades gracefully when the source ~/.claude does not exist (fresh box)', () => {
+  it('degrades gracefully when the source ~/.claude does not exist (fresh box)', async () => {
     // home has NO .claude / .claude.json seeded.
-    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-5', home });
+    const { configDir } = await writeInteractiveClaudeConfig({ sid: 'su-5', home });
     expect(existsSync(configDir)).toBe(true);
     // Still gets an isolated transcript store; just no symlinks to mirror.
     expect(lstatSync(join(configDir, 'projects')).isDirectory()).toBe(true);
@@ -428,9 +488,9 @@ describe('writeInteractiveClaudeConfig', () => {
     expect(settings.permissions.defaultMode).toBe('bypassPermissions');
   });
 
-  it('prunePlugins (context-trimming-tiers P-020): fleet members lose github/cloudflare/firecrawl + playwright, keep context7 + papercusp-su', () => {
+  it('prunePlugins (context-trimming-tiers P-020): fleet members lose github/cloudflare/firecrawl + playwright, keep context7 + papercusp-su', async () => {
     seedHome(home);
-    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-prune', home, prunePlugins: true });
+    const { configDir } = await writeInteractiveClaudeConfig({ sid: 'su-prune', home, prunePlugins: true });
     // plugins/ is a REAL dir: children link through, the registry is filtered.
     const reg = JSON.parse(
       readFileSync(join(configDir, 'plugins', 'installed_plugins.json'), 'utf8'),
@@ -443,7 +503,7 @@ describe('writeInteractiveClaudeConfig', () => {
     };
     expect(Object.keys(cj.mcpServers)).toEqual(['papercusp-su']);
     // Default (no prune) stays a symlink mirror with the full registry.
-    const { configDir: fullDir } = writeInteractiveClaudeConfig({ sid: 'su-full', home });
+    const { configDir: fullDir } = await writeInteractiveClaudeConfig({ sid: 'su-full', home });
     const fullReg = JSON.parse(
       readFileSync(join(fullDir, 'plugins', 'installed_plugins.json'), 'utf8'),
     ) as { plugins: Record<string, unknown> };
@@ -504,19 +564,19 @@ describe('WI-3280: SessionStart playbook recovery', () => {
     });
   }
 
-  function seedWithPlaybook(sid: string): string {
+  async function seedWithPlaybook(sid: string): Promise<string> {
     seedHome(home);
     const playbookSrc = join(home, 'playbook.md');
     writeFileSync(playbookSrc, '# SU engineer playbook\nA pot is the offline-first data substrate.\n');
-    return writeInteractiveClaudeConfig({
+    return (await writeInteractiveClaudeConfig({
       sid,
       home,
       recovery: { playbookPath: playbookSrc, nativeSessionId: '22fa0398-0e51-48b1-93cb-e7c8426064d1' },
-    }).configDir;
+    })).configDir;
   }
 
-  it('parks the playbook copy + intent and writes the hook script', () => {
-    const configDir = seedWithPlaybook('su-rec1');
+  it('parks the playbook copy + intent and writes the hook script', async () => {
+    const configDir = await seedWithPlaybook('su-rec1');
     expect(readFileSync(join(configDir, RECOVER_PLAYBOOK), 'utf8')).toContain('A pot is');
     const intent = JSON.parse(readFileSync(join(configDir, RECOVER_INTENT), 'utf8'));
     expect(intent.sid).toBe('su-rec1');
@@ -529,7 +589,7 @@ describe('WI-3280: SessionStart playbook recovery', () => {
     expect(cmd).toContain(JSON.stringify(process.execPath).slice(1, -1));
   });
 
-  it('appends to (never replaces) existing global SessionStart hook groups', () => {
+  it('appends to (never replaces) existing global SessionStart hook groups', async () => {
     seedHome(home);
     writeFileSync(
       join(home, '.claude', 'settings.json'),
@@ -537,32 +597,32 @@ describe('WI-3280: SessionStart playbook recovery', () => {
         hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'echo user-hook' }] }] },
       }),
     );
-    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-rec2', home });
+    const { configDir } = await writeInteractiveClaudeConfig({ sid: 'su-rec2', home });
     const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'));
     expect(settings.hooks.SessionStart).toHaveLength(2);
     expect(JSON.stringify(settings.hooks.SessionStart[0])).toContain('user-hook');
     expect(JSON.stringify(settings.hooks.SessionStart[1])).toContain(RECOVER_HOOK);
   });
 
-  it('a resume-path re-materialize WITHOUT recovery keeps the original parked playbook', () => {
-    const configDir = seedWithPlaybook('su-rec3');
-    writeInteractiveClaudeConfig({ sid: 'su-rec3', home }); // wake-executor leg: no recovery opt
+  it('a resume-path re-materialize WITHOUT recovery keeps the original parked playbook', async () => {
+    const configDir = await seedWithPlaybook('su-rec3');
+    await writeInteractiveClaudeConfig({ sid: 'su-rec3', home }); // wake-executor leg: no recovery opt
     expect(readFileSync(join(configDir, RECOVER_PLAYBOOK), 'utf8')).toContain('A pot is');
     expect(existsSync(join(configDir, RECOVER_INTENT))).toBe(true);
   });
 
-  it('hook is SILENT when the claude ancestor still carries --system-prompt-file', () => {
-    const configDir = seedWithPlaybook('su-rec4');
+  it('hook is SILENT when the claude ancestor still carries --system-prompt-file', async () => {
+    const configDir = await seedWithPlaybook('su-rec4');
     expect(runHook(configDir, INTACT_CHAIN)).toBe('');
   });
 
-  it('hook is SILENT when a structured engine manages the system prompt outside argv', () => {
-    const configDir = seedWithPlaybook('su-rec-sdk');
+  it('hook is SILENT when a structured engine manages the system prompt outside argv', async () => {
+    const configDir = await seedWithPlaybook('su-rec-sdk');
     expect(runHook(configDir, DROPPED_CHAIN, { PAPERCUSP_CLAUDE_SYSTEM_PROMPT_MANAGED: '1' })).toBe('');
   });
 
-  it('hook injects the playbook when the claude ancestor lost its argv (the VM shape)', () => {
-    const configDir = seedWithPlaybook('su-rec5');
+  it('hook injects the playbook when the claude ancestor lost its argv (the VM shape)', async () => {
+    const configDir = await seedWithPlaybook('su-rec5');
     const out = JSON.parse(runHook(configDir, DROPPED_CHAIN));
     const ctx = out.hookSpecificOutput.additionalContext as string;
     expect(out.hookSpecificOutput.hookEventName).toBe('SessionStart');
@@ -579,15 +639,15 @@ describe('WI-3280: SessionStart playbook recovery', () => {
     expect(ctx).toContain('run loop:status');
   });
 
-  it('hook injects on the --resume relaunch branch too (argv rebuilt without the prompt flag)', () => {
-    const configDir = seedWithPlaybook('su-rec6');
+  it('hook injects on the --resume relaunch branch too (argv rebuilt without the prompt flag)', async () => {
+    const configDir = await seedWithPlaybook('su-rec6');
     const out = JSON.parse(runHook(configDir, RESUME_RELAUNCH_CHAIN));
     expect(out.hookSpecificOutput.additionalContext).toContain('A pot is');
   });
 
-  it('hook is SILENT when no playbook was parked (role/raw dirs stay inert)', () => {
+  it('hook is SILENT when no playbook was parked (role/raw dirs stay inert)', async () => {
     seedHome(home);
-    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-rec7', home });
+    const { configDir } = await writeInteractiveClaudeConfig({ sid: 'su-rec7', home });
     expect(existsSync(join(configDir, RECOVER_PLAYBOOK))).toBe(false);
     expect(runHook(configDir, DROPPED_CHAIN)).toBe('');
   });
@@ -611,9 +671,9 @@ describe('WI-3280: SessionStart playbook recovery', () => {
       return `su-rec-${label}-${process.pid}-${Math.floor(performance.now() * 1000)}`;
     }
 
-    it('a dropped-argv relaunch appends a respawned/self-relaunch event carrying the LIVE session_id', () => {
+    it('a dropped-argv relaunch appends a respawned/self-relaunch event carrying the LIVE session_id', async () => {
       const sid = uniqueSid('drop');
-      const configDir = seedWithPlaybook(sid);
+      const configDir = await seedWithPlaybook(sid);
       const logPath = respawnLogPath(sid);
       try {
         expect(existsSync(logPath)).toBe(false);
@@ -630,9 +690,9 @@ describe('WI-3280: SessionStart playbook recovery', () => {
       }
     });
 
-    it('the --resume relaunch branch reports too (argv rebuilt without the prompt flag)', () => {
+    it('the --resume relaunch branch reports too (argv rebuilt without the prompt flag)', async () => {
       const sid = uniqueSid('resume');
-      const configDir = seedWithPlaybook(sid);
+      const configDir = await seedWithPlaybook(sid);
       const logPath = respawnLogPath(sid);
       try {
         runHook(configDir, RESUME_RELAUNCH_CHAIN);
@@ -644,18 +704,18 @@ describe('WI-3280: SessionStart playbook recovery', () => {
       }
     });
 
-    it('an INTACT argv (no relaunch) never writes the respawn log', () => {
+    it('an INTACT argv (no relaunch) never writes the respawn log', async () => {
       const sid = uniqueSid('intact');
-      const configDir = seedWithPlaybook(sid);
+      const configDir = await seedWithPlaybook(sid);
       const logPath = respawnLogPath(sid);
       runHook(configDir, INTACT_CHAIN);
       expect(existsSync(logPath)).toBe(false);
     });
 
-    it('a relaunch with no parked playbook (raw/role dir) never writes the respawn log', () => {
+    it('a relaunch with no parked playbook (raw/role dir) never writes the respawn log', async () => {
       seedHome(home);
       const sid = uniqueSid('noplaybook');
-      const { configDir } = writeInteractiveClaudeConfig({ sid, home });
+      const { configDir } = await writeInteractiveClaudeConfig({ sid, home });
       const logPath = respawnLogPath(sid);
       runHook(configDir, DROPPED_CHAIN);
       expect(existsSync(logPath)).toBe(false);
@@ -688,15 +748,15 @@ describe('P-004: SessionStart[source=compact] continuity anchor', () => {
   /** A refused-connection operator URL — port 1 is never listening. */
   const DEAD_OPERATOR = 'http://127.0.0.1:1';
 
-  function seedWithPlaybook(sid: string): string {
+  async function seedWithPlaybook(sid: string): Promise<string> {
     seedHome(home);
     const playbookSrc = join(home, 'playbook.md');
     writeFileSync(playbookSrc, '# SU engineer playbook\nA pot is the offline-first data substrate.\n');
-    return writeInteractiveClaudeConfig({
+    return (await writeInteractiveClaudeConfig({
       sid,
       home,
       recovery: { playbookPath: playbookSrc, nativeSessionId: '22fa0398-0e51-48b1-93cb-e7c8426064d1' },
-    }).configDir;
+    })).configDir;
   }
 
   /** Async runner — the stub-server test must keep the parent event loop free
@@ -729,7 +789,7 @@ describe('P-004: SessionStart[source=compact] continuity anchor', () => {
   }
 
   it('compact source: injects the static anchor + the fetched carry brief (owner from intent)', async () => {
-    const configDir = seedWithPlaybook('su-cmp1');
+    const configDir = await seedWithPlaybook('su-cmp1');
     const hits: string[] = [];
     const server: Server = createServer((req, res) => {
       hits.push(req.url ?? '');
@@ -784,7 +844,7 @@ describe('P-004: SessionStart[source=compact] continuity anchor', () => {
   });
 
   it('P-005: startup/resume/clear each bump the context epoch ONCE and inject nothing extra', async () => {
-    const configDir = seedWithPlaybook('su-epoch1');
+    const configDir = await seedWithPlaybook('su-epoch1');
     const hits: Array<{ method: string; url: string }> = [];
     const server: Server = createServer((req, res) => {
       hits.push({ method: req.method ?? '', url: req.url ?? '' });
@@ -813,7 +873,7 @@ describe('P-004: SessionStart[source=compact] continuity anchor', () => {
   });
 
   it('P-005: a startup bump with the operator DOWN still exits 0 and emits nothing', async () => {
-    const configDir = seedWithPlaybook('su-epoch2');
+    const configDir = await seedWithPlaybook('su-epoch2');
     const out = await runHookAsync(configDir, INTACT_CHAIN, '{"session_id":"x","source":"startup"}', {
       PAPERCUSP_OPERATOR_URL: DEAD_OPERATOR,
     });
@@ -821,7 +881,7 @@ describe('P-004: SessionStart[source=compact] continuity anchor', () => {
   });
 
   it('compact source with the operator DOWN: static anchor alone, exit 0 (fail-soft)', async () => {
-    const configDir = seedWithPlaybook('su-cmp2');
+    const configDir = await seedWithPlaybook('su-cmp2');
     const out = JSON.parse(
       await runHookAsync(configDir, INTACT_CHAIN, '{"session_id":"x","source":"compact"}', {
         PAPERCUSP_OPERATOR_URL: DEAD_OPERATOR,
@@ -845,7 +905,7 @@ describe('P-004: SessionStart[source=compact] continuity anchor', () => {
   });
 
   it('compact source + dropped argv: BOTH the playbook recovery and the anchor land, in that order', async () => {
-    const configDir = seedWithPlaybook('su-cmp3');
+    const configDir = await seedWithPlaybook('su-cmp3');
     const out = JSON.parse(
       await runHookAsync(configDir, DROPPED_CHAIN, '{"session_id":"x","source":"compact"}', {
         PAPERCUSP_OPERATOR_URL: DEAD_OPERATOR,
@@ -859,7 +919,7 @@ describe('P-004: SessionStart[source=compact] continuity anchor', () => {
   });
 
   it('compact source with an SDK-managed prompt skips duplicate playbook recovery but keeps the anchor', async () => {
-    const configDir = seedWithPlaybook('su-cmp-sdk');
+    const configDir = await seedWithPlaybook('su-cmp-sdk');
     const out = JSON.parse(
       await runHookAsync(configDir, DROPPED_CHAIN, '{"session_id":"x","source":"compact"}', {
         PAPERCUSP_OPERATOR_URL: DEAD_OPERATOR,
@@ -874,7 +934,7 @@ describe('P-004: SessionStart[source=compact] continuity anchor', () => {
 
   it('compact source with NO parked playbook (raw dir): the anchor still lands', async () => {
     seedHome(home);
-    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-cmp4', home });
+    const { configDir } = await writeInteractiveClaudeConfig({ sid: 'su-cmp4', home });
     const out = JSON.parse(
       await runHookAsync(configDir, DROPPED_CHAIN, '{"session_id":"x","source":"compact"}', {
         PAPERCUSP_OPERATOR_URL: DEAD_OPERATOR,
@@ -887,7 +947,7 @@ describe('P-004: SessionStart[source=compact] continuity anchor', () => {
   });
 
   it('startup source stays SILENT on the compact path (anchor is compact-gated)', async () => {
-    const configDir = seedWithPlaybook('su-cmp5');
+    const configDir = await seedWithPlaybook('su-cmp5');
     const out = await runHookAsync(configDir, INTACT_CHAIN, '{"session_id":"x","source":"startup"}', {
       PAPERCUSP_OPERATOR_URL: DEAD_OPERATOR,
     });
@@ -918,15 +978,15 @@ describe('P-007: SessionStart identity rebind (recorded sid ≠ live PAPERCUSP_S
   ];
   const DEAD_OPERATOR = 'http://127.0.0.1:1';
 
-  function seedWithPlaybook(sid: string): string {
+  async function seedWithPlaybook(sid: string): Promise<string> {
     seedHome(home);
     const playbookSrc = join(home, 'playbook.md');
     writeFileSync(playbookSrc, '# SU engineer playbook\nA pot is the offline-first data substrate.\n');
-    return writeInteractiveClaudeConfig({
+    return (await writeInteractiveClaudeConfig({
       sid,
       home,
       recovery: { playbookPath: playbookSrc, nativeSessionId: '22fa0398-0e51-48b1-93cb-e7c8426064d1' },
-    }).configDir;
+    })).configDir;
   }
 
   function runHookAsync(
@@ -965,7 +1025,7 @@ describe('P-007: SessionStart identity rebind (recorded sid ≠ live PAPERCUSP_S
   }
 
   it('auto-rebinds on mismatch, reports per-surface counts, and retires the old sid in the intent file', async () => {
-    const configDir = seedWithPlaybook('su-old-p7a');
+    const configDir = await seedWithPlaybook('su-old-p7a');
     const { posts, server } = rebindServer({
       ok: true,
       from: 'su-old-p7a',
@@ -1010,7 +1070,7 @@ describe('P-007: SessionStart identity rebind (recorded sid ≠ live PAPERCUSP_S
   });
 
   it('a REFUSED rebind (from appears live) requires verification and keeps the recorded sid', async () => {
-    const configDir = seedWithPlaybook('su-old-p7b');
+    const configDir = await seedWithPlaybook('su-old-p7b');
     const { server } = rebindServer({ ok: false, refused: 'from_appears_live', surfaces: [], totalMoved: 0 });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
     try {
@@ -1035,7 +1095,7 @@ describe('P-007: SessionStart identity rebind (recorded sid ≠ live PAPERCUSP_S
   });
 
   it('operator DOWN: the one-call instruction still lands (fail-soft, exit 0), sid stays recorded', async () => {
-    const configDir = seedWithPlaybook('su-old-p7c');
+    const configDir = await seedWithPlaybook('su-old-p7c');
     const out = JSON.parse(
       await runHookAsync(configDir, INTACT_CHAIN, '{"session_id":"x","source":"startup"}', {
         PAPERCUSP_SID: 'su-new-p7c',
@@ -1052,7 +1112,7 @@ describe('P-007: SessionStart identity rebind (recorded sid ≠ live PAPERCUSP_S
   });
 
   it('matching live + recorded sid stays SILENT (the common start)', async () => {
-    const configDir = seedWithPlaybook('su-same-p7d');
+    const configDir = await seedWithPlaybook('su-same-p7d');
     const out = await runHookAsync(configDir, INTACT_CHAIN, '{"session_id":"x","source":"startup"}', {
       PAPERCUSP_SID: 'su-same-p7d',
       PAPERCUSP_OPERATOR_URL: DEAD_OPERATOR,
@@ -1096,22 +1156,22 @@ describe('EI-12938: interactive resume needs a LAUNCH-READY config dir, not just
     return dir;
   }
 
-  it('a rematerialized (transcript-only) dir is NOT ready — the exact repro', () => {
+  it('a rematerialized (transcript-only) dir is NOT ready — the exact repro', async () => {
     const dir = seedRematerializedDir('su-remat');
     expect(existsSync(join(dir, '.claude.json'))).toBe(false);
-    expect(isInteractiveClaudeConfigReady(dir)).toBe(false);
+    expect(await isInteractiveClaudeConfigReady(dir)).toBe(false);
   });
 
-  it("a bee's creds-symlink-only dir (writeSpawnClaudeConfig shape) is NOT ready", () => {
+  it("a bee's creds-symlink-only dir (writeSpawnClaudeConfig shape) is NOT ready", async () => {
     const dir = sessionClaudeConfigDir('su-bee');
     mkdirSync(dir, { recursive: true });
     symlinkSync(join(home, '.claude', '.credentials.json'), join(dir, '.credentials.json'));
     // A VALID credential + no account state is precisely the trap: auth looks fine.
     expect(existsSync(join(dir, '.credentials.json'))).toBe(true);
-    expect(isInteractiveClaudeConfigReady(dir)).toBe(false);
+    expect(await isInteractiveClaudeConfigReady(dir)).toBe(false);
   });
 
-  it('the stub .claude.json claude mints on a first-run boot is NOT ready (an account, but no MCP)', () => {
+  it('the stub .claude.json claude mints on a first-run boot is NOT ready (an account, but no MCP)', async () => {
     const dir = seedRematerializedDir('su-stub');
     // Verbatim shape of the file the owner's attempt-1 left behind: oauthAccount
     // present (so attempt 2 stops prompting), mcpServers absent (so it is a
@@ -1120,15 +1180,15 @@ describe('EI-12938: interactive resume needs a LAUNCH-READY config dir, not just
       join(dir, '.claude.json'),
       JSON.stringify({ oauthAccount: { emailAddress: 'owner@example.com' }, userID: 'abc' }),
     );
-    expect(isInteractiveClaudeConfigReady(dir)).toBe(false);
+    expect(await isInteractiveClaudeConfigReady(dir)).toBe(false);
   });
 
-  it('ensure repairs a rematerialized dir into a launch-ready one — account state, hooks, MCP, transcript kept', () => {
+  it('ensure repairs a rematerialized dir into a launch-ready one — account state, hooks, MCP, transcript kept', async () => {
     const dir = seedRematerializedDir('su-fix');
-    const { configDir, repaired } = ensureInteractiveClaudeConfig({ sid: 'su-fix', home });
+    const { configDir, repaired } = await ensureInteractiveClaudeConfig({ sid: 'su-fix', home });
     expect(configDir).toBe(dir);
     expect(repaired).toBe(true);
-    expect(isInteractiveClaudeConfigReady(dir)).toBe(true);
+    expect(await isInteractiveClaudeConfigReady(dir)).toBe(true);
     // .claude.json — the file that gates the wizard AND carries the user-level
     // MCP servers — is linked to the user's real config.
     expect(lstatSync(join(dir, '.claude.json')).isSymbolicLink()).toBe(true);
@@ -1144,44 +1204,46 @@ describe('EI-12938: interactive resume needs a LAUNCH-READY config dir, not just
     expect(existsSync(join(dir, 'projects', 'proj-hash', 'peer-uuid.jsonl'))).toBe(false);
   });
 
-  it('ensure repairs the first-run stub too (so a "working" second attempt is not left tool-less)', () => {
+  it('ensure repairs the first-run stub too (so a "working" second attempt is not left tool-less)', async () => {
     const dir = seedRematerializedDir('su-stub2');
     writeFileSync(join(dir, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: 'o@e.com' } }));
-    expect(ensureInteractiveClaudeConfig({ sid: 'su-stub2', home }).repaired).toBe(true);
+    expect((await ensureInteractiveClaudeConfig({ sid: 'su-stub2', home })).repaired).toBe(true);
     expect(lstatSync(join(dir, '.claude.json')).isSymbolicLink()).toBe(true);
     expect(JSON.parse(readFileSync(join(dir, '.claude.json'), 'utf8')).mcpServers).toHaveProperty('papercusp-su');
   });
 
-  it('a healthy mirror is ready → ensure no-ops (byte-identical, no re-link churn)', () => {
-    writeInteractiveClaudeConfig({ sid: 'su-healthy', home });
+  it('a healthy mirror is ready → ensure no-ops (byte-identical, no re-link churn)', async () => {
+    await writeInteractiveClaudeConfig({ sid: 'su-healthy', home });
     const dir = sessionClaudeConfigDir('su-healthy');
-    expect(isInteractiveClaudeConfigReady(dir)).toBe(true);
+    expect(await isInteractiveClaudeConfigReady(dir)).toBe(true);
     const before = lstatSync(join(dir, '.claude.json')).mtimeMs;
-    expect(ensureInteractiveClaudeConfig({ sid: 'su-healthy', home }).repaired).toBe(false);
+    expect((await ensureInteractiveClaudeConfig({ sid: 'su-healthy', home })).repaired).toBe(false);
     expect(lstatSync(join(dir, '.claude.json')).mtimeMs).toBe(before);
   });
 
-  it('a P-020 pruned fleet dir is ready → an ensure never silently UN-prunes it', () => {
-    writeInteractiveClaudeConfig({ sid: 'su-pruned', home, prunePlugins: true });
+  it('a P-020 pruned fleet dir is ready → an ensure never silently UN-prunes it', async () => {
+    await writeInteractiveClaudeConfig({ sid: 'su-pruned', home, prunePlugins: true });
     const dir = sessionClaudeConfigDir('su-pruned');
     const json = join(dir, '.claude.json');
     // The pruned copy is a REAL file (it lost write-passthrough on purpose) that
     // still carries mcpServers — complete, just filtered.
     expect(lstatSync(json).isSymbolicLink()).toBe(false);
-    expect(isInteractiveClaudeConfigReady(dir)).toBe(true);
-    expect(ensureInteractiveClaudeConfig({ sid: 'su-pruned', home }).repaired).toBe(false);
+    expect(await isInteractiveClaudeConfigReady(dir)).toBe(true);
+    expect((await ensureInteractiveClaudeConfig({ sid: 'su-pruned', home })).repaired).toBe(false);
     expect(lstatSync(json).isSymbolicLink()).toBe(false); // still pruned, not re-linked
     expect(JSON.parse(readFileSync(json, 'utf8')).mcpServers).not.toHaveProperty('playwright');
   });
 
-  it('never throws on a hopeless dir — a launch must never fail on config repair', () => {
-    expect(isInteractiveClaudeConfigReady('/nope/does/not/exist')).toBe(false);
+  it('never throws on a hopeless dir — a launch must never fail on config repair', async () => {
+    expect(await isInteractiveClaudeConfigReady('/nope/does/not/exist')).toBe(false);
     // A dangling .claude.json symlink (the source config was deleted under it).
     const dir = sessionClaudeConfigDir('su-dangle');
     mkdirSync(dir, { recursive: true });
     symlinkSync(join(home, 'gone.json'), join(dir, '.claude.json'));
-    expect(isInteractiveClaudeConfigReady(dir)).toBe(false);
-    expect(() => ensureInteractiveClaudeConfig({ sid: 'su-dangle', home })).not.toThrow();
+    expect(await isInteractiveClaudeConfigReady(dir)).toBe(false);
+    await expect(ensureInteractiveClaudeConfig({ sid: 'su-dangle', home })).resolves.toMatchObject({
+      configDir: expect.any(String),
+    });
   });
 });
 
@@ -1236,7 +1298,7 @@ describe('EI-12938: every INTERACTIVE rematerialize leg re-ensures the config di
   /** The definition site, not a caller. */
   const DEFINER = 'session-archive.ts';
 
-  it('no rematerializeSession caller launches a human into an unensured dir', () => {
+  it('no rematerializeSession caller launches a human into an unensured dir', async () => {
     const found = execFileSync('grep', ['-rl', '--include=*.ts', 'rematerializeSession', LIB], {
       encoding: 'utf8',
     })
@@ -1278,7 +1340,7 @@ describe('EI-12938: every INTERACTIVE rematerialize leg re-ensures the config di
     ).toEqual([]);
   });
 
-  it('the exempt legs are still exempt for the reason recorded (not quietly repurposed)', () => {
+  it('the exempt legs are still exempt for the reason recorded (not quietly repurposed)', async () => {
     // wake-executor's exemption rests on it targeting a bee's OWN config dir.
     const wake = readFileSync(join(LIB, 'events/await/wake-executor.ts'), 'utf8');
     expect(wake).toMatch(/rematerializeSession\(\{ sourceKind: 'claude', sessionId: sid, targetRoot: cfgDir \}\)/);
@@ -1293,6 +1355,90 @@ describe('EI-12938: every INTERACTIVE rematerialize leg re-ensures the config di
     const remat = readFileSync(join(LIB, 'session-transcript-remat.ts'), 'utf8');
     expect(remat).toMatch(/export async function rematerializeTranscript/);
     expect(remat).not.toMatch(/\b(spawn|execFile|console-launcher|writeInteractiveClaudeConfig)\b/);
+  });
+});
+
+describe('WI-10005232: bootstrap/resume config filesystem calls stay asynchronous', () => {
+  it('has no synchronous node:fs calls reachable from the launch and resume entrypoints', () => {
+    const sourcePath = join(__dirname, 'interactive-claude-config.ts');
+    const source = readFileSync(sourcePath, 'utf8');
+    const sourceFile = ts.createSourceFile(sourcePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const syncFsLocals = new Set<string>();
+    const syncFsNamespaces = new Set<string>();
+
+    for (const statement of sourceFile.statements) {
+      if (
+        !ts.isImportDeclaration(statement) ||
+        !ts.isStringLiteral(statement.moduleSpecifier) ||
+        !['fs', 'node:fs'].includes(statement.moduleSpecifier.text)
+      ) {
+        continue;
+      }
+      const clause = statement.importClause;
+      if (!clause) continue;
+      if (clause.name) syncFsNamespaces.add(clause.name.text);
+      if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
+        syncFsNamespaces.add(clause.namedBindings.name.text);
+      }
+      if (clause.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+        for (const specifier of clause.namedBindings.elements) {
+          const imported = specifier.propertyName?.text ?? specifier.name.text;
+          if (imported.endsWith('Sync')) syncFsLocals.add(specifier.name.text);
+        }
+      }
+    }
+
+    const functions = new Map<string, ts.FunctionDeclaration>();
+    for (const statement of sourceFile.statements) {
+      if (ts.isFunctionDeclaration(statement) && statement.name && statement.body) {
+        functions.set(statement.name.text, statement);
+      }
+    }
+
+    const reachable = new Set<string>();
+    const syncCalls: string[] = [];
+    const visitFunction = (name: string): void => {
+      const declaration = functions.get(name);
+      if (!declaration?.body || reachable.has(name)) return;
+      reachable.add(name);
+
+      const visit = (node: ts.Node): void => {
+        if (ts.isCallExpression(node)) {
+          const callee = node.expression;
+          if (ts.isIdentifier(callee)) {
+            if (syncFsLocals.has(callee.text)) syncCalls.push(`${name} -> ${callee.text}`);
+            if (functions.has(callee.text)) visitFunction(callee.text);
+          } else if (
+            ts.isPropertyAccessExpression(callee) &&
+            ts.isIdentifier(callee.expression) &&
+            syncFsNamespaces.has(callee.expression.text) &&
+            callee.name.text.endsWith('Sync')
+          ) {
+            syncCalls.push(`${name} -> ${callee.expression.text}.${callee.name.text}`);
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(declaration.body);
+    };
+
+    visitFunction('writeInteractiveClaudeConfig');
+    visitFunction('ensureInteractiveClaudeConfig');
+
+    expect([...reachable]).toEqual(
+      expect.arrayContaining([
+        'materializeInteractiveClaudeConfig',
+        'isInteractiveClaudeConfigReady',
+        'ensureOnboardingComplete',
+        'ensureProjectTrust',
+        'writeRecoveryArtifacts',
+        'writeSessionSettings',
+        'writePrunedPluginsDir',
+        'writePrunedClaudeJson',
+        'linkIntoAsync',
+      ]),
+    );
+    expect(syncCalls).toEqual([]);
   });
 });
 
@@ -1315,7 +1461,7 @@ describe('EI-12938: every INTERACTIVE rematerialize leg re-ensures the config di
  * source. The first test below closes that class for every future editor.
  */
 describe('EI-20273348458054257 recovery-banner identity claim', () => {
-  it('emits a hook whose source is valid JavaScript (guards the template-escaping class)', () => {
+  it('emits a hook whose source is valid JavaScript (guards the template-escaping class)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'pc-hooksrc-'));
     const file = join(dir, 'session-recover-hook.mjs');
     try {
@@ -1342,7 +1488,7 @@ describe('EI-20273348458054257 recovery-banner identity claim', () => {
     return fn({ sid: recordedSid }, { env: liveSid === undefined ? {} : { PAPERCUSP_SID: liveSid } });
   };
 
-  it('REPORTS THE FORK, and requires verification before any repair, when the live sid differs', () => {
+  it('REPORTS THE FORK, and requires verification before any repair, when the live sid differs', async () => {
     const line = runIdentityLine('su-OLD', 'su-NEW');
     expect(line).toMatch(/IDENTITY CHANGED/);
     expect(line).toContain('su-OLD');
@@ -1357,7 +1503,7 @@ describe('EI-20273348458054257 recovery-banner identity claim', () => {
     expect(line).not.toMatch(/is unaffected/);
   });
 
-  it('does NOT assert coord/MCP continuity it never checked when the sids agree', () => {
+  it('does NOT assert coord/MCP continuity it never checked when the sids agree', async () => {
     const line = runIdentityLine('su-SAME', 'su-SAME');
     expect(line).toContain('su-SAME');
     // The regression itself: the old text asserted the coord/MCP identity was
@@ -1369,7 +1515,7 @@ describe('EI-20273348458054257 recovery-banner identity claim', () => {
     expect(line).toMatch(/coord:orient/);
   });
 
-  it('stays honest when there is no recorded sid to compare', () => {
+  it('stays honest when there is no recorded sid to compare', async () => {
     const line = runIdentityLine(undefined, 'su-NEW');
     expect(line).not.toMatch(/is unaffected/);
     expect(line).toContain('VERIFY FIRST');
@@ -1377,7 +1523,7 @@ describe('EI-20273348458054257 recovery-banner identity claim', () => {
     expect(line).toMatch(/coord:orient/);
   });
 
-  it('stays honest when there is a recorded sid but no live sid', () => {
+  it('stays honest when there is a recorded sid but no live sid', async () => {
     const line = runIdentityLine('su-OLD', undefined);
     expect(line).toContain('su-OLD');
     expect(line).toContain('no live PAPERCUSP_SID');
@@ -1387,7 +1533,7 @@ describe('EI-20273348458054257 recovery-banner identity claim', () => {
     expect(line).not.toContain('coord:rebind-identity');
   });
 
-  it('stays honest when neither sid is available', () => {
+  it('stays honest when neither sid is available', async () => {
     const line = runIdentityLine(undefined, undefined);
     expect(line).toContain('No recorded or live PAPERCUSP_SID');
     expect(line).toContain('VERIFY FIRST');

@@ -8,16 +8,126 @@ const {
   buildContextBudget,
   CODEX_DENIED_MODEL_IDS,
   CODEX_SAFE_DEFAULT_MODEL,
+  claudeInheritedEffortOverride,
   codexModelConfigToml,
   formatCodexLaunchContextSection,
   isCodexModelDenied,
   listCodexInstalledModels,
   normalizeCodexCliModel,
+  normalizeClaudeModelEffortSpec,
   readLaunchContextText,
   resolveCodexModel,
   resolveCodexModelSelection,
   resolveModelContextWindow,
+  listLaunchModelAliases,
+  resolveLaunchModelAlias,
 } = modelContextBudget;
+
+describe('shared launch model aliases', () => {
+  it('resolves the requested model wording before backend selection', () => {
+    for (const alias of ['sol 6.1', '6.1 sol', 'sol6.1', 'SOL-6.1']) {
+      expect(resolveLaunchModelAlias(alias, { effort: 'xhigh' })).toMatchObject({
+        agent: 'codex', model: 'gpt-6.1-sol:xhigh', effort: 'xhigh',
+      });
+      expect(normalizeCodexCliModel(`${alias}:xhigh`)).toBe('gpt-6.1-sol:xhigh');
+    }
+    expect(resolveLaunchModelAlias('sol 6.1 xhigh').model).toBe('gpt-6.1-sol:xhigh');
+  });
+
+  it('echoes the backend-normalized effort without changing other backends', () => {
+    expect(resolveLaunchModelAlias('claude opus', { effort: 'xhigh' })).toMatchObject({
+      agent: 'claude', model: 'opus:max', effort: 'max',
+    });
+    expect(resolveLaunchModelAlias('opus[1m]:xhigh').model).toBe('opus[1m]:max');
+    expect(resolveLaunchModelAlias('sol 6.1:xhigh').effort).toBe('xhigh');
+    expect(resolveLaunchModelAlias('opus:xhigh', { agent: 'omp' }).effort).toBe('xhigh');
+  });
+
+  it('refuses unknown and ambiguous aliases with candidate models', () => {
+    for (const [model, code] of [['mystery', 'unknown_model_alias'], ['6', 'ambiguous_model_alias']]) {
+      try {
+        resolveLaunchModelAlias(model);
+        expect.fail('Expected an alias refusal');
+      } catch (error) {
+        expect(error).toMatchObject({ code, candidates: expect.arrayContaining([
+          expect.objectContaining({ agent: 'codex', model: 'gpt-6-sol' }),
+        ]) });
+      }
+    }
+  });
+
+  it('preserves legacy aliases, native ids and explicit OMP selectors', () => {
+    expect(resolveLaunchModelAlias('sol:high').model).toBe('gpt-5.6-sol:high');
+    expect(resolveLaunchModelAlias('gpt-future-sol:high').model).toBe('gpt-future-sol:high');
+    expect(resolveLaunchModelAlias('openrouter/vendor/model:high', { agent: 'omp' }).model)
+      .toBe('openrouter/vendor/model:high');
+    expect(resolveLaunchModelAlias('ornith', { agent: 'omp' }).model).toBe('ornith');
+    expect(() => resolveLaunchModelAlias('sol 6.1', { agent: 'claude' })).toThrow(/requires agent/);
+    expect(() => resolveLaunchModelAlias('sol 6.1', { effort: 'extreme' })).toThrow(/Unknown effort/);
+    expect(() => resolveLaunchModelAlias('sol 6.1', { agent: 'unknown' })).toThrow(/Unknown agent/);
+  });
+
+  it('prevents a catalog reader from mutating the registry', () => {
+    const catalog = listLaunchModelAliases();
+    expect(catalog).toContainEqual(expect.objectContaining({ model: 'gpt-6.1-sol', agent: 'codex' }));
+    catalog[0].aliases.splice(0);
+    expect(resolveLaunchModelAlias('sol 6.1').model).toBe('gpt-6.1-sol');
+  });
+});
+
+describe('Claude Opus 5 effort compatibility', () => {
+  it('maps only Opus 5 xhigh specs to Claude Code max', () => {
+    expect(normalizeClaudeModelEffortSpec('opus:xhigh')).toBe('opus:max');
+    expect(normalizeClaudeModelEffortSpec('opus[1m]:XHIGH')).toBe('opus[1m]:max');
+    expect(normalizeClaudeModelEffortSpec('claude-opus-5-5:xhigh')).toBe('claude-opus-5-5:max');
+    expect(normalizeClaudeModelEffortSpec('claude-opus-5.5:xhigh')).toBe('claude-opus-5.5:max');
+  });
+
+  it('preserves other models and effort levels', () => {
+    for (const spec of [
+      'claude-opus-4-8:xhigh',
+      'claude-sonnet-5:xhigh',
+      'opus:high',
+      'opus:max',
+      'gpt-5.5:xhigh',
+    ]) {
+      expect(normalizeClaudeModelEffortSpec(spec)).toBe(spec);
+    }
+  });
+
+  // WI-10005900: a launch whose argv names no effort inherits settings.json effortLevel.
+  it('clamps an inherited Opus 5 xhigh effortLevel to max', () => {
+    // Model-less launch: the settings model decides.
+    expect(
+      claudeInheritedEffortOverride({ model: null, settings: { model: 'opus[1m]', effortLevel: 'xhigh' } }),
+    ).toBe('max');
+    // Model without an effort suffix: the argv model decides, not settings.model.
+    expect(
+      claudeInheritedEffortOverride({
+        model: 'claude-opus-5-5',
+        settings: { model: 'sonnet', effortLevel: 'XHIGH' },
+      }),
+    ).toBe('max');
+  });
+
+  it('leaves the inherited effort alone when nothing needs clamping', () => {
+    const cases: Array<Parameters<typeof claudeInheritedEffortOverride>[0]> = [
+      // The argv carries its own effort, so settings.effortLevel never applies.
+      { model: 'opus:high', settings: { model: 'opus', effortLevel: 'xhigh' } },
+      // Supported level, or a family that keeps xhigh.
+      { model: null, settings: { model: 'opus[1m]', effortLevel: 'max' } },
+      { model: 'claude-sonnet-5', settings: { effortLevel: 'xhigh' } },
+      // Nothing to inherit, or no model to judge it against.
+      { model: 'opus', settings: { model: 'opus' } },
+      { model: null, settings: { effortLevel: 'xhigh' } },
+      { model: 'opus', settings: null },
+      { model: 'opus', settings: { effortLevel: 42 } },
+    ];
+    for (const input of cases) {
+      expect(claudeInheritedEffortOverride(input)).toBeNull();
+    }
+  });
+});
 
 describe('managed Codex model policy', () => {
   it('rejects unresolved model input with a stable missing_model code', () => {
@@ -243,6 +353,39 @@ describe('codex extended-window launch config', () => {
     });
   });
 
+  it('clamps only the native auto-compaction threshold to the active per-session limit', () => {
+    const home = codexHome([SOL], 'session-limit');
+    expect(codexContextWindowConfig('gpt-5.6-sol', { home, compactionLimit: 250_000 })).toEqual({
+      model: 'gpt-5.6-sol',
+      window: 1_000_000,
+      autoCompactLimit: 200_000,
+      source: 'codex-official-1m-policy',
+    });
+    expect(codexContextConfigArgs('gpt-5.6-sol', { home, compactionLimit: 250_000 })).toEqual([
+      '-c',
+      'model_context_window=1000000',
+      '-c',
+      'model_auto_compact_token_limit=200000',
+    ]);
+    expect(codexContextConfigToml('gpt-5.6-sol', { home, compactionLimit: 250_000 })).toBe(
+      'model_context_window = 1000000\nmodel_auto_compact_token_limit = 200000\n',
+    );
+  });
+
+  it('starts native compaction before the scheduler reaches 90% of a managed budget', () => {
+    const home = codexHome([SOL], 'managed-headroom');
+    const config = codexContextWindowConfig('gpt-5.6-sol', { home, compactionLimit: 200_000 });
+    expect(config).toMatchObject({ window: 1_000_000, autoCompactLimit: 160_000 });
+    expect(config!.autoCompactLimit).toBeLessThan(200_000 * 0.9);
+  });
+
+  it('does not let a session limit raise the model-derived native threshold', () => {
+    expect(codexContextWindowConfig('gpt-5.6-sol', { compactionLimit: 1_200_000 })).toMatchObject({
+      window: 1_000_000,
+      autoCompactLimit: 900_000,
+    });
+  });
+
   it('resolves a psu alias + effort suffix to the same config as the native id', () => {
     const home = codexHome([SOL], 'alias');
     expect(codexContextWindowConfig('sol:high', { home })).toEqual(
@@ -334,6 +477,14 @@ describe('codex extended-window launch config', () => {
       window: 872_000,
       autoCompactLimit: 784_800,
       source: 'codex-model-cache-max',
+    });
+    expect(codexContextWindowConfig(model, { home: noRegistry, compactionLimit: 200_000 })).toMatchObject({
+      window: 1_000_000,
+      autoCompactLimit: 160_000,
+    });
+    expect(codexContextWindowConfig(model, { codexHome: sessionHome, compactionLimit: 200_000 })).toMatchObject({
+      window: 872_000,
+      autoCompactLimit: 160_000,
     });
   });
 

@@ -24,7 +24,7 @@
  * Fails CLOSED: any name that is unset, malformed, unresolvable, or that fails
  * for an unexpected reason exits non-zero.
  */
-import { resolveHostedSecretRef, type HostedSecretRefResolver } from '@papercusp/operator-core/lib/auth/hosted/secret-ref';
+import { assertHostedProductionSecretRef, resolveHostedSecretRef, type HostedSecretRefResolver } from '@papercusp/operator-core/lib/auth/hosted/secret-ref';
 
 export type ReferenceCheckStatus = 'resolved' | 'UNSET' | 'UNRESOLVED' | 'absent-optional';
 
@@ -73,6 +73,7 @@ export async function checkReferences(options: CheckReferencesOptions): Promise<
       return;
     }
     try {
+      if (env.PAPERCUSP_DEPLOYMENT_ENVIRONMENT === 'production') assertHostedProductionSecretRef(reference);
       const value = await resolve(reference);
       if (typeof value !== 'string' || value.trim().length === 0) {
         // Defensive: a resolver that returns empty must not read as success.

@@ -115,17 +115,18 @@ describe('runArmGeneration', () => {
 });
 
 describe('runPapercuspArm', () => {
-  it('runs the full spine (arm=papercusp, blueprint=external-bench)', async () => {
+  it('runs the maintained current treatment and preserves its execution receipts', async () => {
     const ports: GenerationPorts = {
       clone: async () => ({ dir: '/co', repo: 'a/b', baseCommit: 'abc1234', cleanup: async () => {} }) as TaskCheckout,
       extractDiff: async () => 'D',
       instantiate: async (blueprintId) => {
-        expect(blueprintId).toBe('external-bench');
-        return { worktreePath: '/co', telemetry: telemetry() };
+        expect(blueprintId).toBe('su');
+        return { worktreePath: '/co', telemetry: telemetry({ armMeta: { currentExecution: { identityStatus: 'unknown' } } }) };
       },
     };
     const a = await runPapercuspArm(task(), 'seed-0', {}, ports);
     expect(a.arm).toBe('papercusp');
-    expect(a.blueprintId).toBe('external-bench');
+    expect(a.blueprintId).toBe('su');
+    expect(a.armMeta).toEqual({ currentExecution: { identityStatus: 'unknown' } });
   });
 });

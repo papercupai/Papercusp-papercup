@@ -35,6 +35,7 @@ function observation(over: Partial<CoordFoldObservation> = {}): CoordFoldObserva
     hydrateMs: 100,
     inboxAdvanced: false,
     inboxTotal: 0,
+    glanceHydrated: true,
     glanceOnly: false,
     ...over,
   };
@@ -120,6 +121,11 @@ describe('censusCoordFold', () => {
   it('keeps an unreadable inbox total as null, distinct from a real 0', () => {
     expect(censusCoordFold(observation({ inboxTotal: null })).inboxTotal).toBeNull();
     expect(censusCoordFold(observation({ inboxTotal: 0 })).inboxTotal).toBe(0);
+  });
+
+  it('records actual glance hydration independently from the inbox gate', () => {
+    expect(censusCoordFold(observation({ changed: true, glanceHydrated: false })).glanceHydrated).toBe(false);
+    expect(censusCoordFold(observation({ changed: false, glanceOnly: true, glanceHydrated: true })).glanceHydrated).toBe(true);
   });
 });
 

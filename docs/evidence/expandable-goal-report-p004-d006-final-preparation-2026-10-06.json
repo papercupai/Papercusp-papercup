@@ -1,0 +1,215 @@
+{
+  "schemaVersion": 1,
+  "kind": "verification-preparation",
+  "workItemId": "WI-10005952",
+  "planSlug": "expandable-canonical-goal-reports-with-decision-ready-owner-2026-10-03",
+  "decision": "D-006",
+  "observedAt": "2026-10-06T02:59:21.297535+00:00",
+  "observedHead": "81c7be521adb885de5ec230c8511424ec63804d3",
+  "finalSourcePin": null,
+  "testResult": null,
+  "selectorCommand": [
+    "npm",
+    "run",
+    "test:integration-only",
+    "--",
+    "--print-affected"
+  ],
+  "selectorRunId": "1307397-249e097d",
+  "collectorCommand": [
+    "node",
+    "<canonical-root>/node_modules/vitest/vitest.mjs",
+    "list",
+    "--filesOnly",
+    "--json=<manifest>",
+    "--config",
+    "vitest.integration.config.ts"
+  ],
+  "collectorMode": "file specification listing; no test collection or execution",
+  "node": "v25.9.0",
+  "vitest": "4.1.8",
+  "tasks": [
+    {
+      "workspaceDir": "apps/operator",
+      "name": "web",
+      "candidateFiles": 69,
+      "manifestRef": "local-state:verification-harness/goal-report-d006/preparation-2026-10-06/web.files.json",
+      "config": "apps/operator/vitest.integration.config.ts",
+      "configSha256": "238b3844717384e15c8cc362daa7aa0e7a365205fc591bf1a080bda2e6f94038",
+      "collectorExitCode": 0
+    },
+    {
+      "workspaceDir": "packages/agent-mcp",
+      "name": "agent-mcp",
+      "candidateFiles": 1,
+      "manifestRef": "local-state:verification-harness/goal-report-d006/preparation-2026-10-06/agent-mcp.files.json",
+      "config": "packages/agent-mcp/vitest.integration.config.ts",
+      "configSha256": "9e3247600b862ebb76950c3f10beff2baf7f27705dbbfcc50f5faa518c3892ed",
+      "collectorExitCode": 0
+    },
+    {
+      "workspaceDir": "packages/operator-core",
+      "name": "operator-core",
+      "candidateFiles": 1258,
+      "manifestRef": "local-state:verification-harness/goal-report-d006/preparation-2026-10-06/operator-core.files.json",
+      "config": "packages/operator-core/vitest.integration.config.ts",
+      "configSha256": "066593a9c92112c1b0c5c13868c1348784a570ad61e6104515f0df78cbe412f0",
+      "collectorExitCode": 0
+    },
+    {
+      "workspaceDir": "libs/papercusp/libs/db",
+      "name": "db-org",
+      "candidateFiles": 77,
+      "manifestRef": "local-state:verification-harness/goal-report-d006/preparation-2026-10-06/db-org.files.json",
+      "config": "libs/papercusp/libs/db/vitest.integration.config.ts",
+      "configSha256": "e02e7bf2ae9b7822645c735a312586c6d310a6ce73ad1e70e8ebeece46595ba2",
+      "collectorExitCode": 0
+    },
+    {
+      "workspaceDir": "libs/papercusp/plugins/gitnexus-bridge",
+      "name": "gitnexus-bridge",
+      "candidateFiles": 1,
+      "manifestRef": "local-state:verification-harness/goal-report-d006/preparation-2026-10-06/gitnexus-bridge.files.json",
+      "config": "libs/papercusp/plugins/gitnexus-bridge/vitest.integration.config.ts",
+      "configSha256": "95264f185cd81fb0430fa66a67cbd33765493f67f7aaa615216cd6eb1a4fedc2",
+      "collectorExitCode": 0
+    },
+    {
+      "workspaceDir": "libs/test-config",
+      "name": "test-config",
+      "candidateFiles": 7,
+      "manifestRef": "local-state:verification-harness/goal-report-d006/preparation-2026-10-06/test-config.files.json",
+      "config": "libs/test-config/vitest.integration.config.ts",
+      "configSha256": "a09d38202e1393abb6758ed417b7ec033d64a83efd70ed5c55a36af1798bf376",
+      "collectorExitCode": 0
+    },
+    {
+      "workspaceDir": "libs/generic/search",
+      "name": "search",
+      "candidateFiles": 6,
+      "manifestRef": "local-state:verification-harness/goal-report-d006/preparation-2026-10-06/search.files.json",
+      "config": "libs/generic/search/vitest.integration.config.ts",
+      "configSha256": "22fff73b2d3771ea464d4d18139c1bcdf0aae718dd607218a5ebea259e193c29",
+      "collectorExitCode": 0
+    }
+  ],
+  "candidateFileCount": 1419,
+  "sourceFingerprintScope": "Post-collection candidate test bytes and config bytes only; not a complete run-start/import/runtime identity. Final source readiness remains pending.",
+  "rawArtifacts": [
+    {
+      "path": "local-state:verification-harness/goal-report-d006/preparation-2026-10-06/agent-mcp.collection.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-d006/preparation-2026-10-06/agent-mcp.files.json",
+      "sha256": "d87ee2d56887c39627e0a3c6566b5ac5b8aea491c77c2b277e4844d09c3f9965",
+      "bytes": 137
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-d006/preparation-2026-10-06/db-org.collection.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-d006/preparation-2026-10-06/db-org.files.json",
+      "sha256": "dcf987b084cba213ff5edd5486f4a1063bd52d3deb3bf3b4e9c89496bec13e22",
+      "bytes": 11636
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-d006/preparation-2026-10-06/gitnexus-bridge.collection.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-d006/preparation-2026-10-06/gitnexus-bridge.files.json",
+      "sha256": "1fdf1d9e0283dc0f90f86b4723d1ec932bdbb14c4d9f08bc8f703f4a4be187d9",
+      "bytes": 143
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-d006/preparation-2026-10-06/operator-core.collection.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-d006/preparation-2026-10-06/operator-core.files.json",
+      "sha256": "eee03f6fd1c63c3ecb9a1f531f6ade2deba837f487972f6e826861f7817d7f3e",
+      "bytes": 193028
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-d006/preparation-2026-10-06/search.collection.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-d006/preparation-2026-10-06/search.files.json",
+      "sha256": "f98b526dccb00f93b93c972652b2eb7c0457f5d44a963297acb7e6239febfb00",
+      "bytes": 827
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-d006/preparation-2026-10-06/selector.log",
+      "sha256": "b2fa0cc6c6666a7fc08fb84366710b6732a37d28fa8869ba69cb34d32cc42cf3",
+      "bytes": 5525
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-d006/preparation-2026-10-06/test-config.collection.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-d006/preparation-2026-10-06/test-config.files.json",
+      "sha256": "f06ef37c620c3746a1c4dc6e03629458374f69315923d7e378361bc15bb1ae11",
+      "bytes": 932
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-d006/preparation-2026-10-06/test-source-hashes.json",
+      "sha256": "4c9f40008fa8e040dbc505fb0da30896f98697ce175767ba54792955c5bff8cd",
+      "bytes": 272992
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-d006/preparation-2026-10-06/web.collection.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-d006/preparation-2026-10-06/web.files.json",
+      "sha256": "fb3446054c40b022843683989fcf85ea40635bca9d59eef766d5ca712429fc82",
+      "bytes": 9396
+    }
+  ],
+  "reusedSurfaces": [
+    "npm run test:integration-only -- --print-affected (canonical integration task selector)",
+    "Installed Vitest 4.1.8 list --filesOnly --json (configuration-aware file specifications without collect/run)",
+    "Existing local-state verification-harness/goal-report-d006 raw evidence custody"
+  ],
+  "sourceReferences": [
+    "scripts/affected-tests.mjs: printAffected and selectedFilesLine",
+    "node_modules/vitest/dist/chunks/cac.C9xsMMkH.js: collect filesOnly branch",
+    "node_modules/vitest/dist/chunks/cli-api.BfdDOPPI.js: outputJsonFileList",
+    "scripts/affected-tests.mjs: runChild recordsExecutedMap",
+    "libs/test-config/src/vitest-config.ts: executedSourceMapConfig"
+  ],
+  "coverageSemantics": {
+    "selectedTaskIdentity": "Exact canonical print-only selected task commands, not the full AFFECTED_WS namespace list.",
+    "candidateFiles": "Configuration-aware file specifications listed independently before final-source readiness; neither executed files nor a final verdict.",
+    "testHashPins": "All candidate file paths resolved on disk and SHA256 pins were written after collection. These are post-collection bytes.",
+    "runOmissions": "The actual final-run selector may still emit wide-run/unenumerated. Reconcile listing with actual task output, reporter ledger, retries, reusable passes and skipped cases before a coverage claim.",
+    "sourceMap": "Default affected-tests recordsExecutedMap stamps unit/lane tasks, not test:integration. Do not infer captured integration import/source maps from default root command."
+  },
+  "nextExecutionContract": [
+    "Wait for the fleet leader's exact final-source/readiness instruction; do not rerun completed clean unit/native proof.",
+    "Read the current P004 checkpoint and governing D006 decision, then measure actual prior broad-child liveness before launching one final suite.",
+    "Refresh canonical task and configuration-aware file manifests at the authorized source pin using the exact final environment; preserve run-start and run-end pins rather than treating this preparation as final evidence.",
+    "Use one unique PAPERCUSP_TEST_RUN_GROUP and the existing durable attributed runner for npm run test:integration-only; preserve separate full stdout/stderr and terminal markers.",
+    "Capture explicit source/test/dependency/config/runtime/fixture/database identities to the extent the maintained runtime measures them; label any unavailable fingerprint as unknown. Default integration executed-source-map stamping is not provisioned by this preparation.",
+    "Reconcile selected, executed, skipped/reused, failed and unobserved populations with exact raw references and ledger identities; retain expected-fail segment semantics and unavailable skip-case names.",
+    "Record the actual verdict and all omissions; no final acceptance, promotion or shipment follows from this preparation."
+  ],
+  "limits": [
+    "No integration suite, assertion or mutation probe ran for this preparation.",
+    "No leader final-source authorization was received; observedHead is only the collection-time checkout.",
+    "Source bytes were hashed after listing; the listing has no before/after source-stability certificate.",
+    "Per-suite fixture/database/runtime/dependency identities and final-run source/import capture remain to be measured on the final runtime.",
+    "Production source, actors, staffing caps and LIVE_GATE_OPS were unchanged."
+  ]
+}

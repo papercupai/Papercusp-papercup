@@ -13,7 +13,7 @@
  */
 
 import { defineTool } from '@papercusp/agent-mcp';
-import { startRun, type SpawnRequest } from '../../../testing-run-store';
+import { startRunAsync, type SpawnRequest } from '../../../testing-run-store';
 import { inferWorkspaceRoot, resolveNearestVitestConfig } from '../../../testing-domain-glob';
 
 export type TestRunner =
@@ -139,7 +139,7 @@ export default defineTool({
     if ('error' in spawnReq) {
       return Response.json(spawnReq, { status: 400 });
     }
-    const snapshot = startRun(spawnReq);
+    const snapshot = await startRunAsync(spawnReq);
     return Response.json({ runId: snapshot.runId, snapshot });
   },
 });

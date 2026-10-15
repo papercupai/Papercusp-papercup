@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "public-blind-relay R-5: same-NAT peers connect through the default relay (relaydrill netns harness, defaults arm)",
+  "framework": "shell",
+  "command": ["bash", ".papercusp/scratch/relaydrill/run.sh"],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T16:22:05.722Z",
+  "finishedAt": "2026-10-01T16:24:06.506Z",
+  "summary": "Two peers in separate network namespaces behind the tower's one public IP (no hairpin), joined to one hyperswarm topic through the shipped sync-relay module (resolveSyncRelayKeys(syncRelayKeyReader(undefined))). Both arms unset PAPERCUSP_VOICE_RELAY_KEYS. Control arm PAPERCUSP_RELAY_DEFAULTS=0: no relay key, never connects. Defaults arm PAPERCUSP_RELAY_DEFAULTS=1: the shipped default key b1015b56 is used and both peers record a relayed connection. Plan public-blind-relay-2026-10-01 clause AUTO-BAR-R-5-P-004. Log: .papercusp/scratch/relaydrill/run-defaults-r2.log.",
+  "assertions": [
+    {
+      "id": "r5-control-never-connects",
+      "passed": true,
+      "evidence": "norelay arm: relay-config keys=[] ('relay fallback: NONE configured'); dials 1-4 all HOLEPUNCH_ABORTED, client ended dials=4 code=1 at t=62.8s"
+    },
+    {
+      "id": "r5-default-key-with-no-configuration",
+      "passed": true,
+      "evidence": "defaults arm with PAPERCUSP_VOICE_RELAY_KEYS unset: client relay-config keys=['b1015b56'] ('1 blind-relay key(s), used only after a direct holepunch fails')"
+    },
+    {
+      "id": "auto-bar-r-5-p-004",
+      "passed": true,
+      "evidence": "client: dial 1 direct HOLEPUNCH_ABORTED, dial 2 relayThrough=set, then connection relayed=true remote 34.61.108.176:49737 peer 5768dfd5 and data 'pong:ping-1790871842822', end code=0 at t=22.0s; server: connection relayed=true remote 34.61.108.176:49737 peer cb2b54e7 and data 'ping-1790871842822' at t=33.3s"
+    },
+    {
+      "id": "r5-teardown-clean",
+      "passed": true,
+      "evidence": "DOWN ok; RULES_LEFT nat=0 fwd=0 ns=0; EXIT=0"
+    }
+  ]
+}

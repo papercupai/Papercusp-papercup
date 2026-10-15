@@ -51,20 +51,7 @@ export default defineTool({
       .describe('Filter to one routine group slug (WI-5018; routines source only — other sources have groupSlug=null and never match). Pass "" for ungrouped-only.'),
   }),
   async handler(args) {
-    let rows = await collectScheduleInventory();
-    if (args.source) rows = rows.filter((r) => r.source === args.source);
-    if (args.tier) rows = rows.filter((r) => r.tier === args.tier);
-    if (args.name) {
-      const needle = args.name.toLowerCase();
-      rows = rows.filter((r) => r.name.toLowerCase().includes(needle));
-    }
-    if (args.installSlug) {
-      const needle = args.installSlug.toLowerCase();
-      rows = rows.filter((r) => (r.installSlug ?? '').toLowerCase().includes(needle));
-    }
-    if (args.group !== undefined) {
-      rows = args.group === '' ? rows.filter((r) => r.groupSlug === null) : rows.filter((r) => r.groupSlug === args.group);
-    }
+    const rows = await collectScheduleInventory({}, args);
     const summary = summarizeInventory(rows);
     return { data: { summary, rows } };
   },

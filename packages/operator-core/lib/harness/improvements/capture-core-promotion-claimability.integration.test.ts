@@ -23,6 +23,8 @@ const { captureImprovement } = await import('./capture-core');
 const { createIssue } = await import('../../issues-engineer');
 const { createImplementationReadiness } = await import('./agent-review-policy');
 const { readIssueClaimability } = await import('../../scheduler/get-next');
+const { stampFiledBugReproduction } = await import('../../attention/bug-reproduction');
+const { defaultReproductionLedgerDeps } = await import('../../attention/intake-promotion');
 
 let db: OrgTestDb;
 
@@ -39,12 +41,19 @@ afterAll(async () => {
 describe('tool-failure probation promotion → scheduler admission', () => {
   it('stores file-time duplicate evidence while keeping the new bug behind admission', async () => {
     const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const first = await captureImprovement({
-      title: `duplicate handshake admission failure ${suffix}`,
-      kind: 'bug',
-      scope: 'harness:papercusp',
-      createdBy: 'su-test',
-    });
+    // This row only seeds the real database write. The lexical query is not part
+    // of this test's claimability contract; a slow query can legitimately hit
+    // captureImprovement's bounded fallback and its warning, which Vitest treats
+    // as a failure. The second capture below supplies its duplicate candidate.
+    const first = await captureImprovement(
+      {
+        title: `duplicate handshake admission failure ${suffix}`,
+        kind: 'bug',
+        scope: 'harness:papercusp',
+        createdBy: 'su-test',
+      },
+      { searchIssues: async () => [], createIssue },
+    );
     const second = await captureImprovement(
       {
         title: `duplicate handshake admission failures ${suffix}`,
@@ -184,11 +193,13 @@ describe('tool-failure probation promotion → scheduler admission', () => {
     if (!stored) throw new Error(`promoted row ${id} was not persisted`);
     expect(stored.workspace_id).not.toBe('');
     expect(Object.keys(stored.payload)).not.toContain('lane');
+    // P-008 / D-038: promotion stamps the one stage reason, awaiting-agent-review, and
+    // enrolment (EI-25176539351759672) re-stamps it with the review lifecycle's own record.
     expect(stored.payload).toMatchObject({
       implementationReadiness: {
         schemaVersion: 'implementation-readiness-v1',
         status: 'unknown',
-        reason: 'corroborated-tool-failure-awaiting-review',
+        reason: 'awaiting-agent-review',
       },
     });
 
@@ -211,6 +222,9 @@ describe('tool-failure probation promotion → scheduler admission', () => {
     expect(claimability.breakdown.excluded.agentReview).toBe(1);
     expect(claimability.rows).toEqual([]);
 
+    // EI-25176539351759672: the awaiting-review stamp is backed by a real pending
+    // review, so approval has to clear that review too, not just the readiness key.
+    expect(stored.payload).toMatchObject({ agentReview: { status: 'pending', submittedBy: 'su-peer' } });
     const approved = createImplementationReadiness({
       status: 'ready',
       source: 'agent-review',
@@ -219,7 +233,9 @@ describe('tool-failure probation promotion → scheduler admission', () => {
     });
     await db.adminSql`
       UPDATE harness_shared.work_items
-         SET payload = jsonb_set(payload, '{implementationReadiness}', ${JSON.stringify(approved)}::jsonb, true)
+         SET payload = jsonb_set(
+               jsonb_set(payload, '{implementationReadiness}', ${JSON.stringify(approved)}::jsonb, true),
+               '{agentReview,status}', '"approved"'::jsonb, false)
        WHERE feature_id = ${id}`;
     const afterApproval = await readIssueClaimability(
       filter,
@@ -233,6 +249,109 @@ describe('tool-failure probation promotion → scheduler admission', () => {
       { limit: 10 },
     );
     expect(afterApproval.rows.map((row) => row.id)).toEqual([id]);
+  });
+
+  // EI-25176539351759672 (plan unified-bug-pipeline-and-honest-queue-2026-10-05 P-002):
+  // ~450 promoted bugs carried readiness 'unknown/corroborated-tool-failure-awaiting-review'
+  // with NO agentReview record. The claim floor held them as in-review, and the reviewer
+  // lane selects only agentReview.status pending, so nobody could ever clear them.
+  const promoteBug = async (suffix: string, extra: Record<string, unknown> = {}) => {
+    const title = `promoted bug review enrolment ${suffix}`;
+    const watchdogKey = `repeated-tool-error:work_items:get:structural:${suffix}`;
+    const probation = (reporter: string) => ({
+      state: 'probation' as const,
+      class: 'structural',
+      watchdogKey,
+      correlationFingerprint: `work_items:get|handler_error|500|payload|bug|${suffix}`,
+      intendedKind: 'bug' as const,
+      reporters: [reporter],
+    });
+    const first = await captureImprovement({
+      title,
+      kind: 'bug',
+      lane: 'observation',
+      scope: 'harness:papercusp',
+      watchdogKey,
+      createdBy: 'su-test',
+      payloadExtra: { toolFailureProbation: probation('su-test') },
+    });
+    const promoted = await captureImprovement({
+      title,
+      kind: 'bug',
+      lane: 'observation',
+      scope: 'harness:papercusp',
+      watchdogKey,
+      createdBy: 'su-peer',
+      payloadExtra: { toolFailureProbation: probation('su-peer'), ...extra },
+    });
+    expect(promoted).toMatchObject({ ok: true, created: false, reason: 'promoted' });
+    const [stored] = await db.adminSql<{ workspace_id: string; payload: Record<string, unknown> }[]>`
+      SELECT workspace_id, payload FROM harness_shared.work_items WHERE feature_id = ${first.issue!.id}`;
+    return { id: first.issue!.id, stored: stored! };
+  };
+
+  it('enrols a peer-corroborated tool-failure promotion so the reviewer lane can claim it', async () => {
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const { id, stored } = await promoteBug(suffix);
+    expect(stored.payload).toMatchObject({
+      agentReview: { status: 'pending', submittedBy: 'su-peer', round: 1 },
+      implementationReadiness: { status: 'unknown' },
+    });
+    const { claimAgentReview } = await import('./agent-review');
+    const review = await claimAgentReview({ id, reviewer: 'su-reviewer', harnessSlug: 'papercusp' });
+    expect(review).toMatchObject({ claimed: true, workItem: { id } });
+  });
+
+  // P-029: resolve the actual ledger before driving persisted promotion and
+  // scheduler admission. A caller-authored "verified" fixture misses this seam.
+  it.each([
+    { name: 'failed invocation', table: 'tool_invocations', status: 'error', build: 'abcdef1234567', dirty: false, ineligible: null, expected: 'verified' },
+    { name: 'wrong-build invocation', table: 'tool_invocations', status: 'error', build: '7654321fedcba', dirty: false, ineligible: null, expected: 'refuted' },
+    { name: 'successful invocation', table: 'tool_invocations', status: 'ok', build: 'abcdef1234567', dirty: false, ineligible: null, expected: 'refuted' },
+    { name: 'clean failed test', table: 'test_runs', status: 'fail', build: 'abcdef1234567', dirty: false, ineligible: null, expected: 'verified' },
+    { name: 'passing test', table: 'test_runs', status: 'pass', build: 'abcdef1234567', dirty: false, ineligible: null, expected: 'refuted' },
+    { name: 'dirty failed test', table: 'test_runs', status: 'fail', build: 'abcdef1234567', dirty: true, ineligible: null, expected: 'refuted' },
+    { name: 'caller-ineligible receipt', table: 'tool_invocations', status: 'error', build: 'abcdef1234567', dirty: false, ineligible: 'caller-classified tool failure', expected: 'not-eligible' },
+    { name: 'human-ineligible receipt', table: 'tool_invocations', status: 'error', build: 'abcdef1234567', dirty: false, ineligible: 'human-filed report', expected: 'not-eligible' },
+  ])('admits only an eligible ledger-backed encounter: $name', async (scenario) => {
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const [ledger] = scenario.table === 'test_runs'
+      ? await db.adminSql<{ id: string }[]>`
+          INSERT INTO harness_shared.test_runs (file_path, framework, status, commit_sha, worktree_dirty)
+          VALUES (${`p029/${suffix}.test.ts`}, 'vitest', ${scenario.status}, ${scenario.build}, ${scenario.dirty})
+          RETURNING id`
+      : await db.adminSql<{ id: string }[]>`
+          INSERT INTO harness_shared.tool_invocations
+            (workspace_id, harness_slug, plugin_name, role, spawn_id, window_key, tool_name, status, serving_build_sha)
+          VALUES ('default', 'papercusp', 'papercusp', 'su', 'p029-test', 'p029-test',
+                  'work_items:get', ${scenario.status}, ${scenario.build})
+          RETURNING id`;
+    const ref = `${scenario.table}:${ledger!.id}`;
+    const stamp = await stampFiledBugReproduction(
+      { kind: 'encounter', ref, buildSha: 'abcdef1234567', verification: { status: 'verified' } },
+      { filedBy: 'su-peer', ineligibleReason: scenario.ineligible },
+      defaultReproductionLedgerDeps(),
+    );
+    expect(stamp.ok).toBe(true);
+    if (!stamp.ok) throw new Error(stamp.error);
+    expect(stamp.stored.verification.status).toBe(scenario.expected);
+    const { id, stored } = await promoteBug(suffix, { reproduction: stamp.stored });
+    expect(stored.payload).toMatchObject({ reproduction: { receipt: { ref }, verification: { status: scenario.expected } } });
+    if (scenario.expected === 'verified') {
+      expect(stored.payload).toMatchObject({ implementationReadiness: { status: 'ready', reason: 'born-verified-tool-failure-promotion' } });
+      expect(stored.payload).not.toHaveProperty('agentReview');
+    } else {
+      expect(stored.payload).toMatchObject({
+        implementationReadiness: { status: 'unknown', reason: 'awaiting-agent-review' },
+        agentReview: { status: 'pending', submittedBy: 'su-peer' },
+      });
+    }
+    const claimability = await readIssueClaimability(
+      { field: 'id', op: 'in', value: [id] },
+      { harness: 'papercusp', workspaceId: stored.workspace_id, states: ['open'], assignee: 'su-test', client: db.adminSql },
+      { limit: 10 },
+    );
+    expect(claimability.rows.map((row) => row.id)).toEqual(scenario.expected === 'verified' ? [id] : []);
   });
 
   it('keeps a row with no readiness key on the explicit legacy path', async () => {

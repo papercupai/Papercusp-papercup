@@ -22,12 +22,13 @@
  */
 
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { constants as osConstants } from 'node:os';
 import { readProcessIdentity } from '../process-identity';
 import { redactSensitiveText } from '../sensitive-text';
 import {
   buildTaskScopeArgvWithTransport,
   SCOPE_LAUNCH_FAILURE_RE,
-  SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
+  probeTransientScopeSupport,
   taskDeadlineEnv,
 } from '../systemd-scope';
 import {
@@ -54,6 +55,12 @@ import {
 } from './types';
 
 export interface ManagedSpawnOptions {
+  /** Metered executions require enrollment before any process can send. */
+  requireRegistration?: boolean;
+  /** Optional launch tracer; observes the existing spawn path without secrets. */
+  stage?: (name: string) => void;
+  /** Observe the child synchronously before post-fork ledger writes can outlive it. */
+  onSpawn?: (child: ChildProcess, taskId: string) => void;
   /** Anything `child_process.spawn` takes. `detached` is honoured — a detached
    *  child still cannot leave its cgroup, which is the point. */
   spawnOptions?: SpawnOptions;
@@ -74,12 +81,20 @@ export interface ManagedSpawnOptions {
   scopeAvailable?: boolean;
 }
 
+export type ManagedSpawnCompletion =
+  | { status: 'recorded' }
+  | { status: 'delegated'; reason: string }
+  | { status: 'unavailable'; reason: string };
+
 export interface ManagedSpawnResult {
   taskId: string;
   row: TaskRow;
   child: ChildProcess;
   scopeUnit: string | null;
   confined: boolean;
+  /** Await this before exiting a short-lived caller. Child exit alone does not
+   * await ledger persistence; a live scope is explicitly delegated to reconciliation. */
+  waitForCompletion: () => Promise<ManagedSpawnCompletion>;
   /** Set when confinement was requested but unavailable — surfaced so a caller
    *  (and the pane) can say WHY a task is unconfined rather than guessing. */
   confinementSkippedReason?: string;
@@ -92,6 +107,8 @@ export interface ManagedSpawnResult {
  */
 type ManagedSpawnHandle = Pick<ChildProcess, 'kill'>;
 const intentionalTeardownChildren = new WeakSet<ManagedSpawnHandle>();
+/** Explicit taskId kill signal, captured before systemd-run's client can exit. */
+const requestedKillSignals = new WeakMap<ManagedSpawnHandle, NodeJS.Signals>();
 
 /**
  * Mark a managed-spawn client before its owning task scope is intentionally
@@ -119,6 +136,19 @@ export const SCOPE_HANDOFF_RECHECK_MS = 25;
 const LEDGER_REGISTRATION_RETRY_BASE_MS = 1_000;
 const LEDGER_REGISTRATION_RETRY_MAX_MS = 30_000;
 const MAX_LEDGER_REGISTRATION_FAILURES = 8;
+
+type SpawnStdioArray = Exclude<SpawnOptions['stdio'], string | undefined>;
+
+function normalizeSpawnStdio(stdio: SpawnOptions['stdio']): SpawnStdioArray {
+  const normalized =
+    stdio === undefined || stdio === 'pipe'
+      ? ['pipe', 'pipe', 'pipe']
+      : typeof stdio === 'string'
+        ? [stdio, stdio, stdio]
+        : [...stdio];
+  while (normalized.length < 3) normalized.push('pipe');
+  return normalized as SpawnStdioArray;
+}
 
 function errorMessage(error: unknown): string {
   return redactSensitiveText(error instanceof Error ? error.message : String(error)).slice(0, 500);
@@ -148,52 +178,7 @@ let scopeProbe: Promise<{ ok: boolean; reason?: string }> | null = null;
  * probe answers it before any real work is at stake.
  */
 export function probeScopeSupport(spawnFn: typeof spawn = spawn): Promise<{ ok: boolean; reason?: string }> {
-  if (scopeProbe) return scopeProbe;
-  scopeProbe = new Promise((resolve) => {
-    if (process.platform !== 'linux') {
-      resolve({ ok: false, reason: `platform ${process.platform} has no cgroup scopes` });
-      return;
-    }
-    let settled = false;
-    const done = (v: { ok: boolean; reason?: string }): void => {
-      if (!settled) {
-        settled = true;
-        resolve(v);
-      }
-    };
-    try {
-      const child = spawnFn(
-        'systemd-run',
-        ['--user', '--scope', '--quiet', ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS, '--', 'true'],
-        { stdio: ['ignore', 'ignore', 'pipe'] },
-      );
-      let stderr = '';
-      child.stderr?.on('data', (d: Buffer) => {
-        stderr += String(d);
-      });
-      const timer = setTimeout(() => {
-        try {
-          child.kill('SIGKILL');
-        } catch {
-          /* already gone */
-        }
-        done({ ok: false, reason: 'systemd-run probe timed out' });
-      }, 10_000);
-      timer.unref?.();
-      child.on('error', (e) => {
-        clearTimeout(timer);
-        done({ ok: false, reason: `systemd-run unavailable: ${e.message}` });
-      });
-      child.on('exit', (code) => {
-        clearTimeout(timer);
-        if (code === 0) done({ ok: true });
-        else done({ ok: false, reason: `systemd-run probe exited ${code}: ${stderr.trim().slice(0, 200)}` });
-      });
-    } catch (e) {
-      done({ ok: false, reason: `systemd-run spawn threw: ${(e as Error).message}` });
-    }
-  });
-  return scopeProbe;
+  return scopeProbe ??= probeTransientScopeSupport({ spawnFn });
 }
 
 /** Test seam — forget the cached probe. */
@@ -268,17 +253,27 @@ export async function managedSpawn(
   }
 
   // WI-6499 — the master switch. OFF ⇒ a plain spawn: no scope, no ledger row,
-  // no exit wiring. Byte-identical to what this seam's callers did before the
+  // no ledger exit wiring. Byte-identical to what this seam's callers did before the
   // task manager existed, which is what makes the flag an honest kill-switch
   // rather than a dashboard blanker.
+  opts.stage?.('spawn-read-flag');
   if (!(await isTaskManagerEnabled('task-manager:spawn'))) {
+    if (opts.requireRegistration) throw new Error('Required task enrollment is disabled; no process started.');
+    opts.stage?.('spawn-fork');
     const child = spawnFn(command, args as string[], opts.spawnOptions ?? {});
+    const completion = new Promise<ManagedSpawnCompletion>((resolve) => {
+      const finish = () => resolve({ status: 'unavailable', reason: 'task manager disabled' });
+      child.once('exit', finish);
+      child.once('error', finish);
+    });
+    opts.onSpawn?.(child, taskId);
     return {
       taskId,
       row: unledgeredRow(taskId, { ...spec, argv: [command, ...args] }, opts.workspaceId, child.pid ?? null),
       child,
       scopeUnit: null,
       confined: false,
+      waitForCompletion: () => completion,
       confinementSkippedReason: 'task manager disabled (papercusp-task-manager)',
     };
   }
@@ -292,6 +287,7 @@ export async function managedSpawn(
       scopeOk = opts.scopeAvailable;
       if (!scopeOk) skippedReason = 'confinement disabled by caller';
     } else {
+      opts.stage?.('spawn-scope-probe');
       const probe = await probeScopeSupport(spawnFn);
       scopeOk = probe.ok;
       skippedReason = probe.reason;
@@ -322,8 +318,10 @@ export async function managedSpawn(
     reserveScope: scopeOk,
   };
   try {
-    row = await registerTask(argvSpec, registerOptions);
+    opts.stage?.('spawn-register-task');
+    row = await registerTask(argvSpec, registerOptions, undefined, opts.stage ? { stage: opts.stage } : undefined);
   } catch (e) {
+    if (opts.requireRegistration) throw new Error(`Required task enrollment failed; no process started: ${errorMessage(e)}`);
     ledgered = false;
     const why = `ledger register failed: ${rememberLedgerRegistrationFailure(registrationFailures, e)}`;
     skippedReason = skippedReason ? `${skippedReason}; ${why}` : why;
@@ -345,11 +343,16 @@ export async function managedSpawn(
   // payload gets the caller's exactly, via a memory-only fd transport. Unconfined spawns are
   // untouched — there is no client to protect, and node applies `env` itself.
   const payloadEnv = opts.spawnOptions?.env;
+  const environmentStdio =
+    scopeOk && payloadEnv !== undefined ? normalizeSpawnStdio(opts.spawnOptions?.stdio) : null;
+  const environmentFdIndex = environmentStdio ? Math.max(3, environmentStdio.length) : undefined;
+  opts.stage?.('spawn-environment-transport');
   const builtLaunch = scopeOk
     ? buildTaskScopeArgvWithTransport([command, ...args], {
         unit: scopeUnit!,
         slice: sliceForClass(spec.class),
         env: payloadEnv,
+        environmentFdIndex,
         memoryMaxBytes: spec.memoryMaxBytes,
         // WI-41206: carry the caller's swap policy through. Omitted => 'allow' (page, don't
         // OOM-kill) — see ScopeSwapPolicy in systemd-scope.ts.
@@ -366,9 +369,16 @@ export async function managedSpawn(
   // Everything else the caller asked for (stdio, cwd, detached) still applies to
   // the client, and a `--scope` payload inherits all three from it.
   let launchSpawnOptions: SpawnOptions = opts.spawnOptions ?? {};
-  if (scopeOk && payloadEnv) {
+  if (scopeOk && payloadEnv !== undefined) {
     const { env: _payloadEnvMovedIntoArgv, ...rest } = launchSpawnOptions;
-    launchSpawnOptions = rest;
+    const inheritedFd = builtLaunch?.inheritFd;
+    if (environmentStdio && inheritedFd) {
+      environmentStdio[inheritedFd.index] = inheritedFd.fd;
+    }
+    launchSpawnOptions = {
+      ...rest,
+      ...(environmentStdio ? { stdio: environmentStdio } : {}),
+    };
   } else if (scopeOk && spec.runtimeMaxSec && spec.runtimeMaxSec > 0) {
     // WI-1639265: with no payload env there is no exact-env transport to fold the deadline
     // into, and a `--scope` payload is forked from THIS client — so the client's env is the
@@ -384,6 +394,7 @@ export async function managedSpawn(
 
   let child: ChildProcess;
   try {
+    opts.stage?.('spawn-fork');
     child = spawnFn(launchArgv[0]!, launchArgv.slice(1), launchSpawnOptions);
   } catch (e) {
     environmentTransport?.release();
@@ -410,8 +421,15 @@ export async function managedSpawn(
   // long-lived scope or an abnormal client handoff).
   if (environmentTransport) {
     const releaseEnvironmentTransport = (): void => environmentTransport.release();
-    child.once('exit', releaseEnvironmentTransport);
-    child.once('error', releaseEnvironmentTransport);
+    if (builtLaunch?.inheritFd) {
+      // libuv duplicated the descriptor into the systemd-run client before spawn returned.
+      // The scope runner owns its inherited copy now, so the operator can release its copy
+      // immediately even when it exits before systemd admits the scope.
+      releaseEnvironmentTransport();
+    } else {
+      child.once('exit', releaseEnvironmentTransport);
+      child.once('error', releaseEnvironmentTransport);
+    }
   }
 
   const pid = child.pid ?? null;
@@ -429,6 +447,7 @@ export async function managedSpawn(
   // The child is ALREADY RUNNING by here, so a throw out of `markSpawned` would
   // be the worst of both worlds: the caller sees a failed spawn and abandons a
   // live process nobody is holding. Record what we can, degrade to unaccounted.
+  opts.stage?.('spawn-process-identity');
   const spawnedFacts = {
     pid,
     processIdentity: pid ? readProcessIdentity(pid) : null,
@@ -525,19 +544,25 @@ export async function managedSpawn(
     }
   };
 
-  const persistCloseWhenRegistered = async (write: () => Promise<void>): Promise<void> => {
+  const persistCloseWhenRegistered = async (write: () => Promise<void>): Promise<boolean> => {
     if (ledgered) {
       await write();
-      return;
+      return true;
     }
     pendingCloseWrites.push(write);
-    await attemptRegistrationRecovery();
+    return attemptRegistrationRecovery();
   };
 
-  if (ledgered) await markSpawnedRow();
-  else scheduleRegistrationRetry();
+  // A short child can finish while markSpawned waits on PG. Both ledger and
+  // caller observers must be installed before that await; events are not replayed.
+  const waitForCompletion = wireExit(child, taskId, scopeOk, scopeUnit, scopeCgroupPath, fs, persistCloseWhenRegistered);
+  opts.onSpawn?.(child, taskId);
 
-  wireExit(child, taskId, scopeOk, scopeUnit, scopeCgroupPath, fs, persistCloseWhenRegistered);
+  if (ledgered) {
+    opts.stage?.('spawn-mark-running');
+    await markSpawnedRow();
+  }
+  else scheduleRegistrationRetry();
 
   return {
     taskId,
@@ -545,6 +570,7 @@ export async function managedSpawn(
     child,
     scopeUnit,
     confined: scopeOk,
+    waitForCompletion,
     confinementSkippedReason: scopeOk ? undefined : skippedReason,
   };
 }
@@ -617,9 +643,13 @@ function wireExit(
   scopeUnit: string | null,
   scopeCgroupPath: string | null,
   fs: CgroupFs,
-  persistClose: (write: () => Promise<void>) => Promise<void>,
-): void {
+  persistClose: (write: () => Promise<void>) => Promise<boolean>,
+): () => Promise<ManagedSpawnCompletion> {
   let closed = false;
+  let resolveCompletion!: (outcome: ManagedSpawnCompletion) => void;
+  const completion = new Promise<ManagedSpawnCompletion>((resolve) => { resolveCompletion = resolve; });
+  let completionRequested = false;
+  let handoffTimer: ReturnType<typeof setTimeout> | undefined;
   // WI-10004434: a kill made through task-manager control (killTask /
   // processes:kill) is deliberate by definition, so it marks this handle as an
   // intentional teardown the same way markManagedSpawnTeardown does. The
@@ -628,18 +658,27 @@ function wireExit(
   // mark its own kill: su-session-stdio-peer's close() did not, and a real omp
   // that outlived the 5s stdin-EOF grace turned its deliberate SIGKILL into an
   // "abnormal client exit" warning that failed the exact-resume acceptance.
-  const stopKillNotify = onTaskKillRequested((killedTaskId) => {
-    if (killedTaskId === taskId) intentionalTeardownChildren.add(child);
+  const stopKillNotify = onTaskKillRequested((killedTaskId, requestedSignal) => {
+    if (killedTaskId === taskId) {
+      intentionalTeardownChildren.add(child);
+      requestedKillSignals.set(child, requestedSignal);
+    }
   });
   child.once('exit', stopKillNotify);
   child.once('error', stopKillNotify);
-  const close = (state: 'exited' | 'killed', code: number | null, reason: string | null): void => {
+  const close = (
+    state: 'exited' | 'killed',
+    code: number | null,
+    reason: string | null,
+    preserveKillIntent = false,
+  ): void => {
     if (closed) return;
     closed = true;
+    let recorded = false;
     void (async () => {
       const abnormal = state !== 'exited' || code !== 0 || Boolean(reason);
       const candidate =
-        abnormal && confined && scopeUnit
+        abnormal && !preserveKillIntent && confined && scopeUnit
           ? ((await inspectTaskUnitTerminals([scopeUnit])).get(scopeUnit) ?? null)
           : null;
       const terminal =
@@ -647,14 +686,18 @@ function wireExit(
           ? candidate
           : null;
       const outcome = { state, exitCode: code, exitReason: reason };
-      await persistClose(async () => {
-        await closeTask(taskId, terminal ? { ...outcome, terminalProvenance: terminal } : outcome);
+      const registered = await persistClose(async () => {
+        recorded = await closeTask(taskId, terminal ? { ...outcome, terminalProvenance: terminal } : outcome);
         if (terminal) await resetFailedTaskUnit(terminal);
       });
-    })().catch(() => {
+      resolveCompletion(recorded ? { status: 'recorded' } : {
+        status: 'unavailable', reason: registered ? 'terminal write did not update the row' : 'ledger registration pending',
+      });
+    })().catch((error) => {
       // A persistence failure leaves a retained failed unit available for the
       // reconciler's next tick. A close that merely loses the race is fine:
       // closeTask is idempotent on `ended_at`, so the first terminal writer wins.
+      resolveCompletion(recorded ? { status: 'recorded' } : { status: 'unavailable', reason: errorMessage(error) });
     });
   };
 
@@ -689,6 +732,7 @@ function wireExit(
     // at info level without raising a false orphan warning.
     if (intentionalTeardown || (!signal && code === 0)) console.info(message);
     else console.warn(message);
+    resolveCompletion({ status: 'delegated', reason: 'scope still holds processes; reconciler owns terminal persistence' });
   };
 
   /**
@@ -716,14 +760,26 @@ function wireExit(
         settle();
         return;
       }
-      const timer = setTimeout(recheck, Math.min(SCOPE_HANDOFF_RECHECK_MS, remaining));
-      timer.unref?.();
+      handoffTimer = setTimeout(recheck, Math.min(SCOPE_HANDOFF_RECHECK_MS, remaining));
+      if (!completionRequested) handoffTimer.unref?.();
     };
-    const timer = setTimeout(recheck, SCOPE_HANDOFF_RECHECK_MS);
-    timer.unref?.();
+    handoffTimer = setTimeout(recheck, SCOPE_HANDOFF_RECHECK_MS);
+    if (!completionRequested) handoffTimer.unref?.();
   };
 
-  const closeAfterExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+  const closeAfterExit = (
+    code: number | null,
+    signal: NodeJS.Signals | null,
+    requestedSignal: NodeJS.Signals | null,
+  ): void => {
+    if (requestedSignal) {
+      // For confined tasks the observed child is systemd-run's client. Its exit
+      // (and the unit's later exit-code result) can be clean or unrelated to the
+      // signal that processes:kill deliberately sent. Preserve kill intent as a
+      // cancelled attempt instead of fingerprinting the client's verdict.
+      close('killed', 128 + osConstants.signals[requestedSignal], `processes:kill requested ${requestedSignal}`, true);
+      return;
+    }
     if (signal) {
       close('killed', code, `signal ${signal}`);
     } else if (confined && code !== 0) {
@@ -754,6 +810,8 @@ function wireExit(
 
   child.on('exit', (code, signal) => {
     const intentionalTeardown = intentionalTeardownChildren.delete(child);
+    const requestedSignal = requestedKillSignals.get(child) ?? null;
+    requestedKillSignals.delete(child);
     if (confined && scopeCgroupPath) {
       // A populated scope at the instant the client exits is not yet proof that
       // the payload outlived it. Normal payload teardown can leave a short-lived
@@ -766,19 +824,27 @@ function wireExit(
           reportPayloadOutlivedClient(code, signal, true, intentionalTeardown);
           return;
         }
-        closeAfterExit(code, signal);
+        closeAfterExit(code, signal, requestedSignal);
       });
       return;
     }
-    closeAfterExit(code, signal);
+    closeAfterExit(code, signal, requestedSignal);
   });
 
   child.on('error', (e) => {
     intentionalTeardownChildren.delete(child);
+    requestedKillSignals.delete(child);
     const msg = e.message ?? String(e);
     // A scope that could not start is NOT a payload failure — record it as such
     // so a box that has quietly lost its user bus is diagnosable from the ledger.
     const scopeFailed = confined && SCOPE_LAUNCH_FAILURE_RE.test(msg);
     close('exited', null, scopeFailed ? `scope launch failed: ${msg}` : `spawn error: ${msg}`);
   });
+  return () => {
+    completionRequested = true;
+    // Merely awaiting a Promise does not keep a CLI alive. Only an explicit
+    // waiter retains the short handoff timer; ordinary background spawns do not.
+    handoffTimer?.ref?.();
+    return completion;
+  };
 }

@@ -20,12 +20,18 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-import { runScenario, type ScenarioVariant } from '@papercusp/testing-shell/llm';
+import {
+  LLM_CALL_DIAGNOSTICS_MAX_EVENTS,
+  runScenario,
+  type LlmCallDiagnostic,
+  type LlmCallDiagnosticSummary,
+  type ScenarioVariant,
+} from '@papercusp/testing-shell/llm';
 
 import { isLlmAvailable } from '@papercusp/operator-core/lib/llm-testing/llm-client';
 import { operatorRunnerDeps } from '@papercusp/operator-core/lib/llm-testing/deps';
-import { SCENARIOS, getScenario, listScenarioIds } from '@papercusp/operator-core/lib/llm-testing/scenarios';
-import { listTargets } from '@papercusp/operator-core/lib/llm-testing/targets';
+import { SCENARIOS, getScenario, listScenarioIds } from '@papercusp/operator-core/lib/llm-testing/scenarios/index';
+import { listTargets } from '@papercusp/operator-core/lib/llm-testing/targets/index';
 import { findPromotionCandidates, formatCandidatesReport } from '@papercusp/operator-core/lib/llm-testing/promotion/candidates';
 import { promoteShape } from '@papercusp/operator-core/lib/llm-testing/promotion/promote';
 import { replayFixture, reEvaluateRun } from '@papercusp/operator-core/lib/llm-testing/replay';
@@ -39,9 +45,18 @@ import {
 } from '@papercusp/operator-core/lib/llm-testing/run-exit-code';
 import {
   beginLlmScenarioLedger,
+  prepareLlmScenarioRuntimeReader,
   recordLlmScenarioTestRun,
+  recordLlmScenarioTestRunFailure,
   resolveScenarioSourceFile,
 } from '@papercusp/operator-core/lib/llm-testing/test-run-ledger';
+
+// The registry and fixtures moved together into operator-core. Resolve them
+// from this ESM entry, independently of the caller's working directory.
+const llmTestingRoot = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '..', '..', '..', 'packages', 'operator-core', 'lib', 'llm-testing',
+);
 
 type Verb = 'run' | 'promote-candidates' | 'promote' | 'replay' | 'export-fixture' | 'lint';
 
@@ -264,7 +279,6 @@ async function main(): Promise<void> {
   if (args.verb === 'lint') {
     const { lintScenarios, formatViolations } = await import('@papercusp/testing-shell/llm');
     const { existsSync } = await import('node:fs');
-    const { resolve } = await import('node:path');
     const scope = args.scenarioId
       ? [getScenario(args.scenarioId)]
       : args.targetId
@@ -272,7 +286,7 @@ async function main(): Promise<void> {
         : [...SCENARIOS];
     const genericViolations = lintScenarios(scope, {
       fileExists: (p) => existsSync(p),
-      fixtureRoot: resolve(__dirname, '../lib/llm-testing'),
+      fixtureRoot: llmTestingRoot,
       // The lib lint skips the target-registration check when this is absent;
       // pass the operator's registry so unknown-target scenarios still error
       // (matches the pre-P-073 behavior, which imported listTargets directly).
@@ -406,13 +420,19 @@ async function main(): Promise<void> {
     const scenarioFilePath = resolveScenarioFilePath(scenario);
     process.stdout.write(`\n▶ ${scenario.id}  [${scenario.target}]\n`);
     let report;
-    const ledgerBefore = args.noPersist ? null : beginLlmScenarioLedger();
+    const runtimeReader = args.noPersist ? undefined
+      // Same effective transport the runner resolves (runner.ts: `scenario.transport ?? 'http-sse'`).
+      : await prepareLlmScenarioRuntimeReader(scenarioFilePath, scenario.transport ?? 'http-sse');
+    const ledgerBefore = args.noPersist ? null : await beginLlmScenarioLedger(scenarioFilePath, runtimeReader);
+    const diagnosticCapture = createLlmCallDiagnosticCapture();
+    const runnerStartedAt = new Date();
     try {
       report = await runScenario(scenario, {
         forceRepeat: args.noMatrix ? 1 : undefined,
         scenarioFilePath,
         ...(args.seed !== undefined && { seed: args.seed }),
         ...(variant !== undefined && { variant }),
+        onDiagnostic: (diagnostic) => diagnosticCapture.record(diagnostic),
       }, deps);
     } catch (err) {
       const msg = (err as Error).message ?? '';
@@ -422,6 +442,32 @@ async function main(): Promise<void> {
         // scenario measured nothing. The zero-executed guard below is what
         // keeps that from exiting 0 (EI-22032714687384561).
         return 'skipped';
+      }
+      const diagnostics = diagnosticCapture.snapshot();
+      const runnerErrorName = err instanceof Error ? err.name : 'NonErrorThrown';
+      writeFileSync(join(evidenceDir, 'report-summary.json'), `${JSON.stringify({
+        scenarioId: scenario.id,
+        verdict: 'errored',
+        runs: [{
+          status: 'errored',
+          costUsd: 0,
+          turns: 0,
+          assertErrors: [],
+          judgeErrors: [],
+          runnerErrorName,
+          llmCallDiagnostics: diagnostics,
+        }],
+      }, null, 2)}\n`);
+      if (!args.noPersist) {
+        const testRunId = await recordLlmScenarioTestRunFailure({
+          scenarioId: scenario.id,
+          startedAt: runnerStartedAt,
+          finishedAt: new Date(),
+          llmCallDiagnostics: diagnostics,
+        }, scenarioFilePath, ledgerBefore);
+        process.stdout.write(testRunId === null
+          ? `  ⚠ test_runs ledger row not recorded [${scenario.id}]\n`
+          : `  ledger test_runs.id=${testRunId} layer=llm\n`);
       }
       console.error(`  ✗ runner error [${scenario.id}]: ${msg}`);
       return 'failed';
@@ -469,13 +515,12 @@ function resolveScenarioFilePath(scenario: { id: string; target: string }): stri
   // Operator scenarios: 'op-S01-...' → files 'S01-...'
   // Oracle scenarios:   'oracle-O1-...' → files 'O1-...'
   // Architect:          'architect-A1-...' → files 'A1-...'
-  const here = dirname(fileURLToPath(import.meta.url));
   // Scenarios live in operator-core. One file may define many scenarios (S33), so the id
   // is not the basename — resolveScenarioSourceFile maps it (EI-24434635346407728).
   return resolveScenarioSourceFile(
     scenario.id,
     scenario.target,
-    join(here, '..', '..', '..', 'packages', 'operator-core', 'lib', 'llm-testing', 'scenarios'),
+    join(llmTestingRoot, 'scenarios'),
   );
 }
 
@@ -490,7 +535,28 @@ function reportSummary(scenarioId: string, report: ReturnType<typeof runScenario
       turns: r.summary.turns.length,
       assertErrors: r.violations.filter((v) => v.severity === 'error').map((v) => `[${v.assertKind}] ${v.claim}`),
       judgeErrors: r.judge.findings.filter((f) => f.severity === 'error').map((f) => `${f.axis}: ${f.claim}`),
+      ...(r.summary.timeout ? { timeout: r.summary.timeout } : {}),
+      ...(r.summary.llmCallDiagnostics ? { llmCallDiagnostics: r.summary.llmCallDiagnostics } : {}),
     })),
+  };
+}
+
+function createLlmCallDiagnosticCapture() {
+  const events: LlmCallDiagnostic[] = [];
+  let total = 0;
+  let omitted = 0;
+  return {
+    record(diagnostic: LlmCallDiagnostic): void {
+      total += 1;
+      if (events.length === LLM_CALL_DIAGNOSTICS_MAX_EVENTS) {
+        events.shift();
+        omitted += 1;
+      }
+      events.push({ ...diagnostic });
+    },
+    snapshot(): LlmCallDiagnosticSummary {
+      return { events: events.map((diagnostic) => ({ ...diagnostic })), total, omitted };
+    },
   };
 }
 

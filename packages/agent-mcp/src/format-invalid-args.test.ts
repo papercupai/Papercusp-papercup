@@ -19,26 +19,15 @@ import { z } from 'zod';
 import { formatInvalidArgs } from './server';
 
 describe('formatInvalidArgs', () => {
-  it('too_big number → states how far over + the usable ceiling (EI-21864057724720621)', () => {
-    // Mirrors the pre-existing string too_big case in server-dispatch.test.ts:
-    // a numeric ceiling (e.g. work_items:get's threadLimit, capped at 10) gets
-    // the same "how far over, what to use instead" treatment instead of Zod's
-    // bare "Too big: expected number to be <=10", which names the ceiling but
-    // not the caller's actual value or how to fix it in one retry. Measured
-    // recurring independently across 6+ sessions against this exact field.
-    const message = formatInvalidArgs(
-      [
-        {
-          message: 'Too big: expected number to be <=10',
-          code: 'too_big',
-          origin: 'number',
-          maximum: 10,
-          path: ['threadLimit'],
-        },
-      ],
-      { threadLimit: 50 },
+  it('too_big number → reports the requested value and usable ceiling (EI-25689908429575401)', () => {
+    const input = { byte_limit: 8192 };
+    const parsed = z.object({ byte_limit: z.number().int().positive().max(4096) }).safeParse(input);
+    expect(parsed.success).toBe(false);
+    if (parsed.success) throw new Error('Expected byte_limit to exceed the 4096 ceiling');
+
+    expect(formatInvalidArgs(parsed.error.issues, input)).toBe(
+      'byte_limit: too big — 8192 over the 4096 limit; use ≤4096.',
     );
-    expect(message).toBe('threadLimit: too big — 40 over the 10 limit; use 10.');
   });
 
   it('too_big number without a numeric actual value at the issue path → falls back to the bare ceiling message', () => {
@@ -57,7 +46,7 @@ describe('formatInvalidArgs', () => {
       ],
       {},
     );
-    expect(message).toBe('threadLimit: too big — over the 10 limit; use 10.');
+    expect(message).toBe('threadLimit: too big — over the 10 limit; use ≤10.');
   });
 
   it('too_big number at exactly the maximum reads as "over" only when strictly greater', () => {
@@ -68,7 +57,7 @@ describe('formatInvalidArgs', () => {
       [{ message: 'Too big', code: 'too_big', origin: 'number', maximum: 10, path: ['n'] }],
       { n: 10 },
     );
-    expect(message).toBe('n: too big — over the 10 limit; use 10.');
+    expect(message).toBe('n: too big — over the 10 limit; use ≤10.');
   });
 
   it('too_big string case is unaffected by the new number branch (regression guard)', () => {
@@ -106,7 +95,7 @@ describe('formatInvalidArgs', () => {
       ],
       { threadLimit: 25 },
     );
-    expect(message).toBe('threadLimit: too big — 15 over the 10 limit; use 10.; id: required');
+    expect(message).toBe('threadLimit: too big — 25 over the 10 limit; use ≤10.; id: required');
   });
 });
 

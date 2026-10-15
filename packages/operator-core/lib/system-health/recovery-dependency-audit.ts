@@ -335,6 +335,13 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     recovers: [],
     note: 'Reads remote provider-pool burn and sheds agent concurrency before quota exhaustion; that failure domain is outside the listed operator substrate.',
   },
+  {
+    name: 'claude-update-canary',
+    file: 'packages/operator-core/lib/system-health/claude-update-canary.ts',
+    executor: 'operator-in-process-timer',
+    recovers: [],
+    note: 'Probes a changed Claude Code build and its saved model route, then escalates CLI regressions. The external CLI failure domain is outside the listed operator substrate; this timer does not claim to recover a stopped operator.',
+  },
 
   // ── DBOS / routines engine ───────────────────────────────────────────────────────
   {
@@ -380,6 +387,15 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     executor: 'operator-in-process-timer',
     recovers: [],
     note: 'Alarms on a silently-stalled green-checkpoint run.',
+  },
+  {
+    // The gate run is its own process (not the operator), so a run lost mid-flight leaves
+    // this operator-hosted timer alive to page about it: nothing it rides is in the failure.
+    name: 'green-checkpoint-lost-run-alarm',
+    file: 'packages/operator-core/lib/release/green-stall-watchdog.ts',
+    executor: 'operator-in-process-timer',
+    recovers: [],
+    note: 'Pages the gate holder and fleet leader once per green-checkpoint run that died with its marker set.',
   },
   {
     name: 'git-sync-stall-watchdog',
@@ -588,11 +604,11 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     note: 'P-009 — a goal-mode owner report-silent past the cadence floor gets one nudge with the report skeleton. A quiet owner is not a substrate failure.',
   },
   {
-    name: 'retrieval-degradation-watchdog',
-    file: 'packages/operator-core/lib/system-health/retrieval-degradation-watchdog.ts',
+    name: 'degradation-watchdog',
+    file: 'packages/operator-core/lib/system-health/degradation-watchdog.ts',
     executor: 'operator-in-process-timer',
     recovers: [],
-    note: 'P-002 of this plan — semantic leg blocked by the embed budget.',
+    note: 'degradation-signals-on-condition-rail-2026-10-11 P-003 — the generic collapsed-fail-open-rate detector. It absorbed the retrieval-degradation timer (P-002: semantic leg blocked by the embed budget); retrieval-degradation-watchdog.ts no longer arms a timer of its own.',
   },
   {
     name: 'embed-latency-watchdog',

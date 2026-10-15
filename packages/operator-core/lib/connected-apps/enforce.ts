@@ -22,7 +22,7 @@ import {
 } from '@papercusp/agent-mcp';
 import { resolveConcreteHarnessSlug } from '../agent-tools/_harness-scope';
 import { ACCESS_TOKEN_SLUG_SEPARATOR, APP_PRINCIPAL_SLUG_PREFIX } from './principal';
-import { appScopeToolOf, evaluateAppScope, type AppScopeRow, type AppScopeTool } from './scope-policy';
+import { appScopeToolOf, evaluateAppScopeChain, type AppScopeRow, type AppScopeTool } from './scope-policy';
 import { raiseConnectedAppAlert, type AlertedApp, type ConnectedAppAlert } from './alerts';
 import { LLM_RUNNING_TOOLS, loadAppSpendStatus, spendCapVerdict, type AppSpendStatus } from './spend';
 import { loadAccessTokenScopeRow, loadAlertedAppRow, loadAppScopeRow } from './store';
@@ -184,10 +184,7 @@ export async function appKeyToolListFilter(
   return (toolName) => {
     const tool = deps.lookupTool(toolName);
     if (!tool) return false;
-    return rows.every((row) => {
-      const verdict = evaluateAppScope({ tool, args: undefined, workspaceId: ws, harnessSlug: null, now }, row);
-      return verdict.allow || verdict.code === 'harness_required_by_scope';
-    });
+    return evaluateAppScopeChain({ tool, args: undefined, workspaceId: ws, harnessSlug: null, now }, rows).listable;
   };
 }
 
@@ -228,10 +225,8 @@ export async function enforceAppKeyScope(
       now: deps.now?.(),
     };
     // The parent key first, then (for an access token) the token's own scope: both must allow.
-    for (const row of rows) {
-      const verdict = evaluateAppScope(input, row);
-      if (!verdict.allow) return deny(verdict.code, verdict.reason);
-    }
+    const { verdict } = evaluateAppScopeChain(input, rows);
+    if (!verdict.allow) return deny(verdict.code, verdict.reason);
     // In scope. An LLM-running call must also be under the key's spending cap (R-27).
     return await spendCapDenial(ref, request.toolName, deps, input.now ?? new Date());
   } catch (err) {

@@ -751,6 +751,7 @@ const setTestingFlag = (on: boolean) =>
 import LearningTab, {
   ARMING_WORKFLOWS_KIND,
   ARMING_WORKFLOWS_TAB,
+  graderChipLabel,
   railChipPromise,
 } from "./LearningTab";
 
@@ -2691,6 +2692,60 @@ describe("LearningTab — grading, the only row control the merge kept (P-005: c
     expect(screen.getByLabelText("Grade this idea")).toBeTruthy();
   });
 
+  it("10b. the grade chip shortens a peer agent's session id; the title keeps it whole (WI-10006513)", () => {
+    // A full `su-<uuid>` made the nowrap chip ~250px and pushed the row's note
+    // button out of its cell at 1366px. The chip shows the presence-style
+    // short id; the full id stays in the title.
+    const longId = "su-2f324ce6-c2d6-415e-8572-f263eca5d1b0";
+    expect(graderChipLabel(longId, "brain")).toBe("su-2f324");
+    expect(graderChipLabel("owner", "brain")).toBe("Owner");
+    expect(graderChipLabel("auto-grader", "brain")).toBe("brain");
+    // A non-id label passes through untouched rather than being mangled.
+    expect(graderChipLabel("reviewer-7", "brain")).toBe("reviewer-7");
+
+    scoutResult = {
+      ...scoutResult,
+      data: [
+        {
+          ...scoutSnapshot,
+          recent: scoutSnapshot.recent.map((idea) =>
+            idea.humanGrade != null ? { ...idea, gradedBy: longId } : idea,
+          ),
+        },
+      ],
+    };
+    render(<LearningTab />);
+    const chip = document.querySelector(".pc-learning__gradechip");
+    expect(chip?.textContent?.replace(/\s+/g, " ")).toContain("su-2f324");
+    expect(chip?.textContent).not.toContain(longId);
+    expect(chip?.getAttribute("title")).toContain(longId);
+  });
+
+  it("10c. the chip columns carry px floors so a narrow window never cuts a chip (WI-10006513)", () => {
+    // Measured on the deployed cloud portal at 1024x650: the bare fr tracks
+    // shrank to 49-60px while the lens/severity/stage chips need up to 80px +
+    // 20px cell padding, and the overflow:hidden cells cut them mid-word.
+    render(<LearningTab />);
+    const templates = Array.from(document.querySelectorAll<HTMLElement>("*"))
+      .map((el) => el.style.gridTemplateColumns)
+      .filter(Boolean);
+    // Positive control: the items grid (identified by its Age floor) rendered.
+    const itemsGrid = templates.filter((t) => t.includes("minmax(64px, 0.7fr)"));
+    expect(itemsGrid.length).toBeGreaterThan(0);
+    for (const t of itemsGrid) {
+      // lens + stage
+      expect(t.split("minmax(104px, 1.1fr)").length - 1).toBe(2);
+      // severity
+      expect(t).toContain("minmax(72px, 0.9fr)");
+      // score (cut at 1024px by a bare 0.6fr track, re-sweep 2026-10-06)
+      expect(t).toContain("minmax(56px, 0.6fr)");
+      // the pre-fix bare tracks are gone
+      expect(
+        t.split(" ").filter((track) => track === "1.1fr" || track === "0.9fr" || track === "0.6fr"),
+      ).toHaveLength(0);
+    }
+  });
+
   it("11. renders lens weights as shares, sorted descending", () => {
     scoutResult = {
       ...scoutResult,
@@ -3534,6 +3589,116 @@ describe("LearningTab — inherited pot lens (owner directive 2026-07-26; was P-
     expect(screen.getByRole("button", { name: "remove" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Close detail" }));
     expect(nuqsState.rsel).toBeNull();
+  });
+
+  describe("retained memory mutation responses", () => {
+    let memoryFetch: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      nuqsState.lview = "learnings";
+      nuqsState.rsel = "memory:mutation-selected";
+      retainFeedResult = {
+        data: [{ rows: [{ kind: "memory", id: "mutation-selected", title: "Selected learning",
+          ts: "2026-08-15T12:00:00.000Z", status: null, shipped: false, meta: {} }],
+          counts: null, nextCursor: null, degraded: [], generatedAt: "2026-08-16T00:00:00.000Z" }],
+        loading: false, fetching: false, error: null, invalidate: vi.fn(),
+      };
+      retainDetailResult = {
+        data: [{ kind: "memory", id: "mutation-selected", title: "Selected learning", status: null,
+          ts: "2026-08-15T12:00:00.000Z", body: "Original selected learning body.",
+          bodyTruncated: false, code: null, listItems: [], fields: [], editable: true }],
+        loading: false, fetching: false, error: null, invalidate: vi.fn(),
+      };
+      memoryFetch = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      vi.stubGlobal("fetch", memoryFetch);
+    });
+
+    afterEach(() => vi.unstubAllGlobals());
+
+    const invalidators = () => [retainDetailResult, retainFeedResult, retainSummaryResult, retainCountsResult]
+      .map(result => result.invalidate);
+
+    async function submitMemoryAction(method: "PATCH" | "DELETE", cancel = false) {
+      fireEvent.click(screen.getByRole("button", { name: method === "PATCH" ? "edit" : "remove" }));
+      if (method === "PATCH") {
+        fireEvent.change(screen.getByLabelText("Learning text"), { target: { value: "Updated selected learning body." } });
+      }
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: cancel ? "Cancel" : method === "PATCH" ? "Save" : "Remove" }));
+      });
+    }
+
+    it.each([
+      ["PATCH", 403], ["PATCH", 500], ["DELETE", 403], ["DELETE", 500],
+    ] as const)("keeps selected memory and reports rejected %s HTTP %s without success refresh", async (method, status) => {
+      memoryFetch.mockResolvedValue(new Response(JSON.stringify({ error: "Memory change denied" }), { status }));
+      render(<LearningTab />);
+      await screen.findByText("Original selected learning body.");
+      await submitMemoryAction(method);
+      expect(memoryFetch).toHaveBeenCalledTimes(1);
+      expect(memoryFetch.mock.calls[0][1]).toMatchObject({ method });
+      expect(nuqsState.rsel).toBe("memory:mutation-selected");
+      const alert = await screen.findByRole("alert");
+      expect(alert.textContent).toContain(`HTTP ${status}`);
+      expect(alert.textContent).toContain("Memory change denied");
+      expect(screen.getByText("Original selected learning body.")).toBeTruthy();
+      for (const invalidate of invalidators()) expect(invalidate).not.toHaveBeenCalled();
+
+      // The same selected item can be retried; the successful receipt clears the error.
+      memoryFetch.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      await submitMemoryAction(method);
+      expect(memoryFetch).toHaveBeenCalledTimes(2);
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(nuqsState.rsel).toBe(method === "PATCH" ? "memory:mutation-selected" : null);
+      for (const invalidate of invalidators()) expect(invalidate).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(["PATCH", "DELETE"] as const)("refreshes the selected memory only after a successful %s receipt", async method => {
+      render(<LearningTab />);
+      await screen.findByText("Original selected learning body.");
+      await submitMemoryAction(method);
+      expect(memoryFetch).toHaveBeenCalledTimes(1);
+      const [url, init] = memoryFetch.mock.calls[0];
+      expect(url).toBe(method === "PATCH" ? "/api/user/memory" : "/api/user/memory?id=mutation-selected");
+      expect(init.method).toBe(method);
+      if (method === "PATCH") expect(JSON.parse(init.body)).toEqual({ id: "mutation-selected", text: "Updated selected learning body." });
+      expect(nuqsState.rsel).toBe(method === "PATCH" ? "memory:mutation-selected" : null);
+      expect(screen.queryByRole("alert")).toBeNull();
+      for (const invalidate of invalidators()) expect(invalidate).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(["PATCH", "DELETE"] as const)("preserves the memory and reports a %s network failure", async method => {
+      memoryFetch.mockRejectedValue(new TypeError("Network request failed"));
+      render(<LearningTab />);
+      await screen.findByText("Original selected learning body.");
+      await submitMemoryAction(method);
+      expect((await screen.findByRole("alert")).textContent).toContain("Network request failed");
+      expect(nuqsState.rsel).toBe("memory:mutation-selected");
+      expect(screen.getByText("Original selected learning body.")).toBeTruthy();
+      for (const invalidate of invalidators()) expect(invalidate).not.toHaveBeenCalled();
+    });
+
+    it("keeps a newer selection when an earlier successful delete finishes", async () => {
+      let finish!: (response: Response) => void;
+      memoryFetch.mockImplementation(() => new Promise<Response>(resolve => { finish = resolve; }));
+      render(<LearningTab />);
+      await screen.findByText("Original selected learning body.");
+      await submitMemoryAction("DELETE");
+      expect(memoryFetch).toHaveBeenCalledTimes(1);
+      nuqsState.rsel = "memory:neighbor-selected";
+      await act(async () => { finish(new Response(null, { status: 204 })); });
+      expect(nuqsState.rsel).toBe("memory:neighbor-selected");
+      for (const invalidate of invalidators()) expect(invalidate).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(["PATCH", "DELETE"] as const)("cancels %s without a memory write or refresh", async method => {
+      render(<LearningTab />);
+      await screen.findByText("Original selected learning body.");
+      await submitMemoryAction(method, true);
+      expect(memoryFetch).not.toHaveBeenCalled();
+      expect(nuqsState.rsel).toBe("memory:mutation-selected");
+      for (const invalidate of invalidators()) expect(invalidate).not.toHaveBeenCalled();
+    });
   });
 
   it("pins a deep-linked ?rsel selection into the detail aside on first render", () => {

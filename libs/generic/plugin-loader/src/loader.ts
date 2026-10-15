@@ -41,7 +41,8 @@ export interface LoadedPlugin<TPlugin, TManifest> {
 export type LoadFromDirResult<TPlugin, TManifest> =
   | LoadedPlugin<TPlugin, TManifest>
   | { error: string; path: string }
-  | { skipped: 'not-a-plugin'; path: string };
+  | { skipped: 'not-a-plugin'; path: string }
+  | { skipped: 'excluded'; path: string; reason: string };
 
 /** Marker a `readManifest` port returns when a manifest exists but is invalid. */
 export interface ManifestError {
@@ -56,6 +57,14 @@ export interface PluginLoaderPorts<TPlugin, TManifest> {
    *   - `null`                          → no identity-bearing manifest here.
    */
   readManifest(dir: string): Promise<TManifest | ManifestError | null>;
+  /**
+   * Optional root-aware admission, checked after the manifest validates and
+   * BEFORE any entry is located or imported. Return a reason string to skip
+   * this directory (`{ skipped: 'excluded', reason }`), or null to load it.
+   * Runs before loadAll's first-seen dedupe, so an excluded copy can never
+   * shadow a same-named plugin in a later root.
+   */
+  admitManifest?(manifest: TManifest, source: string): string | null;
   /** Locate the entry module in `dir`, or null if none exists. */
   locateEntry(dir: string): Promise<string | null>;
   /**
@@ -185,6 +194,9 @@ export function createPluginLoader<TPlugin, TManifest>(
     if (typeof manifest === 'object' && '__error' in manifest) {
       return { error: (manifest as ManifestError).__error, path };
     }
+
+    const excluded = ports.admitManifest?.(manifest as TManifest, source) ?? null;
+    if (excluded) return { skipped: 'excluded', path, reason: excluded };
 
     // Alternate-runtime manifests (e.g. wasm/daemon) can short-circuit the
     // JS entry/import/validate path entirely.

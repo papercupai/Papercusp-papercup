@@ -46,7 +46,11 @@ import {
   type FleetLaneHealthReadResult,
   type FleetLaneHealthUnavailable,
 } from '../../fleet/lane-health';
+import { FLEET_SCOPE_ISSUE_DIAG_DEFAULT_TOTAL_BUDGET_MS } from '../../scheduler/fleet-scope-admission';
 import { canonicalExecutableWidth, exactPositiveSinglePlanSlugFromFilter } from '../../fleet/executable-frontier';
+import { computeFleetUnderStaffedAlert, type FleetUnderStaffedEvaluation } from '../../fleet/under-staffed-alert';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { buildClaimableNowAggregate } from './leader-brief-aggregate';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/identity';
@@ -63,7 +67,6 @@ import {
   getFleetHeadcountTarget,
   listFleetsLedBy,
   projectFleetHeadcountState,
-  FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
   type AgentFleetRecord,
   type FleetControlState,
   type FleetLaunchGovernorAction,
@@ -71,6 +74,11 @@ import {
   type FleetLaunchTransaction,
 } from '../../agent-fleets-store';
 import { takeFleetLeadership } from '../fleet_registry/take-leadership-core';
+import {
+  countedMemberSet,
+  readFleetMemberSilence,
+  type FleetMemberSilencePartition,
+} from '../fleet_registry/silent-member';
 import {
   ensureFleetLeaderControl,
   resolveFleetLeaderTransitionEventKeys,
@@ -98,7 +106,7 @@ import {
   type ClaimHealth,
 } from '../../fleet/assignments';
 import { listPresence } from '../coordination/presence';
-import { findLiveHost } from '../../events/await/psu-pty-discovery';
+import { findLiveHost, findLiveHostAsync } from '../../events/await/psu-pty-discovery';
 import { applyPsuHostAuthority } from '../coordination/liveness-oracle';
 import {
   reconcileWakeability,
@@ -174,7 +182,7 @@ import {
   parseFleetMetricsResult,
   type FleetMetricsResult,
 } from './fleet-metrics-contract';
-import { resolveFleetMetricScope, type FleetMetricScopeResolution } from './fleet-metrics-scope';
+import { readFleetMetricSource, withFleetMetricReadSql, resolveFleetMetricScope, type FleetMetricSource, type FleetMetricScopeResolution, type ResolvedFleetMetricScope } from './fleet-metrics-scope';
 import { buildFleetMetricsResult } from '../work_items/burn_down';
 import { trimToByteBudget } from '../_bound-output';
 import { LEADER_BRIEF_SHAPER_BUDGET_CHARS, shapeLeaderBrief } from './leader-brief-shape';
@@ -194,6 +202,7 @@ import {
   DEFAULT_LEADER_BLOCKER_STALL_THRESHOLD_HOURS,
   type LeaderBlockerStallView,
 } from '../../leader-blocker-stall-alert';
+import { computeStalledItemRotation, type StalledItemRotation } from './stalled-item-rotation';
 
 // EI-20226510994156306: a 50-member leader brief previously serialized ~66KB
 // before the transport's own result cap. Keep the detailed, verbose rows small;
@@ -213,6 +222,35 @@ const LEADER_BRIEF_RESERVATION_DETAIL_BUDGET = 3_500;
  */
 export const LEADER_BRIEF_READ_CONCURRENCY = 4;
 export const LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS = 3_000;
+/**
+ * The canonical fleet-metrics census is independent from headcount. Its
+ * measured complete cohort took 3,272.388ms, so it needs its own bounded leg
+ * budget instead of inheriting the shorter headcount cutoff.
+ */
+export const LEADER_BRIEF_FLEET_METRICS_TIMEOUT_MS = 5_000;
+
+export type LeaderBriefSilentMembers =
+  | { status: 'measured'; ownerIds: string[]; thresholdMs: number; paused: boolean }
+  | { status: 'unknown'; reason: string };
+
+/**
+ * P-007 / R-17: name the live members the silence rule left out of
+ * `headcount.current`. An unreadable roster or silence leg is `unknown` with a
+ * reason — never an empty list, which would read as "nobody is silent".
+ */
+export function silentMembersSummary(
+  liveMemberIds: readonly string[] | null,
+  partition: FleetMemberSilencePartition | null,
+): LeaderBriefSilentMembers {
+  if (liveMemberIds == null) return { status: 'unknown', reason: 'live roster unreadable' };
+  if (partition == null) return { status: 'unknown', reason: 'execution or await leg unreadable' };
+  return {
+    status: 'measured',
+    ownerIds: [...partition.silent],
+    thresholdMs: partition.thresholdMs,
+    paused: partition.paused,
+  };
+}
 /**
  * Keep optional leader-brief legs below the MCP transport budget. The roster
  * has its own larger, per-leg budget; everything after it is advisory and can
@@ -234,7 +272,7 @@ export interface LeaderBriefFleetMetricsDeps {
     fleet: string;
     flowMode: 'current-spec';
   }): Promise<FleetMetricScopeResolution>;
-  listItems(input: { harness: string; includeObservations: true; limit: number }): Promise<WorkItem[]>;
+  listItems(input: { harness: string; includeObservations: true; resolution: ResolvedFleetMetricScope }): Promise<WorkItem[] | FleetMetricSource>;
   readOccurrences(input: { workspaceId: string; harnessSlug: string; since: string }): Promise<IssueOccurrenceCounts>;
   build(
     resolution: FleetMetricScopeResolution,
@@ -243,14 +281,17 @@ export interface LeaderBriefFleetMetricsDeps {
       issueOccurrences: IssueOccurrenceCounts | PromiseLike<IssueOccurrenceCounts>;
       sourceCapExhausted: boolean;
       assignee?: string;
+      /** P-001: scopes the feature-close claim history and fleet pause reads. */
+      workspaceId?: string | null;
+      terminalContributions?: FleetMetricSource['terminalContributions'];
     },
   ): Promise<FleetMetricsResult>;
 }
 
 const LEADER_BRIEF_FLEET_METRICS_DEPS: LeaderBriefFleetMetricsDeps = {
   resolveScope: resolveFleetMetricScope,
-  listItems: listWorkItems,
-  readOccurrences: readIssueOccurrenceCounts,
+  listItems: input => readFleetMetricSource(input.resolution),
+  readOccurrences: input => withFleetMetricReadSql(sql => readIssueOccurrenceCounts(input, sql)),
   build: buildFleetMetricsResult,
 };
 
@@ -292,17 +333,6 @@ export async function readLeaderBriefFleetMetrics(
     });
   }
   try {
-    const itemsPromise = Promise.resolve(
-      deps.listItems({
-        harness: input.harness,
-        includeObservations: true,
-        limit: WORK_ITEMS_MAX_LIMIT,
-      }),
-    );
-    // A failed item read must remain observed even when scope resolution fails
-    // first; the metric leg is best-effort and must not create an unhandled
-    // rejection while it is being abandoned.
-    void itemsPromise.catch(() => undefined);
     const resolution = await deps.resolveScope({
       workspaceId: input.workspaceId,
       harness: input.harness,
@@ -310,6 +340,12 @@ export async function readLeaderBriefFleetMetrics(
       flowMode: 'current-spec',
     });
     if (!resolution.ok) return parseFleetMetricsResult(resolution);
+    // The exact predicate must be fixed before payload hydration. Reading the
+    // whole harness in parallel costs ~19s on the measured production cohort.
+    const itemsPromise = Promise.resolve(deps.listItems({
+      harness: input.harness, includeObservations: true, resolution,
+    }));
+    void itemsPromise.catch(() => undefined);
     const issueOccurrences = deps.readOccurrences({
       workspaceId: input.workspaceId,
       harnessSlug: input.harness,
@@ -318,11 +354,13 @@ export async function readLeaderBriefFleetMetrics(
     // The builder consumes this promise after it has started its floor read, so
     // the two independent aggregate queries can overlap.
     void issueOccurrences.catch(() => undefined);
-    const items = await itemsPromise;
-    return await deps.build(resolution, items, {
+    const source = await itemsPromise;
+    return await deps.build(resolution, Array.isArray(source) ? source : source.items, {
+      ...(Array.isArray(source) ? {} : { terminalContributions: source.terminalContributions }),
       issueOccurrences,
-      sourceCapExhausted: items.length >= WORK_ITEMS_MAX_LIMIT,
+      sourceCapExhausted: false,
       assignee: input.assignee,
+      workspaceId: input.workspaceId,
     });
   } catch (error) {
     return leaderBriefFleetMetricsUnavailable({
@@ -427,6 +465,19 @@ async function boundedLeaderBriefRead<T>(
   }
 }
 
+/** Apply the dedicated deadline to the canonical fleet-metrics leg. */
+export function boundedLeaderBriefFleetMetricsRead<T>(
+  work: () => Promise<T>,
+  fallback: T,
+): Promise<T> {
+  return boundedLeaderBriefRead(
+    'fleet-metrics',
+    work,
+    fallback,
+    LEADER_BRIEF_FLEET_METRICS_TIMEOUT_MS,
+  );
+}
+
 /**
  * Run optional reads with both bounded width and a per-leg deadline. The
  * regular fan-out helper intentionally has no fallback policy because callers
@@ -458,7 +509,7 @@ function leaderBriefClaimabilityRecovery(fleet: string, harness?: string | null)
         'work_items:claimable with that spec and its resolved harness';
 }
 
-/** Explicit fallback for the optional lane-health leg; UNKNOWN is never rendered as zero. */
+/** Explicit fallback for required lane health; UNKNOWN is never rendered as zero. */
 export function leaderBriefLaneHealthUnavailable(input: {
   fleet: string;
   harness?: string | null;
@@ -467,8 +518,8 @@ export function leaderBriefLaneHealthUnavailable(input: {
     code: 'leader-brief-budget-exceeded',
     stage: 'leader-brief',
     detail:
-      `Fleet lane health did not settle inside the ${LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS}ms ` +
-      'optional-read deadline; the brief abandoned no unbounded aggregate and inferred no zero.',
+      `Fleet lane health did not settle inside the ${FLEET_SCOPE_ISSUE_DIAG_DEFAULT_TOTAL_BUDGET_MS}ms ` +
+      'bounded diagnostic deadline; the brief inferred no zero.',
     recoverVia: leaderBriefClaimabilityRecovery(input.fleet, input.harness),
     spec: null,
     basis: null,
@@ -486,7 +537,7 @@ export async function readLeaderBriefLaneHealth(
 ): Promise<FleetLaneHealthReadResult> {
   return read({
     ...input,
-    issueFamilyTotalBudgetMs: LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS,
+    issueFamilyTotalBudgetMs: FLEET_SCOPE_ISSUE_DIAG_DEFAULT_TOTAL_BUDGET_MS,
   });
 }
 
@@ -849,6 +900,13 @@ export interface LeaderBriefMember {
    *  healthy drain member cycling scheduler:get_next is laneless-idle but not spinning —
    *  get_next is productive). See computeSpinningAlert. */
   spinning?: true;
+  /** P-004/R-4: this member's held item has had no MATERIAL advancement (authored
+   *  checkpoint or state transition since the claim) for STALLED_ITEM_ROTATION_THRESHOLD_MS
+   *  while ready items wait in the fleet claim set. Measures the ITEM, not the worker, so a
+   *  busy member doing status reads is still named. Absent when the fleet is paused, the
+   *  member is inside an instrumented long test, or no ready item waits. See
+   *  stalled-item-rotation.ts. */
+  stalledItem?: StalledItemRotation;
   /** EI-21548894457555139: this member is INSIDE a tool call right now that has been
    *  running longer than LONG_CALL_IN_FLIGHT_MS — it is working, not idle.
    *
@@ -1462,8 +1520,9 @@ export function computeBenchSuggestion(
    * still HOLDS a claim and looks wedged during a pause is a genuine fault — indeed it
    * is precisely what blocks the stand-down from completing.
    *
-   * `undefined`/absent reads as "not paused" (today's behavior), never a false
-   * suppression — an unread control state must not silence a real starvation signal.
+   * `null` is an explicit unread control state: do not recommend wake/bench actions
+   * without measuring whether the fleet permits work. An omitted argument retains
+   * the legacy pure-caller behavior. Held stalled-work diagnostics above still apply.
    */
   fleetPaused?: boolean | null,
   /**
@@ -1575,7 +1634,7 @@ export function computeBenchSuggestion(
   // EI-18703234178947959: a PAUSED fleet's idle member is compliant, not starving —
   // see the `fleetPaused` parameter doc. Every branch below would misdiagnose it and
   // prescribe a remedy the claim path itself refuses to honor.
-  if (fleetPaused) return undefined;
+  if (fleetPaused || fleetPaused === null) return undefined;
   if (a.load === 0 && (a.queued?.length ?? 0) === 0 && !a.doing) {
     // EI-19313376980892266: `a.load === 0` is a PRESENCE-layer reading and does NOT mean
     // the scheduler considers this member free — a parked/held item keeps `taken_by`, so
@@ -1788,7 +1847,7 @@ export function computeDormantAlert(
   },
   fleetPaused?: boolean | null,
 ): boolean {
-  if (fleetPaused) return false;
+  if (fleetPaused || fleetPaused === null) return false;
   // EI-21548894457555139: a member INSIDE a long-running call is executing, and
   // `dormant` means the opposite — "no self-wake mechanism at all; nothing will bring
   // it back". Checked FIRST because every condition below is derived from settled
@@ -2188,6 +2247,43 @@ export function renderFalsifierCall(tool: string, args: Record<string, unknown>)
   return parts.length > 0 ? `${tool} { ${parts.join(', ')} }` : `${tool} {}`;
 }
 
+/**
+ * P-005 / D-030 step 5: the brief's view of the UNDER-staff alert — the pure
+ * evaluation plus the falsifier a fired alert must ship. The falsifier reads live
+ * members and their claims straight from fleet:assignments, independent of the
+ * productive-seat projection that fired the alert. PURE — exported so the wiring
+ * is testable without the handler's DI ceremony.
+ */
+export function buildFleetUnderStaffedBriefAlert(input: {
+  fleet: string | null | undefined;
+  headcount: Parameters<typeof computeFleetUnderStaffedAlert>[0]['headcount'];
+  /** null/undefined when the fleet record could not be read: the alert stays unknown. */
+  controlState: string | null | undefined;
+  fleetPaused?: boolean | null;
+}): (FleetUnderStaffedEvaluation & { falsifier?: AlertFalsifier }) | undefined {
+  const evaluation = computeFleetUnderStaffedAlert({
+    headcount: input.headcount,
+    controlState: input.controlState,
+    fleetPaused: input.fleetPaused,
+  });
+  if (!evaluation?.alert) return evaluation;
+  return {
+    ...evaluation,
+    falsifier: {
+      tool: 'fleet:assignments',
+      check: renderFalsifierCall('fleet:assignments', { fleet: input.fleet }),
+      measurement:
+        'each live member and the work-item it holds right now, read from presence and claims — ' +
+        'not from the productive-seat count `summary.headcount.current` this alert fired on',
+      kills:
+        evaluation.target != null
+          ? `${evaluation.target} or more members are live and each holds a claim → headcount.current ` +
+            'under-read them; do not launch more workers from this alert.'
+          : 'at least one live member holds a claim → the fleet is not empty; do not launch from this alert.',
+    },
+  };
+}
+
 const DARK_FLEET_MIN_MEMBERS = 3;
 const DARK_FLEET_ACTIVITY_WINDOW_SEC = 30 * 60;
 
@@ -2585,7 +2681,7 @@ export function computeIdleWithClaimableAlert(input: {
   // is already 0 for a paused fleet because computeBenchSuggestion suppresses the idle
   // branches at source, so this is the second, independent guard that keeps the alert
   // false-positive-proof if a future caller ever feeds it a differently-derived count.
-  if (input.fleetPaused) return undefined;
+  if (input.fleetPaused || input.fleetPaused === null) return undefined;
   if (input.claimableCount == null || input.claimableCount <= 0) return undefined;
   if (input.idleMemberCount <= 0) return undefined;
   const accused = input.idleMemberIds?.[0];
@@ -2692,7 +2788,7 @@ export function computeFloorStarvedFleetAlert(input: {
   harness?: string | null;
   fleet?: string | null;
 }): { reason: string; falsifier: AlertFalsifier } | undefined {
-  if (input.fleetPaused) return undefined;
+  if (input.fleetPaused || input.fleetPaused === null) return undefined;
   if (input.claimable == null || input.claimable !== 0) return undefined;
   if (input.matchedByFilter == null || input.matchedByFilter <= 0) return undefined;
   if (input.idleMemberCount <= 0) return undefined;
@@ -2811,6 +2907,8 @@ export function computeFleetBlockVerdict(input: {
   harness?: string | null;
   fleet?: string | null;
 }): FleetBlockVerdict | undefined {
+  // An unread pause cannot support a verdict that prescribes activating members.
+  if (input.fleetPaused === null) return undefined;
   const idleTotal = input.idleMemberCount + input.lanelessIdleCount;
   if (!input.fleetPaused && idleTotal <= 0) return undefined;
 
@@ -3421,8 +3519,8 @@ export function projectMember(
   /** EI-18689489507862177: pre-floor match + per-floor exclusions, so the bench
    *  suggestion can tell a GATED lane from a drained one. Absent = not read. */
   laneGating?: { matchedByFilter: number; excluded?: Record<string, number> } | null,
-  /** EI-18703234178947959: the fleet's own control_state is winding-down (owner-paused),
-   *  so an idle member is compliant and carries no bench suggestion. Absent = not paused. */
+  /** A paused or explicitly unread fleet carries no idle-member wake/bench advice.
+   *  An omitted argument retains legacy pure-caller behavior. */
   fleetPaused?: boolean | null,
   /** EI-19313376980892266: this member's authoritative concurrency verdict from the shared
    *  oracle (work_items.taken_by), NOT the presence layer's `load`. Absent = not read on
@@ -3524,6 +3622,15 @@ export function projectMember(
       return suggestion ? { benchSuggestion: suggestion } : {};
     })(),
     ...(computeDormantAlert({ ...a, longCallInFlight }, fleetPaused) ? { dormant: true } : {}),
+    ...(() => {
+      const stalledItem = computeStalledItemRotation(
+        { agentId: a.agentId, sessionState: a.sessionState ?? null, claims: a.claims, longCallInFlight },
+        nowMs,
+        claimableCount,
+        fleetPaused,
+      );
+      return stalledItem ? { stalledItem } : {};
+    })(),
     ...(longCallInFlight ? { longCallInFlight } : {}),
     ...(computeSpinningAlert({ ...a, lastToolCallAgeMs, productiveToolCallAgeMs }, fleetPaused)
       ? { spinning: true }
@@ -3925,6 +4032,16 @@ export async function recoverFleetRecordForLeaderControl(input: {
   );
 }
 
+/** Use the same measured record for pause, headcount and leadership control.
+ * A missing/failed record is unknown, never evidence that the fleet resumed. */
+export function projectLeaderBriefFleetPause(
+  record: Pick<AgentFleetRecord, 'controlState' | 'controlReason'> | null | undefined,
+): { paused: boolean | null; reason: string | null } {
+  if (record == null) return { paused: null, reason: null };
+  const paused = record.controlState === 'winding-down';
+  return { paused, reason: paused ? record.controlReason ?? null : null };
+}
+
 /**
  * The READ half of `fleet:leader-brief` — every leg from roster through
  * decorations, alerts and the fleet-block verdict. Pure with respect to the
@@ -4000,6 +4117,15 @@ export async function buildLeaderBrief(
   // fleet:status's presence-primary roster is the membership authority. The
   // old claim-primary read omitted live idle members whose assignment view had
   // no row, so leader-brief and fleet:status reported different rosters.
+  // Claimability is required report data, not a 750ms optional decoration.
+  // Start the existing bounded diagnostic before roster/decorations, inside
+  // the unchanged whole-call deadline, so it overlaps those independent reads.
+  const fleetLaneHealthPromise = boundedLeaderBriefRead(
+    'lane-health',
+    () => readLeaderBriefLaneHealth({ fleet, harness: args.harness, workspaceId }),
+    leaderBriefLaneHealthUnavailable({ fleet, harness: args.harness }),
+    FLEET_SCOPE_ISSUE_DIAG_DEFAULT_TOTAL_BUDGET_MS,
+  );
   const rosterResult = await boundedLeaderBriefRead<ListFleetRosterResult>(
     'roster',
     () => listFleetRosterDiagnosed({ fleetSlug: fleet, workspaceId }),
@@ -4029,25 +4155,6 @@ export async function buildLeaderBrief(
         label: 'leader-brief:fleetRecord',
       }),
   ] as const);
-  // WI-2034624: `current` is attested from recent agent-origin execution over
-  // the canonical live roster — never from the current launch transaction's
-  // worker-ready set, which excludes every member a prior transaction or a
-  // carry-respawn created. Deliberately a SEPARATE read from the WI-583276
-  // collapse leg below, on two axes: WINDOW (that one wants a tight window so
-  // silence is noticed fast; this one wants a wide one so a legitimately parked
-  // member is not mistaken for a missing seat) and LEDGER (this one unions the
-  // MCP and native tool ledgers, because `tool_invocations` misses an agent
-  // working through native Bash/Read/Edit entirely). A failed read stays UNKNOWN.
-  const headcountExecutingRead = await withBoundedTimeout(
-    headcountCurrentResult.value == null
-      ? Promise.resolve(null)
-      : executingOwnersSince(headcountCurrentResult.value, FLEET_HEADCOUNT_EXECUTION_WINDOW_MS),
-    {
-      fallback: null,
-      timeoutMs: LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
-      label: 'leader-brief:headcountExecuting',
-    },
-  );
   // A degraded `getFleet` result is not evidence of a vacant leader seat.
   // Corroborate only positive self-leadership before repairing control; the
   // recovery helper intentionally cannot authorize `takeFleetLeadership`.
@@ -4061,6 +4168,43 @@ export async function buildLeaderBrief(
   const fleetRecord =
     fleetRecordResult.value !== undefined ? fleetRecordResult.value : controlFleetRecord;
   const fleetRecordReadAvailable = fleetRecordResult.value !== undefined || controlFleetRecord !== null;
+  const fleetPause = projectLeaderBriefFleetPause(fleetRecord);
+  // WI-2034624: `current` is attested from recent agent-origin execution over
+  // the canonical live roster — never from the current launch transaction's
+  // worker-ready set, which excludes every member a prior transaction or a
+  // carry-respawn created. P-007 / R-17: the count goes through the SAME silence
+  // seam as the headcount governor and `fleet:status` (readFleetMemberSilence), so
+  // a member silent past the threshold — heartbeats only, no pending declared
+  // await, fleet not paused — is excluded here exactly as the writer excludes it,
+  // and is NAMED in `summary.silentMembers` instead of vanishing. Deliberately a
+  // SEPARATE read from the WI-583276 collapse leg below (that one keys on
+  // `tool_invocations` alone; this one unions the MCP and native tool ledgers).
+  // A failed read stays UNKNOWN.
+  const headcountSilenceRead = await withBoundedTimeout(
+    headcountCurrentResult.value == null
+      ? Promise.resolve(null)
+      : readFleetMemberSilence(headcountCurrentResult.value, {
+          fleetPaused: fleetPause.paused,
+        }),
+    {
+      fallback: null,
+      timeoutMs: LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
+      label: 'leader-brief:headcountExecuting',
+    },
+  );
+  const headcountExecutingRead = { value: countedMemberSet(headcountSilenceRead.value) };
+  // P-005 / D-030: the governor's own eligibility facts, so `headcount.held` says
+  // whether anything will actually restore this fleet. A failed flag read stays
+  // null (unknown), never a fabricated OFF; an unread fleet record supplies no
+  // governance at all, so `held` reads null rather than guessing.
+  const governorFlagRead = await withBoundedTimeout(
+    getFlag(FLAGS.FLEET_HEADCOUNT_GOVERNOR, 'system').then((on): boolean | null => on === true),
+    {
+      fallback: null,
+      timeoutMs: LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
+      label: 'leader-brief:headcountGovernorFlag',
+    },
+  );
   const headcount = projectFleetHeadcountState(
     headcountTargetResult.value,
     fleetRecordReadAvailable ? (fleetRecord?.lastLaunchTransaction ?? null) : undefined,
@@ -4073,6 +4217,15 @@ export async function buildLeaderBrief(
         fleet,
         ...(args.harness ? { harness: args.harness } : {}),
       },
+      ...(fleetRecordReadAvailable
+        ? {
+            governance: {
+              governorFlagOn: governorFlagRead.value,
+              controlState: fleetRecord?.controlState ?? null,
+              leaderOwnerId: fleetRecord?.leaderOwnerId ?? null,
+            },
+          }
+        : {}),
     },
   );
   const rosterEntries: DecoratedAgent[] = rosterResult.entries.map((entry) => ({
@@ -4231,7 +4384,26 @@ export async function buildLeaderBrief(
     () => listPresence({ workspaceId }),
     [],
   );
-  reconcilePsuHostLiveness(rosterEntries, new Map(presence.map((p) => [p.ownerId, p.agentRole] as const)));
+  const visibleHostIds = [...new Set(rosterEntries
+    .filter((agent) => {
+      const role = presence.find((row) => row.ownerId === agent.agentId)?.agentRole;
+      return agent.tty != null && role != null && role !== 'cup';
+    })
+    .map((agent) => agent.agentId))];
+  const visibleHosts = await boundedLeaderBriefRead('visible-psu-hosts', async () => {
+    const hosts = new Map<string, unknown | null>();
+    for (let i = 0; i < visibleHostIds.length; i += 16) {
+      await Promise.all(visibleHostIds.slice(i, i + 16).map(async (ownerId) => {
+        hosts.set(ownerId, await findLiveHostAsync(ownerId).catch(() => null));
+      }));
+    }
+    return hosts;
+  }, new Map<string, unknown | null>(visibleHostIds.map((id) => [id, { lookupTimedOut: true }])));
+  reconcilePsuHostLiveness(
+    rosterEntries,
+    new Map(presence.map((p) => [p.ownerId, p.agentRole] as const)),
+    (ownerId) => visibleHosts.get(ownerId) ?? null,
+  );
   const { rows: grouped, census: memberCensus } = selectLeaderBriefMembers(rosterEntries, fleet, args.include_stale);
   await boundedLeaderBriefRead('decorate-parked-on', () => decorateParkedOn(grouped), grouped);
   // Keep the parked-on → loop → member-verdict dependency chain intact. The
@@ -4267,8 +4439,6 @@ export async function buildLeaderBrief(
     unownedCriticalsAll,
     admissionBlockRead,
     orphanedInFlight,
-    fleetLaneHealthRead,
-    fleetPause,
     concurrencyByOwner,
     poolCapacity,
   ] = await runBoundedLeaderBriefReads(
@@ -4300,30 +4470,6 @@ export async function buildLeaderBrief(
           workspaceId,
           minAgeMinutes: args.orphan_min_age_minutes,
         }),
-      // EI-18681259560385029: read the fleet's LIVE claimable count before
-      // projecting members; failures are UNKNOWN, never zero. EI-22687145239379284:
-      // the issue aggregate may take ~20s, so the diagnosed reader receives this
-      // leg's whole 750ms allowance and refuses to launch work that cannot fit it.
-      () =>
-        readLeaderBriefLaneHealth({
-          fleet,
-          harness: args.harness,
-          workspaceId: actorWorkspace,
-        }),
-      // EI-18703234178947959: the fleet's own durable pause state. Fail-soft
-      // to not-paused so a registry hiccup never silences a genuine alert.
-      () =>
-        (async (): Promise<{ paused: boolean; reason: string | null }> => {
-          try {
-            const { getFleet } = await import('../../agent-fleets-store');
-            const rec = await getFleet(workspaceId, fleet);
-            return rec?.controlState === 'winding-down'
-              ? { paused: true, reason: rec.controlReason ?? null }
-              : { paused: false, reason: null };
-          } catch {
-            return { paused: false, reason: null };
-          }
-        })(),
       // EI-19313376980892266: authoritative per-member concurrency, resolved
       // against this fleet's own spec limit and fail-soft to an empty map.
       () =>
@@ -4373,13 +4519,12 @@ export async function buildLeaderBrief(
         reason: 'leader-brief optional admission-block read timed out or failed',
       } as FleetAdmissionBlockRead,
       [] as OrphanedInFlightCandidate[],
-      leaderBriefLaneHealthUnavailable({ fleet, harness: args.harness }),
-      { paused: false, reason: null },
       new Map<string, { blocked: boolean; activeClaims: number; heldIds: string[] }>(),
       null,
     ] as const,
     'optional-fleet-reads',
   );
+  const fleetLaneHealthRead = await fleetLaneHealthPromise;
   const fleetLaneHealth = fleetLaneHealthRead.laneHealth;
   const takeoversBySubscriber = new Map<string, VerifiedWaitTakeoverAlert[]>();
   for (const alert of verifiedWaitTakeovers) {
@@ -4421,8 +4566,7 @@ export async function buildLeaderBrief(
       ? `work_items:burn_down { harness: '${fleetMetricsHarness}', fleet: '${fleet}', window: 'fleet-lifetime' }`
       : 'fleet:leader-brief { fleet, harness }',
   });
-  const fleetMetrics = await boundedLeaderBriefRead(
-    'fleet-metrics',
+  const fleetMetrics = await boundedLeaderBriefFleetMetricsRead(
     () =>
       readLeaderBriefFleetMetrics({
         workspaceId,
@@ -4431,7 +4575,6 @@ export async function buildLeaderBrief(
         assignee: ownerId,
       }),
     fleetMetricsFallback,
-    LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
   );
   const fleetLaneEffective = fleetLaneHealth?.effective ?? null;
   const fleetClaimableCount = fleetLaneEffective?.claimable ?? null;
@@ -4594,6 +4737,10 @@ export async function buildLeaderBrief(
     // public target stays null so a reusable recipe cannot masquerade as an
     // active headcount commitment. Read failures remain in-band `unknown`.
     headcount,
+    // P-007 / R-17: the live members `headcount.current` left out because they are
+    // silent past the threshold (heartbeats only). Named so a leader can wake or
+    // replace them; `unknown` when either silence leg was unreadable, never `[]`.
+    silentMembers: silentMembersSummary(headcountCurrentResult.value, headcountSilenceRead.value),
     speaking: members.filter((m) => m.verdict === 'speaking').length,
     monitoring: members.filter((m) => m.monitorState === 'monitoring').length,
     waiting: members.filter((m) => m.monitorState === 'waiting').length,
@@ -4640,6 +4787,10 @@ export async function buildLeaderBrief(
     // here (stalled, dead) reads these as healthy. >0 means wake it explicitly and
     // investigate; do not assume the loop will self-correct.
     spinning: members.filter((m) => m.spinning === true).length,
+    // P-004/R-4: members whose held ITEM has not materially advanced past the stall
+    // threshold while ready items wait in the fleet claim set. >0 means require one
+    // accountable action per named member (see each member's `stalledItem.requiredAction`).
+    stalled_item: members.filter((m) => m.stalledItem != null).length,
     // EI-19381528967421062: members whose loop is backed off from a provider wall right
     // now — `active:true`/`sessionState:parked` read identical to a healthy between-wakes
     // member on every OTHER surface. >0 here means those claims are stranded until
@@ -4911,6 +5062,15 @@ export async function buildLeaderBrief(
   } catch {
     /* best-effort — never block the brief on a spec-effect preview failure */
   }
+  // P-005 / D-030 step 5: the UNDER-staff counterpart of the over-staff alert
+  // above. Plan-independent: a fleet with zero workers is short whatever it drains.
+  // An unread fleet record passes a null control state, so the alert stays unknown.
+  const fleetUnderStaffed = buildFleetUnderStaffedBriefAlert({
+    fleet,
+    headcount,
+    controlState: fleetRecordReadAvailable ? (fleetRecord?.controlState ?? null) : null,
+    fleetPaused: fleetPause.paused,
+  });
   const announcedGates = await boundedLeaderBriefRead(
     'announced-gates',
     () =>
@@ -5192,6 +5352,8 @@ export async function buildLeaderBrief(
         ...(fleetHeadcountVsExecutableFrontierAlert
           ? { fleetHeadcountVsExecutableFrontierAlert: fleetHeadcountVsExecutableFrontierAlert.alert }
           : {}),
+        // P-005 / D-030: absent = unknown or not applicable, never a clean false.
+        ...(fleetUnderStaffed ? { fleetUnderStaffedAlert: fleetUnderStaffed.alert } : {}),
         // P-009: null is load-bearing — the dependency population was not
         // measured or one of the alarm's required row legs was unknown.
         leaderBlockerStallAlert: leaderBlockerStall.alert,
@@ -5359,6 +5521,12 @@ export async function buildLeaderBrief(
         ? {
             fleetHeadcountVsExecutableFrontierAlertReason: fleetHeadcountVsExecutableFrontierAlert.reason,
             fleetHeadcountVsExecutableFrontierAlertFalsifier: fleetHeadcountVsExecutableFrontierAlert.falsifier,
+          }
+        : {}),
+      ...(fleetUnderStaffed?.alert
+        ? {
+            fleetUnderStaffedAlertReason: fleetUnderStaffed.reason,
+            fleetUnderStaffedAlertFalsifier: fleetUnderStaffed.falsifier,
           }
         : {}),
       ...(idleWithClaimableAlert

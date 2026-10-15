@@ -37,11 +37,11 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => ({
 import {
   LSP_FACADE_OPS,
   MAX_SITES_PER_ANSWER,
-  lspFacade,
+  lspDaemonFacade as lspFacade,
   lspFacadeOpSpec,
   lspHealth,
   type LspFacadeOp,
-} from './lsp-facade.ts';
+} from './lsp-daemon-facade.ts';
 import { DEFAULT_RESOURCE_BUDGET, isTrustworthyEmpty } from './contracts.ts';
 import {
   LSP_VENDOR_DIR,
@@ -159,7 +159,7 @@ describe('argument refusals are answers, not throws', () => {
     {
       what: 'a file no pinned server handles',
       op: 'symbol',
-      args: { file: '/x/a.py', line1: 1, character: 0 },
+      args: { file: '/x/a.cpp', line1: 1, character: 0 },
       match: /no pinned language server/,
     },
     {

@@ -1,0 +1,168 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "goal-brief R-2 live pickup probe — counterexample scope-mismatch",
+  "framework": "shell",
+  "command": [
+    "env",
+    "R2_COUNTEREXAMPLE=scope-mismatch",
+    "npx",
+    "tsx",
+    "docs/evidence/goal-brief-r2-live-probe-2026-09-29.mts"
+  ],
+  "mode": "counterexample",
+  "counterexample": {
+    "id": "scope-mismatch",
+    "targets": "auto-bar-r-2-p-003,auto-bar-r-2-p-007",
+    "fault": "each lineage is judged against the NEXT lineage's drain fleet (roster, leader, lease pair, claim filter) — a scope/lease mismatch",
+    "expected": "r2-clean-lineage-exists=false, auto-bar-r-2-p-003=false, auto-bar-r-2-p-007=false, exitCode 1 (caught)"
+  },
+  "exitCode": 1,
+  "startedAt": "2026-10-07T02:21:52.692Z",
+  "finishedAt": "2026-10-07T02:21:53.611Z",
+  "summary": "2/6 live assertions passed for plan goal-brief-to-claimed-plan-work-2026-09-23 clauses AUTO-BAR-R-2-P-003/AUTO-BAR-R-2-P-007.",
+  "assertions": [
+    {
+      "id": "r2-clean-lineage-exists",
+      "passed": false,
+      "evidence": "0/6 lineages show independent leader + valid coupling lease + positive filter at claim time + sole non-leader member claim within 2 holder opportunities: none"
+    },
+    {
+      "id": "r2-pickup-is-member-claim",
+      "passed": true,
+      "evidence": "0 counted pickup(s), each a work-item claim by a joined member that is neither the fleet leader nor the goal holder; 21 fleet launch/lead events recorded as observations only"
+    },
+    {
+      "id": "r2-no-unexplained-miss",
+      "passed": false,
+      "evidence": "lineages with eligible plan work but no in-scope member pickup: 9368ec=non-fleet-claim, 406e99=non-fleet-claim, 956e4d=non-fleet-claim"
+    },
+    {
+      "id": "r2-no-duplicate-owner",
+      "passed": true,
+      "evidence": "no picked-up plan item was also worked by the holder or a second owner"
+    },
+    {
+      "id": "auto-bar-r-2-p-003",
+      "passed": false,
+      "evidence": "2/4 R-2 sub-assertions passed over 6 P-007 lineages (9368ec=non-fleet-claim, 406e99=non-fleet-claim, 8016e1=no-goal-stamped-plan-work, 956e4d=non-fleet-claim, a88411=no-goal-stamped-plan-work, 81a93e=no-goal-stamped-plan-work); 7 residual unknown(s) disclosed"
+    },
+    {
+      "id": "auto-bar-r-2-p-007",
+      "passed": false,
+      "evidence": "2/4 R-2 sub-assertions passed (clause text identical to AUTO-BAR-R-2-P-003 @rev4)"
+    }
+  ],
+  "plan": "goal-brief-to-claimed-plan-work-2026-09-23",
+  "residualUnknowns": [
+    "session_turns rows are stored under workspace_id 'default', so holder turns are selected by owner su-id alone (a workspace_id='papercusp-workspace' predicate returns zero rows for every owner, including a positive control).",
+    "restore-reliable-hourly-papercusp-postgres-backu-9368ec: non-fleet-claim (first claim WI-10003455 by su-06173b22-1ac4-4f2f-991a-5010e2d9cc5a at 2026-09-27T15:09:08.299Z)",
+    "finish-restoring-reliable-hourly-papercusp-postg-406e99: non-fleet-claim (first claim WI-10003479 by su-3a5b14be-47e1-4aa7-b9e2-62a605bb1775 at 2026-09-27T16:33:56.222Z)",
+    "stop-work-item-duplicate-screening-from-admittin-956e4d: non-fleet-claim (first claim WI-10003483 by su-79c9a8bc-085f-4d53-8cc9-b8ff37854d61 at 2026-09-27T15:24:13.405Z)",
+    "Fleet filters are the D-005 positive `=` leaf on goal (plan items reach the lane through the goal_id stamp); a lineage passes the positive-filter check only when the leaf in force at claim time names this goal, this plan, or the claimed item id.",
+    "Plan eligibility is measured over the plan's WORK ITEMS (source_plan_slug); plan-level steps that are not claimable work items (ship, grading) are not decision opportunities for a fleet and are not counted.",
+    "agent_couplings stores the CURRENT edge state only; a lease is treated as valid at claim time when the edge is coupled now, was created before the claim and has no earlier expiry. Historical suspension of the edge is not visible."
+  ],
+  "observations": {
+    "lineages": [
+      {
+        "goal": "restore-reliable-hourly-papercusp-postgres-backu-9368ec",
+        "plan": "papercusp-db-backup-invalid-db-2026-09-27",
+        "holder": "su-8ea5fa57-8cd2-4b8a-9147-bea86e8888c1",
+        "fleet": "goal-drain-finish-restoring-reliable-hourly-papercusp-406e99",
+        "leader": "su-f89a4a6a-fe65-4d00-910b-186a47071be7",
+        "fleetType": "single",
+        "goalStampedPlanItems": [
+          "WI-10003455:done",
+          "WI-10003480:done"
+        ],
+        "verdict": "non-fleet-claim",
+        "detail": "first claim WI-10003455 by su-06173b22-1ac4-4f2f-991a-5010e2d9cc5a at 2026-09-27T15:09:08.299Z"
+      },
+      {
+        "goal": "finish-restoring-reliable-hourly-papercusp-postg-406e99",
+        "plan": "papercusp-db-backup-invalid-db-2026-09-27",
+        "holder": "su-b604b77f-474f-41d8-902b-10dad4eaef22",
+        "fleet": "goal-drain-ship-plan-papercusp-db-backup-invalid-db-2-8016e1",
+        "leader": "su-b6820bfd-f4ec-497f-8d6a-10e892941cea",
+        "fleetType": "single",
+        "goalStampedPlanItems": [
+          "WI-10003478:done",
+          "WI-10003479:done"
+        ],
+        "verdict": "non-fleet-claim",
+        "detail": "first claim WI-10003479 by su-3a5b14be-47e1-4aa7-b9e2-62a605bb1775 at 2026-09-27T16:33:56.222Z"
+      },
+      {
+        "goal": "ship-plan-papercusp-db-backup-invalid-db-2026-09-8016e1",
+        "plan": "papercusp-db-backup-invalid-db-2026-09-27",
+        "holder": "su-2b1e9949-5d9f-4127-9977-11579016d9d8",
+        "fleet": "goal-drain-stop-work-item-duplicate-screening-from-ad-956e4d",
+        "leader": "su-7ad51e78-ca41-43fc-a15e-38f24ddaaf85",
+        "fleetType": "single",
+        "goalStampedPlanItems": [],
+        "verdict": "no-goal-stamped-plan-work",
+        "detail": "no work item carries this goal and plan, and none of the plan's 4 items was open at goal start"
+      },
+      {
+        "goal": "stop-work-item-duplicate-screening-from-admittin-956e4d",
+        "plan": "duplicate-screening-keys-on-authored-prose-and-its-normalize-2026-09-05",
+        "holder": "su-1b82d5da-e4c7-422a-bd9c-ed9f55282b46",
+        "fleet": "goal-drain-finish-shipping-the-duplicate-screening-fi-a88411",
+        "leader": "su-0a08a70f-72ca-47b8-97c4-a53e8500728a",
+        "fleetType": "single",
+        "goalStampedPlanItems": [
+          "WI-10003483:done",
+          "WI-10003484:done"
+        ],
+        "verdict": "non-fleet-claim",
+        "detail": "first claim WI-10003483 by su-79c9a8bc-085f-4d53-8cc9-b8ff37854d61 at 2026-09-27T15:24:13.405Z"
+      },
+      {
+        "goal": "finish-shipping-the-duplicate-screening-fix-adop-a88411",
+        "plan": "duplicate-screening-keys-on-authored-prose-and-its-normalize-2026-09-05",
+        "holder": "su-0381ae85-e293-4299-a46a-25ed89259d19",
+        "fleet": "goal-drain-ship-adopted-plan-duplicate-screening-keys-81a93e",
+        "leader": "su-59f446b4-77cd-4170-8df7-bac813429af4",
+        "fleetType": "single",
+        "goalStampedPlanItems": [],
+        "verdict": "no-goal-stamped-plan-work",
+        "detail": "no work item carries this goal and plan, and none of the plan's 2 items was open at goal start"
+      },
+      {
+        "goal": "ship-adopted-plan-duplicate-screening-keys-on-au-81a93e",
+        "plan": "duplicate-screening-keys-on-authored-prose-and-its-normalize-2026-09-05",
+        "holder": "su-e53d23dc-5460-46bd-af64-60203cd84be5",
+        "fleet": "goal-drain-restore-reliable-hourly-papercusp-postgres-9368ec",
+        "leader": "su-b4d1fb3a-844e-4e2a-a2b2-9c377423b042",
+        "fleetType": "single",
+        "goalStampedPlanItems": [],
+        "verdict": "no-goal-stamped-plan-work",
+        "detail": "no work item carries this goal and plan, and none of the plan's 2 items was open at goal start"
+      }
+    ],
+    "launchEvents": [
+      "9368ec su-b4d1fb3a member/join 2026-09-27T11:05:33.871347-04:00",
+      "9368ec su-b4d1fb3a leader/lead 2026-09-27T11:05:40.680844-04:00",
+      "9368ec su-06173b22 member/join 2026-09-27T11:05:41.636785-04:00",
+      "956e4d su-7ad51e78 member/join 2026-09-27T11:05:59.146867-04:00",
+      "956e4d su-7ad51e78 leader/lead 2026-09-27T11:06:05.84081-04:00",
+      "956e4d su-79c9a8bc member/join 2026-09-27T11:06:07.702606-04:00",
+      "9368ec su-b4d1fb3a leader/lead 2026-09-27T11:16:38.353479-04:00",
+      "9368ec su-b4d1fb3a leader/lead 2026-09-27T11:16:47.003728-04:00",
+      "9368ec su-b4d1fb3a leader/lead 2026-09-27T11:17:06.299362-04:00",
+      "9368ec su-b4d1fb3a leader/lead 2026-09-27T11:26:34.583853-04:00",
+      "9368ec su-b4d1fb3a leader/lead 2026-09-27T11:26:48.241046-04:00",
+      "406e99 su-f89a4a6a member/join 2026-09-27T12:31:59.868367-04:00",
+      "406e99 su-f89a4a6a leader/lead 2026-09-27T12:32:06.484627-04:00",
+      "406e99 su-3a5b14be member/join 2026-09-27T12:32:07.281221-04:00",
+      "a88411 su-0a08a70f member/join 2026-09-27T12:32:30.558992-04:00",
+      "a88411 su-0a08a70f leader/lead 2026-09-27T12:32:37.269843-04:00",
+      "a88411 su-ea328b7a member/join 2026-09-27T12:32:38.243427-04:00",
+      "8016e1 su-b6820bfd member/join 2026-09-28T21:01:10.197917-04:00",
+      "8016e1 su-b6820bfd leader/lead 2026-09-28T21:01:16.90673-04:00",
+      "81a93e su-59f446b4 member/join 2026-09-28T21:02:16.447176-04:00",
+      "81a93e su-59f446b4 leader/lead 2026-09-28T21:02:23.313744-04:00"
+    ]
+  }
+}

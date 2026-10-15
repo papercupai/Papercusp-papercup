@@ -26,7 +26,7 @@ import {
   autoFixSqlCommentBacktick,
 } from './sql-comment-backtick';
 import {
-  findCommitBlockingSecrets,
+  findCommitBlockingSecretsSliced,
   describeCommitBlockingSecrets,
   cachedExemptionLoader,
   defaultExemptionLoader,
@@ -199,6 +199,23 @@ export const smartQuotesDetector: ContentDetector = {
  * was unparseable (a 9-day-abandoned scratchpad probe with a trailing comma) — fixed in
  * the same change, so this adds coverage without newly quarantining anything.
  */
+/**
+ * An empty TypeScript source module parses successfully, so the parser and
+ * transform detectors cannot catch a source file that git-sync stages during
+ * a truncate/write window. Such a blob is syntactically valid but removes all
+ * exports and runtime behavior from the committed module.
+ */
+export const emptyTsSourceDetector: ContentDetector = {
+  key: 'empty-ts-source',
+  glob: '**/*.{ts,tsx,mts,cts}',
+  matches: (file) => /\.(ts|tsx|mts|cts)$/.test(file) && !DECLARATION_FILE_RE.test(file) && !isExcludedPath(file),
+  detect: (file, text) =>
+    text.length === 0
+      ? `TypeScript source file "${file}" is zero bytes; git-sync would publish an empty module. Restore its intended contents or remove it before commit.`
+      : null,
+  fixerRole: CONTENT_FIXER_ROLE,
+};
+
 export const tsParseDetector: ContentDetector = {
   key: 'ts-parse',
   glob: '**/*.{ts,tsx,mts,cts}',
@@ -565,13 +582,17 @@ export const focusedTestDetector: ContentDetector = {
  * instances were a .test.ts, a .mjs hook and a test harness — no suffix filter
  * would have caught all three. `scanTextForSecrets` skips >4096-char lines, so
  * minified/one-line blobs cost nothing.
+ *
+ * The scan is TIME-SLICED (WI-6554700010008327): git-sync runs this detector over
+ * every dirty file on the host's main thread, and generated JSON in the tree reaches
+ * ~10 MB, so a synchronous per-file scan stalled bg-host's event loop for seconds.
  */
 export const secretsDetector: ContentDetector = {
   key: 'secrets',
   glob: '**/*',
   matches: (f) => !isExcludedPath(f),
   detect: async (file, text) => {
-    const findings = findCommitBlockingSecrets(file, text, await loadContentLintExemptions());
+    const findings = await findCommitBlockingSecretsSliced(file, text, await loadContentLintExemptions());
     if (findings.length === 0) return null;
     return describeCommitBlockingSecrets(file, findings);
   },
@@ -612,6 +633,28 @@ export const identityLeakDetector: ContentDetector = {
   repoScope: 'superproject-only',
 };
 
+/**
+ * Shell output accidentally redirected into an extensionless root filename
+ * (EI-23381057036304308). Requiring both a colon and whitespace keeps this
+ * narrow to status/report-like names; submodules have their own legitimate
+ * root-level files and normal documents carry an extension.
+ */
+export const rootRedirectArtifactDetector: ContentDetector = {
+  key: 'root-redirect-artifact',
+  glob: '<superproject-root extensionless filename containing colon + whitespace>',
+  matches: (file) =>
+    !file.includes('/') &&
+    !file.startsWith('.') &&
+    !file.includes('.') &&
+    file.includes(':') &&
+    /\s/.test(file),
+  detect: (file) =>
+    `Root-level shell output artifact filename "${file}" has no extension and resembles redirected command output. ` +
+    'Delete accidental output or move it to ignored scratch; intentional root files should use a descriptive extension.',
+  fixerRole: CONTENT_FIXER_ROLE,
+  repoScope: 'superproject-only',
+};
+
 export const DEFAULT_CONTENT_DETECTORS: ContentDetector[] = [
   // Ordered FIRST: a file carrying a credential shape is the one offence here whose
   // cost is unbounded and unrecoverable (a permanent egress freeze) rather than a
@@ -632,6 +675,7 @@ export const DEFAULT_CONTENT_DETECTORS: ContentDetector[] = [
   // so the specific detector must record first. It also catches the SILENT form,
   // which ts-parse cannot see at all (the file parses).
   sqlCommentBacktickDetector,
+  emptyTsSourceDetector,
   esbuildTransformDetector,
   tsParseDetector,
   shellSyntaxDetector,
@@ -645,4 +689,5 @@ export const DEFAULT_CONTENT_DETECTORS: ContentDetector[] = [
   // sweep committed, not an INVALID file. Scoped to test/spec files only, so it
   // never overlaps the detectors above on ordinary source.
   focusedTestDetector,
+  rootRedirectArtifactDetector,
 ];

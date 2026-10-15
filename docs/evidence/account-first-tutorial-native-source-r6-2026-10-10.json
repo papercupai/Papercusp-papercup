@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "kind": "native-review-source-manifest",
+  "workItemId": "WI-10007744",
+  "implementationWorkItemId": "WI-10007170",
+  "planSlug": "cloud-app-live-tutorial-2026-10-01",
+  "profile": "product-guide",
+  "root": "/dev/shm/pcv/papercusp-lint-as-committed-dd07170622-5DQyHU",
+  "sourceRoot": "$HOME/papercupai-workspace/papercusp",
+  "portalRoot": "/dev/shm/pcv/papercusp-lint-as-committed-501a33d403-dom0BA",
+  "portalSourceRoot": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+  "rootCommit": "dd07170622dbe1000a0e97a38c940af1a9da7403",
+  "portalCommit": "501a33d40324abefde337479b154c1da18f363e0",
+  "files": [
+    { "path": "packages/operator-core/lib/onboarding/product-tutorial-lesson.ts", "sha256": "b91a3ea0338f77ad37f990f63cb8e5f7406dda731373e457684a471841a51ea4" },
+    { "path": "packages/operator-ui/src/onboarding/product-tutorial.tsx", "sha256": "6ef334883debb8355a81cfedba8308cd386977682e3661c971012a570ddd4453" },
+    { "path": "packages/operator-ui/src/browser-telemetry.tsx", "sha256": "465b90f33d7bc3ca21c96da30b74f09234cd389967f51e2dfde12b8ce61923d5" }
+  ],
+  "portalFiles": [
+    { "path": "packages/ui/src/shell.tsx", "sha256": "1e7b345e0272d7304d0225a22b3a118503d0c5281cbfba91684b9da450682aaf" },
+    { "path": "packages/ui/src/auth.tsx", "sha256": "7aef72afb0a431396db5f004bb55f10a19f664e0f948434fc7a61c05cbeefaa4" },
+    { "path": "packages/ui/src/shell-model.ts", "sha256": "92bb9a49f04ae9da8c27299e60afb316997a18efde6042910a41256d2fcc6a6f" },
+    { "path": "app/tokens.css", "sha256": "956a7e727acee15f2bfcff0d58eb3288bf5f4ee7da3ec2692a4499a7c421b9b6" },
+    { "path": "app/globals.css", "sha256": "5e11ab8e97f8eb535504677f1a40b78b83fec7c3171f2e6f3dde7dc112ac95de" },
+    { "path": "playwright.config.ts", "sha256": "7f282f66b2706f5f2cbe4f13ec4bda1059f506bc351f0db6af5e63d205710887" },
+    { "path": "e2e/portal-product-tutorial.spec.ts", "sha256": "839049107b70bcc0bb154d3b09fdca04ef8a88885b340dc9713fb3272bc49c24" }
+  ],
+  "consumedImports": [
+    "/dev/shm/pcv/papercusp-lint-as-committed-dd07170622-5DQyHU/packages/operator-ui/src/onboarding/product-tutorial.tsx",
+    "/dev/shm/pcv/papercusp-lint-as-committed-dd07170622-5DQyHU/packages/operator-core/lib/onboarding/product-tutorial-lesson.ts",
+    "/dev/shm/pcv/papercusp-lint-as-committed-dd07170622-5DQyHU/packages/operator-core/lib/onboarding/product-tutorial-lesson.ts",
+    "/dev/shm/pcv/papercusp-lint-as-committed-dd07170622-5DQyHU/packages/operator-ui/src/browser-telemetry.tsx",
+    "/dev/shm/pcv/papercusp-lint-as-committed-dd07170622-5DQyHU/packages/operator-ui/src/browser-telemetry.tsx"
+  ],
+  "observedAt": "2026-10-10T13:25:41.309Z",
+  "limitations": [
+    "Readiness and source custody only; native review remains pending.",
+    "The maintained Chrome/Orca mounted-guide review does not exercise the Tauri bridge, hosted providers, signup, real destination tasks, or production."
+  ]
+}

@@ -14,6 +14,7 @@
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { findSessionTranscript, papercuspSessionClaudeBase, newestTranscriptUnderOwner } from './claude-sessions';
 import { findCodexRolloutPath, findCodexRolloutPathByUuid } from './session-transcript-resolvers';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
@@ -22,6 +23,8 @@ import {
   analyzeClaudeResumeTranscript,
   CLAUDE_TOOL_REFERENCE_RECOVERY_TURNS,
 } from './claude-resume-tool-references.mjs';
+import { parseLaunchCompactionLimitArgv } from './model-context-budget.mjs';
+export { parseLaunchCompactionLimitArgv };
 
 // P-016 fallback resolver — RELOCATED to claude-sessions.ts (2026-07-04, WI-2680) so
 // the agents-roster live-thinking pane + stream share the SAME resume-rotation
@@ -64,19 +67,77 @@ export interface CodexContextSnapshot {
  * last_token_usage; cumulative total_token_usage is deliberately ignored. */
 const CODEX_TOKEN_TAIL_BYTES = 1024 * 1024;
 
-export function codexContextSnapshotFromRollout(pathStr: string): CodexContextSnapshot | null {
+/**
+ * WI-10005305: the compaction-compliance sweep asks for the same rollout twice
+ * (tokens, then window) and again every sweep, while most rollouts have not
+ * changed since the previous read. It used to re-read the 1 MiB tail
+ * synchronously each time (~2.25 reads/s, ~2.5% of bg-host's main thread,
+ * measured under P-017). The last parsed snapshot is kept per path and reused
+ * while (size, mtimeMs, ino) is unchanged: Codex only appends to a rollout, so
+ * any new token_count event changes `size`, and a file replaced by rename
+ * changes `ino`. Only completed reads are remembered; an error is never cached.
+ */
+const CODEX_SNAPSHOT_MEMO_MAX = 512;
+interface CodexSnapshotMemoEntry {
+  size: number;
+  mtimeMs: number;
+  ino: number;
+  snapshot: CodexContextSnapshot | null;
+}
+const codexSnapshotMemo = pinModuleState<{ byPath: Map<string, CodexSnapshotMemoEntry> }>(
+  '@papercusp/operator-core.compaction-usage.codexSnapshotMemo',
+  () => ({ byPath: new Map() }),
+);
+
+function rememberCodexSnapshot(pathStr: string, entry: CodexSnapshotMemoEntry): void {
+  const byPath = codexSnapshotMemo.byPath;
+  byPath.delete(pathStr); // re-insert at the newest position (Map keeps insertion order)
+  byPath.set(pathStr, entry);
+  while (byPath.size > CODEX_SNAPSHOT_MEMO_MAX) {
+    const oldest = byPath.keys().next().value;
+    if (oldest === undefined) break;
+    byPath.delete(oldest);
+  }
+}
+
+export async function codexContextSnapshotFromRollout(
+  pathStr: string,
+  fileOps: Pick<typeof fs.promises, 'stat' | 'open'> = fs.promises,
+): Promise<CodexContextSnapshot | null> {
   try {
-    const size = fs.statSync(pathStr).size;
-    const start = Math.max(0, size - CODEX_TOKEN_TAIL_BYTES);
-    const fd = fs.openSync(pathStr, 'r');
-    let text: string;
-    try {
-      const buf = Buffer.alloc(size - start);
-      fs.readSync(fd, buf, 0, buf.length, start);
-      text = buf.toString('utf8');
-    } finally {
-      fs.closeSync(fd);
+    const st = await fileOps.stat(pathStr);
+    const memo = codexSnapshotMemo.byPath.get(pathStr);
+    if (memo && memo.size === st.size && memo.mtimeMs === st.mtimeMs && memo.ino === st.ino) {
+      rememberCodexSnapshot(pathStr, memo);
+      return memo.snapshot;
     }
+    const start = Math.max(0, st.size - CODEX_TOKEN_TAIL_BYTES);
+    const fh = await fileOps.open(pathStr, 'r');
+    let text: string;
+    let complete: boolean;
+    try {
+      const buf = Buffer.alloc(st.size - start);
+      const { bytesRead } = await fh.read(buf, 0, buf.length, start);
+      complete = bytesRead === buf.length;
+      text = buf.toString('utf8', 0, bytesRead);
+    } finally {
+      await fh.close();
+    }
+    const snapshot = codexContextSnapshotFromText(text);
+    // A short read means the file shrank after the stat; the result does not
+    // describe the stat'ed contents, so it is returned but not remembered.
+    if (complete) {
+      rememberCodexSnapshot(pathStr, { size: st.size, mtimeMs: st.mtimeMs, ino: st.ino, snapshot });
+    }
+    return snapshot;
+  } catch {
+    return null;
+  }
+}
+
+/** Newest valid token_count snapshot in a rollout tail (pure; the tail may begin mid-line). */
+export function codexContextSnapshotFromText(text: string): CodexContextSnapshot | null {
+  try {
     const lines = text.split('\n');
     for (let i = lines.length - 1; i >= 0; i--) {
       const line = lines[i]?.trim();
@@ -325,7 +386,7 @@ async function codexSnapshotForRef(
   if (ref.agent !== 'codex' || ref.sessionKey == null) return null;
   try {
     const rollout = await resolveCodexRolloutPathForRef(ref, ownerId, deps);
-    return rollout ? codexContextSnapshotFromRollout(rollout) : null;
+    return rollout ? await codexContextSnapshotFromRollout(rollout) : null;
   } catch {
     return null;
   }
@@ -572,7 +633,9 @@ export async function resolveSessionRef(ownerId: string): Promise<SessionRef | n
         FROM harness_shared.adv_sessions
        WHERE coord_owner_id = ${ownerId}
          AND (session_id IS NOT NULL OR agent = 'codex')
-       ORDER BY started_at DESC
+         AND ended_at IS NULL
+         AND ended_by IS NULL
+       ORDER BY started_at DESC, id DESC
        LIMIT 1
     `;
     if (!rows.length) return null;
@@ -832,10 +895,29 @@ async function servedRouteBoundToRef(
 }
 
 /** The hard window of a served route: 1M when the beta was forwarded, else the 200k default.
- *  Null when the route is unknown or its gateway predates the `context1m` field (never guess). */
+ *  Null when the route is unknown or its gateway predates the `context1m` field (never guess).
+ *
+ *  WI-10006049: OBSERVED USAGE OUTRANKS THE FLAG. A request whose real input (exact
+ *  `inputTotal`, or the prompt floor) exceeded 200k was by construction served by a window
+ *  larger than 200k — whatever the `context1m` flag of the latest request says. Without this,
+ *  one 200k-flagged request (a bare `/model` menu pick on Claude Code 2.1.289, or a CLI
+ *  rate-limit fallback) re-seeded a session that was already holding >200k at 158k, below its
+ *  own fixed-prompt floor, and the watchdog respawned it on every turn (8 respawns in an hour,
+ *  2026-10-05). Usage can only RAISE the window, never lower it.
+ *
+ *  Only a reading taken ON THE REQUEST THE FLAG DESCRIBES counts (`usage.at >= route.at`: the
+ *  gateway stamps the route on response headers and the usage on that response's
+ *  `message_start`). A reading carried over from an EARLIER request proves nothing about the
+ *  current one: the da701a71 death (2026-09-02) was a 248,703-token session whose CLI fell back
+ *  to a bare 200k model, so the window really was 200k and every later request failed — that
+ *  session must still read 200k so the watchdog rescues it. */
 export function servedWindowForRoute(route: GatewayServedRoute | null | undefined): number | null {
   if (!route?.model || route.context1m == null) return null;
-  return route.context1m ? MODEL_WINDOW_1M : MODEL_WINDOW_DEFAULT;
+  if (route.context1m) return MODEL_WINDOW_1M;
+  const usage = route.usage;
+  const sameRequest = usage != null && route.at != null && usage.at >= route.at;
+  const observed = sameRequest ? usage.inputTotal : 0;
+  return Number.isFinite(observed) && observed > MODEL_WINDOW_DEFAULT ? MODEL_WINDOW_1M : MODEL_WINDOW_DEFAULT;
 }
 
 /**
@@ -903,8 +985,11 @@ export async function resolveSessionRefReconciled(
             return nativeId ? { nativeId, atMs: null } : null;
           })()
         : await (async () => {
-            const { latestRespawnNativeSession } = await import('./events/await/psu-pty-discovery');
-            return latestRespawnNativeSession(ownerId, undefined, { allowWithoutHost: !ref });
+            // ASYNC on purpose (WI-10005220): this runs per owner on bg-host's sweeps, and the
+            // sync form's stat/read in the shared psu-pty dir froze the event loop 0.6-2.0 s
+            // per call whenever the ext4 journal stalled.
+            const { latestRespawnNativeSessionAsync } = await import('./events/await/psu-pty-discovery');
+            return latestRespawnNativeSessionAsync(ownerId, undefined, { allowWithoutHost: !ref });
           })();
     const respawnNewerThanRef =
       hostRespawn?.atMs == null ||
@@ -1528,6 +1613,43 @@ export async function detectContextDeathForOwner(ownerId: string): Promise<boole
   return tail != null && tailCarriesContextDeath(tail);
 }
 
+/** Positive recovery evidence, unlike the best-effort false/null death APIs.
+ * An empty, unreadable, changing or error-only transcript is not healthy. */
+export async function observeHealthyClaudeTranscriptForOwner(ownerId: string, deps: Pick<EstimateContextDeps, 'resolveRef'> & {
+  readTail?: typeof readLiveClaudeTranscriptTail;
+} = {}): Promise<{
+  sessionId: string; measuredAtMs: number;
+} | null> {
+  try {
+    const resolveRef = deps.resolveRef ?? resolveSessionRefReconciled;
+    const before = await resolveRef(ownerId);
+    if (before?.agent !== 'claude' || !before.sessionId) return null;
+    const tail = await (deps.readTail ?? readLiveClaudeTranscriptTail)(ownerId, TOOL_REFERENCE_DEATH_TAIL_BYTES, before);
+    const after = await resolveRef(ownerId);
+    if (tail == null || after?.agent !== 'claude' || after.sessionId !== before.sessionId ||
+        after.transcriptOwner !== before.transcriptOwner || tailCarriesContextDeath(tail) ||
+        tailCarriesToolReferenceDeath(tail)) return null;
+    const measuredAtMs = healthyClaudeTranscriptResponseAt(tail);
+    return measuredAtMs == null ? null : { sessionId: before.sessionId, measuredAtMs };
+  } catch { return null; }
+}
+
+export function healthyClaudeTranscriptResponseAt(tail: string, nowMs = Date.now()): number | null {
+  if (!Number.isFinite(nowMs) || tailCarriesContextDeath(tail) || tailCarriesToolReferenceDeath(tail)) return null;
+  let latest: Record<string, unknown> | null = null;
+  for (const line of tail.split('\n')) {
+    try { const record = JSON.parse(line); if (record?.type === 'assistant') latest = record; }
+    catch { /* partial JSONL edge is not evidence */ }
+  }
+  if (!latest || latest.isApiErrorMessage === true || latest.isSynthetic === true) return null;
+  const at = typeof latest.timestamp === 'string' ? Date.parse(latest.timestamp) : Number.NaN;
+  const message = latest.message as { model?: string; content?: unknown } | undefined;
+  if (!Number.isFinite(at) || at <= 0 || at > nowMs || !message || message.model === '<synthetic>' ||
+      !Array.isArray(message.content) || !message.content.some(block => block && typeof block === 'object' &&
+        ((block.type === 'text' && typeof block.text === 'string' && block.text.trim()) || block.type === 'tool_use'))) return null;
+  return at;
+}
+
 /**
  * The TAIL of an owner's LIVE claude transcript, or null (omp/codex, no transcript,
  * read error). EI-13477: reconciled, same reasoning as resolveLiveTranscriptPath —
@@ -1537,9 +1659,11 @@ export async function detectContextDeathForOwner(ownerId: string): Promise<boole
  * The first line of a tail may be a partial record; both detectors parse whole JSONL
  * lines and skip it.
  */
-async function readLiveClaudeTranscriptTail(ownerId: string, bytes: number): Promise<string | null> {
+async function readLiveClaudeTranscriptTail(ownerId: string, bytes: number, expectedRef?: SessionRef): Promise<string | null> {
   try {
     const ref = await resolveSessionRefReconciled(ownerId);
+    if (expectedRef && (ref?.agent !== expectedRef.agent || ref.sessionId !== expectedRef.sessionId ||
+        ref.transcriptOwner !== expectedRef.transcriptOwner)) return null;
     if (!ref?.sessionId || ref.agent === 'omp' || ref.agent === 'codex') return null;
     const { findSessionTranscript } = await import('./claude-sessions');
     const p = await findSessionTranscript(ref.sessionId, {
@@ -1551,7 +1675,8 @@ async function readLiveClaudeTranscriptTail(ownerId: string, bytes: number): Pro
     const fd = await fs.promises.open(p, 'r');
     try {
       const buf = Buffer.alloc(size - start);
-      await fd.read(buf, 0, buf.length, start);
+      const read = await fd.read(buf, 0, buf.length, start);
+      if (read.bytesRead !== buf.length) return null;
       return buf.toString('utf8');
     } finally {
       await fd.close();
@@ -1645,32 +1770,6 @@ export async function resolveLaunchCompactionLimitForOwner(ownerId: string): Pro
   } catch {
     return null;
   }
-}
-
-/**
- * The pure argv scan behind {@link resolveLaunchCompactionLimitForOwner} — split
- * out so the parsing contract is unit-testable without a database.
- *
- * Accepts both wire forms (mirroring the `--model` scan below): psu emits
- * `--compaction-limit=N`, but a hand-composed argv may use the space form. A
- * malformed value is DROPPED rather than coerced — psu rejects bad input at parse
- * time, so anything unparseable here came from a hand-edited argv, and falling
- * through to the model-derived default is the safe read. Returns null when the
- * launch named no limit.
- */
-export function parseLaunchCompactionLimitArgv(argv: unknown): number | null {
-  if (!Array.isArray(argv)) return null;
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (typeof a !== 'string') continue;
-    let raw: string | null = null;
-    if (a.startsWith('--compaction-limit=')) raw = a.slice('--compaction-limit='.length).trim();
-    else if (a === '--compaction-limit' && typeof argv[i + 1] === 'string') raw = (argv[i + 1] as string).trim();
-    if (!raw) continue;
-    const n = Number(raw);
-    if (Number.isFinite(n) && n > 0) return Math.floor(n);
-  }
-  return null;
 }
 
 /**

@@ -28,4 +28,15 @@ else
   cp -R "$SRC"/. "$DEST"/
 fi
 
+# Package the same canonical public content for fresh/standalone Papercup
+# installs. Keep it separate from the engineering tree and the HTML route.
+MANUAL_SOURCE_DEST="../operator/public/manual-source"
+mkdir -p "$MANUAL_SOURCE_DEST"
+if command -v rsync >/dev/null 2>&1; then
+  rsync -a --delete src/content/docs/ "$MANUAL_SOURCE_DEST"/
+else
+  rm -rf "${MANUAL_SOURCE_DEST:?}"/*
+  cp -R src/content/docs/. "$MANUAL_SOURCE_DEST"/
+fi
+
 echo "postbuild-copy: $(find "$DEST" -type f | wc -l | tr -d ' ') files → $DEST"

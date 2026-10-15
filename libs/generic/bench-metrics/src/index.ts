@@ -39,9 +39,11 @@ export {
   bootstrapMeanCI,
   meanStderr,
   pairedBootstrapCI,
+  pairedRepositoryPowerPlan,
   mcnemarExact,
   type Interval,
   type PairedComparison,
+  type PairedClusterPowerPlan,
   type McNemarResult,
 } from './intervals';
 export { dominates, paretoFrontier, costAccuracyFrontier, type Direction } from './pareto';
@@ -66,6 +68,8 @@ export {
 // Benchmark cost layer.
 export {
   PRICE_TABLE_V1,
+  PRICE_TABLE_V2,
+  priceTableForVersion,
   DEFAULT_PRICE_TABLE,
   priceRun,
   resolveModelPrice,
@@ -76,7 +80,10 @@ export {
 export { accountTokens, verifyIsoBudget, budgetExceeded, isScored, type IsoBudgetCheck, type IsoBudgetCap } from './cost';
 
 // Report builder — the importable aggregation surface for the Evaluation UI (P-020).
-export { aggregateArm, buildSuiteReport, type AggregateOpts } from './aggregate';
+export {
+  aggregateArm, buildSuiteReport, classifyAttemptOutcome, summarizeAssignedOutcomes,
+  type AggregateOpts, type AssignedOutcomeRow, type AttemptOutcome, type AttemptOutcomeCounts,
+} from './aggregate';
 
 // Per-capability attribution + cross-suite roll-up (capability-injection redesign / P-011).
 export {
@@ -94,6 +101,20 @@ export {
   type CrossSuiteAttribution,
   type CapabilityRollup,
 } from './capability-attribution';
+
+// Observed capability availability/delivery/use evidence + the lift-admission gate (fairness C4).
+export {
+  CAPABILITY_EVIDENCE_META_KEY,
+  readCapabilityEvidence,
+  mergeCapabilityEvidence,
+  withCapabilityEvidence,
+  classifyExercise,
+  admitCapabilityLift,
+  type CapabilityExerciseEvidence,
+  type CapabilityLiftAdmission,
+  type ExerciseClass,
+  type LiftRefusal,
+} from './capability-exercise';
 
 // Mandatory C1–C10 pre-claim fairness-audit table (capability-injection redesign / P-011 / C10).
 export {

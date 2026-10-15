@@ -24,6 +24,7 @@
 import { routeToAuthorityForHive, type LockAuthorityDeps } from './authority/lock-authority';
 import type { AuthorityOp } from './authority';
 import { setWorkItemReplicaAuthority, type WorkItemReplicaAuthority } from './work-item-replica-authority';
+import { observeFallback } from './degradation/fallback-observations';
 
 export class SwarmWorkItemReplicaAuthority implements WorkItemReplicaAuthority {
   constructor(private readonly deps: LockAuthorityDeps = {}) {}
@@ -35,11 +36,15 @@ export class SwarmWorkItemReplicaAuthority implements WorkItemReplicaAuthority {
 
   async route<T>(potSlug: string, op: AuthorityOp<T>): Promise<T> {
     const res = await routeToAuthorityForHive<T>(potSlug, op, this.deps);
+    observeFallback('swarm-authority-route', {
+      eligible: 1, applied: res.via === 'fail-open' || res.warning ? 0 : 1,
+      reason: res.via === 'fail-open' || res.warning ? 'authority-unreachable' : 'applied',
+      scope: `work-item-replica:${potSlug}`,
+    });
     if (res.warning) {
       // Fail-open (cross-machine, no transport / unreachable): the op ran locally
       // and the redundancy group may transiently split until the authority is
       // reachable again. Surface the warning (D-004). On a single box never fires.
-       
       console.warn(`[work-item-replica] authority fail-open for hive ${potSlug}: ${res.warning}`);
     }
     return res.value;

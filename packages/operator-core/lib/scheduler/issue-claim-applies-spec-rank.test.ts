@@ -103,4 +103,34 @@ describe('get-next.ts tier 3 threads the compiled rank down to the issue door', 
     const src = read(GET_NEXT_TS);
     expect(src).toMatch(/const\s+specOrderSql\s*=\s*compileRank\(/);
   });
+
+  it('attributes the injected pool on the operation-read and feature-candidate transactions', () => {
+    const src = read(GET_NEXT_TS);
+    const operationStart = src.indexOf('const operationClaimRead = await boundedOrgTxn(');
+    const operationEnd = src.indexOf('  if (operationClaimRead.status', operationStart);
+    expect(operationStart).toBeGreaterThan(-1);
+    expect(src.slice(operationStart, operationEnd)).toContain('acquirePool: opts.acquirePool');
+
+    const attemptStart = src.indexOf('const attempt = async');
+    const candidateStart = src.indexOf('const rows = await boundedOrgTxn(', attemptStart);
+    const candidateEnd = src.indexOf('      );\n      return rows[0]', candidateStart);
+    expect(candidateStart).toBeGreaterThan(-1);
+    expect(src.slice(candidateStart, candidateEnd)).toContain('acquirePool: opts.acquirePool');
+  });
+
+  it('forwards injected-pool attribution through both issue-tier call paths and transaction', () => {
+    const getNext = read(GET_NEXT_TS);
+    const claimIssueStart = getNext.indexOf('const claimIssue =');
+    const claimIssueEnd = getNext.indexOf('// The normal ladder', claimIssueStart);
+    expect(claimIssueStart).toBeGreaterThan(-1);
+    expect(getNext.slice(claimIssueStart, claimIssueEnd)).toContain('acquirePool: opts.acquirePool');
+    expect(tierThreeCallOpts(getNext)).toContain('acquirePool: opts.acquirePool');
+
+    const workItems = read(WORK_ITEMS_TS);
+    const issueClaimStart = workItems.indexOf('export async function claimNextIssueWorkItem(');
+    const issueTxnStart = workItems.indexOf('const claimed = await measureResolutionStep', issueClaimStart);
+    const issueTxnEnd = workItems.indexOf(').catch(async (error)', issueTxnStart);
+    expect(issueClaimStart).toBeGreaterThan(-1);
+    expect(workItems.slice(issueTxnStart, issueTxnEnd)).toContain('acquirePool: opts.acquirePool');
+  });
 });

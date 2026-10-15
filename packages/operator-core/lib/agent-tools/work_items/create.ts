@@ -23,10 +23,12 @@
  * remains the immediate-bypass (requestUrgentHiveWake) for fire-now cases.
  */
 import { z } from 'zod';
+import { itemClassOfPayload } from '../../scout/ideation-origin';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { potArg } from '../_pot-scope';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import {
   createOneWorkItem,
   type CreateOneWorkItemArgs,
@@ -34,6 +36,7 @@ import {
 } from './_create-core';
 import { looksLikeResidualClosure } from '../../plan-items/convert';
 import { TERMINAL_WORK_ITEM_STATES } from '../../work-items';
+import { FEATURE_STATE_ALIASES } from '../../work-item-dispatch-states';
 import { LINK_RELS } from './link';
 import { PLAN_ITEM_KIND, planItemRef } from '../../issue-blocks-merge';
 import { derivePlanSlug } from '../coordination/derived-plan-slug';
@@ -49,11 +52,18 @@ import type { ClaimSpecSubject } from '../../scheduler/claim-spec-match';
 import { ROUTING_GATE_INTENTS } from '../../routing-gate-hints';
 import { getModes } from '../../modes/store';
 import { withDrainBugAdmission } from './drain-flow';
+import { workItemsCreateAbortCompletionReceipt } from './create-abort-completion';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { resolveGoalContext } from '../../modes/goal-context';
+import { evaluateStewardHandDispatch } from '../../goals/steward-hand-dispatch';
 import { gateWorkScope } from '../../work-scope-policy';
 import { canonicalizeAssigneeOwnerId } from '../../work-item-holder-identity';
+import { changeKindsArg, changeKindReasonArg, type ChangeKind } from '../../change-kind-catalog';
+import { declareChangeKinds } from '../../work-item-change-kinds';
+import { stampFiledBugReproduction } from '../../attention/bug-reproduction';
+import { defaultReproductionLedgerDeps } from '../../attention/intake-promotion';
+import { CREATE_RECEIPT, toWorkItemReceipt } from './receipt';
 
 /**
  * Inline typed-link spec (WI-3956) — one edge written from the NEW work-item to a
@@ -82,8 +92,17 @@ const stateOnCreate = z
     message:
       'a work-item cannot be CREATED in a terminal state — that would bypass the completion-integrity gate (no owner, no evidence). Create it, then work_items:complete { id, completion, state } so the verification evidence is recorded.',
   })
+  // WI-6554700010009155 (owner directive #1746): `blocked` must NAME its blocker. Creating
+  // straight into `blocked` was the one door that skipped work_items:set_state's typed-blocker
+  // guard — measured 2026-10-12: 14 rows born blocked with no blocker, e.g. WI-6554700010008642.
+  // Aliases are folded through the same map the runtime writer uses, so a future spelling of
+  // `blocked` is refused here on its own.
+  .refine((s) => (FEATURE_STATE_ALIASES[s.trim().toLowerCase()] ?? s.trim().toLowerCase()) !== 'blocked', {
+    message:
+      "a work-item cannot be CREATED in state 'blocked' — a blocked item must name its blocker. Create it (open), then: work_items:set_blocker { id, kind, capability, ref, summary, nextVerb } for an external event/gate/runtime/human blocker (it parks the item), or work_items:link { id: '<blocker-id>', target_id: '<new-id>', rel: 'blocks' } for another work-item, or plans:set-status for a plan item.",
+  })
   .describe(
-    "initial lifecycle state (EI-10897) — e.g. 'wip' to open an ad-hoc unit you are starting RIGHT NOW (pair with assign_to:'self'), or 'blocked'. Defaults to the kind's normal entry state (todo). Terminal states are rejected: complete the item instead, so its evidence is recorded.",
+    "initial lifecycle state (EI-10897) — e.g. 'wip' to open an ad-hoc unit you are starting RIGHT NOW (pair with assign_to:'self'). Defaults to the kind's normal entry state (todo). Terminal states and 'blocked' are rejected: complete the item instead, or create it then name its blocker with work_items:set_blocker.",
   );
 
 /**
@@ -110,7 +129,7 @@ const linkSpec = z.object({
   target_ref: z.string().max(160).optional().describe('explicit coord ObjectRef ref — use with target_kind'),
   target_harness: z.string().max(80).optional().describe('harness for a feature target_id (disambiguation)'),
   satisfaction: z.enum(['settled', 'success']).optional().describe('blocks-only outcome requirement; omitted defaults to settled'),
-});
+}).meta({ id: 'work-items-create-link-v1' });
 
 function rejectMissingScheduleCadence(
   value: { routing_intent?: string; cadence?: string },
@@ -165,6 +184,15 @@ function describeDedupCoverageWarning(
  */
 export const WORK_ITEMS_CREATE_MAX_CONCURRENCY = 4;
 
+/**
+ * oversized-tool-results-reduction-2026-10-12 P-002: the default create RECEIPT (see receipt.ts).
+ * The full row echoed the caller's own `summary` back, plus `payload` internals, an inert
+ * `interestWatch` and ~20 nulls. Pass `payloadTier:'full'` for the whole row.
+ */
+export function toCreateReceiptWorkItem(row: object): Record<string, unknown> {
+  return toWorkItemReceipt(row, CREATE_RECEIPT);
+}
+
 function createAdmissionSubject(spec: CreateOneWorkItemArgs): ClaimSpecSubject {
   const payload = spec.payload ?? {};
   const numberOrNull = (value: unknown): number | null => {
@@ -190,6 +218,8 @@ function createAdmissionSubject(spec: CreateOneWorkItemArgs): ClaimSpecSubject {
     planItem: spec.targetPlanItem ? [spec.targetPlanItem.itemId] : [],
     fleet: null,
     triageGate: null,
+    // P-005: a Scout-authored create (payload.sourceRole 'Scout') is ideation at birth too.
+    itemClass: itemClassOfPayload(payload),
     age: Date.now(),
     riskTier: typeof payload.risk_tier === 'string' ? payload.risk_tier : null,
     redundancy: numberOrNull(payload.redundancy),
@@ -236,6 +266,8 @@ const itemSpec = z.object({
   urgent: z.boolean().optional().describe('URGENT enqueue: wake the brain immediately (floor-debounced). Reserve for a production fire.'),
   force: z.boolean().optional().describe('Override the dupe guards (EI-316 mirror, semantic cosine, exact identity) for this item.'),
   assign_to: z.string().max(120).optional().describe('Atomically CLAIM this item for this agent id in the SAME create (B-LOOP-4) — pass a concrete ownerId, or the literal "self" to resolve to the caller. Overrides assign_all_to_self for this item.'),
+  changeKinds: changeKindsArg().optional(), // change-kind-declared-proof P-001: recorded only when the item is claimed (assign_to)
+  changeKindReason: changeKindReasonArg().optional(),
   // EI-10897: the su persona itself documents `work_items:create { title, assign_to:'self',
   // state:'wip' }` as THE way to open an ad-hoc unit you are starting right now — and the
   // tool rejected `state` as an unrecognized key. A prompt that teaches an arg the tool
@@ -248,6 +280,7 @@ const itemSpec = z.object({
     .describe('Plan item this work-item IMPLEMENTS ({ slug, item:"P-003" }): writes a work→plan_item coverage edge so it rolls up into that item; completing the item can auto-resolve it as residue. A bug merely DISCOVERED while working an item is NOT implementing it — file it unlinked (EI-19460536530145188).'),
   links: z.array(linkSpec).max(20).optional().describe('inline typed links (WI-3956) written from the new item to targets on create — e.g. [{ rel:"investigates", target_id:"EI-9250" }]. Best-effort: a bad target is skipped, never fails the create.'),
   conditionKey: hardText(200).optional().describe('recurring-detector filing identity (WI-39604): an OPEN item already holding this key is refreshed and returned (see conditionUpsert on the result) instead of a sibling being filed — single-host system filers only.'),
+  conditionReplay: z.literal('include-terminal').optional().describe('For immutable revision identities: reuse the original conditionKey filing after closure too, without reopening or rewriting its disposition. Requires conditionKey and a concrete workspace. Omit for recurring alarms.'),
   directiveRef: directiveRefArg,
 })
   // WI-4492: strict — an unknown field name is a LOUD error naming it, never a silent drop
@@ -259,6 +292,10 @@ const itemSpec = z.object({
 export default defineTool({
   name: 'work_items:create',
   profile: 'engineer',
+  // WI-10005718: a create that outruns the 60s dispatch budget has ALREADY inserted the
+  // row; the receipt makes dispatch return that late envelope (id + downgrade notices)
+  // instead of a bare `timeout` that invites a duplicate-filing retry.
+  abortCompletionReceipt: workItemsCreateAbortCompletionReceipt,
   description:
     "Create ONE or MANY work-items. bug/change/task file tracked issues; feature enters the harness queue; chunk is retired (rejected). If creation requests an assignment to a fleet MEMBER outside that member's claim scope, the finding is retained as an explicitly unassigned, claim-held filing with a visible downgrade — it never grants an out-of-scope claim. Single: { kind, title, … }; many: items:[…]. Returns per-item outcomes, including a visible warning when dedup coverage is degraded.",
   guidance: {
@@ -356,6 +393,8 @@ export default defineTool({
       urgent: z.boolean().optional().describe('URGENT enqueue: wake the brain immediately (floor-debounced). Reserve for a production fire, not routine filing.'),
       force: z.boolean().optional().describe('Override the dupe guards (EI-316 mirror, semantic cosine, exact identity).'),
       assign_to: z.string().max(120).optional().describe('Atomically CLAIM the new item for this agent id in the SAME create (B-LOOP-4) — pass a concrete ownerId, or the literal "self" to resolve to the caller. Omit ⇒ unclaimed.'),
+      changeKinds: changeKindsArg().optional(), // change-kind-declared-proof P-001: recorded only when the item is claimed (assign_to)
+      changeKindReason: changeKindReasonArg().optional(),
       state: stateOnCreate.optional(), // EI-10897
       plan_item: z
         .object({ slug: z.string().min(1), item: z.string().min(1) })
@@ -369,15 +408,42 @@ export default defineTool({
       assign_all_to_self: z.boolean().optional().describe('Claim every created item for YOU (your ownerId) — unless an item carries its own assign_to.'),
       // batch-level routing default for all items
       workspace: z.string().max(120).optional().describe('target workspace id — defaults to the request workspace (MCP ?workspace=). EI-728 routing for the inline create / every item.'),
+      phone_producer: z.object({ roomName: z.string().trim().min(1).max(200).regex(/^[^\u0000-\u001f\u007f]+$/) }).strict()
+        .optional().describe('Admit a Phone voice producer from the configured authenticated host. Room selector only; host records supply identity and canonical binding. Exclusive with ordinary create metadata.'),
     })
     // WI-4492: strict so an unknown field name (e.g. a stripped `body`) is a LOUD error.
     .strict()
-    .refine((a) => (a.items?.length ?? 0) > 0 || (Boolean(a.kind) && Boolean(a.title)), {
+    .refine((a) => Boolean(a.phone_producer) || (a.items?.length ?? 0) > 0 || (Boolean(a.kind) && Boolean(a.title)), {
       message: 'pass { kind, title } for one, or items:[{ kind, title }] for many',
     })
     .superRefine(rejectBodySummaryConflict)
+    .superRefine((args, ctx) => {
+      if (args.phone_producer && Object.keys(args).some((key) => !['phone_producer', 'harness', 'workspace'].includes(key))) {
+        ctx.addIssue({ code: 'custom', message: 'phone_producer is exclusive with ordinary create metadata' });
+      }
+      if ([args, ...(args.items ?? [])].some((item) => item.payload &&
+          Object.prototype.hasOwnProperty.call(item.payload, 'externalRuntimeProducer'))) {
+        ctx.addIssue({ code: 'custom', message: 'externalRuntimeProducer is host-authored; use phone_producer admission' });
+      }
+      if ([args, ...(args.items ?? [])].some(item => item.payload && Object.prototype.hasOwnProperty.call(item.payload, '_frozenTests'))) {
+        ctx.addIssue({ code: 'custom', message: '_frozenTests is server-authored; register independent evidence with work_items:update frozenTests' });
+      }
+    })
     .superRefine(rejectMissingScheduleCadence),
   async handler(args, ctx) {
+    if (args.phone_producer) {
+      const { admitConfiguredPhoneProducer } = await import('../../blueprint/phone-producer-admission');
+      const requestedHarness = resolveConcreteHarnessSlug(args.harness, ctx);
+      if (args.harness?.trim() && !requestedHarness) {
+        throw new Error('phone_producer_concrete_harness_required');
+      }
+      const binding = await admitConfiguredPhoneProducer(ctx.principal, args.phone_producer.roomName, {
+        harness: requestedHarness ?? undefined,
+        workspace: args.workspace ?? ctx.workspaceId,
+      });
+      return { content: [{ type: 'text' as const, text: JSON.stringify(binding) }],
+        data: { ok: true, results: [{ ok: true, id: binding.workItemId, producerBinding: binding }], counts: { ok: 1, failed: 0 } } };
+    }
     const ident = resolveAgentIdentity(ctx);
     const createCtx = {
       ownerId: ident.ownerId,
@@ -385,12 +451,20 @@ export default defineTool({
       harnessSlug: ctx.harnessSlug,
       projectDir: ctx.projectDir,
     };
+    // change-kind-declared-proof P-001: the declaration rides beside the spec, not inside it —
+    // createOneWorkItem never sees it. Keyed by the spec object, which the loop below mutates
+    // in place (assign_to canonicalization / downgrade), so the lookup sees the FINAL assignee.
+    const declaredKinds = new WeakMap<CreateOneWorkItemArgs, { kinds: ChangeKind[]; reason?: string }>();
+    const withDeclaration = (spec: CreateOneWorkItemArgs, kinds: ChangeKind[] | undefined, reason: string | undefined) => {
+      if (kinds?.length) declaredKinds.set(spec, { kinds, reason });
+      return spec;
+    };
     const list: CreateOneWorkItemArgs[] = args.items?.length
       ? args.items.map((it) => {
           // WI-4492: `body` is an accepted alias for `summary`. Drop the raw `body` key
           // (createOneWorkItem takes `summary`) and resolve the single value from either.
-          const { body: _body, ...rest } = it;
-          return {
+          const { body: _body, changeKinds: itKinds, changeKindReason: itKindReason, ...rest } = it;
+          return withDeclaration({
             ...rest,
             summary: resolveBodyAlias(it),
             harness: it.harness ?? args.harness,
@@ -398,10 +472,10 @@ export default defineTool({
             assign_to: resolveSelfLiteral(it.assign_to, ident.ownerId) ?? (args.assign_all_to_self ? ident.ownerId : undefined),
             ...(it.plan_item ? { targetPlanItem: { slug: it.plan_item.slug, itemId: it.plan_item.item } } : {}),
             ...(it.links ? { links: it.links } : {}),
-          };
+          }, itKinds, itKindReason);
         })
       : [
-          {
+          withDeclaration({
             kind: args.kind as string,
             title: args.title as string,
             summary: resolveBodyAlias(args), // WI-4492: `body` is an accepted alias for `summary`
@@ -422,7 +496,7 @@ export default defineTool({
             assign_to: resolveSelfLiteral(args.assign_to, ident.ownerId) ?? (args.assign_all_to_self ? ident.ownerId : undefined),
             ...(args.plan_item ? { targetPlanItem: { slug: args.plan_item.slug, itemId: args.plan_item.item } } : {}),
             ...(args.links ? { links: args.links } : {}),
-          },
+          }, args.changeKinds, args.changeKindReason),
         ];
     const drainMode = list.some((spec) => spec.kind === 'bug')
       ? (await getModes(ident.workspaceId ?? ctx.workspaceId ?? 'default', ident.ownerId)).find(
@@ -457,6 +531,26 @@ export default defineTool({
         // available when the semantic probe is unavailable; feature/chunk/bug/change
         // still inherit the resolved GOAL fail-closed rail.
         spec.goalDedupGate = goalDedupGate && spec.kind !== 'task';
+        // P-013 / D-024: `payload.reproduction` is a SERVER-computed stamp — it is what
+        // lets an encountered bug skip the bulk-review reproduction step. A caller value
+        // is never stored verbatim: re-stamp it under the caller's identity (ledger refs
+        // resolved, any caller-written verdict discarded), or refuse one that won't parse.
+        const callerPayload =
+          typeof spec.payload === 'object' && spec.payload !== null ? (spec.payload as Record<string, unknown>) : null;
+        if (callerPayload && callerPayload.reproduction !== undefined) {
+          const raw = callerPayload.reproduction;
+          const receiptInput =
+            raw && typeof raw === 'object' && !Array.isArray(raw) && 'receipt' in raw
+              ? (raw as { receipt: unknown }).receipt
+              : raw;
+          const stamp = await stampFiledBugReproduction(
+            receiptInput,
+            { filedBy: ident.ownerId },
+            defaultReproductionLedgerDeps(),
+          );
+          if (!stamp.ok) throw new Error(`payload.reproduction: ${stamp.error}`);
+          spec.payload = { ...callerPayload, reproduction: stamp.stored };
+        }
         // EI-18784357226895330: a claim spec governs what a member may PULL from the
         // shared claimable pool. It must NOT govern what a member may FILE. This block
         // used to refuse the whole create, which meant a member who discovered an
@@ -505,8 +599,39 @@ export default defineTool({
             assigneeResolutionDowngrade = { assigneeResolutionDowngrade: `FILED UNASSIGNED — ${canonical.message}` };
           }
         }
+        // WI-10005281 (recurrence of WI-10004867): a goal HOLDER files work UNASSIGNED
+        // and steers through claim specs/priority — it does not hand work to another
+        // agent. Downgrade (never refuse) so the finding stays durable and claimable;
+        // inherited goal context (fleet members/leaders) is deliberately NOT affected.
+        // No admissionBypass: a named assignment must not step around the screening floor.
+        let stewardHandDispatchDowngrade: Record<string, never> | { stewardHandDispatchDowngrade: string } = {};
+        if (spec.assign_to && resolvedGoalContext) {
+          const steward = await evaluateStewardHandDispatch({
+            workspaceId: ident.workspaceId,
+            ownerId: ident.ownerId,
+            assignTo: spec.assign_to,
+            goalContextId: resolvedGoalContext,
+          });
+          if (steward.handDispatch) {
+            spec.payload = {
+              ...(typeof spec.payload === 'object' && spec.payload !== null ? spec.payload : {}),
+              stewardHandDispatchDowngrade: {
+                requestedAssignee: steward.requestedAssignee,
+                reportedBy: ident.ownerId,
+                goalId: steward.goalId,
+                at: new Date().toISOString(),
+              },
+            };
+            spec.assign_to = undefined;
+            stewardHandDispatchDowngrade = { stewardHandDispatchDowngrade: steward.notice };
+          }
+        }
         let workScopeDowngrade: Record<string, never> | { workScopeDowngrade: string } = {};
         let fleetScopeDowngrade: Record<string, never> | { fleetScopeDowngrade: string } = {};
+        let fleetRefusal: {
+          admission: Extract<Awaited<ReturnType<typeof admitSubjectForFleetTarget>>, { allowed: false }>;
+          requestedAssignee: string;
+        } | undefined;
         if (spec.assign_to) {
           // workspace-work-scope-policy-2026-09-04 D-002/P-006: filing is allowed,
           // but an explicit assignment is a hand-out of work and must not create a
@@ -557,20 +682,9 @@ export default defineTool({
             workspaceId: ident.workspaceId,
           });
           if (!admission.allowed) {
-            // WI-6326: reuse the SAME liveness read the leader notification just performed
-            // (never a second lookup) so the caller-facing downgrade note's "route
-            // elsewhere" advice is code-conditional too.
-            const { liveRouteTarget, classRefusal } = (await notifyFleetScopeRefusal(
-              ident,
-              admission,
-              `work_items:create+assign '${spec.title}' → ${spec.assign_to}`,
-              // EI-19484346966003625 (R1): hand the refused subject's harness over so the
-              // notice can say whether this spec is refusing a CLASS rather than only this
-              // row — the per-row widen it otherwise recommends is what drove one leader
-              // through 6 spec revisions in 42h without unblocking its member.
-              { harness: spec.harness ?? createCtx.harnessSlug },
-            )) ?? {};
             const requestedAssignee = spec.assign_to;
+            // File first so both notification and receipt carry the actual id.
+            fleetRefusal = { admission, requestedAssignee };
             spec.payload = {
               ...(typeof spec.payload === 'object' && spec.payload !== null ? spec.payload : {}),
               // The downgraded filing is deliberately unassigned, but it must remain
@@ -592,21 +706,6 @@ export default defineTool({
             // it from entering the duplicate-screening pending dead end.
             spec.admissionBypass = 'bypass:explicit-assignment';
             spec.assign_to = undefined;
-            fleetScopeDowngrade = {
-              // EI-18673501896258575: the same concrete remedy fleetScopeLeaderRemedy
-              // already sent to the fleet leader (via notifyFleetScopeRefusal), echoed to
-              // the CALLER too, so a member can see the exact scheduler:set_claim_spec
-              // shape needed instead of waiting, blind, for the leader to notice.
-              fleetScopeDowngrade:
-                `FILED UNASSIGNED — the item exists on the ledger, but you do NOT hold it: ` +
-                `${admission.reason}. No out-of-scope claim was created. You are recorded as the ` +
-                `reporter, so the finding is durable and attributable while it waits for an owner. ` +
-                // EI-21906739799895413: the row is not persisted yet, so there is no id to
-                // render — pass a placeholder so the notice still shows the fence-preserving
-                // COMBINATOR shape (the part nobody can guess) with an obvious fill-in,
-                // rather than degrading to prose that sends the reader inventing syntax.
-                `${fleetScopeLeaderRemedy(admission, liveRouteTarget, classRefusal, null, '<the filed work-item id>')}`,
-            };
           }
         }
         const persist = () => createOneWorkItem(spec, createCtx);
@@ -656,6 +755,19 @@ export default defineTool({
             // EI-23799808825983763: the refusal's own next action (retry / force).
             ...(res.disposition !== undefined ? { disposition: res.disposition } : {}),
             ...(res.queueAdmission !== undefined ? { queueAdmission: res.queueAdmission } : {}),
+          };
+        }
+        if (fleetRefusal) {
+          const harness = spec.harness ?? createCtx.harnessSlug;
+          const { admission, requestedAssignee } = fleetRefusal;
+          const { liveRouteTarget, classRefusal } = (await notifyFleetScopeRefusal(
+            ident, admission, `work_items:create+assign ${res.workItem.id} → ${requestedAssignee}`,
+            { harness, subject: { itemId: res.workItem.id, member: requestedAssignee } },
+          )) ?? {};
+          fleetScopeDowngrade = { fleetScopeDowngrade:
+            `FILED UNASSIGNED — the item exists on the ledger, but you do NOT hold it: ` +
+            `${admission.reason}. No out-of-scope claim was created. You are recorded as the reporter. ` +
+            fleetScopeLeaderRemedy(admission, liveRouteTarget, classRefusal, null, res.workItem.id, harness),
           };
         }
         // WI-2874 non-blocking nudge: `task` is NON-CODE only. If a fresh task smells
@@ -750,11 +862,34 @@ export default defineTool({
             };
           }
         }
+        // change-kind-declared-proof P-001 (D-001): a create records kinds only for an item it
+        // also claims — an unassigned item has no agent whose work the kinds describe. Read
+        // spec.assign_to HERE, after the canonicalization/downgrades above have settled it.
+        const declared = declaredKinds.get(spec);
+        const changeKindsOut = declared
+          ? {
+              changeKinds: spec.assign_to
+                ? await declareChangeKinds({
+                    workspaceId: ident.workspaceId ?? ctx.workspaceId ?? 'default',
+                    featureId: res.workItem.id,
+                    kinds: declared.kinds,
+                    step: 'create',
+                    declaredBy: ident.ownerId,
+                    reason: declared.reason ?? null,
+                  })
+                : {
+                    recorded: false as const,
+                    error:
+                      'changeKinds were not recorded: a create records them only when it also claims the item (assign_to). Declare them at work_items:claim.',
+                  },
+            }
+          : {};
         return {
           ok: true as const,
           id: res.workItem.id,
           title: spec.title,
-          workItem: res.workItem,
+          workItem: ctx.payloadTierOverride === 'full' ? res.workItem : toCreateReceiptWorkItem(res.workItem),
+          ...changeKindsOut,
           ...(warnings.length > 0 ? { warning: warnings.join('\n') } : {}),
           ...residualLinkNudge,
           // EI-20450339646861882: filed, but nothing links it to the plan lane the
@@ -763,6 +898,7 @@ export default defineTool({
           // EI-18784357226895330: filed, but the requested self-assignment was refused
           // by the fleet lane — the caller must see this on an ok:true result.
           ...assigneeResolutionDowngrade,
+          ...stewardHandDispatchDowngrade,
           ...workScopeDowngrade,
           ...fleetScopeDowngrade,
           // work-queue-admission-and-bulk-dedup-2026-08-24 P-002 (item d): the P-008

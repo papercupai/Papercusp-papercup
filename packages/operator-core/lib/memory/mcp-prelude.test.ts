@@ -21,10 +21,12 @@ import { buildMcpPrelude, initializeQueryForHarness, _testing } from './mcp-prel
 import { buildMemoryContextBlock } from './injection';
 import { readInsightsDir } from './insights-index';
 import { withOptionalMemoryAdmission } from './mid-turn-admission';
+import { setSessionConfinementResolver } from '../capability-envelope/session-confinement-port';
 
 const origEnv = { ...process.env };
 
 beforeEach(() => {
+  setSessionConfinementResolver(() => null);
   vi.mocked(buildMemoryContextBlock).mockReset();
   vi.mocked(readInsightsDir).mockReset();
   vi.mocked(withOptionalMemoryAdmission).mockReset();
@@ -36,7 +38,16 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setSessionConfinementResolver(undefined);
   process.env = origEnv;
+});
+
+it('suppresses both live recall and the insights index for a frozen native session', async () => {
+  setSessionConfinementResolver(() => ({ denyTools: [], denyOutside: ['coord:whoami'],
+    denyAmbientContext: true, reason: 'frozen benchmark', imposedBy: 'host' }));
+  expect(await buildMcpPrelude({ userId: 'u1', workspaceId: 'private', sessionId: 'su-frozen', harnessSlug: 'xbench' })).toBeNull();
+  expect(buildMemoryContextBlock).not.toHaveBeenCalled();
+  expect(readInsightsDir).not.toHaveBeenCalled();
 });
 
 describe('injectionEnabled', () => {

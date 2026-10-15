@@ -87,6 +87,10 @@ function adequacyCard(subjectRef: string, over: Partial<ScorecardRow> = {}): Sco
     createdAt: '2026-08-20T02:00:00Z',
     createdBy: 'su-grader',
     rubricRef: 'spec-test-adequacy',
+    rubricCurrentness: {
+      state: 'current', reason: 'current', recordedRevision: 1, currentRevision: 1,
+      recordedCriteriaHash: 'criteria-hash-v1', currentCriteriaHash: 'criteria-hash-v1',
+    },
     subject: { kind: 'plan', ref: subjectRef },
     ratings: { traceability: { rating: 'pass', evidence: 'covered' } },
     nKeys: 1,
@@ -325,6 +329,29 @@ describe('computePlanSpecCoverage — the aggregate', () => {
         listClauses: vi.fn(async () => [clause({ revision: 2, currentRevision: 2 })]),
         listEvidence: vi.fn(async () => [evidence('SPEC-1', 2)]),
         listCards: listCards as unknown as PlanSpecCoverageDeps['listCards'],
+      }),
+    );
+
+    expect(aggregate.adequacy).toMatchObject({ graded: 0, ungraded: 1, ungradedSpecIds: ['SPEC-1'] });
+  });
+
+  it.each([
+    ['stale', {
+      state: 'stale', reason: 'criteria-hash-mismatch', recordedRevision: 6, currentRevision: 7,
+      recordedCriteriaHash: 'old-hash', currentCriteriaHash: 'current-hash',
+    }],
+    ['unknown', {
+      state: 'unknown', reason: 'live-identity-missing', recordedRevision: 6, currentRevision: null,
+      recordedCriteriaHash: 'old-hash', currentCriteriaHash: null,
+    }],
+  ] as const)('does not count an adequacy card with %s scored-rubric currentness', async (_state, rubricCurrentness) => {
+    const subjectRef = `${PLAN}#SPEC-1@1`;
+    const aggregate = await computePlanSpecCoverage(
+      { harnessSlug: 'papercusp', planSlug: PLAN },
+      deps({
+        listClauses: vi.fn(async () => [clause()]),
+        listEvidence: vi.fn(async () => [evidence('SPEC-1', 1)]),
+        listCards: vi.fn(async () => [adequacyCard(subjectRef, { rubricCurrentness })]),
       }),
     );
 

@@ -72,6 +72,7 @@ vi.mock('./ConversationsTab', () => ({ default: () => <div data-testid="panel-co
 // hide a regression that re-added them. See the "moved out" test below.
 
 import LeftSidebar, { leftSidebarWidthFromPointer } from './LeftSidebar';
+import { getLatestMeasure } from '@/app/_components/perf/perf-marks';
 
 describe('far-left dock width math (D-009)', () => {
   it('uses viewport clientX directly, independent of the chat pane width', () => {
@@ -156,6 +157,7 @@ describe('<LeftSidebar> shell', () => {
     expect(rail.getAttribute('data-collapsed')).toBe('false');
     expect(rail.getAttribute('data-tab')).toBe('accounts');
     expect(await screen.findByTestId('panel-accounts')).toBeTruthy();
+    await waitFor(() => expect(getLatestMeasure('accounts-tab-import')).not.toBeNull());
   });
 
   // Pins the WHOLE owner-set order, not just the first pair (owner ask

@@ -76,6 +76,26 @@ const CODEX_GUIDANCE = [
   'use the CLI fallback below.',
   'ptool tools:find --json -',
   '`tools.find` and',
+  // WI-10005083: seeded tools are called directly, never re-found per restart
+  // (a Codex drain fleet re-ran tools:find ~12x per restart for seeded tools).
+  'Your seeded tools are already callable. Do not re-find them after a restart.',
+  'Check `ALL_TOOLS` first, then call the method',
+  'tools.mcp__papercusp_su__work_items_get({ id, harness })',
+  'Use `tools:find` only for a capability that is\nnot in `ALL_TOOLS`',
+  'on the `ptool` path it cannot',
+  // EI-25176447697693688: stale direct wrappers require a current tools/list baseline.
+  '`stale_tool_contract`',
+  '`tools/list` baseline for the current serving generation.',
+  'each named `ptool` invocation opens its own MCP\nconnection and lists the current catalog',
+  'The CLI uses its\nown connection, so it does not repair the old direct-wrapper session.',
+  'that client reconnects and refreshes its list.',
+  // Native-owner authority refusal: use the authenticated ptool route without weakening the boundary.
+  '`native_tool_owner_unsupported_capability`',
+  'host-local `authenticatedPrincipal`',
+  'Do NOT retry the same direct wrapper',
+  'Switch this and the remaining Papercusp\ncalls in the session to the installed',
+  'A successful ptool call verifies the CLI route only',
+  'not a reason to loosen\n`authenticatedPrincipal` forwarding.',
 ] as const;
 
 describe('codex overlay reaches live launch context (P-010)', () => {
@@ -87,6 +107,14 @@ describe('codex overlay reaches live launch context (P-010)', () => {
     expect(rendered.overlaySource).not.toBe('');
     expect(rendered.overlaySource).toBe(join(LIVE_OVERLAY_DIR, 'papercusp-su.codex.md'));
     expect(rendered.text.length).toBeGreaterThan(0);
+  });
+
+  it('renders the coord:send summary contract in the live Codex launch context', async () => {
+    const { text, baseSource, overlaySource } = await render('codex');
+    expect(baseSource).toBe(LIVE_BASE_SOURCE);
+    expect(overlaySource).toBe(join(LIVE_OVERLAY_DIR, 'papercusp-su.codex.md'));
+    expect(text).toContain('`summary` is REQUIRED at the top level for every single-message send.');
+    expect(text).toContain('It is the one-line inbox headline the recipient sees, even when `body` carries the full message.');
   });
 
   it.each(CODEX_GUIDANCE)('a launched Codex session receives: %s', async (phrase) => {

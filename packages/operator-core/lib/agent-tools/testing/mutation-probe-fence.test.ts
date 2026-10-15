@@ -1,10 +1,29 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { execFileSync } from 'node:child_process';
-import { mkdirSync,mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync, fork, type ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import { existsSync, mkdirSync,mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
+import { build } from 'esbuild';
+import { terminateSpawnTree } from '@papercusp/backup/hook';
 
+vi.mock('node:child_process', async original => {
+  const actual = await original<typeof import('node:child_process')>();
+  return { ...actual, fork: vi.fn(actual.fork) };
+});
+vi.mock('@papercusp/backup/hook', async original => {
+  const actual = await original<typeof import('@papercusp/backup/hook')>();
+  return { ...actual, terminateSpawnTree: vi.fn(actual.terminateSpawnTree) };
+});
+
+// runTestFilesCore also consults the restricted-write fence (WI-10005634), which reads the
+// disclosure ledger through getOrgPg and fails CLOSED without it. This suite has no Postgres
+// and is about the mutation fence; restricted-hold-fence.test.ts covers that fence.
+vi.mock('./restricted-hold-fence', () => ({ restrictedHoldRefusal: async () => null }));
 vi.mock('../locks/su-lock-store', () => ({
   ensureBootstrap: vi.fn(async () => undefined),
   getTxPool: vi.fn(() => ({})),
@@ -13,20 +32,139 @@ vi.mock('../locks/su-lock-store', () => ({
 
 import { readQueue } from '../locks/su-lock-store';
 import { runTestFilesCore } from './run';
-import { mutationProbeRefusal } from './mutation-probe-fence';
+import { mutationProbeRefusal, testImportClosures } from './mutation-probe-fence';
 
 const readQueueMock = vi.mocked(readQueue);
 let root: string;
+let admissionBase = '';
+let previousAdmissionBase: string | undefined;
+
+it('keeps concurrent closure workers independent of an active caller compiler', async () => {
+  const dir = makeRoot();
+  writeFileSync(join(dir, 'subject.ts'), 'export const value = 1;');
+  writeFileSync(join(dir, 'entry.ts'), 'export { value } from "./subject.ts";');
+  let release!: () => void, started!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const ready = new Promise<void>(resolve => { started = resolve; });
+  const parentBuild = build({ stdin: { contents: 'export const parent = 1;' }, write: false,
+    plugins: [{ name: 'held-parent-compiler', setup(api) { api.onStart(async () => { started(); await gate; }); } }] });
+  // Attach rejection handling immediately: killing the caller's service is the
+  // counterexample, and must be reported here rather than as an unhandled rejection.
+  const parentOutcome = parentBuild.then(result => ({ result }), error => ({ error }));
+  try {
+    await ready;
+    const results = await Promise.all([testImportClosures(dir, [join(dir, 'entry.ts')]),
+      testImportClosures(dir, [join(dir, 'entry.ts')])]);
+    for (const result of results) {
+      expect(result.status).toBe('complete');
+      if (result.status === 'complete') expect(result.files.get(join(dir, 'entry.ts'))).toContain(join(dir, 'subject.ts'));
+    }
+  } finally { release(); }
+  expect(await parentOutcome).toHaveProperty('result.outputFiles');
+}, 20_000);
+
+it.skipIf(process.platform !== 'linux')('terminates a deadline-expired compiler and its real esbuild child', async () => {
+  const dir = makeRoot(), marker = join(dir, 'service.json'), worker = join(dir, 'blocked.mjs');
+  const esbuild = pathToFileURL(createRequire(import.meta.url).resolve('esbuild')).href;
+  writeFileSync(worker, `import { build } from ${JSON.stringify(esbuild)};
+    import { readFileSync, writeFileSync } from 'node:fs';
+    const input = await new Promise(resolve => process.once('message', resolve));
+    await build({ stdin: { contents: 'export const blocked = 1' }, write: false,
+      plugins: [{ name: 'blocked-build', setup(api) { api.onStart(async () => {
+        // Synchronous thread-self reads select this worker's OS thread. A
+        // process-wide census would include the caller service we must preserve.
+        const children = readFileSync('/proc/thread-self/children', 'utf8').trim().split(/\\s+/).filter(Boolean)
+          .filter(pid => { try { return readFileSync('/proc/' + pid + '/cmdline', 'utf8').includes('--service='); } catch { return false; } });
+        writeFileSync(input.root + '/service.json', JSON.stringify(children.map(Number)));
+        await new Promise(() => {});
+      }); } }] });`);
+  const result = await testImportClosures(dir, [], { workerPath: worker, budgetMs: 1500 });
+  expect(result).toEqual({ status: 'incomplete', reason: 'closure exceeded 1500ms' });
+  expect(existsSync(marker), 'The compiler must have started before the deadline; startup alone is not a cancellation test.').toBe(true);
+  const children: number[] = JSON.parse(readFileSync(marker, 'utf8'));
+  expect(children.length).toBeGreaterThan(0);
+  const deadline = Date.now() + 3000;
+  while (children.some(pid => existsSync('/proc/' + pid)) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+  expect(children.filter(pid => existsSync('/proc/' + pid))).toEqual([]);
+}, 6000);
+
+it('fails closed when the owned compiler worker errors or exits without evidence', async () => {
+  const dir = makeRoot(), worker = join(dir, 'broken.mjs');
+  writeFileSync(worker, 'throw new Error("compiler-fixture-error");');
+  const failure = await testImportClosures(dir, [], { workerPath: worker });
+  expect(failure.status).toBe('incomplete');
+  if (failure.status === 'incomplete') expect(failure.reason).toContain('compiler-fixture-error');
+  writeFileSync(worker, 'process.exit(0);');
+  await expect(testImportClosures(dir, [], { workerPath: worker })).resolves.toMatchObject({ status: 'incomplete', reason: 'compiler worker exited before returning a closure (0)' });
+});
+
+function failedTransport(pid?: number) {
+  const child = Object.assign(new EventEmitter(), {
+    pid, exitCode: null as number | null, signalCode: null,
+    stdout: new PassThrough(), stderr: new PassThrough(),
+    send: vi.fn(() => queueMicrotask(() => child.emit('error', new Error('compiler IPC failed')))),
+  });
+  vi.mocked(fork).mockReturnValueOnce(child as unknown as ChildProcess);
+  return child;
+}
+
+it('waits for a spawned compiler to exit after an IPC error before returning or closing its streams', async () => {
+  const child = failedTransport(2_147_483_647);
+  let terminated!: () => void;
+  const cleanupStarted = new Promise<void>(resolve => { terminated = resolve; });
+  // No real process is signalled: this transport fixture controls exit independently.
+  vi.mocked(terminateSpawnTree).mockImplementationOnce(() => terminated());
+  let settled = false;
+  const outcome = testImportClosures(makeRoot(), []).then(result => { settled = true; return result; });
+  try {
+    await cleanupStarted;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(settled, 'IPC failure does not mean the owned worker has exited').toBe(false);
+    expect(child.stdout.destroyed).toBe(false);
+    expect(child.stderr.destroyed).toBe(false);
+    child.exitCode = 1;
+    child.emit('exit', 1, null);
+    await expect(outcome).resolves.toEqual({ status: 'incomplete', reason: 'compiler IPC failed' });
+    expect(child.stdout.destroyed).toBe(true);
+    expect(child.stderr.destroyed).toBe(true);
+  } finally {
+    child.emit('exit', 1, null);
+    await outcome;
+  }
+});
+
+it('returns promptly when a compiler fails to spawn and emits no exit event', async () => {
+  const child = failedTransport();
+  vi.mocked(terminateSpawnTree).mockImplementationOnce(() => undefined);
+  const outcome = testImportClosures(makeRoot(), [], { budgetMs: 50 });
+  await expect(outcome).resolves.toEqual({ status: 'incomplete', reason: 'compiler IPC failed' });
+  expect(child.stdout.destroyed).toBe(true);
+  expect(child.stderr.destroyed).toBe(true);
+}, 1000);
+
+beforeEach(() => {
+  previousAdmissionBase = process.env.PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT;
+  admissionBase = mkdtempSync(join(tmpdir(), 'testing-run-mutation-probe-admission-'));
+  process.env.PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT = admissionBase;
+});
 
 afterEach(() => {
   readQueueMock.mockReset();
   if (root) rmSync(root, { recursive: true, force: true });
   root = '';
+  if (admissionBase) rmSync(admissionBase, { recursive: true, force: true });
+  if (previousAdmissionBase === undefined) delete process.env.PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT;
+  else process.env.PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT = previousAdmissionBase;
 });
 
 function makeRoot(): string {
   root = mkdtempSync(join(tmpdir(), 'testing-run-mutation-probe-fence-'));
   return root;
+}
+
+function admissionDirFor(dir: string): string {
+  const key = createHash('sha256').update(realpathSync(dir)).digest('hex');
+  return join(admissionBase, `papercusp-mutation-probe-${process.getuid?.() ?? 0}-${key}`);
 }
 
 it('refuses the run before root discovery when the checkout has an active mutation-probe lock', async () => {
@@ -111,7 +249,7 @@ describe('mutationProbeRefusal narrowing', () => {
     const dir = checkout({ ...base,
       'tests/dynamic.test.ts': 'export const load = (name: string) => import(name);\n',
     });
-    const manifestDir = join('/tmp', `papercusp-mutation-probe-${process.getuid?.() ?? 0}-${createHash('sha256').update(dir).digest('hex')}`);
+    const manifestDir = admissionDirFor(dir);
     mkdirSync(manifestDir, { mode: 0o700 });
     try {
       writeFileSync(join(manifestDir, 'original.manifest'),
@@ -126,7 +264,6 @@ describe('mutationProbeRefusal narrowing', () => {
 
   describe('a lock that outlives the dirty window (EI-24720263797874266)', () => {
     const sha = (value: string) => createHash('sha256').update(value).digest('hex');
-    const admissionDirFor = (dir: string) => join('/tmp', `papercusp-mutation-probe-${process.getuid?.() ?? 0}-${sha(realpathSync(dir))}`);
     function recordRestore(dir: string, path: string, original: string, rootField = realpathSync(dir)): void {
       const subjectPath = join(realpathSync(dir), path);
       const records = join(admissionDirFor(dir), 'restored');
@@ -249,6 +386,47 @@ describe('mutationProbeRefusal narrowing', () => {
       expect(refusal).toMatchObject({ error: 'mutation_probe_active' });
       expect(refusal!.hint).toContain('mutation probe on src/other.ts and');
     });
+
+    // EI-24852529885337741: every operator-side fork costs ~160 ms of main-thread time and this
+    // preflight runs on every testing:run while a probe lock is held (386 single-path
+    // hash-object forks in 10 min on :3170, 2026-10-02). A PATH wrapper records each git argv.
+    function recordGitArgv<T>(run: () => Promise<T>): Promise<{ result: T; hashObject: string[] }> {
+      const bin = mkdtempSync(join(tmpdir(), 'fence-git-argv-'));
+      const log = join(bin, 'argv.log');
+      const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+      writeFileSync(join(bin, 'git'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexec '${realGit}' "$@"\n`, { mode: 0o755 });
+      const savedPath = process.env.PATH;
+      process.env.PATH = `${bin}:${savedPath ?? ''}`;
+      return run().then((result) => {
+        const lines = existsSync(log) ? readFileSync(log, 'utf8').split('\n') : [];
+        return { result, hashObject: lines.filter((line) => / hash-object /.test(` ${line} `)) };
+      }).finally(() => {
+        process.env.PATH = savedPath;
+        rmSync(bin, { recursive: true, force: true });
+      });
+    }
+
+    it('proves every locked path with ONE hash-object fork', async () => {
+      const dir = checkout(walks);
+      commitAll(dir);
+      const { result, hashObject } = await recordGitArgv(() =>
+        mutationProbeRefusal(dir, ['tests/walk.test.ts'], probe('src/subject.ts', 'src/other.ts', 'src/mid.ts')));
+      expect(result).toBeNull();
+      expect(hashObject).toHaveLength(1);
+      expect(hashObject[0]).toMatch(/hash-object -- src\/subject\.ts src\/other\.ts src\/mid\.ts$/);
+    });
+
+    it('falls back to one fork per path when the batch fails, so a missing file fences only itself', async () => {
+      const dir = checkout(walks);
+      commitAll(dir);
+      rmSync(join(dir, 'src/other.ts'));
+      const { result, hashObject } = await recordGitArgv(() =>
+        mutationProbeRefusal(dir, ['tests/walk.test.ts'], probe('src/subject.ts', 'src/other.ts')));
+      expect(result).toMatchObject({ error: 'mutation_probe_active' });
+      expect(result!.hint).toContain('mutation probe on src/other.ts and');
+      expect(result!.hint).not.toContain('src/subject.ts');
+      expect(hashObject).toHaveLength(3);
+    });
   });
 
   it('does not mistake a commented literal package import for a dynamic import', async () => {
@@ -296,6 +474,26 @@ describe('mutationProbeRefusal narrowing', () => {
       'tests/merkle-log.test.ts': "import { vectors } from '../src/merkle-log';\nexport default vectors;\n" });
     await expect(mutationProbeRefusal(dir, ['tests/merkle-log.test.ts'],
       probe('apps/operator-public/src/db.ts'))).resolves.toBeNull();
+  });
+
+  // EI-24777609977774399: a probe on plans/runner.ts refused a test whose only `runner` token was
+  // its import path '…/migration-runner.js'. The probed filename must sit at a path boundary on
+  // BOTH sides: a hyphen-prefixed sibling and a longer suffix name different files. Every case
+  // above uses a literal that lacks the probed filename entirely, so only this one pins the
+  // boundary checks themselves; the positive control proves the same probe still fences.
+  it('does not mistake a filename that merely contains the probed filename for a reference to it', async () => {
+    const runner = probe('packages/operator-core/lib/agent-tools/plans/runner.ts');
+    const near = checkout({ ...base,
+      'src/loader.ts': "export const paths = ['../embedded-postgres-server/src/migration-runner.ts', 'plans/runner.ts.snap'];\n",
+      'tests/loader.test.ts': "import { paths } from '../src/loader';\nexport default paths;\n" });
+    await expect(mutationProbeRefusal(near, ['tests/loader.test.ts'], runner)).resolves.toBeNull();
+
+    const exact = checkout({ ...base,
+      'src/loader.ts': "export const paths = ['../agent-tools/plans/runner.ts'];\n",
+      'tests/loader.test.ts': "import { paths } from '../src/loader';\nexport default paths;\n" });
+    const refusal = await mutationProbeRefusal(exact, ['tests/loader.test.ts'], runner);
+    expect(refusal).toMatchObject({ error: 'mutation_probe_active' });
+    expect(refusal!.hint).toContain('loader.ts names runner.ts');
   });
 
   it('still fences a statically concatenated complete probed filename', async () => {

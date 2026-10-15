@@ -47,16 +47,14 @@ vi.mock('../sidecar-socket/pid-keyed-socket', async (importOriginal) => ({
  *  The parameters are TYPED on purpose: an untyped `vi.fn(() => …)` gives
  *  `mock.calls` an empty-tuple element type, so every `calls[n][0]` read below
  *  fails typecheck with TS2493 while the test itself passes. */
-const execFileSyncMock = vi.hoisted(() =>
-  vi.fn((_file: string, _args: readonly string[]) => Buffer.from('')),
-);
+const execFileMock = vi.hoisted(() => vi.fn());
 
 // Partial mock — keep the real surface for everything this file does not stub
 // (a full replacement breaks at import time on transitive promisify(execFile)).
 vi.mock('node:child_process', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:child_process')>()),
   spawn: (...a: unknown[]) => spawnMock(...a),
-  execFileSync: (...a: unknown[]) => execFileSyncMock(...(a as [string, readonly string[]])),
+  execFile: (...a: unknown[]) => execFileMock(...(a as [string, readonly string[], unknown, (...args: unknown[]) => void])),
 }));
 
 // Hermetic ledger. The real store needs Postgres, and this file is about the
@@ -96,6 +94,9 @@ import {
   _resetSpawnerSidecarSpawnStateForTests,
   hasAdoptedSpawnerSidecar,
   spawnSpawnerSidecar,
+  stopSpawnerSidecar,
+  stopSpawnerSidecarAtHostExit,
+  isSpawnerSidecarRunning,
 } from './spawner-sidecar-spawn';
 import { SIDECAR_EXIT_SOCKET_IN_USE } from '../sidecar-socket/pid-keyed-socket';
 import { probeScopeSupport, resetScopeProbe } from '../task-manager/managed-spawn';
@@ -113,12 +114,32 @@ function makeChild(pid = 4242): FakeChild {
   const child = new EventEmitter() as FakeChild;
   child.pid = pid;
   child.killed = false;
-  child.stdout = new EventEmitter();
+  child.stdout = makeReplayableStdout();
   child.stderr = new EventEmitter();
   child.kill = vi.fn(() => {
     child.killed = true;
   });
   return child;
+}
+
+/** Buffer an early handshake until spawnSpawnerSidecar has attached its listener. */
+function makeReplayableStdout(): EventEmitter {
+  const stdout = new EventEmitter();
+  const emit = stdout.emit.bind(stdout);
+  const pending: unknown[][] = [];
+  stdout.emit = ((event: string, ...args: unknown[]) => {
+    if (event === 'data' && stdout.listenerCount('data') === 0) {
+      pending.push(args);
+      return false;
+    }
+    return emit(event, ...args);
+  }) as typeof stdout.emit;
+  stdout.on('newListener', (event) => {
+    if (event !== 'data' || pending.length === 0) return;
+    const buffered = pending.splice(0);
+    process.nextTick(() => buffered.forEach((args) => emit('data', ...args)));
+  });
+  return stdout;
 }
 
 /** Let the promise chain inside managedSpawn (probe → ledger → spawn) settle.
@@ -169,6 +190,10 @@ const SOCK = '/tmp/papercusp-test-spawner.sock';
 describe('spawner sidecar cgroup confinement (EI-19479764372783341)', () => {
   beforeEach(async () => {
     spawnMock.mockReset();
+    execFileMock.mockReset();
+    execFileMock.mockImplementation((_file, _args, _options, callback) => {
+      queueMicrotask(() => callback(null, Buffer.alloc(0), Buffer.alloc(0)));
+    });
     // Reset the ADOPTION probe to "nothing is serving" so a leftover
     // mockResolvedValueOnce from a prior test cannot make an unrelated case adopt
     // (and thus assert "spawn called 0 times" for the wrong reason).
@@ -202,27 +227,39 @@ describe('spawner sidecar cgroup confinement (EI-19479764372783341)', () => {
     try {
       const child = makeChild();
       spawnMock.mockImplementationOnce(() => child);
+      let complete: ((...args: unknown[]) => void) | undefined;
+      execFileMock.mockImplementationOnce((_file, _args, _options, callback) => {
+        complete = callback;
+      });
 
       const p = spawnSpawnerSidecar(SOCK);
       await flush();
-      execFileSyncMock.mockClear();
+      execFileMock.mockClear();
 
       // Never emit PAPERCUSP_SPAWNER_READY -> the 10s startup timeout fires.
       vi.advanceTimersByTime(10_001);
       await expect(p).rejects.toThrow(/startup timeout/i);
+      expect(isSpawnerSidecarRunning()).toBe(false);
 
-      const scopeKill = execFileSyncMock.mock.calls.find(
-        (c) => c[0] === 'systemctl' && c[1]?.includes('kill'),
-      );
-      expect(scopeKill, 'the startup-timeout path must signal the sidecar scope').toBeTruthy();
-      const argv = scopeKill![1];
+      expect(execFileMock).toHaveBeenCalledTimes(1);
+      const [file, argv, options] = execFileMock.mock.calls[0] as [
+        string,
+        string[],
+        { timeout?: number; killSignal?: string },
+      ];
+      expect(file).toBe('systemctl');
       expect(argv).toEqual(expect.arrayContaining(['--user', 'kill', '--signal=SIGTERM']));
+      expect(options).toMatchObject({ timeout: 1500, killSignal: 'SIGKILL' });
       expect(
-        argv.some((a) => /^pc-.+\.scope$/.test(a)),
+        argv.some((a: string) => /^pc-.+\.scope$/.test(a)),
         'must address the pc-<taskId>.scope unit, never a bare pid',
       ).toBe(true);
 
-      // The client signal stays as the unconfined fallback — this is belt AND braces.
+      // The timeout rejects promptly while systemctl is still pending; cleanup then
+      // signals the owned scope before the systemd-run client.
+      expect(child.kill).not.toHaveBeenCalled();
+      complete?.(null, Buffer.alloc(0), Buffer.alloc(0));
+      await flush();
       expect(child.kill).toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
@@ -242,16 +279,14 @@ describe('spawner sidecar cgroup confinement (EI-19479764372783341)', () => {
 
       const p = spawnSpawnerSidecar(SOCK);
       await flush();
-      execFileSyncMock.mockClear();
+      execFileMock.mockClear();
 
       vi.advanceTimersByTime(10_001);
       await expect(p).rejects.toThrow(/startup timeout/i);
 
-      const scopeKill = execFileSyncMock.mock.calls.find(
-        (c) => c[0] === 'systemctl' && c[1]?.includes('kill'),
-      );
-      expect(scopeKill, 'no scope exists, so there is nothing to signal').toBeUndefined();
+      expect(execFileMock, 'no scope exists, so there is nothing to signal').not.toHaveBeenCalled();
       // ...and the client kill is then the ONLY thing standing between us and a leak.
+      await flush();
       expect(child.kill).toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
@@ -491,5 +526,64 @@ describe('spawner sidecar cgroup confinement (EI-19479764372783341)', () => {
     expect(hasAdoptedSpawnerSidecar()).toBe(true);
     await flush();
     expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('graceful stop waits for the async owned-scope signal before stopping the client', async () => {
+    const child = makeChild();
+    child.kill.mockImplementation((signal?: string) => {
+      child.killed = true;
+      child.emit('exit', signal === 'SIGKILL' ? 137 : 0, signal ?? null);
+    });
+    spawnMock.mockImplementationOnce(() => child);
+
+    const ready = spawnSpawnerSidecar(SOCK);
+    await flush();
+    child.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
+    await ready;
+    execFileMock.mockClear();
+
+    let complete: ((...args: unknown[]) => void) | undefined;
+    execFileMock.mockImplementationOnce((_file, _args, _options, callback) => {
+      complete = callback;
+    });
+    const stopping = stopSpawnerSidecar();
+    await flush();
+
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+    expect(child.kill).not.toHaveBeenCalled();
+    complete?.(null, Buffer.alloc(0), Buffer.alloc(0));
+    await stopping;
+    expect(child.kill).toHaveBeenCalled();
+  });
+
+  it('host-exit hook starts scope cleanup before the client signal', async () => {
+    const child = makeChild();
+    const order: string[] = [];
+    child.kill.mockImplementation((signal?: string) => {
+      order.push('client');
+      child.killed = true;
+      child.emit('exit', signal === 'SIGKILL' ? 137 : 0, signal ?? null);
+    });
+    spawnMock.mockImplementationOnce(() => child);
+
+    const ready = spawnSpawnerSidecar(SOCK);
+    await flush();
+    child.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
+    await ready;
+    execFileMock.mockClear();
+
+    let complete: ((...args: unknown[]) => void) | undefined;
+    execFileMock.mockImplementationOnce((_file, _args, _options, callback) => {
+      order.push('scope');
+      complete = callback;
+    });
+    stopSpawnerSidecarAtHostExit();
+
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['scope', 'client']);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    complete?.(null, Buffer.alloc(0), Buffer.alloc(0));
+    await flush();
+    expect(order).toEqual(['scope', 'client']);
   });
 });

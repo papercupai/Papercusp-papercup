@@ -269,6 +269,20 @@ describe('Scout cycle — all four rails land in real PG storage (one cycle)', (
     // concrete slug now THROWS instead of resolving.
     await registerHarnessProject(db.adminSql, WS, HARNESS);
 
+    // A LIVE gym, so the testable proposal can route to the gym rail. The router asks
+    // paused-rails.ts (plan scout-su-ideate-pipeline-gaps-2026-10-08 P-002), which reads
+    // the workspace from activeWorkspaceId(): pin it to WS (restored in afterAll) and seed
+    // both halves of gym liveness there — an enabled autoloop AND an active gym-cycle
+    // routine. Without them the gym rail is paused and gets no route by design.
+    savedEnv.PAPERCUSP_WORKSPACE_ID = process.env.PAPERCUSP_WORKSPACE_ID;
+    process.env.PAPERCUSP_WORKSPACE_ID = WS;
+    await db.adminSql`
+      INSERT INTO harness_shared.gym_autoloop_config (workspace_id, harness_slug, enabled, updated_at)
+      VALUES (${WS}, ${HARNESS}, true, ${Date.now()})`;
+    await db.adminSql`
+      INSERT INTO harness_shared.routines (id, install_slug, name, trigger_kind, trigger_config, target_role, active, workspace_id)
+      VALUES ('real-rails-gym-cycle', ${HARNESS}, 'gym-cycle', 'schedule', '{}'::jsonb, 'worker', true, ${WS})`;
+
     fakeLlm = makeFakeScoutLlm({
       responders: [ideatorResponder, criticResponder, recombineResponder],
     });
@@ -377,7 +391,7 @@ describe('Scout cycle — all four rails land in real PG storage (one cycle)', (
     expect(Number(plan.version)).toBe(1);
     expect(plan.origin).toBe('local');
     // The template body carries the Mug-triage Now block + the proposal rationale.
-    expect(plan.content).toContain('Awaiting Mug/owner triage');
+    expect(plan.content).toContain('Awaiting steward/owner triage');
     expect(plan.content).toContain(`Why new: ${RAIL_PROPOSALS.plan.whyNew}`);
     expect(plan.content).toContain(dec.sourceIdeaIds[0]); // provenance back to the source idea
   });

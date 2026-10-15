@@ -198,7 +198,14 @@ export function buildClaudeMcpEntry(
       // threads it to ctx.contextTier so defineTool `shape` projections apply.
       // Unset/empty/invalid ⇒ 'full' (unshaped — byte-identical for a bare claude).
       `&ctx_tier=\${PAPERCUSP_CONTEXT_TIER:-}`,
-    headers: { Authorization: `Bearer ${token}` },
+    headers: {
+      Authorization: `Bearer ${token}`,
+      // The launcher knows a forced/resumed native ID before Claude expands
+      // HTTP config. Its built-in ID is only guaranteed in tool subprocesses.
+      // Keep the query fallback for bare clients; the server prefers this
+      // existing carrier and independently verifies its owner binding.
+      'x-papercusp-native-session': '${PAPERCUSP_NATIVE_SESSION_ID:-}',
+    },
   };
 }
 

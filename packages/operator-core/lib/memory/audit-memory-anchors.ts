@@ -29,13 +29,15 @@ import {
   planCheckerPg,
   migrationChecker,
   featureChecker,
+  nonFileAnchorChecker,
   type AuditCheckers,
   type MemoryWithAnchors,
 } from './audit-anchors';
+import type { AnchorKind } from './anchors';
 import { pgClientFields } from './mem0-connection';
 import { detectPapercupRoot } from '../harness/register-papercusp';
-import { fileURLToPath } from 'node:url';
 import { isCliEntry } from '../util/cli-entry';
+import { moduleRepoRoot } from '../module-repo-root';
 
 interface CliOptions {
   dryRun: boolean;
@@ -45,14 +47,12 @@ interface CliOptions {
 function parseArgs(argv: string[]): CliOptions {
   const dryRun = argv.includes('--dry-run');
   // Repo root: detect the papercup checkout (markers: apps/operator + libs/papercusp
-  // package.json), falling back to the path relative to THIS file. This file lives at
-  // packages/operator-core/lib/memory/ → FOUR levels up is the repo root. (The old
-  // `..×3` calc was a stale carry-over from when the CLI lived at apps/operator/bin/;
-  // it resolved to `…/packages` and made the fileChecker stat anchors against the
-  // wrong root — every file anchor false-flagged.) operator-core is "type":"module",
-  // so `__dirname` isn't defined under ESM — derive the dir from import.meta.url.
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  const repoRoot = detectPapercupRoot() ?? path.resolve(here, '..', '..', '..', '..');
+  // package.json), falling back to the checkout containing THIS file. The fallback walks
+  // to `.git` rather than counting `..` levels: a fixed climb has been wrong twice — once
+  // when the CLI moved (the old `..×3` resolved to `…/packages` and false-flagged every
+  // file anchor), and again inside the esbuild host bundle, where import.meta.url is the
+  // bundle's URL (P-016; see module-repo-root.ts).
+  const repoRoot = detectPapercupRoot() ?? moduleRepoRoot(import.meta.url);
   return { dryRun, repoRoot };
 }
 
@@ -80,9 +80,10 @@ async function loadAuditState(client: {
     kind: string;
     value: string;
     state: string;
+    workspace_id: string;
   };
   const res = await client.query(
-    `SELECT a.memory_id, a.kind, a.value, c.state
+    `SELECT a.memory_id, a.kind, a.value, c.state, c.workspace_id
      FROM harness_shared.memory_anchors a
      JOIN harness_shared.memory_canonical c ON c.id = a.memory_id
      ORDER BY a.memory_id, a.kind, a.value`,
@@ -95,14 +96,15 @@ async function loadAuditState(client: {
     const existing = byMem.get(r.memory_id);
     if (existing) {
       existing.anchors.push({
-        kind: r.kind as 'file' | 'feature' | 'plan' | 'migration' | 'symbol',
+        kind: r.kind as AnchorKind,
         value: r.value,
       });
     } else {
       byMem.set(r.memory_id, {
         memoryId: r.memory_id,
+        workspaceId: r.workspace_id,
         anchors: [{
-          kind: r.kind as 'file' | 'feature' | 'plan' | 'migration' | 'symbol',
+          kind: r.kind as AnchorKind,
           value: r.value,
         }],
       });
@@ -157,11 +159,16 @@ async function writeAuditResults(
   }
 }
 
-async function buildCheckers(
+export async function buildCheckers(
   opts: CliOptions,
   client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> },
 ): Promise<AuditCheckers> {
   return {
+    'work-item': nonFileAnchorChecker(client),
+    decision: nonFileAnchorChecker(client),
+    fact: nonFileAnchorChecker(client),
+    'session-turn': nonFileAnchorChecker(client),
+    report: nonFileAnchorChecker(client),
     file: fileChecker(opts.repoRoot),
     // Plans went PG-canonical (plans-pg-canonical-migration-2026-06-03): a
     // 'plan' anchor is valid iff a harness_plans row exists for the slug.

@@ -3,7 +3,7 @@
  * (papercup-chat-one-component-one-contract-2026-09-06 P-005, D-007 §3).
  * Pure: env/config injected.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { PAPERCUP_CHAT_MODEL_PIN } from '../agent-config-constants';
 import { classifyChatModelFailure } from '../chat-model-failure';
 import { papercupChatFailover, resolvePapercupChatModel } from './papercup-chat-model';
@@ -78,6 +78,7 @@ describe('papercupChatFailover (WI-10003608)', () => {
 
   it('a capped codex account moves the retry to claude-code', () => {
     expect(papercupChatFailover({ engine: 'codex', failure: classifyChatModelFailure(CODEX_CAP, NOW) })).toEqual({
+      kind: 'failover',
       model: 'sonnet:low',
       backend: 'claude-code',
       cause: 'model_usage_limited',
@@ -87,7 +88,41 @@ describe('papercupChatFailover (WI-10003608)', () => {
   it('a revoked claude credential moves the retry to the codex pin', () => {
     expect(
       papercupChatFailover({ engine: 'claude-code', failure: classifyChatModelFailure(CLAUDE_REVOKED, NOW) }),
-    ).toEqual({ ...PAPERCUP_CHAT_MODEL_PIN, cause: 'model_auth_required' });
+    ).toEqual({ kind: 'failover', ...PAPERCUP_CHAT_MODEL_PIN, cause: 'model_auth_required' });
+  });
+
+  // WI-10004897: avi-test's claude token capped and the failover ran a codex copy whose
+  // refresh token was blanked (D-311) and whose access token had expired: a 401.
+  it('an alternate whose login is known dead yields `unavailable` with the reason, not a doomed failover', () => {
+    const credentialOf = vi.fn(() => ({ usable: false as const, reason: 'expired-no-refresh' as const }));
+    expect(
+      papercupChatFailover({ engine: 'codex', failure: classifyChatModelFailure(CODEX_CAP, NOW), credentialOf }),
+    ).toEqual({
+      kind: 'unavailable',
+      credential: 'expired-no-refresh',
+      model: 'sonnet:low',
+      backend: 'claude-code',
+      cause: 'model_usage_limited',
+    });
+    // The verdict is asked about the ALTERNATE, never the backend that just failed.
+    expect(credentialOf).toHaveBeenCalledWith('claude-code');
+  });
+
+  it('a usable or unjudgeable alternate still fails over', () => {
+    const cap = classifyChatModelFailure(CODEX_CAP, NOW);
+    expect(
+      papercupChatFailover({ engine: 'codex', failure: cap, credentialOf: () => ({ usable: true, basis: 'refreshable' }) })
+        ?.kind,
+    ).toBe('failover');
+    expect(papercupChatFailover({ engine: 'codex', failure: cap, credentialOf: () => null })?.kind).toBe('failover');
+  });
+
+  it('no failover cause means the credential is never probed', () => {
+    const credentialOf = vi.fn(() => null);
+    expect(
+      papercupChatFailover({ engine: 'codex', failure: classifyChatModelFailure(CODEX_RATE, NOW), credentialOf }),
+    ).toBeNull();
+    expect(credentialOf).not.toHaveBeenCalled();
   });
 
   it('a transient rate limit or an unclassified failure keeps the same-backend retry', () => {

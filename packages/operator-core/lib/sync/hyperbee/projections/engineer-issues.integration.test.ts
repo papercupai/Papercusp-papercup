@@ -17,6 +17,7 @@ import { applyOpVia, type TableProjection } from '../projection';
 import type { PeerLogOp } from '../peer-log';
 import { SNAPSHOT_TABLE_TAG, type SnapshotPayload, type SnapshotRow } from '../log-snapshot';
 import { composeEngineerIssueKey } from '../feature-issue-op-keys';
+import { listFederationRefusedOpCounters } from '../federation-refused-op-counter';
 
 const WS = 'ws-ei-proj';
 const SLUG = 'papercup';
@@ -63,6 +64,13 @@ beforeAll(async () => {
   // projection applies REMOTE-origin ops (echo-guarded), so no capture trigger is needed.
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(SUBSTRATE_OUTBOX_DDL);
+  // Install the production local-only counter, including its real conflict key.
+  const countersMigration = readFileSync(new URL(
+    '../../../../../../libs/papercusp/libs/db/sql/474-federation-refused-op-counters.sql', import.meta.url,
+  ), 'utf8');
+  await db.sql.unsafe(countersMigration.split('\n').filter((line) =>
+    !line.startsWith('\\') && line.trim() !== 'BEGIN;' && line.trim() !== 'COMMIT;',
+  ).join('\n'));
   // WI-183/WI-2845/WI-2853: the shared _work-items-schema.ts fixture deliberately
   // omits stamp_local_federated_write_trg (constraints/triggers are added per-test,
   // not in the shared fixture — see that file's own header). But `work_items` IS a
@@ -78,17 +86,34 @@ beforeAll(async () => {
     -- value each call so the test can prove the trigger DID/DIDN'T re-stamp the clock.
     CREATE OR REPLACE FUNCTION harness_shared.hlc_now() RETURNS text
       LANGUAGE sql AS $hlc_stub$
-        SELECT (extract(epoch FROM clock_timestamp()) * 1000)::bigint::text || ':stub';
+        SELECT lpad((extract(epoch FROM clock_timestamp()) * 1000)::bigint::text, 15, '0') || ':00000:stub';
       $hlc_stub$;
 
-    -- Verbatim body of mig 517 (fix-stamp-local-federated-write-mask): the
-    -- work_items-scoped extra exclusion of updated_ts/ts, kept table-scoped
-    -- because other federated tables sharing this function (e.g. coord_event_log)
-    -- have a genuine-content ts column that must NOT be masked globally.
+    -- Preserve migration 517's table-scoped bookkeeping mask and migration 681's
+    -- generated-column mask: NEW generated values are not computed until AFTER
+    -- BEFORE triggers. Comparing them to OLD turns a same-op replay into a local edit.
     CREATE OR REPLACE FUNCTION harness_shared.stamp_local_federated_write() RETURNS trigger
         LANGUAGE plpgsql
         AS $fn$
+    DECLARE
+      mask text[] := ARRAY['fed_ts', 'fed_hlc', 'origin', 'author_pubkey', 'updated_at', '_search', 'version', 'local_disposition'];
+      generated_columns text[];
     BEGIN
+      -- Typed receiver seam (1467). This legacy-schema fixture retains its
+      -- original bookkeeping mask; the complete migrated trigger stack and
+      -- causal negative controls live in remote-issue-clock.integration.test.ts.
+      IF NEW.origin = 'remote:engineer-issues' THEN
+        IF TG_OP <> 'UPDATE' OR TG_TABLE_NAME <> 'work_items' THEN
+          RAISE EXCEPTION 'issue receiver token requires a work_items UPDATE';
+        END IF;
+        IF COALESCE(OLD.item_kind, '') NOT IN ('bug', 'change', 'task')
+           OR COALESCE(NEW.item_kind, '') NOT IN ('bug', 'change', 'task')
+           OR NULLIF(NEW.author_pubkey, '') IS NULL THEN
+          RAISE EXCEPTION 'issue receiver token requires issue-family publisher provenance';
+        END IF;
+        NEW.origin := 'remote';
+        RETURN NEW;
+      END IF;
       IF TG_OP = 'UPDATE' AND NEW.fed_ts IS DISTINCT FROM OLD.fed_ts THEN
         RETURN NEW;
       END IF;
@@ -98,20 +123,11 @@ beforeAll(async () => {
         END IF;
         RETURN NEW;
       END IF;
-      IF TG_TABLE_NAME = 'work_items' THEN
-        IF (to_jsonb(NEW) - 'fed_ts' - 'fed_hlc' - 'origin' - 'author_pubkey' - 'updated_at' - '_search' - 'version' - 'local_disposition' - 'updated_ts' - 'ts')
-           IS DISTINCT FROM
-           (to_jsonb(OLD) - 'fed_ts' - 'fed_hlc' - 'origin' - 'author_pubkey' - 'updated_at' - '_search' - 'version' - 'local_disposition' - 'updated_ts' - 'ts')
-        THEN
-          NEW.fed_ts := (extract(epoch FROM clock_timestamp()) * 1000)::bigint;
-          NEW.fed_hlc := harness_shared.hlc_now();
-          NEW.origin := 'local';
-        END IF;
-        RETURN NEW;
-      END IF;
-      IF (to_jsonb(NEW) - 'fed_ts' - 'fed_hlc' - 'origin' - 'author_pubkey' - 'updated_at' - '_search' - 'version' - 'local_disposition')
-         IS DISTINCT FROM
-         (to_jsonb(OLD) - 'fed_ts' - 'fed_hlc' - 'origin' - 'author_pubkey' - 'updated_at' - '_search' - 'version' - 'local_disposition')
+      SELECT array_agg(attname::text) INTO generated_columns FROM pg_attribute
+        WHERE attrelid = TG_RELID AND attnum > 0 AND NOT attisdropped AND attgenerated <> '';
+      mask := mask || COALESCE(generated_columns, ARRAY[]::text[]);
+      IF TG_TABLE_NAME = 'work_items' THEN mask := mask || ARRAY['updated_ts', 'ts']; END IF;
+      IF (to_jsonb(NEW) - mask) IS DISTINCT FROM (to_jsonb(OLD) - mask)
       THEN
         NEW.fed_ts := (extract(epoch FROM clock_timestamp()) * 1000)::bigint;
         NEW.fed_hlc := harness_shared.hlc_now();
@@ -165,6 +181,11 @@ beforeAll(async () => {
       )
       WHERE ((payload -> 'resource_governor') ->> 'schemaVersion') = '1';
 
+    -- Migration 1298: the promotion key is unique even after the winner settles.
+    CREATE UNIQUE INDEX IF NOT EXISTS work_items_intake_promotion_key_uniq
+      ON harness_shared.work_items ((payload -> 'intakePromotion' ->> 'key'))
+      WHERE payload ? 'intakePromotion';
+
     -- A second partial index gives the negative control teeth: its 23505 must
     -- still escape the projection rather than being mistaken for migration 865.
     CREATE UNIQUE INDEX IF NOT EXISTS engineer_issues_projection_unrelated_uq
@@ -176,6 +197,7 @@ afterAll(async () => {
   await db?.cleanup();
 });
 beforeEach(async () => {
+  await db.sql`DELETE FROM harness_shared.federation_refused_op_counters`;
   await db.sql`DELETE FROM harness_shared.work_items WHERE item_kind IN ('bug', 'change', 'task')`;
   await db.sql`DELETE FROM harness_shared.substrate_outbox`;
 });
@@ -248,6 +270,40 @@ describe('engineer-issues projection — pure helpers', () => {
 });
 
 describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', () => {
+  it.each(['drill', 'replay', 'shadow'] as const)(
+    'retains receiver %s provenance when an issue update omits the local learning tag',
+    async (signalOrigin) => {
+      for (const origin of ['local', 'remote'] as const) {
+        const id = `EI-provenance-${signalOrigin}-${origin}`;
+        const p = proj();
+        await p.writeToPg(issueRow({ issue_id: id }), { ts: 100, origin: 'local', authorPubkey: 'peer' });
+        await db.sql`
+          UPDATE harness_shared.engineer_issues SET signal_origin = ${signalOrigin}
+           WHERE workspace_id = ${WS} AND issue_id = ${id}`;
+        const [seeded] = await db.sql<{ signal_origin: string }[]>`
+          SELECT signal_origin FROM harness_shared.engineer_issues
+           WHERE workspace_id = ${WS} AND issue_id = ${id}`;
+        expect(seeded?.signal_origin).toBe(signalOrigin);
+
+        const nextTs = Date.now() + 10_000;
+        await p.writeToPg(issueRow({ issue_id: id, title: 'updated content', payload: { peerEdit: true } }), {
+          ts: nextTs,
+          fedHlc: `${String(nextTs).padStart(15, '0')}:00000:peer`,
+          origin,
+          authorPubkey: 'peer',
+        });
+
+        const [stored] = await db.sql<{ title: string; signal_origin: string; organic: boolean }[]>`
+          SELECT title, signal_origin, signal_origin = 'organic' AS organic
+            FROM harness_shared.engineer_issues
+           WHERE workspace_id = ${WS} AND issue_id = ${id}`;
+        expect(stored?.title).toBe('updated content');
+        expect(stored?.signal_origin).toBe(signalOrigin);
+        expect(stored?.organic).toBe(false);
+      }
+    },
+  );
+
   it('applies a remote op into engineer_issues (issues:* reads it); origin=remote, fed_ts set', async () => {
     await proj().writeToPg(issueRow({ issue_id: 'EI-7', state: 'open', title: 'remote bug' }), {
       ts: 100,
@@ -627,6 +683,40 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
     }
   });
 
+  it('coalesces a repeated intake promotion replay onto its settled winner', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const p = proj();
+      const payload = { intakePromotion: { key: 'intake-exec:EI-source:revision-a', schemaVersion: 'intake-execution-v1' } };
+      await p.writeToPg(issueRow({ issue_id: 'WI-intake-winner', state: 'done', payload }), {
+        ts: 100, origin: 'remote', authorPubkey: 'peer-a',
+      });
+      const incoming = issueRow({ issue_id: 'WI-intake-duplicate', payload });
+      const provenance = { ts: 200, origin: 'remote' as const, authorPubkey: 'peer-b' };
+      await p.writeToPg(incoming, provenance);
+      await p.writeToPg(incoming, provenance);
+      expect(await getIssue('WI-intake-winner')).not.toBeNull();
+      expect(await getIssue('WI-intake-duplicate')).toBeNull();
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('winner=WI-intake-winner'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('the intake index permits missing keys, but malformed-key conflicts still escape', async () => {
+    const p = proj();
+    const provenance = { ts: 100, origin: 'remote' as const, authorPubkey: 'peer' };
+    for (const id of ['WI-intake-no-key-a', 'WI-intake-no-key-b']) {
+      await p.writeToPg(issueRow({ issue_id: id, payload: { intakePromotion: {} } }), provenance);
+      expect(await getIssue(id)).not.toBeNull();
+    }
+    const payload = { intakePromotion: { key: '' } };
+    await p.writeToPg(issueRow({ issue_id: 'WI-intake-invalid-a', payload }), provenance);
+    await expect(p.writeToPg(issueRow({ issue_id: 'WI-intake-invalid-b', payload }), provenance))
+      .rejects.toMatchObject({ code: '23505', constraint_name: 'work_items_intake_promotion_key_uniq' });
+  });
+
   it('a governor receipt outside the migration-986 predicate lands untouched (calibration)', async () => {
     const p = proj();
     const resource_governor = { schemaVersion: 1, namespace: 'testing-run-process', idempotencyKey: 'same-key' };
@@ -737,12 +827,18 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
           created_at: new Date(999_000).toISOString(),
           created_ts: 999_000,
         }),
-        { ts: 999, origin: 'remote', authorPubkey: 'peer-b' },
+        { ts: 999, origin: 'remote', authorPubkey: 'peer-b', sourceLogKeyHex: 'distinct-receiver-log' },
       );
       const afterCollision = await getIssue('EI-13236');
       expect(afterCollision?.title).toBe('freshly captured local improvement'); // NOT clobbered
       expect(afterCollision?.fed_ts).toBe(100); // the peer-b write never applied at all
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('EI-13285 id collision'));
+      await p.writeToPg(issueRow({ issue_id: 'EI-13236', created_ts: 999_000 }), {
+        ts: 1000, origin: 'remote', authorPubkey: 'peer-b', sourceLogKeyHex: 'distinct-receiver-log',
+      });
+      expect(await listFederationRefusedOpCounters({ workspaceId: WS, harnessSlug: SLUG }, db.sql)).toEqual([
+        { sourceHive: 'distinct-receiver-log', tableTag: 'engineer-issues', reason: 'distinct-entity-collision', count: 2 },
+      ]);
 
       // A genuine follow-up edit of the SAME issue (identical created_at, newer
       // fed_ts) must still apply normally — the guard must not block real convergence.
@@ -754,6 +850,9 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
       const afterRealEdit = await getIssue('EI-13236');
       expect(afterRealEdit?.title).toBe('edited by the same author');
       expect(afterRealEdit?.state).toBe('resolved');
+      expect(await listFederationRefusedOpCounters({ workspaceId: WS, harnessSlug: SLUG }, db.sql)).toEqual([
+        { sourceHive: 'distinct-receiver-log', tableTag: 'engineer-issues', reason: 'distinct-entity-collision', count: 2 },
+      ]);
     } finally {
       warnSpy.mockRestore();
     }
@@ -826,7 +925,11 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
     expect(await getIssue('EI-11-no-provenance')).not.toBeNull();
   });
 
-  it('a harness-qualified tombstone deletes only the exact authored twin', async () => {
+  // scope-unique-identifiers-2026-07-26 P-009: one row per id per workspace. This test used
+  // to build a sibling-hive TWIN and prove a qualified tombstone deleted only one of them;
+  // the projection no longer mints the twin, so it now proves the resident-row landing and
+  // that each author's qualified tombstone still touches only a row that author wrote.
+  it('a second harness put for a resident id lands on the resident row, and qualified tombstones stay author-scoped (P-009)', async () => {
     const p = proj();
     const sameId = 'EI-826-twin';
     await p.writeToPg(issueRow({ issue_id: sameId, storage_harness_slug: SLUG }), {
@@ -839,24 +942,106 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
         issue_id: sameId,
         scope: 'harness:sibling-hive',
         storage_harness_slug: 'sibling-hive',
+        title: 'sibling edit',
       }),
-      { ts: 100, origin: 'remote', authorPubkey: 'peer-sibling' },
+      { ts: 150, origin: 'remote', authorPubkey: 'peer-sibling' },
     );
 
+    expect(await getIssueBaseRows(sameId)).toEqual([
+      { feature_id: sameId, harness_slug: SLUG, status: 'open', origin: 'remote' },
+    ]);
+    expect((await getIssue(sameId))?.title).toBe('sibling edit');
+
+    // The resident row is now authored by peer-sibling, so peer-papercup's tombstone for its
+    // own key leaves it alone ...
     await p.deleteFromPg(`${SLUG}/${sameId}`, 200, undefined, {
       ts: 200,
       origin: 'remote',
       authorPubkey: 'peer-papercup',
     });
+    expect(await getIssueBaseRows(sameId)).toHaveLength(1);
 
-    expect(await getIssueBaseRows(sameId)).toEqual([
-      {
-        feature_id: sameId,
-        harness_slug: 'sibling-hive',
-        status: 'open',
-        origin: 'remote',
-      },
+    // ... and peer-sibling's tombstone, keyed on the harness it wrote under, follows the row.
+    await p.deleteFromPg(`sibling-hive/${sameId}`, 300, undefined, {
+      ts: 300,
+      origin: 'remote',
+      authorPubkey: 'peer-sibling',
+    });
+    expect(await getIssueBaseRows(sameId)).toHaveLength(0);
+  });
+
+  it('an operator-scope op for an id resident under a concrete harness updates that row in place (P-009)', async () => {
+    const p = proj();
+    const id = 'EI-P009-operator';
+    await p.writeToPg(issueRow({ issue_id: id }), { ts: 100, origin: 'remote', authorPubkey: 'peer-a' });
+    await p.writeToPg(issueRow({ issue_id: id, scope: 'operator', title: 'operator edit' }), {
+      ts: 200,
+      origin: 'remote',
+      authorPubkey: 'peer-b',
+    });
+
+    expect(await getIssueBaseRows(id)).toEqual([{ feature_id: id, harness_slug: SLUG, status: 'open', origin: 'remote' }]);
+    expect((await getIssue(id))?.title).toBe('operator edit');
+  });
+
+  it('a concrete-harness op for an id resident under operator:<ws> updates that row in place (P-009)', async () => {
+    const p = proj();
+    const id = 'EI-P009-concrete';
+    await p.writeToPg(issueRow({ issue_id: id, scope: 'operator' }), { ts: 100, origin: 'remote', authorPubkey: 'peer-a' });
+    await p.writeToPg(issueRow({ issue_id: id, title: 'harness edit' }), { ts: 200, origin: 'remote', authorPubkey: 'peer-b' });
+
+    expect(await getIssueBaseRows(id)).toEqual([
+      { feature_id: id, harness_slug: `operator:${WS}`, status: 'open', origin: 'remote' },
     ]);
+    expect((await getIssue(id))?.title).toBe('harness edit');
+  });
+
+  it('refuses an op whose id is resident under another harness as a DIFFERENT issue (created_ts disagrees) (P-009 + EI-13285)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const p = proj();
+      const id = 'EI-P009-distinct';
+      await p.writeToPg(issueRow({ issue_id: id, title: 'resident' }), { ts: 100, origin: 'remote', authorPubkey: 'peer-a' });
+      await p.writeToPg(issueRow({ issue_id: id, scope: 'operator', title: 'impostor', created_ts: 9_000_000 }), {
+        ts: 200,
+        origin: 'remote',
+        authorPubkey: 'peer-b',
+      });
+
+      expect(await getIssueBaseRows(id)).toEqual([{ feature_id: id, harness_slug: SLUG, status: 'open', origin: 'remote' }]);
+      expect((await getIssue(id))?.title).toBe('resident');
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('EI-13285 id collision'));
+      expect(await listFederationRefusedOpCounters({ workspaceId: WS, harnessSlug: SLUG }, db.sql)).toEqual([
+        { sourceHive: 'peer-b', tableTag: 'engineer-issues', reason: 'distinct-entity-collision', count: 1 },
+      ]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('refuses rather than guesses when the id is already twinned across two other harnesses (P-009)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const id = 'EI-P009-twinned';
+      for (const slug of ['twin-a', 'twin-b']) {
+        await db.sql`
+          INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, item_kind, title, status)
+          VALUES (${WS}, ${slug}, ${id}, 'bug', 'pre-P-011 residue', 'open')`;
+      }
+      await proj().writeToPg(issueRow({ issue_id: id, scope: 'operator', title: 'third copy' }), {
+        ts: 200,
+        origin: 'remote',
+        authorPubkey: 'peer-b',
+      });
+
+      expect((await getIssueBaseRows(id)).map((r) => r.harness_slug)).toEqual(['twin-a', 'twin-b']);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('P-009 resident-row refusal'));
+      expect(await listFederationRefusedOpCounters({ workspaceId: WS, harnessSlug: SLUG }, db.sql)).toEqual([
+        { sourceHive: 'peer-b', tableTag: 'engineer-issues', reason: 'resident-row-collision', count: 1 },
+      ]);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('a legacy bare tombstone cannot erase a same-id row from another author', async () => {
@@ -942,7 +1127,9 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
       expect(await getIssueBaseRows('EI-826-rekeyed')).toHaveLength(0);
 
       // The same identity on a qualified post-829 key is authoritative and is
-      // therefore allowed even though survivor evidence exists.
+      // therefore allowed even though survivor evidence exists. Since
+      // scope-unique-identifiers P-009 it lands on the resident survivor row in place
+      // (one row per id per workspace) instead of recreating the sibling-hive twin.
       await p.writeToPg(
         issueRow({
           issue_id: 'EI-826-merged',
@@ -954,8 +1141,8 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
       );
       expect(await getIssueBaseRows('EI-826-merged')).toEqual([
         { feature_id: 'EI-826-merged', harness_slug: SLUG, status: 'open', origin: 'remote' },
-        { feature_id: 'EI-826-merged', harness_slug: 'sibling-hive', status: 'open', origin: 'remote' },
       ]);
+      expect((await getIssue('EI-826-merged'))?.title).toBe('current qualified source row');
       expect(warnSpy).toHaveBeenCalledTimes(2);
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('suppressing legacy replay'));
     } finally {
@@ -980,15 +1167,40 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
     const first = await getIssue('EI-183');
     expect(first?.origin).toBe('remote');
     expect(first?.fed_ts).toBe(500);
+    const [before] = await db.sql<{ row: Record<string, unknown> }[]>`
+      SELECT to_jsonb(w) AS row FROM harness_shared.work_items w WHERE feature_id = 'EI-183'`;
+    // A non-null generated value calibrates the historical false-diff direction.
+    expect(before!.row.severity_projection).toBe('minor');
 
     // Re-fold the IDENTICAL op a second time (a retry/backfill re-applying the same
     // wire op) — must be a no-op on origin/fed_ts, never flip to 'local' nor advance
     // the LWW clock, even though the write touches bookkeeping columns (updated_ts).
     await p.writeToPg(op, provenance);
     const second = await getIssue('EI-183');
+    const [after] = await db.sql<{ row: Record<string, unknown> }[]>`
+      SELECT to_jsonb(w) AS row FROM harness_shared.work_items w WHERE feature_id = 'EI-183'`;
+    const bookkeeping = new Set(['updated_ts', 'ts', 'fed_ts', 'fed_hlc', 'origin', 'author_pubkey']);
+    const contentDeltas = Object.keys(before!.row).filter((key) => !bookkeeping.has(key) &&
+      JSON.stringify(before!.row[key]) !== JSON.stringify(after!.row[key]));
+    expect(contentDeltas, 'same-op content deltas before federation assertions').toEqual([]);
     expect(second?.origin).toBe('remote'); // must NOT flip to 'local'
     expect(second?.fed_ts).toBe(500); // must NOT advance
     expect(second?.title).toBe('stable content');
+  });
+
+  it('masking generated columns still stamps a genuine local payload edit', async () => {
+    const p = proj();
+    await p.writeToPg(issueRow({ issue_id: 'EI-generated-local' }), {
+      ts: 500, fedHlc: '500:00000:peer', origin: 'remote', authorPubkey: 'peer',
+    });
+    await db.sql`
+      UPDATE harness_shared.work_items SET payload = jsonb_set(payload, '{_ei,severity}', '"major"'::jsonb)
+      WHERE feature_id = 'EI-generated-local'`;
+    const [row] = await db.sql<{ origin: string; fed_ts: string; severity_projection: string }[]>`
+      SELECT origin, fed_ts, severity_projection FROM harness_shared.work_items WHERE feature_id = 'EI-generated-local'`;
+    expect(row!.origin).toBe('local');
+    expect(Number(row!.fed_ts)).toBeGreaterThan(500);
+    expect(row!.severity_projection).toBe('major');
   });
 });
 
@@ -1417,6 +1629,9 @@ describe('P-536: snapshot-lane group writes leave the same rows as per-op writes
   const peer = (ts: number) => ({ ts, fedHlc: `${ts}:00000:peer`, origin: 'remote' as const, authorPubkey: 'peer' });
 
   async function seed(p: ReturnType<typeof proj>): Promise<void> {
+    await db.sql`
+      INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, item_kind, title, status, origin, fed_ts)
+      VALUES (${WS}, 'other-resident', 'EI-g-resident', 'feature', 'resident feature', 'open', 'remote', 100)`;
     // Created at 1000 (issueRow's default); the chunk's op claims a different creation instant.
     await p.writeToPg(issueRow({ issue_id: 'EI-g-collide', title: 'local distinct issue' }), peer(100));
     await p.writeToPg(issueRow({ issue_id: 'EI-g-older', title: 'stored older' }), peer(100));
@@ -1461,6 +1676,7 @@ describe('P-536: snapshot-lane group writes leave the same rows as per-op writes
       );
     }
     rows.push(at('EI-g-collide', 6000, { title: 'remote distinct issue', created_ts: 999_000 }));
+    rows.push(at('EI-g-resident', 6000, { title: 'remote issue must not replace feature' }));
     rows.push(at('EI-g-older', 6001, { title: 'chunk wins' }));
     rows.push(at('EI-g-newer', 6002, { title: 'chunk loses under LWW' }));
     rows.push(
@@ -1499,7 +1715,9 @@ describe('P-536: snapshot-lane group writes leave the same rows as per-op writes
        ORDER BY feature_id`;
   }
 
-  async function fold(snapshotLanes: number) {
+  async function fold(snapshotLanes: number, countersAvailable = true) {
+    if (countersAvailable) await db.sql`DELETE FROM harness_shared.federation_refused_op_counters`;
+    await db.sql`DELETE FROM harness_shared.work_items WHERE feature_id = 'EI-g-resident'`;
     await db.sql`DELETE FROM harness_shared.work_items WHERE item_kind IN ('bug', 'change', 'task')`;
     const p = proj();
     await seed(p);
@@ -1516,8 +1734,30 @@ describe('P-536: snapshot-lane group writes leave the same rows as per-op writes
       batchApply: { maxOps: 25, maxMs: 60_000, snapshotLanes },
     });
     const winners = Object.fromEntries([...cursor.winners].map(([k, v]) => [k, v.ts]));
-    return { res, rows: await snapshot(), position: cursor.positions.get('peer-log'), cursor, winners };
+    const counters = (countersAvailable
+      ? await listFederationRefusedOpCounters({ workspaceId: WS, harnessSlug: SLUG }, db.sql) : [])
+      .sort((a, b) => a.reason.localeCompare(b.reason));
+    return { res, rows: await snapshot(), position: cursor.positions.get('peer-log'), cursor, winners, counters };
   }
+
+  it('a failed counter statement does not abort accepted rows in per-op or snapshot-group batches', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await db.sql`ALTER TABLE harness_shared.federation_refused_op_counters RENAME TO unavailable_refusal_counters`;
+    try {
+      for (const lanes of [1, 4]) {
+        const result = await fold(lanes, false);
+        expect(result.rows).toHaveLength(66);
+        expect(result.position).toBe(1);
+        expect(result.cursor.applyFailures?.get('peer-log')).toBeUndefined();
+        expect(result.rows.find((r) => r.feature_id === 'EI-g-older')?.title).toBe('chunk wins');
+        expect(result.rows.find((r) => r.feature_id === 'EI-g-collide')?.title).toBe('local distinct issue');
+      }
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[federation-refused-op] counter bump failed'));
+    } finally {
+      await db.sql`ALTER TABLE harness_shared.unavailable_refusal_counters RENAME TO federation_refused_op_counters`;
+      warnSpy.mockRestore();
+    }
+  });
 
   it('matches per-op writes row for row, refusing the same rows, while the lanes write in groups', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -1526,7 +1766,12 @@ describe('P-536: snapshot-lane group writes leave the same rows as per-op writes
       const grouped = await fold(4);
 
       expect(grouped.rows).toEqual(perOp.rows);
-      expect(grouped.rows).toHaveLength(65);
+      expect(grouped.counters).toEqual(perOp.counters);
+      expect(grouped.counters).toEqual([
+        { sourceHive: 'peer-log', tableTag: 'engineer-issues', reason: 'distinct-entity-collision', count: 1 },
+        { sourceHive: 'peer-log', tableTag: 'engineer-issues', reason: 'resident-row-collision', count: 1 },
+      ]);
+      expect(grouped.rows).toHaveLength(66);
       expect(grouped.position).toBe(1);
       expect(perOp.position).toBe(1);
       expect(grouped.cursor.applyFailures?.get('peer-log')).toBeUndefined();
@@ -1539,6 +1784,7 @@ describe('P-536: snapshot-lane group writes leave the same rows as per-op writes
 
       const byId = new Map(grouped.rows.map((r) => [r.feature_id as string, r]));
       expect(byId.get('EI-g-collide')?.title).toBe('local distinct issue');
+      expect(byId.get('EI-g-resident')).toMatchObject({ harness_slug: 'other-resident', item_kind: 'feature', title: 'resident feature' });
       expect(byId.get('EI-g-older')?.title).toBe('chunk wins');
       expect(byId.get('EI-g-newer')?.title).toBe('stored newer');
       expect(byId.get('EI-g-wd-loser')).toMatchObject({ status: 'resolved', title: 'terminal signal' });

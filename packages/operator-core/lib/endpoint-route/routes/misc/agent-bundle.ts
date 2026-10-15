@@ -16,6 +16,7 @@ import { spliceToolingOverlay } from '../../../desktop-install/splice-tooling-ov
 import { defineTool } from '@papercusp/agent-mcp';
 import { accountProviderForInteractiveBackend, backendFeatureGuard } from '../../../backend-feature-capabilities';
 import { ompGatewayModelsConfig, ompProviderForAccountProvider } from '../../../inference-gateway/omp-models-config';
+import { CODEX_SAFE_DEFAULT_MODEL } from '../../../model-context-budget.mjs';
 
 interface BundleFile {
   name: string;
@@ -124,6 +125,7 @@ async function resolveOmpGatewayModels(
     const { gatewayPort } = await import('../../../inference-gateway/spawn-env');
     const cfg = ompGatewayModelsConfig({
       provider: ompProviderForAccountProvider(provider),
+      models: provider === 'codex' ? [CODEX_SAFE_DEFAULT_MODEL.split(':')[0]] : undefined,
       accountId: accounts[0].id,
       ownerId,
       port: gatewayPort(),

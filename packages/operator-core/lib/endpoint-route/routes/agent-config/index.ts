@@ -25,6 +25,9 @@ import {
   parseBackends,
   parseBulkResolverLaunchProfiles,
   parseRoleBackends,
+  parseRoleAccounts,
+  parseRoleBackups,
+  roleRoutingProblem,
   parseSurfaceModels,
   parseTiers,
   parseTierCeilings,
@@ -94,7 +97,7 @@ export default [
               ownerId: latestCodexSession.coordOwnerId,
               startedAt: latestCodexSession.startedAt,
               endedAt: latestCodexSession.endedAt,
-              home: readCodexHomeDiagnostics(latestCodexSession.id),
+              home: await readCodexHomeDiagnostics(latestCodexSession.id),
             }
           : null,
         effectiveBackend: effectiveBackend(cfg),
@@ -118,6 +121,8 @@ export default [
             ...new Set([
               ...Object.keys(cfg.models ?? {}),
               ...Object.keys(cfg.roleBackends ?? {}),
+              ...Object.keys(cfg.roleAccounts ?? {}),
+              ...Object.keys(cfg.roleBackups ?? {}),
               ...Object.keys(cfg.tierCeilings ?? {}),
             ]),
           ]
@@ -133,6 +138,8 @@ export default [
                   backendSource: r.backendSource,
                   why: r.why,
                   conflict: r.conflict,
+                  account: r.account,
+                  backups: r.backups,
                 },
               ];
             }),
@@ -180,6 +187,8 @@ export default [
               )
             : {},
         roleBackends: parseRoleBackends(body.roleBackends),
+        roleAccounts: body.roleAccounts === undefined ? current.roleAccounts : parseRoleAccounts(body.roleAccounts),
+        roleBackups: body.roleBackups === undefined ? current.roleBackups : parseRoleBackups(body.roleBackups),
         backends: parseBackends(body.backends),
         surfaceModels: parseSurfaceModels(body.surfaceModels),
         tiers: parseTiers(body.tiers),
@@ -193,6 +202,12 @@ export default [
       // Strict-save guard: persisting LESS than the body asked for is silent
       // data loss, not normalization. Count the entries the parsers kept.
       const dropped: string[] = [];
+      const routingProblem = roleRoutingProblem({
+        ...next,
+        roleAccounts: body.roleAccounts === undefined ? next.roleAccounts : body.roleAccounts,
+        roleBackups: body.roleBackups === undefined ? next.roleBackups : body.roleBackups,
+      });
+      if (routingProblem) dropped.push(routingProblem);
       const sentCount = (v: unknown) =>
         Array.isArray(v) ? v.length : v && typeof v === 'object' ? Object.keys(v).length : 0;
       if (body.models != null && sentCount(body.models) !== Object.keys(next.models).length) {
@@ -200,6 +215,11 @@ export default [
       }
       if (body.roleBackends != null && sentCount(body.roleBackends) !== Object.keys(next.roleBackends ?? {}).length) {
         dropped.push('roleBackends: every value must be a concrete backend');
+      }
+      for (const field of ['roleAccounts', 'roleBackups'] as const) {
+        if (body[field] !== undefined && sentCount(body[field]) !== Object.keys(next[field] ?? {}).length) {
+          dropped.push(`${field}: every role key must remain unique after normalization`);
+        }
       }
       if (body.backends != null && sentCount(body.backends) !== Object.keys(next.backends ?? {}).length) {
         dropped.push('backends: unknown surface key or backend');

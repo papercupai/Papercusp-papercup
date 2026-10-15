@@ -66,6 +66,16 @@ describe('R-27: a key whose recorded spend reached its cap is refused new LLM-ru
     }
   });
 
+  it('a zero cap refuses new LLM work even at zero spend while preserving reads and cancel', async () => {
+    const call = seat({ capCents: 0, spentCents: 0, windowSec: null });
+    for (const tool of ['blueprint:submit', 'blueprint:resume']) {
+      expect(await call(tool)).toMatchObject({ decision: 'deny', code: 'app_scope:spend_cap_reached' });
+    }
+    for (const tool of ['blueprint:status', 'blueprint:result', 'blueprint:events', 'blueprint:cancel']) {
+      expect(await call(tool)).toBeNull();
+    }
+  });
+
   it('refuses through an access token of the key too: spend and the cap are the parent key’s', async () => {
     const call = seat(AT_CAP);
     // A token principal also needs its token row; a seat without a token loader refuses it outright,
@@ -104,6 +114,7 @@ describe('the cap verdict and its alerts (D-006: a cap about to be hit)', () => 
     expect(spendCapVerdict({ capCents: 1000, spentCents: 799, windowSec: null }).state).toBe('under');
     expect(spendCapVerdict({ capCents: 1000, spentCents: 800, windowSec: null }).state).toBe('near');
     expect(spendCapVerdict({ capCents: 1000, spentCents: 1000, windowSec: null }).state).toBe('reached');
+    expect(spendCapVerdict({ capCents: 0, spentCents: 0, windowSec: null }).state).toBe('reached');
     expect(spendCapVerdict({ capCents: null, spentCents: 5, windowSec: null }).state).toBe('no-cap');
   });
 

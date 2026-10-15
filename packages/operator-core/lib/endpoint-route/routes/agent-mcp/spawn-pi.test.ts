@@ -15,13 +15,20 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../../define-route';
 
-const startPiSessionMock = vi.fn(async (o: { sessionId: string }) => ({
+const startPiSessionMock = vi.fn(async (o: { sessionId: string; allowedTools: string[] }) => ({
   sessionId: o.sessionId,
   bearer: 'pi-scoped-bearer-0123456789abcdef',
 }));
 
 vi.mock('@papercusp/agent-mcp/provisioning', () => ({
-  startPiSession: (o: { sessionId: string }) => startPiSessionMock(o),
+  startPiSession: (o: { sessionId: string; allowedTools: string[] }) => startPiSessionMock(o),
+}));
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getCatalog: () => [
+    { name: 'tasks:list', capability: 'tasks:read' },
+    { name: 'coord:send', capability: 'coord:write' },
+  ],
 }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../../papercusp-root', () => ({ papercuspRoot: () => '/srv/papercusp-home' }));
@@ -81,7 +88,23 @@ describe('POST /api/agent-mcp/spawn-pi (WI-10003619)', () => {
     expect(json.mcpServer.env.AGENT_MCP_BEARER).toBe(json.bearer);
     expect(json.mcpServer.env.OPERATOR_BASE_URL).toBe('http://127.0.0.1:3070');
     expect(startPiSessionMock).toHaveBeenCalledWith(
-      expect.objectContaining({ workspaceId: 'ws-test', sessionId: 'abc', capabilities: ['coord:read'] }),
+      expect.objectContaining({
+        workspaceId: 'ws-test',
+        sessionId: 'abc',
+        capabilities: ['coord:read'],
+        allowedTools: [],
+      }),
+    );
+  });
+
+  it('persists exact names, not only coarse capability tags', async () => {
+    await callPost({ sessionId: 'scoped', capabilities: ['tasks:read'] });
+    expect(startPiSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'scoped',
+        capabilities: ['tasks:read'],
+        allowedTools: ['tasks:list'],
+      }),
     );
   });
 });

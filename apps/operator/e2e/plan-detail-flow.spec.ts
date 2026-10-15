@@ -30,6 +30,7 @@
  * blank #root, so tests skip rather than fail when the shell never mounts.
  */
 import { test, expect, assertMounted, type Page } from './_egress';
+import { learnPageWorkspaceHeaders } from './_page-workspace';
 
 // Mirror playwright.config.ts's BASE_URL derivation — honoring
 // OPERATOR_E2E_PORT keeps this spec on the SAME server the config's
@@ -54,9 +55,15 @@ interface PlanRow {
 let listReachable = false;
 let plans: PlanRow[] = [];
 
-test.beforeAll(async ({ request }) => {
+test.beforeAll(async ({ request, browser }) => {
   try {
-    const r = await request.get(`${baseURL}/api/admin/plans/list`, { timeout: 20_000 });
+    // Resolve fixtures in the SAME workspace the page's rail lists: a bare
+    // request fixture resolves against the backend's global workspace, which
+    // on a fresh isolated rig is not the page's (WI-10006792).
+    const probe = await browser.newPage();
+    const headers = await learnPageWorkspaceHeaders(probe, `${baseURL}/admin/plans`).catch(() => ({}));
+    await probe.close();
+    const r = await request.get(`${baseURL}/api/admin/plans/list`, { timeout: 20_000, headers });
     if (!r.ok()) return;
     const body = (await r.json()) as { plans?: PlanRow[] };
     // Mirror the UI's default rail contents: non-archived plans.
@@ -169,6 +176,14 @@ test.describe('/admin/plans — plan detail flow', () => {
 
     // Rows arrive async (usePlanList) — at least one renders, each carrying
     // a status pill (StatusPill in PlanRail.tsx).
+    // The default rail lists plans with matching items. A status bucket also
+    // includes empty plans, which are valid fixtures in a fresh isolated DB.
+    // Select the rendered lifecycle buckets rather than deriving one from
+    // status alone: an active but unstarted plan belongs to Ready, not Running.
+    const buckets = page.getByRole('group', { name: 'Plan status filters' }).getByRole('button');
+    for (const bucket of await buckets.all()) {
+      if (await bucket.getAttribute('aria-pressed') !== 'true') await bucket.click();
+    }
     const rows = page.locator('.pc-plan-row');
     await expect(rows.first()).toBeVisible({ timeout: 20_000 });
     await expect(page.locator('.pc-plan-rail__rows .pc-pill').first()).toBeVisible();
@@ -199,7 +214,7 @@ test.describe('/admin/plans — plan detail flow', () => {
     await expect(detail).toBeVisible({ timeout: 20_000 });
     const tablist = detail.getByRole('tablist', { name: 'Plan view' });
     await expect(tablist).toBeVisible({ timeout: 30_000 });
-    await expect(tablist.getByRole('tab')).toHaveText(['Editor', 'Revisions', 'Agents']);
+    await expect(tablist.getByRole('tab')).toHaveText(['Editor', 'Triggers', 'Revisions', 'Agents', 'Runs']);
 
     // Open the Revisions panel — the click writes `?ptab=revisions` (nuqs)
     // and mounts RevisionsPanel (any of its states carries the class).

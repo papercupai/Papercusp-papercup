@@ -1,7 +1,7 @@
 /**
  * Guard: every live `Conversation.startSession()` call site must pin
- * `connectionType: 'webrtc'` — the invariant that keeps libsamplerate-js's
- * jsdelivr fetch DEAD CODE.
+ * `connectionType: 'webrtc'`, except the tutorial's explicit websocket seam
+ * which pins all three local audio assets. Both avoid the SDK's CDN default.
  *
  * WI-7116 (egress-monitor-origin-axis-2026-08-02 P-004 static scan). The scan
  * found `https://cdn.jsdelivr.net/npm/@alexanderolsen/libsamplerate-js@2.1.2/
@@ -30,14 +30,9 @@
  * reintroduces the jsdelivr fetch on first resample. Exactly the class of bug
  * monaco-cdn.test.ts / vditor-cdn.test.ts guard for their own libraries.
  *
- * NOT fixed by mirroring (unlike Monaco/Porcupine/Excalidraw): the code path
- * is unreachable today, so there is nothing to override at runtime — vendoring
- * `@alexanderolsen/libsamplerate-js`'s worklet purely to wire an unreachable
- * `libsampleratePath` config would be dead-code busywork. If a future call
- * site legitimately needs `connectionType: 'websocket'`, wire
- * `libsampleratePath`/`workletPaths` (AudioWorkletConfig, exported by
- * `@elevenlabs/client`) at the SAME time — this guard will fail first and
- * point here.
+ * Tutorial voice now needs websocket signed URLs. Its single named exception
+ * must pin libsampleratePath and both workletPaths; all other launches remain
+ * WebRTC. setup-elevenlabs-runtime.mjs prepares the maintained local assets.
  */
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
@@ -68,7 +63,7 @@ async function liveStartSessionCallSites(): Promise<string[]> {
 }
 
 describe('elevenlabs-conv libsamplerate cdn (WI-7116)', () => {
-  it('every live Conversation.startSession() call site pins connectionType: webrtc', async () => {
+  it('every live SDK launch pins WebRTC or the tutorial local websocket assets', async () => {
     const sites = await liveStartSessionCallSites();
 
     // Two today: the production conv-voice engine and the /el-min diagnostic
@@ -79,7 +74,14 @@ describe('elevenlabs-conv libsamplerate cdn (WI-7116)', () => {
     const notPinned: string[] = [];
     for (const file of sites) {
       const code = stripJsComments(await readFile(resolve(REPO_ROOT, file), 'utf8'));
-      if (!CONNECTION_TYPE_WEBRTC.test(code)) notPinned.push(file);
+      if (file === 'apps/operator/lib/onboarding/tutorial-voice-client.ts') {
+        expect(code).toMatch(/connectionType:\s*'websocket'/);
+        for (const asset of ['rawAudioProcessor.js', 'audioConcatProcessor.js', 'libsamplerate.worklet.js']) {
+          expect(code).toContain('/elevenlabs-runtime/' + asset);
+        }
+        expect(code).toMatch(/workletPaths:\s*\{\s*\.\.\.workletPaths\s*\}/);
+        expect(code).toMatch(/libsampleratePath,/);
+      } else if (!CONNECTION_TYPE_WEBRTC.test(code)) notPinned.push(file);
     }
 
     // Named, not counted: the failure has to say WHICH surface stopped

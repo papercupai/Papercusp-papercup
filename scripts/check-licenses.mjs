@@ -51,8 +51,8 @@
  *   node scripts/check-licenses.mjs --notices <path>     # write THIRD-PARTY-NOTICES.md
  */
 
-import { readFileSync, writeFileSync, existsSync, readdirSync, openSync, readSync, closeSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, writeFileSync, existsSync, readdirSync, openSync, readSync, closeSync, mkdtempSync, rmSync, cpSync, realpathSync, statfsSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -423,18 +423,47 @@ function readHead(path) {
   } catch { return null; } finally { if (fd !== undefined) closeSync(fd); }
 }
 
+function syftSkipsDirectory(dir) {
+  if (process.platform !== 'linux') return false;
+  const actual = realpathSync(dir);
+  // Syft's directory resolver excludes tmpfs under these host paths, even
+  // when the user explicitly asks it to scan a narrow installer tree there.
+  // See Syft v1.51.0 syft/internal/fileresolver/path_skipper.go.
+  return Number(statfsSync(actual).type) === 0x01021994
+    && ['/run', '/dev', '/var/run', '/var/lock', '/sys']
+      .some(prefix => actual === prefix || actual.startsWith(`${prefix}/`));
+}
+
 function runSyft(dir) {
-  const out = join(mkdtempSync(join(tmpdir(), 'papercusp-license-syft-')), 'syft.json');
-  execFileSync('syft', [`dir:${dir}`, '--select-catalogers', '+javascript-package-cataloger', '-q', '-o', `syft-json=${out}`], {
-    stdio: ['ignore', 'ignore', 'pipe'], timeout: 1_800_000, env: { ...process.env, SYFT_CHECK_FOR_APP_UPDATE: 'false' },
-  });
-  return (readJson(out).artifacts ?? []).map((a) => ({
-    type: a.type,
-    name: a.name,
-    version: a.version ?? '?',
-    licenses: [...new Set((a.licenses ?? []).map((l) => l.spdxExpression || l.value).filter(Boolean))],
-    path: String(a.locations?.[0]?.path ?? '').replace(/^\/+/, ''),
-  }));
+  let scratch;
+  try {
+    let scanRoot = dir;
+    if (syftSkipsDirectory(dir)) {
+      // Keep the original relative tree and bytes. Neither a cwd change nor
+      // selecting the JavaScript cataloger bypasses Syft's mount exclusion.
+      // Select an inspectable private staging root rather than accept zero.
+      const parent = [tmpdir(), '/tmp', homedir()].find(p => existsSync(p) && !syftSkipsDirectory(p));
+      if (!parent) throw new Error('no inspectable temporary root for the Syft installer scan');
+      scratch = mkdtempSync(join(parent, 'papercusp-license-syft-'));
+      scanRoot = join(scratch, 'input');
+      cpSync(dir, scanRoot, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true });
+    } else {
+      scratch = mkdtempSync(join(tmpdir(), 'papercusp-license-syft-'));
+    }
+    const out = join(scratch, 'syft.json');
+    execFileSync('syft', [`dir:${scanRoot}`, '--select-catalogers', '+javascript-package-cataloger', '-q', '-o', `syft-json=${out}`], {
+      stdio: ['ignore', 'ignore', 'pipe'], timeout: 1_800_000, env: { ...process.env, SYFT_CHECK_FOR_APP_UPDATE: 'false' },
+    });
+    return (readJson(out).artifacts ?? []).map((a) => ({
+      type: a.type,
+      name: a.name,
+      version: a.version ?? '?',
+      licenses: [...new Set((a.licenses ?? []).map((l) => l.spdxExpression || l.value).filter(Boolean))],
+      path: String(a.locations?.[0]?.path ?? '').replace(/^\/+/, ''),
+    }));
+  } finally {
+    if (scratch) rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 /**

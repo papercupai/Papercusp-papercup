@@ -1,5 +1,6 @@
+import type { RefusalContract } from '../capability-envelope/refusal-contract-types';
 import {
-  assertWorkspaceHostSecretIsolation,
+assertWorkspaceHostSecretIsolation,
   type CloudCredentialRef,
   type WorkspaceHostProviderConnection,
 } from '@papercusp/deployment-driver';
@@ -64,9 +65,9 @@ export type AzureWorkspaceHostRequiredResourceType =
   (typeof AZURE_WORKSPACE_HOST_REQUIRED_RESOURCE_TYPES)[number];
 
 /**
- * Narrow control-plane actions exercised by provision, retained-data
+ * Narrow permission actions exercised by provision, retained-data
  * lifecycle, snapshots, managed identity, Key Vault encryption, and Bastion.
- * Data-plane Key Vault actions are intentionally separate from secret access.
+ * Key Vault key actions are data-plane permissions, separate from secret access.
  */
 export const AZURE_WORKSPACE_HOST_PERMISSION_ACTIONS = [
   'Microsoft.Resources/subscriptions/read',
@@ -123,6 +124,40 @@ export const AZURE_WORKSPACE_HOST_PERMISSION_ACTIONS = [
   'Microsoft.KeyVault/vaults/keys/unwrap/action',
 ] as const;
 export type AzureWorkspaceHostPermissionAction = (typeof AZURE_WORKSPACE_HOST_PERMISSION_ACTIONS)[number];
+
+/** Azure RBAC classifies key metadata and wrap/unwrap as DataActions. */
+const AZURE_WORKSPACE_HOST_DATA_ACTIONS: ReadonlySet<AzureWorkspaceHostPermissionAction> = new Set([
+  'Microsoft.KeyVault/vaults/keys/read',
+  'Microsoft.KeyVault/vaults/keys/wrap/action',
+  'Microsoft.KeyVault/vaults/keys/unwrap/action',
+]);
+const AZURE_WORKSPACE_HOST_SUBSCRIPTION_ACTIONS: ReadonlySet<AzureWorkspaceHostPermissionAction> = new Set([
+  'Microsoft.Resources/subscriptions/read',
+  'Microsoft.Resources/subscriptions/providers/read',
+  'Microsoft.Resources/subscriptions/providers/register/action',
+  'Microsoft.Compute/locations/usages/read',
+  'Microsoft.Compute/skus/read',
+]);
+
+/** JSON accepted by `az role definition create --role-definition @role.json`. */
+export interface AzureWorkspaceHostRoleDefinition {
+  Name: string;
+  IsCustom: true;
+  Description: string;
+  Actions: AzureWorkspaceHostPermissionAction[];
+  NotActions: [];
+  DataActions: AzureWorkspaceHostPermissionAction[];
+  NotDataActions: [];
+  AssignableScopes: [string];
+}
+
+export interface AzureWorkspaceHostRoleDefinitions {
+  subscription: AzureWorkspaceHostRoleDefinition;
+  resourceGroup: AzureWorkspaceHostRoleDefinition;
+  /** Needed only when the selected image lives in a different resource group. */
+  imageResourceGroup?: AzureWorkspaceHostRoleDefinition;
+}
+
 
 export type AzureWorkspaceHostCredentialSource =
   | {
@@ -359,6 +394,8 @@ export interface AzureWorkspaceHostPreflightIssue {
     | 'probe-failed';
   message: string;
   remediation: string;
+  /** Present on fail-closed authority refusals (WI-10005197): what compared, what lifts it, who can. */
+  refusal?: RefusalContract;
 }
 
 export interface AzureWorkspaceHostPreflightRequest {
@@ -401,6 +438,76 @@ function requireUuid(value: string, label: string): string {
   const normalized = value.trim();
   if (!AZURE_UUID.test(normalized)) throw new Error(`${label} must be an Azure UUID`);
   return normalized;
+}
+
+function requireResourceGroup(value: string, label = 'resourceGroup'): string {
+  if (value !== value.trim() || !AZURE_RESOURCE_GROUP.test(value)) {
+    throw new Error(`${label} must be a valid Azure resource-group name`);
+  }
+  return value;
+}
+
+/**
+ * Prepare customer-run roles without resolving credentials or applying RBAC.
+ * Assign each role at its sole AssignableScope: defining a role grants no access.
+ * The resource group must already exist; subscription-wide writes are limited
+ * to provider registration. Lifecycle role-assignment actions remain privileged.
+ */
+export function buildAzureWorkspaceHostRoleDefinitions(input: {
+  subscriptionId: string;
+  resourceGroup: string;
+  imageResourceGroup?: string;
+}): AzureWorkspaceHostRoleDefinitions {
+  assertWorkspaceHostSecretIsolation(input, 'azure.roleDefinition');
+  const subscriptionId = requireUuid(input.subscriptionId, 'subscriptionId');
+  const resourceGroup = requireResourceGroup(input.resourceGroup);
+  const imageResourceGroup = input.imageResourceGroup === undefined
+    ? undefined
+    : requireResourceGroup(input.imageResourceGroup, 'imageResourceGroup');
+  const subscriptionScope = `/subscriptions/${subscriptionId}`;
+  const role = (
+    name: string,
+    scope: string,
+    description: string,
+    actions: AzureWorkspaceHostPermissionAction[],
+  ): AzureWorkspaceHostRoleDefinition => ({
+    Name: name,
+    IsCustom: true,
+    Description: description,
+    Actions: actions.filter((action) => !AZURE_WORKSPACE_HOST_DATA_ACTIONS.has(action)),
+    NotActions: [],
+    DataActions: actions.filter((action) => AZURE_WORKSPACE_HOST_DATA_ACTIONS.has(action)),
+    NotDataActions: [],
+    AssignableScopes: [scope],
+  });
+  return {
+    subscription: role(
+      `Papercusp Workspace Host Preflight (${subscriptionId})`,
+      subscriptionScope,
+      'Subscription preflight reads and provider registration; no workspace lifecycle or RBAC writes.',
+      AZURE_WORKSPACE_HOST_PERMISSION_ACTIONS.filter((action) =>
+        AZURE_WORKSPACE_HOST_SUBSCRIPTION_ACTIONS.has(action)),
+    ),
+    resourceGroup: role(
+      `Papercusp Workspace Host Lifecycle (${subscriptionId}/${resourceGroup})`,
+      `${subscriptionScope}/resourceGroups/${resourceGroup}`,
+      'Workspace lifecycle and key encryption in one existing resource group. Includes privileged role-assignment write/delete permissions; customer must review delegation.',
+      AZURE_WORKSPACE_HOST_PERMISSION_ACTIONS.filter((action) =>
+        !AZURE_WORKSPACE_HOST_SUBSCRIPTION_ACTIONS.has(action)),
+    ),
+    ...(imageResourceGroup && imageResourceGroup.toLowerCase() !== resourceGroup.toLowerCase()
+      ? {
+          imageResourceGroup: role(
+            `Papercusp Workspace Host Image Reader (${subscriptionId}/${imageResourceGroup})`,
+            `${subscriptionScope}/resourceGroups/${imageResourceGroup}`,
+            'Read existing managed images and Compute Gallery versions in the selected image resource group.',
+            AZURE_WORKSPACE_HOST_PERMISSION_ACTIONS.filter((action) =>
+              action === 'Microsoft.Compute/images/read' ||
+              action === 'Microsoft.Compute/galleries/images/versions/read'),
+          ),
+        }
+      : {}),
+  };
 }
 
 function requireHttpsUrl(value: string, label: string): string {
@@ -521,9 +628,7 @@ export function buildAzureWorkspaceHostProviderConnection(
   nonEmpty(request.cloudCredentialRef.ref, 'cloudCredentialRef.ref');
   requireUuid(request.selection.tenantId, 'selection.tenantId');
   requireUuid(request.selection.subscriptionId, 'selection.subscriptionId');
-  if (!AZURE_RESOURCE_GROUP.test(request.selection.resourceGroup)) {
-    throw new Error('resourceGroup must be a valid Azure resource-group name');
-  }
+  requireResourceGroup(request.selection.resourceGroup);
   if (!AZURE_REGION.test(request.selection.region)) throw new Error('region must be an Azure region identifier');
   if (!AZURE_VM_SKU.test(request.selection.vmSku)) throw new Error('vmSku must be a valid Azure VM SKU');
   if (!request.selection.quotas.length) throw new Error('At least one Azure quota must be preflighted');
@@ -735,6 +840,13 @@ export async function preflightAzureWorkspaceHostConnection(
         code: 'permission-denied',
         message: `Azure permission '${action}' is denied${evidence.reason ? `: ${evidence.reason}` : '.'}`,
         remediation: `Grant '${action}' at the narrowest applicable subscription or resource-group scope.`,
+        refusal: {
+          observed: { action, allowed: 'false', reason: evidence.reason ?? null },
+          liftsWhen:
+            `the selected principal is granted '${action}' at the subscription/resource-group scope (an Azure ` +
+            'administrator assigns the role) and the preflight is re-run. Re-running unchanged cannot pass',
+          whoCanMakeItTrue: ['owner'],
+        } satisfies RefusalContract,
       });
     }
   }

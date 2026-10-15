@@ -839,6 +839,47 @@ describe('buildPlanItemBlockGraph (EI-12372) — plan-item blocking', () => {
     // P-001 status is recorded as 'todo'
     expect(graph.planItemStatuses.get('P-plan')?.get('P-001')).toBe('todo');
   });
+
+  // WI-10008237: memoized on the (cached, identity-stable) row arrays.
+  type Item = PlanIndexRow['items'][number];
+  const item = (id: string, status: Item['status'], blockedBy: string[] = []): Item =>
+    ({ id, status, text: '', importance: 'high', blockedBy, decisionRefs: [], phase: null }) as Item;
+
+  it('reuses the graph for the same row array and rebuilds for a new one', () => {
+    const rows = [planRow({ planSlug: 'M-plan', harnessSlug: 'h1', items: [item('P-001', 'todo'), item('P-002', 'todo', ['P-001'])] })];
+    const first = buildPlanItemBlockGraph([rows]);
+    expect(buildPlanItemBlockGraph([rows])).toBe(first);
+    // The plan index changed: the cache hands back a NEW array, which must not hit the memo.
+    const changed = [planRow({ planSlug: 'M-plan', harnessSlug: 'h1', items: [item('P-001', 'done'), item('P-002', 'todo', ['P-001'])] })];
+    const second = buildPlanItemBlockGraph([changed]);
+    expect(second).not.toBe(first);
+    expect(second.planItemStatuses.get('M-plan')?.get('P-001')).toBe('done');
+    expect(first.planItemStatuses.get('M-plan')?.get('P-001')).toBe('todo');
+  });
+
+  it('merges a plan present in several harness arrays without mutating either memoized part', () => {
+    const a = [planRow({ planSlug: 'X-plan', harnessSlug: 'h1', items: [item('P-001', 'todo'), item('P-002', 'todo', ['P-001'])] })];
+    const b = [
+      planRow({ planSlug: 'X-plan', harnessSlug: 'h2', items: [item('P-003', 'done'), item('P-004', 'todo', ['P-003'])] }),
+      planRow({ planSlug: 'Y-plan', harnessSlug: 'h2', items: [item('P-001', 'todo')] }),
+    ];
+    const partA = buildPlanItemBlockGraph([a]);
+    const partB = buildPlanItemBlockGraph([b]);
+    const merged = buildPlanItemBlockGraph([a, b]);
+
+    expect([...merged.planItemBlockers.get('X-plan')!.keys()].sort()).toEqual(['P-001', 'P-002', 'P-003', 'P-004']);
+    expect(merged.planItemStatuses.get('X-plan')?.get('P-001')).toBe('todo');
+    expect(merged.planItemStatuses.get('X-plan')?.get('P-003')).toBe('done');
+    expect(merged.planItemBlockers.get('Y-plan')?.get('P-001')).toEqual([]);
+    // The memoized single-array graphs are untouched by the merge.
+    expect([...partA.planItemBlockers.get('X-plan')!.keys()].sort()).toEqual(['P-001', 'P-002']);
+    expect([...partB.planItemBlockers.get('X-plan')!.keys()].sort()).toEqual(['P-003', 'P-004']);
+    expect(partA.planItemStatuses.get('X-plan')?.has('P-003')).toBe(false);
+    // Same answer as building the merged rows from scratch in one array.
+    const flat = buildPlanItemBlockGraph([[...a, ...b]]);
+    expect(merged.planItemBlockers).toEqual(flat.planItemBlockers);
+    expect(merged.planItemStatuses).toEqual(flat.planItemStatuses);
+  });
 });
 
 describe('surveyPot plan-item blocking (EI-12372)', () => {
@@ -948,7 +989,7 @@ describe('surveyPot escalated-issue frontier (EI-12275)', () => {
     ...over,
   });
 
-  // The headline defect: pot:survey.fetchFrontierRows is feature/chunk-only
+  // The headline defect: pot:survey.fetchFrontierRows excludes the issue-routed kinds
   // (frontierPlacementKindClause), so a severity:major bug/change/task item was
   // structurally invisible to the Mug's ranked frontier — no escalation-pressure
   // weight could ever help it, because it never entered rankPlacements' input set

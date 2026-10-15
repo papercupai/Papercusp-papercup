@@ -15,16 +15,57 @@
  * (dedicated volume + ghcr + GB pulls + 4–20h/task; 5 tasks need B200/H100) — see FRONTIER-SWE-PILOT.md.
  */
 import type { CoordinationSpec, IsoBudget } from './coordination-topology';
-import type { AgentRunOutput, RunAgentInput, TopologyRowMeta, TopologyRunResult } from './run-topology';
+import type { AgentRunOutput, EnsembleSelector, RunAgentInput, TopologyRowMeta, TopologyRunResult } from './run-topology';
 import { runTopology } from './run-topology';
 import type { TaskRunResult } from '@papercusp/bench-metrics';
 import type { ProcExec } from './grader/swe-bench-pro';
 import { makeFrontierSweCloneGradeSeam, type FrontierSweEnvHandle } from './frontier-swe-seam';
 import { loadFrontierSweTaskSet } from './task-sets';
+import type { BenchTask } from './types';
 import { appendRunResult, missingTrials, readRunResults } from './frontier-swe-resume';
+import { startFrontierSweLaunchAdapter, type FrontierSweLaunchAdapterConfig } from './frontier-swe-launch-adapter';
+import {
+  buildCampaignBundle, campaignEntriesFromFrontierSweResults, writeCampaignBundle, type CampaignMissing,
+} from './reproducibility/campaign-bundle';
 
 const GRADER_FAMILY = 'frontier-swe';
 const SUITE = 'frontier-swe';
+
+/** Current protocol arms: the maintained native launch adapter is owned for the whole run.
+ * The historical injected runAgent surface below remains for recorded historical arms/tests.
+ */
+export async function runFrontierSweCurrentArm(
+  deps: Omit<FrontierSweArmDeps, 'runAgent' | 'seamExec'> & { launch: FrontierSweLaunchAdapterConfig; backlog?: readonly BenchTask[] },
+): Promise<TopologyRunResult> {
+  if (!['papercusp', 'baseline'].includes(deps.spec.arm) || deps.launch.runId !== deps.runId) {
+    throw new Error('Current FrontierSWE arm requires a supported native arm and its exact run id.');
+  }
+  const now = deps.now ?? Date.now;
+  const backlog = deps.backlog ?? loadFrontierSweTaskSet(deps.taskSetId ?? 'frontier-swe-v2-cpu', deps.taskIds);
+  const adapter = await startFrontierSweLaunchAdapter(deps.launch);
+  const result: TopologyRunResult = { arm: deps.spec.arm, runId: deps.runId,
+    startedAtMs: now(), finishedAtMs: now(), rows: [], modelCallsSpent: 0, tokensSpent: 0, costUsdSpent: 0,
+    budgetExhausted: false, attemptedTaskIds: [], skippedTaskIds: [] };
+  try {
+    // Current protocols freeze caps PER assignment. One shared adapter owns the
+    // run; each task gets its own topology pass. The lifetime governor owns the
+    // aggregate cap across tasks, seeds and arms.
+    for (const task of backlog) {
+      if (deps.launch.signal?.aborted) { result.skippedTaskIds.push(task.instanceId); continue; }
+      const pass = await runTopology<FrontierSweEnvHandle>({ ...deps, backlog: [task], cap: 1,
+        seam: adapter.seam, rowMeta: frontierSweRowMeta(deps.rowMeta), now, runAgent: adapter.runAgent });
+      result.rows.push(...pass.rows); result.attemptedTaskIds.push(...pass.attemptedTaskIds);
+      result.skippedTaskIds.push(...pass.skippedTaskIds); result.modelCallsSpent += pass.modelCallsSpent;
+      result.tokensSpent += pass.tokensSpent; result.costUsdSpent += pass.costUsdSpent;
+      result.budgetExhausted ||= pass.budgetExhausted;
+    }
+    result.finishedAtMs = now();
+    return result;
+  } finally {
+    const report = await adapter.stop();
+    if (report.errors.length) throw new Error(`FrontierSWE run cleanup incomplete: ${report.errors.join('; ')}`);
+  }
+}
 
 /** The FrontierSWE-specific run-level row metadata (the rest comes from the caller for pre-registration). */
 export interface FrontierSweRowMetaInput {
@@ -66,6 +107,8 @@ export interface FrontierSweArmDeps {
   rowMeta: FrontierSweRowMetaInput;
   cap?: number;
   ensembleSize?: number;
+  /** Required for an ensemble (aggregate:'judge-best') spec; runTopology refuses without it. */
+  ensembleSelector?: EnsembleSelector;
   now?: () => number;
   onResult?: (r: TaskRunResult) => void | Promise<void>;
   /** Inject a fake docker exec in tests; live defaults to the seam's shell-free execFile binding. */
@@ -74,6 +117,9 @@ export interface FrontierSweArmDeps {
 
 /** Run ONE FrontierSWE topology arm × one seed over a task-set. Thin: builds the seam + rowMeta, calls runTopology. */
 export function runFrontierSweArm(deps: FrontierSweArmDeps): Promise<TopologyRunResult> {
+  if (deps.spec.arm === 'papercusp') {
+    throw new Error('The current Papercusp FrontierSWE arm requires runFrontierSweCurrentArm; legacy runAgent injection is retired.');
+  }
   const backlog = loadFrontierSweTaskSet(deps.taskSetId ?? 'frontier-swe-cpu', deps.taskIds);
   const seam = makeFrontierSweCloneGradeSeam({ version: deps.rowMeta.version, exec: deps.seamExec });
   return runTopology<FrontierSweEnvHandle>({
@@ -88,6 +134,7 @@ export function runFrontierSweArm(deps: FrontierSweArmDeps): Promise<TopologyRun
     runAgent: deps.runAgent,
     cap: deps.cap,
     ensembleSize: deps.ensembleSize,
+    ensembleSelector: deps.ensembleSelector,
     onResult: deps.onResult,
   });
 }
@@ -101,6 +148,20 @@ export interface FrontierSweResilientDeps extends Omit<FrontierSweArmDeps, 'seed
   runIdBase: string;
   /** Optional extra per-row hook (the durable append is automatic). */
   onResult?: (r: TaskRunResult) => void | Promise<void>;
+  /** P-022 / D-010: where each completed campaign pass writes its dated bundle
+   *  (`<bundleDir>/benchmarks/campaigns/<UTC date>-<campaignId>/`). */
+  bundleDir: string;
+  /** Bundle campaign id (default `runIdBase`). */
+  campaignId?: string;
+}
+
+/** The dated bundle a campaign pass wrote, with its completeness verdict (D-009 item 3). */
+export interface FrontierSweCampaignBundleResult {
+  root: string;
+  complete: boolean;
+  missing: CampaignMissing[];
+  /** Repo-relative paths written under `bundleDir`. */
+  written: string[];
 }
 
 /**
@@ -111,7 +172,7 @@ export interface FrontierSweResilientDeps extends Omit<FrontierSweArmDeps, 'seed
  */
 export async function runFrontierSweResilient(
   deps: FrontierSweResilientDeps,
-): Promise<{ perSeed: TopologyRunResult[]; rows: TaskRunResult[]; alreadyComplete: boolean }> {
+): Promise<{ perSeed: TopologyRunResult[]; rows: TaskRunResult[]; alreadyComplete: boolean; bundle: FrontierSweCampaignBundleResult }> {
   const backlog = loadFrontierSweTaskSet(deps.taskSetId ?? 'frontier-swe-cpu', deps.taskIds);
   const allIds = backlog.map((t) => t.instanceId);
   const arm = deps.spec.arm;
@@ -153,6 +214,8 @@ export async function runFrontierSweResilient(
           score: r.score ?? null,
           resolved: r.resolved,
           graderStatus: r.graderStatus,
+          ...(r.graderDetail !== undefined ? { graderDetail: r.graderDetail } : {}),
+          ...(r.traceRefs && r.traceRefs.length > 0 ? { traceRefs: r.traceRefs } : {}),
         });
         rows.push(r);
         await deps.onResult?.(r);
@@ -160,5 +223,16 @@ export async function runFrontierSweResilient(
     });
     perSeed.push(res);
   }
-  return { perSeed, rows, alreadyComplete: perSeed.length === 0 };
+
+  // P-022 / D-010: the campaign pass is complete — write its dated bundle from the FULL durable record (latest row
+  // per attempt, so a resumed campaign's earlier trials are included). Gaps stay visible in the manifest.
+  const entries = campaignEntriesFromFrontierSweResults(readRunResults(deps.resultsPath), SUITE, arm);
+  const built = buildCampaignBundle({
+    campaignId: deps.campaignId ?? deps.runIdBase,
+    completedAt: new Date((deps.now ?? Date.now)()),
+    entries,
+  });
+  const written = writeCampaignBundle(built, deps.bundleDir);
+  const bundle = { root: built.root, complete: built.manifest.complete, missing: built.manifest.missing, written };
+  return { perSeed, rows, alreadyComplete: perSeed.length === 0, bundle };
 }

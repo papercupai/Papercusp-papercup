@@ -1,5 +1,6 @@
 import { unwrapToolResult, type ToolResult, type UnifiedToolContext } from '@papercusp/tooldef';
 import { applyResultProjection, projectionMaterializationFormat, type ApplyProjectionOpts } from './apply';
+import { describeSourceMaterialization } from './materialization-audit';
 import { parseProjection } from './parse';
 import { PROJECTION_ARG, type ProjectionSpec } from './types';
 
@@ -68,7 +69,25 @@ export function applyNestedProjection<T>(
     spec,
     opts,
   );
-  return unwrapToolResult(projected as ToolResult) as T;
+  const projectedResult = projected as unknown as ToolResult;
+  const bodyContentIndex = (
+    projectedResult._meta?.resultProjection as { bodyContentIndex?: unknown } | undefined
+  )?.bodyContentIndex;
+  if (typeof bodyContentIndex === 'number' && Number.isInteger(bodyContentIndex)) {
+    const bodyItem = projectedResult.content?.[bodyContentIndex];
+    if (bodyItem?.type === 'text' && typeof bodyItem.text === 'string') {
+      // applyResultProjection leads with degrading diagnostics so transport
+      // truncation cannot hide them. A code-mode caller needs the projected
+      // body as its typed root; unwrap that explicit body item while retaining
+      // resultProjection in _meta for object results.
+      return unwrapToolResult({
+        ...projectedResult,
+        content: [bodyItem],
+        structuredContent: undefined,
+      }) as T;
+    }
+  }
+  return unwrapToolResult(projectedResult) as T;
 }
 
 /**
@@ -87,10 +106,20 @@ export function nestedProjectionContext(
   const hasExplicitPayloadTier = isRecord(args) && 'payloadTier' in args;
   const needsFullSource = !hasExplicitPayloadTier;
   const needsStructuredSource = spec.pick !== undefined;
-  if (!needsFullSource && !needsStructuredSource) return ctx;
+  // Audit-only (WI-6554700010010307): lets the invocation ledger count which
+  // projections promoted their source, which args_json cannot show.
+  const sourceMaterialization = describeSourceMaterialization({
+    sourceProjection: spec,
+    needsFullSource,
+    needsStructuredSource,
+  });
+  if (!needsFullSource && !needsStructuredSource) {
+    return sourceMaterialization ? { ...ctx, sourceMaterialization } : ctx;
+  }
 
   return {
     ...ctx,
+    ...(sourceMaterialization ? { sourceMaterialization } : {}),
     ...(needsFullSource
       ? {
           contextTier: 'full' as const,

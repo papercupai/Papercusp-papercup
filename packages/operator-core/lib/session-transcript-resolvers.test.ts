@@ -8,6 +8,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
+import type { Sql } from 'postgres';
 import {
   findCodexLiveThreadId,
   findCodexRolloutPath,
@@ -16,9 +18,291 @@ import {
   ompAgentHomeForSessionKey,
   ompSessionsRootForSessionKey,
   __resetTranscriptResolverCaches,
+  readClosedCodexSessionUsage,
+  readClosedCodexRuntimeUsage,
+  readClosedCodexTurnInput,
+  readClosedCodexTurnToolResult,
 } from './session-transcript-resolvers';
 
 afterEach(() => __resetTranscriptResolverCaches());
+
+describe('source-bound closed Codex input', () => {
+  const session = '11111111-2222-3333-4444-555555555555', turn = 'private-input-turn';
+  const text = 'Dependency bytes π\nwith their exact whitespace.';
+  const source = () => [
+    { type: 'session_meta', payload: { id: session } },
+    { type: 'event_msg', payload: { type: 'task_started', turn_id: turn } },
+    { timestamp: '2026-10-11T00:00:01Z', type: 'response_item', payload: { type: 'message', role: 'user',
+      content: [{ type: 'input_text', text: 'initial context' }, { type: 'input_text', text }] } },
+    { type: 'turn_context', payload: { turn_id: turn, model: 'configured-alias' } },
+    { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 100, output_tokens: 10 },
+      last_token_usage: { input_tokens: 100, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 10 } } } },
+    { type: 'event_msg', payload: { type: 'task_complete', turn_id: turn } },
+  ];
+  async function fixture(fault?: string) {
+    const rows = source();
+    if (fault === 'foreign-session') rows[0].payload.id = 'foreign-session';
+    if (fault === 'foreign-start') rows[1].payload.turn_id = 'foreign-turn';
+    if (fault === 'missing-start') rows[1].payload.type = 'unrelated';
+    if (fault === 'assistant') rows[2].payload.role = 'assistant';
+    if (fault === 'image') rows[2].payload.content![1].type = 'input_image';
+    if (fault === 'missing-text') delete (rows[2].payload.content![1] as { text?: string }).text;
+    if (fault === 'timestamp') rows[2].timestamp = 'unmeasured';
+    if (fault === 'after-close') { const message = rows.splice(2, 1)[0]; rows.push(message); }
+    if (fault === 'open-turn') rows.pop();
+    const transcript = rows.map(row => JSON.stringify(row) + '\n').join('');
+    const home = await fs.mkdtemp(join(tmpdir(), 'codex-source-input-'));
+    const dir = join(home, 'sessions', '2026', '10', '11'); await fs.mkdir(dir, { recursive: true });
+    const file = join(dir, `rollout-2026-10-11T00-00-00-${session}.jsonl`); await fs.writeFile(file, transcript);
+    const calls: unknown[][] = [];
+    const sql = (async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push(values);
+      if (fault === 'source-mutated') await fs.appendFile(file, '{}\n');
+      return fault === 'missing-frontier' ? [] : [{ byte_offset: String(Buffer.byteLength(transcript) - (fault === 'partial-frontier' ? 1 : 0)),
+        parser_state: { initialized: true, fileGeneration: 0 } }];
+    }) as unknown as Sql;
+    const binding = { workspaceId: 'private-input-workspace', nativeSessionId: session, codexHome: home,
+      nativeTurnId: turn, recordIndex: fault === 'after-close' ? 5 : 2, contentIndex: 1 };
+    return { home, file, transcript, sql, binding, calls };
+  }
+  it('resolves the exact text block before turn_context through native start/closure and the canonical frontier', async () => {
+    const f = await fixture();
+    try {
+      expect(await readClosedCodexTurnInput(f.sql, f.binding)).toEqual({ file: f.file,
+        sourceSha256: createHash('sha256').update(f.transcript).digest('hex'), nativeSessionId: session, nativeTurnId: turn,
+        recordIndex: 2, contentIndex: 1, at: '2026-10-11T00:00:01.000Z', text });
+      expect(f.calls).toEqual([['private-input-workspace', f.file]]);
+    } finally { await fs.rm(f.home, { recursive: true, force: true }); }
+  });
+  it.each(['foreign-session', 'foreign-start', 'missing-start', 'assistant', 'image', 'missing-text', 'timestamp',
+    'after-close', 'open-turn', 'source-mutated', 'missing-frontier', 'partial-frontier'])
+  ('refuses %s input authority', async fault => {
+    const f = await fixture(fault);
+    try { expect(await readClosedCodexTurnInput(f.sql, f.binding)).toBeNull(); }
+    finally { await fs.rm(f.home, { recursive: true, force: true }); }
+  });
+  it('refuses foreign turns and unallocated record/block indices', async () => {
+    const f = await fixture();
+    try {
+      for (const changed of [{ nativeTurnId: 'another-turn' }, { recordIndex: 3 }, { contentIndex: 99 },
+        { recordIndex: -1 }, { contentIndex: 1.5 }])
+        expect(await readClosedCodexTurnInput(f.sql, { ...f.binding, ...changed })).toBeNull();
+    } finally { await fs.rm(f.home, { recursive: true, force: true }); }
+  });
+});
+
+describe('source-bound closed Codex tool results', () => {
+  const session = '11111111-2222-3333-4444-555555555555', turn = 'private-tool-turn', callId = 'private-call';
+  const args = '{"paths":["private/task.txt"],"intent":"exact π"}', output = '{"ok":false,"busy":["private/task.txt"]}';
+  async function fixture(fault?: string) {
+    const rows: any[] = [
+      { type: 'session_meta', payload: { id: session } },
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: turn } },
+      { timestamp: '2026-10-11T00:00:01Z', type: 'response_item', payload: { type: 'function_call',
+        name: 'locks_acquire', namespace: 'mcp', call_id: callId, arguments: args } },
+      { timestamp: '2026-10-11T00:00:02Z', type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output } },
+      { type: 'turn_context', payload: { turn_id: turn, model: 'configured-alias' } },
+      { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 100, output_tokens: 10 },
+        last_token_usage: { input_tokens: 100, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 10 } } } },
+      { type: 'event_msg', payload: { type: 'task_complete', turn_id: turn } },
+    ];
+    if (fault === 'custom') {
+      rows[2].payload.type = 'custom_tool_call'; rows[2].payload.input = rows[2].payload.arguments; delete rows[2].payload.arguments;
+      rows[3].payload.type = 'custom_tool_call_output'; rows[3].payload.output = [{ type: 'input_text', text: output }];
+      rows[3].payload.is_error = true;
+    }
+    if (fault === 'wrapper') { rows[2].payload.name = 'exec'; rows[2].payload.namespace = 'functions'; }
+    if (fault === 'foreign-session') rows[0].payload.id = 'foreign-session';
+    if (fault === 'foreign-start') rows[1].payload.turn_id = 'foreign-turn';
+    if (fault === 'missing-start') rows[1].payload.type = 'unrelated';
+    if (fault === 'call-id') rows[3].payload.call_id = 'foreign-call';
+    if (fault === 'foreign-explicit-turn') rows[3].payload.turn_id = 'foreign-turn';
+    if (fault === 'output-kind') rows[3].payload.type = 'custom_tool_call_output';
+    if (fault === 'name') delete rows[2].payload.name;
+    if (fault === 'namespace') rows[2].payload.namespace = {};
+    if (fault === 'args') rows[2].payload.arguments = {};
+    if (fault === 'output') rows[3].payload.output = {};
+    if (fault === 'is-error') rows[3].payload.is_error = 'false';
+    if (fault === 'timestamp') rows[3].timestamp = 'unmeasured';
+    if (fault === 'reversed-time') rows[3].timestamp = '2026-10-11T00:00:00Z';
+    if (fault === 'duplicate-call') rows.splice(4, 0, rows[2]);
+    if (fault === 'duplicate-output') rows.splice(4, 0, rows[3]);
+    if (fault === 'interrupted') rows.splice(3, 0, { type: 'turn_context', payload: { turn_id: 'foreign-turn' } });
+    if (fault === 'after-close') rows.push(rows.splice(3, 1)[0]);
+    if (fault === 'open-turn') rows.pop();
+    const transcript = rows.map(row => JSON.stringify(row) + '\n').join('');
+    const home = await fs.mkdtemp(join(tmpdir(), 'codex-source-tool-'));
+    const dir = join(home, 'sessions', '2026', '10', '11'); await fs.mkdir(dir, { recursive: true });
+    const file = join(dir, `rollout-2026-10-11T00-00-00-${session}.jsonl`); await fs.writeFile(file, transcript);
+    const sql = (async () => {
+      if (fault === 'source-mutated') await fs.appendFile(file, '{}\n');
+      return fault === 'missing-frontier' ? [] : [{ byte_offset: String(Buffer.byteLength(transcript) - (fault === 'partial-frontier' ? 1 : 0)),
+        parser_state: { initialized: true, fileGeneration: 0 } }];
+    }) as unknown as Sql;
+    const resultRecordIndex = fault === 'interrupted' ? 4 : fault === 'after-close' ? rows.length - 1 : 3;
+    return { home, file, transcript, sql, binding: { workspaceId: 'private-tool-workspace', nativeSessionId: session, codexHome: home,
+      nativeTurnId: turn, callRecordIndex: 2, resultRecordIndex } };
+  }
+  it.each(['function', 'custom', 'wrapper'])('preserves exact %s call identity, raw arguments and result', async kind => {
+    const f = await fixture(kind);
+    try {
+      expect(await readClosedCodexTurnToolResult(f.sql, f.binding)).toEqual({ file: f.file,
+        sourceSha256: createHash('sha256').update(f.transcript).digest('hex'), nativeSessionId: session, nativeTurnId: turn,
+        callRecordIndex: 2, resultRecordIndex: 3, callId, name: kind === 'wrapper' ? 'functions.exec' : 'mcp.locks_acquire',
+        arguments: args, output: kind === 'custom' ? [{ type: 'input_text', text: output }] : output,
+        callType: kind === 'custom' ? 'custom_tool_call' : 'function_call',
+        isError: kind === 'custom' ? true : null, calledAt: '2026-10-11T00:00:01.000Z', at: '2026-10-11T00:00:02.000Z' });
+    } finally { await fs.rm(f.home, { recursive: true, force: true }); }
+  });
+  it.each(['foreign-session', 'foreign-start', 'missing-start', 'call-id', 'foreign-explicit-turn', 'output-kind',
+    'name', 'namespace', 'args', 'output', 'is-error', 'timestamp', 'reversed-time', 'duplicate-call', 'duplicate-output',
+    'interrupted', 'after-close', 'open-turn', 'source-mutated', 'missing-frontier', 'partial-frontier'])
+  ('rejects %s tool-result authority', async fault => {
+    const f = await fixture(fault);
+    try { expect(await readClosedCodexTurnToolResult(f.sql, f.binding)).toBeNull(); }
+    finally { await fs.rm(f.home, { recursive: true, force: true }); }
+  });
+  it('refuses foreign turns, reordered and unallocated source ordinals', async () => {
+    const f = await fixture();
+    try {
+      for (const changed of [{ nativeTurnId: 'foreign-turn' }, { callRecordIndex: -1 }, { resultRecordIndex: 3.5 },
+        { callRecordIndex: 3 }, { resultRecordIndex: 2 }, { resultRecordIndex: 99 }])
+        expect(await readClosedCodexTurnToolResult(f.sql, { ...f.binding, ...changed })).toBeNull();
+    } finally { await fs.rm(f.home, { recursive: true, force: true }); }
+  });
+});
+
+describe('complete closed Codex source accounting', () => {
+  const session = '11111111-2222-3333-4444-555555555555';
+  const line = (value: unknown) => JSON.stringify(value) + '\n';
+  const transcript = line({ type: 'session_meta', payload: { id: session } }) +
+    line({ type: 'turn_context', payload: { turn_id: 'turn-1', model: 'configured-alias' } }) +
+    line({ type: 'event_msg', payload: { type: 'token_count', info: {
+      total_token_usage: { input_tokens: 100, output_tokens: 10 },
+      last_token_usage: { input_tokens: 100, cached_input_tokens: 20, cache_write_input_tokens: 0, output_tokens: 10 },
+    } } }) + line({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-1' } });
+  async function fixture(run: (input: { home: string; file: string; sql: Sql; calls: unknown[][] }) => Promise<void>,
+    frontier: unknown = { byte_offset: String(Buffer.byteLength(transcript)), parser_state: { initialized: true, fileGeneration: 0 } }) {
+    const home = await fs.mkdtemp(join(tmpdir(), 'codex-complete-source-'));
+    const dir = join(home, 'sessions', '2026', '10', '09');
+    await fs.mkdir(dir, { recursive: true });
+    const file = join(dir, `rollout-2026-10-09T00-00-00-${session}.jsonl`);
+    await fs.writeFile(file, transcript);
+    const calls: unknown[][] = [];
+    const sql = (async (_strings: TemplateStringsArray, ...values: unknown[]) => { calls.push(values); return frontier ? [frontier] : []; }) as unknown as Sql;
+    try { await run({ home, file, sql, calls }); } finally { await fs.rm(home, { recursive: true, force: true }); }
+  }
+  const read = (sql: Sql, home: string) => readClosedCodexSessionUsage(sql, { workspaceId: 'bench-private', codexHome: home, nativeSessionId: session });
+
+  it('binds exact native tokens to full bytes and a workspace-scoped canonical frontier without fabricating billed dollars', async () => {
+    await fixture(async ({ home, file, sql, calls }) => {
+      const result = await read(sql, home);
+      expect(result).toMatchObject({ ok: true, file, sourceSha256: createHash('sha256').update(transcript).digest('hex'), nativeTurnIds: ['turn-1'] });
+      expect(calls).toEqual([['bench-private', file]]);
+      expect(result).not.toHaveProperty('billedInferenceMicros');
+      if (result.ok) expect(result.events[0].usage).toMatchObject({ inputTokens: 80, cacheReadTokens: 20, cacheCreationTokens: 0 });
+    });
+  });
+  it.each(['open turn', 'partial record', 'malformed tail'] as const)('retains the proven closed-turn subtotal with an incomplete %s', async tail => {
+    await fixture(async ({ home, file, sql }) => {
+      const suffix = tail === 'open turn' ? line({ type: 'turn_context', payload: { turn_id: 'turn-2', model: 'configured-alias' } }) :
+        tail === 'partial record' ? '{"type":"event_msg"' : 'unreadable\n';
+      await fs.appendFile(file, suffix);
+      const result = await read(sql, home);
+      expect(result).toMatchObject({ ok: false, knownSubtotal: { ok: true, nativeTurnIds: ['turn-1'],
+        closedByteOffset: Buffer.byteLength(transcript), file,
+        sourceSha256: createHash('sha256').update(transcript + suffix).digest('hex') } });
+      if (!result.ok && result.knownSubtotal) expect(result.knownSubtotal.events[0].usage).toMatchObject({ inputTokens: 80, outputTokens: 10, cacheReadTokens: 20 });
+    });
+  });
+  it('does not infer a known closed subtotal from a frontier before closure', async () => {
+    await fixture(async ({ home, sql }) => {
+      const result = await read(sql, home);
+      expect(result).toMatchObject({ ok: false });
+      expect(result).not.toHaveProperty('knownSubtotal');
+    }, { byte_offset: String(Buffer.byteLength(transcript) - 1), parser_state: { initialized: true, fileGeneration: 0 } });
+  });
+  it.each([
+    ['missing', null],
+    ['partial', { byte_offset: '0', parser_state: { initialized: true } }],
+    ['beyond source', { byte_offset: String(Buffer.byteLength(transcript) + 1), parser_state: { initialized: true } }],
+    ['uninitialized', { byte_offset: String(Buffer.byteLength(transcript)), parser_state: { initialized: false } }],
+    ['bootstrap', { byte_offset: String(Buffer.byteLength(transcript)), parser_state: { initialized: true, bootstrapOffset: 0 } }],
+    ['invalid generation', { byte_offset: String(Buffer.byteLength(transcript)), parser_state: { initialized: true, fileGeneration: -1 } }],
+  ])('refuses a %s frontier', async (_name, frontier) => {
+    await fixture(async ({ home, sql }) => { expect(await read(sql, home)).toMatchObject({ ok: false }); }, frontier);
+  });
+  it('refuses a source modified during frontier IO', async () => {
+    await fixture(async ({ home, file, sql }) => {
+      const changing = (async (...args: unknown[]) => {
+        const rows = await (sql as unknown as (...args: unknown[]) => Promise<unknown>)(...args);
+        await fs.appendFile(file, line({ type: 'response_item', payload: { type: 'message' } }));
+        return rows;
+      }) as unknown as Sql;
+      expect(await read(changing, home)).toMatchObject({ ok: false, detail: expect.stringMatching(/changed/) });
+    });
+  });
+  it('refuses a replaced source even when its byte length is unchanged', async () => {
+    await fixture(async ({ home, file, sql }) => {
+      const replacing = (async (...args: unknown[]) => {
+        const rows = await (sql as unknown as (...args: unknown[]) => Promise<unknown>)(...args);
+        await fs.rename(file, file + '.old'); await fs.writeFile(file, transcript);
+        return rows;
+      }) as unknown as Sql;
+      expect(await read(replacing, home)).toMatchObject({ ok: false, detail: expect.stringMatching(/changed/) });
+    });
+  });
+  it('refuses a symlink to source bytes in another runtime', async () => {
+    await fixture(async ({ home, file, sql }) => {
+      const outside = join(home, 'other-runtime.jsonl');
+      await fs.rename(file, outside); await fs.symlink(outside, file);
+      expect(await read(sql, home)).toMatchObject({ ok: false });
+    });
+  });
+  it('includes earlier native carry sources rather than returning only the latest session', async () => {
+    await fixture(async ({ home, file, sql }) => {
+      const old = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+      await fs.writeFile(file.replace(session, old), transcript.replace(session, old));
+      const result = await readClosedCodexRuntimeUsage(sql, { workspaceId: 'bench-private', codexHome: home });
+      expect(result.complete).toBe(true);
+      expect(result.sessions.map(source => source.nativeSessionId)).toEqual([session, old]);
+    });
+  });
+  it.each(['append', 'same-size rewrite'] as const)('refuses completeness when an earlier source changes by %s during a later source read', async change => {
+    await fixture(async ({ home, file, sql, calls }) => {
+      const old = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+      await fs.writeFile(file.replace(session, old), transcript.replace(session, old));
+      const changing = (async (...args: unknown[]) => {
+        const rows = await (sql as unknown as (...args: unknown[]) => Promise<unknown>)(...args);
+        if (calls.length === 2) {
+          if (change === 'append') await fs.appendFile(file, line({ type: 'response_item', payload: { type: 'message' } }));
+          else await fs.writeFile(file, transcript.replaceAll('"output_tokens":10', '"output_tokens":20'));
+        }
+        return rows;
+      }) as unknown as Sql;
+      const result = await readClosedCodexRuntimeUsage(changing, { workspaceId: 'bench-private', codexHome: home });
+      expect(calls).toHaveLength(2);
+      expect(result.sessions).toHaveLength(2);
+      expect(result.complete).toBe(false);
+    });
+  });
+  it('retains complete sources while marking an open predecessor incomplete', async () => {
+    await fixture(async ({ home, file, sql }) => {
+      const old = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+      await fs.writeFile(file.replace(session, old), transcript.replace(session, old).trimEnd());
+      const result = await readClosedCodexRuntimeUsage(sql, { workspaceId: 'bench-private', codexHome: home });
+      expect(result.complete).toBe(false);
+      expect(result.sessions).toHaveLength(2);
+      expect(result.sessions.map(source => source.usage.ok)).toEqual([true, false]);
+    });
+  });
+  it('refuses an ambiguous duplicated native session source', async () => {
+    await fixture(async ({ home, file, sql }) => {
+      await fs.writeFile(file.replace('00-00-00', '01-00-00'), transcript);
+      expect(await readClosedCodexRuntimeUsage(sql, { workspaceId: 'bench-private', codexHome: home })).toEqual({ complete: false, sessions: [] });
+    });
+  });
+});
 
 describe('findCodexRolloutPath', () => {
   it('resolves the NEWEST rollout under sessions/<y>/<m>/<d>/ (a resume adds a second file)', async () => {

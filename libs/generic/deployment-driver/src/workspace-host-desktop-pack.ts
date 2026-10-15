@@ -36,6 +36,7 @@ import {
   DEFAULT_WORKSPACE_HOST_SERVICE_USER,
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
   WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+  WORKSPACE_HOST_DATA_ROOT,
   WORKSPACE_HOST_RUNTIME_ROOT,
   WORKSPACE_HOST_STATE_ROOT,
 } from './workspace-host-bootstrap';
@@ -219,6 +220,13 @@ export const WORKSPACE_HOST_DESKTOP_PACK_CHECKS = [
   'desktop-runtime',
   'desktop-socket',
   'desktop-egress-isolation',
+  // personal-cloud-desktop-2026-10-06 (D-001): the second worker instance, which runs as
+  // the customer workspace account for the person's own desktop.
+  'personal-desktop-runtime',
+  // The negative pair: each worker mode refuses the other's account, so neither class
+  // of desktop can be served under the wrong Unix identity.
+  'personal-desktop-identity',
+  'personal-desktop-socket',
 ] as const;
 export type WorkspaceHostDesktopPackCheckName =
   (typeof WORKSPACE_HOST_DESKTOP_PACK_CHECKS)[number];
@@ -361,6 +369,11 @@ export function buildWorkspaceHostDesktopPackScript(
   }
   if (desktopUser !== DEFAULT_WORKSPACE_HOST_DESKTOP_USER || desktopGroup !== DEFAULT_WORKSPACE_HOST_DESKTOP_GROUP) {
     throw new Error('Desktop runtime requires the fixed papercusp-desktop identity');
+  }
+  // The personal worker asserts this exact account and /home/<account> (D-001), so a
+  // different workspace account would fail at install rather than serve a desktop.
+  if (workspaceUser !== DEFAULT_WORKSPACE_HOST_WORKSPACE_USER) {
+    throw new Error('Personal desktop runtime requires the fixed papercusp-workspace identity');
   }
 
   const apt = [
@@ -600,6 +613,79 @@ systemctl enable --now papercusp-desktop.socket
 systemctl is-active --quiet papercusp-desktop.socket || fail desktop-socket
 [ -S /run/papercusp-desktop/session.sock ] || fail desktop-socket
 [ "$(stat -c %a /run/papercusp-desktop/session.sock)" = 660 ] || fail desktop-socket
+
+# ── personal desktop worker (personal-cloud-desktop-2026-10-06, D-001) ─────────────
+# A SECOND instance of the same worker, running as the customer workspace account: a
+# person's own desktop must see their checkout, files and credentials, exactly as their
+# hosted terminal does. It is a separate socket and unit — never a mode switch inside the
+# sandbox unit — so a sandbox lease cannot land in the customer account, and a personal
+# lease cannot land in the isolated desktop user. The sandbox isolation above is untouched.
+# No egress rules: the person's desktop has the same network as the person's terminal.
+WORKSPACE_HOME="/home/$WORKSPACE_USER"
+[ -d "$WORKSPACE_HOME" ] || fail personal-desktop-runtime
+runuser -u "$WORKSPACE_USER" -- env -i HOME="$WORKSPACE_HOME" PATH=/usr/bin:/bin \\
+  "$DESKTOP_LIB/node" "$DESKTOP_LIB/session.cjs" --personal --check || fail personal-desktop-runtime
+# Negative form on purpose: each mode must REFUSE the other's account. A worker that
+# accepted either identity would pass every positive check above.
+if runuser -u "$DESKTOP_USER" -- env -i HOME="$DESKTOP_ROOT" PATH=/usr/bin:/bin \\
+  "$DESKTOP_LIB/node" "$DESKTOP_LIB/session.cjs" --personal --check >/dev/null 2>&1; then
+  fail personal-desktop-identity
+fi
+if runuser -u "$WORKSPACE_USER" -- env -i HOME="$WORKSPACE_HOME" PATH=/usr/bin:/bin \\
+  "$DESKTOP_LIB/node" "$DESKTOP_LIB/session.cjs" --check >/dev/null 2>&1; then
+  fail personal-desktop-identity
+fi
+cat > /etc/systemd/system/papercusp-personal-desktop.socket <<UNIT
+[Unit]
+Description=Papercusp personal desktop session admission
+[Socket]
+ListenStream=/run/papercusp-personal-desktop/session.sock
+SocketUser=root
+SocketGroup=$SERVICE_USER
+SocketMode=0660
+DirectoryMode=0755
+Accept=yes
+MaxConnections=16
+RemoveOnStop=yes
+[Install]
+WantedBy=multi-user.target
+UNIT
+cat > /etc/systemd/system/papercusp-personal-desktop@.service <<UNIT
+[Unit]
+Description=Papercusp personal desktop session (customer workspace account)
+After=papercusp-workspace.service
+BindsTo=papercusp-workspace.service
+JoinsNamespaceOf=papercusp-workspace.service
+[Service]
+Type=exec
+User=$WORKSPACE_USER
+WorkingDirectory=$WORKSPACE_HOME
+Environment=HOME=$WORKSPACE_HOME
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=LANG=C.UTF-8
+Environment=SHELL=/bin/bash
+ExecStart=$DESKTOP_LIB/node $DESKTOP_LIB/session.cjs --personal --stdio
+StandardInput=socket
+StandardOutput=inherit
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=$WORKSPACE_HOME -${WORKSPACE_HOST_DATA_ROOT}
+InaccessiblePaths=-${WORKSPACE_HOST_STATE_ROOT}
+RestrictSUIDSGID=true
+LockPersonality=true
+UMask=0077
+KillMode=control-group
+TimeoutStopSec=5s
+UNIT
+chmod 0644 /etc/systemd/system/papercusp-personal-desktop.socket /etc/systemd/system/papercusp-personal-desktop@.service
+systemd-analyze verify /etc/systemd/system/papercusp-personal-desktop.socket /etc/systemd/system/papercusp-personal-desktop@.service
+systemctl daemon-reload
+systemctl enable --now papercusp-personal-desktop.socket
+systemctl is-active --quiet papercusp-personal-desktop.socket || fail personal-desktop-socket
+[ -S /run/papercusp-personal-desktop/session.sock ] || fail personal-desktop-socket
+[ "$(stat -c %a /run/papercusp-personal-desktop/session.sock)" = 660 ] || fail personal-desktop-socket
 phase install-desktop-runtime
 
 # ── attest-pack ─────────────────────────────────────────────────────────────────────

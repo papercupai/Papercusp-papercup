@@ -117,7 +117,7 @@ async function runSmoke() {
     runId: `smoke-run-${Date.now()}`,
     preregHash: 'smoke-prereg',
     suite: 'swe-bench-pro',
-    modelId: 'claude-opus-4-8-smoke',
+    modelId: 'smoke-stub-model', // stubbed generation: no model is called, so no registry id is evaluated
     harnessVersion: 'baseline-best-of-n-smoke@0.1.0',
     task: makeSmokeTask(),
     seed: 0,

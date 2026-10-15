@@ -588,6 +588,55 @@ describe('issueToCandidate — federation workItemOrigin, DISTINCT from signalOr
     expect(c.workItemOrigin).toBe('remote');
   });
 
+  it('WI-10006515: an OWN-NODE row stranded at origin=remote omits workItemOrigin (not routed to human)', () => {
+    const c = issueToCandidate(issue({ id: 'EI-OWN', title: 'ours', kind: 'bug', origin: 'remote' }), { ownNode: true });
+    expect(c).not.toHaveProperty('workItemOrigin');
+  });
+
+  it('WI-10006515: readImprovementItems classifies remote rows in ONE batch; a true peer row keeps its label', async () => {
+    const asked: string[][] = [];
+    const items = await readImprovementItems(
+      {},
+      {
+        listIssues: async () => [
+          issue({ id: 'EI-OWN', title: 'ours', kind: 'bug', origin: 'remote' }),
+          issue({ id: 'EI-PEER', title: 'theirs', kind: 'bug', origin: 'remote' }),
+          issue({ id: 'EI-LOC', title: 'local', kind: 'bug', origin: 'local' }),
+        ],
+        ownNodeRemoteIds: async (ids) => ((asked.push([...ids])), new Set(['EI-OWN'])),
+      },
+    );
+    expect(asked).toEqual([['EI-OWN', 'EI-PEER']]);
+    expect(Object.fromEntries(items.map((c) => [c.id, c.workItemOrigin ?? null]))).toEqual({
+      'EI-OWN': null,
+      'EI-PEER': 'remote',
+      'EI-LOC': null,
+    });
+  });
+
+  it('WI-10006515: a failing classifier is fail-closed (every remote row keeps its label); no remote row ⇒ no call', async () => {
+    const failing = await readImprovementItems(
+      {},
+      {
+        listIssues: async () => [issue({ id: 'EI-R', title: 'r', kind: 'bug', origin: 'remote' })],
+        ownNodeRemoteIds: async () => {
+          throw new Error('pg down');
+        },
+      },
+    );
+    expect(failing[0]!.workItemOrigin).toBe('remote');
+
+    let called = false;
+    await readImprovementItems(
+      {},
+      {
+        listIssues: async () => [issue({ id: 'EI-L', title: 'l', kind: 'bug', origin: 'local' })],
+        ownNodeRemoteIds: async () => ((called = true), new Set<string>()),
+      },
+    );
+    expect(called).toBe(false);
+  });
+
   it('a local row omits workItemOrigin (byte-identical candidate for the common case)', () => {
     const c = issueToCandidate(issue({ id: 'EI-1', title: 'local', kind: 'bug', origin: 'local' }));
     expect(c.workItemOrigin).toBeUndefined();

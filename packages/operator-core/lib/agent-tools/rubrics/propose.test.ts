@@ -2,16 +2,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import proposeTool, { rubricsProposeArgs } from './propose';
 import { normalizeRequirementSections } from '../../requirement-contract';
+import { rubricTemplateDataSchema } from '../plans/rubric-template';
 
 const mocks = vi.hoisted(() => ({
   proposeRubric: vi.fn(),
   validateRubricReplicationSql: vi.fn(),
+  // P-005: the handler reads the stored revision to grandfather carried instrument keys.
+  getRubric: vi.fn(async (): Promise<unknown> => null),
 }));
 
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'me' }) }));
 vi.mock('../../rubrics', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rubrics')>();
-  return { ...actual, proposeRubric: mocks.proposeRubric };
+  return { ...actual, proposeRubric: mocks.proposeRubric, getRubric: mocks.getRubric };
 });
 vi.mock('../../rubrics-replication-sql', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rubrics-replication-sql')>();
@@ -51,6 +54,24 @@ const lightAcceptanceCriterion = {
 describe('rubrics:propose args — standard-only watchdog fields', () => {
   it('keeps the complete tool schema JSON-Schema-representable', () => {
     expect(() => z.toJSONSchema(proposeTool.args as never)).not.toThrow();
+  });
+
+  it('scopes gradingAuthority descriptions to acceptance grading, separate from standard scorecards', () => {
+    const descriptionOf = (schema: unknown): string => {
+      const jsonSchema = z.toJSONSchema(schema as never) as {
+        properties?: { gradingAuthority?: { description?: string } };
+      };
+      return jsonSchema.properties?.gradingAuthority?.description ?? '';
+    };
+    const descriptions = [descriptionOf(rubricsProposeArgs), descriptionOf(rubricTemplateDataSchema)];
+
+    expect(descriptions).toHaveLength(2);
+    for (const description of descriptions) {
+      expect(description).toContain('acceptance-kind plan/goal rubrics');
+      expect(description).toContain('standard-kind terminal scorecards');
+      expect(description).toContain('P-013');
+      expect(description).toContain('goal-rubric stewardship');
+    }
   });
 
   it('documents the conditional acceptance ratingScale normalization without requiring caller input', () => {
@@ -209,6 +230,54 @@ describe('rubrics:propose args — standard-only watchdog fields', () => {
         stalenessWatched: true,
       }),
     );
+  });
+
+  it('P-005: refuses a NEW unregistered instrument binding before anything is written', async () => {
+    const result = await proposeTool.handler(
+      {
+        ...base,
+        kind: 'standard',
+        criteria: [{ ...base.criteria[0], check: { kind: 'instrument', instrumentKey: 'parked-agent-census' } }],
+      } as never,
+      {} as never,
+    );
+    const parsed = JSON.parse((result as { content: Array<{ text: string }> }).content[0]!.text);
+
+    expect(parsed).toMatchObject({
+      ok: false,
+      code: 'unregistered_instrument',
+      refused: [{ criterion: 'tests', instrumentKey: 'parked-agent-census', priorInstrumentKey: null }],
+    });
+    expect(parsed.registeredKeys).toContain('host:psi-cpu-some-avg10-pct');
+    expect(mocks.getRubric).toHaveBeenCalledWith('release-readiness');
+    expect(mocks.proposeRubric).not.toHaveBeenCalled();
+  });
+
+  it('P-005: grandfathers a legacy key carried unchanged from the stored revision and reports it', async () => {
+    const legacy = { ...base.criteria[0], instrumentKey: 'pot-throughput-ticks' };
+    mocks.getRubric.mockResolvedValueOnce({ criteria: [legacy] });
+    mocks.proposeRubric.mockResolvedValue({
+      ...base,
+      rubricId: 'release-readiness',
+      kind: 'standard',
+      criteria: [legacy],
+      description: '',
+      ratingScale: ['healthy', 'degraded', 'broken', 'unknown'],
+      methodRef: null,
+      status: 'proposed',
+      createdBy: null,
+      proposedBy: 'me',
+      ratifiedBy: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    const result = await proposeTool.handler({ ...base, kind: 'standard', criteria: [legacy] } as never, {} as never);
+    const parsed = JSON.parse((result as { content: Array<{ text: string }> }).content[0]!.text);
+
+    expect(parsed.ok).toBe(true);
+    expect(parsed.grandfatheredInstruments).toEqual([{ criterion: 'tests', instrumentKey: 'pot-throughput-ticks' }]);
+    expect(mocks.proposeRubric).toHaveBeenCalledTimes(1);
   });
 
   it('returns a non-blocking methodLint advisory for native-shell acceptance methods', async () => {

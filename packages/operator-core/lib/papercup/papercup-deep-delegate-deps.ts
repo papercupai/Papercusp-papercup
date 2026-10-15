@@ -28,6 +28,7 @@ import type { DeepDelegateDeps } from './papercup-deep-delegate';
 import { DEEP_DELEGATION_LABEL } from './papercup-deep-delegate';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
+import { observeFallback } from '../degradation/fallback-observations';
 
 /** The system identity deep-delegation coord messages are sent AS. Not a live
  *  session — the deep session must answer via the work-item completion (the
@@ -103,7 +104,7 @@ export function defaultDeepDelegateDeps(): DeepDelegateDeps {
       }
     },
 
-    async deliverToDeep({ ownerId, workItemId, harness, question, brief }) {
+    async deliverToDeep({ workspaceId, ownerId, workItemId, harness, question, brief }) {
       try {
         const [{ sendMessage }, { wakeRecipients }] = await Promise.all([
           import('../agent-tools/coordination/messages'),
@@ -121,16 +122,28 @@ export function defaultDeepDelegateDeps(): DeepDelegateDeps {
           summary: `deep delegation ${workItemId}`,
           source: 'papercup-deep-delegate',
         });
-        if (wake.woken > 0) return true;
+        if (wake.woken > 0) {
+          observeFallback('coordination-delivery', {
+            eligible: 1, applied: 1, reason: 'applied', scope: 'deep-delegation',
+          }, { workspaceId });
+          return true;
+        }
         // staged (manual wake-mode) or missed (no live session watching the key):
         // the D-007 trap — a staged wake never fires by itself, so treat both as
         // NOT delivered and let the core degrade honestly.
+        observeFallback('coordination-delivery', {
+          eligible: 1, applied: 0, reason: wake.staged > 0 ? 'wake-staged' : 'wake-missed',
+          scope: 'deep-delegation',
+        }, { workspaceId });
         console.warn(
           `[deep-delegate] wake for ${workItemId} did not land on ${ownerId} ` +
             `(woken=${wake.woken}, staged=${wake.staged}) — falling back`,
         );
         return false;
       } catch (err) {
+        observeFallback('coordination-delivery', {
+          eligible: 1, applied: 0, reason: 'delivery-failed', scope: 'deep-delegation',
+        }, { workspaceId });
         console.warn('[deep-delegate] coord delivery failed:', (err as Error).message);
         return false;
       }

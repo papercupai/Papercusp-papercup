@@ -208,7 +208,12 @@ describe('workspace-host sidecar entrypoint producer', () => {
     const builder = readFileSync(BUILDER, 'utf8');
     const emit = builder.indexOf('bash "$HERE/install-workspace-host-entrypoints.sh"');
     const prune = builder.indexOf('--prune-vm-release', emit);
-    const verify = builder.indexOf('"$ROOT/bin/verify-sidecar-bundle.sh"', prune);
+    // The builder invokes the verifier through its own bin dir, `"$HERE/verify-sidecar-bundle.sh"`
+    // (with PAPERCUSP_DESKTOP_TARGET_ROOT="$ROOT"); older builders spelled it `"$ROOT/bin/…"`.
+    // Both name the same script — the ordering after prune is the property under test.
+    const verifyCall = /"\$(?:HERE|ROOT\/bin)\/verify-sidecar-bundle\.sh" "\$SIDECAR_DIR"/g;
+    verifyCall.lastIndex = Math.max(prune, 0);
+    const verify = prune < 0 ? -1 : (verifyCall.exec(builder)?.index ?? -1);
     expect(emit).toBeGreaterThan(0);
     expect(prune).toBeGreaterThan(emit);
     expect(verify).toBeGreaterThan(prune);

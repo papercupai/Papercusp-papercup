@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  GCLOUD_ACTIVE_USER_AUTH_TTL_MS,
   GCP_GCLOUD_ACTIVE_USER_CREDENTIAL_REF,
   GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS,
   acquireGcpGcloudActiveUserAuth,
+  createGcloudActiveUserAuthMemo,
   createGcpWorkspaceHostAcquireAuth,
   fetchGcpApiJson,
   inspectGcpLocalCredentialOnboarding,
@@ -160,6 +162,102 @@ describe('GCP workspace-host credential references', () => {
     expect(() => createGcpWorkspaceHostAcquireAuth('env:GOOGLE_APPLICATION_CREDENTIALS')).toThrow(
       'gcp_workspace_host_cloud_credential_ref_unsupported',
     );
+  });
+
+  // WI-10005446: each active-user resolution forks three gcloud CLIs (~0.7 CPU-s each) from
+  // bg-host, in bursts during GCP operations. The memo reuses one resolution for a window
+  // shorter than gcloud's own 300 s refresh margin.
+  describe('gcloud active-user memo', () => {
+    const auth = (n: number) => ({ accessToken: `${SECRET}-${n}`, identity: 'developer@example.com', projectId: PROJECT });
+
+    it('keeps the reuse window inside gcloud refresh margin (300 s) with at least 60 s to spare', () => {
+      expect(GCLOUD_ACTIVE_USER_AUTH_TTL_MS).toBeGreaterThan(0);
+      expect(GCLOUD_ACTIVE_USER_AUTH_TTL_MS).toBeLessThanOrEqual(240_000);
+    });
+
+    it('reuses a resolution until the window closes, timed from when it started', async () => {
+      let clock = 1_000;
+      const memo = createGcloudActiveUserAuthMemo({ ttlMs: 180_000, now: () => clock });
+      let calls = 0;
+      const resolve = vi.fn(async () => {
+        calls += 1;
+        clock += 2_000; // the resolution itself takes time; the window must not start after it
+        return auth(calls);
+      });
+
+      await expect(memo.get(resolve)).resolves.toMatchObject({ accessToken: `${SECRET}-1` });
+      clock = 1_000 + 179_999;
+      await expect(memo.get(resolve)).resolves.toMatchObject({ accessToken: `${SECRET}-1` });
+      expect(resolve).toHaveBeenCalledTimes(1);
+
+      clock = 1_000 + 180_000;
+      await expect(memo.get(resolve)).resolves.toMatchObject({ accessToken: `${SECRET}-2` });
+      expect(resolve).toHaveBeenCalledTimes(2);
+    });
+
+    it('shares one in-flight resolution between concurrent callers', async () => {
+      const memo = createGcloudActiveUserAuthMemo({ now: () => 0 });
+      let release!: (value: ReturnType<typeof auth>) => void;
+      const resolve = vi.fn(() => new Promise<ReturnType<typeof auth>>((r) => (release = r)));
+
+      const first = memo.get(resolve);
+      const second = memo.get(resolve);
+      release(auth(1));
+
+      await expect(Promise.all([first, second])).resolves.toEqual([auth(1), auth(1)]);
+      expect(resolve).toHaveBeenCalledTimes(1);
+    });
+
+    it('never stores a failure', async () => {
+      const memo = createGcloudActiveUserAuthMemo({ now: () => 0 });
+      const resolve = vi
+        .fn<() => Promise<ReturnType<typeof auth>>>()
+        .mockRejectedValueOnce(new Error('gcp_gcloud_active_user_token_unavailable'))
+        .mockResolvedValueOnce(auth(2));
+
+      await expect(memo.get(resolve)).rejects.toThrow('gcp_gcloud_active_user_token_unavailable');
+      await expect(memo.get(resolve)).resolves.toMatchObject({ accessToken: `${SECRET}-2` });
+      expect(resolve).toHaveBeenCalledTimes(2);
+    });
+
+    it('hands each caller its own copy', async () => {
+      const memo = createGcloudActiveUserAuthMemo({ now: () => 0 });
+      const resolve = vi.fn(async () => auth(1));
+
+      const first = await memo.get(resolve);
+      first.accessToken = 'mutated';
+      await expect(memo.get(resolve)).resolves.toMatchObject({ accessToken: `${SECRET}-1` });
+    });
+
+    function gcloudExec() {
+      return vi.fn(async (_file: string, args: readonly string[]) => {
+        if (args[0] === 'auth' && args[1] === 'list') return { stdout: 'developer@example.com\n' };
+        if (args[0] === 'auth' && args[1] === 'print-access-token') return { stdout: `${SECRET}\n` };
+        if (args[0] === 'config') return { stdout: `${PROJECT}\n` };
+        throw new Error('unexpected command');
+      });
+    }
+
+    it('routes the active-user acquirer through a supplied memo: two acquires fork gcloud three times, not six', async () => {
+      const exec = gcloudExec();
+      const acquire = createGcpWorkspaceHostAcquireAuth(GCP_GCLOUD_ACTIVE_USER_CREDENTIAL_REF, {
+        exec,
+        activeUserAuthMemo: createGcloudActiveUserAuthMemo({ now: () => 0 }),
+      });
+
+      await acquire();
+      await expect(acquire()).resolves.toMatchObject({ identity: 'developer@example.com', projectId: PROJECT });
+      expect(exec).toHaveBeenCalledTimes(3);
+    });
+
+    it('keeps an injected exec out of the process-wide memo', async () => {
+      const exec = gcloudExec();
+      const acquire = createGcpWorkspaceHostAcquireAuth(GCP_GCLOUD_ACTIVE_USER_CREDENTIAL_REF, { exec });
+
+      await acquire();
+      await acquire();
+      expect(exec).toHaveBeenCalledTimes(6);
+    });
   });
 
   // EI-22191286944372582: a momentary exec failure (observed cause: concurrent gcloud
@@ -576,6 +674,24 @@ describe('provider failure reasons on the shared Google API transport', () => {
       expect((error as { throttled?: boolean }).throttled).toBe(true);
     },
   );
+
+  // P-318 r62b (2026-10-01): a subnetwork insert against a network Google is still creating
+  // answers 400 resourceNotReady. Without the throttle mark the 4xx rule halts the provision.
+  it('marks a 400 resourceNotReady (parent still being created) as retryable', async () => {
+    const error = await failWith(
+      {
+        error: {
+          code: 400,
+          message: "The resource 'projects/p/global/networks/n' is not ready",
+          errors: [{ reason: 'resourceNotReady', message: "The resource 'projects/p/global/networks/n' is not ready" }],
+        },
+      },
+      400,
+    );
+
+    expect((error as { status?: number }).status).toBe(400);
+    expect((error as { throttled?: boolean }).throttled).toBe(true);
+  });
 
   // The other half of the contract, and the reason this keys on reason codes rather than on the
   // canonical `RESOURCE_EXHAUSTED` status: a spent quota does not refill on a backoff, so retrying

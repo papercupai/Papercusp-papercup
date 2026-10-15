@@ -109,9 +109,34 @@ export function toWireRow(e: MemoryEntry): {
   };
 }
 
+export type JudgeMemorySearchScope =
+  | { ok: true; harnessSlug: string; harnessOnly: true }
+  | { ok: false; reason: string }
+  | null;
+
+/** A judge may search only the concrete harness that owns its session. */
+export function resolveJudgeMemorySearchScope(
+  args: { harness_slug?: string; harnessOnly?: boolean; workspace?: string },
+  ctx: { role?: string; harnessSlug?: string | null; principal?: { slug?: string } | null },
+): JudgeMemorySearchScope {
+  const isJudge = ctx.role === 'judge' || ctx.principal?.slug === 'system:judge';
+  if (!isJudge) return null;
+  const harnessSlug = ctx.harnessSlug;
+  if (!harnessSlug || harnessSlug === '*') return { ok: false, reason: 'judge_harness_scope_required' };
+  if (args.harness_slug && args.harness_slug !== harnessSlug) {
+    return { ok: false, reason: 'judge_harness_scope_mismatch' };
+  }
+  if (args.workspace !== undefined || args.harnessOnly === false) {
+    return { ok: false, reason: 'judge_scope_override_forbidden' };
+  }
+  return { ok: true, harnessSlug, harnessOnly: true };
+}
+
 export default defineTool({
   name: 'memory:search',
-  capability: 'memory:read',
+  // memory:read derives this narrow search grant for existing readers. Judges
+  // receive only this capability and are further pinned to their active harness.
+  capability: 'memory:search:read',
   description:
     "Search the user's persistent memories by semantic similarity. Returns matched facts ranked by relevance.",
   guidance: {
@@ -177,6 +202,12 @@ export default defineTool({
       ),
   }),
   async handler(args, ctx) {
+    const judgeScope = resolveJudgeMemorySearchScope(args, ctx);
+    if (judgeScope?.ok === false) {
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: judgeScope.reason, results: [] }) }] };
+    }
+    const searchHarnessSlug = judgeScope ? judgeScope.harnessSlug : args.harness_slug;
+    const searchHarnessOnly = judgeScope ? judgeScope.harnessOnly : args.harnessOnly;
     const user = await getSessionUserOrDefault();
     const backend = getMemoryBackend();
     const limit = args.limit ?? 8;
@@ -186,8 +217,8 @@ export default defineTool({
     // lexical fallback below needs the SAME scopes after the semantic leg
     // has already failed (WI-4214).
     let harnessSlugs: string[];
-    if (args.harness_slug) {
-      harnessSlugs = [args.harness_slug];
+    if (searchHarnessSlug) {
+      harnessSlugs = [searchHarnessSlug];
     } else {
       try {
         // The principal carries the resolved workspace (incl. a per-call
@@ -226,7 +257,7 @@ export default defineTool({
     // recalls just its own facts, not the user's personal memories (which would be noise / confound the
     // measurement). harnessOnly without harness_slug is meaningless (no pool to isolate to) → ignored.
     const harnessScopes = harnessSlugs.map((slug) => `harness:${slug}`);
-    const scope = args.harnessOnly && args.harness_slug ? harnessScopes : [user.id, ...harnessScopes];
+    const scope = searchHarnessOnly && searchHarnessSlug ? harnessScopes : [user.id, ...harnessScopes];
 
     // Temporal-lite read controls (P-006) — ride SearchOptions into the backend
     // (and the lexical fallback below, so a degraded point-in-time read keeps
@@ -380,6 +411,14 @@ export default defineTool({
       hits = applyFeedbackRerank(hits, await loadFeedbackSignals(getOrgPg().sql));
     } catch {
       /* best-effort */
+    }
+
+    try {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { loadOutcomeCounts, applyOutcomeRerank } = await import('../../memory/surfaced-outcomes');
+      hits = applyOutcomeRerank(hits, await withMemoryToolTimeout(loadOutcomeCounts(getOrgPg().sql, hits.map(hit => hit.id)), 'memory outcome ranking'));
+    } catch {
+      /* Outcome availability does not disable recall. */
     }
 
     // EI-9031: when the production embedder (OpenAI) is in its post-exhaustion

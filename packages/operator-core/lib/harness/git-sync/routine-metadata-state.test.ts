@@ -22,6 +22,7 @@ const githubBridgeState: GithubBridgeRoutineState = {
   agent_actionable: false,
   agent_remedies: [],
   egress_head: null,
+  egress_scan_progress: null,
   errors: [],
 };
 
@@ -65,12 +66,25 @@ describe('complete git-sync routine metadata states (WI-7063)', () => {
   });
 
   it.each([
-    ['github_bridge', completeGithubBridgeState, githubBridgeState, 'egress_head'],
+    ['github_bridge', completeGithubBridgeState, githubBridgeState, 'egress_scan_progress'],
     ['own_head_publish', completeOwnHeadPublishState, ownHeadPublishState, 'publishedSha'],
     ['ref_announce', completeRefAnnounceState, refAnnounceState, 'budgetStates'],
   ] as const)('%s rejects an undefined field before JSON serialization can erase it', (key, complete, state, field) => {
     expect(() => complete({ ...state, [field]: undefined } as never)).toThrow(
       `metadata.${key} is incomplete; missing/undefined: ${field}`,
     );
+  });
+
+  it('preserves a pending egress scan cursor in the complete bridge replacement', () => {
+    const cursor = {
+      version: 1 as const,
+      policyFingerprint: 'a'.repeat(64),
+      baseSha: 'b'.repeat(40),
+      targetSha: 'c'.repeat(40),
+      lastScannedCommitSha: 'd'.repeat(40),
+    };
+
+    expect(completeGithubBridgeState({ ...githubBridgeState, egress_scan_progress: cursor }).egress_scan_progress)
+      .toEqual(cursor);
   });
 });

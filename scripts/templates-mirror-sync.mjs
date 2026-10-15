@@ -15,8 +15,9 @@
 // (Papercusp/templates) because the Cupboard worker rejects private repos;
 // this monorepo's templates/ tree stays canonical. This script diffs the
 // canonical tree against a local clone of the mirror and either reports
-// drift (default: exit 1) or applies + commits + pushes the sync (--push),
-// so the published mirror can never silently trail the canonical tree.
+// drift (default: exit 1) or applies + commits the sync on a content-addressed
+// branch and opens/reuses a PR to protected main (--push). Required checks stay
+// in force; the script never pushes to or merges main.
 //
 // Sync map (mirror uses a FLAT layout — template dirs at repo root):
 //   templates/<id>/**                      -> <mirror>/<id>/**
@@ -34,15 +35,17 @@
 //
 // Usage:
 //   npm run mirror:check                  # drift report, exit 1 on ANY drift
-//   npm run mirror:push                   # apply + commit + push the sync
+//   npm run mirror:push                   # apply + commit + open/reuse a PR
 //   node scripts/templates-mirror-sync.mjs [--mirror <path>] [--push] [--message <msg>]
 //   mirror path default: $PC_TEMPLATES_MIRROR or /tmp/pc-templates-mirror
-//   exit codes: 0 in sync (or pushed clean) · 1 drift (check mode) · 2 usage/env error
+//   exit codes: 0 in sync (or PR ready) · 1 drift (check mode) · 2 usage/git/GitHub error
 
 import { promises as fs } from "node:fs";
+import { createHash } from "node:crypto";
 import { join, dirname, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { parse as parseYaml } from "yaml";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const MIRROR_REMOTE = "github.com/Papercusp/templates";
@@ -86,6 +89,35 @@ export function isMirrorRemote(remote) {
       parsed.owner.toLowerCase() === MIRROR_OWNER.toLowerCase() &&
       parsed.repo.toLowerCase() === MIRROR_REPO.toLowerCase(),
   );
+}
+
+/** Refuse bundle publication until its blueprint manifests exist in the public source repos. */
+export async function validatePublishedBundleBlueprints(bundleFile, runGh) {
+  const bundle = parseYaml(await fs.readFile(bundleFile, "utf8"));
+  const units = [...(bundle.blueprint ? [bundle.blueprint] : []), ...(bundle.blueprints ?? [])];
+  const repositories = new Map();
+  for (const unit of units) {
+    const repository = parseGithubRemote(unit.githubUrl ?? "");
+    const ref = unit.listingRef ?? "";
+    if (!repository || !/^[A-Za-z0-9._/-]*$/.test(ref) || ref.split("/").some(segment => segment === "." || segment === "..")) {
+      throw new Error(`unsafe bundle blueprint source: ${unit.id}`);
+    }
+    const repo = `${repository.owner}/${repository.repo}`;
+    let paths = repositories.get(repo.toLowerCase());
+    if (!paths) {
+      const tree = JSON.parse(runGh("api", `repos/${repo}/git/trees/HEAD?recursive=1`));
+      if (tree.truncated !== false || !Array.isArray(tree.tree)) {
+        throw new Error(`cannot verify complete public blueprint tree: ${repo}`);
+      }
+      paths = new Set(tree.tree.filter(entry => entry.type === "blob").map(entry => entry.path));
+      repositories.set(repo.toLowerCase(), paths);
+    }
+    const manifest = ref ? `${ref}/blueprint.yaml` : "blueprint.yaml";
+    if (!paths.has(manifest)) {
+      throw new Error(`workspace-host bundle references unpublished blueprint "${unit.id}": ${repo}/${manifest}; publish the blueprint mirror before the bundle`);
+    }
+  }
+  return { blueprints: units.length, repositories: repositories.size };
 }
 
 // Source-shippable packages vendored into the mirror (zero runtime deps,
@@ -285,6 +317,77 @@ export async function computeDrift(expected, actual, mirror) {
 export const driftTotal = (drift) =>
   drift.missing.length + drift.changed.length + drift.extraneous.length;
 
+async function contentAddressedSyncBranch(expected) {
+  const hash = createHash("sha256");
+  for (const [rel, source] of [...expected].sort(([a], [b]) => a.localeCompare(b))) {
+    hash.update(rel);
+    hash.update("\0");
+    hash.update(await fs.readFile(source));
+    hash.update("\0");
+  }
+  return "templates-sync-" + hash.digest("hex").slice(0, 12);
+}
+
+async function findMirrorPullRequest(runGh, branch) {
+  const output = runGh(
+    "pr",
+    "list",
+    "--repo",
+    "Papercusp/templates",
+    "--state",
+    "all",
+    "--head",
+    "Papercusp:" + branch,
+    "--json",
+    "number,url,state",
+  );
+  const prs = JSON.parse(output || "[]");
+  return Array.isArray(prs) ? (prs[0] ?? null) : null;
+}
+
+async function ensureMirrorPullRequest(runGh, branch, message) {
+  const existing = await findMirrorPullRequest(runGh, branch);
+  if (existing?.state === "OPEN" && typeof existing.url === "string")
+    return existing.url;
+  if (existing?.state === "CLOSED" && existing.number != null) {
+    runGh(
+      "pr",
+      "reopen",
+      String(existing.number),
+      "--repo",
+      "Papercusp/templates",
+    );
+    return existing.url;
+  }
+  if (existing?.state === "MERGED") {
+    throw new Error(
+      "the content-addressed sync branch already has a merged PR; refresh the mirror clone and retry",
+    );
+  }
+
+  const body =
+    "This pull request syncs the canonical Papercusp template tree into the public mirror.\n\n" +
+    "The protected main branch is updated only by merging this pull request after its required " +
+    "cupboard-verify check succeeds. The sync tool does not push to or merge main.";
+  const output = runGh(
+    "pr",
+    "create",
+    "--repo",
+    "Papercusp/templates",
+    "--base",
+    "main",
+    "--head",
+    branch,
+    "--title",
+    message,
+    "--body",
+    body,
+  );
+  const url = output.match(/https:\/\/github\.com\/Papercusp\/templates\/pull\/\d+/)?.[0];
+  if (!url) throw new Error("gh pr create did not return a pull request URL");
+  return url;
+}
+
 async function main(argv) {
   const args = argv.slice(2);
   const flag = (name) => {
@@ -335,8 +438,186 @@ async function main(argv) {
     return err.exitCode ?? 2;
   }
 
-  const actual = await buildActual(mirror, VENDORED);
-  const drift = await computeDrift(expected, actual, mirror);
+  let actual;
+  let drift;
+  let syncBranch = null;
+  let syncBranchExists = false;
+  let restoreMain = false;
+  let safeToDiscardScriptChanges = false;
+  const runGit = (...gitArgs) => {
+    const result = spawnSync("git", ["-C", mirror, ...gitArgs], {
+      encoding: "utf8",
+    });
+    if (result.error)
+      throw new Error("git " + gitArgs.join(" ") + " failed: " + result.error.message);
+    if (result.status !== 0)
+      throw new Error(
+        "git " +
+          gitArgs.join(" ") +
+          " failed:\n" +
+          (result.stderr || result.stdout || "unknown git error"),
+      );
+    return (result.stdout ?? "").trim();
+  };
+  const runGh = (...ghArgs) => {
+    const result = spawnSync("gh", ghArgs, { encoding: "utf8" });
+    if (result.error)
+      throw new Error("gh " + ghArgs.join(" ") + " failed: " + result.error.message);
+    if (result.status !== 0)
+      throw new Error(
+        "gh " +
+          ghArgs.join(" ") +
+          " failed:\n" +
+          (result.stderr || result.stdout || "unknown gh error"),
+      );
+    return (result.stdout ?? "").trim();
+  };
+  const restoreMainCheckout = ({ discardScriptChanges = false } = {}) => {
+    if (!restoreMain) return true;
+    if (discardScriptChanges) {
+      if (!safeToDiscardScriptChanges) {
+        console.error(
+          "[templates-mirror-sync] refusing cleanup because the mirror was not confirmed clean before sync",
+        );
+        return false;
+      }
+      const reset = spawnSync(
+        "git",
+        ["-C", mirror, "reset", "--hard", "origin/main"],
+        { encoding: "utf8" },
+      );
+      if (reset.error || reset.status !== 0) {
+        console.error(
+          "[templates-mirror-sync] could not discard the sync's local changes: " +
+            (reset.error?.message || reset.stderr || reset.stdout || "unknown git error"),
+        );
+        return false;
+      }
+      const clean = spawnSync("git", ["-C", mirror, "clean", "-fd"], {
+        encoding: "utf8",
+      });
+      if (clean.error || clean.status !== 0) {
+        console.error(
+          "[templates-mirror-sync] could not remove the sync's untracked files: " +
+            (clean.error?.message || clean.stderr || clean.stdout || "unknown git error"),
+        );
+        return false;
+      }
+    }
+    const restored = spawnSync(
+      "git",
+      ["-C", mirror, "switch", "--detach", "origin/main"],
+      { encoding: "utf8" },
+    );
+    if (restored.error || restored.status !== 0) {
+      console.error(
+        "[templates-mirror-sync] could not restore mirror clone to origin/main: " +
+          (restored.error?.message || restored.stderr || restored.stdout || "unknown git error"),
+      );
+      return false;
+    }
+    return true;
+  };
+
+  if (push) {
+    try {
+      const status = runGit("status", "--porcelain");
+      if (status)
+        throw new Error(
+          "mirror clone has local changes; commit or discard them before running mirror:push",
+        );
+      safeToDiscardScriptChanges = true;
+      const origin = runGit("remote", "get-url", "origin");
+      if (!isMirrorRemote(origin))
+        throw new Error(
+          "refusing to sync: origin '" + origin + "' is not " + MIRROR_REMOTE,
+        );
+      // The bundle is published by this repo, but its blueprints live in another mirror. Local
+      // source coverage cannot prove those dependencies were published first (EI-25968237672096071).
+      await validatePublishedBundleBlueprints(
+        expected.get("bundles/workspace-host/bundle.yaml"),
+        runGh,
+      );
+      runGit(
+        "fetch",
+        "origin",
+        "+refs/heads/main:refs/remotes/origin/main",
+      );
+      runGit("switch", "--detach", "origin/main");
+      restoreMain = true;
+      actual = await buildActual(mirror, VENDORED);
+      drift = await computeDrift(expected, actual, mirror);
+
+      if (driftTotal(drift) > 0) {
+        runGh("auth", "status", "--hostname", "github.com");
+        syncBranch = await contentAddressedSyncBranch(expected);
+        const previousPr = await findMirrorPullRequest(runGh, syncBranch);
+        if (previousPr?.state === "MERGED") {
+          syncBranch += "-" + runGit("rev-parse", "--short", "origin/main");
+        }
+
+        const remoteBranch = spawnSync(
+          "git",
+          [
+            "-C",
+            mirror,
+            "ls-remote",
+            "--exit-code",
+            "--heads",
+            "origin",
+            "refs/heads/" + syncBranch,
+          ],
+          { encoding: "utf8" },
+        );
+        if (remoteBranch.error)
+          throw new Error("git ls-remote failed: " + remoteBranch.error.message);
+        if (remoteBranch.status === 0) {
+          syncBranchExists = true;
+          runGit(
+            "fetch",
+            "origin",
+            "+refs/heads/" +
+              syncBranch +
+              ":refs/remotes/origin/" +
+              syncBranch,
+          );
+          runGit("switch", "--detach", "origin/" + syncBranch);
+          actual = await buildActual(mirror, VENDORED);
+          drift = await computeDrift(expected, actual, mirror);
+
+          const branchFiles = runGit(
+            "diff",
+            "--name-only",
+            "origin/main...origin/" + syncBranch,
+          )
+            .split("\n")
+            .filter(Boolean);
+          const allowedFiles = new Set([...expected.keys(), ...actual]);
+          const unrelated = branchFiles.filter((path) => !allowedFiles.has(path));
+          if (unrelated.length > 0)
+            throw new Error(
+              "sync branch contains files outside the mirror surface: " +
+                unrelated.join(", "),
+            );
+        } else if (remoteBranch.status !== 2) {
+          throw new Error(
+            "git ls-remote failed:\n" +
+              (remoteBranch.stderr || remoteBranch.stdout || "unknown git error"),
+          );
+        }
+      }
+    } catch (err) {
+      console.error(
+        "[templates-mirror-sync] protected-main preflight failed: " +
+          (err instanceof Error ? err.message : String(err)),
+      );
+      restoreMainCheckout();
+      return 2;
+    }
+  } else {
+    actual = await buildActual(mirror, VENDORED);
+    drift = await computeDrift(expected, actual, mirror);
+  }
 
   for (const kind of ["missing", "changed", "extraneous"]) {
     for (const rel of drift[kind].sort())
@@ -349,8 +630,30 @@ async function main(argv) {
   );
 
   if (driftTotal(drift) === 0) {
+    if (push && syncBranchExists && syncBranch) {
+      try {
+        const prUrl = await ensureMirrorPullRequest(runGh, syncBranch, message);
+        console.log(
+          "[templates-mirror-sync] sync branch already contains the canonical tree; PR " +
+            prUrl +
+            " is ready for cupboard-verify",
+        );
+      } catch (err) {
+        console.error(
+          "[templates-mirror-sync] could not open or reuse the mirror PR: " +
+            (err instanceof Error ? err.message : String(err)),
+        );
+        restoreMainCheckout();
+        return 2;
+      }
+    }
+    if (push && !restoreMainCheckout()) {
+      return 2;
+    }
     console.log(
-      "[templates-mirror-sync] mirror is IN SYNC with the canonical tree",
+      push && syncBranchExists
+        ? "[templates-mirror-sync] sync branch matches the canonical tree; protected main changes after PR merge"
+        : "[templates-mirror-sync] mirror is IN SYNC with the canonical tree",
     );
     return 0;
   }
@@ -359,7 +662,7 @@ async function main(argv) {
     console.error(
       "[templates-mirror-sync] DRIFT — the published mirror trails the canonical tree.",
     );
-    console.error("  apply + push with: npm run mirror:push");
+    console.error("  apply + open a protected-main PR with: npm run mirror:push");
     return 1;
   }
 
@@ -367,8 +670,10 @@ async function main(argv) {
   let failed = false;
   const git = (...a) => {
     const r = spawnSync("git", ["-C", mirror, ...a], { encoding: "utf8" });
-    if (r.status !== 0) {
-      console.error(`git ${a.join(" ")} failed:\n${r.stderr || r.stdout}`);
+    if (r.error || r.status !== 0) {
+      console.error(
+        `git ${a.join(" ")} failed:\n${r.error?.message || r.stderr || r.stdout || "unknown git error"}`,
+      );
       failed = true;
       return "";
     }
@@ -376,32 +681,104 @@ async function main(argv) {
   };
 
   const origin = git("remote", "get-url", "origin");
-  if (failed) return 2;
+  if (failed) {
+    restoreMainCheckout();
+    return 2;
+  }
   if (!isMirrorRemote(origin)) {
     console.error(
       `refusing to push: origin '${origin}' is not ${MIRROR_REMOTE}`,
     );
+    restoreMainCheckout();
     return 2;
   }
 
   for (const rel of [...drift.missing, ...drift.changed]) {
     const dst = join(mirror, rel);
-    await fs.mkdir(dirname(dst), { recursive: true });
-    await fs.copyFile(expected.get(rel), dst);
+    try {
+      await fs.mkdir(dirname(dst), { recursive: true });
+      await fs.copyFile(expected.get(rel), dst);
+    } catch (err) {
+      console.error(
+        "[templates-mirror-sync] could not apply " +
+          rel +
+          ": " +
+          (err instanceof Error ? err.message : String(err)),
+      );
+      restoreMainCheckout({ discardScriptChanges: true });
+      return 2;
+    }
   }
-  for (const rel of drift.extraneous) await fs.rm(join(mirror, rel));
+  for (const rel of drift.extraneous) {
+    try {
+      await fs.rm(join(mirror, rel));
+    } catch (err) {
+      console.error(
+        "[templates-mirror-sync] could not remove extraneous file " +
+          rel +
+          ": " +
+          (err instanceof Error ? err.message : String(err)),
+      );
+      restoreMainCheckout({ discardScriptChanges: true });
+      return 2;
+    }
+  }
 
   if (git("status", "--porcelain") === "") {
-    if (failed) return 2;
-    console.log("[templates-mirror-sync] nothing to commit after apply");
-    return 0;
+    if (failed) {
+      restoreMainCheckout({ discardScriptChanges: true });
+      return 2;
+    }
+    console.error(
+      "[templates-mirror-sync] expected drift produced no commit; check mirror ignore rules",
+    );
+    restoreMainCheckout({ discardScriptChanges: true });
+    return 2;
   }
   git("add", "-A");
+  if (failed) {
+    restoreMainCheckout({ discardScriptChanges: true });
+    return 2;
+  }
   git("commit", "-m", message);
-  git("push", "origin", "HEAD");
-  if (failed) return 2;
+  if (failed) {
+    restoreMainCheckout({ discardScriptChanges: true });
+    return 2;
+  }
+  if (!syncBranch) {
+    console.error("[templates-mirror-sync] protected sync branch was not prepared");
+    restoreMainCheckout({ discardScriptChanges: true });
+    return 2;
+  }
+  git("push", "origin", "HEAD:refs/heads/" + syncBranch);
+  if (failed) {
+    restoreMainCheckout({ discardScriptChanges: true });
+    return 2;
+  }
+  let prUrl;
+  try {
+    prUrl = await ensureMirrorPullRequest(runGh, syncBranch, message);
+  } catch (err) {
+    console.error(
+      "[templates-mirror-sync] branch was pushed but the mirror PR could not be opened: " +
+        (err instanceof Error ? err.message : String(err)),
+    );
+    restoreMainCheckout();
+    return 2;
+  }
+  const shortSha = git("rev-parse", "--short", "HEAD");
+  if (failed) {
+    restoreMainCheckout();
+    return 2;
+  }
   console.log(
-    `[templates-mirror-sync] pushed ${git("rev-parse", "--short", "HEAD")} to ${origin}`,
+    `[templates-mirror-sync] pushed ${shortSha} to ${origin}`,
+  );
+  if (!restoreMainCheckout()) return 2;
+  console.log(
+    "[templates-mirror-sync] PR " +
+      prUrl +
+      " is ready for cupboard-verify; merge it after the required check passes",
   );
   return 0;
 }

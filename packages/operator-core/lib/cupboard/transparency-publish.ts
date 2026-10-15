@@ -25,10 +25,12 @@ import type { JournalEntry } from './money-journal';
 import { reconciliationPeriod, type InvariantVerdict, type ReconciliationInvariant } from './reconciliation';
 import {
   RECONCILIATION_SIGNATURE_HEADER,
+  TRANSPARENCY_ATTESTATION_PATH,
   TRANSPARENCY_LIVE_PATH,
   TRANSPARENCY_STATEMENT_PATH,
   signReconciliationRequest,
 } from './reconciliation-hmac';
+import type { StatementAttestationPush } from './statement-attestation-push';
 import {
   buildMonthlyStatement,
   buildTransparencyReport,
@@ -85,11 +87,16 @@ export function anchorCovering(anchors: readonly StoredAnchor[], untilMs: number
 
 export type StatementPublish = 'created' | 'unchanged' | { readonly conflict: string } | { readonly failed: string };
 
+/** `proof-added`: the record was already public and this push added its first inclusion proof. */
+export type AttestationPublish = 'created' | 'unchanged' | 'proof-added' | { readonly refused: string } | { readonly failed: string };
+
 export interface TransparencyWorker {
   pushLive(push: LiveTransparencyPush): Promise<{ readonly ok: true; readonly stored: 'stored' | 'stale' } | { readonly ok: false; readonly detail: string }>;
   /** The published statement, null when the month has none. Throws when the Worker cannot be read. */
   readStatement(workspaceId: string, month: string): Promise<SignedStatement | null>;
   publishStatement(signed: SignedStatement): Promise<StatementPublish>;
+  /** P-047 (D-031): an attestation record, with its inclusion proof once anchored. */
+  publishAttestation(push: StatementAttestationPush): Promise<AttestationPublish>;
 }
 
 /** The Cupboard Worker over HTTP: signed PUTs, public GETs. */
@@ -146,6 +153,19 @@ export function cupboardTransparencyWorker(input: {
         return { failed: errorText(error) };
       }
     },
+    async publishAttestation(push) {
+      try {
+        const res = await signedPut(TRANSPARENCY_ATTESTATION_PATH, push);
+        const text = await res.text();
+        // 400 / 409: the Worker judged the push and refused it; retrying the same push cannot succeed.
+        if (res.status === 400 || res.status === 409) return { refused: `${res.status}: ${text.slice(0, 300)}` };
+        if (!res.ok) return { failed: `the Worker answered ${res.status}: ${text.slice(0, 200)}` };
+        const published = (JSON.parse(text) as { published?: unknown }).published;
+        return published === 'unchanged' || published === 'proof-added' ? published : 'created';
+      } catch (error) {
+        return { failed: errorText(error) };
+      }
+    },
   };
 }
 
@@ -183,13 +203,49 @@ export interface TransparencyReconciliationView {
 /** The signing key, or why there is none (the anchor key file, D-021). */
 export type SigningKeyRead = { readonly ok: true; readonly privateKey: Hex } | { readonly ok: false; readonly reason: string; readonly detail: string };
 
+/** What happened to the workspace's statement attestations this pass (P-047, D-031). */
+export interface AttestationPushResult {
+  /** Records the pass read and offered to the Worker. */
+  readonly offered: number;
+  /** Accepted pushes (created, unchanged or proof-added). */
+  readonly accepted: number;
+  /** One line per refused or failed push, or why none could be offered. */
+  readonly problems: readonly string[];
+}
+
 export interface WorkspaceTransparency {
   readonly workspaceId: string;
   readonly month: string;
   readonly live: { readonly pushed: true; readonly stored: 'stored' | 'stale' } | { readonly pushed: false; readonly detail: string };
   readonly statement: StatementStatus;
   readonly drift: StatementDrift | null;
+  readonly attestations: AttestationPushResult;
   readonly error: string | null;
+}
+
+const NO_ATTESTATIONS: AttestationPushResult = { offered: 0, accepted: 0, problems: [] };
+
+/** Offer every attestation (and its proof, once anchored) to the Worker. The Worker keeps the first record and proof. */
+export async function pushAttestations(input: {
+  readonly workspaceId: string;
+  readonly worker: TransparencyWorker | null;
+  readonly attestations: (workspaceId: string) => Promise<readonly StatementAttestationPush[]>;
+}): Promise<AttestationPushResult> {
+  if (!input.worker) return NO_ATTESTATIONS;
+  let pushes: readonly StatementAttestationPush[];
+  try {
+    pushes = await input.attestations(input.workspaceId);
+  } catch (error) {
+    return { offered: 0, accepted: 0, problems: [`reading the attestations failed: ${errorText(error)}`] };
+  }
+  let accepted = 0;
+  const problems: string[] = [];
+  for (const push of pushes) {
+    const r = await input.worker.publishAttestation(push);
+    if (typeof r === 'string') accepted += 1;
+    else problems.push(`${push.attestation.month} ${push.attestation.documentSha256.slice(0, 12)}: ${'refused' in r ? `refused ${r.refused}` : r.failed}`);
+  }
+  return { offered: pushes.length, accepted, problems };
 }
 
 /** Where the last closed month's statement stands, publishing it when it is ready. */
@@ -290,6 +346,8 @@ export interface TransparencySources {
   readonly readReconciliation: (workspaceId: string) => Promise<TransparencyReconciliationView>;
   readonly anchors: (workspaceId: string) => Promise<readonly StoredAnchor[]>;
   readonly treasury: (workspaceId: string) => Promise<TreasuryFigure>;
+  /** The workspace's statement attestations as Worker pushes, each with its proof or null (P-047, D-031). */
+  readonly attestations: (workspaceId: string) => Promise<readonly StatementAttestationPush[]>;
   readonly signingKey: () => SigningKeyRead;
   readonly drift: DriftSink;
   readonly now: () => number;
@@ -328,6 +386,7 @@ export async function publishTransparency(src: TransparencySources): Promise<Tra
         entries,
         period: monthPeriod(month),
         provisional: true,
+        asOfMs: nowMs,
         treasury,
         latestAnchor: latest ? reportAnchor(latest) : null,
       });
@@ -337,7 +396,9 @@ export async function publishTransparency(src: TransparencySources): Promise<Tra
         const r = await src.worker.pushLive(push);
         live = r.ok ? { pushed: true, stored: r.stored } : { pushed: false, detail: r.detail };
       }
-      results.push({ workspaceId, month, live, statement: settled.statement, drift: settled.drift, error: null });
+      // After the statement settled: the Worker accepts an attestation only for its published statement.
+      const attestations = await pushAttestations({ workspaceId, worker: src.worker, attestations: src.attestations });
+      results.push({ workspaceId, month, live, statement: settled.statement, drift: settled.drift, attestations, error: null });
     } catch (error) {
       results.push({
         workspaceId,
@@ -345,6 +406,7 @@ export async function publishTransparency(src: TransparencySources): Promise<Tra
         live: { pushed: false, detail: 'the pass failed before pushing' },
         statement: { status: 'pending', month: null, digest: null, withheldBy: [], detail: 'the pass failed' },
         drift: null,
+        attestations: NO_ATTESTATIONS,
         error: errorText(error),
       });
     }

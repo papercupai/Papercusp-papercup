@@ -78,7 +78,7 @@ const COMPANY_DENYLIST = [
 ];
 
 /** Strip markdown chars that get spoken aloud. */
-function stripMarkdown(s: string): { out: string; changed: boolean } {
+function stripMarkdown(s: string, keepLinkTargets = false): { out: string; changed: boolean } {
   const cleaned = s
     .replace(/\*\*(.+?)\*\*/g, '$1')
     .replace(/\*(.+?)\*/g, '$1')
@@ -86,8 +86,29 @@ function stripMarkdown(s: string): { out: string; changed: boolean } {
     .replace(/_(.+?)_/g, '$1')
     .replace(/`+([^`]+)`+/g, '$1')
     .replace(/^#+\s+/gm, '')
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label: string, target: string) =>
+      keepLinkTargets ? `${label} (${target})` : label);
   return { out: cleaned, changed: cleaned !== s };
+}
+
+/** Original-content reading: presentation changes only, never reply/persona shaping. */
+export function prepareForReading(input: string, format: 'text' | 'markdown' = 'text'): PrepareResult {
+  const modifications: string[] = [];
+  let text = input.replace(/\r\n?/g, '\n');
+  if (text !== input) modifications.push('line-endings');
+  if (format === 'markdown') {
+    // Protect code from emphasis/name/preamble substitutions. Fence language labels
+    // are presentation metadata; code bodies and link destinations remain spoken.
+    const normalized = text.split(/(```[^\n]*\n[\s\S]*?```|~~~[^\n]*\n[\s\S]*?~~~|`[^`\n]+`)/g)
+      .map(part => {
+        if (part.startsWith('```') || part.startsWith('~~~')) return part.replace(/^(?:```|~~~)[^\n]*\n/, '').slice(0, -3);
+        if (part.startsWith('`') && part.endsWith('`')) return part.slice(1, -1);
+        return stripMarkdown(part, true).out;
+      }).join('');
+    if (normalized !== text) modifications.push('markdown');
+    text = normalized;
+  }
+  return { text: text.trim() ? text : null, nameUsed: false, modifications };
 }
 
 /** Truncate at sentence boundary just under limit, never mid-word. */

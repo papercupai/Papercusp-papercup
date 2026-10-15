@@ -1,0 +1,4624 @@
+{
+  "schemaVersion": 1,
+  "plan": "degradation-signals-on-condition-rail-2026-10-11",
+  "sourceAuditSha256": "433a84547e2d3bc3e413e9eee3bcb6e16d31866fa23de940b564a4cda427e92f",
+  "rowsSha256": "a2fdb5475a100101ea8dafb6019d75045cb38e53ef1a5e4870c6670d5abb77e4",
+  "rows": [
+    {
+      "id": "bespoke-watchdog|apps/operator/scripts/bghost-watchdog.mjs|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "apps/operator/scripts/bghost-watchdog.mjs",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "bghost-watchdog",
+      "disposition": "migrate",
+      "item": "P-015",
+      "route": "observation"
+    },
+    {
+      "id": "bespoke-watchdog|apps/operator/scripts/recompute-watchdog-keys.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "apps/operator/scripts/recompute-watchdog-keys.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "recompute-watchdog-keys",
+      "disposition": "not-applicable",
+      "reason": "configuration, status, key-migration or seeding code AROUND a watchdog; it raises no signal of its own, the watchdog it serves is dispositioned separately",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/agent-tools/improvements/set-watchdog-tunables.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/agent-tools/improvements/set-watchdog-tunables.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "set-watchdog-tunables",
+      "disposition": "not-applicable",
+      "reason": "configuration, status, key-migration or seeding code AROUND a watchdog; it raises no signal of its own, the watchdog it serves is dispositioned separately",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/agent-tools/improvements/watchdog-status.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/agent-tools/improvements/watchdog-status.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "watchdog-status",
+      "disposition": "not-applicable",
+      "reason": "configuration, status, key-migration or seeding code AROUND a watchdog; it raises no signal of its own, the watchdog it serves is dispositioned separately",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/attention/bulk-run-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/attention/bulk-run-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "bulk-run-watchdog",
+      "disposition": "migrate",
+      "item": "P-015",
+      "route": "observation"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/dbos/dbos-hang-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/dbos/dbos-hang-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "dbos-hang-watchdog",
+      "disposition": "migrate",
+      "item": "P-015",
+      "route": "observation"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/fleet/spawner-sidecar-orphan-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/fleet/spawner-sidecar-orphan-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "spawner-sidecar-orphan-watchdog",
+      "disposition": "migrate",
+      "item": "P-015",
+      "route": "observation"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/harness/improvements/watchdog-key-migration.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/harness/improvements/watchdog-key-migration.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "watchdog-key-migration",
+      "disposition": "not-applicable",
+      "reason": "configuration, status, key-migration or seeding code AROUND a watchdog; it raises no signal of its own, the watchdog it serves is dispositioned separately",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/harness/improvements/watchdog-tunables.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/harness/improvements/watchdog-tunables.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "watchdog-tunables",
+      "disposition": "not-applicable",
+      "reason": "configuration, status, key-migration or seeding code AROUND a watchdog; it raises no signal of its own, the watchdog it serves is dispositioned separately",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/harness/improvements/watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/harness/improvements/watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "watchdog",
+      "disposition": "not-applicable",
+      "reason": "the improvements watchdog is itself a filing engine: it files deduplicated, owned EI work items through issues-engineer, so its findings already reach an owner",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/harness/routines/bulk-run-watchdog-action.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/harness/routines/bulk-run-watchdog-action.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "bulk-run-watchdog-action",
+      "disposition": "migrate",
+      "item": "P-015",
+      "route": "observation"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/harness/routines/seed-bulk-run-watchdog-routine.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/harness/routines/seed-bulk-run-watchdog-routine.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "seed-bulk-run-watchdog-routine",
+      "disposition": "not-applicable",
+      "reason": "configuration, status, key-migration or seeding code AROUND a watchdog; it raises no signal of its own, the watchdog it serves is dispositioned separately",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/harness/routines/sync-read-budget-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/harness/routines/sync-read-budget-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "sync-read-budget-watchdog",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/inference-gateway/watchdog.mjs|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/inference-gateway/watchdog.mjs",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "watchdog",
+      "disposition": "migrate",
+      "item": "P-015",
+      "route": "observation"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/memory-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/memory-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "memory-watchdog",
+      "disposition": "migrate",
+      "item": "P-015",
+      "route": "observation"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/overwatch/watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/overwatch/watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "watchdog",
+      "disposition": "migrate",
+      "item": "P-015",
+      "route": "observation"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/pot/placement-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/pot/placement-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "placement-watchdog",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/pot/watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/pot/watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "watchdog",
+      "disposition": "migrate",
+      "item": "P-015",
+      "route": "observation"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/release/watchdog-health.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/release/watchdog-health.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "watchdog-health",
+      "disposition": "migrate",
+      "item": "P-008",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/release/worktree-coverage-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/release/worktree-coverage-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "worktree-coverage-watchdog",
+      "disposition": "migrate",
+      "item": "P-008",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/rubric-staleness-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/rubric-staleness-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "rubric-staleness-watchdog",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/scout/draft-review-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/scout/draft-review-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "draft-review-watchdog",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/scout/ungraded-filings-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/scout/ungraded-filings-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "ungraded-filings-watchdog",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/scout/watchdog-health-lane.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/scout/watchdog-health-lane.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "watchdog-health-lane",
+      "disposition": "not-applicable",
+      "reason": "digest lane that summarizes the system watchdog’s persisted ticks for the scout digest; a reader of watchdog output, not a watchdog",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/search/session-ingest-lag-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/search/session-ingest-lag-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "session-ingest-lag-watchdog",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/system-health/agent-productivity-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/system-health/agent-productivity-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "agent-productivity-watchdog",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "carry-drill-drop-watchdog",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/system-health/cluster-lag-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/system-health/cluster-lag-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "cluster-lag-watchdog",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/system-health/codex-rollout-persistence-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/system-health/codex-rollout-persistence-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "codex-rollout-persistence-watchdog",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "compaction-compliance-watchdog",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/system-health/embed-latency-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/system-health/embed-latency-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "embed-latency-watchdog",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "goal-drain-fleet-watchdog",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "goal-edit-claim-watchdog",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "goal-liveness-watchdog",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "goal-owner-report-watchdog",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/system-health/installed-hook-drift-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/system-health/installed-hook-drift-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "installed-hook-drift-watchdog",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/system-health/kernel-leak-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/system-health/kernel-leak-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "kernel-leak-watchdog",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/system-health/retrieval-degradation-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/system-health/retrieval-degradation-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "retrieval-degradation-watchdog",
+      "disposition": "migrate",
+      "item": "P-005",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "service-restart-rate-watchdog",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/system-health/unservable-critical-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "unservable-critical-watchdog",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/system-health/wedged-identity-activation-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/system-health/wedged-identity-activation-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "wedged-identity-activation-watchdog",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|packages/operator-core/lib/wall-lapse-watchdog.ts|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "packages/operator-core/lib/wall-lapse-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "wall-lapse-watchdog",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "bespoke-watchdog|scripts/lib/batch-watchdog.mjs|<module>|1",
+      "class": "bespoke-watchdog",
+      "file": "scripts/lib/batch-watchdog.mjs",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1,
+      "symbol": "batch-watchdog",
+      "disposition": "not-applicable",
+      "reason": "per-batch test timeout inside the gate runner: a hung batch is killed and reported as that task’s failure in the gate verdict, which already has an owner",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|apps/operator-vite/src/components/adv/LearningInfraHealthChip.tsx|<module>|1",
+      "class": "health-flag-no-condition",
+      "file": "apps/operator-vite/src/components/adv/LearningInfraHealthChip.tsx",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 21,
+      "symbol": "degraded",
+      "disposition": "not-applicable",
+      "reason": "UI component that renders a health value computed server-side; the producer is the site that raises the condition",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|apps/operator-vite/src/components/adv/LearningInfraHealthChip.tsx|<module>|2",
+      "class": "health-flag-no-condition",
+      "file": "apps/operator-vite/src/components/adv/LearningInfraHealthChip.tsx",
+      "enclosing": "<module>",
+      "ordinal": 2,
+      "line": 25,
+      "symbol": "degraded",
+      "disposition": "not-applicable",
+      "reason": "UI component that renders a health value computed server-side; the producer is the site that raises the condition",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|apps/operator/app/harness/insights/SubstrateHealthPill.tsx|<module>|1",
+      "class": "health-flag-no-condition",
+      "file": "apps/operator/app/harness/insights/SubstrateHealthPill.tsx",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 79,
+      "symbol": "degraded",
+      "disposition": "not-applicable",
+      "reason": "UI component that renders a health value computed server-side; the producer is the site that raises the condition",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|apps/operator/app/harness/insights/SubstrateHealthPill.tsx|<module>|2",
+      "class": "health-flag-no-condition",
+      "file": "apps/operator/app/harness/insights/SubstrateHealthPill.tsx",
+      "enclosing": "<module>",
+      "ordinal": 2,
+      "line": 85,
+      "symbol": "unhealthy",
+      "disposition": "not-applicable",
+      "reason": "UI component that renders a health value computed server-side; the producer is the site that raises the condition",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|libs/generic/search/src/leg-health.ts|sampleOfLegs|1",
+      "class": "health-flag-no-condition",
+      "file": "libs/generic/search/src/leg-health.ts",
+      "enclosing": "sampleOfLegs",
+      "ordinal": 1,
+      "line": 139,
+      "symbol": "degraded",
+      "disposition": "migrate",
+      "item": "P-010",
+      "route": "observation"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/agent-tools/work_items/semantic-dedup-probe-alarm.ts|reportSemanticDedupProbeUnavailable|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/agent-tools/work_items/semantic-dedup-probe-alarm.ts",
+      "enclosing": "reportSemanticDedupProbeUnavailable",
+      "ordinal": 1,
+      "line": 95,
+      "symbol": "degraded",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/consult/consult-routing-health.ts|expertiseExecutionHealthFromRows|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/consult/consult-routing-health.ts",
+      "enclosing": "expertiseExecutionHealthFromRows",
+      "ordinal": 1,
+      "line": 94,
+      "symbol": "degraded",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/resource-governor/health-analysis.ts|#assessObjective|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/resource-governor/health-analysis.ts",
+      "enclosing": "#assessObjective",
+      "ordinal": 1,
+      "line": 610,
+      "symbol": "breached",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/resource-governor/health-analysis.ts|#assessObjective|2",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/resource-governor/health-analysis.ts",
+      "enclosing": "#assessObjective",
+      "ordinal": 2,
+      "line": 628,
+      "symbol": "breached",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/resource-governor/health-analysis.ts|#assessObjective|3",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/resource-governor/health-analysis.ts",
+      "enclosing": "#assessObjective",
+      "ordinal": 3,
+      "line": 665,
+      "symbol": "breached",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/resource-governor/health-analysis.ts|#assessObjective|4",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/resource-governor/health-analysis.ts",
+      "enclosing": "#assessObjective",
+      "ordinal": 4,
+      "line": 686,
+      "symbol": "breached",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/search/session-ingest-lag-watchdog.ts|evaluatePartsWriter|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/search/session-ingest-lag-watchdog.ts",
+      "enclosing": "evaluatePartsWriter",
+      "ordinal": 1,
+      "line": 466,
+      "symbol": "degraded",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/search/session-ingest-lag-watchdog.ts|evaluatePartsWriter|2",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/search/session-ingest-lag-watchdog.ts",
+      "enclosing": "evaluatePartsWriter",
+      "ordinal": 2,
+      "line": 475,
+      "symbol": "degraded",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/search/session-ingest-lag-watchdog.ts|evaluatePartsWriter|3",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/search/session-ingest-lag-watchdog.ts",
+      "enclosing": "evaluatePartsWriter",
+      "ordinal": 3,
+      "line": 483,
+      "symbol": "degraded",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/search/session-ingest-lag-watchdog.ts|evaluatePartsWriter|4",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/search/session-ingest-lag-watchdog.ts",
+      "enclosing": "evaluatePartsWriter",
+      "ordinal": 4,
+      "line": 490,
+      "symbol": "degraded",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts|<module>|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 106,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts|<module>|2",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 2,
+      "line": 147,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts|defaultEscalate|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts",
+      "enclosing": "defaultEscalate",
+      "ordinal": 1,
+      "line": 372,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts|defaultEscalateOrphan|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts",
+      "enclosing": "defaultEscalateOrphan",
+      "ordinal": 1,
+      "line": 436,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts|escalateCompactionStranding|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts",
+      "enclosing": "escalateCompactionStranding",
+      "ordinal": 1,
+      "line": 2076,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 577,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|readGoalPlanFleetObservation|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+      "enclosing": "readGoalPlanFleetObservation",
+      "ordinal": 1,
+      "line": 631,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalPlanFleetLegEventKey|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+      "enclosing": "goalPlanFleetLegEventKey",
+      "ordinal": 1,
+      "line": 649,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalPlanFleetEventPayload|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+      "enclosing": "goalPlanFleetEventPayload",
+      "ordinal": 1,
+      "line": 664,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalPlanFleetSubjectSignature|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+      "enclosing": "goalPlanFleetSubjectSignature",
+      "ordinal": 1,
+      "line": 691,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalPlanFleetRemedy|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+      "enclosing": "goalPlanFleetRemedy",
+      "ordinal": 1,
+      "line": 697,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalDrainRelaunchEligibility|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+      "enclosing": "goalDrainRelaunchEligibility",
+      "ordinal": 1,
+      "line": 845,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|2",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 2,
+      "line": 912,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|3",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 3,
+      "line": 915,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|4",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 4,
+      "line": 944,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|5",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 5,
+      "line": 953,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|6",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 6,
+      "line": 955,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|7",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 7,
+      "line": 957,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|defaultEscalatePullStall|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+      "enclosing": "defaultEscalatePullStall",
+      "ordinal": 1,
+      "line": 1544,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|defaultEscalate|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+      "enclosing": "defaultEscalate",
+      "ordinal": 1,
+      "line": 1596,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|defaultEmitDrainDead|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+      "enclosing": "defaultEmitDrainDead",
+      "ordinal": 1,
+      "line": 1965,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|defaultEscalatePlanFleet|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+      "enclosing": "defaultEscalatePlanFleet",
+      "ordinal": 1,
+      "line": 2000,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|defaultEmitPlanFleet|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+      "enclosing": "defaultEmitPlanFleet",
+      "ordinal": 1,
+      "line": 2023,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|defaultNotifyPlanFleetHolders|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+      "enclosing": "defaultNotifyPlanFleetHolders",
+      "ordinal": 1,
+      "line": 2052,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts|<module>|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 146,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts|<module>|2",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 2,
+      "line": 150,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts|defaultEscalate|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts",
+      "enclosing": "defaultEscalate",
+      "ordinal": 1,
+      "line": 250,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts|defaultEmitEditClaim|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts",
+      "enclosing": "defaultEmitEditClaim",
+      "ordinal": 1,
+      "line": 310,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|<module>|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 72,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|<module>|2",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts",
+      "enclosing": "<module>",
+      "ordinal": 2,
+      "line": 74,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|describeGrader|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts",
+      "enclosing": "describeGrader",
+      "ordinal": 1,
+      "line": 112,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|defaultEscalate|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts",
+      "enclosing": "defaultEscalate",
+      "ordinal": 1,
+      "line": 119,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|defaultWakeGrader|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts",
+      "enclosing": "defaultWakeGrader",
+      "ordinal": 1,
+      "line": 151,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|runGoalGradingBacklogSweepOnce|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts",
+      "enclosing": "runGoalGradingBacklogSweepOnce",
+      "ordinal": 1,
+      "line": 217,
+      "symbol": "alerting",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|runGoalGradingBacklogSweepOnce|2",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts",
+      "enclosing": "runGoalGradingBacklogSweepOnce",
+      "ordinal": 2,
+      "line": 249,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 507,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|2",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 2,
+      "line": 515,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|3",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 3,
+      "line": 524,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|4",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 4,
+      "line": 540,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|5",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 5,
+      "line": 552,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|defaultEscalatePortfolioIdle|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+      "enclosing": "defaultEscalatePortfolioIdle",
+      "ordinal": 1,
+      "line": 771,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|defaultEscalate|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+      "enclosing": "defaultEscalate",
+      "ordinal": 1,
+      "line": 1074,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|defaultEscalateReadiness|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+      "enclosing": "defaultEscalateReadiness",
+      "ordinal": 1,
+      "line": 1140,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|defaultEscalateWedge|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+      "enclosing": "defaultEscalateWedge",
+      "ordinal": 1,
+      "line": 1265,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts|buildReportSkeleton|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts",
+      "enclosing": "buildReportSkeleton",
+      "ordinal": 1,
+      "line": 338,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts|<module>|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 357,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts|<module>|2",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 2,
+      "line": 359,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts|defaultEscalate|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts",
+      "enclosing": "defaultEscalate",
+      "ordinal": 1,
+      "line": 503,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts|defaultNudge|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts",
+      "enclosing": "defaultNudge",
+      "ordinal": 1,
+      "line": 543,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/kernel-leak-watchdog.ts|formatKernelLeakEscalation|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/kernel-leak-watchdog.ts",
+      "enclosing": "formatKernelLeakEscalation",
+      "ordinal": 1,
+      "line": 219,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/kernel-leak-watchdog.ts|<module>|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/kernel-leak-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 256,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/kernel-leak-watchdog.ts|defaultEscalate|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/kernel-leak-watchdog.ts",
+      "enclosing": "defaultEscalate",
+      "ordinal": 1,
+      "line": 318,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/perf-budgets.ts|evaluatePerfSignals|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/perf-budgets.ts",
+      "enclosing": "evaluatePerfSignals",
+      "ordinal": 1,
+      "line": 984,
+      "symbol": "degraded",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/perf-budgets.ts|evaluatePerfSignals|2",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/perf-budgets.ts",
+      "enclosing": "evaluatePerfSignals",
+      "ordinal": 2,
+      "line": 1129,
+      "symbol": "degraded",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/retrieval-degradation-watchdog.ts|defaultEscalate|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/retrieval-degradation-watchdog.ts",
+      "enclosing": "defaultEscalate",
+      "ordinal": 1,
+      "line": 157,
+      "symbol": "degraded",
+      "disposition": "migrate",
+      "item": "P-005",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts|<module>|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 157,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts|defaultEscalate|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts",
+      "enclosing": "defaultEscalate",
+      "ordinal": 1,
+      "line": 189,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts|<module>|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/unservable-critical-watchdog.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 189,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts|remedyFor|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/unservable-critical-watchdog.ts",
+      "enclosing": "remedyFor",
+      "ordinal": 1,
+      "line": 325,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "health-flag-no-condition|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts|defaultEscalate|1",
+      "class": "health-flag-no-condition",
+      "file": "packages/operator-core/lib/system-health/unservable-critical-watchdog.ts",
+      "enclosing": "defaultEscalate",
+      "ordinal": 1,
+      "line": 340,
+      "symbol": "alert",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "log-only-fallback|apps/operator/app/_components/voice/voice-mode.ts|maybeStartWakeWordGate|1",
+      "class": "log-only-fallback",
+      "file": "apps/operator/app/_components/voice/voice-mode.ts",
+      "enclosing": "maybeStartWakeWordGate",
+      "ordinal": 1,
+      "line": 1938,
+      "symbol": "falling-back",
+      "disposition": "not-applicable",
+      "reason": "client-side webview fallback chain between wake-word engines and a retired-config notice; runs in the user’s UI process, not a server mechanism",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|apps/operator/app/_components/voice/voice-mode.ts|maybeStartWakeWordGate|2",
+      "class": "log-only-fallback",
+      "file": "apps/operator/app/_components/voice/voice-mode.ts",
+      "enclosing": "maybeStartWakeWordGate",
+      "ordinal": 2,
+      "line": 1959,
+      "symbol": "falling-back",
+      "disposition": "not-applicable",
+      "reason": "client-side webview fallback chain between wake-word engines and a retired-config notice; runs in the user’s UI process, not a server mechanism",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|apps/operator/app/_components/voice/voice-mode.ts|maybeStartWhisperCapture|1",
+      "class": "log-only-fallback",
+      "file": "apps/operator/app/_components/voice/voice-mode.ts",
+      "enclosing": "maybeStartWhisperCapture",
+      "ordinal": 1,
+      "line": 2060,
+      "symbol": "falling-back",
+      "disposition": "not-applicable",
+      "reason": "client-side webview fallback chain between wake-word engines and a retired-config notice; runs in the user’s UI process, not a server mechanism",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|apps/operator/bin/hono-host.ts|startRequestServers|1",
+      "class": "log-only-fallback",
+      "file": "apps/operator/bin/hono-host.ts",
+      "enclosing": "startRequestServers",
+      "ordinal": 1,
+      "line": 321,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-012",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|apps/operator/bin/host-bootstrap.ts|startPackagedMcpProxy|1",
+      "class": "log-only-fallback",
+      "file": "apps/operator/bin/host-bootstrap.ts",
+      "enclosing": "startPackagedMcpProxy",
+      "ordinal": 1,
+      "line": 215,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-012",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|apps/operator/bin/host-bootstrap.ts|startPackagedMcpProxy|2",
+      "class": "log-only-fallback",
+      "file": "apps/operator/bin/host-bootstrap.ts",
+      "enclosing": "startPackagedMcpProxy",
+      "ordinal": 2,
+      "line": 218,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-012",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|apps/operator/bin/host-bootstrap.ts|startPackagedMcpProxy|3",
+      "class": "log-only-fallback",
+      "file": "apps/operator/bin/host-bootstrap.ts",
+      "enclosing": "startPackagedMcpProxy",
+      "ordinal": 3,
+      "line": 223,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-012",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|apps/operator/bin/host-bootstrap.ts|runBootstrap|1",
+      "class": "log-only-fallback",
+      "file": "apps/operator/bin/host-bootstrap.ts",
+      "enclosing": "runBootstrap",
+      "ordinal": 1,
+      "line": 1752,
+      "symbol": "falls-back",
+      "disposition": "migrate",
+      "item": "P-012",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|apps/operator/bin/host-bootstrap.ts|runBootstrap|2",
+      "class": "log-only-fallback",
+      "file": "apps/operator/bin/host-bootstrap.ts",
+      "enclosing": "runBootstrap",
+      "ordinal": 2,
+      "line": 1900,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-012",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|apps/operator/bin/host-bootstrap.ts|runBootstrap|3",
+      "class": "log-only-fallback",
+      "file": "apps/operator/bin/host-bootstrap.ts",
+      "enclosing": "runBootstrap",
+      "ordinal": 3,
+      "line": 1937,
+      "symbol": "fall-back",
+      "disposition": "migrate",
+      "item": "P-012",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|apps/operator/lib/release/green-checkpoint.ts|beginCheckpointPreflight|1",
+      "class": "log-only-fallback",
+      "file": "apps/operator/lib/release/green-checkpoint.ts",
+      "enclosing": "beginCheckpointPreflight",
+      "ordinal": 1,
+      "line": 16349,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-008",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|apps/operator/lib/release/green-checkpoint.ts|emitInconclusiveVerdict|1",
+      "class": "log-only-fallback",
+      "file": "apps/operator/lib/release/green-checkpoint.ts",
+      "enclosing": "emitInconclusiveVerdict",
+      "ordinal": 1,
+      "line": 22199,
+      "symbol": "fall-back",
+      "disposition": "migrate",
+      "item": "P-008",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|apps/operator/scripts/hooks/omp/coord-hook.ts|onToolCall|1",
+      "class": "log-only-fallback",
+      "file": "apps/operator/scripts/hooks/omp/coord-hook.ts",
+      "enclosing": "onToolCall",
+      "ordinal": 1,
+      "line": 4980,
+      "symbol": "failing-open",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|apps/operator/scripts/hooks/omp/coord-hook.ts|onToolCall|2",
+      "class": "log-only-fallback",
+      "file": "apps/operator/scripts/hooks/omp/coord-hook.ts",
+      "enclosing": "onToolCall",
+      "ordinal": 2,
+      "line": 5031,
+      "symbol": "fail-open",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|apps/operator/scripts/hooks/omp/coord-hook.ts|onToolCall|3",
+      "class": "log-only-fallback",
+      "file": "apps/operator/scripts/hooks/omp/coord-hook.ts",
+      "enclosing": "onToolCall",
+      "ordinal": 3,
+      "line": 5048,
+      "symbol": "fail-open",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|apps/operator/scripts/onboard-launcher.mjs|<module>|1",
+      "class": "log-only-fallback",
+      "file": "apps/operator/scripts/onboard-launcher.mjs",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 438,
+      "symbol": "fallback",
+      "disposition": "not-applicable",
+      "reason": "interactive or developer CLI: the fallback is printed to the invoking caller, and there is no long-running mechanism whose rate can collapse unobserved",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|apps/operator/scripts/psu-launcher.mjs|writeOmpSessionConfigDir|1",
+      "class": "log-only-fallback",
+      "file": "apps/operator/scripts/psu-launcher.mjs",
+      "enclosing": "writeOmpSessionConfigDir",
+      "ordinal": 1,
+      "line": 6377,
+      "symbol": "falling-back",
+      "disposition": "not-applicable",
+      "reason": "interactive or developer CLI: the fallback is printed to the invoking caller, and there is no long-running mechanism whose rate can collapse unobserved",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|apps/operator/scripts/psu-launcher.mjs|fallbackToUntrackedFork|1",
+      "class": "log-only-fallback",
+      "file": "apps/operator/scripts/psu-launcher.mjs",
+      "enclosing": "fallbackToUntrackedFork",
+      "ordinal": 1,
+      "line": 14608,
+      "symbol": "fallback",
+      "disposition": "not-applicable",
+      "reason": "interactive or developer CLI: the fallback is printed to the invoking caller, and there is no long-running mechanism whose rate can collapse unobserved",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|apps/operator/scripts/ptool.mjs|onFallback|1",
+      "class": "log-only-fallback",
+      "file": "apps/operator/scripts/ptool.mjs",
+      "enclosing": "onFallback",
+      "ordinal": 1,
+      "line": 4011,
+      "symbol": "fallback",
+      "disposition": "not-applicable",
+      "reason": "interactive or developer CLI: the fallback is printed to the invoking caller, and there is no long-running mechanism whose rate can collapse unobserved",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|apps/operator/scripts/ptool.mjs|main|1",
+      "class": "log-only-fallback",
+      "file": "apps/operator/scripts/ptool.mjs",
+      "enclosing": "main",
+      "ordinal": 1,
+      "line": 4090,
+      "symbol": "fallback",
+      "disposition": "not-applicable",
+      "reason": "interactive or developer CLI: the fallback is printed to the invoking caller, and there is no long-running mechanism whose rate can collapse unobserved",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|apps/operator/scripts/ptool.mjs|main|2",
+      "class": "log-only-fallback",
+      "file": "apps/operator/scripts/ptool.mjs",
+      "enclosing": "main",
+      "ordinal": 2,
+      "line": 4147,
+      "symbol": "fallback",
+      "disposition": "not-applicable",
+      "reason": "interactive or developer CLI: the fallback is printed to the invoking caller, and there is no long-running mechanism whose rate can collapse unobserved",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|apps/operator/scripts/rotate-spawn-signing-key.mjs|<module>|1",
+      "class": "log-only-fallback",
+      "file": "apps/operator/scripts/rotate-spawn-signing-key.mjs",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 104,
+      "symbol": "falling-back",
+      "disposition": "not-applicable",
+      "reason": "interactive or developer CLI: the fallback is printed to the invoking caller, and there is no long-running mechanism whose rate can collapse unobserved",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|apps/operator/scripts/rotate-spawn-signing-key.mjs|<module>|2",
+      "class": "log-only-fallback",
+      "file": "apps/operator/scripts/rotate-spawn-signing-key.mjs",
+      "enclosing": "<module>",
+      "ordinal": 2,
+      "line": 107,
+      "symbol": "falling-back",
+      "disposition": "not-applicable",
+      "reason": "interactive or developer CLI: the fallback is printed to the invoking caller, and there is no long-running mechanism whose rate can collapse unobserved",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|libs/generic/memory/src/embed-device.ts|recordEmbedDeviceDemotion|1",
+      "class": "log-only-fallback",
+      "file": "libs/generic/memory/src/embed-device.ts",
+      "enclosing": "recordEmbedDeviceDemotion",
+      "ordinal": 1,
+      "line": 330,
+      "symbol": "fall-back",
+      "disposition": "migrate",
+      "item": "P-010",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|libs/generic/memory/src/local-embedder-worker.ts|warnEmbedFallback|1",
+      "class": "log-only-fallback",
+      "file": "libs/generic/memory/src/local-embedder-worker.ts",
+      "enclosing": "warnEmbedFallback",
+      "ordinal": 1,
+      "line": 1132,
+      "symbol": "falling-back",
+      "disposition": "migrate",
+      "item": "P-010",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|libs/generic/rerank/src/local-engine.ts|reportDemotion|1",
+      "class": "log-only-fallback",
+      "file": "libs/generic/rerank/src/local-engine.ts",
+      "enclosing": "reportDemotion",
+      "ordinal": 1,
+      "line": 243,
+      "symbol": "falling-back",
+      "disposition": "migrate",
+      "item": "P-010",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|libs/generic/rerank/src/local-reranker-worker.ts|warnRerankFallback|1",
+      "class": "log-only-fallback",
+      "file": "libs/generic/rerank/src/local-reranker-worker.ts",
+      "enclosing": "warnRerankFallback",
+      "ordinal": 1,
+      "line": 432,
+      "symbol": "falling-back",
+      "disposition": "migrate",
+      "item": "P-010",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|libs/generic/search/src/backfill/backfill-table.ts|backfillTable|1",
+      "class": "log-only-fallback",
+      "file": "libs/generic/search/src/backfill/backfill-table.ts",
+      "enclosing": "backfillTable",
+      "ordinal": 1,
+      "line": 208,
+      "symbol": "falling-back",
+      "disposition": "migrate",
+      "item": "P-010",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|libs/generic/sync/src/fallback/useTransportFallback.ts|useTransportFallback|1",
+      "class": "log-only-fallback",
+      "file": "libs/generic/sync/src/fallback/useTransportFallback.ts",
+      "enclosing": "useTransportFallback",
+      "ordinal": 1,
+      "line": 87,
+      "symbol": "falling-back",
+      "disposition": "migrate",
+      "item": "P-011",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|libs/generic/tooldef/src/dispatch-stack.ts|run|1",
+      "class": "log-only-fallback",
+      "file": "libs/generic/tooldef/src/dispatch-stack.ts",
+      "enclosing": "run",
+      "ordinal": 1,
+      "line": 465,
+      "symbol": "failing-open",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|libs/papercusp/libs/db/scripts/pull-schema.mjs|runPullSchema|1",
+      "class": "log-only-fallback",
+      "file": "libs/papercusp/libs/db/scripts/pull-schema.mjs",
+      "enclosing": "runPullSchema",
+      "ordinal": 1,
+      "line": 960,
+      "symbol": "fallback",
+      "disposition": "not-applicable",
+      "reason": "interactive or developer CLI: the fallback is printed to the invoking caller, and there is no long-running mechanism whose rate can collapse unobserved",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|libs/papercusp/libs/db/src/connection.ts|_quarantineDiscoveryEndpointIfProvenForeign|1",
+      "class": "log-only-fallback",
+      "file": "libs/papercusp/libs/db/src/connection.ts",
+      "enclosing": "_quarantineDiscoveryEndpointIfProvenForeign",
+      "ordinal": 1,
+      "line": 479,
+      "symbol": "falling-back",
+      "disposition": "migrate",
+      "item": "P-012",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/agent-mcp/src/entity-resolvers-papercusp.ts|assertNotUnitTier|1",
+      "class": "log-only-fallback",
+      "file": "packages/agent-mcp/src/entity-resolvers-papercusp.ts",
+      "enclosing": "assertNotUnitTier",
+      "ordinal": 1,
+      "line": 180,
+      "symbol": "fails-open",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/docs-engine/src/render-mdx.ts|renderMdxToMarkdownUnqueued|1",
+      "class": "log-only-fallback",
+      "file": "packages/docs-engine/src/render-mdx.ts",
+      "enclosing": "renderMdxToMarkdownUnqueued",
+      "ordinal": 1,
+      "line": 128,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/agent-tools/coordination/messages.ts|readInboxWindow|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/agent-tools/coordination/messages.ts",
+      "enclosing": "readInboxWindow",
+      "ordinal": 1,
+      "line": 980,
+      "symbol": "falling-back",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/agent-tools/coordination/messages.ts|readOutboxWindow|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/agent-tools/coordination/messages.ts",
+      "enclosing": "readOutboxWindow",
+      "ordinal": 1,
+      "line": 1319,
+      "symbol": "falling-back",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/agent-tools/fleet/place_batch.ts|gatherLivePresenceCurrentFiles|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/agent-tools/fleet/place_batch.ts",
+      "enclosing": "gatherLivePresenceCurrentFiles",
+      "ordinal": 1,
+      "line": 315,
+      "symbol": "falls-back",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/agent-tools/index.ts|<module>|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/agent-tools/index.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 1881,
+      "symbol": "fallback",
+      "disposition": "not-applicable",
+      "reason": "\"fallback wake\" names the watchdog’s normal backup-wake arming (outcome armed/kept), not a degraded path",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/agent-tools/index.ts|<module>|2",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/agent-tools/index.ts",
+      "enclosing": "<module>",
+      "ordinal": 2,
+      "line": 1910,
+      "symbol": "fallback",
+      "disposition": "not-applicable",
+      "reason": "\"fallback wake\" names the watchdog’s normal backup-wake arming (outcome armed/kept), not a degraded path",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/agent-tools/loop/arm.ts|handler|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/agent-tools/loop/arm.ts",
+      "enclosing": "handler",
+      "ordinal": 1,
+      "line": 819,
+      "symbol": "falling-back",
+      "disposition": "migrate",
+      "item": "P-009",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/agent-tools/loop/checkpoint.ts|handler|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/agent-tools/loop/checkpoint.ts",
+      "enclosing": "handler",
+      "ordinal": 1,
+      "line": 894,
+      "symbol": "fail-open",
+      "disposition": "migrate",
+      "item": "P-009",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/agent-tools/operator/converse-prompt.ts|buildOperatorPrompt|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/agent-tools/operator/converse-prompt.ts",
+      "enclosing": "buildOperatorPrompt",
+      "ordinal": 1,
+      "line": 218,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/agent-tools/plans/remote-seat-inventory.ts|resolveRemoteSeatInventory|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/agent-tools/plans/remote-seat-inventory.ts",
+      "enclosing": "resolveRemoteSeatInventory",
+      "ordinal": 1,
+      "line": 87,
+      "symbol": "falls-back",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/agent-tools/search/embedder.ts|buildQueryEmbedderResolved|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/agent-tools/search/embedder.ts",
+      "enclosing": "buildQueryEmbedderResolved",
+      "ordinal": 1,
+      "line": 329,
+      "symbol": "degrading-to",
+      "disposition": "migrate",
+      "item": "P-010",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/attention/reconcile-escalations.ts|rerouteUnackedEscalationsOnce|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/attention/reconcile-escalations.ts",
+      "enclosing": "rerouteUnackedEscalationsOnce",
+      "ordinal": 1,
+      "line": 984,
+      "symbol": "failing-open",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/authority/transport-wiring.ts|envAddressMap|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/authority/transport-wiring.ts",
+      "enclosing": "envAddressMap",
+      "ordinal": 1,
+      "line": 75,
+      "symbol": "fail-open",
+      "disposition": "migrate",
+      "item": "P-011",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/blueprint/blueprint-run-action.ts|handleBlueprintRun|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/blueprint/blueprint-run-action.ts",
+      "enclosing": "handleBlueprintRun",
+      "ordinal": 1,
+      "line": 540,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/blueprint/launch-blueprint.ts|defaultFire|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/blueprint/launch-blueprint.ts",
+      "enclosing": "defaultFire",
+      "ordinal": 1,
+      "line": 483,
+      "symbol": "falling-back",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/blueprint/launch-blueprint.ts|defaultFire|2",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/blueprint/launch-blueprint.ts",
+      "enclosing": "defaultFire",
+      "ordinal": 2,
+      "line": 570,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/blueprint/launch-blueprint.ts|defaultFire|3",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/blueprint/launch-blueprint.ts",
+      "enclosing": "defaultFire",
+      "ordinal": 3,
+      "line": 728,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/blueprint/launch-blueprint.ts|defaultFire|4",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/blueprint/launch-blueprint.ts",
+      "enclosing": "defaultFire",
+      "ordinal": 4,
+      "line": 748,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/bounded-timeout.ts|withBoundedTimeout|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/bounded-timeout.ts",
+      "enclosing": "withBoundedTimeout",
+      "ordinal": 1,
+      "line": 93,
+      "symbol": "degrading-to",
+      "disposition": "migrate",
+      "item": "P-012",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/bounded-timeout.ts|withBoundedTimeout|2",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/bounded-timeout.ts",
+      "enclosing": "withBoundedTimeout",
+      "ordinal": 2,
+      "line": 104,
+      "symbol": "degrading-to",
+      "disposition": "migrate",
+      "item": "P-012",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/cache/l2-tier.ts|noteL2Error|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/cache/l2-tier.ts",
+      "enclosing": "noteL2Error",
+      "ordinal": 1,
+      "line": 189,
+      "symbol": "degrading-to",
+      "disposition": "migrate",
+      "item": "P-012",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/db-tools/sanitize-baseline.ts|<module>|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/db-tools/sanitize-baseline.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 520,
+      "symbol": "fallback",
+      "disposition": "not-applicable",
+      "reason": "developer tool that sanitizes the frozen schema baseline; the unknown-shape note is its own report to the operator running it",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/dbos/bootstrap.ts|startDbosOnce|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/dbos/bootstrap.ts",
+      "enclosing": "startDbosOnce",
+      "ordinal": 1,
+      "line": 533,
+      "symbol": "fall-back",
+      "disposition": "migrate",
+      "item": "P-009",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/dbos/dbos-executor-reaper.ts|<module>|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/dbos/dbos-executor-reaper.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 155,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-009",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/dbos/dbos-executor-reaper.ts|<module>|2",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/dbos/dbos-executor-reaper.ts",
+      "enclosing": "<module>",
+      "ordinal": 2,
+      "line": 161,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-009",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/dbos/in-process-periodic.ts|tick|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/dbos/in-process-periodic.ts",
+      "enclosing": "tick",
+      "ordinal": 1,
+      "line": 1113,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-009",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/dbos/routines-workflow.ts|routinesTickImpl|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/dbos/routines-workflow.ts",
+      "enclosing": "routinesTickImpl",
+      "ordinal": 1,
+      "line": 1155,
+      "symbol": "fail-open",
+      "disposition": "migrate",
+      "item": "P-009",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/dbos/routines-workflow.ts|routinesSweepTickImpl|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/dbos/routines-workflow.ts",
+      "enclosing": "routinesSweepTickImpl",
+      "ordinal": 1,
+      "line": 1455,
+      "symbol": "fallback",
+      "disposition": "not-applicable",
+      "reason": "\"fallback wake\" names the watchdog’s normal backup-wake arming (outcome armed/kept), not a degraded path",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/dbos/routines-workflow.ts|routinesSweepTickImpl|2",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/dbos/routines-workflow.ts",
+      "enclosing": "routinesSweepTickImpl",
+      "ordinal": 2,
+      "line": 1524,
+      "symbol": "fallback",
+      "disposition": "not-applicable",
+      "reason": "\"fallback wake\" names the watchdog’s normal backup-wake arming (outcome armed/kept), not a degraded path",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-role.ts|handler|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-role.ts",
+      "enclosing": "handler",
+      "ordinal": 1,
+      "line": 587,
+      "symbol": "falling-back",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-el-spend.ts|handler|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-el-spend.ts",
+      "enclosing": "handler",
+      "ordinal": 1,
+      "line": 134,
+      "symbol": "fallback",
+      "disposition": "not-applicable",
+      "reason": "no EL API key configured: a configuration choice that selects the PG spend source, not a runtime failure",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-el-spend.ts|handler|2",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-el-spend.ts",
+      "enclosing": "handler",
+      "ordinal": 2,
+      "line": 141,
+      "symbol": "falling-back",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts|handler|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts",
+      "enclosing": "handler",
+      "ordinal": 1,
+      "line": 446,
+      "symbol": "falling-back",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts|handler|2",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts",
+      "enclosing": "handler",
+      "ordinal": 2,
+      "line": 918,
+      "symbol": "fallback",
+      "disposition": "not-applicable",
+      "reason": "\"fallback wake\" names the watchdog’s normal backup-wake arming (outcome armed/kept), not a degraded path",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts|handler|3",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts",
+      "enclosing": "handler",
+      "ordinal": 3,
+      "line": 934,
+      "symbol": "fallback",
+      "disposition": "not-applicable",
+      "reason": "\"fallback wake\" names the watchdog’s normal backup-wake arming (outcome armed/kept), not a degraded path",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/endpoint-route/routes/misc/updates-manifest.ts|handler|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/endpoint-route/routes/misc/updates-manifest.ts",
+      "enclosing": "handler",
+      "ordinal": 1,
+      "line": 611,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-008",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/endpoint-route/routes/misc/updates-rollback.ts|handler|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/endpoint-route/routes/misc/updates-rollback.ts",
+      "enclosing": "handler",
+      "ordinal": 1,
+      "line": 364,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-008",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts|tryBuildSpawnContext|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts",
+      "enclosing": "tryBuildSpawnContext",
+      "ordinal": 1,
+      "line": 1991,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-012",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/fleet/git-via-sidecar.ts|recordSidecarFallback|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/fleet/git-via-sidecar.ts",
+      "enclosing": "recordSidecarFallback",
+      "ordinal": 1,
+      "line": 466,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-012",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/grading-integrity.ts|readActiveLoopStanddownOwners|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/grading-integrity.ts",
+      "enclosing": "readActiveLoopStanddownOwners",
+      "ordinal": 1,
+      "line": 1176,
+      "symbol": "failing-open",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/harness/improvements/watchdog.ts|withWatchdogTickLock|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/harness/improvements/watchdog.ts",
+      "enclosing": "withWatchdogTickLock",
+      "ordinal": 1,
+      "line": 5102,
+      "symbol": "fail-open",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/harness/improvements/watchdog.ts|withWatchdogTickLock|2",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/harness/improvements/watchdog.ts",
+      "enclosing": "withWatchdogTickLock",
+      "ordinal": 2,
+      "line": 5115,
+      "symbol": "fail-open",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/harness/improvements/watchdog.ts|runWatchdogTickBody|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/harness/improvements/watchdog.ts",
+      "enclosing": "runWatchdogTickBody",
+      "ordinal": 1,
+      "line": 5261,
+      "symbol": "degrading-to",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts|openAnalyzeLog|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts",
+      "enclosing": "openAnalyzeLog",
+      "ordinal": 1,
+      "line": 2367,
+      "symbol": "falling-back",
+      "disposition": "migrate",
+      "item": "P-009",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/harness/routines/improvement-actions.ts|intFromEnv|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/harness/routines/improvement-actions.ts",
+      "enclosing": "intFromEnv",
+      "ordinal": 1,
+      "line": 104,
+      "symbol": "fallback",
+      "disposition": "not-applicable",
+      "reason": "configuration parse default: a non-integer tunable falls back to its documented default once at parse time",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/harness/routines/project-history-refresh-action.ts|<module>|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/harness/routines/project-history-refresh-action.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 375,
+      "symbol": "fall-back",
+      "disposition": "migrate",
+      "item": "P-009",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/harness/routines/reconcile-loop-routines.ts|reconcileLoopRoutines|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/harness/routines/reconcile-loop-routines.ts",
+      "enclosing": "reconcileLoopRoutines",
+      "ordinal": 1,
+      "line": 1983,
+      "symbol": "falling-back",
+      "disposition": "migrate",
+      "item": "P-009",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/harness/routines/release-pause-ttl.ts|listLoopStanddownOwners|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/harness/routines/release-pause-ttl.ts",
+      "enclosing": "listLoopStanddownOwners",
+      "ordinal": 1,
+      "line": 550,
+      "symbol": "failing-open",
+      "disposition": "migrate",
+      "item": "P-008",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/harness/routines/seed-work-item-admission-fail-open-routine.ts|main|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/harness/routines/seed-work-item-admission-fail-open-routine.ts",
+      "enclosing": "main",
+      "ordinal": 1,
+      "line": 46,
+      "symbol": "fail-open",
+      "disposition": "migrate",
+      "item": "P-009",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/harness/routines/seed-work-item-admission-fail-open-routine.ts|<module>|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/harness/routines/seed-work-item-admission-fail-open-routine.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 56,
+      "symbol": "fail-open",
+      "disposition": "migrate",
+      "item": "P-009",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/harness/routines/silent-halt-reconcile.ts|sweepSilentHalts|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/harness/routines/silent-halt-reconcile.ts",
+      "enclosing": "sweepSilentHalts",
+      "ordinal": 1,
+      "line": 602,
+      "symbol": "falling-back",
+      "disposition": "migrate",
+      "item": "P-009",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/issues-engineer.ts|refreshIssuesPerWorkspace|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/issues-engineer.ts",
+      "enclosing": "refreshIssuesPerWorkspace",
+      "ordinal": 1,
+      "line": 483,
+      "symbol": "falling-back",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/learning/pot-gate/gates.ts|scoutPotGate|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/learning/pot-gate/gates.ts",
+      "enclosing": "scoutPotGate",
+      "ordinal": 1,
+      "line": 52,
+      "symbol": "fail-open",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/learning/pot-gate/gates.ts|scoutConfigDelta|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/learning/pot-gate/gates.ts",
+      "enclosing": "scoutConfigDelta",
+      "ordinal": 1,
+      "line": 133,
+      "symbol": "fail-open",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/learning/pot-gate/store.ts|failOpenOnMissingRelation|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/learning/pot-gate/store.ts",
+      "enclosing": "failOpenOnMissingRelation",
+      "ordinal": 1,
+      "line": 62,
+      "symbol": "fail-open",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/memory/bench/wi-6512-known-item-replay-cli.ts|explainSelection|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/memory/bench/wi-6512-known-item-replay-cli.ts",
+      "enclosing": "explainSelection",
+      "ordinal": 1,
+      "line": 473,
+      "symbol": "falling-back",
+      "disposition": "not-applicable",
+      "reason": "interactive or developer CLI: the fallback is printed to the invoking caller, and there is no long-running mechanism whose rate can collapse unobserved",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/memory/embed-sidecar-spawn.ts|scheduleRespawn|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/memory/embed-sidecar-spawn.ts",
+      "enclosing": "scheduleRespawn",
+      "ordinal": 1,
+      "line": 442,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-010",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/memory/jev-transport.ts|reportTransportEvent|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/memory/jev-transport.ts",
+      "enclosing": "reportTransportEvent",
+      "ordinal": 1,
+      "line": 88,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-010",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/operator-sentinel-handoff-deps.ts|nudgeRecipient|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/operator-sentinel-handoff-deps.ts",
+      "enclosing": "nudgeRecipient",
+      "ordinal": 1,
+      "line": 166,
+      "symbol": "falling-back",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/overwatch/watchdog.ts|armFallbackOverwatchWake|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/overwatch/watchdog.ts",
+      "enclosing": "armFallbackOverwatchWake",
+      "ordinal": 1,
+      "line": 298,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-015",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/papercup/papercup-deep-delegate-deps.ts|deliverToDeep|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/papercup/papercup-deep-delegate-deps.ts",
+      "enclosing": "deliverToDeep",
+      "ordinal": 1,
+      "line": 128,
+      "symbol": "falling-back",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/plan-items/claim-authority-swarm.ts|route|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/plan-items/claim-authority-swarm.ts",
+      "enclosing": "route",
+      "ordinal": 1,
+      "line": 40,
+      "symbol": "fail-open",
+      "disposition": "migrate",
+      "item": "P-011",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/pot-membership.ts|workItemStorageSlug|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/pot-membership.ts",
+      "enclosing": "workItemStorageSlug",
+      "ordinal": 1,
+      "line": 184,
+      "symbol": "falling-back",
+      "disposition": "migrate",
+      "item": "P-011",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/pot/watchdog.ts|claimWatchdogFire|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/pot/watchdog.ts",
+      "enclosing": "claimWatchdogFire",
+      "ordinal": 1,
+      "line": 681,
+      "symbol": "fail-open",
+      "disposition": "migrate",
+      "item": "P-015",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/pot/watchdog.ts|armFallbackPotWake|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/pot/watchdog.ts",
+      "enclosing": "armFallbackPotWake",
+      "ordinal": 1,
+      "line": 779,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-015",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/release/green-stall-watchdog.ts|readCheckpointRunState|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/release/green-stall-watchdog.ts",
+      "enclosing": "readCheckpointRunState",
+      "ordinal": 1,
+      "line": 1584,
+      "symbol": "fail-open",
+      "disposition": "migrate",
+      "item": "P-008",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/routines-dispatch-derivation.ts|dispatchedSweepMatcher|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/routines-dispatch-derivation.ts",
+      "enclosing": "dispatchedSweepMatcher",
+      "ordinal": 1,
+      "line": 169,
+      "symbol": "falling-back",
+      "disposition": "migrate",
+      "item": "P-009",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/scout/cycle-deps.ts|ideate|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/scout/cycle-deps.ts",
+      "enclosing": "ideate",
+      "ordinal": 1,
+      "line": 807,
+      "symbol": "degraded-to",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/scout/cycle-deps.ts|route|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/scout/cycle-deps.ts",
+      "enclosing": "route",
+      "ordinal": 1,
+      "line": 943,
+      "symbol": "fail-open",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/scout/dedup-burn-guard.ts|readDedupBurnVerdict|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/scout/dedup-burn-guard.ts",
+      "enclosing": "readDedupBurnVerdict",
+      "ordinal": 1,
+      "line": 206,
+      "symbol": "fail-open",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/scout/paused-rails.ts|readPausedRails|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/scout/paused-rails.ts",
+      "enclosing": "readPausedRails",
+      "ordinal": 1,
+      "line": 75,
+      "symbol": "fail-open",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/scout/routed-ledger.ts|getScoutLensWeights|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/scout/routed-ledger.ts",
+      "enclosing": "getScoutLensWeights",
+      "ordinal": 1,
+      "line": 1672,
+      "symbol": "falling-back",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/search/coverage-gate.ts|loadCoverageSnapshotCached|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/search/coverage-gate.ts",
+      "enclosing": "loadCoverageSnapshotCached",
+      "ordinal": 1,
+      "line": 263,
+      "symbol": "degrading-to",
+      "disposition": "migrate",
+      "item": "P-010",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/search/lexical/rank.ts|runBm25TopK|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/search/lexical/rank.ts",
+      "enclosing": "runBm25TopK",
+      "ordinal": 1,
+      "line": 336,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-010",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/sync/hyperbee/boot-all.ts|defaultResolveSwarmBinding|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/sync/hyperbee/boot-all.ts",
+      "enclosing": "defaultResolveSwarmBinding",
+      "ordinal": 1,
+      "line": 810,
+      "symbol": "falling-back",
+      "disposition": "migrate",
+      "item": "P-011",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/sync/hyperbee/boot-all.ts|bootSingleHarness|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/sync/hyperbee/boot-all.ts",
+      "enclosing": "bootSingleHarness",
+      "ordinal": 1,
+      "line": 885,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-011",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/sync/hyperbee/boot-all.ts|resolveActivationDeferrals|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/sync/hyperbee/boot-all.ts",
+      "enclosing": "resolveActivationDeferrals",
+      "ordinal": 1,
+      "line": 1282,
+      "symbol": "fail-open",
+      "disposition": "migrate",
+      "item": "P-011",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/sync/hyperbee/boot.ts|mergeOnePass|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/sync/hyperbee/boot.ts",
+      "enclosing": "mergeOnePass",
+      "ordinal": 1,
+      "line": 4331,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-011",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/sync/hyperbee/projections/coord-message.ts|writeToPg|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/sync/hyperbee/projections/coord-message.ts",
+      "enclosing": "writeToPg",
+      "ordinal": 1,
+      "line": 656,
+      "symbol": "falls-back",
+      "disposition": "migrate",
+      "item": "P-011",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/sync/hyperbee/substrate-active-set-facts.ts|gatherActivationFacts|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/sync/hyperbee/substrate-active-set-facts.ts",
+      "enclosing": "gatherActivationFacts",
+      "ordinal": 1,
+      "line": 78,
+      "symbol": "fail-open",
+      "disposition": "migrate",
+      "item": "P-011",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/sync/hyperbee/substrate-boot-wrapper.ts|bootSubstrateWithFallback|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/sync/hyperbee/substrate-boot-wrapper.ts",
+      "enclosing": "bootSubstrateWithFallback",
+      "ordinal": 1,
+      "line": 292,
+      "symbol": "falling-back",
+      "disposition": "migrate",
+      "item": "P-011",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/sync/hyperbee/substrate-boot-wrapper.ts|bootSubstrateWithFallback|2",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/sync/hyperbee/substrate-boot-wrapper.ts",
+      "enclosing": "bootSubstrateWithFallback",
+      "ordinal": 2,
+      "line": 306,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-011",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/sync/hyperbee/substrate-sidecar-spawn.ts|scheduleRespawn|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/sync/hyperbee/substrate-sidecar-spawn.ts",
+      "enclosing": "scheduleRespawn",
+      "ordinal": 1,
+      "line": 171,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-011",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/sync/hyperbee/swarm.ts|buildSharedSwarm|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/sync/hyperbee/swarm.ts",
+      "enclosing": "buildSharedSwarm",
+      "ordinal": 1,
+      "line": 4119,
+      "symbol": "falling-back",
+      "disposition": "migrate",
+      "item": "P-011",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/sync/hyperbee/swarm.ts|buildSharedSwarm|2",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/sync/hyperbee/swarm.ts",
+      "enclosing": "buildSharedSwarm",
+      "ordinal": 2,
+      "line": 4176,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-011",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/sync/hyperbee/sync-relay.ts|resolveSyncRelayKeys|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/sync/hyperbee/sync-relay.ts",
+      "enclosing": "resolveSyncRelayKeys",
+      "ordinal": 1,
+      "line": 59,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-011",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts|maybeForceRespawn|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts",
+      "enclosing": "maybeForceRespawn",
+      "ordinal": 1,
+      "line": 1398,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/system-health/single-primary-check.ts|countBackgroundPrimaries|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/system-health/single-primary-check.ts",
+      "enclosing": "countBackgroundPrimaries",
+      "ordinal": 1,
+      "line": 603,
+      "symbol": "failing-open",
+      "disposition": "migrate",
+      "item": "P-012",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/work-item-claim-authority-swarm.ts|route|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/work-item-claim-authority-swarm.ts",
+      "enclosing": "route",
+      "ordinal": 1,
+      "line": 48,
+      "symbol": "fail-open",
+      "disposition": "migrate",
+      "item": "P-011",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/work-item-lock-release.ts|releaseReclaimedWorkItemLocks|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/work-item-lock-release.ts",
+      "enclosing": "releaseReclaimedWorkItemLocks",
+      "ordinal": 1,
+      "line": 77,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/work-item-lock-release.ts|releaseReclaimedWorkItemLocks|2",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/work-item-lock-release.ts",
+      "enclosing": "releaseReclaimedWorkItemLocks",
+      "ordinal": 2,
+      "line": 127,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/work-item-replica-authority-swarm.ts|route|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/work-item-replica-authority-swarm.ts",
+      "enclosing": "route",
+      "ordinal": 1,
+      "line": 43,
+      "symbol": "fail-open",
+      "disposition": "migrate",
+      "item": "P-011",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/work-items-stale-claims.ts|reclaimStaleWorkItemClaims|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/work-items-stale-claims.ts",
+      "enclosing": "reclaimStaleWorkItemClaims",
+      "ordinal": 1,
+      "line": 648,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/work-items-stale-claims.ts|reclaimStaleWorkItemClaims|2",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/work-items-stale-claims.ts",
+      "enclosing": "reclaimStaleWorkItemClaims",
+      "ordinal": 2,
+      "line": 654,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/work-items.ts|claimWorkItem|1",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/work-items.ts",
+      "enclosing": "claimWorkItem",
+      "ordinal": 1,
+      "line": 5891,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|packages/operator-core/lib/work-items.ts|claimWorkItem|2",
+      "class": "log-only-fallback",
+      "file": "packages/operator-core/lib/work-items.ts",
+      "enclosing": "claimWorkItem",
+      "ordinal": 2,
+      "line": 5896,
+      "symbol": "fallback",
+      "disposition": "migrate",
+      "item": "P-013",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|scripts/check-optional-seam-strands.mjs|main|1",
+      "class": "log-only-fallback",
+      "file": "scripts/check-optional-seam-strands.mjs",
+      "enclosing": "main",
+      "ordinal": 1,
+      "line": 476,
+      "symbol": "fallback",
+      "disposition": "not-applicable",
+      "reason": "lint or gate tooling: the line is the tool’s own diagnostic output about the code it checks, not a runtime fallback",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|scripts/check-optional-seam-strands.mjs|main|2",
+      "class": "log-only-fallback",
+      "file": "scripts/check-optional-seam-strands.mjs",
+      "enclosing": "main",
+      "ordinal": 2,
+      "line": 480,
+      "symbol": "falls-back",
+      "disposition": "not-applicable",
+      "reason": "lint or gate tooling: the line is the tool’s own diagnostic output about the code it checks, not a runtime fallback",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|scripts/check-partial-index-alignment.mjs|main|1",
+      "class": "log-only-fallback",
+      "file": "scripts/check-partial-index-alignment.mjs",
+      "enclosing": "main",
+      "ordinal": 1,
+      "line": 490,
+      "symbol": "falls-back",
+      "disposition": "not-applicable",
+      "reason": "lint or gate tooling: the line is the tool’s own diagnostic output about the code it checks, not a runtime fallback",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|scripts/check-sidecar-fallback-reported.mjs|main|1",
+      "class": "log-only-fallback",
+      "file": "scripts/check-sidecar-fallback-reported.mjs",
+      "enclosing": "main",
+      "ordinal": 1,
+      "line": 277,
+      "symbol": "fallback",
+      "disposition": "not-applicable",
+      "reason": "lint or gate tooling: the line is the tool’s own diagnostic output about the code it checks, not a runtime fallback",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|scripts/check-sidecar-fallback-reported.mjs|main|2",
+      "class": "log-only-fallback",
+      "file": "scripts/check-sidecar-fallback-reported.mjs",
+      "enclosing": "main",
+      "ordinal": 2,
+      "line": 280,
+      "symbol": "fallback",
+      "disposition": "not-applicable",
+      "reason": "lint or gate tooling: the line is the tool’s own diagnostic output about the code it checks, not a runtime fallback",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|scripts/check-sidecar-fallback-reported.mjs|main|3",
+      "class": "log-only-fallback",
+      "file": "scripts/check-sidecar-fallback-reported.mjs",
+      "enclosing": "main",
+      "ordinal": 3,
+      "line": 283,
+      "symbol": "falling-back",
+      "disposition": "not-applicable",
+      "reason": "lint or gate tooling: the line is the tool’s own diagnostic output about the code it checks, not a runtime fallback",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|scripts/check-sidecar-fallback-reported.mjs|main|4",
+      "class": "log-only-fallback",
+      "file": "scripts/check-sidecar-fallback-reported.mjs",
+      "enclosing": "main",
+      "ordinal": 4,
+      "line": 284,
+      "symbol": "fallback",
+      "disposition": "not-applicable",
+      "reason": "lint or gate tooling: the line is the tool’s own diagnostic output about the code it checks, not a runtime fallback",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|scripts/check-sidecar-fallback-reported.mjs|main|5",
+      "class": "log-only-fallback",
+      "file": "scripts/check-sidecar-fallback-reported.mjs",
+      "enclosing": "main",
+      "ordinal": 5,
+      "line": 287,
+      "symbol": "fallback",
+      "disposition": "not-applicable",
+      "reason": "lint or gate tooling: the line is the tool’s own diagnostic output about the code it checks, not a runtime fallback",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|scripts/lib/tsc-baseline-gate.mjs|runTscBaselineGate|1",
+      "class": "log-only-fallback",
+      "file": "scripts/lib/tsc-baseline-gate.mjs",
+      "enclosing": "runTscBaselineGate",
+      "ordinal": 1,
+      "line": 3393,
+      "symbol": "fall-back",
+      "disposition": "not-applicable",
+      "reason": "lint or gate tooling: the line is the tool’s own diagnostic output about the code it checks, not a runtime fallback",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|scripts/lint-as-committed.mjs|main|1",
+      "class": "log-only-fallback",
+      "file": "scripts/lint-as-committed.mjs",
+      "enclosing": "main",
+      "ordinal": 1,
+      "line": 1289,
+      "symbol": "fallback",
+      "disposition": "not-applicable",
+      "reason": "lint or gate tooling: the line is the tool’s own diagnostic output about the code it checks, not a runtime fallback",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|scripts/mcp-call.mjs|main|1",
+      "class": "log-only-fallback",
+      "file": "scripts/mcp-call.mjs",
+      "enclosing": "main",
+      "ordinal": 1,
+      "line": 896,
+      "symbol": "fallback",
+      "disposition": "not-applicable",
+      "reason": "interactive or developer CLI: the fallback is printed to the invoking caller, and there is no long-running mechanism whose rate can collapse unobserved",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|scripts/mcp-call.mjs|main|2",
+      "class": "log-only-fallback",
+      "file": "scripts/mcp-call.mjs",
+      "enclosing": "main",
+      "ordinal": 2,
+      "line": 937,
+      "symbol": "fallback",
+      "disposition": "not-applicable",
+      "reason": "interactive or developer CLI: the fallback is printed to the invoking caller, and there is no long-running mechanism whose rate can collapse unobserved",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|scripts/npm-install-safe.mjs|main|1",
+      "class": "log-only-fallback",
+      "file": "scripts/npm-install-safe.mjs",
+      "enclosing": "main",
+      "ordinal": 1,
+      "line": 1707,
+      "symbol": "fallback",
+      "disposition": "not-applicable",
+      "reason": "interactive or developer CLI: the fallback is printed to the invoking caller, and there is no long-running mechanism whose rate can collapse unobserved",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|scripts/npm-install-safe.mjs|main|2",
+      "class": "log-only-fallback",
+      "file": "scripts/npm-install-safe.mjs",
+      "enclosing": "main",
+      "ordinal": 2,
+      "line": 1712,
+      "symbol": "fallback",
+      "disposition": "not-applicable",
+      "reason": "interactive or developer CLI: the fallback is printed to the invoking caller, and there is no long-running mechanism whose rate can collapse unobserved",
+      "route": "observation"
+    },
+    {
+      "id": "log-only-fallback|scripts/report-cargo-tests.mjs|readDiskAdmission|1",
+      "class": "log-only-fallback",
+      "file": "scripts/report-cargo-tests.mjs",
+      "enclosing": "readDiskAdmission",
+      "ordinal": 1,
+      "line": 191,
+      "symbol": "fail-open",
+      "disposition": "not-applicable",
+      "reason": "interactive or developer CLI: the fallback is printed to the invoking caller, and there is no long-running mechanism whose rate can collapse unobserved",
+      "route": "observation"
+    },
+    {
+      "id": "owner-only-alarm|apps/operator/bin/host-bootstrap.ts|runBootstrap|1",
+      "class": "owner-only-alarm",
+      "file": "apps/operator/bin/host-bootstrap.ts",
+      "enclosing": "runBootstrap",
+      "ordinal": 1,
+      "line": 718,
+      "symbol": "notifyAttention",
+      "disposition": "migrate",
+      "item": "P-009",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|apps/operator/lib/release/green-checkpoint.ts|escalate|1",
+      "class": "owner-only-alarm",
+      "file": "apps/operator/lib/release/green-checkpoint.ts",
+      "enclosing": "escalate",
+      "ordinal": 1,
+      "line": 21638,
+      "symbol": "notifyAttention",
+      "disposition": "migrate",
+      "item": "P-008",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|apps/operator/lib/release/green-checkpoint.ts|onFire|1",
+      "class": "owner-only-alarm",
+      "file": "apps/operator/lib/release/green-checkpoint.ts",
+      "enclosing": "onFire",
+      "ordinal": 1,
+      "line": 22571,
+      "symbol": "notifyAttention",
+      "disposition": "migrate",
+      "item": "P-008",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/agent-governor-observer.ts|surfacePause|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/agent-governor-observer.ts",
+      "enclosing": "surfacePause",
+      "ordinal": 1,
+      "line": 116,
+      "symbol": "escalateAlarm",
+      "disposition": "migrate",
+      "item": "P-007",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/agent-tools/operator/notify_owner.ts|handler|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/agent-tools/operator/notify_owner.ts",
+      "enclosing": "handler",
+      "ordinal": 1,
+      "line": 108,
+      "symbol": "notifyAttentionOnce",
+      "disposition": "not-applicable",
+      "reason": "the notify_owner tool relays an agent-authored message to the owner; it reports no system condition",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/agent-tools/plans/set-status.ts|setStatusOne|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/agent-tools/plans/set-status.ts",
+      "enclosing": "setStatusOne",
+      "ordinal": 1,
+      "line": 1946,
+      "symbol": "notifyAttention",
+      "disposition": "not-applicable",
+      "reason": "needs-human decision request raised when a plan item needs the owner’s call; not a failure or degradation",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/agent-tools/routines/set.ts|handler|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/agent-tools/routines/set.ts",
+      "enclosing": "handler",
+      "ordinal": 1,
+      "line": 519,
+      "symbol": "notifyAttention",
+      "disposition": "not-applicable",
+      "reason": "owner-authority audit notice that an agent deliberately paused an always-on routine; the resulting not-running state is the host-bootstrap always-on check (P-009)",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/agent-tools/work_items/claim-hold-guard.ts|notifyClaimHoldBypass|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/agent-tools/work_items/claim-hold-guard.ts",
+      "enclosing": "notifyClaimHoldBypass",
+      "ordinal": 1,
+      "line": 139,
+      "symbol": "notifyAttention",
+      "disposition": "not-applicable",
+      "reason": "owner-authority audit notice of a deliberate forced claim by an agent; an authorization trail, not a system failure",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/agent-tools/work_items/release-force-guard.ts|notifyForceTransition|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/agent-tools/work_items/release-force-guard.ts",
+      "enclosing": "notifyForceTransition",
+      "ordinal": 1,
+      "line": 555,
+      "symbol": "notifyAttention",
+      "disposition": "not-applicable",
+      "reason": "owner-authority audit notice of a deliberate forced release by an agent; an authorization trail, not a system failure",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/alarm-attention.ts|defaultNotify|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/alarm-attention.ts",
+      "enclosing": "defaultNotify",
+      "ordinal": 1,
+      "line": 51,
+      "symbol": "notifyAttention",
+      "disposition": "migrate",
+      "item": "P-007",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/attention/bulk-run-owner-digest.ts|notify|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/attention/bulk-run-owner-digest.ts",
+      "enclosing": "notify",
+      "ordinal": 1,
+      "line": 77,
+      "symbol": "notifyAttentionOnce",
+      "disposition": "not-applicable",
+      "reason": "owner digest of a finished bulk run’s results; a report, not a failure signal",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/dbos/in-process-periodic.ts|tick|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/dbos/in-process-periodic.ts",
+      "enclosing": "tick",
+      "ordinal": 1,
+      "line": 1145,
+      "symbol": "notifyAttention",
+      "disposition": "migrate",
+      "item": "P-009",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/endpoint-route/routes/internal/escalation-event.ts|handler|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/endpoint-route/routes/internal/escalation-event.ts",
+      "enclosing": "handler",
+      "ordinal": 1,
+      "line": 98,
+      "symbol": "notifyAttention",
+      "disposition": "not-applicable",
+      "reason": "relays an escalation the harness already recorded on the escalations surface to the owner’s desktop; the raiser owns the condition, not this relay",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/endpoint-route/routes/internal/smoke-test-event.ts|handler|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/endpoint-route/routes/internal/smoke-test-event.ts",
+      "enclosing": "handler",
+      "ordinal": 1,
+      "line": 78,
+      "symbol": "notifyAttention",
+      "disposition": "migrate",
+      "item": "P-009",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/fleet-ekg/scan.ts|alarm|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/fleet-ekg/scan.ts",
+      "enclosing": "alarm",
+      "ordinal": 1,
+      "line": 303,
+      "symbol": "notifyAttention",
+      "disposition": "migrate",
+      "item": "P-009",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/gates/gate-canary-sweep-action.ts|recordCanaryVerdict|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/gates/gate-canary-sweep-action.ts",
+      "enclosing": "recordCanaryVerdict",
+      "ordinal": 1,
+      "line": 138,
+      "symbol": "notifyAttention",
+      "disposition": "migrate",
+      "item": "P-008",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts|trackGitnexusDbCapacity|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts",
+      "enclosing": "trackGitnexusDbCapacity",
+      "ordinal": 1,
+      "line": 2049,
+      "symbol": "notifyAttention",
+      "disposition": "migrate",
+      "item": "P-009",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts|trackGitnexusDbCapacity|2",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts",
+      "enclosing": "trackGitnexusDbCapacity",
+      "ordinal": 2,
+      "line": 2071,
+      "symbol": "notifyAttention",
+      "disposition": "migrate",
+      "item": "P-009",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts|trackDependencySnapshot|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts",
+      "enclosing": "trackDependencySnapshot",
+      "ordinal": 1,
+      "line": 2913,
+      "symbol": "notifyAttention",
+      "disposition": "migrate",
+      "item": "P-009",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts|finishAnalyzeTick|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts",
+      "enclosing": "finishAnalyzeTick",
+      "ordinal": 1,
+      "line": 3308,
+      "symbol": "notifyAttention",
+      "disposition": "migrate",
+      "item": "P-009",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/harness/routines/human-queue-digest-action.ts|deliverStaleNeedsHumanReminder|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/harness/routines/human-queue-digest-action.ts",
+      "enclosing": "deliverStaleNeedsHumanReminder",
+      "ordinal": 1,
+      "line": 225,
+      "symbol": "notifyAttentionOnce",
+      "disposition": "not-applicable",
+      "reason": "reminder and weekly digest of the owner’s own needs-human queue; a report, not a failure signal",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/harness/routines/human-queue-digest-action.ts|<module>|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/harness/routines/human-queue-digest-action.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 275,
+      "symbol": "notifyAttention",
+      "disposition": "not-applicable",
+      "reason": "reminder and weekly digest of the owner’s own needs-human queue; a report, not a failure signal",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/harness/routines/loop-dead-man.ts|checkLoopDeadMan|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/harness/routines/loop-dead-man.ts",
+      "enclosing": "checkLoopDeadMan",
+      "ordinal": 1,
+      "line": 198,
+      "symbol": "notifyAttention",
+      "disposition": "migrate",
+      "item": "P-009",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/harness/routines/project-history-refresh-action.ts|<module>|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/harness/routines/project-history-refresh-action.ts",
+      "enclosing": "<module>",
+      "ordinal": 1,
+      "line": 436,
+      "symbol": "notifyAttention",
+      "disposition": "migrate",
+      "item": "P-009",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/harness/routines/release-actions.ts|trackGateStall|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/harness/routines/release-actions.ts",
+      "enclosing": "trackGateStall",
+      "ordinal": 1,
+      "line": 4680,
+      "symbol": "notifyAttentionOnce",
+      "disposition": "migrate",
+      "item": "P-008",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/harness/routines/release-actions.ts|trackGateStall|2",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/harness/routines/release-actions.ts",
+      "enclosing": "trackGateStall",
+      "ordinal": 2,
+      "line": 5250,
+      "symbol": "notifyAttentionOnce",
+      "disposition": "migrate",
+      "item": "P-008",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/harness/routines/release-actions.ts|trackFlakeHistory|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/harness/routines/release-actions.ts",
+      "enclosing": "trackFlakeHistory",
+      "ordinal": 1,
+      "line": 5614,
+      "symbol": "notifyAttention",
+      "disposition": "migrate",
+      "item": "P-008",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/harness/routines/release-actions.ts|dispatchReleaseFixer|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/harness/routines/release-actions.ts",
+      "enclosing": "dispatchReleaseFixer",
+      "ordinal": 1,
+      "line": 7185,
+      "symbol": "notifyAttention",
+      "disposition": "migrate",
+      "item": "P-008",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/harness/routines/release-pause-ttl.ts|notifyLoopStanddownAutoResume|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/harness/routines/release-pause-ttl.ts",
+      "enclosing": "notifyLoopStanddownAutoResume",
+      "ordinal": 1,
+      "line": 752,
+      "symbol": "notifyAttentionOnce",
+      "disposition": "not-applicable",
+      "reason": "notice that a paused loop or routine AUTO-RESUMED after its stand-down TTL lapsed: the system already recovered, nothing remains to own",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/harness/routines/release-pause-ttl.ts|notifyAutoResume|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/harness/routines/release-pause-ttl.ts",
+      "enclosing": "notifyAutoResume",
+      "ordinal": 1,
+      "line": 792,
+      "symbol": "notifyAttentionOnce",
+      "disposition": "not-applicable",
+      "reason": "notice that a paused loop or routine AUTO-RESUMED after its stand-down TTL lapsed: the system already recovered, nothing remains to own",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/harness/routines/silent-halt-reconcile.ts|sweepSilentHalts|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/harness/routines/silent-halt-reconcile.ts",
+      "enclosing": "sweepSilentHalts",
+      "ordinal": 1,
+      "line": 758,
+      "symbol": "notifyAttention",
+      "disposition": "migrate",
+      "item": "P-009",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/iq-battery/gen-loop.ts|runIqBatteryGen|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/iq-battery/gen-loop.ts",
+      "enclosing": "runIqBatteryGen",
+      "ordinal": 1,
+      "line": 111,
+      "symbol": "notifyAttention",
+      "disposition": "not-applicable",
+      "reason": "needs-human request for the owner to decide an IQ-battery cadence change; a decision request, not a failure",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/papercup/papercup-proactive-sweep-deps.ts|pushAttention|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/papercup/papercup-proactive-sweep-deps.ts",
+      "enclosing": "pushAttention",
+      "ordinal": 1,
+      "line": 162,
+      "symbol": "notifyAttention",
+      "disposition": "not-applicable",
+      "reason": "the Papercup assistant’s proactive Sentinel message to its user; a product feature, not a system failure signal",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/poll-suspect-alarm.ts|runPollSuspectScanOnce|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/poll-suspect-alarm.ts",
+      "enclosing": "runPollSuspectScanOnce",
+      "ordinal": 1,
+      "line": 183,
+      "symbol": "escalateAlarm",
+      "disposition": "migrate",
+      "item": "P-007",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/release/green-stall-watchdog.ts|checkGreenStall|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/release/green-stall-watchdog.ts",
+      "enclosing": "checkGreenStall",
+      "ordinal": 1,
+      "line": 2259,
+      "symbol": "notifyAttentionOnce",
+      "disposition": "migrate",
+      "item": "P-008",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/release/idle-repair-queue-actuator.ts|escalateOwner|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/release/idle-repair-queue-actuator.ts",
+      "enclosing": "escalateOwner",
+      "ordinal": 1,
+      "line": 508,
+      "symbol": "notifyAttention",
+      "disposition": "migrate",
+      "item": "P-008",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/release/lost-gate-run-alarm.ts|defaultNotifyOwner|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/release/lost-gate-run-alarm.ts",
+      "enclosing": "defaultNotifyOwner",
+      "ordinal": 1,
+      "line": 393,
+      "symbol": "notifyAttention",
+      "disposition": "migrate",
+      "item": "P-008",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/release/staging-fix-proposal-cli.ts|runAutomaticStagingFixProposal|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/release/staging-fix-proposal-cli.ts",
+      "enclosing": "runAutomaticStagingFixProposal",
+      "ordinal": 1,
+      "line": 176,
+      "symbol": "notifyAttentionOnce",
+      "disposition": "not-applicable",
+      "reason": "a CLI proposing a staging fix for owner review at normal importance; a proposal, not a failure signal",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/storage/disk-space-alarm.ts|runDiskSpaceAlarmOnce|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/storage/disk-space-alarm.ts",
+      "enclosing": "runDiskSpaceAlarmOnce",
+      "ordinal": 1,
+      "line": 567,
+      "symbol": "escalateAlarm",
+      "disposition": "migrate",
+      "item": "P-007",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/storage/localstorage-wal-guard.ts|runWalCheckpointGuard|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/storage/localstorage-wal-guard.ts",
+      "enclosing": "runWalCheckpointGuard",
+      "ordinal": 1,
+      "line": 280,
+      "symbol": "escalateAlarm",
+      "disposition": "migrate",
+      "item": "P-007",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/storage/replication-slot-alarm.ts|runReplicationSlotAlarmOnce|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/storage/replication-slot-alarm.ts",
+      "enclosing": "runReplicationSlotAlarmOnce",
+      "ordinal": 1,
+      "line": 255,
+      "symbol": "escalateAlarm",
+      "disposition": "migrate",
+      "item": "P-007",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/storage/storage-growth-alarm.ts|runStorageGrowthAlarmOnce|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/storage/storage-growth-alarm.ts",
+      "enclosing": "runStorageGrowthAlarmOnce",
+      "ordinal": 1,
+      "line": 637,
+      "symbol": "escalateAlarm",
+      "disposition": "migrate",
+      "item": "P-007",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/system-health/codex-rollout-persistence-watchdog.ts|checkCodexRolloutPersistence|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/system-health/codex-rollout-persistence-watchdog.ts",
+      "enclosing": "checkCodexRolloutPersistence",
+      "ordinal": 1,
+      "line": 705,
+      "symbol": "notifyAttention",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/system-health/codex-rollout-persistence-watchdog.ts|checkCodexRolloutPersistence|2",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/system-health/codex-rollout-persistence-watchdog.ts",
+      "enclosing": "checkCodexRolloutPersistence",
+      "ordinal": 2,
+      "line": 738,
+      "symbol": "notifyAttention",
+      "disposition": "migrate",
+      "item": "P-014",
+      "route": "condition"
+    },
+    {
+      "id": "owner-only-alarm|packages/operator-core/lib/system-health/gui-e2e-surface-scheduled-run.ts|escalate|1",
+      "class": "owner-only-alarm",
+      "file": "packages/operator-core/lib/system-health/gui-e2e-surface-scheduled-run.ts",
+      "enclosing": "escalate",
+      "ordinal": 1,
+      "line": 129,
+      "symbol": "escalateAlarm",
+      "disposition": "migrate",
+      "item": "P-007",
+      "route": "condition"
+    }
+  ],
+  "amendments": [
+    {
+      "rowId": "log-only-fallback|packages/operator-core/lib/harness/routines/project-history-refresh-action.ts|<module>|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "refusal branch aborts before spawning and explicitly refuses the PATH fallback; the scanner matched negated fallback wording, not a fallback decision"
+      },
+      "reason": "Independent exact-site review found a fail-closed refusal, outside D-006 class 2.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "reviewerRef": "thread-post:1175595"
+    },
+    {
+      "rowId": "log-only-fallback|packages/operator-core/lib/harness/routines/seed-work-item-admission-fail-open-routine.ts|main|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "seeder diagnostics name the fail-open routine; successful upsert logs status and the top-level failure handler exits 1, while neither performs a fallback decision"
+      },
+      "reason": "Independent exact-site review found a successful seeding diagnostic, outside D-006 class 2.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "reviewerRef": "thread-post:1175595"
+    },
+    {
+      "rowId": "log-only-fallback|packages/operator-core/lib/harness/routines/seed-work-item-admission-fail-open-routine.ts|<module>|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "seeder diagnostics name the fail-open routine; successful upsert logs status and the top-level failure handler exits 1, while neither performs a fallback decision"
+      },
+      "reason": "Independent exact-site review found a fail-closed error diagnostic, outside D-006 class 2.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "reviewerRef": "thread-post:1175595"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/consult/consult-routing-health.ts|expertiseExecutionHealthFromRows|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "historical routing-receipt histogram initializes and counts the degraded outcome bucket; this pure read neither detects a runtime condition nor performs a fallback"
+      },
+      "reason": "Independent exact-site review distinguishes a receipt counter from an alarm-shaped health verdict; genuine routing producer coverage is separately tracked in EI-25769222848861661.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "reviewerRef": "thread-post:1175978"
+    },
+    {
+      "rowId": "log-only-fallback|packages/agent-mcp/src/entity-resolvers-papercusp.ts|assertNotUnitTier|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "unit-tier database guard logs a diagnosis and immediately throws before database access; fallback wording describes the separate enum overlay, not a fallback decision at this site"
+      },
+      "reason": "Independent exact-site review confirms a VITEST-only infrastructure refusal, outside D-006 class 2; enum-discovery producer coverage is separately tracked in EI-25769222848861661.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "reviewerRef": "thread-post:1175978"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts|<module>|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts",
+        "line": 106,
+        "syntax": "Parameter",
+        "declaration": "alert: CarryDrillDropAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts|<module>|2",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts",
+        "line": 147,
+        "syntax": "Parameter",
+        "declaration": "alert: OrphanedRespawnAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts|defaultEscalate|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts",
+        "line": 372,
+        "syntax": "Parameter",
+        "declaration": "alert: CarryDrillDropAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts|defaultEscalateOrphan|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts",
+        "line": 436,
+        "syntax": "Parameter",
+        "declaration": "alert: OrphanedRespawnAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts|escalateCompactionStranding|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts",
+        "line": 2076,
+        "syntax": "Parameter",
+        "declaration": "alert: CompactionStrandingAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as PropertySignature, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 577,
+        "syntax": "PropertySignature",
+        "declaration": "alert: GoalPlanFleetAlert | null;"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalPlanFleetLegEventKey|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 649,
+        "syntax": "Parameter",
+        "declaration": "alert: Pick<GoalPlanFleetAlert, 'goalId' | 'reason'>"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalPlanFleetEventPayload|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 664,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalPlanFleetAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalPlanFleetSubjectSignature|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 691,
+        "syntax": "Parameter",
+        "declaration": "alert: Pick<GoalPlanFleetAlert, 'workspaceId' | 'goalId' | 'reason' | 'planSlug'>"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalPlanFleetRemedy|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 697,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalPlanFleetAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalDrainRelaunchEligibility|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 845,
+        "syntax": "Parameter",
+        "declaration": "alert: Pick<GoalDrainAlert, 'reason'>"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|2",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 912,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalDrainAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|3",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 915,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalDrainAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|4",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 944,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalDrainFleetPullStallAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|5",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 953,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalPlanFleetAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|6",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 955,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalPlanFleetAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|7",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 957,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalPlanFleetAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|defaultEscalatePullStall|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 1544,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalDrainFleetPullStallAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|defaultEscalate|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 1596,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalDrainAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|defaultEmitDrainDead|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 1965,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalDrainAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|defaultEscalatePlanFleet|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 2000,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalPlanFleetAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|defaultEmitPlanFleet|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 2023,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalPlanFleetAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|defaultNotifyPlanFleetHolders|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts",
+        "line": 2052,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalPlanFleetAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts|<module>|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts",
+        "line": 146,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalEditClaimAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts|<module>|2",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts",
+        "line": 150,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalEditClaimAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts|defaultEscalate|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts",
+        "line": 250,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalEditClaimAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts|defaultEmitEditClaim|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts",
+        "line": 310,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalEditClaimAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|<module>|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value. The genuine runGoalGradingBacklogSweepOnce|1 health field remains migrate/P-014; openEscalation-only emitters fall outside the five D-006 classes and the census caveat is tracked in EI-25769222848861661.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts",
+        "line": 72,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalGradingBacklogAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|<module>|2",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value. The genuine runGoalGradingBacklogSweepOnce|1 health field remains migrate/P-014; openEscalation-only emitters fall outside the five D-006 classes and the census caveat is tracked in EI-25769222848861661.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts",
+        "line": 74,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalGradingBacklogAlert & { graderId: string }"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|describeGrader|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value. The genuine runGoalGradingBacklogSweepOnce|1 health field remains migrate/P-014; openEscalation-only emitters fall outside the five D-006 classes and the census caveat is tracked in EI-25769222848861661.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts",
+        "line": 112,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalGradingBacklogAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|defaultEscalate|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value. The genuine runGoalGradingBacklogSweepOnce|1 health field remains migrate/P-014; openEscalation-only emitters fall outside the five D-006 classes and the census caveat is tracked in EI-25769222848861661.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts",
+        "line": 119,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalGradingBacklogAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|defaultWakeGrader|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value. The genuine runGoalGradingBacklogSweepOnce|1 health field remains migrate/P-014; openEscalation-only emitters fall outside the five D-006 classes and the census caveat is tracked in EI-25769222848861661.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts",
+        "line": 151,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalGradingBacklogAlert & { graderId: string }"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|runGoalGradingBacklogSweepOnce|2",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as VariableDeclaration, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value. The genuine runGoalGradingBacklogSweepOnce|1 health field remains migrate/P-014; openEscalation-only emitters fall outside the five D-006 classes and the census caveat is tracked in EI-25769222848861661.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts",
+        "line": 249,
+        "syntax": "VariableDeclaration",
+        "declaration": "alert: GoalGradingBacklogAlert = { ...goal, verdict, graderId, graderAlive }"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+        "line": 507,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalLivenessAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|2",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+        "line": 515,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalReadinessAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|3",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+        "line": 524,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalWedgeAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|4",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+        "line": 540,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalPortfolioIdleAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|5",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+        "line": 552,
+        "syntax": "Parameter",
+        "declaration": "alert: UnplannedClusterAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|defaultEscalatePortfolioIdle|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+        "line": 771,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalPortfolioIdleAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|defaultEscalate|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+        "line": 1074,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalLivenessAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|defaultEscalateReadiness|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+        "line": 1140,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalReadinessAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|defaultEscalateWedge|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+        "line": 1265,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalWedgeAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts|buildReportSkeleton|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts",
+        "line": 338,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalOwnerReportAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts|<module>|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts",
+        "line": 357,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalOwnerReportAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts|<module>|2",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts",
+        "line": 359,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalOwnerReportAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts|defaultEscalate|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts",
+        "line": 503,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalOwnerReportAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts|defaultNudge|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts",
+        "line": 543,
+        "syntax": "Parameter",
+        "declaration": "alert: GoalOwnerReportAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/kernel-leak-watchdog.ts|formatKernelLeakEscalation|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/kernel-leak-watchdog.ts",
+        "line": 219,
+        "syntax": "Parameter",
+        "declaration": "alert: KernelLeakAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/kernel-leak-watchdog.ts|<module>|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/kernel-leak-watchdog.ts",
+        "line": 256,
+        "syntax": "Parameter",
+        "declaration": "alert: KernelLeakAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/kernel-leak-watchdog.ts|defaultEscalate|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/kernel-leak-watchdog.ts",
+        "line": 318,
+        "syntax": "Parameter",
+        "declaration": "alert: KernelLeakAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts|<module>|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts",
+        "line": 157,
+        "syntax": "Parameter",
+        "declaration": "alert: RestartRateAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts|defaultEscalate|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts",
+        "line": 189,
+        "syntax": "Parameter",
+        "declaration": "alert: RestartRateAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts|<module>|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/unservable-critical-watchdog.ts",
+        "line": 189,
+        "syntax": "Parameter",
+        "declaration": "alert: UnservableAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts|remedyFor|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/unservable-critical-watchdog.ts",
+        "line": 325,
+        "syntax": "Parameter",
+        "declaration": "alert: UnservableAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts|defaultEscalate|1",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+      },
+      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value.",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "evidence": {
+        "file": "packages/operator-core/lib/system-health/unservable-critical-watchdog.ts",
+        "line": 340,
+        "syntax": "Parameter",
+        "declaration": "alert: UnservableAlert"
+      },
+      "reviewerRef": "thread-post:1176052"
+    }
+  ]
+}

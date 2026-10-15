@@ -1,13 +1,26 @@
 /** P-005 real-Postgres coverage for exact spec evidence edges, tools, and currentness. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+import { once } from 'node:events';
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { createServer as createHttpServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import type { SpecClauseWrite } from './spec-clauses-store';
 import { carryUnchangedBarEvidenceBindings } from '../../acceptance-bar-amendment';
+import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
+import { configureRuntimeVintageStore, resetRuntimeVintageStore, InMemoryRuntimeVintageStore,
+  reportRuntimeVintage, listRuntimeVintage, measureRuntimeVintageEnvironment } from '../../runtime-vintage';
+import { configureRemoteRuntimeDescribe, measureRuntimeEnvironment, resetRemoteRuntimeDescribe }
+  from '../../remote-runtime-identity';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, repoRoot: '', siblingRoot: '' }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -68,17 +81,23 @@ const MIGRATION_930 = migration('930-spec-clause-falsifier-null-safe.sql');
 // append-only trigger with a strict superset of it. Applied LAST so the guards below
 // exercise the trigger this migration installs, not the one 855 installed.
 const MIGRATION_1174 = migration('1174-spec-evidence-binding-retraction.sql');
+const MIGRATION_1445 = migration('1445-spec-evidence-independent-verification.sql');
 // 1175 scopes the dedup index to live rows so a retracted binding releases its
 // slot for an identical corrected binding (WI-10001850 / D-011).
 const MIGRATION_1175 = migration('1175-spec-evidence-dedup-partial-on-live.sql');
 // 1176 completes the expand/contract sequence after the predicate-aware writer is
 // deployed by dropping the obsolete total index (WI-10001850 / EI-23634085867209303).
 const MIGRATION_1176 = migration('1176-spec-evidence-drop-total-dedup-contract-phase.sql');
+const MIGRATION_1378 = migration('1378-preserve-spec-bound-test-runs.sql');
+// 1478 adds the per-case results ledger (test-rubric-unification P-002): the bind path
+// resolves declared testCases against it when the run recorded its cases.
+const MIGRATION_1478 = migration('1478-test-case-runs.sql');
 const CTX = {
   isSuperuser: true,
   uiClientId: 'su-spec-evidence-integration',
   workspaceId: WORKSPACE,
   harnessSlug: HARNESS,
+  metadata: () => undefined,
 } as never;
 
 let db: FreshPgDb;
@@ -103,7 +122,7 @@ function clause(over: Partial<SpecClauseWrite> = {}): SpecClauseWrite {
   };
 }
 
-async function seedExternalEvidence() {
+async function seedExternalEvidence(runFilePath: string | null = null) {
   const [surface] = await db.sql<{ id: number }[]>`
     INSERT INTO harness_shared.testing_surfaces (workspace_id, harness_slug)
     VALUES (${WORKSPACE}, ${HARNESS}) RETURNING id`;
@@ -111,8 +130,8 @@ async function seedExternalEvidence() {
     INSERT INTO harness_shared.coverage_evidence (surface_ref)
     VALUES (${surface.id}) RETURNING id`;
   const [run] = await db.sql<{ id: number }[]>`
-    INSERT INTO harness_shared.test_runs (workspace_id, harness_slug)
-    VALUES (${WORKSPACE}, ${HARNESS}) RETURNING id`;
+    INSERT INTO harness_shared.test_runs (workspace_id, harness_slug, file_path)
+    VALUES (${WORKSPACE}, ${HARNESS}, ${runFilePath}) RETURNING id`;
   return { surfaceId: Number(surface.id), coverageEvidenceRef: Number(coverage.id), testRunId: Number(run.id) };
 }
 
@@ -148,7 +167,29 @@ beforeAll(async () => {
       -- note above records (EI-21270668928342264): a hand-rolled fixture silently falling
       -- one column behind a harness_shared table.
       content text NOT NULL DEFAULT '',
+      -- resolveSpecScopeSlug writes this alongside content when it lazily creates the
+      -- ad-hoc scope; keep the hand-built table aligned with the live harness_plans shape.
+      content_hash text NOT NULL DEFAULT '',
       PRIMARY KEY (workspace_id, harness_slug, plan_slug)
+    );
+    -- The same first-use path appends a system revision in this ledger. The production
+    -- writer names every column below; omitting the table here makes the omitted-slug
+    -- behavior fail before it can return its intended spec_not_found result.
+    CREATE TABLE harness_shared.plan_revisions (
+      id bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+      workspace_id text NOT NULL,
+      harness_slug text NOT NULL,
+      plan_slug text NOT NULL,
+      seq integer NOT NULL,
+      content_hash text NOT NULL,
+      content_snapshot text NOT NULL,
+      rationale text,
+      author_kind text NOT NULL,
+      author_id text NOT NULL,
+      session_id text,
+      session_kind text,
+      created_at bigint NOT NULL,
+      UNIQUE (workspace_id, harness_slug, plan_slug, seq)
     );
     CREATE TABLE harness_shared.plan_items (
       workspace_id text NOT NULL,
@@ -178,6 +219,7 @@ beforeAll(async () => {
       workspace_id text NOT NULL,
       harness_slug text NOT NULL,
       feature_id text NOT NULL,
+      status text,
       source_plan_slug text,
       admission text, admitted_at timestamptz, admitted_by text,
       PRIMARY KEY (harness_slug, feature_id)
@@ -194,12 +236,18 @@ beforeAll(async () => {
       harness_slug text,
       file_path text,
       status text,
+      -- bind-from-test-run also reads the run's measurement lower bound.
+      started_at timestamptz NOT NULL DEFAULT now(),
       finished_at timestamptz,
+      output_tail text,
       run_group_id text,
       commit_sha text,
       worktree_dirty boolean NOT NULL DEFAULT false,
       -- P-044: bind-from-test-run reads the writer origin (real table: NOT NULL DEFAULT 'local').
-      source text NOT NULL DEFAULT 'local'
+      source text NOT NULL DEFAULT 'local',
+      -- bind-from-test-run reads the recording framework to route cargo rows (real table:
+      -- framework TEXT NOT NULL, no default). WI-10006905: omitting it failed every fromTestRun case.
+      framework text NOT NULL DEFAULT 'vitest'
     );
     CREATE TABLE harness_shared.testing_surfaces (
       id bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
@@ -226,6 +274,15 @@ beforeAll(async () => {
   await applyMigrationForTest(db.sql, MIGRATION_1175); // idempotent and replay-safe
   await applyMigrationForTest(db.sql, MIGRATION_1176);
   await applyMigrationForTest(db.sql, MIGRATION_1176); // idempotent and replay-safe
+  await applyMigrationForTest(db.sql, MIGRATION_1378);
+  await applyMigrationForTest(db.sql, MIGRATION_1378); // idempotent and replay-safe
+  await applyMigrationForTest(db.sql, MIGRATION_1445);
+  await applyMigrationForTest(db.sql, MIGRATION_1478);
+  const [{ present }] = await db.sql<{ present: boolean }[]>`SELECT EXISTS (
+    SELECT 1 FROM information_schema.columns WHERE table_schema = 'harness_shared'
+      AND table_name = 'spec_evidence_bindings' AND column_name = 'verifies_binding_id'
+  ) AS present`;
+  expect(present, 'the fixture must support the current evidence writer before compiler scenarios run').toBe(true);
 }, 90_000);
 
 afterAll(async () => {
@@ -240,6 +297,7 @@ beforeEach(async () => {
   await writeFile(path.join(h.repoRoot, 'src', 'reconnect.ts'), 'export const reconnect = true;\n');
   await db.sql`TRUNCATE
     harness_shared.carry_notes,
+    harness_shared.plan_revisions,
     harness_shared.spec_evidence_bindings,
     harness_shared.work_item_spec_revision_edges,
     harness_shared.plan_spec_clause_revisions,
@@ -305,7 +363,7 @@ describe('test execution carries mappings into the real evidence ledger', () => 
     expect(exact![0].execution_details).toEqual(details);
     const recovered = await recoverTestEvidence(recovery, scope, deps);
     expect(recovered.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass', testRunId: Number(row.id) });
-    expect(recovered.verificationFingerprint).toBeTruthy();
+    expect(recovered).toHaveProperty('verificationFingerprint', expect.any(String));
     // Two matching receipts are ambiguous, even when both say pass.
     await db.sql`INSERT INTO harness_shared.test_runs
       (workspace_id,harness_slug,file_path,status,finished_at,run_group_id,commit_sha,worktree_dirty,execution_details)
@@ -334,9 +392,26 @@ describe('test execution carries mappings into the real evidence ledger', () => 
     const pending = await evidenceStore.listSpecEvidence({ harnessSlug: HARNESS, planSlugs: ['reconnect-plan'], workItemIds: ['WI-101'] });
     expect(pending).toHaveLength(1);
     expect(pending[0].details.adequacy).toMatchObject({ outcome: 'pending', executed: false, causalPairIds: ['original-reconnect'] });
+    const executionDetails = {
+      schemaVersion: 1,
+      root: h.repoRoot,
+      filePath: testPath,
+      runGroupId: runId,
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+      testNamePattern: null,
+      passed: 1,
+      failed: 0,
+      skipped: 0,
+      collectionFailed: false,
+      mutationPhase: null,
+      commitSha: 'fixture-commit',
+      worktreeDirty: false,
+    };
     const [run] = await db.sql<{ id: number }[]>`INSERT INTO harness_shared.test_runs
-      (workspace_id,harness_slug,file_path,status,finished_at,run_group_id,commit_sha,worktree_dirty)
-      VALUES (${WORKSPACE},${HARNESS},${testPath},'pass',now(),${runId},'fixture-commit',false) RETURNING id`;
+      (workspace_id,harness_slug,file_path,status,finished_at,run_group_id,commit_sha,worktree_dirty,execution_details)
+      VALUES (${WORKSPACE},${HARNESS},${testPath},'pass',now(),${runId},'fixture-commit',false,
+        ${JSON.stringify(executionDetails)}::text::jsonb) RETURNING id`;
     await db.sql`INSERT INTO harness_shared.test_runs (workspace_id,harness_slug,file_path,status,finished_at,run_group_id)
       VALUES (${OTHER_WORKSPACE},${HARNESS},${testPath},'fail',now(),${runId})`;
     const result = { ok: true, runId, root: h.repoRoot, passed: 1, failed: 0, skipped: 0, files: 1,
@@ -348,8 +423,13 @@ describe('test execution carries mappings into the real evidence ledger', () => 
     const [bound] = await evidenceStore.listSpecEvidence({
       harnessSlug: HARNESS, planSlugs: ['reconnect-plan'], workItemIds: ['WI-101'],
     });
-    expect(bound.testRunProvenance).toEqual({
+    expect(bound.testRunProvenance).toMatchObject({
       filePath: testPath, commitSha: 'fixture-commit', worktreeDirty: true,
+    });
+    expect(bound.testRunExecution).toEqual({
+      status: 'pass',
+      passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+      filePath: testPath,
     });
     await db.sql`UPDATE harness_shared.test_runs SET worktree_dirty = false WHERE id = ${run.id}`;
     // Integrated continuation: persist once, cross the reader boundary, and use
@@ -383,6 +463,9 @@ describe('test execution carries mappings into the real evidence ledger', () => 
     expect(await buildFailureLoopHintText(hint!)).toContain('Reuse the saved evidence');
     const recovered = await recoverTestEvidence({ workItemId: 'WI-101', planSlug: 'reconnect-plan', originRunId: runId, runId }, scope, deps);
     expect(recovered.rows[0]).toMatchObject({ testRunId: Number(run.id), phase: 'settled', outcome: 'pass', bindingStatus: 'unchanged' });
+    // The next recovery check models a synthetic failed legacy row; clear the
+    // successful counters used above to verify the listSpecEvidence projection.
+    await db.sql`UPDATE harness_shared.test_runs SET execution_details = NULL WHERE id = ${run.id}`;
     await db.sql`UPDATE harness_shared.test_runs SET status = 'fail' WHERE id = ${run.id}`;
     const revised = await recoverTestEvidence({ workItemId: 'WI-101', planSlug: 'reconnect-plan', originRunId: runId, runId }, scope, deps);
     expect(revised.rows[0]).toMatchObject({ testRunId: Number(run.id), phase: 'review-required', outcome: 'unknown' });
@@ -391,6 +474,40 @@ describe('test execution carries mappings into the real evidence ledger', () => 
     const changed = await evidenceStore.listSpecEvidence({ harnessSlug: HARNESS, planSlugs: ['reconnect-plan'], workItemIds: ['WI-101'] });
     expect(changed.every(row => row.currentness.overall === 'stale')).toBe(true);
   });
+});
+
+describe('native P015 compiler dependency evidence', () => {
+  it('marks persisted proof stale after a dependency changes without revising the requirement or test run', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    await writeFile(path.join(h.repoRoot, 'src/reconnect.ts'),
+      'import { dependency } from "./reconnect-dependency";\nexport function reconnect() { return dependency(); }\n');
+    await writeFile(path.join(h.repoRoot, 'src/reconnect-dependency.ts'), 'export function dependency() { return 1; }\n');
+    const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+    const args = bindTool.args.parse({ harness: HARNESS, slug: 'reconnect-plan',
+      dependencies: [{ name: 'reconnect', file: 'src/reconnect.ts', paths: ['src'] }],
+      binding: { workItemId: 'WI-101', specId: 'SPEC-003-01', specRevision: 1,
+        evidenceKind: 'test', evidenceRef: 'test/reconnect.test.ts', testRunId,
+        measurement: { schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/reconnect.ts'] } } });
+    const bound = await bindTool.handler(args as never, CTX) as { data: { results: Array<{ ok: boolean }> } };
+    expect(bound.data.results[0]?.ok, JSON.stringify(bound.data.results)).toBe(true);
+    const read = () => evidenceStore.listSpecEvidence({ harnessSlug: HARNESS, planSlugs: ['reconnect-plan'], workItemIds: ['WI-101'] });
+    const [before] = await read();
+    expect(before!.currentness.overall).toBe('current');
+    expect(before!.details.currentMeasurement).toMatchObject({
+      sourcePaths: ['src/reconnect-dependency.ts', 'src/reconnect.ts'],
+    });
+    expect(before!.details.codeDependencies).toMatchObject({ schemaVersion: 1, sources: expect.arrayContaining([
+      expect.objectContaining({ path: 'src/reconnect-dependency.ts', representation: 'full-source' }),
+    ]) });
+    await writeFile(path.join(h.repoRoot, 'src/reconnect-dependency.ts'), 'export function dependency() { return 2; }\n');
+    const [after] = await read();
+    expect(after!.currentness.overall).toBe('stale');
+    expect(after!.currentness.dimensions.source).toBe('stale');
+    expect(after!.id).toBe(before!.id);
+    expect(after!.specRevision).toBe(1);
+    expect(after!.testRunId).toBe(testRunId);
+    expect(after!.fingerprints).toEqual(before!.fingerprints);
+  }, 120_000);
 });
 
 describe('ad-hoc work-items carry spec evidence with no plan (P-022 / D-018)', () => {
@@ -476,6 +593,87 @@ describe('ad-hoc work-items carry spec evidence with no plan (P-022 / D-018)', (
     expect(new Set(items.map((r) => Number(r.seq))).size, 'seq must stay distinct').toBe(2);
   });
 
+  it('explains an omitted slug when a real-plan clause is absent from the default ad-hoc scope', async () => {
+    await specs.setSpecClause(clause());
+    const binding = {
+      workItemId: 'WI-101',
+      specId: 'SPEC-003-01',
+      evidenceKind: 'test' as const,
+      evidenceRef: 'test/reconnect.integration.ts#missing-slug',
+      sourceFingerprint: 'git:missing-slug',
+    };
+    const refused = (await bindTool.handler({ binding, harness: HARNESS }, CTX)) as {
+      data: { results: Array<{ message: string }> };
+    };
+    expect(refused.data).toMatchObject({
+      ok: false,
+      results: [
+        {
+          status: 'spec_not_found',
+          slug: ADHOC,
+          specId: binding.specId,
+          message: expect.stringContaining('no slug supplied'),
+        },
+      ],
+    });
+    const row = refused.data.results[0]!;
+    expect(row.message).toContain(ADHOC);
+    expect(row.message).toContain('pass slug');
+    const [scope] = await db.sql<{ content: string; content_hash: string }[]>`
+      SELECT content, content_hash FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND plan_slug = ${ADHOC}`;
+    expect(scope).toBeDefined();
+    expect(scope!.content).toContain(`# Ad-hoc work-item spec scope`);
+    expect(scope!.content_hash).toBe(hashPlanContent(scope!.content));
+    const [revision] = await db.sql<{
+      seq: number | string; content_hash: string; content_snapshot: string; author_kind: string; author_id: string;
+    }[]>`
+      SELECT seq, content_hash, content_snapshot, author_kind, author_id
+        FROM harness_shared.plan_revisions
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND plan_slug = ${ADHOC}`;
+    expect(revision).toMatchObject({
+      content_hash: scope!.content_hash,
+      content_snapshot: scope!.content,
+      author_kind: 'system',
+      author_id: 'plan-spec:adhoc-scope',
+    });
+    expect(Number(revision!.seq)).toBe(1);
+    const edges = await db.sql`
+      SELECT id FROM harness_shared.spec_evidence_bindings
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}`;
+    expect(edges, 'a refusal must not write a binding').toHaveLength(0);
+
+    const rebound = await bindTool.handler({ binding, harness: HARNESS, slug: 'reconnect-plan' }, CTX);
+    expect(rebound).toMatchObject({
+      data: {
+        ok: true,
+        results: [{ status: 'created', slug: 'reconnect-plan', specId: binding.specId }],
+      },
+    });
+  });
+
+  it('does not blame an explicit plan miss on an omitted slug', async () => {
+    const refused = (await bindTool.handler(
+      {
+        slug: 'reconnect-plan',
+        harness: HARNESS,
+        binding: {
+          workItemId: 'WI-101',
+          specId: 'ABSENT-SPEC',
+          evidenceKind: 'test',
+          evidenceRef: 'test/reconnect.integration.ts#absent-spec',
+          sourceFingerprint: 'git:explicit-miss',
+        },
+      },
+      CTX,
+    )) as { data: { results: Array<Record<string, unknown>> } };
+    expect(refused.data).toMatchObject({
+      ok: false,
+      results: [{ status: 'spec_not_found', slug: 'reconnect-plan', specId: 'ABSENT-SPEC' }],
+    });
+    expect(refused.data.results[0]).not.toHaveProperty('message');
+  });
+
   it('still honours an explicit plan slug — the ad-hoc path is a fallback, not a takeover', async () => {
     await specs.setSpecClause(clause());
     const bound = await evidenceStore.bindSpecEvidence({
@@ -497,6 +695,409 @@ describe('ad-hoc work-items carry spec evidence with no plan (P-022 / D-018)', (
 });
 
 describe('exact spec evidence bindings', () => {
+  it.each([
+    ['integration', true, false], ['e2e', true, false], ['unit', true, false],
+    ['e2e', false, false], ['e2e', true, true],
+  ] as const)('pins original isolated lifetime hashes (layer=%s receipts=%s wrong-unit=%s)',
+    async (testLayer, hasReceipts, wrongUnit) => {
+      await specs.setSpecClause(clause({ mutationRequired: false }));
+      const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+      const runId = '20261008T000000Z-100';
+      const receipts = [{ runId, resultSha256: 'a'.repeat(64), sourceSha256: 'b'.repeat(64),
+        lifecycleSha256: 'c'.repeat(64) }];
+      const execution = { schemaVersion: 1, root: h.repoRoot, filePath: 'test/reconnect.test.ts',
+        runGroupId: null, workspaceId: WORKSPACE, harnessSlug: HARNESS, testNamePattern: null,
+        testLayer, passed: 1, failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null,
+        commitSha: null, worktreeDirty: true, ...(hasReceipts ? { isolatedRuntimeReceipts: receipts } : {}) };
+      await db.sql`UPDATE harness_shared.test_runs SET execution_details = ${JSON.stringify(execution)}::text::jsonb
+        WHERE id = ${testRunId}`;
+      const result = await evidenceStore.bindSpecEvidence({
+        workItemId: 'WI-101', specId: 'SPEC-003-01', harnessSlug: HARNESS,
+        planSlug: 'reconnect-plan', actorId: 'su-test', evidenceKind: 'test',
+        evidenceRef: 'test/reconnect.test.ts', testRunId, sourceFingerprint: 'source',
+        environmentFingerprint: 'caller-cannot-create-a-receipt', details: { evidencePlane: 'live', currentMeasurement: {
+          schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/reconnect.ts'],
+          runtimeUnits: [wrongUnit ? 'bg-host' : `isolated-integration:${runId}`],
+        } },
+      });
+      expect(result).toMatchObject({ status: 'created' });
+      const [stored] = await db.sql`SELECT environment_fingerprint FROM harness_shared.spec_evidence_bindings`;
+      const expected = testLayer !== 'unit' && hasReceipts && !wrongUnit
+        ? createHash('sha256').update(JSON.stringify(receipts)).digest('hex') : null;
+      expect(stored.environment_fingerprint).toBe(expected);
+    });
+
+  // EI-25847620673275477: a judge following the brief re-observes an isolated-integration
+  // proof with the cited measurement and no testRunId. Before the fix the store pinned the
+  // caller's environment (no run → no receipts), refused independent_fingerprint_mismatch,
+  // and a row that did name the run still lacked the plane the read side certifies.
+  it('adopts the cited test run, plane and run identity for an independent re-observation of an isolated run', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+    const runId = '20261013T000000Z-200';
+    const receipts = [{ runId, resultSha256: 'a'.repeat(64), sourceSha256: 'b'.repeat(64),
+      lifecycleSha256: 'c'.repeat(64) }];
+    const execution = { schemaVersion: 1, root: h.repoRoot, filePath: 'test/reconnect.test.ts',
+      runGroupId: null, workspaceId: WORKSPACE, harnessSlug: HARNESS, testNamePattern: null,
+      testLayer: 'integration', passed: 1, failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null,
+      commitSha: null, worktreeDirty: true, isolatedRuntimeReceipts: receipts };
+    await db.sql`UPDATE harness_shared.test_runs SET execution_details = ${JSON.stringify(execution)}::text::jsonb
+      WHERE id = ${testRunId}`;
+    const currentMeasurement = { schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/reconnect.ts'],
+      runtimeUnits: [`isolated-integration:${runId}`] };
+    const testRun = { id: testRunId, filePath: 'test/reconnect.test.ts' };
+    const implementer = await evidenceStore.bindSpecEvidence({
+      workItemId: 'WI-101', specId: 'SPEC-003-01', harnessSlug: HARNESS, planSlug: 'reconnect-plan',
+      actorId: 'su-implementer', evidenceKind: 'test', evidenceRef: 'test/reconnect.test.ts', testRunId,
+      sourceFingerprint: 'source', details: { evidencePlane: 'live', testRun, currentMeasurement },
+    });
+    expect(implementer).toMatchObject({ status: 'created' });
+    const citedId = (implementer as { id: number }).id;
+    const judge = {
+      workItemId: 'WI-101', specId: 'SPEC-003-01', harnessSlug: HARNESS, planSlug: 'reconnect-plan',
+      actorId: 'su-judge', evidenceKind: 'independent-verification' as const, verifiesBindingId: citedId,
+      evidenceRef: 'test/reconnect.test.ts', sourceFingerprint: 'source',
+      environmentFingerprint: 'judge-supplied-runtime', details: { note: 'receipts re-read', currentMeasurement },
+    };
+
+    // A run other than the cited one cannot match, and the refusal names the run to use.
+    const { testRunId: otherRun } = await seedExternalEvidence('test/reconnect.test.ts');
+    const wrongRun = await evidenceStore.bindSpecEvidence({ ...judge, testRunId: otherRun });
+    expect(wrongRun).toMatchObject({ status: 'independent_fingerprint_mismatch', mismatched: ['environment'],
+      citedTestRunId: testRunId });
+    expect((wrongRun as { message: string }).message).toContain(`test-run ${testRunId}`);
+
+    const adopted = await evidenceStore.bindSpecEvidence(judge);
+    expect(adopted).toMatchObject({ status: 'created' });
+    const [row] = await db.sql<{ test_run_id: string; environment_fingerprint: string; details: Record<string, unknown> }[]>`
+      SELECT test_run_id, environment_fingerprint, details FROM harness_shared.spec_evidence_bindings
+       WHERE id = ${(adopted as { id: number }).id}`;
+    expect(Number(row.test_run_id)).toBe(testRunId);
+    expect(row.environment_fingerprint).toBe(createHash('sha256').update(JSON.stringify(receipts)).digest('hex'));
+    expect(row.details).toMatchObject({ note: 'receipts re-read', evidencePlane: 'live', testRun });
+  });
+
+  it('pins only matching execution-time ledger witnesses and never a binding-time caller runtime', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+    const witness = { schemaVersion: 1, units: ['bg-host'], fingerprint: 'a'.repeat(64),
+      observedAt: '2026-10-07T00:00:00Z' };
+    const execution = { schemaVersion: 1, root: h.repoRoot, filePath: 'test/reconnect.test.ts',
+      runGroupId: null, workspaceId: WORKSPACE, harnessSlug: HARNESS, testNamePattern: null,
+      passed: 1, failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null,
+      commitSha: null, worktreeDirty: true, runtimeEnvironmentBefore: witness,
+      runtimeEnvironmentAfter: { ...witness, observedAt: '2026-10-07T00:01:00Z' } };
+    await db.sql`UPDATE harness_shared.test_runs SET execution_details = ${JSON.stringify(execution)}::text::jsonb
+      WHERE id = ${testRunId}`;
+    const input = { workItemId: 'WI-101', specId: 'SPEC-003-01', harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan', actorId: 'su-test', evidenceKind: 'test' as const,
+      evidenceRef: 'test/reconnect.test.ts', testRunId, sourceFingerprint: 'source',
+      environmentFingerprint: 'caller-current-runtime', details: { evidencePlane: 'live', currentMeasurement: {
+        schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/reconnect.ts'], runtimeUnits: ['bg-host'] } } };
+    const first = await evidenceStore.bindSpecEvidence(input);
+    expect(first).toMatchObject({ status: 'created' });
+    const [pinned] = await db.sql`SELECT environment_fingerprint FROM harness_shared.spec_evidence_bindings`;
+    expect(pinned.environment_fingerprint).toBe(witness.fingerprint);
+    execution.runtimeEnvironmentAfter.fingerprint = 'b'.repeat(64);
+    await db.sql`UPDATE harness_shared.test_runs SET execution_details = ${JSON.stringify(execution)}::text::jsonb
+      WHERE id = ${testRunId}`;
+    const drift = await evidenceStore.bindSpecEvidence({ ...input, evidenceRef: 'test/reconnect.test.ts#drift' });
+    expect(drift).toMatchObject({ status: 'created' });
+    const [unproven] = await db.sql`SELECT environment_fingerprint FROM harness_shared.spec_evidence_bindings
+      WHERE evidence_ref = 'test/reconnect.test.ts#drift'`;
+    expect(unproven.environment_fingerprint).toBeNull();
+    await db.sql`UPDATE harness_shared.test_runs SET execution_details = NULL WHERE id = ${testRunId}`;
+    await evidenceStore.bindSpecEvidence({ ...input, evidenceRef: 'test/reconnect.test.ts#historical' });
+    const [historical] = await db.sql`SELECT environment_fingerprint FROM harness_shared.spec_evidence_bindings
+      WHERE evidence_ref = 'test/reconnect.test.ts#historical'`;
+    expect(historical.environment_fingerprint).toBeNull();
+  });
+
+  it('keeps the first test-run measurement when the same evidence is rebound to a later spec revision', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+    const measurement = {
+      schemaVersion: 1 as const,
+      kind: 'repo-files' as const,
+      sourcePaths: ['src/reconnect.ts'],
+      testPaths: ['test/reconnect.test.ts'],
+    };
+    const firstMeasurement = await evidenceStore.measureAndPinRepoFilesEvidenceAtRoot(h.repoRoot, measurement);
+    const binding = {
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      workItemId: 'WI-101',
+      specId: 'SPEC-003-01',
+      evidenceKind: 'test' as const,
+      evidenceRef: 'test/reconnect.test.ts#same-run',
+      testRunId,
+      actorId: 'su-test',
+    };
+    const first = await evidenceStore.bindSpecEvidence({
+      ...binding,
+      specRevision: 1,
+      sourceFingerprint: firstMeasurement.sourceFingerprint,
+      testFingerprint: firstMeasurement.testFingerprint,
+      details: { currentMeasurement: measurement, measurementPin: firstMeasurement.pin },
+    });
+    expect(first).toMatchObject({ status: 'created', specRevision: 1 });
+
+    await writeFile(path.join(h.repoRoot, 'src', 'reconnect.ts'), 'export const reconnect = false;\n');
+    const revised = await specs.setSpecClause(clause({
+      expectedRevision: 1,
+      mutationRequired: false,
+      behavior: 'A later revision still requires evidence from its original execution state.',
+    }));
+    expect(revised).toMatchObject({ status: 'revised', revision: 2 });
+    const reboundMeasurement = await evidenceStore.measureAndPinRepoFilesEvidenceAtRoot(h.repoRoot, measurement);
+    expect(reboundMeasurement.sourceFingerprint).not.toBe(firstMeasurement.sourceFingerprint);
+
+    const rebound = await evidenceStore.bindSpecEvidence({
+      ...binding,
+      specRevision: 2,
+      sourceFingerprint: reboundMeasurement.sourceFingerprint,
+      testFingerprint: reboundMeasurement.testFingerprint,
+      details: { currentMeasurement: measurement, measurementPin: reboundMeasurement.pin },
+    });
+    expect(rebound).toMatchObject({ status: 'created', specRevision: 2 });
+
+    const rows = await db.sql<Array<{
+      spec_revision: number;
+      source_fingerprint: string;
+      details: Record<string, unknown>;
+    }>>`
+      SELECT spec_revision, source_fingerprint, details
+        FROM harness_shared.spec_evidence_bindings
+       WHERE workspace_id = ${WORKSPACE}
+         AND harness_slug = ${HARNESS}
+         AND work_item_id = 'WI-101'
+         AND plan_slug = 'reconnect-plan'
+         AND spec_id = 'SPEC-003-01'
+         AND evidence_ref = 'test/reconnect.test.ts#same-run'
+         AND test_run_id = ${testRunId}
+       ORDER BY spec_revision`;
+    expect(rows).toHaveLength(2);
+    expect(rows[1]!.source_fingerprint).toBe(firstMeasurement.sourceFingerprint);
+    expect(rows[1]!.details.measurementPin).toEqual(firstMeasurement.pin);
+
+    const evidence = await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      workItemIds: ['WI-101'],
+      specIds: ['SPEC-003-01'],
+    });
+    const revisionTwo = evidence.find((row) => row.specRevision === 2);
+    expect(revisionTwo?.currentness).toMatchObject({
+      dimensions: { source: 'stale' },
+      staleReasons: expect.arrayContaining(['source-stale']),
+    });
+  });
+
+  it('refuses a same-run rebind when its measurement recipe changes', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+    const measurement = {
+      schemaVersion: 1 as const,
+      kind: 'repo-files' as const,
+      sourcePaths: ['src/reconnect.ts'],
+      testPaths: ['test/reconnect.test.ts'],
+    };
+    const firstMeasurement = await evidenceStore.measureAndPinRepoFilesEvidenceAtRoot(h.repoRoot, measurement);
+    const binding = {
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      workItemId: 'WI-101',
+      specId: 'SPEC-003-01',
+      evidenceKind: 'test' as const,
+      evidenceRef: 'test/reconnect.test.ts#recipe-change',
+      testRunId,
+      actorId: 'su-test',
+    };
+    expect(await evidenceStore.bindSpecEvidence({
+      ...binding,
+      specRevision: 1,
+      sourceFingerprint: firstMeasurement.sourceFingerprint,
+      testFingerprint: firstMeasurement.testFingerprint,
+      details: { currentMeasurement: measurement, measurementPin: firstMeasurement.pin },
+    })).toMatchObject({ status: 'created' });
+
+    const revised = await specs.setSpecClause(clause({
+      expectedRevision: 1,
+      mutationRequired: false,
+      behavior: 'The new revision requires source that the original test did not measure.',
+    }));
+    expect(revised).toMatchObject({ status: 'revised', revision: 2 });
+    await writeFile(path.join(h.repoRoot, 'src', 'other.ts'), 'export const other = true;\n');
+    const changedMeasurement = {
+      ...measurement,
+      sourcePaths: ['src/other.ts', 'src/reconnect.ts'],
+    };
+    const changed = await evidenceStore.measureAndPinRepoFilesEvidenceAtRoot(h.repoRoot, changedMeasurement);
+    const refused = await evidenceStore.bindSpecEvidence({
+      ...binding,
+      specRevision: 2,
+      sourceFingerprint: changed.sourceFingerprint,
+      testFingerprint: changed.testFingerprint,
+      details: { currentMeasurement: changedMeasurement, measurementPin: changed.pin },
+    });
+
+    expect(refused).toMatchObject({
+      status: 'test_run_measurement_recipe_changed',
+      testRunId,
+      previousSpecRevision: 1,
+      specRevision: 2,
+    });
+    const rows = await db.sql<Array<{ spec_revision: number }>>`
+      SELECT spec_revision
+        FROM harness_shared.spec_evidence_bindings
+       WHERE workspace_id = ${WORKSPACE}
+         AND harness_slug = ${HARNESS}
+         AND work_item_id = 'WI-101'
+         AND plan_slug = 'reconnect-plan'
+         AND spec_id = 'SPEC-003-01'
+         AND evidence_ref = 'test/reconnect.test.ts#recipe-change'
+         AND test_run_id = ${testRunId}`;
+    expect(rows.map((row) => row.spec_revision)).toEqual([1]);
+  });
+
+  it('binds and remeasures a work-items live runtime from the server witness', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+    configureRuntimeVintageStore(new InMemoryRuntimeVintageStore());
+    try {
+      await reportRuntimeVintage({ workspaceId: WORKSPACE, unit: 'bg-host',
+        treeSha: 'a'.repeat(40), pid: process.pid });
+      const runtimeRows = await listRuntimeVintage(WORKSPACE);
+      const fingerprint = measureRuntimeVintageEnvironment(runtimeRows, ['bg-host']);
+      expect(fingerprint).toMatch(/^[a-f0-9]{64}$/);
+
+      const witness = { schemaVersion: 1, units: ['bg-host'], fingerprint: fingerprint!,
+        observedAt: '2026-10-07T00:00:00Z' };
+      const execution = { schemaVersion: 1, root: h.repoRoot, filePath: 'test/reconnect.test.ts',
+        runGroupId: null, workspaceId: WORKSPACE, harnessSlug: HARNESS, testNamePattern: null,
+        passed: 1, failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null,
+        commitSha: null, worktreeDirty: true, runtimeEnvironmentBefore: witness,
+        runtimeEnvironmentAfter: { ...witness, observedAt: '2026-10-07T00:01:00Z' } };
+      await db.sql`UPDATE harness_shared.test_runs SET execution_details = ${JSON.stringify(execution)}::text::jsonb
+        WHERE id = ${testRunId}`;
+
+      const measurement = { schemaVersion: 1 as const, kind: 'work-items' as const,
+        workItemIds: ['WI-101'], runtimeUnits: ['bg-host'] };
+      const input = { workItemId: 'WI-101', specId: 'SPEC-003-01', harnessSlug: HARNESS,
+        planSlug: 'reconnect-plan', actorId: 'su-test', evidenceKind: 'test' as const,
+        evidenceRef: 'test/reconnect-work-items.test.ts', testRunId, sourceFingerprint: 'source',
+        environmentFingerprint: 'caller-current-runtime', details: { evidencePlane: 'live', currentMeasurement: measurement } };
+      expect(await evidenceStore.bindSpecEvidence(input)).toMatchObject({ status: 'created' });
+
+      const [pinned] = await db.sql`SELECT environment_fingerprint FROM harness_shared.spec_evidence_bindings
+        WHERE evidence_ref = 'test/reconnect-work-items.test.ts'`;
+      expect(pinned.environment_fingerprint).toBe(fingerprint);
+      const measured = await evidenceStore.measureWorkItemsEvidenceForScope(WORKSPACE, HARNESS, measurement, runtimeRows);
+      expect(measured.environmentFingerprint).toBe(fingerprint);
+      const absent = await evidenceStore.measureWorkItemsEvidenceForScope(WORKSPACE, HARNESS,
+        { ...measurement, runtimeUnits: ['missing-runtime'] }, runtimeRows);
+      expect(absent.environmentFingerprint).toBeNull();
+    } finally {
+      resetRuntimeVintageStore();
+    }
+  });
+  // WI-6554700010008521: the repo-files basis once measured runtimeUnits only at READ time, so a
+  // live probe pinned to source files stored a NULL environment and could never read as current.
+  it.each([
+    ['manual', 'work-items'], ['operational', 'work-items'],
+    ['manual', 'repo-files'], ['operational', 'repo-files'],
+  ] as const)(
+    'preserves the server-measured runtime for live %s proof on a %s basis without a test run', async (evidenceKind, basis) => {
+      await specs.setSpecClause(clause({ mutationRequired: false }));
+      configureRuntimeVintageStore(new InMemoryRuntimeVintageStore());
+      try {
+        await reportRuntimeVintage({ workspaceId: WORKSPACE, unit: 'bg-host',
+          treeSha: 'a'.repeat(40), pid: process.pid });
+        const fingerprint = measureRuntimeVintageEnvironment(await listRuntimeVintage(WORKSPACE), ['bg-host']);
+        expect(fingerprint).toMatch(/^[a-f0-9]{64}$/);
+        const measurement = basis === 'work-items'
+          ? { schemaVersion: 1 as const, kind: 'work-items' as const, workItemIds: ['WI-101'], runtimeUnits: ['bg-host'] }
+          : { schemaVersion: 1 as const, kind: 'repo-files' as const, sourcePaths: ['src/reconnect.ts'],
+              runtimeUnits: ['bg-host'] };
+        const binding = {
+          workItemId: 'WI-101', specId: 'SPEC-003-01', evidenceKind,
+          evidenceRef: `live-${evidenceKind}-${basis}-probe`, measurement, details: { evidencePlane: 'live' },
+        };
+        // The live-runtime fixture uses only the binder's built-in server measurements.
+        // An omitted declaration must still fail closed before any binding is written.
+        const undeclared = await bindTool.handler!({ harness: HARNESS, slug: 'reconnect-plan', binding }, CTX);
+        expect(undeclared).toMatchObject({ data: { ok: false, results: [
+          { ok: false, error: 'instrument_undeclared', instrument: null },
+        ] } });
+        expect(await db.sql`SELECT id FROM harness_shared.spec_evidence_bindings
+          WHERE evidence_ref = ${binding.evidenceRef}`).toHaveLength(0);
+        const result = await bindTool.handler!({ harness: HARNESS, slug: 'reconnect-plan', binding: {
+          ...binding, details: { ...binding.details, instrument: {
+            none: true, reason: 'Only the binder built-in work-item and runtime-vintage measurements are used; no external probe is run.',
+          } },
+        } }, CTX);
+        expect(result).toMatchObject({ data: { ok: true, results: [{ ok: true, status: 'created' }] } });
+        const [stored] = await db.sql`SELECT test_run_id, environment_fingerprint
+          FROM harness_shared.spec_evidence_bindings WHERE evidence_ref = ${binding.evidenceRef}`;
+        expect(stored.test_run_id).toBeNull();
+        expect(stored.environment_fingerprint).toBe(fingerprint);
+        const [proof] = await evidenceStore.listSpecEvidence({ harnessSlug: HARNESS,
+          planSlugs: ['reconnect-plan'], evidenceRefs: [binding.evidenceRef] });
+        expect(proof.currentness).toMatchObject({ overall: 'current', provenance: 'server-measured',
+          dimensions: { environment: 'current', testRun: 'not-applicable' } });
+      } finally {
+        resetRuntimeVintageStore();
+      }
+    },
+  );
+
+  // WI-6554700010011907: a live probe against a REMOTE managed resource has no local
+  // runtime-vintage row, so its environment stayed NULL and the proof could never read as
+  // current. A remote unit is read from the provider's control plane at bind time and again,
+  // independently, at read time; a settings change makes it stale and a failed read is unknown.
+  it('stores and re-measures a remote managed-resource runtime for live manual proof', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const unit = 'gcp-cloudsql:papercusp-cloud-prod/pc-cloud-prod-pg';
+    let settingsVersion: string | null = '8';
+    configureRemoteRuntimeDescribe(async () => settingsVersion === null ? null : JSON.stringify({
+      name: 'pc-cloud-prod-pg', project: 'papercusp-cloud-prod', createTime: '2026-10-14T03:25:36.604Z',
+      databaseVersion: 'POSTGRES_18', state: 'RUNNABLE', settings: { settingsVersion },
+    }));
+    configureRuntimeVintageStore(new InMemoryRuntimeVintageStore());
+    try {
+      const fingerprint = await measureRuntimeEnvironment([], [unit]);
+      expect(fingerprint).toMatch(/^[a-f0-9]{64}$/);
+      const binding = {
+        workItemId: 'WI-101', specId: 'SPEC-003-01', evidenceKind: 'manual' as const,
+        evidenceRef: 'live-remote-cloudsql-probe',
+        measurement: { schemaVersion: 1 as const, kind: 'repo-files' as const, sourcePaths: ['src/reconnect.ts'],
+          runtimeUnits: [unit] },
+        details: { evidencePlane: 'live', instrument: {
+          none: true as const,
+          reason: 'Only the binder built-in remote-runtime control-plane read is used; no external probe is run.',
+        } },
+      };
+      const result = await bindTool.handler!({ harness: HARNESS, slug: 'reconnect-plan', binding }, CTX);
+      const [first] = (result as { data: { results: Array<{ ok: boolean; status?: string; error?: string; message?: string }> } })
+        .data.results;
+      expect({ ok: first!.ok, status: first!.status, error: first!.error, message: first!.message })
+        .toEqual({ ok: true, status: 'created', error: undefined, message: undefined });
+      const [stored] = await db.sql`SELECT environment_fingerprint
+        FROM harness_shared.spec_evidence_bindings WHERE evidence_ref = ${binding.evidenceRef}`;
+      expect(stored.environment_fingerprint).toBe(fingerprint);
+      const read = async () => (await evidenceStore.listSpecEvidence({ harnessSlug: HARNESS,
+        planSlugs: ['reconnect-plan'], evidenceRefs: [binding.evidenceRef] }))[0]!.currentness;
+      expect(await read()).toMatchObject({ overall: 'current', dimensions: { environment: 'current' } });
+      settingsVersion = '9';
+      expect(await read()).toMatchObject({ dimensions: { environment: 'stale' } });
+      settingsVersion = null;
+      expect((await read()).dimensions.environment).not.toBe('current');
+    } finally {
+      resetRemoteRuntimeDescribe();
+      resetRuntimeVintageStore();
+    }
+  });
+
   it('keeps one shared proof reference for distinct spec clauses', async () => {
     await specs.setSpecClause(clause());
     await specs.setSpecClause(
@@ -983,7 +1584,7 @@ describe('exact spec evidence bindings', () => {
     expect(absent).not.toHaveProperty('scopeMismatch');
   });
 
-  it('validates optional reference scope, detects pruned ledgers, and forbids history mutation', async () => {
+  it('preserves spec-bound test runs while detecting missing coverage and forbidding history mutation', async () => {
     await specs.setSpecClause(clause());
     const external = await seedExternalEvidence();
     const [otherSurface] = await db.sql<{ id: number }[]>`
@@ -1037,7 +1638,17 @@ describe('exact spec evidence bindings', () => {
          AND work_item_id = 'WI-101'`).rejects.toThrow(/append-only/);
 
     await db.sql`DELETE FROM harness_shared.coverage_evidence WHERE id = ${external.coverageEvidenceRef}`;
-    await db.sql`DELETE FROM harness_shared.test_runs WHERE id = ${external.testRunId}`;
+    const [unboundRun] = await db.sql<{ id: number }[]>`
+      INSERT INTO harness_shared.test_runs (workspace_id, harness_slug)
+      VALUES (${WORKSPACE}, ${HARNESS}) RETURNING id`;
+    const deletedRuns = await db.sql<{ id: number }[]>`
+      DELETE FROM harness_shared.test_runs
+       WHERE id IN (${external.testRunId}, ${unboundRun.id})
+       RETURNING id`;
+    expect(deletedRuns.map(({ id }) => Number(id))).toEqual([Number(unboundRun.id)]);
+    const [retainedRun] = await db.sql<{ id: number }[]>`
+      SELECT id FROM harness_shared.test_runs WHERE id = ${external.testRunId}`;
+    expect(Number(retainedRun.id)).toBe(external.testRunId);
     const [historical] = await evidenceStore.listSpecEvidence({
       harnessSlug: HARNESS,
       planSlugs: ['reconnect-plan'],
@@ -1054,7 +1665,7 @@ describe('exact spec evidence bindings', () => {
       testRunId: external.testRunId,
       currentness: {
         overall: 'stale',
-        staleReasons: ['coverageEvidence-stale', 'testRun-stale'],
+        staleReasons: ['coverageEvidence-stale'],
       },
     });
   });
@@ -1277,7 +1888,7 @@ describe('narrowed reruns carry sibling scenarios only from a CURRENT ledger row
 
     const bundle = await run({ runId: RERUN, pattern: 'recover' });
     expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass' });
-    expect(bundle.verificationFingerprint).toBeTruthy();
+    expect(bundle).toHaveProperty('verificationFingerprint', expect.any(String));
 
     const settled = await persisted(RERUN);
     const priorRow = await persisted(PRIOR_RUN);
@@ -1299,7 +1910,7 @@ describe('narrowed reruns carry sibling scenarios only from a CURRENT ledger row
 
     const bundle = await run({ runId: RERUN, pattern: 'recover' });
     expect(bundle.rows[0]).toMatchObject({ phase: 'stale-sibling-evidence', outcome: 'unknown' });
-    expect(bundle.verificationFingerprint).toBeNull();
+    expect(bundle).toHaveProperty('verificationFingerprint', null);
 
     const refused = await persisted(RERUN);
     expect(refused!.details.adequacy).toMatchObject({ outcome: 'unknown', executed: false });
@@ -1325,7 +1936,7 @@ describe('narrowed reruns carry sibling scenarios only from a CURRENT ledger row
 
     const bundle = await run({ runId: RERUN });
     expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass' });
-    expect(bundle.verificationFingerprint).toBeTruthy();
+    expect(bundle).toHaveProperty('verificationFingerprint', expect.any(String));
     expect((await persisted(RERUN))!.details.testExecution.rerunScope).toBeUndefined();
   });
 
@@ -1338,7 +1949,7 @@ describe('narrowed reruns carry sibling scenarios only from a CURRENT ledger row
 
     const bundle = await run({ runId: RERUN, pattern: 'recover', scenarioIds: ['recover'] });
     expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass' });
-    expect(bundle.verificationFingerprint).toBeTruthy();
+    expect(bundle).toHaveProperty('verificationFingerprint', expect.any(String));
     expect((await persisted(RERUN))!.details.testExecution.rerunScope).toBeUndefined();
   });
 });
@@ -1480,6 +2091,135 @@ describe('recorded retraction is the one sanctioned repair for a malformed bindi
       SELECT count(*)::int AS n FROM harness_shared.spec_evidence_bindings WHERE id = ${id}`;
     expect(row.n).toBe(1);
   });
+
+  it('routes a private retraction through MCP and a refused fresh connection never dispatches', async () => {
+    // getOrgPg is mocked to this disposable database for this suite. The MCP server below
+    // calls the maintained handler imported from the current checkout; it never contacts
+    // the shared :3170 operator or its workspace data.
+    expect(h.sql).toBe(db.sql);
+    const retractedId = await bindOne();
+    const protectedExternal = await seedExternalEvidence();
+    const protectedBinding = await evidenceStore.bindSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      workItemId: 'WI-101',
+      specId: 'SPEC-003-01',
+      evidenceKind: 'coverage-census',
+      evidenceRef: 'surface:private-control',
+      sourceFingerprint: 'git:private-control',
+      coverageEvidenceRef: protectedExternal.coverageEvidenceRef,
+      testRunId: protectedExternal.testRunId,
+      actorId: 'su-test',
+    });
+    expect(protectedBinding.status).toBe('created');
+    const protectedId = Number((protectedBinding as { id: number }).id);
+    expect(protectedId).not.toBe(retractedId);
+    expect(await visibleIds()).toEqual(expect.arrayContaining([retractedId, protectedId]));
+
+    const hosts: Array<{ host: McpServer; transport: StreamableHTTPServerTransport }> = [];
+    const toolDispatches: string[] = [];
+    const serverErrors: unknown[] = [];
+    const http = createHttpServer(async (request, response) => {
+      if (request.headers.authorization !== 'Bearer private-spec-evidence-fixture') {
+        response.writeHead(401).end();
+        return;
+      }
+      const host = new McpServer(
+        { name: 'private-spec-evidence-retraction', version: '1' },
+        { capabilities: { tools: {} } },
+      );
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableJsonResponse: true,
+      });
+      hosts.push({ host, transport });
+      host.server.setRequestHandler(ListToolsRequestSchema, async () => ({
+        tools: [{
+          name: bindTool.name,
+          description: 'Private isolated retraction fixture',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              harness: { type: 'string' },
+              slug: { type: 'string' },
+              retract: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: { bindingId: { type: 'number' }, reason: { type: 'string' } },
+                  required: ['bindingId', 'reason'],
+                },
+              },
+            },
+            required: ['harness', 'retract'],
+          },
+        }],
+      }));
+      host.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+        if (request.params.name !== bindTool.name) throw new Error('unexpected_fixture_tool');
+        toolDispatches.push(request.params.name);
+        const result = await bindTool.handler!(request.params.arguments as never, CTX);
+        return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+      });
+      try {
+        await host.connect(transport);
+        await transport.handleRequest(request, response);
+      } catch (error) {
+        serverErrors.push(error);
+        if (!response.headersSent) response.writeHead(500);
+        response.end();
+      }
+    });
+    http.listen(0, '127.0.0.1');
+    await once(http, 'listening');
+    const address = http.address();
+    if (!address || typeof address === 'string') throw new Error('missing_private_mcp_port');
+    const url = new URL('/api/mcp', `http://127.0.0.1:${address.port}`);
+    const closeHttp = async () => {
+      await Promise.allSettled(hosts.map(async ({ host, transport }) => {
+        await host.close();
+        await transport.close();
+      }));
+      http.closeAllConnections();
+      if (http.listening) {
+        await new Promise<void>((resolve, reject) => http.close((error) => error ? reject(error) : resolve()));
+      }
+    };
+    const client = new Client({ name: 'private-spec-evidence-retraction', version: '1.0.0' });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(url, {
+        requestInit: { headers: { Authorization: 'Bearer private-spec-evidence-fixture' } },
+      }));
+      const result = await client.callTool({
+        name: bindTool.name,
+        arguments: {
+          harness: HARNESS,
+          slug: 'reconnect-plan',
+          retract: [{ bindingId: retractedId, reason: 'private MCP transport fixture retraction' }],
+        },
+      });
+      expect(result.isError).not.toBe(true);
+      expect(toolDispatches).toEqual([bindTool.name]);
+      expect(await visibleIds()).not.toContain(retractedId);
+      expect(await visibleIds()).toContain(protectedId);
+    } finally {
+      await Promise.allSettled([client.close()]);
+      await closeHttp();
+    }
+
+    const refusedClient = new Client({ name: 'private-spec-evidence-refused-client', version: '1.0.0' });
+    try {
+      await expect(refusedClient.connect(new StreamableHTTPClientTransport(url, {
+        requestInit: { headers: { Authorization: 'Bearer private-spec-evidence-fixture' } },
+      }))).rejects.toThrow();
+    } finally {
+      await Promise.allSettled([refusedClient.close()]);
+    }
+    expect(toolDispatches).toEqual([bindTool.name]);
+    expect(await visibleIds()).toContain(protectedId);
+    expect(await visibleIds(true)).toContain(retractedId);
+    expect(serverErrors).toEqual([]);
+  }, 30_000);
 
   it('refuses a second retraction, so the recorded author and reason are final', async () => {
     const id = await bindOne();
@@ -1696,13 +2436,80 @@ describe('supersedeAtRevision withdraws same-kind siblings at the clause revisio
     ).map((row) => Number((row as { id: number }).id));
   }
 
+  const REPLAY_TEST = 'test/reconnect.integration.test.ts';
+  const REPLAY_UNIT_TEST = 'test/reconnect.test.ts';
+
+  async function markRunAsPassing(
+    testRunId: number,
+    filePath: string,
+    caseTitle: string,
+    testLayer: 'unit' | 'integration' = 'integration',
+  ) {
+    const executionDetails = {
+      schemaVersion: 1,
+      root: h.repoRoot,
+      filePath,
+      runGroupId: null,
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+      testNamePattern: null,
+      passed: 1,
+      failed: 0,
+      skipped: 0,
+      collectionFailed: false,
+      mutationPhase: null,
+      commitSha: 'c0ffee1234567890',
+      worktreeDirty: false,
+      testLayer,
+      passedCaseTitles: [caseTitle],
+    };
+    await db.sql`UPDATE harness_shared.test_runs
+      SET status = 'pass', finished_at = now(), execution_details = ${db.sql.json(executionDetails)}
+      WHERE id = ${testRunId}`;
+  }
+
+  it.each([
+    { scenario: 'exact self-target', oldTarget: 'SPEC-003-01', freshTarget: 'SPEC-003-01', requiredScenarios: [], replaced: true },
+    { scenario: 'lowercase self-target alias', oldTarget: 'SPEC-003-01', freshTarget: 'spec-003-01', requiredScenarios: [], replaced: true },
+    { scenario: 'canonical self-target alias', oldTarget: 'spec-003-01', freshTarget: 'SPEC-003-01', requiredScenarios: [], replaced: true },
+    { scenario: 'case-sensitive scenario targets', oldTarget: 'SPEC-003-01', freshTarget: 'spec-003-01', requiredScenarios: ['spec-003-01'], replaced: false },
+    { scenario: 'different scenario targets', oldTarget: 'scenario-a', freshTarget: 'scenario-b', requiredScenarios: ['scenario-a', 'scenario-b'], replaced: false },
+  ])('uses the accepted target policy for $scenario during supersession', async ({ oldTarget, freshTarget, requiredScenarios, replaced }) => {
+    const created = await specs.setSpecClause(clause({
+      falsifier: requiredScenarios.length ? { observation: 'A selected reconnect scenario fails.', requiredScenarios } : null,
+    }));
+    expect(created).toMatchObject({ status: 'created', specId: 'SPEC-003-01', revision: 1 });
+    const oldRun = await seedExternalEvidence(REPLAY_TEST);
+    const freshRun = await seedExternalEvidence(REPLAY_TEST);
+    await markRunAsPassing(freshRun.testRunId, REPLAY_TEST, 'fresh selected target');
+    const old = await bindViaTool({
+      evidenceKind: 'test', evidenceRef: 'test-run:old-target', testRunId: oldRun.testRunId,
+      details: { adequacy: { ...PASSED, targeted: oldTarget } },
+    });
+    const fresh = await bindViaTool({
+      evidenceKind: 'test', evidenceRef: 'test-run:fresh-target', testRunId: freshRun.testRunId,
+      details: { adequacy: { ...PASSED, targeted: freshTarget } },
+    }, true);
+    const [outcome] = fresh.supersession as Array<{
+      retracted: Array<{ bindingId: number }>;
+      kept: Array<{ bindingId: number; reason: string }>;
+    }>;
+    expect(outcome!.retracted.map(row => row.bindingId)).toEqual(replaced ? [old.id] : []);
+    expect(outcome!.kept).toEqual(replaced ? [] : [expect.objectContaining({ bindingId: old.id, reason: 'different-target' })]);
+    const live = await liveIds();
+    expect(live).toContain(fresh.id);
+    expect(live.includes(old.id)).toBe(!replaced);
+  });
+
   it('retracts the older same-kind row, keeps the mutation proof, and names the superseding binding', async () => {
     await specs.setSpecClause(clause());
+    // Two attempts of ONE test file: the fresh run replaces the failed one.
     const [oldRun, mutationRun, freshRun] = [
-      await seedExternalEvidence(),
-      await seedExternalEvidence(),
-      await seedExternalEvidence(),
+      await seedExternalEvidence(REPLAY_TEST),
+      await seedExternalEvidence(REPLAY_TEST),
+      await seedExternalEvidence(REPLAY_TEST),
     ];
+    await markRunAsPassing(freshRun.testRunId, REPLAY_TEST, 'fresh integration attempt');
     const old = await bindViaTool({
       evidenceKind: 'test',
       evidenceRef: 'test-run:old-attempt',
@@ -1738,6 +2545,7 @@ describe('supersedeAtRevision withdraws same-kind siblings at the clause revisio
         clause: 'SPEC-003-01@1',
         evidenceKind: 'test',
         retracted: [{ bindingId: old.id, workItemId: 'WI-101', evidenceRef: 'test-run:old-attempt' }],
+        kept: [],
       },
     ]);
     const live = await liveIds();
@@ -1751,6 +2559,92 @@ describe('supersedeAtRevision withdraws same-kind siblings at the clause revisio
       `superseded by binding ${fresh.id} (plans:bind-spec-evidence supersedeAtRevision)`,
     );
     expect(stamp?.retracted_by).toBeTruthy();
+  });
+
+  it.each([
+    { scenario: 'passing selected cases', declared: ['scope > selected'], superseded: true },
+    { scenario: 'a skipped selected case', declared: ['scope > selected', 'scope > skipped'], superseded: false },
+    { scenario: 'a partial selected title', declared: ['scope > select'], superseded: false },
+  ])('checks $scenario against the persisted ledger before scoped supersession', async ({ declared, superseded }) => {
+    await specs.setSpecClause(clause());
+    const [oldRun, freshRun] = [
+      await seedExternalEvidence(REPLAY_TEST),
+      await seedExternalEvidence(REPLAY_TEST),
+    ];
+    await markRunAsPassing(freshRun.testRunId, REPLAY_TEST, 'outer > scope > selected');
+    // The aggregate skip count includes cases outside the selected scope. The
+    // production store must retain that count and corroborate each declared case.
+    await db.sql`UPDATE harness_shared.test_runs
+      SET execution_details = jsonb_set(execution_details, '{skipped}', '95'::jsonb)
+      WHERE id = ${freshRun.testRunId}`;
+    const old = await bindViaTool({
+      evidenceKind: 'test', evidenceRef: 'test-run:old-scoped-attempt',
+      testRunId: oldRun.testRunId,
+      details: { adequacy: { ...PASSED, outcome: 'failed' } },
+    });
+    const fresh = await bindViaTool({
+      evidenceKind: 'test', evidenceRef: 'test-run:fresh-scoped-attempt',
+      testRunId: freshRun.testRunId,
+      details: { adequacy: { ...PASSED, testCases: declared } },
+    }, true);
+
+    expect(fresh.supersession).toEqual([expect.objectContaining({
+      bindingId: fresh.id, status: superseded ? 'superseded' : 'refused',
+    })]);
+    const live = await liveIds();
+    expect(live).toContain(fresh.id);
+    expect(live.includes(old.id)).toBe(!superseded);
+    const [measured] = await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS, planSlugs: ['reconnect-plan'], bindingIds: [fresh.id],
+    });
+    expect(measured?.testRunExecution).toMatchObject({
+      passed: 1, failed: 0, skipped: 95, passedCaseTitles: ['outer > scope > selected'],
+    });
+  });
+
+  it('supersedes an earlier mutation using measured failed identities from the real ledger', async () => {
+    await specs.setSpecClause(clause());
+    const [oldRun, freshRun] = [
+      await seedExternalEvidence(REPLAY_TEST),
+      await seedExternalEvidence(REPLAY_TEST),
+    ];
+    const failedCase = 'owner selection > rejects the forbidden assignment';
+    const execution = {
+      schemaVersion: 1, root: h.repoRoot, filePath: REPLAY_TEST,
+      runGroupId: null, workspaceId: WORKSPACE, harnessSlug: HARNESS,
+      testNamePattern: null, passed: 23, failed: 1, skipped: 0,
+      collectionFailed: false, mutationPhase: 'mutant',
+      commitSha: 'c0ffee1234567890', worktreeDirty: false,
+      testLayer: 'integration', failedCaseTitles: [failedCase],
+    };
+    await db.sql`UPDATE harness_shared.test_runs
+      SET source = 'mutation-probe', status = 'fail', finished_at = now(),
+          output_tail = NULL, execution_details = ${db.sql.json(execution)}
+      WHERE id = ${freshRun.testRunId}`;
+    const adequacy = { ...PASSED, outcome: 'killed', targeted: 'spec-003-01', testCases: [failedCase] };
+    const old = await bindViaTool({
+      evidenceKind: 'mutation', evidenceRef: 'mutation-probe:old-attempt',
+      testRunId: oldRun.testRunId, details: { adequacy },
+    });
+    const freshBinding = {
+      evidenceKind: 'mutation', evidenceRef: 'mutation-probe:fresh-attempt',
+      testRunId: freshRun.testRunId, details: { adequacy },
+    };
+    const fresh = await bindViaTool(freshBinding);
+    // A normal bind preserves both rows; only verified supersession may withdraw old proof.
+    expect(await liveIds()).toEqual(expect.arrayContaining([old.id, fresh.id]));
+    const superseded = await bindViaTool(freshBinding, true);
+    expect(superseded.supersession).toEqual([{
+      bindingId: fresh.id, status: 'superseded', clause: 'SPEC-003-01@1', evidenceKind: 'mutation',
+      retracted: [{ bindingId: old.id, workItemId: 'WI-101', evidenceRef: 'mutation-probe:old-attempt' }],
+      kept: [],
+    }]);
+    const [measured] = await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS, planSlugs: ['reconnect-plan'], bindingIds: [fresh.id],
+    });
+    expect(measured?.testRunProvenance?.mutationFailedCaseTitles).toEqual([failedCase]);
+    expect(await liveIds()).toContain(fresh.id);
+    expect(await liveIds()).not.toContain(old.id);
   });
 
   it('binds a row that is not sufficient on its own but supersedes nothing, and says why', async () => {
@@ -1777,6 +2671,92 @@ describe('supersedeAtRevision withdraws same-kind siblings at the clause revisio
       }),
     ]);
     expect(await liveIds()).toEqual(expect.arrayContaining([old.id, weak.id]));
+  });
+
+  // EI-25220306060165214: a clause proven by a unit AND an integration file lost its current
+  // unit proof when a fresh integration run superseded the stale integration row.
+  it("keeps a different test file's current proof and reports it in kept", async () => {
+    await specs.setSpecClause(clause());
+    const [unitRun, staleRun, freshRun] = [
+      await seedExternalEvidence(REPLAY_UNIT_TEST),
+      await seedExternalEvidence(REPLAY_TEST),
+      await seedExternalEvidence(REPLAY_TEST),
+    ];
+    await Promise.all([
+      markRunAsPassing(unitRun.testRunId, REPLAY_UNIT_TEST, 'unit proof remains current', 'unit'),
+      markRunAsPassing(freshRun.testRunId, REPLAY_TEST, 'fresh integration attempt'),
+    ]);
+    const unit = await bindViaTool({
+      evidenceKind: 'test',
+      evidenceRef: REPLAY_UNIT_TEST,
+      testRunId: unitRun.testRunId,
+      details: { adequacy: { ...PASSED, testLayer: 'unit' } },
+    });
+    const stale = await bindViaTool({
+      evidenceKind: 'test',
+      evidenceRef: REPLAY_TEST,
+      testRunId: staleRun.testRunId,
+      details: { adequacy: { ...PASSED, outcome: 'failed' } },
+    });
+
+    const fresh = await bindViaTool(
+      { evidenceKind: 'test', evidenceRef: REPLAY_TEST, testRunId: freshRun.testRunId, details: { adequacy: PASSED } },
+      true,
+    );
+
+    expect(fresh.supersession).toEqual([
+      expect.objectContaining({
+        status: 'superseded',
+        retracted: [{ bindingId: stale.id, workItemId: 'WI-101', evidenceRef: REPLAY_TEST }],
+        kept: [{ bindingId: unit.id, workItemId: 'WI-101', evidenceRef: REPLAY_UNIT_TEST, reason: 'different-subject' }],
+      }),
+    ]);
+    const live = await liveIds();
+    expect(live).toEqual(expect.arrayContaining([unit.id, fresh.id]));
+    expect(live).not.toContain(stale.id);
+  });
+
+  // EI-24400631485940769: one fresh run of a multi-seam clause wiped every other seam's
+  // current proof. A row is replaced only when the fresh row claims everything it claimed.
+  it('keeps rows claiming another causal pair or target, and retracts only what the fresh row covers', async () => {
+    await specs.setSpecClause(clause());
+    const runs = await Promise.all([1, 2, 3, 4, 5].map(() => seedExternalEvidence(REPLAY_TEST)));
+    await markRunAsPassing(runs[4]!.testRunId, REPLAY_TEST, 'fresh causal-pair case');
+    const bindTest = (index: number, adequacy: Record<string, unknown>) =>
+      bindViaTool({
+        evidenceKind: 'test',
+        evidenceRef: `test-run:${index}`,
+        testRunId: runs[index]!.testRunId,
+        details: { adequacy: { ...PASSED, ...adequacy } },
+      });
+    const sameSeamOld = await bindTest(0, { causalPairIds: ['pair-a'], targeted: 'scenario-a' });
+    const untaggedOld = await bindTest(1, {});
+    const otherSeam = await bindTest(2, { causalPairIds: ['pair-b'], targeted: 'scenario-a' });
+    const otherTarget = await bindTest(3, { causalPairIds: ['pair-a'], targeted: 'scenario-b' });
+
+    const fresh = await bindViaTool(
+      {
+        evidenceKind: 'test',
+        evidenceRef: 'test-run:4',
+        testRunId: runs[4]!.testRunId,
+        details: { adequacy: { ...PASSED, causalPairIds: ['pair-a'], targeted: 'scenario-a' } },
+      },
+      true,
+    );
+
+    const [outcome] = fresh.supersession as Array<{
+      retracted: Array<{ bindingId: number }>;
+      kept: Array<{ bindingId: number; reason: string }>;
+    }>;
+    expect(outcome!.retracted.map((row) => row.bindingId).sort()).toEqual([sameSeamOld.id, untaggedOld.id].sort());
+    expect(outcome!.kept).toEqual([
+      expect.objectContaining({ bindingId: otherSeam.id, reason: 'different-causal-pairs' }),
+      expect.objectContaining({ bindingId: otherTarget.id, reason: 'different-target' }),
+    ]);
+    const live = await liveIds();
+    expect(live).toEqual(expect.arrayContaining([otherSeam.id, otherTarget.id, fresh.id]));
+    expect(live).not.toContain(sameSeamOld.id);
+    expect(live).not.toContain(untaggedOld.id);
   });
 });
 
@@ -1815,16 +2795,24 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
     return Number(row.id);
   }
 
-  async function bindFromRun(fromTestRun: number, workItemId = 'WI-101', details?: Record<string, unknown>) {
+  async function bindFromRun(
+    fromTestRun: number,
+    workItemId = 'WI-101',
+    details?: Record<string, unknown>,
+    supersedeAtRevision = false,
+  ) {
     const out = (await bindTool.handler(
       {
         harness: HARNESS,
         slug: 'reconnect-plan',
+        ...(supersedeAtRevision ? { supersedeAtRevision: true } : {}),
         binding: { workItemId, specId: 'SPEC-003-01', fromTestRun, ...(details ? { details } : {}) },
       } as never,
       CTX,
-    )) as { data: { results: Array<Record<string, unknown>> } };
-    return out.data.results[0];
+    )) as { data: { results: Array<Record<string, unknown>>; supersession?: unknown[] } };
+    return supersedeAtRevision
+      ? { ...out.data.results[0], supersession: out.data.supersession }
+      : out.data.results[0];
   }
 
   it('produces the same stored measurement as the hand-built binding of the same run', async () => {
@@ -1883,6 +2871,232 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
       overall: 'current',
       dimensions: { source: 'current', test: 'current', testRun: 'current' },
     });
+  });
+
+  it('projects canonical passedCaseTitles through the evidence store into the adequacy evaluator', async () => {
+    const exactTitle = 'derive suite > exact integration case';
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const [clauseRevision] = await specs.listSpecClauses({
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      specIds: ['SPEC-003-01'],
+    });
+    expect(clauseRevision).toBeDefined();
+
+    const runId = await recordRun();
+    const executionDetails = {
+      schemaVersion: 1,
+      root: h.repoRoot,
+      filePath: DERIVE_TEST,
+      runGroupId: null,
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+      testNamePattern: null,
+      passed: 1,
+      failed: 0,
+      skipped: 0,
+      collectionFailed: false,
+      mutationPhase: null,
+      commitSha: 'c0ffee1234567890',
+      worktreeDirty: false,
+      testLayer: 'integration',
+      passedCaseTitles: [exactTitle],
+    };
+    await db.sql`UPDATE harness_shared.test_runs
+      SET execution_details = ${db.sql.json(executionDetails)}
+      WHERE id = ${runId}`;
+
+    const bound = await bindFromRun(runId, 'WI-101', {
+      adequacy: {
+        collected: true,
+        skipped: false,
+        executed: true,
+        outcome: 'passed',
+        targeted: 'SPEC-003-01',
+        testLayer: 'integration',
+        pathReachable: true,
+        testCases: [exactTitle],
+      },
+    }, true);
+    expect(bound).toMatchObject({
+      ok: true,
+      status: 'created',
+      derivedFromTestRun: { testRunId: runId },
+      supersession: [expect.objectContaining({ status: 'superseded', evidenceKind: 'test' })],
+    });
+
+    const projected = (await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      workItemIds: ['WI-101'],
+      evidenceRefs: [DERIVE_TEST],
+    })).find((row) => row.testRunId === runId);
+    expect(projected).toBeDefined();
+    expect(projected!.testRunExecution).toMatchObject({
+      status: 'pass',
+      passed: 1,
+      failed: 0,
+      skipped: 0,
+      collectionFailed: false,
+      testLayer: 'integration',
+      passedCaseTitles: [exactTitle],
+    });
+
+    const { evaluateSpecTestAdequacy } = await import('./spec-test-adequacy');
+    const evaluate = (evidenceRows: NonNullable<typeof projected>[]) => evaluateSpecTestAdequacy({
+      clause: clauseRevision!,
+      evidence: evidenceRows,
+      classRef: 'plan-class-feature-ship',
+    });
+    const accepted = evaluate([projected!]);
+    expect(accepted.ratings['correct-layer'].rating).toBe('pass');
+    expect(accepted.ratings['correct-layer'].evidence).toContain(`testRunId=${runId}`);
+
+    const details = projected!.details as Record<string, unknown>;
+    const adequacy = details.adequacy as Record<string, unknown>;
+    const differentTitle = {
+      ...projected!,
+      details: { ...details, adequacy: { ...adequacy, testCases: ['different passing case'] } },
+    };
+    const rejected = evaluate([differentTitle]);
+    expect(rejected.ratings['correct-layer'].rating).toBe('unknown');
+    expect(rejected.ratings['correct-layer'].suggestion).toContain('exact passedCaseTitles');
+  });
+
+  it('refuses a test binding whose declared cases have zero overlap with a complete passing title ledger', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const runId = await recordRun();
+    const executionDetails = {
+      schemaVersion: 1,
+      root: h.repoRoot,
+      filePath: DERIVE_TEST,
+      runGroupId: null,
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+      testNamePattern: null,
+      passed: 1,
+      failed: 0,
+      skipped: 0,
+      collectionFailed: false,
+      mutationPhase: null,
+      commitSha: 'c0ffee1234567890',
+      worktreeDirty: false,
+      testLayer: 'integration',
+      passedCaseTitles: ['outer > suite > selected case'],
+    };
+    await db.sql`UPDATE harness_shared.test_runs
+      SET execution_details = ${db.sql.json(executionDetails)}
+      WHERE id = ${runId}`;
+
+    const accepted = await bindFromRun(runId, 'WI-101', {
+      adequacy: { collected: true, skipped: false, executed: true, outcome: 'passed', testCases: ['selected case'] },
+    });
+    expect(accepted).toMatchObject({ ok: true, status: 'created' });
+
+    const rejected = await bindFromRun(runId, 'WI-102', {
+      adequacy: { collected: true, skipped: false, executed: true, outcome: 'passed', testCases: ['case from another file'] },
+    });
+    expect(rejected).toMatchObject({
+      ok: false,
+      error: 'test_cases_not_in_run',
+      status: 'test_cases_not_in_run',
+      testRunId: runId,
+      declaredCaseCount: 1,
+      passedCaseTitleCount: 1,
+    });
+    const persisted = await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      workItemIds: ['WI-102'],
+      evidenceRefs: [DERIVE_TEST],
+    });
+    expect(persisted).toEqual([]);
+
+    const incompleteRunId = await recordRun();
+    const incompleteDetails = {
+      ...executionDetails,
+      passed: 65,
+      passedCaseTitles: Array.from({ length: 64 }, (_, index) => 'outer > recorded case ' + index),
+      passedCaseTitlesTruncated: true,
+    };
+    await db.sql`UPDATE harness_shared.test_runs
+      SET execution_details = ${db.sql.json(incompleteDetails)}
+      WHERE id = ${incompleteRunId}`;
+    const incomplete = await bindFromRun(incompleteRunId, 'WI-102', {
+      adequacy: { collected: true, skipped: false, executed: true, outcome: 'passed', testCases: ['case omitted from title cap'] },
+    });
+    expect(incomplete).toMatchObject({ ok: true, status: 'created' });
+    const incompleteEvidence = await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      workItemIds: ['WI-102'],
+      evidenceRefs: [DERIVE_TEST],
+    });
+    expect(incompleteEvidence).toHaveLength(1);
+    expect(incompleteEvidence[0]?.testRunExecution).toMatchObject({
+      passed: 65,
+      passedCaseTitlesIncomplete: true,
+    });
+    expect(incompleteEvidence[0]?.testRunExecution?.passedCaseTitles).toHaveLength(64);
+  });
+
+  it('resolves declared cases against the per-case ledger, closing the title-cap bypass (P-002 / R-2)', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    // The same capped-title shape the previous case binds successfully: 65 passed, 64
+    // titles recorded, so the declared case is invisible to the title list. Here the run
+    // ALSO recorded every case in the ledger, which is the authority when present.
+    const runId = await recordRun();
+    await db.sql`UPDATE harness_shared.test_runs
+      SET execution_details = ${db.sql.json({
+        schemaVersion: 1, root: h.repoRoot, filePath: DERIVE_TEST, runGroupId: null,
+        workspaceId: WORKSPACE, harnessSlug: HARNESS, testNamePattern: null,
+        passed: 65, failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null,
+        commitSha: 'c0ffee1234567890', worktreeDirty: false, testLayer: 'integration',
+        passedCaseTitles: Array.from({ length: 64 }, (_, index) => 'outer > recorded case ' + index),
+        passedCaseTitlesTruncated: true,
+      })}
+      WHERE id = ${runId}`;
+    const keys = [
+      ...Array.from({ length: 64 }, (_, index) => 'outer > recorded case ' + index),
+      'outer > case beyond the title cap',
+    ];
+    for (const [index, caseKey] of keys.entries()) {
+      await db.sql`INSERT INTO harness_shared.test_case_runs (test_run_id, case_index, case_key, status, duration_ms)
+        VALUES (${runId}, ${index}, ${caseKey}, 'pass', 3)`;
+    }
+
+    // A case the title list could not show but the ledger recorded binds.
+    const beyondCap = await bindFromRun(runId, 'WI-101', {
+      adequacy: { collected: true, skipped: false, executed: true, outcome: 'passed', testCases: ['case beyond the title cap'] },
+    });
+    expect(beyondCap).toMatchObject({ ok: true, status: 'created' });
+
+    // A declared case the run never executed is refused, even though the capped title list
+    // could not have proved it absent — and even beside a declared case that DID match.
+    const rejected = await bindFromRun(runId, 'WI-102', {
+      adequacy: {
+        collected: true, skipped: false, executed: true, outcome: 'passed',
+        testCases: ['recorded case 3', 'case omitted from title cap'],
+      },
+    });
+    expect(rejected).toMatchObject({
+      ok: false,
+      error: 'test_cases_not_in_run',
+      status: 'test_cases_not_in_run',
+      testRunId: runId,
+      declaredCaseCount: 2,
+      passedCaseTitleCount: 65,
+      source: 'case-ledger',
+      unmatchedTestCases: ['case omitted from title cap'],
+    });
+    expect(
+      await evidenceStore.listSpecEvidence({
+        harnessSlug: HARNESS,
+        planSlugs: ['reconnect-plan'],
+        workItemIds: ['WI-102'],
+        evidenceRefs: [DERIVE_TEST],
+      }),
+    ).toEqual([]);
   });
 
   it('binds a mutation-probe copy-out row using its JSON execution root and canonical test path', async () => {
@@ -2035,6 +3249,62 @@ describe('a lifecycle-only revision carries proof forward (WI-10002889)', () => 
     expect(edge?.spec_fingerprint).toBe((promoted as { contentHash: string }).contentHash);
   });
 
+  it.each(['accepted', 'active'] as const)('carries manual proof when an exempt clause becomes %s and clears required lifecycle metadata', async (lifecycleStatus) => {
+    const exemption = { justification: 'Manually inspect the final signed package.', provenance: 'D-003' };
+    const manual = clause({
+      lifecycleStatus: 'exempt', behaviorClass: 'non-automated', requiredTestLayers: [],
+      mutationRequired: false, requiredEvidence: ['deployed'], exemption,
+    });
+    await specs.setSpecClause(manual);
+    const external = await seedExternalEvidence();
+    expect(await evidenceStore.bindSpecEvidence({
+      harnessSlug: HARNESS, planSlug: 'reconnect-plan', workItemId: 'WI-101',
+      specId: 'SPEC-003-01', evidenceKind: 'manual', evidenceRef: 'package:final-signed',
+      sourceFingerprint: 'git:abc123', testRunId: external.testRunId, actorId: 'su-test',
+    })).toMatchObject({ status: 'created' });
+
+    const promoted = await specs.setSpecClause({
+      ...manual, expectedRevision: 1, lifecycleStatus, exemption: null,
+    });
+    expect(promoted).toMatchObject({ status: 'revised', revision: 2, evidenceCarriedForward: 1 });
+    expect(await liveRefsAt(2)).toEqual(['package:final-signed']);
+    const [current] = await specs.listSpecClauses({
+      harnessSlug: HARNESS, planSlug: 'reconnect-plan', specIds: ['SPEC-003-01'],
+    });
+    expect(current).toMatchObject({ lifecycleStatus, exemption: null, behaviorClass: 'non-automated' });
+    const [prior] = await specs.listSpecClauses({
+      harnessSlug: HARNESS, planSlug: 'reconnect-plan', specIds: ['SPEC-003-01'], revision: 1,
+    });
+    expect(prior).toMatchObject({ lifecycleStatus: 'exempt', exemption });
+    const [carried] = await db.sql<{ test_run_id: string | number; evidence_kind: string }[]>`
+      SELECT test_run_id, evidence_kind FROM harness_shared.spec_evidence_bindings
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+         AND plan_slug = 'reconnect-plan' AND spec_id = 'SPEC-003-01' AND spec_revision = 2`;
+    expect(Number(carried?.test_run_id)).toBe(external.testRunId);
+    expect(carried?.evidence_kind).toBe('manual');
+  });
+
+  it('does not treat changed manual proof obligations as exemption-only provenance', () => {
+    const exemption = { justification: 'Manual signed package inspection.', provenance: 'D-003' };
+    const manual = clause({
+      lifecycleStatus: 'exempt', behaviorClass: 'non-automated', requiredTestLayers: [],
+      mutationRequired: false, requiredEvidence: ['deployed'], exemption,
+    });
+    const prior = { lifecycleStatus: 'exempt' as const, acceptanceRef: 'D-003', exemption };
+    const hash = specs.specClauseContentHash(manual);
+    const promoted = { ...manual, lifecycleStatus: 'active' as const, exemption: null };
+    expect(specs.differsOnlyInAcceptanceProvenance(promoted, prior, null, hash)).toBe(true);
+    for (const changed of [
+      { ...promoted, behavior: 'A different package outcome.' },
+      { ...promoted, requiredEvidence: ['live'] },
+      { ...promoted, requiredTestLayers: ['unit'] },
+      { ...promoted, mutationRequired: true },
+      { ...promoted, behaviorClass: 'happy-path' },
+    ] as typeof promoted[]) {
+      expect(specs.differsOnlyInAcceptanceProvenance(changed, prior, null, hash)).toBe(false);
+    }
+  });
+
   it('does NOT carry proof across a substantive edit, even one that also changes lifecycle', async () => {
     await specs.setSpecClause(clause({ lifecycleStatus: 'draft' }));
     const external = await seedExternalEvidence();
@@ -2099,6 +3369,77 @@ describe('a lifecycle-only revision carries proof forward (WI-10002889)', () => 
     const restored = await specs.setSpecClause(clause({ expectedRevision: 2, acceptanceRef: 'D-003' }));
     expect(restored).toMatchObject({ status: 'revised', revision: 3, evidenceCarriedForward: 1 });
     expect(await liveRefsAt(3)).toEqual(['surface:GET /events']);
+  });
+
+  it('carries proof when only the pinned rubric revision and acceptanceRef advance', async () => {
+    const priorBar = {
+      barKey: 'R-1',
+      barHash: 'a'.repeat(64),
+      barSetHash: 'b'.repeat(64),
+      rubricSlug: 'acceptance-reconnect-plan',
+      rubricRevision: 2,
+      evidencePlane: 'tree' as const,
+    };
+    const nextBar = { ...priorBar, rubricRevision: 3 };
+    const acceptanceRef = (revision: number) => `acceptance-reconnect-plan@${revision}:R-1`;
+
+    await specs.setSpecClause(clause({
+      lifecycleStatus: 'active',
+      acceptanceRef: acceptanceRef(2),
+      sourceBar: priorBar,
+    }));
+    const external = await seedExternalEvidence();
+    await bindAtCurrent('surface:GET /events', external.testRunId, external.coverageEvidenceRef);
+
+    const advanced = await specs.setSpecClause(clause({
+      expectedRevision: 1,
+      lifecycleStatus: 'active',
+      acceptanceRef: acceptanceRef(3),
+      sourceBar: nextBar,
+    }));
+    expect(advanced).toMatchObject({ status: 'revised', revision: 2, evidenceCarriedForward: 1 });
+    expect(await liveRefsAt(2)).toEqual(['surface:GET /events']);
+
+    const [stored] = await db.sql<{
+      acceptance_ref: string;
+      source_bar_key: string;
+      source_bar_hash: string;
+      source_bar_set_hash: string;
+      source_rubric_slug: string;
+      source_rubric_revision: number;
+      evidence_plane: string;
+    }[]>`
+      SELECT acceptance_ref, source_bar_key, source_bar_hash, source_bar_set_hash,
+             source_rubric_slug, source_rubric_revision, evidence_plane
+        FROM harness_shared.plan_spec_clause_revisions
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+         AND plan_slug = 'reconnect-plan' AND spec_id = 'SPEC-003-01' AND revision = 2`;
+    expect(stored).toEqual({
+      acceptance_ref: acceptanceRef(3),
+      source_bar_key: 'R-1',
+      source_bar_hash: 'a'.repeat(64),
+      source_bar_set_hash: 'b'.repeat(64),
+      source_rubric_slug: 'acceptance-reconnect-plan',
+      source_rubric_revision: 3,
+      evidence_plane: 'tree',
+    });
+
+    const changedBarIdentity = {
+      ...nextBar,
+      barHash: 'c'.repeat(64),
+      barSetHash: 'd'.repeat(64),
+      rubricRevision: 4,
+    };
+    const identityChanged = await specs.setSpecClause(clause({
+      expectedRevision: 2,
+      lifecycleStatus: 'active',
+      acceptanceRef: acceptanceRef(4),
+      sourceBar: changedBarIdentity,
+    }));
+    expect(identityChanged).toMatchObject({ status: 'revised', revision: 3 });
+    expect(identityChanged).not.toHaveProperty('evidenceCarriedForward');
+    expect(await liveRefsAt(3)).toEqual([]);
+    expect(await liveRefsAt(2)).toEqual(['surface:GET /events']);
   });
 
   it('differsOnlyInAcceptanceProvenance answers false for any other change', () => {

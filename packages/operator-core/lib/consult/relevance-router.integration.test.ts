@@ -18,10 +18,15 @@
  *    and a missing embedder degrades honestly while exposing only an explicit
  *    lexical fallback path (never semantic qualification).
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DISCLOSURE_LEDGER_FIXTURE_DDL } from '../../test/_disclosure-ledger-fixture';
+import { D006_TRANSCRIPT_RULE } from '../personal-vault/transcript-exclusion';
 import postgres, { type Sql } from 'postgres';
-import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { recordExpertiseRoutingInvocation, readExpertiseRoutingRecorderHealth, EXPERTISE_ROUTING_PATH } from '../endpoint-route/telemetry';
+import { readExpertiseExecutionHealth } from './consult-routing-health';
+import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { resolveProseProfileSelection } from '../search/prose-vector-dims';
 import {
@@ -29,7 +34,12 @@ import {
   extractPathTokens,
   DEFAULT_SIM_FLOOR,
   DEFAULT_RELEVANCE_FLOOR,
+  SUBJECT_EVIDENCE_OWNER_LIMIT,
+  SUBJECT_EVIDENCE_TIMEOUT_MS,
+  scoreSubjectEvidence,
+  snapshotCandidateQualifies,
   type ConsultRouteDeps,
+  type ExpertiseRoutingReceipt,
 } from './relevance-router';
 
 const WS = 'ws-consult';
@@ -45,6 +55,9 @@ const vecAt = (theta: number): number[] => {
 };
 
 let rootSql: Sql;
+let fixtureDb: MigratedTestDb;
+let recordNativeTurnQuery = false;
+let nativeTurnQuery: { query: string; parameters: unknown[] } | null = null;
 
 const deps = (embedTheta: number | null, over: Partial<ConsultRouteDeps> = {}): ConsultRouteDeps => ({
   getSql: () => rootSql,
@@ -54,19 +67,23 @@ const deps = (embedTheta: number | null, over: Partial<ConsultRouteDeps> = {}): 
     : resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma),
   embeddingMode: embedTheta === null ? null : 'gemma',
   now: () => NOW,
+  // Analytic vector fixtures isolate the PG/vector contract. Subject scenarios
+  // override this seam with independent positive/counterexample evidence.
+  scoreSubjectEvidence: async (_subject, texts) => texts.map(() => 1),
   ...over,
 });
 
 let turnSeq = 0;
-async function insertTurn(owner: string, theta: number, tsMsAgo: number, over: { verdict?: string } = {}) {
+async function insertTurn(owner: string, theta: number, tsMsAgo: number, over: { verdict?: string; text?: string } = {}) {
   turnSeq += 1;
+  const text = over.text ?? `turn ${turnSeq} of ${owner}`;
   await rootSql`
     INSERT INTO harness_shared.session_turns
       (workspace_id, source_kind, session_id, turn_idx, ts, owner, speaker, text,
        text_embedding, text_embedding_mode, text_embedding_profile, turn_origin_verdict)
     VALUES ('default', 'claude', ${'sess-' + owner}, ${turnSeq},
             ${new Date(NOW.getTime() - tsMsAgo).toISOString()}::timestamptz,
-            ${owner}, 'assistant', ${'turn ' + turnSeq + ' of ' + owner},
+            ${owner}, 'assistant', ${text},
             ${JSON.stringify(vecAt(theta))}::vector,
             'gemma', ${EMBEDDER_DIM_SPECS.gemma.profileId},
             ${over.verdict ?? null})`;
@@ -83,19 +100,21 @@ async function insertWorkItem(owner: string, authority: string, closedMsAgo: num
 }
 
 beforeAll(async () => {
-  const adminUri = await getTestPg();
-  const dbName = `consultr_${randomBytes(5).toString('hex')}`;
-  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
-  try {
-    await admin.unsafe(`CREATE DATABASE "${dbName}"`);
-  } finally {
-    await admin.end({ timeout: 5 });
-  }
-  const u = new URL(adminUri);
-  u.pathname = `/${dbName}`;
-  rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
+  fixtureDb = await createFreshTestDb({ prefix: 'consultr' });
+  rootSql = postgres(fixtureDb.url, { max: 1, onnotice: () => {},
+    debug: (_connection, query, parameters) => {
+      if (recordNativeTurnQuery && query.includes('AS "subjectText"')) {
+        nativeTurnQuery = { query, parameters };
+      }
+    } });
   await rootSql.unsafe('CREATE EXTENSION IF NOT EXISTS vector');
   await rootSql.unsafe('CREATE SCHEMA harness_shared');
+  const ledgerMigration = fileURLToPath(new URL('../../../../libs/papercusp/libs/db/sql/archive/077-route-invocations.sql', import.meta.url));
+  await rootSql.unsafe(readFileSync(ledgerMigration, 'utf8').replace(/^\\.*$/gm, ''));
+  const metadataMigration = fileURLToPath(new URL('../../../../libs/papercusp/libs/db/sql/1429-route-invocation-metadata.sql', import.meta.url));
+  await rootSql.unsafe(readFileSync(existsSync(metadataMigration) ? metadataMigration : metadataMigration + '.DRAFT', 'utf8'));
+  // D-006: routing excludes experts who have held a disclosure; the ledger must exist.
+  await rootSql.unsafe(DISCLOSURE_LEDGER_FIXTURE_DDL);
   // Only the columns the router reads. ⚠ These names MUST match the real
   // migration-owned schema exactly — a hand-rolled fixture that invents column
   // names makes this suite self-consistent and WRONG. That is not hypothetical:
@@ -115,6 +134,7 @@ beforeAll(async () => {
       owner text,
       speaker text NOT NULL,
       text text NOT NULL,
+      chunked_at timestamptz,
       ingested_at timestamptz NOT NULL DEFAULT now(),
       text_embedding vector(768),
       text_embedding_mode text,
@@ -132,6 +152,19 @@ beforeAll(async () => {
       closed_ts bigint,
       payload jsonb NOT NULL DEFAULT '{}'::jsonb
     )`);
+  // Registry columns match 000-baseline + 115-adv-session-native-id.sql.
+  // These are population hints; the native resolver still measures liveness.
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.adv_sessions (
+      id bigserial PRIMARY KEY, workspace_id text NOT NULL, coord_owner_id text,
+      agent text, role text, session_id text, omp_thread_id text,
+      ended_at timestamptz
+    )`);
+  // Exact canonical column names from the existing plan-claim store; only
+  // population selection reads this fixture, never claim lifecycle operations.
+  await rootSql.unsafe(`CREATE TABLE harness_shared.plan_item_claims (
+    workspace_id text NOT NULL, owner text NOT NULL, expires_ts timestamptz NOT NULL
+  )`);
 
   // ── The corpus ─────────────────────────────────────────────────────────
   // alpha: highly similar (θ≈0.2), recent, verified, authored the named path.
@@ -164,10 +197,367 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-  await rootSql?.end({ timeout: 5 });
+  try { await rootSql?.end({ timeout: 5 }); }
+  finally { await fixtureDb?.drop(); }
 });
 
 const baseParams = { workspaceId: WS, requesterId: 'agent-self', question: 'how does the consult router work?' };
+
+describe('native source population before retrieval and subject bounds', () => {
+  const nativeConsult = { sourceBackend: 'claude', sourceState: 'live', targetBackend: 'codex' } as const;
+  const question = 'testing:run native acceptance source';
+  const addedOwners: string[] = [];
+  afterEach(async () => {
+    await rootSql`DELETE FROM harness_shared.session_turns WHERE owner = ANY(${addedOwners}::text[])`;
+    await rootSql`DELETE FROM harness_shared.adv_sessions WHERE coord_owner_id = ANY(${addedOwners}::text[])`;
+    await rootSql`DELETE FROM harness_shared.plan_item_claims WHERE owner = ANY(${addedOwners}::text[])`;
+    addedOwners.length = 0;
+  });
+  async function source(owner: string, angle: number, options: {
+    backend?: string; ended?: boolean; session?: string; currentSession?: string;
+    workspace?: string; role?: string; text?: string;
+  } = {}) {
+    addedOwners.push(owner);
+    await insertTurn(owner, angle, DAY);
+    const session = options.session ?? 'sess-' + owner;
+    await rootSql`UPDATE harness_shared.session_turns
+      SET source_kind = ${options.backend ?? 'claude'}, session_id = ${session},
+          text = ${options.text ?? question}, chunked_at = NULL WHERE owner = ${owner}`;
+    await rootSql`INSERT INTO harness_shared.adv_sessions
+      (workspace_id, coord_owner_id, agent, role, session_id, ended_at)
+      VALUES (${options.workspace ?? WS}, ${owner}, ${options.backend ?? 'claude'}, ${options.role ?? null},
+        ${options.currentSession ?? session}, ${options.ended ? NOW.toISOString() : null}::timestamptz)`;
+  }
+
+  it('does not spend bounded turns or subject checks on incompatible native evidence', async () => {
+    for (let n = 0; n < SUBJECT_EVIDENCE_OWNER_LIMIT + 2; n++) {
+      await source('native-pop-codex-' + n, n * 0.005, { backend: 'codex' });
+    }
+    await source('native-pop-ended', 0.06, { ended: true });
+    await source('native-pop-old', 0.07, { currentSession: 'new-native' });
+    await source('native-pop-foreign', 0.08, { workspace: 'another-workspace' });
+    await source('native-pop-role', 0.09, { role: 'judge' });
+    await source('native-pop-live', 0.25, { text: question + ' compatible' });
+    await source('native-pop-mismatch', 0.27, { text: question + ' unrelated' });
+    await source('native-pop-below-floor', 1.4);
+    const seen: string[] = [];
+    const result = await routeConsult({ ...baseParams, question, nativeConsult,
+      turnLimit: 3, maxCandidates: 1, maxQualified: 1 }, deps(0, {
+      scoreSubjectEvidence: async (_subject, texts) => {
+        seen.push(...texts);
+        return texts.map(text => text.endsWith('compatible') ? 0.9 : 0.2);
+      },
+    }));
+    expect(result.qualified.map(c => c.ownerId)).toEqual(['native-pop-live']);
+    expect(result.qualified[0]?.evidence.map(ref => ref.session_id)).toEqual(['sess-native-pop-live']);
+    expect(seen).toHaveLength(2);
+    expect(seen.every(text => text.endsWith('compatible') || text.endsWith('unrelated'))).toBe(true);
+    expect(result.snapshot.subjectValidation).toMatchObject({ evaluated: 2, unmeasured: 0 });
+    expect(result.snapshot.simFloor).toBe(DEFAULT_SIM_FLOOR);
+    expect(result.snapshot.relevanceFloor).toBe(DEFAULT_RELEVANCE_FLOOR);
+  });
+
+  it('retains ended historical evidence across native-id reanchors, while live evidence must be current', async () => {
+    await source('native-pop-history', 0.1, { ended: true,
+      session: 'historical-native', currentSession: 'newer-ended-native' });
+    const result = await routeConsult({ ...baseParams, nativeConsult: { ...nativeConsult, sourceState: 'ended' },
+      turnLimit: 1 }, deps(0));
+    expect(result.qualified.map(c => c.ownerId)).toEqual(['native-pop-history']);
+    expect(result.qualified[0]?.evidence[0]?.session_id).toBe('historical-native');
+  });
+
+  it('requires genuine source plan leases before bounded semantic and lexical retrieval', async () => {
+    await source('native-plan-empty', 0.01);
+    await source('native-plan-expired', 0.02);
+    await source('native-plan-foreign', 0.03);
+    await source('native-plan-held', 0.2);
+    await rootSql`INSERT INTO harness_shared.plan_item_claims (workspace_id, owner, expires_ts) VALUES
+      (${WS}, 'native-plan-expired', clock_timestamp() - interval '1 minute'),
+      ('another-workspace', 'native-plan-foreign', clock_timestamp() + interval '1 hour'),
+      (${WS}, 'native-plan-held', clock_timestamp() + interval '1 hour')`;
+    const request = { ...baseParams, question, nativeConsult: { ...nativeConsult, requireSourcePlanClaims: true },
+      turnLimit: 1, maxCandidates: 1, maxQualified: 1 };
+    const measured = await routeConsult(request, deps(0));
+    expect(measured.qualified.map(c => c.ownerId)).toEqual(['native-plan-held']);
+    expect(measured.snapshot.simFloor).toBe(DEFAULT_SIM_FLOOR);
+    expect(measured.snapshot.relevanceFloor).toBe(DEFAULT_RELEVANCE_FLOOR);
+    const lexical = await routeConsult(request, deps(null));
+    expect(lexical.qualified).toEqual([]);
+    expect(lexical.snapshot.candidates.map(c => c.ownerId)).toEqual(['native-plan-held']);
+    expect(lexical.snapshot).toMatchObject({ degraded: 'embed-unavailable', fallback: 'lexical' });
+    // Omitting the internal predicate preserves the ordinary native population.
+    const ordinary = await routeConsult({ ...request, nativeConsult }, deps(0));
+    expect(ordinary.qualified.map(c => c.ownerId)).toEqual(['native-plan-empty']);
+  });
+
+  it('constrains lexical fallback too, without treating it as measured expertise', async () => {
+    await source('native-pop-lexical-wrong', 0, { backend: 'codex' });
+    await source('native-pop-lexical-right', 0.2);
+    const result = await routeConsult({ ...baseParams, question, nativeConsult, turnLimit: 1 }, deps(null));
+    expect(result.qualified).toEqual([]);
+    expect(result.snapshot.candidates.map(c => c.ownerId)).toEqual(['native-pop-lexical-right']);
+    expect(result.snapshot).toMatchObject({ degraded: 'embed-unavailable', fallback: 'lexical' });
+  });
+
+  it('retrieves a claimed live native source outside the global HNSW scan budget', async () => {
+    const owner = 'native-hnsw-held';
+    const noise = 'native-hnsw-incompatible';
+    await source(owner, 0.2);
+    await rootSql`INSERT INTO harness_shared.plan_item_claims (workspace_id, owner, expires_ts)
+      VALUES (${WS}, ${owner}, clock_timestamp() + interval '1 hour')`;
+    addedOwners.push(noise);
+    await rootSql`INSERT INTO harness_shared.session_turns
+      (workspace_id, source_kind, session_id, turn_idx, owner, speaker, text,
+       text_embedding, text_embedding_mode, text_embedding_profile)
+      SELECT 'default', 'codex', ${'sess-' + noise}, n, ${noise}, 'assistant', ${question},
+             ${JSON.stringify(vecAt(0))}::vector, 'gemma', ${EMBEDDER_DIM_SPECS.gemma.profileId}
+        FROM generate_series(1, 2000) n`;
+    await rootSql.unsafe(`CREATE INDEX native_source_hnsw_test
+      ON harness_shared.session_turns USING hnsw (text_embedding vector_cosine_ops)
+      WITH (m = 4, ef_construction = 8)`);
+    try {
+      await rootSql.begin(async tx => {
+        await tx.unsafe('SET LOCAL enable_seqscan = off');
+        await tx.unsafe('SET LOCAL enable_sort = off');
+        await tx.unsafe('SET LOCAL hnsw.iterative_scan = relaxed_order');
+        await tx.unsafe('SET LOCAL hnsw.ef_search = 1');
+        await tx.unsafe('SET LOCAL hnsw.max_scan_tuples = 1');
+        const plan = await tx`EXPLAIN (FORMAT JSON) SELECT session_id
+          FROM harness_shared.session_turns WHERE owner = ${owner}
+          ORDER BY text_embedding <=> ${JSON.stringify(vecAt(0))}::vector LIMIT 1`;
+        expect(JSON.stringify(plan)).toContain('native_source_hnsw_test');
+        // A global ANN scan can stop before reaching this existing source.
+        // The router must measure within the eligible native population.
+        const exact = await tx`SELECT session_id FROM harness_shared.session_turns
+          WHERE session_id = ${'sess-' + owner} AND owner = ${owner}`;
+        expect(exact).toHaveLength(1);
+        nativeTurnQuery = null;
+        recordNativeTurnQuery = true;
+        const result = await routeConsult({ ...baseParams, question: 'native source evidence',
+          nativeConsult: { ...nativeConsult, requireSourcePlanClaims: true },
+          turnLimit: 1, maxCandidates: 1, maxQualified: 1 },
+        deps(0, { getSql: () => tx as unknown as Sql }));
+        recordNativeTurnQuery = false;
+        expect(nativeTurnQuery).not.toBeNull();
+        // Verify the actual router query, not only a simpler lookalike query.
+        const executedPlan = await tx.unsafe('EXPLAIN (FORMAT JSON) ' + nativeTurnQuery!.query,
+          nativeTurnQuery!.parameters as never[]);
+        const planText = JSON.stringify(executedPlan);
+        expect(planText.includes('native_source_hnsw_test') || planText.includes('native_turns')).toBe(true);
+        expect(result.qualified.map(candidate => candidate.ownerId)).toEqual([owner]);
+        expect(result.snapshot.simFloor).toBe(DEFAULT_SIM_FLOOR);
+        expect(result.snapshot.relevanceFloor).toBe(DEFAULT_RELEVANCE_FLOOR);
+      });
+    } finally {
+      recordNativeTurnQuery = false;
+      await rootSql.unsafe('DROP INDEX IF EXISTS harness_shared.native_source_hnsw_test');
+    }
+  });
+});
+
+describe('bounded subject evidence against real transcript SQL', () => {
+  const question = 'stale desktop registry rows block computer:provision_desktop; invoke soleOwner reconciliation?';
+  let addedOwners: string[] = [];
+  afterEach(async () => {
+    if (addedOwners.length) await rootSql`DELETE FROM harness_shared.session_turns WHERE owner = ANY(${addedOwners}::text[])`;
+    addedOwners = [];
+  });
+  async function passage(owner: string, text: string, angle: number, previouslyChunked = false) {
+    addedOwners.push(owner);
+    await insertTurn(owner, angle, DAY);
+    if (previouslyChunked) {
+      await rootSql`UPDATE harness_shared.session_turns SET chunked_at = ${NOW.toISOString()}::timestamptz WHERE owner = ${owner}`;
+    }
+    await rootSql`UPDATE harness_shared.session_turns SET text = ${text}, chunked_at = NULL WHERE owner = ${owner}`;
+  }
+
+  it('invalidates a previous chunk marker when replacing fixture transcript text', async () => {
+    await passage('subject-chunk-marker', 'replacement transcript', 0, true);
+    const rows = await rootSql`SELECT text, chunked_at FROM harness_shared.session_turns WHERE owner = 'subject-chunk-marker'`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ text: 'replacement transcript', chunked_at: null });
+  });
+
+  it('rejects the sole-live-gate collision while keeping direct and conceptual expertise', async () => {
+    await passage('subject-gate', 'The ownership cell is held-live; this is the sole live gate lane. Do not run the checkpoint.', 0);
+    await passage('subject-direct', 'Fixed computer:provision_desktop stale rows on desktop_sessions_live_display_uq.', 0.1);
+    await passage('subject-concept', 'Xvfb screen allocations use database leases; reclaim an orphan only after verifying the former process died.', 0.2);
+    const seen: string[] = [];
+    const result = await routeConsult({ ...baseParams, question }, deps(0, {
+      scoreSubjectEvidence: async (subject, texts, deadline) => {
+        expect(subject).toBe('computer:provision_desktop');
+        expect(deadline - Date.now()).toBeLessThanOrEqual(SUBJECT_EVIDENCE_TIMEOUT_MS);
+        seen.push(...texts);
+        return texts.map(text => text.includes('Xvfb') ? 0.692 : text.includes('Fixed computer:') ? 0.902 : 0.350);
+      },
+    }));
+    expect(seen.some(text => text.includes('Xvfb'))).toBe(true);
+    expect(result.qualified.map(c => c.ownerId)).toEqual(['subject-direct', 'subject-concept']);
+    const gate = result.snapshot.candidates.find(c => c.ownerId === 'subject-gate')!;
+    expect(gate.signals.similarity).toBe(1);
+    expect(snapshotCandidateQualifies(result.snapshot, gate)).toBe(false);
+    expect(snapshotCandidateQualifies(result.snapshot, {
+      ...gate,
+      subjectEvidence: undefined,
+      subjectEvidenceCoverage: undefined,
+    })).toBe(true);
+    expect(result.snapshot.subjectValidation?.unmeasured).toBe(0);
+  });
+
+  it('validates the complete natural lease question instead of generic before/after history', async () => {
+    const leaseQuestion = 'For native isolated session-port consults, what evidence distinguishes child mutation of source plan leases from legitimate source renewal, system cleanup, and mutate-then-revert? I need a concrete actor-correlated before/after audit that preserves the original native receipt when timeout cleanup runs.';
+    await passage('subject-generic-history', 'Verified continuation identity and AUTO state before/after recovering the storage scanner.', 0);
+    await passage('subject-lease-actor', 'A claim ledger recorded the source lease writer and actor on each renewal, child mutation, revert and timeout-cleanup transition; retain the original native receipt.', 0.1);
+    const subjects: string[] = [];
+    const result = await routeConsult({ ...baseParams, question: leaseQuestion }, deps(0, {
+      scoreSubjectEvidence: async (subject, texts) => {
+        subjects.push(subject);
+        // A broad procedural token explains both passages. The actual question
+        // requires lease/actor evidence; vector geometry cannot supply it.
+        return texts.map(text => subject === leaseQuestion ? text.includes('claim ledger') ? 0.9 : 0.1 : 0.8);
+      },
+    }));
+    expect(subjects).toEqual([leaseQuestion]);
+    expect(result.qualified.map(c => c.ownerId)).toEqual(['subject-lease-actor']);
+    const generic = result.snapshot.candidates.find(c => c.ownerId === 'subject-generic-history')!;
+    expect(generic.signals.similarity).toBe(1);
+    expect(generic.subjectEvidenceCoverage).toMatchObject({ status: 'mismatch', required: [leaseQuestion] });
+    expect(snapshotCandidateQualifies(result.snapshot, generic)).toBe(false);
+    // Explicit caller anchors still take precedence over this fallback.
+    const explicit = await routeConsult({ ...baseParams, question: leaseQuestion, subjectRefs: ['src/lease.ts'] }, deps(0, {
+      scoreSubjectEvidence: async (subject, texts) => {
+        expect(subject).toBe('src/lease.ts');
+        return texts.map(() => 0.9);
+      },
+    }));
+    expect(explicit.snapshot.subjectRefs).toEqual(['src/lease.ts']);
+  });
+
+  it('leaves an overlapping-contract expert unmeasured while admitting a distinct absolute-floor win', async () => {
+    await passage('subject-tied', 'equal release gate checkpoint', 0);
+    await passage('subject-floor', 'distinct release gate checkpoint', 0.1);
+    const contracts = [
+      { name: 'computer:provision_desktop', description: 'Start a sandboxed GUI desktop.' },
+      { name: 'release:checkpoint-run', description: 'Run the release gate checkpoint suite.' },
+    ];
+    const result = await routeConsult({ ...baseParams, question }, deps(0, {
+      scoreSubjectEvidence: (subject, texts, deadline) => scoreSubjectEvidence(subject, texts, deadline, {
+        contracts,
+        scorer: async text => text.startsWith('distinct') ? [0.5, 0.1] : [0.8, 0.8],
+      }),
+    }));
+    const tied = result.snapshot.candidates.find(c => c.ownerId === 'subject-tied')!;
+    expect(tied.subjectEvidence).toMatchObject({ status: 'unmeasured', score: null });
+    expect(snapshotCandidateQualifies(result.snapshot, tied)).toBe(false);
+    const floor = result.snapshot.candidates.find(c => c.ownerId === 'subject-floor')!;
+    expect(floor.subjectEvidence).toMatchObject({ status: 'supported', score: 0.5 });
+    expect(result.qualified.map(c => c.ownerId)).toEqual(['subject-floor']);
+    expect(result.snapshot.subjectValidation?.unmeasured).toBeGreaterThan(0);
+    expect(result.snapshot.degraded).toBe('evidence-unavailable');
+  });
+
+  it('distinguishes failed/malformed scores from a measured no-expert case', async () => {
+    for (const scoreSubjectEvidence of [async () => { throw new Error('scorer unavailable'); }, async () => [], async (_q: string, texts: string[]) => texts.map(() => NaN)]) {
+      const result = await routeConsult({ ...baseParams, question }, deps(0, { scoreSubjectEvidence }));
+      expect(result.verdict).toBe('relevance_unmeasured');
+      expect(result.snapshot.degraded).toBe('evidence-unavailable');
+      expect(result.qualified).toEqual([]);
+    }
+    const measured = await routeConsult({ ...baseParams, question }, deps(0, { scoreSubjectEvidence: async (_q, texts) => texts.map(() => 0.1) }));
+    expect(measured.verdict).toBe('no_qualified_responder');
+    expect(measured.snapshot.subjectValidation?.unmeasured).toBe(0);
+  });
+
+  it('caps scored owners and leaves overflow explicitly unmeasured', async () => {
+    for (let i = 0; i < SUBJECT_EVIDENCE_OWNER_LIMIT + 2; i++) await passage(`subject-cap-${i}`, 'virtual screen lease diagnosis', i * 0.01);
+    let pairs = 0;
+    const result = await routeConsult({ ...baseParams, question }, deps(0, {
+      scoreSubjectEvidence: async (_q, texts) => { pairs = texts.length; return texts.map(() => 0.9); },
+    }));
+    expect(pairs).toBeLessThanOrEqual(SUBJECT_EVIDENCE_OWNER_LIMIT * 3);
+    expect(result.snapshot.subjectValidation?.unmeasured).toBeGreaterThan(0);
+    expect(result.snapshot.degraded).toBe('evidence-unavailable');
+    expect(result.qualified.length).toBeGreaterThan(0);
+  });
+});
+
+describe('shared routing telemetry in the real invocation ledger', () => {
+  beforeEach(async () => {
+    await rootSql`DELETE FROM harness_shared.route_invocations WHERE workspace_id = ${WS}`;
+  });
+
+  it('persists the exact returned stage receipt and remains distinct from HTTP/MCP invocations', async () => {
+    const writes: Promise<void>[] = [];
+    const result = await routeConsult({ ...baseParams, telemetry: {
+      caller: 'fixture-consult', policy: 'consult-default', buildSha: '1234567', correlationId: 'ledger-success',
+    } }, deps(0, { recordTelemetry: r => { writes.push(recordExpertiseRoutingInvocation(r, rootSql)); } }));
+    await Promise.all(writes);
+    const rows = await rootSql<{ method: string; path: string; metadata_json: ExpertiseRoutingReceipt }[]>`
+      SELECT method, path, metadata_json FROM harness_shared.route_invocations
+       WHERE workspace_id = ${WS} AND metadata_json->>'correlationId' = 'ledger-success'`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].method).toBe('INTERNAL');
+    expect(rows[0].path).toBe(EXPERTISE_ROUTING_PATH);
+    expect(rows[0].metadata_json).toEqual(result.snapshot.measurement);
+    const executionHealth = await readExpertiseExecutionHealth(rootSql, WS, '2000-01-01T00:00:00Z', '2100-01-01T00:00:00Z');
+    expect(executionHealth).toMatchObject({ status: 'measured', cohort: 'routing-execution-start', rowsScanned: 1, invalidReceipts: 0 });
+    expect(executionHealth.groups).toEqual([expect.objectContaining({
+      caller: 'fixture-consult', policy: 'consult-default', buildSha: '1234567', calls: 1,
+      outcomes: { returned: 1, degraded: 0, threw: 0 },
+      latencyMs: { observed: 1, p50: rows[0].metadata_json.durationMs, p95: rows[0].metadata_json.durationMs },
+    })]);
+    // Counterexample: postgres.js serializes a string AGAIN when PG describes
+    // its parameter as jsonb. The writer must bind text before converting it.
+    const legacy = await rootSql.unsafe<{ kind: string }[]>(
+      'SELECT jsonb_typeof($1::jsonb) AS kind', [JSON.stringify(rows[0].metadata_json)],
+    );
+    expect(legacy[0].kind).toBe('string');
+    expect(rows[0].metadata_json.stages).toMatchObject({
+      disclosure: { outcome: 'returned' }, embedding: { outcome: 'returned' },
+      transcripts: { outcome: 'returned' }, verification: { outcome: 'returned' }, ranking: { outcome: 'returned' },
+    });
+    expect(JSON.stringify(rows[0].metadata_json)).not.toContain(baseParams.question);
+  });
+
+  it('persists a thrown pre-consult route even when no consultation was created', async () => {
+    const writes: Promise<void>[] = [];
+    const error = Object.assign(new Error('private database details'), { code: '57P01' });
+    await expect(routeConsult({ ...baseParams, telemetry: {
+      caller: 'fixture-preview', policy: 'consult-default', buildSha: null, correlationId: 'ledger-throw',
+    } }, deps(0, {
+      getSql: () => { throw error; },
+      recordTelemetry: r => { writes.push(recordExpertiseRoutingInvocation(r, rootSql)); },
+    }))).rejects.toBe(error);
+    await Promise.all(writes);
+    const rows = await rootSql<{ metadata_json: ExpertiseRoutingReceipt }[]>`
+      SELECT metadata_json FROM harness_shared.route_invocations
+       WHERE workspace_id = ${WS} AND metadata_json->>'correlationId' = 'ledger-throw'`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].metadata_json).toMatchObject({ caller: 'fixture-preview', outcome: 'threw', verdict: null, errorCode: '57P01' });
+    expect(JSON.stringify(rows)).not.toContain('private database');
+  });
+
+  it('exposes recorder failures independently of ledger cohorts without replacing the original error', async () => {
+    const before = readExpertiseRoutingRecorderHealth();
+    const error = Object.assign(new Error('private recorder failure'), { code: '57P01' });
+    const receipt: ExpertiseRoutingReceipt = {
+      schemaVersion: 1, correlationId: 'sink-failure', workspaceId: WS, requesterId: 'fixture-requester',
+      caller: 'fixture-recorder', policy: 'consult-default', buildSha: null,
+      startedAt: NOW.toISOString(), durationMs: 1, outcome: 'threw', verdict: null, errorCode: null, stages: {},
+    };
+    const failingSql = { begin: async () => { throw error; } } as unknown as Sql;
+    await expect(recordExpertiseRoutingInvocation(receipt, failingSql)).rejects.toBe(error);
+    const after = readExpertiseRoutingRecorderHealth();
+    expect(after).toMatchObject({
+      scope: 'serving-process', attempted: before.attempted + 1, persisted: before.persisted,
+      failed: before.failed + 1, pending: before.pending,
+      lastFailure: { code: '57P01', caller: 'fixture-recorder', policy: 'consult-default' },
+    });
+    expect(JSON.stringify(after)).not.toContain('private');
+    const health = await readExpertiseExecutionHealth(rootSql, WS, '2000-01-01T00:00:00Z', '2100-01-01T00:00:00Z');
+    expect(health).toMatchObject({ status: 'measured-empty', rowsScanned: 0, groups: [] });
+  });
+});
 
 describe('routeConsult — routing + blend', () => {
   it('routes to the similar+recent+verified owner; snapshot carries the D-008 shape', async () => {
@@ -269,6 +659,17 @@ describe('routeConsult — routing + blend', () => {
     );
     expect(scoped.qualified.map((candidate) => candidate.ownerId)).toEqual(['reviewer-on-target-rubric']);
 
+    // A decision id used as a trial tag is still an exact corpus predicate.
+    // An empty filtered trial does not exercise subject scoring.
+    const scoreUnusedFilter = vi.fn(async (_subject: string, texts: string[]) => texts.map(() => 0.9));
+    const unusedFilter = await routeConsult(
+      { workspaceId: WS, requesterId: 'review-requester', question, subjectRef: 'D-029' },
+      { ...routeDeps, scoreSubjectEvidence: scoreUnusedFilter },
+    );
+    expect(unusedFilter.snapshot.candidates).toEqual([]);
+    expect(unusedFilter.snapshot.subjectValidation).toBeUndefined();
+    expect(scoreUnusedFilter).not.toHaveBeenCalled();
+
     const lexicalScoped = await routeConsult(
       {
         workspaceId: WS,
@@ -281,6 +682,57 @@ describe('routeConsult — routing + blend', () => {
     expect(lexicalScoped.snapshot.candidates.map((candidate) => candidate.ownerId)).toEqual([
       'reviewer-on-target-rubric',
     ]);
+  });
+
+  it('requires supported evidence for every resolved anchor and fails closed on incomplete documents', async () => {
+    const owners = ['manual-anchor-complete', 'manual-anchor-partial'];
+    const subjectRefs = ['src/billing.ts', 'src/backup.ts'];
+    const question = 'Review the public manual source anchors for billing and backup behavior.';
+    try {
+      await insertTurn(owners[0]!, 0.1, DAY, { text: 'Reviewed billing reconciliation and backup recovery in production.' });
+      await insertTurn(owners[1]!, 0.12, DAY, { text: 'Reviewed billing reconciliation in production.' });
+
+      const scoreCoverage = async (subject: string, texts: string[]) => {
+        const topic = subject === 'src/billing.ts' ? 'billing' : 'backup';
+        return texts.map(text => text.includes(topic) ? 0.95 : 0.1);
+      };
+      const covered = await routeConsult({ ...baseParams, question, subjectRefs }, deps(0, {
+        scoreSubjectEvidence: scoreCoverage,
+      }));
+
+      expect(covered.snapshot.subjectRefs).toEqual(subjectRefs);
+      expect(covered.qualified.map(candidate => candidate.ownerId)).toEqual(['manual-anchor-complete']);
+      expect(covered.snapshot.candidates.find(candidate => candidate.ownerId === 'manual-anchor-complete')?.subjectEvidenceCoverage)
+        .toMatchObject({ status: 'supported', required: subjectRefs, unresolved: [] });
+      expect(covered.snapshot.candidates.find(candidate => candidate.ownerId === 'manual-anchor-partial')?.subjectEvidenceCoverage)
+        .toMatchObject({
+          status: 'mismatch',
+          evidence: [
+            { subject: 'src/billing.ts', status: 'supported' },
+            { subject: 'src/backup.ts', status: 'mismatch' },
+          ],
+        });
+
+      const incomplete = await routeConsult({
+        ...baseParams,
+        question,
+        subjectRefs,
+        unresolvedSubjectRefs: ['apps/papercusp-docs/src/content/docs/incomplete.mdx'],
+      }, deps(0, { scoreSubjectEvidence: scoreCoverage }));
+      expect(incomplete.qualified).toEqual([]);
+      expect(incomplete.snapshot.unresolvedSubjectRefs).toEqual(['apps/papercusp-docs/src/content/docs/incomplete.mdx']);
+      expect(incomplete.snapshot.subjectValidation).toMatchObject({
+        subjects: subjectRefs,
+        unresolved: ['apps/papercusp-docs/src/content/docs/incomplete.mdx'],
+        unmeasured: expect.any(Number),
+      });
+      expect(incomplete.snapshot.subjectValidation?.unmeasured).toBeGreaterThanOrEqual(2);
+      const checked = incomplete.snapshot.candidates.filter(candidate => candidate.subjectEvidenceCoverage);
+      expect(checked.length).toBeGreaterThanOrEqual(2);
+      expect(checked.every(candidate => candidate.subjectEvidenceCoverage?.status === 'unmeasured')).toBe(true);
+    } finally {
+      await rootSql`DELETE FROM harness_shared.session_turns WHERE owner = ANY(${owners}::text[])`;
+    }
   });
 
   it('R-13/D-001: 40 days of idleness does NOT disqualify — beta still clears the floor, it just ranks last', async () => {
@@ -641,6 +1093,98 @@ describe('routeConsult — D-001 two-stage: recency compares, never qualifies', 
     )!;
     expect(stale.score).toBeLessThan(atDefault.score);
     expect(stale.relevance).toBe(atDefault.relevance); // …but qualification is untouched
+  });
+});
+
+// Plan personal-data-reader-set-labels-2026-10-01 P-013 / D-006 / D-009: consult
+// forks a routed expert's WHOLE transcript, so an expert who has EVER held a
+// disclosure is not routable at all, and the count it reports must not depend
+// on the question (a per-question count would confirm a guess about the text).
+describe('routeConsult — D-006 restricted experts are excluded in SQL', () => {
+  async function disclose(owner: string, released = false): Promise<void> {
+    await rootSql`
+      INSERT INTO harness_shared.personal_disclosures
+        (workspace_id, user_id, agent_owner_id, document_id, source, level, reader_set,
+         delivered_via, delivered_at, released_at, released_by, release_ref)
+      VALUES (${WS}, gen_random_uuid(), ${owner}, gen_random_uuid(), 'gmail', 'participants',
+              ${['owner@me.example']}::text[], 'personal:search', ${new Date(NOW.getTime() - 90 * DAY).toISOString()}::timestamptz,
+              ${released ? new Date(NOW.getTime() - 60 * DAY).toISOString() : null}::timestamptz,
+              ${released ? 'owner' : null}, ${released ? 'test-release' : null})`;
+  }
+  async function turnsOf(owner: string): Promise<number> {
+    const [row] = await rootSql<Array<{ n: number }>>`
+      SELECT count(*)::int AS n FROM harness_shared.session_turns
+       WHERE owner = ${owner} AND (workspace_id = ${WS} OR workspace_id = 'default')`;
+    return row!.n;
+  }
+  afterEach(async () => {
+    await rootSql`DELETE FROM harness_shared.personal_disclosures`;
+  });
+
+  it('never routes to an expert who held a disclosure and reports the same count for a near and a far question', async () => {
+    const before = await routeConsult(baseParams, deps(0));
+    expect(before.qualified[0]?.ownerId).toBe('agent-alpha');
+    expect(before.snapshot.withheld).toBeUndefined();
+
+    await disclose('agent-alpha');
+    const near = await routeConsult(baseParams, deps(0));
+    expect(near.snapshot.candidates.map((c) => c.ownerId)).not.toContain('agent-alpha');
+    expect(near.qualified.map((c) => c.ownerId)).not.toContain('agent-alpha');
+    expect(near.snapshot.withheld).toEqual({
+      restricted_turns: await turnsOf('agent-alpha'),
+      restricted_owners: 1,
+      rule: D006_TRANSCRIPT_RULE,
+    });
+    expect(near.snapshot.withheld!.restricted_turns).toBeGreaterThan(0);
+    // D-009: the count is a property of the ledger, never of the question.
+    const far = await routeConsult(baseParams, deps(-1.3));
+    expect(far.snapshot.withheld).toEqual(near.snapshot.withheld);
+  });
+
+  it('a released disclosure still excludes the expert — its transcript still holds the content', async () => {
+    await disclose('agent-alpha', true);
+    const r = await routeConsult(baseParams, deps(0));
+    expect(r.snapshot.candidates.map((c) => c.ownerId)).not.toContain('agent-alpha');
+    expect(r.snapshot.withheld?.restricted_owners).toBe(1);
+  });
+
+  it("does not count the requester's own disclosure against it", async () => {
+    await disclose('agent-self');
+    const r = await routeConsult(baseParams, deps(0));
+    expect(r.snapshot.withheld).toBeUndefined();
+    expect(r.qualified[0]?.ownerId).toBe('agent-alpha');
+  });
+
+  it('the lexical fallback excludes a restricted expert the same way', async () => {
+    const word = 'quokkafluxion';
+    await rootSql`
+      INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, speaker, text)
+      VALUES ('default', 'claude', 'sess-lex-a', 1, ${NOW.toISOString()}::timestamptz, 'agent-lex-a', 'assistant', ${'the ' + word + ' detail'}),
+             ('default', 'claude', 'sess-lex-b', 1, ${NOW.toISOString()}::timestamptz, 'agent-lex-b', 'assistant', ${'another ' + word + ' detail'})`;
+    try {
+      const params = { ...baseParams, question: word };
+      const open = await routeConsult(params, deps(null));
+      expect(open.snapshot.candidates.map((c) => c.ownerId)).toEqual(expect.arrayContaining(['agent-lex-a', 'agent-lex-b']));
+
+      await disclose('agent-lex-a');
+      const closed = await routeConsult(params, deps(null));
+      const owners = closed.snapshot.candidates.map((c) => c.ownerId);
+      expect(owners).toContain('agent-lex-b');
+      expect(owners).not.toContain('agent-lex-a');
+      expect(closed.snapshot.withheld).toMatchObject({ restricted_owners: 1, restricted_turns: 1 });
+    } finally {
+      await rootSql`DELETE FROM harness_shared.session_turns WHERE owner IN ('agent-lex-a', 'agent-lex-b')`;
+    }
+  });
+
+  it('refuses rather than routing unfiltered when the ledger cannot be read', async () => {
+    await rootSql.unsafe('ALTER TABLE harness_shared.personal_disclosures RENAME TO personal_disclosures_gone');
+    try {
+      await expect(routeConsult(baseParams, deps(0))).rejects.toMatchObject({ code: 'disclosure_ledger_unavailable' });
+    } finally {
+      await rootSql.unsafe('ALTER TABLE harness_shared.personal_disclosures_gone RENAME TO personal_disclosures');
+    }
   });
 });
 

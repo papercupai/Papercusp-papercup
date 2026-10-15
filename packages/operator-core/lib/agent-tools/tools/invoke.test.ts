@@ -30,8 +30,17 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
 }));
 
 import toolInvoke, { NestedToolRefusalError, summarizeNestedToolOutcome } from './invoke';
+import dbMigrateTool from '../db/migrate';
 
 const markEnabledMock = vi.mocked(dispatchWrapperMarkEnabled);
+
+const servingGenerationMock = vi.hoisted(() => ({
+  read: vi.fn(),
+}));
+vi.mock('../../serving-generation', () => ({
+  readServingGeneration: servingGenerationMock.read,
+}));
+import { readServingGeneration } from '../../serving-generation';
 
 type ToolDef = {
   name: string;
@@ -49,10 +58,17 @@ describe('tools:invoke registration', () => {
     expect(def.name).toBe('tools:invoke');
     expect(def.capability).toBe('agent_tools:read');
     expect(def.requirePrincipal).toBe(false);
-    // The inner target dispatcher owns the real timeout (agent tools max at
-    // 600s). The meta-wrapper must not race it with defineTool's 60s default.
-    expect(def.timeoutSec).toBe(660);
+    // db:migrate's explicit target budget (1020s) is longer than scorecards:emit's
+    // 900s budget. Keep the meta-wrapper at least 60s above it, not merely above
+    // the previously longest known target.
+    const dbMigrateTimeoutSec = (dbMigrateTool as unknown as { timeoutSec: number }).timeoutSec;
+    expect(def.timeoutSec - dbMigrateTimeoutSec).toBeGreaterThanOrEqual(60);
     expect(def.args.safeParse({ name: 'flags:set', args: { key: 'x', value: true } }).success).toBe(true);
+    expect(def.args.safeParse({
+      name: 'flags:set',
+      args: { key: 'x', value: true },
+      servingGeneration: 'serving-generation-v1:test',
+    }).success).toBe(true);
     expect(def.args.safeParse({ name: 'flags:set' }).success).toBe(true); // args optional
     expect(def.args.safeParse({}).success).toBe(false); // name required
     expect(def.args.safeParse({ name: '' }).success).toBe(false); // non-empty
@@ -82,6 +98,27 @@ describe('tools:invoke registration', () => {
     if (r.success) {
       expect(r.data.args).toEqual({ key: 'x', value: true, nested: { a: [1, 2, 3] } });
     }
+  });
+
+  it('recovers a long JSON record with one surplus closing brace (EI-25644994406425836)', () => {
+    const args = {
+      question: 'Can you review this decision?',
+      body: "Here's the longer context (with apostrophes and parentheses). ".repeat(30),
+      topics: ['papercusp-improvement'],
+      timeout_s: 0,
+    };
+    const r = def.args.safeParse({
+      name: 'coord:ask-owner',
+      args: `${JSON.stringify(args)}}`,
+    }) as { success: true; data: { args: unknown } } | { success: false };
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.args).toEqual(args);
+
+    const array = def.args.safeParse({
+      name: 'flags:set',
+      args: `${JSON.stringify(['not a record'])}}`,
+    });
+    expect(array.success).toBe(false);
   });
 
   it('still rejects a non-JSON string args payload (no silent pass-through)', () => {
@@ -135,6 +172,44 @@ describe('tools:invoke registration', () => {
 });
 
 describe('tools:invoke handler', () => {
+  it('dispatches only when the discovered serving generation matches', async () => {
+    vi.mocked(readServingGeneration).mockResolvedValue({
+      state: 'known',
+      revision: 'serving-generation-v1:test',
+      buildSha: 'test-build',
+      appliedMigrationDigest: 'test-migrations',
+      toolRegistryRevision: 'test-registry',
+    });
+    const dispatchTool = vi.fn(async () => ({ content: [{ type: 'text', text: 'ok' }] }));
+
+    await def.handler({
+      name: 'flags:get',
+      args: {},
+      servingGeneration: 'serving-generation-v1:test',
+    }, { dispatchTool });
+
+    expect(dispatchTool).toHaveBeenCalledExactlyOnceWith('flags:get', {});
+  });
+
+  it('refuses a mismatched serving generation before dispatching the target', async () => {
+    vi.mocked(readServingGeneration).mockResolvedValue({
+      state: 'known',
+      revision: 'serving-generation-v1:current',
+      buildSha: 'current-build',
+      appliedMigrationDigest: 'current-migrations',
+      toolRegistryRevision: 'current-registry',
+    });
+    const dispatchTool = vi.fn();
+
+    await expect(def.handler({
+      name: 'flags:set',
+      args: { key: 'k', value: true },
+      servingGeneration: 'serving-generation-v1:stale',
+    }, { dispatchTool })).rejects.toThrow(/stale_tool_contract/);
+
+    expect(dispatchTool).not.toHaveBeenCalled();
+  });
+
   it('routes the call through ctx.dispatchTool with name + args and returns its result', async () => {
     const calls: Array<[string, unknown]> = [];
     const metadata = vi.fn();
@@ -160,6 +235,26 @@ describe('tools:invoke handler', () => {
     );
 
     expect(dispatchTool).toHaveBeenCalledWith('plans:get', { slug: 'example', payloadTier: 'full' });
+  });
+
+  it('preserves nested result-door metadata on a successful re-dispatch', async () => {
+    const nested = {
+      content: [{ type: 'text' as const, text: '{"_projection":{"cursor":{"reason":"spill-write-failed"}}}' }],
+      _meta: {
+        resultDoor: {
+          truncated: true,
+          spillFailed: true,
+          spillErrorCode: 'unknown error',
+          spillError: 'private filesystem detail',
+        },
+      },
+    };
+    const res = await def.handler(
+      { name: 'work_items:get', args: { id: 'WI-123' } },
+      { dispatchTool: async () => nested },
+    );
+
+    expect((res as typeof nested)._meta).toEqual(nested._meta);
   });
 
   it('preserves an explicit target payloadTier in in-script re-dispatches', async () => {
@@ -220,6 +315,13 @@ describe('tools:invoke handler', () => {
     const nested = {
       isError: true,
       content: [{ type: 'text' as const, text: refusalText }],
+      _meta: {
+        abortCompletionReceipt: {
+          status: 'recorded',
+          msg_id: 'm-late',
+          diagnostics: { coordSendPhaseTimingsMs: [{ itemIndex: 0, prePersistMs: 8, persistMs: 12, postPersistMs: 5 }] },
+        },
+      },
     };
     const ctx = {
       metadata,
@@ -232,6 +334,7 @@ describe('tools:invoke handler', () => {
       code: 'invalid_input',
       details: { field: 'harness' },
       nestedResult: nested,
+      dispatchMetadata: nested._meta,
       message: refusalText,
     });
     expect(metadata).toHaveBeenCalledWith({

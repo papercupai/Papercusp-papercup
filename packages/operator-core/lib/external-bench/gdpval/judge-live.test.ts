@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { makeLiveGdpvalJudge } from './judge-live';
 import { combineDualOrder, parseJudgeVerdict } from '../grader/gdpval';
+import { benchDefaultModelId } from '../model-registry-snapshot';
 
 /** A fake Anthropic-ish client: records the params, returns a canned text message. */
 function fakeClient(text: string) {
@@ -18,7 +19,8 @@ describe('gdpval judge-live — makeLiveGdpvalJudge', () => {
     const out = await judge({ prompt: 'Write a memo', rubric: 'clarity', deliverableA: 'AAA', deliverableB: 'BBB' });
     expect(out).toContain('WINNER: A');
     const params = stream.mock.calls[0][0] as { system: unknown; messages: { content: string }[]; model: string };
-    expect(params.model).toBe('claude-opus-4-8');
+    // R-9: the default judge model is the registry-resolved benchmark default, never a literal.
+    expect(params.model).toBe(benchDefaultModelId());
     expect(params.messages[0].content).toContain('Write a memo');
     expect(params.messages[0].content).toContain('AAA');
   });

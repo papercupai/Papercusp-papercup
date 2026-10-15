@@ -23,6 +23,7 @@ import { spawnSync } from 'node:child_process';
 
 import {
   assessCargoDiskAdmission,
+  cargoTestRunReceipt,
   cargoCoverageOutputPath,
   cargoRunExitCode,
   CARGO_CACHE_TAG,
@@ -40,14 +41,24 @@ import {
   formatCargoResultLine,
   diskProbePathFor,
   parseCargoTestResultLines,
+  parseCargoMeasuredTestResults,
   pruneStaleBuildScriptOutputs,
   reclaimInactiveCargoArtifacts,
   resolveCargoBin,
   resolveCargoTargetDir,
+  buildCargoExecutionDetails,
+  cargoWorktreeProvenance,
+  UNMEASURED_CARGO_WORKTREE,
+  resolveCargoMutationPhase,
+  resolveCargoTestRunScope,
+  resolveCargoTestRunSource,
   shouldRunAffectedCargoSuite,
   stripCargoTerminalControlSequences,
 // @ts-ignore -- runtime reporter module intentionally tested from TypeScript.
 } from '../../../../scripts/lib/cargo-result.mjs';
+import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
+import { mutationFailureLines } from '../agent-tools/plans/spec-evidence-store';
+import { describeWorktreeDirt } from '../../../../libs/test-config/src/admin-test-runs-reporter';
 
 const GIB = 1024 ** 3;
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
@@ -55,6 +66,76 @@ const REPORTER_SOURCE = readFileSync(resolve(TEST_DIR, '../../../../scripts/repo
 const AFFECTED_TESTS_SOURCE = readFileSync(resolve(TEST_DIR, '../../../../scripts/affected-tests.mjs'), 'utf8');
 const VERIFY_SOURCE = readFileSync(resolve(TEST_DIR, '../../../../scripts/verify-tauri-headless.sh'), 'utf8');
 const RIG_SOURCE = readFileSync(resolve(TEST_DIR, '../../../../papercusp-desktop/bin/lib/deb-hetzner-rig.sh'), 'utf8');
+// Reporter subprocesses below exercise Cargo argument forwarding and result recording, not
+// the host's disk state. Keep their admission policy independent of live headroom. The
+// refusal case sets an intentionally restrictive threshold and covers the real CLI gate.
+const PERMISSIVE_REPORTER_DISK_ENV = Object.freeze({
+  PAPERCUSP_DISK_ALARM_FREE_PCT: '0.001',
+  PAPERCUSP_DISK_ALARM_FREE_GB: '0.01',
+  PAPERCUSP_CARGO_DISK_ALARM_PERCENT_FLOOR_BYPASS_GB: '0.01',
+});
+
+describe('Cargo reporter CLI usage (EI-25299812440954833)', () => {
+  it('explains libtest forwarding and rejects a missing manifest before running Cargo', () => {
+    const reporterPath = resolve(TEST_DIR, '../../../../scripts/report-cargo-tests.mjs');
+    for (const args of [[], ['--coverage']]) {
+      const result = spawnSync(process.execPath, [reporterPath, ...args], {
+        encoding: 'utf8', timeout: 10_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('[-- <libtest args>]');
+      expect(result.stderr).toContain('Arguments after -- go to the libtest test binary');
+      expect(result.stderr).toContain('Cargo flags such as --all-targets are not supported');
+      expect(result.stderr).not.toContain('<cargo test args>');
+      expect(result.stdout).toBe('');
+    }
+    expect(REPORTER_SOURCE).toContain('[-- <libtest args>]');
+    expect(REPORTER_SOURCE).toContain('Cargo.toml -- --nocapture');
+    expect(REPORTER_SOURCE).not.toContain('<cargo test args>');
+  });
+
+  it('forwards supported libtest arguments after Cargo -- in normal and coverage runs', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cargo-cli-args-'));
+    const manifest = join(root, 'Cargo.toml');
+    const argvFile = join(root, 'argv.json');
+    const reporterPath = resolve(TEST_DIR, '../../../../scripts/report-cargo-tests.mjs');
+    try {
+      writeFileSync(manifest, '[package]\nname="cli-fixture"\nversion="0.0.0"\n');
+      writeFileSync(join(root, 'cargo'), [
+        '#!/usr/bin/env node',
+        "require('node:fs').writeFileSync(process.env.CARGO_CLI_ARGV_FILE, JSON.stringify(process.argv.slice(2)));",
+        "console.log('test fixture ... ok');",
+      ].join('\n'), { mode: 0o755 });
+      for (const coverage of [false, true]) {
+        const result = spawnSync(process.execPath, [
+          reporterPath, '--manifest-path', manifest,
+          ...(coverage ? ['--coverage', '--coverage-output', join(root, 'coverage.lcov')] : []),
+          '--', '--nocapture', '--exact', 'fixture',
+        ], {
+          encoding: 'utf8', timeout: 10_000,
+          env: {
+            ...process.env, ...PERMISSIVE_REPORTER_DISK_ENV, PATH: `${root}:${process.env.PATH ?? ''}`,
+            CARGO_TARGET_DIR: join(root, 'target'), CARGO_CLI_ARGV_FILE: argvFile,
+            // Keep this fake-Cargo invocation away from the live test ledger.
+            HARNESS_ADMIN_DATABASE_URL: 'postgres://fixture:fixture@127.0.0.1:1/fixture',
+          },
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stderr).not.toContain('shared test-run reporter helpers unavailable');
+        const args = JSON.parse(readFileSync(argvFile, 'utf8')) as string[];
+        expect(args[0]).toBe(coverage ? 'llvm-cov' : 'test');
+        expect(args.slice(args.indexOf('--') + 1)).toEqual([
+          '--test-threads=4', '--nocapture', '--exact', 'fixture',
+        ]);
+        expect(args.slice(0, args.indexOf('--'))).toContain('--manifest-path');
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 25_000);
+});
 
 const SIGTERM_CARGO_OUTPUT = `
 error: could not compile \`papercusp-desktop\` (bin "papercusp-desktop" test)
@@ -63,11 +144,325 @@ Caused by:
   process didn't exit successfully: \`/usr/bin/rustc --crate-name papercusp_desktop\` (signal: 15, SIGTERM: termination signal)
 `;
 
+describe('Cargo measured passing cases and layers (P-002)', () => {
+  it('records real virtual-workspace target paths and excludes a real inherited child harness', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cargo-workspace-reporter-'));
+    const receiptFile = join(root, 'receipts.ndjson');
+    try {
+      writeFileSync(join(root, 'Cargo.toml'), '[workspace]\nmembers = ["a", "b"]\nresolver = "2"\n');
+      for (const name of ['a', 'b']) {
+        mkdirSync(join(root, name, 'src'), { recursive: true });
+        writeFileSync(join(root, name, 'Cargo.toml'), `[package]\nname = "reporter-fixture-${name}"\nversion = "0.0.0"\nedition = "2021"\n`);
+        writeFileSync(join(root, name, 'src/lib.rs'), `
+          #[cfg(test)] mod tests {
+            #[test] fn same() {}
+            ${name === 'a' ? `#[test] fn reentrant() {
+              if std::env::var_os("REPORTER_FIXTURE_CHILD").is_none() {
+                let status = std::process::Command::new(std::env::current_exe().unwrap())
+                  .env("REPORTER_FIXTURE_CHILD", "1")
+                  .args(["--exact", "tests::reentrant"]).status().unwrap();
+                assert!(status.success());
+              }
+            }` : ''}
+          }
+        `);
+      }
+      const result = spawnSync(process.execPath, [
+        '--import', 'tsx', resolve(TEST_DIR, '../../../../scripts/report-cargo-tests.mjs'),
+        '--manifest-path', join(root, 'Cargo.toml'),
+      ], {
+        encoding: 'utf8', timeout: 90_000,
+        env: { ...process.env, ...PERMISSIVE_REPORTER_DISK_ENV, CARGO_TARGET_DIR: join(root, 'target'), CARGO_BUILD_JOBS: '1',
+          HARNESS_ADMIN_DATABASE_URL: 'postgres://fixture:fixture@127.0.0.1:1/fixture',
+          PAPERCUSP_TEST_RUN_RECEIPT_FILE: receiptFile },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain('parsed 3 test results;');
+      const receipts = readFileSync(receiptFile, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      expect(receipts.map(r => r.filePath).sort()).toEqual([
+        '. (cargo aggregate)', 'a/src/lib.rs::tests::reentrant',
+        'a/src/lib.rs::tests::same', 'b/src/lib.rs::tests::same',
+      ]);
+      expect(receipts.every(r => r.status === 'pass')).toBe(true);
+      // The DB is intentionally unreachable: failed recording must not fail Cargo.
+      expect(receipts.every(r => r.outcome === 'failed')).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 100_000);
+
+  it('uses unique metadata for llvm-cov headers and refuses ambiguous package attribution', () => {
+    const output = [
+      '     Running tests/shared.rs (/target/debug/deps/shared-123abc)',
+      'running 1 test', 'test contract ... ok', 'test result: ok. 1 passed',
+    ].join('\n');
+    const targets = [{ name: 'shared', src_path: '/mobile/a/tests/shared.rs' }];
+    expect(parseCargoMeasuredTestResults(output, { root: '/mobile', targets })[0])
+      .toMatchObject({ testFilePath: 'a/tests/shared.rs', testLayer: 'integration' });
+    expect(parseCargoMeasuredTestResults(output, { root: '/mobile', targets: [
+      ...targets, { name: 'shared', src_path: '/mobile/b/tests/shared.rs' },
+    ] })[0]).not.toHaveProperty('testFilePath');
+  });
+
+  it('counts the outer libtest run, excluding inherited reentrant child output', () => {
+    const rows = parseCargoMeasuredTestResults([
+      '     Running unittests src/lib.rs (target/debug/deps/bindings-123)',
+      'running 2 tests',
+      'test independent ... ok',
+      'running 1 test',
+      'test reentrant ... FAILED',
+      'test result: FAILED. 0 passed; 1 failed',
+      'test reentrant ... ok',
+      'test result: ok. 2 passed; 0 failed',
+    ].join('\n'));
+    expect(rows).toEqual([
+      { name: 'independent', outcome: 'ok', testLayer: 'unit' },
+      { name: 'reentrant', outcome: 'ok', testLayer: 'unit' },
+    ]);
+  });
+
+  it('attributes identical workspace case names to their exact compiler targets', () => {
+    const artifact = (pkg: string, executable: string) => JSON.stringify({
+      reason: 'compiler-artifact', executable,
+      target: { src_path: `/mobile/crates/${pkg}/src/lib.rs` },
+    });
+    const rows = parseCargoMeasuredTestResults([
+      artifact('a', '/target/debug/deps/shared-111'),
+      artifact('b', '/target/debug/deps/shared-222'),
+      '     Running unittests src/lib.rs (/target/debug/deps/shared-111)',
+      'running 1 test', 'test tests::same ... ok',
+      'test result: ok. 1 passed; 0 failed',
+      '     Running unittests src/lib.rs (/target/debug/deps/shared-222)',
+      'running 1 test', 'test tests::same ... FAILED',
+      'test result: FAILED. 0 passed; 1 failed',
+    ].join('\n'), { root: '/mobile' });
+    expect(rows).toEqual([
+      { name: 'tests::same', outcome: 'ok', testLayer: 'unit', testFilePath: 'crates/a/src/lib.rs' },
+      { name: 'tests::same', outcome: 'FAILED', testLayer: 'unit', testFilePath: 'crates/b/src/lib.rs' },
+    ]);
+  });
+
+  it('keeps partial outer failures without treating captured stdout as executed cases', () => {
+    expect(parseCargoMeasuredTestResults([
+      '     Running tests/contract.rs (target/debug/deps/contract-123)',
+      'running 2 tests', 'test broken ... FAILED',
+      '---- broken stdout ----', 'test invented ... ok',
+      'test result: FAILED. 0 passed; 1 failed',
+      '     Running tests/crashed.rs (target/debug/deps/crashed-123)',
+      'running 2 tests', 'test before_crash ... ok',
+    ].join('\n'))).toEqual([
+      { name: 'broken', outcome: 'FAILED', testLayer: 'integration' },
+      { name: 'before_crash', outcome: 'ok', testLayer: 'integration' },
+    ]);
+  });
+
+  it('records ignored tests with their libtest reason without inventing passing results', () => {
+    const output = [
+      '     Running tests/live_smoke.rs (target/debug/deps/live_smoke-123)',
+      'test live_p0_contract_smoke ... ignored, needs a live operator, two workspaces and one-time pair token',
+      'test malformed_pass ... ok, unrelated text',
+      'test malformed_failure ... FAILED, unrelated text',
+      'test real_pass ... ok',
+    ].join('\n');
+    expect(parseCargoTestResultLines(output)).toEqual([
+      { name: 'live_p0_contract_smoke', outcome: 'ignored' },
+      { name: 'real_pass', outcome: 'ok' },
+    ]);
+    expect(parseCargoMeasuredTestResults(output)).toEqual([
+      { name: 'live_p0_contract_smoke', outcome: 'ignored', testLayer: 'integration' },
+      { name: 'real_pass', outcome: 'ok', testLayer: 'integration' },
+    ]);
+  });
+
+  it('distinguishes unit, integration and unannounced results from target headers', () => {
+    const rows = parseCargoMeasuredTestResults([
+      'test unannounced ... ok',
+      '     Running unittests src/lib.rs (target/debug/deps/core-123)',
+      'test tests::unit ... ok',
+      'test tests::ignored ... ignored',
+      'test result: ok. 1 passed; 0 failed; 1 ignored',
+      '     Running tests/client_test.rs (target/debug/deps/client_test-123)',
+      'test null_status ... ok',
+      'test rejected ... FAILED',
+      'test result: FAILED. 1 passed; 1 failed',
+      '   Doc-tests core',
+      'test src/lib.rs - example (line 2) ... ok',
+      'test trailing ... ok',
+    ].join('\n'));
+    expect(rows).toEqual([
+      { name: 'unannounced', outcome: 'ok' },
+      { name: 'tests::unit', outcome: 'ok', testLayer: 'unit' },
+      { name: 'tests::ignored', outcome: 'ignored', testLayer: 'unit' },
+      { name: 'null_status', outcome: 'ok', testLayer: 'integration' },
+      { name: 'rejected', outcome: 'FAILED', testLayer: 'integration' },
+      { name: 'trailing', outcome: 'ok' },
+    ]);
+  });
+
+  it('persists passing case identity and measured layer in the strict ledger contract', () => {
+    const detail = buildCargoExecutionDetails({
+      root: '/mobile', filePath: 'core::null_status', passed: 1,
+      passedCaseTitles: ['null_status', 'null_status', 'bad\ntitle', 'extra'],
+      testLayer: 'integration', env: {},
+    });
+    expect(parseTestRunExecutionDetails(detail)).toMatchObject({
+      passedCaseTitles: ['null_status'], testLayer: 'integration',
+    });
+    const crash = buildCargoExecutionDetails({ root: '/mobile', filePath: 'aggregate',
+      passed: 1, collectionFailed: true, passedCaseTitles: ['unexecuted'], env: {} });
+    expect(crash).not.toHaveProperty('passedCaseTitles');
+    expect(crash).not.toHaveProperty('testLayer');
+    expect(REPORTER_SOURCE).toContain('parseCargoMeasuredTestResults(combinedOutput ?? combined, { root: REPO_ROOT, targets })');
+    expect(REPORTER_SOURCE).toContain('passedCaseTitles: r.outcome');
+    expect(REPORTER_SOURCE).toContain('testRunReporter?.setRunRoot?.(REPO_ROOT)');
+  });
+});
+
 const SIGKILL_CARGO_OUTPUT = `
 error: could not compile \`papercusp-desktop\` (bin "papercusp-desktop" test)
 Caused by:
   process didn't exit successfully: \`/usr/bin/rustc --crate-name papercusp_desktop\` (signal: 9, SIGKILL: kill)
 `;
+
+describe('cargo test_runs rows are attributed to a harness/workspace (WI-10006828)', () => {
+  const VITEST_REPORTER_SOURCE = readFileSync(
+    resolve(TEST_DIR, '../../../../libs/test-config/src/admin-test-runs-reporter.ts'),
+    'utf8',
+  );
+
+  /** The `process.env.X ||` chain inside one named resolver in the vitest reporter. */
+  function vitestPrecedence(fnName: string): string[] {
+    const start = VITEST_REPORTER_SOURCE.indexOf(`export function ${fnName}(`);
+    expect(start, `${fnName} must exist in admin-test-runs-reporter.ts`).toBeGreaterThanOrEqual(0);
+    const body = VITEST_REPORTER_SOURCE.slice(start, VITEST_REPORTER_SOURCE.indexOf('\n}\n', start));
+    return [...body.matchAll(/process\.env\.([A-Z_]+)/g)].map((m) => m[1]);
+  }
+
+  it('resolves the harness and workspace with the same precedence as the vitest reporter', () => {
+    const harnessKeys = vitestPrecedence('resolveTestRunHarnessSlug');
+    const workspaceKeys = vitestPrecedence('resolveTestRunWorkspaceId');
+    // Calibration: an empty list would make every assertion below vacuous.
+    expect(harnessKeys.length).toBeGreaterThanOrEqual(2);
+    expect(workspaceKeys.length).toBeGreaterThanOrEqual(2);
+
+    for (const [field, keys] of [['harnessSlug', harnessKeys], ['workspaceId', workspaceKeys]] as const) {
+      expect(resolveCargoTestRunScope({})[field]).toBeNull();
+      // Each key alone resolves; and each key beats every key after it.
+      keys.forEach((key, i) => {
+        expect(resolveCargoTestRunScope({ [key]: `v-${key}` })[field]).toBe(`v-${key}`);
+        const env = Object.fromEntries(keys.slice(i).map((k) => [k, `v-${k}`]));
+        expect(resolveCargoTestRunScope(env)[field]).toBe(`v-${key}`);
+      });
+      // An empty string falls through, exactly like the `||` chain it mirrors.
+      expect(resolveCargoTestRunScope({ [keys[0]]: '', [keys[1]]: 'second' })[field]).toBe('second');
+    }
+  });
+
+  it('the reporter INSERT writes harness_slug and workspace_id from the resolved scope', () => {
+    const insert = REPORTER_SOURCE.slice(REPORTER_SOURCE.indexOf('INSERT INTO harness_shared.test_runs'));
+    const columns = insert.slice(insert.indexOf('(') + 1, insert.indexOf(')')).split(',').map((c) => c.trim());
+    expect(columns).toContain('harness_slug');
+    expect(columns).toContain('workspace_id');
+    const values = insert.slice(insert.indexOf('VALUES'));
+    const valueList = values.slice(values.indexOf('(') + 1, values.indexOf('\n        `')).trim();
+    // Column and value lists must stay aligned, with the scope values in the matching slots.
+    const valueSlots = valueList.replace(/\)\s*$/, '').split(',').map((v) => v.trim());
+    expect(valueSlots).toHaveLength(columns.length);
+    expect(valueSlots[columns.indexOf('harness_slug')]).toBe('${harnessSlug}');
+    expect(valueSlots[columns.indexOf('workspace_id')]).toBe('${workspaceId}');
+    expect(REPORTER_SOURCE).toMatch(/const \{ harnessSlug, workspaceId \} = resolveCargoTestRunScope\(\)/);
+    // The probe phase rides in execution_details, and the row source comes from the shared rule.
+    expect(columns).toContain('execution_details');
+    expect(valueSlots[columns.indexOf('execution_details')]).toContain('executionDetails');
+    expect(REPORTER_SOURCE).toMatch(/const executionDetails = buildCargoExecutionDetails\(\{ \.\.\.row\.execution,/);
+    expect(REPORTER_SOURCE).toMatch(/const source = resolveCargoTestRunSource\(\)/);
+  });
+
+  it('a mutation probe records cargo rows as source=mutation-probe, like the vitest reporter', () => {
+    // Pinned to the vitest reporter's own rule so the two cannot drift apart silently.
+    expect(VITEST_REPORTER_SOURCE).toMatch(
+      /if \(process\.env\.PAPERCUSP_MUTATION_PROBE === '1'\) return 'mutation-probe';/,
+    );
+    expect(resolveCargoTestRunSource({})).toBe('local');
+    expect(resolveCargoTestRunSource({ CI: '1' })).toBe('ci');
+    expect(resolveCargoTestRunSource({ CI: '1', PAPERCUSP_MUTATION_PROBE: '1' })).toBe('mutation-probe');
+    expect(resolveCargoTestRunSource({ PAPERCUSP_TEST_RUN_SOURCE: 'admin-ui' })).toBe('admin-ui');
+    expect(resolveCargoTestRunSource({ PAPERCUSP_TEST_RUN_SOURCE: 'bogus' })).toBe('local');
+    expect(resolveCargoTestRunSource({ PAPERCUSP_MUTATION_PROBE: '1', PAPERCUSP_TEST_RUN_SOURCE: 'ci' }))
+      .toBe('mutation-probe');
+  });
+
+  it('records the probe phase, and no phase outside a probe', () => {
+    expect(resolveCargoMutationPhase({})).toBeNull();
+    expect(resolveCargoMutationPhase({ PAPERCUSP_MUTATION_PHASE: 'mutant' })).toBeNull();
+    expect(resolveCargoMutationPhase({ PAPERCUSP_MUTATION_PROBE: '1' })).toBeNull();
+    expect(resolveCargoMutationPhase({ PAPERCUSP_MUTATION_PROBE: '1', PAPERCUSP_MUTATION_PHASE: ' mutant ' }))
+      .toBe('mutant');
+  });
+
+  it('writes Cargo mutation-probe receipt lines using the shared receipt helper (WI-10006990)', () => {
+    const receipt = cargoTestRunReceipt({
+      filePath: 'papercusp-desktop/src-tauri::tests::recovery_page',
+      status: 'fail',
+      returnedId: 20865149,
+    });
+    expect(receipt).toEqual({
+      filePath: 'papercusp-desktop/src-tauri::tests::recovery_page',
+      status: 'fail',
+      outcome: 'inserted',
+      id: '20865149',
+    });
+    expect(cargoTestRunReceipt({ filePath: 'c::test', status: 'pass', error: 'pg_insert_timeout_2000ms' }))
+      .toEqual({ filePath: 'c::test', status: 'pass', outcome: 'timeout', reason: 'pg_insert_timeout_2000ms' });
+    expect(cargoTestRunReceipt({ filePath: 'c::test', status: 'fail', error: 'pg_unavailable' }))
+      .toEqual({ filePath: 'c::test', status: 'fail', outcome: 'failed', reason: 'pg_unavailable' });
+    expect(cargoTestRunReceipt({ filePath: 'c::test', status: 'fail' }))
+      .toEqual({ filePath: 'c::test', status: 'fail', outcome: 'failed', reason: 'insert_returned_no_id' });
+
+    expect(REPORTER_SOURCE).toContain('RETURNING id');
+    expect(REPORTER_SOURCE).toMatch(/appendTestRunReceipts\?\.\(process\.env, receipts\)/);
+    expect(REPORTER_SOURCE).toMatch(/returnedId: returned\?\.\[0\]\?\.id/);
+  });
+
+  // WI-10006849: the contract parser is strict, and the spec evaluator reads failed-case
+  // identity ONLY from a record it accepts — a partial record silently erased every cargo
+  // mutant's failing case, so no cargo clause could ever prove falsifiability.
+  it('writes execution_details the shared contract parser accepts, naming the failed cargo case', () => {
+    const probe = { PAPERCUSP_MUTATION_PROBE: '1', PAPERCUSP_MUTATION_PHASE: 'mutant' };
+    const failedRow = buildCargoExecutionDetails({
+      root: '/repo', filePath: 'papercusp-desktop/src-tauri::tests::tracker_measures', failed: 1,
+      failedCaseTitles: ['tests::tracker_measures'], harnessSlug: 'papercusp', workspaceId: 'ws', env: probe,
+    });
+    expect(parseTestRunExecutionDetails(failedRow)).toMatchObject({
+      failed: 1, failedCaseTitles: ['tests::tracker_measures'], mutationPhase: 'mutant', harnessSlug: 'papercusp',
+    });
+    // The evaluator's own line derivation turns that identity into a declarable case prefix.
+    expect(mutationFailureLines('thread panicked at src/main.rs:1:1:', failedRow))
+      .toEqual(['tests::tracker_measures: (recorded failed assertion)']);
+
+    const passRow = buildCargoExecutionDetails({ root: '/repo', filePath: 'c::tests::ok', passed: 1, env: {} });
+    expect(parseTestRunExecutionDetails(passRow)).toMatchObject({ passed: 1, failed: 0, mutationPhase: null });
+    expect(passRow).not.toHaveProperty('failedCaseTitles');
+
+    // A crashed binary is a collection failure: it may name no failed case.
+    const crashed = buildCargoExecutionDetails({
+      root: '/repo', filePath: 'c (cargo aggregate)', collectionFailed: true, failed: 0, failedCaseTitles: ['x'], env: {},
+    });
+    expect(parseTestRunExecutionDetails(crashed)).toBeDefined();
+    expect(crashed).not.toHaveProperty('failedCaseTitles');
+
+    // Titles beyond the failed count, duplicates and control characters are never recorded.
+    const aggregate = buildCargoExecutionDetails({
+      root: '/repo', filePath: 'c (cargo aggregate)', failed: 2,
+      failedCaseTitles: ['tests::a', 'tests::a', 'bad\ntitle', 'tests::b', 'tests::c'], env: {},
+    });
+    expect(aggregate.failedCaseTitles).toEqual(['tests::a', 'tests::b']);
+    expect(parseTestRunExecutionDetails(aggregate)).toBeDefined();
+
+    // The partial record this replaces is exactly what the parser rejects.
+    expect(parseTestRunExecutionDetails({ mutationPhase: 'mutant' })).toBeUndefined();
+  });
+});
 
 describe('cargo result classification (EI-20041922041407287)', () => {
   it('recognizes SIGTERM as an externally killed compiler, not a compile failure', () => {
@@ -142,7 +537,7 @@ describe('cargo test result parsing', () => {
       'native_console::tests::ignored_case',
     ]);
     expect(results.map(({ outcome }) => outcome)).toEqual(['ok', 'ok', 'ignored']);
-    expect(REPORTER_SOURCE).toContain('const results = parseCargoTestResultLines(combined);');
+    expect(REPORTER_SOURCE).toContain('const results = measuredResults;');
   });
 });
 
@@ -194,7 +589,7 @@ describe('cargo coverage output placement (P-010, design-to-code-coverage-seam-2
     // work unchanged. If this ever became a separate runner, the per-test rows
     // would silently stop being recorded.
     expect(REPORTER_SOURCE).toContain("'llvm-cov',");
-    expect(REPORTER_SOURCE).toContain('const results = parseCargoTestResultLines(combined);');
+    expect(REPORTER_SOURCE).toContain('const results = measuredResults;');
   });
 });
 
@@ -230,6 +625,41 @@ describe('affected-runner Cargo selection (EI-21851033142703518)', () => {
 });
 
 describe('cargo disk admission (EI-21047688909295463)', () => {
+  it('refuses before spawning the Cargo test command when the configured absolute disk floor is unmet', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cargo-admission-refusal-'));
+    const markerFile = join(root, 'cargo-spawned');
+    const reporterPath = resolve(TEST_DIR, '../../../../scripts/report-cargo-tests.mjs');
+    try {
+      writeFileSync(join(root, 'Cargo.toml'), '[package]\nname="admission-fixture"\nversion="0.0.0"\n');
+      mkdirSync(join(root, 'target'), { recursive: true });
+      writeFileSync(join(root, 'cargo'), [
+        '#!/usr/bin/env node',
+        "if (process.argv[2] === 'test') require('node:fs').writeFileSync(process.env.CARGO_CLI_MARKER_FILE, 'spawned');",
+      ].join('\n'), { mode: 0o755 });
+
+      const result = spawnSync(process.execPath, [
+        reporterPath, '--manifest-path', join(root, 'Cargo.toml'),
+      ], {
+        encoding: 'utf8', timeout: 15_000,
+        env: {
+          ...process.env,
+          PATH: `${root}:${process.env.PATH ?? ''}`,
+          CARGO_TARGET_DIR: join(root, 'target'),
+          CARGO_CLI_MARKER_FILE: markerFile,
+          HARNESS_ADMIN_DATABASE_URL: 'postgres://fixture:fixture@127.0.0.1:1/fixture',
+          PAPERCUSP_DISK_ALARM_FREE_GB: '1000000000',
+        },
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(CARGO_DISK_REFUSAL_EXIT_CODE);
+      expect(result.stderr).toContain('REFUSED before spawning Cargo');
+      expect(existsSync(markerFile)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('refuses a new native suite below the standing 10% free-space floor', () => {
     const result = assessCargoDiskAdmission({
       totalBytes: 2_000 * GIB,
@@ -1359,5 +1789,130 @@ describe('affected-tests cargo failure labelling (EI-21950408988436927)', () => 
     expect(forgivingControl({ code: CARGO_DISK_REFUSAL_EXIT_CODE }).gating).toBe(false);
     // Calibration: still gating on a real red, so the control is not simply inert.
     expect(forgivingControl({ code: 1 }).gating).toBe(true);
+  });
+});
+
+// WI-10006749: on 2026-10-06 a reclaim under disk pressure deleted <target>/release whole,
+// minutes after a build, and with it the test-artifact .deb archived inside it.
+// papercusp-desktop/bin/build-and-archive-deb.sh now archives under
+// <target>/.papercusp-deb-archive/<profile>/. This pins the other half of that contract: no
+// reclaim candidate may ever contain that directory.
+describe('deb archives survive a full reclaim of the Cargo target (WI-10006749)', () => {
+  it('reclaims every stale profile but never <target>/.papercusp-deb-archive', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'papercusp-deb-archive-reclaim-'));
+    const target = resolve(root, 'cargo-target');
+    const archived = resolve(target, '.papercusp-deb-archive', 'release', 'archive', 'x-Papercusp Server.deb');
+    const testArtifact = resolve(target, '.papercusp-deb-archive', 'release', 'test-artifacts', 'x-TEST-ARTIFACT-Papercusp Server.deb');
+    // The old location, inside a candidate. Its deletion is the calibration that this reclaim
+    // really had the authority to delete an archive left where the script used to put it.
+    const oldLocation = resolve(target, 'release', 'bundle', 'deb', 'test-artifacts', 'old-TEST-ARTIFACT.deb');
+    try {
+      for (const f of [archived, testArtifact, oldLocation]) {
+        mkdirSync(dirname(f), { recursive: true });
+        writeFileSync(f, 'deb');
+      }
+      ensureCargoCacheTag(target);
+      const old = (Date.now() - 60_000) / 1000;
+      for (const d of [
+        dirname(oldLocation),
+        resolve(target, 'release', 'bundle', 'deb'),
+        resolve(target, 'release', 'bundle'),
+        resolve(target, 'release'),
+        dirname(archived),
+        dirname(testArtifact),
+        resolve(target, '.papercusp-deb-archive', 'release'),
+        resolve(target, '.papercusp-deb-archive'),
+        target,
+      ]) {
+        utimesSync(d, old, old);
+      }
+
+      const result = reclaimInactiveCargoArtifacts({
+        tmpDir: root,
+        cargoRoots: [target],
+        configuredTargetDir: target,
+        now: Date.now(),
+        policy: {
+          ...DEFAULT_CARGO_RECLAIM_POLICY,
+          cargoTtlMs: 1,
+          heartbeatTtlMs: 1,
+          minCargoArtifactBytes: 0,
+          maxBytes: 1024 * 1024,
+          maxEntries: 50,
+        },
+        pathIsLive: () => false,
+        slotLockIsHeld: () => false,
+      });
+
+      expect(result.reclaimed).toBeGreaterThan(0);
+      expect(existsSync(oldLocation)).toBe(false);
+      expect(readFileSync(archived, 'utf8')).toBe('deb');
+      expect(readFileSync(testArtifact, 'utf8')).toBe('deb');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('cargo rows record the MEASURED worktree, never the column default (WI-10006860)', () => {
+  // test_runs.worktree_dirty is NOT NULL DEFAULT false, and spec freshness rates a run current
+  // only when it is false. A reporter that omits the column claims every cargo run — an in-tree
+  // mutant included — came from a clean tree.
+  const SHA = 'a'.repeat(40);
+  const clean = { commit: SHA, porcelain: '' };
+  const provenanceOf = (before: unknown, after: unknown) =>
+    cargoWorktreeProvenance({ before, after, describeDirt: describeWorktreeDirt });
+  const detailsFor = (worktree: unknown) =>
+    parseTestRunExecutionDetails(buildCargoExecutionDetails({
+      root: '/repo', filePath: 'papercusp-desktop/src-tauri::tests::x', passed: 1, harnessSlug: 'papercusp',
+      workspaceId: 'papercusp-workspace', env: {}, ...(worktree === undefined ? {} : { worktree }),
+    }));
+
+  it('a clean, unmoved tree is recorded clean with its commit, and still parses under the strict contract', () => {
+    const worktree = provenanceOf(clean, clean);
+    expect(worktree).toEqual({ commitSha: SHA, worktreeDirty: false, worktreeDirtyReason: null });
+    const details = detailsFor(worktree);
+    expect(details).not.toBeNull();
+    expect(details?.worktreeDirty).toBe(false);
+    expect(details?.commitSha).toBe(SHA);
+    expect(details?.worktreeDirtyReason).toBeUndefined();
+  });
+
+  it.each([
+    ['an uncommitted file', clean, { commit: SHA, porcelain: ' M papercusp-desktop/src-tauri/src/main.rs' }, /porcelain line/],
+    ['a moved HEAD', clean, { commit: 'b'.repeat(40), porcelain: '' }, /HEAD moved/],
+    ['an unreadable git status', clean, { commit: SHA, porcelain: null }, /unreadable/],
+    ['an unreadable HEAD', { commit: null, porcelain: '' }, clean, /HEAD unreadable/],
+  ])('%s is recorded dirty with the reason the vitest reporter would name', (_label, before, after, reason) => {
+    const worktree = provenanceOf(before, after);
+    expect(worktree.worktreeDirty).toBe(true);
+    expect(worktree.worktreeDirtyReason).toMatch(reason);
+    const details = detailsFor(worktree);
+    expect(details?.worktreeDirty).toBe(true);
+    expect(details?.worktreeDirtyReason).toMatch(reason);
+  });
+
+  it('a missing snapshot, describer, or throwing describer is dirty, never clean', () => {
+    expect(cargoWorktreeProvenance({ before: null, after: clean, describeDirt: describeWorktreeDirt })).toEqual(UNMEASURED_CARGO_WORKTREE);
+    expect(cargoWorktreeProvenance({ before: clean, after: clean, describeDirt: undefined })).toEqual(UNMEASURED_CARGO_WORKTREE);
+    const thrown = cargoWorktreeProvenance({ before: clean, after: clean, describeDirt: () => { throw new Error('boom'); } });
+    expect(thrown.worktreeDirty).toBe(true);
+    expect(thrown.worktreeDirtyReason).toMatch(/boom/);
+    expect(detailsFor(undefined)?.worktreeDirty).toBe(true);
+  });
+
+  it('the reporter snapshots around the cargo spawn and INSERTs commit_sha and worktree_dirty from it', () => {
+    const insert = REPORTER_SOURCE.slice(REPORTER_SOURCE.indexOf('INSERT INTO harness_shared.test_runs'));
+    const columns = insert.slice(0, insert.indexOf('VALUES'));
+    expect(columns).toMatch(/\bcommit_sha\b/);
+    expect(columns).toMatch(/\bworktree_dirty\b/);
+    expect(insert).toMatch(/\$\{worktree\.commitSha\}, \$\{worktree\.worktreeDirty\}/);
+    const before = REPORTER_SOURCE.indexOf('const worktreeBefore = await snapshotWorktree(');
+    const spawnCall = REPORTER_SOURCE.indexOf('await runCargoTest(manifestAbs');
+    const provenance = REPORTER_SOURCE.indexOf('cargoWorktreeProvenance({', spawnCall);
+    expect(before).toBeGreaterThan(-1);
+    expect(spawnCall).toBeGreaterThan(before);
+    expect(provenance).toBeGreaterThan(spawnCall);
+    expect(REPORTER_SOURCE).toMatch(/tsImport\('\.\.\/libs\/test-config\/src\/admin-test-runs-reporter\.ts', import\.meta\.url\)/);
   });
 });

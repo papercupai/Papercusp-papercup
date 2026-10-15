@@ -11,6 +11,50 @@ import {
 const HEAD = "a".repeat(40);
 
 describe("targeted gate outcome evidence", () => {
+  it("retains bounded stdout and stderr for a clean nonzero task, including failure before test reporting", async () => {
+    const result = await measureTargetedGateRuns(["lint:broken", "lint:after"], async (script) => ({
+      code: script === "lint:broken" ? 1 : 0,
+      stdout: "x".repeat(10_000) + "\nSTDOUT-LAST-LINE",
+      stderr: "y".repeat(10_000) + "\nCONFIG-LOAD-FAILED; module missing",
+    }));
+    expect(result.pass).toBe(false);
+    expect(result.coverageComplete).toBe(true);
+    const failed = result.perGate?.[0];
+    expect(failed).toMatchObject({ id: "lint:broken", status: "fail" });
+    expect(failed?.outputTail).toContain("STDOUT-LAST-LINE");
+    expect(failed?.outputTail).toContain("CONFIG-LOAD-FAILED; module missing");
+    expect(failed?.outputTail!.length).toBeLessThanOrEqual(2_000);
+    expect(result.summary).toContain("CONFIG-LOAD-FAILED, module missing");
+    expect(result.perGate?.[1]).toEqual({ id: "lint:after", status: "pass" });
+  });
+
+  it("names the failing test in both outputTail and summary, not npm's footer (WI-10007516)", async () => {
+    // pipeline_events 601064's shape: vitest on stdout, ending in the source-map receipt;
+    // npm's lifecycle footer on stderr. Pre-fix, both artifacts held only the footer.
+    const failCase = "admission fix precheck exec > kills the backgrounded grandchild";
+    const stdout = [
+      ` FAIL  lib/release/admission-fix-precheck-exec.test.ts > ${failCase}`,
+      "AssertionError: expected false to be true // Object.is equality",
+      ...Array.from({ length: 40 }, (_, i) => `     ${i}|     frame line ${"·".repeat(40)}`),
+      " Test Files  1 failed | 904 passed (905)",
+      "[executed-source-map] written ws=@papercusp/operator-core rows=905 skipped=14 sha=f07043ba dirty=false",
+    ].join("\n");
+    const stderr = [
+      "npm error Lifecycle script `test:lane-stateful` failed with error:",
+      "npm error code 1",
+      "npm error command failed",
+      "npm error command sh -c PC_TEST_LANE=stateful ../../scripts/pc-heavy.sh -- vitest run --passWithNoTests",
+    ].join("\n");
+    const result = await measureTargetedGateRuns(["lint:broken"], async () => ({ code: 1, stdout, stderr }));
+    const tail = result.perGate?.[0]?.outputTail ?? "";
+    expect(tail.startsWith("lint:broken:  FAIL  lib/release/admission-fix-precheck-exec.test.ts")).toBe(true);
+    expect(tail.length).toBeLessThanOrEqual(2_000);
+    expect(result.summary).toContain(failCase);
+    expect(result.summary).toContain("Test Files 1 failed");
+    expect(result.summary).not.toContain("npm error");
+    expect(result.summary).not.toContain("[executed-source-map]");
+  });
+
   it("runs beyond the first failure and retains each task's actual result", async () => {
     const run = vi.fn(async (script: string) => ({ code: script === "lint:broken" ? 1 : 0 }));
     const result = await measureTargetedGateRuns(["lint:before", "lint:broken", "lint:after"], run);
@@ -48,6 +92,37 @@ describe("targeted gate outcome evidence", () => {
         { id: "lint:after", status: "pass" },
       ],
     });
+  });
+
+  it("treats a registered non-gating NOT CHECKED leg as coverage-neutral, an unregistered exit 2 as fail (WI-10004928 / D-129)", async () => {
+    // Exit 2 = EXIT_NOT_CHECKED. Only the registered diff-vs-HEAD detector is forgiven;
+    // it examines nothing in the gate's clean checkout at EVERY head, so counting it as
+    // missing coverage blocked every repair-round selectiveCoverage receipt.
+    const run = vi.fn(async (script: string) => ({
+      code: script === "lint:vimock-export-strands" || script === "lint:unregistered" ? 2 : 0,
+    }));
+    const result = await measureTargetedGateRuns(
+      ["lint:vimock-export-strands", "lint:unregistered", "lint:after"],
+      run,
+    );
+    expect(result).toMatchObject({
+      pass: false,
+      coverageComplete: true,
+      perGate: [
+        { id: "lint:vimock-export-strands", status: "not-checked" },
+        { id: "lint:unregistered", status: "fail" },
+        { id: "lint:after", status: "pass" },
+      ],
+    });
+    // A not-checked leg beside an ERRORED one still leaves the measurement incomplete.
+    const errored = await measureTargetedGateRuns(
+      ["lint:vimock-export-strands", "lint:throws"],
+      vi.fn(async (script: string) => {
+        if (script === "lint:throws") throw new Error("spawn failed");
+        return { code: 2 };
+      }),
+    );
+    expect(errored.coverageComplete).toBe(false);
   });
 
   it("names WHY a leg errored in the summary instead of a bare ERRORED (WI-10003211)", async () => {

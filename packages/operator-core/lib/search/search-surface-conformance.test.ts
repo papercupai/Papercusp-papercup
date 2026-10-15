@@ -35,7 +35,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { dirname, resolve, join, relative } from 'node:path';
 import ts from 'typescript';
-import { importGraph, stripComments } from './import-graph';
+import { importGraph, runtimeCallSites, stripComments } from './import-graph';
 import {
   SEARCH_SURFACES,
   FLOOR_GAP_CEILING,
@@ -103,27 +103,31 @@ function discoverSearchTools(): Array<{ id: string; file: string }> {
   return found.sort((a, b) => a.id.localeCompare(b.id));
 }
 
-/** What a surface's code actually does, derived from its import graph. */
+// This suite reads one source snapshot, as its census does below. Floor and
+// exemption assertions reuse engine derivation instead of reparsing each graph.
+const derived = new Map<string, { callsEngine: boolean; callsFulltext: boolean; hasFloor: boolean }>();
+
+/** What a surface's code actually does, derived from references and loading. */
 function derive(
   entry: string,
   unrelatedEngineModules: readonly string[] = [],
 ): { callsEngine: boolean; callsFulltext: boolean; hasFloor: boolean } {
+  const key = JSON.stringify([entry, unrelatedEngineModules]);
+  const prior = derived.get(key);
+  if (prior) return prior;
   const g = importGraph(entry);
   // The graph walker already ignores comments when it derives edges; feature
   // detection must do the same. Otherwise a rationale that merely names
   // `runHybridSearch(` manufactures an engine call in an unrelated surface.
   const ignored = new Set(unrelatedEngineModules);
-  const all = [entry, ...g.modules].map((file) => ({
-    file,
-    source: stripComments(readFileSync(file, 'utf8')),
-  }));
-  return {
-    callsEngine: all.some(
-      ({ file, source }) => !ignored.has(rel(file)) && /runHybridSearch\s*\(/.test(source),
-    ),
-    callsFulltext: all.some(({ source }) => /runFullTextSearch\s*\(/.test(source)),
+  const calls = runtimeCallSites(entry, ['runHybridSearch', 'runFullTextSearch']);
+  const result = {
+    callsEngine: [...calls.get('runHybridSearch')!].some((file) => !ignored.has(rel(file))),
+    callsFulltext: calls.get('runFullTextSearch')!.size > 0,
     hasFloor: g.modules.has(POLICY_SEAM),
   };
+  derived.set(key, result);
+  return result;
 }
 
 /**
@@ -353,9 +357,10 @@ describe('search surface conformance (P-021)', () => {
           ).toMatch(/runHybridSearch\s*\(/);
         }
 
-        // Prove the exemption is necessary NOW, then prove it removes only the
-        // declared noise. A second/new engine caller remains visible and reds.
-        expect(derive(abs(surface)).callsEngine).toBe(true);
+        // Preserve the exact loaded-module inventory while deriving behavior
+        // through referenced exports. A newly referenced engine caller reds,
+        // even when its module was already loaded for an unrelated export.
+        expect(derive(abs(surface)).callsEngine).toBe(false);
         expect(derive(abs(surface), exemption.modules).callsEngine).toBe(false);
       },
     );

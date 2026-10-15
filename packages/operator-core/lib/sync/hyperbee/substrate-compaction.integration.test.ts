@@ -114,6 +114,7 @@ describe('substrate compaction under live replication — $0 local parity (multi
         writer.send('wait-snapshot');
         const snap = await writer.waitFor('snapshot-ready', TEN_MIN);
         expect(snap, 'writer should answer wait-snapshot').toBeTruthy();
+        expect(snap!.error, 'the snapshot barrier must report producer/scan failures directly').toBeUndefined();
         expect(
           (snap as unknown as { index: number | null }).index,
           'the writer must have appended its __snapshot__ BEFORE the fresh joiner boots — with no snapshot to seed from there is nothing to skip and the byte-skip proof below is vacuous',

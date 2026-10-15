@@ -1,0 +1,98 @@
+---
+title: Accounts and billing
+description: Separate account creation, sign-in, organization access and subscription confirmation.
+documents:
+  - packages/operator-core/lib/auth/hosted/self-signup.ts
+  - packages/operator-core/lib/auth/hosted/billing/entitlement-seam.ts
+  - packages/operator-core/lib/endpoint-route/hosted-billing-runtime.ts
+---
+
+Use this guide to confirm which account can access your workspace and who
+pays its costs. You should finish able to identify the intended organization,
+check workspace access, and distinguish a pending payment from a confirmed
+subscription before paying again.
+
+You can read this manual without signing in. Acting on a hosted workspace
+requires the correct Papercusp account and organization access. An external
+integration connection and a paid subscription are separate from sign-in.
+
+Before starting checkout, identify the organization you
+intend to pay for and check whether your role can manage its billing.
+
+## Create an account once
+
+Choose **Create account**, verify the identity offered by the sign-up flow,
+review the terms and privacy notice, and return to the portal.
+For an existing identity, choose **Sign in** using the same provider.
+If account creation says the identity is already registered, repeated
+sign-ups will not repair access.
+
+Use the account and organization that own the intended workspace. Being
+signed in does not grant access to every project or another organization's
+machines.
+
+Open **Portal account** using the account icon in the navigation rail. Check
+the displayed identity and **Status**. The **Accounts sidebar** manages the
+selected workspace's model accounts; it does not identify your Papercusp
+sign-in or grant organization membership.
+
+If the portal does not show an organization name or selector, ask the intended
+organization's administrator to confirm your membership and which workspace
+you should be able to open. If that workspace is missing, confirm your sign-in
+identity and ask the administrator to check your access. Signing up again
+does not grant missing workspace permission.
+
+## Connect integrations separately
+
+Gmail, Calendar and other integrations request their own authorization.
+They do not create a Papercusp owner session, and disconnecting one should
+not be confused with signing out of Papercusp.
+
+Review provider permissions before connecting. Never include verification
+links, session cookies, passwords or tokens in a support report.
+See [Plugins](/docs/plugins) and [Remote access](/docs/remote-access).
+
+## Use the billing page shown for your account
+
+If your installation offers hosted subscriptions, open **Portal account**
+and choose **Billing** while signed in. Read the current plans, status and
+restrictions. Use the plan and price displayed there; this guide does not
+promise a fixed price, allowance or provider quota. Local installations may
+show a different, read-only billing state.
+
+There are three separate cost categories: your Papercusp subscription, model
+usage billed to the applicable model account, and cloud resources billed under
+the selected hosting arrangement. Read the current account and provider terms
+for the amounts and payer. Stopping agents or closing the browser does not
+cancel a subscription or remove cloud resources. See
+[Cloud workspaces](/docs/cloud-workspaces#stop-delete-and-recover-deliberately) before
+stopping or deleting a host.
+
+Choose the displayed subscription action to open checkout.
+After returning, wait for the portal's subscription confirmation.
+The checkout return page alone is not proof that payment and entitlements
+have been confirmed.
+
+If **Manage billing** is available, it opens the supported billing-management
+flow. Review its effective dates and cancellation consequences before making
+changes. Billing controls can depend on your role in the organization.
+
+## Payment pending or an unexpected restriction
+
+Read the status message rather than starting duplicate subscriptions.
+Record the time and the status message shown in Billing. If confirmation or
+access remains wrong, use Support.
+
+A subscription does not prove that cloud provisioning succeeded, and an
+active plan does not imply unlimited resources. Check the workspace's status
+and the limits actually shown by your installation.
+See [Cloud workspaces](/docs/cloud-workspaces) and
+[Troubleshooting](/docs/troubleshooting).
+
+## Expected result
+
+You have checked the displayed sign-in identity and confirmed your organization
+membership and intended workspace through the portal or its administrator.
+Verify workspace access separately, and check for a confirmed subscription
+status if you purchased one. If the status remains pending, record the time
+and displayed status and follow the recovery above before retrying payment.

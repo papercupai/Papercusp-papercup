@@ -11,6 +11,8 @@
  */
 
 import type postgres from 'postgres';
+import { boundedPgReadTxn } from '../../pg-read-query';
+import { observeFallback } from '../../degradation/fallback-observations';
 import {
   newMsgId,
   filterInbox,
@@ -19,6 +21,7 @@ import {
   type CoordKind,
   type InboxOptions,
 } from '@papercusp/coordination/core';
+import { parseBody } from '@papercusp/coordination/event-log';
 import { coordLog, coordWorkspaceId, coordSql, coordHasPgFastPath } from './log';
 import { getLineEnvelopeById } from './line-event-by-id';
 import { expandAudienceDetailed, hasAudienceSelector, type UnreachableAudience } from './audience';
@@ -46,6 +49,8 @@ import {
 import { shouldDerivePlanSlug, derivePlanSlug, PLAN_SLUG_DERIVED_PROVENANCE } from './derived-plan-slug';
 import { shouldDeriveWhyGoal, deriveWhyGoal, WHY_GOAL_DERIVED_PROVENANCE } from './derived-why-goal';
 import { noteIntentDeclared, readAgentStateStamp } from '../../agent-state-stamp';
+import { sealCoordEnvelope } from '../../personal-vault/sealed-contents';
+import { trackDetached } from '../../detached-imports';
 
 export type { InboxOptions };
 
@@ -73,6 +78,9 @@ export function getUnreachableAudienceSelectors(
 
 /** Options for sendMessage / generalised coord append. */
 export interface SendOptions {
+  /** Internal producer seam: validate/prepare and persist one envelope atomically.
+   * The GOAL reference bridge uses the existing PG event log, including its stamp. */
+  persistEnvelope?: (envelope: CoordEnvelope) => Promise<CoordEnvelope>;
   /** Recipient ownerIds. Use ['*'] for broadcast, ['human'] for the human inbox. */
   to: string[];
   /**
@@ -261,7 +269,7 @@ export async function sendMessage(
       opts = { ...opts, extra: { ...opts.extra, [CUE_AUTHORITY_FIELD]: stamp } };
     }
   }
-  const env: CoordEnvelope = {
+  let env: CoordEnvelope = {
     ts: new Date().toISOString(),
     msg_id: opts.msgId ?? newMsgId(),
     from: identity.ownerId,
@@ -442,6 +450,17 @@ export async function sendMessage(
       env.fieldProvenance = { ...existing, why: WHY_GOAL_DERIVED_PROVENANCE };
     }
   }
+  // personal-data-reader-set-labels P-006 / D-006: a sender holding a restricted
+  // Personal Vault disclosure has what it authored moved to the sealed store, and
+  // only the stub is parked, persisted and federated. Runs after every stamp
+  // above and before the first write below, so no copy leaves unsealed. Skipped
+  // only where nothing is persisted to Postgres (the in-memory test seam) or the
+  // sender has no concrete workspace, which is also where no disclosure can be
+  // recorded. A ledger failure throws disclosure_ledger_unavailable.
+  const sealWorkspaceId = identity.workspaceId?.trim();
+  if (coordHasPgFastPath() && sealWorkspaceId && sealWorkspaceId !== '*') {
+    env = await sealCoordEnvelope(coordSql(), { workspaceId: sealWorkspaceId, env });
+  }
   // Park the envelope durably for each addressed slot (./slot-parked-store) —
   // drained into the spawnee's handoff when an agent spawns into the slot (P-023).
   if (slots.length) {
@@ -462,6 +481,7 @@ export async function sendMessage(
   // delivered by the park alone.
   let persistedEnv = env;
   let persistedSequence: number | null = null;
+  let created = true;
   if (liveAddrs.length > 0 || slots.length === 0) {
     // A caller-supplied msg_id is a producer's deterministic replay key (for
     // example, coord:send's MCP idempotency key). Claim that line atomically
@@ -472,10 +492,13 @@ export async function sendMessage(
     // Calls without an explicit msg_id intentionally retain append-only
     // semantics. In particular, appendAck uses this path so repeated acks stay
     // visible, and mailbox re-delivery below remains append-only.
-    if (opts.msgId !== undefined) {
+    if (opts.persistEnvelope) {
+      persistedEnv = await opts.persistEnvelope(env);
+    } else if (opts.msgId !== undefined) {
       const result = await coordLog.appendLineIfAbsent('messages', identity.ownerId, env);
       persistedEnv = result.envelope;
       persistedSequence = result.sequence;
+      created = result.created;
     } else {
       persistedSequence = await coordLog.appendLine('messages', identity.ownerId, env);
     }
@@ -504,6 +527,13 @@ export async function sendMessage(
   // side-effect only, guarded on a `@fleet:` selector — a normal send pays nothing.
   if (opts.to.some((t) => t.startsWith('@fleet:'))) {
     await deliverFleetDigests(opts.to, persistedEnv, persistedEnv.to).catch(() => {});
+  }
+  // After persistence/sealing only: failed writes and deterministic replays
+  // must not publish a fresh owner notification. Other recipients pay no I/O.
+  if (created && persistedEnv.kind === 'message' && persistedEnv.to.includes('human') && identity.workspaceId) {
+    void trackDetached(import('../../session-push').then(module =>
+      module.notifySessionOwnerMessage(persistedEnv, identity.workspaceId!),
+    ).catch(error => { console.warn('[session-push] notification failed:', error instanceof Error ? error.name : 'unknown'); }));
   }
   unresolvedAudienceByEnvelope.set(persistedEnv, unresolvedAudienceSelectors);
   unreachableAudienceByEnvelope.set(persistedEnv, unreachableAudienceSelectors);
@@ -655,8 +685,8 @@ export async function readInbox(
     const sinceBound = opts.since_ts
       ? new Date(new Date(opts.since_ts).getTime() - INBOX_SINCE_TS_SKEW_PAD_MS).toISOString()
       : null;
-    const rows = await sql<{ body: unknown }[]>`
-      SELECT body
+    const rows = await sql<{ body: unknown; ts: unknown; msg_id: string }[]>`
+      SELECT body, ts, msg_id
         FROM harness_shared.coord_event_log
        WHERE workspace_id = ${coordWorkspaceId()}
          AND surface = 'messages'
@@ -677,11 +707,73 @@ export async function readInbox(
           'returned; a caller doing a genuine full-history backfill should page via since_ts.',
       );
     }
-    const lines = rows.map((r) => (typeof r.body === 'string' ? JSON.parse(r.body) : r.body) as CoordEnvelope);
+    const lines = rows.map((r) => parseBody(r.body, r));
     return suppressRetracted(filterInbox(lines, ownerId, opts), collectRetractedIds(lines));
   }
   const lines = await coordLog.readLines('messages');
   return suppressRetracted(filterInbox(lines, ownerId, opts), collectRetractedIds(lines));
+}
+
+/** Row cap for {@link readDirectedInbox}: directed traffic to one session id is small
+ *  (no broadcast rows match), so this bounds a pathological id, not a normal read. */
+export const DIRECTED_INBOX_ROW_CAP = 2_000;
+
+/**
+ * WI-10005678: entries addressed EXPLICITLY to `ownerId` — never the `'*'` broadcasts
+ * {@link readInbox} also returns. coord:inbox uses it for a caller's VERIFIED session
+ * alias (identity.ts `verifiedSpawnSessionAlias`): the caller's own read already carries
+ * every broadcast, so re-reading them here would only re-pay the ~20k-row broadcast scan
+ * (WI-6939) for rows that dedupe away. Same recipient predicate, index and post-filter as
+ * readInbox; the recipient match is narrowed to an explicit `to` entry.
+ */
+export async function readDirectedInbox(
+  ownerId: string,
+  opts: InboxOptions = {},
+): Promise<CoordEnvelope[]> {
+  if (!ownerId) return [];
+  const directed = (entries: CoordEnvelope[]): CoordEnvelope[] =>
+    entries.filter((e) => Array.isArray(e.to) && (e.to as unknown[]).includes(ownerId));
+  if (coordHasPgFastPath()) {
+    const sql = coordSql();
+    const sinceBound = opts.since_ts
+      ? new Date(new Date(opts.since_ts).getTime() - INBOX_SINCE_TS_SKEW_PAD_MS).toISOString()
+      : null;
+    const rows = await sql<{ body: unknown; ts: unknown; msg_id: string }[]>`
+      SELECT body, ts, msg_id
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${coordWorkspaceId()}
+         AND surface = 'messages'
+         ${sinceBound ? sql`AND ts >= ${sinceBound}` : sql``}
+         AND jsonb_typeof(body->'to') = 'array'
+         AND (body->'to') ? ${ownerId}
+       ORDER BY id DESC
+       LIMIT ${DIRECTED_INBOX_ROW_CAP}
+    `;
+    const lines = rows.map((r) => parseBody(r.body, r));
+    return directed(suppressRetracted(filterInbox(lines, ownerId, opts), collectRetractedIds(lines)));
+  }
+  const lines = await coordLog.readLines('messages');
+  return directed(suppressRetracted(filterInbox(lines, ownerId, opts), collectRetractedIds(lines)));
+}
+
+/**
+ * WI-10005678: fold `extra` into `base` without duplicating a message delivered to both
+ * ids, keeping filterInbox's ascending (ts, msg_id) order. Pure; `base` wins on a
+ * msg_id collision.
+ */
+export function mergeInboxEntries<T extends { msg_id?: unknown; ts?: unknown }>(
+  base: readonly T[],
+  extra: readonly T[],
+): T[] {
+  if (extra.length === 0) return [...base];
+  const seen = new Set(base.map((e) => e.msg_id).filter((id): id is string => typeof id === 'string'));
+  const added = extra.filter((e) => typeof e.msg_id !== 'string' || !seen.has(e.msg_id));
+  if (added.length === 0) return [...base];
+  return [...base, ...added].sort(
+    (a, b) =>
+      String(a.ts ?? '').localeCompare(String(b.ts ?? '')) ||
+      String(a.msg_id ?? '').localeCompare(String(b.msg_id ?? '')),
+  );
 }
 
 /** Rows fetched per keyset page by {@link readInboxWindow}. Sized so a normal
@@ -756,10 +848,10 @@ async function pageCoordEventLogDesc(params: {
   while (pages < INBOX_MAX_PAGES) {
     // Explicit annotation: `beforeId` is assigned FROM `rows` and then read back
     // into the next iteration's query, which TS otherwise flags as circular (TS7022).
-    const rows: { id: string | number; body: unknown }[] = await sql<
-      { id: string | number; body: unknown }[]
+    const rows: { id: string | number; body: unknown; ts: unknown; msg_id: string }[] = await sql<
+      { id: string | number; body: unknown; ts: unknown; msg_id: string }[]
     >`
-      SELECT id, body
+      SELECT id, body, ts, msg_id
         FROM harness_shared.coord_event_log
        WHERE workspace_id = ${coordWorkspaceId()}
          AND surface = 'messages'
@@ -771,7 +863,7 @@ async function pageCoordEventLogDesc(params: {
     `;
     pages += 1;
     for (const r of rows) {
-      raw.push((typeof r.body === 'string' ? JSON.parse(r.body) : r.body) as CoordEnvelope);
+      raw.push(parseBody(r.body, r));
     }
     // A short page means we reached the end of this owner's matching history.
     if (rows.length < INBOX_PAGE_ROWS) {
@@ -879,6 +971,7 @@ export async function readInboxWindow(
       paged.pages,
       paged.raw.length,
     );
+    observeFallback('coordination-window-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'inbox' }, { workspaceId: coordWorkspaceId() });
     return {
       entries: visible(paged.raw),
       exhausted: paged.exhausted,
@@ -887,6 +980,7 @@ export async function readInboxWindow(
     };
   } catch (err) {
     // Any query error falls back to the authoritative full read. WI-1338374: that
+    observeFallback('coordination-window-read', { eligible: 1, applied: 0, reason: 'paging-failed', scope: 'inbox' }, { workspaceId: coordWorkspaceId() });
     // fallback is `readInbox(ownerId, opts)` — a 2-ARG call, so it hits the SAME
     // no-since_ts `LIMIT 25000` unbounded fast-path query this window form exists
     // to avoid (messages.ts's top-level readInbox, coord_event_log queryid
@@ -1144,8 +1238,8 @@ export async function readOutbox(
         ? new Date(sinceMs - INBOX_SINCE_TS_SKEW_PAD_MS).toISOString()
         : null;
 
-    const rows = await sql<{ body: unknown }[]>`
-      SELECT body
+    const rows = await sql<{ body: unknown; ts: unknown; msg_id: string }[]>`
+      SELECT body, ts, msg_id
         FROM harness_shared.coord_event_log
        WHERE workspace_id = ${coordWorkspaceId()}
          AND surface = 'messages'
@@ -1161,9 +1255,7 @@ export async function readOutbox(
           'returned; a caller doing a genuine full-history backfill should page via since_ts.',
       );
     }
-    const lines = rows.map(
-      (r) => (typeof r.body === 'string' ? JSON.parse(r.body) : r.body) as CoordEnvelope,
-    );
+    const lines = rows.map((r) => parseBody(r.body, r));
     return filterOutbox(lines, ownerId, sinceMs);
   }
   const lines = await coordLog.readLines('messages');
@@ -1226,6 +1318,7 @@ export async function readOutboxWindow(
       paged.pages,
       paged.raw.length,
     );
+    observeFallback('coordination-window-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'outbox' }, { workspaceId: coordWorkspaceId() });
     return {
       entries: visible(paged.raw),
       exhausted: paged.exhausted,
@@ -1234,6 +1327,7 @@ export async function readOutboxWindow(
     };
   } catch (err) {
     // Any query error falls back to the authoritative full read — see the matching
+    observeFallback('coordination-window-read', { eligible: 1, applied: 0, reason: 'paging-failed', scope: 'outbox' }, { workspaceId: coordWorkspaceId() });
     // instrumentation on readInboxWindow's catch block (WI-1338374) for why this
     // fallback is worth logging: it hits readOutbox's own unbounded no-since_ts
     // LIMIT-capped fast path, the same shape of query implicated there.
@@ -1291,8 +1385,8 @@ export async function readInvolvingOwner(
 ): Promise<CoordEnvelope[]> {
   if (coordHasPgFastPath()) {
     const sql = coordSql();
-    const rows = await sql<{ body: unknown }[]>`
-      SELECT body
+    const rows = await sql<{ body: unknown; ts: unknown; msg_id: string }[]>`
+      SELECT body, ts, msg_id
         FROM harness_shared.coord_event_log
        WHERE workspace_id = ${coordWorkspaceId()}
          AND surface = 'messages'
@@ -1312,9 +1406,7 @@ export async function readInvolvingOwner(
           'OLDEST matching rows beyond the cap were NOT returned.',
       );
     }
-    return rows.map(
-      (r) => (typeof r.body === 'string' ? JSON.parse(r.body) : r.body) as CoordEnvelope,
-    );
+    return rows.map((r) => parseBody(r.body, r));
   }
   return coordLog.readLines('messages');
 }
@@ -1351,8 +1443,8 @@ export async function readInvolvingOwner(
  * parameterised, so `plan-events` could get the same correct by-id lookup
  * without a second copy of this query. Behaviour here is unchanged.
  */
-export async function getMessageById(msgId: string): Promise<CoordEnvelope | null> {
-  return getLineEnvelopeById('messages', msgId);
+export async function getMessageById(msgId: string, sqlOverride?: postgres.Sql): Promise<CoordEnvelope | null> {
+  return getLineEnvelopeById('messages', msgId, sqlOverride);
 }
 
 /**
@@ -1525,11 +1617,12 @@ export async function markSuperseded(msgId: string, correctionMsgId: string): Pr
 }
 
 /**
- * A full coord msg_id looks like `msas1j6h-0000-<32 hex>`. The LEADING SHORT
- * FORM is what actually circulates: agents cite ids in prose, summaries and
- * carry-notes constantly ("still waiting on msas1j6h"), and `getMessageById`
- * matches EXACTLY — so anyone who copied an id out of prose and looked it up
- * was told, confidently, that a real message did not exist.
+ * A standard full coord msg_id looks like `msas1j6h-0000-<32 hex>`;
+ * coord:send's idempotency path also emits `coord-send-<64 hex>`. The LEADING
+ * SHORT FORM is what actually circulates: agents cite ids in prose, summaries
+ * and carry-notes constantly ("still waiting on msas1j6h"), and
+ * `getMessageById` matches EXACTLY — so anyone who copied an id out of prose
+ * and looked it up was told, confidently, that a real message did not exist.
  *
  * WI-6725: that silent empty is a WRONG ANSWER, not a missing feature — it is
  * indistinguishable from a true negative. It cost a real commitment on
@@ -1544,7 +1637,11 @@ export async function markSuperseded(msgId: string, correctionMsgId: string): Pr
  * without saying so. Exact match is tried first and always wins, so a full id
  * keeps its indexed fast path and its existing behavior exactly.
  */
-const FULL_MSG_ID_SHAPE = /^[^-\s]+-\d+-[0-9a-f]{32}$/i;
+// coord:send's idempotency path also emits `coord-send-<sha256>` IDs. They
+// are full message IDs even though they do not use newMsgId()'s three-part
+// format; recognize both so a missing row is not misdiagnosed as a truncated
+// reference.
+const FULL_MSG_ID_SHAPE = /^(?:[^-\s]+-\d+-[0-9a-f]{32}|coord-send-[0-9a-f]{64})$/i;
 /** Ambiguity is reported with candidates, capped so a 2-char ref can't flood. */
 const REF_CANDIDATE_CAP = 10;
 
@@ -1555,9 +1652,9 @@ export type MessageRefResolution =
 
 /** Ids whose msg_id starts with `prefix` (bounded). Prefix-only — never a substring match.
  *  On PG a query error PROPAGATES (D-011); the scan below is the non-PG seam only. */
-async function findMessageIdsByPrefix(prefix: string, limit: number): Promise<string[]> {
+async function findMessageIdsByPrefix(prefix: string, limit: number, sqlOverride?: postgres.Sql): Promise<string[]> {
   if (coordHasPgFastPath()) {
-    const sql = coordSql();
+    const sql = sqlOverride ?? coordSql();
     // starts_with() rather than LIKE: no escaping of `%`/`_` in the ref.
     const rows = await sql<{ msg_id: string }[]>`
       SELECT msg_id
@@ -1594,13 +1691,17 @@ async function findMessageIdsByPrefix(prefix: string, limit: number): Promise<st
  * must not hide a projection-only open escalation. Non-PG seams read the
  * original escalation events directly; resolved siblings do not remove them.
  */
-async function findEscalationsByPrefix(prefix: string, limit: number): Promise<CoordEnvelope[]> {
+async function findEscalationsByPrefix(
+  prefix: string,
+  limit: number,
+  sqlOverride?: postgres.Sql,
+): Promise<CoordEnvelope[]> {
   if (!prefix || limit <= 0) return [];
 
   if (coordHasPgFastPath()) {
     const candidates = new Map<string, CoordEnvelope>();
     try {
-      const sql = coordSql();
+      const sql = sqlOverride ?? coordSql();
       const rows = await sql<{ body: unknown }[]>`
         SELECT body
           FROM harness_shared.coord_event_log
@@ -1619,7 +1720,7 @@ async function findEscalationsByPrefix(prefix: string, limit: number): Promise<C
       // Fall through to the projection: it may still retain an open original.
     }
     try {
-      const sql = coordSql();
+      const sql = sqlOverride ?? coordSql();
       const rows = await sql<{ body: unknown }[]>`
         SELECT body
           FROM harness_shared.coord_open_escalations
@@ -1661,12 +1762,16 @@ async function findEscalationsByPrefix(prefix: string, limit: number): Promise<C
  * The PG path uses the same indexed prefix lookup as the message resolver;
  * non-PG seams fall back to the event-log abstraction used by handoffs.ts.
  */
-async function findHandoffsByPrefix(prefix: string, limit: number): Promise<CoordEnvelope[]> {
+async function findHandoffsByPrefix(
+  prefix: string,
+  limit: number,
+  sqlOverride?: postgres.Sql,
+): Promise<CoordEnvelope[]> {
   if (!prefix || limit <= 0) return [];
 
   if (coordHasPgFastPath()) {
     try {
-      const sql = coordSql();
+      const sql = sqlOverride ?? coordSql();
       const rows = await sql<{ body: unknown }[]>`
         SELECT body
           FROM harness_shared.coord_event_log
@@ -1698,18 +1803,18 @@ async function findHandoffsByPrefix(prefix: string, limit: number): Promise<Coor
  * See the WI-6725 note above for why this is three-valued rather than
  * `CoordEnvelope | null`.
  */
-export async function resolveMessageRef(ref: string): Promise<MessageRefResolution> {
+export async function resolveMessageRef(ref: string, sqlOverride?: postgres.Sql): Promise<MessageRefResolution> {
   const msgId = (ref ?? '').trim();
   if (!msgId) return { status: 'not-found', msgId, looksTruncated: false };
 
-  const exact = await getMessageById(msgId);
+  const exact = await getMessageById(msgId, sqlOverride);
   if (exact) return { status: 'found', msgId, message: exact, resolvedFrom: 'exact' };
 
   // EI-21271857379493174: an open escalation can outlive its original
   // `escalations` event in the log while remaining durable in the open-set
   // projection. Treat that live record as a valid exact/prefix target so a
   // driver can acknowledge it through coord:send.
-  const escalations = await findEscalationsByPrefix(msgId, REF_CANDIDATE_CAP + 1);
+  const escalations = await findEscalationsByPrefix(msgId, REF_CANDIDATE_CAP + 1, sqlOverride);
   const exactEscalation = escalations.find((event) => event.msg_id === msgId);
   if (exactEscalation) {
     return { status: 'found', msgId, message: exactEscalation, resolvedFrom: 'exact' };
@@ -1718,7 +1823,7 @@ export async function resolveMessageRef(ref: string): Promise<MessageRefResoluti
   // coord:feed includes handoffs, whose immutable records live on their own
   // event surface. Resolve them before treating a well-formed full id as a
   // genuine miss, and retain the candidates for truncated-prefix resolution.
-  const handoffs = await findHandoffsByPrefix(msgId, REF_CANDIDATE_CAP + 1);
+  const handoffs = await findHandoffsByPrefix(msgId, REF_CANDIDATE_CAP + 1, sqlOverride);
   const exactHandoff = handoffs.find((event) => event.msg_id === msgId);
   if (exactHandoff) {
     return { status: 'found', msgId, message: exactHandoff, resolvedFrom: 'exact' };
@@ -1727,7 +1832,7 @@ export async function resolveMessageRef(ref: string): Promise<MessageRefResoluti
   // A well-formed full id that missed is a genuine not-found — no prefix scan.
   if (FULL_MSG_ID_SHAPE.test(msgId)) return { status: 'not-found', msgId, looksTruncated: false };
 
-  const messageCandidates = await findMessageIdsByPrefix(msgId, REF_CANDIDATE_CAP + 1);
+  const messageCandidates = await findMessageIdsByPrefix(msgId, REF_CANDIDATE_CAP + 1, sqlOverride);
   const candidates = [
     ...new Set([
       ...messageCandidates,
@@ -1739,7 +1844,7 @@ export async function resolveMessageRef(ref: string): Promise<MessageRefResoluti
   if (candidates.length > 1) {
     return { status: 'ambiguous', msgId, candidates: candidates.slice(0, REF_CANDIDATE_CAP) };
   }
-  const resolved = await getMessageById(candidates[0]);
+  const resolved = await getMessageById(candidates[0], sqlOverride);
   if (resolved) return { status: 'found', msgId: candidates[0], message: resolved, resolvedFrom: 'prefix' };
   const escalation = escalations.find((event) => event.msg_id === candidates[0]);
   if (escalation) return { status: 'found', msgId: candidates[0], message: escalation, resolvedFrom: 'prefix' };
@@ -1752,7 +1857,7 @@ export async function resolveMessageRef(ref: string): Promise<MessageRefResoluti
  * Reconstruct a thread rooted at `rootMsgId` by walking the
  * `related_msg_id` chain in both directions. Sorted by ts ascending.
  */
-export async function readThread(rootMsgId: string): Promise<CoordEnvelope[]> {
+export async function readThread(rootMsgId: string, sqlOverride?: postgres.Sql): Promise<CoordEnvelope[]> {
   // EI-21150596392578187: the old implementation loaded the entire messages
   // surface and only then folded the related_msg_id graph in JavaScript. On a
   // cold PG cache that made one rooted thread read pay for every message ever
@@ -1768,7 +1873,7 @@ export async function readThread(rootMsgId: string): Promise<CoordEnvelope[]> {
   // On PG a query error PROPAGATES: the full read is exactly the whole-surface
   // load this fast path replaced (host-memory-reduction-2026-09-27 D-011).
   if (coordHasPgFastPath()) {
-    const sql = coordSql();
+    const sql = sqlOverride ?? coordSql();
     const rows = await sql<
       { body: unknown; ts: unknown; msg_id: string; harness_slug: string | null }[]
     >`
@@ -1804,26 +1909,48 @@ export async function readThread(rootMsgId: string): Promise<CoordEnvelope[]> {
        ORDER BY e.id ASC
     `;
     const all = rows.map((row) => {
-      const parsed = (typeof row.body === 'string' ? JSON.parse(row.body) : row.body) as
-        | Record<string, unknown>
-        | null;
-      const envelope: Record<string, unknown> =
-        parsed && typeof parsed === 'object' ? { ...parsed } : {};
-      // Match PgCoordLog's read boundary: remote/federated rows can have a
-      // malformed body, so the NOT-NULL columns backstop the fold's required
-      // identity/order fields. The normalized scope column is authoritative.
-      if ((typeof envelope.ts !== 'string' || !envelope.ts) && row.ts != null) {
-        envelope.ts = row.ts instanceof Date ? row.ts.toISOString() : String(row.ts);
-      }
-      if ((typeof envelope.msg_id !== 'string' || !envelope.msg_id) && row.msg_id) {
-        envelope.msg_id = row.msg_id;
-      }
+      const envelope = parseBody(row.body, row);
       if (row.harness_slug == null) delete envelope.harness_slug;
       else envelope.harness_slug = row.harness_slug;
-      return envelope as CoordEnvelope;
+      return envelope;
     });
     return foldThread(all, rootMsgId);
   }
   const all = await coordLog.readLines('messages');
   return foldThread(all, rootMsgId);
+}
+
+export const THREAD_READ_STATEMENT_TIMEOUT_MS = 12_000;
+export const THREAD_READ_ACQUIRE_TIMEOUT_MS = 5_000;
+
+/**
+ * Resolve and reconstruct a thread on one bounded, READ ONLY admin-pool
+ * transaction. Bare getOrgPg() checkouts have no effective statement_timeout
+ * behind PgBouncer, so leaving either the id lookup or recursive graph walk on
+ * the ambient pool can outlive ptool's 30s call deadline. The shared bounded
+ * read seam sets server-side statement + acquisition deadlines and keeps both
+ * reads within its whole-call deadline on one snapshot. Non-PG test/dev seams
+ * retain their small portable read path.
+ */
+export async function readThreadFromRef(ref: string): Promise<{
+  resolution: MessageRefResolution;
+  entries: CoordEnvelope[];
+}> {
+  const read = async (sqlOverride?: postgres.Sql) => {
+    const resolution = await resolveMessageRef(ref, sqlOverride);
+    if (resolution.status !== 'found') return { resolution, entries: [] as CoordEnvelope[] };
+    const entries = await readThread(resolution.msgId, sqlOverride);
+    return { resolution, entries };
+  };
+
+  if (!coordHasPgFastPath()) return read();
+  return boundedPgReadTxn((tx) => read(tx as unknown as postgres.Sql), {
+    client: coordSql(),
+    timeoutMs: THREAD_READ_STATEMENT_TIMEOUT_MS,
+    acquireTimeoutMs: THREAD_READ_ACQUIRE_TIMEOUT_MS,
+    // The production PgCoordLog client is getOrgPg().sql. Identify its pool
+    // even though it is injected, so acquisition failures carry local pressure
+    // measurements and the bounded-read seam can retry proven queue pressure.
+    acquirePool: 'org-admin',
+  });
 }

@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Legacy Inno reaper with persistent private Wine lifecycle",
+  "framework": "shell",
+  "command": ["bash", "-c", "bash -n bin/lib/inno-legacy-reaper.selftest.sh\nBASH_XTRACEFD=3 timeout 600 bash -x bin/lib/inno-legacy-reaper.selftest.sh 3> \"$HOME/.papercusp/scratch/c0523-inno-legacy-lifecycle-v1.trace\" > \"$HOME/.papercusp/scratch/c0523-inno-legacy-lifecycle-v1.log\" 2>&1"],
+  "cwd": "papercusp-desktop",
+  "exitCode": 0,
+  "startedAt": "2026-10-14T16:57:40.373Z",
+  "finishedAt": "2026-10-14T17:01:31.758Z",
+  "summary": "Saved focused native shell execution passed lifecycle fault controls and real Inno quoted/unquoted ghost/live cases without skip. Original aggregate already passed legacy; this repairs a source-level lifecycle risk independently. Full aggregate, runtime closure and plan shipment are unmeasured.",
+  "assertions": [
+    {"id": "lifecycle-fault-controls", "passed": true, "evidence": "Maintained fixture rejects the nonpersistent-server and failed-wait negative controls; persistent positive control requires display-start, server-persist, three clients, server-stop, server-wait, display-stop in order."},
+    {"id": "quoted-ghost-and-live", "passed": true, "evidence": "Native log: [quoted] ghost reaped and live entry spared."},
+    {"id": "unquoted-ghost-and-live", "passed": true, "evidence": "Native log: [unquoted] ghost reaped and live entry spared; terminal PASS inno-legacy-reaper, exit0, no SKIP."}
+  ],
+  "workItemId": "EI-25973450727337503",
+  "nativeExecution": {"sessionId": "01a13b4f-2d3c-7162-a726-037fb62024fe", "eventOrdinal": 264, "eventId": "exec-b239c7e5-f285-4464-b47b-4294e585b8b6"},
+  "source": {"path": "papercusp-desktop/bin/lib/inno-legacy-reaper.selftest.sh", "sha256": "75fdccf9289627de29959e2017e5dcf09c7db1d0f33724fcd8903ea4a8937d73", "committedRepoHeadAtRead": "bb8eb8201650e90f92d67e565189e8f3df6ac29a"},
+  "logs": [
+    {"path": "~/.papercusp/scratch/c0523-inno-legacy-lifecycle-v1.log", "sha256": "e71b7b13100a0845dc446f7d86a92f7d92eea7e16289025d7bd864e5d1db992e"},
+    {"path": "~/.papercusp/scratch/c0523-inno-legacy-lifecycle-v1.trace", "sha256": "5f26a482c8dd2bfe9cfe46708744fa4e3fd186e9e4cc7c64ae35fabcfe2cb1e2"}
+  ],
+  "referencePathConvention": "Home paths use ~ or $HOME; saved native event and logs are unchanged.",
+  "runtimeClosure": "unmeasured",
+  "operationalAcceptance": false,
+  "requirementDisposition": {"legacy-private-lifecycle": "verified-local", "registry-probe-failure-classification": "owned-follow-up-EI-25975181569416624", "full-plan": "unshipped"}
+}

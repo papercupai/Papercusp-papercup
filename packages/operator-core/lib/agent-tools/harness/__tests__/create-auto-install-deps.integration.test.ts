@@ -33,13 +33,19 @@ function mockInstallable() {
   vi.doMock('../../../cupboard/pack-catalog', async (importOriginal) => {
     const actual = await importOriginal<typeof import('../../../cupboard/pack-catalog')>();
     const { getCatalog } = await import('@papercusp/agent-mcp');
+    // Empty child arrays retain coding's dependencies; model its ready
+    // providers without bootstrapping the entire operator in this fixture.
+    const { operatorResolveExtends } = await import('../../../blueprint/installed-blueprints');
+    const { loadBlueprintFromFile } = await import('@papercusp/orchestrator/blueprint');
+    const resolve = operatorResolveExtends();
+    const { blueprint } = loadBlueprintFromFile(resolve('coding')!, resolve);
     return {
       ...actual,
       derivePackCatalog: async (deriveOpts: { includeCupboard?: boolean } = {}) =>
         actual.assemblePackCatalog({
           installed: installed ? [{ name: 'md-tools', version: '0.1.0', kind: 'pack', tools: [{ name: 'render' }] }] : [],
           projectedTools: installed ? [{ pluginName: 'md-tools', mcpName: 'md-tools.render' }] : [],
-          legacyCatalogNames: getCatalog().map((t) => t.name),
+          legacyCatalogNames: [...getCatalog().map((t) => t.name), ...(blueprint.dependencies?.tools ?? [])],
           cupboardUnits:
             deriveOpts.includeCupboard === false
               ? []

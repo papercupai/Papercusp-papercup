@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Android current-source Rust device-contract regression",
+  "framework": "cargo",
+  "command": [
+    "cargo",
+    "test",
+    "--workspace",
+    "--all-targets",
+    "--locked"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T21:28:33.104182+00:00",
+  "finishedAt": "2026-10-01T21:28:44.942085+00:00",
+  "summary": "Current mobile f5fff7c03d2002c36ff240541ecfb901048e4e70: 98 tests passed, zero failed, one opt-in live smoke ignored. Client fixtures:58 passed/0ignored; core units:28 passed/0ignored; Android ABI/CI guards:5 passed. This is host Rust evidence only. Current native, automatic schedule, signed-candidate and physical-phone/Play acceptance remain separate.",
+  "repository": "papercup-rust-mobile",
+  "sourceCommit": "f5fff7c03d2002c36ff240541ecfb901048e4e70",
+  "sourceDirty": false,
+  "log": {
+    "path": "papercup-rust-mobile/android/app/build/ci-evidence/current-rust-f5fff7c/cargo-test.log",
+    "sha256": "ab456f5a767d0c8ba99841aab0bf0a213707f162b55b466243a0620f8ffb54da"
+  },
+  "testCounts": {
+    "passed": 98,
+    "failed": 0,
+    "ignored": 1,
+    "suites": 7
+  },
+  "ignoredTests": [
+    "live_p0_contract_smoke: requires a live operator, two workspaces and a one-time pair token; this invocation did not execute it"
+  ],
+  "sourceFiles": [
+    {
+      "path": "crates/papercup-core/src/client.rs",
+      "sha256": "acdee2304bb9ff0ec6412f0f5cdbc6ae306c569363067586bdd9a6712cc636fa"
+    },
+    {
+      "path": "crates/papercup-core/src/types.rs",
+      "sha256": "932eb532d8532109ee66189336bbe14c37883269e1ba0b417a5b8e0e5d7f6ad2"
+    },
+    {
+      "path": "crates/papercup-core/tests/client_test.rs",
+      "sha256": "cdaffbceedace6ad19dab39114db12756cead9363d21fe34fbc1e574f4c995b6"
+    },
+    {
+      "path": "crates/papercup-core/tests/live_smoke.rs",
+      "sha256": "2354908ad2415fbf519d74dfb55662b45723255c814a90ad3d3a0f4fb0431349"
+    },
+    {
+      "path": "crates/papercup-core/tests/android_uniffi_abi_guard.rs",
+      "sha256": "b062d00139d07079f404015bf388896256532e2885c6186d2d1a524b9ec45225"
+    },
+    {
+      "path": "Cargo.lock",
+      "sha256": "8e62f21674e407f6eb9fb2d548258c48d09cabed33ce3bf04ff8856032c8fde6"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "cargo-locked-exit",
+      "passed": true,
+      "evidence": "The real cargo test --workspace --all-targets --locked process exited0; all seven result summaries reported0failed."
+    },
+    {
+      "id": "client-fixtures-executed",
+      "passed": true,
+      "evidence": "tests/client_test.rs completed58passed,0failed,0ignored,0filtered; this is executable fixture integration coverage."
+    },
+    {
+      "id": "nullable-device-fields",
+      "passed": true,
+      "evidence": "runtime_config_null_voice_port_decodes_as_none and plans_list_tolerates_null_status both reported ok."
+    },
+    {
+      "id": "auth-error-shapes",
+      "passed": true,
+      "evidence": "nested_401_maps_to_unauthorized, nested_403_maps_to_unauthorized, nested_500_maps_to_server_with_code_and_message and pair_invalid_token_maps_to_unauthorized all reported ok."
+    },
+    {
+      "id": "workspace-token-boundaries",
+      "passed": true,
+      "evidence": "workspace_switch_requires_both_replacement_token_and_scope, workspace_switch_replacement_token_authenticates_followup_requests, workspace_switch_auth_rejection_never_retries_fallback and workspace_switch_without_token_never_sends_a_request all reported ok."
+    },
+    {
+      "id": "stream-failure-and-completion",
+      "passed": true,
+      "evidence": "operator_converse_rejects_streams_without_completion, operator_converse_does_not_retry_rejected_or_started_streams, operator_converse_stream_surfaces_error_event and operator_converse_stream_emits_deltas_in_order all reported ok."
+    },
+    {
+      "id": "core-unit-frame-boundaries",
+      "passed": true,
+      "evidence": "Core unit suite28passed/0failed/0ignored, including complete_frames_reject_invalid_utf8 and chunk_boundaries_do_not_corrupt_utf8_or_frame_separators."
+    },
+    {
+      "id": "maintained-ci-abi-guards",
+      "passed": true,
+      "evidence": "android_uniffi_abi_guard.rs completed5passed/0failed/0ignored. Its maintained CI reachability/result tests execute the shell positive and mutation controls."
+    },
+    {
+      "id": "live-proof-not-inferred",
+      "passed": true,
+      "evidence": "The live_p0_contract_smoke is explicitly ignored in this invocation. No live/native/scheduled/signed/physical/Play acceptance is inferred from this artifact."
+    }
+  ]
+}

@@ -11,6 +11,10 @@ import {
   type SnapshotFoldProgress,
 } from '../log-snapshot';
 import type { OwnLog, PeerLogOp } from '../peer-log';
+import { stubHivePolicyReadsForSuite } from './_hive-policy-read-stubs';
+
+// WI-10007530: no PG here, and the merge pass no longer swallows a failed policy read.
+stubHivePolicyReadsForSuite();
 
 const NEVER_EMIT_MARKER = 'never-emit-me';
 
@@ -698,5 +702,47 @@ describe('produceFilteredSnapshotIntoLog — prior-snapshot seek (WI-10001822)',
     const plainRes = await produceLogSnapshot(plain, { now: 1000, schemaVersion: 1 });
     const plainOp = await plain.get(plainRes.coversUpTo);
     expect((plainOp!.value as SnapshotPayload).excludeTables).toBeUndefined();
+  });
+
+  /**
+   * WI-10005425 — `ownPrefix` is what lets read-merge skip a filtered set a reader
+   * already folded. It must appear on EVERY chunk of the own-log producer's filtered
+   * set (the release-cut head snapshot), and NEVER on the seed core, which summarizes
+   * another log. An unfiltered set stays unmarked (it is already skip-eligible).
+   */
+  it('marks an own-log filtered set ownPrefix on every chunk, and never the seed core or an unfiltered set', async () => {
+    const own = memLog('own-log');
+    for (let i = 0; i < 30; i++) await own.append(put('plans', `p${i}`, { title: `t${i}` }, 1 + i));
+    await own.append(put('presence', 'me', { at: 1 }, 50));
+    const ownRes = await produceLogSnapshot(own, {
+      now: 1000,
+      schemaVersion: 1,
+      excludeTables: ['presence'],
+      maxChunkBytes: 200,
+    });
+    expect(ownRes.chunkCount).toBeGreaterThan(1);
+    for (let j = 0; j < ownRes.chunkCount; j++) {
+      const v = (await own.get(ownRes.coversUpTo + j))!.value as SnapshotPayload;
+      expect(v.excludeTables).toEqual(['presence']);
+      expect(v.ownPrefix).toBe(true);
+    }
+
+    const { src } = await sourceWithSnapshotThenTail();
+    const seedCore = memLog('seed-core');
+    const seedRes = await produceFilteredSnapshotIntoLog(src, seedCore, {
+      now: 2000,
+      schemaVersion: 1,
+      excludeTables: ['presence'],
+    });
+    for (let j = 0; j < seedRes.chunkCount; j++) {
+      const v = (await seedCore.get(seedRes.coversUpTo + j))!.value as SnapshotPayload;
+      expect(v.excludeTables).toEqual(['presence']);
+      expect(v).not.toHaveProperty('ownPrefix');
+    }
+
+    const plain = memLog('plain-own-log');
+    await plain.append(put('plans', 'p1', { title: 'x' }, 1));
+    const plainRes = await produceLogSnapshot(plain, { now: 1000, schemaVersion: 1 });
+    expect((await plain.get(plainRes.coversUpTo))!.value).not.toHaveProperty('ownPrefix');
   });
 });

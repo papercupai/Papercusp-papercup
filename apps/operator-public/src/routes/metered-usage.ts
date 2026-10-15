@@ -23,11 +23,15 @@ import {
   acceptMeteredVoucher,
   closeMeteredInvocation,
   declareMeter,
+  verifySellerReceiptAuthority,
+  verifyUsageReceiptSignature,
   type BillableUnit,
   type MeteredRefusalCode,
 } from '@papercusp/operator-core/lib/p2p/metered-invocation.ts';
 import type { CumulativePaymentVoucher } from '@papercusp/operator-core/lib/p2p/microcharge.ts';
-import { paymentVoucherDigest, unsignedVoucher } from '@papercusp/operator-core/lib/p2p/microcharge.ts';
+import { paymentVoucherDigest, unsignedVoucher, verifyPaymentVoucherSignature } from '@papercusp/operator-core/lib/p2p/microcharge.ts';
+import { quoteIdentityInferenceTurn } from '@papercusp/operator-core/lib/cupboard/identity-per-use-offer';
+import { identityUsageStatement } from '@papercusp/operator-core/lib/cupboard/commerce-dashboards';
 import type { Env } from '../env.ts';
 import { AuthError, resolveGithubBearer } from '../auth.ts';
 import { getCommerceOffer } from '../commerce-store.ts';
@@ -35,8 +39,10 @@ import { getPaymentChannel } from '../payment-channel-store.ts';
 import {
   getUsageReceipt,
   listChannelUsageReceipts,
+  listPrincipalUsageReceipts,
   loadMicrochargeChannel,
   reserveUsageReceipt,
+  readIdentityMarkupRemainder,
   settleUsageReceipt,
   type StoredUsageReceipt,
 } from '../usage-receipt-store.ts';
@@ -109,7 +115,7 @@ function voucherFromReceipt(receipt: StoredUsageReceipt): CumulativePaymentVouch
     seller: receipt.seller,
     releaseRef: receipt.releaseRef,
     usageNonce: receipt.usageNonce,
-    meterQuantity: BigInt(receipt.meterQuantity),
+    meterQuantity: BigInt(receipt.reservedMeterQuantity),
     pricePerUnitMicros: BigInt(receipt.unitPriceMicros),
     priceVersion: receipt.priceVersion,
     splitManifestHash: receipt.splitManifestHash,
@@ -144,14 +150,52 @@ function receiptJson(receipt: StoredUsageReceipt) {
     voucherDigest: receipt.voucherDigest,
     voucherSignature: receipt.voucherSignature,
     receiptSignature: receipt.receiptSignature,
+    sellerPubkeyBase64: receipt.sellerPubkeyBase64 ?? null,
     state: receipt.state,
     reservedAtMs: receipt.reservedAtMs,
     settledAtMs: receipt.settledAtMs,
+    ...(receipt.identityInference ? { identityInference: {
+      ceilingMicros: String(receipt.identityInference.ceilingMicros),
+      billedInferenceMicros: receipt.identityInference.billedInferenceMicros === null ? null : String(receipt.identityInference.billedInferenceMicros),
+      priorRemainderNumerator: receipt.identityInference.priorRemainderNumerator === null ? null : String(receipt.identityInference.priorRemainderNumerator),
+      remainderNumerator: receipt.identityInference.remainderNumerator === null ? null : String(receipt.identityInference.remainderNumerator),
+    } } : {}),
   };
 }
 
 export function meteredUsageRoute(): Hono<{ Bindings: Env }> {
   const route = new Hono<{ Bindings: Env }>();
+
+  // Statement source across channels. Caller arguments never select a party.
+  route.get('/commerce/metered-invocations', async (c) => {
+    const auth = await authenticate(c.req.raw);
+    if (!auth.ok) return c.json({ error: 'unauthorized', reason: auth.reason }, 401);
+    const limitText = c.req.query('limit') ?? '100';
+    if (!/^[1-9][0-9]{0,2}$/.test(limitText) || Number(limitText) > 200) {
+      return c.json({ error: 'invalid_usage_limit', detail: 'limit must be an integer from 1 to 200' }, 400);
+    }
+    const cursor = c.req.query('cursor');
+    let after: { channelId: string; usageNonce: string } | undefined;
+    if (cursor !== undefined) {
+      try {
+        if (cursor.length > 2000) throw new Error('oversized cursor');
+        const parsed: unknown = JSON.parse(cursor);
+        if (!Array.isArray(parsed) || parsed.length !== 2 || !parsed.every(value =>
+          typeof value === 'string' && value.length > 0 && value.length <= 300 && value.trim() === value)) {
+          throw new Error('invalid cursor');
+        }
+        after = { channelId: parsed[0], usageNonce: parsed[1] };
+      } catch {
+        return c.json({ error: 'invalid_usage_cursor' }, 400);
+      }
+    }
+    const page = await listPrincipalUsageReceipts(c.env.DB, auth.principalId, Number(limitText), after);
+    const receipts = page.receipts.map(receiptJson);
+    return c.json({ receipts, identityStatement: identityUsageStatement(receipts, auth.principalId),
+      nextCursor: page.next ? JSON.stringify([page.next.channelId, page.next.usageNonce]) : null,
+      coverage: { scope: 'authenticated-principal', population: 'live-page',
+        totals: 'page', hasMore: page.next !== null } });
+  });
 
   // ── RESERVE, before the seller executes the unit ─────────────────────────
   route.post('/commerce/metered-invocations', async (c) => {
@@ -209,6 +253,17 @@ export function meteredUsageRoute(): Hono<{ Bindings: Env }> {
     }
     const declared = declareMeter(offer.perUse);
     if (!declared.ok) return c.json({ error: declared.code, detail: declared.detail }, 422);
+    const identityCeiling = bigintFrom(body.identityInferenceCeilingMicros);
+    const isIdentity = offer.skuRef.startsWith('identity-release:');
+    if (isIdentity) {
+      const q = quoteIdentityInferenceTurn({ offer: { skuRef: offer.skuRef, ...offer.perUse },
+        billedInferenceMicros: 0n, inferenceCeilingMicros: identityCeiling ?? 0n });
+      if (!q.ok || q.reservationQuantity !== meterQuantity) {
+        return c.json({ error: 'identity-ceiling-mismatch', detail: 'identity reserve requires its exact positive inference ceiling and matching block quantity' }, 422);
+      }
+    } else if (body.identityInferenceCeilingMicros !== undefined) {
+      return c.json({ error: 'identity-ceiling-mismatch', detail: 'only identity offers accept inference ceilings' }, 422);
+    }
 
     const unit: BillableUnit = {
       payer: channel.principalId,
@@ -240,8 +295,17 @@ export function meteredUsageRoute(): Hono<{ Bindings: Env }> {
       unit,
       voucher,
       nowMs: Date.now(),
+      verifySignature: (candidate) => verifyPaymentVoucherSignature(candidate, {
+        channelId: channel.channelId,
+        payer: channel.principalId,
+        pubkeyBase64: channel.payerPubkeyBase64 ?? '',
+      }),
     });
     if (!accepted.ok) return c.json({ error: accepted.code, detail: accepted.detail }, statusFor(accepted.code));
+    if (!offer.receiptAuthority || !verifySellerReceiptAuthority({ seller: offer.creatorId,
+        offerId: offer.offerId, productId: offer.productId, skuRef: offer.skuRef }, offer.receiptAuthority)) {
+      return c.json({ error: 'seller-authority-required', detail: 'publish an authenticated seller receipt key before reserving usage' }, 422);
+    }
 
     const stored = await reserveUsageReceipt(c.env.DB, {
       channelId: channel.channelId,
@@ -261,10 +325,12 @@ export function meteredUsageRoute(): Hono<{ Bindings: Env }> {
       expiresAtMs: voucher.expiresAtMs,
       voucherDigest: paymentVoucherDigest(unsignedVoucher(voucher)),
       voucherSignature: voucher.signature,
+      sellerPubkeyBase64: offer.receiptAuthority.pubkeyBase64,
       nowMs: Date.now(),
+      ...(isIdentity ? { identityInferenceCeilingMicros: identityCeiling! } : {}),
     });
     if (!stored.ok) {
-      return c.json({ error: 'duplicate-nonce', detail: `usage nonce '${voucher.usageNonce}' was already observed` }, 409);
+      return c.json({ error: stored.code, detail: 'the durable usage ledger refused admission' }, stored.code === 'cap-exhausted' ? 402 : 409);
     }
     return c.json({ reserved: true, receipt: receiptJson(stored.receipt) }, 201);
   });
@@ -293,23 +359,51 @@ export function meteredUsageRoute(): Hono<{ Bindings: Env }> {
     if (reserved.seller !== auth.principalId) {
       return c.json({ error: 'forbidden', detail: 'only the seller named on the reservation can settle it' }, 403);
     }
-    if (reserved.state === 'settled') {
-      return c.json({ error: 'already-settled', detail: `usage nonce '${usageNonce}' was already settled` }, 409);
-    }
 
     const channel = await getPaymentChannel(c.env.DB, body.channelId);
     if (!channel) return c.json({ error: 'unknown_channel', detail: `payment channel ${body.channelId} does not exist` }, 404);
 
+    const occurredAtMs = body.occurredAtMs === undefined && !reserved.identityInference ? Date.now() : body.occurredAtMs;
+    if (typeof occurredAtMs !== 'number' || !Number.isSafeInteger(occurredAtMs) || occurredAtMs < reserved.reservedAtMs || occurredAtMs > Date.now()) {
+      return c.json({ error: 'invalid_request', detail: 'a signed completion timestamp between admission and now is required' }, 400);
+    }
+    let identityInference;
+    let exact;
+    if (reserved.releaseRef.startsWith('identity-release:')) {
+      const billed = bigintFrom(body.billedInferenceMicros), prior = bigintFrom(body.priorRemainderNumerator);
+      if (!reserved.identityInference || billed === null || prior === null || actualQuantity != null) {
+        return c.json({ error: 'identity-settlement-mismatch', detail: 'exact billed cost and prior remainder are required for an admitted identity turn' }, 422);
+      }
+      // Replays quote with their stored prior; new settlements use hosted history.
+      const authoritativePrior = reserved.state === 'settled' ? BigInt(reserved.identityInference.priorRemainderNumerator!) :
+        await readIdentityMarkupRemainder(c.env.DB, reserved.payer, reserved.offerId);
+      if (prior !== authoritativePrior) return c.json({ error: 'identity-remainder-mismatch', detail: 'prior remainder differs from hosted history' }, 409);
+      identityInference = { offer: { skuRef: reserved.releaseRef, meterUnit: reserved.meterUnit,
+        unitPriceMicros: reserved.unitPriceMicros, priceVersion: reserved.priceVersion, splitManifestHash: reserved.splitManifestHash },
+        billedInferenceMicros: billed, inferenceCeilingMicros: BigInt(reserved.identityInference.ceilingMicros), priorRemainderNumerator: prior };
+      const q = quoteIdentityInferenceTurn(identityInference);
+      if (!q.ok) return c.json({ error: q.code, detail: q.detail }, 422);
+      exact = { billedInferenceMicros: billed, priorRemainderNumerator: prior, remainderNumerator: q.remainderNumerator };
+    } else if (body.billedInferenceMicros !== undefined || body.priorRemainderNumerator !== undefined) {
+      return c.json({ error: 'identity-settlement-mismatch', detail: 'ordinary units cannot override their published price' }, 422);
+    }
     const durable = await loadMicrochargeChannel(c.env.DB, channel);
-    const occurredAtMs = Date.now();
+    // An identical retry is checked against the stored receipt, using the same
+    // pure closure, rather than signing a new timestamp after a transport loss.
+    const closureChannel = reserved.state === 'settled' ? { ...durable,
+      reservations: { ...durable.reservations, [usageNonce]: BigInt(reserved.reservedMicros) } } : durable;
     const closed = closeMeteredInvocation({
-      channel: durable,
+      channel: closureChannel,
       voucher: voucherFromReceipt(reserved),
       ...(actualQuantity != null ? { actualQuantity } : {}),
       occurredAtMs,
+      ...(identityInference ? { identityInference } : {}),
       signReceipt: () => body.receiptSignature as string,
     });
     if (!closed.ok) return c.json({ error: closed.code, detail: closed.detail }, statusFor(closed.code));
+    if (!reserved.sellerPubkeyBase64 || !verifyUsageReceiptSignature(closed.receipt, reserved.sellerPubkeyBase64)) {
+      return c.json({ error: 'invalid-receipt-signature', detail: 'the original seller key must sign the exact usage receipt' }, 422);
+    }
 
     const persisted = await settleUsageReceipt(c.env.DB, {
       channelId: channel.channelId,
@@ -318,11 +412,13 @@ export function meteredUsageRoute(): Hono<{ Bindings: Env }> {
       meterQuantity: closed.receipt.meterQuantity,
       receiptSignature: closed.receipt.signature,
       nowMs: occurredAtMs,
+      ...(exact ? { identityInference: exact } : {}),
     });
     if (!persisted.ok) {
       return c.json(
         { error: persisted.code, detail: persisted.detail },
-        persisted.code === 'cap-exhausted' ? 402 : persisted.code === 'already-settled' ? 409 : 404,
+        persisted.code === 'cap-exhausted' ? 402 : persisted.code === 'already-settled' ? 409 :
+          persisted.code === 'unknown-reservation' ? 404 : 422,
       );
     }
     return c.json({ settled: true, receipt: receiptJson(persisted.receipt) });
@@ -341,11 +437,35 @@ export function meteredUsageRoute(): Hono<{ Bindings: Env }> {
       return c.json({ error: 'forbidden', detail: 'only the funding principal or a named seller can read this usage' }, 403);
     }
     const visible = channel.principalId === auth.principalId ? receipts : receipts.filter((r) => r.seller === auth.principalId);
+    const identityOfferId = c.req.query('identityOfferId');
+    let identityMarkupOrigin;
+    if (identityOfferId !== undefined) {
+      const offered = await getCommerceOffer(c.env.DB, identityOfferId);
+      if (!offered || !offered.perUse || !offered.skuRef.startsWith('identity-release:')) {
+        return c.json({ error: 'unknown_identity_offer' }, 404);
+      }
+      if (!offered.active || !offered.productActive) return c.json({ error: 'inactive_offer' }, 422);
+      if (channel.principalId !== auth.principalId && !visible.some((r) => r.offerId === identityOfferId)) {
+        return c.json({ error: 'forbidden' }, 403);
+      }
+      const offer = { skuRef: offered.skuRef, ...offered.perUse };
+      const valid = quoteIdentityInferenceTurn({ offer, billedInferenceMicros: 0n, inferenceCeilingMicros: 1n });
+      if (!valid.ok) return c.json({ error: valid.code }, 422);
+      try {
+        identityMarkupOrigin = { offerId: identityOfferId, payer: channel.principalId, seller: offered.creatorId,
+          offer, remainderNumerator: String(await readIdentityMarkupRemainder(c.env.DB, channel.principalId, identityOfferId)) };
+      } catch {
+        return c.json({ error: 'identity-history-unverifiable' }, 422);
+      }
+    }
+    const renderedReceipts = visible.map(receiptJson);
     return c.json({
       channelId,
       escrowMicros: String(channel.escrowMicros),
       committedMicros: String(channel.committedMicros),
-      receipts: visible.map(receiptJson),
+      receipts: renderedReceipts,
+      identityStatement: identityUsageStatement(renderedReceipts, auth.principalId),
+      ...(identityMarkupOrigin ? { identityMarkupOrigin } : {}),
     });
   });
 

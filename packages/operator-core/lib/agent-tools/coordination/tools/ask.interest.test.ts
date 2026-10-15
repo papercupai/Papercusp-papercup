@@ -47,6 +47,8 @@ beforeEach(() => {
 describe('coord:ask requester interest handle (P-024)', () => {
   it('is hidden from every agent role and rejects direct agent/MCP invocation', async () => {
     expect(tool.agentRoles).toEqual([]);
+    expect(tool.description).toMatch(/^OWNER-UI ONLY\./);
+    expect(tool.description).toMatch(/Agent sessions are denied/);
     await expect(call({ transport: 'mcp', uiClientId: 'pc-admin-coord-ui' }))
       .rejects.toThrow(/owner-UI-only/);
     await expect(call({ transport: 'http', uiClientId: 'su-agent' }))

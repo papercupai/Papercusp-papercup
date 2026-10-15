@@ -73,6 +73,16 @@ export function resolveConditionHarness(
   if (!entry) return null;
   if (entry.harnessFrom === 'ambient') return ambientHarness?.trim() || null;
   const suffix = key.slice(entry.prefix.length).trim();
+  if (entry.harnessFrom === 'leading-segment') {
+    // `<harness>:<detail>` — the detail may itself contain ':' (a leg such as
+    // `lint:tsc`), so only the FIRST segment is the harness. A key with no detail at
+    // all names no sub-subject; refuse it rather than mint an item for nothing.
+    const sep = suffix.indexOf(':');
+    if (sep <= 0) return null;
+    const head = suffix.slice(0, sep).trim();
+    const detail = suffix.slice(sep + 1).trim();
+    return head && detail ? head : null;
+  }
   // A suffix carrying further ':' segments is not a bare slug — don't guess.
   return suffix && !suffix.includes(':') ? suffix : ambientHarness?.trim() || null;
 }

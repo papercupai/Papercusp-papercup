@@ -360,6 +360,16 @@ export interface PerUseChannelPosition {
   readonly reversedMicros: string;
   /** `settledMicros - reversedMicros`, floored at zero. */
   readonly netSettledMicros: string;
+  /** Shares of final settlement proceeds, not proof that a payee was paid. */
+  readonly settledAllocations?: {
+    readonly daoMicros: string;
+    readonly componentAuthorsMicros: Readonly<Record<string, string>>;
+  };
+  /** Successful chain submission receipts; this does not assert payout finality. */
+  readonly submittedPayouts?: {
+    readonly daoMicros: string;
+    readonly componentAuthorsMicros: Readonly<Record<string, string>>;
+  };
   readonly lastEventAtMs: number;
 }
 
@@ -385,6 +395,8 @@ interface ChannelAccumulator {
   settledMicros: bigint;
   pendingSettlementMicros: bigint;
   reversedMicros: bigint;
+  settledAllocations?: { daoMicros: bigint; componentAuthorsMicros: Map<string, bigint> };
+  submittedPayouts?: { daoMicros: bigint; componentAuthorsMicros: Map<string, bigint> };
   lastEventAtMs: number;
 }
 
@@ -428,11 +440,17 @@ export function perUseRollup(accepted: readonly CommerceEvent[]): PerUseRollup {
   const channels = new Map<string, ChannelAccumulator>();
   const unusable: BridgeIssue[] = [];
   const settledRequestHashes = new Set<string>();
+  const payoutKeys = new Set<string>();
 
   for (const event of accepted) {
+    // The revenue-split kind also carries allocations and treasury reserve
+    // movements. Only explicit DAO/component payout receipts belong here.
+    if (event.kind === 'revenue-split' && (event.payload.payoutStatus === undefined ||
+        (event.payload.share !== 'dao' && event.payload.share !== 'component'))) continue;
     if (
       event.kind !== 'usage-receipt' &&
       event.kind !== 'settlement-proof' &&
+      event.kind !== 'revenue-split' &&
       event.kind !== 'reversal'
     ) {
       continue;
@@ -457,6 +475,30 @@ export function perUseRollup(accepted: readonly CommerceEvent[]): PerUseRollup {
     channel.releaseRef = channel.releaseRef ?? readString(p, 'releaseRef');
     channel.payer = channel.payer ?? readString(p, 'payer');
     channel.seller = channel.seller ?? readString(p, 'seller');
+
+    if (event.kind === 'revenue-split') {
+      const amount = readMicros(p.amountMicros);
+      const share = readString(p, 'share');
+      const payeeId = readString(p, 'payeeId');
+      const receiptHash = readString(p, 'receiptHash');
+      const transactionHash = readString(p, 'transactionHash');
+      const recipient = readString(p, 'recipient');
+      if (p.payoutStatus !== 'submitted' || !receiptHash || !readString(p, 'safeTxHash') ||
+          !transactionHash || !/^0x[0-9a-fA-F]{64}$/.test(transactionHash) ||
+          !recipient || !/^0x[0-9a-fA-F]{40}$/.test(recipient) || amount === null || amount <= 0n ||
+          (share !== 'dao' && share !== 'component') || (share === 'component' && !payeeId)) {
+        unusable.push({ eventId: event.eventId, reason: 'payout statement needs a successful submission receipt, exact micros and component payee identity' });
+        continue;
+      }
+      const key = JSON.stringify([receiptHash, share, payeeId ?? '']);
+      if (payoutKeys.has(key)) continue;
+      payoutKeys.add(key);
+      channel.submittedPayouts ??= { daoMicros: 0n, componentAuthorsMicros: new Map() };
+      if (share === 'dao') channel.submittedPayouts.daoMicros += amount;
+      else channel.submittedPayouts.componentAuthorsMicros.set(payeeId!,
+        (channel.submittedPayouts.componentAuthorsMicros.get(payeeId!) ?? 0n) + amount);
+      continue;
+    }
 
     if (event.kind === 'usage-receipt') {
       const micros = readMicros(p.amountMicros);
@@ -491,6 +533,27 @@ export function perUseRollup(accepted: readonly CommerceEvent[]): PerUseRollup {
         // arrival of the claimed proof cannot resurrect the pending amount.
         settledRequestHashes.add(requestHash ?? event.eventId);
         channel.settledMicros += micros;
+        if (Object.hasOwn(p, 'componentAllocationsMicros')) {
+          const authors = p.componentAllocationsMicros;
+          const shares = p.allocationsMicros;
+          const validObject = (value: unknown): value is Record<string, unknown> =>
+            value !== null && typeof value === 'object' && !Array.isArray(value);
+          const entries = validObject(authors) ? Object.entries(authors) : [];
+          const component = validObject(shares) ? readMicros(shares.component) : null;
+          const dao = validObject(shares) ? readMicros(shares.dao) : null;
+          const parsed = entries.map(([author, amount]) => [author, readMicros(amount)] as const);
+          if (!validObject(authors) || component === null || dao === null ||
+              parsed.some(([author, amount]) => !author.trim() || amount === null) ||
+              parsed.reduce((sum, [, amount]) => sum + (amount ?? 0n), 0n) !== component) {
+            unusable.push({ eventId: event.eventId, reason: 'settlement component author allocations must be integer micros summing to the component share, with a DAO share' });
+          } else {
+            const allocation = channel.settledAllocations ??= { daoMicros: 0n, componentAuthorsMicros: new Map() };
+            allocation.daoMicros += dao;
+            for (const [author, amount] of parsed) {
+              allocation.componentAuthorsMicros.set(author, (allocation.componentAuthorsMicros.get(author) ?? 0n) + amount!);
+            }
+          }
+        }
       } else if (!settledRequestHashes.has(requestHash ?? event.eventId)) {
         channel.pendingSettlementMicros += micros;
       }
@@ -542,6 +605,18 @@ export function perUseRollup(accepted: readonly CommerceEvent[]): PerUseRollup {
       pendingSettlementMicros: channel.pendingSettlementMicros.toString(),
       reversedMicros: channel.reversedMicros.toString(),
       netSettledMicros: net.toString(),
+      ...(channel.settledAllocations ? { settledAllocations: {
+        daoMicros: channel.settledAllocations.daoMicros.toString(),
+        componentAuthorsMicros: Object.fromEntries([...channel.settledAllocations.componentAuthorsMicros]
+          .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+          .map(([author, amount]) => [author, amount.toString()])),
+      } } : {}),
+      ...(channel.submittedPayouts ? { submittedPayouts: {
+        daoMicros: channel.submittedPayouts.daoMicros.toString(),
+        componentAuthorsMicros: Object.fromEntries([...channel.submittedPayouts.componentAuthorsMicros]
+          .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+          .map(([author, amount]) => [author, amount.toString()])),
+      } } : {}),
       lastEventAtMs: channel.lastEventAtMs,
     } satisfies PerUseChannelPosition;
   });

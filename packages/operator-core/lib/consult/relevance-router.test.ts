@@ -5,18 +5,55 @@
  * and shared by every selecting surface so the semantics cannot drift between
  * call sites — these tests pin them.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { fileURLToPath } from 'node:url';
+import * as ts from 'typescript';
+import { buildSidecarFirstEmbedder, EMBEDDER_DIM_SPECS } from '@papercusp/memory';
+import { resolveProseProfileSelection } from '../search/prose-vector-dims';
 import {
   selectResponders,
+  routeConsult,
+  type ConsultRouteDeps,
+  type ExpertiseRoutingReceipt,
   selectionSnapshot,
   snapshotCandidateQualifies,
   qualifyingScoreOf,
   relevanceOf,
   freshnessOf,
+  expertiseSubject,
+  extractPathTokens,
+  subjectEvidenceQuery,
+  contrastedSubjectScore,
+  subjectContrasts,
+  scoreSubjectEvidence,
+  meetsRoutingFloors,
+  SUBJECT_EVIDENCE_MIN_SCORE,
   FRESHNESS_BASE,
+  relativeLexicalRanks,
   type RoutingCandidate,
   type SelectedResponder,
 } from './relevance-router';
+
+describe('relativeLexicalRanks — lexical fallback scores are engine-independent (BM25 plan P-005)', () => {
+  it('divides by the best score, so unbounded BM25 scores keep their order instead of all clamping to 1', () => {
+    const rows = [{ owner: 'a', lexicalRank: 8 }, { owner: 'b', lexicalRank: '4' }, { owner: 'c', lexicalRank: 2 }];
+    expect(relativeLexicalRanks(rows).map((r) => r.lexicalRank)).toEqual([1, 0.5, 0.25]);
+  });
+
+  it('gives the same values for ts_rank_cd-sized scores in the same ratios', () => {
+    const rows = [{ lexicalRank: 0.08 }, { lexicalRank: 0.04 }, { lexicalRank: 0.02 }];
+    expect(relativeLexicalRanks(rows).map((r) => r.lexicalRank)).toEqual([1, 0.5, 0.25]);
+  });
+
+  it('keeps zero and non-finite scores at zero instead of dividing by them', () => {
+    expect(relativeLexicalRanks([{ lexicalRank: 0 }, { lexicalRank: 0 }]).map((r) => r.lexicalRank)).toEqual([0, 0]);
+    expect(relativeLexicalRanks([{ lexicalRank: 'NaN' }, { lexicalRank: 2 }]).map((r) => r.lexicalRank)).toEqual([0, 1]);
+    expect(relativeLexicalRanks([])).toEqual([]);
+  });
+});
 
 const cand = (ownerId: string, over: Partial<RoutingCandidate> = {}): RoutingCandidate => ({
   ownerId,
@@ -31,6 +68,366 @@ const cand = (ownerId: string, over: Partial<RoutingCandidate> = {}): RoutingCan
 
 const ids = (s: SelectedResponder[]) => s.map((x) => x.candidate.ownerId);
 const vias = (s: SelectedResponder[]) => s.map((x) => x.via);
+
+describe('problem-specific expertise qualification', () => {
+  it('does not mistake prose slash pairs for a repository subject', () => {
+    const question = 'Distinguish child/source lease actors with a before/after audit and CPU/q8 scoring.';
+    expect(extractPathTokens(question)).toEqual([]);
+    expect(expertiseSubject(question)).toBeNull();
+    expect(extractPathTokens('Compare before/after in packages/core/lease.ts and `src/leases`.'))
+      .toEqual(['packages/core/lease.ts', 'src/leases']);
+    expect(extractPathTokens('Inspect ./src/leases, /var/log/leases and src/leases/.'))
+      .toEqual(['./src/leases', '/var/log/leases', 'src/leases/']);
+  });
+
+  it('scores a natural question with punctuation without requiring a named tool contract', async () => {
+    const question = 'Which lease writer caused the before/after change? Note: preserve the native cleanup receipt.';
+    const scorer = vi.fn(async () => [0.9, 0.1]);
+    const contracts = [{ name: 'session:request-compaction', description: 'Recover a generic continuation.' }];
+    const primary = 'Which lease writer caused the before/after change?';
+    expect(subjectEvidenceQuery(question)).toBe(primary);
+    expect(await scoreSubjectEvidence(question, ['lease actor audit with generic continuation'],
+      Date.now() + 4000, { scorer, contracts })).toEqual([0.9]);
+    expect(scorer).toHaveBeenCalledWith('lease actor audit with generic continuation',
+      [primary, 'session:request-compaction\nRecover a generic continuation.'], expect.any(Object));
+    expect(subjectEvidenceQuery('Context: the native child kept a receipt. Which lease actor changed it? Preserve the log.'))
+      .toBe('Context: the native child kept a receipt. Which lease actor changed it?');
+    expect(subjectEvidenceQuery('Diagnose native lease actors and preserve the original receipt'))
+      .toBe('Diagnose native lease actors and preserve the original receipt');
+  });
+
+  it('rejects natural-question procedural overlap when another primary action explains the passage better', async () => {
+    const question = 'Which native lease actor changed the source?';
+    const contracts = [{ name: 'session:request-compaction', description: 'Recover a generic continuation.' }];
+    const scorer = vi.fn(async (passage: string, _texts: string[]) => passage.startsWith('lease') ? [0.92, 0.2] : [0.78, 0.95]);
+    const deadline = Date.now() + 4000;
+    const scores = await scoreSubjectEvidence(question,
+      ['lease actor with generic continuation', 'generic continuation before/after recovery'], deadline, { scorer, contracts });
+    expect(scores[0]).toBeGreaterThanOrEqual(SUBJECT_EVIDENCE_MIN_SCORE);
+    expect(scores[1]).toBeLessThan(SUBJECT_EVIDENCE_MIN_SCORE);
+    for (const call of scorer.mock.calls) expect(call[1]).toEqual([
+      question, 'session:request-compaction\nRecover a generic continuation.',
+    ]);
+    expect(await scoreSubjectEvidence(question, ['generic continuation'], deadline,
+      { scorer, contracts: [] })).toEqual([null]);
+    expect(await scoreSubjectEvidence(question, ['generic continuation'], deadline,
+      { scorer: async () => [0.9], contracts })).toEqual([null]);
+  });
+
+  it('requires primary-issue evidence even when a passage matches the contextual preamble', async () => {
+    const question = 'For distributed request processing, which writer changed the resource lease? Preserve the receipt.';
+    const primary = 'For distributed request processing, which writer changed the resource lease?';
+    const issue = 'which writer changed the resource lease?';
+    const contracts = [{ name: 'request:deliver', description: 'Deliver a distributed request.' }];
+    const scorer = vi.fn(async (text: string, queries: string[]) => queries.map(query => {
+      if (query === primary) return 0.9;
+      if (query === issue) return text.startsWith('writer') ? 0.8 : 0.1;
+      return 0.2;
+    }));
+    const scores = await scoreSubjectEvidence(question, ['writer lease audit for a distributed request', 'distributed request delivery'],
+      Date.now() + 4000, { scorer, contracts });
+    expect(scores[0]).toBeGreaterThanOrEqual(SUBJECT_EVIDENCE_MIN_SCORE);
+    expect(scores[1]).toBeLessThan(SUBJECT_EVIDENCE_MIN_SCORE);
+    expect(scorer.mock.calls[0][1]).toEqual([primary, issue, 'request:deliver\nDeliver a distributed request.']);
+  });
+
+  it('nominates competing primary actions without matching their operational boilerplate', () => {
+    const contracts = [
+      { name: 'db:migrate', description: 'Apply a SQL migration.' },
+      { name: 'accounts:pin', description: 'Pin a billing account. Inference model migration endpoint routing.' },
+      { name: 'dev:cache_stats', description: 'Read cache statistics. Inference model migration endpoint routing.' },
+      { name: 'fleet:status', description: 'Read fleet status. Inference model migration endpoint routing.' },
+      { name: 'gateway:owner_report', description: 'Report inference model migration endpoint routing outcomes.' },
+    ];
+    expect(subjectContrasts('db:migrate', 'inference model migration endpoint routing', contracts).map(c => c.name))
+      .toEqual(['gateway:owner_report']);
+  });
+
+  it('compares the registered primary action without unrelated operational notes', () => {
+    expect(subjectEvidenceQuery('db:migrate',
+      'Apply a SQL migration file, coordinated. DRY RUN unless confirm:true; drain before applying.'))
+      .toBe('db:migrate\nApply a SQL migration file, coordinated.');
+    expect(subjectEvidenceQuery('gateway:owner_report',
+      'Report inference routing outcomes. Uses the shared SQL ledger for durable history.'))
+      .toBe('gateway:owner_report\nReport inference routing outcomes.');
+    expect(subjectEvidenceQuery('computer:observe',
+      'Read org.example.Widget v2.1 roles and state. Returns activation references.'))
+      .toBe('computer:observe\nRead org.example.Widget v2.1 roles and state.');
+    expect(subjectEvidenceQuery('tools:read', 'x'.repeat(2_000)))
+      .toBe(`tools:read\n${'x'.repeat(1_500)}`);
+    expect(subjectEvidenceQuery('db:migrate', '  ')).toBeNull();
+    expect(subjectEvidenceQuery('src/schema.sql', 'Operational notes.')).toBe('src/schema.sql');
+  });
+
+  it('requires measured contract evidence to beat a competing system, rather than trusting a high absolute score', async () => {
+    expect(contrastedSubjectScore(0.74, [0.91])).toBeLessThan(0.5);
+    expect(contrastedSubjectScore(0.81, [0.65])).toBeGreaterThan(0.5);
+    expect(contrastedSubjectScore(0.4, [0.1])).toBeLessThan(0.5);
+    for (const alternatives of [[], [null], [NaN], [2]]) expect(contrastedSubjectScore(0.9, alternatives)).toBeNull();
+    const contracts = [
+      { name: 'computer:provision_desktop', description: 'Start a sandboxed GUI desktop.' },
+      { name: 'computer:observe', description: 'Read accessible GUI widgets.' },
+      { name: 'release:checkpoint-run', description: 'Run the release gate checkpoint suite.' },
+    ];
+    expect(subjectContrasts('computer:provision_desktop', 'release gate checkpoint', contracts).map(c => c.name))
+      .toEqual(['release:checkpoint-run']);
+    const scorer = vi.fn(async (_query: string, texts: string[]) => texts.map((_, i) => i ? 0.91 : 0.74));
+    const scores = await scoreSubjectEvidence('computer:provision_desktop', ['release gate checkpoint'], Date.now() + 4000, { contracts, scorer });
+    expect(scores[0]).toBeLessThan(0.5);
+    expect(scorer.mock.calls[0][0]).toBe('release gate checkpoint');
+    expect(scorer.mock.calls[0][1]).toEqual(['computer:provision_desktop\nStart a sandboxed GUI desktop.',
+      'release:checkpoint-run\nRun the release gate checkpoint suite.']);
+    expect(await scoreSubjectEvidence('missing:contract', ['text'], Date.now() + 4000, { contracts, scorer })).toEqual([null]);
+  });
+
+  it('keeps equal competing contracts unmeasured while preserving a supported absolute-floor win', () => {
+    expect(contrastedSubjectScore(0.8, [0.8])).toBeNull();
+    expect(contrastedSubjectScore(0.8, [0.2, 0.8])).toBeNull();
+    expect(contrastedSubjectScore(0.5, [0.5])).toBeNull();
+    expect(contrastedSubjectScore(0.5, [0.1])).toBe(SUBJECT_EVIDENCE_MIN_SCORE);
+  });
+
+  it('propagates overlapping contract ambiguity without discarding a distinct supported passage', async () => {
+    const contracts = [
+      { name: 'computer:provision_desktop', description: 'Start a sandboxed GUI desktop.' },
+      { name: 'release:checkpoint-run', description: 'Run the release gate checkpoint suite.' },
+    ];
+    const scorer = async (text: string) => text.startsWith('equal') ? [0.8, 0.8] : [0.5, 0.1];
+    expect(await scoreSubjectEvidence('computer:provision_desktop',
+      ['equal release gate checkpoint', 'distinct release gate checkpoint'], Date.now() + 4000, { contracts, scorer }))
+      .toEqual([null, SUBJECT_EVIDENCE_MIN_SCORE]);
+  });
+
+  it('keeps measured peer evidence when another passage cannot be scored, and preserves missing contrasts as unknown', async () => {
+    const contracts = [
+      { name: 'computer:provision_desktop', description: 'Start a sandboxed GUI desktop.' },
+      { name: 'release:checkpoint-run', description: 'Run the release gate checkpoint suite.' },
+    ];
+    const scorer = async (text: string) => {
+      if (text.startsWith('unavailable')) throw new Error('deadline');
+      return [0.9, 0.2];
+    };
+    const observed = await scoreSubjectEvidence('computer:provision_desktop',
+      ['unavailable release checkpoint', 'desktop repair instead of release checkpoint'], Date.now() + 4000, { contracts, scorer });
+    expect(observed[0]).toBeNull();
+    expect(observed[1]).toBeGreaterThan(0.5);
+    expect(await scoreSubjectEvidence('computer:provision_desktop', ['unrelated'], Date.now() + 4000, { contracts, scorer })).toEqual([null]);
+  });
+
+  it('anchors named tools independently of shared ownership decision words', () => {
+    expect(expertiseSubject('stale desktop rows block computer:provision_desktop; use soleOwner?')).toBe('computer:provision_desktop');
+    expect(expertiseSubject('inspect packages/core/lease.ts for stale leases')).toBe('packages/core/lease.ts');
+    expect(expertiseSubject('how should ownership work?')).toBeNull();
+    expect(subjectEvidenceQuery('computer:observe')).toBeNull();
+    expect(subjectEvidenceQuery('computer:observe', 'Capture a desktop screenshot.')).toContain('desktop screenshot');
+    expect(subjectEvidenceQuery('packages/core/lease.ts')).toBe('packages/core/lease.ts');
+  });
+
+  it('preserves a conceptual positive and refuses above-floor mismatches, including snapshot refill', () => {
+    const floors = { simFloor: 0.4, relevanceFloor: 0.41 };
+    for (const status of ['supported', 'mismatch', 'unmeasured'] as const) {
+      const candidate = cand('historical-expert', { subjectEvidence: {
+        subject: 'computer:provision_desktop', status,
+        score: status === 'unmeasured' ? null : status === 'supported' ? 0.692 : 0.350,
+      } });
+      expect(meetsRoutingFloors(candidate, floors)).toBe(status === 'supported');
+      expect(snapshotCandidateQualifies(floors, candidate)).toBe(status === 'supported');
+    }
+    expect(SUBJECT_EVIDENCE_MIN_SCORE).toBe(0.5);
+    expect(meetsRoutingFloors(cand('legacy'), floors)).toBe(true);
+    expect(meetsRoutingFloors(cand('subject-only', { signals: { similarity: 0.1, verification: 1, authorship: 1, freshness: 1 },
+      subjectEvidence: { subject: 'computer:provision_desktop', status: 'supported', score: 1 } }), floors)).toBe(false);
+  });
+
+  it('keeps a subject mismatch labelled minimum instead of restoring expert status', () => {
+    const negative = cand('gate-owner', { subjectEvidence: { subject: 'computer:provision_desktop', status: 'mismatch', score: 0.35 } });
+    expect(vias(selectResponders({ qualified: [], allCandidates: [negative], min: 1, max: 1 }))).toEqual(['minimum']);
+  });
+});
+
+describe('routing stage receipts', () => {
+  it('derives production callers and requires attributable telemetry and a receipt sink on every binding', () => {
+    const root = fileURLToPath(new URL('../../../../', import.meta.url));
+    const files = execFileSync('rg', [
+      '-l', '\\brouteConsult\\b', 'apps', 'packages', 'libs',
+      '--glob', '*.ts', '--glob', '*.tsx', '--glob', '!*.test.ts',
+      '--glob', '!*.test.tsx', '--glob', '!*.integration.test.ts',
+      '--glob', '!**/node_modules/**', '--glob', '!**/dist/**',
+    ], { cwd: root, encoding: 'utf8' }).trim().split('\n');
+    const callers: string[] = [];
+    const gaps: string[] = [];
+    for (const file of files) {
+      const source = ts.createSourceFile(file, readFileSync(new URL(file, `file://${root}`), 'utf8'),
+        ts.ScriptTarget.Latest, true);
+      const names = new Set(['routeConsult']);
+      const discoverAliases = (node: ts.Node) => {
+        if (ts.isImportSpecifier(node) && node.propertyName?.text === 'routeConsult') names.add(node.name.text);
+        if (ts.isBindingElement(node) && node.propertyName?.getText(source) === 'routeConsult'
+          && ts.isIdentifier(node.name)) names.add(node.name.text);
+        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer
+          && ts.isIdentifier(node.initializer) && names.has(node.initializer.text)) names.add(node.name.text);
+        ts.forEachChild(node, discoverAliases);
+      };
+      discoverAliases(source);
+      const property = (node: ts.Node | undefined, name: string) => node && ts.isObjectLiteralExpression(node)
+        ? node.properties.find(p => p.name?.getText(source).replace(/['"]/g, '') === name) : undefined;
+      const inspect = (node: ts.Node) => {
+        if (ts.isCallExpression(node) && (
+          (ts.isIdentifier(node.expression) && names.has(node.expression.text))
+          || (ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'routeConsult')
+          || (ts.isElementAccessExpression(node.expression) && ts.isStringLiteral(node.expression.argumentExpression)
+            && node.expression.argumentExpression.text === 'routeConsult')
+        )) {
+          const label = `${file}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}`;
+          callers.push(label);
+          const telemetry = property(node.arguments[0], 'telemetry');
+          const recorder = property(node.arguments[1], 'recordTelemetry');
+          // An inert value cannot satisfy the production receipt requirement.
+          const recorderConfigured = recorder && ts.isPropertyAssignment(recorder)
+            && (ts.isArrowFunction(recorder.initializer) || ts.isFunctionExpression(recorder.initializer)
+              || (ts.isIdentifier(recorder.initializer) && recorder.initializer.text !== 'undefined'));
+          if (!telemetry || !ts.isPropertyAssignment(telemetry)
+            || !['caller', 'policy', 'buildSha'].every(key => property(telemetry.initializer, key))
+            || !recorderConfigured) gaps.push(label);
+        }
+        ts.forEachChild(node, inspect);
+      };
+      inspect(source);
+    }
+    // A deleted/renamed mechanism cannot make an empty census pass.
+    expect(callers.some(path => path.startsWith('packages/operator-core/lib/consult/get-feedback-prod.ts:'))).toBe(true);
+    expect(gaps, `Unattributable production routing calls: ${gaps.join(', ')}`).toEqual([]);
+  });
+
+  const params = {
+    workspaceId: 'fixture-workspace', requesterId: 'requester', question: 'private question',
+    telemetry: { caller: 'fixture-caller', policy: 'consult-default', buildSha: '1234567', correlationId: 'fixture-correlation' },
+  };
+
+  it('records a pre-query exception once without losing its identity or logging private text', async () => {
+    const error = Object.assign(new Error('private error containing secret text'), { code: '57P01' });
+    const receipts: ExpertiseRoutingReceipt[] = [];
+    let tick = 0;
+    await expect(routeConsult(params, {
+      getSql: () => { throw error; }, embed: null, embeddingProfile: null, embeddingMode: null,
+      monotonicNow: () => ++tick, recordTelemetry: r => { receipts.push(r); },
+    })).rejects.toBe(error);
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({
+      caller: 'fixture-caller', policy: 'consult-default', correlationId: 'fixture-correlation',
+      buildSha: '1234567', outcome: 'threw', verdict: null, errorCode: '57P01', stages: {},
+    });
+    expect(JSON.stringify(receipts)).not.toContain('private');
+    expect(receipts[0].durationMs).toBeGreaterThan(0);
+  });
+
+  it('distinguishes missing embedding from a measured no-expert verdict, and keeps unexecuted stages absent', async () => {
+    const sql = vi.fn(async () => []) as unknown as ReturnType<ConsultRouteDeps['getSql']>;
+    const receipts: ExpertiseRoutingReceipt[] = [];
+    const result = await routeConsult(params, {
+      getSql: () => sql, embed: null, embeddingProfile: null, embeddingMode: null,
+      recordTelemetry: r => { receipts.push(r); },
+    });
+    expect(result.verdict).toBe('relevance_unmeasured');
+    expect(receipts[0]).toMatchObject({ outcome: 'degraded', verdict: 'relevance_unmeasured' });
+    expect(receipts[0].stages.embedding).toBeUndefined();
+    expect(receipts[0].stages.verification).toBeUndefined();
+    expect(receipts[0].stages.transcripts?.outcome).toBe('returned');
+    expect(receipts[0].stages.ranking?.outcome).toBe('returned');
+    expect(result.snapshot.measurement).toEqual(receipts[0]);
+  });
+
+  it('a synchronous or rejected diagnostic recorder does not replace the routing exception', async () => {
+    const error = new Error('route failed');
+    for (const recordTelemetry of [() => { throw new Error('sink failed'); }, async () => { throw new Error('sink failed'); }]) {
+      await expect(routeConsult(params, {
+        getSql: () => { throw error; }, embed: null, embeddingProfile: null, embeddingMode: null,
+        recordTelemetry,
+      })).rejects.toBe(error);
+    }
+  });
+
+  it.each([
+    ['provider code', Object.assign(new Error('private provider text'), { code: 'ECONNREFUSED' }), 'ECONNREFUSED'],
+    ['wrapped abort', new Error('private wrapper', { cause: new DOMException('private abort text', 'AbortError') }), 'ABORT_ERR'],
+    ['wrapped timeout', new Error('private wrapper', { cause: new DOMException('private timeout text', 'TimeoutError') }), 'ETIMEDOUT'],
+    ['unsafe code', Object.assign(new Error('private error'), { code: 'private credential value' }), 'routing_exception'],
+  ])('retains a safe %s for an embedding exception recovered by lexical fallback', async (_label, error, code) => {
+    const sql = vi.fn(async () => []) as unknown as ReturnType<ConsultRouteDeps['getSql']>;
+    const receipts: ExpertiseRoutingReceipt[] = [];
+    const result = await routeConsult(params, {
+      getSql: () => sql, embed: async () => { throw error; },
+      embeddingProfile: resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma),
+      embeddingMode: 'gemma', recordTelemetry: r => { receipts.push(r); },
+    });
+    expect(result.verdict).toBe('relevance_unmeasured');
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({ outcome: 'degraded', errorCode: null,
+      stages: { embedding: { outcome: 'threw', errorCode: code } } });
+    expect(result.snapshot.measurement).toEqual(receipts[0]);
+    expect(JSON.stringify(receipts)).not.toContain('private');
+  });
+
+  it('retains a native HTTP timeout through the sidecar wrapper and recovered router stage', async () => {
+    let received = 0;
+    let healthy = true;
+    const server = createServer((request, response) => {
+      received++;
+      request.resume();
+      if (healthy) {
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify({ vectors: [[1, 0]], dims: 2, runtime: 'test', modelRev: 'test' }));
+      }
+      // The second request reaches HTTP but never answers. The production
+      // client's own deadline must survive its terminal wrapper and the
+      // router's lexical recovery as a safe code, without retaining the query.
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = server.address();
+      expect(address).not.toBeNull();
+      if (!address || typeof address === 'string') throw new Error('missing private HTTP port');
+      const fallback = vi.fn(() => { throw new Error('unexpected fallback'); });
+      const embed = buildSidecarFirstEmbedder({
+        url: `http://127.0.0.1:${address.port}`, model: 'gemma', kind: 'query',
+        timeoutMs: 1000, maxAttempts: 1, fallback, onTransition: () => {},
+      });
+      expect(await embed('healthy control')).toEqual([1, 0]);
+      healthy = false;
+      const sql = vi.fn(async () => []) as unknown as ReturnType<ConsultRouteDeps['getSql']>;
+      const receipts: ExpertiseRoutingReceipt[] = [];
+      const result = await routeConsult({ ...params, question: 'private HTTP timeout query' }, {
+        getSql: () => sql, embed,
+        embeddingProfile: resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma),
+        embeddingMode: 'gemma', recordTelemetry: receipt => { receipts.push(receipt); },
+      });
+      expect(received).toBe(2);
+      expect(fallback).not.toHaveBeenCalled();
+      expect(result.verdict).toBe('relevance_unmeasured');
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0]).toMatchObject({ outcome: 'degraded', errorCode: null,
+        stages: { embedding: { outcome: 'threw', errorCode: 'ABORT_ERR' } } });
+      expect(result.snapshot.measurement).toEqual(receipts[0]);
+      expect(JSON.stringify(receipts)).not.toContain('private HTTP timeout query');
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
+  it('bounds cyclic error causes without replacing the recovered routing result', async () => {
+    const error = Object.assign(new Error('private cycle'), { cause: null as unknown });
+    error.cause = error;
+    const sql = vi.fn(async () => []) as unknown as ReturnType<ConsultRouteDeps['getSql']>;
+    const result = await routeConsult(params, {
+      getSql: () => sql, embed: async () => { throw error; },
+      embeddingProfile: resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma),
+      embeddingMode: 'gemma',
+    });
+    expect(result.verdict).toBe('relevance_unmeasured');
+    expect(result.snapshot.measurement?.stages.embedding).toMatchObject({ errorCode: 'routing_exception' });
+  });
+});
 
 describe('selectResponders — floor picks', () => {
   it('selects every qualified candidate best-first up to max, labeled via:floor', () => {

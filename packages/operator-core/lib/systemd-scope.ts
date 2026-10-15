@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { closeSync, existsSync, openSync, unlinkSync, writeSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { controlPlaneTempCandidates } from './control-plane-temp.mjs';
 
 /**
  * systemd-scope — the pure `systemd-run --user --scope` argv-builder shared by every
@@ -37,6 +38,54 @@ export const SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS = [
   '--collect',
   '--property=CollectMode=inactive-or-failed',
 ] as const;
+
+/** Exercise a harmless payload before trusting a bus/socket availability hint.
+ * Callers own caching: the test router probes against each admitted child's env,
+ * while managedSpawn retains its existing process-lifetime cache.
+ */
+export function probeTransientScopeSupport({
+  spawnFn = spawn,
+  systemdRunPath = 'systemd-run',
+  env = process.env,
+  platform = process.platform,
+  timeoutMs = 10_000,
+}: {
+  spawnFn?: typeof spawn;
+  systemdRunPath?: string;
+  env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+  timeoutMs?: number;
+} = {}): Promise<{ ok: boolean; reason?: string }> {
+  if (platform !== 'linux') return Promise.resolve({ ok: false, reason: `platform ${platform} has no cgroup scopes` });
+  return new Promise(resolve => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const done = (result: { ok: boolean; reason?: string }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    try {
+      const child = spawnFn(systemdRunPath, [
+        '--user', '--scope', '--quiet', ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
+        '--property=RuntimeMaxSec=5', '--property=TimeoutStopSec=1', '--', '/usr/bin/true',
+      ], { env, stdio: ['ignore', 'ignore', 'pipe'] });
+      let stderr = '';
+      child.stderr?.on('data', chunk => { stderr = (stderr + String(chunk)).slice(-512); });
+      timer = setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch { /* already gone */ }
+        done({ ok: false, reason: 'systemd-run probe timed out' });
+      }, timeoutMs);
+      timer.unref?.();
+      child.once('error', error => done({ ok: false, reason: `systemd-run unavailable: ${error.message}` }));
+      child.once('exit', code => done(code === 0 ? { ok: true }
+        : { ok: false, reason: `systemd-run probe exited ${code}: ${stderr.trim().slice(0, 200)}` }));
+    } catch (error) {
+      done({ ok: false, reason: `systemd-run spawn threw: ${error instanceof Error ? error.message : String(error)}` });
+    }
+  });
+}
 
 /**
  * Can a `systemd-run --user` client started with `env` reach a USER manager at all?
@@ -83,6 +132,8 @@ export const SECRET_ENV_TRANSPORT_RELEASE_GRACE_MS = 60_000;
 export interface SecretEnvironmentTransport {
   /** `/proc/<operator-pid>/fd/<fd>`; the backing file is unlinked immediately. */
   sourcePath: string;
+  /** The open descriptor, for a caller that deliberately inherits it into a scope. */
+  fd: number;
   /** Close the operator-side reference after the consumer has started. */
   release: () => void;
 }
@@ -115,24 +166,32 @@ export function createSecretEnvironmentTransport(
   env: Readonly<Record<string, string | undefined>>,
 ): SecretEnvironmentTransport {
   const bytes = encodeSecretEnvironment(env);
-  const roots = process.platform === 'linux' && existsSync('/dev/shm') ? ['/dev/shm', tmpdir()] : [tmpdir()];
+  const roots = controlPlaneTempCandidates('payload');
   let fd: number | null = null;
   let lastError: unknown = null;
   for (const root of roots) {
-    const pathname = join(root, `papercusp-env-${process.pid}-${randomUUID()}`);
+    const pathname = join(root, 'papercusp-env-' + process.pid + '-' + randomUUID());
+    let candidateFd: number | null = null;
     try {
-      fd = openSync(pathname, 'wx', 0o600);
+      candidateFd = openSync(pathname, 'wx', 0o600);
+      let offset = 0;
+      while (offset < bytes.length) {
+        const written = writeSync(candidateFd, bytes, offset, bytes.length - offset);
+        if (written <= 0) throw new Error('anonymous environment fd write made no progress');
+        offset += written;
+      }
       unlinkSync(pathname);
+      fd = candidateFd;
+      candidateFd = null;
       break;
     } catch (error) {
       lastError = error;
-      if (fd != null) {
+      if (candidateFd != null) {
         try {
-          closeSync(fd);
+          closeSync(candidateFd);
         } catch {
           /* best effort */
         }
-        fd = null;
       }
       try {
         unlinkSync(pathname);
@@ -143,21 +202,6 @@ export function createSecretEnvironmentTransport(
   }
   if (fd == null) {
     throw lastError instanceof Error ? lastError : new Error('unable to create anonymous environment fd');
-  }
-  try {
-    let offset = 0;
-    while (offset < bytes.length) {
-      const written = writeSync(fd, bytes, offset, bytes.length - offset);
-      if (written <= 0) throw new Error('anonymous environment fd write made no progress');
-      offset += written;
-    }
-  } catch (error) {
-    try {
-      closeSync(fd);
-    } catch {
-      /* best effort */
-    }
-    throw error;
   }
   let released = false;
   let releaseTimer: ReturnType<typeof setTimeout> | null = null;
@@ -175,6 +219,7 @@ export function createSecretEnvironmentTransport(
   releaseTimer.unref?.();
   return {
     sourcePath: `/proc/${process.pid}/fd/${fd}`,
+    fd,
     release,
   };
 }
@@ -273,6 +318,26 @@ export function checkpointScopeMemoryMaxG(env: NodeJS.ProcessEnv = process.env):
   return CHECKPOINT_SCOPE_OVERHEAD_G + CHECKPOINT_FORKS_BY_MODE[mode] * CHECKPOINT_FORK_HEAP_G;
 }
 
+/** A green command that runs the Papercusp Vitest fork runner (the suite the fork heaps model). */
+const VITEST_FORK_SUITE_RE = /\btest:affected\b|\bvitest\b/;
+
+/**
+ * Memory cap (GiB) for one install's green-checkpoint scope, sized by the suite it runs
+ * (WI-10006274). The fork-derived cap models the Papercusp Vitest affected runner; an install
+ * whose green command runs anything else (a foreign pot's `npm test` running node:test, a build)
+ * has no Vitest fork heaps, so it requests the scope overhead alone. `greenCmd` is the routing
+ * overlay's command; null/undefined means the install runs the operator-home default suite.
+ */
+export function checkpointScopeMemoryMaxGForGreenCmd(
+  greenCmd: string | null | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  if (greenCmd == null || greenCmd.trim() === '' || VITEST_FORK_SUITE_RE.test(greenCmd)) {
+    return checkpointScopeMemoryMaxG(env);
+  }
+  return CHECKPOINT_SCOPE_OVERHEAD_G;
+}
+
 /**
  * Swap policy for a transient scope. Choose by what the payload IS, not by habit.
  *
@@ -365,6 +430,8 @@ export interface TaskScopeProperties {
   /** Environment explicitly bound to a transient SERVICE. A service is not a
    * child of the launching process, so it cannot inherit the caller's env. */
   env?: Readonly<Record<string, string | undefined>>;
+  /** Opt into passing a scope environment payload through this inherited fd slot. */
+  environmentFdIndex?: number;
   memoryMaxBytes?: number | null;
   cpuWeight?: number | null;
   tasksMax?: number | null;
@@ -516,6 +583,7 @@ export function buildExactEnvPayload(base: readonly string[], env: NodeJS.Proces
 export interface BuiltTaskArgv {
   argv: string[];
   transport: SecretEnvironmentTransport | null;
+  inheritFd?: { index: number; fd: number };
 }
 
 function buildTaskArgv(base: string[], props: TaskScopeProperties, kind: 'scope' | 'service'): BuiltTaskArgv {
@@ -532,11 +600,23 @@ function buildTaskArgv(base: string[], props: TaskScopeProperties, kind: 'scope'
   // env at the launch site (see managed-spawn.ts).
   const deadlineEnv = taskDeadlineEnv(props.runtimeMaxSec);
   const payloadEnv = props.env ? { ...props.env, ...deadlineEnv } : null;
+  const environmentFdIndex = props.environmentFdIndex;
+  if (
+    environmentFdIndex !== undefined &&
+    (kind !== 'scope' || !payloadEnv || !Number.isSafeInteger(environmentFdIndex) || environmentFdIndex < 3)
+  ) {
+    throw new TypeError('environmentFdIndex requires a scope environment payload and an integer slot >= 3');
+  }
   const payload = payloadEnv
     ? kind === 'service'
       ? buildServiceEnvPayloadWithTransport(payloadBase, payloadEnv)
       : buildExactEnvPayloadWithTransport(payloadBase, payloadEnv)
     : null;
+  const inheritFd =
+    payload && environmentFdIndex !== undefined ? { index: environmentFdIndex, fd: payload.transport.fd } : undefined;
+  const payloadArgv = inheritFd
+    ? environmentRunnerPayload(payloadBase, `/proc/self/fd/${inheritFd.index}`, 'fd-path')
+    : (payload?.argv ?? payloadBase);
   const argv = [
     'systemd-run',
     '--user',
@@ -569,8 +649,8 @@ function buildTaskArgv(base: string[], props: TaskScopeProperties, kind: 'scope'
   }
   if (payload?.credentialProperty) argv.push(payload.credentialProperty);
   appendTaskProperties(argv, props);
-  argv.push(...(payload?.argv ?? payloadBase));
-  return { argv, transport: payload?.transport ?? null };
+  argv.push(...payloadArgv);
+  return { argv, transport: payload?.transport ?? null, ...(inheritFd ? { inheritFd } : {}) };
 }
 
 export function buildTaskScopeArgvWithTransport(base: string[], props: TaskScopeProperties): BuiltTaskArgv {

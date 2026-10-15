@@ -37,14 +37,17 @@
  * Kill-switch: PAPERCUSP_GREEN_STALL_WATCHDOG='0'.
  */
 import type { Sql } from 'postgres';
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 // EI-21297913810967409: every `(non-fatal)` swallow below reports its outcome here, so a pass
 // that CANNOT RUN is distinguishable from a pass that ran and found nothing. Called from each
 // pass's `finally` — see recordWatchdogPassOutcome's own note on why the tail of the try is the
 // wrong place (these passes have early `return out` paths).
 import { recordWatchdogPassOutcome } from './watchdog-health';
+import { observeFallback as defaultObserveFallback } from '../degradation/fallback-observations';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { broadcastSevereEvent, broadcastSevereEventResolved } from '../severe-event-broadcast';
+import { WEDGE_SILENT_MS } from '../fleet/spawn-reclaim';
 import { readRoutineEngineLiveness } from './routine-engine-liveness';
 import {
   isCheckpointRunLockHeldCheap,
@@ -79,9 +82,17 @@ import {
   recordLostGateRun,
   type StoredInFlightCandidate,
 } from './in-flight-candidate';
+import { LOST_RUN_SWEEP_INTERVAL_MS, sweepLostGateRuns } from './lost-gate-run-alarm';
 import { buildKey } from '../events/await/catalog';
 import type { EmitAwaitedEventOpts } from '../events/await/engine';
 import type { GateOwnershipAssessment } from '../coord/gate-ownership';
+import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
+
+// Lazy + memoized: some test modules stub `node:child_process` without execFile's custom
+// promisifier, so creating it eagerly can make unrelated imports fail.
+let execFileAsyncMemo: typeof execFile.__promisify__ | null = null;
+const execFileAsync = ((...args: unknown[]) =>
+  Reflect.apply((execFileAsyncMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;
 
 /** An ACTIVE green-checkpoint that hasn't FIRED in this long ⇒ the scheduler isn't
  *  running it (cron is hourly at :15, so this is ~3 missed fires). */
@@ -1555,20 +1566,36 @@ export async function wakeAbandonedCheckpointAwaits(
  * and returns an empty partial snapshot: evaluateGreenStall deliberately fails
  * open unless it can prove both a live lock and the exact `delivering` phase.
  */
-async function readCheckpointRunState(
+export async function readCheckpointRunState(
   installSlug: string,
   workspaceId: string,
+  deps: { route?: typeof resolveCheckpointRouting; readLock?: typeof isCheckpointRunLockHeldCheap;
+    readPhase?: typeof readCheckpointRunPhaseCheap; observeFallback?: typeof defaultObserveFallback } = {},
 ): Promise<Pick<GreenStallSnapshot, 'checkpointRunActive' | 'checkpointRunPhase'>> {
+  const observeFallback = deps.observeFallback ?? defaultObserveFallback;
   try {
-    const routing = await resolveCheckpointRouting({ installSlug, workspaceId }, integrationRoot());
-    if (routing.skip) return {};
+    const routing = await (deps.route ?? resolveCheckpointRouting)({ installSlug, workspaceId }, integrationRoot());
+    if (routing.skip) {
+      // A non-gated hive legitimately skips this route and is not an eligible release-state read.
+      // Keep an explicitly misconfigured gated hive visible as a degraded read.
+      if (routing.skip.misconfigured) {
+        observeFallback('release-state-read', { eligible: 1, applied: 0,
+          reason: 'routing-misconfigured', scope: `${workspaceId}:${installSlug}:checkpoint-run-state` }, { workspaceId });
+      }
+      return {};
+    }
 
     const root = routing.extraEnv.PAPERCUSP_INTEGRATION_ROOT ?? routing.root;
     const checkpointLogDir = routing.extraEnv.PAPERCUSP_CHECKPOINT_LOG_DIR;
-    const lock = isCheckpointRunLockHeldCheap(root, undefined, undefined, undefined, checkpointLogDir);
-    const phase = readCheckpointRunPhaseCheap(root, checkpointLogDir)?.phase ?? null;
+    const lock = (deps.readLock ?? isCheckpointRunLockHeldCheap)(root, undefined, undefined, undefined, checkpointLogDir);
+    const phase = (deps.readPhase ?? readCheckpointRunPhaseCheap)(root, checkpointLogDir)?.phase ?? null;
+    observeFallback('release-state-read', { eligible: 1,
+      applied: lock.held && phase == null ? 0 : 1, reason: lock.held && phase == null ? 'phase-unavailable' : 'applied',
+      scope: `${workspaceId}:${installSlug}:checkpoint-run-state` }, { workspaceId });
     return { checkpointRunActive: lock.held, checkpointRunPhase: phase };
   } catch (error) {
+    observeFallback('release-state-read', { eligible: 1, applied: 0,
+      reason: 'run-state-unavailable', scope: `${workspaceId}:${installSlug}:checkpoint-run-state` }, { workspaceId });
     // The alert must remain useful when registry/routing state is temporarily
     // unreadable. Unknown is not "no run": it simply cannot suppress a stall.
     console.warn(
@@ -2245,6 +2272,16 @@ export async function checkGreenStall(
                    AND COALESCE((metadata->'gate_health'->>'verdictRateAlarmed')::boolean, false) = false`;
               if (flip.count === 1) {
                 if (!out.alarmed.includes(row.install_slug)) out.alarmed.push(row.install_slug);
+                try {
+                  await broadcastSevereEvent({
+                    conditionKey: `alarm:release-verdict-rate:${row.install_slug}`,
+                    summary: `Release gate verdict rate degraded on ${row.install_slug} (${rate.reason})`,
+                    body: rate.detail ?? 'Repair the verdict path; this observation does not diagnose failing code.',
+                    oneShot: true,
+                  });
+                } catch (error) {
+                  console.warn(`[green-stall-watchdog] verdict-rate condition broadcast failed: ${String(error)}`);
+                }
                 const { notifyAttentionOnce } = await import('../attention-notify');
                 await notifyAttentionOnce({
                   kind: 'intervention',
@@ -2281,6 +2318,10 @@ export async function checkGreenStall(
                  WHERE install_slug = ${row.install_slug}
                    AND target_role = 'system:green-checkpoint'`;
               if (!out.recovered.includes(row.install_slug)) out.recovered.push(row.install_slug);
+              await broadcastSevereEventResolved({
+                conditionKey: `alarm:release-verdict-rate:${row.install_slug}`,
+                summary: `Release gate verdict rate recovered on ${row.install_slug}`,
+              });
             }
           } catch (e) {
             // Fail-soft like every other limb: a broken rate read must not take the sweep down.
@@ -2764,17 +2805,16 @@ export function mainBehindRecoverySummary(
   );
 }
 
-function gitOut(root: string, args: string[]): string | null {
+async function gitOut(root: string, args: string[]): Promise<string | null> {
   try {
     // EI-9922 (EI-8794 class): a failing git call — e.g. this watchdog's boot pass
     // running in a PACKAGED install's non-repo dir — must NOT leak "fatal: not a git
-    // repository" onto the parent's own stderr/serve.log. `execFileSync`'s default
-    // stdio inherits the child's stderr; pin it to ['ignore','pipe','ignore'] so we
-    // capture stdout but discard stderr (mirrors build-info.ts / workspace-map.ts).
-    return execFileSync('git', ['-C', root, ...args], {
+    // repository" onto the parent's own stderr/serve.log. `execFile` captures both output
+    // streams instead of inheriting them; consume stdout and discard stderr on failure.
+    const { stdout } = await execFileAsync('git', ['-C', root, ...args], {
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
+    });
+    return stdout.trim();
   } catch {
     return null;
   }
@@ -2786,19 +2826,19 @@ function gitOut(root: string, args: string[]): string | null {
  *  operator-core; mirrors dev-deploy-state.ts's own self-contained pattern).
  *  Fails open (all-null) on any git error — a missing branch/checkout must
  *  never itself trigger the alarm it's trying to compute. */
-export function computeMainBehindStaging(
+export async function computeMainBehindStaging(
   root: string,
   mainBranch = 'main',
   stagingBranch = 'staging',
-): MainBehindStagingSnapshot {
-  const countRaw = gitOut(root, ['rev-list', '--count', `${mainBranch}..${stagingBranch}`]);
+): Promise<MainBehindStagingSnapshot> {
+  const countRaw = await gitOut(root, ['rev-list', '--count', `${mainBranch}..${stagingBranch}`]);
   const commitsBehind = countRaw != null && /^\d+$/.test(countRaw) ? Number(countRaw) : null;
   if (commitsBehind == null || commitsBehind === 0) return { commitsBehind: commitsBehind ?? null, behindMs: null };
 
   // The OLDEST commit reachable from staging but not main — its age is how
   // long main has been behind by at least this much (a fresh-only lag from
   // commits landing in the last minute reads as ~0, not an hours-old stall).
-  const oldestTsRaw = gitOut(root, [
+  const oldestTsRaw = await gitOut(root, [
     'log',
     `${mainBranch}..${stagingBranch}`,
     '--format=%ct',
@@ -2868,10 +2908,10 @@ export async function checkMainBehindStaging(
     const root =
       opts.root ??
       process.env.PAPERCUSP_INTEGRATION_ROOT ??
-      gitOut(process.cwd(), ['rev-parse', '--show-toplevel']) ??
+      (await gitOut(process.cwd(), ['rev-parse', '--show-toplevel'])) ??
       process.cwd();
     const harnessSlug = opts.harnessSlug ?? 'papercusp';
-    const gitSnapshot = computeMainBehindStaging(root, opts.mainBranch, opts.stagingBranch);
+    const gitSnapshot = await computeMainBehindStaging(root, opts.mainBranch, opts.stagingBranch);
     // EI-10202: fold in "has the gate advanced main recently?" so a deep-but-
     // healthy backlog (gate greening every cycle) is not mislabeled STALLED.
     // Only read the DB signal when the git snapshot could even alarm — a quiet
@@ -3444,6 +3484,32 @@ export async function checkReleaseTriggerFireStale(
 // documented as "a fixer must name the paths by hand" — admittable, not unreachable — so alarming
 // on it would fire on healthy queues. Manifest counts are REPORTED in the alarm text only.
 const STRANDED_REPAIR_QUEUE_PHASE = 'stranded-repair-queue-watchdog';
+const STRANDED_REPAIR_FIXER_SILENCE_PHASE = 'stranded-repair-fixer-silence-watchdog';
+
+type QuietLiveFixerState = 'not-applicable' | 'unknown' | 'active' | 'silent';
+
+/** Output silence is advisory; it never changes fixer liveness or queue ownership. */
+export function evaluateQuietLiveFixer(input: {
+  phase: string;
+  fixerSpawnId: string | null;
+  fixerAlive: boolean | null;
+  lastOutputAtMs: number | null;
+  nowMs: number;
+}): { state: QuietLiveFixerState; silentMs: number | null } {
+  if (input.phase !== 'awaiting-fixer' || !input.fixerSpawnId || input.fixerAlive === false) {
+    return { state: 'not-applicable', silentMs: null };
+  }
+  if (
+    input.fixerAlive !== true ||
+    input.lastOutputAtMs === null ||
+    !Number.isFinite(input.lastOutputAtMs) ||
+    !Number.isFinite(input.nowMs)
+  ) {
+    return { state: 'unknown', silentMs: null };
+  }
+  const silentMs = Math.max(0, input.nowMs - input.lastOutputAtMs);
+  return { state: silentMs >= WEDGE_SILENT_MS ? 'silent' : 'active', silentMs };
+}
 
 export interface StrandedRepairQueueSnapshot {
   candidate: string;
@@ -3457,6 +3523,12 @@ export interface StrandedRepairQueueSnapshot {
   fixerAlive: boolean | null;
   /** Independent gate-owner oracle; null means ownership could not be measured. */
   gateOwnership: GateOwnershipAssessment | null;
+  /**
+   * The gate holder's session state from the same ownership read (WI-10005262). Only consulted
+   * for `lease-expired`: a lapsed claim lease does not mean the holder left — a live holder
+   * waiting on a long verify run lets its lease lapse while still driving the gate.
+   */
+  gateHolderSessionState?: SessionState | null;
   /** The queue policy's own current decision kind (e.g. 'wait-for-fixer', 'hold-exhausted'). */
   decision: string;
   manifest: { legs: number; red: number; admitted: number; green: number; pathless: number } | null;
@@ -3471,13 +3543,33 @@ export interface StrandedRepairQueueVerdict {
   reason: string | null;
 }
 
+/**
+ * PURE. `harness_escalations.escalation` is TEXT: a row written with `JSON.stringify` reads back
+ * as a STRING. Accept either shape; a string that is not a JSON object is `null`, never a guess.
+ */
+export function parseEscalationRecord<T extends object>(raw: unknown): T | null {
+  let value: unknown = raw;
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as T) : null;
+}
+
 /** PURE. Alarm on any open frozen queue that has crossed an 8h age rung (P-010's contract). */
 export function evaluateStrandedRepairQueue(s: StrandedRepairQueueSnapshot | null): StrandedRepairQueueVerdict {
   if (!s || !Number.isFinite(s.ageEscalationRung) || s.ageEscalationRung < 1) {
     return { alarm: false, rung: 0, stranded: false, reason: null };
   }
+  // A lapsed lease is an absent owner only when the holder is not positively present — the
+  // same present set assessGateOwnership uses for a held claim (live | parked | recorded).
+  const holderPresent = s.gateHolderSessionState === 'live' || s.gateHolderSessionState === 'parked' ||
+    s.gateHolderSessionState === 'recorded';
   const ownerAbsent = s.gateOwnership === 'unowned' || s.gateOwnership === 'claimable' ||
-    s.gateOwnership === 'lease-expired' || s.gateOwnership === 'held-by-ended-session';
+    (s.gateOwnership === 'lease-expired' && !holderPresent) || s.gateOwnership === 'held-by-ended-session';
   const fixerAbsent = !s.fixerSpawnId || s.fixerAlive === false;
   const stranded = s.phase === 'awaiting-fixer' && fixerAbsent && ownerAbsent;
   const hours = Math.round(s.ageMs / 3_600_000);
@@ -3499,7 +3591,9 @@ export function evaluateStrandedRepairQueue(s: StrandedRepairQueueSnapshot | nul
     reason:
       `Frozen candidate ${s.candidate.slice(0, 12)} has held main for ~${hours}h in phase '${s.phase}' ` +
       `(age rung ${s.ageEscalationRung}, ${s.attempts} fixer attempt(s); ${fixer}; ` +
-      `gate ownership ${s.gateOwnership ?? 'UNKNOWN'}; queue decision '${s.decision}').` +
+      `gate ownership ${s.gateOwnership ?? 'UNKNOWN'}` +
+      `${s.gateOwnership === 'lease-expired' ? ` (holder ${s.gateHolderSessionState ?? 'UNKNOWN'})` : ''}; ` +
+      `queue decision '${s.decision}').` +
       m +
       (stranded
         ? ' STRANDED SHAPE: awaiting a fixer with none live — the queue cannot leave awaiting-fixer until one ' +
@@ -3542,9 +3636,11 @@ export async function checkStrandedRepairQueue(
       ? await releaseFixerSpawnAlive(sql as never, queue.fixerSpawnId).catch(() => null)
       : null;
     const diag = diagnoseFrozenCandidateRepairQueue(queue, { nowMs: now, fixerAlive });
-    const gateOwnership = diag
-      ? await readGateOwnership({ harness: installSlug }).then((ownership) => ownership.assessment).catch(() => null)
+    const ownershipRead = diag
+      ? await readGateOwnership({ harness: installSlug }).catch(() => null)
       : null;
+    const gateOwnership = ownershipRead?.assessment ?? null;
+    const gateHolderSessionState = ownershipRead?.holderSessionState ?? null;
     const verdict = evaluateStrandedRepairQueue(
       diag
         ? {
@@ -3556,16 +3652,144 @@ export async function checkStrandedRepairQueue(
             fixerSpawnId: diag.fixerSpawnId,
             fixerAlive: diag.fixerAlive,
             gateOwnership,
+            gateHolderSessionState,
             decision: diag.decision,
             manifest: diag.manifestSummary,
           }
         : null,
     );
 
+    // A live fixer that has stopped streaming gets an independent advisory nudge before the
+    // 8h age rung. Missing output is UNKNOWN (never streamed is not evidence); this path never
+    // changes releaseFixerSpawnAlive, the frozen candidate, or dispatch ownership.
+    let fixerSilencePassError: unknown;
+    try {
+      let lastOutputAtMs: number | null = null;
+      if (diag?.fixerSpawnId) {
+        const activityRows = await sql<{ last_output_at: Date | string | null }[]>`
+          SELECT last_output_at
+            FROM harness_shared.spawned_agents
+           WHERE workspace_id = ${workspaceId} AND spawn_id = ${diag.fixerSpawnId}
+           LIMIT 1`;
+        const rawLastOutputAt = activityRows[0]?.last_output_at;
+        const parsedLastOutputAt = rawLastOutputAt instanceof Date
+          ? rawLastOutputAt.getTime()
+          : typeof rawLastOutputAt === 'string'
+            ? Date.parse(rawLastOutputAt)
+            : null;
+        lastOutputAtMs = parsedLastOutputAt !== null && Number.isFinite(parsedLastOutputAt)
+          ? parsedLastOutputAt
+          : null;
+      }
+      const fixerActivity = evaluateQuietLiveFixer({
+        phase: queue?.phase ?? '',
+        fixerSpawnId: diag?.fixerSpawnId ?? null,
+        fixerAlive,
+        lastOutputAtMs,
+        nowMs: now,
+      });
+      const quietRows = await sql<{
+        escalation: { candidate?: string; fixerSpawnId?: string | null } | null;
+      }[]>`
+        SELECT escalation FROM harness_shared.harness_escalations
+         WHERE harness_slug = ${installSlug} AND phase = ${STRANDED_REPAIR_FIXER_SILENCE_PHASE}`;
+      const priorQuiet = parseEscalationRecord<{ candidate?: string; fixerSpawnId?: string | null }>(
+        quietRows[0]?.escalation,
+      );
+      const sameQuietFixer = Boolean(
+        priorQuiet &&
+        diag &&
+        priorQuiet.candidate === diag.candidate &&
+        priorQuiet.fixerSpawnId === diag.fixerSpawnId,
+      );
+      const quietConditionKey = 'stranded-repair-fixer-silence:' + installSlug;
+
+      if (priorQuiet && (!sameQuietFixer || fixerActivity.state === 'active' || fixerActivity.state === 'not-applicable')) {
+        await sql`
+          UPDATE harness_shared.harness_escalations
+             SET escalation = NULL, mtime_ms = ${now}
+           WHERE harness_slug = ${installSlug} AND phase = ${STRANDED_REPAIR_FIXER_SILENCE_PHASE}`;
+        await broadcastSevereEventResolved({
+          conditionKey: quietConditionKey,
+          summary: 'Release fixer ' + (priorQuiet.fixerSpawnId ?? '') + ' on ' + installSlug + ' is no longer stream-silent.',
+        });
+        out.recovered = true;
+      }
+
+      if (fixerActivity.state === 'silent' && diag && !sameQuietFixer) {
+        const silentMs = fixerActivity.silentMs ?? 0;
+        const minutes = Math.round(silentMs / 60_000);
+        const title = 'Release fixer silent ~' + minutes + 'm — still live; frozen candidate unchanged';
+        const body =
+          'Release fixer ' + diag.fixerSpawnId + ' for frozen candidate ' + diag.candidate.slice(0, 12) +
+          ' is still live, but spawned_agents.last_output_at shows no stdout/stderr for ~' + minutes +
+          ' minutes. This is advisory only: it does not release or reassign the fixer or change the candidate. ' +
+          "Inspect release:repair-queue { op:'status' } before taking action.";
+        try {
+          const { notifyAttention } = await import('../attention-notify');
+          await notifyAttention({
+            kind: 'intervention',
+            title,
+            body,
+            importance: 'normal',
+            workspaceId,
+            data: {
+              candidate: diag.candidate,
+              fixerSpawnId: diag.fixerSpawnId,
+              lastOutputAtMs,
+              silentMs,
+              advisory: true,
+            },
+          });
+        } catch (e) {
+          console.warn('[stranded-repair-queue-watchdog] fixer-silence notify failed: ' + (e instanceof Error ? e.message : e));
+        }
+        await broadcastSevereEvent({
+          summary: title + ' on ' + installSlug + '.',
+          body,
+          category: 'severe-event',
+          conditionKey: quietConditionKey,
+          oneShot: true,
+        });
+        await sql`
+          INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
+          VALUES (${installSlug}, ${STRANDED_REPAIR_FIXER_SILENCE_PHASE}, ${JSON.stringify({
+            kind: STRANDED_REPAIR_FIXER_SILENCE_PHASE,
+            harness_slug: installSlug,
+            candidate: diag.candidate,
+            fixerSpawnId: diag.fixerSpawnId,
+            lastOutputAtMs,
+            silentMs,
+            thresholdMs: WEDGE_SILENT_MS,
+            advisory: true,
+            emitted_at: now,
+          })}, ${now}, ${workspaceId})
+          ON CONFLICT (harness_slug, phase)
+          DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`;
+        out.alarmed = true;
+        console.warn('[stranded-repair-queue-watchdog] FIXER SILENT ' + installSlug + ': ' + body);
+      }
+    } catch (e) {
+      // Failure in the optional activity signal must not suppress the independent age alarm.
+      fixerSilencePassError = e;
+      console.warn('[stranded-repair-queue-watchdog] fixer-silence pass failed (non-fatal): ' + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      // A healthy outer age pass must not erase this subpass's failure marker.
+      await recordWatchdogPassOutcome(
+        sql, 'stranded-repair-fixer-silence', { routineName: 'green-checkpoint', installSlug }, fixerSilencePassError,
+      );
+    }
+
     const existing = await sql<{ escalation: { candidate?: string; rung?: number; stranded?: boolean } | null }[]>`
       SELECT escalation FROM harness_shared.harness_escalations
        WHERE harness_slug = ${installSlug} AND phase = ${STRANDED_REPAIR_QUEUE_PHASE}`;
-    const prior = existing[0]?.escalation ?? null;
+    // `escalation` is a TEXT column, so the driver hands back the JSON as a STRING. Reading it raw
+    // made `prior.candidate` always undefined, so the per-(candidate, rung) one-shot never matched
+    // and the same rung re-alarmed on later ticks (observed 2026-10-06: rung 4 at 21:15:48 and
+    // again at 21:30:39 -04:00). WI-10007476.
+    const prior = parseEscalationRecord<{ candidate?: string; rung?: number; stranded?: boolean }>(
+      existing[0]?.escalation,
+    );
     const conditionKey = `stranded-repair-queue:${installSlug}`;
 
     if (verdict.alarm && diag) {
@@ -3598,13 +3822,13 @@ export async function checkStrandedRepairQueue(
       } catch (e) {
         console.warn(`[stranded-repair-queue-watchdog] notify failed: ${e instanceof Error ? e.message : e}`);
       }
-      await broadcastSevereEvent({
-        summary: `${title} on ${installSlug}.`,
-        body: verdict.reason ?? '',
-        category: 'severe-event',
-        conditionKey,
-        oneShot: true,
-      });
+      // P-002 (WI-10007476): NO fleet-wide broadcast here any more. Every 8h rung used to inject
+      // "Frozen repair queue has held main ~Nh" into every agent's inbox; on 2026-10-08 the 65h
+      // alarm cost at least four agents a turn each while the gate already had a live owner, and
+      // none of them could act on it. The age record above and the owner's attention item stay;
+      // the ACTION half is idle-repair-queue-actuator.ts (dispatch, wake the gate holder alone,
+      // escalate to the owner). The resolved-branch broadcast below is kept so a condition opened
+      // by an earlier build still closes.
       try {
         await sql`
           INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
@@ -3648,6 +3872,7 @@ export async function checkStrandedRepairQueue(
 }
 
 let watchdogTimer: ManagedHandle | null = null;
+let lostRunTimer: ManagedHandle | null = null;
 
 /**
  * Start the watchdog: an immediate boot check + a recurring process-level sweep.
@@ -3657,7 +3882,7 @@ let watchdogTimer: ManagedHandle | null = null;
  */
 export function startGreenStallWatchdog(
   sql: Sql,
-  opts: GreenStallThresholds & { intervalMs?: number } = {},
+  opts: GreenStallThresholds & { intervalMs?: number; lostRunIntervalMs?: number } = {},
 ): void {
   if (process.env.PAPERCUSP_GREEN_STALL_WATCHDOG === '0') return;
   const intervalMs = opts.intervalMs ?? DEFAULT_WATCHDOG_INTERVAL_MS;
@@ -3696,9 +3921,41 @@ export function startGreenStallWatchdog(
     // nothing fired it — a queue sat awaiting-fixer ~40h silently. Independent for the same
     // reason as the checks above: a stranded queue produces no verdict for the gate to react to.
     void checkStrandedRepairQueue(sql);
+    // P-002 (WI-10007476): the ACTION half of a stalled queue — dispatch, then wake the gate
+    // holder, then escalate to the owner. Replaces the fleet-wide age broadcast above.
+    void import('./idle-repair-queue-actuator').then(({ checkIdleRepairQueue }) => checkIdleRepairQueue(sql));
+    // P-018 (WI-10007479): standing live invariants for the gate mechanisms earlier plans shipped.
+    // The pass records its own failure in watchdog_health; the catch only covers a failed import.
+    void import('./gate-live-invariants')
+      .then(({ checkGateLiveInvariants }) => checkGateLiveInvariants(sql))
+      .catch((err: unknown) => console.warn('[gate-live-invariants] import failed:', err));
+    // P-016 (green-main-cycle-time-2026-10-08, D-030): the green-main SLO pages — main red ≥ 12h,
+    // no verdict ≥ 6h — delivered once per episode. The pass records its own failure.
+    void import('./green-main-slo-watchdog')
+      .then(({ checkGreenMainSlo }) => checkGreenMainSlo(sql))
+      .catch((err: unknown) => console.warn('[green-main-slo] import failed:', err));
   };
 
   run(); // boot check
   if (watchdogTimer) watchdogTimer.stop();
   watchdogTimer = managedSetInterval('green-stall-watchdog', intervalMs, run, { category: 'watchdog' });
+
+  // P-005 (gate-throughput-shift-left-2026-10-06, R-5): the pass above only wakes checkpoint
+  // waiters for a run that died with its marker set, and only every 15 minutes, so nobody was
+  // paged (WI-10004928: 70+ minutes silent). This sweep pages the gate holder + fleet leader once
+  // per dead run, on its own short cadence. It never clears the marker, so it cannot race the
+  // record/emit/clear transaction the pass above owns.
+  const sweepLostRuns = (): void => {
+    void sweepLostGateRuns(sql).then((r) => {
+      if (r.alarmed.length > 0) console.warn(`[green-stall-watchdog] lost gate run paged on: ${r.alarmed.join(', ')}`);
+    });
+  };
+  sweepLostRuns();
+  if (lostRunTimer) lostRunTimer.stop();
+  lostRunTimer = managedSetInterval(
+    'green-checkpoint-lost-run-alarm',
+    opts.lostRunIntervalMs ?? LOST_RUN_SWEEP_INTERVAL_MS,
+    sweepLostRuns,
+    { category: 'watchdog' },
+  );
 }

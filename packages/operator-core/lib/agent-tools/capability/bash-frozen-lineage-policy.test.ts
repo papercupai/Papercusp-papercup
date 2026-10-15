@@ -12,6 +12,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const markerIo = vi.hoisted(() => ({ read: vi.fn() }));
 const queueIo = vi.hoisted(() => ({ read: vi.fn() }));
 const gitIo = vi.hoisted(() => ({ head: vi.fn() }));
+const sourceHoldIo = vi.hoisted(() => ({ read: vi.fn() }));
+const sessionRestrictionIo = vi.hoisted(() => ({ read: vi.fn() }));
 const jobs = vi.hoisted(() => ({
   startBackground: vi.fn(() => ({
     id: 'bash-frozen-lineage',
@@ -36,6 +38,8 @@ vi.mock('../../harness/routines/release-actions', () => ({
   readFrozenCandidateRepairQueue: queueIo.read,
 }));
 vi.mock('../../harness/docs/git-runner', () => ({ repoHeadSha: gitIo.head }));
+vi.mock('../../personal-vault/git-sync-hold', () => ({ readRestrictedSourceHoldState: sourceHoldIo.read }));
+vi.mock('../../personal-vault/binding-enforcement', () => ({ readSessionRestriction: sessionRestrictionIo.read }));
 vi.mock('./bash-jobs', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./bash-jobs')>()),
   startBackground: jobs.startBackground,
@@ -91,6 +95,8 @@ function payload(result: ToolResult): Record<string, unknown> {
 beforeEach(() => {
   vi.clearAllMocks();
   process.env.PAPERCUSP_INTEGRATION_ROOT = ROOT;
+  sourceHoldIo.read.mockResolvedValue('clear');
+  sessionRestrictionIo.read.mockResolvedValue(false);
   // The queue is authoritative. Keep the marker deliberately stale so these
   // handler tests cannot pass by accidentally falling back to the projection.
   markerIo.read.mockReturnValue({ ...MARKER, repairHead: CANDIDATE, updatedAtMs: 1 });
@@ -142,6 +148,18 @@ describe('capability:bash frozen-lineage guard', () => {
     expect(jobs.startBackground).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    ['node scripts/affected-tests.mjs --changed-paths libs/papercusp --base HEAD^ --dry'],
+    ['node scripts/affected-tests.mjs --changed-paths libs/papercusp --base HEAD^ --print-affected'],
+  ] as const)('runs selection-only affected-tests probes without a candidate-verdict check: %s', async (command) => {
+    const result = await bash.handler({ command, cwd: ROOT }, ctx());
+    expect(result.isError).not.toBe(true);
+    expect(queueIo.read).not.toHaveBeenCalled();
+    expect(markerIo.read).not.toHaveBeenCalled();
+    expect(gitIo.head).not.toHaveBeenCalled();
+    expect(jobs.startBackground).toHaveBeenCalledOnce();
+  });
+
   it('treats an authoritative ready-to-test queue as inactive even when the marker is stale', async () => {
     queueIo.read.mockResolvedValue({ ...QUEUE, phase: 'ready-to-test' });
 
@@ -168,6 +186,9 @@ describe('capability:bash frozen-lineage guard', () => {
   it.each([
     'npm run test:file -- packages/operator-core/lib/release/frozen-lineage-execution-policy.test.ts',
     'ptool release:repair-queue --json - <<\'JSON\'\n{"op":"admit","paths":["a.ts"]}\nJSON',
+    // P-015: a sibling checkout's suite and worktree cut are not papercusp lineage operations.
+    'cd /tmp/p015-sibling-checkout || exit 1; npm test',
+    'R=/tmp/p015-sibling-checkout; git -C "$R" worktree add --detach /tmp/p015-w staging',
   ])('preserves focused tests and explicit repair admission without marker/Git probes: %s', async (command) => {
     const result = await bash.handler({ command, cwd: ROOT }, ctx());
     expect(result.isError).not.toBe(true);
@@ -190,5 +211,30 @@ describe('capability:bash frozen-lineage guard', () => {
     });
     expect(gitIo.head).not.toHaveBeenCalled();
     expect(jobs.startBackground).not.toHaveBeenCalled();
+  });
+
+  it.each(['held', 'unknown'] as const)('requires the no-egress sandbox before spawn when the source hold is %s', async (state) => {
+    sourceHoldIo.read.mockResolvedValue(state);
+    const result = await bash.handler({ command: 'python3 -c "open(\'https://example.invalid\')"', cwd: ROOT }, ctx());
+
+    expect(result.isError).not.toBe(true);
+    expect(sourceHoldIo.read).toHaveBeenCalledWith(ROOT);
+    expect(jobs.startBackground).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sandboxEnabled: true,
+        sandboxRequired: true,
+        sandboxBuildOpts: { denyAllEgress: true, srtBin: null },
+      }),
+      expect.any(Number),
+    );
+  });
+
+  it('keeps the source-hold decision clear for a clean tree and unrestricted session', async () => {
+    const result = await bash.handler({ command: 'echo ok', cwd: ROOT }, ctx());
+    expect(result.isError).not.toBe(true);
+    expect(jobs.startBackground).toHaveBeenCalledWith(
+      expect.objectContaining({ sandboxEnabled: false, sandboxRequired: false }),
+      expect.any(Number),
+    );
   });
 });

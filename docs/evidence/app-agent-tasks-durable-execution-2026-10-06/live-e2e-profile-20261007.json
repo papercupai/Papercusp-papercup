@@ -1,0 +1,62 @@
+{
+  "tauriPID": 1429368,
+  "runtimeUnits": [
+    "hono-host:3170",
+    "p010-email-sidecar-20261007",
+    "p010-calendar-sidecar-20261007",
+    "p010-phone-sidecar-20261007",
+    "p010-tauri-shell-20261007"
+  ],
+  "email": {
+    "origin": "http://127.0.0.1:20267",
+    "messageId": "p010-email-ui-preflight-20261007",
+    "receiptId": 46,
+    "targetId": "WI-10007117",
+    "nativeUrl": "http://127.0.0.1:20267/?thread=mailbox:address%253Alocal%2540example.test:p010-email-ui-preflight-20261007",
+    "body": "Confirming that the durable task result for the P010 durable acceptance UI preflight is readable."
+  },
+  "calendar": {
+    "origin": "http://127.0.0.1:21503",
+    "eventId": "p010-restart-calendar-20261007",
+    "requestKey": "meeting-prep:p010-restart-calendar-20261007:2026-10-08T16%3A00%3A00Z:43fbe9cf62728c91",
+    "trigger": {
+      "eventKey": "ext:gcal:event-upcoming",
+      "dedupeKey": "p010-restart-calendar-20261007-v2",
+      "datatype": "calendar-event",
+      "payload": {
+        "id": "p010-restart-calendar-20261007",
+        "calendarId": "primary",
+        "summary": "P010 restart acceptance synthetic meeting",
+        "description": "Synthetic only. Prepare readable meeting notes; do not update calendars or contact anyone.",
+        "start": {
+          "dateTime": "2026-10-08T16:00:00Z"
+        },
+        "end": {
+          "dateTime": "2026-10-08T16:30:00Z"
+        },
+        "attendees": [
+          {
+            "email": "fixture@example.invalid",
+            "displayName": "Synthetic fixture"
+          }
+        ]
+      }
+    },
+    "nativeUrl": "http://127.0.0.1:21503/?event=p010-restart-calendar-20261007",
+    "body": "Review (about 20 min): read through these preparation notes"
+  },
+  "phone": {
+    "origin": "http://127.0.0.1:43375",
+    "bookingId": "e58e251b-bcad-4682-9196-a5ca35813df9",
+    "receiptId": 47,
+    "booking": {
+      "requestKey": "p010-restart-phone-20261007-v1",
+      "title": "P010 restart synthetic brief — do not dial",
+      "guestName": "Synthetic restart fixture",
+      "scheduledFor": "2026-10-08T17:00:00Z",
+      "durationMin": 30
+    },
+    "nativeUrl": "http://127.0.0.1:43577/?app=phone&phoneView=scheduled",
+    "body": "No email address is on the booking, and no earlier notes or call history were found for this caller"
+  }
+}

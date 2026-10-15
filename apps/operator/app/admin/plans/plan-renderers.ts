@@ -113,70 +113,9 @@ export function decoratePlanItemBadges(
   }
 }
 
-// P-083 — Per-plan-item test-coverage badge (the plan↔test rollup via the VAL).
-// Sibling to decoratePlanItemBadges; data comes from plans:get's `planItemTests`
-// map (computed server-side from harness_plan_assertions ⋈ harness_tests).
-interface ItemTestCoverage {
-  valsRequiringTest: number;
-  valsCovered: number;
-  valsPassing: number;
-}
-
-/**
- * Inject a `✓ pass/required` test-coverage badge next to each P-NNN item that
- * has test-requiring VAL assertions. Green = all passing, amber = partial,
- * red = covered-but-none-passing, grey = none covered yet. Items with no
- * test-requiring VAL get no badge. Idempotent.
- */
-export function decoratePlanItemTestBadges(
-  root: HTMLElement,
-  planItemTests: Record<string, ItemTestCoverage>,
-): void {
-  for (const old of Array.from(root.querySelectorAll('.pc-item-test-badge'))) {
-    old.remove();
-  }
-  if (!planItemTests || Object.keys(planItemTests).length === 0) return;
-
-  for (const li of Array.from(root.querySelectorAll<HTMLElement>('li[data-plan-item]'))) {
-    const itemId = li.dataset.planItem;
-    if (!itemId) continue;
-    const cov = planItemTests[itemId];
-    if (!cov || cov.valsRequiringTest === 0) continue; // nothing to gate on
-
-    const { valsRequiringTest: req, valsCovered: covered, valsPassing: pass } = cov;
-    const color =
-      pass === req ? 'var(--good, #34d399)'
-      : covered === 0 ? 'var(--fg-mute, #7f9bb4)'
-      : pass === 0 ? 'var(--bad, #f87171)'
-      : 'var(--warn, #fbbf24)';
-
-    const badge = document.createElement('span');
-    badge.className = 'pc-item-test-badge';
-    badge.textContent = `✓ ${pass}/${req}`;
-    badge.style.cssText = [
-      `color: ${color}`,
-      `background: color-mix(in oklab, ${color}, transparent 85%)`,
-      `border: 1px solid color-mix(in oklab, ${color}, transparent 58%)`,
-      'font-size: 10px',
-      'font-weight: 500',
-      'padding: 1px 6px',
-      'border-radius: 3px',
-      'margin-left: 6px',
-      'vertical-align: middle',
-      'white-space: nowrap',
-    ].join(';');
-    badge.title = `Tests: ${pass}/${req} VAL(s) passing · ${covered}/${req} covered`;
-
-    // Sit after the feature-status badge if present, else after the P-NNN id.
-    const featureBadge = li.querySelector<HTMLElement>(':scope > .pc-item-feature-badge');
-    const firstStrong =
-      li.querySelector<HTMLElement>(':scope > strong') ??
-      li.querySelector<HTMLElement>(':scope > p > strong');
-    if (featureBadge) featureBadge.after(badge);
-    else if (firstStrong) firstStrong.after(badge);
-    else li.appendChild(badge);
-  }
-}
+// P-083's per-item VAL test-coverage badge (decoratePlanItemTestBadges) was
+// retired with the VAL-* assertion system (verification-system-improvements-
+// 2026-10-10 P-003): requirement-contract clauses carry verification now.
 
 /**
  * Attach a delegated click listener for feature badges injected by

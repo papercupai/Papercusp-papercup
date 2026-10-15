@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildAcceptanceBarSeed,
+  canSeedAcceptanceBarSuccessor,
   parseBarMappings,
   acceptanceBarProjectedBehavior,
+  acceptanceBarBehaviorClass,
   parseRequirementBars,
+  validateAcceptanceBarSource,
 } from './acceptance-bar-seed';
 import { computeAcceptanceBarSetHash, normalizeAcceptanceBarCriterion } from './rubrics';
 import { guardAcceptanceBarTemplateDataWrite } from './agent-tools/plans/rubric-loss-guard';
+import { rubricCriterionCheckSchema } from './agent-tools/plans/rubric-template';
 import { specBehaviorNonAtomicReason } from './agent-tools/plans/spec-clause-compiler';
 
 function plan(opts: { requirements?: string; map?: string } = {}): string {
@@ -52,6 +56,124 @@ const input = {
   rubricSlug: 'acceptance-seed-target',
   rubricRevision: 1,
 };
+
+describe('reopened draft successor adoption', () => {
+  function authoredSuccessor() {
+    const bars = Array.from({ length: 14 }, (_, index) => {
+      const n = index + 1;
+      const title = `Outcome ${n}`;
+      const outcome = `The observed result ${n} is available.`;
+      return normalizeAcceptanceBarCriterion({
+        key: `r-${n}`, barKey: `R-${n}`, title,
+        model: n <= 8 ? `${title}. ${outcome}` : outcome,
+        ...(n > 8 ? { intent: { request: outcome } } : {}),
+        driftMarkers: `The observed result ${n} is missing.`,
+        role: 'outcome', mandatory: true, requiredScope: ['tree'], evidencePlane: 'tree',
+        passRatings: ['healthy'], requiredTestLayers: ['unit'],
+        method: `Run the detector for outcome ${n}.`,
+        check: { kind: 'tests', files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
+        replication: `Inspect the persisted outcome ${n} and its exact evidence.`,
+        barProvenance: { lifecycle: 'pre-implementation', declaredAt: input.declaredAt, declaredBy: input.actorId },
+      });
+    });
+    const content = plan({
+      requirements: bars.map((bar, index) => `**${bar.barKey} — ${bar.title}.** The observed result ${index + 1} is available.`).join('\n\n'),
+      map: bars.map((bar) => `| ${bar.barKey} | P-001 | tree |`).join('\n'),
+    });
+    return { bars, content, template: { kind: 'acceptance', subjectPlan: input.planSlug,
+      characteristic: 'plan-acceptance', description: 'Reviewed successor', proposedBy: input.actorId,
+      ratingScale: ['healthy', 'degraded', 'broken', 'unknown'], criteria: bars } };
+  }
+
+  it('adopts complete authored successor criteria verbatim, including eight historical hashes without Intent', () => {
+    const fixture = authoredSuccessor();
+    const before = JSON.stringify(fixture);
+    const result = buildAcceptanceBarSeed({ ...input, planStatus: 'draft',
+      planContent: fixture.content, existingTemplateData: fixture.template, requireContractCompleteness: true });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
+    if (!result.ok) throw new Error(result.message);
+    expect(result.criteria).toEqual(fixture.bars);
+    expect(result.criteria.slice(0, 8).map((bar) => bar.barHash)).toEqual(fixture.bars.slice(0, 8).map((bar) => bar.barHash));
+    expect(result.criteria.slice(0, 8).every((bar) => bar.intent === undefined)).toBe(true);
+    expect(result.projections.map((projection) => projection.falsifier?.observation)).toEqual(fixture.bars.map((bar) => bar.driftMarkers));
+    expect(JSON.stringify(fixture)).toBe(before);
+  });
+
+  it.each(['outcome', 'title', 'plane'])('refuses %s source drift instead of silently rebuilding an authored successor', (field) => {
+    const fixture = authoredSuccessor();
+    const changed = field === 'outcome' ? fixture.content.replace('The observed result 1 is available.', 'A different result is available.')
+      : field === 'title' ? fixture.content.replace('R-1 — Outcome 1.', 'R-1 — Different title.')
+      : fixture.content.replace('| R-1 | P-001 | tree |', '| R-1 | P-001 | live |');
+    expect(buildAcceptanceBarSeed({ ...input, planStatus: 'draft', planContent: changed,
+      existingTemplateData: fixture.template, requireContractCompleteness: true })).toMatchObject({
+      ok: false, error: 'bar_rubric_conflict', problems: [expect.objectContaining({ barKey: 'R-1' })],
+    });
+  });
+
+  it('validates the preserved successor contract rather than exempting it as previously seeded', () => {
+    const fixture = authoredSuccessor();
+    delete fixture.bars[0]!.method;
+    expect(buildAcceptanceBarSeed({ ...input, planStatus: 'draft', planContent: fixture.content,
+      existingTemplateData: fixture.template, requireContractCompleteness: true })).toMatchObject({
+      ok: false, error: 'bar_contract_method_missing', problems: [expect.objectContaining({ barKey: 'R-1' })],
+    });
+  });
+
+  it('fills missing server provenance on first adoption without changing BAR hashes', () => {
+    const fixture = authoredSuccessor();
+    delete fixture.bars[0]!.barProvenance;
+    const result = buildAcceptanceBarSeed({ ...input, planStatus: 'draft', planContent: fixture.content,
+      existingTemplateData: fixture.template, requireContractCompleteness: true });
+    if (!result.ok) throw new Error(result.message);
+    expect(result.criteria[0]).toMatchObject({ barHash: fixture.bars[0]!.barHash,
+      barProvenance: { lifecycle: 'pre-implementation', declaredAt: input.declaredAt, declaredBy: input.actorId } });
+  });
+
+  function adoption() {
+    const built = buildAcceptanceBarSeed({ ...input, planContent: plan() });
+    if (!built.ok) throw new Error('valid retired contract fixture required');
+    const { barContract: _contract, barSetHash: _hash, ...unstarted } = built.templateData;
+    return {
+      planStatus: 'draft', planSlug: 'seed-target',
+      pinnedRubricSlug: 'acceptance-seed-target', pinnedRubricStatus: 'superseded',
+      pinnedRubricArchived: false, pinnedTemplateData: built.templateData,
+      activeRubrics: [{ plan_slug: 'acceptance-successor', template_data: unstarted }],
+    };
+  }
+
+  it('routes an intact retired contract and one unstarted successor to the seeder without mutation', () => {
+    const args = adoption();
+    const before = JSON.stringify(args);
+    expect(canSeedAcceptanceBarSuccessor(args)).toBe(true);
+    expect(JSON.stringify(args)).toBe(before);
+  });
+
+  it.each(['active', 'ready', 'shipped', 'superseded', null])('keeps subject status %s on its existing contract path', (planStatus) => {
+    expect(canSeedAcceptanceBarSuccessor({ ...adoption(), planStatus })).toBe(false);
+  });
+
+  it.each(['active', 'ready', 'draft', null])('does not bypass a pinned rubric with status %s', (pinnedRubricStatus) => {
+    expect(canSeedAcceptanceBarSuccessor({ ...adoption(), pinnedRubricStatus })).toBe(false);
+  });
+
+  it('refuses absent, ambiguous, pinned, started or unrelated successor identities', () => {
+    const args = adoption();
+    const candidate = args.activeRubrics[0]!;
+    const variants = [
+      [],
+      [candidate, { ...candidate, plan_slug: 'acceptance-second-successor' }],
+      [{ ...candidate, plan_slug: args.pinnedRubricSlug }],
+      [{ ...candidate, template_data: args.pinnedTemplateData }],
+      [{ ...candidate, template_data: { ...candidate.template_data, subjectPlan: 'another-plan' } }],
+      [{ ...candidate, template_data: {} }],
+    ];
+    for (const activeRubrics of variants) {
+      expect(canSeedAcceptanceBarSuccessor({ ...args, activeRubrics })).toBe(false);
+    }
+    expect(canSeedAcceptanceBarSuccessor({ ...args, pinnedTemplateData: candidate.template_data })).toBe(false);
+    expect(canSeedAcceptanceBarSuccessor({ ...args, pinnedTemplateData: {} })).toBe(false);
+  });
+});
 
 describe('Requirements BAR parser', () => {
   it('parses every explicit R-N record and refuses malformed partial records', () => {
@@ -139,6 +261,126 @@ describe('Requirements BAR parser', () => {
 });
 
 describe('acceptance BAR seed builder', () => {
+  it.each([
+    ['tree', 'live'],
+    ['live', 'tree'],
+    ['tree', 'deployed'],
+  ] as const)('rejects %s/%s evidence-plane conflicts in preview and writer', (accepted, mapped) => {
+    const requirement = {
+      intent: { request: 'Preserve the selected evidence plane.', sourceRefs: ['session_turn:fixture'] },
+      acceptance: {
+        condition: 'The evidence describes the selected source version.',
+        falsifier: 'Evidence from another plane is accepted as current.',
+        evidencePlane: accepted,
+        requiredScope: ['P-001'],
+        requiredTestLayers: ['unit'],
+      },
+      verification: {
+        method: 'Compare the declared plane with the evidence source.',
+        check: { kind: 'tests', files: ['lib/evidence.test.ts'] },
+      },
+    };
+    const content = plan({
+      requirements: '**R-1 — Selected evidence.**\n```requirement\n' + JSON.stringify(requirement) + '\n```',
+      map: `| R-1 | P-001 | ${mapped} |`,
+    });
+    const preview = validateAcceptanceBarSource(content);
+    const written = buildAcceptanceBarSeed({ ...input, planContent: content });
+    expect(preview).toMatchObject({
+      ok: false,
+      problems: [{ code: 'bar_evidence_plane_invalid', barKey: 'R-1' }],
+    });
+    expect(written).toMatchObject({ ok: false, error: 'bar_evidence_plane_invalid' });
+    if (preview.ok || written.ok) throw new Error('conflicting planes were admitted');
+    expect(preview.problems).toEqual(written.problems);
+
+    const consistent = content.replace(`| ${mapped} |`, `| ${accepted} |`);
+    expect(validateAcceptanceBarSource(consistent).ok).toBe(true);
+    expect(buildAcceptanceBarSeed({ ...input, planContent: consistent }).ok).toBe(true);
+  });
+
+  // WI-10008304: an activation dry run once passed a block whose explicit passRatings were
+  // off the seeded rubric's rating scale, and the real run then refused it. Preview and writer
+  // both build through this function, so the refusal is pinned HERE, where they converge.
+  it('refuses a requirement pass rating that is not on the rubric rating scale', () => {
+    const sections = {
+      intent: { request: 'Keep the rubric gradeable.', sourceRefs: ['session_turn:fixture'] },
+      acceptance: { condition: 'The seeded rubric accepts the declared pass rating.',
+        falsifier: 'A pass rating outside the rating scale is seeded.', evidencePlane: 'tree',
+        requiredScope: ['P-001'], requiredTestLayers: ['unit'], passRatings: ['pass'] },
+      verification: { method: 'Seed the rubric and read its criteria.',
+        check: { kind: 'tests', files: ['lib/evidence.test.ts'] } },
+    };
+    const content = plan({ requirements: '**R-1 — Gradeable rubric.**\n```requirement\n' + JSON.stringify(sections) + '\n```',
+      map: '| R-1 | P-001 | tree |' });
+    const refused = buildAcceptanceBarSeed({ ...input, planContent: content });
+    expect(refused).toMatchObject({ ok: false, error: 'bar_rubric_conflict' });
+    if (refused.ok) throw new Error('an off-scale pass rating was seeded');
+    expect(refused.problems[0]!.detail).toMatch(/passRatings.*not present in the rubric ratingScale/);
+    const onScale = content.replace('"passRatings":["pass"]', '"passRatings":["healthy"]');
+    expect(onScale).not.toBe(content);
+    expect(buildAcceptanceBarSeed({ ...input, planContent: onScale }).ok).toBe(true);
+  });
+
+  // EI-25649770239138025: plans:edit on build d740fc3802 refused a multi-probe requirement
+  // (`check: { kind:'probe', all:[...] }`) that the rubric template accepted. Both paths now
+  // share rubricCriterionCheckSchema; this pins the round-trip so they cannot diverge again.
+  it('round-trips a multi-probe check from a requirement block into the seeded criterion', () => {
+    const probes = [
+      { kind: 'state-cell', schemaRevision: 1, cell: 'verification.health', expect: { path: 'status', op: 'eq', value: 'measured' } },
+      { kind: 'state-cell', schemaRevision: 1, cell: 'verification.health', expect: { path: 'denominator', op: 'gt', value: 0 } },
+    ];
+    const sections = (check: Record<string, unknown>) => ({
+      intent: { request: 'Grade a metric and its denominator together.', sourceRefs: ['session_turn:fixture'] },
+      acceptance: { condition: 'The metric and its positive control both pass.',
+        falsifier: 'Either probe fails.', evidencePlane: 'tree',
+        requiredScope: ['P-001'], requiredTestLayers: ['unit'] },
+      verification: { method: 'Run both read-only probes.', check },
+    });
+    const content = (check: Record<string, unknown>) => plan({
+      requirements: '**R-1 — Metric with control.**\n```requirement\n' + JSON.stringify(sections(check)) + '\n```',
+      map: '| R-1 | P-001 | tree |',
+    });
+
+    const multi = { kind: 'probe', all: probes };
+    // Every member of the rubric check union, not only the shape that failed: the item's
+    // defect class is the two schemas diverging on ANY shape. One entry per union kind
+    // (probe twice: single and all), so a new kind added to the union without a case
+    // here is caught by the length assertion below.
+    const everyShape: Record<string, Record<string, unknown>> = {
+      tests: { kind: 'tests', files: ['lib/evidence.test.ts'], testName: 'suite > exact case' },
+      cargo: { kind: 'cargo', manifestPath: 'native/Cargo.toml', sourceFiles: ['native/src/lib.rs'], test: 'limits' },
+      instrument: { kind: 'instrument', instrumentKey: 'upload-limit-meter' },
+      'probe-single': { kind: 'probe', probe: probes[0] },
+      'probe-all': multi,
+      coverage: { kind: 'coverage', scope: { surfaceKind: 'mcp-tool', planTouched: true }, floor: 'l2' },
+      requirements: { kind: 'requirements' },
+    };
+    const unionKinds = rubricCriterionCheckSchema.options.map((o) => o.shape.kind.value);
+    expect(new Set(Object.values(everyShape).map((s) => s.kind))).toEqual(new Set(unionKinds));
+    for (const [label, shape] of Object.entries(everyShape)) {
+      expect(rubricCriterionCheckSchema.safeParse(shape).success, label).toBe(true);
+      const parsed = parseRequirementBars(content(shape));
+      if (!parsed.ok) throw new Error(`${label} requirement refused: ${JSON.stringify(parsed.problems)}`);
+      expect(parsed.bars[0]!.criterion?.check, label).toEqual(shape);
+    }
+    expect(buildAcceptanceBarSeed({ ...input, planContent: content(multi) }).ok).toBe(true);
+
+    // Controls: the shared refinement refuses neither/both on both paths alike, so the
+    // calibration above cannot pass vacuously on a parser that accepts anything.
+    for (const bad of [
+      { kind: 'probe' },
+      { kind: 'probe', probe: probes[0], all: probes },
+      { kind: 'tests', files: ['a.test.ts', 'b.test.ts'], testName: 'selected case' },
+    ]) {
+      expect(rubricCriterionCheckSchema.safeParse(bad).success).toBe(false);
+      expect(parseRequirementBars(content(bad))).toMatchObject({
+        ok: false,
+        problems: [expect.objectContaining({ code: 'bar_requirement_parse_failed', barKey: 'R-1' })],
+      });
+    }
+  });
+
   it('authors one unified requirement and derives all mapped proof contracts without rewriting its promise', () => {
     const sections = {
       intent: { request: 'Export every matching customer.', sourceRefs: ['session_turn:export'] },
@@ -468,6 +710,15 @@ describe('activation seed contract completeness (requireContractCompleteness)', 
     const mismatch = buildAcceptanceBarSeed({ ...input, planContent: plan({ requirements: block(unitOnly), map: oneBarMap }),
       requireContractCompleteness: true });
     expect(mismatch).toMatchObject({ ok: false, error: 'bar_contract_check_layer_mismatch' });
+
+    // WI-10006536: a declared layer the run ledger never records cannot pass correct-layer.
+    const unrecordable = { ...completeSections, acceptance: { ...completeSections.acceptance,
+      requiredTestLayers: ['integration', 'component'] } };
+    const refused = buildAcceptanceBarSeed({ ...input, planContent: plan({ requirements: block(unrecordable), map: oneBarMap }),
+      requireContractCompleteness: true });
+    expect(refused).toMatchObject({ ok: false, error: 'bar_contract_check_layer_mismatch' });
+    if (refused.ok) throw new Error('expected refusal');
+    expect(refused.problems[0]!.contractGaps).toEqual(['test_layer_unrecordable']);
   });
 
   it('requires layers for a live-plane tests check while preserving an explicit manual check', () => {
@@ -492,6 +743,57 @@ describe('activation seed contract completeness (requireContractCompleteness)', 
       requireContractCompleteness: true,
     });
     expect(manual.ok).toBe(true);
+
+    const manualWithExplicitEmptyLayers = buildAcceptanceBarSeed({
+      ...input,
+      planContent: plan({ requirements: block({
+        ...noLayers,
+        acceptance: { ...noLayers.acceptance, requiredTestLayers: [] },
+        verification: { method: 'Inspect the live state.', check: { kind: 'instrument', instrumentKey: 'none' } },
+      }), map: liveMap }),
+      requireContractCompleteness: true,
+    });
+    expect(manualWithExplicitEmptyLayers.ok).toBe(true);
+
+    const automatedWithExplicitEmptyLayers = buildAcceptanceBarSeed({
+      ...input,
+      planContent: plan({ requirements: block({
+        ...noLayers,
+        acceptance: { ...noLayers.acceptance, requiredTestLayers: [] },
+      }), map: liveMap }),
+      requireContractCompleteness: true,
+    });
+    expect(automatedWithExplicitEmptyLayers).toMatchObject({
+      ok: false,
+      error: 'bar_requirement_parse_failed',
+    });
+  });
+
+  it.each(['tree', 'deployed', 'live'] as const)('projects explicit manual %s review without an automated clause class', (plane) => {
+    const manual = buildAcceptanceBarSeed({
+      ...input,
+      planContent: plan({ requirements: block({
+        ...completeSections,
+        acceptance: { condition: 'The reviewed offer has explicit cancellation terms.', falsifier: 'Cancellation terms are missing.' },
+        verification: { method: 'Read the offer and retain the actual demonstration receipt.', check: { kind: 'instrument', instrumentKey: 'none' } },
+      }), map: `| R-1 | P-001 | ${plane} |` }),
+      requireContractCompleteness: true,
+    });
+    expect(manual.ok).toBe(true);
+    if (!manual.ok) throw new Error(manual.message);
+    expect(manual.projections).toHaveLength(1);
+    expect(manual.projections[0]?.behaviorClass).toBe('non-automated');
+    expect(manual.projections[0]?.mutationRequired ?? false).toBe(false);
+    expect(manual.projections[0]?.requiredTestLayers ?? []).toEqual([]);
+    expect(manual.criteria[0]?.method).toContain('actual demonstration receipt');
+  });
+
+  it('retains automated classes for tree work without explicit manual intent or with declared layers', () => {
+    expect(acceptanceBarBehaviorClass('tree')).toBe('happy-path');
+    expect(acceptanceBarBehaviorClass('tree', [], { kind: 'requirements' })).toBe('happy-path');
+    expect(acceptanceBarBehaviorClass('tree', ['unit'], { kind: 'instrument', instrumentKey: 'none' })).toBe('happy-path');
+    expect(acceptanceBarBehaviorClass('live', ['integration'], { kind: 'instrument', instrumentKey: 'none' })).toBe('happy-path');
+    expect(acceptanceBarBehaviorClass('tree', [], { kind: 'instrument', instrumentKey: 'none' })).toBe('non-automated');
   });
 
   it('judges only fresh post-epoch BARs: opt-out, legacy backfill and unchanged priors are untouched', () => {

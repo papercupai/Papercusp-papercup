@@ -1,0 +1,135 @@
+{
+  "formatVersion": 1,
+  "workItem": "WI-10005738",
+  "parentWorkItem": "WI-10004537",
+  "plan": "mdenseon-adoption-measurements-2026-10-01",
+  "status": "transport-detector-repair-verified-historical-cause-open",
+  "verifiedAt": "2026-10-03T01:28:25.683443+00:00",
+  "sources": [
+    {
+      "path": "libs/papercusp-shared/src/agent/chat-stream.ts",
+      "sha256": "d03daa8f1e3f8743f7baa6fb04ba3db5f5ee3a98d3066480b490b4e48ef5568a",
+      "bytes": 158225
+    },
+    {
+      "path": "libs/papercusp-shared/src/agent/chat-stream-transport.test.ts",
+      "sha256": "578cd129f296f7f7df6a684624316ab2a69ff7784ec710f512071da33af468bd",
+      "bytes": 6161
+    },
+    {
+      "path": "packages/operator-core/lib/llm-testing/llm-client.ts",
+      "sha256": "776ec3bdfb54f4a3ed40df092815ecd1dd3dc1c013f88ebab5825f5f21b5497b",
+      "bytes": 21660
+    },
+    {
+      "path": "packages/operator-core/lib/llm-testing/__tests__/llm-client-error.test.ts",
+      "sha256": "edbbcf853961e75276e74db5784cec69b54e5d41e4ae7e0b9c7f302169fd4975",
+      "bytes": 20158
+    }
+  ],
+  "receipts": [
+    {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/transport-attempt-diagnostics-v1/test-final-full.json",
+      "sha256": "cfaf99c95a6d76ce45e8f6804c8e1687faf140f1241dd3d25c48f149a28f92bd",
+      "bytes": 9288
+    },
+    {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/transport-attempt-diagnostics-v1/ledger.json",
+      "sha256": "b3dcf57a1394a74ae87069a70a92430d94579bdfa3d7f0c72ca5c19ca9e74f36",
+      "bytes": 3822
+    },
+    {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/transport-attempt-diagnostics-v1/ledger-operator.json",
+      "sha256": "3fbc6a128335ccd42d9457c18f1f1c6eca9dc0e8b29ae8cb939ec9bcf23159c9",
+      "bytes": 1424
+    },
+    {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/transport-attempt-diagnostics-v1/tsc-final.log",
+      "sha256": "98372184ade1ae7cfe35e4a5f246d518fd6669aedb9a51d219e4c2a633f58a2a",
+      "bytes": 5016
+    },
+    {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/transport-attempt-diagnostics-v1/transport-before.log",
+      "sha256": "9c391948e95d26d0394c9c75db2944c1c8089c4bcf0a08002d01cccbcc6b0252",
+      "bytes": 18875
+    },
+    {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/transport-attempt-diagnostics-v1/test-final.json",
+      "sha256": "a82cdf42fb20ef1d8391b20b565d8700211f14bd470df6a46d5195442573c9d9",
+      "bytes": 3420
+    }
+  ],
+  "reusedSurface": "RunAgentChatOptions callback at the existing stateless SDK fetch boundary; existing LlmCallError and result.raw carry the host evidence. No new table, routing service, admission key, account policy or retry policy.",
+  "detectorRootCause": "The collector retains call receipts only after a successful llmCall. The transport backend label identifies credential selection, not actual network egress. SDK internal retries were invisible to that receipt and failed calls retained no sanitized resolved endpoint or upstream response identity.",
+  "durableChange": {
+    "captureBoundary": "Actual SDK HTTP send/response/transport exception, including SDK internal retries and refreshed client instances",
+    "correlation": "Local call UUID plus actual HTTP attempt ordinal; local UUID is not forwarded or treated as an admission key",
+    "metadata": [
+      "sanitized endpoint origin",
+      "transport label",
+      "governor mode",
+      "requested account",
+      "actual served account when a response header exists",
+      "provider request id when a response header exists",
+      "HTTP status",
+      "prompt fingerprint",
+      "model",
+      "caller owner"
+    ],
+    "unknowns": "Missing response account/request metadata remains null. Connection errors do not fabricate a provider identity.",
+    "failureRetention": "writeSync diagnostics before exception; classified error exposes frozen transportDiagnostics and promptSha256 without changing turn identity or user-visible message",
+    "successRetention": "LlmCallResult.raw retains diagnostic records",
+    "preservation": [
+      "Exact request objects/headers/body unchanged",
+      "Response body unconsumed",
+      "Exact transport exception rethrown",
+      "Same model/prompt/temperature/retries/account selection",
+      "Diagnostic sink failure cannot break the request"
+    ]
+  },
+  "verification": {
+    "testRunGroup": "86a970bd-0721-4b9d-9211-6de900be451b",
+    "actualTask": "0murpg0zl1dw0g61ror",
+    "actualExitCode": 0,
+    "testRunIds": [
+      20601442,
+      20601443,
+      20601444,
+      20601446,
+      20601447
+    ],
+    "testFiles": [
+      "libs/papercusp-shared/src/agent/chat-stream.test.ts",
+      "libs/papercusp-shared/src/agent/chat-stream-resolve.test.ts",
+      "libs/papercusp-shared/src/agent/chat-stream-transport.test.ts",
+      "packages/operator-core/lib/llm-testing/llm-client.test.ts",
+      "packages/operator-core/lib/llm-testing/__tests__/llm-client-error.test.ts"
+    ],
+    "scope": "Five exact conventional suites passed in canonical current build. Stamped local state, not deployed-main or release-verdict evidence.",
+    "testCount": "Not reported by detached status; no count or skip inference",
+    "typecheck": "Named-file lint:tsc exit0 at95a082baa2; shared package passes; operator scoped verdict clean with two baseline errors in one other file. Changed path baseline entries absent.",
+    "failureAudit": [
+      "Pre-implementation tests refused missing helper; red-run provenance unknown after HEAD moved, retained as diagnostic only",
+      "Five-file foreground cap45s returned a durable automatic recovery; attach it rather than start a manual duplicate",
+      "Named typecheck queued behind release-reservation clamp; verified same own queued PID, cancelled it and used documented caller-scoped PC_HEAVY_GATE_RESERVE=0; normal slot admission retained"
+    ]
+  },
+  "retainedEvidence": {
+    "prefixAssessmentSha256": "bc2679d209cdee916dbfd111fc010fe38f3cbc1b040143d130a06729a8c92ad9",
+    "prefixReferenceChecks": 2059,
+    "prefixReferenceFailures": [],
+    "overlayCompletionSha256": "4ad0bbc4a923914c4c9de21a8f79f16cba0c76feb3ebdef9cca030a4f7dfc790",
+    "overlayReferenceChecks": 23,
+    "overlayReferenceFailures": [],
+    "previousPublicDossierSha256": "0003c77f12ed95f1e27d5b40397e640fbbbec930a8405f61b8d2a80387dea7b5",
+    "fourCollectorSourcePinsUnchanged": true
+  },
+  "modelRequests": 0,
+  "newCollectorStarted": false,
+  "historicalFailedEndpointProven": false,
+  "historical429RootCauseProven": false,
+  "historical429Fixed": false,
+  "finalLabelsPresent": false,
+  "p003Complete": false,
+  "next": "Fresh immutable no-model launch preflight must qualify current resolved endpoint and current source pins; then a single prefix-only successor may collect missing calls with synchronous transport diagnostics. Do not replay donors or use completed-cohort audit until successful EOF and all eight outputs exist."
+}

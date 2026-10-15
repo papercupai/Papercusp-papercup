@@ -11,6 +11,13 @@
 import { describe, it, expect, vi } from 'vitest';
 import { runSetPolicy, type SetPolicyDeps, type ClaimGateRow } from './policy-set';
 import type { ResolvedHivePolicy } from '../../../hive-policy-store';
+import routes from './policy-set';
+
+vi.mock('../../../hive-identity', () => ({ isCanonicalHiveOwner: vi.fn().mockResolvedValue(false) }));
+vi.mock('../../../identity/resolve-local-github-identity', () => ({ resolveLocalGithubIdentity: vi.fn().mockResolvedValue({ kind: 'ok', githubUserId: 42, githubLogin: 'fixture' }) }));
+vi.mock('../../../federated-pot-scope', () => ({ resolveFederatedPotScope: vi.fn().mockResolvedValue('canonical-home') }));
+vi.mock('../../../hive-membership-admission', () => ({ approvePendingJoin: vi.fn().mockResolvedValue({ ok: true, status: 'approved' }), denyPendingJoin: vi.fn().mockResolvedValue({ ok: true, status: 'denied' }) }));
+vi.mock('../../../sync-sse', () => ({ notifySyncInvalidate: vi.fn().mockResolvedValue(undefined) }));
 
 const WS = 'ws';
 const HOME = 'home';
@@ -35,7 +42,37 @@ function deps(over: Partial<SetPolicyDeps> = {}): SetPolicyDeps {
 
 const goodBody = { policy: { membership: 'approval', rate: { opsPerMin: 10 } } };
 
+describe('Workbench desktop membership adapter', () => {
+  const ctx = { params: { id: 'local-home' }, principal: null, input: undefined, log: () => {}, signal: new AbortController().signal };
+  const route = routes.find(r => r.path === '/pot/:id/membership' && r.method === 'POST')!;
+  it('does not admit a contributor from a device that is not the canonical owner', async () => {
+    const { isCanonicalHiveOwner } = await import('../../../hive-identity');
+    const { approvePendingJoin } = await import('../../../hive-membership-admission');
+    vi.mocked(isCanonicalHiveOwner).mockResolvedValue(false); vi.mocked(approvePendingJoin).mockClear();
+    const response = await route.handler(new Request('http://localhost/api/pot/local-home/membership', { method: 'POST', body: JSON.stringify({ githubUserId: 99, decision: 'approve' }) }), ctx);
+    expect(response.status).toBe(403); expect(approvePendingJoin).not.toHaveBeenCalled();
+  });
+  it('uses the canonical scope and server identity for owner-approved admission, and rejects an unrelated origin', async () => {
+    const { isCanonicalHiveOwner } = await import('../../../hive-identity');
+    const { approvePendingJoin } = await import('../../../hive-membership-admission');
+    vi.mocked(isCanonicalHiveOwner).mockResolvedValue(true); vi.mocked(approvePendingJoin).mockClear();
+    const request = (origin?: string) => new Request('http://localhost/api/pot/local-home/membership', { method: 'POST', headers: origin ? { origin } : {}, body: JSON.stringify({ githubUserId: 99, decision: 'approve', workspace: 'forged-workspace', pot: 'forged-home' }) });
+    expect((await route.handler(request('https://unrelated.invalid'), ctx)).status).toBe(403);
+    expect(approvePendingJoin).not.toHaveBeenCalled();
+    const response = await route.handler(request(), ctx);
+    expect(response.status).toBe(200);
+    expect(approvePendingJoin).toHaveBeenCalledWith(expect.objectContaining({ potHomeSlug: 'canonical-home', githubUserId: 99, decidedByGithubUserId: 42 }));
+  });
+});
+
 describe('runSetPolicy claim gate (S0 authority)', () => {
+  it('passes the reviewed version to the owner author and reports concurrent changes as conflict', async () => {
+    const d = deps({ author: vi.fn(async () => ({ ok: false as const, code: 'policy_version_conflict' as const })) });
+    const res = await runSetPolicy(WS, HOME, { ...goodBody, expectedPolicyVersion: 7 }, d);
+    expect(res.status).toBe(409);
+    expect(d.author).toHaveBeenCalledWith(expect.objectContaining({ expectedPolicyVersion: 7 }));
+    expect((await runSetPolicy(WS, HOME, { ...goodBody, expectedPolicyVersion: -1 }, d)).status).toBe(400);
+  });
   it('claimed Hive + claimant viewer → 200, author invoked with the coerced policy', async () => {
     const d = deps();
     const res = await runSetPolicy(WS, HOME, goodBody, d);

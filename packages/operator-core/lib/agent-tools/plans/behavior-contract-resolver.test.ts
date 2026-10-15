@@ -157,6 +157,27 @@ describe('resolveWorkItemBehaviorContract — D-013 applicability', () => {
     expect(out.groups[0].staleEdges).toEqual([{ specId: 'SPEC-1', edgeRevision: 1, currentRevision: 3 }]);
   });
 
+  // EI-25255610125482108: edges are append-only, so an item re-bound to the current
+  // revision keeps every superseded edge as a row. Judging rows instead of specs reported
+  // those as stale although the item IS bound to the current revision.
+  it('does not report a superseded edge when the same spec also has an edge at the current revision', async () => {
+    const deps = readers({
+      edges: [edge({ specRevision: 1 }), edge({ specRevision: 2 }), edge({ specRevision: 3 })],
+      clauses: [clause({ revision: 3, currentRevision: 3 })],
+    });
+    const out = await resolveWorkItemBehaviorContract({ id: 'EI-1', kind: 'bug', harness: 'papercup' }, deps);
+    expect(out.groups[0].staleEdges).toEqual([]);
+  });
+
+  it('reports a genuinely stale spec once, at its newest edge, regardless of edge order', async () => {
+    const deps = readers({
+      edges: [edge({ specRevision: 2 }), edge({ specRevision: 1 })],
+      clauses: [clause({ revision: 3, currentRevision: 3 })],
+    });
+    const out = await resolveWorkItemBehaviorContract({ id: 'EI-1', kind: 'bug', harness: 'papercup' }, deps);
+    expect(out.groups[0].staleEdges).toEqual([{ specId: 'SPEC-1', edgeRevision: 2, currentRevision: 3 }]);
+  });
+
   it('counts only accepted/active clauses as enforceable', async () => {
     const deps = readers({
       edges: [edge({ specId: 'SPEC-D' })],
@@ -196,6 +217,46 @@ describe('resolveWorkItemBehaviorContract — impact reporting', () => {
     expect(out.impact.report).toContain("planItemId: 'P-23787801255099066'");
     // Still the advice it was before — naming the new argument must not drop the old one.
     expect(out.impact.report).toContain('omitting `slug`');
+  });
+
+  // EI-23820598120293502: the advice named both verbs and the arg to omit but not what either
+  // verb REQUIRES, which cost a closer five corrective round-trips (a one-item array under
+  // `spec`; `revision` vs `specRevision`; loose args instead of a `binding` object). Pin the
+  // structural facts, not the enum lists, so the advice cannot drift back to naming only verbs.
+  it('names the wrapper key and required keys of both verbs, not just their names', async () => {
+    const out = await resolveWorkItemBehaviorContract({ id: 'EI-1', kind: 'bug', harness: 'papercup' }, readers());
+    const report = out.impact.report ?? '';
+    expect(report).toContain('ONE object under `spec` (not an array)');
+    for (const key of ['specId', 'expectedRevision', 'planItemId', 'behavior', 'behaviorClass', 'lifecycleStatus']) {
+      expect(report).toContain(key);
+    }
+    expect(report).toContain('ONE object under `binding`');
+    for (const key of ['workItemId', 'specRevision', 'evidenceKind', 'evidenceRef']) {
+      expect(report).toContain(key);
+    }
+    // Measured live while re-binding a sibling clause: a binding without `measurement.schemaVersion`
+    // is refused ("expected 1"), and the plain binding schema requires exactly one of
+    // measurement / sourceFingerprint — neither was named before.
+    expect(report).toContain('schemaVersion: 1');
+    expect(report).toContain('sourceFingerprint');
+    // The ledger form is the alternative shape; naming only the plain one would mislead a
+    // closer who already holds a test_runs row.
+    expect(report).toContain('fromTestRun');
+    expect(report).toContain('tools:find');
+  });
+
+  it('does not state the shapes when the item HAS a source plan (the remedy there is different)', async () => {
+    // The stamped branch tells the closer to link/promote against an existing clause on its
+    // own plan; the ad-hoc-scope shape advice would be wrong there.
+    const out = await resolveWorkItemBehaviorContract(
+      { id: 'EI-1', kind: 'bug', harness: 'papercup', sourcePlanSlug: 'some-plan', sourcePlanItemIds: ['P-001'] },
+      readers(),
+    );
+    const report = out.impact.report;
+    // Positive control: the report exists and IS the stamped-branch remedy. Without this the
+    // negative assertion below would also pass if the item resolved no report at all.
+    expect(report).toContain('link one with plans:bind-spec-evidence');
+    expect(report).not.toContain('ONE object under `spec`');
   });
 
   it('falls back to the required SHAPE rather than naming a planItemId the write would reject', async () => {

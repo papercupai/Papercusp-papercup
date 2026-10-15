@@ -15,6 +15,8 @@ import {
   isBulkConfidence,
   meetsBulkConfidenceFloor,
   normalizeStandingBulkAutomationPolicy,
+  bulkRiskAutonomy,
+  isBulkRiskAutonomy,
   type BulkConfidence,
   type StandingBulkAutomationPolicy,
 } from './bulk-dispositions';
@@ -45,10 +47,10 @@ export function standingAutomationEligibility(
 ): StandingAutomationEligibility {
   const authority = delegationFor(kind);
   if (authority == null) return { allowed: false, reason: 'unknown-kind' };
-  if (authority === 'never-auto') return { allowed: false, reason: 'never-auto' };
-  if (policy.level === 'L0') return { allowed: false, reason: 'review-all' };
-  if (authority === 'owner-by-right' && policy.level !== 'L2') {
-    return { allowed: false, reason: 'owner-by-right' };
+  const risk = authority === 'delegable' ? 'low' : authority === 'owner-by-right' ? 'medium' : 'high';
+  if (bulkRiskAutonomy(policy)[risk] !== 'automatic') {
+    return { allowed: false, reason: authority === 'never-auto' ? 'never-auto'
+      : policy.level === 'L0' ? 'review-all' : 'owner-by-right' };
   }
   if (confidence == null) return { allowed: false, reason: 'confidence-missing' };
   if (!meetsBulkConfidenceFloor(confidence, policy.minConfidence)) {
@@ -57,14 +59,16 @@ export function standingAutomationEligibility(
   return { allowed: true, reason: null };
 }
 
-/** Missing/unreadable storage fails closed to L0 review-all. */
+/** Runtime reads fail closed; settings must distinguish unavailable storage from a missing policy. */
 export async function readStandingBulkAutomationPolicy(
   workspaceId: string = activeWorkspaceId(),
+  options: { strict?: boolean } = {},
 ): Promise<StandingBulkAutomationPolicy> {
   try {
     const stored = await readOperatorState<Partial<StandingBulkAutomationPolicy>>(STORE, workspaceId);
     return normalizeStandingBulkAutomationPolicy(stored);
-  } catch {
+  } catch (error) {
+    if (options.strict) throw error;
     return { ...DEFAULT_STANDING_BULK_AUTOMATION_POLICY };
   }
 }
@@ -74,13 +78,18 @@ export async function writeStandingBulkAutomationPolicy(
   patch: Partial<StandingBulkAutomationPolicy>,
   workspaceId: string = activeWorkspaceId(),
 ): Promise<StandingBulkAutomationPolicy> {
+  if (patch.riskLevels !== undefined && !isBulkRiskAutonomy(patch.riskLevels)) {
+    throw new Error('invalid attention risk autonomy: low, medium and high must be review or automatic');
+  }
   if (patch.level !== undefined && !isBulkAutomationLevel(patch.level)) {
     throw new Error(`invalid attention automation level ${JSON.stringify(patch.level)}`);
   }
   if (patch.minConfidence !== undefined && !isBulkConfidence(patch.minConfidence)) {
     throw new Error(`invalid attention confidence floor ${JSON.stringify(patch.minConfidence)}`);
   }
-  const next = { ...(await readStandingBulkAutomationPolicy(workspaceId)), ...patch };
+  const next = { ...(await readStandingBulkAutomationPolicy(workspaceId, { strict: true })), ...patch };
+  // A legacy level change replaces the per-risk override rather than retaining a hidden grant.
+  if (patch.level !== undefined && patch.riskLevels === undefined) delete next.riskLevels;
   await writeOperatorState<StandingBulkAutomationPolicy>(STORE, next, workspaceId);
   return next;
 }

@@ -12,8 +12,11 @@ let deadProxyAlerts: (
 let egressPoolDownAlert: (
   s: unknown,
 ) => { totalProxyEntries: number; reachableProxyEntries: number } | null;
+let sharedDirectEgressAlert: (
+  s: unknown,
+) => { accountCount: number; directRouteCount: number; sampledDirectRouteCount: number; distinctDirectExitIpCount: number } | null;
 beforeAll(async () => {
-  ({ externalStallReason, deadProxyAlerts, egressPoolDownAlert } = await import('./watchdog.mjs'));
+  ({ externalStallReason, deadProxyAlerts, egressPoolDownAlert, sharedDirectEgressAlert } = await import('./watchdog.mjs'));
 });
 
 /**
@@ -170,5 +173,36 @@ describe('gateway watchdog — egressPoolDownAlert (pool-wide egress outage)', (
     expect(egressPoolDownAlert({})).toBeNull();
     expect(egressPoolDownAlert(health(undefined))).toBeNull();
     expect(egressPoolDownAlert(health({ allDown: true }))).toBeNull(); // no `configured` → not a judgeable proxy path
+  });
+});
+
+describe('gateway watchdog — sharedDirectEgressAlert (collapsed direct exit IP)', () => {
+  it('alerts only after every account and direct route has a fresh sample showing one exit IP', () => {
+    expect(sharedDirectEgressAlert({
+      egressExitIpHealth: {
+        accountCount: 18,
+        directAccountCount: 18,
+        directRouteCount: 1,
+        sampledDirectRouteCount: 1,
+        distinctDirectExitIpCount: 1,
+        sameDirectExitIp: true,
+      },
+    })).toEqual({ accountCount: 18, directRouteCount: 1, sampledDirectRouteCount: 1, distinctDirectExitIpCount: 1 });
+  });
+
+  it('stays silent for partial samples, proxy-backed accounts, missing telemetry, and a single-account pool', () => {
+    expect(sharedDirectEgressAlert({ egressExitIpHealth: {
+      accountCount: 18, directAccountCount: 18, directRouteCount: 2, sampledDirectRouteCount: 1,
+      distinctDirectExitIpCount: 1, sameDirectExitIp: false,
+    } })).toBeNull();
+    expect(sharedDirectEgressAlert({ egressExitIpHealth: {
+      accountCount: 18, directAccountCount: 17, directRouteCount: 1, sampledDirectRouteCount: 1,
+      distinctDirectExitIpCount: 1, sameDirectExitIp: false,
+    } })).toBeNull();
+    expect(sharedDirectEgressAlert({})).toBeNull();
+    expect(sharedDirectEgressAlert({ egressExitIpHealth: {
+      accountCount: 1, directAccountCount: 1, directRouteCount: 1, sampledDirectRouteCount: 1,
+      distinctDirectExitIpCount: 1, sameDirectExitIp: false,
+    } })).toBeNull();
   });
 });

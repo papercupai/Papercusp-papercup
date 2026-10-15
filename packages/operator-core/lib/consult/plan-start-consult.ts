@@ -46,7 +46,7 @@
  * mirroring the get_feedback tool's wiring of routeConsult.
  */
 import type { Sql } from 'postgres';
-import type { ConsultRouteParams, RouteResult, RoutingCandidate, SnapshotSelection, TurnEvidence } from './relevance-router';
+import type { ConsultRouteParams, RouteResult, RoutingCandidate, RoutingSnapshot, SnapshotSelection, TurnEvidence } from './relevance-router';
 import { selectResponders, selectionSnapshot } from './relevance-router';
 import { DEFAULT_MAX_RESPONDERS, DEFAULT_MIN_RESPONDERS } from './get-feedback-core';
 
@@ -76,7 +76,7 @@ export type PlanStartConsultOutcome =
   | {
       outcome: 'proceed';
       verdict: 'no_qualified_responder' | 'all_responders_paused';
-      degraded?: 'embed-unavailable';
+      degraded?: RoutingSnapshot['degraded'];
     }
   /** At least one selectable candidate — floor-qualified or best-available
    * minimum fill (D-001 §2 min:1). The tool layer refuses once with these

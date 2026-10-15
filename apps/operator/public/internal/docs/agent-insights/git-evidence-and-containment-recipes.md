@@ -87,6 +87,25 @@ Then inspect `git show <candidate>:<path>`, or compare its blob with the known-g
 Whole-blob equality is sufficient; after legitimate later edits, verify the fix's specific
 content predicate instead.
 
+## Confirm whether the path is a submodule
+
+A directory under `libs/generic/*` is not necessarily an independent Git repository. `git -C <path> ...` accepts any directory inside a repository; when the target is an ordinary directory, Git still runs at the superproject root. In that case, paths after `HEAD:` must be superproject-relative. A true submodule has its own root, so its `HEAD:` paths are relative to that submodule.
+
+Classify the exact target before extracting or counting matches:
+
+```bash
+repo_root=$(git rev-parse --show-toplevel) || exit 1
+target=libs/generic/bench-metrics
+target_root=$(git -C "$target" rev-parse --show-toplevel) || exit 1
+if [ "$target_root" = "$repo_root" ]; then
+  git show "HEAD:$target/src/intervals.test.ts" || exit 1
+else
+  git -C "$target" show "HEAD:src/intervals.test.ts" || exit 1
+fi
+```
+
+For another target, change `target` and the file path. Keep Git's exit status visible before piping or counting matches; hiding an extraction error can turn a missing path into a misleading zero. The guard is `git -C <path> rev-parse --show-toplevel`: compare it with the superproject root before choosing a `HEAD:` path.
+
 ## `--verify --quiet`, and never `staging:` inside a submodule
 
 Both misreport SILENTLY.

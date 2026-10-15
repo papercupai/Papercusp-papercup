@@ -53,11 +53,10 @@ if (typeof window !== 'undefined') {
   // + Phase-E eligibility). No runtime change yet — nothing calls callTool until
   // the Phase B migration. Plan: calltool-endpoint-seam-2026-06-01.
   installCallToolResolver();
-  // Persisted sync cache (WI-3318): hydrate the sync QueryClient from
-  // localStorage NOW — module-eval runs before any component mounts, so the
-  // first render of every panel paints from the last session's data while
-  // staleTime + SSE invalidates revalidate it in the background. Bump the
-  // buster when sync row shapes change incompatibly.
+  // Start the IndexedDB snapshot read before component mounts. Async hydration
+  // paints retained data while preserving any newer live response, and the
+  // restored entries revalidate on mount. Keep high-churn snapshots out of
+  // WebKit's localStorage WAL. Bump the buster for incompatible row shapes.
   enablePersistedSyncCache({ buster: 'v1' });
 }
 

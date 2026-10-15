@@ -40,6 +40,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { parseBridgeModel } from './codex-cli-bridge';
 import { parseProviderReset } from './provider-reset';
 import { CODEX_MODEL_REFUSAL_RE } from './codex-model-refusals';
+import type { AccountCreditBalance } from '../deployment/account-pool';
 
 /** The ChatGPT backend that serves codex Responses for ChatGPT-subscription auth. */
 export const CODEX_CHATGPT_BACKEND_BASE =
@@ -552,15 +553,33 @@ export interface CodexProviderCompletionEvidence {
  * accepts only a provider response.completed object, never a request model or
  * the cli-exec bridge's synthetic response. One frame is bounded independently
  * of the stream length, so long agent turns need no whole-stream buffer. */
-export function createCodexProviderCompletionDecoder(contentType: string) {
-  const sse = contentType.toLowerCase().includes('text/event-stream');
-  if (!sse && !contentType.toLowerCase().includes('application/json')) {
-    throw new Error('accepted Codex response has an unsupported content type');
+export function createCodexProviderCompletionDecoder(contentType: string,
+  protocol: 'openai-responses' | 'anthropic-messages' = 'openai-responses') {
+  const declaredType = contentType.trim().toLowerCase();
+  let responseKind: 'sse' | 'json' | 'unknown' = declaredType.includes('text/event-stream')
+    ? 'sse' : declaredType.includes('application/json') ? 'json' : 'unknown';
+  if (responseKind === 'unknown' && declaredType) {
+    throw new Error(`accepted Codex response has an unsupported content type: ${JSON.stringify(declaredType.slice(0, 128))}`);
   }
   const decoder = new StringDecoder('utf8');
   let carry = '';
   let completed: CodexProviderCompletionEvidence | null = null;
-  const maxBytes = sse ? 1_048_576 : 8_388_608;
+  let anthropicMessage: Record<string, unknown> | null = null;
+  let anthropicFinalUsageSeen = false;
+  let failure: Error | null = null;
+  const frameLimit = () => responseKind === 'sse' ? 1_048_576 : 8_388_608;
+  const detectHeaderlessFormat = () => {
+    if (responseKind !== 'unknown') return;
+    // Match the existing non-stream aggregator's headerless ChatGPT support.
+    // Keep split opening bytes in carry, then decode the entire prefix exactly
+    // once. An absent header never relaxes completion/model/usage validation.
+    const prefix = carry.slice(0, 256).trimStart();
+    if (/^(?:event|data):/.test(prefix) || prefix.startsWith(':')) responseKind = 'sse';
+    else if (prefix.startsWith('{') || prefix.startsWith('[')) responseKind = 'json';
+    else if (carry.length >= 256) {
+      throw new Error('accepted Codex headerless response has an unrecognized format');
+    }
+  };
   const count = (value: unknown): number | null =>
     typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
   const readResponse = (value: unknown): CodexProviderCompletionEvidence => {
@@ -568,6 +587,10 @@ export function createCodexProviderCompletionDecoder(contentType: string) {
       throw new Error('accepted Codex response has no provider completion object');
     }
     const response = value as Record<string, unknown>;
+    if (protocol === 'openai-responses' && (response.error != null ||
+        response.status !== undefined && response.status !== 'completed')) {
+      throw new Error('accepted OpenAI response did not complete successfully');
+    }
     const reasoning = response.reasoning && typeof response.reasoning === 'object' &&
       !Array.isArray(response.reasoning) ? response.reasoning as Record<string, unknown> : null;
     const rawEffort = reasoning?.effort;
@@ -581,10 +604,18 @@ export function createCodexProviderCompletionDecoder(contentType: string) {
     const details = usage?.input_tokens_details && typeof usage.input_tokens_details === 'object' &&
       !Array.isArray(usage.input_tokens_details)
       ? usage.input_tokens_details as Record<string, unknown> : null;
-    const input = count(usage?.input_tokens);
+    const uncachedInput = count(usage?.input_tokens);
     const output = count(usage?.output_tokens);
-    const cacheRead = count(details?.cached_tokens);
-    const cacheWrite = count(details?.cache_write_tokens);
+    const cacheRead = count(protocol === 'anthropic-messages' ? usage?.cache_read_input_tokens : details?.cached_tokens);
+    const cacheWrite = count(protocol === 'anthropic-messages' ? usage?.cache_creation_input_tokens : details?.cache_write_tokens);
+    const input = protocol === 'anthropic-messages'
+      ? uncachedInput !== null && cacheRead !== null && cacheWrite !== null && count(uncachedInput + cacheRead + cacheWrite) !== null
+        ? uncachedInput + cacheRead + cacheWrite : null
+      : uncachedInput;
+    if (protocol === 'anthropic-messages' && (response.type !== 'message' ||
+        typeof response.stop_reason !== 'string' || !response.stop_reason)) {
+      throw new Error('accepted Anthropic response has no completed message');
+    }
     if (typeof response.id !== 'string' || !response.id ||
         typeof response.model !== 'string' || !response.model || input === null || output === null ||
         (cacheRead !== null && cacheRead > input) ||
@@ -601,14 +632,47 @@ export function createCodexProviderCompletionDecoder(contentType: string) {
     if (!data || data === '[DONE]') return null;
     let event: unknown;
     try { event = JSON.parse(data); } catch { throw new Error('accepted Codex response has malformed SSE JSON'); }
-    if (!event || typeof event !== 'object' || Array.isArray(event)) return null;
-    const typed = event as { type?: unknown; response?: unknown };
+    if (!event || typeof event !== 'object' || Array.isArray(event)) {
+      throw new Error('accepted provider SSE payload is not an event object');
+    }
+    const typed = event as { type?: unknown; response?: unknown; message?: unknown; usage?: unknown; delta?: unknown };
+    if (['error', 'response.failed', 'response.incomplete', 'response.error'].includes(String(typed.type))) {
+      throw new Error('accepted provider response contains an error or incomplete event');
+    }
+    if (completed && !(protocol === 'anthropic-messages' && typed.type === 'ping')) {
+      throw new Error('accepted provider response contains an event after completion');
+    }
+    if (protocol === 'anthropic-messages') {
+      if (typed.type === 'message_start') {
+        if (anthropicMessage || !typed.message || typeof typed.message !== 'object' || Array.isArray(typed.message)) {
+          throw new Error('accepted Anthropic response has invalid message start');
+        }
+        anthropicMessage = { ...typed.message as Record<string, unknown> };
+        if (anthropicMessage.stop_reason != null) throw new Error('accepted Anthropic start cannot establish final usage');
+      } else if (typed.type === 'message_delta') {
+        if (!anthropicMessage || !typed.usage || typeof typed.usage !== 'object' || Array.isArray(typed.usage) ||
+            !typed.delta || typeof typed.delta !== 'object' || Array.isArray(typed.delta)) {
+          throw new Error('accepted Anthropic response has invalid message delta');
+        }
+        if (count((typed.usage as Record<string, unknown>).output_tokens) === null) {
+          throw new Error('accepted Anthropic final usage lacks output tokens');
+        }
+        anthropicMessage.usage = { ...anthropicMessage.usage as Record<string, unknown>, ...typed.usage as Record<string, unknown> };
+        anthropicMessage.stop_reason = (typed.delta as Record<string, unknown>).stop_reason;
+        anthropicFinalUsageSeen = typeof anthropicMessage.stop_reason === 'string' && !!anthropicMessage.stop_reason;
+      } else if (typed.type === 'message_stop') {
+        if (!anthropicFinalUsageSeen) throw new Error('accepted Anthropic response lacks final output usage');
+        return readResponse(anthropicMessage);
+      }
+      return null;
+    }
     return typed.type === 'response.completed' ? readResponse(typed.response) : null;
   };
-  const push = (chunk: Uint8Array): CodexProviderCompletionEvidence | null => {
+  const pushChunk = (chunk: Uint8Array): CodexProviderCompletionEvidence | null => {
     carry += decoder.write(Buffer.from(chunk));
-    if (!sse) {
-      if (carry.length > maxBytes) throw new Error('accepted Codex response evidence frame exceeds its bound');
+    detectHeaderlessFormat();
+    if (responseKind !== 'sse') {
+      if (carry.length > frameLimit()) throw new Error('accepted Codex response evidence frame exceeds its bound');
       return null;
     }
     const boundaries = /\r?\n\r?\n/g;
@@ -618,7 +682,7 @@ export function createCodexProviderCompletionDecoder(contentType: string) {
     while ((boundary = boundaries.exec(carry))) {
       const frame = carry.slice(frameStart, boundary.index);
       frameStart = boundaries.lastIndex;
-      if (frame.length > maxBytes) throw new Error('accepted Codex response evidence frame exceeds its bound');
+      if (frame.length > frameLimit()) throw new Error('accepted Codex response evidence frame exceeds its bound');
       const evidence = readFrame(frame);
       if (evidence) {
         if (completed) throw new Error('accepted Codex response has duplicate completions');
@@ -627,13 +691,25 @@ export function createCodexProviderCompletionDecoder(contentType: string) {
       }
     }
     carry = carry.slice(frameStart);
-    if (carry.length > maxBytes) throw new Error('accepted Codex response evidence frame exceeds its bound');
+    if (carry.length > frameLimit()) throw new Error('accepted Codex response evidence frame exceeds its bound');
     return newlyCompleted;
   };
+  const push = (chunk: Uint8Array): CodexProviderCompletionEvidence | null => {
+    if (failure) throw failure;
+    try {
+      return pushChunk(chunk);
+    } catch (error) {
+      failure = error instanceof Error ? error : new Error('accepted provider response evidence is invalid');
+      throw failure;
+    }
+  };
   const finish = (): CodexProviderCompletionEvidence => {
+    if (failure) throw failure;
     carry += decoder.end();
-    if (carry.length > maxBytes) throw new Error('accepted Codex response evidence frame exceeds its bound');
-    if (sse) {
+    detectHeaderlessFormat();
+    if (responseKind === 'unknown') throw new Error('accepted Codex headerless response has an unrecognized format');
+    if (carry.length > frameLimit()) throw new Error('accepted Codex response evidence frame exceeds its bound');
+    if (responseKind === 'sse') {
       const tail = carry.trim();
       if (tail) {
         const evidence = readFrame(tail);
@@ -650,7 +726,7 @@ export function createCodexProviderCompletionDecoder(contentType: string) {
     if (!completed) throw new Error('accepted Codex response ended without provider completion');
     return completed;
   };
-  return { push, finish };
+  return { push, finish, contentType: () => responseKind === 'sse' ? 'text/event-stream' : 'application/json' };
 }
 
 /** Build the upstream request headers: start from the codex CLI's incoming headers
@@ -895,6 +971,9 @@ export interface CodexCapacityWindows {
   windowResetAt?: number;
   utilization7d?: number;
   windowResetAt7d?: number;
+  /** Credit-funded continuation is separate from the included allowance. */
+  usageCreditsAvailable?: boolean;
+  creditBalance?: AccountCreditBalance;
   /** Which METER produced this reading (EI-22103680502746318). `premium` = the generic weekly/5h
    *  windows (`x-codex-*`) — the meter the account-pool projection (`rate.utilization[7d]`)
    *  describes. `base_model_inference` = the Luna reserve tier (`x-base-model-inference-*`) — a
@@ -998,6 +1077,25 @@ export function parseCodexRateLimitHeaders(
   const lower: Record<string, string | undefined> = {};
   for (const [key, value] of Object.entries(h)) lower[key.toLowerCase()] = value;
   const generic = ['x-codex-primary', 'x-codex-secondary'] as const;
+  const flag = (value: string | undefined): boolean | undefined => {
+    const normalized = value?.trim().toLowerCase();
+    return normalized === 'true' ? true : normalized === 'false' ? false : undefined;
+  };
+  const hasCredits = flag(lower['x-codex-credits-has-credits']);
+  const unlimited = flag(lower['x-codex-credits-unlimited']);
+  const balance = lower['x-codex-credits-balance'];
+  const numericBalance = balance !== undefined && balance.trim() !== '' ? Number(balance) : NaN;
+  const creditBalance: AccountCreditBalance | undefined = unlimited === true
+    ? { amount: null, unit: 'credits', source: 'codex', unlimited: true }
+    : Number.isFinite(numericBalance) && numericBalance >= 0
+      ? { amount: numericBalance, unit: 'credits', source: 'codex', unlimited: false }
+      : undefined;
+  const credits: Pick<CodexCapacityWindows, 'usageCreditsAvailable' | 'creditBalance'> =
+    hasCredits === undefined && unlimited === undefined ? {} : {
+      usageCreditsAvailable: unlimited === true ||
+        (hasCredits === true && (balance === undefined || (Number.isFinite(Number(balance)) && Number(balance) > 0))),
+    };
+  if (creditBalance) credits.creditBalance = creditBalance;
   const reserve = ['x-base-model-inference-primary', 'x-base-model-inference-secondary'] as const;
   const bucket = codexRateLimitBucket(lower);
   // When the backend tells us which meter is active, do not project a different
@@ -1013,10 +1111,10 @@ export function parseCodexRateLimitHeaders(
     // reserve meter into the premium slots (EI-22103680502746318). Stamped only when a family
     // actually parsed — an empty result stays `{}` so "saw a rate header at all" checks hold.
     if (Object.keys(parsed).length > 0) {
-      return { ...parsed, bucket: family === reserve ? 'base_model_inference' : 'premium' };
+      return { ...parsed, ...credits, bucket: family === reserve ? 'base_model_inference' : 'premium' };
     }
   }
-  return {};
+  return credits;
 }
 
 /** A window at/over this utilization is EXHAUSTED — the meter that produced the 429. Matches the
@@ -1069,8 +1167,12 @@ export function parseCodexRateReset(
       walledResetAt = walledResetAt === null ? resetAt : Math.max(walledResetAt, resetAt);
     }
   };
-  consider(windows.utilization, windows.windowResetAt);
-  consider(windows.utilization7d, windows.windowResetAt7d);
+  // Paid continuation makes the included premium meter non-binding. A real
+  // request/token throttle and the separate reserve meter still supply their resets.
+  if (windows.usageCreditsAvailable !== true || windows.bucket === 'base_model_inference') {
+    consider(windows.utilization, windows.windowResetAt);
+    consider(windows.utilization7d, windows.windowResetAt7d);
+  }
 
   // api.openai.com's bearer lane speaks the generic OpenAI dialect rather than
   // the ChatGPT subscription's x-codex-* windows. Reset values are durations

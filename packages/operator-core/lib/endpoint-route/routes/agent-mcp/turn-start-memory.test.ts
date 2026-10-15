@@ -43,11 +43,12 @@ const {
   detectHarnessSlugSyncMock,
   resolveAgentSignalsMock,
   recordInjectionCoverageMock,
-  buildPersonalAmbientContextBlockMock,
+  buildGrantedSourcesContextBlockMock,
   getMemoryBlockBoundedResultMock,
   withOptionalMemoryAdmissionMock,
   buildTurnStartOrientationBlockMock,
   readSuLaunchSpecByOwnerMock,
+  readAdvSessionLaunchRecordByOwnerMock,
   evaluateTurnStartPackageSinkMock,
   packageSinkReceiptMock,
 } = vi.hoisted(() => ({
@@ -62,11 +63,12 @@ const {
   detectHarnessSlugSyncMock: vi.fn(),
   resolveAgentSignalsMock: vi.fn(),
   recordInjectionCoverageMock: vi.fn(),
-  buildPersonalAmbientContextBlockMock: vi.fn(),
+  buildGrantedSourcesContextBlockMock: vi.fn(),
   getMemoryBlockBoundedResultMock: vi.fn(),
   withOptionalMemoryAdmissionMock: vi.fn(),
   buildTurnStartOrientationBlockMock: vi.fn(),
   readSuLaunchSpecByOwnerMock: vi.fn(),
+  readAdvSessionLaunchRecordByOwnerMock: vi.fn(),
   evaluateTurnStartPackageSinkMock: vi.fn(),
   packageSinkReceiptMock: vi.fn(),
 }));
@@ -96,6 +98,7 @@ vi.mock('../../../stack-binding-channel', () => ({
 vi.mock('../../../adv-sessions', async (orig) => ({
   ...(await orig<typeof import('../../../adv-sessions')>()),
   readSuLaunchSpecByOwner: readSuLaunchSpecByOwnerMock,
+  readAdvSessionLaunchRecordByOwner: readAdvSessionLaunchRecordByOwnerMock,
 }));
 vi.mock('../../../memory/detect-harness-slug', () => ({
   detectHarnessSlugSync: detectHarnessSlugSyncMock,
@@ -106,8 +109,11 @@ vi.mock('../../../memory/agent-signals', () => ({
 vi.mock('../../../memory/injection-delivery-coverage', () => ({
   recordInjectionCoverage: recordInjectionCoverageMock,
 }));
-vi.mock('../../../personal-vault/ambient', () => ({
-  buildPersonalAmbientContextBlock: buildPersonalAmbientContextBlockMock,
+// enterprise-data-sources P-017: the route's fourth leg is the granted-sources
+// builder (Personal Vault + subscribed organization sources + pot), which wraps
+// the vault's ambient leg. Its own suites own the per-leg authorization.
+vi.mock('../../../data-sources/granted-sources-injection', () => ({
+  buildGrantedSourcesContextBlock: buildGrantedSourcesContextBlockMock,
 }));
 vi.mock('../../../memory/injection-block-cache', () => ({
   getMemoryBlockBoundedResult: getMemoryBlockBoundedResultMock,
@@ -126,6 +132,7 @@ vi.mock('../../../agent-identities/turn-start-package-sink', () => ({
 }));
 
 import routes from './turn-start-memory';
+import { setSessionConfinementResolver } from '../../../capability-envelope/session-confinement-port';
 
 const endpoint = routes[0] as unknown as {
   handler: (req: Request) => Promise<Response>;
@@ -141,7 +148,19 @@ const post = async (body: unknown): Promise<{ ok: boolean; text: string; deliver
   return (await res.json()) as { ok: boolean; text: string; deliveryToken?: string };
 };
 
+it('suppresses all live turn-start context before recall, control or package reads for frozen sessions', async () => {
+  setSessionConfinementResolver(() => ({ denyTools: [], denyOutside: ['coord:whoami'],
+    denyAmbientContext: true, reason: 'frozen benchmark', imposedBy: 'host' }));
+  try {
+    expect(await post({ owner: 'su-frozen', workspace: 'private', prompt: 'retrieve live context' })).toEqual({ ok: true, text: '' });
+    expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();
+    expect(preparePendingControlTransitionMock).not.toHaveBeenCalled();
+    expect(evaluateTurnStartPackageSinkMock).not.toHaveBeenCalled();
+  } finally { setSessionConfinementResolver(undefined); }
+});
+
 beforeEach(() => {
+  setSessionConfinementResolver(() => null);
   configureReadCursorStore(new InMemoryReadCursorStore());
   buildMemoryContextBlockMock.mockReset().mockResolvedValue('MEM-BLOCK');
   preparePendingControlTransitionMock.mockReset().mockResolvedValue(null);
@@ -154,7 +173,7 @@ beforeEach(() => {
   detectHarnessSlugSyncMock.mockReset().mockReturnValue({ slug: null, source: null });
   resolveAgentSignalsMock.mockReset().mockResolvedValue(undefined);
   recordInjectionCoverageMock.mockReset().mockResolvedValue(undefined);
-  buildPersonalAmbientContextBlockMock.mockReset().mockResolvedValue(null);
+  buildGrantedSourcesContextBlockMock.mockReset().mockResolvedValue(null);
   withOptionalMemoryAdmissionMock.mockReset().mockImplementation(async (run: () => Promise<unknown>) => ({
     admitted: true,
     value: await run(),
@@ -178,6 +197,7 @@ beforeEach(() => {
     );
   buildTurnStartOrientationBlockMock.mockReset().mockResolvedValue({ block: '', deliveryToken: null });
   readSuLaunchSpecByOwnerMock.mockReset().mockResolvedValue(null);
+  readAdvSessionLaunchRecordByOwnerMock.mockReset().mockResolvedValue(null);
   evaluateTurnStartPackageSinkMock.mockReset().mockResolvedValue({ result: null, classes: [] });
   packageSinkReceiptMock.mockReset().mockReturnValue(null);
 });
@@ -192,6 +212,21 @@ afterEach(() => resetReadCursorStore());
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
 describe('turn-start-memory admission (F-E: no length floor)', () => {
+  it('preserves bound-plan orientation and eligible memory alongside cited knowledge with server-bound agent scope', async () => {
+    detectHarnessSlugSyncMock.mockReturnValue({ slug: 'papercusp',source: 'meta-papercup' });
+    buildTurnStartOrientationBlockMock.mockResolvedValue({ block: '## Orientation\nBound plan: current repair requirement',deliveryToken: null });
+    buildMemoryContextBlockMock.mockResolvedValue('Relevant memory: retain verified snapshot\n\n'
+      + 'Related context: [plan other-repair] tail decision; [doc repair-runbook] prerequisite; [report rpt-repair] dated evidence');
+    const out = await post({ owner: 'su-knowledge-reader',prompt: 'repair the queue boundary',harness: 'papercusp',client: 'codex' });
+    expect(out.text).toContain('Bound plan: current repair requirement');
+    expect(out.text).toContain('retain verified snapshot');
+    expect(out.text).toContain('[plan other-repair]');
+    expect(out.text).toContain('[doc repair-runbook] prerequisite');
+    expect(out.text).toContain('[report rpt-repair] dated evidence');
+    expect(buildMemoryContextBlockMock).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-test',harnessSlugs: ['papercusp'],session: expect.objectContaining({ sessionId: 'su-knowledge-reader',client: 'codex' }),
+    }));
+  });
   it('shares the host-wide optional-memory admission and preserves orientation when capacity is full', async () => {
     withOptionalMemoryAdmissionMock.mockResolvedValueOnce({ admitted: false, reason: 'at_capacity' });
     buildTurnStartOrientationBlockMock.mockResolvedValue({
@@ -221,7 +256,7 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
 
     expect(out.text).toContain('improvement triage: top EI-1');
     expect(out.text).not.toContain('MEM-BLOCK');
-    expect(getMemoryBlockBoundedResultMock).toHaveBeenCalledWith('ws-test', 'turn-start:sess-1', expect.any(Function));
+    expect(getMemoryBlockBoundedResultMock).toHaveBeenCalledWith('ws-test', 'turn-start:sess-1', expect.any(Function), { sessionId: 'sess-1' });
     expect(recordInjectionCoverageMock).not.toHaveBeenCalled();
   });
 
@@ -352,10 +387,12 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
   });
 
   it('fail-soft: a throwing memory pipeline never surfaces an error into the turn', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     buildMemoryContextBlockMock.mockRejectedValue(new Error('backend down'));
     const out = await post({ owner: 'sess-1', prompt: 'a question about storage policy' });
     expect(out.ok).toBe(true);
     expect(out.text).toBe('');
+    expect(warning).toHaveBeenCalledWith('[turn-start] memory path failed (context omitted):', 'backend down');
   });
 
   // EI-18893248175645463: an operator/superuser-scope session never sends
@@ -456,9 +493,9 @@ describe('agent signals reach the query (context-injection-audit-2026-07-28 P-04
   });
 });
 
-describe('granted-only Personal Vault ambient leg', () => {
-  it('renders granted personal context as a separate block after general memory', async () => {
-    buildPersonalAmbientContextBlockMock.mockResolvedValue('VAULT-BLOCK');
+describe('granted-sources leg (Personal Vault + subscribed sources + pot)', () => {
+  it('renders granted source context as a separate block after general memory', async () => {
+    buildGrantedSourcesContextBlockMock.mockResolvedValue('VAULT-BLOCK');
 
     const out = await post({
       owner: 'meeting-prep-run-1',
@@ -467,22 +504,54 @@ describe('granted-only Personal Vault ambient leg', () => {
     });
 
     expect(out.text).toBe('MEM-BLOCK\n\nVAULT-BLOCK');
-    expect(buildPersonalAmbientContextBlockMock).toHaveBeenCalledWith({
+    expect(buildGrantedSourcesContextBlockMock).toHaveBeenCalledWith({
       ownerId: 'meeting-prep-run-1',
       userId: 'u-1',
       workspaceId: 'ws-test',
       query: 'prepare me for the Acme review',
+      // No launch record for this owner: the session is unknown, judged by dataUse only.
+      session: null,
     });
+  });
+
+  // enterprise-readiness P-007 (WI-6554700010011738): the leg is judged against the
+  // RECEIVING session's provider, resolved from its newest launch record.
+  it('passes the receiving session backend/model from its launch record', async () => {
+    buildGrantedSourcesContextBlockMock.mockResolvedValue('VAULT-BLOCK');
+    readAdvSessionLaunchRecordByOwnerMock.mockResolvedValue({
+      workspaceId: 'ws-test',
+      agent: 'codex',
+      launchSpec: { agent: 'codex', model: 'gpt-5.5:high' },
+      launchArgv: null,
+    });
+
+    await post({ owner: 'su-codex-1', prompt: 'summarize the org policy', workspace: 'ws-test' });
+
+    expect(readAdvSessionLaunchRecordByOwnerMock).toHaveBeenCalledWith('su-codex-1');
+    expect(buildGrantedSourcesContextBlockMock.mock.calls[0]![0]).toMatchObject({
+      ownerId: 'su-codex-1',
+      session: { agent: 'codex', model: 'gpt-5.5:high' },
+    });
+  });
+
+  it('an unreadable launch record leaves the session unknown instead of failing the leg', async () => {
+    buildGrantedSourcesContextBlockMock.mockResolvedValue('VAULT-BLOCK');
+    readAdvSessionLaunchRecordByOwnerMock.mockRejectedValue(new Error('adv_sessions unreachable'));
+
+    const out = await post({ owner: 'su-x', prompt: 'prepare me for the Acme review', workspace: 'ws-test' });
+
+    expect(out.text).toBe('MEM-BLOCK\n\nVAULT-BLOCK');
+    expect(buildGrantedSourcesContextBlockMock.mock.calls[0]![0]).toMatchObject({ session: null });
   });
 
   it('injects nothing when authorization refuses the caller', async () => {
     buildMemoryContextBlockMock.mockResolvedValue(null);
-    buildPersonalAmbientContextBlockMock.mockResolvedValue(null);
+    buildGrantedSourcesContextBlockMock.mockResolvedValue(null);
 
     const out = await post({ owner: 'coding-agent-1', prompt: 'search the owner vault' });
 
     expect(out.text).toBe('');
-    expect(buildPersonalAmbientContextBlockMock).toHaveBeenCalledTimes(1);
+    expect(buildGrantedSourcesContextBlockMock).toHaveBeenCalledTimes(1);
   });
 
   it('does not even invoke personal recall when turn-start memory is disabled', async () => {
@@ -493,7 +562,7 @@ describe('granted-only Personal Vault ambient leg', () => {
     });
 
     expect(out.text).toBe('');
-    expect(buildPersonalAmbientContextBlockMock).not.toHaveBeenCalled();
+    expect(buildGrantedSourcesContextBlockMock).not.toHaveBeenCalled();
   });
 });
 
@@ -590,6 +659,7 @@ describe('turn-start delivery coverage (WI-37597)', () => {
   });
 
   it('records NOTHING when the pipeline throws — a fault must not read as healthy quiet', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     // The outcome vocabulary has no failure value, and 'no-recall' means healthy
     // quiet, so recording it would actively hide the fault. Writing nothing
     // leaves the turn absent from the numerator, which the outage detector
@@ -598,6 +668,7 @@ describe('turn-start delivery coverage (WI-37597)', () => {
     const out = await post({ owner: 'sess-1', prompt: 'why is recall empty', client: 'omp' });
     await settle();
     expect(out.ok).toBe(true); // still fail-soft — the turn is never harmed
+    expect(warning).toHaveBeenCalledWith('[turn-start] memory path failed (context omitted):', expect.any(String));
     expect(recordInjectionCoverageMock).not.toHaveBeenCalled();
   });
 
@@ -825,7 +896,7 @@ describe('control activation waits for host emission (WI-10003297)', () => {
     const delayed = new Promise<null>((resolve) => {
       release = () => resolve(null);
     });
-    buildPersonalAmbientContextBlockMock.mockReturnValueOnce(delayed);
+    buildGrantedSourcesContextBlockMock.mockReturnValueOnce(delayed);
     const request = post({ owner: 'sess-1', prompt: 'slow response', confirmedDelivery: null });
     try {
       await vi.waitFor(() => expect(markControlTransitionPreparedMock).toHaveBeenCalled());
@@ -985,5 +1056,116 @@ describe('portable-identity P-010 package sink', () => {
     const unproved = await post({ owner: 'sess-1', prompt: 'unproved', confirmedDelivery: 'wrong-token' });
     await post({ owner: 'sess-1', prompt: 'proved', confirmedDelivery: unproved.deliveryToken });
     expect(store.committed).toEqual([null, null, { version: 1, status: 'fenced', rendered: false }]);
+  });
+});
+
+/**
+ * WI-10005053: the hook aborts at its wall and then prints NOTHING, so one slow
+ * leg used to cost the whole response — including a CTRL line that was ready
+ * long before — and left the staged control candidate unprovable, which held
+ * in-place identity activations at `prepared` turn after turn (measured on
+ * su-d5eaa301, 2026-10-01). With a declared wall the endpoint now answers at
+ * `arrivedAt + wallMs - margin` with the ready legs. Real timers: the property
+ * under test IS wall-clock behaviour, and every wait here is well under 1s.
+ */
+describe('response deadline (WI-10005053)', () => {
+  // wallMs 200 → margin min(300, 50) = 50 → the endpoint answers ~150ms in.
+  const WALL_MS = 200;
+  const SLOW_MS = 1_000;
+  // The endpoint answers ~150ms in; a pre-fix endpoint waits >= SLOW_MS. The
+  // bound sits far from both so a loaded CI host cannot flip the verdict.
+  const ANSWERED_BY_MS = 600;
+  const desired = { specificationRevision: 'spec-dl', stateRevision: 'state-dl' };
+  const after = <T>(ms: number, value: T) => new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    let pending = true;
+    preparePendingControlTransitionMock.mockImplementation(async () =>
+      pending ? { kind: 'stack', generation: 21, state: { activation: { desired } } } : null,
+    );
+    acknowledgeControlTransitionMock.mockImplementation(async () => {
+      pending = false;
+      return true;
+    });
+    renderStackTransitionContextResultMock.mockResolvedValue({ text: 'IDENTITY-LAYER', rendered: true });
+    buildMemoryContextBlockMock.mockResolvedValue(null);
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => warn.mockRestore());
+
+  it('turnStartRespondBy: only a sane declared wall yields a deadline, cut by the margin', async () => {
+    const { turnStartRespondBy } = await import('./turn-start-memory');
+    expect(turnStartRespondBy(1_000, 2_500)).toBe(1_000 + 2_500 - 300);
+    expect(turnStartRespondBy(1_000, WALL_MS)).toBe(1_000 + WALL_MS - 50);
+    for (const bad of [undefined, null, '2500', 0, -1, Number.NaN, Number.POSITIVE_INFINITY, 60_001]) {
+      expect(turnStartRespondBy(1_000, bad)).toBeNull();
+    }
+  });
+
+  it('delivers the ready CTRL at the deadline when orientation is slow, under a token the late orientation never owns', async () => {
+    let orientationSettled = false;
+    buildTurnStartOrientationBlockMock.mockImplementationOnce(() =>
+      after(SLOW_MS, { block: 'LATE-ORIENTATION', deliveryToken: 'late-o' }).finally(() => {
+        orientationSettled = true;
+      }),
+    );
+    const t0 = Date.now();
+    const out = await post({ owner: 'sess-dl', prompt: 'slow orientation', confirmedDelivery: null, wallMs: WALL_MS });
+    const elapsed = Date.now() - t0;
+
+    // The pre-fix endpoint waited the full SLOW_MS here — past the hook's wall.
+    expect(elapsed).toBeLessThan(ANSWERED_BY_MS);
+    expect(out.text).toContain('IDENTITY-LAYER');
+    expect(out.text).not.toContain('LATE-ORIENTATION');
+    expect(out.deliveryToken).toEqual(expect.any(String));
+    expect(out.deliveryToken).not.toBe('late-o');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('omitted orientation'));
+
+    // Let the omitted leg finish; it must not disturb the delivered proof.
+    await vi.waitFor(() => expect(orientationSettled).toBe(true), { timeout: SLOW_MS * 2 });
+    expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
+    await post({ owner: 'sess-dl', prompt: 'next turn', confirmedDelivery: out.deliveryToken });
+    expect(acknowledgeControlTransitionMock).toHaveBeenCalledWith('sess-dl', 'ws-test', 21, undefined, desired);
+  });
+
+  it('never stages a control candidate that missed the deadline, so its later confirmation acknowledges nothing', async () => {
+    preparePendingControlTransitionMock.mockImplementationOnce(() =>
+      after(SLOW_MS, { kind: 'stack', generation: 21, state: { activation: { desired } } }),
+    );
+    buildTurnStartOrientationBlockMock.mockResolvedValue({ block: 'ORIENTATION', deliveryToken: 'tok-o' });
+
+    const t0 = Date.now();
+    const out = await post({ owner: 'sess-dl', prompt: 'slow control', confirmedDelivery: null, wallMs: WALL_MS });
+    expect(Date.now() - t0).toBeLessThan(ANSWERED_BY_MS);
+    expect(out.text).toContain('ORIENTATION');
+    expect(out.text).not.toContain('IDENTITY-LAYER');
+    expect(out.deliveryToken).toBe('tok-o');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('omitted control'));
+
+    // The late leg still prepares; nothing may stage it under the sent token.
+    await vi.waitFor(() => expect(markControlTransitionPreparedMock).toHaveBeenCalled(), { timeout: SLOW_MS * 2 });
+    const retry = await post({ owner: 'sess-dl', prompt: 'confirm orientation', confirmedDelivery: out.deliveryToken });
+    expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
+    // …and the transition is offered again, now that control is fast.
+    expect(retry.text).toContain('IDENTITY-LAYER');
+  });
+
+  it('hands memory the margin-adjusted deadline, not the raw wall', async () => {
+    const t0 = Date.now();
+    await post({ owner: 'sess-dl', prompt: 'memory deadline', wallMs: WALL_MS });
+    const t1 = Date.now();
+    const { respondByMs } = buildMemoryContextBlockMock.mock.calls[0]![0] as { respondByMs?: number };
+    expect(respondByMs).toBeGreaterThanOrEqual(t0 + WALL_MS - 50);
+    expect(respondByMs).toBeLessThanOrEqual(t1 + WALL_MS - 50);
+  });
+
+  it('a hook that declares no wall still waits for every leg (unchanged contract)', async () => {
+    buildTurnStartOrientationBlockMock.mockImplementationOnce(() =>
+      after(300, { block: 'PATIENT-ORIENTATION', deliveryToken: null }),
+    );
+    const out = await post({ owner: 'sess-dl', prompt: 'no wall' });
+    expect(out.text).toContain('PATIENT-ORIENTATION');
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('response deadline'));
   });
 });

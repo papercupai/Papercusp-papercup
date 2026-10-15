@@ -72,6 +72,14 @@ describe('extractToolsUsed', () => {
     expect(used).toEqual(['coord:wake-queue', 'work_items:get', 'work_items:list']);
   });
 
+  it('maps a bracket ref with a kebab-case verb back to its canonical tool name', () => {
+    const used = extractToolsUsed(
+      `await tools.capability["git-evidence"]({ path: 'packages/operator-core' });`,
+      [...TOOLS, mkTool('capability:git-evidence')],
+    );
+    expect(used).toEqual(['capability:git-evidence']);
+  });
+
   it('resolves the tools.call() escape-hatch full name', () => {
     const used = extractToolsUsed(`await tools.call('plans:set-status', { id: 'P-1' });`, TOOLS);
     expect(used).toEqual(['plans:set-status']);

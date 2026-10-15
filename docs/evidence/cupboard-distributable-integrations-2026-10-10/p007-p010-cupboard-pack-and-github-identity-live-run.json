@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-010 + P-007 live: the GitHub card names the account a pasted token belongs to; the bug-triage trigger pack installed from the Cupboard (no project given) shows a set-up section on Settings -> Integrations, and picking a project materializes it",
+  "framework": "shell",
+  "command": [
+    "scripts/verify-tauri-headless.sh",
+    "--",
+    "bash",
+    ".papercusp/scratch/p010-fixtures/headless-p010.sh",
+    "(launched by .papercusp/scratch/p010-fixtures/launch-p010.sh with VERIFY_TAURI_ISOLATED_DB=1, a private PAPERCUSP_HOME, VERIFY_TAURI_SOURCE_REF pinned and the acceptance inputs checked byte-identical to that ref; github.com/Papercusp/* is rewritten to the local libs/papercusp checkout through a git url rewrite scoped to the isolated operator's private XDG_CONFIG_HOME)"
+  ],
+  "startedAt": "2026-10-11T16:02:57.607Z",
+  "finishedAt": "2026-10-11T16:13:14.124Z",
+  "exitCode": 0,
+  "summary": "verify-tauri-headless run 20261011T160255Z-3987961 verdict=pass (passed=3 failed=0 blocked=0 skipped=0), isolated DB and private home, superproject 4f99124770, libs/papercusp e5a9a2c1db. This re-run supersedes run 20261011T143419Z-2603096: P-008 step 3 edited apps/operator/app/settings/integrations/page.tsx after that run, so its evidence went source-stale. Boot attempt 1 booted. P-010: gh reports the machine's token belongs to papercupai; the GitHub Issues card did not name papercupai before connecting; the token typed into the masked personal access token field saved and appears nowhere in the page; after a reload the card's connected source reads 'papercupai ● connected', i.e. the account GitHub itself reports for the token (D-016 identity endpoint); the token was then deleted (200). P-007: no bug-triage section existed before install; POST /api/cupboard/install-plugin with no harness installed @papercupai/bug-triage 0.1.0 (review then accept, both 200; review shows a trigger pack with one binding); without an app update Settings -> Integrations then showed the bug-triage section 'Version 0.1.0 · installed, not set up yet' with its description; after a throwaway project p007-verify was added, the section's project picker listed it, Set up was pressed, and the section changed to 'runs plans in p007-verify' with its Channels to watch and File bugs in inputs rendered (D-017).",
+  "assertions": [
+    { "id": "github-identity-independent-of-app", "passed": true, "evidence": "GH_LOGIN papercupai (gh api user for the machine's own token, outside the app)." },
+    { "id": "github-card-unconnected-before", "passed": true, "evidence": "LABEL_BEFORE_CONNECT includesLogin=false." },
+    { "id": "github-token-saved-not-echoed", "passed": true, "evidence": "TOKEN_IN_PAGE false (document.body.innerHTML does not contain the token)." },
+    { "id": "github-card-names-account", "passed": true, "evidence": "ACCOUNT_LABEL 'papercupai● connected Not synced yet · 0 tickets mirrored · 0 admitted as work …' after a reload." },
+    { "id": "github-token-cleanup", "passed": true, "evidence": "TOKEN_CLEANUP deleteStatus=200." },
+    { "id": "pack-section-absent-before-install", "passed": true, "evidence": "PACK_SECTION_BEFORE_INSTALL count=0." },
+    { "id": "pack-installs-through-cupboard-route-without-harness", "passed": true, "evidence": "INSTALL_BUG_TRIAGE first=200 second=200; review name @papercupai/bug-triage version 0.1.0 with a triggerPack block." },
+    { "id": "pack-section-appears-without-app-update", "passed": true, "evidence": "PACK_SECTION '@papercupai/bug-triage Version 0.1.0 · installed, not set up yet Not set up Trigger pack: reads messages in the chat channels you pick, decides which ones report a bug, and files each bug as a ticket in the project you pick…'; PACK_STATE_AFTER_INSTALL not-set-up." },
+    { "id": "set-up-lists-projects", "passed": true, "evidence": "ADD_PROJECT status=200 (p007-verify in the isolated home); PACK_SETUP_CLICK PICKED p007-verify options=1." },
+    { "id": "set-up-materializes-pack", "passed": true, "evidence": "PACK_SECTION_AFTER_SETUP '@papercupai/bug-triage Version 0.1.0 · runs plans in p007-verify Needs setup Channels to watch (required) Only messages posted in these channels are triaged…'." }
+  ],
+  "plan": "cupboard-distributable-integrations-2026-10-10",
+  "items": ["P-010", "P-007"],
+  "specs": ["SPEC-R-2-P-010", "SPEC-R-1-P-007"],
+  "evidencePlane": "live",
+  "harnessRun": {
+    "harness": "verify-tauri-headless",
+    "runId": "20261011T160255Z-3987961",
+    "verdict": "pass",
+    "evidenceDir": "~/.local/state/verification-harness/verify-tauri-headless/20261011T160255Z-3987961",
+    "superprojectRef": "4f991247708f12d9edc56af763f1f8fd94219773",
+    "packageRef": "libs/papercusp@e5a9a2c1dbbd51eb36b38ecb6a6b249c7b9ce6b3",
+    "supersedesRunId": "20261011T143419Z-2603096",
+    "testedInputs": [
+      "apps/operator/app/settings/integrations/page.tsx",
+      "packages/operator-core/lib/integrations/provider-identity.ts",
+      "packages/operator-core/lib/integrations/provider-credentials.ts",
+      "packages/operator-core/lib/integrations/connection-lifecycle.ts",
+      "packages/operator-core/lib/external-triggers/source-store.ts",
+      "libs/papercusp/plugins/github-issues/papercusp.json",
+      "libs/papercusp/plugins/bug-triage/papercusp.json",
+      "packages/operator-core/lib/cupboard/trigger-pack-lifecycle.ts",
+      "packages/operator-core/lib/cupboard/install-io.ts",
+      "packages/operator-core/lib/integrations/ticket-integrations.ts",
+      "packages/operator-core/lib/endpoint-route/routes/user/ticket-integrations.ts",
+      "apps/operator/app/settings/integrations/ticket-integrations-client.ts",
+      "apps/operator/app/settings/integrations/TriggerPackSection.tsx"
+    ]
+  },
+  "limitations": [
+    "The packages are served from the local libs/papercusp checkout through a git url rewrite scoped to the isolated operator; public Cupboard listings for slack and bug-triage are P-011 (D-014).",
+    "The GitHub identity is shown for a pasted personal access token (D-016). The OAuth consent path on github.com is not exercised headless.",
+    "The live chat-message -> ticket path (SPEC-R-4-P-007, AUTO-BAR-R-4-P-006/P-007) is not exercised here; it is the P-008 live drill (D-010).",
+    "The harness's result.json leaves finishedAt empty; finishedAt above is the write time of the launcher's EXIT=0 line.",
+    "The fixture's screenshot calls printed paths under /tmp/su0dd6-p010-headless/; the DOM text assertions above are the evidence."
+  ]
+}

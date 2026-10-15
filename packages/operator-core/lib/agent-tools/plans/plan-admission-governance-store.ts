@@ -8,6 +8,13 @@
  * for the certificate source to fail closed on.
  */
 import type { Sql } from 'postgres';
+import { canonicalJson } from '../../authority/authority-rpc-envelope';
+import { getHivePolicy } from '../../hive-policy-store';
+import { getHiveBySlug } from '../../hive-store';
+import { canonicalizeHivePolicy, hivePolicySignedBytes } from '../../hive-policy-schema';
+import { verifyEd25519 } from '../../identity/ed25519';
+import { authenticateGovernanceEvent, governanceAuthorityHash, validGovernanceSigningAuthority,
+  type GovernanceSigningAuthority } from './governance-authentication';
 import { resolveFederatedPotScope } from '../../federated-pot-scope';
 import {
   listHiveSettings,
@@ -33,7 +40,8 @@ import {
   type LedgerSource,
 } from '../../cupboard/ledger-chain';
 
-export const PLAN_ADMISSION_GOVERNANCE_EVENT_PREFIX = 'governanceEvent.v1.';
+import { PLAN_ADMISSION_GOVERNANCE_EVENT_PREFIX } from './governance-federation';
+export { PLAN_ADMISSION_GOVERNANCE_EVENT_PREFIX } from './governance-federation';
 /** Hash-chain stream per pot (agent-economy-flywheel P-040); suffix is the federated pot id. */
 export const PLAN_ADMISSION_GOVERNANCE_STREAM_PREFIX = 'governance.plan-admission:';
 
@@ -56,8 +64,77 @@ export interface PlanAdmissionGovernanceStoreDeps {
   readonly listSettings?: ListSettings;
   readonly setSetting?: SetSetting;
   readonly resolvePotScope?: ResolvePotScope;
+  readonly resolveAuthority?: typeof resolvePlanAdmissionGovernanceAuthority;
+  readonly nowMs?: () => number;
   /** Where the hash-chain links are witnessed; defaults to Postgres. `null` skips witnessing. */
   readonly ledgerChain?: LedgerChainLinkStore | null;
+}
+
+/** Reuse the owner-signed HivePolicy; neither an event nor its claimed signer supplies trust. */
+export async function resolvePlanAdmissionGovernanceAuthority(
+  input: { workspaceId: string; potHomeSlug: string; potId: string },
+  sql?: Sql,
+  deps: {
+    getPolicy?: typeof getHivePolicy;
+    getOwner?: (workspaceId: string, potHomeSlug: string, sql?: Sql) => Promise<{ pubkeyBase64: string } | null>;
+  } = {},
+): Promise<GovernanceSigningAuthority | null> {
+  const [signed, owner] = await Promise.all([
+    (deps.getPolicy ?? getHivePolicy)(input.workspaceId, input.potId, sql),
+    (deps.getOwner ?? getHiveBySlug)(input.workspaceId, input.potHomeSlug, sql),
+  ]);
+  if (!signed || !owner || signed.workspaceId !== input.workspaceId ||
+      signed.potHomeSlug !== input.potId || signed.ownerPubkey !== owner.pubkeyBase64 ||
+      !Number.isSafeInteger(signed.policyVersion) || signed.policyVersion < 1 ||
+      signed.policyJson !== canonicalizeHivePolicy(signed.policy)) return null;
+  const signature = Buffer.from(signed.signature, 'base64');
+  if (signature.length !== 64 || signature.toString('base64') !== signed.signature ||
+      !verifyEd25519(hivePolicySignedBytes({ workspaceId: input.workspaceId,
+        potHomeSlug: input.potId, policyVersion: signed.policyVersion,
+        canonicalPolicyJson: signed.policyJson }), owner.pubkeyBase64, signature)) return null;
+  const governance = signed.policy.governance;
+  if (!governance?.planAdmission || !governance.signingAuthority) return null;
+  const authority: GovernanceSigningAuthority = { potId: input.potId,
+    policy: governance.planAdmission, members: governance.signingAuthority.members,
+    delegations: governance.signingAuthority.delegations };
+  return validGovernanceSigningAuthority(authority) ? authority : null;
+}
+
+/** Authenticate a whole unordered snapshot again at its consumption boundary. */
+export function authenticatePlanAdmissionGovernanceEvents(
+  events: readonly FederatedGovernanceEvent[], authority: GovernanceSigningAuthority | null,
+  nowMs: number,
+): { events: FederatedGovernanceEvent[]; integrityErrors: string[] } {
+  if (!authority) return { events: [], integrityErrors: ['missing verified governance signing authority'] };
+  const rounds = new Map<string, GovernanceRound>();
+  const integrityErrors: string[] = [];
+  for (const event of events) {
+    if (!isFederatedGovernanceEvent(event)) {
+      integrityErrors.push('invalid governance event');
+      continue;
+    }
+    if (event.body.kind !== 'round-open') continue;
+    const prior = rounds.get(event.roundId);
+    if (prior && canonicalJson(prior) !== canonicalJson(event.body.round))
+      integrityErrors.push(`conflicting round definition: ${event.roundId}`);
+    rounds.set(event.roundId, event.body.round);
+  }
+  const authenticated: FederatedGovernanceEvent[] = [];
+  const seen = new Map<string, string>();
+  for (const event of events) {
+    if (!isFederatedGovernanceEvent(event)) continue;
+    const result = authenticateGovernanceEvent({ authority, event, round: rounds.get(event.roundId), nowMs });
+    if (!result.ok) {
+      integrityErrors.push(`${event.eventId}: ${result.code}`);
+      continue;
+    }
+    const digest = planAdmissionGovernanceEventDigest(event);
+    const prior = seen.get(event.eventId);
+    if (prior && prior !== digest) integrityErrors.push(`immutable event conflict: ${event.eventId}`);
+    if (!prior) authenticated.push(event);
+    seen.set(event.eventId, digest);
+  }
+  return { events: authenticated, integrityErrors };
 }
 
 export interface PlanAdmissionGovernanceSnapshot {
@@ -184,7 +261,7 @@ export function planAdmissionGovernanceEventSettingKey(event: FederatedGovernanc
 }
 
 export async function readPlanAdmissionGovernanceSnapshot(
-  input: { workspaceId: string; potHomeSlug: string },
+  input: { workspaceId: string; potHomeSlug: string; planRevisionHash?: string; policyVersion?: number },
   sql?: Sql,
   deps: PlanAdmissionGovernanceStoreDeps = {},
 ): Promise<PlanAdmissionGovernanceSnapshot> {
@@ -228,6 +305,19 @@ export async function readPlanAdmissionGovernanceSnapshot(
     events.push(event);
   }
 
+  if (events.length > 0) {
+    const authority = await (deps.resolveAuthority ?? resolvePlanAdmissionGovernanceAuthority)({ ...input, potId }, sql);
+    // History remains immutable. Superseded policy/key epochs cannot authorize
+    // the requested revision, and must not poison a freshly re-ratified round.
+    const selectedRoundIds = input.planRevisionHash === undefined ? null : new Set(events.flatMap(event =>
+      event.body.kind === 'round-open' && event.body.round.planRevisionHash === input.planRevisionHash &&
+      event.body.round.policyVersion === input.policyVersion && authority &&
+      event.body.round.authorityHash === governanceAuthorityHash(authority) ? [event.roundId] : []));
+    const selected = selectedRoundIds ? events.filter(event => selectedRoundIds.has(event.roundId)) : events;
+    const authenticated = authenticatePlanAdmissionGovernanceEvents(selected, authority, (deps.nowMs ?? Date.now)());
+    return { potId, events: authenticated.events, conflictedRoundIds,
+      integrityErrors: [...integrityErrors, ...authenticated.integrityErrors] };
+  }
   return { potId, events, conflictedRoundIds, integrityErrors };
 }
 
@@ -280,6 +370,19 @@ export async function appendPlanAdmissionGovernanceEvent(
       input.potHomeSlug,
       sql,
     )).find((row) => row.settingKey === settingKey);
+  }
+  const authority = await (deps.resolveAuthority ?? resolvePlanAdmissionGovernanceAuthority)(
+    { workspaceId: input.workspaceId, potHomeSlug: input.potHomeSlug, potId: snapshot.potId }, sql);
+  const authentication = authenticatePlanAdmissionGovernanceEvents(
+    [...snapshot.events, input.event], authority, (deps.nowMs ?? Date.now)());
+  if (authentication.integrityErrors.length > 0) {
+    throw new Error(`appendPlanAdmissionGovernanceEvent: authentication refused: ${authentication.integrityErrors.join('; ')}`);
+  }
+  if (input.event.body.kind === 'vote') {
+    const ballotId = input.event.body.vote.eventId;
+    const finalizations = snapshot.events.filter(event => event.roundId === input.event.roundId && event.body.kind === 'finalize');
+    if (finalizations.some(event => event.body.kind === 'finalize' && !event.body.certificate.voteEventIds.includes(ballotId)))
+      throw new Error('appendPlanAdmissionGovernanceEvent: vote is outside the finalized ballot set');
   }
   record ??= await (deps.setSetting ?? setHiveSetting)(
     {

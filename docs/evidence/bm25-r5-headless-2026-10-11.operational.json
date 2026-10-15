@@ -1,0 +1,61 @@
+{
+ "schemaVersion": 1,
+ "kind": "operational-test-evidence",
+ "framework": "shell",
+ "name": "BM25 on a fresh headless desktop with an isolated database (R-5)",
+ "command": [
+  "env",
+  "VERIFY_TAURI_ISOLATED_DB=1",
+  "scripts/verify-tauri-headless.sh",
+  "--",
+  "<BM25 health read + ranked search>"
+ ],
+ "exitCode": 0,
+ "startedAt": "2026-10-11T10:41:25.991Z",
+ "finishedAt": "2026-10-11T10:41:25.991Z",
+ "summary": "embedded PostgreSQL 18.4 on x, preload pg_textsearch, pg_textsearch 1.5.1, all checks True",
+ "assertions": [
+  {
+   "id": "r5-embeddedPg18_4",
+   "passed": true,
+   "evidence": "checks.embeddedPg18_4 = True in docs/evidence/bm25-r5-headless-2026-10-11.json"
+  },
+  {
+   "id": "r5-preloaded",
+   "passed": true,
+   "evidence": "checks.preloaded = True in docs/evidence/bm25-r5-headless-2026-10-11.json"
+  },
+  {
+   "id": "r5-extensionInstalled",
+   "passed": true,
+   "evidence": "checks.extensionInstalled = True in docs/evidence/bm25-r5-headless-2026-10-11.json"
+  },
+  {
+   "id": "r5-bm25IndexesAllValid",
+   "passed": true,
+   "evidence": "checks.bm25IndexesAllValid = True in docs/evidence/bm25-r5-headless-2026-10-11.json"
+  },
+  {
+   "id": "r5-healthProbeOk",
+   "passed": true,
+   "evidence": "checks.healthProbeOk = True in docs/evidence/bm25-r5-headless-2026-10-11.json"
+  },
+  {
+   "id": "r5-searchServedByBm25Index",
+   "passed": true,
+   "evidence": "checks.searchServedByBm25Index = True in docs/evidence/bm25-r5-headless-2026-10-11.json"
+  },
+  {
+   "id": "r5-overall-pass",
+   "passed": true,
+   "evidence": "pass = True; 16 BM25 indexes; PostgreSQL 18.4 on x86_64-pc-linux-gnu, "
+  }
+ ],
+ "provenance": {
+  "sourceReport": "docs/evidence/bm25-r5-headless-2026-10-11.json",
+  "sourceReportSha256": "973573b13feaf1d861b9b405c8bcf8e6c263a9fa576dddd5b7b5082fb2377100",
+  "evidencePlane": "live",
+  "plan": "bm25-lexical-search-evoke-adoption-2026-10-10",
+  "commandRepresentation": "the headless verify run that produced the source transcript; startedAt/finishedAt are its recorded capture time"
+ }
+}

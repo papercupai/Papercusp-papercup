@@ -16,4 +16,8 @@ IOSchedulingPriority=7
 # default 90s). 300s bounds a pathological run without cutting a legitimate
 # graceful-shutdown attempt short.
 TimeoutStartSec=300
-ExecStart=%h/papercupai-workspace/papercusp/bin/reap-stale-testvms.sh
+# Run from an immutable per-invocation snapshot: a shared-tree edit mid-run cannot
+# corrupt it (papercusp-script-snapshot.sh; census in systemd-script-snapshot.test.ts).
+# The snapshot lives under $TMPDIR, so the script's repo root is pinned here.
+Environment=PAPERCUSP_REPO_ROOT=%h/papercupai-workspace/papercusp
+ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/bin/reap-stale-testvms.sh

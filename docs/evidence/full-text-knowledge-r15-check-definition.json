@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-check-definition",
+  "name": "R-15 exact shipped runtime and automatic report delivery",
+  "runner": "packages/operator-core/lib/agent-tools/testing/record-run.ts#executeOperationalRun",
+  "target": {
+    "planSlug": "full-text-knowledge-retrieval-2026-10-08",
+    "workItemId": "WI-10007679",
+    "specId": "AUTO-BAR-R-15-P-008",
+    "specRevision": 3,
+    "specFingerprint": "be07b1260f9e385ac79fbe5b5170b519546568fdb93df7866880a3e9e439eeff",
+    "evidencePlane": "deployed"
+  },
+  "runtime": {
+    "origin": "http://127.0.0.1:3070",
+    "units": ["hono-host:3070"],
+    "identityRequired": [
+      "elected release owner's promoted SHA and deploy receipt",
+      "serving tree SHA equals the exact deployed artifact SHA",
+      "runtime-vintage kernel process identity matches the live process",
+      "the same runtime environment is measured before and after execution"
+    ],
+    "enabledFlags": ["papercusp-memory-corpus-recall", "papercusp-reports-library"],
+    "registeredSources": ["session_turn", "work_item", "plan", "doc", "report"]
+  },
+  "report": {
+    "kind": "synthetic-owner-private-acceptance-report",
+    "id": "rpt_0c9b3725-9938-4114-821d-bc17fa206a72",
+    "path": "/reports?sel=rpt_0c9b3725-9938-4114-821d-bc17fa206a72",
+    "bodySha256": "fb4a9859542dca3c8923ed259f34a0043e0b6efc79848a350749b0761cfbd7b8",
+    "query": "hemeritequeue boundary recovery: how should I acknowledge the repaired queue?",
+    "finding": "retain the snapshot before acknowledging the repaired queue",
+    "visibility": "owner"
+  },
+  "nativeJourney": {
+    "adapter": "apps/operator/scripts/hooks/inject/adapters/codex.mjs",
+    "dispatch": "apps/operator/scripts/hooks/inject/core.mjs#runInjection",
+    "event": "UserPromptSubmit",
+    "endpoint": "/api/agent-mcp/turn-start-memory",
+    "requirements": [
+      "use the verified current session identity and normal registered authority",
+      "every native request reaches the exact deployed origin without fallback",
+      "retain the adapter's normal timeout and automatic memory settings",
+      "read the authorized report and verify its complete body hash",
+      "native additionalContext contains the report ID, matching finding and citation",
+      "persisted turn-start corpus receipt records the delivered report source",
+      "retain source, runtime, flag, request, response and receipt evidence"
+    ]
+  },
+  "assertionIds": [
+    "elected-release-receipts-resolve",
+    "exact-shipped-runtime-identity",
+    "default-enabled-knowledge-configuration",
+    "authorized-report-body-readback",
+    "native-codex-automatic-report-delivery",
+    "persisted-native-corpus-receipt"
+  ],
+  "receiptCorrelation": {
+    "table": "harness_shared.memory_recall_stats",
+    "workspaceId": "papercusp-workspace",
+    "sessionId": "verified current coord:whoami ownerId",
+    "surface": "turn-start",
+    "client": "codex",
+    "queryHash": "describeRecallQuery from packages/operator-core/lib/memory/recall-stats.ts",
+    "freshness": "id greater than the pre-request cursor and created_at at or after the native request",
+    "completedSourceReceipt": "admission.corpus.stages contains report source status ran with positive rows",
+    "delivery": "admission.corpus.admitted is positive; native additionalContext independently contains the exact report ID, finding and reports:get citation",
+    "wait": "bounded wait for the existing asynchronous receipt writer; do not replay the native request to obtain its receipt"
+  },
+  "defaultConfigurationOracle": {
+    "source": "libs/flags/src/types.ts at the exact shipped source revision",
+    "required": "Both enabledFlags are registered, absent from DARK_FLAGS and resolve true through flags:get on the exact deployed origin. All registeredSources have execution or explicit non-run receipts from that same native request."
+  },
+  "executionState": "not-run",
+  "notes": "Expected data only. This fixture is not an execution verdict, promotion receipt, deployed proof or owner reading acknowledgement. Final shipment reporting belongs to KT-SHIPPED-DELIVERY."
+}

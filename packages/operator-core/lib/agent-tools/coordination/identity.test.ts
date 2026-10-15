@@ -69,6 +69,30 @@ describe('resolveAgentIdentity — cup:spawn child (THE UMBILICAL)', () => {
     expect(id.source).toBe('principal');
   });
 
+  it('keeps a trusted spawn role principal on its accepted session owner', () => {
+    const ownerId = 'su-2342c61e-5b1d-4f29-9016-d0692cc241ae';
+    const principal = { kind: 'harness', slug: 'system:researcher', workspaceId: 'ws-1',
+      authMethod: 'spawn-url', trust: 'trusted' };
+    const id = resolveAgentIdentity({ principal, uiClientId: ownerId, sigVerifiedSpawn: true });
+    // The applied adv-session receipt, claim and coord sender must share one id.
+    expect(id.ownerId).toBe(ownerId);
+    expect(id.workspaceId).toBe('ws-1');
+    expect(id.source).toBe('principal');
+    expect(principal).toEqual({ kind: 'harness', slug: 'system:researcher', workspaceId: 'ws-1',
+      authMethod: 'spawn-url', trust: 'trusted' });
+  });
+
+  it.each([
+    { authMethod: 'bearer', trust: 'trusted' },
+    { authMethod: 'spawn-url', trust: 'untrusted' },
+  ])('does not adopt an unverified bearer client (%s)', (proof) => {
+    const ownerId = 'su-2342c61e-5b1d-4f29-9016-d0692cc241ae';
+    const id = resolveAgentIdentity({ uiClientId: ownerId,
+      principal: { kind: 'harness', slug: 'system:researcher', workspaceId: 'ws-1', ...proof } });
+    expect(id.ownerId).toBe(`system:researcher/${ownerId}`);
+    expect(id.source).toBe('principal');
+  });
+
   it('still hard-errors when the ctx carries NO attributable identity at all', () => {
     expect(() => resolveAgentIdentity({})).toThrow(/cannot be attributed/);
     // An empty-string client is not an identity either.

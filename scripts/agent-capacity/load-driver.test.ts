@@ -1,11 +1,32 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { encodeChunk, type RecordedExchange } from './record-proxy';
 import type { Corpus, SessionMeta } from './record-session';
-import { achievedConcurrency, drive, replayPath, replayTimeoutMs, selectSessions, sessionFor, summarize, toolOutcomesDiverge, versionMismatches } from './load-driver';
+import { achievedConcurrency, checkParkedPlan, drive, nodeMajor, nodeMismatches, parseAgentEnv, replayPath, replayTimeoutMs, selectSessions, sessionFor, summarize, summarizeParked, toolOutcomesDiverge, versionMismatches, type ParkRelease } from './load-driver';
+
+describe('parseAgentEnv', () => {
+  it('absent or blank is no extra env', () => {
+    expect(parseAgentEnv(undefined)).toBeUndefined();
+    expect(parseAgentEnv('  ')).toBeUndefined();
+  });
+
+  it('parses KEY=VALUE pairs separated by ";", keeping "=" inside a value and empty values', () => {
+    expect(parseAgentEnv('PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE=papercusp-tsc-service;A=b=c;EMPTY=;')).toEqual({
+      PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE: 'papercusp-tsc-service',
+      A: 'b=c',
+      EMPTY: '',
+    });
+  });
+
+  it('refuses a pair with no key or a key that is not a variable name', () => {
+    expect(() => parseAgentEnv('NOEQUALS')).toThrow(/expected KEY=VALUE/);
+    expect(() => parseAgentEnv('=v')).toThrow(/expected KEY=VALUE/);
+    expect(() => parseAgentEnv('1BAD=v')).toThrow(/expected KEY=VALUE/);
+  });
+});
 
 // WI-10004672: the corpus profile limits gave each recording a different slowdown tolerance
 // (286s recorded against 300s timed out under ANY slowdown), so the limit is relative.
@@ -148,6 +169,25 @@ describe('selection and scheduling', () => {
   });
 });
 
+// WI-10004683: recordings made on the tower's Node 25 (no bundled corepack) diverged on a Node 24
+// VM, where `command -v corepack` succeeds. The driver now compares node majors as well.
+describe('nodeMismatches', () => {
+  it('parses a node major and rejects what does not parse', () => {
+    expect(nodeMajor('v25.9.0')).toBe(25);
+    expect(nodeMajor('24.18.1\n')).toBe(24);
+    expect(nodeMajor('missing')).toBeNull();
+    expect(nodeMajor(null)).toBeNull();
+  });
+
+  it('flags a recorded major the replay host does not match, and counts sessions it cannot check', () => {
+    const sessions = [{ env: { path: null, node: 'v25.9.0' } }, { env: { path: null, node: 'v25.8.1' } }, {}];
+    expect(nodeMismatches(sessions, 'v25.1.0')).toEqual({ have: 'v25.1.0', want: [], unchecked: 1 });
+    expect(nodeMismatches(sessions, 'v24.18.1')).toEqual({ have: 'v24.18.1', want: ['v25.9.0', 'v25.8.1'], unchecked: 1 });
+    expect(nodeMismatches(sessions, 'missing').want).toEqual(['v25.9.0', 'v25.8.1']);
+    expect(nodeMismatches([{}], 'v24.18.1')).toEqual({ have: 'v24.18.1', want: [], unchecked: 1 });
+  });
+});
+
 // cgroup accounting and event-loop hygiene: session-process.test.ts (shared with record-session).
 
 describe('drive (end to end with a fake CLI)', () => {
@@ -191,7 +231,7 @@ const call = async (n) => {
   const out = [await call(2), await call(4)];
   if (process.env.FAKE_EXTRA === '1') out.push(await call(6));
   for (const l of results) console.log(l);
-  console.log(JSON.stringify({ prompt, out, cfg: process.env.CLAUDE_CONFIG_DIR ? 'set' : 'unset' }));
+  console.log(JSON.stringify({ prompt, out, cfg: process.env.CLAUDE_CONFIG_DIR ? 'set' : 'unset', cwd: process.cwd(), agentVar: process.env.CAPDRV_AGENT_PROBE ?? null }));
   process.exit(out.every(([s]) => s === 200) ? 0 : 1);
 })();
 `;
@@ -255,11 +295,45 @@ const call = async (n) => {
       expect(printed.prompt).toBe('Do the thing.\n\nSUFFIX');
       expect(printed.cfg).toBe('set');
       expect(printed.out.map((o: [number, string]) => o[1])).toEqual(['data: reply-0\n\n', 'data: reply-1\n\n']);
+      // The default private workdir, and no agent env unless one is passed.
+      // (Already deleted by teardown, so compare paths, not realpaths.)
+      expect(printed.cwd).toContain(path.join('cache', 'replay-work', 'T', 's'));
+      expect(printed.agentVar).toBeNull();
     }
     expect(readFileSync(path.join(root, 'out', 'agents.jsonl'), 'utf8').trim().split('\n')).toHaveLength(3);
     expect(readFileSync(path.join(root, 'out', 'served.jsonl'), 'utf8').trim().split('\n')).toHaveLength(6);
     expect(() => readFileSync(path.join(root, 'cache', 'replay-work', 'T', 's0-i0', 'README'))).toThrow();
     expect(summarize(runs)).toMatchObject({ runs: 3, clean: 3, failed: 0, diverged: 0, served: { exact: 6, exhausted: 0 } });
+  });
+
+  it('shared workdir: every session runs in the prepared checkout itself and gets the agent env', async () => {
+    const prepared = path.join(root, 'cache', 'prepared', 'r');
+    const runs = await drive({
+      cacheDir: path.join(root, 'cache'),
+      agents: 2,
+      sessions: [meta({ id: 'claude-s1' })],
+      corpus,
+      corpusDir: path.join(root, 'corpus'),
+      outDir: path.join(root, 'out'),
+      runId: 'W',
+      speed: 0,
+      staggerMs: 0,
+      durationSec: 0,
+      isolation: 'none',
+      keepWork: false,
+      workdir: 'shared',
+      agentEnv: { CAPDRV_AGENT_PROBE: 'on' },
+    });
+    expect(runs).toHaveLength(2);
+    for (const r of runs) {
+      expect(r).toMatchObject({ exitCode: 0, timedOut: false, diverged: false });
+      const printed = JSON.parse(readFileSync(path.join(root, 'out', 'sessions', `${r.instance}.cli.jsonl`), 'utf8'));
+      expect(realpathSync(printed.cwd)).toBe(realpathSync(prepared));
+      expect(printed.agentVar).toBe('on');
+    }
+    // Teardown leaves the shared tree in place and never makes a per-session copy.
+    expect(readFileSync(path.join(prepared, 'README'), 'utf8')).toBe('repo');
+    expect(existsSync(path.join(root, 'cache', 'replay-work', 'W'))).toBe(false);
   });
 
   it('sweep runs every selected session exactly once across the slots', async () => {
@@ -366,5 +440,63 @@ const call = async (n) => {
       });
       expect(summarize([r])).toMatchObject({ clean: 0, diverged: 1, toolDiverged: 1 });
     });
+  });
+
+  it('parked (P-015): extra claude sessions idle on a held reply until one shared release, then finish intact, reported apart', async () => {
+    let release: ParkRelease | null = null;
+    const runs = await drive({
+      cacheDir: path.join(root, 'cache'),
+      agents: 1,
+      sessions: [meta({ id: 'claude-s1' })],
+      corpus,
+      corpusDir: path.join(root, 'corpus'),
+      outDir: path.join(root, 'out'),
+      runId: 'T',
+      speed: 0,
+      staggerMs: 0,
+      durationSec: 0,
+      isolation: 'none',
+      keepWork: false,
+      parked: { agents: 2, atRequest: 2, releaseAtSec: 1 },
+      onRelease: (e) => (release = e),
+    });
+    const active = runs.filter((r) => !r.parked);
+    const parked = runs.filter((r) => r.parked);
+    expect(active.map((r) => r.instance)).toEqual(['T-s0-i0']);
+    expect(parked.map((r) => r.instance).sort()).toEqual(['T-p0-i0', 'T-p1-i0']);
+    for (const r of runs) expect(r).toMatchObject({ exitCode: 0, timedOut: false, diverged: false, served: { exact: 2, exhausted: 0 } });
+    // The active session finished before the release (1 s after the start); each parked one sat on
+    // its 2nd reply and finished only after it, with the reply intact.
+    expect(release).toMatchObject({ held: 2, parked: 2 });
+    const releasedAt = Date.parse((release as unknown as ParkRelease).at);
+    const endOf = (r: (typeof runs)[number]) => Date.parse(r.startedAt) + r.wallMs;
+    expect(endOf(active[0])).toBeLessThan(releasedAt);
+    for (const r of parked) {
+      expect(endOf(r)).toBeGreaterThanOrEqual(releasedAt - 5);
+      const printed = JSON.parse(readFileSync(path.join(root, 'out', 'sessions', `${r.instance}.cli.jsonl`), 'utf8'));
+      expect(printed.out.map((o: [number, string]) => o[1])).toEqual(['data: reply-0\n\n', 'data: reply-1\n\n']);
+    }
+    const served = readFileSync(path.join(root, 'out', 'served.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { instance: string; seq: number; heldMs?: number });
+    const held = served.filter((s) => s.heldMs !== undefined);
+    expect(held.map((s) => [s.instance, s.seq]).sort()).toEqual([['T-p0-i0', 1], ['T-p1-i0', 1]]);
+    for (const s of held) expect(s.heldMs).toBeGreaterThanOrEqual(500);
+    expect(readFileSync(path.join(root, 'out', 'parked.jsonl'), 'utf8')).toContain('"event":"release"');
+    expect(summarizeParked(runs, release)).toMatchObject({ runs: 2, heldAtRelease: 2, failed: 0 });
+    expect(summarize(active)).toMatchObject({ runs: 1, clean: 1, failed: 0 });
+  });
+});
+
+describe('checkParkedPlan (P-015)', () => {
+  it('returns the claude sessions to park, or none without a plan', () => {
+    const s = [meta({ id: 'claude-a' }), meta({ id: 'codex-b', cli: 'codex' })];
+    expect(checkParkedPlan(undefined, s, 600)).toEqual([]);
+    expect(checkParkedPlan({ agents: 0, atRequest: 4, releaseAtSec: 1 }, s, 600)).toEqual([]);
+    expect(checkParkedPlan({ agents: 3, atRequest: 4, releaseAtSec: 360 }, s, 600).map((m) => m.sessionId)).toEqual(['claude-a']);
+  });
+
+  it('refuses a plan that cannot run: no claude session, a bad hold point, or a release after the step ends', () => {
+    expect(() => checkParkedPlan({ agents: 2, atRequest: 4, releaseAtSec: 60 }, [meta({ id: 'codex-b', cli: 'codex' })], 600)).toThrow(/claude/);
+    expect(() => checkParkedPlan({ agents: 2, atRequest: 0, releaseAtSec: 60 }, [meta({ id: 'claude-a' })], 600)).toThrow(/park-at-request/);
+    expect(() => checkParkedPlan({ agents: 2, atRequest: 4, releaseAtSec: 600 }, [meta({ id: 'claude-a' })], 600)).toThrow(/inside --duration-sec/);
   });
 });

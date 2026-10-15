@@ -30,6 +30,8 @@ import createTestnet from 'hyperdht/testnet.js';
 import Hyperswarm from 'hyperswarm';
 import type Corestore from 'corestore';
 import { bootHarnessSubstrate, type BootedHarnessHandle } from '../boot';
+import type { HiveRekeyBootDeps } from '../hive-epoch-boot-deps';
+import { stubHivePolicyReadsForTest } from './_hive-policy-read-stubs';
 import type { RemoteLog } from '../peer-log';
 import { type HyperswarmLike } from '../swarm';
 import type { OpEnvelope } from '../op-envelope-types';
@@ -101,6 +103,24 @@ export const WORK_ITEM_CLAIMS_DDL = `
 
 // ── async resource teardown (newest-first), drained by each file's afterEach. ──
 export const cleanups: Array<() => void | Promise<void>> = [];
+
+let rigHivePolicyStubInstalled = false;
+/** Hermetic merge-pass hive-policy + roster reads for the current test (WI-6554700010008561).
+ *  mergeOnePass reads both through the PROCESS-GLOBAL org pool, which an integration run must
+ *  never open (live :5432 — WI-10006585 refuses it, the pass fails, and fail-on-console reds the
+ *  test). Installed ONCE per test at the BOTTOM of the newest-first `cleanups` stack, so it is
+ *  restored only after EVERY peer has closed (a teardown can still run a pass). A file that
+ *  already calls stubHivePolicyReadsForSuite() is unaffected: re-spying returns the same spy. */
+export function ensureRigHivePolicyReadStub(): void {
+  if (rigHivePolicyStubInstalled) return;
+  rigHivePolicyStubInstalled = true;
+  const restore = stubHivePolicyReadsForTest();
+  cleanups.unshift(() => {
+    restore();
+    rigHivePolicyStubInstalled = false;
+  });
+}
+
 export async function rigAfterEach(): Promise<void> {
   while (cleanups.length) {
     try {
@@ -109,6 +129,7 @@ export async function rigAfterEach(): Promise<void> {
       /* a thrown assertion must never leak a swarm/dir/db/DHT node */
     }
   }
+  rigHivePolicyStubInstalled = false;
   _resetCacheForTests();
   _resetBootHistoryForTests();
   __resetRemotePeersCacheForTests();
@@ -231,7 +252,15 @@ export async function bootPresencePeer(opts: {
    *  no_replicator / frozen grace window so a test doesn't need minutes of
    *  real wall-clock time to observe an alarm. Omitted = the 3-minute default. */
   replicationStallGraceMs?: number;
+  /** Re-key deps for this boot. Omitted = `null`: the rig federates presence /
+   *  coord rows, not epoch keys, and the default-ON POT_REKEY build resolves the
+   *  Hive scope through the PROCESS-GLOBAL org-admin pool, which an integration
+   *  run must never open (it points at live :5432 — WI-10006585 fails it closed,
+   *  so every rig consumer without its own db-org mock went red; WI-6554700010008561).
+   *  A caller that genuinely exercises re-key passes its own deps here. */
+  rekeyDepsOverride?: HiveRekeyBootDeps | null;
 }): Promise<PresencePeer> {
+  ensureRigHivePolicyReadStub();
   const root = makeWorkspaceRoot(opts.rootPrefix);
   let handle: BootedHarnessHandle | undefined;
   let apply: ((op: OpEnvelope) => Promise<boolean>) | undefined;
@@ -242,8 +271,10 @@ export async function bootPresencePeer(opts: {
     swarmBinding: BINDING,
     swarmOverride: makeSwarm(opts.testnetBootstrap),
     verifyBindingOverride: async (_pk, _login, userId) => opts.verify(userId),
-    applyOverride: (op) => {
-      apply ??= buildPeerApply(opts.sql, handle!.ownLog.keyHex, opts.extraProjections ?? []);
+    // ctx, not `handle`: a merge pass can run before bootHarnessSubstrate returns
+    // (a rejoining peer already holds admitted logs) — WI-6554700010008561.
+    applyOverride: (op, ctx) => {
+      apply ??= buildPeerApply(opts.sql, ctx.ownLogKeyHex, opts.extraProjections ?? []);
       return apply(op);
     },
     mergePollMs: 0,
@@ -251,6 +282,7 @@ export async function bootPresencePeer(opts: {
     reverifyIntervalMs: 0,
     loadRevokedOverride: async () => new Set(),
     announceIdentityOverride: opts.identity.override,
+    rekeyDepsOverride: opts.rekeyDepsOverride === undefined ? null : opts.rekeyDepsOverride,
     ...(opts.openRemoteLogOverride ? { openRemoteLogOverride: opts.openRemoteLogOverride } : {}),
     ...(opts.replicationStallGraceMs !== undefined
       ? { replicationStallGraceMs: opts.replicationStallGraceMs }

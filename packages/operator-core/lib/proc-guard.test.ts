@@ -16,7 +16,9 @@
  * embeds the pattern) and assert the guard is immune to it while still catching
  * a genuinely unrelated external process.
  */
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -34,6 +36,7 @@ import {
   parseCmdline,
   parsePpid,
   parseCgroupPath,
+  assertManagedTestCgroup,
   parseUsageUsec,
   computeCoresBusy,
   sampleCgroupBusy,
@@ -229,6 +232,29 @@ describe('parseArgv and getOperationalArgv', () => {
       '--model=sonnet:high',
     ];
     expect(getOperationalArgv(argv)).toEqual(['node', '/repo/.papercusp/bin/psu', '--model=sonnet:high']);
+  });
+
+  it('removes inline shell command text from process-name matching', () => {
+    const argv = [
+      '/usr/bin/bash',
+      '-lc',
+      "ptool work_items:checkpoint --json - <<'JSON'\\n{\\\"checkpoint\\\":\\\"green-checkpoint\\\"}\\nJSON",
+    ];
+    expect(getOperationalArgv(argv)).toEqual(['/usr/bin/bash', '-lc']);
+  });
+
+  it('redacts inline interpreter source and structured payloads even in verbose output', () => {
+    const shellPayload = "ptool work_items:checkpoint --json - <<'JSON'\\nsecret green-checkpoint\\nJSON";
+    const shellArgv = ['bash', '-lc', shellPayload];
+    const verbose = formatProcessCmdline(shellArgv, { verbose: true });
+    expect(verbose).toBe('bash -lc [inline command redacted]');
+    expect(verbose).not.toContain('secret');
+    expect(formatProcessCmdline([
+      'node',
+      '/repo/scripts/ptool.mjs',
+      'work_items:checkpoint',
+      '{"checkpoint":"private payload"}',
+    ], { verbose: true })).toBe('node /repo/scripts/ptool.mjs work_items:checkpoint [payload redacted]');
   });
 });
 
@@ -507,6 +533,25 @@ describe('matchExternalProcesses — the EI-18666147162251862 regression', () =>
     expect(matchExternalProcesses(PATTERN, { procRoot: fixtureRoot, selfPid: 100 }).map((m) => m.pid)).toEqual([777]);
   });
 
+  it('does not report a shell wrapper whose command text only contains a ptool payload match', () => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'proc-guard-fixture-'));
+    fixtureProc(fixtureRoot, 1, 0, ['/sbin/init']);
+    fixtureProc(fixtureRoot, 100, 1, ['node', 'scripts/proc-guard.mjs', 'check', 'green-checkpoint']);
+    fixtureProc(fixtureRoot, 777, 1, [
+      'bash',
+      '-lc',
+      "ptool work_items:checkpoint --json - <<'JSON'\\n{\\\"checkpoint\\\":\\\"green-checkpoint\\\"}\\nJSON",
+    ]);
+
+    const report = matchExternalProcessesDetailed('green-checkpoint', {
+      procRoot: fixtureRoot,
+      selfPid: 100,
+    });
+    expect(report.matches).toEqual([]);
+    expect(report.argvTextOnly.map((row) => row.pid)).toEqual([777]);
+    expect(formatProcessCmdline(report.fullMatches[0].argv, { verbose: true })).not.toContain('green-checkpoint');
+  });
+
   // EI-20303820187580514, the live repro: `check green-checkpoint` reported 4
   // matches while exactly ONE green-checkpoint process existed. The other three
   // were peers' hook/tool processes whose JSON argv named the gate because those
@@ -686,6 +731,95 @@ describe('listProcesses', () => {
  * wrapper; `c*` ticks are credited only on wait(), which vitest never does for
  * its own workers). The cgroup cannot be escaped, so it is the instrument.
  */
+describe('managed test cgroup containment', () => {
+  const env = {
+    PAPERCUSP_TEST_RUN_GROUP: 'owned-calibration-123',
+    PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '2000',
+    PAPERCUSP_EXPECTED_TEST_CGROUP: '/user.slice/owned.service',
+  };
+  const options = { env, now: 1000, pid: 123, readFile: () => '0::/user.slice/owned.service\n' };
+
+  it('accepts actual membership with both managed lifetime markers', () => {
+    expect(assertManagedTestCgroup(options)).toEqual({
+      pid: 123, cgroupPath: env.PAPERCUSP_EXPECTED_TEST_CGROUP,
+      runGroup: env.PAPERCUSP_TEST_RUN_GROUP, deadlineEpochMs: 2000,
+    });
+  });
+
+  it.each([
+    { PAPERCUSP_TEST_RUN_GROUP: undefined },
+    { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: undefined },
+    { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '1000' },
+    { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: 'Infinity' },
+    { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '1e9' },
+    { PAPERCUSP_EXPECTED_TEST_CGROUP: '/' },
+    { PAPERCUSP_EXPECTED_TEST_CGROUP: '/user.slice/../sibling.scope' },
+  ])('refuses invalid context %j before a worker can run', (override) => {
+    expect(() => assertManagedTestCgroup({ ...options, env: { ...env, ...override } }))
+      .toThrow('PAPERCUSP_TEST_CGROUP_CONTAINMENT');
+  });
+
+  it('rejects a sibling scope and unknown or unreadable membership', () => {
+    for (const readFile of [
+      () => '0::/user.slice/papercusp-test-escaped.scope\n',
+      () => '12:pids:/user.slice/owned.service\n',
+      () => { throw new Error('unreadable'); },
+    ]) expect(() => assertManagedTestCgroup({ ...options, readFile })).toThrow('PAPERCUSP_TEST_CGROUP_CONTAINMENT');
+  });
+
+  it.skipIf(process.platform !== 'linux')('checks a real Node fork and refuses a mismatched parent', () => {
+    const cgroupPath = parseCgroupPath(readFileSync('/proc/self/cgroup', 'utf8'));
+    expect(cgroupPath).toBeTruthy();
+    expect(cgroupPath).not.toBe('/');
+    const module = fileURLToPath(new URL('../../../scripts/proc-guard.mjs', import.meta.url));
+    const command = `import { assertManagedTestCgroup } from ${JSON.stringify(module)}; console.log(JSON.stringify(assertManagedTestCgroup()));`;
+    const childEnv = {
+      ...process.env, ...env,
+      PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + 60_000),
+      PAPERCUSP_EXPECTED_TEST_CGROUP: cgroupPath!,
+    };
+    const contained = spawnSync(process.execPath, ['--input-type=module', '-e', command], { env: childEnv, encoding: 'utf8' });
+    expect(contained.status, contained.stderr).toBe(0);
+    expect(JSON.parse(contained.stdout)).toMatchObject({ cgroupPath, runGroup: env.PAPERCUSP_TEST_RUN_GROUP });
+    const escaped = spawnSync(process.execPath, ['--input-type=module', '-e', command], {
+      env: { ...childEnv, PAPERCUSP_EXPECTED_TEST_CGROUP: cgroupPath + '-sibling' }, encoding: 'utf8',
+    });
+    expect(escaped.status).not.toBe(0);
+    expect(escaped.stderr).toContain('escaped');
+  });
+
+  it.skipIf(process.platform !== 'linux')('keeps the preload lifetime independent of runner-policy fixtures and mutable environment', () => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'managed-cgroup-preload-'));
+    const cgroupPath = parseCgroupPath(readFileSync('/proc/self/cgroup', 'utf8'));
+    const evidencePath = join(fixtureRoot, 'observations.jsonl');
+    const preload = fileURLToPath(new URL('../../../scripts/lib/managed-test-cgroup-preload.mjs', import.meta.url));
+    const context = { runGroup: 'real-calibration', deadlineEpochMs: Date.now() + 60_000, cgroupPath, evidencePath };
+    const childEnv = {
+      ...process.env,
+      PAPERCUSP_TEST_CGROUP_CONTEXT: JSON.stringify(context),
+      PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '1',
+      PAPERCUSP_TEST_RUN_GROUP: '',
+      PAPERCUSP_EXPECTED_TEST_CGROUP: '/fixture-controlled',
+    };
+    const command = "process.env.PAPERCUSP_TEST_CGROUP_CONTEXT = '{}'; console.log('fixture reached');";
+    const run = (pins: typeof context) => spawnSync(process.execPath, ['--import', preload, '-e', command], {
+      env: { ...childEnv, PAPERCUSP_TEST_CGROUP_CONTEXT: JSON.stringify(pins) }, encoding: 'utf8',
+    });
+    const contained = run(context);
+    expect(contained.status, contained.stderr).toBe(0);
+    expect(contained.stdout).toContain('fixture reached');
+    const observations = readFileSync(evidencePath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(observations.map(row => row.phase)).toEqual(['preload', 'exit']);
+    for (const row of observations) expect(row).toMatchObject({ cgroupPath, runGroup: context.runGroup, deadlineEpochMs: context.deadlineEpochMs });
+    for (const pins of [{ ...context, deadlineEpochMs: 1 }, { ...context, cgroupPath: cgroupPath + '-sibling' }]) {
+      const refused = run(pins);
+      expect(refused.status).not.toBe(0);
+      expect(refused.stdout).not.toContain('fixture reached');
+      expect(refused.stderr).toContain('PAPERCUSP_TEST_CGROUP_CONTAINMENT');
+    }
+  });
+});
+
 describe('proc-guard --busy: cgroup CPU sampling', () => {
   describe('parseCgroupPath', () => {
     it('extracts the cgroup-v2 path', () => {

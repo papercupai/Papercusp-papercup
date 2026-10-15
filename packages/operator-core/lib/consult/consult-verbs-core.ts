@@ -48,6 +48,8 @@ import {
   type CascadeEventKind,
 } from './cascade-core';
 import { consultResponderVerbMenu } from './responder-verb-menu';
+import { isDecisionReviewRouting, validateDecisionReviewStance, type DecisionReviewStance } from './decision-review';
+import { appendParkerResponse } from './park-adapters';
 
 export const RESPONDER_REPLY_KINDS = ['answer', 'clarifying_question', 'new_fact'] as const;
 export const REQUESTER_REPLY_KINDS = ['question', 'new_fact'] as const;
@@ -171,6 +173,12 @@ export interface ConsultVerbDeps {
     closedBy: string;
     reason: string;
   }) => Promise<{ id: string }>;
+  /** consult-backed-parking P-006 (R-6/R-16): run the park resolver after ANY reply on
+   * a decision-review consult committed (an objection wakes the parked agent; an
+   * adopt/rebut settles it). Prod binds runParkTriggersForConsult with the prod park
+   * seams. Called fail-soft — a resolver fault never fails the committed reply, and
+   * the expiry sweep re-runs the resolver for any park it left due. */
+  onDecisionReviewReply?: (input: { workspaceId: string; conversationId: string; now: string }) => Promise<void>;
   now?: () => Date;
 }
 
@@ -187,7 +195,10 @@ export type ConsultVerbError =
   | { error: 'reason_required' }
   | { error: 'post_failed'; cause: string }
   | { error: 'graduate_unavailable'; hint: string }
-  | { error: 'graduate_failed'; cause: string };
+  | { error: 'graduate_failed'; cause: string }
+  | { error: 'not_the_requester'; hint: string }
+  | { error: 'stance_required' | 'invalid_stance' | 'objection_basis_required'; hint: string }
+  | { error: 'park_response_not_applicable' | 'invalid_park_response'; hint: string };
 
 const POSTABLE_STATES = new Set(['awaiting_responder', 'active']);
 
@@ -353,6 +364,18 @@ function remainingFromSnapshot(routing: unknown, excludeOwnerId: string): Array<
     .map((c) => ({ ownerId: c.ownerId, score: c.score, liveness: c.liveness ?? 'unknown' }));
 }
 
+/** A changed-facts follow-up may continue an undelivered finite menu. It does
+ * not reopen closed consultations, rerank expertise or replay tried sources. */
+function isUndeliveredRequesterFact(
+  row: ConsultStateRow,
+  reply?: { authorId: string; kind: ConsultReplyKind },
+): boolean {
+  return row.closed_at === null && row.responder_id === null &&
+    (row.state === 'no_qualified_responder' || row.state === 'no_launchable_responder') &&
+    reply?.authorId === row.requester_id && reply.kind === 'new_fact' &&
+    selectionFromRouting(row.routing).length > 0;
+}
+
 function gateCommon(
   row: ConsultStateRow | null,
   manualReply?: { authorId: string; kind: ConsultReplyKind },
@@ -364,7 +387,7 @@ function gateCommon(
     row.responder_id !== row.requester_id &&
     manualReply?.authorId === row.responder_id &&
     manualReply.kind === 'new_fact';
-  if (!POSTABLE_STATES.has(row.state) && !isManualNoQualifiedReply) {
+  if (!POSTABLE_STATES.has(row.state) && !isManualNoQualifiedReply && !isUndeliveredRequesterFact(row, manualReply)) {
     return {
       error: 'consult_not_open',
       state: row.state,
@@ -462,12 +485,22 @@ export interface ConsultReplyRequest {
   kind: ConsultReplyKind;
   body: string;
   evidence?: ConsultEvidenceRef[];
+  /** Decision-review consults only (consult-backed-parking P-004, R-4/R-15): the
+   * reviewer's stance. REQUIRED on every responder reply to a decision review;
+   * validated by validateDecisionReviewStance and stored on consult_post_meta.stance. */
+  stance?: unknown;
+  /** Decision-review consults only, from the REQUESTER (the parked agent; consult-backed-
+   * parking P-006, R-6/R-16): adopt the objection's alternative, or rebut it. Stored on
+   * consult_state.park_state.parkerResponses; the park resolver then settles the park. */
+  parkResponse?: { kind: 'adopt' | 'rebut'; text: string; objectionId?: string | null };
 }
 
 export interface ConsultReplyResult {
   ok: true;
   post_id: number;
   role: 'requester' | 'responder';
+  /** The validated stance stored with this post (decision-review responder replies only). */
+  stance?: DecisionReviewStance;
   state: string;
   exchanges_used: number;
   max_exchanges: number;
@@ -476,6 +509,8 @@ export interface ConsultReplyResult {
    * follow-up always attempts the wake; wakes_used stays a plain stat. */
   wake?: {
     attempted: boolean;
+    /** Legacy queue-count alias: a positive value means wake delivery was queued,
+     * not that the responder started a turn. */
     woke: number;
     /** Present after a zero-count wake attempt; records the confirmed-dead
      * check and the outcome of the CAS-guarded cascade. */
@@ -494,6 +529,7 @@ export interface ConsultReplyResult {
     advanced_to: string | null;
     exhausted: boolean;
     woke: number;
+    pending?: boolean;
     refilled?: boolean;
   };
   hint: string;
@@ -538,6 +574,7 @@ export async function consultReplyCore(
     };
   }
   const role: 'requester' | 'responder' = req.authorId === row.requester_id ? 'requester' : 'responder';
+  const resumesUndelivered = isUndeliveredRequesterFact(row, req);
 
   // Kind rules (D-001): the enum is the structural termination — untyped prose
   // ("ok thanks") has no valid kind and cannot enter the thread.
@@ -556,6 +593,34 @@ export async function consultReplyCore(
       error: 'evidence_required',
       hint: 'kind=answer requires evidence: [{ session_id, turn_idx, note? }] — cite the transcript turns the answer rests on (sessions:read resolves them).',
     };
+  }
+  // consult-backed-parking P-004 (R-4/R-15, D-003): a reviewer on a decision-review
+  // consult (a product-decision park) must declare support / object / no-view, and an
+  // objection must carry an alternative, hazard evidence or an owner-authority topic.
+  // Refused BEFORE the post so a stance-less reply never enters the thread.
+  let stance: DecisionReviewStance | undefined;
+  if (role === 'responder' && isDecisionReviewRouting(row.routing)) {
+    const checked = validateDecisionReviewStance(req.stance);
+    if (!checked.ok) return { error: checked.error, hint: checked.hint };
+    stance = checked.stance;
+  }
+  // consult-backed-parking P-006 (R-6/R-16): only the parked agent (the requester of a
+  // decision review) adopts or rebuts an objection. Refused before the post.
+  const isDecisionReview = isDecisionReviewRouting(row.routing);
+  if (req.parkResponse !== undefined) {
+    if (role !== 'requester' || !isDecisionReview) {
+      return {
+        error: 'park_response_not_applicable',
+        hint: 'parkResponse is accepted only from the requester (the parked agent) of a decision-review consult.',
+      };
+    }
+    const pr = req.parkResponse;
+    if ((pr.kind !== 'adopt' && pr.kind !== 'rebut') || typeof pr.text !== 'string' || !pr.text.trim()) {
+      return {
+        error: 'invalid_park_response',
+        hint: "parkResponse needs kind 'adopt' | 'rebut' and a non-empty text (the adopted plan, or the rebuttal's reasoning).",
+      };
+    }
   }
   // A cascade-advancing PERSPECTIVE reply is the CURRENT responder's post
   // (any kind, D-005). It is exempt from the exchange cap and does not debit
@@ -594,13 +659,26 @@ export async function consultReplyCore(
   if ('error' in posted) return { error: 'post_failed', cause: posted.error };
   const postId = posted.post.id;
 
-  await sql`
-    INSERT INTO harness_shared.consult_post_meta
-      (workspace_id, post_id, conversation_id, author_id, kind, evidence)
-    VALUES
-      (${req.workspaceId}, ${postId}, ${req.conversationId}, ${req.authorId},
-       ${req.kind}, ${req.evidence ? sql.json(req.evidence as never) : null})
-  `;
+  // The stance column (migration 1482) is written ONLY when a stance exists, so an
+  // ordinary consult insert keeps the pre-1482 column list (fixtures that hand-roll
+  // consult_post_meta without it stay valid).
+  if (stance) {
+    await sql`
+      INSERT INTO harness_shared.consult_post_meta
+        (workspace_id, post_id, conversation_id, author_id, kind, evidence, stance)
+      VALUES
+        (${req.workspaceId}, ${postId}, ${req.conversationId}, ${req.authorId},
+         ${req.kind}, ${req.evidence ? sql.json(req.evidence as never) : null}, ${sql.json(stance as never)})
+    `;
+  } else {
+    await sql`
+      INSERT INTO harness_shared.consult_post_meta
+        (workspace_id, post_id, conversation_id, author_id, kind, evidence)
+      VALUES
+        (${req.workspaceId}, ${postId}, ${req.conversationId}, ${req.authorId},
+         ${req.kind}, ${req.evidence ? sql.json(req.evidence as never) : null})
+    `;
+  }
 
   const nextState =
     role === 'responder' && (row.state === 'awaiting_responder' || row.state === 'no_qualified_responder')
@@ -609,12 +687,30 @@ export async function consultReplyCore(
   const exchangesUsed = row.exchanges_used + (isPerspective ? 0 : 1);
   await sql`
     UPDATE harness_shared.consult_state
-       SET state = ${nextState},
-           exchanges_used = ${exchangesUsed},
+       SET state = CASE WHEN ${resumesUndelivered}::boolean THEN state ELSE ${nextState} END,
+           exchanges_used = CASE WHEN ${resumesUndelivered}::boolean THEN exchanges_used + 1 ELSE ${exchangesUsed} END,
            wakes_used = wakes_used + ${willWake ? 1 : 0},
            updated_at = ${now}::timestamptz
      WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${req.conversationId}
   `;
+
+  // consult-backed-parking P-006: the parker's adopt/rebut is data, recorded on the
+  // committed reply (not fail-soft); the resolver run after it is a side effect (fail-soft).
+  if (req.parkResponse) {
+    await appendParkerResponse(sql, req.workspaceId, req.conversationId, {
+      kind: req.parkResponse.kind,
+      at: now,
+      text: req.parkResponse.text,
+      objectionId: req.parkResponse.objectionId ?? null,
+    });
+  }
+  if (isDecisionReview && deps.onDecisionReviewReply) {
+    try {
+      await deps.onDecisionReviewReply({ workspaceId: req.workspaceId, conversationId: req.conversationId, now });
+    } catch (e) {
+      console.warn(`[consult:reply] park resolver failed for ${req.conversationId}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
 
   // The park-key emit (D-005/D-008): every responder post signals the requester
   // — a hard-blocked requester parked on the latched key wakes NOW.
@@ -662,7 +758,7 @@ export async function consultReplyCore(
     | NonNullable<ConsultReplyResult['wake']>['reroute']
     | undefined = willWake && woke === 0 ? { status: 'not_confirmed_dead', to: null } : undefined;
   const confirmedDeadFollowup = role === 'requester' && responderConfirmedDead;
-  if (isPerspective || confirmedDeadFollowup) {
+  if (isPerspective || confirmedDeadFollowup || resumesUndelivered) {
     const adv = await advanceCascade(
       {
         workspaceId: req.workspaceId,
@@ -676,7 +772,7 @@ export async function consultReplyCore(
         // Safe narrowing: isPerspective ⇒ role 'responder', and the kind gate
         // above already restricted req.kind to RESPONDER_REPLY_KINDS — the
         // requester-only 'question' cannot reach this branch.
-        event: isPerspective
+        event: isPerspective || resumesUndelivered
           ? makeDigestEntry(req.authorId, req.kind as CascadeEventKind, now, req.body)
           : makeDigestEntry(
               answeringOwnerId ?? row.responder_id ?? req.authorId,
@@ -690,6 +786,7 @@ export async function consultReplyCore(
             ? 'awaiting_responder'
             : 'active',
         nowIso: now,
+        ...(resumesUndelivered ? { expectedState: row.state } : {}),
       },
       sql,
       deps.dispatch,
@@ -702,28 +799,31 @@ export async function consultReplyCore(
         advanced_to: adv.next?.ownerId ?? null,
         exhausted: adv.exhausted,
         woke: adv.woke,
+        ...(adv.pending ? { pending: true } : {}),
         ...(adv.refilled ? { refilled: true } : {}),
       };
-      if (confirmedDeadFollowup) {
+      if (confirmedDeadFollowup || resumesUndelivered) {
         requesterReroute = {
           status: adv.advanced ? 'advanced' : adv.exhausted ? 'exhausted' : 'unchanged',
           to: adv.advanced ? adv.next?.ownerId ?? null : null,
         };
       }
-    } else if (confirmedDeadFollowup) {
+    } else if (confirmedDeadFollowup || resumesUndelivered) {
       requesterReroute = { status: 'raced', to: null };
     }
   }
   const cascadeNote = cascade
     ? cascade.advanced_to
-      ? ` Cascade advanced (D-005): an answering session was dispatched from ${cascade.advanced_to}'s transcript with the feedback so far (D-002 — forked/converted, never woken).${cascade.refilled ? ' (min-ANSWERS refill, WI-39861: the menu was extended once — answers collected < selection.min.)' : ''}`
+      ? cascade.pending
+        ? ` Cascade advanced: the next launch from ${cascade.advanced_to}'s transcript is durably queued; no answering session is claimed yet. Recovery continues server-side; do not repeat your post.`
+        : ` Cascade advanced (D-005): an answering session was dispatched from ${cascade.advanced_to}'s transcript with the feedback so far (D-002 — forked/converted, never woken).${cascade.refilled ? ' (min-ANSWERS refill, WI-39861: the menu was extended once — answers collected < selection.min.)' : ''}`
       : ' Cascade menu exhausted — you were the last selectee.'
     : '';
   const requesterRerouteHint =
     requesterReroute?.status === 'advanced'
       ? `; the consult advanced to reviewer ${requesterReroute.to}`
       : requesterReroute?.status === 'exhausted'
-        ? '; the confirmed-ended responder had no remaining selected reviewer'
+        ? '; no remaining reviewer could be dispatched from the saved cascade'
         : requesterReroute?.status === 'raced'
           ? '; another operation advanced the cascade first'
           : requesterReroute?.status === 'unchanged'
@@ -738,13 +838,13 @@ export async function consultReplyCore(
         : req.kind === 'answer'
           ? `Answer posted (exchange ${exchangesUsed}/${row.max_exchanges}); the requester was signaled via ${parkKey(req.conversationId)}. When the thread is settled, close it: consult:close { outcome: 'answered' }.${cascadeNote}`
           : `Posted (exchange ${exchangesUsed}/${row.max_exchanges}); the requester was signaled via ${parkKey(req.conversationId)}.${cascadeNote}`
-      : `Follow-up posted (exchange ${exchangesUsed}/${row.max_exchanges})${willWake ? `; responder ${woke > 0 ? 'woken' : responderConfirmedDead ? 'confirmed ended' : 'pinged'}` : ''}${requesterRerouteHint}.`;
+      : `Follow-up posted (exchange ${exchangesUsed}/${row.max_exchanges})${willWake ? `; responder ${woke > 0 ? 'wake queued; turn pickup not confirmed' : responderConfirmedDead ? 'confirmed ended' : 'pinged; turn pickup not confirmed'}` : ''}${requesterRerouteHint}.`;
 
   return {
     ok: true,
     post_id: postId,
     role,
-    state: nextState,
+    state: resumesUndelivered ? (await readState(sql, req.workspaceId, req.conversationId))?.state ?? nextState : nextState,
     exchanges_used: exchangesUsed,
     max_exchanges: row.max_exchanges,
     ...(role === 'requester'
@@ -752,11 +852,12 @@ export async function consultReplyCore(
           wake: {
             attempted: willWake,
             woke,
-            ...(willWake && woke === 0 && requesterReroute ? { reroute: requesterReroute } : {}),
+            ...((willWake && woke === 0 || resumesUndelivered) && requesterReroute ? { reroute: requesterReroute } : {}),
           },
         }
       : {}),
     ...(cascade ? { cascade } : {}),
+    ...(stance ? { stance } : {}),
     hint,
   };
 }
@@ -784,6 +885,7 @@ export interface ConsultDeclineResult {
     advanced_to: string | null;
     exhausted: boolean;
     woke: number;
+    pending?: boolean;
     refilled?: boolean;
   };
   /** Route-time candidate refs — decliner excluded, route-time-dead filtered
@@ -881,10 +983,13 @@ export async function consultDeclineCore(
         advanced_to: adv.next?.ownerId ?? null,
         exhausted: false,
         woke: adv.woke,
+        ...(adv.pending ? { pending: true } : {}),
         ...(adv.refilled ? { refilled: true } : {}),
       },
       remaining_candidates: remaining,
-      hint: `Declined. Cascade advanced (D-005): an answering session was dispatched from ${adv.next?.ownerId ?? 'the next selectee'}'s transcript with the feedback so far — the consult stays open.${adv.refilled ? ' (min-ANSWERS refill, WI-39861: the menu was extended once — answers collected < selection.min.)' : ''}`,
+      hint: adv.pending
+        ? `Declined. The next launch from ${adv.next?.ownerId ?? 'the next selectee'}'s transcript is durably queued; no answering session is claimed yet. The consult stays open and recovery continues server-side; do not repeat the decline.`
+        : `Declined. Cascade advanced (D-005): an answering session was dispatched from ${adv.next?.ownerId ?? 'the next selectee'}'s transcript with the feedback so far — the consult stays open.${adv.refilled ? ' (min-ANSWERS refill, WI-39861: the menu was extended once — answers collected < selection.min.)' : ''}`,
     };
   }
 
@@ -904,7 +1009,10 @@ export async function consultDeclineCore(
                      answered_by: [...new Set(declineAnswerEvents.map((e) => e.ownerId))],
                    }
                  : {}),
-             } as never)},
+             } as never)}::jsonb
+                       || CASE WHEN (outcome -> 'reconciliation') IS NOT NULL
+                               THEN jsonb_build_object('reconciliation', outcome -> 'reconciliation')
+                               ELSE '{}'::jsonb END,
              closed_at = ${now}::timestamptz,
              updated_at = ${now}::timestamptz
        WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${req.conversationId}
@@ -1084,7 +1192,10 @@ export async function consultCloseCore(
     await tx`
       UPDATE harness_shared.consult_state
          SET state = ${state},
-             outcome = ${tx.json(outcome as never)},
+             outcome = ${tx.json(outcome as never)}::jsonb
+                       || CASE WHEN (outcome -> 'reconciliation') IS NOT NULL
+                               THEN jsonb_build_object('reconciliation', outcome -> 'reconciliation')
+                               ELSE '{}'::jsonb END,
              closed_at = ${now}::timestamptz,
              updated_at = ${now}::timestamptz
        WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${req.conversationId}
@@ -1127,5 +1238,55 @@ export async function consultCloseCore(
         : state === 'graduated'
           ? `Graduated (D-004): the consult outgrew its bounds — shared work item ${graduatedWorkItemId} carries it forward and both participants are subscribed. The consult takes no further posts.`
           : `Closed as can't-help — an honest terminal outcome (D-003), not a failure. The requester proceeds on their own judgment.`,
+  };
+}
+
+// Historical follow-through values retained for reading existing consult outcomes.
+export const CONSULT_RECONCILIATION_DISPOSITIONS = ['confirmed', 'rescoped', 'reversed', 'moot'] as const;
+export type ConsultReconciliationDisposition = (typeof CONSULT_RECONCILIATION_DISPOSITIONS)[number];
+
+// ── plans:start override linkage ─────────────────────────────────────────────
+// EI-23764501791910357 slice 3b (WI-10005177). `plans:start`'s consult override
+// (`consulted` + `consult_reason`) is free text; `consult_id` makes the consult the
+// caller proceeded on a STRUCTURED reference. This resolves + validates it — never
+// writes — so the result/ledger can name the consultation that informed the plan.
+
+export interface ConsultRequestedRefRequest {
+  workspaceId: string;
+  requesterId: string;
+  /** Full conversation id or a unique prefix (same resolution as the consult verbs). */
+  conversationRef: string;
+}
+
+export interface ConsultRequestedRefResult {
+  ok: true;
+  conversation_id: string;
+  consult_state: string;
+  latency_contract: string;
+}
+
+export async function consultResolveRequestedConsult(
+  req: ConsultRequestedRefRequest,
+  deps: Pick<ConsultVerbDeps, 'getSql'>,
+): Promise<ConsultRequestedRefResult | ConsultVerbError> {
+  const sql = deps.getSql();
+  const normalized = await normalizeConversationRef(sql, {
+    workspaceId: req.workspaceId,
+    conversationId: req.conversationRef,
+  });
+  if ('error' in normalized) return normalized;
+  const row = await readState(sql, req.workspaceId, normalized.req.conversationId);
+  if (!row) return { error: 'not_a_consult' };
+  if (row.requester_id !== req.requesterId) {
+    return {
+      error: 'not_the_requester',
+      hint: `consult_id must name a consult YOU requested; ${row.conversation_id} was requested by ${row.requester_id}.`,
+    };
+  }
+  return {
+    ok: true,
+    conversation_id: row.conversation_id,
+    consult_state: row.state,
+    latency_contract: row.latency_contract,
   };
 }

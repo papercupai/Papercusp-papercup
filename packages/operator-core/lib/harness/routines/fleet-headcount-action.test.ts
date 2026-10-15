@@ -11,6 +11,7 @@ import {
   resolveProductiveCapacityFloor,
   resolveFleetHeadcountLaunchRole,
   resolveFleetHeadcountProfile,
+  resolveGovernorMemberLaunchProfile,
   supersedeLegacyHeadcountTransaction,
 } from './fleet-headcount-action';
 
@@ -128,6 +129,23 @@ describe('fleet headcount governor guards (WI-2479)', () => {
       contextSize: 'trimmed',
       compactionLimit: 825_000,
       brief: 'drain bugs',
+    });
+  });
+
+  describe('resolveGovernorMemberLaunchProfile (WI-10008195)', () => {
+    it('takes the agent from the goal profile together with its model, so a codex model never launches as claude', () => {
+      const profile = resolveGovernorMemberLaunchProfile(
+        { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' },
+        { agent: 'claude', model: undefined, effort: undefined, account: undefined },
+      );
+      expect(profile).toEqual({ agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' });
+    });
+
+    it('falls back to the fleet config field by field when the goal profile omits a key', () => {
+      expect(resolveGovernorMemberLaunchProfile(
+        {},
+        { agent: 'claude', model: 'sonnet', effort: 'high', account: undefined },
+      )).toEqual({ agent: 'claude', model: 'sonnet', effort: 'high', account: 'default' });
     });
   });
 

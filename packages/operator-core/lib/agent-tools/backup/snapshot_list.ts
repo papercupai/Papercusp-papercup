@@ -6,7 +6,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 export default defineTool({
   name: 'backup:snapshot_list',
   profile: 'engineer',
-  description: 'List recent kopia snapshots for the active workspace, plus any backup session currently holding schema locks.',
+  description: 'List recent kopia snapshots for the active workspace, plus backup sessions holding granted relation locks.',
   capability: 'backup:read',
   guidance: {
     when: `List backup snapshots — point-in-time captures of the workspace's PG + filesystem state.`,
@@ -15,7 +15,7 @@ export default defineTool({
       'backup:snapshot_create (create a new snapshot)',
       'backup:restore (apply a snapshot from the list)',
     ],
-    chaining: `snapshots[] covers only THIS workspace's kopia-hook receipts in harness_shared.backup_snapshots. It cannot see the independent host-level pg_dump cron (EI-22064935119941678), so an empty snapshots[] is NOT an all-clear. Check liveBackupSessions[] too — it lists ANY currently-active pg_dump (host OR workspace) that can hold schema-blocking locks right now, regardless of receipt state.`,
+    chaining: `snapshots[] covers only THIS workspace's kopia-hook receipts in harness_shared.backup_snapshots. It cannot see the independent host-level pg_dump cron (EI-22064935119941678), so an empty snapshots[] is NOT an all-clear. Check liveBackupSessions[] too — it lists host or workspace backup sessions holding a granted relation AccessShareLock right now, regardless of receipt state. An idle session without that lock is not reported as a schema-lock holder.`,
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

@@ -40,7 +40,8 @@
  * `it.skip`, not a gap (see the rationale at that test).
  */
 
-import { afterEach, describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, onTestFailed } from 'vitest';
+import { channel } from 'node:diagnostics_channel';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -50,7 +51,8 @@ import {
   type BootHarnessOpts,
 } from '../boot';
 import { buildAnnounce, type SignedAnnounce } from '../announce';
-import { _resetCacheForTests } from '../corestore';
+import { CORESTORE_OPEN_CHANNEL, type CorestoreOpenObservation, _resetCacheForTests } from '../corestore';
+import { processMonotonicClock } from '../../../process-monotonic-clock';
 import { _clearRegistryForTests } from '../projection';
 import { listBootHistory, _resetBootHistoryForTests } from '../boot-history';
 
@@ -60,12 +62,46 @@ import { listBootHistory, _resetBootHistoryForTests } from '../boot-history';
  * Individual tests can still override this default through the existing seam.
  */
 function bootHarnessSubstrate(opts: BootHarnessOpts) {
-  return bootHarnessSubstrateImpl({ rekeyDepsOverride: null, ...opts });
+  return trackBootFixture(() => bootHarnessSubstrateImpl({ rekeyDepsOverride: null, ...opts }));
 }
 
 const cleanups: Array<() => void | Promise<void>> = [];
+const openStages: CorestoreOpenObservation[] = [];
+const openChannel = channel(CORESTORE_OPEN_CHANNEL);
+const recordOpenStage = (message: unknown) => {
+  const observation = message as CorestoreOpenObservation;
+  if (observation.workspaceRoot.includes('a003-')) openStages.push(observation);
+};
 
-afterEach(async () => {
+beforeEach(() => {
+  openStages.length = 0;
+  openChannel.subscribe(recordOpenStage);
+  onTestFailed(() => {
+    const last = openStages.at(-1);
+    console.info('A003_NATIVE_OPEN_DIAGNOSTIC', JSON.stringify({
+      stages: openStages,
+      pendingStageMs: last ? processMonotonicClock.now() - last.atMs : null,
+    }));
+  });
+});
+
+/** Own a pending boot before awaiting it: timed-out tests must not delete
+ * the native store directory while its open is still in flight. */
+function trackBootFixture<T extends { close(): Promise<void> }>(open: () => Promise<T>): Promise<T> {
+  const pending = open();
+  let tearingDown = false;
+  cleanups.push(async () => {
+    tearingDown = true;
+    const handle = await pending.catch(() => null);
+    await handle?.close();
+  });
+  return pending.then((handle) => {
+    if (tearingDown) throw new Error('substrate fixture boot completed after teardown started');
+    return handle;
+  });
+}
+
+async function drainFixtureCleanups() {
   while (cleanups.length) {
     try {
       await cleanups.pop()!();
@@ -73,6 +109,14 @@ afterEach(async () => {
       /* best-effort */
     }
   }
+}
+
+afterEach(async () => {
+  await drainFixtureCleanups();
+  if (openStages.length) {
+    console.info('A003_NATIVE_OPEN_RESULT', JSON.stringify(openStages));
+  }
+  openChannel.unsubscribe(recordOpenStage);
   _resetCacheForTests();
   _clearRegistryForTests();
   _resetBootHistoryForTests();
@@ -115,6 +159,37 @@ async function validAnnounce(
 }
 
 describe('A-003 receive-side slug-scope buffer (Brief I)', () => {
+  it('closes a late native boot before removing its directory and refuses its stale continuation', async () => {
+    const directory = tmpDir('a003-late-boot-');
+    const order: string[] = [];
+    cleanups.push(() => { order.push('remove'); rmSync(directory, { recursive: true, force: true }); });
+    let resolveBoot!: (handle: { close(): Promise<void> }) => void;
+    const pending = new Promise<{ close(): Promise<void> }>((resolve) => { resolveBoot = resolve; });
+    const boot = trackBootFixture(() => pending);
+    const staleContinuation = expect(boot).rejects.toThrow('after teardown started');
+    const teardown = drainFixtureCleanups();
+    expect(order).toEqual([]);
+    resolveBoot({ close: async () => { order.push('close'); } });
+    await teardown;
+    await staleContinuation;
+    expect(order).toEqual(['close', 'remove']);
+  });
+
+  it('drains a rejected native boot before directory removal', async () => {
+    const order: string[] = [];
+    cleanups.push(() => { order.push('remove'); });
+    let rejectBoot!: (reason: Error) => void;
+    const pending = new Promise<{ close(): Promise<void> }>((_resolve, reject) => { rejectBoot = reject; });
+    const boot = trackBootFixture(() => pending);
+    const failedBoot = expect(boot).rejects.toThrow('native open failed');
+    const teardown = drainFixtureCleanups();
+    expect(order).toEqual([]);
+    rejectBoot(new Error('native open failed'));
+    await teardown;
+    await failedBoot;
+    expect(order).toEqual(['remove']);
+  });
+
   it(
     "BUFFERS (reason 'pending'), does NOT conclusive-reject, an out-of-scope hive-home announce while the joiner's hive-home slug is UNRESOLVED",
     async () => {
@@ -131,7 +206,6 @@ describe('A-003 receive-side slug-scope buffer (Brief I)', () => {
         loadRevokedOverride: async () => new Set(), // avoid real PG
         verifyBindingOverride: async () => 'verified', // identity is valid — the only gate under test is slug-scope
       });
-      cleanups.push(() => handle.close());
 
       const logCoreKey = 'a1'.repeat(32);
       // The OWNER's hive-home log frame: origin slug = the hive-home harness,
@@ -197,7 +271,6 @@ describe('A-003 receive-side slug-scope buffer (Brief I)', () => {
         loadRevokedOverride: async () => new Set(),
         verifyBindingOverride: async () => 'verified',
       });
-      cleanups.push(() => handle.close());
 
       // A frame carrying the OWN slug is in-scope regardless of home → admitted.
       const ownKey = 'b2'.repeat(32);

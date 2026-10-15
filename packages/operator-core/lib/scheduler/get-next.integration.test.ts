@@ -32,7 +32,7 @@ import {
 } from '../../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
-  USER_TRUST_LIST_DDL,
+  applyClaimPathReadDeps,
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
 import type { ClaimSpec } from './claim-spec';
@@ -168,7 +168,7 @@ beforeAll(async () => {
     );
   `).simple();
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
-  await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(`
     ALTER TABLE harness_shared.work_items
@@ -254,7 +254,71 @@ describe('get_next — an unaffordable claim ladder fails LOUDLY, never as a dra
     // Teeth: the SAME spec, same rows, with a real budget DOES claim. So the rejection above was
     // about the budget and not about there being nothing to find — without this second half the
     // test would still pass if the filter simply matched no rows.
-    expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('F-affordable');
+    const phases: string[] = [];
+    expect((await getNextWorkItem(s, BEE, {
+      harness: H,
+      onResolutionStep: (step) => phases.push(step),
+    }))?.workItem.id).toBe('F-affordable');
+    expect(phases).toEqual([
+      'candidate-ready-flag-read',
+      'candidate-worker-binding-read',
+      'candidate-feature-tier-1',
+      'candidate-holder-interests',
+    ]);
+  });
+
+  it('returns the committed claim while optional holder-interest arming is still pending', async () => {
+    const id = 'F-holder-interest-arm-pending';
+    await seedFeature(id);
+
+    let markArmStarted!: () => void;
+    const armStarted = new Promise<void>((resolve) => {
+      markArmStarted = resolve;
+    });
+    type InterestWatch = Awaited<ReturnType<typeof wi.armWorkItemHolderInterests>>;
+    let finishArm!: (watch: InterestWatch) => void;
+    let armFinished = false;
+    const pendingArm = new Promise<InterestWatch>((resolve) => {
+      finishArm = (watch) => {
+        armFinished = true;
+        resolve(watch);
+      };
+    });
+    const armSpy = vi.spyOn(wi, 'armWorkItemHolderInterests').mockImplementation(() => {
+      markArmStarted();
+      return pendingArm;
+    });
+
+    let result: Awaited<ReturnType<typeof getNextWorkItem>> | undefined;
+    let error: unknown;
+    const pull = getNextWorkItem(DEFAULT_CLAIM_SPEC, BEE, { harness: H }).then(
+      (value) => {
+        result = value;
+      },
+      (caught) => {
+        error = caught;
+      },
+    );
+
+    try {
+      const first = await Promise.race([
+        armStarted.then(() => 'arm-started' as const),
+        pull.then(() => 'pull-returned' as const),
+      ]);
+      expect(first).toBe('arm-started');
+      // Let the claim's return continuation run, but keep the optional arm unresolved.
+      await Promise.resolve();
+      expect(armFinished).toBe(false);
+      expect(error).toBeUndefined();
+      expect(result?.workItem).toMatchObject({ id, assignee: BEE.assignee });
+      const rows = await db.sql<{ taken_by: string | null }[]>`
+        SELECT taken_by FROM harness_shared.harness_features_consolidated WHERE feature_id = ${id}`;
+      expect(rows[0]?.taken_by).toBe(BEE.assignee);
+    } finally {
+      finishArm(undefined);
+      await pull;
+      armSpy.mockRestore();
+    }
   });
 
   // COVERAGE NOTE — why this second, source-level test exists.
@@ -272,6 +336,105 @@ describe('get_next — an unaffordable claim ladder fails LOUDLY, never as a dra
     expect(src).toContain('boundedOrgTxn');
     // The pre-fix form: the claim UPDATE issued directly on the pool handle.
     expect(src).not.toMatch(/await sql<FeatureRowDb\[\]>`\s*\n?\s*UPDATE harness_shared\.harness_features_consolidated/);
+  });
+
+  it('bounds candidate authority reads before entering the feature ladder', async () => {
+    await seedFeature('F-candidate-bound');
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'candidate-bound',
+      revision: 1,
+      view: { filter: { field: 'id', op: '=', value: 'F-candidate-bound' } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    let releaseLock!: () => void;
+    let locked!: () => void;
+    const holding = db.sql.begin(async (tx) => {
+      await tx`LOCK TABLE harness_shared.adv_sessions IN ACCESS EXCLUSIVE MODE`;
+      locked();
+      await new Promise<void>((resolve) => { releaseLock = resolve; });
+    });
+    await new Promise<void>((resolve) => { locked = resolve; });
+    const steps: string[] = [];
+    try {
+      await expect(getNextWorkItem(s, BEE, {
+        harness: H,
+        onResolutionStep: (step) => steps.push(step),
+      })).rejects.toBeInstanceOf(OrgTxnTimeoutError);
+      expect(steps).toEqual(['candidate-ready-flag-read', 'candidate-worker-binding-read']);
+    } finally {
+      releaseLock();
+      await holding;
+    }
+    // The timeout was the authority read, not an empty spec view: after the lock
+    // clears the same spec and candidate must become claimable without widening.
+    expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('F-candidate-bound');
+  });
+
+  it('captures one bounded, PID-targeted candidate wait snapshot', async () => {
+    await seedFeature('F-candidate-wait-snapshot');
+    const claimBudgetMs = 2_000;
+    let releaseBlocker: (() => void) | undefined;
+    let signalBlockerReady!: () => void;
+    const blockerReady = new Promise<void>((resolve) => { signalBlockerReady = resolve; });
+    let blockerPid: number | undefined;
+    const holding = db.sql.begin(async (tx) => {
+      // Lock the relation the candidate UPDATE itself touches, after its target
+      // backend identity has been read on the same transaction.
+      await tx`LOCK TABLE harness_shared.harness_features_consolidated IN ACCESS EXCLUSIVE MODE`;
+      const [row] = await tx<Array<{ pid: number }>>`SELECT pg_backend_pid()::int AS pid`;
+      blockerPid = Number(row!.pid);
+      signalBlockerReady();
+      await new Promise<void>((resolve) => { releaseBlocker = resolve; });
+    });
+    await blockerReady;
+
+    const steps: string[] = [];
+    const outcome = await getNextWorkItem(DEFAULT_CLAIM_SPEC, BEE, {
+      harness: H,
+      client: db.sql,
+      claimBudgetMs,
+      captureCandidateWait: true,
+      onResolutionStep: (step, event) => {
+        if (event.phase === 'start') steps.push(step);
+      },
+    }).then(
+      (value) => ({ status: 'resolved' as const, value }),
+      (error: unknown) => ({ status: 'rejected' as const, error }),
+    );
+
+    try {
+      expect(steps).toContain('candidate-feature-tier-1');
+      expect(outcome.status).toBe('rejected');
+      if (outcome.status !== 'rejected' || !(outcome.error instanceof OrgTxnTimeoutError)) {
+        throw new Error('bounded candidate reproduction did not return OrgTxnTimeoutError');
+      }
+      expect(outcome.error.pgCode).toBe('57014');
+      expect(outcome.error.timeoutSource).toBe('pg');
+      expect(outcome.error.candidateWaitSnapshot).toMatchObject({
+        status: 'sampled',
+        waitEventType: 'Lock',
+        blockingPids: expect.arrayContaining([blockerPid]),
+      });
+      const snapshot = outcome.error.candidateWaitSnapshot;
+      expect(snapshot?.statementCapMs).toBeLessThanOrEqual(claimBudgetMs);
+      expect(snapshot?.sampleAfterMs).toBe(Math.floor((snapshot?.statementCapMs ?? 0) * 0.8));
+      expect(JSON.stringify(snapshot)).not.toContain('queryText');
+
+      if (process.env.SCHEDULER_TIMEOUT_REPRO === '1') {
+        console.info(`SCHEDULER_TIMEOUT_REPRO ${JSON.stringify({
+          phase: 'candidate-feature-tier-1',
+          timeoutSource: outcome.error.timeoutSource,
+          pgCode: outcome.error.pgCode,
+          candidateWaitSnapshot: snapshot,
+          blockerPid,
+          interpretation: 'one instantaneous sample; not evidence for the full statement duration',
+        })}`);
+      }
+    } finally {
+      releaseBlocker?.();
+      await holding;
+    }
   });
 });
 
@@ -742,6 +905,7 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
     setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
     await seedFeature('F-cross-family-feature', { featureOrder: 10, createdTs: 10 });
     await seedIssue('EI-cross-family-better', { featureOrder: 1, createdTs: 100 });
+    const phaseDurations: number[] = [];
     const s = spec({
       specVersion: '1.0',
       specId: 'cross-family-priority',
@@ -750,7 +914,20 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
       rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
     });
 
-    expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('EI-cross-family-better');
+    expect((await getNextWorkItem(s, BEE, {
+      harness: H,
+      onResolutionStep: (step, event) => {
+        if (step === 'candidate-priority-issue-preclaim' && event.phase === 'end') {
+          phaseDurations.push(event.elapsedMs);
+        }
+      },
+    }))?.workItem.id).toBe('EI-cross-family-better');
+    expect(phaseDurations).toHaveLength(1);
+    expect(phaseDurations[0]).toEqual(expect.any(Number));
+    expect(phaseDurations[0]).toBeGreaterThanOrEqual(0);
+    if (process.env.SCHEDULER_PHASE_TIMING === '1') {
+      console.log(`SCHEDULER_PHASE_TIMING candidate-priority-issue-preclaim=${phaseDurations[0]!.toFixed(2)}ms`);
+    }
   });
 
   it.each([
@@ -784,8 +961,11 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
     expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('F-exact');
   });
 
+  // enterprise-data-sources-2026-10-01 D-022 point 2: chunks are excluded by the STATUS
+  // floors, not by a kind case, and every live chunk row is terminal (done/passed/dropped).
+  // So a retired chunk is seeded terminal; an open chunk is a state that no longer occurs.
   it('retired chunks remain outside tier 2 after a feature-narrowed miss', async () => {
-    await seedFeature('RT-1', { createdTs: 100, kind: 'chunk' });
+    await seedFeature('RT-1', { createdTs: 100, kind: 'chunk', status: 'done' });
     const s = spec({
       specVersion: '1.0',
       specId: 'kind-feature-widen',
@@ -797,8 +977,8 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
   });
 
   it('a co-existing tags narrowing cannot re-admit retired chunks', async () => {
-    await seedFeature('RT-sync', { createdTs: 100, kind: 'chunk', tags: ['sync'] });
-    await seedFeature('RT-docs', { createdTs: 10, kind: 'chunk', tags: ['docs'] }); // older, wrong tag
+    await seedFeature('RT-sync', { createdTs: 100, kind: 'chunk', tags: ['sync'], status: 'passed' });
+    await seedFeature('RT-docs', { createdTs: 10, kind: 'chunk', tags: ['docs'], status: 'dropped' }); // older, wrong tag
     const s = spec({
       specVersion: '1.0',
       specId: 'kind-and-tag',
@@ -818,7 +998,7 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
 
   it('retired chunks stay excluded after a historical blocker settles', async () => {
     await seedFeature('CH-blocker', { createdTs: 1, kind: 'chunk', status: 'wip' });
-    await seedFeature('CH-blocked', { createdTs: 50, kind: 'chunk' });
+    await seedFeature('CH-blocked', { createdTs: 50, kind: 'chunk', status: 'dropped' });
     await blockByFeature('CH-blocked', 'CH-blocker');
     const s = spec({
       specVersion: '1.0',
@@ -842,9 +1022,31 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
       view: { filter: { field: 'kind', op: '=', value: 'feature' } },
       rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
     });
-    const r = await getNextWorkItem(s, BEE, { harness: H });
+    const phaseEvents: Array<{ step: string; phase: string }> = [];
+    const r = await getNextWorkItem(s, BEE, {
+      harness: H,
+      onResolutionStep: (step, event) => phaseEvents.push({ step, phase: event.phase }),
+    });
     expect(r?.workItem.id).toBe('EI-t3-on');
     expect(r?.claimedUnder).toEqual({ specId: 'kind-feature-issue-fallthrough', revision: 2 });
+    expect(phaseEvents.filter(({ step }) => step === 'candidate-issue-claim-update').map(({ phase }) => phase))
+      .toEqual(['start', 'end']);
+    expect(phaseEvents.filter(({ step }) => step === 'candidate-issue-post-claim-reread').map(({ phase }) => phase))
+      .toEqual(['start', 'end']);
+  });
+
+  it('reuses the bounded candidate authority read for the issue tier', async () => {
+    setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
+    await seedIssue('EI-one-authority-read', { state: 'open' });
+    const operationClaims = await import('../blueprint/operation-worker-binding');
+    const read = vi.spyOn(operationClaims, 'readActiveOperationWorkerClaimBinding');
+    try {
+      expect((await getNextWorkItem(DEFAULT_CLAIM_SPEC, BEE, { harness: H }))?.workItem.id)
+        .toBe('EI-one-authority-read');
+      expect(read).toHaveBeenCalledTimes(1);
+    } finally {
+      read.mockRestore();
+    }
   });
 
   it('tier 3: an issue-kind spec narrows issue fallback instead of claiming an older task', async () => {
@@ -984,6 +1186,50 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
     const r = await getNextWorkItem(s, BEE, { harness: H });
     // Widened past `kind='feature'` (else zero rows), but the `not` leg still excludes the p2p one.
     expect(r?.workItem.id).toBe('EI-fallthrough');
+  });
+
+  it.each([false, true])('WI-10002617: a feature-only fleet never claims an adjacent change (priority=%s)', async (priority) => {
+    setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
+    await seedIssue('EI-fleet-outside', { kind: 'change', featureOrder: 1 });
+    const s = spec({
+      specVersion: '1.0', specId: 'strict-feature-fleet', revision: 6,
+      view: { filter: { all: [
+        { field: 'kind', op: 'in', value: ['feature'] },
+        { not: { field: 'title', op: 'word', value: 'p2p' } },
+      ] } },
+      rank: { mode: 'lexicographic', terms: priority
+        ? [{ expr: 'priority', dir: 'desc' }, { expr: 'age', dir: 'asc' }]
+        : [{ expr: 'age', dir: 'asc' }] },
+    });
+    const opts = { harness: H, fleetSlug: 'strict-feature-fleet' };
+    expect(await getNextWorkItem(s, BEE, opts)).toBeNull();
+    const [outside] = await db.sql`SELECT taken_by FROM harness_shared.work_items
+      WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = 'EI-fleet-outside'`;
+    expect(outside.taken_by).toBeNull();
+
+    await seedFeature('F-fleet-inside', { featureOrder: 100 });
+    expect((await getNextWorkItem(s, BEE, opts))?.workItem.id).toBe('F-fleet-inside');
+    const [stillOutside] = await db.sql`SELECT taken_by FROM harness_shared.work_items
+      WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = 'EI-fleet-outside'`;
+    expect(stillOutside.taken_by).toBeNull();
+  });
+
+  it('WI-10002617: a fleet still claims an issue admitted by a nested mixed-family filter', async () => {
+    setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
+    await seedIssue('EI-fleet-admitted', { kind: 'change' });
+    const s = spec({
+      specVersion: '1.0', specId: 'mixed-family-fleet', revision: 1,
+      view: { filter: { all: [
+        { any: [
+          { field: 'kind', op: '=', value: 'feature' },
+          { field: 'id', op: '=', value: 'EI-fleet-admitted' },
+        ] },
+        { not: { field: 'title', op: 'word', value: 'p2p' } },
+      ] } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    expect((await getNextWorkItem(s, BEE, { harness: H, fleetSlug: 'mixed-family-fleet' }))?.workItem.id)
+      .toBe('EI-fleet-admitted');
   });
 
   // EI-10062 (and its duplicate trail: EI-9887/9888/9896/10002/10040): a leader's hand-curated

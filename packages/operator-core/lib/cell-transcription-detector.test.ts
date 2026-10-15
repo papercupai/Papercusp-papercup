@@ -18,8 +18,14 @@ import {
   MAX_DEPENDS_ON_SUGGESTIONS,
   CONTEXT_WINDOW,
 } from './cell-transcription-detector';
+import { cellTranscriptionHintResolvingCommits, commitResolverRepo, gitResolvesToCommit } from './git-commit-resolver';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { registerBuiltinCells } from './cell-registrations';
 import { getCellUnchecked, __resetCellRegistryForTests } from './cell-registry';
+import { chunkHeaderText } from './agent-tools/coordination/tools/send-chunking';
 
 describe('cell-transcription detector — TRUE positives (the 2026-07-26 shape)', () => {
   it('flags a sha stated as the deployed position', () => {
@@ -126,6 +132,25 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     expect(detectCellTranscriptions('abc1234 was deployed').length).toBeGreaterThanOrEqual(1);
   });
 
+  it('does not pair a work-item checkpoint hash with candidate context in the next sentence', async () => {
+    const text =
+      "Final canonical Next action heading corrected the initial replacement's oversized resume packet. " +
+      'Latest8710 checkpoint f90d28e7d85e and bounded nextAction readback verified; ' +
+      'use this instead of intermediate d90099a21e31. Candidate/rollout limits unchanged; ' +
+      'no test or source work replayed.';
+
+    // Isolate context matching from the git resolver. The recorded coord:send false hint
+    // named d90099a21e31 as a gate candidate even though its candidate prose starts after
+    // the sentence boundary; a same-sentence candidate remains a real transcription.
+    const hint = await cellTranscriptionHintResolvingCommits(text, async () => true);
+    expect(hint).toBeNull();
+    const positive = await cellTranscriptionHintResolvingCommits(
+      'green-checkpoint is judging candidate 9a4319b7',
+      async () => true,
+    );
+    expect(positive).toContain('9a4319b7');
+  });
+
   it('DOES fire when a source HEAD is explicitly described as deployed', () => {
     const hits = detectCellTranscriptions('current HEAD 2b95ba4eb7 is deployed to :3070');
     expect(hits).toHaveLength(1);
@@ -136,6 +161,48 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     const hits = detectCellTranscriptions('Root HEAD cd9b060 is deployed to :3070');
     expect(hits).toHaveLength(1);
     expect(hits[0]!.value).toBe('cd9b060');
+  });
+
+  it('does not classify a worktree HEAD next to a staging mention as the deployed position', () => {
+    const text = 'My current worktree remains on staging at HEAD 14f32c7e05.';
+    expect(detectCellTranscriptions(text)).toEqual([]);
+    expect(cellTranscriptionHint(text)).toBeNull();
+  });
+
+  it('does not classify a local test HEAD as deployed when the same sentence disclaims deployment', async () => {
+    const text =
+      "Live coord injection reports git-sync is still quarantined after 665 ticks: 7 files failed the content check and the content-fixer could not repair them, so human intervention is needed. " +
+      'My focused suites pass locally at HEAD cb797c99b1; this does not establish commit or deployment. ' +
+      "I could not identify from the alert whether any of the seven files are in this item's import graph.";
+    let resolverCalls = 0;
+    const hint = await cellTranscriptionHintResolvingCommits(text, async () => {
+      resolverCalls += 1;
+      return true;
+    });
+
+    expect(hint).toBeNull();
+    expect(resolverCalls).toBe(0);
+  });
+
+  it('does not describe a staged SHA as deployed when the message explicitly says it is not deployed', async () => {
+    const text =
+      "FYI for live gate item WI-10006055: dev:pipeline_position for packages/operator-core/lib/carry-blind-window.ts reports target SHA 27733d8abafa1325b394c1c59edab6b39445b6c5 committed/on staging, not in main and not deployed; blockedOn=gate, gateVerdict=inconclusive, gateOwnership=held-live. " +
+      'The ownership cell identifies you as the live holder. ' +
+      "This is the deployment boundary for EI-25461817843124970's post-promotion verification; I will leave LIVE_GATE_OPS with you.";
+    let resolverCalls = 0;
+    const hint = await cellTranscriptionHintResolvingCommits(text, async () => {
+      resolverCalls += 1;
+      return true;
+    });
+
+    expect(hint).toBeNull();
+    expect(resolverCalls).toBe(0);
+  });
+
+  it('still flags a locally tested HEAD when it is explicitly described as deployed', () => {
+    const hits = detectCellTranscriptions('focused suites pass locally at HEAD cb797c99b1 is deployed to :3070');
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.value).toBe('cb797c99b1');
   });
 
   it('DOES fire when a target commit is explicitly described as deployed', () => {
@@ -163,6 +230,45 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     expect(cellTranscriptionHint(text)).toBeNull();
   });
 
+  it.each(['barHash', 'priorBarHash', 'nextBarHash', 'sha256', 'fingerprint', 'fingerprint digest'])(
+    'does not classify a labeled %s artifact digest as a deployed SHA beside release context',
+    (label) => {
+      const text = `The release acceptance rubric ${label} 2e12616a568397f3`;
+      const collidingCommit = () => true;
+      expect(detectCellTranscriptions(text, { resolvesToCommit: collidingCommit })).toEqual([]);
+      expect(cellTranscriptionHint(text, { resolvesToCommit: collidingCommit })).toBeNull();
+    },
+  );
+
+  it('does not classify a checkpoint fingerprint as a deployed SHA beside unrelated release context', async () => {
+    const text = 'Checkpoint fingerprint digest fa14e401 is persisted; release status remains unchanged';
+    expect(detectCellTranscriptions(text, { resolvesToCommit: () => true })).toEqual([]);
+    expect(cellTranscriptionHint(text)).toBeNull();
+
+    const requested: string[] = [];
+    const hint = await cellTranscriptionHintResolvingCommits(text, async (token) => {
+      requested.push(token);
+      return true;
+    });
+    expect(requested).toEqual([]);
+    expect(hint).toBeNull();
+  });
+
+  it('does not classify a labeled memory ID prefix as a deployed SHA even if it resolves to a commit', () => {
+    const text =
+      'memory 0035cbc4: specAdequacy { classRef, evidenceRefs } must list the live binding evidence_ref strings';
+    const collidingCommit = () => true;
+    expect(detectCellTranscriptions(text, { resolvesToCommit: collidingCommit })).toEqual([]);
+    expect(cellTranscriptionHint(text, { resolvesToCommit: collidingCommit })).toBeNull();
+  });
+
+  it('still detects a deployed commit when memory is not the value label', () => {
+    const text = 'the memory service commit 8badf00d is live on :3070';
+    const hits = detectCellTranscriptions(text, { resolvesToCommit: () => true });
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.value).toBe('8badf00d');
+  });
+
   it('does not classify an explicitly labeled Git blob hash as a deployed SHA', () => {
     const text = 'InboxPane staging blob 6183d5ee';
     expect(detectCellTranscriptions(text)).toEqual([]);
@@ -179,6 +285,172 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
 
     expect(hits.some((hit) => hit.value === '721014582be1')).toBe(false);
     expect(cellTranscriptionHint(text)).not.toContain('721014582be1');
+  });
+});
+
+describe('EI-25431705270466357 — fractional byte amounts are not commit SHAs', () => {
+  for (const amount of ['40,279,831,019.520004B', '14,991,024,619.520004B', '0.1234567B']) {
+    for (const context of ['No live reclaim occurred.', 'The green-checkpoint candidate needs space.']) {
+      it(`does not classify fractional byte amount ${amount} beside ${context}`, () => {
+        const text = `reserve${amount}; ${context}`;
+        expect(detectCellTranscriptions(text)).toEqual([]);
+        // Even a colliding commit cannot change the amount's numeric meaning.
+        expect(detectCellTranscriptions(text, { resolvesToCommit: () => true })).toEqual([]);
+        expect(cellTranscriptionHint(text)).toBeNull();
+        expect(suggestDependsOnCells(text)).toEqual([]);
+      });
+    }
+  }
+
+  it('retains a standalone deployed SHA beside a fractional byte amount', () => {
+    const text = 'reserve40,279,831,019.520004B; release is serving abc1234';
+    expect(detectCellTranscriptions(text).map((hit) => hit.value)).toEqual(['abc1234']);
+    expect(detectCellTranscriptions('release is serving 520004B').map((hit) => hit.value)).toEqual(['520004B']);
+  });
+
+  it('does not resolve a fractional byte suffix even when the resolver would accept it', async () => {
+    const asked: string[] = [];
+    const hint = await cellTranscriptionHintResolvingCommits(
+      'reserve40,279,831,019.520004B; release is serving abc1234',
+      async (token) => {
+        asked.push(token);
+        return true;
+      },
+    );
+    expect(asked).toEqual(['abc1234']);
+    expect(hint).toContain('abc1234');
+    expect(hint).not.toContain('520004B');
+  });
+});
+
+describe('EI-24684014950807803 — a hex token that names no commit is not a sha', () => {
+  it('does not suggest a Git dependency for a coord message prefix that resolves to no commit', () => {
+    const body = 'Live intake: ask c308 a853236d for existing-builder acceptance.';
+    expect(suggestDependsOnCells(body)).toEqual([
+      expect.objectContaining({ cell: 'git.pipelinePosition', value: 'a853236d' }),
+    ]);
+    expect(suggestDependsOnCells(body, [], { resolvesToCommit: () => false })).toEqual([]);
+  });
+
+  // The measured message: a peer named by its agent short id beside a real candidate sha.
+  const text =
+    'c0b38c83 is live on staging and owns the repair; candidate 9a4319b7 is what green-checkpoint is judging';
+  const realShas = new Set(['9a4319b7']);
+  const resolvesToCommit = (token: string) => realShas.has(token.toLowerCase());
+
+  it('POSITIVE CONTROL: without a resolver the shape-only scan still flags the agent short id', () => {
+    expect(detectCellTranscriptions(text).map((h) => h.value)).toContain('c0b38c83');
+  });
+
+  it('drops an agent short id that does not resolve, and keeps the real candidate sha', () => {
+    const hits = detectCellTranscriptions(text, { resolvesToCommit });
+    expect(hits.map((h) => h.value)).not.toContain('c0b38c83');
+    expect(hits.some((h) => h.value === '9a4319b7' && h.cell === 'gate.greenCheckpoint.candidate')).toBe(true);
+    expect(cellTranscriptionHint(text, { resolvesToCommit })).not.toContain('c0b38c83');
+  });
+
+  it('keeps the hit when the resolver cannot tell (null) or throws — fail-open', () => {
+    expect(detectCellTranscriptions(':3070 is serving abc1234', { resolvesToCommit: () => null })).toHaveLength(1);
+    const throwing = () => {
+      throw new Error('git unavailable');
+    };
+    expect(detectCellTranscriptions(':3070 is serving abc1234', { resolvesToCommit: throwing })).toHaveLength(1);
+  });
+
+  it('never applies the resolver to commit COUNTS, which are not shas', () => {
+    const hits = detectCellTranscriptions('main is 3 commits behind staging', { resolvesToCommit: () => false });
+    expect(hits).toHaveLength(1);
+  });
+
+  it('the async two-pass hint resolves only sha-claimed tokens and applies the verdicts', async () => {
+    const asked: string[] = [];
+    const hint = await cellTranscriptionHintResolvingCommits(text, async (token) => {
+      asked.push(token);
+      return realShas.has(token);
+    });
+    expect(asked.sort()).toEqual(['9a4319b7', 'c0b38c83']);
+    expect(hint).toContain('9a4319b7');
+    expect(hint).not.toContain('c0b38c83');
+  });
+
+  it('the async hint fails open: a rejecting resolver keeps every shape-only hit', async () => {
+    const hint = await cellTranscriptionHintResolvingCommits(text, async () => {
+      throw new Error('git unavailable');
+    });
+    expect(hint).toContain('c0b38c83');
+    expect(hint).toContain('9a4319b7');
+  });
+
+  it('the async hint spawns nothing for text with no sha-shaped claim', async () => {
+    let calls = 0;
+    const hint = await cellTranscriptionHintResolvingCommits('main is 3 commits behind staging', async () => {
+      calls += 1;
+      return false;
+    });
+    expect(calls).toBe(0);
+    expect(hint).not.toBeNull();
+  });
+
+  it('the async hint does not resolve an explicitly labeled memory ID as a commit', async () => {
+    const text =
+      'memory 0035cbc4: specAdequacy { classRef, evidenceRefs } must list the live binding evidence_ref strings';
+    const asked: string[] = [];
+    const hint = await cellTranscriptionHintResolvingCommits(text, async (token) => {
+      asked.push(token);
+      return true;
+    });
+
+    expect(asked).toEqual([]);
+    expect(hint).toBeNull();
+  });
+
+  it('does not treat generated coord:send chunk headers as authored commit references', async () => {
+    const groupId = 'abaddeed';
+    const realSha = '8badf00d';
+    const text = `${chunkHeaderText(1, 2, groupId, true)}\n:3070 is serving ${realSha}`;
+    const asked: string[] = [];
+    const hint = await cellTranscriptionHintResolvingCommits(text, async (token) => {
+      asked.push(token);
+      return true; // Model a short-id collision with a real commit.
+    });
+
+    expect(asked).toEqual([realSha]);
+    expect(hint).toContain(realSha);
+    expect(hint).not.toContain(groupId);
+  });
+
+  it('resolves against PAPERCUSP_INTEGRATION_ROOT, not the release checkout cwd', () => {
+    expect(commitResolverRepo({ PAPERCUSP_INTEGRATION_ROOT: '/srv/integration' }, '/srv/release/apps/operator')).toBe(
+      '/srv/integration',
+    );
+    expect(commitResolverRepo({}, '/srv/repo')).toBe('/srv/repo');
+  });
+
+  it('the git resolver answers true for a real commit, false for an agent short id, null outside a repo', async () => {
+    // Bound the object population: the shared checkout's short-ID lookup can
+    // legitimately hit the resolver's deadline or collide with a real object.
+    const fixture = mkdtempSync(join(tmpdir(), 'commit-resolver-'));
+    const repo = join(fixture, 'repo');
+    const outside = join(fixture, 'outside');
+    mkdirSync(repo);
+    mkdirSync(outside);
+    const git = (args: string[]) => execFileSync('git', args, {
+      cwd: repo, encoding: 'utf8', timeout: 10_000,
+    }).trim();
+    try {
+      git(['init', '--quiet']);
+      git(['-c', 'user.name=Resolver Test', '-c', 'user.email=resolver@example.invalid',
+        '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null',
+        'commit', '--quiet', '--allow-empty', '-m', 'resolver fixture']);
+      const head = git(['rev-parse', '--short=8', 'HEAD']);
+      const absent = head.startsWith('c0b38c83') ? 'd0b38c83' : 'c0b38c83';
+      expect(await gitResolvesToCommit(head, repo)).toBe(true);
+      expect(await gitResolvesToCommit(absent, repo)).toBe(false);
+      expect(await gitResolvesToCommit('not-hex', repo)).toBe(false);
+      expect(await gitResolvesToCommit('abc1234', outside)).toBeNull();
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
   });
 });
 

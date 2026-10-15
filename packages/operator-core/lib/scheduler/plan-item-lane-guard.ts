@@ -60,12 +60,21 @@
  */
 import type { WorkItem } from '../work-items';
 import { isTerminalItemStatus } from '../fleet-drained-events';
+import { noteAttributesBlockTo } from '../plan-items/block-attribution';
 
 export interface PlanItemLaneBlock {
   reason: string;
   planSlug: string;
   itemId: string;
   effectiveStatus: string;
+  /**
+   * Present only when the sole plan-side block is a stored `blocked` status
+   * whose latest note attributes it to this work-item, with no unresolved plan
+   * dependencies, needs-human lane, or owner-gate marker among the linked items.
+   * This is metadata for the lifecycle writer; it must still verify that the
+   * work-item has no active typed external blockers before allowing a transition.
+   */
+  blockAttributedToWorkItemId?: string;
   /**
    * WI-7316: the `staleBlockedHint` `resolveEffectiveStatusForItems` already derived for
    * the SPECIFIC plan item that produced this block — passed straight through, never
@@ -485,6 +494,17 @@ export async function planItemLaneBlockReason(
       .map((itemId) => items.find((i) => i.id === itemId))
       .filter((i): i is (typeof items)[number] => Boolean(i));
     if (linked.length === 0) return null;
+    const nowText = [row.nowState, row.nowNext].filter(Boolean).join('\n');
+    const allItemIds = items.map((i) => i.id);
+    const ownerGateMarkerFor = (li: (typeof linked)[number]): string | null => {
+      const ownMarker = findAnchoredOwnerGateMarker(li.text);
+      const nowMarker = findNowOwnerGateMarker(nowText, li.id, allItemIds);
+      const decisionMarker = (row.decisions ?? [])
+        .filter((d) => d.itemRefs.includes(li.id))
+        .map((d) => findOwnerGateMarker(d.title) ?? findOwnerGateMarker(d.body))
+        .find((m): m is string => Boolean(m));
+      return ownMarker ?? nowMarker ?? decisionMarker ?? null;
+    };
     // A work-item can implement several plan items (source_plan_item_ids) — ANY
     // one of them being effectively blocked, or needing a human decision, gates
     // the whole work-item (a claimer executing it would be doing that item's
@@ -494,11 +514,27 @@ export async function planItemLaneBlockReason(
     if (blocked) {
       const blockers =
         blocked.unresolvedBlockers.length > 0 ? ` (blocked-by: ${blocked.unresolvedBlockers.join(', ')})` : '';
+      let blockAttributedToWorkItemId: string | undefined;
+      const attributionEligible =
+        typeof workItem.id === 'string' &&
+        workItem.id.trim().length > 0 &&
+        linked.filter((i) => i.effectiveStatus === 'blocked').length === 1 &&
+        blocked.unresolvedBlockers.length === 0 &&
+        !linked.some((i) => i.needsHuman || i.effectiveStatus === 'needs-human') &&
+        !linked.some((i) => ownerGateMarkerFor(i) !== null);
+      if (attributionEligible) {
+        // Reuse plans:set-status's canonical parser predicate through its leaf
+        // helper; this guard must not import the full write-side tool.
+        if (noteAttributesBlockTo(blocked.text, workItem.id!)) {
+          blockAttributedToWorkItemId = workItem.id;
+        }
+      }
       return {
         reason: `plan-item ${stamp.plan_slug}#${blocked.id} is effectively blocked${blockers}`,
         planSlug: stamp.plan_slug,
         itemId: blocked.id,
         effectiveStatus: blocked.effectiveStatus,
+        ...(blockAttributedToWorkItemId ? { blockAttributedToWorkItemId } : {}),
         // WI-7316: the headline case. `blockers` above is EMPTY exactly when every
         // blocked-by dependency has resolved — i.e. the block is a sticky stored token
         // with nothing actually blocking it — and that is precisely when the resolver
@@ -543,16 +579,8 @@ export async function planItemLaneBlockReason(
     // structural effectiveStatus/needsHuman signal at all (see the module-level
     // OWNER_GATE_MARKERS doc comment). Checked last, over the SAME `linked` set,
     // same any-one-gates-the-whole-work-item semantics as blocked/needsHuman above.
-    const nowText = [row.nowState, row.nowNext].filter(Boolean).join('\n');
-    const allItemIds = items.map((i) => i.id);
     for (const li of linked) {
-      const ownMarker = findAnchoredOwnerGateMarker(li.text);
-      const nowMarker = findNowOwnerGateMarker(nowText, li.id, allItemIds);
-      const decisionMarker = (row.decisions ?? [])
-        .filter((d) => d.itemRefs.includes(li.id))
-        .map((d) => findOwnerGateMarker(d.title) ?? findOwnerGateMarker(d.body))
-        .find((m): m is string => Boolean(m));
-      const hit = ownMarker ?? nowMarker ?? decisionMarker ?? null;
+      const hit = ownerGateMarkerFor(li);
       if (hit) {
         return {
           reason: `plan-item ${stamp.plan_slug}#${li.id}'s plan text marks it owner-gated ("${hit}") — not eligible for self-select`,

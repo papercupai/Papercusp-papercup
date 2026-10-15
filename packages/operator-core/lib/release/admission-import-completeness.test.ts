@@ -17,10 +17,11 @@ import {
   checkAdmissionImportCompleteness,
   extractRelativeImportSpecifiers,
   importCompletenessPreflight,
+  readAdmissionBlobBatch,
   renderMissingImports,
   resolveImportCandidates,
 } from './admission-import-completeness';
-import { admitPathsOntoRepairHead, frozenLineageRef, realAdmissionGit, type AdmissionGitRunner } from './repair-head-admission';
+import { ADMISSION_GIT_MAX_BUFFER, admitPathsOntoRepairHead, frozenLineageRef, realAdmissionGit, type AdmissionGitRunner } from './repair-head-admission';
 
 const TEMP: string[] = [];
 afterEach(() => {
@@ -300,6 +301,34 @@ describe('checkAdmissionImportCompleteness — real git', () => {
     });
   });
 
+  it('resolves a tracked builder output through its directory parameter default', () => {
+    const { root } = repo();
+    const generated = sweep(root, {
+      'apps/operator/tool.ts': "import native from '../../packages/demo/dist/native-client.cjs';\nexport { native };\n",
+      'packages/demo/build-native.mjs':
+        "export function nativeBuilds(root, outDir = root + 'packages/demo/dist/') {\n" +
+        "  const outputDir = outDir;\n" +
+        "  return [{ outfile: outputDir + 'native-client.cjs' }];\n}\n",
+    }, 'builder constructs output from directory and basename');
+    expect(checkAdmissionImportCompleteness({ root, commit: generated, paths: ['apps/operator/tool.ts'] }))
+      .toMatchObject({ ok: true, skipped: [{ reason: 'generated-by-tracked-builder' }] });
+  });
+
+  it.each([
+    "export function nativeBuilds(root, outDir = root + 'packages/other/dist/') { return [{ outfile: outDir + 'native-client.cjs' }]; }\n",
+    "export function nativeBuilds(root, outDir) { return [{ outfile: outDir + 'native-client.cjs' }]; }\n",
+    "const outDir = root + 'packages/demo/dist/'; function nativeBuilds(outDir) { return [{ outfile: outDir + 'native-client.cjs' }]; }\n",
+    "const outDir = root + 'packages/demo/dist/'; const doc = 'native-client.cjs'; const outfile = outDir + 'other.cjs';\n",
+  ])('refuses a split builder output without the requested directory and filename: %s', builder => {
+    const { root } = repo();
+    const commit = sweep(root, {
+      'apps/operator/tool.ts': "import native from '../../packages/demo/dist/native-client.cjs';\nexport { native };\n",
+      'packages/demo/build-native.mjs': builder,
+    }, 'builder does not prove the requested output');
+    expect(checkAdmissionImportCompleteness({ root, commit, paths: ['apps/operator/tool.ts'] }))
+      .toMatchObject({ ok: false, code: 'admission-incomplete' });
+  });
+
   it('wired as the primitive preflight (the admit door): refuses BEFORE publish naming the path, the lineage ref never moves, and both paths then publish', () => {
     const { root, candidate } = repo();
     sweep(
@@ -324,6 +353,117 @@ describe('checkAdmissionImportCompleteness — real git', () => {
     if (!ok.ok) return;
     expect(ok.published).toBe(true);
     expect(refAt(root, frozenLineageRef(candidate))).toBe(ok.commit);
+  });
+
+  it('refuses a runtime data file read through new URL when its literal filename is in an admitted sibling module', () => {
+    const { root, candidate } = repo();
+    sweep(root, {
+      'lib/dream/study/accounting.mts':
+        "export const STUDY_BLOCKS = { haiku: { file: 'protocol.json' }, luna: { file: 'protocol-luna.json' } };\n",
+      'lib/dream/dream-study-accounting.test.ts':
+        "import { readFileSync } from 'node:fs';\n" +
+        "import { STUDY_BLOCKS } from './study/accounting.mts';\n" +
+        "const blocks = Object.values(STUDY_BLOCKS).map(block => JSON.parse(readFileSync(new URL('./study/' + block.file, import.meta.url), 'utf8')));\n",
+      'lib/dream/study/protocol.json': '{"name":"haiku"}\n',
+      'lib/dream/study/protocol-luna.json': '{"name":"luna"}\n',
+    }, 'runtime data read');
+    const preflight = importCompletenessPreflight({ root, probeRef: 'staging' });
+
+    const incomplete = admit(root, candidate, [
+      'lib/dream/study/accounting.mts',
+      'lib/dream/dream-study-accounting.test.ts',
+    ], { preflight });
+    expect(incomplete).toMatchObject({
+      ok: false,
+      code: 'admission-incomplete',
+      missing: [
+        expect.objectContaining({ from: 'lib/dream/study/accounting.mts', wanted: 'lib/dream/study/protocol.json', atProbeRef: 'present', relation: 'runtime-data' }),
+        expect.objectContaining({ from: 'lib/dream/study/accounting.mts', wanted: 'lib/dream/study/protocol-luna.json', atProbeRef: 'present', relation: 'runtime-data' }),
+      ],
+    });
+
+    const complete = admit(root, candidate, [
+      'lib/dream/study/accounting.mts',
+      'lib/dream/dream-study-accounting.test.ts',
+      'lib/dream/study/protocol.json',
+      'lib/dream/study/protocol-luna.json',
+    ], { preflight });
+    expect(complete.ok).toBe(true);
+  });
+
+  it('does not turn unrelated generated fixture names into dependencies when the batch includes a URL reader', () => {
+    const { root, candidate } = repo();
+    sweep(root, {
+      'lib/reader.ts': "import { readFileSync } from 'node:fs';\nexport const value = readFileSync(new URL('./real.json', import.meta.url), 'utf8');\n",
+      'lib/real.json': '{}\n',
+      'lib/fixtures.test.ts': "import { writeFileSync } from 'node:fs';\nwriteFileSync('generated.json', '{}');\nconst missingFixture = 'missing.md';\n",
+    }, 'reader and unrelated fixtures');
+    const outcome = admit(root, candidate, ['lib/reader.ts', 'lib/real.json', 'lib/fixtures.test.ts'], {
+      preflight: importCompletenessPreflight({ root, probeRef: 'staging' }),
+    });
+    expect(outcome.ok).toBe(true);
+  });
+
+  it('checks the actual URL path without checking generated fixture names in the reader itself', () => {
+    const { root, candidate } = repo();
+    sweep(root, {
+      'lib/reader.test.ts': "import { readFileSync, writeFileSync } from 'node:fs';\nwriteFileSync('generated.json', '{}');\nconst value = readFileSync(new URL('./real.json', import.meta.url), 'utf8');\n" +
+        'export const unrelatedTail = ' + JSON.stringify('x'.repeat(512)) + ';\n',
+      'lib/real.json': '{}\n',
+    }, 'reader with generated fixture and long tail');
+    const preflight = importCompletenessPreflight({ root, probeRef: 'staging' });
+    const missing = admit(root, candidate, ['lib/reader.test.ts'], { preflight });
+    expect(missing).toMatchObject({
+      ok: false,
+      code: 'admission-incomplete',
+      missing: [expect.objectContaining({ wanted: 'lib/real.json', relation: 'runtime-data' })],
+    });
+    if (!missing.ok && 'missing' in missing) expect(missing.missing).toHaveLength(1);
+    expect(admit(root, candidate, ['lib/reader.test.ts', 'lib/real.json'], { preflight }).ok).toBe(true);
+  });
+
+  it.each([
+    "const filename = 'real.json'; const value = readFileSync(new URL(filename, import.meta.url), 'utf8');",
+    "const DATA = { item: { file: 'real.json' } }; const values = Object.values(DATA).map(block => readFileSync(new URL(block.file, import.meta.url), 'utf8'));",
+  ])('preserves a local variable data dependency: %s', (reader) => {
+    const { root, candidate } = repo();
+    sweep(root, {
+      'lib/reader.ts': "import { readFileSync } from 'node:fs';\n" + reader + '\n',
+      'lib/real.json': '{}\n',
+    }, 'inline data dependency');
+    const preflight = importCompletenessPreflight({ root, probeRef: 'staging' });
+    expect(admit(root, candidate, ['lib/reader.ts'], { preflight })).toMatchObject({
+      ok: false, code: 'admission-incomplete',
+      missing: [expect.objectContaining({ wanted: 'lib/real.json', relation: 'runtime-data' })],
+    });
+    expect(admit(root, candidate, ['lib/reader.ts', 'lib/real.json'], { preflight }).ok).toBe(true);
+  });
+
+  it('does not resolve a generated temporary URL against the repository', () => {
+    const { root, candidate } = repo();
+    sweep(root, {
+      'lib/reader.ts': "import { readFileSync } from 'node:fs';\nconst value = readFileSync(new URL('generated.json', temporaryDirectoryUrl), 'utf8');\n",
+    }, 'temporary URL data');
+    expect(admit(root, candidate, ['lib/reader.ts'], {
+      preflight: importCompletenessPreflight({ root, probeRef: 'staging' }),
+    }).ok).toBe(true);
+  });
+
+  it('checks only the imported binding that feeds a dynamic URL, keeping unrelated helper configs out of its data cohort', () => {
+    const { root, candidate } = repo();
+    sweep(root, {
+      'lib/reader.ts': "import { readFileSync } from 'node:fs';\nimport { DATA } from './data';\nimport { prepare } from './helper';\nprepare();\nconst values = Object.values(DATA).map(block => readFileSync(new URL(block.file, import.meta.url), 'utf8'));\n",
+      'lib/data.ts': "export const DATA = { item: { file: 'real.json' } };\nexport const UNRELATED = 'unused.json';\n",
+      'lib/helper.ts': "export const prepare = () => writeFileSync('settings.json', '{}');\n",
+      'lib/real.json': '{}\n',
+    }, 'data binding and generated configs');
+    const preflight = importCompletenessPreflight({ root, probeRef: 'staging' });
+    const paths = ['lib/reader.ts', 'lib/data.ts', 'lib/helper.ts'];
+    const missing = admit(root, candidate, paths, { preflight });
+    expect(missing).toMatchObject({ ok: false, code: 'admission-incomplete',
+      missing: [expect.objectContaining({ wanted: 'lib/real.json', relation: 'runtime-data' })] });
+    if (!missing.ok && 'missing' in missing) expect(missing.missing).toHaveLength(1);
+    expect(admit(root, candidate, [...paths, 'lib/real.json'], { preflight }).ok).toBe(true);
   });
 
   it('refuses a whole-blob admission until differing reverse-importing tests and their imported modules share its pinned source', () => {
@@ -377,11 +517,11 @@ describe('checkAdmissionImportCompleteness — real git', () => {
     expect(missing).toMatchObject({ ok: false, code: 'admission-incomplete',
       missing: [expect.objectContaining({ wanted: 'lib/a.test.ts', relation: 'reverse-importer' })] });
     expect(refAt(root, frozenLineageRef(candidate))).toBeNull();
-    // One admitted blob + diff + tree + content batch. No per-test processes or
+    // One admitted blob + diff + tree + size metadata + content batch. No per-test processes or
     // per-import path probes, regardless of the unrelated changed-test population.
-    expect(calls).toHaveLength(4);
+    expect(calls).toHaveLength(5);
     expect(calls.filter((args) => args[1] === '--batch')).toHaveLength(1);
-    expect(calls.some((args) => args[1]?.startsWith('--batch-check'))).toBe(false);
+    expect(calls.filter((args) => args[1] === '--batch-check')).toHaveLength(1);
     const complete = admit(root, candidate, ['lib/a.ts', 'lib/a.test.ts'], { source: { ref: sourceCommit }, preflight });
     expect(complete.ok).toBe(true);
   });
@@ -404,6 +544,48 @@ describe('checkAdmissionImportCompleteness — real git', () => {
     expect(admit(root, candidate, ['lib/a.ts'], { source: { ref: sourceCommit }, preflight }))
       .toMatchObject({ ok: false, code: 'git-failed', step: expect.stringContaining('source cohort blobs') });
     expect(refAt(root, frozenLineageRef(candidate))).toBeNull();
+  });
+});
+
+describe('immutable blob capture bounds', () => {
+  it('reads more than the native capture limit without losing Unicode framing or the subprocess error', () => {
+    const { root } = repo();
+    const unit = '// café ☕\n';
+    const body = unit.repeat(Math.ceil(14 * 1024 * 1024 / Buffer.byteLength(unit)));
+    const sources = Array.from({ length: 5 }, (_, i) => `${body}// object ${i}\n`);
+    const objectIds = sources.map(input => execFileSync('git', ['hash-object', '-w', '--stdin'], {
+      cwd: root, env: GIT_ENV, encoding: 'utf8', input,
+    }).trim());
+    expect(sources.reduce((sum, source) => sum + Buffer.byteLength(source), 0)).toBeGreaterThan(ADMISSION_GIT_MAX_BUFFER);
+    const unbounded = realAdmissionGit(['cat-file', '--batch'], { cwd: root, input: objectIds.join('\n') + '\n' });
+    expect(unbounded.status).toBeNull();
+    expect(unbounded.stderr).toContain('ENOBUFS');
+    const captures: number[] = [];
+    const runner: AdmissionGitRunner = (argv, opts) => {
+      const result = realAdmissionGit(argv, opts);
+      if (argv[1] === '--batch') captures.push(Buffer.byteLength(result.stdout));
+      return result;
+    };
+    const result = readAdmissionBlobBatch(root, objectIds, runner);
+    expect(result.ok).toBe(true);
+    if (result.ok) objectIds.forEach((oid, i) => expect(result.contents.get(oid)).toBe(sources[i]));
+    expect(captures.length).toBeGreaterThan(1);
+    expect(captures.every(size => size < ADMISSION_GIT_MAX_BUFFER)).toBe(true);
+  }, 60_000);
+
+  it.each(['missing', 'wrong-object', 'trailing', 'oversized', 'command-failure'])('fails closed on %s size metadata before content capture', fault => {
+    const oid = 'a'.repeat(40);
+    const calls: string[][] = [];
+    const runner: AdmissionGitRunner = argv => {
+      calls.push([...argv]);
+      return fault === 'command-failure' ? { status: null, stdout: '', stderr: 'ENOBUFS: metadata capture failed' }
+        : { status: 0, stderr: '', stdout: fault === 'missing' ? `${oid} missing\n`
+          : fault === 'wrong-object' ? `${'b'.repeat(40)} blob 1\n`
+          : fault === 'trailing' ? `${oid} blob 1\nunexpected\n`
+          : `${oid} blob ${ADMISSION_GIT_MAX_BUFFER}\n` };
+    };
+    expect(readAdmissionBlobBatch('/unused', [oid], runner)).toMatchObject({ ok: false, code: 'git-failed' });
+    expect(calls).toEqual([['cat-file', '--batch-check']]);
   });
 });
 

@@ -5,16 +5,21 @@
  *   GET  /hosted/billing/subscription  member   — current subscription + what it entitles
  *   POST /hosted/billing/checkout      billing:manage — Stripe Checkout (subscription mode) URL
  *   POST /hosted/billing/portal        billing:manage — Stripe customer-portal URL (manage/cancel)
+ *   GET  /hosted/billing/receipts      billing:manage — the org's own payment receipts (P-046)
  *   POST /hosted/billing/webhook       public, Stripe-signed — subscription state intake
  *
  * Mounted only by `hosted-billing-runtime.ts`, never the local route barrel.
  * Entitlement policy is NOT decided here: the subscription route asks the
  * `HostedSubscriptionEntitlementProvider` seam.
  *
- * stripe-subscription-signup-2026-10-01 P-005.
+ * stripe-subscription-signup-2026-10-01 P-005; receipts:
+ * agent-economy-flywheel-2026-08-30 P-046 / D-029 §7 (WI-10004802).
  */
 import type { HostedPermission, HostedPrincipal } from '../../../auth/hosted-principal';
 import type { HostedBillingStore } from '../../../auth/hosted/billing/billing-store';
+import { logHostedBillingFailure, observeHostedBillingFailure, type HostedBillingFailureObserver } from '../../../auth/hosted/billing/billing-recovery';
+import type { HostedBillingUsageSource } from '../../../auth/hosted/billing/usage-service';
+import type { HostedUsageStatement } from '../../../auth/hosted/billing/usage-statement';
 import {
   SUBSCRIBED_STATUSES,
   resolveHostedSubscriptionEntitlement,
@@ -23,6 +28,7 @@ import {
 import type { StripeBillingClient } from '../../../auth/hosted/billing/stripe-billing-client';
 import { parseHostedBillingEvent } from '../../../auth/hosted/billing/stripe-billing-events';
 import { createStripeAdapter } from '../../../cupboard/payment-adapters/stripe';
+import type { CustomerReceiptEntry } from '../../../cupboard/payment-receipt-store';
 import { webhookBodyDigest } from '../../../cupboard/webhook-inbox';
 
 export const HOSTED_BILLING_ROUTES = [
@@ -30,8 +36,43 @@ export const HOSTED_BILLING_ROUTES = [
   { method: 'GET', path: '/hosted/billing/subscription', access: 'authenticated' },
   { method: 'POST', path: '/hosted/billing/checkout', access: 'authenticated' },
   { method: 'POST', path: '/hosted/billing/portal', access: 'authenticated' },
+  { method: 'GET', path: '/hosted/billing/receipts', access: 'authenticated' },
+  { method: 'GET', path: '/hosted/billing/usage', access: 'authenticated' },
   { method: 'POST', path: '/hosted/billing/webhook', access: 'public' },
 ] as const;
+
+/**
+ * Every payment receipt for ONE Stripe customer, newest first. The route only
+ * ever passes the signed-in organization's own customer id; which workspace's
+ * ledger holds the receipts is the composition's decision.
+ */
+export type HostedBillingReceiptSource = (stripeCustomerId: string) => Promise<readonly CustomerReceiptEntry[]>;
+
+/** One entry of `GET /hosted/billing/receipts`. */
+export interface HostedBillingReceiptView {
+  readonly balanceTransactionId: string;
+  readonly created: string;
+  readonly amount: number;
+  readonly currency: string;
+  /** `anchored` carries the verifiable receipt; anything else is still waiting for an anchored root. */
+  readonly status: 'anchored' | 'not-yet-anchored';
+  /** Why a not-yet-anchored entry is waiting (`not-chained` | `not-in-log` | `not-yet-anchored` | …). */
+  readonly pendingReason: string | null;
+  /** The receipt exactly as `scripts/verify-payment-receipt.mts` checks it; null until anchored. */
+  readonly receipt: unknown;
+}
+
+export function hostedBillingReceiptView(entry: CustomerReceiptEntry): HostedBillingReceiptView {
+  const base = {
+    balanceTransactionId: entry.balanceTransactionId,
+    created: new Date(entry.created * 1000).toISOString(),
+    amount: entry.amount,
+    currency: entry.currency,
+  };
+  return entry.result.ok
+    ? { ...base, status: 'anchored', pendingReason: null, receipt: entry.result.receipt }
+    : { ...base, status: 'not-yet-anchored', pendingReason: entry.result.error, receipt: null };
+}
 
 /** Browser path (under the `/api` base) the Checkout and portal flows return to. */
 export const HOSTED_BILLING_RETURN_PATH = '/billing';
@@ -53,6 +94,8 @@ export interface HostedBillingStripe {
 }
 
 export interface HostedBillingRouteDependencies {
+  /** Independent of billing receipt/fact transactions. */
+  readonly observeFailure?: HostedBillingFailureObserver;
   readonly publicOrigin: string;
   readonly plans: readonly HostedBillingPlan[];
   readonly store: HostedBillingStore;
@@ -61,6 +104,10 @@ export interface HostedBillingRouteDependencies {
   /** Why `stripe` is null, surfaced to the UI (e.g. `live_mode_not_allowed`). */
   readonly unavailableReason?: string | null;
   readonly entitlementProvider?: HostedSubscriptionEntitlementProvider;
+  /** Absent = receipts are not configured on this host; `/receipts` answers 503. */
+  readonly receipts?: HostedBillingReceiptSource;
+  /** A server-owned collector/read composition; the request supplies no billing facts. */
+  readonly usage?: HostedBillingUsageSource;
   readonly clock?: () => Date;
 }
 
@@ -79,9 +126,47 @@ function jsonError(code: string, safeMessage: string, status: number): Response 
   return Response.json({ ok: false, error: { code, safeMessage } }, { status });
 }
 
+/** Project only the public usage contract; provider payloads and extra fields never pass through. */
+function usageView(statement: HostedUsageStatement): HostedUsageStatement {
+  return {
+    scope: { controlWorkspaceId: statement.scope.controlWorkspaceId, organizationId: statement.scope.organizationId,
+      customerWorkspaceId: statement.scope.customerWorkspaceId },
+    month: statement.month, currency: statement.currency, asOfMs: statement.asOfMs, sourceRef: statement.sourceRef,
+    settlementEligible: statement.settlementEligible, gaps: [...statement.gaps],
+    lines: statement.lines.map(line => ({
+      customerWorkspaceId: line.customerWorkspaceId, provider: line.provider, category: line.category,
+      payer: line.payer, unit: line.unit, quantity: line.quantity, usages: line.usages,
+      unpricedUsages: line.unpricedUsages, estimatedMicros: line.estimatedMicros,
+      reportedMicros: line.reportedMicros, billedMicros: line.billedMicros,
+      ...(line.estimatedMicrosExact === undefined ? {} : { estimatedMicrosExact: line.estimatedMicrosExact }),
+      ...(line.reportedMicrosExact === undefined ? {} : { reportedMicrosExact: line.reportedMicrosExact }),
+      ...(line.billedMicrosExact === undefined ? {} : { billedMicrosExact: line.billedMicrosExact }),
+    })),
+    consumptionBilled: { micros: statement.consumptionBilled.micros, wholeCents: statement.consumptionBilled.wholeCents,
+      roundingMicros: statement.consumptionBilled.roundingMicros,
+      ...(statement.consumptionBilled.microsExact === undefined ? {} : { microsExact: statement.consumptionBilled.microsExact }),
+      ...(statement.consumptionBilled.roundingMicrosExact === undefined ? {} : { roundingMicrosExact: statement.consumptionBilled.roundingMicrosExact }) },
+    platformBilledMicros: statement.platformBilledMicros, customerDirectBilledMicros: statement.customerDirectBilledMicros,
+    ...(statement.platformBilledMicrosExact === undefined ? {} : { platformBilledMicrosExact: statement.platformBilledMicrosExact }),
+    ...(statement.customerDirectBilledMicrosExact === undefined ? {} : { customerDirectBilledMicrosExact: statement.customerDirectBilledMicrosExact }),
+    forecast: { method: statement.forecast.method, basisMicros: statement.forecast.basisMicros,
+      elapsedMs: statement.forecast.elapsedMs, periodMs: statement.forecast.periodMs,
+      projectedConsumptionMicros: statement.forecast.projectedConsumptionMicros,
+      provisional: statement.forecast.provisional, unavailableReason: statement.forecast.unavailableReason,
+      ...(statement.forecast.basisMicrosExact === undefined ? {} : { basisMicrosExact: statement.forecast.basisMicrosExact }) },
+    history: statement.history.map(history => ({ customerWorkspaceId: history.customerWorkspaceId,
+      provider: history.provider, usageId: history.usageId, revisions: history.revisions.map(revision => ({
+        recordId: revision.recordId, revision: revision.revision, sourceRef: revision.sourceRef,
+        costSource: revision.costSource, costMicros: revision.costMicros, observedAtMs: revision.observedAtMs,
+        ...(revision.costMicrosExact === undefined ? {} : { costMicrosExact: revision.costMicrosExact }),
+      })) })),
+  };
+}
+
 export function createHostedBillingRoutes(deps: HostedBillingRouteDependencies): readonly HostedBillingRoute[] {
   const origin = new URL(deps.publicOrigin).origin;
   const clock = deps.clock ?? (() => new Date());
+  const observe = deps.observeFailure ?? logHostedBillingFailure;
   const planByKey = new Map(deps.plans.map((plan) => [plan.planKey, plan]));
   const planKeyForPrice = (priceId: string | null): string | null =>
     (priceId ? deps.plans.find((plan) => plan.priceId === priceId)?.planKey : null) ?? null;
@@ -218,6 +303,32 @@ export function createHostedBillingRoutes(deps: HostedBillingRouteDependencies):
     },
   };
 
+  const receipts: HostedBillingRoute = {
+    method: 'GET',
+    path: '/hosted/billing/receipts',
+    auth: { capabilities: ['billing:manage'] },
+    async handler(_req, ctx) {
+      const organizationId = organizationOf(ctx);
+      if (!organizationId) return jsonError('organization_required', 'An active organization is required.', 403);
+      if (!deps.receipts) return jsonError('receipts_unavailable', 'Payment receipts are not configured on this host.', 503);
+      let customer;
+      try {
+        customer = await deps.store.customerFor(organizationId);
+      } catch {
+        return jsonError('billing_store_unavailable', 'Billing state could not be read.', 503);
+      }
+      // No billing customer yet means nothing was ever paid: an empty list, not an error.
+      if (!customer) return Response.json({ ok: true, receipts: [] });
+      let entries;
+      try {
+        entries = await deps.receipts(customer.stripeCustomerId);
+      } catch {
+        return jsonError('receipts_unavailable', 'Payment receipts could not be read.', 503);
+      }
+      return Response.json({ ok: true, receipts: entries.map(hostedBillingReceiptView) });
+    },
+  };
+
   const webhook: HostedBillingRoute = {
     method: 'POST',
     path: '/hosted/billing/webhook',
@@ -237,6 +348,7 @@ export function createHostedBillingRoutes(deps: HostedBillingRouteDependencies):
       try {
         if (!parsed.ok) {
           if (!parsed.eventId || !parsed.eventType || parsed.livemode === null) {
+            await observeHostedBillingFailure(observe, 'permanent-rejection', parsed.eventId);
             return jsonError(parsed.code, 'The webhook body is not a Stripe event.', 400);
           }
           const recorded = await deps.store.recordRejectedEvent({
@@ -246,7 +358,11 @@ export function createHostedBillingRoutes(deps: HostedBillingRouteDependencies):
             livemode: parsed.livemode,
             code: parsed.code,
           });
-          if (recorded === 'replay-mismatch') return jsonError('replay-mismatch', 'The event id was already received with different bytes.', 409);
+          if (recorded === 'replay-mismatch') {
+            await observeHostedBillingFailure(observe, 'replay-mismatch', parsed.eventId);
+            return jsonError('replay-mismatch', 'The event id was already received with different bytes.', 409);
+          }
+          await observeHostedBillingFailure(observe, 'permanent-rejection', parsed.eventId);
           // A permanent content refusal is acknowledged (2xx) so Stripe does not retry it for days.
           return Response.json({ ok: true, outcome: recorded === 'duplicate' ? 'duplicate' : 'rejected', code: parsed.code });
         }
@@ -257,15 +373,52 @@ export function createHostedBillingRoutes(deps: HostedBillingRouteDependencies):
           planKeyForPrice,
         });
         if (result.outcome === 'replay-mismatch') {
+          await observeHostedBillingFailure(observe, 'replay-mismatch', parsed.event.eventId);
           return jsonError('replay-mismatch', 'The event id was already received with different bytes.', 409);
         }
+        if (result.outcome === 'rejected') await observeHostedBillingFailure(observe, 'permanent-rejection', parsed.event.eventId);
         return Response.json({ ok: true, outcome: result.outcome, ...(result.outcome === 'rejected' ? { code: result.code } : {}) });
       } catch {
         // Transient: a non-2xx makes Stripe redeliver, and the transaction left no partial state.
+        await observeHostedBillingFailure(observe, 'endpoint-store-unavailable', parsed.ok ? parsed.event.eventId : parsed.eventId);
         return jsonError('billing_store_unavailable', 'The event could not be recorded.', 503);
       }
     },
   };
 
-  return [plans, subscription, checkout, portal, webhook];
+  const usage: HostedBillingRoute = {
+    method: 'GET', path: '/hosted/billing/usage', auth: { capabilities: ['billing:manage'] },
+    async handler(req, ctx) {
+      const organizationId = organizationOf(ctx);
+      if (!organizationId || !ctx.principal) return jsonError('organization_required', 'An active organization is required.', 403);
+      const parameters = new URL(req.url).searchParams;
+      if ([...parameters.keys()].some(key => !['month', 'workspaceId'].includes(key))
+          || parameters.getAll('month').length > 1 || parameters.getAll('workspaceId').length > 1) {
+        return jsonError('invalid_usage_filter', 'Choose one month and an optional workspace.', 400);
+      }
+      const now = clock().getTime();
+      if (!Number.isSafeInteger(now) || now < 0) return jsonError('usage_unavailable', 'Usage could not be read.', 503);
+      const month = parameters.get('month') ?? new Date(now).toISOString().slice(0, 7);
+      const customerWorkspaceId = parameters.get('workspaceId');
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)
+          || (customerWorkspaceId !== null && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(customerWorkspaceId))) {
+        return jsonError('invalid_usage_filter', 'Choose a valid month and workspace.', 400);
+      }
+      if (!deps.usage) return jsonError('usage_unavailable', 'Usage is not configured.', 503);
+      const scope = Object.freeze({ controlWorkspaceId: ctx.principal.workspaceId, organizationId, customerWorkspaceId });
+      try {
+        const statement = await deps.usage(Object.freeze({ scope, month, asOfMs: now }));
+        if (statement.scope.controlWorkspaceId !== scope.controlWorkspaceId || statement.scope.organizationId !== organizationId
+            || statement.scope.customerWorkspaceId !== customerWorkspaceId || statement.month !== month || statement.asOfMs !== now
+            || (customerWorkspaceId !== null && [...statement.lines, ...statement.history].some(line => line.customerWorkspaceId !== customerWorkspaceId))) {
+          return jsonError('usage_unavailable', 'Usage could not be read.', 503);
+        }
+        return Response.json({ ok: true, statement: usageView(statement) }, { headers: { 'cache-control': 'no-store' } });
+      } catch {
+        return jsonError('usage_unavailable', 'Usage could not be read.', 503);
+      }
+    },
+  };
+
+  return [plans, subscription, checkout, portal, receipts, usage, webhook];
 }

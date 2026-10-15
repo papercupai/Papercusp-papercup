@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "public-blind-relay R-5: same-NAT peers connect through the default relay (committed harness scripts/relay/drill, defaults arm)",
+  "framework": "shell",
+  "command": ["bash", "scripts/relay/drill/run.sh"],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T18:38:20.032Z",
+  "finishedAt": "2026-10-01T18:40:19.103Z",
+  "summary": "Re-run of the R-5 live drill from the committed harness (scripts/relay/drill/run.sh + netns.sh + peer.mts, ported from the scratch relaydrill harness used at 16:22Z). Two peers in separate network namespaces behind the tower's one public IP with no route between them, joined to one hyperswarm topic through the shipped sync-relay module (resolveSyncRelayKeys(syncRelayKeyReader(undefined))). Both arms unset PAPERCUSP_VOICE_RELAY_KEYS. Control arm PAPERCUSP_RELAY_DEFAULTS=0: no relay key, never connects. Defaults arm PAPERCUSP_RELAY_DEFAULTS=1: the shipped default key b1015b56 is used and both peers record a relayed connection through the e2-micro relay. Plan public-blind-relay-2026-10-01 clause AUTO-BAR-R-5-P-004. Per-arm JSONL: .papercusp/scratch/relaydrill/out-committed/.",
+  "assertions": [
+    {
+      "id": "r5-control-never-connects",
+      "passed": true,
+      "evidence": "norelay arm: relay-config keys=[] ('relay fallback: NONE configured'); dials 1-3 all relayThrough=none and HOLEPUNCH_ABORTED; client ended dials=3 code=1 at t=63.1s (client_exit=1); server saw no connection"
+    },
+    {
+      "id": "r5-default-key-with-no-configuration",
+      "passed": true,
+      "evidence": "defaults arm with PAPERCUSP_VOICE_RELAY_KEYS unset: client and server relay-config keys=['b1015b56'] ('1 blind-relay key(s), used only after a direct holepunch fails')"
+    },
+    {
+      "id": "auto-bar-r-5-p-004",
+      "passed": true,
+      "evidence": "client: dial 1 direct HOLEPUNCH_ABORTED at t=9.1s, dial 2 relayThrough=set at t=16.6s, then connection relayed=true remote 34.61.108.176:49737 peer 6122a637 and data 'pong:ping-1790880011865', end code=0 at t=19.6s (client_exit=0); server: connection relayed=true remote 34.61.108.176:49737 peer 21552cbf and data 'ping-1790880011865' at t=31.6-32.6s"
+    },
+    {
+      "id": "r5-teardown-clean",
+      "passed": true,
+      "evidence": "DOWN ok; RULES_LEFT nat=0 fwd=0 ns=0; job exit 0"
+    }
+  ]
+}

@@ -8,6 +8,7 @@
  *      workspace-scoped, not per-pot, so they're left to avoid clobbering
  *      sibling hives — known limitation).
  *   2. cancel every live cup in the pot's home harness (+ its subtree).
+ *   2.9. delete the pot's per-hive green-checkpoint/release-trigger routines.
  *   3. deregister the home harness from the workspace registry.
  *   3.5. tear down the pot's learning loop — the dark gym autoloop row, the
  *      inactive scout routine, and the gym:<pot>/scout:<pot> governor
@@ -38,6 +39,7 @@ import { removeAllHiveMembers } from '../../hive-membership-store';
 import { resolveFederatedPotScope } from '../../federated-pot-scope';
 import { requirePotTier } from '../../pot/member-tier-gate';
 import { teardownPotLearningLoop } from '../../pot/provision-learning-loop';
+import { teardownHiveReleaseRoutines } from '../../harness/routines/seed-hive-release-routines';
 import { releaseHiveDesktop } from '../computer/desktop-lease';
 import { resolvePot } from './_resolve';
 
@@ -177,6 +179,22 @@ export default defineTool({
       steps.membershipError = (e instanceof Error ? e.message : String(e)).slice(0, 200);
       console.warn(
         `[pot:dissolve] hive_members teardown for ${pot.slug} failed (dissolve unaffected): ${e instanceof Error ? e.message : e}`,
+      );
+    }
+
+    // 2.9. Remove the per-hive release routines before deregistration. Once the
+    // registry entry is gone, the normal release-state reader can no longer
+    // resolve this install and the still-active routine only emits routing-skipped
+    // observations. Best-effort: preserve dissolve's teardown contract on DB errors.
+    try {
+      const releaseRoutines = await teardownHiveReleaseRoutines({ sql, workspaceId, potSlug: pot.slug });
+      steps.releaseRoutinesTornDown = true;
+      steps.releaseRoutinesDeleted = releaseRoutines.deleted;
+    } catch (e) {
+      steps.releaseRoutinesTornDown = false;
+      steps.releaseRoutinesError = (e instanceof Error ? e.message : String(e)).slice(0, 200);
+      console.warn(
+        `[pot:dissolve] release-routine teardown for ${pot.slug} failed (dissolve unaffected): ${e instanceof Error ? e.message : e}`,
       );
     }
 

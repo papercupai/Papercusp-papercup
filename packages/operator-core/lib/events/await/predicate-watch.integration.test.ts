@@ -801,5 +801,40 @@ describe('predicate watches (real PG)', () => {
       expect(await step(row.id, 'green')).toMatchObject({ matched: true, fired: true });
       expect(h.emits).toHaveLength(2);
     });
+
+    /**
+     * EI-25217293871529814 — the measured false wake, through the real store. One
+     * evaluator's absent read (a degraded payload missing the path; no throw, so the
+     * error path never ran) was persisted as an established null baseline, and its
+     * next present read fired `changed from null` while the value never moved.
+     */
+    it('an absent read is never persisted as a `changed` baseline', async () => {
+      const { row } = await seedWatch({ once: false, awaitOnce: false, op: 'changed', value: null, path: 'verdict' });
+      as('3070');
+      expect(await step(row.id, 'awaiting-gate')).toMatchObject({ fired: false });
+      expect(await step(row.id, null)).toMatchObject({ fired: false });
+      expect(await step(row.id, undefined)).toMatchObject({ fired: false });
+      expect(await step(row.id, 'awaiting-gate'), 'A → absent → A is not a change').toMatchObject({ fired: false });
+
+      // A fresh evaluator (a host restarted onto new code) whose FIRST read is absent.
+      as('3170');
+      expect(await step(row.id, null)).toMatchObject({ fired: false });
+      const afterAbsent = (await pw.getPredicateWatch(row.id))!;
+      expect(Object.keys(afterAbsent.evaluatorBaselines).some((k) => k.startsWith('port-3170@'))).toBe(false);
+      expect(await step(row.id, 'awaiting-gate'), 'its first present read establishes, not fires').toMatchObject({
+        fired: false,
+      });
+      expect(h.emits).toHaveLength(0);
+
+      // POSITIVE CONTROL — a real move after an absent read still fires, from the last PRESENT value.
+      as('3070');
+      expect(await step(row.id, null)).toMatchObject({ fired: false });
+      expect(await step(row.id, 'in-main')).toMatchObject({ matched: true, fired: true });
+      expect(h.emits).toHaveLength(1);
+      expect(h.emits[0].payload).toMatchObject({
+        observed: 'in-main',
+        predicate: { op: 'changed', changedFrom: 'awaiting-gate' },
+      });
+    });
   });
 });

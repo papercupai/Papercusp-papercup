@@ -37,7 +37,7 @@ export function CanvasView({ slug }: Props) {
 
   // Eager Zero subscription — replaces the lazy REST fetch so the canvas
   // hydrates same-frame on open instead of after a round trip.
-  const { data: brainstormRows } = useSyncQuery<BrainstormRow>({
+  const { data: brainstormRows, loading, error } = useSyncQuery<BrainstormRow>({
     queryName: 'harnessBrainstorm.byHarness',
     args: { harnessSlug: slug },
     enabled: !!slug,
@@ -48,20 +48,23 @@ export function CanvasView({ slug }: Props) {
   );
 
   useEffect(() => {
-    if (brainstormRows === undefined) return; // still loading
+    // A pending/failed Sync read can carry []; it is not a writable empty
+    // scene. Excalidraw must first mount with the completed saved scene.
+    if (loading || error || brainstormRows === undefined) return;
     const canvas = brainstormRow?.canvas as SceneFile | null | undefined;
     setScene(canvas ?? { elements: [], appState: {}, files: {} });
     setLoaded(true);
-  }, [brainstormRow, brainstormRows]);
+  }, [brainstormRow, brainstormRows, loading, error]);
 
   useEffect(() => {
     saveRef.current = debounce(async (s: SceneFile) => {
       try {
-        await fetch(`/api/harness/${slug}/brainstorm-canvas`, {
+        const response = await fetch(`/api/harness/${slug}/brainstorm-canvas`, {
           method: 'PUT',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ scene: s }),
         });
+        if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
       } catch (e: any) {
         toast.error(`Canvas save failed: ${e?.message ?? e}`);
       }

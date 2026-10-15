@@ -1,12 +1,13 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createCandidateVersionVerdict, runOptimizationLoop, type LoopConfig, type LoopDeps, type LoopProposalRecord } from '../loop';
-import type { VariantEval } from '../gate-engine';
+import { decideAccept, type VariantEval } from '../gate-engine';
 import type { CandidateProposal } from '../proposer';
 import { LlmCallError } from '@papercusp/testing-shell/llm';
 import type { TurnError } from '../../agent-chat-stream';
+import type { GateResult } from '../gates';
 
 const rateLimited = (resetAt?: number): LlmCallError =>
-  new LlmCallError({ class: 'rate_limited', message: '429', provider: 'anthropic', retryable: true, ...(resetAt !== undefined ? { resetAt } : {}) } as TurnError);
+  Object.assign(new LlmCallError({ class: 'rate_limited', message: '429', provider: 'anthropic', retryable: true, ...(resetAt !== undefined ? { resetAt } : {}) } as TurnError), { costUsd: 0 });
 
 /**
  * Continuous loop driver (P-022): select parent → propose → evaluate → gate →
@@ -65,6 +66,43 @@ function baseDeps(over: Partial<LoopDeps> = {}): { d: LoopDeps; calls: string[] 
 }
 
 describe('runOptimizationLoop', () => {
+  it('retains the evaluated candidate, distinct parent and champion, run identities and gate configuration', async () => {
+    const recorded: LoopProposalRecord[] = [];
+    const evaluations = new Map<string, { evalResult: VariantEval; runIds: string[]; costUsd: number }>();
+    const { d } = baseDeps({
+      async evaluate(variantId) {
+        const agg = variantId === 'baseline' ? 7 : variantId === 'cand-1' ? 7.5 : 8;
+        const evaluation = {
+          evalResult: { ...evalOf(variantId, agg), trainVector: variantId === 'baseline' ? [7, 7] : [agg + 1, agg - 1] },
+          runIds: [`run:${variantId}`], costUsd: agg / 10,
+        };
+        evaluations.set(variantId, evaluation);
+        return { ...evaluation, worstTraces: [] };
+      },
+      recordProposal: async (record) => { recorded.push(record); },
+    });
+    await runOptimizationLoop({ ...config, maxCycles: 2 }, d);
+    const baseline = evaluations.get('baseline')!;
+    const first = evaluations.get('cand-1')!;
+    const second = evaluations.get('cand-2')!;
+    // Both variants remain on the frontier: the lower-fitness baseline is the
+    // second parent, while the accepted first candidate is the champion.
+    expect(recorded[1].parentId).toBe('baseline');
+    expect(recorded[1].candidateVersion).toMatchObject({
+      evaluation: { candidate: second, parent: baseline, champion: first,
+        thresholds: config.thresholds, baselineMeanCost: config.baselineMeanCost },
+      hashes: { evaluationHash: expect.stringMatching(/^[0-9a-f]{64}$/) },
+    });
+    expect(recorded[1].candidateVersion.gateResults).toEqual(
+      decideAccept(second.evalResult, baseline.evalResult, first.evalResult, config.baselineMeanCost, config.thresholds).results,
+    );
+    const retained = JSON.stringify(recorded[1].candidateVersion);
+    second.evalResult.trainVector[0] = -100;
+    baseline.runIds.push('later-run');
+    first.evalResult.probeEvidence = { ...MEASURED_PASS, status: 'not-measured' };
+    expect(JSON.stringify(recorded[1].candidateVersion)).toBe(retained);
+  });
+
   it('runs maxCycles, accepts improving candidates, and promotes the champion', async () => {
     const { d, calls } = baseDeps();
     const res = await runOptimizationLoop(config, d);
@@ -109,6 +147,56 @@ describe('runOptimizationLoop', () => {
     // baseline eval (1.0) + ~1 candidate cycle (1.0) ≈ budget 2.0
     expect(res.cycles).toBeLessThanOrEqual(2);
     expect(res.spentUsd).toBeGreaterThanOrEqual(2.0);
+  });
+
+  it.each([0, -0])('does not dispatch even the baseline with a zero budget (%s)', async (budgetUsd) => {
+    const archive: string[] = [];
+    const { d, calls } = baseDeps({
+      recordArchive: async (record) => { archive.push(record.variantId); },
+    });
+    const result = await runOptimizationLoop({ ...config, budgetUsd }, d);
+    expect(result).toEqual({
+      cycles: 0, accepts: 0, championId: 'baseline', spentUsd: 0,
+      breakerTripped: false, skipped: 0, skipReasons: [],
+    });
+    expect(calls).toEqual([]);
+    expect(archive).toEqual([]);
+  });
+
+  it.each([-1, NaN, Infinity, -Infinity])('rejects an invalid budget before dispatch (%s)', async (budgetUsd) => {
+    const { d, calls } = baseDeps();
+    await expect(runOptimizationLoop({ ...config, budgetUsd }, d)).rejects.toMatchObject({
+      name: 'RangeError', message: 'Gym budgetUsd must be null or a finite nonnegative number', costUsd: 0,
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it('stops before proposing when the baseline consumes the budget', async () => {
+    const { d, calls } = baseDeps();
+    const result = await runOptimizationLoop({ ...config, budgetUsd: 1 }, d);
+    expect(calls).toEqual(['eval:baseline']);
+    expect(result).toMatchObject({ cycles: 0, spentUsd: 1, accepts: 0 });
+  });
+
+  it.each([1, 1.25])('retains proposer spend and stops before candidate evaluation when the cap is reached ($%s)', async (costUsd) => {
+    const archives: string[] = [];
+    const { d, calls } = baseDeps({
+      async propose() {
+        calls.push('propose');
+        return { overlay: { promptOverrides: { worker: 'improved' } }, rationale: 'better', diffFromParent: 'worker', costUsd };
+      },
+      recordArchive: async (record) => { archives.push(record.variantId); },
+      newVariantId: () => { calls.push('new-id'); return 'candidate'; },
+      recordProposal: async () => { calls.push('record-proposal'); },
+    });
+    const result = await runOptimizationLoop({ ...config, budgetUsd: 2, maxCycles: 99 }, d);
+    expect(calls).toEqual(['eval:baseline', 'propose']);
+    expect(archives).toEqual(['baseline']);
+    expect(result).toMatchObject({
+      cycles: 1, accepts: 0, championId: 'baseline', spentUsd: 1 + costUsd,
+      breakerTripped: false, skipped: 1,
+      skipReasons: ['cycle 1: budget exhausted after proposer; candidate evaluation not dispatched'],
+    });
   });
 
   it('charges proposer spend before a successful evaluation is settled', async () => {
@@ -201,6 +289,8 @@ describe('runOptimizationLoop', () => {
       provenance: { evaluatorHash: 'e', rubricHash: 'r', taskHash: 't', codeHash: 'c' },
     });
     expect(verdict.verdict).toBe('reject');
+    expect(verdict).not.toHaveProperty('evaluation');
+    expect(verdict.hashes).not.toHaveProperty('evaluationHash');
     expect(verdict.hashes).toEqual({
       variantHash: expect.stringMatching(/^[0-9a-f]{64}$/),
       parentHash: expect.stringMatching(/^[0-9a-f]{64}$/),
@@ -209,6 +299,65 @@ describe('runOptimizationLoop', () => {
       taskHash: 't',
       codeHash: 'c',
     });
+  });
+
+  it('retains the hashed candidate, rollback target and nested gate artifacts after caller mutation', () => {
+    const input = {
+      candidateId: 'cand-1', parentId: 'baseline', recordedAt: 1,
+      variant: { promptOverrides: { worker: 'evaluated' }, models: { worker: 'student' } },
+      parent: { promptOverrides: { worker: 'rollback' }, models: { worker: 'parent-model' } },
+      gateResults: [{ gate: 'no-new-regressions', pass: true, status: 'pass', detail: 'measured',
+        evidence: { status: 'pass', coverage: { required: 1, measured: 1, unmeasuredTaskIds: [] },
+          artifacts: ['trace://original'] } }] as GateResult[],
+      provenance: { evaluatorHash: 'e', rubricHash: 'r', taskHash: 't', codeHash: 'c' },
+    };
+    const receipt = createCandidateVersionVerdict(input);
+    const original = JSON.stringify(receipt);
+    input.variant.promptOverrides.worker = 'unevaluated';
+    input.variant.models.worker = 'other-model';
+    input.parent.promptOverrides.worker = 'different-rollback';
+    input.parent.models.worker = 'other-parent-model';
+    input.provenance.codeHash = 'other-code';
+    input.gateResults[0].status = 'fail';
+    input.gateResults[0].evidence!.coverage.measured = 0;
+    (input.gateResults[0].evidence!.coverage.unmeasuredTaskIds as string[]).push('missing-task');
+    (input.gateResults[0].evidence!.artifacts as string[]).push('trace://replacement');
+    input.gateResults.push({ gate: 'cost', pass: false, status: 'fail', detail: 'late gate' });
+    expect(JSON.stringify(receipt)).toBe(original);
+    expect(Object.isFrozen(input.variant)).toBe(false);
+    expect(Object.isFrozen(input.gateResults[0].evidence!.artifacts)).toBe(false);
+  });
+
+  it('refuses to rewrite any nested part of a returned candidate receipt', () => {
+    const receipt = createCandidateVersionVerdict({
+      candidateId: 'cand-1', parentId: 'baseline', recordedAt: 1,
+      variant: { promptOverrides: { worker: 'evaluated' }, models: { worker: 'student' } },
+      parent: { promptOverrides: { worker: 'rollback' } },
+      gateResults: [{ gate: 'no-new-regressions', pass: true, status: 'pass', detail: 'measured',
+        evidence: { status: 'pass', coverage: { required: 1, measured: 1, unmeasuredTaskIds: [] },
+          artifacts: ['trace://original'] } }],
+    });
+    expect(() => { receipt.variant.promptOverrides.worker = 'unevaluated'; }).toThrow(TypeError);
+    expect(() => { receipt.variant.models!.worker = 'other-model'; }).toThrow(TypeError);
+    expect(() => { receipt.parent.promptOverrides.worker = 'different-rollback'; }).toThrow(TypeError);
+    expect(() => { receipt.hashes.variantHash = 'other-hash'; }).toThrow(TypeError);
+    expect(() => { receipt.gateResults[0].evidence!.coverage.measured = 0; }).toThrow(TypeError);
+    expect(() => { (receipt.gateResults[0].evidence!.artifacts as string[]).push('trace://other'); }).toThrow(TypeError);
+    expect(() => { receipt.verdict = 'reject'; }).toThrow(TypeError);
+    expect(receipt.hashes.codeHash).toBe('unresolved');
+  });
+
+  it('keeps the loop proposal receipt separate from mutable prompt and rollback views', async () => {
+    const recorded: LoopProposalRecord[] = [];
+    const { d } = baseDeps({ recordProposal: async (record) => { recorded.push(record); } });
+    await runOptimizationLoop({ ...config, maxCycles: 1, autoPromote: false }, d);
+    const record = recorded[0];
+    const original = JSON.stringify(record.candidateVersion);
+    record.overlay.promptOverrides.worker = 'later-edit';
+    record.parentOverlay.promptOverrides.worker = 'later-parent-edit';
+    expect(JSON.stringify(record.candidateVersion)).toBe(original);
+    expect(record.candidateVersion.variant.promptOverrides.worker).toBe('improved');
+    expect(record.candidateVersion.parent.promptOverrides.worker).toBeUndefined();
   });
 
   it('still auto-promotes by default (autoPromote undefined) + records when the dep is present', async () => {
@@ -256,6 +405,37 @@ describe('runOptimizationLoop', () => {
     expect(res.skipped).toBe(0);
     expect(clock).toBe(5000); // waited out the reset
     expect(res.cycles).toBe(1);
+  });
+
+  it.each([{}, { costUsd: 0.23 }, { costUsd: 0.23, costUsdMeasurementMissing: true }])(
+    'preserves unsafe baseline rate-limit usage rather than replaying the evaluation: %j', async usage => {
+      const failure = Object.assign(new LlmCallError({ class: 'rate_limited', message: '429', retryAfterMs: 1 }), usage);
+      const sleep = vi.fn(async () => {});
+      const evaluate = vi.fn().mockRejectedValueOnce(failure).mockResolvedValue({
+        evalResult: evalOf('baseline', 7), worstTraces: [], costUsd: 0.02,
+      });
+      const { d } = baseDeps({ evaluate, sleep, now: () => 0 });
+      await expect(runOptimizationLoop({ ...config, maxCycles: 1 }, d)).rejects.toBe(failure);
+      expect(evaluate).toHaveBeenCalledTimes(1);
+      expect(sleep).not.toHaveBeenCalled();
+    },
+  );
+
+  it('charges a failed candidate subtotal without replaying previously completed work', async () => {
+    const failure = Object.assign(rateLimited(5000), { costUsd: 0.23 });
+    const sleep = vi.fn(async () => {});
+    let candidateCalls = 0;
+    const { d } = baseDeps({
+      now: () => 0, sleep,
+      async evaluate(variantId) {
+        if (variantId !== 'baseline' && candidateCalls++ === 0) throw failure;
+        return { evalResult: evalOf(variantId, 7.5), worstTraces: [], costUsd: 1 };
+      },
+    });
+    const result = await runOptimizationLoop({ ...config, maxCycles: 1 }, d);
+    expect(candidateCalls).toBe(1);
+    expect(result).toMatchObject({ spentUsd: 1.23, skipped: 1, accepts: 0 });
+    expect(sleep).not.toHaveBeenCalled();
   });
 
   it('skips a cycle on a NON-rate propose error (never crashes)', async () => {

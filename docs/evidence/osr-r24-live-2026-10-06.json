@@ -1,0 +1,504 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-24: the hosted cloud tier provisions no service-owned Anthropic credentials into a customer workspace",
+  "framework": "operational",
+  "command": [
+    "python3 .papercusp/scratch/osr/r1006/r24-live-v2.py (HTTP probes of the running :3880 hosted runtime; mounted-route census of hosted-runtime.ts; live papercusp DB census via sudo -n -u postgres psql)"
+  ],
+  "startedAt": "2026-10-06T12:07:47.029428Z",
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "R-24",
+  "specIds": [
+    "AUTO-BAR-R-24-P-016",
+    "AUTO-BAR-R-24-P-019"
+  ],
+  "decision": "open-source-release-2026-09-29#D-024",
+  "subjectCommit": "72f1e3cdbd965945216a036d48e5a5e3fb78cd3f",
+  "workItemId": "WI-10003960",
+  "servingObservation": {
+    "url": "http://127.0.0.1:3880/api/health",
+    "status": 200,
+    "body": {
+      "ok": true,
+      "service": "papercusp-operator",
+      "sha": "2041f3e9c7",
+      "version": "0.0.1",
+      "ts": "2026-10-06T12:07:47.051Z"
+    }
+  },
+  "mountedRouteControl": {
+    "method": "GET",
+    "path": "/api/hosted/auth/session",
+    "status": 401,
+    "contentType": "application/json",
+    "expect": "anything but 404 (the route is mounted; unauthenticated is fine)"
+  },
+  "unmountedNegativeControl": {
+    "path": "/api/workspace-hosts/r24-probe/no-such-route-r24",
+    "status": 404,
+    "contentType": "text/plain; charset=UTF-8",
+    "expect": 404
+  },
+  "forbidden": [
+    {
+      "method": "POST",
+      "path": "/api/workspace-hosts/host-3daf37098c8096b5d9e0ac72/agent-credentials",
+      "status": 404,
+      "contentType": "text/plain; charset=UTF-8",
+      "expect": 404,
+      "ok": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/workspace-hosts/host-3daf37098c8096b5d9e0ac72/canary",
+      "status": 404,
+      "contentType": "text/plain; charset=UTF-8",
+      "expect": 404,
+      "ok": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/workspace-hosts/host-3daf37098c8096b5d9e0ac72/credential-lifecycle",
+      "status": 404,
+      "contentType": "text/plain; charset=UTF-8",
+      "expect": 404,
+      "ok": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/workspace-hosts/host-3daf37098c8096b5d9e0ac72/credential-lifecycle",
+      "status": 404,
+      "contentType": "text/plain; charset=UTF-8",
+      "expect": 404,
+      "ok": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/workspace-hosts/host-3daf37098c8096b5d9e0ac72/initialize",
+      "status": 404,
+      "contentType": "text/plain; charset=UTF-8",
+      "expect": 404,
+      "ok": true
+    }
+  ],
+  "mountedRouteCensus": {
+    "source": "packages/operator-core/lib/endpoint-route/hosted-runtime.ts",
+    "sourceBlob": "6121aae18ba1c41aec0a9b829a9591aa434f13bc",
+    "keyCount": 40,
+    "keys": [
+      "GET /health",
+      "GET /health/ready",
+      "POST /auth/workos/webhook",
+      "GET /hosted/browser/rest-query",
+      "GET /hosted/browser/sse",
+      "POST /hosted/browser/workspace-hosts/connection",
+      "POST /hosted/browser/workspace-hosts/provision",
+      "POST /hosted/browser/workspace-hosts/action",
+      "POST /hosted/browser/onboarding/first-workspace",
+      "POST /hosted/browser/onboarding/select-workspace",
+      "GET /hosted/browser/onboarding/tutorial-progress",
+      "POST /hosted/browser/onboarding/tutorial-progress",
+      "POST /hosted/browser/onboarding/tutorial-help",
+      "POST /hosted/browser/onboarding/tutorial-speech",
+      "POST /hosted/workspaces/:workspaceId/connectors/enroll",
+      "POST /hosted/workspaces/:workspaceId/connectors/rotate",
+      "POST /hosted/workspaces/:workspaceId/connectors/revoke",
+      "POST /hosted/workspaces/:workspaceId/connectors/session-ticket",
+      "POST /hosted/connectors/register",
+      "POST /hosted/connectors/heartbeat",
+      "GET /hosted/connectors/events",
+      "GET /hosted/connectors/socket",
+      "POST /hosted/workspaces/:workspaceId/provider-delegations/onboard",
+      "POST /hosted/workspaces/:workspaceId/provider-delegations/verify",
+      "POST /hosted/workspaces/:workspaceId/provider-delegations/rotate",
+      "POST /hosted/workspaces/:workspaceId/provider-delegations/revoke",
+      "POST /hosted/cli/device/code",
+      "GET /hosted/cli/device",
+      "POST /hosted/cli/device/decision",
+      "POST /hosted/cli/device/token",
+      "GET /hosted/cli/workspaces",
+      "POST /hosted/cli/workspaces/:workspaceId/terminal",
+      "POST /hosted/cli/logout",
+      "POST /hosted/relay/device/code",
+      "POST /hosted/relay/device/token",
+      "POST /hosted/relay/unlink",
+      "GET /hosted/auth/sign-in",
+      "GET /hosted/auth/callback",
+      "POST /hosted/auth/logout",
+      "GET /hosted/auth/session"
+    ],
+    "forbiddenProducerKeys": [],
+    "bootTimeExactMatchAssertionPresent": true,
+    "credentialTouchingKeys": {
+      "provider-delegations (customer supplies own provider key)": [
+        "POST /hosted/workspaces/:workspaceId/provider-delegations/onboard",
+        "POST /hosted/workspaces/:workspaceId/provider-delegations/verify",
+        "POST /hosted/workspaces/:workspaceId/provider-delegations/rotate",
+        "POST /hosted/workspaces/:workspaceId/provider-delegations/revoke"
+      ],
+      "cli device grant (customer signs in with the CLI)": [
+        "POST /hosted/cli/device/code",
+        "GET /hosted/cli/device",
+        "POST /hosted/cli/device/decision",
+        "POST /hosted/cli/device/token",
+        "GET /hosted/cli/workspaces",
+        "POST /hosted/cli/workspaces/:workspaceId/terminal",
+        "POST /hosted/cli/logout"
+      ],
+      "relay device grant (local install link)": [
+        "POST /hosted/relay/device/code",
+        "POST /hosted/relay/device/token",
+        "POST /hosted/relay/unlink"
+      ]
+    },
+    "hostedBringUpAgents": {
+      "source": "packages/operator-core/lib/workspace-host/hosted-bring-up.ts",
+      "value": "'omp'"
+    }
+  },
+  "dbCensus": {
+    "customerWorkspaces": [
+      {
+        "kind": "hosted",
+        "state": "active",
+        "deleted": false,
+        "n": 4
+      },
+      {
+        "kind": "hosted",
+        "state": "deleted",
+        "deleted": true,
+        "n": 7
+      },
+      {
+        "kind": "linked",
+        "state": "active",
+        "deleted": false,
+        "n": 4
+      },
+      {
+        "kind": "linked",
+        "state": "deleted",
+        "deleted": true,
+        "n": 4
+      }
+    ],
+    "customerBoundHosts": [
+      {
+        "display_name": "P-029 Acceptance Workspace",
+        "kind": "hosted",
+        "state": "deleted",
+        "created_by_principal_kind": "system",
+        "host_id": "p018-canary-20260905-r7"
+      },
+      {
+        "display_name": "D-399 e2e probe",
+        "kind": "hosted",
+        "state": "deleted",
+        "created_by_principal_kind": "user",
+        "host_id": "host-1baae2daeac913bf4e8042f3"
+      },
+      {
+        "display_name": "D-399 e2e probe",
+        "kind": "hosted",
+        "state": "deleted",
+        "created_by_principal_kind": "user",
+        "host_id": "host-3b44551202aa97c3c3048660"
+      },
+      {
+        "display_name": "D-401 e2e probe",
+        "kind": "hosted",
+        "state": "deleted",
+        "created_by_principal_kind": "user",
+        "host_id": "host-2f6a4b0c6dc222d8d20766ae"
+      },
+      {
+        "display_name": "D-403 e2e probe",
+        "kind": "hosted",
+        "state": "deleted",
+        "created_by_principal_kind": "user",
+        "host_id": "host-fa543ae0f9de0837d1be8787"
+      },
+      {
+        "display_name": "avi-test",
+        "kind": "hosted",
+        "state": "active",
+        "created_by_principal_kind": "user",
+        "host_id": "host-3daf37098c8096b5d9e0ac72"
+      },
+      {
+        "display_name": "D-405 e2e probe",
+        "kind": "hosted",
+        "state": "active",
+        "created_by_principal_kind": "user",
+        "host_id": "host-560adc2a196edd88206fb582"
+      },
+      {
+        "display_name": "D-405 e2e probe",
+        "kind": "hosted",
+        "state": "active",
+        "created_by_principal_kind": "user",
+        "host_id": "host-90866b9b8016c4d1dca7c91a"
+      },
+      {
+        "display_name": "Linked host 1",
+        "kind": "linked",
+        "state": "active",
+        "created_by_principal_kind": "user",
+        "host_id": "linked-lw-adbc37e33a27bc8efb01992b"
+      },
+      {
+        "display_name": "Linked host 2",
+        "kind": "linked",
+        "state": "deleted",
+        "created_by_principal_kind": "user",
+        "host_id": "linked-lw-aa87b4a9bf31ea74cb7039c5"
+      },
+      {
+        "display_name": "Linked host 3",
+        "kind": "linked",
+        "state": "active",
+        "created_by_principal_kind": "user",
+        "host_id": "linked-lw-624d62853b77a8cc86db1f10"
+      },
+      {
+        "display_name": "Linked host 4",
+        "kind": "linked",
+        "state": "deleted",
+        "created_by_principal_kind": "user",
+        "host_id": "linked-lw-b04b6599a05891f5977762b0"
+      },
+      {
+        "display_name": "Linked host 5",
+        "kind": "linked",
+        "state": "deleted",
+        "created_by_principal_kind": "user",
+        "host_id": "linked-lw-afab0cc64cc954e7082a7ef3"
+      },
+      {
+        "display_name": "Linked host 6",
+        "kind": "linked",
+        "state": "active",
+        "created_by_principal_kind": "user",
+        "host_id": "linked-lw-c019813316141c7995c35805"
+      },
+      {
+        "display_name": "Linked host 7",
+        "kind": "linked",
+        "state": "deleted",
+        "created_by_principal_kind": "user",
+        "host_id": "linked-lw-a676a292fc9039b797feb759"
+      },
+      {
+        "display_name": "P-014 leg (a) hosted",
+        "kind": "hosted",
+        "state": "active",
+        "created_by_principal_kind": "user",
+        "host_id": "host-2802cefffb052f989eae2969"
+      },
+      {
+        "display_name": "Linked host 8",
+        "kind": "linked",
+        "state": "active",
+        "created_by_principal_kind": "user",
+        "host_id": "linked-lw-a44dc511442db68fdaa45e29"
+      },
+      {
+        "display_name": "P-016 canary",
+        "kind": "hosted",
+        "state": "deleted",
+        "created_by_principal_kind": "user",
+        "host_id": "host-0f9b1ba8db30d143becc130a"
+      },
+      {
+        "display_name": "P-017 J5 canary",
+        "kind": "hosted",
+        "state": "deleted",
+        "created_by_principal_kind": "user",
+        "host_id": "host-19ff2a97befd83b51d2306fd"
+      }
+    ],
+    "agentCredentialAdmissionsOnCustomerBoundHosts": [
+      {
+        "display_name": "P-029 Acceptance Workspace",
+        "host_id": "p018-canary-20260905-r7",
+        "action": "initialize",
+        "status": "failed",
+        "created_at": "2026-09-05T16:00:11.193014-04:00",
+        "admission_family": "",
+        "bind_step_delivery": "encrypted-reference"
+      },
+      {
+        "display_name": "P-029 Acceptance Workspace",
+        "host_id": "p018-canary-20260905-r7",
+        "action": "initialize",
+        "status": "failed",
+        "created_at": "2026-09-06T11:09:21.963583-04:00",
+        "admission_family": "",
+        "bind_step_delivery": "encrypted-reference"
+      },
+      {
+        "display_name": "P-029 Acceptance Workspace",
+        "host_id": "p018-canary-20260905-r7",
+        "action": "initialize",
+        "status": "failed",
+        "created_at": "2026-09-06T15:00:33.640188-04:00",
+        "admission_family": "",
+        "bind_step_delivery": "encrypted-reference"
+      },
+      {
+        "display_name": "P-029 Acceptance Workspace",
+        "host_id": "p018-canary-20260905-r7",
+        "action": "initialize",
+        "status": "failed",
+        "created_at": "2026-09-06T19:28:22.283167-04:00",
+        "admission_family": "",
+        "bind_step_delivery": "encrypted-reference"
+      },
+      {
+        "display_name": "P-029 Acceptance Workspace",
+        "host_id": "p018-canary-20260905-r7",
+        "action": "initialize",
+        "status": "failed",
+        "created_at": "2026-09-06T19:38:11.782429-04:00",
+        "admission_family": "",
+        "bind_step_delivery": "encrypted-reference"
+      },
+      {
+        "display_name": "P-029 Acceptance Workspace",
+        "host_id": "p018-canary-20260905-r7",
+        "action": "initialize",
+        "status": "failed",
+        "created_at": "2026-09-06T21:38:02.515291-04:00",
+        "admission_family": "",
+        "bind_step_delivery": "encrypted-reference"
+      },
+      {
+        "display_name": "P-029 Acceptance Workspace",
+        "host_id": "p018-canary-20260905-r7",
+        "action": "initialize",
+        "status": "failed",
+        "created_at": "2026-09-07T01:37:57.930054-04:00",
+        "admission_family": "",
+        "bind_step_delivery": "encrypted-reference"
+      },
+      {
+        "display_name": "avi-test",
+        "host_id": "host-3daf37098c8096b5d9e0ac72",
+        "action": "initialize",
+        "status": "succeeded",
+        "created_at": "2026-09-25T22:15:55.052613-04:00",
+        "admission_family": "agent-forwarded-reference",
+        "bind_step_delivery": "forwarded-agent"
+      },
+      {
+        "display_name": "avi-test",
+        "host_id": "host-3daf37098c8096b5d9e0ac72",
+        "action": "initialize",
+        "status": "succeeded",
+        "created_at": "2026-09-26T13:30:25.133893-04:00",
+        "admission_family": "agent-forwarded-reference",
+        "bind_step_delivery": "forwarded-agent"
+      },
+      {
+        "display_name": "avi-test",
+        "host_id": "host-3daf37098c8096b5d9e0ac72",
+        "action": "initialize",
+        "status": "succeeded",
+        "created_at": "2026-09-26T14:36:08.280756-04:00",
+        "admission_family": "agent-forwarded-reference",
+        "bind_step_delivery": "forwarded-agent"
+      }
+    ],
+    "agentRevocationsOnCustomerBoundHosts": [
+      {
+        "display_name": "avi-test",
+        "host_id": "host-3daf37098c8096b5d9e0ac72",
+        "operation_id": "osr-r24-avi-test-revoke-agent-20261006-1",
+        "status": "succeeded",
+        "created_at": "2026-10-06T08:03:07.068582-04:00",
+        "finished_at": "2026-10-06T08:03:31.556163-04:00",
+        "message": "Workspace host credential lifecycle 'revoke' completed (2 steps)",
+        "revokes_agent": true,
+        "verifies_agent_revoked": true
+      }
+    ]
+  },
+  "disclosure": {
+    "thirdPartyCustomers": 0,
+    "basis": "every customer_workspaces row was created by the owner or by agents for testing (D-024)",
+    "preGuardException": {
+      "workspace": "avi-test",
+      "hostId": "host-3daf37098c8096b5d9e0ac72",
+      "what": "the owner's own single-workspace test org received this box's operator-home-file Claude/Codex login (agent-forwarded-reference) via initialize on 2026-09-26, before the guard existed",
+      "disposition": "revoked by osr-r24-avi-test-revoke-agent-20261006-1 at 2026-10-06T08:03:31.556163-04:00 (D-031, supersedes D-024 ruling 2)"
+    },
+    "succeededAgentAdmissionsByWorkspace": [
+      "avi-test"
+    ],
+    "failedOnlyAttempts": [
+      "P-029 Acceptance Workspace"
+    ],
+    "revocationByHost": {
+      "host-3daf37098c8096b5d9e0ac72": {
+        "lastSucceededAdmissionAt": "2026-09-26T14:36:08.280756-04:00",
+        "revokedBy": "osr-r24-avi-test-revoke-agent-20261006-1",
+        "revokedAt": "2026-10-06T08:03:31.556163-04:00"
+      }
+    }
+  },
+  "decisions": [
+    "open-source-release-2026-09-29#D-024",
+    "open-source-release-2026-09-29#D-031"
+  ],
+  "producerGuard": {
+    "route": "POST /workspace-hosts/:hostId/agent-credentials",
+    "refusal": "409 customer_workspace_service_credential_refused for any non-absent slot source on a customer-bound host (deleted rows included), before any source is read, dry run included; 503 customer_binding_unverified when the binding read fails",
+    "source": {
+      "path": "packages/operator-core/lib/endpoint-route/routes/workspace-hosts/agent-credentials.ts",
+      "sha256": "82cb7a1d0980befd5be48d74b6a7288fd5bd9fc319688476763a5bd0851c49e1"
+    },
+    "test": {
+      "path": "packages/operator-core/lib/endpoint-route/routes/workspace-hosts/agent-credentials.test.ts",
+      "sha256": "098bb8ed95023915e06c86a9f8c2c173505441b36e303bb8882c3c6f317fd45c"
+    }
+  },
+  "finishedAt": "2026-10-06T12:07:47.775598Z",
+  "failures": [],
+  "status": "pass",
+  "exitCode": 0,
+  "assertions": [
+    {
+      "id": "positive-controls",
+      "passed": true,
+      "evidence": "/api/health 200 (sha 2041f3e9c7); mounted /api/hosted/auth/session 401; unmounted control 404"
+    },
+    {
+      "id": "producer-routes-unmounted",
+      "passed": true,
+      "evidence": "POST agent-credentials -> 404; POST canary -> 404; GET credential-lifecycle -> 404; POST credential-lifecycle -> 404; POST initialize -> 404"
+    },
+    {
+      "id": "mounted-census-has-no-producer",
+      "passed": true,
+      "evidence": "40 boot-asserted mounted keys; producer keys: none; customer credentials only via provider-delegations or the CLI device grant"
+    },
+    {
+      "id": "service-agent-credentials-revoked",
+      "passed": true,
+      "evidence": "host-3daf37098c8096b5d9e0ac72: last admission 2026-09-26T14:36:08.280756-04:00, revoked by osr-r24-avi-test-revoke-agent-20261006-1 at 2026-10-06T08:03:31.556163-04:00"
+    },
+    {
+      "id": "db-census-disclosed",
+      "passed": true,
+      "evidence": "succeeded agent admissions on customer-bound hosts: ['avi-test']; failed-only: ['P-029 Acceptance Workspace']; zero third-party customers"
+    }
+  ],
+  "summary": "The running :3880 hosted runtime answers 404 on every service-credential producer route beside non-vacuous controls; its boot-asserted mounted route set contains no producer route; the live DB census finds zero third-party customers; avi-test, the one customer-bound host that received this box's login before the guard, had that agent credential revoked and verify-revoked through the lifecycle route (D-031); P-029's agent bind attempts all failed (host destroyed).",
+  "limitations": [
+    "avi-test received this box's operator-home-file login on 2026-09-26, before the guard existed; it was revoked on 2026-10-06 (D-031). The receipt proves the revoke + verify-revoked steps ran on the host; it does not prove the upstream provider session was invalidated.",
+    "The producer guard is proven by unit tests, not by a live refusal on a customer host, so as not to touch avi-test's credentials."
+  ]
+}

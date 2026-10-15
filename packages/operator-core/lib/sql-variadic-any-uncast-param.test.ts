@@ -38,6 +38,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import ts from 'typescript';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
@@ -138,7 +139,7 @@ function sqlFragmentIdentifiers(source: string): Set<string> {
 }
 
 /**
- * Whether offset `at` sits inside a PLAIN template literal passed directly to `.unsafe(`.
+ * Literal text in an untagged template is JS string interpolation, never parameter binding.
  *
  * `sql.unsafe(\`SELECT jsonb_build_object(${keyObject}) …\`, [limit])` LOOKS like the broken
  * shape but contains no parameter at all: the template is UNTAGGED, so `${keyObject}` is ordinary
@@ -147,28 +148,38 @@ function sqlFragmentIdentifiers(source: string): Set<string> {
  * list of identifiers validated by `validateChunkEmbedTarget`.) Skipping it is being right about
  * the semantics, like the fragment rule above, not exempting a call site that was ever broken.
  *
- * Deliberately narrow: only when the NEAREST backtick before `at` opens a template that is the
- * direct argument of `.unsafe(` (a generic without parens is allowed). A tagged `sql` template, a
- * template assigned to a variable, or the closing backtick of a nested template all still scan,
- * so the failure direction stays toward flagging.
+ * This also holds when the text is assigned to a variable before reaching `.unsafe`, as in
+ * the R-11 query builder. Use parsed literal spans so a tagged SQL template nested INSIDE a
+ * plain template's expression still scans. Unknown tags remain conservative candidates.
  */
-function insideUnsafeTextTemplate(source: string, at: number): boolean {
-  const tick = source.lastIndexOf('`', at);
-  if (tick === -1) return false;
-  const before = source.slice(Math.max(0, tick - 400), tick);
-  return /\.unsafe\s*(?:<[^()`]*>)?\s*\(\s*$/.test(before);
+function plainTemplateTextSpans(source: string, file: string): Array<[number, number]> {
+  const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+  const spans: Array<[number, number]> = [];
+  const visit = (node: ts.Node) => {
+    if (!ts.isTaggedTemplateExpression(node.parent)) {
+      if (ts.isNoSubstitutionTemplateLiteral(node)) spans.push([node.getStart(parsed), node.end]);
+      else if (ts.isTemplateExpression(node)) {
+        spans.push([node.head.getStart(parsed), node.head.end]);
+        for (const span of node.templateSpans) spans.push([span.literal.getStart(parsed), span.literal.end]);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(parsed, visit);
+  return spans;
 }
 
 export function findUncastVariadicAnyParams(source: string, file: string): UncastFinding[] {
   const findings: UncastFinding[] = [];
   const fragments = sqlFragmentIdentifiers(source);
+  const plainText = plainTemplateTextSpans(source, file);
   for (const fn of VARIADIC_ANY_FNS) {
     let cursor = 0;
     for (;;) {
       const at = source.indexOf(`${fn}(`, cursor);
       if (at === -1) break;
       cursor = at + fn.length;
-      if (insideUnsafeTextTemplate(source, at)) continue; // text interpolation, not a parameter
+      if (plainText.some(([start, end]) => start <= at && at < end)) continue;
       let depth = 0;
       let end = at + fn.length;
       for (; end < source.length; end++) {
@@ -276,6 +287,22 @@ describe('the detector itself is falsifiable', () => {
       "const r = sql`SELECT jsonb_build_object('a', ${v})`;",
     ].join('\n');
     expect(findUncastVariadicAnyParams(later, 'fixture.ts')).toHaveLength(1);
+  });
+
+  it('recognises assigned SQL text while the same text tagged as SQL remains unsafe', () => {
+    const plain = "const key = `jsonb_build_array(${target.keyCols.join(', ')})::text`;";
+    expect(findUncastVariadicAnyParams(plain, 'fixture.ts')).toEqual([]);
+    expect(findUncastVariadicAnyParams(plain.replace('= `', '= sql`'), 'fixture.ts')).toHaveLength(1);
+  });
+
+  it('still scans tagged SQL nested inside a plain template expression', () => {
+    const nested = 'const text = `key: ${sql`jsonb_build_array(${value})`}`;';
+    expect(findUncastVariadicAnyParams(nested, 'fixture.ts')).toHaveLength(1);
+  });
+
+  it('does not treat an unknown template tag as plain string interpolation', () => {
+    expect(findUncastVariadicAnyParams('query`jsonb_build_array(${value})`', 'fixture.ts'))
+      .toHaveLength(1);
   });
 
   it('finds a parameter in a NESTED variadic-any call, not just the outer one', () => {

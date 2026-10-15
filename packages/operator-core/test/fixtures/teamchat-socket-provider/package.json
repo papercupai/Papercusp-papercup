@@ -1,0 +1,13 @@
+{
+  "name": "teamchat-socket-provider",
+  "version": "1.0.0",
+  "description": "TeamChat chat provider for Papercusp: host-held gateway socket, pasted tokens, threaded replies.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "files": ["papercusp.json", "daemon.mjs", "README.md"],
+  "devDependencies": {
+    "@papercusp/plugin-sdk": "^0.1.0",
+    "@types/node": "^22.0.0"
+  }
+}

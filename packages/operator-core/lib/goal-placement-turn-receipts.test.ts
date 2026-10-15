@@ -9,6 +9,7 @@ import {
   confirmGoalPlacementDelivery, deliveredGoalPlacementRows, prepareGoalPlacementDelivery,
   type GoalPlacementTurnReceiptDeps,
   recordGoalPlacementTurnEnd, type GoalPlacementTurnEndDeps, GOAL_PLACEMENT_TURN_END_SETTLE_POLLS,
+  recordGoalPlacementTurnEndOutcome, recordGoalPlacementDeliveryOutcome, boundedRecordGoalPlacementTurnEnd,
   observeGoalPlacementAdmission, qualifyGoalPlacementTurn, type GoalPlacementAdmissionDeps,
   type GoalPlacementAdmissionObservation, noProgressAge, placementSelection,
 } from './goal-placement-turn-receipts';
@@ -23,6 +24,54 @@ const row = defineAgentObligation({ ruleId: 'placement', ruleRevision: 'v1', fam
   sourceGeneration: 'generation-1', episode: 'fixture-episode', applicableDemand: 1,
   clearsWhen: { id: 'claimed', summary: 'A verified member claim exists.', evidenceKind: 'state', sourceRef: 'fixture:claims' },
   action: { kind: 'delegate', summary: 'Staff the eligible plan.', targetRef: 'plan:harness/plan', tool: 'fleet:launch-on-plan' },
+});
+
+describe('goal placement delivery drop outcomes (WI-10005636)', () => {
+  it('persists the drop stage and reason under a key separate from goalPlacementTurn receipts', async () => {
+    const append = vi.fn(async () => ({ id: 'diagnostic' }));
+    const persisted = await recordGoalPlacementDeliveryOutcome({
+      ownerId: 'holder', workspaceId: 'workspace', stage: 'confirm', reason: 'native-window-incomplete',
+      candidate: { version: 1, token: 'tok-1', nativeSessionId: 'native-1', sourceKind: 'claude',
+        rows: [{ planSlug: 'plan-a' }, { planSlug: 'plan-b' }] },
+    }, { append, now: () => at(5).getTime() });
+
+    expect(persisted).toBe(true);
+    expect(append).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: 'workspace', owner: 'holder', agent: 'claude', sessionId: 'native-1', scope: 'plan-a',
+      kind: 'lifecycle', toolName: null, phase: null,
+      toolUseId: `goal-placement-delivery-outcome:confirm:tok-1:${at(5).toISOString()}`,
+      summary: 'Goal placement delivery produced no receipt', status: null, cwd: null,
+      detail: { goalPlacementDeliveryOutcome: {
+        version: 1, stage: 'confirm', recorded: false, reason: 'native-window-incomplete',
+        observedAt: at(5).toISOString(), token: 'tok-1', unavailable: false, candidateReason: null,
+        planSlugs: ['plan-a', 'plan-b'],
+      } },
+    });
+  });
+
+  it('keeps the staged fallback reason of an unavailable candidate and tolerates a malformed one', async () => {
+    const append = vi.fn(async (_record: { detail: unknown }) => ({ id: 'diagnostic' }));
+    const deps = { append, now: () => at(6).getTime() };
+    await recordGoalPlacementDeliveryOutcome({ ownerId: 'holder', workspaceId: 'workspace', stage: 'late-upgrade',
+      reason: 'late-prepare-timeout', candidate: { version: 1, unavailable: true, token: 'tok-2', reason: 'timeout',
+        rows: [{ planSlug: 'plan-a' }] } }, deps);
+    await recordGoalPlacementDeliveryOutcome({ ownerId: 'holder', workspaceId: 'workspace', stage: 'confirm',
+      reason: 'no-exact-proof-candidate', candidate: 'not-an-object' }, deps);
+
+    const details = append.mock.calls.map(([record]) => record.detail);
+    expect(details).toEqual([
+      { goalPlacementDeliveryOutcome: expect.objectContaining({ stage: 'late-upgrade', unavailable: true,
+        candidateReason: 'timeout', token: 'tok-2', planSlugs: ['plan-a'] }) },
+      { goalPlacementDeliveryOutcome: expect.objectContaining({ stage: 'confirm', unavailable: false,
+        candidateReason: null, token: null, planSlugs: [] }) },
+    ]);
+  });
+
+  it('reports a failed append instead of throwing into the detached turn-start path', async () => {
+    const append = vi.fn(async () => { throw new Error('pg down'); });
+    await expect(recordGoalPlacementDeliveryOutcome({ ownerId: 'holder', workspaceId: 'workspace',
+      stage: 'confirm', reason: 'x', candidate: null }, { append, now: () => at(7).getTime() })).resolves.toBe(false);
+  });
 });
 
 const admission = (minute: number, overrides: Partial<GoalPlacementAdmissionObservation> = {}): GoalPlacementAdmissionObservation => ({
@@ -246,7 +295,7 @@ describe('native turn-end policy observation', () => {
     f.setTail([turn('prior', 1), turn('current', 3)]); f.setNow(4);
     const read = { goalId: 'goal', portfolio: null, observedAt: at(4).toISOString(),
       agenda: { evaluations: [row] } } as AgentObligationAgendaRead;
-    const deps: GoalPlacementTurnEndDeps = { ...f.deps, goalSubject: vi.fn(async () => 'goal'), agenda: vi.fn(async () => read),
+    const deps: GoalPlacementTurnEndDeps = { ...f.deps, goalSubject: vi.fn(async () => 'goal'), goalHarness: vi.fn(async () => 'home-harness'), agenda: vi.fn(async () => read),
       sleep: vi.fn(async () => {}) };
     const endInput = { ownerId: 'holder', workspaceId: 'workspace', nativeSessionId: session.sessionId, sourceKind: session.sourceKind };
     return { ...f, read, deps, endInput };
@@ -260,6 +309,83 @@ describe('native turn-end policy observation', () => {
         actionKind: 'delegate', obligationId: row.id, sourceGeneration: 'generation-1', ruleRevision: 'v1' }],
     } } }));
   });
+  it('persists completed and active stage timings when the bounded writer times out', async () => {
+    const f = endFixture();
+    await Promise.all([import('./bounded-timeout'), import('./detached-imports')]);
+    let resumeCurrent: ((value: typeof session | null) => void) | undefined;
+    f.deps.current = vi.fn(() => new Promise<typeof session | null>((resolve) => { resumeCurrent = resolve; }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    try {
+      const pending = boundedRecordGoalPlacementTurnEnd(f.endInput, f.deps);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.deps.goalSubject).toHaveBeenCalledOnce();
+      expect(f.deps.current).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(3_500);
+      const result = await pending;
+      expect(result).toMatchObject({ recorded: false, reason: 'turn-end-read-unavailable', diagnostics: {
+        boundary: 'timeout', activeStage: 'current-session', stages: [
+          expect.objectContaining({ stage: 'bounded-support-import', state: 'completed' }),
+          expect.objectContaining({ stage: 'goal-subject', state: 'completed' }),
+          expect.objectContaining({ stage: 'current-session', state: 'active', elapsedMs: 3_500 }),
+        ],
+      } });
+
+      const append = vi.fn(async () => ({ id: 'diagnostic' }));
+      expect(await recordGoalPlacementTurnEndOutcome(f.endInput, result, { append, now: () => at(5).getTime() })).toBe(true);
+      expect(append).toHaveBeenCalledWith(expect.objectContaining({ detail: { goalPlacementTurnEndOutcome:
+        expect.objectContaining({ reason: 'turn-end-read-unavailable', diagnostics: expect.objectContaining({
+          boundary: 'timeout', activeStage: 'current-session',
+        }) }) } }));
+    } finally {
+      resumeCurrent?.(null);
+      await vi.advanceTimersByTimeAsync(0);
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
+  });
+  it('keeps thrown errors distinct from timeouts in the persisted outcome', async () => {
+    const f = endFixture();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    f.deps.current = vi.fn(async () => { throw new Error('session lookup failed'); });
+    try {
+      const result = await boundedRecordGoalPlacementTurnEnd(f.endInput, f.deps);
+      expect(result).toMatchObject({ recorded: false, reason: 'turn-end-read-unavailable', diagnostics: {
+        boundary: 'error', activeStage: null, error: { name: 'Error', message: 'session lookup failed' }, stages: [
+          expect.objectContaining({ stage: 'bounded-support-import', state: 'completed' }),
+          expect.objectContaining({ stage: 'goal-subject', state: 'completed' }),
+          expect.objectContaining({ stage: 'current-session', state: 'error', errorName: 'Error',
+            errorMessage: 'session lookup failed' }),
+        ],
+      } });
+      const append = vi.fn(async () => ({ id: 'diagnostic' }));
+      expect(await recordGoalPlacementTurnEndOutcome(f.endInput, result, { append, now: () => at(5).getTime() })).toBe(true);
+      expect(append).toHaveBeenCalledWith(expect.objectContaining({ detail: { goalPlacementTurnEndOutcome:
+        expect.objectContaining({ diagnostics: expect.objectContaining({ boundary: 'error', error: {
+          name: 'Error', message: 'session lookup failed',
+        } }) }) } }));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+  it.each(['failed', 'empty', 'other-harness'] as const)(
+    'WI-10004818: uses the goal filing harness when the portfolio is %s', async (state) => {
+      const f = endFixture();
+      f.read.portfolio = state === 'failed' ? null : {
+        worklist: state === 'empty' ? [] : [{ harness: 'other-harness' }],
+      } as NonNullable<AgentObligationAgendaRead['portfolio']>;
+      f.read.agenda.evaluations = [{ ...row, scope: { ...row.scope, planSlug: undefined }, status: 'unknown', action: undefined,
+        measurementFailure: { code: 'canonical-plan-placement-read-failed',
+          detail: 'goal portfolio timeout after 900ms', retry: 'retry' } }];
+      expect((await recordGoalPlacementTurnEnd(f.endInput, f.deps)).recorded).toBe(true);
+      expect(f.deps.goalHarness).toHaveBeenCalledExactlyOnceWith('goal', 'workspace');
+      expect(f.deps.append).toHaveBeenCalledWith(expect.objectContaining({
+        workspaceId: 'workspace', scope: 'home-harness',
+        detail: { goalPlacementTurnEnd: expect.objectContaining({ rows: [expect.objectContaining({
+          measurementFailure: expect.objectContaining({ code: 'canonical-plan-placement-read-failed' }),
+        })] }) },
+      }));
+    });
   it('records why an unknown placement row could not be measured', async () => {
     const f = endFixture();
     const unknown = { ...row, status: 'unknown' as const, action: { kind: 'inspect' as const, summary: 'retry', targetRef: 'plan:harness/plan' },
@@ -400,6 +526,38 @@ describe('native turn-end policy observation', () => {
     f.read.goalId = null;
     expect((await recordGoalPlacementTurnEnd(f.endInput, f.deps)).reason).toBe('no-canonical-goal');
     expect(f.deps.append).not.toHaveBeenCalled();
+  });
+});
+
+describe('native turn-end non-recording diagnostics', () => {
+  const input = { ownerId: 'holder', workspaceId: 'workspace', nativeSessionId: 'old-session', sourceKind: 'codex' as const };
+
+  it('stores a compact lifecycle outcome under a key separate from eligibility receipts', async () => {
+    const append = vi.fn(async () => ({ id: 'diagnostic' }));
+    const persisted = await recordGoalPlacementTurnEndOutcome(input,
+      { recorded: false, reason: 'native-session-mismatch' }, { append, now: () => at(5).getTime() });
+
+    expect(persisted).toBe(true);
+    expect(append).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: 'workspace', owner: 'holder', agent: 'codex', sessionId: 'old-session', scope: null,
+      kind: 'lifecycle', toolName: null, phase: null,
+      toolUseId: `goal-placement-turn-end-outcome:codex:old-session:${at(5).toISOString()}`,
+      summary: 'Goal placement policy turn-end observation was not recorded', status: null, cwd: null,
+      detail: { goalPlacementTurnEndOutcome: {
+        version: 1, recorded: false, reason: 'native-session-mismatch', observedAt: at(5).toISOString(),
+      } },
+    });
+  });
+
+  it('leaves successful observations and no-canonical-goal outcomes out of the diagnostic stream', async () => {
+    const append = vi.fn(async () => ({ id: 'diagnostic' }));
+    const deps = { append, now: () => at(5).getTime() };
+
+    expect(await recordGoalPlacementTurnEndOutcome(input,
+      { recorded: true, reason: 'turn-end-policy-recorded-not-yet-graded' }, deps)).toBe(false);
+    expect(await recordGoalPlacementTurnEndOutcome(input,
+      { recorded: false, reason: 'no-canonical-goal' }, deps)).toBe(false);
+    expect(append).not.toHaveBeenCalled();
   });
 });
 

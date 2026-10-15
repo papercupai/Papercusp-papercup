@@ -105,14 +105,17 @@ describe('emitPlanEventForCaller — best-effort', () => {
 
   it('swallows an identity-resolution failure and emits as system', async () => {
     mockResolve.mockImplementation(() => { throw new Error('no identity'); });
-    await expect(emitPlanEventForCaller({} as never, { planSlug: 'p', event: 'created' })).resolves.toBeUndefined();
+    // P-004: the emit returns the event's msg_id (the id a Now note records).
+    const msgId = await emitPlanEventForCaller({} as never, { planSlug: 'p', event: 'created' });
+    expect(msgId).toBe(lastEnv().msg_id);
     expect(lastEnv().from).toBe('system'); // null identity → system, the write still happened
   });
 
   it('never throws when the underlying append fails (observability, not state)', async () => {
     mockResolve.mockReturnValue({ ownerId: 'caller-1', workspaceId: 'ws' });
     mockLog.appendLine.mockRejectedValueOnce(new Error('pg down'));
-    await expect(emitPlanEventForCaller({} as never, { planSlug: 'p', event: 'created' })).resolves.toBeUndefined();
+    // A failed append yields no event id: null, never a throw.
+    await expect(emitPlanEventForCaller({} as never, { planSlug: 'p', event: 'created' })).resolves.toBeNull();
     expect(mockAwaitedEvent).toHaveBeenCalledWith(expect.objectContaining({ key: 'plan:acceptance:p' }));
   });
 

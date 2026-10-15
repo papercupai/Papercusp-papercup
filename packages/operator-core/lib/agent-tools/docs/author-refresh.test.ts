@@ -6,10 +6,13 @@ const h = vi.hoisted(() => {
   const order: string[] = [];
   return {
     order,
+    lineageQuery: vi.fn(async (_sql: string, _params: string[]): Promise<Record<string, unknown>[]> => [{ exists: 1 }]),
     existsSync: vi.fn(() => false),
     mkdir: vi.fn(async () => undefined),
     writeFile: vi.fn(async () => undefined),
-    resolveHarnessDocPaths: vi.fn(async () => ({ docsRoot: '/tmp/docs-author-refresh-test' })),
+    resolveHarnessDocPaths: vi.fn(async () => ({ repoRoot: '/tmp/docs-author-refresh-test', docsRoot: '/tmp/docs-author-refresh-test' })),
+    generateNativeArchitecture: vi.fn(async () => ({ body: '## Source-backed architecture\n\nCited static relationship.',
+      documents: ['api.ts', 'target.ts'], sourceFingerprint: 'a'.repeat(64), statements: 1 })),
     safeJoinUnderRoot: vi.fn((_root: string, docId: string) => `/tmp/docs-author-refresh-test/${docId}`),
     anchorManualDoc: vi.fn(async (_args: { content: string }) => ({
       ok: true,
@@ -39,6 +42,11 @@ vi.mock('node:fs', async (importOriginal) => {
   };
 });
 vi.mock('../../harness/docs/harness-repo', () => ({ resolveHarnessDocPaths: h.resolveHarnessDocPaths }));
+vi.mock('../../promotion-lineage', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../promotion-lineage')>();
+  return { ...actual, validatePromotedFrom: (raw: Parameters<typeof actual.validatePromotedFrom>[0], workspace: string) =>
+    actual.validatePromotedFrom(raw, workspace, h.lineageQuery) };
+});
 vi.mock('../../harness/docs/doc-fs', () => ({ safeJoinUnderRoot: h.safeJoinUnderRoot }));
 vi.mock('../../harness/docs/manual-anchor', () => ({ anchorManualDoc: h.anchorManualDoc }));
 vi.mock('../../harness/docs/authored-doc-projection', () => ({ applyProjectionBanner: h.applyProjectionBanner }));
@@ -48,6 +56,7 @@ vi.mock('./_engineering-adapter', () => ({
   invalidateEngineeringAdapter: h.invalidateEngineeringAdapter,
 }));
 vi.mock('../../search/doc-embed-sync', () => ({ refreshDocPageSections: h.refreshDocPageSections }));
+vi.mock('../../harness/docs/native-architecture', () => ({ generateNativeArchitecture: h.generateNativeArchitecture }));
 
 import authorTool from './author';
 
@@ -55,7 +64,7 @@ type HandlerResult = { content: Array<{ text: string }>; isError?: boolean };
 type AuthorHandler = (args: Record<string, unknown>, ctx: Record<string, unknown>) => Promise<HandlerResult>;
 
 const callAuthor = (args: Record<string, unknown>) =>
-  (authorTool as unknown as { handler: AuthorHandler }).handler(args, { isSuperuser: true });
+  (authorTool as unknown as { handler: AuthorHandler }).handler(args, { isSuperuser: true, workspaceId: 'lineage-workspace' });
 
 const baseArgs = {
   slug: 'current-refresh',
@@ -72,9 +81,73 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.existsSync.mockImplementation(() => false);
   h.getAuthoredDocContent.mockResolvedValue(null);
+  h.lineageQuery.mockReset();
+  h.lineageQuery.mockResolvedValue([{ exists: 1 }]);
+  h.generateNativeArchitecture.mockResolvedValue({ body: '## Source-backed architecture\n\nCited static relationship.',
+    documents: ['api.ts', 'target.ts'], sourceFingerprint: 'a'.repeat(64), statements: 1 });
+});
+
+describe('docs:author promotion lineage write boundary', () => {
+  it('persists resolved lineage in canonical frontmatter and the projection', async () => {
+    const promotedFrom = [{ kind: 'work-item', ref: 'WI-123' }];
+    const result = await callAuthor({ ...baseArgs, promotedFrom });
+    expect(JSON.parse(result.content[0].text).ok).toBe(true);
+    expect(h.lineageQuery).toHaveBeenCalledWith(expect.stringContaining('harness_shared.work_items'), ['lineage-workspace', 'WI-123']);
+    const content = h.anchorManualDoc.mock.calls[0][0].content;
+    expect(authorTool).toBeDefined();
+    expect(content).toContain('promotedFrom:');
+    expect(content).toContain('WI-123');
+    expect(h.writeFile).toHaveBeenCalledWith(expect.any(String), expect.stringContaining('WI-123'), 'utf8');
+  });
+
+  it.each(['missing', 'unavailable'])('refuses %s lineage before canonical persistence or projection', async (state) => {
+    if (state === 'missing') h.lineageQuery.mockResolvedValue([]);
+    else h.lineageQuery.mockRejectedValue(new Error('resolver offline'));
+    await expect(callAuthor({ ...baseArgs, promotedFrom: [{ kind: 'work-item', ref: 'WI-123' }] }))
+      .rejects.toThrow(state === 'missing' ? 'source missing' : 'resolution unavailable');
+    expect(h.anchorManualDoc).not.toHaveBeenCalled();
+    expect(h.writeFile).not.toHaveBeenCalled();
+    expect(h.refreshDocPageSections).not.toHaveBeenCalled();
+  });
+});
+
+describe('docs:author native architecture write boundary', () => {
+  const architecture = { name: 'entry', file: 'api.ts', paths: ['api.ts', 'target.ts'] };
+  it('persists the generated section and its source anchors through canonical authorship', async () => {
+    const result = await callAuthor({ ...baseArgs, architecture });
+    expect(JSON.parse(result.content[0].text).ok).toBe(true);
+    expect(h.generateNativeArchitecture).toHaveBeenCalledWith('/tmp/docs-author-refresh-test', architecture, expect.any(Function));
+    expect(h.anchorManualDoc).toHaveBeenCalledWith(expect.objectContaining({
+      documents: expect.arrayContaining(['api.ts', 'target.ts', baseArgs.documents[0]]),
+      content: expect.stringContaining('## Source-backed architecture'),
+    }));
+    expect(h.writeFile).toHaveBeenCalled();
+  });
+  it('refuses uncited graph evidence before canonical persistence, projection or search refresh', async () => {
+    h.generateNativeArchitecture.mockRejectedValueOnce(new Error('native_architecture_uncited_relationship'));
+    const result = await callAuthor({ ...baseArgs, architecture });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe('native_architecture_uncited_relationship');
+    expect(h.anchorManualDoc).not.toHaveBeenCalled();
+    expect(h.writeFile).not.toHaveBeenCalled();
+    expect(h.refreshDocPageSections).not.toHaveBeenCalled();
+  });
 });
 
 describe('docs:author search refresh', () => {
+  it('rejects unbound MDX expression identifiers before persistence or refresh', async () => {
+    const result = await callAuthor({ ...baseArgs, body: 'An optional plan {publisher, product, name}.\n' });
+    const payload = JSON.parse(result.content[0].text) as { ok: boolean; error?: string };
+    expect(result.isError).toBe(true);
+    expect(payload.ok).toBe(false);
+    expect(payload.error).toContain('invalid_mdx');
+    expect(payload.error).toContain('publisher');
+    expect(h.anchorManualDoc).not.toHaveBeenCalled();
+    expect(h.writeFile).not.toHaveBeenCalled();
+    expect(h.invalidateEngineeringAdapter).not.toHaveBeenCalled();
+    expect(h.refreshDocPageSections).not.toHaveBeenCalled();
+  });
+
   it('rejects MDX-invalid prose before the canonical write', async () => {
     const result = await callAuthor({
       ...baseArgs,
@@ -301,5 +374,52 @@ describe('docs:author truncated-body guards', () => {
 
     expect(result.isError).not.toBe(true);
     expect(payload.ok).toBe(true);
+  });
+});
+
+// WI-6554700010011197: a ROOT-level page (branding.mdx, index.mdx, performance.mdx) must
+// reach the canonical writer, the projection and the stored-row read under the dir-less
+// doc id — not `agent-insights/branding.mdx`, and not `//branding.mdx`.
+describe('docs:author docs-root section (WI-6554700010011197)', () => {
+  type RootPayload = { ok: boolean; path?: string; ref?: string; section?: string; read?: { slugs: string[] } };
+  const parse = (r: HandlerResult) => JSON.parse(r.content[0].text) as RootPayload;
+
+  it('section "/" writes <docsRoot>/<slug>.mdx with a dir-less ref', async () => {
+    const result = await callAuthor({ ...baseArgs, slug: 'branding', section: '/' });
+
+    expect(result.isError).not.toBe(true);
+    expect(parse(result)).toMatchObject({
+      ok: true,
+      path: 'branding.mdx',
+      ref: 'branding',
+      section: '/',
+      read: { slugs: ['branding'] },
+    });
+    expect(h.safeJoinUnderRoot).toHaveBeenCalledWith('/tmp/docs-author-refresh-test', 'branding.mdx');
+    expect(h.anchorManualDoc).toHaveBeenCalledWith(expect.objectContaining({ docId: 'branding.mdx' }));
+    expect(h.writeFile).toHaveBeenCalledWith('/tmp/docs-author-refresh-test/branding.mdx', expect.any(String), 'utf8');
+  });
+
+  it('an overwrite via a leading-slash slug reads the stored root row by its root doc id', async () => {
+    h.existsSync.mockReturnValue(true);
+    h.getAuthoredDocContent.mockResolvedValue(
+      '---\ntitle: "Branding"\ndescription: "Brand guide."\n---\n\n# Branding\n\nOld body.\n',
+    );
+    const { section: _omitted, ...noSection } = baseArgs;
+
+    const result = await callAuthor({ ...noSection, slug: '/branding.mdx', overwrite: true });
+
+    expect(result.isError).not.toBe(true);
+    expect(h.getAuthoredDocContent).toHaveBeenCalledWith(expect.any(String), 'branding.mdx');
+    expect(parse(result)).toMatchObject({ ok: true, path: 'branding.mdx', ref: 'branding' });
+  });
+
+  it('a bare slug with no section still lands in agent-insights, never the root', async () => {
+    const { section: _omitted, ...noSection } = baseArgs;
+
+    const result = await callAuthor({ ...noSection, slug: 'branding' });
+
+    expect(parse(result)).toMatchObject({ ok: true, path: 'agent-insights/branding.mdx', ref: 'agent-insights/branding' });
+    expect(h.anchorManualDoc).toHaveBeenCalledWith(expect.objectContaining({ docId: 'agent-insights/branding.mdx' }));
   });
 });

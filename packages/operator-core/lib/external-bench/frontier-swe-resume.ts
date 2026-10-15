@@ -23,15 +23,31 @@ export interface FrontierSweResultRecord {
   arm?: string;
   score: number | null;
   resolved: boolean | null;
-  /** 'passed' | 'failed' | 'error' | 'timeout' — error/timeout = infra, re-run on resume. */
+  /** 'passed' | 'failed' | 'error' | 'timeout' | 'invalid' — error/timeout = infra, re-run on resume;
+   *  invalid = integrity check found tampering, TERMINAL (never re-run). */
   graderStatus: string;
   /** Optional epoch-ms stamp (the driver supplies it; omitted here since Date.now() is non-deterministic). */
   ts?: number;
+  /** The seam's structured scorer output (integrity verdict, reward source) — P-022 / D-009 item 2. */
+  graderDetail?: unknown;
+  /** The attempt's transcript pointers, graded agent first (TaskRunResult.traceRefs, D-010). Absent → a campaign
+   *  bundle reports the missing trace. */
+  traceRefs?: string[];
 }
 
-/** A scored (non-infra) trial we never need to re-run. */
+/** A scored (non-infra, integrity-clean) trial we never need to re-run. */
 export function isScoredRecord(r: FrontierSweResultRecord): boolean {
-  return r.graderStatus !== 'error' && r.graderStatus !== 'timeout' && (r.score != null || r.resolved != null);
+  return r.graderStatus !== 'error' && r.graderStatus !== 'timeout' && r.graderStatus !== 'invalid' &&
+    (r.score != null || r.resolved != null);
+}
+
+/**
+ * A trial whose seed is SETTLED: scored, or `invalid` (plan benchmark-coverage-frontierswe-v2-2026-10-10 D-008).
+ * An invalid trial is a disclosed missing measurement, not an infra fault: re-running it would let an arm re-roll
+ * a tampered attempt until a clean one replaced it, laundering the tampering out of the report.
+ */
+export function isSettledRecord(r: FrontierSweResultRecord): boolean {
+  return r.graderStatus === 'invalid' || isScoredRecord(r);
 }
 
 /** Read the durable results.jsonl (missing/empty file → []). Malformed lines are skipped, not fatal. */
@@ -58,10 +74,23 @@ export function appendRunResult(path: string, rec: FrontierSweResultRecord): voi
 
 /** instanceId → set of seeds with a SCORED result for `arm` (the trials we can skip on resume). */
 export function scoredTrials(records: readonly FrontierSweResultRecord[], arm?: string): Map<string, Set<number>> {
+  return trialsWhere(records, isScoredRecord, arm);
+}
+
+/** Seeds per task that are settled ({@link isSettledRecord}) — what the resume plan treats as done. */
+export function settledTrials(records: readonly FrontierSweResultRecord[], arm?: string): Map<string, Set<number>> {
+  return trialsWhere(records, isSettledRecord, arm);
+}
+
+function trialsWhere(
+  records: readonly FrontierSweResultRecord[],
+  keep: (r: FrontierSweResultRecord) => boolean,
+  arm?: string,
+): Map<string, Set<number>> {
   const out = new Map<string, Set<number>>();
   for (const r of records) {
     if (arm !== undefined && r.arm !== arm) continue;
-    if (!isScoredRecord(r)) continue;
+    if (!keep(r)) continue;
     const set = out.get(r.instanceId) ?? new Set<number>();
     set.add(r.seed);
     out.set(r.instanceId, set);
@@ -70,8 +99,9 @@ export function scoredTrials(records: readonly FrontierSweResultRecord[], arm?: 
 }
 
 /**
- * The resume plan: for each task, the seeds in [0, k) that still lack a SCORED result for `arm`. An infra row
- * (error/timeout) leaves its seed missing → it is re-run (self-healing). Tasks fully complete are omitted.
+ * The resume plan: for each task, the seeds in [0, k) that still lack a SETTLED result for `arm`. An infra row
+ * (error/timeout) leaves its seed missing → it is re-run (self-healing); an `invalid` row settles its seed (never
+ * re-run). Tasks fully complete are omitted.
  */
 export function missingTrials(
   taskIds: readonly string[],
@@ -80,7 +110,7 @@ export function missingTrials(
   arm?: string,
 ): Array<{ instanceId: string; seeds: number[] }> {
   if (!Number.isInteger(k) || k < 1) throw new Error(`frontier-swe-resume: k must be an integer ≥ 1 (got ${k})`);
-  const done = scoredTrials(records, arm);
+  const done = settledTrials(records, arm);
   const out: Array<{ instanceId: string; seeds: number[] }> = [];
   for (const instanceId of taskIds) {
     const haveSeeds = done.get(instanceId) ?? new Set<number>();

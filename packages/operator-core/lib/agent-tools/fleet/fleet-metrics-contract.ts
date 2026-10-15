@@ -10,6 +10,7 @@
 import { z } from 'zod';
 import type { FleetPopulationLifecycleSnapshot } from './fleet-population';
 import { COUNT_EVIDENCE_COMPARISON_RULE } from '../../count-evidence-contract';
+import { WORK_ITEM_PRESENTATION_STAGES } from '../../work-item-presentation-contract';
 
 export const FLEET_METRICS_SCHEMA_VERSION = 'fleet-metrics-v1' as const;
 
@@ -339,6 +340,182 @@ const issueUnitsSchema = z
     }
   });
 
+/**
+ * P-001 (feature-drain-delivery-readiness-and-outcome-accounting-2026-10-01, R-1/R-11..R-14).
+ *
+ * The flow/authority blocks above count ISSUE-family rows only, so a feature fleet whose
+ * claim spec admits only feature rows read `terminal 0` while it was closing features
+ * (WI-10004580: four committed + two proposed feature closes were invisible). Feature
+ * outcomes are therefore their own population: only feature-family closes count, the
+ * supporting tasks/bugs closed in the same window are listed apart and never added in,
+ * every close is labelled fleet-done / inherited / unknown, and authority stays partitioned
+ * so a proposed close is never a committed outcome.
+ */
+export const FLEET_METRIC_FEATURE_INHERITED_CLAIM_TO_CLOSE_MAX_MS = 2 * 60 * 60 * 1000;
+
+export const FLEET_METRIC_FEATURE_ORIGIN_RULE =
+  'inherited = work history shows a worker outside the fleet ever-member cohort before the closing claim AND closedAt minus that closing claim is at most claimToCloseMaxMs; fleet-done = history present otherwise; unknown = no work history recorded for the row' as const;
+
+export const FLEET_METRIC_PAUSED_TIME_RULE =
+  'workingMs = windowMs - pausedMs, where pausedMs is the union of fleet pause/wind-down intervals clipped to the window' as const;
+
+const unknownMeasureSchema = z.object({
+  status: z.literal('unknown'),
+  reason: nonEmpty,
+  recoverVia: nonEmpty,
+});
+
+const featureOriginSchema = z.object({
+  fleetDone: nonNegativeInt,
+  inherited: nonNegativeInt,
+  unknown: nonNegativeInt,
+  partitionsLifecycleTerminal: z.literal(true),
+  claimToCloseMaxMs: z.literal(FLEET_METRIC_FEATURE_INHERITED_CLAIM_TO_CLOSE_MAX_MS),
+  rule: z.literal(FLEET_METRIC_FEATURE_ORIGIN_RULE),
+  historyWriter: z.literal('harness_shared.work_items.worked_by_history'),
+});
+
+const featureSupportingSchema = z
+  .object({
+    unit: z.literal('distinct canonical issue-family work-item ids'),
+    tasks: nonNegativeInt,
+    bugs: nonNegativeInt,
+    other: nonNegativeInt,
+    total: nonNegativeInt,
+    countedInFeatureOutcomes: z.literal(false),
+  })
+  .superRefine((supporting, ctx) => {
+    if (supporting.tasks + supporting.bugs + supporting.other !== supporting.total) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['total'], message: 'supporting buckets must sum to total' });
+    }
+  });
+
+export const fleetFeatureOutcomesSchema = z.discriminatedUnion('status', [
+  unknownMeasureSchema,
+  z
+    .object({
+      status: z.literal('measured'),
+      unit: z.literal('distinct canonical feature-family work-item ids'),
+      population: z.literal('feature-family-lifecycle-terminal-in-window'),
+      closes: authorityPartitionSchema,
+      origin: featureOriginSchema,
+      shipped: z.discriminatedUnion('status', [
+        z.object({ status: z.literal('measured'), count: nonNegativeInt }),
+        unknownMeasureSchema,
+      ]),
+      supporting: featureSupportingSchema,
+    })
+    .superRefine((outcomes, ctx) => {
+      const { fleetDone, inherited, unknown } = outcomes.origin;
+      if (fleetDone + inherited + unknown !== outcomes.closes.lifecycleTerminal) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['origin'],
+          message: 'origin buckets must partition closes.lifecycleTerminal',
+        });
+      }
+    }),
+]);
+
+export const fleetPausedTimeSchema = z.discriminatedUnion('status', [
+  unknownMeasureSchema,
+  z
+    .object({
+      status: z.literal('measured'),
+      windowMs: nonNegativeInt,
+      pausedMs: nonNegativeInt,
+      workingMs: nonNegativeInt,
+      intervalCount: nonNegativeInt,
+      openAtGeneratedAt: z.boolean(),
+      source: z.literal('harness_shared.tool_invocations fleet:pause|fleet:wind-down -> fleet:resume'),
+      rule: z.literal(FLEET_METRIC_PAUSED_TIME_RULE),
+    })
+    .superRefine((paused, ctx) => {
+      if (paused.pausedMs + paused.workingMs !== paused.windowMs) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['workingMs'],
+          message: 'workingMs must equal windowMs - pausedMs',
+        });
+      }
+    }),
+]);
+
+const waitAgeSchema = z.object({
+  population: nonNegativeInt, known: nonNegativeInt, unknown: nonNegativeInt,
+  oldestKnownMs: z.number().nonnegative().nullable(), oldestMs: z.number().nonnegative().nullable(),
+}).superRefine((value, ctx) => {
+  if (value.known + value.unknown !== value.population ||
+      (value.known === 0) !== (value.oldestKnownMs === null) ||
+      value.oldestMs !== (value.unknown ? null : value.oldestKnownMs)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'wait ages must partition the clock population; missing dates keep the oldest wait unknown' });
+  }
+});
+
+const fleetVerificationServiceSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('known'), workers: nonNegativeInt,
+    arrivals: nonNegativeInt, arrivalsUnknown: nonNegativeInt, priorRoundsUnmeasured: nonNegativeInt,
+    outcomes: z.object({ approved: nonNegativeInt, revisionRequested: nonNegativeInt }).nullable(),
+    outcomesUnknown: nonNegativeInt,
+    pickups: z.object({ attempts: nonNegativeInt, claimed: nonNegativeInt, noClaim: nonNegativeInt,
+      unknown: nonNegativeInt }).nullable(), unscopedPickupAttempts: nonNegativeInt,
+    pickupFailureReasons: z.object({ rows: z.array(z.object({ reason: nonEmpty, count: nonNegativeInt })).max(10),
+      omittedReasons: nonNegativeInt, recoverVia: nonEmpty }),
+    since: isoDateTime, until: isoDateTime, specId: nonEmpty, specRevision: nonNegativeInt,
+    basis: z.literal('dated-review-rounds-and-scheduler-dispositions'),
+    snapshot: z.literal('selection-then-service-read'),
+  }),
+  z.object({ status: z.literal('unknown'), reason: nonEmpty, recoverVia: nonEmpty }),
+  z.object({ status: z.literal('not-applicable'), reason: nonEmpty }),
+]);
+
+/** P-032: bounded aggregates over the same pre-limit current-spec population. */
+export const fleetQueueHealthSchema = z.object({
+  population: nonNegativeInt, scope: z.literal('current-spec non-terminal canonical issue rows'),
+  waiting: z.object({ unit: z.literal('milliseconds'), reportAge: waitAgeSchema, reviewWait: waitAgeSchema,
+    revisionAge: waitAgeSchema, admissionWait: waitAgeSchema, admissionDelay: waitAgeSchema,
+    writers: z.object({ reportAge: nonEmpty, reviewWait: nonEmpty, revisionAge: nonEmpty,
+      admissionWait: nonEmpty, admissionDelay: nonEmpty }) }),
+  controls: z.object({ activeClaims: nonNegativeInt, rawClaimHolds: nonNegativeInt,
+    holdOpenLeases: nonNegativeInt, durableParks: nonNegativeInt,
+    pendingAgentReview: nonNegativeInt, revisionRequestedAgentReview: nonNegativeInt }),
+  controlsOverlap: z.literal(true),
+  missingMetadata: z.object({ unattributedClaimHolds: nonNegativeInt, parkReason: nonNegativeInt,
+    parkTimestamp: nonNegativeInt, invalidParkTimestamp: nonNegativeInt, pendingReviewTimestamp: nonNegativeInt }),
+  parkAgeBuckets: z.record(z.string(), nonNegativeInt),
+  releaseConditions: z.object({ statusCounts: z.record(z.string(), nonNegativeInt),
+    findingCounts: z.record(z.string(), nonNegativeInt), flagged: nonNegativeInt, nextAction: nonEmpty.nullable(),
+    examples: z.object({ rows: z.array(z.object({
+      id: nonEmpty, parker: nonEmpty, condition: nonEmpty.nullable(), clearer: nonEmpty.nullable(),
+      trigger: nonEmpty.nullable(), reachability: z.enum(['reachable', 'blocked', 'unreachable', 'satisfied']).nullable(),
+      findings: z.array(nonEmpty), ageMs: z.number().nonnegative().nullable(),
+      ageSource: z.literal('payload.claim_hold_at'), nextAction: nonEmpty, recheck: nonEmpty,
+    })).max(10), total: nonNegativeInt, omitted: nonNegativeInt, recoverVia: nonEmpty }),
+  }),
+  overdueReview: z.object({ thresholdHours: z.literal(24), known: nonNegativeInt,
+    timingUnknown: nonNegativeInt, nextAction: nonEmpty.nullable(),
+    examples: z.object({ rows: z.array(z.object({
+      id: nonEmpty, submittedBy: nonEmpty, ledgerIdeaId: nonEmpty, round: z.number().int().positive(),
+      clearer: nonEmpty.nullable(), ageMs: z.number().nonnegative(),
+      ageSource: z.literal('payload.agentReview.timing.enteredAt (matching round)'),
+      nextAction: nonEmpty, recheck: nonEmpty,
+    })).max(10), total: nonNegativeInt, omitted: nonNegativeInt, recoverVia: nonEmpty }),
+  }),
+  verificationService: fleetVerificationServiceSchema,
+}).superRefine((health, ctx) => {
+  if (health.waiting.reportAge.population !== health.population ||
+      health.waiting.reviewWait.population !== health.controls.pendingAgentReview ||
+      health.waiting.revisionAge.population !== health.controls.revisionRequestedAgentReview ||
+      Object.values(health.parkAgeBuckets).reduce((a, b) => a + b, 0) !== health.controls.durableParks ||
+      Object.values(health.releaseConditions.statusCounts).reduce((a, b) => a + b, 0) !== health.controls.durableParks ||
+      health.releaseConditions.examples.total !== health.controls.durableParks ||
+      health.releaseConditions.examples.rows.length + health.releaseConditions.examples.omitted !== health.releaseConditions.examples.total ||
+      health.overdueReview.examples.total !== health.overdueReview.known ||
+      health.overdueReview.examples.rows.length + health.overdueReview.examples.omitted !== health.overdueReview.examples.total) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'queue health must retain its complete clock and park populations' });
+  }
+});
+
 export const fleetMetricsSnapshotSchema = z
   .object({
     schemaVersion: z.literal(FLEET_METRICS_SCHEMA_VERSION),
@@ -358,9 +535,33 @@ export const fleetMetricsSnapshotSchema = z
     remaining: remainingSchema,
     authority: authorityPartitionSchema,
     issueUnits: issueUnitsSchema,
+    intakeStages: z.object({
+      population: nonNegativeInt,
+      unit: z.literal('work-item rows'),
+      counts: z.record(z.enum(WORK_ITEM_PRESENTATION_STAGES), nonNegativeInt),
+      remainingBugs: nonNegativeInt,
+      verifiedCompletions: nonNegativeInt,
+      mutuallyExclusive: z.literal(true),
+      writer: z.literal('deriveWorkItemPresentationStage'),
+      scope: z.literal('current-spec issue-family rows including observation evidence'),
+      window: z.literal('current stock at generatedAt'),
+    }).superRefine((report, ctx) => {
+      if (WORK_ITEM_PRESENTATION_STAGES.reduce((sum, stage) => sum + (report.counts[stage] ?? 0), 0) !== report.population
+        || WORK_ITEM_PRESENTATION_STAGES.some(stage => report.counts[stage] === undefined)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['counts'], message: 'intake stages must partition the declared population once' });
+      }
+      if (report.verifiedCompletions !== report.counts['verified-completion']) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['verifiedCompletions'], message: 'verified delivery must equal the verified-completion stage' });
+      }
+    }).optional(),
     // Optional for backwards-compatible parsing of pre-P-004 snapshots; the
     // canonical resolver and burn-down writer always emit it for fleet reads.
     populationLifecycle: z.custom<FleetPopulationLifecycleSnapshot>().optional(),
+    // P-001: optional only so pre-P-001 snapshots still parse; buildFleetMetricsResult
+    // always emits both, as `unknown` (never zero) when the population was not measured.
+    featureOutcomes: fleetFeatureOutcomesSchema.optional(),
+    pausedTime: fleetPausedTimeSchema.optional(),
+    queueHealth: fleetQueueHealthSchema.optional(),
     admissionParity: z.object({
       oracle: z.literal(FLEET_METRIC_ADMISSION_PARITY.oracle),
       filterEvaluator: z.literal(FLEET_METRIC_ADMISSION_PARITY.filterEvaluator),
@@ -451,6 +652,8 @@ export type FleetMetricScope = z.infer<typeof fleetMetricScopeSchema>;
 export type FleetMetricQuality = z.infer<typeof fleetMetricQualitySchema>;
 export type FleetMetricsSnapshot = z.infer<typeof fleetMetricsSnapshotSchema>;
 export type FleetMetricsResult = z.infer<typeof fleetMetricsResultSchema>;
+export type FleetFeatureOutcomes = z.infer<typeof fleetFeatureOutcomesSchema>;
+export type FleetPausedTime = z.infer<typeof fleetPausedTimeSchema>;
 
 export function parseFleetMetricsResult(value: unknown): FleetMetricsResult {
   return fleetMetricsResultSchema.parse(value);

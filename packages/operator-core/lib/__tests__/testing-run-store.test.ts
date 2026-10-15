@@ -143,6 +143,7 @@ describe('durable detached snapshots', () => {
   it('reads a snapshot from the shared ledger when the local worker has no run', async () => {
     const remote = {
       run_id: 'remote-run',
+      task_id: null,
       kind: 'vitest',
       label: 'remote test',
       file_path: 'packages/example.test.ts',

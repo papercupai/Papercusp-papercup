@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:EI-25166161739773210:47fe794e8eaae313e0e6aae8793381a4",
+  "inputSha256": "47fe794e8eaae313e0e6aae8793381a4b99d7730d851d772b4647015a45f900a",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-10-10T22:16:01.614Z",
+  "actor": "su-6baa8b9a-8d72-4223-b6d2-bf9f687dcfcb",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "EI-25166161739773210",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "a663ce179deaa247ea6794ee9b806c4b57f10059fb5bc5645d04aa977d4504f4",
+      "observedParkFingerprint": "a663ce179deaa247ea6794ee9b806c4b57f10059fb5bc5645d04aa977d4504f4",
+      "reasonCode": "condition-satisfied",
+      "evidence": "Park release trigger is work-item:done:WI-10006184 (condition: 'Recheck whether WI-10006184 fixed the shared Claude seed wire-budget overrun; if the report is covered, close this EI as a duplicate with evidence, otherwise resume its remaining root-cause work.'). Re-read 2026-10-10T22:15Z (su-6baa8, psql on harness_shared.work_items, workspace papercusp-workspace): WI-10006184 status=done, taken_by none; EI-25166161739773210 status=open, taken_by null. The trigger target is terminal, so the release condition is met. The re-evaluation the condition describes is the next claimant's work and travels with the row. Settled under plan bug-queue-legitimacy-and-actionable-validation-2026-10-10 P-004 / D-009.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-EI-25166161739773210-47fe794e8eaae313e0e6aae8793381a4-reconcile.json"
+}

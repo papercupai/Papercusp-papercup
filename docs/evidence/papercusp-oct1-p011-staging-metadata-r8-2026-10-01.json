@@ -1,0 +1,121 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10004890",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "kind": "bounded-staging-metadata",
+  "status": "attribution-incomplete",
+  "startedAt": "2026-10-01T20:46:40.429Z",
+  "samples": [
+    {
+      "pid": 3389995,
+      "atEpochMs": 1790887600475,
+      "uptimeSec": 2619.299240677,
+      "memory": {
+        "rss": 3961954304,
+        "heapTotal": 2241953792,
+        "heapUsed": 2001661400,
+        "external": 87554133,
+        "arrayBuffers": 3995805
+      },
+      "pssBytes": 3950893056,
+      "observerMs": 41,
+      "nativeContexts": 2,
+      "detachedContexts": 0,
+      "singletonPopulation": 126,
+      "singletonsChecked": 126,
+      "cache": {
+        "population": 699,
+        "checked": 699,
+        "notChecked": 0,
+        "expiredAmongChecked": 238,
+        "inflight": 0
+      },
+      "observedQueryBuildShas": [
+        "f27961b45b"
+      ]
+    },
+    {
+      "pid": 3389995,
+      "atEpochMs": 1790887603655,
+      "uptimeSec": 2622.479225299,
+      "memory": {
+        "rss": 3957104640,
+        "heapTotal": 2237521920,
+        "heapUsed": 2075219208,
+        "external": 86081969,
+        "arrayBuffers": 2523641
+      },
+      "pssBytes": 3946842112,
+      "observerMs": 38,
+      "nativeContexts": 2,
+      "detachedContexts": 0,
+      "singletonPopulation": 126,
+      "singletonsChecked": 126,
+      "cache": {
+        "population": 701,
+        "checked": 701,
+        "notChecked": 0,
+        "expiredAmongChecked": 238,
+        "inflight": 0
+      },
+      "observedQueryBuildShas": [
+        "f27961b45b"
+      ]
+    },
+    {
+      "pid": 3389995,
+      "atEpochMs": 1790887606839,
+      "uptimeSec": 2625.663542203,
+      "memory": {
+        "rss": 3960745984,
+        "heapTotal": 2244481024,
+        "heapUsed": 2132824624,
+        "external": 86830497,
+        "arrayBuffers": 3272105
+      },
+      "pssBytes": 3947981824,
+      "observerMs": 37,
+      "nativeContexts": 2,
+      "detachedContexts": 0,
+      "singletonPopulation": 126,
+      "singletonsChecked": 126,
+      "cache": {
+        "population": 702,
+        "checked": 702,
+        "notChecked": 0,
+        "expiredAmongChecked": 237,
+        "inflight": 1
+      },
+      "observedQueryBuildShas": [
+        "f27961b45b"
+      ]
+    }
+  ],
+  "finalMainPid": 3389995,
+  "cleanup": {
+    "closed": true
+  },
+  "rawEvidence": {
+    "path": ".papercusp/scratch/bash-2cd59eef-dcf.log",
+    "sha256": "9f1c31268a7bf98eb569730c2380686759606c05f8a1954dcfbd00495744120d"
+  },
+  "limitations": [
+    "No full retainer graph; known singleton fields only.",
+    "Counts and string characters are not retained bytes.",
+    "Ordinary moving workload, not controlled idle or candidate A/B.",
+    "No GC, queryObjects or profiler start/stop.",
+    "Expired entries count is not their retained footprint; no cache defect/reduction is claimed.",
+    "Native allocation ownership remains unmeasured; PSS minus heap counters is not a native allocator census.",
+    "The earlier passive host selector matched a systemd-run command containing host source text; do not use its aggregate host count."
+  ],
+  "instrumentGuard": {
+    "workItem": "WI-10005074",
+    "testRunIds": [
+      20432011,
+      20432019
+    ],
+    "tests": "cdp-inspector 5/5; replacement-inspector preflight 1/1, unrelated cohort assertions skipped2",
+    "sourceSha256": "b73e04e0aae68af32900e73e0141e3ffbbccb61f781b244da8572b11e12dfce8",
+    "testSha256": "1101453fb9f9cf650ff2bda128b64e67fe4202c2ec895df8813fb0b637ca9c7e"
+  }
+}

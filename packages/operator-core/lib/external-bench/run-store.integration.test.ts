@@ -10,7 +10,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import type { OrgSql } from './reproducibility/db';
 
@@ -25,6 +25,7 @@ import {
   upsertBenchRunTask,
   taskRowFromFleetResult,
   appendBenchRunEvents,
+  setBenchRunEvents,
   setBenchRunStatus,
   applyGradeMap,
   listBenchRuns,
@@ -55,6 +56,9 @@ beforeAll(async () => {
   sql = db.sql as unknown as OrgSql;
   await db.sql.unsafe(migrationSql('296-bench-run-operational-store.sql'));
   await db.sql.unsafe(migrationSql('298-bench-run-infra-excluded.sql'));
+  const archiveMigration = '1434-benchmark-ungraded-archive-state.sql';
+  await db.sql.unsafe(migrationSql(existsSync(resolve(SQL_DIR, archiveMigration))
+    ? archiveMigration : `${archiveMigration}.DRAFT`));
   // D-007 pot-rename: mig 296 creates bench_runs.hive_slug; mig 523 renamed it → pot_slug.
   // Replaying only 296/298 predates the rename, so apply it in-place to match the write path.
   await db.sql.unsafe(`ALTER TABLE harness_shared.bench_runs RENAME COLUMN hive_slug TO pot_slug`);
@@ -95,6 +99,74 @@ function fleetResult(instanceId: string, diff: string, costUsd: number): FleetTa
 }
 
 describe('bench run-store (live write + read)', () => {
+  it('serializes concurrent sequence allocation over real PostgreSQL', async () => {
+    const runId = 'concurrent-event-append';
+    await upsertBenchRun({ id: runId, arm: 'papercusp', taskSetId: 'fixture', model: 'fixture' }, scope);
+    // Hold both unprotected reads at the same frontier. Transaction-local SQL
+    // keeps its normal behavior, so a serialized implementation never needs
+    // the barrier. This makes the old race reproducible without timing sleeps.
+    let reads = 0;
+    let release!: () => void;
+    const bothRead = new Promise<void>(resolve => { release = resolve; });
+    const concurrentSql = new Proxy(sql, {
+      apply(target, receiver, args) {
+        const result = Reflect.apply(target, receiver, args);
+        if (Array.isArray(args[0]) && args[0].join('').includes('MAX(seq)')) {
+          return Promise.resolve(result).then(async rows => {
+            if (++reads === 2) release();
+            await bothRead;
+            return rows;
+          });
+        }
+        return result;
+      },
+    });
+    await Promise.all(['first', 'second'].map(agent => appendBenchRunEvents(
+      runId, [{ kind: 'placement', agent }], { ...scope, sql: concurrentSql },
+    )));
+    const rows = await sql<{ seq: number; agent: string }[]>`
+      SELECT seq, agent FROM harness_shared.bench_run_events
+       WHERE run_id = ${runId} AND workspace_id = ${WS} ORDER BY seq
+    `;
+    expect(rows.map(row => Number(row.seq))).toEqual([0, 1]);
+    expect(rows.map(row => row.agent).sort()).toEqual(['first', 'second']);
+  });
+
+  it('shares one serialization boundary for append and whole-trace replacement', async () => {
+    const runId = 'concurrent-event-replacement';
+    await upsertBenchRun({ id: runId, arm: 'papercusp', taskSetId: 'fixture', model: 'fixture' }, scope);
+    await appendBenchRunEvents(runId, [{ kind: 'placement', agent: 'old' }], scope);
+    await Promise.all([
+      setBenchRunEvents(runId, [{ kind: 'placement', agent: 'replacement' }], scope),
+      ...Array.from({ length: 12 }, (_, i) => appendBenchRunEvents(
+        runId, [{ kind: 'placement', agent: `append-${i}` }], scope,
+      )),
+    ]);
+    const rows = await sql<{ seq: number; agent: string }[]>`
+      SELECT seq, agent FROM harness_shared.bench_run_events
+       WHERE run_id = ${runId} AND workspace_id = ${WS} ORDER BY seq
+    `;
+    // Replacement may precede or follow any append. Either order must replay
+    // as one contiguous trace starting with the replacement, without duplicates.
+    expect(rows[0]?.agent).toBe('replacement');
+    expect(rows.map(row => Number(row.seq))).toEqual(rows.map((_, i) => i));
+    expect(new Set(rows.map(row => row.agent)).size).toBe(rows.length);
+  });
+
+  it('refuses event writes for a missing or foreign-workspace run', async () => {
+    const runId = 'event-write-workspace-scope';
+    await upsertBenchRun({ id: runId, arm: 'papercusp', taskSetId: 'fixture', model: 'fixture' }, scope);
+    await appendBenchRunEvents(runId, [{ kind: 'placement', agent: 'retained' }], scope);
+    for (const input of [
+      { runId, scope: { ...scope, workspaceId: 'other-workspace' } },
+      { runId: 'absent-run', scope },
+    ]) {
+      await expect(appendBenchRunEvents(input.runId, [{ kind: 'placement' }], input.scope)).rejects.toThrow(/workspace/);
+      await expect(setBenchRunEvents(input.runId, [], input.scope)).rejects.toThrow(/workspace/);
+    }
+    expect((await getBenchRunDetail(runId, scope))!.run.coordEvents?.map(event => event.agent)).toEqual(['retained']);
+  });
+
   it('writes a run + tasks + events and reads them back in the PreservedArmRun shape', async () => {
     await upsertBenchRun(
       { id: 'r1', arm: 'hive-realqueen', taskSetId: '11-task-pilot', model: 'opus', status: 'running', config: { cap: 5 } },
@@ -186,7 +258,8 @@ describe('rollupBenchRunMetrics — fairness exclusion (benchmark-fairness-fix)'
     expect(r.gradedCount).toBe(3); // ONLY the scored tasks — infra/timeout EXCLUDED from the denominator
     expect(r.resolvedCount).toBe(2);
     expect(r.infraExcluded).toBe(2); // timeout-1 + infra-1, surfaced separately
-    expect(r.resolvedPct).toBeCloseTo(2 / 3, 5); // resolved / SCORED-tasks, NOT 2/5
+    expect(r.resolvedPct).toBeCloseTo(2 / 5, 5);
+    expect(r.conditionalResolvedPct).toBeCloseTo(2 / 3, 5);
     // Cost still counts EVERY task (a crashed/throttled run still spent real tokens — honest cost).
     expect(r.costUsd).toBeCloseTo(20, 5);
   });
@@ -201,7 +274,33 @@ describe('rollupBenchRunMetrics — fairness exclusion (benchmark-fairness-fix)'
     expect(r.gradedCount).toBe(1); // only the genuine 'done' row
     expect(r.resolvedCount).toBe(1);
     expect(r.infraExcluded).toBe(1);
-    expect(r.resolvedPct).toBe(1); // 1/1 scored, NOT 1/2
+    expect(r.resolvedPct).toBe(1 / 2);
+    expect(r.conditionalResolvedPct).toBe(1);
+  });
+});
+
+describe('assigned task scoring across store readers', () => {
+  it('retains the declared task set after partial collection and grader repair', async () => {
+    await upsertBenchRun({ id: 'assigned', arm: 'su', taskSetId: 'custom:5-task', model: 'sol',
+      taskCount: 5, config: { taskIds: ['a', 'b', 'c', 'd', 'e'] } }, scope);
+    await upsertBenchRunTask('assigned', { instanceId: 'a', taskStatus: 'collected', stopReason: 'done',
+      generationError: '', costUsd: 1 }, scope);
+    await upsertBenchRunTask('assigned', { instanceId: 'b', taskStatus: 'collected', stopReason: 'timeout',
+      generationError: 'budget ceiling', costUsd: 2 }, scope);
+    await rollupBenchRunMetrics('assigned', scope);
+    const before = (await listBenchRuns(scope)).find(row => row.id === 'assigned')!;
+    expect(before).toMatchObject({ taskCount: 5, attemptedCount: 2, absentCount: 3,
+      missingGradeCount: 1, measurementComplete: false, resolvedPct: null, costUsd: 3 });
+    expect((await getBenchRunDetail('assigned', scope))!.summary).toMatchObject({
+      taskCount: 5, missingGradeCount: 1, resolvedPct: null });
+    await applyGradeMap('assigned', { a: true }, scope);
+    const after = (await listBenchRuns(scope)).find(row => row.id === 'assigned')!;
+    const detail = (await getBenchRunDetail('assigned', scope))!;
+    expect(after).toMatchObject({ taskCount: 5, gradedCount: 1, resolvedCount: 1,
+      resolvedPct: 0.2, conditionalResolvedPct: 1, missingGradeCount: 0, infraExcluded: 1 });
+    expect(detail.resolvedPct).toBe(after.resolvedPct);
+    expect(detail.summary.resolvedPct).toBe(after.resolvedPct);
+    expect(detail.summary.conditionalResolvedPct).toBe(after.conditionalResolvedPct);
   });
 });
 
@@ -215,6 +314,9 @@ describe('bench run-store (file-dir import)', () => {
       arm: 'hive-realqueen',
       runId: 'preserved-run-orig',
       startedAt: '2026-06-16T04:47:56.836Z',
+      finishedAt: '2026-06-16T05:00:00.000Z',
+      model: 'provider-model-frozen-version',
+      suite: 'swe-bench-pro',
       wallMs: 0,
       peakConcurrentBees: 3,
       taskCount: 2,
@@ -248,6 +350,10 @@ describe('bench run-store (file-dir import)', () => {
     expect(detail!.source).toBe('import');
     expect(detail!.status).toBe('done');
     expect(detail!.arm).toBe('hive-realqueen');
+    expect(detail!.model).toBe('provider-model-frozen-version');
+    expect(detail!.suite).toBe('swe-bench-pro');
+    expect(new Date(detail!.finishedAt!).toISOString()).toBe('2026-06-16T05:00:00.000Z');
+    expect(detail!.config?.importedAt).toEqual(expect.any(String));
     expect(detail!.recovered).toBe(true);
     expect(detail!.taskSetId).toBe('custom:2-task');
     expect(detail!.perTask).toHaveLength(2);
@@ -263,10 +369,60 @@ describe('bench run-store (file-dir import)', () => {
   });
 
   it('re-import is idempotent (same row, no dupes)', async () => {
+    const before = await getBenchRunDetail('preserved-run', scope);
     await importPreservedRunToStore('preserved-run', { ...scope, baseDir });
     const detail = await getBenchRunDetail('preserved-run', scope);
     expect(detail!.perTask).toHaveLength(2);
     expect(detail!.run.coordEvents).toHaveLength(2);
+    expect(new Date(detail!.finishedAt!).toISOString()).toBe(new Date(before!.finishedAt!).toISOString());
+  });
+
+  it('keeps a valid archive without grades explicitly ungraded and its model unknown', async () => {
+    const dir = join(baseDir, 'ungraded-run');
+    mkdirSync(dir);
+    writeFileSync(join(dir, 'arm.json'), JSON.stringify({ arm: 'solo', perTask: [{ instanceId: 'ungraded-task' }] }));
+    expect((await importPreservedRunToStore('ungraded-run', { ...scope, baseDir })).imported).toBe(true);
+    const detail = await getBenchRunDetail('ungraded-run', scope);
+    expect(detail!.status).toBe('ungraded');
+    expect(detail!.gradedCount).toBe(0);
+    expect(detail!.model).toBe('unknown');
+    expect(detail!.suite).toBe('unknown');
+    expect(detail!.startedAt).toBeNull();
+    expect(detail!.finishedAt).toBeNull();
+  });
+
+  it('marks an archive with only some task grades ungraded', async () => {
+    const dir = join(baseDir, 'partial-grade-run');
+    mkdirSync(join(dir, 'grade-solo', 'out'), { recursive: true });
+    writeFileSync(join(dir, 'solo.json'), JSON.stringify({ arm: 'solo', perTask: [{ instanceId: 'first' }, { instanceId: 'second' }] }));
+    writeFileSync(join(dir, 'grade-solo', 'out', 'eval_results.json'), JSON.stringify({ first: true }));
+    await importPreservedRunToStore('partial-grade-run', { ...scope, baseDir });
+    const detail = await getBenchRunDetail('partial-grade-run', scope);
+    expect(detail!.status).toBe('ungraded');
+    expect(detail!.gradedCount).toBe(1);
+    expect(detail!.perTask.find((task) => task.instanceId === 'second')!.resolved).toBeNull();
+  });
+
+  it('repairs former dataset-only imports without altering a same-shaped UI run', async () => {
+    for (const source of ['import', 'ui'] as const) {
+      const id = `dataset-${source}`;
+      const dir = join(baseDir, id);
+      mkdirSync(dir);
+      writeFileSync(join(dir, 'summary.json'), JSON.stringify({ instances: 103 }));
+      await upsertBenchRun({ id, arm: 'unknown', model: 'opus', taskSetId: 'dataset', source, status: 'done' }, scope);
+      expect((await importPreservedRunToStore(id, { ...scope, baseDir })).imported).toBe(false);
+      const detail = await getBenchRunDetail(id, scope);
+      expect(detail!.status).toBe(source === 'import' ? 'error' : 'done');
+      expect(detail!.runError).toBe(source === 'import' ? 'archive_not_a_run:no_task_submission_records' : null);
+    }
+  });
+
+  it('does not overwrite known archived history when the source evidence is unavailable', async () => {
+    const before = await getBenchRunDetail('preserved-run', scope);
+    expect((await importPreservedRunToStore('preserved-run', { ...scope, baseDir: join(baseDir, 'absent') })).imported).toBe(false);
+    const after = await getBenchRunDetail('preserved-run', scope);
+    expect(after!.status).toBe('done');
+    expect(new Date(after!.finishedAt!).toISOString()).toBe(new Date(before!.finishedAt!).toISOString());
   });
 });
 

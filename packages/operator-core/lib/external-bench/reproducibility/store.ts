@@ -4,8 +4,9 @@
  * Evaluation UI consume one type with no per-caller mapping. Also reads the
  * rollout cards + prereg rows (P-010-owned artifacts).
  */
-import type { TaskRunResult, TestOutcome } from '@papercusp/bench-metrics';
+import { buildSuiteReport, type AggregateOpts, type SuiteReport, type TaskRunResult, type TestOutcome } from '@papercusp/bench-metrics';
 import type { PreregRecord, RolloutRecord } from './schema';
+import { currentProtocolFromConfig, currentProtocolPriceTable } from './schema';
 import { resolveDb, type DbScope } from './db';
 
 /** bigint/numeric columns arrive as strings from postgres.js — coerce to number. */
@@ -124,6 +125,89 @@ export async function listRunResults(
      ORDER BY suite, task_id, arm, seed
   `;
   return rows.map(rowToTaskRunResult);
+}
+
+/** Resolve the same immutable population for canonical and portable reports. */
+export function resolveRunReportAssignment(rows: readonly Pick<TaskRunResult,
+  'runId' | 'suite' | 'arm' | 'preregHash' | 'modelId' | 'tokensCacheWrite'>[], prereg: PreregRecord | null): AggregateOpts {
+  let assignment: AggregateOpts = {};
+  // Current protocols freeze structured execution controls per arm. Validate
+  // the complete contract even if the task roster is missing; old string
+  // rosters retain their original report semantics.
+  const currentProtocol = prereg ? currentProtocolFromConfig(prereg.config) : null;
+  if (currentProtocol && currentProtocol.runId !== prereg!.runId) {
+    throw new Error('benchmark report: current protocol differs from frozen run identity');
+  }
+  if (prereg?.config.taskIds !== undefined) {
+    const { taskIds, seeds, arms, arm } = prereg.config;
+    const stringRoster = (value: unknown, label: string): string[] => {
+      if (!Array.isArray(value) || value.length === 0 ||
+          value.some(v => typeof v !== 'string' || !v.trim()) || new Set(value).size !== value.length) {
+        throw new Error(`benchmark report: invalid frozen ${label} roster`);
+      }
+      return value as string[];
+    };
+    const assignedTaskIds = stringRoster(taskIds, 'task');
+    const assignedArms = stringRoster(currentProtocol?.arms.map(value => value.id) ??
+      arms ?? (typeof arm === 'string' ? [arm] : undefined), 'arm');
+    const assignedSeeds = typeof seeds === 'number' && Number.isSafeInteger(seeds) && seeds > 0 && seeds <= 10000
+      ? Array.from({ length: seeds }, (_, i) => i) : seeds;
+    if (!Array.isArray(assignedSeeds) || assignedSeeds.length === 0 ||
+        assignedSeeds.some(seed => !Number.isSafeInteger(seed) || seed < 0) ||
+        new Set(assignedSeeds).size !== assignedSeeds.length) {
+      throw new Error('benchmark report: invalid frozen seed roster');
+    }
+    // Existing taskIds is a flat roster; it cannot truthfully describe multiple suites.
+    if (prereg.suites.length !== 1 || rows.some(row => row.runId !== prereg.runId || row.suite !== prereg.suites[0])) {
+      throw new Error('benchmark report: frozen assignment has ambiguous run or suite identity');
+    }
+    assignment = { assignedTaskIds, assignedArms, assignedSeeds, runId: prereg.runId, suite: prereg.suites[0] };
+    if (currentProtocol) {
+      const models = new Map(currentProtocol.arms.map(value => [value.id, value.model]));
+      for (const row of rows) {
+        if (row.preregHash !== prereg.preregHash || row.modelId !== models.get(row.arm)) {
+          throw new Error('benchmark report: result model or preregistration differs from frozen current protocol');
+        }
+      }
+      assignment.priceTable = currentProtocolPriceTable(currentProtocol, rows);
+      assignment.requireRegisteredSampling = true;
+      if (currentProtocol.sampling) {
+        const sampling = currentProtocol.sampling;
+        assignment.repositoryByTask = Object.fromEntries(assignedTaskIds.map(id => [id, sampling.taskRepositories[id]]));
+        assignment.ci = sampling.ci;
+        assignment.bootstrapSeed = sampling.bootstrapSeed;
+        assignment.bootstrapIterations = sampling.bootstrapIterations;
+      }
+    }
+  }
+  return assignment;
+}
+
+/** Use the existing immutable preregistration, never an observed-row task roster. */
+export function buildRunReports(rows: TaskRunResult[], prereg: PreregRecord | null): SuiteReport[] {
+  const assignment = resolveRunReportAssignment(rows, prereg);
+  const bySuite = new Map<string, TaskRunResult[]>();
+  for (const row of rows) {
+    const group = bySuite.get(row.suite) ?? [];
+    group.push(row);
+    bySuite.set(row.suite, group);
+  }
+  if (assignment.suite && !bySuite.has(assignment.suite)) bySuite.set(assignment.suite, []);
+  return [...bySuite.values()].map(group => {
+    const report = buildSuiteReport(group, assignment);
+    if (assignment.priceTable) report.priceTableVersion = assignment.priceTable.version;
+    if (prereg) report.assignment = {
+      ...report.assignment!, preregHash: prereg.preregHash, protocolCommitted: prereg.gitCommitted,
+    };
+    return report;
+  });
+}
+
+export async function getRunReports(runId: string, opts: { suite?: string } & DbScope = {}): Promise<SuiteReport[]> {
+  const [rows, prereg] = await Promise.all([
+    listRunResults({ ...opts, runId, suite: undefined }), getPrereg({ runId }, opts),
+  ]);
+  return buildRunReports(rows, prereg).filter(report => !opts.suite || report.suite === opts.suite);
 }
 
 export interface SuiteSummary {

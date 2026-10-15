@@ -62,6 +62,7 @@ async function destroyOpened(journal: ReturnType<typeof releaseLedger>) {
     ...HOST,
     releaseTaskId: TASK_ID,
     operationId: 'op-destroy-1',
+    provider: 'gcp',
     billing: SUBJECT,
     ledger: journal,
     readHostRuntimeRelease: async () => ({ bundleSha256: BUNDLE }),

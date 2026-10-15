@@ -15,13 +15,16 @@
  * this is a formatting choice.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   findCommitBlockingSecrets,
+  findCommitBlockingSecretsSliced,
   describeCommitBlockingSecrets,
   cachedExemptionLoader,
   EXEMPTION_CACHE_TTL_MS,
 } from './secrets';
 import { secretsDetector, setContentLintExemptionLoader, DEFAULT_CONTENT_DETECTORS } from './registry';
+import { scanTextForSecrets, scanTextForSecretsSliced, SLICED_SCAN_LINES_PER_CHECK } from '../sync/pot-git/secrets-guard';
 
 /** An AWS-access-key-shaped value, assembled so this file's own text never
  *  carries the contiguous shape. Deliberately NOT suffixed `EXAMPLE`: the
@@ -52,6 +55,12 @@ describe('findCommitBlockingSecrets', () => {
 
   it('reports clean text as clean', () => {
     expect(findCommitBlockingSecrets('a/b.ts', "const NEVER_EMIT_MARKER = 'never-emit-me';\n", NO_EXEMPTIONS)).toEqual([]);
+  });
+
+  it('keeps the mobile HTTP audit fixtures committable without a secrets exemption', () => {
+    const path = 'packages/operator-core/lib/owner-sessions/device-actions.integration.test.ts';
+    const text = readFileSync(new URL('../owner-sessions/device-actions.integration.test.ts', import.meta.url), 'utf8');
+    expect(findCommitBlockingSecrets(path, text, NO_EXEMPTIONS)).toEqual([]);
   });
 
   it('skips a STATIC fixture file (isFixtureFile) so the scanner cannot wedge its own suite', () => {
@@ -237,5 +246,58 @@ describe('secretsDetector (registry wiring)', () => {
 
   it('declares NO autoFix — a credential-shaped repair is never applied unread', () => {
     expect(secretsDetector.autoFix).toBeUndefined();
+  });
+});
+
+describe('time-sliced scan (WI-6554700010008327)', () => {
+  // More shapes, assembled at runtime for the reason in this file's header.
+  const slackShape = (): string => 'xo' + 'xb-' + '1234567890abcdef';
+  const assignment = (): string => 'pass' + 'word = "' + 'Zx9Qw3Er' + '7Ty1Ui5Op2As"';
+
+  const corpus = (): Array<[string, string]> => [
+    ['empty', ''],
+    ['clean', 'export const x = 1;\nexport const y = 2;\n'],
+    ['first-middle-last-no-trailing-newline', `${awsShape()}\nclean\n${pemHeader()}\nclean\n${slackShape()}`],
+    ['trailing-newline', `clean\n${assignment()}\n`],
+    ['crlf', `clean\r\n${awsShape()}\r\nclean\r\n`],
+    ['two-on-one-line', `a ${awsShape()} b ${slackShape()}\n`],
+    ['overlong-line-skipped', `${'x'.repeat(5000)} ${awsShape()}\nnext ${awsShape()}\n`],
+  ];
+
+  it('the sliced scanner returns exactly the synchronous scanner’s findings, yielding mid-text', async () => {
+    let positives = 0;
+    for (const [name, text] of corpus()) {
+      const path = `docs/${name}.md`;
+      const expected = scanTextForSecrets(path, text);
+      positives += expected.length;
+      let yields = 0;
+      const sliced = await scanTextForSecretsSliced(path, text, async () => { yields += 1; }, 2);
+      expect(sliced, name).toEqual(expected);
+      if (text.split('\n').length > 2) expect(yields, `${name} yields`).toBeGreaterThan(0);
+    }
+    // Positive control: without it, a broken fixture would make the comparison
+    // above pass vacuously on empty arrays.
+    expect(positives).toBe(8);
+  });
+
+  it('yields every SLICED_SCAN_LINES_PER_CHECK lines inside ONE large file and still finds a hit on its last line', async () => {
+    const lineCount = 5000;
+    const text = `${'const clean = 1;\n'.repeat(lineCount)}const id = '${awsShape()}';`;
+    let yields = 0;
+    const findings = await findCommitBlockingSecretsSliced('apps/operator/lib/big.ts', text, NO_EXEMPTIONS, async () => {
+      yields += 1;
+    });
+    expect(findings.map((f) => [f.line, f.rule])).toEqual([[lineCount + 1, 'aws-access-key-id']]);
+    expect(yields).toBe(Math.floor(lineCount / SLICED_SCAN_LINES_PER_CHECK));
+  });
+
+  it('keeps both exemption layers and does no scanning work for an exempt file', async () => {
+    let yields = 0;
+    const count = async (): Promise<void> => { yields += 1; };
+    const big = `${'x\n'.repeat(2000)}${awsShape()}`;
+    const fixture = 'packages/operator-core/lib/sync/pot-git/secrets-guard.test.ts';
+    expect(await findCommitBlockingSecretsSliced(fixture, big, NO_EXEMPTIONS, count)).toEqual([]);
+    expect(await findCommitBlockingSecretsSliced('libs/generic/fixtures/a.ts', big, new Set(['libs/generic/fixtures/']), count)).toEqual([]);
+    expect(yields).toBe(0);
   });
 });

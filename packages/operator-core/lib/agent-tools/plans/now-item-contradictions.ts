@@ -37,6 +37,11 @@ const PLAN_ITEM_RANGE_RE =
 // multi-segment kebab-case token ending in a full date immediately before
 // a plan-item id.
 const PLAN_SLUG_PREFIX_RE = /\b([a-z][a-z0-9]*(?:-[a-z0-9]+)*-\d{4}-\d{2}-\d{2})\s+$/i;
+// A short plan-name reference can scope an item without repeating its full
+// dated slug, e.g. "behind modernization P-008". Limit this to the explicit
+// dependency construction and do not exempt a name that is already part of
+// the current plan's slug.
+const NAMED_FOREIGN_PLAN_PREFIX_RE = /\bbehind\s+([a-z][a-z0-9]*(?:-[a-z0-9]+)*)\s+$/i;
 // EI-21920559821120577 (partial): the exemption vocabulary was missing three
 // past-tense completion verbs this codebase uses constantly — `landed` above
 // all (CLAUDE.md itself says "the fixes land ON TOP of it", "a fix already
@@ -57,6 +62,11 @@ const PLAN_SLUG_PREFIX_RE = /\b([a-z][a-z0-9]*(?:-[a-z0-9]+)*-\d{4}-\d{2}-\d{2})
 // safe to take separately; the redesign is not.
 const NOW_CLOSED_RE =
   /\b(?:done|complete(?:d)?|closed|shipped|dropped|finished|terminal|accepted|landed|merged|resolved)\b|\bno\s+longer\s+(?:active|open|pending|in\s+progress)\b/i;
+// work_items:complete can report committed closure authority as the proof of a
+// truthful terminal mention. Keep this exact authority phrase separate from
+// generic "committed" prose, which does not establish completion by itself.
+const NOW_COMMITTED_CLOSURE_AUTHORITY_RE =
+  /\bclosure\s+authority\s+(?:(?:is|was)\s+|has\s+been\s+)?committed\b/i;
 // A terminal item may also be reported through quantitative test evidence,
 // e.g. "P-013 passed 113/113 focused tests plus 9/9 migrated-Postgres tests".
 // Keep this narrower than the bare past-tense verb: "P-013 passed to the
@@ -365,14 +375,18 @@ export function detectNowItemContradictions(
     const before = clause.slice(0, refOffset);
     const after = clause.slice(refOffset + id.length);
     const closeAfter =
-      (NOW_CLOSED_RE.test(after) || NOW_PASSED_TEST_EVIDENCE_RE.test(after)) &&
+      (NOW_CLOSED_RE.test(after) ||
+        NOW_PASSED_TEST_EVIDENCE_RE.test(after) ||
+        NOW_COMMITTED_CLOSURE_AUTHORITY_RE.test(after)) &&
       !NOW_NEGATED_OR_FUTURE_RE.test(after);
     const explicitTerminalStatus = NOW_TERMINAL_STATUS_ASSERTION_RE.test(after);
     const pastTenseReport = NOW_PAST_TENSE_REPORT_RE.test(after);
     const derivationCompletionAfter =
       NOW_DERIVATION_COMPLETION_RE.test(after) && !NOW_NEGATED_OR_FUTURE_RE.test(after);
     const closeBefore =
-      (NOW_CLOSED_RE.test(before) || NOW_PASSED_TEST_EVIDENCE_RE.test(before)) &&
+      (NOW_CLOSED_RE.test(before) ||
+        NOW_PASSED_TEST_EVIDENCE_RE.test(before) ||
+        NOW_COMMITTED_CLOSURE_AUTHORITY_RE.test(before)) &&
       !NOW_NEGATED_OR_FUTURE_RE.test(before.slice(-120));
     const stagingOnlyCompletion = isStagingOnlyCompletion(after);
     const clauseItemIds = [...clause.matchAll(PLAN_ITEM_REF_RE)].map((itemMatch) => itemMatch[0]);
@@ -460,8 +474,12 @@ export function detectNowItemContradictions(
     // item of THIS plan, so there is nothing for this plan's terminal-status
     // map to contradict.
     const precedingSlugMatch = PLAN_SLUG_PREFIX_RE.exec(before);
+    const namedForeignPlanMatch = NAMED_FOREIGN_PLAN_PREFIX_RE.exec(before);
+    const currentPlanSlugTerms = parsed.slug.toLowerCase().split(/[-\s]+/);
     const explicitForeignPlanReference =
-      precedingSlugMatch !== null && precedingSlugMatch[1].toLowerCase() !== parsed.slug.toLowerCase();
+      (precedingSlugMatch !== null && precedingSlugMatch[1].toLowerCase() !== parsed.slug.toLowerCase()) ||
+      (namedForeignPlanMatch !== null &&
+        !currentPlanSlugTerms.includes(namedForeignPlanMatch[1].toLowerCase()));
     if (
       closeAfter ||
       explicitTerminalStatus ||

@@ -1,0 +1,302 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P010 current-build manual mid-task restart and native acceptance",
+  "framework": "operational",
+  "command": [
+    "native owner-click/Calendar upcoming trigger/Phone synthetic booking",
+    "dev:restart staging authorize:true fences1688,1689",
+    "registered test:file app-operation-results.live.e2e.test.ts"
+  ],
+  "startedAt": "2026-10-07T10:58:00.000Z",
+  "finishedAt": "2026-10-07T11:16:23.385Z",
+  "exitCode": 0,
+  "summary": "Three real accepted operations survived coordinated staging restarts while pending, completed with readable results, and preserved original identities on replay. Native captures and API observations retained. Registered e2e receipt20893398/binding28958 separately measures current result/replay/native display. This operational artifact does not manufacture an e2e execution layer.",
+  "assertions": [
+    {
+      "id": "email-restart-result-replay",
+      "passed": true,
+      "evidence": "Receipt46/WI10007117 accepted before fence1688 old3633740->3794676, terminal succeeded and replay same receipt/target, ready body native; drafts0."
+    },
+    {
+      "id": "calendar-restart-result-replay",
+      "passed": true,
+      "evidence": "Receipt48/WI10007119 pending before fence1689 old3794676->3917709, ready current result; original dedupe replay true/eventcount1; native actualagenda."
+    },
+    {
+      "id": "phone-restart-result-replay",
+      "passed": true,
+      "evidence": "Receipt47/WI10007118 pending before fence1689, ready brief, bookingreplay originale58e251b count1; dialClaim/session/call null; native actualbrief."
+    }
+  ],
+  "runtime": {
+    "stagingAfterRestart": "5363ccca83",
+    "nativePID": 1835173,
+    "restartFences": [
+      1688,
+      1689
+    ]
+  },
+  "apps": {
+    "email": {
+      "api": {
+        "measuredAt": "2026-10-07T11:06:47.476Z",
+        "replay": {
+          "ok": true,
+          "handle": {
+            "workspaceId": "papercusp-workspace",
+            "harnessSlug": "email",
+            "receiptId": 46,
+            "operationId": "draft-reply",
+            "specificationRevision": "6901b7cd5542044211dca08f1df26148bbf8db1bb3a4aa6c6fca5bfd490c2b80",
+            "target": {
+              "kind": "work-item",
+              "id": "WI-10007117"
+            }
+          },
+          "requestKey": "draft-reply:mailbox-message%3Aaddress%253Alocal%2540example.test%3Ap010-email-ui-preflight-20261007"
+        },
+        "result": {
+          "ok": true,
+          "draftReply": {
+            "state": "submitted",
+            "handle": {
+              "target": {
+                "id": "WI-10007117",
+                "kind": "work-item"
+              },
+              "receiptId": 46,
+              "harnessSlug": "email",
+              "operationId": "draft-reply",
+              "workspaceId": "papercusp-workspace",
+              "specificationRevision": "6901b7cd5542044211dca08f1df26148bbf8db1bb3a4aa6c6fca5bfd490c2b80"
+            },
+            "status": {
+              "handle": {
+                "workspaceId": "papercusp-workspace",
+                "harnessSlug": "email",
+                "receiptId": 46,
+                "operationId": "draft-reply",
+                "specificationRevision": "6901b7cd5542044211dca08f1df26148bbf8db1bb3a4aa6c6fca5bfd490c2b80",
+                "target": {
+                  "kind": "work-item",
+                  "id": "WI-10007117"
+                }
+              },
+              "phase": "terminal",
+              "outcome": "succeeded",
+              "items": [
+                {
+                  "id": "WI-10007117",
+                  "state": "done",
+                  "assignee": null
+                }
+              ],
+              "planRun": null,
+              "cancellationRequested": false,
+              "wait": null
+            },
+            "result": {
+              "state": "ready",
+              "status": {
+                "handle": {
+                  "workspaceId": "papercusp-workspace",
+                  "harnessSlug": "email",
+                  "receiptId": 46,
+                  "operationId": "draft-reply",
+                  "specificationRevision": "6901b7cd5542044211dca08f1df26148bbf8db1bb3a4aa6c6fca5bfd490c2b80",
+                  "target": {
+                    "kind": "work-item",
+                    "id": "WI-10007117"
+                  }
+                },
+                "phase": "terminal",
+                "outcome": "succeeded",
+                "items": [
+                  {
+                    "id": "WI-10007117",
+                    "state": "done",
+                    "assignee": null
+                  }
+                ],
+                "planRun": null,
+                "cancellationRequested": false,
+                "wait": null
+              },
+              "output": {
+                "messageId": "p010-email-ui-preflight-20261007",
+                "proposals": [
+                  {
+                    "to": [
+                      "acceptance@example.test"
+                    ],
+                    "subject": "Re: P010 durable acceptance UI preflight",
+                    "text": "Hi,\n\nConfirming that the durable task result for the P010 durable acceptance UI preflight is readable.\n\nThanks",
+                    "confidence": 0.8,
+                    "rationale": "The inbound message from acceptance@example.test makes one explicit request: a reply confirming that the durable task result is readable. The draft goes to the sender only, keeps the original subject with a Re: prefix, and makes that one confirmation with no other facts, dates, or commitments. Confidence is 0.8 rather than higher because the confirmation is a factual claim. It should be sent only after the owner has opened this stored result, which is itself the durable task result. No labels are proposed because the message supplied no label taxonomy.",
+                    "evidence": [
+                      "messageId p010-email-ui-preflight-20261007 (threadId p010-email-ui-preflight-20261007): from acceptance@example.test to local@example.test, subject \"P010 durable acceptance UI preflight\"",
+                      "messageId p010-email-ui-preflight-20261007 body: \"Prepare a reply confirming that the durable task result is readable.\"",
+                      "messageId p010-email-ui-preflight-20261007 policy: draftOnly=true (proposal only; nothing sent)"
+                    ]
+                  }
+                ],
+                "notes": "One draft-only proposal for the single explicit request. Nothing was sent. Personal Vault and app tables were not touched.",
+                "ts": "2026-10-07T11:03:15.688Z",
+                "agentRunRef": "1791370780-email-draft-worker-WI-10007117"
+              },
+              "evidenceRef": "work-item:completion:WI-10007117"
+            }
+          }
+        },
+        "drafts": {
+          "ok": true,
+          "drafts": []
+        }
+      },
+      "apiSha256": "fcdb94ff98ef513f246fe2792005f805b29e4111eaba8b7759574a7c4cf3eb34",
+      "capture": "docs/evidence/app-agent-tasks-durable-execution-2026-10-06/email-restart-ready-tauri.png",
+      "captureSha256": "b3714aebb74653302ef5b3257b9ed9238bb8491696437ccd221e748ff6789065"
+    },
+    "calendar": {
+      "api": {
+        "measuredAt": "2026-10-07T11:12:05.845Z",
+        "replay": {
+          "ok": true,
+          "deduplicated": true,
+          "meetingPrep": null
+        },
+        "result": {
+          "ok": true,
+          "status": {
+            "phase": "ready",
+            "requestKey": "meeting-prep:p010-restart-calendar-20261007:2026-10-08T16%3A00%3A00Z:43fbe9cf62728c91",
+            "current": true,
+            "brief": {
+              "eventId": "p010-restart-calendar-20261007",
+              "proposals": [
+                {
+                  "agenda": [
+                    "Open (about 5 min): confirm the meeting's purpose. The event names only one topic, its title 'P010 restart acceptance synthetic meeting'. No other agenda items were supplied.",
+                    "Review (about 20 min): read through these preparation notes and check they are readable and match the event's time and attendee, as the event description asks ('Prepare readable meeting notes').",
+                    "Close (about 5 min): confirm that no calendar change and no outreach follow from this meeting. The description rules out both ('do not update calendars or contact anyone')."
+                  ],
+                  "preparationNotes": [
+                    "When: Thursday 2026-10-08, 16:00 to 16:30 UTC (30 minutes), on calendar 'primary'. The event gives no time zone, so all times here are UTC.",
+                    "Where: the event gives no location or conferencing link. If the meeting is actually held, confirm where before it starts.",
+                    "Who: one attendee, 'Synthetic fixture' (fixture@example.invalid). The .invalid top-level domain is reserved and cannot receive mail, so this attendee cannot be reached and must not be contacted.",
+                    "Scope: the description marks the meeting as synthetic only. This packet proposes no calendar create, update or delete, and no message to anyone.",
+                    "Gaps: there are no prior events, contact records or workspace notes behind these notes. The permitted memory read (memory:search) was refused by this worker's capability ceiling, so everything here rests only on the supplied event fields.",
+                    "The agenda timings are suggestions that fit the 30-minute slot. They are not commitments made by any attendee."
+                  ],
+                  "attendeeContext": [
+                    {
+                      "email": "fixture@example.invalid",
+                      "note": "Display name 'Synthetic fixture'. The event gives no response status and no optional flag. This is a synthetic test attendee on an unreachable reserved domain. Do not contact."
+                    }
+                  ],
+                  "evidence": [
+                    "WI-10007119 payload.blueprintOperation.input.eventId = 'p010-restart-calendar-20261007' (operation meeting-prep v1, specificationRevision cb75fa123654003506557c1a58da2d2e0373f3588f30eda2d611315f0c1454ff)",
+                    "input.summary = 'P010 restart acceptance synthetic meeting'",
+                    "input.start.dateTime = '2026-10-08T16:00:00Z'; input.end.dateTime = '2026-10-08T16:30:00Z'; input.calendarId = 'primary'",
+                    "input.attendees[0] = { email: 'fixture@example.invalid', displayName: 'Synthetic fixture' } (the only attendee)",
+                    "input.description = 'Synthetic only. Prepare readable meeting notes; do not update calendars or contact anyone.'",
+                    "Not in input: location, timeZone, triggerRef, and the attendee's responseStatus and optional flag",
+                    "memory:search, called 2026-10-07 about 11:10Z by this worker, returned 'authorization_denied: Kernel preflight denied tool memory:search: outside-ceiling'. No additional context was retrieved.",
+                    "requestKey = 'meeting-prep:p010-restart-calendar-20261007:2026-10-08T16%3A00%3A00Z:43fbe9cf62728c91'"
+                  ],
+                  "confidence": 0.6
+                }
+              ],
+              "notes": "This is a synthetic event. Every fact here comes from the supplied event fields: time, calendar, attendee and description. The event facts are certain, but the agenda content is thin because the event names no topics beyond its title. That is why confidence is 0.6. No calendar change or contact is proposed. The memory:search context read was refused (outside-ceiling), so there was no extra evidence to use.",
+              "ts": "2026-10-07T11:10:12.000Z",
+              "agentRunRef": "1791371278-calendar-prep-worker-WI-10007119"
+            }
+          }
+        },
+        "eventCount": 1
+      },
+      "apiSha256": "ec469787bf1e40b754c803ddd73ac1f72167ed77809f64a5bcf95b4ebb29ba8c",
+      "capture": "docs/evidence/app-agent-tasks-durable-execution-2026-10-06/calendar-restart-ready-tauri.png",
+      "captureSha256": "3600331d7158e04e8760a5d5c3f65dba4248798f6d2b7b62d63d06b9f068889a"
+    },
+    "phone": {
+      "api": {
+        "measuredAt": "2026-10-07T11:10:24.253Z",
+        "replay": {
+          "ok": true,
+          "scheduled": {
+            "id": "e58e251b-bcad-4682-9196-a5ca35813df9",
+            "title": "P010 restart synthetic brief — do not dial",
+            "guestName": "Synthetic restart fixture",
+            "guestEmail": null,
+            "scheduledFor": "2026-10-08T17:00:00.000Z",
+            "durationMin": 30,
+            "roomName": "phone-booked-e58e251b-bcad-4682-9196-a5ca35813df9",
+            "status": "scheduled",
+            "callId": null,
+            "requestKey": "p010-restart-phone-20261007-v1",
+            "createdAt": "2026-10-07T11:01:39.318Z"
+          }
+        },
+        "bookings": [
+          {
+            "id": "e58e251b-bcad-4682-9196-a5ca35813df9",
+            "title": "P010 restart synthetic brief — do not dial",
+            "guestName": "Synthetic restart fixture",
+            "guestEmail": null,
+            "scheduledFor": "2026-10-08T17:00:00.000Z",
+            "durationMin": 30,
+            "roomName": "phone-booked-e58e251b-bcad-4682-9196-a5ca35813df9",
+            "status": "scheduled",
+            "callId": null,
+            "requestKey": "p010-restart-phone-20261007-v1",
+            "createdAt": "2026-10-07T11:01:39.318Z",
+            "callUnit": {
+              "callKey": "scheduled:e58e251b-bcad-4682-9196-a5ca35813df9",
+              "kind": "scheduled",
+              "scheduledId": "e58e251b-bcad-4682-9196-a5ca35813df9",
+              "roomName": "phone-booked-e58e251b-bcad-4682-9196-a5ca35813df9",
+              "callId": null,
+              "brief": {
+                "status": "succeeded",
+                "handle": {
+                  "target": {
+                    "id": "WI-10007118",
+                    "kind": "work-item"
+                  },
+                  "receiptId": 47,
+                  "harnessSlug": "phone-app",
+                  "operationId": "call-brief",
+                  "workspaceId": "papercusp-workspace",
+                  "specificationRevision": "d838a0af8e9c2a8a1f0b65ae8e0d1c1621afee68f3baac480cf89887c1f1252c"
+                },
+                "error": null,
+                "updatedAt": "2026-10-07T11:09:36.489Z",
+                "result": "Booked call: \"P010 restart synthetic brief — do not dial\", scheduled for Thursday 8 October 2026 at 17:00 UTC.\n\nWho is calling: the booking is under the name \"Synthetic restart fixture\". No email address is on the booking, and no earlier notes or call history were found for this caller, so treat it as a first conversation.\n\nHow to open: greet them by name, confirm this is the call they booked for this time, and ask what they would like to cover today. Keep the conversation to their booking and what they ask about.\n\nThis booking is a synthetic test fixture. Answer it only if it comes in; do not place an outbound call, join it from elsewhere, or send anything on its behalf."
+              },
+              "dialClaimedAt": null,
+              "sessionStartedAt": null,
+              "sessionEndedAt": null,
+              "endReason": null,
+              "transcriptSegmentCount": null,
+              "transcriptSha256": null,
+              "wrapUp": {
+                "status": "pending",
+                "handle": null,
+                "error": null,
+                "updatedAt": null
+              },
+              "outcome": null,
+              "createdAt": "2026-10-07T11:01:39.318Z",
+              "updatedAt": "2026-10-07T11:09:36.489Z"
+            }
+          }
+        ]
+      },
+      "apiSha256": "7673d105944f380dc150eb4f73b804f24781860b95e8f871ec0b3a136384c71a",
+      "capture": "docs/evidence/app-agent-tasks-durable-execution-2026-10-06/phone-restart-ready-tauri.png",
+      "captureSha256": "e26c007d30611972b6717ce234086508b52ea9d78a547714d023325650354628"
+    }
+  }
+}

@@ -50,6 +50,7 @@ export interface CupboardHygienePolicy {
 }
 
 export interface CupboardHygieneGateDecision {
+  replay?: import('@papercusp/operator-core/lib/release/gate-hygiene-split').GateDecisionReplay;
   action: CupboardHygieneGateAction;
   reasons: string[];
   summary: string;
@@ -141,7 +142,8 @@ export async function runCupboardHygieneGate(
   io: CupboardHygieneGateIO = defaultCupboardHygieneGateIO,
 ): Promise<CupboardHygieneGateDecision> {
   if (!policy.enabled) {
-    return evaluateCupboardHygieneGate([], policy, candidateSha);
+    const decision = evaluateCupboardHygieneGate([], policy, candidateSha);
+    return { ...decision, replay: captureGateDecisionReplay('cupboard-hygiene', [[], policy, candidateSha], decision) };
   }
 
   const { testRows, errors } = await scanCupboardForTestRows(io.browse).catch(() => ({
@@ -149,6 +151,14 @@ export async function runCupboardHygieneGate(
     errors: LISTING_KINDS.map((kind) => ({ kind, error: 'scan_threw' })),
   }));
 
+  const decision = evaluateCupboardHygieneScan(testRows, errors, policy, candidateSha);
+  return { ...decision, replay: captureGateDecisionReplay('cupboard-scan', [testRows, errors, policy, candidateSha], decision) };
+}
+
+/** Pure interpretation of the complete scan, including unmeasured/partial outcomes. */
+export function evaluateCupboardHygieneScan(testRows: CupboardTestRow[],
+  errors: Array<{ kind: string; error: string }>, policy: CupboardHygienePolicy,
+  candidateSha?: string): CupboardHygieneGateDecision {
   // Total failure (every kind unreachable): the scan says nothing meaningful —
   // fail-soft to `pass`, worded honestly as "unscanned", never as "clean".
   if (testRows.length === 0 && errors.length >= LISTING_KINDS.length) {
@@ -173,3 +183,5 @@ export async function runCupboardHygieneGate(
   }
   return decision;
 }
+
+import { captureGateDecisionReplay } from '@papercusp/operator-core/lib/release/gate-hygiene-split';

@@ -100,6 +100,36 @@ describe('foldGoalPackageBoard', () => {
     expect(entries[0]?.instances.map((i) => i.goalId)).toEqual(['G-1']);
   });
 
+  it('prefers a paused held instance over earlier terminal history', () => {
+    const [entry] = foldGoalPackageBoard([pkg({ ref: 'woe' })], [
+      row('G-old', 'killed', { goalPackageRef: 'woe' }),
+      row('G-new', 'paused', { goalPackageRef: 'woe', agentOwnerId: 'su-test' }),
+    ]);
+    expect(entry?.activeGoalId).toBe('G-new');
+  });
+
+  it('opens a paused unstarted replacement when the only other instances are terminal', () => {
+    const [entry] = foldGoalPackageBoard([pkg({ ref: 'woe' })], [
+      row('G-old', 'killed', { goalPackageRef: 'woe' }),
+      row('G-done', 'achieved', { goalPackageRef: 'woe' }),
+      row('G-new', 'paused', { goalPackageRef: 'woe' }),
+    ]);
+    expect(entry?.activeGoalId).toBe('G-new');
+    expect(entry?.instances.find((i) => i.goalId === 'G-new')?.adoptableStub).toBe(true);
+    expect(entry?.instances.map((i) => i.status)).toEqual(['killed', 'achieved', 'paused']);
+  });
+
+  it('keeps the active instance ahead of paused replacements and preserves terminal-only history', () => {
+    const packages = [pkg({ ref: 'woe' })];
+    const history = [row('G-old', 'killed', { goalPackageRef: 'woe' })];
+    expect(foldGoalPackageBoard(packages, history)[0]?.activeGoalId).toBe('G-old');
+    const [entry] = foldGoalPackageBoard(packages, [
+      ...history, row('G-new', 'paused', { goalPackageRef: 'woe' }),
+      row('G-active', 'active', { goalPackageRef: 'woe', agentOwnerId: 'su-test' }),
+    ]);
+    expect(entry?.activeGoalId).toBe('G-active');
+  });
+
   it('ignores rows with no usable goalPackageRef stamp', () => {
     const [entry] = foldGoalPackageBoard(
       [pkg({ ref: 'woe' })],

@@ -1,0 +1,160 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-022 native PR viewer journey (re-run on current PR UI source)",
+  "framework": "operational",
+  "command": [
+    "P022_DIR=.papercusp/scratch/p022-native VERIFY_TAURI_ISOLATED_DB=1 scripts/verify-tauri-headless.sh -- bash <journey.sh>",
+    "journey.sh: tauri-agent-tools eval/click/wait against the real PrsTab/PrRow/PrDetails with an in-webview query/action stub (stub.js)"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T11:48:58Z",
+  "finishedAt": "2026-10-06T11:49:56Z",
+  "summary": "Real PrsTab/PrRow/PrDetails in an isolated native Tauri shell (isolated PG): 19 UI assertions passed, 0 failed. Query and action responses came from an in-webview stub; no live GitHub merge, close or send ran. Re-run replaces retracted binding 24209 (its run predated the PrDetails Select swap).",
+  "assertions": [
+    {
+      "id": "native-list-history",
+      "passed": true,
+      "evidence": "2 open, 1 merged, 1 closed PR rows in real PrsTab"
+    },
+    {
+      "id": "visible-panel",
+      "passed": true,
+      "evidence": "Native Git dock mounts the visible real PrsTab via named sync query harnessPrs.byHarness"
+    },
+    {
+      "id": "details-selected",
+      "passed": true,
+      "evidence": "Details selected by PR number and member in nuqs URL; harnessPrs.detail queried"
+    },
+    {
+      "id": "commit-diff-checks-report",
+      "passed": true,
+      "evidence": "Native details show commit, combined diff, check and reviewer report"
+    },
+    {
+      "id": "exact-merge-sha",
+      "passed": true,
+      "evidence": "PR head, target and tested merge result displayed separately"
+    },
+    {
+      "id": "github-link",
+      "passed": true,
+      "evidence": "Details link to the correct PR on GitHub"
+    },
+    {
+      "id": "file-diff-url",
+      "passed": true,
+      "evidence": "Native ./Select file selection shows the patch and writes nuqs prs_file"
+    },
+    {
+      "id": "binary-diff-disclosure",
+      "passed": true,
+      "evidence": "Native binary-file selection explains the absent patch"
+    },
+    {
+      "id": "all-changes",
+      "passed": true,
+      "evidence": "Selecting All changes clears prs_file and restores the combined diff"
+    },
+    {
+      "id": "member-separation",
+      "passed": true,
+      "evidence": "Identical PR number in a different member opens only that member's details"
+    },
+    {
+      "id": "permissions-hide-writes",
+      "passed": true,
+      "evidence": "Authoritative detail permissions hide merge, close and send-green"
+    },
+    {
+      "id": "stale-retest",
+      "passed": true,
+      "evidence": "Stale head/target evidence requires retest and labels the action honestly"
+    },
+    {
+      "id": "conflict-blocks-merge",
+      "passed": true,
+      "evidence": "Conflicted PR shows the blocker and disables merge"
+    },
+    {
+      "id": "running-blocks-merge",
+      "passed": true,
+      "evidence": "Running merge-result suite prevents another merge"
+    },
+    {
+      "id": "outcome-testing",
+      "passed": true,
+      "evidence": "Native click shows the confirmed outcome; success toast only for a confirmed result; POST targets the selected member"
+    },
+    {
+      "id": "outcome-refused",
+      "passed": true,
+      "evidence": "Native click shows the confirmed outcome; success toast only for a confirmed result; POST targets the selected member"
+    },
+    {
+      "id": "outcome-merged",
+      "passed": true,
+      "evidence": "Native click shows the confirmed outcome; success toast only for a confirmed result; POST targets the selected member"
+    },
+    {
+      "id": "close-action",
+      "passed": true,
+      "evidence": "Native click shows the confirmed outcome; success toast only for a confirmed result; POST targets the selected member"
+    },
+    {
+      "id": "send-green-action",
+      "passed": true,
+      "evidence": "Native click shows the confirmed outcome; success toast only for a confirmed result; POST targets the selected member"
+    }
+  ],
+  "evidencePlane": "tree",
+  "plan": "pot-review-integration-mode-2026-10-05",
+  "specId": "SPEC-P-022-pr-viewer",
+  "workItemId": "WI-10006102",
+  "subjectCommit": "bd4f522988d62018c628a2b95da037d2aea224a4",
+  "observations": {
+    "run": "20261006T113439Z-3591369",
+    "bridgePid": 165962,
+    "isolatedDb": true,
+    "source": [
+      {
+        "path": "apps/operator/app/harness/PrsTab.tsx",
+        "sha256": "18735933027b292f1d11b4163001315fbbcf47f93d5b7c743820bcbca9640ea2",
+        "gitStatusAtStart": "clean",
+        "unchangedThroughRun": true,
+        "matchesHead": true,
+        "headBlob": "ba81f4fe287c5d6155bcb45cdb9219f7bc873942"
+      },
+      {
+        "path": "apps/operator/app/harness/PrRow.tsx",
+        "sha256": "7b7f01ea31aadd643f5ea11603e721091e0ec910ac22128d95bc068f29bdd53b",
+        "gitStatusAtStart": "clean",
+        "unchangedThroughRun": true,
+        "matchesHead": true,
+        "headBlob": "2d753ab7591381149670b0eb95f6855e56d153e1"
+      },
+      {
+        "path": "apps/operator/app/harness/PrDetails.tsx",
+        "sha256": "e6f3c822f83b76deca869ec6c2cbe13069265e0f54f19fc98eeb726247427baa",
+        "gitStatusAtStart": "clean",
+        "unchangedThroughRun": true,
+        "matchesHead": true,
+        "headBlob": "3df45f3a5020f2c9283b79ce57198f4a1e6561b4"
+      },
+      {
+        "path": "apps/operator/app/harness/Select.tsx",
+        "sha256": "c32c2ba3c6d4c3ff67f4bd546629bfd6194c10f20d9dcd79898d1b034b0b554b",
+        "gitStatusAtStart": "clean",
+        "unchangedThroughRun": true,
+        "matchesHead": true,
+        "headBlob": "92abe16a07aab5df8afe0f8990f1864c2cb50283"
+      }
+    ],
+    "journeyScriptSha256": "c76fa23b965d0bee22bf40d9f1ce82af7b6b895ee9eacadad62c6074d6e29075",
+    "stubSha256": "05f2e964527147209b59d4c894d612ffcdee34bcd05ef636dde2be4fdb9a0f21",
+    "rawLogSha256": "48e4be506f7913e18a03a9fd6b2b3a867aed19066e4b2b3222e8c5713b6a6988",
+    "noGitHubWrites": true,
+    "nativeUiFixture": true
+  }
+}

@@ -387,6 +387,180 @@ describe('transformers model sourcing — the opt-in step a pristine-clone build
   });
 });
 
+describe('transformers dependency identity matches the pinned model contract before packaging', () => {
+  function dependencyFixture(): { root: string; contract: string } {
+    const root = fixture();
+    const modelRoot = join(root, 'cache', 'onnx-community');
+    for (const model of MODELS) makeModel(modelRoot, model);
+    write(join(root, 'apps/operator/package.json'), JSON.stringify({
+      dependencies: { '@huggingface/transformers': '4.2.0' },
+    }));
+    write(join(root, 'package-lock.json'), JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        'apps/operator': { dependencies: { '@huggingface/transformers': '4.2.0' } },
+        'node_modules/@huggingface/transformers': { version: '4.2.0' },
+      },
+    }));
+    write(join(root, 'node_modules/@huggingface/transformers/package.json'), JSON.stringify({
+      name: '@huggingface/transformers',
+      version: '4.2.0',
+    }));
+    return { root, contract: pinnedContract(root, modelRoot) };
+  }
+
+  function verifyDependencies(root: string, contract: string, installed = false) {
+    return runHelper(['dependencies', root, installed ? '1' : '0'], {
+      PAPERCUSP_TRANSFORMERS_DISTRIBUTION_CONTRACT: contract,
+    });
+  }
+
+  it('binds exact declarations, lock resolution and installed package identity', () => {
+    const { root, contract } = dependencyFixture();
+    const result = verifyDependencies(root, contract, true);
+    expect(result.code, result.err).toBe(0);
+    expect(JSON.parse(result.out)).toMatchObject({
+      ok: true, transformersPackage: '4.2.0', consumers: ['apps/operator'], installedChecked: true,
+    });
+  });
+
+  it('refuses the real failure class: a newer locked version with otherwise valid model bytes', () => {
+    const { root, contract } = dependencyFixture();
+    const lockPath = join(root, 'package-lock.json');
+    const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+    lock.packages['node_modules/@huggingface/transformers'].version = '4.3.1';
+    writeFileSync(lockPath, JSON.stringify(lock));
+    const result = verifyDependencies(root, contract);
+    expect(result.code).not.toBe(0);
+    expect(result.err).toContain('expects 4.2.0, got 4.3.1');
+  });
+
+  it('accepts an exact workspace-local lock and installed resolution without assuming root hoisting', () => {
+    const { root, contract } = dependencyFixture();
+    const lockPath = join(root, 'package-lock.json');
+    const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+    const localPath = 'apps/operator/node_modules/@huggingface/transformers';
+    lock.packages[localPath] = lock.packages['node_modules/@huggingface/transformers'];
+    delete lock.packages['node_modules/@huggingface/transformers'];
+    writeFileSync(lockPath, JSON.stringify(lock));
+    const installed = readFileSync(join(root, 'node_modules/@huggingface/transformers/package.json'));
+    rmSync(join(root, 'node_modules'), { recursive: true });
+    write(join(root, localPath, 'package.json'), installed.toString());
+    const result = verifyDependencies(root, contract, true);
+    expect(result.code, result.err).toBe(0);
+    expect(JSON.parse(result.out).resolutions).toEqual({ 'apps/operator': localPath });
+  });
+
+  it('refuses an untracked nearer installed package shadowing the locked resolution', () => {
+    const { root, contract } = dependencyFixture();
+    write(join(root, 'apps/operator/node_modules/@huggingface/transformers/package.json'), JSON.stringify({
+      name: '@huggingface/transformers', version: '4.2.0',
+    }));
+    const result = verifyDependencies(root, contract, true);
+    expect(result.code).not.toBe(0);
+    expect(result.err).toContain('installed resolution from apps/operator expects node_modules/');
+  });
+
+  it('refuses a floating workspace dependency even when its current lock matches', () => {
+    const { root, contract } = dependencyFixture();
+    write(join(root, 'apps/operator/package.json'), JSON.stringify({
+      dependencies: { '@huggingface/transformers': '^4.2.0' },
+    }));
+    const result = verifyDependencies(root, contract);
+    expect(result.code).not.toBe(0);
+    expect(result.err).toContain('package declaration apps/operator must pin 4.2.0');
+  });
+
+  it('refuses floating declarations stored in the lock itself', () => {
+    const { root, contract } = dependencyFixture();
+    const lockPath = join(root, 'package-lock.json');
+    const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+    lock.packages['apps/operator'].dependencies['@huggingface/transformers'] = '^4.2.0';
+    writeFileSync(lockPath, JSON.stringify(lock));
+    const result = verifyDependencies(root, contract);
+    expect(result.code).not.toBe(0);
+    expect(result.err).toContain('lock declaration apps/operator must pin 4.2.0');
+  });
+
+  it('defers installed identity until dependency preparation, then refuses installed drift', () => {
+    const { root, contract } = dependencyFixture();
+    write(join(root, 'node_modules/@huggingface/transformers/package.json'), JSON.stringify({
+      name: '@huggingface/transformers', version: '4.3.1',
+    }));
+    expect(verifyDependencies(root, contract).code).toBe(0);
+    const result = verifyDependencies(root, contract, true);
+    expect(result.code).not.toBe(0);
+    expect(result.err).toContain('installed package expects @huggingface/transformers@4.2.0');
+  });
+
+  it('refuses a missing installed package when the installed check is requested', () => {
+    const { root, contract } = dependencyFixture();
+    rmSync(join(root, 'node_modules'), { recursive: true });
+    expect(verifyDependencies(root, contract).code).toBe(0);
+    const result = verifyDependencies(root, contract, true);
+    expect(result.code).not.toBe(0);
+    expect(result.err).toContain('cannot read');
+  });
+
+  it('refuses an incompatible nested lock resolution', () => {
+    const { root, contract } = dependencyFixture();
+    const lockPath = join(root, 'package-lock.json');
+    const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+    lock.packages['node_modules/consumer/node_modules/@huggingface/transformers'] = { version: '4.3.1' };
+    writeFileSync(lockPath, JSON.stringify(lock));
+    const result = verifyDependencies(root, contract);
+    expect(result.code).not.toBe(0);
+    expect(result.err).toContain('node_modules/consumer/node_modules/@huggingface/transformers');
+  });
+
+  it('refuses a malformed or absent lock instead of accepting an empty census', () => {
+    const { root, contract } = dependencyFixture();
+    write(join(root, 'package-lock.json'), '{}');
+    expect(verifyDependencies(root, contract).code).not.toBe(0);
+    rmSync(join(root, 'package-lock.json'));
+    expect(verifyDependencies(root, contract).code).not.toBe(0);
+  });
+
+  it('checks the lock before source capture and installed identity before the SPA build', () => {
+    const script = codeOnly(readFileSync(BUILD_SCRIPT_PATH, 'utf8'));
+    const lockCheck = script.indexOf('papercusp_verify_transformers_dependencies "$REPO_ROOT" 0');
+    const installedCheck = script.indexOf('papercusp_verify_transformers_dependencies "$REPO_ROOT" 1');
+    expect(lockCheck).toBeGreaterThan(0);
+    expect(lockCheck).toBeLessThan(script.indexOf('--capture-source'));
+    expect(installedCheck).toBeGreaterThan(lockCheck);
+    expect(installedCheck).toBeLessThan(script.indexOf('VITE_BUILD_SNAPSHOT_DIR='));
+  });
+
+  it('the real producer refuses incompatible source inputs before capture or expensive work', () => {
+    const { root, contract } = dependencyFixture();
+    const lockPath = join(root, 'package-lock.json');
+    const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+    lock.packages['node_modules/@huggingface/transformers'].version = '4.3.1';
+    writeFileSync(lockPath, JSON.stringify(lock));
+    const result = spawnSync('bash', [BUILD_SCRIPT_PATH], {
+      encoding: 'utf8',
+      timeout: 60_000,
+      killSignal: 'SIGKILL',
+      env: {
+        ...process.env,
+        REPO_ROOT: root,
+        PAPERCUSP_DISTRIBUTION_PROFILE: 'vm-release',
+        PAPERCUSP_BUILD_SHA: '1'.repeat(40),
+        PAPERCUSP_DESKTOP_VERSION: '0.0.26',
+        PAPERCUSP_TRANSFORMERS_DISTRIBUTION_CONTRACT: contract,
+      },
+    });
+    expect(result.status, result.stderr).toBe(1);
+    expect(result.stderr).toContain('expects 4.2.0, got 4.3.1');
+    expect(`${result.stdout}${result.stderr}`).not.toMatch(/capture-source|npm install|building operator-vite|esbuild-bundling/);
+  });
+
+  it('the repository declarations and committed lock match the real model contract', () => {
+    const result = runHelper(['dependencies', ROOT]);
+    expect(result.code, result.err).toBe(0);
+  });
+});
+
 describe('the sourcing step is wired into the sidecar build, and its model list cannot drift', () => {
   it('build-desktop-sidecar.sh sources the helper and calls the staging step', () => {
     const script = codeOnly(readFileSync(BUILD_SCRIPT_PATH, 'utf8'));

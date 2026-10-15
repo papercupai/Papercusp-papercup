@@ -2,10 +2,30 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
+import { moduleRepoRoot } from '../../module-repo-root';
 import os from 'node:os';
-import { ORT_SESSION_OPTIONS } from '../../../../../libs/generic/memory/src/local-embedder-worker';
+import { ORT_SESSION_OPTIONS, validNativeRuntimeSample, type WorkerInputTrace, type WorkerInferenceTrace, type WorkerNativeInferenceTrace } from '../../../../../libs/generic/memory/src/local-embedder-worker';
 import { gemmaPrompt, harrierPrompt, mrlTruncate, embedViaWorker, embedRequestedExecution,
-  shutdownLocalEmbedder, getWorkerState, EMBEDDER_DIM_SPECS } from '@papercusp/memory';
+  shutdownLocalEmbedder, getWorkerState, EMBEDDER_DIM_SPECS, buildMdenseOnEmbedder,
+  embedExecutionTarget, MDENSEON_MODEL, MDENSEON_REVISION } from '@papercusp/memory';
+import { fingerprintFile, measurementPackageVersion, realDestination } from './measurement-manifest';
+
+/** A frozen source tree has no Git metadata. Qualify the benchmark's source
+ * layout rather than inheriting an unrelated ancestor checkout (e.g. home).
+ * Exported so launch recipes can reject bad paths before heavy admission. */
+export function nativeBenchmarkOutputPaths(outputFile: string, moduleUrl = import.meta.url): { repo: string; output: string } {
+  const sourceFiles = ['package.json', 'packages/operator-core/package.json',
+    'packages/operator-core/lib/memory/bench/candidate-embedders.ts',
+    'libs/generic/memory/src/local-embedder-worker.script.mjs'];
+  const hasSourceLayout = (root: string) => sourceFiles.every((file) => fs.existsSync(path.join(root, file)));
+  const sourceRoot = moduleRepoRoot(moduleUrl, hasSourceLayout);
+  if (!hasSourceLayout(sourceRoot)) throw new Error('native benchmark source layout not found');
+  const repo = fs.realpathSync(sourceRoot), output = realDestination(outputFile);
+  if (output === repo || output.startsWith(`${repo}${path.sep}`)) {
+    throw new Error('raw benchmark output must remain private outside source tree');
+  }
+  return { repo, output };
+}
 
 /** Independent pooling oracle for isolated qualification; production recipes
  * and profiles remain untouched. Padding must not contribute to the mean. */
@@ -32,6 +52,389 @@ export const INCUMBENT_REFERENCE_CASES = [
 
 export const CORRECTED_GEMMA_REFERENCE_ID = 'gemma-corrected-rust-768@benchmark-v1';
 export const REFERENCE_PARITY_LIMITS = { minimumCosine: 0.99999, maximumAbsoluteError: 3e-5 } as const;
+
+export const MDENSEON_BOUNDARY_IDS = ['short-query', 'short-document', 'unicode', 'code', 'whitespace', 'empty', 'full-8192', 'over-limit'] as const;
+export interface NativeBoundaryRequest {
+  formatVersion: number; model: string; revision: string; export: string; snapshot: string;
+  execution: { dtype: string; intraOpThreads: number; interOpThreads: number; maxLength: number };
+  thresholds: { minimumCosine: number; maximumAbsoluteError: number; ranking: string };
+  assets: { path: string; sha256: string; bytes: number }[];
+  cases: { id: string; kind: 'query' | 'document'; text: string; untruncatedTokens: number }[];
+  batches: { id: string; caseIds: string[] }[];
+}
+
+/** Consume the same frozen Python boundary inputs without rebinding its old
+ * helper source pin to current source. This runner executes the shipped worker. */
+export function validateNativeBoundaryRequest(request: NativeBoundaryRequest): void {
+  if (request.formatVersion !== 1 || request.model !== MDENSEON_MODEL || request.revision !== MDENSEON_REVISION
+    || !path.isAbsolute(request.export) || !path.isAbsolute(request.snapshot)
+    || request.execution.dtype !== 'fp32' || request.execution.maxLength !== 8192
+    || request.execution.intraOpThreads !== 4 || request.execution.interOpThreads !== 1
+    || request.thresholds.minimumCosine !== REFERENCE_PARITY_LIMITS.minimumCosine
+    || request.thresholds.maximumAbsoluteError !== REFERENCE_PARITY_LIMITS.maximumAbsoluteError
+    || request.thresholds.ranking !== 'exact') throw new Error('native boundary fixed contract mismatch');
+  if (JSON.stringify(request.cases.map((c) => c.id)) !== JSON.stringify(MDENSEON_BOUNDARY_IDS)
+    || request.cases.some((c) => !['query', 'document'].includes(c.kind) || typeof c.text !== 'string'
+      || !Number.isInteger(c.untruncatedTokens) || c.untruncatedTokens < 2)
+    || request.cases[6].untruncatedTokens !== 8192 || request.cases[7].untruncatedTokens <= 8192) {
+    throw new Error('native boundary input population/token contract mismatch');
+  }
+  const batches = [{ id: 'padded', caseIds: ['short-query', 'unicode', 'code', 'whitespace', 'empty'] },
+    { id: 'mixed-length', caseIds: ['short-query', 'full-8192'] }];
+  if (JSON.stringify(request.batches) !== JSON.stringify(batches)) throw new Error('native boundary batch contract mismatch');
+  if (!request.assets.length || request.assets.some((a) => !path.isAbsolute(a.path) || !/^[a-f0-9]{64}$/.test(a.sha256)
+    || !Number.isInteger(a.bytes) || a.bytes < 1)) throw new Error('native boundary asset pin mismatch');
+}
+
+export interface NativeBoundaryRow {
+  id: string; inputIds: number[]; referenceInputIds: number[]; vector: number[]; referenceVector: number[];
+  execution: { device: string; verified: boolean }; worker: { alive: boolean; disabled: boolean };
+  inputTraces?: WorkerInputTrace[];
+  inferenceTraces?: WorkerInferenceTrace[];
+  nativeInferenceTraces?: WorkerNativeInferenceTrace[];
+}
+export interface NativeBoundaryBatchRow {
+  id: string; submittedCaseIds: string[]; actualInferenceBatchSize: number; vectors: number[][];
+  execution: { device: string; verified: boolean }; worker: { alive: boolean; disabled: boolean };
+  inputTracesByCase?: { id: string; traces: WorkerInputTrace[] }[];
+  inferenceTracesByCase?: { id: string; traces: WorkerInferenceTrace[] }[];
+  nativeInferenceTracesByCase?: { id: string; traces: WorkerNativeInferenceTrace[] }[];
+}
+
+function matchesWorkerInput(traces: WorkerInputTrace[] | undefined, model: string, ids: number[], device: string): boolean {
+  return !!traces?.length && traces.every((trace) => trace.model === model && trace.device === device
+    && Number.isFinite(Date.parse(trace.observedAt)) && JSON.stringify(trace.inputShape) === JSON.stringify([1, ids.length])
+    && JSON.stringify(trace.inputIds) === JSON.stringify(ids) && trace.attentionMask.length === ids.length
+    && trace.attentionMask.every((n) => n === 1));
+}
+
+/** Verify retained graph-call identity before any profiler clock/correlation
+ * join. Overlapping graph intervals alone never establish kernel ownership. */
+export function nativeInferenceTraceVerified(inputs: WorkerInputTrace[] | undefined,
+  events: WorkerInferenceTrace[] | undefined, model: string, ids: number[], device: string): boolean {
+  if (!matchesWorkerInput(inputs, model, ids, device) || inputs?.length !== 1 || events?.length !== 2) return false;
+  const request = inputs[0].request;
+  if (!request || !Number.isSafeInteger(request.requestId) || request.requestId < 0
+    || [request.attempt, request.processId, request.workerThreadId]
+    .some((n) => !Number.isSafeInteger(n) || n < 1)
+    || (request.nativeThreadId !== null && (!Number.isSafeInteger(request.nativeThreadId) || request.nativeThreadId < 1))) return false;
+  const [start, end] = events;
+  return start.phase === 'start' && start.outcome === undefined && end.phase === 'end' && end.outcome === 'success'
+    && events.every((event) => event.model === model && event.device === device && event.clock === 'node-hrtime'
+      && Number.isFinite(Date.parse(event.observedAt)) && typeof event.monotonicNs === 'string' && /^[1-9]\d*$/.test(event.monotonicNs)
+      && (['requestId', 'attempt', 'processId', 'workerThreadId', 'nativeThreadId'] as const)
+        .every((key) => event[key] === request[key]))
+    && BigInt(end.monotonicNs) >= BigInt(start.monotonicNs);
+}
+
+/** A request's synchronous addon calls must sit inside its outer graph interval.
+ * No profiler clock alignment or compute-kernel ownership is inferred here. */
+export function nativeRunTraceVerified(inputs: WorkerInputTrace[] | undefined, graph: WorkerInferenceTrace[] | undefined,
+  events: WorkerNativeInferenceTrace[] | undefined, model: string, ids: number[], device: string): boolean {
+  if (!nativeInferenceTraceVerified(inputs, graph, model, ids, device) || !events?.length || events.length % 2) return false;
+  const request = inputs![0].request!, begin = BigInt(graph![0].monotonicNs), end = BigInt(graph![1].monotonicNs);
+  let previous = begin;
+  for (let i = 0; i < events.length; i += 2) {
+    const pair = events.slice(i, i+2), index = i/2+1;
+    if (!nativeInferenceTraceVerified(inputs, pair, model, ids, device)
+      || pair.some((event) => event.runIndex !== index
+        || event.runTag !== `pc-embed:${request.processId}:${request.workerThreadId}:${request.requestId}:${request.attempt}:${index}`)) return false;
+    const startNs = BigInt(pair[0].monotonicNs), endNs = BigInt(pair[1].monotonicNs);
+    if (startNs < previous || endNs > end) return false;
+    previous = endNs;
+  }
+  return true;
+}
+
+export function nativeRawClockTraceVerified(events: WorkerNativeInferenceTrace[] | undefined): boolean {
+  if (!events?.length || events.length % 2) return false;
+  let previousRaw = 0n, executable = '';
+  for (const [index, event] of events.entries()) {
+    const clock = event.rawClock;
+    if (!clock || event.phase !== (index % 2 ? 'end' : 'start')
+      || event.clockProbeError !== undefined || clock.clock !== 'linux-clock-monotonic-raw'
+      || [event.monotonicNs, clock.rawNs, clock.monotonicBeforeNs, clock.monotonicAfterNs, clock.nodeBeforeNs, clock.nodeAfterNs]
+        .some((n) => typeof n !== 'string' || !/^[1-9]\d*$/.test(n))
+      || !clock.executable || typeof clock.executable.path !== 'string' || !Number.isSafeInteger(clock.executable.bytes)
+      || clock.executable.bytes < 1 || !/^[a-f0-9]{64}$/.test(clock.executable.sha256)
+      || typeof clock.pythonVersion !== 'string' || !clock.pythonVersion
+      || BigInt(clock.nodeBeforeNs) > BigInt(clock.monotonicBeforeNs)
+      || BigInt(clock.monotonicBeforeNs) > BigInt(clock.monotonicAfterNs)
+      || BigInt(clock.monotonicAfterNs) > BigInt(clock.nodeAfterNs)
+      || (event.phase === 'start' && BigInt(clock.nodeAfterNs) > BigInt(event.monotonicNs))
+      || (event.phase === 'end' && BigInt(clock.nodeBeforeNs) < BigInt(event.monotonicNs))
+      || BigInt(clock.rawNs) <= previousRaw) return false;
+    const identity = JSON.stringify({ ...clock.executable, pythonVersion: clock.pythonVersion });
+    if (executable && executable !== identity) return false;
+    executable = identity; previousRaw = BigInt(clock.rawNs);
+  }
+  return true;
+}
+
+export function nativeRuntimeTraceVerified(events: WorkerNativeInferenceTrace[] | undefined): boolean {
+  return !!events?.length && events.length % 2 === 0
+    && events.every((event,i)=>event.phase === (i%2 ? 'end' : 'start') && validNativeRuntimeSample(event));
+}
+/** Only the observed maps population is checked. A library loaded and unloaded
+ * within Run can evade the snapshots; complete closure needs loader evidence. */
+export function nativeObservedLibraryClosureVerified(events: WorkerNativeInferenceTrace[] | undefined): boolean {
+  if (!nativeRuntimeTraceVerified(events)) return false;
+  for (let i=0;i<events!.length;i+=2) {
+    const before = new Map(events![i].runtime!.libraries.map(f=>[f.path,f]));
+    if (events![i+1].runtime!.libraries.some(f=> {
+      const prior=before.get(f.path); return !prior || prior.bytes!==f.bytes || prior.sha256!==f.sha256
+        || prior.mappedDevice!==f.mappedDevice || prior.mappedInode!==f.mappedInode;
+    })) return false;
+  }
+  return true;
+}
+export function nativeGpuCapacityObserved(events: WorkerNativeInferenceTrace[] | undefined): boolean {
+  return nativeRuntimeTraceVerified(events) && events!.every(e=>e.device==='cuda' && e.runtime!.gpuMemory.status==='measured');
+}
+
+export function nativeBoundaryPopulation(request: NativeBoundaryRequest, selectedCell?: string) {
+  validateNativeBoundaryRequest(request);
+  const population = [...request.cases.map((c) => `single-${c.id}`), ...request.batches.map((b) => b.id)];
+  if (!selectedCell) return { cases: request.cases, batches: request.batches, diagnosticOnly: false, notChecked: [] as string[] };
+  const item = request.cases.find((c) => `single-${c.id}` === selectedCell);
+  const batch = request.batches.find((b) => b.id === selectedCell);
+  if (!item && !batch) throw new Error('native diagnostic requires one declared single-input cell or request group');
+  const cases = item ? [item] : request.cases.filter((c) => batch!.caseIds.includes(c.id));
+  const checked = new Set([selectedCell, ...cases.map((c) => `single-${c.id}`)]);
+  return { cases, batches: batch ? [batch] : [], diagnosticOnly: true, notChecked: population.filter((id) => !checked.has(id)) };
+}
+
+/** Recompute fixed gates and stable all-input rankings from the retained raw
+ * arrays. A measured loss is an outcome; a missing/fallback row is not proof. */
+export function summarizeNativeBoundaries(request: NativeBoundaryRequest, rows: NativeBoundaryRow[], device: 'cpu' | 'cuda', selectedCell?: string,
+  batchRows: NativeBoundaryBatchRow[] = []) {
+  const selected = nativeBoundaryPopulation(request, selectedCell);
+  if (JSON.stringify(rows.map((r) => r.id)) !== JSON.stringify(selected.cases.map((c) => c.id))) throw new Error('native boundary incomplete population');
+  const comparisons = rows.map((row, i) => {
+    if (!row.execution.verified || row.execution.device !== device || !row.worker.alive || row.worker.disabled) {
+      throw new Error('native boundary unverified device or worker fallback');
+    }
+    const length = Math.min(8192, selected.cases[i].untruncatedTokens);
+    if (row.inputIds.length !== length || row.referenceInputIds.length !== length
+      || [...row.inputIds, ...row.referenceInputIds].some((n) => !Number.isSafeInteger(n) || n < 0)) {
+      throw new Error('native boundary invalid inferred token length/ids');
+    }
+    return { id: row.id, tokenLength: length, tokenIdsEqual: JSON.stringify(row.inputIds) === JSON.stringify(row.referenceInputIds),
+      workerInputTraceVerified: matchesWorkerInput(row.inputTraces, request.export, row.referenceInputIds, device),
+      workerInferenceTraceVerified: nativeInferenceTraceVerified(row.inputTraces, row.inferenceTraces, request.export, row.referenceInputIds, device),
+      nativeRunTraceVerified: nativeRunTraceVerified(row.inputTraces, row.inferenceTraces, row.nativeInferenceTraces, request.export, row.referenceInputIds, device),
+      nativeRawClockTraceVerified: nativeRawClockTraceVerified(row.nativeInferenceTraces),
+      nativeRuntimeTraceVerified: nativeRuntimeTraceVerified(row.nativeInferenceTraces),
+      observedLibraryClosureVerified: nativeObservedLibraryClosureVerified(row.nativeInferenceTraces),
+      gpuDeviceCapacityObserved: nativeGpuCapacityObserved(row.nativeInferenceTraces),
+      ...referenceVectorComparison(row.vector, row.referenceVector, 768) };
+  });
+  const ranks = (vectors: number[][]) => vectors.map((q) => vectors.map((d, i) => ({ i, score: q.reduce((s, v, j) => s + v * d[j], 0) }))
+    .sort((a, b) => b.score - a.score || a.i - b.i).map((d) => d.i));
+  const actualRankings = ranks(rows.map((r) => r.vector)), referenceRankings = ranks(rows.map((r) => r.referenceVector));
+  const rankingsEqual = selected.diagnosticOnly ? null : JSON.stringify(actualRankings) === JSON.stringify(referenceRankings);
+  const workerInputTraceVerified = comparisons.every((c) => c.workerInputTraceVerified);
+  const vectorCompatible = comparisons.every((c) => c.passed && c.tokenIdsEqual)
+    && rows.every((row, i) => (!row.inputTraces || comparisons[i].workerInputTraceVerified)
+      && (!row.inferenceTraces || comparisons[i].workerInferenceTraceVerified));
+  const nativeRunCompatible = rows.every((row, i) => !row.nativeInferenceTraces || comparisons[i].nativeRunTraceVerified);
+  if ((batchRows.length || (selectedCell && selected.batches.length))
+    && JSON.stringify(batchRows.map((b) => b.id)) !== JSON.stringify(selected.batches.map((b) => b.id))) {
+    throw new Error('native boundary incomplete request-group population');
+  }
+  const batchComparisons = batchRows.map((batch, index) => {
+    const declared = selected.batches[index];
+    if (JSON.stringify(batch.submittedCaseIds) !== JSON.stringify(declared.caseIds)
+      || batch.actualInferenceBatchSize !== 1 || batch.vectors.length !== declared.caseIds.length
+      || !batch.execution.verified || batch.execution.device !== device || !batch.worker.alive || batch.worker.disabled) {
+      throw new Error('native boundary request-group identity or worker mismatch');
+    }
+    const cases = batch.vectors.map((vector, i) => {
+      const single = rows.find((r) => r.id === declared.caseIds[i])!;
+      return { id: single.id, single: referenceVectorComparison(vector, single.vector, 768),
+        reference: referenceVectorComparison(vector, single.referenceVector, 768) };
+    });
+    const inputTraceVerified = batch.inputTracesByCase?.length === declared.caseIds.length
+      && batch.inputTracesByCase.every((item, i) => item.id === declared.caseIds[i]
+        && matchesWorkerInput(item.traces, request.export, rows.find((r) => r.id === item.id)!.referenceInputIds, device));
+    const inferenceTraceVerified = batch.inferenceTracesByCase?.length === declared.caseIds.length
+      && batch.inferenceTracesByCase.every((item, i) => item.id === declared.caseIds[i]
+        && nativeInferenceTraceVerified(batch.inputTracesByCase?.[i]?.traces, item.traces, request.export,
+          rows.find((r) => r.id === item.id)!.referenceInputIds, device));
+    const nativeTraceVerified = batch.nativeInferenceTracesByCase?.length === declared.caseIds.length
+      && batch.nativeInferenceTracesByCase.every((item, i) => item.id === declared.caseIds[i]
+        && nativeRunTraceVerified(batch.inputTracesByCase?.[i]?.traces, batch.inferenceTracesByCase?.[i]?.traces,
+          item.traces, request.export, rows.find((r) => r.id === item.id)!.referenceInputIds, device));
+    return { id: batch.id, cases, inputTraceVerified: inputTraceVerified === true, inferenceTraceVerified: inferenceTraceVerified === true,
+      nativeRunTraceVerified: nativeTraceVerified === true,
+      nativeRuntimeTraceVerified: batch.nativeInferenceTracesByCase?.every(item=>nativeRuntimeTraceVerified(item.traces)) === true,
+      observedLibraryClosureVerified: batch.nativeInferenceTracesByCase?.every(item=>nativeObservedLibraryClosureVerified(item.traces)) === true,
+      gpuDeviceCapacityObserved: batch.nativeInferenceTracesByCase?.every(item=>nativeGpuCapacityObserved(item.traces)) === true,
+      passed: cases.every((c) => c.single.passed && c.reference.passed) && (!batch.inputTracesByCase || inputTraceVerified)
+        && (!batch.inferenceTracesByCase || inferenceTraceVerified) && (!batch.nativeInferenceTracesByCase || nativeTraceVerified) };
+  });
+  const batchPopulationCompatible = batchRows.length === selected.batches.length && batchComparisons.every((b) => b.passed);
+  return { comparisons, actualRankings, referenceRankings, rankingsEqual, diagnosticOnly: selected.diagnosticOnly,
+    notCheckedCells: [...selected.notChecked, ...selected.batches.filter((b) => !batchRows.some((r) => r.id === b.id)).map((b) => b.id)],
+    batchComparisons, batchPopulationCompatible, workerInputTraceVerified,
+    requestGroupInputTraceVerified: batchPopulationCompatible && batchComparisons.every((b) => b.inputTraceVerified),
+    workerInferenceTraceVerified: comparisons.every((c) => c.workerInferenceTraceVerified),
+    requestGroupInferenceTraceVerified: batchPopulationCompatible && batchComparisons.every((b) => b.inferenceTraceVerified),
+    nativeRunTraceVerified: comparisons.every((c) => c.nativeRunTraceVerified),
+    requestGroupNativeRunTraceVerified: batchPopulationCompatible && batchComparisons.every((b) => b.nativeRunTraceVerified),
+    diagnosticCompatible: selected.diagnosticOnly && vectorCompatible && nativeRunCompatible && batchPopulationCompatible,
+    passedFixedVectorGates: comparisons.every((c) => c.passed), tokenIdsEqual: comparisons.every((c) => c.tokenIdsEqual),
+    singlePopulationCompatible: !selected.diagnosticOnly && rankingsEqual === true && vectorCompatible && nativeRunCompatible };
+}
+
+/** Extend incumbent qualification instead of adding a second executable. The
+ * published worker submits one text per inference, including batch requests. */
+export async function qualifyMdenseOnBoundaries(requestFile: string, expectedSha: string, referenceDirectory: string,
+  referenceSummarySha: string, outputFile: string, selectedCell?: string): Promise<void> {
+  const hash = (file: string) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+  if (!/^[a-f0-9]{64}$/.test(expectedSha) || hash(requestFile) !== expectedSha) throw new Error('boundary request SHA mismatch');
+  const request = JSON.parse(fs.readFileSync(requestFile, 'utf8')) as NativeBoundaryRequest;
+  const selected = nativeBoundaryPopulation(request, selectedCell);
+  const tf32Override = process.env.NVIDIA_TF32_OVERRIDE;
+  if (tf32Override !== undefined && tf32Override !== '0') throw new Error('native TF32 diagnostic requires unset or explicit override0');
+  const requested = embedRequestedExecution();
+  if (!['cpu', 'cuda'].includes(process.env.PAPERCUSP_EMBED_DEVICE ?? '') || requested.source !== 'env'
+    || getWorkerState().alive || ORT_SESSION_OPTIONS.intraOpNumThreads !== 4 || ORT_SESSION_OPTIONS.interOpNumThreads !== 1) {
+    throw new Error('native boundary requires explicit device and fresh pinned worker');
+  }
+  const device = process.env.PAPERCUSP_EMBED_DEVICE as 'cpu' | 'cuda';
+  if (requested.device !== device) throw new Error('native boundary requested device mismatch');
+  const { output, repo } = nativeBenchmarkOutputPaths(outputFile);
+  const summaryPath = path.join(referenceDirectory, 'summary.json');
+  if (!/^[a-f0-9]{64}$/.test(referenceSummarySha) || hash(summaryPath) !== referenceSummarySha) throw new Error('boundary reference summary SHA mismatch');
+  const summary = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
+  const population = [...MDENSEON_BOUNDARY_IDS.map((id) => `single-${id}`), 'padded', 'mixed-length'];
+  if (summary.requestSha256 !== expectedSha || summary.diagnosticOnly !== false || summary.fullPopulationCompatible !== true
+    || JSON.stringify(summary.cells) !== JSON.stringify(population) || summary.notChecked.length !== 0
+    || summary.deviceRecipe !== 'python-ort-cpu-fp32-tf32-default' || hash(summary.profile.path) !== summary.profile.sha256) {
+    throw new Error('boundary reference population/identity mismatch');
+  }
+  const references = request.cases.map((c) => {
+    const file = path.join(referenceDirectory, `single-${c.id}.json`), ref = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (ref.requestSha256 !== expectedSha || ref.cell.id !== `single-${c.id}` || JSON.stringify(ref.cell.caseIds) !== JSON.stringify([c.id])
+      || ref.referenceVectors.length !== 1 || ref.inputIds.length !== 1 || ref.tokenIdsEqual !== true
+      || ref.inputIds[0].length !== Math.min(8192, c.untruncatedTokens)) throw new Error('boundary retained reference cell mismatch');
+    assertVector(ref.referenceVectors[0], 768, 'boundary reference');
+    return { file, sha256: hash(file), referenceInputIds: ref.inputIds[0] as number[], referenceVector: ref.referenceVectors[0] as number[] };
+  });
+  const exportAssets = request.assets.filter((a) => a.path.startsWith(`${request.export}${path.sep}`));
+  for (const name of ['config.json', 'tokenizer.json', 'tokenizer_config.json', 'export-manifest.json', 'onnx/model.onnx']) {
+    if (!exportAssets.some((a) => a.path === path.join(request.export, name))) throw new Error('native boundary export pin missing');
+  }
+  for (const asset of exportAssets) {
+    const actual = await fingerprintFile(asset.path);
+    if (actual.sha256 !== asset.sha256 || actual.bytes !== asset.bytes) throw new Error('native boundary export asset drift');
+  }
+  const sources = await Promise.all(['packages/operator-core/lib/memory/bench/candidate-embedders.ts',
+    'packages/operator-core/lib/memory/bench/embedder-eval-cli.ts', 'libs/generic/memory/src/mdenseon-embedder.ts',
+    'libs/generic/memory/src/local-embedder-worker.ts', 'libs/generic/memory/src/local-embedder-worker.script.mjs',
+    'libs/generic/memory/src/embed-device.ts', 'packages/operator-core/lib/memory/bench/measurement-manifest.ts']
+    .map((file) => fingerprintFile(path.join(repo, file))));
+  const identity = { requestSha256: expectedSha, referenceSummarySha256: referenceSummarySha, device, sources, references,
+    execution: { dtype: 'fp32', ...ORT_SESSION_OPTIONS }, nativeTransport: 'shipped-worker-single-text',
+    selectedCell: selectedCell ?? null, precisionEnvironment: { NVIDIA_TF32_OVERRIDE: tf32Override ?? 'unset' },
+    runtimeVersions: { node: process.versions.node, transformers: measurementPackageVersion('@huggingface/transformers'),
+      tokenizers: measurementPackageVersion('tokenizers'), onnxruntimeNode: measurementPackageVersion('onnxruntime-node') },
+    providerProof: 'worker-session-construction-report', computeKernelProfiling: 'not-exposed-by-shipped-worker',
+    tokenIdsProof: 'independent qualification tokenizer and opt-in pre-graph worker tensors',
+    actualWorkerTokenTrace: 'private per-cell JSONL, emitted before candidate inference',
+    actualWorkerInferenceTrace: 'private graph-call and synchronous native Run start/end JSONL; profiler clock calibration and unique kernel joins remain separate' };
+  fs.writeFileSync(`${output}.request.json`, JSON.stringify(identity), { flag: 'wx', mode: 0o600 });
+  const rows: NativeBoundaryRow[] = [], batches: NativeBoundaryBatchRow[] = [];
+  const collectInput = (cell: string, caseId: string, traces: WorkerInputTrace[]) => (trace: WorkerInputTrace) => {
+    fs.appendFileSync(`${output}.inputs.jsonl`, JSON.stringify({ cell, caseId, trace }) + '\n', { mode: 0o600 });
+    traces.push(trace);
+  };
+  const collectInference = (cell: string, caseId: string, traces: WorkerInferenceTrace[]) => (trace: WorkerInferenceTrace) => {
+    fs.appendFileSync(`${output}.inference.jsonl`, JSON.stringify({ cell, caseId, trace }) + '\n', { mode: 0o600 });
+    traces.push(trace);
+  };
+  const collectNative = (cell: string, caseId: string, traces: WorkerNativeInferenceTrace[]) => (trace: WorkerNativeInferenceTrace) => {
+    fs.appendFileSync(`${output}.native-inference.jsonl`, JSON.stringify({ cell, caseId, trace }) + '\n', { mode: 0o600 });
+    traces.push(trace);
+  };
+  let activeCell = 'tokenizer-load';
+  try {
+    const { Tokenizer } = await import('tokenizers');
+    const tokenizer = Tokenizer.fromFile(path.join(request.export, 'tokenizer.json'));
+    tokenizer.setTruncation(8192);
+    for (const item of selected.cases) {
+      const i = request.cases.findIndex((c) => c.id === item.id); activeCell = `single-${item.id}`;
+      const inputIds = (await tokenizer.encode(`${item.kind}: ${item.text}`)).getIds();
+      const inputTraces: WorkerInputTrace[] = [];
+      const inferenceTraces: WorkerInferenceTrace[] = [];
+      const nativeInferenceTraces: WorkerNativeInferenceTrace[] = [];
+      const vector = await buildMdenseOnEmbedder({ kind: item.kind, model: request.export,
+        onInputTrace: collectInput(activeCell, item.id, inputTraces),
+        onInferenceTrace: collectInference(activeCell, item.id, inferenceTraces),
+        onNativeInferenceTrace: collectNative(activeCell, item.id, nativeInferenceTraces) })(item.text);
+      const row = { id: item.id, inputIds, inputTraces, inferenceTraces, nativeInferenceTraces, vector, ...references[i], execution: embedExecutionTarget(), worker: getWorkerState() };
+      rows.push(row);
+      fs.writeFileSync(`${output}.${activeCell}.json`, JSON.stringify({ ...identity, ...row }), { flag: 'wx', mode: 0o600 });
+      console.log('native boundary cell', activeCell, inputIds.length, row.execution.device);
+      if (!row.execution.verified || row.execution.device !== device || !row.worker.alive || row.worker.disabled) throw new Error('native boundary device fallback');
+      if (!matchesWorkerInput(inputTraces, request.export, references[i].referenceInputIds, device)) throw new Error('native boundary worker input evidence mismatch');
+      if (!nativeInferenceTraceVerified(inputTraces, inferenceTraces, request.export, references[i].referenceInputIds, device)) {
+        throw new Error('native boundary worker inference evidence mismatch');
+      }
+      if (!nativeRunTraceVerified(inputTraces, inferenceTraces, nativeInferenceTraces, request.export, references[i].referenceInputIds, device)) {
+        throw new Error('native boundary synchronous Run evidence mismatch');
+      }
+      if (process.platform === 'linux' && !nativeRawClockTraceVerified(nativeInferenceTraces)) throw new Error('native boundary RAW clock evidence mismatch');
+      if (process.platform === 'linux' && !nativeRuntimeTraceVerified(nativeInferenceTraces)) throw new Error('native boundary runtime evidence mismatch');
+    }
+    for (const batch of selected.batches) {
+      activeCell = batch.id;
+      // This is the same Promise.all of single-text calls as the HTTP sidecar,
+      // not proof of a padded ONNX input tensor. Python retains that separate proof.
+      const inputTracesByCase = batch.caseIds.map((id) => ({ id, traces: [] as WorkerInputTrace[] }));
+      const inferenceTracesByCase = batch.caseIds.map((id) => ({ id, traces: [] as WorkerInferenceTrace[] }));
+      const nativeInferenceTracesByCase = batch.caseIds.map((id) => ({ id, traces: [] as WorkerNativeInferenceTrace[] }));
+      const vectors = await Promise.all(batch.caseIds.map((id, i) => {
+        const item = request.cases.find((c) => c.id === id)!;
+        return buildMdenseOnEmbedder({ kind: item.kind, model: request.export,
+          onInputTrace: collectInput(activeCell, id, inputTracesByCase[i].traces),
+          onInferenceTrace: collectInference(activeCell, id, inferenceTracesByCase[i].traces),
+          onNativeInferenceTrace: collectNative(activeCell, id, nativeInferenceTracesByCase[i].traces) })(item.text);
+      }));
+      const comparisons = vectors.map((vector, i) => ({ id: batch.caseIds[i],
+        ...referenceVectorComparison(vector, rows.find((r) => r.id === batch.caseIds[i])!.vector, 768) }));
+      const result = { id: batch.id, submittedCaseIds: batch.caseIds, actualInferenceBatchSize: 1, vectors, comparisons, inputTracesByCase, inferenceTracesByCase, nativeInferenceTracesByCase,
+        execution: embedExecutionTarget(), worker: getWorkerState(), passed: comparisons.every((c) => c.passed) };
+      if (!result.execution.verified || result.execution.device !== device || !result.worker.alive || result.worker.disabled) throw new Error('native boundary batch fallback');
+      if (!inputTracesByCase.every((item) => matchesWorkerInput(item.traces, request.export, rows.find((r) => r.id === item.id)!.referenceInputIds, device))) {
+        throw new Error('native boundary request-group input evidence mismatch');
+      }
+      if (!inferenceTracesByCase.every((item, i) => nativeInferenceTraceVerified(inputTracesByCase[i].traces, item.traces,
+        request.export, rows.find((r) => r.id === item.id)!.referenceInputIds, device))) throw new Error('native boundary request-group inference evidence mismatch');
+      if (!nativeInferenceTracesByCase.every((item, i) => nativeRunTraceVerified(inputTracesByCase[i].traces,
+        inferenceTracesByCase[i].traces, item.traces, request.export, rows.find((r) => r.id === item.id)!.referenceInputIds, device))) {
+        throw new Error('native boundary request-group synchronous Run evidence mismatch');
+      }
+      if (process.platform === 'linux' && !nativeInferenceTracesByCase.every((item) => nativeRawClockTraceVerified(item.traces))) {
+        throw new Error('native boundary request-group RAW clock evidence mismatch');
+      }
+      if (process.platform === 'linux' && !nativeInferenceTracesByCase.every(item=>nativeRuntimeTraceVerified(item.traces))) {
+        throw new Error('native boundary request-group runtime evidence mismatch');
+      }
+      batches.push(result);
+      fs.writeFileSync(`${output}.${batch.id}.json`, JSON.stringify({ ...identity, ...result }), { flag: 'wx', mode: 0o600 });
+      console.log('native boundary request group', batch.id, 'single-text worker', result.passed);
+    }
+    const measured = summarizeNativeBoundaries(request, rows, device, selectedCell, batches);
+    fs.writeFileSync(output, JSON.stringify({ ...identity, ...measured, batches, notChecked: ['native worker compute-kernel profile',
+      'native padded/mixed ONNX tensors: worker accepts one text per call'] }), { flag: 'wx', mode: 0o600 });
+  } catch (error) {
+    fs.writeFileSync(`${output}.failure.json`, JSON.stringify({ ...identity, activeCell, completedSingles: rows.map((r) => r.id),
+      completedBatches: batches, error: String(error), execution: embedExecutionTarget(), worker: getWorkerState() }), { flag: 'wx', mode: 0o600 });
+    throw error;
+  } finally { await shutdownLocalEmbedder(); }
+}
 
 type ReferenceCase = { id: string; kind: 'query' | 'document'; text: string; promptedText: string;
   inputIds: number[]; attentionMask: number[]; vector: number[]; shippedVector?: number[] };
@@ -165,8 +568,7 @@ export async function qualifyIncumbentReferences(protocolFile: string, expectedS
   const protocol = JSON.parse(fs.readFileSync(protocolFile, 'utf8'));
   if (protocol.plan !== 'mdenseon-adoption-measurements-2026-10-01' || protocol.ownerId !== process.env.PAPERCUSP_SID) throw new Error('reference protocol owner/plan mismatch');
   if (embedRequestedExecution().device !== 'cpu') throw new Error('reference qualification requires explicit CPU; no fallback');
-  const output = path.resolve(outputFile), repo = path.resolve(import.meta.dirname, '../../../../..');
-  if (output === repo || output.startsWith(`${repo}${path.sep}`)) throw new Error('raw reference vectors must remain private outside repository');
+  const { output, repo } = nativeBenchmarkOutputPaths(outputFile);
   const identities = ['gemma', 'harrier'].map((model) => {
     const arm = protocol.modelIdentities.find((a: any) => a.model === model);
     if (!arm || arm.profile.nativeDims !== (model === 'gemma' ? 768 : 1024)) throw new Error('reference native profile mismatch');

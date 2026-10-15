@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import {
   assessCandidateFailures,
   outstandingLegIds,
+  staleUnadmittedRedLegIds,
   parseGitLsTreeObjectIds,
   readGateCandidateFailures,
   submoduleRelativeCandidates,
@@ -1052,17 +1053,17 @@ describe('P-007 — a red non-test leg is NEVER none-failing on any reading of t
 
   describe('the pure rules, so a future reorder of the branches fails HERE with the case named', () => {
     it('assessCandidateFailures — first match, in this order', () => {
-      expect(assessCandidateFailures({ fileCount: 2, stillBrokenCount: 1, alreadyFixedCount: 1, passedAtRepairHeadCount: 0, outstandingLegs: 1, fixedLegs: 0 })).toBe('repairs-outstanding');
-      expect(assessCandidateFailures({ fileCount: 0, stillBrokenCount: 0, alreadyFixedCount: 0, passedAtRepairHeadCount: 0, outstandingLegs: 1, fixedLegs: 0 })).toBe('non-test-leg-failing');
-      expect(assessCandidateFailures({ fileCount: 2, stillBrokenCount: 0, alreadyFixedCount: 2, passedAtRepairHeadCount: 0, outstandingLegs: 1, fixedLegs: 0 })).toBe('non-test-leg-failing');
+      expect(assessCandidateFailures({ fileCount: 2, stillBrokenCount: 1, alreadyFixedCount: 1, passedAtRepairHeadCount: 0, outstandingLegs: 1, fixedLegs: 0, staleUnadmittedLegs: 0 })).toBe('repairs-outstanding');
+      expect(assessCandidateFailures({ fileCount: 0, stillBrokenCount: 0, alreadyFixedCount: 0, passedAtRepairHeadCount: 0, outstandingLegs: 1, fixedLegs: 0, staleUnadmittedLegs: 0 })).toBe('non-test-leg-failing');
+      expect(assessCandidateFailures({ fileCount: 2, stillBrokenCount: 0, alreadyFixedCount: 2, passedAtRepairHeadCount: 0, outstandingLegs: 1, fixedLegs: 0, staleUnadmittedLegs: 0 })).toBe('non-test-leg-failing');
       // EI-24654779657165409: every file passed at repairHead, one leg still red → the LEG.
-      expect(assessCandidateFailures({ fileCount: 20, stillBrokenCount: 0, alreadyFixedCount: 0, passedAtRepairHeadCount: 20, outstandingLegs: 1, fixedLegs: 0 })).toBe('non-test-leg-failing');
-      expect(assessCandidateFailures({ fileCount: 2, stillBrokenCount: 0, alreadyFixedCount: 1, passedAtRepairHeadCount: 0, outstandingLegs: 0, fixedLegs: 0 })).toBe('unmeasured');
-      expect(assessCandidateFailures({ fileCount: 2, stillBrokenCount: 0, alreadyFixedCount: 2, passedAtRepairHeadCount: 0, outstandingLegs: 0, fixedLegs: 0 })).toBe('all-fixes-contained');
+      expect(assessCandidateFailures({ fileCount: 20, stillBrokenCount: 0, alreadyFixedCount: 0, passedAtRepairHeadCount: 20, outstandingLegs: 1, fixedLegs: 0, staleUnadmittedLegs: 0 })).toBe('non-test-leg-failing');
+      expect(assessCandidateFailures({ fileCount: 2, stillBrokenCount: 0, alreadyFixedCount: 1, passedAtRepairHeadCount: 0, outstandingLegs: 0, fixedLegs: 0, staleUnadmittedLegs: 0 })).toBe('unmeasured');
+      expect(assessCandidateFailures({ fileCount: 2, stillBrokenCount: 0, alreadyFixedCount: 2, passedAtRepairHeadCount: 0, outstandingLegs: 0, fixedLegs: 0, staleUnadmittedLegs: 0 })).toBe('all-fixes-contained');
       // A file PASSED at repairHead is resolved, so it never leaves the rest reading unmeasured.
-      expect(assessCandidateFailures({ fileCount: 2, stillBrokenCount: 0, alreadyFixedCount: 1, passedAtRepairHeadCount: 1, outstandingLegs: 0, fixedLegs: 0 })).toBe('all-fixes-contained');
-      expect(assessCandidateFailures({ fileCount: 0, stillBrokenCount: 0, alreadyFixedCount: 0, passedAtRepairHeadCount: 0, outstandingLegs: 0, fixedLegs: 1 })).toBe('all-fixes-contained');
-      expect(assessCandidateFailures({ fileCount: 0, stillBrokenCount: 0, alreadyFixedCount: 0, passedAtRepairHeadCount: 0, outstandingLegs: 0, fixedLegs: 0 })).toBe('none-failing');
+      expect(assessCandidateFailures({ fileCount: 2, stillBrokenCount: 0, alreadyFixedCount: 1, passedAtRepairHeadCount: 1, outstandingLegs: 0, fixedLegs: 0, staleUnadmittedLegs: 0 })).toBe('all-fixes-contained');
+      expect(assessCandidateFailures({ fileCount: 0, stillBrokenCount: 0, alreadyFixedCount: 0, passedAtRepairHeadCount: 0, outstandingLegs: 0, fixedLegs: 1, staleUnadmittedLegs: 0 })).toBe('all-fixes-contained');
+      expect(assessCandidateFailures({ fileCount: 0, stillBrokenCount: 0, alreadyFixedCount: 0, passedAtRepairHeadCount: 0, outstandingLegs: 0, fixedLegs: 0, staleUnadmittedLegs: 0 })).toBe('none-failing');
     });
 
     it('outstandingLegIds — the one rule the assessment and the readings share', () => {
@@ -1072,6 +1073,28 @@ describe('P-007 — a red non-test leg is NEVER none-failing on any reading of t
       expect(outstandingLegIds([row('a', 'fail', 'never-admitted')], null)).toEqual(['a']);
       // stale head: only the lifecycle
       expect(outstandingLegIds([row('a', 'fail', 'fixed'), row('b', 'pass', 'failing'), row('c', 'fail', 'never-admitted')], false)).toEqual(['b']);
+    });
+
+    // WI-10005727 — observed 2026-10-02 on queue 6ca43115: 11 legs measured `fail` at a stale
+    // head, all never-admitted, and the cell read `none-failing`. A stale red with no
+    // lifecycle is "unknown at repairHead", never an all-clear.
+    it('staleUnadmittedRedLegIds — the legs outstandingLegIds refuses must not vanish from the verdict', () => {
+      const row = (id: string, measuredNow: 'pass' | 'fail' | 'errored' | 'not-measured', lifecycle: 'failing' | 'fixed' | 'never-admitted') => ({ id, measuredNow, lifecycle });
+      const legs = [row('a', 'fail', 'never-admitted'), row('b', 'errored', 'never-admitted'), row('c', 'pass', 'never-admitted'), row('d', 'not-measured', 'never-admitted'), row('e', 'fail', 'fixed'), row('f', 'fail', 'failing')];
+      expect(staleUnadmittedRedLegIds(legs, false)).toEqual(['a', 'b']);
+      // At the current head (or unknown currency) outstandingLegIds already counts them — no double count.
+      expect(staleUnadmittedRedLegIds(legs, true)).toEqual([]);
+      expect(staleUnadmittedRedLegIds(legs, null)).toEqual([]);
+      // The exact observed shape: every red leg stale + never-admitted → nothing outstanding, so the
+      // verdict must come from the stale count, and it must not be either all-clear.
+      const observed = [row('lint:tsc', 'fail', 'never-admitted'), row('lint:migrations', 'pass', 'never-admitted')];
+      expect(outstandingLegIds(observed, false)).toEqual([]);
+      const verdict = assessCandidateFailures({ fileCount: 0, stillBrokenCount: 0, alreadyFixedCount: 0, passedAtRepairHeadCount: 0, outstandingLegs: 0, fixedLegs: 0, staleUnadmittedLegs: staleUnadmittedRedLegIds(observed, false).length });
+      expect(verdict).toBe('unmeasured');
+      // Rank: real work still outranks it; it outranks both all-clears.
+      expect(assessCandidateFailures({ fileCount: 1, stillBrokenCount: 1, alreadyFixedCount: 0, passedAtRepairHeadCount: 0, outstandingLegs: 0, fixedLegs: 0, staleUnadmittedLegs: 3 })).toBe('repairs-outstanding');
+      expect(assessCandidateFailures({ fileCount: 0, stillBrokenCount: 0, alreadyFixedCount: 0, passedAtRepairHeadCount: 0, outstandingLegs: 1, fixedLegs: 0, staleUnadmittedLegs: 3 })).toBe('non-test-leg-failing');
+      expect(assessCandidateFailures({ fileCount: 2, stillBrokenCount: 0, alreadyFixedCount: 2, passedAtRepairHeadCount: 0, outstandingLegs: 0, fixedLegs: 1, staleUnadmittedLegs: 1 })).toBe('unmeasured');
     });
   });
 });

@@ -342,6 +342,112 @@ describe('durable SU owner-turn acceptance', () => {
     });
     expect(store.reserve).not.toHaveBeenCalled();
   });
+
+  // pui-chat-first-ux P-026 / D-025: an owner turn may carry the model to run
+  // it on; omitted keeps the current one, but a present one must be a spec.
+  it('P-026: refuses an owner turn whose model is present but empty, before reserving', async () => {
+    const store: SuSessionCommandStore = { reserve: vi.fn(), finish: vi.fn() };
+    for (const model of ['', '   ', 42]) {
+      await expect(readyHost().acceptCommand({ ...command('owner_turn'), model } as never, store))
+        .rejects.toMatchObject({ code: 'invalid_command' });
+    }
+    expect(store.reserve).not.toHaveBeenCalled();
+  });
+
+  it('P-026: publishes the model an engine switched to, once', () => {
+    const host = readyHost();
+    const before = eventTypes(host).length;
+    expect(host.updateModel('claude-sonnet-4-5:high')).not.toBeNull();
+    expect(host.descriptor().model).toBe('claude-sonnet-4-5:high');
+    expect(host.updateModel('claude-sonnet-4-5:high')).toBeNull();
+    expect(eventTypes(host).slice(before)).toEqual(['session']);
+  });
+
+  it('P-026: persists the owner-selected model separately from later native model observations', async () => {
+    const persist = vi.fn(async (_snapshot: SuSessionDescriptor<'claude'>) => true);
+    const host = new SuSessionHost({ descriptor: descriptor(), persistDescriptor: persist });
+    try {
+      host.updateModel('claude-haiku-4-5:high');
+      host.emit({ type: 'session', descriptor: { ...host.descriptor(), model: 'claude-haiku-4-5' } });
+      await expect(host.persistDescriptorNow()).resolves.toBe(true);
+
+      expect(host.descriptor()).toMatchObject({
+        model: 'claude-haiku-4-5',
+        ownerSelectedModel: 'claude-haiku-4-5:high',
+      });
+      expect(persist.mock.calls.at(-1)?.[0]).toMatchObject({
+        model: 'claude-haiku-4-5',
+        ownerSelectedModel: 'claude-haiku-4-5:high',
+      });
+    } finally { host.dispose(); }
+  });
+
+  // pui-chat-first-ux P-027 / D-026: an owner turn may carry an approvals mode.
+  it('D-026: refuses an owner turn whose approvals mode is unknown, before reserving', async () => {
+    const store: SuSessionCommandStore = { reserve: vi.fn(), finish: vi.fn() };
+    for (const approvals of ['', 'full-access', 'bypassPermissions', 3]) {
+      await expect(readyHost().acceptCommand({ ...command('owner_turn'), approvals } as never, store))
+        .rejects.toMatchObject({ code: 'invalid_command' });
+    }
+    expect(store.reserve).not.toHaveBeenCalled();
+  });
+
+  it('D-026: publishes the approvals mode an engine switched to, once', () => {
+    const host = readyHost();
+    const before = eventTypes(host).length;
+    expect(host.updateApprovals('read-only')).not.toBeNull();
+    expect(host.descriptor().approvals).toBe('read-only');
+    expect(host.updateApprovals('read-only')).toBeNull();
+    expect(eventTypes(host).slice(before)).toEqual(['session']);
+  });
+
+  // pui-chat-first-ux P-029 / D-031: usage and plan ride the descriptor.
+  it('D-031: merges usage into the descriptor, keeps unreported fields, and emits only on change', () => {
+    const host = readyHost();
+    const before = eventTypes(host).length;
+    expect(host.updateUsage({ contextTokens: 1200, contextWindow: 200_000 })).not.toBeNull();
+    expect(host.updateUsage({ costUsd: 0.25 })).not.toBeNull();
+    expect(host.descriptor().usage).toEqual({ contextTokens: 1200, contextWindow: 200_000, costUsd: 0.25 });
+    // A repeat of known values, and values that are not measurements, change nothing.
+    expect(host.updateUsage({ contextTokens: 1200 })).toBeNull();
+    expect(host.updateUsage({ contextTokens: -1, costUsd: Number.NaN } as never)).toBeNull();
+    expect(host.descriptor().usage).toEqual({ contextTokens: 1200, contextWindow: 200_000, costUsd: 0.25 });
+    expect(eventTypes(host).slice(before)).toEqual(['session', 'session']);
+  });
+
+  it('D-031: replaces the plan list and emits only when it changed', () => {
+    const host = readyHost();
+    const before = eventTypes(host).length;
+    const plan = [
+      { text: 'Read the file', status: 'completed' as const },
+      { text: 'Write the fix', status: 'in_progress' as const },
+    ];
+    expect(host.updatePlan(plan)).not.toBeNull();
+    expect(host.descriptor().plan).toEqual(plan);
+    expect(host.updatePlan(plan.map((item) => ({ ...item })))).toBeNull();
+    expect(host.updatePlan([{ text: 'Write the fix', status: 'completed' }])).not.toBeNull();
+    expect(host.descriptor().plan).toEqual([{ text: 'Write the fix', status: 'completed' }]);
+    expect(host.updatePlan([])).not.toBeNull();
+    expect(host.descriptor().plan).toEqual([]);
+    expect(eventTypes(host).slice(before)).toEqual(['session', 'session', 'session']);
+  });
+
+  it('WI-10006652: publishes the engine model catalog and emits only when it changed', () => {
+    const host = readyHost();
+    const before = eventTypes(host).length;
+    const models = [
+      { id: 'sonnet', label: 'Sonnet', description: 'Sonnet 5 · Efficient for routine tasks', efforts: ['low', 'high'] },
+      { id: ' ', label: 'Unnamed' },
+    ];
+    expect(host.updateModels(models)).not.toBeNull();
+    // A row with no id is not something a client could ever send back.
+    expect(host.descriptor().models).toEqual([models[0]]);
+    expect(host.updateModels([{ ...models[0] }])).toBeNull();
+    // An empty answer keeps the last catalog rather than blanking /model.
+    expect(host.updateModels([])).toBeNull();
+    expect(host.descriptor().models).toEqual([models[0]]);
+    expect(eventTypes(host).slice(before)).toEqual(['session']);
+  });
 });
 
 afterEach(() => {

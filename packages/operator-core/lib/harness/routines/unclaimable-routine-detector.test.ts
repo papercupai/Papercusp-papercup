@@ -26,6 +26,13 @@ function input(over: Partial<ClaimSkipInput> = {}): ClaimSkipInput {
 }
 
 describe('classifyClaimSkip', () => {
+  it('WI-10005062: does not throw when lastFiredAt arrives as a string (it aborted routinesTick)', () => {
+    const raw = '2026-08-23T10:00:00.000Z' as unknown as Date;
+    const v = classifyClaimSkip(input({ nextFireAt: new Date(NOW - 90 * 60_000), lastFiredAt: raw }), NOW);
+    expect(v.state).toBe('unclaimable');
+    expect(v.reason).toContain('last fired at 2026-08-23T10:00:00.000Z');
+  });
+
   it('stays SILENT for a routine that just lost a race (the common case)', () => {
     // Two executors contend on every tick; the loser must not alarm. If this ever flips, the
     // detector becomes noise and gets ignored — the exact failure it exists to prevent.

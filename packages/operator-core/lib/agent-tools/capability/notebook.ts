@@ -32,11 +32,12 @@
  * Honest failure contract (plan D-005 — never claim a property the mechanism lacks):
  * every rejection (not a notebook, unparseable JSON, unknown cell, missing source)
  * is decided BEFORE the single write, so a rejected call leaves the file
- * byte-unchanged. One `writeFileSync` of the whole document is the only mutation.
+ * byte-unchanged. One `replaceFileContents` of the whole document is the only mutation.
  */
 
 import { randomUUID } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
+import { replaceFileContents } from './replace-file';
 import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
@@ -181,7 +182,7 @@ export default defineTool({
 
       const serialized = JSON.stringify(nb, null, indent) + (trailingNewline ? '\n' : '');
       try {
-        writeFileSync(abs, serialized, 'utf8');
+        replaceFileContents(abs, serialized);
       } catch (e: unknown) {
         return err('write_failed', `${abs}: ${e instanceof Error ? e.message : String(e)}. The notebook is unchanged.`);
       }

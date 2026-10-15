@@ -14,6 +14,7 @@ import {
   renderIndexHtml,
   renderInstructionsHtml,
   renderPlanPageHtml,
+  renderProductDownloads,
   renderProjectHistoryPage,
   renderWorkItemPageHtml,
   workItemPagePath,
@@ -33,6 +34,8 @@ const GENERATED_AT = new Date('2026-07-13T00:00:00Z');
 /** The index minus its Instructions loader — the one script that is not the beacon (owner #868). */
 const LOADER_RE = new RegExp(`<script ${INSTRUCTIONS_LOADER_ATTR}>[\\s\\S]*?</script>`);
 const withoutInstructionsLoader = (html: string) => html.replace(LOADER_RE, '');
+const withoutOptionalLoaders = (html: string) => withoutInstructionsLoader(html)
+  .replace(/<script data-product-downloads>[\s\S]*?<\/script>/, '');
 
 function row(over: Partial<ReleaseRow> = {}): ReleaseRow {
   return {
@@ -270,7 +273,7 @@ describe('the beacon — the leak detector [owner: "collect stats on visits to m
    * entirely. The question was always "what does the SCRIPT read", so ask that.
    */
   const beaconOf = (html: string) => {
-    const m = /<script[^>]*>([\s\S]*?)<\/script>/.exec(withoutInstructionsLoader(html));
+    const m = /<script[^>]*>([\s\S]*?)<\/script>/.exec(withoutOptionalLoaders(html));
     return m ? m[1] : '';
   };
 
@@ -415,8 +418,8 @@ describe('PostHog parity with papercusp.com [owner 2026-07-27: "the same sort of
   });
 
   it('omits the beacon ENTIRELY when no analytics are configured', () => {
-    // The Instructions loader (owner #868) is the one other script; it is not analytics.
-    const html = withoutInstructionsLoader(
+    // Optional content loaders are separate from analytics and keep static fallbacks.
+    const html = withoutOptionalLoaders(
       renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: null }),
     );
     expect(html).not.toContain('<script');
@@ -428,6 +431,70 @@ describe('PostHog parity with papercusp.com [owner 2026-07-27: "the same sort of
     expect(html).toContain('noindex');
     // ...and does not hand the secret path to whatever a tester clicks through to.
     expect(html).toContain('name="referrer" content="no-referrer"');
+  });
+});
+
+describe('one product downloads page', () => {
+  it('provides five native product choices and keeps the console fallback without JavaScript', () => {
+    const html = withoutOptionalLoaders(renderIndexHtml([hydrated()], {
+      generatedAt: GENERATED_AT, analytics: null, redact: [],
+    }));
+    for (const [id, label] of [['server', 'Desktop Server'], ['gui', 'Desktop GUI'],
+      ['psu', 'PSU + PUI'], ['android', 'Android'], ['iphone', 'iPhone']]) {
+      expect(html).toContain(`id="choose-${id}"`);
+      expect(html).toContain(`<label for="choose-${id}">${label}</label>`);
+      expect(html).toContain(`id="download-${id}"`);
+    }
+    expect(html).toContain('href="pui/index.html"');
+    expect(html).toContain('Where should psu run?');
+    expect(html).toContain('Local — this computer');
+    expect(html).toContain('Uses the same download as Linux.');
+    expect(html).toContain('Apple Silicon: no verified standalone download is published yet.');
+    expect(html).toContain('Intel: no verified standalone download is published yet.');
+    expect(html).toContain('PSU and PUI are included.');
+    expect(html).not.toMatch(/(?:psu|pui) --connect/);
+  });
+
+  it('keeps the server setup guide inside its product panel and archives closed by default', () => {
+    const html = renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: null, redact: [] });
+    const server = html.slice(html.indexOf('id="download-server"'), html.indexOf('id="download-gui"'));
+    expect(server).toContain(`id="${INSTRUCTIONS_BODY_ID}"`);
+    expect(html.match(new RegExp(`id="${INSTRUCTIONS_BODY_ID}"`, 'g'))).toHaveLength(1);
+    expect(html).toContain('<details class="release-downloads"><summary>Archived downloads for');
+    expect(html).not.toContain('<details class="release-downloads" open');
+  });
+
+  it('explains the unpublished replacement mobile builds without offering withdrawn downloads', () => {
+    const html = renderProductDownloads([]);
+    expect(html).toContain('The previous Android builds were withdrawn. A replacement download is not published yet.');
+    expect(html).toContain('The previous iPhone builds were withdrawn. A replacement download is not published yet.');
+    expect(html).not.toMatch(/href="[^"]+\.(?:apk|ipa)"/);
+  });
+
+  it('keeps separate server, GUI and mobile artifacts, including multiple formats', () => {
+    const artifacts = [
+      { product: 'gui' as const, platform: 'linux-x86_64', name: 'gui.deb' },
+      { product: 'gui' as const, platform: 'linux-x86_64', name: 'gui.AppImage' },
+      { product: 'server' as const, platform: 'linux-x86_64', name: 'server.deb' },
+      { product: 'mobile' as const, platform: 'android-universal', name: 'android.apk' },
+      { product: 'mobile' as const, platform: 'ios-arm64', name: 'iphone.ipa' },
+    ].map(a => ({ ...a, url: `release/${a.name}`, size: 1000, sha256: 'a'.repeat(64) }));
+    const html = renderProductDownloads([hydrated({ row: row({ artifacts }) })]);
+    for (const artifact of artifacts) expect(html).toContain(`href="release/${artifact.name}"`);
+    const server = html.slice(html.indexOf('id="download-server"'), html.indexOf('id="download-gui"'));
+    expect(server).toContain('server.deb');
+    expect(server).not.toContain('gui.deb');
+  });
+
+  it('does not revive an older build when the newest platform slot is withdrawn', () => {
+    const pulled = { ...row().artifacts[0], name: 'pulled.deb', url: 'new/pulled.deb',
+      withdrawn: { at: '2026-10-12T00:00:00Z', reason: 'rejected', ref: 'D-1' } };
+    const html = renderProductDownloads([
+      hydrated({ row: row({ version: '0.0.10', artifacts: [pulled] }) }), hydrated(),
+    ]);
+    expect(html).not.toContain('href="new/pulled.deb"');
+    expect(html).not.toContain('href="desktop-v0.0.9-alpha/papercusp_0.0.9_amd64.deb"');
+    expect(html).toContain('No download is published for this product yet.');
   });
 });
 
@@ -689,7 +756,7 @@ describe('the homepage demo video [owner 2026-07-27: "add the same video that is
   it('needs no JavaScript to appear — <video> is markup, like everything else here', () => {
     // analytics:null ⇒ no beacon, and the video still renders. (The Instructions
     // loader is unrelated to the video and is stripped for this check.)
-    expect(withoutInstructionsLoader(html)).not.toContain('<script');
+    expect(withoutOptionalLoaders(html)).not.toContain('<script');
     expect(html).toContain('<video');
   });
 
@@ -781,6 +848,22 @@ describe('the Instructions section [owner 2026-07-27]', () => {
     }
     // ...and the "Not ready" list the owner removed [#812] stays gone.
     expect(INSTRUCTIONS_MD).not.toContain('Not ready');
+  });
+
+  it('points problem reports at the desktop door, with preview and explicit consent (P-017)', () => {
+    const section = INSTRUCTIONS_MD.split("### Don't like something about Papercusp?")[1].split('### Use several AI accounts')[0];
+    expect(section).toContain('open the command palette and choose **Report a problem**');
+    expect(section).toContain('<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>');
+    expect(section).toContain('<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> on macOS');
+    expect(section).toContain('one sentence');
+    expect(section).toContain('**Review** to see exactly what will be sent');
+    expect(section).toContain('log lines are optional and off by default');
+    expect(section).toContain('nothing is sent until you choose **Send**');
+    expect(section.indexOf('**Report a problem**')).toBeLessThan(section.indexOf('Ask an agent to build it'));
+    expect(page).toContain('<strong>Report a problem</strong>');
+    expect(page).toContain('<strong>Review</strong>');
+    expect(page).toContain('<strong>Send</strong>');
+    expect(page).toContain('click <strong>Release</strong> to go back');
   });
 
   it('opens external links in a new tab — losing this page means losing the secret URL', () => {
@@ -1346,5 +1429,48 @@ describe('a platform-only hotfix shares the card of the release it patches (WI-1
       ['0.0.23', 0],
       ['0.0.22', 0],
     ]);
+  });
+});
+
+// open-source-release-2026-09-29 D-030: an artifact pulled from the channel keeps its
+// registry entry (marked `withdrawn`) but must not be offered for download anywhere.
+describe('withdrawn artifacts', () => {
+  const opts = { generatedAt: GENERATED_AT, analytics: null, redact: [] };
+  const listed = {
+    product: 'gui' as const,
+    platform: 'linux-x86_64',
+    name: 'Papercusp GUI_0.0.25_amd64.deb',
+    url: 'desktop-v0.0.25-alpha/Papercusp GUI_0.0.25_amd64.deb',
+    size: 1_000,
+    sha256: 'aaa',
+  };
+  const pulled = {
+    product: 'gui' as const,
+    platform: 'linux-x86_64',
+    name: 'Papercusp_GUI_0.0.25_amd64.AppImage',
+    url: 'desktop-v0.0.25-alpha/Papercusp_GUI_0.0.25_amd64.AppImage',
+    size: 2_000,
+    sha256: 'bbb',
+    withdrawn: { at: '2026-10-06T11:00:00Z', reason: 'fails the installer license scan', ref: 'D-030' },
+  };
+  const rel = hydrated({ row: row({ version: '0.0.25', artifacts: [listed, pulled] }) });
+
+  it('the releases page links the listed artifact and not the withdrawn one', () => {
+    const html = renderIndexHtml([rel], opts);
+    expect(html).toContain('Papercusp GUI_0.0.25_amd64.deb');
+    expect(html).not.toContain('Papercusp_GUI_0.0.25_amd64.AppImage');
+  });
+
+  it('history.json (the in-app update feed) omits the withdrawn artifact', () => {
+    const json = JSON.parse(renderHistoryJson([rel], opts)) as {
+      releases: Array<{ artifacts: Array<{ name: string }> }>;
+    };
+    expect(json.releases[0]!.artifacts.map((a) => a.name)).toEqual(['Papercusp GUI_0.0.25_amd64.deb']);
+  });
+
+  it('a release whose only artifact is withdrawn says it has no downloads', () => {
+    const html = renderIndexHtml([hydrated({ row: row({ version: '0.0.25', artifacts: [pulled] }) })], opts);
+    expect(html).not.toContain('Papercusp_GUI_0.0.25_amd64.AppImage');
+    expect(html).toContain('No downloadable artifacts recorded for this release.');
   });
 });

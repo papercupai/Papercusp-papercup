@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 
 /**
  * WI-2146225 — recurrence guards for the TIERED Postgres dump.
@@ -294,9 +296,74 @@ describe('papercusp-db-backup.sh tiered dump (WI-2146225)', () => {
     it('never counts a not-due tier as dumped or failed', () => {
       const branch = code.match(/tx_age=\$\(transcript_tier_age[\s\S]*?\n {4}fi\n/);
       expect(branch, 'expected the transcript dump branch').not.toBeNull();
-      const notDue = (branch as RegExpMatchArray)[0].split(/\n\s*elif dump_one/)[0];
+      const [notDue, due] = (branch as RegExpMatchArray)[0].split(/\n\s*else\n/);
       expect(notDue).toContain('TIER_NOT_DUE+=("$db-transcript")');
-      expect(notDue).not.toMatch(/DUMPED\+=|FAILED\+=/);
+      expect(notDue).not.toMatch(/DUMPED\+=|FAILED\+=|TRANSCRIPT_DUE\+=/);
+      // A due tier is queued for the local-only phase (WI-10004870), never dumped
+      // inside the shared-lock section.
+      expect(due, 'expected the due branch').toBeDefined();
+      expect(due).toContain('TRANSCRIPT_DUE+=("$db")');
+      expect(due).not.toMatch(/dump_one/);
+    });
+
+    it('dumps the transcript tier only after every snapshotted artifact, outside the shared lock (WI-10004870)', () => {
+      // The guard holds the host-wide Kopia lock for this whole script unless the
+      // script asks for it back. The transcript tier is the only thing excluded
+      // from every snapshot, so it is the only thing allowed after the ask: a
+      // snapshotted artifact written after it could be captured mid-swap by a
+      // sweep that just took the lock.
+      const askAt = code.indexOf('release_shared_backup_lock "');
+      expect(askAt, 'expected the early-release request').toBeGreaterThan(0);
+      expect(
+        (code.match(/release_shared_backup_lock "/g) ?? []).length,
+        'exactly one call site',
+      ).toBe(1);
+      const before = code.slice(0, askAt);
+      const after = code.slice(askAt);
+      // Every snapshotted producer is BEFORE the ask.
+      expect(before).toMatch(/dump_one "\$db" "\$db-state"/);
+      expect(before).toContain('ODDSMITH_DISCOVERY=');
+      expect(before).toMatch(/for db in \$DBS; do/);
+      // After it: the transcript dump and nothing else that writes a dump.
+      expect(after).toMatch(/dump_one "\$db" "\$db-transcript"/);
+      expect((after.match(/dump_one /g) ?? []).length).toBe(1);
+      expect(after).not.toMatch(/\bpg_dump\b|\bpg_dumpall\b/);
+      // The only snapshotted file still written after the ask is STATUS.json, and
+      // it is swapped in atomically through a *.tmp name .kopiaignore excludes, so a
+      // sweep that starts early sees the old or the new receipt, never a torn one.
+      expect((after.match(/mv -f /g) ?? []).length).toBe(1);
+      expect(after).toContain('> "$STATUS.tmp" && mv -f "$STATUS.tmp" "$STATUS"');
+      expect(src).toContain("ensure_kopiaignore_rule '*.tmp'");
+      // The phase only runs when a tier is actually due, so a not-due run keeps
+      // the lock to its end exactly as before.
+      expect(code).toMatch(
+        /if \[ \$\{#TRANSCRIPT_DUE\[@\]\} -gt 0 \]; then\n {2}release_shared_backup_lock "/,
+      );
+    });
+
+    it('asks the guard through its release path, and is a no-op outside the guard', () => {
+      const fn = src.match(/release_shared_backup_lock\(\) \{[\s\S]*?\n\}\n/);
+      expect(fn, 'expected release_shared_backup_lock').not.toBeNull();
+      const dir = mkdtempSync(join(tmpdir(), 'backup-release-'));
+      try {
+        const request = join(dir, 'global.lock.release.123');
+        const body = `log() { printf '%s\\n' "$*"; }\n${(fn as RegExpMatchArray)[0]}\nrelease_shared_backup_lock papercusp`;
+        const asked = spawnSync('bash', ['-c', body], {
+          encoding: 'utf8',
+          env: { ...process.env, KOPIA_BACKUP_GUARD_RELEASE_PATH: request },
+        });
+        expect(asked.status, asked.stderr).toBe(0);
+        expect(existsSync(request)).toBe(true);
+        expect(asked.stdout).toContain('early release requested');
+
+        const env = { ...process.env };
+        delete env.KOPIA_BACKUP_GUARD_RELEASE_PATH;
+        const manual = spawnSync('bash', ['-c', body], { encoding: 'utf8', env });
+        expect(manual.status, manual.stderr).toBe(0);
+        expect(manual.stdout).toBe('');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     });
 
     it('still dumps when there is no artifact to keep', () => {

@@ -87,6 +87,14 @@ const PINNED: Readonly<Record<string, Disposition>> = Object.freeze({
       'here would make a replay claim comparability it cannot support. Closed the ' +
       'last `owed` row of EI-21448289024080765.',
   },
+  'packages/operator-core/lib/memory/bench/answer-usefulness.ts': {
+    kind: 'folds',
+    why:
+      'ANSWER_RUBRIC_VERSION is deriveRubricVersion(..., scaffold: JUDGE_PROMPT_SCAFFOLD_VERSION); ' +
+      'it keys each judged answer\'s identity hash and labels the persisted report, so a scaffold ' +
+      'edit moves the version. Classified when this guard went red on the new importer ' +
+      '(EI-25355584370404958).',
+  },
 });
 
 function walk(dir: string, out: string[]): void {

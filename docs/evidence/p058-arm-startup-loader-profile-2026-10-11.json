@@ -1,0 +1,216 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "name": "P058 bounded ARM startup loader and current CPU profile diagnostic",
+  "cwd": ".",
+  "command": [
+    "node",
+    ".papercusp/scratch/p058-arm-startup-profile-loads-20261011/run.mjs"
+  ],
+  "startedAt": "2026-10-11T01:36:20.824Z",
+  "finishedAt": "2026-10-11T01:37:39.051Z",
+  "exitCode": 1,
+  "summary": "The instrumented wrapper FAILED its separate75000ms outer deadline and no Server boot receipt was observed. Independently, the exact current collector saved a valid35s ARM profile while the bound target was alive. Original60000ms child contract retained; source bytes unchanged. No startup acceptance or root-cause claim.",
+  "workItemId": "EI-25500068013952985",
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "candidateAccepted": false,
+  "evidencePlane": "instrumented-direct-binfmt-arm-uid1000",
+  "producerTaskId": "0mv35jmd4a27bpwwj9g",
+  "executedRunnerSha256": "fc94046141db541ccf376752164b4011a435ab9562fe6a7c1b7024cec9a01975",
+  "executedRunnerBinding": "Reconstructed from the sole observed post-run one-hunk correction; no assay replay.",
+  "currentRunnerSha256": "3423dc9d75c80efb2ab6f4bca2f130e148d4f2201b39fee9b9a4b68671c6c99a",
+  "inputBindings": {
+    "scripts/cpu-sample.mjs": "c75cb780006a80b85a760550c6cd10539c90fe035d00190e0aef415da32c3df3",
+    "scripts/cdp-inspector.mjs": "bb15dc2ac1ec9cb60d26d62d0790610f2cd097a9171b37c39465c8f5a7d22112",
+    "scripts/lib/cpu-profile.mjs": "b77446b36ee55d5670eb7bcd74955bef10f23e804be9672eeb25aef9f7ba9fc3",
+    "scripts/proc-guard.mjs": "5eb8c0c9ca8a2d39aef88e4840e14e4832f808450e13977b6c628fadd7677cda",
+    "packages/operator-core/lib/cpu-sample.test.ts": "bd2c94a82727d274653b2a63cb9f0f6345698881b08cdb8a96ed9180ddc1271b",
+    ".papercusp/scratch/p058-direct-arm-closed-20261011/native-arm64-release10/bin/node": "a990a8ae388fc285ddbce280e63fca48cfd7695f632b66aec6ed581566eace99",
+    ".papercusp/scratch/p058-direct-arm-closed-20261011/native-arm64-release10/serve.mjs": "2cbbcca8d8da25a7bf972da3fa21e88a1f61cbfc17c842aa05615e63c3487365",
+    ".papercusp/scratch/p058-direct-arm-closed-20261011/native-arm64-release10/.sidecar-build-stamp": "42d0ad383174cdd3013fc36d1454f6897ceb8af1de8cdeb87601bdf6a80247b3",
+    ".papercusp/scratch/p058-direct-arm-closed-20261011/native-arm64-release10/build-provenance.json": "e1e3076ad430d5ad9ff8f314003ba6d820e4c80fd4f0ddd55145ac28543e9f28",
+    ".papercusp/scratch/p058-direct-arm-closed-20261011/usr/lib/aarch64-linux-gnu/libutil.so.1": "c2c2f3733137b0acaee7b3abb9d6ee8ce05783013bce6e20da363cd7eb986703",
+    ".papercusp/scratch/p058-direct-arm-closed-20261011/boot-probe2.sh": "7cf6fac8301db322543441a15923b754e3e17e8637d8852529f24e6f20f6f99a"
+  },
+  "canonicalHelperOriginalSha256": "1e10ccfae6c0c106a3aba0a2ea12091bc640745376f78ec6566d071ace9b89f2",
+  "instrumentedHelperSha256": "c1e75a5d193f6835cd8db63b7341d7012bb42f01a2d78dab640eeabf06e7526e",
+  "deadlines": {
+    "canonicalChildMs": 60000,
+    "outerMs": 75000,
+    "captureWindowMs": 35000
+  },
+  "observation": {
+    "wrapper": {
+      "status": null,
+      "signal": "SIGTERM",
+      "outerTimedOut": true,
+      "elapsedMs": 78223.615841
+    },
+    "boot": {
+      "passed": false,
+      "receiptObserved": false,
+      "note": "Outer termination prevented observing the canonical parent return; do not invent a distinct child timeout result."
+    },
+    "capture": {
+      "savedAt": "2026-10-11T01:37:04.635Z",
+      "savedWhileTargetAlive": true,
+      "target": {
+        "pid": 550988,
+        "entry": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-direct-arm-closed-20261011/native-arm64-release10/serve.mjs",
+        "argv": [
+          "--verify-boot-imports"
+        ],
+        "execArgv": [
+          "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-direct-arm-closed-20261011/native-arm64-release10/bin/node",
+          "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-direct-arm-closed-20261011/native-arm64-release10/bin/node",
+          "--inspect-wait=127.0.0.1:0",
+          "--require",
+          "/tmp/papercusp-boot-imports-2Zs4Wf/boot-imports.guard.cjs"
+        ],
+        "startTicks": "47155840",
+        "listenerInode": "976388288",
+        "identity": "proc"
+      },
+      "startupResumed": true,
+      "captureMs": 35000,
+      "samples": 32004,
+      "nodes": 11407,
+      "passed": true,
+      "profileSha256": "3d91c256a4f72de6ab359b6bf97ce79e8c74d95618321d31ef98fe25b7e7b164",
+      "profileBytes": 2695390,
+      "profileGraphValid": true
+    },
+    "moduleLoads": 2281,
+    "largestLoaderGaps": [
+      {
+        "precedingUrl": "file:///home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-direct-arm-closed-20261011/native-arm64-release10/serve.mjs",
+        "precedingBytes": 75984521,
+        "afterMs": 339.956952,
+        "nextMs": 12576.434753,
+        "gapMs": 12236.477800999999
+      },
+      {
+        "precedingUrl": "file:///home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-direct-arm-closed-20261011/native-arm64-release10/node_modules/undici/lib/web/eventsource/util.js",
+        "precedingBytes": 629,
+        "afterMs": 40985.971751000005,
+        "nextMs": 46345.035111000005,
+        "gapMs": 5359.06336
+      },
+      {
+        "precedingUrl": "file:///home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-direct-arm-closed-20261011/native-arm64-release10/node_modules/mingo/cjs/core/index.js",
+        "precedingBytes": 1318,
+        "afterMs": 33123.243182000006,
+        "nextMs": 36677.944616,
+        "gapMs": 3554.701433999995
+      }
+    ],
+    "aggregate": {
+      "totalUs": 36310698,
+      "realUs": 36219561,
+      "excludedUs": 91137,
+      "frames": [
+        [
+          "compileSourceTextModule @ node:internal/modules/esm/utils:315",
+          14186425
+        ],
+        [
+          "wrapSafe @ node:internal/modules/cjs/loader:1761",
+          2669853
+        ],
+        [
+          "parse @ (native):-1",
+          1431271
+        ],
+        [
+          "lstat @ (native):-1",
+          1207491
+        ],
+        [
+          "detectModuleFormat @ node:internal/modules/esm/get_format:86",
+          1118845
+        ],
+        [
+          "realpathSync @ node:fs:2710",
+          923100
+        ],
+        [
+          "decodeUTF8 @ (native):-1",
+          507274
+        ],
+        [
+          "getPackageScopeConfig @ (native):-1",
+          462756
+        ]
+      ]
+    },
+    "sourceStable": true,
+    "cleanup": {
+      "parentAbsent": true,
+      "targetAbsent": true,
+      "ownedTemporaryHomeAbsent": true
+    }
+  },
+  "rawEvidence": {
+    "root": ".papercusp/scratch/p058-arm-startup-profile-loads-20261011",
+    "sha256": {
+      "run.mjs": "3423dc9d75c80efb2ab6f4bca2f130e148d4f2201b39fee9b9a4b68671c6c99a",
+      "canonical-helper.mjs": "c1e75a5d193f6835cd8db63b7341d7012bb42f01a2d78dab640eeabf06e7526e",
+      "result.json": "c6fdb8bdb4642153e94e4f0b31a898a99cf9abb2f204fddc4a22532674d13647",
+      "capture.json": "ae5edce3b67489c771879e156faf9efc4daae2fe3c5a41114a6054329b638e8a",
+      "profile.cpuprofile": "3d91c256a4f72de6ab359b6bf97ce79e8c74d95618321d31ef98fe25b7e7b164",
+      "loads.jsonl": "88c57ed41068c2a48a0b676944801d40ef7d9731111e71c8cf6b70f7f2c19da9",
+      "owner.json": "082082e24bbf69c7c5ee8042ae3a669f357d349cbd4c1b4ab75c7f8bd6ed0b7d",
+      "child-ownership.json": "6ba5553f986348f760b313b6c08227f445875a4ed6c49ccd11015b27aa387c56",
+      "host-admission.json": "76019d23515a8d9fe40ef84a7e35d9b2d7046337f54e3ca73fa38eb3cf948f55",
+      "stdout.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "retained-guard.cjs": "82ec9625f36e4126b43b3226c9c2d7ddbb0e9860fa16697ccbd54ed444fbfe55",
+      "retained-child-stderr.log": "486f985e2794971a139ced6dcf16f136a670103f89501fac53aa0afc644c77f7"
+    }
+  },
+  "correction": {
+    "originalCapturePassed": false,
+    "derivedCapturePassed": true,
+    "reason": "Original result writer incorrectly coupled a completed capture to the later outer timeout. Immutable capture.json/profile are independent positive evidence; original result.json is preserved. Future runner formula corrected without re-execution."
+  },
+  "assertions": [
+    {
+      "id": "exact-current-collector-profile",
+      "passed": true,
+      "evidence": "Kernel target550988/startTicks47155840/socket976388288;35s/32004samples/11407nodes; profile persisted01:37:04.635Z while alive, before wrapper termination01:37:39Z."
+    },
+    {
+      "id": "guarded-source-inputs-stable",
+      "passed": true,
+      "evidence": "Exact guard, frozen serve2cbbcca8, current collector hashes and qualified ARM native/rootfs namespace retained; all recorded input bytes rehashed unchanged."
+    },
+    {
+      "id": "canonical-startup-receipt",
+      "passed": false,
+      "evidence": "No PAPERCUSP_BOOT_IMPORTS_OK; separate outer75000ms deadline hit, original child60000ms retained."
+    },
+    {
+      "id": "owned-cleanup",
+      "passed": true,
+      "evidence": "Controller and exact target absent; own two temporary diagnostic files copied byte-for-byte, empty generated state directory and own home removed."
+    }
+  ],
+  "limitations": [
+    "Direct UID1000/binfmt differs from container UID1001 and physical ARM.",
+    "Inspector, namespace/load hooks and profiling add observer overhead; this is a distinct diagnostic run.",
+    "Loader gaps are measured intervals between loads, not exclusive CPU time for the preceding module; the largest intervals cannot be added to CPU-profile frame totals.",
+    "The initial35s profile leaves later initialization unprofiled; the complete startup cause remains unproven.",
+    "Frozen stderr prompt-weight warning is not evidence of any current live release gate verdict.",
+    "No installed-native, trusted publication, transfer, or independent shipment acceptance."
+  ],
+  "publication": {
+    "method": "scripts/lib/identity-leak-patterns.mjs::serializeIdentitySafeJson",
+    "privateReceiptSha256": "3ea154ef37bb78c46a8f007a50746b72479cec43ad11aa8db90b5148507a88d3",
+    "privateArchiveRef": ".papercusp/scratch/p058-evidence-publication-20261011/startup-original-3ea154ef.json",
+    "keyNormalization": "Canonical-checkout absolute input binding keys become repository-relative; values are unchanged. Other keys retain their original schema.",
+    "publicationOnly": true,
+    "executedAgain": false
+  }
+}

@@ -21,6 +21,7 @@ import { defineTool, AGENT_ROLES, resolveMcpName } from '@papercusp/agent-mcp';
 import { DISPATCH_WRAPPER_METADATA_KEY } from '../sessions/automatic-tool-names';
 import { dispatchWrapperMarkEnabled } from '../../telemetry-dispatch-wrapper';
 import { decodeToolsInvokeArgs } from './invoke-args';
+import { readServingGeneration } from '../../serving-generation';
 
 type NestedOutcome = {
   effectiveStatus: 'ok' | 'partial' | 'error' | 'vacuous';
@@ -151,6 +152,7 @@ function nestedRefusal(result: NestedToolResult): NestedRefusal {
  */
 export class NestedToolRefusalError extends Error {
   override readonly name = 'NestedToolRefusalError';
+  readonly dispatchMetadata: Record<string, unknown> | undefined;
 
   constructor(
     readonly toolName: string,
@@ -160,6 +162,8 @@ export class NestedToolRefusalError extends Error {
     message: string,
   ) {
     super(message);
+    const receipt = nestedResult._meta?.abortCompletionReceipt;
+    this.dispatchMetadata = receipt === undefined ? undefined : { abortCompletionReceipt: receipt };
   }
 }
 
@@ -260,12 +264,15 @@ export function summarizeNestedToolOutcome(result: {
 
 export default defineTool({
   name: 'tools:invoke',
-  // The target runs through its own projected dispatcher and therefore owns
-  // the authoritative deadline. Keep this wrapper outside the longest agent-
-  // tool deadline (600s) so its default 60s watchdog cannot abort first and
-  // turn a successfully-completed target into the misleading
-  // "handler returned but signal had aborted" timeout (EI-9242).
-  timeoutSec: 660,
+  // The MCP host races nested dispatch against the target's effective MCP
+  // deadline; the projected dispatcher also owns the target's timeout signal.
+  // Keep this wrapper outside the longest known target MCP deadline. scorecards:emit
+  // declares 900s and db:migrate declares 1020s (300s drain + two 300s lock attempts
+  // + 120s slack); the 60s margin lets either result settle before this watchdog can abort.
+  // This avoids turning a successfully-completed target
+  // into the misleading "handler returned but signal had aborted" timeout
+  // (EI-9242).
+  timeoutSec: 1080,
   description:
     'Call ANY tool in the full ~550-tool catalog by name, even one not in your loaded tool list. ' +
     // ⚠ THIS SENTENCE IS DELIBERATELY A HARD RAIL, AND MUST STAY ONE (D-047).
@@ -276,7 +283,7 @@ export default defineTool({
     // display spelling (`work_items__list`; `sanitizeToolName` maps ':' → '__'),
     // reached no tool at all, and reported "no open work items found". Re-running
     // the same arm with this contract delivered produced ZERO such calls in 12 runs.
-    // Keep this rail under SUMMARY_LEAD_MAX_CHARS so it ships intact at the
+    // Keep this rail under the retained compact rail cap so it ships intact at the
     // compact tier where the wrong display spelling caused actual failures.
     '⚠ Use colon tool names (flags:set); NEVER underscored display names. Args go in `args`. The call is ' +
     'dispatched server-side and gated exactly as a direct call would be. Pair with tools:find: ' +
@@ -291,7 +298,7 @@ export default defineTool({
       'the model constructs the call natively). This meta-tool adds a layer of indirection; prefer a ' +
       'direct call whenever the tool is reachable.',
     chaining:
-      'tools:find("<intent>") → take the top hit\'s name + argSchema → tools:invoke({ name, args: {…} }).',
+    'tools:find("<intent>") → take the top hit\'s name + argSchema + servingGeneration → tools:invoke({ name, args: {…}, servingGeneration }). The dispatcher refuses a different/unknown generation before target execution.',
     seeAlso: [
       'tools:find (discover a tool by intent — returns names + schemas, and activates them where supported)',
     ],
@@ -336,6 +343,8 @@ export default defineTool({
   args: z.object({
     /** Exact MCP tool name in colon form, e.g. "flags:set". */
     name: z.string().min(1).max(120),
+    /** Exact generation returned by tools:find; binds the schema to this dispatcher. */
+    servingGeneration: z.string().trim().min(1).max(160).optional(),
     // EI-6681 / EI-15360: some MCP clients intermittently stringify a
     // moderately-long/complex nested `args` object before it reaches this schema
     // (root cause client-side — this server's own dispatch path never stringifies
@@ -366,6 +375,19 @@ export default defineTool({
         isError: true,
         content: [{ type: 'text' as const, text: 'invalid_target: tools:invoke cannot invoke itself' }],
       };
+    }
+    if (args.servingGeneration) {
+      const current = await readServingGeneration();
+      if (current.state !== 'known') {
+        throw new Error(
+          `stale_tool_contract: dispatch generation cannot be verified (${current.reason}); refresh tools:find on this operator`,
+        );
+      }
+      if (current.revision !== args.servingGeneration) {
+        throw new Error(
+          `stale_tool_contract: schema was discovered from ${args.servingGeneration}, but this operator serves ${current.revision}; refresh tools:find on this operator`,
+        );
+      }
     }
     if (!ctx.dispatchTool) {
       return {

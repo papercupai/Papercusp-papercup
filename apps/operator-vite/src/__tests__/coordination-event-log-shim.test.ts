@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_COORD_WORKSPACE,
   ensureCoordEventLogTable,
+  parseBody,
   PgCoordLog,
 } from '../shims/coordination-event-log-browser';
 
@@ -36,6 +37,16 @@ describe('PgCoordLog browser stub', () => {
 
   it('still exports the workspace constant the client actually uses', () => {
     expect(DEFAULT_COORD_WORKSPACE).toBe('default');
+  });
+
+  it('parses a stored body and backstops identity from the row columns', () => {
+    const rowTs = new Date('2026-10-07T19:00:00.000Z');
+    expect(
+      parseBody('{"ts":"","msg_id":"stale","kind":"message"}', {
+        ts: rowTs,
+        msg_id: 'row-42',
+      }),
+    ).toEqual({ ts: rowTs.toISOString(), msg_id: 'row-42', kind: 'message' });
   });
 
   it('links the schema-bootstrap binding but fails loudly if the browser calls it', async () => {

@@ -402,20 +402,31 @@ describe('goal placement receipts through the real orientation ACK path', () => 
     expect(goalObligations()).toEqual({ contributionId: 'goal-obligations', omission: { reason: 'ineligible' } });
   });
 
-  it('a wrong token does not prove the first exposure; only a subsequently emitted retry can be recorded', async () => {
+  it('a wrong token attributes the discarded exposure and redelivers from the proven floor', async () => {
     const f = fixture();
     const first = await f.turn(null); f.finish();
     const retry = await f.turn('not-the-token');
     await drainDetached();
     expect(retry.block).toContain(formatAgentObligationLine(f.row, 'action'));
     expect(retry.deliveryToken).not.toBe(first.deliveryToken);
-    expect(f.receiptDeps.append).not.toHaveBeenCalled();
+    expect(f.receiptDeps.append).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ detail: {
+      goalPlacementDeliveryOutcome: expect.objectContaining({
+        stage: 'confirm', recorded: false, reason: 'confirmation-token-mismatch',
+        token: first.deliveryToken, planSlugs: ['plan'],
+      }),
+    } }));
   });
 
   it.each(['progress', 'interrupted'] as const)('does not record a %s native response despite valid delivery proof', async (disposition) => {
     const f = fixture(); const first = await f.turn(null); f.finish(disposition);
     await f.turn(first.deliveryToken); await drainDetached();
-    expect(f.receiptDeps.append).not.toHaveBeenCalled();
+    // WI-10005636: no receipt, but the drop is attributed instead of discarded.
+    expect(f.receiptDeps.append).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ detail: {
+      goalPlacementDeliveryOutcome: expect.objectContaining({
+        stage: 'confirm', recorded: false, reason: 'no-completed-native-decision',
+        token: first.deliveryToken, planSlugs: ['plan'],
+      }),
+    } }));
   });
 
   it('legacy arrival ACK never becomes a goal exposure receipt', async () => {
@@ -447,7 +458,17 @@ describe('goal placement receipts through the real orientation ACK path', () => 
       unavailable: true, reason: 'timeout', token: first.deliveryToken,
     });
     expect(f.receiptDeps.lookup).not.toHaveBeenCalled();
-    expect(f.receiptDeps.append).not.toHaveBeenCalled();
+    // WI-10005636: both drop sites attribute themselves; neither is a receipt.
+    const details = vi.mocked(f.receiptDeps.append).mock.calls.map(([record]) => record.detail);
+    expect(details).toEqual([
+      { goalPlacementDeliveryOutcome: expect.objectContaining({
+        stage: 'late-upgrade', reason: 'late-prepare-timeout', unavailable: true, candidateReason: 'timeout',
+        token: first.deliveryToken,
+      }) },
+      { goalPlacementDeliveryOutcome: expect.objectContaining({
+        stage: 'confirm', reason: 'no-exact-proof-candidate', unavailable: true, token: first.deliveryToken,
+      }) },
+    ]);
   });
 
   it('upgrades a baseline that outlives the hook budget by token, so the next ACK still records the receipt', async () => {

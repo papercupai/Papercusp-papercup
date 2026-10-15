@@ -3,7 +3,7 @@
  * work-item + declared intent, from the roster data it was already handed.
  */
 import type { JSX } from 'react';
-import { activityLiveness, activityLivenessTitle, displayName, hasThinking, isTranscriptFresh, shortOwner } from './logic';
+import { activityLiveness, activityLivenessTitle, displayName, hasThinking, isAgentThinking, shortOwner } from './logic';
 import { agentGlyph } from './glyphs';
 import type { RosterAgent } from './types';
 import type { RosterChrome, RosterLabels } from './seams';
@@ -37,7 +37,7 @@ export function AgentDetailStrip({
         {agentGlyph(agent)} <strong>{name}</strong>
         {agent.fleetSlug ? <span className="pc-agents-roster__detail-fleet"> · {agent.fleetSlug}</span> : null}
         <span className="pc-agents-roster__detail-live" title={activityLivenessTitle(agent, nowMs)}> · {activityLiveness(agent, nowMs)}{agent.loopArmed ? ' (loop armed)' : ''}</span>
-        {isTranscriptFresh(agent) ? (
+        {isAgentThinking(agent) ? (
           <span className="pc-agents-roster__detail-thinking" style={{ marginLeft: 6, display: 'inline-flex', alignItems: 'center', gap: 4, color: '#6aa84f' }}>
             <ThinkingDot size={6} /> thinking
           </span>

@@ -117,6 +117,7 @@ import {
   discoverSiblingTypecheckGates,
   coveragePrefixesFromGateModule,
   gateCoveringFile,
+  TOOLCHAIN_FAILURE_EXIT_CODE,
 } from './lib/tsc-baseline-gate.mjs';
 
 export {
@@ -231,8 +232,9 @@ async function main() {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   main().catch((err) => {
     // Never let a crash read as a pass: this gate's whole job is refusing to report clean when
-    // it did not actually judge anything.
+    // it did not actually judge anything — and never as a regression either: exit 1 prints
+    // status=regressed, so a crash exits EX_SOFTWARE and reads error(70) (EI-25816656568127078).
     console.error(err);
-    process.exit(1);
+    process.exit(TOOLCHAIN_FAILURE_EXIT_CODE);
   });
 }

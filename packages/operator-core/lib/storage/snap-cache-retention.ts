@@ -10,7 +10,6 @@
  */
 import { spawn } from 'node:child_process';
 
-// @ts-expect-error -- buildless plain-JS mutex module intentionally has no declaration file.
 import { PACKAGE_CACHE_MUTEX_NAME, withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 
 export { PACKAGE_CACHE_MUTEX_NAME };
@@ -179,29 +178,26 @@ export function runSnapCacheCommand(
 }
 
 function parseAmount(raw: string): number | undefined {
-  const match = raw.trim().match(/^([0-9]+(?:\.[0-9]+)?)\s*([kmgtpe]?i?b)?$/i);
+  const match = raw.trim().match(/^([0-9]+(?:\.[0-9]+)?)\s*([kmgtpe](?:ib|b)?|b)?$/i);
   if (!match) return undefined;
   const value = Number(match[1]);
   if (!Number.isFinite(value)) return undefined;
   const unit = (match[2] ?? 'B').toLowerCase();
   const powers: Record<string, number> = {
     b: 0,
-    kb: 1,
-    kib: 1,
-    mb: 2,
-    mib: 2,
-    gb: 3,
-    gib: 3,
-    tb: 4,
-    tib: 4,
-    pb: 5,
-    pib: 5,
-    eb: 6,
-    eib: 6,
+    k: 1,
+    m: 2,
+    g: 3,
+    t: 4,
+    p: 5,
+    e: 6,
   };
-  const power = powers[unit];
+  const power = powers[unit[0]!];
   if (power === undefined) return undefined;
-  return Math.round(value * 1024 ** power);
+  // Snapd emits decimal quantities such as 11.3G; only explicit iB units
+  // denote binary powers. Treating GB as GiB also overstates cache pressure.
+  const bytes = Math.round(value * (unit.includes('i') ? 1024 : 1000) ** power);
+  return Number.isFinite(bytes) ? bytes : undefined;
 }
 
 function lineValue(output: string, label: string): string | undefined {

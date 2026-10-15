@@ -5,17 +5,21 @@
  */
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import {
+  createDispatchPhaseInstrumentation,
   composeDispatch,
+  coordDispatchAbortCompletionReceipt,
   finalizePilotDispatchReceipt,
+  runInstrumentedDispatch,
   type DispatchArgs,
   type DispatchResult,
 } from './dispatch';
 import dispatch from './dispatch';
 import type { HydratableRef, HydratedRef } from '../ref-hydrate';
 import type { RefResolvers } from '../ref-hydrate-resolve';
+import type { StableAgentTargetState } from '../actionable-work-item-dispatch';
 import { AdmissionRecoveryRefused } from '../../../work-item-admission-recovery';
 import { lookupByMcpName, papercuspGateBypass } from '@papercusp/agent-mcp';
-import { runDispatchStack } from '@papercusp/tooldef';
+import { runDispatchStack, type ToolResult } from '@papercusp/tooldef';
 
 const recoveryIO = vi.hoisted(() => ({ request: vi.fn(), target: vi.fn() }));
 vi.mock('../../../work-item-admission-recovery', async (original) => ({
@@ -90,6 +94,37 @@ describe('public original-item recovery door (handler wiring, mocked recovery I/
     expect(result.request).toEqual({ state: 'queued', pickupConfirmed: false });
   });
 
+  it('passes an exact canonical owner ID directly to recovery authorization', async () => {
+    const ownerId = 'su-12345678-abcd-4000-8000-1234567890ab';
+    const result = await call({ ...base, to: ownerId });
+
+    expect(recoveryIO.target).not.toHaveBeenCalled();
+    expect(recoveryIO.request).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-recovery',
+      harnessSlug: 'papercusp',
+      workItemId: 'WI-original',
+      caller: 'su-requester',
+      target: ownerId,
+    }));
+    expect(result.request).toEqual({ state: 'queued', pickupConfirmed: false });
+  });
+
+  it('WI-6554700010010992: names an adopter-gone stable name instead of registering recovery for a dead session', async () => {
+    recoveryIO.target.mockResolvedValue({
+      requested: 'reviewer', ownerId: 'su-dead-1', present: false, sessionState: null, wakeable: false,
+      adoptedBy: ['su-dead-1'],
+    });
+    const result = await call();
+
+    expect(recoveryIO.request).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      ok: false, error: 'target_adopter_gone', target: 'reviewer', adoptedBy: ['su-dead-1'],
+      workItemId: 'WI-original', pickupConfirmed: false,
+    });
+    expect(result.reason).toContain('plan_items:adopt_name { name: "reviewer" }');
+    expect(result.nextAction).toMatch(/resumeAdmission:true/);
+  });
+
   it('returns an original-item remedy, not replacement or pickup, on authority refusal', async () => {
     recoveryIO.request.mockRejectedValue(new AdmissionRecoveryRefused('member override denied original item'));
     const result = await call();
@@ -144,6 +179,114 @@ const sendEnv = (to: string, wake: Record<string, unknown>, msg_id = 'm-1') => (
   ok: true,
   results: [{ ok: true, to: [to], msg_id, ts: 't', wake }],
   counts: { ok: 1, failed: 0 },
+});
+
+describe('coord:dispatch abort-completion receipt', () => {
+  const attempt = { callId: 'dispatch-call-1', toolName: 'coord:dispatch' };
+  const result = (payload: unknown) => ({
+    content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+  }) as ToolResult;
+  const base = {
+    ok: true,
+    to: 'su-target',
+    sessionState: 'parked',
+    wakeable: true,
+    assigned: null,
+    workItems: null,
+    delivered: 'message-1',
+    woken: 0,
+    queued: 1,
+    pickupConfirmed: false,
+  };
+
+  it('records a persisted message id from the completed dispatch result', () => {
+    expect(coordDispatchAbortCompletionReceipt({ to: 'su-target' }, result(base), attempt)).toEqual({
+      status: 'recorded',
+      effectRef: 'coord-dispatch:dispatch-call-1:message:message-1',
+    });
+  });
+
+  it('records only plan assignments whose row and canonical assignment identity agree', () => {
+    expect(coordDispatchAbortCompletionReceipt({ to: 'builder-1' }, result({
+      ...base,
+      delivered: null,
+      assigned: {
+        planSlug: 'plan-a', items: ['P-001'], requested: 1, assigned: 1, failed: 0, partial: false,
+        results: [{
+          ok: true, plan: 'plan-a', item: 'P-001',
+          assignment: { planSlug: 'plan-a', itemId: 'P-001', assigneeName: 'builder-1' },
+        }],
+      },
+    }), attempt)).toEqual({
+      status: 'recorded',
+      effectRef: 'coord-dispatch:dispatch-call-1:plan-item:plan-a#P-001',
+    });
+  });
+
+  it('records successful atomic work-item claims and the delivered note together', () => {
+    expect(coordDispatchAbortCompletionReceipt({ to: 'su-target' }, result({
+      ...base,
+      workItems: {
+        ok: true, targetAgent: 'su-target', requested: ['EI-1'], actionable: ['EI-1'],
+        assigned: ['EI-1'], retained: [], skipped: [], failed: [], executionWorkItemIds: ['EI-1'],
+      },
+    }), attempt)).toEqual({
+      status: 'recorded',
+      effectRef: 'coord-dispatch:dispatch-call-1:message:message-1,work-item:EI-1',
+    });
+  });
+
+  it('keeps a proven message visible but marks an unproven assignment recovery incomplete', () => {
+    expect(coordDispatchAbortCompletionReceipt({ to: 'builder-1' }, result({
+      ...base,
+      assigned: {
+        planSlug: 'plan-a', items: ['P-001'], requested: 1, assigned: 1, failed: 0, partial: false,
+        results: [{ ok: true, plan: 'plan-a', item: 'P-001' }],
+      },
+    }), attempt)).toMatchObject({
+      status: 'recovery-incomplete',
+      effectRef: 'coord-dispatch:dispatch-call-1:message:message-1',
+      failures: ['unresolved-plan-assignment-outcomes'],
+    });
+  });
+
+  it('fails closed when a failed claim may have committed before its error', () => {
+    expect(coordDispatchAbortCompletionReceipt({ to: 'su-target' }, result({
+      ...base,
+      delivered: null,
+      workItems: {
+        ok: false, targetAgent: 'su-target', requested: ['EI-1'], actionable: ['EI-1'],
+        assigned: [], retained: [], skipped: [],
+        failed: [{ workItemId: 'EI-1', code: 'claim_failed', reason: 'connection closed' }],
+        executionWorkItemIds: [],
+      },
+    }), attempt)).toMatchObject({
+      status: 'recovery-incomplete',
+      failures: ['unresolved-work-item-assignment-outcomes'],
+    });
+  });
+
+  it('proves the no-op frontier did not deliver or assign anything', () => {
+    expect(coordDispatchAbortCompletionReceipt({ to: 'su-target' }, result({
+      ...base,
+      assigned: null,
+      workItems: {
+        ok: true, targetAgent: 'su-target', requested: ['EI-1'], actionable: [],
+        assigned: [], retained: [], skipped: [{ workItemId: 'EI-1', code: 'blocked' }],
+        failed: [], executionWorkItemIds: [],
+      },
+      delivered: null,
+    }), attempt)).toEqual({
+      status: 'not-recorded',
+      reason: 'coord:dispatch found no executable work-items and performed no delivery',
+    });
+  });
+
+  it('rejects a receipt for the wrong tool attempt', () => {
+    expect(coordDispatchAbortCompletionReceipt({ to: 'su-target' }, result(base), {
+      ...attempt, toolName: 'coord:send',
+    })).toMatchObject({ status: 'recovery-incomplete', failures: ['missing-attempt-identity'] });
+  });
 });
 
 describe('directed-pair pilot dispatch receipt', () => {
@@ -242,12 +385,119 @@ function expectQueuedWake(result: { queued?: number; woken: number; pickupConfir
   expect(result.pickupConfirmed).toBe(false);
 }
 
+describe('coord:dispatch phase instrumentation', () => {
+  it('keeps cumulative phase evidence and the nested coord:send timings in metadata', async () => {
+    const metadata = vi.fn();
+    const trace = createDispatchPhaseInstrumentation(metadata);
+    const sent = sendEnv('su-7a2aFULL', { mode: 'required', targets: ['su-7a2aFULL'], woken: 1 });
+    const { call } = mockCall({
+      'coord:presence': presence([{ ownerId: 'su-7a2aFULL', sessionState: 'parked', wakeable: true }]),
+      'plan_items:status': { items: [] },
+      'plan_items:assign': { ok: true, results: [{ ok: true }, { ok: true }] },
+      'coord:send': {
+        ...sent,
+        results: sent.results.map((result) => ({
+          ...result,
+          phaseTimingsMs: { prePersistMs: 3, persistMs: 5, postPersistMs: 8 },
+        })),
+      },
+    });
+
+    const result = await runInstrumentedDispatch(
+      baseArgs,
+      call,
+      {},
+      'su-dispatcher',
+      { workspaceId: 'ws-dispatch', harnessSlug: 'papercusp' },
+      trace,
+    );
+
+    expect(result.delivered).toBe('m-1');
+    const dispatchTrace = metadata.mock.calls.at(-1)?.[0]?.coordDispatch;
+    expect(dispatchTrace).toMatchObject({
+      schemaVersion: 'coord-dispatch-phase-v1',
+      status: 'completed',
+      elapsedMs: expect.any(Number),
+      phases: [
+        { phase: 'target_resolution', status: 'completed', elapsedMs: expect.any(Number) },
+        { phase: 'assignment_preflight', status: 'completed', elapsedMs: expect.any(Number) },
+        { phase: 'assignment', status: 'completed', elapsedMs: expect.any(Number) },
+        { phase: 'hydration', status: 'completed', elapsedMs: expect.any(Number) },
+        { phase: 'required_delivery', status: 'completed', elapsedMs: expect.any(Number) },
+        { phase: 'finalization', status: 'completed', elapsedMs: expect.any(Number) },
+      ],
+      coordSendPhaseTimingsMs: { prePersistMs: 3, persistMs: 5, postPersistMs: 8 },
+    });
+    expect(JSON.stringify(dispatchTrace)).not.toContain(baseArgs.note);
+    expect(JSON.stringify(dispatchTrace)).not.toContain('su-7a2a');
+  });
+
+  it('records an abort while required delivery is still pending', async () => {
+    const metadata = vi.fn();
+    const controller = new AbortController();
+    const trace = createDispatchPhaseInstrumentation(metadata, controller.signal);
+    let beginDelivery!: () => void;
+    let settleDelivery!: (value: unknown) => void;
+    const deliveryStarted = new Promise<void>((resolve) => { beginDelivery = resolve; });
+    const pendingDelivery = new Promise<unknown>((resolve) => { settleDelivery = resolve; });
+    const { call } = mockCall({
+      'coord:presence': presence([{ ownerId: 'su-abort-target', sessionState: 'parked', wakeable: true }]),
+      'coord:send': () => {
+        beginDelivery();
+        return pendingDelivery;
+      },
+    });
+    const running = runInstrumentedDispatch(
+      { to: 'su-abort-target', note: 'private abort regression' },
+      call,
+      {},
+      'su-dispatcher',
+      { workspaceId: 'ws-dispatch', harnessSlug: 'papercusp' },
+      trace,
+    );
+
+    await deliveryStarted;
+    controller.abort();
+
+    const abortedTrace = metadata.mock.calls.at(-1)?.[0]?.coordDispatch;
+    expect(abortedTrace).toMatchObject({
+      status: 'aborted',
+      currentPhase: 'required_delivery',
+      phases: expect.arrayContaining([
+        expect.objectContaining({ phase: 'target_resolution', status: 'completed' }),
+        expect.objectContaining({ phase: 'required_delivery', status: 'aborted', elapsedMs: expect.any(Number) }),
+      ]),
+    });
+
+    settleDelivery(sendEnv('su-abort-target', { mode: 'required', targets: ['su-abort-target'], woken: 1 }));
+    await expect(running).resolves.toMatchObject({ delivered: 'm-1' });
+    expect(metadata.mock.calls.at(-1)?.[0]?.coordDispatch.status).toBe('aborted');
+  });
+});
+
 describe('composeDispatch', () => {
   it('caps the required note and optional body at coord:send\'s inbox limit', () => {
     const base = { to: 'su-target', note: 'take the assigned lane' };
     expect(dispatch.args.safeParse({ ...base, body: 'x'.repeat(600) }).success).toBe(true);
     expect(dispatch.args.safeParse({ ...base, body: 'x'.repeat(601) }).success).toBe(false);
     expect(dispatch.args.safeParse({ ...base, note: 'x'.repeat(601) }).success).toBe(false);
+  });
+
+  it('skips the optional presence read for an exact owner id so delivery cannot wait on alias resolution', async () => {
+    const target = 'su-c7a0035f-da52-48f1-88f1-7f939f04c1b7';
+    const { call, calls } = mockCall({
+      'coord:presence': () => { throw new Error('exact ids must not need a roster lookup'); },
+      'plan_items:status': { items: [] },
+      'plan_items:assign': { ok: true, results: [{ ok: true }, { ok: true }] },
+      'coord:send': sendEnv(target, { mode: 'required', targets: [target], woken: 1 }),
+    });
+
+    const result = await composeDispatch({ ...baseArgs, to: target }, call);
+
+    expect(calls.map((entry) => entry.name)).not.toContain('coord:presence');
+    expect(calls.map((entry) => entry.name)).toContain('coord:send');
+    expect(result).toMatchObject({ to: target, sessionState: null, wakeable: null });
+    expectQueuedWake(result);
   });
 
   it('full dispatch to a PARKED target: assigns lane + delivers note + queues wake without pickup', async () => {
@@ -322,6 +572,83 @@ describe('composeDispatch', () => {
     expect(res.failure).toMatchObject({ code: 'target_dead', queuePreserved: true });
     expect(res.warning).toMatch(/RELAUNCH|relaunch/);
     expect(res.warning).toMatch(/no LIVE session/i);
+  });
+
+  describe('WI-6554700010010992: a stable name whose every adopter ended', () => {
+    const gone: StableAgentTargetState = {
+      requested: 'reviewer',
+      ownerId: 'su-dead-1',
+      present: false,
+      sessionState: null,
+      wakeable: false,
+      adoptedBy: ['su-dead-1', 'su-dead-2'],
+    };
+    const failedSend = (to = 'su-dead-1') =>
+      mockCall({
+        'coord:presence': presence([]),
+        'plan_items:assign': { ok: true, results: [{ ok: true }] },
+        'coord:send': sendEnv(to, { mode: 'required', targets: [to], woken: 0, recipient_absent: true }),
+      });
+
+    it('reports target_adopter_gone naming the NAME and its adopt_name repair', async () => {
+      const { call } = failedSend();
+      const resolveStableTarget = vi.fn(async () => gone);
+      const res = await composeDispatch({ ...baseArgs, to: 'reviewer', items: ['P-001'] }, call, { resolveStableTarget });
+
+      expect(resolveStableTarget).toHaveBeenCalledWith('reviewer');
+      expect(res.ok).toBe(false);
+      expect(res.failure).toMatchObject({ code: 'target_adopter_gone', target: 'reviewer', queuePreserved: true });
+      expect(res.failure?.message).toContain('plan_items:adopt_name { name: "reviewer" }');
+      expect(res.failure?.message).toContain('su-dead-1, su-dead-2');
+      expect(res.warning).toMatch(/no live adopter/);
+      expect(res.warning).toContain('plan_items:adopt_name');
+    });
+
+    it('keeps target_absent when the name is present or was never adopted', async () => {
+      const states: StableAgentTargetState[] = [
+        { ...gone, present: true, sessionState: 'parked', wakeable: true },
+        { requested: 'reviewer', ownerId: 'reviewer', present: false, sessionState: null, wakeable: false },
+      ];
+      for (const state of states) {
+        const { call } = failedSend();
+        const res = await composeDispatch({ ...baseArgs, to: 'reviewer', items: ['P-001'] }, call, {
+          resolveStableTarget: async () => state,
+        });
+        expect(res.failure?.code).toBe('target_absent');
+      }
+    });
+
+    it('never consults the resolver for a canonical owner id or a delivered wake', async () => {
+      const resolveStableTarget = vi.fn(async () => gone);
+      const ownerId = 'su-12345678-abcd-4000-8000-1234567890ab';
+      const canonical = await composeDispatch(
+        { ...baseArgs, to: ownerId, items: ['P-001'] },
+        failedSend(ownerId).call,
+        { resolveStableTarget },
+      );
+      expect(canonical.failure?.code).toBe('target_absent');
+
+      const { call } = mockCall({
+        'coord:presence': presence([]),
+        'plan_items:assign': { ok: true, results: [{ ok: true }] },
+        'coord:send': sendEnv('su-live', { mode: 'required', targets: ['su-live'], queued: 1 }),
+      });
+      const delivered = await composeDispatch({ ...baseArgs, to: 'reviewer', items: ['P-001'] }, call, {
+        resolveStableTarget,
+      });
+      expect(delivered.failure).toBeUndefined();
+      expect(resolveStableTarget).not.toHaveBeenCalled();
+    });
+
+    it('a resolver error degrades to the raw classification', async () => {
+      const { call } = failedSend();
+      const res = await composeDispatch({ ...baseArgs, to: 'reviewer', items: ['P-001'] }, call, {
+        resolveStableTarget: async () => {
+          throw new Error('roster unavailable');
+        },
+      });
+      expect(res.failure?.code).toBe('target_absent');
+    });
   });
 
   it('pure directed wake (no planSlug/items) skips plan_items:assign entirely', async () => {

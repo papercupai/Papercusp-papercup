@@ -36,6 +36,7 @@ function processAttestation(input: {
       cacheAgeMs: cacheGeneration === null ? null : 0,
       ttlMs: 5_000,
       ttlRemainingMs,
+      loadError: null,
     },
     process: {
       role: 'operator',

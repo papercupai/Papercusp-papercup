@@ -536,9 +536,9 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
         bootExtra: {
           announceIdentityOverride: idB.override,
           loadRevokedOverride: async () => new Set(bPublishedRevoked),
-          applyOverride: (op) => {
-            bHomeApply ??= buildBHomeApply(bHandle!.ownLog.keyHex);
-            bMemberApply ??= buildBMemberApply(bHandle!.ownLog.keyHex);
+          applyOverride: (op, ctx) => {
+            bHomeApply ??= buildBHomeApply(ctx.ownLogKeyHex);
+            bMemberApply ??= buildBMemberApply(ctx.ownLogKeyHex);
             return op.table === 'plans-by-slug' ? bMemberApply(op) : bHomeApply(op);
           },
         },

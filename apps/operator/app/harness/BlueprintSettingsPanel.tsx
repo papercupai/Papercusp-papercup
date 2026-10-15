@@ -16,6 +16,7 @@ import { Checkbox } from './Checkbox';
 import { Select } from './Select';
 import SavedPromptsSection from './SavedPromptsSection';
 import HarnessPluginsSection from './HarnessPluginsSection';
+import IntegrationModeSection from './IntegrationModeSection';
 
 /**
  * BlueprintSettingsPanel — the SCHEMA-DRIVEN per-harness settings panel
@@ -36,15 +37,26 @@ import HarnessPluginsSection from './HarnessPluginsSection';
  *     applies them with `applyParamPatch`, and PUTs the merged config to the SAME
  *     `/spec` endpoint the legacy panel used.
  *
- * Flag-gated behind `BLUEPRINT_AWARE_SETTINGS` (default off) at the AdvHarnessPanelPage
- * wire-in — the legacy panel stays the default until this is Tauri-verified.
+ * Selected by `BLUEPRINT_AWARE_SETTINGS` (default on) at AdvHarnessPanelPage;
+ * turning it off selects the legacy panel.
  */
-export default function BlueprintSettingsPanel({ slug, phase }: { slug: string; phase: string }) {
+export default function BlueprintSettingsPanel(props: { slug: string; phase: string }) {
   const workspaceId = useWorkspaceId(); // EI-1763: tenant-scope sync reads
+  return <BlueprintSettingsPanelForScope key={JSON.stringify([workspaceId, props.slug, props.phase])}
+    {...props} workspaceId={workspaceId} />;
+}
+
+function BlueprintSettingsPanelForScope({ slug, phase, workspaceId }: {
+  slug: string; phase: string; workspaceId: string;
+}) {
   const [params, setParams] = useState<BlueprintParams>({});
   const [blueprintId, setBlueprintId] = useState<string | null>(null);
   const [paramsLoaded, setParamsLoaded] = useState(false);
+  const [paramsError, setParamsError] = useState<string | null>(null);
+  const [schemaRetry, setSchemaRetry] = useState(0);
   const [originalConfig, setOriginalConfig] = useState<Record<string, unknown>>({});
+  const [configLoaded, setConfigLoaded] = useState(false);
+  const [configParseError, setConfigParseError] = useState<string | null>(null);
   /** In-flight edits keyed by param key (config.json dot-path). */
   const [edits, setEdits] = useState<Record<string, unknown>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -53,41 +65,57 @@ export default function BlueprintSettingsPanel({ slug, phase }: { slug: string; 
   // The declared schema for this harness's blueprint.
   useEffect(() => {
     let cancelled = false;
+    setParamsLoaded(false);
+    setParamsError(null);
     fetch(`/api/harness/${slug}/blueprint-params?phase=${phase}`)
-      .then((r) => r.json())
-      .then((d: { blueprintId?: string | null; params?: BlueprintParams }) => {
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((d: { blueprintId?: string | null; params?: BlueprintParams; error?: string }) => {
         if (cancelled) return;
+        if (d.error) throw new Error(d.error);
         setParams(d.params ?? {});
         setBlueprintId(d.blueprintId ?? null);
         setParamsLoaded(true);
       })
-      .catch(() => {
-        if (!cancelled) setParamsLoaded(true);
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setParamsError(error instanceof Error ? error.message : String(error));
+        setParamsLoaded(true);
       });
     return () => {
       cancelled = true;
     };
-  }, [slug, phase]);
+  }, [slug, phase, schemaRetry]);
 
   // Current per-harness config.json via the existing sync mirror (cross-tab live).
-  const { data: cfgRows } = useSyncQuery<{ harnessSlug: string; config?: string | null }>({
+  const { data: cfgRows, loading: configLoading, error: configReadError, invalidate: invalidateConfig } = useSyncQuery<{
+    harnessSlug: string; config?: string | null;
+  }>({
     queryName: 'harnessProjectFiles.byHarness',
     args: { harnessSlug: slug, workspaceId },
     enabled: !!slug,
   });
   useEffect(() => {
-    if (!Array.isArray(cfgRows) || cfgRows.length === 0) return;
+    setConfigLoaded(false);
+    setConfigParseError(null);
+    if (configLoading || configReadError || !Array.isArray(cfgRows)) return;
     const raw = cfgRows[0]?.config;
     let cfg: Record<string, unknown> = {};
     if (typeof raw === 'string' && raw.trim()) {
       try {
-        cfg = JSON.parse(raw) as Record<string, unknown>;
-      } catch {
-        cfg = {};
+        const parsed: unknown = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Settings config must be an object');
+        cfg = parsed as Record<string, unknown>;
+      } catch (error) {
+        setConfigParseError(error instanceof Error ? error.message : String(error));
+        return;
       }
     }
     setOriginalConfig(cfg);
-  }, [cfgRows]);
+    setConfigLoaded(true);
+  }, [cfgRows, configLoading, configReadError]);
 
   // Param views: the declared params over the saved config, with in-flight edits overlaid.
   const views = useMemo<ParamView[]>(() => {
@@ -110,6 +138,7 @@ export default function BlueprintSettingsPanel({ slug, phase }: { slug: string; 
   }, []);
 
   const save = useCallback(async () => {
+    if (!paramsLoaded || paramsError || !configLoaded || configLoading || configReadError || configParseError) return;
     const res = validateParamPatch(params, edits);
     if (!res.ok) {
       const errMap: Record<string, string> = {};
@@ -137,9 +166,16 @@ export default function BlueprintSettingsPanel({ slug, phase }: { slug: string; 
     } finally {
       setSaving(false);
     }
-  }, [params, edits, originalConfig, slug, phase]);
+  }, [params, edits, originalConfig, slug, phase, paramsLoaded, paramsError, configLoaded, configLoading, configReadError, configParseError]);
 
-  if (!paramsLoaded) {
+  const loadError = paramsError || configReadError?.message || configParseError;
+  if (loadError) {
+    return <div role="alert" style={{ padding: 24 }}>
+      <p>Unable to load settings: {loadError}</p>
+      <button type="button" onClick={() => { setSchemaRetry(n => n + 1); invalidateConfig(); }}>Retry settings</button>
+    </div>;
+  }
+  if (!paramsLoaded || !configLoaded || configLoading) {
     return <div style={{ padding: 24, color: 'var(--fg-mute)' }}>Loading…</div>;
   }
 
@@ -197,6 +233,13 @@ export default function BlueprintSettingsPanel({ slug, phase }: { slug: string; 
           )}
         </div>
       )}
+
+      {/* WI-10006501 (pot-review-integration-mode-2026-10-05 P-016/P-017): the pot's
+          "Where should the agents' work go?" switch. This is the panel the Settings tab
+          mounts by default (BLUEPRINT_AWARE_SETTINGS on), so the switch must live here as
+          well as in the legacy HarnessSettingsPanel. Saves on its own; hidden for
+          projects that are not pots. */}
+      <IntegrationModeSection slug={slug} />
 
       <SavedPromptsSection scope={{ kind: 'harness', slug }} />
       <HarnessPluginsSection slug={slug} />

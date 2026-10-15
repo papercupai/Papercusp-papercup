@@ -15,13 +15,14 @@
  */
 
 import * as fs from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import * as path from 'node:path';
+import { resolveOperatorAppRootFromModuleDir } from '../operator-app-root';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import * as TOML from '@iarna/toml';
 import { fileURLToPath } from 'node:url';
-import { createTextCollector } from '../child-output';
+import { collectChildOutput, createTextCollector } from '../child-output';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { filterInstallSources, describeRefusals } from './install-source-guard';
 // Single definition, shared with the pot-git ext:: transport (EI-20078551747038927).
 // Re-exported below so existing importers of this module keep resolving it here.
@@ -54,7 +55,7 @@ import {
   RESULT_DOOR_MARKER,
   SHARED_BASE_NOTES_MARKER,
 } from './splice-tooling-overlay';
-import { renderResultDoorSection } from '../result-door-prompt';
+import { renderClientResultDoorSection, renderResultDoorSection, type OutputGuidancePolicy } from '../result-door-prompt';
 import { renderModesPolicy } from '../operating-modes-policy';
 import { renderDeployPipelineNote } from '../deploy-pipeline-policy';
 import { renderWaitLoopNote } from '../wait-loop-policy';
@@ -177,6 +178,10 @@ export interface InstallResult extends InstallPaths {
   /** True when [tui].status_line was merged into an existing ~/.codex/config.toml this call
    *  (false when codex isn't set up here or the user already configured their own status line). */
   codexStatusLineMerged: boolean;
+  /** The pinned RTK binary at ~/.local/bin/rtk (WI-6554700010009448): already current, a
+   *  background install started, or why nothing was attempted. Never a failure: the install
+   *  itself runs after this call returns, and the rtk-liveness alarm reports a lasting miss. */
+  rtkProvision: RtkProvisionResult;
 }
 
 export interface InstallOpts {
@@ -198,6 +203,8 @@ export interface InstallOpts {
    * resolution. Tests set this to a fake tree.
    */
   operatorAppRoot?: string;
+  /** RTK binary provisioning (WI-6554700010009448). Defaults to `provisionRtk`; tests inject. */
+  provisionRtk?: (deps: ProvisionRtkDeps) => Promise<ProvisionRtkHandle>;
 }
 
 /**
@@ -710,37 +717,9 @@ async function writeSplicedPlaybook(baseSrc: string, dst: string): Promise<boole
   return true;
 }
 
-/**
- * Resolve the operator app root from the directory containing this module.
- *
- * The source module lives below `packages/operator-core`, while an esbuild
- * bundle collapses the module directory to `sidecar/` and the dist-host build
- * puts it below `apps/operator/`. A fixed number of `..` hops therefore cannot
- * describe all three layouts. Walk upward and accept either an existing
- * `<ancestor>/apps/operator` (source/package sidecar) or an ancestor already
- * named `apps/operator` (dist-host/source app). The artifact check makes the
- * source and packaged choices self-validating instead of cwd-dependent.
- */
-export function resolveOperatorAppRootFromModuleDir(moduleDir: string): string {
-  const originalDir = path.resolve(moduleDir);
-  let dir = originalDir;
-  while (true) {
-    if (path.basename(dir) === 'operator' && path.basename(path.dirname(dir)) === 'apps') {
-      return dir;
-    }
-
-    const packagedAppRoot = path.join(dir, 'apps', 'operator');
-    if (existsSync(packagedAppRoot)) return packagedAppRoot;
-
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-
-  // Preserve the old best-effort fallback for an incomplete/unpacked runtime;
-  // the candidate lists still provide their cwd and legacy-layout fallbacks.
-  return path.resolve(originalDir, '..', '..');
-}
+// Lifted to ../operator-app-root (WI-10007644) so non-desktop modules can resolve
+// apps/operator paths in bundle and source alike; re-exported for existing callers.
+export { resolveOperatorAppRootFromModuleDir };
 
 function resolveOperatorAppRoot(): string {
   // ESM-safe: use fileURLToPath(import.meta.url) for the module path, with
@@ -868,6 +847,10 @@ export const CC_HOOK_FILES = [
   // The incoming-content guard cannot see corruption introduced after dispatch;
   // this hook compares the requested UTF-8 bytes with the resulting file.
   'posttooluse-write-byte-integrity-guard.mjs',
+  // WI-10004699: re-seeds promptOverride.su the moment papercup-pot.su.md is edited, so
+  // the fail-closed launch check (verifyPapercuspSuInstanceOverride) never refuses every
+  // fresh papercusp su launch because a human forgot the manual re-seed (WI-10004556).
+  'posttooluse-su-instance-override-reseed.mjs',
   // PostToolUse nudge: an Edit/Write after the last `lint:tsc` run invalidates that
   // run's "clean" verdict, so the hook says so at the edit instead of hours later at
   // the gate (the hook file shipped without this allowlist entry — install parity 3/3).
@@ -948,6 +931,11 @@ export const CC_HOOK_FILES = [
   // installer (dead code whose own header claimed it was "the hard backstop").
   // Moved here and wired below.
   'pretooluse-secrets-guard.mjs',
+  // P-007 / BAR R-11 (plan personal-data-reader-set-labels-2026-10-01): PreToolUse
+  // (matcher "Bash|WebFetch") hard DENY when a session that has read restricted personal
+  // data names a mail/chat/calendar/social provider host, a sidecar, or the sidecars'
+  // secrets in a client-native tool call. capability:bash is gated server-side.
+  'pretooluse-restricted-egress-guard.mjs',
   // EI-18896033546676518: PreToolUse (matcher "Edit|MultiEdit") hard DENY on any file
   // that already contains a raw NUL byte — the Edit tool has a confirmed round-trip
   // corruption bug on such files (silently writes a different byte than requested
@@ -1007,6 +995,14 @@ export const CC_HOOK_FILES = [
   //   matcher that can never fire. It is registered where it can: the managed
   //   Codex home's PreToolUse chain in role-codex-home.ts (matcher ^apply_patch$).
   'pretooluse-apply-patch-duplicate-target-guard.mjs',
+  // WI-6554700010009447 (owner #1759/#1764): PreToolUse (Codex, matcher ^Bash$) RTK
+  // output compression for Codex's native shell, reusing the egress guard's
+  // rtkRewriteSync (so it must land beside pretooluse-restricted-egress-guard.mjs).
+  //   ⚠ COPIED BUT NOT REGISTERED IN mergeClaudeHookSettings, on purpose: Claude's
+  //   native Bash already gets RTK inside the egress guard, and a second Claude hook
+  //   returning updatedInput would race it (last to finish wins). Registered in the
+  //   managed Codex home's PreToolUse chain (role-codex-home.ts writeCodexLockHooks).
+  'pretooluse-codex-rtk-rewrite.mjs',
   // WI-38352: PreToolUse (matcher "Edit|Write|MultiEdit") BLOCKING guard on a write to
   // libs/papercusp/libs/db/sql/<NNN>-*.sql whose NNN was hand-picked rather than allocated
   // via `node scripts/next-migration.mjs` (no row in harness_shared.migration_reservations).
@@ -1063,6 +1059,8 @@ export const CC_HOOK_FILES = [
   // compile error immediately after an .mdx edit. PreToolUse sees only fragments and
   // cannot compile them meaningfully.
   'posttooluse-mdx-nudge.mjs',
+  // P-003: reuse launch-prose lint immediately after prompt/doc-part edits.
+  'posttooluse-launch-prose-budget-nudge.mjs',
   'posttooluse-no-proc-path-fixture-nudge.mjs',
   // EI-19359711978838614: PostToolUse (matcher "Edit|Write|MultiEdit") ADVISORY nudge
   // when a new/edited migration (libs/papercusp/libs/db/sql/*.sql) introduces a column
@@ -1204,6 +1202,16 @@ export const CC_HOOK_FILES = [
   // its allowance — i.e. exactly when the gate would fail. Nearly free on unrelated edits: the
   // detector's own `import.meta.url` substring short-circuit runs before any git work.
   'posttooluse-cli-entry-nudge.mjs',
+  // WI-10007553: PostToolUse (matcher "Edit|Write|MultiEdit") ADVISORY nudge when an edit
+  // makes scripts/check-resource-governor-enforcement.mjs fail: an unreviewed resource start
+  // (spawn/execFile/fork/new Worker outside Governor.admit), a reviewed row whose
+  // matchesSource pin no longer accepts the source, or a row left stale by removing its
+  // finding. That guard is an AFFECTED_GUARD, so each such edit reds the gate for EVERY lane;
+  // measured 2026-10-08 (WI-10007542), four unrelated files broke it within ~12h, each first
+  // seen by the fleet gate rather than the author. Imports the guard's OWN scanInventory and
+  // BYPASS_REGISTRY and scans only the edited file, so it cannot drift from the gate's
+  // verdict; files outside every enforced lane exit before any git or scan work.
+  'posttooluse-resource-governor-nudge.mjs',
   // frozen-candidate-compliance-enforcement-2026-08-30 P-004/P-005: PostToolUse (matcher
   // "Edit|Write|MultiEdit") ADVISORY nudge when the edited path is one the FROZEN gate
   // candidate is failing on. Under freeze-and-converge (D-007) every run RESUMES one frozen
@@ -1231,6 +1239,15 @@ export const CC_HOOK_FILES = [
   // the su's PAPERCUSP_SID). Omit it and the guard fails open: a nested `claude -p`
   // ends the su again. Run via the interpreter, never exec'd directly, so it is 0644.
   'pc_nested_cli.py',
+  // WI-10004945: the CACHED form of the same verdict, for hooks that fire on every tool
+  // call (activity reports, ask-gate-mirror, workitem-verify-nudge) and for the Stop
+  // directive check. Sourced by bash hooks and run via `bash <path>` by the .mjs one,
+  // never exec'd, so 0644. Omit it and those hooks fail open: a nested CLI acts as the su.
+  'pc_nested_cli.sh',
+  // WI-10004953: the node entry to that cached verdict, imported by the .mjs hooks
+  // (stop-owner-directive-check, precompact-managed-carry, schedule-wakeup provenance) and
+  // by the inject dispatcher. Imported, never executed, so 0644.
+  'pc_nested_cli.mjs',
 ] as const;
 
 /** Hook files that are LIBRARIES, not executables — installed 0644, never chmod +x. */
@@ -1238,6 +1255,8 @@ const CC_HOOK_LIB_FILES: ReadonlySet<string> = new Set([
   'pc_tty.py',
   'mcp_response.py',
   'pc_nested_cli.py',
+  'pc_nested_cli.sh',
+  'pc_nested_cli.mjs',
 ]);
 
 /** Match the runtime-vintage unit label used by host-bootstrap in install evidence. */
@@ -1622,8 +1641,22 @@ export const PSU_REEXEC_EXIT_CODE = 87;
  *  fresh code, so the fixed point is reached in one hop. The cap exists for the
  *  case that does NOT converge — a file rewritten under a running loop (git-sync
  *  sweeps this tree continuously) — where an uncapped loop would respawn the
- *  owner's session forever. */
+ *  owner's session forever.
+ *
+ *  WI-10005351: the cap counts re-execs inside ONE BURST (see
+ *  PSU_REEXEC_WINDOW_SEC), not over the session's lifetime. Adoptions ride on
+ *  carry-respawns, so a healthy long-lived session on this tree adopts every
+ *  respawn while host code keeps changing: measured 2026-10-02, 6 of the 7
+ *  owners whose event log reached a 17th adoption got no prompt successor
+ *  kickoff on it. The shim refused and exited, and the session stayed dark
+ *  until an unrelated wake resumed a stale native id. */
 export const PSU_REEXEC_MAX = 16;
+
+/** WI-10005351: a re-exec more than this many seconds after the previous one
+ *  starts a new burst (the counter resets). A genuine non-converging loop
+ *  re-execs within seconds; legitimate adoptions are a respawn apart (minutes).
+ *  `PAPERCUSP_PSU_REEXEC_WINDOW_SEC` overrides it (non-negative integer). */
+export const PSU_REEXEC_WINDOW_SEC = 300;
 
 function launcherNameVariants(launcherPath: string): string[] {
   const names = [path.basename(launcherPath)];
@@ -1737,7 +1770,14 @@ export async function writeShim(
         // promise that someone will re-run it, and exit into nobody.
         'export PAPERCUSP_PSU_REEXEC_PPID=$$\n' +
         'psu_reexecs=0\n' +
+        // WI-10005351: the cap below counts one BURST, not the session lifetime.
+        `psu_reexec_window="\${PAPERCUSP_PSU_REEXEC_WINDOW_SEC:-${PSU_REEXEC_WINDOW_SEC}}"\n` +
+        `case "$psu_reexec_window" in ''|*[!0-9]*) psu_reexec_window=${PSU_REEXEC_WINDOW_SEC} ;; esac\n` +
+        'psu_last_reexec_at=$SECONDS\n' +
         'while :; do\n' +
+        // Capability is advertised on every pass; only passes after exit 87
+        // have a predecessor handoff to recover. Overwrite inherited markers.
+        '  export PAPERCUSP_PSU_REEXEC_COUNT="$psu_reexecs"\n' +
         `  ${shellLiteral(nodeCmd)} "$launcher" "$@"\n` +
         '  psu_code=$?\n' +
         `  [ "$psu_code" -eq ${runtime.reexecExitCode} ] || exit "$psu_code"\n` +
@@ -1764,12 +1804,17 @@ export async function writeShim(
         '    esac\n' +
         '  done\n' +
         '  set -- "${psu_next_args[@]}"\n' +
+        // WI-10005351: a re-exec a full window after the previous one is a new
+        // burst. A real loop re-execs within seconds; adoptions are a respawn
+        // apart, so a long-lived session never accumulates toward the cap.
+        '  if [ $((SECONDS - psu_last_reexec_at)) -ge "$psu_reexec_window" ]; then psu_reexecs=0; fi\n' +
+        '  psu_last_reexec_at=$SECONDS\n' +
         '  psu_reexecs=$((psu_reexecs + 1))\n' +
         // -gt, not -ge: `psu_reexecs` counts re-execs ALREADY PERFORMED, so the
         // Nth one must be allowed to happen before the N+1th is refused.
         `  if [ "$psu_reexecs" -gt ${PSU_REEXEC_MAX} ]; then\n` +
         `    printf '%s\\n' ${shellLiteral(
-          `papercusp ${label}: ${PSU_REEXEC_MAX} host re-execs in one session — refusing to loop again`,
+          `papercusp ${label}: ${PSU_REEXEC_MAX} host re-execs in one burst (each within the re-exec window of the last) — refusing to loop again`,
         )} >&2\n` +
         '    exit "$psu_code"\n' +
         '  fi\n' +
@@ -2882,6 +2927,17 @@ export function mergeClaudeHookSettings(
         hooks: cmd('posttooluse-write-byte-integrity-guard.mjs'),
       },
     );
+  // merge_su_instance_override_reseed_hook — PostToolUse (WI-10004699). The script itself
+  // no-ops for every path except the canonical papercup-pot.su.md source.
+  if (has('posttooluse-su-instance-override-reseed.mjs'))
+    hooks.PostToolUse = replaceOurHookEntries(
+      ev('PostToolUse'),
+      ours('posttooluse-su-instance-override-reseed.mjs'),
+      {
+        matcher: fileWriteMatcher,
+        hooks: cmd('posttooluse-su-instance-override-reseed.mjs'),
+      },
+    );
   // merge_activity_pre_hook — PreToolUse, matcher '*' (EI-8997: a renewal signal
   // at dispatch time too, not just completion — see the script's own header).
   if (has('pretooluse-activity-report.sh'))
@@ -2946,6 +3002,11 @@ export function mergeClaudeHookSettings(
     hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-mdx-nudge.mjs'), {
       matcher: 'Edit|Write|MultiEdit|docs:author|mcp__.*__docs[_:-]author',
       hooks: cmd('posttooluse-mdx-nudge.mjs'),
+    });
+  if (has('posttooluse-launch-prose-budget-nudge.mjs'))
+    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-launch-prose-budget-nudge.mjs'), {
+      matcher: '^(?:Edit|Write|MultiEdit|apply_patch|write_file|edit_file|Bash|exec_command|shell_command|(?:mcp__.*__)?capability[:_-](?:edit|write|multi_?edit|patch|bash)|(?:mcp__.*__)?tools[:_]invoke)$',
+      hooks: cmd('posttooluse-launch-prose-budget-nudge.mjs'),
     });
   // merge_no_proc_path_fixture_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
   // (EI-19968483416347685). Advisory only, like its siblings. Closes the last gap in the
@@ -3038,10 +3099,10 @@ export function mergeClaudeHookSettings(
   // nudge that misses the writes agents actually make is the failure mode the file exists to stop.
   if (has('posttooluse-frozen-candidate-edit-nudge.mjs'))
     hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-frozen-candidate-edit-nudge.mjs'), {
-      // …plus tools:invoke: a trimmed psu surface reaches capability:edit/write ONLY through it, so
-      // without this every su edit is absent from the frozen-repair edit ledger and hunk-exact
-      // admission refuses no-ledgered-hunks. The hook unwraps the envelope; other invokes extract nothing.
-      matcher: `${fileWriteMatcher}|mcp__.*__tools_invoke`,
+      // …plus capability:patch's per-hunk path shape and tools:invoke: a trimmed psu surface reaches
+      // capability:edit/write/patch through the invoke wrapper. Keep this matcher local instead of
+      // widening every file-write guard, whose input contracts do not all accept the patch payload.
+      matcher: [fileWriteMatcher, 'mcp__.*__capability_patch', 'mcp__.*__tools_invoke'].join('|'),
       hooks: cmd('posttooluse-frozen-candidate-edit-nudge.mjs'),
     });
   // merge_registry_census_drift_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
@@ -3071,6 +3132,16 @@ export function mergeClaudeHookSettings(
     hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-cli-entry-nudge.mjs'), {
       matcher: 'Edit|Write|MultiEdit',
       hooks: cmd('posttooluse-cli-entry-nudge.mjs'),
+    });
+  // merge_resource_governor_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
+  // (WI-10007553). Advisory only, and it MUST stay advisory: PostToolUse cannot block, and
+  // check-resource-governor-enforcement.mjs remains the authority. This only moves the
+  // SIGNAL from the fleet gate to the edit that caused it. Fires only for a finding the HEAD
+  // version did not already have, so an unrelated edit to an already-red file is silent.
+  if (has('posttooluse-resource-governor-nudge.mjs'))
+    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-resource-governor-nudge.mjs'), {
+      matcher: 'Edit|Write|MultiEdit',
+      hooks: cmd('posttooluse-resource-governor-nudge.mjs'),
     });
   // merge_tsc_verdict_stale_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'.
   // Advisory only: an Edit/Write landing AFTER the session's last `lint:tsc` run invalidates
@@ -3231,6 +3302,16 @@ export function mergeClaudeHookSettings(
     hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-secrets-guard.mjs'), {
       matcher: fileWriteMatcher,
       hooks: cmd('pretooluse-secrets-guard.mjs'),
+    });
+  // merge_restricted_egress_guard_hook — PreToolUse (P-007 / BAR R-11). The client-native
+  // tools never pass through capability:bash's server-side egress check. WI-10005589 / D-012
+  // widened the matcher: a restricted session's Bash is rewritten to run with no network,
+  // and WebFetch, non-Papercusp MCP tools and edits of agent runtime files are denied.
+  // Must equal the hook's own RESTRICTED_EGRESS_MATCHER (claude-hooks.test.ts pins both).
+  if (has('pretooluse-restricted-egress-guard.mjs'))
+    hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-restricted-egress-guard.mjs'), {
+      matcher: 'Bash|WebFetch|Edit|Write|MultiEdit|NotebookEdit|mcp__(?!papercusp).*',
+      hooks: cmd('pretooluse-restricted-egress-guard.mjs'),
     });
   // merge_nul_byte_edit_guard_hook — PreToolUse, matcher 'Edit|MultiEdit' (EI-18896033546676518).
   // Write is deliberately NOT in the matcher — see the script header for why.
@@ -3650,6 +3731,167 @@ async function installCodexStatusLine(home: string): Promise<{ merged: boolean }
   }
 }
 
+// ── RTK binary (WI-6554700010009448) ───────────────────────────────────────────
+//
+// Provision the pinned RTK binary at ~/.local/bin/rtk on a DESKTOP install: the job
+// install-standalone-mcp.sh step 4i does on the dev box. Every RTK seam (the
+// native-Bash egress guard, capability:bash, the Codex rewrite hook) looks for it
+// there and fails OPEN without it, so a desktop install used to run with no
+// compression at all and only alarm:rtk-liveness:<host> said so.
+//
+// ONE pin source: this runs apps/operator/scripts/install-rtk.sh (shipped into the
+// sidecar by build-desktop-sidecar.sh) and reads RTK_VERSION from it for the fast
+// path. Never copy the version or the sha256s into TypeScript.
+//
+// Never blocks a launch: installPapercuspFiles runs on launch paths (console
+// launcher, plugin spawn, host bootstrap), so a missing or outdated binary starts the
+// script in the BACKGROUND and the call returns at once. The steady state costs one
+// `rtk --version` (2 s cap). One run at a time per process; a failure is logged and
+// the next install retries. Fail-soft throughout: Windows (no pinned asset and no
+// bash), a missing script, offline, or a bad download only report a status.
+//
+// Only the REAL user's home: the seams resolve rtk from $HOME / homedir(), so an
+// install into an overridden `home` (tests, sandboxes) would place a binary nothing
+// reads, and would download from inside a test. Those calls report 'home-override'.
+
+/**
+ * - `current`: the pinned version is already at ~/.local/bin/rtk
+ * - `started`: install-rtk.sh is now running in the background
+ * - `in-flight`: an earlier call's run is still going
+ * - `unsupported-platform`: Windows (install-rtk.sh has no pinned asset there)
+ * - `script-missing`: no install-rtk.sh shipped in this layout
+ * - `home-override`: `home` is not the real user's home, so nothing is installed
+ */
+export type RtkProvisionStatus =
+  | 'current'
+  | 'started'
+  | 'in-flight'
+  | 'unsupported-platform'
+  | 'script-missing'
+  | 'home-override';
+
+export interface RtkProvisionResult {
+  status: RtkProvisionStatus;
+  /** The install-rtk.sh that was (or would be) run; empty when none resolved. */
+  script: string;
+  /** RTK_VERSION read from that script; empty when it was not read. */
+  pinnedVersion: string;
+}
+
+export interface RtkInstallOutcome {
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  stderrTail: string;
+}
+
+export interface ProvisionRtkDeps {
+  home: string;
+  /** install-rtk.sh, already resolved through installPapercuspFiles' source guard. */
+  script: string | null;
+  platform?: NodeJS.Platform;
+  /** The real user's home. Provisioning is skipped for any other `home`. */
+  realHome?: string;
+  /** The version `<binary> --version` reports, or null when it does not run. */
+  probeVersion?: (binary: string) => Promise<string | null>;
+  /** Runs install-rtk.sh to completion. Must resolve, never reject. */
+  runScript?: (script: string, home: string) => Promise<RtkInstallOutcome>;
+}
+
+export interface ProvisionRtkHandle {
+  result: RtkProvisionResult;
+  /** The background run when one is going (`started` / `in-flight`), else null. */
+  done: Promise<RtkInstallOutcome> | null;
+}
+
+/** Hard ceiling for one background install (download + verify + copy). */
+const RTK_PROVISION_TIMEOUT_MS = 5 * 60_000;
+
+const rtkProvisionState = pinModuleState('@papercusp/operator-core.rtk-provision', () => ({
+  inFlight: null as Promise<RtkInstallOutcome> | null,
+}));
+
+/** The pinned RTK_VERSION in install-rtk.sh's text, or '' when absent. */
+export function readPinnedRtkVersion(scriptText: string): string {
+  return /^RTK_VERSION="([^"]+)"/m.exec(scriptText)?.[1] ?? '';
+}
+
+/** install-rtk.sh sits two levels above the cc hook dir in every shipped layout. */
+export function rtkInstallerCandidates(operatorAppRoot: string, explicitRoot: boolean): string[] {
+  return ccHookDirCandidates(operatorAppRoot, explicitRoot).map((dir) => path.join(dir, '..', '..', 'install-rtk.sh'));
+}
+
+async function probeRtkVersion(binary: string): Promise<string | null> {
+  const { execFile } = await import('node:child_process');
+  return new Promise((resolve) => {
+    execFile(binary, ['--version'], { timeout: 2_000 }, (err, stdout) => {
+      if (err) return resolve(null);
+      // `rtk 0.51.0` -> `0.51.0` (install-rtk.sh reads field 2 the same way).
+      resolve(String(stdout).trim().split(/\s+/)[1] ?? null);
+    });
+  });
+}
+
+async function runInstallRtkScript(script: string, home: string): Promise<RtkInstallOutcome> {
+  const { spawn } = await import('node:child_process');
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn('bash', [script], {
+        env: { ...process.env, HOME: home },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: RTK_PROVISION_TIMEOUT_MS,
+      });
+    } catch (err) {
+      resolve({ exitCode: null, signal: null, stderrTail: String(err) });
+      return;
+    }
+    const out = collectChildOutput(child);
+    child.on('error', (err) => resolve({ exitCode: null, signal: null, stderrTail: String(err) }));
+    child.on('close', (exitCode, signal) =>
+      resolve({ exitCode, signal, stderrTail: out.stderr.text().slice(-600) }),
+    );
+  });
+}
+
+/** Provision ~/.local/bin/rtk from install-rtk.sh without blocking (see the block comment above). */
+export async function provisionRtk(deps: ProvisionRtkDeps): Promise<ProvisionRtkHandle> {
+  const script = deps.script ?? '';
+  const settled = (status: RtkProvisionStatus, pinnedVersion = ''): ProvisionRtkHandle => ({
+    result: { status, script, pinnedVersion },
+    done: null,
+  });
+  if ((deps.platform ?? process.platform) === 'win32') return settled('unsupported-platform');
+  if (path.resolve(deps.home) !== path.resolve(deps.realHome ?? os.homedir())) return settled('home-override');
+  if (!deps.script) return settled('script-missing');
+
+  const pinnedVersion = readPinnedRtkVersion(await fs.readFile(deps.script, 'utf8').catch(() => ''));
+  const probe = deps.probeVersion ?? probeRtkVersion;
+  if (pinnedVersion && (await probe(path.join(deps.home, '.local', 'bin', 'rtk'))) === pinnedVersion) {
+    return settled('current', pinnedVersion);
+  }
+  if (rtkProvisionState.inFlight) {
+    return { result: { status: 'in-flight', script, pinnedVersion }, done: rtkProvisionState.inFlight };
+  }
+
+  const run = deps.runScript ?? runInstallRtkScript;
+  const done = run(deps.script, deps.home)
+    .then((outcome) => {
+      if (outcome.exitCode !== 0) {
+        const last = outcome.stderrTail.trim().split('\n').pop() ?? '';
+        console.warn(
+          `[desktop-install] install-rtk.sh ended with ${outcome.exitCode ?? outcome.signal ?? 'no status'}: ${last} ` +
+            '(RTK stays off until the next install retries; alarm:rtk-liveness reports it)',
+        );
+      }
+      return outcome;
+    })
+    .finally(() => {
+      rtkProvisionState.inFlight = null;
+    });
+  rtkProvisionState.inFlight = done;
+  return { result: { status: 'started', script, pinnedVersion }, done };
+}
+
 export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<InstallResult> {
   const home = opts.home ?? os.homedir();
   const explicitRoot = !!opts.operatorAppRoot;
@@ -3906,6 +4148,12 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   // run resolves it (PAPERCUSP_SIDECAR_BIN set), so the link lands regardless.
   await ensureBundledNodeLinked(home);
 
+  // WI-6554700010009448: the pinned RTK binary every RTK seam looks for. Resolved
+  // through the same scratch-source guard as the hooks; the install itself runs in the
+  // background (see provisionRtk), so this never delays a launch.
+  const rtkScript = await resolveSource('rtk installer', rtkInstallerCandidates(operatorAppRoot, explicitRoot));
+  const rtkProvision = (await (opts.provisionRtk ?? provisionRtk)({ home, script: rtkScript })).result;
+
   // macOS Tutorial.app wrapper (WI-2197): only where it means something (darwin)
   // and only once the dispatcher it invokes actually landed — a DMG install has
   // no postinstall-script hook, so this is provisioned here at first boot,
@@ -3968,12 +4216,15 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
     injectionHooksInstalled: injectionHooks,
     claudeSettingsMerged: claudeHooks.settingsMerged,
     codexStatusLineMerged: codexStatusLine.merged,
+    rtkProvision,
   };
 }
 
 export interface RenderSuPlaybookInput {
   /** Which client's tooling overlay to splice in (omp/claude/codex). */
   agent: string;
+  /** Resolved launch restrictions, when the caller already has them. Defaults to the canonical policy. */
+  nativeToolPolicy?: OutputGuidancePolicy;
   /** Base-playbook profile: 'engineer' (default) | 'power'. */
   profile?: string;
   /** Override the operator app root (tests). Defaults to walking up from here. */
@@ -4171,7 +4422,7 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
   // from computeTurnDoors (the SAME function applyResultDoor enforces with) so the number the
   // agent is taught cannot drift from the number it is held to. Both tiers get it — a fleet
   // member pays the door exactly like a full session does.
-  const withDoor = spliceGeneratedSection(withAuto, RESULT_DOOR_MARKER, renderResultDoorSection());
+  const withDoor = spliceGeneratedSection(withAuto, RESULT_DOOR_MARKER, renderClientResultDoorSection(input.agent, input.nativeToolPolicy));
   // agent-managed-compaction: the agent self-management compaction protocol (client-neutral).
   const withCompaction = spliceGeneratedSection(
     withDoor,

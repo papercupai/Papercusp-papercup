@@ -234,7 +234,7 @@ describe("<HostedDesktopViewer>", () => {
     expect(socket.url).toBe(
       `ws://localhost:3000/api/hosted/connectors/socket?ticket=${TICKET}&kind=desktop&desktopSessionId=desktop-1&desktopMode=takeover`,
     );
-    expect(rfb.viewOnly).toBe(false);
+    expect(rfb.viewOnly).toBe(true);
     expect(rfb.scaleViewport).toBe(true);
 
     act(() => {
@@ -253,6 +253,7 @@ describe("<HostedDesktopViewer>", () => {
         .getAttribute("data-input-allowed"),
     ).toBe("true");
     expect(screen.getByText("connected · takeover")).toBeTruthy();
+    expect(rfb.viewOnly).toBe(false);
   });
 
   it("keeps watch mode view-only even if the relay reports a permissive flag", async () => {
@@ -275,6 +276,61 @@ describe("<HostedDesktopViewer>", () => {
     ).toBe("false");
     expect(screen.getByText(/Watch-only mode/)).toBeTruthy();
   });
+
+  it("keeps a denied takeover view-only at the noVNC input boundary", async () => {
+    const { socket, rfb } = await renderViewer({ mode: "takeover" });
+    act(() => {
+      socket.emit("message", {
+        data: JSON.stringify({
+          type: "desktop.ready",
+          action: "takeover",
+          inputAllowed: false,
+        }),
+      });
+      rfb.emit("connect");
+    });
+    expect(screen.getByText("connected · takeover input unavailable")).toBeTruthy();
+    expect(rfb.viewOnly).toBe(true);
+  });
+
+  it("requires a fresh input grant after reconnect and ignores the old stream's grant", async () => {
+    const { socket, rfb } = await renderViewer({ mode: "takeover" });
+    acceptConnection(0, "takeover");
+    fireEvent.click(screen.getByRole("button", { name: /Reconnect/ }));
+    expect(rfb.viewOnly).toBe(true);
+    await waitFor(() => expect(H.FakeRFB.instances).toHaveLength(2));
+    const replacement = H.FakeRFB.instances[1];
+    expect(replacement.viewOnly).toBe(true);
+    act(() => {
+      socket.emit("message", {
+        data: JSON.stringify({
+          type: "desktop.ready",
+          action: "takeover",
+          inputAllowed: true,
+        }),
+      });
+    });
+    expect(replacement.viewOnly).toBe(true);
+    acceptConnection(1, "takeover");
+    expect(replacement.viewOnly).toBe(false);
+  });
+
+  it.each(["error", "close", "disconnect"])(
+    "revokes noVNC input on %s",
+    async (event) => {
+      const { socket, rfb } = await renderViewer({ mode: "takeover" });
+      acceptConnection(0, "takeover");
+      expect(rfb.viewOnly).toBe(false);
+      act(() => {
+        if (event === "disconnect") rfb.emit("disconnect");
+        else socket.emit(event, event === "close" ? { code: 1006, reason: "" } : {});
+      });
+      expect(rfb.viewOnly).toBe(true);
+      expect(
+        screen.getByRole("region", { name: "Desktop viewer" }).getAttribute("data-input-allowed"),
+      ).toBe("false");
+    },
+  );
 
   it("reconnects only the selected desktop stream and tears down the old socket", async () => {
     const { socket, rfb } = await renderViewer();

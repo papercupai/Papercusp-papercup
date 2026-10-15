@@ -10,7 +10,7 @@
  *
  * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/peer-dial-registry.integration.test.ts
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { rm, mkdtemp } from 'node:fs/promises';
 import { createServer, connect, type Server, type Socket } from 'node:net';
 import { Duplex } from 'node:stream';
@@ -28,8 +28,16 @@ import { insertHiveIfAbsent } from '../../hive-store';
 import { defaultRunGit, ensurePotGitRepo } from './storage';
 import { fetchOverDuplex } from './fetch-transport';
 import { openHiveGitFetchDuplex, wireHiveGitServe } from './serve-wiring';
+import { upsertHiveMember } from '../../hive-membership-store';
+import { unsafeFederatedPotScope } from '../../federated-pot-scope';
 import { setPotGitMode, getPotGitMode } from '../../harness/git-sync/hive-git-mode';
-import { wireHiveGitDial, resolvePotGitPeerSocket, openHiveGitDuplexToDevice, _testing } from './peer-dial-registry';
+import {
+  wireHiveGitDial,
+  resolvePotGitPeerSocket,
+  openHiveGitDuplexToDevice,
+  resolveVerifiedDevicePubkeyForSocket,
+  _testing,
+} from './peer-dial-registry';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
 
 const WORKSPACE_ID = `ws-dial-registry-${randomUUID().slice(0, 8)}`;
@@ -156,6 +164,43 @@ function frameWrap(raw: Socket): Duplex {
   return wrapped;
 }
 
+/**
+ * WI-10006889: a SECOND simulated box, with its own module instance of the dial registry.
+ *
+ * The registry's wired-topic identity is process-global ON PURPOSE: one process is one box, and
+ * a hello on a topic must carry the identity that wired that topic on this box, never the muxer's
+ * "whoever wired last" config (P-203 Leg A, 023f0570b6). Two boxes simulated in ONE process that
+ * wire the SAME topic under DIFFERENT devices therefore overwrite each other's signer: the later
+ * wire wins and BOTH sides then sign their hellos as that one device. The WI-3496 and WI-5210
+ * regressions below broke exactly that way after 2026-09-02 (both hellos carried one device;
+ * one side's registry assertion passed for the wrong device and the other timed out).
+ *
+ * Box B therefore loads a fresh copy of the module graph, so its process-global maps are its own,
+ * the way a real second machine's are. Box A keeps this file's static imports. Each side's
+ * registry is asserted on its OWN instance, and each side must never register its own device.
+ * The fresh graph re-arms the shared `pot-git-dial-heal` timer name (the scheduled registry stops
+ * the previous timer on a re-arm), so no test here may rely on box A's automatic heal sweep; the
+ * heal test drives `healSweep()` by hand.
+ */
+type DialBox = typeof import('./peer-dial-registry') & {
+  wireHiveGitServe: typeof import('./serve-wiring').wireHiveGitServe;
+};
+async function loadSecondBox(): Promise<DialBox> {
+  vi.resetModules();
+  const dial = await import('./peer-dial-registry');
+  const serve = await import('./serve-wiring');
+  return { ...dial, wireHiveGitServe: serve.wireHiveGitServe };
+}
+
+/** Positive control, run as a TEST in each two-box describe: the isolation is real only if box
+ *  B's registry is a different object graph from box A's (this file's static imports). If
+ *  `loadSecondBox` ever stops isolating, this fails by assertion instead of the hello tests
+ *  quietly asserting against one shared registry again. */
+function expectIsolatedBox(b: DialBox): void {
+  expect(b.resolvePotGitPeerSocket).not.toBe(resolvePotGitPeerSocket);
+  expect(b._testing.wiredTopicIdentity).not.toBe(_testing.wiredTopicIdentity);
+}
+
 async function waitFor(predicate: () => boolean, timeoutMs = 15000): Promise<void> {
   const start = Date.now();
   while (!predicate()) {
@@ -198,6 +243,24 @@ describe('pot-git peer-dial-registry (WI-3583: device_pubkey -> live socket, ove
       pubkeyBase64: FAKE_PUBKEY,
       keychainId: 'k-dial-registry',
     });
+    // WI-10006832: serve admits only an attested device, so the dialing client's device is
+    // attested here, exactly as a joined member's would be.
+    await upsertHiveMember({
+      workspaceId: WORKSPACE_ID,
+      potHomeSlug: unsafeFederatedPotScope(HIVE, 'test fixture: this hive home is its own federated scope'),
+      githubUserId: 5151,
+      githubUsername: 'dial-client-under-test',
+      deviceAttestations: [
+        {
+          device_pubkey: CLIENT_DEVICE,
+          gist_id: 'gist-dial-client',
+          gist_url: '',
+          device_label: 'test-device',
+          created_at: Date.now(),
+          signature_by_device: '',
+        },
+      ],
+    });
 
     root = await mkdtemp(join(tmpdir(), 'hgdial-'));
     process.env.PAPERCUSP_HIVE_GIT_ROOT = root;
@@ -218,7 +281,12 @@ describe('pot-git peer-dial-registry (WI-3583: device_pubkey -> live socket, ove
       // cuts syscalls, it's no longer load-bearing for correctness.
       const srvDuplex = frameWrap(srvConn);
       wireAllCorked(srvDuplex, () => {
-        wireHiveGitServe(srvDuplex, TOPIC, { potHomeSlug: HIVE, workspaceId: WORKSPACE_ID });
+        wireHiveGitServe(srvDuplex, TOPIC, {
+          potHomeSlug: HIVE,
+          workspaceId: WORKSPACE_ID,
+          // swarm.ts's production default: the signed-hello registry's verified device.
+          resolvePeerDevicePubkey: resolveVerifiedDevicePubkeyForSocket,
+        });
         wireHiveGitDial(srvDuplex, TOPIC, SERVER_DEVICE, signAsServer);
       });
     });
@@ -321,8 +389,12 @@ describe('WI-3496 drill regression: opens rejected by a not-yet-wired peer RECOV
   let aSocket: Socket;
   let aDuplex: Duplex;
   let bWire: (() => void) | null = null;
+  // B is the late box: its own module instance (see loadSecondBox) so its TOPIC2 wire cannot
+  // overwrite the identity A signs with.
+  let B: DialBox;
 
   beforeAll(async () => {
+    B = await loadSecondBox();
     root2 = await mkdtemp(join(tmpdir(), 'hgdial-race-'));
     sockPath2 = join(root2, 'link.sock');
     server2 = createServer({ allowHalfOpen: true }, (srvConn) => {
@@ -337,8 +409,8 @@ describe('WI-3496 drill regression: opens rejected by a not-yet-wired peer RECOV
       if (!muxStream.userData) muxStream.userData = mux;
       bWire = () => {
         wireAllCorked(d, () => {
-          wireHiveGitServe(d, TOPIC2, { potHomeSlug: HIVE, workspaceId: WORKSPACE_ID });
-          wireHiveGitDial(d, TOPIC2, SERVER_DEVICE, signAsServer);
+          B.wireHiveGitServe(d, TOPIC2, { potHomeSlug: HIVE, workspaceId: WORKSPACE_ID });
+          B.wireHiveGitDial(d, TOPIC2, SERVER_DEVICE, signAsServer);
         });
       };
     });
@@ -371,7 +443,12 @@ describe('WI-3496 drill regression: opens rejected by a not-yet-wired peer RECOV
     } catch {
       /* ignore */
     }
+    B?._testing.reset();
     await rm(root2, { recursive: true, force: true });
+  });
+
+  it('box B is its own module instance (WI-10006889 positive control)', () => {
+    expectIsolatedBox(B);
   });
 
   it('openHiveGitFetchDuplex fails SOFT (fast destroyed duplex) while the peer is unwired — never the 120s hang', async () => {
@@ -385,14 +462,19 @@ describe('WI-3496 drill regression: opens rejected by a not-yet-wired peer RECOV
 
   it('hellos flow and BOTH registries populate once the late peer finally wires', async () => {
     expect(resolvePotGitPeerSocket(TOPIC2, SERVER_DEVICE)).toBeUndefined();
-    expect(resolvePotGitPeerSocket(TOPIC2, CLIENT_DEVICE)).toBeUndefined();
+    expect(B.resolvePotGitPeerSocket(TOPIC2, CLIENT_DEVICE)).toBeUndefined();
     bWire!();
     // B's own channel-opens hit A's pair() notifiers: with eviction the dead
     // states are GONE, so fresh channels pair, and the muxer-level dial config
     // lets A's re-created (pair-materialized) channel still SIGN + send its
     // hello and register B's — bidirectional recovery with no reconnect.
+    // A learns B's device; B learns A's device — each in its OWN registry.
     await waitFor(() => resolvePotGitPeerSocket(TOPIC2, SERVER_DEVICE) !== undefined);
-    await waitFor(() => resolvePotGitPeerSocket(TOPIC2, CLIENT_DEVICE) !== undefined);
+    await waitFor(() => B.resolvePotGitPeerSocket(TOPIC2, CLIENT_DEVICE) !== undefined);
+    // Neither side's hello carried the other side's device (WI-10006889: a hello signed under the
+    // wrong identity registers the SENDER's peer as itself, which is what masked this break).
+    expect(resolvePotGitPeerSocket(TOPIC2, CLIENT_DEVICE)).toBeUndefined();
+    expect(B.resolvePotGitPeerSocket(TOPIC2, SERVER_DEVICE)).toBeUndefined();
   });
 
   it('a refusal arriving on a LISTENERLESS client duplex is fail-soft — never an unhandled error (bg-host crash, 2026-07-17)', async () => {
@@ -428,6 +510,9 @@ describe('WI-5210 fence-25 regression: a one-sided hello gap heals WITHOUT a rec
   let server3: Server;
   const serverDuplexes: Duplex[] = [];
   const clientSockets: Socket[] = [];
+  // B (the server-side box) is its own module instance (see loadSecondBox): "this box" in the
+  // comments below means B's process-global wired-topic state, which A's wires must not touch.
+  let B: DialBox;
 
   const connect3 = async (): Promise<{ socket: Socket; duplex: Duplex }> => {
     const arrived = serverDuplexes.length;
@@ -443,6 +528,7 @@ describe('WI-5210 fence-25 regression: a one-sided hello gap heals WITHOUT a rec
   };
 
   beforeAll(async () => {
+    B = await loadSecondBox();
     root3 = await mkdtemp(join(tmpdir(), 'hgdial-heal-'));
     sockPath3 = join(root3, 'link.sock');
     server3 = createServer({ allowHalfOpen: true }, (srvConn) => {
@@ -465,7 +551,12 @@ describe('WI-5210 fence-25 regression: a one-sided hello gap heals WITHOUT a rec
         /* ignore */
       }
     }
+    B?._testing.reset();
     await rm(root3, { recursive: true, force: true });
+  });
+
+  it('box B is its own module instance (WI-10006889 positive control)', () => {
+    expectIsolatedBox(B);
   });
 
   it('a channel pair-materialized on a muxer never wired for its topic still ANNOUNCES itself (the dead direction of fence-25)', async () => {
@@ -475,7 +566,7 @@ describe('WI-5210 fence-25 regression: a one-sided hello gap heals WITHOUT a rec
     const c1 = await connect3();
     const b1 = serverDuplexes[0];
     wireAllCorked(b1, () => {
-      wireHiveGitDial(b1, TOPIC_CHURN, SERVER_DEVICE, signAsServer);
+      B.wireHiveGitDial(b1, TOPIC_CHURN, SERVER_DEVICE, signAsServer);
     });
     await new Promise((r) => setTimeout(r, 300));
     c1.socket.destroy();
@@ -486,7 +577,7 @@ describe('WI-5210 fence-25 regression: a one-sided hello gap heals WITHOUT a rec
     const c2 = await connect3();
     const b2 = serverDuplexes[1];
     wireAllCorked(b2, () => {
-      wireHiveGitDial(b2, TOPIC_OTHER, SERVER_DEVICE, signAsServer);
+      B.wireHiveGitDial(b2, TOPIC_OTHER, SERVER_DEVICE, signAsServer);
     });
     // A wires TOPIC_CHURN on its side of c2 → B pair-materializes the channel
     // on a muxer whose cfg.topics does NOT contain it. Pre-fix, B registered
@@ -494,8 +585,12 @@ describe('WI-5210 fence-25 regression: a one-sided hello gap heals WITHOUT a rec
     wireAllCorked(c2.duplex, () => {
       wireHiveGitDial(c2.duplex, TOPIC_CHURN, CLIENT_DEVICE, signAsClient);
     });
-    await waitFor(() => resolvePotGitPeerSocket(TOPIC_CHURN, CLIENT_DEVICE) !== undefined);
+    await waitFor(() => B.resolvePotGitPeerSocket(TOPIC_CHURN, CLIENT_DEVICE) !== undefined);
     await waitFor(() => resolvePotGitPeerSocket(TOPIC_CHURN, SERVER_DEVICE) !== undefined);
+    // B's pair-materialized channel signed under the identity B wired TOPIC_CHURN with on the dead
+    // c1 (SERVER), never A's: neither side ever registers its own device (WI-10006889).
+    expect(resolvePotGitPeerSocket(TOPIC_CHURN, CLIENT_DEVICE)).toBeUndefined();
+    expect(B.resolvePotGitPeerSocket(TOPIC_CHURN, SERVER_DEVICE)).toBeUndefined();
   });
 
   it('the heal sweep completes a handshake that got stuck BEFORE the topic was wired anywhere on this box — no reconnect needed', async () => {
@@ -506,12 +601,11 @@ describe('WI-5210 fence-25 regression: a one-sided hello gap heals WITHOUT a rec
     const c4 = await connect3();
     const b4 = serverDuplexes[2];
     wireAllCorked(b4, () => {
-      wireHiveGitDial(b4, TOPIC_OTHER, SERVER_DEVICE, signAsServer);
+      B.wireHiveGitDial(b4, TOPIC_OTHER, SERVER_DEVICE, signAsServer);
     });
-    // The remote peer is HAND-ROLLED protomux, not wireHiveGitDial: in
-    // production it is another box, and driving it through this module here
-    // would fake the precondition away (its wire call would flip the shared
-    // process-global wired-topic set that gates B's signing).
+    // The remote peer is HAND-ROLLED protomux, not wireHiveGitDial: it must stay
+    // SILENT-proof (it records every hello it receives) and must never itself
+    // pair-materialize a signing channel, which the dial module would do.
     const muxStream = c4.duplex as unknown as { userData?: unknown };
     const rawMux = Protomux.from(muxStream as never);
     if (!muxStream.userData) muxStream.userData = rawMux;
@@ -551,7 +645,7 @@ describe('WI-5210 fence-25 regression: a one-sided hello gap heals WITHOUT a rec
 
     // B pair-materializes TOPIC_STUCK, verifies + registers the remote — but
     // stays SILENT (no identity gate passes yet): the one-sided dead state.
-    await waitFor(() => resolvePotGitPeerSocket(TOPIC_STUCK, CLIENT_DEVICE) !== undefined);
+    await waitFor(() => B.resolvePotGitPeerSocket(TOPIC_STUCK, CLIENT_DEVICE) !== undefined);
     await new Promise((r) => setTimeout(r, 300));
     expect(received).toHaveLength(0);
 
@@ -560,7 +654,7 @@ describe('WI-5210 fence-25 regression: a one-sided hello gap heals WITHOUT a rec
     const c5 = await connect3();
     const b5 = serverDuplexes[3];
     wireAllCorked(b5, () => {
-      wireHiveGitDial(b5, TOPIC_STUCK, SERVER_DEVICE, signAsServer);
+      B.wireHiveGitDial(b5, TOPIC_STUCK, SERVER_DEVICE, signAsServer);
     });
     await new Promise((r) => setTimeout(r, 100));
     expect(received).toHaveLength(0);
@@ -568,7 +662,7 @@ describe('WI-5210 fence-25 regression: a one-sided hello gap heals WITHOUT a rec
     // One sweep heals the LIVE stuck state on c4: seeds b4's own muxer
     // identity (topic gate now passes) and sends the overdue hello over the
     // EXISTING channel — the remote finally learns this box's device.
-    _testing.healSweep();
+    B._testing.healSweep();
     await waitFor(() => received.includes(SERVER_DEVICE));
   });
 });

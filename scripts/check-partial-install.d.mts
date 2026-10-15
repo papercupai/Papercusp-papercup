@@ -4,23 +4,41 @@
 // scripts/check-partial-install.mjs and regenerate.
 /**
  * Expand the root package.json `workspaces` globs to concrete workspace directories.
- * Only the `dir/*` shape occurs in this repo; anything else is treated as a literal
- * path. A pattern entry that resolves to no package.json is skipped rather than
- * guessed at — this guard reports corruption, so it must not invent members.
+ * Share the link guard's npm-compatible glob and exclusion semantics. A pattern
+ * entry that resolves to no package.json is skipped rather than guessed at.
  */
 export function expandWorkspaceDirs(patterns: any, root: any): any[];
+/**
+ * Present .bin links are install outputs too. A hoisted package can resolve while
+ * an orphaned workspace shim still points at its removed local copy. npm's normal
+ * hoisted reify does not inventory orphan shims, so an up-to-date install can leave
+ * them untouched. Share this detector with install:safe's verified repair boundary.
+ *
+ * @param {string} root
+ * @param {{ workspaceDirs?: string[] }} [options]
+ * @returns {Array<{workspace: string, pkg: string, kind: 'dangling-bin-symlink', package?: string}>}
+ */
+export function findBrokenBinLinks(root: string, { workspaceDirs }?: {
+    workspaceDirs?: string[];
+}): Array<{
+    workspace: string;
+    pkg: string;
+    kind: "dangling-bin-symlink";
+    package?: string;
+}>;
 /**
  * THE DETECTOR. Walks the root node_modules and every workspace's package-local
  * node_modules, and returns each present-but-unusable package entry.
  *
- * @returns {{ findings: Array<{workspace: string, pkg: string, kind: 'hollow'|'dangling-symlink'}>,
+ * @returns {{ findings: Array<{workspace: string, pkg: string, kind: 'hollow'|'dangling-symlink'|'dangling-bin-symlink', package?: string}>,
  *             workspacesScanned: number, nodeModulesScanned: number, packagesScanned: number }}
  */
 export function findHollowPackages(root: any): {
     findings: Array<{
         workspace: string;
         pkg: string;
-        kind: "hollow" | "dangling-symlink";
+        kind: "hollow" | "dangling-symlink" | "dangling-bin-symlink";
+        package?: string;
     }>;
     workspacesScanned: number;
     nodeModulesScanned: number;

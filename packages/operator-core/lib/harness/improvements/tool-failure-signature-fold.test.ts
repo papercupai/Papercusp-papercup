@@ -82,6 +82,41 @@ describe('foldLegacyToolFailureRows (review-system-rework-reduction D-010)', () 
     expect(h.merges.find(([id]) => id === 'EI-9')![1]).toMatchObject({ repeatCount: 4 });
   });
 
+  it('folds legacy result-door rows across tool names, including rows without invocation metadata', async () => {
+    const rows = [
+      legacy('EI-3', 'b3', 3, {}, {
+        toolName: 'facts:list', errorCode: 'output_spill_failed', status: 'error',
+        message: 'result spill write failed',
+      }),
+      legacy('EI-2', 'b2', 2, {}, {
+        toolName: 'work_items:get', errorCode: 'output_spill_failed', status: 'error',
+        message: 'result spill write failed',
+      }),
+    ];
+    for (const row of rows) delete row.payload.toolInvocation;
+
+    const h = harness(rows);
+    expect(legacySignatureOf(rows[0]!.payload)).toBe(
+      'tool-failure-signature:result-door:structural:output_spill_failed:field-unknown',
+    );
+    expect(legacySignatureOf(rows[1]!.payload)).toBe(legacySignatureOf(rows[0]!.payload));
+
+    expect(await foldLegacyToolFailureRows('ws', h.deps)).toEqual({
+      scanned: 2, groups: 1, folded: 1, rekeyed: 1, failedGroups: 0,
+    });
+    expect(h.sqlCalls[0]!.text).not.toContain("payload ? 'toolInvocation'");
+    const survivor = h.merges.find(([id]) => id === 'EI-3')![1];
+    expect(survivor).toMatchObject({
+      watchdogKey: 'tool-failure-signature:result-door:structural:output_spill_failed:field-unknown',
+      repeatCount: 5,
+    });
+    const classes = Object.values((survivor.toolFailureSignature as {
+      classes: Record<string, { count: number }>;
+    }).classes);
+    expect(classes.map((entry) => entry.count).sort()).toEqual([2, 3]);
+    expect(h.resolved).toEqual(['EI-2']);
+  });
+
   it('folds onto an existing signature row without re-keying it and keeps its tally', async () => {
     const existing = legacy('EI-SIG', 'b9', 7);
     existing.payload.watchdogKey = SIGNATURE;
@@ -134,6 +169,7 @@ describe('foldLegacyToolFailureRows scope=promoted (WI-10004648)', () => {
       "->>'state' = 'promoted'", "COALESCE(admission, '') <> 'pending'",
       // A row legacySignatureOf cannot read would be re-scanned every tick and could starve foldable ones.
       "'toolFailureProbation'->>'class' IS NOT NULL", "->'report'->>'toolName' IS NOT NULL",
+      "COALESCE(payload->'admissionReview'->>'state', '') <> 'pending'",
       "NOT IN ('pending', 'revision-requested')", "NOT LIKE 'tool-failure-signature:%'"]) {
       expect(text).toContain(predicate);
     }

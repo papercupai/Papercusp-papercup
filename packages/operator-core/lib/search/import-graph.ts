@@ -41,6 +41,7 @@
 
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import ts from 'typescript';
 
 export interface ImportGraph {
   /** Every .ts/.tsx file reachable from the entry, EXCLUDING the entry itself. */
@@ -116,6 +117,10 @@ export function stripComments(src: string): string {
  * statement.
  */
 export function runtimeSpecifiers(file: string): string[] {
+  if (file.endsWith('.json')) {
+    JSON.parse(readFileSync(file, 'utf8'));
+    return [];
+  }
   const src = stripComments(readFileSync(file, 'utf8'));
   const out: string[] = [];
   // ⚠ TWO guards in this pattern, both earned by a false edge it produced:
@@ -158,7 +163,8 @@ function isFile(p: string): boolean {
 }
 
 /**
- * Resolve a RELATIVE specifier to a concrete .ts/.tsx/.mjs file, or null.
+ * Resolve a RELATIVE specifier to a concrete .ts/.tsx/.mjs/.json file, or null.
+ * JSON runtime assets are validated leaves: their strings cannot create import edges.
  *
  * `.mjs` is accepted because this repo deliberately keeps a handful of shared
  * modules as plain ESM with a `.d.mts` sibling — `su-tier-roles.mjs`,
@@ -186,7 +192,7 @@ export function resolveRelative(fromFile: string, specifier: string): string | n
     `${base}/index.ts`,
     `${base}/index.tsx`,
   ]) {
-    if (/\.(ts|tsx|mjs)$/.test(cand) && isFile(cand)) return cand;
+    if (/\.(ts|tsx|mjs|json)$/.test(cand) && isFile(cand)) return cand;
   }
   return null;
 }
@@ -234,4 +240,173 @@ export function importGraph(
 /** Convenience: does the runtime graph from `entry` reach `target`? */
 export function reaches(entry: string, target: string): boolean {
   return importGraph(entry).modules.has(target);
+}
+
+/**
+ * Calls reachable through referenced exports, separately from runtime loading.
+ * Importing a module loads its initializers, but does not invoke every exported
+ * function. Keep importGraph's loading contract intact; this walk selects named
+ * exports and follows their local references (including callbacks). Namespace
+ * imports and star re-exports are conservative. Bare packages remain outside
+ * the walk, as they are for importGraph. This is static reference reachability,
+ * not proof that a branch executes or that a callback is invoked.
+ */
+export function runtimeCallSites(entry: string, names: readonly string[]): Map<string, Set<string>> {
+  const calls = new Map(names.map((name) => [name, new Set<string>()]));
+  const graph = importGraph(entry);
+  const files = [entry, ...graph.modules].filter((file) => !file.endsWith('.json'));
+  type Binding = { file: string | null; name: string };
+  type Module = {
+    source: ts.SourceFile;
+    locals: Map<string, ts.Node>;
+    imports: Map<string, Binding>;
+    exports: Map<string, string | Binding>;
+    stars: string[];
+  };
+  const modules = new Map<string, Module>();
+  const requested = new Set<string>();
+  const scanned = new Set<ts.Node>();
+
+  const moduleOf = (file: string): Module => {
+    const prior = modules.get(file);
+    if (prior) return prior;
+    const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
+    const info: Module = { source, locals: new Map(), imports: new Map(), exports: new Map(), stars: [] };
+    modules.set(file, info);
+    const binding = (specifier: string, name: string): Binding => ({
+      file: specifier.startsWith('.') ? resolveRelative(file, specifier) : null,
+      name,
+    });
+    const addDeclaration = (name: ts.BindingName, node: ts.Node): void => {
+      if (ts.isIdentifier(name)) info.locals.set(name.text, node);
+      else for (const element of name.elements) {
+        if (ts.isBindingElement(element)) addDeclaration(element.name, node);
+      }
+    };
+    for (const statement of source.statements) {
+      if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
+        const clause = statement.importClause;
+        if (!clause || clause.isTypeOnly) continue;
+        const specifier = statement.moduleSpecifier.text;
+        if (clause.name) info.imports.set(clause.name.text, binding(specifier, 'default'));
+        if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
+          info.imports.set(clause.namedBindings.name.text, binding(specifier, '*'));
+        } else if (clause.namedBindings) {
+          for (const element of clause.namedBindings.elements) {
+            if (!element.isTypeOnly) info.imports.set(element.name.text, binding(specifier, element.propertyName?.text ?? element.name.text));
+          }
+        }
+      } else if (ts.isExportDeclaration(statement) && !statement.isTypeOnly) {
+        const specifier = statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)
+          ? statement.moduleSpecifier.text : null;
+        if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+          for (const element of statement.exportClause.elements) {
+            if (element.isTypeOnly) continue;
+            const name = element.propertyName?.text ?? element.name.text;
+            info.exports.set(element.name.text, specifier ? binding(specifier, name) : name);
+          }
+        } else if (specifier && statement.exportClause && ts.isNamespaceExport(statement.exportClause)) {
+          info.exports.set(statement.exportClause.name.text, binding(specifier, '*'));
+        } else if (specifier) {
+          const target = binding(specifier, '*').file;
+          if (target && !target.endsWith('.json')) info.stars.push(target);
+        }
+      } else if (ts.isVariableStatement(statement)) {
+        for (const declaration of statement.declarationList.declarations) addDeclaration(declaration.name, declaration);
+      } else if ((ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement) || ts.isEnumDeclaration(statement)) && statement.name) {
+        info.locals.set(statement.name.text, statement);
+      }
+      if (ts.canHaveModifiers(statement)) {
+        const modifiers = ts.getModifiers(statement) ?? [];
+        if (modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) {
+          if (ts.isVariableStatement(statement)) {
+            for (const [name, node] of info.locals) {
+              if (node.parent.parent === statement) info.exports.set(name, name);
+            }
+          } else if (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement) || ts.isEnumDeclaration(statement)) {
+            const isDefault = modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword);
+            if (statement.name) info.exports.set(isDefault ? 'default' : statement.name.text, statement.name.text);
+            else if (isDefault) info.locals.set('default', statement);
+          }
+        }
+      }
+      if (ts.isExportAssignment(statement)) info.locals.set('default', statement.expression);
+    }
+    return info;
+  };
+
+  const visitBinding = (binding: Binding): void => {
+    if (binding.file && !binding.file.endsWith('.json')) select(binding.file, binding.name);
+  };
+  const scan = (file: string, node: ts.Node, initializersOnly = false): void => {
+    if (ts.isTypeNode(node) || ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)) return;
+    if (initializersOnly && ts.isFunctionLike(node)) return;
+    // A declaration may be scanned first for evaluation and later for its body.
+    if (!initializersOnly) {
+      if (scanned.has(node)) return;
+      scanned.add(node);
+    }
+    const info = moduleOf(file);
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression;
+      const name = ts.isIdentifier(callee)
+        ? info.imports.get(callee.text)?.name ?? callee.text
+        : ts.isPropertyAccessExpression(callee) ? callee.name.text : null;
+      if (name && calls.has(name)) calls.get(name)!.add(file);
+    }
+    if (ts.isIdentifier(node)) {
+      // Property names and declaration names do not reference a same-named local.
+      const parent = node.parent;
+      const isName = (ts.isPropertyAccessExpression(parent) && parent.name === node)
+        || ((ts.isPropertyAssignment(parent) || ts.isMethodDeclaration(parent)) && parent.name === node)
+        || ((ts.isVariableDeclaration(parent) || ts.isFunctionDeclaration(parent) || ts.isParameter(parent)) && parent.name === node);
+      if (!isName) {
+        const imported = info.imports.get(node.text);
+        if (imported) visitBinding(imported);
+        else {
+          const local = info.locals.get(node.text);
+          if (local) scan(file, local);
+        }
+      }
+    }
+    ts.forEachChild(node, (child) => scan(file, child, initializersOnly));
+  };
+  const select = (file: string, name: string): void => {
+    const key = `${file}\0${name}`;
+    if (requested.has(key)) return;
+    requested.add(key);
+    const info = moduleOf(file);
+    if (name === '*') {
+      for (const statement of info.source.statements) {
+        if (!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) scan(file, statement);
+      }
+      for (const exported of info.exports.values()) {
+        if (typeof exported === 'string') {
+          const local = info.locals.get(exported);
+          if (local) scan(file, local);
+          else if (info.imports.has(exported)) visitBinding(info.imports.get(exported)!);
+        } else visitBinding(exported);
+      }
+      for (const star of info.stars) select(star, '*');
+      return;
+    }
+    const exported = info.exports.get(name) ?? name;
+    if (typeof exported !== 'string') visitBinding(exported);
+    else {
+      const local = info.locals.get(exported);
+      if (local) scan(file, local);
+      else if (info.imports.has(exported)) visitBinding(info.imports.get(exported)!);
+      else for (const star of info.stars) select(star, name);
+    }
+  };
+
+  // Every loaded module evaluates its top-level code, regardless of the export
+  // selected by its importer. Function/arrow bodies are deferred until referenced.
+  for (const file of files) {
+    for (const statement of moduleOf(file).source.statements) {
+      if (!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) scan(file, statement, true);
+    }
+  }
+  select(entry, '*');
+  return calls;
 }

@@ -15,7 +15,7 @@ import type postgres from 'postgres';
 import setPlanStatusTool from '../set-plan-status';
 import { MOOT_CARRIER_NOW_MARK } from '../plan-scope-cascade';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
-import { setupPlanPgFixture, cleanupPlans, seedPlan, type PlanPgFixture } from './_pg-tool-fixture';
+import { setupPlanPgFixture, cleanupPlans, registerHarnessProject, seedPlan, type PlanPgFixture } from './_pg-tool-fixture';
 
 const HARNESS = `zzz-sps-cascade-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const SUBJECT = 'zzz-cascade-subject-2026-09-23';
@@ -104,20 +104,43 @@ beforeAll(async () => {
 afterAll(async () => {
   await cleanupItems().catch(() => {});
   await cleanupPlans(admin, WS, HARNESS).catch(() => {});
+  await cleanupPlans(admin, WS, OTHER_HARNESS).catch(() => {});
   await fx?.dispose();
 });
 
 beforeEach(async () => {
   await cleanupItems().catch(() => {});
   await cleanupPlans(admin, WS, HARNESS).catch(() => {});
+  await cleanupPlans(admin, WS, OTHER_HARNESS).catch(() => {});
   await seedPlan(admin, WS, HARNESS, SUBJECT, planBody(SUBJECT, 'draft'));
   await seedPlan(admin, WS, HARNESS, CARRIER_PLAN, planBody(CARRIER_PLAN, 'ready'));
+  // This harness has no seeded plan, so it needs its own canonical Pot identity.
+  await registerHarnessProject(admin, WS, OTHER_HARNESS);
   await insertItem(CARRIER_ID, `Ship ${SUBJECT}: rebuild its acceptance chain`, 'P-001');
   await insertItem(UNRELATED_ID, 'Land the repair queue admission fix', 'P-002');
   await insertItem(OTHER_CARRIER_ID, `Ship ${SUBJECT}: rebuild its acceptance chain`, 'P-001', OTHER_HARNESS);
 });
 
 describe('plans:set-plan-status → superseded runs the P-030 scope cascade', () => {
+  it('requires a real Pot for the other harness and cleans both fixture identities', async () => {
+    const controlId = `${OTHER_CARRIER_ID}-membership-control`;
+    await admin`DELETE FROM harness_shared.pots
+      WHERE workspace_id = ${WS} AND pot_home_slug = ${OTHER_HARNESS}`;
+    await expect(insertItem(controlId, 'Membership control', 'P-003', OTHER_HARNESS))
+      .rejects.toThrow('pot-membership violation');
+
+    await registerHarnessProject(admin, WS, OTHER_HARNESS);
+    await insertItem(controlId, 'Membership control', 'P-003', OTHER_HARNESS);
+    expect(await selfSelectable(controlId, OTHER_HARNESS)).toBe(true);
+
+    await cleanupItems();
+    await cleanupPlans(admin, WS, HARNESS);
+    await cleanupPlans(admin, WS, OTHER_HARNESS);
+    const identities = await admin`SELECT pot_home_slug FROM harness_shared.pots
+      WHERE workspace_id = ${WS} AND pot_home_slug IN (${HARNESS}, ${OTHER_HARNESS})`;
+    expect(identities).toEqual([]);
+  });
+
   it('parks the moot carrier out of self-select, leaves the unrelated item claimable, and stamps readiness into the carrier plan Now', async () => {
     // Calibration: before the supersede, both items are self-selectable.
     expect(await selfSelectable(CARRIER_ID)).toBe(true);

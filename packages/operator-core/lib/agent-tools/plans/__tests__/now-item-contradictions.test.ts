@@ -4,6 +4,8 @@ import { detectNowItemContradictions, detectNowItemOmissions } from '../now-item
 import { evaluateSetContent } from '../set-content';
 import { evaluateNowUpdate } from '../set-now';
 import { lintParsed } from '../lint';
+import { applyNowNoteToParsed, type PlanNowNote } from '../now-note-store';
+import type { NowItemContradiction } from '../now-item-contradictions';
 
 const SLUG = 'now-item-contradictions-2026-08-23';
 
@@ -44,6 +46,10 @@ const EXACT_REPRO_CURRENT = CURRENT.replace(`slug: ${SLUG}`, `slug: ${EXACT_REPR
     '**State:** P-001 is done.\n\n**Next:** Continue with acceptance review.',
   )
   .replace('- **P-002** `todo` Open item.', '- **P-002** `done` Finished item.');
+const EXACT_REPRO_WITH_TERMINAL_P008 = EXACT_REPRO_CURRENT.replace(
+  '- **P-002** `done` Finished item.',
+  '- **P-002** `done` Finished item.\n- **P-008** `done` Finished item.',
+);
 
 const GROUPED_COMPLETION = CURRENT.replace(
   '**State:** P-001 is done.\n\n**Next:** Continue with P-002.',
@@ -626,11 +632,57 @@ describe('evaluateSetContent — Now/item contradiction guard', () => {
   });
 });
 
-describe('evaluateNowUpdate — Now/item contradiction guard', () => {
-  it('rejects a structured Now write that points back at a terminal item', () => {
-    const result = evaluateNowUpdate(CURRENT, 'Work remains.', 'Revisit P-001.', SLUG);
+/**
+ * derived-status-not-hand-written-2026-10-12 P-006 retired the plans:set-now
+ * contradiction refusal: set-now now stores a note that names a finished item
+ * (pinned in set-now.note-only.test.ts). The detector is unchanged and still
+ * drives plans:lint's `now_item_status_contradiction` and the derived Next, so
+ * the wording cases below keep pinning how it reads a Now NOTE. `noteVerdict`
+ * returns the omission refusal set-now still makes, else the contradiction
+ * verdict lint reports for the plan once the note is written, beside the note
+ * set-now wrote.
+ */
+function noteVerdict(
+  current: string,
+  state: string,
+  next: string,
+  slug: string,
+): {
+  nowNote: PlanNowNote | undefined;
+  value:
+    | { ok: true }
+    | { ok: false; code: 'now_item_status_contradiction'; contradictions: NowItemContradiction[] }
+    | { ok: false; code: 'not_found' | 'now_item_omission'; [key: string]: unknown };
+} {
+  const written = evaluateNowUpdate(current, state, next, slug);
+  if (!written.value.ok || !written.nowNote) return { nowNote: written.nowNote, value: written.value };
+  const asRead = applyNowNoteToParsed(parsePlan(current, { filePath: `${slug}.md` }), written.nowNote);
+  const contradictions = detectNowItemContradictions(asRead);
+  return {
+    nowNote: written.nowNote,
+    value: contradictions.length > 0
+      ? { ok: false, code: 'now_item_status_contradiction', contradictions }
+      : { ok: true },
+  };
+}
 
-    expect(result.newBody).toBeNull();
+describe('evaluateNowUpdate — a note may mention finished items (P-006)', () => {
+  it('stores a note that points back at a terminal item; lint still reports it', () => {
+    const written = evaluateNowUpdate(CURRENT, 'Work remains.', 'Revisit P-001.', SLUG);
+    expect(written.value).toEqual({ ok: true });
+    expect(written.nowNote?.next).toBe('Revisit P-001.');
+    expect(noteVerdict(CURRENT, 'Work remains.', 'Revisit P-001.', SLUG).value).toMatchObject({
+      ok: false,
+      code: 'now_item_status_contradiction',
+    });
+  });
+});
+
+describe('Now note wording — the plans:lint contradiction verdict', () => {
+  it('flags a note that points back at a terminal item', () => {
+    const result = noteVerdict(CURRENT, 'Work remains.', 'Revisit P-001.', SLUG);
+
+    expect(result.nowNote).toBeDefined(); // P-006: set-now stores it; lint flags it
     expect(result.value).toEqual({
       ok: false,
       code: 'now_item_status_contradiction',
@@ -639,14 +691,14 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
   });
 
   it('accepts a structured Now write that records completion and advances to open work', () => {
-    const result = evaluateNowUpdate(CURRENT, 'P-001 is done.', 'Continue with P-002.', SLUG);
+    const result = noteVerdict(CURRENT, 'P-001 is done.', 'Continue with P-002.', SLUG);
 
     expect(result.value).toEqual({ ok: true });
-    expect(result.newBody).toContain('**Next:** Continue with P-002.');
+    expect(result.nowNote?.next).toBe('Continue with P-002.');
   });
 
   it('accepts a structured Now write with a neutral possessive citation after completion', () => {
-    const result = evaluateNowUpdate(
+    const result = noteVerdict(
       CURRENT,
       "P-001 IS DONE as of 2026-09-16T17:07Z; of P-001's 5 AUTO-REQ-M-* specs only M-004 and M-102 are item-specific.",
       'Continue with P-002.',
@@ -654,12 +706,12 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
     );
 
     expect(result.value).toEqual({ ok: true });
-    expect(result.newBody).toContain("of P-001's 5 AUTO-REQ-M-* specs only M-004 and M-102 are item-specific.");
+    expect(result.nowNote?.state).toContain("of P-001's 5 AUTO-REQ-M-* specs only M-004 and M-102 are item-specific.");
   });
 
   it('accepts a structured Now write with an explicit do-not-reopen terminal guard', () => {
     const current = CURRENT.replace('- **P-002** `todo` Open item.', '- **P-002** `done` Finished item.');
-    const result = evaluateNowUpdate(
+    const result = noteVerdict(
       current,
       'Work remains.',
       'Claim P-007 ...; do not reopen completed Phone or P-002.',
@@ -667,19 +719,19 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
     );
 
     expect(result.value).toEqual({ ok: true });
-    expect(result.newBody).toContain('do not reopen completed Phone or P-002.');
+    expect(result.nowNote?.next).toContain('do not reopen completed Phone or P-002.');
   });
 
   it('rejects a positive reopen that follows a do-not-reopen terminal guard', () => {
     const current = CURRENT.replace('- **P-002** `todo` Open item.', '- **P-002** `done` Finished item.');
-    const result = evaluateNowUpdate(
+    const result = noteVerdict(
       current,
       'Work remains.',
       'do not reopen completed Phone or P-002, but reopen P-002.',
       SLUG,
     );
 
-    expect(result.newBody).toBeNull();
+    expect(result.nowNote).toBeDefined(); // P-006: set-now stores it; lint flags it
     expect(result.value).toEqual({
       ok: false,
       code: 'now_item_status_contradiction',
@@ -688,7 +740,7 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
   });
 
   it('accepts a structured Now write that references an item range', () => {
-    const result = evaluateNowUpdate(
+    const result = noteVerdict(
       CURRENT,
       'On each AUTO wake, re-read latest P-001–P-002.',
       'Continue with P-002.',
@@ -701,7 +753,7 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
   it.each(EXACT_REPORTED_COMPLETIONS)(
     'accepts the reported completion narration at current HEAD: %s',
     (state) => {
-      const result = evaluateNowUpdate(
+      const result = noteVerdict(
         EXACT_REPRO_CURRENT,
         state,
         'Continue with acceptance review.',
@@ -713,7 +765,7 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
   );
 
   it('accepts a terminal item in neutral historical promotion provenance', () => {
-    const result = evaluateNowUpdate(
+    const result = noteVerdict(
       EXACT_REPRO_CURRENT,
       EXACT_REPORTED_PROVENANCE,
       'Continue with acceptance review.',
@@ -723,19 +775,78 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
     expect(result.value).toEqual({ ok: true });
   });
 
+  it('accepts committed closure authority as terminal completion evidence', () => {
+    const result = noteVerdict(
+      EXACT_REPRO_CURRENT,
+      'P-002 closure authority is committed.',
+      'Continue with acceptance review.',
+      EXACT_REPRO_SLUG,
+    );
+
+    expect(result.value).toEqual({ ok: true });
+    expect(result.nowNote?.state).toBe('P-002 closure authority is committed.');
+  });
+
   it.each([
-    'P-001 and P-002 are done. Exact-plan launch path remains intentionally unused because the plan lacks promoted P-002 execution metadata.',
-    'P-001 and P-002 are done. Exact-plan launch path remains intentionally unused because the plan will lack promoted P-002 execution metadata.',
-    'P-001 and P-002 are done. Exact-plan launch path remains intentionally unused because the plan lacked promoted P-002 execution metadata; revisit P-002.',
-  ])('still rejects non-historical or action-oriented promotion provenance: %s', (state) => {
-    const result = evaluateNowUpdate(
+    'P-002 closure authority is not committed.',
+    'P-002 closure authority will be committed.',
+    'P-002 committed the closure authority for a later review.',
+  ])('still rejects negated, future, or non-authoritative closure prose: %s', (state) => {
+    const result = noteVerdict(
       EXACT_REPRO_CURRENT,
       state,
       'Continue with acceptance review.',
       EXACT_REPRO_SLUG,
     );
 
-    expect(result.newBody).toBeNull();
+    expect(result.nowNote).toBeDefined(); // P-006: set-now stores it; lint flags it
+    expect(result.value).toEqual({
+      ok: false,
+      code: 'now_item_status_contradiction',
+      contradictions: [expect.objectContaining({ id: 'P-002', status: 'done' })],
+    });
+  });
+
+  it('accepts a short named foreign-plan reference to a terminal local id', () => {
+    const result = noteVerdict(
+      EXACT_REPRO_WITH_TERMINAL_P008,
+      'Evaluation UI integration remains open behind modernization P-008.',
+      'Continue with acceptance review.',
+      EXACT_REPRO_SLUG,
+    );
+
+    expect(result.value).toEqual({ ok: true });
+  });
+
+  it('does not treat a same-plan name as a foreign-plan reference', () => {
+    const result = noteVerdict(
+      EXACT_REPRO_WITH_TERMINAL_P008,
+      'Evaluation UI integration remains open behind deterministic P-008.',
+      'Continue with acceptance review.',
+      EXACT_REPRO_SLUG,
+    );
+
+    expect(result.nowNote).toBeDefined(); // P-006: set-now stores it; lint flags it
+    expect(result.value).toEqual({
+      ok: false,
+      code: 'now_item_status_contradiction',
+      contradictions: [expect.objectContaining({ id: 'P-008', status: 'done' })],
+    });
+  });
+
+  it.each([
+    'P-001 and P-002 are done. Exact-plan launch path remains intentionally unused because the plan lacks promoted P-002 execution metadata.',
+    'P-001 and P-002 are done. Exact-plan launch path remains intentionally unused because the plan will lack promoted P-002 execution metadata.',
+    'P-001 and P-002 are done. Exact-plan launch path remains intentionally unused because the plan lacked promoted P-002 execution metadata; revisit P-002.',
+  ])('still rejects non-historical or action-oriented promotion provenance: %s', (state) => {
+    const result = noteVerdict(
+      EXACT_REPRO_CURRENT,
+      state,
+      'Continue with acceptance review.',
+      EXACT_REPRO_SLUG,
+    );
+
+    expect(result.nowNote).toBeDefined(); // P-006: set-now stores it; lint flags it
     expect(result.value).toEqual({
       ok: false,
       code: 'now_item_status_contradiction',
@@ -748,14 +859,14 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
     'P-002 will make the `## Now` next-pointer DERIVED at read time',
     'P-002 made the `## Now` next-pointer stale at read time',
   ])('keeps non-completion resulting-state prose contradictory: %s', (state) => {
-    const result = evaluateNowUpdate(
+    const result = noteVerdict(
       EXACT_REPRO_CURRENT,
       state,
       'Continue with acceptance review.',
       EXACT_REPRO_SLUG,
     );
 
-    expect(result.newBody).toBeNull();
+    expect(result.nowNote).toBeDefined(); // P-006: set-now stores it; lint flags it
     expect(result.value).toEqual({
       ok: false,
       code: 'now_item_status_contradiction',
@@ -764,7 +875,7 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
   });
 
   it('accepts staging completion before the item reaches main/deployed', () => {
-    const result = evaluateNowUpdate(
+    const result = noteVerdict(
       CURRENT,
       'P-001 is done on staging but not in main/deployed.',
       'Continue with P-002.',
@@ -772,11 +883,11 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
     );
 
     expect(result.value).toEqual({ ok: true });
-    expect(result.newBody).toContain('P-001 is done on staging but not in main/deployed.');
+    expect(result.nowNote?.state).toBe('P-001 is done on staging but not in main/deployed.');
   });
 
   it('accepts grouped affirmative completion evidence in an incomplete plan', () => {
-    const result = evaluateNowUpdate(
+    const result = noteVerdict(
       GROUPED_COMPLETION,
       'NOT COMPLETE: The engineering half (P-001/P-002/P-003/P-004/P-005/P-007) is code-truth audited and independently accepted; P-008 remains blocked.',
       'Continue with P-008.',
@@ -787,7 +898,7 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
   });
 
   it('accepts a neutral cross-ledger implementation mapping while verification continues', () => {
-    const result = evaluateNowUpdate(
+    const result = noteVerdict(
       CURRENT,
       'The consumer lane is now WI-41755/P-001 under D-081; its affected-radius verification remains in progress.',
       'Continue the affected-radius verification.',
@@ -798,7 +909,7 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
   });
 
   it('accepts a neutral decision reference for a terminal item', () => {
-    const result = evaluateNowUpdate(
+    const result = noteVerdict(
       CURRENT,
       "D-022 records P-001's stack-mutation primitive — attach/detach with delivery semantics.",
       'Continue with P-002.',
@@ -809,14 +920,14 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
   });
 
   it('rejects a status-invalidating decision reference for a terminal item', () => {
-    const result = evaluateNowUpdate(
+    const result = noteVerdict(
       CURRENT,
       'D-022 records P-001 as pending work.',
       'Continue with P-002.',
       SLUG,
     );
 
-    expect(result.newBody).toBeNull();
+    expect(result.nowNote).toBeDefined(); // P-006: set-now stores it; lint flags it
     expect(result.value).toEqual({
       ok: false,
       code: 'now_item_status_contradiction',
@@ -828,20 +939,20 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
     "P-001's measurement residue is owned by WI-1311290, not dropped.",
     "P-001's measurement residue carries forward under WI-1311290.",
   ])('accepts a neutral terminal residue handoff: %s', (state) => {
-    const result = evaluateNowUpdate(CURRENT, state, 'Continue with P-002.', SLUG);
+    const result = noteVerdict(CURRENT, state, 'Continue with P-002.', SLUG);
 
     expect(result.value).toEqual({ ok: true });
   });
 
   it('rejects an active terminal residue handoff', () => {
-    const result = evaluateNowUpdate(
+    const result = noteVerdict(
       CURRENT,
       "P-001's measurement residue remains open under WI-1311290.",
       'Continue with P-002.',
       SLUG,
     );
 
-    expect(result.newBody).toBeNull();
+    expect(result.nowNote).toBeDefined(); // P-006: set-now stores it; lint flags it
     expect(result.value).toEqual({
       ok: false,
       code: 'now_item_status_contradiction',
@@ -854,7 +965,7 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
     // plan's item id by writing "<other-plan-slug> P-001" into a plan whose
     // OWN P-001 happens to already be done must not be read as a
     // contradiction about this plan's P-001.
-    const result = evaluateNowUpdate(
+    const result = noteVerdict(
       CURRENT,
       'Audited under pui-tui-ship-drive-2026-08-30 P-001.',
       'Continue with P-002.',
@@ -865,9 +976,9 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
   });
 
   it('rejects a structured Now write that makes an exhaustive list omitting open work', () => {
-    const result = evaluateNowUpdate(EXHAUSTIVE_OMISSION, 'Work remains.', 'P-002 only, and it is not actionable yet.', SLUG);
+    const result = noteVerdict(EXHAUSTIVE_OMISSION, 'Work remains.', 'P-002 only, and it is not actionable yet.', SLUG);
 
-    expect(result.newBody).toBeNull();
+    expect(result.nowNote).toBeUndefined(); // the omission guard still refuses the write
     expect(result.value).toEqual({
       ok: false,
       code: 'now_item_omission',

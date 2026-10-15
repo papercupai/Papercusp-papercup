@@ -8,6 +8,7 @@
  */
 
 import { SYNC_TRIGGERED_SCHEDULES } from '../../schedule-descriptors.mjs';
+import type { DocumentedSourceChange } from './drift';
 
 /** Stable inventory identity for the optional LLM repair writer. */
 const DOC_STEWARD_DISPATCH_NAME = SYNC_TRIGGERED_SCHEDULES.docStewardDispatch.name;
@@ -29,6 +30,11 @@ export interface DriftedDoc {
    * instead of reverse-engineering the diff. Absent when the change wasn't attributed.
    */
   workItems?: string[];
+  /** File-authoritative corpus: edit this repo-relative file, not docs:author. */
+  sourceFile?: string;
+  /** P-016: pinned code/symbol evidence for the existing review/authoring route. */
+  sourceChanges?: DocumentedSourceChange[];
+  sourceChangesTruncated?: boolean;
 }
 
 const DOC_STEWARD_ACTIVE_WINDOW_MIN = 50;
@@ -92,7 +98,7 @@ export async function dispatchDocStewardForDrift(
     await fireLaunchBlueprintForEvent('docs:drift', {
       installSlug: harnessSlug,
       workspaceId,
-      kickoff: `[${DOC_STEWARD_DISPATCH_NAME}] Re-sync ${batch.length} drifted doc(s) in ${harnessSlug} to the current code: ${batch.map((d) => d.docId).join(', ')}`,
+      kickoff: `[${DOC_STEWARD_DISPATCH_NAME}] Re-sync ${batch.length} drifted doc(s) in ${harnessSlug} to the current code: ${batch.map((d) => d.docId).join(', ')}. For entries with sourceFile, edit that canonical repo file under a work-item/file lock, then re-anchor/verify the docId; do NOT copy it into docs:author or publish private docs.`,
       extra: ['--doc-drift', JSON.stringify({ docs: batch })],
     });
     return batch;

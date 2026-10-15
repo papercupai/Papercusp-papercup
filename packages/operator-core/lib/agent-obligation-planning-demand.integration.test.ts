@@ -74,11 +74,14 @@ async function existingPlan(status: 'draft' | 'ready') {
   expect((await setWorklist([PLAN], 0)).ok).toBe(true);
 }
 
-async function record(disposition: 'plan-needed' | 'existing-plans-sufficient') {
+// A supported no-new-plan review cites every worklist plan nothing is moving
+// (goal-planning-needed-v4, WI-10006710); `citeWorklistPlan: false` is the negative control.
+async function record(disposition: 'plan-needed' | 'existing-plans-sufficient', citeWorklistPlan = true) {
+  const coverage = citeWorklistPlan ? [{ need: 'Recover failed checkout', itemRefs: ['WI-fixture-1'], planRef: PLAN }] : [];
   const result = await recordTool.handler(ideatePassRecordArgs.parse({ ideasFiled: 0, goalReview: {
     goalId: GOAL, disposition, rationale: 'Review of the isolated recovery portfolio.',
     evidenceRefs: [`goal:${GOAL}`],
-    ...(disposition === 'plan-needed' ? { uncoveredOutcome: 'Recover failed checkout' } : {}),
+    ...(disposition === 'plan-needed' ? { uncoveredOutcome: 'Recover failed checkout' } : { coverage }),
   } }), { isSuperuser: true, uiClientId: OWNER, workspaceId: WS, harnessSlug: 'papercusp',
     metadata: vi.fn(), log: vi.fn(), progress: vi.fn(), signal: new AbortController().signal,
     emit: vi.fn(async () => {}),
@@ -91,7 +94,9 @@ async function agenda(realAdmission = false) {
     // Scope, portfolio, review, ownership, index and ordering are real. Launch admissibility
     // and unrelated final acceptance are controlled inputs: this proves priority,
     // not launch admission or a plan acceptance verdict.
-    deps: { planSlugs: async () => [], ownerDirectives: async () => [], waitingOn: async () => [],
+    deps: { planSlugs: async () => [], ownerDirectives: async () => [], waitingOn: async () => [], 
+      fleetStaffing: async () => [],
+      strandedGoalWork: async (_ws: string, goalId: string) => ({ goalId, thresholdMs: 0, total: 0, refusedCount: 0, sample: [], truncatedByLimit: false }),
       ownerReport: async () => null,
       planAcceptance: async () => ({ satisfied: true, buildProvenance: { sha: null, version: 'fixture' } }),
       // Priority cases control admission as well as launch feasibility. The
@@ -137,6 +142,14 @@ describe('goal planning demand and execution priority from PostgreSQL', () => {
     const read = await agenda();
     expect(read.evaluations.find((entry) => entry.family === 'planning-needed')?.status).toBe('satisfied');
     expect(read.primary[0], read.primary[0]?.reason).toMatchObject({ family: 'plan-placement', status: 'due', action: { kind: 'delegate', tool: 'fleet:launch-on-plan' } });
+  }, 90_000);
+
+  it('keeps planning due when a sufficient-plan review omits the unplaced worklist plan', async () => {
+    await existingPlan('ready');
+    await record('existing-plans-sufficient', false);
+    const planning = (await agenda()).evaluations.find((entry) => entry.family === 'planning-needed');
+    expect(planning, planning?.reason).toMatchObject({ status: 'due', title: 'Account for every unplaced worklist plan' });
+    expect(planning?.reason).toContain(PLAN);
   }, 90_000);
 
   it('prioritizes staffing the eligible unstaffed plan over further planning', async () => {

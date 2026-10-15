@@ -42,8 +42,8 @@
  * `@papercusp/bench-metrics`; PG is `benchmark_run_result` (migration 291).
  *
  * Sync-arg discipline (the invalidation-match gotcha): `emitRollout` fires
- * `notifySyncInvalidate('evals.runs', { run_id })`, so the runs/report queries
- * are keyed by `run_id` (NOT suite) or live invalidation silently won't refresh.
+ * `notifySyncInvalidate('evals.runs', { runId })`, so the runs/report queries
+ * use the maintained camelCase runId argument for filtering and invalidation.
  * The suite picker resolves suite → latest `run_id` via `evals.suites`.
  *
  * Until those resolvers register + the first run lands, every query resolves to
@@ -52,11 +52,13 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useQueryState, parseAsStringEnum, parseAsString } from 'nuqs';
 import { useSyncMutate, useSyncQuery } from '@papercusp/sync';
+import type { SuiteReport, ArmDelta, Interval, ArmId as MetricArmId } from '@papercusp/bench-metrics';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { Trophy, Beaker, TrendingUp, FileText, RefreshCw, Gauge, Scale, Zap, DollarSign, Network, Archive, Play, CheckCircle2, Download, RotateCcw, Trash2 } from 'lucide-react';
 import { Select } from '@/app/harness/Select';
 import { Checkbox } from '@/app/harness/Checkbox';
 import { StatusPill } from '../ui';
+import { frontierSweVersionLabel } from '@papercusp/operator-core/lib/external-bench/frontier-swe-version';
 // Shared, purely-presentational benchmark viz (P-021 / BRIEF 10). This tab owns
 // the @papercusp/sync read and feeds these props; the components read no data.
 import {
@@ -83,7 +85,7 @@ import {
 // These exact strings key the schema, the Pareto/delta math, and the viz series.
 // Do NOT invent new labels — every arm-runner emits one of these.
 const ARMS = ['papercusp', 'baseline-a-ablation', 'baseline-b-native', 'baseline-c-bestofn'] as const;
-type ArmId = (typeof ARMS)[number];
+type ArmId = MetricArmId;
 
 const ARM_LABEL: Record<ArmId, string> = {
   papercusp: 'Papercusp',
@@ -137,8 +139,9 @@ interface EvalSuiteSummary {
 }
 interface EvalArmAggregate {
   arm: ArmId;
-  passAt1: number;
+  passAt1: number | null;
   ci?: [number, number];
+  ciLevel?: number;
   // null (not just absent) is a real value: an ablation arm can report "no cost
   // measured". The frontier filter already guards `costUsd != null` (line ~311),
   // and the sibling aggregate types below allow null — align this one.
@@ -148,8 +151,26 @@ interface EvalArmAggregate {
 export interface EvalReport {
   suite: string;
   byArm: EvalArmAggregate[];
+  canonical?: boolean;
+  sampling?: SuiteReport['sampling'];
+  assignment?: SuiteReport['assignment'];
   /** System-delta vs each baseline (papercusp − baseline). */
-  deltas?: Array<{ baseline: ArmId; deltaPassAt1: number; costRatio: number | null }>;
+  deltas?: Array<{ baseline: ArmId; treatment?: ArmId; deltaPassAt1: number | null; costRatio: number | null;
+    accuracyDeltaCi?: Interval | null; uncertainty?: ArmDelta['uncertainty']; efficiencyMeasured?: boolean }>;
+}
+
+/** Translate the maintained report at the consumer boundary; keep legacy read shapes readable. */
+export function normalizeEvalReport(report: SuiteReport | EvalReport | undefined): EvalReport | undefined {
+  if (!report || 'byArm' in report) return report;
+  return { suite: report.suite, canonical: true, sampling: report.sampling, assignment: report.assignment,
+    byArm: report.arms.map(arm => ({ arm: arm.arm, passAt1: arm.passAt1,
+      ci: arm.passAt1Ci ? [arm.passAt1Ci.lower, arm.passAt1Ci.upper] : undefined,
+      ciLevel: arm.passAt1Ci?.ci,
+      costUsd: arm.attempts > 0 && !arm.cost.missingMeasurements ? arm.cost.costUsd / arm.attempts : null,
+      isoBudgetTokens: arm.budgetTokens })),
+    deltas: report.deltas.map(delta => ({ baseline: delta.baseline, treatment: delta.treatment,
+      deltaPassAt1: delta.accuracyDelta, costRatio: delta.costRatio, accuracyDeltaCi: delta.accuracyDeltaCi,
+      uncertainty: delta.uncertainty, efficiencyMeasured: delta.efficiencyMeasured })) };
 }
 
 // One per-(task × arm × seed) row from `evals.runs`. camelCase mirror of the
@@ -163,6 +184,8 @@ export interface EvalRunRow {
   resolved: boolean | null;
   costUsd?: number | null;
   tokensTotal?: number | null;
+  generationStatus?: string;
+  armMeta?: Record<string, unknown>;
 }
 
 // Fleet-layer (L2–L4) read shapes ARE the shared eval-viz prop item types —
@@ -204,6 +227,8 @@ interface PreservedResolvedTask {
   wallClockMs?: number;
   diffBytes?: number;
   resolved: boolean | null;
+  generationError?: string | null;
+  armMeta?: Record<string, unknown>;
 }
 interface PreservedRunSummary {
   arm: string;
@@ -211,6 +236,10 @@ interface PreservedRunSummary {
   resolvedCount: number;
   taskCount: number;
   resolvedPct: number | null;
+  conditionalResolvedPct?: number | null;
+  attemptedCount?: number;
+  absentCount?: number;
+  missingGradeCount?: number;
   costUsd: number;
   tokensIn: number;
   tokensOut: number;
@@ -236,7 +265,7 @@ interface PreservedRunDetail {
   arm?: string;
   taskSetId?: string;
   source?: string;
-  config?: { cap?: number | null } | null;
+  config?: { cap?: number | null; current?: unknown; protocol?: unknown; synthetic?: boolean } | null;
   run: { arm: string; startedAt?: string; coordEvents?: Array<{ kind: string; agent?: string; taskId?: string | null; detail?: string }> };
   perTask: PreservedResolvedTask[];
   summary: PreservedRunSummary;
@@ -266,6 +295,8 @@ interface LaunchRunArgs {
   maxUsdPerTask?: number;
   maxTokensPerTask?: number;
   maxUsdPerRun?: number;
+  current?: { workspaceId: string; protocolRunId: string; preregHash: string; seed: number;
+    observation: { runtimeWorkspaceId: string; workerUnit: string; gatewayUnit: string } };
 }
 interface LaunchRunResult {
   ok: boolean;
@@ -311,8 +342,8 @@ const pctLabel = (v: number | null | undefined): string => (v == null ? '—' : 
 export function toFrontierPoints(report: EvalReport | undefined): FrontierPoint[] {
   if (!report) return [];
   return report.byArm
-    .filter((a) => a.costUsd != null)
-    .map((a) => ({ label: armLabel(a.arm), cost: a.costUsd as number, score: a.passAt1, arm: a.arm }));
+    .filter((a) => a.costUsd != null && a.passAt1 != null)
+    .map((a) => ({ label: armLabel(a.arm), cost: a.costUsd as number, score: a.passAt1!, arm: a.arm }));
 }
 
 /** Per-task pass@1 pivot for the A/B table: mean(resolved over seeds) per (task,
@@ -476,7 +507,7 @@ export default function AdvEvalsTab() {
         </div>
         <div className="pc-evals__controlsright">
           {/* Suite picker — shared across views; hidden until suites exist. */}
-          {suites.length > 0 ? (
+          {!suitesSync.error && suites.length > 0 ? (
             <label className="pc-evals__suitepick">
               <Gauge size={12} aria-hidden />
               <span className="pc-evals__suitelabel">suite</span>
@@ -508,7 +539,12 @@ export default function AdvEvalsTab() {
         </div>
       </div>
 
-      {view === 'throughput' ? (
+      {suitesSync.error ? (
+        <p className="pc-evals__empty" role="alert">
+          Could not load benchmark suites: {suitesSync.error instanceof Error
+            ? suitesSync.error.message : String(suitesSync.error)}
+        </p>
+      ) : view === 'throughput' ? (
         <ThroughputView runId={runId} suites={suites} suitesLoading={suitesSync.loading && !suitesSync.data} />
       ) : view === 'value' ? (
         <ValueView runId={runId} suites={suites} suitesLoading={suitesSync.loading && !suitesSync.data} />
@@ -572,13 +608,13 @@ function ExternalBenchmarksView({
   // The per-arm aggregate for the selected run (pass@1 + derived cost), keyed by
   // run_id to match emitRollout's notifySyncInvalidate('evals.report', { run_id }).
   // Feeds the cost/accuracy Pareto (P-021 Frontier).
-  const reportSync = useSyncQuery<EvalReport>({
+  const reportSync = useSyncQuery<SuiteReport | EvalReport>({
     queryName: 'evals.report',
-    args: { run_id: runId },
+    args: { runId },
     staleTime: 30_000,
     enabled: !!runId,
   });
-  const report = reportSync.data?.[0];
+  const report = useMemo(() => normalizeEvalReport(reportSync.data?.[0]), [reportSync.data]);
   const frontierPoints = useMemo(() => toFrontierPoints(report), [report]);
 
   if (suitesLoading) {
@@ -658,6 +694,63 @@ function FleetStat({ arm, value, sub, hint }: { arm: string; value: string; sub?
       {sub ? <span className="pc-evals__statsub">{sub}</span> : null}
     </div>
   );
+}
+
+export function PreservedOutcomeStats({ summary: s }: {
+  summary: Pick<PreservedRunSummary, 'arm' | 'resolvedPct' | 'conditionalResolvedPct' | 'resolvedCount' | 'taskCount' | 'gradedCount' | 'missingGradeCount'>;
+}) {
+  return <>
+    <FleetStat arm={s.arm}
+      value={s.resolvedPct == null ? '—' : `${Math.round(s.resolvedPct * 1000) / 10}%`}
+      sub={`${s.resolvedCount}/${s.taskCount} assigned tasks resolved`}
+      hint={s.missingGradeCount ? `${s.missingGradeCount} submissions await official grades; primary score is inconclusive.`
+        : 'Primary outcome rate includes every assigned task, including non-attempts and generation failures.'} />
+    <FleetStat arm={s.arm}
+      value={s.conditionalResolvedPct == null ? '—' : `${Math.round(s.conditionalResolvedPct * 1000) / 10}%`}
+      sub={`${s.resolvedCount}/${s.gradedCount} graded submissions · conditional quality`}
+      hint="Secondary score among officially graded submissions; excludes generation failures and absent attempts." />
+  </>;
+}
+
+/** Classify recorded evidence; a current config or a successful exit alone proves no measurement. */
+export function BenchmarkEvidenceNote({ source, hasFrozenProtocol = false, protocolCommitted = false,
+  tasks, expectedAssignments, missingGradeCount = 0, synthetic = false }: {
+  source?: string; hasFrozenProtocol?: boolean; protocolCommitted?: boolean;
+  tasks: Array<Pick<EvalRunRow, 'resolved' | 'generationStatus' | 'armMeta'> & { generationError?: string | null }>;
+  expectedAssignments?: number; missingGradeCount?: number; synthetic?: boolean;
+}) {
+  const object = (value: unknown): Record<string, unknown> | null =>
+    value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  const fixture = synthetic || source === 'synthetic' || tasks.some(task => task.armMeta?.synthetic === true);
+  const complete = expectedAssignments != null && expectedAssignments > 0 && tasks.length === expectedAssignments
+    && missingGradeCount === 0 && tasks.every(task => task.resolved != null);
+  const verified = complete && protocolCommitted && tasks.every(task => {
+    const execution = object(task.armMeta?.currentExecution);
+    const identity = object(execution?.measured);
+    const protocol = object(execution?.protocolIdentity);
+    const prereg = object(execution?.preregistration);
+    return (execution?.kind === 'current-su' || execution?.kind === 'stock-native')
+      && execution.identityStatus === 'measured' && protocol?.status === 'matched'
+      && ['sourceRevision', 'runtimeRevision', 'clientVersion', 'promptHash', 'toolsHash']
+        .every(key => typeof identity?.[key] === 'string' && Boolean((identity[key] as string).trim()))
+      && typeof prereg?.gitCommitSha === 'string' && Boolean(prereg.gitCommitSha.trim())
+      && typeof prereg.receiptRef === 'string' && Boolean(prereg.receiptRef.trim());
+  });
+  const label = fixture ? 'Synthetic fixture evidence'
+    : source === 'import' ? 'Historical archive evidence'
+    : !hasFrozenProtocol ? 'Historical or unverified evidence'
+    : verified ? 'Current measured evidence' : 'Incomplete current evidence';
+  return <div className="pc-evals__note" role="note" aria-label="Benchmark evidence class">
+    <strong>{label}</strong>
+    <span>{fixture ? 'Fixture results do not measure current product performance.'
+      : source === 'import' || !hasFrozenProtocol ? 'Recorded snapshot; current runtime and protocol parity are not established.'
+      : verified ? 'Recorded execution identity matches the committed protocol; assigned outcomes are measured. This alone does not establish superiority.'
+      : 'Complete assigned outcomes, committed protocol and measured matching execution identity are required before this is current measured performance.'}
+      {missingGradeCount > 0 ? ` ${missingGradeCount} submissions await official grades.` : ''}
+      {expectedAssignments != null && tasks.length < expectedAssignments
+        ? ` ${expectedAssignments - tasks.length} assigned attempts are absent.` : ''}
+    </span>
+  </div>;
 }
 
 // ── Throughput view (L2 — fleet speedup, tasks/$, backlog-drain) ──────────────
@@ -870,9 +963,9 @@ function ReportView({ suite, runId }: { suite: string; runId: string }) {
   // The headline aggregate for this run — pass@1 + Wilson CI by arm + the
   // system-delta vs each baseline (P-011 `buildSuiteReport`). Keyed by run_id to
   // match emitRollout's invalidation.
-  const reportSync = useSyncQuery<EvalReport>({
+  const reportSync = useSyncQuery<SuiteReport | EvalReport>({
     queryName: 'evals.report',
-    args: { run_id: runId },
+    args: { runId },
     staleTime: 30_000,
     enabled: !!runId,
   });
@@ -880,11 +973,11 @@ function ReportView({ suite, runId }: { suite: string; runId: string }) {
   // tables. Keyed by run_id to match emitRollout's invalidation of evals.runs.
   const runsSync = useSyncQuery<EvalRunRow>({
     queryName: 'evals.runs',
-    args: { run_id: runId },
+    args: { runId },
     staleTime: 30_000,
     enabled: !!runId,
   });
-  const report = reportSync.data?.[0];
+  const report = normalizeEvalReport(reportSync.data?.[0]);
   const runs = runsSync.data ?? [];
 
   return (
@@ -911,10 +1004,19 @@ function ReportView({ suite, runId }: { suite: string; runId: string }) {
         <EmptyCard
           icon={<Scale size={20} aria-hidden />}
           title="No report yet"
-          body="Once a suite has been run across all four arms with ≥3 seeds, the headline lands here: pass@1 with a 95% confidence interval per arm, the iso-budget cost, and the system-delta — “holding the model constant, the Papercusp harness resolves X% more at Z% of the native-harness cost.” The per-baseline A/B/C deltas plot below as Papercusp-vs-baseline tables."
+          body="Select a registered run to see assigned-task outcomes, measured costs and paired uncertainty under its frozen sampling policy. Missing grades remain inconclusive."
         />
       ) : (
         <>
+          <BenchmarkEvidenceNote tasks={runs}
+            hasFrozenProtocol={report.assignment?.basis === 'frozen'}
+            protocolCommitted={report.assignment?.protocolCommitted}
+            expectedAssignments={report.assignment?.seeds
+              ? report.assignment.taskIds.length * report.assignment.arms.length * report.assignment.seeds.length : undefined}
+            missingGradeCount={report.deltas?.reduce((count, delta) => Math.max(count, delta.uncertainty?.missingMeasurements ?? 0), 0)} />
+          {report.sampling && <p className="pc-evals__empty">
+            {report.sampling.taskPairs} task pairs · {report.sampling.independentUnits ?? 'unknown'} independent {report.sampling.unit === 'repository' ? 'repositories' : 'sampling units'} · {report.sampling.assignedSeeds?.length ?? 'unknown'} assigned seeds per task · {Math.round(report.sampling.ci * 100)}% CI
+          </p>}
           <div className="pc-evals__scoreboard" aria-label={`${suite} — headline pass@1 by arm`}>
             {report.byArm.map((a) => (
               <ArmStat
@@ -922,7 +1024,7 @@ function ReportView({ suite, runId }: { suite: string; runId: string }) {
                 arm={a.arm}
                 value={pctLabel(a.passAt1)}
                 sub={a.ci ? `${pctLabel(a.ci[0])}–${pctLabel(a.ci[1])}` : undefined}
-                hint={`pass@1 (95% CI) for ${ARM_LABEL[a.arm]}. ${ARM_HINT[a.arm]}`}
+                hint={`Primary assigned-task outcome${a.ciLevel ? ` (${Math.round(a.ciLevel * 100)}% CI)` : '; interval unavailable'} for ${ARM_LABEL[a.arm] ?? armLabel(a.arm)}.`}
               />
             ))}
           </div>
@@ -930,7 +1032,22 @@ function ReportView({ suite, runId }: { suite: string; runId: string }) {
           {/* Papercusp vs each baseline — per-task score deltas (P-021 Compare),
               B native first (the headline baseline, D-002). Each Compare renders
               its own empty state until per-task rows arrive. */}
-          {BASELINE_ARMS.map((baseline) => (
+          {report.canonical ? report.deltas?.map(delta => (
+            <div key={delta.baseline} className="pc-evals__compareblock">
+              <h3 className="pc-evals__h3">{armLabel(delta.treatment ?? 'papercusp')} vs {armLabel(delta.baseline)}</h3>
+              <p>Primary difference: {pctLabel(delta.deltaPassAt1)}. {delta.accuracyDeltaCi
+                ? `Paired ${Math.round(delta.accuracyDeltaCi.ci * 100)}% CI: ${pctLabel(delta.accuracyDeltaCi.lower)}–${pctLabel(delta.accuracyDeltaCi.upper)}.`
+                : delta.uncertainty?.status === 'missing-grade' ? 'Interval unavailable: missing official grades.'
+                : delta.uncertainty?.status === 'insufficient-independent-units' ? 'Interval unavailable: fewer than two independent sampling units.'
+                : 'Interval unavailable: sampling policy is unregistered.'}</p>
+              {delta.uncertainty && <p>
+                Observed attempts: baseline {delta.uncertainty.baselineObservedAttempts}, treatment {delta.uncertainty.treatmentObservedAttempts}.
+                {' '}Absent assignments: baseline {delta.uncertainty.baselineAbsentAttempts}, treatment {delta.uncertainty.treatmentAbsentAttempts}.
+                {' '}Missing measurements: {delta.uncertainty.missingMeasurements}.
+              </p>}
+              {delta.efficiencyMeasured === false && <p>Cost efficiency is unmeasured.</p>}
+            </div>
+          )) : BASELINE_ARMS.map((baseline) => (
             <div key={baseline} className="pc-evals__compareblock">
               <h3 className="pc-evals__h3">Papercusp vs {ARM_LABEL[baseline]}</h3>
               <Compare
@@ -954,12 +1071,7 @@ function ReportView({ suite, runId }: { suite: string; runId: string }) {
 // above a spend threshold (D-004); disabled while a run is in flight. opus is
 // pinned (fail-closed). The launch is gated server-side on papercusp-external-bench
 // (default OFF) — a 403 surfaces the "enable the flag" message honestly.
-const LAUNCH_ARMS = ['hive-realqueen', 'fifo-noqueen', 'mini-swe-agent'] as const;
-const LAUNCH_TASK_SETS = [
-  { id: '11-task-pilot', label: '11-task pilot (public SWE-bench Pro)' },
-  { id: 'swe-bench-pro-full', label: 'Full SWE-bench Pro (~731)' },
-  { id: 'custom', label: 'Custom instance ids' },
-] as const;
+const LAUNCH_ARMS = ['papercusp', 'baseline'] as const;
 const OWNER_CONFIRM_USD = 20;
 const fieldStyle: CSSProperties = {
   background: 'var(--bg-2)', border: '1px solid var(--border)', color: 'var(--fg)',
@@ -967,23 +1079,28 @@ const fieldStyle: CSSProperties = {
 };
 
 interface LaunchEstimate {
+  ready?: boolean;
+  arm?: string;
+  error?: string;
   taskCount: number;
   estCostUsd: number;
   estWallMin: number;
   perTaskUsd: number;
   basis: string;
+  aggregateBudgetUsd?: number;
+  model?: string;
+  effort?: string;
+  account?: string;
+  current?: LaunchRunArgs['current'];
 }
 
 function LaunchRunView() {
-  const [armRaw, setArm] = useQueryState('launchArm', parseAsStringEnum([...LAUNCH_ARMS]).withDefault('hive-realqueen'));
-  const [taskSetRaw, setTaskSet] = useQueryState('launchTaskSet', parseAsStringEnum(LAUNCH_TASK_SETS.map((t) => t.id)).withDefault('11-task-pilot'));
-  const [capRaw, setCap] = useQueryState('launchCap', parseAsString);
-  const arm = armRaw ?? 'hive-realqueen';
-  const taskSet = taskSetRaw ?? '11-task-pilot';
-  const capNum = Math.max(1, Number(capRaw) || 5);
-
-  const [maxUsd, setMaxUsd] = useState('10');
-  const [customIds, setCustomIds] = useState('');
+  const [armRaw, setArm] = useQueryState('launchArm', parseAsStringEnum([...LAUNCH_ARMS]).withDefault('papercusp'));
+  const [protocolRunId, setProtocolRunId] = useState('');
+  const [workspaceId, setWorkspaceId] = useState('benchmarks');
+  const [seedText, setSeedText] = useState('1');
+  const arm = LAUNCH_ARMS.includes(armRaw as typeof LAUNCH_ARMS[number]) ? armRaw! : 'papercusp';
+  const seed = Number(seedText);
   const [confirmed, setConfirmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1002,26 +1119,24 @@ function LaunchRunView() {
   // Cost+time estimate (D-004) — shared sync read so the launch form stays on the audited data path.
   const estimateSync = useSyncQuery<LaunchEstimate>({
     queryName: 'evals.benchEstimate',
-    args: { taskSetId: taskSet, cap: capNum },
+    args: { workspaceId, protocolRunId, arm, seed: Number.isSafeInteger(seed) && seed >= 0 ? seed : 1 },
   });
   const estimate = estimateSync.data?.[0] ?? null;
 
-  const needsConfirm = (estimate?.estCostUsd ?? 0) >= OWNER_CONFIRM_USD;
-  const customMissing = taskSet === 'custom' && customIds.trim().length === 0;
-  const canLaunch = !activeRun && !submitting && (!needsConfirm || confirmed) && !customMissing;
+  // A previous query result cannot authorize a newly typed protocol/seed.
+  const selection = estimate?.current;
+  const ready = estimate?.ready === true && estimate.arm === arm && selection?.workspaceId === workspaceId &&
+    selection.protocolRunId === protocolRunId && selection.seed === seed &&
+    !estimateSync.loading && !estimateSync.fetching && !estimateSync.error;
+  const needsConfirm = (estimate?.aggregateBudgetUsd ?? 0) >= OWNER_CONFIRM_USD;
+  const canLaunch = ready && !activeRun && !submitting && (!needsConfirm || confirmed);
 
   async function launch() {
     setSubmitting(true);
     setError(null);
     try {
-      const body: LaunchRunArgs = {
-        arm,
-        taskSetId: taskSet,
-        cap: capNum,
-        model: 'opus',
-        maxUsdPerTask: Number(maxUsd) || undefined,
-      };
-      if (taskSet === 'custom') body.taskIds = customIds.split(',').map((s) => s.trim()).filter(Boolean);
+      if (!canLaunch || !selection) throw new Error('The selected committed protocol is not ready.');
+      const body: LaunchRunArgs = { arm, taskSetId: 'custom', current: selection };
       const json = await launchRun(body);
       if (!json.ok || !json.runId) {
         setError(json.error || 'launch failed');
@@ -1039,7 +1154,8 @@ function LaunchRunView() {
   return (
     <section className="pc-evals__section">
       <p className="pc-evals__lede">
-        Launch a managed SWE-bench Pro run with the selected arm, task set, and spend ceiling.
+        Launch one arm and seed of a committed matched protocol. The protocol fixes the model,
+        task roster, context and spending limits for both arms.
       </p>
 
       {activeRun ? (
@@ -1059,79 +1175,56 @@ function LaunchRunView() {
                 ariaLabel="Benchmark arm"
                 value={arm}
                 onChange={(v: string) => void setArm(v as (typeof LAUNCH_ARMS)[number])}
-                options={LAUNCH_ARMS.map((a) => ({ value: a, label: armLabel(a) }))}
+                options={LAUNCH_ARMS.map((a) => ({ value: a, label: a === 'papercusp' ? 'Current Papercusp su' : 'Stock Codex' }))}
               />
             </label>
 
             <label className="pc-evals__suitepick">
-              <span className="pc-evals__suitelabel">task set</span>
-              <Select
-                ariaLabel="Task set"
-                value={taskSet}
-                onChange={(v: string) => void setTaskSet(v as (typeof LAUNCH_TASK_SETS)[number]['id'])}
-                options={LAUNCH_TASK_SETS.map((t) => ({ value: t.id, label: t.label }))}
-              />
+              <span className="pc-evals__suitelabel">protocol</span>
+              <input aria-label="Committed protocol run ID" value={protocolRunId}
+                onChange={e => { setProtocolRunId(e.target.value); setConfirmed(false); }} style={{ ...fieldStyle, width: '100%' }} />
             </label>
 
-            {taskSet === 'custom' ? (
-              <label className="pc-evals__suitepick pc-launch__wide">
-                <span className="pc-evals__suitelabel">ids</span>
-                <input
-                  aria-label="Custom instance ids (comma-separated)"
-                  value={customIds}
-                  onChange={(e) => setCustomIds(e.target.value)}
-                  placeholder="instance_a, instance_b"
-                  style={{ ...fieldStyle, width: '100%' }}
-                />
-              </label>
-            ) : null}
+            <label className="pc-evals__suitepick pc-launch__wide">
+              <span className="pc-evals__suitelabel">workspace</span>
+              <input aria-label="Benchmark workspace" value={workspaceId}
+                onChange={e => { setWorkspaceId(e.target.value); setConfirmed(false); }} style={{ ...fieldStyle, width: '100%' }} />
+            </label>
 
             <div className="pc-launch__model" aria-label="Model policy">
               <span className="pc-evals__suitelabel">model</span>
-              <strong>opus</strong>
-              <span>fail-closed</span>
+              <strong>{ready ? estimate?.model : 'From committed protocol'}</strong>
+              {ready ? <span>{estimate?.effort} · {estimate?.account}</span> : null}
             </div>
 
             <label className="pc-evals__suitepick">
-              <span className="pc-evals__suitelabel">fleet cap</span>
+              <span className="pc-evals__suitelabel">seed</span>
               <input
-                aria-label="Fleet concurrency cap"
+                aria-label="Registered seed"
                 type="number"
-                min={1}
-                value={capRaw ?? '5'}
-                onChange={(e) => void setCap(e.target.value)}
+                min={0}
+                value={seedText}
+                onChange={(e) => { setSeedText(e.target.value); setConfirmed(false); }}
                 style={fieldStyle}
               />
             </label>
 
-            <label className="pc-evals__suitepick">
-              <span className="pc-evals__suitelabel">$/task cap</span>
-              <input
-                aria-label="Per-task budget cap (USD)"
-                type="number"
-                min={0}
-                step={0.5}
-                value={maxUsd}
-                onChange={(e) => setMaxUsd(e.target.value)}
-                style={fieldStyle}
-              />
-            </label>
           </div>
         </div>
 
         <div className="pc-launch__panel pc-launch__panel--estimate">
           <div className="pc-evals__sectionhead"><h2>Estimate</h2></div>
-          {estimate ? (
+          {ready && estimate ? (
             <div className="pc-evals__scoreboard pc-launch__estimate" aria-label="Run cost estimate">
               <div className="pc-evals__stat">
-                <span className="pc-evals__statlabel"><DollarSign size={12} aria-hidden /> est. cost</span>
-                <span className="pc-evals__statvalue">≈ ${estimate.estCostUsd.toFixed(2)}</span>
+                <span className="pc-evals__statlabel"><DollarSign size={12} aria-hidden /> generation ceiling</span>
+                <span className="pc-evals__statvalue">≤ ${estimate.estCostUsd.toFixed(2)}</span>
                 <span className="pc-evals__statsub">{estimate.basis}</span>
               </div>
               <div className="pc-evals__stat">
                 <span className="pc-evals__statlabel"><Gauge size={12} aria-hidden /> wall</span>
-                <span className="pc-evals__statvalue">~{estimate.estWallMin} min</span>
-                <span className="pc-evals__statsub">rough projection</span>
+                <span className="pc-evals__statvalue">≤ {estimate.estWallMin} min</span>
+                <span className="pc-evals__statsub">generation time ceiling</span>
               </div>
               <div className="pc-evals__stat">
                 <span className="pc-evals__statlabel">tasks</span>
@@ -1140,14 +1233,15 @@ function LaunchRunView() {
               </div>
             </div>
           ) : (
-            <p className="pc-evals__empty">Estimate unavailable.</p>
+            <p className="pc-evals__empty" role="status">{estimate?.error ?? 'Select a committed protocol to check its account and loaded runtime.'}</p>
           )}
 
-          {needsConfirm ? (
+          {ready && needsConfirm ? (
             <label className="pc-evals__confirm">
               <Checkbox checked={confirmed} onChange={setConfirmed} ariaLabel="Approve this spend" />
               <span>
-                Estimated at <strong>≈ ${estimate?.estCostUsd.toFixed(2)}</strong> of opus. Confirm to unlock launch.
+                This protocol permits up to <strong>${estimate?.aggregateBudgetUsd?.toFixed(2)}</strong> across
+                its assignments. Confirm to unlock launch.
               </span>
             </label>
           ) : null}
@@ -1186,6 +1280,12 @@ function runStatusTone(status: string | undefined): 'good' | 'warn' | 'bad' | 'n
 function RunStatusPill({ status }: { status: string | undefined }) {
   const label = status || 'unknown';
   return <StatusPill tone={runStatusTone(status)} label={label} />;
+}
+
+/** P-016 / FSWE-P016-BADGE: the FrontierSWE corpus version a run's task set loads, so a v2 run never reads as v1. */
+export function FrontierSweVersionBadge({ taskSetId }: { taskSetId: string | null | undefined }) {
+  const label = frontierSweVersionLabel(taskSetId);
+  return label ? <StatusPill tone="neutral" label={label} /> : null;
 }
 
 function fmtShortDate(value: string | undefined): string {
@@ -1697,7 +1797,7 @@ function PreservedRunsView() {
             triggerStyle={{ maxWidth: 300 }}
             options={filteredRuns.map((r) => ({
               value: r.id,
-              label: `${r.id} · ${armLabel(r.arm)} · ${r.resolvedPct != null ? Math.round(r.resolvedPct * 100) + '%' : '—'} · ${r.status}`,
+              label: [r.id, armLabel(r.arm), frontierSweVersionLabel(r.taskSetId), r.resolvedPct != null ? Math.round(r.resolvedPct * 100) + '%' : '—', r.status].filter(Boolean).join(' · '),
             }))}
           />
         </label>
@@ -1717,6 +1817,7 @@ function PreservedRunsView() {
               <div className="pc-preserved__meta" aria-label="Selected run metadata">
                 <span>{armLabel(s.arm)}</span>
                 <span>{detail.taskSetId || 'task set unknown'}</span>
+                <FrontierSweVersionBadge taskSetId={detail.taskSetId || selRun?.taskSetId} />
                 <span>{selRun?.source || detail.source || 'store'}</span>
                 <span>{fmtShortDate(selRun?.createdAt || detail.run.startedAt)}</span>
               </div>
@@ -1756,26 +1857,14 @@ function PreservedRunsView() {
           {/* Live fleet panel (P-007) while the run is in flight. */}
           {live?.isLive ? <LiveFleetPanel live={live} /> : null}
 
-          {/* Honest caveats (impartial-benchmark-suite D-027): this is a single
-              preserved arm, not strictly opus, empty diffs counted as unresolved,
-              no valid no-Queen control yet, and an 11-task subset. */}
-          <div className="pc-evals__note" role="note">
-            <strong>Real graded run · {armLabel(s.arm)}</strong>
-            <span>
-              Officially graded snapshot. Caveats: ~92% opus (not strictly opus); empty diffs (no patch) score as
-              unresolved; no valid no-Mug control arm yet (single treatment arm, so the per-task table has no
-              baseline column); {s.taskCount}-task subset, not the full set.
-              {s.recovered ? ' This snapshot was reconstructed from recovered fleet state (no preserved wall-clock).' : ''}
-            </span>
-          </div>
+          <BenchmarkEvidenceNote source={detail.source ?? selRun?.source}
+            tasks={detail.perTask} expectedAssignments={s.taskCount} missingGradeCount={s.missingGradeCount}
+            hasFrozenProtocol={Boolean(detail.config?.current && detail.config?.protocol)}
+            protocolCommitted={Boolean(detail.config?.current && detail.config?.protocol)}
+            synthetic={detail.config?.synthetic === true} />
 
           <div className="pc-evals__scoreboard" aria-label={`${s.arm} — preserved run summary`}>
-            <FleetStat
-              arm={s.arm}
-              value={s.resolvedPct == null ? '—' : `${Math.round(s.resolvedPct * 1000) / 10}%`}
-              sub={`${s.resolvedCount}/${s.gradedCount} resolved`}
-              hint={`Official-grader pass rate: ${s.resolvedCount} of ${s.gradedCount} graded tasks resolved.`}
-            />
+            <PreservedOutcomeStats summary={s} />
             <FleetStat arm={s.arm} value={fmtUsd(s.costUsd)} sub={`${s.taskCount} tasks`} hint="Total cost across the run." />
             <FleetStat arm={s.arm} value={`${s.nonEmptyDiffs}/${s.taskCount}`} sub="non-empty diffs" hint="Tasks where a real patch was produced." />
             <FleetStat arm={s.arm} value={fmtDurMs(s.wallMs)} sub={`${s.coordEventCount} coord events`} hint="Parallel backlog-drain wall-clock + coordination-trace volume." />
@@ -1859,10 +1948,10 @@ function ArmStat({
   hint?: string;
 }) {
   return (
-    <div className="pc-evals__stat" aria-label={hint} style={{ ['--arm-accent' as string]: ARM_COLOR[arm] }}>
+    <div className="pc-evals__stat" aria-label={hint} style={{ ['--arm-accent' as string]: ARM_COLOR[arm] ?? armColor(arm) }}>
       <span className="pc-evals__statlabel">
         <span className="pc-evals__statdot" aria-hidden />
-        {ARM_LABEL[arm]}
+        {ARM_LABEL[arm] ?? armLabel(arm)}
       </span>
       <span className="pc-evals__statvalue">{value}</span>
       {sub ? <span className="pc-evals__statsub">{sub}</span> : null}

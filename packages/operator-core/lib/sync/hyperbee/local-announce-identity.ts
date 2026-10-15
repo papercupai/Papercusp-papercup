@@ -68,6 +68,12 @@ export interface ResolveAttestationGistArgs {
   pubkeyBase64: string;
   githubUserId: number;
   githubLogin: string;
+  /**
+   * WI-10006733: the gist this SAME device (keychain id + pubkey + GitHub user)
+   * resolved last time, from the identity cache. Present only on a match. The
+   * default resolver verifies it before falling back to the full gist listing.
+   */
+  knownGistId?: string;
 }
 
 export interface ResolveLocalAnnounceIdentityOpts {
@@ -314,6 +320,7 @@ async function defaultResolveAttestationGistId(
     githubUserId: args.githubUserId,
     githubLogin: args.githubLogin,
     token: tok.token,
+    ...(args.knownGistId ? { knownGistId: args.knownGistId } : {}),
   });
 }
 
@@ -485,6 +492,18 @@ export async function resolveLocalAnnounceIdentity(
   const keychainId = opts.keychainId ?? buildKeychainId(user.id);
   const keypair = await loadKeypair(keychainId);
   const resolveGist = opts.resolveAttestationGistId ?? defaultResolveAttestationGistId;
+  // WI-10006733: past the 60s fresh window the cache still names the gist this
+  // device resolved last time. Hand it to the resolver as a hint (it verifies
+  // it remotely) so the steady state is one request, not a walk of every gist
+  // on the account. Only a cache for THIS device/user qualifies.
+  const prior = await readCachedIdentity(cachePath);
+  const knownGistId =
+    prior &&
+    prior.keychainId === keychainId &&
+    prior.devicePubkeyBase64 === keypair.pubkeyBase64 &&
+    prior.githubUserId === user.id
+      ? prior.attestationGistId
+      : undefined;
   let attestationGistId: string;
   try {
     attestationGistId = await resolveGist({
@@ -492,6 +511,7 @@ export async function resolveLocalAnnounceIdentity(
       pubkeyBase64: keypair.pubkeyBase64,
       githubUserId: user.id,
       githubLogin: user.login,
+      ...(knownGistId ? { knownGistId } : {}),
     });
   } catch (e) {
     // A cached identity for THIS device carries a real, previously-resolved

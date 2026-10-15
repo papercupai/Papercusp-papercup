@@ -15,7 +15,7 @@
  * learning_governor_loops alone, so it is asserted against real rows rather
  * than trusted to code review.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -33,6 +33,9 @@ import {
   setPotLearningScope,
 } from './store';
 import { isDeliberatePause } from './core';
+
+// These tests exercise transactional gate reads, not the separate durable recorder.
+vi.mock('../../degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
 
 let sql: postgres.Sql;
 let containerUri: string;
@@ -66,6 +69,41 @@ afterAll(async () => {
 });
 
 describe('learning-pot-scope store', () => {
+  it('missing-relation fallbacks leave an enclosing transaction usable', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await sql.begin(async tx => {
+        await tx`ALTER TABLE harness_shared.learning_pot_scope RENAME TO learning_pot_scope_unavailable`;
+        try {
+          const client = tx as unknown as postgres.Sql;
+          expect(await potLearningEnabled(client, { workspaceId: WS, potSlug: 'any' })).toBe(true);
+          expect(await listPotLearningScope(client, { workspaceId: WS })).toEqual([]);
+          expect(await disabledPotSlugs(client, { workspaceId: WS })).toEqual([]);
+          expect(await tx`SELECT 1 AS alive`).toMatchObject([{ alive: 1 }]);
+        } finally {
+          await tx`ALTER TABLE harness_shared.learning_pot_scope_unavailable RENAME TO learning_pot_scope`;
+        }
+      });
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('is answering fail-OPEN'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('propagates other read errors while leaving the enclosing transaction usable', async () => {
+    await sql.begin(async tx => {
+      await tx`ALTER TABLE harness_shared.learning_pot_scope RENAME COLUMN pot_slug TO unavailable_slug`;
+      try {
+        await expect(getPotLearningScope(tx as unknown as postgres.Sql, { workspaceId: WS, potSlug: 'any' }))
+          .rejects.toMatchObject({ code: '42703' });
+        expect(await tx`SELECT 1 AS alive`).toMatchObject([{ alive: 1 }]);
+      } finally {
+        await tx`ALTER TABLE harness_shared.learning_pot_scope RENAME COLUMN unavailable_slug TO pot_slug`;
+      }
+    });
+  });
+
   it('an empty table means every pot is enabled', async () => {
     // R-5, against the real relation: this is the state migration 1039 ships in,
     // so a regression here stops the whole fleet's learning the moment it applies.

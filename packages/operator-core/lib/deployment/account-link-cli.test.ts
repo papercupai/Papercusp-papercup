@@ -349,6 +349,34 @@ describe('account-link-cli — CLI-driven OAuth link', () => {
 });
 
 describe('resolveCliBin — CLI binary resolution for stripped-PATH operator hosts (WI-1917)', () => {
+  it.each(['claude', 'codex'] as const)('selects the vendor %s login CLI instead of a cloud session wrapper', (provider) => {
+    const vendor = `/usr/local/lib/papercusp-agent-toolchain/bin/${provider}`;
+    const wrapper = `/opt/papercusp/current/bin/${provider}`;
+    const sharedResolver = vi.fn(() => wrapper);
+    fsProbe.accessSync = (path) => {
+      if (path !== vendor && path !== wrapper) throw new Error('ENOENT');
+    };
+    try {
+      expect(resolveCliBin(provider, { PAPERCUSP_DISTRIBUTION_PROFILE: 'vm-release', PATH: '/opt/papercusp/current/bin' }, sharedResolver))
+        .toBe(vendor);
+      expect(sharedResolver).not.toHaveBeenCalled();
+    } finally {
+      fsProbe.accessSync = null;
+    }
+  });
+
+  it.each(['claude', 'codex'] as const)('names a missing cloud vendor %s toolchain instead of launching a session', (provider) => {
+    fsProbe.accessSync = () => { throw new Error('ENOENT'); };
+    const sharedResolver = vi.fn(() => `/opt/papercusp/current/bin/${provider}`);
+    try {
+      expect(() => resolveCliBin(provider, { PAPERCUSP_DISTRIBUTION_PROFILE: 'vm-release', PATH: '' }, sharedResolver))
+        .toThrow(/vendor login CLI.*customer agent toolchain/);
+      expect(sharedResolver).not.toHaveBeenCalled();
+    } finally {
+      fsProbe.accessSync = null;
+    }
+  });
+
   it('an explicit env override wins verbatim, no existence check', () => {
     expect(resolveCliBin('claude', { CLAUDE_BIN: '/custom/claude' })).toBe('/custom/claude');
     expect(resolveCliBin('codex', { CODEX_BIN: '/custom/codex' })).toBe('/custom/codex');

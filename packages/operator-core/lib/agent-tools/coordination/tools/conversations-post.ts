@@ -19,7 +19,7 @@ import { hardText, LIMITS } from '../../limits';
 export default defineTool({
   name: 'conversations:post',
   description:
-    'Start a discussion (open-ended) or append a reply to an existing conversation. Omit conversation_id and its id alias to start a new discussion tagged with topics; pass either key to reply (conversation_id wins when both are supplied). Replies fan out to the conversation\'s subscribers.',
+    'Start a discussion (open-ended) or append a reply to an existing conversation. Omit conversation_id and its id alias to start a new discussion tagged with topics; pass either key to reply (conversation_id wins when both are supplied). Replies fan out to the conversation\'s subscribers. Consult threads require typed verbs: use consult:reply to respond, consult:decline to decline, or consult:close to close; conversations:post is refused for consult threads.',
   guidance: {
     when:
       'Open-ended coordination with no single answer ("how should we approach X?"), or contributing to an existing thread via conversation_id (or its id alias). For a directed peer question, use coord:send with expects:"answer" or coord:message-agent for a durable thread.',

@@ -400,6 +400,118 @@ describe('ensureFleetLeaderControl', () => {
     expect(out.watches.awaitIds).toEqual([1, 2, 3, 4, 5, 6]);
   });
 
+  it.each(['status', 'payload', 'standdown'] as const)(
+    'does not resurrect an inactive exhausted monitor recorded by %s while preserving push watches',
+    async (evidenceSource) => {
+      const exhaustedMonitor = {
+        predicateKey: 'fleet:alpha',
+        stopCondition: 'fleet alpha is drained or leadership ends',
+        noDeltaBudget: 100,
+        remainingNoDeltaBudget: 0,
+        authority: { kind: 'fleet-leader' as const, fleet: 'alpha' },
+      };
+      getLoopStatus.mockResolvedValue({
+        active: false,
+        harnessSlug: 'papercusp',
+        intervalSec: 1200,
+        mode: 'monitor',
+        carry: 'cold',
+        continuation: 'gated',
+        monitor: evidenceSource === 'status' ? exhaustedMonitor : null,
+        monitorStanddown:
+          evidenceSource === 'standdown'
+            ? {
+                code: 'no_delta_budget_exhausted',
+                reason: 'quiet-wake budget exhausted',
+                authorityCode: null,
+                atMs: 1791335177901,
+              }
+            : null,
+      });
+      readActiveLoopFacts.mockResolvedValue({
+        active: false,
+        intervalSec: 1200,
+        harnessSlug: 'papercusp',
+        goal: 'lead fleet alpha without reviving an exhausted monitor',
+        kickoff: 'preserved monitor kickoff',
+        fireCount: 100,
+        carry: 'cold',
+        continuation: 'gated',
+        mode: 'monitor',
+        monitor: evidenceSource === 'payload' ? exhaustedMonitor : null,
+      });
+      materializeLoop.mockResolvedValue({ changed: true, intervalSec: 1200 });
+      listActiveAwaits.mockResolvedValue([
+        ...activeWatches(),
+        {
+          id: 99,
+          eventKey: 'release:green',
+          policy: 'wake',
+          once: true,
+          wakeHandle: { kind: 'psu-socket' },
+          boundTo: { kind: 'loop', ref: 'loop-1' },
+        },
+      ]);
+
+      const out = await ensureFleetLeaderControl(input);
+
+      expect(materializeLoop).not.toHaveBeenCalled();
+      expect(buildLoopWakePrompt).not.toHaveBeenCalled();
+      expect(out.healthy).toBe(true);
+      expect(out.repaired).toBe(false);
+      expect(out.loop).toMatchObject({
+        healthy: true,
+        changed: false,
+        intervalSec: 1200,
+        mode: 'monitor',
+        standdown: 'no_delta_budget_exhausted',
+      });
+      expect(out.inboxWake.healthy).toBe(true);
+      expect(armInboxWake).toHaveBeenCalledTimes(1);
+      expect(out.watches.active).toEqual(standardEventKeys());
+      expect(out.watches.awaitIds).toEqual([1, 2, 3, 4, 5, 6]);
+      expect(registerAwait).not.toHaveBeenCalled();
+      expect(cancelAwait).not.toHaveBeenCalled();
+      expect(retireLifecycleBoundWatches).not.toHaveBeenCalled();
+      expect(exhaustedMonitor.remainingNoDeltaBudget).toBe(0);
+    },
+  );
+
+  it('recovers a renewed positive monitor budget despite historical exhaustion metadata', async () => {
+    const renewedMonitor = {
+      predicateKey: 'fleet:alpha',
+      stopCondition: 'fleet alpha is drained or leadership ends',
+      noDeltaBudget: 100,
+      remainingNoDeltaBudget: 73,
+      authority: { kind: 'fleet-leader' as const, fleet: 'alpha' },
+    };
+    getLoopStatus.mockResolvedValue({
+      active: false,
+      harnessSlug: 'papercusp',
+      intervalSec: 1200,
+      mode: 'monitor',
+      carry: 'warm',
+      monitor: renewedMonitor,
+      monitorStanddown: { code: 'no_delta_budget_exhausted', reason: 'historical standdown' },
+    });
+    readActiveLoopFacts.mockResolvedValue({
+      active: false,
+      intervalSec: 1200,
+      mode: 'monitor',
+      monitor: renewedMonitor,
+      kickoff: 'renewed monitor kickoff',
+    });
+    materializeLoop.mockResolvedValue({ changed: true, intervalSec: 1200 });
+
+    const out = await ensureFleetLeaderControl(input);
+
+    expect(out.loop).toMatchObject({ healthy: true, changed: true, mode: 'monitor' });
+    expect(out.loop).not.toHaveProperty('standdown');
+    expect(materializeLoop).toHaveBeenCalledWith(
+      expect.objectContaining({ monitor: renewedMonitor, onlyIfInactive: true }),
+    );
+  });
+
   it('preserves an active deliberately retuned work loop instead of overwriting its cadence and goal', async () => {
     const deliberateGoal = 'continue the staged verification at the widened fallback cadence';
     getLoopStatus.mockResolvedValue({

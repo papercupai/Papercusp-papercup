@@ -16,6 +16,10 @@ import { scaffoldHarnessSchema } from './scaffold-harness-schema';
 
 const TEST_SLUG = `contract-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const TEST_SCHEMA = `harness_${TEST_SLUG.replace(/-/g, '_')}`;
+// scope-unique-identifiers-2026-07-26 P-009: this suite writes to the LIVE org database, where a
+// work-item id names one row per workspace. A fixed `F-CONTRACT-001` collided with every earlier
+// run whose cleanup did not finish (14 residue rows measured 2026-10-10), so the id is per-run too.
+const TEST_FEATURE_ID = `F-CONTRACT-${TEST_SLUG.replace(/[^a-z0-9]/gi, '').slice(-12).toUpperCase()}`;
 
 async function getSql() {
   const { getOrgPg } = await import('@papercusp/db-org');
@@ -109,15 +113,15 @@ describe('un-hardcode contract', () => {
     await sql.unsafe(`
       INSERT INTO ${TEST_SCHEMA}.harness_features
         (harness_slug, feature_id, title, status, ts, created_ts, updated_ts)
-      VALUES ($1, 'F-CONTRACT-001', 'contract test feature', 'open', $2, $2, $2)
-    `, [TEST_SLUG, ts]);
+      VALUES ($1, $3, 'contract test feature', 'open', $2, $2, $2)
+    `, [TEST_SLUG, ts, TEST_FEATURE_ID]);
 
     const rows = await sql<{ feature_id: string; title: string; workspace_id: string }[]>`
       SELECT feature_id, title, workspace_id FROM harness_shared.harness_features_consolidated
        WHERE harness_slug = ${TEST_SLUG}
     `;
     expect(rows).toHaveLength(1);
-    expect(rows[0].feature_id).toBe('F-CONTRACT-001');
+    expect(rows[0].feature_id).toBe(TEST_FEATURE_ID);
     expect(rows[0].title).toBe('contract test feature');
     // workspace_id auto-fill trigger should set 'default' when no project row exists.
     expect(rows[0].workspace_id).toBeTruthy();

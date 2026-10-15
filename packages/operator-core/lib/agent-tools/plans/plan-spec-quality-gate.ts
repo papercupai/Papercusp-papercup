@@ -5,9 +5,17 @@ import {
   settledGradingAuditIsCurrent,
   type ScorecardRow,
 } from '../../scorecards';
+import { listTasks } from '../../task-manager/store';
+import type { TaskRow } from '../../task-manager/types';
 import { getAcceptanceRubricsForPlan } from '../../rubrics';
 import { listSpecClauses } from './spec-clauses-store';
-import { evaluatePlanSpecQuality, SPEC_QUALITY_RUBRIC_REF, type PlanSpecQualityResult } from './spec-quality';
+import {
+  evaluatePlanSpecQuality,
+  specQualityEvidenceWithoutReplay,
+  SPEC_QUALITY_RUBRIC_REF,
+  type PlanSpecQualityResult,
+  type SpecQualityPlanItem,
+} from './spec-quality';
 import { PLAN_CLASS_RUBRIC_REFS, type PlanClassRubricRef } from './spec-test-adequacy';
 
 export type PlanSpecQualityGateCode =
@@ -44,6 +52,7 @@ type AcceptanceRubricRef = { rubricId?: string; classRef?: string | null };
 type GateDeps = {
   listClauses?: typeof listSpecClauses;
   listCards?: typeof listScorecards;
+  listTasks?: typeof listTasks;
   listAcceptanceRubrics?: (planSlug: string, options: { harnessSlug: string; strict: true }) => Promise<ReadonlyArray<AcceptanceRubricRef>>;
 };
 
@@ -136,7 +145,10 @@ function matchesSpecQualityEvidence(card: ScorecardRow, evaluation: PlanSpecQual
   // A stored fingerprint must first attest to the actual stored ratings, not
   // merely to what the current evaluator would have emitted.
   if (card.evidenceFingerprint !== fingerprint(card.ratings)) return false;
-  if (card.evidenceFingerprint === fingerprint(evaluation.ratings)) return true;
+  const currentFindings = Object.fromEntries(Object.entries(card.ratings).map(([key, entry]) => [key, {
+    ...entry, evidence: specQualityEvidenceWithoutReplay(entry.evidence, evaluation),
+  }]));
+  if (fingerprint(currentFindings) === fingerprint(evaluation.ratings)) return true;
 
   const identity = evaluation.ratings['stable-revision-identity'];
   const allActiveSuffix =
@@ -150,7 +162,7 @@ function matchesSpecQualityEvidence(card: ScorecardRow, evaluation: PlanSpecQual
         + allActiveSuffix.replace(' current clause(s)', ' active/accepted current clause(s)'),
     },
   };
-  return card.evidenceFingerprint === fingerprint(interimRatings);
+  return fingerprint(currentFindings) === fingerprint(interimRatings);
 }
 
 /**
@@ -184,6 +196,51 @@ function scorecardMatches(card: ScorecardRow, evaluation: PlanSpecQualityResult)
   );
 }
 
+async function reservedGradingAuditorGuidance(
+  card: ScorecardRow,
+  readTasks: typeof listTasks,
+): Promise<string | null> {
+  const reservation = card.gradingAudit?.dispatchReservation;
+  if (!reservation) return null;
+
+  const expectedKey = `grading-audit:${card.issueId}`;
+  const reservationDescription = `The grading-audit dispatch reservation was recorded at '${reservation.reservedAt}'.`;
+  if (reservation.key !== expectedKey || !reservation.reservedAt.trim()) {
+    return `${reservationDescription} Its lease does not match this scorecard, so do not emit another audit; retry only after the current audit state is checked.`;
+  }
+
+  let tasks: TaskRow[];
+  try {
+    tasks = await readTasks({
+      states: ['pending', 'running'],
+      labelPrefix: expectedKey,
+      limit: 10,
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return `${reservationDescription} The live auditor-task lookup failed (${reason}), so its assignee could not be confirmed. Do not emit another audit or file a duplicate request; retry plans:start after this audit settles. No grading-audit await key is available.`;
+  }
+
+  const auditors = tasks.filter((task) => {
+    const label = typeof task.detail?.label === 'string' ? task.detail.label : '';
+    return task.class === 'agent-session' &&
+      (task.state === 'pending' || task.state === 'running') &&
+      (label === expectedKey || label.startsWith(`${expectedKey}:`)) &&
+      (task.workItemId == null || task.workItemId === card.issueId);
+  });
+  const taskDescriptions = auditors.map((task) => {
+    const owner = typeof task.detail?.coordOwnerId === 'string' ? task.detail.coordOwnerId.trim() : '';
+    return owner ? `task '${task.taskId}' (owner '${owner}')` : `task '${task.taskId}'`;
+  });
+  const auditorDescription = taskDescriptions.length === 1
+    ? `The already-reserved auditor is ${taskDescriptions[0]}.`
+    : taskDescriptions.length > 1
+      ? `The reservation currently matches multiple live auditor tasks: ${taskDescriptions.join(', ')}.`
+      : 'No live auditor task row is currently visible for this reservation.';
+
+  return `${reservationDescription} ${auditorDescription} Do not emit another audit or file a duplicate request; no further action is needed while it settles. Retry plans:start after the audit completes. No grading-audit await key is available.`;
+}
+
 /**
  * Legacy/no-clause plans are report-only so rollout cannot freeze the existing
  * queue. A plan becomes enforcement-eligible by adopting any first-class clause;
@@ -191,11 +248,17 @@ function scorecardMatches(card: ScorecardRow, evaluation: PlanSpecQualityResult)
  * closed before promotion.
  */
 export async function evaluatePlanSpecQualityGate(
-  input: { harnessSlug: string; planSlug: string; planItemIds: readonly string[] },
+  input: {
+    harnessSlug: string;
+    planSlug: string;
+    planItemIds: readonly string[];
+    planItems?: readonly SpecQualityPlanItem[];
+  },
   deps: GateDeps = {},
 ): Promise<PlanSpecQualityGateVerdict> {
   const listClauses = deps.listClauses ?? listSpecClauses;
   const listCards = deps.listCards ?? listScorecards;
+  const readTasks = deps.listTasks ?? listTasks;
   const listAcceptanceRubrics = deps.listAcceptanceRubrics ?? getAcceptanceRubricsForPlan;
   let clauses;
   try {
@@ -263,6 +326,7 @@ export async function evaluatePlanSpecQualityGate(
     planSlug: input.planSlug,
     harnessSlug: input.harnessSlug,
     planItemIds: input.planItemIds,
+    planItems: input.planItems,
     clauses,
     classRef: classResolution.classRef,
   });
@@ -319,6 +383,7 @@ export async function evaluatePlanSpecQualityGate(
       (card) => scorecardStructurallyExact(card, evaluation) && card.gradingAudit?.state === 'pending',
     );
     if (pendingAudit) {
+      const reservationGuidance = await reservedGradingAuditorGuidance(pendingAudit, readTasks);
       return {
         satisfied: false,
         applicable: true,
@@ -330,7 +395,14 @@ export async function evaluatePlanSpecQualityGate(
         code: 'spec_quality_scorecard_grading_audit_pending',
         wouldBlock: ['exact-specSetHash-scorecard-grading-audit-pending'],
         candidates,
-        message:
+        message: reservationGuidance
+          ?
+          `Plan '${input.planSlug}' has an exact terminal ${SPEC_QUALITY_RUBRIC_REF} scorecard ` +
+          `(${pendingAudit.issueId}) for exact specSetHash ${evaluation.specSetHash}, but it ` +
+          "does not yet satisfy this gate: P-013 grade-the-grader stamps every terminal standard-rubric card " +
+          "'gradingAudit.state: pending' until a NON-AUTHOR independently audits it, and this gate only accepts " +
+          `an audited (or audit-exempt) card. ${reservationGuidance}`
+          :
           `Plan '${input.planSlug}' has an exact terminal ${SPEC_QUALITY_RUBRIC_REF} scorecard ` +
           `(${pendingAudit.issueId}) for exact specSetHash ${evaluation.specSetHash}, but it ` +
           "does not yet satisfy this gate: P-013 grade-the-grader stamps every terminal standard-rubric card " +

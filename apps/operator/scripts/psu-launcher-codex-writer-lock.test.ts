@@ -33,7 +33,7 @@
  *
  * Run: cd apps/operator && npx vitest run scripts/psu-launcher-codex-writer-lock.test.ts
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync, readFileSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -43,6 +43,9 @@ import {
   findFlockWriteHolderPid,
   codexThreadWriterLockPath,
   codexThreadWriterHolder,
+  codexNativeIdForPty,
+  readLinuxProcessFlockText,
+  codexThreadWriterStatErrorCode,
   codexResumeHome,
   codexActiveWriterMessage,
 } from './psu-launcher.mjs';
@@ -57,6 +60,40 @@ afterEach(() => {
 
 const LIVE_THREAD = '01a038ff-9f8b-7ce2-aedc-d7d3268579ea';
 
+describe('Codex carry startup identity (EI-24961854655864836)', () => {
+  const readStartupPid = () => 42;
+  const held = { held: true, pid: 42, lockPath: '/isolated/thread.lock', sessionId: LIVE_THREAD, reason: 'held' };
+
+  it('uses the exact native child process as the writer-lock filter', () => {
+    const calls: unknown[] = [];
+    const readHolder = (...args: unknown[]) => { calls.push(args); return held; };
+    expect(codexNativeIdForPty('/isolated', 12, { readHolder, readStartupPid })).toBe(LIVE_THREAD);
+    expect(calls).toEqual([['/isolated', null, { holderPid: 42 }]]);
+  });
+
+  it('rejects a sibling or nested Codex writer even inside the same PTY tree', () => {
+    const readHolder = () => ({ ...held, pid: 43 });
+    expect(codexNativeIdForPty('/isolated', 12, { readHolder, readStartupPid })).toBeNull();
+  });
+
+  it('never substitutes an unlocked predecessor or an unknown native process', () => {
+    expect(codexNativeIdForPty('/isolated', 12, {
+      readStartupPid, readHolder: () => ({ ...held, held: false }),
+    })).toBeNull();
+    expect(codexNativeIdForPty('/isolated', 12, {
+      readStartupPid: () => null, readHolder: () => held,
+    })).toBeNull();
+  });
+
+  it('returns null without reading writer locks when the startup PID is absent', () => {
+    const readHolder = vi.fn(() => held);
+    expect(codexNativeIdForPty('/isolated', 12, {
+      readStartupPid: () => null, readHolder,
+    })).toBeNull();
+    expect(readHolder).not.toHaveBeenCalled();
+  });
+});
+
 /** A verbatim /proc/locks excerpt from the box while the bug was reproducing.
  *  Row 995 is the real holder of the real session's writer lock. */
 const PROC_LOCKS = [
@@ -68,6 +105,53 @@ const PROC_LOCKS = [
 
 /** dev 66307 / inode 36177832 — the observed values behind row 995. */
 const HELD = { dev: 66307, ino: 36177832 };
+
+describe('process-local writer-lock evidence (WI-10007670)', () => {
+  it('reads only the exact process fdinfo and reuses holder parsing', () => {
+    const reads: string[] = [];
+    const text = readLinuxProcessFlockText(42, {
+      listFdInfo: () => ['0', '5', '9', '../locks'],
+      readFdInfo: (path: string) => {
+        reads.push(path);
+        if (path.endsWith('/9')) throw new Error('descriptor closed');
+        return path.endsWith('/5')
+          ? 'pos:\t0\nlock:\t1: FLOCK ADVISORY WRITE 42 103:03:36177832 0 EOF\n'
+          : 'pos:\t0\nflags:\t0100000\n';
+      },
+    });
+    expect(reads).toEqual(['/proc/42/fdinfo/0', '/proc/42/fdinfo/5', '/proc/42/fdinfo/9']);
+    expect(findFlockWriteHolderPid(text, { major: 259, minor: 3, inode: 36177832 })).toBe(42);
+    expect(findFlockWriteHolderPid(text, { major: 259, minor: 3, inode: 999999 })).toBeNull();
+    expect(() => readLinuxProcessFlockText(0)).toThrow('invalid');
+  });
+
+  it('does not accept a waiter or sibling as the current process writer', () => {
+    const text = readLinuxProcessFlockText(42, {
+      listFdInfo: () => ['5'],
+      readFdInfo: () => 'lock:\t1: -> FLOCK ADVISORY WRITE 42 103:03:36177832 0 EOF\n',
+    });
+    expect(findFlockWriteHolderPid(text, { major: 259, minor: 3, inode: 36177832 })).toBeNull();
+    expect(codexThreadWriterHolder(dir, LIVE_THREAD, {
+      holderPid: 42, readProcLocks: () => '1: FLOCK ADVISORY WRITE 43 103:03:36177832 0 EOF',
+      statFile: () => ({ dev: 66307, ino: 36177832 }),
+    }).held).toBe(false);
+  });
+
+  it('selects the exact-process reader for a known holder and never the global oracle', () => {
+    const local = vi.fn(() =>
+      '1: FLOCK ADVISORY WRITE 42 103:03:36177832 0 EOF\n');
+    const lockPath = codexThreadWriterLockPath(dir, LIVE_THREAD);
+    mkdirSync(join(dir, 'thread-writer-locks'), { recursive: true });
+    writeFileSync(lockPath, '');
+    const got = codexThreadWriterHolder(dir, LIVE_THREAD, {
+      holderPid: 42,
+      readProcessLocks: local,
+      statFile: () => ({ dev: 66307, ino: 36177832 }),
+    });
+    expect(got.held).toBe(true);
+    expect(local).toHaveBeenCalledWith(42);
+  });
+});
 
 describe('devMajorMinor', () => {
   it('decodes the dev_t behind the observed 103:03 lock row', () => {
@@ -188,6 +272,20 @@ describe('codexThreadWriterHolder', () => {
     });
     expect(got.held).toBe(false);
     expect(got.reason).toBe('no-lock-file');
+    expect(got.statErrorCodes).toEqual(['ENOENT']);
+  });
+
+  it('preserves a non-missing lock stat error as a distinct diagnostic', () => {
+    const home = homeWithLocks([LIVE_THREAD + '.lock']);
+    const statError = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    const got = codexThreadWriterHolder(home, LIVE_THREAD, {
+      readProcLocks: () => PROC_LOCKS,
+      statFile: () => { throw statError; },
+    });
+    expect(got.held).toBe(false);
+    expect(got.reason).toBe('stat-error-EACCES');
+    expect(got.statErrorCodes).toEqual(['EACCES']);
+    expect(codexThreadWriterStatErrorCode({ code: 'not a safe code' })).toBe('unknown');
   });
 
   it('FAILS OPEN when there is no CODEX_HOME to inspect', () => {
@@ -303,7 +401,10 @@ describe('calibration: a real flock is visible through the real /proc/locks', ()
   it.runIf(haveProcLocks && haveFlock)('finds the pid of a live flock holder', async () => {
     const lockPath = join(dir, 'calibration.lock');
     writeFileSync(lockPath, '');
-    const holder = spawn('flock', ['-x', lockPath, '-c', 'sleep 10'], { stdio: 'ignore' });
+    // Keep the lock and sleep in one PID. Killing flock's default shell child
+    // otherwise leaves its sleep descendant alive in the test runner's scope.
+    const holder = spawn('flock', ['--no-fork', '-x', lockPath, 'sleep', '10'], { stdio: 'ignore' });
+    const exited = new Promise<void>((resolve) => holder.once('exit', () => resolve()));
     try {
       const st = statSync(lockPath);
       const { major, minor } = devMajorMinor(st.dev);
@@ -319,6 +420,18 @@ describe('calibration: a real flock is visible through the real /proc/locks', ()
       }
       expect(pid).not.toBeNull();
 
+      // Periodic identity must see the same real flock through process-local
+      // evidence without reading the global lock table.
+      let localHolder = null;
+      for (let i = 0; i < 50 && localHolder === null; i++) {
+        localHolder = findFlockWriteHolderPid(readLinuxProcessFlockText(holder.pid!), {
+          major, minor, inode: Number(st.ino),
+        });
+        if (localHolder === null) await new Promise((r) => setTimeout(r, 20));
+      }
+      expect(localHolder).toBe(pid);
+      expect(readFileSync(`/proc/${holder.pid}/task/${holder.pid}/children`, 'utf8').trim()).toBe('');
+
       // NEGATIVE CONTROL, same instrument: an inode nobody locked must read as free.
       // Without this, a parser that returned the first WRITE row it saw would pass above.
       const freePath = join(dir, 'unlocked.lock');
@@ -332,6 +445,7 @@ describe('calibration: a real flock is visible through the real /proc/locks', ()
       ).toBeNull();
     } finally {
       holder.kill('SIGKILL');
+      await exited;
     }
   });
 });

@@ -13,7 +13,13 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
-import { preflightRestartTarget } from './restart-preflight';
+import {
+  preflightRestartTarget,
+  prepareStagingSchemaForRestart,
+  type StagingSchemaCommandOptions,
+  type StagingSchemaCommandRunner,
+  type StagingSchemaPreparationResult,
+} from './restart-preflight';
 import { RESTART_TARGET_UNITS } from './restart-target-units';
 import { preflightTreeAt, type LockTreeDriftCheck } from '../../boot-integrity-preflight';
 
@@ -111,6 +117,118 @@ describe('preflightRestartTarget — resolving the target tree', () => {
     });
     expect(r.ok).toBe(false);
     expect(r.missing).toEqual(['hono', 'postgres']);
+  });
+});
+
+describe('prepareStagingSchemaForRestart — guarded target migration preparation', () => {
+  const resultPrefix = '__PAPERCUSP_STAGING_MIGRATION_RESULT__';
+  const successfulOutput = resultPrefix + JSON.stringify({ applied: 2, failed: [] });
+
+  it('runs the pinned staging tree migrations under a shared nonblocking sync lock', async () => {
+    const integrationRoot = '/staging.current';
+    const sqlDir = '/staging.current/libs/papercusp/libs/db/sql';
+    const readUnitProperty = vi.fn(async (_unit: string, property: string) =>
+      property === 'Environment'
+        ? 'PAPERCUSP_INTEGRATION_ROOT="/staging.current" PAPERCUSP_PG_SQL_DIR="/staging.current/libs/papercusp/libs/db/sql"'
+        : '/staging.current/apps/operator',
+    );
+    const runCommand = vi.fn(
+      async (_command: string, _args: string[], _options: StagingSchemaCommandOptions) => ({ stdout: successfulOutput }),
+    );
+
+    const result = await prepareStagingSchemaForRestart('/tmp/papercup-staging-sync.lock', {
+      readUnitProperty,
+      runCommand: runCommand as StagingSchemaCommandRunner,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      integrationRoot,
+      sqlDir,
+      applied: 2,
+      failed: [],
+    });
+    expect(readUnitProperty).toHaveBeenCalledWith(RESTART_TARGET_UNITS.staging, 'Environment');
+    expect(readUnitProperty).toHaveBeenCalledWith(RESTART_TARGET_UNITS.staging, 'WorkingDirectory');
+    const [command, args, options] = runCommand.mock.calls[0]!;
+    expect(command).toBe('/usr/bin/flock');
+    expect(args.slice(0, 6)).toEqual([
+      '--shared',
+      '--nonblock',
+      '--conflict-exit-code',
+      '75',
+      '/tmp/papercup-staging-sync.lock',
+      'node',
+    ]);
+    expect(args).toContain('--eval');
+    expect(args.at(-1)).toContain('applyPendingMigrationsNow');
+    expect(args.at(-1)).toContain('broadcast: false');
+    expect(options).toMatchObject({ cwd: integrationRoot, timeout: 300_000 });
+    expect(options.env).toMatchObject({
+      PAPERCUSP_INTEGRATION_ROOT: integrationRoot,
+      PAPERCUSP_PG_SQL_DIR: sqlDir,
+      TSX_TSCONFIG_PATH: '/staging.current/apps/operator/tsconfig.json',
+    });
+  });
+
+  it('refuses conflicting unit roots before launching the migration runner', async () => {
+    const runCommand = vi.fn(
+      async (_command: string, _args: string[], _options: StagingSchemaCommandOptions) => ({ stdout: successfulOutput }),
+    );
+    const result = await prepareStagingSchemaForRestart('/tmp/papercup-staging-sync.lock', {
+      readUnitProperty: async (_unit, property) =>
+        property === 'Environment' ? 'PAPERCUSP_INTEGRATION_ROOT=/other-tree' : '/staging-tree/apps/operator',
+      runCommand: runCommand as StagingSchemaCommandRunner,
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: 'staging_target_root_unknown' });
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  it('keeps staging-sync lock contention before migration or service disruption', async () => {
+    const conflict = Object.assign(new Error('lock held'), { code: 75 });
+    const result = await prepareStagingSchemaForRestart('/tmp/papercup-staging-sync.lock', {
+      readUnitProperty: async (_unit, property) =>
+        property === 'Environment' ? 'PAPERCUSP_INTEGRATION_ROOT=/staging-tree' : '/staging-tree/apps/operator',
+      runCommand: async () => {
+        throw conflict;
+      },
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: 'staging_sync_collision' });
+    expect(result.note).toContain('no migration or restart was attempted');
+  });
+
+  it('reports failed migrations and refuses an unparseable runner result', async () => {
+    const unitReader = async (_unit: string, property: string) =>
+      property === 'Environment' ? 'PAPERCUSP_INTEGRATION_ROOT=/staging-tree' : '/staging-tree/apps/operator';
+    const failed: StagingSchemaPreparationResult = {
+      ok: false,
+      integrationRoot: '/staging-tree',
+      sqlDir: '/staging-tree/libs/papercusp/libs/db/sql',
+      applied: 1,
+      failed: [{ file: '299-test.sql', error: 'constraint violation' }],
+      reason: 'staging_migration_failed',
+      note: 'failed',
+    };
+    const failedResult = await prepareStagingSchemaForRestart('/tmp/staging.lock', {
+      readUnitProperty: unitReader,
+      runCommand: async () => ({
+        stdout: resultPrefix + JSON.stringify({ applied: failed.applied, failed: failed.failed }),
+      }),
+    });
+    const missingResult = await prepareStagingSchemaForRestart('/tmp/staging.lock', {
+      readUnitProperty: unitReader,
+      runCommand: async () => ({ stdout: 'runner completed without a result record' }),
+    });
+
+    expect(failedResult).toMatchObject({
+      ok: false,
+      reason: 'staging_migration_failed',
+      applied: 1,
+      failed: [{ file: '299-test.sql', error: 'constraint violation' }],
+    });
+    expect(missingResult).toMatchObject({ ok: false, reason: 'staging_migration_result_missing' });
   });
 });
 

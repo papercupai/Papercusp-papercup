@@ -77,7 +77,7 @@ export function declaresContract(relPath: string, content: string): boolean {
     );
   }
   return (
-    lines.some((l) => /from\s+['"]@papercusp\/verification-harness['"]/.test(l)) &&
+    lines.some((l) => /from\s+['"]@papercusp\/verification-harness['"]|\bimport\s*\(\s*['"]@papercusp\/verification-harness['"]\s*\)/.test(l)) &&
     lines.some((l) => /\brunHarness\s*\(/.test(l))
   );
 }

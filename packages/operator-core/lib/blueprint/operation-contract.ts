@@ -8,7 +8,8 @@
  * shapes, so the transports cannot drift into separate contracts. */
 import { z } from 'zod';
 import { entityRef } from '@papercusp/tooldef';
-import { OperationEventBodySchema, OperationHandleSchema } from './operation-service';
+import { BusinessReviewStateSchema, OperationEventBodySchema, OperationHandleSchema } from './operation-service';
+import { WorkflowAdministrationActionSchema, WorkflowAdministrationSelectionSchema } from './support-workflow-administration';
 
 export { BLUEPRINT_OPERATION_TOOLS, type BlueprintOperationVerb } from './operation-tool-names';
 
@@ -28,15 +29,23 @@ export const SubmitArgsSchema = z.object({
   }),
   operationId: z.string().trim().min(1).max(200).describe('Operation id declared by the harness blueprint.'),
   requestKey,
+  expectedSpecificationRevision: z.string().regex(/^[0-9a-f]{64}$/).optional()
+    .describe('The current approved revision shown to the employee. Refuses a changed revision before new admission; a replay stays pinned to its original receipt.'),
   input: z.record(z.string(), z.unknown()).describe('Operation input; validated against the declared inputSchema.'),
+  privateInput: z.unknown().optional()
+    .describe('Only for operations declaring privateInputSchema: content for the worker, kept out of the work item and deleted when it ends.'),
   title: z.string().trim().min(1).max(200).optional(),
   summary: z.string().max(4_000).optional(),
 }).strict();
 
-export const HandleArgsSchema = z.object({ handle }).strict();
+const review = z.literal(true).optional().describe('Read as the distinct authenticated business reviewer named by this pinned operation.');
+export const HandleArgsSchema = z.object({ handle, review }).strict();
+export const StatusArgsSchema = z.union([HandleArgsSchema,
+  WorkflowAdministrationSelectionSchema.extend({ administration: z.literal(true) }).strict()]);
 
 export const EventsArgsSchema = z.object({
   handle,
+  review,
   cursor: z.string().regex(/^(0|[1-9][0-9]*)$/).optional()
     .describe('Resume after this event cursor (from a prior page). Omit to read from the start.'),
   limit: z.number().int().min(1).max(100).optional(),
@@ -46,12 +55,14 @@ export const CancelArgsSchema = z.object({
   handle, requestKey, reason: z.string().trim().min(1).max(2_000),
 }).strict();
 
-export const SignalArgsSchema = z.object({
+export const SignalArgsSchema = z.union([z.object({
   handle,
   channel: z.string().trim().min(1).max(200).describe('Signal channel declared by the operation.'),
   payload: z.unknown().describe('Payload validated against the channel payloadSchema.'),
   requestKey,
-}).strict();
+}).strict(), WorkflowAdministrationSelectionSchema.extend({
+  administration: WorkflowAdministrationActionSchema, requestKey,
+}).strict()]);
 
 export const ResumeArgsSchema = z.object({
   handle,
@@ -92,6 +103,7 @@ export const BlueprintOperationResultSchema = z.union([
   z.object({
     state: z.literal('ready'), status: BlueprintOperationStatusSchema,
     output: z.unknown(), evidenceRef: z.string(), acceptanceEvidenceRef: z.string().optional(),
+    businessReview: BusinessReviewStateSchema.optional(),
   }),
 ]);
 

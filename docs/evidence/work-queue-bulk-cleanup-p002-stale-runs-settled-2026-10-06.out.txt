@@ -1,0 +1,12 @@
+BEGIN
+S1|population: target run ids present (expect 3)
+3
+S2|run_id|run_kind|phase|items_total|items_open|items_dismissed|findings_total|findings_open|findings_dismissed
+bulk-7d35ee41-f64f-4150-8e12-35524c481213|plan-cleanup|complete|0|0|0|24|0|13
+bulk-bc6d1eeb-5609-4881-8731-029b5b102682|plan-cleanup|complete|0|0|0|32|0|26
+bulk-ef1590f9-6abe-4072-9389-8857864d2b90|inbox-resolve|complete|158|0|144|0|0|0
+S3|positive control: the open-row predicate does return non-zero on other runs (count of runs with >=1 open item)
+221
+S4|measured_at
+2026-10-06T10:37:22Z
+COMMIT

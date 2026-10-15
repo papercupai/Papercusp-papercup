@@ -2164,8 +2164,11 @@ async function clearPerfRecorder(ctx: SuiteContext): Promise<void> {
     ctx,
     `(() => {
       const s = window.__papercuspPerfRecorder;
-      if (s && Array.isArray(s.events)) s.events.length = 0;
-      try { localStorage.removeItem('papercusp.testing.perf-events.v1'); } catch {}
+      if (typeof s?.clear === 'function') s.clear();
+      else {
+        if (s && Array.isArray(s.events)) s.events.length = 0;
+        try { localStorage.removeItem('papercusp.testing.perf-events.v1'); } catch {}
+      }
       return true;
     })()`,
   ).catch(() => undefined);

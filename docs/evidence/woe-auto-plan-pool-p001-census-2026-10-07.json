@@ -1,0 +1,255 @@
+{
+  "schemaVersion": 1,
+  "plan": "woe-automatic-active-plan-pool-2026-10-07",
+  "item": "P-001",
+  "workItem": "WI-10007253",
+  "scope": "Source-grounded inventory and proposed contract only; not runtime feature acceptance or shipment.",
+  "headSha": "77a0fb0d1e9cedefc69c2677e7193e96eba34194",
+  "observedAt": "2026-10-07T20:31:38.623818+00:00",
+  "sourceFingerprints": {
+    "packages/operator-core/lib/typed-properties.ts": "91e418dccdfc95660343b0c87e895644133b8eb4c6baa05f79deaf0b9503706f",
+    "packages/operator-core/lib/typed-properties-db.ts": "950b9a44112a713cc1191e9d155ac0c0347e44ef11dbe4d3247b89a7d99dddac",
+    "packages/operator-core/lib/datatype-display.ts": "871cfd91390f712c13f80d7f041a7c223add52e6da3bbe8c336fcaef47c658b1",
+    "packages/operator-core/lib/goals/package-property-datatypes.ts": "20b84df196f3d3a713616ae7025f9a6c3465563dccf26eabacd6de2fcd7b1a3f",
+    "packages/operator-core/lib/goal-launch-settings.ts": "705e3a10d86ba733d36ed0dda14433761eaa7aaaa39f187d52cb697664369126",
+    "packages/operator-core/lib/agent-tools/goals/set-property.ts": "92b84d5b129a82d128fa13d59c3dcfd9ddc50d20c035aee5987f0e717cf65ce5",
+    "packages/operator-core/lib/work-items.ts": "05b668d6d6b4fd94af74a6da0f5787e61313fc85465bf226e847c7b3d09202a2",
+    "packages/operator-core/lib/issues-engineer.ts": "694dd45894f6e9b9d913ab783c08976bca6fa6e635c1a648ef6e51f4d98e916f",
+    "packages/operator-core/lib/scheduler/get-next.ts": "ab5cd81c30ef957238e62dac6b45b96a8980769af073bcd15e0e6a8f75b8b91a",
+    "packages/operator-core/lib/scheduler/claim-spec-store.ts": "2f289ea63b392fb11b00ab20138f9ac0074c5584590f70e2219fc63fc10defe0",
+    "packages/operator-core/lib/harness/improvements/agent-review.ts": "15cf9165b1d2d9f3978331ac6703d29d1ce43ee00509466c29e1634791a5fde8",
+    "packages/operator-core/lib/agent-tools/fleet_registry/launch-on-plan.ts": "a71f84ddf0eb10f7c28880009ed2cfbf2cd83a3699af32b92a2bec521371f916",
+    "packages/operator-core/lib/agent-tools/capability/launch-agent.ts": "0b0008626ca7e49e7aa7f383ab841b3223273ebb4a3855d9496b7241d145ec4c",
+    "packages/operator-core/lib/sync-resolver/goals.ts": "07b1169c49b005209662817c518c4f80d419a9d82b22e75c033acf8252425230",
+    "apps/operator/app/adv/hud/goal-detail-model.ts": "497fe759ea84c57a7a2b2361f6b2c91d116af8e14314ea7327c5246f8a7d8202",
+    "apps/operator/app/adv/hud/GoalDetailPanel.tsx": "49b1723ce7839fd868a5599b7c63428648fb876da7cf10b86af2e2553468f1e3",
+    "packages/operator-core/lib/endpoint-route/routes/admin/goals.ts": "8cec9b5bc3316266e08a8c8ac2fdc6ec44e04e87ae6c71c6e9e4f2c683997dfb",
+    "packages/operator-core/lib/blueprint/operation-agent-placement.ts": "083cdc9b8f72875c4280d0963070c2d8dd5ea2d3577377440234c2c0d2291300",
+    "packages/operator-core/lib/scheduler/claim-door-census.test.ts": "55f386ab8655cbffd15f78fc630e1ba1b67d88032fe2a82997ba213b6dabe963"
+  },
+  "claimDoors": [
+    {
+      "ref": "work-items.ts#claimNextWorkItem",
+      "classification": "self-select-gating"
+    },
+    {
+      "ref": "work-items.ts#claimNextIssueWorkItem",
+      "classification": "self-select-gating"
+    },
+    {
+      "ref": "scheduler/get-next.ts#getNextWorkItem",
+      "classification": "self-select-gating"
+    },
+    {
+      "ref": "scheduler/get-next.ts#getNextWorkItemDefault",
+      "classification": "self-select-gating"
+    },
+    {
+      "ref": "scheduler/claim-spec-store.ts#getNextForBee",
+      "classification": "self-select-gating"
+    },
+    {
+      "ref": "harness/improvements/agent-review.ts#claimNextVerificationTask",
+      "classification": "self-select-gating"
+    },
+    {
+      "ref": "harness/improvements/agent-review.ts#claimNextVerificationWork",
+      "classification": "self-select-gating"
+    },
+    {
+      "ref": "harness/improvements/agent-review.ts#claimNextAgentReview",
+      "classification": "self-select-gating"
+    },
+    {
+      "ref": "work-items.ts#claimWorkItem",
+      "classification": "by-id-ungated"
+    },
+    {
+      "ref": "issues-engineer.ts#claimIssue",
+      "classification": "by-id-ungated"
+    },
+    {
+      "ref": "harness/improvements/agent-review.ts#claimAgentReview",
+      "classification": "by-id-ungated"
+    },
+    {
+      "ref": "work-items.ts#claimFloorsWhereSql",
+      "classification": "floor-builder"
+    },
+    {
+      "ref": "work-items.ts#claimHoldExclusionSql",
+      "classification": "floor-builder"
+    },
+    {
+      "ref": "blueprint/operation-agent-placement.ts#claimAgentOperationPlacements",
+      "classification": "not-a-work-item-door"
+    },
+    {
+      "ref": "adv-sessions.ts#claimAdvSessionResume",
+      "classification": "not-a-work-item-door"
+    },
+    {
+      "ref": "agent-launch-core.ts#claimAgentLaunch",
+      "classification": "not-a-work-item-door"
+    },
+    {
+      "ref": "pot/watchdog.ts#claimWatchdogFire",
+      "classification": "not-a-work-item-door"
+    },
+    {
+      "ref": "work-item-redundancy.ts#claimReplicaSlot",
+      "classification": "not-a-work-item-door"
+    },
+    {
+      "ref": "work-item-redundancy.ts#claimReplicaSlotLocal",
+      "classification": "not-a-work-item-door"
+    },
+    {
+      "ref": "coord/condition-bridge.ts#claimConditionKey",
+      "classification": "not-a-work-item-door"
+    },
+    {
+      "ref": "coord/condition-object.ts#claimHoldBlocked",
+      "classification": "not-a-work-item-door"
+    },
+    {
+      "ref": "coord/condition-object.ts#claimStateOf",
+      "classification": "not-a-work-item-door"
+    },
+    {
+      "ref": "events/await/store.ts#claimSpecificOnceAwaits",
+      "classification": "not-a-work-item-door"
+    },
+    {
+      "ref": "events/await/store.ts#claimDueDeliveries",
+      "classification": "not-a-work-item-door"
+    },
+    {
+      "ref": "events/await/store.ts#claimDueVerifiedAwaits",
+      "classification": "not-a-work-item-door"
+    }
+  ],
+  "finalNewWorkBoundaries": [
+    "work-items.ts#claimWorkItem feature UPDATE and delegated issue claim",
+    "issues-engineer.ts#claimIssue issue UPDATE",
+    "work-items.ts#claimNextWorkItem",
+    "work-items.ts#claimNextIssueWorkItem",
+    "scheduler/get-next.ts#getNextWorkItem and issue fallback",
+    "scheduler/claim-spec-store.ts#getNextForBee (delegating wrapper)",
+    "harness/improvements/agent-review.ts canonical claim delegation",
+    "agent-tools/fleet_registry/launch-on-plan.ts final placement/registration before spawn",
+    "agent-tools/capability/launch-agent.ts GOAL plan-placement bypass refusal"
+  ],
+  "readAndAttributionBoundaries": [
+    "goal-launch-settings.ts#readGoalPortfolioBrief/readGoalPortfolioBriefStaged/compileGoalPlanPlacement",
+    "goal-launch-settings.ts#resolveGoalPotPlacementAuthority/resolveGoalLaunchForGoal",
+    "agent-tools/coordination/tools/orient.ts; goal-planning-review.ts; agent-obligation-reader.ts; goal holder start/routine consumers",
+    "agent-tools/goals/set-property.ts worklist-only attribution backfill",
+    "goals/worklist-attribution-backfill.ts; modes/goal-context.ts enrollment; plan-cleanup/gather.ts worklist cleanup"
+  ],
+  "proposedContract": {
+    "status": "Planned: current strict schemas do not yet support collection metadata.",
+    "reuse": "Extend the existing TypedPropertyDefinitionSchema, list display, typed property writer, goal portfolio and GoalDetailPanel. No new membership table, scheduler, tool or dashboard.",
+    "newDatatypeRationale": "Register one strict ordered-selection-policy datatype in the maintained datatype registry: the existing generic record constrains only object shape and does not enforce unique order/exclusion arrays. Use the existing builtin list for the second fixture.",
+    "woe": {
+      "worklist": {
+        "datatype": "plan-ref-list",
+        "default": [],
+        "editable_by": "both",
+        "collection": {
+          "source": "active-workspace-plans",
+          "policy": "worklist_policy",
+          "order": "priority",
+          "selectable": true,
+          "defaultSelected": true
+        }
+      },
+      "worklist_policy": {
+        "datatype": "ordered-selection-policy",
+        "default": {
+          "order": [],
+          "excluded": []
+        },
+        "editable_by": "owner"
+      }
+    },
+    "portableNonPlanFixture": {
+      "goal": "Tea tasting queue (private test fixture, no goal-name branching)",
+      "tea_choices": {
+        "datatype": "list",
+        "default": [
+          "mint",
+          "chamomile",
+          "rooibos"
+        ],
+        "editable_by": "both",
+        "collection": {
+          "source": "manual",
+          "policy": "tea_policy",
+          "order": "display",
+          "selectable": true,
+          "defaultSelected": true
+        }
+      },
+      "tea_policy": {
+        "datatype": "ordered-selection-policy",
+        "default": {
+          "order": [],
+          "excluded": []
+        },
+        "editable_by": "owner"
+      }
+    },
+    "reader": "One pure ordered-selection reader overlays persistent owner order/exclusions onto manual or approved-source candidates. Domain adapters apply existing runnability, approvals, dependencies and ownership AFTER selection. Keep dormant preferences when candidates disappear; discovery failure is unavailable, never a destructive empty-list update.",
+    "cas": "Reuse existing versioned typed property writes and derived provenance. Agent source edits and reconciliation cannot change owner-only policy. Re-read policy revision at final NEW work boundaries; allow a current atomic step to finish safely.",
+    "compatibility": "Preserve legacy worklist bytes/order, workspace-qualified reference identity and remembered choices through lifecycle churn. Nonconfigured/manual goals retain existing behavior. Automatic discovery never calls worklist attribution writers.",
+    "admission": "Do not confuse owner exclusions with the dependency readiness floor: by-ID readiness overrides remain deliberate, while scoped selection/ownership controls remain authoritative. Lease-only functions are not work-item ownership writers."
+  },
+  "ui": {
+    "surface": "Existing GoalDetailPanel/goals.detail",
+    "registry": [
+      "control.checkbox",
+      "action.secondary"
+    ],
+    "sorting": "Maintained dnd-kit row sorting plus keyboard move controls, not RichGrid column sorting",
+    "savedDesignRef": "WI-10007196#checkpoint shared editor IR; predecessor validate/lint receipts preserved",
+    "missingSeams": [
+      "goals.detail SELECT omits property_schema/properties",
+      "goal-detail-model omits typed goal data",
+      "admin/goals proxy does not expose canonical goals:set-property"
+    ]
+  },
+  "currentBuildRoute": {
+    "testClass": "operator-api",
+    "runtime": "staging-operator",
+    "route": "http://127.0.0.1:3170 after containment check",
+    "source": "Committed origin/staging mirror, not the uncommitted edit tree",
+    "isolation": "Separate process/port/checkout; database/workspace shared",
+    "prerequisites": [
+      "Containing staging commit loaded",
+      "Private test identity/data for writes"
+    ],
+    "verification": "Measured :3170 build identity plus request/response on that build"
+  },
+  "verification": {
+    "canonicalCensusTest": "packages/operator-core/lib/scheduler/claim-door-census.test.ts",
+    "testRunId": 20905674,
+    "result": "13 passed, 0 failed, 0 skipped",
+    "relatedFixedDefect": "EI-25352734424117213 (committed completion)",
+    "limitation": "Proves the maintained source-door census and receipt-only placement classification, not discovery, selection UI, CAS extension, runtime race, mutation, GUI certification or deployment."
+  },
+  "downstreamSuites": [
+    "typed-properties.test.ts",
+    "typed-properties-db.integration.test.ts",
+    "datatype-display.test.ts",
+    "goal-launch-settings.test.ts",
+    "goal-plan-placement-order.integration.test.ts",
+    "goal-plan-placement-claim.integration.test.ts",
+    "goals/goal-portfolio-ladder.integration.test.ts",
+    "scheduler claim/fence and cross-door-agreement suites",
+    "GoalDetailPanel.test.tsx",
+    "sync-resolver/goals.integration.test.ts",
+    "endpoint-route/routes/admin/goals.test.ts",
+    "ongoing-work-ui.spec.ts"
+  ]
+}

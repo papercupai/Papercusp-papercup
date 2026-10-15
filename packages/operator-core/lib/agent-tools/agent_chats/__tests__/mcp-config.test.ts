@@ -9,11 +9,15 @@
  * the token read itself. `agentChatsToolEventFilter` + the tool-name
  * constants are pure.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'default-ws' }));
 vi.mock('../../../self-url', () => ({ selfUrl: () => 'http://127.0.0.1:3055' }));
 
+import { isValidSuperuserBearer } from '../../../superuser-token';
 import {
   AGENT_CHATS_ALLOWED_TOOLS,
   AGENT_CHATS_MCP_TOOLS,
@@ -110,5 +114,36 @@ describe('buildAgentChatsMcpConfig', () => {
   it('rejects a too-short token as unprovisioned', () => {
     const cfg = buildAgentChatsMcpConfig({ harness: 'papercusp', readToken: () => 'short' });
     expect(cfg).toBeNull();
+  });
+
+  // WI-10006617: the DEFAULT reader (no injected readToken) must present the bearer the
+  // operator will VALIDATE against — `$PAPERCUSP_HOME/superuser-token` when a scoped home is
+  // set (an isolated verify-tauri-headless sidecar). It used to hard-code
+  // `homedir()/.papercusp`, so a chat agent spawned by an isolated sidecar presented the
+  // real-home bearer and got `superuser_invalid_bearer`.
+  describe('default token reader honours PAPERCUSP_HOME', () => {
+    let scopedHome: string;
+    beforeEach(() => {
+      scopedHome = mkdtempSync(join(tmpdir(), 'wi-10006617-home-'));
+      writeFileSync(join(scopedHome, 'superuser-token'), 'scoped-home-token-0123456789abcdef\n');
+      vi.stubEnv('PAPERCUSP_HOME', scopedHome);
+    });
+    afterEach(() => {
+      vi.unstubAllEnvs();
+      rmSync(scopedHome, { recursive: true, force: true });
+    });
+
+    it('presents the scoped-home bearer, not the real-home one', () => {
+      const cfg = buildAgentChatsMcpConfig({ harness: 'papercusp', workspaceId: 'ws-1' });
+      expect(cfg?.mcpServers.agentmcp.headers.Authorization).toBe(
+        'Bearer scoped-home-token-0123456789abcdef',
+      );
+    });
+
+    it('presents the exact bearer the validator accepts', () => {
+      const cfg = buildAgentChatsMcpConfig({ harness: 'papercusp', workspaceId: 'ws-1' });
+      const bearer = cfg?.mcpServers.agentmcp.headers.Authorization.replace(/^Bearer /, '');
+      expect(isValidSuperuserBearer(bearer)).toBe(true);
+    });
   });
 });

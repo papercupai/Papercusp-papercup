@@ -1,0 +1,138 @@
+{
+  "schemaVersion": 1,
+  "kind": "bounded-supplemental-native-fork-observation",
+  "observationKey": "get-feedback-d017-live-claude-f805-20261011-0822",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItem": "WI-10007521",
+  "governingDecisions": [
+    "D-006",
+    "D-017"
+  ],
+  "scope": "Existing maintained capability:launch-agent Claude fork, not normal consult dispatch, R6 cohort credit, or R7 shipment.",
+  "requester": {
+    "owner": "su-e16e0da4-f858-4e10-9665-55116edbc36b",
+    "nativeAtCapture": "01a12a05-bc40-79c3-8fd7-4907968f294f",
+    "nativeEvidence": "/home/builduser/.papercusp/su-codex-homes/session-37370/sessions/2026/10/11/rollout-2026-10-11T04-13-01-01a12a05-bc40-79c3-8fd7-4907968f294f.jsonl"
+  },
+  "source": {
+    "owner": "su-f805985e-050f-4692-9a52-e3a9618dc5bb",
+    "native": "4b09ff2b-1fb2-4557-83d7-fa2d12fcc13b",
+    "path": "/home/builduser/.papercusp/session-claude/su-f805985e-050f-4692-9a52-e3a9618dc5bb/projects/-home-builduser-papercupai-workspace-papercusp/4b09ff2b-1fb2-4557-83d7-fa2d12fcc13b.jsonl",
+    "before": {
+      "at": "2026-10-11T08:22:19.362698Z",
+      "completeBytes": 1333836,
+      "highWaterBytes": 1333836,
+      "sha256": "d2d427893d301c60146cff9c4f2b34b23365a2a448afa3e4eb7a38da7a65cece",
+      "dev": 66307,
+      "inode": 52573232,
+      "nlink": 1,
+      "nativeEvidenceLine": 225
+    },
+    "after": {
+      "resultRecordedAt": "2026-10-11T08:24:19.213Z",
+      "size": 1490770,
+      "prefixBytesRead": 1333836,
+      "prefixSha256": "d2d427893d301c60146cff9c4f2b34b23365a2a448afa3e4eb7a38da7a65cece",
+      "capturedPrefixPreserved": true,
+      "dev": 66307,
+      "inode": 52573232,
+      "nlink": 1,
+      "nativeEvidenceLine": 257
+    }
+  },
+  "launch": {
+    "mechanism": "capability:launch-agent",
+    "idempotencyKey": "get-feedback-d017-live-claude-f805-20261011-0822",
+    "fork": true,
+    "headless": true,
+    "nativeKickoffPersisted": true,
+    "nativeEvidenceLine": 248,
+    "launcherLog": "/home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/fork-4b09ff2b-1fb2-4557-83d7-fa2d12fcc13b-1472810-1791706981501.log"
+  },
+  "child": {
+    "owner": "su-f68b63e1-8fdc-4657-b8fa-6fe5d1a763c0",
+    "advSessionId": 40356,
+    "native": "438f61ea-ebb4-4bbd-87bf-8b1ad85ddbce",
+    "path": "/home/builduser/.papercusp/session-claude/su-f68b63e1-8fdc-4657-b8fa-6fe5d1a763c0/projects/-home-builduser-papercupai-workspace-papercusp/438f61ea-ebb4-4bbd-87bf-8b1ad85ddbce.jsonl",
+    "dev": 66307,
+    "inode": 52566132,
+    "nlink": 1,
+    "kickoffKeyPresent": true,
+    "onlyObservedSessionId": "438f61ea-ebb4-4bbd-87bf-8b1ad85ddbce",
+    "whoami": {
+      "toolUseId": "toolu_01VpJaTbJAWd932HTi1J9UkP",
+      "invocation": 36001617
+    },
+    "sourceClaimRead": {
+      "toolUseId": "toolu_013xo6L4888rDWcZeDkGL3vU",
+      "invocation": 36006821,
+      "workItem": "WI-6554700010008363",
+      "assignee": "su-f805985e-050f-4692-9a52-e3a9618dc5bb",
+      "state": "open",
+      "takenAt": "2026-10-11T08:20:39.309Z"
+    },
+    "report": {
+      "toolUseId": "toolu_01Es6ybhMfEtLBE5vxAR7sdG",
+      "invocation": 36007361,
+      "at": "2026-10-11T08:31:57.451Z",
+      "transport": "coord:send",
+      "parts": 8,
+      "receivedByRequester": true,
+      "typedConsultReply": false
+    }
+  },
+  "forkSeed": {
+    "inode": 52582472,
+    "nlink": 1,
+    "size": 1389984,
+    "sourceNativeFilename": "4b09ff2b-1fb2-4557-83d7-fa2d12fcc13b.jsonl",
+    "rawCapturedPrefixEqual": false,
+    "expectedTransformation": {
+      "writer": "apps/operator/scripts/psu-launcher.mjs:14658",
+      "helper": "packages/operator-core/lib/claude-resume-tool-references.mjs:257",
+      "referencesNeutralized": 10,
+      "capturedSourceBytes": 1333836,
+      "transformedBytes": 1333322,
+      "transformedCapturedSourceIsSeedPrefix": true,
+      "nativeEvidenceLine": 310
+    }
+  },
+  "actorAudit": {
+    "windowStart": "2026-10-11T08:23:00Z",
+    "windowEnd": "2026-10-11T08:34:00Z",
+    "instrument": "harness_shared.tool_invocations",
+    "observedRows": 53,
+    "truncated": false,
+    "positiveControlInvocation": 36001617,
+    "selectedInvocations": [
+      36001617,
+      36006821,
+      36007361
+    ],
+    "selectedLaunchRow": 40356,
+    "selectedLaunchRowVersion": "851338893",
+    "ownerConsistent": true,
+    "nativeLaunchLedgerSessionConsistent": true,
+    "launchParentOwner": "su-e16e0da4-f858-4e10-9665-55116edbc36b",
+    "requestOriginNativeSession": null,
+    "writerRead": "packages/operator-core/lib/projected-tool-deps.ts:563 and auditLaunchRowSelection:800",
+    "coverage": "MCP invocation evidence only; native Bash/Read/Write actions are outside this ledger. Native tool use/result pairs separately corroborate the selected calls; transport call-id binding is unmeasured."
+  },
+  "interpretation": {
+    "established": [
+      "Captured source prefix preserved between the two named observations",
+      "Source, seed, and child native files have distinct observed inodes and nlink 1",
+      "Maintained seed-only tool-reference transformation explains the raw copy difference",
+      "Substantive child report delivered through coord with own native whoami and source-claim receipt"
+    ],
+    "unknown": [
+      "Mutation then revert between observations",
+      "Authorship of subsequent source appends",
+      "Universal same-UID or process immutability",
+      "Per-call requestOrigin native transport binding",
+      "Normal consult cascade outcome",
+      "Final acceptance and shipment"
+    ],
+    "correction": "Child lacked the parent's pre-launch capture. Its couldNotDetermine about that capture describes its own evidence scope; parent lines225/257 supply the separate bounded prefix proof."
+  }
+}

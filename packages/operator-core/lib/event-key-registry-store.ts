@@ -26,6 +26,7 @@
  */
 
 import type postgres from 'postgres';
+import { lexicalLeg } from './search/lexical/rank';
 
 /** Lifecycle INTENT — a decision, never a measurement. See `emitterExists` for the measurement. */
 export type EventKeyStatus = 'active' | 'retired' | 'superseded';
@@ -360,21 +361,29 @@ export async function listEventKeys(
 ): Promise<EventKeyRow[]> {
   const limit = Math.min(Math.max(options.limit ?? 50, 1), 500);
   const query = options.query?.trim();
+  // Lexical ranking goes through the lexical seam: BM25 when available, else ts_rank over
+  // title_tsv with the AND (plainto) tsquery.
+  const leg = query
+    ? await lexicalLeg(sql, {
+        table: 'event_key_registry',
+        query,
+        legacy: {
+          score: sql`ts_rank(title_tsv, plainto_tsquery('english', ${query}))`,
+          match: sql`title_tsv @@ plainto_tsquery('english', ${query})`,
+        },
+      })
+    : null;
 
   const rows = await sql<EventKeyDbRow[]>`
-    SELECT *${
-      query
-        ? sql`, ts_rank(title_tsv, plainto_tsquery('english', ${query})) AS score`
-        : sql``
-    }
+    SELECT *${leg ? sql`, (${leg.score})::float8 AS score` : sql``}
       FROM harness_shared.event_key_registry
      WHERE workspace_id = ${workspaceId}
        ${options.includeInactive ? sql`` : sql`AND status = 'active'`}
-       ${query ? sql`AND title_tsv @@ plainto_tsquery('english', ${query})` : sql``}
+       ${leg ? sql`AND ${leg.match}` : sql``}
        ${options.tag ? sql`AND ${options.tag} = ANY(tags)` : sql``}
        ${options.reviewStatus ? sql`AND review_status = ${options.reviewStatus}` : sql``}
        ${options.contributor ? sql`AND contributor = ${options.contributor}` : sql``}
-     ORDER BY ${query ? sql`score DESC,` : sql``} event_key ASC
+     ORDER BY ${leg ? sql`${leg.order},` : sql``} event_key ASC
      LIMIT ${limit}
   `;
   return rows.map(mapRow);

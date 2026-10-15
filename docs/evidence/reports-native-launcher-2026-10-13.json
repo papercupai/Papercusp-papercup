@@ -1,0 +1,216 @@
+{
+  "schemaVersion": 1,
+  "kind": "verification-evidence",
+  "name": "Reports native launcher repair and original-run custody",
+  "workItemId": "EI-25859967412733518",
+  "drivingWorkItemId": "WI-10007208",
+  "scope": "Generated shell launcher defect only; full native Reports acceptance and shipment remain open.",
+  "rootCause": "Five LAUNCH heredoc continuations were over-escaped. The unquoted heredoc generated literal double backslashes, causing env to execute a literal backslash instead of npm.",
+  "detectorFailure": "Parent bash -n accepted the generator; no early generated-launcher continuation validation existed.",
+  "fix": {
+    "source": "scripts/verify-tauri-headless.sh",
+    "test": "packages/operator-core/lib/__tests__/verify-tauri-launcher.test.ts",
+    "changes": [
+      "Correct exactly five source continuation lines.",
+      "Validate heredoc continuations before display, compilation and isolated PostgreSQL preparation."
+    ],
+    "governingDecisions": [
+      "automatic-lock-operation-fence-2026-10-13#D-003",
+      "automatic-lock-operation-fence-2026-10-13#D-004"
+    ],
+    "route": "Authenticated maintained capability:write/edit with explicit manual path locks; native hook unchanged."
+  },
+  "originalNativeAttempt": {
+    "terminal": {
+      "startedAt": "2026-10-13T10:09:47.548Z",
+      "completedAt": "2026-10-13T10:27:50.478Z",
+      "status": 1,
+      "signal": null,
+      "sourceRef": "dfb296f7964cfdf0fbabda273838ff15ff8b8963",
+      "group": "reports-native-f146-recovery-20261013",
+      "log": "/tmp/reports-f146-recovery-native-run.log"
+    },
+    "originalFire39": {
+      "status": 1,
+      "signal": null,
+      "sourceRef": "44f253b7b91a9502cd5c89eb9156961fe93b2798",
+      "group": "reports-native-f146-w39-20261013",
+      "log": "/tmp/reports-f146-w39-native-run.log"
+    },
+    "files": [
+      {
+        "path": ".papercusp/tmp/reports-native-f146-recovery-20261013/verify-tauri-headless.res3GG/isolated-pg-processes.log",
+        "bytes": 240,
+        "sha256": "7bc975f75fce7e94ac780f497dd3c29b7b4a56fd349fef24ace6c000661192d2"
+      },
+      {
+        "path": ".papercusp/tmp/reports-native-f146-recovery-20261013/verify-tauri-headless.res3GG/isolated-pg.log",
+        "bytes": 759033,
+        "sha256": "c039dbeb1a7d7854f996f2fbcfb144af0ac6598ce85d6c7899f383ebde230301",
+        "ready": true,
+        "migrationsComplete": true
+      },
+      {
+        "path": ".papercusp/tmp/reports-native-f146-recovery-20261013/verify-tauri-headless.res3GG/isolated-pgdata.startup.log",
+        "bytes": 76395,
+        "sha256": "c36600cb4b430e6a4b14959659df1ee1f0c52432b6f5bdf6edcd5cf68c0c65c4"
+      },
+      {
+        "path": ".papercusp/tmp/reports-native-f146-recovery-20261013/verify-tauri-headless.res3GG/launch.sh",
+        "bytes": 6140,
+        "sha256": "3e9abc03a1e4b1852e466225af995897fff6c1543153219e91bb96299234a59a"
+      },
+      {
+        "path": ".papercusp/tmp/reports-native-f146-recovery-20261013/verify-tauri-headless.res3GG/tauri.log",
+        "bytes": 41,
+        "sha256": "2148a057780b7461586e1bb3c513d8b14419ac753c2ba89bd7798d06d14647ad",
+        "launcherError": [
+          "env: ‘\\\\’: No such file or directory"
+        ]
+      }
+    ],
+    "harnessResult": {
+      "runId": "20261013T100952Z-2352508",
+      "verdict": "fail",
+      "firstFailure": {
+        "phase": "boot",
+        "step": "launch-attempt-1",
+        "reasonCode": "exit-1"
+      }
+    },
+    "phases": [
+      {
+        "phase": "prepare",
+        "status": "passed",
+        "step": "isolated-database-prepare",
+        "reasonCode": null,
+        "elapsedMs": 1019906
+      },
+      {
+        "phase": "boot",
+        "status": "failed",
+        "step": "launch-attempt-1",
+        "reasonCode": "exit-1",
+        "elapsedMs": 191
+      },
+      {
+        "phase": "assert",
+        "status": "blocked",
+        "step": null,
+        "reasonCode": "aborted:boot:exit-1",
+        "elapsedMs": 0
+      }
+    ]
+  },
+  "regression": {
+    "baseline": {
+      "command": [
+        "npm",
+        "run",
+        "test:file",
+        "--",
+        "packages/operator-core/lib/__tests__/verify-tauri-launcher.test.ts"
+      ],
+      "failed": 2,
+      "log": "/tmp/reports-f146-launcher-red.log",
+      "logSha256": "113e30b8df81cd77d6a4cd87e17299f629af3d207f7fa996e08f98f5355e128a"
+    },
+    "greenReceipt": {
+      "ok": true,
+      "runId": "63e04dc9-93f5-4e13-8310-a007b42e1661",
+      "root": "/home/builduser/papercupai-workspace/papercusp",
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0,
+      "files": 1,
+      "failures": [],
+      "failuresTruncated": false,
+      "durationMs": 669,
+      "byFile": {
+        "packages/operator-core/lib/__tests__/verify-tauri-launcher.test.ts": {
+          "passed": 8,
+          "failed": 0,
+          "skipped": 0,
+          "collectionFailed": false,
+          "runId": 21193724
+        }
+      },
+      "testRunIds": [
+        21193724
+      ],
+      "rootSource": "requested"
+    },
+    "canonicalLedger": {
+      "id": 21193724,
+      "workspaceId": "papercusp-workspace",
+      "harnessSlug": "papercusp",
+      "root": null,
+      "filePath": "packages/operator-core/lib/__tests__/verify-tauri-launcher.test.ts",
+      "status": "pass",
+      "framework": "vitest",
+      "startedAt": "2026-10-13T10:45:09.128Z",
+      "finishedAt": "2026-10-13T10:45:09.804Z",
+      "durationMs": 676,
+      "commitSha": "0adbf613a517e2564cfff4ec451f411f8a256167",
+      "runGroupId": "63e04dc9-93f5-4e13-8310-a007b42e1661",
+      "source": "local",
+      "branch": "staging",
+      "outputTail": null,
+      "loopLagP95Ms": 106.2,
+      "rssMb": 124.3,
+      "saturationSuspect": false,
+      "worktreeDirty": true,
+      "isScratchConfig": false
+    },
+    "provenanceNote": "Original local/dirty row retained unchanged. Commit qualification is a later byte comparison, not a clean test restamp."
+  },
+  "committedQualification": {
+    "commit": "2fb82b5cdfd0a266c5bd2861ff47b6384023e554",
+    "workingEqualsGitBlob": true,
+    "files": [
+      {
+        "path": "scripts/verify-tauri-headless.sh",
+        "sha256": "abf4204354069adece47e8a3785890babfba235d5814ebf648448d435ec83cc7"
+      },
+      {
+        "path": "packages/operator-core/lib/__tests__/verify-tauri-launcher.test.ts",
+        "sha256": "42b6936be7a5f6989f4e8f2a4032846386310e1710c233894ba04f706daf3b92"
+      }
+    ]
+  },
+  "verification": {
+    "testedCases": [
+      "Generated npm launcher executes in isolated mode and preserves environment/secret removal.",
+      "Generated npm launcher executes in non-isolated mode and preserves environment/secret removal.",
+      "Early preflight accepts current source.",
+      "Each of the five formerly malformed continuation sites is rejected after an injected over-escape."
+    ],
+    "notEstablished": [
+      "Original fire39 initdb delay root cause.",
+      "Fresh Reports native retirement/SSE/citation assertions.",
+      "Whole Reports acceptance or shipment."
+    ]
+  },
+  "evidenceRefs": [
+    "/tmp/reports-f146-launcher-green.json",
+    "/tmp/reports-f146-fire46-launcher-ledger.json",
+    "/tmp/reports-f146-recovery-native-exit.json",
+    "/tmp/reports-f146-fire46-forensic-compact.json"
+  ],
+  "replay": {
+    "command": [
+      "npm",
+      "run",
+      "test:file",
+      "--",
+      "packages/operator-core/lib/__tests__/verify-tauri-launcher.test.ts"
+    ],
+    "sourceCommit": "2fb82b5cdfd0a266c5bd2861ff47b6384023e554",
+    "note": "Replay is optional future verification. No test replay was used to reconstruct saved proof."
+  },
+  "publicExport": {
+    "serializer": "scripts/lib/identity-leak-patterns.mjs --serialize-json",
+    "privateJsonSha256": "b742a7d2b0128c92836e606402673b6645a41d57f312f63f45a202fd6b026b75",
+    "note": "Machine paths are mapped by the maintained serializer; source/test/log hashes and original ledger/receipt counters remain unchanged."
+  }
+}

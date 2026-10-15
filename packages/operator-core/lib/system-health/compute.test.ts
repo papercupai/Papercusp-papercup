@@ -56,6 +56,15 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => ({
   getFlag: getFlagMock,
 }));
 vi.mock('../dev-deploy-state', () => ({ devDeployState: devDeployStateMock }));
+// WI-10006803: the live git-sync push-backlog probe resolves its repo root through
+// operator-notes first, so this is where a test can hang the whole probe.
+const { projectDirForSlugMock } = vi.hoisted(() => ({
+  projectDirForSlugMock: vi.fn(async (_slug: string): Promise<string | null> => null),
+}));
+vi.mock('../operator-notes', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../operator-notes')>()),
+  projectDirForSlug: projectDirForSlugMock,
+}));
 vi.mock('../harness/routines/cron', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../harness/routines/cron')>()),
   computeNextFireAt: computeNextFireAtMock,
@@ -84,12 +93,15 @@ vi.mock('node:os', async (importOriginal) => ({
   homedir: homedirMock,
   tmpdir: tmpdirMock,
 }));
-import { makeOpenImprovementsReader, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, summarizeDeadRoutines, FLEET_BLOCKING_ROUTINE_NAMES, mergeHealthPanels, resolveSystemHealth, readSharedSystemHealthSnapshot, selectPreviousHealthSnapshot, deriveSystemHealthGitSyncStatus, collectDeploy, _resetSystemHealthCache, systemHealthGitSidecarEnabled, hostPressureSampleFromLiveHealth, publishGovernorStateSnapshot, readAcceptanceDrainVisibility, ACCEPTANCE_DRAIN_VISIBILITY_SQL, countInvalidModelFailures, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
+import { makeOpenImprovementsReader, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, summarizeDeadRoutines, FLEET_BLOCKING_ROUTINE_NAMES, mergeHealthPanels, resolveSystemHealth, readSharedSystemHealthSnapshot, selectPreviousHealthSnapshot, deriveSystemHealthGitSyncStatus, readFreshGitSyncMissedIntervalsByInstall, collectDeploy, _resetSystemHealthCache, systemHealthGitSidecarEnabled, hostPressureSampleFromLiveHealth, publishGovernorStateSnapshot, readAcceptanceDrainVisibility, ACCEPTANCE_DRAIN_VISIBILITY_SQL, countInvalidModelFailures, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
 import { readDiskPressure } from './compute';
+import { markSpawnOffloadHost, resetSpawnOffloadHostForTest } from '../fleet/git-via-sidecar';
+import { PUSH_BACKLOG_DEADLINE_MS } from './push-backlog-reader';
 import { PANEL_LABELS, PANEL_ORDER } from './types';
+import { GIT_SYNC_MISSING_CHECKOUT_RETIRE_AFTER_MS } from '../harness/git-sync/missing-checkout';
 import type { ClaudeAccount } from '../deployment/account-pool';
 import type { ImprovementCandidate } from '../harness/improvements/policy';
-import type { HealthPanel, PanelKey, PanelStatus, SystemHealth, SystemHealthPanels } from './types';
+import type { DeployHealth, HealthPanel, PanelKey, PanelStatus, SystemHealth, SystemHealthPanels } from './types';
 
 /** A real (minimal) ImprovementCandidate — id/kind/scope/title are the only required
  *  fields, so these tests need no cast and stay honest if the shape changes. */
@@ -1027,6 +1039,93 @@ describe('collectDeploy — EI-218 git-sync freshness wiring', () => {
     });
   });
 
+  it('excludes a progressing in-flight fire from the scheduler-starvation alarm candidates', async () => {
+    sqlMock.mockResolvedValue([
+      {
+        ...routine({
+          last_status: 'synced',
+          last_synced_at: now - 24 * 60_000,
+          git_sync_activity: {
+            active: true,
+            phase: 'local-sync',
+            started_at: now - 8 * 60_000,
+            last_progress_at: now - 60_000,
+          },
+        }),
+        install_slug: 'progressing-install',
+      },
+      {
+        ...routine({
+          last_status: 'synced',
+          last_synced_at: now - 18 * 60_000,
+          git_sync_activity: {
+            active: true,
+            phase: 'local-sync',
+            started_at: now - 20 * 60_000,
+            last_progress_at: now - 12 * 60_000,
+          },
+        }),
+        install_slug: 'stuck-install',
+      },
+      {
+        ...routine({ last_status: 'skipped', last_skip_reason: 'locked-path', last_synced_at: now - 15 * 60_000 }),
+        install_slug: 'starved-install',
+      },
+    ]);
+
+    const panel = await collectDeploy(ctx());
+    const data = panel.data as DeployHealth;
+    expect(data.gitSyncMissedIntervalsByInstall?.map((entry) => entry.installSlug)).toEqual([
+      'stuck-install',
+      'starved-install',
+    ]);
+    expect(data.gitSyncMissedIntervalsByInstall?.map((entry) => entry.missedIntervals)).toEqual([6, 5]);
+    // Keep the raw diagnostic max even when it came from the progressing install.
+    expect(data.gitSyncMaxMissedIntervals).toBe(8);
+  });
+
+  it('re-reads current starvation candidates with the same exclusions as the deploy snapshot', async () => {
+    sqlMock.mockResolvedValue([
+      {
+        ...routine({
+          last_status: 'synced',
+          last_synced_at: now - 24 * 60_000,
+          git_sync_activity: {
+            active: true,
+            phase: 'local-sync',
+            started_at: now - 8 * 60_000,
+            last_progress_at: now - 60_000,
+          },
+        }),
+        install_slug: 'progressing-install',
+      },
+      {
+        ...routine({ last_status: 'skipped', last_skip_reason: 'locked-path', last_synced_at: now - 15 * 60_000 }),
+        install_slug: 'starved-install',
+      },
+      {
+        ...routine({ last_status: 'error', last_synced_at: now - 30 * 60_000 }),
+        install_slug: 'failing-install',
+      },
+      {
+        ...routine({ last_status: 'skipped', last_skip_reason: 'no_path', last_synced_at: now - 30 * 60_000 }),
+        install_slug: 'missing-checkout',
+      },
+    ]);
+
+    await expect(readFreshGitSyncMissedIntervalsByInstall('ws-ei-218', now)).resolves.toEqual([
+      { installSlug: 'starved-install', missedIntervals: 5 },
+    ]);
+    const [template, workspaceId] = sqlMock.mock.calls[0] ?? [];
+    expect(String((template as TemplateStringsArray).join(' '))).toContain("target_role = 'system:git-sync'");
+    expect(workspaceId).toBe('ws-ei-218');
+  });
+
+  it('reports an unreadable live routine read as unknown instead of an empty candidate set', async () => {
+    sqlMock.mockRejectedValue(new Error('routine metadata unavailable'));
+    await expect(readFreshGitSyncMissedIntervalsByInstall('ws-ei-218', now)).resolves.toBeNull();
+  });
+
   it('keeps the deploy panel fail-soft when the routine metadata read fails', async () => {
     sqlMock.mockRejectedValue(new Error('routine metadata unavailable'));
 
@@ -1039,6 +1138,95 @@ describe('collectDeploy — EI-218 git-sync freshness wiring', () => {
     });
     expect(panel.error).toBeUndefined();
   });
+
+  it('WI-10006867: a vanished checkout (skipped no_path) is reported as checkout-missing, never as missed intervals', async () => {
+    // Both rows went quiet 2h ago on a 3-minute cadence, so each derives ~40 missed
+    // intervals. Only the no_path row's silence is explained by a vanished checkout;
+    // the locked-path control proves the exclusion keys on the skip REASON, not on
+    // last_status alone, and that a real starvation reading still gets through.
+    const since = now - 2 * 60 * 60_000;
+    sqlMock.mockResolvedValue([
+      {
+        ...routine({
+          last_status: 'skipped',
+          last_skip_reason: 'no_path',
+          last_synced_at: since,
+          missing_checkout: { since, path: '/gone/checkout' },
+        }),
+        install_slug: 'vanished-install',
+      },
+      {
+        ...routine({ last_status: 'skipped', last_skip_reason: 'locked-path', last_synced_at: since }),
+        install_slug: 'starved-install',
+      },
+    ]);
+
+    const panel = await collectDeploy(ctx());
+    const data = panel.data as DeployHealth;
+    expect(data.gitSyncCheckoutMissingByInstall).toEqual([
+      {
+        installSlug: 'vanished-install',
+        path: '/gone/checkout',
+        sinceMs: since,
+        retireAtMs: since + GIT_SYNC_MISSING_CHECKOUT_RETIRE_AFTER_MS,
+      },
+    ]);
+    expect((data.gitSyncMissedIntervalsByInstall ?? []).map((entry) => entry.installSlug)).toEqual(['starved-install']);
+    expect(data.gitSyncMissedIntervalsInstallSlug).toBe('starved-install');
+    expect(data.gitSyncMaxMissedIntervals).toBe(40);
+  });
+
+  it('WI-10006867: a no_path row with no recorded missing_checkout still leaves the starvation measure', async () => {
+    // Rows skipped by a host that predates the recorder carry no missing_checkout key.
+    // They must still be kept out of missed intervals, reported with unknown since/path.
+    sqlMock.mockResolvedValue([
+      routine({ last_status: 'skipped', last_skip_reason: 'no_path', last_synced_at: now - 2 * 60 * 60_000 }),
+    ]);
+
+    const panel = await collectDeploy(ctx());
+    const data = panel.data as DeployHealth;
+    expect(data.gitSyncCheckoutMissingByInstall).toEqual([
+      { installSlug: 'home-harness', path: null, sinceMs: null, retireAtMs: null },
+    ]);
+    expect(data.gitSyncMissedIntervalsByInstall).toEqual([]);
+    expect(data.gitSyncMaxMissedIntervals).toBeNull();
+  });
+
+  it('WI-10006803: a hung push-backlog probe never holds the deploy leg past the reader deadline', async () => {
+    // With push errors present (consecutive_error_ticks > 0) collectDeploy consults the
+    // live push backlog. The probe behind it is ~117 serial git spawns on a big tree
+    // (39-75s per tick measured on bg-host, 2026-10-06). Hang it outright: the panel must
+    // settle at the reader's cold-miss deadline with the backlog unknown and the error
+    // ticks kept. Awaiting the probe directly (the pre-fix wiring) never settles here.
+    // A unique slug keeps the hung single-flight entry out of every other test's key.
+    const slug = 'wi-10006803-hung-probe';
+    projectDirForSlugMock.mockReset().mockImplementation(() => new Promise<string | null>(() => {}));
+    sqlMock.mockResolvedValue([
+      {
+        ...routine({ last_status: 'error', last_synced_at: now - 60_000, consecutive_error_ticks: 2 }),
+        install_slug: slug,
+      },
+    ]);
+
+    // Real timers: collectDeploy reaches the probe through dynamic imports, which load in
+    // real time, so fake time cannot order "probe entered" before "deadline fired".
+    // Pre-load both modules so the measured window is the deadline, not module loading.
+    await import('../agent-tools/routines/list');
+    await import('../operator-notes');
+    const startedAt = performance.now();
+    const panel = await collectDeploy(ctx());
+    const elapsedMs = performance.now() - startedAt;
+
+    // Upper bound only: libuv arms setTimeout from the loop's cached time, so under load
+    // the deadline can fire before performance.now() shows the full window. The guard is
+    // that the leg settles at all; the pre-fix wiring never does.
+    expect(projectDirForSlugMock).toHaveBeenCalledWith(slug);
+    expect(elapsedMs).toBeLessThan(PUSH_BACKLOG_DEADLINE_MS + 5_000);
+    expect(panel.data).toMatchObject({
+      gitSyncPushBacklog: null,
+      gitSyncConsecutiveErrorTicks: 2,
+    });
+  }, 20_000);
 });
 
 describe('computeEscalationsHealth — operational flood excluded (EI-1490)', () => {
@@ -1379,8 +1567,14 @@ describe('systemHealthGitSidecarEnabled — WI-7160 (git-spawn stalls the main t
     expect(systemHealthGitSidecarEnabled({})).toBe(false);
   });
 
-  it('is ON when the shared enable var is set', () => {
-    expect(systemHealthGitSidecarEnabled({ PAPERCUSP_SPAWNER_SIDECAR: '1' })).toBe(true);
+  it('ignores an inherited shared enable var unless this process is marked as the host', () => {
+    try {
+      expect(systemHealthGitSidecarEnabled({ PAPERCUSP_SPAWNER_SIDECAR: '1' })).toBe(false);
+      markSpawnOffloadHost();
+      expect(systemHealthGitSidecarEnabled({ PAPERCUSP_SPAWNER_SIDECAR: '1' })).toBe(true);
+    } finally {
+      resetSpawnOffloadHostForTest();
+    }
   });
 
   it("this caller's own explicit var can force it ON while the shared var is unset", () => {

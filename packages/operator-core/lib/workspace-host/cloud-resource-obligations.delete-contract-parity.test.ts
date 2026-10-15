@@ -21,7 +21,13 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { CLOUD_RESOURCE_DELETE_CONTRACT } from './cloud-resource-obligations';
+import {
+  AWS_CLOUD_RESOURCE_DELETE_CONTRACT,
+  CLOUD_RESOURCE_DELETE_CONTRACT,
+  cloudResourceDeleteContract,
+  cloudResourceKindForDeleteOp,
+  describeCloudResourceDeleteAddress,
+} from './cloud-resource-obligations';
 
 const PROVIDER_PATH = join(__dirname, 'gcp-provider.ts');
 const source = readFileSync(PROVIDER_PATH, 'utf8');
@@ -97,5 +103,54 @@ describe('CLOUD_RESOURCE_DELETE_CONTRACT parity with gcp-provider', () => {
     expect(CLOUD_RESOURCE_DELETE_CONTRACT.nat!.requires).toEqual(['region', 'parentResourceId']);
     expect(CLOUD_RESOURCE_DELETE_CONTRACT.network!.requires).toEqual([]);
     expect(CLOUD_RESOURCE_DELETE_CONTRACT.firewall!.requires).toEqual([]);
+  });
+});
+
+// aws-byoc-gcp-parity-2026-10-01 P-003. The AWS provider reuses the GCP kind NAMES ('vm', 'disk')
+// with different delete ops, which is why the contract is keyed by provider, not by kind alone.
+describe('AWS_CLOUD_RESOURCE_DELETE_CONTRACT parity with aws-provider', () => {
+  const awsSource = readFileSync(join(__dirname, 'aws-provider.ts'), 'utf8');
+  const awsKinds = new Set(Object.values(readKindConstants(awsSource)));
+  // The provider's delete ops are the `op` literals of its step-input union that delete.
+  const awsDeleteOps = new Set(
+    [...awsSource.matchAll(/^\s*\|\s*\{\s*op:\s*'((?:terminate|delete)-[a-z]+)'/gm)].map((m) => m[1]!),
+  );
+
+  it('POSITIVE CONTROL: the extraction found the AWS kinds and delete ops', () => {
+    expect(awsKinds).toEqual(new Set(['vm', 'disk']));
+    expect(awsDeleteOps).toEqual(new Set(['terminate-instance', 'delete-volume']));
+  });
+
+  it('covers exactly the kinds the AWS provider creates, with ops from its delete union', () => {
+    expect(new Set(Object.keys(AWS_CLOUD_RESOURCE_DELETE_CONTRACT))).toEqual(awsKinds);
+    expect(new Set(Object.values(AWS_CLOUD_RESOURCE_DELETE_CONTRACT).map((entry) => entry.op))).toEqual(awsDeleteOps);
+  });
+
+  it('resolves contracts by provider, so a shared kind name never borrows the other cloud\'s op', () => {
+    expect(cloudResourceDeleteContract('aws').vm!.op).toBe('terminate-instance');
+    expect(cloudResourceDeleteContract('gcp').vm!.op).toBe('delete-instance');
+    expect(cloudResourceKindForDeleteOp('terminate-instance', 'aws')).toBe('vm');
+    expect(cloudResourceKindForDeleteOp('terminate-instance', 'gcp')).toBeUndefined();
+    expect(cloudResourceKindForDeleteOp('delete-instance', 'aws')).toBeUndefined();
+    expect(cloudResourceDeleteContract('azure')).toEqual({});
+  });
+
+  it('addresses an AWS row by account + region (EC2 and EBS deletes are regional calls)', () => {
+    const row = { provider: 'aws' as const, resourceKind: 'vm', resourceId: 'i-0abc', projectId: '413781344298', zone: '', parentResourceId: '', hostId: 'host-1' };
+    expect(describeCloudResourceDeleteAddress({ ...row, region: '' })).toEqual({
+      addressable: false,
+      op: 'terminate-instance',
+      missing: ['region'],
+    });
+    expect(describeCloudResourceDeleteAddress({ ...row, region: 'us-east-2' })).toEqual({
+      addressable: true,
+      address: { op: 'terminate-instance', projectId: '413781344298', resourceName: 'i-0abc', hostId: 'host-1', region: 'us-east-2' },
+    });
+    // The same row read as GCP needs a zone instead — the provider column changes the contract.
+    expect(describeCloudResourceDeleteAddress({ ...row, provider: 'gcp', region: 'us-east-2' })).toMatchObject({
+      addressable: false,
+      op: 'delete-instance',
+      missing: ['zone'],
+    });
   });
 });

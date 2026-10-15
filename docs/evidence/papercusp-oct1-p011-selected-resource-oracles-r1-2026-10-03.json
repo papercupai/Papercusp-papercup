@@ -1,0 +1,214 @@
+{
+  "schemaVersion": "p011-selected-resource-oracles-v1",
+  "spec": {
+    "id": "PERF-OCT1-P011-MEMORY",
+    "revision": 2,
+    "fingerprint": "6059e251ea51a61458afd5075a8190a60e1f1139d28c55784b4ff12d2c624010"
+  },
+  "startedAt": "2026-10-03T03:13:30.060Z",
+  "endedAt": "2026-10-03T03:13:30.130Z",
+  "results": [
+    {
+      "id": "inbox",
+      "fixture": {
+        "path": "docs/evidence/papercusp-oct1-p011-inbox-physical-pair-r4-2026-10-02.json",
+        "sha256": "8da0585c8cd1155c563aed2dc092a7413ff90b5a0fc7095873b7dcdde0c4ae58"
+      },
+      "accepted": false,
+      "headlineIgnored": false,
+      "measured": null,
+      "expectedCounterexamples": 18,
+      "counterexamples": [
+        {
+          "id": "incomplete",
+          "rejection": "incomplete run"
+        }
+      ]
+    },
+    {
+      "id": "expiry",
+      "fixture": {
+        "path": "docs/evidence/papercusp-oct1-p011-cache-resource-comparison-r10-2026-10-01.json",
+        "sha256": "07672507519848b146e761652372f82584222c4e9c20b05e8e607e5ca49d1df5"
+      },
+      "accepted": true,
+      "headlineIgnored": true,
+      "measured": {
+        "expiredReachable": [
+          438,
+          0
+        ],
+        "usefulEntries": 604,
+        "heapUsedDifferenceBytes": 163653752,
+        "pssDifferenceBytes": -17983488,
+        "physicalPssReductionObserved": false,
+        "cumulativeV8Allocation": "unmeasured",
+        "usefulContentParity": "unmeasured: saved entry counts and cache statistics only",
+        "processStartTicks": "unmeasured",
+        "productionSavings": "unmeasured"
+      },
+      "expectedCounterexamples": 12,
+      "counterexamples": [
+        {
+          "id": "fixture-count",
+          "rejection": "fixture population"
+        },
+        {
+          "id": "same-process",
+          "rejection": "matched arms"
+        },
+        {
+          "id": "different-node",
+          "rejection": "matched arms"
+        },
+        {
+          "id": "different-generation",
+          "rejection": "matched arms"
+        },
+        {
+          "id": "wrong-expiry-phase",
+          "rejection": "expiry and ordinary-read phases"
+        },
+        {
+          "id": "missing-ordinary-reads",
+          "rejection": "expiry and ordinary-read phases"
+        },
+        {
+          "id": "rss-only",
+          "rejection": "separate heap and PSS counters"
+        },
+        {
+          "id": "expired-root-left",
+          "rejection": "expired roots removed"
+        },
+        {
+          "id": "useful-entry-lost",
+          "rejection": "expired roots removed"
+        },
+        {
+          "id": "miss-regression",
+          "rejection": "cache outcomes"
+        },
+        {
+          "id": "heap-no-reclamation",
+          "rejection": "heap reclamation"
+        },
+        {
+          "id": "cleanup-root-left",
+          "rejection": "cleanup roots"
+        }
+      ]
+    },
+    {
+      "id": "compiler",
+      "fixture": {
+        "path": "docs/evidence/papercusp-oct1-p011-serving-compiler-r24-2026-10-02.json",
+        "sha256": "d3929023e6b7586ff35b382989a266594cd0da41a6d201ab03bfb3a056ee3ead"
+      },
+      "accepted": true,
+      "headlineIgnored": true,
+      "measured": {
+        "tracedForks": [
+          0,
+          3
+        ],
+        "nativeDescendants": 3,
+        "nativeExecutableSha256": "fd49340cbb5f7ca3ce6f313db78d056de21f07338135ec8dfad63294a304fd2c",
+        "nativeSampleCounts": [
+          3,
+          4,
+          4
+        ],
+        "hostResourceSamples": [
+          5,
+          5
+        ],
+        "scope": "Historical private refused preflight caller and final cleanup only",
+        "pairedPssReduction": "unmeasured: these arms distinguish invocation, not an optimization",
+        "namedSourceCurrentness": "unmeasured in raw receipt; separate historical qualification required",
+        "historicalGigabyteRecovery": "unmeasured",
+        "productionSavings": "unmeasured"
+      },
+      "expectedCounterexamples": 16,
+      "counterexamples": [
+        {
+          "id": "incomplete",
+          "rejection": "incomplete run"
+        },
+        {
+          "id": "bundle-drift",
+          "rejection": "serving artifact identity"
+        },
+        {
+          "id": "pid-reused",
+          "rejection": "sample identity"
+        },
+        {
+          "id": "rss-only",
+          "rejection": "PSS and cumulative V8 counters"
+        },
+        {
+          "id": "allocation-reset",
+          "rejection": "PSS and cumulative V8 counters"
+        },
+        {
+          "id": "request-omitted",
+          "rejection": "request population"
+        },
+        {
+          "id": "request-mismatch",
+          "rejection": "matched HTTP inputs"
+        },
+        {
+          "id": "test-process-started",
+          "rejection": "real refused preflight"
+        },
+        {
+          "id": "wrong-caller-path",
+          "rejection": "distinguishing caller path"
+        },
+        {
+          "id": "wrong-trace-target",
+          "rejection": "trace identity and coverage"
+        },
+        {
+          "id": "wrong-fork-caller",
+          "rejection": "actual compiler caller"
+        },
+        {
+          "id": "basename-only",
+          "rejection": "executable-identified population"
+        },
+        {
+          "id": "wrong-parent",
+          "rejection": "native descendant ancestry"
+        },
+        {
+          "id": "native-no-samples",
+          "rejection": "native resource observation"
+        },
+        {
+          "id": "post-request-child",
+          "rejection": "post-request descendants"
+        },
+        {
+          "id": "unreaped-child",
+          "rejection": "cleanup or pause"
+        }
+      ]
+    }
+  ],
+  "incomplete": true,
+  "oracle": {
+    "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+    "sha256": "d6eaa434c4a5bbffb9a9296e033f6f84f0dd07471808d163834eaec9839090c2",
+    "independentOf": "No cohort emitter or summary used; raw counters, regenerated input and response expectations, caller/ancestry evidence determine scoped conclusions."
+  },
+  "scope": "Saved historical private data acceptance and targeted data-corruption controls; no runtime cohort replay.",
+  "limits": [
+    "Expiry heap reclamation does not establish PSS reduction or cumulative allocation.",
+    "Inbox concurrent batch outcomes are preserved; actual overlap timestamps are absent.",
+    "Compiler receipt distinguishes invocation and cleanup, not paired optimization or historical recovery.",
+    "Named-source and executed-graph limits, live paired savings, parent acceptance and shipment remain open."
+  ]
+}

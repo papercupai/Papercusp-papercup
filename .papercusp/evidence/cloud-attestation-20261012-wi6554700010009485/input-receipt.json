@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-6554700010009485",
+  "observedAt": "2026-10-12T23:56:12.146280+00:00",
+  "owner": "su-ec5efb56-8a98-4efe-a8e2-02017ee78bb8",
+  "sourceRecords": [
+    {
+      "path": ".papercusp/evidence/cloud-attestation-20261012-wi6554700010009485/plan-requirements.json",
+      "bytes": 12505,
+      "sha256": "7219a0e1862e63f5f1ed87540c2c1abd6a706cad4889a081b429a5acfb3c130d"
+    },
+    {
+      "path": ".papercusp/evidence/cloud-attestation-20261012-wi6554700010009485/consult-partial.json",
+      "bytes": 3993,
+      "sha256": "1c7e08a37d06844c1411cc7e24c69c93843728feb61c1eae09f15c03d97011e6"
+    },
+    {
+      "path": ".papercusp/evidence/cloud-attestation-20261012-wi6554700010009485/meta-rubric.json",
+      "bytes": 11964,
+      "sha256": "e53bd25b7da4d79370b21f4a76c83d7bb85cd1c6da76d5993000698ab6a766a3"
+    },
+    {
+      "path": ".papercusp/evidence/cloud-attestation-20261012-wi6554700010009485/prior-card.json",
+      "bytes": 15374,
+      "sha256": "447f2f993acdadb7f02fd0a4c441b979cc2b46dd315471f082797493f4a5bdb9"
+    },
+    {
+      "path": ".papercusp/evidence/cloud-attestation-20261012-wi6554700010009485/plan-decisions.json",
+      "bytes": 9845,
+      "sha256": "d493099fb682841b6e24ae8132e224bd29aac3a08f8c2ba98132a4e122e01430"
+    },
+    {
+      "path": ".papercusp/evidence/cloud-attestation-20261012-wi6554700010009485/parent-rubric.json",
+      "bytes": 26352,
+      "sha256": "6320176abdcdc7598862163472dddb9e3c5084745e3aa0fbb58ad0c04ba28f55"
+    }
+  ],
+  "checkerIdentity": [
+    {
+      "path": "packages/operator-core/lib/workspace-host/cloud-e2e-campaign-evidence.ts",
+      "sha256": "6016943d82e87410e81ee5f28b7eff8ac4c77425837967ebf586d1ac572ce4d4",
+      "headBlob": "0204bc06d8918a911d48704d46d180d2b4cc52c7",
+      "workingBlob": "0204bc06d8918a911d48704d46d180d2b4cc52c7"
+    },
+    {
+      "path": "packages/operator-core/lib/workspace-host/cloud-e2e-campaign-evidence.test.ts",
+      "sha256": "88716794d22372240c327ed81504464aa8b468f538eb63ed4c2363db08bbd80f",
+      "headBlob": "99afbc58eb8f12a7b7249517a74e594db93b1797",
+      "workingBlob": "99afbc58eb8f12a7b7249517a74e594db93b1797"
+    }
+  ],
+  "currentPlan": {
+    "revision": 16,
+    "contentHash": "67e21d9136af1493c5b4645a27cdbed50c10a885941c74c0ab84c5b4f574a4c4"
+  },
+  "parentRubric": {
+    "revision": 6,
+    "criteriaHash": "50c85cea02abc61fa13a85280a3bdffd6fcfa6acebb423a9920613bd2c3d6dfc"
+  },
+  "oldCard": "EI-25585761932988344",
+  "diagnosis": "Current vetting rejected stale grade-the-grader criteria hash. Old card terminal/observation/passed old audit; pending-only repair is not applicable.",
+  "limits": [
+    "Consult read upstream-partial: question and replies still need complete documented recovery, not assumed absent.",
+    "Bound checker first250lines inspected; remaining behavioral assertions and every criterion-specific detector still require actual read before fresh meta ratings.",
+    "No scorecard emission, rubric/BAR edit, terminal-card replay, testing or runtime/provider invocation.",
+    "Host/Git/source/scope choices remain already asked and pending; source review does not grant live target access."
+  ],
+  "next": "Recover complete existing consult with conversations:get payloadTier full through tools:invoke, finish canonical assertion-to-falsifier mapping for6bars/current D001-D005. Emit current meta card through maintained scorecards only if the evidence supports it; preserve partial/weak ratings and independent audit requirement."
+}

@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "plane": "live-current-build-operator-api",
+  "incomplete": true,
+  "pid": 3857646,
+  "buildSha": "247b9ed162",
+  "startedAt": "2026-10-02T09:36:50.297Z",
+  "samples": [],
+  "windows": [],
+  "requests": [],
+  "operations": [],
+  "cleanup": {
+    "inspector": {
+      "preservedPreexisting": true
+    },
+    "processIdentityPreserved": true
+  },
+  "metricDefinitions": {
+    "pssBytes": "smaps_rollup Pss kernel kB times 1024",
+    "heapAndNative": "V8/Node counters, overlapping with PSS; no additive native-residual estimate",
+    "observerMs": "wall time for inspector counter read and proc descendant census"
+  },
+  "limits": {
+    "windows": 3,
+    "idleMs": 2000,
+    "requestsPerWindow": 8,
+    "concurrency": 2
+  },
+  "limitations": [
+    "Main service PID only; HTTP requests may be served by sibling workers.",
+    "Ambient workload is uncontrolled; idle means no probe HTTP requests.",
+    "No paired intervention, allocation profiler, retainer graph or physical-savings claim.",
+    "Current disk bundle hash is recorded separately from the health-reported loaded build."
+  ],
+  "healthBefore": {
+    "sha": "247b9ed162",
+    "version": "0.0.0",
+    "at": "2026-10-02T09:36:50.660Z"
+  },
+  "error": "ENOENT: no such file or directory, open 'dist-host/hono-host.mjs'",
+  "endedAt": "2026-10-02T09:36:50.996Z"
+}

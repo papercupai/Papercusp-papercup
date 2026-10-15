@@ -21,6 +21,7 @@
  * unanswered decision at the wiring seam, where it is visible, instead of at runtime.
  */
 import { withWorkspace } from '@papercusp/db-org';
+import { safeCloudError } from '../../cloud-telemetry';
 import type { WorkspaceHostDesiredSpec } from '@papercusp/deployment-driver';
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
@@ -90,7 +91,7 @@ export function createDefaultHostedWorkspaceAdmissionDependencies(
     ((error: unknown, context: { hostId: string; operationId: string }) => {
       console.error(
         `[hosted-admission] failed to enqueue provisioning for host ${context.hostId} (operation ${context.operationId})`,
-        error,
+        safeCloudError('provisioning_failure', error),
       );
     });
 

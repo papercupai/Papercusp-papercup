@@ -1,0 +1,290 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "API36.1 DMA readback and guest userdata admission repair",
+  "framework": "shell",
+  "command": [
+    "make test-android-runner test-android-ci",
+    "emulator -avd papercusp-api36-16k -read-only -no-snapshot -no-window -no-audio -gpu swiftshader -memory 2048 -port 5580 -debug feature -show-kernel",
+    "emulator -avd papercusp-api36-16k -read-only -no-snapshot -no-window -no-audio -gpu swiftshader -memory 2048 -port 5580 -feature GLDirectMem,HasSharedSlotsHostMemoryAllocator -debug feature -show-kernel",
+    "emulator -avd p007-dma-fresh -no-snapshot -no-window -no-audio -gpu swiftshader -memory 2048 -partition-size 6144 -port 5580 -feature GLDirectMem,HasSharedSlotsHostMemoryAllocator -debug feature -show-kernel",
+    "bash tools/run-android-checks.sh verify-emulator-boot emulator-5580 <unique-private-attempt-directory> 120",
+    "adb -s emulator-5580 exec-out screencap -p"
+  ],
+  "startedAt": "2026-10-03T03:48:14+00:00",
+  "finishedAt": "2026-10-03T04:04:32+00:00",
+  "timestampBasis": "Filesystem birth and final-write times bound the retained sequential suite/runtime evidence; they are not per-command execution clocks. Each distinct runtime/suite has a separate receipt/log.",
+  "exitCode": 0,
+  "workingDirectory": "papercup-rust-mobile",
+  "summary": "Existing runner/CI now require DMA capability on API36.1+ and measured guest userdata headroom. Controlled same-image/default launch reproduced the DMA failure; explicit two capabilities supplied the missing host extension and prevented it. Current runner passed on owned fresh API36.1/16KiB userdata, then native screen readback and repeated framework health passed. Original SDK and AVD were not deleted or wiped; diagnostics used read-only copies, and the owned fresh runtime was stopped and its temporary AVD deleted. No app rebuild, notice-test replay, hosted execution or release acceptance.",
+  "sourceFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/run-android-checks.sh",
+      "sha256": "3ba85bca7400840412d535e93e4e62bba171817bf922548689ee4a348b731760"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/tests/run-android-checks-test.sh",
+      "sha256": "b7414aa14100e443a0d6535d4786312edceb4ca035e4db0b3671379dbe344767"
+    },
+    {
+      "path": "papercup-rust-mobile/.github/workflows/ci.yml",
+      "sha256": "dc5a69b49ea8cf2d6e10e2ccdd2de3941f7abbd151cc8ce662ab01f2c1d9b22f"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-ci-contract-test.sh",
+      "sha256": "1dbec5cc5513d19b1355ae5a42f13d41ef4c443c8b593d07b29137e43b1a6bff"
+    },
+    {
+      "path": "papercup-rust-mobile/docs/BUILD.md",
+      "sha256": "21bf9467d11997677609012e79357b7429059d5b724c2e2c59d848e1e94eca7d"
+    }
+  ],
+  "testFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/tests/run-android-checks-test.sh",
+      "sha256": "b7414aa14100e443a0d6535d4786312edceb4ca035e4db0b3671379dbe344767"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-ci-contract-test.sh",
+      "sha256": "1dbec5cc5513d19b1355ae5a42f13d41ef4c443c8b593d07b29137e43b1a6bff"
+    }
+  ],
+  "rootCause": {
+    "graphics": "API36.1 GoldfishMapper::readFromHost requires ANDROID_EMU_read_color_buffer_dma. Default local emulator negotiation lacked it even though the image GLDMA flag was on. Host advertises readback only with both direct-memory and shared-slots allocator features; explicit GLDirectMem and HasSharedSlotsHostMemoryAllocator provide them. Renderer choice alone does not.",
+    "detector": "Sticky boot plus short process stability admitted a runtime before its delayed mapper abort; absence of the required host extension was not checked.",
+    "guestStorage": "Host AVD space checks omit free space inside inherited userdata. The original owned read-only copy had only4572KiB available in/data and Java SQLiteFullException/code13; current admission requires512MiB and refuses unmeasured space.",
+    "supportingSourceScope": "Official pinned source explains the measured feature relationship; it is not proof that those exact commits built the installed binary."
+  },
+  "officialSources": [
+    {
+      "url": "https://android.googlesource.com/device/generic/goldfish/+/3ce87694caeb4a330280bb1284d9ad050fe28263/hals/gralloc/mapper.cpp",
+      "lines": "593-617"
+    },
+    {
+      "url": "https://android.googlesource.com/platform/hardware/google/gfxstream/+/d047a57228332d995d36600792fa9ccc26cf8ae6/host/RenderControl.cpp",
+      "lines": "469-496,631-634"
+    }
+  ],
+  "runtime": {
+    "emulatorVersion": "36.6.11.0",
+    "emulatorBuild": "15507667",
+    "image": "system-images/android-36.1/google_apis_ps16k/x86_64",
+    "imageRevision": 4,
+    "fingerprint": "google/sdk_gphone16k_x86_64/emu64xa16k:16/BE4B.251210.005/14574095:userdebug/dev-keys",
+    "pageSize": 16384,
+    "defaultFeatureDmaAssertions": 2,
+    "defaultFeatureReadbackExtension": false,
+    "forcedFeaturesReadbackExtension": true,
+    "forcedFeaturesDmaAssertions": 0,
+    "freshAdmission": {
+      "serial": "emulator-5580",
+      "bootCompleted": true,
+      "checks": 79,
+      "property": "1",
+      "adbError": "",
+      "transportEvidence": "boot-transports.txt",
+      "frameworkReady": true,
+      "frameworkSamples": [
+        {
+          "surfaceflinger": "760",
+          "system_server": "916",
+          "settings": "0"
+        },
+        {
+          "surfaceflinger": "760",
+          "system_server": "916",
+          "settings": "0"
+        },
+        {
+          "surfaceflinger": "760",
+          "system_server": "916",
+          "settings": "0"
+        }
+      ],
+      "frameworkErrors": [],
+      "graphics": {
+        "sdkVersion": "36.1",
+        "dmaReadbackRequired": true,
+        "requiredExtensions": [
+          "ANDROID_EMU_read_color_buffer_dma",
+          "ANDROID_EMU_direct_mem",
+          "ANDROID_EMU_has_shared_slots_host_memory_allocator"
+        ],
+        "missingExtensions": []
+      },
+      "guestStorage": {
+        "availableBytes": 5190692864,
+        "requiredBytes": 536870912,
+        "sufficient": true
+      }
+    },
+    "freshFinalAdmission": {
+      "serial": "emulator-5580",
+      "bootCompleted": true,
+      "checks": 1,
+      "property": "1",
+      "adbError": "",
+      "transportEvidence": "boot-transports.txt",
+      "frameworkReady": true,
+      "frameworkSamples": [
+        {
+          "surfaceflinger": "760",
+          "system_server": "916",
+          "settings": "0"
+        },
+        {
+          "surfaceflinger": "760",
+          "system_server": "916",
+          "settings": "0"
+        },
+        {
+          "surfaceflinger": "760",
+          "system_server": "916",
+          "settings": "0"
+        }
+      ],
+      "frameworkErrors": [],
+      "graphics": {
+        "sdkVersion": "36.1",
+        "dmaReadbackRequired": true,
+        "requiredExtensions": [
+          "ANDROID_EMU_read_color_buffer_dma",
+          "ANDROID_EMU_direct_mem",
+          "ANDROID_EMU_has_shared_slots_host_memory_allocator"
+        ],
+        "missingExtensions": []
+      },
+      "guestStorage": {
+        "availableBytes": 5067546624,
+        "requiredBytes": 536870912,
+        "sufficient": true
+      }
+    },
+    "screenReadback": {
+      "width": 1080,
+      "height": 2400,
+      "bytes": 1378237,
+      "sha256": "03eebd5581fd9c4475de62b0497146d4c73b67db7a19829afaa8c2751d1d45fe"
+    }
+  },
+  "tests": {
+    "invocation": "make test-android-runner test-android-ci",
+    "exitCode": 0,
+    "admissionNegativeControls": 10,
+    "workflowMutationsRejected": 35,
+    "runnerPhaseOmissionsRejected": 20,
+    "scope": "Maintained shell/HTTP fixture controls and real emulator admission/readback; no production app journey."
+  },
+  "failedAttempts": {
+    "initialExplicitFeatures": "No guest online during120checks; omitted original explicit memory flag, so retained as confounded, not proof of a DMA fix.",
+    "firstSuite": "Existing nested ADB fixture lacked new SDK/df replies; added measured healthy fixture responses and reran the same maintained targets."
+  },
+  "assertions": [
+    {
+      "id": "same-image-feature-contrast",
+      "passed": true,
+      "evidence": "Default lacks readback and reproduces2DMA assertions; comparable explicit-feature runtime advertises readback and has0DMA assertions."
+    },
+    {
+      "id": "current-runner-actual-native-admission",
+      "passed": true,
+      "evidence": "Fresh sameAPI36.1/16KiB image passes three stable framework samples, all required DMA extensions and5190692864bytes guest free space."
+    },
+    {
+      "id": "actual-readback-and-late-health",
+      "passed": true,
+      "evidence": "Screen readback yielded valid1080x2400PNG; later current admission reports unchanged framework process identities."
+    },
+    {
+      "id": "guest-space-controls",
+      "passed": true,
+      "evidence": "Maintained suite accepts exact512MiB boundary and rejects original4572KiB,1KiB below floor, unknown and unreadable space."
+    },
+    {
+      "id": "capability-recurrence-guards",
+      "passed": true,
+      "evidence": "Maintained suite rejects missing/partial extension tokens; workflow guard rejects either omitted host capability."
+    },
+    {
+      "id": "owned-cleanup",
+      "passed": true,
+      "evidence": "Owned emulator handles54096/33411/77493/9693 exited0; privatep007-dma-fresh AVD deleted by avdmanager; original AVD was not wiped or deleted."
+    }
+  ],
+  "evidenceFiles": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/dma-feature-20261003-preflight/maintained-guards-final.log",
+      "sha256": "c60ea1aa382bd9aa83578c96314fe0b1aa89259d1b5458ffd5a8cf95fe70a18e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/dma-feature-20261003-preflight/emulator-feature-on-exact.log",
+      "sha256": "8534a27aada3450c6494fa4fac19907b52429788e1c314a9a47dc6a3e9f19732"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/dma-feature-20261003-preflight/exact-on-surface-late.txt",
+      "sha256": "38eaa791ac2b36ea36ee329fd8f974198c2aa1e5f407a83b722775593e8a8207"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/dma-feature-20261003-preflight/exact-on-final-health/emulator-boot.json",
+      "sha256": "bd2ba3a3b964e337c7c46efd5811abe68b9b26611aa2c75e14494768ef59056e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/dma-feature-20261003-preflight/default-surface.txt",
+      "sha256": "1a72855b0bd9aed27542bd440edf5620e25210c012ace9d5d0da25f1f87f05e4"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/dma-feature-20261003-preflight/default-data-space.txt",
+      "sha256": "94bc3abdc47c476c48560440d65ac86a1afc1258451480a19ce6ce368401fd35"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/dma-feature-20261003-preflight/default-crash.txt",
+      "sha256": "921b5387a335f8fac56e44550052e124d9c47e8c2bdb34096e75f0c8d49ddf6d"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/dma-feature-20261003-preflight/emulator-default-features.log",
+      "sha256": "57625f088bd8abb97cd6621068668e0c990e907c763261f3dc22ef4f77e47888"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/dma-feature-20261003-preflight/fresh-positive-health/emulator-boot.json",
+      "sha256": "7d2a8d5647b4423de0c2bd88a0a5474d0544aeb6402f906be4dadb80cb02d61f"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/dma-feature-20261003-preflight/fresh-positive-health/framework-graphics.txt",
+      "sha256": "826839d1a870d2284183339da80d09f7b23d1c9b83de97f5e0a7acd2911d4cf9"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/dma-feature-20261003-preflight/fresh-positive-health/guest-data-space.txt",
+      "sha256": "c4649852dc01d094ad1d8eb998926fe1fe5592b0bf7d65582eebf6b51f66294f"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/dma-feature-20261003-preflight/fresh-positive-final-health/emulator-boot.json",
+      "sha256": "76d645dc6d75af3b96ae1c6038270608a44c9986e0fbe7b24b1d3d0263b012b6"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/dma-feature-20261003-preflight/fresh-positive-final-health/framework-crash.log",
+      "sha256": "a86af359c7b80542d3c8ebd0cd986413b17821895670af8d49a35a6398fd8469"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/dma-feature-20261003-preflight/fresh-positive-readback.png",
+      "sha256": "03eebd5581fd9c4475de62b0497146d4c73b67db7a19829afaa8c2751d1d45fe"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/dma-feature-20261003-preflight/emulator-fresh-positive.log",
+      "sha256": "3132ed3c42fe704e11182603b6915c0c9567e3bc530578ba666fb1d04361f710"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/dma-feature-20261003-preflight/feature-on-health/emulator-boot.json",
+      "sha256": "bd6db763b138267b1131348df419f65f66c9b5f692ff0874359bd21bbb7d4bc0"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/dma-feature-20261003-preflight/maintained-guards.log",
+      "sha256": "98c32ceaba0512d843b178aa0595b3ac9ebad249d93cf6cdc9308f13d983eb45"
+    }
+  ],
+  "relatedWorkItems": [
+    "EI-24926092400277910",
+    "EI-24929048763433701",
+    "WI-10004774"
+  ],
+  "scope": "Local emulator readiness preparation only. Full Android release, exact signed candidate, rights/notices/recipient, paired automatic hostedCI, phone and Play acceptance remain open."
+}

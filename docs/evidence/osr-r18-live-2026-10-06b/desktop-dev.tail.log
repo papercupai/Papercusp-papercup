@@ -1,0 +1,60 @@
+[2026-10-06T10:37:44.904Z] [heap-sampling]   0.6 MB  push @ (unknown):0 {}
+[2026-10-06T10:37:45.004Z] [mem0] no Claude session and no Anthropic or OpenAI API key in operator-credentials or env (add at /settings/api-keys).
+[2026-10-06T10:37:45.004Z] [memory-warm] attempt 1 not ready after available() (49704ms): mem0_unavailable — retrying once in 15s
+[2026-10-06T10:37:45.089Z] [routine-validation] FATAL: 109 registered system action(s) have NO routine row in this workspace, so they have never fired and never will: acceptance-drain-sweep, acceptance-grading-sweep, account-capacity-reprobe, autoloop-release-readiness-monitor, autonomy-trust-scan, bulk-run-watchdog, cargo-test, claim-discipline-watch, claim-integrity-sweep, completion-claim-recheck, connected-app-alert-sweep, connector-sync, consult-expiry-sweep, coord-invariant-monitor, coord-probe-canary, corpus-term-df, coverage-census, dead-citation-sweep, dead-target-reaper-sweep, doc-anchor-reconcile, dream-cycle, durable-escalation-orphan-sweep, episode-scoped-operational-reconcile, external-trigger-dispatch, facebook-personal-vault-poll, fleet-headcount-governor, fleet-transition-sweep, foreign-git-sync, frozen-candidate-drift-sweep, gate-canary-sweep, gate-fire-drill, gate-watcher-tick, gc-dead-loops, gc-desktop-sessions, gc-plan-runs, gc-verify-instances, gitnexus-reindex, green-checkpoint, gym-cycle, hetzner-orphan-frame-reaper, hive-canary, hive-canary-sla, hosted-lifecycle-reconcile, hosted-public-ingress-probe, idle-backend-reaper, idle-session-reaper, improvement-correction-decay, improvement-human-digest, improvement-implement, improvement-invalid-args-miner, improvement-tool-rejection-scorecard, improvement-triage, improvement-watchdog, inbox-bulk-resolve, intake-triage-drain, interactive-usage-ingest, knowledge-pack-delivery, knowledge-pack-hygiene, launch-cost-ceiling, legacy-needs-human-reconcile, nightly-release-cut, oddsmith-error-triage-autofix, oddsmith-error-triage-ingest, oddsmith-paper-cycle, orphaned-mcp-reaper, overwatch-launch, p2p-foreign-supervision, p2p-perf-tier1, p2p-perf-tier2, personal-vault-import, plan-cleanup-sweep, plan-drain-sweep, plan-item-orphan-reconcile, plan-item-reflect-orphan-reconcile, pr-poll, precompute-derived-reads, presence-transition-sweep, project-history-refresh, psu-pty-host-events-ingest, readiness-drift-monitor, reconcile-silent-halts, release-trigger, resolver-whole-corpus, scout-cycle, scout-signal-accumulator-sweep, session-dir-gc, slack-org-sync, sql-read-census, supervision-reconcile, sweep-orphaned-foreign-harnesses, sweep-stalled-loops, sweep-wedged-pty-hosts, sync-batch-delta-check, task-reconcile, telemetry-retention, template-gym, test-webview-reaper, token-weekly-report, unclaimed-work-digest, unguarded-halt-rescue, unshipped-plans-audit, wake-brain, work-item-admission-bulk-dedup-driver, work-item-admission-daily-digest, work-item-admission-delta-sweep, work-item-admission-fail-open, work-item-admission-promoter, work-item-durable-park-audit, worker-breaker-watch. Each is built, imported and green — and dead. Fix by running that action's seed script (usually packages/operator-core/lib/harness/routines/seed-<action>-routine.ts, most of which need an explicit --active), or, if the row is meant to be materialized per object at runtime rather than seeded, declare it at its registerSystemAction() call as { scheduling: 'on-demand' }. See EI-18752496371939475. [recurrence unknown (episode row not matchable)]
+[2026-10-06T10:37:45.128Z] [resource-governor-health] monitor ready in 49555ms
+[2026-10-06T10:37:45.140Z] [pg-huge-pages] huge_pages=try fell back to 4 KiB pages (huge_pages_status=off, cause=pool-too-small): PostgreSQL needs 1276 huge pages, pool total=0. See endgame D-052 / WI-10002573.
+[2026-10-06T10:37:46.535Z] [git-export] boot: 0 harness(es), 14 git table(s), 0 drain loop(s)
+[2026-10-06T10:37:46.602Z] [plugin-host] warmed at boot: loaded=37 errors=0
+[2026-10-06T10:37:46.698Z] [hyperbee-substrate] boot complete in 23ms — attempted=0 booted=0 alreadyBooted=0 failed=0 deferred=0
+[2026-10-06T10:37:46.796Z] [p2p-host-routines] workspace-c3618c5c: partial seed (sweep=true supervision=false) — p2p-foreign-supervision: gh not authenticated (resolveLocalGithubIdentity) — never fabricated; will resolve after `gh auth login` succeeds on this host.
+[2026-10-06T10:37:46.858Z] [timer-registration-scan] seeded the known-timer set (first run)
+[2026-10-06T10:37:47.944Z] [event-loop-lag] captured CPU profile of the saturated loop — load in DevTools/speedscope {
+  p95Ms: 1969.2,
+  maxMs: 4087.3,
+  durationMs: 3000,
+  file: '/home/tester/.papercusp/loop-profiles/loop-saturation-1791283067942-pid35813-p95_1969ms.cpuprofile',
+  startMs: 0.1601080000109505,
+  stopMs: 2.9942960000189487,
+  samplingIntervalUs: 10000
+}
+[2026-10-06T10:37:50.629Z] [desktop-install] hooks/cc <- /home/tester/papercusp-app/apps/operator/scripts/hooks/cc (unit=hono-host:3270, sha=5eb41d7e19fe35df711feb4e9bccda5d53a4c08b)
+[2026-10-06T10:37:52.442Z] [desktop-install] injection hooks: installed 10 file(s) into /home/tester/.papercusp/hooks/inject + /home/tester/.papercusp/hooks/omp from /home/tester/papercusp-app/apps/operator/scripts/hooks/inject @ 1a3db574b837 — inject/core.mjs, inject/delivery-ledger.mjs, inject/index.mjs, inject/ports.mjs, inject/adapters/claude.mjs, inject/adapters/codex.mjs, inject/adapters/omp.mjs, omp/coord-hook.ts, omp/inject-hook.ts, omp/non-preempting-delivery.ts
+[ensure-omp-su] OMP integration updated: created /home/tester/.omp/agent/mcp.json; created /home/tester/.omp/agent/models.yml (papercusp-gateway provider)
+MCP Bridge plugin initialized for 'Papercusp GUI' (com.papercusp.gui) on 127.0.0.1:9223
+MCP Bridge WebSocket server listening on: 127.0.0.1:9223
+[2026-10-06T10:38:00.013Z] [memory-warm] SKIPPED after available() (9ms): mem0_unavailable — the first real turn will pay the cold path
+libEGL warning: DRI3 error: Could not get DRI3 device
+libEGL warning: Ensure your X server supports DRI3 to get accelerated rendering
+[papercusp-desktop] role=gui (identifier com.papercusp.gui)
+[webkit-render] UseDamagingInformationForCompositing: false -> false (requested false)
+[webkit-render] applied 1/1 feature(s) of 489 available
+[papercusp] fd-limit: soft=1048576 (already-sufficient)
+[papercusp-desktop] version self-report v0.0.26 pid 35381 -> /home/tester/.papercusp/desktop-app-version-0.json
+[papercusp-desktop] localstorage checkpoint http_127.0.0.1_3270.localstorage: busy=0 log=0 ckpt=0 wal 1487352 -> 0 bytes
+[papercusp-desktop] localstorage WAL reclaim: 1 attempted, 1 truncated, 0 runaway, 0 failed (reader busy, 0 bytes reclaimed), 1487352 bytes reclaimed (/home/tester/.local/share/com.papercusp.gui/localstorage)
+[papercusp-desktop] native-terminal strategy: glued-ghostty-x11
+[papercusp-desktop] dev mode — skipping sidecar spawn (expecting devUrl :3070 to be served externally)
+[papercusp-desktop] dev bridge listening on 127.0.0.1:42767
+Dev bridge 0.8.1 started on port 42767
+Token file: /tmp/tauri-dev-bridge-35381.token
+[env-switch] PAPERCUSP_DEV_API_TARGET :3270 — primed /api :3270 before IPC supervisor
+[env-switch] PAPERCUSP_DEV_API_TARGET :3270 — content + /api pinned (not persisted)
+[env-switch] /api target → :3270 (IPC re-dial)
+[endpoint_ipc] connected to /home/tester/.papercusp/sockets/35813.sock (selected port 3270: live advertisement /home/tester/.papercusp/sockets/35813.sock (pid 35813))
+[env-switch] escape-hatch shortcut CmdOrCtrl+Alt+1 → :3270
+[env-switch] escape-hatch shortcut CmdOrCtrl+Alt+2 → :3070
+[env-switch] escape-hatch shortcut CmdOrCtrl+Alt+3 → :3170
+[env-switch] escape-hatch shortcut CmdOrCtrl+Alt+4 → :3055
+[docs-search] global shortcut disabled (default) — no key registered
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+[2026-10-06T10:38:06.440Z] [sync] invalidation bus listening
+[2026-10-06T10:38:08.426Z] [updates/manifest] no GitHub token available (gh auth / github_pat / GITHUB_TOKEN) — serving 204 (no update offered)
+[2026-10-06T10:38:08.492Z] [updates/manifest] no GitHub token available (gh auth / github_pat / GITHUB_TOKEN) — serving 204 (no update offered)

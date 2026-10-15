@@ -8,11 +8,15 @@ footprint on a cloud VM, split by process class (supervisor, operator node, post
 Runs ON the test VM (stock python3, no dependencies). Output, one JSON object per line:
 
   {"header": {...}}                       first line: clock tick, cores, RAM, cgroup path
-  {"t": <epoch s>, "cg": {...}, "procs": [...]}   one line per sample
+  {"t": <epoch s>, "cg": {...}, "host": {...}, "procs": [...]}   one line per sample
 
 `cg.cpu_usec` is the cgroup's own cumulative CPU counter (exact, includes processes that
 lived and died between two samples); per-process `ticks` (utime+stime) only cover processes
 seen at both ends of an interval. `footprint-summary.ts` turns this into rates.
+
+Swap lever (P-015): `cg.swap` / `cg.pgmajfault` / `cg.psi`, per-process `swap_kb` / `majflt`,
+and `host` (vmstat swap-in/out, meminfo swap, machine PSI, every zram device's mm_stat). All
+counters are cumulative, so rates come from differencing two samples.
 """
 import argparse
 import json
@@ -73,15 +77,19 @@ def proc_sample(pid):
     rparen = stat.rfind(")")
     comm = stat[stat.find("(") + 1 : rparen]
     fields = stat[rparen + 2 :].split()
-    # fields[0] is state (field 3); utime/stime are fields 14/15 -> indexes 11/12.
+    # fields[0] is state (field 3); majflt is field 12 -> index 9; utime/stime are fields
+    # 14/15 -> indexes 11/12.
     ppid = int(fields[1])
+    majflt = int(fields[9])
     ticks = int(fields[11]) + int(fields[12])
-    rss_kb = anon_kb = 0
+    rss_kb = anon_kb = swap_kb = 0
     for line in (read(f"/proc/{pid}/status", "") or "").splitlines():
         if line.startswith("VmRSS:"):
             rss_kb = int(line.split()[1])
         elif line.startswith("RssAnon:"):
             anon_kb = int(line.split()[1])
+        elif line.startswith("VmSwap:"):
+            swap_kb = int(line.split()[1])
     raw = read(f"/proc/{pid}/cmdline", "") or ""
     argv = [a for a in raw.split("\0") if a]
     return {
@@ -91,8 +99,65 @@ def proc_sample(pid):
         "cls": classify(comm, argv),
         "rss_kb": rss_kb,
         "anon_kb": anon_kb,
+        # P-015 (swap lever): a process's swapped-out anon memory, and its cumulative major
+        # faults. A Node CLI whose garbage collector walks its whole heap faults swapped pages
+        # back in, so idle claude sessions would show majflt climbing while codex (Rust) stays flat.
+        "swap_kb": swap_kb,
+        "majflt": majflt,
         "ticks": ticks,
     }
+
+
+def parse_pressure(text):
+    """PSI file body -> cumulative stall microseconds: {"some_us": n, "full_us": n}.
+
+    Totals, not the kernel's avg10/60/300, so a summary can difference two samples exactly.
+    """
+    out = {}
+    for line in (text or "").splitlines():
+        kind, _, rest = line.partition(" ")
+        for field in rest.split():
+            key, _, val = field.partition("=")
+            if key == "total" and kind in ("some", "full"):
+                out[kind + "_us"] = int(val)
+    return out
+
+
+def zram_sample(sys_block="/sys/block"):
+    """Every zram device's mm_stat, in bytes: what was stored, what it compressed to, and the
+    RAM the device really holds (mem_used_total, the number that counts against the machine)."""
+    out = {}
+    try:
+        names = sorted(n for n in os.listdir(sys_block) if n.startswith("zram"))
+    except OSError:
+        return out
+    for name in names:
+        cols = (read(os.path.join(sys_block, name, "mm_stat"), "") or "").split()
+        if len(cols) >= 3:
+            out[name] = {"orig": int(cols[0]), "compr": int(cols[1]), "used": int(cols[2])}
+    return out
+
+
+def host_sample(proc="/proc", sys_block="/sys/block"):
+    """Machine-wide swap traffic and memory pressure (P-015): swap and zram are host resources,
+    so the cgroup alone cannot say how much RAM the compressed pages cost or how hard the disk
+    was paged."""
+    out = {}
+    for line in (read(os.path.join(proc, "vmstat"), "") or "").splitlines():
+        key, _, val = line.partition(" ")
+        if key in ("pswpin", "pswpout", "pgmajfault"):
+            out[key] = int(val)
+    for line in (read(os.path.join(proc, "meminfo"), "") or "").splitlines():
+        key, _, rest = line.partition(":")
+        if key in ("MemAvailable", "SwapTotal", "SwapFree"):
+            out[key + "_kb"] = int(rest.split()[0])
+    psi = parse_pressure(read(os.path.join(proc, "pressure", "memory"), ""))
+    if psi:
+        out["psi"] = psi
+    zram = zram_sample(sys_block)
+    if zram:
+        out["zram"] = zram
+    return out
 
 
 def cgroup_sample(root):
@@ -100,10 +165,16 @@ def cgroup_sample(root):
     mem = read(os.path.join(root, "memory.current"))
     if mem is not None:
         out["mem"] = int(mem.strip())
+    swap = read(os.path.join(root, "memory.swap.current"))
+    if swap is not None:
+        out["swap"] = int(swap.strip())
     for line in (read(os.path.join(root, "memory.stat"), "") or "").splitlines():
         key, _, val = line.partition(" ")
-        if key in ("anon", "file", "kernel", "shmem"):
+        if key in ("anon", "file", "kernel", "shmem", "pgmajfault", "zswap"):
             out[key] = int(val)
+    psi = parse_pressure(read(os.path.join(root, "memory.pressure"), ""))
+    if psi:
+        out["psi"] = psi
     for line in (read(os.path.join(root, "cpu.stat"), "") or "").splitlines():
         key, _, val = line.partition(" ")
         if key == "usage_usec":
@@ -142,7 +213,7 @@ def main():
         while True:
             t = time.time()
             procs = [p for p in (proc_sample(pid) for pid in cgroup_pids(args.cgroup)) if p]
-            f.write(json.dumps({"t": t, "cg": cgroup_sample(args.cgroup), "procs": procs}) + "\n")
+            f.write(json.dumps({"t": t, "cg": cgroup_sample(args.cgroup), "host": host_sample(), "procs": procs}) + "\n")
             if time.monotonic() >= deadline:
                 break
             time.sleep(max(0.0, args.interval - (time.time() - t)))

@@ -58,7 +58,8 @@ function buildRound(roundId: string, choices: readonly GovernanceVoteEvent['choi
     if (!appended.ok) throw new Error(appended.detail);
     votes = appended.value;
   });
-  const finalized = finalizeGovernanceRound({ round: created.value, events: votes, policy: DEFAULT_PLAN_ADMISSION_POLICY, nowMs: 2_000 });
+  const finalized = finalizeGovernanceRound({ round: created.value, events: votes,
+    members: created.value.eligibleMemberIds.map(memberId => ({ memberId })), policy: DEFAULT_PLAN_ADMISSION_POLICY, nowMs: 2_000 });
   if (!finalized.ok) throw new Error(finalized.detail);
   return { round: created.value, votes, cert: finalized.value };
 }

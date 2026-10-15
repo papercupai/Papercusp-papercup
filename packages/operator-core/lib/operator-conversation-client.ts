@@ -42,10 +42,17 @@ export async function persistOperatorVoiceTurn(input: {
   text: string;
   source: 'voice_stt' | 'voice_tts';
   elConvId?: string | null;
+  /**
+   * The conversation the voice session belongs to. When set, the turn goes
+   * there or nowhere: a pinned conversation that has gone away must not have
+   * its turns land in whatever conversation is active now.
+   */
+  conversationId?: string | null;
 }): Promise<void> {
   const text = input.text?.trim();
   if (!text) return;
-  let id = await getActiveOperatorConversationId();
+  const pinned = input.conversationId?.trim() || null;
+  let id = pinned ?? (await getActiveOperatorConversationId());
   if (!id) return;
   const body = JSON.stringify({
     role: input.role,
@@ -58,7 +65,7 @@ export async function persistOperatorVoiceTurn(input: {
     headers: { 'content-type': 'application/json' },
     body,
   }).catch(() => null);
-  if (res && res.status === 404) {
+  if (res && res.status === 404 && !pinned) {
     // conversation was archived under us — refetch + retry once
     clearOperatorConversationCache();
     id = await getActiveOperatorConversationId();

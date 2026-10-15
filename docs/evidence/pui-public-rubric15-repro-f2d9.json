@@ -1,0 +1,720 @@
+{
+  "schemaVersion": 1,
+  "rubricRef": "acceptance-pui-first-party-public-release-2026-09-07",
+  "rubricRevision": 15,
+  "criteriaHash": "c3776900beb7e64c59ae275494eeba18bf58c45f91fcfba8539dbec7e34c52d5",
+  "planVersion": 146,
+  "planContentHash": "0189b7fdad8a26315b93faa293d9e7b29264ff61703320a8cc4240843f1353bf",
+  "testedSha": "f2d92cbc8ad685b843e70c83718ac7a8d1a45371",
+  "retainedInputSha256": "a4a6d1cb8d1f94a2c902cf208787006b63de158bda0b2637bfe3aa7e22823776",
+  "sourceSha256": {
+    "packages/operator-core/lib/agent-tools/plans/spec-clause-compiler.ts": "9e0d17219fd5f3df1aee9cab076fc1c8e1088df71ab158803a221fb99af65387",
+    "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts": "bffd13d3215dd178cb89934a148ac08bee4750b131d56a5063d22134e58b4e38",
+    "packages/operator-core/lib/pui-e2e/context-pane-cockpit-pty.integration.test.ts": "6e56ae67521250e81579686bc33c98e699a6246cc04bd38455434daae1b80a07",
+    "packages/operator-core/lib/pui-e2e/public-package.integration.test.ts": "11364a9828fbbba4f128326e2bdb0837595a47af9e37e772d346da8d18376a78",
+    "packages/operator-core/lib/pui-e2e/release-acceptance.integration.test.ts": "8970756983f33572811feacb7e9f8bd7c7896274062a36126e90a1c6ae86ae9b",
+    "packages/operator-core/lib/su-session-capability-parity.test.ts": "18cf0faa6e4aff83e56a938a759c3d71b292ae0a2f63f5861d8e34dfe094cae7"
+  },
+  "criteria": [
+    {
+      "key": "r-01",
+      "title": "First-party interaction",
+      "model": "Every ordinary chat interaction in the installed PUI completes inside PUI without a native Claude, Codex or OMP interface.",
+      "bar": "Every ordinary chat interaction in the installed PUI completes inside PUI without a native Claude, Codex or OMP interface.",
+      "barKey": "R-01",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "integration"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-09-07T05:45:21.152Z",
+        "declaredBy": "su-84c127f1-787b-49ea-849d-47d1b6217757"
+      },
+      "method": "Run the committed installed-PUI PTY first-message, tool, approval, interrupt, and resume journeys with every native engine pane closed; inspect the transcript and pane census for any native-client dependency. NAMED CASES that fail for this criterion's drift (cite names, not lines): agent-chat-pty.integration.test.ts: 'P-030: bare `pui` opens the chat as the focused main pane with the workbench panes beside it'; 'first exact draft reaches the structured SU engine, streams tools/reply, and reopens'; 'P-009 END: ending the session from PUI ends it and leaves no native engine process'; 'greeting, real file tool, interrupt and continued reply stay in one first-party session' (positive control: 'R-01 control: a `pui hud` frame shows the chrome a default launch must not'). GOAL CLAUSE: plan pui-first-party-public-release-2026-09-07 ## Requirements R-01 (First-party interaction). GOVERNING DECISIONS: D-001 (Avi rejected the native Claude pane and expects our own full TUI), D-002 (approved replacement of the launcher-UI rule for PUI), D-004 (the installed-product journey is the release authority and must prove absence of unwanted native UI). RATING BASIS: the model is the pass floor and every numbered driftMarker is also rated; a degraded or failing rating names the marker number(s) that tripped.",
+      "driftMarkers": "BROKEN if any ONE holds: (1) sending text opens or requires a native Claude/Codex/OMP pane; (2) creating or resuming a session opens or requires one; (3) answering an approval opens or requires one; (4) cancelling work or continuing a reply opens or requires one; (5) an external terminal opens without the user explicitly requesting it (an explicitly requested external terminal is the only allowed exception).",
+      "replication": "REPLICATION DRILL: Run the bound agent-chat PTY tests \"first exact draft reaches the structured SU engine\" and \"greeting, real file tool, interrupt and continued reply\"; fail if any ordinary interaction depends on a native pane.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts"
+        ]
+      }
+    },
+    {
+      "key": "r-02",
+      "title": "Reliable first-turn delivery",
+      "model": "The first message sent from the installed PUI yields exactly one accepted owner turn with its correlated reply in the same transcript.",
+      "bar": "The first message sent from the installed PUI yields exactly one accepted owner turn with its correlated reply in the same transcript.",
+      "barKey": "R-02",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "integration"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-09-07T05:45:21.152Z",
+        "declaredBy": "su-84c127f1-787b-49ea-849d-47d1b6217757"
+      },
+      "method": "Run the delayed-ready, durable receipt, duplicate suppression, interruption, and delivery-uncertain PTY cases against the exact candidate binary; verify one accepted owner turn and one correlated reply. NAMED CASES that fail for this criterion's drift (cite names, not lines): agent-chat-pty.integration.test.ts: 'delayed readiness sends the first draft once and accepts a follow-up after completion'; 'P-002: a first message survives the loss of its launching runtime and still gets a reply'; 'AUTO-BAR-R-02-P-009: %s keeps the draft and replays the exact persisted command without a second model turn or tool execution'. GOAL CLAUSE: plan pui-first-party-public-release-2026-09-07 ## Requirements R-02 (Reliable first-turn delivery). GOVERNING DECISIONS: D-004 (the journey must prove readiness, first message and correlated reply), D-012 and D-013 (real-engine evidence legs pin their model; Claude-scoped), D-024 (bounded-timeout fallbacks are recorded as evidence, not failures). RATING BASIS: the model is the pass floor and every numbered driftMarker is also rated; a degraded or failing rating names the marker number(s) that tripped.",
+      "driftMarkers": "BROKEN if any ONE holds: (1) a delayed backend loses the first accepted draft; (2) the first draft is submitted or accepted twice; (3) the reply is missing or is not correlated with that turn in the same transcript; (4) the host does not acknowledge durable acceptance; (5) an uncertain delivery is blindly resent instead of being shown as uncertain and reconciled.",
+      "replication": "REPLICATION DRILL: Run the bound PTY cases \"delayed readiness sends the first draft once\", \"delivery receipt and assistant segment\", and \"host refusal retains an editable draft\"; verify the accepted-turn count and correlated reply.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts"
+        ]
+      }
+    },
+    {
+      "key": "r-03",
+      "title": "Full SU capability",
+      "model": "An installed-PUI SU session on every advertised engine carries the full SU runtime contract, not a provider-only text completion.",
+      "bar": "An installed-PUI SU session on every advertised engine carries the full SU runtime contract, not a provider-only text completion.",
+      "barKey": "R-03",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-09-07T05:45:21.152Z",
+        "declaredBy": "su-84c127f1-787b-49ea-849d-47d1b6217757"
+      },
+      "method": "Run the Claude/Codex/OMP capability-parity and attached-live suites plus the installed-PUI real-engine journeys. Verify persona, workspace, tool, permission, coordination, task, mode, history, and resume effects rather than provider text alone. NAMED CASES that fail for this criterion's drift (cite names, not lines): su-session-capability-parity.test.ts: describe 'P-006 su-session capability parity': '%s declares exactly the canonical command and feature key sets', '%s gives the PUI a usable explanation for every non-supported capability' (per engine), and 'never declares a capability as simulated — unsupported behaviour stays visible'. agent-chat-pty.integration.test.ts: 'P-016: a ${backend} chat runs ${backend}'s own identity outside every checkout and the SU identity inside one'; 'PUI-TASK: an SU-session task list is edited in Context by owner and agent and survives restart'; 'restores the same native conversation after the operator OS process exits'. GOAL CLAUSE: plan pui-first-party-public-release-2026-09-07 ## Requirements R-03 (Full SU capability). GOVERNING DECISIONS: D-003 (preserve the full SU runtime contract), D-021 (Claude default-mode approvals auto-allow only read-only SU tools; writes keep asking). RATING BASIS: the model is the pass floor and every numbered driftMarker is also rated; a degraded or failing rating names the marker number(s) that tripped.",
+      "driftMarkers": "BROKEN if any ONE holds: (1) persona is lost; (2) workspace or project scope is lost; (3) tools or permissions are lost; (4) coordination identity is lost; (5) context or the task list is lost; (6) modes are lost; (7) session history is lost; (8) carry/resume is lost; (9) any of these is absent while a provider-only text completion still appears successful.",
+      "replication": "REPLICATION DRILL: Run su-session-capability-parity \"all three engines agree on the key sets\" and \"never declares a capability as simulated\", attached-live integration, and installed-PUI real-engine PTY; fail on absent SU effects.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/su-session-capability-parity.test.ts",
+          "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts"
+        ]
+      }
+    },
+    {
+      "key": "r-04",
+      "title": "Usable session setup and history",
+      "model": "Before any request runs in the installed PUI, the session visibly names its project, engine, model and account.",
+      "bar": "Before any request runs in the installed PUI, the session visibly names its project, engine, model and account.",
+      "barKey": "R-04",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "integration"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-09-07T05:45:21.152Z",
+        "declaredBy": "su-84c127f1-787b-49ea-849d-47d1b6217757"
+      },
+      "method": "Run new/switch/rename/archive/resume, legacy-history continuation, backend/model/account visibility, and authentication/setup PTY journeys against the exact candidate. NAMED CASES that fail for this criterion's drift (cite names, not lines): agent-chat-pty.integration.test.ts: 'AUTO-BAR-R-04-P-010: new-session setup reviews every effective choice and launches only from Review'; 'AUTO-BAR-R-04-P-008: legacy continuation preserves source identity, history and the unsent draft'; 'PUI-SESSION-LIFECYCLE: session browser keeps isolated history addressable and supports rename/archive'; 'PUI-SETTINGS-PICKERS: live pickers name defaults and reasons, and a launch-time pick on a running conversation opens a new session'. GOAL CLAUSE: plan pui-first-party-public-release-2026-09-07 ## Requirements R-04 (Usable session setup and history). GOVERNING DECISIONS: D-004, D-006 (one clear project/session at the front door), D-020 (a launch-time pick opens the New SU session form; About/Support in the palette). RATING BASIS: the model is the pass floor and every numbered driftMarker is also rated; a degraded or failing rating names the marker number(s) that tripped.",
+      "driftMarkers": "BROKEN if any ONE holds: (1) a session starts with a hidden or wrong project, engine, model or account; (2) new-session setup, backend/model/account selection or authentication guidance cannot be completed within PUI; (3) legacy history has no explicit provenance-preserving Continue in new session action, or continuing silently changes engine or becomes the default dead end; (4) rename, archive or resume loses or silently changes history or engine.",
+      "replication": "REPLICATION DRILL: Run bound PTY \"legacy continuation preserves source identity, history and the unsent draft\", \"session browser keeps isolated history\", and \"new-session setup reviews every effective choice\".",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts"
+        ]
+      }
+    },
+    {
+      "key": "r-05",
+      "title": "Complete editor and controls",
+      "model": "An owner draft in the installed PUI composer survives editing, streaming and control actions unchanged until the owner sends it.",
+      "bar": "An owner draft in the installed PUI composer survives editing, streaming and control actions unchanged until the owner sends it.",
+      "barKey": "R-05",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "integration"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-09-07T05:45:21.152Z",
+        "declaredBy": "su-84c127f1-787b-49ea-849d-47d1b6217757"
+      },
+      "method": "Run the editor, multiline/paste/undo/history/copy, streaming-draft, queue/stop/retry, approval, question, tool-result, and diff PTY cases against the exact candidate. NAMED CASES that fail for this criterion's drift (cite names, not lines): agent-chat-pty.integration.test.ts: 'PUI-EDITOR-UNDO: undo restores the exact pre-paste draft'; 'PUI-EDITOR-HISTORY: navigating history preserves and restores the in-progress draft'; 'PUI-EDITOR-COPY: copying a focused transcript result preserves its plain text'; 'AUTO-BAR-R-05-P-007: editing a draft during a streamed turn neither disturbs the stream nor sends the draft'; 'P-004: the default chat composer has slash commands, multi-line input, history, @file and Esc to stop'; 'delivery receipt and assistant segment keep input locked until interruption completes'; 'PUI-QUESTION: a $route question is answered in the PUI and reaches the asking turn'. GOAL CLAUSE: plan pui-first-party-public-release-2026-09-07 ## Requirements R-05 (Complete editor and controls). GOVERNING DECISIONS: D-007 (the owner operates session controls through PUI), D-015 (composer @ picker implemented; PUBLIC_RELEASE_UX affordances pinned against the code). RATING BASIS: the model is the pass floor and every numbered driftMarker is also rated; a degraded or failing rating names the marker number(s) that tripped.",
+      "driftMarkers": "BROKEN if any ONE holds: (1) multiline editing, paste, undo, history or cursor movement corrupts a draft; (2) scrolling or copying corrupts a draft or copies the wrong text; (3) a streamed reply swallows or sends a new draft; (4) queue, stop, retry or resume has no explicit visible state or uses inconsistent keys; (5) an approval or tool result cannot be acted on inline.",
+      "replication": "REPLICATION DRILL: Run bound PTY PUI-EDITOR-UNDO, PUI-EDITOR-HISTORY, PUI-EDITOR-COPY, AUTO-BAR-R-05-P-007, PUI-QUESTION and approval allow/deny tests; inspect draft equality and single-action assertions.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts"
+        ]
+      }
+    },
+    {
+      "key": "r-06",
+      "title": "Recoverable lifecycle",
+      "model": "Every failure or interruption of an installed-PUI session leaves one defined lifecycle state with a visible recovery action.",
+      "bar": "Every failure or interruption of an installed-PUI session leaves one defined lifecycle state with a visible recovery action.",
+      "barKey": "R-06",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "integration"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-09-07T05:45:21.152Z",
+        "declaredBy": "su-84c127f1-787b-49ea-849d-47d1b6217757"
+      },
+      "method": "Run startup failure, reconnect, restart, interruption, uncertain delivery, compaction/resume, ended-session, and ownership-preservation PTY cases; verify every failure releases busy state and exposes recovery. NAMED CASES that fail for this criterion's drift (cite names, not lines): agent-chat-pty.integration.test.ts: 'AUTO-BAR-R-06-P-009: $mode after acceptance leaves a usable composer within 15s'; 'AUTO-BAR-R-06-P-009: startup failure leaves the exact draft retryable within 15s'; 'a refused reconnect stays visible without submitting a new owner turn'; 'interrupted startup retains the draft and retries without creating another chat'; 'host refusal retains an editable draft and a ready retry commits it once'; 'P-009 QUIT: /exit ends the engine, says so, and a relaunch resumes the conversation from its transcript'. GOAL CLAUSE: plan pui-first-party-public-release-2026-09-07 ## Requirements R-06 (Recoverable lifecycle). GOVERNING DECISIONS: D-004 (the journey must prove recovery), D-016 (one authoritative lifecycle lives in the pui binary; palette lifecycle actions). RATING BASIS: the model is the pass floor and every numbered driftMarker is also rated; a degraded or failing rating names the marker number(s) that tripped.",
+      "driftMarkers": "BROKEN if any ONE holds: (1) more than one lifecycle authority disagrees about the session state; (2) a starting, ready, sending, streaming, waiting-for-approval, interrupted, reconnecting, failed, ended or delivery-uncertain state has no defined transition or recovery action; (3) a failure leaves PUI busy or the draft/recovery controls unusable; (4) quit, restart or connection loss loses history or ownership; (5) recovery duplicates an accepted turn.",
+      "replication": "REPLICATION DRILL: Run bound PTY \"startup failure leaves the exact draft retryable\", \"interrupted startup retains the draft\", \"engine startup exit releases input\", and \"restores the same native conversation after the operator OS process exits\".",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts"
+        ]
+      }
+    },
+    {
+      "key": "r-07",
+      "title": "Relevant context and layout",
+      "model": "At every supported terminal size the installed PUI keeps the current conversation visible as its primary surface.",
+      "bar": "At every supported terminal size the installed PUI keeps the current conversation visible as its primary surface.",
+      "barKey": "R-07",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "integration"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-09-07T05:45:21.152Z",
+        "declaredBy": "su-84c127f1-787b-49ea-849d-47d1b6217757"
+      },
+      "method": "Run compact/wide layout, Surface B context, current task/plan/tool/diff/scope, below-minimum blocking, live resize, and narrow-terminal PTY cases on the candidate. NAMED CASES that fail for this criterion's drift (cite names, not lines): agent-chat-pty.integration.test.ts: 'AUTO-BAR-R-07-P-008: a default launch opens on the active conversation and its Context despite unrelated activity, normal and compact'; 'AUTO-BAR-R-03-P-008: Context follows the selected session in the wide rail and the compact Ctrl-T surface'; 'P-013: below 80x20 a blocking view holds the draft and a resize back resumes it'; 'P-013: 80x24, 120x40 and 200x60 keep a streamed reply whole across resizes'. context-pane-cockpit-pty.integration.test.ts: describe 'pui context-pane cockpit (installed binary, real PTY, fake canonical operator)', case 'HUD cockpit: semantic cards, actionable frontier, lifecycle oracle, launcher door, ended sessions, leader tape and critical path'. GOAL CLAUSE: plan pui-first-party-public-release-2026-09-07 ## Requirements R-07 (Relevant context and layout). GOVERNING DECISIONS: D-006 (user context drives the layout and defaults: the conversation plus its contextual work surface; global operational data behind explicit navigation). RATING BASIS: the model is the pass floor and every numbered driftMarker is also rated; a degraded or failing rating names the marker number(s) that tripped.",
+      "driftMarkers": "BROKEN if any ONE holds: (1) the conversation disappears behind global presence, fleets or internal IDs; (2) the Surface B Context pane lacks the current task, plan, context, tool/diff or scope information; (3) the Context pane shows another session’s task, context, tool/diff or scope; (4) a narrow or below-minimum terminal clips controls or accepts hidden input instead of preserving the draft.",
+      "replication": "REPLICATION DRILL: Run bound PTY Context-follows-selected-session, default-launch active-conversation, P-013 below-80x20 and live-resize cases, plus context-pane cockpit PTY; inspect the visible pane and preserved draft.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts",
+          "packages/operator-core/lib/pui-e2e/context-pane-cockpit-pty.integration.test.ts"
+        ]
+      }
+    },
+    {
+      "key": "r-08",
+      "title": "Clean installation",
+      "model": "The PUI release archive completes its install-to-first-reply journey on a clean HOME that has no checkout, Cargo, private dotfiles, developer database, injected operator URL or desktop window.",
+      "bar": "The PUI release archive completes its install-to-first-reply journey on a clean HOME that has no checkout, Cargo, private dotfiles, developer database, injected operator URL or desktop window.",
+      "barKey": "R-08",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "integration"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-09-07T05:45:21.152Z",
+        "declaredBy": "su-84c127f1-787b-49ea-849d-47d1b6217757"
+      },
+      "method": "Build the committed-source public archive and install it into an isolated HOME with no Cargo, git, private dotfiles, developer database, injected endpoint, or desktop window; run doctor and the first-use path. NAMED CASES that fail for this criterion's drift (cite names, not lines): public-package.integration.test.ts: 'AUTO-BAR-R-08-P-011: a clean HOME installs and runs PUI with no checkout, cargo, python, git, dotfiles or operator'; 'AUTO-BAR-R-08-P-018: the archive ships psu on its own pinned Node — it runs in a HOME with no node, npm or checkout'; 'AUTO-BAR-R-08-P-019: install links psu beside pui, never over a psu it does not own, pui runs its own psu first, and uninstall leaves no psu residue'; 'AUTO-BAR-R-08-P-020: with no operator, installed PUI setup signs in to Papercusp cloud through its bundled psu and runs PUI on the cloud workspace'. GOAL CLAUSE: plan pui-first-party-public-release-2026-09-07 ## Requirements R-08 (Clean installation). GOVERNING DECISIONS: D-004 (grading distinguishes source, built, installed and public artifact), D-016 (one PUI release unit), D-025 (remote hosts: PUI runs on the remote host through the psu terminal bridge), D-031 (the archive ships psu on a private Node; first-run setup gains the cloud path), D-032 (pui-audio helper, so pui starts without ALSA). RATING BASIS: the model is the pass floor and every numbered driftMarker is also rated; a degraded or failing rating names the marker number(s) that tripped.",
+      "driftMarkers": "BROKEN if any ONE holds: (1) the clean-HOME install needs this checkout, Cargo or git; (2) it needs private shell dotfiles, a pre-existing developer database or test pots; (3) it needs an injected operator URL or a running desktop window; (4) a required runtime or service prerequisite is neither installed nor explained and checked in-product (doctor omits it); (5) local versus remote endpoint identity is ambiguous or wrongly scoped.",
+      "replication": "REPLICATION DRILL: Run public-package AUTO-BAR-R-08-P-011 in isolated HOME and agent-chat PTY clean-workbench setup cases; fail on an undeclared dependency, inaccessible first-use path, or wrong endpoint identity.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/pui-e2e/public-package.integration.test.ts"
+        ]
+      }
+    },
+    {
+      "key": "r-09",
+      "title": "Safe credentials and consent",
+      "model": "A fresh public PUI install acts only with the permissions, paid account and autonomy the user explicitly consented to.",
+      "bar": "A fresh public PUI install acts only with the permissions, paid account and autonomy the user explicitly consented to.",
+      "barKey": "R-09",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "integration"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-09-07T05:45:21.152Z",
+        "declaredBy": "su-84c127f1-787b-49ea-849d-47d1b6217757"
+      },
+      "method": "Run the isolated-package secret-leak/diagnostics checks and installed real-engine approval/permission journeys; verify no development AUTO/bypass state or credential value crosses into the archive or support report. NAMED CASES that fail for this criterion's drift (cite names, not lines): public-package.integration.test.ts: 'AUTO-BAR-R-09-P-011: installing needs explicit consent, and neither the package nor the support export carries a seeded credential or private text'. agent-chat-pty.integration.test.ts: 'new-session setup refuses an operator without the safe native approval capability'; 'PUI-APPROVAL-ALLOW / AUTO-BAR-R-09-P-010: approving one request executes exactly it and leaves its peer pending'; 'PUI-APPROVAL-DENY / AUTO-BAR-R-09-P-010: declining one request executes nothing and leaves its peer pending'; 'PUI-ABOUT-SUPPORT: palette About shows identity and Diagnostics previews and saves a redacted report'. GOAL CLAUSE: plan pui-first-party-public-release-2026-09-07 ## Requirements R-09 (Safe credentials and consent). GOVERNING DECISIONS: D-021 (only read-only SU tools auto-allowed; writes keep asking), D-022 (the one sanctioned no-card write: owner directive bookkeeping), D-031 (first-run cloud path and account consent). RATING BASIS: the model is the pass floor and every numbered driftMarker is also rated; a degraded or failing rating names the marker number(s) that tripped.",
+      "driftMarkers": "BROKEN if any ONE holds: (1) a fresh install inherits development AUTO or bypass state; (2) a permission escalates or a paid account is selected without explicit consent; (3) credentials bypass the existing secure configuration/authentication paths; (4) a seeded credential or private conversation text appears in the archive, a log, diagnostics or a support export by default; (5) telemetry is undocumented or cannot be controlled.",
+      "replication": "REPLICATION DRILL: Run public-package AUTO-BAR-R-09-P-011 secret/consent assertions and agent-chat PTY approval allow/deny and redacted Diagnostics tests; verify seeded secrets never appear.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/pui-e2e/public-package.integration.test.ts",
+          "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts"
+        ]
+      }
+    },
+    {
+      "key": "r-10",
+      "title": "Verified backend and platform support",
+      "model": "Every advertised backend and operating-system cell has recorded installed-product acceptance for the exact candidate.",
+      "bar": "Every advertised backend and operating-system cell has recorded installed-product acceptance for the exact candidate.",
+      "barKey": "R-10",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "integration"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-09-07T05:45:21.152Z",
+        "declaredBy": "su-84c127f1-787b-49ea-849d-47d1b6217757"
+      },
+      "method": "Derive the required platform/backend matrix from PUBLIC_RELEASE_UX, run every advertised candidate cell through release acceptance, and refuse advertising any cell without candidate-bound installed evidence. NAMED CASES that fail for this criterion's drift (cite names, not lines): release-acceptance.integration.test.ts: 'AUTO-BAR-R-10-P-012: an advertised combination missing any installed-product leg is refused' (fixture over the committed contract: it fails when a cell is advertised without an installed-product leg) and, for this candidate, 'AUTO-BAR-R-12-P-012: release acceptance drives user input through the installed PUI binary and the production operator' plus the candidate acceptance report's legs for every advertised OS x backend cell. agent-chat-pty.integration.test.ts: 'P-016: a ${backend} chat runs ${backend}'s own identity outside every checkout and the SU identity inside one'. GOVERNING DECISIONS: D-004 (installed-product journey is the release authority), D-007 (owner scope), D-017 (committed compatibility.json never marks a target verified), D-018 (derived required matrix, per-candidate advertising). GOAL CLAUSE: plan pui-first-party-public-release-2026-09-07 ## Requirements R-10 (Verified backend and platform support). RATING BASIS: the model is the pass floor and every numbered driftMarker is also rated; a degraded or failing rating names the marker number(s) that tripped.",
+      "driftMarkers": "BROKEN if any ONE holds: (1) an advertised platform/backend cell lacks an installed-candidate journey; (2) an unsupported cell is marked verified in committed compatibility metadata; (3) Claude, Codex or OMP scope from the prior approved scope is silently omitted instead of tracked.",
+      "replication": "REPLICATION DRILL: Run release-acceptance AUTO-BAR-R-10-P-012 missing-leg refusal and public-package AUTO-BAR-R-10-P-011 committed-verified-claim refusal, then installed real-engine cells; compare the advertised matrix with measured candidate evidence.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/pui-e2e/release-acceptance.integration.test.ts",
+          "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts"
+        ]
+      }
+    },
+    {
+      "key": "r-11",
+      "title": "Reproducible release artifacts",
+      "model": "Two builds of one committed source generation produce byte-identical public PUI artifacts.",
+      "bar": "Two builds of one committed source generation produce byte-identical public PUI artifacts.",
+      "barKey": "R-11",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "integration"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-09-07T05:45:21.152Z",
+        "declaredBy": "su-84c127f1-787b-49ea-849d-47d1b6217757"
+      },
+      "method": "Build two committed generations, verify deterministic manifests/digests/provenance/license/compatibility/release notes, install/update/rollback/uninstall in an isolated HOME, and verify user data survives. NAMED CASES that fail for this criterion's drift (cite names, not lines): public-package.integration.test.ts: 'AUTO-BAR-R-11-P-011: archives are reproducible, name their committed generation, and refuse tampering'; 'AUTO-BAR-R-11-P-011: install, update, roll back and uninstall across two generations preserve user data'. GOAL CLAUSE: plan pui-first-party-public-release-2026-09-07 ## Requirements R-11 (Reproducible release artifacts). GOVERNING DECISIONS: D-004, D-016 (one PUI release unit reused from the sidecar recipe), D-017 (the committed compatibility.json never marks a target verified), D-026 (Apache-2.0 and the Papercusp copyright line on public artifacts). RATING BASIS: the model is the pass floor and every numbered driftMarker is also rated; a degraded or failing rating names the marker number(s) that tripped.",
+      "driftMarkers": "BROKEN if any ONE holds: (1) two builds from one committed generation differ without an explained input; (2) an archive version, digest, provenance or license is wrong; (3) install, update or uninstall fails; (4) an update loses user data or rollback does not restore the previous version; (5) the compatibility table or release notes are untruthful.",
+      "replication": "REPLICATION DRILL: Run public-package AUTO-BAR-R-11-P-011 reproducibility/tamper and two-generation install-update-rollback-uninstall tests; compare SHA256SUMS and preserved HOME data.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/pui-e2e/public-package.integration.test.ts"
+        ]
+      }
+    },
+    {
+      "key": "r-12",
+      "title": "Executable release evidence",
+      "model": "Public readiness of the exact final candidate rests on installed-PUI journeys, an independent grade and Avi’s recorded approval naming that candidate.",
+      "bar": "Public readiness of the exact final candidate rests on installed-PUI journeys, an independent grade and Avi’s recorded approval naming that candidate.",
+      "barKey": "R-12",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "integration"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-09-07T05:45:21.152Z",
+        "declaredBy": "su-84c127f1-787b-49ea-849d-47d1b6217757"
+      },
+      "method": "On the exact final candidate, rerun installed real-engine and PTY release journeys, bind ledger evidence, obtain a lineage-independent product grade, and inspect Avi's recorded release approval. Per D-041 (owner Avi, 2026-09-30, directive #1060: 'remove that requirement it just needs my approval only') no participant study is required, before or after release; WI-10003018 is dropped. NAMED CASES that fail for this criterion's drift (cite names, not lines): agent-chat-pty.integration.test.ts: 'greeting, real file tool, interrupt and continued reply stay in one first-party session'; 'restores the same native conversation after the operator OS process exits'; 'exact resume reaches readiness on every repetition without a startup timeout' (real-engine cases, run against the installed candidate). public-package.integration.test.ts: 'AUTO-BAR-R-08-P-011: a clean HOME installs and runs PUI with no checkout, cargo, python, git, dotfiles or operator' (the installed binary the journeys run). GOVERNING DECISIONS: D-004, D-038 (pass-equivalent independent ratings on all 15 BARs), D-041 (Avi removes the fresh-user study; R-12 needs only his approval). GOAL CLAUSE: plan pui-first-party-public-release-2026-09-07 ## Requirements R-12 (Executable release evidence). RATING BASIS: the model is the pass floor and every numbered driftMarker is also rated; a degraded or failing rating names the marker number(s) that tripped. RATING BASIS (M2): until Avi’s approval of the exact final candidate is recorded in a plan Decision, R-12 rates unknown, not fail; an unknown here is the expected owner-gated state, not a defect.",
+      "driftMarkers": "BROKEN if any ONE holds: (1) readiness is inferred only from unit counts, adapter-only tests, screenshots of an empty composer or terminal work-item statuses; (2) installed-PUI real-engine journeys on the exact final candidate are missing; (3) no eligible lineage-independent grade exists; (4) the approval is inferred from an agent turn, a coord message, a prior candidate or a directive that does not name the candidate, instead of an owner-typed directive (turn-provenance OWNER) quoted in a plan Decision naming the candidate version or sha; (5) a participant study is claimed as observed, or treated as required despite D-041 removing it.",
+      "replication": "REPLICATION DRILL: run release-acceptance AUTO-BAR-R-12-P-012 installed-binary journey and real-engine PTY; inspect the independent scorecard and the implementer acceptance; inspect Avi's recorded release approval of this exact candidate (D-041): the plan Decision that quotes his owner-typed directive naming the candidate version or sha. No participant-study evidence is required or accepted.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts",
+          "packages/operator-core/lib/pui-e2e/public-package.integration.test.ts"
+        ]
+      }
+    },
+    {
+      "key": "r-13",
+      "title": "Our own durable task list",
+      "model": "The installed PUI has one first-class task list that its owner and the attached agent share.",
+      "bar": "The installed PUI has one first-class task list that its owner and the attached agent share.",
+      "barKey": "R-13",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "integration"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-09-07T05:45:21.152Z",
+        "declaredBy": "su-84c127f1-787b-49ea-849d-47d1b6217757"
+      },
+      "method": "Run the context/task cockpit PTY suite and installed task journeys covering add/edit/reorder/start/block/unblock/complete/reopen/drop, agent updates, provenance, restart, session switch, and engine continuity. NAMED CASES that fail for this criterion's drift (cite names, not lines): context-pane-cockpit-pty.integration.test.ts: 'PUI-TASK owner journey: edit retry, agent update, add/status/block/reopen/reorder/drop persist across reload and session scope'; 'codex target is read-only: degraded footer, and task keys emit no wire ops'. agent-chat-pty.integration.test.ts: 'PUI-TASK: an SU-session task list is edited in Context by owner and agent and survives restart'. GOAL CLAUSE: plan pui-first-party-public-release-2026-09-07 ## Requirements R-13 (Our own durable task list). GOVERNING DECISIONS: D-007 (our own task list is core scope), D-019 (the editable task list is keyed on the PUI conversation and the attached agent writes the same list). RATING BASIS: the model is the pass floor and every numbered driftMarker is also rated; a degraded or failing rating names the marker number(s) that tripped.",
+      "driftMarkers": "BROKEN if any ONE holds: (1) the owner cannot add, edit, reorder, start, block, unblock, complete, reopen or drop a task; (2) the attached agent cannot update that same list while it works; (3) the current task, next action, progress, blockers or links to conversation/tool evidence are not visible; (4) a task, its project/session provenance or its evidence link disappears after a restart, session switch or supported engine change.",
+      "replication": "REPLICATION DRILL: Run context-pane-cockpit-pty \"PUI-TASK owner journey\" and agent-chat-pty \"PUI-TASK: an SU-session task list is edited in Context\"; verify task state after reload and session scope switch.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/pui-e2e/context-pane-cockpit-pty.integration.test.ts",
+          "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts"
+        ]
+      }
+    },
+    {
+      "key": "r-14",
+      "title": "Native-client feature replacement",
+      "model": "Every native-client capability the release relies on has a first-party PUI home backed by an installed-product acceptance test.",
+      "bar": "Every native-client capability the release relies on has a first-party PUI home backed by an installed-product acceptance test.",
+      "barKey": "R-14",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "integration"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-09-07T05:45:21.152Z",
+        "declaredBy": "su-84c127f1-787b-49ea-849d-47d1b6217757"
+      },
+      "method": "Compare every required native-client capability row with the committed acceptance matrix, then run its installed-product PTY acceptance case; any missing required row or unverified capability fails. NAMED CASES that fail for this criterion's drift (cite names, not lines): release-acceptance.integration.test.ts: 'AUTO-BAR-R-14-P-012: a required capability row without installed-product evidence blocks release unless the owner excluded it'. agent-chat-pty.integration.test.ts: 'PUI-COMMANDS: help and the command palette discover and execute a harmless extension'; 'PUI-TOOLS-DIFF: a file edit opens a reviewable in-PUI diff'; 'PUI-FILE-CONTEXT: selecting a project file attaches only its stable reference to the next accepted prompt'; 'PUI-USAGE: absent provider measurements render unknown instead of fabricated zero'; 'Network loads on navigation, manual refresh, and saved-view restoration'. GOVERNING DECISIONS: D-007 (native-client feature replacement is core scope), D-018 (derived required matrix; an exclusion needs the owner). GOAL CLAUSE: plan pui-first-party-public-release-2026-09-07 ## Requirements R-14 (Native-client feature replacement). RATING BASIS: the model is the pass floor and every numbered driftMarker is also rated; a degraded or failing rating names the marker number(s) that tripped.",
+      "driftMarkers": "BROKEN if any ONE holds: (1) a relied-on native-client capability (task/plan progress, editor/history, tools/results/diffs, approvals and questions, session lifecycle, model/account/effort/mode settings, context/usage indicators, command/skill discovery, file/attachment selection, recovery) has no first-party PUI action or data source; (2) it has no implementation item or installed-product acceptance test; (3) a required missing capability does not block release; (4) an exclusion enters the release matrix without explicit owner approval.",
+      "replication": "REPLICATION DRILL: Run release-acceptance AUTO-BAR-R-14-P-012 required-row refusal and installed-PUI PTY inventory journeys; compare each required row with its implementation item and acceptance evidence.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/pui-e2e/release-acceptance.integration.test.ts",
+          "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts"
+        ]
+      }
+    },
+    {
+      "key": "r-15",
+      "title": "Verified public distribution",
+      "model": "After publication, a fresh download through the public distribution path passes first-message, tool, approval and resume acceptance in a clean environment.",
+      "bar": "After publication, a fresh download through the public distribution path passes first-message, tool, approval and resume acceptance in a clean environment.",
+      "barKey": "R-15",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "deployed"
+      ],
+      "evidencePlane": "deployed",
+      "requiredTestLayers": [
+        "manual-provenance"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-09-07T05:45:21.152Z",
+        "declaredBy": "su-84c127f1-787b-49ea-849d-47d1b6217757"
+      },
+      "method": "After publication, download the exact public artifact into a clean environment, verify its digest/provenance/license, install it through the documented public path, and run first-message, tool, approval, and resume acceptance before marking the plan shipped. GOVERNING DECISIONS: D-034 (Avi approves an exact candidate for publication, gated on independent review), D-040 (further publication held on the chat-first UX plan). MANUAL CONTRACT: the check {instrument, none} is the platform's explicit manual contract, because publication is an owner-gated deployed event no committed test can reach. Its EVIDENCE ARTIFACTS are: (a) the release-ledger record of the published version: version, public download URL and SHA-256 digest; (b) the clean-environment install log from downloading that URL into a fresh HOME with no checkout, showing the digest, provenance and license verified; (c) the first-message, tool, approval and resume PTY journey output against the downloaded binary. Staging, current-build or pre-publication evidence does not count. GOAL CLAUSE: plan pui-first-party-public-release-2026-09-07 ## Requirements R-15 (Verified public distribution). RATING BASIS: the model is the pass floor and every numbered driftMarker is also rated; a degraded or failing rating names the marker number(s) that tripped. RATING BASIS (M2): before publication no public artifact exists, so R-15 rates unknown, not fail; after publication the grader rates it only from the three EVIDENCE ARTIFACTS above.",
+      "driftMarkers": "BROKEN if any ONE holds: (1) the downloaded artifact has the wrong digest, provenance or license; (2) it cannot install in a clean environment; (3) it fails first-message, tool, approval or resume acceptance; (4) staging, current-build or pre-publication evidence is offered in place of the public-path download (this property is scoped only to P-015).",
+      "replication": "REPLICATION DRILL: After P-015 publication, download the exact public artifact, verify digest/provenance/license, install in clean HOME, then run the documented first-message/tool/approval/resume PTY journey against the downloaded binary.",
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      }
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D-001",
+      "title": "Avi's correction defines the product outcome; this document is a proposal"
+    },
+    {
+      "id": "D-002",
+      "title": "Approved replacement of the launcher-UI rule for PUI"
+    },
+    {
+      "id": "D-003",
+      "title": "Preserve the full SU runtime contract and existing own-loop direction"
+    },
+    {
+      "id": "D-004",
+      "title": "The installed-product journey is the release authority"
+    },
+    {
+      "id": "D-005",
+      "title": "Prove the vertical path before adding polish or widening scope"
+    },
+    {
+      "id": "D-006",
+      "title": "User context drives the layout and defaults"
+    },
+    {
+      "id": "D-007",
+      "title": "Owner clarification: our task list and native-client feature replacement are core scope"
+    },
+    {
+      "id": "D-008",
+      "title": "Owner approval: AUTO and self implementation through the complete release plan"
+    },
+    {
+      "id": "D-009",
+      "title": "Owner-directed successor takeover preserves whole-plan AUTO/self execution"
+    },
+    {
+      "id": "D-010",
+      "title": "Ship route: leader + headless fleet; P-014/P-015 stay sequenced last"
+    },
+    {
+      "id": "D-011",
+      "title": "D: Execute this plan solo — no fleet fan-out while the system-wide agent pause stands"
+    },
+    {
+      "id": "D-012",
+      "title": "Every real-engine evidence leg MUST pin its model explicitly; an inherited CLI default model is an invisible dependency on a quota balance"
+    },
+    {
+      "id": "D-013",
+      "title": "D-012 is CLAUDE-scoped: pinning PUI_REAL_MODEL is REFUSED on the OMP backend under account=auto"
+    },
+    {
+      "id": "D-014",
+      "title": "PUI spec-test-adequacy can only be satisfied by the TS pui-e2e suite; cargo tests cannot reach the evidence ledger"
+    },
+    {
+      "id": "D-015",
+      "title": "PUI-FILE-CONTEXT: implement the composer @ picker rather than drop it; pin PUBLIC_RELEASE_UX affordances against the code"
+    },
+    {
+      "id": "D-016",
+      "title": "P-011 shape: one PUI release unit reused from the sidecar recipe; lifecycle lives in the pui binary; palette lifecycle actions implemented; macOS built-but-not-advertised"
+    },
+    {
+      "id": "D-017",
+      "title": "R-10: the committed compatibility.json may never mark a target verified; per-candidate advertising belongs to the release stage (P-012)"
+    },
+    {
+      "id": "D-018",
+      "title": "P-012 shape: a derived required matrix, reporter-harvested evidence bound to the installed binary sha, and a per-candidate verdict file the publish steps require"
+    },
+    {
+      "id": "D-019",
+      "title": "Editable task list is keyed on the PUI conversation: SU-session chats are task-writable and the attached SU agent's task tools resolve to the chat id"
+    },
+    {
+      "id": "D-020",
+      "title": "P-012 settings and support rows: a launch-time pick on a running conversation opens the New SU session form; About/Support is the palette's About PUI, not a Settings screen"
+    },
+    {
+      "id": "D-021",
+      "title": "PUI Claude default-mode approvals: auto-allow only server-advertised read-only SU tools (host capability_* family excluded); writes keep asking with a session-scoped remembered choice; tools:invoke is a write"
+    },
+    {
+      "id": "D-022",
+      "title": "Allow the owner directive bookkeeping write without a native approval card"
+    },
+    {
+      "id": "D-023",
+      "title": "The task-reaper's managed-residue class spares a no-row scope that a live out-of-scope parent still holds"
+    },
+    {
+      "id": "D-024",
+      "title": "Installed real-engine acceptance records bounded-timeout fallbacks as evidence instead of failing on them"
+    },
+    {
+      "id": "D-025",
+      "title": "P-017 remote hosts: PUI runs ON the remote host through psu's own terminal bridge (--connect-program=pui), not as a local client of a forwarded remote operator"
+    },
+    {
+      "id": "D-026",
+      "title": "PUI public artifacts use Apache-2.0 and the existing Papercusp copyright line"
+    },
+    {
+      "id": "D-027",
+      "title": "Initial shipment proceeds without fabricated study evidence; the fresh-user study moves to tracked post-release learning"
+    },
+    {
+      "id": "D-028",
+      "title": "Acceptance BAR amendment"
+    },
+    {
+      "id": "D-029",
+      "title": "Acceptance BAR amendment"
+    },
+    {
+      "id": "D-030",
+      "title": "Acceptance BAR amendment"
+    },
+    {
+      "id": "D-031",
+      "title": "Owner scope 2026-09-26: the PUI archive ships psu on a private Node; first-run setup gains the cloud path; bounded usability pass; r8 candidate superseded"
+    },
+    {
+      "id": "D-032",
+      "title": "PUI audio moves into a sibling pui-audio helper binary so pui starts on machines without ALSA (WI-10003295)"
+    },
+    {
+      "id": "D-033",
+      "title": "Owner scope 2026-09-26 (#625): release gaps found in the bundle review become plan items so the release drive picks them up"
+    },
+    {
+      "id": "D-034",
+      "title": "Avi approves exact r14 candidate for public publication (P-015), gated on independent review"
+    },
+    {
+      "id": "D-035",
+      "title": "Acceptance BAR amendment"
+    },
+    {
+      "id": "D-036",
+      "title": "Acceptance BAR amendment"
+    },
+    {
+      "id": "D-037",
+      "title": "Clause proof layers follow the rubric BAR layers; the hand-authored 'e2e' label is dropped"
+    },
+    {
+      "id": "D-038",
+      "title": "Ship gate requires pass-equivalent independent ratings on all 15 BARs — remediation lane to r15"
+    },
+    {
+      "id": "D-039",
+      "title": "Correction: D-027 is an agent ruling under AUTO, not an owner deferral; D-038 misattributed it"
+    },
+    {
+      "id": "D-040",
+      "title": "Hold further PUI publication on the chat-first UX plan"
+    },
+    {
+      "id": "D-041",
+      "title": "Avi removes the pre-release fresh-user study (2026-09-30): R-12 needs only his approval"
+    },
+    {
+      "id": "D-042",
+      "title": "Acceptance BAR amendment"
+    },
+    {
+      "id": "D-043",
+      "title": "Acceptance BAR amendment"
+    },
+    {
+      "id": "D-044",
+      "title": "Acceptance BAR amendment"
+    }
+  ],
+  "decisionExclusions": {
+    "D-005": "Sequencing rule, no distinct product outcome",
+    "D-008": "AUTO/self execution authority",
+    "D-009": "Successor execution authority",
+    "D-010": "Superseded fleet execution route",
+    "D-011": "Solo execution route",
+    "D-014": "Evidence plumbing: TS pui-e2e suites bind objective criteria",
+    "D-023": "Platform task-reaper infrastructure",
+    "D-027": "Superseded by D-041; study removed",
+    "D-028": "BAR amendment record",
+    "D-029": "BAR amendment record",
+    "D-030": "BAR amendment record",
+    "D-033": "Process: review gaps become items",
+    "D-035": "BAR amendment record",
+    "D-036": "BAR amendment record",
+    "D-037": "Evidence plumbing: BAR proof layers",
+    "D-039": "Owner attribution correction record",
+    "D-042": "BAR amendment record",
+    "D-043": "BAR amendment record",
+    "D-044": "BAR amendment record"
+  }
+}

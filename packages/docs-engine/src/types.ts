@@ -64,6 +64,11 @@ export interface SectionMeta {
   description?: string;
 }
 
+export interface DocContentOptions {
+  /** Abort signal for a caller that no longer needs this rendered body. */
+  signal?: AbortSignal;
+}
+
 /**
  * Pluggable source of doc pages. Adapters wrap fumadocs, filesystem walks,
  * HTTP endpoints, etc., and present a uniform interface to the engine.
@@ -76,7 +81,7 @@ export interface DocSource {
   /** Look up by slash-joined slug. Return null if not found. */
   getPage(slug: string): Promise<DocPage | null>;
   /** Render the page's MDX/markdown body to clean markdown (no JSX). */
-  getContent(page: DocPage): Promise<string>;
+  getContent(page: DocPage, options?: DocContentOptions): Promise<string>;
   /**
    * The page's CANONICAL SOURCE — the exact bytes an author edits, frontmatter
    * included: no JSX flattening, no frontmatter strip, no read preamble. This is

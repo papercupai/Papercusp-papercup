@@ -84,20 +84,23 @@ vi.mock('../../session-timeline-parsers', () => ({
 }));
 
 const {
-  default: streamRoutes,
-  parseAgentTimelineChunks,
   capEntryText,
   THINKING_ENTRY_TEXT_CAP,
   sessionTurnEntryKind,
+  backfillFromOwnerSessionTurns,
+  decodeOwnerHistoryCursor,
+  encodeOwnerHistoryCursor,
+} = await import('../../owner-sessions/transcript');
+
+const {
+  default: streamRoutes,
+  parseAgentTimelineChunks,
   pickSessionTurnWindow,
   sessionPartEntryKind,
   positionalScanLimit,
   POSITIONAL_SCAN_CEILING,
   preferHigherFidelityBackfill,
   shouldServeDbBackfill,
-  backfillFromOwnerSessionTurns,
-  decodeOwnerHistoryCursor,
-  encodeOwnerHistoryCursor,
   splitUtf8Chunks,
   batchRawLogLines,
   slimFeatureForStream,
@@ -247,6 +250,15 @@ describe('capEntryText (UI-bound thinking entry cap)', () => {
 });
 
 describe('harness agent thinking stream parsing', () => {
+  it('attests native Claude end_turn and explicit result success while preserving unknown and errored results', () => {
+    const timestamp = '2026-10-01T12:00:00.000Z';
+    const parse = (row: unknown) => parseAgentTimelineChunks([JSON.stringify(row) + '\n']).entries;
+    expect(parse({ type: 'assistant', uuid: 'reply', timestamp, message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Tools: read.' }] } }).at(-1)?.outcome).toBe('succeeded');
+    expect(parse({ type: 'assistant', uuid: 'reply', timestamp, message: { stop_reason: 'tool_use', content: [{ type: 'text', text: 'Working.' }] } }).some(entry => entry.outcome)).toBe(false);
+    expect(parse({ type: 'result', is_error: true, result: 'Account error', timestamp }).at(-1)?.outcome).toBe('failed');
+    expect(parse({ type: 'result', is_error: false, result: 'Tools: read.', timestamp }).at(-1)?.outcome).toBe('succeeded');
+    expect(parse({ type: 'result', result: 'Legacy answer', timestamp }).at(-1)?.outcome).toBeUndefined();
+  });
   it('parses durable run chunks into an initial live-thinking timeline', () => {
     const chunks = [
       '{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"checking "}}\n',

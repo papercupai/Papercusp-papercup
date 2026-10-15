@@ -159,6 +159,30 @@ describe('prepareWorkdir', () => {
     }
   });
 
+  it('shared: the session works in the prepared checkout itself; nothing is created, mounted or removed', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'capdrv-wd-'));
+    try {
+      const src = path.join(root, 'prepared', 'papercusp');
+      mkdirSync(src, { recursive: true });
+      writeFileSync(path.join(src, 'a.txt'), 'hello');
+      const calls: string[] = [];
+      const run = async (cmd: string, args: string[]) => {
+        calls.push([cmd, ...args].join(' '));
+        return '';
+      };
+      const wd = await prepareWorkdir('shared', src, `${src}/`, run as never);
+      await wd.teardown(false);
+      await wd.teardown(true);
+      expect(calls).toEqual([]);
+      expect(readFileSync(path.join(src, 'a.txt'), 'utf8')).toBe('hello');
+      expect(existsSync(path.join(root, 'replay-work'))).toBe(false);
+      // A per-session path would silently give each session its own tree (and its own service).
+      await expect(prepareWorkdir('shared', src, path.join(root, 'replay-work', 'run', 's0-i0'), run as never)).rejects.toThrow(/must be the prepared checkout/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('overlay refuses paths its mount option string cannot carry', () => {
     expect(() => overlayLayout('/a,b', '/w')).toThrow(/cannot contain/);
     expect(() => overlayLayout('/a', '/w:x')).toThrow(/cannot contain/);

@@ -124,6 +124,49 @@ describe('starlightContentAdapter — synthetic fixture', () => {
     }
   });
 
+  it('a published content revision refreshes FAQ answers and the searchable page population', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'public-faq-revision-'));
+    const file = path.join(root, 'faq.md');
+    let revision = 'publication-1';
+    const src = starlightContentAdapter({ contentRoot: root, baseUrl: '/docs', getRevision: () => revision });
+    try {
+      await fs.writeFile(file, '---\ntitle: Common questions\n---\n## Costs\nOld answer\n');
+      const before = (await src.getPage('faq'))!;
+      expect(before.url).toBe('/docs/faq');
+      expect(await src.getContent(before)).toContain('Old answer');
+      await fs.writeFile(file, '---\ntitle: Reviewed questions\n---\n## Costs\nRevised answer\n');
+      await fs.writeFile(path.join(root, 'billing.md'), '# Billing\nNew guide');
+      // Positive control: a stable published revision retains its cached snapshot.
+      expect(await src.getContent(before)).toContain('Old answer');
+      revision = 'publication-2';
+      expect((await src.getPage('faq'))!.title).toBe('Reviewed questions');
+      expect(await src.getContent(before)).toContain('Revised answer');
+      expect(await src.getContent(before)).not.toContain('Old answer');
+      expect((await src.listPages()).map((page) => page.slug)).toEqual(['billing', 'faq']);
+      await fs.unlink(file);
+      revision = 'publication-3';
+      expect(await src.getPage('faq')).toBeNull();
+      expect((await src.listPages()).map((page) => page.slug)).toEqual(['billing']);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a cached answer when the published revision becomes unavailable', async () => {
+    let unavailable = false;
+    const src = starlightContentAdapter({
+      contentRoot: tmp,
+      getRevision: () => {
+        if (unavailable) throw new Error('public revision unavailable');
+        return 'publication-1';
+      },
+    });
+    const before = (await src.getPage('agents/operator'))!;
+    expect(await src.getContent(before)).toContain('Voice');
+    unavailable = true;
+    await expect(src.getContent(before)).rejects.toThrow('public revision unavailable');
+  });
+
   /**
    * WI-1511581 — `getSource` is the authoring read: the file as it sits on disk.
    *

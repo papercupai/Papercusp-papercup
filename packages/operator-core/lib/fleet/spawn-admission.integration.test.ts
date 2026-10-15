@@ -11,81 +11,38 @@
  *     retry no longer double-spawns).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { admitSpawn } from './operator-spawn';
 
-const SPAWNED_AGENTS_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.spawned_agents (
-    spawn_id text PRIMARY KEY, workspace_id text NOT NULL, harness_slug text,
-    parent_spawn_id text, parent_role text, child_role text NOT NULL,
-    feature_id text, chunk_id text, run_id text,
-    status text NOT NULL DEFAULT 'running', started_at timestamptz NOT NULL DEFAULT now(),
-    finished_at timestamptz, duration_ms bigint, exit_code int, output_tail text, error_message text,
-    cancel_requested boolean NOT NULL DEFAULT false, session_owner text,
-    coordination_domain text NOT NULL DEFAULT 'default', plan_slug text, item_id text,
-    model_spec text, model_tier text, brief text,
-    restart_strategy text NOT NULL DEFAULT 'one_for_one', restart_count int NOT NULL DEFAULT 0,
-    restart_window_start timestamptz, cancel_reason text, cancelled_at timestamptz,
-    heartbeat_at timestamptz NOT NULL DEFAULT now(),
-    -- migration 228 (EI-85 leg c): the reclaim sweep SELECTs these; this fixture
-    -- hand-rolls the schema so it must mirror them (column does not exist otherwise).
-    -- migration 339 (EI-2186): the boot reconcile + reclaim also SELECT launcher_boot_id.
-    pid integer, launcher_host text, launcher_boot_id text,
-    idempotency_key text);
-  CREATE UNIQUE INDEX IF NOT EXISTS spawned_agents_idempotency_key_uq
-    ON harness_shared.spawned_agents (workspace_id, idempotency_key)
-    WHERE idempotency_key IS NOT NULL`;
-
-// admitSpawn's pre-admission sweep (sweepStaleSpawnClaims, spawn-reclaim.ts)
-// also reads the three claim surfaces — mirror spawn-reclaim.integration's
-// minimal stand-ins so the sweep runs instead of erroring "does not exist".
-const FEATURES_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (
-    feature_id text NOT NULL, workspace_id text NOT NULL, harness_slug text NOT NULL,
-    status text, taken_by text, taken_at timestamptz, last_progress_at timestamptz,
-    updated_ts bigint, PRIMARY KEY (feature_id, workspace_id, harness_slug))`;
-const ISSUES_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.engineer_issues (
-    workspace_id text NOT NULL DEFAULT 'default', issue_id text NOT NULL,
-    assignee text, assigned_at timestamptz, origin text NOT NULL DEFAULT 'local',
-    updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (workspace_id, issue_id))`;
-const PLAN_CLAIMS_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.plan_item_claims (
-    workspace_id text NOT NULL, harness_slug text NOT NULL, plan_slug text NOT NULL,
-    item_id text NOT NULL, owner text NOT NULL,
-    PRIMARY KEY (workspace_id, harness_slug, plan_slug, item_id))`;
-
+// Replay the canonical schema so pre-admission reclaim and its claim surfaces
+// cannot drift from a parallel handwritten table definition.
 const WS = 'default';
-let db: FreshPgDb;
+let db: OrgTestDb;
 
 function recordRow(spawnId: string, role = 'worker') {
   return async (tx: Parameters<Parameters<typeof admitSpawn>[1]['record']>[0]) => {
     await tx`
       INSERT INTO harness_shared.spawned_agents
-        (spawn_id, workspace_id, harness_slug, child_role, run_id, status)
-      VALUES (${spawnId}, ${WS}, 'papercup', ${role}, ${'r-' + spawnId}, 'running')`;
+        (spawn_id, workspace_id, harness_slug, parent_role, child_role, run_id, status)
+      VALUES (${spawnId}, ${WS}, 'papercup', 'operator', ${role}, ${'r-' + spawnId}, 'running')`;
   };
 }
 
 async function rowCount(): Promise<number> {
-  const rows = await db.sql<{ n: string }[]>`
+  const rows = await db.adminSql<{ n: string }[]>`
     SELECT count(*)::text AS n FROM harness_shared.spawned_agents WHERE workspace_id = ${WS}`;
   return Number(rows[0]?.n ?? 0);
 }
 
 beforeAll(async () => {
-  db = await createFreshPgDb('spawn-admission');
-  await db.sql.unsafe(SPAWNED_AGENTS_DDL);
-  await db.sql.unsafe(FEATURES_DDL);
-  await db.sql.unsafe(ISSUES_DDL);
-  await db.sql.unsafe(PLAN_CLAIMS_DDL);
+  db = await createOrgTestDb();
 }, 90_000);
 afterAll(async () => { await db?.cleanup(); });
-beforeEach(async () => { await db.sql`TRUNCATE harness_shared.spawned_agents`; });
+beforeEach(async () => { await db.adminSql`TRUNCATE harness_shared.spawned_agents`; });
 
 describe('admitSpawn (P-017 + P-039, real PG)', () => {
   it('admits below the cap and records the row', async () => {
-    const { admission } = await admitSpawn(db.sql, {
+    const { admission } = await admitSpawn(db.adminSql, {
       workspaceId: WS, spawnId: 's-a', idempotencyKey: null, cap: 2, record: recordRow('s-a'),
     });
     expect(admission).toEqual({ kind: 'admitted' });
@@ -93,10 +50,10 @@ describe('admitSpawn (P-017 + P-039, real PG)', () => {
   });
 
   it('rejects over the cap without recording', async () => {
-    await admitSpawn(db.sql, {
+    await admitSpawn(db.adminSql, {
       workspaceId: WS, spawnId: 's-a', idempotencyKey: null, cap: 1, record: recordRow('s-a'),
     });
-    const { admission } = await admitSpawn(db.sql, {
+    const { admission } = await admitSpawn(db.adminSql, {
       workspaceId: WS, spawnId: 's-b', idempotencyKey: null, cap: 1, record: recordRow('s-b'),
     });
     expect(admission).toEqual({ kind: 'over_cap', running: 1, cap: 1 });
@@ -106,7 +63,7 @@ describe('admitSpawn (P-017 + P-039, real PG)', () => {
   it('CONCURRENT: 8 simultaneous admissions at cap=1 admit exactly one (P-039)', async () => {
     const results = await Promise.all(
       Array.from({ length: 8 }, (_, i) =>
-        admitSpawn(db.sql, {
+        admitSpawn(db.adminSql, {
           workspaceId: WS,
           spawnId: `s-race-${i}`,
           idempotencyKey: null,
@@ -123,7 +80,7 @@ describe('admitSpawn (P-017 + P-039, real PG)', () => {
   });
 
   it('roleCap counts only that role while the global cap still counts every running spawn', async () => {
-    await admitSpawn(db.sql, {
+    await admitSpawn(db.adminSql, {
       workspaceId: WS,
       spawnId: 's-doc',
       idempotencyKey: null,
@@ -132,7 +89,7 @@ describe('admitSpawn (P-017 + P-039, real PG)', () => {
       record: recordRow('s-doc', 'doc-steward'),
     });
 
-    const bee = await admitSpawn(db.sql, {
+    const bee = await admitSpawn(db.adminSql, {
       workspaceId: WS,
       spawnId: 's-bee',
       idempotencyKey: null,
@@ -142,7 +99,7 @@ describe('admitSpawn (P-017 + P-039, real PG)', () => {
     });
     expect(bee.admission).toEqual({ kind: 'admitted' });
 
-    const secondBee = await admitSpawn(db.sql, {
+    const secondBee = await admitSpawn(db.adminSql, {
       workspaceId: WS,
       spawnId: 's-bee-2',
       idempotencyKey: null,
@@ -152,7 +109,7 @@ describe('admitSpawn (P-017 + P-039, real PG)', () => {
     });
     expect(secondBee.admission).toEqual({ kind: 'over_cap', running: 1, cap: 1, role: 'cup' });
 
-    const docAgainstGlobal = await admitSpawn(db.sql, {
+    const docAgainstGlobal = await admitSpawn(db.adminSql, {
       workspaceId: WS,
       spawnId: 's-doc-2',
       idempotencyKey: null,
@@ -166,10 +123,10 @@ describe('admitSpawn (P-017 + P-039, real PG)', () => {
 
   it('CONCURRENT: two admissions sharing an idempotencyKey yield one row + a duplicate pointing at it (P-017/EI-73)', async () => {
     const [a, b] = await Promise.all([
-      admitSpawn(db.sql, {
+      admitSpawn(db.adminSql, {
         workspaceId: WS, spawnId: 's-idem-a', idempotencyKey: 'retry-1', cap: 10, record: recordRow('s-idem-a'),
       }),
-      admitSpawn(db.sql, {
+      admitSpawn(db.adminSql, {
         workspaceId: WS, spawnId: 's-idem-b', idempotencyKey: 'retry-1', cap: 10, record: recordRow('s-idem-b'),
       }),
     ]);
@@ -182,10 +139,10 @@ describe('admitSpawn (P-017 + P-039, real PG)', () => {
   });
 
   it('a SEQUENTIAL retry with the same key dedupes against the committed row', async () => {
-    await admitSpawn(db.sql, {
+    await admitSpawn(db.adminSql, {
       workspaceId: WS, spawnId: 's-first', idempotencyKey: 'k1', cap: 10, record: recordRow('s-first'),
     });
-    const { admission } = await admitSpawn(db.sql, {
+    const { admission } = await admitSpawn(db.adminSql, {
       workspaceId: WS, spawnId: 's-second', idempotencyKey: 'k1', cap: 10, record: recordRow('s-second'),
     });
     expect(admission).toEqual({ kind: 'duplicate', spawnId: 's-first' });
@@ -193,10 +150,10 @@ describe('admitSpawn (P-017 + P-039, real PG)', () => {
   });
 
   it('different keys spawn independently', async () => {
-    await admitSpawn(db.sql, {
+    await admitSpawn(db.adminSql, {
       workspaceId: WS, spawnId: 's-k1', idempotencyKey: 'k1', cap: 10, record: recordRow('s-k1'),
     });
-    const { admission } = await admitSpawn(db.sql, {
+    const { admission } = await admitSpawn(db.adminSql, {
       workspaceId: WS, spawnId: 's-k2', idempotencyKey: 'k2', cap: 10, record: recordRow('s-k2'),
     });
     expect(admission).toEqual({ kind: 'admitted' });

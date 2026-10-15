@@ -164,8 +164,25 @@ describe('systemd drop-in install guard (scripts/check-systemd-dropins-installed
 const FAKE_SYSTEMCTL = `#!/usr/bin/env node
 const fs = require('node:fs');
 const path = require('node:path');
+// Scope-aware like the real thing: --user answers from scripts/systemd/<unit>.d, the system
+// manager from scripts/systemd/system/<unit>.d (P-008 system drop-ins).
+const isUser = process.argv.includes('--user');
 const args = process.argv.slice(2).filter((a) => a !== '--user');
 if (args[0] === 'is-system-running') { process.stdout.write('running\\n'); process.exit(0); }
+// Prefix drop-ins (WI-6554700010012202): the guard lists live units for 'session-*.scope'.
+// FAKE_LIVE_UNITS is a space-separated list of running units; '' means none is running.
+if (args[0] === 'list-units') {
+  if (process.env.FAKE_SYSTEMCTL_MODE === 'list-fail') {
+    process.stderr.write('Failed to list units: Connection timed out\\n');
+    process.exit(1);
+  }
+  const pattern = args.slice(1).find((a) => !a.startsWith('-')) ?? '*';
+  const re = new RegExp('^' + pattern.replace(/[.]/g, '\\\\.').replace(/[*]/g, '.*') + '$');
+  const live = (process.env.FAKE_LIVE_UNITS ?? 'session-7.scope').split(' ').filter(Boolean);
+  const rows = live.filter((u) => re.test(u)).map((u) => u + ' loaded active running Fake ' + u);
+  process.stdout.write(rows.length ? rows.join('\\n') + '\\n' : '');
+  process.exit(0);
+}
 if (args[0] !== 'show') { process.stderr.write('fake systemctl: unsupported ' + args.join(' ') + '\\n'); process.exit(64); }
 const counter = path.join(process.env.FAKE_SYSTEMCTL_STATE, 'show-calls');
 const n = (fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) : 0) + 1;
@@ -188,8 +205,15 @@ if (mode === 'fail-dropin-read-once' && props.includes('DropInPaths') && units.i
   process.exit(1);
 }
 const blocks = units.map((u) => {
-  const dir = path.join(process.env.FAKE_SYSTEMD_DIR, u + '.d');
-  let confs = fs.existsSync(dir) ? fs.readdirSync(dir).filter((c) => c.endsWith('.conf')) : [];
+  // Like systemd: a unit loads its own <unit>.d plus every prefix dir <name-up-to-a-dash>-.<type>.d.
+  const [name, type] = [u.slice(0, u.lastIndexOf('.')), u.slice(u.lastIndexOf('.') + 1)];
+  const dirNames = [u + '.d'];
+  for (let i = name.indexOf('-'); i >= 0; i = name.indexOf('-', i + 1)) dirNames.push(name.slice(0, i + 1) + '.' + type + '.d');
+  let confs = [];
+  for (const dirName of dirNames) {
+    const dir = path.join(process.env.FAKE_SYSTEMD_DIR, isUser ? '' : 'system', dirName);
+    if (fs.existsSync(dir)) confs.push(...fs.readdirSync(dir).filter((c) => c.endsWith('.conf')));
+  }
   if (drop && u === process.env.FAKE_DROP_UNIT) confs = confs.filter((c) => c !== process.env.FAKE_DROP_CONF);
   const values = { Id: u, LoadState: 'loaded', ActiveState: 'inactive', DropInPaths: confs.map((c) => '/fake/' + u + '.d/' + c).join(' ') };
   return props.map((p) => p + '=' + (values[p] ?? '')).join('\\n');
@@ -206,15 +230,21 @@ describe('systemd drop-in guard: a failed read is never a verdict (EI-2416157915
   chmodSync(join(binDir, 'systemctl'), 0o755);
   afterAll(() => rmSync(binDir, { recursive: true, force: true }));
 
-  function runWithFake(mode: string, args: string[] = []) {
+  function runWithFake(
+    mode: string,
+    args: string[] = [],
+    drop: { unit: string; conf: string } = { unit: DROP_UNIT, conf: DROP_CONF },
+    env: Record<string, string> = {},
+  ) {
     const stateDir = mkdtempSync(join(binDir, 'state-'));
     const result = runGuard(args, {
+      ...env,
       PATH: `${binDir}:${process.env.PATH ?? ''}`,
       FAKE_SYSTEMCTL_MODE: mode,
       FAKE_SYSTEMCTL_STATE: stateDir,
       FAKE_SYSTEMD_DIR: join(REPO_ROOT, 'apps/operator/scripts/systemd'),
-      FAKE_DROP_UNIT: DROP_UNIT,
-      FAKE_DROP_CONF: DROP_CONF,
+      FAKE_DROP_UNIT: drop.unit,
+      FAKE_DROP_CONF: drop.conf,
       CHECK_SYSTEMD_DROPINS_RETRY_DELAY_MS: '0',
     });
     const showCalls = Number(readFileSync(join(stateDir, 'show-calls'), 'utf8'));
@@ -281,5 +311,96 @@ describe('systemd drop-in guard: a failed read is never a verdict (EI-2416157915
     const list = runWithFake('drop-always', ['--list']);
     expect(list.stdout).toMatch(/^\s*MISSING\s+at-spi-dbus-bus\.service\s+10-survive-bus-drop\.conf\s*$/m);
     expect(list.stdout).toMatch(/^installed=\d+ missing=1 unit-absent=0$/m);
+  });
+
+  // papercusp-performance-audit-2026-10-12 P-008: the serving-path PostgreSQL weights are
+  // SYSTEM drop-ins (scripts/systemd/system/). They must be read from the system manager and,
+  // when missing, reported with a root-owned install, never a symlink into a user's home.
+  const SYSTEM_DROP = { unit: 'system-postgresql.slice', conf: '60-papercusp-serving-cpu-weight.conf' };
+
+  it('tracks the system-scope PostgreSQL drop-ins (guards against a vacuous system pass)', () => {
+    const systemDir = join(REPO_ROOT, 'apps/operator/scripts/systemd/system');
+    expect(existsSync(join(systemDir, `${SYSTEM_DROP.unit}.d`, SYSTEM_DROP.conf))).toBe(true);
+    const list = runWithFake('none', ['--list']);
+    expect(list.stdout).toMatch(
+      /^\s*INSTALLED\s+system-postgresql\.slice\s+60-papercusp-serving-cpu-weight\.conf\s*$/m,
+    );
+    expect(list.stdout).toMatch(/^installed=\d+ missing=0 unit-absent=0$/m);
+  });
+
+  it('catches a missing SYSTEM drop-in and prints the root install, not a user symlink', () => {
+    const gate = runWithFake('drop-always', [], SYSTEM_DROP);
+    expect(gate.status).toBe(1);
+    expect(gate.stderr).toContain(`${SYSTEM_DROP.unit}  <-  ${SYSTEM_DROP.conf}`);
+    expect(gate.stderr).toContain(`/etc/systemd/system/${SYSTEM_DROP.unit}.d/${SYSTEM_DROP.conf}`);
+    expect(gate.stderr).not.toContain(`~/.config/systemd/user/${SYSTEM_DROP.unit}.d`);
+  });
+
+  // WI-6554700010010449 (plan R-3, outside review thread-post:1178953): the serving path only
+  // outweighs headless agent / test / bash-job work if papercusp.slice — a USER slice — is
+  // weighted below app.slice. Before this, the guard collected only user *.service.d, so a
+  // user slice drop-in could be committed and never installed with nothing noticing.
+  const USER_SLICE_DROP = { unit: 'papercusp.slice', conf: '60-background-cpu-weight.conf' };
+
+  it('tracks the user-scope papercusp.slice CPU weight drop-in (guards against a vacuous user-slice pass)', () => {
+    const conf = join(REPO_ROOT, 'apps/operator/scripts/systemd', `${USER_SLICE_DROP.unit}.d`, USER_SLICE_DROP.conf);
+    expect(existsSync(conf)).toBe(true);
+    expect(readFileSync(conf, 'utf8')).toMatch(/^\[Slice\]\nCPUWeight=25$/m);
+    const list = runWithFake('none', ['--list']);
+    expect(list.stdout).toMatch(/^\s*INSTALLED\s+papercusp\.slice\s+60-background-cpu-weight\.conf\s*$/m);
+    expect(list.stdout).toMatch(/^installed=\d+ missing=0 unit-absent=0$/m);
+  });
+
+  it('catches a missing USER slice drop-in and prints the symlink install, not a root copy', () => {
+    const gate = runWithFake('drop-always', [], USER_SLICE_DROP);
+    expect(gate.status).toBe(1);
+    expect(gate.stderr).toContain(`${USER_SLICE_DROP.unit}  <-  ${USER_SLICE_DROP.conf}`);
+    expect(gate.stderr).toContain(`~/.config/systemd/user/${USER_SLICE_DROP.unit}.d/${USER_SLICE_DROP.conf}`);
+    expect(gate.stderr).not.toContain(`/etc/systemd/system/${USER_SLICE_DROP.unit}.d`);
+  });
+
+  // WI-6554700010012202: the freeze fix keeps Xorg and the login session out of swap with a
+  // PREFIX drop-in, system/session-.scope.d/55-no-swap.conf. The session number changes at
+  // each login, so the guard must check it on whichever session-N.scope is live. Before this,
+  // *.scope.d was never collected and deleting the drop-in raised nothing.
+  const SESSION_PREFIX = { dir: 'session-.scope', conf: '55-no-swap.conf' };
+  const LIVE_SESSION = 'session-7.scope';
+
+  it('tracks the session-scope no-swap prefix drop-in and checks it on the live session scope', () => {
+    const conf = join(REPO_ROOT, 'apps/operator/scripts/systemd/system', `${SESSION_PREFIX.dir}.d`, SESSION_PREFIX.conf);
+    expect(existsSync(conf)).toBe(true);
+    expect(readFileSync(conf, 'utf8')).toMatch(/^\[Scope\]\nMemoryAccounting=yes\nMemorySwapMax=0$/m);
+    const list = runWithFake('none', ['--list']);
+    expect(list.stdout).toMatch(/^\s*INSTALLED\s+session-7\.scope\s+55-no-swap\.conf\s*$/m);
+    expect(list.stdout).toMatch(/^installed=\d+ missing=0 unit-absent=0$/m);
+  });
+
+  it('catches a live session scope that did not load it, and prints the PREFIX-dir root install', () => {
+    const gate = runWithFake('drop-always', [], { unit: LIVE_SESSION, conf: SESSION_PREFIX.conf });
+    expect(gate.status).toBe(1);
+    expect(gate.stderr).toContain(`${LIVE_SESSION}  <-  ${SESSION_PREFIX.conf}`);
+    expect(gate.stderr).toContain(`/etc/systemd/system/${SESSION_PREFIX.dir}.d/${SESSION_PREFIX.conf}`);
+    expect(gate.stderr).not.toContain(`/etc/systemd/system/${LIVE_SESSION}.d`);
+  });
+
+  it('reports no live session scope as UNIT-ABSENT (a headless host), never MISSING', () => {
+    const gate = runWithFake('none', [], undefined, { FAKE_LIVE_UNITS: '' });
+    expect(gate.status).toBe(0);
+    expect(gate.output).not.toMatch(/NOT loaded|MISSING/);
+    const list = runWithFake('none', ['--list'], undefined, { FAKE_LIVE_UNITS: '' });
+    expect(list.stdout).toMatch(
+      /^\s*UNIT-ABSENT\s+session-\.scope\s+55-no-swap\.conf\s+\(no live session-\*\.scope in system scope\)\s*$/m,
+    );
+    expect(list.stdout).toMatch(/^installed=\d+ missing=0 unit-absent=1$/m);
+  });
+
+  it('reports a failed live-unit listing as NOT VERIFIED (exit 2), never as drift', () => {
+    const gate = runWithFake('list-fail');
+    expect(gate.status).toBe(2);
+    expect(gate.output).toContain('Connection timed out');
+    expect(gate.output).toMatch(/UNREADABLE\s+session-\.scope\s+55-no-swap\.conf/);
+    expect(gate.output).not.toMatch(/NOT loaded by the unit/);
+    const list = runWithFake('list-fail', ['--list']);
+    expect(list.stdout).toMatch(/^\s*UNIT-ABSENT\s+session-\.scope\s+55-no-swap\.conf\s+\(systemctl show failed\)\s*$/m);
   });
 });

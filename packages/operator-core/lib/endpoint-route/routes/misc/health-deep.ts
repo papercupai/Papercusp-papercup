@@ -394,7 +394,7 @@ export interface AgentSandboxProbeDeps {
  * and reported the sandbox down. Here the deadline only schedules the kill for the check phase,
  * after any pending exit has been processed.
  */
-export function runProbeCommand(bin: string, args: readonly string[], timeoutMs: number): Promise<{ code: number | null; stderr: string; error?: string }> {
+export function runProbeCommand(bin: string, args: readonly string[], timeoutMs: number, spawnProbe: typeof spawn = spawn): Promise<{ code: number | null; stderr: string; error?: string }> {
   return new Promise((resolve) => {
     let stderr = '';
     let settled = false;
@@ -405,7 +405,10 @@ export function runProbeCommand(bin: string, args: readonly string[], timeoutMs:
       if (timer) clearTimeout(timer);
       resolve(r);
     };
-    const child = spawn(bin, [...args], { stdio: ['ignore', 'ignore', 'pipe'] });
+    // Keep the production process start visible to the governor's audited bypass scanner.
+    const child = spawnProbe === spawn
+      ? spawn(bin, [...args], { stdio: ['ignore', 'ignore', 'pipe'] })
+      : spawnProbe(bin, [...args], { stdio: ['ignore', 'ignore', 'pipe'] });
     child.stderr?.setEncoding('utf8').on('data', (d: string) => {
       if (stderr.length < 4096) stderr += d;
     });

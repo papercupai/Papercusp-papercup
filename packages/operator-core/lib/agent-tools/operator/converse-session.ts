@@ -31,7 +31,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -66,6 +66,30 @@ interface Marker {
 export function hashSystemPrompt(systemPromptText: string): string {
   return createHash('sha256').update(systemPromptText).digest('hex').slice(0, 32);
 }
+
+/**
+ * Whether a converse turn may RESUME or MINT a reusable brain session at all
+ * (before the feature flag is consulted). A reused session keeps the turn's
+ * verbatim history in claude's on-disk store, and a dir is only reclaimed when
+ * the SAME conversation takes another turn — so a one-off conversation's
+ * content outlives the turn indefinitely. A caller whose content carries its
+ * own retention policy (a phone call under D-022's 30-day rule) passes
+ * `retainSession: false`, and then nothing is resumed or written regardless
+ * of backend or flag (WI-10006465). Omitted ⇒ unchanged behavior.
+ *
+ * `isClaudeCodeBackend` is a thunk so the backend is only resolved for a turn
+ * that could reuse at all (same short-circuit order as before this gate).
+ */
+export function brainSessionReuseEligible(input: {
+  conversationId: string | null;
+  isClaudeCodeBackend: () => boolean;
+  retainSession?: boolean;
+}): boolean {
+  return Boolean(input.conversationId) && input.retainSession !== false && input.isClaudeCodeBackend();
+}
+
+/** The only dir names `dirFor` ever produces — the sweep touches nothing else. */
+const SESSION_DIR_NAME = /^[0-9a-f]{24}$/;
 
 function dirFor(conversationId: string): string {
   // Conversation ids are external input — key the dir by a hash, never the
@@ -157,4 +181,67 @@ export function invalidateChatBrainSession(conversationId: string, reason: strin
     console.log(`[converse-session] invalidating brain session for conversation (${reason})`);
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
   }
+}
+
+/**
+ * Margin past MAX_SESSION_AGE_MS before the sweep may remove a dir. A session
+ * that expires while a turn is still running in it must not lose its store
+ * mid-turn; one hour is far longer than any converse turn.
+ */
+export const CHAT_BRAIN_SWEEP_GRACE_MS = 60 * 60 * 1000;
+
+export interface ChatBrainSweepResult {
+  scanned: number;
+  removed: string[];
+  kept: number;
+  errors: Array<{ dir: string; error: string }>;
+  dryRun: boolean;
+}
+
+/**
+ * Remove brain-session dirs that can never be resumed again (WI-10006551).
+ *
+ * `getChatBrainSession` only drops an expired dir when the SAME conversation
+ * takes another turn, so a conversation that never returns keeps its
+ * verbatim history on disk forever (measured: 18 dirs, oldest 81 days). A dir
+ * is collectible once its marker's `createdAt` is past MAX_SESSION_AGE_MS plus
+ * the grace margin: from then on `getChatBrainSession` would discard it
+ * anyway, so removing it changes nothing a later turn can observe. A dir with
+ * no readable marker is judged by its own mtime with the same bound. Only
+ * entries named like `dirFor` output are considered.
+ *
+ * Driven by the hourly filesystem janitor (`dbos/periodic-workflows.ts`,
+ * `sessionDirGc`). Never throws.
+ */
+export function sweepExpiredChatBrainSessions(opts: { now?: number; dryRun?: boolean; root?: string } = {}): ChatBrainSweepResult {
+  const now = opts.now ?? Date.now();
+  const root = opts.root ?? ROOT();
+  const dryRun = opts.dryRun === true;
+  const result: ChatBrainSweepResult = { scanned: 0, removed: [], kept: 0, errors: [], dryRun };
+  let names: string[];
+  try {
+    names = readdirSync(root);
+  } catch {
+    return result; // no root yet ⇒ nothing to sweep
+  }
+  const cutoff = now - (MAX_SESSION_AGE_MS + CHAT_BRAIN_SWEEP_GRACE_MS);
+  for (const name of names) {
+    if (!SESSION_DIR_NAME.test(name)) continue;
+    const dir = join(root, name);
+    try {
+      if (!statSync(dir).isDirectory()) continue;
+      result.scanned += 1;
+      const marker = readMarker(dir);
+      const startedAt = marker ? marker.createdAt : statSync(dir).mtimeMs;
+      if (startedAt > cutoff) {
+        result.kept += 1;
+        continue;
+      }
+      if (!dryRun) rmSync(dir, { recursive: true, force: true });
+      result.removed.push(dir);
+    } catch (err) {
+      result.errors.push({ dir, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return result;
 }

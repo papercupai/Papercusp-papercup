@@ -1,0 +1,5 @@
+{"t": 1792017309.1050165, "kind": "fio", "device": "titanium-z3", "job": "randread-4k-qd1", "iops": 12304, "mbps": 50.4, "clatP50us": 75.3, "clatP99us": 96.8}
+{"t": 1792017329.3862603, "kind": "fio", "device": "titanium-z3", "job": "randread-4k-qd32", "iops": 315829, "mbps": 1293.6, "clatP50us": 93.7, "clatP99us": 189.4}
+{"t": 1792017349.6708317, "kind": "fio", "device": "titanium-z3", "job": "randread-32k-qd16", "iops": 98421, "mbps": 3225.0, "clatP50us": 146.4, "clatP99us": 342.0}
+{"t": 1792017369.962825, "kind": "fio", "device": "titanium-z3", "job": "randwrite-4k-qd32", "iops": 339681, "mbps": 1391.3, "clatP50us": 91.6, "clatP99us": 107.0}
+{"t": 1792017390.244945, "kind": "fio", "device": "titanium-z3", "job": "seqread-1m-qd8", "iops": 3076, "mbps": 3225.0, "clatP50us": 2572.3, "clatP99us": 3096.6}

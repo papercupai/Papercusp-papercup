@@ -1,0 +1,282 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-022 native PR viewer journey",
+  "framework": "operational",
+  "command": [
+    "scripts/verify-tauri-headless.sh --boot-only",
+    "source /tmp/verify-tauri-headless.BIP08U/env.sh",
+    "check-live.sh then tauri-agent-tools check/eval/click/select/wait/screenshot --pid 1699355",
+    "spa_require_built_gate <frozen SPA> <canonical tree> <three PR UI source files>",
+    "/tmp/verify-tauri-headless.BIP08U/stop.sh"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T00:51:11.815Z",
+  "finishedAt": "2026-10-06T01:00:29.404Z",
+  "summary": "Real PrsTab/PrRow/PrDetails in isolated native Tauri Git dock: 22 UI assertions passed, plus scoped source and teardown checks. Query and action responses were in-webview fixtures; no live GitHub merge, close or send was executed. Native actions and outcome feedback, history, permissions, conflict/stale/running guards, member/file URL selection verified. Broad shared SPA freshness failed on changed unrelated assets; exact three source paths match the boot commit and are included by frozen build stamp. Screenshot is a cropped view of the narrow dock, not full-detail pixel proof.",
+  "assertions": [
+    {
+      "id": "native-list-history",
+      "passed": true,
+      "evidence": "2 open, 1 merged, 1 closed PR rows in real PrsTab"
+    },
+    {
+      "id": "visible-panel",
+      "passed": true,
+      "evidence": "Native Git dock mounts the visible real PrsTab and named sync query"
+    },
+    {
+      "id": "details-selected",
+      "passed": true,
+      "evidence": "Details selected by PR number and member in nuqs URL"
+    },
+    {
+      "id": "commit-diff-checks-report",
+      "passed": true,
+      "evidence": "Native details show commit, combined diff, check and reviewer report"
+    },
+    {
+      "id": "exact-merge-sha",
+      "passed": true,
+      "evidence": "PR head, target and tested merge result displayed separately"
+    },
+    {
+      "id": "github-link",
+      "passed": true,
+      "evidence": "Details link to correct PR on GitHub"
+    },
+    {
+      "id": "file-diff-url",
+      "passed": true,
+      "evidence": "Native file selection shows patch and nuqs prs_file URL"
+    },
+    {
+      "id": "binary-diff-disclosure",
+      "passed": true,
+      "evidence": "Native binary-file selection explains absent patch"
+    },
+    {
+      "id": "permissions-hide-writes",
+      "passed": true,
+      "evidence": "Authoritative detail permissions hide merge, close and send-green"
+    },
+    {
+      "id": "stale-retest",
+      "passed": true,
+      "evidence": "Stale head/target evidence requires retest and labels the action honestly"
+    },
+    {
+      "id": "conflict-blocks-merge",
+      "passed": true,
+      "evidence": "Conflicted PR shows blocker and disables merge"
+    },
+    {
+      "id": "running-blocks-merge",
+      "passed": true,
+      "evidence": "Running merge-result suite prevents another merge"
+    },
+    {
+      "id": "outcome-testing",
+      "passed": true,
+      "evidence": "Native merge click displays testing; success toast only for confirmed merged; POST targets selected member"
+    },
+    {
+      "id": "outcome-refused",
+      "passed": true,
+      "evidence": "Native merge click displays refused; success toast only for confirmed merged; POST targets selected member"
+    },
+    {
+      "id": "outcome-merged",
+      "passed": true,
+      "evidence": "Native merge click displays merged; success toast only for confirmed merged; POST targets selected member"
+    },
+    {
+      "id": "close-action",
+      "passed": true,
+      "evidence": "Native close posts close and displays confirmed closed result"
+    },
+    {
+      "id": "send-green-action",
+      "passed": true,
+      "evidence": "Native send-green posts send-green and displays confirmed sent result"
+    },
+    {
+      "id": "same-number-member-isolation",
+      "passed": true,
+      "evidence": "Same PR number in another member selects only that member and queries its details"
+    },
+    {
+      "id": "filter-closed",
+      "passed": true,
+      "evidence": "Native closed filter returns exactly the expected historical-state rows and persists in nuqs"
+    },
+    {
+      "id": "filter-merged",
+      "passed": true,
+      "evidence": "Native merged filter returns exactly the expected historical-state rows and persists in nuqs"
+    },
+    {
+      "id": "filter-open",
+      "passed": true,
+      "evidence": "Native open filter returns exactly the expected historical-state rows and persists in nuqs"
+    },
+    {
+      "id": "closed-pr-readable",
+      "passed": true,
+      "evidence": "Historical closed PR retains complete details and disables merge/close"
+    },
+    {
+      "id": "scoped-current-source",
+      "passed": true,
+      "evidence": "Three PR viewer UI files match boot commit ae71fe3f73 and predate frozen SPA build stamp; scoped spa_require_built_gate passed. Broad shared-dist check reported unrelated changed assets."
+    },
+    {
+      "id": "rig-teardown",
+      "passed": true,
+      "evidence": "stop.sh completed; exact owned Tauri bridge and isolated PostgreSQL PIDs are absent."
+    }
+  ],
+  "observations": {
+    "ownerId": "su-f7a0fc2f-2dfd-4e6d-92e9-8803cb408362",
+    "run": "20261006T003912Z-1443361",
+    "bootstrapAssertPhase": "skipped (boot-only); acceptance ran separately",
+    "isolation": {
+      "display": ":90",
+      "bridgePid": 1699355,
+      "devPort": 33700,
+      "isolatedPgPort": 42607
+    },
+    "source": [
+      {
+        "path": "apps/operator/app/harness/PrsTab.tsx",
+        "sha256": "18735933027b292f1d11b4163001315fbbcf47f93d5b7c743820bcbca9640ea2",
+        "matchesBootCommit": true,
+        "mtimeBeforeFrozenBuild": true
+      },
+      {
+        "path": "apps/operator/app/harness/PrRow.tsx",
+        "sha256": "7b7f01ea31aadd643f5ea11603e721091e0ec910ac22128d95bc068f29bdd53b",
+        "matchesBootCommit": true,
+        "mtimeBeforeFrozenBuild": true
+      },
+      {
+        "path": "apps/operator/app/harness/PrDetails.tsx",
+        "sha256": "5171e186eac9775be4a82bed49a1bc5a2e4830b4dfdbc307ae65aa4a08c0606d",
+        "matchesBootCommit": true,
+        "mtimeBeforeFrozenBuild": true
+      }
+    ],
+    "fixtureActions": [
+      {
+        "path": "/api/harness/e2e-pr-viewer/prs/7/action",
+        "action": "merge"
+      },
+      {
+        "path": "/api/harness/e2e-pr-viewer/prs/7/action",
+        "action": "merge"
+      },
+      {
+        "path": "/api/harness/e2e-pr-viewer/prs/7/action",
+        "action": "merge"
+      },
+      {
+        "path": "/api/harness/e2e-pr-viewer/prs/7/action",
+        "action": "close"
+      },
+      {
+        "path": "/api/harness/e2e-pr-viewer/prs/7/action",
+        "action": "send-green"
+      }
+    ],
+    "url": "http://127.0.0.1:33700/adv?tab=git&slug=e2e-pr-viewer&ws=verify-tauri-isolated-90&prs_selected=7&prs_member=e2e-pr-viewer&prs_report=true&prs_file=logo.png",
+    "queryNames": [
+      "harnessPrs.byHarness",
+      "prReviewerSettings.byHarness",
+      "harnessPrs.detail"
+    ],
+    "screenshot": {
+      "path": "/tmp/verify-tauri-headless.BIP08U/pr-viewer.png",
+      "sha256": "b14a940bd32448f284d1e04fcda2cab927c9167e780730978517c0b0eac3a92f"
+    },
+    "rawJourneySha256": "0daf88697a75f16a5a181fce361718c873b7e859484656c6763d1c0de333c5e4",
+    "checkReceipts": [
+      {
+        "name": "pr-02-details.json",
+        "sha256": "de9839d5d2e9694a55a2035909d74147c0cf5bc7f72b67c08337c56ae586c0ac"
+      },
+      {
+        "name": "pr-03-file.json",
+        "sha256": "474e09a913ed24bc1eb30ec308205ecafa5059b4ddf8e58235a60ac1059ba61e"
+      },
+      {
+        "name": "pr-04-binary.json",
+        "sha256": "9b648d00c5c3072ae107a83b08e8b655ca387f94d74d1b91e233e3de477e14ca"
+      },
+      {
+        "name": "pr-05-permissions.json",
+        "sha256": "c996bf5ad45f79fb473d0093c1ee59671e8b2f883dda46efb19984b6d41f6512"
+      },
+      {
+        "name": "pr-06-stale.json",
+        "sha256": "e47fbede6c9cc34a0f469fa0e9d09f7c109b4f3139cea723f833bfe0eb3789b8"
+      },
+      {
+        "name": "pr-07-conflict.json",
+        "sha256": "6290fbb9647bef008d62f56236c27c56364d9ae721ae2a4eab65a34199386193"
+      },
+      {
+        "name": "pr-08-running.json",
+        "sha256": "286595c0ec9e1792a3371d814417863f8ac7a07ceb3581ba0986e512f6135449"
+      },
+      {
+        "name": "pr-09-merged.json",
+        "sha256": "4aaa5cbfb697335edec00d7f4f92dd48059fd957de0aab8e417102bb9e39d11c"
+      },
+      {
+        "name": "pr-09-refused.json",
+        "sha256": "4aaa5cbfb697335edec00d7f4f92dd48059fd957de0aab8e417102bb9e39d11c"
+      },
+      {
+        "name": "pr-09-testing.json",
+        "sha256": "4aaa5cbfb697335edec00d7f4f92dd48059fd957de0aab8e417102bb9e39d11c"
+      },
+      {
+        "name": "pr-10-close.json",
+        "sha256": "49bb9132d521ad3a35abc4d0f0c5275dc538dd8664d2f478a53584babaf3ab65"
+      },
+      {
+        "name": "pr-11-send.json",
+        "sha256": "3d9609d915df3374b0f126d9b8ae987b9b7b90f7ae738a0b84906e26644c6c6b"
+      },
+      {
+        "name": "pr-12-member.json",
+        "sha256": "3f4d0688a7b13306e30e9506ae9a76a89aad196889dba8958c4c7ab3e2c7ba6b"
+      },
+      {
+        "name": "pr-13-closed.json",
+        "sha256": "63d0b1170ad469eaaae8aa7b46dada2fc1d7fc92a91d71ce9544f8c070c7cb01"
+      },
+      {
+        "name": "pr-13-merged.json",
+        "sha256": "63d0b1170ad469eaaae8aa7b46dada2fc1d7fc92a91d71ce9544f8c070c7cb01"
+      },
+      {
+        "name": "pr-13-open.json",
+        "sha256": "63d0b1170ad469eaaae8aa7b46dada2fc1d7fc92a91d71ce9544f8c070c7cb01"
+      },
+      {
+        "name": "pr-14-history.json",
+        "sha256": "8a76984c6ce99a5bf60b8e0eaf88a7573c011c13ce4ff4477aaff26d13f3f702"
+      },
+      {
+        "name": "pr-15-final.json",
+        "sha256": "bee7ef5f6601fa8d3a1e352460e3593ba832f38cfa8898a9670dac6c42ece394"
+      }
+    ],
+    "notes": [
+      "Installed CLI retained only the last repeated --eval flag in first preliminary check; superseded by single-expression named assertions.",
+      "Teardown removed temporary operator-source before a post-run byte comparison; current source proved using boot commit plus retained frozen SPA build stamp."
+    ],
+    "uiFinishedAt": "2026-10-06T00:56:31.242Z"
+  }
+}

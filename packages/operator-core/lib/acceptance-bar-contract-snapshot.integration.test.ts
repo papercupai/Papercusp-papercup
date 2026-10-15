@@ -49,7 +49,7 @@ const { createOrgTestDb } = await import('../test/_org-test-db');
 const { hashPlanContent } = await import('./agent-tools/plans/content-hash');
 const { bindSpecEvidence, listSpecEvidence, measureRepoFilesEvidenceAtRoot } = await import('./agent-tools/plans/spec-evidence-store');
 const { listSpecClauses, setSpecClause } = await import('./agent-tools/plans/spec-clauses-store');
-const { seedAcceptanceBarsInTransaction } = await import('./acceptance-bar-seed');
+const { MAX_BAR_PROJECTION_EDGES, seedAcceptanceBarsInTransaction } = await import('./acceptance-bar-seed');
 const { readAcceptanceBarContractSnapshot } = await import('./acceptance-bar-contract-snapshot');
 const { getRubric } = await import('./rubrics');
 const { createIssue } = await import('./issues-engineer');
@@ -326,9 +326,20 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
         state: 'current',
         currentEvidence: 1,
         staleEvidence: 0,
+        // Evaluator rev 4 (SPEC_TEST_ADEQUACY_EVALUATOR_REVISION): a counterexample alone cannot
+        // establish falsifiability — its canonical test file must ALSO be bound as a successful
+        // current test on the same clause revision. The proof is still reused exactly (current,
+        // one row); only adequacy waits for that corroboration, which bindAttempt(2, 'pass')
+        // below supplies and the `selected` read asserts flips adequacy to pass.
         adequacy: {
-          state: 'pass',
-          checks: [{ specId: SPEC, revision: promotedRevision, verdict: 'pass', wouldBlock: [], evidenceRefs: [EVIDENCE_REF] }],
+          state: 'unknown',
+          checks: [{
+            specId: SPEC,
+            revision: promotedRevision,
+            verdict: 'unknown',
+            wouldBlock: ['falsifiability', 'plan-class-risk-floor'],
+            evidenceRefs: [EVIDENCE_REF],
+          }],
         },
       },
       grading: {
@@ -430,5 +441,88 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
         }),
       }),
     ]));
+  });
+
+  // EI-25254803369850716. work_item_spec_revision_edges is append-only, so a long-lived plan
+  // keeps one edge per spec revision each work item ever bound. Reading that whole history
+  // let superseded rows alone exceed MAX_BAR_PROJECTION_EDGES and refuse the entire contract
+  // (bar_snapshot_source_truncated) with zero BARs blocking. Builds on the plan the test
+  // above leaves behind: SPEC at revision 2 and WORK_ITEM bound to revision 2.
+  it('reads one edge per work item and spec, so superseded edge history cannot truncate the contract', async () => {
+    const HISTORY_ITEMS = 100;
+    const CURRENT_REVISION = 12;
+    // Revisions 3..12 of the same clause (copies of revision 2 with distinct content hashes),
+    // then make 12 current — the shape a repeatedly re-revised AUTO-BAR clause accrues.
+    await db.adminSql`
+      INSERT INTO harness_shared.plan_spec_clause_revisions
+        (workspace_id, harness_slug, plan_slug, spec_id, revision, plan_item_id, behavior, behavior_class,
+         required_evidence, required_test_layers, mutation_required, lifecycle_status, supersedes_spec_id,
+         supersedes_revision, exemption, content_hash, created_by, accepted_by, accepted_at, acceptance_ref,
+         falsifier, source_bar_key, source_bar_hash, source_bar_set_hash, source_rubric_slug,
+         source_rubric_revision, evidence_plane)
+      SELECT workspace_id, harness_slug, plan_slug, spec_id, g, plan_item_id, behavior, behavior_class,
+             required_evidence, required_test_layers, mutation_required, lifecycle_status, supersedes_spec_id,
+             supersedes_revision, exemption, encode(sha256(convert_to(content_hash || ':' || g, 'UTF8')), 'hex'),
+             created_by, accepted_by, accepted_at, acceptance_ref, falsifier, source_bar_key, source_bar_hash,
+             source_bar_set_hash, source_rubric_slug, source_rubric_revision, evidence_plane
+        FROM harness_shared.plan_spec_clause_revisions, generate_series(3, ${CURRENT_REVISION}) AS g
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND plan_slug = ${PLAN}
+         AND spec_id = ${SPEC} AND revision = 2`;
+    await db.adminSql`
+      UPDATE harness_shared.plan_spec_clauses SET current_revision = ${CURRENT_REVISION}
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND plan_slug = ${PLAN} AND spec_id = ${SPEC}`;
+    // 100 work items that each bound EVERY revision 2..12 (11 edges each, current one last),
+    // plus one work item whose newest edge is revision 5: it must stay visible, as stale.
+    await db.adminSql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, status, item_kind, source_plan_slug, taken_by)
+      SELECT ${WORKSPACE}, ${HARNESS}, 'WI-edge-history-' || n, 'edge history ' || n, 'done', 'feature', ${PLAN}, 'su-impl'
+        FROM generate_series(1, ${HISTORY_ITEMS}) AS n
+      UNION ALL
+      SELECT ${WORKSPACE}, ${HARNESS}, 'WI-edge-stale-only', 'stale-only edge', 'done', 'feature', ${PLAN}, 'su-impl'`;
+    await db.adminSql`
+      INSERT INTO harness_shared.work_item_spec_revision_edges
+        (workspace_id, harness_slug, work_item_id, plan_slug, spec_id, spec_revision, spec_fingerprint, created_by)
+      SELECT r.workspace_id, r.harness_slug, 'WI-edge-history-' || n, r.plan_slug, r.spec_id, r.revision,
+             r.content_hash, 'su-impl'
+        FROM harness_shared.plan_spec_clause_revisions r, generate_series(1, ${HISTORY_ITEMS}) AS n
+       WHERE r.workspace_id = ${WORKSPACE} AND r.harness_slug = ${HARNESS} AND r.plan_slug = ${PLAN}
+         AND r.spec_id = ${SPEC} AND r.revision BETWEEN 2 AND ${CURRENT_REVISION}
+      UNION ALL
+      SELECT r.workspace_id, r.harness_slug, 'WI-edge-stale-only', r.plan_slug, r.spec_id, r.revision,
+             r.content_hash, 'su-impl'
+        FROM harness_shared.plan_spec_clause_revisions r
+       WHERE r.workspace_id = ${WORKSPACE} AND r.harness_slug = ${HARNESS} AND r.plan_slug = ${PLAN}
+         AND r.spec_id = ${SPEC} AND r.revision BETWEEN 2 AND 5`;
+
+    // Control: the fixture really exceeds the cap as full history, so the pre-fix reader
+    // (every edge, ordered, LIMIT cap+1) would have truncated. Without this the assertion
+    // below could pass vacuously on a fixture that never reached the cap.
+    const [history] = await db.adminSql<{ total: number }[]>`
+      SELECT count(*)::int AS total FROM harness_shared.work_item_spec_revision_edges
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND plan_slug = ${PLAN}`;
+    expect(history!.total).toBeGreaterThan(MAX_BAR_PROJECTION_EDGES);
+
+    const snapshot = await readAcceptanceBarContractSnapshot(PLAN, {}, { harnessSlug: HARNESS });
+    const livePairs = HISTORY_ITEMS + 2; // + WORK_ITEM (revision 2 only) + the stale-only item
+    expect(snapshot.bounded.workContracts).toEqual({
+      rowsRead: livePairs,
+      limit: MAX_BAR_PROJECTION_EDGES,
+      truncated: false,
+    });
+    expect(snapshot.completeness.problems.map((problem) => problem.code))
+      .not.toContain('bar_snapshot_source_truncated');
+
+    const contracts = snapshot.bars[0]!.workContracts;
+    expect(contracts).toHaveLength(livePairs);
+    const historyContracts = contracts.filter((contract) => contract.workItemId.startsWith('WI-edge-history-'));
+    expect(historyContracts).toHaveLength(HISTORY_ITEMS);
+    // The preferred row is the CURRENT-revision edge, not merely any edge per pair.
+    expect(historyContracts.every((contract) => contract.current && contract.specRevision === CURRENT_REVISION))
+      .toBe(true);
+    expect(contracts.find((contract) => contract.workItemId === 'WI-edge-stale-only'))
+      .toMatchObject({ specId: SPEC, specRevision: 5, current: false });
+    expect(contracts.find((contract) => contract.workItemId === WORK_ITEM))
+      .toMatchObject({ specId: SPEC, specRevision: 2, current: false });
   });
 });

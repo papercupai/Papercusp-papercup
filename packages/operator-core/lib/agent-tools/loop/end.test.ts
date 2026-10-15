@@ -41,8 +41,12 @@ vi.mock('../../harness/routines/loop', () => ({
   getLoopStatus: vi.fn(async () => ({ harnessSlug: 'papercusp', ownerId: 'su-caller-own-id', active: true })),
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-1') }));
+// WI-10005199: the control-anchor projection loop:end attests. Default (see beforeEach) is a
+// FAITHFUL anchor — the stop projected `loop.active:false` — so every pre-existing test sees an
+// agreeing read and no `controlConsumerView`; the diverging fixtures below override it per-test.
+const controlAnchorH = vi.hoisted(() => ({ refresh: vi.fn() }));
 vi.mock('../coordination/control-anchor', () => ({
-  refreshControlAnchorAfterMutation: vi.fn(async () => ({ generation: 8 })),
+  refreshControlAnchorAfterMutation: controlAnchorH.refresh,
 }));
 vi.mock('../orders/open-directives-guard', () => ({
   checkOpenDirectivesGuard: vi.fn(async () => null),
@@ -54,11 +58,24 @@ vi.mock('../../carry-note', () => ({ getLoopCarryNote: vi.fn(async () => null) }
 vi.mock('../../events/await/store', () => ({
   listActiveAwaits: vi.fn(async () => []),
   listParkedAwaitsForSubscribers: vi.fn(async () => []),
+  hasPendingDeliberateWakeDelivery: vi.fn(async () => false),
   INBOX_WAKE_KEY_PREFIX: 'coord:inbox-wake:',
 }));
 vi.mock('../../events/await/compose-store', () => ({
   listActiveComposedRoots: vi.fn(async () => []),
 }));
+// P-009: the shared wake-source predicate runs REAL; only its two PG readers are mocked.
+const predicateH = vi.hoisted(() => ({
+  readHeldWorkItems: vi.fn(async (..._a: unknown[]) => [] as unknown[]),
+  readWorkItemAwaitTargets: vi.fn(async (..._a: unknown[]) => new Map()),
+}));
+vi.mock('../../events/await/wake-source-predicate', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../events/await/wake-source-predicate')>()),
+  readHeldWorkItems: (...a: unknown[]) => predicateH.readHeldWorkItems(...a),
+  readWorkItemAwaitTargets: (...a: unknown[]) => predicateH.readWorkItemAwaitTargets(...a),
+}));
+const getOwnerDirectiveMock = vi.hoisted(() => vi.fn(async (..._a: unknown[]) => null as unknown));
+vi.mock('../../owner-directives', () => ({ getOwnerDirective: (...a: unknown[]) => getOwnerDirectiveMock(...a) }));
 // Keep the module graph light: these are transitive imports of the REAL
 // wind-down-disposition module loaded via importOriginal below.
 vi.mock('../../modes/store', () => ({
@@ -98,8 +115,13 @@ vi.mock('../../goals/wind-down-disposition', async (importOriginal) => {
 
 import { deactivateLoop, getLoopStatus } from '../../harness/routines/loop';
 import { getLoopCarryNote } from '../../carry-note';
-import { listActiveAwaits, listParkedAwaitsForSubscribers } from '../../events/await/store';
+import {
+  listActiveAwaits,
+  listParkedAwaitsForSubscribers,
+  hasPendingDeliberateWakeDelivery,
+} from '../../events/await/store';
 import { listActiveComposedRoots } from '../../events/await/compose-store';
+import { applyRootDeadlines } from '../../events/await/effective-deadline';
 import { getModes } from '../../modes/store';
 import { checkOpenDirectivesGuard } from '../orders/open-directives-guard';
 import {
@@ -123,6 +145,7 @@ const acceptanceGateMock = evaluateGoalAcceptanceGate as unknown as ReturnType<t
 const listActiveAwaitsMock = listActiveAwaits as unknown as ReturnType<typeof vi.fn>;
 const listActiveComposedRootsMock = listActiveComposedRoots as unknown as ReturnType<typeof vi.fn>;
 const listParkedAwaitsMock = listParkedAwaitsForSubscribers as unknown as ReturnType<typeof vi.fn>;
+const pendingDeliberateWakeMock = hasPendingDeliberateWakeDelivery as unknown as ReturnType<typeof vi.fn>;
 const getModesMock = getModes as unknown as ReturnType<typeof vi.fn>;
 const checkOpenDirectivesGuardMock = checkOpenDirectivesGuard as unknown as ReturnType<typeof vi.fn>;
 
@@ -143,6 +166,8 @@ const run = (args: Record<string, unknown> = {}) =>
     .then((r) => ({ ...JSON.parse(r.content[0].text), isError: r.isError === true }));
 
 beforeEach(() => {
+  controlAnchorH.refresh.mockReset();
+  controlAnchorH.refresh.mockResolvedValue({ generation: 8, state: { loop: { active: false, intervalSec: null } } });
   deactivateLoopMock.mockClear();
   deactivateLoopMock.mockResolvedValue(true);
   getLoopStatusMock.mockClear();
@@ -169,6 +194,8 @@ beforeEach(() => {
   listActiveComposedRootsMock.mockResolvedValue([]);
   listParkedAwaitsMock.mockReset();
   listParkedAwaitsMock.mockResolvedValue([]);
+  pendingDeliberateWakeMock.mockReset();
+  pendingDeliberateWakeMock.mockResolvedValue(false);
   getModesMock.mockReset();
   getModesMock.mockResolvedValue([]);
   readFleetWindDownLoopEndAuthorizationMock.mockReset();
@@ -177,6 +204,12 @@ beforeEach(() => {
   readFleetWindDownLoopEndRequirementMock.mockResolvedValue(null);
   checkOpenDirectivesGuardMock.mockReset();
   checkOpenDirectivesGuardMock.mockResolvedValue(null);
+  predicateH.readHeldWorkItems.mockReset();
+  predicateH.readHeldWorkItems.mockResolvedValue([]);
+  predicateH.readWorkItemAwaitTargets.mockReset();
+  predicateH.readWorkItemAwaitTargets.mockResolvedValue(new Map());
+  getOwnerDirectiveMock.mockReset();
+  getOwnerDirectiveMock.mockResolvedValue(null);
 });
 
 describe('the P-012 wake-less autonomy guard', () => {
@@ -262,6 +295,17 @@ describe('the P-012 wake-less autonomy guard', () => {
 
     expect(got.isError).toBe(false);
     expect(got.ended).toBe(true);
+    expect(deactivateLoopMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows a fired deliberate await whose wake delivery is still outstanding', async () => {
+    getModesMock.mockResolvedValue([mode('auto')]);
+    pendingDeliberateWakeMock.mockResolvedValue(true);
+
+    const got = await run({ reason: 'event fired while this turn was still running' });
+
+    expect(got).toMatchObject({ isError: false, ok: true, ended: true });
+    expect(pendingDeliberateWakeMock).toHaveBeenCalledWith('su-caller-own-id');
     expect(deactivateLoopMock).toHaveBeenCalledTimes(1);
   });
 
@@ -480,6 +524,226 @@ describe('the P-012 wake-less autonomy guard', () => {
   });
 });
 
+// parked-agent-census-resumption-and-root-cause-2026-10-09 P-008: the guidance used to list
+// "you are blocked on something external" as a stop reason and told AUTO sessions to pass
+// acknowledgeWakeLessAutonomy on the FIRST call. The guard below refuses both for a claim holder.
+describe('loop:end guidance (P-008)', () => {
+  it('names blocked as NOT a stop and scopes the acknowledgement to a claimless stop', () => {
+    const when = String((endTool as unknown as { guidance: { when: string } }).guidance.when);
+    expect(when).not.toContain('blocked on something external');
+    expect(when).not.toContain('first call');
+    expect(when).toContain('Blocked is NOT a stop');
+    expect(when).toContain('work_items:set_blocker');
+    expect(when).toContain('no claims? Pass `acknowledgeWakeLessAutonomy:true`');
+    expect(when).toContain('ownerStopDirectiveId');
+  });
+});
+
+describe('the P-009 claim-holder guard (D-008 (1), D-009)', () => {
+  const ME = 'su-caller-own-id';
+  const held = (over: Record<string, unknown> = {}) => ({
+    id: 'WI-1',
+    harness: 'papercusp',
+    status: 'wip',
+    eventBlockers: [],
+    ...over,
+  });
+  const park = (over: Record<string, unknown> = {}) => ({
+    subscriberId: ME,
+    eventKey: 'release:green',
+    note: null,
+    expiresTs: null,
+    createdAt: '2026-10-11T00:00:00.000Z',
+    rootId: null,
+    ...over,
+  });
+  beforeEach(() => {
+    getModesMock.mockResolvedValue([{ mode: 'auto' }]);
+    predicateH.readHeldWorkItems.mockResolvedValue([held()]);
+  });
+
+  it('refuses an AUTO claim holder with no wake source EVEN with acknowledgeWakeLessAutonomy, before deactivation', async () => {
+    const got = await run({ reason: 'stopping', acknowledgeWakeLessAutonomy: true });
+
+    expect(got).toMatchObject({
+      isError: true,
+      ok: false,
+      error: 'wake_less_claim_holder_refused',
+      heldWorkItems: ['WI-1'],
+      autonomyModes: ['auto'],
+    });
+    expect(deactivateLoopMock).not.toHaveBeenCalled();
+    expect(predicateH.readHeldWorkItems).toHaveBeenCalledWith(ME, 'ws-1');
+  });
+
+  it('with no stated blocker, recovers by checkpoint + release, then the claimless retry', async () => {
+    const got = await run({ reason: 'stopping' });
+
+    expect(got.recovery.action).toBe('release-claims-then-retry');
+    expect(got.recovery.steps.map((s: { tool: string }) => s.tool)).toEqual([
+      'work_items:checkpoint',
+      'work_items:release',
+      'loop:end',
+    ]);
+    expect(got.recovery.steps[1].args).toEqual({ ids: ['WI-1'] });
+    expect(got.recovery.steps[2].args).toEqual({ reason: 'stopping', acknowledgeWakeLessAutonomy: true });
+  });
+
+  it("offers a bounded events:await keyed to a blocked item's own unblocked event, never the acknowledgement", async () => {
+    predicateH.readHeldWorkItems.mockResolvedValue([held({ status: 'blocked' })]);
+
+    const got = await run({ reason: 'stopping', acknowledgeWakeLessAutonomy: true });
+
+    expect(got.recovery.action).toBe('register-bounded-await-then-retry');
+    expect(got.recovery.steps[0]).toEqual({
+      tool: 'events:await',
+      args: expect.objectContaining({ event: 'work-item:unblocked:WI-1', timeout_sec: 3600, on_timeout: 'wake' }),
+    });
+    expect(got.recovery.steps[1]).toEqual({ tool: 'loop:end', args: { reason: 'stopping' } });
+    expect(JSON.stringify(got.recovery)).not.toContain('acknowledgeWakeLessAutonomy');
+  });
+
+  it('does not count an UNTIMED live await for a claim holder, and names it', async () => {
+    listParkedAwaitsMock.mockResolvedValue([park({ eventKey: 'conversation:answered:conv-1' })]);
+
+    const got = await run({});
+
+    expect(got.error).toBe('wake_less_claim_holder_refused');
+    expect(got.untimedWakeSources).toEqual(['conversation:answered:conv-1']);
+  });
+
+  it('lets a claim holder end with a BOUNDED wake-on-timeout await surviving', async () => {
+    listParkedAwaitsMock.mockResolvedValue([park({ expiresTs: '2026-10-11T03:00:00.000Z' })]);
+
+    const got = await run({});
+
+    expect(got).toMatchObject({ isError: false, ok: true, ended: true });
+    expect(deactivateLoopMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['wake', 'expire'])('honors the composed audit root %s timeout policy for a claim holder', async (timeoutBehavior) => {
+    // The composed writer keeps the delivery anchor unbounded/expire; its root
+    // node owns the tree deadline AND policy. Exercise the shared read fold and
+    // the real claim-holder predicate, rather than mocking a ready-made guarantee.
+    const deadline = new Date(Date.now() + 900_000).toISOString();
+    listParkedAwaitsMock.mockResolvedValue(applyRootDeadlines([
+      park({ eventKey: 'composed-root:438', rootId: 438, timeoutBehavior: 'expire' }),
+    ], new Map([[438, { expiresTs: deadline, timeoutBehavior }]])));
+
+    const got = await run({});
+
+    if (timeoutBehavior === 'wake') {
+      expect(got).toMatchObject({ isError: false, ok: true, ended: true });
+      expect(deactivateLoopMock).toHaveBeenCalledTimes(1);
+    } else {
+      expect(got.error).toBe('wake_less_claim_holder_refused');
+      expect(got.untimedWakeSources).toEqual(['composed-root:438']);
+      expect(deactivateLoopMock).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does not count a bounded on_timeout:'expire' park as a guarantee: it lapses without waking anyone", async () => {
+    // The parked-await read now carries timeout_behavior; before, a missing value defaulted to
+    // 'wake' and this park read as the guarantee it is not.
+    listParkedAwaitsMock.mockResolvedValue([
+      park({ expiresTs: '2026-10-11T03:00:00.000Z', timeoutBehavior: 'expire' }),
+    ]);
+
+    const got = await run({});
+
+    expect(got.error).toBe('wake_less_claim_holder_refused');
+    expect(got.untimedWakeSources).toEqual(['release:green']);
+    expect(deactivateLoopMock).not.toHaveBeenCalled();
+  });
+
+  it('lets a claim holder end while a deliberate wake delivery is still pending', async () => {
+    pendingDeliberateWakeMock.mockResolvedValue(true);
+
+    const got = await run({});
+
+    expect(got).toMatchObject({ isError: false, ended: true });
+  });
+
+  it('does not count a bounded done-await on an item the session itself holds (self-deadlock)', async () => {
+    listParkedAwaitsMock.mockResolvedValue([
+      park({ eventKey: 'work-item:done:WI-1', expiresTs: '2026-10-11T03:00:00.000Z' }),
+    ]);
+    predicateH.readWorkItemAwaitTargets.mockResolvedValue(new Map([['WI-1', [{ status: 'wip', takenBy: ME }]]]));
+
+    const got = await run({});
+
+    expect(got.error).toBe('wake_less_claim_holder_refused');
+    expect(got.deadAwaits).toEqual([{ eventKey: 'work-item:done:WI-1', reason: 'self-held-done' }]);
+  });
+
+  it('honors a verified owner stop directive without demanding the acknowledgement', async () => {
+    getOwnerDirectiveMock.mockResolvedValue({ id: 77, workspaceId: 'ws-1', ownerId: ME, capturedByHook: true });
+
+    const got = await run({ ownerStopDirectiveId: 77 });
+
+    expect(got).toMatchObject({ isError: false, ok: true, ended: true, ownerStopDirectiveId: 77 });
+    expect(getOwnerDirectiveMock).toHaveBeenCalledWith(77);
+  });
+
+  it.each([
+    ['another session', { id: 77, workspaceId: 'ws-1', ownerId: 'su-someone-else', capturedByHook: true }, /belongs to/],
+    ['an agent-recorded row', { id: 77, workspaceId: 'ws-1', ownerId: ME, capturedByHook: false }, /agent-recorded/],
+    ['a missing row', null, /not found/],
+  ])('rejects an owner stop directive from %s', async (_label, row, why) => {
+    getOwnerDirectiveMock.mockResolvedValue(row);
+
+    const got = await run({ ownerStopDirectiveId: 77 });
+
+    expect(got.error).toBe('wake_less_claim_holder_refused');
+    expect(String(got.ownerStopDirectiveRejected)).toMatch(why);
+    expect(deactivateLoopMock).not.toHaveBeenCalled();
+  });
+
+  it("passes an 'achieved' goal through (the acceptance gate already ran)", async () => {
+    activeGoalForOwnerMock.mockResolvedValue(ACTIVE_GOAL);
+
+    const got = await run({ disposition: 'achieved', acknowledgeWakeLessAutonomy: true });
+
+    expect(got).toMatchObject({ ok: true, ended: true, disposition: 'achieved' });
+  });
+
+  it('passes a typed fleet wind-down cue through', async () => {
+    readFleetWindDownLoopEndAuthorizationMock.mockResolvedValue(true);
+
+    const got = await run({});
+
+    expect(got).toMatchObject({ ok: true, ended: true });
+  });
+
+  it('leaves a non-autonomous claim holder unaffected', async () => {
+    getModesMock.mockResolvedValue([{ mode: 'ideate' }]);
+
+    const got = await run({});
+
+    expect(got).toMatchObject({ ok: true, ended: true });
+    expect(predicateH.readHeldWorkItems).not.toHaveBeenCalled();
+  });
+
+  it('fails open when the hold read fails (always-stoppable): only the P-012 acknowledgement remains', async () => {
+    predicateH.readHeldWorkItems.mockRejectedValue(new Error('pg down'));
+
+    const got = await run({ acknowledgeWakeLessAutonomy: true });
+
+    expect(got).toMatchObject({ ok: true, ended: true });
+  });
+
+  it('D-008 (1): a dead park no longer satisfies the claimless P-012 guard either', async () => {
+    predicateH.readHeldWorkItems.mockResolvedValue([]);
+    listParkedAwaitsMock.mockResolvedValue([park({ eventKey: 'work-item:done:WI-9' })]);
+    predicateH.readWorkItemAwaitTargets.mockResolvedValue(new Map([['WI-9', [{ status: 'done', takenBy: null }]]]));
+
+    const got = await run({});
+
+    expect(got.error).toBe('wake_less_autonomy_refused');
+    expect(deactivateLoopMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('the P-002 disposition gate (acceptance)', () => {
   it('REFUSES a goal-mode wind-down without a disposition — naming the arg and all three values — and does NOT end the loop', async () => {
     activeGoalForOwnerMock.mockResolvedValue(ACTIVE_GOAL);
@@ -675,6 +939,43 @@ describe('the habitual `harness` argument (EI-21769332722376884)', () => {
     // still pass if `harness` ever began redirecting the write somewhere else.
     expect(deactivateLoopMock).toHaveBeenCalledTimes(1);
     expect(deactivateLoopMock.mock.calls[0][0]).toBe('su-caller-own-id');
+  });
+});
+
+describe('loop:end — consumerView on the control-anchor projection (WI-10005199)', () => {
+  it('stays silent when the projected loop agrees the stop landed', async () => {
+    const got = await run({});
+    expect(got.ended).toBe(true);
+    expect(got.controlGeneration).toBe(8);
+    expect(got).not.toHaveProperty('controlConsumerView');
+  });
+
+  it('DIVERGES — and says so on the payload — when the fail-soft refresh returned null', async () => {
+    controlAnchorH.refresh.mockResolvedValueOnce(null);
+    const got = await run({});
+    // The stop itself still succeeded; the exception-only field tells the caller the consumer's
+    // read (control_state->loop) cannot be shown to reflect it.
+    expect(got.ended).toBe(true);
+    expect(got.controlGeneration).toBeNull();
+    expect(got.controlConsumerView).toMatchObject({
+      readPath: 'harness_shared.session_briefs.control_state->loop',
+      value: { active: null, intervalSec: null },
+      divergedFromWrite: true,
+    });
+  });
+
+  it('DIVERGES when the projection still shows the loop ACTIVE (the stale wake-source direction)', async () => {
+    controlAnchorH.refresh.mockResolvedValueOnce({ generation: 5, state: { loop: { active: true, intervalSec: 300 } } });
+    const got = await run({});
+    expect(got.controlConsumerView).toMatchObject({ value: { active: true, intervalSec: 300 }, divergedFromWrite: true });
+  });
+
+  it('does not attest (and does not refresh) when no active loop was ended', async () => {
+    deactivateLoopMock.mockResolvedValue(false);
+    const got = await run({});
+    expect(got.ended).toBe(false);
+    expect(got).not.toHaveProperty('controlConsumerView');
+    expect(controlAnchorH.refresh).not.toHaveBeenCalled();
   });
 });
 

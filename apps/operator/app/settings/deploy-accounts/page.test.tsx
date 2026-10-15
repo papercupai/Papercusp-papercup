@@ -13,20 +13,23 @@
  * and rendering RichGrid here would couple this to the whole account-row projection.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
 
 // vi.mock is hoisted above every top-level const, so the spies have to be hoisted with it.
-const H = vi.hoisted(() => ({ toastSuccess: vi.fn(), toastError: vi.fn() }));
+const H = vi.hoisted(() => ({ toastSuccess: vi.fn(), toastError: vi.fn(), query: {} as Record<string, unknown> }));
 const toastError = H.toastError;
 vi.mock('sonner', () => ({
   toast: Object.assign(vi.fn(), { success: H.toastSuccess, error: H.toastError, message: vi.fn() }),
 }));
-vi.mock('nuqs', () => ({
-  useQueryState: (_k: string, parser?: { defaultValue?: unknown }) => [parser?.defaultValue ?? null, vi.fn()],
-  parseAsBoolean: { withDefault: (d: unknown) => ({ defaultValue: d }) },
-  parseAsString: { withDefault: (d: unknown) => ({ defaultValue: d }) },
-}));
+vi.mock('nuqs', async () => {
+  const { useState } = await import('react');
+  return {
+    useQueryState: (key: string, parser?: { defaultValue?: unknown }) => useState(H.query[key] ?? parser?.defaultValue ?? null),
+    parseAsBoolean: { withDefault: (d: unknown) => ({ defaultValue: d }) },
+    parseAsString: { withDefault: (d: unknown) => ({ defaultValue: d }) },
+  };
+});
 vi.mock('@papercusp/grid-core', () => ({ RichGrid: () => <div data-testid="grid" /> }));
 vi.mock('@/app/harness/Tooltip', () => ({ Tooltip: ({ children }: { children: ReactNode }) => <>{children}</> }));
 vi.mock('@/app/harness/useConfirmDialog', () => ({
@@ -56,7 +59,7 @@ const ACCOUNTS = [
 const banner = () => within(screen.getByRole('status'));
 
 /** Serve the page's three GETs; `defaultOverride` drives the axis under test. */
-function stubFetch(opts: { defaultOverride?: unknown; overrideFails?: boolean; post?: unknown } = {}) {
+function stubFetch(opts: { defaultOverride?: unknown; overrideFails?: boolean; post?: unknown; accounts?: typeof ACCOUNTS } = {}) {
   const post = vi.fn();
   vi.stubGlobal(
     'fetch',
@@ -71,16 +74,124 @@ function stubFetch(opts: { defaultOverride?: unknown; overrideFails?: boolean; p
         return { ok: true, json: async () => ({ ok: true, override: opts.defaultOverride ?? {} }) } as Response;
       }
       if (url.includes('inference-gateway/stats')) return { ok: true, json: async () => ({ ok: false }) } as Response;
-      return { ok: true, json: async () => ({ ok: true, accounts: ACCOUNTS }) } as Response;
+      return { ok: true, json: async () => ({ ok: true, accounts: opts.accounts ?? ACCOUNTS }) } as Response;
     }),
   );
   return { post };
 }
 
+beforeEach(() => { H.query = {}; });
+
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
+  vi.restoreAllMocks();
+});
+
+describe('Deploy accounts — browser login completion', () => {
+  function loginFetch(status: 'completed' | 'unknown') {
+    stubFetch();
+    const read = globalThis.fetch;
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/link-start')) return {
+        status: 200,
+        json: async () => ({ ok: true, authorizeUrl: 'https://provider.example/login', linkId: 'private-link', userCode: 'ABCD-12345' }),
+      } as Response;
+      if (url.endsWith('/link-status')) return { status: 200, json: async () => ({ ok: true, status }) } as Response;
+      return read(input, init);
+    });
+    vi.stubGlobal('fetch', fetch);
+    return fetch;
+  }
+
+  it.each(['Claude', 'Codex'])('observes %s approval without a manual Complete link click', async (provider) => {
+    H.query = { add: true, id: 'pc-proof' };
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const fetch = loginFetch('completed');
+    render(<DeployAccountsPage />);
+    if (provider === 'Codex') fireEvent.click(screen.getByRole('tab', { name: 'Codex' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Get authorize link' }));
+    await screen.findByRole('link', { name: /open the/ });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+    expect(H.toastSuccess).toHaveBeenCalledWith(`${provider} account "pc-proof" linked via browser login`);
+    expect(screen.queryByText('Link an account')).toBeNull();
+    expect(fetch.mock.calls.some(([path]) => String(path).endsWith('/link-complete'))).toBe(false);
+  });
+
+  it('shows an expired link and makes a new login available after a workspace restart', async () => {
+    H.query = { add: true, id: 'pc-proof' };
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    loginFetch('unknown');
+    render(<DeployAccountsPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'Get authorize link' }));
+    await screen.findByRole('link', { name: /open the/ });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+    expect(screen.getByText(/The login link expired or the workspace restarted/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Get authorize link' })).toBeTruthy();
+    expect(screen.queryByRole('link', { name: /open the/ })).toBeNull();
+  });
+});
+
+describe('Inference — Anthropic API-key accounts', () => {
+  it('submits the Anthropic workspace ID with a user-scoped key', async () => {
+    H.query = { add: true, id: 'user-api' };
+    stubFetch();
+    render(<DeployAccountsPage />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Anthropic API key' }));
+    fireEvent.change(screen.getByLabelText('3 · Anthropic API key'), { target: { value: ['sk', 'ant', 'usr', 'fixture'].join('-') } });
+    fireEvent.change(screen.getByLabelText(/Anthropic workspace ID/), { target: { value: 'wrkspc_selected' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Link account' }));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).endsWith('/register'))).toBe(true));
+    const call = vi.mocked(fetch).mock.calls.find(([url]) => String(url).endsWith('/register'))!;
+    expect(JSON.parse(String(call[1]?.body))).toMatchObject({ credentialType: 'api-key', anthropicWorkspaceId: 'wrkspc_selected' });
+  });
+
+  it('offers a private API-key entry beside subscription login and posts the explicit credential type', async () => {
+    H.query = { add: true, id: 'console-api' };
+    stubFetch();
+    const read = globalThis.fetch;
+    const register = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => ({ ok: true, json: async () => ({ ok: true }) }) as Response);
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).endsWith('/register') ? register(input, init) : read(input, init)));
+    render(<DeployAccountsPage />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Anthropic API key' }));
+    expect(screen.getByText(/billed separately from a Claude Max subscription/)).toBeTruthy();
+    expect(screen.getByText(/when no subscription account has included allowance/)).toBeTruthy();
+    const key = screen.getByLabelText('3 · Anthropic API key');
+    expect(key.getAttribute('type')).toBe('password');
+    fireEvent.change(key, { target: { value: 'sk-ant-api03-test-console-key' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Link account' }));
+    await waitFor(() => expect(register).toHaveBeenCalled());
+    const [, init] = register.mock.calls[0] as unknown as [unknown, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({
+      accountId: 'console-api', provider: 'claude', credentialType: 'api-key', value: 'sk-ant-api03-test-console-key',
+    });
+    await waitFor(() => expect(screen.queryByLabelText('3 · Anthropic API key')).toBeNull());
+  });
+
+  it('clears a secret when switching credential modes or providers', async () => {
+    H.query = { add: true, id: 'console-api' };
+    stubFetch();
+    render(<DeployAccountsPage />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Anthropic API key' }));
+    fireEvent.change(screen.getByLabelText('3 · Anthropic API key'), { target: { value: 'sk-ant-api03-secret' } });
+    fireEvent.click(screen.getByRole('tab', { name: 'Paste a setup-token' }));
+    expect((screen.getByRole('textbox', { name: /Paste the token/ }) as HTMLTextAreaElement).value).toBe('');
+    fireEvent.click(screen.getByRole('tab', { name: 'Anthropic API key' }));
+    expect((screen.getByLabelText('3 · Anthropic API key') as HTMLInputElement).value).toBe('');
+    fireEvent.click(screen.getByRole('tab', { name: 'Codex' }));
+    expect(screen.queryByRole('tab', { name: 'Anthropic API key' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Get authorize link' })).toBeTruthy();
+  });
+
+  it('labels API accounts as paid credits in the account list', async () => {
+    stubFetch({ accounts: [{ ...ACCOUNTS[0], id: 'console-api', credentialRef: 'apikey:file:/private/console-api' }] });
+    render(<DeployAccountsPage />);
+    expect(await screen.findByText('Anthropic API · paid credits')).toBeTruthy();
+  });
 });
 
 describe('Deploy accounts — default-account banner (P-006)', () => {

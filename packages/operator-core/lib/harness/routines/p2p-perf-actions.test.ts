@@ -14,6 +14,9 @@
  * finding at all. This locks that classification so the noise loop can't return.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { classifyNoSummaryRun } from './p2p-perf-actions';
 import type { RunSummary } from '../../sync/hyperbee/perf/runner';
 
@@ -81,6 +84,49 @@ describe('classifyNoSummaryRun (EI-5753)', () => {
     // Our timeout firing implies we SIGTERM'd the tree, so signal/143 co-occur —
     // the run overran its budget, so it must classify as timeout, not signal.
     expect(classifyNoSummaryRun({ code: 143, signal: 'SIGTERM', timedOut: true })).toBe('timeout');
+  });
+});
+
+describe('runTier scratch cleanup (EI-24940172185367066)', () => {
+  it('removes a partial summary before releasing the tier lock on a handled signal exit', async () => {
+    const priorTmpdir = process.env.TMPDIR;
+    const isolatedTmpdir = mkdtempSync(path.join(os.tmpdir(), 'p2p-perf-cleanup-test-'));
+    process.env.TMPDIR = isolatedTmpdir;
+
+    let summaryPath: string | undefined;
+    const events: string[] = [];
+    try {
+      const { runTier, releasePerfLock } = (await import('./p2p-perf-actions'))._testing;
+      await runTier({} as never, '--tier1', 1_000, {
+        runRunner: async (_root, args) => {
+          const summaryArg = args.indexOf('--summary-json');
+          const candidate = args[summaryArg + 1];
+          if (!candidate) throw new Error('runner arguments omitted the summary path');
+          summaryPath = candidate;
+          writeFileSync(summaryPath, '{partial');
+          return { code: 137, stdout: '', stderr: 'runner was killed', signal: null, timedOut: false };
+        },
+        removeSummary: (filePath, options) => {
+          events.push('summary');
+          rmSync(filePath, options);
+        },
+        releasePerfLock: (tier) => {
+          events.push('lock');
+          expect(summaryPath).toBeDefined();
+          expect(existsSync(summaryPath!)).toBe(false);
+          releasePerfLock(tier);
+        },
+      });
+
+      expect(events).toEqual(['summary', 'lock']);
+      expect(summaryPath).toBeDefined();
+      expect(existsSync(summaryPath!)).toBe(false);
+      expect(existsSync(path.join(isolatedTmpdir, 'papercusp-p2p-perf--tier1.lock'))).toBe(false);
+    } finally {
+      if (priorTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = priorTmpdir;
+      rmSync(isolatedTmpdir, { recursive: true, force: true });
+    }
   });
 });
 

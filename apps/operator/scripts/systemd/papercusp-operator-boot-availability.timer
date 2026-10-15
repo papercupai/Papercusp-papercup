@@ -1,0 +1,15 @@
+[Unit]
+Description=Check Papercusp :3070 startup readiness every minute (WI-10006021)
+
+[Timer]
+# StartupSec is relative to the user manager, not the host's default target.
+# This timer therefore runs while a misordered API unit is still queued behind
+# default.target and measures the delay from user@1000.service itself.
+OnStartupSec=60s
+OnUnitActiveSec=60s
+AccuracySec=5s
+RandomizedDelaySec=0
+Unit=papercusp-operator-boot-availability.service
+
+[Install]
+WantedBy=timers.target

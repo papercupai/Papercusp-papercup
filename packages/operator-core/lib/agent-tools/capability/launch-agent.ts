@@ -28,18 +28,22 @@
  *  2. RESUME vs FORK. An in-place resume re-attaches the ORIGINAL coord identity;
  *     resuming a session whose CLI is still running would open a second CLI against
  *     one transcript (WI-3882), so a LIVE source is auto-forked instead (D-007) —
- *     a fork mints a fresh identity and leaves the original untouched.
+ *     a fork mints a fresh identity and leaves the original untouched. Explicit
+ *     `fork:false` instead requires an in-place resume and refuses a live source.
  */
 import { randomUUID } from 'node:crypto';
+import { SCOPED_INFERENCE_GATEWAY_ENV, snapshotScopedInferenceGateway, type ScopedInferenceGateway } from '@papercusp/orchestrator/codex-gateway-config';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 import { join } from 'node:path';
 import { closeSync, fstatSync, openSync, readSync, statSync } from 'node:fs';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import type { AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { parseBindingRef } from '@papercusp/orchestrator/blueprint';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless, type SpawnChildExit } from '../../console-spawn';
+import { AGENT_LAUNCH_HANDLER_TIMEOUT_SEC, RESUME_VERIFY_TIMEOUT_MS } from '../../agent-kickoff/launch-budgets.mjs';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
 import {
@@ -68,6 +72,8 @@ import {
   formatFreshLaunchEvidenceSummary,
   injectFleetArg,
   injectLaunchedByArg,
+  INTERNAL_EXPECTED_SUCCESSOR_BINDING,
+  type InternalExpectedSuccessorBinding,
   renderGoalFleetAllocation,
   isStaleHeadlessAgentHost,
   memberSpecSchema,
@@ -90,11 +96,12 @@ import {
 import { declareCoupling } from '../../coord/couplings';
 import { nativeSessionHandleForAdvSession, type NativeSessionHandle } from '../../native-session-handles';
 // WI-37920 / P-002: check the backend in the env the WINDOW gets, not ours.
-import { preflightBackendLaunch } from '../../backend-bin-resolve.mjs';
+import { BACKEND_AGENTS, backendBinOverrideEnvKey, preflightBackendLaunch } from '../../backend-bin-resolve.mjs';
+import { NATIVE_CONTAINER_EXEC_ENV, type NativeContainerExecBinding } from '@papercusp/orchestrator/fleet-srt-spawn';
 import { describeSessionEndTime, hasAdvSessionTerminalEvidence, markAdvSessionEnded } from '../../adv-sessions';
 import { resolveSessionStates } from '../coordination/liveness-oracle';
 import type { ColorScheme } from '../../console-color-schemes';
-import { findLiveHost, shutdownViaPty } from '../../events/await/psu-pty-discovery';
+import { findLiveHostAsync, shutdownViaPty } from '../../events/await/psu-pty-discovery';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import { classifyResumeTurnExit } from '../../events/await/resume-turn-outcome';
 import { nodeCgroupFs } from '../../task-manager/cgroup-read';
@@ -104,8 +111,8 @@ import {
   PSU_LAUNCH_LOG_TAIL_CHARS,
   readPsuLaunchLogTail,
 } from '../../psu-launch-log.mjs';
-import { codexThreadWriterHolder } from '../../../../../apps/operator/scripts/psu-launcher.mjs';
-import { resolveCodexModelSelection } from '../../model-context-budget.mjs';
+import { assertOriginalCodexRouting, codexThreadWriterHolder, ORIGINAL_CODEX_ROUTING_ENV, supportsTrackedFork } from '../../../../../apps/operator/scripts/psu-launcher.mjs';
+import { LaunchModelAliasError, resolveCodexModelSelection, resolveLaunchModelAlias } from '../../model-context-budget.mjs';
 import { isSuTierRole } from '../../su-role-addendum';
 import { spawnGovernedAgentProcess } from '../../resource-governor/spawn-execution';
 import {
@@ -114,11 +121,71 @@ import {
   type SavedFleetLaunchSpecProvenance,
 } from '../fleet_registry/saved-launch-spec';
 
+/** Internal direct-handler context marker used only to preserve a cold loop
+ * successor's already-enrolled first-turn provenance. It is not part of the
+ * public launch-agent schema or ordinary caller arguments. */
+export const INTERNAL_LOOP_FIRE_ORIGIN: unique symbol = Symbol('internal-loop-fire-origin');
+
+/** Private controller seam, absent from the public tool schema. */
+export const INTERNAL_SCOPED_INFERENCE_GATEWAY: unique symbol = Symbol('internal-scoped-inference-gateway');
+export const INTERNAL_SCOPED_SESSION_CONFINEMENT: unique symbol = Symbol('internal-scoped-session-confinement');
+/**
+ * Internal context key (benchmark-coverage-frontierswe-v2-2026-10-10 D-026): pin a fresh
+ * headless launch's backend CLI to an exact executable, e.g. `{ codex: <container-exec
+ * wrapper> }`. Delivered to psu as backendBinOverrideEnvKey(agent), which
+ * resolveBackendLaunch honours without falling back. A context symbol, not an argument,
+ * so no MCP caller can set it; only the server-side bench runner does.
+ */
+export const INTERNAL_BACKEND_BIN_OVERRIDE: unique symbol = Symbol('internal-backend-bin-override');
+export type InternalBackendBinOverride = Readonly<Record<string, string | NativeContainerExecBinding>>;
+
 /** How long to wait for a resumed session's live psu-pty host to appear before
  *  returning an honest UNCONFIRMED verdict. Most healthy resumes register within
  *  a few seconds, but EI-21476169071856015 measured a healthy exact Codex resume
  *  landing more than seven minutes later, so expiry is never itself a failure. */
-const RESUME_VERIFY_TIMEOUT_MS = 30_000;
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function agentLaunchCompletionReceipt(
+  idempotencyKey: string | null | undefined,
+  summaryRecorded: boolean,
+): AbortCompletionReceipt | null {
+  const key = idempotencyKey?.trim();
+  if (!key || !summaryRecorded) return null;
+  return { status: 'recorded', effectRef: `agent-launch:${key}` };
+}
+
+/**
+ * A launch can open processes before its 90-second dispatch deadline. Surface a
+ * late success only when this exact call returned a durable idempotency receipt;
+ * opening a process alone is not enough to make retrying or reporting safe.
+ */
+function agentLaunchAbortCompletionReceipt(
+  args: unknown,
+  result: ToolResult,
+): AbortCompletionReceipt {
+  const key = asRecord(args)?.idempotencyKey;
+  const normalizedKey = typeof key === 'string' ? key.trim() : '';
+  const resultData = asRecord(result.structuredContent);
+  const receipt = asRecord(resultData?.completionReceipt);
+  const expectedEffectRef = normalizedKey ? `agent-launch:${normalizedKey}` : null;
+  if (
+    expectedEffectRef &&
+    receipt?.status === 'recorded' &&
+    receipt.effectRef === expectedEffectRef
+  ) {
+    return { status: 'recorded', effectRef: expectedEffectRef };
+  }
+  return {
+    status: 'recovery-incomplete',
+    reason: 'launch-agent did not return a matching durable idempotency receipt',
+    failures: [normalizedKey ? 'missing-completion-receipt' : 'missing-idempotency-key'],
+  };
+}
 
 /**
  * Read the bounded, per-owner psu boot log without allowing this diagnostic
@@ -375,14 +442,16 @@ function splitSavedProfileExtraArgs(extraArgs: readonly string[] | undefined): {
   return { profileArgs, modeArgs };
 }
 
+const RESUME_FORK_BRIEF_CALL_CONSTRAINT = 'resume or fork => non-empty top-level brief required';
+
 export default defineTool({
   name: 'capability:launch-agent',
   description:
-    "Start agents for a fixed ad-hoc `brief`, or resume/fork a prior session — visible/headless, fleet/unfleeted. For N members on an existing plan use fleet:launch-on-plan. A successful spawn proves only that a process opened; read verification before claiming registration, a first turn, or a task claim.",
+    "Launch an ad-hoc agent, resume, or fork. `resume`/`fork` require a non-empty top-level `brief`; fresh plan-bound or successor launches may omit it. A spawn is not proof of registration, a first turn, or a work claim—read launch verification.",
   guidance: {
     when: 'AD-HOC/RECOVERY AGENT-LAUNCH DOOR: fixed brief, resume, or fork; visible or headless, fleet or unfleeted. Existing-plan N-member work uses fleet:launch-on-plan. Duplicate screening never delays process launch; it governs work-item claims.',
     notWhen:
-      'To run a COMMAND (dev server, build, REPL): capability:terminal / capability:bash. For N members on a plan: fleet:launch-on-plan. Doors: /internal/docs/agent-insights/launching-agents-which-tool-for-which-door.',
+      'To run a COMMAND (dev server, build, REPL): capability:terminal / capability:bash. Doors: /internal/docs/agent-insights/launching-agents-which-tool-for-which-door.',
     chaining:
       "A fresh/fork/headless launch returns once spawned; a visible in-place resume uses a three-state verifier: matching host = verified, observed UUID mismatch = isError, deadline with no host = RESUME UNCONFIRMED (not an invented failure). `resume: { agentId }` resolves that agent's latest session; a LIVE source is auto-FORKED (two CLIs on one transcript collide), minting a NEW identity — find it in coord:presence. Pass `idempotencyKey` if a retry might re-fire the call (a replay reports deduped:true instead of opening a second set of windows). EI-9748: a `:3170` restart reaps HEADLESS children.",
     seeAlso: [
@@ -420,13 +489,13 @@ export default defineTool({
   capability: 'capability:terminal',
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
-  // EI-22780156976598155: a fresh headless launch can legitimately spend
-  // 6s in boot checks, 30s awaiting its detached kickoff proof, and 25s in
-  // fresh-launch verification. The default 60s dispatcher budget races the
-  // ~55s MCP transport and returns an unknown outcome while the launch is
-  // still progressing. Keep this handler budget above that bounded path; the
-  // transport derives a matching deadline from the declaration.
-  timeoutSec: 90,
+  // The kickoff-proof window is longer than the old 90s parent declaration.
+  // Derive the parent from the actual sequential proof windows so a slow
+  // launch returns its structured receipt before the transport abandons it.
+  timeoutSec: AGENT_LAUNCH_HANDLER_TIMEOUT_SEC,
+  // Launches are deliberately non-idempotent. A completed handler can still prove
+  // that this attempt's launch summary is durably queryable by its idempotency key.
+  abortCompletionReceipt: agentLaunchAbortCompletionReceipt,
   args: (() => {
     const base = z.object({
       brief: z
@@ -435,7 +504,7 @@ export default defineTool({
         .max(8000)
         .optional()
         .describe(
-          "The agent's requested FIRST TURN (no plan required). Required with `resume`/`fork`, where it becomes the resumed session's next-turn request (\"here's what changed, carry on\"). Delivery is not evidence the turn began or claimed work; read the launch verification. Omit only for a FRESH launch bound to a `plan`.",
+          'First-turn request; REQUIRED for resume/fork. Optional for fresh plan-bound or per-member briefs, or a successor with seeded carry. Delivery does not prove a turn started or claimed work; read launch verification.',
         ),
       plan: z
         .string()
@@ -464,6 +533,15 @@ export default defineTool({
         .describe(
           'Exact work-item id that authorizes this launch under a work-scope exception (for example, the scorecard being independently audited).',
         ),
+      feature: z
+        .string()
+        .trim()
+        .min(1)
+        .max(200)
+        .optional()
+        .describe(
+          'Work-item/feature id passed as psu --feature on a fresh launch. For an accepted-operation worker, it must equal workItem; resume and fork retain their source binding.',
+        ),
       resume: z
         .object({
           agentId: z
@@ -483,7 +561,7 @@ export default defineTool({
         })
         .optional()
         .describe(
-          'Resume an existing session mid-thread — its full context comes back. A non-empty `brief` is required because it is the resumed session\'s actionable next turn. Pass EITHER agentId (usual) or sessionId (exact pin).',
+          'Resume full context with a required non-empty brief. For ordinary in-place continuation, send `{ resume, brief }`. Add `fork:false` for strict in-place recovery that refuses a live source instead of auto-forking. Choose agentId (latest) OR sessionId (exact). Omitted settings use the target/saved fleet profile. Leave `carry` out because it is rejected for resume/fork. Normally omit `account` and `model` too; overrides may conflict with the saved fleet profile. Use successor for fresh context with retained identity and explicit runtime/carry.',
         ),
       successor: z
         .object({
@@ -496,25 +574,34 @@ export default defineTool({
         })
         .optional()
         .describe(
-          'Start a FRESH context as an explicit successor of an ended session. The predecessor owner id is pre-pinned so its coord-keyed carry/claims survive; its durable carry/recovery brief is seeded into the first turn. A live source is refused — use ordinary resume, which auto-forks live sources, when you need a parallel branch.',
+          'Fresh context for an ENDED predecessor, preserving owner identity, claims and seeded recovery brief. Allows explicit fresh-context `account`, `model`, or `carry` settings. Visible by default when `headless` is omitted or `false`; headless:true hides the window. Cannot combine with restoreVisible. Live sources are refused; resume auto-forks them for a parallel branch.',
         ),
+      originalRouting: z.object({
+        ownerId: z.string().min(1).max(120),
+        advSessionId: z.number().int().positive(),
+        sessionId: z.string().uuid(),
+        codexHome: z.string().min(1).max(500),
+        profileFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+      }).strict().optional().describe(
+        'Repair the provider route of an exact quiescent Codex thread using its saved gateway account. Pin its original owner, adv row, UUID, isolated home and codexOriginalRoutingFingerprint. Requires an existing healthy profile/transcript; live or changed custody refuses, without fork, successor, shutdown or profile repair. Omit all runtime/settings overrides.',
+      ),
       fork: z
         .boolean()
         .optional()
         .describe(
-          'Branch off the resumed session instead of continuing it in place: the fork gets a FRESH identity + its own transcript, and the original is untouched. Forced automatically when the source session is still LIVE (a second CLI on one transcript collides — WI-3882).',
+          'Resume routing: omit this for the normal protective behavior (a LIVE source is automatically forked); `true` always branches to a FRESH identity; explicit `false` requires an in-place resume and fails closed if the source is LIVE, rather than silently changing to a fork.',
         ),
       restoreVisible: z
         .boolean()
         .optional()
         .describe(
-          'Guarded recovery for an EXACT `resume.sessionId` whose managed host survived after its desktop window disappeared. If the target is already ended or no managed host remains, the tool safely falls through to an ordinary exact resume without terminating anything. When a host is present, refuses unless kernel cgroup evidence positively says that exact host window is dead; alive/unknown/non-window states are never terminated. For a stale headless host (`not-a-window`), omit `restoreVisible` and use ordinary exact resume, which performs guarded stale-headless recovery. The old agent-launched host must accept graceful shutdown before the exact UUID is resumed into a verified visible terminal.',
+          'Recover an exact resume.sessionId after its desktop window disappeared. No surviving host: ordinary exact resume. A surviving host is shut down gracefully ONLY with kernel cgroup proof its window is dead; alive/unknown/non-window hosts are refused. For stale headless hosts omit this flag and use ordinary exact resume. Verify the restored visible terminal.',
         ),
       agent: z
         .enum(['claude', 'codex', 'omp'])
         .optional()
         .describe(
-          'Which agent CLI backs a FRESH launch (default: the psu default). Ignored for an in-place resume/fork — a session resumes under the CLI it was recorded on; an identity-preserving successor may explicitly override the predecessor backend.',
+          'Which agent CLI backs a FRESH launch (default: the psu default). For resume, an explicit different backend requests a session port that retains the source identity; supply a compatible model. Live-source resumes automatically fork, so they cannot cross backends. A fork keeps the recorded backend. An identity-preserving successor may explicitly override the predecessor backend.',
         ),
       role: z
         .string()
@@ -539,7 +626,7 @@ export default defineTool({
         .boolean()
         .optional()
         .describe(
-          "Keep a FRESH launch out of the caller's presence fleet. This only suppresses fresh caller-fleet inheritance; an explicit `fleet` still wins, and RESUME/FORK preserve the target session's durable membership.",
+          "Keep a FRESH launch out of the caller's presence fleet; an explicit `fleet` still wins (RESUME/FORK membership: see `fleet`).",
         ),
       goalVerifier: z
         .enum(['grade', 'test'])
@@ -549,7 +636,7 @@ export default defineTool({
         .boolean()
         .optional()
         .describe(
-          'Launch with no window (logs to a file under the workspace fleet-logs dir) instead of a visible desktop terminal. Default false = visible. Headless sessions stay injectable (managed pty), but note EI-9748: a `:3170` restart reaps them.',
+          'Launch with no window (logs to a file under the workspace fleet-logs dir) instead of a visible desktop terminal. Default false = visible. Headless sessions stay injectable (managed pty).',
         ),
       count: z
         .number()
@@ -563,7 +650,7 @@ export default defineTool({
         .array(memberSpecSchema)
         .optional()
         .describe(
-          'DECLARATIVE per-member config for a FRESH multi-launch, index-aligned to agent number (entry 0 → agent 1, …). Each set field OVERRIDES the flat top-level arg (model/effort/account/model/context/limit/role/carry/brief/…) for THAT agent only; an unset field falls through to the top-level arg, then the system default. `members[i].role` is a REGISTERED PERSONA ID resolved against the target harness (valid ids are harness-specific); discover exact ids first with roles:list { harnessSlug: "<target>" } and read roles[].id. It is never a lane/job label — put lane direction in `members[i].brief` or the shared `label`; invalid personas fail atomically before any terminal opens. Fewer entries than `count` ⇒ the rest use the flat args, never an error. `count` defaults to `members.length` when omitted. Not for resume/fork (a single session). `claimKinds` needs a self-pulling fleet — use fleet:launch-on-plan for that claim-lane behavior.',
+          'Index-aligned FRESH multi-launch config (entry 0 = agent 1). Set fields override top-level args, then system defaults. Registered roles only; invalid personas fail atomically before launch. Missing entries use flat args; omitted count uses members.length. Not for resume/fork. claimKinds requires a self-pulling fleet via fleet:launch-on-plan.',
         ),
       cwd: z
         .string()
@@ -585,13 +672,15 @@ export default defineTool({
         .max(120)
         .optional()
         .describe(
-          "Account routing: 'default' (the system login), 'auto' (gateway-routed), or a pool account id. Defaults to 'default' on every platform; the gateway is never selected implicitly. Always resolved — a scripted launch must never block on the interactive account picker.",
+          "Account routing for a fresh launch or successor: 'default' (the system login), 'auto' (gateway-routed), or a pool account id. Defaults to 'default' on every platform; the gateway is never selected implicitly. For ordinary in-place resume, omit it to use the target's recorded or saved-fleet account. An explicit resume override is intentional and may be refused if it conflicts with the saved fleet profile. Always resolved — a scripted launch must never block on the interactive account picker.",
         ),
       model: z
         .string()
         .max(80)
         .optional()
-        .describe('Model override for the launched agent (e.g. an opus/sonnet spec).'),
+        .describe('Model override for a fresh launch or successor (e.g. an opus/sonnet spec). For ordinary in-place resume, omit it to use the target session model; an explicit resume override is intentional and may be refused if it conflicts with the saved fleet profile.'),
+      effort: z.string().min(1).max(40).optional()
+        .describe('Reasoning effort for every member (low|medium|high|xhigh|max); members[].effort overrides it. Human model aliases resolve through config:tiers-get launchAliases.'),
       extraArgs: z
         .array(z.string().max(200))
         .max(20)
@@ -621,7 +710,7 @@ export default defineTool({
           .enum(['warm', 'cold'])
           .optional()
           .describe(
-            "Warm/cold auto-mode carry for a FRESH launch or identity-preserving successor. `members[i].carry` overrides this flat value; an in-place resume/fork preserves the target session's loop/profile carry.",
+            "Warm/cold auto-mode carry for a FRESH launch or identity-preserving successor. `members[i].carry` overrides this flat value. Do not set it with in-place `resume`/`fork`: the schema rejects it and the target session's loop/profile carry is retained.",
           ),
       })
       .superRefine((value, refinement) => {
@@ -632,6 +721,13 @@ export default defineTool({
             code: z.ZodIssueCode.custom,
             path: ['successor'],
             message: '`resume` and `successor` are mutually exclusive; choose the source recovery mode you want.',
+          });
+        }
+        if (hasSuccessor && value.restoreVisible !== undefined) {
+          refinement.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['restoreVisible'],
+            message: '`successor` and `restoreVisible` are mutually exclusive; use `restoreVisible` only with an exact session resume.',
           });
         }
         if (value.plan && (hasResume || hasSuccessor)) {
@@ -655,21 +751,126 @@ export default defineTool({
             message: '`brief` is required with `resume`/`fork` because it is the resumed session\'s actionable next turn',
           });
         }
+      })
+      // Keep the root Zod object (launch-agent consumers inspect args.shape),
+      // while publishing the same cross-field rule to MCP/compact-schema clients.
+      // A root oneOf would be erased by flattenForOpenAi; dependentSchemas is
+      // preserved as an object-rooted JSON Schema constraint.
+      // This validator-owned call annotation preserves the separate
+      // resume/fork brief requirement in tools:find, whose structural
+      // projection correctly keeps `brief` optional for fresh launches.
+      .meta({
+        dependentSchemas: {
+          successor: { not: { required: ['restoreVisible'] } },
+          restoreVisible: { not: { required: ['successor'] } },
+        },
+        'x-papercusp-call-constraint': RESUME_FORK_BRIEF_CALL_CONSTRAINT,
       });
   })(),
   async handler(args, ctx) {
+    let modelResolution: ReturnType<typeof resolveLaunchModelAlias> | null = null;
+    const memberAliasResolutions: Array<ReturnType<typeof resolveLaunchModelAlias> | undefined> = [];
+    const requestedDefaultEffort = args.effort;
+    try {
+      if (args.model) {
+        modelResolution = resolveLaunchModelAlias(args.model, { effort: args.effort, agent: args.agent });
+        args = { ...args, model: modelResolution.model, effort: modelResolution.effort ?? undefined, agent: args.agent ?? modelResolution.agent ?? undefined };
+      }
+      if (args.members) {
+        args = { ...args, members: args.members.map((member, i) => {
+          if (!member.model) return member;
+          const resolved = resolveLaunchModelAlias(member.model, { effort: member.effort ?? requestedDefaultEffort, agent: member.agent });
+          memberAliasResolutions[i] = resolved;
+          return { ...member, model: resolved.model, effort: resolved.effort ?? undefined, agent: member.agent ?? resolved.agent ?? undefined };
+        }) };
+      }
+    } catch (error) {
+      if (error instanceof LaunchModelAliasError) {
+        return { data: { ok: false, error: error.code, message: error.message, candidates: error.candidates }, isError: true };
+      }
+      throw error;
+    }
+    const privateRoute = (ctx as typeof ctx & {
+      [INTERNAL_SCOPED_INFERENCE_GATEWAY]?: ScopedInferenceGateway;
+    })[INTERNAL_SCOPED_INFERENCE_GATEWAY];
+    const scopedGateway = privateRoute === undefined ? null : snapshotScopedInferenceGateway(privateRoute);
+    const privateConfinement = (ctx as typeof ctx & {
+      [INTERNAL_SCOPED_SESSION_CONFINEMENT]?: import('../../capability-envelope/session-confinement').SessionToolConfinement;
+    })[INTERNAL_SCOPED_SESSION_CONFINEMENT];
+    if (scopedGateway && (!privateConfinement || !Array.isArray(privateConfinement.denyOutside)))
+      return err('Scoped native inference requires an exact server-side session tool ceiling before launch.');
+    if (scopedGateway && (args.resume || args.successor || args.fork || (args.count ?? args.members?.length ?? 1) !== 1)) {
+      return err('Scoped inference gateway requires a fresh single native launch.');
+    }
+    const backendBinOverride = (ctx as typeof ctx & {
+      [INTERNAL_BACKEND_BIN_OVERRIDE]?: InternalBackendBinOverride;
+    })[INTERNAL_BACKEND_BIN_OVERRIDE];
+    const backendBinOverrideEnv: Record<string, string> = {};
+    if (backendBinOverride !== undefined) {
+      if (args.resume || args.successor || args.fork || args.headless !== true) {
+        return err('A backend binary override requires a fresh headless launch.');
+      }
+      for (const [agentName, override] of Object.entries(backendBinOverride)) {
+        if (!(BACKEND_AGENTS as readonly string[]).includes(agentName)) {
+          return err(`A backend binary override names an unknown agent: ${agentName}.`);
+        }
+        const binPath = typeof override === 'string' ? override : override?.command;
+        if (typeof binPath !== 'string' || !isAbsolute(binPath)) {
+          return err(`A backend binary override for ${agentName} must be an absolute path.`);
+        }
+        if (typeof override !== 'string') {
+          if (!scopedGateway || !privateConfinement || agentName !== 'codex' || override.kind !== 'docker-exec' ||
+              !/^[a-f0-9]{64}$/.test(override.sha256) || Object.keys(override).sort().join(',') !== 'command,kind,sha256')
+            return err('A native container binding requires the private metered Codex launch and an exact wrapper digest.');
+          backendBinOverrideEnv[NATIVE_CONTAINER_EXEC_ENV] = JSON.stringify(override);
+        }
+        backendBinOverrideEnv[backendBinOverrideEnvKey(agentName)] = binPath;
+      }
+    }
+    // A launch-declared confinement binds a NEW identity before its process opens. A
+    // resumed, successor or forked identity already ran turns unconfined, so it is refused
+    // rather than confined after the fact (WI-6554700010008492).
+    if (privateConfinement && (args.resume || args.successor || args.fork)) {
+      return err('A launch-declared session tool confinement requires a fresh launch.');
+    }
     // Internal direct-handler seam used only by fleet:respawn-member after the
     // canonical saved profile has been resolved. It is deliberately absent
     // from the public zod schema, so ordinary fresh-launch behavior does not
     // change and callers cannot smuggle an unaudited recovery carry.
     let savedLaunchCarry = (args as typeof args & { __savedLaunchCarry?: 'warm' | 'cold' }).__savedLaunchCarry;
+    const internalKickoffOrigin =
+      (ctx as typeof ctx & { [INTERNAL_LOOP_FIRE_ORIGIN]?: 'loop-fire' })[INTERNAL_LOOP_FIRE_ORIGIN] === 'loop-fire'
+        ? 'loop-fire'
+        : null;
     // Internal seam used by fleet:respawn-member: a replacement must be
     // identity-correlated before it is spawned, because concurrent respawns
     // cannot safely identify one another by roster ordering after launch.
     const respawnOwnerId = (args as typeof args & { __respawnOwnerId?: string }).__respawnOwnerId?.trim() || null;
+    // Internal seam, same trust boundary as __respawnOwnerId: the member this launch REPLACES.
+    // A respawn is net-zero on headcount, so the goal ceiling check must not charge the
+    // replaced member's seat (EI-24909345582884838) — otherwise a fleet AT maxPerFleet refuses
+    // its own replacement after fleet:respawn-member has already drained the old member.
+    const respawnReplacesOwnerId =
+      (args as typeof args & { __respawnReplacesOwnerId?: string }).__respawnReplacesOwnerId?.trim() || null;
     let isResume = !!(args.resume?.agentId || args.resume?.sessionId);
     let isSuccessor = !!(args.successor?.agentId || args.successor?.sessionId);
+    const expectedSuccessorBinding = (ctx as typeof ctx & {
+      [INTERNAL_EXPECTED_SUCCESSOR_BINDING]?: InternalExpectedSuccessorBinding;
+    })[INTERNAL_EXPECTED_SUCCESSOR_BINDING];
+    if (expectedSuccessorBinding && !isSuccessor) {
+      return err('An internal expected source binding requires an identity-preserving successor.');
+    }
     const sourceAction = isResume || isSuccessor;
+    if (args.originalRouting && (!isResume || !args.resume?.sessionId || args.resume.agentId ||
+        args.resume.sessionId !== args.originalRouting.sessionId ||
+        ['successor', 'fork', 'restoreVisible', 'agent', 'account', 'model', 'carry', 'fleet', 'extraArgs',
+          'members', 'plan', 'cwd', 'role', 'headless', 'independent', 'goalVerifier', 'feature']
+          .some((key) => (args as Record<string, unknown>)[key] !== undefined))) {
+      return err('originalRouting requires an exact resume with no fork, successor or settings overrides.');
+    }
+    if (sourceAction && !isSuccessor && args.feature?.trim()) {
+      return err('feature cannot override a resumed or forked session binding; omit it to keep the source session binding.');
+    }
     if (args.successor && !isSuccessor) {
       return err('`successor` needs `agentId` or `sessionId` — pass the ended predecessor reference to recover.');
     }
@@ -823,12 +1024,18 @@ export default defineTool({
     let resumeId: string | null = null;
     let resumeOwnerId: string | null = null;
     let resumeAgent: string | null = null;
+    let resumeRole: string | null = null;
+    let resumeFeature: string | null = null;
+    let resumeSourceAdvSessionId: number | null = null;
     let resumeModel: string | null = null;
     let resumeModelSource: CodexModelSource | null = null;
     let resumeAccount: string | null = null;
     let successorBrief: string | null = null;
     const successorPreparation: { reconcile?: () => Promise<string | null> } = {};
+    let reconcileOriginalRouting: (() => Promise<void>) | null = null;
+    let recheckInPlaceResume: (() => Promise<void>) | null = null;
     let fork = !!args.fork;
+    let sourceStillLive = false;
     const notes: string[] = [];
     if (sourceAction) {
       const source = isSuccessor ? args.successor : args.resume;
@@ -837,14 +1044,135 @@ export default defineTool({
         sessionId: source?.sessionId ?? null,
       });
       if (!target.ok) return err(`Cannot ${isSuccessor ? 'start successor' : 'resume'}: ${target.detail}`);
+      if (expectedSuccessorBinding) {
+        const expected = expectedSuccessorBinding;
+        if (!expected.ownerId || !expected.workspaceId || !expected.harnessSlug || !expected.binding?.startedAt ||
+            workspaceId !== expected.workspaceId || slug !== expected.harnessSlug ||
+            target.ownerId !== expected.ownerId || target.advSessionId !== expected.advSessionId ||
+            target.workspaceId !== expected.workspaceId || target.harnessSlug !== expected.harnessSlug ||
+            target.binding?.coordOwnerId !== expected.binding.coordOwnerId ||
+            target.binding?.sessionId !== expected.binding.sessionId ||
+            target.binding?.startedAt !== expected.binding.startedAt) {
+          return err('Cannot start successor: the resolved source no longer matches the expected workspace, harness, and incarnation binding. No process was opened.');
+        }
+      }
       resumeSessionId = target.sessionId;
       // Native UUID verification remains nullable for tracked Codex rows that
       // resume by their adv_sessions row id through psu's isolated CODEX_HOME.
       resumeId = target.resumeId ?? target.sessionId;
       resumeOwnerId = target.ownerId;
       resumeAgent = target.agent;
+      resumeRole = target.role;
+      resumeFeature = target.feature;
+      resumeSourceAdvSessionId = target.advSessionId;
       resumeModel = target.model;
       resumeAccount = target.account;
+      if (args.originalRouting) {
+        const pin = args.originalRouting;
+        if (typeof target.headless !== 'boolean') return err('originalRouting refused: recorded placement is unavailable.');
+        // The request forbids placement overrides. Carry the recorded value
+        // into the existing command/member configuration after that check.
+        args = { ...args, headless: target.headless };
+        if (target.agent !== 'codex' || target.advSessionId !== pin.advSessionId ||
+            target.ownerId !== pin.ownerId || target.sessionId !== pin.sessionId || target.live ||
+            target.binding?.coordOwnerId !== pin.ownerId || target.binding?.sessionId !== pin.sessionId ||
+            !target.binding?.startedAt) {
+          return err('originalRouting refused: original binding is live or changed.');
+        }
+        const snapshotTarget = target;
+        let snapshot = JSON.stringify(target);
+        let terminalEvidenceEstablished = target.endedAt != null;
+        const sameExceptTerminal = (current: typeof target) => {
+          const omitTerminalFields = (key: string, value: unknown) =>
+            key === 'endedAt' || key === 'endedBy' ? undefined : value;
+          return JSON.stringify(current, omitTerminalFields) === JSON.stringify(snapshotTarget, omitTerminalFields);
+        };
+        const validate = (current: typeof target) => {
+          if (current.live || current.binding?.sessionId !== pin.sessionId ||
+              current.binding?.coordOwnerId !== pin.ownerId)
+            throw new Error('originalRouting refused: original binding is live or changed.');
+          const native = nativeSessionHandleForAdvSession({
+            id: current.advSessionId, agent: current.agent, coordOwnerId: current.ownerId,
+            sessionId: current.sessionId,
+          } as Parameters<typeof nativeSessionHandleForAdvSession>[0], { findCodexRolloutId: () => null });
+          assertOriginalCodexRouting({ id: current.advSessionId, agent: current.agent,
+            coordOwnerId: current.ownerId, sessionId: current.sessionId, endedAt: current.endedAt,
+            role: current.role,
+            account: current.account, codexHome: native?.backend === 'codex' ? native.codexHome : null,
+          }, pin);
+        };
+        // An existing end marker remains a prerequisite for every other
+        // original-routing check. A missing marker is handled at the spawn
+        // boundary below, where the same terminal-oracle/host/writer/CAS guard
+        // used by successors can safely reconcile an exact dead binding.
+        if (terminalEvidenceEstablished) {
+          try { validate(target); } catch (error) { return err((error as Error).message); }
+        }
+        reconcileOriginalRouting = async () => {
+          let current = await resolveResumeTarget({ sessionId: pin.sessionId });
+          if (!current.ok)
+            throw new Error('originalRouting refused: original custody or saved settings changed before spawn.');
+          if (JSON.stringify(current) !== snapshot) {
+            if (!terminalEvidenceEstablished && current.endedAt != null && sameExceptTerminal(current)) {
+              // The normal lifecycle writer or reaper may publish its marker
+              // after the initial read. Accept only that monotonic transition
+              // for this same binding/settings snapshot.
+              snapshot = JSON.stringify(current);
+              terminalEvidenceEstablished = true;
+            } else {
+              throw new Error('originalRouting refused: original custody or saved settings changed before spawn.');
+            }
+          }
+          if (!terminalEvidenceEstablished) {
+            const binding = snapshotTarget.binding;
+            if (!binding || binding.coordOwnerId !== pin.ownerId || binding.sessionId !== pin.sessionId) {
+              throw new Error('originalRouting refused: exact predecessor binding is unavailable.');
+            }
+            if (current.live || await findLiveHostAsync(pin.ownerId)) {
+              throw new Error('originalRouting refused: original host is live.');
+            }
+            const writer = readSourceCodexWriter();
+            if (!writer || writer.held || !['free', 'no-lock-file'].includes(writer.reason)) {
+              throw new Error('originalRouting refused: original writer is live or unknown.');
+            }
+            if (!hasAdvSessionTerminalEvidence(current)) {
+              const verdicts = await resolveSessionStates([{ ownerId: pin.ownerId }], { hydratePerId: true });
+              const state = verdicts.get(pin.ownerId)?.sessionState;
+              if (state !== 'ended' && state !== 'suspect') {
+                throw new Error(
+                  `originalRouting refused: predecessor liveness is ${state ?? 'unknown'}; positive terminal evidence is required.`,
+                );
+              }
+            }
+            if (await findLiveHostAsync(pin.ownerId)) {
+              throw new Error('originalRouting refused: a live host appeared during terminal reconciliation.');
+            }
+            const writerAfterOracle = readSourceCodexWriter();
+            if (!writerAfterOracle || writerAfterOracle.held ||
+                !['free', 'no-lock-file'].includes(writerAfterOracle.reason)) {
+              throw new Error('originalRouting refused: a live or unknown writer appeared during terminal reconciliation.');
+            }
+            const ended = await markAdvSessionEnded(pin.advSessionId, null, 'reconciler', {
+              expectedBinding: binding,
+              throwOnError: true,
+            });
+            if (!ended) {
+              throw new Error('originalRouting refused: predecessor binding reconciliation lost its compare-and-swap.');
+            }
+            const reconciled = await resolveResumeTarget({ sessionId: pin.sessionId });
+            if (!reconciled.ok || reconciled.endedAt == null || !sameExceptTerminal(reconciled)) {
+              throw new Error('originalRouting refused: terminal reconciliation changed or lost the original binding.');
+            }
+            current = reconciled;
+            snapshot = JSON.stringify(current);
+            terminalEvidenceEstablished = true;
+            notes.push(
+              `✓ Reconciled terminal original binding #${pin.advSessionId} before exact routing recovery; actual exit time remains unknown.`,
+            );
+          }
+          validate(current);
+        };
+      }
       // A legacy Codex launch may have recorded a model without the newer
       // provenance flag, or no model at all. Preserve the recorded model as an
       // inherited choice; when it is absent, make the configured-default
@@ -873,16 +1201,16 @@ export default defineTool({
             'opened. Pass `fork: true` to branch onto a fresh identity, or launch a fresh agent instead.',
         );
       }
-      let sourceStillLive = target.live;
+      sourceStillLive = target.live;
       let codexWriterHeld = false;
       // A wake-pump can reactivate a Codex session without a managed pty-host
       // row being visible to resolveResumeTarget yet. Codex's per-thread flock
       // is the same single-writer authority checked by psu immediately before
-      // resume, so consult it here as an additional positive liveness witness.
-      // This turns that race into the documented live-source fork instead of a
-      // second terminal that later exits with Codex's active-writer refusal.
-      if (!isSuccessor && !fork && target.agent === 'codex') {
-        const nativeHandle = nativeSessionHandleForAdvSession(
+      // resume, so consult it for every retained-owner source launch, including
+      // a fresh successor. Ordinary resume forks a live source; a successor
+      // must refuse because it would retain that writer's active owner identity.
+      const codexNativeHandle = !fork && target.agent === 'codex'
+        ? nativeSessionHandleForAdvSession(
           {
             id: target.advSessionId,
             agent: 'codex',
@@ -890,9 +1218,17 @@ export default defineTool({
             sessionId: target.sessionId,
           } as Parameters<typeof nativeSessionHandleForAdvSession>[0],
           { findCodexRolloutId: () => null },
-        );
-        if (nativeHandle?.backend === 'codex') {
-          const writer = codexThreadWriterHolder(nativeHandle.codexHome, target.sessionId);
+        )
+        : null;
+      const readSourceCodexWriter = () => codexNativeHandle?.backend === 'codex'
+        ? codexThreadWriterHolder(codexNativeHandle.codexHome, target.sessionId)
+        : null;
+      {
+        const writer = readSourceCodexWriter();
+        if (args.originalRouting && (!writer || writer.held || !['free', 'no-lock-file'].includes(writer.reason))) {
+          return err('originalRouting refused: original writer is live or unknown; no fork was created.');
+        }
+        if (writer) {
           codexWriterHeld = writer.held;
           if (writer.held) {
             sourceStillLive = true;
@@ -978,11 +1314,22 @@ export default defineTool({
           if (!current.ok || current.advSessionId !== target.advSessionId ||
               current.binding?.coordOwnerId !== binding.coordOwnerId ||
               current.binding?.sessionId !== binding.sessionId ||
-              current.binding?.startedAt !== binding.startedAt) {
+              current.binding?.startedAt !== binding.startedAt ||
+              current.workspaceId !== target.workspaceId ||
+              current.harnessSlug !== target.harnessSlug ||
+              (expectedSuccessorBinding && (
+                current.ownerId !== expectedSuccessorBinding.ownerId ||
+                current.advSessionId !== expectedSuccessorBinding.advSessionId ||
+                current.workspaceId !== expectedSuccessorBinding.workspaceId ||
+                current.harnessSlug !== expectedSuccessorBinding.harnessSlug
+              ))) {
             return 'Cannot start successor: the predecessor binding changed during preparation. Re-resolve the source; no process was opened.';
           }
-          if (current.live || findLiveHost(binding.coordOwnerId)) {
+          if (current.live || (await findLiveHostAsync(binding.coordOwnerId))) {
             return 'Cannot start successor: a LIVE source host appeared during preparation. No process was opened.';
+          }
+          if (readSourceCodexWriter()?.held) {
+            return 'Cannot start successor: an active native Codex writer appeared during preparation. No process was opened.';
           }
           if (current.endedAt != null) return null;
           if (!hasAdvSessionTerminalEvidence(current)) {
@@ -991,12 +1338,15 @@ export default defineTool({
               { hydratePerId: true },
             );
             const state = verdicts.get(binding.coordOwnerId)?.sessionState;
-            if (state !== 'ended' && state !== 'suspect') {
+            if (state !== 'ended' && !(state === 'suspect' && !expectedSuccessorBinding?.requirePositiveTerminalEvidence)) {
               return `Cannot start successor: predecessor liveness is ${state ?? 'unknown'}; positive terminal evidence is required. No process was opened.`;
             }
           }
-          if (findLiveHost(binding.coordOwnerId)) {
+          if (await findLiveHostAsync(binding.coordOwnerId)) {
             return 'Cannot start successor: a LIVE source host appeared during reconciliation. No process was opened.';
+          }
+          if (readSourceCodexWriter()?.held) {
+            return 'Cannot start successor: an active native Codex writer appeared during reconciliation. No process was opened.';
           }
           const ended = await markAdvSessionEnded(target.advSessionId, null, 'reconciler', {
             expectedBinding: binding,
@@ -1027,7 +1377,7 @@ export default defineTool({
               'continuing with an ordinary exact resume (nothing to terminate).',
           );
         } else {
-          const host = findLiveHost(target.ownerId);
+          const host = await findLiveHostAsync(target.ownerId);
           if (!host) {
             // The host can disappear between resolveResumeTarget and this check.
             // That race is safe: there is no remaining CLI to collide with, so
@@ -1042,7 +1392,7 @@ export default defineTool({
             if (!restoreVisibleMayShutdown(windowVerdict)) {
               const recoveryHint =
                 windowVerdict === 'not-a-window'
-                  ? ' This is a stale headless host, not a visible-window restore case; omit `restoreVisible` and retry the ordinary exact resume, which performs guarded stale-headless recovery.'
+                  ? ' This host has no live desktop window; omit `restoreVisible` and retry an ordinary exact resume. That path reclaims only an explicitly agent-launched headless host with measured pty activity idle for at least 30 minutes; otherwise a still-live source is forked to avoid opening a second CLI on one transcript.'
                   : '';
               return err(
                 `Cannot restore ${target.sessionId}: desktop-window verdict for ${target.ownerId} is ${windowVerdict}. ` +
@@ -1075,9 +1425,41 @@ export default defineTool({
         }
       }
       if (!isSuccessor) {
+        // Omission permits the normal protective auto-fork. Explicit false
+        // requires the original identity/transcript, so reject a live source
+        // before changing routes or reclaiming a stale headless host.
+        if (args.fork === false) {
+          const refusal = `Cannot resume ${target.resumeId ?? target.sessionId} in place: `;
+          if (sourceStillLive) {
+            return err(refusal + 'the source session is still LIVE. Explicit `fork:false` is fail-closed; omit `fork` to allow the normal protective auto-fork, or retry after the source ends.');
+          }
+          const custody = (current: typeof target) => JSON.stringify([
+            current.ownerId, current.advSessionId, current.sessionId, current.resumeId, current.binding,
+          ]);
+          const sourceCustody = custody(target);
+          recheckInPlaceResume = async () => {
+            const current = await resolveResumeTarget({
+              agentId: target.sessionId ? null : target.ownerId,
+              sessionId: target.sessionId,
+            });
+            if (!current.ok || custody(current) !== sourceCustody) {
+              throw new Error(refusal + 'source custody changed during preparation; no replacement was launched.');
+            }
+            if (current.live || await findLiveHostAsync(target.ownerId!)) {
+              throw new Error(refusal + 'the source session became LIVE during preparation; no replacement was launched.');
+            }
+            const writer = readSourceCodexWriter();
+            if (target.agent === 'codex' && (!writer || writer.held || !['free', 'no-lock-file'].includes(writer.reason))) {
+              throw new Error(refusal + 'the Codex writer is live or unknown; no replacement was launched.');
+            }
+          };
+          try { await recheckInPlaceResume(); } catch (error) {
+            return err(error instanceof Error ? error.message : String(error));
+          }
+        }
         let staleHeadlessRecovery = false;
         if (sourceStillLive && !codexWriterHeld && !fork && !args.restoreVisible && target.ownerId) {
-          const host = findLiveHost(target.ownerId);
+          const host = await findLiveHostAsync(target.ownerId);
           if (!host) {
             // The host can disappear between resolveResumeTarget and this check.
             // There is then no remaining CLI to collide with, so exact-resume.
@@ -1112,7 +1494,7 @@ export default defineTool({
         // An exact native-session pin is a request to keep that transcript.
         // Pressure may require the CLI to compact, but it is not permission
         // to replace the conversation with a fresh successor (WI-10001085).
-        if (target.ownerId && !(args.resume?.sessionId && !fork && !target.live)) {
+        if (target.ownerId && !((args.resume?.sessionId || args.fork === false) && !fork && !target.live)) {
           try {
             const pressure = (await fetchContextPressure([target.ownerId])).get(target.ownerId);
             if (pressure === 'critical') {
@@ -1177,6 +1559,24 @@ export default defineTool({
           );
         }
       }
+    }
+
+    // Every capability fork pre-pins a managed identity. Check the launcher's
+    // actual tracked-fork capability before reservation or terminal allocation,
+    // rather than opening a child that must refuse before registering.
+    if (isResume && fork && !supportsTrackedFork({
+      agent: resumeAgent,
+      sessionId: resumeSessionId,
+      coordOwnerId: resumeOwnerId,
+      id: resumeSourceAdvSessionId,
+    })) {
+      return err(
+        `Cannot launch a managed fork of ${resumeId ?? 'that session'}: tracked fork is unavailable for this ` +
+          `${resumeAgent ?? 'unknown'} source. It currently requires a Claude source with a native session id, ` +
+          'coord owner and tracked session row. No process was admitted or opened. ' +
+          'Resume in place with `fork:false` only after the source and its writer have ended, ' +
+          'or launch a fresh agent with a context-seeded brief.',
+      );
     }
 
     // A same-owner resume must preserve the target session's loop lifecycle. The
@@ -1385,6 +1785,14 @@ export default defineTool({
     }
 
     const cwd = args.cwd ? (isAbsolute(args.cwd) ? args.cwd : resolvePath(base.cwd, args.cwd)) : base.cwd;
+    if (args.originalRouting) {
+      if (args.account && args.account !== resumeAccount)
+        return err('originalRouting refused: saved fleet account differs from original account.');
+      if (args.model && args.model !== resumeModel)
+        return err('originalRouting refused: saved fleet model differs from original model.');
+      // Codex reads the original transcript model/effort, not an explicit saved-fleet override.
+      args.model = undefined;
+    }
 
     // ── Per-member launch composition (P-002) ──────────────────────────────────
     // A FRESH multi-launch folds `members[i]` over the flat top-level args, so agent i
@@ -1398,6 +1806,33 @@ export default defineTool({
     // belong to that goal and are bound by the goal's ceilings. `count` is passed
     // whole so an over-large batch is refused once here rather than part-way
     // through, leaving half a fleet running against a breached ceiling.
+    const retainedOwnerId = isSuccessor || (isResume && !fork) ? resumeOwnerId : null;
+    // Forks also carry the reviewer's transcript and get the caller's launch edge.
+    // Screen the source identity for both retaining and forked recovery, before
+    // writing an edge that would put the reviewer under its plan's implementer.
+    const reviewerSourceOwnerId = isSuccessor || isResume ? resumeOwnerId : null;
+    if (reviewerSourceOwnerId && callerOwnerId) {
+      const guard = await import('../../acceptance-reviewer-relaunch-guard');
+      let conflict: Awaited<ReturnType<typeof guard.findReviewerRelaunchConflict>>;
+      try {
+        conflict = await guard.findReviewerRelaunchConflict({
+          workspaceId,
+          launcherOwnerId: callerOwnerId,
+          retainedOwnerId: reviewerSourceOwnerId,
+        });
+      } catch (e) {
+        return err(
+          `reviewer_relaunch_independence_unreadable: could not verify that relaunching ${reviewerSourceOwnerId} keeps ` +
+            `acceptance review independent of ${callerOwnerId} (${e instanceof Error ? e.message : String(e)}). ` +
+            'Retry once the database is readable (EI-25876555362728602).',
+        );
+      }
+      if (conflict) return err(guard.renderReviewerRelaunchRefusal(conflict));
+    }
+    const goalExcludedOwnerIds = [...new Set([
+      ...(respawnReplacesOwnerId ? [respawnReplacesOwnerId] : []),
+      ...(retainedOwnerId ? [retainedOwnerId] : []),
+    ])];
     const goalLaunch = await resolveGoalLaunch({
       workspaceId,
       launcherOwnerId: callerOwnerId ?? '',
@@ -1406,13 +1841,36 @@ export default defineTool({
       goalRole: args.goalVerifier === 'grade' ? 'grading' : args.goalVerifier === 'test' ? 'test' : null,
       fleetSlug,
       count,
+      ...(goalExcludedOwnerIds.length ? { excludeOwnerIds: goalExcludedOwnerIds } : {}),
       requested: {
         ...(args.agent ? { agent: args.agent as 'claude' | 'codex' | 'omp' } : {}),
         ...(args.account ? { account: args.account } : {}),
         ...(args.model ? { model: args.model } : {}),
       },
     });
-    if (goalLaunch.refusal) return err(goalLaunch.refusal.message);
+    if (goalLaunch.refusal) {
+      // P-005 / R-5: a refused goal launch must not strand the goal-created work it
+      // was for. Stamp every open, unassigned item of this goal the launch named so
+      // the holder's stranded-goal-work agenda shows it at once. Best-effort: the
+      // refusal is returned either way.
+      let strandNote = '';
+      if (goalLaunch.goalId) {
+        const stranded = await import('../../goal-stranded-work');
+        const record = await stranded
+          .recordGoalPlacementRefusal({
+            workspaceId,
+            goalId: goalLaunch.goalId,
+            launcherOwnerId: callerOwnerId ?? '',
+            reason: goalLaunch.refusal.reason,
+            message: goalLaunch.refusal.message,
+            source: 'capability:launch-agent',
+            named: stranded.launchNamedWorkItemIds({ feature: args.feature, workItem: args.workItem, brief: args.brief }),
+          })
+          .catch((e: unknown) => ({ named: [] as string[], marked: [] as string[], error: e instanceof Error ? e.message : String(e) }));
+        strandNote = stranded.goalPlacementRefusalNote(record);
+      }
+      return err(goalLaunch.refusal.message + strandNote);
+    }
 
     const memberSpecs: (MemberSpec | undefined)[] = args.members ?? [];
     const flatBase: FleetMemberDefaults = {
@@ -1426,7 +1884,7 @@ export default defineTool({
       modelSource: isSuccessor && resumeAgent === 'codex'
         ? (goalLaunch.effective.model || args.model ? 'explicit' : resumeModelSource ?? undefined)
         : undefined,
-      effort: goalLaunch.effective.effort ?? undefined,
+      effort: goalLaunch.effective.effort ?? args.effort ?? undefined,
       contextSize: goalLaunch.effective.contextSize ?? persistedHeadcountProfile?.config.contextSize ?? undefined,
       compactionLimit: persistedHeadcountProfile?.config.compactionLimit,
       // P-003: `headless` was the ONE knob in this block that ignored the goal
@@ -1442,7 +1900,15 @@ export default defineTool({
       // An explicit flat role is the caller's persona choice and must win over
       // any persisted fleet profile. This mirrors member > fleet precedence:
       // a saved role is only a fallback when the caller omitted the field.
-      role: args.role ?? persistedHeadcountProfile?.config.role,
+      // A fresh successor retains the predecessor's persona by default. The
+      // caller's explicit role still wins; a null source role stays generic SU
+      // instead of inheriting an unrelated saved headcount profile.
+      role: isSuccessor
+        ? (args.role ?? resumeRole ?? undefined)
+        : (args.role ?? persistedHeadcountProfile?.config.role),
+      feature: isSuccessor
+        ? (args.feature ?? resumeFeature ?? undefined)
+        : (sourceAction ? undefined : args.feature ?? undefined),
       stack: args.stack ?? undefined,
       // A flat carry setting applies to every fresh member unless that member
       // supplies its own override in `members[i].carry`.
@@ -1479,6 +1945,51 @@ export default defineTool({
       });
       return { ...folded, model: selection.model, modelSource: selection.source };
     });
+    if (scopedGateway && (foldedConfigs.length !== 1 || foldedConfigs.some(config => config.agent !== 'codex'))) {
+      return err('Scoped inference gateway requires the supported Codex transport.');
+    }
+    // A workItem grants launch scope but does not bind a worker identity. When
+    // the requested role is the accepted operation's worker role, require the
+    // same target as --feature before any terminal is opened. Generic audit
+    // launches against ordinary work items, and accepted items for other roles,
+    // continue through the generic launch path.
+    if ((!isResume || isSuccessor) && args.workItem?.trim() && slug) {
+      const roles = [...new Set(
+        foldedConfigs.map((config) => config.role?.trim()).filter((role): role is string => !!role),
+      )];
+      if (roles.length) {
+        try {
+          const { resolveAcceptedOperationWorkerBinding } =
+            await import('../../blueprint/operation-worker-binding');
+          for (const role of roles) {
+            const binding = await resolveAcceptedOperationWorkerBinding({
+              workspaceId,
+              harnessSlug: slug,
+              workItemId: args.workItem.trim(),
+              role,
+              roleMismatch: 'ignore',
+              repoDir: args.cwd?.trim() || papercuspPathForWorkspace(workspaceId),
+            });
+            if (!binding) continue;
+            const unboundConfig = foldedConfigs.find((config) =>
+              config.role?.trim() === role && config.feature?.trim() !== binding.workItemId);
+            if (unboundConfig) {
+              return err(
+                'Accepted blueprint operation worker role "' + role + '" for ' + binding.workItemId +
+                  ' requires feature to exactly match workItem. Pass feature: "' +
+                  binding.workItemId + '". No process was spawned.',
+              );
+            }
+          }
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          return err(
+            'Could not verify accepted operation worker binding before launch: ' +
+              detail + '. No process was spawned.',
+          );
+        }
+      }
+    }
     // The psu bootstrap rejects malformed stack refs, but that is too late:
     // admission and a child process have already been consumed by then. Check
     // every effective member (including overrides) before claiming the launch.
@@ -1498,14 +2009,28 @@ export default defineTool({
     // bootstrap can then register the session under the same owner that the
     // launcher, admission metadata, and launch verifier already know. A
     // respawn supplies its durable replacement identity; successors and
-    // in-place resumes retain the source identity; forks deliberately mint a
-    // new identity from their resumed transcript and therefore stay unpinned.
+    // in-place resumes retain the source identity; each fork gets a fresh pin
+    // through the shared command builder so its reservation and bootstrap agree.
     const memberOwnerIds: Array<string | null> = Array.from({ length: count }, (_v, i) => {
       if (isSuccessor || (isResume && !fork)) return resumeOwnerId;
-      if (isResume) return null;
       if (i === 0 && respawnOwnerId) return respawnOwnerId;
       return `su-${randomUUID()}`;
     });
+    // Installed whenever the host declared one, not only beside a scoped gateway. Until
+    // WI-6554700010008492 a confinement passed without a gateway was silently dropped.
+    if (privateConfinement) {
+      try {
+        const { declareSessionConfinement } = await import('../../capability-envelope/session-confinement-store');
+        for (const ownerId of memberOwnerIds) {
+          if (!ownerId) return err('Scoped native launch has no pinned confinement identity.');
+          const receipt = await declareSessionConfinement({ ownerId, workspaceId,
+            confinement: privateConfinement! });
+          if (!receipt.ok) return err(`Scoped native tool confinement refused: ${receipt.reason}`);
+        }
+      } catch {
+        return err('Scoped native tool confinement could not be durably installed; no process started.');
+      }
+    }
     if (!isResume) {
       const roleFailure = unresolvedAgentRole({
         harness: slug,
@@ -1526,6 +2051,19 @@ export default defineTool({
     //
     // Fresh launches only: a resume/fork runs under the CLI its session was
     // recorded on, which this call does not choose.
+    // WI-6554700010011633: the session's own model and provider are chosen HERE, after alias
+    // resolution and saved-profile inheritance — not at a tool dispatch the kernel seat sees.
+    // Judge every launch (fresh, successor, resume) against the workspace's inherited policy
+    // before any terminal opens; a resume onto a now-forbidden model is refused too.
+    {
+      const { judgeLaunchGovernance } = await import('../../governance-policy/session-governance');
+      const refusal = await judgeLaunchGovernance(
+        workspaceId,
+        foldedConfigs.map((folded) => ({ agent: folded.agent ?? 'claude', model: folded.model })),
+      );
+      if (refusal) return err(refusal);
+    }
+
     if (!isResume) {
       const preflighted = new Set<string>();
       for (const folded of foldedConfigs) {
@@ -1583,6 +2121,7 @@ export default defineTool({
         cmd = isResume
           ? buildAgentLaunchCommand({
               mode: fork ? 'fork' : 'resume',
+              ...(fork ? { ownerId: memberOwnerIds[i] } : {}),
               sessionId: resumeSessionId,
               resumeId,
               // A same-session resume/fork keeps the source's account route
@@ -1597,11 +2136,12 @@ export default defineTool({
               // reader selects the latest turn_context model:effort, falling
               // back to recorded launch metadata only if no transcript exists.
               agent: resumeAgent,
+              targetAgent: args.agent ?? null,
               model: args.model ?? (resumeAgent === 'codex' ? null : resumeModel),
               modelSource: args.model ? 'explicit' : (resumeAgent === 'codex' ? null : resumeModelSource),
               headless: !!args.headless,
               carry: savedLaunchCarry ?? null,
-              launchMode,
+              launchMode: args.originalRouting ? null : launchMode,
               extraArgs: args.extraArgs ?? null,
             })
           : buildAgentLaunchCommand({
@@ -1631,7 +2171,11 @@ export default defineTool({
               allowSubagents: folded.allowSubagents,
               addDir: folded.addDir ?? null,
               launchContext: folded.launchContext ?? null,
-              launchMode,
+              // Fresh fleet members receive mode participation, not the launching
+              // leader's personal mission or sticky owner-directed authority.
+              launchMode: fleetSlug && !isSuccessor
+                ? normalizeLaunchMode(launchMode, { fleetRole: 'member' })
+                : launchMode,
               extraArgs: folded.extraArgs ?? null,
             });
       } catch (e) {
@@ -1649,6 +2193,24 @@ export default defineTool({
     // Back-compat: `command` (singular) is the representative reported/recorded command
     // — identical across members in the common no-`members` case.
     const command = memberCommands[0] ?? '';
+    // Use the same final model/effort pair that composed each command. A flat
+    // preflight resolution can differ after member or goal settings are folded.
+    const memberModelResolutions = isResume ? [] : foldedConfigs.map((config, i) => {
+      const model = composeModelSpec(config.model, config.effort);
+      if (!model) return null;
+      const requested = memberAliasResolutions[i] ?? modelResolution;
+      return {
+        requested: requested?.requested ?? model,
+        agent: config.agent ?? null,
+        model,
+        effort: (model.match(/:(low|medium|high|xhigh|max)$/i)?.[1] ?? null) as ReturnType<typeof resolveLaunchModelAlias>['effort'],
+        alias: requested?.alias ?? null,
+      };
+    });
+    const firstModelResolution = memberModelResolutions[0] ?? null;
+    const effectiveModelResolution = isResume ? modelResolution : memberModelResolutions.every(resolved =>
+      resolved?.model === firstModelResolution?.model && resolved?.agent === firstModelResolution?.agent &&
+      resolved?.effort === firstModelResolution?.effort) ? firstModelResolution : null;
 
     // P-014: claim the launch only after all validation, target/profile resolution,
     // backend/model preflight, and command composition have succeeded. A refused
@@ -1684,6 +2246,9 @@ export default defineTool({
           launch: priorLaunch
             ? { ...priorLaunch, deduped: true }
             : { deduped: true, opened: 0, failed: 0, mode: 'deduped', fleet: null, tasks: [] },
+          ...(agentLaunchCompletionReceipt(args.idempotencyKey, prior !== null)
+            ? { completionReceipt: agentLaunchCompletionReceipt(args.idempotencyKey, prior !== null) }
+            : {}),
         },
       };
     }
@@ -1782,7 +2347,21 @@ export default defineTool({
     const results = await Promise.all(
       memberCommands.map(async (cmd, i) => {
         const memberBrief = memberBriefs[i];
-        const env = memberBrief ? { ...base.env, PAPERCUSP_KICKOFF_PROMPT: memberBrief } : base.env;
+        const env = {
+          ...base.env,
+          // Only explicit exact resume authorizes retirement clearing.
+          ...(!fork && isResume ? { PSU_ALLOW_RETIRED_RESUME: '1' } : {}),
+          ...(scopedGateway ? { [SCOPED_INFERENCE_GATEWAY_ENV]: JSON.stringify(scopedGateway) } : {}),
+          ...(memberBrief ? { PAPERCUSP_KICKOFF_PROMPT: memberBrief } : {}),
+          ...(internalKickoffOrigin
+            ? { PAPERCUSP_INTERNAL_KICKOFF_ORIGIN: internalKickoffOrigin }
+            : {}),
+          ...(args.originalRouting ? { [ORIGINAL_CODEX_ROUTING_ENV]: JSON.stringify(args.originalRouting) } : {}),
+          ...backendBinOverrideEnv,
+        };
+        // Never inherit a prior assignment's host-boundary authority.
+        if (backendBinOverrideEnv[NATIVE_CONTAINER_EXEC_ENV] === undefined)
+          delete (env as Record<string, string | undefined>)[NATIVE_CONTAINER_EXEC_ENV];
         const memberLabel = memberLabels[i];
         const targetOwnerId = memberOwnerIds[i];
         // Any scripted brief is a real first-turn obligation. Ask the headless
@@ -1792,6 +2371,8 @@ export default defineTool({
         // than being mistaken for a clean launch.
         const requireKickoffProof = kickoffProofRequired[i];
         try {
+          if (recheckInPlaceResume) await recheckInPlaceResume();
+          if (reconcileOriginalRouting) await reconcileOriginalRouting();
           return await spawnGovernedAgentProcess(
           {
             workspaceId,
@@ -1803,9 +2384,12 @@ export default defineTool({
               targetOwnerId,
               fleetSlug,
               headless: !!foldedConfigs[i].headless,
+              ...(respawnReplacesOwnerId ? { replacesOwnerId: respawnReplacesOwnerId } : {}),
             },
           },
           async (admissionContext) => {
+            if (recheckInPlaceResume) await recheckInPlaceResume();
+            if (reconcileOriginalRouting) await reconcileOriginalRouting();
             const governedEnv = {
               ...env,
               PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(admissionContext),
@@ -1820,9 +2404,8 @@ export default defineTool({
                 fleetSlug,
                 kickoffProof: requireKickoffProof,
                 // Fresh members and successors are explicitly pre-pinned. An
-                // in-place resume re-attaches its source owner. A fork
-                // deliberately gets no stamp because it mints a distinct
-                // identity at boot.
+                // in-place resume re-attaches its source owner. Each fork's
+                // distinct identity is pinned in both argv and this receipt.
                 coordOwnerId: targetOwnerId,
               });
               // A one-turn headless agent may finish at its CLI prompt without
@@ -1906,6 +2489,9 @@ export default defineTool({
     const openedOwnerIds = results.flatMap((result, i) =>
       result.status === 'ok' && memberOwnerIds[i] ? [memberOwnerIds[i]] : [],
     );
+    for (const result of results) {
+      notes.push(...(result.goalAdmissionDegraded ?? []).map((reason) => `⚠ ${reason}`));
+    }
     let verifierCoupling: { status: 'coupled' | 'failed' | 'not-opened'; holderId: string; verifierId: string | null; error?: string } | null = null;
     if (args.goalVerifier && callerOwnerId) {
       const verifierId = openedOwnerIds[0] ?? null;
@@ -1999,6 +2585,9 @@ export default defineTool({
       const childExit = headlessResult?.status === 'ok' ? headlessResult.childExit : undefined;
       const verifyPromise = verifyResumeStarted(resumeOwnerId, {
         expectedSessionId: resumeSessionId,
+        ...(args.agent && args.agent !== resumeAgent && resumeSourceAdvSessionId != null ? {
+          expectedPort: { sourceAdvSessionId: resumeSourceAdvSessionId, targetBackend: args.agent },
+        } : {}),
         timeoutMs: RESUME_VERIFY_TIMEOUT_MS,
       });
       const observation = childExit
@@ -2277,6 +2866,30 @@ export default defineTool({
 
     const launchSummary = {
       deduped: false,
+      // Preserve the resolver's pre-spawn count. A later read could include this
+      // launch or an existing actor whose goal attribution/freshness changed.
+      goalAdmission: goalLaunch.goalId ? {
+        stage: 'batch-preflight',
+        goalId: goalLaunch.goalId,
+        fleet: fleetSlug,
+        requested: count,
+        ceilings: goalLaunch.ceilings,
+        headcount: goalLaunch.headcountMeasurement ? goalLaunch.headcount : null,
+        measurement: goalLaunch.headcountMeasurement ?? null,
+        capacityStatus: goalLaunch.degradedReasons.some((reason) => reason.startsWith('ceiling not enforced'))
+          ? 'unenforced' : goalLaunch.headcountMeasurement ? 'enforced' : 'not-checked',
+        degraded: goalLaunch.degraded,
+        degradedReasons: goalLaunch.degradedReasons,
+      } : null,
+      // Preserve each final decision separately from the earlier batch check.
+      // A throwing spawn can leave a durable receipt but no returned context;
+      // null is unknown here, never proof of a zero or unenforced population.
+      finalGoalAdmissions: results.map((result, memberIndex) => ({
+        memberIndex, ownerId: memberOwnerIds[memberIndex] ?? null,
+        receiptId: result.admissionContext?.receiptId ?? null,
+        admission: result.goalAdmission ?? null,
+        outcome: result.status === 'ok' ? 'opened' : 'failed',
+      })),
       opened: opened.length,
       failed: failed.length,
       failures,
@@ -2350,17 +2963,25 @@ export default defineTool({
         : {}),
     };
 
+    let launchSummaryRecorded = false;
     if (!launchClaimReleased) {
-      await recordAgentLaunchResult({
+      launchSummaryRecorded = await recordAgentLaunchResult({
         workspaceId,
         idempotencyKey: args.idempotencyKey,
         summary: launchSummary,
       });
     }
+    const completionReceipt = agentLaunchCompletionReceipt(args.idempotencyKey, launchSummaryRecorded);
 
     return {
       content: [{ type: 'text' as const, text: lines.join('\n') }],
-      data: { deduped: false, launch: launchSummary },
+      data: {
+        deduped: false,
+        modelResolution: effectiveModelResolution,
+        memberModelResolutions,
+        launch: launchSummary,
+        ...(completionReceipt ? { completionReceipt } : {}),
+      },
       // Only an OBSERVED failure is an error. `agentStarted === null` and
       // `resumeVerified === null` (unconfirmed — still booting) must NOT set
       // isError: healthy launches can land there inside this bounded window, and

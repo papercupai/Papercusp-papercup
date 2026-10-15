@@ -17,15 +17,35 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { boundedOrgTxn } from '../../pg-bounded-txn';
+import { boundedOrgTxn, type BoundedOrgTxnOptions } from '../../pg-bounded-txn';
+import { readWakeFanoutPacing, reserveWakeFanout, withWakeFanoutPacing, WAKE_FANOUT_BURST } from '../../agent-tools/coordination/wake-fanout-pacing';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import {
+  findLiveHostAsync,
+  hostSupports,
+  injectIntoHostWithConfirmation,
+  PSU_PTY_DIR,
+} from './psu-pty-discovery';
 import { normalizeEventKey } from './announce-key';
 import { isPattern, keyMatchesPattern, payloadMatchesFilter, patternLiteralPrefix } from './pattern';
 import { WAKE_TURN_CHANNELS } from './types';
+import { turnProofColumnsReady } from './turn-proof-schema';
+import {
+  type TurnProof,
+  initialTurnProof,
+  isTurnProof,
+  pickupWindowSec,
+  PICKUP_ESCALATION_SOURCE,
+  TURN_EVIDENCE_EXCLUDED_AGENT_TOOLS,
+  TURN_EVIDENCE_HOOK_ACTIVITY_PHASES,
+  TURN_EVIDENCE_HOOK_TOOLS,
+} from './turn-proof';
 import { withEffectiveDeadlines } from './effective-deadline';
 import { observeCheckpointProducer } from './checkpoint-verified-wait';
 import { reconcileEventExternalBlockers } from '../../work-items';
 import { reconcileEventDurableParks } from '../../work-items-durable-park-audit';
+import { AWAIT_CANCEL_REASONS, type AwaitSystemCancelReason } from './cancel-reasons';
+export { AWAIT_CANCEL_REASONS, type AwaitSystemCancelReason } from './cancel-reasons';
 import type {
   AwaitPolicy,
   AwaitRow,
@@ -187,6 +207,11 @@ function mapDelivery(r: any): DeliveryRow {
     minSleepSec: r.min_sleep_sec != null ? Number(r.min_sleep_sec) : null,
     coalescedCount: r.coalesced_count != null ? Number(r.coalesced_count) : 1,
     source: r.source ?? null,
+    // A value outside the migration-1441 CHECK set cannot be written, but a pre-1441 reader
+    // (column absent) yields undefined: both map to null = UNKNOWN, never to an outcome.
+    turnProof: isTurnProof(r.turn_proof) ? r.turn_proof : null,
+    turnStartedAt: r.turn_started_at ? new Date(r.turn_started_at).toISOString() : null,
+    pickupDeadlineAt: r.pickup_deadline_at ? new Date(r.pickup_deadline_at).toISOString() : null,
   };
 }
 
@@ -223,6 +248,9 @@ export async function registerAwait(input: {
   expectedGeneration?: number | null;
   /** Lifecycle owner for auto/suggested-armed rows. Manual awaits omit it. */
   boundTo?: LifecycleBinding | null;
+  /** Lifecycle auto-arm reuses a pending explicit one-shot wake for this key,
+   *  preserving its identity and complete control state under the key lock. */
+  preserveExplicitWait?: boolean;
   /** Retire this owner's pending rows atomically with the replacement insert. */
   supersedePending?: {
     /** Retire matching rows across every event key for this subscriber. Callers
@@ -331,13 +359,42 @@ export async function registerAwait(input: {
     !isPattern(input.eventKey) &&
     input.payloadFilter == null &&
     !input.note?.startsWith(FLEET_BENCH_NOTE_PREFIX);
-  const retireExactPending = async (tx: any): Promise<number> => {
-    if (!exactOneShot) return 0;
+  if (input.preserveExplicitWait &&
+      (!input.boundTo || !exactOneShot || supersedePending || (input.policy ?? 'wake') !== 'wake')) {
+    throw new Error('preserveExplicitWait requires an exact one-shot lifecycle wake without explicit supersession');
+  }
+  const reconcileExactPending = async (tx: any): Promise<AwaitRow | null> => {
+    if (!exactOneShot) return null;
     const lockKey = `event-await:${ws}:${input.subscriberId}:${input.eventKey}`;
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
-    const retired = await tx`
+    if (input.preserveExplicitWait) {
+      // The snapshot in interest-auto-arm is advisory. Ordinary explicit
+      // registrations share this lock, so a late bounded wait cannot be retired
+      // and replaced by an unlimited automatic registration. Return the stored
+      // row verbatim: recomputing timeoutSec would extend the original deadline.
+      // Filtered explicit siblings must not gain an unconditional automatic wake.
+      const explicit = await tx`
+        SELECT * FROM harness_shared.event_awaits
+         WHERE workspace_id = ${ws}
+           AND subscriber_id = ${input.subscriberId}
+           AND event_key = ${input.eventKey}
+           AND policy = 'wake'
+           AND once = true
+           AND root_id IS NULL
+           AND bound_to IS NULL
+           AND (note IS NULL OR note NOT LIKE ${FLEET_BENCH_NOTE_PREFIX + '%'})
+           AND fired_at IS NULL
+           AND cancelled_at IS NULL
+           AND superseded_at IS NULL
+         ORDER BY expires_ts ASC NULLS LAST, id DESC
+         LIMIT 1
+         FOR UPDATE
+      `;
+      if (explicit[0]) return mapAwait(explicit[0]);
+    }
+    await tx`
       UPDATE harness_shared.event_awaits
-         SET cancelled_at = now()
+         SET cancelled_at = now(), cancel_reason = ${AWAIT_SUPERSEDED_BY_REGISTRATION}
        WHERE workspace_id = ${ws}
          AND subscriber_id = ${input.subscriberId}
          AND event_key = ${input.eventKey}
@@ -351,7 +408,7 @@ export async function registerAwait(input: {
          AND superseded_at IS NULL
       RETURNING id
     `;
-    return retired.length;
+    return null;
   };
   if (supersedePending) {
     return boundedOrgTxn(async (tx) => {
@@ -377,7 +434,7 @@ export async function registerAwait(input: {
             : tx``;
       const superseded = await tx`
         UPDATE harness_shared.event_awaits
-           SET cancelled_at = now()
+           SET cancelled_at = now(), cancel_reason = ${AWAIT_SUPERSEDED_BY_REGISTRATION}
          WHERE workspace_id = ${ws}
            AND subscriber_id = ${input.subscriberId}
            ${eventFilter}
@@ -398,14 +455,14 @@ export async function registerAwait(input: {
   if (input.expectedGeneration != null) {
     return boundedOrgTxn(async (tx) => {
       await assertGenerationPin(tx);
-      await retireExactPending(tx);
-      return insertAwait(tx);
+      const explicit = await reconcileExactPending(tx);
+      return explicit ?? insertAwait(tx);
     }, AWAIT_PRE_REGISTRATION_TXN_OPTIONS);
   }
   if (exactOneShot) {
     return boundedOrgTxn(async (tx) => {
-      await retireExactPending(tx);
-      return insertAwait(tx);
+      const explicit = await reconcileExactPending(tx);
+      return explicit ?? insertAwait(tx);
     }, AWAIT_PRE_REGISTRATION_TXN_OPTIONS);
   }
   // Keep the legacy insert byte-for-byte free of `bound_to` when no binding was
@@ -485,7 +542,7 @@ export async function retireLifecycleBoundWatches(
     const rows = await tx<{ awaits: number; predicate_watches: number }[]>`
       WITH retired_awaits AS (
         UPDATE harness_shared.event_awaits
-           SET cancelled_at = now()
+           SET cancelled_at = now(), cancel_reason = ${AWAIT_CANCEL_REASONS.lifecycleBindingRetired}
          WHERE bound_to = ANY(${bindingJsons}::text[]::jsonb[])
            AND (NOT ${ownerFilter}::boolean OR subscriber_id = ANY(${owners}::text[]))
            -- Announcements are declaration/latch rows, not lifecycle
@@ -544,7 +601,7 @@ export async function retireWatchesForReapedOwners(
   return boundedOrgTxn(async (tx) => {
     const awaits = await tx`
       UPDATE harness_shared.event_awaits
-         SET cancelled_at = now()
+         SET cancelled_at = now(), cancel_reason = ${AWAIT_CANCEL_REASONS.ownerReaped}
        WHERE subscriber_id = ANY(${owners}::text[])
          -- A declared gate is durable coordination state, not an
          -- owner-scoped await.  Do not cancel it when the announcer is
@@ -635,7 +692,7 @@ export async function cancelInboxWakeAwaits(subscriberId: string): Promise<numbe
   const ws = eventsWs();
   const rows = await sql`
     UPDATE harness_shared.event_awaits
-       SET cancelled_at = now()
+       SET cancelled_at = now(), cancel_reason = ${AWAIT_CANCEL_REASONS.inboxWakeSessionEnded}
      WHERE workspace_id = ${ws} AND subscriber_id = ${subscriberId}
        AND policy = 'wake' AND once = false AND fired_at IS NULL AND cancelled_at IS NULL
        AND event_key LIKE 'coord:inbox-wake:%'
@@ -648,23 +705,30 @@ export async function cancelInboxWakeAwaits(subscriberId: string): Promise<numbe
   return rows.length;
 }
 
-/** Cancel a subscriber's standing `work-item:claimable` await(s) — called when the
- *  agent SUCCESSFULLY claims work (scheduler:get_next / work_items:claim_next). Holding a
- *  claim and waiting for claimable work are mutually exclusive: the documented idle model is
- *  serial (park ONE `work-item:claimable` await when a self-pull misses → wake → claim → work
- *  → re-park on the next miss), so a claimable await that outlives its claim is always stale.
- *  EI-10541: a pre-claim idle-park await that isn't cancelled when the agent later claims via a
- *  leader-fed spec bump keeps firing spurious ~30-min timeout wakes while the agent is busy,
- *  each costing a full re-orient turn. Subscriber-scoped (you can only cancel your own, like
- *  cancelInboxWakeAwaits); best-effort at the call site. Returns how many rows were cancelled. */
-export async function cancelClaimableAwaits(subscriberId: string): Promise<number> {
+/** Cancel a subscriber's pending one-shot `work-item:claimable` wake await(s) after a
+ *  successful claim. A one-shot idle wait is stale once the agent is working, but a standing
+ *  `once:false` watch is a reusable subscription and must survive claims. Notification-policy
+ *  rows are also independent of the agent's idle/working state and are preserved.
+ *
+ *  Paused-fleet paths pass `includeStanding:true` to retire every wake-policy claimable wait,
+ *  since the member must not be re-invoked for work it is forbidden to claim.
+ *  Subscriber-scoped (you can only cancel your own, like cancelInboxWakeAwaits); best-effort
+ *  at the call site. Returns how many rows were cancelled. */
+export async function cancelClaimableAwaits(
+  subscriberId: string,
+  options: { includeStanding?: boolean } = {},
+): Promise<number> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
+  const includeStanding = options.includeStanding === true;
   const rows = await sql`
     UPDATE harness_shared.event_awaits
-       SET cancelled_at = now()
+       SET cancelled_at = now(),
+           cancel_reason = ${includeStanding ? AWAIT_CANCEL_REASONS.claimableFleetPaused : AWAIT_CANCEL_REASONS.claimableWorkClaimed}
      WHERE workspace_id = ${ws} AND subscriber_id = ${subscriberId}
        AND event_key = 'work-item:claimable'
+       AND policy = 'wake'
+       AND (once = true OR ${includeStanding})
        AND fired_at IS NULL AND cancelled_at IS NULL
     RETURNING id
   `;
@@ -706,6 +770,15 @@ export async function cancelAwaitsForSubscribersOnKeys(
     includeNotePrefix?: string;
     /** Restrict cancellation to one-shot rows; standing watches remain armed. */
     onceOnly?: boolean;
+    /** Stamped into cancel_reason; defaults to the generic sibling/supersession reason. */
+    reason?: AwaitCancelReason;
+    /**
+     * Run the cancel + delivery settle on this client instead of the org pool — for a
+     * caller that already owns its connection (a sweep handed `sql`, or a fixture DB)
+     * so the retirement it performs and this cancel land on the same database
+     * (WI-10005573). Still bounded by the same txn timeouts.
+     */
+    client?: BoundedOrgTxnOptions['client'];
   } = {},
 ): Promise<number> {
   if (subscriberIds.length === 0 || eventKeys.length === 0) return 0;
@@ -721,7 +794,8 @@ export async function cancelAwaitsForSubscribersOnKeys(
       const onceFilter = options.onceOnly ? tx`AND once = true` : tx``;
       const cancelled = await tx`
         UPDATE harness_shared.event_awaits
-           SET cancelled_at = now()
+           SET cancelled_at = now(),
+               cancel_reason = ${options.reason ?? AWAIT_CANCEL_REASONS.siblingOrSupersededKey}
          WHERE workspace_id = ${ws}
            AND subscriber_id = ANY(${tx.array([...subscriberIds])}::text[])
            AND event_key = ANY(${tx.array([...eventKeys])}::text[])
@@ -746,7 +820,7 @@ export async function cancelAwaitsForSubscribersOnKeys(
       );
       return cancelled;
     },
-    AWAIT_PRE_REGISTRATION_TXN_OPTIONS,
+    options.client ? { ...AWAIT_PRE_REGISTRATION_TXN_OPTIONS, client: options.client } : AWAIT_PRE_REGISTRATION_TXN_OPTIONS,
   );
   return rows.length;
 }
@@ -762,13 +836,16 @@ export async function cancelAwaitsForSubscribersOnKeys(
  * a payload-filter match, never a guess. Best-effort shape: returns the count actually
  * cancelled (already-fired/cancelled rows are silently skipped, not an error).
  */
-export async function cancelAwaitsByIds(ids: readonly number[]): Promise<number> {
+export async function cancelAwaitsByIds(
+  ids: readonly number[],
+  reason: AwaitCancelReason = AWAIT_CANCEL_REASONS.exactIdCleanup,
+): Promise<number> {
   if (ids.length === 0) return 0;
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const rows = await sql`
     UPDATE harness_shared.event_awaits
-       SET cancelled_at = now()
+       SET cancelled_at = now(), cancel_reason = ${reason}
      WHERE workspace_id = ${ws} AND id = ANY(${[...ids]})
        AND policy <> 'announce'
        AND fired_at IS NULL AND cancelled_at IS NULL
@@ -782,6 +859,29 @@ export async function cancelAwaitsByIds(ids: readonly number[]): Promise<number>
 }
 
 export type AwaitCancellationSource = 'operator';
+
+/**
+ * Why a SYSTEM (non-operator) cancellation happened, stamped into cancel_reason so
+ * a reminder plane's delivery is measurable (P-010, goal-holder-plans-ideation-
+ * truthful-reports-2026-10-03). Never 'operator': that value is the user-cancel
+ * marker that suppresses a later auto-arm and is set only via `source`.
+ */
+export type AwaitCancelReason =
+  | 'obligation-discharged'
+  | 'obligation-superseded'
+  | 'obligation-delivered'
+  | 'obligation-unevaluated-expired'
+  | typeof AWAIT_SUPERSEDED_BY_REGISTRATION
+  | AwaitSystemCancelReason;
+
+/**
+ * Stamped by registerAwait itself when a new registration retires a pending
+ * row (exact one-shot dedup or supersedePending). Without it the retired row
+ * reads as an unexplained cancel and a caller's later, more specific
+ * cancelAwait reason is lost because the row is already cancelled
+ * (WI-10005938: 22 agent-obligation watches in one goal-holder window).
+ */
+export const AWAIT_SUPERSEDED_BY_REGISTRATION = 'superseded-by-registration' as const;
 
 /** A user cancellation marker that suppresses a later auto-arm re-registration. */
 export interface OperatorCancelledAwait {
@@ -799,7 +899,7 @@ export interface CancelAwaitResult {
   expiresTs?: string | null;
   droppedDeliveries: number;
   inFlightDeliveries: number;
-  error?: 'standing_watch_requires_confirmation';
+  error?: 'standing_watch_requires_confirmation' | 'active_loop_inbox_wake_requires_loop_end';
 }
 
 /**
@@ -809,7 +909,9 @@ export interface CancelAwaitResult {
  * `source:'operator'` is reserved for the explicit events:cancel surface;
  * internal cleanup callers intentionally omit it and do not create a suppression.
  * Public cancellation also requires `confirmStanding:true` for a standing
- * (`once:false`) watch. A one-word `await_id` slip must not silently disable a
+ * (`once:false`) watch. The active loop's own inbox-wake is additionally
+ * protected until loop:end deactivates that loop; a loopless session may still
+ * explicitly opt out. A one-word `await_id` slip must not silently disable a
  * recurring wake source.
  */
 export async function cancelAwaitDetailed(input: {
@@ -817,6 +919,8 @@ export async function cancelAwaitDetailed(input: {
   subscriberId: string;
   source?: AwaitCancellationSource;
   confirmStanding?: boolean;
+  /** Stamped into cancel_reason for a system cancel; ignored when source is 'operator'. */
+  reason?: AwaitCancelReason;
 }): Promise<CancelAwaitResult> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
@@ -861,9 +965,33 @@ export async function cancelAwaitDetailed(input: {
       };
     }
 
+    if (
+      input.source === 'operator' &&
+      !once &&
+      base.eventKey === 'coord:inbox-wake:' + input.subscriberId
+    ) {
+      const activeLoops = await tx`
+        SELECT 1
+          FROM harness_shared.routines
+         WHERE workspace_id = ${ws}
+           AND target_owner_id = ${input.subscriberId}
+           AND active = TRUE
+           AND reschedule_interval_sec IS NOT NULL
+         LIMIT 1
+      `;
+      if (activeLoops.length > 0) {
+        return {
+          ...base,
+          cancelled: false,
+          error: 'active_loop_inbox_wake_requires_loop_end',
+        };
+      }
+    }
+
     const rows = await tx`
       UPDATE harness_shared.event_awaits
-         SET cancelled_at = now(), cancel_reason = ${input.source === 'operator' ? 'operator' : null}
+         SET cancelled_at = now(),
+             cancel_reason = ${input.source === 'operator' ? 'operator' : (input.reason ?? AWAIT_CANCEL_REASONS.internalCleanup)}
        WHERE workspace_id = ${ws} AND id = ${input.awaitId}
          AND subscriber_id = ${input.subscriberId}
          AND policy <> 'announce'
@@ -908,6 +1036,7 @@ export async function cancelAwait(input: {
   subscriberId: string;
   source?: AwaitCancellationSource;
   confirmStanding?: boolean;
+  reason?: AwaitCancelReason;
 }): Promise<boolean> {
   return (await cancelAwaitDetailed(input)).cancelled;
 }
@@ -1166,13 +1295,17 @@ const UNGUARDED_HALT_RESCUE_SOURCE = 'unguarded-halt-rescue';
  */
 export async function listParkedAwaitsForSubscribers(
   subscriberIds: readonly string[],
-): Promise<Array<Pick<AwaitRow, 'subscriberId' | 'eventKey' | 'note' | 'expiresTs' | 'createdAt' | 'rootId' | 'boundTo'>>> {
+): Promise<
+  Array<
+    Pick<AwaitRow, 'subscriberId' | 'eventKey' | 'note' | 'expiresTs' | 'timeoutBehavior' | 'createdAt' | 'rootId' | 'boundTo'>
+  >
+> {
   const ids = [...new Set(subscriberIds.filter((id) => !!id))];
   if (ids.length === 0) return [];
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const rows = await sql`
-    SELECT subscriber_id, event_key, note, expires_ts, created_at, root_id, bound_to
+    SELECT subscriber_id, event_key, note, expires_ts, timeout_behavior, created_at, root_id, bound_to
       FROM harness_shared.event_awaits
      WHERE workspace_id = ${ws}
        AND subscriber_id = ANY(${ids as string[]}::text[])
@@ -1214,6 +1347,10 @@ export async function listParkedAwaitsForSubscribers(
     eventKey: r.event_key,
     note: r.note ?? null,
     expiresTs: r.expires_ts ? new Date(r.expires_ts).toISOString() : null,
+    // P-009: loop:end asks whether a park GUARANTEES a re-wake (bounded AND wakes on its deadline).
+    // Without this column a bounded `on_timeout:'expire'` park defaulted to 'wake' there and read as
+    // a guarantee it is not — it lapses silently.
+    timeoutBehavior: r.timeout_behavior as AwaitRow['timeoutBehavior'],
     createdAt: new Date(r.created_at).toISOString(),
     rootId: r.root_id != null ? Number(r.root_id) : null,
     // Loop suppression needs the writer's provenance: an automatically bound
@@ -1227,6 +1364,48 @@ export async function listParkedAwaitsForSubscribers(
   // TREE already lapsed survives it and reads as an ACTIVE park. `dropExpired` closes
   // the second — fixing only the first would trade one wrong verdict for another.
   return withEffectiveDeadlines(mapped, { workspaceId: ws, dropExpired: true });
+}
+
+/**
+ * A deliberate one-shot wake can fire while its subscriber is still in a turn.
+ * The await is no longer parked after `fired_at` is set, but its delivery may
+ * still be pending, parked, or in flight until the turn boundary. That queued
+ * delivery remains an independent wake source for loop:end.
+ *
+ * Keep the deliberateness filters aligned with listParkedAwaitsForSubscribers:
+ * platform-armed interests, announcements, the inbox keepalive, and cancelled
+ * source awaits do not authorize a loop stop.
+ */
+export async function hasPendingDeliberateWakeDelivery(subscriberId: string): Promise<boolean> {
+  if (!subscriberId) return false;
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const rows = await sql<Array<{ has_wake: boolean }>>`
+    SELECT EXISTS (
+      SELECT 1
+        FROM harness_shared.event_wake_deliveries AS d
+        JOIN harness_shared.event_awaits AS a
+          ON a.workspace_id = d.workspace_id AND a.id = d.await_id
+       WHERE d.workspace_id = ${ws}
+         AND d.subscriber_id = ${subscriberId}
+         AND a.subscriber_id = ${subscriberId}
+         AND d.status IN ('pending', 'parked', 'delivering')
+         AND a.policy = 'wake'
+         AND a.fired_at IS NOT NULL
+         AND a.cancelled_at IS NULL
+         AND (
+           a.event_key NOT LIKE ${INBOX_WAKE_KEY_PREFIX + '%'}
+           OR a.note LIKE ${EXPLICIT_PARK_NOTE_MARKER + '%'}
+           OR (
+             a.event_key LIKE ${INBOX_WAKE_KEY_PREFIX + '%'}
+             AND a.expires_ts IS NOT NULL
+             AND a.timeout_behavior = 'wake'
+           )
+         )
+         AND COALESCE(a.bound_to->>'kind', '') NOT IN ('work-item-claim', 'fleet-leadership', 'agent-obligation')
+    ) AS has_wake
+  `;
+  return rows[0]?.has_wake === true;
 }
 
 /**
@@ -1629,6 +1808,75 @@ export async function hasLiveExactAwaitForSubscriberKey(
   return rows.length > 0;
 }
 
+/**
+ * Standing-watch registration identity for `watch:create`'s dedupe gate (WI-10005697).
+ *
+ * A STANDING watch is the one registration nothing ever consumes — a standing fire
+ * matches without setting `fired_at` — so re-running the drained-lane member contract's
+ * own `watch:create { pattern:'work-item:claimable', wake:true, once:false }` step added
+ * a PERMANENT duplicate row on every wake. One owner was measured holding SEVEN identical
+ * never-expiring rows (EI-23788231724653530). Only PREDICATE watches had a dedupe
+ * (`findMatchingActivePredicateWatch`); this is the pattern-watch counterpart, and it is
+ * deliberately shaped the same way: an IDENTICAL live registration is JOINED rather than
+ * duplicated.
+ *
+ * Identity is every field that changes how the watch BEHAVES — key, payload filter, wake
+ * floor, urgency — so two registrations that would wake the subscriber identically
+ * collapse, while any behavioural difference still earns its own row. `note` is annotation
+ * and is deliberately excluded. `payload_filter` is compared as jsonb, which Postgres
+ * normalizes on parse, so key ORDER and duplicate keys cannot split an otherwise identical
+ * filter.
+ *
+ * ⚠ Key comparison is EXACT, not `normalizeEventKey`. That helper is a fuzzy NEAR-MISS
+ * normalizer (`trim().toLowerCase().replace(/[-_:.]/g,'')`) while `registerAwait` stores
+ * the key verbatim, so normalizing here would compare a separator-stripped probe against a
+ * raw column and never match the very keys this exists for (`work-item:claimable` has both
+ * a `-` and a `:`).
+ *
+ * Scope is narrow on purpose — standing, deadline-free, plain (non-composed, no producer
+ * certificate) wake rows, i.e. exactly the shape that accumulates forever because nothing
+ * retires it. A one-shot await is consumed by its fire; a deadline-bearing, composed, or
+ * certificate-bearing row carries per-registration state. Those still insert.
+ *
+ * NOT atomic against a concurrent identical registration: this is a read, and
+ * `registerAwait` opens its own transaction. Two registrations racing inside that window
+ * still produce two rows — the same residual race `findMatchingActivePredicateWatch` has.
+ * The defect being fixed is sequential re-registration across wakes, which this closes
+ * completely.
+ */
+export async function findMatchingActiveStandingWatch(input: {
+  subscriberId: string;
+  eventKey: string;
+  payloadFilter?: unknown | null;
+  minSleepSec?: number | null;
+  urgency?: boolean;
+}): Promise<AwaitRow | null> {
+  const ws = eventsWs();
+  const payloadFilter = input.payloadFilter == null ? null : JSON.stringify(input.payloadFilter);
+  const rows = await boundedOrgTxn(
+    (tx) => tx`
+    SELECT * FROM harness_shared.event_awaits
+     WHERE workspace_id = ${ws}
+       AND subscriber_id = ${input.subscriberId}
+       AND event_key = ${input.eventKey}
+       AND policy = 'wake'
+       AND once = false
+       AND root_id IS NULL
+       AND expires_ts IS NULL
+       AND producer_health IS NULL
+       AND fired_at IS NULL
+       AND cancelled_at IS NULL
+       AND superseded_at IS NULL
+       AND payload_filter IS NOT DISTINCT FROM ${payloadFilter}::text::jsonb
+       AND min_sleep_sec IS NOT DISTINCT FROM ${input.minSleepSec ?? null}
+       AND coalesce(urgency, false) = ${input.urgency ?? false}
+     ORDER BY created_at ASC
+     LIMIT 1
+  `,
+  );
+  return rows.length > 0 ? mapAwait(rows[0]) : null;
+}
+
 /** Active awaits matching an event key — peek without firing (sources may use
  *  this to decide whether anyone is waiting at all).
  *
@@ -1789,6 +2037,7 @@ export async function fireAwaitsForKey(input: {
              fired_by = ${input.source ?? null}, fired_payload = ${firePayloadJson}::text::jsonb
        WHERE workspace_id = ${ws} AND event_key = ${input.eventKey}
          AND once = true AND fired_at IS NULL AND cancelled_at IS NULL
+         AND (expires_ts IS NULL OR expires_ts > now() OR producer_health IS NOT NULL)
          AND payload_filter IS NULL
          AND policy <> 'announce'
          AND ${!suppressRescueInboxOneShot}
@@ -1799,6 +2048,7 @@ export async function fireAwaitsForKey(input: {
     SELECT 'once_filter'::text AS m_branch, a.* FROM harness_shared.event_awaits a
      WHERE a.workspace_id = ${ws} AND a.event_key = ${input.eventKey}
        AND a.once = true AND a.fired_at IS NULL AND a.cancelled_at IS NULL
+       AND (a.expires_ts IS NULL OR a.expires_ts > now() OR a.producer_health IS NOT NULL)
        AND a.payload_filter IS NOT NULL
        AND a.policy <> 'announce'
        AND ${!suppressRescueInboxOneShot}
@@ -1813,7 +2063,7 @@ export async function fireAwaitsForKey(input: {
      WHERE a.workspace_id = ${ws}
        AND a.event_key LIKE '%*%'
        AND a.fired_at IS NULL AND a.cancelled_at IS NULL
-       AND (a.once = true OR a.expires_ts IS NULL OR a.expires_ts > now())
+       AND (a.expires_ts IS NULL OR a.expires_ts > now() OR a.producer_health IS NOT NULL)
        AND a.policy <> 'announce'
        AND a.id NOT IN (SELECT id FROM claimed_once)
   `;
@@ -1839,6 +2089,7 @@ export async function fireAwaitsForKey(input: {
                  fired_by = ${input.source ?? null}, fired_payload = ${firePayloadJson}::text::jsonb
            WHERE id = ANY(${onceFilterMatchedIds})
              AND fired_at IS NULL AND cancelled_at IS NULL
+             AND (expires_ts IS NULL OR expires_ts > now() OR producer_health IS NOT NULL)
           RETURNING *
         `
       : [];
@@ -1883,6 +2134,7 @@ export async function fireAwaitsForKey(input: {
                  fired_by = ${input.source ?? null}, fired_payload = ${firePayloadJson}::text::jsonb
            WHERE id = ANY(${matchedOnceIds})
              AND fired_at IS NULL AND cancelled_at IS NULL
+             AND (expires_ts IS NULL OR expires_ts > now() OR producer_health IS NOT NULL)
           RETURNING *
         `
       : [];
@@ -1932,22 +2184,32 @@ export async function insertDeliveries(input: {
    *  resume-turn-exit handler can attribute a turn death to its source (e.g. a loop fire's
    *  `loop:<routineId>`). */
   source?: string | null;
+  /** Emit result accounting: callbacks run only after a durable insert. */
+  onDeferred?: (subscriberId: string, notBeforeMs: number) => void;
+  pacingWorkspaceId?: string;
 }): Promise<number> {
   if (input.awaits.length === 0) return 0;
   const { sql } = getOrgPg();
   const ws = eventsWs();
+  const explicitPacing = readWakeFanoutPacing(input.payload);
+  const bulk = input.awaits.length > WAKE_FANOUT_BURST && !input.urgent && !input.source?.startsWith('loop:');
+  const subscribers = [...new Set(input.awaits.filter((a) => !a.urgency).map((a) => a.subscriberId))];
+  const reservations = bulk && !explicitPacing ? await reserveWakeFanout(subscribers.length, input.pacingWorkspaceId) : [];
+  const bySubscriber = new Map(subscribers.map((id, i) => [id, reservations[i]]));
   let n = 0;
   for (const a of input.awaits) {
     // The delivery is urgent if EITHER the emit declared it OR the watch is an
     // always-urgent watch (a.urgency) — either bypasses the floor.
     const urgent = (input.urgent ?? false) || a.urgency;
-    const deliveryPayload = withLifecycleBindingProvenance(input.payload, a.boundTo);
+    const pacing = urgent || input.source?.startsWith('loop:') ? null : explicitPacing ?? bySubscriber.get(a.subscriberId);
+    const deliveryPayload = withLifecycleBindingProvenance(pacing ? withWakeFanoutPacing(input.payload, pacing) : input.payload, a.boundTo);
     const payloadJson = deliveryPayload === undefined ? null : JSON.stringify(deliveryPayload);
     const write = (tx: typeof sql) => tx<Array<{ id: number }>>`
       INSERT INTO harness_shared.event_wake_deliveries
-        (workspace_id, await_id, subscriber_id, event_key, payload, summary, urgent, min_sleep_sec, source)
+        (workspace_id, await_id, subscriber_id, event_key, payload, summary, urgent, min_sleep_sec, source, next_attempt_at)
       VALUES (${ws}, ${a.id}, ${a.subscriberId}, ${a.eventKey}, ${payloadJson}::text::jsonb,
-              ${input.summary ?? null}, ${urgent}, ${a.minSleepSec ?? null}, ${input.source ?? null})
+              ${input.summary ?? null}, ${urgent}, ${a.minSleepSec ?? null}, ${input.source ?? null},
+              ${new Date(pacing?.notBeforeMs ?? Date.now()).toISOString()}::timestamptz)
       RETURNING id
     `;
     // A standing watch may deliver many times. A consumed one-shot may deliver
@@ -1964,6 +2226,7 @@ export async function insertDeliveries(input: {
         })
       : await write(sql);
     if (inserted.length === 0) continue;
+    if (pacing && pacing.notBeforeMs > Date.now()) input.onDeferred?.(a.subscriberId, pacing.notBeforeMs);
     const deliveryId = Number(inserted[0]?.id);
 
     // EI-21303383797798186: a loop fire supersedes every older undelivered fire
@@ -2012,12 +2275,18 @@ export async function reconcileFiredWakeDeliveries(limit = 100): Promise<number>
      ORDER BY a.fired_at, a.id LIMIT ${limit}
   `;
   let recovered = 0;
-  for (const raw of rows) {
+  // Preserve bulk cardinality when recovering a shared-key resume whose emitter
+  // died after consuming its awaits. Recovering each row as a single directed wake
+  // would bypass pacing precisely when a restart has accumulated the biggest herd.
+  const recoveryReservations = rows.length > WAKE_FANOUT_BURST ? await reserveWakeFanout(rows.length) : [];
+  for (const [index, raw] of rows.entries()) {
     const awaited = mapAwait(raw);
     const timeout = awaited.firedReason === 'timeout';
     recovered += await insertDeliveries({
       awaits: [awaited],
-      payload: awaited.firedPayload ?? {
+      payload: recoveryReservations[index] && !readWakeFanoutPacing(awaited.firedPayload)
+        ? withWakeFanoutPacing(awaited.firedPayload ?? { recoveredDelivery: true, eventKey: awaited.eventKey, ...(timeout ? { timeout: true } : {}) }, recoveryReservations[index])
+        : awaited.firedPayload ?? {
         recoveredDelivery: true,
         eventKey: awaited.eventKey,
         ...(timeout ? { timeout: true } : {}),
@@ -2068,6 +2337,19 @@ export async function compactSupersededLoopDeliveries(): Promise<number> {
 }
 
 /**
+ * last_error stamped by recoverStuckDeliveries on a row whose claimed attempt
+ * recorded no verdict at all (the host died or the write failed mid-delivery).
+ */
+export const RECOVERED_STUCK_DELIVERING_ERROR = 'recovered:stuck-delivering';
+
+/**
+ * A recovered row outranks the aged-retry pool for this many attempts only. The
+ * stuck sweep never dead-letters, so a row that kills its host on every attempt
+ * would otherwise be re-prioritised forever and take a slot from every batch.
+ */
+const RECOVERED_PRIORITY_MAX_ATTEMPTS = 2;
+
+/**
  * Claim due deliveries for the pump: flip pending/parked → delivering and
  * return them joined with their await's wake handle. `FOR UPDATE SKIP LOCKED`
  * keeps two hosts from double-claiming one row.
@@ -2078,10 +2360,14 @@ export async function claimDueDeliveries(input: { limit?: number }): Promise<Del
   const limit = input.limit ?? 10;
   // Fresh first-attempt work should usually win, but a permanently uninjectable
   // subscriber can otherwise keep a retried row behind an unbounded stream of new
-  // deliveries. Reserve one slot for the oldest retry once it has waited past this
-  // bound; the remaining slots preserve the fresh-first policy and keep a bad
-  // subscriber from monopolizing the batch.
+  // deliveries. Reserve one slot for the oldest due loop retry so an unrelated
+  // work-item backlog cannot strand an agent's own continuation, and one slot for
+  // the oldest due non-loop retry. Within each retry lane, next_attempt_at rotates
+  // a repeatedly parked row behind retries that have waited longer. The remaining
+  // slots preserve the fresh-first policy and keep a bad subscriber from
+  // monopolizing the batch.
   const retryStarvationAgeSec = 60;
+  const loopRetryReserveSlots = limit > 0 ? 1 : 0;
   const retryReserveSlots = limit > 0 ? 1 : 0;
   const rows = await sql`
     WITH ranked AS (
@@ -2090,13 +2376,39 @@ export async function claimDueDeliveries(input: { limit?: number }): Promise<Del
                attempts > 0
                AND created_at <= now() - make_interval(secs => ${retryStarvationAgeSec})
              ) AS aged_retry,
+             (
+               attempts > 0
+               AND created_at <= now() - make_interval(secs => ${retryStarvationAgeSec})
+               AND COALESCE(source LIKE 'loop:%', false)
+             ) AS aged_loop_retry,
+             (
+               attempts > 0
+               AND created_at <= now() - make_interval(secs => ${retryStarvationAgeSec})
+               AND NOT COALESCE(source LIKE 'loop:%', false)
+             ) AS aged_nonloop_retry,
              row_number() OVER (
                PARTITION BY (
                  attempts > 0
                  AND created_at <= now() - make_interval(secs => ${retryStarvationAgeSec})
                )
-               ORDER BY created_at ASC, id ASC
-             ) AS retry_rank
+               ORDER BY next_attempt_at ASC, created_at ASC, id ASC
+             ) AS aged_rank,
+             row_number() OVER (
+               PARTITION BY (
+                 attempts > 0
+                 AND created_at <= now() - make_interval(secs => ${retryStarvationAgeSec})
+                 AND COALESCE(source LIKE 'loop:%', false)
+               )
+               ORDER BY next_attempt_at ASC, created_at ASC, id ASC
+             ) AS loop_retry_rank,
+             row_number() OVER (
+               PARTITION BY (
+                 attempts > 0
+                 AND created_at <= now() - make_interval(secs => ${retryStarvationAgeSec})
+                 AND NOT COALESCE(source LIKE 'loop:%', false)
+               )
+               ORDER BY next_attempt_at ASC, created_at ASC, id ASC
+             ) AS nonloop_retry_rank
         FROM harness_shared.event_wake_deliveries
        WHERE workspace_id = ${ws}
          AND status IN ('pending', 'parked')
@@ -2112,18 +2424,30 @@ export async function claimDueDeliveries(input: { limit?: number }): Promise<Del
        -- A permanently uninjectable subscriber can legitimately PARK for a long
        -- time, but its retries must never monopolize this bounded batch. Give an
        -- untouched/no-error row its first delivery attempt before retrying recent
-       -- failures, while reserving one slot for the oldest retry after it has waited
-       -- long enough to prove that fresh-first ordering is starving it. The final
-       -- FIFO keys keep each tier deterministic. Loop-source compaction above keeps
+       -- failures, while reserving one slot for the oldest due loop retry and one
+       -- for the oldest due non-loop retry. A parked retry gets a later
+       -- next_attempt_at and rotates behind the remaining due retries instead of
+       -- reclaiming its lane's reserve on every pump batch. The remaining aged
+       -- retries stay ordered by due time; loop-source compaction above keeps
        -- repeated fires from becoming an unbounded fresh tier of their own
        -- (EI-21303383797798186).
+       -- A row recovered from a stuck 'delivering' claim never reached a channel,
+       -- so it ranks with first attempts rather than behind the parked pool
+       -- (mostly subscribers that cannot be injected right now), whose older
+       -- next_attempt_at would otherwise put it last (WI-10008205).
        ORDER BY CASE
-                  WHEN r.aged_retry AND r.retry_rank <= ${retryReserveSlots} THEN 0
-                  WHEN d.attempts = 0 AND d.last_error IS NULL THEN 1
-                  WHEN r.aged_retry THEN 2
-                  ELSE 3
+                  WHEN d.urgent THEN -2
+                  WHEN COALESCE(d.source LIKE 'loop:%', false) THEN -1
+                  WHEN r.aged_loop_retry AND r.loop_retry_rank <= ${loopRetryReserveSlots} THEN 0
+                  WHEN r.aged_nonloop_retry AND r.nonloop_retry_rank <= ${retryReserveSlots} THEN 1
+                  WHEN d.attempts = 0 AND d.last_error IS NULL THEN 2
+                  WHEN d.status = 'pending'
+                       AND d.last_error = ${RECOVERED_STUCK_DELIVERING_ERROR}
+                       AND d.attempts <= ${RECOVERED_PRIORITY_MAX_ATTEMPTS} THEN 3
+                  WHEN r.aged_retry THEN 4
+                  ELSE 5
                 END,
-                CASE WHEN r.aged_retry THEN r.retry_rank END ASC NULLS LAST,
+                CASE WHEN r.aged_retry THEN r.aged_rank END ASC NULLS LAST,
                 d.attempts ASC,
                 d.next_attempt_at ASC,
                 d.created_at ASC,
@@ -2142,12 +2466,35 @@ export async function claimDueDeliveries(input: { limit?: number }): Promise<Del
   return rows.map(mapWork);
 }
 
-export async function markDeliveryDelivered(id: number, channel: WakeChannel, coalescedCount = 1): Promise<void> {
+export async function markDeliveryDelivered(
+  id: number,
+  channel: WakeChannel,
+  coalescedCount = 1,
+  attested?: 'host-attested',
+): Promise<void> {
   const { sql } = getOrgPg();
+  if (!(await turnProofColumnsReady())) {
+    // Migration 1441 not applied yet: book the channel only (turn-proof-schema.ts).
+    await sql`
+      UPDATE harness_shared.event_wake_deliveries
+         SET status = 'delivered', channel = ${channel}, delivered_at = now(), last_error = NULL,
+             coalesced_count = ${coalescedCount}
+       WHERE id = ${id}
+    `;
+    return;
+  }
+  // P-006/D-004: status='delivered' says only that the delivery reached its channel. The turn is
+  // booked separately — attested now, superseded, or awaiting the pump's pickup sweep.
+  const proof = initialTurnProof(channel, attested);
+  const windowSec = pickupWindowSec();
   await sql`
     UPDATE harness_shared.event_wake_deliveries
        SET status = 'delivered', channel = ${channel}, delivered_at = now(), last_error = NULL,
-           coalesced_count = ${coalescedCount}
+           coalesced_count = ${coalescedCount},
+           turn_proof = ${proof},
+           turn_started_at = CASE WHEN ${proof} = 'host-attested' THEN now() ELSE NULL END,
+           pickup_deadline_at = CASE WHEN ${proof} = 'awaiting'
+                                     THEN now() + make_interval(secs => ${windowSec}) ELSE NULL END
      WHERE id = ${id}
   `;
 }
@@ -2159,12 +2506,191 @@ export async function markDeliveryDelivered(id: number, channel: WakeChannel, co
 export async function markDeliveriesCoalesced(ids: number[], intoDeliveryId: number): Promise<void> {
   if (ids.length === 0) return;
   const { sql } = getOrgPg();
+  if (!(await turnProofColumnsReady())) {
+    await sql`
+      UPDATE harness_shared.event_wake_deliveries
+         SET status = 'delivered', channel = 'coalesced', delivered_at = now(),
+             last_error = ${`coalesced into wake #${intoDeliveryId}`}
+       WHERE id = ANY(${ids})
+    `;
+    return;
+  }
   await sql`
     UPDATE harness_shared.event_wake_deliveries
        SET status = 'delivered', channel = 'coalesced', delivered_at = now(),
+           turn_proof = 'superseded',
            last_error = ${`coalesced into wake #${intoDeliveryId}`}
      WHERE id = ANY(${ids})
   `;
+}
+
+// ── P-006 slice 2: the pickup sweep's store half (D-004) ─────────────────────────────────
+
+/**
+ * Resolve `awaiting` deliveries whose subscriber has shown a REAL-TIME turn signal since
+ * delivery: an MCP call recorded in `tool_invocations` that only a running turn can make
+ * ({@link TURN_EVIDENCE_EXCLUDED_AGENT_TOOLS} / {@link TURN_EVIDENCE_HOOK_TOOLS}). Each row's
+ * proof becomes `observed`, stamped with the first such call. Rows are scanned oldest
+ * deadline first and bounded by `limit`; the lateral probe rides
+ * `tool_invocations_coord_owner_idx`. Returns how many rows were resolved.
+ */
+export async function observeAwaitingTurnProofs(limit = 500): Promise<number> {
+  // Pre-1441 schema: nothing can be `awaiting` (turn-proof-schema.ts).
+  if (!(await turnProofColumnsReady())) return 0;
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const excludedAgentTools = [...TURN_EVIDENCE_EXCLUDED_AGENT_TOOLS];
+  const hookTools = [...TURN_EVIDENCE_HOOK_TOOLS];
+  const hookPhases = [...TURN_EVIDENCE_HOOK_ACTIVITY_PHASES];
+  const rows = await sql<Array<{ id: number }>>`
+    WITH cand AS (
+      SELECT d.id, d.subscriber_id, d.delivered_at
+        FROM harness_shared.event_wake_deliveries d
+       WHERE d.workspace_id = ${ws}
+         AND d.turn_proof = 'awaiting'
+         AND d.delivered_at IS NOT NULL
+       ORDER BY d.pickup_deadline_at ASC NULLS FIRST, d.id ASC
+       LIMIT ${limit}
+       FOR UPDATE OF d SKIP LOCKED
+    ), hit AS (
+      SELECT c.id, ev.invoked_at
+        FROM cand c
+        CROSS JOIN LATERAL (
+          SELECT ti.invoked_at
+            FROM harness_shared.tool_invocations ti
+           WHERE ti.coord_owner_id = c.subscriber_id
+             AND ti.invoked_at > c.delivered_at
+             AND (
+               (ti.call_origin = 'agent' AND NOT (ti.tool_name = ANY(${excludedAgentTools})))
+               OR (ti.call_origin = 'hook' AND ti.tool_name = ANY(${hookTools}))
+               OR (ti.call_origin = 'hook' AND ti.tool_name = 'activity:report'
+                   AND ti.args_json->>'phase' = ANY(${hookPhases}))
+             )
+           ORDER BY ti.invoked_at ASC
+           LIMIT 1
+        ) ev
+    )
+    UPDATE harness_shared.event_wake_deliveries d
+       SET turn_proof = 'observed', turn_started_at = hit.invoked_at
+      FROM hit
+     WHERE d.id = hit.id AND d.turn_proof = 'awaiting'
+    RETURNING d.id
+  `;
+  return rows.length;
+}
+
+/** An `awaiting` delivery whose pickup window has closed with no real-time turn signal. */
+export interface ExpiredPickupRow {
+  id: number;
+  awaitId: number;
+  subscriberId: string;
+  eventKey: string;
+  channel: string | null;
+  source: string | null;
+  deliveredAtMs: number;
+  pickupDeadlineAtMs: number;
+}
+
+/** The expired `awaiting` rows, oldest deadline first. Read-only; settlement re-checks the proof. */
+export async function listExpiredPickups(limit = 200): Promise<ExpiredPickupRow[]> {
+  if (!(await turnProofColumnsReady())) return [];
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const rows = await sql<
+    Array<{
+      id: number | string;
+      await_id: number | string;
+      subscriber_id: string;
+      event_key: string;
+      channel: string | null;
+      source: string | null;
+      delivered_at: Date;
+      pickup_deadline_at: Date;
+    }>
+  >`
+    SELECT id, await_id, subscriber_id, event_key, channel, source, delivered_at, pickup_deadline_at
+      FROM harness_shared.event_wake_deliveries
+     WHERE workspace_id = ${ws}
+       AND turn_proof = 'awaiting'
+       AND pickup_deadline_at <= now()
+     ORDER BY pickup_deadline_at ASC, id ASC
+     LIMIT ${limit}
+  `;
+  return rows.map((r) => ({
+    id: Number(r.id),
+    awaitId: Number(r.await_id),
+    subscriberId: r.subscriber_id,
+    eventKey: r.event_key,
+    channel: r.channel,
+    source: r.source,
+    deliveredAtMs: new Date(r.delivered_at).getTime(),
+    pickupDeadlineAtMs: new Date(r.pickup_deadline_at).getTime(),
+  }));
+}
+
+/** Result of {@link settleExpiredPickup}: whether this call settled the row, and the re-queued id. */
+export interface SettleExpiredPickupResult {
+  settled: boolean;
+  requeuedDeliveryId: number | null;
+}
+
+/**
+ * Settle one expired `awaiting` delivery, atomically and only if it is still `awaiting`
+ * (a concurrent observe/ack wins). `observed` stamps the host-reported turn start.
+ * `not-picked-up` optionally hands the delivery to host recovery: ONE fresh pending delivery
+ * carrying the same await, key, payload and summary, tagged `source='pickup-escalation'` so it
+ * is never escalated again, with `pickup_escalated_at` stamped on the original (D-004 (4)).
+ */
+export async function settleExpiredPickup(input: {
+  id: number;
+  proof: 'observed' | 'not-picked-up';
+  turnStartedAtMs?: number | null;
+  escalate?: boolean;
+}): Promise<SettleExpiredPickupResult> {
+  if (!(await turnProofColumnsReady())) return { settled: false, requeuedDeliveryId: null };
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const escalate = input.proof === 'not-picked-up' && input.escalate === true;
+  const startedAt = input.proof === 'observed' && input.turnStartedAtMs != null
+    ? new Date(input.turnStartedAtMs)
+    : null;
+  const rows = await sql<Array<{ settled: number | string; requeued_id: number | string | null }>>`
+    WITH prior AS (
+      -- Judge escalation eligibility on the PRE-update row: never a re-queue of a re-queue,
+      -- never a second escalation of the same delivery.
+      SELECT id,
+             (${escalate} AND source IS DISTINCT FROM ${PICKUP_ESCALATION_SOURCE}
+                          AND pickup_escalated_at IS NULL) AS escalating
+        FROM harness_shared.event_wake_deliveries
+       WHERE workspace_id = ${ws} AND id = ${input.id} AND turn_proof = 'awaiting'
+       FOR UPDATE
+    ), settled AS (
+      UPDATE harness_shared.event_wake_deliveries d
+         SET turn_proof = ${input.proof},
+             turn_started_at = CASE WHEN ${input.proof} = 'observed'
+                                    THEN COALESCE(${startedAt}::timestamptz, now()) ELSE NULL END,
+             pickup_escalated_at = CASE WHEN prior.escalating THEN now() ELSE d.pickup_escalated_at END
+        FROM prior
+       WHERE d.id = prior.id AND d.turn_proof = 'awaiting'
+       RETURNING d.id, d.workspace_id, d.await_id, d.subscriber_id, d.event_key, d.payload, d.summary,
+                 d.urgent, d.min_sleep_sec, prior.escalating
+    ), requeued AS (
+      INSERT INTO harness_shared.event_wake_deliveries
+        (workspace_id, await_id, subscriber_id, event_key, payload, summary, urgent, min_sleep_sec,
+         source, last_error)
+      SELECT workspace_id, await_id, subscriber_id, event_key, payload, summary, urgent, min_sleep_sec,
+             ${PICKUP_ESCALATION_SOURCE}, 'pickup escalation of wake #' || id || ': no turn started'
+        FROM settled
+       WHERE escalating
+      RETURNING id
+    )
+    SELECT (SELECT count(*) FROM settled) AS settled, (SELECT id FROM requeued LIMIT 1) AS requeued_id
+  `;
+  const row = rows[0];
+  return {
+    settled: Number(row?.settled ?? 0) > 0,
+    requeuedDeliveryId: row?.requeued_id == null ? null : Number(row.requeued_id),
+  };
 }
 
 /**
@@ -2285,13 +2811,24 @@ export async function markDeliveryDeferred(id: number, deferMs: number): Promise
   `;
 }
 
-/** Sweep half 1: stuck 'delivering' rows (host crashed mid-attempt) → pending. */
+/**
+ * Sweep half 1: stuck 'delivering' rows (host crashed mid-attempt) → pending.
+ *
+ * A row whose claimed attempt recorded NO verdict (last_error NULL) is stamped
+ * RECOVERED_STUCK_DELIVERING_ERROR. Without it the row is indistinguishable from
+ * an ordinary untouched retry (attempts=1, last_error NULL), which is how 392
+ * deliveries stranded by the 2026-10-10 20:19-20:44Z pump failure stayed
+ * invisible while they queued behind the parked pool (WI-10008205). An existing
+ * last_error is kept verbatim: the pump reads `psu-host accepted:` /
+ * `psu-host pending-delivery-id:` prefixes to avoid a duplicate wake.
+ */
 export async function recoverStuckDeliveries(input: { olderThanMs: number }): Promise<number> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const rows = await sql`
     UPDATE harness_shared.event_wake_deliveries
-       SET status = 'pending'
+       SET status = 'pending',
+           last_error = COALESCE(last_error, ${RECOVERED_STUCK_DELIVERING_ERROR})
      WHERE workspace_id = ${ws} AND status = 'delivering'
        AND next_attempt_at < now() - make_interval(secs => ${Math.ceil(input.olderThanMs / 1000)})
     RETURNING id
@@ -2303,6 +2840,34 @@ export async function recoverStuckDeliveries(input: { olderThanMs: number }): Pr
 export async function fireTimedOutAwaits(): Promise<AwaitRow[]> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
+  // A key-level fire from any producer suppresses an unfiltered await's timeout
+  // while its event claim is racing. For filtered awaits, that latch is not enough:
+  // check its latest payload with the same predicate matcher as event claims.
+  const filteredDueRows = await sql`
+    SELECT await.id, await.created_at, await.expires_ts, await.payload_filter,
+           fire.last_fired_at, fire.last_payload
+      FROM harness_shared.event_awaits AS await
+      LEFT JOIN harness_shared.event_key_fires AS fire
+        ON fire.workspace_id = await.workspace_id AND fire.event_key = await.event_key
+     WHERE await.workspace_id = ${ws} AND await.timeout_behavior = 'wake'
+       AND await.once = true
+       AND await.expires_ts IS NOT NULL AND await.expires_ts <= now()
+       AND await.producer_health IS NULL
+       AND await.fired_at IS NULL AND await.cancelled_at IS NULL
+       AND await.payload_filter IS NOT NULL
+  `;
+  const filteredTimeoutIds = filteredDueRows
+    .filter((row: any) => {
+      const firedAt = row.last_fired_at == null ? NaN : new Date(row.last_fired_at).getTime();
+      const createdAt = new Date(row.created_at).getTime();
+      const expiresAt = new Date(row.expires_ts).getTime();
+      const fireWasDuringAwait = Number.isFinite(firedAt) && firedAt >= createdAt && firedAt <= expiresAt;
+      return (
+        !fireWasDuringAwait ||
+        !payloadMatchesFilter(parseJsonb(row.payload_filter), parseJsonb(row.last_payload))
+      );
+    })
+    .map((row: any) => Number(row.id));
   const rows = await sql`
     UPDATE harness_shared.event_awaits AS await
        SET fired_at = now(), fired_reason = 'timeout',
@@ -2312,16 +2877,16 @@ export async function fireTimedOutAwaits(): Promise<AwaitRow[]> {
        AND await.expires_ts IS NOT NULL AND await.expires_ts <= now()
        AND await.producer_health IS NULL
        AND await.fired_at IS NULL AND await.cancelled_at IS NULL
-       -- An emit records its fire latch before claiming waiter rows. If the
-       -- latest fire for this key landed during this await's lifetime, let
-       -- the event claim win this timeout race.
-       AND NOT EXISTS (
-         SELECT 1
-           FROM harness_shared.event_key_fires AS fire
-          WHERE fire.workspace_id = await.workspace_id
-            AND fire.event_key = await.event_key
-            AND fire.last_fired_at >= await.created_at
-            AND fire.last_fired_at <= await.expires_ts
+       AND (
+         (await.payload_filter IS NULL AND NOT EXISTS (
+           SELECT 1
+             FROM harness_shared.event_key_fires AS fire
+            WHERE fire.workspace_id = await.workspace_id
+              AND fire.event_key = await.event_key
+              AND fire.last_fired_at >= await.created_at
+              AND fire.last_fired_at <= await.expires_ts
+         ))
+         OR (await.payload_filter IS NOT NULL AND await.id = ANY(${filteredTimeoutIds}))
        )
     RETURNING *
   `;
@@ -2423,38 +2988,114 @@ export type AckDeliveryResult = {
   /** The caller owns an existing delivery that was already terminal. */
   alreadySettled: boolean;
   status?: string;
+  /** The live host accepted a cancellation request, but has not confirmed its pre-write barrier yet. */
+  cancellationRequested?: boolean;
 };
 
-export async function ackDelivery(input: { deliveryId: number; subscriberId: string }): Promise<AckDeliveryResult> {
+async function markDeliveryAcked(
+  input: { deliveryId: number; subscriberId: string },
+  options: { pendingOrParked: boolean; delivering: boolean },
+): Promise<boolean> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
-  const rows = await sql`
+  const hasTurnProof = await turnProofColumnsReady();
+  const rows = hasTurnProof
+    ? await sql`
+    UPDATE harness_shared.event_wake_deliveries
+       SET status = 'delivered', channel = COALESCE(channel, 'inbox'), delivered_at = now(),
+           -- The subscriber acked it from inside a running turn (P-006/D-004).
+           turn_proof = 'observed', turn_started_at = now(),
+           last_error = 'acked by subscriber while awake'
+     WHERE workspace_id = ${ws} AND id = ${input.deliveryId} AND subscriber_id = ${input.subscriberId}
+       AND ((${options.pendingOrParked} AND status IN ('pending', 'parked'))
+         OR (${options.delivering} AND status = 'delivering'))
+     RETURNING id
+  `
+    : await sql`
     UPDATE harness_shared.event_wake_deliveries
        SET status = 'delivered', channel = COALESCE(channel, 'inbox'), delivered_at = now(),
            last_error = 'acked by subscriber while awake'
      WHERE workspace_id = ${ws} AND id = ${input.deliveryId} AND subscriber_id = ${input.subscriberId}
-       AND status IN ('pending', 'parked')
+       AND ((${options.pendingOrParked} AND status IN ('pending', 'parked'))
+         OR (${options.delivering} AND status = 'delivering'))
      RETURNING id
   `;
-  if (rows.length > 0) return { acked: true, alreadySettled: false };
+  return rows.length > 0;
+}
+
+type DirectDeliveryCancelResult = 'confirmed-before-write' | 'requested' | 'unconfirmed';
+
+async function requestDirectDeliveryCancellation(
+  input: { deliveryId: number; subscriberId: string },
+): Promise<DirectDeliveryCancelResult> {
+  try {
+    const host = await findLiveHostAsync(input.subscriberId, PSU_PTY_DIR);
+    if (!host || !hostSupports(host, 'delivery-cancel')) return 'unconfirmed';
+
+    const result = await injectIntoHostWithConfirmation(host.sock, {
+      mode: 'delivery-cancel',
+      data: '',
+      ownerId: input.subscriberId,
+      deliveryId: String(input.deliveryId),
+    });
+    // Bare close, timeout, a request queued behind the host's gates, or a
+    // refusal is NOT the pre-write receipt required to settle a delivering row.
+    if (result.confirmation !== 'acked' || !result.ok) return 'unconfirmed';
+    if (result.reason === 'cancelled-before-write') return 'confirmed-before-write';
+    if (result.reason === 'cancel-requested') return 'requested';
+  } catch {
+    // This is an optional recall attempt. A transport/discovery miss preserves
+    // the durable row as delivering; it must not turn into an optimistic ACK.
+  }
+  return 'unconfirmed';
+}
+
+export async function ackDelivery(input: { deliveryId: number; subscriberId: string }): Promise<AckDeliveryResult> {
+  if (await markDeliveryAcked(input, { pendingOrParked: true, delivering: false })) {
+    return { acked: true, alreadySettled: false };
+  }
 
   // A wake can be settled by the inbox/wake path between the nudge and the
   // caller's acknowledgement. Distinguish that benign race from a missing or
   // peer-owned delivery so events:cancel can report an explicit outcome.
-  const settled = await sql<{ status: string }[]>`
-    SELECT status
-      FROM harness_shared.event_wake_deliveries
-     WHERE workspace_id = ${ws} AND id = ${input.deliveryId}
-       AND subscriber_id = ${input.subscriberId}
-     LIMIT 1
-  `;
-  if (settled.length > 0) {
-    const status = settled[0].status;
-    if (status === 'pending' || status === 'parked' || status === 'delivering') {
-      return { acked: false, alreadySettled: false, status };
+  const readOwnedStatus = async (): Promise<string | undefined> => {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ status: string }[]>`
+      SELECT status
+        FROM harness_shared.event_wake_deliveries
+       WHERE workspace_id = ${eventsWs()} AND id = ${input.deliveryId}
+         AND subscriber_id = ${input.subscriberId}
+       LIMIT 1
+    `;
+    return rows[0]?.status;
+  };
+
+  let status = await readOwnedStatus();
+  if (status === 'delivering') {
+    const cancellation = await requestDirectDeliveryCancellation(input);
+    if (cancellation === 'confirmed-before-write') {
+      // Only the host's acknowledged pre-write barrier permits a direct ACK of
+      // a row the pump already claimed. Include queued states too: the pump may
+      // have re-armed the exact delivery while the host was confirming its
+      // tombstone, but that host will still refuse this id before any PTY byte.
+      if (await markDeliveryAcked(input, { pendingOrParked: true, delivering: true })) {
+        return { acked: true, alreadySettled: false };
+      }
     }
-    return { acked: false, alreadySettled: true, status };
+    // The pump can win the terminal update while the host request is in flight.
+    // Re-read rather than returning a stale `delivering` snapshot.
+    status = await readOwnedStatus();
+    if (status === 'pending' || status === 'parked' || status === 'delivering') {
+      return {
+        acked: false,
+        alreadySettled: false,
+        status,
+        ...(cancellation === 'requested' && status === 'delivering' ? { cancellationRequested: true } : {}),
+      };
+    }
   }
+
+  if (status != null) return { acked: false, alreadySettled: true, status };
   return { acked: false, alreadySettled: false };
 }
 
@@ -2476,7 +3117,15 @@ export async function ackDelivery(input: { deliveryId: number; subscriberId: str
  * channel `'coalesced'` (no turn burned, WAKE_TURN_CHANNELS-excluded), never
  * touching another subscriber's rows (subscriber_id-scoped, like ackDelivery).
  * Deliveries created AFTER the cutoff are left alone — a message that arrived
- * mid-read must still wake normally next time. Returns rows settled.
+ * mid-read must still wake normally next time. Loop-source deliveries also
+ * survive: they share the inbox key but reading messages does not execute the
+ * scheduled iteration (EI-25610308076916440). Work-item dispatch deliveries
+ * (payload kind 'actionable-work-item-dispatch', written by
+ * assignAndWakeActionableWorkItems for plan runs and coord:dispatch) survive
+ * for the same reason: the assignment they carry is not a coord message, so a
+ * bulk inbox read never shows it, and settling the wake leaves the dispatched
+ * item open with nobody woken to work it (WI-6554700010009881). Returns rows
+ * settled.
  */
 export async function settleCaughtUpInboxWakeDeliveries(input: {
   subscriberId: string;
@@ -2485,12 +3134,16 @@ export async function settleCaughtUpInboxWakeDeliveries(input: {
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const key = `${INBOX_WAKE_KEY_PREFIX}${input.subscriberId}`;
+  const proof = (await turnProofColumnsReady()) ? sql`turn_proof = 'superseded',` : sql``;
   const rows = await sql`
     UPDATE harness_shared.event_wake_deliveries
        SET status = 'delivered', channel = 'coalesced', delivered_at = now(),
+           ${proof}
            last_error = 'caught up at turn-end cursor settle — already seen in a bulk coord:inbox read (EI-9389)'
      WHERE workspace_id = ${ws} AND subscriber_id = ${input.subscriberId}
        AND event_key = ${key}
+       AND COALESCE(source, '') NOT LIKE 'loop:%'
+       AND COALESCE(payload->>'kind', '') <> 'actionable-work-item-dispatch'
        AND status IN ('pending', 'parked')
        AND created_at <= ${input.cutoffTs}
     RETURNING id
@@ -2624,9 +3277,11 @@ export async function listRecentDeliveries(
   awaitId?: number,
 ): Promise<DeliveryRow[]> {
   const { sql } = getOrgPg();
+  const ws = eventsWs();
   const rows = await sql`
     SELECT * FROM harness_shared.event_wake_deliveries
-     WHERE subscriber_id = ${subscriberId}
+     WHERE workspace_id = ${ws}
+       AND subscriber_id = ${subscriberId}
        AND (${awaitId ?? null}::bigint IS NULL OR await_id = ${awaitId ?? null})
      ORDER BY created_at DESC
      LIMIT ${limit}
@@ -2634,22 +3289,37 @@ export async function listRecentDeliveries(
   return rows.map(mapDelivery);
 }
 
-/** The D-007 meter: wake counts by subscriber + channel over a window. */
+/** The D-007 meter: wake counts by subscriber + channel over a window.
+ *
+ *  `turnProof` (P-006 / D-004) splits every group by whether its deliveries actually started a
+ *  turn. `turnInvoked` only says the CHANNEL was turn-capable; a `delivered` + `turnInvoked` row
+ *  with `turnProof: 'not-picked-up'` is the silent failure this dimension exists to expose.
+ *  null = booked before migration 1441 (unknown). */
 export async function wakeMeter(
   input: {
     sinceHours?: number;
   } = {},
-): Promise<Array<{ subscriberId: string; status: string; channel: string | null; turnInvoked: boolean; count: number }>> {
+): Promise<Array<{
+  subscriberId: string;
+  status: string;
+  channel: string | null;
+  turnInvoked: boolean;
+  turnProof: TurnProof | null;
+  count: number;
+}>> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
+  const hasProof = await turnProofColumnsReady();
+  const proofCol = hasProof ? sql`turn_proof` : sql`NULL::text`;
+  const proofGroup = hasProof ? sql`, turn_proof` : sql``;
   const rows = await sql`
-    SELECT subscriber_id, status, channel,
+    SELECT subscriber_id, status, channel, ${proofCol} AS turn_proof,
            COALESCE(channel = ANY(${WAKE_TURN_CHANNELS as unknown as string[]}), false) AS turn_invoked,
            count(*)::int AS count
       FROM harness_shared.event_wake_deliveries
      WHERE workspace_id = ${ws}
        AND created_at > now() - make_interval(hours => ${input.sinceHours ?? 24})
-     GROUP BY subscriber_id, status, channel
+     GROUP BY subscriber_id, status, channel${proofGroup}
      ORDER BY count DESC
      LIMIT 50
   `;
@@ -2658,6 +3328,7 @@ export async function wakeMeter(
     status: r.status,
     channel: r.channel ?? null,
     turnInvoked: r.turn_invoked === true,
+    turnProof: isTurnProof(r.turn_proof) ? r.turn_proof : null,
     count: Number(r.count),
   }));
 }
@@ -2671,7 +3342,7 @@ export async function wakeMeter(
 // touch these rows.
 
 /** Register (or refresh) the announcement for a key. One ACTIVE announcement per
- *  key: re-announcing updates note/scope/expiry in place instead of duplicating. */
+ *  key: re-announcing supersedes the old generation with a new, unfired one. */
 export async function registerAnnouncement(input: {
   subscriberId: string;
   eventKey: string;
@@ -2726,16 +3397,14 @@ export async function registerAnnouncement(input: {
        WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${input.eventKey}
     `;
     const generation = Number(generationRows[0]?.next_generation ?? 1);
-    const superseded = await tx`
+    // Renewal replaces declaration custody, not the event's completion proof.
+    // Keep matching work-item blockers active until a real fire or explicit retirement.
+    await tx`
       UPDATE harness_shared.event_awaits
          SET superseded_at = COALESCE(superseded_at, now())
        WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${input.eventKey}
          AND superseded_at IS NULL
-      RETURNING event_key
     `;
-    if (superseded.length > 0) {
-      await reconcileEventExternalBlockers(tx, input.eventKey, input.subscriberId);
-    }
     const rows = await tx`
       INSERT INTO harness_shared.event_awaits
         (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts,
@@ -2865,19 +3534,17 @@ export async function stampAnnouncementsFired(
       RETURNING id
     `;
     // EI-20721448404004954: a gate that FIRES must settle the typed event blockers
-    // waiting on it, exactly as retirement and supersession already do. Without this
-    // the third settlement path was missing, and the asymmetry ran the wrong way: an
-    // item unblocked when its gate was CANCELLED or RE-DECLARED but not when the gate
-    // actually opened — so the SUCCESS case was the one that stranded finished work.
+    // waiting on it, as explicit retirement does. Declaration renewal does not
+    // settle blockers (EI-25231851216237441).
     // (The filing: a deployed a11y fix read as an open major bug for 3 days because
     // the gate fired after its holder's session had ended, and nothing else could
     // clear a blocker bound to that session's await.)
     //
-    // Same transaction and advisory lock as the other two settlement paths, per
+    // Same transaction and advisory lock as explicit retirement, per
     // reconcileEventExternalBlockers' own contract — otherwise the announcement can
     // latch fired while the work item stays parked outside scheduler self-select.
     //
-    // Gated on a real transition, like the supersede path. The reconciler probes
+    // Gated on a real fire transition. The reconciler probes
     // work_items by payload containment, which is a parallel seq scan here (~350ms,
     // measured 2026-09-05: 180k rows, no GIN on payload); announcements fire ~7×/day,
     // so it stays off the ordinary emit path, where stampAnnouncementsFired is called
@@ -3142,22 +3809,23 @@ export async function clearKeyFire(
  * emitter exists: a row means the key genuinely fired at least once. This reads it
  * two ways, strongest first:
  *   - EXACT: this precise key has fired before (`release:deployed:abc123`);
- *   - PREFIX/SIBLING: some key sharing this key's first two segments has fired
- *     (`coord:inbox-wake:su-NEW` has never fired, but 118 sibling owner keys have —
- *     so the SHAPE demonstrably has an emitter, which is what the warning claims
- *     does not exist).
+ *   - PREFIX/SIBLING: some key sharing this key's first two stable family segments
+ *     has fired (`coord:inbox-wake:su-NEW` has never fired, but sibling owner keys
+ *     have — so that event family demonstrably has an emitter).
  *
  * A genuine orphan (the EI-10870 case: `overwatch:surface-landed`, 0 fires ever,
  * appears nowhere in the tree) matches NEITHER, so the warning still fires for the
  * keys it was built for — this only removes the false positives.
  *
- * Two segments is the family granularity every builtin template uses before its
- * first placeholder (`coord:inbox-wake`, `work-item:done`, `release:deployed`), so
- * the prefix is the family, not a loose namespace match. A key with fewer than two
- * segments probes itself exactly.
+ * Two segments is the family granularity for stable builtin templates
+ * (`coord:inbox-wake`, `work-item:done`, `release:deployed`). Runtime-scoped
+ * announcements (`fleet:<slug>:<gate>`, `plan:<slug>:<gate>`, and harness-scoped
+ * gates) do not have a stable family prefix: the second segment is the scope ref.
+ * For those keys, and keys shorter than a family prefix, sibling history is not
+ * evidence and the probe is exact-key-only.
  */
 export interface KeyFireEvidence {
-  /** The prefix the sibling probe used (the key's first two `:` segments). */
+  /** Stable family prefix, or the exact key when sibling evidence is unsafe. */
   prefix: string;
   /** This EXACT key has fired before. */
   exact: boolean;
@@ -3169,12 +3837,19 @@ export interface KeyFireEvidence {
   lastFiredAt: string | null;
 }
 
-/** The family prefix an evidence probe uses: the key's first two `:` segments. */
+const RUNTIME_SCOPED_EVENT_NAMESPACES = new Set(['fleet', 'plan', 'harness']);
+
+function exactOnlyKeyFireEvidence(eventKey: string): boolean {
+  const parts = String(eventKey ?? '').trim().split(':');
+  return parts.length <= 2 || RUNTIME_SCOPED_EVENT_NAMESPACES.has(parts[0] ?? '');
+}
+
+/** Stable event-family prefix, or the whole key when sibling evidence is unsafe. */
 export function keyFireEvidencePrefix(eventKey: string): string {
   const parts = String(eventKey ?? '')
     .trim()
     .split(':');
-  return parts.length <= 2 ? parts.join(':') : parts.slice(0, 2).join(':');
+  return exactOnlyKeyFireEvidence(eventKey) ? parts.join(':') : parts.slice(0, 2).join(':');
 }
 
 /**
@@ -3188,6 +3863,7 @@ export async function probeKeyFireEvidence(eventKey: string): Promise<KeyFireEvi
   const ws = eventsWs();
   const key = String(eventKey ?? '').trim();
   const prefix = keyFireEvidencePrefix(key);
+  const exactOnly = exactOnlyKeyFireEvidence(key);
   const empty: KeyFireEvidence = { prefix, exact: false, distinctKeys: 0, fires: 0, lastFiredAt: null };
   if (!prefix) return empty;
   // `prefix` is a literal key segment, never a caller-supplied LIKE pattern —
@@ -3200,7 +3876,13 @@ export async function probeKeyFireEvidence(eventKey: string): Promise<KeyFireEvi
            bool_or(event_key = ${key})                               AS exact
       FROM harness_shared.event_key_fires
      WHERE workspace_id = ${ws}
-       AND (event_key = ${prefix} OR event_key LIKE ${`${escaped}:%`} ESCAPE '\\')
+       AND (
+         event_key = ${key}
+         OR (
+           ${!exactOnly}
+           AND (event_key = ${prefix} OR event_key LIKE ${`${escaped}:%`} ESCAPE '\\')
+         )
+       )
   `;
   const row = rows[0];
   if (!row) return empty;

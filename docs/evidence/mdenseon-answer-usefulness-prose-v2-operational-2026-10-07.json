@@ -1,0 +1,485 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "mdenseon P-008 downstream answer usefulness (prose): fixed answerer, blinded frozen judge, mdenseon vs both incumbents",
+  "plan": "mdenseon-adoption-measurements-2026-10-01",
+  "workItemId": "WI-10004542",
+  "specId": "AUTO-BAR-R-7-P-008",
+  "relatedSpecIds": [
+    "MDENSE-blinded-answer-score"
+  ],
+  "evidencePlane": "tree",
+  "command": [
+    "node",
+    "--import",
+    "tsx",
+    ".papercusp/scratch/p008-answer-operational-v2.mts",
+    "prose"
+  ],
+  "assembler": {
+    "path": "$HOME/papercupai-workspace/papercusp/.papercusp/scratch/p008-answer-operational-v2.mts",
+    "sha256": "2d8230e2d0925d645ba8e365d8a9d4c1d8d41b7869553961b98cdbac029f1c7c",
+    "bytes": 12996
+  },
+  "startedAt": "2026-10-07T07:38:09.590Z",
+  "finishedAt": "2026-10-07T07:38:18.424Z",
+  "exitCode": 0,
+  "input": {
+    "snapshot": {
+      "path": "$HOME/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/snapshot-v4-prose-source-complete.json",
+      "sha256": "49dbfafc277855af9ff13a46fb95ef466b8cb117fb83b8b5a753854610d204ea",
+      "bytes": 4156938
+    },
+    "gold": {
+      "path": "$HOME/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v21-resume-v20-concurrency-succession/labels.json",
+      "sha256": "483b7c46469da4aa39d87c5d1b6b0a3b173beb4211855191178a5d7e72374641",
+      "bytes": 779620
+    },
+    "retrievalReports": [
+      {
+        "arm": "mdenseon",
+        "file": "prose-mdenseon-v1.json",
+        "sha256": "cc9311ec96b8ab8b8bd73bc3d5aa9ac8882c9b0656edec4c9d02bafdc1cbf6d9",
+        "profileId": "mdenseon-a5fdb000-768@v1",
+        "path": "$HOME/.cache/papercusp/model-validation/mdenseon-complete-hybrid-WI10004538-20261006/prose-mdenseon-v1.json",
+        "bytes": 3397047
+      },
+      {
+        "arm": "harrier",
+        "file": "prose-harrier-v1.json",
+        "sha256": "ba5ad4cc2c51c5a66d853d9b0f8b53b84b770af1c319662e721778357bedc81c",
+        "profileId": "harrier-oss-v1-0.6b-1024@v1",
+        "path": "$HOME/.cache/papercusp/model-validation/mdenseon-complete-hybrid-WI10004538-20261006/prose-harrier-v1.json",
+        "bytes": 3272411
+      },
+      {
+        "arm": "gemma",
+        "file": "prose-gemma-v1.json",
+        "sha256": "ed72d221924e524d419cd4a4c5ac7d8da6adabe7eb38fb7a545246793b07e1ed",
+        "profileId": "gemma-embeddinggemma-300m-768@v1",
+        "path": "$HOME/.cache/papercusp/model-validation/mdenseon-complete-hybrid-WI10004538-20261006/prose-gemma-v1.json",
+        "bytes": 3918652
+      }
+    ]
+  },
+  "runs": [
+    {
+      "taskId": "0muxova0cpk1e0y1r6u",
+      "output": {
+        "path": "$HOME/.cache/papercusp/model-validation/mdenseon-answer-usefulness-WI10004542-20261006/prose-answer-usefulness-v1.json",
+        "sha256": "1aecd600d57bfcaedc97e079afde59d700183b220f8a3abcd388aa3438b9f632",
+        "bytes": 6809744
+      },
+      "log": {
+        "path": "$HOME/.cache/papercusp/model-validation/mdenseon-answer-usefulness-WI10004542-20261006/prose-run.log",
+        "sha256": "5e6ffa400ebf0dddc0d79531a28b48753f9c44e996d8ff66c1e0dfff3dfa837e",
+        "bytes": 13655151
+      },
+      "receipts": {
+        "answers": 3407,
+        "judgments": 6814
+      }
+    }
+  ],
+  "results": {
+    "baseline": "mdenseon",
+    "arms": [
+      "mdenseon",
+      "harrier",
+      "gemma"
+    ],
+    "derivedSummary": {
+      "mdenseon": {
+        "queries": 1140,
+        "answerable": 855,
+        "unanswerable": 285,
+        "usefulRate": 0.8517520215633423,
+        "groundedAccuracy": 0.8128019323671497,
+        "correctRejection": 0.9649122807017544,
+        "unsupportedAnswerRate": 0.023872679045092837,
+        "unsupportedOnUnanswerable": 0.03508771929824561,
+        "citationGoldPrecision": 0.8726851851851851,
+        "invalidCitationRate": 0
+      },
+      "harrier": {
+        "queries": 1140,
+        "answerable": 855,
+        "unanswerable": 285,
+        "usefulRate": 0.848349687778769,
+        "groundedAccuracy": 0.8026315789473685,
+        "correctRejection": 0.9824561403508771,
+        "unsupportedAnswerRate": 0.019400352733686066,
+        "unsupportedOnUnanswerable": 0.017543859649122806,
+        "citationGoldPrecision": 0.8520701309674695,
+        "invalidCitationRate": 0
+      },
+      "gemma": {
+        "queries": 1140,
+        "answerable": 855,
+        "unanswerable": 285,
+        "usefulRate": 0.8652291105121294,
+        "groundedAccuracy": 0.8260869565217391,
+        "correctRejection": 0.9789473684210527,
+        "unsupportedAnswerRate": 0.014109347442680775,
+        "unsupportedOnUnanswerable": 0.021052631578947368,
+        "citationGoldPrecision": 0.8660240464344942,
+        "invalidCitationRate": 0
+      }
+    },
+    "paired": {
+      "harrier": {
+        "vs": "mdenseon",
+        "useful": {
+          "n": 1102,
+          "mean": 0.0027223230490018148,
+          "lo": -0.013611615245009074,
+          "hi": 0.019963702359346643,
+          "wins": 67,
+          "losses": 64
+        },
+        "groundedAccuracy": {
+          "n": 817,
+          "mean": -0.0024479804161566705,
+          "lo": -0.02447980416156671,
+          "hi": 0.01346389228886169,
+          "wins": 59,
+          "losses": 61
+        },
+        "unsupportedAnswer": {
+          "n": 1127,
+          "mean": -0.00354924578527063,
+          "lo": -0.018633540372670808,
+          "hi": 0.0026619343389529724,
+          "wins": 18,
+          "losses": 22
+        },
+        "citationGoldPrecision": {
+          "n": 752,
+          "mean": -0.021564716312056736,
+          "lo": -0.037411347517730495,
+          "hi": -0.0007313829787234044,
+          "wins": 45,
+          "losses": 68
+        },
+        "byClass": {
+          "exact-identifier": {
+            "n": 280,
+            "mean": 0.007142857142857143,
+            "lo": -0.017857142857142856,
+            "hi": 0.02857142857142857,
+            "wins": 7,
+            "losses": 5
+          },
+          "hard-negative": {
+            "n": 285,
+            "mean": 0.017543859649122806,
+            "lo": 0,
+            "hi": 0.03859649122807018,
+            "wins": 8,
+            "losses": 3
+          },
+          "lexical-gap": {
+            "n": 268,
+            "mean": -0.018656716417910446,
+            "lo": -0.06343283582089553,
+            "hi": 0.03731343283582089,
+            "wins": 30,
+            "losses": 35
+          },
+          "session-start-intent": {
+            "n": 269,
+            "mean": 0.0037174721189591076,
+            "lo": -0.040892193308550186,
+            "hi": 0.05947955390334572,
+            "wins": 22,
+            "losses": 21
+          }
+        }
+      },
+      "gemma": {
+        "vs": "mdenseon",
+        "useful": {
+          "n": 1089,
+          "mean": 0.013774104683195593,
+          "lo": -0.0027548209366391185,
+          "hi": 0.03948576675849403,
+          "wins": 58,
+          "losses": 43
+        },
+        "groundedAccuracy": {
+          "n": 804,
+          "mean": 0.013681592039800995,
+          "lo": -0.008706467661691543,
+          "hi": 0.046019900497512436,
+          "wins": 53,
+          "losses": 42
+        },
+        "unsupportedAnswer": {
+          "n": 1126,
+          "mean": -0.008880994671403197,
+          "lo": -0.021314387211367674,
+          "hi": -0.003552397868561279,
+          "wins": 9,
+          "losses": 19
+        },
+        "citationGoldPrecision": {
+          "n": 767,
+          "mean": -0.003324641460234684,
+          "lo": -0.01788352890047806,
+          "hi": 0.016558018252933498,
+          "wins": 55,
+          "losses": 60
+        },
+        "byClass": {
+          "exact-identifier": {
+            "n": 279,
+            "mean": 0,
+            "lo": -0.021505376344086023,
+            "hi": 0.02867383512544803,
+            "wins": 6,
+            "losses": 6
+          },
+          "hard-negative": {
+            "n": 285,
+            "mean": 0.014035087719298246,
+            "lo": 0,
+            "hi": 0.03508771929824561,
+            "wins": 5,
+            "losses": 1
+          },
+          "lexical-gap": {
+            "n": 262,
+            "mean": 0.019083969465648856,
+            "lo": -0.022900763358778626,
+            "hi": 0.0648854961832061,
+            "wins": 25,
+            "losses": 20
+          },
+          "session-start-intent": {
+            "n": 263,
+            "mean": 0.022813688212927757,
+            "lo": -0.019011406844106463,
+            "hi": 0.08745247148288973,
+            "wins": 22,
+            "losses": 16
+          }
+        }
+      }
+    },
+    "agreement": {
+      "correctness": {
+        "n": 3304,
+        "binaryAgreement": 0.9891041162227603,
+        "kappa": 0.8851750023168885,
+        "meanAbsScoreDiff": 0.04539951573849879
+      },
+      "grounding": {
+        "n": 3304,
+        "binaryAgreement": 0.9909200968523002,
+        "kappa": 0.7810799349777354,
+        "meanAbsScoreDiff": 0.02754237288135593
+      }
+    },
+    "cost": {
+      "answerCalls": 1799,
+      "judgeCalls": 3604,
+      "answerCostUsd": 2.0649680000000012,
+      "judgeCostUsd": 12.15102300000003,
+      "answerReplays": 1608,
+      "judgeReplays": 3210,
+      "uniqueTotalUsd": 14.215991000000031
+    },
+    "completedReceiptCost": {
+      "answerUsd": 3.8748800000000014,
+      "judgeUsd": 22.48095599999994,
+      "scope": "All distinct completed request receipts, including resumed calls; excludes failed calls without a successful receipt. Not total gateway billing."
+    },
+    "byClass": {
+      "mdenseon": {
+        "exact-identifier": {
+          "queries": 285,
+          "usefulRate": 0.9359430604982206
+        },
+        "hard-negative": {
+          "queries": 285,
+          "usefulRate": 0.9649122807017544
+        },
+        "lexical-gap": {
+          "queries": 285,
+          "usefulRate": 0.6970802919708029
+        },
+        "session-start-intent": {
+          "queries": 285,
+          "usefulRate": 0.8021978021978022
+        }
+      },
+      "harrier": {
+        "exact-identifier": {
+          "queries": 285,
+          "usefulRate": 0.9328621908127208
+        },
+        "hard-negative": {
+          "queries": 285,
+          "usefulRate": 0.9824561403508771
+        },
+        "lexical-gap": {
+          "queries": 285,
+          "usefulRate": 0.6726618705035972
+        },
+        "session-start-intent": {
+          "queries": 285,
+          "usefulRate": 0.8
+        }
+      },
+      "gemma": {
+        "exact-identifier": {
+          "queries": 285,
+          "usefulRate": 0.9326241134751773
+        },
+        "hard-negative": {
+          "queries": 285,
+          "usefulRate": 0.9789473684210527
+        },
+        "lexical-gap": {
+          "queries": 285,
+          "usefulRate": 0.7242647058823529
+        },
+        "session-start-intent": {
+          "queries": 285,
+          "usefulRate": 0.8175182481751825
+        }
+      }
+    }
+  },
+  "limitations": [
+    "answers come from one fixed model (claude-haiku-4-5) at temperature 0; agent models in production differ",
+    "the judge (claude-sonnet-4-6) is a different model family member from the answerer but is still an LLM; agreement is same-model temperature agreement",
+    "context is the production pull route top-k truncated to the frozen character budget",
+    "unanswerable queries are the independently labelled hard negatives (empty gold)"
+  ],
+  "assertions": [
+    {
+      "id": "run-exited-zero",
+      "passed": true,
+      "evidence": "run.log EXIT=0"
+    },
+    {
+      "id": "snapshot-pinned",
+      "passed": true,
+      "evidence": "49dbfafc277855af == 49dbfafc277855af"
+    },
+    {
+      "id": "gold-pinned",
+      "passed": true,
+      "evidence": "483b7c46469da4aa == 483b7c46469da4aa (blind-labels-v21-resume-v20-concurrency-succession/labels.json)"
+    },
+    {
+      "id": "mdenseon-retrieval-report-pinned",
+      "passed": true,
+      "evidence": "prose-mdenseon-v1.json cc9311ec96b8ab8b == cc9311ec96b8ab8b profile=mdenseon-a5fdb000-768@v1"
+    },
+    {
+      "id": "harrier-retrieval-report-pinned",
+      "passed": true,
+      "evidence": "prose-harrier-v1.json ba5ad4cc2c51c5a6 == ba5ad4cc2c51c5a6 profile=harrier-oss-v1-0.6b-1024@v1"
+    },
+    {
+      "id": "gemma-retrieval-report-pinned",
+      "passed": true,
+      "evidence": "prose-gemma-v1.json ed72d221924e524d == ed72d221924e524d profile=gemma-embeddinggemma-300m-768@v1"
+    },
+    {
+      "id": "answer-contract-fixed",
+      "passed": true,
+      "evidence": "one contract for every arm: model=claude-haiku-4-5 temperature=0 hash 107454ae8b089239"
+    },
+    {
+      "id": "judge-separate-and-frozen",
+      "passed": true,
+      "evidence": "judge claude-sonnet-4-6 rubric answer-usefulness.5e739180cbd6 passes [0,0.4] vs answerer claude-haiku-4-5"
+    },
+    {
+      "id": "answer-receipts-complete",
+      "passed": true,
+      "evidence": "3407/3407 unique answers have receipts; new=1799, resumed=1608"
+    },
+    {
+      "id": "judgment-receipts-complete",
+      "passed": true,
+      "evidence": "6814/6814 unique judgments have receipts; new=3604, resumed=3210"
+    },
+    {
+      "id": "receipt-fingerprints-match",
+      "passed": true,
+      "evidence": "0 receipts whose recorded fingerprint differs from their file name"
+    },
+    {
+      "id": "every-judgment-blind",
+      "passed": true,
+      "evidence": "6814/6814 judgment receipts carry a verified blind attestation"
+    },
+    {
+      "id": "mdenseon-summary-rederived",
+      "passed": true,
+      "evidence": "useful 0.8518 grounded 0.8128 rejection 0.9649122807017544 unsupported 0.023872679045092837 citeGoldPrec 0.8727 (n=1140, 285 absent-answer)"
+    },
+    {
+      "id": "mdenseon-absent-answer-queries-measured",
+      "passed": true,
+      "evidence": "285 unanswerable queries, correctRejection 0.9649122807017544"
+    },
+    {
+      "id": "harrier-summary-rederived",
+      "passed": true,
+      "evidence": "useful 0.8483 grounded 0.8026 rejection 0.9824561403508771 unsupported 0.019400352733686066 citeGoldPrec 0.8521 (n=1140, 285 absent-answer)"
+    },
+    {
+      "id": "harrier-absent-answer-queries-measured",
+      "passed": true,
+      "evidence": "285 unanswerable queries, correctRejection 0.9824561403508771"
+    },
+    {
+      "id": "gemma-summary-rederived",
+      "passed": true,
+      "evidence": "useful 0.8652 grounded 0.8261 rejection 0.9789473684210527 unsupported 0.014109347442680775 citeGoldPrec 0.8660 (n=1140, 285 absent-answer)"
+    },
+    {
+      "id": "gemma-absent-answer-queries-measured",
+      "passed": true,
+      "evidence": "285 unanswerable queries, correctRejection 0.9789473684210527"
+    },
+    {
+      "id": "harrier-vs-mdenseon-paired-useful-rederived",
+      "passed": true,
+      "evidence": "n=1102 mean 0.0027 [-0.0136, 0.0200] wins 67 losses 64; re-derived n=1102 mean 0.0027"
+    },
+    {
+      "id": "gemma-vs-mdenseon-paired-useful-rederived",
+      "passed": true,
+      "evidence": "n=1089 mean 0.0138 [-0.0028, 0.0395] wins 58 losses 43; re-derived n=1089 mean 0.0138"
+    },
+    {
+      "id": "judge-agreement-correctness",
+      "passed": true,
+      "evidence": "n=3304 binaryAgreement 0.9891 kappa 0.8852"
+    },
+    {
+      "id": "judge-agreement-grounding",
+      "passed": true,
+      "evidence": "n=3304 binaryAgreement 0.9909 kappa 0.7811"
+    },
+    {
+      "id": "cost-reported",
+      "passed": true,
+      "evidence": "LATEST successful invocation unique $14.2160 (answers $2.0650, judge $12.1510); excludes prior invocations and failed-call spend; replays 1608/3210"
+    }
+  ],
+  "summary": "All 23 assertions pass on 1140 prose test queries (855 answerable, 285 absent-answer). Useful rate: mdenseon 0.852, harrier 0.848, gemma 0.865. harrier vs mdenseon +0.003 [-0.014, 0.020]; gemma vs mdenseon +0.014 [-0.003, 0.039]. Absent-answer rejection / unsupported-answer rate: mdenseon 0.9649122807017544 / 0.023872679045092837, harrier 0.9824561403508771 / 0.019400352733686066, gemma 0.9789473684210527 / 0.014109347442680775.",
+  "defectsFound": [
+    {
+      "workItemId": "EI-25296417482817603",
+      "note": "Resumed study after quota and transport failures. Cause diagnostics identified local gateway restart; bounded loopback cause classification corrected. Latest task completed; earlier upstream timeout origin remains unproven."
+    }
+  ]
+}

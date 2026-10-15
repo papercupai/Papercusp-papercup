@@ -1,0 +1,124 @@
+{
+  "schemaVersion": 1,
+  "kind": "rubric-vetting-evidence",
+  "scope": "Author-owned contract quality review, not acceptance of implementation or shipment",
+  "subject": {
+    "rubricRef": "acceptance-cloud-app-live-tutorial-2026-10-01",
+    "revision": 10,
+    "criteriaHash": "2bfb2dc3419c2b9ed6466e674a67062ded7e8f3ac32c74e9264843bbeb0c5028",
+    "barSetHash": "16072d1d433ed1173d028baf6664c55d63d55e9aef5c48d83e338e68a4f3b285",
+    "planRevision": 106,
+    "planContentHash": "82536a39294fc26f5e9abef99a732774a599c4a7456bb1492b8e54b2c16d7571"
+  },
+  "method": {
+    "rubricRef": "meta-acceptance-rubric",
+    "revision": 5,
+    "criteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614"
+  },
+  "reviewSources": [
+    {
+      "ref": "WI-10007064#comment:1162484",
+      "role": "Independent approval of exact amendment manifest1162450; D027 applies revision10",
+      "identity": "system:judge/su-0210835a-7ce8-4b55-9032-256c1e9e8857",
+      "boundary": "Approval preserves amended BAR contract, not an independent healthy grade of unfinished implementation."
+    },
+    {
+      "ref": "conv-muqlma72-0000-7b41f81ca8a34fa8951e7809875205b7",
+      "role": "Historical revision8/9 critique retained; not represented as current10 critique."
+    }
+  ],
+  "reviewerFollowup": {
+    "result": "unknown_recipient; session ended2026-10-07T17:07:01.904Z; nothing sent",
+    "next": "Preserve exact approval. Current contract attestation must state critique boundary and remain author-owned; any resumed review must use the maintained review seam."
+  },
+  "rerun": {
+    "calls": [
+      {
+        "tool": "rubrics:get",
+        "args": {
+          "rubricRef": "acceptance-cloud-app-live-tutorial-2026-10-01",
+          "revision": 10,
+          "detail": "full"
+        }
+      },
+      {
+        "tool": "rubrics:get",
+        "args": {
+          "rubricRef": "meta-acceptance-rubric",
+          "revision": 5,
+          "detail": "full"
+        }
+      },
+      {
+        "tool": "conversations:get",
+        "args": {
+          "id": "thread-post:1162450"
+        }
+      },
+      {
+        "tool": "conversations:get",
+        "args": {
+          "id": "thread-post:1162484"
+        }
+      }
+    ],
+    "population": [
+      "R-1",
+      "R-2",
+      "R-3",
+      "R-4",
+      "R-5",
+      "R-6",
+      "R-7",
+      "R-8",
+      "R-9",
+      "R-10",
+      "R-11",
+      "R-12",
+      "R-13",
+      "R-14",
+      "R-15",
+      "R-16",
+      "R-17",
+      "R-18"
+    ],
+    "procedure": "Read each immutable model, intent.sourceRefs, method, driftMarkers, check and required layers. Compare each approved changed BAR hash against1162450. Grade contract semantics separately from whether its required proofs exist."
+  },
+  "ratings": {
+    "outcomes-not-diff-restatements": {
+      "rating": "pass",
+      "evidence": "All18models describe observable lesson, lifecycle, authorization, measurement, library-selection, source-traceability or delivered-artifact outcomes. None is merely that a file/function was added. R16 specifically requires guide-before-Home/Cloud despite preassigned workspace; R17 requires actual reachable catalogue routes; R18 requires truthful billing and no checkout."
+    },
+    "traces-to-goal-or-decision": {
+      "rating": "weak",
+      "evidence": "Each of the18criteria has owner sourceRefs. D022's explicit questions/protected shared account appears in R15.requiredScope/method; D023/D024 account-first/full-product semantics appear in amended existing bars and R16/R17/R18; D025/D026 route and review preservation is retained. Complete inverse semantic review of all27Decisions is not repeated in this artifact, so it does not assert universal decision coverage. Existing activation audit14 is retained separately."
+    },
+    "falsifiable-with-evidence": {
+      "rating": "pass",
+      "evidence": "All18driftMarkers name concrete failures: click/pending falsely completing a step; blocked/missing target; lost scope/CAS/version progress; inaccessible form; secret or cross-tenant Help; implicit product action; disabled telemetry emitting; incompatible engine; forked control plane; skipped/failed verification; different deployed artifact; lost owner requirement; implicit microphone/cancel failure; signup bypass; unmapped/dead catalogue route; tutorial-triggered checkout. These observations can differ from a healthy contract result without changing the diff."
+    },
+    "failure-mode-coverage": {
+      "rating": "pass",
+      "evidence": "R2covers late/missing targets and overlay cleanup; R3pending/failed actions; R5CAS/concurrent/version/tenant/session isolation; R7outage/secret/bad-domain-completion; R8explicit cost/authority; R9consent/failure; R13wrong/stale artifact; R15permission refusal/audio outage/capture/stop; R16preassigned/return/session; R17denial and new registry addition; R18test mode/payment failure/charge boundaries. This is coverage of named failure classes, not proof they currently pass."
+    },
+    "non-overlapping": {
+      "rating": "weak",
+      "evidence": "There are strict/scope-specialized overlaps: R16account-first lifecycle intersects R4/R5; R17catalogue teaching intersects expanded R2/R6/R7; R18billing safety intersects R8. The amended contract intentionally preserves original bars/proof layers per D025/D027. This review does not invent an unauthorized merge or claim every one of153pairs has a distinct separating observation. Final grading must separate assertions and scope rather than multiply one green journey into independent proofs."
+    },
+    "prefer-structured-check": {
+      "rating": "weak",
+      "evidence": "R2/R4check.files retain Cloud controller/guide suites while model now includes AccountProductTutorial. Bindable full-product tests exist at packages/operator-ui/src/onboarding/product-tutorial.test.tsx and Portal tests/contracts.test.ts plus e2e/portal-product-tutorial-served.spec.ts; no assertion in a Cloud-only guide render proves preassigned hosted signup or every Portal catalogue route. Requirements checks on R16/R17/R18 must consume exact item-bound detector layers, not a generic requirements PASS. Current Help binding30246is scoped to a committed evidence artifact and3real candidate journeys, not complete R7security/outage/source graph. Do not claim structured adequacy or work acceptance from existing path resolution/pass counts alone."
+    }
+  },
+  "remaining": [
+    "Current independent acceptance grade after proofs",
+    "Preassigned authenticated signup",
+    "Complete route/detector and non-Cloud manual acceptance",
+    "Protected spoken questions/shared-account evidence",
+    "Exact promoted production artifact journey"
+  ],
+  "settledProofs": [
+    "Run20924867/binding30246 remains CURRENT and is not rerun/rebound by this review",
+    "Historical native/affected/child repair proofs retained with their original scope"
+  ]
+}

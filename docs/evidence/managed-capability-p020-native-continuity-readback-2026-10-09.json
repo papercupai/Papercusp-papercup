@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-020 archived Codex/OMP native CLI continuity witnesses with explicit Claude failure",
+  "framework": "operational",
+  "command": [
+    "TMPDIR=/dev/shm npx tsx -e <read exact saved outcomes and witnesses; invoke exported verifyResumeSmokeContinuation; compare SHA-256 and strict selected outcomes>"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-09T23:40:48.107Z",
+  "finishedAt": "2026-10-09T23:40:48.111Z",
+  "summary": "Reverified exact saved Codex and OMP same-session transcript witnesses using the maintained current-source continuation verifier, unchanged-prefix/new decoded wake checks and saved SHA-256 hashes. This readback does not launch a model or prove managed capability/background wake delivery. Required Claude actual continuity remains unverified; its latest strictly selected launch failed at the unchanged 180000ms deadline with ETIMEDOUT. All-client acceptance is not claimed.",
+  "assertions": [
+    {
+      "id": "codex-private-witness-hashes",
+      "passed": true,
+      "evidence": "Saved private before/after transcript SHA-256 match: d31ddcc7a86cc7e724065cffd6549ea5bb04394b81081a7f49cb41fa410e4ad1 / d2c99f89380e387ed906c0572a021ad44607fe7e82c404dc5d05c03f8b5e28a9."
+    },
+    {
+      "id": "codex-exact-session-new-wake",
+      "passed": true,
+      "evidence": "codex-cli 0.162.0 session 01a122d6-a1d1-79b0-bd66-16668f45feae retained unchanged prefix and newly decoded wake; records 15 -> 26; original outcome 2026-10-09T22:44:24.635Z."
+    },
+    {
+      "id": "codex-strict-selected-outcome",
+      "passed": true,
+      "evidence": "Original selected leg requires all selected cases, status pass and exit 0; no skipped selected leg."
+    },
+    {
+      "id": "omp-private-witness-hashes",
+      "passed": true,
+      "evidence": "Saved private before/after transcript SHA-256 match: aaba60df471a4f2dad0f51477fca1db709fa3c81ecde4fc8212a94b8ac6a1f7a / d2e50606782ba04b95a264aaec5c75494ec6616fdfd02f19163a8f835481b223."
+    },
+    {
+      "id": "omp-exact-session-new-wake",
+      "passed": true,
+      "evidence": "omp/18.0.3 session 01a122d7-ca56-7239-b40c-66669f0d730f retained unchanged prefix and newly decoded wake; records 7 -> 10; original outcome 2026-10-09T22:45:38.379Z."
+    },
+    {
+      "id": "omp-strict-selected-outcome",
+      "passed": true,
+      "evidence": "Original selected leg requires all selected cases, status pass and exit 0; no skipped selected leg."
+    },
+    {
+      "id": "claude-failure-retained",
+      "passed": true,
+      "evidence": "2.1.293 (Claude Code) strict launch failed, code143, ETIMEDOUT, 180467ms at 180000ms deadline. No Claude resume/wake witness or passing client-acceptance assertion exists."
+    }
+  ],
+  "workItem": "WI-10007984",
+  "sourceVerifier": "apps/operator/scripts/resume-spawn-live.ts#verifyResumeSmokeContinuation",
+  "privateEvidenceDirectory": "$HOME/.papercusp/evidence/WI-10007984/native-client-smoke-20261009/",
+  "acceptanceScope": "archived-native-cli-witness-readback",
+  "clientWitnesses": [
+    {
+      "agent": "codex",
+      "version": "codex-cli 0.162.0",
+      "observedAt": "2026-10-09T22:44:24.635Z",
+      "sessionId": "01a122d6-a1d1-79b0-bd66-16668f45feae",
+      "beforeSha256": "d31ddcc7a86cc7e724065cffd6549ea5bb04394b81081a7f49cb41fa410e4ad1",
+      "afterSha256": "d2c99f89380e387ed906c0572a021ad44607fe7e82c404dc5d05c03f8b5e28a9",
+      "beforeRecords": 15,
+      "afterRecords": 26,
+      "hashMatched": true,
+      "continuation": true,
+      "strictSelectedPass": true
+    },
+    {
+      "agent": "omp",
+      "version": "omp/18.0.3",
+      "observedAt": "2026-10-09T22:45:38.379Z",
+      "sessionId": "01a122d7-ca56-7239-b40c-66669f0d730f",
+      "beforeSha256": "aaba60df471a4f2dad0f51477fca1db709fa3c81ecde4fc8212a94b8ac6a1f7a",
+      "afterSha256": "d2e50606782ba04b95a264aaec5c75494ec6616fdfd02f19163a8f835481b223",
+      "beforeRecords": 7,
+      "afterRecords": 10,
+      "hashMatched": true,
+      "continuation": true,
+      "strictSelectedPass": true
+    }
+  ],
+  "claude": {
+    "agent": "claude",
+    "version": "2.1.293 (Claude Code)",
+    "observedAt": "2026-10-09T23:17:47.420Z",
+    "status": "fail",
+    "exitCode": 1,
+    "launchCode": 143,
+    "errorCode": "ETIMEDOUT",
+    "timedOut": true,
+    "elapsedMs": 180467,
+    "timeoutMs": 180000,
+    "continuation": "unverified"
+  },
+  "allClientAcceptance": "unverified",
+  "unexercised": [
+    "actual Claude resume/wake",
+    "native TUI rendering/media/question/permission parity for every client",
+    "production managed background wake dispatch for these CLI witnesses",
+    "full per-client per-capability matrix",
+    "final deployed controls"
+  ],
+  "credentialHandling": "Only versions, outcome metadata and private transcript hashes are published; credentials and transcript bytes remain private.",
+  "replayProcedure": "For each listed client, read the private outcomes.json and the referenced before/after witnesses; verify the hashes above and call the exported verifyResumeSmokeContinuation(before, after, wakeText) from the maintained source. Compare the original strict selected outcome, then read the failed Claude diagnostic outcome and stage metadata. This procedure rechecks retained evidence and makes no new model execution claim."
+}

@@ -33,11 +33,11 @@ interface FakeChannel {
   protocol: string;
   id: Buffer | null;
   onopen?: () => void;
-  onclose?: () => void;
+  onclose?: (isRemote: boolean) => void;
   closed: boolean;
   open(): void;
   pairRemote(): void;
-  fireClose(): void;
+  fireClose(isRemote?: boolean): void;
 }
 interface FakeMux {
   channels: FakeChannel[];
@@ -45,7 +45,7 @@ interface FakeMux {
     protocol: string;
     id?: Buffer | null;
     onopen?: () => void;
-    onclose?: () => void;
+    onclose?: (isRemote: boolean) => void;
   }): FakeChannel | null;
   pair(opts: { protocol: string }, notify: (id: Buffer | null) => void | Promise<void>): void;
 }
@@ -68,9 +68,9 @@ function makeMux(): FakeMux {
         pairRemote() {
           this.onopen?.();
         },
-        fireClose() {
+        fireClose(isRemote = true) {
           this.closed = true;
-          this.onclose?.();
+          this.onclose?.(isRemote);
         },
       };
       (ch as unknown as { addMessage: (m: unknown) => { send: (v: unknown) => void } }).addMessage = () => ({
@@ -155,12 +155,16 @@ function makeGossip(f: ReturnType<typeof fakeSwarm>, minUsefulChannelMs?: number
 
 /** Pair a fresh peer, hold the channel open `aliveMs`, then let it die —
  *  one turn of the observed storm cycle. */
-async function flapOnce(f: ReturnType<typeof fakeSwarm>, aliveMs: number): Promise<void> {
+async function flapOnce(
+  f: ReturnType<typeof fakeSwarm>,
+  aliveMs: number,
+  isRemote = true,
+): Promise<void> {
   const socket = f.connect();
   const ch = socket.userData!.channels[0]!;
   ch.pairRemote();
   await vi.advanceTimersByTimeAsync(aliveMs);
-  ch.fireClose();
+  ch.fireClose(isRemote);
 }
 
 beforeEach(() => {
@@ -168,6 +172,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllEnvs();
 });
 
 describe('createTopicGossip fast-window flap backoff (EI-18808621019872598)', () => {
@@ -208,6 +213,31 @@ describe('createTopicGossip fast-window flap backoff (EI-18808621019872598)', ()
     // keepalive that may fall due inside it.
     expect(f.refreshed.length - n).toBeLessThanOrEqual(1);
     await g.close();
+  });
+
+  it('records Protomux local versus remote-or-stream close attribution on flap warnings', async () => {
+    vi.stubEnv('VITEST', '');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const f = fakeSwarm();
+    const g = makeGossip(f, MIN_USEFUL_MS);
+    g.joinTopic(TOPIC);
+
+    await flapOnce(f, 10, true); // first flap is intentionally quiet
+    await flapOnce(f, 10, true);
+    await flapOnce(f, 10, false);
+
+    const flapWarnings = warn.mock.calls
+      .map(([message]) => String(message))
+      .filter((message) => message.includes(' flapping '));
+    expect(
+      flapWarnings.some((message) => message.includes('closeSource=remote-or-stream (Protomux isRemote=true)')),
+    ).toBe(true);
+    expect(
+      flapWarnings.some((message) => message.includes('closeSource=local-channel-close (Protomux isRemote=false)')),
+    ).toBe(true);
+
+    await g.close();
+    warn.mockRestore();
   });
 
   it('CONTROL: minUsefulChannelMs 0 keeps the pre-fix amplifier — the same script storms', async () => {

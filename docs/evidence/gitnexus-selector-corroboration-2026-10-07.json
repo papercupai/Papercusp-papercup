@@ -1,0 +1,54 @@
+{
+  "workItem": "WI-10007001",
+  "plan": "gitnexus-deterministic-integration-2026-10-05",
+  "verificationPlane": "current-working-tree",
+  "sourceControl": "88409fd94d:scripts/lib/graph-dependency-suggestions.mjs",
+  "headAtMeasurement": "36780a883dac440e34cd0fe39f1bff9d99d8f8d0",
+  "method": "Derive one current edge population using deriveFirstPartyEdges with nearestTsconfigAliases and nodeModulesPackageResolver. Pass the identical edges, readSource, index and time to buildSnapshot from the control commit and the current module. Compare kept edge identities.",
+  "sameInputComparison": {
+    "input": 71052,
+    "before": {
+      "kept": 61457,
+      "skippedMissing": 0,
+      "skippedUncorroborated": 9595,
+      "duplicates": 0
+    },
+    "after": {
+      "kept": 71034,
+      "skippedMissing": 0,
+      "skippedUncorroborated": 18,
+      "duplicates": 0
+    },
+    "newlyKept": 9577,
+    "priorKeptLost": 0
+  },
+  "independentCliRun": {
+    "command": "node --import tsx scripts/gen-graph-dependency-snapshot.mjs --first-party --out .papercusp/scratch/wi7001-first-party-snapshot.json",
+    "input": 71051,
+    "kept": 71033,
+    "skippedUncorroborated": 18,
+    "note": "Separate run against a live shared tree; its population differs by one edge. Only sameInputComparison is a controlled before/after measurement."
+  },
+  "tests": [
+    {
+      "path": "packages/operator-core/lib/__tests__/affected-tests-graph-suggestions.test.ts",
+      "passed": 32,
+      "added": 4,
+      "scope": "Local source and test edits; focused runner had no explicit ledger harness. Not bound as plan acceptance proof."
+    },
+    {
+      "path": "packages/operator-core/lib/__tests__/gen-graph-dependency-snapshot.test.ts",
+      "passed": 44,
+      "scope": "PAPERCUSP_TEST_RUN_HARNESS=papercusp; current source, including real CLI tests."
+    }
+  ],
+  "guards": [
+    "directory-index aliases accepted; wrong directory and basename-only guesses refused",
+    "package roots and src subpaths require the target manifest's exact package name",
+    "package prefix near-misses, unrelated targets, missing and malformed manifests refused",
+    "producer and consumer share manifest resolution; manifest rename refuses a previously valid edge",
+    "importer hash drift still refuses; union remains a baseline superset",
+    "manifest reads memoized within each build"
+  ],
+  "scopeBoundary": "The remaining 18 uncorroborated edges remain rejected intentionally by the conservative corroboration contract; this is not a claim that every derived edge is valid. No shared snapshot or deployed runtime was changed by this verification."
+}

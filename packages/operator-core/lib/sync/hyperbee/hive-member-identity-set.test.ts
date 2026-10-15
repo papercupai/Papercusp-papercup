@@ -4,6 +4,8 @@ import {
   invalidateHiveMemberDeviceSet,
   _clearHiveMemberDeviceSetCacheForTest,
   MEMBER_SET_TTL_MS,
+  resolveGithubIdentityForDevicePubkey,
+  resolveGithubUserIdForDevicePubkey,
 } from './hive-member-identity-set';
 import type { listHiveMembers } from '../../hive-membership-store';
 // EI-18777176681958978: the `loadMembers` seam now takes a LOCAL pot handle and resolves the
@@ -27,6 +29,40 @@ function fakeMembers(
 }
 
 beforeEach(() => _clearHiveMemberDeviceSetCacheForTest());
+
+describe('receiver device-to-user authority', () => {
+  function member(uid: number, login: string, device = 'device') {
+    return { githubUserId: uid, githubUsername: login, deviceAttestations: [{ device_pubkey: device }],
+      revokedPubkeys: [] as string[] } as unknown as Members[number];
+  }
+
+  it('resolves both user attributes from the current roster and sees revocation without a TTL', async () => {
+    let rows = [member(42, 'alice')];
+    const loadMembers = vi.fn(async () => rows);
+    expect(await resolveGithubIdentityForDevicePubkey('w', 'h', 'device', undefined, { loadMembers }))
+      .toEqual({ githubUserId: 42, githubUsername: 'alice' });
+    rows = [{ ...rows[0]!, revokedPubkeys: ['device'] }];
+    expect(await resolveGithubUserIdForDevicePubkey('w', 'h', 'device', undefined, { loadMembers })).toBeNull();
+    expect(loadMembers).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [member(42, 'alice'), member(77, 'bob')],
+    [member(42, 'alice'), member(42, 'other-login')],
+    [member(0, 'alice')],
+    [member(42, '')],
+    [member(42, 'alice', 'other-device')],
+  ])('refuses ambiguous, invalid or absent device ownership (%#)', async (...rows) => {
+    const loadMembers = async () => rows;
+    expect(await resolveGithubIdentityForDevicePubkey('w', 'h', 'device', undefined, { loadMembers })).toBeNull();
+  });
+
+  it('propagates a failed roster read so a policy pass can retry without advancing', async () => {
+    const loadMembers = async () => { throw new Error('roster unavailable'); };
+    await expect(resolveGithubIdentityForDevicePubkey('w', 'h', 'device', undefined, { loadMembers }))
+      .rejects.toThrow('roster unavailable');
+  });
+});
 
 describe('resolveHiveMemberDeviceSet', () => {
   it('extracts every member device pubkey — deduped union across members + multi-device', async () => {

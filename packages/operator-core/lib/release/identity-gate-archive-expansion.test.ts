@@ -24,9 +24,10 @@
  * a newly-added identity is covered automatically instead of drifting.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = path.resolve(__dirname, '../../../..');
@@ -161,5 +162,48 @@ describe('release identity gate: archive expansion (EI-20108164746219771)', () =
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  }, 120_000);
+  }, 130_000);
+
+  // WI-10005667. Measured on the P-012 AWS bake's rootfs: 14 man-page links such as
+  // usr/share/man/man1/man.1.gz -> /etc/alternatives/man.1.gz were opened as archives, so
+  // their ABSOLUTE targets resolved against the HOST, not the scanned tree. They dangled
+  // and failed the gate; a target that existed on the host would have been read as
+  // image content. A link's target string is scanned by the symlink-target phase, and
+  // a target that ships is a regular file the walk reaches on its own.
+  it('never expands a SYMLINKED archive, so a rootfs link is not resolved against the host', () => {
+    if (!have('python3')) {
+      console.warn('[identity-gate guard] SKIPPED: python3 unavailable on this host');
+      return;
+    }
+    const sentinel = sentinelFromDenylist();
+    const hostSide = mkdtempSync(path.join(tmpdir(), 'pc-identity-gate-host-'));
+    const scanned = mkdtempSync(path.join(tmpdir(), 'pc-identity-gate-rootfs-'));
+    try {
+      // Bytes that exist only OUTSIDE the scanned tree, and would red the gate if read.
+      const hostArchive = path.join(hostSide, 'host-only.1.gz');
+      writeFileSync(hostArchive, gzipSync(Buffer.from(`handle=${sentinel}\n`)));
+
+      const man1 = path.join(scanned, 'usr/share/man/man1');
+      mkdirSync(man1, { recursive: true });
+      // Positive control: a regular archive in the tree must still be expanded.
+      writeFileSync(path.join(man1, 'real.1.gz'), gzipSync(Buffer.from('harmless man page\n')));
+      symlinkSync(path.join(hostSide, 'missing', 'man.1.gz'), path.join(man1, 'dangling.1.gz'));
+      symlinkSync(hostArchive, path.join(man1, 'host.1.gz'));
+
+      const run = spawnSync('python3', [GATE, '--scan-dir', scanned], {
+        encoding: 'utf8',
+        env: GATE_ENV,
+        timeout: 120_000,
+        killSignal: 'SIGKILL',
+      });
+      const out = `${run.stdout}${run.stderr}`;
+      expect(out).toMatch(/expanding 1 archive\(s\)/);
+      expect(out).not.toMatch(/cannot expand/);
+      expect(out).not.toMatch(/CARRIES SENSITIVE IDENTITY/);
+      expect(run.status, out).toBe(0);
+    } finally {
+      rmSync(scanned, { recursive: true, force: true });
+      rmSync(hostSide, { recursive: true, force: true });
+    }
+  }, 130_000);
 });

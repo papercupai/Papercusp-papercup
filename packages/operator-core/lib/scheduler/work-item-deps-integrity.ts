@@ -58,15 +58,18 @@ import {
   type DependencyGraphNodeInput,
   type DependencyIdentity,
 } from './dependency-graph-analysis';
+import {
+  type CensusWorkItemRow,
+  censusNodeFromWorkItemRow,
+  dependencyEndpointCandidateFeatureIds,
+  FEATURE_ENDPOINT_KIND,
+  ISSUE_ENDPOINT_KIND,
+} from './dependency-graph-census-nodes';
 import { getDependencyPolicy, type DependencyPolicyFinding } from './dependency-invariants';
 import {
   dependencyGraphPerformanceTelemetry,
   type DependencyGraphPerformanceTelemetry,
 } from './dependency-performance-budget';
-
-/** The issue-family endpoint kind — the counterpart of FEATURE_KIND for this table. */
-const ISSUE_ENDPOINT_KIND = 'issue';
-const FEATURE_ENDPOINT_KIND = 'feature';
 
 /**
  * Which relation the endpoint lives in. `work_item_deps` is now canonical for blocking;
@@ -155,9 +158,6 @@ export interface DependencyGraphPolicyCensusResult {
   telemetry: DependencyGraphPerformanceTelemetry;
 }
 
-const ISSUE_ITEM_KINDS = new Set(['bug', 'change', 'task']);
-const ISSUE_TERMINAL = new Set(['resolved', 'closed', 'done', 'dropped']);
-const FEATURE_TERMINAL = new Set(['passed', 'deprecated', 'done', 'dropped']);
 
 const identityLabel = (id: DependencyIdentity): string => `${id.kind}:${id.ref}`;
 
@@ -238,12 +238,6 @@ export async function reconcileDependencyGraphPolicy(
   sql: Sql = getOrgPg().sql,
 ): Promise<DependencyGraphPolicyCensusResult> {
   const startedAt = performance.now();
-  const nodeRows = await sql<
-    Array<{ workspace_id: string; harness_slug: string; feature_id: string; item_kind: string; status: string | null }>
-  >`
-    SELECT workspace_id, harness_slug, feature_id, item_kind, status
-      FROM harness_shared.work_items
-     ORDER BY workspace_id, harness_slug, feature_id, item_kind`;
   const edgeRows = await sql<
     Array<{
       workspace_id: string;
@@ -259,25 +253,25 @@ export async function reconcileDependencyGraphPolicy(
       FROM harness_shared.work_item_deps
      WHERE dep_type = 'blocks'
      ORDER BY workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref`;
+  // Only rows that can resolve an edge endpoint (canonically or by alias) can change
+  // the analysis: this census seeds bad roots solely from cycles and endpoint defects,
+  // and impossibility propagates only along edges, so an edge-free row is always
+  // `reachable`, never stranded and never in a finding. Loading every work_items row
+  // (~335K) cost ~0.7s of bg-host main thread per tick for ~2.7K edges
+  // (WI-6554700010008460). Equivalence is pinned by dependency-graph-candidates.test.ts.
+  const candidateIds = dependencyEndpointCandidateFeatureIds(
+    edgeRows.flatMap((row) => [row.blocked_ref, row.blocker_ref]),
+  );
+  const nodeRows =
+    candidateIds.length === 0
+      ? []
+      : await sql<CensusWorkItemRow[]>`
+    SELECT workspace_id, harness_slug, feature_id, item_kind, status
+      FROM harness_shared.work_items
+     WHERE feature_id = ANY(${candidateIds}::text[])
+     ORDER BY workspace_id, harness_slug, feature_id, item_kind`;
 
-  const nodes: DependencyGraphNodeInput[] = nodeRows.map((row) => {
-    const issue = ISSUE_ITEM_KINDS.has(row.item_kind);
-    const qualified = `${row.harness_slug}#${row.feature_id}`;
-    return {
-      id: issue ? { kind: ISSUE_ENDPOINT_KIND, ref: row.feature_id } : { kind: FEATURE_ENDPOINT_KIND, ref: qualified },
-      aliases: issue
-        ? [
-            { kind: FEATURE_ENDPOINT_KIND, ref: qualified },
-            { kind: ISSUE_ENDPOINT_KIND, ref: qualified },
-          ]
-        : [
-            { kind: ISSUE_ENDPOINT_KIND, ref: row.feature_id },
-            { kind: FEATURE_ENDPOINT_KIND, ref: row.feature_id },
-          ],
-      terminal: (issue ? ISSUE_TERMINAL : FEATURE_TERMINAL).has(row.status ?? ''),
-      scope: `${row.workspace_id}/${row.harness_slug}`,
-    };
-  });
+  const nodes: DependencyGraphNodeInput[] = nodeRows.map(censusNodeFromWorkItemRow);
   const edges: DependencyGraphEdgeInput[] = edgeRows.map((row) => ({
     blocked: { kind: row.blocked_kind, ref: row.blocked_ref },
     blocker: { kind: row.blocker_kind, ref: row.blocker_ref },

@@ -104,6 +104,10 @@ function run(args: string[], env: NodeJS.ProcessEnv) {
   });
 }
 
+function readLog(path: string): string {
+  return existsSync(path) ? readFileSync(path, 'utf8') : '(no log)';
+}
+
 async function waitForPath(path: string, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!existsSync(path)) {
@@ -120,11 +124,176 @@ async function waitForOutput(read: () => string, text: string, timeoutMs = 10_00
   }
 }
 
+async function waitForProgressPhase(path: string, phase: string, timeoutMs = 10_000): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutMs;
+  let last = '';
+  while (Date.now() < deadline) {
+    try {
+      last = readFileSync(path, 'utf8');
+      const marker = JSON.parse(last) as Record<string, unknown>;
+      if (marker.phase === phase) return marker;
+    } catch {
+      // The atomic rename can leave the previous marker visible for one turn.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for progress phase ${phase} in ${path}: ${last}`);
+}
+
+async function waitForKernelFlockBlock(pidPath: string, timeoutMs = 10_000): Promise<void> {
+  await waitForPath(pidPath, timeoutMs);
+  const pid = Number(readFileSync(pidPath, 'utf8').trim());
+  if (!Number.isSafeInteger(pid) || pid <= 0) {
+    throw new Error('flock witness wrote an invalid pid: ' + readFileSync(pidPath, 'utf8'));
+  }
+
+  const procPath = '/proc/' + pid;
+  const wchanPath = procPath + '/wchan';
+  const deadline = Date.now() + timeoutMs;
+  let lastWchan = 'unreadable';
+  while (Date.now() < deadline) {
+    if (!existsSync(procPath)) {
+      throw new Error('flock process ' + pid + ' exited before entering the kernel lock wait');
+    }
+    try {
+      lastWchan = readFileSync(wchanPath, 'utf8').trim();
+    } catch {
+      lastWchan = 'unreadable';
+    }
+    if (lastWchan === 'locks_lock_inode_wait') return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(
+    'timed out waiting for flock process ' + pid +
+      ' to block in /proc wchan; last value was ' + JSON.stringify(lastWchan),
+  );
+}
+
+// The guard logs its waiting result before it calls flock. The wrapper records
+// the exec'd PID; waitForKernelFlockBlock verifies that the kernel has actually
+// blocked it before a test releases the holder or starts measuring a long wait.
+function witnessBlockingFlock(dir: string) {
+  const bin = join(dir, 'bin');
+  mkdirSync(bin);
+  const pidPath = join(dir, 'contender-flock.pid');
+  writeFileSync(join(bin, 'flock'), [
+    '#!/bin/bash',
+    'if [ "$#" = 1 ] && [ "$1" = 9 ]; then echo "$$" >"$CONTENDER_FLOCK_PID"; fi',
+    'exec /usr/bin/flock "$@"',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  return {
+    pidPath,
+    env: { PATH: `${bin}:${process.env.PATH}`, CONTENDER_FLOCK_PID: pidPath },
+  };
+}
+
+async function stopFixtureGroup(child: ReturnType<typeof spawn>, closed: Promise<number | null>) {
+  // These detached children own only their fixture process groups.
+  if (child.pid) {
+    try { process.kill(-child.pid, 'SIGKILL'); } catch { /* already gone */ }
+  }
+  await closed;
+}
+
+async function contendWithFixtureHolder(fx: ReturnType<typeof fixture>, args: string[], waitReason?: string) {
+  const { dir, env } = fx;
+  const ready = join(dir, 'holder-ready');
+  const release = join(dir, 'release-holder');
+  const marker = join(dir, 'contender');
+  const witness = witnessBlockingFlock(dir);
+  const holder = spawn('bash', ['-c',
+    'exec 9>>"$KOPIA_BACKUP_LOCK_PATH"; /usr/bin/flock 9; touch "$READY"; while [ ! -e "$RELEASE" ]; do sleep 0.01; done',
+  ], { env: { ...env, READY: ready, RELEASE: release }, stdio: 'ignore', detached: true });
+  const holderClosed = new Promise<number | null>((resolve) => holder.once('close', resolve));
+  let child: ReturnType<typeof spawn> | undefined;
+  let closed: Promise<number | null> | undefined;
+  let output = '';
+  try {
+    await waitForPath(ready);
+    child = spawn('bash', [guard, ...args, '--', 'touch', marker],
+      { env: { ...env, ...witness.env }, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+    closed = new Promise<number | null>((resolve) => child!.once('close', resolve));
+    child.stdout!.setEncoding('utf8').on('data', (chunk: string) => { output += chunk; });
+    child.stderr!.setEncoding('utf8').on('data', (chunk: string) => { output += chunk; });
+    if (waitReason) {
+      await waitForKernelFlockBlock(witness.pidPath);
+      await waitForOutput(() => output, `result=waiting reason=${waitReason}`);
+      expect(existsSync(marker), output).toBe(false);
+      expect(child.exitCode, output).toBeNull();
+      writeFileSync(release, 'released after contender blocked');
+    }
+    const status = await closed;
+    return { status, output, ran: existsSync(marker) };
+  } finally {
+    // A non-waiting contender must finish BEFORE this releases the holder too.
+    writeFileSync(release, 'cleanup');
+    if (child && closed) await stopFixtureGroup(child, closed);
+    await stopFixtureGroup(holder, holderClosed);
+  }
+}
+
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 describe('Kopia global backup guard', () => {
+  it('publishes a live db-dump marker while queued, advances it after lock acquisition, then removes it', async () => {
+    const { dir, env } = fixture();
+    const ready = join(dir, 'holder-ready');
+    const release = join(dir, 'release-holder');
+    const holder = spawn('bash', ['-c',
+      'exec 9>>"$KOPIA_BACKUP_LOCK_PATH"; /usr/bin/flock 9; touch "$READY"; while [ ! -e "$RELEASE" ]; do sleep 0.01; done',
+    ], { env: { ...env, READY: ready, RELEASE: release }, stdio: 'ignore', detached: true });
+    const holderClosed = new Promise<number | null>((resolve) => holder.once('close', resolve));
+    let child: ReturnType<typeof spawn> | undefined;
+    let closed: Promise<number | null> | undefined;
+    let output = '';
+    try {
+      await waitForPath(ready);
+      child = spawn('bash', [
+        guard,
+        '--mode', 'scheduled',
+        '--label', 'db-dump',
+        '--no-restart-safe',
+        '--priority-on-contention',
+        '--',
+        'bash', '-c', 'sleep 0.5',
+      ], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+      closed = new Promise<number | null>((resolve) => child!.once('close', resolve));
+      child.stdout!.setEncoding('utf8').on('data', (chunk: string) => { output += chunk; });
+      child.stderr!.setEncoding('utf8').on('data', (chunk: string) => { output += chunk; });
+
+      const markerPath = `${env.KOPIA_BACKUP_LOCK_PATH}.db-dump.${child.pid}.run`;
+      await waitForPath(markerPath);
+      const queued = JSON.parse(readFileSync(markerPath, 'utf8')) as Record<string, unknown>;
+      expect(queued).toMatchObject({ pid: child.pid, phase: 'guard-queued' });
+      expect(queued.processStartTicks).toMatch(/^\d+$/);
+      expect(queued.startedAtEpoch).toBeTypeOf('number');
+      await waitForOutput(() => output, 'result=waiting reason=priority-on-contention');
+      expect(readFileSync(markerPath, 'utf8')).toContain('"phase":"guard-queued"');
+
+      writeFileSync(release, 'release lock for db-dump');
+      const running = await waitForProgressPhase(markerPath, 'guard-running');
+      expect(running.pid).toBe(child.pid);
+      expect(await closed).toBe(0);
+      expect(existsSync(markerPath)).toBe(false);
+    } finally {
+      writeFileSync(release, 'cleanup');
+      if (child && closed) await stopFixtureGroup(child, closed);
+      await stopFixtureGroup(holder, holderClosed);
+    }
+  }, 20_000);
+
+  it('does not publish a db-dump progress marker for another label', () => {
+    const { dir, env } = fixture();
+    const marker = join(dir, 'ran');
+    const result = run(['--mode', 'scheduled', '--label', 'hot', '--', 'touch', marker], env);
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(readdirSync(dir).some((entry) => entry.includes('.db-dump.') && entry.endsWith('.run'))).toBe(false);
+  });
+
   it('keeps the default staleness override below the primary freshness alarm', () => {
     const guardSource = readFileSync(guard, 'utf8');
     const healthCheckSource = readFileSync(backupHealthCheckPath, 'utf8');
@@ -369,32 +538,94 @@ describe('Kopia global backup guard', () => {
     // the child handles TERM promptly.
   }, 30_000);
 
-  it('defers a scheduled contender while a backup holds the lock', () => {
-    const { dir, env } = fixture();
-    const scenario = spawnSync(
-      'bash',
-      [
-        '-c',
-        `
-        set -uo pipefail
-        "$GUARD" --mode wait --label holder -- bash -c 'touch "$1"; sleep 0.4' _ "$READY" &
-        holder=$!
-        for _ in $(seq 1 100); do [ -e "$READY" ] && break; sleep 0.01; done
-        [ -e "$READY" ] || exit 91
-        out=$("$GUARD" --mode scheduled --label contender -- touch "$CONTENDER")
-        rc=$?
-        wait "$holder"
-        [ "$rc" -eq ${SCHEDULED_DEFER_EXIT} ] && [ ! -e "$CONTENDER" ] && grep -q 'result=deferred reason=lock-held' <<<"$out"
-      `,
-      ],
-      {
-        encoding: 'utf8',
-        env: { ...env, READY: join(dir, 'ready'), CONTENDER: join(dir, 'contender') },
-        timeout: 10_000,
-      },
-    );
+  it('defers a scheduled contender while a backup holds the lock', async () => {
+    const result = await contendWithFixtureHolder(fixture(), ['--mode', 'scheduled', '--label', 'contender']);
+    expect(result.status, result.output).toBe(SCHEDULED_DEFER_EXIT);
+    expect(result.ran, result.output).toBe(false);
+    expect(result.output).toContain('result=deferred reason=lock-held');
+  }, 30_000);
 
-    expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}`).toBe(0);
+  it('signals lock readiness only after acquisition and keeps guard logs off dump stdout', async () => {
+    const { dir, env } = fixture();
+    const holderReady = join(dir, 'holder-ready');
+    const releaseHolder = join(dir, 'release-holder');
+    const holder = spawn(
+      'bash',
+      ['-c', 'exec 9>>"$KOPIA_BACKUP_LOCK_PATH"; flock 9; touch "$READY"; while [ ! -e "$RELEASE" ]; do sleep 0.01; done'],
+      { env: { ...env, READY: holderReady, RELEASE: releaseHolder }, stdio: 'ignore' },
+    );
+    const holderClosed = new Promise<number | null>((resolve) => holder.once('close', resolve));
+    let child: ReturnType<typeof spawn> | null = null;
+    let stdout = '';
+    let stderr = '';
+    let readiness = '';
+
+    try {
+      await waitForPath(holderReady);
+      child = spawn(
+        'bash',
+        [guard, '--mode', 'wait', '--label', 'dump-stream', '--', 'bash', '-c', 'printf "SELECT 1;\\n"'],
+        {
+          env: {
+            ...env,
+            KOPIA_BACKUP_GUARD_READY_FD: '3',
+            KOPIA_BACKUP_GUARD_LOG_STDERR: '1',
+          },
+          stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
+        },
+      );
+      const childClosed = new Promise<number | null>((resolve) => child!.once('close', resolve));
+      child.stdout!.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+      child.stderr!.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+      (child.stdio[3] as import('node:stream').Readable)
+        .setEncoding('utf8')
+        .on('data', (chunk: string) => { readiness += chunk; });
+
+      await waitForOutput(() => stderr, 'result=waiting reason=lock');
+      expect(readiness).toBe('');
+      writeFileSync(releaseHolder, 'released');
+
+      expect(await childClosed).toBe(0);
+      expect(await holderClosed).toBe(0);
+      expect(stdout).toBe('SELECT 1;\n');
+      expect(stderr).toContain('result=started mode=wait');
+      expect(readiness).toBe('KOPIA_BACKUP_GUARD_READY\n');
+    } finally {
+      writeFileSync(releaseHolder, 'released');
+      if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      if (holder.exitCode === null && holder.signalCode === null) holder.kill('SIGKILL');
+    }
+  });
+
+  it('bounds wait-mode lock acquisition with a distinct lock-timeout result', async () => {
+    const { dir, env } = fixture();
+    const holderReady = join(dir, 'timeout-holder-ready');
+    const releaseHolder = join(dir, 'timeout-release-holder');
+    const marker = join(dir, 'must-not-run-after-lock-timeout');
+    const holder = spawn(
+      'bash',
+      ['-c', 'exec 9>>"$KOPIA_BACKUP_LOCK_PATH"; flock 9; touch "$READY"; while [ ! -e "$RELEASE" ]; do sleep 0.01; done'],
+      { env: { ...env, READY: holderReady, RELEASE: releaseHolder }, stdio: 'ignore' },
+    );
+    const holderClosed = new Promise<number | null>((resolve) => holder.once('close', resolve));
+
+    try {
+      await waitForPath(holderReady);
+      const result = run(
+        ['--mode', 'wait', '--label', 'timeout', '--', 'touch', marker],
+        { ...env, KOPIA_BACKUP_GUARD_LOCK_WAIT_TIMEOUT_SEC: '1' },
+      );
+      expect(result.status).toBe(75);
+      expect(result.stdout).toContain('result=failed mode=wait reason=lock-timeout timeout_sec=1');
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      writeFileSync(releaseHolder, 'released');
+      if (holder.exitCode === null && holder.signalCode === null) {
+        const cleanupTimeout = setTimeout(() => holder.kill('SIGKILL'), 1_000);
+        try { await holderClosed; } finally { clearTimeout(cleanupTimeout); }
+      }
+    }
+    expect(await holderClosed).toBe(0);
   });
 
   // WI-10003884. The deferral above is right for a producer whose cadence is far shorter
@@ -403,36 +634,13 @@ describe('Kopia global backup guard', () => {
   // so ANY contention at that tick discarded the whole hour. Measured 2026-09-29: 'backup
   // OK' only at even hours for 16h, each odd-hour tick logging deferred reason=lock-held.
   // This is the A/B twin of the test above: identical holder and contender, one flag.
-  it('waits out a held lock instead of deferring when the producer asks for --priority-on-contention', () => {
-    const { dir, env } = fixture();
-    const scenario = spawnSync(
-      'bash',
-      [
-        '-c',
-        `
-        set -uo pipefail
-        "$GUARD" --mode wait --label holder -- bash -c 'touch "$1"; sleep 0.4' _ "$READY" &
-        holder=$!
-        for _ in $(seq 1 100); do [ -e "$READY" ] && break; sleep 0.01; done
-        [ -e "$READY" ] || exit 91
-        out=$("$GUARD" --mode scheduled --label contender --priority-on-contention -- touch "$CONTENDER")
-        rc=$?
-        wait "$holder"
-        [ "$rc" -eq 0 ] &&
-          [ -e "$CONTENDER" ] &&
-          grep -q 'result=waiting reason=priority-on-contention' <<<"$out" &&
-          ! grep -q 'result=deferred reason=lock-held' <<<"$out"
-      `,
-      ],
-      {
-        encoding: 'utf8',
-        env: { ...env, READY: join(dir, 'ready'), CONTENDER: join(dir, 'contender') },
-        timeout: 10_000,
-      },
-    );
-
-    expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}`).toBe(0);
-  });
+  it('waits out a held lock instead of deferring when the producer asks for --priority-on-contention', async () => {
+    const result = await contendWithFixtureHolder(fixture(),
+      ['--mode', 'scheduled', '--label', 'contender', '--priority-on-contention'], 'priority-on-contention');
+    expect(result.status, result.output).toBe(0);
+    expect(result.ran, result.output).toBe(true);
+    expect(result.output).not.toContain('result=deferred reason=lock-held');
+  }, 30_000);
 
   // The wait must also REGISTER as a priority request, or a hot sweep that never pauses
   // would hold the lock through the whole hour and the wait would be a deferral with
@@ -488,7 +696,7 @@ describe('Kopia global backup guard', () => {
         hot=$!
         for _ in $(seq 1 100); do [ -e "$HOT_READY" ] && break; sleep 0.01; done
         [ -e "$HOT_READY" ] || exit 91
-        "$GUARD" --mode wait --label daily-home-vm -- bash -c 'touch "$1"' _ "$DB_RAN" >"$DB_LOG" 2>&1 &
+        "$GUARD" --mode wait --label protected-manual -- bash -c 'touch "$1"' _ "$DB_RAN" >"$DB_LOG" 2>&1 &
         db=$!
         wait "$db"
         wait "$hot"
@@ -536,7 +744,7 @@ describe('Kopia global backup guard', () => {
         hot=$!
         for _ in $(seq 1 100); do [ -e "$HOT_READY" ] && break; sleep 0.01; done
         [ -e "$HOT_READY" ] || exit 91
-        "$GUARD" --mode wait --label daily-home-vm -- bash -c 'touch "$1"' _ "$DB_RAN" >"$DB_LOG" 2>&1 &
+        "$GUARD" --mode wait --label protected-manual -- bash -c 'touch "$1"' _ "$DB_RAN" >"$DB_LOG" 2>&1 &
         db=$!
         # Release the child only once the guard has SEEN the waiter and declined to yield.
         # Polling the log instead of sleeping keeps this a contract assertion rather than a
@@ -570,6 +778,104 @@ describe('Kopia global backup guard', () => {
     );
 
     expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}`).toBe(0);
+  });
+
+  it('hands the lock back early when the child asks, and still waits for the child (WI-10004870)', () => {
+    // The hourly db-dump writes its last ~25 min into a tier that .kopiaignore keeps
+    // out of every snapshot, so it asks the guard to drop the shared lock first. The
+    // contract: once asked, a contender gets the lock WHILE the child is still running,
+    // the guard still reports the child's own exit status, and the request file does
+    // not outlive the run (a later guard must never inherit it).
+    const { dir, env } = fixture();
+    const scenario = spawnSync(
+      'bash',
+      [
+        '-c',
+        `
+        set -uo pipefail
+        "$GUARD" --mode scheduled --label db-dump --no-restart-safe -- bash -c ': >"$KOPIA_BACKUP_GUARD_RELEASE_PATH"; for _ in $(seq 1 1000); do [ -e "$1" ] && break; sleep 0.01; done; [ -e "$1" ] && touch "$2"' _ "$CHILD_GO" "$CHILD_DONE" >"$HOLDER_LOG" 2>&1 &
+        holder=$!
+        for _ in $(seq 1 500); do grep -q 'result=released-early' "$HOLDER_LOG" && break; sleep 0.01; done
+        grep -q 'result=released-early' "$HOLDER_LOG" || exit 91
+        "$GUARD" --mode scheduled --label hot -- touch "$CONTENDER_RAN" >"$CONTENDER_LOG" 2>&1
+        contender_rc=$?
+        # The first child must still be running: it only finishes once released below.
+        [ -e "$CHILD_DONE" ] && exit 92
+        touch "$CHILD_GO"
+        wait "$holder"
+        holder_rc=$?
+        leftovers=$(ls "$DIR"/global.lock.release.* 2>/dev/null | wc -l)
+        [ "$contender_rc" -eq 0 ] || exit 93
+        [ -e "$CONTENDER_RAN" ] || exit 94
+        [ "$holder_rc" -eq 0 ] && [ -e "$CHILD_DONE" ] || exit 95
+        [ "$(grep -c 'result=released-early' "$HOLDER_LOG")" -eq 1 ] || exit 96
+        grep -q 'result=finished mode=scheduled rc=0' "$HOLDER_LOG" || exit 97
+        [ "$leftovers" -eq 0 ] || exit 98
+        `,
+      ],
+      {
+        encoding: 'utf8',
+        env: {
+          ...env,
+          DIR: dir,
+          CHILD_GO: join(dir, 'child-go'),
+          CHILD_DONE: join(dir, 'child-done'),
+          HOLDER_LOG: join(dir, 'holder.log'),
+          CONTENDER_RAN: join(dir, 'contender-ran'),
+          CONTENDER_LOG: join(dir, 'contender.log'),
+        },
+        timeout: 20_000,
+      },
+    );
+
+    expect(
+      scenario.status,
+      `${scenario.stdout}\n${scenario.stderr}\nholder:\n${readLog(join(dir, 'holder.log'))}\ncontender:\n${readLog(join(dir, 'contender.log'))}`,
+    ).toBe(0);
+  });
+
+  it('keeps the whole-lifetime hold for a child that never asks for early release', () => {
+    // Calibration for the case above: the request channel is exported to EVERY
+    // scheduled child, so a child that ignores it (the hot sweep) must still block a
+    // contender until it exits. Without this, a guard that unlocked unconditionally
+    // would pass the early-release case too.
+    const { dir, env } = fixture();
+    const scenario = spawnSync(
+      'bash',
+      [
+        '-c',
+        `
+        set -uo pipefail
+        "$GUARD" --mode scheduled --label db-dump --no-restart-safe -- bash -c '[ -n "$KOPIA_BACKUP_GUARD_RELEASE_PATH" ] || exit 7; touch "$1"; for _ in $(seq 1 1000); do [ -e "$2" ] && break; sleep 0.01; done' _ "$READY" "$GO" >"$HOLDER_LOG" 2>&1 &
+        holder=$!
+        for _ in $(seq 1 500); do [ -e "$READY" ] && break; sleep 0.01; done
+        [ -e "$READY" ] || exit 91
+        sleep 0.3
+        "$GUARD" --mode scheduled --label hot -- touch "$CONTENDER_RAN" >/dev/null 2>&1
+        contender_rc=$?
+        touch "$GO"
+        wait "$holder"
+        holder_rc=$?
+        [ "$contender_rc" -eq ${SCHEDULED_DEFER_EXIT} ] || exit 92
+        [ ! -e "$CONTENDER_RAN" ] || exit 93
+        [ "$holder_rc" -eq 0 ] || exit 94
+        ! grep -q 'result=released-early' "$HOLDER_LOG" || exit 95
+        `,
+      ],
+      {
+        encoding: 'utf8',
+        env: {
+          ...env,
+          READY: join(dir, 'ready'),
+          GO: join(dir, 'go'),
+          HOLDER_LOG: join(dir, 'holder.log'),
+          CONTENDER_RAN: join(dir, 'contender-ran'),
+        },
+        timeout: 20_000,
+      },
+    );
+
+    expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}\n${readLog(join(dir, 'holder.log'))}`).toBe(0);
   });
 
   it('waits for the current holder and releases the lock after failure', () => {
@@ -760,9 +1066,10 @@ describe('Kopia managed entrypoint contract', () => {
 
   it('routes every managed path through the same guard', () => {
     expect(hotService).toContain('kopia-backup-guard.sh --mode scheduled --label hot');
-    expect(homeService).toContain('kopia-backup-guard.sh --mode wait --label daily-home-vm');
+    expect(homeService).toContain('kopia-backup-guard.sh --mode scheduled --label daily-home-vm --priority-on-contention');
     expect(hotScript).toContain('--mode scheduled --label hot');
-    expect(homeScript).toContain('--mode wait --label daily-home-vm');
+    expect(homeScript).toContain('--mode scheduled --label daily-home-vm --priority-on-contention');
+    expect(homeService).not.toContain('kopia-backup-guard.sh --mode wait --label daily-home-vm');
     expect(protectedScript).toContain('--mode wait --label protected-manual');
     expect(dbService).toContain('kopia-backup-guard.sh --mode scheduled --label db-dump');
     expect(dbService).not.toContain('kopia-backup-guard.sh --mode wait --label db-dump');
@@ -787,7 +1094,7 @@ describe('Kopia managed entrypoint contract', () => {
       .split('\n')
       .find((line) => line.trim() !== '')
       ?.trim();
-    expect(firstRequiredSource).toBe('"${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/backup/db-dumps}"');
+    expect(firstRequiredSource).toBe('"${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/cold-a/Backup/db-dumps}"');
     expect(dbTimer).toContain('Unit=papercusp-nonblocking-trigger@papercusp-db-backup.service');
     expect(dbTimer).not.toContain('Unit=papercusp-db-backup.service');
     expect(nonblockingTrigger).toContain('Type=oneshot');
@@ -811,12 +1118,12 @@ describe('Kopia managed entrypoint contract', () => {
   });
 
   it('bounds the hot snapshot with the proven daily parallelism and memory envelope', () => {
-    expect(hotScript).toContain('snapshot create "--parallel=1" "$@"');
+    expect(hotScript).toContain('"--parallel=1" "$@"');
     expect(hotService).toContain('MemoryAccounting=yes');
     expect(hotService).toContain('MemoryHigh=8G');
     expect(hotService).toContain('MemoryMax=12G');
     expect(hotService).toContain('MemorySwapMax=0');
-    expect(hotService).toContain('TimeoutStopSec=30s');
+    expect(hotService).toContain('TimeoutStopSec=180s');
   });
 
   it('bounds the hourly database dump after a serialized run breached host PSI', () => {
@@ -843,15 +1150,15 @@ describe('Kopia managed entrypoint contract', () => {
   });
 
   // WI-10003884. Same activation-vs-capability rule as the test above: the priority-wait
-  // branch is inert unless the unit asks for it, so dropping the word from the unit
-  // silently restores the every-other-hour skip. Only the hourly dump needs it; a Kopia
-  // sweep that also waited on contention would stop yielding the lock to the dump.
-  it('makes lock contention a priority wait for the db dump only', () => {
+  // branch is inert unless the entrypoint asks for it, so dropping the word silently
+  // restores the every-other-hour skip. The hourly dump and daily home walk register
+  // priority waits; the periodic hot sweep stays preemptible and must not wait here.
+  it('enables priority-on-contention for the db dump and daily home snapshot only', () => {
     expect(dbService).toContain('--label db-dump --no-restart-safe --priority-on-contention -- ');
+    expect(homeService).toContain('--label daily-home-vm --priority-on-contention -- ');
+    expect(homeScript).toContain('--mode scheduled --label daily-home-vm --priority-on-contention');
     expect(hotService).not.toContain('--priority-on-contention');
-    expect(homeService).not.toContain('--priority-on-contention');
     expect(hotScript).not.toContain('--priority-on-contention');
-    expect(homeScript).not.toContain('--priority-on-contention');
   });
 
   it('reaps only host-owned database dumps, never the concurrent workspace dump', () => {
@@ -1152,10 +1459,11 @@ describe('Kopia managed entrypoint contract', () => {
     // case the retry exists for, so the next tick must be free to override again.
     const { dir, env } = fixture();
     seedDeadlineBase(dir, 'hot', 25_200);
-    // The dump is overdue too, so its published deadline has passed and the overdue
-    // sweep yields at once (WI-10004741). A dump that is not yet due is held until it
-    // is: see 'keeps an overdue hot sweep running until a waiting dump is itself due'.
-    seedDeadlineBase(dir, 'db-dump', 25_200);
+    // The dump is overdue too, and its deadline passed BEFORE the sweep's, so under
+    // earliest-deadline-first (WI-10004861) the overdue sweep yields at once. A dump
+    // that is not yet due, or due after the sweep, is held: see 'keeps an overdue hot
+    // sweep running until a waiting dump is itself due' and the EDF tests below.
+    seedDeadlineBase(dir, 'db-dump', 25_300);
     const scenario = spawnSync(
       'bash',
       [
@@ -1172,6 +1480,7 @@ describe('Kopia managed entrypoint contract', () => {
         grep -q 'result=staleness-override-armed' "$HOT_LOG" || exit 94
         grep -q 'result=escalation-refunded reason=priority-waiter shared-guard handoff' "$HOT_LOG" || exit 95
         ! grep -q 'reason=holder-overdue' "$HOT_LOG" || exit 96
+        ! grep -q 'reason=holder-earlier-deadline' "$HOT_LOG" || exit 97
         `,
       ],
       {
@@ -1201,7 +1510,9 @@ describe('Kopia managed entrypoint contract', () => {
   it('keeps an overdue hot sweep running until a waiting dump is itself due, then yields', () => {
     const fx = fixture();
     const { dir } = fx;
-    const env = { ...fx.env, KOPIA_BACKUP_MAX_DEFER_SEC: '10' };
+    // Extension 0 pins the WI-10004741 half on its own: the sweep yields the moment the
+    // dump is due. The EDF extension past that point is covered by the tests below.
+    const env = { ...fx.env, KOPIA_BACKUP_MAX_DEFER_SEC: '10', KOPIA_BACKUP_PRIORITY_HOLD_EXTENSION_SEC: '0' };
     seedDeadlineBase(dir, 'hot', 25_200);
     const dumpBase = Number(readFileSync(seedDeadlineBase(dir, 'db-dump', 3), 'utf8').trim());
     const dueEpoch = dumpBase + 10;
@@ -1247,6 +1558,10 @@ describe('Kopia managed entrypoint contract', () => {
     expect(declined, evidence).toHaveLength(1);
     // ...then yields once the dump is due, not before and not at its own end.
     expect(hotOut, evidence).toContain('result=stopping-during-run reason=priority-waiter');
+    // ...naming the waiter it honored, so the preemption is attributable afterwards.
+    expect(hotOut, evidence).toMatch(
+      /result=honoring-priority-waiter reason=waiter-due waiter_overdue_sec=-?\d+ waiter=global\.lock\.db-dump\.\d+\.wait waiter_pid=\d+ waiter_mode=scheduled\b/,
+    );
     expect(hotOut, evidence).toContain('result=escalation-refunded');
     expect(Number(readFileSync(dbRan, 'utf8').trim()), evidence).toBeGreaterThanOrEqual(dueEpoch);
     expect(
@@ -1256,7 +1571,7 @@ describe('Kopia managed entrypoint contract', () => {
   });
 
   it('yields an overdue hot sweep at once to a waiter that publishes no deadline', () => {
-    // Calibration for the hold above: a wait-mode producer (the daily home snapshot),
+    // Calibration for the hold above: a protected/manual wait-mode producer,
     // a waiter with no baseline, and a guard from before WI-10004741 all write a marker
     // with no .due. Each counts as due now, so even an overdue sweep yields at once.
     const { dir, env } = fixture();
@@ -1272,7 +1587,7 @@ describe('Kopia managed entrypoint contract', () => {
         hot=$!
         for _ in $(seq 1 100); do [ -e "$HOT_READY" ] && break; sleep 0.01; done
         [ -e "$HOT_READY" ] || exit 91
-        "$GUARD" --mode wait --label daily-home-vm -- touch "$WAIT_RAN" >/dev/null 2>&1 || exit 92
+        "$GUARD" --mode wait --label protected-manual -- touch "$WAIT_RAN" >/dev/null 2>&1 || exit 92
         wait "$hot"
         [ "$?" -eq ${SCHEDULED_DEFER_EXIT} ] || exit 93
         `,
@@ -1288,7 +1603,304 @@ describe('Kopia managed entrypoint contract', () => {
     expect(hotOut).toContain('result=staleness-override-armed');
     expect(hotOut).toContain('result=stopping-during-run reason=priority-waiter');
     expect(hotOut).not.toContain('reason=holder-overdue');
+    // A marker with no .due is honored as due now -- and the log says so, with its pid.
+    expect(hotOut).toMatch(/result=honoring-priority-waiter reason=waiter-due-now waiter=\S+\.wait waiter_pid=\d+ waiter_mode=wait\b/);
     expect(existsSync(join(dir, 'wait-ran'))).toBe(true);
+  });
+
+  // WI-10004861. Measured 2026-10-01: the hourly dump holds the shared lock 23-62 min
+  // (mostly 42-56) and a sweep must re-hash the ~93 GB it rewrote, so yielding the
+  // moment the dump is due (above) still stopped every sweep: 12 of 14 preemptions
+  // since 2026-09-30 23:50Z were the dump, and the dumps went 18h without an off-host
+  // copy. Between two OVERDUE producers the one whose deadline passed first goes first.
+  // The "keeps holding while making progress" cases. The guard stamps progress in
+  // whole seconds and the child forks `sleep` per loop, so on a loaded host the
+  // child itself goes unscheduled: measured 2026-10-06, gaps between two progress
+  // writes of 1-3s at load ~150 and 8s at load ~230, against a 1s limit, yielded a
+  // progressing sweep as stalled. A 10s limit absorbs that; 80 loops of 0.25s
+  // (~20s nominal, fewer forks) keep the sweep longer than the limit, so a guard that
+  // stopped tracking progress still yields mid-sweep and fails the test. The 300s
+  // extension keeps the EDF hold window from ending before a slow sweep does.
+  const HOLD_PROGRESS_STALL_SEC = 10;
+  const HOLD_PROGRESS_LOOPS = 80;
+  const HOLD_PROGRESS_SLEEP = '0.25';
+  const HOLD_PROGRESS_EXTENSION_SEC = 300;
+  const HOLD_PROGRESS_TEST_TIMEOUT_MS = 180_000;
+
+  function edfScenario(opts: {
+    extensionSec: number;
+    dumpAgeSec: number;
+    hotLoops: number;
+    // Point the guard's progress counter at a fixture file (an io.stat stand-in).
+    // `hotWritesProgress` makes the sweep's child advance it on every loop.
+    progressStallSec?: number;
+    hotWritesProgress?: boolean;
+    hotSleep?: string;
+  }) {
+    const fx = fixture();
+    const { dir } = fx;
+    const progressPath = join(dir, 'io.stat');
+    const env: NodeJS.ProcessEnv = {
+      ...fx.env,
+      KOPIA_BACKUP_MAX_DEFER_SEC: '10',
+      KOPIA_BACKUP_PRIORITY_HOLD_EXTENSION_SEC: String(opts.extensionSec),
+      HOT_PROGRESS: '',
+      HOT_SLEEP: opts.hotSleep ?? '0.05',
+    };
+    if (opts.progressStallSec !== undefined) {
+      writeFileSync(progressPath, '8:0 rbytes=0 wbytes=0 rios=0 wios=0\n');
+      env.KOPIA_BACKUP_PROGRESS_PATH = progressPath;
+      env.KOPIA_BACKUP_PROGRESS_STALL_SEC = String(opts.progressStallSec);
+      if (opts.hotWritesProgress) env.HOT_PROGRESS = progressPath;
+    }
+    seedDeadlineBase(dir, 'hot', 25_200);
+    const dumpBase = Number(readFileSync(seedDeadlineBase(dir, 'db-dump', opts.dumpAgeSec), 'utf8').trim());
+    const hotLog = join(dir, 'hot.log');
+    const dbLog = join(dir, 'db.log');
+    const dbRan = join(dir, 'db-ran');
+    const hotDone = join(dir, 'hot-done');
+    const scenario = spawnSync(
+      'bash',
+      [
+        '-c',
+        `
+        set -uo pipefail
+        "$GUARD" --mode scheduled --label hot -- bash -c 'touch "$1"; for i in $(seq 1 "$3"); do [ -z "$4" ] || printf "8:0 rbytes=%s wbytes=0\\n" "$i" >"$4"; sleep "$5"; done; date +%s.%N >"$2"' _ "$HOT_READY" "$HOT_DONE" "$HOT_LOOPS" "$HOT_PROGRESS" "$HOT_SLEEP" >"$HOT_LOG" 2>&1 &
+        hot=$!
+        for _ in $(seq 1 100); do [ -e "$HOT_READY" ] && break; sleep 0.01; done
+        [ -e "$HOT_READY" ] || exit 91
+        "$GUARD" --mode scheduled --label db-dump --no-restart-safe --priority-on-contention -- bash -c 'date +%s.%N >"$1"' _ "$DB_RAN" >"$DB_LOG" 2>&1
+        db_rc=$?
+        wait "$hot"
+        hot_rc=$?
+        echo "db_rc=$db_rc hot_rc=$hot_rc"
+        `,
+      ],
+      {
+        encoding: 'utf8',
+        env: {
+          ...env,
+          HOT_READY: join(dir, 'hot-ready'),
+          HOT_DONE: hotDone,
+          HOT_LOOPS: String(opts.hotLoops),
+          HOT_LOG: hotLog,
+          DB_LOG: dbLog,
+          DB_RAN: dbRan,
+        },
+        timeout: 170_000,
+      },
+    );
+    const hotOut = existsSync(hotLog) ? readFileSync(hotLog, 'utf8') : 'missing';
+    const dbOut = existsSync(dbLog) ? readFileSync(dbLog, 'utf8') : 'missing';
+    return {
+      dir,
+      scenario,
+      hotOut,
+      dbOut,
+      dumpDue: dumpBase + 10,
+      dbRanAt: existsSync(dbRan) ? Number(readFileSync(dbRan, 'utf8').trim()) : Number.NaN,
+      hotDoneAt: existsSync(hotDone) ? Number(readFileSync(hotDone, 'utf8').trim()) : Number.NaN,
+      evidence: `${scenario.stdout}\n${scenario.stderr}\nhot guard:\n${hotOut}\ndb guard:\n${dbOut}`,
+    };
+  }
+
+  it('lets an overdue sweep whose deadline passed FIRST finish before an overdue dump', () => {
+    // The dump is overdue (due 2s ago) and has armed its own floor, but the sweep has
+    // been overdue for hours: the sweep runs to its end, then the dump gets the lock.
+    const r = edfScenario({ extensionSec: 60, dumpAgeSec: 12, hotLoops: 40 });
+
+    expect(r.scenario.stdout, r.evidence).toContain('db_rc=0 hot_rc=0');
+    expect(r.dbOut, r.evidence).toContain('result=waiting reason=staleness-override-lock');
+    const held = r.hotOut.match(
+      /result=holding-against-priority-waiter reason=holder-earlier-deadline waiter=global\.lock\.db-dump\.\d+\.wait waiter_overdue_sec=\d+ holder_overdue_sec=\d+ hold_ends_in_sec=\d+ /g,
+    );
+    expect(held, r.evidence).toHaveLength(1);
+    expect(r.hotOut, r.evidence).not.toContain('result=stopping-during-run');
+    expect(r.hotOut, r.evidence).toContain('result=finished mode=scheduled rc=0');
+    expect(r.dbRanAt, r.evidence).toBeGreaterThanOrEqual(r.hotDoneAt);
+    expect(
+      readdirSync(r.dir).filter((name) => /\.(wait|due)$/.test(name)),
+      r.evidence,
+    ).toEqual([]);
+  });
+
+  it('bounds the earliest-deadline hold: the sweep still yields once the dump is overdue by the extension', () => {
+    // A sweep that never finishes must not starve the dump: past its due + extension
+    // the dump preempts even a sweep whose own deadline passed hours earlier.
+    const r = edfScenario({ extensionSec: 3, dumpAgeSec: 11, hotLoops: 400 });
+
+    expect(r.scenario.stdout, r.evidence).toContain(`db_rc=0 hot_rc=${SCHEDULED_DEFER_EXIT}`);
+    const held = r.hotOut.match(/result=holding-against-priority-waiter reason=holder-earlier-deadline /g);
+    expect(held, r.evidence).toHaveLength(1);
+    expect(r.hotOut, r.evidence).toContain('result=stopping-during-run reason=priority-waiter');
+    expect(r.hotOut, r.evidence).toContain('result=escalation-refunded');
+    expect(Number.isNaN(r.hotDoneAt), r.evidence).toBe(true);
+    expect(r.dbRanAt, r.evidence).toBeGreaterThanOrEqual(r.dumpDue + 3);
+  });
+
+  // EI-25211496463956189. A dump whose previous runs FAILED arrives already overdue by
+  // more than the extension. Measured 2026-10-06 (EDT): it arrived 4.4h and 6.4h late
+  // at the 10:10 and 12:11 ticks and stopped a sweep 11-13h overdue after 5s and after
+  // 52 min, because the hold window was anchored at the dump's deadline, which had
+  // already passed by more than the extension. The window now starts at its arrival.
+  it('still protects an earlier-deadline sweep from a dump that arrives overdue by more than the extension', () => {
+    const r = edfScenario({ extensionSec: 60, dumpAgeSec: 3_600, hotLoops: 40 });
+
+    expect(r.scenario.stdout, r.evidence).toContain('db_rc=0 hot_rc=0');
+    const held = r.hotOut.match(
+      /result=holding-against-priority-waiter reason=holder-earlier-deadline waiter=global\.lock\.db-dump\.\d+\.wait waiter_overdue_sec=(\d+) holder_overdue_sec=\d+ hold_ends_in_sec=(\d+) /,
+    );
+    expect(held, r.evidence).not.toBeNull();
+    // Overdue by ~3590s, yet the hold still has (almost) the whole extension left.
+    expect(Number(held![1]), r.evidence).toBeGreaterThan(3_000);
+    expect(Number(held![2]), r.evidence).toBeGreaterThan(50);
+    expect(r.hotOut, r.evidence).not.toContain('result=stopping-during-run');
+    expect(r.dbRanAt, r.evidence).toBeGreaterThanOrEqual(r.hotDoneAt);
+  });
+
+  it('keeps holding while the sweep is making I/O progress', () => {
+    // The hot child advances the progress counter on every loop, so a stall limit
+    // shorter than its runtime never trips. HOLD_PROGRESS_* keeps the sweep ~2x the
+    // limit (a guard that stopped tracking progress would still yield mid-sweep)
+    // while tolerating multi-second scheduling gaps on a loaded host.
+    const r = edfScenario({
+      extensionSec: HOLD_PROGRESS_EXTENSION_SEC,
+      dumpAgeSec: 12,
+      hotLoops: HOLD_PROGRESS_LOOPS,
+      progressStallSec: HOLD_PROGRESS_STALL_SEC,
+      hotWritesProgress: true,
+      hotSleep: HOLD_PROGRESS_SLEEP,
+    });
+
+    expect(r.scenario.stdout, r.evidence).toContain('db_rc=0 hot_rc=0');
+    expect(r.hotOut, r.evidence).toContain('reason=holder-earlier-deadline');
+    expect(r.hotOut, r.evidence).not.toContain('reason=holder-stalled');
+    expect(r.hotOut, r.evidence).not.toContain('result=stopping-during-run');
+    expect(r.dbRanAt, r.evidence).toBeGreaterThanOrEqual(r.hotDoneAt);
+  }, HOLD_PROGRESS_TEST_TIMEOUT_MS);
+
+  it('yields a sweep whose I/O has stalled instead of holding a due dump for the whole extension', () => {
+    // Same overdue sweep and waiter, but the progress counter never moves: past the
+    // stall limit the sweep is stuck, and keeping the dump waiting buys nothing.
+    const r = edfScenario({ extensionSec: 60, dumpAgeSec: 12, hotLoops: 400, progressStallSec: 1 });
+
+    expect(r.scenario.stdout, r.evidence).toContain(`db_rc=0 hot_rc=${SCHEDULED_DEFER_EXIT}`);
+    expect(r.hotOut, r.evidence).toMatch(
+      /result=yielding-to-priority-waiter reason=holder-stalled waiter=global\.lock\.db-dump\.\d+\.wait would_hold=holder-earlier-deadline stalled_sec=\d+ stall_limit_sec=1 /,
+    );
+    expect(r.hotOut, r.evidence).toContain('result=stopping-during-run reason=priority-waiter');
+    expect(Number.isNaN(r.hotDoneAt), r.evidence).toBe(true);
+    // Well inside the 60s extension: the stall, not the extension, ended the hold.
+    expect(r.dbRanAt - r.dumpDue, r.evidence).toBeLessThan(30);
+  });
+
+  // EI-25211496463956189. A wait-mode marker publishes no deadline, so it stops even an
+  // overdue sweep at once (calibration above). Measured 2026-10-06 09:57 EDT: the
+  // per-workspace DB hook's dump stopped the overdue hot sweep 3s after it began
+  // waiting, then was killed at its own 900s budget. --deadline-at-arrival gives such a
+  // waiter its arrival as its deadline, so the earliest-deadline hold and the progress
+  // check apply to it.
+  function arrivalWaiterScenario(opts: {
+    hotLoops: number;
+    hotWritesProgress: boolean;
+    progressStallSec?: number;
+    hotSleep?: string;
+    extensionSec?: number;
+  }) {
+    const fx = fixture();
+    const { dir } = fx;
+    const progressPath = join(dir, 'io.stat');
+    writeFileSync(progressPath, '8:0 rbytes=0 wbytes=0 rios=0 wios=0\n');
+    seedDeadlineBase(dir, 'hot', 25_200);
+    const hotLog = join(dir, 'hot.log');
+    const waitLog = join(dir, 'wait.log');
+    const waitRan = join(dir, 'wait-ran');
+    const hotDone = join(dir, 'hot-done');
+    const scenario = spawnSync(
+      'bash',
+      [
+        '-c',
+        `
+        set -uo pipefail
+        "$GUARD" --mode scheduled --label hot -- bash -c 'touch "$1"; for i in $(seq 1 "$3"); do [ -z "$4" ] || printf "8:0 rbytes=%s wbytes=0\\n" "$i" >"$4"; sleep "$5"; done; date +%s.%N >"$2"' _ "$HOT_READY" "$HOT_DONE" "$HOT_LOOPS" "$HOT_PROGRESS" "$HOT_SLEEP" >"$HOT_LOG" 2>&1 &
+        hot=$!
+        for _ in $(seq 1 100); do [ -e "$HOT_READY" ] && break; sleep 0.01; done
+        [ -e "$HOT_READY" ] || exit 91
+        "$GUARD" --mode wait --label workspace-db-dump --deadline-at-arrival -- bash -c 'date +%s.%N >"$1"' _ "$WAIT_RAN" >"$WAIT_LOG" 2>&1
+        wait_rc=$?
+        wait "$hot"
+        hot_rc=$?
+        echo "wait_rc=$wait_rc hot_rc=$hot_rc"
+        `,
+      ],
+      {
+        encoding: 'utf8',
+        env: {
+          ...fx.env,
+          KOPIA_BACKUP_MAX_DEFER_SEC: '10',
+          KOPIA_BACKUP_PRIORITY_HOLD_EXTENSION_SEC: String(opts.extensionSec ?? 60),
+          KOPIA_BACKUP_PROGRESS_PATH: progressPath,
+          KOPIA_BACKUP_PROGRESS_STALL_SEC: String(opts.progressStallSec ?? 1),
+          HOT_PROGRESS: opts.hotWritesProgress ? progressPath : '',
+          HOT_SLEEP: opts.hotSleep ?? '0.05',
+          HOT_READY: join(dir, 'hot-ready'),
+          HOT_DONE: hotDone,
+          HOT_LOOPS: String(opts.hotLoops),
+          HOT_LOG: hotLog,
+          WAIT_LOG: waitLog,
+          WAIT_RAN: waitRan,
+        },
+        timeout: 170_000,
+      },
+    );
+    const hotOut = existsSync(hotLog) ? readFileSync(hotLog, 'utf8') : 'missing';
+    const waitOut = existsSync(waitLog) ? readFileSync(waitLog, 'utf8') : 'missing';
+    return {
+      scenario,
+      hotOut,
+      waitRanAt: existsSync(waitRan) ? Number(readFileSync(waitRan, 'utf8').trim()) : Number.NaN,
+      hotDoneAt: existsSync(hotDone) ? Number(readFileSync(hotDone, 'utf8').trim()) : Number.NaN,
+      evidence: `${scenario.stdout}\n${scenario.stderr}\nhot guard:\n${hotOut}\nwait guard:\n${waitOut}`,
+    };
+  }
+
+  it('lets an overdue sweep that is making progress finish before a --deadline-at-arrival waiter', () => {
+    const r = arrivalWaiterScenario({
+      hotLoops: HOLD_PROGRESS_LOOPS,
+      hotWritesProgress: true,
+      progressStallSec: HOLD_PROGRESS_STALL_SEC,
+      hotSleep: HOLD_PROGRESS_SLEEP,
+      extensionSec: HOLD_PROGRESS_EXTENSION_SEC,
+    });
+
+    expect(r.scenario.stdout, r.evidence).toContain('wait_rc=0 hot_rc=0');
+    expect(r.hotOut, r.evidence).toContain('result=staleness-override-armed');
+    expect(r.hotOut, r.evidence).toContain('result=holding-against-priority-waiter reason=holder-earlier-deadline');
+    expect(r.hotOut, r.evidence).not.toContain('result=stopping-during-run');
+    expect(r.waitRanAt, r.evidence).toBeGreaterThanOrEqual(r.hotDoneAt);
+  }, HOLD_PROGRESS_TEST_TIMEOUT_MS);
+
+  it('still yields to a --deadline-at-arrival waiter once the sweep has stalled', () => {
+    const r = arrivalWaiterScenario({ hotLoops: 400, hotWritesProgress: false });
+
+    expect(r.scenario.stdout, r.evidence).toContain(`wait_rc=0 hot_rc=${SCHEDULED_DEFER_EXIT}`);
+    expect(r.hotOut, r.evidence).toMatch(
+      /result=yielding-to-priority-waiter reason=holder-stalled waiter=\S+\.wait would_hold=holder-earlier-deadline /,
+    );
+    expect(r.hotOut, r.evidence).toContain('result=stopping-during-run reason=priority-waiter');
+    expect(Number.isNaN(r.hotDoneAt), r.evidence).toBe(true);
+    expect(Number.isNaN(r.waitRanAt), r.evidence).toBe(false);
+  });
+
+  it('rejects --deadline-at-arrival outside wait mode', () => {
+    const { env } = fixture();
+    const r = spawnSync('bash', ['-c', '"$GUARD" --mode scheduled --label hot --deadline-at-arrival -- true'], {
+      encoding: 'utf8',
+      env,
+      timeout: 10_000,
+    });
+    expect(r.status, `${r.stdout}\n${r.stderr}`).toBe(64);
+    expect(r.stderr).toContain('usage:');
   });
 
   it('keeps the escalation spent when an override cycle ends on its own', () => {
@@ -1307,37 +1919,14 @@ describe('Kopia managed entrypoint contract', () => {
     expect(next.stdout).toMatch(/escalation_retry_in_sec=\d+/);
   });
 
-  it('waits for the lock when a scheduled cycle is already past its staleness deadline', () => {
-    const { dir, env } = fixture();
-    seedDeadlineBase(dir, 'stale-lock', 25_200);
-    const ready = join(dir, 'ready');
-    const marker = join(dir, 'ran');
-    const scenario = spawnSync(
-      'bash',
-      [
-        '-c',
-        `
-        set -uo pipefail
-        "$GUARD" --mode wait --label holder -- bash -c 'touch "$1"; sleep 0.35' _ "$READY" &
-        holder=$!
-        for _ in $(seq 1 100); do [ -e "$READY" ] && break; sleep 0.01; done
-        [ -e "$READY" ] || exit 91
-        out=$("$GUARD" --mode scheduled --label stale-lock -- touch "$MARKER")
-        rc=$?
-        wait "$holder"
-        [ "$rc" -eq 0 ] && [ -e "$MARKER" ] &&
-          grep -q 'result=waiting reason=staleness-override-lock' <<<"$out"
-      `,
-      ],
-      {
-        encoding: 'utf8',
-        env: { ...env, GUARD: guard, READY: ready, MARKER: marker },
-        timeout: 10_000,
-      },
-    );
-
-    expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}`).toBe(0);
-  });
+  it('waits for the lock when a scheduled cycle is already past its staleness deadline', async () => {
+    const fx = fixture();
+    seedDeadlineBase(fx.dir, 'stale-lock', 25_200);
+    const result = await contendWithFixtureHolder(fx, ['--mode', 'scheduled', '--label', 'stale-lock'],
+      'staleness-override-lock');
+    expect(result.status, result.output).toBe(0);
+    expect(result.ran, result.output).toBe(true);
+  }, 30_000);
 
   // WI-10003884, second half. The --priority-on-contention lock wait went live and the
   // very first tick after it (13:00 EDT 2026-09-29) waited out the lock for 5s, then
@@ -1381,7 +1970,7 @@ describe('Kopia managed entrypoint contract', () => {
       // design; holding the lock here would park them behind someone else's PSI for up to
       // the whole wait. If the lock were held, this blocks until run()'s 10s timeout.
       const holderRan = join(dir, 'holder-ran');
-      const holder = run(['--mode', 'wait', '--label', 'daily-home-vm', '--', 'touch', holderRan], env);
+      const holder = run(['--mode', 'wait', '--label', 'protected-manual', '--', 'touch', holderRan], env);
       expect(holder.status, `${holder.stdout}\n${holder.stderr}`).toBe(0);
       expect(existsSync(holderRan)).toBe(true);
       expect(existsSync(dbRan)).toBe(false);
@@ -1517,6 +2106,10 @@ describe('Kopia managed entrypoint contract', () => {
     expect(contended, out).toBeGreaterThan(cleared);
     expect(started, out).toBeGreaterThan(contended);
     expect(hotOut.text).toContain('result=stopping-during-run reason=priority-waiter');
+    // A holder that is not overdue honors every waiter at once; the log names which.
+    expect(hotOut.text).toMatch(
+      /result=honoring-priority-waiter reason=holder-not-overdue waiter=\S+\.wait waiter_pid=\d+ waiter_mode=scheduled\b/,
+    );
     expect(existsSync(dbRan)).toBe(true);
   }, 30_000);
 
@@ -1590,7 +2183,7 @@ describe('Kopia managed entrypoint contract', () => {
   // pressure. A long TOTAL wait must not make that handoff look stale: the releasing
   // holder's note decides. Without a note the reading really is stale, and the producer
   // re-waits as before (the control below).
-  function longWaitBehindHolder(withNote: boolean) {
+  async function longWaitBehindHolder(withNote: boolean) {
     const fx = fixture();
     const { dir } = fx;
     // handoff_fresh_sec = monitor 0.05 + grace 1 + 5 = 6s. No child is TERM'd here,
@@ -1605,48 +2198,49 @@ describe('Kopia managed entrypoint contract', () => {
     pressureFile(ioHigh, 15.4);
     const dbLog = join(dir, 'db.log');
     const dbRan = join(dir, 'db-ran');
-    const scenario = spawnSync(
-      'bash',
-      [
-        '-c',
-        `
-        set -uo pipefail
-        (
-          exec 9>>"$KOPIA_BACKUP_LOCK_PATH"
-          flock 9
-          touch "$HOLDER_READY"
-          sleep 7.5
-          cp "$IO_HIGH" "$KOPIA_BACKUP_IO_PSI_PATH"
-          if [ "$WITH_NOTE" = 1 ]; then date +%s >"$KOPIA_BACKUP_LOCK_PATH.handoff"; fi
-        ) &
-        holder=$!
-        for _ in $(seq 1 200); do [ -e "$HOLDER_READY" ] && break; sleep 0.01; done
-        [ -e "$HOLDER_READY" ] || exit 91
-        "$GUARD" --mode scheduled --label db-dump --no-restart-safe --priority-on-contention -- touch "$DB_RAN" >"$DB_LOG" 2>&1
-        db_rc=$?
-        wait "$holder"
-        exit "$db_rc"
-        `,
-      ],
-      {
-        encoding: 'utf8',
-        env: {
-          ...env,
-          HOLDER_READY: join(dir, 'holder-ready'),
-          IO_HIGH: ioHigh,
-          WITH_NOTE: withNote ? '1' : '0',
-          DB_LOG: dbLog,
-          DB_RAN: dbRan,
-        },
-        timeout: 25_000,
-      },
-    );
-    const dbOut = existsSync(dbLog) ? readFileSync(dbLog, 'utf8') : 'missing';
-    return { scenario, dbOut, ran: existsSync(dbRan), notePath: `${env.KOPIA_BACKUP_LOCK_PATH}.handoff` };
+    const ready = join(dir, 'holder-ready');
+    const release = join(dir, 'release-holder');
+    const witness = witnessBlockingFlock(dir);
+    const holder = spawn('bash', ['-c', `
+      exec 9>>"$KOPIA_BACKUP_LOCK_PATH"
+      /usr/bin/flock 9
+      touch "$HOLDER_READY"
+      while [ ! -e "$RELEASE" ]; do sleep 0.01; done
+      cp "$IO_HIGH" "$KOPIA_BACKUP_IO_PSI_PATH"
+      if [ "$WITH_NOTE" = 1 ]; then date +%s >"$KOPIA_BACKUP_LOCK_PATH.handoff"; fi
+    `], { env: { ...env, HOLDER_READY: ready, RELEASE: release, IO_HIGH: ioHigh, WITH_NOTE: withNote ? '1' : '0' },
+      stdio: 'ignore', detached: true });
+    const holderClosed = new Promise<number | null>((resolve) => holder.once('close', resolve));
+    let child: ReturnType<typeof spawn> | undefined;
+    let closed: Promise<number | null> | undefined;
+    let dbOut = '';
+    try {
+      await waitForPath(ready);
+      child = spawn('bash', [guard, '--mode', 'scheduled', '--label', 'db-dump', '--no-restart-safe', '--priority-on-contention', '--', 'touch', dbRan],
+        { env: { ...env, ...witness.env }, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+      closed = new Promise<number | null>((resolve) => child!.once('close', resolve));
+      child.stdout!.setEncoding('utf8').on('data', (chunk: string) => { dbOut += chunk; });
+      child.stderr!.setEncoding('utf8').on('data', (chunk: string) => { dbOut += chunk; });
+      await waitForKernelFlockBlock(witness.pidPath);
+      await waitForOutput(() => dbOut, 'result=waiting reason=priority-on-contention');
+      // This duration starts AFTER the guard entered its blocking flock call,
+      // rather than after holder startup. It must exceed the 6s freshness window.
+      await new Promise((resolve) => setTimeout(resolve, 7_500));
+      expect(existsSync(dbRan), dbOut).toBe(false);
+      writeFileSync(release, 'release after measured long contention');
+      const status = await closed;
+      await holderClosed;
+      writeFileSync(dbLog, dbOut);
+      return { scenario: { status, stdout: '', stderr: '' }, dbOut, ran: existsSync(dbRan), notePath: `${env.KOPIA_BACKUP_LOCK_PATH}.handoff` };
+    } finally {
+      writeFileSync(release, 'cleanup');
+      if (child && closed) await stopFixtureGroup(child, closed);
+      await stopFixtureGroup(holder, holderClosed);
+    }
   }
 
-  it('keeps a lock handed over after a long wait behind a non-yielding holder when the handoff note is fresh', () => {
-    const { scenario, dbOut, ran, notePath } = longWaitBehindHolder(true);
+  it('keeps a lock handed over after a long wait behind a non-yielding holder when the handoff note is fresh', async () => {
+    const { scenario, dbOut, ran, notePath } = await longWaitBehindHolder(true);
     expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}\ndb guard:\n${dbOut}`).toBe(0);
     const admitted = dbOut.match(
       /result=admitted-after-handoff reason=io-pressure full_avg10=15\.40 limit=10 lock_waited_sec=(\d+) handoff_note_age_sec=(\d+) /,
@@ -1660,8 +2254,8 @@ describe('Kopia managed entrypoint contract', () => {
     expect(existsSync(notePath)).toBe(false);
   }, 30_000);
 
-  it('re-waits on pressure after a long wait when the holder left no handoff note', () => {
-    const { scenario, dbOut, ran } = longWaitBehindHolder(false);
+  it('re-waits on pressure after a long wait when the holder left no handoff note', async () => {
+    const { scenario, dbOut, ran } = await longWaitBehindHolder(false);
     expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}\ndb guard:\n${dbOut}`).toBe(SCHEDULED_DEFER_EXIT);
     expect(dbOut).not.toContain('result=admitted-after-handoff');
     expect(dbOut).toContain('result=waiting reason=priority-on-pressure io-pressure full_avg10=15.40');

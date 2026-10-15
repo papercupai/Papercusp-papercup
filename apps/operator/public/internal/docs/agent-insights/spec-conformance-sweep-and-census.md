@@ -1,0 +1,28 @@
+# Spec conformance sweep and census
+URL: /internal/docs/agent-insights/spec-conformance-sweep-and-census
+
+Run deterministic plan checks, inspect the retrofit census, resolve deviations, and refresh clause proof through existing plan and ledger surfaces.
+
+The conformance loop extends requirement checks, the rubric results ledger, drift conditions, plan Decisions, and work-item links. It does not replace final acceptance grading.
+
+## Sweep selection and runtime
+
+`system:spec-conformance-sweep` selects plans whose requirements compile to the conformance contract. A missing watermark triggers the first run. Later runs trigger when the declared footprint changes, a linked work-item transitions after the saved transition timestamp, or the per-plan interval expires. Selection is bounded by `maxRunsPerTick`: never-run plans first, then change/transition plans, then interval-only plans, with older runs first within each tier. Deferred plans retain their pending trigger.
+
+Migration 1507 creates the `spec_conformance_state` watermark table. Each plan/workspace/harness watermark records its last run, transition and footprint commit plus the observed outcome. A per-plan failure is recorded without aborting the tick. Failure to probe the footprint is reported explicitly. Conformance verdicts use `conformance:<harness>/<plan>` in the existing results ledger.
+
+The seed script `packages/operator-core/lib/harness/routines/seed-spec-conformance-sweep-routine.ts` creates one operator-home ephemeral routine with a recurring interval and `system:spec-conformance-sweep` as its registered target. New rows are active by default; reseeding preserves an operator's existing pause. Run it only when the actual executor has the handler and migration loaded. The background host arms ephemeral rows at startup. Inspect the routine's real fire/outcome record before claiming continuous execution; a seeded row alone is insufficient.
+
+## Census and retrofit report
+
+Call `plans:conformance { op:'report', harness:'papercusp' }` for the plan census. Its requested status population determines coverage; counts are derived by `conformance-report.ts`. The report separates applicable requirements, enforced/unenforced checks, invalid contracts, and missing footprint declarations. A count does not certify passing behavior. Publish the complete retrofit Markdown through `reports:publish`, read it back with `reports:get`, and retain the report id and source path. Re-run the census to compare later editions instead of treating historical totals as current.
+
+## Drift, deviations and closure
+
+A failed check raises the requirement's condition-keyed drift alarm and blocks affected dependent work. Repair the underlying behavior and rerun its check. If the requirement cannot be met, use `plans:conformance` with `op:'propose-deviation'`, the exact requirement key and reason, then `op:'approve-deviation'` with the proposal Decision. An owner-sourced requirement requires verified owner-turn provenance for approval. A proposal alone grants no exemption.
+
+At completion, declare mapped requirement keys in `completion.discharges` or `completion.contributesTo`. Discharged executable checks need canonical passing results. Open mapped drift alarms refuse either declaration unless an approved deviation applies. Contribution does not assert the whole requirement is delivered. A URL-only directive disposition is refused.
+
+## Refreshing spec proof
+
+Use the existing sequence: amend the acceptance rubric when necessary, vet it, then bind recorded executable evidence to the immutable clause revision with `plans:bind-spec-evidence`. Prefer `fromTestRun` with explicit relevant source paths. Preserve the measured source/test provenance; binder-authored `fixtureFree`, `pathReachable`, or rung flags do not establish independent adequacy. Mutation proof needs a recorded calibration and mutant linked to the exact clause. Use `plans:evaluate-spec-test-adequacy` to read each blocker, then `plans:certify-spec-clauses` after it passes. Read the independent grading audit before closing. Retire stale bindings only with a reason and preserve their ledger history.

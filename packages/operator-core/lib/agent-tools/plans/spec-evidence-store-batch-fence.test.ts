@@ -16,15 +16,19 @@ const h = vi.hoisted(() => ({
   activeLocks: [] as Array<{ coordinationDomain: string; path: string; intent: string }>,
   // Locks that appear only from the Nth readQueue call on: a probe starting mid-batch.
   lateLocks: null as null | { fromCall: number; locks: Array<{ coordinationDomain: string; path: string; intent: string }> },
-  calls: [] as Array<{ coordinationDomain: string; paths: string[] }>,
+  calls: [] as Array<{ coordinationDomain: string; paths: string[]; includeWaiting: boolean }>,
   failNextRead: false,
 }));
 
 vi.mock('../locks/su-lock-store', () => ({
   ensureBootstrap: vi.fn(async () => undefined),
   getTxPool: vi.fn(() => ({})),
-  readQueue: vi.fn(async (_pool: unknown, args: { coordinationDomain: string; paths: string[] }) => {
-    h.calls.push({ coordinationDomain: args.coordinationDomain, paths: [...args.paths].sort() });
+  readQueue: vi.fn(async (_pool: unknown, args: { coordinationDomain: string; paths: string[]; includeWaiting?: boolean }) => {
+    h.calls.push({
+      coordinationDomain: args.coordinationDomain,
+      paths: [...args.paths].sort(),
+      includeWaiting: args.includeWaiting ?? true,
+    });
     if (h.failNextRead) {
       h.failNextRead = false;
       throw new Error('lock queue unavailable');
@@ -157,8 +161,8 @@ describe('listSpecEvidence batch mutation-probe fence', () => {
     expect(rows.map((row) => (row as { serverMeasurement?: { status: string } }).serverMeasurement?.status))
       .toEqual(['measured', 'measured', 'measured']);
     const union = [
-      { coordinationDomain: root, paths: ['a.ts', 'b.ts'] },
-      { coordinationDomain: nestedRoot, paths: ['c.ts'] },
+      { coordinationDomain: root, paths: ['a.ts', 'b.ts'], includeWaiting: false },
+      { coordinationDomain: nestedRoot, paths: ['c.ts'], includeWaiting: false },
     ];
     expect(h.calls).toHaveLength(4);
     expect(h.calls.slice(0, 2)).toEqual(expect.arrayContaining(union));

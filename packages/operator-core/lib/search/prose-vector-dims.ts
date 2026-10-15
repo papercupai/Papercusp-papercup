@@ -276,7 +276,7 @@ export const PROSE_VECTOR_COLUMNS: ReadonlyArray<{ table: string; column: string
   // migration must include it, but its refill is deliberately kept off the
   // general TARGETS sweep: personal-vault/embedding.ts hard-pins the local-only
   // embedder and runs this target as a separate governed leg.
-  { table: 'harness_shared.personal_documents', column: 'embedding' },
+  { table: 'harness_shared.documents', column: 'embedding' },
   // WI-39840. Both are QUERY vectors compared against `session_turns.text_embedding`,
   // so they are governed by the shared prose width — but both were created AFTER
   // migration 727 moved that width to 768 and each declared `vector(384)` anyway

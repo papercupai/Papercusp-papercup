@@ -9,6 +9,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseRepairTickLegs,
+  partitionSameHeadContradictions,
+  releaseFixerTargetsAfterSameHeadContradictions,
   repairTickClearedQueueSignature,
   repairTickLegsCurrent,
   type StoredRepairTickLegs,
@@ -169,5 +171,88 @@ describe('repairTickClearedQueueSignature', () => {
   it('is false with no measurement or an empty queue failing set', () => {
     expect(repairTickClearedQueueSignature(null, { repairHead: HEAD, failingTests: [LANE] })).toBe(false);
     expect(repairTickClearedQueueSignature(tick(), { repairHead: HEAD, failingTests: [] })).toBe(false);
+  });
+});
+
+// WI-10007494: a same-head contradiction mixed with a real red. Before this, nothing removed
+// the contradicted entry, so the fixer was told to fix a leg its own head had passed.
+describe('partitionSameHeadContradictions / releaseFixerTargetsAfterSameHeadContradictions', () => {
+  const HEAD = 'aa9487596d5406cc49d424a4162d99634b214cdf';
+  const LANE = '@papercusp/operator-core :: test:lane-stateful';
+  const FILE = 'packages/operator-core/lib/agent-tools/plans/arm-schedule.test.ts';
+  const LINT = 'lint:design-primitives';
+  const tick = (over: Partial<StoredRepairTickLegs> = {}): StoredRepairTickLegs => ({
+    head: HEAD.slice(0, 12),
+    atMs: 1_000,
+    ok: false,
+    failingSignatures: [LINT],
+    legs: [
+      { id: LANE, status: 'pass', durationMs: 1_159_339 },
+      { id: LINT, status: 'fail', durationMs: 4_000 },
+    ],
+    ...over,
+  });
+
+  it('splits a passed same-head leg from a real red and a test file, keeping input order', () => {
+    expect(partitionSameHeadContradictions([FILE, LANE, LINT], tick(), HEAD)).toEqual({
+      contradicted: [LANE],
+      actionable: [FILE, LINT],
+    });
+  });
+
+  it('contradicts nothing when the tick measured an earlier head', () => {
+    expect(partitionSameHeadContradictions([LANE, LINT], tick({ head: 'fff000000000' }), HEAD)).toEqual({
+      contradicted: [],
+      actionable: [LANE, LINT],
+    });
+  });
+
+  it('contradicts nothing when currency cannot be judged (no repairHead) or there is no tick', () => {
+    expect(partitionSameHeadContradictions([LANE], tick(), null).contradicted).toEqual([]);
+    expect(partitionSameHeadContradictions([LANE], null, HEAD)).toEqual({ contradicted: [], actionable: [LANE] });
+  });
+
+  it('keeps an id actionable when the same tick also recorded it failing or errored', () => {
+    const dup = tick({
+      failingSignatures: [],
+      legs: [
+        { id: LANE, status: 'pass', durationMs: 1 },
+        { id: LANE, status: 'errored', durationMs: 2 },
+      ],
+    });
+    expect(partitionSameHeadContradictions([LANE], dup, HEAD).contradicted).toEqual([]);
+    const named = tick({ failingSignatures: [LANE], legs: [{ id: LANE, status: 'pass', durationMs: 1 }] });
+    expect(partitionSameHeadContradictions([LANE], named, HEAD).contradicted).toEqual([]);
+  });
+
+  it('never contradicts a test-file entry, which is not a tick leg id', () => {
+    expect(partitionSameHeadContradictions([FILE], tick(), HEAD)).toEqual({ contradicted: [], actionable: [FILE] });
+  });
+
+  it('hands the fixer only the real red in the mixed case and names the contradicted entry', () => {
+    expect(releaseFixerTargetsAfterSameHeadContradictions([LANE, LINT], tick(), HEAD)).toEqual({
+      targets: [LINT],
+      sameHeadContradicted: [LANE],
+    });
+  });
+
+  it('leaves an all-contradicted signature to the retest path rather than emptying the target list', () => {
+    const allPassed = tick({ ok: true, failingSignatures: [], legs: [{ id: LANE, status: 'pass', durationMs: 1 }] });
+    expect(releaseFixerTargetsAfterSameHeadContradictions([LANE], allPassed, HEAD)).toEqual({
+      targets: [LANE],
+      sameHeadContradicted: [],
+    });
+    expect(repairTickClearedQueueSignature(allPassed, { repairHead: HEAD, failingTests: [LANE] })).toBe(true);
+  });
+
+  it('returns the input unchanged when nothing is contradicted', () => {
+    expect(releaseFixerTargetsAfterSameHeadContradictions([FILE, LINT], tick(), HEAD)).toEqual({
+      targets: [FILE, LINT],
+      sameHeadContradicted: [],
+    });
+    expect(releaseFixerTargetsAfterSameHeadContradictions(undefined, tick(), HEAD)).toEqual({
+      targets: [],
+      sameHeadContradicted: [],
+    });
   });
 });

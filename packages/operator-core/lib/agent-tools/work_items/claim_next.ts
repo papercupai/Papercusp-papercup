@@ -12,7 +12,8 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
+import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveExplicitAgentOwnerId } from '../coordination/recipient-resolve';
 import { COORD_ROLES } from '../coordination/roles';
 // The allowlist comes from its leaf: the args schema below reads it at module-eval time,
 // which the `../../work-items` re-export cannot serve inside that module's import cycle.
@@ -32,7 +33,7 @@ import {
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeRetractionAdvisory } from './retraction-advisory';
 import {
-  fetchContextPressure,
+  fetchContextPressureReadings,
   resolveContextPressureRecoveryPath,
   resolveContextPressureHeadroom,
 } from '../coordination/context-pressure';
@@ -112,10 +113,23 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
-    // EI-9274: resolve a literal `'self'` assignee the same as an omitted one (both →
-    // the caller) — previously stored verbatim, producing an unmatchable, permanently
-    // orphaned claim (WI-3881).
-    const assignee = resolveSelfLiteral(args.assignee, ident.ownerId) ?? ident.ownerId;
+    const requestedAssignee = args.assignee ?? ident.ownerId;
+    const assigneeResolution = await resolveExplicitAgentOwnerId(
+      requestedAssignee,
+      ident.ownerId,
+      ident.workspaceId,
+    );
+    if (!assigneeResolution.ok) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({ ok: false, error: assigneeResolution.code, hint: assigneeResolution.message }),
+          },
+        ],
+      };
+    }
+    const assignee = assigneeResolution.ownerId;
     // workspace-work-scope-policy-2026-09-04 P-006: a pull from an out-of-scope harness is
     // refused before any SKIP-LOCKED claim runs (held, never deleted; ledgered). No policy ⇒
     // one cached read, byte-identical behaviour.
@@ -135,11 +149,12 @@ export default defineTool({
     // ungated here (work_items:claim, the by-id surface, is likewise deliberately not gated).
     if (assignee === ident.ownerId) {
       const gateEnabled = await getFlag(FLAGS.SCHEDULER_CONTEXT_PRESSURE_GATE, ident.ownerId).catch(() => true);
-      const bucket = gateEnabled
-        ? await fetchContextPressure([ident.ownerId])
+      const reading = gateEnabled
+        ? await fetchContextPressureReadings([ident.ownerId])
             .then((m) => m.get(ident.ownerId) ?? null)
             .catch(() => null)
         : null;
+      const bucket = reading?.bucket ?? null;
       // EI-23744538757758407: both remedy reads fire ONLY on the refusal path, and in PARALLEL.
       // Headroom answers a question `recovery` cannot — whether this caller's limit is even
       // SATISFIABLE — so that a session whose fixed baseline already exceeds its soft limit is
@@ -153,6 +168,7 @@ export default defineTool({
         : [null, null];
       const gate = decideContextPressureGate({
         bucket,
+        reading,
         override: args.ignoreContextPressure === true,
         enabled: gateEnabled,
         overrideArg: 'ignoreContextPressure',
@@ -212,7 +228,7 @@ export default defineTool({
         // it (the admission gate only refuses the ensuing claim), burning a full
         // session-resume cycle on a pull this member is forbidden to make anyway.
         // Mirrors the same-purpose cancel on a successful claim below.
-        const claimableAwaitsCancelled = await cancelClaimableAwaits(assignee).catch(() => 0);
+        const claimableAwaitsCancelled = await cancelClaimableAwaits(assignee, { includeStanding: true }).catch(() => 0);
         const miss = fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, {
           pausedReason: pause.reason,
           claimableAwaitsCancelled,
@@ -686,6 +702,10 @@ export default defineTool({
         return null;
       }
     };
+    const taskBriefFor = async (workItem: ReturnType<typeof wiOf>) => {
+      const m = await import('../../code-intelligence/task-brief');
+      return m.getClaimTimeTaskBrief({ workItem, harness: args.harness, workspaceId: ident.workspaceId });
+    };
 
     const count = args.count ?? 1;
     // Backward-compatible single-item shape when count is omitted/1.
@@ -698,8 +718,8 @@ export default defineTool({
         'workItem' in claimed
           ? { ok: true as const, workItem: claimed.workItem, claimedUnder: claimed.claimedUnder }
           : { ok: true as const, workItem: claimed };
-      // EI-10541: idle -> working transition — cancel this agent's stale `work-item:claimable`
-      // idle-park await(s) (best-effort, see cancelClaimableAwaits). Mutually exclusive with holding a claim.
+      // EI-10541: idle -> working transition — cancel this agent's stale one-shot claimable wake
+      // (best-effort, see cancelClaimableAwaits); reusable standing watches remain armed.
       await cancelClaimableAwaits(assignee).catch(() => 0);
       const memory = await recallFor([wiOf(claimed)]);
       const [
@@ -714,6 +734,7 @@ export default defineTool({
         planItemLandedResult,
         siblingPathOverlapResult,
         sourceCitationResult,
+        taskBriefResult,
       ] = await Promise.all([
         planDecisionsFor(wiOf(claimed)),
         priorAttemptsFor(wiOf(claimed)),
@@ -726,6 +747,7 @@ export default defineTool({
         planItemLandedFor(wiOf(claimed)),
         siblingPathOverlapFor(wiOf(claimed)),
         sourceCitationFor(wiOf(claimed)),
+        taskBriefFor(wiOf(claimed)),
       ]);
       return {
         content: [
@@ -747,6 +769,7 @@ export default defineTool({
               ...(planItemLandedResult ?? {}),
               ...(siblingPathOverlapResult ?? {}),
               ...(sourceCitationResult ?? {}),
+              ...(taskBriefResult ?? {}),
             }),
           },
         ],
@@ -769,7 +792,7 @@ export default defineTool({
       const miss = await missResult();
       return { content: [{ type: 'text' as const, text: JSON.stringify({ ...miss, claimed }) }] };
     }
-    // EI-10541: claimed >=1 item — cancel this agent's stale `work-item:claimable` idle-park await(s).
+    // EI-10541: claimed >=1 item — cancel this agent's stale one-shot claimable wake wait(s).
     await cancelClaimableAwaits(assignee).catch(() => 0);
     const memory = await recallFor(claimed.map((c) => wiOf(c)));
     // EI-19387745408924340: attach each claimed item's governing plan decisions, same as
@@ -790,6 +813,7 @@ export default defineTool({
           planItemLandedResult,
           siblingPathOverlapResult,
           sourceCitationResult,
+          taskBriefResult,
         ] = await Promise.all([
           planDecisionsFor(wiOf(c)),
           priorAttemptsFor(wiOf(c)),
@@ -802,6 +826,7 @@ export default defineTool({
           planItemLandedFor(wiOf(c)),
           siblingPathOverlapFor(wiOf(c)),
           sourceCitationFor(wiOf(c)),
+          taskBriefFor(wiOf(c)),
         ]);
         return {
           ...c,
@@ -818,6 +843,7 @@ export default defineTool({
           ...(planItemLandedResult ?? {}),
           ...(siblingPathOverlapResult ?? {}),
           ...(sourceCitationResult ?? {}),
+          ...(taskBriefResult ?? {}),
         };
       }),
     );

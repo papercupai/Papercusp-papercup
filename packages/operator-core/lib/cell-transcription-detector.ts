@@ -59,15 +59,33 @@ interface TranscriptionPattern {
   what: string;
   /** The value shape. MUST be global (`g`) — callers rely on lastIndex scanning. */
   value: RegExp;
-  /** Required state-claim context within CONTEXT_WINDOW chars of the value. */
+  /** Required state-claim context within CONTEXT_WINDOW chars and the value's sentence. */
   context: RegExp;
+  /** The value is claimed to be a commit sha, so a commit resolver may veto it. */
+  commitSha?: boolean;
+}
+
+export interface DetectOptions {
+  /**
+   * Does this hex token name a real commit? `true` keeps the hit, `false` drops it,
+   * `null` means "could not tell" and keeps it (fail-open, like the detector itself).
+   *
+   * EI-24684014950807803: shape alone cannot tell a sha from the other hex ids that
+   * travel in coord prose — an agent short id (`c0b38c83` for `su-c0b38c83-…`), a
+   * chunk-group id, a contentHash. One exclusion per id kind never converges;
+   * resolving the token does. The detector stays PURE and synchronous: a caller that
+   * can reach git resolves the tokens first (`cellTranscriptionHintResolvingCommits`
+   * in `git-commit-resolver.ts`) and passes the verdicts in here.
+   */
+  resolvesToCommit?: (token: string) => boolean | null;
 }
 
 /**
  * How far either side of a matched value we look for a state-claim context word.
- * Deliberately tight: a sha and the word "deployed" 400 chars apart are usually two
- * unrelated sentences, and widening this trades precision for recall in exactly the
- * direction EI-10949 warns against.
+ * Context must also be in the same sentence as the value: a nearby status word in
+ * the next sentence can describe a different value, as in a checkpoint hash followed
+ * by "Candidate/rollout limits unchanged." Deliberately tight: widening this trades
+ * precision for recall in exactly the direction EI-10949 warns against.
  */
 export const CONTEXT_WINDOW = 60;
 
@@ -77,7 +95,7 @@ export const CONTEXT_WINDOW = 60;
  * sentence cannot turn a source citation into a deployment claim.
  */
 const SOURCE_HEAD_VALUE_PREFIX =
-  /\b(?:current|local|root|source|working(?:\s+tree)?)\s+(?:git\s+)?head(?:\s+(?:sha|commit))?\s*(?:is|=|:)?\s*$/i;
+  /(?:\b(?:current|local|root|source|working(?:\s+tree)?)\s+(?:git\s+)?head(?:\s+(?:sha|commit))?|\b(?:working\s+tree|worktree)\b[^\n]{0,40}\b(?:git\s+)?head(?:\s+(?:sha|commit))?|\blocally\s+at\s+(?:git\s+)?head(?:\s+(?:sha|commit))?)\s*(?:is|=|:)?\s*$/i;
 
 /**
  * If a source HEAD value is explicitly described as deployed/serving/live, it is
@@ -101,14 +119,14 @@ const EXPLICIT_PIPELINE_STATE_AFTER_VALUE =
   /^\s*(?:is|was|now|currently)\s+(?:(?:(?:the|a)\s+)?(?:deploy(?:ed|ing|ment)?|serving|serves|live|release[d]?|staging|main|running|shipped)\b|at\s+:(?:3070|3170)\b)/i;
 
 /**
- * A commit explicitly described as committed locally/on staging is path evidence,
+ * A commit/SHA explicitly described as committed locally/on staging is path evidence,
  * not evidence that the commit is the deployed pipeline position. Keep this tied to
- * the value's `commit` label and its immediate state phrase: a generic `staging`
+ * a commit/SHA label at the value and its immediate state phrase: a generic `staging`
  * mention elsewhere must still keep ordinary staging-position claims detectable.
  */
-const STAGING_ONLY_COMMIT_PREFIX = /\bcommit\s*$/i;
+const STAGING_ONLY_COMMIT_PREFIX = /\b(?:commit|sha)\s*$/i;
 const EXPLICIT_STAGING_ONLY_COMMIT_AFTER =
-  /^\s+(?:was\s+)?committed\s+(?:locally\s*\/\s*on\s+staging|on\s+staging)\b/i;
+  /^\s+(?:was\s+)?committed(?:\s*\/\s*|\s+)(?:locally\s*\/\s*on\s+staging|on\s+staging)\b/i;
 
 /**
  * Lock and lease ids are hex-shaped by design, but they are not Git state. Keep
@@ -130,15 +148,23 @@ function isExplicitLockOrLeaseIdentifier(haystack: string, valueStart: number, v
 }
 
 /**
- * A work-item checkpoint's contentHash is an artifact fingerprint, not a Git or
- * deployment SHA. The label is often immediately adjacent to the value (for
- * example, `checkpoint 721...` or `(contentHash 562...)`), while an unrelated
- * phrase such as "live Vite locks" appears later in the same coord summary. Keep
- * this exclusion anchored to the value so that ordinary checkpoint prose does not
- * weaken the detector's state-claim context globally.
+ * Checkpoint, rubric-bar and package digests are artifact fingerprints, not Git or
+ * deployment SHAs. Their labels sit immediately before the value while unrelated
+ * pipeline words may appear nearby in the same coord message. Keep these
+ * exclusions anchored to the value so they cannot weaken state-claim context for
+ * an actual deployed commit elsewhere in the prose.
  */
 const CHECKPOINT_VALUE_PREFIX = /\bcheckpoint\s*$/i;
-const CONTENT_HASH_VALUE_PREFIX = /\bcontent[- ]?hash\s*(?::|=)?\s*$/i;
+const ARTIFACT_HASH_VALUE_PREFIX =
+  /\b(?:content[- ]?hash|(?:(?:prior|next))?bar[- ]?hash|(?:artifact[- ]?)?fingerprint(?:[- ]?(?:digest|hash))?|sha[- ]?256)\s*(?::|=)?\s*$/i;
+
+/**
+ * Memory-store identifiers are often rendered as their leading eight hex digits.
+ * A nearby word like "live" can satisfy the broad pipeline context window, but the
+ * immediate `memory <id>` label identifies an artifact id rather than a Git SHA.
+ */
+const MEMORY_ID_VALUE_PREFIX =
+  /\b(?:memory(?:[-\s]+(?:id|identifier))?|mem0(?:[-\s]+memory)?(?:[-\s]+(?:id|identifier))?)\s*(?:[:=#]\s*)?$/i;
 
 /**
  * Git blob object ids are hex-shaped, but a blob is an object artifact rather than
@@ -150,9 +176,54 @@ const CONTENT_HASH_VALUE_PREFIX = /\bcontent[- ]?hash\s*(?::|=)?\s*$/i;
 const GIT_BLOB_VALUE_PREFIX =
   /\b(?:git\s+)?blob(?:[-\s]+(?:id|identifier|hash|sha|oid)){0,2}\s*(?:[:=]\s*)?$/i;
 
+/**
+ * coord:send prepends these exact generated lines to over-cap message parts. The
+ * 8-hex group id is a content fingerprint, not an authored pipeline position;
+ * nearby prose such as ":3070 is serving" must not turn it into a cell hit even
+ * when that short id happens to resolve to a Git commit. Mask the whole generated
+ * line while preserving offsets and the surrounding authored text.
+ */
+const GENERATED_COORD_CHUNK_HEADER_LINE = /^⟦part \d+\/\d+ g:[0-9a-f]{8}(?: cont)?⟧\r?$/gm;
+
+function maskGeneratedCoordChunkHeaders(text: string): string {
+  return text.replace(GENERATED_COORD_CHUNK_HEADER_LINE, (header) => ' '.repeat(header.length));
+}
+
+/**
+ * Keep nearby status prose attached to the value it describes. The character window
+ * alone crossed a sentence boundary on a work-item checkpoint hash followed by a
+ * separate "Candidate/rollout limits unchanged" sentence, producing a false gate
+ * candidate. Search only the intersection of the existing distance window and the
+ * sentence containing the value; a genuine claim before or after the value in that
+ * sentence remains detectable.
+ */
+function sameSentenceContextWindow(haystack: string, valueStart: number, valueLength: number): string {
+  const windowStart = Math.max(0, valueStart - CONTEXT_WINDOW);
+  const valueEnd = valueStart + valueLength;
+  const windowEnd = Math.min(haystack.length, valueEnd + CONTEXT_WINDOW);
+  const sentenceBoundary = /[.!?](?:["'”’)]*)\s+/g;
+
+  let sentenceStart = windowStart;
+  const before = haystack.slice(windowStart, valueStart);
+  let boundary: RegExpExecArray | null;
+  while ((boundary = sentenceBoundary.exec(before)) !== null) {
+    sentenceStart = windowStart + sentenceBoundary.lastIndex;
+  }
+
+  const after = haystack.slice(valueEnd, windowEnd);
+  const nextBoundary = /[.!?](?:["'”’)]*)\s+/.exec(after);
+  const sentenceEnd = nextBoundary ? valueEnd + nextBoundary.index : windowEnd;
+  return haystack.slice(sentenceStart, sentenceEnd);
+}
+
 function isCheckpointMetadataValue(haystack: string, valueStart: number): boolean {
   const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
-  return CHECKPOINT_VALUE_PREFIX.test(before) || CONTENT_HASH_VALUE_PREFIX.test(before);
+  return CHECKPOINT_VALUE_PREFIX.test(before) || ARTIFACT_HASH_VALUE_PREFIX.test(before);
+}
+
+function isExplicitMemoryIdentifier(haystack: string, valueStart: number): boolean {
+  const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
+  return MEMORY_ID_VALUE_PREFIX.test(before);
 }
 
 function isGitBlobHash(haystack: string, valueStart: number): boolean {
@@ -205,8 +276,9 @@ const PATTERNS: readonly TranscriptionPattern[] = [
     // Candidate state has its own registered cell. Keep it ahead of the generic
     // pipeline-position pattern and do not let a gate candidate be described as
     // the deployed/serving commit.
-    value: /(?<![0-9A-Za-z#-])(?=[0-9a-f]{7,40}(?![0-9A-Za-z-]))[0-9a-f]*[a-f][0-9a-f]*(?![0-9A-Za-z-])/gi,
+    value: /(?<![0-9]\.)(?<![0-9A-Za-z#-])(?=[0-9a-f]{7,40}(?![0-9A-Za-z-]))[0-9a-f]*[a-f][0-9a-f]*(?![0-9A-Za-z-])/gi,
     context: /\b(candidate|green[- ]?checkpoint)\b/i,
+    commitSha: true,
   },
   {
     cell: 'git.pipelinePosition',
@@ -226,9 +298,13 @@ const PATTERNS: readonly TranscriptionPattern[] = [
     // So the run must not ABUT an alphanumeric, a hyphen, or a '#': that excludes uuid
     // segments (both interior and leading, via the trailing lookahead), hyphenated
     // identifiers, and hex colours, while leaving a standalone sha untouched.
-    value: /(?<![0-9A-Za-z#-])(?=[0-9a-f]{7,40}(?![0-9A-Za-z-]))[0-9a-f]*[a-f][0-9a-f]*(?![0-9A-Za-z-])/gi,
+    // Nor may it start after a digit and decimal point: 019.520004B is a byte
+    // amount, even if its fractional suffix happens to resolve to a Git commit.
+    // The candidate pattern above uses the same numeric boundary.
+    value: /(?<![0-9]\.)(?<![0-9A-Za-z#-])(?=[0-9a-f]{7,40}(?![0-9A-Za-z-]))[0-9a-f]*[a-f][0-9a-f]*(?![0-9A-Za-z-])/gi,
     context:
       /\b(deploy(ed|ing|ment)?|serving|serves|live|release[d]?|staging|main|:3070|:3170|running|shipped)\b/i,
+    commitSha: true,
   },
   {
     cell: 'git.pipelinePosition',
@@ -262,11 +338,12 @@ function dedupeKey(hit: CellTranscription): string {
  * inside a `coord:send` would turn an advisory into an outage, which is the one
  * failure mode a tier-3 mechanism must never have.
  */
-export function detectCellTranscriptions(text: unknown): CellTranscription[] {
+export function detectCellTranscriptions(text: unknown, options: DetectOptions = {}): CellTranscription[] {
   if (typeof text !== 'string' || text.length === 0) return [];
   // Bound the work: a 100KB message body is not worth a full scan, and the scan is
   // on the hot path of every send.
-  const haystack = text.length > 20_000 ? text.slice(0, 20_000) : text;
+  const boundedText = text.length > 20_000 ? text.slice(0, 20_000) : text;
+  const haystack = maskGeneratedCoordChunkHeaders(boundedText);
 
   const out: CellTranscription[] = [];
   const seen = new Set<string>();
@@ -283,9 +360,7 @@ export function detectCellTranscriptions(text: unknown): CellTranscription[] {
         re.lastIndex += 1;
         continue;
       }
-      const start = Math.max(0, m.index - CONTEXT_WINDOW);
-      const end = Math.min(haystack.length, m.index + m[0].length + CONTEXT_WINDOW);
-      const window = haystack.slice(start, end);
+      const window = sameSentenceContextWindow(haystack, m.index, m[0].length);
       if (!p.context.test(window)) continue; // a citation, not a claim
 
       // A broad context window is intentional for ordinary pipeline prose, but it
@@ -294,6 +369,7 @@ export function detectCellTranscriptions(text: unknown): CellTranscription[] {
       // that HEAD value keeps it classified as a deployment claim.
       if (
         isExplicitLockOrLeaseIdentifier(haystack, m.index, m[0].length) ||
+        isExplicitMemoryIdentifier(haystack, m.index) ||
         (p.field === 'positions.deployed / serving.startedSinceCodeChange' &&
           (isUnlinkedSourceHeadCitation(haystack, m.index, m[0].length) ||
             isUnlinkedReferenceCommitCitation(haystack, m.index, m[0].length) ||
@@ -304,6 +380,10 @@ export function detectCellTranscriptions(text: unknown): CellTranscription[] {
         continue;
       }
 
+      if (p.commitSha && options.resolvesToCommit && resolvesSafely(options.resolvesToCommit, m[0]) === false) {
+        continue; // hex-shaped, but not a commit — an agent id, hash, or other artifact id
+      }
+
       const hit: CellTranscription = { cell: p.cell, field: p.field, value: m[0], what: p.what };
       const key = dedupeKey(hit);
       if (seen.has(key)) continue;
@@ -312,6 +392,14 @@ export function detectCellTranscriptions(text: unknown): CellTranscription[] {
     }
   }
   return out;
+}
+
+function resolvesSafely(resolve: (token: string) => boolean | null, token: string): boolean | null {
+  try {
+    return resolve(token);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -336,8 +424,8 @@ export function formatCellTranscriptionHint(hits: CellTranscription[]): string |
 }
 
 /** Convenience: detect + format in one call. Returns null when there is nothing to say. */
-export function cellTranscriptionHint(text: unknown): string | null {
-  return formatCellTranscriptionHint(detectCellTranscriptions(text));
+export function cellTranscriptionHint(text: unknown, options: DetectOptions = {}): string | null {
+  return formatCellTranscriptionHint(detectCellTranscriptions(text, options));
 }
 
 /**
@@ -398,6 +486,7 @@ export const MAX_DEPENDS_ON_SUGGESTIONS = 3;
 export function suggestDependsOnCells(
   body: unknown,
   declaredCells: readonly string[] = [],
+  options: DetectOptions = {},
 ): DependsOnSuggestion[] {
   const declared = new Set(
     declaredCells.map((c) => (typeof c === 'string' ? c.trim().toLowerCase() : '')).filter(Boolean),
@@ -406,7 +495,7 @@ export function suggestDependsOnCells(
   const out: DependsOnSuggestion[] = [];
   const seenCells = new Set<string>();
 
-  for (const hit of detectCellTranscriptions(body)) {
+  for (const hit of detectCellTranscriptions(body, options)) {
     const cellKey = hit.cell.toLowerCase();
     if (declared.has(cellKey)) continue; // guard 2
     if (seenCells.has(cellKey)) continue; // guard 3

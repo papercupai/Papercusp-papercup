@@ -12,8 +12,8 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { execFileSync, spawnSync, type SpawnSyncReturns } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import * as path from 'node:path';
 
@@ -44,19 +44,24 @@ function variant(changes: Record<string, string>): string {
   }).trim();
   rmSync(index, { force: true });
   scratchGit(['read-tree', HEAD]);
-  for (const [file, content] of Object.entries(changes)) {
+  // Child source loaders judge this fixture's HEAD as well as the requested sha.
+  // Commit the bundler under test so local fixes are exercised before git-sync.
+  const fixtureChanges = { 'apps/tui/scripts/bundle-psu.mjs': readFileSync(BUNDLER, 'utf8'), ...changes };
+  for (const [file, content] of Object.entries(fixtureChanges)) {
     const blob = scratchGit(['hash-object', '-w', '--stdin'], content);
     scratchGit(['update-index', '--cacheinfo', `100644,${blob},${file}`]);
   }
-  return scratchGit(['commit-tree', scratchGit(['write-tree']), '-p', HEAD, '-m', 'p018 variant']);
+  const sha = scratchGit(['commit-tree', scratchGit(['write-tree']), '-p', HEAD, '-m', 'p018 variant']);
+  scratchGit(['update-ref', 'HEAD', sha]);
+  return sha;
 }
 
-function bundle(sha: string, label: string) {
+function bundle(sha: string, label: string, options: { target?: string; cache?: string } = {}) {
   const out = path.join(WORK, label);
   const run = spawnSync('node', [
-    BUNDLER, '--root', REPO_ROOT, '--sha', sha, '--target', 'linux-x86_64',
+    BUNDLER, '--root', REPO_ROOT, '--sha', sha, '--target', options.target ?? 'linux-x86_64',
     '--out', path.join(out, 'lib', 'psu'), '--summary', path.join(out, 'summary.json'),
-    '--native-builds', NATIVE_BUILDS, '--cache', path.join(WORK, 'cache'),
+    '--native-builds', NATIVE_BUILDS, '--cache', options.cache ?? path.join(WORK, 'cache'),
   ], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 180_000, env: { ...process.env, GIT_DIR: STORE, HOST_BANNER } });
   return { run, out };
 }
@@ -78,6 +83,51 @@ afterAll(() => {
 });
 
 describe.sequential('bundle-psu.mjs builds psu from the committed generation', () => {
+  test.skipIf(process.platform !== 'linux' || !existsSync('/dev/shm')
+    || statSync('/dev/shm').dev === statSync(tmpdir()).dev)(
+    'extracts a locked Mac native addon when the cache and temporary directory use different filesystems',
+    { timeout: 240_000 }, () => {
+      const cache = mkdtempSync('/dev/shm/pui-bundle-cache-');
+      try {
+        expect(statSync(cache).dev).not.toBe(statSync(tmpdir()).dev);
+        const platformKey = 'node_modules/@lydell/node-pty-darwin-x64';
+        expect(existsSync(path.join(REPO_ROOT, platformKey, 'package.json'))).toBe(false);
+        const lock = JSON.parse(git('show', `${HEAD}:package-lock.json`)) as {
+          packages: Record<string, { version: string; resolved?: string; integrity?: string }>;
+        };
+        const version = lock.packages[platformKey].version;
+        const packageDir = path.join(WORK, 'mac-addon-tarball', 'package');
+        mkdirSync(packageDir, { recursive: true });
+        writeFileSync(path.join(packageDir, 'package.json'), JSON.stringify({
+          name: '@lydell/node-pty-darwin-x64', version, license: 'MIT',
+        }));
+        const addonBytes = Buffer.from('cross-filesystem native addon fixture');
+        writeFileSync(path.join(packageDir, 'pty.node'), addonBytes);
+        const tarball = path.join(WORK, 'mac-addon.tgz');
+        execFileSync('tar', ['-czf', tarball, '-C', path.dirname(packageDir), 'package']);
+        const bytes = readFileSync(tarball);
+        lock.packages[platformKey] = {
+          ...lock.packages[platformKey],
+          resolved: `data:application/octet-stream;base64,${bytes.toString('base64')}`,
+          integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}`,
+        };
+        const sha = variant({ 'package-lock.json': `${JSON.stringify(lock, null, 2)}\n` });
+        const { run, out } = bundle(sha, 'cross-filesystem-mac-addon', { target: 'macos-x86_64', cache });
+        expect(run.status, output(run)).toBe(0);
+        const addon = path.join(out, 'lib', 'psu', 'node_modules', '@lydell', 'node-pty-darwin-x64');
+        expect(readFileSync(path.join(addon, 'pty.node'))).toEqual(addonBytes);
+        expect(JSON.parse(readFileSync(path.join(addon, 'package.json'), 'utf8')).version).toBe(version);
+        expect(readdirSync(cache).some((entry) => entry.startsWith('bundle-psu-pty-'))).toBe(false);
+        const summary = JSON.parse(readFileSync(path.join(out, 'summary.json'), 'utf8'));
+        expect(summary.npmPackages).toContainEqual(expect.objectContaining({
+          name: '@lydell/node-pty-darwin-x64', version, lockKey: platformKey,
+        }));
+      } finally {
+        rmSync(cache, { recursive: true, force: true });
+      }
+    },
+  );
+
   test('AUTO-BAR-R-11-P-018: committed bytes reach psu.mjs; the working tree does not', { timeout: 240_000 }, () => {
     const marker = `P018-COMMITTED-ONLY-${randomBytes(8).toString('hex')}`;
     // Commit the launcher under test into the fixture store so local launcher
@@ -102,12 +152,14 @@ describe.sequential('bundle-psu.mjs builds psu from the committed generation', (
 
     // A downloaded bundle has neither the source package.json nor a build-id
     // environment. Its version must still come from this committed generation.
-    const expectedVersion = JSON.parse(git('show', `${HEAD}:apps/operator/package.json`)).version;
+    const releaseVersion = git('show', `${HEAD}:apps/tui/Cargo.toml`)
+      .match(/^version\s*=\s*"([^"]+)"\s*$/m)?.[1];
+    if (!releaseVersion) throw new Error('committed apps/tui/Cargo.toml has no PUI release version');
     const version = spawnSync(process.execPath, [path.join(out, 'lib', 'psu', 'psu.mjs'), '--version'], {
       cwd: WORK, env: { HOME: WORK, PATH: '/usr/bin:/bin' }, encoding: 'utf8', timeout: 5_000,
     });
     expect(version.status, output(version)).toBe(0);
-    expect(version.stdout).toBe(`psu ${expectedVersion}\n`);
+    expect(version.stdout).toBe(`psu ${releaseVersion}\n`);
 
     const summary = JSON.parse(readFileSync(path.join(out, 'summary.json'), 'utf8')) as {
       sourcePins: Record<string, string>;

@@ -17,6 +17,8 @@ import { mcpEndpointHint } from './fetch-mcp-hint';
 import { INLINE_OUTPUT_CAP, scratchDir } from './bash-jobs';
 import { heuristicScreener, labelExternalContent } from '../../external-content';
 import { resolveOperationBoundaryProfile } from './boundary-profile';
+import { browserSessionArg } from './browser-session';
+import { runManagedBrowserSession } from './browser-owner';
 import {
   CapabilityFetchPolicyError,
   DEFAULT_MAX_REDIRECTS,
@@ -52,9 +54,9 @@ export class CapabilityFetchSizeLimitError extends Error {
 
 /**
  * Read a response without materializing an unbounded body in memory. The first
- * maxBytes are retained for the inline result; once the cap is crossed, the
- * complete stream is written to a scratch file with backpressure and only the
- * bounded prefix remains in memory.
+ * min(maxBytes, INLINE_OUTPUT_CAP) bytes are retained for the inline result;
+ * once that effective cap is crossed, the complete stream is written to a
+ * scratch file with backpressure and only the bounded prefix remains in memory.
  */
 export async function readResponseBody(
   response: Response,
@@ -71,6 +73,7 @@ export async function readResponseBody(
   }
 
   const reader = response.body.getReader();
+  const inlineLimit = Math.min(maxBytes, INLINE_OUTPUT_CAP);
   const prefix: Uint8Array[] = [];
   let prefixBytes = 0;
   let totalBytes = 0;
@@ -98,7 +101,7 @@ export async function readResponseBody(
       }
       totalBytes += chunk.byteLength;
 
-      if (!truncated && totalBytes <= maxBytes) {
+      if (!truncated && totalBytes <= inlineLimit) {
         prefix.push(chunk);
         prefixBytes += chunk.byteLength;
         continue;
@@ -111,7 +114,7 @@ export async function readResponseBody(
         // The chunks retained before the threshold are also part of the full
         // spill, so write them before the chunk that crossed the threshold.
         for (const prior of prefix) await writeChunk(prior);
-        const remaining = Math.max(0, maxBytes - prefixBytes);
+        const remaining = Math.max(0, inlineLimit - prefixBytes);
         if (remaining > 0) {
           prefix.push(chunk.subarray(0, remaining));
           prefixBytes += remaining;
@@ -132,7 +135,6 @@ export async function readResponseBody(
     reader.releaseLock();
   }
 
-  const inlineLimit = Math.min(maxBytes, INLINE_OUTPUT_CAP);
   const inline = Buffer.concat(prefix.map((chunk) => Buffer.from(chunk))).subarray(0, inlineLimit);
   return {
     body: inline.toString('utf8'),
@@ -151,20 +153,30 @@ export default defineTool({
     chaining: 'Standalone. Large bodies spill to a log path you can capability:read.',
   },
   capability: 'capability:net',
+  // Arbitrary HTTP methods and browser lifetimes can mutate state. Code-mode dry-run must skip them.
+  effect: 'write',
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   timeoutSec: 60,
   args: z.object({
-    url: z.string().url().describe('Absolute http(s) URL.'),
+    url: z.string().url().optional().describe('Absolute http(s) URL; required for HTTP fetch/browser navigation.'),
+    browser: browserSessionArg.optional().describe('Opt into a scoped Playwright browser: open/navigate/observe/close. Navigation and DOM reads only; remote writes, WebSockets, service workers, background network and downloads are refused. State is process-local; close/abort/idle expires it. Native TUI features remain enabled.'),
     method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']).optional().describe('Default GET.'),
     headers: z.record(z.string(), z.string()).optional().describe('Request headers.'),
     body: z.string().optional().describe('Request body (string).'),
-    max_bytes: z.number().int().positive().max(HARD_MAX_BYTES).optional().describe(`Max body bytes returned inline (default ${DEFAULT_MAX_BYTES}); beyond spills to a file.`),
+    max_bytes: z.number().int().positive().max(HARD_MAX_BYTES).optional().describe(`Max body bytes returned inline (default ${DEFAULT_MAX_BYTES}, bounded by the shared ${INLINE_OUTPUT_CAP}-byte inline ceiling); beyond the effective cap spills to a file.`),
     max_download_bytes: z.number().int().positive().max(HARD_MAX_DOWNLOAD_BYTES).optional().describe(`Hard streamed response ceiling (default ${DEFAULT_MAX_DOWNLOAD_BYTES}); the body is cancelled before further buffering or disk growth.`),
     max_redirects: z.number().int().min(0).max(10).optional().describe(`Maximum manually validated redirects (default ${DEFAULT_MAX_REDIRECTS}).`),
     timeout_ms: z.number().int().positive().max(120_000).optional().describe(`Request timeout in ms (default ${DEFAULT_TIMEOUT_MS}).`),
+  }).superRefine((args, ctx) => {
+    if ((!args.browser || args.browser.op === 'navigate') && !args.url) ctx.addIssue({ code: 'custom', path: ['url'], message: 'url required' });
+    if (args.browser && (args.method || args.headers || args.body || args.max_bytes !== undefined || args.max_download_bytes !== undefined || args.max_redirects !== undefined)) ctx.addIssue({ code: 'custom', path: ['browser'], message: 'browser uses its own read-only request policy and text/resource limits; HTTP method/headers/body/limits are not accepted' });
+    if (args.browser && ['observe', 'close'].includes(args.browser.op) && args.url) ctx.addIssue({ code: 'custom', path: ['url'], message: 'url only accepted for open/navigation' });
   }),
   async handler(args, ctx) {
+    if (args.browser) return runManagedBrowserSession(args.browser, args.url, ctx, {
+      timeoutMs: Math.min(args.timeout_ms ?? DEFAULT_TIMEOUT_MS, 30_000), maxText: args.browser.max_text_chars ?? 10_000,
+    });
     const maxDownloadBytes = args.max_download_bytes ?? DEFAULT_MAX_DOWNLOAD_BYTES;
     const maxBytes = Math.min(args.max_bytes ?? DEFAULT_MAX_BYTES, maxDownloadBytes);
     const timeoutMs = args.timeout_ms ?? DEFAULT_TIMEOUT_MS;
@@ -180,7 +192,7 @@ export default defineTool({
     try {
       const profile = await resolveOperationBoundaryProfile(ctx);
       const request = await fetchWithCapabilityPolicy({
-        url: args.url,
+        url: args.url!,
         method: args.method ?? 'GET',
         headers: args.headers,
         body: args.body,

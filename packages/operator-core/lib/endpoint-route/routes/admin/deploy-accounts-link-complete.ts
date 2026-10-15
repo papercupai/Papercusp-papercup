@@ -12,6 +12,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 export default defineTool({
   method: 'POST',
   path: '/admin/deploy-accounts/link-complete',
+  // The CLI's code exchange owns a 60s wait, followed by credential persistence.
+  timeoutSec: 90,
   // unverified-loopback: cookie-less desktop webview (EI-338) — mirrors /register, /reset-rate.
   auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
   async handler(req) {

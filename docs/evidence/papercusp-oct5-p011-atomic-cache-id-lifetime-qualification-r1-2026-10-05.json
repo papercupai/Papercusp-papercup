@@ -1,0 +1,295 @@
+{
+  "schemaVersion": "p011-atomic-cache-id-lifetime-qualification-v1",
+  "measuredAt": "2026-10-05T18:11:49.083332+00:00",
+  "ownerId": "su-7db4feb8-04cb-46ce-80c2-844aa23006d2",
+  "workItem": "WI-10006064",
+  "deadlineWorkItem": "EI-25163485246886918",
+  "parent": "WI-10004890",
+  "plan": {
+    "slug": "papercusp-log-performance-remediation-2026-09-23",
+    "item": "P-011",
+    "spec": "PERF-OCT1-P011-MEMORY@2",
+    "decision": "D-021"
+  },
+  "originalFailure": {
+    "path": "docs/evidence/papercusp-oct5-p011-inbox-cache-retainers-r1-2026-10-05.json",
+    "bytes": 513058,
+    "sha256": "0b1f180bb4239f3dab4826c12f3675211cb3c1a2f7b0ff246841b38d97484ab6"
+  },
+  "trace": {
+    "raw": {
+      "path": "docs/evidence/papercusp-oct5-p011-inspector-lifetime-trace-r1-2026-10-05.json",
+      "bytes": 65172,
+      "sha256": "d3990e06954a21913cb8740fca5c44b28c5166d317d2042c28569b8b0ad9e615"
+    },
+    "testRunId": 20712856,
+    "result": "PASS",
+    "writeMs": 11282,
+    "disconnectCalls": 0,
+    "rootAndPayloadIdsFound": true,
+    "originalThirdHostCause": "UNCONFIRMED"
+  },
+  "durableFix": {
+    "surface": "scripts/cdp-inspector.mjs capturePinnedHeapSnapshot",
+    "reuse": "Existing root/cache selectors, digest matching, membership fence, client and native graph adapter. No cache, registry, profiler policy, service or orchestration fork.",
+    "boundary": "WeakRef-only selection in earlier target job. File and IDs in one target job through synchronous inspector callbacks. Release local and remote handles; disconnect only after saved numeric identities.",
+    "recurrenceGuards": "Real CPU recorder teardown erases live ID map; atomic numeric IDs still join actual file. Evicted WeakRef target collects during snapshot. CPU sampler remains useful after atomic helper cleanup. Selection facade removed."
+  },
+  "verification": [
+    {
+      "testRunId": 20714168,
+      "result": "PASS",
+      "executedAssertions": 4,
+      "filteredSkipped": 63,
+      "scope": "First exact lifecycle discriminator, before additive weak-eviction guard."
+    },
+    {
+      "testRunId": 20714815,
+      "result": "FAIL",
+      "passed": 67,
+      "failed": 1,
+      "scope": "New CPU-preservation assertion read an unawaited Promise; fixed with Runtime.evaluate awaitPromise:true."
+    },
+    {
+      "testRunId": 20714818,
+      "result": "PASS",
+      "passed": 68,
+      "skipped": 0,
+      "scope": "Full inspector suite. Later source delta was JSDoc return annotations and regenerated declarations; runtime function bodies unchanged."
+    },
+    {
+      "testRunId": 20717258,
+      "result": "PASS",
+      "passed": 5,
+      "filteredSkipped": 138,
+      "scope": "Canonical whole-cohort budget admission cases; budget resolver reused from actual test-files runner."
+    }
+  ],
+  "types": {
+    "namedFiles": [
+      "packages/operator-core/lib/cdp-inspector.test.ts",
+      "packages/operator-core/lib/service-memory-attribution.integration.test.ts"
+    ],
+    "finalErrors": 0,
+    "scope": "Exact named-file maintained TSC service; LSP push diagnostics were DEGRADED, never treated as clean."
+  },
+  "correctedR2": {
+    "raw": {
+      "path": "docs/evidence/papercusp-oct5-p011-inbox-cache-retainers-r2-interrupted-2026-10-05.json",
+      "bytes": 311754,
+      "sha256": "296cf71fce6087309a33ddced4019aa2f203be3684aac7e94aba21b732a3b894"
+    },
+    "outcome": "NOT MEASURED",
+    "nativeExitCode": 2,
+    "testRunId": null,
+    "ledgerLimit": "No terminal test verdict row returned by exact file/time ledger read; watchdog log is authoritative for interruption.",
+    "wrapperTimeoutMs": 600000,
+    "declaredTestTimeoutMs": 1200000,
+    "privateRuntimeTimeoutMs": 900000,
+    "arms": [
+      {
+        "arm": 0,
+        "mode": "baseline",
+        "pid": 4079881,
+        "startTicks": "1171970",
+        "osAbsent": true,
+        "reportedReaped": true,
+        "resourceSamples": 11,
+        "windows": 3,
+        "rootStatuses": [
+          "found"
+        ],
+        "payloadIds": 8,
+        "graphRequestedNodes": 17,
+        "writeMs": 12736,
+        "summaryMs": 90539
+      },
+      {
+        "arm": 1,
+        "mode": "shared",
+        "pid": 4193282,
+        "startTicks": "1185718",
+        "osAbsent": true,
+        "reportedReaped": true,
+        "resourceSamples": 11,
+        "windows": 3,
+        "rootStatuses": [
+          "found"
+        ],
+        "payloadIds": 1,
+        "graphRequestedNodes": 3,
+        "writeMs": 13924,
+        "summaryMs": 94010
+      },
+      {
+        "arm": 2,
+        "mode": "shared",
+        "pid": 138047,
+        "startTicks": "1199702",
+        "osAbsent": true,
+        "reportedReaped": true,
+        "resourceSamples": 11,
+        "windows": 3,
+        "rootStatuses": [
+          "found"
+        ],
+        "payloadIds": 1,
+        "graphRequestedNodes": 3,
+        "writeMs": 12811,
+        "summaryMs": 93112
+      },
+      {
+        "arm": 3,
+        "mode": "baseline",
+        "pid": 228872,
+        "startTicks": "1213709",
+        "osAbsent": true,
+        "reportedReaped": false,
+        "resourceSamples": 11,
+        "windows": 3,
+        "rootStatuses": [
+          "found"
+        ],
+        "payloadIds": 8,
+        "graphRequestedNodes": null,
+        "writeMs": 13328,
+        "summaryMs": null
+      }
+    ],
+    "fourArmComparisonComplete": false,
+    "independentCompletePairOracle": "not run; raw incomplete",
+    "sourceFence": "Full before/after source receipt did not settle before watchdog; historical execution qualification remains unknown."
+  },
+  "deadlineAudit": {
+    "failureClasses": [
+      "R1: file snapshot IDs read across separate target jobs, allowing isolate-wide map reset. Original host emitter remains unconfirmed.",
+      "R2: focused wrapper600000ms shorter than declared whole test1200000ms and private cohort900000ms."
+    ],
+    "repairs": [
+      "Atomic snapshot/IDs lifecycle with real inspector, weak-collection and CPU-continuity recurrence guards.",
+      "Budget admission before bundle/temp/private DB launch; use actual runner resolver. Missing/short/malformed budgets refuse. Whole budget1200000ms admits."
+    ],
+    "siblingCensus": "Other runCohortWithLog runtime routes in this file use360000ms or less; remaining general resource producer declares435000ms. The full cache-retainer comparison is the route exceeding the default600000ms.",
+    "beforeNextSlowAttempt": "Use PAPERCUSP_TEST_FILE_TIMEOUT_MS=1200000 and a NEW R3 raw path; preflight now enforces the whole declared budget. No replay of R1/R2 for recovery."
+  },
+  "currentSourceReceipts": [
+    {
+      "path": "scripts/cdp-inspector.mjs",
+      "bytes": 66663,
+      "sha256": "bb15dc2ac1ec9cb60d26d62d0790610f2cd097a9171b37c39465c8f5a7d22112"
+    },
+    {
+      "path": "scripts/cdp-inspector.d.mts",
+      "bytes": 17204,
+      "sha256": "a1376f105ad1895e7d64088885e63f1ade5853484dd2eadb4a6632af6ef88963"
+    },
+    {
+      "path": "packages/operator-core/lib/cdp-inspector.test.ts",
+      "bytes": 79987,
+      "sha256": "d05b5c168ec2d1e3fca03c8a592018d00bd594ba60b7c2f39d38f4f188cd3e9f"
+    },
+    {
+      "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+      "bytes": 212957,
+      "sha256": "4d8db96fc5d2ec92d8dfbcfe0b790e6329b72ab0fff258e1852de0819d098903"
+    },
+    {
+      "path": "packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts",
+      "bytes": 79432,
+      "sha256": "3561f7439050cefa5eaf0efa5444e212d472484ad933b55910534dc6fb3fa3f3"
+    },
+    {
+      "path": "packages/operator-core/lib/event-loop-cpu-recorder.ts",
+      "bytes": 6170,
+      "sha256": "496812aee19fe61c96956ed24e3f3dc3975844bd92af9c688e1b7ae7ef9ffcd9"
+    },
+    {
+      "path": "packages/operator-core/lib/event-loop-lag-monitor.ts",
+      "bytes": 50798,
+      "sha256": "d361d749d586cee97838afd97ce796e5695aba9c8eec5e8dedd15119e99c06df"
+    },
+    {
+      "path": "scripts/test-files.mjs",
+      "bytes": 180974,
+      "sha256": "745d6ec3613bbcc7a525ecba32c05b660ed0f4b078f9ed7b6e18948747515657"
+    }
+  ],
+  "logs": [
+    {
+      "source": "/tmp/su-7db4f-p011-inspector-lifetime-trace-r1.log",
+      "path": ".papercusp/logs/cohort-0d2cb8803d6adea1b7a22300f54c4f91a519ad59cb6ad09744a1ee266b1d7cbb.log",
+      "bytes": 58176,
+      "sha256": "0d2cb8803d6adea1b7a22300f54c4f91a519ad59cb6ad09744a1ee266b1d7cbb"
+    },
+    {
+      "source": "/tmp/su-7db4f-p011-atomic-inspector-guards-r1.log",
+      "path": ".papercusp/logs/cohort-b2ed104a6c75f57f38679542da46c5f38fa35fdab7e3c9ee231c262e8c8caec7.log",
+      "bytes": 25198,
+      "sha256": "b2ed104a6c75f57f38679542da46c5f38fa35fdab7e3c9ee231c262e8c8caec7"
+    },
+    {
+      "source": "/tmp/su-7db4f-p011-atomic-inspector-full-r1.log",
+      "path": ".papercusp/logs/cohort-94e02d27962896229c0dcc2b8d91e807cba3cbfbaee15e3702d677d219fc8bbf.log",
+      "bytes": 13039,
+      "sha256": "94e02d27962896229c0dcc2b8d91e807cba3cbfbaee15e3702d677d219fc8bbf"
+    },
+    {
+      "source": "/tmp/su-7db4f-p011-atomic-inspector-full-r2.log",
+      "path": ".papercusp/logs/cohort-c6a0955ca6f712bfbb1d96e416a56b4beaddb63d56ae22648cd20c20420afc13.log",
+      "bytes": 5525,
+      "sha256": "c6a0955ca6f712bfbb1d96e416a56b4beaddb63d56ae22648cd20c20420afc13"
+    },
+    {
+      "source": "/tmp/su-7db4f-p011-atomic-inspector-types-r2.log",
+      "path": ".papercusp/logs/cohort-22dbaeda6b2b22ab9b742d9cd0e1fa2aa959160454127195a23e2e5669893ef9.log",
+      "bytes": 1178,
+      "sha256": "22dbaeda6b2b22ab9b742d9cd0e1fa2aa959160454127195a23e2e5669893ef9"
+    },
+    {
+      "source": "/tmp/su-7db4f-p011-atomic-inspector-types-r3.log",
+      "path": ".papercusp/logs/cohort-bb539f444c98ba00daf47ce3335fc60730cae1415fb5d4c3b51ce37a86569793.log",
+      "bytes": 1178,
+      "sha256": "bb539f444c98ba00daf47ce3335fc60730cae1415fb5d4c3b51ce37a86569793"
+    },
+    {
+      "source": "/tmp/su-7db4f-p011-inspector-declarations-r3.log",
+      "path": ".papercusp/logs/cohort-00cbc80ad83474aac637b65013cbb3d55a2b4ef9da3eaa40aa5396c6726aa774.log",
+      "bytes": 234,
+      "sha256": "00cbc80ad83474aac637b65013cbb3d55a2b4ef9da3eaa40aa5396c6726aa774"
+    },
+    {
+      "source": "/tmp/su-7db4f-p011-inbox-cache-retainers-r2.log",
+      "path": ".papercusp/logs/cohort-62f620d4e68bffa0f9dd262dbe210f5c1d89898358ddd66791c90e5a8b1b8163.log",
+      "bytes": 19872,
+      "sha256": "62f620d4e68bffa0f9dd262dbe210f5c1d89898358ddd66791c90e5a8b1b8163"
+    },
+    {
+      "source": "/tmp/su-7db4f-p011-cohort-budget-guards-r1.log",
+      "path": ".papercusp/logs/cohort-880f9aff782fe5e380b8ada1f4bae02ff10792a516a0a5220c422a3d3a8d8d64.log",
+      "bytes": 56443,
+      "sha256": "880f9aff782fe5e380b8ada1f4bae02ff10792a516a0a5220c422a3d3a8d8d64"
+    }
+  ],
+  "scope": {
+    "plane": "isolated-current-build-operator-api",
+    "atomicLifecycleGuardVerified": true,
+    "matchedResourceRetainerComparisonComplete": false,
+    "fullExecutedSourceGraph": "unknown",
+    "nativePhysicalOwnership": "unmeasured",
+    "physicalSavings": "unmeasured",
+    "fullP011Acceptance": false,
+    "shipmentVerified": false
+  },
+  "stillOpen": [
+    "Necessary admitted R3 matched comparison and independent saved raw oracle",
+    "Original third host causal emitter unknown",
+    "Eight-source dispositions, worker clones, native physical ownership, full executed graph, current shared/deployed runtime",
+    "WholeP011@2/D021, P010/R8R9, authenticated owner-origin wall, independent acceptance and shipment"
+  ],
+  "runtimeCleanup": {"hostsOsAbsent":true,"privateDirectoryRemoved":true,"lastSnapshotRemoved":true,"lastHostReportedReaped":false,"distinction":"Final host teardown happened through watchdog; its inner finally did not publish reaped:true. OS absence was independently checked."},
+  "interruptedRuntimeLogs": [{"path":".papercusp/logs/cohort-00a9ae0bf28337202bd0dde4f406c978746b929f23995b40671e31e41a24d0b8.log","bytes":2487,"sha256":"00a9ae0bf28337202bd0dde4f406c978746b929f23995b40671e31e41a24d0b8"},{"path":".papercusp/logs/cohort-35173216e42ce34b3a542f1a790718caae88c557080b93819a8f17a666592dc5.log","bytes":636942,"sha256":"35173216e42ce34b3a542f1a790718caae88c557080b93819a8f17a666592dc5"}],
+  "sourceRefs": [
+    "https://github.com/nodejs/node/blob/v25.9.0/deps/v8/src/inspector/v8-heap-profiler-agent-impl.cc#L302",
+    "https://github.com/nodejs/node/blob/v25.9.0/deps/v8/src/inspector/v8-inspector-session-impl.cc#L146"
+  ]
+}

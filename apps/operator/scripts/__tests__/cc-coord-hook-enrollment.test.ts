@@ -10,7 +10,6 @@
  * round trip, so THAT script is what `ccCoordHookEnrollment` now checks.
  */
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — plain .mjs module without type declarations
 import { ccCoordHookEnrollment } from '../psu-launcher.mjs';
 
 const HOOK = '/home/user/.papercusp/hooks/cc/posttooluse-activity-report.sh';

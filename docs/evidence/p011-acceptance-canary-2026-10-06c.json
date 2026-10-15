@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-011 legacy acceptance adoption: current-build canary, report-first cohort and cutover-check on :3170 (P-012 re-measure, third pass)",
+  "framework": "operational",
+  "command": [
+    "curl -s 127.0.0.1:3170/api/health",
+    "node scripts/mcp-call.mjs work_items:acceptance_adoption --json-file .papercusp/scratch/p011-canary-args.json --port 3170 --client su-4a152da3-3ef7-420f-a82b-bfab10cf563a  # {op:canary,harness:papercusp,confirm:true}",
+    "node scripts/mcp-call.mjs work_items:acceptance_adoption --json-file .papercusp/scratch/p011-report-args.json --port 3170 ...  # {op:report,harness:papercusp,kind:bug,limit:25}",
+    "node scripts/mcp-call.mjs work_items:acceptance_adoption --json-file .papercusp/scratch/p011-cutover-args.json --port 3170 ...  # {op:cutover-check,proposedCutover:2026-10-02T00:00:00.000Z} -> refused cutover-precedes-canary (expected)",
+    "node scripts/mcp-call.mjs work_items:acceptance_adoption --json-file .papercusp/scratch/p012-rebind/live/cutover-args.json --port 3170 ...  # {op:cutover-check,proposedCutover:2026-10-07T00:00:00.000Z}",
+    "driver: .papercusp/scratch/p012-rebind/live-remeasure.sh",
+    "testing:run { files: [packages/operator-core/lib/work-items-intake-acceptance.integration.test.ts] }  # companion run 20844275"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T15:18:06Z",
+  "finishedAt": "2026-10-06T15:18:11Z",
+  "summary": "On staging build 728748a085 (:3170) the P-011 canary passed (lac-canary-f08cc2c0-6b9c-4608-817e-da6098c6e799; steps new-intake-stage, legacy-cohort-report, fail-closed, fast-path all ok). Containment: legacy-acceptance-adoption.ts 9ca5eb60bf, issues-engineer.ts 4aca744ef7, agent-review-policy.ts f71d54a25e and work-items-intake-acceptance.integration.test.ts a6620691e2 have equal blobs at 728748a085 and in the working tree (all four clean at HEAD bff348aa42). The report-first cohort examined 25 legacy bugs, found 0 eligible, and was a dry run. The cutover check refused a cutover dated before the canary and authorized one dated after it, with the canary as the receipt. Enforcement stays off because the sentinel cutover is kept. Companion integration test run 20844275 passed 23/23.",
+  "assertions": [
+    "canary.status == passed on buildSha 728748a085",
+    "report.dryRun == true; report.examined == 25; report.eligible == []",
+    "cutover-check(2026-10-02) refused with cutover-precedes-canary",
+    "cutover-check(2026-10-07) authorization.ok == true with receiptRunId lac-canary-f08cc2c0",
+    "attested.enforcing == false (sentinel cutover kept)"
+  ],
+  "subject": [
+    "packages/operator-core/lib/harness/improvements/legacy-acceptance-adoption.ts",
+    "packages/operator-core/lib/issues-engineer.ts",
+    "packages/operator-core/lib/harness/improvements/agent-review-policy.ts"
+  ],
+  "workItem": "WI-10004574",
+  "recordedBy": "su-4a152da3-3ef7-420f-a82b-bfab10cf563a (P-012, WI-10004575)",
+  "evidencePlane": "live",
+  "runtime": {
+    "port": 3170,
+    "service": "papercusp-operator",
+    "buildSha": "728748a085",
+    "healthTs": "2026-10-06T15:18:06Z"
+  },
+  "containment": {
+    "packages/operator-core/lib/harness/improvements/legacy-acceptance-adoption.ts": "9ca5eb60bf695bfe073e062fd56b160c37a5c4b6",
+    "packages/operator-core/lib/issues-engineer.ts": "4aca744ef7c27cc6e85f4ea2aae89177207e994b",
+    "packages/operator-core/lib/harness/improvements/agent-review-policy.ts": "f71d54a25e80cf7ec9571b926b0ee4b760b7bcee",
+    "packages/operator-core/lib/work-items-intake-acceptance.integration.test.ts": "a6620691e244346f5ac9ad28996f8a3d03446b55"
+  },
+  "canary": {
+    "runId": "lac-canary-f08cc2c0-6b9c-4608-817e-da6098c6e799",
+    "runtime": "operator-api",
+    "buildSha": "728748a085",
+    "status": "passed",
+    "recordedAt": "2026-10-06T15:18:08.638Z",
+    "steps": ["new-intake-stage", "legacy-cohort-report", "fail-closed", "fast-path"]
+  },
+  "reportFirstCohort": {
+    "runId": "lac-report-feb01a0f-bf9c-435e-b7b8-084811bbc2c4",
+    "dryRun": true,
+    "cohortKey": "bug:0..4102444800000",
+    "examined": 25,
+    "eligible": 0,
+    "remainingLegacyOutsideCohort": 789,
+    "fingerprint": "lac-v1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "cutoverCheck": [
+    {
+      "proposedCutover": "2026-10-02T00:00:00.000Z",
+      "ok": false,
+      "attested": { "ok": true, "enforcing": false },
+      "authorization": { "ok": false, "refusal": "cutover-precedes-canary" }
+    },
+    {
+      "proposedCutover": "2026-10-07T00:00:00.000Z",
+      "ok": true,
+      "attested": { "ok": true, "enforcing": false },
+      "authorization": { "ok": true, "receiptRunId": "lac-canary-f08cc2c0-6b9c-4608-817e-da6098c6e799", "buildSha": "728748a085" }
+    }
+  ],
+  "companionTestRun": { "id": 20844275, "file": "packages/operator-core/lib/work-items-intake-acceptance.integration.test.ts", "status": "pass", "passed": 23 },
+  "rawOutputs": ".papercusp/scratch/p012-rebind/live-20261006T151806Z/{health-3170,containment.tsv,canary,report,cutover,cutover2}.json"
+}

@@ -1,0 +1,4132 @@
+{
+  "schema": "native-code-intelligence-preregistration/v1",
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "item": "P-002",
+  "workItem": "WI-10007865",
+  "registeredAt": "2026-10-09T20:06:30.977Z",
+  "preregistration": {
+    "corpusIds": [
+      "callees-apply-merge-rule-submodule",
+      "callees-classify-projection-body",
+      "callees-get-next-for-bee",
+      "callees-install-rule-from-cupboard",
+      "callees-list-spec-evidence",
+      "callees-recover-index-lock",
+      "callers-absent-apply-sql-file",
+      "callers-absent-seed-fingerprint",
+      "callers-append-host-event",
+      "callers-apply-min-score-submodule",
+      "callers-classify-projection-body",
+      "callers-compare-by-head-of-line-dynamic",
+      "callers-create-panel-registry-submodule",
+      "callers-managed-spawn",
+      "callers-mark-spawn-offload-host",
+      "callers-measure-repo-files-evidence",
+      "callers-record-scheduled-fire-failure",
+      "callers-recover-index-lock",
+      "callers-resolve-installed-event",
+      "callers-run-integrator-tick-same-name",
+      "callers-seal-implementation-acceptance",
+      "callers-seed-acceptance-bars",
+      "callers-verdict-of-same-name",
+      "definition-append-host-event",
+      "definition-apply-audit-verdict-submodule",
+      "definition-managed-set-interval-shadowed",
+      "definition-panel-registry-barrel",
+      "definition-pin-module-state",
+      "definition-recover-index-lock",
+      "definition-verdict-of-same-name",
+      "impact-absent-clear-operator-sleep",
+      "impact-is-provenance-only",
+      "impact-mark-spawn-offload-host",
+      "impact-pot-git-gc-tick-dynamic",
+      "impact-record-scheduled-fire-failure",
+      "impact-resolve-installed-event",
+      "native-go-callees-absence-configured-current",
+      "native-go-callees-positive-configured-current",
+      "native-go-callers-absence-configured-current",
+      "native-go-callers-positive-configured-current",
+      "native-go-callers-positive-configured-deleted",
+      "native-go-callers-positive-configured-stale",
+      "native-go-callers-positive-unconfigured-current",
+      "native-go-definition-absence-configured-current",
+      "native-go-definition-positive-configured-current",
+      "native-go-impact-absence-configured-current",
+      "native-go-impact-positive-configured-current",
+      "native-go-references-absence-configured-current",
+      "native-go-references-positive-configured-current",
+      "native-go-symbol-search-absence-configured-current",
+      "native-go-symbol-search-positive-configured-current",
+      "native-go-text-search-absence-configured-current",
+      "native-go-text-search-positive-configured-current",
+      "native-javascript-callees-absence-configured-current",
+      "native-javascript-callees-positive-configured-current",
+      "native-javascript-callers-absence-configured-current",
+      "native-javascript-callers-positive-configured-current",
+      "native-javascript-callers-positive-configured-deleted",
+      "native-javascript-callers-positive-configured-stale",
+      "native-javascript-callers-positive-unconfigured-current",
+      "native-javascript-definition-absence-configured-current",
+      "native-javascript-definition-positive-configured-current",
+      "native-javascript-impact-absence-configured-current",
+      "native-javascript-impact-positive-configured-current",
+      "native-javascript-references-absence-configured-current",
+      "native-javascript-references-positive-configured-current",
+      "native-javascript-symbol-search-absence-configured-current",
+      "native-javascript-symbol-search-positive-configured-current",
+      "native-javascript-text-search-absence-configured-current",
+      "native-javascript-text-search-positive-configured-current",
+      "native-python-callees-absence-configured-current",
+      "native-python-callees-positive-configured-current",
+      "native-python-callers-absence-configured-current",
+      "native-python-callers-positive-configured-current",
+      "native-python-callers-positive-configured-deleted",
+      "native-python-callers-positive-configured-stale",
+      "native-python-callers-positive-unconfigured-current",
+      "native-python-definition-absence-configured-current",
+      "native-python-definition-positive-configured-current",
+      "native-python-impact-absence-configured-current",
+      "native-python-impact-positive-configured-current",
+      "native-python-references-absence-configured-current",
+      "native-python-references-positive-configured-current",
+      "native-python-symbol-search-absence-configured-current",
+      "native-python-symbol-search-positive-configured-current",
+      "native-python-text-search-absence-configured-current",
+      "native-python-text-search-positive-configured-current",
+      "native-real-javascript-definition-main",
+      "native-real-javascript-text-search-main",
+      "native-real-python-definition-count_event",
+      "native-real-python-text-search-count_event",
+      "native-real-rust-definition-encode_frame",
+      "native-real-rust-text-search-encode_frame",
+      "native-rust-callees-absence-configured-current",
+      "native-rust-callees-positive-configured-current",
+      "native-rust-callers-absence-configured-current",
+      "native-rust-callers-positive-configured-current",
+      "native-rust-callers-positive-configured-deleted",
+      "native-rust-callers-positive-configured-stale",
+      "native-rust-callers-positive-unconfigured-current",
+      "native-rust-definition-absence-configured-current",
+      "native-rust-definition-positive-configured-current",
+      "native-rust-impact-absence-configured-current",
+      "native-rust-impact-positive-configured-current",
+      "native-rust-references-absence-configured-current",
+      "native-rust-references-positive-configured-current",
+      "native-rust-symbol-search-absence-configured-current",
+      "native-rust-symbol-search-positive-configured-current",
+      "native-rust-text-search-absence-configured-current",
+      "native-rust-text-search-positive-configured-current",
+      "native-typescript-callees-absence-configured-current",
+      "native-typescript-callees-positive-configured-current",
+      "native-typescript-callers-absence-configured-current",
+      "native-typescript-callers-positive-configured-current",
+      "native-typescript-callers-positive-configured-deleted",
+      "native-typescript-callers-positive-configured-stale",
+      "native-typescript-callers-positive-unconfigured-current",
+      "native-typescript-definition-absence-configured-current",
+      "native-typescript-definition-positive-configured-current",
+      "native-typescript-impact-absence-configured-current",
+      "native-typescript-impact-positive-configured-current",
+      "native-typescript-references-absence-configured-current",
+      "native-typescript-references-positive-configured-current",
+      "native-typescript-symbol-search-absence-configured-current",
+      "native-typescript-symbol-search-positive-configured-current",
+      "native-typescript-text-search-absence-configured-current",
+      "native-typescript-text-search-positive-configured-current",
+      "references-absent-bundled-recipes-dir",
+      "references-classify-projection-body",
+      "references-handle-pr-poll-dynamic",
+      "references-integrator-tick-input-type",
+      "references-mark-spawn-offload-host",
+      "references-panel-registry-barrel",
+      "references-resolve-installed-event",
+      "symbol-absent-v2",
+      "symbol-claim-next-issue-work-item",
+      "symbol-run-integrator-tick-same-name",
+      "symbol-verdict-of-same-name",
+      "text-absent-literal",
+      "text-env-var",
+      "text-publish-blueprint-route",
+      "text-shell-function",
+      "text-sql-table"
+    ],
+    "corpusHash": "d07a0452156bb922a405da8d072bbed080d2a60e8992f85e902da8767ab5ef9d",
+    "keyHash": "c381ccae24df5da7aab354b01448dbe021a938066d4586757ce9860810272707",
+    "arms": [
+      {
+        "armId": "codebase-memory",
+        "version": "dev",
+        "intents": [
+          "callees",
+          "callers",
+          "definition",
+          "impact",
+          "symbol-search",
+          "text-search"
+        ],
+        "licence": "permissive"
+      },
+      {
+        "armId": "codegraph",
+        "version": "1.6.2",
+        "intents": [
+          "callees",
+          "callers",
+          "definition",
+          "impact",
+          "symbol-search"
+        ],
+        "licence": "permissive"
+      },
+      {
+        "armId": "codegraphcontext",
+        "version": "0.6.13",
+        "intents": [
+          "callees",
+          "callers",
+          "definition",
+          "impact",
+          "symbol-search",
+          "text-search"
+        ],
+        "licence": "permissive"
+      },
+      {
+        "armId": "gitnexus",
+        "version": "1.6.9",
+        "intents": [
+          "callees",
+          "callers",
+          "definition",
+          "impact",
+          "symbol-search"
+        ],
+        "licence": "noncommercial"
+      },
+      {
+        "armId": "lsp-query",
+        "version": "typescript-language-server (vendored) / typescript 6.0.3",
+        "intents": [
+          "definition",
+          "references",
+          "symbol-search"
+        ],
+        "licence": "first-party"
+      },
+      {
+        "armId": "no-third-party",
+        "version": "typescript 6.0.3",
+        "intents": [
+          "callees",
+          "callers",
+          "definition",
+          "impact",
+          "references",
+          "symbol-search"
+        ],
+        "licence": "first-party"
+      },
+      {
+        "armId": "rg",
+        "version": "rg rg",
+        "intents": [
+          "callees",
+          "callers",
+          "symbol-search",
+          "text-search"
+        ],
+        "licence": "permissive"
+      },
+      {
+        "armId": "trace-mcp",
+        "version": "3.34.6",
+        "intents": [
+          "callees",
+          "callers",
+          "definition",
+          "impact",
+          "references",
+          "symbol-search",
+          "text-search"
+        ],
+        "licence": "permissive"
+      }
+    ],
+    "reps": 3,
+    "seed": 20261009,
+    "bars": {
+      "minReps": 3,
+      "maxFailureRate": 0.05,
+      "f1TieMargin": 0.05,
+      "cfeTieMargin": 0.02
+    },
+    "budgets": {
+      "coldStartMsMax": 10000,
+      "warmQueryMsMax": 1500,
+      "rssMbMax": 1024,
+      "childProcMax": 1,
+      "indexDiskMbMax": 2048,
+      "resultTokensMax": 1500
+    },
+    "protocol": {
+      "edition": "native-ecosystem-P002-2026-10-09-v1",
+      "sourceCommit": "90e6465ad21b79142bac4853bb1c9c958f868f41",
+      "fixtureHash": "69a78e5b6b90e6ad533fac6adbe5764d742b66b8ef3add805bfa24bed22bafb5",
+      "languages": [
+        "javascript",
+        "typescript",
+        "rust",
+        "python",
+        "go"
+      ],
+      "matchedIntents": [
+        "callers",
+        "callees",
+        "impact",
+        "definition",
+        "references",
+        "symbol-search",
+        "text-search"
+      ],
+      "measurements": [
+        {
+          "metric": "setup-wall",
+          "unit": "ms",
+          "method": "Monotonic time from process/index start to readiness, including parsing, dependency setup and index construction; fresh isolated tree/home per arm and repetition.",
+          "unavailable": "Record setup-failed, timeout or not-measured with the raw receipt; exclude from accuracy, include in failure/coverage."
+        },
+        {
+          "metric": "cold-query",
+          "unit": "ms",
+          "method": "First query of each language/intent in a fresh process after readiness. Preserve every sample; report p50/p95/max and sample count, never mix with warm queries.",
+          "unavailable": "No first-query witness means not-measured; cannot pass the coldStartMsMax ceiling."
+        },
+        {
+          "metric": "warm-query",
+          "unit": "ms",
+          "method": "After one labelled warm-up, run seeded shuffled identical cases for at least three repetitions. Preserve every latency; report p50/p95/max separately by language/intent/configuration/source state.",
+          "unavailable": "Unsupported, stale-index, crash and timeout remain separate outcomes; do not impute zero latency."
+        },
+        {
+          "metric": "peak-memory",
+          "unit": "MiB",
+          "method": "Fresh task cgroup memory.peak across parent, workers and language servers; reset via a new task for each repetition. Retain runtime/source identity and bytes, divide by 1048576.",
+          "unavailable": "Absent cgroup counter is not-measured; parent-only process maxRSS is diagnostic and cannot certify the rssMbMax ceiling."
+        },
+        {
+          "metric": "resident-memory",
+          "unit": "MiB",
+          "method": "Task cgroup memory.current at ready, after warm-up, and after the final query, with named timestamps and all child processes included; bytes / 1048576.",
+          "unavailable": "Missing stage sample stays null/not-measured, never inferred from peak or host-wide memory."
+        },
+        {
+          "metric": "index-disk",
+          "unit": "MiB",
+          "method": "Logical byte sum of all arm-created index/cache files under its isolated tree/home after ready and completion, separately from source/dependencies; retain file census and bytes / 1048576.",
+          "unavailable": "Incomplete paths or unreadable files mean not-measured; an explicit measured empty census alone permits zero."
+        },
+        {
+          "metric": "agent-task",
+          "unit": "outcome",
+          "method": "Replay the pinned real repository-demand questions and calibration controls through the native tool seam. Preserve question, tool requests/raw responses, source/config identity, keyed answer, tokens, wall time and process costs. Configuration is removed for unconfigured controls; index original bytes before replacing callers for stale or deleting source for deleted controls.",
+          "unavailable": "Authored controls are labelled authored; absent real tasks, unsupported language/intent or missing tool replay cannot certify real-task coverage."
+        }
+      ],
+      "correctness": {
+        "minEffectiveF1": 0.95,
+        "maxConfidentFalseEmptyRate": 0,
+        "maxAbsenceFalsePositiveRate": 0,
+        "maxStaleAnswerRate": 0,
+        "pooling": "Seed independently verified source sites before running arms. Pool every additional site across all arms; record valid/invalid/alias/neutral judgments and rescore all arms. No verdict while sites remain unadjudicated. Report each language/intent stratum and matched operation intersection; undeclared cells reduce coverage and never count as correct."
+      },
+      "realTaskCoverage": [
+        {
+          "language": "javascript",
+          "refs": [
+            "repository:scripts/gen-graph-dependency-snapshot.mjs@90e6465ad21b79142bac4853bb1c9c958f868f41#main"
+          ],
+          "unavailable": null
+        },
+        {
+          "language": "typescript",
+          "refs": [
+            "acceptance-corpus#callers-of-managed-spawn; mined grep demand (4 sessions)",
+            "selective-corpus#selective-external-consumer",
+            "mined grep demand (7 sessions)",
+            "mined grep demand (5 sessions)",
+            "mined grep demand (4 sessions)",
+            "mined grep demand (3 sessions)",
+            "selective-corpus#selective-scheduler-edge",
+            "selective-corpus#selective-fingerprint-chain",
+            "acceptance-corpus#definition-cross-package-bare-specifier; mined (8 sessions)",
+            "acceptance-corpus#shadowed-symbol-no-cross-contamination",
+            "acceptance-corpus#references-through-barrel-reexport",
+            "selective-corpus#selective-exact-index-symbol",
+            "selective-corpus#selective-route-boundary"
+          ],
+          "unavailable": null
+        },
+        {
+          "language": "rust",
+          "refs": [
+            "repository:apps/tui/src/framing.rs@90e6465ad21b79142bac4853bb1c9c958f868f41#encode_frame"
+          ],
+          "unavailable": null
+        },
+        {
+          "language": "python",
+          "refs": [
+            "repository:papercusp-desktop/bin/qmp-command.py@90e6465ad21b79142bac4853bb1c9c958f868f41#count_event"
+          ],
+          "unavailable": null
+        },
+        {
+          "language": "go",
+          "refs": [],
+          "unavailable": "No real Go task/source in frozen repository; authored controls only. Real-task acceptance remains unmeasured until a separately pinned edition is frozen before measurement."
+        }
+      ]
+    },
+    "hash": "01e83723c28b35dc6e18f0bc8a107d50bccafdfc093a85251ba2cf79298d6925"
+  },
+  "cases": [
+    {
+      "id": "callers-managed-spawn",
+      "intent": "callers",
+      "subject": "managedSpawn",
+      "tags": [
+        "cross-package"
+      ],
+      "source": "acceptance",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "acceptance-corpus#callers-of-managed-spawn; mined grep demand (4 sessions)",
+      "sourceFingerprint": "56f54601362257e6446b2932e05dbbda0d3d3849d45b4b093808c282d006ded2"
+    },
+    {
+      "id": "callers-measure-repo-files-evidence",
+      "intent": "callers",
+      "subject": "measureRepoFilesEvidenceAtRoot",
+      "tags": [
+        "cross-package"
+      ],
+      "source": "selective",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "selective-corpus#selective-external-consumer",
+      "sourceFingerprint": "9211fe41fda10efc683d85b5646b8c9869d2fe27ad24d96423adfb8b75409c1d"
+    },
+    {
+      "id": "callers-append-host-event",
+      "intent": "callers",
+      "subject": "appendHostEvent",
+      "tags": [],
+      "source": "mined-grep",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "mined grep demand (7 sessions)",
+      "sourceFingerprint": "72c964abaf6d6e791934fa5c2cb66029c9bfad4d58f75b5ae2e8bd4364b97011"
+    },
+    {
+      "id": "callers-verdict-of-same-name",
+      "intent": "callers",
+      "subject": "verdictOf",
+      "anchorFile": "packages/operator-core/lib/pot-eval/supervision-metrics.ts",
+      "tags": [
+        "same-name"
+      ],
+      "source": "mined-grep",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "mined grep demand (7 sessions)",
+      "sourceFingerprint": "9ce10220e1e4f5164ff296a254878ced9ed5b32aef7ee8bede9d38734692d9b3"
+    },
+    {
+      "id": "callers-classify-projection-body",
+      "intent": "callers",
+      "subject": "classifyProjectionBody",
+      "tags": [],
+      "source": "mined-grep",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "mined grep demand (5 sessions)",
+      "sourceFingerprint": "f2b93a98bd60d9744a2fef2b59964b505e012cf9042cb29bca298d3075a8172f"
+    },
+    {
+      "id": "callers-recover-index-lock",
+      "intent": "callers",
+      "subject": "recoverIndexLockContention",
+      "tags": [],
+      "source": "mined-grep",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "mined grep demand (5 sessions)",
+      "sourceFingerprint": "9240ae769ab2f578b2c8e6173efcbdfd5616db650eb9460e932c6918330d50c1"
+    },
+    {
+      "id": "callers-resolve-installed-event",
+      "intent": "callers",
+      "subject": "resolveInstalledEvent",
+      "tags": [],
+      "source": "mined-grep",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "mined grep demand (5 sessions)",
+      "sourceFingerprint": "8a71527e090738b5a3a7c415c36e7216ea9218ba0771a9554164ea032742d0ab"
+    },
+    {
+      "id": "callers-seed-acceptance-bars",
+      "intent": "callers",
+      "subject": "seedAcceptanceBarsInTransaction",
+      "tags": [],
+      "source": "mined-grep",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "mined grep demand (4 sessions)",
+      "sourceFingerprint": "1c48fcc65910bec1fbe169e32bdb9cf4b0a92e213e8916f1cbc5ed49e95caf93"
+    },
+    {
+      "id": "callers-seal-implementation-acceptance",
+      "intent": "callers",
+      "subject": "sealImplementationAcceptance",
+      "tags": [],
+      "source": "mined-grep",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "mined grep demand (4 sessions)",
+      "sourceFingerprint": "a411911cc9143c4f59c3f370af5a5b3138483a377463a5975490d7fad95980e1"
+    },
+    {
+      "id": "callers-run-integrator-tick-same-name",
+      "intent": "callers",
+      "subject": "runIntegratorTick",
+      "anchorFile": "packages/operator-core/lib/sync/pot-git/integrator-tick.ts",
+      "tags": [
+        "same-name"
+      ],
+      "source": "mined-grep",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "mined grep demand (3 sessions)",
+      "sourceFingerprint": "1ca5e478212c4080dacbe4b59e20c9e755193308313bbed226d54a8747ae81ec"
+    },
+    {
+      "id": "callers-mark-spawn-offload-host",
+      "intent": "callers",
+      "subject": "markSpawnOffloadHost",
+      "tags": [],
+      "source": "mined-grep",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "mined grep demand (3 sessions)",
+      "sourceFingerprint": "31265a552d60f1ddcc4bc57695c4da3f55d97ada3cd81524ebd5830e4a3aa6e2"
+    },
+    {
+      "id": "callers-record-scheduled-fire-failure",
+      "intent": "callers",
+      "subject": "recordScheduledFireFailure",
+      "tags": [],
+      "source": "mined-grep",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "mined grep demand (3 sessions)",
+      "sourceFingerprint": "30e02f6d96c4a4a9bafe0ff9a61cc3b58b92505ca2988dba37549c41371de637"
+    },
+    {
+      "id": "callers-apply-min-score-submodule",
+      "intent": "callers",
+      "subject": "applyMinScore",
+      "tags": [
+        "submodule"
+      ],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "candidate scan: defined in the libs/generic/search submodule, 11 call lines",
+      "sourceFingerprint": "48856d120b0c9d13a503a68a7b8cb6e8b89f2568a58ed801a50f6b2f30b5147c"
+    },
+    {
+      "id": "callers-compare-by-head-of-line-dynamic",
+      "intent": "callers",
+      "subject": "compareByHeadOfLine",
+      "tags": [
+        "dynamic-dispatch"
+      ],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "candidate scan: exported, never called by name",
+      "sourceFingerprint": "a2934c634ade49f0cf53ca108fa63247d82e3739994fda4b9ad224e786926555"
+    },
+    {
+      "id": "callers-create-panel-registry-submodule",
+      "intent": "callers",
+      "subject": "createPanelRegistry",
+      "tags": [
+        "submodule"
+      ],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "sibling export of PanelRegistry in the dock-workbench submodule",
+      "sourceFingerprint": "b7cf95fa787a4fb1a5fb9a81401d2864f1c6bf12017849c20a1c8ac968b8e429"
+    },
+    {
+      "id": "callers-absent-seed-fingerprint",
+      "intent": "callers",
+      "subject": "acceptanceBarSeedFingerprint",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "candidate scan: exported, zero call sites",
+      "sourceFingerprint": "4b9099b29bd3d2d33bad4d7d304e52cb0d18bf12265c14e40000331e9db3c988"
+    },
+    {
+      "id": "callers-absent-apply-sql-file",
+      "intent": "callers",
+      "subject": "applySqlFile",
+      "tags": [
+        "absence",
+        "submodule"
+      ],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "candidate scan: exported in the libs/papercusp submodule, zero call sites",
+      "sourceFingerprint": "5656bee9d19e02ed4e61b59bb19a01c98f3cc423299c51034f403f118aeca137"
+    },
+    {
+      "id": "callees-get-next-for-bee",
+      "intent": "callees",
+      "subject": "getNextForBee",
+      "tags": [],
+      "source": "selective",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "selective-corpus#selective-scheduler-edge",
+      "sourceFingerprint": "db2c111d5ef30c7b2cac01f0ef3a542cf41dcac236e732ce2ddbec4c226678f1"
+    },
+    {
+      "id": "callees-list-spec-evidence",
+      "intent": "callees",
+      "subject": "listSpecEvidence",
+      "tags": [],
+      "source": "selective",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "selective-corpus#selective-fingerprint-chain",
+      "sourceFingerprint": "71fae7a47ddecb1ba06eea441e93cc317750e77f433a16407ba4c5b608975e69"
+    },
+    {
+      "id": "callees-recover-index-lock",
+      "intent": "callees",
+      "subject": "recoverIndexLockContention",
+      "tags": [],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "paired with callers-recover-index-lock",
+      "sourceFingerprint": "04f020d3ce0271786cff23927651bcf85b0bc5204f56f41702b7645749ab870e"
+    },
+    {
+      "id": "callees-classify-projection-body",
+      "intent": "callees",
+      "subject": "classifyProjectionBody",
+      "tags": [],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "paired with callers-classify-projection-body",
+      "sourceFingerprint": "5cef2fdcb9606c9825cd62fb15ead994aefbcbc67418047c323b89734967522b"
+    },
+    {
+      "id": "callees-install-rule-from-cupboard",
+      "intent": "callees",
+      "subject": "installRuleFromCupboard",
+      "tags": [],
+      "source": "mined-grep",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "mined grep demand (3 sessions)",
+      "sourceFingerprint": "3c6a17925f7408a625385fc73ea7533349a195199b2be55322ee3ea7f091ac2e"
+    },
+    {
+      "id": "callees-apply-merge-rule-submodule",
+      "intent": "callees",
+      "subject": "applyMergeRule",
+      "tags": [
+        "submodule"
+      ],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "candidate scan: libs/papercusp orchestrator submodule",
+      "sourceFingerprint": "b9143211568b0445af0e6242ea6d2d1ce1047a5a9c6c5461c5429bd8eb87d31a"
+    },
+    {
+      "id": "impact-is-provenance-only",
+      "intent": "impact",
+      "subject": "isProvenanceOnlyReprojection",
+      "depth": 2,
+      "tags": [],
+      "source": "mined-grep",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "mined grep demand (4 sessions)",
+      "sourceFingerprint": "3fe034b5d4934ee9dfcdb7d110c599ea0b4ec337163f2e1331bef72a6d0c72ac"
+    },
+    {
+      "id": "impact-resolve-installed-event",
+      "intent": "impact",
+      "subject": "resolveInstalledEvent",
+      "depth": 2,
+      "tags": [],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "paired with callers-resolve-installed-event",
+      "sourceFingerprint": "312d9321ebe7055a3ec316eb38fb96a1324f61b14d94f74dbccbc5396f03afe1"
+    },
+    {
+      "id": "impact-mark-spawn-offload-host",
+      "intent": "impact",
+      "subject": "markSpawnOffloadHost",
+      "depth": 2,
+      "tags": [],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "paired with callers-mark-spawn-offload-host",
+      "sourceFingerprint": "4452f3d59f9fa40ea1a290ccb0f6ec8df3ecf97dffdf81608c8f71385850c993"
+    },
+    {
+      "id": "impact-record-scheduled-fire-failure",
+      "intent": "impact",
+      "subject": "recordScheduledFireFailure",
+      "depth": 2,
+      "tags": [],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "paired with callers-record-scheduled-fire-failure",
+      "sourceFingerprint": "caffc239394447b65d5203f5dbcbee8e56c519b832cb7dc6e6b1ddab969aff7b"
+    },
+    {
+      "id": "impact-pot-git-gc-tick-dynamic",
+      "intent": "impact",
+      "subject": "potGitGcTick",
+      "depth": 2,
+      "tags": [
+        "dynamic-dispatch"
+      ],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "registered with registerSystemAction and invoked by name",
+      "sourceFingerprint": "52517c920874d464aa72810414bfed984fa01bb614f908e89034b108d46fd6c3"
+    },
+    {
+      "id": "impact-absent-clear-operator-sleep",
+      "intent": "impact",
+      "subject": "clearOperatorSleep",
+      "depth": 2,
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "candidate scan: exported, zero references",
+      "sourceFingerprint": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "id": "definition-pin-module-state",
+      "intent": "definition",
+      "subject": "pinModuleState",
+      "anchorFile": "apps/operator/bin/host-bootstrap.ts",
+      "tags": [
+        "cross-package"
+      ],
+      "source": "acceptance",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "acceptance-corpus#definition-cross-package-bare-specifier; mined (8 sessions)",
+      "sourceFingerprint": "5087bfb9a21f58fe286275ab937da51a1002791b6f8fa4a99e417d82572f8a3c"
+    },
+    {
+      "id": "definition-managed-set-interval-shadowed",
+      "intent": "definition",
+      "subject": "managedSetInterval",
+      "anchorFile": "packages/operator-core/lib/pty-bridge.ts",
+      "tags": [
+        "same-name"
+      ],
+      "source": "acceptance",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "acceptance-corpus#shadowed-symbol-no-cross-contamination",
+      "sourceFingerprint": "511197612aad4a81135bc86a67996a184ab4f1ff4980a283987a814f131e38d7"
+    },
+    {
+      "id": "definition-panel-registry-barrel",
+      "intent": "definition",
+      "subject": "PanelRegistry",
+      "anchorFile": "apps/operator/app/harness/dock/panel-registry.ts",
+      "tags": [
+        "barrel-reexport",
+        "submodule",
+        "cross-package"
+      ],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "paired with references-panel-registry-barrel",
+      "sourceFingerprint": "5d4a11cfa3bbca30d589dfbfe6209705fb94e87da775adf0b3a73ffdb359635b"
+    },
+    {
+      "id": "definition-append-host-event",
+      "intent": "definition",
+      "subject": "appendHostEvent",
+      "tags": [],
+      "source": "mined-grep",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "mined grep demand (7 sessions)",
+      "sourceFingerprint": "0c6b2462e36ed9ff3b4364837a6a4856e1cd45bfe6d48bb9334004a60bc2fdcd"
+    },
+    {
+      "id": "definition-verdict-of-same-name",
+      "intent": "definition",
+      "subject": "verdictOf",
+      "anchorFile": "packages/operator-core/lib/pot-eval/supervision-metrics.ts",
+      "tags": [
+        "same-name"
+      ],
+      "source": "mined-grep",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "mined grep demand (7 sessions)",
+      "sourceFingerprint": "9ce10220e1e4f5164ff296a254878ced9ed5b32aef7ee8bede9d38734692d9b3"
+    },
+    {
+      "id": "definition-apply-audit-verdict-submodule",
+      "intent": "definition",
+      "subject": "applyAuditVerdict",
+      "tags": [
+        "submodule"
+      ],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "candidate scan: libs/papercusp orchestrator submodule",
+      "sourceFingerprint": "6d5a29cef6cccb097eea7c16fa6e053fd05ebbd3ae3d849c16a9e599101e7ba7"
+    },
+    {
+      "id": "definition-recover-index-lock",
+      "intent": "definition",
+      "subject": "recoverIndexLockContention",
+      "tags": [],
+      "source": "mined-grep",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "mined grep demand (5 sessions)",
+      "sourceFingerprint": "04f020d3ce0271786cff23927651bcf85b0bc5204f56f41702b7645749ab870e"
+    },
+    {
+      "id": "references-panel-registry-barrel",
+      "intent": "references",
+      "subject": "PanelRegistry",
+      "tags": [
+        "barrel-reexport",
+        "submodule"
+      ],
+      "source": "acceptance",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "acceptance-corpus#references-through-barrel-reexport",
+      "sourceFingerprint": "5346975dcd28bf29d3fd29bdc7fbe1597b6c24c87fe9ccd0378d723a8690f574"
+    },
+    {
+      "id": "references-classify-projection-body",
+      "intent": "references",
+      "subject": "classifyProjectionBody",
+      "tags": [],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "paired with callers-classify-projection-body",
+      "sourceFingerprint": "f2b93a98bd60d9744a2fef2b59964b505e012cf9042cb29bca298d3075a8172f"
+    },
+    {
+      "id": "references-resolve-installed-event",
+      "intent": "references",
+      "subject": "resolveInstalledEvent",
+      "tags": [],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "paired with callers-resolve-installed-event",
+      "sourceFingerprint": "bd674ee979d4b7ace8bc3f74bb94a144f52a5300e5e98ff34cc4fb8c664604f9"
+    },
+    {
+      "id": "references-mark-spawn-offload-host",
+      "intent": "references",
+      "subject": "markSpawnOffloadHost",
+      "tags": [],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "paired with callers-mark-spawn-offload-host",
+      "sourceFingerprint": "458ac63ccc3dd1fa79b704601ad5724f287e355640cb2140811539c4ea5f936a"
+    },
+    {
+      "id": "references-integrator-tick-input-type",
+      "intent": "references",
+      "subject": "IntegratorTickInput",
+      "tags": [],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "type-only symbol beside runIntegratorTick",
+      "sourceFingerprint": "945686c5507e1594f4683c635d3743af7a2f7aca4c5179e4294106d9c7925310"
+    },
+    {
+      "id": "references-handle-pr-poll-dynamic",
+      "intent": "references",
+      "subject": "handlePrPoll",
+      "tags": [
+        "dynamic-dispatch"
+      ],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "registered with registerSystemAction and invoked by name",
+      "sourceFingerprint": "93d1acc1212e072834418c5618a252f8fd40109bb0937a5e9a9c34b941653740"
+    },
+    {
+      "id": "references-absent-bundled-recipes-dir",
+      "intent": "references",
+      "subject": "bundledRecipesDir",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "candidate scan: exported, zero references",
+      "sourceFingerprint": "b2359db2c8156eb6459375b6ded876140b5830af6b4eb1960bea35b69da410ab"
+    },
+    {
+      "id": "symbol-claim-next-issue-work-item",
+      "intent": "symbol-search",
+      "subject": "claimNextIssueWorkItem",
+      "tags": [],
+      "source": "selective",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "selective-corpus#selective-exact-index-symbol",
+      "sourceFingerprint": "dd86827e596b249649a34e2519a036d5bef0228219fbad154ebce2a9961b7d4f"
+    },
+    {
+      "id": "symbol-verdict-of-same-name",
+      "intent": "symbol-search",
+      "subject": "verdictOf",
+      "tags": [
+        "same-name"
+      ],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "paired with callers-verdict-of-same-name",
+      "sourceFingerprint": "e2e1ab5db270501d839868cf692d6f6de1256ff8ad4408d7cd644553d42ecaab"
+    },
+    {
+      "id": "symbol-run-integrator-tick-same-name",
+      "intent": "symbol-search",
+      "subject": "runIntegratorTick",
+      "tags": [
+        "same-name"
+      ],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "paired with callers-run-integrator-tick-same-name",
+      "sourceFingerprint": "6a6936ff6167ae56d8267875ff217be0e34484379aee34fb3d0621c4e6a3ea0e"
+    },
+    {
+      "id": "symbol-absent-v2",
+      "intent": "symbol-search",
+      "subject": "claimNextIssueWorkItemV2",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "plausible-but-nonexistent name",
+      "sourceFingerprint": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "id": "text-publish-blueprint-route",
+      "intent": "text-search",
+      "subject": "/api/cupboard/publish-blueprint",
+      "tags": [],
+      "source": "selective",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "selective-corpus#selective-route-boundary",
+      "sourceFingerprint": "1c550ad7881a93435c2cb2a4a326322e376273c1a70225d1476a0fc586cc8525"
+    },
+    {
+      "id": "text-shell-function",
+      "intent": "text-search",
+      "subject": "release_task_prepare_manifest_stage",
+      "tags": [],
+      "source": "mined-grep",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "mined grep demand (5 sessions)",
+      "sourceFingerprint": "65e6144dfaa62e46152424d4972d44327e4a108a7e5d7f37c0c5ecd5eb7d29bc"
+    },
+    {
+      "id": "text-env-var",
+      "intent": "text-search",
+      "subject": "PAPERCUSP_RG_BIN",
+      "tags": [],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "env var read by the engine-comparison rg arm",
+      "sourceFingerprint": "76073e8a0b8a1a9885ac441e3454f9e234658b7c2e27a8f226c3657813339890"
+    },
+    {
+      "id": "text-sql-table",
+      "intent": "text-search",
+      "subject": "migration_reservations",
+      "tags": [],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "a table named in SQL migrations, TypeScript and docs",
+      "sourceFingerprint": "ed13ad07c2d88c2ade68b53430327faaed4eae6b1ff04c395dab47817ea24328"
+    },
+    {
+      "id": "text-absent-literal",
+      "intent": "text-search",
+      "subject": "PAPERCUSP_DISABLE_GITNEXUS_ROUTING",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "taskRef": "plausible-but-nonexistent env var",
+      "sourceFingerprint": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "id": "native-real-javascript-definition-main",
+      "intent": "definition",
+      "subject": "main",
+      "anchorFile": "scripts/gen-graph-dependency-snapshot.mjs",
+      "tags": [],
+      "source": "repository-task",
+      "language": "javascript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "cf8a1e0cb869165b0b5cf04bb07ef23d1150237ef7eb5e0f966d0eba5853f952",
+      "taskRef": "repository:scripts/gen-graph-dependency-snapshot.mjs@90e6465ad21b79142bac4853bb1c9c958f868f41#main"
+    },
+    {
+      "id": "native-real-javascript-text-search-main",
+      "intent": "text-search",
+      "subject": "main",
+      "anchorFile": "scripts/gen-graph-dependency-snapshot.mjs",
+      "tags": [],
+      "source": "repository-task",
+      "language": "javascript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "cf8a1e0cb869165b0b5cf04bb07ef23d1150237ef7eb5e0f966d0eba5853f952",
+      "taskRef": "repository:scripts/gen-graph-dependency-snapshot.mjs@90e6465ad21b79142bac4853bb1c9c958f868f41#main"
+    },
+    {
+      "id": "native-real-rust-definition-encode_frame",
+      "intent": "definition",
+      "subject": "encode_frame",
+      "anchorFile": "apps/tui/src/framing.rs",
+      "tags": [],
+      "source": "repository-task",
+      "language": "rust",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "23e2de381ec6d6d5da611f7d23802b46b00d6e5018644829aac98732751b4d39",
+      "taskRef": "repository:apps/tui/src/framing.rs@90e6465ad21b79142bac4853bb1c9c958f868f41#encode_frame"
+    },
+    {
+      "id": "native-real-rust-text-search-encode_frame",
+      "intent": "text-search",
+      "subject": "encode_frame",
+      "anchorFile": "apps/tui/src/framing.rs",
+      "tags": [],
+      "source": "repository-task",
+      "language": "rust",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "23e2de381ec6d6d5da611f7d23802b46b00d6e5018644829aac98732751b4d39",
+      "taskRef": "repository:apps/tui/src/framing.rs@90e6465ad21b79142bac4853bb1c9c958f868f41#encode_frame"
+    },
+    {
+      "id": "native-real-python-definition-count_event",
+      "intent": "definition",
+      "subject": "count_event",
+      "anchorFile": "papercusp-desktop/bin/qmp-command.py",
+      "tags": [],
+      "source": "repository-task",
+      "language": "python",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "8117ee0c6188dea09d61a36b903c34f453acd0bfe920832cb253d2eb69bd5abe",
+      "taskRef": "repository:papercusp-desktop/bin/qmp-command.py@90e6465ad21b79142bac4853bb1c9c958f868f41#count_event"
+    },
+    {
+      "id": "native-real-python-text-search-count_event",
+      "intent": "text-search",
+      "subject": "count_event",
+      "anchorFile": "papercusp-desktop/bin/qmp-command.py",
+      "tags": [],
+      "source": "repository-task",
+      "language": "python",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "8117ee0c6188dea09d61a36b903c34f453acd0bfe920832cb253d2eb69bd5abe",
+      "taskRef": "repository:papercusp-desktop/bin/qmp-command.py@90e6465ad21b79142bac4853bb1c9c958f868f41#count_event"
+    },
+    {
+      "id": "native-javascript-callers-positive-configured-current",
+      "intent": "callers",
+      "subject": "target",
+      "anchorFile": "native-controls/javascript/control.js",
+      "tags": [],
+      "source": "authored",
+      "language": "javascript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "ab8b3c662402ea47494183e2ea3fe688a39ad2b9c940b9409d928bdc08256f26",
+      "taskRef": "authored-control:native-javascript-callers-positive-configured-current"
+    },
+    {
+      "id": "native-javascript-callers-absence-configured-current",
+      "intent": "callers",
+      "subject": "absent",
+      "anchorFile": "native-controls/javascript/control.js",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "javascript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "ab8b3c662402ea47494183e2ea3fe688a39ad2b9c940b9409d928bdc08256f26",
+      "taskRef": "authored-control:native-javascript-callers-absence-configured-current"
+    },
+    {
+      "id": "native-javascript-callees-positive-configured-current",
+      "intent": "callees",
+      "subject": "consumer",
+      "anchorFile": "native-controls/javascript/control.js",
+      "tags": [],
+      "source": "authored",
+      "language": "javascript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "ab8b3c662402ea47494183e2ea3fe688a39ad2b9c940b9409d928bdc08256f26",
+      "taskRef": "authored-control:native-javascript-callees-positive-configured-current"
+    },
+    {
+      "id": "native-javascript-callees-absence-configured-current",
+      "intent": "callees",
+      "subject": "absent",
+      "anchorFile": "native-controls/javascript/control.js",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "javascript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "ab8b3c662402ea47494183e2ea3fe688a39ad2b9c940b9409d928bdc08256f26",
+      "taskRef": "authored-control:native-javascript-callees-absence-configured-current"
+    },
+    {
+      "id": "native-javascript-impact-positive-configured-current",
+      "intent": "impact",
+      "subject": "target",
+      "anchorFile": "native-controls/javascript/control.js",
+      "depth": 2,
+      "tags": [],
+      "source": "authored",
+      "language": "javascript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "ab8b3c662402ea47494183e2ea3fe688a39ad2b9c940b9409d928bdc08256f26",
+      "taskRef": "authored-control:native-javascript-impact-positive-configured-current"
+    },
+    {
+      "id": "native-javascript-impact-absence-configured-current",
+      "intent": "impact",
+      "subject": "absent",
+      "anchorFile": "native-controls/javascript/control.js",
+      "depth": 2,
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "javascript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "ab8b3c662402ea47494183e2ea3fe688a39ad2b9c940b9409d928bdc08256f26",
+      "taskRef": "authored-control:native-javascript-impact-absence-configured-current"
+    },
+    {
+      "id": "native-javascript-definition-positive-configured-current",
+      "intent": "definition",
+      "subject": "target",
+      "anchorFile": "native-controls/javascript/control.js",
+      "tags": [],
+      "source": "authored",
+      "language": "javascript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "ab8b3c662402ea47494183e2ea3fe688a39ad2b9c940b9409d928bdc08256f26",
+      "taskRef": "authored-control:native-javascript-definition-positive-configured-current"
+    },
+    {
+      "id": "native-javascript-definition-absence-configured-current",
+      "intent": "definition",
+      "subject": "absent",
+      "anchorFile": "native-controls/javascript/control.js",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "javascript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "ab8b3c662402ea47494183e2ea3fe688a39ad2b9c940b9409d928bdc08256f26",
+      "taskRef": "authored-control:native-javascript-definition-absence-configured-current"
+    },
+    {
+      "id": "native-javascript-references-positive-configured-current",
+      "intent": "references",
+      "subject": "target",
+      "anchorFile": "native-controls/javascript/control.js",
+      "tags": [],
+      "source": "authored",
+      "language": "javascript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "ab8b3c662402ea47494183e2ea3fe688a39ad2b9c940b9409d928bdc08256f26",
+      "taskRef": "authored-control:native-javascript-references-positive-configured-current"
+    },
+    {
+      "id": "native-javascript-references-absence-configured-current",
+      "intent": "references",
+      "subject": "absent",
+      "anchorFile": "native-controls/javascript/control.js",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "javascript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "ab8b3c662402ea47494183e2ea3fe688a39ad2b9c940b9409d928bdc08256f26",
+      "taskRef": "authored-control:native-javascript-references-absence-configured-current"
+    },
+    {
+      "id": "native-javascript-symbol-search-positive-configured-current",
+      "intent": "symbol-search",
+      "subject": "target",
+      "anchorFile": "native-controls/javascript/control.js",
+      "tags": [],
+      "source": "authored",
+      "language": "javascript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "ab8b3c662402ea47494183e2ea3fe688a39ad2b9c940b9409d928bdc08256f26",
+      "taskRef": "authored-control:native-javascript-symbol-search-positive-configured-current"
+    },
+    {
+      "id": "native-javascript-symbol-search-absence-configured-current",
+      "intent": "symbol-search",
+      "subject": "absent",
+      "anchorFile": "native-controls/javascript/control.js",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "javascript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "ab8b3c662402ea47494183e2ea3fe688a39ad2b9c940b9409d928bdc08256f26",
+      "taskRef": "authored-control:native-javascript-symbol-search-absence-configured-current"
+    },
+    {
+      "id": "native-javascript-text-search-positive-configured-current",
+      "intent": "text-search",
+      "subject": "target",
+      "anchorFile": "native-controls/javascript/control.js",
+      "tags": [],
+      "source": "authored",
+      "language": "javascript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "ab8b3c662402ea47494183e2ea3fe688a39ad2b9c940b9409d928bdc08256f26",
+      "taskRef": "authored-control:native-javascript-text-search-positive-configured-current"
+    },
+    {
+      "id": "native-javascript-text-search-absence-configured-current",
+      "intent": "text-search",
+      "subject": "neverDeclaredAbsent",
+      "anchorFile": "native-controls/javascript/control.js",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "javascript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "ab8b3c662402ea47494183e2ea3fe688a39ad2b9c940b9409d928bdc08256f26",
+      "taskRef": "authored-control:native-javascript-text-search-absence-configured-current"
+    },
+    {
+      "id": "native-javascript-callers-positive-unconfigured-current",
+      "intent": "callers",
+      "subject": "target",
+      "anchorFile": "native-controls/javascript/control.js",
+      "tags": [],
+      "source": "authored",
+      "language": "javascript",
+      "configuration": "unconfigured",
+      "sourceState": "current",
+      "sourceFingerprint": "b382c15f36d21d7e7e4c6b94d65772cf8c94161b0285f86113f727067650f8bd",
+      "taskRef": "authored-control:native-javascript-callers-positive-unconfigured-current"
+    },
+    {
+      "id": "native-javascript-callers-positive-configured-stale",
+      "intent": "callers",
+      "subject": "target",
+      "anchorFile": "native-controls/javascript/control.js",
+      "tags": [],
+      "source": "authored",
+      "language": "javascript",
+      "configuration": "configured",
+      "sourceState": "stale",
+      "sourceFingerprint": "ab8b3c662402ea47494183e2ea3fe688a39ad2b9c940b9409d928bdc08256f26",
+      "taskRef": "authored-control:native-javascript-callers-positive-configured-stale"
+    },
+    {
+      "id": "native-javascript-callers-positive-configured-deleted",
+      "intent": "callers",
+      "subject": "target",
+      "anchorFile": "native-controls/javascript/control.js",
+      "tags": [],
+      "source": "authored",
+      "language": "javascript",
+      "configuration": "configured",
+      "sourceState": "deleted",
+      "sourceFingerprint": "ab8b3c662402ea47494183e2ea3fe688a39ad2b9c940b9409d928bdc08256f26",
+      "taskRef": "authored-control:native-javascript-callers-positive-configured-deleted"
+    },
+    {
+      "id": "native-typescript-callers-positive-configured-current",
+      "intent": "callers",
+      "subject": "target",
+      "anchorFile": "native-controls/typescript/control.ts",
+      "tags": [],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "e3dd6d213e683dfcb1e9e645b0c7591bb18175c65cd7759f4bd518cb7d899b81",
+      "taskRef": "authored-control:native-typescript-callers-positive-configured-current"
+    },
+    {
+      "id": "native-typescript-callers-absence-configured-current",
+      "intent": "callers",
+      "subject": "absent",
+      "anchorFile": "native-controls/typescript/control.ts",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "e3dd6d213e683dfcb1e9e645b0c7591bb18175c65cd7759f4bd518cb7d899b81",
+      "taskRef": "authored-control:native-typescript-callers-absence-configured-current"
+    },
+    {
+      "id": "native-typescript-callees-positive-configured-current",
+      "intent": "callees",
+      "subject": "consumer",
+      "anchorFile": "native-controls/typescript/control.ts",
+      "tags": [],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "e3dd6d213e683dfcb1e9e645b0c7591bb18175c65cd7759f4bd518cb7d899b81",
+      "taskRef": "authored-control:native-typescript-callees-positive-configured-current"
+    },
+    {
+      "id": "native-typescript-callees-absence-configured-current",
+      "intent": "callees",
+      "subject": "absent",
+      "anchorFile": "native-controls/typescript/control.ts",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "e3dd6d213e683dfcb1e9e645b0c7591bb18175c65cd7759f4bd518cb7d899b81",
+      "taskRef": "authored-control:native-typescript-callees-absence-configured-current"
+    },
+    {
+      "id": "native-typescript-impact-positive-configured-current",
+      "intent": "impact",
+      "subject": "target",
+      "anchorFile": "native-controls/typescript/control.ts",
+      "depth": 2,
+      "tags": [],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "e3dd6d213e683dfcb1e9e645b0c7591bb18175c65cd7759f4bd518cb7d899b81",
+      "taskRef": "authored-control:native-typescript-impact-positive-configured-current"
+    },
+    {
+      "id": "native-typescript-impact-absence-configured-current",
+      "intent": "impact",
+      "subject": "absent",
+      "anchorFile": "native-controls/typescript/control.ts",
+      "depth": 2,
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "e3dd6d213e683dfcb1e9e645b0c7591bb18175c65cd7759f4bd518cb7d899b81",
+      "taskRef": "authored-control:native-typescript-impact-absence-configured-current"
+    },
+    {
+      "id": "native-typescript-definition-positive-configured-current",
+      "intent": "definition",
+      "subject": "target",
+      "anchorFile": "native-controls/typescript/control.ts",
+      "tags": [],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "e3dd6d213e683dfcb1e9e645b0c7591bb18175c65cd7759f4bd518cb7d899b81",
+      "taskRef": "authored-control:native-typescript-definition-positive-configured-current"
+    },
+    {
+      "id": "native-typescript-definition-absence-configured-current",
+      "intent": "definition",
+      "subject": "absent",
+      "anchorFile": "native-controls/typescript/control.ts",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "e3dd6d213e683dfcb1e9e645b0c7591bb18175c65cd7759f4bd518cb7d899b81",
+      "taskRef": "authored-control:native-typescript-definition-absence-configured-current"
+    },
+    {
+      "id": "native-typescript-references-positive-configured-current",
+      "intent": "references",
+      "subject": "target",
+      "anchorFile": "native-controls/typescript/control.ts",
+      "tags": [],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "e3dd6d213e683dfcb1e9e645b0c7591bb18175c65cd7759f4bd518cb7d899b81",
+      "taskRef": "authored-control:native-typescript-references-positive-configured-current"
+    },
+    {
+      "id": "native-typescript-references-absence-configured-current",
+      "intent": "references",
+      "subject": "absent",
+      "anchorFile": "native-controls/typescript/control.ts",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "e3dd6d213e683dfcb1e9e645b0c7591bb18175c65cd7759f4bd518cb7d899b81",
+      "taskRef": "authored-control:native-typescript-references-absence-configured-current"
+    },
+    {
+      "id": "native-typescript-symbol-search-positive-configured-current",
+      "intent": "symbol-search",
+      "subject": "target",
+      "anchorFile": "native-controls/typescript/control.ts",
+      "tags": [],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "e3dd6d213e683dfcb1e9e645b0c7591bb18175c65cd7759f4bd518cb7d899b81",
+      "taskRef": "authored-control:native-typescript-symbol-search-positive-configured-current"
+    },
+    {
+      "id": "native-typescript-symbol-search-absence-configured-current",
+      "intent": "symbol-search",
+      "subject": "absent",
+      "anchorFile": "native-controls/typescript/control.ts",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "e3dd6d213e683dfcb1e9e645b0c7591bb18175c65cd7759f4bd518cb7d899b81",
+      "taskRef": "authored-control:native-typescript-symbol-search-absence-configured-current"
+    },
+    {
+      "id": "native-typescript-text-search-positive-configured-current",
+      "intent": "text-search",
+      "subject": "target",
+      "anchorFile": "native-controls/typescript/control.ts",
+      "tags": [],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "e3dd6d213e683dfcb1e9e645b0c7591bb18175c65cd7759f4bd518cb7d899b81",
+      "taskRef": "authored-control:native-typescript-text-search-positive-configured-current"
+    },
+    {
+      "id": "native-typescript-text-search-absence-configured-current",
+      "intent": "text-search",
+      "subject": "neverDeclaredAbsent",
+      "anchorFile": "native-controls/typescript/control.ts",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "e3dd6d213e683dfcb1e9e645b0c7591bb18175c65cd7759f4bd518cb7d899b81",
+      "taskRef": "authored-control:native-typescript-text-search-absence-configured-current"
+    },
+    {
+      "id": "native-typescript-callers-positive-unconfigured-current",
+      "intent": "callers",
+      "subject": "target",
+      "anchorFile": "native-controls/typescript/control.ts",
+      "tags": [],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "unconfigured",
+      "sourceState": "current",
+      "sourceFingerprint": "5f4de5e47e1343150fd95c345d1c111c2016d1c363f1302aee19a808ce6c2cb4",
+      "taskRef": "authored-control:native-typescript-callers-positive-unconfigured-current"
+    },
+    {
+      "id": "native-typescript-callers-positive-configured-stale",
+      "intent": "callers",
+      "subject": "target",
+      "anchorFile": "native-controls/typescript/control.ts",
+      "tags": [],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "stale",
+      "sourceFingerprint": "e3dd6d213e683dfcb1e9e645b0c7591bb18175c65cd7759f4bd518cb7d899b81",
+      "taskRef": "authored-control:native-typescript-callers-positive-configured-stale"
+    },
+    {
+      "id": "native-typescript-callers-positive-configured-deleted",
+      "intent": "callers",
+      "subject": "target",
+      "anchorFile": "native-controls/typescript/control.ts",
+      "tags": [],
+      "source": "authored",
+      "language": "typescript",
+      "configuration": "configured",
+      "sourceState": "deleted",
+      "sourceFingerprint": "e3dd6d213e683dfcb1e9e645b0c7591bb18175c65cd7759f4bd518cb7d899b81",
+      "taskRef": "authored-control:native-typescript-callers-positive-configured-deleted"
+    },
+    {
+      "id": "native-rust-callers-positive-configured-current",
+      "intent": "callers",
+      "subject": "target",
+      "anchorFile": "native-controls/rust/control.rs",
+      "tags": [],
+      "source": "authored",
+      "language": "rust",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "9fc370bd089d94374b82670c9bfff15e02a4e9892c1ef8014ef994fe5d8da0ba",
+      "taskRef": "authored-control:native-rust-callers-positive-configured-current"
+    },
+    {
+      "id": "native-rust-callers-absence-configured-current",
+      "intent": "callers",
+      "subject": "absent",
+      "anchorFile": "native-controls/rust/control.rs",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "rust",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "9fc370bd089d94374b82670c9bfff15e02a4e9892c1ef8014ef994fe5d8da0ba",
+      "taskRef": "authored-control:native-rust-callers-absence-configured-current"
+    },
+    {
+      "id": "native-rust-callees-positive-configured-current",
+      "intent": "callees",
+      "subject": "consumer",
+      "anchorFile": "native-controls/rust/control.rs",
+      "tags": [],
+      "source": "authored",
+      "language": "rust",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "9fc370bd089d94374b82670c9bfff15e02a4e9892c1ef8014ef994fe5d8da0ba",
+      "taskRef": "authored-control:native-rust-callees-positive-configured-current"
+    },
+    {
+      "id": "native-rust-callees-absence-configured-current",
+      "intent": "callees",
+      "subject": "absent",
+      "anchorFile": "native-controls/rust/control.rs",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "rust",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "9fc370bd089d94374b82670c9bfff15e02a4e9892c1ef8014ef994fe5d8da0ba",
+      "taskRef": "authored-control:native-rust-callees-absence-configured-current"
+    },
+    {
+      "id": "native-rust-impact-positive-configured-current",
+      "intent": "impact",
+      "subject": "target",
+      "anchorFile": "native-controls/rust/control.rs",
+      "depth": 2,
+      "tags": [],
+      "source": "authored",
+      "language": "rust",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "9fc370bd089d94374b82670c9bfff15e02a4e9892c1ef8014ef994fe5d8da0ba",
+      "taskRef": "authored-control:native-rust-impact-positive-configured-current"
+    },
+    {
+      "id": "native-rust-impact-absence-configured-current",
+      "intent": "impact",
+      "subject": "absent",
+      "anchorFile": "native-controls/rust/control.rs",
+      "depth": 2,
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "rust",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "9fc370bd089d94374b82670c9bfff15e02a4e9892c1ef8014ef994fe5d8da0ba",
+      "taskRef": "authored-control:native-rust-impact-absence-configured-current"
+    },
+    {
+      "id": "native-rust-definition-positive-configured-current",
+      "intent": "definition",
+      "subject": "target",
+      "anchorFile": "native-controls/rust/control.rs",
+      "tags": [],
+      "source": "authored",
+      "language": "rust",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "9fc370bd089d94374b82670c9bfff15e02a4e9892c1ef8014ef994fe5d8da0ba",
+      "taskRef": "authored-control:native-rust-definition-positive-configured-current"
+    },
+    {
+      "id": "native-rust-definition-absence-configured-current",
+      "intent": "definition",
+      "subject": "absent",
+      "anchorFile": "native-controls/rust/control.rs",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "rust",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "9fc370bd089d94374b82670c9bfff15e02a4e9892c1ef8014ef994fe5d8da0ba",
+      "taskRef": "authored-control:native-rust-definition-absence-configured-current"
+    },
+    {
+      "id": "native-rust-references-positive-configured-current",
+      "intent": "references",
+      "subject": "target",
+      "anchorFile": "native-controls/rust/control.rs",
+      "tags": [],
+      "source": "authored",
+      "language": "rust",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "9fc370bd089d94374b82670c9bfff15e02a4e9892c1ef8014ef994fe5d8da0ba",
+      "taskRef": "authored-control:native-rust-references-positive-configured-current"
+    },
+    {
+      "id": "native-rust-references-absence-configured-current",
+      "intent": "references",
+      "subject": "absent",
+      "anchorFile": "native-controls/rust/control.rs",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "rust",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "9fc370bd089d94374b82670c9bfff15e02a4e9892c1ef8014ef994fe5d8da0ba",
+      "taskRef": "authored-control:native-rust-references-absence-configured-current"
+    },
+    {
+      "id": "native-rust-symbol-search-positive-configured-current",
+      "intent": "symbol-search",
+      "subject": "target",
+      "anchorFile": "native-controls/rust/control.rs",
+      "tags": [],
+      "source": "authored",
+      "language": "rust",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "9fc370bd089d94374b82670c9bfff15e02a4e9892c1ef8014ef994fe5d8da0ba",
+      "taskRef": "authored-control:native-rust-symbol-search-positive-configured-current"
+    },
+    {
+      "id": "native-rust-symbol-search-absence-configured-current",
+      "intent": "symbol-search",
+      "subject": "absent",
+      "anchorFile": "native-controls/rust/control.rs",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "rust",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "9fc370bd089d94374b82670c9bfff15e02a4e9892c1ef8014ef994fe5d8da0ba",
+      "taskRef": "authored-control:native-rust-symbol-search-absence-configured-current"
+    },
+    {
+      "id": "native-rust-text-search-positive-configured-current",
+      "intent": "text-search",
+      "subject": "target",
+      "anchorFile": "native-controls/rust/control.rs",
+      "tags": [],
+      "source": "authored",
+      "language": "rust",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "9fc370bd089d94374b82670c9bfff15e02a4e9892c1ef8014ef994fe5d8da0ba",
+      "taskRef": "authored-control:native-rust-text-search-positive-configured-current"
+    },
+    {
+      "id": "native-rust-text-search-absence-configured-current",
+      "intent": "text-search",
+      "subject": "neverDeclaredAbsent",
+      "anchorFile": "native-controls/rust/control.rs",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "rust",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "9fc370bd089d94374b82670c9bfff15e02a4e9892c1ef8014ef994fe5d8da0ba",
+      "taskRef": "authored-control:native-rust-text-search-absence-configured-current"
+    },
+    {
+      "id": "native-rust-callers-positive-unconfigured-current",
+      "intent": "callers",
+      "subject": "target",
+      "anchorFile": "native-controls/rust/control.rs",
+      "tags": [],
+      "source": "authored",
+      "language": "rust",
+      "configuration": "unconfigured",
+      "sourceState": "current",
+      "sourceFingerprint": "b50f7e8e29ead6dcb6b6ffc6acecb6c6d5d8847221355fdd06a981bed0f2f40e",
+      "taskRef": "authored-control:native-rust-callers-positive-unconfigured-current"
+    },
+    {
+      "id": "native-rust-callers-positive-configured-stale",
+      "intent": "callers",
+      "subject": "target",
+      "anchorFile": "native-controls/rust/control.rs",
+      "tags": [],
+      "source": "authored",
+      "language": "rust",
+      "configuration": "configured",
+      "sourceState": "stale",
+      "sourceFingerprint": "9fc370bd089d94374b82670c9bfff15e02a4e9892c1ef8014ef994fe5d8da0ba",
+      "taskRef": "authored-control:native-rust-callers-positive-configured-stale"
+    },
+    {
+      "id": "native-rust-callers-positive-configured-deleted",
+      "intent": "callers",
+      "subject": "target",
+      "anchorFile": "native-controls/rust/control.rs",
+      "tags": [],
+      "source": "authored",
+      "language": "rust",
+      "configuration": "configured",
+      "sourceState": "deleted",
+      "sourceFingerprint": "9fc370bd089d94374b82670c9bfff15e02a4e9892c1ef8014ef994fe5d8da0ba",
+      "taskRef": "authored-control:native-rust-callers-positive-configured-deleted"
+    },
+    {
+      "id": "native-python-callers-positive-configured-current",
+      "intent": "callers",
+      "subject": "target",
+      "anchorFile": "native-controls/python/control.py",
+      "tags": [],
+      "source": "authored",
+      "language": "python",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "0979ff654358b6eed0cc1ba71241c77f430343e61d225b7239d714e1a3687626",
+      "taskRef": "authored-control:native-python-callers-positive-configured-current"
+    },
+    {
+      "id": "native-python-callers-absence-configured-current",
+      "intent": "callers",
+      "subject": "absent",
+      "anchorFile": "native-controls/python/control.py",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "python",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "0979ff654358b6eed0cc1ba71241c77f430343e61d225b7239d714e1a3687626",
+      "taskRef": "authored-control:native-python-callers-absence-configured-current"
+    },
+    {
+      "id": "native-python-callees-positive-configured-current",
+      "intent": "callees",
+      "subject": "consumer",
+      "anchorFile": "native-controls/python/control.py",
+      "tags": [],
+      "source": "authored",
+      "language": "python",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "0979ff654358b6eed0cc1ba71241c77f430343e61d225b7239d714e1a3687626",
+      "taskRef": "authored-control:native-python-callees-positive-configured-current"
+    },
+    {
+      "id": "native-python-callees-absence-configured-current",
+      "intent": "callees",
+      "subject": "absent",
+      "anchorFile": "native-controls/python/control.py",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "python",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "0979ff654358b6eed0cc1ba71241c77f430343e61d225b7239d714e1a3687626",
+      "taskRef": "authored-control:native-python-callees-absence-configured-current"
+    },
+    {
+      "id": "native-python-impact-positive-configured-current",
+      "intent": "impact",
+      "subject": "target",
+      "anchorFile": "native-controls/python/control.py",
+      "depth": 2,
+      "tags": [],
+      "source": "authored",
+      "language": "python",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "0979ff654358b6eed0cc1ba71241c77f430343e61d225b7239d714e1a3687626",
+      "taskRef": "authored-control:native-python-impact-positive-configured-current"
+    },
+    {
+      "id": "native-python-impact-absence-configured-current",
+      "intent": "impact",
+      "subject": "absent",
+      "anchorFile": "native-controls/python/control.py",
+      "depth": 2,
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "python",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "0979ff654358b6eed0cc1ba71241c77f430343e61d225b7239d714e1a3687626",
+      "taskRef": "authored-control:native-python-impact-absence-configured-current"
+    },
+    {
+      "id": "native-python-definition-positive-configured-current",
+      "intent": "definition",
+      "subject": "target",
+      "anchorFile": "native-controls/python/control.py",
+      "tags": [],
+      "source": "authored",
+      "language": "python",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "0979ff654358b6eed0cc1ba71241c77f430343e61d225b7239d714e1a3687626",
+      "taskRef": "authored-control:native-python-definition-positive-configured-current"
+    },
+    {
+      "id": "native-python-definition-absence-configured-current",
+      "intent": "definition",
+      "subject": "absent",
+      "anchorFile": "native-controls/python/control.py",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "python",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "0979ff654358b6eed0cc1ba71241c77f430343e61d225b7239d714e1a3687626",
+      "taskRef": "authored-control:native-python-definition-absence-configured-current"
+    },
+    {
+      "id": "native-python-references-positive-configured-current",
+      "intent": "references",
+      "subject": "target",
+      "anchorFile": "native-controls/python/control.py",
+      "tags": [],
+      "source": "authored",
+      "language": "python",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "0979ff654358b6eed0cc1ba71241c77f430343e61d225b7239d714e1a3687626",
+      "taskRef": "authored-control:native-python-references-positive-configured-current"
+    },
+    {
+      "id": "native-python-references-absence-configured-current",
+      "intent": "references",
+      "subject": "absent",
+      "anchorFile": "native-controls/python/control.py",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "python",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "0979ff654358b6eed0cc1ba71241c77f430343e61d225b7239d714e1a3687626",
+      "taskRef": "authored-control:native-python-references-absence-configured-current"
+    },
+    {
+      "id": "native-python-symbol-search-positive-configured-current",
+      "intent": "symbol-search",
+      "subject": "target",
+      "anchorFile": "native-controls/python/control.py",
+      "tags": [],
+      "source": "authored",
+      "language": "python",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "0979ff654358b6eed0cc1ba71241c77f430343e61d225b7239d714e1a3687626",
+      "taskRef": "authored-control:native-python-symbol-search-positive-configured-current"
+    },
+    {
+      "id": "native-python-symbol-search-absence-configured-current",
+      "intent": "symbol-search",
+      "subject": "absent",
+      "anchorFile": "native-controls/python/control.py",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "python",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "0979ff654358b6eed0cc1ba71241c77f430343e61d225b7239d714e1a3687626",
+      "taskRef": "authored-control:native-python-symbol-search-absence-configured-current"
+    },
+    {
+      "id": "native-python-text-search-positive-configured-current",
+      "intent": "text-search",
+      "subject": "target",
+      "anchorFile": "native-controls/python/control.py",
+      "tags": [],
+      "source": "authored",
+      "language": "python",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "0979ff654358b6eed0cc1ba71241c77f430343e61d225b7239d714e1a3687626",
+      "taskRef": "authored-control:native-python-text-search-positive-configured-current"
+    },
+    {
+      "id": "native-python-text-search-absence-configured-current",
+      "intent": "text-search",
+      "subject": "neverDeclaredAbsent",
+      "anchorFile": "native-controls/python/control.py",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "python",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "0979ff654358b6eed0cc1ba71241c77f430343e61d225b7239d714e1a3687626",
+      "taskRef": "authored-control:native-python-text-search-absence-configured-current"
+    },
+    {
+      "id": "native-python-callers-positive-unconfigured-current",
+      "intent": "callers",
+      "subject": "target",
+      "anchorFile": "native-controls/python/control.py",
+      "tags": [],
+      "source": "authored",
+      "language": "python",
+      "configuration": "unconfigured",
+      "sourceState": "current",
+      "sourceFingerprint": "3e849c03c4cecb0641c79e0d512f285f4bbe5af10ecfdef5603bd15eb29f8bd7",
+      "taskRef": "authored-control:native-python-callers-positive-unconfigured-current"
+    },
+    {
+      "id": "native-python-callers-positive-configured-stale",
+      "intent": "callers",
+      "subject": "target",
+      "anchorFile": "native-controls/python/control.py",
+      "tags": [],
+      "source": "authored",
+      "language": "python",
+      "configuration": "configured",
+      "sourceState": "stale",
+      "sourceFingerprint": "0979ff654358b6eed0cc1ba71241c77f430343e61d225b7239d714e1a3687626",
+      "taskRef": "authored-control:native-python-callers-positive-configured-stale"
+    },
+    {
+      "id": "native-python-callers-positive-configured-deleted",
+      "intent": "callers",
+      "subject": "target",
+      "anchorFile": "native-controls/python/control.py",
+      "tags": [],
+      "source": "authored",
+      "language": "python",
+      "configuration": "configured",
+      "sourceState": "deleted",
+      "sourceFingerprint": "0979ff654358b6eed0cc1ba71241c77f430343e61d225b7239d714e1a3687626",
+      "taskRef": "authored-control:native-python-callers-positive-configured-deleted"
+    },
+    {
+      "id": "native-go-callers-positive-configured-current",
+      "intent": "callers",
+      "subject": "target",
+      "anchorFile": "native-controls/go/control.go",
+      "tags": [],
+      "source": "authored",
+      "language": "go",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "c933b34edaa172720bc916b4ff3fceeee9a0e09724640747a94d3d1b505b5590",
+      "taskRef": "authored-control:native-go-callers-positive-configured-current"
+    },
+    {
+      "id": "native-go-callers-absence-configured-current",
+      "intent": "callers",
+      "subject": "absent",
+      "anchorFile": "native-controls/go/control.go",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "go",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "c933b34edaa172720bc916b4ff3fceeee9a0e09724640747a94d3d1b505b5590",
+      "taskRef": "authored-control:native-go-callers-absence-configured-current"
+    },
+    {
+      "id": "native-go-callees-positive-configured-current",
+      "intent": "callees",
+      "subject": "consumer",
+      "anchorFile": "native-controls/go/control.go",
+      "tags": [],
+      "source": "authored",
+      "language": "go",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "c933b34edaa172720bc916b4ff3fceeee9a0e09724640747a94d3d1b505b5590",
+      "taskRef": "authored-control:native-go-callees-positive-configured-current"
+    },
+    {
+      "id": "native-go-callees-absence-configured-current",
+      "intent": "callees",
+      "subject": "absent",
+      "anchorFile": "native-controls/go/control.go",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "go",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "c933b34edaa172720bc916b4ff3fceeee9a0e09724640747a94d3d1b505b5590",
+      "taskRef": "authored-control:native-go-callees-absence-configured-current"
+    },
+    {
+      "id": "native-go-impact-positive-configured-current",
+      "intent": "impact",
+      "subject": "target",
+      "anchorFile": "native-controls/go/control.go",
+      "depth": 2,
+      "tags": [],
+      "source": "authored",
+      "language": "go",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "c933b34edaa172720bc916b4ff3fceeee9a0e09724640747a94d3d1b505b5590",
+      "taskRef": "authored-control:native-go-impact-positive-configured-current"
+    },
+    {
+      "id": "native-go-impact-absence-configured-current",
+      "intent": "impact",
+      "subject": "absent",
+      "anchorFile": "native-controls/go/control.go",
+      "depth": 2,
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "go",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "c933b34edaa172720bc916b4ff3fceeee9a0e09724640747a94d3d1b505b5590",
+      "taskRef": "authored-control:native-go-impact-absence-configured-current"
+    },
+    {
+      "id": "native-go-definition-positive-configured-current",
+      "intent": "definition",
+      "subject": "target",
+      "anchorFile": "native-controls/go/control.go",
+      "tags": [],
+      "source": "authored",
+      "language": "go",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "c933b34edaa172720bc916b4ff3fceeee9a0e09724640747a94d3d1b505b5590",
+      "taskRef": "authored-control:native-go-definition-positive-configured-current"
+    },
+    {
+      "id": "native-go-definition-absence-configured-current",
+      "intent": "definition",
+      "subject": "absent",
+      "anchorFile": "native-controls/go/control.go",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "go",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "c933b34edaa172720bc916b4ff3fceeee9a0e09724640747a94d3d1b505b5590",
+      "taskRef": "authored-control:native-go-definition-absence-configured-current"
+    },
+    {
+      "id": "native-go-references-positive-configured-current",
+      "intent": "references",
+      "subject": "target",
+      "anchorFile": "native-controls/go/control.go",
+      "tags": [],
+      "source": "authored",
+      "language": "go",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "c933b34edaa172720bc916b4ff3fceeee9a0e09724640747a94d3d1b505b5590",
+      "taskRef": "authored-control:native-go-references-positive-configured-current"
+    },
+    {
+      "id": "native-go-references-absence-configured-current",
+      "intent": "references",
+      "subject": "absent",
+      "anchorFile": "native-controls/go/control.go",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "go",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "c933b34edaa172720bc916b4ff3fceeee9a0e09724640747a94d3d1b505b5590",
+      "taskRef": "authored-control:native-go-references-absence-configured-current"
+    },
+    {
+      "id": "native-go-symbol-search-positive-configured-current",
+      "intent": "symbol-search",
+      "subject": "target",
+      "anchorFile": "native-controls/go/control.go",
+      "tags": [],
+      "source": "authored",
+      "language": "go",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "c933b34edaa172720bc916b4ff3fceeee9a0e09724640747a94d3d1b505b5590",
+      "taskRef": "authored-control:native-go-symbol-search-positive-configured-current"
+    },
+    {
+      "id": "native-go-symbol-search-absence-configured-current",
+      "intent": "symbol-search",
+      "subject": "absent",
+      "anchorFile": "native-controls/go/control.go",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "go",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "c933b34edaa172720bc916b4ff3fceeee9a0e09724640747a94d3d1b505b5590",
+      "taskRef": "authored-control:native-go-symbol-search-absence-configured-current"
+    },
+    {
+      "id": "native-go-text-search-positive-configured-current",
+      "intent": "text-search",
+      "subject": "target",
+      "anchorFile": "native-controls/go/control.go",
+      "tags": [],
+      "source": "authored",
+      "language": "go",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "c933b34edaa172720bc916b4ff3fceeee9a0e09724640747a94d3d1b505b5590",
+      "taskRef": "authored-control:native-go-text-search-positive-configured-current"
+    },
+    {
+      "id": "native-go-text-search-absence-configured-current",
+      "intent": "text-search",
+      "subject": "neverDeclaredAbsent",
+      "anchorFile": "native-controls/go/control.go",
+      "tags": [
+        "absence"
+      ],
+      "source": "authored",
+      "language": "go",
+      "configuration": "configured",
+      "sourceState": "current",
+      "sourceFingerprint": "c933b34edaa172720bc916b4ff3fceeee9a0e09724640747a94d3d1b505b5590",
+      "taskRef": "authored-control:native-go-text-search-absence-configured-current"
+    },
+    {
+      "id": "native-go-callers-positive-unconfigured-current",
+      "intent": "callers",
+      "subject": "target",
+      "anchorFile": "native-controls/go/control.go",
+      "tags": [],
+      "source": "authored",
+      "language": "go",
+      "configuration": "unconfigured",
+      "sourceState": "current",
+      "sourceFingerprint": "c0e6e67e71bb9f2f0ca82a9c93caed57f4571b664d8c59048aadf2e77bc68fb9",
+      "taskRef": "authored-control:native-go-callers-positive-unconfigured-current"
+    },
+    {
+      "id": "native-go-callers-positive-configured-stale",
+      "intent": "callers",
+      "subject": "target",
+      "anchorFile": "native-controls/go/control.go",
+      "tags": [],
+      "source": "authored",
+      "language": "go",
+      "configuration": "configured",
+      "sourceState": "stale",
+      "sourceFingerprint": "c933b34edaa172720bc916b4ff3fceeee9a0e09724640747a94d3d1b505b5590",
+      "taskRef": "authored-control:native-go-callers-positive-configured-stale"
+    },
+    {
+      "id": "native-go-callers-positive-configured-deleted",
+      "intent": "callers",
+      "subject": "target",
+      "anchorFile": "native-controls/go/control.go",
+      "tags": [],
+      "source": "authored",
+      "language": "go",
+      "configuration": "configured",
+      "sourceState": "deleted",
+      "sourceFingerprint": "c933b34edaa172720bc916b4ff3fceeee9a0e09724640747a94d3d1b505b5590",
+      "taskRef": "authored-control:native-go-callers-positive-configured-deleted"
+    }
+  ],
+  "keys": [
+    {
+      "caseId": "callers-managed-spawn",
+      "sites": [
+        "packages/operator-core/lib/code-intelligence/lsp-adapter-shutdown.integration.test.ts:30",
+        "packages/operator-core/lib/code-intelligence/lsp-adapter.integration.test.ts:26",
+        "packages/operator-core/lib/code-intelligence/lsp-adapter.ts:1199"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "packages/operator-core/lib/task-manager/managed-spawn.ts:255"
+      ]
+    },
+    {
+      "caseId": "callers-measure-repo-files-evidence",
+      "sites": [
+        "packages/operator-core/lib/acceptance-bar-contract-snapshot.integration.test.ts:217",
+        "packages/operator-core/lib/agent-tools/plans/certify-spec-clauses.test.ts:243",
+        "packages/operator-core/lib/agent-tools/plans/evidence-measurement-pin.test.ts:123"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:349"
+      ]
+    },
+    {
+      "caseId": "callers-append-host-event",
+      "sites": [
+        "apps/operator/lib/psu-adopt-first-turn.test.ts:40",
+        "apps/operator/lib/psu-pty-busy-gate-durable-evidence.test.ts:129",
+        "apps/operator/lib/psu-pty-busy-gate-durable-evidence.test.ts:48"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "apps/operator/scripts/psu-pty-host.d.mts:823"
+      ]
+    },
+    {
+      "caseId": "callers-verdict-of-same-name",
+      "sites": [
+        "packages/operator-core/lib/pot-eval/supervision-metrics.ts:144",
+        "packages/operator-core/lib/pot-eval/supervision-metrics.ts:272"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "packages/operator-core/lib/pot-eval/supervision-metrics.ts:67"
+      ]
+    },
+    {
+      "caseId": "callers-classify-projection-body",
+      "sites": [
+        "packages/operator-core/lib/continuity-probes.ts:556",
+        "packages/operator-core/lib/result-door.ts:1207",
+        "packages/operator-core/lib/result-door.ts:416"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "packages/operator-core/lib/result-projection/apply.ts:263"
+      ]
+    },
+    {
+      "caseId": "callers-recover-index-lock",
+      "sites": [
+        "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts:5037",
+        "packages/operator-core/lib/harness/git-sync/run-git-sync.ts:1914",
+        "packages/operator-core/lib/harness/git-sync/run-git-sync.ts:2039"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "packages/operator-core/lib/harness/git-sync/run-git-sync.ts:2492"
+      ]
+    },
+    {
+      "caseId": "callers-resolve-installed-event",
+      "sites": [
+        "packages/operator-core/lib/blueprint/compile-packages.ts:194",
+        "packages/operator-core/lib/cupboard/install-event-io.test.ts:165",
+        "packages/operator-core/lib/cupboard/install-event-io.ts:146"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "packages/operator-core/lib/cupboard/event-store.ts:272"
+      ]
+    },
+    {
+      "caseId": "callers-seed-acceptance-bars",
+      "sites": [
+        "packages/operator-core/lib/acceptance-bar-contract-snapshot.integration.test.ts:160",
+        "packages/operator-core/lib/acceptance-bar-migration.ts:339",
+        "packages/operator-core/lib/acceptance-bar-receiver-seed.ts:167"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "packages/operator-core/lib/acceptance-bar-seed.ts:948"
+      ]
+    },
+    {
+      "caseId": "callers-seal-implementation-acceptance",
+      "sites": [
+        "packages/operator-core/lib/attention/intake-promotion.ts:569",
+        "packages/operator-core/lib/harness/improvements/agent-review-policy.integration.test.ts:51",
+        "packages/operator-core/lib/harness/improvements/agent-review-policy.test.ts:74"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "packages/operator-core/lib/harness/improvements/agent-review-policy.ts:487"
+      ]
+    },
+    {
+      "caseId": "callers-run-integrator-tick-same-name",
+      "sites": [
+        "packages/operator-core/lib/harness/git-sync/git-sync-action.ts:6707",
+        "packages/operator-core/lib/sync/pot-git/integrator-tick.integration.test.ts:272",
+        "packages/operator-core/lib/sync/pot-git/integrator-tick.integration.test.ts:95"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "packages/operator-core/lib/sync/pot-git/integrator-tick.ts:228"
+      ]
+    },
+    {
+      "caseId": "callers-mark-spawn-offload-host",
+      "sites": [
+        "apps/operator/bin/hono-host-spawn-offload.test.ts:44",
+        "apps/operator/bin/hono-host.ts:202",
+        "packages/operator-core/lib/fleet/git-via-sidecar.test.ts:113"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "packages/operator-core/lib/fleet/git-via-sidecar.ts:145"
+      ]
+    },
+    {
+      "caseId": "callers-record-scheduled-fire-failure",
+      "sites": [
+        "packages/operator-core/lib/harness/routines/plan-run-action-fire-failure.test.ts:125",
+        "packages/operator-core/lib/harness/routines/plan-run-action.ts:754"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "packages/operator-core/lib/harness/routines/plan-run-action.ts:777"
+      ]
+    },
+    {
+      "caseId": "callers-apply-min-score-submodule",
+      "sites": [
+        "libs/generic/search/src/hybrid.ts:300",
+        "libs/generic/search/src/hybrid.ts:554",
+        "libs/generic/search/src/min-score.test.ts:62"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "libs/generic/search/src/min-score.ts:103"
+      ]
+    },
+    {
+      "caseId": "callers-compare-by-head-of-line-dynamic",
+      "sites": [
+        "packages/operator-core/lib/work-items-head-of-line.test.ts:42",
+        "packages/operator-core/lib/work-items-head-of-line.test.ts:45",
+        "packages/operator-core/lib/work-items.ts:1478"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "packages/operator-core/lib/work-items.ts:1203"
+      ]
+    },
+    {
+      "caseId": "callers-create-panel-registry-submodule",
+      "sites": [
+        "libs/generic/dock-workbench/src/panel-registry.test.ts:10",
+        "libs/generic/dock-workbench/src/panel-registry.ts:84"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "libs/generic/dock-workbench/src/panel-registry.ts:80"
+      ]
+    },
+    {
+      "caseId": "callers-absent-seed-fingerprint",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "packages/operator-core/lib/acceptance-bar-seed.ts:1337"
+      ]
+    },
+    {
+      "caseId": "callers-absent-apply-sql-file",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "libs/papercusp/packages/cli/src/pg-client.ts:93"
+      ]
+    },
+    {
+      "caseId": "callees-get-next-for-bee",
+      "sites": [
+        "packages/operator-core/lib/scheduler/get-next.ts:2813"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "callees-list-spec-evidence",
+      "sites": [
+        "packages/operator-core/lib/agent-tools/plans/source.ts:500",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:1076",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:1081",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:857"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "callees-recover-index-lock",
+      "sites": [
+        "packages/operator-core/lib/harness/git-sync/run-git-sync.ts:2251",
+        "packages/operator-core/lib/harness/git-sync/run-git-sync.ts:2475"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "callees-classify-projection-body",
+      "sites": [
+        "packages/operator-core/lib/result-projection/apply.ts:429"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "callees-install-rule-from-cupboard",
+      "sites": [
+        "packages/operator-core/lib/cupboard/install-io.ts:106",
+        "packages/operator-core/lib/cupboard/install-rule-core.ts:53",
+        "packages/operator-core/lib/cupboard/install-rule-io.ts:29",
+        "packages/operator-core/lib/cupboard/resolve-listing-by-kind.ts:126"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "callees-apply-merge-rule-submodule",
+      "sites": [
+        "libs/papercusp/packages/orchestrator/src/blueprint/merge.ts:134",
+        "libs/papercusp/packages/orchestrator/src/blueprint/merge.ts:156",
+        "libs/papercusp/packages/orchestrator/src/blueprint/merge.ts:169",
+        "libs/papercusp/packages/orchestrator/src/blueprint/merge.ts:49"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "impact-is-provenance-only",
+      "sites": [
+        "packages/operator-core/lib/acceptance-bar-amendment.ts:484"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "impact-resolve-installed-event",
+      "sites": [
+        "packages/operator-core/lib/blueprint/compile-packages.ts:172",
+        "packages/operator-core/lib/cupboard/install-event-io.ts:121"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "impact-mark-spawn-offload-host",
+      "sites": [
+        "apps/operator/bin/hono-host.ts:202"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "impact-record-scheduled-fire-failure",
+      "sites": [
+        "packages/operator-core/lib/harness/routines/plan-run-action.ts:740"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "impact-pot-git-gc-tick-dynamic",
+      "sites": [
+        "packages/operator-core/lib/harness/routines/hive-git-gc-action.ts:105"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "impact-absent-clear-operator-sleep",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "definition-pin-module-state",
+      "sites": [
+        "libs/generic/module-singleton/src/index.ts:106"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "definition-managed-set-interval-shadowed",
+      "sites": [
+        "libs/generic/scheduled-registry/src/index.ts:410"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "definition-panel-registry-barrel",
+      "sites": [
+        "libs/generic/dock-workbench/src/panel-registry.ts:30"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "definition-append-host-event",
+      "sites": [
+        "apps/operator/scripts/psu-pty-host.mjs:2324"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "definition-verdict-of-same-name",
+      "sites": [
+        "packages/operator-core/lib/pot-eval/supervision-metrics.ts:67"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "definition-apply-audit-verdict-submodule",
+      "sites": [
+        "libs/papercusp/packages/orchestrator/src/auditor-dispatch.ts:154"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "definition-recover-index-lock",
+      "sites": [
+        "packages/operator-core/lib/harness/git-sync/run-git-sync.ts:2492"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "references-panel-registry-barrel",
+      "sites": [
+        "apps/operator/app/harness/dock/panel-registry.ts:2",
+        "libs/generic/dock-workbench/src/DockWorkspace.tsx:13",
+        "libs/generic/dock-workbench/src/DockWorkspace.tsx:6"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "libs/generic/dock-workbench/src/panel-registry.ts:30"
+      ]
+    },
+    {
+      "caseId": "references-classify-projection-body",
+      "sites": [
+        "packages/operator-core/lib/continuity-probes.ts:15",
+        "packages/operator-core/lib/continuity-probes.ts:556",
+        "packages/operator-core/lib/result-door.ts:51"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "packages/operator-core/lib/result-projection/apply.ts:263"
+      ]
+    },
+    {
+      "caseId": "references-resolve-installed-event",
+      "sites": [
+        "packages/operator-core/lib/blueprint/compile-packages.ts:194",
+        "packages/operator-core/lib/blueprint/compile-packages.ts:31",
+        "packages/operator-core/lib/cupboard/install-event-io.test.ts:70"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "packages/operator-core/lib/cupboard/event-store.ts:272"
+      ]
+    },
+    {
+      "caseId": "references-mark-spawn-offload-host",
+      "sites": [
+        "apps/operator/bin/hono-host-spawn-offload.test.ts:25",
+        "apps/operator/bin/hono-host-spawn-offload.test.ts:32",
+        "apps/operator/bin/hono-host-spawn-offload.test.ts:36"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "packages/operator-core/lib/fleet/git-via-sidecar.ts:145"
+      ]
+    },
+    {
+      "caseId": "references-integrator-tick-input-type",
+      "sites": [
+        "packages/operator-core/lib/sync/pot-git/integrator-tick.ts:228"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "packages/operator-core/lib/sync/pot-git/integrator-tick.ts:52"
+      ]
+    },
+    {
+      "caseId": "references-handle-pr-poll-dynamic",
+      "sites": [
+        "packages/operator-core/lib/pr-host/poll-daemon.test.ts:23",
+        "packages/operator-core/lib/pr-host/poll-daemon.test.ts:604",
+        "packages/operator-core/lib/pr-host/poll-daemon.ts:953"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "packages/operator-core/lib/pr-host/poll-daemon.ts:914"
+      ]
+    },
+    {
+      "caseId": "references-absent-bundled-recipes-dir",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "packages/operator-core/lib/cupboard/recipe-store.ts:57"
+      ]
+    },
+    {
+      "caseId": "symbol-claim-next-issue-work-item",
+      "sites": [
+        "packages/operator-core/lib/work-items.ts:8540"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "symbol-verdict-of-same-name",
+      "sites": [
+        "packages/operator-core/lib/code-intelligence/engine-comparison-provenance.integration.test.ts:25",
+        "packages/operator-core/lib/plan-provenance-read.ts:130",
+        "packages/operator-core/lib/pot-eval/supervision-metrics.ts:67"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "symbol-run-integrator-tick-same-name",
+      "sites": [
+        "packages/operator-core/lib/sync/pot-git/integrator-tick.integration.test.ts:444",
+        "packages/operator-core/lib/sync/pot-git/integrator-tick.ts:228"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "symbol-absent-v2",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "text-publish-blueprint-route",
+      "sites": [
+        "packages/operator-core/lib/code-intelligence/selective-assist.integration.test.ts:278",
+        "packages/operator-core/lib/code-intelligence/selective-corpus.ts:81",
+        "packages/operator-core/lib/code-intelligence/selective-corpus.ts:87"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "text-shell-function",
+      "sites": [
+        "papercusp-desktop/test/release-gitleaks.test.js:2036",
+        "papercusp-desktop/test/release-local-linux-reuse.test.js:1120",
+        "papercusp-desktop/test/release-local-mac-sig-collection.test.js:31"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "text-env-var",
+      "sites": [
+        "packages/operator-core/lib/code-intelligence/engine-comparison-arms.ts:134"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "text-sql-table",
+      "sites": [
+        "apps/operator/lib/release/migrate.ts:14",
+        "apps/operator/scripts/hooks/cc/__tests__/pretooluse-unreserved-migration-guard.test.ts:80",
+        "apps/operator/scripts/hooks/cc/__tests__/pretooluse-unreserved-migration-guard.test.ts:93"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "text-absent-literal",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-real-javascript-definition-main",
+      "sites": [
+        "scripts/gen-graph-dependency-snapshot.mjs:461"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-real-javascript-text-search-main",
+      "sites": [
+        "scripts/gen-graph-dependency-snapshot.mjs:461",
+        "scripts/gen-graph-dependency-snapshot.mjs:542"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-real-rust-definition-encode_frame",
+      "sites": [
+        "apps/tui/src/framing.rs:67"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-real-rust-text-search-encode_frame",
+      "sites": [
+        "apps/tui/src/framing.rs:67",
+        "apps/tui/src/framing.rs:160",
+        "apps/tui/src/framing.rs:161",
+        "apps/tui/src/framing.rs:169",
+        "apps/tui/src/framing.rs:172",
+        "apps/tui/src/framing.rs:187",
+        "apps/tui/src/framing.rs:194",
+        "apps/tui/src/framing.rs:195",
+        "apps/tui/src/framing.rs:200",
+        "apps/tui/src/framing.rs:212"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-real-python-definition-count_event",
+      "sites": [
+        "papercusp-desktop/bin/qmp-command.py:42"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-real-python-text-search-count_event",
+      "sites": [
+        "papercusp-desktop/bin/qmp-command.py:42",
+        "papercusp-desktop/bin/qmp-command.py:61",
+        "papercusp-desktop/bin/qmp-command.py:87"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-javascript-callers-positive-configured-current",
+      "sites": [
+        "native-controls/javascript/control.js:2"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-javascript-callers-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-javascript-callees-positive-configured-current",
+      "sites": [
+        "native-controls/javascript/control.js:1"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-javascript-callees-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-javascript-impact-positive-configured-current",
+      "sites": [
+        "native-controls/javascript/control.js:2"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-javascript-impact-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-javascript-definition-positive-configured-current",
+      "sites": [
+        "native-controls/javascript/control.js:1"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-javascript-definition-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-javascript-references-positive-configured-current",
+      "sites": [
+        "native-controls/javascript/control.js:2"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "native-controls/javascript/control.js:1"
+      ]
+    },
+    {
+      "caseId": "native-javascript-references-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-javascript-symbol-search-positive-configured-current",
+      "sites": [
+        "native-controls/javascript/control.js:1"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-javascript-symbol-search-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-javascript-text-search-positive-configured-current",
+      "sites": [
+        "native-controls/javascript/control.js:1",
+        "native-controls/javascript/control.js:2"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-javascript-text-search-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-javascript-callers-positive-unconfigured-current",
+      "sites": [
+        "native-controls/javascript/control.js:2"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-javascript-callers-positive-configured-stale",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-javascript-callers-positive-configured-deleted",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-typescript-callers-positive-configured-current",
+      "sites": [
+        "native-controls/typescript/control.ts:2"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-typescript-callers-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-typescript-callees-positive-configured-current",
+      "sites": [
+        "native-controls/typescript/control.ts:1"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-typescript-callees-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-typescript-impact-positive-configured-current",
+      "sites": [
+        "native-controls/typescript/control.ts:2"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-typescript-impact-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-typescript-definition-positive-configured-current",
+      "sites": [
+        "native-controls/typescript/control.ts:1"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-typescript-definition-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-typescript-references-positive-configured-current",
+      "sites": [
+        "native-controls/typescript/control.ts:2"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "native-controls/typescript/control.ts:1"
+      ]
+    },
+    {
+      "caseId": "native-typescript-references-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-typescript-symbol-search-positive-configured-current",
+      "sites": [
+        "native-controls/typescript/control.ts:1"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-typescript-symbol-search-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-typescript-text-search-positive-configured-current",
+      "sites": [
+        "native-controls/typescript/control.ts:1",
+        "native-controls/typescript/control.ts:2"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-typescript-text-search-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-typescript-callers-positive-unconfigured-current",
+      "sites": [
+        "native-controls/typescript/control.ts:2"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-typescript-callers-positive-configured-stale",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-typescript-callers-positive-configured-deleted",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-rust-callers-positive-configured-current",
+      "sites": [
+        "native-controls/rust/control.rs:2"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-rust-callers-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-rust-callees-positive-configured-current",
+      "sites": [
+        "native-controls/rust/control.rs:1"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-rust-callees-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-rust-impact-positive-configured-current",
+      "sites": [
+        "native-controls/rust/control.rs:2"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-rust-impact-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-rust-definition-positive-configured-current",
+      "sites": [
+        "native-controls/rust/control.rs:1"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-rust-definition-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-rust-references-positive-configured-current",
+      "sites": [
+        "native-controls/rust/control.rs:2"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "native-controls/rust/control.rs:1"
+      ]
+    },
+    {
+      "caseId": "native-rust-references-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-rust-symbol-search-positive-configured-current",
+      "sites": [
+        "native-controls/rust/control.rs:1"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-rust-symbol-search-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-rust-text-search-positive-configured-current",
+      "sites": [
+        "native-controls/rust/control.rs:1",
+        "native-controls/rust/control.rs:2"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-rust-text-search-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-rust-callers-positive-unconfigured-current",
+      "sites": [
+        "native-controls/rust/control.rs:2"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-rust-callers-positive-configured-stale",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-rust-callers-positive-configured-deleted",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-python-callers-positive-configured-current",
+      "sites": [
+        "native-controls/python/control.py:2"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-python-callers-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-python-callees-positive-configured-current",
+      "sites": [
+        "native-controls/python/control.py:1"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-python-callees-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-python-impact-positive-configured-current",
+      "sites": [
+        "native-controls/python/control.py:2"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-python-impact-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-python-definition-positive-configured-current",
+      "sites": [
+        "native-controls/python/control.py:1"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-python-definition-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-python-references-positive-configured-current",
+      "sites": [
+        "native-controls/python/control.py:2"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "native-controls/python/control.py:1"
+      ]
+    },
+    {
+      "caseId": "native-python-references-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-python-symbol-search-positive-configured-current",
+      "sites": [
+        "native-controls/python/control.py:1"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-python-symbol-search-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-python-text-search-positive-configured-current",
+      "sites": [
+        "native-controls/python/control.py:1",
+        "native-controls/python/control.py:2"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-python-text-search-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-python-callers-positive-unconfigured-current",
+      "sites": [
+        "native-controls/python/control.py:2"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-python-callers-positive-configured-stale",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-python-callers-positive-configured-deleted",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-go-callers-positive-configured-current",
+      "sites": [
+        "native-controls/go/control.go:3"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-go-callers-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-go-callees-positive-configured-current",
+      "sites": [
+        "native-controls/go/control.go:2"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-go-callees-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-go-impact-positive-configured-current",
+      "sites": [
+        "native-controls/go/control.go:3"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-go-impact-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-go-definition-positive-configured-current",
+      "sites": [
+        "native-controls/go/control.go:2"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-go-definition-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-go-references-positive-configured-current",
+      "sites": [
+        "native-controls/go/control.go:3"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": [
+        "native-controls/go/control.go:2"
+      ]
+    },
+    {
+      "caseId": "native-go-references-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-go-symbol-search-positive-configured-current",
+      "sites": [
+        "native-controls/go/control.go:2"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-go-symbol-search-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-go-text-search-positive-configured-current",
+      "sites": [
+        "native-controls/go/control.go:2",
+        "native-controls/go/control.go:3"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-go-text-search-absence-configured-current",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-go-callers-positive-unconfigured-current",
+      "sites": [
+        "native-controls/go/control.go:3"
+      ],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-go-callers-positive-configured-stale",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    },
+    {
+      "caseId": "native-go-callers-positive-configured-deleted",
+      "sites": [],
+      "aliases": {},
+      "rejected": [],
+      "neutral": []
+    }
+  ],
+  "controlFiles": {
+    "native-controls/javascript/control.js": "export function target() { return 1; }\nexport function consumer() { return target(); }\n// absent() is only a comment\n",
+    "native-controls/javascript/jsconfig.json": "{\"compilerOptions\":{\"checkJs\":true,\"allowJs\":true},\"include\":[\"control.js\"]}\n",
+    "native-controls/typescript/control.ts": "export function target(): number { return 1; }\nexport function consumer(): number { return target(); }\n// absent() is only a comment\n",
+    "native-controls/typescript/tsconfig.json": "{\"compilerOptions\":{\"strict\":true,\"target\":\"es2022\"},\"include\":[\"control.ts\"]}\n",
+    "native-controls/rust/control.rs": "pub fn target() -> i32 { 1 }\npub fn consumer() -> i32 { target() }\n// absent() is only a comment\n",
+    "native-controls/rust/Cargo.toml": "[package]\nname = \"native_control\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[lib]\npath = \"control.rs\"\n",
+    "native-controls/python/control.py": "def target(): return 1\ndef consumer(): return target()\n# absent() is only a comment\n",
+    "native-controls/python/pyproject.toml": "[tool.pyright]\ninclude = [\"control.py\"]\ntypeCheckingMode = \"strict\"\n",
+    "native-controls/go/control.go": "package control\nfunc target() int { return 1 }\nfunc consumer() int { return target() }\n// absent() is only a comment\n",
+    "native-controls/go/go.mod": "module native.control\n\ngo 1.22\n"
+  },
+  "sourcePins": [
+    {
+      "path": "apps/operator/app/harness/dock/panel-registry.ts",
+      "sha256": "0e9329fe32f7317308fdca4026defeb3a940bf9c991556aaae4b0f2d3aa5b2d1",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "apps/operator/bin/hono-host-spawn-offload.test.ts",
+      "sha256": "94b8b507f3a00221c80b8c7d278a957a22e7ee936483593a9c88d6f51519e44e",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "apps/operator/bin/hono-host.ts",
+      "sha256": "30191ce9c7ed49c49ca6b4fa5f5d6b088cfb191e07a15274126e34d339b9981c",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "apps/operator/lib/psu-adopt-first-turn.test.ts",
+      "sha256": "9c03a5f869f21e31a13e6bcb11d3c1b90f982900eebb65930497746ccb429ea5",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "apps/operator/lib/psu-pty-busy-gate-durable-evidence.test.ts",
+      "sha256": "bb686aef79987229dfc8f353f0d4e62d0564d6395e69874fef6d89a415a10873",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "apps/operator/lib/release/migrate.ts",
+      "sha256": "16ed5e29b3d36f94c1b58a00b0e206cd1a5c612ca10de14c7772ac20ebd56559",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "apps/operator/scripts/hooks/cc/__tests__/pretooluse-unreserved-migration-guard.test.ts",
+      "sha256": "53981efc4dc6e2624bbe78c3ffe26511d115c7b625dda58f0551e5c538737a64",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "apps/operator/scripts/psu-pty-host.d.mts",
+      "sha256": "93157d2db88d9436f05267c3f5613bf4bcbe7d1364d2a1495f2144e9d3bde933",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "apps/operator/scripts/psu-pty-host.mjs",
+      "sha256": "8b9a598c0058d710c0bc88f8fd468b6fed0e90363a1b89a94eeaf1f8e81d9ef5",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "apps/tui/src/framing.rs",
+      "sha256": "23e2de381ec6d6d5da611f7d23802b46b00d6e5018644829aac98732751b4d39",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "libs/generic/dock-workbench/src/DockWorkspace.tsx",
+      "sha256": "8ce07e574ee96a4aa9d50f030ac74433ea775ecbf001c44d1cb8c315cf7286ec",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "libs/generic/dock-workbench/src/panel-registry.test.ts",
+      "sha256": "bf4101a47ca4504c626cc7a20dfd2d38a7b01e183d23c27f8db2803c61f7c605",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "libs/generic/dock-workbench/src/panel-registry.ts",
+      "sha256": "0e3a16cfdfc46d97ae30245c2ad78e012213c5a7b4cb7fec60956bd0d1077b2a",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "libs/generic/module-singleton/src/index.ts",
+      "sha256": "4d8852efe38c7fddf07a77c821ba0bb704df0e52c7324182a2941db564712dbf",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "libs/generic/scheduled-registry/src/index.ts",
+      "sha256": "26b021f303b59c2a00c12dbfa50c2e11960339500cd3ba81d71a5cfed5843364",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "libs/generic/search/src/hybrid.ts",
+      "sha256": "2c4b31a9423685a8c16a5a4e9f1501412e98393bd116e92cf9f1920ae93b38e0",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "libs/generic/search/src/min-score.test.ts",
+      "sha256": "194550d94271be4dbe9729c0efef196a4509dd742d1dda3b8e542bbf2ff55897",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "libs/generic/search/src/min-score.ts",
+      "sha256": "d3e0d780149bf84590e1f0ecdca268f14857181c2cf0cedaf0347ccc6df8e429",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "libs/papercusp/packages/cli/src/pg-client.ts",
+      "sha256": "64c4e2a707687d32d11eb1aaec3f4901950d758709912f56bbacd94510abbe3b",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "libs/papercusp/packages/orchestrator/src/auditor-dispatch.ts",
+      "sha256": "e22e8e5997c5bf3ee6692d8fc9eba1a7d3ca09015b4501bed19a3dee38282d9b",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "libs/papercusp/packages/orchestrator/src/blueprint/merge.ts",
+      "sha256": "e8435d0380f2ec7fea97c92f81b2cd3c82164d2a3087c8b43c768bb0913bee32",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/acceptance-bar-amendment.ts",
+      "sha256": "94fa172de03b15b7aa4318371a3ca2b373aaa768c6a98bad08c34fa5d74e2bda",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/acceptance-bar-contract-snapshot.integration.test.ts",
+      "sha256": "6e13a92018e7b46dee2bcf512caac2cafc858cacc2c7b362d2e6cce5ecb09cdf",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/acceptance-bar-migration.ts",
+      "sha256": "61b718348aee021e8ac01592b5f2a8bea81594019a0ada91213fee1d67dd8fd6",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/acceptance-bar-receiver-seed.ts",
+      "sha256": "ecb24a3cac3219c26a2dc1fc18c06429cb564d596f0d65f8ad50413280bdc7fb",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/acceptance-bar-seed.ts",
+      "sha256": "8b487b2692dc3e75b340037bb58e10e122492f9b6bad4b2b89d94bc2f5bcdb58",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/certify-spec-clauses.test.ts",
+      "sha256": "0136811f0071853d5439f85af8623ce0528d85c0d3d841ad50c668786fbaeae5",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/evidence-measurement-pin.test.ts",
+      "sha256": "03171b63b6a3556c05395c9ffe04d8a9e7d31a6931c229ff73cafb61b8f25520",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/source.ts",
+      "sha256": "4591ef3d46cfd39dc91568b9154f100ccf375a2146080fd70cb449061ef39959",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts",
+      "sha256": "090de4c87d05c89e535aa89d863cc8d226bd7ad06f87ccdb836ca11606ad385a",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/attention/intake-promotion.ts",
+      "sha256": "777dcce7e6e9ebd3e5b7af03eacfa9fcf4296019b7b1f728217f4122e3edc8bb",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/blueprint/compile-packages.ts",
+      "sha256": "9a5a0b384d55cb27d00b1266ba4048127f7737c5bc4e160dcd31becc70fecfb0",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/code-intelligence/engine-comparison-arms.ts",
+      "sha256": "ba546a13081706ad26cc7204365f912772451e83115d463709e87fe0ae50986c",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/code-intelligence/engine-comparison-provenance.integration.test.ts",
+      "sha256": "b75fbcc44227be75ecd07141a40efe93e55206b74e18aec896a3918a31ec2cf4",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/code-intelligence/lsp-adapter-shutdown.integration.test.ts",
+      "sha256": "2c16b77e05864e68125fa6cdf725c133799a5c598a5e85bee90f01148cadedd1",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/code-intelligence/lsp-adapter.integration.test.ts",
+      "sha256": "89b890a6e4868b9f9055ae60307a2f281bc84d8f5dcca16280a5113369deeeb6",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/code-intelligence/lsp-adapter.ts",
+      "sha256": "1fd0f82b13d86ad29f142cf8b2524b464fe91df7acb0eb171907a0dc7c56b3e0",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/code-intelligence/selective-assist.integration.test.ts",
+      "sha256": "8258fcf060d06d903c7e08e8387d013f73781442fc17abccf08a3561011f5e9b",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/code-intelligence/selective-corpus.ts",
+      "sha256": "dc0071ae2dc81403ccc7eb5692b35ce89d9eb6d0fff77d3bb75f2628ce722168",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/continuity-probes.ts",
+      "sha256": "e2e3100d8934f8af226ef578e283e8a71c13624eb2d9be334a275c0c3038f5df",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/cupboard/event-store.ts",
+      "sha256": "cf82f80100d8ed4337701ce4e46e78cca4e0950e45e6190ae189adf485cf3d0a",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/cupboard/install-event-io.test.ts",
+      "sha256": "e77d4db9cc195073c6cc232bf780e95b3b9815691e2bfed28179a432e1f2d7b3",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/cupboard/install-event-io.ts",
+      "sha256": "41cdacb32987a27ec0ba90f39a6c1f5695998f4955013acb40375b0ee8712a96",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/cupboard/install-io.ts",
+      "sha256": "7b7eeb914bb54b56ddb23b985a27fd90e101b96c080665bc79bced9ffec9f5be",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/cupboard/install-rule-core.ts",
+      "sha256": "dba12f8deb244a8f90a2178e43c523bd895b663ce5599f45896d72ce306039cd",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/cupboard/install-rule-io.ts",
+      "sha256": "bd224567282509fc341eded841390a076fcb40dbbfffecdb9ed4ba118748543c",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/cupboard/recipe-store.ts",
+      "sha256": "0f7263e77efa3ad79297f78ca0d4d79c35343ca78e33054ac4e8bc27dad1041a",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/cupboard/resolve-listing-by-kind.ts",
+      "sha256": "51dcfe2ead2ea66031f662a1c6a374c33c1abd5d68804295a9254ebdacf2afb5",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/fleet/git-via-sidecar.test.ts",
+      "sha256": "3f91be44a58ed640b75f1459d2d6f53ec843d5354a639ca528ab603bbc534362",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/fleet/git-via-sidecar.ts",
+      "sha256": "123c4e46d81651a58c7e0b9426cfac87b7a40e48d237a291d47c55cf36ff17c2",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/harness/git-sync/git-sync-action.ts",
+      "sha256": "ed0c6cc75e4b1d0fac6c384e171fe5c3ce861b0d67ea2b7026224364683abe17",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "sha256": "4c4fe1aa56b0cf4ce5d4be25a1b31e5c413be6d03f26b8d122735108902044b8",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/harness/git-sync/run-git-sync.ts",
+      "sha256": "66b143f5f9b7404d3343b8f9fbff451c4b92d151ec5b784d88ceb918543bbb21",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/harness/improvements/agent-review-policy.integration.test.ts",
+      "sha256": "f53b88d814d41e21011ef1a8ae4878fe4921ebe252c99181cf34f8fdb9078078",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/harness/improvements/agent-review-policy.test.ts",
+      "sha256": "06ce914fa009891dd5dccf9f15d6544482fb877437e4134125fb4cc5e5959dea",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/harness/improvements/agent-review-policy.ts",
+      "sha256": "1896e5ea9914267b63b6b9549f0834737f747c691440c59962ac10c93c153e1d",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/harness/routines/hive-git-gc-action.ts",
+      "sha256": "725e83831ca38482b3843f067e2aeb2cfbf700b09fb87396ec527c9ecd8c4b25",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/harness/routines/plan-run-action-fire-failure.test.ts",
+      "sha256": "68cb8297ac0cdba50ccad748d484a7f42c0adb9b806a2fdd15ac384f9de9db59",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/harness/routines/plan-run-action.ts",
+      "sha256": "668c24e5c79f926ece1e931f4c1863f914934c315e0e4ff7c7dbcaca6c83e610",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/plan-provenance-read.ts",
+      "sha256": "969a2f3dde09b23df0c999266bef090b9c0a47fb3053ec99255c92eccb75a427",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/pot-eval/supervision-metrics.ts",
+      "sha256": "a13a7b2c6b78fd91c6745a3bbd2d21bd9bceeeb34a7409d4bcb815f27d406e77",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/pr-host/poll-daemon.test.ts",
+      "sha256": "071f711390bbcb67c423181ba11fc16e8f5c2b14663085e312276a1ac017e430",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/pr-host/poll-daemon.ts",
+      "sha256": "aebd4a6d3d4fd1f9df327c9d642f868ab6e092e54d1dcdaff24e773076205b5f",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/result-door.ts",
+      "sha256": "11e58eb45f48a591b4a57a610a76443f1d5a66f1239c23e3536adb7f3b1f6f09",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/result-projection/apply.ts",
+      "sha256": "96096f407ed33fe437cb3f6e95f96946254fabc1034a85823be4ed3fc1729582",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/scheduler/get-next.ts",
+      "sha256": "7a16456d7c146c9cfe1d2e7b73d44fc34e16130b433c9b49dc2afe3c538eb93d",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/sync/pot-git/integrator-tick.integration.test.ts",
+      "sha256": "4c8091b05e3d40c725d4b9d64e8f86adade87b7dda9fd7c7eef1c7038aa4a3c2",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/sync/pot-git/integrator-tick.ts",
+      "sha256": "4729eeff50af8f51cac3c1e8a9c11fb4f8cd6b4b3ce602daa6bc7221b72fb653",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/task-manager/managed-spawn.ts",
+      "sha256": "7b6a713d996a84511956175f9ca5a28bd96c5661f08dbb55022a6bf89bcb0de9",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/work-items-head-of-line.test.ts",
+      "sha256": "62e61f17ef40b2bc245b6c7e6594a0c0ee97099e4dd38a56704d06eb227af67c",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "packages/operator-core/lib/work-items.ts",
+      "sha256": "2c509400f5fbad87ef9107d87436f0f6ce9e2fea0105f9c568b2006157ae418e",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "papercusp-desktop/bin/qmp-command.py",
+      "sha256": "8117ee0c6188dea09d61a36b903c34f453acd0bfe920832cb253d2eb69bd5abe",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "papercusp-desktop/test/release-gitleaks.test.js",
+      "sha256": "70c590c2e2b61b36e2e5e53b126831de461a73775a6d32b1ef958803fad90f90",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "papercusp-desktop/test/release-local-linux-reuse.test.js",
+      "sha256": "92c0161686139c16f543566e33e81821d9628a5bd76cdee77b9067595a3ff1f4",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "papercusp-desktop/test/release-local-mac-sig-collection.test.js",
+      "sha256": "d4a636de76303483cf8617f9f2e434244391374a675ae937edafed26db651e86",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    },
+    {
+      "path": "scripts/gen-graph-dependency-snapshot.mjs",
+      "sha256": "cf8a1e0cb869165b0b5cf04bb07ef23d1150237ef7eb5e0f966d0eba5853f952",
+      "commit": "90e6465ad21b79142bac4853bb1c9c958f868f41"
+    }
+  ],
+  "armAdmission": [
+    {
+      "armId": "rg",
+      "unavailable": null,
+      "version": "rg rg",
+      "construction": "No index/query executed; prior licence/telemetry policy still applies.",
+      "availability": "not-measured",
+      "note": "A constructed adapter is not proof that its executable exists or can answer this cohort."
+    },
+    {
+      "armId": "lsp-query",
+      "unavailable": null,
+      "version": "typescript-language-server (vendored) / typescript 6.0.3",
+      "construction": "No index/query executed; prior licence/telemetry policy still applies.",
+      "availability": "not-measured",
+      "note": "A constructed adapter is not proof that its executable exists or can answer this cohort."
+    },
+    {
+      "armId": "no-third-party",
+      "unavailable": null,
+      "version": "typescript 6.0.3",
+      "construction": "No index/query executed; prior licence/telemetry policy still applies.",
+      "availability": "not-measured",
+      "note": "A constructed adapter is not proof that its executable exists or can answer this cohort."
+    },
+    {
+      "armId": "gitnexus",
+      "unavailable": null,
+      "version": "1.6.9",
+      "construction": "No index/query executed; prior licence/telemetry policy still applies.",
+      "availability": "not-measured",
+      "note": "A constructed adapter is not proof that its executable exists or can answer this cohort."
+    },
+    {
+      "armId": "codebase-memory",
+      "unavailable": null,
+      "version": "dev",
+      "construction": "No index/query executed; prior licence/telemetry policy still applies.",
+      "availability": "not-measured",
+      "note": "A constructed adapter is not proof that its executable exists or can answer this cohort."
+    },
+    {
+      "armId": "codegraph",
+      "unavailable": null,
+      "version": "1.6.2",
+      "construction": "No index/query executed; prior licence/telemetry policy still applies.",
+      "availability": "not-measured",
+      "note": "A constructed adapter is not proof that its executable exists or can answer this cohort."
+    },
+    {
+      "armId": "trace-mcp",
+      "unavailable": null,
+      "version": "3.34.6",
+      "construction": "No index/query executed; prior licence/telemetry policy still applies.",
+      "availability": "not-measured",
+      "note": "A constructed adapter is not proof that its executable exists or can answer this cohort."
+    },
+    {
+      "armId": "codegraphcontext",
+      "unavailable": null,
+      "version": "0.6.13",
+      "construction": "No index/query executed; prior licence/telemetry policy still applies.",
+      "availability": "not-measured",
+      "note": "A constructed adapter is not proof that its executable exists or can answer this cohort."
+    }
+  ],
+  "observations": [],
+  "verdict": "not-run",
+  "notes": [
+    "Reuses existing fair-comparison corpus, preregistration, budgets, pooled adjudication and arm adapters.",
+    "Real-demand corpus stays frozen at its original commit; authored multilingual/configuration/stale/deleted controls are separately labelled.",
+    "No backend result, language certification or live gate claim follows from preregistration.",
+    "Go real-task coverage is explicitly unmeasured. P026 must report it or freeze a new pinned corpus edition before collecting its results; authored controls do not certify real tasks."
+  ]
+}

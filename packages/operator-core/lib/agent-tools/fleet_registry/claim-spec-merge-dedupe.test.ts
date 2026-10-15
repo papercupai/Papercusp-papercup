@@ -37,6 +37,7 @@ const subject = (over: Partial<ClaimSpecSubject>): ClaimSpecSubject => ({
   planItem: ['P-006'],
   fleet: null,
   triageGate: null,
+  itemClass: 'work',
   age: 0,
   riskTier: null,
   redundancy: 1,

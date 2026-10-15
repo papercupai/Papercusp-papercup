@@ -16,15 +16,20 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { createServer } from 'node:net';
+import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 import ts from 'typescript';
+import { DEFAULT_UNIT_TEST_TIMEOUT_MS } from '@papercusp/test-config/vitest-config';
+import { filesDependingOnChangedModules, diagnosticFilesDependingOnChangedTypes, checkedSetFor } from '../../../scripts/lib/tsc-service.mjs';
 
 it('includes executable .mts scripts in the root scripts TypeScript project', () => {
   const configPath = fileURLToPath(new URL('../../../scripts/tsconfig.json', import.meta.url));
@@ -104,6 +109,8 @@ import {
   formatLintTscRunStamp,
   gitHeadShaForLintTsc,
   writeLintTscRunMarker,
+  toolchainFailureExitCode,
+  TOOLCHAIN_FAILURE_EXIT_CODE,
 } from '../../../scripts/lib/tsc-baseline-gate.mjs';
 
 describe('typecheck mid-install diagnostics (EI-19366483607548056)', () => {
@@ -198,10 +205,12 @@ describe('LINT_TSC_RESULT completion marker (EI-19395061642732083)', () => {
         label: 'operator-core',
         scope: 'files',
         code: 0,
-        filesUnchecked: 1,
         routed: true,
       }),
-    ).toBe('LINT_TSC_RESULT label=operator-core scope=files exit=0 status=routed filesUnchecked=1');
+    ).toBe('LINT_TSC_RESULT label=operator-core scope=files exit=0 status=routed');
+    expect(formatLintTscResultMarker({
+      label: 'operator-core', scope: 'files', code: 0, routed: true, filesUnchecked: 1,
+    })).toBe('LINT_TSC_RESULT label=operator-core scope=files exit=0 status=partial filesUnchecked=1');
     expect(
       formatLintTscResultMarker({
         label: 'operator-core',
@@ -601,6 +610,166 @@ describe('concurrent-edit regression guard (EI-20211153048499132)', () => {
     expect(stderr).toContain('INCONCLUSIVE');
     expect(stderr).toContain('src/value.ts');
     expect(stderr).not.toContain('Fix the new errors');
+  });
+});
+
+// WI-6554700010009284 — a compile that produced NO output is a toolchain failure: nothing was
+// measured. It used to `process.exit(1)`, and exit 1 is the gate's CONSIDERED failure, so the
+// LINT_TSC_RESULT marker told the caller `status=regressed` (observed when pc-heavy's detached
+// scope could not reach the user D-Bus: PC_HEAVY_RESULT status=undetermined exit=75). The same
+// exit-1 mislabel sat on three more never-measured paths, pinned below: a crash whose output is
+// a trace with no parseable diagnostics, an unreadable baseline, and a refused `--seed`.
+describe('a toolchain, input or usage failure never reads as regressed (WI-6554700010009284)', () => {
+  let dir = '';
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = '';
+  });
+
+  // `baseline: null` writes no baseline file. `compilerStdout` is printed by the fake compiler
+  // before it exits with `compilerExit`.
+  function runGateWithFakeCompiler({
+    compilerExit,
+    compilerStdout = '',
+    baseline = { files: {} },
+    argv = [],
+    foreignBaselines,
+  }: {
+    compilerExit: number;
+    compilerStdout?: string;
+    baseline?: { files: Record<string, number> } | null;
+    argv?: string[];
+    foreignBaselines?: { prefix: string; baselineFile: string; label: string }[];
+  }) {
+    dir = mkdtempSync(join(tmpdir(), 'tsc-toolchain-failure-'));
+    const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..');
+    const gateUrl = pathToFileURL(join(repoRoot, 'scripts/lib/tsc-baseline-gate.mjs')).href;
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(join(dir, 'src/entry.ts'), 'export const answer = 42;\n');
+    if (baseline !== null) writeFileSync(join(dir, 'baseline.json'), JSON.stringify(baseline));
+    writeFileSync(
+      join(dir, 'fake-tsc.mjs'),
+      (compilerStdout ? `process.stdout.write(${JSON.stringify(compilerStdout)});\n` : '') +
+        `process.exit(${compilerExit});\n`,
+    );
+    writeFileSync(
+      join(dir, 'run.mjs'),
+      `import { runTscBaselineGate } from ${JSON.stringify(gateUrl)};\n` +
+        `await runTscBaselineGate({ root: ${JSON.stringify(dir)}, ` +
+        `tscCommand: ${JSON.stringify(`${process.execPath} ${join(dir, 'fake-tsc.mjs')}`)}, ` +
+        `baselineFile: ${JSON.stringify(join(dir, 'baseline.json'))}, label: 'fixture', ` +
+        `argv: ${JSON.stringify(argv)}` +
+        (foreignBaselines ? `, foreignBaselines: ${JSON.stringify(foreignBaselines)}` : '') +
+        ` });\n`,
+    );
+    let status: number | null = 0;
+    let stdout = '';
+    let stderr = '';
+    try {
+      stdout = execFileSync(process.execPath, [join(dir, 'run.mjs')], { cwd: dir, encoding: 'utf8', stdio: 'pipe' });
+    } catch (error) {
+      const failed = error as { status?: number | null; stdout?: string; stderr?: string };
+      status = failed.status ?? null;
+      stdout = String(failed.stdout ?? '');
+      stderr = String(failed.stderr ?? '');
+    }
+    return { status, stdout, stderr };
+  }
+
+  function runGateWithSilentCompiler(compilerExit: number) {
+    return runGateWithFakeCompiler({ compilerExit });
+  }
+
+  // Without this, every `not.toContain('status=regressed')` below could pass vacuously.
+  it('positive control: a real new diagnostic still exits 1 as regressed', () => {
+    const { status, stdout } = runGateWithFakeCompiler({
+      compilerExit: 1,
+      compilerStdout: "src/entry.ts(1,14): error TS2322: Type 'number' is not assignable to type 'string'.\n",
+    });
+    expect(status).toBe(1);
+    expect(stdout).toContain('status=regressed');
+  });
+
+  it("passes the compiler's own abnormal exit through (pc-heavy EX_TEMPFAIL 75 -> error(75))", () => {
+    const { status, stdout, stderr } = runGateWithSilentCompiler(75);
+    expect(status).toBe(75);
+    expect(stdout).toContain('status=error(75)');
+    expect(stdout).not.toContain('status=regressed');
+    expect(stderr).toContain('toolchain failure');
+  });
+
+  it('a silent compiler that exits 1 still fails, but as error(70), never regressed', () => {
+    const { status, stdout } = runGateWithSilentCompiler(1);
+    expect(status).toBe(TOOLCHAIN_FAILURE_EXIT_CODE);
+    expect(stdout).toContain(`status=error(${TOOLCHAIN_FAILURE_EXIT_CODE})`);
+    expect(stdout).not.toContain('status=regressed');
+  });
+
+  it('toolchainFailureExitCode never returns 0 or 1 (pass / considered failure)', () => {
+    expect(toolchainFailureExitCode({ status: 75 })).toBe(75);
+    expect(toolchainFailureExitCode({ status: null, signal: 'SIGTERM' })).toBe(143);
+    expect(toolchainFailureExitCode({ status: null, signal: 'SIGKILL' })).toBe(137);
+    for (const child of [{}, { status: 0 }, { status: 1 }, { status: -1 }, { status: 300 }, { signal: 'NOT_A_SIGNAL' }]) {
+      const code = toolchainFailureExitCode(child);
+      expect(code).toBe(TOOLCHAIN_FAILURE_EXIT_CODE);
+      expect(formatLintTscResultMarker({ label: 'x', scope: 'all', code })).toContain(`status=error(${code})`);
+    }
+  });
+
+  // The OOM shape (WI-37485): tsc aborts with a V8 heap trace and no TS diagnostic. The trace makes
+  // the output non-empty, so this reaches the zero-parseable-diagnostics guard, not the no-output one.
+  it('a crash that prints only a heap trace fails with its own code (134), never regressed', () => {
+    const { status, stdout, stderr } = runGateWithFakeCompiler({
+      compilerExit: 134,
+      compilerStdout:
+        'FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory\n',
+    });
+    expect(status).toBe(134);
+    expect(stdout).toContain('status=error(134)');
+    expect(stdout).not.toContain('status=regressed');
+    expect(stderr).toContain('ZERO parseable diagnostics');
+  });
+
+  it('a crash trace with a plain exit 1 still fails, but as error(70), never regressed', () => {
+    const { status, stdout } = runGateWithFakeCompiler({ compilerExit: 1, compilerStdout: 'Segmentation fault\n' });
+    expect(status).toBe(TOOLCHAIN_FAILURE_EXIT_CODE);
+    expect(stdout).toContain(`status=error(${TOOLCHAIN_FAILURE_EXIT_CODE})`);
+    expect(stdout).not.toContain('status=regressed');
+  });
+
+  // Input and usage refusals judge nothing either: sysexits EX_NOINPUT (66) and EX_USAGE (64).
+  it('an unreadable baseline file fails as error(66), never regressed', () => {
+    const { status, stdout, stderr } = runGateWithFakeCompiler({ compilerExit: 0, baseline: null });
+    expect(status).toBe(66);
+    expect(stdout).toContain('status=error(66)');
+    expect(stdout).not.toContain('status=regressed');
+    expect(stderr).toContain('Failed to read baseline file');
+  });
+
+  it('--seed against a populated baseline is refused as error(64), never regressed', () => {
+    const { status, stdout, stderr } = runGateWithFakeCompiler({
+      compilerExit: 0,
+      baseline: { files: { 'src/entry.ts': 1 } },
+      argv: ['--seed'],
+    });
+    expect(status).toBe(64);
+    expect(stdout).toContain('status=error(64)');
+    expect(stdout).not.toContain('status=regressed');
+    expect(stderr).toContain('--seed refused');
+  });
+
+  it('--seed with an unreadable owning baseline is refused as error(66), never regressed', () => {
+    const { status, stdout, stderr } = runGateWithFakeCompiler({
+      compilerExit: 0,
+      argv: ['--seed'],
+      foreignBaselines: [
+        { prefix: 'src/', baselineFile: '/nonexistent-papercusp-fixture/owner-baseline.json', label: 'owner' },
+      ],
+    });
+    expect(status).toBe(66);
+    expect(stdout).toContain('status=error(66)');
+    expect(stdout).not.toContain('status=regressed');
+    expect(stderr).toContain('owning baseline(s) could not be read');
   });
 });
 
@@ -2252,6 +2421,134 @@ describe('exportedTypeNames + filesReferencingTypeNames (EI-18756182128903253)',
   });
 });
 
+describe('resolved module attribution (EI-25720784739215773)', () => {
+  let dir = '';
+  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
+
+  it('skips the symbol-less named import clause while retaining actual changed-type diagnostics (EI-26067051823790156)', () => {
+    dir = mkdtempSync(join(tmpdir(), 'tsc-import-clause-'));
+    writeFileSync(join(dir, 'shape.ts'), 'export interface Verdict { ok: boolean; reason: string }\n');
+    writeFileSync(join(dir, 'user.ts'), "import type { Verdict } from './shape';\nconst v: Verdict = { ok: true };\n");
+    const user = join(dir, 'user.ts');
+    // A diagnostic from the earlier compile can now land on `type` in this
+    // re-read snapshot. Ascending from that token used to query ImportClause,
+    // whose undefined default-import symbol crashes TypeScript's checker.
+    const run = (output: string) => diagnosticFilesDependingOnChangedTypes({
+      root: dir, named: ['shape.ts'], candidates: ['user.ts'], output,
+    });
+    const clause = `${user}(1,8): error TS1484: a diagnostic at the import clause`;
+    expect(() => run(clause)).not.toThrow();
+    expect(run(clause)).toEqual(new Set());
+    expect(run(`${clause}\n${user}(2,7): error TS2741: Property reason is missing`)).toEqual(new Set([user]));
+  });
+
+  it('gates real imported, aliased, namespace and inferred fixture regressions through a cyclic barrel', () => {
+    dir = mkdtempSync(join(tmpdir(), 'tsc-module-provenance-'));
+    const sources = {
+      'shape.ts': 'export interface Verdict { ok: boolean; required: string }\nexport function take(v: Verdict) {}',
+      'barrel.ts': "export * from './shape.js'; export * from './cycle.js';",
+      'cycle.ts': "export * from './barrel.js';",
+      'direct.ts': "import type { Verdict } from './shape.js'; const v: Verdict = { ok: true };",
+      'alias.ts': "import type { Verdict as Result } from './barrel.js'; const v: Result = { ok: true };",
+      'namespace.ts': "import * as shapes from './barrel.js'; const v: shapes.Verdict = { ok: true };",
+      'inferred.ts': "import { take } from './barrel.js'; take({ ok: true });",
+      'receiver.ts': "import type { Verdict } from './barrel.js'; const v: Verdict = { ok: true, required: 'yes' }; v.removed;",
+      'comment.ts': '// Verdict Arm; import { Verdict } from "./shape.js";\nconst a: string = 1;',
+      'string.ts': 'const text = `Verdict; import { Verdict } from "./shape.js"`; const a: string = 1;',
+      'local.ts': 'interface Verdict { unrelated: string } const v: Verdict = {}; export {};',
+      'other.ts': 'export interface Verdict { unrelated: string }',
+      'other-fixture.ts': "import type { Verdict } from './other.js'; const v: Verdict = {};",
+      'function-decoy.ts': "import { take } from './barrel.js'; interface Verdict { unrelated: string } const v: Verdict = {}; const s: string = 1;",
+    };
+    for (const [file, body] of Object.entries(sources)) writeFileSync(join(dir, file), body);
+    const program = ts.createProgram(Object.keys(sources).map((file) => join(dir, file)), {
+      noEmit: true, noLib: true, module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    });
+    const errors = ts.getPreEmitDiagnostics(program).filter((d) => d.file && d.category === ts.DiagnosticCategory.Error);
+    const counts: Record<string, number> = {};
+    for (const d of errors) { const file = d.file!.fileName.slice(dir.length + 1); counts[file] = (counts[file] ?? 0) + 1; }
+    const output = errors.map((d) => { const pos = d.file!.getLineAndCharacterOfPosition(d.start!);
+      return `${d.file!.fileName}(${pos.line + 1},${pos.character + 1}): error TS${d.code}: ${ts.flattenDiagnosticMessageText(d.messageText, '\n')}`;
+    }).join('\n');
+    const dependents = diagnosticFilesDependingOnChangedTypes({ root: dir, named: ['shape.ts'], candidates: Object.keys(counts), output });
+    const expected = ['direct.ts', 'alias.ts', 'namespace.ts', 'inferred.ts', 'receiver.ts'];
+    expect([...dependents].sort()).toEqual(expected.map((file) => join(dir, file)).sort());
+    const verdict = decidePerFile({ currentByFile: counts, baselineByFile: Object.fromEntries(Object.keys(counts).map((file) => [file, 0])),
+      brokenFiles: [], changedFiles: new Set(['shape.ts']), typeReferencedFiles: new Set([...dependents].map((file) => file.slice(dir.length + 1))) });
+    expect(verdict.verdict).toBe('fail-attributed');
+    expect(verdict.attributed!.map((r) => r.file).sort()).toEqual(expected.sort());
+    const scope = checkedSetFor({ root: dir, named: ['shape.ts'], programFiles: Object.keys(sources).map((f) => join(dir, f)),
+      readText: (file) => readFileSync(file, 'utf8') });
+    expect(scope.files.map((f) => f.slice(dir.length + 1)).sort()).toEqual(['shape.ts', 'barrel.ts', 'cycle.ts', 'function-decoy.ts', ...expected].sort());
+  });
+
+  it('resolves path aliases exactly instead of matching an unrelated module with the same suffix', () => {
+    dir = mkdtempSync(join(tmpdir(), 'tsc-module-alias-'));
+    mkdirSync(join(dir, 'other'), { recursive: true });
+    writeFileSync(join(dir, 'shape.ts'), 'export interface Verdict { ok: boolean }');
+    writeFileSync(join(dir, 'other/shape.ts'), 'export interface Verdict { unrelated: string }');
+    writeFileSync(join(dir, 'tsconfig.json'), JSON.stringify({ compilerOptions: { baseUrl: '.', paths: { '@changed': ['./shape.ts'], '@other': ['./other/shape.ts'] } } }));
+    writeFileSync(join(dir, 'real.ts'), "import type { Verdict as Result } from '@changed'; const v: Result = {};" );
+    writeFileSync(join(dir, 'decoy.ts'), "import type { Verdict } from '@other'; const v: Verdict = {};" );
+    expect(filesDependingOnChangedModules({ root: dir, named: ['shape.ts'], candidates: ['real.ts', 'decoy.ts'] }))
+      .toEqual(new Set([join(dir, 'real.ts')]));
+  });
+
+  it('skips a diagnostic whose column no longer exists in the re-read file instead of crashing the gate (EI-25816656568127078)', () => {
+    dir = mkdtempSync(join(tmpdir(), 'tsc-stale-column-'));
+    writeFileSync(join(dir, 'shape.ts'), 'export interface Verdict { ok: boolean; reason: string }\n');
+    writeFileSync(join(dir, 'user.ts'), "import type { Verdict } from './shape';\nconst v: Verdict = { ok: true };\nexport { v };\n");
+    const user = join(dir, 'user.ts');
+    const message = "error TS2741: Property 'reason' is missing in type '{ ok: true; }' but required in type 'Verdict'.";
+    // tsc judged an earlier, longer snapshot of the shared tree. (2,400) is past the end of a middle
+    // line and (4,50) is past the end of the final line: both name text that is gone, and each made
+    // TypeScript's getPositionOfLineAndCharacter throw "Debug Failure. False expression.".
+    const stale = [`${user}(2,400): ${message}`, `${user}(4,50): ${message}`].join('\n');
+    const run = (output: string) =>
+      diagnosticFilesDependingOnChangedTypes({ root: dir, named: ['shape.ts'], candidates: ['user.ts'], output });
+    expect(() => run(stale)).not.toThrow();
+    expect(run(stale)).toEqual(new Set());
+    // Positive control: the same file still attributes from a location that exists (the `v` at 2:7),
+    // so the skip is per-diagnostic and the empty set above is not the function going inert.
+    expect(run(`${stale}\n${user}(2,7): ${message}`)).toEqual(new Set([user]));
+  });
+});
+
+describe('a crashed typecheck gate reads error(70), never regressed (EI-25816656568127078)', () => {
+  // Exit 1 is the gate's CONSIDERED failure, and the exit hook prints it as status=regressed. A
+  // gate whose top-level crash handler also exits 1 reports an uncaught exception — e.g. the
+  // TypeScript Debug Failure in diagnosticFilesDependingOnChangedTypes — as a type regression in
+  // the caller's files. Every entrypoint that runs runTscBaselineGate must exit EX_SOFTWARE instead.
+  const scriptsDir = join(dirname(fileURLToPath(import.meta.url)), '../../../scripts');
+  const entrypoints = readdirSync(scriptsDir)
+    .filter((name) => /^lint-tsc.*\.mjs$/.test(name))
+    .filter((name) => /\brunTscBaselineGate\(/.test(readFileSync(join(scriptsDir, name), 'utf8')));
+
+  it('finds the gate entrypoints (the scan below is not vacuous)', () => {
+    expect(entrypoints).toContain('lint-tsc.mjs');
+    expect(entrypoints.length).toBeGreaterThanOrEqual(7);
+  });
+
+  it('every entrypoint crash handler exits TOOLCHAIN_FAILURE_EXIT_CODE, not 1', () => {
+    const offenders = entrypoints.flatMap((name) => {
+      const text = readFileSync(join(scriptsDir, name), 'utf8');
+      const at = text.lastIndexOf('.catch((err)');
+      if (at < 0) return [`${name}: no top-level .catch((err) => …) crash handler`];
+      const handler = text.slice(at, text.indexOf('});', at));
+      if (/process\.exit\(\s*1\s*\)/.test(handler)) return [`${name}: crash handler exits 1 (reads status=regressed)`];
+      if (!handler.includes('process.exit(TOOLCHAIN_FAILURE_EXIT_CODE)')) return [`${name}: crash handler does not exit TOOLCHAIN_FAILURE_EXIT_CODE`];
+      return [];
+    });
+    expect(offenders).toEqual([]);
+  });
+
+  it('the marker for that exit code is error(70), not regressed', () => {
+    const marker = formatLintTscResultMarker({ label: 'operator-core', scope: 'files', code: TOOLCHAIN_FAILURE_EXIT_CODE });
+    expect(marker).toContain(`status=error(${TOOLCHAIN_FAILURE_EXIT_CODE})`);
+    expect(marker).not.toContain('status=regressed');
+  });
+});
+
 describe('diagnosticFilesReferencingTypeNames — compiler messages close source-text attribution gaps (EI-21833727883305743)', () => {
   const DEPENDENT = 'packages/operator-core/lib/digest-fixture.test.ts';
 
@@ -2765,12 +3062,13 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
     "lib/a.ts(597,60): error TS1320: Type of 'await' operand must either be a valid promise or must not contain a callable 'then' member.";
 
   /** Run the real gate over canned compiler output; returns its combined output. */
-  function runGate(baseline: Record<string, number>): string {
+  function runGate(baseline: Record<string, number>, extraFile?: { path: string; diagnostic: string }): string {
     const root = mkdtempSync(join(tmpdir(), 'tsc-gate-wiring-'));
     try {
       mkdirSync(join(root, 'lib'), { recursive: true });
       writeFileSync(join(root, 'lib/a.ts'), 'export const fixture = 1;\n');
-      writeFileSync(join(root, 'tsc-output.txt'), `${TSC_LINES}\n`);
+      if (extraFile) writeFileSync(join(root, extraFile.path), 'export const peerFixture = 1;\n');
+      writeFileSync(join(root, 'tsc-output.txt'), `${TSC_LINES}\n${extraFile?.diagnostic ?? ''}\n`);
       // The baseline is `{ files: {...} }`, not a flat map. Writing a flat map here made the
       // gate read NO baseline at all and default the file to 0 — which still produced a green
       // "0 → 2" for the baseline-0 case, i.e. the test would have passed for the wrong reason.
@@ -2877,6 +3175,10 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
           `  argv: ['--files=lib/a.ts'],\n` +
           `});\n`,
       );
+      // The test runner preloads committed-source-loader, which also guards this child process.
+      // Give the generated driver a committed version before invoking Node.
+      git(['add', 'run.mjs']);
+      git(['commit', '-q', '-m', 'commit fixture runner']);
       let out: string;
       try {
         out = execFileSync('node', [join(root, 'run.mjs')], { encoding: 'utf-8', stdio: 'pipe' });
@@ -2909,6 +3211,16 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
     expect(out).toContain('lib/a.ts: 1 → 2');
     expect(out).toContain('PRE-DATE');
     expect(out).not.toContain('every error above is new');
+  });
+
+  it('prints new-file diagnostics alongside an attributed regression without another compile', () => {
+    const diagnostic = "lib/new-peer.ts(7,4): error TS2339: Property 'peerOnly' does not exist on type '{}'.";
+    const out = runGate({ 'lib/a.ts': 0 }, { path: 'lib/new-peer.ts', diagnostic });
+    expect(out).toContain('lib/a.ts: 0 → 2');
+    expect(out).toContain('also 1 NEW file(s) with errors');
+    expect(out).toContain('lib/new-peer.ts: 0 → 1');
+    expect(out).toContain(diagnostic);
+    expect(out).toContain('status=regressed');
   });
 
   it('a TS1xxx hard failure prints the compiler message without calling it a parse error', () => {
@@ -3346,6 +3658,17 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
         coveredPrefixes: ['packages/operator-core/'],
       });
       expect(covered).toEqual(['packages/operator-core/lib/a.ts']);
+    });
+
+    it('uses actual program membership rather than a directory when membership is available', () => {
+      expect(partitionFilesByCoverage({
+        files: ['./scripts/included.ts', 'scripts/excluded.ts', 'scripts/test-files.mjs'],
+        coveredPrefixes: ['scripts/'],
+        programFiles: ['scripts/included.ts'],
+      })).toEqual({
+        covered: ['scripts/included.ts'],
+        uncovered: ['scripts/excluded.ts', 'scripts/test-files.mjs'],
+      });
     });
   });
 
@@ -3794,6 +4117,37 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
           options: { cwd: '/repo', stdio: 'inherit' },
         });
         expect((invocations[0].options.env as Record<string, string>).PAPERCUSP_TSC_AUTO_ROUTE).toBe('1');
+      });
+
+      it('an OUT-OF-SCOPE delegate is unchecked files only when the mixed branch opts in (WI-6554700010009876)', () => {
+        const routes = [{ args: ['run', '--workspace', 'pkg-b', 'typecheck'] }];
+        const childExit = (marker: string) => (): never => {
+          throw Object.assign(new Error('child exit 1'), { status: 1, stdout: `${marker}\n` });
+        };
+        const outOfScope = childExit('LINT_TSC_RESULT label=fixture-delegate scope=files exit=1 status=out-of-scope filesUnchecked=2');
+        const unchecked: number[] = [];
+        // Mixed branch: the caller still owes its own compile, so a gap must not short-circuit it.
+        expect(
+          runAutoTypecheckRoutes({ root: '/repo', routes, execFile: outOfScope, onUnchecked: (n: number) => unchecked.push(n), outOfScopeIsUnchecked: true }),
+        ).toBe(0);
+        expect(unchecked).toEqual([2]);
+        // All-routed branch (no opt-in): nothing else will compile, so exit 0 would claim a check that never ran.
+        expect(runAutoTypecheckRoutes({ root: '/repo', routes, execFile: outOfScope, onUnchecked: () => {} })).toBe(1);
+        // A delegate that really failed stays a failure even with the opt-in.
+        const regressed = childExit('LINT_TSC_RESULT label=fixture-delegate scope=files exit=1 status=regressed');
+        expect(
+          runAutoTypecheckRoutes({ root: '/repo', routes, execFile: regressed, onUnchecked: () => {}, outOfScopeIsUnchecked: true }),
+        ).toBe(1);
+        // Only the delegate's FINAL marker counts: a nested child's out-of-scope line does not excuse its parent's red.
+        const nested = (): never => {
+          throw Object.assign(new Error('child exit 1'), {
+            status: 1,
+            stdout: 'LINT_TSC_RESULT label=inner scope=files exit=1 status=out-of-scope filesUnchecked=1\nLINT_TSC_RESULT label=outer scope=files exit=1 status=regressed\n',
+          });
+        };
+        expect(
+          runAutoTypecheckRoutes({ root: '/repo', routes, execFile: nested, onUnchecked: () => {}, outOfScopeIsUnchecked: true }),
+        ).toBe(1);
       });
 
       it('plans a standalone package as npm --prefix and a workspace package as npm run --workspace (WI-10003822)', () => {
@@ -4342,6 +4696,7 @@ describe('EI-21985804122617157 - mixed --files sets delegate instead of silently
     function runMixedGate(
       delegateScript: string,
       env: Record<string, string> = {},
+      files = ['pkg-a/lib/a.ts', 'pkg-b/lib/b.ts'],
     ): { out: string; code: number } {
       const root = mkdtempSync(join(tmpdir(), 'tsc-gate-mixed-route-'));
       try {
@@ -4378,7 +4733,7 @@ describe('EI-21985804122617157 - mixed --files sets delegate instead of silently
             `  tscCommand: ${JSON.stringify(`cat ${join(root, 'tsc-output.txt')} # -p pkg-a/tsconfig.json`)},\n` +
             `  baselineFile: ${JSON.stringify(join(root, 'baseline.json'))},\n` +
             `  label: 'test',\n` +
-            `  argv: ['--files=pkg-a/lib/a.ts,pkg-b/lib/b.ts'],\n` +
+            `  argv: [${JSON.stringify(`--files=${files.join(',')}`)}],\n` +
             `});\n`,
         );
         try {
@@ -4420,6 +4775,20 @@ describe('EI-21985804122617157 - mixed --files sets delegate instead of silently
       expect(out).not.toContain('status=regressed');
     });
 
+    // WI-6554700010009876: a delegate that compiled NONE of its files also exits 1, but its own
+    // marker says status=out-of-scope. That is a coverage gap, not a type error, so this gate's
+    // own compile must still run and the run reads partial, never routed-failed.
+    it('an OUT-OF-SCOPE delegate does not short-circuit the own compile: partial, never routed-failed', () => {
+      const { out, code } = runMixedGate(
+        'node -e "console.log(\'LINT_TSC_RESULT label=fixture-delegate scope=files exit=1 status=out-of-scope filesUnchecked=1\'); process.exit(1)"',
+      );
+      expect(out).toContain('label=fixture-delegate');
+      expect(out).not.toContain('status=routed-failed');
+      // THIS gate's own marker: its covered file was compiled and the routed file is reported unchecked.
+      expect(out).toMatch(/LINT_TSC_RESULT label=test scope=files exit=0 status=partial\b[^\n]*filesUnchecked=1\b/);
+      expect(code).toBe(0);
+    });
+
     // THE FALSIFIABILITY CONTROL, and a real guard in its own right.
     //
     // A guard test that has never failed is a guard you have not tested — but this repo forbids
@@ -4451,6 +4820,113 @@ describe('EI-21985804122617157 - mixed --files sets delegate instead of silently
       expect(code).toBe(3);
       expect(out).toContain('status=error(3)');
       expect(out).not.toContain('routed-failed');
+    });
+
+    it.each([['mixed', undefined], ['entirely delegated', ['pkg-b/lib/b.ts']]])(
+      'preserves a successful partial delegate in the %s parent verdict', (_kind, files) => {
+        const { out, code } = runMixedGate(
+          'node -e "console.log(\'LINT_TSC_RESULT label=delegate scope=files exit=0 status=partial filesUnchecked=1\')"',
+          {}, files,
+        );
+        expect(code).toBe(0);
+        const parent = out.split('\n').filter((line) => line.startsWith('LINT_TSC_RESULT label=test ')).at(-1);
+        expect(parent).toContain('status=partial filesUnchecked=1');
+        expect(parent).not.toContain('status=clean');
+        expect(parent).not.toContain('filesRoutedAway=1');
+      },
+    );
+  });
+});
+
+describe('actual program coverage of scoped typechecks (EI-25574814068391872)', () => {
+  const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
+  const gateUrl = pathToFileURL(join(repoRoot, 'scripts/lib/tsc-baseline-gate.mjs')).href;
+  const exec = promisify(execFile);
+  const unitTestTimeoutMs = Number(process.env.VITEST_UNIT_TIMEOUT_MS) || DEFAULT_UNIT_TEST_TIMEOUT_MS;
+  const childFinalizationHeadroomMs = 5_000;
+
+  async function runCoverageGate(files: string[], service: boolean) {
+    const root = mkdtempSync(join(tmpdir(), 'tsc-gate-enrollment-'));
+    const server = service ? createServer((socket) => {
+      socket.once('data', () => {
+        const checked: string[] = files.filter((file) => file === 'scripts/included.ts');
+        socket.end(JSON.stringify({
+          ok: true, output: '', errorCount: 0, checked,
+          counts: { named: checked.length, typeReferencing: 0, importers: 0 },
+          namedNotInProgram: files.filter((file) => !checked.includes(file)),
+          snapshotAgeMs: 0, queuedMs: 0, checkMs: 0,
+        }) + '\n');
+      });
+    }) : null;
+    try {
+      mkdirSync(join(root, 'scripts'));
+      symlinkSync(join(repoRoot, 'node_modules'), join(root, 'node_modules'), 'dir');
+      writeFileSync(join(root, 'scripts/included.ts'), 'export const fixture: number = 1;\n');
+      writeFileSync(join(root, 'scripts/excluded.ts'), 'export const fixture: number = 1;\n');
+      writeFileSync(join(root, 'scripts/unenrolled.mjs'), 'export const fixture = 1;\n');
+      writeFileSync(join(root, 'scripts/tsconfig.json'), JSON.stringify({
+        compilerOptions: { noEmit: true, types: [], lib: ['es2022'] },
+        files: ['included.ts'],
+      }));
+      writeFileSync(join(root, 'baseline.json'), JSON.stringify({ files: {} }));
+      writeFileSync(join(root, 'run.mjs'),
+        `import {runTscBaselineGate} from ${JSON.stringify(gateUrl)};\n` +
+        `await runTscBaselineGate(${JSON.stringify({
+          root, baselineFile: join(root, 'baseline.json'), label: 'coverage-fixture',
+          tscCommand: 'npx tsc -p scripts/tsconfig.json --noEmit --incremental false',
+          argv: [`--files=${files.join(',')}`],
+        })});\n`,
+      );
+      const socketPath = join(root, 'service.sock');
+      if (server) await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(socketPath, resolve);
+      });
+      const options = {
+        cwd: root,
+        encoding: 'utf-8' as const,
+        // This child runs a real tsc compile. Keep its deadline inside the shared
+        // unit-test budget, leaving time for assertions and fixture cleanup. The
+        // old local 15s cap redlined the full stateful lane while focused cases passed.
+        timeout: Math.max(1_000, unitTestTimeoutMs - childFinalizationHeadroomMs),
+        env: { ...process.env, PAPERCUSP_TSC_SERVICE: service ? '1' : '0',
+          PAPERCUSP_TSC_SERVICE_SOCKET: socketPath, PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE: '' },
+      };
+      try {
+        const result = await exec(process.execPath, [join(root, 'run.mjs')], options);
+        return { code: 0, out: result.stdout + result.stderr };
+      } catch (error: any) {
+        return { code: error.code, out: `${error.stdout ?? ''}${error.stderr ?? ''}` };
+      }
+    } finally {
+      if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  describe.each([['service', true], ['full compiler', false]] as const)('%s route', (_name, service) => {
+    it.each(['scripts/unenrolled.mjs', 'scripts/excluded.ts'])(
+      'refuses a clean verdict for the only named file %s absent from its program', async (file) => {
+        const result = await runCoverageGate([file], service);
+        expect(result.code).toBe(1);
+        expect(result.out).toContain('NOTHING YOU NAMED WAS TYPECHECKED');
+        expect(result.out).toContain('status=out-of-scope filesUnchecked=1');
+        expect(result.out).not.toContain('status=clean');
+      },
+    );
+
+    it('reports mixed actual coverage as partial without changing the covered verdict', async () => {
+      const result = await runCoverageGate(['scripts/included.ts', 'scripts/unenrolled.mjs'], service);
+      expect(result.code).toBe(0);
+      expect(result.out).toContain('status=partial filesUnchecked=1');
+      expect(result.out).not.toContain('status=clean');
+    });
+
+    it('keeps the enrolled TypeScript control clean', async () => {
+      const result = await runCoverageGate(['scripts/included.ts'], service);
+      expect(result.code).toBe(0);
+      expect(result.out).toContain('status=clean');
+      expect(result.out).not.toContain('filesUnchecked=');
     });
   });
 });

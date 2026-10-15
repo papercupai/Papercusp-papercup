@@ -89,4 +89,16 @@ describe('ingressOriginBranches — transient vs real transport errors (EI-18152
     expect(r.errors).toHaveLength(1);
     expect(r.errors[0].transient).toBe(false);
   });
+
+  it('a DNS failure from git is transient even though git returns a real exit code', async () => {
+    const r = await ingressOriginBranches({
+      repoPath: '/tmp/fake-bare.git',
+      remoteUrl: 'https://github.com/acme/widgets.git',
+      branches: ['main'],
+      runGit: async () => ({ code: 128, stdout: '', stderr: 'fatal: unable to access URL: Could not resolve host: github.com' }),
+    });
+    expect(r.ok).toBe(false);
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0].transient).toBe(true);
+  });
 });

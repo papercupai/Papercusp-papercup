@@ -60,6 +60,18 @@ QUAR="$ROOT/.quarantine"
 # replaces the payload cannot reset the attempt count that bounds it.
 QMETA="$ROOT/.quarantine-meta"
 LOG="$ROOT/mirror.log"
+# WI-10006303: a user-scope unit cannot depend on network-online.target (not-found in
+# the user manager) and Persistent=true fires the missed run at login, before the
+# uplink is up (measured 2026-10-05: probe 14:38:46-14:39:47Z, Wi-Fi CONNECTED_GLOBAL
+# 14:53:35Z). So the script itself waits for connectivity, bounded, and DEFERS
+# (exit 75 + a capped retry timer) instead of raising a false "gcloud auth?" alarm.
+NET_WAIT_SEC="${PC_ESTATE_MIRROR_NET_WAIT_SEC:-1800}"       # how long one run waits for an uplink
+NET_DEFER_MAX="${PC_ESTATE_MIRROR_NET_DEFER_MAX:-6}"         # consecutive no-network DEFERs before a real FATAL
+NET_PROBE_HOST="${PC_ESTATE_MIRROR_NET_PROBE_HOST:-storage.googleapis.com}"
+PROBE_RETRY_SEC="${PC_ESTATE_MIRROR_PROBE_RETRY_SEC:-20}"    # pause between the 3 bucket probes
+RETRY_TIMER="${PC_ESTATE_MIRROR_RETRY_TIMER:-pc-estate-mirror-retry.timer}"
+DEFER_COUNT="$ROOT/.net-defer-count"
+GCS_PROBE_ERR=""
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Overridable so a test can point the alert channel at a recording stub and
 # assert on WHICH channel fired. Without this seam the only way to prove an
@@ -67,6 +79,13 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # git-sync sweep can commit mid-probe; with it, the whole alert contract is
 # testable against a copy outside the tree.
 ALERT="${PC_ESTATE_MIRROR_ALERT:-$SELF_DIR/pc-estate-mirror-alert.sh}"
+# Where the restore runbook (tools/) is copied FROM. Defaults to this script's own
+# directory, but the unit runs the script through papercusp-script-snapshot.sh
+# (a private per-run copy, so a mid-run edit in the shared tree cannot rewrite
+# the running program), and that snapshot holds only the *.sh/*.mjs siblings —
+# not RESTORE-RUNBOOK.md. Without this override the copy would silently fall
+# back to the bucket's hand-uploaded, possibly months-stale tools/.
+TOOLS_SRC="${PC_ESTATE_MIRROR_TOOLS_SRC:-$SELF_DIR}"
 
 log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG" >&2; }
 die() { log "FATAL: $*"; exit 1; }
@@ -91,6 +110,14 @@ degraded() {
   # GCS bucket" to whatever reason it is given, so routing a probe-only fault
   # through it broadcasts a backup outage that is not happening (WI-10001692).
   [ -x "$ALERT" ] && "$ALERT" --degraded "$*" || log "DEGRADED (no alert script): $*"
+}
+
+partial_source() {
+  # The fourth channel: a fault in a SOURCE backup that the mirror copied and
+  # verified faithfully. Neither the mirror nor its probe is broken, so neither the
+  # FAILING nor the DEGRADED latch applies, and nothing re-raises it later: the
+  # caller fires this exactly once, when the snapshot is first published (WI-10006330).
+  [ -x "$ALERT" ] && "$ALERT" --partial-source "$*" || log "PARTIAL SOURCE (no alert script): $*"
 }
 
 clear_failing_marker() {
@@ -256,7 +283,7 @@ gcs_reachable() {
   # Bounded retry on the reachability probe, because THIS TIMER IS DAILY: a
   # single transient blip that reaches `die` costs a full ~24h of off-site
   # coverage, not one run. That is not hypothetical — 2026-09-01T05:18Z failed
-  # here once with "cannot read gs://… (gcloud auth?)", and the off-GCP copy
+  # here once with "cannot read gs://…: <gcloud's last stderr line>", and the off-GCP copy
   # then sat 33h stale until the next attempt succeeded unattended (WI-2140790).
   #
   # Deliberately bounded, and deliberately still fatal after the bound: a real
@@ -264,15 +291,60 @@ gcs_reachable() {
   # did. Retrying is only allowed to absorb a blip, never to convert a standing
   # fault into silence — that is the EI-10733 failure (a backup rotting quietly
   # for 30 days) this whole alarm exists to prevent.
-  local attempt
+  # The last stderr line is kept in GCS_PROBE_ERR so the FATAL names the real error
+  # ("Reauthentication failed", "403", a DNS failure) instead of guessing "auth?".
+  local attempt err; err="$(mktemp)"
   for attempt in 1 2 3; do
-    gcloud storage ls "$BUCKET/" >/dev/null 2>&1 && return 0
+    if gcloud storage ls "$BUCKET/" >/dev/null 2>"$err"; then rm -f "$err"; return 0; fi
+    GCS_PROBE_ERR="$(tail -n 1 "$err" 2>/dev/null | tr -d '\r' | cut -c1-200)"
     if [ "$attempt" -lt 3 ]; then
-      log "bucket probe failed (attempt $attempt/3) — retrying in 20s"
-      sleep 20
+      log "bucket probe failed (attempt $attempt/3): ${GCS_PROBE_ERR:-no stderr} — retrying in ${PROBE_RETRY_SEC}s"
+      sleep "$PROBE_RETRY_SEC"
     fi
   done
+  rm -f "$err"
   return 1
+}
+
+# Connectivity = a default route AND the bucket endpoint resolves. Both go through
+# PATH (ip, getent) so the test suite can shim them.
+net_online() {
+  ip route show default 2>/dev/null | grep -q . || return 1
+  getent ahosts "$NET_PROBE_HOST" >/dev/null 2>&1
+}
+
+wait_for_network() {
+  local waited=0
+  while ! net_online; do
+    [ "$waited" -ge "$NET_WAIT_SEC" ] && return 1
+    [ "$waited" -eq 0 ] && log "network not up yet (no default route, or $NET_PROBE_HOST unresolvable) — waiting up to ${NET_WAIT_SEC}s"
+    sleep 10; waited=$((waited+10))
+  done
+  [ "$waited" -gt 0 ] && log "network up after ${waited}s"
+  return 0
+}
+
+# EX_TEMPFAIL (75): the unit maps it to success (SuccessExitStatus=75), so OnFailure=
+# does NOT raise the fleet-wide alarm for a box that merely has no uplink yet; a
+# bounded retry timer re-fires the mirror instead. The 6-hourly health probe still
+# alarms STALE on its own clock, so a box offline for a day is still caught — and
+# after NET_DEFER_MAX consecutive defers this becomes a real FATAL (the alarm).
+defer_for_network() {
+  local n=0
+  [ -f "$DEFER_COUNT" ] && n="$(tr -cd 0-9 <"$DEFER_COUNT" 2>/dev/null)"; n="${n:-0}"
+  n=$((n+1))
+  if [ "$n" -gt "$NET_DEFER_MAX" ]; then
+    rm -f "$DEFER_COUNT"
+    die "no network for $NET_DEFER_MAX consecutive runs (each waited ${NET_WAIT_SEC}s) — giving up until the next scheduled run"
+  fi
+  echo "$n" >"$DEFER_COUNT"
+  if [ -n "$RETRY_TIMER" ] && command -v systemctl >/dev/null 2>&1 \
+     && systemctl --user start "$RETRY_TIMER" >/dev/null 2>&1; then
+    log "DEFER $n/$NET_DEFER_MAX: no network after ${NET_WAIT_SEC}s — $RETRY_TIMER armed"
+  else
+    log "DEFER $n/$NET_DEFER_MAX: no network after ${NET_WAIT_SEC}s — retry timer not armed; next scheduled run will retry"
+  fi
+  exit 75
 }
 
 do_mirror() {
@@ -280,7 +352,9 @@ do_mirror() {
   chmod 700 "$ROOT" 2>/dev/null || true
 
   command -v gcloud >/dev/null || die "gcloud not on PATH"
-  gcs_reachable || die "cannot read $BUCKET after 3 attempts over ~40s (gcloud auth?)"
+  wait_for_network || defer_for_network
+  gcs_reachable || die "cannot read $BUCKET after 3 attempts over ~$((2*PROBE_RETRY_SEC))s: ${GCS_PROBE_ERR:-gcloud printed nothing}"
+  rm -f "$DEFER_COUNT"
 
   local sealed=false; seal_supported && sealed=true
   $sealed || log "WARNING: chattr +i unavailable here — snapshots will be mirrored but NOT sealed"
@@ -292,7 +366,25 @@ do_mirror() {
     || die "snapshot enumeration failed"
   [ -n "$manifests" ] || die "no snapshots found in $BUCKET/daily/ — nothing to mirror is itself a fault"
 
-  local errors=() quarantined=() mirrored=0 skipped=0
+  # Walk each host NEWEST-FIRST and stop once KEEP snapshots are held (WI-10006308).
+  # The bucket keeps far more history than the KEEP retained here, and the old
+  # oldest-first walk downloaded, verified and sealed every one of those older
+  # snapshots only for retention to delete them minutes later — +45 snapshots,
+  # ~38min and ~50GB of egress on 2026-10-03, growing by two every day until it
+  # would overrun the unit's TimeoutStartSec. Quarantined and failed snapshots do
+  # not count toward KEEP, so an older good one still backfills behind a bad
+  # newer one: the set left on disk is exactly what download-all-then-prune kept.
+  # Newest-first also means a run cut short has already secured the copy that
+  # matters most.
+  local ordered
+  ordered=$(printf '%s\n' "$manifests" \
+    | awk -F/ 'NF >= 4 { print $(NF-2) "\t" $(NF-1) "\t" $0 }' \
+    | sort -t "$(printf '\t')" -k1,1 -k2,2r \
+    | cut -f3-)
+  [ -n "$ordered" ] || die "snapshot enumeration returned no parseable <host>/<ts>/MANIFEST.json paths"
+
+  local errors=() quarantined=() mirrored=0 skipped=0 beyond_keep=0
+  local -A held=()
   while IFS= read -r mf; do
     [ -n "$mf" ] || continue
     local prefix host ts dst
@@ -301,7 +393,10 @@ do_mirror() {
     host="$(basename "$(dirname "$prefix")")"
     dst="$SNAPDIR/$host/$ts"
 
-    if [ -f "$dst/MIRROR-META.json" ]; then skipped=$((skipped+1)); continue; fi
+    if [ "${held[$host]:-0}" -ge "$KEEP" ]; then beyond_keep=$((beyond_keep+1)); continue; fi
+    if [ -f "$dst/MIRROR-META.json" ]; then
+      skipped=$((skipped+1)); held[$host]=$(( ${held[$host]:-0} + 1 )); continue
+    fi
 
     # A snapshot that has already been judged UNMIRRORABLE is not retried
     # forever. The distinction matters and it is not cosmetic:
@@ -422,7 +517,23 @@ PY
     fi
     $sealed && { seal "$dst" || log "WARNING: seal failed for $dst"; }
     mirrored=$((mirrored+1))
-  done <<<"$manifests"
+    # A snapshot whose MANIFEST records producer failures verifies cleanly here --
+    # every artifact it DECLARES is present -- yet that day's backup is missing data,
+    # and nothing on the source VMs alerts on it. 2026-10-05 hetzner-restore-mesh
+    # shipped 108/109 artifacts (a ClickHouse export hit SOCKET_TIMEOUT) and this
+    # mirror published it silently (WI-10006330). The producer writes an integer;
+    # a list form is counted by length so neither shape reads as zero.
+    mfail=$(python3 -c 'import json,sys
+f=json.load(open(sys.argv[1])).get("manifest_failures")
+print(len(f) if isinstance(f,list) else int(f or 0))' "$dst/MIRROR-META.json" 2>/dev/null || echo 0)
+    if [ "${mfail:-0}" -gt 0 ] 2>/dev/null; then
+      log "PARTIAL SOURCE BACKUP $host/$ts: MANIFEST records $mfail producer failure(s)"
+      partial_source "$host/$ts: the source backup recorded $mfail artifact failure(s) in its MANIFEST, so that day's backup is missing data (the mirror copy itself verified clean)"
+    fi
+    held[$host]=$(( ${held[$host]:-0} + 1 ))
+  done <<<"$ordered"
+  [ "$beyond_keep" -gt 0 ] && \
+    log "not fetched: $beyond_keep bucket snapshot(s) older than the newest KEEP=$KEEP per host (retention would prune them)"
 
   # --- the restore PROCEDURE travels with the data --------------------------
   # Data without the runbook is not a recovery, so tools/ is re-synced every
@@ -433,8 +544,8 @@ PY
   # so nobody has to guess how current their emergency runbook is.
   local tnew="$ROOT/.tools.new" tsrc=""
   rm -rf "$tnew"; mkdir -p "$tnew"
-  if [ -f "$SELF_DIR/RESTORE-RUNBOOK.md" ] && cp -a "$SELF_DIR"/. "$tnew/" 2>>"$LOG"; then
-    tsrc="repo:$SELF_DIR"
+  if [ -f "$TOOLS_SRC/RESTORE-RUNBOOK.md" ] && cp -a "$TOOLS_SRC"/. "$tnew/" 2>>"$LOG"; then
+    tsrc="repo:$TOOLS_SRC"
   elif gcloud storage cp -r "$BUCKET/tools/*" "$tnew/" --quiet >>"$LOG" 2>&1; then
     tsrc="bucket:$BUCKET/tools"
   fi

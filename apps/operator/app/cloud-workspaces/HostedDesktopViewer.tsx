@@ -76,6 +76,7 @@ export function HostedDesktopViewer({
   const socketRef = useRef<WebSocket | null>(null);
   const channelRef = useRef<HostedDesktopRelayChannel | null>(null);
   const rfbRef = useRef<import("@novnc/novnc").default | null>(null);
+  const inputAllowedRef = useRef(false);
   const epochRef = useRef(0);
   const readyRejectedRef = useRef(false);
   const controlButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -84,6 +85,14 @@ export function HostedDesktopViewer({
   const [error, setError] = useState<string | null>(null);
   const [inputAllowed, setInputAllowed] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
+
+  const updateInputAllowed = useCallback((allowed: boolean) => {
+    // The relay's grant governs both the UI and noVNC's keyboard/pointer gate.
+    // Keep it across the asynchronous noVNC import, which can finish after ready.
+    inputAllowedRef.current = allowed;
+    setInputAllowed(allowed);
+    if (rfbRef.current) rfbRef.current.viewOnly = !allowed;
+  }, []);
 
   const updateState = useCallback(
     (next: HostedDesktopViewerState) => {
@@ -96,7 +105,7 @@ export function HostedDesktopViewer({
   const disconnect = useCallback(() => {
     epochRef.current += 1;
     readyRejectedRef.current = false;
-    setInputAllowed(false);
+    updateInputAllowed(false);
     rfbRef.current?.disconnect();
     rfbRef.current = null;
     channelRef.current?.close(1000, "viewer_detached");
@@ -108,14 +117,14 @@ export function HostedDesktopViewer({
     } catch {
       // Already closed.
     }
-  }, []);
+  }, [updateInputAllowed]);
 
   const connect = useCallback(async (nextAttempt = 1) => {
     disconnect();
     const epoch = epochRef.current;
     setAttempt(nextAttempt);
     setError(null);
-    setInputAllowed(false);
+    updateInputAllowed(false);
     readyRejectedRef.current = false;
     updateState("ticketing");
 
@@ -162,13 +171,13 @@ export function HostedDesktopViewer({
          * for a watch credential (or vice versa). */
         if (event.action !== mode) {
           readyRejectedRef.current = true;
-          setInputAllowed(false);
+          updateInputAllowed(false);
           setError("desktop_action_mismatch");
           updateState("error");
           channel.close(1008, "desktop_action_mismatch");
           return;
         }
-        setInputAllowed(mode === "takeover" && event.inputAllowed);
+        updateInputAllowed(mode === "takeover" && event.inputAllowed);
       };
       channel.onopen = () => {
         if (epoch !== epochRef.current) return;
@@ -177,6 +186,7 @@ export function HostedDesktopViewer({
       };
       channel.onerror = (event) => {
         if (epoch !== epochRef.current) return;
+        updateInputAllowed(false);
         const detail =
           event && typeof event === "object" && "code" in event
             ? String((event as { code?: unknown }).code)
@@ -186,7 +196,7 @@ export function HostedDesktopViewer({
       };
       channel.onclose = (event) => {
         if (epoch !== epochRef.current) return;
-        setInputAllowed(false);
+        updateInputAllowed(false);
         const reason = event.reason?.trim();
         setError(reason || null);
         updateState(readyRejectedRef.current ? "error" : "closed");
@@ -202,7 +212,7 @@ export function HostedDesktopViewer({
       const rfb = new RFB(stageRef.current, channel as unknown as WebSocket, {
         shared: true,
       });
-      rfb.viewOnly = mode === "watch";
+      rfb.viewOnly = !inputAllowedRef.current;
       rfb.scaleViewport = true;
       rfb.clipViewport = true;
       rfb.resizeSession = false;
@@ -216,13 +226,14 @@ export function HostedDesktopViewer({
       });
       rfb.addEventListener("disconnect", () => {
         if (epoch === epochRef.current) {
-          setInputAllowed(false);
+          updateInputAllowed(false);
           if (!readyRejectedRef.current) updateState("closed");
         }
       });
       rfbRef.current = rfb;
     } catch (cause) {
       if (epoch !== epochRef.current) return;
+      updateInputAllowed(false);
       setError(cause instanceof Error ? cause.message : String(cause));
       updateState("error");
     }
@@ -232,6 +243,7 @@ export function HostedDesktopViewer({
     hostId,
     mode,
     routeLabel,
+    updateInputAllowed,
     updateState,
     workspaceId,
   ]);

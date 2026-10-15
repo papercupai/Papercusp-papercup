@@ -24,11 +24,14 @@ import {
   validateWorkspaceHostBootstrapAttestation,
   type WorkspaceHostBootstrapAttestation,
   type WorkspaceHostBootstrapEntrypoints,
+  type WorkspaceHostAgentRuntimeInstall,
   type WorkspaceHostBootstrapInput,
   type WorkspaceHostBootstrapIsolation,
   type WorkspaceHostBootstrapRelease,
   type WorkspaceHostBootstrapService,
+  type WorkspaceHostBootstrapStatusChannel,
   type WorkspaceHostModel,
+  workspaceHostBootcPinnedImageRef,
 } from "./workspace-host-bootstrap";
 import type {
   WorkspaceHostImageRef,
@@ -220,6 +223,10 @@ export interface WorkspaceHostCleanRoomInstallSpec {
   minimumNodeMajor: number;
   service: WorkspaceHostBootstrapService;
   isolation?: WorkspaceHostBootstrapIsolation;
+  /** Provider-specific clean-room runtime set; AWS supplies the controller's production set. */
+  agentRuntimeInstalls?: readonly WorkspaceHostAgentRuntimeInstall[];
+  /** Provider-specific bootstrap status channel used to attest remote completion. */
+  statusChannel?: WorkspaceHostBootstrapStatusChannel;
   /**
    * Keys to authorize for the workspace account. Optional here — unlike on
    * `WorkspaceHostBootstrapInput`, where it is required — because a clean-room VM is torn down
@@ -891,6 +898,8 @@ function fixtureBootstrapInput(
     minimumNodeMajor: spec.minimumNodeMajor,
     service: spec.service,
     isolation: spec.isolation,
+    ...(spec.agentRuntimeInstalls ? { agentRuntimeInstalls: spec.agentRuntimeInstalls } : {}),
+    ...(spec.statusChannel ? { statusChannel: spec.statusChannel } : {}),
     workspaceAuthorizedKeys: spec.workspaceAuthorizedKeys?.length
       ? spec.workspaceAuthorizedKeys
       : [WORKSPACE_HOST_CLEAN_ROOM_AUTHORIZED_KEY],
@@ -1153,7 +1162,8 @@ export function workspaceHostCleanRoomFixtureAttestation(
       bootcBaseImage: bootc.baseImage ?? WORKSPACE_HOST_BOOTC_BASE_IMAGE,
       release: {
         version: fixture.bootstrapInput.release.version,
-        source: bootc.image,
+        // What `bootc status` reports on a correct host: the digest-pinned ref (WI-10006339).
+        source: workspaceHostBootcPinnedImageRef(bootc),
         imageDigest: bootc.imageDigest,
         signaturePolicyPath: bootc.signaturePolicyPath,
         signatureVerified: true,

@@ -272,7 +272,13 @@ describe("cc PostToolUse locks-release hook — operator-independent paths", () 
     );
     const elapsed = Date.now() - t0;
     expect(r.status).toBe(0); // release is always best-effort — never blocks the turn
-    expect(r.stdout).toBe("");
+    // 9ae6b57aad: an unconfirmed release is surfaced to the agent as a
+    // LOCK MODE UPDATE (its lock may still be held), never a silent no-op.
+    const hookOutput = JSON.parse(r.stdout).hookSpecificOutput;
+    expect(hookOutput.hookEventName).toBe("PostToolUse");
+    expect(hookOutput.additionalContext).toContain("LOCK MODE UPDATE");
+    expect(hookOutput.additionalContext).toContain("manual");
+    expect(hookOutput.additionalContext).toContain("a.ts");
     expect(elapsed).toBeGreaterThan(1500); // proves the retry loop actually ran
     // EI-211603: an HTTP/transport failure is not a confirmed release. Keep the
     // token + paths so the parent exec-completion recovery can retry instead of
@@ -621,7 +627,11 @@ function runStatusline(extraEnv: Record<string, string> = {}, homeDir = home) {
 }
 
 // ── SessionStart/SessionEnd lifecycle hook ─────────────────────────────
-const LIFECYCLE_HOOK = join(__dirname, "..", "lifecycle-report.sh");
+// PAPERCUSP_TEST_LIFECYCLE_HOOK: run this suite against another copy of the hook
+// (e.g. a pre-fix blob in a scratch copy of hooks/cc) to prove the guards are
+// falsifiable without mutating the shared tree.
+const LIFECYCLE_HOOK =
+  process.env.PAPERCUSP_TEST_LIFECYCLE_HOOK || join(__dirname, "..", "lifecycle-report.sh");
 
 function runLifecycle(
   payloadObj: object,
@@ -646,6 +656,7 @@ async function runLifecycleAgainstDisposition(
   disposition: "terminal" | "continuation",
   advSessionId?: string,
   roleEnv: Record<string, string> = {},
+  eventName: "SessionEnd" | "Stop" = "SessionEnd",
 ) {
   const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
   const server = createServer((req, res) => {
@@ -664,20 +675,28 @@ async function runLifecycleAgainstDisposition(
       requests.push({ path: req.url ?? "", body });
       res.setHeader("content-type", "application/json");
       if (req.url?.startsWith("/api/mcp")) {
+        const params = body.params as
+          | { name?: string; arguments?: Record<string, unknown> }
+          | undefined;
+        const resultText =
+          params?.name === "locks:release"
+            ? JSON.stringify({
+                ok: true,
+                released: Array.isArray(params.arguments?.paths)
+                  ? params.arguments.paths
+                  : [],
+                held_before: 1,
+              })
+            : JSON.stringify({
+                ok: true,
+                session_end_disposition: disposition,
+              });
         res.end(
           JSON.stringify({
             jsonrpc: "2.0",
             id: 1,
             result: {
-              content: [
-                {
-                  type: "text",
-                  text: JSON.stringify({
-                    ok: true,
-                    session_end_disposition: disposition,
-                  }),
-                },
-              ],
+              content: [{ type: "text", text: resultText }],
             },
           }),
         );
@@ -695,6 +714,8 @@ async function runLifecycleAgainstDisposition(
       ...process.env,
       HOME: home,
       PAPERCUSP_SID: "su-lifecycle-terminal",
+      PAPERCUSP_LOCK_SID: "",
+      CODEX_HOME: "",
       PAPERCUSP_AGENT: "codex",
       PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${address.port}`,
       ...(advSessionId ? { PAPERCUSP_ADV_SESSION_ID: advSessionId } : {}),
@@ -704,7 +725,7 @@ async function runLifecycleAgainstDisposition(
   });
   child.stdin.end(
     payload({
-      hook_event_name: "SessionEnd",
+      hook_event_name: eventName,
       session_id: "codex-thread-1",
       cwd: repo,
     }),
@@ -790,6 +811,31 @@ describe("cc lifecycle hook — operator-independent paths", () => {
     });
   });
 
+  it("forwards the wake executor's PAPERCUSP_WAKE_DELIVERY_ID as wake_delivery_id (WI-10005679)", async () => {
+    const { exitCode, requests } = await runLifecycleAgainstDisposition(
+      "terminal",
+      undefined,
+      { PAPERCUSP_WAKE_DELIVERY_ID: "413379" },
+    );
+    expect(exitCode).toBe(0);
+    expect(
+      (requests[0].body.params as { arguments?: Record<string, unknown> })
+        .arguments,
+    ).toMatchObject({ wake_delivery_id: 413379 });
+  });
+
+  it("drops a malformed PAPERCUSP_WAKE_DELIVERY_ID instead of forwarding it", async () => {
+    const { requests } = await runLifecycleAgainstDisposition(
+      "continuation",
+      undefined,
+      { PAPERCUSP_WAKE_DELIVERY_ID: "not-a-number" },
+    );
+    const args = (requests[0].body.params as { arguments?: Record<string, unknown> })
+      .arguments;
+    expect(args).toBeDefined();
+    expect(args).not.toHaveProperty("wake_delivery_id");
+  });
+
   it("a carry/reset continuation SessionEnd never kills the managed host", async () => {
     const { exitCode, requests } = await runLifecycleAgainstDisposition(
       "continuation",
@@ -803,6 +849,73 @@ describe("cc lifecycle hook — operator-independent paths", () => {
       (requests[0].body.params as { arguments?: Record<string, unknown> })
         .arguments,
     ).toMatchObject({ role: "judge" });
+  });
+  it("Stop with a continuation releases only same-owner locks from that native session", async () => {
+    const stopCache = fs.mkdtempSync(join(os.tmpdir(), "lifecycle-stop-locks-"));
+    const seedLock = (
+      toolUseId: string,
+      lockId: string,
+      owner: string,
+      sessionId: string,
+      path: string,
+    ) => {
+      fs.writeFileSync(join(stopCache, `${toolUseId}.lock`), `${lockId}\n`);
+      fs.writeFileSync(join(stopCache, `${toolUseId}.paths`), JSON.stringify([path]));
+      fs.writeFileSync(join(stopCache, `${toolUseId}.owner`), owner);
+      fs.writeFileSync(join(stopCache, `${toolUseId}.session`), sessionId);
+    };
+    const currentSession = "codex-thread-1";
+    seedLock("owned-tu", "lock-owned", "su-lifecycle-terminal", currentSession, "owned.ts");
+    seedLock("other-session-tu", "lock-other-session", "su-lifecycle-terminal", "another-session", "other-session.ts");
+    seedLock("other-owner-tu", "lock-other-owner", "su-peer", currentSession, "other-owner.ts");
+
+    try {
+      const { exitCode, requests } = await runLifecycleAgainstDisposition(
+        "continuation",
+        undefined,
+        { PAPERCUSP_LOCKS_CACHE_DIR: stopCache },
+        "Stop",
+      );
+      const lockReleases = requests.filter(
+        (request) =>
+          (request.body.params as { name?: string } | undefined)?.name ===
+          "locks:release",
+      );
+      expect(exitCode).toBe(0);
+      expect(requests.some((request) => request.path === "/api/admin/coordination/fleet/kill")).toBe(false);
+      expect(lockReleases).toHaveLength(1);
+      expect(lockReleases[0].body.params).toMatchObject({
+        name: "locks:release",
+        arguments: { lock_id: "lock-owned", paths: ["owned.ts"] },
+      });
+      expect(fs.existsSync(join(stopCache, "owned-tu.lock"))).toBe(false);
+      expect(fs.existsSync(join(stopCache, "owned-tu.session"))).toBe(false);
+      expect(fs.existsSync(join(stopCache, "other-session-tu.lock"))).toBe(true);
+      expect(fs.existsSync(join(stopCache, "other-owner-tu.lock"))).toBe(true);
+    } finally {
+      fs.rmSync(stopCache, { recursive: true, force: true });
+    }
+  });
+  // WI-6554700010009992: Codex fires Stop at the end of EVERY turn. When it was
+  // reported as "■ session ended", a parked loop-less session (a warm headless
+  // executor after its first turn) got a `terminal` verdict and fleet:kill'ed its
+  // own live host. The server verdict is forced to `terminal` here so the hook,
+  // not the classifier, is what must keep a turn end from ending the session.
+  it("Stop is a turn end — even a terminal verdict never reports an end or kills the host", async () => {
+    const { exitCode, requests } = await runLifecycleAgainstDisposition(
+      "terminal",
+      "42",
+      {},
+      "Stop",
+    );
+    expect(exitCode).toBe(0);
+    expect(requests.some((request) => request.path === "/api/admin/coordination/fleet/kill")).toBe(false);
+    const reports = requests.filter(
+      (request) =>
+        (request.body.params as { name?: string } | undefined)?.name ===
+        "activity:report",
+    );
+    expect(reports).toEqual([]);
   });
 });
 

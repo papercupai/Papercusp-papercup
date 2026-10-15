@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "UniFFI external Kotlin checksum declarations and four ABI packaging",
+  "framework": "operational",
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "papercup-core",
+    "--test",
+    "android_uniffi_abi_guard",
+    "--",
+    "--nocapture"
+  ],
+  "startedAt": "2026-10-02T13:13:38.505000+00:00",
+  "finishedAt": "2026-10-02T13:14:33.169000+00:00",
+  "exitCode": 0,
+  "summary": "Original parser rejected maintained external fun checksum declarations: two standard Cargo regressions failed. Optional-external parser fix passes seven tests including missing-export controls; actual rebuilt libraries pass all 55 expected checksum exports across four ABIs. Cached debug packaging separately passed.",
+  "repository": "papercup-rust-mobile",
+  "containingSourceCommit": "d1e1ee255886a9d898bbc3cc8a1e82f02287b4c8",
+  "sourceFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/build-scripts/verify-android-uniffi-abi.sh",
+      "sha256": "c48d7550aa3a0bb60c0365c027ab303d6299a8336e7f4710180bf7424f8d3fdd"
+    },
+    {
+      "path": "papercup-rust-mobile/crates/papercup-core/tests/android_uniffi_abi_guard.rs",
+      "sha256": "f074dfe26940e2fe5e9c3d8ec8a8ab3f864803af82911148c9883090151c264e"
+    }
+  ],
+  "workItem": "EI-24873440465105570",
+  "rawEvidence": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/uniffi-abi-parser-before-20261002.log",
+      "sha256": "3170d027f08fa5f7bdd872cc802c8f09c2f588fe6d7c37d1d056df95e97e1ee1"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/uniffi-abi-parser-after-20261002.log",
+      "sha256": "97c732bd9790d0d2b760a6e269c736538eedde0f2e54101ad5147380f573af9f"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/uniffi-abi-actual-20261002.log",
+      "sha256": "065855a07c29f9b45452252641a1897c218aaa3edab98f086ac3eb0424eae9df"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/uniffi-android-packaging-20261002-1329.log",
+      "sha256": "1bb63f788f28dba70700926efd44c6791e281f54519a98d6021dc0a4136777c0"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "red-parser-controls",
+      "passed": true,
+      "evidence": "Two external-declaration regressions failed on the original parser."
+    },
+    {
+      "id": "green-parser-and-negative-exports",
+      "passed": true,
+      "evidence": "Seven Cargo tests passed without failures or skips; absent required exports remain rejected."
+    },
+    {
+      "id": "real-four-ABI-contract",
+      "passed": true,
+      "evidence": "55 required UniFFI checksum exports verified in arm64-v8a, armeabi-v7a, x86 and x86_64."
+    },
+    {
+      "id": "retained-packaging",
+      "passed": true,
+      "evidence": "Historical debug packaging succeeded with four ABIs and 16KB ELF/APK guards."
+    }
+  ],
+  "scope": "Local maintained regression and debug-native preparation only; no signed-candidate, automatic CI, physical-phone or Play acceptance.",
+  "testCounts": {
+    "red": {
+      "tests": 2,
+      "failures": 2,
+      "ignored": 0
+    },
+    "green": {
+      "tests": 7,
+      "failures": 0,
+      "ignored": 0
+    }
+  },
+  "packaging": {
+    "apkSha256AtExecution": "5cff6d87fde533d0d16dcb2ca9d081d7dd27168b2c11b4eab0d2069ecba9dd96",
+    "scope": "Debug artifact before the later Android application callback policy addition."
+  }
+}

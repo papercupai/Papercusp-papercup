@@ -134,6 +134,11 @@ describe('registry integrity (discord-shortcuts 2026-06-06)', () => {
   // rebind keys that fired nothing. Removed; `goto.insights` was instead WIRED
   // (AdvShell + GlobalAppShortcuts). Pins both halves.
   describe('no dead rebindable rows', () => {
+    it('drops editor.save after its prompt and memory editors were retired', () => {
+      expect(getShortcutDef('editor.save')).toBeUndefined();
+      expect(effectiveCombo('editor.save', { 'editor.save': 'mod+alt+s' })).toBe('');
+    });
+
     it('drops the feature-list ids (their FeatureList no longer exists)', () => {
       expect(SHORTCUTS.filter((s) => s.id.startsWith('feature.'))).toEqual([]);
     });

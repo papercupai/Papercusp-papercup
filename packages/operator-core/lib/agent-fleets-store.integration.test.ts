@@ -16,18 +16,25 @@
  * store fns take an explicit `sql` so no module mocking is needed.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import {
   claimFleetLaunchSlot,
+  clearFleetLeaderMissingSince,
   createFleetIfAbsent,
   deleteFleet,
   getFleet,
   getFleetHeadcountTarget,
   claimFleetHeadcountAttempt,
+  lapseFleetTopUpRule,
+  listExpiredFleetTopUpRules,
   listFleetHeadcountTargets,
   recordFleetHeadcountAttempt,
   releaseFleetLaunchSlot,
+  markFleetLeaderMissingSince,
+  promoteFleetLeaderIfMissing,
+  setFleetLeader,
   setFleetHeadcountTarget,
   setFleetControlState,
   setFleetLaunchTransaction,
@@ -35,9 +42,15 @@ import {
 } from './agent-fleets-store';
 import { latestFleetMembership } from './fleet-membership-store';
 import { fleetSlugOfAgent } from './fleet-transition-events';
+import type { FleetTopUpRule } from './fleet/top-up-rule';
 
 const WS = 'ws-flguard';
 const WINDOW = 60_000;
+const LEADER_MISSING_MIGRATION = readFileSync(
+  new URL('../../../libs/papercusp/libs/db/sql/1348-fleet-leader-missing-since.sql', import.meta.url),
+  'utf8',
+);
+const LEADER_MISSING_GRACE_MS = 10 * 60_000;
 
 let rootSql: postgres.Sql;
 let db: FreshPgDb;
@@ -60,7 +73,8 @@ beforeAll(async () => {
   // max > 1 (the helper's max=4) keeps the concurrency test genuine.
   // The agent_fleets shape: 417 baseline + the 484 launch-guard columns + the
   // 575 control-state columns (P-009 / H4) + the 964 fleet_type column (D-008 /
-  // P-010). This fixture hand-rolls the table, so it does NOT inherit new
+  // P-010). Migration 1348 is applied below to this pre-migration table. This
+  // fixture hand-rolls the table, so it does NOT inherit other new
   // migrations — a column added to the real table has to be added here too or
   // every store call that names it fails with a bare "column does not exist".
   await rootSql.unsafe(`
@@ -95,6 +109,12 @@ beforeAll(async () => {
       CONSTRAINT agent_fleets_pkey PRIMARY KEY (workspace_id, fleet_slug)
     )
   `);
+  await rootSql.unsafe(
+    `INSERT INTO harness_shared.agent_fleets (workspace_id, fleet_slug, leader_owner_id, created_at, updated_at)
+     VALUES ($1, 'leader-missing-legacy', 'legacy-leader', $2, $2)`,
+    [WS, Date.now()],
+  );
+  await rootSql.unsafe(LEADER_MISSING_MIGRATION);
   // Minimal canonical append-only membership ledger for deleteFleet's teardown
   // test. The production projection trigger/view is not needed here: the test
   // exercises the latest-fact writer directly, which is the source those
@@ -115,6 +135,135 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await db?.cleanup();
+});
+
+describe('leader-missing timestamp and succession (migration 1348)', () => {
+  it('adds a nullable bigint and preserves existing fleets with no absence episode', async () => {
+    const columns = await rootSql.unsafe(
+      `SELECT data_type, is_nullable FROM information_schema.columns
+        WHERE table_schema = 'harness_shared' AND table_name = 'agent_fleets'
+          AND column_name = 'leader_missing_since_ms'`,
+    ) as unknown as Array<{ data_type: string; is_nullable: string }>;
+    expect(columns).toEqual([{ data_type: 'bigint', is_nullable: 'YES' }]);
+    expect((await getFleet(WS, 'leader-missing-legacy', rootSql))?.leaderMissingSinceMs).toBeNull();
+  });
+
+  it('starts once, clears with a matching snapshot, then atomically promotes after the grace', async () => {
+    const { record } = await createFleetIfAbsent(
+      { workspaceId: WS, fleetSlug: 'leader-missing-cas', leaderOwnerId: 'leader-a' },
+      rootSql,
+    );
+    expect(record.leaderMissingSinceMs).toBeNull();
+
+    const firstSeenAt = Math.max(Date.now(), record.updatedAt + 1);
+    const marked = await markFleetLeaderMissingSince({
+      workspaceId: WS,
+      fleetSlug: 'leader-missing-cas',
+      expectedLeaderOwnerId: 'leader-a',
+      expectedUpdatedAtMs: record.updatedAt,
+      observedAtMs: firstSeenAt,
+    }, rootSql);
+    expect(marked?.leaderMissingSinceMs).toBe(firstSeenAt);
+
+    // A later complete absence observation cannot restart the grace clock.
+    const duplicateMark = await markFleetLeaderMissingSince({
+      workspaceId: WS,
+      fleetSlug: 'leader-missing-cas',
+      expectedLeaderOwnerId: 'leader-a',
+      expectedUpdatedAtMs: marked!.updatedAt,
+      observedAtMs: firstSeenAt + 5_000,
+    }, rootSql);
+    expect(duplicateMark).toBeNull();
+    expect((await getFleet(WS, 'leader-missing-cas', rootSql))?.leaderMissingSinceMs).toBe(firstSeenAt);
+
+    const staleClear = await clearFleetLeaderMissingSince({
+      workspaceId: WS,
+      fleetSlug: 'leader-missing-cas',
+      expectedLeaderOwnerId: 'leader-a',
+      expectedLeaderMissingSinceMs: firstSeenAt,
+      expectedUpdatedAtMs: marked!.updatedAt - 1,
+      observedAtMs: marked!.updatedAt + 1,
+    }, rootSql);
+    expect(staleClear).toBeNull();
+    const cleared = await clearFleetLeaderMissingSince({
+      workspaceId: WS,
+      fleetSlug: 'leader-missing-cas',
+      expectedLeaderOwnerId: 'leader-a',
+      expectedLeaderMissingSinceMs: firstSeenAt,
+      expectedUpdatedAtMs: marked!.updatedAt,
+      observedAtMs: marked!.updatedAt + 1,
+    }, rootSql);
+    expect(cleared?.leaderMissingSinceMs).toBeNull();
+
+    const nextFirstSeen = cleared!.updatedAt + 1;
+    const remapped = await markFleetLeaderMissingSince({
+      workspaceId: WS,
+      fleetSlug: 'leader-missing-cas',
+      expectedLeaderOwnerId: 'leader-a',
+      expectedUpdatedAtMs: cleared!.updatedAt,
+      observedAtMs: nextFirstSeen,
+    }, rootSql);
+    expect(remapped?.leaderMissingSinceMs).toBe(nextFirstSeen);
+
+    const promotion = {
+      workspaceId: WS,
+      fleetSlug: 'leader-missing-cas',
+      expectedLeaderOwnerId: 'leader-a',
+      expectedLeaderMissingSinceMs: nextFirstSeen,
+      expectedUpdatedAtMs: remapped!.updatedAt,
+      replacementLeaderOwnerId: 'successor-b',
+      graceMs: LEADER_MISSING_GRACE_MS,
+    };
+    await expect(promoteFleetLeaderIfMissing({
+      ...promotion,
+      nowMs: nextFirstSeen + LEADER_MISSING_GRACE_MS - 1,
+    }, rootSql)).resolves.toBeNull();
+
+    // A registry mutation after the roster snapshot invalidates promotion even
+    // when the leader id and absence clock themselves have not changed.
+    await rootSql.unsafe(
+      `UPDATE harness_shared.agent_fleets
+          SET updated_at = updated_at + 1
+        WHERE workspace_id = $1 AND fleet_slug = $2`,
+      [WS, 'leader-missing-cas'],
+    );
+    await expect(promoteFleetLeaderIfMissing({
+      ...promotion,
+      nowMs: nextFirstSeen + LEADER_MISSING_GRACE_MS,
+    }, rootSql)).resolves.toBeNull();
+    const currentVersion = (await getFleet(WS, 'leader-missing-cas', rootSql))!.updatedAt;
+
+    const results = await Promise.all([
+      promoteFleetLeaderIfMissing({ ...promotion, expectedUpdatedAtMs: currentVersion, nowMs: nextFirstSeen + LEADER_MISSING_GRACE_MS }, rootSql),
+      promoteFleetLeaderIfMissing({ ...promotion, expectedUpdatedAtMs: currentVersion, nowMs: nextFirstSeen + LEADER_MISSING_GRACE_MS }, rootSql),
+    ]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(results.find(Boolean)).toMatchObject({
+      leaderOwnerId: 'successor-b',
+      leaderMissingSinceMs: null,
+    });
+    expect(await getFleet(WS, 'leader-missing-cas', rootSql)).toMatchObject({
+      leaderOwnerId: 'successor-b',
+      leaderMissingSinceMs: null,
+    });
+  });
+
+  it('manual leader changes clear a previously observed absence clock', async () => {
+    const { record } = await createFleetIfAbsent(
+      { workspaceId: WS, fleetSlug: 'leader-missing-manual', leaderOwnerId: 'leader-old' },
+      rootSql,
+    );
+    const marked = await markFleetLeaderMissingSince({
+      workspaceId: WS,
+      fleetSlug: 'leader-missing-manual',
+      expectedLeaderOwnerId: 'leader-old',
+      expectedUpdatedAtMs: record.updatedAt,
+      observedAtMs: Math.max(Date.now(), record.updatedAt + 1),
+    }, rootSql);
+    expect(marked?.leaderMissingSinceMs).not.toBeNull();
+    const changed = await setFleetLeader(WS, 'leader-missing-manual', 'leader-new', rootSql, 'leader-old');
+    expect(changed).toMatchObject({ leaderOwnerId: 'leader-new', leaderMissingSinceMs: null });
+  });
 });
 
 describe('deleteFleet membership retirement', () => {
@@ -776,5 +925,301 @@ describe('fleet headcount target (WI-2479)', () => {
         workspaceId: WS, fleetSlug: 'headcount-legacy-active', now: 12_000_000, sql: rootSql,
       })).toMatchObject({ fleetSlug: 'headcount-legacy-active', target: 1 });
     });
+  });
+});
+
+// P-005 / D-030. An unheld fleet is held off by a visible, attributed rule that
+// EXPIRES. These tests exercise the SQL halves the unit suites mock out: the
+// rule riding the preserved recipe, the expired-rule listing, and the lapse
+// compare-and-set. Each exclusion has a positive control beside it, so a
+// predicate that refused everything could not pass.
+describe('fleet no-top-up rule (P-005 / D-030)', () => {
+  const config = {
+    plan: 'drain', harness: 'papercusp', agent: 'codex' as const,
+    model: 'gpt-5.6-luna', effort: 'max', account: 'default', headless: true,
+    carry: 'warm' as const, contextSize: 'trimmed' as const, compactionLimit: 825_000,
+    role: 'su', brief: 'drain bugs',
+  };
+  const rule = (over: Partial<FleetTopUpRule> = {}): FleetTopUpRule => ({
+    kind: 'target-disabled',
+    ratifiedBy: 'su-leader',
+    ratifiedAt: 1_000,
+    reason: 'plan paused for review',
+    until: 5_000,
+    suspendedTarget: 3,
+    suspendedSupervise: true,
+    ...over,
+  });
+
+  async function insertFleetIn(workspaceId: string, slug: string): Promise<void> {
+    await rootSql.unsafe(
+      `INSERT INTO harness_shared.agent_fleets (workspace_id, fleet_slug, created_at, updated_at)
+       VALUES ($1, $2, $3, $3)`,
+      [workspaceId, slug, Date.now()],
+    );
+  }
+
+  async function readRow(slug: string, workspaceId = WS): Promise<{
+    target: number | null;
+    config: (Record<string, unknown> & { topUpRule?: unknown; supervise?: unknown }) | null;
+  }> {
+    const [row] = await rootSql.unsafe<{ headcount_target: number | null; headcount_config: unknown }[]>(
+      `SELECT headcount_target, headcount_config
+         FROM harness_shared.agent_fleets
+        WHERE workspace_id = $1 AND fleet_slug = $2`,
+      [workspaceId, slug],
+    );
+    const raw = row?.headcount_config;
+    return {
+      target: row?.headcount_target ?? null,
+      config: (typeof raw === 'string' ? JSON.parse(raw) : raw) as never,
+    };
+  }
+
+  it('a disable merges the rule into the preserved recipe; a disable without one strips it', async () => {
+    await insertFleet('topup-merge');
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-merge', target: 3, config: { ...config, supervise: true }, sql: rootSql,
+    });
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-merge', target: null, topUpRule: rule(), sql: rootSql,
+    });
+    const ruled = await readRow('topup-merge');
+    expect(ruled.target).toBeNull();
+    expect(ruled.config).toMatchObject({ ...config, supervise: true, topUpRule: rule() });
+
+    await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: 'topup-merge', target: null, sql: rootSql });
+    const stripped = await readRow('topup-merge');
+    expect(stripped.target).toBeNull();
+    expect(stripped.config).toMatchObject({ ...config, supervise: true });
+    expect(stripped.config).not.toHaveProperty('topUpRule');
+  });
+
+  it('a row with no recipe stays NULL even when a rule is offered', async () => {
+    await insertFleet('topup-no-recipe');
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-no-recipe', target: null, topUpRule: rule(), sql: rootSql,
+    });
+    expect(await readRow('topup-no-recipe')).toEqual({ target: null, config: null });
+  });
+
+  // The readers tolerate a jsonb STRING recipe (`typeof === 'string' ? JSON.parse`),
+  // which hid that this fixture's typed-parameter client stored one: the stored
+  // SHAPE is asserted directly, because readRow's parse would mask a regression.
+  it('every writer stores an object recipe, and a non-object recipe is left untouched', async () => {
+    const storedType = async (slug: string): Promise<string | null> => {
+      const [row] = await rootSql.unsafe<{ t: string | null }[]>(
+        `SELECT jsonb_typeof(headcount_config) AS t FROM harness_shared.agent_fleets
+          WHERE workspace_id = $1 AND fleet_slug = $2`,
+        [WS, slug],
+      );
+      return row?.t ?? null;
+    };
+    await insertFleet('topup-shape');
+    await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: 'topup-shape', target: 2, config, sql: rootSql });
+    expect(await storedType('topup-shape')).toBe('object');
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-shape', target: 2, config, topUpRule: rule(), sql: rootSql,
+    });
+    expect(await storedType('topup-shape')).toBe('object');
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-shape', target: null, topUpRule: rule({ until: 9_000 }), sql: rootSql,
+    });
+    expect(await storedType('topup-shape')).toBe('object');
+    await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: 'topup-shape', target: null, sql: rootSql });
+    expect(await storedType('topup-shape')).toBe('object');
+
+    await insertFleet('topup-scalar');
+    await rootSql.unsafe(
+      `UPDATE harness_shared.agent_fleets SET headcount_config = to_jsonb('legacy'::text)
+        WHERE workspace_id = $1 AND fleet_slug = $2`,
+      [WS, 'topup-scalar'],
+    );
+    await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: 'topup-scalar', target: null, sql: rootSql });
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-scalar', target: null, topUpRule: rule(), sql: rootSql,
+    });
+    expect(await storedType('topup-scalar')).toBe('string');
+    const [scalar] = await rootSql.unsafe<{ v: string | null }[]>(
+      `SELECT headcount_config #>> '{}' AS v FROM harness_shared.agent_fleets
+        WHERE workspace_id = $1 AND fleet_slug = $2`,
+      [WS, 'topup-scalar'],
+    );
+    expect(scalar?.v).toBe('legacy');
+  });
+
+  it('a non-null write strips a stale stored rule unless the write ratifies one', async () => {
+    await insertFleet('topup-rearm');
+    // A recipe read back from the row still carries its old rule; re-arming with
+    // it must not resurrect that rule.
+    const staleRecipe = { ...config, supervise: true, topUpRule: rule() };
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-rearm', target: 4, config: staleRecipe, sql: rootSql,
+    });
+    const rearmed = await readRow('topup-rearm');
+    expect(rearmed.target).toBe(4);
+    expect(rearmed.config).toMatchObject({ ...config, supervise: true });
+    expect(rearmed.config).not.toHaveProperty('topUpRule');
+
+    const revoke = rule({ kind: 'supervise-revoked', suspendedTarget: null, suspendedSupervise: true });
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-rearm', target: 4,
+      config: { ...config, supervise: false }, topUpRule: revoke, sql: rootSql,
+    });
+    const revoked = await readRow('topup-rearm');
+    expect(revoked.target).toBe(4);
+    expect(revoked.config).toMatchObject({ ...config, supervise: false, topUpRule: revoke });
+  });
+
+  it('lists expired rules only, excluding in-force, winding-down and malformed ones', async () => {
+    const ws = 'ws-topup-list';
+    for (const slug of ['expired', 'in-force', 'wound', 'malformed', 'until-text', 'no-rule']) {
+      await insertFleetIn(ws, slug);
+      await setFleetHeadcountTarget({
+        workspaceId: ws, fleetSlug: slug, target: 2, config: { ...config, supervise: true }, sql: rootSql,
+      });
+    }
+    await setFleetHeadcountTarget({ workspaceId: ws, fleetSlug: 'expired', target: null, topUpRule: rule(), sql: rootSql });
+    await setFleetHeadcountTarget({
+      workspaceId: ws, fleetSlug: 'in-force', target: null, topUpRule: rule({ until: 50_000 }), sql: rootSql,
+    });
+    await setFleetHeadcountTarget({ workspaceId: ws, fleetSlug: 'wound', target: null, topUpRule: rule(), sql: rootSql });
+    expect(await setFleetControlState(
+      ws, 'wound', { state: 'winding-down', reason: 'plan shipped', by: 'su-test' }, rootSql,
+    )).toBeTruthy();
+    // Written raw: the typed writer could never store these shapes.
+    await rootSql.unsafe(
+      `UPDATE harness_shared.agent_fleets
+          SET headcount_target = NULL,
+              headcount_config = headcount_config || jsonb_build_object('topUpRule', $3::jsonb)
+        WHERE workspace_id = $1 AND fleet_slug = $2`,
+      [ws, 'malformed', JSON.stringify({ ...rule(), reason: '' })],
+    );
+    await rootSql.unsafe(
+      `UPDATE harness_shared.agent_fleets
+          SET headcount_target = NULL,
+              headcount_config = headcount_config || jsonb_build_object('topUpRule', $3::jsonb)
+        WHERE workspace_id = $1 AND fleet_slug = $2`,
+      [ws, 'until-text', JSON.stringify({ ...rule(), until: '5000' })],
+    );
+
+    // The wound fleet's rule is still stored: its exclusion is control_state, not absence.
+    expect((await readRow('wound', ws)).config).toMatchObject({ topUpRule: rule() });
+
+    const expired = await listExpiredFleetTopUpRules(ws, 10_000, rootSql);
+    expect(expired).toEqual([
+      {
+        workspaceId: ws,
+        fleetSlug: 'expired',
+        rule: rule(),
+        config: expect.objectContaining({ plan: 'drain', supervise: true }),
+      },
+    ]);
+
+    // Positive control: past its own until, the in-force rule lists too; the
+    // wound, malformed and text-until rows stay excluded at every instant.
+    const later = await listExpiredFleetTopUpRules(ws, 100_000, rootSql);
+    expect(later.map((r) => r.fleetSlug).sort()).toEqual(['expired', 'in-force']);
+    // The boundary is inclusive: a rule expires AT its until.
+    expect((await listExpiredFleetTopUpRules(ws, 5_000, rootSql)).map((r) => r.fleetSlug)).toEqual(['expired']);
+    expect(await listExpiredFleetTopUpRules(ws, 4_999, rootSql)).toEqual([]);
+  });
+
+  it('lapse with restore puts back the suspended target and grant of a target-disabled rule', async () => {
+    await insertFleet('topup-lapse-target');
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-lapse-target', target: 3, config: { ...config, supervise: true }, sql: rootSql,
+    });
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-lapse-target', target: null, topUpRule: rule(), sql: rootSql,
+    });
+    expect(await listFleetHeadcountTargets(WS, rootSql)).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ fleetSlug: 'topup-lapse-target' })]),
+    );
+
+    expect(await lapseFleetTopUpRule({
+      workspaceId: WS, fleetSlug: 'topup-lapse-target', expectedUntil: 5_000, restore: true, now: 9_000, sql: rootSql,
+    })).toBe(true);
+    const lapsed = await readRow('topup-lapse-target');
+    expect(lapsed.target).toBe(3);
+    expect(lapsed.config).toMatchObject({ ...config, supervise: true });
+    expect(lapsed.config).not.toHaveProperty('topUpRule');
+    expect(await listFleetHeadcountTargets(WS, rootSql)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ fleetSlug: 'topup-lapse-target', target: 3 })]),
+    );
+    // A second lapse finds no rule and changes nothing.
+    expect(await lapseFleetTopUpRule({
+      workspaceId: WS, fleetSlug: 'topup-lapse-target', expectedUntil: 5_000, restore: true, sql: rootSql,
+    })).toBe(false);
+  });
+
+  it('lapse with restore on a supervise-revoked rule restores only the grant', async () => {
+    await insertFleet('topup-lapse-grant');
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-lapse-grant', target: 2, config: { ...config, supervise: false },
+      topUpRule: rule({ kind: 'supervise-revoked', suspendedTarget: 7, suspendedSupervise: true }), sql: rootSql,
+    });
+    expect(await lapseFleetTopUpRule({
+      workspaceId: WS, fleetSlug: 'topup-lapse-grant', expectedUntil: 5_000, restore: true, sql: rootSql,
+    })).toBe(true);
+    const lapsed = await readRow('topup-lapse-grant');
+    // suspendedTarget is ignored for this kind: the target was never suspended.
+    expect(lapsed.target).toBe(2);
+    expect(lapsed.config).toMatchObject({ ...config, supervise: true });
+    expect(lapsed.config).not.toHaveProperty('topUpRule');
+  });
+
+  it('lapse without restore only clears the rule', async () => {
+    await insertFleet('topup-lapse-clear');
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-lapse-clear', target: 3, config: { ...config, supervise: false }, sql: rootSql,
+    });
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-lapse-clear', target: null, topUpRule: rule(), sql: rootSql,
+    });
+    expect(await lapseFleetTopUpRule({
+      workspaceId: WS, fleetSlug: 'topup-lapse-clear', expectedUntil: 5_000, restore: false, sql: rootSql,
+    })).toBe(true);
+    const cleared = await readRow('topup-lapse-clear');
+    expect(cleared.target).toBeNull();
+    expect(cleared.config).toMatchObject({ ...config, supervise: false });
+    expect(cleared.config).not.toHaveProperty('topUpRule');
+  });
+
+  it('the until compare-and-set loses to a re-ratification, and a winding-down fleet is never lapsed', async () => {
+    await insertFleet('topup-cas');
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-cas', target: 3, config: { ...config, supervise: true }, sql: rootSql,
+    });
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-cas', target: null, topUpRule: rule(), sql: rootSql,
+    });
+    // The leader re-ratifies between the sweep's listing and its lapse.
+    const reRatified = rule({ ratifiedAt: 7_000, until: 80_000 });
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-cas', target: null, topUpRule: reRatified, sql: rootSql,
+    });
+    expect(await lapseFleetTopUpRule({
+      workspaceId: WS, fleetSlug: 'topup-cas', expectedUntil: 5_000, restore: true, sql: rootSql,
+    })).toBe(false);
+    expect(await readRow('topup-cas')).toMatchObject({ target: null, config: { topUpRule: reRatified } });
+    // Positive control: the CURRENT until lapses it.
+    expect(await lapseFleetTopUpRule({
+      workspaceId: WS, fleetSlug: 'topup-cas', expectedUntil: 80_000, restore: true, sql: rootSql,
+    })).toBe(true);
+    expect((await readRow('topup-cas')).target).toBe(3);
+
+    await insertFleet('topup-wound');
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-wound', target: 3, config: { ...config, supervise: true }, sql: rootSql,
+    });
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-wound', target: null, topUpRule: rule(), sql: rootSql,
+    });
+    await setFleetControlState(WS, 'topup-wound', { state: 'winding-down', reason: 'plan shipped', by: 'su-test' }, rootSql);
+    expect(await lapseFleetTopUpRule({
+      workspaceId: WS, fleetSlug: 'topup-wound', expectedUntil: 5_000, restore: true, sql: rootSql,
+    })).toBe(false);
+    expect(await readRow('topup-wound')).toMatchObject({ target: null, config: { topUpRule: rule() } });
   });
 });

@@ -31,6 +31,18 @@ describe('datatype display contract', () => {
     expect(parseDatatypeDisplay({ widget: 'text', summary: '{{ owner[' }).ok).toBe(false);
   });
 
+  it('extends the existing list editor with opt-in ordering and selection metadata', () => {
+    expect(parseDatatypeDisplay({ widget: 'list', params: {
+      itemDatatype: 'plan-ref', order: 'priority', selectable: true, defaultSelected: true,
+    }, summary: '{{length}} plans' }).ok).toBe(true);
+    expect(parseDatatypeDisplay({ widget: 'list', params: {
+      itemDatatype: 'string', order: 'display', selectable: true, defaultSelected: false,
+    }, summary: '{{length}} choices' }).ok).toBe(true);
+    for (const params of [{ order: 'random' }, { selectable: 'yes' }, { defaultSelected: 1 }, { execute: 'code' }]) {
+      expect(parseDatatypeDisplay({ widget: 'list', params, summary: '{{length}}' }).ok).toBe(false);
+    }
+  });
+
   it('has one ref-kind registry and serializes plan refs in D-004 qualified form', () => {
     expect(DATATYPE_REF_PICKER_REGISTRY.plan.searchTool).toBe('plans:list');
     expect(DATATYPE_REF_PICKER_REGISTRY.goal.searchTool).toBe('goals:list');

@@ -8,6 +8,7 @@ import {
   mergeRosterEntries,
   pendingLaunchesToRosterEntries,
   startingLaunchesToRosterEntries,
+  readStartingLaunchLogHints,
   dedupeStartingAgainstActive,
   dedupeEndedAgainstActive,
   shouldProbePid,
@@ -597,7 +598,7 @@ describe('startingLaunchesToRosterEntries (WI-6376 — terminal launch boot wind
     expect(e.intent).toBe('starting up');
   });
 
-  it('marks a live headless launch parked at the weekly-limit dialog as BLOCKED, not failed', () => {
+  it('marks a live headless launch parked at the weekly-limit dialog as BLOCKED, not failed', async () => {
     const root = mkdtempSync(join(tmpdir(), 'adv-roster-headless-'));
     try {
       const log = join(root, '.papercusp', 'fleet-logs', 'claude-headless-123-456.log');
@@ -606,18 +607,20 @@ describe('startingLaunchesToRosterEntries (WI-6376 — terminal launch boot wind
         log,
         "\x1b[38;2;255;107;128mYou've hit your weekly limit \u00b7 resets 7am (America/New_York)\r\x1b[39m",
       );
+      const rows = [
+        adv({
+          id: 96,
+          display: 'terminal',
+          coordOwnerId: 'su-blocked',
+          terminalBin: `headless (log: ${log})`,
+          sessionId: '8cda4456-bc7d-4131-a764-f339a50680ac',
+          endedAt: null,
+        }),
+      ];
       const [e] = startingLaunchesToRosterEntries(
-        [
-          adv({
-            id: 96,
-            display: 'terminal',
-            coordOwnerId: 'su-blocked',
-            terminalBin: `headless (log: ${log})`,
-            sessionId: '8cda4456-bc7d-4131-a764-f339a50680ac',
-            endedAt: null,
-          }),
-        ],
+        rows,
         'box-1',
+        await readStartingLaunchLogHints(rows),
       );
       expect(e.launchBlocked).toBe(true);
       expect(e.launchFailed).toBe(false);
@@ -629,22 +632,67 @@ describe('startingLaunchesToRosterEntries (WI-6376 — terminal launch boot wind
     }
   });
 
-  it('does not call an ordinary live headless boot blocked merely because it has a log', () => {
+  it('does not call an ordinary live headless boot blocked merely because it has a log', async () => {
     const root = mkdtempSync(join(tmpdir(), 'adv-roster-headless-'));
     try {
       const log = join(root, '.papercusp', 'fleet-logs', 'claude-headless-123-789.log');
       mkdirSync(dirname(log), { recursive: true });
       writeFileSync(log, 'Claude Code booting\nMCP connected\n');
-      const [e] = startingLaunchesToRosterEntries(
-        [adv({ id: 97, display: 'terminal', terminalBin: `headless (log: ${log})` })],
-        'box-1',
-      );
+      const rows = [adv({ id: 97, display: 'terminal', terminalBin: `headless (log: ${log})` })];
+      const hints = await readStartingLaunchLogHints(rows);
+      expect(hints.get(97)).toEqual({ blockedHint: null, failureHint: null });
+      const [e] = startingLaunchesToRosterEntries(rows, 'box-1', hints);
       expect(e.launchBlocked).toBe(false);
       expect(e.launchBlockedHint).toBeNull();
       expect(e.intent).toBe('starting up');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  // EI-24748208098755918: this mapper runs on every roster poll on the operator's
+  // main thread. It used to readSync each starting launch's log, and a profile
+  // charged 790 ms of one 3 s window to that read. The mapper must stay PURE:
+  // given no hints it reports no hint, even when a blocking log sits on disk.
+  it('does no file I/O itself: a blocking log on disk is ignored unless hints were read first', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'adv-roster-headless-'));
+    try {
+      const log = join(root, '.papercusp', 'fleet-logs', 'claude-headless-123-999.log');
+      mkdirSync(dirname(log), { recursive: true });
+      writeFileSync(log, "You've hit your weekly limit · resets 7am\n");
+      const rows = [adv({ id: 98, display: 'terminal', terminalBin: `headless (log: ${log})` })];
+
+      const [pure] = startingLaunchesToRosterEntries(rows, 'box-1');
+      expect(pure.launchBlocked).toBe(false);
+      expect(pure.launchBlockedHint).toBeNull();
+
+      // Positive control: the same row IS blocked once the async reader ran, so
+      // the assertion above is about where the read happens, not a dead log.
+      const [read] = startingLaunchesToRosterEntries(
+        rows,
+        'box-1',
+        await readStartingLaunchLogHints(rows),
+      );
+      expect(read.launchBlocked).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('hint reader never rejects and never reads a log for a FAILED launch as a block', async () => {
+    const failed = adv({
+      id: 99,
+      display: 'terminal',
+      coordOwnerId: 'su-not-a-real-owner-for-this-test',
+      terminalBin: 'headless (log: /nonexistent/.papercusp/fleet-logs/x.log)',
+      endedAt: '2026-08-02T02:25:11.000Z',
+      sessionId: null,
+    });
+    const hints = await readStartingLaunchLogHints([failed]);
+    expect(hints.get(99)?.blockedHint).toBeNull();
+    const [e] = startingLaunchesToRosterEntries([failed], 'box-1', hints);
+    expect(e.launchFailed).toBe(true);
+    expect(e.launchBlocked).toBe(false);
   });
 
   // A session that booted and later ended is an ORDINARY end. Calling that a

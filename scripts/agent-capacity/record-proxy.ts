@@ -36,6 +36,8 @@ export interface RequestFingerprint {
   /** `messages.length` (Anthropic) or `input.length` (OpenAI Responses); null if neither. */
   messages: number | null;
   tools: number | null;
+  /** Redacted input tool-output metadata; output contents are never persisted. */
+  inputToolOutputs?: InputToolOutputSummary;
   /**
    * Exec-session ids the CLI reported as still running in this request's tool outputs, with
    * the `call_id` each output answers (OpenAI Responses only; omitted when there are none).
@@ -50,6 +52,69 @@ export interface RequestFingerprint {
 export interface ExecSessionReport {
   callId: string;
   id: string;
+}
+
+/** Safe metadata for one tool result in an API request body. */
+export interface InputToolOutputItem {
+  type: string;
+  callId: string | null;
+  /** UTF-8 bytes of the output value (or JSON serialization for non-string values). */
+  outputBytes: number | null;
+}
+
+/** Bounded request summary: never includes a tool's returned text or structured data. */
+export interface InputToolOutputSummary {
+  count: number;
+  omitted: number;
+  items: InputToolOutputItem[];
+}
+
+const MAX_INPUT_TOOL_OUTPUT_ITEMS = 64;
+
+function outputByteLength(value: unknown): number | null {
+  if (value === undefined) return null;
+  const serialized = typeof value === 'string' ? value : JSON.stringify(value);
+  return serialized === undefined ? null : Buffer.byteLength(serialized, 'utf8');
+}
+
+/**
+ * Describe tool outputs in the request without retaining their contents. OpenAI Responses
+ * outputs are top-level `input[]` items; Anthropic tool results are blocks in user messages.
+ */
+function summarizeInputToolOutputs(j: Record<string, unknown>): InputToolOutputSummary | undefined {
+  const items: InputToolOutputItem[] = [];
+  if (Array.isArray(j.input)) {
+    for (const raw of j.input) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+      const item = raw as Record<string, unknown>;
+      if (typeof item.type !== 'string' || !item.type.endsWith('_output')) continue;
+      items.push({
+        type: item.type,
+        callId: typeof item.call_id === 'string' ? item.call_id : null,
+        outputBytes: outputByteLength(item.output),
+      });
+    }
+  } else if (Array.isArray(j.messages)) {
+    for (const rawMessage of j.messages) {
+      if (!rawMessage || typeof rawMessage !== 'object' || Array.isArray(rawMessage)) continue;
+      const message = rawMessage as Record<string, unknown>;
+      if (message.role !== 'user' || !Array.isArray(message.content)) continue;
+      for (const rawBlock of message.content) {
+        if (!rawBlock || typeof rawBlock !== 'object' || Array.isArray(rawBlock)) continue;
+        const block = rawBlock as Record<string, unknown>;
+        if (block.type !== 'tool_result') continue;
+        items.push({
+          type: 'tool_result',
+          callId: typeof block.tool_use_id === 'string' ? block.tool_use_id : null,
+          outputBytes: outputByteLength(block.content),
+        });
+      }
+    }
+  } else {
+    return undefined;
+  }
+  const retained = items.slice(0, MAX_INPUT_TOOL_OUTPUT_ITEMS);
+  return { count: items.length, omitted: items.length - retained.length, items: retained };
 }
 
 // The CLI's own report of a still-running process: an unescaped JSON `"session_id": <n>`
@@ -140,6 +205,8 @@ export function fingerprintRequest(body: Buffer): RequestFingerprint {
       const execSessions = reportedExecSessions(j.input);
       if (execSessions.length > 0) fp.execSessions = execSessions;
     }
+    const inputToolOutputs = summarizeInputToolOutputs(j);
+    if (inputToolOutputs) fp.inputToolOutputs = inputToolOutputs;
     if (Array.isArray(j.tools)) fp.tools = j.tools.length;
   } catch {
     // Non-JSON body: bytes + sha256 are still a usable fingerprint.

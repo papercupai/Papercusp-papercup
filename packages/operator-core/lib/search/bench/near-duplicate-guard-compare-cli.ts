@@ -21,9 +21,18 @@
  * filing was created (the guard screens against open items only).
  *
  * POOL (per filing, reconstructed as the guard would have seen it at creation):
- * same workspace + harness + embedding mode, created before the filing, not in
- * a terminal status by then (closed_ts, falling back to updated_ts). Like the
- * guard, the pool is NOT filtered by lane, so open observation rows are in it.
+ * same workspace + harness + embedding mode, created before the filing, and not
+ * in a terminal status by then (closed_ts, falling back to updated_ts).
+ * Two arms are read from that ONE pool in one SQL statement per filing, so the
+ * guard's before/after comparison uses the same labelled sample and the same
+ * live database snapshot per pair:
+ *  - current: the shipped guard, which excludes observation-lane rows before
+ *    top-k (WI-10004338). Every approach (current, library, hybrid) runs here.
+ *  - previous: the same pool WITHOUT the observation filter, i.e. the guard as
+ *    it ran before WI-10004338. Only the current guard is scored on it.
+ * The observation filter must be applied per arm, never in the shared pool CTE:
+ * filtering the pool made both arms identical and the run reported a vacuous
+ * delta of 0 (WI-10005217). pairedArmDivergence() now refuses such a run.
  * Cosines are exact (no ANN index), over the vectors stored today.
  */
 import { execFileSync } from 'node:child_process';
@@ -32,12 +41,14 @@ import { dirname } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { dupeThresholds } from '../../agent-tools/work_items/semantic-dupe-guard';
 import { ALL_TERMINAL_STATUSES } from '../../work-item-blocking';
+import { observationLaneExclusionSql } from '../../work-items';
 import {
   classifyWithCurrentGuard,
   classifyWithHybrid,
   classifyWithLibrary,
   GUARD_CANDIDATE_LIMIT,
   HYBRID_TITLE_FLOOR,
+  pairedArmDivergence,
   summarizeComparison,
   type FilingObservation,
   type PairLabel,
@@ -149,23 +160,34 @@ async function selectPairs(perStratum: number, unlabelled: number): Promise<Pair
   return out;
 }
 
-async function observe(row: PairRow): Promise<FilingObservation | null> {
+interface PairedPoolObservation {
+  /** Historical behavior: observations were allowed into the top-k candidate pool. */
+  previous: FilingObservation;
+  /** Current behavior: D-005 excludes observation-lane candidates before top-k. */
+  current: FilingObservation;
+}
+
+async function observe(row: PairRow): Promise<PairedPoolObservation | null> {
   const { sql } = getOrgPg();
   const terminal = [...ALL_TERMINAL_STATUSES];
   const partner = row.partner_id ?? '';
   const [r] = await sql<Array<{
     found: boolean;
     pool_size: number;
+    previous_pool_size: number;
     top: Array<{ id: string; title: string; cosine: number; titleSimilarity: number }>;
+    previous_top: Array<{ id: string; title: string; cosine: number; titleSimilarity: number }>;
     background: number[];
     partner: { cosine: number; titleSimilarity: number; rank: number } | null;
+    previous_partner: { cosine: number; titleSimilarity: number; rank: number } | null;
   }>>`
     WITH f AS (
       SELECT feature_id, harness_slug, COALESCE(title, '') AS title, created_ts, embedding, embedding_mode
         FROM harness_shared.work_items
        WHERE workspace_id = ${WORKSPACE} AND feature_id = ${row.filing_id} AND embedding IS NOT NULL
     ), pool AS MATERIALIZED (
-      SELECT p.feature_id, COALESCE(p.title, '') AS title, 1 - (p.embedding <=> f.embedding) AS cosine
+      SELECT p.feature_id, COALESCE(p.title, '') AS title, p.lane,
+             1 - (p.embedding <=> f.embedding) AS cosine
         FROM harness_shared.work_items p, f
        WHERE p.workspace_id = ${WORKSPACE}
          AND p.harness_slug = f.harness_slug
@@ -173,34 +195,63 @@ async function observe(row: PairRow): Promise<FilingObservation | null> {
          AND p.embedding_mode = f.embedding_mode
          AND p.feature_id <> f.feature_id
          AND p.created_ts < f.created_ts
+         -- NO lane filter here: the previous arm reads this pool unfiltered, and the
+         -- current arm applies observationLaneExclusionSql itself (WI-10005217).
          AND NOT (COALESCE(p.status, '') = ANY(${terminal}::text[])
                   AND COALESCE(p.closed_ts, p.updated_ts) <= f.created_ts)
     ), top AS (
+      SELECT feature_id, title, cosine FROM pool p
+       WHERE ${observationLaneExclusionSql(sql, 'payload')}
+       ORDER BY cosine DESC, feature_id LIMIT ${GUARD_CANDIDATE_LIMIT}
+    ), previous_top AS (
       SELECT feature_id, title, cosine FROM pool ORDER BY cosine DESC, feature_id LIMIT ${GUARD_CANDIDATE_LIMIT}
     )
     SELECT EXISTS (SELECT 1 FROM f) AS found,
-           (SELECT count(*) FROM pool)::int AS pool_size,
+           (SELECT count(*) FROM pool p WHERE ${observationLaneExclusionSql(sql, 'payload')})::int AS pool_size,
+           (SELECT count(*) FROM pool)::int AS previous_pool_size,
            (SELECT COALESCE(json_agg(json_build_object(
                      'id', t.feature_id, 'title', t.title, 'cosine', t.cosine,
                      'titleSimilarity', similarity(t.title, (SELECT title FROM f)))
                    ORDER BY t.cosine DESC, t.feature_id), '[]'::json) FROM top t) AS top,
+           (SELECT COALESCE(json_agg(json_build_object(
+                     'id', t.feature_id, 'title', t.title, 'cosine', t.cosine,
+                     'titleSimilarity', similarity(t.title, (SELECT title FROM f)))
+                   ORDER BY t.cosine DESC, t.feature_id), '[]'::json) FROM previous_top t) AS previous_top,
            (SELECT COALESCE(json_agg(b.cosine), '[]'::json) FROM (
-              SELECT cosine FROM pool WHERE feature_id NOT IN (SELECT feature_id FROM top)
+              SELECT cosine FROM pool p
+               WHERE ${observationLaneExclusionSql(sql, 'payload')}
+                 AND feature_id NOT IN (SELECT feature_id FROM top)
                ORDER BY md5(feature_id || ':' || ${row.filing_id}) LIMIT ${DEFAULT_BACKGROUND_SAMPLE_LIMIT}) b) AS background,
            (SELECT json_build_object(
                      'cosine', pp.cosine,
                      'titleSimilarity', similarity(pp.title, (SELECT title FROM f)),
+                     'rank', 1 + (SELECT count(*) FROM pool q WHERE ${observationLaneExclusionSql(sql, 'payload')} AND q.cosine > pp.cosine))
+              FROM pool pp WHERE ${observationLaneExclusionSql(sql, 'payload')} AND pp.feature_id = ${partner}) AS partner,
+           (SELECT json_build_object(
+                     'cosine', pp.cosine,
+                     'titleSimilarity', similarity(pp.title, (SELECT title FROM f)),
                      'rank', 1 + (SELECT count(*) FROM pool q WHERE q.cosine > pp.cosine))
-              FROM pool pp WHERE pp.feature_id = ${partner}) AS partner`;
+              FROM pool pp WHERE pp.feature_id = ${partner}) AS previous_partner`;
   if (!r || !r.found) return null;
   return {
-    filingId: row.filing_id,
-    partnerId: row.partner_id,
-    label: row.label,
-    poolSize: r.pool_size,
-    top: r.top,
-    background: r.background,
-    partner: r.partner,
+    current: {
+      filingId: row.filing_id,
+      partnerId: row.partner_id,
+      label: row.label,
+      poolSize: r.pool_size,
+      top: r.top,
+      background: r.background,
+      partner: r.partner,
+    },
+    previous: {
+      filingId: row.filing_id,
+      partnerId: row.partner_id,
+      label: row.label,
+      poolSize: r.previous_pool_size,
+      top: r.previous_top,
+      background: [],
+      partner: r.previous_partner,
+    },
   };
 }
 
@@ -225,20 +276,35 @@ async function main(): Promise<void> {
   const pairs = await selectPairs(perStratum, unlabelled);
   const thresholds = dupeThresholds();
   const scored: ScoredObservation[] = [];
+  const previousPoolScored: ScoredObservation[] = [];
+  const pairedObservations: PairedPoolObservation[] = [];
   const skipped: Array<{ filingId: string; reason: string }> = [];
   for (const [i, row] of pairs.entries()) {
-    const o = await observe(row);
-    if (!o) {
+    const paired = await observe(row);
+    if (!paired) {
       skipped.push({ filingId: row.filing_id, reason: 'filing-not-found-or-unembedded' });
       continue;
     }
-    const current = await classifyWithCurrentGuard(o, row.filing_title, HARNESS);
-    const library = await classifyWithLibrary(o);
-    const hybrid = classifyWithHybrid(o, library, thresholds.hard);
-    scored.push({ obs: o, verdicts: { current, library, hybrid } });
+    pairedObservations.push(paired);
+    const current = await classifyWithCurrentGuard(paired.current, row.filing_title, HARNESS);
+    const previousCurrent = await classifyWithCurrentGuard(paired.previous, row.filing_title, HARNESS);
+    const library = await classifyWithLibrary(paired.current);
+    const hybrid = classifyWithHybrid(paired.current, library, thresholds.hard);
+    scored.push({ obs: paired.current, verdicts: { current, library, hybrid } });
+    previousPoolScored.push({
+      obs: paired.previous,
+      verdicts: {
+        current: previousCurrent,
+        library: { flagged: [], noVerdict: true },
+        hybrid: { flagged: [], noVerdict: true },
+      },
+    });
     if ((i + 1) % 50 === 0) console.error(`R8_PROGRESS ${i + 1}/${pairs.length} ${Math.round((Date.now() - started) / 1000)}s`);
   }
+  const divergence = pairedArmDivergence(pairedObservations);
   const summary = summarizeComparison(scored);
+  const previousPoolCurrent = summarizeComparison(previousPoolScored).find((s) => s.approach === 'current')!;
+  const currentSummary = summary.find((s) => s.approach === 'current')!;
   const libCuts = scored.map((s) => s.verdicts.library.cut).filter((c): c is number => c !== undefined).sort((a, b) => a - b);
   const pct = (q: number) => (libCuts.length ? round(libCuts[Math.min(libCuts.length - 1, Math.floor(q * libCuts.length))]!) : null);
   const result = {
@@ -253,6 +319,7 @@ async function main(): Promise<void> {
       guard: { path: 'packages/operator-core/lib/agent-tools/work_items/semantic-dupe-guard.ts', blob: gitBlob('packages/operator-core/lib/agent-tools/work_items/semantic-dupe-guard.ts') },
       library: { path: 'libs/generic/search/src/near-duplicate.ts', blob: gitBlob('libs/generic/search/src/near-duplicate.ts') },
       comparison: { path: 'packages/operator-core/lib/search/bench/near-duplicate-guard-compare.ts', blob: gitBlob('packages/operator-core/lib/search/bench/near-duplicate-guard-compare.ts') },
+      cli: { path: 'packages/operator-core/lib/search/bench/near-duplicate-guard-compare-cli.ts', blob: gitBlob('packages/operator-core/lib/search/bench/near-duplicate-guard-compare-cli.ts') },
     },
     approaches: {
       current: `production semantic-dupe-guard, run through findSemanticDupes with the historical top-${GUARD_CANDIDATE_LIMIT}: refuse when cosine >= ${thresholds.hard} or (cosine >= 0.86 and pg_trgm title similarity >= 0.45)`,
@@ -268,7 +335,7 @@ async function main(): Promise<void> {
       'Labels are the admission promoter\'s model adjudications (dedup_adjudications), not human judgments; its candidate pairs were pre-selected by cosine >= 0.85, a shared title key or a shared condition key, so the labelled population over-represents high-cosine pairs for BOTH approaches.',
       'Vectors are the ones stored today (title + first 2000 chars of body); the guard embeds title + summary at create time, and some rows may have been re-embedded since filing.',
       'Openness at filing time uses closed_ts, falling back to updated_ts for terminal rows without closed_ts; a reopened item is treated by its current status.',
-      'Like the guard, the pool includes open observation-lane rows.',
+      'Observation-lane rows are excluded from the candidate pool per D-005; NULL lane values remain eligible.',
     ],
     counts: { pairsSelected: pairs.length, pairsObserved: scored.length, filingsObserved: new Set(scored.map((s) => s.obs.filingId)).size, skipped },
     libraryCut: { calibrated: libCuts.length, p05: pct(0.05), p50: pct(0.5), p95: pct(0.95) },
@@ -276,12 +343,28 @@ async function main(): Promise<void> {
       const sizes = scored.map((s) => s.obs.poolSize).sort((a, b) => a - b);
       return sizes.length ? { min: sizes[0], p50: sizes[Math.floor(sizes.length / 2)], max: sizes[sizes.length - 1] } : null;
     })(),
+    candidatePoolFilterComparison: {
+      method: 'paired current/unfiltered candidate pools read from the same SQL statement for every filing',
+      pairs: pairs.length,
+      divergence,
+      previousUnfiltered: previousPoolCurrent,
+      currentObservationExcluded: currentSummary,
+      delta: {
+        missedDuplicates: currentSummary.missedDuplicates - previousPoolCurrent.missedDuplicates,
+        falseMerges: currentSummary.falseMerges - previousPoolCurrent.falseMerges,
+      },
+    },
     summary,
-    rows: scored.map(({ obs, verdicts }) => ({
+    rows: scored.map(({ obs, verdicts }, i) => ({
       filing: obs.filingId,
       partner: obs.partnerId,
       label: obs.label,
       poolSize: obs.poolSize,
+      previous: {
+        poolSize: previousPoolScored[i]!.obs.poolSize,
+        top: previousPoolScored[i]!.obs.top.map((n) => n.id),
+        flaggedCurrent: previousPoolScored[i]!.verdicts.current.noVerdict ? null : previousPoolScored[i]!.verdicts.current.flagged,
+      },
       partnerCosine: obs.partner ? round(obs.partner.cosine) : null,
       partnerTitleSimilarity: obs.partner ? round(obs.partner.titleSimilarity) : null,
       partnerRank: obs.partner?.rank ?? null,
@@ -295,6 +378,16 @@ async function main(): Promise<void> {
     })),
     elapsedMs: Date.now() - started,
   };
+  if (divergence.vacuous) {
+    // WI-10005217: identical arms mean the observation filter leaked into the shared
+    // pool (or the corpus has no observation rows at all). Either way the paired
+    // delta is not a measurement, so refuse rather than publish "0 regressions".
+    console.error(
+      `R8_VACUOUS_PAIRED_COMPARISON ${JSON.stringify(divergence)} — the previous and current arms saw identical pools for every filing; nothing was written to ${out}`,
+    );
+    process.exitCode = 2;
+    return;
+  }
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, `${JSON.stringify(result, null, 2)}\n`);
   console.log(

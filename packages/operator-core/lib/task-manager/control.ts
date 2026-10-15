@@ -25,6 +25,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { linuxProcStateFromStat, readProcessGroupId, readProcessIdentity } from '../process-identity';
 import { absCgroupDir, nodeCgroupFs, walkCgroupTree, type CgroupFs } from './cgroup-read';
+import { reportFreezeDeadlines, type InnerTimeoutHint, type LedgerDeadline } from './freeze-deadline';
 import { notifyTaskKillRequested } from './kill-notify';
 import { closeTask, getSubtree, getTask, reopenStrandedTask, updateTaskLimits } from './store';
 import { isLiveOwnedState, taskIdFromScopeUnit, type TaskRow } from './types';
@@ -51,7 +52,17 @@ function execFileAsync(file: string, args: string[], opts?: Record<string, unkno
 }
 
 export type ControlOutcome =
-  | { ok: true; taskId: string; action: string; detail?: string }
+  | {
+      ok: true;
+      taskId: string;
+      action: string;
+      detail?: string;
+      /** freeze/thaw only (EI-24796665684871321): wall-clock deadlines the task carries — the
+       *  freezer stops CPU, never the clock, so a deadline keeps burning while frozen. */
+      deadline?: LedgerDeadline | null;
+      innerTimeouts?: InnerTimeoutHint[];
+      warnings?: string[];
+    }
   | { ok: false; taskId: string; action: string; error: ControlError; detail?: string };
 
 export type ControlError =
@@ -280,6 +291,35 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
   const row = await getTask(taskId);
   if (!row) return { ok: false, taskId, action: 'kill', error: 'task_not_found' };
 
+  // A parent scope can already be empty while an API-launched child owns a
+  // separate service. Reap the logical descendants before accepting an empty
+  // terminal parent as cleanup proof. Ordinary terminal-row calls still refuse.
+  if (opts.includeSubtree && (isLiveOwnedState(row.state) || opts.reapTerminalResidue)) {
+    const tree = await getSubtree(row.rootTaskId);
+    const subtreeIds = new Set([taskId]);
+    let expanded = true;
+    while (expanded) {
+      expanded = false;
+      for (const task of tree) {
+        if (task.parentTaskId && subtreeIds.has(task.parentTaskId) && !subtreeIds.has(task.taskId)) {
+          subtreeIds.add(task.taskId);
+          expanded = true;
+        }
+      }
+    }
+    const descendants = tree.filter(t => t.taskId !== taskId && subtreeIds.has(t.taskId) &&
+      (isLiveOwnedState(t.state) || opts.reapTerminalResidue));
+    for (const child of descendants) {
+      const result = await killTask(child.taskId, { ...opts, includeSubtree: false });
+      const verifiedGone = !result.ok && (result.error === 'already_gone' || (result.error === 'not_live' &&
+        result.detail?.includes('holds no live process right now; nothing to reap')));
+      if (!result.ok && !verifiedGone) {
+        return { ok: false, taskId, action: 'kill', error: 'incomplete',
+          detail: `Descendant cleanup failed for ${child.taskId}: ${result.error}: ${result.detail ?? ''}` };
+      }
+    }
+  }
+
   // Terminal row: refused by default (D-010 — residue is report-only unless a
   // caller explicitly asks to reap it AND we can positively re-verify it's real).
   let reapingResidue = false;
@@ -318,30 +358,6 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
   }
 
   const signal = opts.signal ?? 'SIGTERM';
-
-  if (opts.includeSubtree) {
-    const tree = await getSubtree(row.rootTaskId);
-    // The ledger read returns the WHOLE root tree. A nested task owns only
-    // its descendants, never its ancestors or sibling scopes.
-    const subtreeIds = new Set([taskId]);
-    let expanded = true;
-    while (expanded) {
-      expanded = false;
-      for (const task of tree) {
-        if (task.parentTaskId && subtreeIds.has(task.parentTaskId) && !subtreeIds.has(task.taskId)) {
-          subtreeIds.add(task.taskId);
-          expanded = true;
-        }
-      }
-    }
-    const descendants = tree.filter(
-      (t) => t.taskId !== taskId && subtreeIds.has(t.taskId)
-        && (isLiveOwnedState(t.state) || opts.reapTerminalResidue),
-    );
-    for (const t of descendants) {
-      await killTask(t.taskId, { ...opts, includeSubtree: false });
-    }
-  }
 
   // ── the trustworthy path ────────────────────────────────────────────────
   if (row.confined && row.scopeUnit) {
@@ -514,8 +530,10 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
  * a ledger row. The scope unit is validated, systemd supplies the authoritative
  * cgroup path, and the cgroup is positively non-empty before signalling. A
  * bounded deep re-probe is required before success, matching `killTask`'s
- * no-false-green contract. Automatic reconciliation remains report-only; this
- * path exists only for an explicit operator `processes:kill { scopeUnit }`.
+ * no-false-green contract. Both explicit `processes:kill { scopeUnit }` calls
+ * and trusted lifecycle-verdict enforcement use this primitive. The lifecycle
+ * enforcer records a durable audit intent before signalling; this function does
+ * not invent or mutate a task-ledger row.
  */
 export async function killScopeUnit(
   scopeUnit: string,
@@ -889,9 +907,21 @@ async function setFrozen(taskId: string, frozen: boolean, opts: ControlDeps): Pr
     };
   }
   const res = await systemctl([action, row.scopeUnit], d);
-  return res.ok
-    ? { ok: true, taskId, action, detail: `scope ${row.scopeUnit} ${frozen ? 'frozen' : 'thawed'}` }
-    : { ok: false, taskId, action, error: 'command_failed', detail: res.detail };
+  if (!res.ok) return { ok: false, taskId, action, error: 'command_failed', detail: res.detail };
+  // The freezer stops CPU, not the clock: report every wall-clock deadline the task carries so
+  // the caller can see a freeze that will trip it on thaw (EI-24796665684871321). Warn, never
+  // refuse — freeze is pressure relief and a deadline-bearing task is still better frozen than
+  // thrashing; what was missing was the information to choose.
+  const report = reportFreezeDeadlines(row, d.now(), action);
+  return {
+    ok: true,
+    taskId,
+    action,
+    detail: `scope ${row.scopeUnit} ${frozen ? 'frozen' : 'thawed'}`,
+    ...(report.ledgerDeadline ? { deadline: report.ledgerDeadline } : {}),
+    ...(report.innerTimeouts.length > 0 ? { innerTimeouts: report.innerTimeouts } : {}),
+    ...(report.warnings.length > 0 ? { warnings: report.warnings } : {}),
+  };
 }
 
 export interface LimitInput {

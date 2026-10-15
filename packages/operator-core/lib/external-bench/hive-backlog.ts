@@ -90,9 +90,9 @@ export interface FleetTaskResult {
  * unaffected; the su-independent driver fills it from its pool-occupancy counter.
  */
 export interface ConcurrencyTimeline {
-  /** One sample per cadence tick: `tMs` = ms since the run started, `live` = concurrent agents then. */
+  /** Cadence samples or lifecycle transitions: `tMs` = ms since the run started, `live` = concurrency then. */
   samples: { tMs: number; live: number }[];
-  /** Mean of `samples[].live` (0 when no samples) — the average concurrency the run actually sustained. */
+  /** Cadence samplers use the sample mean; complete lifecycle intervals use a time-weighted mean. */
   avgConcurrent: number;
   /** Max of `samples[].live` (0 when no samples) — the sampled peak (≈ `peakConcurrentBees`). */
   peakConcurrent: number;

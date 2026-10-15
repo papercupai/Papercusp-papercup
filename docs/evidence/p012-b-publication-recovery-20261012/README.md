@@ -1,0 +1,13 @@
+Original P-012 B r70 verification output recovered from the faithful transcript store.
+
+The stored tool result at codex session `01a11bed-cfb3-7220-a6cb-d2fff983ab17`, part 219, contains the original verifier's JSON line. Its paired source is part 218. The command returned exit 0 after checking publication acceptance, trusted scan, recomputed manifest identity and clean-account lifecycle conditions. `verification.json` preserves that line and its hashes; `verifier-source.txt` preserves the original guard source.
+
+This is a historical verification summary, not the missing full `publish.B-contained.json`. Recovery did not contact AWS, republish an AMI or change a controller pin. The original JSON's disappearance and retention guard remain unresolved under EI-25740161578224454. Preserve A/r69, B/r70, host-f and its volume, shared CMK grants, private inputs and peer R12.
+
+On October 12 at 21:29:58Z, a separate read-only STS/GetParameter command recovered the publisher's existing SSM version manifest at `/papercusp/workspace-host/ami/manifests/0.0.21-p012r70`. `ssm-current-read.json` preserves that command's original JSON output; `ssm-current-validation.json` records the corrected comparison of its prefixed identity values. The stored and recomputed identities both equal `sha256:73420c6303698a4b33a0670b942b295d451142d68a6a7f0a2d34ff6304a23402`, matching the historical verifier. The parameter is version 1, last modified October 8, and its raw value SHA-256 is `1528524fb712b7edd4e6f5a1865758b10e5079cce37c6a9ee601330600e8e106`.
+
+This is a current read of retained publisher evidence. It does not recreate the original CLI publication envelope, identify the deletion mechanism, or prove controller adoption or final canary shipment. The original missing-receipt bug remains open.
+
+The October 8 host Kopia snapshot `c9928d4f16a0fd1d120360da8963ce38` also retains the original Codex transcript. Its 5,524,513 bytes hash to `89834d7dda12524abc038e06a2c749e0d2d5585298cb95b7e5d7d171562f36aa`. The exact file object and original call provenance are recorded in `backup-transcript-proof.json`.
+
+`original-publication-view.txt` preserves the original October 8 jq output recovered from that transcript. It still contains the original truncation warning: 21,069 tokens were reduced to a partial view. The saved view SHA-256 is `e239ee787e5a989f5e9e38790bf471a1ff2331a3cb1cc08d1bf99139afeface9`. This recovers original historical evidence, including its omissions; it does not recover the full CLI file or justify filling in its missing fields. The later October 9 snapshot does not contain the exact transcript filename in its checked directory.

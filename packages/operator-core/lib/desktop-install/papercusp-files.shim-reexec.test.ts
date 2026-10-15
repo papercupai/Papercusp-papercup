@@ -119,15 +119,22 @@ describe('psu shim re-exec loop (WI-38292)', () => {
         "const counter = process.env.RUN_LOG + '.n';",
         "let n = 0; try { n = Number(readFileSync(counter, 'utf8')); } catch {}",
         'n += 1; writeFileSync(counter, String(n));',
-        "appendFileSync(process.env.RUN_LOG, 'run' + n + '\\n');",
+        "appendFileSync(process.env.RUN_LOG, JSON.stringify({ run: n, reexecCount: process.env.PAPERCUSP_PSU_REEXEC_COUNT }) + '\\n');",
         `process.exit(n <= 2 ? ${PSU_REEXEC_EXIT_CODE} : 0);`,
         '',
       ].join('\n'),
     );
 
-    const { code } = await runShim();
+    const { code } = await runShim({ PAPERCUSP_PSU_REEXEC_COUNT: '99' });
     expect(code).toBe(0);
     expect(await runCount()).toBe(3);
+    const rows = (await fs.readFile(path.join(tmp, 'runs.log'), 'utf8'))
+      .trim().split('\n').map((line) => JSON.parse(line));
+    expect(rows).toEqual([
+      { run: 1, reexecCount: '0' },
+      { run: 2, reexecCount: '1' },
+      { run: 3, reexecCount: '2' },
+    ]);
   });
 
   it('consumes kickoff env + argv before a host-code re-exec, while preserving ordinary launch args', async () => {
@@ -275,6 +282,42 @@ describe('psu shim re-exec loop (WI-38292)', () => {
     await fs.writeFile(launcherPath, launcherSource('always', PSU_REEXEC_EXIT_CODE));
 
     const { code, stderr } = await runShim();
+    expect(code).toBe(PSU_REEXEC_EXIT_CODE);
+    expect(await runCount()).toBe(PSU_REEXEC_MAX + 1);
+    expect(stderr).toContain('refusing to loop again');
+  });
+
+  it('WI-10005351: re-execs spaced a window apart never reach the cap — a long-lived session adopting all day is not a loop', async () => {
+    await writePsuShim();
+    // Asks for a re-exec on every pass until it has run PSU_REEXEC_MAX + 4
+    // times, then ends the session normally. Under the lifetime cap the shim
+    // refused at pass PSU_REEXEC_MAX + 1 and the session went dark (measured:
+    // 6 of 7 owners whose event log reached a 17th adoption got no prompt
+    // successor kickoff on it). Window 0 makes every re-exec a new burst, which
+    // is exactly the spacing of real adoptions (one per carry-respawn, minutes apart).
+    const passes = PSU_REEXEC_MAX + 5;
+    await fs.writeFile(
+      launcherPath,
+      [
+        "import { appendFileSync, readFileSync } from 'node:fs';",
+        "appendFileSync(process.env.RUN_LOG, 'pass\\n');",
+        "const n = readFileSync(process.env.RUN_LOG, 'utf8').split('\\n').filter(Boolean).length;",
+        `process.exit(n < ${passes} ? ${PSU_REEXEC_EXIT_CODE} : 0);`,
+        '',
+      ].join('\n'),
+    );
+
+    const { code, stderr } = await runShim({ PAPERCUSP_PSU_REEXEC_WINDOW_SEC: '0' });
+    expect(stderr).not.toContain('refusing to loop again');
+    expect(code).toBe(0);
+    expect(await runCount()).toBe(passes);
+  });
+
+  it('WI-10005351: a malformed window override falls back to the default burst window, so a real loop is still capped', async () => {
+    await writePsuShim();
+    await fs.writeFile(launcherPath, launcherSource('always', PSU_REEXEC_EXIT_CODE));
+
+    const { code, stderr } = await runShim({ PAPERCUSP_PSU_REEXEC_WINDOW_SEC: 'soon' });
     expect(code).toBe(PSU_REEXEC_EXIT_CODE);
     expect(await runCount()).toBe(PSU_REEXEC_MAX + 1);
     expect(stderr).toContain('refusing to loop again');

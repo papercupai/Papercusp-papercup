@@ -434,6 +434,98 @@ describe('verifyAttestation', () => {
     vi.unstubAllGlobals();
   });
 
+  // WI-10006733: the account this box publishes under carries ~10k binding
+  // gists, so the listing is ~104 pages (~2 min). A device that already knows
+  // its gist must verify it directly instead of walking every page.
+  it('ensureAttestationGist: a verified knownGistId hint returns without listing or creating (WI-10006733)', async () => {
+    const { ensureAttestationGist } = await import('./attest');
+    const { pubkeyBase64, body } = makeFakeGistResponse();
+    const filename = attestationGistFilename(pubkeyBase64);
+    const fetchMock = vi.fn(async (url: unknown, init?: unknown) => {
+      void init;
+      if (url === 'https://api.github.com/gists/g-hint-6733') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            id: 'g-hint-6733',
+            owner: { id: 12345 },
+            files: { [filename]: { content: JSON.stringify(body, null, 2) } },
+          }),
+        };
+      }
+      throw new Error('unexpected fetch ' + String(url));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const id = await ensureAttestationGist({
+      keychainId: 'k',
+      pubkeyBase64,
+      deviceLabel: 'test',
+      githubUserId: 12345,
+      githubLogin: 'testuser',
+      token: 'tok',
+      knownGistId: 'g-hint-6733',
+    });
+
+    expect(id).toBe('g-hint-6733');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/gists?'))).toBe(false);
+    expect(
+      fetchMock.mock.calls.some((c) => (c[1] as { method?: string } | undefined)?.method === 'POST'),
+    ).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
+  it('ensureAttestationGist: a hint that does not verify falls back to the listing (WI-10006733)', async () => {
+    const { ensureAttestationGist } = await import('./attest');
+    const { pubkeyBase64, body } = makeFakeGistResponse();
+    const filename = attestationGistFilename(pubkeyBase64);
+    const fetchMock = vi.fn(async (url: unknown, init?: unknown) => {
+      void init;
+      if (url === 'https://api.github.com/gists/g-gone-6733') {
+        return { ok: false, status: 404, json: async () => ({}) };
+      }
+      if (typeof url === 'string' && url.includes('/gists?')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [{ id: 'g-listed-6733', files: { [filename]: {} } }],
+        };
+      }
+      if (url === 'https://api.github.com/gists/g-listed-6733') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            id: 'g-listed-6733',
+            owner: { id: 12345 },
+            files: { [filename]: { content: JSON.stringify(body, null, 2) } },
+          }),
+        };
+      }
+      throw new Error('unexpected fetch ' + String(url));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const id = await ensureAttestationGist({
+      keychainId: 'k',
+      pubkeyBase64,
+      deviceLabel: 'test',
+      githubUserId: 12345,
+      githubLogin: 'testuser',
+      token: 'tok',
+      knownGistId: 'g-gone-6733',
+    });
+
+    expect(id).toBe('g-listed-6733');
+    expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/gists?'))).toBe(true);
+    expect(
+      fetchMock.mock.calls.some((c) => (c[1] as { method?: string } | undefined)?.method === 'POST'),
+    ).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
   it('ensureAttestationGist: follows pagination to find an aged binding without creating', async () => {
     const { ensureAttestationGist } = await import('./attest');
     const { pubkeyBase64, body } = makeFakeGistResponse();

@@ -1,0 +1,836 @@
+{
+  "schemaVersion": 1,
+  "incomplete": false,
+  "plane": "serving-operator-http-preflight-private-cohorts",
+  "bundleSha256": "98713d6efbf9a474fd5e3af3014383307ab5fdfa5bf7e5c54dfaf0ceefd650cf",
+  "workerSha256": "fc4febf9df144a3a704fb29d5dd3dc6a7e4350bda29d17511bfcc0819187fb00",
+  "sourceDirectory": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-41f842ced14e.iaO4JU/checkout/apps/operator/dist-host",
+  "cohorts": [
+    {
+      "mode": "control",
+      "samples": [
+        {
+          "phase": "preflight",
+          "pid": 1546814,
+          "at": 1790924416322,
+          "uptime": 6.325186183,
+          "memory": {
+            "rss": 961388544,
+            "heapTotal": 675057664,
+            "heapUsed": 555937568,
+            "external": 146715358,
+            "arrayBuffers": 70440421
+          },
+          "heap": {
+            "total_heap_size": 675057664,
+            "total_heap_size_executable": 5931008,
+            "total_physical_size": 675057664,
+            "total_available_size": 137083502656,
+            "used_heap_size": 555942456,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 118602888,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 127048,
+            "used_global_handles_size": 112704,
+            "external_memory": 146715398,
+            "total_allocated_bytes": 1850927192
+          },
+          "os": {
+            "pid": 1546814,
+            "parent": 1546480,
+            "startTicks": "21408913",
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssKiB": 913000,
+            "anonymousKiB": 909624,
+            "privateDirtyKiB": 909668
+          },
+          "descendants": []
+        },
+        {
+          "phase": "window-0",
+          "pid": 1546814,
+          "at": 1790924418139,
+          "uptime": 8.141794046,
+          "memory": {
+            "rss": 963629056,
+            "heapTotal": 680763392,
+            "heapUsed": 565387040,
+            "external": 146915368,
+            "arrayBuffers": 70640391
+          },
+          "heap": {
+            "total_heap_size": 680763392,
+            "total_heap_size_executable": 6193152,
+            "total_physical_size": 680763392,
+            "total_available_size": 137074047936,
+            "used_heap_size": 565387264,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 118602888,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 348232,
+            "used_global_handles_size": 262432,
+            "external_memory": 146915368,
+            "total_allocated_bytes": 1868779112
+          },
+          "os": {
+            "pid": 1546814,
+            "parent": 1546480,
+            "startTicks": "21408913",
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssKiB": 918647,
+            "anonymousKiB": 915272,
+            "privateDirtyKiB": 915328
+          },
+          "descendants": []
+        },
+        {
+          "phase": "window-1",
+          "pid": 1546814,
+          "at": 1790924418480,
+          "uptime": 8.48231013,
+          "memory": {
+            "rss": 963629056,
+            "heapTotal": 681549824,
+            "heapUsed": 568873120,
+            "external": 147165221,
+            "arrayBuffers": 70890244
+          },
+          "heap": {
+            "total_heap_size": 681549824,
+            "total_heap_size_executable": 6455296,
+            "total_physical_size": 681549824,
+            "total_available_size": 137070561712,
+            "used_heap_size": 568873344,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 118602888,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 348232,
+            "used_global_handles_size": 262560,
+            "external_memory": 147165221,
+            "total_allocated_bytes": 1884534224
+          },
+          "os": {
+            "pid": 1546814,
+            "parent": 1546480,
+            "startTicks": "21408913",
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssKiB": 918887,
+            "anonymousKiB": 915512,
+            "privateDirtyKiB": 915568
+          },
+          "descendants": []
+        },
+        {
+          "phase": "window-2",
+          "pid": 1546814,
+          "at": 1790924418796,
+          "uptime": 8.798530367,
+          "memory": {
+            "rss": 963629056,
+            "heapTotal": 682074112,
+            "heapUsed": 572350360,
+            "external": 147372149,
+            "arrayBuffers": 71097172
+          },
+          "heap": {
+            "total_heap_size": 682074112,
+            "total_heap_size_executable": 6455296,
+            "total_physical_size": 682074112,
+            "total_available_size": 137067084440,
+            "used_heap_size": 572350584,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 118602888,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 348232,
+            "used_global_handles_size": 262688,
+            "external_memory": 147372149,
+            "total_allocated_bytes": 1898096792
+          },
+          "os": {
+            "pid": 1546814,
+            "parent": 1546480,
+            "startTicks": "21408913",
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssKiB": 919226,
+            "anonymousKiB": 915852,
+            "privateDirtyKiB": 915908
+          },
+          "descendants": []
+        },
+        {
+          "phase": "bounded-idle",
+          "pid": 1546814,
+          "at": 1790924420072,
+          "uptime": 10.074811533,
+          "memory": {
+            "rss": 963629056,
+            "heapTotal": 682074112,
+            "heapUsed": 574120824,
+            "external": 147935244,
+            "arrayBuffers": 71660267
+          },
+          "heap": {
+            "total_heap_size": 682074112,
+            "total_heap_size_executable": 6455296,
+            "total_physical_size": 682074112,
+            "total_available_size": 137065313976,
+            "used_heap_size": 574121048,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 118602888,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 348232,
+            "used_global_handles_size": 262880,
+            "external_memory": 147935244,
+            "total_allocated_bytes": 1906792912
+          },
+          "os": {
+            "pid": 1546814,
+            "parent": 1546480,
+            "startTicks": "21408913",
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssKiB": 919365,
+            "anonymousKiB": 915992,
+            "privateDirtyKiB": 916048
+          },
+          "descendants": []
+        }
+      ],
+      "requests": [
+        {
+          "window": 0,
+          "value": {
+            "ok": false,
+            "runId": "446def03-98eb-461c-8b3f-4de5f23936df",
+            "root": "/tmp/pcv/papercusp-test-runtime-CFL8t0/workspaces/test-runtime-1c320d85-f2b/operator-home",
+            "error": "mutation_probe_active",
+            "hint": "no test process was started because this checkout has an active mutation probe on subject.txt and subject.txt is not a code module, so only a filesystem read can reach it; retry after the probe restores its source",
+            "testRunIds": [],
+            "rootSource": "requested",
+            "phaseTimingsMs": {
+              "preflightMs": 9.99,
+              "provenanceMs": 12.11,
+              "preparationMs": 0.11,
+              "admissionWaitMs": null,
+              "routerExecutionMs": null,
+              "ledgerIdReadbackMs": 4.14,
+              "finalizationMs": 0.2,
+              "totalHandlerMs": 171.17
+            }
+          },
+          "requestSha256": "2400b19399261c024d32ca97b8331f8b811433998520756175fe4a1a8cfd8c91",
+          "requestBytes": 130
+        },
+        {
+          "window": 1,
+          "value": {
+            "ok": false,
+            "runId": "e65bbff2-3169-4f9d-b6de-d1cde5fc735b",
+            "root": "/tmp/pcv/papercusp-test-runtime-CFL8t0/workspaces/test-runtime-1c320d85-f2b/operator-home",
+            "error": "mutation_probe_active",
+            "hint": "no test process was started because this checkout has an active mutation probe on subject.txt and subject.txt is not a code module, so only a filesystem read can reach it; retry after the probe restores its source",
+            "testRunIds": [],
+            "rootSource": "requested",
+            "phaseTimingsMs": {
+              "preflightMs": 7.13,
+              "provenanceMs": 12.75,
+              "preparationMs": 0.01,
+              "admissionWaitMs": null,
+              "routerExecutionMs": null,
+              "ledgerIdReadbackMs": 2.58,
+              "finalizationMs": 0.02,
+              "totalHandlerMs": 58.2
+            }
+          },
+          "requestSha256": "2400b19399261c024d32ca97b8331f8b811433998520756175fe4a1a8cfd8c91",
+          "requestBytes": 130
+        },
+        {
+          "window": 2,
+          "value": {
+            "ok": false,
+            "runId": "4fce580f-ddf2-4db5-bd88-a79da3422be8",
+            "root": "/tmp/pcv/papercusp-test-runtime-CFL8t0/workspaces/test-runtime-1c320d85-f2b/operator-home",
+            "error": "mutation_probe_active",
+            "hint": "no test process was started because this checkout has an active mutation probe on subject.txt and subject.txt is not a code module, so only a filesystem read can reach it; retry after the probe restores its source",
+            "testRunIds": [],
+            "rootSource": "requested",
+            "phaseTimingsMs": {
+              "preflightMs": 7.19,
+              "provenanceMs": 13.79,
+              "preparationMs": 0.01,
+              "admissionWaitMs": null,
+              "routerExecutionMs": null,
+              "ledgerIdReadbackMs": 2.36,
+              "finalizationMs": 0.01,
+              "totalHandlerMs": 54.24
+            }
+          },
+          "requestSha256": "2400b19399261c024d32ca97b8331f8b811433998520756175fe4a1a8cfd8c91",
+          "requestBytes": 130
+        }
+      ],
+      "descendants": [
+        {
+          "pid": 1570631,
+          "parent": 1546814,
+          "startTicks": "21409714",
+          "executable": "/usr/bin/git",
+          "executableSha256": "2a8c18fbf43da9f692d75474c72bea9dfd796c260b0f3dfe456376abc3bbd668",
+          "pssKiB": 36,
+          "anonymousKiB": 36,
+          "privateDirtyKiB": 36,
+          "samples": 1,
+          "peakPssKiB": 36
+        },
+        {
+          "pid": 1571946,
+          "parent": 1546814,
+          "startTicks": "21409759",
+          "executable": "/usr/bin/git",
+          "executableSha256": "2a8c18fbf43da9f692d75474c72bea9dfd796c260b0f3dfe456376abc3bbd668",
+          "pssKiB": 40,
+          "anonymousKiB": 40,
+          "privateDirtyKiB": 40,
+          "samples": 1,
+          "peakPssKiB": 40
+        },
+        {
+          "pid": 1572904,
+          "parent": 1546814,
+          "startTicks": "21409791",
+          "executable": "/usr/bin/git",
+          "executableSha256": "2a8c18fbf43da9f692d75474c72bea9dfd796c260b0f3dfe456376abc3bbd668",
+          "pssKiB": 32,
+          "anonymousKiB": 32,
+          "privateDirtyKiB": 32,
+          "samples": 1,
+          "peakPssKiB": 32
+        }
+      ],
+      "pauses": 0,
+      "reaped": true,
+      "identity": {
+        "pid": 1546814,
+        "entry": "/tmp/pcv/papercusp-serving-compiler-tVWBWL/host/hono-host.mjs",
+        "startTicks": "21408913",
+        "bundleSha256": "98713d6efbf9a474fd5e3af3014383307ab5fdfa5bf7e5c54dfaf0ceefd650cf"
+      },
+      "leaseReceipt": {
+        "ok": true,
+        "lock_id": "4a4c0b78-b4b1-4b69-bbb5-621f62bfdf06",
+        "owner": "loopback",
+        "owner_label": "system · loopback",
+        "expires_ts": "2026-10-02T07:02:16.298Z",
+        "held": [
+          "subject.txt"
+        ],
+        "newly_held": [
+          "subject.txt"
+        ],
+        "sha_token": {
+          "required_sha": null,
+          "unsynced_risk": false
+        }
+      },
+      "trace": {
+        "pid": 1546814,
+        "startedAt": 1790924417904,
+        "until": 1790924447904,
+        "total": 0,
+        "observerMs": 0,
+        "calls": {
+          "fork": {
+            "calls": 0,
+            "stacks": []
+          }
+        },
+        "endedAt": 1790924419028,
+        "limited": false
+      },
+      "unreaped": [],
+      "leaseRelease": {
+        "ok": true,
+        "results": [
+          {
+            "ok": true,
+            "lock_id": "4a4c0b78-b4b1-4b69-bbb5-621f62bfdf06",
+            "released": [
+              "subject.txt"
+            ],
+            "held_before": 1
+          }
+        ],
+        "counts": {
+          "ok": 1,
+          "failed": 0
+        }
+      }
+    },
+    {
+      "mode": "compiler",
+      "samples": [
+        {
+          "phase": "preflight",
+          "pid": 1578050,
+          "at": 1790924426969,
+          "uptime": 6.441167749,
+          "memory": {
+            "rss": 963420160,
+            "heapTotal": 674271232,
+            "heapUsed": 588407776,
+            "external": 148198757,
+            "arrayBuffers": 71923820
+          },
+          "heap": {
+            "total_heap_size": 674271232,
+            "total_heap_size_executable": 6193152,
+            "total_physical_size": 674271232,
+            "total_available_size": 137050991728,
+            "used_heap_size": 588412664,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 118602888,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 112960,
+            "external_memory": 148198797,
+            "total_allocated_bytes": 1802061384
+          },
+          "os": {
+            "pid": 1578050,
+            "parent": 1546480,
+            "startTicks": "21409965",
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssKiB": 927626,
+            "anonymousKiB": 924252,
+            "privateDirtyKiB": 924296
+          },
+          "descendants": []
+        },
+        {
+          "phase": "window-0",
+          "pid": 1578050,
+          "at": 1790924428859,
+          "uptime": 8.331903573,
+          "memory": {
+            "rss": 974544896,
+            "heapTotal": 684957696,
+            "heapUsed": 560383864,
+            "external": 146661108,
+            "arrayBuffers": 70380275
+          },
+          "heap": {
+            "total_heap_size": 684957696,
+            "total_heap_size_executable": 6455296,
+            "total_physical_size": 684957696,
+            "total_available_size": 137079010376,
+            "used_heap_size": 560384088,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4227152,
+            "peak_malloced_memory": 118602888,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 348232,
+            "used_global_handles_size": 262752,
+            "external_memory": 146661108,
+            "total_allocated_bytes": 1823574360
+          },
+          "os": {
+            "pid": 1578050,
+            "parent": 1546480,
+            "startTicks": "21409965",
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssKiB": 937381,
+            "anonymousKiB": 934008,
+            "privateDirtyKiB": 934064
+          },
+          "descendants": []
+        },
+        {
+          "phase": "window-1",
+          "pid": 1578050,
+          "at": 1790924429605,
+          "uptime": 9.077704918,
+          "memory": {
+            "rss": 974544896,
+            "heapTotal": 685219840,
+            "heapUsed": 564996744,
+            "external": 147094785,
+            "arrayBuffers": 70813728
+          },
+          "heap": {
+            "total_heap_size": 685219840,
+            "total_heap_size_executable": 6455296,
+            "total_physical_size": 685219840,
+            "total_available_size": 137074397480,
+            "used_heap_size": 564996968,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4235352,
+            "peak_malloced_memory": 118602888,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 348232,
+            "used_global_handles_size": 263008,
+            "external_memory": 147094785,
+            "total_allocated_bytes": 1836856400
+          },
+          "os": {
+            "pid": 1578050,
+            "parent": 1546480,
+            "startTicks": "21409965",
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssKiB": 937550,
+            "anonymousKiB": 934176,
+            "privateDirtyKiB": 934232
+          },
+          "descendants": []
+        },
+        {
+          "phase": "window-2",
+          "pid": 1578050,
+          "at": 1790924430343,
+          "uptime": 9.816130042,
+          "memory": {
+            "rss": 974544896,
+            "heapTotal": 685219840,
+            "heapUsed": 569591592,
+            "external": 147559826,
+            "arrayBuffers": 71278545
+          },
+          "heap": {
+            "total_heap_size": 685219840,
+            "total_heap_size_executable": 6455296,
+            "total_physical_size": 685219840,
+            "total_available_size": 137069802632,
+            "used_heap_size": 569591816,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4243552,
+            "peak_malloced_memory": 118602888,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 348232,
+            "used_global_handles_size": 263328,
+            "external_memory": 147559826,
+            "total_allocated_bytes": 1849220544
+          },
+          "os": {
+            "pid": 1578050,
+            "parent": 1546480,
+            "startTicks": "21409965",
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssKiB": 937727,
+            "anonymousKiB": 934352,
+            "privateDirtyKiB": 934408
+          },
+          "descendants": []
+        },
+        {
+          "phase": "bounded-idle",
+          "pid": 1578050,
+          "at": 1790924431618,
+          "uptime": 11.090634581,
+          "memory": {
+            "rss": 974544896,
+            "heapTotal": 685219840,
+            "heapUsed": 571441368,
+            "external": 148201844,
+            "arrayBuffers": 71920563
+          },
+          "heap": {
+            "total_heap_size": 685219840,
+            "total_heap_size_executable": 6455296,
+            "total_physical_size": 685219840,
+            "total_available_size": 137067952856,
+            "used_heap_size": 571441592,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4243552,
+            "peak_malloced_memory": 118602888,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 348232,
+            "used_global_handles_size": 263488,
+            "external_memory": 148201844,
+            "total_allocated_bytes": 1855572600
+          },
+          "os": {
+            "pid": 1578050,
+            "parent": 1546480,
+            "startTicks": "21409965",
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssKiB": 937806,
+            "anonymousKiB": 934432,
+            "privateDirtyKiB": 934488
+          },
+          "descendants": []
+        }
+      ],
+      "requests": [
+        {
+          "window": 0,
+          "value": {
+            "ok": false,
+            "runId": "5dedea95-5f90-443d-861b-8e7fa23d1e0b",
+            "root": "/tmp/pcv/papercusp-test-runtime-CFL8t0/workspaces/test-runtime-1c320d85-f2b/operator-home",
+            "error": "mutation_probe_active",
+            "hint": "no test process was started because this checkout has an active mutation probe on subject.ts and caller.test.ts may observe it: imports /tmp/pcv/papercusp-test-runtime-CFL8t0/workspaces/test-runtime-1c320d85-f2b/operator-home/subject.ts; retry after the probe restores its source",
+            "testRunIds": [],
+            "rootSource": "requested",
+            "phaseTimingsMs": {
+              "preflightMs": 11.79,
+              "provenanceMs": 22.1,
+              "preparationMs": 0.14,
+              "admissionWaitMs": null,
+              "routerExecutionMs": null,
+              "ledgerIdReadbackMs": 3.09,
+              "finalizationMs": 0.18,
+              "totalHandlerMs": 476.49
+            }
+          },
+          "requestSha256": "2400b19399261c024d32ca97b8331f8b811433998520756175fe4a1a8cfd8c91",
+          "requestBytes": 130
+        },
+        {
+          "window": 1,
+          "value": {
+            "ok": false,
+            "runId": "23b37baa-990a-432f-844f-f40d7b6ff3c1",
+            "root": "/tmp/pcv/papercusp-test-runtime-CFL8t0/workspaces/test-runtime-1c320d85-f2b/operator-home",
+            "error": "mutation_probe_active",
+            "hint": "no test process was started because this checkout has an active mutation probe on subject.ts and caller.test.ts may observe it: imports /tmp/pcv/papercusp-test-runtime-CFL8t0/workspaces/test-runtime-1c320d85-f2b/operator-home/subject.ts; retry after the probe restores its source",
+            "testRunIds": [],
+            "rootSource": "requested",
+            "phaseTimingsMs": {
+              "preflightMs": 6.78,
+              "provenanceMs": 16.54,
+              "preparationMs": 0.01,
+              "admissionWaitMs": null,
+              "routerExecutionMs": null,
+              "ledgerIdReadbackMs": 2.35,
+              "finalizationMs": 0.01,
+              "totalHandlerMs": 453.14
+            }
+          },
+          "requestSha256": "2400b19399261c024d32ca97b8331f8b811433998520756175fe4a1a8cfd8c91",
+          "requestBytes": 130
+        },
+        {
+          "window": 2,
+          "value": {
+            "ok": false,
+            "runId": "6ecff79c-a1a6-4144-a3e0-5d8e52a19e41",
+            "root": "/tmp/pcv/papercusp-test-runtime-CFL8t0/workspaces/test-runtime-1c320d85-f2b/operator-home",
+            "error": "mutation_probe_active",
+            "hint": "no test process was started because this checkout has an active mutation probe on subject.ts and caller.test.ts may observe it: imports /tmp/pcv/papercusp-test-runtime-CFL8t0/workspaces/test-runtime-1c320d85-f2b/operator-home/subject.ts; retry after the probe restores its source",
+            "testRunIds": [],
+            "rootSource": "requested",
+            "phaseTimingsMs": {
+              "preflightMs": 6.36,
+              "provenanceMs": 14.03,
+              "preparationMs": 0.02,
+              "admissionWaitMs": null,
+              "routerExecutionMs": null,
+              "ledgerIdReadbackMs": 2.93,
+              "finalizationMs": 0.02,
+              "totalHandlerMs": 450.32
+            }
+          },
+          "requestSha256": "2400b19399261c024d32ca97b8331f8b811433998520756175fe4a1a8cfd8c91",
+          "requestBytes": 130
+        }
+      ],
+      "descendants": [
+        {
+          "pid": 1593152,
+          "parent": 1578050,
+          "startTicks": "21410753",
+          "executable": "/usr/bin/git",
+          "executableSha256": "2a8c18fbf43da9f692d75474c72bea9dfd796c260b0f3dfe456376abc3bbd668",
+          "pssKiB": 24,
+          "anonymousKiB": 24,
+          "privateDirtyKiB": 24,
+          "samples": 1,
+          "peakPssKiB": 24
+        },
+        {
+          "pid": 1593202,
+          "parent": 1578050,
+          "startTicks": "21410756",
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssKiB": 67039,
+          "anonymousKiB": 66856,
+          "privateDirtyKiB": 66864,
+          "samples": 2,
+          "peakPssKiB": 67039
+        },
+        {
+          "pid": 1594919,
+          "parent": 1578050,
+          "startTicks": "21410830",
+          "executable": "/usr/bin/git",
+          "executableSha256": "2a8c18fbf43da9f692d75474c72bea9dfd796c260b0f3dfe456376abc3bbd668",
+          "pssKiB": 36,
+          "anonymousKiB": 36,
+          "privateDirtyKiB": 36,
+          "samples": 1,
+          "peakPssKiB": 36
+        },
+        {
+          "pid": 1594976,
+          "parent": 1578050,
+          "startTicks": "21410833",
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssKiB": 66583,
+          "anonymousKiB": 66404,
+          "privateDirtyKiB": 66412,
+          "samples": 2,
+          "peakPssKiB": 66583
+        },
+        {
+          "pid": 1596163,
+          "parent": 1578050,
+          "startTicks": "21410902",
+          "executable": "/usr/bin/git",
+          "executableSha256": "2a8c18fbf43da9f692d75474c72bea9dfd796c260b0f3dfe456376abc3bbd668",
+          "pssKiB": 24,
+          "anonymousKiB": 24,
+          "privateDirtyKiB": 24,
+          "samples": 1,
+          "peakPssKiB": 24
+        },
+        {
+          "pid": 1596231,
+          "parent": 1578050,
+          "startTicks": "21410906",
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssKiB": 66587,
+          "anonymousKiB": 66408,
+          "privateDirtyKiB": 66416,
+          "samples": 2,
+          "peakPssKiB": 66587
+        }
+      ],
+      "pauses": 0,
+      "reaped": true,
+      "identity": {
+        "pid": 1578050,
+        "entry": "/tmp/pcv/papercusp-serving-compiler-tVWBWL/host/hono-host.mjs",
+        "startTicks": "21409965",
+        "bundleSha256": "98713d6efbf9a474fd5e3af3014383307ab5fdfa5bf7e5c54dfaf0ceefd650cf"
+      },
+      "leaseReceipt": {
+        "ok": true,
+        "lock_id": "fa616d90-f372-4925-95f6-fd0417ca1ab4",
+        "owner": "loopback",
+        "owner_label": "system · loopback",
+        "expires_ts": "2026-10-02T07:02:26.946Z",
+        "held": [
+          "subject.ts"
+        ],
+        "newly_held": [
+          "subject.ts"
+        ],
+        "sha_token": {
+          "required_sha": null,
+          "unsynced_risk": false
+        }
+      },
+      "trace": {
+        "pid": 1578050,
+        "startedAt": 1790924428280,
+        "until": 1790924458280,
+        "total": 3,
+        "observerMs": 0.33827500000188593,
+        "calls": {
+          "fork": {
+            "calls": 3,
+            "stacks": [
+              "Error\n    at eval (eval at fork (node:child_process:126:3), <anonymous>:6:32)\n    at eval (eval at fork (node:child_process:126:3), <anonymous>:9:70)\n    at fork (node:child_process:126:3)\n    at testImportClosures (file:///tmp/pcv/papercusp-serving-compiler-tVWBWL/host/hono-host.mjs:310185:14)\n    at mutationProbeRefusal (file:///tmp/pcv/papercusp-serving-compiler-tVWBWL/host/hono-host.mjs:310380:25)\n    at async runTestFilesCore (file:///tmp/pcv/papercusp-serving-compiler-tVWBWL/host/hono-host.mjs:314112:25)\n    at async Object.handler (file:///tmp/pcv/papercusp-serving-compiler-tVWBWL/host/hono-host.mjs:314673:26)\n    at async Object.projectedFn [as fn] (file:///tmp/pcv/papercusp-serving-compiler-tVWBWL/host/hono-host.mjs:84798:18)\n    at async Object.run (file:///tmp/pcv/papercusp-serving-compiler-tVWBWL/host/hono-host.mjs:79308:26)\n    at async runDispatchStack (file:///tmp/pcv/papercusp-serving-compiler-tVWBWL/host/hono-host.mjs:78876:20)"
+            ]
+          }
+        },
+        "endedAt": 1790924430573,
+        "limited": false
+      },
+      "unreaped": [],
+      "leaseRelease": {
+        "ok": true,
+        "results": [
+          {
+            "ok": true,
+            "lock_id": "fa616d90-f372-4925-95f6-fd0417ca1ab4",
+            "released": [
+              "subject.ts"
+            ],
+            "held_before": 1
+          }
+        ],
+        "counts": {
+          "ok": 1,
+          "failed": 0
+        }
+      }
+    }
+  ],
+  "limitations": [
+    "Actual maintained HTTP testing:run preflight; private request-only processes and data, not ambient production load.",
+    "Control uses an unsupported-extension mutation lease; compiler uses a code-module lease. HTTP request and source bytes match.",
+    "Compiler workload is a refused mutation preflight, not a completed test run or normal idle baseline.",
+    "No historical gigabyte caller attribution or production memory reduction is claimed.",
+    "Executable PSS and V8 native counters are separate measurements, not a total native allocation estimate."
+  ],
+  "repositoryPreflight": {
+    "root": "/tmp/pcv/papercusp-test-runtime-CFL8t0/workspaces/test-runtime-1c320d85-f2b/operator-home",
+    "initialized": true,
+    "noCommit": true
+  },
+  "inputs": {
+    "sourceBytes": 768915,
+    "sourceSha256": "a0fba187b939a0fbaf9be5b48368a6d1a04a5e1ce1c69c261d958b7fb7f8d860",
+    "testSha256": "e3d86a64cc2ea3839ac8327ea81fb2fc7ee746959465c022365db280b8386a89"
+  },
+  "runner": {
+    "status": 0,
+    "signal": null,
+    "stdoutBytes": 0,
+    "stderrBytes": 4000,
+    "log": {
+      "path": "/tmp/su-7db4f-p011-serving-r23-child.log",
+      "bytes": 622612,
+      "sha256": "4ce04cef6a2c9a7790f10fd0d28d7e5efe129b30443801f8b87a02b7df935768"
+    }
+  }
+}

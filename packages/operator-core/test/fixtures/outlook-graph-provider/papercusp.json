@@ -1,0 +1,64 @@
+{
+  "kind": "plugin",
+  "name": "outlook-graph-provider",
+  "version": "1.0.0",
+  "papercusp": "^0.1.0",
+  "description": "Outlook mail and calendar through Microsoft Graph, with a reply-to-inbound-mail trigger pack.",
+  "author": "Independent Author",
+  "publisher": "@independent-author",
+  "license": "MIT",
+  "capabilities": [],
+  "runtime": { "kind": "daemon", "daemonCommand": ["node", "daemon.mjs"] },
+  "provider": {
+    "id": "outlook-graph",
+    "contractVersion": 1,
+    "displayName": "Outlook (Microsoft Graph)",
+    "datatypes": ["email-message", "calendar-event"],
+    "capabilities": ["mail.read", "calendar.read"],
+    "egressHosts": ["graph.microsoft.com", "login.microsoftonline.com"],
+    "oauth": {
+      "authorizeUrl": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+      "tokenUrl": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+      "scopes": ["offline_access", "Mail.Read", "Calendars.Read", "User.Read"],
+      "pkce": true,
+      "clientRegistrationRef": "microsoft",
+      "identity": {
+        "url": "https://graph.microsoft.com/v1.0/me",
+        "idField": "id",
+        "displayNameField": "userPrincipalName"
+      }
+    }
+  },
+  "triggerPack": {
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tone"],
+      "properties": { "tone": { "type": "string" } }
+    },
+    "defaultStormPolicy": { "maxRuns": 5, "windowSeconds": 3600 },
+    "targets": [
+      {
+        "id": "reply",
+        "kind": "plan",
+        "path": "plan-reply.md",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["trigger", "tone"],
+          "properties": { "trigger": { "type": "object", "additionalProperties": true }, "tone": { "type": "string" } }
+        }
+      }
+    ],
+    "bindings": [
+      {
+        "id": "inbound-mail",
+        "source": { "kind": "external", "datatype": "email-message", "capabilities": ["mail.read"] },
+        "target": "reply",
+        "eventPattern": "ext:*:message.received",
+        "filter": { "direction": "inbound" }
+      }
+    ],
+    "edges": []
+  }
+}

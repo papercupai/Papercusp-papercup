@@ -257,6 +257,16 @@ describe('partitionUnownedCriticalsByOrigin (WI-6846)', () => {
     expect(actionable).toEqual([]);
     expect(federatedUnresolvable).toEqual([]);
   });
+
+  it('WI-10006515: an own-node row stranded at origin=remote is actionable, not federated', () => {
+    const [own, peer] = unownedAgedCriticals(
+      [item({ id: 'EI-own', origin: 'remote' }), item({ id: 'EI-peer', origin: 'remote' })],
+      { nowMs: NOW },
+    );
+    const { actionable, federatedUnresolvable } = partitionUnownedCriticalsByOrigin([{ ...own!, ownNode: true }, peer!]);
+    expect(actionable.map((c) => c.id)).toEqual(['EI-own']);
+    expect(federatedUnresolvable.map((c) => c.id)).toEqual(['EI-peer']);
+  });
 });
 
 describe('unownedInFlightOrphansMatchingFleetSpec (routing, EI-18693470222331709)', () => {

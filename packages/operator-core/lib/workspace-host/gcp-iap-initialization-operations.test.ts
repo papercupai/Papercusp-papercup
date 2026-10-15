@@ -534,6 +534,22 @@ describe('GCP IAP workspace-host bootstrap readiness gate', () => {
     expect(runner.commands).toHaveLength(1);
   });
 
+  it('fails immediately when the controller lacks the AWS Session Manager plugin', async () => {
+    const runner = scriptedRunner([255], 'aws: [ERROR]: SessionManagerPlugin is not found.');
+    const timing = virtualTiming();
+    const onWaiting = vi.fn();
+    const bootstrapStatus = vi.fn(async () => ({ state: 'succeeded' as const }));
+
+    await expect(new GcpIapWorkspaceHostInitializationOperations(PROFILE, runner, timing, bootstrapStatus)
+      .awaitBootstrapReady({ timeoutMs: 1_200_000, onWaiting }))
+      .rejects.toThrow('AWS Session Manager plugin on the controller');
+
+    expect(runner.commands).toHaveLength(1);
+    expect(timing.slept).toEqual([]);
+    expect(onWaiting).not.toHaveBeenCalled();
+    expect(bootstrapStatus).not.toHaveBeenCalled();
+  });
+
   it('fails fast on the bootstrap reporting failure, instead of waiting out the budget (WI-10002837)', async () => {
     // A host that died in harden-os never authorizes the controller key, so every probe is a 255.
     const runner = scriptedRunner([255], 'Permission denied (publickey).');

@@ -154,6 +154,29 @@ Client                              Server
 Every call has exactly **one** terminal frame (`DONE` or `ERROR`), never both,
 never neither.
 
+## Keepalive
+
+While a call is in flight the server sends, every 5s by default, a liveness
+`EVENT_JSON { id, name: 'ipc.keepalive', data: null }` for it
+(`IPC_KEEPALIVE_EVENT` / `keepaliveIntervalMs` in
+`@papercusp/ipc-endpoint-server`; `0` disables). It exists because a client's
+per-call idle watchdog (20s in the desktop, WI-2817) cannot otherwise tell a
+slow-but-live call from a wedged peer: a route that works before answering (a
+Cupboard install clones a repo and starts a sandboxed daemon) sends nothing
+until its `head`, and was force-failed as `connection_lost`
+(WI-6554700010008458).
+
+- The beat comes from the server's own event loop, so a sidecar that is blocked,
+  or that accepted the socket but is not servicing it, still sends nothing and
+  the watchdog keeps its purpose.
+- Clients treat it as activity only: the desktop never forwards it to the
+  webview and never counts it toward the per-call event cap. A client that does
+  not know the name must ignore it like any unknown event.
+- It stops at the call's terminal frame, and after `keepaliveMaxMs` (15 min by
+  default) so a call that hangs forever still ends at the client. Streams that
+  outlive that span carry their own heartbeats (SSE).
+- The name is written on both sides; `keepalive-lockstep.test.ts` pins them.
+
 ## Validation errors
 
 If the server receives a malformed REQUEST (invalid JSON, missing fields,

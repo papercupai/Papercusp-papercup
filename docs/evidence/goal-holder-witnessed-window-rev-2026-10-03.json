@@ -1,0 +1,74 @@
+{
+ "start": "2026-10-03T00:53:17Z",
+ "end": "2026-10-03T02:13:10Z",
+ "lease": [
+  {
+   "error": "PostgresError: column \"updated_at\" does not exist"
+  }
+ ],
+ "out": [
+  {
+   "holder": "su-9e72a11f-da70-4737-b3da-62fa98badea8",
+   "holderCalls": 132,
+   "ws": "2026-10-03T00:53:17Z",
+   "we": "2026-10-03T02:13:10Z",
+   "plans": {
+    "plansNew": 0,
+    "plansStarted": 0,
+    "planFleetLaunches": 0,
+    "unplannedOpenGoalItems": 39,
+    "unplannedClusters": 1,
+    "overdueUnplannedClusters": 1
+   },
+   "ideation": {
+    "plansNew": 0,
+    "ideasFiled": 0,
+    "reviews": 9,
+    "noNewPlanReviews": 4,
+    "noNewPlanReviewsOverUnplannedCluster": 4,
+    "reviewsWithUncoveredClusterNeed": 0
+   },
+   "reports": {
+    "reports": 2,
+    "costNotMeasured": 2,
+    "walledEntries": 6,
+    "bareWalledEntries": 2
+   },
+   "loop": {
+    "deliveredFires": 3,
+    "suppressedFires": 2,
+    "windowHours": 1.331388888888889
+   },
+   "nudges": {
+    "timedReminders": 3,
+    "fired": 1,
+    "cancelled": 2,
+    "cancelledWithReason": 0,
+    "dischargedCancels": 0,
+    "watchChurnWithoutReason": 27
+   },
+   "ratings": {
+    "holder-plan-authorship": {
+     "verdict": "fail",
+     "why": "1 unplanned cluster(s) of 3+ goal items were older than 2 reporting cycles and the holder wrote 0, started 0, staffed 0 plan(s) in the window (a plan must be written and staffed)."
+    },
+    "ideation-yield": {
+     "verdict": "fail",
+     "why": "4 no-new-plan review(s) over 3+ unplanned goal items and 0 review(s) with an uncovered 3+ item need in the goal-day since 2026-10-02T02:13:10.000Z."
+    },
+    "owner-report-truthfulness": {
+     "verdict": "fail",
+     "why": "2 of 2 report(s) gave no measured goal COST; 2 of 6 walled entries named no owner action."
+    },
+    "stewardship-loop-liveness": {
+     "verdict": "fail",
+     "why": "2 of 5 loop fires suppressed (1.50/h > 1/h)."
+    },
+    "nudge-efficacy": {
+     "verdict": "fail",
+     "why": "2 timed reminder cancel(s) and 27 obligation watch cancel(s) carry no cancel_reason, so delivery cannot be shown."
+    }
+   }
+  }
+ ]
+}

@@ -93,12 +93,21 @@ function isLockEnvelope(literal: string): boolean {
   return /\bnewBody\b\s*:/.test(literal);
 }
 
+/** A caller-facing refusal: it names an `error` or says `ok: false`. */
+function isRefusalEnvelope(literal: string): boolean {
+  return /\berror\b\s*:/.test(literal) || /\bok\b\s*:\s*false\b/.test(literal);
+}
+
 /** Decide the property over a decision-emitter source file. */
 export function auditDecisionEmitterSource(source: string): EmitterReturnAudit {
   const literals = extractReturnObjectLiterals(stripComments(source));
   const carrying = literals.filter(
     (lit) =>
       !isLockEnvelope(lit) &&
+      // A REFUSAL envelope (`error:` / `ok: false`) is not a success return: a lock
+      // refusal spreads `result.value` too, but that value carries a code, never a
+      // decisionId, so it owes no `ref` (EI-25743754504297634).
+      !isRefusalEnvelope(lit) &&
       // Either it names the id outright, or it SPREADS the lock result that
       // carries it. The spread case is the one a token match would miss, and it
       // is exactly how the caller-facing success return is written.

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { createHmac } from 'node:crypto';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import {
-  AdmissionRecoveryRefused, requestAdmissionRecovery, runAdmissionRecoveries,
+  AdmissionRecoveryRefused, observeAdmissionRecoveryPickup, requestAdmissionRecovery, runAdmissionRecoveries,
   type AdmissionRecoveryDeps,
 } from './work-item-admission-recovery';
 
@@ -19,6 +19,7 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.work_items (
       workspace_id text, harness_slug text, feature_id text, status text DEFAULT 'open',
       origin text DEFAULT 'local', taken_by text, admission text DEFAULT 'pending', payload jsonb,
+      author_pubkey text, last_progress_at timestamptz,
       PRIMARY KEY(workspace_id, harness_slug, feature_id)
     );
     CREATE TABLE harness_shared.routines (
@@ -149,6 +150,50 @@ describe('original-item durable admission recovery', () => {
     });
   });
 
+  it('reports current target guard refusals before a stale stored hold without changing protected rows', async () => {
+    await db.sql`UPDATE harness_shared.work_items
+      SET payload = payload || ${db.sql.json({ admissionHold: { reason: 'old ambiguity', runId: 'old-run' } })}`;
+    const first = await requestAdmissionRecovery(input, { authorize }, db.sql);
+    const d = deps({ screen: vi.fn(async () => ({
+      runId: 'current-screen',
+      guardRefusals: [
+        { itemId: 'WI-other', canonicalId: null, reason: 'remote-owned' as const, detail: 'unrelated refusal' },
+        { itemId: scope.workItemId, canonicalId: null, reason: 'outside-mutation-scope' as const,
+          detail: 'screened component requires mutations outside the exact target set; no component writes authorized' },
+      ],
+    })) });
+    await runAdmissionRecoveries(scope, d, db.sql);
+    const original = await current();
+    expect(original).toMatchObject({ admission: 'pending', taken_by: null });
+    expect(original.payload.admissionHold).toEqual({ reason: 'old ambiguity', runId: 'old-run' });
+    expect(original.payload._admissionRecovery).toMatchObject({
+      requestId: first.request.requestId, state: 'held', stage: 'screen', pickupConfirmed: false,
+    });
+    expect(original.payload._admissionRecovery.reason).toContain('current-screen');
+    expect(original.payload._admissionRecovery.reason).toContain('outside-mutation-scope');
+    expect(original.payload._admissionRecovery.reason).toContain('no component writes authorized');
+    expect(original.payload._admissionRecovery.reason).toContain('ordinary component screening/review');
+    expect(original.payload._admissionRecovery.reason).not.toMatch(/old ambiguity|unrelated refusal/);
+    expect(d.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('does not attribute another item\'s guard refusal to the original stored hold', async () => {
+    await db.sql`UPDATE harness_shared.work_items
+      SET payload = payload || ${db.sql.json({ admissionHold: { reason: 'needs review', runId: 'hold-run' } })}`;
+    await requestAdmissionRecovery(input, { authorize }, db.sql);
+    const d = deps({ screen: vi.fn(async () => ({
+      runId: 'other-screen',
+      guardRefusals: [
+        { itemId: 'WI-other', canonicalId: null, reason: 'claimed' as const, detail: 'other holder' },
+      ],
+    })) });
+    await runAdmissionRecoveries(scope, d, db.sql);
+    const reason = (await current()).payload._admissionRecovery.reason;
+    expect(reason).toContain('admission hold from run hold-run: needs review');
+    expect(reason).not.toMatch(/other-screen|other holder|ordinary component screening/);
+    expect(d.dispatch).not.toHaveBeenCalled();
+  });
+
   it('concurrent/repeated requests persist one identity and atomically accelerate the real routine', async () => {
     // First commit establishes the visible identity; racing retries must preserve it.
     const first = await requestAdmissionRecovery(input, { authorize }, db.sql);
@@ -260,6 +305,37 @@ describe('original-item durable admission recovery', () => {
     expect(d.dispatch).not.toHaveBeenCalled();
     const rows = await db.sql`SELECT payload->'_admissionRecovery'->>'reason' AS reason FROM harness_shared.work_items`;
     expect(rows.every((r) => r.reason.includes('provenance is invalid'))).toBe(true);
+  });
+
+  // WI-10006515: origin records how a row ARRIVED, not who wrote it (WI-10003565).
+  async function strandAsRemote(authorKey: string) {
+    // A key this workspace has written locally is one of OUR own-node keys.
+    await db.sql`
+      INSERT INTO harness_shared.work_items(workspace_id,harness_slug,feature_id,author_pubkey)
+      VALUES (${scope.workspaceId}, ${scope.harnessSlug}, 'WI-own-key-witness', 'own-key')`;
+    await db.sql`UPDATE harness_shared.work_items SET origin = 'remote', author_pubkey = ${authorKey}
+      WHERE feature_id = ${scope.workItemId}`;
+  }
+
+  it('heals an own-node row stranded at origin=remote and recovers it instead of refusing', async () => {
+    await strandAsRemote('own-key');
+    const first = await requestAdmissionRecovery(input, { authorize }, db.sql);
+    expect(first.ok).toBe(true);
+    const row = await current();
+    expect(row.origin).toBe('local');
+    expect(row.payload).toMatchObject({ keep: 'original', _admissionRecovery: { state: 'queued' } });
+    const d = deps();
+    await runAdmissionRecoveries(scope, d, db.sql);
+    expect(d.dispatch).toHaveBeenCalledTimes(1);
+    expect((await current()).taken_by).toBe('reviewer');
+  });
+
+  it('still refuses a true peer row at origin=remote and leaves it untouched', async () => {
+    await strandAsRemote('peer-key');
+    await expect(requestAdmissionRecovery(input, { authorize }, db.sql)).rejects.toThrow('originating actor');
+    const row = await current();
+    expect(row.origin).toBe('remote');
+    expect(row.payload).toEqual({ keep: 'original' });
   });
 
   it('rechecks authority after screening latency and stops before admission persistence', async () => {
@@ -391,5 +467,108 @@ describe('original-item durable admission recovery', () => {
     await runAdmissionRecoveries(scope, resumed, db.sql);
     expect(resumed.screen).not.toHaveBeenCalled();
     expect((await current()).payload._admissionRecovery.state).toBe('delivered');
+  });
+
+  it('confirms pickup only after the target records progress later than delivery', async () => {
+    const first = await requestAdmissionRecovery(input, { authorize }, db.sql);
+    const d = deps();
+    await runAdmissionRecoveries(scope, d, db.sql);
+    const delivered = (await current()).payload._admissionRecovery;
+    expect(delivered).toMatchObject({ state: 'delivered', stage: 'await-pickup', pickupConfirmed: false });
+    expect(delivered.deliveredAt).toBeTypeOf('string');
+
+    const progressAt = new Date(Date.parse(delivered.deliveredAt) + 1);
+    await db.sql`UPDATE harness_shared.work_items SET last_progress_at = ${progressAt.toISOString()}::timestamptz
+      WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+        AND feature_id = ${scope.workItemId}`;
+    await runAdmissionRecoveries(scope, d, db.sql);
+
+    const observed = (await current()).payload._admissionRecovery;
+    expect(observed).toMatchObject({
+      requestId: first.request.requestId,
+      state: 'delivered', stage: 'picked-up', pickupConfirmed: false,
+      pickupObservation: {
+        requestId: first.request.requestId,
+        workItemId: scope.workItemId,
+        target: input.target,
+        deliveredAt: delivered.deliveredAt,
+        verdict: 'confirmed',
+        activityAt: progressAt.toISOString(),
+        source: 'last-progress-at',
+      },
+    });
+    expect(d.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps pickup unconfirmed when the target progress predates delivery', async () => {
+    const first = await requestAdmissionRecovery(input, { authorize }, db.sql);
+    const d = deps();
+    await runAdmissionRecoveries(scope, d, db.sql);
+    const delivered = (await current()).payload._admissionRecovery;
+    const progressAt = new Date(Date.parse(delivered.deliveredAt) - 1);
+    await db.sql`UPDATE harness_shared.work_items SET last_progress_at = ${progressAt.toISOString()}::timestamptz
+      WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+        AND feature_id = ${scope.workItemId}`;
+
+    await runAdmissionRecoveries(scope, d, db.sql);
+
+    expect((await current()).payload._admissionRecovery).toMatchObject({
+      requestId: first.request.requestId,
+      state: 'delivered', stage: 'await-pickup', pickupConfirmed: false,
+      pickupObservation: {
+        verdict: 'not-yet', activityAt: progressAt.toISOString(), source: 'last-progress-at',
+        reason: expect.stringContaining('predates recovery delivery'),
+      },
+    });
+    expect(d.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses pickup observations for a different request or target before reading activity', async () => {
+    const first = await requestAdmissionRecovery(input, { authorize }, db.sql);
+    await runAdmissionRecoveries(scope, deps(), db.sql);
+    const readActivity = vi.fn(async () => ({ assignee: input.target, lastProgressAt: new Date() }));
+
+    await expect(observeAdmissionRecoveryPickup({
+      ...scope, requestId: '00000000-0000-4000-8000-000000000000', target: input.target,
+    }, { readActivity }, db.sql)).rejects.toThrow('does not match the saved recovery request and target');
+    await expect(observeAdmissionRecoveryPickup({
+      ...scope, requestId: first.request.requestId, target: 'different-target',
+    }, { readActivity }, db.sql)).rejects.toThrow('does not match the saved recovery request and target');
+    expect(readActivity).not.toHaveBeenCalled();
+  });
+
+  it('records an unreadable activity read as a failed measurement, not a negative pickup', async () => {
+    await requestAdmissionRecovery(input, { authorize }, db.sql);
+    await runAdmissionRecoveries(scope, deps(), db.sql);
+    const readPickupActivity = vi.fn(async () => { throw new Error('activity store unavailable'); });
+
+    await runAdmissionRecoveries(scope, deps({ readPickupActivity }), db.sql);
+
+    expect(readPickupActivity).toHaveBeenCalledTimes(1);
+    expect((await current()).payload._admissionRecovery).toMatchObject({
+      state: 'delivered', stage: 'await-pickup', pickupConfirmed: false,
+      pickupObservation: {
+        verdict: 'unreadable', activityAt: null,
+        reason: expect.stringContaining('measurement failed'),
+      },
+    });
+  });
+
+  it('keeps a duplicate not-yet receipt idempotent without changing its observation time', async () => {
+    const first = await requestAdmissionRecovery(input, { authorize }, db.sql);
+    await runAdmissionRecoveries(scope, deps(), db.sql);
+    const delivered = (await current()).payload._admissionRecovery;
+    const nowMs = Date.parse(delivered.deliveredAt) + 1_000;
+    const args = { ...scope, requestId: first.request.requestId, target: input.target };
+
+    const original = await observeAdmissionRecoveryPickup(args, { }, db.sql);
+    const afterOriginal = (await current()).payload._admissionRecovery;
+    const duplicate = await observeAdmissionRecoveryPickup({ ...args, nowMs: nowMs + 1_000 }, {}, db.sql);
+    const afterDuplicate = (await current()).payload._admissionRecovery;
+
+    expect(original).toMatchObject({ verdict: 'not-yet', requestId: first.request.requestId });
+    expect(duplicate).toEqual(original);
+    expect(afterDuplicate.pickupObservation).toEqual(afterOriginal.pickupObservation);
+    expect(afterDuplicate.updatedAt).toBe(afterOriginal.updatedAt);
   });
 });

@@ -44,7 +44,17 @@ import {
   type WallEntry,
 } from '../../carry-note';
 import { getOrgPg } from '@papercusp/db-org';
+import {
+  readGoalHolderRows,
+  resolveGoalHoldersBatch,
+  type GoalHolderRow,
+  type GoalHolders,
+} from '../../goals/holder';
 import { assessGoalStaleness, extractGoalWorkItemIds } from './loop-goal-staleness';
+import {
+  readGoalHolderWakeState as defaultReadGoalHolderWakeState,
+  type GoalHolderWakeLoop,
+} from '../../goal-holder-wake-state';
 import { assessGoalFactDivergence, type CorrectedFact } from './loop-goal-fact-divergence';
 import {
   assessBlockerLiveness,
@@ -157,6 +167,19 @@ export interface LoopFireDeps {
    *  otherwise suppress the wake. A failed read returns null, which keeps the
    *  pre-WI-10004466 decision. Injected for tests. */
   countActionableHeldItems?: (input: { ownerId: string; workspaceId: string; sql?: Sql }) => Promise<number | null>;
+  /** WI-10005778: does the owner hold an ACTIVE goal's lease (goals.metadata.agentOwnerId)?
+   *  Read only when an await would otherwise suppress the wake. A failed read returns null,
+   *  which keeps the decision above. Injected for tests. */
+  ownerStewardsActiveGoal?: (input: { ownerId: string; sql?: Sql }) => Promise<boolean | null>;
+  /** P-007 (goal-grading-live-coverage-and-holder-followthrough-2026-10-08): render the
+   *  goal-holder state block (goal snapshot, loop cadence, obligations) for an owner that
+   *  holds an active goal's lease. Read only when `ownerStewardsActiveGoal` is true; a
+   *  failed or timed-out read returns null and the wake ships without it. Injected for tests. */
+  readGoalHolderWakeState?: (input: {
+    workspaceId: string;
+    ownerId: string;
+    loop: GoalHolderWakeLoop;
+  }) => Promise<string | null>;
   /** EI-21350609923930437: re-arm a parked pure loop at the suppression threshold before
    *  withholding its wake. Injected for tests; a failed write fails open and delivers the
    *  wake rather than leaving the claimed row parked forever. */
@@ -165,10 +188,10 @@ export interface LoopFireDeps {
    *  defaults to ensureInboxWakeArmedForActiveSession (a live adv_sessions row but no
    *  active standing inbox-wake await ⇒ re-arm it and report true). Injected for tests. */
   ensureWakeArmed?: typeof defaultEnsureWakeArmed;
-  /** EI-21417550055038906 (cold-carry delivery): arm the standing inbox-wake
-   *  DIRECTLY (no live-session gate) so the wake-executor's resume channel can
-   *  cold-respawn a between-fires owner. Injectable for tests. */
-  armWakeForColdRespawn?: typeof defaultArmInboxWake;
+  /** Arm the standing inbox-wake DIRECTLY (no live-session gate) after a
+   *  no-watcher miss. An active loop is standing consent to resume for either
+   *  carry mode; the wake executor's liveness ladder handles exited sessions. */
+  armWakeForResume?: typeof defaultArmInboxWake;
 }
 
 export interface LoopFireResult {
@@ -270,6 +293,9 @@ export interface LoopAwaitSuppressionDecision {
   /** WI-10004466: present only when an await WOULD have suppressed but the owner holds
    *  more actionable work-items than LOOP_AWAIT_SUPPRESSION_MAX_ACTIONABLE_HELD. */
   overriddenByActionableHeldItems?: number;
+  /** WI-10005778: present only when an await WOULD have suppressed but the owner holds an
+   *  active goal's lease, whose stewardship loop is standing work no single await gates. */
+  overriddenByGoalStewardship?: true;
 }
 
 /** Pure decision: given the owner's currently-active blocking awaits, should THIS
@@ -296,6 +322,9 @@ export function decideLoopAwaitSuppression(input: {
   /** WI-10004466: the owner's actionable held work-items. null/absent = unknown, which
    *  keeps the pre-WI-10004466 decision (an await alone may suppress). */
   actionableHeldItemCount?: number | null;
+  /** WI-10005778: true when the owner holds an active goal's lease. null/absent = unknown,
+   *  which keeps the decision the other inputs produce. */
+  ownerStewardsActiveGoal?: boolean | null;
 }): LoopAwaitSuppressionDecision {
   const maxQuietMs =
     typeof input.maxQuietMs === 'number' && Number.isFinite(input.maxQuietMs) && input.maxQuietMs > 0
@@ -341,6 +370,15 @@ export function decideLoopAwaitSuppression(input: {
   ) {
     return { suppress: false, resumeAtMs: null, drivingEventKey, overriddenByActionableHeldItems: actionable };
   }
+  // WI-10005778: a goal holder's loop is its stewardship cadence (fleet checks, owner
+  // reports it promised by a time), the same kind of standing duty that exempts monitor
+  // loops above. P-024's premise is a session whose ONLY lane is the await; a goal holder's
+  // lane never is, yet it holds few work-items because it outsources builds, so the
+  // actionable count above cannot see that duty. Observed 2026-10-03: coord:ask-owner's
+  // auto-armed conversation-question await held a 900s holder loop to ~1 fire per hour.
+  if (input.ownerStewardsActiveGoal === true) {
+    return { suppress: false, resumeAtMs: null, drivingEventKey, overriddenByGoalStewardship: true };
+  }
   return { suppress: true, resumeAtMs: earliestResumeAtMs, drivingEventKey };
 }
 
@@ -380,6 +418,51 @@ export async function defaultCountActionableHeldItems(input: {
   `;
   const n = rows[0]?.n;
   return typeof n === 'number' && Number.isFinite(n) ? n : null;
+}
+
+/** Seams for {@link defaultOwnerStewardsActiveGoal}; defaults read Postgres. */
+export interface OwnerStewardshipDeps {
+  readRows: (sql: Sql) => Promise<GoalHolderRow[]>;
+  readActiveGoals: (sql: Sql, goalIds: readonly string[]) => Promise<{ goalId: string; workspaceId: string }[]>;
+  resolveBatch: (
+    sql: Sql,
+    goals: readonly { goalId: string; workspaceId: string }[],
+    opts: { rows: readonly GoalHolderRow[] },
+  ) => Promise<Map<string, Pick<GoalHolders, 'elected'>>>;
+}
+
+const defaultOwnerStewardshipDeps: OwnerStewardshipDeps = {
+  readRows: (sql) => readGoalHolderRows(sql),
+  readActiveGoals: async (sql, goalIds) => {
+    const rows = await sql<{ id: string; workspace_id: string }[]>`
+      SELECT id, workspace_id FROM harness_shared.goals
+       WHERE id = ANY(${goalIds as string[]}::text[]) AND status = 'active'`;
+    return rows.map((r) => ({ goalId: r.id, workspaceId: r.workspace_id }));
+  },
+  resolveBatch: (sql, goals, opts) => resolveGoalHoldersBatch(sql, goals, opts),
+};
+
+/** WI-10005778 default resolver: is the owner the ELECTED lease holder of an ACTIVE goal?
+ *  The lease is the owner's `goal` mode row (subject = goal id, goal_lease_epoch), resolved
+ *  through lib/goals/holder.ts, so a predecessor whose row outlived its session, or that lost
+ *  the election, is not exempted (lint:no-raw-goal-holder-read). NOT goals.metadata.agentOwnerId:
+ *  measured 2026-10-03, that field still named a predecessor 6h after epoch 18 elected
+ *  su-9e72a11f. Not scoped by workspace: owner ids are globally unique, and a goal may live in a
+ *  different workspace from the holder's loop routine. Liveness is not required: this owner's
+ *  loop is firing, and the question is whether it holds the lease, not whether it is reachable. */
+export async function defaultOwnerStewardsActiveGoal(
+  input: { ownerId: string; sql?: Sql },
+  deps: OwnerStewardshipDeps = defaultOwnerStewardshipDeps,
+): Promise<boolean | null> {
+  const db = input.sql ?? getOrgPg().sql;
+  const rows = await deps.readRows(db);
+  const subjects = [...new Set(rows.filter((r) => r.ownerId === input.ownerId).map((r) => r.goalId))];
+  if (subjects.length === 0) return false;
+  const active = await deps.readActiveGoals(db, subjects);
+  if (active.length === 0) return false;
+  const holders = await deps.resolveBatch(db, active, { rows });
+  for (const h of holders.values()) if (h.elected?.ownerId === input.ownerId) return true;
+  return false;
 }
 
 /**
@@ -429,6 +512,67 @@ export async function rescheduleLoopAfterAwaitSuppression(input: SuppressedLoopR
     });
   }
   return rows.length > 0;
+}
+
+/**
+ * Revisit an active work loop after its owner explicitly cancels an await. Await suppression
+ * schedules a finite loop at the await's next resume threshold; if the owner clears that await
+ * early, leaving that deadline installed silently extends the loop's idle period. Pull only
+ * delayed pure interval loops back to one configured interval from now. An in-flight loop is
+ * parked at infinity and is deliberately left for its normal completion rebase.
+ */
+export async function rebaseLoopAfterAwaitCancellation(input: {
+  workspaceId: string;
+  targetOwnerId: string;
+  eventKey: string;
+  sql?: Sql;
+}): Promise<number> {
+  const db = input.sql ?? getOrgPg().sql;
+  const workspaceId = resolveConcreteWorkspaceId(input.workspaceId);
+  const rows = await db<{
+    id: string;
+    workspace_id: string;
+    install_slug: string;
+    name: string;
+    target_owner_id: string;
+    reschedule_interval_sec: number | string;
+    next_fire_at: Date | string;
+  }[]>`
+    UPDATE harness_shared.routines
+       SET next_fire_at = now() + (reschedule_interval_sec * interval '1 second'),
+           updated_at = now()
+     WHERE workspace_id = ${workspaceId}
+       AND target_owner_id = ${input.targetOwnerId}
+       AND active = TRUE
+       AND reschedule_interval_sec IS NOT NULL
+       AND reschedule_interval_sec > 0
+       AND next_fire_at <> 'infinity'::timestamptz
+       AND next_fire_at > now() + (reschedule_interval_sec * interval '1 second')
+       AND COALESCE(payload_template->>'mode', 'work') <> 'monitor'
+       AND NOT jsonb_exists(trigger_config, 'cron')
+       AND NOT jsonb_exists(trigger_config, 'rrule')
+     RETURNING id, workspace_id, install_slug, name, target_owner_id,
+               reschedule_interval_sec, next_fire_at
+  `;
+
+  for (const row of rows) {
+    const nextFireAt =
+      row.next_fire_at instanceof Date ? row.next_fire_at.toISOString() : new Date(String(row.next_fire_at)).toISOString();
+    void recordLoopTransition(db, {
+      workspaceId: row.workspace_id,
+      installSlug: row.install_slug,
+      routineId: row.id,
+      routineName: row.name,
+      targetOwnerId: row.target_owner_id,
+      event: 'rearmed',
+      actor: 'await-cancel-recheck',
+      newNextFireAt: nextFireAt,
+      intervalSec: Number(row.reschedule_interval_sec),
+      detail: { via: 'await-cancel-recheck', canceledEventKey: input.eventKey },
+    });
+  }
+
+  return rows.length;
 }
 
 /** Read the loop kickoff (wake-turn text) from the routine's payload_template, if any. */
@@ -718,6 +862,10 @@ export function renderLoopWakeText(opts: {
    *  ABOVE the wall nag, the walls, and the loop contract, in EVERY form:
    *  an owner order outranks the loop's re-injected standing agenda. */
   ownerDirectivesBlock?: string | null;
+  /** P-007: the pre-rendered goal-holder state block (renderGoalHolderWakeState) — fresh
+   *  state read at fire time, so it rides directly beneath the priority stack (owner
+   *  directives / walls / checks) and above the carry-note, in EVERY form. */
+  goalHolderStateBlock?: string | null;
   /** WI-5092: true when the carry-note READ FAILED (store error) — suppresses the
    *  first-carry-note mandate, which must only assert emptiness on a CONFIRMED-empty
    *  read (a failed read may hide a real note the mandate would nudge an overwrite of). */
@@ -766,9 +914,13 @@ export function renderLoopWakeText(opts: {
   });
   const wallsBlock = renderLoopWallsBlock(opts.walls ?? [], opts.nowMs);
   const checksBlock = renderLoopChecksBlock(opts.checks ?? []);
-  const priority = [opts.ownerDirectivesBlock || null, opts.wallNagLine || null, wallsBlock, checksBlock].filter(
-    (s): s is string => Boolean(s),
-  );
+  const priority = [
+    opts.ownerDirectivesBlock || null,
+    opts.wallNagLine || null,
+    wallsBlock,
+    checksBlock,
+    opts.goalHolderStateBlock || null,
+  ].filter((s): s is string => Boolean(s));
   // WI-5092 (su-behavior audit): an armed loop whose carry-note is NEVER written is the
   // audited continuity gap — monitor loops especially armed fine, then settled wake after
   // wake with loop:checkpoint absent from every call, leaving a cold wake / successor /
@@ -1003,6 +1155,14 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   const deadMan = deps.deadMan ?? defaultCheckLoopDeadMan;
   const incrementFireCount = deps.incrementFireCount ?? defaultIncrementLoopFireCount;
   const readFireCount = deps.readFireCount ?? defaultReadLoopFireCount;
+  // WI-10005778 + P-007: one stewardship read per fire, shared by the await-suppression
+  // guard and the goal-holder state block. Lazy and fail-soft (null = unknown).
+  let stewardshipRead: Promise<boolean | null> | null = null;
+  const readStewardshipOnce = (): Promise<boolean | null> =>
+    (stewardshipRead ??= (deps.ownerStewardsActiveGoal ?? defaultOwnerStewardsActiveGoal)({
+      ownerId: input.targetOwnerId,
+      sql: input.sql,
+    }).catch(() => null));
   const getNoteMeta =
     deps.getLoopCarryNoteWithMeta ??
     (deps.getLoopCarryNote
@@ -1098,11 +1258,15 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
         workspaceId: input.workspaceId,
         sql: input.sql,
       }).catch(() => null);
+      // WI-10005778: a goal holder's stewardship loop is standing work no await gates.
+      // Read lazily (only when the decision would still suppress) and fail-soft.
+      const ownerStewardsActiveGoal = await readStewardshipOnce();
       decision = decideLoopAwaitSuppression({
         awaits: blockingAwaits,
         nowMs,
         lastDeliveredAtMs,
         actionableHeldItemCount,
+        ownerStewardsActiveGoal,
       });
     }
     if (decision.suppress) {
@@ -1145,13 +1309,17 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
         }
       }
       if (!rearmFailed) {
-        return {
-          fired: false,
-          reason: 'await-blocking',
-          detail:
-            `owner is parked on a blocking await (${decision.drivingEventKey ?? blockingAwaits[0]?.eventKey}) — ` +
-            `wake withheld until ${decision.resumeAtMs != null ? new Date(decision.resumeAtMs).toISOString() : 'it fires'}`,
-        };
+        const detail =
+          `owner is parked on a blocking await (${decision.drivingEventKey ?? blockingAwaits[0]?.eventKey}) — ` +
+          `wake withheld until ${decision.resumeAtMs != null ? new Date(decision.resumeAtMs).toISOString() : 'it fires'}`;
+        // WI-10005352: stamp the deliberate withhold exactly like the fire-gate branch does.
+        // claimDueRoutine already advanced routines.last_fired_at for this tick, so without a
+        // last_withheld_at >= last_fired_at the stalled-loops guard reads this by-design
+        // silent fire as a turnless one and, after enough of them, DISARMS a session that is
+        // correctly parked on its await (2026-10-02 01:25-02:07Z, su-ce50c06d). Only the
+        // separate last_withheld_* columns are written — never the backoff clock.
+        await recordWithheld(input.installSlug, input.routineName, 'await-blocking', detail).catch(() => {});
+        return { fired: false, reason: 'await-blocking', detail };
       }
     }
   }
@@ -1275,8 +1443,19 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
     blockerLiveness,
     Date.now(),
   ).note;
+  // P-007: a goal holder's wake carries the goal snapshot, loop cadence and obligations it
+  // would otherwise re-fetch (goals:get / loop:status / coord:orient) at the top of every wake.
+  const goalHolderStateBlock =
+    (await readStewardshipOnce()) === true
+      ? await (deps.readGoalHolderWakeState ?? defaultReadGoalHolderWakeState)({
+          workspaceId: input.workspaceId,
+          ownerId: input.targetOwnerId,
+          loop: { fireNumber, intervalSec: input.intervalSec ?? null, firedAtMs: Date.now() },
+        }).catch(() => null)
+      : null;
   const kickoff = renderLoopWakeText({
     kickoff: armTimeKickoff,
+    goalHolderStateBlock,
     goalStalenessNote,
     goalFactDivergenceNote,
     blockerLivenessNote,
@@ -1366,25 +1545,18 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
     let healed = await ensureWakeArmed({ ownerId: input.targetOwnerId, workspaceId: input.workspaceId }).catch(
       () => false,
     );
-    // EI-21417550055038906 (comment 77440, fix part 4): a COLD-carry loop's owner
-    // is EXPECTED to have no live session between fires — each one-turn cold
-    // session dies, its SessionEnd cancels the standing inbox-wake await, and the
-    // live-session-gated self-heal above then refuses to re-arm (no live
-    // adv_sessions row). Every subsequent fire therefore emitted a warm wake into
-    // the void and black-holed as no-session-now (measured: 0/17 fires delivered,
-    // consecutiveErrors climbing, member idle over a claimable lane) — the only
-    // working lever was an external coord:send wake:'required'. For a cold loop,
-    // arm the standing await DIRECTLY (armInboxWake has no live-session gate; it
-    // captures the freshest resume handle, and the wake-executor's liveness
-    // ladder already handles "exited → resume/respawn"), then retry the emit so
-    // THIS fire takes the resume channel instead of counting an error. A cold
-    // loop being armed IS the owner's standing consent to be re-woken; loop:end
-    // is the opt-out, so bypassing the explicit-cancel check here is correct.
-    if (!healed && carry === 'cold') {
-      const armColdWake = deps.armWakeForColdRespawn ?? defaultArmInboxWake;
-      healed = await armColdWake({
+    // A SessionEnd can cancel the standing inbox-wake while the loop itself is
+    // still active. The live-session-gated self-heal above cannot repair every
+    // recovery state (for example, the latest adv_sessions incarnation may be
+    // absent or already ended), so the old cold-only fallback left warm loops
+    // parked after a no-watcher miss. An armed loop in either carry mode is
+    // standing consent to resume; loop:end is the opt-out. Arm directly, capture
+    // the freshest resume handle, and retry this fire through the liveness ladder.
+    if (!healed) {
+      const armWake = deps.armWakeForResume ?? defaultArmInboxWake;
+      healed = await armWake({
         ownerId: input.targetOwnerId,
-        note: `cold-loop resume channel (loop:${input.routineId}) — re-armed by loop-fire after a no-watcher miss`,
+        note: `${carry}-loop resume channel (loop:${input.routineId}) — re-armed by loop-fire after a no-watcher miss`,
       })
         .then(() => true)
         .catch(() => false);

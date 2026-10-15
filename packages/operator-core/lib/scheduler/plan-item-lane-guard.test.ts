@@ -137,6 +137,28 @@ describe('planItemLaneBlockReason', () => {
     expect(got?.planSlug).toBe('p2p-git-live-activation-2026-07-09');
     expect(got?.itemId).toBe('P-503');
     expect(got?.reason).toMatch(/effectively blocked/);
+    expect(got).not.toHaveProperty('blockAttributedToWorkItemId');
+  });
+
+  it('marks a sole stored block as attributable only when its live note names this work-item', async () => {
+    const workItemId = 'WI-1733069';
+    getPlanRowMock.mockResolvedValue({
+      items: [
+        planItem({
+          id: 'P-003',
+          storedStatus: 'blocked',
+          text: `an item — note: ← ${workItemId} blocked (1 external blocker)`,
+        }),
+      ],
+    });
+    const got = await planItemLaneBlockReason({
+      payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-003' } },
+      harness: 'papercusp',
+      id: workItemId,
+      family: UNUSED_FAMILY,
+    });
+    expect(got?.effectiveStatus).toBe('blocked');
+    expect(got?.blockAttributedToWorkItemId).toBe(workItemId);
   });
 
   it('reports blocked for an item blocked-by an unresolved dependency', async () => {
@@ -153,6 +175,52 @@ describe('planItemLaneBlockReason', () => {
       family: UNUSED_FAMILY,
     });
     expect(got?.reason).toMatch(/blocked-by: P-001/);
+    expect(got).not.toHaveProperty('blockAttributedToWorkItemId');
+  });
+
+  it('does not mark a needs-human lane as a self-attributed clear', async () => {
+    const workItemId = 'WI-1733069';
+    getPlanRowMock.mockResolvedValue({
+      items: [
+        planItem({
+          id: 'P-004',
+          storedStatus: 'needs-human',
+          text: `an item — note: ← ${workItemId} needs-human (owner decision)`,
+        }),
+      ],
+    });
+    const got = await planItemLaneBlockReason({
+      payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-004' } },
+      harness: 'papercup',
+      id: workItemId,
+      family: UNUSED_FAMILY,
+    });
+    expect(got?.effectiveStatus).toBe('needs-human');
+    expect(got).not.toHaveProperty('blockAttributedToWorkItemId');
+  });
+
+  it('does not attribute one blocked lane when another linked plan item is also blocked', async () => {
+    const workItemId = 'WI-1733069';
+    getPlanRowMock.mockResolvedValue({
+      items: [
+        planItem({
+          id: 'P-005',
+          storedStatus: 'blocked',
+          text: `first item — note: ← ${workItemId} blocked (1 external blocker)`,
+        }),
+        planItem({ id: 'P-006', storedStatus: 'blocked', text: 'second blocked item' }),
+      ],
+    });
+    const got = await planItemLaneBlockReason({
+      payload: null,
+      harness: 'papercup',
+      id: workItemId,
+      family: UNUSED_FAMILY,
+      sourcePlanSlug: 'a-plan',
+      sourcePlanItemIds: ['P-005', 'P-006'],
+    });
+    expect(got?.effectiveStatus).toBe('blocked');
+    expect(got).not.toHaveProperty('blockAttributedToWorkItemId');
   });
 
   // WI-7316: the lane guard already resolves `staleBlockedHint` (resolveEffectiveStatusForItems

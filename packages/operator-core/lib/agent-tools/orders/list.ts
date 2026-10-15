@@ -48,7 +48,7 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('true = only directives recorded by this session; false = only other sessions; omit = the full ledger. Applied in SQL before `limit`.'),
-    limit: z.number().int().min(1).max(200).optional().describe('Max rows (default 50).'),
+    limit: z.number().int().min(1).max(200).optional().describe('Max rows: integer 1–200 (default 50).'),
   }),
   async handler(args, ctx) {
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId() ?? 'default';

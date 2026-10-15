@@ -24,7 +24,8 @@
  * This is a pin, not a test of GitHub Actions. It asserts that the FACTS this
  * plan's decisions rest on are still facts.
  */
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -53,6 +54,41 @@ const stepIndex = (predicate: (s: WorkflowStep) => boolean): number =>
 const LOST_PIXEL_STEP = (s: WorkflowStep): boolean => (s.run ?? '').includes('npm run lostpixel');
 const REPORT_STEP = (s: WorkflowStep): boolean =>
   (s.run ?? '').includes('npm run design:evidence-report');
+
+function browserInstallTargetsPackage(step: WorkflowStep, repoRoot: string, resolvedDir: string): boolean {
+  const match = /node\s+(\S*playwright-core)\/cli\.js\s+install/.exec(step.run ?? '');
+  if (match === null) return false;
+  // Committed test trees reuse node_modules through a symlink. Resolve both
+  // paths to the physical package, while keeping nested browser builds distinct.
+  return realpathSync(path.resolve(repoRoot, match[1] as string)) === realpathSync(resolvedDir);
+}
+
+describe('browser installation package identity', () => {
+  it('recognizes the resolved package through a shared dependency symlink and rejects a different version', () => {
+    const fixture = mkdtempSync(path.join(tmpdir(), 'design-ci-package-'));
+    try {
+      const shared = path.join(fixture, 'shared');
+      const clone = path.join(fixture, 'clone');
+      const hoisted = path.join(shared, 'node_modules/playwright-core');
+      const nested = path.join(shared, 'node_modules/lost-pixel/node_modules/playwright-core');
+      for (const [directory, version] of [[hoisted, '1.59.1'], [nested, '1.47.2']] as const) {
+        mkdirSync(directory, { recursive: true });
+        writeFileSync(path.join(directory, 'package.json'), JSON.stringify({ name: 'playwright-core', version }));
+      }
+      mkdirSync(path.join(clone, 'packages/operator-core'), { recursive: true });
+      symlinkSync(path.join(shared, 'node_modules'), path.join(clone, 'node_modules'), 'dir');
+      const resolvedDir = path.dirname(require.resolve('playwright-core/package.json', {
+        paths: [path.join(clone, 'packages/operator-core')],
+      }));
+
+      expect(browserInstallTargetsPackage({ run: 'node node_modules/playwright-core/cli.js install chromium' }, clone, resolvedDir)).toBe(true);
+      expect(browserInstallTargetsPackage({ run: 'node node_modules/lost-pixel/node_modules/playwright-core/cli.js install chromium' }, clone, resolvedDir)).toBe(false);
+      expect(browserInstallTargetsPackage({ run: 'node node_modules/playwright-core/cli.js install chromium' }, shared, resolvedDir)).toBe(true);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('visual job wiring (P-008)', () => {
   it('has a visual job with steps at all, so no assertion below passes vacuously', () => {
@@ -126,11 +162,9 @@ describe('visual job wiring (P-008)', () => {
         paths: [path.join(REPO_ROOT, 'packages/operator-core')],
       });
       const resolvedDir = path.dirname(resolved);
-      const installsForResolved = installSteps.filter((step) => {
-        const match = /node\s+(\S*playwright-core)\/cli\.js\s+install/.exec(step.run ?? '');
-        if (match === null) return false;
-        return path.resolve(REPO_ROOT, match[1] as string) === resolvedDir;
-      });
+      const installsForResolved = installSteps.filter((step) =>
+        browserInstallTargetsPackage(step, REPO_ROOT, resolvedDir),
+      );
       expect(
         installsForResolved.length,
         `no CI step installs a browser for ${resolvedDir}, which is the playwright-core ` +

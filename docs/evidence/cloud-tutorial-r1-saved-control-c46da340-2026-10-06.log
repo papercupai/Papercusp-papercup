@@ -1,0 +1,520 @@
+[mutation-probe] copy-out: overlay relocation — post-baseline guard runs see the mutant AT /dev/shm/pcv/papercusp-lint-as-committed-c46da34062-oZEHS0/apps/operator/lib/onboarding/cloud-tutorial-session.tsx inside a private mount namespace (bwrap); the tracked file and every peer still see the original
+[mutation-probe] running baseline guard: test -f /dev/shm/pcv/papercusp-lint-as-committed-c46da34062-oZEHS0/apps/operator/lib/onboarding/cloud-tutorial-session.tsx && PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- apps/operator/lib/onboarding/cloud-tutorial-session.integration.test.tsx
+
+> @papercupai/papercusp-monorepo@0.0.1 test:file
+> PC_HEAVY_RETRY_PREEMPTIONS=3 PC_HEAVY_PREEMPT_AFTER_READY=1 PC_HEAVY_COALESCE=0 bash scripts/pc-heavy.sh node --import ./scripts/lib/committed-source-loader.mjs scripts/npm-install-safe.mjs --exec-under-lock -- node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs apps/operator/lib/onboarding/cloud-tutorial-session.integration.test.tsx
+
+[pc-heavy] release gate is JUDGING (phase=suite) — heavy slots clamped to 2 to keep headroom for its isolation re-run (EI-19315056231449472). PC_HEAVY_GATE_RESERVE=0 lifts THIS CLAMP ONLY — you still queue for a slot behind unrelated heavy runs. To run FOCUSED TESTS without queueing at all, use testing:run { files: [...] }, which spawns the router directly and takes no admission ticket (EI-20204197087661235).
+[pc-heavy] queued for a focused test lane slot (all 1 slot(s) busy) — pid 1630258, waiting up to 30s
+[pc-heavy] still queued (16s elapsed, pid 1630258, slots=1)
+[pc-heavy] still queued (33s elapsed, pid 1630258, slots=1)
+[pc-heavy] slot acquired — starting real work
+NPM_INSTALL_SAFE guarding reader: node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs apps/operator/lib/onboarding/cloud-tutorial-session.integration.test.tsx (root=/dev/shm/pcv/papercusp-lint-as-committed-c46da34062-oZEHS0, lock=npm-install-b16f338a6bfa)
+TEST_FILE_LIST_PROGRESS state=started cwd="apps/operator" elapsedMs=12 capturedBytes=0 completedFiles=[] pendingFiles=[] timeoutMs=120000 exitStatus=pending signal=pending
+TEST_FILE_LIST_PROGRESS state=finished cwd="apps/operator" elapsedMs=2602 capturedBytes=165 completedFiles=[] pendingFiles=[] timeoutMs=120000 exitStatus=0 signal=none
+PC_HEAVY_PREEMPT_READY pid=1653703
+TEST_FILE_PROGRESS state=started cwd="apps/operator" elapsedMs=9 capturedBytes=0 completedFiles=[] pendingFiles=["lib/onboarding/cloud-tutorial-session.integration.test.tsx"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="apps/operator" elapsedMs=10010 capturedBytes=299 completedFiles=[] pendingFiles=["lib/onboarding/cloud-tutorial-session.integration.test.tsx"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="apps/operator" elapsedMs=20011 capturedBytes=451 completedFiles=[] pendingFiles=["lib/onboarding/cloud-tutorial-session.integration.test.tsx"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="apps/operator" elapsedMs=30011 capturedBytes=1915 completedFiles=[] pendingFiles=["lib/onboarding/cloud-tutorial-session.integration.test.tsx"] timeoutMs=600000 exitStatus=pending signal=pending
+PC_HEAVY_PSI_FINALIZATION pid=1653703
+TEST_FILE_PROGRESS state=file-completed cwd="apps/operator" elapsedMs=31499 capturedBytes=2451 completedFiles=["lib/onboarding/cloud-tutorial-session.integration.test.tsx"] pendingFiles=[] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=finished cwd="apps/operator" elapsedMs=37751 capturedBytes=3136 completedFiles=["lib/onboarding/cloud-tutorial-session.integration.test.tsx"] pendingFiles=[] timeoutMs=600000 exitStatus=0 signal=none
+Running as unit: papercusp-test-1653703-muwwbb6i-2.scope; invocation ID: 7eb122cc74184aa89a9c44f5b145dbed
+[org-template-global-setup] template ready key=42646222b4da04b2 name=tmpl_42646222b4da04b2 elapsedMs=200
+(node:1665673) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+TEST_FILE_ROUTE requested=1 groups=1
+TEST_FILE_PROVENANCE head=c46da34062 testedPaths=1 uncommitted=0 unknown=0 phase=pre-run startedAt=2026-10-06T16:31:03.056Z
+  HEAD         : c46da34062
+  tested files : apps/operator/lib/onboarding/cloud-tutorial-session.integration.test.tsx  [clean]
+  scope        : the NAMED paths above only — an edit to any OTHER module in their import graph invalidates this result just as thoroughly and is NOT measured here
+ROUTE cwd=apps/operator config=vitest.integration.config.ts
+  requested lib/onboarding/cloud-tutorial-session.integration.test.tsx
+  matched lib/onboarding/cloud-tutorial-session.integration.test.tsx
+
+ RUN  v4.1.8 /dev/shm/pcv/papercusp-lint-as-committed-c46da34062-oZEHS0/apps/operator
+
+ ✓ lib/onboarding/cloud-tutorial-session.integration.test.tsx (6 tests) 6182ms
+     ✓ requires correlated reviewed first, revision and different self-written answers through the actual owner chat  1992ms
+     ✓ new-user reaches an inspected successful correlated result using explicit real controls  1214ms
+     ✓ existing-workspace reaches an inspected successful correlated result using explicit real controls  1512ms
+     ✓ an actual failed task cannot be inspected or advance the lesson  1197ms
+
+ Test Files  1 passed (1)
+      Tests  6 passed (6)
+   Start at  12:31:15
+   Duration  29.11s (transform 4.41s, setup 248ms, import 7.20s, tests 6.18s, environment 8.84s)
+
+TEST_FILE_PROVENANCE head=c46da34062 testedPaths=1 uncommitted=0 unknown=0 phase=post-run startedAt=2026-10-06T16:31:51.114Z
+  HEAD         : c46da34062
+  tested files : apps/operator/lib/onboarding/cloud-tutorial-session.integration.test.tsx  [clean]
+  scope        : the NAMED paths above only — an edit to any OTHER module in their import graph invalidates this result just as thoroughly and is NOT measured here
+TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=c46da34062 uncommittedPaths=0/1 provenance=stamped startedAt=2026-10-06T16:31:03.056Z skippedTests=0
+[mutation-probe] running unmutated-copy baseline guard: test -f /dev/shm/pcv/papercusp-lint-as-committed-c46da34062-oZEHS0/apps/operator/lib/onboarding/cloud-tutorial-session.tsx && PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- apps/operator/lib/onboarding/cloud-tutorial-session.integration.test.tsx
+
+> @papercupai/papercusp-monorepo@0.0.1 test:file
+> PC_HEAVY_RETRY_PREEMPTIONS=3 PC_HEAVY_PREEMPT_AFTER_READY=1 PC_HEAVY_COALESCE=0 bash scripts/pc-heavy.sh node --import ./scripts/lib/committed-source-loader.mjs scripts/npm-install-safe.mjs --exec-under-lock -- node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs apps/operator/lib/onboarding/cloud-tutorial-session.integration.test.tsx
+
+[pc-heavy] release gate is JUDGING (phase=suite) — heavy slots clamped to 2 to keep headroom for its isolation re-run (EI-19315056231449472). PC_HEAVY_GATE_RESERVE=0 lifts THIS CLAMP ONLY — you still queue for a slot behind unrelated heavy runs. To run FOCUSED TESTS without queueing at all, use testing:run { files: [...] }, which spawns the router directly and takes no admission ticket (EI-20204197087661235).
+[pc-heavy] queued for a focused test lane slot (all 1 slot(s) busy) — pid 1687999, waiting up to 30s
+[pc-heavy] still queued (15s elapsed, pid 1687999, slots=1)
+[pc-heavy] still queued (32s elapsed, pid 1687999, slots=1)
+[pc-heavy] slot acquired — starting real work
+NPM_INSTALL_SAFE guarding reader: node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs apps/operator/lib/onboarding/cloud-tutorial-session.integration.test.tsx (root=/dev/shm/pcv/papercusp-lint-as-committed-c46da34062-oZEHS0, lock=npm-install-b16f338a6bfa)
+TEST_FILE_LIST_PROGRESS state=started cwd="apps/operator" elapsedMs=8 capturedBytes=0 completedFiles=[] pendingFiles=[] timeoutMs=120000 exitStatus=pending signal=pending
+TEST_FILE_LIST_PROGRESS state=finished cwd="apps/operator" elapsedMs=1777 capturedBytes=165 completedFiles=[] pendingFiles=[] timeoutMs=120000 exitStatus=0 signal=none
+PC_HEAVY_PREEMPT_READY pid=1711320
+TEST_FILE_PROGRESS state=started cwd="apps/operator" elapsedMs=21 capturedBytes=0 completedFiles=[] pendingFiles=["lib/onboarding/cloud-tutorial-session.integration.test.tsx"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="apps/operator" elapsedMs=10022 capturedBytes=194 completedFiles=[] pendingFiles=["lib/onboarding/cloud-tutorial-session.integration.test.tsx"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="apps/operator" elapsedMs=20023 capturedBytes=300 completedFiles=[] pendingFiles=["lib/onboarding/cloud-tutorial-session.integration.test.tsx"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="apps/operator" elapsedMs=30023 capturedBytes=300 completedFiles=[] pendingFiles=["lib/onboarding/cloud-tutorial-session.integration.test.tsx"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="apps/operator" elapsedMs=40024 capturedBytes=300 completedFiles=[] pendingFiles=["lib/onboarding/cloud-tutorial-session.integration.test.tsx"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="apps/operator" elapsedMs=50025 capturedBytes=452 completedFiles=[] pendingFiles=["lib/onboarding/cloud-tutorial-session.integration.test.tsx"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="apps/operator" elapsedMs=60025 capturedBytes=452 completedFiles=[] pendingFiles=["lib/onboarding/cloud-tutorial-session.integration.test.tsx"] timeoutMs=600000 exitStatus=pending signal=pending
+PC_HEAVY_PSI_FINALIZATION pid=1711320
+TEST_FILE_PROGRESS state=file-completed cwd="apps/operator" elapsedMs=69723 capturedBytes=2452 completedFiles=["lib/onboarding/cloud-tutorial-session.integration.test.tsx"] pendingFiles=[] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="apps/operator" elapsedMs=70026 capturedBytes=3138 completedFiles=["lib/onboarding/cloud-tutorial-session.integration.test.tsx"] pendingFiles=[] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="apps/operator" elapsedMs=80027 capturedBytes=3138 completedFiles=["lib/onboarding/cloud-tutorial-session.integration.test.tsx"] pendingFiles=[] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=finished cwd="apps/operator" elapsedMs=88768 capturedBytes=3138 completedFiles=["lib/onboarding/cloud-tutorial-session.integration.test.tsx"] pendingFiles=[] timeoutMs=600000 exitStatus=0 signal=none
+Running as unit: papercusp-test-1711320-muwwdma6-2.scope; invocation ID: b65121bfe33847ccb1f623cdc48e18e2
+[org-template-global-setup] template ready key=42646222b4da04b2 name=tmpl_42646222b4da04b2 elapsedMs=2375
+(node:1729084) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+TEST_FILE_ROUTE requested=1 groups=1
+TEST_FILE_PROVENANCE head=c46da34062 testedPaths=1 uncommitted=0 unknown=0 phase=pre-run startedAt=2026-10-06T16:32:27.390Z
+  HEAD         : c46da34062
+  tested files : apps/operator/lib/onboarding/cloud-tutorial-session.integration.test.tsx  [clean]
+  scope        : the NAMED paths above only — an edit to any OTHER module in their import graph invalidates this result just as thoroughly and is NOT measured here
+ROUTE cwd=apps/operator config=vitest.integration.config.ts
+  requested lib/onboarding/cloud-tutorial-session.integration.test.tsx
+  matched lib/onboarding/cloud-tutorial-session.integration.test.tsx
+
+ RUN  v4.1.8 /dev/shm/pcv/papercusp-lint-as-committed-c46da34062-oZEHS0/apps/operator
+
+ ✓ lib/onboarding/cloud-tutorial-session.integration.test.tsx (6 tests) 5649ms
+     ✓ requires correlated reviewed first, revision and different self-written answers through the actual owner chat  2278ms
+     ✓ new-user reaches an inspected successful correlated result using explicit real controls  985ms
+     ✓ existing-workspace reaches an inspected successful correlated result using explicit real controls  1050ms
+     ✓ an actual failed task cannot be inspected or advance the lesson  1102ms
+
+ Test Files  1 passed (1)
+      Tests  6 passed (6)
+   Start at  12:33:03
+   Duration  67.63s (transform 8.07s, setup 421ms, import 26.88s, tests 5.65s, environment 22.70s)
+
+TEST_FILE_PROVENANCE head=c46da34062 testedPaths=1 uncommitted=0 unknown=0 phase=post-run startedAt=2026-10-06T16:34:29.816Z
+  HEAD         : c46da34062
+  tested files : apps/operator/lib/onboarding/cloud-tutorial-session.integration.test.tsx  [clean]
+  scope        : the NAMED paths above only — an edit to any OTHER module in their import graph invalidates this result just as thoroughly and is NOT measured here
+TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=c46da34062 uncommittedPaths=0/1 provenance=stamped startedAt=2026-10-06T16:32:27.390Z skippedTests=0
+[mutation-probe] mutation diff (first 40 lines):
+--- /dev/shm/pcv/mutation-probe.PlOjwt/cloud-tutorial-session.tsx.orig	2026-10-06 12:11:10.743767025 -0400
++++ /dev/shm/pcv/mutation-probe.PlOjwt/overlay/cloud-tutorial-session.tsx	2026-10-06 12:34:30.100225978 -0400
+@@ -16,7 +16,7 @@
+  * another request's answer, and legacy results without an outcome never certify success. */
+ export function correlatedTutorialTask(entries: readonly TimelineEntry[], request: RequestReceipt | null) {
+   if (!request) return null;
+-  const turn = groupEntriesIntoTurns(entries).find(candidate => candidate.prompt?.text?.includes(request.prompt));
++  const turn = groupEntriesIntoTurns(entries).find(candidate => true);
+   const terminal = turn?.entries.filter(entry => entry.kind === "result" && entry.outcome).at(-1);
+   const hasAnswer = turn?.entries.some(entry => (entry.kind === "text" || entry.kind === "result") && entry.text?.trim());
+   return { entries: turn ? [turn.prompt!, ...turn.entries] : [],
+[mutation-probe] mutant applied: 78597788 -> changed (copy-out)
+[mutation-probe] running mutant guard: test -f /dev/shm/pcv/papercusp-lint-as-committed-c46da34062-oZEHS0/apps/operator/lib/onboarding/cloud-tutorial-session.tsx && PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- apps/operator/lib/onboarding/cloud-tutorial-session.integration.test.tsx
+
+> @papercupai/papercusp-monorepo@0.0.1 test:file
+> PC_HEAVY_RETRY_PREEMPTIONS=3 PC_HEAVY_PREEMPT_AFTER_READY=1 PC_HEAVY_COALESCE=0 bash scripts/pc-heavy.sh node --import ./scripts/lib/committed-source-loader.mjs scripts/npm-install-safe.mjs --exec-under-lock -- node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs apps/operator/lib/onboarding/cloud-tutorial-session.integration.test.tsx
+
+[pc-heavy] release gate is JUDGING (phase=suite) — heavy slots clamped to 2 to keep headroom for its isolation re-run (EI-19315056231449472). PC_HEAVY_GATE_RESERVE=0 lifts THIS CLAMP ONLY — you still queue for a slot behind unrelated heavy runs. To run FOCUSED TESTS without queueing at all, use testing:run { files: [...] }, which spawns the router directly and takes no admission ticket (EI-20204197087661235).
+[pc-heavy] queued for a focused test lane slot (all 1 slot(s) busy) — pid 1756488, waiting up to 30s
+[pc-heavy] still queued (15s elapsed, pid 1756488, slots=1)
+[pc-heavy] still queued (30s elapsed, pid 1756488, slots=1)
+[pc-heavy] slot acquired — starting real work
+NPM_INSTALL_SAFE guarding reader: node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs apps/operator/lib/onboarding/cloud-tutorial-session.integration.test.tsx (root=/dev/shm/pcv/papercusp-lint-as-committed-c46da34062-oZEHS0, lock=npm-install-b16f338a6bfa)
+TEST_FILE_LIST_PROGRESS state=started cwd="apps/operator" elapsedMs=9 capturedBytes=0 completedFiles=[] pendingFiles=[] timeoutMs=120000 exitStatus=pending signal=pending
+TEST_FILE_LIST_PROGRESS state=finished cwd="apps/operator" elapsedMs=1896 capturedBytes=165 completedFiles=[] pendingFiles=[] timeoutMs=120000 exitStatus=0 signal=none
+PC_HEAVY_PREEMPT_READY pid=1778297
+TEST_FILE_PROGRESS state=started cwd="apps/operator" elapsedMs=9 capturedBytes=0 completedFiles=[] pendingFiles=["lib/onboarding/cloud-tutorial-session.integration.test.tsx"] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="apps/operator" elapsedMs=10009 capturedBytes=451 completedFiles=[] pendingFiles=["lib/onboarding/cloud-tutorial-session.integration.test.tsx"] timeoutMs=600000 exitStatus=pending signal=pending
+PC_HEAVY_PSI_FINALIZATION pid=1778297
+TEST_FILE_PROGRESS state=file-completed cwd="apps/operator" elapsedMs=18961 capturedBytes=2260 completedFiles=["lib/onboarding/cloud-tutorial-session.integration.test.tsx"] pendingFiles=[] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=running cwd="apps/operator" elapsedMs=20010 capturedBytes=12720 completedFiles=["lib/onboarding/cloud-tutorial-session.integration.test.tsx"] pendingFiles=[] timeoutMs=600000 exitStatus=pending signal=pending
+TEST_FILE_PROGRESS state=finished cwd="apps/operator" elapsedMs=24623 capturedBytes=12720 completedFiles=["lib/onboarding/cloud-tutorial-session.integration.test.tsx"] pendingFiles=[] timeoutMs=600000 exitStatus=1 signal=none
+Running as unit: papercusp-test-1778297-muwwgd6q-2.scope; invocation ID: 4b4d4781ca0a4d9cb253d320893b61b8
+[org-template-global-setup] template ready key=42646222b4da04b2 name=tmpl_42646222b4da04b2 elapsedMs=196
+(node:1788282) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+Not implemented: HTMLMediaElement's play() method
+Not implemented: HTMLMediaElement's pause() method
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  lib/onboarding/cloud-tutorial-session.integration.test.tsx > beginner meaningful work and self-written practice > requires correlated reviewed first, revision and different self-written answers through the actual owner chat
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ lib/onboarding/cloud-tutorial-session.integration.test.tsx:92:108
+     90|     };
+     91|     await finish("Unrelated task", "Other answer");
+     92|     expect(screen.getByRole("button", { name: "I've reviewed the actio…
+       |                                                                                                            ^
+     93|     await finish(firstPrompt, "Mira: ask the library by Friday. Date a…
+     94|     fireEvent.click(screen.getByRole("button", { name: "I've reviewed …
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  lib/onboarding/cloud-tutorial-session.integration.test.tsx > authenticated first-agent product journey > new-user reaches an inspected successful correlated result using explicit real controls
+ FAIL  lib/onboarding/cloud-tutorial-session.integration.test.tsx > authenticated first-agent product journey > existing-workspace reaches an inspected successful correlated result using explicit real controls
+TestingLibraryElementError: Unable to find an element with the text: 4 of 6 steps confirmed. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<aside[39m
+  [33maria-label[39m=[32m"First agent guide"[39m
+  [33mdata-cloud-tutorial-guide[39m=[32m"true"[39m
+  [33mrole[39m=[32m"region"[39m
+  [33mstyle[39m=[32m"border: 1px solid var(--border); background: var(--bg-1); border-radius: 8px; padding: 20px; display: flex; flex-direction: column; gap: 12px; align-self: start;"[39m
+[36m>[39m
+  [36m<h2[39m
+    [33mid[39m=[32m"cloud-tutorial-title"[39m
+  [36m>[39m
+    [0mGet your first agent running[0m
+  [36m</h2>[39m
+  [36m<p>[39m
+    [0m5[0m
+    [0m of [0m
+    [0m6[0m
+    [0m steps confirmed[0m
+  [36m</p>[39m
+  [36m<h3>[39m
+    [0mInspect the result[0m
+  [36m</h3>[39m
+  [36m<p>[39m
+    [0mOpen the completed answer in that session and inspect the tools checklist.[0m
+  [36m</p>[39m
+  [36m<p>[39m
+    [0mThe lesson completes after the app confirms the sample task finished and you inspect its correlated answer. Other chats and unrelated task outputs do not count.[0m
+  [36m</p>[39m
+  [36m<p[39m
+    [33maria-live[39m=[32m"polite"[39m
+    [33mrole[39m=[32m"status"[39m
+  [36m>[39m
+    [0mUse the highlighted control in the app.[0m
+  [36m</p>[39m
+  [36m<div[39m
+    [33mstyle[39m=[32m"display: flex; flex-wrap: wrap; gap: 8px;"[39m
+  [36m>[39m
+    [36m<button[39m
+      [33mclass[39m=[32m"pc-btn"[39m
+      [33mtype[39m=[32m"button"[39m
+    [36m>[39m
+      [0mShow me[0m
+    [36m</button>[39m
+    [36m<button[39m
+      [33mclass[39m=[32m"pc-btn"[39m
+      [33mtype[39m=[32m"button"[39m
+    [36m>[39m
+      [0mCheck again[0m
+    [36m</button>[39m
+    [36m<button[39m
+      [33mclass[39m=[32m"pc-btn"[39m
+      [33mtype[39m=[32m"button"[39m
+    [36m>[39m
+      [0mPause[0m
+    [36m</button>[39m
+    [36m<button[39m
+      [33mclass[39m=[32m"pc-btn"[39m
+      [33mtype[39m=[32m"button"[39m
+    [36m>[39m
+      [0mSkip lesson[0m
+    [36m</button>[39m
+    [36m<button[39m
+      [33mclass[39m=[32m"pc-btn"[39m
+      [33mtype[39m=[32m"button"[39m
+    [36m>[39m
+      [0mRestart lesson[0m
+    [36m</button>[39m
+    [36m<button[39m
+      [33mclass[39m=[32m"pc-btn"[39m
+      [33mtype[39m=[32m"button"[39m
+    [36m>[39m
+      [0mClose guide[0m
+    [36m</button>[39m
+  [36m</div>[39m
+  [36m<section[39m
+    [33maria-label[39m=[32m"Lesson help and speech"[39m
+  [36m>[39m
+    [36m<div[39m
+      [33mstyle[39m=[32m"display: flex; flex-wrap: wrap; gap: 8px;"[39m
+    [36m>[39m
+      [36m<button[39m
+        [33maria-pressed[39m=[32m"false"[39m
+        [33mclass[39m=[32m"pc-btn"[39m
+        [33mtype[39m=[32m"button"[39m
+      [36m>[39m
+        [0mMute guide[0m
+      [36m</button>[39m
+      [36m<button[39m
+        [33mclass[39m=[32m"pc-btn"[39m
+        [33mtype[39m=[32m"button"[39m
+      [36m>[39m
+        [0mStop speech[0m
+      [36m</button>[39m
+      [36m<button[39m
+        [33mclass[39m=[32m"pc-btn"[39m
+        [33mtype[39m=[32m"button"[39m
+      [36m>[39m
+        [0mReplay speech[0m
+      [36m</button>[39m
+      [36m<button[39m
+        [33mclass[39m=[32m"pc-btn"[39m
+        [33mtype[39m=[32m"button"[39m
+      [36m>[39m
+        [0mShow current step[0m
+      [36m</button>[39m
+    [36m</div>[39m
+    [36m<p[39m
+      [33mdata-tutorial-speech-status[39m=[32m"playing"[39m
+      [33mrole[39m=[32m"status"[39m
+    [36m>[39m
+      [0mSpeaking the lesson.[0m
+    [36m</p>[39m
+    [36m<p>[39m
+      [0mAsk about this step. Keep credentials in the app’s connection form.[0m
+    [36m</p>[39m
+    [36m<div[39m
+      [33mstyle[39m=[32m"height: 320px; --pc-chat-fg: var(--fg); --pc-chat-fg-mute: var(--fg-dim); --pc-chat-border: var(--border); --pc-chat-bubble-assistant: var(--bg-2); --pc-chat-bubble-assistant-fg: var(--fg); --pc-chat-bubble-user: var(--bg-popover, var(--bg)); --pc-chat-bubble-user-fg: var(--fg);"[39m
+    [36m>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"pc-chat op-chat-shared"[39m
+        [33mdata-host-trust[39m=[32m"owner"[39m
+        [33mdata-state[39m=[32m"idle"[39m
+        [33mdata-testid[39m=[32m"papercup-chat"[39m
+      [36m>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"pc-chat__banner"[39m
+        [36m/>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"pc-chat__scroller"[39m
+          [33mdata-testid[39m=[32m"papercup-chat-transcript"[39m
+        [36m>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"pc-chat__placeholder"[39m
+            [33mdata-placeholder[39m=[32m"invite"[39m
+            [33mrole[39m=[32m"status"[39m
+          [36m>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"op-chat-empty-state"[39m
+              [33mdata-testid[39m=[32m"operator-chat-empty-state"[39m
+            [36m>[39m
+              [36m<div[39m
+                [33mclass[39m=[32m"op-chat-empty-state__title"[39m
+              [36m>[39m
+                [0mLesson guide[0m
+              [36m</div>[39m
+              [36m<div[39m
+                [33mclass[39m=[32m"op-chat-empty-state__body"[39m
+              [36m>[39m
+                [0mAsk a question about the current lesson step.[0m
+              [36m</div>[39m
+            [36m</div>[39m
+          [36m</div>[39m
+          [36m<div[39m
+            [33maria-live[39m=[32m"polite"[39m
+            [33mclass[39m=[32m"pc-chat__list"[39m
+            [33mrole[39m=[32m"log"[39m
+            [33mstyle[39m=[32m"height: 0px; position: relative;"[39m
+          [36m/>[39m
+        [36m</div>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"pc-chat__tail"[39m
+        [36m/>[39m
+        [36m<form[39m
+          [33mclass[39m=[32m"pc-chat__composer"[39m
+          [33mdata-testid[39m=[32m"papercup-chat-composer"[39m
+        [36m>[39m
+          [36m<textarea[39m
+            [33maria-label[39m=[32m"Message Papercup"[39m
+            [33mclass[39m=[32m"pc-chat__input"[39m
+            [33mdata-testid[39m=[32m"composer"[39m
+            [33mplaceholder[39m=[32m"Reply to Lesson guide…"[39m
+            [33mrows[39m=[32m"1"[39m
+          [36m/>[39m
+          [36m<button[39m
+            [33maria-label[39m=[32m"Send"[39m
+            [33mclass[39m=[32m"pc-chat__send"[39m
+            [33mdata-testid[39m=[32m"send"[39m
+            [33mdisabled[39m=[32m""[39m
+            [33mtype[39m=[32m"submit"[39m
+          [36m>[39m
+            [0mSend[0m
+          [36m</button>[39m
+        [36m</form>[39m
+      [36m</div>[39m
+    [36m</div>[39m
+  [36m</section>[39m
+[36m</aside>[39m...
+ ❯ Object.getElementError ../../../../../../home/builduser/papercupai-workspace/papercusp/node_modules/@testing-library/dom/dist/config.js:37:19
+ ❯ ../../../../../../home/builduser/papercupai-workspace/papercusp/node_modules/@testing-library/dom/dist/query-helpers.js:76:38
+ ❯ ../../../../../../home/builduser/papercupai-workspace/papercusp/node_modules/@testing-library/dom/dist/query-helpers.js:52:17
+ ❯ ../../../../../../home/builduser/papercupai-workspace/papercusp/node_modules/@testing-library/dom/dist/query-helpers.js:95:19
+ ❯ lib/onboarding/cloud-tutorial-session.integration.test.tsx:141:26
+    139|     expect(within(guide).getByText("4 of 6 steps confirmed")).toBeTrut…
+    140|     await answer("succeeded", "An unrelated task");
+    141|     expect(within(guide).getByText("4 of 6 steps confirmed")).toBeTrut…
+       |                          ^
+    142|     await answer("succeeded");
+    143|     await within(guide).findByRole("heading", { name: "Inspect the res…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+TEST_FILE_GROUP_RESULT cwd=apps/operator executed=1 status=failed
+TEST_FILE_ASSERTION_FAILURE file="/dev/shm/pcv/papercusp-lint-as-committed-c46da34062-oZEHS0/apps/operator/lib/onboarding/cloud-tutorial-session.integration.test.tsx" name="beginner meaningful work and self-written practice requires correlated reviewed first, revision and different self-written answers through the actual owner chat" message="AssertionError: expected false to be true // Object.is equality\n    at /dev/shm/pcv/papercusp-lint-as-committed-c46da34062-oZEHS0/apps/operator/lib/onboarding/cloud-tutorial-session.integration.test.tsx:92:108\n    at file:///home/builduser/papercupai-workspace/papercusp/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+TEST_FILE_ASSERTION_FAILURE file="/dev/shm/pcv/papercusp-lint-as-committed-c46da34062-oZEHS0/apps/operator/lib/onboarding/cloud-tutorial-session.integration.test.tsx" name="authenticated first-agent product journey new-user reaches an inspected successful correlated result using explicit real controls" message="TestingLibraryElementError: Unable to find an element with the text: 4 of 6 steps confirmed. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.\n\nIgnored nodes: comments, script, style\n\u001b[36m<aside\u001b[39m\n  \u001b[33maria-label\u001b[39m=\u001b[32m\"First agent guide\"\u001b[39m\n  \u001b[33mdata-cloud-tutorial-guide\u001b[39m=\u001b[32m\"true\"\u001b[39m\n  \u001b[33mrole\u001b[39m=\u001b[32m\"region\"\u001b[39m\n  \u001b[33mstyle\u001b[39m=\u001b[32m\"border: 1px solid var(--border); background: var(--bg-1); border-radius: 8px; padding: 20px; display: flex; flex-direction: column; gap: 12px; align-self: start;\"\u001b[39m\n\u001b[36m>\u001b[39m\n  \u001b[36m<h2\u001b[39m\n    \u001b[33mid\u001b[39m=\u001b[32m\"cloud-tutorial-title\"\u001b[39m\n  \u001b[36m>\u001b[39m\n    \u001b[0mGet your first agent running\u001b[0m\n  \u001b[36m</h2>\u001b[39m\n  \u001b[36m<p>\u001b[39m\n    \u001b[0m5\u001b[0m\n    \u001b[0m of \u001b[0m\n    \u001b[0m6\u001b[0m\n    \u001b[0m steps confirmed\u001b[0m\n  \u001b[36m</p>\u001b[39m\n  \u001b[36m<h3>\u001b[39m\n    \u001b[0mInspect the result\u001b[0m\n  \u001b[36m</h3>\u001b[39m\n  \u001b[36m<p>\u001b[39m\n    \u001b[0mOpen the completed answer in that session and inspect the tools checklist.\u001b[0m\n  \u001b[36m</p>\u001b[39m\n  \u001b[36m<p>\u001b[39m\n    \u001b[0mThe lesson completes after the app confirms the sample task finished and you inspect its correlated answer. Other chats and unrelated task outputs do not count.\u001b[0m\n  \u001b[36m</p>\u001b[39m\n  \u001b[36m<p\u001b[39m\n    \u001b[33maria-live\u001b[39m=\u001b[32m\"polite\"\u001b[39m\n    \u001b[33mrole\u001b[39m=\u001b[32m\"status\"\u001b[39m\n  \u001b[36m>\u001b[39m\n    \u001b[0mUse the highlighted control in the app.\u001b[0m\n  \u001b[36m</p>\u001b[39m\n  \u001b[36m<div\u001b[39m\n    \u001b[33mstyle\u001b[39m=\u001b[32m\"display: flex; flex-wrap: wrap; gap: 8px;\"\u001b[39m\n  \u001b[36m>\u001b[39m\n    \u001b[36m<button\u001b[39m\n      \u001b[33mclass\u001b[39m=\u001b[32m\"pc-btn\"\u001b[39m\n      \u001b[33mtype\u001b[39m=\u001b[32m\"button\"\u001b[39m\n    \u001b[36m>\u001b[39m\n      \u001b[0mShow me\u001b[0m\n    \u001b[36m</button>\u001b[39m\n    \u001b[36m<button\u001b[39m\n      \u001b[33mclass\u001b[39m=\u001b[32m\"pc-btn\"\u001b[39m\n      \u001b[33mtype\u001b[39m=\u001b[32m\"button\"\u001b[39m\n    \u001b[36m>\u001b[39m\n      \u001b[0mCheck again\u001b[0m\n    \u001b[36m</button>\u001b[39m\n    \u001b[36m<button\u001b[39m\n      \u001b[33mclass\u001b[39m=\u001b[32m\"pc-btn\"\u001b[39m\n      \u001b[33mtype\u001b[…"
+TEST_FILE_ASSERTION_FAILURE file="/dev/shm/pcv/papercusp-lint-as-committed-c46da34062-oZEHS0/apps/operator/lib/onboarding/cloud-tutorial-session.integration.test.tsx" name="authenticated first-agent product journey existing-workspace reaches an inspected successful correlated result using explicit real controls" message="TestingLibraryElementError: Unable to find an element with the text: 4 of 6 steps confirmed. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.\n\nIgnored nodes: comments, script, style\n\u001b[36m<aside\u001b[39m\n  \u001b[33maria-label\u001b[39m=\u001b[32m\"First agent guide\"\u001b[39m\n  \u001b[33mdata-cloud-tutorial-guide\u001b[39m=\u001b[32m\"true\"\u001b[39m\n  \u001b[33mrole\u001b[39m=\u001b[32m\"region\"\u001b[39m\n  \u001b[33mstyle\u001b[39m=\u001b[32m\"border: 1px solid var(--border); background: var(--bg-1); border-radius: 8px; padding: 20px; display: flex; flex-direction: column; gap: 12px; align-self: start;\"\u001b[39m\n\u001b[36m>\u001b[39m\n  \u001b[36m<h2\u001b[39m\n    \u001b[33mid\u001b[39m=\u001b[32m\"cloud-tutorial-title\"\u001b[39m\n  \u001b[36m>\u001b[39m\n    \u001b[0mGet your first agent running\u001b[0m\n  \u001b[36m</h2>\u001b[39m\n  \u001b[36m<p>\u001b[39m\n    \u001b[0m5\u001b[0m\n    \u001b[0m of \u001b[0m\n    \u001b[0m6\u001b[0m\n    \u001b[0m steps confirmed\u001b[0m\n  \u001b[36m</p>\u001b[39m\n  \u001b[36m<h3>\u001b[39m\n    \u001b[0mInspect the result\u001b[0m\n  \u001b[36m</h3>\u001b[39m\n  \u001b[36m<p>\u001b[39m\n    \u001b[0mOpen the completed answer in that session and inspect the tools checklist.\u001b[0m\n  \u001b[36m</p>\u001b[39m\n  \u001b[36m<p>\u001b[39m\n    \u001b[0mThe lesson completes after the app confirms the sample task finished and you inspect its correlated answer. Other chats and unrelated task outputs do not count.\u001b[0m\n  \u001b[36m</p>\u001b[39m\n  \u001b[36m<p\u001b[39m\n    \u001b[33maria-live\u001b[39m=\u001b[32m\"polite\"\u001b[39m\n    \u001b[33mrole\u001b[39m=\u001b[32m\"status\"\u001b[39m\n  \u001b[36m>\u001b[39m\n    \u001b[0mUse the highlighted control in the app.\u001b[0m\n  \u001b[36m</p>\u001b[39m\n  \u001b[36m<div\u001b[39m\n    \u001b[33mstyle\u001b[39m=\u001b[32m\"display: flex; flex-wrap: wrap; gap: 8px;\"\u001b[39m\n  \u001b[36m>\u001b[39m\n    \u001b[36m<button\u001b[39m\n      \u001b[33mclass\u001b[39m=\u001b[32m\"pc-btn\"\u001b[39m\n      \u001b[33mtype\u001b[39m=\u001b[32m\"button\"\u001b[39m\n    \u001b[36m>\u001b[39m\n      \u001b[0mShow me\u001b[0m\n    \u001b[36m</button>\u001b[39m\n    \u001b[36m<button\u001b[39m\n      \u001b[33mclass\u001b[39m=\u001b[32m\"pc-btn\"\u001b[39m\n      \u001b[33mtype\u001b[39m=\u001b[32m\"button\"\u001b[39m\n    \u001b[36m>\u001b[39m\n      \u001b[0mCheck again\u001b[0m\n    \u001b[36m</button>\u001b[39m\n    \u001b[36m<button\u001b[39m\n      \u001b[33mclass\u001b[39m=\u001b[32m\"pc-btn\"\u001b[39m\n      \u001b[33mtype\u001b[…"
+TEST_FILE_ROUTE requested=1 groups=1
+TEST_FILE_PROVENANCE head=c46da34062 testedPaths=1 uncommitted=0 unknown=0 phase=pre-run startedAt=2026-10-06T16:35:02.568Z
+  HEAD         : c46da34062
+  tested files : apps/operator/lib/onboarding/cloud-tutorial-session.integration.test.tsx  [clean]
+  scope        : the NAMED paths above only — an edit to any OTHER module in their import graph invalidates this result just as thoroughly and is NOT measured here
+ROUTE cwd=apps/operator config=vitest.integration.config.ts
+  requested lib/onboarding/cloud-tutorial-session.integration.test.tsx
+  matched lib/onboarding/cloud-tutorial-session.integration.test.tsx
+
+ RUN  v4.1.8 /dev/shm/pcv/papercusp-lint-as-committed-c46da34062-oZEHS0/apps/operator
+
+ ❯ lib/onboarding/cloud-tutorial-session.integration.test.tsx (6 tests | 3 failed) 4752ms
+     × requires correlated reviewed first, revision and different self-written answers through the actual owner chat 1090ms
+     × new-user reaches an inspected successful correlated result using explicit real controls 954ms
+     × existing-workspace reaches an inspected successful correlated result using explicit real controls 1267ms
+     ✓ does not expose the launcher for a mismatched authenticated workspace or unreconciled cost 231ms
+     ✓ an actual failed task cannot be inspected or advance the lesson  1196ms
+     ✓ requires the exact request's answer and typed terminal success; adjacent turns, commentary and unknown outcomes do not count 1ms
+
+ Test Files  1 failed (1)
+      Tests  3 failed | 3 passed (6)
+   Start at  12:35:10
+   Duration  17.34s (transform 2.61s, setup 227ms, import 4.95s, tests 4.75s, environment 3.59s)
+
+TEST_FILE_PROVENANCE head=c46da34062 testedPaths=1 uncommitted=0 unknown=0 phase=post-run startedAt=2026-10-06T16:35:33.831Z
+  HEAD         : c46da34062
+  tested files : apps/operator/lib/onboarding/cloud-tutorial-session.integration.test.tsx  [clean]
+  scope        : the NAMED paths above only — an edit to any OTHER module in their import graph invalidates this result just as thoroughly and is NOT measured here
+TEST_FILE_RESULT requested=1 executed=1 matched=1 status=failed head=c46da34062 uncommittedPaths=0/1 provenance=stamped startedAt=2026-10-06T16:35:02.568Z skippedTests=0
+[mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓
+MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evidence=test-file-assertion-failure relocation=overlay
+MUTATION_PROBE_EVIDENCE_JSON={"runnerPath":"scripts/mutation-probe.sh","runnerCommit":"c46da34062628f3346833a5db281896d94561337","cwd":".","schemaVersion":1,"runnerSha256":"9609e573dfe3a7154b9ffb41d10b2f4f8b9635bd68885dc37b4901b4ac72d23b","result":{"target":"copy-out","mutantParse":"unchecked","assertionEvidence":"test-file-assertion-failure","verdict":"caught","relocation":"overlay","baselineExit":0,"guardExit":1,"expected":"caught"},"argv":["--file","apps/operator/lib/onboarding/cloud-tutorial-session.tsx","--mutate","s|\\Qcandidate.prompt?.text?.includes(request.prompt)\\E|true|","--test","test -f {} && PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- apps/operator/lib/onboarding/cloud-tutorial-session.integration.test.tsx","--relocation","overlay"]}
+[mutation-probe] tree integrity: VERIFIED — /dev/shm/pcv/papercusp-lint-as-committed-c46da34062-oZEHS0/apps/operator/lib/onboarding/cloud-tutorial-session.tsx is byte-identical to its pre-probe state

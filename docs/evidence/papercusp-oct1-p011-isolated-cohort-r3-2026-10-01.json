@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "plane": "isolated-current-build-operator-api",
+  "incomplete": true,
+  "buildSha": "f27961b45bfb220a929d923f764c80c48708893d",
+  "bundleHash": "6b52d7e880f1a21bfc08e92486ab914fd2b5590276edb66d7fc8b4d9c32b31fc",
+  "startedAt": "2026-10-01T19:37:43.737Z",
+  "workload": {
+    "population": 1024,
+    "pageLimit": 128,
+    "windows": 3,
+    "requestsPerWindow": 8,
+    "concurrency": 8
+  },
+  "samples": [],
+  "windows": [],
+  "phases": [
+    {
+      "label": "private-profile-preflight",
+      "at": "2026-10-01T19:37:43.738Z"
+    },
+    {
+      "label": "fixture-preflight",
+      "at": "2026-10-01T19:37:43.790Z"
+    },
+    {
+      "label": "host-launch",
+      "at": "2026-10-01T19:37:45.248Z"
+    },
+    {
+      "label": "inspector-owner-preflight",
+      "at": "2026-10-01T19:37:50.865Z"
+    },
+    {
+      "label": "pairing-preflight",
+      "at": "2026-10-01T19:37:50.890Z"
+    },
+    {
+      "label": "named-query-preflight",
+      "at": "2026-10-01T19:37:50.933Z"
+    }
+  ],
+  "limitations": [
+    "One owned request-only process; background, production workers and fleet workloads are not measured.",
+    "Sampling selfSize is live sampled allocation, not total heap or a retained-state owner.",
+    "Completed-result diagnostic bytes are PostgreSQL wire bytes, not HTTP, payload storage or retained heap.",
+    "Inspector sampling and forced GC are labeled diagnostic interventions, not ordinary production operation."
+  ],
+  "phase": "named-query-preflight",
+  "database": "papercusp",
+  "schema": {
+    "filename": "1312-memory-canonical-hot-surfaced-bump.sql",
+    "sha256": "a8009c0d242a9b6fefa47e8ee1b2cc465a67f8d48d8276093f3d950a5573da0c",
+    "applied_at": "2026-10-01T19:37:35.035Z"
+  },
+  "arenaMax": "2",
+  "pid": 1995038,
+  "inspectorEndpoints": [
+    "ws://127.0.0.1:38771/f405cdc6-6da2-43f9-b067-ce2cff0ce7bd"
+  ],
+  "inspector": {
+    "endpoint": "ws://127.0.0.1:38771/f405cdc6-6da2-43f9-b067-ce2cff0ce7bd",
+    "pid": 1995038,
+    "entry": "/tmp/pcv/papercusp-memory-cohort-qLsVSd/host/hono-host.mjs",
+    "arenaMax": "2"
+  },
+  "deviceId": "bbc7c098-3311-40db-b492-76b53eb3b85c",
+  "error": "Error: /api/device/rest-query?name=workItems.byHarness&args=%7B%22harnessSlug%22%3A%22test-runtime-de31470b-9e1%22%2C%22limit%22%3A128%7D HTTP 400",
+  "hostErrorTail": "40, 941, 942, 943, 944, 945, 946, 947, 948, 949, 950, 952, 953, 954, 955, 956, 958, 959, 960, 961, 963, 964, 965, 966, 967, 968, 969, 971, 972, 973, 974, 975, 976, 977, 978, 979, 980, 981, 982, 983, 985, 986, 987, 988, 990, 991, 992, 994, 995, 996, 997, 999, 1002, 1003, 1004, 1005, 1006, 1009, 1010, 1012, 1013, 1014, 1015, 1016, 1017, 1020, 1021, 1022, 1023, 1024, 1025, 1026, 1027, 1028, 1029, 1030, 1032, 1033, 1036, 1037, 1038, 1039, 1040, 1041, 1042, 1043, 1044, 1045, 1046, 1047, 1048, 1049, 1053, 1054, 1055, 1057, 1058, 1062, 1063, 1064, 1065, 1066, 1067, 1070, 1071, 1072, 1074, 1075, 1076, 1081, 1082, 1083, 1087, 1089, 1091, 1092, 1093, 1094, 1095, 1096, 1097, 1098, 1100, 1101, 1102, 1103, 1104, 1105, 1107, 1108, 1109, 1110, 1111, 1112, 1114, 1115, 1116, 1117, 1118, 1119, 1120, 1121, 1122, 1123, 1125, 1126, 1127, 1131, 1132, 1134, 1135, 1136, 1138, 1140, 1141, 1142, 1144, 1147, 1149, 1150, 1151, 1152, 1153, 1154, 1155, 1156, 1157, 1159, 1161, 1162, 1166, 1167, 1168, 1169, 1170, 1171, 1172, 1173, 1174, 1175, 1176, 1177, 1178, 1180, 1181, 1182, 1183, 1185, 1186, 1187, 1188, 1189, 1190, 1191, 1192, 1193, 1194, 1195, 1196, 1197, 1198, 1199, 1200, 1201, 1202, 1203, 1204, 1205, 1206, 1207, 1208, 1209, 1210, 1211, 1212, 1213, 1214, 1215, 1216, 1217, 1218, 1219, 1220, 1221, 1223, 1224, 1225, 1226, 1227, 1228, 1229, 1230, 1231, 1232, 1233, 1234, 1235, 1236, 1237, 1238, 1239, 1240, 1241, 1242, 1243, 1244, 1245, 1246, 1247, 1248, 1249, 1250, 1251, 1252, 1253, 1254, 1255, 1256, 1257, 1258, 1259, 1260, 1261, 1262, 1263, 1264, 1265, 1266, 1267, 1268, 1269, 1270, 1271, 1272, 1273, 1274, 1275, 1276, 1278, 1279, 1280, 1281, 1282, 1283, 1284, 1285, 1286, 1287, 1288, 1289, 1291, 1292, 1293, 1294, 1295, 1296, 1297, 1298, 1299, 1300, 1301, 1302, 1303, 1304, 1305, 1306, 1307, 1308, 1309, 1310, 1311, 1312) — lint:migrations check 5 would otherwise red the shared gate\n[hono-host] applied inbound server timeouts (ms): { keepAliveTimeout: 61000, headersTimeout: 65000 }\n[event-loop-sentinel] armed {\n  mode: 'kill',\n  wedgeAfterMs: 20000,\n  observationsToAct: 3,\n  startupGraceMs: 120000,\n  heartbeatIntervalMs: 1000,\n  observeIntervalMs: 2000\n}\n[hono-host] listening on http://127.0.0.1:39649 (pid=1995038)\n[hono-host] ⚠ PAPERCUSP_WORKSPACE_ID=test-runtime-de31470b-9e1 is set — this PINS workspace resolution to 'test-runtime-de31470b-9e1' for every non-request path on this multi-workspace host. Any window/tool that doesn't carry the x-papercusp-workspace header will see 'test-runtime-de31470b-9e1's harnesses/features/registry, regardless of the active workspace. Unset it unless this host is intentionally single-workspace.\n[hono-host] external-ingress listener on 127.0.0.1:42447 (no local trust)\nDebugger attached.\n[device-jwt] MOBILE_JWT_SECRET is unset; using a per-process secret — device tokens will NOT survive an operator restart (paired phones silently stop working until they re-pair). Set MOBILE_JWT_SECRET (>=32 chars) in apps/operator/.env.local to make them durable.\n",
+  "startupTail": "routine row — it has never run and never will. Run with execute to heal it.\n[learning-singletons] NEVER MATERIALIZED: 'transfer' is declared in LEARNING_SINGLETONS but has no @singleton/bp-singleton-transfer-0 routine row — it has never run and never will. Run with execute to heal it.\n[learning-singletons] NEVER MATERIALIZED: 'red-queen' is declared in LEARNING_SINGLETONS but has no @singleton/bp-singleton-red-queen-0 routine row — it has never run and never will. Run with execute to heal it.\n[learning-singletons] NEVER MATERIALIZED: 'change-ledger' is declared in LEARNING_SINGLETONS but has no @singleton/bp-singleton-change-ledger-0 routine row — it has never run and never will. Run with execute to heal it.\n[learning-singletons] NEVER MATERIALIZED: 'scout' is declared in LEARNING_SINGLETONS but has no @singleton/bp-singleton-scout-0 routine row — it has never run and never will. Run with execute to heal it.\n[learning-singletons] NEVER MATERIALIZED: 'iq-battery' is declared in LEARNING_SINGLETONS but has no @singleton/bp-singleton-iq-battery-0 routine row — it has never run and never will. Run with execute to heal it.\n[learning-singletons] NEVER MATERIALIZED: 'memory-precision' is declared in LEARNING_SINGLETONS but has no @singleton/bp-singleton-memory-precision-0 routine row — it has never run and never will. Run with execute to heal it.\n[learning-singletons] NEVER MATERIALIZED: 'memory-live-recall-canary' is declared in LEARNING_SINGLETONS but has no @singleton/bp-singleton-memory-live-recall-canary-0 routine row — it has never run and never will. Run with execute to heal it.\n[declared-singletons] FATAL: 15 learning loop(s) are DECLARED but have no routine row — they have never run and never will: graduation, negative-space, neologism, fleet-ekg, calibration, deferral-interest, prompt-ablation, regret, transfer, red-queen, change-ledger, scout, iq-battery, memory-precision, memory-live-recall-canary. Heal with: seed-learning-singletons.ts --reconcile --execute\n[mem0] no Claude session and no Anthropic or OpenAI API key in operator-credentials or env (add at /settings/api-keys).\n[event-loop-sentinel] armed {\n  mode: 'kill',\n  wedgeAfterMs: 20000,\n  observationsToAct: 3,\n  startupGraceMs: 120000,\n  heartbeatIntervalMs: 1000,\n  observeIntervalMs: 2000\n}\n[hono-host] ⚠ PAPERCUSP_WORKSPACE_ID=test-runtime-de31470b-9e1 is set — this PINS workspace resolution to 'test-runtime-de31470b-9e1' for every non-request path on this multi-workspace host. Any window/tool that doesn't carry the x-papercusp-workspace header will see 'test-runtime-de31470b-9e1's harnesses/features/registry, regardless of the active workspace. Unset it unless this host is intentionally single-workspace.\nDebugger attached.\n[device-jwt] MOBILE_JWT_SECRET is unset; using a per-process secret — device tokens will NOT survive an operator restart (paired phones silently stop working until they re-pair). Set MOBILE_JWT_SECRET (>=32 chars) in apps/operator/.env.local to make them durable.\n",
+  "finishedAt": "2026-10-01T19:37:51.094Z",
+  "home": "/tmp/pcv/papercusp-test-runtime-w0cqEX/home",
+  "hostReaped": true
+}

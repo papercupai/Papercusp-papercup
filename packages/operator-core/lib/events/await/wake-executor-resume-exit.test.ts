@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -37,34 +37,37 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
   }> {
     const s = tb.session('A');
     const dead = await deadPid();
-    return {
-      s,
-      deps: {
-        findPsuHost: () => null, // no live socket → fall through to the resume ladder
-        getSession: async () =>
-          ({
-            pid: dead,
-            endedAt: null,
-            agent: 'claude',
-            sessionId: 'native-A',
-            coordOwnerId: null,
-            cwd: s.cwd,
-          }) as never,
-        findPty: () => null,
-        write: () => true,
-        presence: async () => null,
-        alive: () => false,
-        // Hermetic Channel 2 resume path: the production default performs the
-        // atomic DB claim, but this unit test only exercises detached-exit wiring.
-        claimResume: async () => true,
-        // WI-10002854: the real accountant writes the ledger row and adv pid to PG.
-        accountHeadlessResumeTurn: () => ({ pidRecorded: Promise.resolve(), finish: () => {} }),
-        // The resume leg's harness fallback reads the live loop row. That blocked
-        // real-PG attempt ran in every test here; model "no loop row" instead.
-        getLoopStatusFn: (async () => null) as never,
-        ...over,
-      },
+    const deps: ExecuteWakeDeps = {
+      resolveWakeModeFn: async () => 'auto',
+      findPsuHost: async () => null, // no live socket → fall through to the resume ladder
+      getSession: async () =>
+        ({
+          pid: dead,
+          endedAt: null,
+          agent: 'claude',
+          sessionId: 'native-A',
+          coordOwnerId: null,
+          cwd: s.cwd,
+        }) as never,
+      findPty: () => null,
+      write: () => true,
+      presence: async () => null,
+      alive: () => false,
+      // Hermetic Channel 2 resume path: the production default performs the
+      // atomic DB claim, but this unit test only exercises detached-exit wiring.
+      claimResume: async () => true,
+      // WI-10002854: the real accountant writes the ledger row and adv pid to PG.
+      accountHeadlessResumeTurn: () => ({ pidRecorded: Promise.resolve(), finish: () => {} }),
+      // The resume leg's harness fallback reads the live loop row. That blocked
+      // real-PG attempt ran in every test here; model "no loop row" instead.
+      getLoopStatusFn: (async () => null) as never,
+      ...over,
     };
+    // Hermetic owner election (WI-10008189): the handle reads not-alive, so executeWake elects
+    // the owner's newest adv-session. Stamp the fixture row with its id + owner and model "no
+    // successor", so it never reaches the real PG election read. A cell's own
+    // getLatestSessionForOwner (via `over`) still wins.
+    return { s, deps: { ...deps, ...tb.ownerElectionDeps(deps) } };
   }
 
   it('forwards the detached turn exit to onResumeTurnExit, bound to the delivery; still delivers on spawn', async () => {
@@ -218,7 +221,9 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
       id: s.advSessionId,
       workspaceId: 'row-ws',
       agent: 'claude',
-      coordOwnerId: null,
+      // Replaces the owner-election-wrapped getSession, so name the row's real owner
+      // itself: the election parks a row it cannot attribute (WI-10008189).
+      coordOwnerId: s.ownerId,
       sessionId: 'native-A',
       startedAt: '2026-09-24T10:06:00.000Z',
       endedAt: null,
@@ -370,6 +375,76 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
     expect(out).toMatchObject({ kind: 'park', reason: expect.stringContaining('fresh context') });
     expect(recover).toHaveBeenCalledWith(s.ownerId, expect.objectContaining({ workspaceId: 'row-ws' }));
     expect(spawned).toBe(false);
+  });
+
+  it.each([
+    ['ExitPlanMode', 'started'],
+    ['ExitPlanMode', 'refused'],
+    ['WaitForMcpServers', 'started'],
+    ['WaitForMcpServers', 'throws'],
+    ['mcp__papercusp-su__plans_audit', 'started'],
+    ['mcp__papercusp-su__plans_audit', 'refused'],
+  ] as const)('uses fresh context for a dead no-host %s rejection (%s)', async (tool, launchResult) => {
+    const root = mkdtempSync(join(tmpdir(), 'wake-resume-tool-reference-'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const transcriptPath = join(root, 'native-A.jsonl');
+      const turn = () => JSON.stringify({
+        type: 'assistant',
+        isApiErrorMessage: true,
+        message: {
+          role: 'assistant', model: '<synthetic>',
+          content: [{ type: 'text', text: `API Error: 400 Tool reference '${tool}' not found in available tools` }],
+        },
+      });
+      writeFileSync(transcriptPath, [turn(), turn(), turn()].join('\n'));
+      const launchColdFreshSuccessor = vi.fn(async (_input: Parameters<NonNullable<ExecuteWakeDeps['launchColdFreshSuccessor']>>[0]) => {
+        if (launchResult === 'throws') throw new Error('successor unavailable');
+        return launchResult === 'started';
+      });
+      const spawnDetached = vi.fn(() => 4242);
+      const claimResume = vi.fn(async () => true);
+      const quarantine = vi.fn(async () => ({ poisoned: true, turns: 3 }));
+      const { deps, s } = await exitedClaudeResumeDeps({
+        getSessionLifecycle: async () => null,
+        collectSessionFiles: async () => [{ rel: 'projects/-repo/native-A.jsonl', abs: transcriptPath, bytes: 1, mtimeMs: 1 }],
+        recoverToolReferenceDeath: async () => 'unrecoverable',
+        launchColdFreshSuccessor,
+        spawnDetached,
+        claimResume,
+        quarantineToolReferenceSession: quarantine as never,
+      });
+      deps.getSession = async () => ({
+        id: s.advSessionId, workspaceId: 'row-ws', harnessSlug: 'papercusp',
+        agent: 'claude', coordOwnerId: s.ownerId, sessionId: 'native-A',
+        startedAt: '2026-09-24T10:00:00.123Z', endedAt: '2026-09-24T10:01:00.000Z',
+        pid: 7777, cwd: s.cwd,
+      }) as never;
+      const d = makeDelivery({ subscriberId: s.ownerId, wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-A', pid: 7777 }) });
+
+      const out = await executeWake(d, deps);
+
+      if (launchResult === 'started') {
+        expect(out).toEqual({ kind: 'delivered', channel: 'cold-fresh-successor' });
+      } else {
+        expect(out).toMatchObject({ kind: 'park', reason: expect.stringContaining('without replaying') });
+      }
+      expect(launchColdFreshSuccessor).toHaveBeenCalledWith(expect.objectContaining({
+        subscriberId: s.ownerId, workspaceId: 'row-ws', harness: 'papercusp', deliveryId: d.id,
+      }));
+      expect(launchColdFreshSuccessor.mock.calls[0]?.[0]).not.toHaveProperty('carry');
+      expect(claimResume).not.toHaveBeenCalled();
+      expect(spawnDetached).not.toHaveBeenCalled();
+      expect(quarantine).not.toHaveBeenCalled();
+      if (launchResult === 'throws') {
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining(`cold fresh successor failed for ${s.ownerId}`));
+      } else {
+        expect(warn).not.toHaveBeenCalled();
+      }
+    } finally {
+      warn.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   // WI-10003466 (su-7dc2cf9d, 2026-09-27): a transient MCP disconnect left a LIVE
@@ -537,6 +612,81 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
     }
   });
 
+  it('quarantines a Codex resume whose turn failed on a context-window overflow (WI-6554700010008894)', async () => {
+    const homes = mkdtempSync(join(tmpdir(), 'wake-codex-overflow-'));
+    try {
+      const s = tb.session('A');
+      const nativeId = '01a10080-4435-7822-8b4f-d82fc7e81227';
+      const sessionsDir = join(homes, `session-${s.advSessionId}`, 'sessions', '2026', '10', '03');
+      mkdirSync(sessionsDir, { recursive: true });
+      const rolloutPath = join(sessionsDir, `rollout-2026-10-03T02-42-48-${nativeId}.jsonl`);
+      writeFileSync(
+        rolloutPath,
+        readFileSync(join(__dirname, '__fixtures__', 'codex-rollout-over-window.tail.jsonl'), 'utf8'),
+      );
+      vi.stubEnv('PAPERCUSP_SU_CODEX_HOMES_DIR', homes);
+      let onExitWired: ((e: ResumeTurnExitRaw) => void) | undefined;
+      let observedContext: unknown;
+      // The detector reads the rollout and decides; here the first exit finds a
+      // one-turn streak and the second finds the threshold-crossing streak.
+      const quarantine = vi
+        .fn(async () => ({ poisoned: true, turns: 2 }))
+        .mockResolvedValueOnce({ poisoned: false, turns: 1 });
+      const { deps } = await exitedClaudeResumeDeps({
+        getSessionLifecycle: async () => null,
+        ensureCodexHomeForWake: (async () => ({ ok: true, repaired: false })) as never,
+        spawnDetached: (_bin, _args, _opts, onExit) => {
+          onExitWired = onExit;
+          return 4343;
+        },
+        quarantineCodexOverflowSession: quarantine as never,
+        onResumeTurnExit: (_d, _exit, context) => { observedContext = context; },
+      });
+      deps.getSession = async () => ({
+        id: s.advSessionId,
+        workspaceId: 'row-ws',
+        harnessSlug: 'papercusp',
+        agent: 'codex',
+        coordOwnerId: s.ownerId,
+        sessionId: nativeId,
+        startedAt: '2026-10-12T11:26:21.000Z',
+        endedAt: null,
+        pid: await deadPid(),
+        cwd: s.cwd,
+      }) as never;
+      const d = makeDelivery({
+        subscriberId: s.ownerId,
+        wakeHandle: advSessionHandle(s, { agent: 'codex', sessionId: nativeId, pid: 0 }),
+      });
+
+      expect(await executeWake(d, deps)).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'resume-headless' });
+      // The real exit shape (captured 2026-10-12 12:22Z): the turn overflowed, Codex then ran a
+      // remote compact task, and THAT failed on the usage wall, so the exit tail names only the
+      // compact failure. The rollout is still consulted; a short streak is not quarantined.
+      const compactFailure =
+        '{"type":"turn.failed","error":{"message":"Error running remote compact task: You’ve hit your usage limit. usage_limit_exceeded"}}';
+      onExitWired!({ exitCode: 0, signal: null, stdoutTail: compactFailure, stderrTail: '' });
+      await vi.waitFor(() => expect(quarantine).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(observedContext).toBeDefined());
+      expect(observedContext).not.toMatchObject({ poisoned: true });
+
+      observedContext = undefined;
+      onExitWired!({ exitCode: 0, signal: null, stdoutTail: compactFailure, stderrTail: '' });
+      await vi.waitFor(() => expect(observedContext).toMatchObject({ poisoned: true, advSessionId: s.advSessionId }));
+      expect(quarantine).toHaveBeenCalledTimes(2);
+      expect(quarantine).toHaveBeenLastCalledWith(
+        expect.objectContaining({ agent: 'codex', transcriptPath: rolloutPath, sessionId: nativeId }),
+        compactFailure,
+      );
+      expect(observedContext).toMatchObject({
+        transcriptPath: rolloutPath,
+        poisonReason: expect.stringContaining('exceeded the model context window'),
+      });
+    } finally {
+      rmSync(homes, { recursive: true, force: true });
+    }
+  });
+
   it('back-compat: with NO onResumeTurnExit dep, the spawn receives an undefined onExit and still delivers', async () => {
     let onExitArg: unknown = 'unset';
     const { deps, s } = await exitedClaudeResumeDeps({
@@ -573,6 +723,7 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
             coordOwnerId: null,
             cwd: s.cwd,
             workspaceId: 'row-ws',
+            launchArgv: ['--account=auto'],
           }) as never,
         spawnDetached: () => 4242,
         accountHeadlessResumeTurn: (input) => {
@@ -604,6 +755,7 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
         coordOwnerId: s.ownerId,
         agent: 'claude',
         resumeId: 'native-A',
+        declaredAccountRoute: { mode: 'auto', accountId: null },
       });
       // The ledger argv never carries the wake text verbatim.
       expect(inputs[0]!.argv.some((a) => a.startsWith('<wake-text '))).toBe(true);

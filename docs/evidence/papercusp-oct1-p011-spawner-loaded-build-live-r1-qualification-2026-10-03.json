@@ -1,0 +1,87 @@
+{
+  "schemaVersion": "p011-spawner-loaded-build-live-qualification-v1",
+  "workItem": "WI-10005751",
+  "parent": "WI-10004890",
+  "status": "loaded-identity-verified-parent-acceptance-open",
+  "plane": "live-current-build-operator-api",
+  "raw": {
+    "path": "docs/evidence/papercusp-oct1-p011-spawner-loaded-build-live-r1-2026-10-03.json",
+    "bytes": 90678,
+    "sha256": "be2f3fad2fd1a060ab969df894daeb50d38b48278bf8ca4eafc9fd1c45e6aacd",
+    "startedAt": "2026-10-03T02:02:08.232Z",
+    "endedAt": "2026-10-03T02:02:19.196Z",
+    "incomplete": false
+  },
+  "execution": {
+    "testPath": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+    "selectedTest": "measures unforced live idle and ordinary HTTP windows on the named staging process",
+    "router": "scripts/test-files.mjs",
+    "log": "/tmp/su-7db4f-p011-spawner-loaded-live-r1.log",
+    "exitCode": 0,
+    "passed": 1,
+    "filteredSkipped": 12,
+    "testRunId": 20609442,
+    "testRunCommit": "3eb2684bffd97403699c6329a8d98024c16163ed",
+    "ledgerHarness": null,
+    "ledgerWorktreeDirty": true,
+    "routerNamedTestUncommittedPaths": 0,
+    "fullImportGraphProvenance": "unknown"
+  },
+  "selection": {
+    "mainPid": 3589357,
+    "mainStartTicks": "3924125",
+    "managedRunnerPid": 4025538,
+    "managedRunnerStartTicks": "3980880",
+    "spawnerPid": 4025592,
+    "spawnerStartTicks": "3980889",
+    "entry": "exact spawner-sidecar.mjs sibling of the named staging hono-host.mjs",
+    "scope": "pc-0murqlo4nm7iiieqdup.scope",
+    "socket": "/tmp/papercusp-spawner-3589357.sock",
+    "readonlySelectionTaskIds": ["0murqumclbbsy14oyrm", "0murqvjg7vn5u09yguh"],
+    "correction": "An earlier selector swallowed a process-detail read failure and returned no candidates. That result did not prove the main exited. Subsequent field-level proc and systemd reads proved the same main and selected the exact managed spawner; the mistaken commentary was corrected before sampling."
+  },
+  "loadedIdentity": {
+    "expectedMainHealthSha": "9450e8d2e1",
+    "expectedSiblingBakedShaReadFromDisk": "9450e8d2e1",
+    "advertisedSpawnerSha": "9450e8d2e1",
+    "source": "PID-bound loaded server cancellation capability",
+    "pid": 4025592,
+    "serverGeneration": "1ea3a38e-3c81-4fd4-b4fd-6ee52dbcd524",
+    "connectionId": "1ac85333-0564-405a-b2c0-15fbadf372ef",
+    "spawnerDiskSha256": "9e709c1d09a0f67ade1ac782b16e54740e3b4572db2d71660f5b162d90a46cc9",
+    "diskIdentityIsLoadedProof": false,
+    "targetModuleImport": false
+  },
+  "observed": {
+    "counterSamples": 9,
+    "ordinaryReadRequests": 24,
+    "healthBeforeAndAfterMatch": true,
+    "inspectorClosed": true,
+    "mainIdentityPreserved": true,
+    "counterIdentityPreserved": true,
+    "allocationProfiler": false,
+    "forcedGc": false,
+    "sharedRuntimeRestart": false
+  },
+  "savedGuardReceipt": {
+    "path": "docs/evidence/papercusp-oct1-p011-spawner-loaded-build-identity-guards-r1-2026-10-03.json",
+    "sha256": "fb64bc1f8b3560a72ede8583efb7b1e0f82df9ff4ab76d2649e47fafa344a687",
+    "replayed": false,
+    "serverPackagedTestReaderAndBuildInfoStillMatch": true,
+    "bundleHelper": "Current 44ea4f7d metadata repair differs from the historical saved guard; the saved guard does not prove this helper's current bytes. Separate prior repair receipt and current actual-serving evidence remain distinct."
+  },
+  "namedCurrentSources": [
+    {"path": "packages/operator-core/lib/fleet/spawner-sidecar-server.ts", "sha256": "7a2e1e1301153cf3e2a1123882544f83e2493a3c713119108847b069ad2b8be2"},
+    {"path": "packages/operator-core/lib/spawner-sidecar-bundle.integration.test.ts", "sha256": "73d1605c2a4b6f4d55f7711d86a7666a33dffa8c654c9db228aac163d0acbe6f"},
+    {"path": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts", "sha256": "ca006abc6d34df2164ab0706bb6b566de1639df8d350adf2da481aeea3b07281"},
+    {"path": "packages/operator-core/lib/build-info.ts", "sha256": "6d271f5721a0d47c68fa8f42996a34f7b48fe4c06e414285a3f7fe36bdc44a50"},
+    {"path": "apps/operator/bin/bundle-host-common.sh", "sha256": "44ea4f7d868a11d696a0117a3071539c7627c1d989fcbaa89b0c3be83dc03652"}
+  ],
+  "limitations": [
+    "Loaded identity is verified only for the named main and exact selected spawner during this observation window.",
+    "HTTP request assignment and physical allocation owners remain unknown.",
+    "Ambient workload is uncontrolled and no paired intervention or physical memory savings are established.",
+    "The focused live run skipped twelve guards; their saved outcomes are separate evidence.",
+    "P011 causal memory acceptance, P010, activation review, independent acceptance and final shipment remain open."
+  ]
+}

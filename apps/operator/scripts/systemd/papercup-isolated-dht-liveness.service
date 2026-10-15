@@ -51,4 +51,9 @@ TimeoutStartSec=150
 # Use a DURABLE dir, never /tmp: macOS purges /tmp by access age, which would
 # rot the leg into a permanent INCONCLUSIVE with no obvious cause.
 EnvironmentFile=-%h/.papercusp/dht-liveness.env
-ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/papercup-dht-liveness-check.sh
+# Run from an immutable per-invocation snapshot: a shared-tree edit mid-run cannot
+# corrupt it (papercusp-script-snapshot.sh; census in systemd-script-snapshot.test.ts).
+# The snapshot lives under $TMPDIR, so the script's repo root (which locates the
+# probe .mjs and its node_modules) is pinned here.
+Environment=PAPERCUSP_REPO_ROOT=%h/papercupai-workspace/papercusp
+ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/apps/operator/scripts/papercup-dht-liveness-check.sh

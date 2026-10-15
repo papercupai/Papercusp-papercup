@@ -6,7 +6,9 @@ import { authorizePersonalAccess } from '../../personal-vault/authorization';
 import { sendNewMail } from '../../capability-verbs/mail';
 import { AddresseeRefused } from '../../capability-verbs/addressing';
 import { UndeliverableAddressee } from '../../capability-verbs/deliverability';
+import { DisclosureRefused, disclosureRefusalData } from '../../personal-vault/disclosure-ledger';
 import { addresseeArg, toProvenance } from '../_addressee-arg';
+import { disclosureSubject } from '../_disclosure-subject';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
 
 export default defineTool({
@@ -14,6 +16,7 @@ export default defineTool({
   needsWorkspaceTx: true,
   profile: 'engineer',
   capability: 'operator:write',
+  irreversible: true,
   requirePrincipal: false,
   agentRoles: [...SU_ROLES, 'papercup', 'papercup-deep'],
   description:
@@ -46,8 +49,9 @@ export default defineTool({
         .max(320)
         .optional()
         .describe(
-          'Which connected account to send AS, e.g. "you@gmail.com"; required once more than one Google account is connected. Omit it with several connected and the send is refused `outbound_source_ambiguous:gmail`, which names the connected accounts — pass one of those back here.',
+          'Which connected account to send AS, e.g. "you@gmail.com"; required once more than one mail account is connected. Omit it with several connected and the send is refused `outbound_source_ambiguous:email-message`, which names the connected accounts — pass one of those back here.',
         ),
+      sourceId: z.string().uuid().optional().describe('The connected mail source to send through; an alternative to from.'),
       allowUndeliverable: z
         .boolean()
         .optional()
@@ -60,7 +64,7 @@ export default defineTool({
     const workspaceId = ctx.workspaceId?.trim() || ctx.principal?.workspaceId?.trim();
     if (!workspaceId || workspaceId === '*') throw new Error('mail_send_workspace_required');
     const user = await getSessionUserOrDefault();
-    const auth = await authorizePersonalAccess(ctx.tx!, ctx, workspaceId, user.id, ['personal:gmail']);
+    const auth = await authorizePersonalAccess(ctx.tx!, ctx, workspaceId, user.id, ['personal:mail']);
     if (!auth.allowed) return { data: { allowed: false, refusal: auth.reason } };
     try {
       const result = await sendNewMail(ctx.tx as unknown as postgres.Sql, {
@@ -72,11 +76,14 @@ export default defineTool({
         text: args.text,
         attachments: args.attachments,
         from: args.from,
+        sourceId: args.sourceId ?? null,
         allowUndeliverable: args.allowUndeliverable,
         provenance: toProvenance(args.addressee),
+        agentOwnerId: disclosureSubject(ctx),
       });
       return { data: { ok: true, ...result } };
     } catch (error) {
+      if (error instanceof DisclosureRefused) return { data: disclosureRefusalData(error) };
       // Same structured shape as the trust rail beside it: a provable bounce is
       // a refusal the caller can act on, not an exception to surface raw.
       if (error instanceof UndeliverableAddressee) {

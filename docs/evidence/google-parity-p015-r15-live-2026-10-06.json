@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Google parity P-015 R-15 live verification on the current build: source identity vs pre-cutover, controlled Google writes read back by sync, no automatic draft, non-Google app round trip",
+  "framework": "operational",
+  "command": [
+    "node", "scripts/mcp-call.mjs", "mail:draft", "--json-file", ".papercusp/scratch/p015/draft-args.json", "--port", "3170",
+    "&&",
+    "node", "scripts/mcp-call.mjs", "calendar:propose", "--json-file", ".papercusp/scratch/p015/cal-args.json", "--port", "3170",
+    "&&",
+    "psql", "-At", "-d", "papercusp", "<", ".papercusp/scratch/p011/enumerate.sql",
+    "&&",
+    "node", ".papercusp/scratch/p015/compare.mjs", ".papercusp/scratch/p011/enum-p011_pre.json", ".papercusp/scratch/p015/enum-live-p015-post.json",
+    "&&",
+    "node", ".papercusp/scratch/p015/cursor-keys.mjs", ".papercusp/scratch/p011/enum-p011_pre.json", ".papercusp/scratch/p015/enum-live-p015-post.json"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T15:25:07Z",
+  "finishedAt": "2026-10-06T15:36:00Z",
+  "summary": "On the staging operator :3170 serving build 4d28209c45, a controlled Gmail draft and an attendee-less Calendar event were written through the providers and read back by the next syncs. The same enumeration query P-011 used (.papercusp/scratch/p011/enumerate.sql) ran against the live database and was diffed by id against the pre-cutover dump enumeration from P-011 (enum-p011_pre.json). Every Google source, grant and pre-existing binding is identical, except for the additive cursor keys the providers own. No trigger run has fired on any Google binding since the cutover. The email and calendar apps' round trip with a non-Google provider passes on the current tree.",
+  "evidencePlane": "live",
+  "runtime": "staging operator :3170 build 4d28209c45 (/api/health 15:25:07Z; tool_invocations.serving_host port-3170, serving_build_sha 4d28209c45 for mail:draft 15:25:21.104Z and calendar:propose 15:25:21.873Z); Google sources synced by the same build",
+  "workItems": ["WI-10006079"],
+  "plan": "generalized-integrations-google-migration-cupboard-workflows-2026-10-05",
+  "assertions": [
+    {
+      "id": "r15-source-identity-preserved",
+      "passed": true,
+      "evidence": "compare.mjs over enum-p011_pre.json (sha256 9175e27eae307a06...) vs enum-live-p015-post.json (f8523612f9810f17...): sources 6 vs 6, none removed or added. The only changed field is cursor_new_keys, on gcal f3d8cee9 ([provider]) and gmail c8fab094 ([provider, wake]), the keys the providers add (D-021, D-024). id, kind, status, owner_user_id, provider_account_id, credential_ref, scope, scope_ref, sync_mode, scope_mapping, datatype_mappings, destination_policy, retention_policy and permission_mapping are identical for all 6. Against the P-011 post-cutover live baseline (enum-papercusp.json, 63890ac0b22b17f0...) the sources show no change in any field except cursor values."
+    },
+    {
+      "id": "r15-cursor-legacy-keys-preserved",
+      "passed": true,
+      "evidence": "cursor-keys.mjs: allSame true. The legacy cursor key sets are identical pre vs live for all 6 sources: gcal c8a574ac, d863e7f1, f3d8cee9 [lastSyncAt, syncToken]; gmail 15508859 [backfill, emailAddress, historyId, lastSyncAt, watchExpiration]; gmail 62b7f9e2 [emailAddress, lastSyncAt, watchExpiration]; gmail c8fab094 [emailAddress, historyId, lastSyncAt, watchExpiration]. Values advance with every sync, so only key sets are compared."
+    },
+    {
+      "id": "r15-grants-and-armed-state-preserved",
+      "passed": true,
+      "evidence": "personal_grants 4 vs 4, identical. plugin_grants 0 vs 0. Bindings: all 9 pre-cutover bindings unchanged, including the only armed one, 5bbaba69 (ext:gcal:event-upcoming), which is still the only armed Google binding. The live set has 5 more, all armed=false: 4e8f31aa, 6d52ff71, 6ec74631 and 737bcda6 (the disarmed draft-reply bindings recorded in the P-011 evidence) and 99387af7 (blueprint-operation). None are part of the cutover."
+    },
+    {
+      "id": "r15-provenance-keys-unchanged",
+      "passed": true,
+      "evidence": "Distinct trigger_deliveries.event_key on gmail/gcal sources, 2026-09-29 to the 03:50Z cutover: ext:gcal:event-created, ext:gcal:event-upcoming, ext:gcal:event-updated, ext:gmail:message.received. Since the cutover: ext:gcal:event-created, ext:gmail:message.received. That is a subset with no renamed or new key; event-upcoming and event-updated did not occur in the window."
+    },
+    {
+      "id": "r15-restore-plus-revert-rehearsed",
+      "passed": true,
+      "evidence": "The snapshot restore plus revert rehearsal is the P-011 one (docs/evidence/google-cutover-p011-r15-live-2026-10-06.json, D-024): revert.sql on a scratch copy of live rows returned the pre-cutover state. It still applies to the current build. Migrations applied after the rehearsal are 1396, 1397, 1398 and 1399. None rewrites data_sources rows or grants: 1396-1398 do not name data_sources, personal_grants, plugin grants or trigger_bindings, and 1399 only replaces the emit_change_notify_trg trigger on data_sources. 1395 (applied 10:07:51Z, before the 10:13Z rehearsal) updates data_sources kind defaults and was already in the rehearsed state."
+    },
+    {
+      "id": "r15-controlled-google-draft",
+      "passed": true,
+      "evidence": "mail:draft to super@papercusp.com through Gmail source c8fab094 on :3170 returned ok, mode draft, draftId r-5697333666205193519, messageId 1a111d1bed5bb1bf. Never sent. The next Gmail sync ingested it at 15:27:27Z into the personal vault as document 42010060 (kind message, labels [DRAFT], direction outbound) and delivered ext:gmail:message.received once each to event-bus, trigger-bindings, personal-vault and app-delivery."
+    },
+    {
+      "id": "r15-controlled-calendar-write",
+      "passed": true,
+      "evidence": "calendar:propose with no attendees through Gcal source f3d8cee9 on :3170 returned ok, event id ak0j2lijk5qqt55b560rb7d8ds, status confirmed, invited []. The Calendar sync at 15:28:37Z read it back as ext:gcal:event-created, delivered once each to event-bus, trigger-bindings, personal-vault and app-delivery, and stored as vault document 5b18d497. Both sources: status connected, last_error null (sync_last_success_at c8fab094 15:23:16Z, f3d8cee9 15:28:38Z)."
+    },
+    {
+      "id": "r15-no-automatic-draft",
+      "passed": true,
+      "evidence": "trigger_runs joined to bindings on any gmail/gcal source since 03:50Z: 0 rows, read at 15:27Z and again at 15:31Z after both readbacks. trigger_runs for the controlled draft's delivery: 0. The only armed Google binding is 5bbaba69 on ext:gcal:event-upcoming, which is not a mail binding."
+    },
+    {
+      "id": "r15-apps-round-trip-non-google",
+      "passed": true,
+      "evidence": "The email and calendar apps' provider-neutral round trip with a non-Google provider is test run 20844364 (packages/operator-core/lib/app-data-producer/live-app-round-trip.integration.test.ts, status pass, commit f9480ef04a, 15:33:12Z, harness papercusp). It ran with ~/.papercusp/app-producer.env sourced; without it the file collects 0 tests (run 20844363, skip). The 2 skipped cases are the opt-in APP_LIVE_REAL_DATA_E2E real-data variants, as in the earlier pass 20843637."
+    }
+  ],
+  "disclosures": [
+    "The pre-cutover baseline is the P-011 enumeration of the 05:40Z papercusp-state dump (enum-p011_pre.json). P-015 re-ran the identical query live and did not take a new dump.",
+    "The controlled Calendar event (2026-10-20, no attendees) stays on the owner's calendar, because the platform has no calendar:delete verb yet (WI-10006509). The controlled draft stays in Drafts.",
+    "Raw enumeration outputs live in .papercusp/scratch/p011 and .papercusp/scratch/p015 (gitignored) and are pinned here by sha256 prefix only. They contain account addresses and opaque sync tokens, so they are not committed.",
+    "Two sources (gmail 15508859, gcal c8a574ac) have status error and two are disabled. Those states are identical to the pre-cutover dump, and none of those sources was used for the controlled writes."
+  ],
+  "couldNotDetermine": [
+    "A live in-place restore of the shared database was not executed; restore and revert were rehearsed on scratch databases in P-011 only."
+  ],
+  "measuredBy": "su-a973d2b0-0677-4a5b-b483-93676730c9e9"
+}

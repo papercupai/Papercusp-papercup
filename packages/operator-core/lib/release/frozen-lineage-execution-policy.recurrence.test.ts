@@ -65,6 +65,7 @@ describe('frozen lineage stale-D-017 recurrence', () => {
       {
         surface: 'compaction-continuation',
         text: 'D-017 — Then pin whatever staging resolves to at that instant, still never a quoted sha.',
+        target: null,
       },
       { marker },
     );

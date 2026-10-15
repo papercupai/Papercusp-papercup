@@ -17,6 +17,7 @@ import { startDedicatedNativePg, startDedicatedTestPg, type DedicatedNativePg } 
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { getResourceProfile } from '../resource-profile';
 import { runPairedBenchmark, type BenchmarkArm } from '../../test/_paired-operation-benchmark';
+import { createTextCollector } from '../child-output';
 import {
   P013D_WORKSPACE, assertWriteExactlyOnce, runP013WorkloadD, type P013DArm, type P013DSample,
 } from './operation-performance-d-driver';
@@ -115,18 +116,17 @@ describe('P-013 workload D fixture', () => {
             stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
             signal: AbortSignal.timeout(120_000),
           });
-          let stderr = '';
+          const stderr = createTextCollector(child.stderr, { maxChars: 4_000 });
           let stage = 'spawned';
           let sample: P013DSample | undefined;
-          child.stderr?.on('data', (chunk) => { stderr = (stderr + String(chunk)).slice(-4_000); });
           const exit = new Promise<void>((resolve, reject) => {
-            child.once('error', (error) => reject(new Error(`P-013 D cold child ${stage}: ${error.message}; ${stderr}`)));
+            child.once('error', (error) => reject(new Error(`P-013 D cold child ${stage}: ${error.message}; ${stderr.peek()}`)));
             // 'close', not 'exit': under load 'exit' can fire before the already-sent p013-sample
             // IPC message is dispatched (the child self-SIGKILLs right after send's callback), so
             // a successful sample read as a failed child. 'close' waits for the IPC channel to drain.
             child.once('close', (code, signal) => code === 0 || (signal === 'SIGKILL' && sample)
               ? resolve()
-              : reject(new Error(`P-013 D cold child ${stage} exited ${code}/${signal}: ${stderr}`)));
+              : reject(new Error(`P-013 D cold child ${stage} exited ${code}/${signal}: ${stderr.peek()}`)));
           });
           child.on('message', (message: { kind?: string; stage?: string; sample?: P013DSample }) => {
             if (message?.kind === 'p013-stage') stage = message.stage ?? stage;

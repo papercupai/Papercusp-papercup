@@ -128,14 +128,31 @@ async function readHistoricalCensus(
              source_kind,
              harness_slug,
              cwd,
-             COALESCE(ts, ingested_at) AS event_at,
+             ts AS event_at,
              'session_turns'::text AS event_source
         FROM harness_shared.session_turns
        WHERE (workspace_id = ${options.workspaceId} OR workspace_id = 'default')
          AND owner IS NOT NULL
          AND session_id IS NOT NULL
-         AND COALESCE(ts, ingested_at) >= ${options.since}::timestamptz
-         AND COALESCE(ts, ingested_at) < ${options.until}::timestamptz
+         AND ts >= ${options.since}::timestamptz
+         AND ts < ${options.until}::timestamptz
+      UNION ALL
+      -- Keep the fallback timestamp disjoint from the indexed ts range above:
+      -- wrapping both columns in COALESCE forced a full scan for bounded history.
+      SELECT owner AS owner_id,
+             session_id,
+             source_kind,
+             harness_slug,
+             cwd,
+             ingested_at AS event_at,
+             'session_turns'::text AS event_source
+        FROM harness_shared.session_turns
+       WHERE (workspace_id = ${options.workspaceId} OR workspace_id = 'default')
+         AND owner IS NOT NULL
+         AND session_id IS NOT NULL
+         AND ts IS NULL
+         AND ingested_at >= ${options.since}::timestamptz
+         AND ingested_at < ${options.until}::timestamptz
       UNION ALL
       SELECT owner_id,
              session_id,
@@ -163,41 +180,127 @@ async function readHistoricalCensus(
          AND invoked_at >= ${options.since}::timestamptz
          AND invoked_at < ${options.until}::timestamptz
     ),
-    enriched_events AS (
-      SELECT e.*,
+    -- Collapse repeated source events before session enrichment. The lookup
+    -- and its result join now process one row per raw owner/session key instead
+    -- of rejoining the full append-only event stream to that small key map.
+    raw_event_groups AS MATERIALIZED (
+      SELECT owner_id,
+             session_id,
+             max(source_kind) AS source_kind,
+             min(event_at) AS first_event_at,
+             max(event_at) AS last_event_at,
+             count(*)::int AS event_count,
+             array_agg(DISTINCT event_source ORDER BY event_source) AS event_sources,
+             max(harness_slug) AS harness_slug,
+             max(cwd) AS cwd
+        FROM raw_events
+       GROUP BY owner_id, session_id
+    ),
+    -- Resolve the immutable session evidence once per grouped key.
+    session_map AS MATERIALIZED (
+      SELECT k.owner_id,
+             k.session_id AS raw_session_id,
              a.session_id AS adv_session_id,
              a.agent AS adv_agent,
              a.first_seen_at AS adv_first_seen_at,
              a.launch_spec AS adv_launch_spec,
              a.harness_slug AS adv_harness_slug,
              a.cwd AS adv_cwd
-        FROM raw_events e
+        FROM raw_event_groups k
         LEFT JOIN LATERAL (
-          SELECT session_id, agent, first_seen_at, launch_spec, harness_slug, cwd
+          -- Disjoint branches preserve the earliest-row rule while allowing
+          -- the owner/first-seen index to supply the lookup order directly.
+          (SELECT session_id, agent, first_seen_at, launch_spec,
+                 launch_spec->>'harnessSlug' AS harness_slug,
+                 cwd
             FROM harness_shared.adv_sessions
-           WHERE coord_owner_id = e.owner_id
-             AND (e.session_id IS NULL OR session_id = e.session_id)
-           ORDER BY CASE WHEN e.session_id IS NOT NULL AND session_id = e.session_id THEN 0 ELSE 1 END,
-                    first_seen_at ASC NULLS LAST,
+           WHERE coord_owner_id = k.owner_id
+             AND k.session_id IS NOT NULL AND session_id = k.session_id
+           ORDER BY first_seen_at ASC NULLS LAST,
                     id ASC
-           LIMIT 1
+           LIMIT 1)
+          UNION ALL
+          (SELECT session_id, agent, first_seen_at, launch_spec,
+                  launch_spec->>'harnessSlug' AS harness_slug,
+                  cwd
+             FROM harness_shared.adv_sessions
+            WHERE coord_owner_id = k.owner_id AND k.session_id IS NULL
+            ORDER BY first_seen_at ASC NULLS LAST,
+                     id ASC
+            LIMIT 1)
         ) a ON true
     ),
-    event_groups AS (
+    -- Split null-session keys from ordinary keys to avoid a null-safe residual
+    -- filter while joining the grouped event stream to the session map.
+    mapped_key_events AS (
+      SELECT k.*,
+             a.adv_session_id,
+             a.adv_agent,
+             a.adv_first_seen_at,
+             a.adv_launch_spec,
+             a.adv_harness_slug,
+             a.adv_cwd
+        FROM raw_event_groups k
+        LEFT JOIN session_map a
+          ON a.owner_id = k.owner_id
+         AND a.raw_session_id = k.session_id
+       WHERE k.session_id IS NOT NULL
+      UNION ALL
+      SELECT k.*,
+             a.adv_session_id,
+             a.adv_agent,
+             a.adv_first_seen_at,
+             a.adv_launch_spec,
+             a.adv_harness_slug,
+             a.adv_cwd
+        FROM raw_event_groups k
+        LEFT JOIN session_map a
+          ON a.owner_id = k.owner_id
+         AND a.raw_session_id IS NULL
+       WHERE k.session_id IS NULL
+    ),
+    event_group_metrics AS (
       SELECT owner_id AS owner,
              COALESCE(session_id, adv_session_id) AS session_id,
              COALESCE(max(adv_agent), max(source_kind), 'unknown') AS source_kind,
              min(adv_first_seen_at) AS first_seen_at,
-             min(event_at) AS first_event_at,
-             max(event_at) AS last_event_at,
-             count(*)::int AS event_count,
-             array_agg(DISTINCT event_source ORDER BY event_source) AS event_sources,
+             min(first_event_at) AS first_event_at,
+             max(last_event_at) AS last_event_at,
+             sum(event_count)::int AS event_count,
              COALESCE(max(adv_harness_slug), max(harness_slug)) AS harness_slug,
              COALESCE(max(adv_cwd), max(cwd)) AS cwd,
              max(adv_launch_spec->>'model') AS model,
              max(adv_launch_spec->>'effort') AS effort
-        FROM enriched_events
+        FROM mapped_key_events
        GROUP BY owner_id, COALESCE(session_id, adv_session_id)
+    ),
+    -- Roll source names separately so unnesting each small source array cannot
+    -- multiply the event_count sums in event_group_metrics.
+    event_group_sources AS (
+      SELECT owner_id AS owner,
+             COALESCE(session_id, adv_session_id) AS session_id,
+             array_agg(DISTINCT source.event_source ORDER BY source.event_source) AS event_sources
+        FROM mapped_key_events
+        CROSS JOIN LATERAL unnest(event_sources) AS source(event_source)
+       GROUP BY owner_id, COALESCE(session_id, adv_session_id)
+    ),
+    event_groups AS (
+      SELECT metrics.owner,
+             metrics.session_id,
+             metrics.source_kind,
+             metrics.first_seen_at,
+             metrics.first_event_at,
+             metrics.last_event_at,
+             metrics.event_count,
+             sources.event_sources,
+             metrics.harness_slug,
+             metrics.cwd,
+             metrics.model,
+             metrics.effort
+        FROM event_group_metrics metrics
+        JOIN event_group_sources sources
+          ON sources.owner = metrics.owner
+         AND sources.session_id IS NOT DISTINCT FROM metrics.session_id
     ),
     membership_as_of_window AS (
       SELECT DISTINCT ON (owner_id)

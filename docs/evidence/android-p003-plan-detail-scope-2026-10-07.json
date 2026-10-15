@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10007163",
+  "parent": "WI-10004770",
+  "scope": "Focused current-source device plan detail route regression; no native live journey or deployed acceptance claim",
+  "framework": "node",
+  "sourceFingerprints": {
+    "packages/operator-core/lib/endpoint-route/routes/device/plans.ts": "220d94e22bd21b785a368f40b177ee071c03ec93be5a8146230ba07161ca83c1",
+    "packages/operator-core/lib/endpoint-route/routes/device/plans.test.ts": "bcc799e3e360504e52171a947c6207a92b09b9c9c6341cd49a66282d7a877f52"
+  },
+  "rootCause": "Detail handler omitted the authenticated principal workspace when invoking a source resolver that otherwise consults the global harness registry. List handler already checked membership and pinned workspace.",
+  "detectorGap": "Existing detail tests supplied only params, omitting the principal, and never asserted workspace scope or foreign-harness rejection.",
+  "before": { "executed": 16, "failed": 5, "passed": 11, "log": "/tmp/android-p003-plan-scope-before.log", "provenance": "local test edits; HEAD moved during run" },
+  "after": { "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/endpoint-route/routes/device/plans.test.ts", "executed": 16, "passed": 16, "failed": 0, "skipped": 0, "head": "a3cf8c1d35", "log": "/tmp/android-p003-plan-scope-after.log", "provenance": "stamped focused route run; route implementation changed locally" },
+  "controls": [
+    "No harness: paired workspace passed to source",
+    "All Pots aliases all and *: paired workspace retained",
+    "Member pot: paired workspace passed to source",
+    "Foreign pot: 404 before plan read or issue-block overlay",
+    "Existing effective-status and missing-plan behavior retained"
+  ]
+}

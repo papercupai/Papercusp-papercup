@@ -1,0 +1,140 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Selected LiveKit and JNA native upstream notice delivery",
+  "framework": "operational",
+  "command": [
+    "make test-android-library-notices",
+    "android/gradlew -p android --offline --console=plain -x :app:generateUniFfiKotlin :app:compileDebugAndroidTestKotlin :app:mergeReleaseResources"
+  ],
+  "workingDirectory": "papercup-rust-mobile",
+  "startedAt": "2026-10-03T04:47:11.623157+00:00",
+  "finishedAt": "2026-10-03T04:50:05.807734+00:00",
+  "timestampSource": "Retained first command log birth time and second command log final modification time; each command completed with exitCode0 in its shell envelope.",
+  "exitCode": 0,
+  "summary": "Actual collector generated seven complete texts for debug/release normal/add/remove graph transitions; 26 damaged controls rejected in each variant/phase. Complete selected LiveKit NOTICE and JNA native libffi text linked without replacing original license references. Release raw resource compiled byte-identically; extended seven-text native guard compiled, without executing native tests.",
+  "scope": "Local selected attribution generation and resource/native-test compilation only; no new APK/native execution, exact signed candidate, complete native/model/Rust rights/notice census, source recipient retrieval, current hosted CI, physical phone or Play acceptance.",
+  "mobileCommitAtCapture": "4331b4095636c190c2d2c3a54631a4848a60cb12",
+  "sourceFiles": [
+    {
+      "path": "papercup-rust-mobile/android/config/SOURCES.json",
+      "sha256": "07a58b894c338b0ffffadb0536ce32e958a2e8dae4795f9cdb0429641c9ceaf9"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/livekit-notice.json",
+      "sha256": "6338c0b4f8b36eb0841d2d5a12f5f797deb982b176156dc1da79eeafc24a3f07"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/jna-libffi.json",
+      "sha256": "105755abcc6a575c09ce7607f41df2435eb9e861bd0a872f33db2c26ab7f2204"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/livekit-notice.json",
+      "sha256": "23ce606d5835b2c9e612841ab912cc51cf3b73f90ac589219554ee5ca2576fba"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/jna-libffi.json",
+      "sha256": "39a576a704c537b7466fb04f612ae083d64c1cabe00845c9d0d83118bca9b530"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-library-notices-test.sh",
+      "sha256": "3ea598ff8ae81940db6c0399d68ebb21ebff40067898e907f702e2170c0ecc81"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/LibraryNoticesScreenTest.kt",
+      "sha256": "84b1a2903b138320104c61522e5bb91a182f8c9a3d8ee0579c63171ec29891ce"
+    },
+    {
+      "path": "papercup-rust-mobile/store/APP-STORE-REVIEW.md",
+      "sha256": "63c7e2660e27fa1126ef9f7259178d1da3f10df74624873b3839ac0eff99dbaa"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build.gradle.kts",
+      "sha256": "0f3517b0b3668789876e7d5dea15c6b5543222836dbce9177547b8550ec3e5f4"
+    }
+  ],
+  "testFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-library-notices-test.sh",
+      "sha256": "3ea598ff8ae81940db6c0399d68ebb21ebff40067898e907f702e2170c0ecc81"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "real-variant-graph-transitions",
+      "passed": true,
+      "evidence": "release221/222/221 and debug227/228/227 modules/records matched actual selected graph versions."
+    },
+    {
+      "id": "selected-upstream-byte-texts",
+      "passed": true,
+      "evidence": "Actual generated texts match retained release-tag bytes: LiveKit1ddcdc49391b88daa34060c04a5c3ecaa324903abdca74010aad6edbd952ed72; JNA libffi2c9c2acb9743e6b007b91350475308aee44691d96aa20eacef8e199988c8c388."
+    },
+    {
+      "id": "original-labels-preserved",
+      "passed": true,
+      "evidence": "LiveKit Apache and JNA Apache/LGPL labels remain alongside selected notices, with unchanged resolved module versions and complete original five texts."
+    },
+    {
+      "id": "damaged-metadata-controls",
+      "passed": true,
+      "evidence": "26 rejecting controls per variant/phase: four original graph/standard-text controls, seven omitted texts, seven substituted texts, seven unlinked references, and distinct JAIN SIP API notice control."
+    },
+    {
+      "id": "compiled-release-resource",
+      "passed": true,
+      "evidence": "Actual mergeReleaseResources passed; compiled raw_aboutlibraries.json.flat contains complete release JSON bytes including both selected attribution texts."
+    },
+    {
+      "id": "native-guard-compile",
+      "passed": true,
+      "evidence": "Actual compileDebugAndroidTestKotlin passed after adding both source-pinned texts to the existing unpaired-recipient test. No native test was run."
+    }
+  ],
+  "variantTransitions": {
+    "release": [
+      221,
+      222,
+      221
+    ],
+    "debug": [
+      227,
+      228,
+      227
+    ]
+  },
+  "retainedLogs": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-upstream-notice-texts-20261003.log",
+      "sha256": "5f79d3b7a20c921b6d75d6fef7b54d22ff159aa72d3091d593631b47abdd2da4"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-upstream-notice-compile-20261003.log",
+      "sha256": "73398254f808a66c3353c1e69120545007248561fda385ea57133ff1e563072a"
+    }
+  ],
+  "generatedResources": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/generated/aboutLibraries/release/res/raw/aboutlibraries.json",
+      "sha256": "bf3d877053baa8966505a89c9f535541025367aab43de897b0213ecd93711027"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/intermediates/merged_res/release/mergeReleaseResources/raw_aboutlibraries.json.flat",
+      "sha256": "c9e90314cd4e082e667beb5fc21aec89381bde5dfde2f51dec33606b865137f5"
+    }
+  ],
+  "unchangedHistoricalArtifact": {
+    "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-exported-app-debug-3c5c6ce622404f7faf827f30ecb5fec6.apk",
+    "sha256": "81bfbe9ff235dfc8480211b8974041c30a293b1629d85d6617d3bbab9bb8a3db"
+  },
+  "unchangedBuildReceipt": {
+    "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-source-build-android-apk-c0adc01280f54ac1.json",
+    "sha256": "c0adc01280f54ac134518efd6a2fe27a6a4bafa847feee59fea08c052624bb52"
+  },
+  "limitations": [
+    "Original five-text native proof remains historical and unchanged. Current native seven-text guard was compiled only.",
+    "The SOURCES.json scope sentence was clarified after the graph suite; source/license/module data were unchanged, and the subsequent compile/resource phase used the clarified ledger.",
+    "Selected upstream references do not establish all native engine/source notices or rights; P007 remaining obligations are mapped in the existing review packet.",
+    "No provider-account, recipient/public-source route, reviewer, signed candidate, current paired hosted CI, phone or Play floor is waived."
+  ]
+}

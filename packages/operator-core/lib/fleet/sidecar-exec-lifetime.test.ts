@@ -53,11 +53,53 @@ describe('sidecar kernel lifetime proof', () => {
     if (kind === 'gone') delete f.files['/proc/123/stat'];
     else f.files['/proc/123/stat'] = procStat(kind === 'recycled' ? '43' : '42', kind === 'zombie' ? 'Z' : 'S');
     const kill = vi.fn(async () => ({ ok: true, detail: 'termination pending' }));
-    expect(await reapDeadSidecar(f.snapshot, { fs: f.fs, kill })).toBe(false);
+    // settleMs:0 pins the single-observation contract: no settle window, so a kill that
+    // was merely accepted is reported as unverified rather than waited out.
+    expect(await reapDeadSidecar(f.snapshot, { fs: f.fs, kill, settleMs: 0 })).toBe(false);
     expect(kill).toHaveBeenCalledExactlyOnceWith('pc-abcd1234.scope');
     f.files[`${root}${path}/cgroup.events`] = 'populated 0\nfrozen 0\n';
     expect(await reapDeadSidecar(f.snapshot, { fs: f.fs, kill })).toBe(true);
     expect(kill).toHaveBeenCalledTimes(1);
+  });
+
+  // WI-10004743: exit lags the signal. Measured live, `killScopeUnit` reported "verified
+  // empty" while the immediately following observation still read `populated`; `exited`
+  // arrived ~50ms later. A single immediate re-read turned that teardown into "exit
+  // unverified" (reapDeadSidecar false -> caller lease retained + console.error).
+  describe('settle window after a signal', () => {
+    it('waits out a teardown that is still `populated` right after the kill', async () => {
+      const f = fixture();
+      delete f.files['/proc/123/stat'];
+      const kill = vi.fn(async () => ({ ok: true }));
+      let sleeps = 0;
+      const sleep = vi.fn(async () => {
+        // The kernel clears `populated` only after the signalled tasks are reaped.
+        if (++sleeps === 3) f.files[`${root}${path}/cgroup.events`] = 'populated 0\nfrozen 0\n';
+      });
+      expect(await reapDeadSidecar(f.snapshot, { fs: f.fs, kill, sleep })).toBe(true);
+      expect(kill).toHaveBeenCalledTimes(1);
+      expect(sleep).toHaveBeenCalledTimes(3);
+    });
+
+    it('is bounded: a scope that never empties is still reported unverified', async () => {
+      const f = fixture();
+      delete f.files['/proc/123/stat'];
+      const kill = vi.fn(async () => ({ ok: true }));
+      const sleep = vi.fn(async () => {});
+      expect(await reapDeadSidecar(f.snapshot, { fs: f.fs, kill, sleep, settleMs: 100 })).toBe(false);
+      expect(sleep).toHaveBeenCalledTimes(4);
+      expect(observeSidecarExit(f.snapshot, f.fs)).toBe('populated');
+    });
+
+    it('does not wait out evidence that is unknown rather than populated', async () => {
+      const f = fixture();
+      delete f.files['/proc/123/stat'];
+      // The kill itself damages the evidence: after it the cgroup events are unreadable.
+      const kill = vi.fn(async () => { f.errors.set(`${root}${path}/cgroup.events`, 'EIO'); });
+      const sleep = vi.fn(async () => {});
+      expect(await reapDeadSidecar(f.snapshot, { fs: f.fs, kill, sleep })).toBe(false);
+      expect(sleep).not.toHaveBeenCalled();
+    });
   });
 
   it('observes exit after signaling, including a kill failure racing scope removal', async () => {

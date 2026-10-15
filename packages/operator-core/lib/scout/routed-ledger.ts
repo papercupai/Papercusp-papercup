@@ -19,6 +19,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
 import { isWorkspaceCoordinationOn, workspaceBrainScopeKey, workspaceBrainReadKeys } from '../workspace-brain-scope';
+import { observeFallback } from '../degradation/fallback-observations';
 import { dedupById, gatherCompletions, type ChangeFeedEntry } from '../curation/change-feed';
 import { buildChangeFeedReaders, CHANGE_FEED_COMPLETION_STATUSES } from '../curation/change-feed-deps';
 import {
@@ -27,6 +28,7 @@ import {
   computeScoutRewardReport,
   lensWeightRowsFromReport,
   samplingWeightsWithFloor,
+  type IdeaOutcome,
   type LensOutcomeReport,
   type LensWeightOptions,
   type LensWeightRow,
@@ -36,11 +38,17 @@ import {
   type ScoutRewardReport,
   type ScoutRewardInput,
   WORK_ITEM_LOSS_STATUSES,
+  outcomeOfWorkItemTag,
+  workItemOutcomeTag,
 } from './outcome-feedback';
 import { CREATIVE_LENSES, type CreativeLens, type SuIdeationLens } from './types';
+import { readPausedRails } from './paused-rails';
+import { IDEA_ORIGIN_PAYLOAD_KEY, isIdeationLedgerOrigin } from './ideation-origin';
+import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { SHADOW_VARIANT_ORIGIN, type ShadowVariantOrigin } from './shadow-variant-origin';
 import { trackDetached } from '../detached-imports';
 import type { PortfolioOutcomeCandidate } from './portfolio-frontier';
+import { recordProducerObservation, withProducerLifecycleWrite } from '../experiment/producer-lifecycle-store';
 
 /**
  * Routing-only provenance used by the agent-review lifecycle. It is deliberately
@@ -201,7 +209,13 @@ interface LedgerRow {
   graded_by: string | null;
   graded_at: Date | string | null;
   created_by: string | null;
+  /** Cached outcome (refreshScoutOutcomes); NULL until first checked. */
+  outcome: string | null;
+  /** Ledger origin (scout / su-ideate / agent-review / ...); NOT NULL in the schema. */
+  origin: string | null;
 }
+
+const IDEA_OUTCOMES: ReadonlySet<string> = new Set<IdeaOutcome>(['won', 'lost', 'pending', 'unresolvable']);
 
 interface FeedbackRevisionRow {
   original_ref: string;
@@ -279,6 +293,7 @@ export async function recordRoutedIdea(input: RecordRoutedIdeaInput): Promise<vo
   // P-005 (D-009): the origin dimension. Default 'scout' so every existing caller (which
   // passes no origin) lands a Scout-origin row exactly as before.
   const origin = input.origin ?? 'scout';
+  await withProducerLifecycleWrite(sql, async (sql) => {
   await sql`
     INSERT INTO harness_shared.scout_routed_ideas
       (idea_id, workspace_id, harness_slug, source_hive, target_hive, cycle_id, lens, rail,
@@ -315,6 +330,23 @@ export async function recordRoutedIdea(input: RecordRoutedIdeaInput): Promise<vo
       model_spec = COALESCE(EXCLUDED.model_spec, scout_routed_ideas.model_spec),
       model_config = COALESCE(EXCLUDED.model_config, scout_routed_ideas.model_config)
     WHERE ${!input.preserveExisting}`;
+  // P-005 (R-10/R-11, EI-18697923246606437): stamp the routed work-item so the claim-spec
+  // `item_class` field can tell it is an idea. Payload-only on purpose — the JS claim matcher
+  // sees only the item's own payload, so a ledger lookup would break SQL/JS parity (see
+  // scout/ideation-origin.ts). Write-once: an existing stamp is never overwritten.
+  // Legacy terminal artifacts must retain their complete completion payload on replay.
+  if (isIdeationLedgerOrigin(origin) && input.routedRef.startsWith('wi:')) {
+    await sql`
+      UPDATE harness_shared.work_items
+         SET payload = COALESCE(payload, '{}'::jsonb) || jsonb_build_object(${IDEA_ORIGIN_PAYLOAD_KEY}::text, ${origin}::text)
+       WHERE workspace_id = ${ws} AND feature_id = ${input.routedRef.slice(3)}
+         AND NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
+         AND (payload IS NULL OR payload->>(${IDEA_ORIGIN_PAYLOAD_KEY}::text) IS NULL)`;
+  }
+  if (origin === 'scout') {
+    await recordProducerObservation(sql, { producer: 'scout', workspaceId: ws, sourceId: input.ideaId });
+  }
+  });
   // Push the Learning tab's Scout view (learning.scout reads this ledger).
   // Fire-and-forget via a lazy import so the PG seam (+ its tests) never
   // statically depends on the SSE layer; a missing SSE bus is a no-op.
@@ -346,11 +378,29 @@ export async function propagateWorkItemOutcome(input: {
   const losingStates = WORK_ITEM_LOSS_STATUSES as readonly string[];
   if (![...winningStates, ...losingStates].includes(normalizedState)) return 0;
 
-  const outcome = losingStates.includes(normalizedState) ? 'lost' : 'won';
   const ws = input.workspaceId ?? activeWorkspaceId();
   const routedRef = `wi:${input.workItemId}`;
   const now = Date.now();
   const { sql } = getOrgPg();
+  // WI-10007390: the state alone does not decide the idea's fate — a hygiene
+  // `closed` is a rejection. Read the same facts the sweep's ref-scoped read
+  // uses and apply the one shared rule, so the eager path and the sweep cannot
+  // disagree.
+  const [facts] = await sql<{ terminal_owner: string | null; triage_rejected: boolean }[]>`
+    SELECT w.terminal_owner,
+           COALESCE(w.payload #>> '{ideaLifecycle,triageDecision}' = 'reject', false) AS triage_rejected
+      FROM harness_shared.work_items w
+     WHERE w.feature_id = ${input.workItemId} AND w.workspace_id = ${ws}
+     LIMIT 1`;
+  const outcome = outcomeOfWorkItemTag(
+    workItemOutcomeTag({
+      status: normalizedState,
+      terminalOwner: facts?.terminal_owner ?? null,
+      triageRejected: facts?.triage_rejected ?? false,
+    }),
+  );
+  if (outcome === null) return 0;
+  return withProducerLifecycleWrite(sql, async (sql) => {
   const rows = await sql<{ idea_id: string }[]>`
     UPDATE harness_shared.scout_routed_ideas
        SET outcome = ${outcome},
@@ -360,7 +410,9 @@ export async function propagateWorkItemOutcome(input: {
        ${input.harnessSlug ? sql`AND harness_slug = ${input.harnessSlug}` : sql``}
        AND outcome IS DISTINCT FROM ${outcome}
     RETURNING idea_id`;
+  await recordProducerObservation(sql, { producer: 'scout', workspaceId: ws, sourceIds: rows.map((row) => row.idea_id) });
   return rows.length;
+  });
 }
 
 /**
@@ -402,6 +454,7 @@ export async function propagatePlanOutcome(input: {
   const routedRef = `plan:${input.planSlug}`;
   const now = Date.now();
   const { sql } = getOrgPg();
+  return withProducerLifecycleWrite(sql, async (sql) => {
   const rows = await sql<{ idea_id: string }[]>`
     UPDATE harness_shared.scout_routed_ideas
        SET outcome = ${outcome},
@@ -411,7 +464,9 @@ export async function propagatePlanOutcome(input: {
        AND routed_ref = ${routedRef}
        AND outcome IS DISTINCT FROM ${outcome}
     RETURNING idea_id`;
+  await recordProducerObservation(sql, { producer: 'scout', workspaceId: ws, sourceIds: rows.map((row) => row.idea_id) });
   return rows.length;
+  });
 }
 
 /** Input to {@link gradeRoutedIdea} — one grader's verdict on a routed idea (C-2). */
@@ -442,6 +497,15 @@ export interface GradeRoutedIdeaResult {
   reason?: 'owner-grade-sovereign' | 'not-found';
 }
 
+export type GradeRoutedIdeaPhase = 'writeTransaction' | 'gradeUpdate' | 'producerObservation' | 'notFoundLookup';
+
+export interface GradeRoutedIdeaDiagnostics {
+  schemaVersion: 'scout-grade-routed-idea-v1';
+  unit: 'ms';
+  elapsedMs: number;
+  phases: Partial<Record<GradeRoutedIdeaPhase, { startedAt: string; elapsedMs: number; status: 'in-progress' | 'ok' | 'error' }>>;
+}
+
 /**
  * Record a grader's verdict on one routed idea (scout-idea-grading C-2): an
  * idempotent UPDATE of the four grade columns on the ledger row. Regrading is
@@ -455,19 +519,46 @@ export interface GradeRoutedIdeaResult {
  * the ledger rows carry the active one (EI-346) — a workspace clause here would
  * silently no-op every grade from the tool surface. Admin client by design.
  */
-export async function gradeRoutedIdea(input: GradeRoutedIdeaInput): Promise<GradeRoutedIdeaResult> {
+export async function gradeRoutedIdea(
+  input: GradeRoutedIdeaInput,
+  options: { onDiagnostics?: (diagnostics: GradeRoutedIdeaDiagnostics) => void } = {},
+): Promise<GradeRoutedIdeaResult> {
   if (!Number.isInteger(input.grade) || input.grade < 1 || input.grade > 5) {
     throw new Error(`gradeRoutedIdea: grade must be an integer 1–5, got ${String(input.grade)}`);
   }
   const { sql } = getOrgPg();
+  const diagnostics: GradeRoutedIdeaDiagnostics | null = options.onDiagnostics
+    ? { schemaVersion: 'scout-grade-routed-idea-v1', unit: 'ms', elapsedMs: 0, phases: {} }
+    : null;
+  const overallStartedAt = diagnostics ? performance.now() : 0;
+  const measure = async <T>(phase: GradeRoutedIdeaPhase, action: () => Promise<T>): Promise<T> => {
+    if (!diagnostics) return action();
+    const startedAt = performance.now();
+    const startedAtIso = new Date().toISOString();
+    let status: 'ok' | 'error' = 'error';
+    diagnostics.phases[phase] = { startedAt: startedAtIso, elapsedMs: 0, status: 'in-progress' };
+    diagnostics.elapsedMs = Math.max(0, performance.now() - overallStartedAt);
+    try { options.onDiagnostics?.({ ...diagnostics, phases: { ...diagnostics.phases } }); } catch { /* Never affect grading. */ }
+    try {
+      const result = await action();
+      status = 'ok';
+      return result;
+    } finally {
+      diagnostics.phases[phase] = { startedAt: startedAtIso, elapsedMs: Math.max(0, performance.now() - startedAt), status };
+      diagnostics.elapsedMs = Math.max(0, performance.now() - overallStartedAt);
+      try { options.onDiagnostics?.({ ...diagnostics, phases: { ...diagnostics.phases } }); } catch { /* Never affect grading. */ }
+    }
+  };
   // D-004 in one statement. `graded_by IS DISTINCT FROM 'owner'` (not `<>`) so
   // ungraded rows (NULL graded_by) pass the guard for both graders. The
   // self-join FROM reads the PRE-update grade in the same statement (FB-15:
   // 'regrade' detection for the owner-interaction capture below) — same
   // unnarrowed idea_id predicate as before, so apply semantics are unchanged.
-  const updated = await sql<
+  const updated = await measure('writeTransaction', () => withProducerLifecycleWrite(sql, async (sql) => {
+  const rows = await measure('gradeUpdate', () => sql<
     {
       idea_id: string;
+      workspace_id: string;
       lens: string;
       rail: string;
       routed_ref: string;
@@ -486,11 +577,16 @@ export async function gradeRoutedIdea(input: GradeRoutedIdeaInput): Promise<Grad
              WHERE idea_id = ${input.ideaId}) prev
      WHERE t.idea_id = prev.idea_id
        AND (${input.gradedBy} = 'owner' OR t.graded_by IS DISTINCT FROM 'owner')
-     RETURNING t.idea_id, t.lens, t.rail, t.routed_ref, t.title,
-               prev.prev_grade, prev.prev_graded_by`;
+     RETURNING t.idea_id, t.workspace_id, t.lens, t.rail, t.routed_ref, t.title,
+               prev.prev_grade, prev.prev_graded_by`);
+  for (const row of rows) await measure('producerObservation', () => recordProducerObservation(sql, {
+    producer: 'scout', workspaceId: row.workspace_id, sourceId: row.idea_id,
+  }));
+  return rows;
+  }));
   if (updated.length === 0) {
-    const exists = await sql<{ idea_id: string }[]>`
-      SELECT idea_id FROM harness_shared.scout_routed_ideas WHERE idea_id = ${input.ideaId}`;
+    const exists = await measure('notFoundLookup', () => sql<{ idea_id: string }[]>`
+      SELECT idea_id FROM harness_shared.scout_routed_ideas WHERE idea_id = ${input.ideaId}`);
     return exists.length === 0
       ? { applied: false, reason: 'not-found' }
       : { applied: false, reason: 'owner-grade-sovereign' };
@@ -647,6 +743,7 @@ interface PendingOutcomeCandidateRow {
   routed_ref: string;
   routed_at: string | number;
   human_grade: number | string | null;
+  outcome_checked_at: string | number | null;
 }
 
 /**
@@ -663,7 +760,7 @@ export async function readPendingOutcomeCandidates(opts: {
   const { sql } = getOrgPg();
   const limit = Math.max(1, Math.min(10_000, Math.floor(opts.limit ?? 5_000)));
   const rows = await sql<PendingOutcomeCandidateRow[]>`
-    SELECT idea_id, origin, routed_ref, routed_at, human_grade
+    SELECT idea_id, origin, routed_ref, routed_at, human_grade, outcome_checked_at
       FROM harness_shared.scout_routed_ideas
      WHERE workspace_id = ${opts.workspaceId}
        AND origin = ANY(${['scout', 'su-ideate']}::text[])
@@ -677,27 +774,90 @@ export async function readPendingOutcomeCandidates(opts: {
     routedRef: row.routed_ref,
     routedAtMs: Number(row.routed_at),
     humanGrade: row.human_grade == null ? null : Number(row.human_grade),
+    // null = never verified (the frontier staleness tier's first-check lane).
+    outcomeCheckedAtMs: row.outcome_checked_at == null ? null : Number(row.outcome_checked_at),
   }));
 }
 
+/** The origins whose `wi:` routes have a window-free, ref-scoped terminal read. */
+export type RefScopedTerminalOrigin = 'scout' | 'su-ideate' | typeof AGENT_REVIEW_LEDGER_ORIGIN;
+
 /**
- * Last-routed instant per lens (ms epoch), workspace-scoped, origin='scout' by
+ * WI-10007540 — routed ideas of `origin` whose `wi:` work item has ALREADY reached a
+ * terminal status, yet whose cached outcome is still NULL/'pending' and has not been
+ * checked since that item last changed.
+ *
+ * The eager path ({@link propagateWorkItemOutcome}) settles a route the moment its
+ * item terminalizes, but it is a single best-effort write: a terminal reached before
+ * that hook existed, or by a path that bypasses it, leaves the row unresolved forever.
+ * Scout and su-ideate rows have the portfolio frontier as their backstop; agent-review
+ * rows had none (measured 2026-10-08: 885 terminal-but-NULL rows). This read is the
+ * selector for that backstop. It returns ONLY rows that already have a terminal, so a
+ * batch never spends its budget on genuinely open work, and the `outcome_checked_at <
+ * updated_ts` predicate stops a row the outcome rule cannot settle from being picked
+ * again until its item changes.
+ */
+export async function readTerminalUnresolvedRefIdeaIds(opts: {
+  workspaceId: string;
+  origin: RefScopedTerminalOrigin;
+  limit?: number;
+}): Promise<string[]> {
+  const { sql } = getOrgPg();
+  const limit = Math.max(1, Math.min(2_000, Math.floor(opts.limit ?? 200)));
+  const rows = await sql<{ idea_id: string }[]>`
+    SELECT s.idea_id
+      FROM harness_shared.scout_routed_ideas s
+      JOIN harness_shared.work_items w
+        ON w.feature_id = substring(s.routed_ref FROM 4)
+     WHERE s.workspace_id = ${opts.workspaceId}
+       AND s.origin = ${opts.origin}
+       AND s.routed_ref LIKE 'wi:%'
+       AND (s.outcome IS NULL OR s.outcome = 'pending')
+       AND w.status = ANY(${[...CHANGE_FEED_COMPLETION_STATUSES, ...WORK_ITEM_LOSS_STATUSES]}::text[])
+       AND (s.outcome_checked_at IS NULL OR s.outcome_checked_at < w.updated_ts)
+     ORDER BY w.updated_ts DESC NULLS LAST, s.idea_id ASC
+     LIMIT ${limit}`;
+  return rows.map((row) => row.idea_id);
+}
+
+/**
+ * Last successful ideator attempt or routed instant per lens (ms epoch), workspace-scoped, origin='scout' by
  * default (D-009 lens-learning isolation) and deliberately NOT harness-filtered
  * (EI-10520: the scout corpus is ONE per-workspace bucket under '@singleton').
  * Feeds the WI-5041 lens-rotation order: a budget-capped ideator roster runs
  * the STALEST lenses first, so even a 2-ideator roster spans the whole lens set
  * across cycles instead of pinning the first two — the multi-lens-routing v2
- * release bar (>=4 distinct lenses / 7d). A lens absent from the result has
- * never routed (treat as most stale).
+ * release bar (>=4 distinct lenses / 7d). EI-24926443593885283: routing alone
+ * cannot advance rotation when critics reject every idea. Reuse the existing
+ * tick's ideator slots so a successful zero-output attempt still takes its turn.
+ * Historical routes remain a fallback; failed slots and non-Scout ticks cannot
+ * make the production Scout roster look exercised.
  */
 export async function readLensRecency(opts: ScoutLedgerOpts = {}): Promise<Record<string, number>> {
   const { sql } = getOrgPg();
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const rows = await sql<Array<{ lens: string; last_routed_at: string | number }>>`
-    SELECT lens, max(routed_at) AS last_routed_at
-      FROM harness_shared.scout_routed_ideas
-     WHERE workspace_id = ${ws}
-       ${originClause(sql, opts.origin)}
+    WITH lens_visits AS (
+      SELECT lens, routed_at AS visited_at
+        FROM harness_shared.scout_routed_ideas
+       WHERE workspace_id = ${ws}
+         ${originClause(sql, opts.origin)}
+      UNION ALL
+      SELECT slot->>'lens' AS lens,
+             (extract(epoch FROM t.tick_at) * 1000)::bigint AS visited_at
+        FROM harness_shared.scout_ticks t
+        CROSS JOIN LATERAL jsonb_array_elements(
+          CASE WHEN jsonb_typeof(t.detail->'ideators') = 'array'
+               THEN t.detail->'ideators' ELSE '[]'::jsonb END
+        ) slot
+       WHERE t.workspace_id = ${ws}
+         AND ${opts.origin ?? 'scout'} = 'scout'
+         AND t.origin = 'scout' AND t.status = 'ran'
+         AND jsonb_typeof(slot->'lens') = 'string'
+         AND slot->>'error' IS NULL
+    )
+    SELECT lens, max(visited_at) AS last_routed_at
+      FROM lens_visits
      GROUP BY lens`;
   const out: Record<string, number> = {};
   for (const r of rows) if (r.lens) out[r.lens] = Number(r.last_routed_at) || 0;
@@ -712,7 +872,7 @@ export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<Route
   const rows = await sql<LedgerRow[]>`
     SELECT idea_id, lens, cycle_id, rail, routed_ref, source_hive, target_hive, title,
            addresses_pattern_refs, routed_at,
-           human_grade, human_feedback, graded_by, graded_at, created_by
+           human_grade, human_feedback, graded_by, graded_at, created_by, outcome, origin
      FROM harness_shared.scout_routed_ideas
      WHERE workspace_id = ${ws}
        ${originClause(sql, opts.origin)}
@@ -787,6 +947,12 @@ export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<Route
       ...(r.graded_by ? { gradedBy: r.graded_by } : {}),
       ...(gradedAt ? { gradedAt } : {}),
       ...(r.created_by ? { createdBy: r.created_by } : {}),
+      // P-002 (scout-su-ideate-pipeline-gaps-2026-10-08): the cached outcome feeds the
+      // success-metrics outcome tally. An unknown label is dropped, not guessed.
+      ...(r.outcome && IDEA_OUTCOMES.has(r.outcome) ? { outcome: r.outcome as IdeaOutcome } : {}),
+      // P-008 / R-18: success-metrics partitions agent-review rows out of every ideation
+      // bar by this field, so a caller that widens the read cannot silently mix them.
+      ...(r.origin ? { origin: r.origin } : {}),
       ...(feedbackRevisions.length > 0
         ? {
             feedbackRevisions: feedbackRevisions.map((revision) => ({
@@ -858,39 +1024,77 @@ async function readWorkItemLossEntries(): Promise<ChangeFeedEntry[]> {
 async function readSuRefScopedTerminalEntries(
   opts: ScoutLedgerOpts = {},
 ): Promise<ChangeFeedEntry[]> {
+  return readRefScopedWorkItemTerminals('su-ideate', opts);
+}
+
+/** One work-item terminal row, with the facts {@link workItemOutcomeTag} decides on. */
+interface WorkItemTerminalRow {
+  feature_id: string;
+  harness_slug: string | null;
+  title: string | null;
+  status: string | null;
+  updated_ts: string | null;
+  terminal_owner: string | null;
+  triage_rejected: boolean;
+}
+
+/**
+ * Map work-item terminal rows to change-feed completion entries through the
+ * single {@link workItemOutcomeTag} rule (WI-10007390). A row the rule cannot
+ * settle (a live status) emits NO entry, so its idea stays pending.
+ */
+export function workItemTerminalEntries(rows: readonly WorkItemTerminalRow[]): ChangeFeedEntry[] {
+  const entries: ChangeFeedEntry[] = [];
+  for (const r of rows) {
+    const tag = workItemOutcomeTag({
+      status: r.status,
+      terminalOwner: r.terminal_owner,
+      triageRejected: r.triage_rejected,
+    });
+    if (tag === null) continue;
+    const lost = outcomeOfWorkItemTag(tag) === 'lost';
+    entries.push({
+      id: `wi:${r.feature_id}`,
+      kind: 'completion' as const,
+      title: r.title || `${lost ? 'Closed' : 'Completed'}: ${r.feature_id}`,
+      detail: `Status: ${tag}`,
+      harness: r.harness_slug ?? undefined,
+      workItemId: r.feature_id,
+      ref: `wi:${r.feature_id}`,
+      ts: epochMsToIso(r.updated_ts),
+    });
+  }
+  return entries;
+}
+
+/**
+ * WI-10007390 — the window-free, ref-scoped work-item terminal read shared by the
+ * scout and su-ideate origins. It selects every terminal (win AND loss statuses)
+ * for the `wi:` refs this origin routed, plus the facts the outcome rule needs:
+ * the terminal owner and the idea triage decision. The rule, not this query,
+ * decides won / lost / unsettled.
+ */
+async function readRefScopedWorkItemTerminals(
+  origin: RefScopedTerminalOrigin,
+  opts: ScoutLedgerOpts = {},
+): Promise<ChangeFeedEntry[]> {
   const { sql } = getOrgPg();
   const ws = opts.workspaceId ?? activeWorkspaceId();
-  const rows = await sql<
-    {
-      feature_id: string;
-      harness_slug: string | null;
-      title: string | null;
-      status: string | null;
-      updated_ts: string | null;
-    }[]
-  >`
-    SELECT w.feature_id, w.harness_slug, w.title, w.status, w.updated_ts
+  const rows = await sql<WorkItemTerminalRow[]>`
+    SELECT w.feature_id, w.harness_slug, w.title, w.status, w.updated_ts, w.terminal_owner,
+           COALESCE(w.payload #>> '{ideaLifecycle,triageDecision}' = 'reject', false) AS triage_rejected
       FROM harness_shared.work_items w
      WHERE w.status = ANY(${[...CHANGE_FEED_COMPLETION_STATUSES, ...WORK_ITEM_LOSS_STATUSES]}::text[])
        AND w.feature_id IN (
              SELECT substring(routed_ref FROM 4)
                FROM harness_shared.scout_routed_ideas
-              WHERE origin = 'su-ideate'
+              WHERE origin = ${origin}
                 AND routed_ref LIKE 'wi:%'
                 AND workspace_id = ${ws}
                 ${opts.harnessSlug ? sql`AND harness_slug = ${opts.harnessSlug}` : sql``}
                 ${opts.cycleId ? sql`AND cycle_id = ${opts.cycleId}` : sql``}
            )`;
-  return rows.map((r) => ({
-    id: `wi:${r.feature_id}`,
-    kind: 'completion' as const,
-    title: r.title || `Completed: ${r.feature_id}`,
-    detail: `Status: ${r.status}`,
-    harness: r.harness_slug ?? undefined,
-    workItemId: r.feature_id,
-    ref: `wi:${r.feature_id}`,
-    ts: epochMsToIso(r.updated_ts),
-  }));
+  return workItemTerminalEntries(rows);
 }
 
 /**
@@ -965,30 +1169,13 @@ async function readScoutRefScopedTerminalEntries(
        ${opts.harnessSlug ? sql`AND harness_slug = ${opts.harnessSlug}` : sql``}
        ${opts.cycleId ? sql`AND cycle_id = ${opts.cycleId}` : sql``}`;
 
-  const [wiRows, wiLossRows, gymRows, gymArchiveWonRows, gymArchiveLostRows, planRows, planShippedRows, droppedPlanRows, planSupersededRows, goalRows] =
+  const [wi, gymRows, gymArchiveWonRows, gymArchiveLostRows, planRows, planShippedRows, droppedPlanRows, planSupersededRows, goalRows] =
     await Promise.all([
-    sql<
-      { feature_id: string; harness_slug: string | null; title: string | null; status: string | null; updated_ts: string | null }[]
-    >`
-      SELECT w.feature_id, w.harness_slug, w.title, w.status, w.updated_ts
-        FROM harness_shared.work_items w
-       WHERE w.status = ANY(${[...CHANGE_FEED_COMPLETION_STATUSES]}::text[])
-         AND w.terminal_owner IS NOT NULL AND w.terminal_owner <> ''
-         AND w.terminal_completion_ref IS NOT NULL AND w.terminal_completion_ref <> ''
-         AND ('wi:' || w.feature_id) IN (${scoutRefsFor('wi:')})`,
-    // EI-20307121130730172 — the wi-rail LOSS terminal, the sibling of the
-    // winning read above. Deliberately NO completion-integrity pair: the
-    // integrity columns exist to prove a WIN was genuinely shipped, and a
-    // dropped/deprecated item never sets them, so requiring them here would
-    // re-create exactly the zero-loss channel this fixes. Mirrors
-    // readWorkItemLossEntries' "a hygiene death is still a negative signal".
-    sql<
-      { feature_id: string; harness_slug: string | null; title: string | null; status: string | null; updated_ts: string | null }[]
-    >`
-      SELECT w.feature_id, w.harness_slug, w.title, w.status, w.updated_ts
-        FROM harness_shared.work_items w
-       WHERE w.status = ANY(${[...WORK_ITEM_LOSS_STATUSES]}::text[])
-         AND ('wi:' || w.feature_id) IN (${scoutRefsFor('wi:')})`,
+    // WI-10007390: the wi rail's wins AND losses through the one shared rule.
+    // The win read used to require `terminal_completion_ref`, which a
+    // work_items:complete close never writes (it writes
+    // payload._completionEvidence), so no completed scout filing ever scored.
+    readRefScopedWorkItemTerminals(refOrigin, opts),
     // GYM-3 (autonomous-loop-prod-audit-2026-07-02 P-013): gym_proposals.id is a
     // COMPOUND key (`${variantId}__${role}`, control-plane.ts recordProposal) —
     // it never equals the bare candidateId the Scout router stamps as
@@ -1121,26 +1308,6 @@ async function readScoutRefScopedTerminalEntries(
          AND ('goal:' || g.id) IN (${scoutRefsFor('goal:')})`,
   ]);
 
-  const wi: ChangeFeedEntry[] = wiRows.map((r) => ({
-    id: `wi:${r.feature_id}`,
-    kind: 'completion' as const,
-    title: r.title || `Completed: ${r.feature_id}`,
-    detail: `Status: ${r.status}`,
-    harness: r.harness_slug ?? undefined,
-    workItemId: r.feature_id,
-    ref: `wi:${r.feature_id}`,
-    ts: epochMsToIso(r.updated_ts),
-  }));
-  const wiLoss: ChangeFeedEntry[] = wiLossRows.map((r) => ({
-    id: `wi:${r.feature_id}`,
-    kind: 'completion' as const,
-    title: r.title || `${r.status === 'dropped' ? 'Dropped' : 'Deprecated'}: ${r.feature_id}`,
-    detail: `Status: ${r.status}`,
-    harness: r.harness_slug ?? undefined,
-    workItemId: r.feature_id,
-    ref: `wi:${r.feature_id}`,
-    ts: epochMsToIso(r.updated_ts),
-  }));
   const gymLabel: Record<string, string> = { accepted: 'Accepted', rejected: 'Rejected', superseded: 'Superseded' };
   const gym: ChangeFeedEntry[] = gymRows.map((r) => ({
     id: `gym:${r.variant_id}`,
@@ -1215,7 +1382,7 @@ async function readScoutRefScopedTerminalEntries(
   // Decided-proposal / op_status entries are listed before their archive- and
   // frontmatter-status-derived siblings so a higher-fidelity explicit decision
   // wins the first-wins-by-ref dedup (computeLensOutcomes) on the rare overlap.
-  return [...wi, ...wiLoss, ...gym, ...gymArchiveWon, ...gymArchiveLost, ...plan, ...planShipped, ...droppedPlan, ...planSuperseded, ...goal];
+  return [...wi, ...gym,...gymArchiveWon, ...gymArchiveLost, ...plan, ...planShipped, ...droppedPlan, ...planSuperseded, ...goal];
 }
 
 /**
@@ -1254,6 +1421,16 @@ async function gatherCompletionsForOrigin(
     const refScoped = await readScoutRefScopedTerminalEntries(opts);
     return refScoped.length > 0 ? dedupById([...completions, ...refScoped]) : completions;
   }
+  if (o === AGENT_REVIEW_LEDGER_ORIGIN) {
+    // WI-10007540: agent-review enrollment rows route only to `wi:` refs. Without
+    // the window-free terminal read, a reviewed item that resolved outside the
+    // feed's top-500 window (or reached a loss terminal, which the feed never
+    // carries) would classify pending forever — the same gap P-016 closed for
+    // su-ideate. Outcome cache only: the D-003 guard in refreshScoutOutcomes keeps
+    // this origin away from scout_lens_weights.
+    const refScoped = await readRefScopedWorkItemTerminals(AGENT_REVIEW_LEDGER_ORIGIN, opts);
+    return refScoped.length > 0 ? dedupById([...completions, ...refScoped]) : completions;
+  }
   return completions;
 }
 
@@ -1279,11 +1456,12 @@ export function buildScoutOutcomeReaders(opts: ScoutLedgerOpts = {}): ScoutOutco
 export async function getScoutLensOutcomes(
   opts: ScoutLedgerOpts & { weights?: LensWeightOptions } = {},
 ): Promise<LensOutcomeReport> {
-  const [provenance, completions] = await Promise.all([
+  const [provenance, completions, pausedRails] = await Promise.all([
     readRoutedIdeas(opts),
     gatherCompletionsForOrigin(opts.origin, opts),
+    readPausedRails(getOrgPg().sql, opts.workspaceId ?? activeWorkspaceId()),
   ]);
-  const report = computeLensOutcomes(provenance, completions, opts.weights);
+  const report = computeLensOutcomes(provenance, completions, { ...opts.weights, pausedRails });
   return { ...report, generatedAt: new Date().toISOString() };
 }
 
@@ -1296,18 +1474,20 @@ export async function getScoutLensOutcomes(
  * {@link computeScoutRewardReport} collapses fused source rows before attribution.
  */
 export async function getScoutRewardReport(opts: ScoutLedgerOpts = {}): Promise<ScoutRewardReport> {
-  const [provenance, completions] = await Promise.all([
+  const [provenance, completions, pausedRails] = await Promise.all([
     readRoutedIdeas(opts),
     gatherCompletionsForOrigin(opts.origin, opts),
+    readPausedRails(getOrgPg().sql, opts.workspaceId ?? activeWorkspaceId()),
   ]);
   const byRef = new Map(completions.map((entry) => [entry.ref, entry]));
-  const rewardInput: ScoutRewardInput[] = provenance.map((idea) => {
-    const outcome = classifyIdeaOutcome(idea, byRef);
-    return {
-      ...idea,
-      outcome: outcome === 'won' || outcome === 'lost' ? outcome : 'pending',
-    };
-  });
+  const rewardInput: ScoutRewardInput[] = [];
+  for (const idea of provenance) {
+    const outcome = classifyIdeaOutcome(idea, byRef, { pausedRails });
+    // P-002: an idea that can never decide carries no reward signal; keep it out of
+    // every reward denominator rather than parking it in 'pending' forever.
+    if (outcome === 'unresolvable') continue;
+    rewardInput.push({ ...idea, outcome: outcome === 'won' || outcome === 'lost' ? outcome : 'pending' });
+  }
   return computeScoutRewardReport(rewardInput);
 }
 
@@ -1376,19 +1556,69 @@ export async function readScoutLensWeights(
 ): Promise<Partial<Record<CreativeLens, number>>> {
   const sql = opts.sql ?? getOrgPg().sql;
   const ws = opts.workspaceId ?? activeWorkspaceId();
-  const rows = await sql<{ lens: string; weight: string | number }[]>`
-    SELECT lens, weight
+  const rows = await sql<{ lens: string; weight: string | number; pot_slug: string | null; updated_at: Date | string | null }[]>`
+    SELECT lens, weight, pot_slug, updated_at
       FROM harness_shared.scout_lens_weights
      WHERE workspace_id = ${ws}
        ${opts.potSlug ? sql`AND pot_slug = ${opts.potSlug}` : sql``}`;
-  const out: Partial<Record<CreativeLens, number>> = {};
+  return pickNewestLensWeightScope(
+    rows.map((r) => ({ lens: r.lens, weight: r.weight, potSlug: r.pot_slug, updatedAt: r.updated_at })),
+  ).weights;
+}
+
+/** One persisted `scout_lens_weights` row, as {@link pickNewestLensWeightScope} reads it. */
+export interface PersistedLensWeightRow {
+  lens: string;
+  weight: string | number;
+  potSlug: string | null;
+  updatedAt: Date | string | null;
+}
+
+/**
+ * Choose ONE coherent weight scope: the pot_slug whose newest row is the most recent
+ * write (ties → the lexically smallest slug, so the choice is deterministic), and return
+ * only that scope's valid lens weights.
+ *
+ * scout-su-ideate-pipeline-gaps-2026-10-08 P-008 / R-19: a workspace-wide read used to
+ * fold EVERY scope's rows into one map, last row wins, in unspecified heap order. The
+ * workspace holds a live sentinel scope (rewritten each refresh from the corrected
+ * outcomes) beside retired per-hive scopes last written 2026-08-02, so the scout cycle's
+ * no-hive read and the learning.scout snapshot could serve an August weight that the
+ * corrected resolver no longer supports. refreshScoutOutcomes writes all lenses of a scope
+ * in one upsert, so the newest scope is always the latest complete derivation.
+ */
+export function pickNewestLensWeightScope(
+  rows: readonly PersistedLensWeightRow[],
+): { potSlug: string | null; updatedAtMs: number | null; weights: Partial<Record<CreativeLens, number>> } {
+  const newestByScope = new Map<string, number>();
   for (const r of rows) {
-    const w = typeof r.weight === 'number' ? r.weight : Number(r.weight);
-    if ((CREATIVE_LENSES as readonly string[]).includes(r.lens) && Number.isFinite(w)) {
-      out[r.lens as CreativeLens] = w;
+    const key = r.potSlug ?? '';
+    const ms = r.updatedAt == null ? Number.NEGATIVE_INFINITY : new Date(r.updatedAt).getTime();
+    const t = Number.isFinite(ms) ? ms : Number.NEGATIVE_INFINITY;
+    newestByScope.set(key, Math.max(newestByScope.get(key) ?? Number.NEGATIVE_INFINITY, t));
+  }
+  let chosen: string | null = null;
+  let chosenMs = Number.NEGATIVE_INFINITY;
+  for (const [key, ms] of [...newestByScope.entries()].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))) {
+    if (chosen === null || ms > chosenMs) {
+      chosen = key;
+      chosenMs = ms;
     }
   }
-  return out;
+  const weights: Partial<Record<CreativeLens, number>> = {};
+  if (chosen === null) return { potSlug: null, updatedAtMs: null, weights };
+  for (const r of rows) {
+    if ((r.potSlug ?? '') !== chosen) continue;
+    const w = typeof r.weight === 'number' ? r.weight : Number(r.weight);
+    if ((CREATIVE_LENSES as readonly string[]).includes(r.lens) && Number.isFinite(w)) {
+      weights[r.lens as CreativeLens] = w;
+    }
+  }
+  return {
+    potSlug: chosen === '' ? null : chosen,
+    updatedAtMs: Number.isFinite(chosenMs) ? chosenMs : null,
+    weights,
+  };
 }
 
 /**
@@ -1431,10 +1661,18 @@ export async function getScoutLensWeights(
         if (Object.keys(persisted).length > 0) break;
       }
     } else {
-      // No hive context → the workspace-wide read (today's behavior).
-      persisted = await readScoutLensWeights({ workspaceId: ws });
+      // No hive context. P-008 / R-19: ON → the workspace sentinel row first (exactly the
+      // scope refreshScoutOutcomes writes from the corrected outcomes); then, or OFF, the
+      // newest single scope (pickNewestLensWeightScope) — never a mix of retired scopes.
+      for (const key of workspaceBrainReadKeys(ws, '', on)) {
+        persisted = await readScoutLensWeights({ workspaceId: ws, potSlug: key });
+        if (Object.keys(persisted).length > 0) break;
+      }
+      if (Object.keys(persisted).length === 0) persisted = await readScoutLensWeights({ workspaceId: ws });
     }
+    observeFallback('scout-state-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'lens-weights' }, { workspaceId: ws });
   } catch (err) {
+    observeFallback('scout-state-read', { eligible: 1, applied: 0, reason: 'lens-weights-read-failed', scope: 'lens-weights' }, { workspaceId: ws });
     // Best-effort read: fall through with no persisted signal → uniform weights.
      
     console.warn(
@@ -1510,7 +1748,9 @@ export async function refreshScoutOutcomes(
     // cannot disappear behind this newest-first report's ordinary limit.
     ideaIds: undefined,
   };
-  const [provenance, completions, boundedProvenance] = await Promise.all([
+  // P-002 (scout-su-ideate-pipeline-gaps-2026-10-08): ideas on a paused rail classify
+  // 'unresolvable'. Read once per refresh; fail-open (nothing paused) on error.
+  const [provenance, completions, boundedProvenance, pausedRails] = await Promise.all([
     readRoutedIdeas(corpusOpts),
     gatherCompletionsForOrigin(opts.origin, corpusOpts),
     opts.ideaIds
@@ -1520,6 +1760,7 @@ export async function refreshScoutOutcomes(
           limit: Math.max(1, opts.ideaIds.length),
         })
       : Promise.resolve(null),
+    readPausedRails(sql, ws),
   ]);
 
   const selectedProvenance = boundedProvenance ?? provenance;
@@ -1528,9 +1769,10 @@ export async function refreshScoutOutcomes(
   if (selectedProvenance.length > 0) {
     const byRef = new Map(completions.map((e) => [e.ref, e]));
     const ids = selectedProvenance.map((p) => p.ideaId);
-    const outcomes = selectedProvenance.map((p) => classifyIdeaOutcome(p, byRef) as string);
+    const outcomes = selectedProvenance.map((p) => classifyIdeaOutcome(p, byRef, { pausedRails }) as string);
     const now = Date.now();
     // One batched UPDATE … FROM unnest(…) — no per-row serial loop.
+    await withProducerLifecycleWrite(sql, async (sql) => {
     await sql`
       UPDATE harness_shared.scout_routed_ideas AS t
          SET outcome = d.outcome, outcome_checked_at = ${now}
@@ -1538,6 +1780,8 @@ export async function refreshScoutOutcomes(
           SELECT * FROM unnest(${ids}::text[], ${outcomes}::text[]) AS u(idea_id, outcome)
         ) AS d
        WHERE t.idea_id = d.idea_id AND t.workspace_id = ${ws}`;
+    await recordProducerObservation(sql, { producer: 'scout', workspaceId: ws, sourceIds: ids });
+    });
 
     if (opts.ideaIds) {
       const observedAt = new Date(now).toISOString();
@@ -1561,7 +1805,7 @@ export async function refreshScoutOutcomes(
     }
   }
 
-  const report = computeLensOutcomes(provenance, completions, opts.weights);
+  const report = computeLensOutcomes(provenance, completions, { ...opts.weights, pausedRails });
 
   // D-003 guard (P-003): only the scout origin closes the lens-weight loop.
   // A su-ideate / 'all' refresh stops here — outcome cache written, weights

@@ -15,11 +15,21 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { runFullTextSearch } from '@papercusp/search';
 import { SEARCH_SOURCES } from './sources';
+import { createReportSearchSource } from './report-source';
+import { createDocSearchSource, createPlanSearchSource } from './knowledge-sources';
+import { resolveViewer } from '../reports/_shared';
 import { scopeResidue } from './scope-residue';
 import { rerankCandidateCount, rerankPageHead } from './rerank';
 import { searchFilterArgs, resolveSearchFilters } from './filters';
 import { scopeArg, DEFAULT_SCOPE } from './scope';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { promotionSourceSchema, reversePromotions } from '../../promotion-lineage';
+import {
+  createStageAttempt,
+  traceStageAwait,
+  withStageAttempt,
+  type StageAttemptContext,
+} from '../../sync/hyperbee/stage-stall-log';
 
 // + overwatch (overwatch-role-2026-06-15 B-01): the supervisor searches to ground nudges.
 // + judge (acceptance-rubric grading): the dedicated evaluator needs read-only
@@ -53,13 +63,49 @@ export default defineTool({
   agentRoles: [...ALL_ROLES],
   rolesQuota: { worker: { perChunk: 10 }, operator: { perRun: 100 } },
   args: z.object({
-    query: z.string().min(1).max(500),
+    query: z.string().max(500).default(''),
+    promotedFrom: promotionSourceSchema.optional().describe('Exact reverse lookup of facts, docs and plan decisions promoted from this source. No text query or inference required.'),
     scope: scopeArg(),
     harness_slug: z.string().optional(),
     limit: z.number().int().min(1).max(50).optional().describe('Max results (default 5; maximum 50).'),
     ...searchFilterArgs,
-  }),
+  }).refine(args => Boolean(args.query) || args.promotedFrom !== undefined, { message: 'query or promotedFrom is required' }),
   async handler(args, ctx) {
+    if (args.promotedFrom) return { content: [{ type: 'text' as const, text: JSON.stringify({
+      ok: true, promotedFrom: args.promotedFrom,
+      ...await reversePromotions(args.promotedFrom, ctx.workspaceId, args.limit ?? 50),
+    }) }] };
+    if (!args.query) throw new Error('query or promotedFrom is required');
+    const startedAt = performance.now();
+    const stages: Array<{ name: string; elapsedMs: number; status: 'ok' | 'error' }> = [];
+    const metadata = (ctx as { metadata?: (value: Record<string, unknown>) => void }).metadata;
+    let queryAttempt: StageAttemptContext | undefined;
+    // Reuse invocation metadata so a slow search distinguishes SQL retrieval
+    // from the optional reranker; record a failed stage before propagating it.
+    const measure = async <T>(name: string, action: () => Promise<T>): Promise<T> => {
+      const start = performance.now();
+      let status: 'ok' | 'error' = 'error';
+      try {
+        const value = await action();
+        status = 'ok';
+        return value;
+      } finally {
+        stages.push({ name, elapsedMs: Math.max(0, performance.now() - start), status });
+        metadata?.({ searchFulltextRead: {
+          schemaVersion: 'fulltext-read-v1',
+          unit: 'ms',
+          timing: 'wall-time-sequential-stages',
+          elapsedMs: Math.max(0, performance.now() - startedAt),
+          stages: [...stages],
+          ...(queryAttempt ? { queryDiagnostics: {
+            ...queryAttempt,
+            stage: 'scope-query',
+            coverage: 'queries-created-during-retrieval',
+            timing: 'query-build-to-terminal-not-acquisition',
+          } } : {}),
+        } });
+      }
+    };
     const limit = args.limit ?? 5;
     // EI-6984: 'work_item' (and now the session/coord corpora) are opt-in only,
     // kept OUT of the historic no-scope default (unscoped callers keep the same
@@ -71,7 +117,10 @@ export default defineTool({
         : !args.scope?.length
           ? DEFAULT_SCOPE
           : args.scope;
-    const sources = SEARCH_SOURCES.filter((s) => scope.includes(s.name));
+    const sources = SEARCH_SOURCES.filter((s) => scope.includes(s.name))
+      .map(s => s.name === 'report' ? createReportSearchSource(resolveViewer(ctx))
+        : s.name === 'plan' ? createPlanSearchSource({ harnessSlugs: ctx.harnessSlug && ctx.harnessSlug !== '*' ? [ctx.harnessSlug] : [] })
+        : s.name === 'doc' ? createDocSearchSource({ harnessSlugs: ctx.harnessSlug && ctx.harnessSlug !== '*' ? [ctx.harnessSlug] : [] }) : s);
 
     // P-002 filter bag: resolve 'self'/fleet sugars server-side (session:'self'
     // also live-tails the caller's own transcript — compaction recovery).
@@ -79,23 +128,39 @@ export default defineTool({
     // ownerId (an unattributable caller asking for 'self' SHOULD error loudly);
     // every other path must keep working for surfaces with no agent identity.
     const needsSelf = args.owner === 'self' || args.session === 'self';
-    const { filters } = await resolveSearchFilters(
+    const { filters } = await measure('filters', () => resolveSearchFilters(
       ctx.tx,
       args,
       needsSelf ? (resolveAgentIdentity(ctx).ownerId ?? '') : '',
       { workspaceId: ctx.workspaceId ?? '' },
-    );
+    ));
 
-    const { results, totalHits } = await runFullTextSearch(sources, {
-      sql: ctx.tx,
-      query: args.query,
-      workspaceId: ctx.workspaceId ?? '',
-      scopeFilter: args.harness_slug ?? null,
-      // Stage B over-fetch — see the note in semantic.ts. `rerankPageHead`
-      // slices back to `limit`, including on the passthrough path.
-      limit: rerankCandidateCount(limit),
-      filters,
-      log: ctx.log,
+    const { results, totalHits } = await measure('retrieval', async () => {
+      // The existing query diagnostic ring captures context when a query is
+      // created. Persist this local attempt identity in invocation metadata so
+      // those records can be joined without guessing from timestamps/session ids.
+      // The ledger invocation id does not exist yet; rowId stays explicitly unknown.
+      const attempt = metadata ? createStageAttempt({ rowId: '', onEvent: () => {} }) : undefined;
+      queryAttempt = attempt?.context;
+      let outcome: 'fulfilled' | 'rejected' = 'rejected';
+      try {
+        const result = await withStageAttempt(attempt, () => traceStageAwait('scope-query', () =>
+          runFullTextSearch(sources, {
+            sql: ctx.tx,
+            query: args.query,
+            workspaceId: ctx.workspaceId ?? '',
+            scopeFilter: args.harness_slug ?? null,
+            // Stage B over-fetch — `rerankPageHead` slices back to limit.
+            limit: rerankCandidateCount(limit),
+            filters,
+            log: ctx.log,
+          }),
+        ));
+        outcome = 'fulfilled';
+        return result;
+      } finally {
+        attempt?.finish(outcome);
+      }
     });
 
     // Stage B: cross-encoder rerank. Fail-safe — no ZeroEntropy key → the
@@ -108,7 +173,7 @@ export default defineTool({
     // blow PROSE_RERANK_TIMEOUT_MS into a full degrade. rerankPageHead honours
     // the cap as a CANDIDATE budget: the head is reranked, the tail rides
     // through in BM25 order, and worst-case cost is flat in page size.
-    const reranked = await rerankPageHead(args.query, results, limit);
+    const reranked = await measure('rerank', () => rerankPageHead(args.query, results, limit));
 
     // search:fulltext's output rows use `rank` (no score/rankers).
     const top = reranked.map((r) => ({

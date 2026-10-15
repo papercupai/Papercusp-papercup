@@ -1,0 +1,737 @@
+{
+  "schemaVersion": 1,
+  "kind": "acceptance-contract-readback",
+  "workItem": "WI-10007984",
+  "sourcePlan": {
+    "slug": "managed-agent-capability-contract-and-native-cutover-2026-09-13",
+    "version": 76,
+    "contentHash": "9e28e6e2514b4d04cc1a1be78555ba831332b62ae5db288bebd317988235a0f4"
+  },
+  "predecessor": {
+    "rubricRef": "acceptance-managed-agent-capability-contract-and-native-cutover-2026-09-13",
+    "revision": 16,
+    "status": "retired",
+    "criteriaPreserved": [
+      "r-1",
+      "r-2",
+      "r-3",
+      "r-4",
+      "r-5",
+      "r-6",
+      "r-7",
+      "r-8"
+    ]
+  },
+  "status": "revision3-reviewed-and-meta-recorded-adoption-blocked",
+  "canonicalReceipt": {
+    "rubricRef": "acceptance-managed-capability-continuation-2026-10-09",
+    "revision": 3,
+    "status": "active",
+    "readbackVerified": true,
+    "acceptanceVerdict": "unknown; contract vetting pending; required Claude and full capability/native-UI evidence unmet",
+    "criteriaHash": "c233165aff1edcb861a98c3c2d12bca5e5455799d276fb3419ee188ccb3a0f87"
+  },
+  "authoringInput": {
+    "rubricRef": "acceptance-managed-capability-continuation-2026-10-09",
+    "kind": "acceptance",
+    "subjectPlan": "managed-agent-capability-contract-and-native-cutover-2026-09-13",
+    "subjectHarnessSlug": "papercusp",
+    "classRef": "plan-class-feature-ship",
+    "characteristic": "plan-acceptance",
+    "title": "Managed capability continuation acceptance with native TUI retention",
+    "description": "Successor to retired acceptance-managed-agent-capability-contract-and-native-cutover-2026-09-13 revision 16. Preserve all eight historical criteria verbatim, including D-010 recovery exclusion; add the six declared continuation BARs R-9..R-14. Governing owner refs: session_turn:codex:01a120cc-9151-7bd2-a57b-4210357ea289:1, :8 and :12; D-032/D-033. Native TUI features remain enabled; native cutover and implementation fan-out remain excluded. Authoring this contract makes no acceptance, independent grading or deployment claim. P-020 actual Claude continuity and full per-capability evidence remain unverified. New criteria provenance records honest canonical legacy backfill, not pre-implementation declaration.",
+    "criteria": [
+      {
+        "key": "r-1",
+        "title": "Complete capability disposition",
+        "model": "Complete capability disposition. Record a test-backed disposition for shell/SSH/interpreters, jobs/PTY, script orchestration/kernels, reads/list/search/LSP, edit/write/patch/notebook, HTTP/search/browser/computer, delegation, schedules/monitors/wakes, tasks/plans/goals, memory/checkpoint/resume/rewind, questions/approvals, images/artifacts/skills/discovery and pure TUI presentation. Each is managed execution, managed-backed native interface, deliberately retained interface with explicit boundary, or a precise unsupported gap. Discovery-only hiding is not security.",
+        "bar": "Complete capability disposition. Record a test-backed disposition for shell/SSH/interpreters, jobs/PTY, script orchestration/kernels, reads/list/search/LSP, edit/write/patch/notebook, HTTP/search/browser/computer, delegation, schedules/monitors/wakes, tasks/plans/goals, memory/checkpoint/resume/rewind, questions/approvals, images/artifacts/skills/discovery and pure TUI presentation. Each is managed execution, managed-backed native interface, deliberately retained interface with explicit boundary, or a precise unsupported gap. Discovery-only hiding is not security.",
+        "barKey": "R-1",
+        "barHash": "474f73b7e85a86dd8d5b8a348b7aa93afd55e91d4eac4771fea81f9784e27d69",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "unit"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-09-13T06:13:53.318Z",
+          "declaredBy": "su-380fb5a8-eb59-4550-8c83-734c45478a14"
+        },
+        "method": "METHOD (tree plane). Derive the capability surface from its own declaration rather than a hand-written list, then assert every enumerated surface carries exactly one recorded disposition drawn from the four permitted kinds: managed execution, managed-backed native interface, deliberately retained interface with an explicit stated boundary, or a precisely scoped unsupported gap. PROCEDURE: (1) read the capability taxonomy and MANAGED_CAPABILITY_RESTRICTIONS from the tree; (2) assert the dispositioned set EQUALS the enumerated set, so a silently dropped or newly added surface FAILS rather than reading as covered; (3) assert each disposition states its boundary or its gap in text, because discovery-only hiding is explicitly not a disposition and must not satisfy this bar; (4) pair every negative with a named calibration case the real taxonomy passes, so the controls cannot pass vacuously. FALSIFIED WHEN: any surface is undispositioned; a disposition is discovery-only concealment presented as security; a disposition names a kind but no boundary or gap; or the enumeration is hand-authored and therefore structurally unable to detect a taxonomy change.",
+        "driftMarkers": "R-1 is falsified when the required outcome is absent, contradicted, or cannot be evidenced on the tree plane.",
+        "replication": "REPLICATION DRILL: Read rubrics:get {\"rubricRef\": \"acceptance-managed-capability-continuation-2026-10-09\", \"detail\": \"full\"} and preserve the returned revision/criteriaHash. Run testing:run {\"harness\": \"papercusp\", \"files\": [\"packages/operator-core/lib/managed-capability-disposition-contract.test.ts\", \"libs/papercusp/packages/orchestrator/src/managed-capability-matrix.test.ts\"], \"work_item_id\": \"WI-10007984\"} using the maintained fixtures in each file. Read every exact testRunId through testing:runs; preserve failed and unselected cases. Inspect the outcomes named in METHOD individually; the structured suite passing does not prove unexecuted client/model, managed dispatch, desktop UX or deployed cases. Use only private identities/data for writes and retain existing suite cleanup. Record source/test/environment fingerprints and evidence-plane/runtime metadata. Bind only matching executed cases with plans:bind-spec-evidence, and leave incomplete acceptance unknown. Obtain grading from an eligible non-lineage reviewer through the canonical acceptance gate, never from the implementer.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/managed-capability-disposition-contract.test.ts",
+            "libs/papercusp/packages/orchestrator/src/managed-capability-matrix.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-2",
+        "title": "Preserve command continuity",
+        "model": "Preserve command continuity. Start each command once. Fast completion returns terminal output; exceeding the response window returns the SAME durable running job and full-output reference before MCP expiry without killing/restarting it. Separate execution deadline, response deadline, abort and explicit kill. Preserve exit truth and whole-tree cleanup, no double execution or orphaning. Completion remains observable through carry/restart.",
+        "bar": "Preserve command continuity. Start each command once. Fast completion returns terminal output; exceeding the response window returns the SAME durable running job and full-output reference before MCP expiry without killing/restarting it. Separate execution deadline, response deadline, abort and explicit kill. Preserve exit truth and whole-tree cleanup, no double execution or orphaning. Completion remains observable through carry/restart.",
+        "barKey": "R-2",
+        "barHash": "d26925a3d02900df616b26383f431b5a5304fd953dfe2a94f2e078ad6d91695f",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "live"
+        ],
+        "evidencePlane": "live",
+        "requiredTestLayers": [
+          "integration"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-09-13T06:13:53.318Z",
+          "declaredBy": "su-380fb5a8-eb59-4550-8c83-734c45478a14"
+        },
+        "method": "METHOD (live plane). Drive real commands through the running managed path and measure continuity rather than inspecting code. PROCEDURE: (1) START-ONCE — run a command that writes a monotonic side effect (append a line per invocation) and assert exactly one write, so a retry or re-dispatch that restarts the command is detected rather than assumed absent; (2) FAST PATH — a command completing inside the response window returns its terminal output directly; (3) SLOW PATH — a command exceeding the response window returns, BEFORE MCP expiry, the SAME durable job identity and a full-output reference, and the underlying process is still alive afterwards (assert liveness by pid, not by the absence of an error); (4) DEADLINE SEPARATION — show execution deadline, response deadline, abort and explicit kill are four distinct controls by exercising each and asserting the other three did not fire; (5) EXIT TRUTH — a non-zero exit and a signal death are reported as themselves, not flattened; (6) CLEANUP — after kill, assert the whole process TREE is gone via cgroup membership, not by a name or pattern match; (7) CARRY — complete a job across a carry/restart boundary and assert completion is still observable afterwards. Each negative is paired with a calibration case the real path passes. FALSIFIED WHEN: a command runs twice, a slow command is killed or restarted to satisfy the response window, output is unreachable after the window, exit truth is flattened, a descendant survives cleanup, or completion becomes unobservable across restart.",
+        "driftMarkers": "R-2 is falsified when the required outcome is absent, contradicted, or cannot be evidenced on the live plane.",
+        "replication": "REPLICATION DRILL: Read rubrics:get {\"rubricRef\": \"acceptance-managed-capability-continuation-2026-10-09\", \"detail\": \"full\"} and preserve the returned revision/criteriaHash. Run testing:run {\"harness\": \"papercusp\", \"files\": [\"libs/papercusp/packages/orchestrator/src/managed-capability-matrix.integration.test.ts\"], \"work_item_id\": \"WI-10007984\"} using the maintained fixtures in each file. Read every exact testRunId through testing:runs; preserve failed and unselected cases. Inspect the outcomes named in METHOD individually; the structured suite passing does not prove unexecuted client/model, managed dispatch, desktop UX or deployed cases. Use only private identities/data for writes and retain existing suite cleanup. Record source/test/environment fingerprints and evidence-plane/runtime metadata. Bind only matching executed cases with plans:bind-spec-evidence, and leave incomplete acceptance unknown. Obtain grading from an eligible non-lineage reviewer through the canonical acceptance gate, never from the implementer. Primary declared runtime psu-pty-host; before measuring read dev:pipeline_position {\"path\": \"libs/papercusp/packages/orchestrator/src/managed-capability-matrix.integration.test.ts\"} and cite its measured build SHA. Current-build operator API proof uses the maintained isolated/private-PostgreSQL route or verified staging-operator; final deployed proof uses release-operator only. Where METHOD spans other runtimes, cite their individual identities and do not infer their verdict from the primary runtime.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "libs/papercusp/packages/orchestrator/src/managed-capability-matrix.integration.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-3",
+        "title": "Bounded context, recoverable permitted output",
+        "model": "Bounded context, recoverable permitted output. Preserve complete permitted output outside context with useful bounded previews, exact range/tail/filter retrieval and truthful truncation/retention/write-failure metadata. Preserve Unicode; specify streams and binary capture rather than falsely promise byte equivalence. Credentials stay redacted/access-controlled. Preload essential tools, avoid repeated discovery and measure context bytes separately from RPC counts; exclude native bytes from managed-output claims.",
+        "bar": "Bounded context, recoverable permitted output. Preserve complete permitted output outside context with useful bounded previews, exact range/tail/filter retrieval and truthful truncation/retention/write-failure metadata. Preserve Unicode; specify streams and binary capture rather than falsely promise byte equivalence. Credentials stay redacted/access-controlled. Preload essential tools, avoid repeated discovery and measure context bytes separately from RPC counts; exclude native bytes from managed-output claims.",
+        "barKey": "R-3",
+        "barHash": "b2152df960d5e64e15eae1c5d30e3567362cc3ad9f5af0f728c7b38e627a9923",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "live"
+        ],
+        "evidencePlane": "live",
+        "requiredTestLayers": [
+          "integration"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-09-13T06:13:53.318Z",
+          "declaredBy": "su-380fb5a8-eb59-4550-8c83-734c45478a14"
+        },
+        "method": "METHOD (live plane). Measure what actually reaches context versus what remains retrievable, with real byte counts rather than claims. PROCEDURE: (1) produce a command whose output greatly exceeds the context budget and assert the COMPLETE permitted output is retrievable out-of-band while only a bounded preview enters context; (2) assert exact RANGE, TAIL and FILTER retrieval each return the bytes actually requested, verified against an independently computed expectation (a hash or a known generator), not against the tool's own echo; (3) assert truncation, retention and write-failure metadata are TRUTHFUL by forcing each condition — a truncated read must report truncated, a failed write must report failure rather than silently succeeding; (4) UNICODE — round-trip multi-byte and combining sequences and assert preservation; do not claim byte equivalence for streams where it is not offered: assert instead that stdout/stderr separation and binary capture are SPECIFIED and behave as specified; (5) CREDENTIALS — seed a known secret pattern in output and assert it is redacted or access-controlled at the retrieval boundary; (6) DISCOVERY COST — assert essential tools are preloaded and that repeated discovery does not recur, measuring CONTEXT BYTES separately from RPC counts and EXCLUDING native bytes from any managed-output claim. Every negative is paired with a calibration case the real path passes. FALSIFIED WHEN: permitted output is lost rather than externalized, a retrieval returns bytes other than those requested, truncation or write failure is under-reported, Unicode is corrupted, a secret reaches an unprotected reader, or a managed-output number silently includes native bytes.",
+        "driftMarkers": "R-3 is falsified when the required outcome is absent, contradicted, or cannot be evidenced on the live plane.",
+        "replication": "REPLICATION DRILL: Read rubrics:get {\"rubricRef\": \"acceptance-managed-capability-continuation-2026-10-09\", \"detail\": \"full\"} and preserve the returned revision/criteriaHash. Run testing:run {\"harness\": \"papercusp\", \"files\": [\"libs/papercusp/packages/orchestrator/src/managed-capability-matrix.integration.test.ts\"], \"work_item_id\": \"WI-10007984\"} using the maintained fixtures in each file. Read every exact testRunId through testing:runs; preserve failed and unselected cases. Inspect the outcomes named in METHOD individually; the structured suite passing does not prove unexecuted client/model, managed dispatch, desktop UX or deployed cases. Use only private identities/data for writes and retain existing suite cleanup. Record source/test/environment fingerprints and evidence-plane/runtime metadata. Bind only matching executed cases with plans:bind-spec-evidence, and leave incomplete acceptance unknown. Obtain grading from an eligible non-lineage reviewer through the canonical acceptance gate, never from the implementer. Primary declared runtime psu-pty-host; before measuring read dev:pipeline_position {\"path\": \"libs/papercusp/packages/orchestrator/src/managed-capability-matrix.integration.test.ts\"} and cite its measured build SHA. Current-build operator API proof uses the maintained isolated/private-PostgreSQL route or verified staging-operator; final deployed proof uses release-operator only. Where METHOD spans other runtimes, cite their individual identities and do not infer their verdict from the primary runtime.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "libs/papercusp/packages/orchestrator/src/managed-capability-matrix.integration.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-4",
+        "title": "PTY and script replacement quality",
+        "model": "PTY and script replacement quality. Support managed PTY input, resize, incremental output, exit/cancel/cleanup, and reattachment or explicit unrecoverable restart outcomes. Preserve script authorized nested calls, branching/fan-out, cancellation, truthful uncertain writes, required explicit kernel state and media. Never silently replace persistent/multimodal workflows with stateless/text-only ones. Complete normal completion-wake behavior through existing events/task ownership.",
+        "bar": "PTY and script replacement quality. Support managed PTY input, resize, incremental output, exit/cancel/cleanup, and reattachment or explicit unrecoverable restart outcomes. Preserve script authorized nested calls, branching/fan-out, cancellation, truthful uncertain writes, required explicit kernel state and media. Never silently replace persistent/multimodal workflows with stateless/text-only ones. Complete normal completion-wake behavior through existing events/task ownership.",
+        "barKey": "R-4",
+        "barHash": "310255c69b0857d9ea6772cce0e62fe29c303ad1003544054d16a7931ab6676d",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "live"
+        ],
+        "evidencePlane": "live",
+        "requiredTestLayers": [
+          "integration"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-09-13T06:13:53.318Z",
+          "declaredBy": "su-380fb5a8-eb59-4550-8c83-734c45478a14"
+        },
+        "method": "METHOD (live plane). Exercise a REAL pty and a REAL multi-step script, asserting the interactive and stateful properties that a stateless text shim would silently lose. PROCEDURE — PTY: (1) send input to a live pty and assert the program observes it; (2) RESIZE and assert the program sees the new dimensions (run something that reports its own width); (3) assert output arrives INCREMENTALLY, by observing a partial read before the process exits rather than only the final buffer; (4) exercise exit, cancel and cleanup as distinct outcomes; (5) reattach to a surviving pty and assert continuity, OR assert an EXPLICIT unrecoverable-restart outcome — an ambiguous or silent loss fails. PROCEDURE — SCRIPT: (6) assert an authorized NESTED call from inside a script is permitted and attributed; (7) exercise branching and fan-out and assert each branch ran; (8) cancel mid-script and assert partial writes are reported as UNCERTAIN rather than as success or failure; (9) where kernel state is required, assert it is explicitly required and preserved across steps; (10) assert media/multimodal results survive as media rather than being degraded to text. (11) Assert normal completion-wake behavior flows through the EXISTING event and task-ownership surfaces rather than a parallel mechanism. Each negative carries a calibration case the real path passes. FALSIFIED WHEN: a persistent or multimodal workflow is silently replaced by a stateless or text-only one, resize/input/incremental output is unobserved, reattachment neither works nor reports an explicit unrecoverable outcome, an uncertain write is reported as certain, or completion-wake is re-implemented outside the existing events.",
+        "driftMarkers": "R-4 is falsified when the required outcome is absent, contradicted, or cannot be evidenced on the live plane.",
+        "replication": "REPLICATION DRILL: Read rubrics:get {\"rubricRef\": \"acceptance-managed-capability-continuation-2026-10-09\", \"detail\": \"full\"} and preserve the returned revision/criteriaHash. Run testing:run {\"harness\": \"papercusp\", \"files\": [\"libs/papercusp/packages/orchestrator/src/managed-capability-matrix-real-client.integration.test.ts\"], \"work_item_id\": \"WI-10007984\"} using the maintained fixtures in each file. Read every exact testRunId through testing:runs; preserve failed and unselected cases. Inspect the outcomes named in METHOD individually; the structured suite passing does not prove unexecuted client/model, managed dispatch, desktop UX or deployed cases. Use only private identities/data for writes and retain existing suite cleanup. Record source/test/environment fingerprints and evidence-plane/runtime metadata. Bind only matching executed cases with plans:bind-spec-evidence, and leave incomplete acceptance unknown. Obtain grading from an eligible non-lineage reviewer through the canonical acceptance gate, never from the implementer. Primary declared runtime psu-pty-host; before measuring read dev:pipeline_position {\"path\": \"libs/papercusp/packages/orchestrator/src/managed-capability-matrix-real-client.integration.test.ts\"} and cite its measured build SHA. Current-build operator API proof uses the maintained isolated/private-PostgreSQL route or verified staging-operator; final deployed proof uses release-operator only. Where METHOD spans other runtimes, cite their individual identities and do not infer their verdict from the primary runtime.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "libs/papercusp/packages/orchestrator/src/managed-capability-matrix-real-client.integration.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-5",
+        "title": "Documented recovery exclusion",
+        "model": "Documented recovery exclusion. No locally authorized native recovery path ships; the software-rooted substitute proven forgeable in D-007/D-008 is absent and unreachable, not merely unbuilt. Canonical documentation records the absence as a deliberate owner-directed exclusion citing D-010, so a reader cannot mistake it for an oversight and rebuild it. Capability gaps whose only closure route was the dropped path carry an explicit unsupported/documented-exclusion disposition rather than an open gap, with no implementation item stripped to reach zero. Resurrection under a weaker authority root is out of scope.",
+        "bar": "Documented recovery exclusion. No locally authorized native recovery path ships; the software-rooted substitute proven forgeable in D-007/D-008 is absent and unreachable, not merely unbuilt. Canonical documentation records the absence as a deliberate owner-directed exclusion citing D-010, so a reader cannot mistake it for an oversight and rebuild it. Capability gaps whose only closure route was the dropped path carry an explicit unsupported/documented-exclusion disposition rather than an open gap, with no implementation item stripped to reach zero. Resurrection under a weaker authority root is out of scope.",
+        "barKey": "R-5",
+        "barHash": "153bcfc07cfdfb2ba8cd8d2e028efd26974c3a769223b10dc780594a20d01804",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "live"
+        ],
+        "evidencePlane": "live",
+        "requiredTestLayers": [
+          "integration"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-09-13T06:13:53.318Z",
+          "declaredBy": "su-380fb5a8-eb59-4550-8c83-734c45478a14"
+        },
+        "method": "METHOD (live plane). Prove the ABSENCE is real, unreachable and documented — never merely unbuilt. An absence claim requires a positive control. PROCEDURE: (1) ABSENCE — search the shipped surface for any locally-authorized / offline recovery authorization path (the software-rooted substitute D-007/D-008 proved forgeable) and assert zero live call sites; run the identical search for a token KNOWN to be present as a POSITIVE CONTROL and fail the measurement if the control also returns empty, since a broken instrument reports absence identically to a real absence. (2) UNREACHABLE, NOT MERELY UNBUILT — assert no route reaches it: no flag, env var, config key or tool argument enables it; attempt the capability through the RUNNING managed path and assert an explicit refusal rather than a silent no-op. (3) DOCUMENTED — assert canonical shipped documentation records the absence as a deliberate owner-directed exclusion CITING D-010 by id, and that the citation resolves to that decision rather than being free prose. (4) DISPOSITION — assert every capability gap whose only closure route was the dropped path carries an explicit unsupported/documented-exclusion disposition, and that no implementation item was stripped or deleted to reach zero open gaps. (5) NO RESURRECTION — assert no weaker authority root re-enables it. CHECK-FILE DISCLOSURE: this bar's `check` (managed-capability-matrix-real-client.integration.test.ts) is barHash material and was therefore NOT amendable when the model was re-authored under D-016; it is INHERITED from the pre-D-010 model and is NOT the falsifier for this bar. The falsifier is the documented-exclusion evidence named above. FALSIFIED WHEN: any live call site or reachable route to a locally-authorized recovery path exists; the exclusion is undocumented, uncited, or reads as an oversight rather than a decision; a gap only the dropped path could close is left open or was deleted rather than dispositioned; or the absence measurement has no passing positive control.",
+        "driftMarkers": "R-5 is falsified when the required outcome is absent, contradicted, or cannot be evidenced on the live plane.",
+        "replication": "REPLICATION DRILL: Read rubrics:get {\"rubricRef\": \"acceptance-managed-capability-continuation-2026-10-09\", \"detail\": \"full\"} and preserve the returned revision/criteriaHash. Run testing:run {\"harness\": \"papercusp\", \"files\": [\"libs/papercusp/packages/orchestrator/src/managed-capability-matrix-real-client.integration.test.ts\"], \"work_item_id\": \"WI-10007984\"} using the maintained fixtures in each file. Read every exact testRunId through testing:runs; preserve failed and unselected cases. Inspect the outcomes named in METHOD individually; the structured suite passing does not prove unexecuted client/model, managed dispatch, desktop UX or deployed cases. Use only private identities/data for writes and retain existing suite cleanup. Record source/test/environment fingerprints and evidence-plane/runtime metadata. Bind only matching executed cases with plans:bind-spec-evidence, and leave incomplete acceptance unknown. Obtain grading from an eligible non-lineage reviewer through the canonical acceptance gate, never from the implementer. Primary declared runtime psu-pty-host; before measuring read dev:pipeline_position {\"path\": \"libs/papercusp/packages/orchestrator/src/managed-capability-matrix-real-client.integration.test.ts\"} and cite its measured build SHA. Current-build operator API proof uses the maintained isolated/private-PostgreSQL route or verified staging-operator; final deployed proof uses release-operator only. Where METHOD spans other runtimes, cite their individual identities and do not infer their verdict from the primary runtime. D-010 exclusion remains authoritative; never launch or enable the dropped local native-recovery path to satisfy this criterion.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "libs/papercusp/packages/orchestrator/src/managed-capability-matrix-real-client.integration.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-6",
+        "title": "Enforced policy across clients and lifecycle",
+        "model": "Enforced policy across clients and lifecycle. Claude/Codex/OMP managed launch, resume and wake use one policy with version-validated adapters. Cover aliases, shell/interpreter/script nesting, file/network/computer paths and override arguments. Preserve sandbox/credentials/network controls; a managed tool name does not confer confinement. Unknown controls or unproven removal produce explicit unsupported/denied truth, never a false managed guarantee.",
+        "bar": "Enforced policy across clients and lifecycle. Claude/Codex/OMP managed launch, resume and wake use one policy with version-validated adapters. Cover aliases, shell/interpreter/script nesting, file/network/computer paths and override arguments. Preserve sandbox/credentials/network controls; a managed tool name does not confer confinement. Unknown controls or unproven removal produce explicit unsupported/denied truth, never a false managed guarantee.",
+        "barKey": "R-6",
+        "barHash": "7f5c5ac27cfb6c4b8d7ff662bdca22a4dd60918cab93859d2a515b0c0d2f3810",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "live"
+        ],
+        "evidencePlane": "live",
+        "requiredTestLayers": [
+          "integration",
+          "unit"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-09-13T06:13:53.318Z",
+          "declaredBy": "su-380fb5a8-eb59-4550-8c83-734c45478a14"
+        },
+        "method": "METHOD (live plane). Assert ONE policy decision function governs every client and every lifecycle surface, and that unprovable confinement is reported as unsupported rather than guaranteed. PROCEDURE: (1) MATRIX — for each of Claude, Codex and OMP, and each of launch, resume and wake, assert the effective restriction is produced by the same policy resolver (assert identity of the decision path, not merely equal outcomes, so two divergent implementations that happen to agree today cannot pass); (2) ADAPTER VERSION — assert each adapter validates the client version it is rendering for, and that an unrecognized version yields an explicit unsupported/denied result rather than a silent best-effort render; drive this from a version READ FROM the installed client, not a fixture; (3) BYPASS PATHS — attempt denial evasion through each nesting route in turn: an ALIAS of the denied tool, a SHELL invocation, an INTERPRETER one-liner, a SCRIPT that calls out, a FILE path, a NETWORK path, a COMPUTER/GUI path, and an OVERRIDE ARGUMENT that re-enables the surface; assert each is denied, and pair with a calibration case that is correctly ALLOWED so the test cannot pass by denying everything; (4) CONFINEMENT TRUTH — assert sandbox, credential and network controls remain in force, and that a merely MANAGED TOOL NAME is never accepted as evidence of confinement; (5) UNKNOWN CONTROLS — assert an unknown or unremovable control produces explicit unsupported/denied truth. FALSIFIED WHEN: any client/surface bypasses the shared resolver, a bypass route succeeds, an unversioned adapter renders silently, or a managed name is treated as a confinement guarantee.",
+        "driftMarkers": "R-6 is falsified when the required outcome is absent, contradicted, or cannot be evidenced on the live plane.",
+        "replication": "REPLICATION DRILL: Read rubrics:get {\"rubricRef\": \"acceptance-managed-capability-continuation-2026-10-09\", \"detail\": \"full\"} and preserve the returned revision/criteriaHash. Run testing:run {\"harness\": \"papercusp\", \"files\": [\"libs/papercusp/packages/orchestrator/src/managed-capability-policy.test.ts\"], \"work_item_id\": \"WI-10007984\"} using the maintained fixtures in each file. Read every exact testRunId through testing:runs; preserve failed and unselected cases. Inspect the outcomes named in METHOD individually; the structured suite passing does not prove unexecuted client/model, managed dispatch, desktop UX or deployed cases. Use only private identities/data for writes and retain existing suite cleanup. Record source/test/environment fingerprints and evidence-plane/runtime metadata. Bind only matching executed cases with plans:bind-spec-evidence, and leave incomplete acceptance unknown. Obtain grading from an eligible non-lineage reviewer through the canonical acceptance gate, never from the implementer. Primary declared runtime psu-pty-host; before measuring read dev:pipeline_position {\"path\": \"libs/papercusp/packages/orchestrator/src/managed-capability-policy.test.ts\"} and cite its measured build SHA. Current-build operator API proof uses the maintained isolated/private-PostgreSQL route or verified staging-operator; final deployed proof uses release-operator only. Where METHOD spans other runtimes, cite their individual identities and do not infer their verdict from the primary runtime.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "libs/papercusp/packages/orchestrator/src/managed-capability-policy.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-7",
+        "title": "Preserve UX and correct canonical state",
+        "model": "Preserve UX and correct canonical state. Keep native rendering/navigation/diffs/images/skills/discovery and useful plan/question panels when their operations use managed authority. Distinguish session tasks from shared work/plans/goals, durable memory from scratch context, transcript resume from filesystem rewind, HTTP fetch from browser/search, and exact-string edit from multi-file patch. Retained reads/provider/media paths have explicit access/output policies or honestly stated exclusions.",
+        "bar": "Preserve UX and correct canonical state. Keep native rendering/navigation/diffs/images/skills/discovery and useful plan/question panels when their operations use managed authority. Distinguish session tasks from shared work/plans/goals, durable memory from scratch context, transcript resume from filesystem rewind, HTTP fetch from browser/search, and exact-string edit from multi-file patch. Retained reads/provider/media paths have explicit access/output policies or honestly stated exclusions.",
+        "barKey": "R-7",
+        "barHash": "75f2337919c457e74fe56d0112692c170d5732fbca0559df122ce0c4c7e2bf92",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "live"
+        ],
+        "evidencePlane": "live",
+        "requiredTestLayers": [
+          "unit"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-09-13T06:13:53.318Z",
+          "declaredBy": "su-380fb5a8-eb59-4550-8c83-734c45478a14"
+        },
+        "method": "METHOD (live plane). Verify the preserved surface still RENDERS and that the durable-versus-ephemeral distinctions are enforced by behavior, not by naming. PROCEDURE — UX: (1) drive the real client and assert native rendering, navigation, diffs, images, skills and discovery still work while their underlying operations run on managed authority; assert the plan and question panels remain useful (they render and accept input), rather than asserting only that the surface exists. PROCEDURE — DISTINCTIONS, each proven by a behavioral consequence, not a label: (2) SESSION TASK vs SHARED WORK — a session task must NOT appear as shared work to a peer, and shared work MUST survive the session ending; (3) DURABLE MEMORY vs SCRATCH CONTEXT — durable memory survives a context reset, scratch does not; assert both directions; (4) TRANSCRIPT RESUME vs FILESYSTEM REWIND — resume restores conversation without reverting files; rewind reverts files; assert each leaves the OTHER untouched; (5) HTTP FETCH vs BROWSER/SEARCH — assert a fetch does not execute page scripts while the browser path does; (6) EXACT-STRING EDIT vs MULTI-FILE PATCH — assert the edit refuses a non-unique match while the patch applies across files. (7) RETAINED PATHS — for every retained read/provider/media path, assert an explicit access and output policy is stated and enforced, or that its exclusion is stated honestly; an undocumented retained path fails. Each negative carries a calibration case the real path passes. FALSIFIED WHEN: a preserved surface stops rendering, any two distinctions above collapse behaviorally, or a retained path has neither an enforced policy nor an honest stated exclusion.",
+        "driftMarkers": "R-7 is falsified when the required outcome is absent, contradicted, or cannot be evidenced on the live plane.",
+        "replication": "REPLICATION DRILL: Read rubrics:get {\"rubricRef\": \"acceptance-managed-capability-continuation-2026-10-09\", \"detail\": \"full\"} and preserve the returned revision/criteriaHash. Run testing:run {\"harness\": \"papercusp\", \"files\": [\"libs/papercusp/packages/orchestrator/src/managed-capability-adoption.test.ts\"], \"work_item_id\": \"WI-10007984\"} using the maintained fixtures in each file. Read every exact testRunId through testing:runs; preserve failed and unselected cases. Inspect the outcomes named in METHOD individually; the structured suite passing does not prove unexecuted client/model, managed dispatch, desktop UX or deployed cases. Use only private identities/data for writes and retain existing suite cleanup. Record source/test/environment fingerprints and evidence-plane/runtime metadata. Bind only matching executed cases with plans:bind-spec-evidence, and leave incomplete acceptance unknown. Obtain grading from an eligible non-lineage reviewer through the canonical acceptance gate, never from the implementer. Primary declared runtime desktop-shell; before measuring read dev:pipeline_position {\"path\": \"libs/papercusp/packages/orchestrator/src/managed-capability-adoption.test.ts\"} and cite its measured build SHA. Current-build operator API proof uses the maintained isolated/private-PostgreSQL route or verified staging-operator; final deployed proof uses release-operator only. Where METHOD spans other runtimes, cite their individual identities and do not infer their verdict from the primary runtime.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "libs/papercusp/packages/orchestrator/src/managed-capability-adoption.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-8",
+        "title": "Evidence-gated cutover and actual shipment",
+        "model": "Evidence-gated cutover and actual shipment. Activate each restriction only after replacement, offline recovery and per-client launch/resume/wake acceptance pass with positive/negative controls. Test version drift, output recovery, jobs/PTY, cancellation, scripts/media, sandbox and nested bypass paths. Canary/rollback reuse existing config and telemetry. Finish code-truth audit, post-implementation rubric/vetting, independent eligible non-lineage grading, author acceptance, deployed-control verification and shipped plan status. Do not silently drop unmet outcomes.",
+        "bar": "Evidence-gated cutover and actual shipment. Activate each restriction only after replacement, offline recovery and per-client launch/resume/wake acceptance pass with positive/negative controls. Test version drift, output recovery, jobs/PTY, cancellation, scripts/media, sandbox and nested bypass paths. Canary/rollback reuse existing config and telemetry. Finish code-truth audit, post-implementation rubric/vetting, independent eligible non-lineage grading, author acceptance, deployed-control verification and shipped plan status. Do not silently drop unmet outcomes.",
+        "barKey": "R-8",
+        "barHash": "cbcd857c233fafda07620e9e453c84a9625a6fd7ab5bb60cfc419e9c8765c94b",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "deployed"
+        ],
+        "evidencePlane": "deployed",
+        "requiredTestLayers": [
+          "unit"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-09-13T06:13:53.318Z",
+          "declaredBy": "su-380fb5a8-eb59-4550-8c83-734c45478a14"
+        },
+        "method": "METHOD (deployed plane). Verify the cutover was EVIDENCE-GATED rather than merely intended, and that the plan actually shipped on the deployed build. PROCEDURE: (1) GATING ORDER — for each activated restriction, assert its activation is CONDITIONED on its replacement, offline-recovery and per-client launch/resume/wake acceptance having passed; prove the condition by exhibiting the withheld case: with an acceptance result missing, failing, stale or recorded against a different client version, the default must NOT activate, and with all present it must; a passing suite alone is not evidence of gating; (2) CONTROLS — every case above carries both a positive and a negative control, and each negative is paired with a named calibration case, so a permanently-denying or permanently-allowing implementation fails; (3) DRIFT — exercise version drift, output recovery, jobs/PTY, cancellation, scripts/media, sandbox and nested bypass, each as its own case; (4) CANARY/ROLLBACK — assert these REUSE the existing config and telemetry surfaces rather than introducing a parallel mechanism, and that rollback actually restores the prior posture; (5) DEPLOYED TRUTH — verify the controls on the DEPLOYED build, identified by its health sha, not on the working tree or a local test run; a tree-plane pass does not satisfy this bar; (6) CEREMONY — assert the code-truth audit, post-implementation rubric authoring, vetting, independent non-lineage grading, author acceptance and shipped plan status are each complete and recorded. FALSIFIED WHEN: a restriction activates without its gating evidence, a control is absent or vacuous, canary/rollback duplicates existing surfaces, verification is only tree-plane, or an unmet outcome is dropped rather than reported.",
+        "driftMarkers": "R-8 is falsified when the required outcome is absent, contradicted, or cannot be evidenced on the deployed plane.",
+        "replication": "REPLICATION DRILL: Read rubrics:get {\"rubricRef\": \"acceptance-managed-capability-continuation-2026-10-09\", \"detail\": \"full\"} and preserve the returned revision/criteriaHash. Run testing:run {\"harness\": \"papercusp\", \"files\": [\"libs/papercusp/packages/orchestrator/src/managed-capability-retention.test.ts\", \"libs/papercusp/packages/orchestrator/src/managed-capability-adoption.test.ts\"], \"work_item_id\": \"WI-10007984\"} using the maintained fixtures in each file. Read every exact testRunId through testing:runs; preserve failed and unselected cases. Inspect the outcomes named in METHOD individually; the structured suite passing does not prove unexecuted client/model, managed dispatch, desktop UX or deployed cases. Use only private identities/data for writes and retain existing suite cleanup. Record source/test/environment fingerprints and evidence-plane/runtime metadata. Bind only matching executed cases with plans:bind-spec-evidence, and leave incomplete acceptance unknown. Obtain grading from an eligible non-lineage reviewer through the canonical acceptance gate, never from the implementer. Primary declared runtime release-operator; before measuring read dev:pipeline_position {\"path\": \"libs/papercusp/packages/orchestrator/src/managed-capability-retention.test.ts\"} and cite its measured build SHA. Current-build operator API proof uses the maintained isolated/private-PostgreSQL route or verified staging-operator; final deployed proof uses release-operator only. Where METHOD spans other runtimes, cite their individual identities and do not infer their verdict from the primary runtime.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "libs/papercusp/packages/orchestrator/src/managed-capability-retention.test.ts",
+            "libs/papercusp/packages/orchestrator/src/managed-capability-adoption.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-9",
+        "title": "Native feature retention",
+        "model": "All native TUI features remain available and usable during replacement-gap work, and acceptance observations cannot activate replacement restrictions, cutover stages or wider authority.",
+        "bar": "All native TUI features remain available and usable during replacement-gap work, and acceptance observations cannot activate replacement restrictions, cutover stages or wider authority.",
+        "barKey": "R-9",
+        "barHash": "4c464982b98a6b39383ec921224b0c2fdb25997bad664b785360f87839af6420",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "live"
+        ],
+        "evidencePlane": "live",
+        "evidenceRuntime": "psu-pty-host",
+        "requiredTestLayers": [],
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "legacy-backfilled",
+          "declaredAt": "2026-10-09T23:38:00.000Z",
+          "declaredBy": "su-faee16ea-3b47-454a-ae48-f949b51c6d8d"
+        },
+        "method": "EXPLICIT MANUAL LIVE-CLIENT CONTRACT. Use the installed Claude, Codex and OMP native TUIs in private profiles/sessions with managed authority and rollout excluded. Enumerate features available for each exact installed version from maintained help/source and the saved baseline; record each feature, interaction and expected result before the drill. Exercise native rendering/navigation/diffs, supported images/media/skills/discovery and plan/question panels where offered; retain direct terminal/desktop observations showing rendering and accepted input. Invoke the corresponding permitted managed operation and inspect its attributed result. Exercise completed replacement readiness, matching-version acceptance, stale/version-drift evidence and unsupported controls; assert each retains normal native interactions and activates no restriction or wider authority. Pair every refusal with a permitted control. Supplementary disposition/policy/adoption suites decide only the no-cutover posture, not UI availability. Record exact client/session/runtime/build identities and feature population with checked/notChecked/notApplicable partitions and reasons; any required unobserved feature remains unknown. Provenance: D-032/D-033 and owner source turn8 retain natives; turn12 authorizes SELF/AUTO implementation, not rollout.",
+        "driftMarkers": "R-9 is falsified if any previously available native feature cannot render or accept its normal interaction, any excluded cutover or restriction activates, authority widens, or a policy-only inventory is accepted as native UI evidence.",
+        "replication": "REPLICATION DRILL: Read the exact successor revision/criteriaHash and D-032/D-033. Use the maintained private client fixture with credential isolation and cleanup. Follow METHOD's actual native interaction matrix on psu-pty-host/native desktop; retain before/after terminal or desktop evidence, feature coverage and exact versions/session/build identities. Run the supplemental managed-capability-disposition-contract.test.ts, managed-capability-policy.test.ts and managed-capability-adoption.test.ts suites, saving testRunIds and their bounded no-cutover scope. Withhold/stale acceptance and prove native interactions remain usable; pair with valid matching-version acceptance under the same excluded rollout posture. Bind only actual live interaction evidence with manual provenance; obtain eligible independent grading. End created private clients and remove only fixture data. instrumentKey none with zero automatic layers declares manual direct UI inspection without waiving any METHOD outcome.",
+        "check": {
+          "kind": "instrument",
+          "instrumentKey": "none"
+        }
+      },
+      {
+        "key": "r-10",
+        "title": "Persistent managed execution",
+        "model": "An authorized persistent managed kernel session preserves owner-scoped state across permitted calls, bounds recoverable output and media, and exposes cancellation, whole-process cleanup and truthful restart outcomes.",
+        "bar": "An authorized persistent managed kernel session preserves owner-scoped state across permitted calls, bounds recoverable output and media, and exposes cancellation, whole-process cleanup and truthful restart outcomes.",
+        "barKey": "R-10",
+        "barHash": "38b99e4415fd505d281ecd38c765fb68b7949e7c80fc7616fcd59b159014e70d",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "live"
+        ],
+        "evidencePlane": "live",
+        "evidenceRuntime": "staging-operator",
+        "requiredTestLayers": [
+          "integration",
+          "unit"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "legacy-backfilled",
+          "declaredAt": "2026-10-09T23:38:00.000Z",
+          "declaredBy": "su-faee16ea-3b47-454a-ae48-f949b51c6d8d"
+        },
+        "method": "Run the named canonical suites. In an isolated current-source production HTTP/SDK route with private PostgreSQL, create owner-scoped JavaScript kernel state, reconnect with a fresh authenticated same-owner transport and verify the prior scalar changes on the next call. Refuse foreign-owner access. Exercise stale tool facade refresh, nested authorization, bounded recoverable output and media, cancellation/deadline, explicit close and owner-process death with truthful state-lost/restart outcomes. Verify owned processes terminate and use existing task ownership. Record exact runtime/source identity and test-run rows; mocks or CLI transcript continuity alone cannot satisfy the live plane. Component choice: reuse maintained scripting/runtime authority, persistent-kernel implementation and task ownership; a helper fixture alone cannot establish production-route state/cleanup.",
+        "driftMarkers": "R-10 is falsified if permitted same-owner calls lose required state without an explicit restart outcome, a foreign owner reads or changes that state, output/media is unrecoverable or degraded, cancellation leaves an owned process running, or a mock substitutes for the live managed route.",
+        "replication": "REPLICATION DRILL: Read rubrics:get {\"rubricRef\": \"acceptance-managed-capability-continuation-2026-10-09\", \"detail\": \"full\"} and preserve the returned revision/criteriaHash. Run testing:run {\"harness\": \"papercusp\", \"files\": [\"libs/generic/tooldef/src/code-orchestration/persistent-kernel.test.ts\", \"packages/operator-core/lib/agent-tools/code/run-kernel.test.ts\", \"packages/operator-core/lib/agent-tools/code/kernel-owner.test.ts\", \"packages/operator-core/lib/agent-tools/capability/managed-capability-api.e2e.test.ts\"], \"work_item_id\": \"WI-10007984\"} using the maintained fixtures in each file. Read every exact testRunId through testing:runs; preserve failed and unselected cases. Inspect the outcomes named in METHOD individually; the structured suite passing does not prove unexecuted client/model, managed dispatch, desktop UX or deployed cases. Use only private identities/data for writes and retain existing suite cleanup. Record source/test/environment fingerprints and evidence-plane/runtime metadata. Bind only matching executed cases with plans:bind-spec-evidence, and leave incomplete acceptance unknown. Obtain grading from an eligible non-lineage reviewer through the canonical acceptance gate, never from the implementer. Primary declared runtime staging-operator; before measuring read dev:pipeline_position {\"path\": \"libs/generic/tooldef/src/code-orchestration/persistent-kernel.test.ts\"} and cite its measured build SHA. Current-build operator API proof uses the maintained isolated/private-PostgreSQL route or verified staging-operator; final deployed proof uses release-operator only. Where METHOD spans other runtimes, cite their individual identities and do not infer their verdict from the primary runtime.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "libs/generic/tooldef/src/code-orchestration/persistent-kernel.test.ts",
+            "packages/operator-core/lib/agent-tools/code/run-kernel.test.ts",
+            "packages/operator-core/lib/agent-tools/code/kernel-owner.test.ts",
+            "packages/operator-core/lib/agent-tools/capability/managed-capability-api.e2e.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-11",
+        "title": "Managed browser parity",
+        "model": "An authorized managed browser session returns the DOM state reached by permitted navigation.",
+        "bar": "An authorized managed browser session returns the DOM state reached by permitted navigation.",
+        "barKey": "R-11",
+        "barHash": "158302cb364f77677a87bf1f6d477e04c0dc9598f31279e83749f8b2ed72a3e4",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "live"
+        ],
+        "evidencePlane": "live",
+        "evidenceRuntime": "staging-operator",
+        "requiredTestLayers": [
+          "integration",
+          "unit"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "legacy-backfilled",
+          "declaredAt": "2026-10-09T23:38:00.000Z",
+          "declaredBy": "su-faee16ea-3b47-454a-ae48-f949b51c6d8d"
+        },
+        "method": "Run the named canonical suites and the isolated current-source production HTTP/SDK browser acceptance with private PostgreSQL. Navigate a controlled page, observe DOM/text/state, reconnect the same owner to the same scoped browser session, and refuse foreign-owner and confined/private-network requests. Exercise egress policy and redirects, cancellation/deadline, owner-process death and explicit close; verify no owned browser remains. Use passing allowed-page controls alongside denied destinations. A plain HTTP fetch or pixel-only observation cannot satisfy browser/DOM parity. Retain exact startup-stage and failure evidence; an unexecuted or timed-out cold-open case remains unverified. Component choice: reuse existing capability tooling and its maintained Playwright implementation; library naming is not evidence of navigation/DOM behavior.",
+        "driftMarkers": "R-11 is falsified if permitted navigation cannot produce the observed DOM state, a foreign owner accesses the session, a denied destination or redirect causes a network effect, cleanup leaves an owned browser running, or fetch/pixel-only proof substitutes for DOM execution.",
+        "replication": "REPLICATION DRILL: Read rubrics:get {\"rubricRef\": \"acceptance-managed-capability-continuation-2026-10-09\", \"detail\": \"full\"} and preserve the returned revision/criteriaHash. Run testing:run {\"harness\": \"papercusp\", \"files\": [\"packages/operator-core/lib/agent-tools/capability/browser-session.test.ts\", \"packages/operator-core/lib/agent-tools/capability/browser-session.e2e.test.ts\", \"packages/operator-core/lib/agent-tools/capability/managed-capability-api.e2e.test.ts\", \"packages/operator-core/lib/agent-tools/capability/fetch-policy.integration.test.ts\"], \"work_item_id\": \"WI-10007984\"} using the maintained fixtures in each file. Read every exact testRunId through testing:runs; preserve failed and unselected cases. Inspect the outcomes named in METHOD individually; the structured suite passing does not prove unexecuted client/model, managed dispatch, desktop UX or deployed cases. Use only private identities/data for writes and retain existing suite cleanup. Record source/test/environment fingerprints and evidence-plane/runtime metadata. Bind only matching executed cases with plans:bind-spec-evidence, and leave incomplete acceptance unknown. Obtain grading from an eligible non-lineage reviewer through the canonical acceptance gate, never from the implementer. Primary declared runtime staging-operator; before measuring read dev:pipeline_position {\"path\": \"packages/operator-core/lib/agent-tools/capability/browser-session.test.ts\"} and cite its measured build SHA. Current-build operator API proof uses the maintained isolated/private-PostgreSQL route or verified staging-operator; final deployed proof uses release-operator only. Where METHOD spans other runtimes, cite their individual identities and do not infer their verdict from the primary runtime.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/agent-tools/capability/browser-session.test.ts",
+            "packages/operator-core/lib/agent-tools/capability/browser-session.e2e.test.ts",
+            "packages/operator-core/lib/agent-tools/capability/managed-capability-api.e2e.test.ts",
+            "packages/operator-core/lib/agent-tools/capability/fetch-policy.integration.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-12",
+        "title": "Client integration without cutover",
+        "model": "Each required installed Claude, Codex and OMP journey continues its exact session through the version-aware managed interface.",
+        "bar": "Each required installed Claude, Codex and OMP journey continues its exact session through the version-aware managed interface.",
+        "barKey": "R-12",
+        "barHash": "5763530422b8a2fafef2d2a557e175da462171b2317d749e71b77db98b9cacc7",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "live"
+        ],
+        "evidencePlane": "live",
+        "evidenceRuntime": "psu-pty-host",
+        "requiredTestLayers": [
+          "integration",
+          "unit"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "legacy-backfilled",
+          "declaredAt": "2026-10-09T23:38:00.000Z",
+          "declaredBy": "su-faee16ea-3b47-454a-ae48-f949b51c6d8d"
+        },
+        "method": "Run the named canonical suites, then execute the maintained resume-spawn-live client acceptance for each installed Claude/Codex/OMP version with strict required-selection handling and private profiles. Preserve exact same-session before/after witnesses, validate unchanged prefix plus the newly decoded wake marker, and record launch, resume and wake outcomes separately. CLI continuity proves only that selected journey; independently bind per-capability observations and production launch/wake resolver coverage. Verify version drift, stale evidence and unsupported client controls fail honestly while replacement-acceptance rows cannot enable cutover. Reuse overlapping PUI evidence only within its saved client/surface scope. Any missing, skipped, timed-out or provider-refused required client remains unverified, never unsupported capability or pass. D-032/D-033 retain SELF/AUTO and exclude rollout. Existing PUI proof is reusable only within its exact executed client/version/surface; coordination supplies no missing model or managed-boundary result.",
+        "driftMarkers": "R-12 is falsified if a required installed client skips or fails launch/resume/wake, changes its session identity or prior transcript prefix, omits the newly decoded wake, bypasses the version-aware managed resolver, silently accepts version drift or unenforced controls, or activates excluded cutover.",
+        "replication": "REPLICATION DRILL: Read rubrics:get {\"rubricRef\": \"acceptance-managed-capability-continuation-2026-10-09\", \"detail\": \"full\"} and preserve the returned revision/criteriaHash. Run testing:run {\"harness\": \"papercusp\", \"files\": [\"libs/papercusp/packages/orchestrator/src/managed-capability-matrix.test.ts\", \"libs/papercusp/packages/orchestrator/src/managed-capability-matrix.integration.test.ts\", \"libs/papercusp/packages/orchestrator/src/managed-capability-matrix-real-client.integration.test.ts\", \"packages/operator-core/lib/events/await/resume-spawn-live.test.ts\"], \"work_item_id\": \"WI-10007984\"} using the maintained fixtures in each file. Read every exact testRunId through testing:runs; preserve failed and unselected cases. Inspect the outcomes named in METHOD individually; the structured suite passing does not prove unexecuted client/model, managed dispatch, desktop UX or deployed cases. Use only private identities/data for writes and retain existing suite cleanup. Record source/test/environment fingerprints and evidence-plane/runtime metadata. Bind only matching executed cases with plans:bind-spec-evidence, and leave incomplete acceptance unknown. Obtain grading from an eligible non-lineage reviewer through the canonical acceptance gate, never from the implementer. Primary declared runtime psu-pty-host; before measuring read dev:pipeline_position {\"path\": \"libs/papercusp/packages/orchestrator/src/managed-capability-matrix.test.ts\"} and cite its measured build SHA. Current-build operator API proof uses the maintained isolated/private-PostgreSQL route or verified staging-operator; final deployed proof uses release-operator only. Where METHOD spans other runtimes, cite their individual identities and do not infer their verdict from the primary runtime. Actual model journey is separately executed by the maintained apps/operator/scripts/resume-spawn-live.ts with --require-all and explicitly selected Claude/Codex/OMP. Preserve exact before/after session bytes and hashes, unchanged prefix and newly decoded wake marker. CLI transcript continuity is only a necessary witness; prove managed launch/resume/wake policy/adoption boundaries separately. A timeout/refusal is failed or unknown acceptance, never unsupported capability or PASS.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "libs/papercusp/packages/orchestrator/src/managed-capability-matrix.test.ts",
+            "libs/papercusp/packages/orchestrator/src/managed-capability-matrix.integration.test.ts",
+            "libs/papercusp/packages/orchestrator/src/managed-capability-matrix-real-client.integration.test.ts",
+            "packages/operator-core/lib/events/await/resume-spawn-live.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-13",
+        "title": "Reconciled lifecycle parity",
+        "model": "Each declared jobs/PTY, patch/notebook, read/network/media and question/permission boundary exhibits its specified managed semantics, and the canonical capability inventory matches measured source/runtime behavior with paired positive and refusal controls.",
+        "bar": "Each declared jobs/PTY, patch/notebook, read/network/media and question/permission boundary exhibits its specified managed semantics, and the canonical capability inventory matches measured source/runtime behavior with paired positive and refusal controls.",
+        "barKey": "R-13",
+        "barHash": "9872138665cd17880855375f64d920f52cfad87aadd701587ee5e44004ee2f84",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "live"
+        ],
+        "evidencePlane": "live",
+        "evidenceRuntime": "staging-operator",
+        "requiredTestLayers": [
+          "integration",
+          "unit"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "legacy-backfilled",
+          "declaredAt": "2026-10-09T23:38:00.000Z",
+          "declaredBy": "su-faee16ea-3b47-454a-ae48-f949b51c6d8d"
+        },
+        "method": "Run the named canonical suites and reconcile each capability family against maintained source anchors and exact saved execution evidence. Verify PTY input/resize, terminal completion/cancel/cleanup, patch/notebook semantics, read/network policy and recoverable media/output behavior through their real managed boundaries. Reconcile questions/permission and native interface distinctions against their actual authority paths, keeping retained and unsupported controls explicit. Preserve predecessor failure and uncertainty rather than deleting it to make inventory green. Remove a stale gap claim only when the named replacement behavior has been observed with a positive control and a refusal/negative control; report all remaining client/surface cases as unverified. DECIDING DETECTOR MAP: jobs/PTY use pty.test.ts, pty-resize.integration.test.ts and pty-bridge.test.ts for input/resize/streaming/termination; patch uses patch.test.ts for atomic application/rejected hunks; notebook uses notebook.test.ts for addressed cell edits, byte-preserving refusal and managed write/lock authority; reads use read-byte-page-door-fit.test.ts for lossless paging/workspace-scoped refusal; network uses fetch.test.ts, fetch-policy.test.ts and fetch-policy.integration.test.ts for allowed requests/denied destinations/validated redirects/bounded downloads; media/output uses result-door-encoding-contract.test.ts for exact recoverable authorized media and honest lost-reference states; questions use ask_choice.test.ts and ask_choice-autonomy.test.ts for answered cards/missing-surface refusal/gated-auto distinctions; permission envelopes use capability-envelope-step.test.ts for declared restrictions. The managed API e2e suite decides its kernel/browser production-route/confinement cases only. For retained read/provider/media paths and native permission surfaces not directly covered by a named case, drive the actual installed-client managed boundary with permitted and forbidden controls using private data; preserve exact arguments, identity, result and measured side effects with manual provenance. Require the complete case-to-detector/evidence map including notChecked cases; another family's pass supplies no missing result. Observe terminal completion and cancellation separately. Remove a gap disposition only after its exact replacement control pair passes.",
+        "driftMarkers": "R-13 is falsified if any inventory disposition disagrees with its measured boundary, a named family lacks its specified positive and refusal controls, a gap is removed without those observations, a family is inferred from an unrelated test, or an unexecuted case is reported as verified.",
+        "replication": "REPLICATION DRILL: Read canonical inventory and current BAR revision/hash; enumerate every declared family/path/control first. Run testing:run for the 14 structured files; read exact testRunIds through testing:runs and preserve selected/failed/unselected cases. Follow METHOD's detector map and execute additional actual installed-client live control pairs with private files/destinations/sessions, attaching exact manual provenance where automation lacks coverage. Verify authority before effects, preserve full recoverable media/output refs, and use existing cleanup. Record source/test/environment fingerprints, individual runtime identities, inventory before/after and checked/notChecked/notApplicable coverage. Fail or leave unknown uncovered required cases; bind only executed evidence and obtain eligible non-lineage grading. File names and helper passes are not universal live evidence.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/agent-tools/capability/pty.test.ts",
+            "packages/operator-core/lib/agent-tools/capability/pty-resize.integration.test.ts",
+            "packages/operator-core/lib/pty-bridge.test.ts",
+            "packages/operator-core/lib/agent-tools/capability/patch.test.ts",
+            "packages/operator-core/lib/agent-tools/capability/notebook.test.ts",
+            "packages/operator-core/lib/agent-tools/capability/read-byte-page-door-fit.test.ts",
+            "packages/operator-core/lib/agent-tools/capability/fetch.test.ts",
+            "packages/operator-core/lib/agent-tools/capability/fetch-policy.test.ts",
+            "packages/operator-core/lib/agent-tools/capability/fetch-policy.integration.test.ts",
+            "packages/operator-core/lib/result-door-encoding-contract.test.ts",
+            "packages/operator-core/lib/agent-tools/chat/ask_choice.test.ts",
+            "packages/operator-core/lib/agent-tools/chat/ask_choice-autonomy.test.ts",
+            "libs/generic/tooldef/src/capability-envelope-step.test.ts",
+            "packages/operator-core/lib/agent-tools/capability/managed-capability-api.e2e.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-14",
+        "title": "Final acceptance record integrity",
+        "model": "Each final parity claim resolves to its exact independently graded evidence record.",
+        "bar": "Each final parity claim resolves to its exact independently graded evidence record.",
+        "barKey": "R-14",
+        "barHash": "2a3866c581bcad5ef72acaac7ca37abba9e3beca694de60c496a7dea0c92a57f",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "deployed"
+        ],
+        "evidencePlane": "deployed",
+        "evidenceRuntime": "release-operator",
+        "requiredTestLayers": [],
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "legacy-backfilled",
+          "declaredAt": "2026-10-09T23:38:00.000Z",
+          "declaredBy": "su-faee16ea-3b47-454a-ae48-f949b51c6d8d"
+        },
+        "method": "EXPLICIT MANUAL EVIDENCE-INTEGRITY CONTRACT. Read canonical R-9..R-13 BARs/specs and enumerate exact claims/required planes/cases. Resolve each evidence row and test-run/manual-provenance record; compare BAR revision/hash, executed-source/test/environment fingerprints, selected cases, runtime/build identity, full-output reference and uncertainty against authoritative readbacks. A filename, green suite, archived CLI transcript or intended deploy supplies no missing case. Reconcile plan/work-item completed/excluded/blocked/unverified states; preserve D-010, D-032/D-033 and immutable retired history. Resolve eligible independent non-lineage grading with current rubric fingerprint and the author verdict through canonical acceptance surfaces; the implementer cannot self-pass. For final shipped claims read exact deployed-artifact identity and controls; current-build proof establishes only its pre-release scope. Publish the complete owner report through reports:publish, read it through reports:get with intended owner visibility, and resolve its absolute GUI /reports?sel=<id> link against a verified GUI origin; retain report_id and source/evidence paths. Inspect deliberately stale/mismatched evidence or missing report-readback as a refusal control, and a matching record as a positive control. Unmet properties stay failed/unknown. This outcome checks record integrity and does not duplicate implementation acceptance.",
+        "driftMarkers": "R-14 is falsified if a final claim lacks matching executed-source/test/environment or deployed identity, evidence is stale or misbound, unknowns are hidden, the grade is absent/ineligible/self-served, bookkeeping contradicts the ledger, or the published owner report fails readback and URL resolution.",
+        "replication": "REPLICATION DRILL: Read current successor revision/criteriaHash, subject plan and exact R-9..R-13 evidence mapping. Follow METHOD using canonical spec/evidence/test-run/scorecard/ledger reads; re-resolve cited IDs, immutable fingerprints and output refs. Record matching positive and stale/mismatched/ineligible/missing-readback refusal controls. Use dev:pipeline_position and runtime-vintage reads for the exact shipped source/deployed identity; staging cannot prove shipment. Resolve reports:get report_id, complete Markdown/owner visibility and the verified absolute GUI report selection URL. Bind the manually inspected record with exact provenance/deployed plane, then obtain eligible independent grading and author acceptance. instrumentKey none/zero automatic layers declares manual record inspection; no implementation suite is claimed to decide grading eligibility, report delivery or deployed identity.",
+        "check": {
+          "kind": "instrument",
+          "instrumentKey": "none"
+        }
+      }
+    ],
+    "ratingScale": [
+      "healthy",
+      "degraded",
+      "broken",
+      "unknown"
+    ],
+    "gradingAuthority": "independent"
+  },
+  "reviewRepair": {
+    "reviewPost": "thread-post:1169733",
+    "sameThreadFollowUp": "thread-post:1169761",
+    "conversationId": "conv-mv1orw5v-0000-69ebfd1c52844e159fcd5db765f60f13",
+    "readbackRuntime": "staging-operator",
+    "preservationMeaning": "Every stored retired16 criterion field is unchanged; only hash-excluded replication metadata is added. All eight canonical barHashes match. Retired16 complete readback body is unchanged.",
+    "historicalDiff": [
+      {
+        "key": "r-1",
+        "barHash": "474f73b7e85a86dd8d5b8a348b7aa93afd55e91d4eac4771fea81f9784e27d69",
+        "hashEqual": true,
+        "fieldsDiffer": [],
+        "added": [
+          "replication"
+        ]
+      },
+      {
+        "key": "r-2",
+        "barHash": "d26925a3d02900df616b26383f431b5a5304fd953dfe2a94f2e078ad6d91695f",
+        "hashEqual": true,
+        "fieldsDiffer": [],
+        "added": [
+          "replication"
+        ]
+      },
+      {
+        "key": "r-3",
+        "barHash": "b2152df960d5e64e15eae1c5d30e3567362cc3ad9f5af0f728c7b38e627a9923",
+        "hashEqual": true,
+        "fieldsDiffer": [],
+        "added": [
+          "replication"
+        ]
+      },
+      {
+        "key": "r-4",
+        "barHash": "310255c69b0857d9ea6772cce0e62fe29c303ad1003544054d16a7931ab6676d",
+        "hashEqual": true,
+        "fieldsDiffer": [],
+        "added": [
+          "replication"
+        ]
+      },
+      {
+        "key": "r-5",
+        "barHash": "153bcfc07cfdfb2ba8cd8d2e028efd26974c3a769223b10dc780594a20d01804",
+        "hashEqual": true,
+        "fieldsDiffer": [],
+        "added": [
+          "replication"
+        ]
+      },
+      {
+        "key": "r-6",
+        "barHash": "7f5c5ac27cfb6c4b8d7ff662bdca22a4dd60918cab93859d2a515b0c0d2f3810",
+        "hashEqual": true,
+        "fieldsDiffer": [],
+        "added": [
+          "replication"
+        ]
+      },
+      {
+        "key": "r-7",
+        "barHash": "75f2337919c457e74fe56d0112692c170d5732fbca0559df122ce0c4c7e2bf92",
+        "hashEqual": true,
+        "fieldsDiffer": [],
+        "added": [
+          "replication"
+        ]
+      },
+      {
+        "key": "r-8",
+        "barHash": "cbcd857c233fafda07620e9e453c84a9625a6fd7ab5bb60cfc419e9c8765c94b",
+        "hashEqual": true,
+        "fieldsDiffer": [],
+        "added": [
+          "replication"
+        ]
+      }
+    ],
+    "newDetectors": {
+      "R9": "explicit manual live native rendering/interaction with per-client coverage and no-cutover controls",
+      "R13": "14 named family-specific suites plus required actual per-boundary installed-client positive/refusal controls and manual provenance for uncovered surfaces",
+      "R14": "explicit manual deployed-plane acceptance-record integrity with exact fingerprint, grading eligibility, ledger and owner report readback/URL controls"
+    },
+    "scope": "Contract authoring, same-thread outside-lineage review and meta-attestation recorded only. No implementation acceptance, model retry, implementation grading, BAR adoption, cutover, native disabling or implementation fan-out.",
+    "approvalPost": "thread-post:1169763",
+    "metaAttestation": {
+      "id": "EI-25553684653416119",
+      "state": "independent grading audit failed: historical test-source inspection lacks a full commit SHA in its stored evidence",
+      "readbackVerified": true,
+      "gradingAuditId": "EI-25554059343086462",
+      "failedCriteria": [
+        "instrument-split",
+        "re-runnable-evidence"
+      ],
+      "unresolvedCriterion": "degenerate-distribution",
+      "requiredCorrection": "Pin detector paths and inspected contents to full historical commit identities through capability:git-evidence; replace the failed meta-attestation through the canonical scorecard path and obtain independent settlement. Do not substitute current HEAD or infer settlement from the observation row's done state."
+    },
+    "adoption": {
+      "state": "preview-refused-no-write",
+      "sourceAuditPreview": "passed; ten inherited mappings/baseAudit15",
+      "code": "bar_contract_check_layer_mismatch",
+      "ownedBlocker": "EI-25556616484428615",
+      "runtime": "staging-operator@1c8cf11a32",
+      "evidencePath": "/dev/shm/p020-r9-plane-repair-preview.json",
+      "sourceRepair": {
+        "workItem": "WI-10008022",
+        "state": "canonical source fix verified and contained by staging; actual P020 adoption remains pending the separately owned R6/R10 detector correction and existing owner hash choice",
+        "sourceCommit": "f5e87c7c87db1e4bd4677892169d57fa5c685dec",
+        "rootCause": "The seed rederived an unstarted full canonical criterion from plaintext Requirements, and the preview exempted subjects with an existing rubric pin even when adopting a fresh successor.",
+        "verification": {
+          "unit": {
+            "passed": 251,
+            "files": 5,
+            "log": "/dev/shm/p020-reviewed-adoption-unit-final.log"
+          },
+          "integration": {
+            "passed": 16,
+            "files": 1,
+            "log": "/dev/shm/p020-reviewed-adoption-integration-final.log"
+          },
+          "typecheck": {
+            "errors": 0,
+            "log": "/dev/shm/p020-reviewed-adoption-typecheck-final.log"
+          },
+          "controls": [
+            "eight unchanged historical hashes without invented Intent",
+            "14 complete criteria preserved",
+            "outcome/title/plane source drift refused",
+            "missing canonical METHOD refused",
+            "preview/write refusal parity",
+            "no table state changes during preview",
+            "retired history unchanged",
+            "neutral revision preview",
+            "repeat-audit idempotence"
+          ]
+        }
+      },
+      "sourceMismatchRepair": {
+        "workItem": "EI-25556340557135475",
+        "planVersion": 77,
+        "planContentHash": "90a719e0d63912e7ae3e918e58eeaf2f83dfc9561c3e7956b5d622e29123a637",
+        "changedRow": "R-9 evidence plane tree -> live",
+        "reason": "align reviewed successor3 manual native TUI METHOD; Requirements unchanged",
+        "receipt": "/dev/shm/p020-r9-plane-repair-edit.json"
+      },
+      "contractLayerGaps": {
+        "workItem": "EI-25556616484428615",
+        "R-6": "requires integration+unit but binds only unit policy suite",
+        "R-10": "requires integration+unit but binds unit/e2e suites, no integration",
+        "candidate": "/dev/shm/p020-layer-repair-amend-preview-args.json",
+        "state": "owner resolution pending: R6 successor hash preservation or legitimate detector correction; no amendment applied",
+        "reuseProposal": {
+          "R-6": "libs/papercusp/packages/orchestrator/src/managed-capability-matrix.integration.test.ts",
+          "R-10": "libs/generic/tooldef/src/code-orchestration/persistent-kernel-process.integration.test.ts"
+        },
+        "hashMeaning": "check is hash material; correction changes R6/R10 successor hashes. Retired16 remains immutable; no override or fabricated Intent."
+      }
+    },
+    "pinnedSourceCorrection": {
+      "sourceEvidencePath": "docs/evidence/managed-capability-p020-detector-source-pins-2026-10-10.json",
+      "sourceCommitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+      "submoduleCommits": {
+        "libs/papercusp": "dfc7ffd47a82a23abfa2034cb8e9462315daee40",
+        "libs/generic/tooldef": "2f9b505e7cdc1db089fcd4fb51fab4fe211c04f4"
+      },
+      "resolvedDetectorPaths": 27,
+      "metaCard": "EI-25556052128462192",
+      "readback": "/dev/shm/p020-meta-pinned-correction-criteria-readback.json",
+      "state": "superseded after source adoption found check-layer gaps; original source pins remain valid"
+    },
+    "latestMetaCorrection": {
+      "id": "EI-25556620243974974",
+      "supersedes": "EI-25556052128462192",
+      "prefer-structured-check": "fail",
+      "remediation": "EI-25556616484428615",
+      "state": "independent audit pending; contract not ready",
+      "evidence": "/dev/shm/p020-meta-detector-gap-correction-args.json"
+    }
+  }
+}

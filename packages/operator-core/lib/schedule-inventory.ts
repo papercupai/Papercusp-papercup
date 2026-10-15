@@ -51,6 +51,15 @@ export type ScheduleScope = 'operator' | 'harness';
 /** Execution mechanism (D-006): durable = DBOS-backed; ephemeral = in-process setInterval. */
 export type ScheduleTier = 'durable' | 'ephemeral';
 
+/** Filters that can be pushed into source collection before doing DB/network work. */
+export interface ScheduleInventoryFilters {
+  source?: ScheduleSource;
+  tier?: ScheduleTier;
+  name?: string;
+  installSlug?: string;
+  group?: string;
+}
+
 export interface ScheduleInventoryRow {
   source: ScheduleSource;
   scope: ScheduleScope;
@@ -238,15 +247,23 @@ export function humanInterval(intervalMs: number): string {
   return `every ${Math.round(intervalMs / 1000)}s`;
 }
 
-async function defaultGetRoutines(): Promise<RoutineRow[]> {
+async function defaultGetRoutines(
+  filters: Pick<ScheduleInventoryFilters, 'name' | 'installSlug' | 'group'> = {},
+): Promise<RoutineRow[]> {
   try {
     const { sql } = getOrgPg();
     const ws = activeWorkspaceId();
+    const name = filters.name || null;
+    const installSlug = filters.installSlug || null;
+    const group = filters.group ?? null;
     return await sql<RoutineRow[]>`
       SELECT install_slug, name, trigger_kind, trigger_config, target_role,
              active, next_fire_at, last_fired_at, metadata, group_slug
         FROM harness_shared.routines
        WHERE workspace_id = ${ws}
+         AND (${name}::text IS NULL OR position(lower(${name}::text) in lower(name)) > 0)
+         AND (${installSlug}::text IS NULL OR position(lower(${installSlug}::text) in lower(install_slug)) > 0)
+         AND (${group}::text IS NULL OR (${group}::text = '' AND group_slug IS NULL) OR group_slug = ${group})
        ORDER BY install_slug, name`;
   } catch {
     return [];
@@ -282,9 +299,19 @@ function defaultGetInProcessChecks(): InProcessChecksResult {
  */
 export async function collectScheduleInventory(
   deps: Partial<ScheduleInventoryDeps> = {},
+  filters: ScheduleInventoryFilters = {},
 ): Promise<ScheduleInventoryRow[]> {
-  const getDbos = deps.getDbosSchedules ?? (() => listDbosScheduledWorkflows());
-  const getRoutines = deps.getRoutines ?? defaultGetRoutines;
+  const nameMatches = (name: string): boolean =>
+    !filters.name || name.toLowerCase().includes(filters.name.toLowerCase());
+  const shouldCollectSource = (source: ScheduleSource): boolean => {
+    const routineOnly = Boolean(filters.installSlug) || filters.group !== undefined;
+    if (routineOnly && source !== 'routines') return false;
+    if (filters.source && filters.source !== source) return false;
+    const tier: ScheduleTier = source === 'dbos' || source === 'routines' ? 'durable' : 'ephemeral';
+    return !filters.tier || filters.tier === tier;
+  };
+  const getDbos = deps.getDbosSchedules ?? (() => listDbosScheduledWorkflows({ nameFilter: filters.name }));
+  const getRoutines = deps.getRoutines ?? (() => defaultGetRoutines(filters));
   const getChecks = deps.getInProcessChecks ?? defaultGetInProcessChecks;
   const getManaged = deps.getManaged ?? (() => listManaged());
   const getExternal = deps.getExternalProcess ?? (() => EXTERNAL_PROCESS_TIMERS);
@@ -293,39 +320,51 @@ export async function collectScheduleInventory(
   const enrichSiblingDbos =
     deps.enrichSiblingDbos ??
     ((schedules: RegisteredSchedule[]) =>
-      listDbosScheduledWorkflows({ getRegisteredSchedules: () => schedules }));
+      listDbosScheduledWorkflows({ getRegisteredSchedules: () => schedules, nameFilter: filters.name }));
 
   const [dbos, routines, siblings] = await Promise.all([
-    getDbos().catch(() => [] as DbosScheduledEntry[]),
-    getRoutines().catch(() => [] as RoutineRow[]),
+    shouldCollectSource('dbos') ? getDbos().catch(() => [] as DbosScheduledEntry[]) : Promise.resolve([]),
+    shouldCollectSource('routines') ? getRoutines().catch(() => [] as RoutineRow[]) : Promise.resolve([]),
     // Federation is a NETWORK seam, so it gets the same fail-soft treatment as the
     // DB seams — and it is additionally time-bounded inside collectSiblingManagedTimers,
     // because a wedged sibling must degrade to an UNKNOWN row, never stall the inventory.
-    getSiblingManaged().catch(() => [] as SiblingManagedTimers[]),
+    // It supplies federated DBOS rows too, so keep it for either DBOS or external-process
+    // reads while avoiding it for unrelated source-only requests.
+    shouldCollectSource('dbos') || shouldCollectSource('external-process')
+      ? getSiblingManaged().catch(() => [] as SiblingManagedTimers[])
+      : Promise.resolve([]),
   ]);
-  let inproc: InProcessChecksResult;
-  try {
-    inproc = getChecks();
-  } catch {
-    inproc = { checks: [], armed: false };
+  let inproc: InProcessChecksResult = { checks: [], armed: false };
+  if (shouldCollectSource('in-process')) {
+    try {
+      inproc = getChecks();
+    } catch {
+      inproc = { checks: [], armed: false };
+    }
   }
-  let managed: ManagedEntry[];
-  try {
-    managed = getManaged();
-  } catch {
-    managed = [];
+  let managed: ManagedEntry[] = [];
+  if (shouldCollectSource('managed')) {
+    try {
+      managed = getManaged();
+    } catch {
+      managed = [];
+    }
   }
-  let external: ExternalProcessTimer[];
-  try {
-    external = getExternal();
-  } catch {
-    external = [];
+  let external: ExternalProcessTimer[] = [];
+  if (shouldCollectSource('external-process')) {
+    try {
+      external = getExternal();
+    } catch {
+      external = [];
+    }
   }
-  let syncTriggered: SyncTriggeredSweep[];
-  try {
-    syncTriggered = getSyncTriggered();
-  } catch {
-    syncTriggered = [];
+  let syncTriggered: SyncTriggeredSweep[] = [];
+  if (shouldCollectSource('in-process')) {
+    try {
+      syncTriggered = getSyncTriggered();
+    } catch {
+      syncTriggered = [];
+    }
   }
 
   const rows: ScheduleInventoryRow[] = [];
@@ -547,10 +586,11 @@ export async function collectScheduleInventory(
      * federated row carries the SAME lastFire/lastStatus a local one would — the
      * sibling only had to hand over names + crontabs.
      */
-    if (s.dbosSchedules?.length) {
+    const siblingDbosSchedules = (s.dbosSchedules ?? []).filter((d) => nameMatches(d.name));
+    if (siblingDbosSchedules.length && shouldCollectSource('dbos')) {
       let federatedDbos: DbosScheduledEntry[] = [];
       try {
-        federatedDbos = await enrichSiblingDbos(s.dbosSchedules);
+        federatedDbos = await enrichSiblingDbos(siblingDbosSchedules);
       } catch {
         federatedDbos = [];
       }
@@ -626,9 +666,28 @@ export async function collectScheduleInventory(
     });
   }
 
-  return rows.sort(
-    (a, b) => a.source.localeCompare(b.source) || a.name.localeCompare(b.name),
-  );
+  return rows
+    .filter((row) => {
+      if (filters.source && row.source !== filters.source) return false;
+      if (filters.tier && row.tier !== filters.tier) return false;
+      if (!nameMatches(row.name)) return false;
+      if (
+        filters.installSlug &&
+        !(row.installSlug ?? '').toLowerCase().includes(filters.installSlug.toLowerCase())
+      ) {
+        return false;
+      }
+      if (
+        filters.group !== undefined &&
+        (filters.group === '' ? row.groupSlug !== null : row.groupSlug !== filters.group)
+      ) {
+        return false;
+      }
+      return true;
+    })
+    .sort(
+      (a, b) => a.source.localeCompare(b.source) || a.name.localeCompare(b.name),
+    );
 }
 
 /** Small rollup for headers/badges. */

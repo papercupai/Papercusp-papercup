@@ -3,13 +3,26 @@ Description=Kopia DAILY snapshot of the curated full home directory
 # Plan: kopia-curated-home-coverage-2026-08-16
 # (not Documentation= — systemd only accepts URIs there and warns on a bare slug)
 After=network-online.target
+RequiresMountsFor=/mnt/backup
+# WI-10006932: Persistent=true on the daily timer cannot retry a service that
+# started and then deferred on lock contention. Bound EX_TEMPFAIL retries to a
+# morning window: at most eight starts in eight hours.
+StartLimitIntervalSec=8h
+StartLimitBurst=8
 
 [Service]
 Type=oneshot
+# Keep EX_TEMPFAIL (75) a failure so it remains visible if the bounded retry
+# window is exhausted. systemd keeps an automatic restart pending between tries.
+Restart=on-failure
+RestartSec=30min
 # Deliberately heavier de-prioritisation than kopia-snapshots.service (Nice=10,
 # best-effort/7). That unit runs about every 30 min; this one walks the WHOLE
 # home tree once a day and must yield to everything else while it does. The script
 # also re-applies renice/ionice to itself so the settings reach kopia's children.
+# This restart-safe daily walk can run for hours, so keep it in scheduled mode:
+# an overdue DB dump can preempt it. Reserve wait mode for protected/manual work
+# that must finish before its caller proceeds.
 Nice=19
 IOSchedulingClass=idle
 # WI-10002636: Nice only ranks processes inside this unit's own cgroup; against
@@ -26,8 +39,16 @@ MemoryAccounting=yes
 MemoryHigh=8G
 MemoryMax=12G
 MemorySwapMax=0
-TimeoutStopSec=30s
-ExecStart=%h/.config/kopia/kopia-backup-guard.sh --mode wait --label daily-home-vm -- %h/.config/kopia/home-snapshot.sh
+# WI-6554700010011924: the stop-post cleanup makes up to 3 privileged calls, each
+# bounded by KOPIA_SUDO_SIGNAL_TIMEOUT_SEC (45 s), plus a 15 s flush grace = 150 s.
+# Under memory+IO pressure one sudo was measured stalling >=37 s, so the old 30 s
+# timed out the cleanup and the root Kopia leaked. Keep this above 3 x bound + grace.
+TimeoutStopSec=180s
+# WI-6554700010011790: reap any root Kopia a previous failed attempt left in this
+# unit's cgroup before starting a new walk (systemd only logs "Found left-over
+# process ... Ignoring"). Same exact-match cleanup as ExecStopPost; always exits 0.
+ExecStartPre=%h/.config/kopia/home-snapshot.sh --cleanup
+ExecStart=%h/.config/kopia/kopia-backup-guard.sh --mode scheduled --label daily-home-vm --priority-on-contention -- %h/.config/kopia/home-snapshot.sh
 # systemd's user manager may fail to kill the root-owned sudo/Kopia child when
 # an OOM tears down the cgroup. The script validates and kills only its recorded
 # exact Kopia PID; it never scans or kills unrelated processes.

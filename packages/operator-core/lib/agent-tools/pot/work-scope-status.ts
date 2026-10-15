@@ -27,7 +27,10 @@ export default defineTool({
   // WORK_SCOPE_CELL.changeSignal.tool). Read-only by contract: `capability: 'intel:read'`.
   capability: 'intel:read',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  // state:read and state:subscribe admit these evidence-scoped roles, and dispatch the
+  // cell resolver under the caller's original role. Keep the resolver's role gate in
+  // lockstep or those callers receive `not-measured` / role_not_allowed from this cell.
+  agentRoles: [...SU_ROLES, 'release-fixer', 'judge'],
   args: z.object({
     /** how many of the most recent ledger decisions to include (0–100; default 10) */
     recent: z.number().int().min(0).max(100).optional(),

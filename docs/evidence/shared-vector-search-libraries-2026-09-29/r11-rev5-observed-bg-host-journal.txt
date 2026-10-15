@@ -1,0 +1,1270 @@
+# R-11 revision-5 observed-window papercusp-bg-host.service journal, 2026-10-02T00:53:29Z..2026-10-03T00:53:29Z.
+# Captured 2026-10-03; local journal contains no records before 2026-10-02T04:41:49Z in this window.
+# Command: journalctl --user -u papercusp-bg-host.service --since @1790902409 --until @1790988809 -o short-iso-precise --no-pager ; kept only [embed-backfill] lines
+# Redaction: local home-directory prefix is literal $HOME; journald hostname field is buildhost.
+2026-10-02T00:42:00.456149-04:00 buildhost bash[1590427]: [embed-backfill] batch embed FAILED for harness_shared.session_turn_chunks, using the per-row path (slower). First error: fetch failed
+2026-10-02T00:42:52.531062-04:00 buildhost bash[1590427]: [embed-backfill] batch embed FAILED for harness_shared.text_chunks, using the per-row path (slower). First error: fetch failed
+2026-10-02T00:42:59.212294-04:00 buildhost bash[1590427]: [embed-backfill] batch embed FAILED for harness_shared.work_items, using the per-row path (slower). First error: fetch failed
+2026-10-02T00:43:55.999347-04:00 buildhost bash[1590427]: [embed-backfill] batch embed FAILED for harness_shared.doc_sections, using the per-row path (slower). First error: fetch failed
+2026-10-02T00:44:22.881352-04:00 buildhost bash[1590427]: [embed-backfill] drain: 1 round(s) in 205s (budget 200s) · drained 7/14 target(s) · budget expired with work remaining
+2026-10-02T00:44:22.881352-04:00 buildhost bash[1590427]: [embed-backfill] periodic sweep embedded NOTHING (scanned=233 errors=233) — operator_turns=0/5(err5) session_turns=0/64(err64) session_turn_chunks=0/64(err64) text_chunks=0/8(err8) work_items=0/64(err64) doc_sections=0/28(err28)
+2026-10-02T00:51:16.164019-04:00 buildhost bash[3290524]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T00:51:16.180669-04:00 buildhost bash[3290524]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T00:51:16.182406-04:00 buildhost bash[3290524]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T00:51:16.362962-04:00 buildhost bash[3290524]: [embed-backfill] batch embed FAILED for harness_shared.operator_turns, using the per-row path (slower). First error: fetch failed
+2026-10-02T00:51:23.360957-04:00 buildhost bash[3290524]: [embed-backfill] batch embed FAILED for harness_shared.session_turns, using the per-row path (slower). First error: fetch failed
+2026-10-02T00:52:25.712518-04:00 buildhost bash[3290524]: [embed-backfill] batch embed FAILED for harness_shared.session_turn_chunks, using the per-row path (slower). First error: fetch failed
+2026-10-02T00:54:39.632058-04:00 buildhost bash[3290524]: [embed-backfill] drain: 2 round(s) in 203s (budget 200s) · drained 8/14 target(s) · budget expired with work remaining
+2026-10-02T00:54:39.632445-04:00 buildhost bash[3290524]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=0/9 harness_decisions=0/0 session_turns=0/64 session_turn_chunks=68/128 text_chunks=60/60 work_items=64/64 doc_sections=41/41 harness_plans=0/0 code_recipes=13/13 datatype_registry=0/0 consult_state=3/3 interest_watches=0/0
+2026-10-02T00:54:44.011883-04:00 buildhost bash[3290524]: [embed-backfill] personal vault=16/16
+2026-10-02T00:55:27.676251-04:00 buildhost bash[3290524]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T00:55:27.676251-04:00 buildhost bash[3290524]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T00:55:27.676251-04:00 buildhost bash[3290524]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T00:58:53.965973-04:00 buildhost bash[3290524]: [embed-backfill] drain: 9 round(s) in 207s (budget 200s) · drained 12/14 target(s) · budget expired with work remaining
+2026-10-02T00:58:53.966140-04:00 buildhost bash[3290524]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=12/12 harness_decisions=0/0 session_turns=576/576 session_turn_chunks=512/512 text_chunks=36/36 work_items=185/185 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T00:58:57.204589-04:00 buildhost bash[3290524]: [embed-backfill] personal vault=16/16
+2026-10-02T01:00:25.187490-04:00 buildhost bash[3290524]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T01:00:25.748353-04:00 buildhost bash[3290524]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T01:00:25.830327-04:00 buildhost bash[3290524]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T01:05:11.208489-04:00 buildhost bash[488825]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T01:05:11.226872-04:00 buildhost bash[488825]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T01:05:11.232369-04:00 buildhost bash[488825]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T01:05:19.487081-04:00 buildhost bash[488825]: [embed-backfill] skipped: a sweep has held the latch for 8s (stale at 3600s)
+2026-10-02T01:05:19.487105-04:00 buildhost bash[488825]: [embed-backfill] periodic sweep skipped: already_running
+2026-10-02T01:05:22.023039-04:00 buildhost bash[488825]: [embed-backfill] personal vault=16/16
+2026-10-02T01:08:38.440337-04:00 buildhost bash[488825]: [embed-backfill] drain: 5 round(s) in 207s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T01:08:44.906837-04:00 buildhost bash[488825]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=320/320 session_turn_chunks=320/320 text_chunks=32/32 work_items=71/71 doc_sections=151/151 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T01:08:44.906837-04:00 buildhost bash[488825]: [embed-backfill] personal vault=16/16
+2026-10-02T01:10:12.440357-04:00 buildhost bash[488825]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T01:10:12.470973-04:00 buildhost bash[488825]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T01:10:12.472430-04:00 buildhost bash[488825]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T01:13:41.839575-04:00 buildhost bash[488825]: [embed-backfill] drain: 9 round(s) in 208s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T01:13:41.839575-04:00 buildhost bash[488825]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=576/576 session_turn_chunks=576/576 text_chunks=0/0 work_items=45/45 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T01:13:45.357972-04:00 buildhost bash[488825]: [embed-backfill] personal vault=16/16
+2026-10-02T01:15:23.902051-04:00 buildhost bash[488825]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T01:15:23.902051-04:00 buildhost bash[488825]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T01:15:23.902051-04:00 buildhost bash[488825]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T01:20:22.657497-04:00 buildhost bash[488825]: [embed-backfill] skipped: a sweep has held the latch for 298s (stale at 3600s)
+2026-10-02T01:20:22.657497-04:00 buildhost bash[488825]: [embed-backfill] periodic sweep skipped: already_running
+2026-10-02T01:20:28.389867-04:00 buildhost bash[488825]: [embed-backfill] drain: 5 round(s) in 304s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T01:20:28.390241-04:00 buildhost bash[488825]: [embed-backfill] periodic sweep complete: harness_escalations=1/1 harness_brainstorm=0/0 operator_turns=0/0 harness_decisions=0/0 session_turns=320/320 session_turn_chunks=304/304 text_chunks=8/8 work_items=40/40 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T01:20:32.356154-04:00 buildhost bash[488825]: [embed-backfill] personal vault=16/16
+2026-10-02T01:20:32.537993-04:00 buildhost bash[488825]: [embed-backfill] personal vault=16/16
+2026-10-02T01:25:24.183908-04:00 buildhost bash[488825]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T01:25:24.187682-04:00 buildhost bash[488825]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T01:25:24.188849-04:00 buildhost bash[488825]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T01:28:49.758465-04:00 buildhost bash[488825]: [embed-backfill] drain: 4 round(s) in 206s (budget 200s) · drained 10/14 target(s) · budget expired with work remaining
+2026-10-02T01:28:50.037695-04:00 buildhost bash[488825]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=256/256 session_turn_chunks=256/256 text_chunks=41/41 work_items=70/70 doc_sections=164/164 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T01:28:57.192660-04:00 buildhost bash[488825]: [embed-backfill] personal vault=16/16
+2026-10-02T01:35:08.731375-04:00 buildhost bash[488825]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T01:35:08.735802-04:00 buildhost bash[488825]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T01:35:08.736558-04:00 buildhost bash[488825]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T01:38:35.516735-04:00 buildhost bash[488825]: [embed-backfill] drain: 7 round(s) in 207s (budget 200s) · drained 12/14 target(s) · budget expired with work remaining
+2026-10-02T01:38:35.517231-04:00 buildhost bash[488825]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=4/4 harness_decisions=0/0 session_turns=448/448 session_turn_chunks=276/276 text_chunks=5/5 work_items=88/88 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T01:38:40.427375-04:00 buildhost bash[488825]: [embed-backfill] personal vault=16/16
+2026-10-02T01:40:16.500526-04:00 buildhost bash[488825]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T01:40:16.508339-04:00 buildhost bash[488825]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T01:40:16.510287-04:00 buildhost bash[488825]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T01:44:55.931255-04:00 buildhost bash[4092141]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T01:44:55.938815-04:00 buildhost bash[4092141]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T01:44:55.940681-04:00 buildhost bash[4092141]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T01:45:04.281557-04:00 buildhost bash[4092141]: [embed-backfill] skipped: a sweep has held the latch for 8s (stale at 3600s)
+2026-10-02T01:45:04.281627-04:00 buildhost bash[4092141]: [embed-backfill] periodic sweep skipped: already_running
+2026-10-02T01:45:06.809358-04:00 buildhost bash[4092141]: [embed-backfill] personal vault=16/16
+2026-10-02T01:48:16.133053-04:00 buildhost bash[4092141]: [embed-backfill] drain: 5 round(s) in 200s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T01:48:16.133053-04:00 buildhost bash[4092141]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=320/320 session_turn_chunks=256/256 text_chunks=0/0 work_items=38/38 doc_sections=162/162 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T01:48:20.514147-04:00 buildhost bash[4092141]: [embed-backfill] personal vault=16/16
+2026-10-02T01:50:15.620935-04:00 buildhost bash[4092141]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T01:50:15.636864-04:00 buildhost bash[4092141]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T01:50:15.638748-04:00 buildhost bash[4092141]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T01:54:46.716544-04:00 buildhost bash[864595]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T01:54:46.716544-04:00 buildhost bash[864595]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T01:54:46.716544-04:00 buildhost bash[864595]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T01:55:11.276798-04:00 buildhost bash[864595]: [embed-backfill] skipped: a sweep has held the latch for 25s (stale at 3600s)
+2026-10-02T01:55:11.276846-04:00 buildhost bash[864595]: [embed-backfill] periodic sweep skipped: already_running
+2026-10-02T01:55:15.134457-04:00 buildhost bash[864595]: [embed-backfill] personal vault=16/16
+2026-10-02T01:58:15.103133-04:00 buildhost bash[864595]: [embed-backfill] drain: 14 round(s) in 208s (budget 200s) · drained 12/14 target(s) · budget expired with work remaining
+2026-10-02T01:58:15.103133-04:00 buildhost bash[864595]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=896/896 session_turn_chunks=832/832 text_chunks=10/10 work_items=36/36 doc_sections=18/18 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T01:58:16.192620-04:00 buildhost bash[864595]: [embed-backfill] personal vault=16/16
+2026-10-02T02:05:29.435994-04:00 buildhost bash[864595]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T02:05:29.435994-04:00 buildhost bash[864595]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T02:05:29.435994-04:00 buildhost bash[864595]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T02:09:31.697262-04:00 buildhost bash[864595]: [embed-backfill] drain: 7 round(s) in 242s (budget 200s) · drained 12/14 target(s) · budget expired with work remaining
+2026-10-02T02:09:31.697262-04:00 buildhost bash[864595]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=5/5 harness_decisions=0/0 session_turns=448/448 session_turn_chunks=298/298 text_chunks=38/38 work_items=125/125 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T02:09:39.862084-04:00 buildhost bash[864595]: [embed-backfill] personal vault=16/16
+2026-10-02T02:11:29.475726-04:00 buildhost bash[864595]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T02:11:29.475726-04:00 buildhost bash[864595]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T02:11:29.475726-04:00 buildhost bash[864595]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T02:15:07.736978-04:00 buildhost bash[864595]: [embed-backfill] drain: 5 round(s) in 218s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T02:15:07.737140-04:00 buildhost bash[864595]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=4/4 harness_decisions=0/0 session_turns=320/320 session_turn_chunks=241/241 text_chunks=0/0 work_items=46/46 doc_sections=148/148 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T02:15:13.409125-04:00 buildhost bash[864595]: [embed-backfill] personal vault=16/16
+2026-10-02T02:15:17.130720-04:00 buildhost bash[864595]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T02:15:17.227601-04:00 buildhost bash[864595]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T02:15:17.291663-04:00 buildhost bash[864595]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T02:18:54.577596-04:00 buildhost bash[864595]: [embed-backfill] drain: 4 round(s) in 217s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T02:18:54.750597-04:00 buildhost bash[864595]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=256/256 session_turn_chunks=233/233 text_chunks=58/58 work_items=21/21 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T02:19:00.003206-04:00 buildhost bash[864595]: [embed-backfill] personal vault=16/16
+2026-10-02T02:20:18.428274-04:00 buildhost bash[864595]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T02:20:18.428274-04:00 buildhost bash[864595]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T02:20:18.428274-04:00 buildhost bash[864595]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T02:26:12.256092-04:00 buildhost bash[3179711]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T02:26:12.264808-04:00 buildhost bash[3179711]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T02:26:12.267361-04:00 buildhost bash[3179711]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T02:26:20.320518-04:00 buildhost bash[3179711]: [embed-backfill] skipped: a sweep has held the latch for 8s (stale at 3600s)
+2026-10-02T02:26:20.320518-04:00 buildhost bash[3179711]: [embed-backfill] periodic sweep skipped: already_running
+2026-10-02T02:26:22.569248-04:00 buildhost bash[3179711]: [embed-backfill] personal vault=16/16
+2026-10-02T02:29:34.289658-04:00 buildhost bash[3179711]: [embed-backfill] drain: 9 round(s) in 202s (budget 200s) · drained 13/14 target(s) · budget expired with work remaining
+2026-10-02T02:29:34.290122-04:00 buildhost bash[3179711]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=4/4 harness_decisions=0/0 session_turns=576/576 session_turn_chunks=308/308 text_chunks=1/1 work_items=66/66 doc_sections=221/221 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T02:29:37.794222-04:00 buildhost bash[3179711]: [embed-backfill] personal vault=16/16
+2026-10-02T02:30:21.708023-04:00 buildhost bash[3179711]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T02:30:21.719183-04:00 buildhost bash[3179711]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T02:30:21.722057-04:00 buildhost bash[3179711]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T02:33:57.799408-04:00 buildhost bash[3179711]: [embed-backfill] drain: 12 round(s) in 216s (budget 200s) · drained 13/14 target(s) · budget expired with work remaining
+2026-10-02T02:33:57.800020-04:00 buildhost bash[3179711]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=0/0 harness_decisions=0/0 session_turns=768/768 session_turn_chunks=246/246 text_chunks=4/4 work_items=37/37 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T02:34:09.379952-04:00 buildhost bash[3179711]: [embed-backfill] personal vault=16/16
+2026-10-02T02:35:22.120285-04:00 buildhost bash[3179711]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T02:35:22.618386-04:00 buildhost bash[3179711]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T02:35:22.618386-04:00 buildhost bash[3179711]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T02:39:06.984030-04:00 buildhost bash[3179711]: [embed-backfill] drain: 5 round(s) in 224s (budget 200s) · drained 12/14 target(s) · budget expired with work remaining
+2026-10-02T02:39:06.984263-04:00 buildhost bash[3179711]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=320/320 session_turn_chunks=0/0 text_chunks=4/4 work_items=29/29 doc_sections=8/8 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T02:39:12.602988-04:00 buildhost bash[3179711]: [embed-backfill] personal vault=16/16
+2026-10-02T02:42:58.220184-04:00 buildhost bash[129870]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T02:42:58.224115-04:00 buildhost bash[129870]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T02:42:58.224710-04:00 buildhost bash[129870]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T02:45:14.843701-04:00 buildhost bash[129870]: [embed-backfill] skipped: a sweep has held the latch for 137s (stale at 3600s)
+2026-10-02T02:45:14.843826-04:00 buildhost bash[129870]: [embed-backfill] periodic sweep skipped: already_running
+2026-10-02T02:45:20.187170-04:00 buildhost bash[129870]: [embed-backfill] personal vault=16/16
+2026-10-02T02:46:20.400714-04:00 buildhost bash[129870]: [embed-backfill] drain: 8 round(s) in 202s (budget 200s) · drained 12/14 target(s) · budget expired with work remaining
+2026-10-02T02:46:20.401494-04:00 buildhost bash[129870]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=512/512 session_turn_chunks=448/448 text_chunks=39/39 work_items=50/50 doc_sections=163/163 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T02:46:22.115281-04:00 buildhost bash[129870]: [embed-backfill] personal vault=16/16
+2026-10-02T02:50:26.958813-04:00 buildhost bash[129870]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T02:50:27.069696-04:00 buildhost bash[129870]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T02:50:27.082904-04:00 buildhost bash[129870]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T03:00:26.253446-04:00 buildhost bash[1401816]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T03:00:26.258479-04:00 buildhost bash[1401816]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T03:00:26.260240-04:00 buildhost bash[1401816]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T03:04:27.098941-04:00 buildhost bash[1401816]: [embed-backfill] drain: 6 round(s) in 241s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T03:04:27.099440-04:00 buildhost bash[1401816]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=384/384 session_turn_chunks=323/323 text_chunks=6/6 work_items=70/70 doc_sections=3/3 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=1/1 interest_watches=0/0
+2026-10-02T03:04:31.435589-04:00 buildhost bash[1401816]: [embed-backfill] personal vault=16/16
+2026-10-02T03:05:23.800426-04:00 buildhost bash[1401816]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T03:05:23.800426-04:00 buildhost bash[1401816]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T03:05:23.800426-04:00 buildhost bash[1401816]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T03:08:52.696958-04:00 buildhost bash[1401816]: [embed-backfill] drain: 5 round(s) in 209s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T03:08:52.697432-04:00 buildhost bash[1401816]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=320/320 session_turn_chunks=256/256 text_chunks=10/10 work_items=45/45 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T03:09:01.240083-04:00 buildhost bash[1401816]: [embed-backfill] personal vault=16/16
+2026-10-02T03:10:31.139983-04:00 buildhost bash[1401816]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T03:10:31.170781-04:00 buildhost bash[1401816]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T03:10:31.187821-04:00 buildhost bash[1401816]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T03:14:44.688216-04:00 buildhost bash[1401816]: [embed-backfill] drain: 3 round(s) in 253s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T03:14:44.688315-04:00 buildhost bash[1401816]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=192/192 session_turn_chunks=128/128 text_chunks=5/5 work_items=26/26 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T03:14:54.267993-04:00 buildhost bash[1401816]: [embed-backfill] personal vault=16/16
+2026-10-02T03:22:08.375951-04:00 buildhost bash[2793351]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T03:22:08.409062-04:00 buildhost bash[2793351]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T03:22:08.461319-04:00 buildhost bash[2793351]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T03:25:21.517693-04:00 buildhost bash[2793351]: [embed-backfill] skipped: a sweep has held the latch for 193s (stale at 3600s)
+2026-10-02T03:25:21.517693-04:00 buildhost bash[2793351]: [embed-backfill] periodic sweep skipped: already_running
+2026-10-02T03:25:32.923860-04:00 buildhost bash[2793351]: [embed-backfill] personal vault=16/16
+2026-10-02T03:25:43.197310-04:00 buildhost bash[2793351]: [embed-backfill] drain: 4 round(s) in 215s (budget 200s) · drained 10/14 target(s) · budget expired with work remaining
+2026-10-02T03:25:43.197563-04:00 buildhost bash[2793351]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=4/4 harness_decisions=0/0 session_turns=256/256 session_turn_chunks=256/256 text_chunks=12/12 work_items=79/79 doc_sections=154/154 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T03:26:05.391948-04:00 buildhost bash[2793351]: [embed-backfill] personal vault=16/16
+2026-10-02T03:30:28.300416-04:00 buildhost bash[2793351]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T03:30:28.304213-04:00 buildhost bash[2793351]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T03:30:28.305441-04:00 buildhost bash[2793351]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T03:33:55.590069-04:00 buildhost bash[2793351]: [embed-backfill] drain: 3 round(s) in 207s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T03:33:55.590661-04:00 buildhost bash[2793351]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=192/192 session_turn_chunks=128/128 text_chunks=43/43 work_items=60/60 doc_sections=8/8 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T03:34:02.093229-04:00 buildhost bash[2793351]: [embed-backfill] personal vault=16/16
+2026-10-02T03:35:25.306510-04:00 buildhost bash[2793351]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T03:35:25.306510-04:00 buildhost bash[2793351]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T03:35:25.306510-04:00 buildhost bash[2793351]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T03:40:06.222445-04:00 buildhost bash[4059338]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T03:40:06.226070-04:00 buildhost bash[4059338]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T03:40:06.227073-04:00 buildhost bash[4059338]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T03:40:13.079988-04:00 buildhost bash[4059338]: [embed-backfill] skipped: a sweep has held the latch for 7s (stale at 3600s)
+2026-10-02T03:40:13.079988-04:00 buildhost bash[4059338]: [embed-backfill] periodic sweep skipped: already_running
+2026-10-02T03:40:15.633997-04:00 buildhost bash[4059338]: [embed-backfill] personal vault=16/16
+2026-10-02T03:43:45.483074-04:00 buildhost bash[4059338]: [embed-backfill] drain: 12 round(s) in 219s (budget 200s) · drained 12/14 target(s) · budget expired with work remaining
+2026-10-02T03:43:45.483526-04:00 buildhost bash[4059338]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=0/0 harness_decisions=0/0 session_turns=768/768 session_turn_chunks=760/760 text_chunks=6/6 work_items=32/32 doc_sections=8/8 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T03:43:50.990416-04:00 buildhost bash[4059338]: [embed-backfill] personal vault=16/16
+2026-10-02T03:45:32.032633-04:00 buildhost bash[4059338]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T03:45:33.714323-04:00 buildhost bash[4059338]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T03:45:33.714323-04:00 buildhost bash[4059338]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T03:49:20.823740-04:00 buildhost bash[4059338]: [embed-backfill] drain: 7 round(s) in 223s (budget 200s) · drained 13/14 target(s) · budget expired with work remaining
+2026-10-02T03:49:20.855706-04:00 buildhost bash[4059338]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=448/448 session_turn_chunks=0/0 text_chunks=32/32 work_items=46/46 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T03:49:28.201552-04:00 buildhost bash[4059338]: [embed-backfill] personal vault=16/16
+2026-10-02T03:55:43.057504-04:00 buildhost bash[4059338]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T03:55:43.093803-04:00 buildhost bash[4059338]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T03:55:43.110501-04:00 buildhost bash[4059338]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T03:59:06.130515-04:00 buildhost bash[1496983]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T03:59:06.247797-04:00 buildhost bash[1496983]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T03:59:06.251531-04:00 buildhost bash[1496983]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T04:00:08.697119-04:00 buildhost bash[1496983]: [embed-backfill] skipped: a sweep has held the latch for 63s (stale at 3600s)
+2026-10-02T04:00:08.697206-04:00 buildhost bash[1496983]: [embed-backfill] periodic sweep skipped: already_running
+2026-10-02T04:00:11.586199-04:00 buildhost bash[1496983]: [embed-backfill] personal vault=16/16
+2026-10-02T04:02:28.595273-04:00 buildhost bash[1496983]: [embed-backfill] drain: 11 round(s) in 202s (budget 200s) · drained 12/14 target(s) · budget expired with work remaining
+2026-10-02T04:02:28.595552-04:00 buildhost bash[1496983]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=704/704 session_turn_chunks=704/704 text_chunks=60/60 work_items=77/77 doc_sections=144/144 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=1/1 interest_watches=0/0
+2026-10-02T04:02:31.107105-04:00 buildhost bash[1496983]: [embed-backfill] personal vault=16/16
+2026-10-02T04:05:30.649115-04:00 buildhost bash[1496983]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T04:05:33.223050-04:00 buildhost bash[1496983]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T04:05:33.265495-04:00 buildhost bash[1496983]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T04:08:59.548100-04:00 buildhost bash[1496983]: [embed-backfill] drain: 3 round(s) in 203s (budget 200s) · drained 12/14 target(s) · budget expired with work remaining
+2026-10-02T04:08:59.548201-04:00 buildhost bash[1496983]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=192/192 session_turn_chunks=40/40 text_chunks=2/2 work_items=52/52 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T04:09:05.394630-04:00 buildhost bash[1496983]: [embed-backfill] personal vault=16/16
+2026-10-02T04:10:14.176751-04:00 buildhost bash[1496983]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T04:10:14.184574-04:00 buildhost bash[1496983]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T04:10:14.186112-04:00 buildhost bash[1496983]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T04:16:11.037353-04:00 buildhost bash[1496983]: [embed-backfill] drain: 4 round(s) in 357s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T04:16:11.037785-04:00 buildhost bash[1496983]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=256/256 session_turn_chunks=192/192 text_chunks=8/8 work_items=50/50 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T04:16:19.863516-04:00 buildhost bash[1496983]: [embed-backfill] personal vault=16/16
+2026-10-02T04:21:49.805257-04:00 buildhost bash[1496983]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T04:21:53.714480-04:00 buildhost bash[1496983]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T04:21:53.721426-04:00 buildhost bash[1496983]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T04:22:28.532849-04:00 buildhost bash[1496983]: [embed-backfill] skipped: a sweep has held the latch for 39s (stale at 3600s)
+2026-10-02T04:22:28.533037-04:00 buildhost bash[1496983]: [embed-backfill] periodic sweep skipped: already_running
+2026-10-02T04:23:07.169627-04:00 buildhost bash[1496983]: [embed-backfill] personal vault=16/16
+2026-10-02T04:25:41.835179-04:00 buildhost bash[1496983]: [embed-backfill] skipped: a sweep has held the latch for 232s (stale at 3600s)
+2026-10-02T04:25:41.835179-04:00 buildhost bash[1496983]: [embed-backfill] periodic sweep skipped: already_running
+2026-10-02T04:26:19.193322-04:00 buildhost bash[1496983]: [embed-backfill] personal vault=16/16
+2026-10-02T04:26:19.193322-04:00 buildhost bash[1496983]: [embed-backfill] drain: 1 round(s) in 220s (budget 200s) · drained 1/14 target(s) · budget expired with work remaining
+2026-10-02T04:26:19.193322-04:00 buildhost bash[1496983]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=0/0 harness_decisions=0/0 session_turns=64/64 session_turn_chunks=63/63 text_chunks=0/0 work_items=0/0 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T04:26:19.193322-04:00 buildhost bash[1496983]: [embed-backfill] personal vault=16/16
+2026-10-02T04:31:48.478731-04:00 buildhost bash[1496983]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T04:31:48.569156-04:00 buildhost bash[1496983]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T04:31:48.573718-04:00 buildhost bash[1496983]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T04:35:55.866659-04:00 buildhost bash[1496983]: [embed-backfill] drain: 3 round(s) in 247s (budget 200s) · drained 10/14 target(s) · budget expired with work remaining
+2026-10-02T04:35:55.866806-04:00 buildhost bash[1496983]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=9/9 harness_decisions=0/0 session_turns=192/192 session_turn_chunks=128/128 text_chunks=33/33 work_items=128/128 doc_sections=128/128 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T04:36:08.801931-04:00 buildhost bash[1496983]: [embed-backfill] personal vault=16/16
+2026-10-02T04:45:24.424961-04:00 buildhost bash[1496983]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T04:45:30.530286-04:00 buildhost bash[1496983]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T04:45:30.548127-04:00 buildhost bash[1496983]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T04:48:54.516729-04:00 buildhost bash[1496983]: [embed-backfill] drain: 1 round(s) in 201s (budget 200s) · drained 5/14 target(s) · budget expired with work remaining
+2026-10-02T04:48:54.516918-04:00 buildhost bash[1496983]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=0/0 harness_decisions=0/0 session_turns=0/0 session_turn_chunks=9/9 text_chunks=30/30 work_items=64/64 doc_sections=44/44 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T04:49:14.935283-04:00 buildhost bash[1496983]: [embed-backfill] personal vault=16/16
+2026-10-02T04:52:27.322836-04:00 buildhost bash[1496983]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T04:52:27.420145-04:00 buildhost bash[1496983]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T04:52:27.427678-04:00 buildhost bash[1496983]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T04:56:29.916027-04:00 buildhost bash[1496983]: [embed-backfill] drain: 2 round(s) in 229s (budget 200s) · drained 9/14 target(s) · budget expired with work remaining
+2026-10-02T04:56:29.916027-04:00 buildhost bash[1496983]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=5/5 harness_decisions=0/0 session_turns=64/64 session_turn_chunks=64/64 text_chunks=0/0 work_items=128/128 doc_sections=128/128 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T04:56:34.972410-04:00 buildhost bash[1496983]: [embed-backfill] personal vault=16/16
+2026-10-02T05:00:42.877778-04:00 buildhost bash[1676964]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T05:00:42.882689-04:00 buildhost bash[1676964]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T05:00:42.884350-04:00 buildhost bash[1676964]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T05:04:04.501626-04:00 buildhost bash[1676964]: [embed-backfill] drain: 4 round(s) in 202s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T05:04:04.502230-04:00 buildhost bash[1676964]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=256/256 session_turn_chunks=256/256 text_chunks=37/37 work_items=115/115 doc_sections=33/33 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T05:04:22.918532-04:00 buildhost bash[1676964]: [embed-backfill] personal vault=16/16
+2026-10-02T05:05:13.606207-04:00 buildhost bash[1676964]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T05:05:13.619239-04:00 buildhost bash[1676964]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T05:05:13.623748-04:00 buildhost bash[1676964]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T05:08:46.536001-04:00 buildhost bash[1676964]: [embed-backfill] drain: 3 round(s) in 213s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T05:08:46.536194-04:00 buildhost bash[1676964]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=192/192 session_turn_chunks=128/128 text_chunks=0/0 work_items=31/31 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T05:10:00.310731-04:00 buildhost bash[1676964]: [embed-backfill] personal vault=16/16
+2026-10-02T05:15:28.944165-04:00 buildhost bash[1676964]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T05:15:31.284933-04:00 buildhost bash[1676964]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T05:15:31.301702-04:00 buildhost bash[1676964]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T05:19:11.805777-04:00 buildhost bash[1676964]: [embed-backfill] drain: 2 round(s) in 219s (budget 200s) · drained 10/14 target(s) · budget expired with work remaining
+2026-10-02T05:19:11.806033-04:00 buildhost bash[1676964]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=128/128 session_turn_chunks=64/64 text_chunks=33/33 work_items=64/64 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T05:19:20.021346-04:00 buildhost bash[1676964]: [embed-backfill] personal vault=16/16
+2026-10-02T05:20:48.130426-04:00 buildhost bash[1676964]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T05:20:48.150980-04:00 buildhost bash[1676964]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T05:20:48.154684-04:00 buildhost bash[1676964]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T05:24:49.375659-04:00 buildhost bash[1676964]: [embed-backfill] drain: 1 round(s) in 241s (budget 200s) · drained 1/14 target(s) · budget expired with work remaining
+2026-10-02T05:24:49.375776-04:00 buildhost bash[1676964]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=0/0 harness_decisions=0/0 session_turns=64/64 session_turn_chunks=64/64 text_chunks=0/0 work_items=0/0 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T05:25:27.888691-04:00 buildhost bash[1676964]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T05:25:28.027671-04:00 buildhost bash[1676964]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T05:25:28.036145-04:00 buildhost bash[1676964]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T05:25:28.624919-04:00 buildhost bash[1676964]: [embed-backfill] personal vault=16/16
+2026-10-02T05:30:53.171122-04:00 buildhost bash[3425554]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T05:30:53.179667-04:00 buildhost bash[3425554]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T05:30:53.181439-04:00 buildhost bash[3425554]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T05:31:07.523324-04:00 buildhost bash[3425554]: [embed-backfill] skipped: a sweep has held the latch for 14s (stale at 3600s)
+2026-10-02T05:31:07.523353-04:00 buildhost bash[3425554]: [embed-backfill] periodic sweep skipped: already_running
+2026-10-02T05:31:09.077858-04:00 buildhost bash[3425554]: [embed-backfill] personal vault=16/16
+2026-10-02T05:34:27.267350-04:00 buildhost bash[3425554]: [embed-backfill] drain: 8 round(s) in 213s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T05:34:27.267350-04:00 buildhost bash[3425554]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=512/512 session_turn_chunks=448/448 text_chunks=0/0 work_items=137/137 doc_sections=20/20 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T05:34:28.786511-04:00 buildhost bash[3425554]: [embed-backfill] personal vault=16/16
+2026-10-02T05:35:10.245695-04:00 buildhost bash[3425554]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T05:35:10.248699-04:00 buildhost bash[3425554]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T05:35:10.249627-04:00 buildhost bash[3425554]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T05:38:41.559565-04:00 buildhost bash[3425554]: [embed-backfill] drain: 9 round(s) in 211s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T05:38:41.559565-04:00 buildhost bash[3425554]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=0/0 harness_decisions=0/0 session_turns=576/576 session_turn_chunks=512/512 text_chunks=2/2 work_items=45/45 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T05:38:44.980182-04:00 buildhost bash[3425554]: [embed-backfill] personal vault=16/16
+2026-10-02T05:40:22.208309-04:00 buildhost bash[3425554]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T05:40:22.218620-04:00 buildhost bash[3425554]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T05:40:22.224103-04:00 buildhost bash[3425554]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T05:43:57.347723-04:00 buildhost bash[50977]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T05:43:57.352507-04:00 buildhost bash[50977]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T05:43:57.353376-04:00 buildhost bash[50977]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T05:45:09.525373-04:00 buildhost bash[50977]: [embed-backfill] skipped: a sweep has held the latch for 72s (stale at 3600s)
+2026-10-02T05:45:09.525438-04:00 buildhost bash[50977]: [embed-backfill] periodic sweep skipped: already_running
+2026-10-02T05:45:12.047387-04:00 buildhost bash[50977]: [embed-backfill] personal vault=16/16
+2026-10-02T05:47:23.089644-04:00 buildhost bash[50977]: [embed-backfill] drain: 15 round(s) in 206s (budget 200s) · drained 12/14 target(s) · budget expired with work remaining
+2026-10-02T05:47:23.107556-04:00 buildhost bash[50977]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=960/960 session_turn_chunks=953/953 text_chunks=0/0 work_items=25/25 doc_sections=5/5 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T05:47:29.703147-04:00 buildhost bash[50977]: [embed-backfill] personal vault=16/16
+2026-10-02T05:50:25.892212-04:00 buildhost bash[50977]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T05:50:25.897015-04:00 buildhost bash[50977]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T05:50:25.898487-04:00 buildhost bash[50977]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T05:54:34.619158-04:00 buildhost bash[50977]: [embed-backfill] drain: 10 round(s) in 249s (budget 200s) · drained 13/14 target(s) · budget expired with work remaining
+2026-10-02T05:54:34.619272-04:00 buildhost bash[50977]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=640/640 session_turn_chunks=236/236 text_chunks=3/3 work_items=45/45 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T05:54:39.389810-04:00 buildhost bash[50977]: [embed-backfill] personal vault=16/16
+2026-10-02T05:55:37.651687-04:00 buildhost bash[50977]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T05:55:37.878092-04:00 buildhost bash[50977]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T05:55:37.878092-04:00 buildhost bash[50977]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T05:58:02.541674-04:00 buildhost bash[50977]: [embed-backfill] drain: 10 round(s) in 145s (budget 200s) · drained 14/14 target(s)
+2026-10-02T05:58:02.542227-04:00 buildhost bash[50977]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=0/0 harness_decisions=0/0 session_turns=541/541 session_turn_chunks=161/161 text_chunks=31/31 work_items=43/43 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T05:58:05.634702-04:00 buildhost bash[50977]: [embed-backfill] personal vault=16/16
+2026-10-02T06:01:43.261555-04:00 buildhost bash[50977]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T06:01:43.308948-04:00 buildhost bash[50977]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T06:01:43.311359-04:00 buildhost bash[50977]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T06:02:49.594522-04:00 buildhost bash[50977]: [embed-backfill] drain: 6 round(s) in 66s (budget 200s) · drained 14/14 target(s)
+2026-10-02T06:02:49.595077-04:00 buildhost bash[50977]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=4/4 harness_decisions=0/0 session_turns=116/116 session_turn_chunks=281/281 text_chunks=2/2 work_items=34/34 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T06:02:52.936209-04:00 buildhost bash[50977]: [embed-backfill] personal vault=16/16
+2026-10-02T06:05:25.479494-04:00 buildhost bash[50977]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T06:05:25.832579-04:00 buildhost bash[50977]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T06:05:25.838618-04:00 buildhost bash[50977]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T06:07:06.143442-04:00 buildhost bash[50977]: [embed-backfill] drain: 6 round(s) in 100s (budget 200s) · drained 14/14 target(s)
+2026-10-02T06:07:06.143570-04:00 buildhost bash[50977]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=138/138 session_turn_chunks=276/276 text_chunks=3/3 work_items=28/28 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T06:07:13.824699-04:00 buildhost bash[50977]: [embed-backfill] personal vault=16/16
+2026-10-02T06:10:51.432621-04:00 buildhost bash[1644144]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T06:10:51.437156-04:00 buildhost bash[1644144]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T06:10:51.438427-04:00 buildhost bash[1644144]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T06:13:29.282411-04:00 buildhost bash[1644144]: [embed-backfill] drain: 6 round(s) in 158s (budget 200s) · drained 14/14 target(s)
+2026-10-02T06:13:29.282863-04:00 buildhost bash[1644144]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=181/181 session_turn_chunks=294/294 text_chunks=3/3 work_items=28/28 doc_sections=0/0 harness_plans=1/1 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T06:13:38.123636-04:00 buildhost bash[1644144]: [embed-backfill] personal vault=16/16
+2026-10-02T06:15:24.526784-04:00 buildhost bash[1644144]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T06:15:24.536682-04:00 buildhost bash[1644144]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T06:15:24.538184-04:00 buildhost bash[1644144]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T06:16:44.701380-04:00 buildhost bash[1644144]: [embed-backfill] drain: 6 round(s) in 80s (budget 200s) · drained 14/14 target(s)
+2026-10-02T06:16:44.701848-04:00 buildhost bash[1644144]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=89/89 session_turn_chunks=258/258 text_chunks=2/2 work_items=21/21 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T06:16:48.593687-04:00 buildhost bash[1644144]: [embed-backfill] personal vault=16/16
+2026-10-02T06:25:22.104954-04:00 buildhost bash[1644144]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T06:25:22.177499-04:00 buildhost bash[1644144]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T06:25:22.191050-04:00 buildhost bash[1644144]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T06:27:15.532073-04:00 buildhost bash[1644144]: [embed-backfill] drain: 8 round(s) in 113s (budget 200s) · drained 14/14 target(s)
+2026-10-02T06:27:15.532522-04:00 buildhost bash[1644144]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=4/4 harness_decisions=0/0 session_turns=364/364 session_turn_chunks=0/0 text_chunks=0/0 work_items=62/62 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T06:27:26.168728-04:00 buildhost bash[1644144]: [embed-backfill] personal vault=16/16
+2026-10-02T06:31:34.347952-04:00 buildhost bash[1644144]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T06:31:35.088393-04:00 buildhost bash[1644144]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T06:31:35.124454-04:00 buildhost bash[1644144]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T06:35:22.679437-04:00 buildhost bash[3212589]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T06:35:22.685019-04:00 buildhost bash[3212589]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T06:35:22.686546-04:00 buildhost bash[3212589]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T06:35:32.302390-04:00 buildhost bash[3212589]: [embed-backfill] skipped: a sweep has held the latch for 10s (stale at 3600s)
+2026-10-02T06:35:32.302446-04:00 buildhost bash[3212589]: [embed-backfill] periodic sweep skipped: already_running
+2026-10-02T06:35:34.793362-04:00 buildhost bash[3212589]: [embed-backfill] personal vault=16/16
+2026-10-02T06:38:58.134220-04:00 buildhost bash[3212589]: [embed-backfill] drain: 5 round(s) in 215s (budget 200s) · drained 12/14 target(s) · budget expired with work remaining
+2026-10-02T06:38:58.134446-04:00 buildhost bash[3212589]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=5/5 harness_decisions=0/0 session_turns=285/285 session_turn_chunks=296/296 text_chunks=30/30 work_items=55/55 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T06:39:00.995505-04:00 buildhost bash[3212589]: [embed-backfill] personal vault=16/16
+2026-10-02T06:41:11.471228-04:00 buildhost bash[3212589]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T06:41:16.524406-04:00 buildhost bash[3212589]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T06:41:16.550104-04:00 buildhost bash[3212589]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T06:45:22.367174-04:00 buildhost bash[3212589]: [embed-backfill] skipped: a sweep has held the latch for 251s (stale at 3600s)
+2026-10-02T06:45:22.367222-04:00 buildhost bash[3212589]: [embed-backfill] periodic sweep skipped: already_running
+2026-10-02T06:45:31.534589-04:00 buildhost bash[3212589]: [embed-backfill] drain: 1 round(s) in 209s (budget 200s) · drained 4/14 target(s) · budget expired with work remaining
+2026-10-02T06:45:31.535087-04:00 buildhost bash[3212589]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=0/0 harness_decisions=0/0 session_turns=64/64 session_turn_chunks=0/0 text_chunks=36/36 work_items=64/64 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T06:45:32.384655-04:00 buildhost bash[3212589]: [embed-backfill] personal vault=16/16
+2026-10-02T06:45:32.924905-04:00 buildhost bash[3212589]: [embed-backfill] personal vault=16/16
+2026-10-02T06:50:50.254924-04:00 buildhost bash[3963664]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T06:50:50.260359-04:00 buildhost bash[3963664]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T06:50:50.261681-04:00 buildhost bash[3963664]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T06:54:20.522046-04:00 buildhost bash[3963664]: [embed-backfill] drain: 3 round(s) in 210s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T06:54:20.522261-04:00 buildhost bash[3963664]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=4/4 harness_decisions=0/0 session_turns=192/192 session_turn_chunks=128/128 text_chunks=38/38 work_items=115/115 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T06:54:27.366110-04:00 buildhost bash[3963664]: [embed-backfill] personal vault=16/16
+2026-10-02T06:55:25.351635-04:00 buildhost bash[3963664]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T06:55:26.023385-04:00 buildhost bash[3963664]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T06:55:26.032618-04:00 buildhost bash[3963664]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T06:59:11.201749-04:00 buildhost bash[3963664]: [embed-backfill] drain: 3 round(s) in 223s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T06:59:11.201845-04:00 buildhost bash[3963664]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=192/192 session_turn_chunks=128/128 text_chunks=5/5 work_items=31/31 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T06:59:15.505151-04:00 buildhost bash[3963664]: [embed-backfill] personal vault=16/16
+2026-10-02T07:05:33.339566-04:00 buildhost bash[3963664]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T07:05:33.339566-04:00 buildhost bash[3963664]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T07:05:33.339566-04:00 buildhost bash[3963664]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T07:09:14.594092-04:00 buildhost bash[3963664]: [embed-backfill] drain: 1 round(s) in 219s (budget 200s) · drained 2/14 target(s) · budget expired with work remaining
+2026-10-02T07:09:14.594200-04:00 buildhost bash[3963664]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=4/4 harness_decisions=0/0 session_turns=64/64 session_turn_chunks=64/64 text_chunks=0/0 work_items=64/64 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T07:09:34.031495-04:00 buildhost bash[3963664]: [embed-backfill] personal vault=16/16
+2026-10-02T07:11:13.909880-04:00 buildhost bash[3963664]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T07:11:14.011528-04:00 buildhost bash[3963664]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T07:11:14.087561-04:00 buildhost bash[3963664]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T07:13:54.787777-04:00 buildhost bash[1122549]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T07:13:54.787777-04:00 buildhost bash[1122549]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T07:13:54.787777-04:00 buildhost bash[1122549]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T07:15:18.573045-04:00 buildhost bash[1122549]: [embed-backfill] skipped: a sweep has held the latch for 84s (stale at 3600s)
+2026-10-02T07:15:18.573178-04:00 buildhost bash[1122549]: [embed-backfill] periodic sweep skipped: already_running
+2026-10-02T07:15:24.401973-04:00 buildhost bash[1122549]: [embed-backfill] personal vault=16/16
+2026-10-02T07:17:23.899915-04:00 buildhost bash[1122549]: [embed-backfill] drain: 4 round(s) in 209s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T07:17:23.900629-04:00 buildhost bash[1122549]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=256/256 session_turn_chunks=256/256 text_chunks=50/50 work_items=67/67 doc_sections=4/4 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T07:17:25.962822-04:00 buildhost bash[1122549]: [embed-backfill] personal vault=16/16
+2026-10-02T07:20:29.035763-04:00 buildhost bash[1122549]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T07:20:29.807096-04:00 buildhost bash[1122549]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T07:20:29.819764-04:00 buildhost bash[1122549]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T07:24:00.777742-04:00 buildhost bash[1122549]: [embed-backfill] drain: 3 round(s) in 209s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T07:24:00.778327-04:00 buildhost bash[1122549]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=192/192 session_turn_chunks=128/128 text_chunks=2/2 work_items=46/46 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T07:24:03.501527-04:00 buildhost bash[1122549]: [embed-backfill] personal vault=16/16
+2026-10-02T07:30:41.391290-04:00 buildhost bash[1122549]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T07:30:41.391290-04:00 buildhost bash[1122549]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T07:30:41.391290-04:00 buildhost bash[1122549]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T07:35:00.614654-04:00 buildhost bash[1122549]: [embed-backfill] drain: 2 round(s) in 259s (budget 200s) · drained 10/14 target(s) · budget expired with work remaining
+2026-10-02T07:35:00.614654-04:00 buildhost bash[1122549]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=4/4 harness_decisions=0/0 session_turns=128/128 session_turn_chunks=64/64 text_chunks=0/0 work_items=64/64 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T07:35:10.256390-04:00 buildhost bash[1122549]: [embed-backfill] personal vault=16/16
+2026-10-02T07:35:26.246837-04:00 buildhost bash[1122549]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T07:35:26.246837-04:00 buildhost bash[1122549]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T07:35:26.246837-04:00 buildhost bash[1122549]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T07:38:58.216485-04:00 buildhost bash[1122549]: [embed-backfill] drain: 1 round(s) in 212s (budget 200s) · drained 1/14 target(s) · budget expired with work remaining
+2026-10-02T07:38:58.216485-04:00 buildhost bash[1122549]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=0/0 harness_decisions=0/0 session_turns=64/64 session_turn_chunks=64/64 text_chunks=0/0 work_items=0/0 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T07:39:06.199258-04:00 buildhost bash[1122549]: [embed-backfill] personal vault=16/16
+2026-10-02T07:45:23.805179-04:00 buildhost bash[1122549]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T07:45:23.959305-04:00 buildhost bash[1122549]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T07:45:23.966765-04:00 buildhost bash[1122549]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T07:49:03.539207-04:00 buildhost bash[1122549]: [embed-backfill] drain: 2 round(s) in 219s (budget 200s) · drained 10/14 target(s) · budget expired with work remaining
+2026-10-02T07:49:03.539324-04:00 buildhost bash[1122549]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=4/4 harness_decisions=0/0 session_turns=128/128 session_turn_chunks=128/128 text_chunks=0/0 work_items=64/64 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T07:49:06.474031-04:00 buildhost bash[1122549]: [embed-backfill] personal vault=16/16
+2026-10-02T07:55:52.041960-04:00 buildhost bash[3379907]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T07:55:52.046751-04:00 buildhost bash[3379907]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T07:55:52.048410-04:00 buildhost bash[3379907]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T07:59:16.051381-04:00 buildhost bash[3379907]: [embed-backfill] drain: 3 round(s) in 204s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T07:59:16.051946-04:00 buildhost bash[3379907]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=5/5 harness_decisions=0/0 session_turns=192/192 session_turn_chunks=128/128 text_chunks=18/18 work_items=107/107 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=1/1 interest_watches=0/0
+2026-10-02T07:59:25.146570-04:00 buildhost bash[3379907]: [embed-backfill] personal vault=16/16
+2026-10-02T08:00:29.341103-04:00 buildhost bash[3379907]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T08:00:37.710553-04:00 buildhost bash[3379907]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T08:00:37.724075-04:00 buildhost bash[3379907]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T08:04:26.046902-04:00 buildhost bash[3379907]: [embed-backfill] drain: 5 round(s) in 222s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T08:04:26.047052-04:00 buildhost bash[3379907]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=320/320 session_turn_chunks=256/256 text_chunks=0/0 work_items=32/32 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T08:04:36.068401-04:00 buildhost bash[3379907]: [embed-backfill] personal vault=16/16
+2026-10-02T08:05:09.758123-04:00 buildhost bash[3379907]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T08:05:09.767634-04:00 buildhost bash[3379907]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T08:05:09.769394-04:00 buildhost bash[3379907]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T08:07:55.699401-04:00 buildhost bash[222822]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T08:07:55.706146-04:00 buildhost bash[222822]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T08:07:55.707444-04:00 buildhost bash[222822]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T08:10:18.877274-04:00 buildhost bash[222822]: [embed-backfill] skipped: a sweep has held the latch for 143s (stale at 3600s)
+2026-10-02T08:10:18.877302-04:00 buildhost bash[222822]: [embed-backfill] periodic sweep skipped: already_running
+2026-10-02T08:10:22.997734-04:00 buildhost bash[222822]: [embed-backfill] personal vault=16/16
+2026-10-02T08:11:22.542710-04:00 buildhost bash[222822]: [embed-backfill] drain: 11 round(s) in 207s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T08:11:22.552142-04:00 buildhost bash[222822]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=704/704 session_turn_chunks=640/640 text_chunks=0/0 work_items=24/24 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T08:11:23.917153-04:00 buildhost bash[222822]: [embed-backfill] personal vault=16/16
+2026-10-02T08:15:21.825386-04:00 buildhost bash[222822]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T08:15:21.874139-04:00 buildhost bash[222822]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T08:15:21.875564-04:00 buildhost bash[222822]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T08:18:47.937989-04:00 buildhost bash[222822]: [embed-backfill] drain: 11 round(s) in 206s (budget 200s) · drained 12/14 target(s) · budget expired with work remaining
+2026-10-02T08:18:47.938446-04:00 buildhost bash[222822]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=704/704 session_turn_chunks=640/640 text_chunks=2/2 work_items=49/49 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T08:18:50.581057-04:00 buildhost bash[222822]: [embed-backfill] personal vault=16/16
+2026-10-02T08:20:25.015630-04:00 buildhost bash[222822]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T08:20:25.142609-04:00 buildhost bash[222822]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T08:20:25.146276-04:00 buildhost bash[222822]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T08:23:58.823844-04:00 buildhost bash[222822]: [embed-backfill] drain: 4 round(s) in 214s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T08:23:58.824376-04:00 buildhost bash[222822]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=256/256 session_turn_chunks=256/256 text_chunks=0/0 work_items=29/29 doc_sections=0/0 harness_plans=1/1 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T08:24:02.367813-04:00 buildhost bash[222822]: [embed-backfill] personal vault=16/16
+2026-10-02T08:27:15.330953-04:00 buildhost bash[222822]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T08:27:15.433035-04:00 buildhost bash[222822]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T08:27:15.516825-04:00 buildhost bash[222822]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T08:29:47.013301-04:00 buildhost bash[222822]: [embed-backfill] drain: 8 round(s) in 151s (budget 200s) · drained 14/14 target(s)
+2026-10-02T08:29:47.013791-04:00 buildhost bash[222822]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=205/205 session_turn_chunks=444/444 text_chunks=4/4 work_items=23/23 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T08:29:52.459556-04:00 buildhost bash[222822]: [embed-backfill] personal vault=16/16
+2026-10-02T08:35:27.892410-04:00 buildhost bash[222822]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T08:35:27.910756-04:00 buildhost bash[222822]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T08:35:27.915087-04:00 buildhost bash[222822]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T08:37:54.014880-04:00 buildhost bash[1859197]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T08:37:54.020810-04:00 buildhost bash[1859197]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T08:37:54.022034-04:00 buildhost bash[1859197]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T08:40:29.302122-04:00 buildhost bash[1859197]: [embed-backfill] skipped: a sweep has held the latch for 147s (stale at 3600s)
+2026-10-02T08:40:29.302122-04:00 buildhost bash[1859197]: [embed-backfill] periodic sweep skipped: already_running
+2026-10-02T08:40:29.303739-04:00 buildhost bash[1859197]: [embed-backfill] drain: 5 round(s) in 151s (budget 200s) · drained 14/14 target(s)
+2026-10-02T08:40:29.303739-04:00 buildhost bash[1859197]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=0/0 harness_decisions=0/0 session_turns=229/229 session_turn_chunks=256/256 text_chunks=36/36 work_items=45/45 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T08:40:29.303739-04:00 buildhost bash[1859197]: [embed-backfill] personal vault=16/16
+2026-10-02T08:40:29.303739-04:00 buildhost bash[1859197]: [embed-backfill] personal vault=16/16
+2026-10-02T08:45:26.262074-04:00 buildhost bash[1859197]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T08:45:26.385267-04:00 buildhost bash[1859197]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T08:45:26.387965-04:00 buildhost bash[1859197]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T08:47:56.743026-04:00 buildhost bash[1859197]: [embed-backfill] drain: 8 round(s) in 150s (budget 200s) · drained 14/14 target(s)
+2026-10-02T08:47:56.743148-04:00 buildhost bash[1859197]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=357/357 session_turn_chunks=448/448 text_chunks=48/48 work_items=63/63 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=1/1 interest_watches=0/0
+2026-10-02T08:47:58.803857-04:00 buildhost bash[1859197]: [embed-backfill] personal vault=16/16
+2026-10-02T08:50:27.664801-04:00 buildhost bash[1859197]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T08:50:27.669418-04:00 buildhost bash[1859197]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T08:50:27.671087-04:00 buildhost bash[1859197]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T08:51:41.775957-04:00 buildhost bash[1859197]: [embed-backfill] drain: 6 round(s) in 74s (budget 200s) · drained 14/14 target(s)
+2026-10-02T08:51:41.776077-04:00 buildhost bash[1859197]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=210/210 session_turn_chunks=302/302 text_chunks=0/0 work_items=22/22 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T08:51:44.846688-04:00 buildhost bash[1859197]: [embed-backfill] personal vault=16/16
+2026-10-02T09:01:59.234397-04:00 buildhost bash[1859197]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T09:01:59.254092-04:00 buildhost bash[1859197]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T09:01:59.255568-04:00 buildhost bash[1859197]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T09:05:53.959971-04:00 buildhost bash[1859197]: [embed-backfill] drain: 4 round(s) in 235s (budget 200s) · drained 12/14 target(s) · budget expired with work remaining
+2026-10-02T09:05:53.959971-04:00 buildhost bash[1859197]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=5/5 harness_decisions=0/0 session_turns=217/217 session_turn_chunks=0/0 text_chunks=0/0 work_items=72/72 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T09:05:59.378938-04:00 buildhost bash[1859197]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T09:05:59.568278-04:00 buildhost bash[1859197]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T09:05:59.575193-04:00 buildhost bash[1859197]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T09:06:02.866928-04:00 buildhost bash[1859197]: [embed-backfill] personal vault=16/16
+2026-10-02T09:07:43.647250-04:00 buildhost bash[1859197]: [embed-backfill] drain: 3 round(s) in 101s (budget 200s) · drained 14/14 target(s)
+2026-10-02T09:07:43.647250-04:00 buildhost bash[1859197]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=0/0 session_turn_chunks=109/109 text_chunks=0/0 work_items=17/17 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T09:07:49.468323-04:00 buildhost bash[1859197]: [embed-backfill] personal vault=16/16
+2026-10-02T09:16:30.966304-04:00 buildhost bash[1859197]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T09:16:34.219150-04:00 buildhost bash[1859197]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T09:16:34.229739-04:00 buildhost bash[1859197]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T09:19:59.661917-04:00 buildhost bash[1859197]: [embed-backfill] drain: 3 round(s) in 205s (budget 200s) · drained 12/14 target(s) · budget expired with work remaining
+2026-10-02T09:19:59.662087-04:00 buildhost bash[1859197]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=5/5 harness_decisions=0/0 session_turns=192/192 session_turn_chunks=52/52 text_chunks=62/62 work_items=61/61 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T09:20:04.611120-04:00 buildhost bash[1859197]: [embed-backfill] personal vault=16/16
+2026-10-02T09:20:10.895736-04:00 buildhost bash[1859197]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T09:20:10.904901-04:00 buildhost bash[1859197]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T09:20:10.907027-04:00 buildhost bash[1859197]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T09:23:45.162142-04:00 buildhost bash[1859197]: [embed-backfill] drain: 2 round(s) in 214s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T09:23:45.162142-04:00 buildhost bash[1859197]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=128/128 session_turn_chunks=64/64 text_chunks=37/37 work_items=11/11 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T09:23:54.948409-04:00 buildhost bash[1859197]: [embed-backfill] personal vault=16/16
+2026-10-02T09:25:18.899242-04:00 buildhost bash[1859197]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T09:25:18.899242-04:00 buildhost bash[1859197]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T09:25:18.899242-04:00 buildhost bash[1859197]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T09:29:36.710185-04:00 buildhost bash[1859197]: [embed-backfill] drain: 5 round(s) in 258s (budget 200s) · drained 12/14 target(s) · budget expired with work remaining
+2026-10-02T09:29:36.710185-04:00 buildhost bash[1859197]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=320/320 session_turn_chunks=256/256 text_chunks=5/5 work_items=32/32 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T09:29:53.723518-04:00 buildhost bash[1859197]: [embed-backfill] personal vault=16/16
+2026-10-02T09:31:10.339330-04:00 buildhost bash[1859197]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T09:31:12.392166-04:00 buildhost bash[1859197]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T09:31:12.403866-04:00 buildhost bash[1859197]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T09:34:38.883555-04:00 buildhost bash[1859197]: [embed-backfill] drain: 3 round(s) in 205s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T09:34:38.883555-04:00 buildhost bash[1859197]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=188/188 session_turn_chunks=192/192 text_chunks=0/0 work_items=20/20 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T09:34:50.635462-04:00 buildhost bash[1859197]: [embed-backfill] personal vault=16/16
+2026-10-02T09:40:30.032236-04:00 buildhost bash[1859197]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T09:40:33.529053-04:00 buildhost bash[1859197]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T09:40:33.702122-04:00 buildhost bash[1859197]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T09:44:16.505798-04:00 buildhost bash[1859197]: [embed-backfill] drain: 5 round(s) in 214s (budget 200s) · drained 12/14 target(s) · budget expired with work remaining
+2026-10-02T09:44:16.505798-04:00 buildhost bash[1859197]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=302/302 session_turn_chunks=182/182 text_chunks=7/7 work_items=42/42 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T09:44:29.179979-04:00 buildhost bash[1859197]: [embed-backfill] personal vault=16/16
+2026-10-02T09:52:21.365064-04:00 buildhost bash[1859197]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T09:52:21.380028-04:00 buildhost bash[1859197]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T09:52:21.381697-04:00 buildhost bash[1859197]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T09:54:20.653155-04:00 buildhost bash[1859197]: [embed-backfill] drain: 7 round(s) in 119s (budget 200s) · drained 14/14 target(s)
+2026-10-02T09:54:20.653155-04:00 buildhost bash[1859197]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=225/225 session_turn_chunks=265/265 text_chunks=7/7 work_items=53/53 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T09:54:30.489088-04:00 buildhost bash[1859197]: [embed-backfill] personal vault=16/16
+2026-10-02T09:55:09.898581-04:00 buildhost bash[1859197]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T09:55:09.902433-04:00 buildhost bash[1859197]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T09:55:09.904878-04:00 buildhost bash[1859197]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T09:55:45.298376-04:00 buildhost bash[1859197]: [embed-backfill] drain: 6 round(s) in 35s (budget 200s) · drained 14/14 target(s)
+2026-10-02T09:55:45.298840-04:00 buildhost bash[1859197]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=0/0 harness_decisions=0/0 session_turns=32/32 session_turn_chunks=260/260 text_chunks=0/0 work_items=8/8 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T09:55:47.060153-04:00 buildhost bash[1859197]: [embed-backfill] personal vault=16/16
+2026-10-02T10:05:44.341803-04:00 buildhost bash[3130189]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T10:05:44.350052-04:00 buildhost bash[3130189]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T10:05:44.352918-04:00 buildhost bash[3130189]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T10:06:20.001845-04:00 buildhost bash[3130189]: [embed-backfill] drain: 6 round(s) in 36s (budget 200s) · drained 14/14 target(s)
+2026-10-02T10:06:20.001845-04:00 buildhost bash[3130189]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=135/135 session_turn_chunks=283/283 text_chunks=6/6 work_items=28/28 doc_sections=23/23 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T10:06:23.486743-04:00 buildhost bash[3130189]: [embed-backfill] personal vault=16/16
+2026-10-02T10:10:14.691332-04:00 buildhost bash[3130189]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T10:10:14.691332-04:00 buildhost bash[3130189]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T10:10:14.691332-04:00 buildhost bash[3130189]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T10:10:45.324422-04:00 buildhost bash[3130189]: [embed-backfill] drain: 5 round(s) in 31s (budget 200s) · drained 14/14 target(s)
+2026-10-02T10:10:45.324556-04:00 buildhost bash[3130189]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=0/0 harness_decisions=0/0 session_turns=62/62 session_turn_chunks=253/253 text_chunks=0/0 work_items=12/12 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T10:10:46.527088-04:00 buildhost bash[3130189]: [embed-backfill] personal vault=16/16
+2026-10-02T10:15:19.776724-04:00 buildhost bash[3130189]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T10:15:19.787657-04:00 buildhost bash[3130189]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T10:15:19.790059-04:00 buildhost bash[3130189]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T10:16:49.905151-04:00 buildhost bash[3130189]: [embed-backfill] drain: 6 round(s) in 90s (budget 200s) · drained 14/14 target(s)
+2026-10-02T10:16:49.905593-04:00 buildhost bash[3130189]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=118/118 session_turn_chunks=274/274 text_chunks=8/8 work_items=31/31 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T10:16:53.191159-04:00 buildhost bash[3130189]: [embed-backfill] personal vault=16/16
+2026-10-02T10:20:15.966641-04:00 buildhost bash[3130189]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T10:20:15.988324-04:00 buildhost bash[3130189]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T10:20:15.998487-04:00 buildhost bash[3130189]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T10:23:46.687440-04:00 buildhost bash[3130189]: [embed-backfill] drain: 4 round(s) in 211s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T10:23:46.687950-04:00 buildhost bash[3130189]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=256/256 session_turn_chunks=192/192 text_chunks=2/2 work_items=36/36 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T10:23:51.761714-04:00 buildhost bash[3130189]: [embed-backfill] personal vault=16/16
+2026-10-02T10:25:16.173294-04:00 buildhost bash[3130189]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T10:25:16.180722-04:00 buildhost bash[3130189]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T10:25:16.181901-04:00 buildhost bash[3130189]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T10:28:01.604720-04:00 buildhost bash[3130189]: [embed-backfill] drain: 7 round(s) in 165s (budget 200s) · drained 14/14 target(s)
+2026-10-02T10:28:01.605344-04:00 buildhost bash[3130189]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=151/151 session_turn_chunks=341/341 text_chunks=33/33 work_items=26/26 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T10:28:05.463985-04:00 buildhost bash[3130189]: [embed-backfill] personal vault=16/16
+2026-10-02T10:30:27.894439-04:00 buildhost bash[3130189]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T10:30:27.896240-04:00 buildhost bash[3130189]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T10:30:27.900068-04:00 buildhost bash[3130189]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T10:33:38.421740-04:00 buildhost bash[3130189]: [embed-backfill] drain: 6 round(s) in 190s (budget 200s) · drained 14/14 target(s)
+2026-10-02T10:33:38.422299-04:00 buildhost bash[3130189]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=162/162 session_turn_chunks=291/291 text_chunks=0/0 work_items=28/28 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T10:33:42.952992-04:00 buildhost bash[3130189]: [embed-backfill] personal vault=16/16
+2026-10-02T10:35:20.488416-04:00 buildhost bash[3130189]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T10:35:20.655059-04:00 buildhost bash[3130189]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T10:35:20.660296-04:00 buildhost bash[3130189]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T10:37:35.366657-04:00 buildhost bash[3130189]: [embed-backfill] drain: 7 round(s) in 135s (budget 200s) · drained 14/14 target(s)
+2026-10-02T10:37:35.366755-04:00 buildhost bash[3130189]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=117/117 session_turn_chunks=259/259 text_chunks=34/34 work_items=18/18 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T10:37:38.514120-04:00 buildhost bash[3130189]: [embed-backfill] personal vault=16/16
+2026-10-02T11:00:50.999014-04:00 buildhost bash[29301]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T11:00:50.999014-04:00 buildhost bash[29301]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T11:00:50.999014-04:00 buildhost bash[29301]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T11:03:51.427643-04:00 buildhost bash[29301]: [embed-backfill] drain: 7 round(s) in 181s (budget 200s) · drained 14/14 target(s)
+2026-10-02T11:03:51.428090-04:00 buildhost bash[29301]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=5/5 harness_decisions=0/0 session_turns=322/322 session_turn_chunks=235/235 text_chunks=103/103 work_items=61/61 doc_sections=31/31 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T11:03:53.651410-04:00 buildhost bash[29301]: [embed-backfill] personal vault=16/16
+2026-10-02T11:05:10.665942-04:00 buildhost bash[29301]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T11:05:10.668942-04:00 buildhost bash[29301]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T11:05:10.669645-04:00 buildhost bash[29301]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T11:05:30.510309-04:00 buildhost bash[29301]: [embed-backfill] drain: 5 round(s) in 20s (budget 200s) · drained 14/14 target(s)
+2026-10-02T11:05:30.510851-04:00 buildhost bash[29301]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=53/53 session_turn_chunks=226/226 text_chunks=3/3 work_items=2/2 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T11:05:31.648301-04:00 buildhost bash[29301]: [embed-backfill] personal vault=16/16
+2026-10-02T11:10:18.740443-04:00 buildhost bash[29301]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T11:10:18.745449-04:00 buildhost bash[29301]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T11:10:18.746764-04:00 buildhost bash[29301]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T11:11:49.042621-04:00 buildhost bash[29301]: [embed-backfill] drain: 5 round(s) in 90s (budget 200s) · drained 14/14 target(s)
+2026-10-02T11:11:49.042742-04:00 buildhost bash[29301]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=140/140 session_turn_chunks=208/208 text_chunks=29/29 work_items=27/27 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T11:11:50.166762-04:00 buildhost bash[29301]: [embed-backfill] personal vault=16/16
+2026-10-02T11:15:33.860532-04:00 buildhost bash[29301]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T11:15:33.864070-04:00 buildhost bash[29301]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T11:15:33.865306-04:00 buildhost bash[29301]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T11:16:26.484739-04:00 buildhost bash[29301]: [embed-backfill] drain: 4 round(s) in 53s (budget 200s) · drained 14/14 target(s)
+2026-10-02T11:16:26.485130-04:00 buildhost bash[29301]: [embed-backfill] periodic sweep complete: harness_escalations=3/3 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=74/74 session_turn_chunks=168/168 text_chunks=11/11 work_items=24/24 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T11:16:27.632020-04:00 buildhost bash[29301]: [embed-backfill] personal vault=16/16
+2026-10-02T11:20:14.664237-04:00 buildhost bash[29301]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T11:20:14.667656-04:00 buildhost bash[29301]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T11:20:14.668543-04:00 buildhost bash[29301]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T11:22:21.299469-04:00 buildhost bash[29301]: [embed-backfill] drain: 5 round(s) in 127s (budget 200s) · drained 14/14 target(s)
+2026-10-02T11:22:21.300000-04:00 buildhost bash[29301]: [embed-backfill] periodic sweep complete: harness_escalations=1/1 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=120/120 session_turn_chunks=249/249 text_chunks=4/4 work_items=26/26 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T11:22:22.572136-04:00 buildhost bash[29301]: [embed-backfill] personal vault=16/16
+2026-10-02T11:25:25.795547-04:00 buildhost bash[29301]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T11:25:25.910899-04:00 buildhost bash[29301]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T11:25:25.927629-04:00 buildhost bash[29301]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T11:25:58.272958-04:00 buildhost bash[29301]: [embed-backfill] drain: 3 round(s) in 31s (budget 200s) · drained 14/14 target(s)
+2026-10-02T11:25:58.273551-04:00 buildhost bash[29301]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=65/65 session_turn_chunks=0/0 text_chunks=0/0 work_items=13/13 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T11:26:03.061851-04:00 buildhost bash[29301]: [embed-backfill] personal vault=16/16
+2026-10-02T11:30:20.997927-04:00 buildhost bash[29301]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T11:30:21.003688-04:00 buildhost bash[29301]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T11:30:21.005589-04:00 buildhost bash[29301]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T11:31:50.046325-04:00 buildhost bash[29301]: [embed-backfill] drain: 6 round(s) in 89s (budget 200s) · drained 14/14 target(s)
+2026-10-02T11:31:50.046414-04:00 buildhost bash[29301]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=0/0 harness_decisions=0/0 session_turns=113/113 session_turn_chunks=200/200 text_chunks=18/18 work_items=34/34 doc_sections=0/0 harness_plans=1/1 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T11:31:52.249019-04:00 buildhost bash[29301]: [embed-backfill] personal vault=16/16
+2026-10-02T11:35:37.557986-04:00 buildhost bash[29301]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T11:35:37.637358-04:00 buildhost bash[29301]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T11:35:37.639649-04:00 buildhost bash[29301]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T11:38:30.636599-04:00 buildhost bash[29301]: [embed-backfill] drain: 7 round(s) in 172s (budget 200s) · drained 14/14 target(s)
+2026-10-02T11:38:30.636714-04:00 buildhost bash[29301]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=152/152 session_turn_chunks=216/216 text_chunks=5/5 work_items=28/28 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T11:38:33.945805-04:00 buildhost bash[29301]: [embed-backfill] personal vault=16/16
+2026-10-02T11:40:16.187221-04:00 buildhost bash[29301]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T11:40:16.190884-04:00 buildhost bash[29301]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T11:40:16.191968-04:00 buildhost bash[29301]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T11:40:48.102042-04:00 buildhost bash[29301]: [embed-backfill] drain: 5 round(s) in 32s (budget 200s) · drained 14/14 target(s)
+2026-10-02T11:40:48.102498-04:00 buildhost bash[29301]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=45/45 session_turn_chunks=256/256 text_chunks=3/3 work_items=9/9 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T11:40:49.290616-04:00 buildhost bash[29301]: [embed-backfill] personal vault=16/16
+2026-10-02T11:45:14.633295-04:00 buildhost bash[29301]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T11:45:14.664067-04:00 buildhost bash[29301]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T11:45:14.667027-04:00 buildhost bash[29301]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T11:46:31.531516-04:00 buildhost bash[29301]: [embed-backfill] drain: 7 round(s) in 77s (budget 200s) · drained 14/14 target(s)
+2026-10-02T11:46:31.531604-04:00 buildhost bash[29301]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=184/184 session_turn_chunks=270/270 text_chunks=2/2 work_items=26/26 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=1/1 interest_watches=0/0
+2026-10-02T11:46:32.758614-04:00 buildhost bash[29301]: [embed-backfill] personal vault=16/16
+2026-10-02T11:50:17.185912-04:00 buildhost bash[29301]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T11:50:17.189369-04:00 buildhost bash[29301]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T11:50:17.190320-04:00 buildhost bash[29301]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T11:50:57.737226-04:00 buildhost bash[29301]: [embed-backfill] drain: 5 round(s) in 40s (budget 200s) · drained 14/14 target(s)
+2026-10-02T11:50:57.737628-04:00 buildhost bash[29301]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=134/134 session_turn_chunks=240/240 text_chunks=3/3 work_items=9/9 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T11:51:01.091584-04:00 buildhost bash[29301]: [embed-backfill] personal vault=16/16
+2026-10-02T11:55:51.386472-04:00 buildhost bash[2230517]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T11:55:51.393366-04:00 buildhost bash[2230517]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T11:55:51.394660-04:00 buildhost bash[2230517]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T11:56:22.537651-04:00 buildhost bash[2230517]: [embed-backfill] drain: 4 round(s) in 31s (budget 200s) · drained 14/14 target(s)
+2026-10-02T11:56:22.538085-04:00 buildhost bash[2230517]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=29/29 session_turn_chunks=186/186 text_chunks=2/2 work_items=11/11 doc_sections=2/2 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T11:56:25.734301-04:00 buildhost bash[2230517]: [embed-backfill] personal vault=16/16
+2026-10-02T12:00:25.867702-04:00 buildhost bash[2230517]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T12:00:25.867702-04:00 buildhost bash[2230517]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T12:00:25.867702-04:00 buildhost bash[2230517]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T12:02:08.826941-04:00 buildhost bash[2230517]: [embed-backfill] drain: 6 round(s) in 103s (budget 200s) · drained 14/14 target(s)
+2026-10-02T12:02:08.827088-04:00 buildhost bash[2230517]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=141/141 session_turn_chunks=288/288 text_chunks=0/0 work_items=31/31 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T12:02:12.278090-04:00 buildhost bash[2230517]: [embed-backfill] personal vault=16/16
+2026-10-02T12:05:19.890329-04:00 buildhost bash[2230517]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T12:05:19.894580-04:00 buildhost bash[2230517]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T12:05:19.895666-04:00 buildhost bash[2230517]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T12:06:21.539329-04:00 buildhost bash[2230517]: [embed-backfill] drain: 5 round(s) in 62s (budget 200s) · drained 14/14 target(s)
+2026-10-02T12:06:21.539857-04:00 buildhost bash[2230517]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=107/107 session_turn_chunks=228/228 text_chunks=41/41 work_items=19/19 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T12:06:23.142501-04:00 buildhost bash[2230517]: [embed-backfill] personal vault=16/16
+2026-10-02T12:10:13.130923-04:00 buildhost bash[2230517]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T12:10:13.134262-04:00 buildhost bash[2230517]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T12:10:13.135472-04:00 buildhost bash[2230517]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T12:11:40.023104-04:00 buildhost bash[2230517]: [embed-backfill] drain: 6 round(s) in 87s (budget 200s) · drained 14/14 target(s)
+2026-10-02T12:11:40.023582-04:00 buildhost bash[2230517]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=146/146 session_turn_chunks=263/263 text_chunks=3/3 work_items=15/15 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T12:11:41.463699-04:00 buildhost bash[2230517]: [embed-backfill] personal vault=16/16
+2026-10-02T12:15:16.897093-04:00 buildhost bash[2230517]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T12:15:16.903457-04:00 buildhost bash[2230517]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T12:15:16.907171-04:00 buildhost bash[2230517]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T12:16:02.842546-04:00 buildhost bash[2230517]: [embed-backfill] drain: 6 round(s) in 46s (budget 200s) · drained 14/14 target(s)
+2026-10-02T12:16:02.842959-04:00 buildhost bash[2230517]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=91/91 session_turn_chunks=255/255 text_chunks=0/0 work_items=27/27 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T12:16:05.133343-04:00 buildhost bash[2230517]: [embed-backfill] personal vault=16/16
+2026-10-02T12:20:22.158818-04:00 buildhost bash[2230517]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T12:20:22.174661-04:00 buildhost bash[2230517]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T12:20:22.175953-04:00 buildhost bash[2230517]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T12:22:38.303148-04:00 buildhost bash[2230517]: [embed-backfill] drain: 5 round(s) in 136s (budget 200s) · drained 14/14 target(s)
+2026-10-02T12:22:38.303148-04:00 buildhost bash[2230517]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=4/4 harness_decisions=0/0 session_turns=149/149 session_turn_chunks=247/247 text_chunks=18/18 work_items=20/20 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T12:22:44.851850-04:00 buildhost bash[2230517]: [embed-backfill] personal vault=16/16
+2026-10-02T12:25:22.620096-04:00 buildhost bash[2230517]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T12:25:22.679445-04:00 buildhost bash[2230517]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T12:25:22.680257-04:00 buildhost bash[2230517]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T12:26:03.001019-04:00 buildhost bash[2230517]: [embed-backfill] drain: 5 round(s) in 40s (budget 200s) · drained 14/14 target(s)
+2026-10-02T12:26:03.001172-04:00 buildhost bash[2230517]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=80/80 session_turn_chunks=223/223 text_chunks=33/33 work_items=6/6 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T12:26:05.623740-04:00 buildhost bash[2230517]: [embed-backfill] personal vault=16/16
+2026-10-02T12:30:56.633766-04:00 buildhost bash[2230517]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T12:30:56.656164-04:00 buildhost bash[2230517]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T12:30:56.657113-04:00 buildhost bash[2230517]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T12:32:36.469986-04:00 buildhost bash[2230517]: [embed-backfill] drain: 5 round(s) in 99s (budget 200s) · drained 14/14 target(s)
+2026-10-02T12:32:36.469986-04:00 buildhost bash[2230517]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=132/132 session_turn_chunks=147/147 text_chunks=4/4 work_items=33/33 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T12:32:40.009678-04:00 buildhost bash[2230517]: [embed-backfill] personal vault=16/16
+2026-10-02T12:35:13.004417-04:00 buildhost bash[2230517]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T12:35:13.008060-04:00 buildhost bash[2230517]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T12:35:13.008920-04:00 buildhost bash[2230517]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T12:39:49.556358-04:00 buildhost bash[3918752]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T12:39:49.559802-04:00 buildhost bash[3918752]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T12:39:49.561041-04:00 buildhost bash[3918752]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T12:40:10.922874-04:00 buildhost bash[3918752]: [embed-backfill] skipped: a sweep has held the latch for 21s (stale at 3600s)
+2026-10-02T12:40:10.922874-04:00 buildhost bash[3918752]: [embed-backfill] periodic sweep skipped: already_running
+2026-10-02T12:40:12.629139-04:00 buildhost bash[3918752]: [embed-backfill] personal vault=16/16
+2026-10-02T12:40:39.146776-04:00 buildhost bash[3918752]: [embed-backfill] drain: 10 round(s) in 50s (budget 200s) · drained 14/14 target(s)
+2026-10-02T12:40:39.147205-04:00 buildhost bash[3918752]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=4/4 harness_decisions=0/0 session_turns=96/96 session_turn_chunks=537/537 text_chunks=2/2 work_items=16/16 doc_sections=5/5 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T12:40:43.351021-04:00 buildhost bash[3918752]: [embed-backfill] personal vault=16/16
+2026-10-02T12:45:04.445483-04:00 buildhost bash[3918752]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T12:45:04.448549-04:00 buildhost bash[3918752]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T12:45:04.450030-04:00 buildhost bash[3918752]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T12:47:37.925657-04:00 buildhost bash[3918752]: [embed-backfill] drain: 5 round(s) in 153s (budget 200s) · drained 14/14 target(s)
+2026-10-02T12:47:37.926219-04:00 buildhost bash[3918752]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=171/171 session_turn_chunks=231/231 text_chunks=0/0 work_items=39/39 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T12:47:40.738747-04:00 buildhost bash[3918752]: [embed-backfill] personal vault=16/16
+2026-10-02T12:50:15.597908-04:00 buildhost bash[3918752]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T12:50:15.604048-04:00 buildhost bash[3918752]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T12:50:15.605959-04:00 buildhost bash[3918752]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T12:52:00.492909-04:00 buildhost bash[3918752]: [embed-backfill] drain: 6 round(s) in 105s (budget 200s) · drained 14/14 target(s)
+2026-10-02T12:52:00.493033-04:00 buildhost bash[3918752]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=260/260 session_turn_chunks=221/221 text_chunks=0/0 work_items=25/25 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T12:52:06.399216-04:00 buildhost bash[3918752]: [embed-backfill] personal vault=16/16
+2026-10-02T12:57:46.890033-04:00 buildhost bash[3918752]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T12:57:46.900886-04:00 buildhost bash[3918752]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T12:57:46.903359-04:00 buildhost bash[3918752]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T13:00:27.430571-04:00 buildhost bash[3918752]: [embed-backfill] skipped: a sweep has held the latch for 161s (stale at 3600s)
+2026-10-02T13:00:27.430694-04:00 buildhost bash[3918752]: [embed-backfill] periodic sweep skipped: already_running
+2026-10-02T13:00:35.683240-04:00 buildhost bash[3918752]: [embed-backfill] personal vault=16/16
+2026-10-02T13:01:21.349521-04:00 buildhost bash[3918752]: [embed-backfill] drain: 7 round(s) in 214s (budget 200s) · drained 13/14 target(s) · budget expired with work remaining
+2026-10-02T13:01:21.349667-04:00 buildhost bash[3918752]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=4/4 harness_decisions=0/0 session_turns=448/448 session_turn_chunks=139/139 text_chunks=12/12 work_items=33/33 doc_sections=156/156 harness_plans=1/1 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T13:01:24.761609-04:00 buildhost bash[3918752]: [embed-backfill] personal vault=16/16
+2026-10-02T13:05:39.470983-04:00 buildhost bash[3918752]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T13:05:39.715271-04:00 buildhost bash[3918752]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T13:05:39.715271-04:00 buildhost bash[3918752]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T13:09:15.368050-04:00 buildhost bash[3918752]: [embed-backfill] drain: 3 round(s) in 216s (budget 200s) · drained 12/14 target(s) · budget expired with work remaining
+2026-10-02T13:09:15.429814-04:00 buildhost bash[3918752]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=4/4 harness_decisions=0/0 session_turns=192/192 session_turn_chunks=49/49 text_chunks=9/9 work_items=35/35 doc_sections=0/0 harness_plans=0/0 code_recipes=1/1 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T13:09:22.733000-04:00 buildhost bash[3918752]: [embed-backfill] personal vault=16/16
+2026-10-02T13:13:40.788919-04:00 buildhost bash[1373881]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T13:13:40.794877-04:00 buildhost bash[1373881]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T13:13:40.796148-04:00 buildhost bash[1373881]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T13:15:06.563855-04:00 buildhost bash[1373881]: [embed-backfill] skipped: a sweep has held the latch for 86s (stale at 3600s)
+2026-10-02T13:15:06.563881-04:00 buildhost bash[1373881]: [embed-backfill] periodic sweep skipped: already_running
+2026-10-02T13:15:08.661958-04:00 buildhost bash[1373881]: [embed-backfill] personal vault=16/16
+2026-10-02T13:16:24.305042-04:00 buildhost bash[1373881]: [embed-backfill] drain: 13 round(s) in 163s (budget 200s) · drained 14/14 target(s)
+2026-10-02T13:16:24.305243-04:00 buildhost bash[1373881]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=652/652 session_turn_chunks=419/419 text_chunks=7/7 work_items=29/29 doc_sections=145/145 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=1/1 interest_watches=0/0
+2026-10-02T13:16:27.129770-04:00 buildhost bash[1373881]: [embed-backfill] personal vault=16/16
+2026-10-02T13:20:26.984011-04:00 buildhost bash[1373881]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T13:20:27.151542-04:00 buildhost bash[1373881]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T13:20:27.219449-04:00 buildhost bash[1373881]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T13:23:58.845123-04:00 buildhost bash[1373881]: [embed-backfill] drain: 4 round(s) in 210s (budget 200s) · drained 12/14 target(s) · budget expired with work remaining
+2026-10-02T13:23:58.845267-04:00 buildhost bash[1373881]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=4/4 harness_decisions=0/0 session_turns=199/199 session_turn_chunks=0/0 text_chunks=2/2 work_items=38/38 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T13:24:03.700583-04:00 buildhost bash[1373881]: [embed-backfill] personal vault=16/16
+2026-10-02T13:32:57.727806-04:00 buildhost bash[2457467]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T13:32:57.734327-04:00 buildhost bash[2457467]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T13:32:57.735276-04:00 buildhost bash[2457467]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T13:35:11.297031-04:00 buildhost bash[2457467]: [embed-backfill] skipped: a sweep has held the latch for 134s (stale at 3600s)
+2026-10-02T13:35:11.297071-04:00 buildhost bash[2457467]: [embed-backfill] periodic sweep skipped: already_running
+2026-10-02T13:35:15.466711-04:00 buildhost bash[2457467]: [embed-backfill] personal vault=16/16
+2026-10-02T13:36:36.419591-04:00 buildhost bash[2457467]: [embed-backfill] drain: 10 round(s) in 218s (budget 200s) · drained 13/14 target(s) · budget expired with work remaining
+2026-10-02T13:36:36.419800-04:00 buildhost bash[2457467]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=0/0 harness_decisions=0/0 session_turns=327/327 session_turn_chunks=635/635 text_chunks=36/36 work_items=50/50 doc_sections=161/161 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T13:36:38.446478-04:00 buildhost bash[2457467]: [embed-backfill] personal vault=16/16
+2026-10-02T13:45:33.906444-04:00 buildhost bash[2457467]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T13:45:36.216277-04:00 buildhost bash[2457467]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T13:45:36.222808-04:00 buildhost bash[2457467]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T13:48:56.934884-04:00 buildhost bash[2457467]: [embed-backfill] drain: 9 round(s) in 199s (budget 200s) · drained 14/14 target(s)
+2026-10-02T13:48:56.934884-04:00 buildhost bash[2457467]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=7/7 harness_decisions=0/0 session_turns=452/452 session_turn_chunks=0/0 text_chunks=5/5 work_items=53/53 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T13:48:59.743699-04:00 buildhost bash[2457467]: [embed-backfill] personal vault=16/16
+2026-10-02T13:50:43.569597-04:00 buildhost bash[2457467]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T13:50:43.574140-04:00 buildhost bash[2457467]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T13:50:43.575278-04:00 buildhost bash[2457467]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T13:52:02.207426-04:00 buildhost bash[2457467]: [embed-backfill] drain: 5 round(s) in 78s (budget 200s) · drained 14/14 target(s)
+2026-10-02T13:52:02.207426-04:00 buildhost bash[2457467]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=116/116 session_turn_chunks=253/253 text_chunks=34/34 work_items=14/14 doc_sections=142/142 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T13:52:12.554202-04:00 buildhost bash[2457467]: [embed-backfill] personal vault=16/16
+2026-10-02T13:55:34.234789-04:00 buildhost bash[3570878]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T13:55:34.240527-04:00 buildhost bash[3570878]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T13:55:34.241304-04:00 buildhost bash[3570878]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T13:56:22.768842-04:00 buildhost bash[3570878]: [embed-backfill] drain: 6 round(s) in 48s (budget 200s) · drained 14/14 target(s)
+2026-10-02T13:56:22.769079-04:00 buildhost bash[3570878]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=122/122 session_turn_chunks=284/284 text_chunks=3/3 work_items=22/22 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=1/1 interest_watches=0/0
+2026-10-02T13:56:24.596275-04:00 buildhost bash[3570878]: [embed-backfill] personal vault=16/16
+2026-10-02T14:00:13.036331-04:00 buildhost bash[3570878]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T14:00:13.041893-04:00 buildhost bash[3570878]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T14:00:13.043661-04:00 buildhost bash[3570878]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T14:01:11.873911-04:00 buildhost bash[3570878]: [embed-backfill] drain: 8 round(s) in 59s (budget 200s) · drained 14/14 target(s)
+2026-10-02T14:01:11.874480-04:00 buildhost bash[3570878]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=400/400 session_turn_chunks=189/189 text_chunks=0/0 work_items=27/27 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T14:01:12.994244-04:00 buildhost bash[3570878]: [embed-backfill] personal vault=16/16
+2026-10-02T14:05:09.945622-04:00 buildhost bash[3570878]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T14:05:09.952734-04:00 buildhost bash[3570878]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T14:05:10.169997-04:00 buildhost bash[3570878]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T14:05:44.193764-04:00 buildhost bash[3570878]: [embed-backfill] drain: 5 round(s) in 34s (budget 200s) · drained 14/14 target(s)
+2026-10-02T14:05:44.194327-04:00 buildhost bash[3570878]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=110/110 session_turn_chunks=211/211 text_chunks=13/13 work_items=16/16 doc_sections=0/0 harness_plans=1/1 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T14:05:45.483402-04:00 buildhost bash[3570878]: [embed-backfill] personal vault=16/16
+2026-10-02T14:10:09.873335-04:00 buildhost bash[3570878]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T14:10:10.010143-04:00 buildhost bash[3570878]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T14:10:10.013259-04:00 buildhost bash[3570878]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T14:11:39.860981-04:00 buildhost bash[791106]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T14:11:39.865125-04:00 buildhost bash[791106]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T14:11:39.866695-04:00 buildhost bash[791106]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T14:11:57.432427-04:00 buildhost bash[791106]: [embed-backfill] drain: 6 round(s) in 18s (budget 200s) · drained 14/14 target(s)
+2026-10-02T14:11:57.432974-04:00 buildhost bash[791106]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=0/0 harness_decisions=0/0 session_turns=0/0 session_turn_chunks=319/319 text_chunks=14/14 work_items=5/5 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T14:11:58.635510-04:00 buildhost bash[791106]: [embed-backfill] personal vault=16/16
+2026-10-02T14:15:14.221876-04:00 buildhost bash[791106]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T14:15:14.226911-04:00 buildhost bash[791106]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T14:15:14.229261-04:00 buildhost bash[791106]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T14:16:07.556128-04:00 buildhost bash[791106]: [embed-backfill] drain: 4 round(s) in 53s (budget 200s) · drained 14/14 target(s)
+2026-10-02T14:16:07.556684-04:00 buildhost bash[791106]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=99/99 session_turn_chunks=168/168 text_chunks=3/3 work_items=24/24 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T14:16:10.469500-04:00 buildhost bash[791106]: [embed-backfill] personal vault=16/16
+2026-10-02T14:20:27.421920-04:00 buildhost bash[791106]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T14:20:27.433347-04:00 buildhost bash[791106]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T14:20:27.435233-04:00 buildhost bash[791106]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T14:23:47.343346-04:00 buildhost bash[791106]: [embed-backfill] drain: 7 round(s) in 200s (budget 200s) · drained 14/14 target(s)
+2026-10-02T14:23:47.343465-04:00 buildhost bash[791106]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=335/335 session_turn_chunks=157/157 text_chunks=2/2 work_items=38/38 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T14:23:49.790332-04:00 buildhost bash[791106]: [embed-backfill] personal vault=16/16
+2026-10-02T14:26:25.960782-04:00 buildhost bash[1585043]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T14:26:25.965074-04:00 buildhost bash[1585043]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T14:26:25.965980-04:00 buildhost bash[1585043]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T14:27:04.433759-04:00 buildhost bash[1585043]: [embed-backfill] drain: 6 round(s) in 38s (budget 200s) · drained 14/14 target(s)
+2026-10-02T14:27:04.434254-04:00 buildhost bash[1585043]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=149/149 session_turn_chunks=314/314 text_chunks=12/12 work_items=16/16 doc_sections=15/15 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T14:27:05.820235-04:00 buildhost bash[1585043]: [embed-backfill] personal vault=16/16
+2026-10-02T14:30:22.998909-04:00 buildhost bash[1585043]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T14:30:23.002752-04:00 buildhost bash[1585043]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T14:30:23.003588-04:00 buildhost bash[1585043]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T14:33:40.785218-04:00 buildhost bash[1585043]: [embed-backfill] drain: 5 round(s) in 198s (budget 200s) · drained 14/14 target(s)
+2026-10-02T14:33:40.785616-04:00 buildhost bash[1585043]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=224/224 session_turn_chunks=79/79 text_chunks=19/19 work_items=67/67 doc_sections=0/0 harness_plans=1/1 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T14:33:49.136416-04:00 buildhost bash[1585043]: [embed-backfill] personal vault=16/16
+2026-10-02T14:35:18.829643-04:00 buildhost bash[1585043]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T14:35:18.833367-04:00 buildhost bash[1585043]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T14:35:18.834716-04:00 buildhost bash[1585043]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T14:36:50.575736-04:00 buildhost bash[1585043]: [embed-backfill] drain: 5 round(s) in 92s (budget 200s) · drained 14/14 target(s)
+2026-10-02T14:36:50.575868-04:00 buildhost bash[1585043]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=46/46 session_turn_chunks=226/226 text_chunks=11/11 work_items=13/13 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T14:36:51.938755-04:00 buildhost bash[1585043]: [embed-backfill] personal vault=16/16
+2026-10-02T14:40:16.579781-04:00 buildhost bash[1585043]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T14:40:16.608391-04:00 buildhost bash[1585043]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T14:40:16.613647-04:00 buildhost bash[1585043]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T14:41:57.465680-04:00 buildhost bash[2373426]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T14:41:57.470880-04:00 buildhost bash[2373426]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T14:41:57.472352-04:00 buildhost bash[2373426]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T14:42:50.434776-04:00 buildhost bash[2373426]: [embed-backfill] drain: 7 round(s) in 53s (budget 200s) · drained 14/14 target(s)
+2026-10-02T14:42:50.434938-04:00 buildhost bash[2373426]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=4/4 harness_decisions=0/0 session_turns=59/59 session_turn_chunks=338/338 text_chunks=16/16 work_items=21/21 doc_sections=4/4 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T14:42:52.961668-04:00 buildhost bash[2373426]: [embed-backfill] personal vault=16/16
+2026-10-02T14:45:18.183254-04:00 buildhost bash[2373426]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T14:45:18.186496-04:00 buildhost bash[2373426]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T14:45:18.187399-04:00 buildhost bash[2373426]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T14:46:05.973466-04:00 buildhost bash[2373426]: [embed-backfill] drain: 5 round(s) in 48s (budget 200s) · drained 14/14 target(s)
+2026-10-02T14:46:05.973895-04:00 buildhost bash[2373426]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=97/97 session_turn_chunks=215/215 text_chunks=0/0 work_items=14/14 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T14:46:07.468010-04:00 buildhost bash[2373426]: [embed-backfill] personal vault=16/16
+2026-10-02T14:50:15.323586-04:00 buildhost bash[2373426]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T14:50:15.327121-04:00 buildhost bash[2373426]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T14:50:15.328024-04:00 buildhost bash[2373426]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T14:51:26.055244-04:00 buildhost bash[2373426]: [embed-backfill] drain: 5 round(s) in 69s (budget 200s) · drained 14/14 target(s)
+2026-10-02T14:51:26.055244-04:00 buildhost bash[2373426]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=134/134 session_turn_chunks=253/253 text_chunks=0/0 work_items=26/26 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T14:51:27.365039-04:00 buildhost bash[2373426]: [embed-backfill] personal vault=16/16
+2026-10-02T14:55:10.502018-04:00 buildhost bash[2373426]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T14:55:10.506123-04:00 buildhost bash[2373426]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T14:55:10.507302-04:00 buildhost bash[2373426]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T14:55:57.652996-04:00 buildhost bash[2373426]: [embed-backfill] drain: 6 round(s) in 47s (budget 200s) · drained 14/14 target(s)
+2026-10-02T14:55:57.653422-04:00 buildhost bash[2373426]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=114/114 session_turn_chunks=273/273 text_chunks=56/56 work_items=19/19 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T14:55:59.303620-04:00 buildhost bash[2373426]: [embed-backfill] personal vault=16/16
+2026-10-02T15:00:17.529129-04:00 buildhost bash[2373426]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T15:00:17.543990-04:00 buildhost bash[2373426]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T15:00:17.547619-04:00 buildhost bash[2373426]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T15:01:00.739929-04:00 buildhost bash[2373426]: [embed-backfill] drain: 5 round(s) in 43s (budget 200s) · drained 14/14 target(s)
+2026-10-02T15:01:00.739929-04:00 buildhost bash[2373426]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=91/91 session_turn_chunks=249/249 text_chunks=2/2 work_items=9/9 doc_sections=14/14 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=1/1 interest_watches=0/0
+2026-10-02T15:01:02.168127-04:00 buildhost bash[2373426]: [embed-backfill] personal vault=16/16
+2026-10-02T15:05:15.842296-04:00 buildhost bash[2373426]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T15:05:15.845029-04:00 buildhost bash[2373426]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T15:05:15.846138-04:00 buildhost bash[2373426]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T15:05:51.396512-04:00 buildhost bash[2373426]: [embed-backfill] drain: 5 round(s) in 36s (budget 200s) · drained 14/14 target(s)
+2026-10-02T15:05:51.396678-04:00 buildhost bash[2373426]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=60/60 session_turn_chunks=249/249 text_chunks=0/0 work_items=11/11 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T15:05:52.550337-04:00 buildhost bash[2373426]: [embed-backfill] personal vault=16/16
+2026-10-02T15:10:15.431304-04:00 buildhost bash[2373426]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T15:10:15.435635-04:00 buildhost bash[2373426]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T15:10:15.436726-04:00 buildhost bash[2373426]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T15:10:41.244772-04:00 buildhost bash[2373426]: [embed-backfill] drain: 6 round(s) in 26s (budget 200s) · drained 14/14 target(s)
+2026-10-02T15:10:41.245210-04:00 buildhost bash[2373426]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=63/63 session_turn_chunks=266/266 text_chunks=3/3 work_items=16/16 doc_sections=9/9 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T15:10:42.629869-04:00 buildhost bash[2373426]: [embed-backfill] personal vault=16/16
+2026-10-02T15:15:21.724820-04:00 buildhost bash[2373426]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T15:15:21.728481-04:00 buildhost bash[2373426]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T15:15:21.729603-04:00 buildhost bash[2373426]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T15:17:04.420515-04:00 buildhost bash[2373426]: [embed-backfill] drain: 5 round(s) in 103s (budget 200s) · drained 14/14 target(s)
+2026-10-02T15:17:04.420627-04:00 buildhost bash[2373426]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=107/107 session_turn_chunks=199/199 text_chunks=0/0 work_items=21/21 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T15:17:06.702860-04:00 buildhost bash[2373426]: [embed-backfill] personal vault=16/16
+2026-10-02T15:20:25.626595-04:00 buildhost bash[2373426]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T15:20:25.630822-04:00 buildhost bash[2373426]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T15:20:25.632098-04:00 buildhost bash[2373426]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T15:22:42.102653-04:00 buildhost bash[2373426]: [embed-backfill] drain: 4 round(s) in 136s (budget 200s) · drained 14/14 target(s)
+2026-10-02T15:22:42.103204-04:00 buildhost bash[2373426]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=101/101 session_turn_chunks=181/181 text_chunks=0/0 work_items=24/24 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T15:23:19.787267-04:00 buildhost bash[2373426]: [embed-backfill] personal vault=16/16
+2026-10-02T15:25:25.765608-04:00 buildhost bash[2373426]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T15:25:25.773805-04:00 buildhost bash[2373426]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T15:25:25.783287-04:00 buildhost bash[2373426]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T15:26:16.440351-04:00 buildhost bash[2373426]: [embed-backfill] drain: 3 round(s) in 51s (budget 200s) · drained 14/14 target(s)
+2026-10-02T15:26:16.440731-04:00 buildhost bash[2373426]: [embed-backfill] periodic sweep complete: harness_escalations=1/1 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=61/61 session_turn_chunks=99/99 text_chunks=0/0 work_items=13/13 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T15:26:18.369976-04:00 buildhost bash[2373426]: [embed-backfill] personal vault=16/16
+2026-10-02T15:30:21.909071-04:00 buildhost bash[2373426]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T15:30:21.912739-04:00 buildhost bash[2373426]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T15:30:21.913407-04:00 buildhost bash[2373426]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T15:31:19.253723-04:00 buildhost bash[2373426]: [embed-backfill] drain: 6 round(s) in 57s (budget 200s) · drained 14/14 target(s)
+2026-10-02T15:31:19.254236-04:00 buildhost bash[2373426]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=129/129 session_turn_chunks=263/263 text_chunks=0/0 work_items=18/18 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T15:31:21.654392-04:00 buildhost bash[2373426]: [embed-backfill] personal vault=16/16
+2026-10-02T15:35:15.572117-04:00 buildhost bash[2373426]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T15:35:15.572117-04:00 buildhost bash[2373426]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T15:35:15.572117-04:00 buildhost bash[2373426]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T15:36:33.755219-04:00 buildhost bash[2373426]: [embed-backfill] drain: 6 round(s) in 81s (budget 200s) · drained 14/14 target(s)
+2026-10-02T15:36:33.755371-04:00 buildhost bash[2373426]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=77/77 session_turn_chunks=250/250 text_chunks=4/4 work_items=15/15 doc_sections=14/14 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T15:36:35.389528-04:00 buildhost bash[2373426]: [embed-backfill] personal vault=16/16
+2026-10-02T15:40:05.721909-04:00 buildhost bash[2373426]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T15:40:05.762965-04:00 buildhost bash[2373426]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T15:40:05.765088-04:00 buildhost bash[2373426]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T15:40:30.276619-04:00 buildhost bash[2373426]: [embed-backfill] drain: 5 round(s) in 23s (budget 200s) · drained 14/14 target(s)
+2026-10-02T15:40:30.277054-04:00 buildhost bash[2373426]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=64/64 session_turn_chunks=231/231 text_chunks=2/2 work_items=15/15 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T15:40:31.406864-04:00 buildhost bash[2373426]: [embed-backfill] personal vault=16/16
+2026-10-02T15:45:10.273370-04:00 buildhost bash[2373426]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T15:45:10.277493-04:00 buildhost bash[2373426]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T15:45:10.278739-04:00 buildhost bash[2373426]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T15:46:28.233750-04:00 buildhost bash[2373426]: [embed-backfill] drain: 9 round(s) in 78s (budget 200s) · drained 14/14 target(s)
+2026-10-02T15:46:28.233853-04:00 buildhost bash[2373426]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=463/463 session_turn_chunks=184/184 text_chunks=0/0 work_items=21/21 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T15:46:33.084084-04:00 buildhost bash[2373426]: [embed-backfill] personal vault=16/16
+2026-10-02T15:50:34.126645-04:00 buildhost bash[2373426]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T15:50:34.141567-04:00 buildhost bash[2373426]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T15:50:34.143050-04:00 buildhost bash[2373426]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T15:52:45.671365-04:00 buildhost bash[2373426]: [embed-backfill] drain: 5 round(s) in 131s (budget 200s) · drained 14/14 target(s)
+2026-10-02T15:52:45.671493-04:00 buildhost bash[2373426]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=204/204 session_turn_chunks=199/199 text_chunks=0/0 work_items=40/40 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T15:52:48.993034-04:00 buildhost bash[2373426]: [embed-backfill] personal vault=16/16
+2026-10-02T15:55:17.774018-04:00 buildhost bash[2373426]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T15:55:17.935700-04:00 buildhost bash[2373426]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T15:55:18.081191-04:00 buildhost bash[2373426]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T15:56:10.539344-04:00 buildhost bash[2373426]: [embed-backfill] drain: 5 round(s) in 52s (budget 200s) · drained 14/14 target(s)
+2026-10-02T15:56:10.539740-04:00 buildhost bash[2373426]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=95/95 session_turn_chunks=218/218 text_chunks=17/17 work_items=18/18 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T15:56:11.786338-04:00 buildhost bash[2373426]: [embed-backfill] personal vault=16/16
+2026-10-02T16:00:20.804271-04:00 buildhost bash[2373426]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T16:00:20.822866-04:00 buildhost bash[2373426]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T16:00:20.824222-04:00 buildhost bash[2373426]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T16:01:52.545536-04:00 buildhost bash[2373426]: [embed-backfill] drain: 4 round(s) in 92s (budget 200s) · drained 14/14 target(s)
+2026-10-02T16:01:52.545654-04:00 buildhost bash[2373426]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=174/174 session_turn_chunks=160/160 text_chunks=4/4 work_items=32/32 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=1/1 interest_watches=0/0
+2026-10-02T16:01:57.918353-04:00 buildhost bash[2373426]: [embed-backfill] personal vault=16/16
+2026-10-02T16:05:12.952927-04:00 buildhost bash[2373426]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T16:05:12.955951-04:00 buildhost bash[2373426]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T16:05:12.956998-04:00 buildhost bash[2373426]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T16:06:27.764155-04:00 buildhost bash[2373426]: [embed-backfill] drain: 5 round(s) in 75s (budget 200s) · drained 14/14 target(s)
+2026-10-02T16:06:27.764257-04:00 buildhost bash[2373426]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=233/233 session_turn_chunks=203/203 text_chunks=2/2 work_items=19/19 doc_sections=23/23 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T16:06:28.864314-04:00 buildhost bash[2373426]: [embed-backfill] personal vault=16/16
+2026-10-02T16:10:06.322509-04:00 buildhost bash[2373426]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T16:10:06.326994-04:00 buildhost bash[2373426]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T16:10:06.328031-04:00 buildhost bash[2373426]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T16:10:56.034751-04:00 buildhost bash[2373426]: [embed-backfill] drain: 5 round(s) in 50s (budget 200s) · drained 14/14 target(s)
+2026-10-02T16:10:56.035404-04:00 buildhost bash[2373426]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=205/205 session_turn_chunks=220/220 text_chunks=2/2 work_items=16/16 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T16:10:57.841674-04:00 buildhost bash[2373426]: [embed-backfill] personal vault=16/16
+2026-10-02T16:15:22.909905-04:00 buildhost bash[2373426]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T16:15:22.909905-04:00 buildhost bash[2373426]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T16:15:22.909905-04:00 buildhost bash[2373426]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T16:16:29.830989-04:00 buildhost bash[2373426]: [embed-backfill] drain: 6 round(s) in 67s (budget 200s) · drained 14/14 target(s)
+2026-10-02T16:16:29.830989-04:00 buildhost bash[2373426]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=0/0 harness_decisions=0/0 session_turns=115/115 session_turn_chunks=198/198 text_chunks=19/19 work_items=31/31 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T16:16:31.820753-04:00 buildhost bash[2373426]: [embed-backfill] personal vault=16/16
+2026-10-02T16:20:22.663787-04:00 buildhost bash[2373426]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T16:20:22.670988-04:00 buildhost bash[2373426]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T16:20:22.674089-04:00 buildhost bash[2373426]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T16:21:28.775390-04:00 buildhost bash[2373426]: [embed-backfill] drain: 5 round(s) in 66s (budget 200s) · drained 14/14 target(s)
+2026-10-02T16:21:28.775390-04:00 buildhost bash[2373426]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=143/143 session_turn_chunks=203/203 text_chunks=3/3 work_items=16/16 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T16:21:31.088372-04:00 buildhost bash[2373426]: [embed-backfill] personal vault=16/16
+2026-10-02T16:25:16.967140-04:00 buildhost bash[2373426]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T16:25:16.971304-04:00 buildhost bash[2373426]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T16:25:16.972091-04:00 buildhost bash[2373426]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T16:26:08.815752-04:00 buildhost bash[2373426]: [embed-backfill] drain: 6 round(s) in 52s (budget 200s) · drained 14/14 target(s)
+2026-10-02T16:26:08.815873-04:00 buildhost bash[2373426]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=82/82 session_turn_chunks=260/260 text_chunks=5/5 work_items=13/13 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T16:26:10.253136-04:00 buildhost bash[2373426]: [embed-backfill] personal vault=16/16
+2026-10-02T16:30:24.817437-04:00 buildhost bash[2373426]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T16:30:24.823417-04:00 buildhost bash[2373426]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T16:30:24.825437-04:00 buildhost bash[2373426]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T16:33:10.824800-04:00 buildhost bash[2373426]: [embed-backfill] drain: 5 round(s) in 165s (budget 200s) · drained 14/14 target(s)
+2026-10-02T16:33:10.824800-04:00 buildhost bash[2373426]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=212/212 session_turn_chunks=180/180 text_chunks=0/0 work_items=26/26 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T16:33:13.833895-04:00 buildhost bash[2373426]: [embed-backfill] personal vault=16/16
+2026-10-02T16:35:19.085068-04:00 buildhost bash[2373426]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T16:35:19.089067-04:00 buildhost bash[2373426]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T16:35:19.090260-04:00 buildhost bash[2373426]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T16:36:22.848547-04:00 buildhost bash[248912]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T16:36:22.854282-04:00 buildhost bash[248912]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T16:36:22.858288-04:00 buildhost bash[248912]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T16:38:15.700302-04:00 buildhost bash[248912]: [embed-backfill] drain: 8 round(s) in 113s (budget 200s) · drained 14/14 target(s)
+2026-10-02T16:38:15.700762-04:00 buildhost bash[248912]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=0/0 harness_decisions=0/0 session_turns=90/90 session_turn_chunks=406/406 text_chunks=5/5 work_items=19/19 doc_sections=15/15 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T16:38:17.210094-04:00 buildhost bash[248912]: [embed-backfill] personal vault=16/16
+2026-10-02T16:40:11.915218-04:00 buildhost bash[248912]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T16:40:11.915218-04:00 buildhost bash[248912]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T16:40:11.915218-04:00 buildhost bash[248912]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T16:41:20.122641-04:00 buildhost bash[248912]: [embed-backfill] drain: 5 round(s) in 68s (budget 200s) · drained 14/14 target(s)
+2026-10-02T16:41:20.122641-04:00 buildhost bash[248912]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=83/83 session_turn_chunks=224/224 text_chunks=6/6 work_items=16/16 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T16:41:21.695040-04:00 buildhost bash[248912]: [embed-backfill] personal vault=16/16
+2026-10-02T16:45:20.741336-04:00 buildhost bash[248912]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T16:45:20.745387-04:00 buildhost bash[248912]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T16:45:20.746647-04:00 buildhost bash[248912]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T16:46:29.777696-04:00 buildhost bash[248912]: [embed-backfill] drain: 6 round(s) in 69s (budget 200s) · drained 14/14 target(s)
+2026-10-02T16:46:29.777879-04:00 buildhost bash[248912]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=117/117 session_turn_chunks=222/222 text_chunks=16/16 work_items=35/35 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T16:46:32.455109-04:00 buildhost bash[248912]: [embed-backfill] personal vault=16/16
+2026-10-02T16:50:19.821852-04:00 buildhost bash[248912]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T16:50:19.825768-04:00 buildhost bash[248912]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T16:50:19.827917-04:00 buildhost bash[248912]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T16:54:30.422253-04:00 buildhost bash[248912]: [embed-backfill] drain: 3 round(s) in 250s (budget 200s) · drained 10/14 target(s) · budget expired with work remaining
+2026-10-02T16:54:30.422253-04:00 buildhost bash[248912]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=4/4 harness_decisions=0/0 session_turns=192/192 session_turn_chunks=182/182 text_chunks=14/14 work_items=38/38 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T16:54:36.401768-04:00 buildhost bash[248912]: [embed-backfill] personal vault=16/16
+2026-10-02T16:55:19.478003-04:00 buildhost bash[248912]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T16:55:19.481122-04:00 buildhost bash[248912]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T16:55:19.482952-04:00 buildhost bash[248912]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T16:56:20.957649-04:00 buildhost bash[248912]: [embed-backfill] drain: 5 round(s) in 61s (budget 200s) · drained 14/14 target(s)
+2026-10-02T16:56:20.957649-04:00 buildhost bash[248912]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=76/76 session_turn_chunks=210/210 text_chunks=6/6 work_items=12/12 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T16:56:22.397694-04:00 buildhost bash[248912]: [embed-backfill] personal vault=16/16
+2026-10-02T17:00:16.440363-04:00 buildhost bash[248912]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T17:00:16.454843-04:00 buildhost bash[248912]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T17:00:16.460283-04:00 buildhost bash[248912]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T17:01:29.064831-04:00 buildhost bash[248912]: [embed-backfill] drain: 6 round(s) in 72s (budget 200s) · drained 14/14 target(s)
+2026-10-02T17:01:29.065257-04:00 buildhost bash[248912]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=247/247 session_turn_chunks=185/185 text_chunks=2/2 work_items=36/36 doc_sections=0/0 harness_plans=2/2 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T17:01:30.101891-04:00 buildhost bash[248912]: [embed-backfill] personal vault=16/16
+2026-10-02T17:05:17.031732-04:00 buildhost bash[248912]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T17:05:17.037996-04:00 buildhost bash[248912]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T17:05:17.039139-04:00 buildhost bash[248912]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T17:06:06.501064-04:00 buildhost bash[248912]: [embed-backfill] drain: 6 round(s) in 49s (budget 200s) · drained 14/14 target(s)
+2026-10-02T17:06:06.501668-04:00 buildhost bash[248912]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=155/155 session_turn_chunks=197/197 text_chunks=11/11 work_items=21/21 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=1/1 interest_watches=0/0
+2026-10-02T17:06:08.448794-04:00 buildhost bash[248912]: [embed-backfill] personal vault=16/16
+2026-10-02T17:10:13.437399-04:00 buildhost bash[248912]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T17:10:13.441361-04:00 buildhost bash[248912]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T17:10:13.442300-04:00 buildhost bash[248912]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T17:11:02.210070-04:00 buildhost bash[248912]: [embed-backfill] drain: 5 round(s) in 49s (budget 200s) · drained 14/14 target(s)
+2026-10-02T17:11:02.210689-04:00 buildhost bash[248912]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=161/161 session_turn_chunks=234/234 text_chunks=0/0 work_items=25/25 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T17:11:05.202387-04:00 buildhost bash[248912]: [embed-backfill] personal vault=16/16
+2026-10-02T17:15:26.429096-04:00 buildhost bash[248912]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T17:15:26.432477-04:00 buildhost bash[248912]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T17:15:26.433089-04:00 buildhost bash[248912]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T17:18:08.663761-04:00 buildhost bash[248912]: [embed-backfill] drain: 6 round(s) in 162s (budget 200s) · drained 14/14 target(s)
+2026-10-02T17:18:08.663901-04:00 buildhost bash[248912]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=218/218 session_turn_chunks=259/259 text_chunks=32/32 work_items=31/31 doc_sections=15/15 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T17:18:10.034688-04:00 buildhost bash[248912]: [embed-backfill] personal vault=16/16
+2026-10-02T17:20:24.824777-04:00 buildhost bash[248912]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T17:20:24.835044-04:00 buildhost bash[248912]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T17:20:24.838448-04:00 buildhost bash[248912]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T17:22:19.841683-04:00 buildhost bash[248912]: [embed-backfill] drain: 5 round(s) in 115s (budget 200s) · drained 14/14 target(s)
+2026-10-02T17:22:19.841853-04:00 buildhost bash[248912]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=152/152 session_turn_chunks=192/192 text_chunks=11/11 work_items=16/16 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T17:22:28.745635-04:00 buildhost bash[248912]: [embed-backfill] personal vault=16/16
+2026-10-02T17:25:07.527147-04:00 buildhost bash[248912]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T17:25:07.557241-04:00 buildhost bash[248912]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T17:25:07.561019-04:00 buildhost bash[248912]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T17:25:52.707766-04:00 buildhost bash[248912]: [embed-backfill] drain: 5 round(s) in 45s (budget 200s) · drained 14/14 target(s)
+2026-10-02T17:25:52.707915-04:00 buildhost bash[248912]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=101/101 session_turn_chunks=200/200 text_chunks=2/2 work_items=18/18 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T17:25:53.906996-04:00 buildhost bash[248912]: [embed-backfill] personal vault=16/16
+2026-10-02T17:30:38.553491-04:00 buildhost bash[248912]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T17:30:38.557803-04:00 buildhost bash[248912]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T17:30:38.558965-04:00 buildhost bash[248912]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T17:32:49.451020-04:00 buildhost bash[248912]: [embed-backfill] drain: 5 round(s) in 131s (budget 200s) · drained 14/14 target(s)
+2026-10-02T17:32:49.451435-04:00 buildhost bash[248912]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=211/211 session_turn_chunks=119/119 text_chunks=5/5 work_items=43/43 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T17:32:53.252381-04:00 buildhost bash[248912]: [embed-backfill] personal vault=16/16
+2026-10-02T17:35:21.651711-04:00 buildhost bash[248912]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T17:35:21.654976-04:00 buildhost bash[248912]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T17:35:21.655936-04:00 buildhost bash[248912]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T17:37:00.265778-04:00 buildhost bash[248912]: [embed-backfill] drain: 5 round(s) in 99s (budget 200s) · drained 14/14 target(s)
+2026-10-02T17:37:00.266250-04:00 buildhost bash[248912]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=169/169 session_turn_chunks=222/222 text_chunks=52/52 work_items=32/32 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T17:37:06.280230-04:00 buildhost bash[248912]: [embed-backfill] personal vault=16/16
+2026-10-02T17:40:29.827894-04:00 buildhost bash[248912]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T17:40:29.831244-04:00 buildhost bash[248912]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T17:40:29.832643-04:00 buildhost bash[248912]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T17:41:17.387668-04:00 buildhost bash[248912]: [embed-backfill] drain: 3 round(s) in 47s (budget 200s) · drained 14/14 target(s)
+2026-10-02T17:41:17.388068-04:00 buildhost bash[248912]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=117/117 session_turn_chunks=0/0 text_chunks=0/0 work_items=23/23 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T17:41:19.774284-04:00 buildhost bash[248912]: [embed-backfill] personal vault=16/16
+2026-10-02T17:50:19.983380-04:00 buildhost bash[248912]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T17:50:20.206231-04:00 buildhost bash[248912]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T17:50:20.209621-04:00 buildhost bash[248912]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T17:51:57.105125-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T17:51:57.109065-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T17:51:57.109982-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T17:55:08.118315-04:00 buildhost bash[3831432]: [embed-backfill] skipped: a sweep has held the latch for 191s (stale at 3600s)
+2026-10-02T17:55:08.118362-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep skipped: already_running
+2026-10-02T17:55:25.689157-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T17:55:31.012413-04:00 buildhost bash[3831432]: [embed-backfill] drain: 7 round(s) in 214s (budget 200s) · drained 11/14 target(s) · budget expired with work remaining
+2026-10-02T17:55:31.012590-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=0/0 harness_decisions=0/0 session_turns=448/448 session_turn_chunks=358/358 text_chunks=54/54 work_items=68/68 doc_sections=4/4 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T17:55:32.987023-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T18:00:22.732917-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T18:00:23.017788-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T18:00:23.023169-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T18:02:57.898934-04:00 buildhost bash[3831432]: [embed-backfill] drain: 8 round(s) in 155s (budget 200s) · drained 14/14 target(s)
+2026-10-02T18:02:57.898934-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=5/5 harness_decisions=0/0 session_turns=435/435 session_turn_chunks=356/356 text_chunks=3/3 work_items=31/31 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T18:02:59.349771-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T18:05:29.600773-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T18:05:29.600773-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T18:05:29.600773-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T18:06:32.674046-04:00 buildhost bash[3831432]: [embed-backfill] drain: 5 round(s) in 64s (budget 200s) · drained 14/14 target(s)
+2026-10-02T18:06:32.674171-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=49/49 session_turn_chunks=248/248 text_chunks=0/0 work_items=14/14 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=1/1 interest_watches=0/0
+2026-10-02T18:06:36.447602-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T18:10:12.040508-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T18:10:12.053256-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T18:10:12.070900-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T18:10:56.181524-04:00 buildhost bash[3831432]: [embed-backfill] drain: 5 round(s) in 44s (budget 200s) · drained 14/14 target(s)
+2026-10-02T18:10:56.181524-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=101/101 session_turn_chunks=237/237 text_chunks=0/0 work_items=21/21 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T18:10:59.040536-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T18:15:12.002135-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T18:15:12.009330-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T18:15:12.010107-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T18:16:34.167252-04:00 buildhost bash[3831432]: [embed-backfill] drain: 4 round(s) in 82s (budget 200s) · drained 14/14 target(s)
+2026-10-02T18:16:34.167252-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=170/170 session_turn_chunks=185/185 text_chunks=14/14 work_items=38/38 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T18:16:36.180481-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T18:20:31.835526-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T18:20:31.840984-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T18:20:31.843460-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T18:22:55.202727-04:00 buildhost bash[3831432]: [embed-backfill] drain: 5 round(s) in 143s (budget 200s) · drained 14/14 target(s)
+2026-10-02T18:22:55.203150-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=4/4 harness_decisions=0/0 session_turns=180/180 session_turn_chunks=35/35 text_chunks=83/83 work_items=17/17 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T18:22:56.624931-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T18:25:11.864434-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T18:25:11.867895-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T18:25:11.869262-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T18:25:56.843404-04:00 buildhost bash[3831432]: [embed-backfill] drain: 5 round(s) in 45s (budget 200s) · drained 14/14 target(s)
+2026-10-02T18:25:56.843619-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=51/51 session_turn_chunks=249/249 text_chunks=13/13 work_items=12/12 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T18:25:58.406221-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T18:30:20.984937-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T18:30:20.996273-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T18:30:20.997836-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T18:31:29.943250-04:00 buildhost bash[3831432]: [embed-backfill] drain: 5 round(s) in 69s (budget 200s) · drained 14/14 target(s)
+2026-10-02T18:31:29.943373-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=118/118 session_turn_chunks=179/179 text_chunks=14/14 work_items=22/22 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T18:31:31.063860-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T18:35:16.915787-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T18:35:16.920706-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T18:35:16.921810-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T18:37:49.515690-04:00 buildhost bash[3831432]: [embed-backfill] drain: 5 round(s) in 153s (budget 200s) · drained 14/14 target(s)
+2026-10-02T18:37:49.638989-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=132/132 session_turn_chunks=216/216 text_chunks=0/0 work_items=24/24 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T18:37:52.637584-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T18:40:19.876568-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T18:40:19.876568-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T18:40:19.876568-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T18:41:04.062622-04:00 buildhost bash[3831432]: [embed-backfill] drain: 5 round(s) in 45s (budget 200s) · drained 14/14 target(s)
+2026-10-02T18:41:04.063227-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=70/70 session_turn_chunks=215/215 text_chunks=0/0 work_items=8/8 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T18:41:05.419086-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T18:45:23.630103-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T18:45:23.648928-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T18:45:23.650300-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T18:46:26.378850-04:00 buildhost bash[3831432]: [embed-backfill] drain: 6 round(s) in 63s (budget 200s) · drained 14/14 target(s)
+2026-10-02T18:46:26.378978-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=94/94 session_turn_chunks=264/264 text_chunks=5/5 work_items=35/35 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T18:46:28.027673-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T18:50:27.346875-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T18:50:27.346875-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T18:50:27.346875-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T18:54:13.079282-04:00 buildhost bash[3831432]: [embed-backfill] drain: 4 round(s) in 226s (budget 200s) · drained 12/14 target(s) · budget expired with work remaining
+2026-10-02T18:54:13.079282-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=242/242 session_turn_chunks=88/88 text_chunks=0/0 work_items=35/35 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T18:54:23.274059-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T18:55:24.227824-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T18:55:24.230962-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T18:55:24.231614-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T18:56:17.170106-04:00 buildhost bash[3831432]: [embed-backfill] drain: 5 round(s) in 53s (budget 200s) · drained 14/14 target(s)
+2026-10-02T18:56:17.170560-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=33/33 session_turn_chunks=246/246 text_chunks=17/17 work_items=10/10 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T18:56:18.929822-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T19:00:24.525340-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T19:00:24.529641-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T19:00:24.530544-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T19:02:25.136760-04:00 buildhost bash[3831432]: [embed-backfill] drain: 4 round(s) in 121s (budget 200s) · drained 14/14 target(s)
+2026-10-02T19:02:25.148892-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=0/0 harness_decisions=0/0 session_turns=127/127 session_turn_chunks=187/187 text_chunks=11/11 work_items=26/26 doc_sections=85/85 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T19:02:26.262137-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T19:05:21.058977-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T19:05:21.062487-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T19:05:21.063096-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T19:06:03.248824-04:00 buildhost bash[3831432]: [embed-backfill] drain: 5 round(s) in 42s (budget 200s) · drained 14/14 target(s)
+2026-10-02T19:06:03.249280-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=64/64 session_turn_chunks=231/231 text_chunks=0/0 work_items=14/14 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T19:06:06.585904-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T19:10:14.019950-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T19:10:14.022909-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T19:10:14.023956-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T19:11:16.687710-04:00 buildhost bash[3831432]: [embed-backfill] drain: 4 round(s) in 63s (budget 200s) · drained 14/14 target(s)
+2026-10-02T19:11:16.687822-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=145/145 session_turn_chunks=176/176 text_chunks=12/12 work_items=32/32 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T19:11:21.196727-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T19:15:13.880304-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T19:15:13.884347-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T19:15:13.906807-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T19:16:07.292831-04:00 buildhost bash[3831432]: [embed-backfill] drain: 5 round(s) in 53s (budget 200s) · drained 14/14 target(s)
+2026-10-02T19:16:07.292929-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=112/112 session_turn_chunks=255/255 text_chunks=13/13 work_items=24/24 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T19:16:09.887422-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T19:20:33.823386-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T19:20:33.823386-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T19:20:33.823386-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T19:23:09.515856-04:00 buildhost bash[3831432]: [embed-backfill] drain: 5 round(s) in 156s (budget 200s) · drained 14/14 target(s)
+2026-10-02T19:23:09.516436-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=174/174 session_turn_chunks=189/189 text_chunks=0/0 work_items=20/20 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T19:23:14.173905-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T19:25:12.427715-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T19:25:12.431357-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T19:25:12.432566-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T19:26:26.893028-04:00 buildhost bash[3831432]: [embed-backfill] drain: 5 round(s) in 74s (budget 200s) · drained 14/14 target(s)
+2026-10-02T19:26:26.893563-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=0/0 harness_decisions=0/0 session_turns=48/48 session_turn_chunks=184/184 text_chunks=11/11 work_items=19/19 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T19:26:28.193653-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T19:30:22.322036-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T19:30:22.355932-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T19:30:22.360641-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T19:32:28.201834-04:00 buildhost bash[3831432]: [embed-backfill] drain: 4 round(s) in 126s (budget 200s) · drained 14/14 target(s)
+2026-10-02T19:32:28.202366-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=4/4 harness_decisions=0/0 session_turns=104/104 session_turn_chunks=66/66 text_chunks=0/0 work_items=20/20 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T19:32:30.837381-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T19:35:16.391754-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T19:35:16.395623-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T19:35:16.396449-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T19:35:55.187193-04:00 buildhost bash[3831432]: [embed-backfill] drain: 5 round(s) in 39s (budget 200s) · drained 14/14 target(s)
+2026-10-02T19:35:55.187808-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=101/101 session_turn_chunks=236/236 text_chunks=1/1 work_items=8/8 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T19:35:56.283044-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T19:40:10.631688-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T19:40:10.637209-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T19:40:10.638483-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T19:40:30.127846-04:00 buildhost bash[3831432]: [embed-backfill] drain: 6 round(s) in 19s (budget 200s) · drained 14/14 target(s)
+2026-10-02T19:40:30.128466-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=49/49 session_turn_chunks=283/283 text_chunks=3/3 work_items=12/12 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T19:40:31.659869-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T19:45:22.557639-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T19:45:22.586455-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T19:45:23.311279-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T19:45:52.647966-04:00 buildhost bash[3831432]: [embed-backfill] drain: 4 round(s) in 29s (budget 200s) · drained 14/14 target(s)
+2026-10-02T19:45:52.649067-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=67/67 session_turn_chunks=156/156 text_chunks=0/0 work_items=14/14 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T19:45:53.813952-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T19:55:20.766960-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T19:55:20.779577-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T19:55:20.781743-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T19:56:25.056149-04:00 buildhost bash[3831432]: [embed-backfill] drain: 6 round(s) in 64s (budget 200s) · drained 14/14 target(s)
+2026-10-02T19:56:25.056639-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=174/174 session_turn_chunks=290/290 text_chunks=14/14 work_items=32/32 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T19:56:26.726082-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T20:00:22.255943-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T20:00:22.276270-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T20:00:22.284193-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T20:01:09.670305-04:00 buildhost bash[3831432]: [embed-backfill] drain: 5 round(s) in 47s (budget 200s) · drained 14/14 target(s)
+2026-10-02T20:01:09.670572-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=97/97 session_turn_chunks=245/245 text_chunks=14/14 work_items=9/9 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T20:01:10.822421-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T20:05:29.998199-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T20:05:30.138291-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T20:05:30.139904-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T20:06:08.503239-04:00 buildhost bash[3831432]: [embed-backfill] drain: 4 round(s) in 38s (budget 200s) · drained 14/14 target(s)
+2026-10-02T20:06:08.503491-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=44/44 session_turn_chunks=178/178 text_chunks=2/2 work_items=11/11 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T20:06:10.730515-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T20:10:11.258859-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T20:10:11.263862-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T20:10:11.265157-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T20:10:31.250050-04:00 buildhost bash[3831432]: [embed-backfill] drain: 4 round(s) in 20s (budget 200s) · drained 14/14 target(s)
+2026-10-02T20:10:31.250211-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=53/53 session_turn_chunks=173/173 text_chunks=3/3 work_items=4/4 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T20:10:33.572492-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T20:15:25.391954-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T20:15:25.396694-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T20:15:25.397625-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T20:17:18.872659-04:00 buildhost bash[3831432]: [embed-backfill] drain: 4 round(s) in 113s (budget 200s) · drained 14/14 target(s)
+2026-10-02T20:17:18.872788-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=176/176 session_turn_chunks=96/96 text_chunks=2/2 work_items=22/22 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T20:17:20.811146-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T20:20:27.632318-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T20:20:27.637913-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T20:20:27.638653-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T20:21:58.574541-04:00 buildhost bash[3831432]: [embed-backfill] drain: 3 round(s) in 91s (budget 200s) · drained 14/14 target(s)
+2026-10-02T20:21:58.575686-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=95/95 session_turn_chunks=29/29 text_chunks=0/0 work_items=24/24 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T20:22:08.827735-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T20:25:09.488697-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T20:25:09.497246-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T20:25:09.497906-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T20:26:13.042964-04:00 buildhost bash[3831432]: [embed-backfill] drain: 4 round(s) in 63s (budget 200s) · drained 14/14 target(s)
+2026-10-02T20:26:13.043609-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=3/3 harness_decisions=0/0 session_turns=94/94 session_turn_chunks=139/139 text_chunks=0/0 work_items=19/19 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T20:26:19.096661-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T20:30:18.991347-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T20:30:18.995383-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T20:30:18.996405-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T20:30:58.114213-04:00 buildhost bash[3831432]: [embed-backfill] drain: 3 round(s) in 39s (budget 200s) · drained 14/14 target(s)
+2026-10-02T20:30:58.114767-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=1/1 harness_decisions=0/0 session_turns=103/103 session_turn_chunks=41/41 text_chunks=5/5 work_items=28/28 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T20:31:00.419879-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T20:35:08.458995-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T20:35:08.464839-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T20:35:08.466751-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T20:36:55.789477-04:00 buildhost bash[3831432]: [embed-backfill] drain: 3 round(s) in 107s (budget 200s) · drained 14/14 target(s)
+2026-10-02T20:36:55.790342-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=128/128 session_turn_chunks=90/90 text_chunks=0/0 work_items=28/28 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T20:36:57.231405-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T20:40:09.397899-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T20:40:09.440349-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T20:40:09.444020-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T20:40:52.936901-04:00 buildhost bash[3831432]: [embed-backfill] drain: 3 round(s) in 43s (budget 200s) · drained 14/14 target(s)
+2026-10-02T20:40:52.937562-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=61/61 session_turn_chunks=57/57 text_chunks=24/24 work_items=15/15 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T20:40:55.814215-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T20:45:16.067135-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T20:45:16.071436-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T20:45:16.073359-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T20:47:08.031900-04:00 buildhost bash[3831432]: [embed-backfill] drain: 5 round(s) in 112s (budget 200s) · drained 14/14 target(s)
+2026-10-02T20:47:08.032057-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=171/171 session_turn_chunks=140/140 text_chunks=0/0 work_items=26/26 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T20:47:12.463559-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16
+2026-10-02T20:50:31.866322-04:00 buildhost bash[3831432]: [embed-backfill] sweep starting: resolving embedder…
+2026-10-02T20:50:31.870813-04:00 buildhost bash[3831432]: [embed-backfill] embedder resolved: mode=gemma dims=768
+2026-10-02T20:50:31.871784-04:00 buildhost bash[3831432]: [embed-backfill] batch-embed enabled (mode=gemma)
+2026-10-02T20:51:54.854877-04:00 buildhost bash[3831432]: [embed-backfill] drain: 3 round(s) in 83s (budget 200s) · drained 14/14 target(s)
+2026-10-02T20:51:54.855032-04:00 buildhost bash[3831432]: [embed-backfill] periodic sweep complete: harness_escalations=0/0 harness_brainstorm=0/0 operator_turns=2/2 harness_decisions=0/0 session_turns=76/76 session_turn_chunks=32/32 text_chunks=0/0 work_items=19/19 doc_sections=0/0 harness_plans=0/0 code_recipes=0/0 datatype_registry=0/0 consult_state=0/0 interest_watches=0/0
+2026-10-02T20:51:58.524808-04:00 buildhost bash[3831432]: [embed-backfill] personal vault=16/16

@@ -1,12 +1,13 @@
 {
   "$comment": "BASELINE for lint:no-ungated-mug-kettle (plan retire-mug-kettle-su-only-2026-08-09, P-016). --list is read-only; --reseed writes atomically and requires --reason when the measured unique entry set shrinks.",
-  "generatedAt": "2026-09-01T20:11:28.157Z",
+  "generatedAt": "2026-10-13T02:44:38.119Z",
   "plan": "retire-mug-kettle-su-only-2026-08-09",
   "item": "P-016",
   "rule": "SHRINK-ONLY. This records the UNGATED mug/kettle/cup surface as it existed when the retirement landed, so the guard can fail on the NEXT ungated addition without demanding a retrofit of ~150 pre-existing sites. NEVER append to it to silence a new finding - gate the new site instead. An entry that disappears is GOOD (that surface was retired or gated); prune it.",
   "whyOnlyUngated": "GATED sites are deliberately absent. They can never be offenders while they stay gated, and leaving them out means a site that LOSES its gate becomes novel+ungated and FAILS - so this baseline catches de-gating for free, which a full-population baseline would have silently absorbed.",
   "reseed": "node scripts/check-ungated-mug-kettle.mjs --reseed --reason \"<reviewed reason>\"   (first inspect with --list; the measured population is the authority - never a hand-run grep)",
   "roleDoorExemptions": {
+    "role-door|portal-roster-browser-fixture|packages/operator-core/test/portal-roster-browser-fixture.ts": "NOT A DOOR, verified 2026-10-13 (WI-6554700010009462) by reading the file: the census pairs an ASSERTION, assert.equal(new URL(read.url).searchParams.get('role'), 'operator') at :2066, which reads the role query param of a request the browser fixture captured, with the file's only launch primitive, execFileSync('git', ['rev-parse', 'HEAD']) at :2320. No role reaches a launch.",
     "role-door|converse|packages/operator-core/lib/agent-tools/operator/converse.ts": "UPSTREAM OF A GATE, verified 2026-08-10 by reading the writer: takes role from input.role and calls spawnAgentInHarness, which carries the gate ON THE FUNCTION ITSELF (fleet/operator-spawn.ts:886-897, isRetiredTierRole + mugKettleSystemEnabled). Not a door in its own right.",
     "role-door|durable-spawn|packages/operator-core/lib/dbos/durable-spawn.ts": "UPSTREAM OF A GATE: dispatches to the /invoke route, which is the D-018 chokepoint (endpoint-route/routes/harness/spawn.ts).",
     "role-door|psu-launcher|apps/operator/scripts/psu-launcher.mjs": "UPSTREAM OF A GATE: `psu --role=<role>` takes roleFlow -> POST /api/agent-mcp/console/bootstrap-role, the D-022 chokepoint. NOTE this is the door P-013 missed entirely; it is exempt because the gate sits at bootstrap-role, not because it is harmless."
@@ -54,6 +55,7 @@
     "prompt|work/mug|libs/papercusp/packages/harness/blueprints/work/prompts/mug.md",
     "role-door|bootstrap-role|packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-role.ts",
     "role-door|converse|packages/operator-core/lib/agent-tools/operator/converse.ts",
+    "role-door|portal-roster-browser-fixture|packages/operator-core/test/portal-roster-browser-fixture.ts",
     "role-door|psu-launcher|apps/operator/scripts/psu-launcher.mjs",
     "role-door|spawn|packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts",
     "spawn-role|cup|packages/operator-core/lib/agent-tools/fleet/place_batch.ts",
@@ -67,18 +69,17 @@
     "spawn-role|cup|packages/operator-core/lib/fleet/placement-gather.ts",
     "spawn-role|cup|packages/operator-core/lib/fleet/spawn-relaunch.ts",
     "spawn-role|cup|packages/operator-core/lib/iq-battery/bee-instance.ts",
-    "spawn-role|cup|packages/operator-core/lib/papercup/papercup-deep-delegate-deps.ts",
     "spawn-role|cup|packages/operator-core/lib/pot/cup-wake-efficiency.ts",
     "spawn-role|cup|packages/operator-core/lib/pot/placement-watchdog.ts",
     "spawn-role|cup|packages/operator-core/lib/pot/soak-report.ts",
     "spawn-role|cup|packages/operator-core/lib/pot/throughput.ts",
     "spawn-role|kettle|packages/operator-core/lib/agent-tools/autonomy/decide.ts",
-    "spawn-role|kettle|packages/operator-core/lib/fleet/operator-spawn.ts",
     "spawn-role|kettle|packages/operator-core/lib/harness/improvements/watchdog.ts",
     "spawn-role|kettle|packages/operator-core/lib/llm-testing/scenarios/overwatch/OW01-nudge-not-replace.ts",
     "spawn-role|kettle|packages/operator-core/lib/llm-testing/scenarios/overwatch/OW02-observe-not-idea.ts",
     "spawn-role|mug|packages/operator-core/lib/blueprint/launch-blueprint.ts",
     "spawn-role|mug|packages/operator-core/lib/dbos/durable-spawn.ts",
+    "spawn-role|mug|packages/operator-core/lib/degradation/agent-routing-migration-cases.ts",
     "spawn-role|mug|packages/operator-core/lib/external-bench/hive-backlog-realqueen.ts",
     "spawn-role|mug|packages/operator-core/lib/pot/mug-wake-efficiency.ts",
     "spawn-role|mug|packages/operator-core/lib/pot/placement-watchdog.ts",
@@ -101,6 +102,7 @@
     "tool|pot:cross_grant|packages/operator-core/lib/agent-tools/pot/cross_grant.ts",
     "tool|pot:declare-wake|packages/operator-core/lib/agent-tools/pot/declare_wake.ts",
     "tool|pot:dissolve|packages/operator-core/lib/agent-tools/pot/dissolve.ts",
+    "tool|pot:equity|packages/operator-core/lib/agent-tools/pot/equity.ts",
     "tool|pot:get-steering|packages/operator-core/lib/agent-tools/pot/get_steering.ts",
     "tool|pot:get|packages/operator-core/lib/agent-tools/pot/get.ts",
     "tool|pot:leave|packages/operator-core/lib/agent-tools/pot/leave.ts",
@@ -168,18 +170,18 @@
     "wake|withinWakeFloor|packages/operator-core/lib/pot/wake.ts"
   ],
   "lastReseed": {
-    "at": "2026-09-01T20:11:28.157Z",
-    "reason": "EI-22050938303232651: shrink-only prune — 6 baseline entry points no longer exist (surface retired); no new ungated entries (guard green at HEAD before reseed)",
-    "previousEntryCount": 160,
-    "nextEntryCount": 154,
+    "at": "2026-10-13T02:44:38.119Z",
+    "reason": "WI-6554700010009462 (fleet gate-lint-green) 2026-10-13: +3 reviewed intentionally-ungated sites, none a retired-tier executor door. (1) tool|pot:equity: OpenZeppelin equity artifact/transaction-prep/chain-inspect tool in the pot: namespace like the other baselined substrate pot tools; gating it behind MUG_KETTLE_SYSTEM would make it always refuse. (2) spawn-role|mug in lib/degradation/agent-routing-migration-cases.ts: a degradation TEST case that drives the original launch-blueprint defaultFire queen-singleton branch (launch-blueprint.ts:532-579) through a stubbed loopbackFetch; a real fire stops at the D-018 /invoke chokepoint. (3) role-door|portal-roster-browser-fixture: lexical false positive, reason recorded in roleDoorExemptions. -2 entries whose surfaces no longer exist, as measured by this reseed.",
+    "previousEntryCount": 154,
+    "nextEntryCount": 155,
     "removedEntries": [
-      "flag|MUG_KETTLE_SYSTEM|libs/flags/src/types.ts",
-      "spawn-role|cup|packages/operator-core/lib/agent-tools/scheduler/get_next.ts",
-      "spawn-role|cup|packages/operator-core/lib/agent-tools/scheduler/set_claim_spec.ts",
-      "spawn-role|kettle|apps/operator/app/settings/agent/page.tsx",
-      "spawn-role|mug|apps/operator/app/settings/agent/page.tsx",
-      "ui|LeftSidebar|apps/operator-vite/src/components/left-sidebar/LeftSidebar.tsx"
+      "spawn-role|cup|packages/operator-core/lib/papercup/papercup-deep-delegate-deps.ts",
+      "spawn-role|kettle|packages/operator-core/lib/fleet/operator-spawn.ts"
     ],
-    "addedEntries": []
+    "addedEntries": [
+      "role-door|portal-roster-browser-fixture|packages/operator-core/test/portal-roster-browser-fixture.ts",
+      "spawn-role|mug|packages/operator-core/lib/degradation/agent-routing-migration-cases.ts",
+      "tool|pot:equity|packages/operator-core/lib/agent-tools/pot/equity.ts"
+    ]
   }
 }

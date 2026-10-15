@@ -2,7 +2,7 @@
  * The GAIA general-assistant agent — a provider-agnostic ReAct tool-loop (plan
  * `benchmark-suite-gaia-2026-06-17`, P-003).
  *
- * GAIA ships no harness, so THIS is the agent: opus-4.8 in a tool-use loop with web browsing/search, code
+ * GAIA ships no harness, so THIS is the agent: the evaluated model in a tool-use loop with web browsing/search, code
  * execution, file reading, and vision, that must finish every answer with `FINAL ANSWER: [answer]` in the
  * GAIA normalized format. The axis GAIA measures — breadth, research depth, multi-hop tool-orchestration —
  * is exactly what this loop exercises; nothing else in the portfolio covers it. The loop is REUSABLE across

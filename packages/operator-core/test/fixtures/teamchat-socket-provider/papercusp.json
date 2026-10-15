@@ -1,0 +1,60 @@
+{
+  "kind": "plugin",
+  "name": "teamchat-socket-provider",
+  "version": "1.0.0",
+  "papercusp": "^0.1.0",
+  "description": "TeamChat as a chat provider: the host holds a gateway socket for each connected workspace and every new message becomes a chat-message record. Workflows can pick rooms (chat.channels) and reply in a thread (chat.reply). Setup is pasted: create the TeamChat app from the bundled definition, then paste its gateway token and API token.",
+  "author": "Acme Chat",
+  "publisher": "@acme-chat",
+  "license": "MIT",
+  "protocol": "^1",
+  "capabilities": [],
+  "runtime": { "kind": "daemon", "daemonCommand": ["node", "daemon.mjs"] },
+  "provider": {
+    "id": "teamchat",
+    "contractVersion": 1,
+    "displayName": "TeamChat",
+    "datatypes": ["chat-message"],
+    "capabilities": ["ingress.normalize", "chat.channels", "chat.reply"],
+    "egressHosts": ["api.teamchat.example"],
+    "defaultDestinations": { "chat-message": ["document", "event"] },
+    "ingress": {
+      "socket": {
+        "credential": "gateway_token",
+        "open": { "url": "https://api.teamchat.example/v1/gateway.open", "method": "POST", "urlField": "gateway.url" },
+        "ackField": "delivery_id",
+        "reconnect": { "field": "kind", "values": ["rotate"] }
+      }
+    },
+    "setup": {
+      "credentials": [
+        {
+          "key": "gateway_token",
+          "label": "Gateway token",
+          "pattern": "tcg-[A-Za-z0-9-]{16,}",
+          "placeholder": "tcg-...",
+          "help": "App settings → Gateway → Create token. Papercusp uses it only to open the gateway socket."
+        },
+        {
+          "key": "api_token",
+          "label": "API token",
+          "pattern": "tca-[A-Za-z0-9-]{16,}",
+          "placeholder": "tca-...",
+          "help": "App settings → Install to workspace, then copy the API token.",
+          "hosts": ["api.teamchat.example"]
+        }
+      ],
+      "appRegistration": {
+        "createUrl": "https://developers.teamchat.example/apps/new?definition={definition}",
+        "docsUrl": "https://developers.teamchat.example/docs/app-definitions",
+        "copyHint": "New app → From a definition → paste this JSON.",
+        "definition": {
+          "name": "Papercusp",
+          "description": "Brings messages from the rooms you add it to into Papercusp, and replies in their threads.",
+          "gateway": true,
+          "scopes": ["messages:read", "rooms:read", "messages:write"]
+        }
+      }
+    }
+  }
+}

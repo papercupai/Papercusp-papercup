@@ -36,12 +36,16 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
+import { parseTestRunExecutionDetails, RECORDED_TEST_LAYERS } from '@papercusp/test-config/execution-details';
 import { CRITICAL_P95_MS } from '../../event-loop-lag-monitor';
 import { toIso } from '../_pg-timestamp';
 
 const DEFAULT_LIMIT = 30;
 const OUTPUT_TAIL_CHARS = 800;
+/** Keep source-filter diagnostics bounded without hiding whether the count is complete. */
+const OMITTED_SOURCE_RUN_IDS_LIMIT = 100;
+/** Inline budget for a bounded row's mutation diff; the full diff stays in the ledger row. */
+export const MUTANT_DIFF_INLINE_CHARS = 600;
 const NO_RUNS_RECORDED_REASON = 'no_runs_recorded' as const;
 
 /**
@@ -71,12 +75,84 @@ const iso = toIso;
  * does not publish them in MCP `outputSchema`, so typed callers cannot discover
  * them and guidance can silently drift away from the registered contract.
  */
+const testCaseResultSchema = z.object({
+  caseKey: z.string(),
+  occurrence: z.number().int().positive(),
+  status: z.enum(['pass', 'fail', 'skip']),
+  durationMs: z.number().int().nonnegative().nullable(),
+  errorTail: z.string().nullable(),
+});
+
+export type TestCaseResult = z.infer<typeof testCaseResultSchema>;
+
+type CaseSql = ReturnType<typeof getOrgPg>['sql'];
+
+/**
+ * The per-case rows (migration 1478) of the given test_runs ids, in module order. A run
+ * with no case rows maps to null: the reporter did not record its cases (a run before
+ * 1478, a collection error, a pending case), which is unknown, never "zero cases".
+ * A ledger without the table answers 'not-migrated' for every run.
+ */
+export async function loadTestCaseResults(
+  sql: CaseSql,
+  testRunIds: readonly number[],
+): Promise<{ byRun: Map<number, TestCaseResult[]>; notMigrated: boolean }> {
+  const byRun = new Map<number, TestCaseResult[]>();
+  if (testRunIds.length === 0) return { byRun, notMigrated: false };
+  let rows: Array<{
+    test_run_id: string;
+    case_key: string;
+    occurrence: number;
+    status: TestCaseResult['status'];
+    duration_ms: number | null;
+    error_tail: string | null;
+  }>;
+  try {
+    rows = await sql`
+      SELECT test_run_id::text, case_key, occurrence, status, duration_ms, error_tail
+        FROM harness_shared.test_case_runs
+       WHERE test_run_id = ANY(${testRunIds.map(String)}::bigint[])
+       ORDER BY test_run_id, case_index`;
+  } catch (error) {
+    if ((error as { code?: unknown } | null)?.code === '42P01') return { byRun, notMigrated: true };
+    throw error;
+  }
+  for (const r of rows) {
+    const id = Number(r.test_run_id);
+    const list = byRun.get(id) ?? [];
+    list.push({
+      caseKey: r.case_key, occurrence: r.occurrence, status: r.status,
+      durationMs: r.duration_ms, errorTail: r.error_tail,
+    });
+    byRun.set(id, list);
+  }
+  return { byRun, notMigrated: false };
+}
+
 const testingRunResultSchema = z
   .object({
     id: z.number().int().positive(),
     workspaceId: z.string().nullable(),
     harnessSlug: z.string().nullable(),
     root: z.string().nullable(),
+    executionDetails: z.object({
+      schemaVersion: z.literal(1),
+      testLayer: z.enum(RECORDED_TEST_LAYERS).optional(),
+      passed: z.number().int().nonnegative(),
+      failed: z.number().int().nonnegative(),
+      skipped: z.number().int().nonnegative(),
+      collectionFailed: z.boolean(),
+      testNamePattern: z.string().nullable(),
+      passedCaseTitles: z.array(z.string()).optional(),
+      passedCaseTitlesTruncated: z.literal(true).optional(),
+      failedCaseTitles: z.array(z.string()).optional(),
+    }).passthrough().nullable(),
+    executionDetailsUnavailableReason: z.enum(['not-recorded', 'invalid-or-unsupported', 'row-mismatch']).optional(),
+    executionDetailsBounded: z.object({
+      passedCaseTitlesOmitted: z.number().int().nonnegative(),
+      failedCaseTitlesOmitted: z.number().int().nonnegative(),
+      fieldsOmitted: z.array(z.string()),
+    }).optional(),
     filePath: z.string(),
     status: z.enum(['pass', 'fail', 'skip', 'cancelled', 'error', 'running']),
     framework: z.string(),
@@ -94,6 +170,8 @@ const testingRunResultSchema = z
     worktreeDirty: z.boolean(),
     isScratchConfig: z.boolean(),
     outputTailTruncated: z.boolean().optional(),
+    cases: z.array(testCaseResultSchema).nullable().optional(),
+    casesUnavailableReason: z.enum(['not-recorded', 'not-migrated']).optional(),
   })
   .passthrough();
 
@@ -162,6 +240,22 @@ export function defaultRollupSource(
   return source ?? (rollup ? 'ci' : null);
 }
 
+/**
+ * A count alone does not say how to see the hidden rows. Under the default
+ * browse exclusion every omitted row is a mutation-probe row, so name the
+ * argument that returns them; under an explicit source, name the writer filter.
+ */
+export function sourceOmissionHint(
+  omitted: number,
+  explicitSource?: 'ci' | 'local' | 'admin-ui' | 'mutation-probe',
+): string | null {
+  if (omitted <= 0) return null;
+  if (explicitSource === undefined) {
+    return `${omitted} matching row(s) hidden by the default mutation-probe exclusion; pass source:"mutation-probe" (or their testRunIds) to read them.`;
+  }
+  return `${omitted} matching row(s) from other writers hidden by source:"${explicitSource}"; omit source or name another writer to read them.`;
+}
+
 /** Accept the output-shaped `runGroupId` spelling as an input compatibility
  * alias while keeping `runGroup` as the canonical selector name. When both
  * are supplied, the canonical spelling wins. */
@@ -198,6 +292,7 @@ export const TESTING_RUNS_TIER_CAPS = {
 } as const;
 
 type TestingRunsTier = keyof typeof TESTING_RUNS_TIER_CAPS;
+type TestingRunsShapeArgs = Readonly<{ testRunIds?: readonly number[] }>;
 
 function clipOutputTail(value: unknown, maxChars: number): { value: unknown; clipped: boolean } {
   if (typeof value !== 'string' || value.length <= maxChars) return { value, clipped: false };
@@ -210,6 +305,36 @@ function clipOutputTail(value: unknown, maxChars: number): { value: unknown; cli
 function projectTestingRun(row: unknown, outputTailChars: number): { row: Record<string, unknown>; clipped: boolean } {
   const r = (row ?? {}) as Record<string, unknown>;
   const outputTail = clipOutputTail(r.outputTail, outputTailChars);
+  const details = r.executionDetails as Record<string, unknown> | null | undefined;
+  let executionProjection: Record<string, unknown> = {};
+  if (details && JSON.stringify(details).length > 1_400) {
+    const summaryKeys = ['schemaVersion', 'testLayer', 'passed', 'failed', 'skipped', 'collectionFailed', 'testNamePattern',
+      'passedCaseTitlesTruncated'];
+    const summary = Object.fromEntries(summaryKeys.map(key => [key, details[key]]));
+    const omitted = { passedCaseTitlesOmitted: 0, failedCaseTitlesOmitted: 0,
+      fieldsOmitted: Object.keys(details).filter(key => !summaryKeys.includes(key)
+        && key !== 'passedCaseTitles' && key !== 'failedCaseTitles' && key !== 'mutation') };
+    // The mutation descriptor is what makes a probe row auditable (plan
+    // mutation-probe-evidence-value-2026-10-11 R-1): keep every field inline and clip
+    // only the diff body, flagging the clip, rather than drop it into fieldsOmitted.
+    const mutation = details.mutation;
+    if (mutation && typeof mutation === 'object' && !Array.isArray(mutation)) {
+      const m = mutation as Record<string, unknown>;
+      const diff = typeof m.mutantDiff === 'string' ? m.mutantDiff : '';
+      summary.mutation = diff.length > MUTANT_DIFF_INLINE_CHARS
+        ? { ...m, mutantDiff: diff.slice(0, MUTANT_DIFF_INLINE_CHARS), mutantDiffTruncated: true }
+        : m;
+    }
+    for (const key of ['passedCaseTitles', 'failedCaseTitles'] as const) {
+      const titles = details[key];
+      if (!Array.isArray(titles)) continue;
+      // Preserve exact identities; a clipped prefix is not a case title.
+      const kept = titles.filter(title => typeof title === 'string' && title.length <= 256).slice(0, 3);
+      summary[key] = kept;
+      omitted[`${key}Omitted`] = titles.length - kept.length;
+    }
+    executionProjection = { executionDetails: summary, executionDetailsBounded: omitted };
+  }
   return {
     row: {
       ...r,
@@ -217,18 +342,24 @@ function projectTestingRun(row: unknown, outputTailChars: number): { row: Record
       workspaceId: r.workspaceId ?? null,
       harnessSlug: r.harnessSlug ?? null,
       outputTail: outputTail.value,
+      ...executionProjection,
       ...(outputTail.clipped ? { outputTailTruncated: true } : {}),
     },
     clipped: outputTail.clipped,
   };
 }
 
-export function shapeTestingRuns(data: unknown, tier: TestingRunsTier): unknown {
+export function shapeTestingRuns(data: unknown, tier: TestingRunsTier, args?: TestingRunsShapeArgs): unknown {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
   const d = data as Record<string, unknown>;
   const caps = TESTING_RUNS_TIER_CAPS[tier];
 
   if (Array.isArray(d.runs)) {
+    // Exact-ID reads are evidence receipts, not browse lists. Dropping a whole
+    // selected row here makes the later result-door spill permanently partial:
+    // it can only preserve the already-shaped payload. Let the result-door
+    // spill the complete receipt set when the rows do not fit inline.
+    const preserveExactReceiptRows = (args?.testRunIds?.length ?? 0) > 0;
     const base = { ...d, runs: [] as Record<string, unknown>[] };
     const kept: Record<string, unknown>[] = [];
     let clippedRows = 0;
@@ -237,7 +368,7 @@ export function shapeTestingRuns(data: unknown, tier: TestingRunsTier): unknown 
       const candidate = { ...base, runs: [...kept, projected.row] };
       // Keep the first valid row even if an unusual envelope is larger than the
       // target; never return an empty row list that looks like no test ran.
-      if (JSON.stringify(candidate).length > caps.targetChars && kept.length > 0) break;
+      if (JSON.stringify(candidate).length > caps.targetChars && kept.length > 0 && !preserveExactReceiptRows) break;
       kept.push(projected.row);
       if (projected.clipped) clippedRows += 1;
     }
@@ -296,7 +427,7 @@ export default defineTool({
     // Response docs live HERE, not in description/when — those are
     // prompt-weight budgeted (the guard refused the P-002 edit on routines:list).
     returns: [
-      'Each row: { id, workspaceId, harnessSlug, root, filePath, status, framework, startedAt, finishedAt, durationMs, commitSha, runGroupId, source, branch, outputTail, loopLagP95Ms, rssMb, saturationSuspect, worktreeDirty, isScratchConfig }. id is the durable testRunId for evidence binding; workspaceId/harnessSlug report the stored scope and may be null. root is the parser-validated absolute checkout root captured in execution_details, or null for legacy/malformed rows. outputTail is populated only for fail/error rows and is truncated.',
+      'Each row: { id, workspaceId, harnessSlug, root, executionDetails, executionDetailsUnavailableReason?, filePath, status, framework, startedAt, finishedAt, durationMs, commitSha, runGroupId, source, branch, outputTail, loopLagP95Ms, rssMb, saturationSuspect, worktreeDirty, isScratchConfig }. id is the durable testRunId for evidence binding; workspaceId/harnessSlug report the stored scope and may be null. root is the parser-validated absolute checkout root captured in execution_details, or null for legacy/malformed rows. executionDetails returns validated measured case counts, the runtime-recorded testLayer (unit|integration|e2e|llm|browser) when present (never inferred from a path), selector and saved case titles; null means unavailable, not zero executed cases. When unavailable, executionDetailsUnavailableReason distinguishes not-recorded (SQL NULL/missing), invalid-or-unsupported (stored metadata rejected by this reader), and row-mismatch (valid metadata names a different file or run group). Bounded responses may omit titles and report executionDetailsBounded; payloadTier:"full" preserves complete saved details. outputTail is populated only for fail/error rows and is truncated.',
       '`runGroup` is the canonical exact run_group_id input selector; `runGroupId` is accepted as a compatibility alias because output rows expose the same value as runGroupId. If both are supplied, runGroup wins.',
       '`testRunIds` is an exact primary-key selector for evidence-lineage lookups; when supplied without an explicit `latestPerFile`, it defaults to `latestPerFile:false` so every requested receipt remains visible, including multiple attempts for one file. Set `latestPerFile:true` only when intentionally collapsing the selected IDs.',
       '{ count, total, truncatedByLimit, latestPerFile, runs, groups } — `runs` is the row list and `groups` is present for rollups.',
@@ -304,6 +435,7 @@ export default defineTool({
       '`runs:[]` or `groups:[]` includes `{ notRecorded:true, reason:"no_runs_recorded" }`; an empty ledger result is not evidence that the requested test passed or did not run.',
       '`count` = rows returned; `total` = rows matching the filter independent of `limit`; `truncatedByLimit` says whether they differ, so a capped list is never read as a total.',
       'Row-list responses include `effectiveSourceFilter` and `omittedBySourceFilter`. The latter counts ledger rows matching all other selectors but removed by the effective source filter (before latestPerFile collapsing), so an empty filtered list is distinguishable from no recorded runs.',
+      '`omittedSourceRunIds` lists up to 100 durable IDs removed by that source filter, newest first; `omittedSourceRunIdsTruncated` says when more IDs remain. Use those IDs with `testRunIds` for an exact receipt read instead of guessing the hidden source.',
       'latestPerFile (default true, or false when you name a filePath) collapses to the most recent run per file — without it a file that failed an hour ago and has passed since still lists as failing.',
       '`saturationSuspect` is true only when a trustworthy host event-loop p95 sample was past the critical band, so the row is NOT reliable evidence of a genuine red — re-run before chasing it. false means a valid calm sample; null means the signal is unknown (no trustworthy host sample), not that the host was calm.',
       'SCOPE: no workspace/harness predicate is applied by default, deliberately. CI/gate rows carry NULL workspace_id/harness_slug (the CI reporter derives them from env vars CI never sets), so scoping by workspace silently excludes every CI row and reads as a clean "no failures" (EI-19324633485547042). Pass `workspace` only for per-hive Tests-tab rows, knowing it excludes CI.',
@@ -400,6 +532,12 @@ export default defineTool({
         'Collapse to the most recent run per file. Defaults true, or false when `filePath` or `testRunIds` is given.',
       ),
     limit: z.number().int().min(1).max(200).optional().describe(`Max rows (default ${DEFAULT_LIMIT}).`),
+    cases: z
+      .boolean()
+      .optional()
+      .describe(
+        'Attach each returned row\'s per-case results (harness_shared.test_case_runs): { caseKey (describe/it title path), occurrence, status, durationMs, errorTail }. Row listings only; ignored for rollups.',
+      ),
   }),
   result: z
     .object({
@@ -411,6 +549,9 @@ export default defineTool({
       source: z.enum(['ci', 'local', 'admin-ui', 'mutation-probe']).optional(),
       effectiveSourceFilter: z.string().optional(),
       omittedBySourceFilter: z.number().int().nonnegative().optional(),
+      omittedSourceRunIds: z.array(z.number().int().positive()).optional(),
+      omittedSourceRunIdsTruncated: z.boolean().optional(),
+      sourceFilterHint: z.string().optional(),
       notRecorded: z.literal(true).optional(),
       reason: z.literal(NO_RUNS_RECORDED_REASON).optional(),
       runs: z.array(testingRunResultSchema).optional(),
@@ -426,8 +567,8 @@ export default defineTool({
   // What can actually regress here is the row BUDGET and the `payloadBounded`
   // marker: behavioural, not key-presence, and covered by this shaper's own tests.
   shape: {
-    standard: (data) => shapeTestingRuns(data, 'standard'),
-    trimmed: (data) => shapeTestingRuns(data, 'trimmed'),
+    standard: (data, sctx) => shapeTestingRuns(data, 'standard', sctx.args as TestingRunsShapeArgs),
+    trimmed: (data, sctx) => shapeTestingRuns(data, 'trimmed', sctx.args as TestingRunsShapeArgs),
   },
   async handler(args: {
     testRunIds?: number[];
@@ -444,6 +585,7 @@ export default defineTool({
     rollup?: 'commit' | 'runGroup';
     latestPerFile?: boolean;
     limit?: number;
+    cases?: boolean;
   }) {
     const { sql } = getOrgPg();
     // Exact-ID lookups are evidence receipt reads: do not silently return only
@@ -641,15 +783,35 @@ export default defineTool({
        LIMIT ${limit}`;
 
     const omittedRows = shouldCountSourceOmissions
-      ? await sql<Array<{ omitted_by_source_filter: string }>>`
-          SELECT count(*)::text AS omitted_by_source_filter
+      ? await sql<Array<{ id: string; omitted_by_source_filter: string }>>`
+          SELECT id::text,
+                 count(*) OVER ()::text AS omitted_by_source_filter
             FROM harness_shared.test_runs
             ${whereWithoutSource}
-             AND NOT COALESCE((${sourceFilter}), false)`
+             AND NOT COALESCE((${sourceFilter}), false)
+           ORDER BY finished_at DESC NULLS LAST, started_at DESC, id DESC
+           LIMIT ${OMITTED_SOURCE_RUN_IDS_LIMIT}`
       : [];
-    const omittedBySourceFilter = Number(omittedRows[0]?.omitted_by_source_filter ?? 0);
+    // A few lightweight SQL facades return their tagged fragment for an
+    // auxiliary query they do not model. Treat that as an unavailable
+    // diagnostic result rather than failing the primary ledger read; the
+    // production postgres client always returns an array here.
+    const omittedRowList = Array.isArray(omittedRows) ? omittedRows : [];
+    const omittedBySourceFilter = Number(omittedRowList[0]?.omitted_by_source_filter ?? 0);
+    const omittedSourceRunIds = omittedRowList
+      .map((row) => Number(row.id))
+      .filter((id): id is number => Number.isSafeInteger(id) && id > 0);
+    const omittedSourceRunIdsTruncated = omittedBySourceFilter > omittedSourceRunIds.length;
+    const sourceFilterHint = sourceOmissionHint(omittedBySourceFilter, args.source);
 
     const total = rows.length > 0 ? Number(rows[0]!.total) : 0;
+    const caseResults = args.cases ? await loadTestCaseResults(sql, rows.map((r) => Number(r.id))) : null;
+    const casesFor = (id: number) => {
+      if (!caseResults) return {};
+      if (caseResults.notMigrated) return { cases: null, casesUnavailableReason: 'not-migrated' as const };
+      const list = caseResults.byRun.get(id);
+      return list ? { cases: list } : { cases: null, casesUnavailableReason: 'not-recorded' as const };
+    };
     return {
       data: {
         count: rows.length,
@@ -659,11 +821,22 @@ export default defineTool({
         latestPerFile,
         effectiveSourceFilter,
         omittedBySourceFilter,
-        runs: rows.map((r) => ({
+        ...(omittedSourceRunIds.length > 0 ? { omittedSourceRunIds } : {}),
+        ...(omittedSourceRunIdsTruncated ? { omittedSourceRunIdsTruncated: true } : {}),
+        ...(sourceFilterHint ? { sourceFilterHint } : {}),
+        runs: rows.map((r) => {
+          const parsedDetails = parseStoredExecutionDetails(r.execution_details);
+          const executionDetails = parsedDetails?.filePath === r.file_path && parsedDetails.runGroupId === r.run_group_id
+            ? parsedDetails : null;
+          const executionDetailsUnavailableReason = r.execution_details == null
+            ? 'not-recorded' : !parsedDetails ? 'invalid-or-unsupported' : 'row-mismatch';
+          return {
           id: Number(r.id),
           workspaceId: r.workspace_id,
           harnessSlug: r.harness_slug,
-          root: parseStoredExecutionDetails(r.execution_details)?.root ?? null,
+          root: executionDetails?.root ?? null,
+          executionDetails,
+          ...(executionDetails ? {} : { executionDetailsUnavailableReason }),
           filePath: r.file_path,
           status: r.status,
           framework: r.framework,
@@ -680,7 +853,9 @@ export default defineTool({
           saturationSuspect: isSaturationSuspect(r.loop_lag_p95_ms),
           worktreeDirty: r.worktree_dirty,
           isScratchConfig: r.is_scratch_config,
-        })),
+          ...casesFor(Number(r.id)),
+          };
+        }),
       },
     };
   },

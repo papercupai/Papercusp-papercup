@@ -15,15 +15,13 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import { tryResolvePrincipal } from '../../../auth/require-principal';
 import { getServerCapabilities } from '../../../capabilities/server-catalog';
+import '../../../agent-tools';
 
 export default defineTool({
   method: 'GET',
   path: '/agent-mcp/capabilities',
   auth: 'public',
   async handler(req) {
-    // Ensure the tool catalog is registered (idempotent; ESM-cached).
-    await import('../../../agent-tools');
-
     const principal = await tryResolvePrincipal(req.headers);
     if (!principal) return Response.json({ capabilities: [] });
 

@@ -1,5 +1,36 @@
 import { describe, it, expect } from 'vitest';
-import { prepareForTTS } from './prepareForTTS';
+import { prepareForReading, prepareForTTS } from './prepareForTTS';
+
+describe('original-content reading', () => {
+  it('preserves source phrases, names, symbols and capitalization instead of shaping a reply', () => {
+    const source = 'great question! as an AI, Google uses {name}. 2 < 5; a_b_c * 3.\nLet me know if you need anything else.';
+    expect(prepareForReading(source)).toEqual({ text: source, nameUsed: false, modifications: [] });
+  });
+
+  it('retains every word and final Unicode tail in long plain text', () => {
+    const source = 'A long paragraph. '.repeat(900) + 'FINAL TAIL: 日本語 🐉';
+    expect(prepareForReading(source).text).toBe(source);
+  });
+
+  it('normalizes line endings without changing whitespace or content', () => {
+    expect(prepareForReading('  first\r\nsecond\rlast  ')).toMatchObject({
+      text: '  first\nsecond\nlast  ', modifications: ['line-endings'],
+    });
+  });
+
+  it('normalizes explicit Markdown while retaining link targets and code symbols', () => {
+    const source = '# Guide\n**Read** [docs](https://example.test/a) and `a_b_c * 2`.\n```js\nconst {name} = "great question";\n```\nEnd.';
+    expect(prepareForReading(source, 'markdown')).toEqual({
+      text: 'Guide\nRead docs (https://example.test/a) and a_b_c * 2.\nconst {name} = "great question";\n\nEnd.',
+      nameUsed: false, modifications: ['markdown'],
+    });
+  });
+
+  it('keeps markup literal unless Markdown normalization was requested', () => {
+    const source = '# example\n**literal** `x_y_z`';
+    expect(prepareForReading(source).text).toBe(source);
+  });
+});
 
 const NOW = 1_700_000_000_000;
 const fixedNow = () => NOW;

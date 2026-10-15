@@ -31,8 +31,9 @@
  *   owner-steering:max-bees          — int; concurrency ceiling for running agents
  *                                      (effective = MIN(system ceiling, this)).
  *   owner-steering:idle-activities   — { gym?, scout?, dream?, curation?, plan-review? }
- *                                      booleans; each defaults ON, `false`
- *                                      suppresses that idle activity (gym /
+ *                                      booleans; Dream requires explicit `true`.
+ *                                      Other activities default ON; `false`
+ *                                      suppresses that activity (gym /
  *                                      Scout-ideation / doc+memory curation /
  *                                      Queen review-iteration of Scout drafts).
  *   owner-steering:auto-scale-out    — bool; `false` disables account-pool
@@ -103,8 +104,9 @@ export const OWNER_STEERING_KEYS = {
   modelOverrides: 'owner-steering:model-overrides',
 } as const;
 
-/** The idle background activities the owner can gate per-Hive (P-006, D-005). Each
- *  defaults ON; only an explicit `false` suppresses it. `plan-review` gates the
+/** The idle background activities the owner can gate per-Hive (P-006, D-005).
+ *  Dream requires explicit `true`; other activities default ON and an explicit
+ *  `false` suppresses them. `plan-review` gates the
  *  Queen's idle review+iteration of Scout-routed draft plans (the Queen↔Scout
  *  feedback loop, queen-scout-feedback-loop-2026-06-20 D-003 #2 — review never
  *  starves placement). */
@@ -152,9 +154,9 @@ export interface OwnerSteering {
   /** SESSION concurrency CEILING (P-006) — max concurrently-running agents/bees.
    *  Effective = MIN(system ceiling, this). null ⇒ no override (use the system ceiling). */
   maxBees?: number | null;
-  /** SESSION idle-activity gates (P-006) — gym/Scout/curation/plan-review. Each
-   *  defaults ON; an explicit `false` suppresses that idle activity. null ⇒ all
-   *  default ON. */
+  /** SESSION idle-activity gates (P-006). Dream requires explicit `true`.
+   *  Other activities default ON; an explicit `false` suppresses them.
+   *  null keeps Dream off and the other activities on. */
   idleActivities?: IdleActivityToggles | null;
   /** SESSION auto-scale-out toggle (P-006) — `false` disables automatic account-pool
    *  scale-out on sustained rate-limit exhaustion. null ⇒ default (enabled). */

@@ -18,7 +18,7 @@ const DIAGNOSED_CLASS_IDS = [
 const REPORT = process.env.PTY_INCIDENT_REPORT_PATH ?? join(
   dirname(fileURLToPath(import.meta.url)),
   '..', '..', '..',
-  'scratchpad',
+  'docs', 'evidence',
   'pty-host-incident-verification-2026-09-25.md',
 );
 

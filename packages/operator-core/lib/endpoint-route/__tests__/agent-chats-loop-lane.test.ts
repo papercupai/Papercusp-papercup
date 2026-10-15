@@ -127,6 +127,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   for (const m of MOCKED_MODULES) vi.doUnmock(m);
+  vi.unstubAllEnvs();
 });
 
 interface LoopLaneMocks {
@@ -310,6 +311,123 @@ function findRoute(routes: RouteDefinition<undefined>[], method: string, path: s
 }
 
 describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
+  it('uses the private channel callback with the real route persistence and no ambient dispatcher', async () => {
+    vi.stubEnv('PAPERCUSP_DISTRIBUTION_PROFILE', 'vm-release');
+    const history = [{ role: 'assistant', content: 'previous answer', ts: '2026-01-01T00:00:00Z' }];
+    const { routes, mocks } = await loopLaneRoutes({ ...baseRow, transcript: history });
+    const { createHostedCustomerChannelHttpHandler } = await import('../../workspace-host/hosted-customer-loop-ports');
+    const { createHostedPrincipal } = await import('../../auth/hosted-principal');
+    const controller = new AbortController();
+    const principal = createHostedPrincipal({ workspaceId: 'control-workspace', userId: 'customer-user',
+      activeOrganizationId: 'customer-org', selectedWorkspaceId: 'customer-workspace',
+      sessionId: 'authenticated-session', sessionVersion: 1, permissions: ['workspace:operate'] });
+    const handler = createHostedCustomerChannelHttpHandler({ workspaceId: 'default', projectDir: '/tmp/proj',
+      customerWorkspaceId: 'customer-workspace', transform: () => { throw new Error('unexpected process'); },
+      dispatchDeps: {}, lookupTool: () => ({ ...fakeProjected('capability:bash'),
+        capabilities: ['capability:bash'], needsWorkspaceTx: false }),
+      createModelPort: () => ({ async *stream() { yield { type: 'text_delta', text: 'unused mock engine' }; } }) });
+    const response = await handler(postReq({ content: 'customer turn', engine: 'loop', model: 'sonnet', account: 'forged-account' }), {
+      channelId: 'private', sessionHost: {
+        customerInvocationSignal: (_id, signal) => signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
+        resolveCustomerPrincipal: async () => ({ ok: true, principal }),
+      },
+    });
+    expect(response?.status).toBe(200);
+    const stream = await drainSse(response!.body, 8_000);
+    expect(stream.closed).toBe(true);
+    expect(stream.text).toContain('event: done');
+    expect(mocks.runLoopChatTurn).toHaveBeenCalledTimes(1);
+    const opts = mocks.runLoopChatTurn.mock.calls[0][0];
+    expect(opts.transcript).toEqual([...history, expect.objectContaining({ role: 'user', content: 'customer turn' })]);
+    expect(opts.system).toContain('ROLE PROMPT');
+    expect(opts.sessions).toBeDefined();
+    expect(opts.port.stream).toBeTypeOf('function');
+    expect(opts.tools.map((tool: { name: string }) => tool.name)).toEqual(['capability:bash']);
+    expect(opts.tools[0].needsApproval).toBe(true);
+    expect(opts).not.toHaveProperty('account');
+    expect(mocks.dispatchProjectedTool).not.toHaveBeenCalled();
+    expect(mocks.updateArgs).toHaveLength(2);
+    expect(JSON.parse(mocks.updateArgs[1][0] as string).at(-1)).toMatchObject({ role: 'assistant',
+      content: 'loop says hi', account_route: 'auto' });
+    // Constructing a private factory never opens the default mounted route.
+    const mounted = findRoute(routes, 'POST', '/harness/:slug/agent-chats/:chatId/messages');
+    expect((await mounted.handler(postReq({ content: 'customer turn', engine: 'loop', model: 'sonnet' }), ctxFor(CHAT)) as Response).status).toBe(403);
+    expect(mocks.updateArgs).toHaveLength(2);
+  });
+
+  it.each(['workspace', 'cwd', 'authorization', 'model', 'signal'])(
+    'refuses private %s authority before transcript writes or engine execution', async reason => {
+      const { mocks } = await loopLaneRoutes({ ...baseRow });
+      const { createAgentChatMessagesRoute } = await import('../routes/agent-chats');
+      const signal = new AbortController().signal;
+      const bind = vi.fn(async () => {
+        if (reason === 'authorization') throw new Error('private-secret');
+        return { modelPort: reason === 'model' ? undefined : { async *stream() {} }, tools: [],
+          signal: reason === 'signal' ? AbortSignal.abort() : signal };
+      });
+      const route = createAgentChatMessagesRoute({ workspaceId: reason === 'workspace' ? 'foreign' : 'default',
+        projectDir: reason === 'cwd' ? '/foreign' : '/tmp/proj', bind: bind as never });
+      const res = await route.handler(postReq({ content: 'customer turn', engine: 'loop', model: 'sonnet' }), ctxFor(CHAT)) as Response;
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'hosted_native_loop_unavailable' });
+      expect(mocks.updateArgs).toEqual([]);
+      expect(mocks.runLoopChatTurn).not.toHaveBeenCalled();
+      expect(mocks.dispatchProjectedTool).not.toHaveBeenCalled();
+      expect(bind).toHaveBeenCalledTimes(['workspace', 'cwd'].includes(reason) ? 0 : 1);
+    },
+  );
+
+  it('cancels stalled private authorization before acquiring persistence authority', async () => {
+    const { mocks } = await loopLaneRoutes({ ...baseRow });
+    const { createAgentChatMessagesRoute } = await import('../routes/agent-chats');
+    const controller = new AbortController();
+    const bind = vi.fn(() => new Promise<never>(() => {}));
+    const route = createAgentChatMessagesRoute({ workspaceId: 'default', projectDir: '/tmp/proj', bind });
+    const request = new Request(postReq({ content: 'customer turn', engine: 'loop', model: 'sonnet' }), { signal: controller.signal });
+    const pending = route.handler(request, ctxFor(CHAT));
+    await vi.waitFor(() => expect(bind).toHaveBeenCalledTimes(1));
+    controller.abort();
+    expect((await pending as Response).status).toBe(403);
+    expect(mocks.updateArgs).toEqual([]);
+    expect(mocks.runLoopChatTurn).not.toHaveBeenCalled();
+  });
+
+  it('refuses connector-stamped customer native turns before operator execution or transcript writes', async () => {
+    const { operatorHttpRequestHeaders } = await import('../../workspace-host/hosted-operator-http');
+    const { routes, mocks } = await loopLaneRoutes({ ...baseRow });
+    const messages = findRoute(routes, 'POST', '/harness/:slug/agent-chats/:chatId/messages');
+    const request = new Request(postReq({ content: 'customer turn', engine: 'loop', model: 'sonnet' }), {
+      headers: operatorHttpRequestHeaders({ 'content-type': 'application/json' }, {
+        userId: 'customer-user', hostedSessionId: 'customer-session',
+      }),
+    });
+    const res = await messages.handler(request, ctxFor(CHAT)) as Response;
+    // Drain the unexpected old SSE path too, so a failing regression leaves no stream behind.
+    const { text, closed } = await drainSse(res.body, 8_000);
+    expect(closed).toBe(true);
+    expect(res.status).toBe(403);
+    expect(JSON.parse(text)).toMatchObject({ error: 'hosted_native_loop_unavailable' });
+    expect(mocks.runLoopChatTurn).not.toHaveBeenCalled();
+    expect(mocks.dispatchProjectedTool).not.toHaveBeenCalled();
+    expect(mocks.updates).toEqual([]);
+  });
+
+  it.each(['', 'off'])('refuses bare native turns on a VM release host with peer policy %j before operator execution', async (peerPolicy) => {
+    vi.stubEnv('PAPERCUSP_DISTRIBUTION_PROFILE', 'vm-release');
+    vi.stubEnv('PAPERCUSP_LOOPBACK_PEER_UID_POLICY', peerPolicy);
+    const { routes, mocks } = await loopLaneRoutes({ ...baseRow });
+    const messages = findRoute(routes, 'POST', '/harness/:slug/agent-chats/:chatId/messages');
+    const res = await messages.handler(
+      postReq({ content: 'customer turn', engine: 'loop', model: 'sonnet' }), ctxFor(CHAT),
+    ) as Response;
+    const { text, closed } = await drainSse(res.body, 8_000);
+    expect(closed).toBe(true);
+    expect(res.status).toBe(403);
+    expect(JSON.parse(text)).toMatchObject({ error: 'hosted_native_loop_unavailable' });
+    expect(mocks.runLoopChatTurn).not.toHaveBeenCalled();
+    expect(mocks.updates).toEqual([]);
+  });
+
   it('routes to runLoopChatTurn with the assembled system + transcript, streams, persists, closes', async () => {
     const { routes, mocks } = await loopLaneRoutes({ ...baseRow });
     const messages = findRoute(routes, 'POST', '/harness/:slug/agent-chats/:chatId/messages');
@@ -428,7 +546,8 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
   it('rejects an unsupported loop model before user-turn persistence or streaming', async () => {
     const { routes, mocks } = await loopLaneRoutes({ ...baseRow });
     const messages = findRoute(routes, 'POST', '/harness/:slug/agent-chats/:chatId/messages');
-    const model = 'openrouter/stealth/ox-alpha:max';
+    // OpenRouter is now executable; use a provider the router actually refuses.
+    const model = 'unsupported-test-provider/model:max';
     const res = (await messages.handler(
       postReq({ content: 'must not run', engine: 'loop', model }),
       ctxFor(CHAT),
@@ -478,18 +597,22 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
       postReq({ content: 'hello loop', engine: 'loop' }),
       ctxFor(CHAT),
     )) as Response;
-    const { closed } = await drainSse(res.body, 8_000);
+    const { text, closed } = await drainSse(res.body, 8_000);
     expect(closed).toBe(true);
+    expect(text).toContain('event: error');
+    expect(text).toContain('gateway exploded');
+    expect(text).not.toContain('event: done');
     const finalUpdate = mocks.updateArgs.at(-1)!;
     const transcript = JSON.parse(finalUpdate[0] as string) as Array<{ role: string; content: string; error?: boolean }>;
     expect(transcript.at(-1)).toMatchObject({
       role: 'assistant',
-      content: 'gateway exploded',
+      content: 'That turn did not complete. Try asking again.',
       error: true,
       engine: 'loop',
       model: 'claude-sonnet-4-6',
       account_route: 'auto',
     });
+    expect(transcript.at(-1)!.content).not.toContain('gateway exploded');
   });
 
   it('a retry with the same trailing user turn does not append it twice', async () => {
@@ -540,7 +663,7 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
     const persisted = JSON.parse(mocks.updateArgs.at(-1)![0] as string) as Array<{ role: string; content: string; error?: boolean }>;
     expect(persisted.at(-1)).toMatchObject({
       role: 'assistant',
-      content: 'agent loop completed without assistant content',
+      content: 'That turn did not complete. Try asking again.',
       error: true,
     });
   });

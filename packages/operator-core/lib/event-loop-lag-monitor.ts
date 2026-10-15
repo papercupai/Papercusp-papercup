@@ -417,6 +417,43 @@ export async function cooperativeYield(count: number, everyN = 4): Promise<numbe
   return next;
 }
 
+/** Main-thread budget for one synchronous slice of a {@link createTimeSlice} loop. */
+export const DEFAULT_TIME_SLICE_MS = 10;
+
+/**
+ * Time-budget sibling of {@link cooperativeYield}, for a loop whose iterations vary
+ * widely in cost: a count cannot bound the slice when one item is 100 bytes and the
+ * next is 2 MB. Call `maybeYield()` before each iteration; it yields once the current
+ * slice has run for `sliceMs` (or whenever loop pressure is already elevated), so a
+ * loop holds the main thread for at most about one slice plus one item.
+ *
+ *   const slice = createTimeSlice();
+ *   for (const f of files) { await slice.maybeYield(); scan(f); }
+ *
+ * WI-10005476: bg-host's secrets scans ran whole 32 MB chunks in one turn and
+ * stalled the main thread for seconds.
+ */
+export function createTimeSlice(
+  sliceMs: number = DEFAULT_TIME_SLICE_MS,
+  opts: { now?: () => number; yieldFn?: () => Promise<void> } = {},
+): { maybeYield(): Promise<void>; readonly yields: number } {
+  const now = opts.now ?? (() => performance.now());
+  const yieldFn = opts.yieldFn ?? yieldToEventLoop;
+  let sliceStart = now();
+  let yields = 0;
+  return {
+    async maybeYield(): Promise<void> {
+      if (now() - sliceStart < sliceMs && loopPressure() === 'ok') return;
+      await yieldFn();
+      yields += 1;
+      sliceStart = now();
+    },
+    get yields() {
+      return yields;
+    },
+  };
+}
+
 /**
  * Start the event-loop-lag monitor. Returns a handle; the underlying timer is
  * `unref`'d so it never keeps the process alive on its own. Idempotent enough

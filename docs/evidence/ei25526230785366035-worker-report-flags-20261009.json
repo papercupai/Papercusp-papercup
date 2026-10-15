@@ -1,0 +1,35 @@
+{
+  "workItem": "EI-25526230785366035",
+  "verifiedNativeSession": "01a12200-346d-7170-b017-1e9085a1f503",
+  "ownerId": "su-972ed2d5-69ae-43de-9a22-03c84ae4a186",
+  "rootCause": "The sentinel explicitly copied process.execArgv into Worker options. Node rejects process-wide report-directory, report-filename and report-on-fatalerror options in explicit Worker execArgv, disabling the sentinel at construction.",
+  "nodeVersion": "v22.21.1",
+  "commandPathPolicy": "Commands use the portable HOME variable for the observed Node v22.21.1 executable directory. The exact executed command is retained in the native transcript and work-item verification record.",
+  "redCommand": "PATH=$HOME/.nvm/versions/node/v22.21.1/bin:$PATH ../../scripts/pc-heavy.sh -- node ../../node_modules/vitest/vitest.mjs run lib/event-loop-sentinel-host.test.ts -t 'diagnostic report directory' --reporter=dot",
+  "redResult": {
+    "exitCode": 1,
+    "failed": 2,
+    "observed": "Both joined and split report-directory cases returned active:false and ERR_WORKER_INVALID_EXEC_ARGV from the actual sentinel constructor."
+  },
+  "greenCommand": "PATH=$HOME/.nvm/versions/node/v22.21.1/bin:$PATH ../../scripts/pc-heavy.sh -- node ../../node_modules/vitest/vitest.mjs run lib/event-loop-sentinel-host.test.ts --reporter=dot",
+  "commandCwd": "packages/operator-core",
+  "greenResult": {
+    "exitCode": 0,
+    "passed": 40,
+    "skipped": 0,
+    "durationSeconds": 61.27,
+    "observed": "Real source watcher remains active, alive and heartbeating with diagnostic report flags, including split value options and disabled fatal reporting. Bundled watcher retains tsx, warnings and supported signal/exception diagnostic flags. Existing stall and profiling tests also pass."
+  },
+  "sources": [
+    {
+      "path": "packages/operator-core/lib/event-loop-sentinel-host.ts",
+      "sha256": "d7636d8d8b7ebc5de30d3bd486f79b9bb85257bb30a20740dc78535b9133ca37"
+    },
+    {
+      "path": "packages/operator-core/lib/event-loop-sentinel-host.test.ts",
+      "sha256": "294cc0abba20971b23ece021d29353cdf2e08b1db0253ee025ee5434e612b530"
+    }
+  ],
+  "diffCheck": "git diff --check passed for both source paths",
+  "boundary": "Source verification only. No existing runtime restart, LIVE_GATE_OPS, promotion or deployed-main claim."
+}

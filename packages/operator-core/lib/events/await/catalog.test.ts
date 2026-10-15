@@ -323,6 +323,7 @@ describe('EI-10870 — keyMatchesCatalog (the orphan-await guard)', () => {
     expect(keyMatchesCatalog('pot-git:staging-advance')).toBe(true);
     expect(keyMatchesCatalog('coord:receipt:ms18qqq-0000-feed')).toBe(true);
     expect(keyMatchesCatalog('work-item:duplicate-settled:WI-5822')).toBe(true);
+    expect(keyMatchesCatalog('work-item:tool-failure-reporter:EI-25396682599838692')).toBe(true);
     expect(keyMatchesCatalog('release-pass:autoloop')).toBe(true);
   });
 

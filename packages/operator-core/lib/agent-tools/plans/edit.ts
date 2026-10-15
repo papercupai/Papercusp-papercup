@@ -89,7 +89,10 @@ export async function evaluatePlanEdit(
   replaceAll: boolean,
   slug: string,
   expectedHash: string | undefined,
-  opts: { expectedVersion?: number; meta?: { version: number; contentHash: string } | null } = {},
+  opts: {
+    expectedVersion?: number;
+    meta?: { version: number; contentHash: string; planStatus?: string | null } | null;
+  } = {},
 ): Promise<{ newBody: string | null; value: PlanEditValue }> {
   if (current === null) {
     return { newBody: null, value: { ok: false, code: 'not_found' } };
@@ -164,6 +167,9 @@ export default defineTool({
         }),
     );
 
+    if (result.kind === 'refused') {
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result.value) }], isError: true };
+    }
     if (result.kind === 'busy') {
       return {
         content: [
@@ -201,6 +207,10 @@ export default defineTool({
             `only the ${v.errors.length} error(s) above were INTRODUCED by this edit — the plan already carried ` +
             `${v.preexistingErrors} unrelated lint error(s), which do not block your write. Fix the introduced ones.`;
         }
+      } else if (v.code === 'terminal_parent_child_mutation') {
+        payload.parentStatus = v.parentStatus;
+        payload.changes = v.changes;
+        payload.message = v.message;
       } else if (v.code === 'string_not_unique') {
         payload.count = v.count;
         payload.hint = 'add surrounding context to old_string to make it unique, or pass replace_all: true';
@@ -234,7 +244,7 @@ export default defineTool({
             ok: true,
             slug: v.slug,
             contentHash: v.contentHash,
-            ...(v.nowStamped ? { nowStamped: true } : {}),
+            ...(v.planDrainTransitionChanged ? { planDrainTransitionChanged: true } : {}),
             version: result.version,
             filePath: result.filePath,
             revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,

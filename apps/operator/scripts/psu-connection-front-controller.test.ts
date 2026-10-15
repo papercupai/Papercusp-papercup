@@ -13,6 +13,7 @@ import {
   defaultPsuConnectionStorePath,
   hostedForwardInput,
   loadPsuConnectionStore,
+  normalizeAwsSsmProfile,
   normalizeGcpIapProfile,
   normalizeHostedPortalOrigin,
   normalizeHostedProfile,
@@ -322,6 +323,215 @@ describe("psu remote front controller", () => {
         pickConnection: async () => "local",
       }),
     ).resolves.toEqual({ handled: false, argv: ["--", "--help"] });
+  });
+});
+
+describe("psu --connect over AWS SSM (aws-byoc-gcp-parity-2026-10-01 P-009)", () => {
+  const INSTANCE = "i-0123456789abcdef0";
+  const SSM_PROXY =
+    "aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p --region=us-east-2 --profile=papercusp-byoc";
+
+  function awsProfile(name = "ec2") {
+    return normalizeAwsSsmProfile({
+      name,
+      region: "us-east-2",
+      instanceId: INSTANCE,
+      sshUser: "ec2-user",
+      awsProfile: "papercusp-byoc",
+    });
+  }
+
+  /** Records every ssh call; the ControlMaster check fails so a new master is built. */
+  function sshRecorder() {
+    const commands: Array<{ command: string; args: readonly string[] }> = [];
+    const interactive: Array<{ command: string; args: readonly string[] }> = [];
+    return {
+      commands,
+      interactive,
+      runCommand: vi.fn(async (command: string, args: readonly string[]) => {
+        commands.push({ command, args });
+        return { code: args.includes("check") ? 1 : 0, signal: null };
+      }),
+      async runInteractive(command: string, args: readonly string[]) {
+        interactive.push({ command, args });
+        return { code: 0, signal: null };
+      },
+    };
+  }
+
+  function option(args: readonly string[], name: string): string | undefined {
+    const hit = args.find(
+      (arg, index) => args[index - 1] === "-o" && arg.startsWith(`${name}=`),
+    );
+    return hit?.slice(name.length + 1);
+  }
+
+  it("parses the AWS add command and forwards every other argv cell", () => {
+    const parsed = parsePsuConnectionArgs([
+      "--connect-add-aws-ssm=ec2",
+      "--connect-region",
+      "us-east-2",
+      `--connect-instance=${INSTANCE}`,
+      "--connect-user=ec2-user",
+      "--connect-aws-profile=papercusp-byoc",
+      "--account=default",
+    ]);
+    expect(parsed.transport).toMatchObject({
+      addAwsName: "ec2",
+      addName: null,
+      region: "us-east-2",
+      instanceName: INSTANCE,
+      sshUser: "ec2-user",
+      awsProfile: "papercusp-byoc",
+    });
+    expect(parsed.forwardedArgv).toEqual(["--account=default"]);
+  });
+
+  it("refuses a provider field that belongs to the other provider's add command", () => {
+    expect(() =>
+      parsePsuConnectionArgs(["--connect-add-gcp-iap=g", "--connect-region=us-east-2"]),
+    ).toThrow("--connect-region/aws-profile require --connect-add-aws-ssm");
+    expect(() =>
+      parsePsuConnectionArgs(["--connect-add-aws-ssm=a", "--connect-zone=us-central1-a"]),
+    ).toThrow("--connect-project/zone require --connect-add-gcp-iap");
+    expect(() =>
+      parsePsuConnectionArgs(["--connect-add-aws-ssm=a", "--connect-add-gcp-iap=g"]),
+    ).toThrow("Choose only one of");
+    expect(() => parsePsuConnectionArgs([`--connect-instance=${INSTANCE}`])).toThrow(
+      "--connect-instance/user require --connect-add-gcp-iap or --connect-add-aws-ssm",
+    );
+  });
+
+  it("normalizes an SSM profile with declared capabilities and rejects shell-shaped identity", () => {
+    const profile = awsProfile();
+    expect(profile).toMatchObject({
+      kind: "aws-ssm-ssh",
+      region: "us-east-2",
+      instanceId: INSTANCE,
+      awsProfile: "papercusp-byoc",
+      target: `ec2-user@${INSTANCE}`,
+      features: { command: true, pty: true, tcpForward: true, fileTransfer: true },
+      audited: true,
+    });
+    expect(profile.endpoint).toBe(
+      `aws-ssm-ssh://${INSTANCE}?region=us-east-2&instance=${INSTANCE}&profile=papercusp-byoc`,
+    );
+    expect(profile.prerequisites).toContain("AWS Session Manager plugin");
+    expect(profile.constraints.join(" ")).toContain("No public IP");
+    // No awsProfile key at all when none is given, so the default chain is used.
+    expect("awsProfile" in normalizeAwsSsmProfile({ ...profile, awsProfile: undefined })).toBe(false);
+    expect(() => normalizeAwsSsmProfile({ ...profile, instanceId: "i-123; touch /tmp/bad" })).toThrow(
+      "EC2 instance id",
+    );
+    expect(() => normalizeAwsSsmProfile({ ...profile, region: "us-east-2 --debug" })).toThrow(
+      "AWS region",
+    );
+    expect(() => normalizeAwsSsmProfile({ ...profile, awsProfile: "p --endpoint-url=x" })).toThrow(
+      "AWS CLI profile",
+    );
+  });
+
+  it("stores AWS beside GCP profiles and reloads both unchanged", () => {
+    const path = savedStore(tempHome(), [gcpProfile("gcp"), awsProfile("aws")]);
+    expect(loadPsuConnectionStore(path).profiles).toEqual([gcpProfile("gcp"), awsProfile("aws")]);
+  });
+
+  it("saves the profile from the add command and lists it", async () => {
+    const home = tempHome();
+    const storePath = defaultPsuConnectionStorePath(home);
+    const output: string[] = [];
+    await expect(
+      runPsuConnectionFrontController(
+        [
+          "--connect-add-aws-ssm=ec2",
+          "--connect-region=us-east-2",
+          `--connect-instance=${INSTANCE}`,
+          "--connect-user=ec2-user",
+          "--connect-aws-profile=papercusp-byoc",
+        ],
+        { home, storePath, interactive: false, output: (line: string) => output.push(line) },
+      ),
+    ).resolves.toMatchObject({ handled: true, exitCode: 0 });
+    expect(loadPsuConnectionStore(storePath).profiles).toEqual([awsProfile()]);
+    expect(output).toEqual([
+      `Saved ec2 — AWS SSM us-east-2/${INSTANCE} as ec2-user (AWS profile papercusp-byoc)`,
+    ]);
+  });
+
+  it("opens remote psu through an SSM-tunnelled ControlMaster to the instance id", async () => {
+    const home = tempHome();
+    const storePath = savedStore(home, [awsProfile()]);
+    const ssh = sshRecorder();
+    const checked: string[] = [];
+
+    const result = await runPsuConnectionFrontController(
+      ["--connect=ec2", "--role=su", "--", "--backend-owned"],
+      {
+        home,
+        storePath,
+        interactive: false,
+        commandAvailable: (command: string) => {
+          checked.push(command);
+          return true;
+        },
+        runCommand: ssh.runCommand,
+        runInteractive: ssh.runInteractive,
+        async reservePort() {
+          return { port: 45124, async release() {} };
+        },
+        async probeOperator() {},
+        notice: vi.fn(),
+      },
+    );
+
+    expect(result).toEqual({
+      handled: true,
+      argv: ["--role=su", "--", "--backend-owned"],
+      exitCode: 0,
+    });
+    expect(checked).toEqual(["ssh", "aws", "session-manager-plugin"]);
+    const master = ssh.commands.find(({ args }) => args.includes("ControlMaster=yes"));
+    expect(master?.command).toBe("ssh");
+    expect(option(master?.args ?? [], "ProxyCommand")).toBe(SSM_PROXY);
+    expect(master?.args).toContain(`ec2-user@${INSTANCE}`);
+    expect(master?.args.join(" ")).not.toContain("gcloud");
+    expect(ssh.interactive[0]?.args.at(-1)).toContain(
+      `'env' 'PAPERCUSP_PSU_CONNECTION_FORWARDED=1' 'psu' '--role=su' '--' '--backend-owned'`,
+    );
+  });
+
+  it("refuses before any ssh call when the Session Manager plugin is missing", async () => {
+    const home = tempHome();
+    const storePath = savedStore(home, [awsProfile()]);
+    const ssh = sshRecorder();
+    await expect(
+      runPsuConnectionFrontController(["--connect=ec2"], {
+        home,
+        storePath,
+        interactive: false,
+        commandAvailable: (command: string) => command !== "session-manager-plugin",
+        runCommand: ssh.runCommand,
+      }),
+    ).rejects.toThrow("Connection 'ec2' requires 'session-manager-plugin' on the local PATH");
+    expect(ssh.commands).toEqual([]);
+  });
+
+  it("names the SSM permission, not IAP or OS Login, when the tunnel cannot be established", async () => {
+    const home = tempHome();
+    const storePath = savedStore(home, [awsProfile()]);
+    await expect(
+      runPsuConnectionFrontController(["--connect=ec2"], {
+        home,
+        storePath,
+        interactive: false,
+        commandAvailable: () => true,
+        runCommand: async () => ({ code: 255, signal: null }),
+        async reservePort() {
+          return { port: 45125, async release() {} };
+        },
+        notice: vi.fn(),
+      }),
+    ).rejects.toThrow(/ssm:StartSession with AWS-StartSSHSession\.$/);
   });
 });
 

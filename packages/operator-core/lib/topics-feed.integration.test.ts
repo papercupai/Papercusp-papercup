@@ -34,9 +34,14 @@ async function seedConversation(id: string, title: string, state = 'open'): Prom
 }
 
 async function seedIssue(id: string, title: string, state = 'open'): Promise<void> {
+  // Seed through the canonical writer surface. The compatibility view's INSERT
+  // readback uses its pre-trigger scope, which can be rehomed by pot membership.
   await admin`
-    INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, scope, title, state)
-    VALUES ('default', ${id}, 'operator', ${title}, ${state})`;
+    INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, title, summary, status, item_kind)
+    VALUES ('default',
+      COALESCE(harness_shared.workspace_platform_pot('default'), 'operator:default'),
+      ${id}, ${title}, '', ${state}, 'bug')`;
 }
 
 beforeAll(async () => {
@@ -56,6 +61,31 @@ afterEach(async () => {
 });
 
 describe('topicFeed (real PG)', () => {
+  it('seeds a stored issue in the workspace platform pot visible through the issue view', async () => {
+    await seedIssue('EI-TF-storage', 'stored issue');
+    const [{ platform }] = await admin`
+      SELECT harness_shared.workspace_platform_pot('default') AS platform`;
+    const [stored] = await admin`
+      SELECT harness_slug, item_kind, title
+      FROM harness_shared.work_items
+      WHERE workspace_id = 'default' AND feature_id = 'EI-TF-storage'`;
+    expect(stored).toEqual({
+      harness_slug: platform ?? 'operator:default',
+      item_kind: 'bug',
+      title: 'stored issue',
+    });
+    const [visible] = await admin`
+      SELECT base_harness_slug, kind, title, state
+      FROM harness_shared.engineer_issues
+      WHERE workspace_id = 'default' AND issue_id = 'EI-TF-storage'`;
+    expect(visible).toEqual({
+      base_harness_slug: stored.harness_slug,
+      kind: 'bug',
+      title: 'stored issue',
+      state: 'open',
+    });
+  });
+
   it('returns [] for a topic with no tagged objects', async () => {
     expect(await topicFeed('tf-empty-topic')).toEqual([]);
   });

@@ -3,7 +3,7 @@
  *
  * Leadership is a control-plane state transition, not prompt advice. Every path
  * that installs a leader calls this effect so the leader holds AUTO mode, an
- * active loop, and standing wake watches for the fleet's transition events. The
+ * eligible loop, and standing wake watches for the fleet's transition events. The
  * effect is idempotent and repairs partial/stale state without overwriting an
  * active loop's deliberately chosen cadence or mission.
  */
@@ -215,6 +215,8 @@ export interface LeaderControlOutcome {
     harness: string | null;
     intervalSec: number | null;
     mode: LoopStatus['mode'] | null;
+    /** An intentional inactive monitor is healthy, not a missing wake source to repair. */
+    standdown?: 'no_delta_budget_exhausted';
     error?: string;
   };
   watches: {
@@ -401,8 +403,23 @@ export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlIn
   // mission, so repair only a missing or inactive loop and preserve every active
   // loop configuration verbatim.
   const priorLoopHealthy = priorLoop?.active === true;
+  const priorMonitor = priorLoopFacts?.monitor ?? priorLoop?.monitor;
+  const priorMonitorExhausted =
+    (priorLoop?.mode ?? priorLoopFacts?.mode) === 'monitor' &&
+    (priorLoop?.monitor?.remainingNoDeltaBudget === 0 ||
+      priorLoopFacts?.monitor?.remainingNoDeltaBudget === 0 ||
+      // Legacy/partial payloads must not turn a recorded exhaustion into a new
+      // default budget. A positive budget from a later explicit arm, however,
+      // supersedes historical standdown metadata (which the writer retains).
+      (!priorMonitor && priorLoop?.monitorStanddown?.code === 'no_delta_budget_exhausted'));
   if (priorLoopHealthy) {
     loop.healthy = true;
+  } else if (priorMonitorExhausted) {
+    // Recovery is not a new monitoring mandate. Keep the row inactive and its
+    // budget untouched, while continuing inbox/transition-watch reconciliation
+    // below so concrete new work can still reach the leader.
+    loop.healthy = true;
+    loop.standdown = 'no_delta_budget_exhausted';
   } else if (!harness) {
     loop.error = 'no concrete harness available for the leader monitor loop';
     errors.push(`loop: ${loop.error}`);
@@ -415,7 +432,7 @@ export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlIn
       const mode = priorLoop?.mode ?? priorLoopFacts?.mode ?? 'monitor';
       const monitor: PersistedMonitorConfig | undefined =
         mode === 'monitor'
-          ? (priorLoopFacts?.monitor ?? {
+          ? (priorMonitor ?? {
               predicateKey: `fleet:${input.fleetSlug}`,
               stopCondition: `Fleet ${input.fleetSlug} is drained, enters winding-down, or ${input.ownerId} no longer holds durable leadership.`,
               noDeltaBudget: MONITOR_NO_DELTA_BUDGET_MAX,

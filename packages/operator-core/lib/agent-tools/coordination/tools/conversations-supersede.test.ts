@@ -91,4 +91,38 @@ describe('conversations:supersede handler', () => {
       reason: 'old premise falsified',
     });
   });
+
+  it('forwards the exact accepted answer for a single resolved-owner correction', async () => {
+    mockResolvedTyped(supersedeM, { error: 'resolution_changed' });
+    const result = await body({
+      id: 'conv-old',
+      expected_answer: 'approved answer v1',
+      replacement: { body: 'corrected question' },
+      reason: 'the accepted answer was stale',
+    });
+
+    expect(result.results[0]).toMatchObject({ ok: false, id: 'conv-old', error: 'resolution_changed' });
+    expect(supersedeM).toHaveBeenCalledWith({ ownerId: 'me' }, {
+      conversation_id: 'conv-old',
+      expected_answer: 'approved answer v1',
+      replacement: { body: 'corrected question' },
+      reason: 'the accepted answer was stale',
+    });
+  });
+
+  it('forwards per-item expected answers in a bulk correction', async () => {
+    mockResolvedTyped(supersedeM, { error: 'resolution_changed' });
+    await body({
+      items: [{
+        id: 'conv-old',
+        expected_answer: 'approved answer v1',
+        replacement: { body: 'corrected question' },
+      }],
+    });
+
+    expect(supersedeM).toHaveBeenCalledWith({ ownerId: 'me' }, expect.objectContaining({
+      conversation_id: 'conv-old',
+      expected_answer: 'approved answer v1',
+    }));
+  });
 });

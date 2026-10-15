@@ -15,6 +15,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../_baseline-coord-fixture';
+import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { listFleetAssignments, groupByAgent, orphanedClaims } from './assignments';
 import { recordedLiveOwnerIds } from '../adv-sessions';
 import { reorderWorkItem } from '../work-items';
@@ -35,9 +36,9 @@ import { onFleetAssignmentChange, _stopForTests, type FleetAssignmentChange } fr
 // seeded under workspace_id='default' by ANY OTHER concurrent consumer of the shared
 // baseline-coord fixture (e.g. stalled-claim-collector.integration.test.ts, which used to
 // share this exact 'default' id) is ALWAYS pulled into this file's own listFleetAssignments
-// reads, regardless of any mutex/serialization between the two files. Using a workspace id
-// distinct from both special buckets makes that structurally impossible: this file's own
-// rows are the ONLY ones visible under an opts.workspaceId filter of WS.
+// reads, regardless of any mutex/serialization between the two files. A unique WS
+// separates this suite's ordinary rows; a caller-owned migrated DB below also
+// isolates the default/global buckets the reader must include.
 vi.mock('../workspace-registry', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../workspace-registry')>();
   return { ...actual, activeWorkspaceId: () => 'fa-assign-test-ws' };
@@ -45,6 +46,7 @@ vi.mock('../workspace-registry', async (importOriginal) => {
 
 let fx: BaselineCoordFixture;
 let admin: postgres.Sql;
+let isolatedDb: OrgTestDb;
 
 const WS = 'fa-assign-test-ws';
 
@@ -151,15 +153,23 @@ async function seedMembershipEvent(
 }
 
 beforeAll(async () => {
-  fx = await setupBaselineCoordFixture();
+  isolatedDb = await createOrgTestDb();
+  fx = await setupBaselineCoordFixture({ dsn: isolatedDb.adminDsn });
   admin = fx.admin;
   await truncateAll();
 }, 120_000);
 
 afterAll(async () => {
-  await truncateAll().catch(() => {});
-  await _stopForTests();
-  await fx.dispose();
+  try {
+    await truncateAll().catch(() => {});
+    await _stopForTests();
+  } finally {
+    try {
+      await fx?.dispose();
+    } finally {
+      await isolatedDb?.cleanup();
+    }
+  }
 });
 
 beforeEach(async () => {

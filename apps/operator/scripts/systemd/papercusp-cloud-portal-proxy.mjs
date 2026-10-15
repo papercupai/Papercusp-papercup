@@ -97,12 +97,17 @@ function forwardHttpRequest(req, res, options) {
       res.writeHead(502, {
         'content-type': 'text/plain; charset=utf-8',
         'cache-control': 'no-store',
+        'referrer-policy': 'no-referrer',
+        'x-robots-tag': 'noindex, nofollow',
       });
     }
     res.end('Papercusp Portal upstream unavailable\n');
+    // Transport messages and arbitrary error fields can carry request credentials.
+    const errorCode = ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ENOTFOUND', 'EAI_AGAIN']
+      .includes(error?.code) ? error.code : 'upstream_error';
     console.error(
       `portal proxy request failed after ${attempts} attempt(s) / ${Date.now() - startedAt}ms:`,
-      error.message,
+      errorCode,
     );
   };
 

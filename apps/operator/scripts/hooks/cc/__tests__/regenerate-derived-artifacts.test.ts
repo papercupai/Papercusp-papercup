@@ -44,7 +44,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -54,7 +54,16 @@ import { fileURLToPath } from 'node:url';
 import {
   selectDerivedArtifacts,
   regenerateForPaths,
+  listDeclarationsGraph,
+  cachedDeclarationsGraph,
+  invalidateDeclarationsGraph,
+  describeGeneratorFailure,
+  declarationsGraphMembers,
+  DECLARATIONS_GRAPH_TTL_MS,
 } from '../regenerate-declaration-before-lock-release.mjs';
+
+/** The helper run as git-sync runs it: a separate node process (WI-6554700010011061). */
+const HELPER = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'regenerate-declaration-before-lock-release.mjs');
 
 /** Walk up for the declarations config — the same marker the helper uses as the repo root. */
 function findRepoRoot(): string {
@@ -69,9 +78,17 @@ function findRepoRoot(): string {
 
 const REPO_ROOT = findRepoRoot();
 
+/**
+ * An empty declarations program graph. The cases below are about enrollment, not the
+ * graph (WI-6554700010010911 has its own block): without this seam each `.ts` path
+ * would list the real graph (~4s), and a synthetic temp repo has no TypeScript to
+ * list it with.
+ */
+const NO_GRAPH = { declarationsGraph: () => new Set<string>() };
+
 /** The artifact ids `selectDerivedArtifacts` reports for a given edit. */
 function selectedIds(paths: string[]): string[] {
-  return selectDerivedArtifacts(REPO_ROOT, paths).map((entry: { id: string }) => entry.id);
+  return selectDerivedArtifacts(REPO_ROOT, paths, NO_GRAPH).map((entry: { id: string }) => entry.id);
 }
 
 const CONTRACT_ARTIFACT = 'testing-domains-contract';
@@ -183,9 +200,11 @@ describe('derived-artifact regeneration: end-to-end wiring', () => {
   it('a registry edit actually reaches the generator', () => {
     withSyntheticRepo((root, marker) => {
       expect(existsSync(marker)).toBe(false);
-      const selected = regenerateForPaths(root, [
-        'packages/operator-core/lib/testing-domains-registry.ts',
-      ]);
+      const selected = regenerateForPaths(
+        root,
+        ['packages/operator-core/lib/testing-domains-registry.ts'],
+        NO_GRAPH,
+      );
       expect(selected).toBe(1);
       expect(existsSync(marker)).toBe(true);
     });
@@ -196,8 +215,222 @@ describe('derived-artifact regeneration: end-to-end wiring', () => {
     // the repo, so an entry that regenerated unconditionally would put its generator in
     // the hot path of every unrelated file change.
     withSyntheticRepo((root, marker) => {
-      expect(regenerateForPaths(root, ['packages/operator-core/lib/unrelated.ts'])).toBe(0);
+      expect(regenerateForPaths(root, ['packages/operator-core/lib/unrelated.ts'], NO_GRAPH)).toBe(0);
       expect(existsSync(marker)).toBe(false);
+    });
+  });
+});
+
+/**
+ * WI-6554700010010911 — a `.ts` inside tsconfig.declarations.json's program graph (but
+ * not itself an enrolled `.mjs`) was never compiled at edit time. Its TS error first
+ * surfaced in git-sync's declarations emit (holding commits) or the green gate's
+ * gen:declarations:check (redding `main`), and when the hook DID run a generator its
+ * failure reached the agent as a bare `Command failed` with no compiler output.
+ */
+describe('WI-6554700010010911: declarations program-graph edits', () => {
+  const IN_GRAPH = 'packages/operator-core/lib/verifier-source.ts';
+
+  /** A graph seam that records whether the (slow) graph lookup was consulted. */
+  function graphSeam(files: string[]) {
+    const seam = { calls: 0, declarationsGraph: (_root: string) => { seam.calls += 1; return new Set(files); } };
+    return seam;
+  }
+
+  function declarationsSelection(paths: string[], deps: { declarationsGraph: (root: string) => Set<string> }) {
+    return selectDerivedArtifacts(REPO_ROOT, paths, deps).find(
+      (entry: { id: string }) => entry.id === 'declarations',
+    ) as { id: string; selected: string[] } | undefined;
+  }
+
+  it('the real graph reaches a known TS input, every enrolled input, and nothing under node_modules', () => {
+    const graph = listDeclarationsGraph(REPO_ROOT);
+    expect(graph).toContain(IN_GRAPH);
+    const raw = readFileSync(join(REPO_ROOT, 'tsconfig.declarations.json'), 'utf8');
+    const enrolled = ((JSON.parse(raw.replace(/^\s*\/\/.*$/gm, '')) as { files?: unknown[] }).files ?? []).filter(
+      (path): path is string => typeof path === 'string' && path.endsWith('.mjs'),
+    );
+    expect(enrolled.length).toBeGreaterThan(0);
+    for (const input of enrolled) expect(graph).toContain(input);
+    expect(graph.filter((path: string) => path.split('/').includes('node_modules'))).toEqual([]);
+    expect(graph.filter((path: string) => path.startsWith('../') || path.startsWith('/'))).toEqual([]);
+  }, 60_000);
+
+  it('an edited TS file in the graph selects the declarations artifact', () => {
+    const seam = graphSeam([IN_GRAPH]);
+    expect(declarationsSelection([IN_GRAPH], seam)?.selected).toEqual([IN_GRAPH]);
+    expect(seam.calls).toBe(1);
+  });
+
+  it('an edited TS file outside the graph selects nothing', () => {
+    const seam = graphSeam([IN_GRAPH]);
+    expect(declarationsSelection(['packages/operator-core/lib/agent-tools/index.ts'], seam)).toBeUndefined();
+  });
+
+  it('a non-source edit never pays for a graph lookup', () => {
+    const seam = graphSeam([IN_GRAPH, 'docs/notes.md']);
+    expect(declarationsSelection(['docs/notes.md'], seam)).toBeUndefined();
+    expect(seam.calls).toBe(0);
+  });
+
+  /**
+   * A synthetic repo whose `gen:declarations` records its argv (and fails with a tsc
+   * diagnostic when a FAIL file exists), so the exact invocation is observable without
+   * touching the shared tree.
+   */
+  function withDeclarationsRepo<T>(body: (root: string) => T): T {
+    const root = mkdtempSync(join(tmpdir(), 'wi10911-'));
+    try {
+      mkdirSync(join(root, 'scripts'), { recursive: true });
+      mkdirSync(join(root, 'lib'), { recursive: true });
+      writeFileSync(join(root, 'tsconfig.declarations.json'), JSON.stringify({ files: ['scripts/enrolled.mjs'] }));
+      writeFileSync(join(root, 'scripts/gen-declarations.ts'), '');
+      writeFileSync(join(root, 'scripts/enrolled.mjs'), '');
+      writeFileSync(join(root, 'lib/in-graph.ts'), '');
+      writeFileSync(
+        join(root, 'scripts/fake-gen.mjs'),
+        [
+          "import { existsSync, writeFileSync } from 'node:fs';",
+          "writeFileSync('ARGV.json', JSON.stringify(process.argv.slice(2)));",
+          "if (existsSync('FAIL')) {",
+          "  console.log(\"lib/in-graph.ts(3,7): error TS2322: Type 'string' is not assignable to type 'number'.\");",
+          // A real failed emit buries the diagnostic under a long tsx stack trace; the
+          // tail alone would push it out of the callers' 200-char window.
+          "  console.error('Error: tsc failed\\n' + '    at runTsc (scripts/gen-declarations.ts:121:11)\\n'.repeat(40));",
+          '  process.exit(1);',
+          '}',
+        ].join('\n'),
+      );
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'wi10911-synthetic', private: true, scripts: { 'gen:declarations': 'node scripts/fake-gen.mjs' } }),
+      );
+      return body(root);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  const argvOf = (root: string): string[] => JSON.parse(readFileSync(join(root, 'ARGV.json'), 'utf8'));
+  const syntheticGraph = { declarationsGraph: () => new Set(['scripts/enrolled.mjs', 'lib/in-graph.ts']) };
+
+  it('an in-graph TS edit runs the FULL generator (a type change can alter any declaration)', () => {
+    withDeclarationsRepo((root) => {
+      expect(regenerateForPaths(root, ['lib/in-graph.ts'], syntheticGraph)).toBe(1);
+      expect(argvOf(root)).toEqual([]);
+    });
+  });
+
+  it('an enrolled-only edit still publishes just its own declarations', () => {
+    withDeclarationsRepo((root) => {
+      expect(regenerateForPaths(root, ['scripts/enrolled.mjs'], syntheticGraph)).toBe(1);
+      expect(argvOf(root)).toEqual(['--files=scripts/enrolled.mjs']);
+    });
+  });
+
+  it('a regeneration drops the cached graph so a changed import set is re-read', () => {
+    withDeclarationsRepo((root) => {
+      const cache = join(root, '.papercusp/scratch/derived-artifacts/declarations-graph.json');
+      mkdirSync(dirname(cache), { recursive: true });
+      writeFileSync(cache, '{}');
+      regenerateForPaths(root, ['lib/in-graph.ts'], syntheticGraph);
+      expect(existsSync(cache)).toBe(false);
+    });
+  });
+
+  it("a failed emit surfaces tsc's diagnostic FIRST, inside the callers' 200-char window", () => {
+    withDeclarationsRepo((root) => {
+      writeFileSync(join(root, 'FAIL'), '');
+      let message = '';
+      try {
+        regenerateForPaths(root, ['lib/in-graph.ts'], syntheticGraph);
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+      expect(message.slice(0, 200)).toContain('lib/in-graph.ts(3,7): error TS2322');
+      expect(message.startsWith('declarations: lib/in-graph.ts(3,7): error TS2322')).toBe(true);
+      expect(message).toContain('exit 1');
+      expect(message).not.toMatch(/^declarations: Command failed/);
+    });
+  });
+
+  it('a failure with no tsc diagnostic still carries the output tail and the exit status', () => {
+    const message = describeGeneratorFailure('gen:declarations', {
+      status: 2,
+      stdout: '',
+      stderr: 'Error: cannot generate undeclared input: lib/x.mjs\n',
+    });
+    expect(message).toBe('gen:declarations exit 2: Error: cannot generate undeclared input: lib/x.mjs');
+  });
+
+  it('the graph cache is reused inside its TTL and recomputed on expiry, config change, or invalidation', () => {
+    withDeclarationsRepo((root) => {
+      let computes = 0;
+      let clock = 1_000_000;
+      const opts = {
+        now: () => clock,
+        compute: () => {
+          computes += 1;
+          return ['lib/in-graph.ts'];
+        },
+      };
+      expect(cachedDeclarationsGraph(root, opts).has('lib/in-graph.ts')).toBe(true);
+      expect(computes).toBe(1);
+      clock += DECLARATIONS_GRAPH_TTL_MS - 1;
+      cachedDeclarationsGraph(root, opts);
+      expect(computes).toBe(1);
+      clock += 2;
+      cachedDeclarationsGraph(root, opts);
+      expect(computes).toBe(2);
+      writeFileSync(
+        join(root, 'tsconfig.declarations.json'),
+        JSON.stringify({ files: ['scripts/enrolled.mjs', 'scripts/other.mjs'] }),
+      );
+      cachedDeclarationsGraph(root, opts);
+      expect(computes).toBe(3);
+      invalidateDeclarationsGraph(root);
+      cachedDeclarationsGraph(root, opts);
+      expect(computes).toBe(4);
+    });
+  });
+
+  // WI-6554700010011061 — git-sync asks the helper which dirty paths are graph sources,
+  // so the commit-time trigger and the edit hook share one rule and one cache.
+  it('declarationsGraphMembers keeps only graph sources, and never looks up a non-source list', () => {
+    const seam = graphSeam([IN_GRAPH, 'scripts/lib/imported.mjs']);
+    expect(
+      declarationsGraphMembers(REPO_ROOT, [IN_GRAPH, IN_GRAPH, 'packages/x/out-of-graph.ts', 'scripts/lib/imported.mjs', 'README.md'], seam),
+    ).toEqual([IN_GRAPH, 'scripts/lib/imported.mjs']);
+    expect(seam.calls).toBe(1);
+    const untouched = graphSeam([IN_GRAPH]);
+    expect(declarationsGraphMembers(REPO_ROOT, ['README.md', 'node_modules/x/index.ts', '../elsewhere.ts'], untouched)).toEqual([]);
+    expect(untouched.calls).toBe(0);
+  });
+
+  it('the --declarations-graph-members CLI prints the members from the shared cache and generates nothing', () => {
+    withDeclarationsRepo((root) => {
+      const config = statSync(join(root, 'tsconfig.declarations.json'));
+      const cache = join(root, '.papercusp', 'scratch', 'derived-artifacts', 'declarations-graph.json');
+      mkdirSync(dirname(cache), { recursive: true });
+      writeFileSync(
+        cache,
+        JSON.stringify({ stamp: `${config.size}:${config.mtimeMs}`, computedAt: Date.now(), files: ['lib/in-graph.ts'] }),
+      );
+      const run = spawnSync(
+        process.execPath,
+        [HELPER, '--declarations-graph-members', '--repo-root', root, '--path', 'lib/in-graph.ts', '--path', 'lib/other.ts', '--path', 'README.md'],
+        { encoding: 'utf8' },
+      );
+      expect(run.stderr).toBe('');
+      expect(run.status).toBe(0);
+      expect(JSON.parse(run.stdout)).toEqual(['lib/in-graph.ts']);
+      expect(existsSync(join(root, 'ARGV.json'))).toBe(false);
+
+      const missingRoot = spawnSync(process.execPath, [HELPER, '--declarations-graph-members', '--path', 'lib/in-graph.ts'], {
+        encoding: 'utf8',
+      });
+      expect(missingRoot.status).toBe(2);
+      expect(missingRoot.stderr).toContain('--declarations-graph-members requires --repo-root');
     });
   });
 });

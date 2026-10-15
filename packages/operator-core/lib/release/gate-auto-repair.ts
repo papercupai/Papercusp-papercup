@@ -53,8 +53,8 @@
  * distinct: `gen:X` produces the artifact, `gen:X:check` judges it. That gives a repair
  * command that is not the checker, plus an independent verifier for whether it worked.
  * Both are required, so only the derived set is admitted here. `budget-exceeded` and
- * `fixture-drift` are refused BY CATEGORY, with their reason attached, rather than
- * silently dropped — a refusal a reader can audit is worth more than a shorter list.
+ * `detector-coverage-drift` are refused BY CATEGORY, with their reason attached, rather
+ * than silently dropped — a refusal a reader can audit is worth more than a shorter list.
  *
  * ## Fail-closed, in the same direction as P-005 and for the same asymmetry
  *

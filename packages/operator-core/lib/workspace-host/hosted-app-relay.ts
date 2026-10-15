@@ -36,6 +36,7 @@ import { publicOriginOf } from '../connected-apps/mcp-oauth-discovery';
 // portal-mcp-oauth imports this module for TYPES only, so this runtime import makes no cycle.
 import { portalResourceMetadataUrl } from '../connected-apps/portal-mcp-oauth';
 import { EXTERNAL_INGRESS_MARKER_HEADER } from '../auth/forwarded-request-trust';
+import { PHONE_DEVICE_METHODS, PHONE_DEVICE_PAIR_PATH, PHONE_DEVICE_PATHS, PHONE_DEVICE_PATH_SHAPES } from '../device-ingress-paths';
 import { isHostedConnectorLive } from '../endpoint-route/hosted-workspace-connector';
 import { WEBHOOK_PATH_RE, WEBHOOK_SOURCE_ID_PATTERN, isWebhookPath } from '../external-triggers/webhook-path';
 import {
@@ -44,11 +45,18 @@ import {
   decideRelayRoute,
   localOperatorOrigin,
   type OperatorHttpAudit,
+  type OperatorHttpBodyDecision,
   type OperatorHttpFetch,
   type OperatorHttpRoute,
   type OperatorHttpRouteDecision,
   type OperatorHttpSend,
 } from './hosted-operator-http';
+import { canonicalNoisePublicKey } from './hosted-machine-noise-key';
+import { isByocSealedPacket } from './byoc-sealed-channel';
+import {
+  HOSTED_WORKSPACE_MAX_MESSAGE_BYTES,
+  type HostedWorkspaceRelaySocket,
+} from '../endpoint-route/hosted-workspace-session';
 
 // ─── Machine side ───────────────────────────────────────────────────────────
 
@@ -60,6 +68,7 @@ export const APP_HTTP_ROUTE_ALLOWLIST: ReadonlyArray<OperatorHttpRoute> = [
   { method: 'DELETE', pattern: /^\/api\/mcp$/, surface: 'app MCP session end' },
   // P-017 (D-032 #4): a signed webhook. The machine route checks the HMAC signature itself.
   { method: 'POST', pattern: WEBHOOK_PATH_RE, surface: 'signed webhook delivery' },
+  { method: 'GET', pattern: WEBHOOK_PATH_RE, surface: 'signed webhook verification' },
 ];
 
 export function decideAppHttpRoute(method: unknown, path: unknown): OperatorHttpRouteDecision {
@@ -86,6 +95,9 @@ const APP_FORWARDED_REQUEST_HEADERS = new Set([
   'papercusp-event',
   'papercusp-delivery',
 ]);
+// Vendor proof headers carry no operator identity; the machine verifies their descriptor scheme.
+// Keep the relay independent of installed provider names and refuse every other custom header.
+const VENDOR_PROOF_HEADER = /^x-[a-z0-9-]+-(?:signature(?:-[0-9]+)?|secret)$/;
 export const APP_HTTP_RESPONSE_HEADERS: ReadonlySet<string> = new Set([
   'content-type',
   'cache-control',
@@ -122,7 +134,7 @@ export function appHttpRequestHeaders(input: unknown): Record<string, string> {
         continue;
       }
       const value = headerValue(raw);
-      if (APP_FORWARDED_REQUEST_HEADERS.has(key) && value !== null) headers[key] = value;
+      if ((APP_FORWARDED_REQUEST_HEADERS.has(key) || (VENDOR_PROOF_HEADER.test(key) && !key.startsWith('x-papercusp-'))) && value !== null) headers[key] = value;
     }
   }
   headers[EXTERNAL_INGRESS_MARKER_HEADER] = APP_RELAY_INGRESS_MARKER;
@@ -148,6 +160,169 @@ export function createAppHttpChannel(options: AppHttpChannelOptions): OperatorHt
     decideRoute: decideAppHttpRoute,
     requestHeaders: appHttpRequestHeaders,
     responseHeaders: APP_HTTP_RESPONSE_HEADERS,
+  });
+}
+
+// ─── Machine side: the device-http channel (android-public-release D-013 #2) ─
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+}
+
+/**
+ * The ONLY machine routes a phone call relayed by the portal may reach: the phone device API,
+ * DERIVED from the list the external-ingress listener serves (device-ingress-paths.ts), never
+ * copied. Desktop mint/list/revoke and the QR renderer are not on it.
+ */
+export const DEVICE_HTTP_ROUTE_ALLOWLIST: ReadonlyArray<OperatorHttpRoute> = PHONE_DEVICE_METHODS.flatMap((method) => [
+  ...PHONE_DEVICE_PATHS.map((path) => ({ method, pattern: new RegExp(`^${escapeRegExp(path)}$`), surface: 'phone device call' })),
+  ...PHONE_DEVICE_PATH_SHAPES.map((pattern) => ({ method, pattern, surface: 'phone device call' })),
+]);
+
+export function decideDeviceHttpRoute(method: unknown, path: unknown): OperatorHttpRouteDecision {
+  return decideRelayRoute(method, path, DEVICE_HTTP_ROUTE_ALLOWLIST);
+}
+
+/** Value of the deny-only ingress marker on every device-relay forward. */
+export const DEVICE_RELAY_INGRESS_MARKER = 'device-relay';
+
+const DEVICE_FORWARDED_REQUEST_HEADERS = new Set(['content-type', 'accept']);
+export const DEVICE_HTTP_RESPONSE_HEADERS: ReadonlySet<string> = new Set([
+  'content-type',
+  'cache-control',
+  'x-accel-buffering',
+  'retry-after',
+]);
+
+const JWT_SHAPE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+
+/** `Bearer <header>.<claims>.<sig>` → the token. An app key, a ticket, a cookie, nothing → null. */
+export function readDeviceJwtBearer(authorization: unknown): string | null {
+  const value = headerValue(authorization)?.trim();
+  if (!value) return null;
+  const match = /^Bearer\s+(\S+)$/i.exec(value);
+  return match && JWT_SHAPE.test(match[1]) ? match[1] : null;
+}
+
+/**
+ * Header policy for a phone call forwarded to the machine's loopback operator: JSON headers,
+ * the device JWT (never any other credential), and the ingress marker, so the operator never
+ * grants the call loopback trust. The machine verifies the JWT; the portal only checks shape.
+ */
+export function deviceHttpRequestHeaders(input: unknown): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (input && typeof input === 'object' && !Array.isArray(input)) {
+    for (const [name, raw] of Object.entries(input as Record<string, unknown>)) {
+      const key = name.toLowerCase();
+      if (key === 'authorization') {
+        const token = readDeviceJwtBearer(raw);
+        if (token) headers.authorization = `Bearer ${token}`;
+        continue;
+      }
+      const value = headerValue(raw);
+      if (DEVICE_FORWARDED_REQUEST_HEADERS.has(key) && value !== null) headers[key] = value;
+    }
+  }
+  headers[EXTERNAL_INGRESS_MARKER_HEADER] = DEVICE_RELAY_INGRESS_MARKER;
+  return headers;
+}
+
+/**
+ * The device a sealed `device-http` channel's Noise handshake identified (D-013 #6). The host
+ * fills `deviceId` once the phone's static key resolves to a live paired device; it stays null
+ * for an unregistered key (a phone redeeming its pair over the sealed channel).
+ */
+export interface DeviceChannelBinding {
+  deviceId: string | null;
+  /**
+   * The phone's static key (canonical base64) that the handshake PROVED: the phone holds its
+   * secret. A pair redeemed on this channel registers exactly this key. Unset means no handshake
+   * has completed, so a pair is refused.
+   */
+  noisePublicKey?: string | null;
+}
+
+/**
+ * Body policy for a sealed channel: a `POST /api/device/pair` registers the handshake-proven key.
+ * A body naming any other key is refused here, before the one-time pair token reaches the machine,
+ * so a phone can never register a key it did not prove it holds. A body with no key gets the proven
+ * one filled in. Every other request passes unchanged.
+ */
+export function bindPairBodyToProvenKey(
+  route: { method: string; path: string },
+  body: Buffer | undefined,
+  binding: DeviceChannelBinding,
+): OperatorHttpBodyDecision {
+  if (route.method !== 'POST' || route.path.split('?')[0] !== PHONE_DEVICE_PAIR_PATH) return { ok: true, body };
+  const proven = binding.noisePublicKey ? canonicalNoisePublicKey(binding.noisePublicKey) : null;
+  if (!proven) return { ok: false, code: 'noise_key_unproven', status: 403 };
+  let parsed: unknown;
+  try {
+    parsed = body ? JSON.parse(body.toString('utf8')) : undefined;
+  } catch {
+    parsed = undefined;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { ok: false, code: 'invalid_body', status: 400 };
+  const fields = parsed as Record<string, unknown>;
+  if (fields.noisePublicKey !== undefined && canonicalNoisePublicKey(fields.noisePublicKey) !== proven) {
+    return { ok: false, code: 'noise_key_mismatch', status: 403 };
+  }
+  return { ok: true, body: Buffer.from(JSON.stringify({ ...fields, noisePublicKey: proven })) };
+}
+
+export interface DeviceHttpChannelOptions extends AppHttpChannelOptions {
+  /**
+   * Present only on a sealed channel. A forwarded device JWT is kept only when its `sub` names
+   * the bound device, so a key paired as one phone can never present another phone's token.
+   * An unbound channel forwards no JWT at all (fail closed: the operator answers 401).
+   */
+  boundDevice?: DeviceChannelBinding;
+}
+
+/**
+ * The `sub` claim of a JWT-shaped token, decoded WITHOUT verifying it. Used only to refuse a
+ * token naming a different device than the channel's; the operator still verifies the
+ * signature on whatever is forwarded.
+ */
+export function unverifiedDeviceJwtSubject(token: string): string | null {
+  const payload = token.split('.')[1];
+  if (!payload) return null;
+  try {
+    const claims: unknown = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    if (!claims || typeof claims !== 'object') return null;
+    const sub = (claims as { sub?: unknown }).sub;
+    return typeof sub === 'string' && sub.length > 0 ? sub : null;
+  } catch {
+    return null;
+  }
+}
+
+/** {@link deviceHttpRequestHeaders}, minus any JWT that does not name `binding.deviceId`. */
+export function boundDeviceHttpRequestHeaders(input: unknown, binding: DeviceChannelBinding): Record<string, string> {
+  const headers = deviceHttpRequestHeaders(input);
+  const token = headers.authorization?.slice('Bearer '.length);
+  if (token && (!binding.deviceId || unverifiedDeviceJwtSubject(token) !== binding.deviceId)) {
+    delete headers.authorization;
+  }
+  return headers;
+}
+
+/** The machine's end of one `device-http` channel. */
+export function createDeviceHttpChannel(options: DeviceHttpChannelOptions): OperatorHttpChannel {
+  const binding = options.boundDevice;
+  return new OperatorHttpChannel({
+    send: options.send,
+    audit: options.audit,
+    ...(options.origin ? { origin: options.origin } : {}),
+    ...(options.fetch ? { fetch: options.fetch } : {}),
+    headerTimeoutMs: options.headerTimeoutMs ?? APP_HTTP_HEADER_TIMEOUT_MS,
+    decideRoute: decideDeviceHttpRoute,
+    // Inline frames remain capped at 512 KiB. Chunked voice JSON can carry the
+    // existing 15 MiB audio limit (base64 + JSON overhead) without an oversized frame.
+    maxChunkedRequestBodyBytes: 64 * HOSTED_OPERATOR_HTTP_MAX_REQUEST_BODY_BYTES,
+    requestHeaders: binding ? (input) => boundDeviceHttpRequestHeaders(input, binding) : deviceHttpRequestHeaders,
+    responseHeaders: DEVICE_HTTP_RESPONSE_HEADERS,
+    ...(binding ? { requestBody: (route, body) => bindPairBodyToProvenKey(route, body, binding) } : {}),
   });
 }
 
@@ -438,7 +613,7 @@ export class AppRelayRateLimiter {
 // ─── Portal side: the relay ─────────────────────────────────────────────────
 
 export interface AppRelayConnector {
-  binding: AppRelayWorkspace & { hostId: string; generation: number };
+  binding: AppRelayWorkspace & { hostId: string; generation: number; hosting?: 'byoc' | 'papercusp' };
   /** The last proof of life the broker saw from this connector socket. */
   lastSeenAt: Date;
 }
@@ -452,7 +627,7 @@ export interface AppRelayChannel {
  * The in-process channels the portal itself opens: `app-http` carries one relayed app call (P-007);
  * `app-key-mint` carries one key mint for a consented MCP OAuth grant (P-325, D-021).
  */
-export type AppRelayChannelKind = 'app-http' | 'app-key-mint';
+export type AppRelayChannelKind = 'app-http' | 'app-key-mint' | 'device-http';
 
 /** What the relay needs from the connector broker (`HostedWorkspaceSessionBroker` implements it). */
 export interface AppRelayPort {
@@ -471,6 +646,71 @@ export interface AppRelayPort {
  */
 export interface AppRelayOpenOptions {
   relayUsage?: RelayUsageReport;
+  /** The outside app owns the peer key and exchanges only Noise packets. */
+  sealed?: boolean;
+}
+
+/**
+ * D-019: the portal is only an opaque transport for a phone's Noise channel.
+ * No portal ticket authorizes device content: the machine authenticates the
+ * static peer key and device JWT after decryption. Plaintext is terminal.
+ *
+ * The upgrade caller checks reachability before accepting HTTP; repeat it here
+ * because the connector can disappear between that check and handleUpgrade.
+ */
+export function attachSealedDeviceSocket(
+  port: AppRelayPort,
+  customerWorkspaceId: string,
+  socket: HostedWorkspaceRelaySocket,
+  now: Date = new Date(),
+): boolean {
+  const connector = port.appConnector(customerWorkspaceId);
+  if (!connector || (connector.binding.hosting !== 'byoc' && connector.binding.hosting !== 'papercusp') ||
+      !isHostedConnectorLive({ state: 'active', transport: 'websocket', heartbeatAt: connector.lastSeenAt }, now)) {
+    socket.close(1013, 'workspace_offline');
+    return false;
+  }
+  let closed = false;
+  let channel: AppRelayChannel | null = null;
+  const close = (code: number, reason: string) => {
+    if (closed) return;
+    closed = true;
+    channel?.close(reason);
+    socket.close(code, reason);
+  };
+  channel = port.openAppChannel(connector, {
+    onFrame: (payload) => {
+      if (closed) return;
+      if (!isByocSealedPacket(payload)) return close(4403, 'sealed_packet_required');
+      if (socket.readyState !== (socket.OPEN ?? 1)) return close(1001, 'device_disconnected');
+      try { socket.send(JSON.stringify(payload)); } catch { close(1011, 'device_transport_failed'); }
+    },
+    onClose: () => close(1013, 'workspace_offline'),
+  }, 'device-http', { sealed: true });
+  if (!channel) {
+    close(1013, 'workspace_offline');
+    return false;
+  }
+  if (closed) {
+    channel.close('device_disconnected');
+    return false;
+  }
+  socket.on('message', (data) => {
+    if (closed) return;
+    const raw = typeof data === 'string' ? Buffer.from(data) :
+      Buffer.isBuffer(data) ? data :
+      data instanceof ArrayBuffer ? Buffer.from(data) :
+      Array.isArray(data) && data.every(Buffer.isBuffer) ? Buffer.concat(data) : null;
+    if (!raw) return close(4403, 'sealed_packet_required');
+    if (raw.length > HOSTED_WORKSPACE_MAX_MESSAGE_BYTES) return close(1009, 'frame_too_large');
+    let payload: unknown;
+    try { payload = JSON.parse(raw.toString('utf8')); } catch { return close(4403, 'sealed_packet_required'); }
+    if (!isByocSealedPacket(payload)) return close(4403, 'sealed_packet_required');
+    if (!channel?.send(payload as unknown as Record<string, unknown>)) close(4403, 'sealed_packet_refused');
+  });
+  socket.on('close', () => close(1001, 'device_disconnected'));
+  socket.on('error', () => close(1011, 'device_transport_failed'));
+  return true;
 }
 
 export interface HostedAppRelayAuditEvent {
@@ -482,6 +722,8 @@ export interface HostedAppRelayAuditEvent {
 
 export interface HostedAppRelayDependencies {
   port: AppRelayPort;
+  /** Server-side hosting lookup for a workspace whose connector is offline. */
+  resolveCustomerWorkspaceHosting?: (customerWorkspaceId: string) => Promise<'byoc' | 'papercusp' | null>;
   usage: HostedAppRelayUsageStore;
   rate: AppRelayRateLimiter;
   limits?: AppRelayLimits;
@@ -499,6 +741,18 @@ const APP_RELAY_PATH = new RegExp(
 export function parseAppRelayPath(pathname: string): { customerWorkspaceId: string; machinePath: string } | null {
   const match = APP_RELAY_PATH.exec(pathname);
   return match ? { customerWorkspaceId: match[1], machinePath: `/api/${match[2]}` } : null;
+}
+
+/**
+ * `/api/workspaces/<id>/api/device/<route>` (D-013 #1/#2). The phone's shared Rust client appends
+ * `/api/device/<route>` to an opaque base URL, and a cloud pairing's base URL is
+ * `<portal>/api/workspaces/<id>` — so this is the exact path the unmodified client sends.
+ */
+const DEVICE_RELAY_PATH = /^\/api\/workspaces\/([A-Za-z0-9][A-Za-z0-9_-]{0,127})\/api\/(device\/[^?#]+)$/;
+
+export function parseDeviceRelayPath(pathname: string): { customerWorkspaceId: string; machinePath: string } | null {
+  const match = DEVICE_RELAY_PATH.exec(pathname);
+  return match ? { customerWorkspaceId: match[1], machinePath: '/api/' + match[2] } : null;
 }
 
 function refuse(status: number, error: string, extra: Record<string, string> = {}, body: Record<string, unknown> = {}): Response {
@@ -536,13 +790,24 @@ export async function handleHostedAppRelay(request: Request, deps: HostedAppRela
   const audit = (action: HostedAppRelayAuditEvent['action'], detail: string) =>
     deps.onAudit?.({ action, customerWorkspaceId: target.customerWorkspaceId, detail });
 
+  // Classify from the broker's server-authenticated connector before inspecting
+  // an app key or reading a body. The vendor portal cannot terminate BYOC content.
+  const connector = deps.port.appConnector(target.customerWorkspaceId);
+  const hosting = connector?.binding.hosting ?? await deps.resolveCustomerWorkspaceHosting?.(target.customerWorkspaceId).catch(() => null);
+  if (hosting === 'byoc') {
+    audit('app_relay_refused', 'byoc_plaintext_relay_refused');
+    return refuse(403, 'byoc_plaintext_relay_refused', {}, {
+      alternatives: ['customer_controlled_ingress', 'sealed_channel'],
+    });
+  }
+
   // P-017 (D-032 #4): a signed webhook carries no app key. The MACHINE checks its HMAC
-  // signature, so the portal skips the key check here, and admits only POST. Every other
+  // signature, so the portal skips the key check here, and admits only GET/POST. Every other
   // portal rule below (offline refusal, rate and bandwidth limits) still applies.
   const webhook = isWebhookPath(target.machinePath);
-  if (webhook && request.method.toUpperCase() !== 'POST') {
+  if (webhook && !['GET', 'POST'].includes(request.method.toUpperCase())) {
     audit('app_relay_refused', 'method_not_allowed');
-    return refuse(405, 'method_not_allowed', { allow: 'POST' });
+    return refuse(405, 'method_not_allowed', { allow: 'GET, POST' });
   }
 
   // D-005: app routes take a limited key and nothing else. Read from Authorization
@@ -558,9 +823,67 @@ export async function handleHostedAppRelay(request: Request, deps: HostedAppRela
     return refuse(401, 'app_key_required', { 'www-authenticate': challenge });
   }
 
+  return admitAndRelay({
+    request, url, machinePath: target.machinePath, connector, deps, audit,
+    kind: 'app-http', requestHeaders: appHttpRequestHeaders, responseHeaders: APP_HTTP_RESPONSE_HEADERS,
+  });
+}
+
+/**
+ * Handle one phone call on the portal (D-013 #2): `/api/workspaces/<id>/api/device/<route>` is
+ * carried to the machine's `/api/device/<route>`. The portal checks SHAPE only (D-013 #4): the
+ * route is on the phone allowlist, and every route but pair carries a device-JWT-shaped bearer.
+ * The machine verifies the JWT, so its 401 passes through unchanged. A BYOC workspace's device
+ * content must be Noise-sealed end to end (D-013 #6), so a plaintext call to one is refused.
+ */
+export async function handleHostedDeviceRelay(request: Request, deps: HostedAppRelayDependencies): Promise<Response> {
+  const url = new URL(request.url);
+  const target = parseDeviceRelayPath(url.pathname);
+  if (!target) return refuse(404, 'not_found');
+  const audit = (action: HostedAppRelayAuditEvent['action'], detail: string) =>
+    deps.onAudit?.({ action, customerWorkspaceId: target.customerWorkspaceId, detail });
+
+  const connector = deps.port.appConnector(target.customerWorkspaceId);
+  const hosting = connector?.binding.hosting ?? await deps.resolveCustomerWorkspaceHosting?.(target.customerWorkspaceId).catch(() => null);
+  if (hosting === 'byoc') {
+    audit('app_relay_refused', 'byoc_plaintext_relay_refused');
+    return refuse(403, 'byoc_plaintext_relay_refused', {}, { alternatives: ['sealed_channel'] });
+  }
+
+  const decision = decideDeviceHttpRoute(request.method, target.machinePath);
+  if (!decision.ok) {
+    audit('app_relay_refused', decision.code);
+    return refuse(decision.code === 'route_not_relayed' ? 403 : 400, decision.code);
+  }
+  if (target.machinePath !== PHONE_DEVICE_PAIR_PATH && !readDeviceJwtBearer(request.headers.get('authorization'))) {
+    audit('app_relay_refused', 'device_token_required');
+    return refuse(401, 'device_token_required', { 'www-authenticate': 'Bearer' });
+  }
+
+  return admitAndRelay({
+    request, url, machinePath: target.machinePath, connector, deps, audit,
+    kind: 'device-http', requestHeaders: deviceHttpRequestHeaders, responseHeaders: DEVICE_HTTP_RESPONSE_HEADERS,
+  });
+}
+
+/**
+ * What every portal relay plane shares once its own credential check passed: the offline
+ * refusal (D-008), the per-workspace limits (D-006), the request body cap, and the relay.
+ */
+async function admitAndRelay(input: {
+  request: Request;
+  url: URL;
+  machinePath: string;
+  connector: AppRelayConnector | null;
+  deps: HostedAppRelayDependencies;
+  audit: (action: HostedAppRelayAuditEvent['action'], detail: string) => void;
+  kind: AppRelayChannelKind;
+  requestHeaders: (input: unknown) => Record<string, string>;
+  responseHeaders: ReadonlySet<string>;
+}): Promise<Response> {
+  const { request, url, connector, deps, audit } = input;
   // D-008: an offline machine is refused at once. Nothing is queued, held or stored.
   const now = deps.now?.() ?? new Date();
-  const connector = deps.port.appConnector(target.customerWorkspaceId);
   if (!connector || !isHostedConnectorLive({ state: 'active', transport: 'websocket', heartbeatAt: connector.lastSeenAt }, now)) {
     audit('app_relay_refused', 'workspace_offline');
     return refuse(503, 'workspace_offline', { 'retry-after': '30' });
@@ -599,8 +922,10 @@ export async function handleHostedAppRelay(request: Request, deps: HostedAppRela
     workspace,
     month,
     method,
-    path: `${target.machinePath}${url.search}`,
-    headers: appHttpRequestHeaders(headers),
+    path: `${input.machinePath}${url.search}`,
+    headers: input.requestHeaders(headers),
+    kind: input.kind,
+    responseHeaders: input.responseHeaders,
     body,
     signal: request.signal,
     audit,
@@ -610,6 +935,8 @@ export async function handleHostedAppRelay(request: Request, deps: HostedAppRela
 
 function relay(input: {
   deps: HostedAppRelayDependencies;
+  kind: AppRelayChannelKind;
+  responseHeaders: ReadonlySet<string>;
   connector: AppRelayConnector;
   workspace: AppRelayWorkspace;
   month: string;
@@ -654,7 +981,7 @@ function relay(input: {
             const headers = new Headers();
             if (frame.headers && typeof frame.headers === 'object') {
               for (const [name, value] of Object.entries(frame.headers as Record<string, unknown>)) {
-                if (APP_HTTP_RESPONSE_HEADERS.has(name.toLowerCase()) && typeof value === 'string') headers.set(name, value);
+                if (input.responseHeaders.has(name.toLowerCase()) && typeof value === 'string') headers.set(name, value);
               }
             }
             clearTimeout(timer);
@@ -709,7 +1036,7 @@ function relay(input: {
         }
         finish(reason);
       },
-    }, 'app-http', { relayUsage: input.relayUsage });
+    }, input.kind, { relayUsage: input.relayUsage });
 
     if (!channel) {
       input.audit('app_relay_refused', 'workspace_offline');

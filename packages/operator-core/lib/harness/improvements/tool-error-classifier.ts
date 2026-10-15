@@ -40,10 +40,12 @@
  *   - structural — a real bug/misconfig (the tool, a missing table, a wiring
  *     gap). Fires on FEW occurrences OR a high error-rate → auto-implement.
  *   - transient  — timeout / load / shared-infra exhaustion. Volume-gated.
- *   - caller     — the caller sent bad input or lacks a role (DX/schema). kind=change.
+ *   - caller     — the caller sent bad input, lacks a role, was rejected at the MCP auth gate, or lost run authority (DX/auth/control flow). kind=change.
  *   - rate-limit — an EXTERNAL provider rate-limit / quota (OpenAI embed TPM
  *     429). Capacity, not a code bug → infra/owner, never the auto-implement lane.
  */
+import { createHash } from 'node:crypto';
+
 export type ToolErrorClass = 'structural' | 'transient' | 'caller' | 'rate-limit';
 
 /** The default class when no rule matches. */
@@ -72,30 +74,58 @@ export interface ToolErrorRule {
 // ── The shared message patterns (dual-engine; see the module header) ──────────
 
 /** A timeout, including one that surfaced as `handler_error`
- *  ("exceeded timeout … handler returned but signal had aborted"). */
-export const TIMEOUT_MESSAGE_PATTERN = 'exceeded timeout|timed? *out';
+ *  ("exceeded timeout … handler returned but signal had aborted") or the
+ *  handler's explicit whole-call-deadline diagnostic. Word boundaries keep
+ *  argument names such as `timeoutSec` from looking like a timeout outcome. */
+export const TIMEOUT_MESSAGE_PATTERN =
+  'exceeded timeout([^a-zA-Z]|$)|(^|[^a-zA-Z])timed? *out([^a-zA-Z]|$)|did not complete within [0-9]+ms of its whole-call deadline';
 
-/** Caller-side arg/scope error in the MESSAGE: an `invalid_args:` prefix
+/** Caller-side auth/arg/scope error in the MESSAGE: a retained
+ *  `missing_capability:` prefix from a nested `tools:invoke` refusal, or an `invalid_args:` prefix
  *  (regardless of the row's error_code — this is the bit the old TS fn missed),
  *  including the `invalid_input: invalid_args:` wrapper from a nested
  *  `tools:invoke` refusal,
- *  the checkpoint replacement safety refusal that requires explicit retirement
- *  of carried safety rows,
+ *  the intentional scratch-reference line-window size refusal
+ *  (scratch_line_window_too_large), or the explicitly caller-side JSON reasons
+ *  for absent scratch evidence and missing tenant-scope controls,
+ *  the checkpoint replacement/merge safety refusals that require explicit
+ *  retirement of carried safety rows, and the stale loop-carry compare-and-swap
+ *  conflict that requires a fresh read before retrying,
+ *  a missing / unregistered browser UI client for a CLI caller,
  *  an explicit compaction flush-gate refusal that requires a checkpoint,
+ *  an explicit claim-spec selector refusal for the literal `self` sentinel,
+ *  an explicit reviewer-model allowlist refusal,
  *  a missing / unregistered harness, a registered standalone harness passed
- *  to the Hive-scoped plan store, or a desktop-only capability called before
- *  its sandbox lease was provisioned. A missing WORKSPACE-scope
+ *  to the Hive-scoped plan store, a desktop-only capability called before its
+ *  sandbox lease was provisioned, or a pre-vetting / approval refusal caused
+ *  by the caller-authored acceptance BAR contract. A missing WORKSPACE-scope
  *  ("requires a workspace-scoped call") is deliberately NOT here — a
  *  workspace-scoping gap is treated as `structural` (a wiring gap worth catching
  *  at the low bar), and the fingerprint separates it from anything it used to mask. */
 export const CALLER_MESSAGE_PATTERN =
-  '^invalid_input: *invalid_args:|^invalid_args:|checkpoint_replace_would_drop_rows|"error":"flush-required"|No harness specified|not registered in (any workspace|harness_shared)|resolvePlanScope:.*is not a Hive home|no sandbox desktop is leased';
+  '^missing_capability:|^invalid_input: *invalid_args:|^invalid_args:|^role_not_allowed:|^reviewer_model_not_allowed:|(^|[^a-zA-Z])(client_id_required|client_not_found):|scratch_line_window_too_large|"reason":"(evidence_class_not_found|tenant_scope_required|positive_control_tenant_scope_required|mixed_window_modes)"|await_id and event are mutually exclusive|checkpoint_(replace_would_drop_rows|merge_would_evict_rows)|"error":"(checkpoint_conflict|flush-required)"|(^|[^a-zA-Z0-9_])acceptance_bar_amendment_revision_conflict:|(^|[^a-zA-Z0-9_])acceptance_bar_approval_required:|No harness specified|not registered in (any workspace|harness_shared)|resolvePlanScope:.*is not a Hive home|no sandbox desktop is leased|acceptance BAR contract is not ready for vetting|predicate_shape_mismatch:|structured_result_shape.*typed root|^cupId must be a concrete session/owner ID, not the literal "self"';
+
+/** `dev:pg_query` returns caller-authored SQL's undefined-column refusal with
+ *  its PostgreSQL 42703 code and a known-column correction payload. When
+ *  tools:invoke wraps that `isError` result, invocation-friction sees the
+ *  wrapper's `handler_error`; retain the PG refusal as caller input instead of
+ *  filing the wrapper as a structural tool bug. Bare application missing-column
+ *  errors remain structural. */
+export const PG_QUERY_UNDEFINED_COLUMN_CALLER_PATTERN =
+  '^column "[^"]+" does not exist: .*"code":"42703".*"knownColumns"';
 
 /** An EXTERNAL provider rate-limit / quota (OpenAI embedding TPM 429,
  *  "Rate limit reached", surfaced as `openai_embed_failed_429`). CAPACITY, not a
  *  code bug — must not fall through to `structural` (P-002). */
 export const RATE_LIMIT_MESSAGE_PATTERN =
   'openai_embed_failed_429|rate[ _-]?limit[ _-]?(reached|exceeded)|tokens per min|requests per min|too many requests';
+
+/** The operator's own MCP admission bulkhead returns a retryable shed response
+ *  when the event loop is critical or its in-flight capacity is full. That is
+ *  backpressure from the shared admission gate, not a per-tool implementation
+ *  defect. */
+export const OPERATOR_ADMISSION_TRANSIENT_MESSAGE_PATTERN =
+  'operator MCP admission(?: is)? saturated|reason[=: ]+(loop_pressure_critical|operator_admission_capacity)';
 
 /** Shared-infra exhaustion (PG `max_connections` / DB-unavailable), an operator
  *  shutdown-window response, and a stale-pooled-connection reset against
@@ -113,15 +143,26 @@ export const RATE_LIMIT_MESSAGE_PATTERN =
  *  the retry helper so a transient reset that slips past the retry stops being
  *  mis-filed as a structural tool bug (EI-11010). */
 export const INFRA_TRANSIENT_MESSAGE_PATTERN =
-  'too many clients already|remaining connection slots are reserved|too many connections|the database system is (starting up|shutting down|in recovery|not yet accepting)|server( is)? shutting down|terminating connection due to|ECONNREFUSED|ECONNRESET|CONNECTION_CLOSED|CONNECT_TIMEOUT|connection terminated|could not connect to server';
+  'too many clients already|remaining connection slots are reserved|too many connections|the database system is (starting up|shutting down|in recovery|not yet accepting)|server( is)? shutting down|terminating connection due to|ECONNREFUSED|ECONNRESET|CONNECTION_CLOSED|CONNECT_TIMEOUT|connection terminated|could not connect to server|current session authority could not be read|session authority reader unavailable|identity policy evaluation unavailable|could not access status of transaction [0-9]+';
 
 /**
  * The ordered classification table. ORDER IS SIGNIFICANT — earlier rules win.
- * The precedence mirrors the historical hand-written logic exactly, with the
- * one intended correction that an `invalid_args:`-prefixed message classifies
- * `caller` regardless of its error_code (the drift that motivated P-011).
+ * Keep the specific structured_result_shape code ahead of generic transient
+ * prose, while leaving mcp_auth_failed later so a specific verifier diagnostic
+ * can still refine that wrapper code. The P-011 invalid_args message rule also
+ * handles generic handler_error rows.
  */
 export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
+  {
+    class: 'caller',
+    errorCodes: ['structured_result_shape'],
+    why: 'code:run diagnosed a script reading an MCP content envelope instead of the returned typed root; this specific caller code must outrank unrelated secondary error text',
+  },
+  {
+    class: 'caller',
+    errorCodes: ['self_await_deadlock'],
+    why: 'events:await deliberately refuses a wait on the current assignee\'s own work-item lifecycle; the guard prevents an unsatisfiable self-deadlock, so this is caller-side control flow rather than a tool defect',
+  },
   {
     class: 'transient',
     errorCodes: ['timeout'],
@@ -130,15 +171,110 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     why: 'a timeout (incl. one surfaced as handler_error) is load, not a tool bug',
   },
   {
+    class: 'transient',
+    errorCodes: ['superuser_native_session_verifier_unavailable'],
+    messagePattern: '(^|[^A-Za-z0-9_])superuser_native_session_verifier_unavailable([^A-Za-z0-9_]|$)',
+    why: 'the native-session verifier could not complete its server-side authority read before dispatch; caller input is not the cause, and detailed verifier diagnostics are retained in mcpAuthFailure metadata',
+  },
+  {
+    class: 'caller',
+    errorCodes: ['aborted'],
+    why: 'the parent request/session cancelled the tool call; dispatch reports this control-flow outcome separately from a tool or handler defect',
+  },
+  {
+    class: 'caller',
+    messagePattern: 'events:status.*evidence-only judge may inspect its own awaits only.*exact-key inspection and fleet-meter access are unavailable',
+    why: 'events:status deliberately refuses exact-key and fleet-wide meter reads for an evidence-only judge; dispatch surfaces this authorization refusal through handler_error, so it must not enter the structural auto-fix lane',
+  },
+  {
+    class: 'caller',
+    messagePattern: '(^|[^A-Za-z0-9_])git_command_interrupted([^A-Za-z0-9_]|$)',
+    why: 'capability:git-evidence returns this reason when its request AbortSignal cancels a Git command; this is expected request/session control flow, not a structural tool defect',
+  },
+  {
     class: 'caller',
     errorCodes: [
       'invalid_args', 'invalid_input', 'role_not_allowed', 'missing_capability',
-      'quota_exceeded', 'harness_required', 'checkpoint_replace_would_drop_rows',
-      'flush-required', 'rubric-not-found',
+      'compile_error',
+      'quota_exceeded', 'harness_required', 'checkpoint_conflict', 'checkpoint_replace_would_drop_rows',
+      'checkpoint_merge_would_evict_rows',
+      'flush-required', 'rubric-not-found', 'reviewer_model_not_allowed',
+      'dynamic_import_unsupported', 'mcp_auth_failed', 'evidence_class_not_found',
+      'tenant_scope_required', 'positive_control_tenant_scope_required',
+      'scratch_line_window_too_large', 'mixed_window_modes', 'client_id_required', 'client_not_found',
+      'owner_not_found', 'owner_ambiguous',
     ],
-    statuses: ['role-not-allowed'],
+    statuses: ['role-not-allowed', 'scratch_line_window_too_large', 'mixed_window_modes'],
     messagePattern: CALLER_MESSAGE_PATTERN,
-    why: 'the caller sent bad input, lacks a role, named no (or an unregistered) harness, or hit an explicit flush precondition — not a tool bug',
+    why: 'the caller sent bad input or stale state (including code:run JavaScript that fails to parse before dispatch), chose a reviewer outside the expert allowlist, attempted an import in the import-free code:run sandbox, lacked a role, was rejected at the MCP auth gate, named no (or an unregistered) harness, selected a missing UI client, supplied an owner handle that matches no or multiple known owners, hit an explicit flush or scratch-reference window-size precondition, supplied stale loop:checkpoint or acceptance BAR revision-bound compare-and-swap state and was refused, combined mutually exclusive capability:read window modes or events:status selectors, or read code:run typed output as an MCP content envelope despite its structured_result_shape typed-root diagnostic — not a tool bug',
+  },
+  {
+    class: 'caller',
+    messagePattern: "capability:bash cwd '[^']+' (does not exist|exists but is not a directory)",
+    why: 'capability:bash preflights an explicit cwd before spawning; a missing path or file passed as cwd is caller input, not a structural tool failure',
+  },
+  {
+    class: 'caller',
+    errorCodes: ['native_tool_owner_unsupported_capability'],
+    statuses: ['native_tool_owner_unsupported_capability'],
+    messagePattern: '^native_tool_owner_unsupported_capability$',
+    why: 'the native-owner transport deliberately refuses to forward host-local authenticatedPrincipal capabilities across its RPC boundary; this is an expected transport refusal, not a structural defect in the named tool. Match the direct code, retained status, or exact message when telemetry omitted the code',
+  },
+  {
+    class: 'caller',
+    errorCodes: ['resolver_owner_mismatch_or_not_executing'],
+    why: 'bulk-resolve and plan-cleanup tools refuse reports, actions, and settlement after a run stops or its resolver ownership changes; this is an expected authority-state refusal, not a structural tool defect',
+  },
+  {
+    class: 'caller',
+    messagePattern: PG_QUERY_UNDEFINED_COLUMN_CALLER_PATTERN,
+    why: 'dev:pg_query wraps a caller-authored SQL 42703 undefined-column refusal with knownColumns guidance; tools:invoke must not turn that target refusal into a structural wrapper bug',
+  },
+  {
+    class: 'caller',
+    messagePattern:
+      'patch verification could not find the expected|patch was rejected before writing because .*abbreviated text|patch was rejected because one expected source line did not match exactly',
+    why: 'the patch tool deliberately refused a hunk whose expected source context did not match; refresh the exact file context instead of filing a Papercusp structural defect',
+  },
+  {
+    class: 'caller',
+    messagePattern: 'Identity capability \\(unresolved\\): outside-ceiling|Identity capability \\(unresolved\\): stale-artifact',
+    why: 'the kernel refused an identity capability check: outside-ceiling is absent from the authored grant, while stale-artifact means the caller launch record cannot prove the desired identity revision. Both are expected authorization-state refusals, not defects in the named tool',
+  },
+  {
+    class: 'caller',
+    messagePattern: 'coord:ask is owner-UI-only',
+    why: 'coord:ask deliberately denies direct agent calls; this owner-UI-only permission refusal is caller-side, while generic unauthorized workspace-scope failures remain structural',
+  },
+  {
+    // A normalized wrapper absent from the client surface was never dispatched.
+    // Codex reports the same local lookup miss in several phrasings; it is not a
+    // server defect because the target MCP handler never ran.
+    class: 'caller',
+    errorCodes: [
+      'wrapper_missing',
+      'client_wrapper_missing',
+      'unknown_tool_wrapper',
+      'wrapper-unavailable',
+      'client_wrapper_unavailable',
+      'client-wrapper-unavailable',
+      'client-wrapper-absent',
+    ],
+    statuses: [
+      'wrapper_missing',
+      'wrapper-unavailable',
+      'client_wrapper_unavailable',
+      'client-wrapper-unavailable',
+      'client-wrapper-absent',
+    ],
+    messagePattern:
+      'Normalized direct wrapper mcp__papercusp_su__[A-Za-z0-9_]+ was not callable|' +
+      'The normalized direct wrapper [A-Za-z0-9_.]+ was undefined, so attempting it raised a local TypeError before MCP dispatch|' +
+      'The catalog exposed [^,]+, but the normalized functions\\.exec method [A-Za-z0-9_.]+ was undefined and raised a TypeError before dispatch|' +
+      'the normalized wrapper was undefined and calling it threw TypeError before MCP dispatch|' +
+      'tools\\.mcp__papercusp_su__[A-Za-z0-9_]+ is not callable .*calling it raised TypeError before dispatch|' +
+      'Direct nested [^ ]+ wrapper call threw TypeError: tools\\.mcp__papercusp_su__[A-Za-z0-9_]+ is not a function before dispatch',
+    why: 'the Codex client tried to call a deferred normalized wrapper before MCP dispatch; use tools:find/tools:invoke, because no target server handler ran',
   },
   {
     class: 'rate-limit',
@@ -147,9 +283,14 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
   },
   {
     class: 'transient',
+    messagePattern: OPERATOR_ADMISSION_TRANSIENT_MESSAGE_PATTERN,
+    why: 'the operator MCP admission gate returned retryable backpressure under critical loop pressure or full capacity — not a per-tool defect',
+  },
+  {
+    class: 'transient',
     errorCodes: ['sidecar_required_unavailable'],
     messagePattern: INFRA_TRANSIENT_MESSAGE_PATTERN,
-    why: 'shared-infra exhaustion (PG max_connections / DB unavailable / embedding sidecar unavailable) — load, not a per-tool bug',
+    why: 'shared-infra exhaustion (PG max_connections / DB unavailable / disk-full transaction-status failure / embedding sidecar unavailable) — not a per-tool bug',
   },
 ];
 
@@ -170,6 +311,20 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
 export const FINGERPRINTED_TOOL_ERROR_CLASSES: ReadonlySet<ToolErrorClass> =
   new Set<ToolErrorClass>(['structural', 'caller', 'transient']);
 
+/**
+ * Error codes emitted by a shared transport/subsystem rather than by the named
+ * tool handler. Their filing identity is the subsystem plus error code, so a
+ * result-door failure from `facts:list` and `work_items:get` remains one row.
+ */
+const TOOL_FAILURE_SUBSYSTEM_BY_ERROR_CODE: Readonly<Record<string, string>> = {
+  output_spill_failed: 'result-door',
+};
+
+export function toolFailureSubsystemForCode(errorCode: string | null | undefined): string | null {
+  const normalized = errorCode?.trim().toLowerCase();
+  return normalized ? TOOL_FAILURE_SUBSYSTEM_BY_ERROR_CODE[normalized] ?? null : null;
+}
+
 /** Compile every rule's messagePattern as a JS RegExp once. Throws (at module
  *  load) if a pattern is not a valid JS regex — the cheap half of the
  *  dual-engine guarantee (the SQL `~*` half is proven by the integration test). */
@@ -183,7 +338,7 @@ function compileRulePatterns(): { rule: ToolErrorRule; re: RegExp | null }[] {
 const COMPILED_RULES = compileRulePatterns();
 
 /**
- * Pure: classify one tool failure by walking `TOOL_ERROR_RULES` in order and
+ * Pure: classify one tool failure by walking the shared table in order and
  * returning the first rule whose error_code / status / message matches; falls
  * back to `structural`. This is the TS half of the single source — the SQL CASE
  * (`toolErrorClassSqlCase`) is generated from the same table.
@@ -243,14 +398,15 @@ export function toolErrorClassSqlCase<T>(sql: SqlTag<T>): T {
 }
 
 /**
- * Pure: the normalized error-shape FINGERPRINT — the first 6 alpha tokens of the
- * digit-stripped, punctuation-collapsed, lowercased message, joined with `-`.
- * Returns null when the message has no alpha content.
+ * Pure: an MD5 digest of the full normalized message skeleton (lowercased,
+ * digit-stripped, punctuation-collapsed). The former first-six-token key let
+ * repeated boilerplate prefixes hide distinct failures whose paths or causes
+ * appeared later in the message. Returns null when the message has no alpha content.
  *
  * MIRROR of `toolErrorFingerprintSqlCase`'s SQL expression — the two MUST agree
- * (proven row-by-row by the integration test). This TS form lets the key-
- * migration routine recompute a fingerprint from an EI's stored sample without
- * a round-trip to PG.
+ * (proven row-by-row by the integration test). PostgreSQL's built-in md5 keeps
+ * parity independent of optional extensions. This TS form lets the key-migration
+ * routine recompute a fingerprint from an EI's stored sample.
  */
 export function toolErrorFingerprint(message: string | null | undefined): string | null {
   const skeleton = (message ?? '')
@@ -259,8 +415,7 @@ export function toolErrorFingerprint(message: string | null | undefined): string
     .replace(/[^a-z]+/g, ' ')
     .trim();
   if (!skeleton) return null;
-  const fp = skeleton.split(' ').filter(Boolean).slice(0, 6).join('-');
-  return fp || null;
+  return `md5-${createHash('md5').update(skeleton, 'utf8').digest('hex')}`;
 }
 
 /**
@@ -274,9 +429,9 @@ export function toolErrorFingerprint(message: string | null | undefined): string
 export function toolErrorFingerprintSqlCase<T>(sql: SqlTag<T>): T {
   const classes = [...FINGERPRINTED_TOOL_ERROR_CLASSES];
   return sql`CASE WHEN class = ANY(${classes}::text[]) THEN
-    nullif(array_to_string((string_to_array(
-      trim(regexp_replace(regexp_replace(lower(coalesce(error_message, '')), '[0-9]+', '', 'g'), '[^a-z]+', ' ', 'g')),
-    ' '))[1:6], '-'), '')
+    nullif('md5-' || md5(trim(regexp_replace(
+      regexp_replace(lower(coalesce(error_message, '')), '[0-9]+', '', 'g'),
+      '[^a-z]+', ' ', 'g'))), 'md5-' || md5(''))
   ELSE NULL END`;
 }
 
@@ -301,7 +456,8 @@ export function toolErrorSignalKey(
  */
 export interface SuspectedToolFailure {
   toolName: string;
-  errorCode?: string;
+  /** Wire payloads may carry an explicit `null`; every consumer treats it as absent. */
+  errorCode?: string | null;
   status?: string;
   message: string;
   schemaRevision?: string;
@@ -514,10 +670,45 @@ export function toolFailureSignatureKey(
   input: Pick<SuspectedToolFailure, 'toolName' | 'errorCode' | 'fieldPath'>,
   failureFamily: ToolErrorClass,
 ): string {
+  const subsystem = toolFailureSubsystemForCode(input.errorCode);
+  if (subsystem) {
+    const errorCode = correlationSegment(input.errorCode, 'error-code-unknown');
+    // `output_spill_failed` is emitted by the outer result-door, not the named
+    // tool. Keep the legacy key grammar (and parser) while fixing the subject,
+    // family and field segments to constants: the actual identity is subsystem
+    // + error code. Per-tool/build classification remains in the class tally.
+    return `tool-failure-signature:${subsystem}:structural:${errorCode}:field-unknown`;
+  }
   const tool = correlationSegment(input.toolName, 'unknown-tool');
   const errorCode = correlationSegment(input.errorCode, 'error-code-unknown');
   const fieldPath = correlationSegment(input.fieldPath, 'field-unknown');
   return `tool-failure-signature:${tool}:${failureFamily}:${errorCode}:${fieldPath}`;
+}
+
+const TOOL_FAILURE_SIGNATURE_PREFIX = 'tool-failure-signature:';
+const TOOL_ERROR_CLASS_VALUES: readonly ToolErrorClass[] = ['structural', 'transient', 'caller', 'rate-limit'];
+
+/**
+ * Inverse of {@link toolFailureSignatureKey}. Tool names and field paths may themselves
+ * contain `:` (`coord:glance`), so the key is split on its ONE enumerated segment, the
+ * failure family, never by position. Returns null for anything the builder cannot emit.
+ */
+export function parseToolFailureSignatureKey(
+  key: string | null | undefined,
+): { toolName: string; failureFamily: ToolErrorClass; errorCode: string; fieldPath: string } | null {
+  if (!key || !key.startsWith(TOOL_FAILURE_SIGNATURE_PREFIX)) return null;
+  const rest = key.slice(TOOL_FAILURE_SIGNATURE_PREFIX.length);
+  let best: { at: number; family: ToolErrorClass } | null = null;
+  for (const family of TOOL_ERROR_CLASS_VALUES) {
+    const at = rest.indexOf(`:${family}:`);
+    if (at > 0 && (best === null || at < best.at)) best = { at, family };
+  }
+  if (!best) return null;
+  const toolName = rest.slice(0, best.at);
+  const tail = rest.slice(best.at + best.family.length + 2);
+  const sep = tail.indexOf(':');
+  if (sep <= 0 || sep === tail.length - 1) return null;
+  return { toolName, failureFamily: best.family, errorCode: tail.slice(0, sep), fieldPath: tail.slice(sep + 1) };
 }
 
 /** Convenience key builder used by callers that already know the failure family. */
@@ -570,8 +761,31 @@ export function normalizeSuspectedToolFailure(input: SuspectedToolFailure): Norm
   const knownExternal = matchKnownExternalToolFailure(input);
   const legacyAttested =
     input.reproduced === true || input.clearServerMismatch === true || input.hardInternal === true;
-  const structuredAttested = input.directEvidence !== undefined;
+  // code:run owns `structured_result_shape`: its tracked result Proxy emits
+  // this caller diagnostic when a script reads MCP `content`/`text` from the
+  // nested tool's typed root. Expected/actual prose cannot turn that concrete
+  // wrong-shape read into evidence of a server mismatch. The message fallback
+  // matters when a reporter omits errorCode; require the already-classified
+  // caller result so secondary mentions cannot mask a different primary error.
+  const structuredResultShapeCallerDiagnostic =
+    input.errorCode?.trim() === 'structured_result_shape' ||
+    (!input.errorCode?.trim() && (
+      input.status?.trim() === 'structured_result_shape' ||
+      (klass === 'caller' && /structured_result_shape.*typed root/.test(input.message))
+    ));
+  // Keep other caller-class overrides available for genuine contract defects.
+  const structuredAttested = input.directEvidence !== undefined && !structuredResultShapeCallerDiagnostic;
   const attested = structuredAttested || (legacyAttested && klass !== 'caller');
+  const deferredWrapperUnavailable = [input.errorCode, input.status]
+    .some((value) => [
+      'unknown_tool_wrapper',
+      'wrapper-unavailable',
+      'client_wrapper_unavailable',
+      'client-wrapper-unavailable',
+      'client-wrapper-absent',
+    ].includes(value?.trim().toLowerCase() ?? ''));
+  const expectedSelfAwaitRefusal = [input.errorCode, input.status]
+    .some((value) => value?.trim().toLowerCase() === 'self_await_deadlock');
   return {
     class: klass,
     watchdogKey: `repeated-tool-error:${signalKey}`,
@@ -582,7 +796,10 @@ export function normalizeSuspectedToolFailure(input: SuspectedToolFailure): Norm
     messageFingerprint,
     // A documented external class never bypasses probation, however the
     // reporter attested it — the attestation is honest, the row is a duplicate.
-    direct: attested && !knownExternal,
+    // A missing client wrapper is affirmative evidence that dispatch never
+    // reached the named handler. Non-empty expected/actual prose cannot turn
+    // that discovery report into a claimable server defect.
+    direct: attested && !knownExternal && !deferredWrapperUnavailable && !expectedSelfAwaitRefusal,
     knownExternal,
   };
 }

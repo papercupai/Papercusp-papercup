@@ -13,6 +13,11 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import { isLoopbackRequest } from '../../../superuser-token';
 import { invokeServerCapability } from '../../../capabilities/invoke';
+import { principalFromCookie } from '../../../auth/principal/from-cookie';
+// Register through the same module graph as the host's other routes. A
+// request-time import makes tsx traverse the already loaded CommonJS catalog
+// through Node's synchronous ESM hooks, blocking unrelated HTTP probes.
+import '../../../agent-tools';
 
 interface Body {
   name?: unknown;
@@ -23,8 +28,8 @@ interface Body {
   /** EI-1751: an optional CALLER-supplied, process-stable id (e.g. the pui's
    *  `pui-<pid>`) — folded into the dispatch ctx as `uiClientId` purely for
    *  per-caller telemetry attribution. Never trusted for anything beyond
-   *  labeling (this route already runs as the fixed `spawnId='palette'`
-   *  operator principal regardless of what's passed here). */
+   *  labeling. The authenticated actor is resolved from the server-side cookie
+   *  session, never from callerSid or another JSON field. */
   callerSid?: unknown;
 }
 
@@ -36,9 +41,6 @@ export default defineTool({
     if (!isLoopbackRequest(req.headers)) {
       return Response.json({ ok: false, error: 'forbidden', detail: 'loopback only' }, { status: 403 });
     }
-    // Ensure the tool catalog is registered (idempotent; ESM-cached).
-    await import('../../../agent-tools');
-
     let body: Body;
     try {
       body = (await req.json()) as Body;
@@ -54,11 +56,13 @@ export default defineTool({
     }
 
     const callerSid = typeof body.callerSid === 'string' ? body.callerSid.trim().slice(0, 128) : '';
+    const authenticatedPrincipal = await principalFromCookie(req.headers);
     const r = await invokeServerCapability({
       name,
       args: body.args,
       confirmed: body.confirmed === true,
       ...(callerSid ? { callerSid } : {}),
+      ...(authenticatedPrincipal ? { authenticatedPrincipal } : {}),
       ...(body.harness === undefined ? {} : { harness: body.harness }),
     });
     if (!r.ok) {

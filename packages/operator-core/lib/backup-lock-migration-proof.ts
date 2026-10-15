@@ -25,7 +25,8 @@
  * waiting (the old behaviour), while a false "safe" is the thing to avoid.
  */
 import type { Sql } from 'postgres';
-import { BACKUP_APPLICATION_NAMES } from '@papercusp/backup/application-names';
+import { BACKUP_APPLICATION_NAMES, BACKUP_MIGRATION_ADVISORY_LOCK_KEY } from '@papercusp/backup/application-names';
+import { splitStatements } from './db-tools/sanitize-baseline';
 
 export interface PendingMigrationText {
   file: string;
@@ -76,6 +77,46 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+const SQL_IDENTIFIER = '[a-z_][a-z0-9_$]*(?:\\.[a-z_][a-z0-9_$]*)*';
+const STATIC_TABLE_ANNOTATION = new RegExp(
+  '^(comment\\s+on\\s+table\\s+' + SQL_IDENTIFIER + '\\s+is\\s+)' +
+  "(?:'(?:''|[^'])*'|(\\$[a-z_][a-z0-9_]*\\$|\\$\\$)[\\s\\S]*\\2)$",
+);
+
+/** A table annotation is data, while its target still takes a relation lock.
+ * Only recognize this narrow static form. Keep executable function/DO bodies
+ * and unknown COMMENT syntax visible to the conservative safety proof. */
+function withoutStaticTableAnnotation(text: string): string {
+  return splitStatements(text)
+    .map((statement) => statement.replace(STATIC_TABLE_ANNOTATION, '$1null'))
+    .join(';\n');
+}
+
+const TRIGGER_COLUMNS = SQL_IDENTIFIER + '(?:\\s*,\\s*' + SQL_IDENTIFIER + ')*';
+const TRIGGER_EVENT = '(?:insert|update(?:\\s+of\\s+' + TRIGGER_COLUMNS + ')?|delete|truncate)';
+// A row-field comparison against a literal has no executable function call.
+// Keep complex WHEN expressions outside this narrow lock-footprint proof.
+const STATIC_TRIGGER_WHEN = '\\s+when\\s*\\(\\s*(?:new|old)\\.[a-z_][a-z0-9_$]*\\s*' +
+  '(?:=|<>|!=|is(?:\\s+not)?\\s+distinct\\s+from)\\s*' +
+  "(?:'(?:''|[^'])*'|null|true|false|[0-9]+)\\s*\\)";
+const STATIC_TRIGGER_ACTION = new RegExp(
+  '^(create\\s+(?:or\\s+replace\\s+)?(?:constraint\\s+)?trigger\\s+' + SQL_IDENTIFIER +
+  '\\s+(?:before|after|instead\\s+of)\\s+' + TRIGGER_EVENT + '(?:\\s+or\\s+' + TRIGGER_EVENT + ')*' +
+  '\\s+on\\s+' + SQL_IDENTIFIER + '(?:\\s+for\\s+(?:each\\s+)?(?:row|statement))?' +
+  '(?:' + STATIC_TRIGGER_WHEN + ')?\\s+)' +
+  'execute(\\s+(?:function|procedure)\\s+' + SQL_IDENTIFIER + '\\s*\\(\\s*\\))$',
+);
+
+/** CREATE TRIGGER declares a future action; it does not execute dynamic SQL.
+ * Recognize only the simple static form. Other syntax remains conservative.
+ * Reuse the statement splitter so a DO body or following prepared EXECUTE
+ * cannot acquire this exemption. Relation checks still inspect the full text. */
+function withoutStaticTriggerAction(text: string): string {
+  return splitStatements(text)
+    .map((statement) => statement.replace(STATIC_TRIGGER_ACTION, '$1trigger_action$2'))
+    .join(';\n');
+}
+
 /**
  * Pure verdict: which pending migrations touch a relation the backup holds, or
  * cannot be proven not to. An empty result means every pending file is safe to
@@ -92,15 +133,58 @@ export function findBackupLockConflicts(
   }));
   const conflicts: MigrationLockConflict[] = [];
   for (const { file, sqlText } of pending) {
-    const text = normalizeMigrationSql(sqlText);
+    const text = withoutStaticTableAnnotation(normalizeMigrationSql(sqlText));
+    const statementText = withoutStaticTriggerAction(text);
     for (const { label, re } of UNPROVABLE_STATEMENTS) {
-      if (re.test(text)) conflicts.push({ file, subject: label, reason: 'unprovable-statement' });
+      if (re.test(statementText)) conflicts.push({ file, subject: label, reason: 'unprovable-statement' });
     }
     for (const { name, re } of matchers) {
       if (re.test(text)) conflicts.push({ file, subject: name, reason: 'names-locked-relation' });
     }
   }
   return conflicts;
+}
+
+export interface BackupRendezvousInspection {
+  /** Whether another session currently owns the backup/migration advisory lock. */
+  rendezvousBusy: boolean;
+  /** Conflicts for this migration when the rendezvous is busy. */
+  conflicts: MigrationLockConflict[];
+}
+
+/**
+ * Inspect the manual migration rendezvous using the same proof as boot-migrate.
+ * A successful try-lock is immediately released; the actual psql apply then
+ * takes the normal transaction lock. When another session owns the rendezvous,
+ * only a complete relation proof with no conflicts permits a concurrent apply.
+ * Query or shape failures throw so callers can retain the blocking path.
+ */
+export async function inspectBackupRendezvousForMigration(
+  client: Sql,
+  migration: PendingMigrationText,
+): Promise<BackupRendezvousInspection> {
+  const lock = await client.unsafe<{ acquired: boolean }[]>(
+    'SELECT pg_try_advisory_lock(hashtext($1)) AS acquired',
+    [BACKUP_MIGRATION_ADVISORY_LOCK_KEY],
+  );
+  if (lock[0]?.acquired === true) {
+    const unlocked = await client.unsafe<{ released: boolean }[]>(
+      'SELECT pg_advisory_unlock(hashtext($1)) AS released',
+      [BACKUP_MIGRATION_ADVISORY_LOCK_KEY],
+    );
+    if (unlocked[0]?.released !== true) {
+      throw new Error('the advisory-lock preflight could not release its probe lock');
+    }
+    return { rendezvousBusy: false, conflicts: [] };
+  }
+  if (lock[0]?.acquired !== false) {
+    throw new Error('the advisory-lock preflight returned no explicit result');
+  }
+  const lockedRelations = await readBackupLockedRelationNames(client);
+  return {
+    rendezvousBusy: true,
+    conflicts: findBackupLockConflicts([migration], lockedRelations),
+  };
 }
 
 /**

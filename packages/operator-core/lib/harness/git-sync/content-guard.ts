@@ -41,6 +41,15 @@ export interface ContentOffender {
    * following a detector whose verdict changed while the work was queued.
    */
   detectorResultHash?: string;
+  /**
+   * WI-6554700010008496: for a `quarantined-importer` finding, the EXCLUDED path
+   * at the bottom of the import chain — not the intermediate importer this file
+   * imports directly. Without it, a held file names only its neighbour, and
+   * finding the file that actually blocks the chain meant walking imports by hand.
+   */
+  excludedRoot?: string;
+  /** Why `excludedRoot` itself was excluded (turn hold, live lock, content error, …). */
+  excludedRootReason?: string;
 }
 
 /** Stable content CAS token shared by the guard and action-layer revalidation. */
@@ -72,6 +81,54 @@ export interface ContentGuardDeps {
   /** The registered content detectors to run (default registry in production). */
   detectors: ContentDetector[];
   log?: (m: string) => void;
+  /**
+   * EI-21230011589307899: optional sink, filled with `path → contentSnapshotHash(text)`
+   * for every file this pass actually judged (the text the detectors saw, after any
+   * auto-repair). The post-stage rescan ({@link detectUnscannedStagedOffenders}) uses
+   * it to tell a staged blob this pass already judged from one it never saw.
+   */
+  scanned?: Map<string, string>;
+}
+
+/**
+ * Drop `superproject-only` detectors when `repoPath` is a submodule (or unknown).
+ * Shared by the pre-stage pass and the post-stage rescan so both judge with the
+ * SAME detector set — a rescan that ran a wider set would quarantine files the
+ * pre-stage pass deliberately lets through.
+ */
+async function resolveActiveDetectors(
+  runGit: RunGit,
+  repoPath: string,
+  detectors: ContentDetector[],
+  log?: (m: string) => void,
+): Promise<ContentDetector[]> {
+  if (!detectors.some((d) => d.repoScope === 'superproject-only')) return detectors;
+  const superproject = await isSuperprojectRepo(runGit, repoPath, log);
+  if (superproject) return detectors;
+  const active = detectors.filter((d) => d.repoScope !== 'superproject-only');
+  log?.(
+    `[content-guard] ${repoPath}: skipping ${detectors.length - active.length} ` +
+      `superproject-only detector(s) here`,
+  );
+  return active;
+}
+
+/** The detectors whose `matches` targets `file` (a throwing `matches` is logged + skipped). */
+async function detectorsTargeting(
+  file: string,
+  active: ContentDetector[],
+  repoPath: string,
+  log?: (m: string) => void,
+): Promise<ContentDetector[]> {
+  const dets: ContentDetector[] = [];
+  for (const d of active) {
+    try {
+      if (await d.matches(file, { repoPath })) dets.push(d);
+    } catch (e) {
+      log?.(`[content-guard] detector "${d.key}" match() threw on ${file} — skipping: ${errMsg(e)}`);
+    }
+  }
+  return dets;
 }
 
 /**
@@ -132,17 +189,7 @@ export async function detectContentOffenders(deps: ContentGuardDeps): Promise<Co
   // costly mistake is the other way round — 45 submodule files carry identity literals
   // by design (redacted at tar time), so wrongly running a superproject-only detector
   // inside a submodule would quarantine them from every commit, fleet-wide.
-  let active = detectors;
-  if (detectors.some((d) => d.repoScope === 'superproject-only')) {
-    const superproject = await isSuperprojectRepo(runGit, repoPath, log);
-    if (!superproject) {
-      active = detectors.filter((d) => d.repoScope !== 'superproject-only');
-      log?.(
-        `[content-guard] ${repoPath}: skipping ${detectors.length - active.length} ` +
-          `superproject-only detector(s) here`,
-      );
-    }
-  }
+  const active = await resolveActiveDetectors(runGit, repoPath, detectors, log);
   if (active.length === 0) return [];
 
   const r = await runGit(['status', '--porcelain', '-z', '-uall'], repoPath);
@@ -151,14 +198,7 @@ export async function detectContentOffenders(deps: ContentGuardDeps): Promise<Co
   // Pair each dirty path with the detectors that target it; drop paths no detector wants.
   const targets: Array<{ file: string; dets: ContentDetector[] }> = [];
   for (const file of parseDirtyPaths(r.stdout)) {
-    const dets: ContentDetector[] = [];
-    for (const d of active) {
-      try {
-        if (await d.matches(file, { repoPath })) dets.push(d);
-      } catch (e) {
-        log?.(`[content-guard] detector "${d.key}" match() threw on ${file} — skipping: ${errMsg(e)}`);
-      }
-    }
+    const dets = await detectorsTargeting(file, active, repoPath, log);
     if (dets.length > 0) targets.push({ file, dets });
   }
 
@@ -204,7 +244,88 @@ export async function detectContentOffenders(deps: ContentGuardDeps): Promise<Co
         log?.(`[content-guard] detector "${d.key}" threw on ${file} — skipping (not blocking): ${errMsg(e)}`);
       }
     }
+    // The text every detector above judged (post-repair). Recorded for offenders too:
+    // their exclusion keeps them out of the index, so the hash is never consulted.
+    deps.scanned?.set(file, contentSnapshotHash(text));
   });
+  return offenders;
+}
+
+/** Inputs for {@link detectUnscannedStagedOffenders}. */
+export interface StagedRescanDeps {
+  /** Bound to the index the guarded commit records (an attributed group's private index). */
+  runGit: RunGit;
+  repoPath: string;
+  /** The staged paths (`git diff --cached --name-only`), deletions included. */
+  staged: readonly string[];
+  /** The pre-stage pass's `scanned` sink: path → hash of the text it judged. */
+  scanned: ReadonlyMap<string, string>;
+  detectors: ContentDetector[];
+  log?: (m: string) => void;
+}
+
+/**
+ * EI-21230011589307899: judge every staged blob the pre-stage pass never saw.
+ *
+ * {@link detectContentOffenders} runs over the dirty set BEFORE `git add -A`, and the
+ * oversized/deletion/import guards and the lock census run in between. A file created
+ * (or rewritten) in that window is staged by the add and committed unscanned: on
+ * 2026-10-13 a secret-shaped test fixture reached HEAD that way, and the own-head
+ * publish guard then froze git egress for the whole fleet. The post-stage drift check
+ * cannot see it, because the file did not change AFTER the add.
+ *
+ * For each staged path some active detector targets, this reads the INDEX blob (what
+ * the commit records, not the working tree) and skips it when its hash matches the text
+ * the pre-stage pass judged. Anything else is run through the same detectors, without
+ * auto-repair: the remedy is to hold the path back, and the next tick quarantines and
+ * escalates it through the full pipeline. FAILS OPEN like the pre-stage pass: an
+ * unreadable blob or a throwing detector is logged and skipped, never an offender.
+ */
+export async function detectUnscannedStagedOffenders(deps: StagedRescanDeps): Promise<ContentOffender[]> {
+  const { runGit, repoPath, staged, scanned, detectors, log } = deps;
+  if (detectors.length === 0 || staged.length === 0) return [];
+  const active = await resolveActiveDetectors(runGit, repoPath, detectors, log);
+  if (active.length === 0) return [];
+
+  const targets: Array<{ file: string; dets: ContentDetector[] }> = [];
+  for (const file of staged) {
+    const dets = await detectorsTargeting(file, active, repoPath, log);
+    if (dets.length > 0) targets.push({ file, dets });
+  }
+
+  const offenders: ContentOffender[] = [];
+  let rescanned = 0;
+  await mapPool(targets, MAX_READ_CONCURRENCY, async ({ file, dets }) => {
+    const blob = await runGit(['show', `:${file}`], repoPath);
+    // A staged deletion has no index blob; any other read failure fails open.
+    if (blob.code !== 0) return;
+    const text = blob.stdout;
+    const hash = contentSnapshotHash(text);
+    if (scanned.get(file) === hash) return;
+    rescanned++;
+    for (const d of dets) {
+      try {
+        const error = await d.detect(file, text, { repoPath });
+        if (!error) continue;
+        offenders.push({
+          file,
+          detectorKey: d.key,
+          error,
+          fixerRole: d.fixerRole,
+          contentHash: hash,
+          detectorResultHash: detectorResultHash(d.key, error),
+        });
+      } catch (e) {
+        log?.(`[content-guard] detector "${d.key}" threw on staged ${file} — skipping (not blocking): ${errMsg(e)}`);
+      }
+    }
+  });
+  if (rescanned > 0) {
+    log?.(
+      `[content-guard] ${repoPath}: post-stage rescan judged ${rescanned} staged path(s) the pre-stage pass ` +
+        `did not see; ${offenders.length} finding(s)`,
+    );
+  }
   return offenders;
 }
 

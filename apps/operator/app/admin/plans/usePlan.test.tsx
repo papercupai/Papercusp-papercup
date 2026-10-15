@@ -166,14 +166,6 @@ describe('usePlan — read-only (live) vs editor (one-shot) split', () => {
           raw: "# Body",
           items: [{ id: "P-001", effectiveStatus: "blocked" }],
           linkedFeatures: { "P-001": { featureId: "WI-1", status: "open" } },
-          planItemTests: {
-            "P-001": {
-              valsTotal: 1,
-              valsRequiringTest: 1,
-              valsCovered: 1,
-              valsPassing: 1,
-            },
-          },
         }),
       ),
     );

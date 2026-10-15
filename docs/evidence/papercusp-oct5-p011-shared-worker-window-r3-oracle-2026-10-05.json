@@ -1,0 +1,1494 @@
+{
+  "schemaVersion": "p011-baseline-independent-v1",
+  "proofs": [
+    {
+      "path": "docs/evidence/papercusp-oct5-p011-shared-worker-window-r3-2026-10-05.json",
+      "sha256": "5c6195b06d91f9112c2de914e5a75a253c1bba37966d6a732506bc1bf92a19a6",
+      "bytes": 372703,
+      "result": {
+        "target": "main",
+        "mainIdentity": "1731718:2678176:7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "counterIdentity": "1731718:2678176:7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "buildSha": "d2a53e1154",
+        "samples": [
+          {
+            "label": "idle-0-start",
+            "pssBytes": 1062481920,
+            "allocatedBytes": 8395302416,
+            "observedPssBytes": 1262817280,
+            "checkedProcesses": 3,
+            "notChecked": []
+          },
+          {
+            "label": "idle-0-end",
+            "pssBytes": 1062480896,
+            "allocatedBytes": 8398737448,
+            "observedPssBytes": 1262816256,
+            "checkedProcesses": 3,
+            "notChecked": []
+          },
+          {
+            "label": "ordinary-0-end",
+            "pssBytes": 1064396800,
+            "allocatedBytes": 8412165288,
+            "observedPssBytes": 1264728064,
+            "checkedProcesses": 3,
+            "notChecked": []
+          },
+          {
+            "label": "idle-1-start",
+            "pssBytes": 1064430592,
+            "allocatedBytes": 8417702880,
+            "observedPssBytes": 1264789504,
+            "checkedProcesses": 3,
+            "notChecked": []
+          },
+          {
+            "label": "idle-1-end",
+            "pssBytes": 1064453120,
+            "allocatedBytes": 8424250872,
+            "observedPssBytes": 1264785408,
+            "checkedProcesses": 3,
+            "notChecked": []
+          },
+          {
+            "label": "ordinary-1-end",
+            "pssBytes": 1068342272,
+            "allocatedBytes": 8563106120,
+            "observedPssBytes": 1268675584,
+            "checkedProcesses": 3,
+            "notChecked": []
+          },
+          {
+            "label": "idle-2-start",
+            "pssBytes": 1068325888,
+            "allocatedBytes": 8571354656,
+            "observedPssBytes": 1268638720,
+            "checkedProcesses": 3,
+            "notChecked": []
+          },
+          {
+            "label": "idle-2-end",
+            "pssBytes": 1069520896,
+            "allocatedBytes": 8578450504,
+            "observedPssBytes": 1270491136,
+            "checkedProcesses": 3,
+            "notChecked": []
+          },
+          {
+            "label": "ordinary-2-end",
+            "pssBytes": 1069835264,
+            "allocatedBytes": 8596435024,
+            "observedPssBytes": 1270837248,
+            "checkedProcesses": 3,
+            "notChecked": []
+          }
+        ],
+        "windows": [
+          {
+            "window": 0,
+            "idlePssDeltaBytes": -1024,
+            "ordinaryPssDeltaBytes": 1915904,
+            "idleAllocatedBytes": 3435032,
+            "ordinaryAllocatedBytes": 13427840
+          },
+          {
+            "window": 1,
+            "idlePssDeltaBytes": 22528,
+            "ordinaryPssDeltaBytes": 3889152,
+            "idleAllocatedBytes": 6547992,
+            "ordinaryAllocatedBytes": 138855248
+          },
+          {
+            "window": 2,
+            "idlePssDeltaBytes": 1195008,
+            "ordinaryPssDeltaBytes": 314368,
+            "idleAllocatedBytes": 7095848,
+            "ordinaryAllocatedBytes": 17984520
+          }
+        ],
+        "requestWorkerWindows": [
+          {
+            "window": 0,
+            "resources": [
+              {
+                "pid": 1731718,
+                "startTicks": "2678176",
+                "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                "processInstanceId": "35ee4bc8-16e5-4205-9332-92016ac331d3",
+                "buildSha": "d2a53e1154",
+                "role": {
+                  "clusterRole": "primary",
+                  "requestOnly": true,
+                  "configuredSidecar": null,
+                  "requestAssignment": "unknown",
+                  "allocationOwner": "unknown"
+                },
+                "pssBytesBefore": 1062489088,
+                "pssBytesAfter": 1064345600,
+                "pssChangeBytes": 1856512,
+                "allocatedBytes": 10745992,
+                "countersBefore": {
+                  "pid": 1731718,
+                  "at": 1791238289897,
+                  "uptime": 481.585662262,
+                  "memory": {
+                    "rss": 1091723264,
+                    "heapTotal": 756527104,
+                    "heapUsed": 624989088,
+                    "external": 122215480,
+                    "arrayBuffers": 38563534
+                  },
+                  "heap": {
+                    "total_heap_size": 756527104,
+                    "total_heap_size_executable": 18452480,
+                    "total_physical_size": 756514816,
+                    "total_available_size": 137017303560,
+                    "used_heap_size": 624989328,
+                    "heap_size_limit": 137640280064,
+                    "malloced_memory": 4227152,
+                    "peak_malloced_memory": 119915592,
+                    "does_zap_garbage": 0,
+                    "number_of_native_contexts": 2,
+                    "number_of_detached_contexts": 0,
+                    "total_global_handles_size": 1478728,
+                    "used_global_handles_size": 1071584,
+                    "external_memory": 122215480,
+                    "total_allocated_bytes": 8399862672
+                  },
+                  "heapSpaces": [
+                    {
+                      "space_name": "read_only_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "new_space",
+                      "space_size": 128450560,
+                      "space_used_size": 36313440,
+                      "space_available_size": 30791328,
+                      "physical_space_size": 128450560
+                    },
+                    {
+                      "space_name": "old_space",
+                      "space_size": 536346624,
+                      "space_used_size": 505549680,
+                      "space_available_size": 29583256,
+                      "physical_space_size": 536334336
+                    },
+                    {
+                      "space_name": "code_space",
+                      "space_size": 18087936,
+                      "space_used_size": 16654976,
+                      "space_available_size": 1430752,
+                      "physical_space_size": 18087936
+                    },
+                    {
+                      "space_name": "shared_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "trusted_space",
+                      "space_size": 21233664,
+                      "space_used_size": 16571144,
+                      "space_available_size": 4635376,
+                      "physical_space_size": 21233664
+                    },
+                    {
+                      "space_name": "shared_trusted_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "new_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 67108864,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "large_object_space",
+                      "space_size": 47587328,
+                      "space_used_size": 47374296,
+                      "space_available_size": 0,
+                      "physical_space_size": 47587328
+                    },
+                    {
+                      "space_name": "code_large_object_space",
+                      "space_size": 364544,
+                      "space_used_size": 357504,
+                      "space_available_size": 0,
+                      "physical_space_size": 364544
+                    },
+                    {
+                      "space_name": "shared_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "shared_trusted_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "trusted_large_object_space",
+                      "space_size": 4456448,
+                      "space_used_size": 2169312,
+                      "space_available_size": 0,
+                      "physical_space_size": 4456448
+                    }
+                  ],
+                  "heapCode": {
+                    "code_and_metadata_size": 21617284,
+                    "bytecode_and_metadata_size": 7789776,
+                    "external_script_source_size": 80766340,
+                    "cpu_profiler_metadata_size": 0
+                  },
+                  "hostFacts": {
+                    "cluster": {
+                      "isPrimary": true,
+                      "isWorker": false,
+                      "workerId": null,
+                      "primaryWorkerCount": 0
+                    },
+                    "backgroundWorkersOverride": "disabled",
+                    "stagingPort": true,
+                    "sidecarFlags": {
+                      "substrate": false,
+                      "spawner": false,
+                      "gateway": false,
+                      "embed": false,
+                      "resourceHealth": false
+                    }
+                  }
+                },
+                "countersAfter": {
+                  "pid": 1731718,
+                  "at": 1791238290484,
+                  "uptime": 482.173188891,
+                  "memory": {
+                    "rss": 1092771840,
+                    "heapTotal": 756527104,
+                    "heapUsed": 630429832,
+                    "external": 123280692,
+                    "arrayBuffers": 39628746
+                  },
+                  "heap": {
+                    "total_heap_size": 756527104,
+                    "total_heap_size_executable": 18452480,
+                    "total_physical_size": 756514816,
+                    "total_available_size": 137011862624,
+                    "used_heap_size": 630430072,
+                    "heap_size_limit": 137640280064,
+                    "malloced_memory": 4227152,
+                    "peak_malloced_memory": 119915592,
+                    "does_zap_garbage": 0,
+                    "number_of_native_contexts": 2,
+                    "number_of_detached_contexts": 0,
+                    "total_global_handles_size": 1478728,
+                    "used_global_handles_size": 1077600,
+                    "external_memory": 123280692,
+                    "total_allocated_bytes": 8410608664
+                  },
+                  "heapSpaces": [
+                    {
+                      "space_name": "read_only_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "new_space",
+                      "space_size": 128450560,
+                      "space_used_size": 41342240,
+                      "space_available_size": 25762528,
+                      "physical_space_size": 128450560
+                    },
+                    {
+                      "space_name": "old_space",
+                      "space_size": 536346624,
+                      "space_used_size": 505757088,
+                      "space_available_size": 29375656,
+                      "physical_space_size": 536334336
+                    },
+                    {
+                      "space_name": "code_space",
+                      "space_size": 18087936,
+                      "space_used_size": 16756736,
+                      "space_available_size": 1328992,
+                      "physical_space_size": 18087936
+                    },
+                    {
+                      "space_name": "shared_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "trusted_space",
+                      "space_size": 21233664,
+                      "space_used_size": 16673920,
+                      "space_available_size": 4532600,
+                      "physical_space_size": 21233664
+                    },
+                    {
+                      "space_name": "shared_trusted_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "new_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 67108864,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "large_object_space",
+                      "space_size": 47587328,
+                      "space_used_size": 47374296,
+                      "space_available_size": 0,
+                      "physical_space_size": 47587328
+                    },
+                    {
+                      "space_name": "code_large_object_space",
+                      "space_size": 364544,
+                      "space_used_size": 357504,
+                      "space_available_size": 0,
+                      "physical_space_size": 364544
+                    },
+                    {
+                      "space_name": "shared_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "shared_trusted_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "trusted_large_object_space",
+                      "space_size": 4456448,
+                      "space_used_size": 2169312,
+                      "space_available_size": 0,
+                      "physical_space_size": 4456448
+                    }
+                  ],
+                  "heapCode": {
+                    "code_and_metadata_size": 21744358,
+                    "bytecode_and_metadata_size": 7829520,
+                    "external_script_source_size": 80766340,
+                    "cpu_profiler_metadata_size": 0
+                  },
+                  "hostFacts": {
+                    "cluster": {
+                      "isPrimary": true,
+                      "isWorker": false,
+                      "workerId": null,
+                      "primaryWorkerCount": 0
+                    },
+                    "backgroundWorkersOverride": "disabled",
+                    "stagingPort": true,
+                    "sidecarFlags": {
+                      "substrate": false,
+                      "spawner": false,
+                      "gateway": false,
+                      "embed": false,
+                      "resourceHealth": false
+                    }
+                  }
+                }
+              }
+            ],
+            "assignment": {
+              "status": "observed",
+              "requested": 8,
+              "assignments": [
+                {
+                  "requestId": "d17f6a42-9ddf-425c-8bc9-59b64b95d3bd",
+                  "pid": 1731718,
+                  "startTicks": "2678176",
+                  "processInstanceId": "35ee4bc8-16e5-4205-9332-92016ac331d3",
+                  "queryTuples": [
+                    "[\"d17f6a42-9ddf-425c-8bc9-59b64b95d3bd\",\"org-admin\",\"35ee4bc8-16e5-4205-9332-92016ac331d3\",\"d2a53e1154\",\"f43ad19d-4184-4016-8315-33efcb8e6a7e\",2,853]",
+                    "[\"d17f6a42-9ddf-425c-8bc9-59b64b95d3bd\",\"org-admin\",\"35ee4bc8-16e5-4205-9332-92016ac331d3\",\"d2a53e1154\",\"f43ad19d-4184-4016-8315-33efcb8e6a7e\",6,867]"
+                  ]
+                },
+                {
+                  "requestId": "3f998dbb-9d2c-4015-b941-a78e8044f60f",
+                  "pid": 1731718,
+                  "startTicks": "2678176",
+                  "processInstanceId": "35ee4bc8-16e5-4205-9332-92016ac331d3",
+                  "queryTuples": [
+                    "[\"3f998dbb-9d2c-4015-b941-a78e8044f60f\",\"org-admin\",\"35ee4bc8-16e5-4205-9332-92016ac331d3\",\"d2a53e1154\",\"f43ad19d-4184-4016-8315-33efcb8e6a7e\",5,893]",
+                    "[\"3f998dbb-9d2c-4015-b941-a78e8044f60f\",\"org-admin\",\"35ee4bc8-16e5-4205-9332-92016ac331d3\",\"d2a53e1154\",\"f43ad19d-4184-4016-8315-33efcb8e6a7e\",14,884]"
+                  ]
+                },
+                {
+                  "requestId": "dfb3e99b-206b-48c6-8dac-820e5573519a",
+                  "pid": 1731718,
+                  "startTicks": "2678176",
+                  "processInstanceId": "35ee4bc8-16e5-4205-9332-92016ac331d3",
+                  "queryTuples": [
+                    "[\"dfb3e99b-206b-48c6-8dac-820e5573519a\",\"org-admin\",\"35ee4bc8-16e5-4205-9332-92016ac331d3\",\"d2a53e1154\",\"f43ad19d-4184-4016-8315-33efcb8e6a7e\",12,888]",
+                    "[\"dfb3e99b-206b-48c6-8dac-820e5573519a\",\"org-admin\",\"35ee4bc8-16e5-4205-9332-92016ac331d3\",\"d2a53e1154\",\"f43ad19d-4184-4016-8315-33efcb8e6a7e\",4,910]"
+                  ]
+                },
+                {
+                  "requestId": "5dcd2147-77b9-4467-b2d8-4a9697e42ebf",
+                  "pid": 1731718,
+                  "startTicks": "2678176",
+                  "processInstanceId": "35ee4bc8-16e5-4205-9332-92016ac331d3",
+                  "queryTuples": [
+                    "[\"5dcd2147-77b9-4467-b2d8-4a9697e42ebf\",\"org-admin\",\"35ee4bc8-16e5-4205-9332-92016ac331d3\",\"d2a53e1154\",\"f43ad19d-4184-4016-8315-33efcb8e6a7e\",7,851]",
+                    "[\"5dcd2147-77b9-4467-b2d8-4a9697e42ebf\",\"org-admin\",\"35ee4bc8-16e5-4205-9332-92016ac331d3\",\"d2a53e1154\",\"f43ad19d-4184-4016-8315-33efcb8e6a7e\",17,869]"
+                  ]
+                },
+                {
+                  "requestId": "49d8a20f-f0d4-41b4-a3f4-26c6f03069a7",
+                  "pid": 1731718,
+                  "startTicks": "2678176",
+                  "processInstanceId": "35ee4bc8-16e5-4205-9332-92016ac331d3",
+                  "queryTuples": [
+                    "[\"49d8a20f-f0d4-41b4-a3f4-26c6f03069a7\",\"org-admin\",\"35ee4bc8-16e5-4205-9332-92016ac331d3\",\"d2a53e1154\",\"f43ad19d-4184-4016-8315-33efcb8e6a7e\",3,880]",
+                    "[\"49d8a20f-f0d4-41b4-a3f4-26c6f03069a7\",\"org-admin\",\"35ee4bc8-16e5-4205-9332-92016ac331d3\",\"d2a53e1154\",\"f43ad19d-4184-4016-8315-33efcb8e6a7e\",9,907]"
+                  ]
+                },
+                {
+                  "requestId": "0221e097-3e0b-43cb-b692-57ed0a77fccd",
+                  "pid": 1731718,
+                  "startTicks": "2678176",
+                  "processInstanceId": "35ee4bc8-16e5-4205-9332-92016ac331d3",
+                  "queryTuples": [
+                    "[\"0221e097-3e0b-43cb-b692-57ed0a77fccd\",\"org-admin\",\"35ee4bc8-16e5-4205-9332-92016ac331d3\",\"d2a53e1154\",\"f43ad19d-4184-4016-8315-33efcb8e6a7e\",8,890]",
+                    "[\"0221e097-3e0b-43cb-b692-57ed0a77fccd\",\"org-admin\",\"35ee4bc8-16e5-4205-9332-92016ac331d3\",\"d2a53e1154\",\"f43ad19d-4184-4016-8315-33efcb8e6a7e\",16,906]"
+                  ]
+                },
+                {
+                  "requestId": "608586b9-56cf-4913-9a4d-3b9c6fb4af7b",
+                  "pid": 1731718,
+                  "startTicks": "2678176",
+                  "processInstanceId": "35ee4bc8-16e5-4205-9332-92016ac331d3",
+                  "queryTuples": [
+                    "[\"608586b9-56cf-4913-9a4d-3b9c6fb4af7b\",\"org-admin\",\"35ee4bc8-16e5-4205-9332-92016ac331d3\",\"d2a53e1154\",\"f43ad19d-4184-4016-8315-33efcb8e6a7e\",10,886]",
+                    "[\"608586b9-56cf-4913-9a4d-3b9c6fb4af7b\",\"org-admin\",\"35ee4bc8-16e5-4205-9332-92016ac331d3\",\"d2a53e1154\",\"f43ad19d-4184-4016-8315-33efcb8e6a7e\",5,894]"
+                  ]
+                },
+                {
+                  "requestId": "6045623d-d915-4cd5-8b0f-d8f91999cd41",
+                  "pid": 1731718,
+                  "startTicks": "2678176",
+                  "processInstanceId": "35ee4bc8-16e5-4205-9332-92016ac331d3",
+                  "queryTuples": [
+                    "[\"6045623d-d915-4cd5-8b0f-d8f91999cd41\",\"org-admin\",\"35ee4bc8-16e5-4205-9332-92016ac331d3\",\"d2a53e1154\",\"f43ad19d-4184-4016-8315-33efcb8e6a7e\",15,877]",
+                    "[\"6045623d-d915-4cd5-8b0f-d8f91999cd41\",\"org-admin\",\"35ee4bc8-16e5-4205-9332-92016ac331d3\",\"d2a53e1154\",\"f43ad19d-4184-4016-8315-33efcb8e6a7e\",2,854]"
+                  ]
+                }
+              ],
+              "unresolvedRequestIds": []
+            },
+            "coverage": [
+              {
+                "phase": "before",
+                "unsampledPids": [
+                  1738108,
+                  1738122
+                ],
+                "notCheckedBefore": [],
+                "notCheckedAfter": []
+              },
+              {
+                "phase": "after",
+                "unsampledPids": [
+                  1738108,
+                  1738122
+                ],
+                "notCheckedBefore": [],
+                "notCheckedAfter": []
+              }
+            ],
+            "selectedAncestry": {
+              "status": "observed",
+              "brackets": [
+                {
+                  "phase": "before",
+                  "bracket": "before",
+                  "pid": 1731718,
+                  "chain": [
+                    {
+                      "pid": 1731718,
+                      "startTicks": "2678176",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-d2a53e115436.49KAK1/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "before",
+                  "bracket": "after",
+                  "pid": 1731718,
+                  "chain": [
+                    {
+                      "pid": 1731718,
+                      "startTicks": "2678176",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-d2a53e115436.49KAK1/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "after",
+                  "bracket": "before",
+                  "pid": 1731718,
+                  "chain": [
+                    {
+                      "pid": 1731718,
+                      "startTicks": "2678176",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-d2a53e115436.49KAK1/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "after",
+                  "bracket": "after",
+                  "pid": 1731718,
+                  "chain": [
+                    {
+                      "pid": 1731718,
+                      "startTicks": "2678176",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-d2a53e115436.49KAK1/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "definition": "Exact selected ancestor lifetime pins across serial bounded census brackets; no atomic or complete service census"
+            },
+            "servingWorkerPopulation": "unknown",
+            "queryPopulation": "bounded terminal ring; eviction remains unknown",
+            "unsampledAncestorLifetimes": "unknown",
+            "allocationOwner": "unknown",
+            "physicalSavings": "unmeasured"
+          },
+          {
+            "window": 1,
+            "resources": [
+              {
+                "pid": 1731718,
+                "startTicks": "2678176",
+                "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                "processInstanceId": "35ee4bc8-16e5-4205-9332-92016ac331d3",
+                "buildSha": "d2a53e1154",
+                "role": {
+                  "clusterRole": "primary",
+                  "requestOnly": true,
+                  "configuredSidecar": null,
+                  "requestAssignment": "unknown",
+                  "allocationOwner": "unknown"
+                },
+                "pssBytesBefore": 1067894784,
+                "pssBytesAfter": 1068334080,
+                "pssChangeBytes": 439296,
+                "allocatedBytes": 35495344,
+                "countersBefore": {
+                  "pid": 1731718,
+                  "at": 1791238294025,
+                  "uptime": 485.713957699,
+                  "memory": {
+                    "rss": 1095917568,
+                    "heapTotal": 774692864,
+                    "heapUsed": 658891288,
+                    "external": 131197547,
+                    "arrayBuffers": 47545601
+                  },
+                  "heap": {
+                    "total_heap_size": 774692864,
+                    "total_heap_size_executable": 18452480,
+                    "total_physical_size": 774692864,
+                    "total_available_size": 136977603088,
+                    "used_heap_size": 658891528,
+                    "heap_size_limit": 137640280064,
+                    "malloced_memory": 4227152,
+                    "peak_malloced_memory": 119915592,
+                    "does_zap_garbage": 0,
+                    "number_of_native_contexts": 2,
+                    "number_of_detached_contexts": 0,
+                    "total_global_handles_size": 1478728,
+                    "used_global_handles_size": 1081536,
+                    "external_memory": 131197547,
+                    "total_allocated_bytes": 8522794312
+                  },
+                  "heapSpaces": [
+                    {
+                      "space_name": "read_only_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "new_space",
+                      "space_size": 133955584,
+                      "space_used_size": 49504008,
+                      "space_available_size": 17600760,
+                      "physical_space_size": 133955584
+                    },
+                    {
+                      "space_name": "old_space",
+                      "space_size": 548667392,
+                      "space_used_size": 525549728,
+                      "space_available_size": 21816432,
+                      "physical_space_size": 548667392
+                    },
+                    {
+                      "space_name": "code_space",
+                      "space_size": 18087936,
+                      "space_used_size": 16860224,
+                      "space_available_size": 1225504,
+                      "physical_space_size": 18087936
+                    },
+                    {
+                      "space_name": "shared_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "trusted_space",
+                      "space_size": 21233664,
+                      "space_used_size": 16741496,
+                      "space_available_size": 4465024,
+                      "physical_space_size": 21233664
+                    },
+                    {
+                      "space_name": "shared_trusted_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "new_large_object_space",
+                      "space_size": 204800,
+                      "space_used_size": 201528,
+                      "space_available_size": 66907336,
+                      "physical_space_size": 204800
+                    },
+                    {
+                      "space_name": "large_object_space",
+                      "space_size": 47722496,
+                      "space_used_size": 47508560,
+                      "space_available_size": 0,
+                      "physical_space_size": 47722496
+                    },
+                    {
+                      "space_name": "code_large_object_space",
+                      "space_size": 364544,
+                      "space_used_size": 357504,
+                      "space_available_size": 0,
+                      "physical_space_size": 364544
+                    },
+                    {
+                      "space_name": "shared_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "shared_trusted_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "trusted_large_object_space",
+                      "space_size": 4456448,
+                      "space_used_size": 2169312,
+                      "space_available_size": 0,
+                      "physical_space_size": 4456448
+                    }
+                  ],
+                  "heapCode": {
+                    "code_and_metadata_size": 21881060,
+                    "bytecode_and_metadata_size": 7831336,
+                    "external_script_source_size": 80766340,
+                    "cpu_profiler_metadata_size": 0
+                  },
+                  "hostFacts": {
+                    "cluster": {
+                      "isPrimary": true,
+                      "isWorker": false,
+                      "workerId": null,
+                      "primaryWorkerCount": 0
+                    },
+                    "backgroundWorkersOverride": "disabled",
+                    "stagingPort": true,
+                    "sidecarFlags": {
+                      "substrate": false,
+                      "spawner": false,
+                      "gateway": false,
+                      "embed": false,
+                      "resourceHealth": false
+                    }
+                  }
+                },
+                "countersAfter": {
+                  "pid": 1731718,
+                  "at": 1791238294464,
+                  "uptime": 486.153058101,
+                  "memory": {
+                    "rss": 1096896512,
+                    "heapTotal": 796463104,
+                    "heapUsed": 659441728,
+                    "external": 120730920,
+                    "arrayBuffers": 37078974
+                  },
+                  "heap": {
+                    "total_heap_size": 796463104,
+                    "total_heap_size_executable": 18714624,
+                    "total_physical_size": 796463104,
+                    "total_available_size": 136977177136,
+                    "used_heap_size": 659441968,
+                    "heap_size_limit": 137640280064,
+                    "malloced_memory": 4227152,
+                    "peak_malloced_memory": 119915592,
+                    "does_zap_garbage": 0,
+                    "number_of_native_contexts": 2,
+                    "number_of_detached_contexts": 0,
+                    "total_global_handles_size": 1478728,
+                    "used_global_handles_size": 1083552,
+                    "external_memory": 120730920,
+                    "total_allocated_bytes": 8558289656
+                  },
+                  "heapSpaces": [
+                    {
+                      "space_name": "read_only_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "new_space",
+                      "space_size": 133955584,
+                      "space_used_size": 25918832,
+                      "space_available_size": 41185936,
+                      "physical_space_size": 133955584
+                    },
+                    {
+                      "space_name": "old_space",
+                      "space_size": 569638912,
+                      "space_used_size": 549254520,
+                      "space_available_size": 19009448,
+                      "physical_space_size": 569638912
+                    },
+                    {
+                      "space_name": "code_space",
+                      "space_size": 18350080,
+                      "space_used_size": 16963264,
+                      "space_available_size": 1384576,
+                      "physical_space_size": 18350080
+                    },
+                    {
+                      "space_name": "shared_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "trusted_space",
+                      "space_size": 21495808,
+                      "space_used_size": 16798768,
+                      "space_available_size": 4669880,
+                      "physical_space_size": 21495808
+                    },
+                    {
+                      "space_name": "shared_trusted_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "new_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 67108864,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "large_object_space",
+                      "space_size": 48201728,
+                      "space_used_size": 47981240,
+                      "space_available_size": 0,
+                      "physical_space_size": 48201728
+                    },
+                    {
+                      "space_name": "code_large_object_space",
+                      "space_size": 364544,
+                      "space_used_size": 357504,
+                      "space_available_size": 0,
+                      "physical_space_size": 364544
+                    },
+                    {
+                      "space_name": "shared_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "shared_trusted_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "trusted_large_object_space",
+                      "space_size": 4456448,
+                      "space_used_size": 2169312,
+                      "space_available_size": 0,
+                      "physical_space_size": 4456448
+                    }
+                  ],
+                  "heapCode": {
+                    "code_and_metadata_size": 22010997,
+                    "bytecode_and_metadata_size": 7831336,
+                    "external_script_source_size": 80766340,
+                    "cpu_profiler_metadata_size": 0
+                  },
+                  "hostFacts": {
+                    "cluster": {
+                      "isPrimary": true,
+                      "isWorker": false,
+                      "workerId": null,
+                      "primaryWorkerCount": 0
+                    },
+                    "backgroundWorkersOverride": "disabled",
+                    "stagingPort": true,
+                    "sidecarFlags": {
+                      "substrate": false,
+                      "spawner": false,
+                      "gateway": false,
+                      "embed": false,
+                      "resourceHealth": false
+                    }
+                  }
+                }
+              }
+            ],
+            "assignment": {
+              "status": "partial",
+              "requested": 8,
+              "assignments": [],
+              "unresolvedRequestIds": [
+                "1cedba73-f3ba-4a5a-ab51-19607354e989",
+                "1ce2f00a-bfd7-4517-b06c-4555ac81da50",
+                "668c562a-be70-466c-be61-3947e49d2561",
+                "98e80b37-3dfa-423e-8e3b-a62fb51ab14a",
+                "2ddaed52-b9c5-477e-b461-1811f3e99a07",
+                "2f97c768-ebb4-4b77-bba4-e0bd8b8c23bb",
+                "4d6b64f8-e400-48e6-a543-86346bafc5e2",
+                "92a3a806-61ed-4823-8488-928a53ef7d81"
+              ]
+            },
+            "coverage": [
+              {
+                "phase": "before",
+                "unsampledPids": [
+                  1738108,
+                  1738122
+                ],
+                "notCheckedBefore": [],
+                "notCheckedAfter": []
+              },
+              {
+                "phase": "after",
+                "unsampledPids": [
+                  1738108,
+                  1738122
+                ],
+                "notCheckedBefore": [],
+                "notCheckedAfter": []
+              }
+            ],
+            "selectedAncestry": {
+              "status": "observed",
+              "brackets": [
+                {
+                  "phase": "before",
+                  "bracket": "before",
+                  "pid": 1731718,
+                  "chain": [
+                    {
+                      "pid": 1731718,
+                      "startTicks": "2678176",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-d2a53e115436.49KAK1/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "before",
+                  "bracket": "after",
+                  "pid": 1731718,
+                  "chain": [
+                    {
+                      "pid": 1731718,
+                      "startTicks": "2678176",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-d2a53e115436.49KAK1/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "after",
+                  "bracket": "before",
+                  "pid": 1731718,
+                  "chain": [
+                    {
+                      "pid": 1731718,
+                      "startTicks": "2678176",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-d2a53e115436.49KAK1/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "after",
+                  "bracket": "after",
+                  "pid": 1731718,
+                  "chain": [
+                    {
+                      "pid": 1731718,
+                      "startTicks": "2678176",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-d2a53e115436.49KAK1/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "definition": "Exact selected ancestor lifetime pins across serial bounded census brackets; no atomic or complete service census"
+            },
+            "servingWorkerPopulation": "unknown",
+            "queryPopulation": "bounded terminal ring; eviction remains unknown",
+            "unsampledAncestorLifetimes": "unknown",
+            "allocationOwner": "unknown",
+            "physicalSavings": "unmeasured"
+          },
+          {
+            "window": 2,
+            "resources": [
+              {
+                "pid": 1731718,
+                "startTicks": "2678176",
+                "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                "processInstanceId": "35ee4bc8-16e5-4205-9332-92016ac331d3",
+                "buildSha": "d2a53e1154",
+                "role": {
+                  "clusterRole": "primary",
+                  "requestOnly": true,
+                  "configuredSidecar": null,
+                  "requestAssignment": "unknown",
+                  "allocationOwner": "unknown"
+                },
+                "pssBytesBefore": 1069710336,
+                "pssBytesAfter": 1069828096,
+                "pssChangeBytes": 117760,
+                "allocatedBytes": 10495368,
+                "countersBefore": {
+                  "pid": 1731718,
+                  "at": 1791238297711,
+                  "uptime": 489.399524272,
+                  "memory": {
+                    "rss": 1097945088,
+                    "heapTotal": 797671424,
+                    "heapUsed": 673660656,
+                    "external": 124195173,
+                    "arrayBuffers": 40543227
+                  },
+                  "heap": {
+                    "total_heap_size": 797671424,
+                    "total_heap_size_executable": 18714624,
+                    "total_physical_size": 797671424,
+                    "total_available_size": 136962007376,
+                    "used_heap_size": 673660896,
+                    "heap_size_limit": 137640280064,
+                    "malloced_memory": 4227152,
+                    "peak_malloced_memory": 119915592,
+                    "does_zap_garbage": 0,
+                    "number_of_native_contexts": 2,
+                    "number_of_detached_contexts": 0,
+                    "total_global_handles_size": 1478728,
+                    "used_global_handles_size": 1086464,
+                    "external_memory": 124195173,
+                    "total_allocated_bytes": 8580493832
+                  },
+                  "heapSpaces": [
+                    {
+                      "space_name": "read_only_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "new_space",
+                      "space_size": 133955584,
+                      "space_used_size": 37915152,
+                      "space_available_size": 29189616,
+                      "physical_space_size": 133955584
+                    },
+                    {
+                      "space_name": "old_space",
+                      "space_size": 569901056,
+                      "space_used_size": 550465416,
+                      "space_available_size": 18056040,
+                      "physical_space_size": 569901056
+                    },
+                    {
+                      "space_name": "code_space",
+                      "space_size": 18350080,
+                      "space_used_size": 17016128,
+                      "space_available_size": 1331712,
+                      "physical_space_size": 18350080
+                    },
+                    {
+                      "space_name": "shared_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "trusted_space",
+                      "space_size": 21495808,
+                      "space_used_size": 16814400,
+                      "space_available_size": 4654248,
+                      "physical_space_size": 21495808
+                    },
+                    {
+                      "space_name": "shared_trusted_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "new_large_object_space",
+                      "space_size": 946176,
+                      "space_used_size": 942784,
+                      "space_available_size": 66166080,
+                      "physical_space_size": 946176
+                    },
+                    {
+                      "space_name": "large_object_space",
+                      "space_size": 48201728,
+                      "space_used_size": 47981240,
+                      "space_available_size": 0,
+                      "physical_space_size": 48201728
+                    },
+                    {
+                      "space_name": "code_large_object_space",
+                      "space_size": 364544,
+                      "space_used_size": 357504,
+                      "space_available_size": 0,
+                      "physical_space_size": 364544
+                    },
+                    {
+                      "space_name": "shared_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "shared_trusted_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "trusted_large_object_space",
+                      "space_size": 4456448,
+                      "space_used_size": 2169312,
+                      "space_available_size": 0,
+                      "physical_space_size": 4456448
+                    }
+                  ],
+                  "heapCode": {
+                    "code_and_metadata_size": 22069000,
+                    "bytecode_and_metadata_size": 7833152,
+                    "external_script_source_size": 80766340,
+                    "cpu_profiler_metadata_size": 0
+                  },
+                  "hostFacts": {
+                    "cluster": {
+                      "isPrimary": true,
+                      "isWorker": false,
+                      "workerId": null,
+                      "primaryWorkerCount": 0
+                    },
+                    "backgroundWorkersOverride": "disabled",
+                    "stagingPort": true,
+                    "sidecarFlags": {
+                      "substrate": false,
+                      "spawner": false,
+                      "gateway": false,
+                      "embed": false,
+                      "resourceHealth": false
+                    }
+                  }
+                },
+                "countersAfter": {
+                  "pid": 1731718,
+                  "at": 1791238298455,
+                  "uptime": 490.143635499,
+                  "memory": {
+                    "rss": 1097945088,
+                    "heapTotal": 797671424,
+                    "heapUsed": 681609456,
+                    "external": 125285466,
+                    "arrayBuffers": 41633520
+                  },
+                  "heap": {
+                    "total_heap_size": 797671424,
+                    "total_heap_size_executable": 18714624,
+                    "total_physical_size": 797671424,
+                    "total_available_size": 136954057480,
+                    "used_heap_size": 681609696,
+                    "heap_size_limit": 137640280064,
+                    "malloced_memory": 4227152,
+                    "peak_malloced_memory": 119915592,
+                    "does_zap_garbage": 0,
+                    "number_of_native_contexts": 2,
+                    "number_of_detached_contexts": 0,
+                    "total_global_handles_size": 1478728,
+                    "used_global_handles_size": 1087744,
+                    "external_memory": 125285466,
+                    "total_allocated_bytes": 8590989200
+                  },
+                  "heapSpaces": [
+                    {
+                      "space_name": "read_only_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "new_space",
+                      "space_size": 133955584,
+                      "space_used_size": 45566448,
+                      "space_available_size": 21538320,
+                      "physical_space_size": 133955584
+                    },
+                    {
+                      "space_name": "old_space",
+                      "space_size": 569901056,
+                      "space_used_size": 550673424,
+                      "space_available_size": 17846936,
+                      "physical_space_size": 569901056
+                    },
+                    {
+                      "space_name": "code_space",
+                      "space_size": 18350080,
+                      "space_used_size": 17065984,
+                      "space_available_size": 1281856,
+                      "physical_space_size": 18350080
+                    },
+                    {
+                      "space_name": "shared_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "trusted_space",
+                      "space_size": 21495808,
+                      "space_used_size": 16854040,
+                      "space_available_size": 4614608,
+                      "physical_space_size": 21495808
+                    },
+                    {
+                      "space_name": "shared_trusted_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "new_large_object_space",
+                      "space_size": 946176,
+                      "space_used_size": 942784,
+                      "space_available_size": 66166080,
+                      "physical_space_size": 946176
+                    },
+                    {
+                      "space_name": "large_object_space",
+                      "space_size": 48201728,
+                      "space_used_size": 47981240,
+                      "space_available_size": 0,
+                      "physical_space_size": 48201728
+                    },
+                    {
+                      "space_name": "code_large_object_space",
+                      "space_size": 364544,
+                      "space_used_size": 357504,
+                      "space_available_size": 0,
+                      "physical_space_size": 364544
+                    },
+                    {
+                      "space_name": "shared_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "shared_trusted_large_object_space",
+                      "space_size": 0,
+                      "space_used_size": 0,
+                      "space_available_size": 0,
+                      "physical_space_size": 0
+                    },
+                    {
+                      "space_name": "trusted_large_object_space",
+                      "space_size": 4456448,
+                      "space_used_size": 2169312,
+                      "space_available_size": 0,
+                      "physical_space_size": 4456448
+                    }
+                  ],
+                  "heapCode": {
+                    "code_and_metadata_size": 22140010,
+                    "bytecode_and_metadata_size": 7833152,
+                    "external_script_source_size": 80766340,
+                    "cpu_profiler_metadata_size": 0
+                  },
+                  "hostFacts": {
+                    "cluster": {
+                      "isPrimary": true,
+                      "isWorker": false,
+                      "workerId": null,
+                      "primaryWorkerCount": 0
+                    },
+                    "backgroundWorkersOverride": "disabled",
+                    "stagingPort": true,
+                    "sidecarFlags": {
+                      "substrate": false,
+                      "spawner": false,
+                      "gateway": false,
+                      "embed": false,
+                      "resourceHealth": false
+                    }
+                  }
+                }
+              }
+            ],
+            "assignment": {
+              "status": "partial",
+              "requested": 8,
+              "assignments": [
+                {
+                  "requestId": "da73c9e0-5531-43b0-ab09-dbc175aebdee",
+                  "pid": 1731718,
+                  "startTicks": "2678176",
+                  "processInstanceId": "35ee4bc8-16e5-4205-9332-92016ac331d3",
+                  "queryTuples": [
+                    "[\"da73c9e0-5531-43b0-ab09-dbc175aebdee\",\"org-admin\",\"35ee4bc8-16e5-4205-9332-92016ac331d3\",\"d2a53e1154\",\"f43ad19d-4184-4016-8315-33efcb8e6a7e\",11,894]",
+                    "[\"da73c9e0-5531-43b0-ab09-dbc175aebdee\",\"org-admin\",\"35ee4bc8-16e5-4205-9332-92016ac331d3\",\"d2a53e1154\",\"f43ad19d-4184-4016-8315-33efcb8e6a7e\",9,934]"
+                  ]
+                },
+                {
+                  "requestId": "5588b331-e116-4b02-a5b5-f7d8b8d79545",
+                  "pid": 1731718,
+                  "startTicks": "2678176",
+                  "processInstanceId": "35ee4bc8-16e5-4205-9332-92016ac331d3",
+                  "queryTuples": [
+                    "[\"5588b331-e116-4b02-a5b5-f7d8b8d79545\",\"org-admin\",\"35ee4bc8-16e5-4205-9332-92016ac331d3\",\"d2a53e1154\",\"f43ad19d-4184-4016-8315-33efcb8e6a7e\",12,913]"
+                  ]
+                }
+              ],
+              "unresolvedRequestIds": [
+                "a40e06da-da4e-4562-a480-a9649b8d2e44",
+                "cb8a93b4-3bf0-415c-b1b0-990ecbb566d1",
+                "2e012495-dc81-4062-8c47-e68b2dfe42fb",
+                "1caa23fe-bfcd-414a-b683-331faa8f9b81",
+                "dcd56a85-b5ff-48e0-b25f-95eae5002bea",
+                "f6e09278-c34f-4c6e-97c6-24342793dcb2"
+              ]
+            },
+            "coverage": [
+              {
+                "phase": "before",
+                "unsampledPids": [
+                  1738108,
+                  1738122
+                ],
+                "notCheckedBefore": [],
+                "notCheckedAfter": []
+              },
+              {
+                "phase": "after",
+                "unsampledPids": [
+                  1738108,
+                  1738122
+                ],
+                "notCheckedBefore": [],
+                "notCheckedAfter": []
+              }
+            ],
+            "selectedAncestry": {
+              "status": "observed",
+              "brackets": [
+                {
+                  "phase": "before",
+                  "bracket": "before",
+                  "pid": 1731718,
+                  "chain": [
+                    {
+                      "pid": 1731718,
+                      "startTicks": "2678176",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-d2a53e115436.49KAK1/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "before",
+                  "bracket": "after",
+                  "pid": 1731718,
+                  "chain": [
+                    {
+                      "pid": 1731718,
+                      "startTicks": "2678176",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-d2a53e115436.49KAK1/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "after",
+                  "bracket": "before",
+                  "pid": 1731718,
+                  "chain": [
+                    {
+                      "pid": 1731718,
+                      "startTicks": "2678176",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-d2a53e115436.49KAK1/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "phase": "after",
+                  "bracket": "after",
+                  "pid": 1731718,
+                  "chain": [
+                    {
+                      "pid": 1731718,
+                      "startTicks": "2678176",
+                      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+                      "parentPid": 4054,
+                      "command": {
+                        "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+                        "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-d2a53e115436.49KAK1/checkout/apps/operator/dist-host/hono-host.mjs"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "definition": "Exact selected ancestor lifetime pins across serial bounded census brackets; no atomic or complete service census"
+            },
+            "servingWorkerPopulation": "unknown",
+            "queryPopulation": "bounded terminal ring; eviction remains unknown",
+            "unsampledAncestorLifetimes": "unknown",
+            "allocationOwner": "unknown",
+            "physicalSavings": "unmeasured"
+          }
+        ],
+        "allocationOwner": "unknown",
+        "requestAssignment": "bounded selected-worker observations",
+        "physicalSavings": "unmeasured",
+        "definition": "Serial bounded raw PSS and cumulative V8 allocation observations; ambient workload uncontrolled."
+      }
+    }
+  ],
+  "independentOf": "No emitter import or headline totals; raw OS/V8 rows, HTTP records and identity fences.",
+  "physicalSavings": "unmeasured",
+  "allocationOwner": "unknown",
+  "requestAssignment": "bounded selected-worker observations"
+}

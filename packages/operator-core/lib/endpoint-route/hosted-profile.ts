@@ -21,7 +21,7 @@ import type { ZodTypeAny } from 'zod';
 import type { HostedPrincipalResolver } from '../auth/hosted-principal-resolver';
 import type { RouteDefinition, RouteMethod } from './define-route';
 import { registerRoute } from './define-route';
-import { createHostedRouteStack } from './hosted-route-stack';
+import { createHostedRouteStack, hasHostedSessionRequirements } from './hosted-route-stack';
 import type { RouteStep } from './route-stack';
 import { ALL_ROUTES } from './routes';
 import {
@@ -32,7 +32,9 @@ import {
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
-export type HostedRouteAccess = 'public' | 'authenticated';
+/** Session access admits verified hosted users before workspace selection.
+ * Authenticated access additionally requires concrete hosted capabilities. */
+export type HostedRouteAccess = 'public' | 'session' | 'authenticated';
 
 export interface HostedRouteAllowlistEntry {
   readonly method: RouteMethod;
@@ -116,6 +118,12 @@ function assertRouteAccess(route: AnyRoute, expected: HostedRouteAccess): void {
 
   if (typeof route.auth !== 'object' || route.auth === null) {
     throw new Error(`hosted-profile: ${key} must require an authenticated principal`);
+  }
+  if (expected === 'session') {
+    if (!hasHostedSessionRequirements(route)) {
+      throw new Error(`hosted-profile: ${key} session access must require a verified user and no capabilities`);
+    }
+    return;
   }
   const capabilities = route.auth.capabilities;
   if (!capabilities?.length) {
@@ -232,11 +240,9 @@ export function createHostedControlPlane(options: HostedControlPlaneOptions): Ho
   ];
 
   const app = new Hono().basePath('/api');
-  const mounted = registerHostedControlPlaneRoutes(
-    app,
-    routes,
-    allowlist,
-    createHostedRouteStack(options.resolvePrincipal),
-  );
+  const mounted = selectHostedControlPlaneRoutes(routes, allowlist);
+  const sessionKeys = new Set(allowlist.filter((entry) => entry.access === 'session').map(routeKey));
+  const stack = createHostedRouteStack(options.resolvePrincipal, mounted.filter((route) => sessionKeys.has(routeKey(route))));
+  for (const route of mounted) registerRoute(app, route, stack);
   return { app, mounted };
 }

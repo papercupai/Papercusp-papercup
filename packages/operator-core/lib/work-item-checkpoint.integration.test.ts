@@ -164,13 +164,24 @@ describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote seman
     const deps = { checkpoint: getWorkItemCheckpointWithMeta,
       freshness: async () => undefined, evidence: async () => [] };
     await setWorkItemCheckpoint(ref, renderCarryNote({ next: 'Acquire run.ts and implement the wiring.' }));
-    const added = 'Wiring is complete. Review the saved proof.';
+    // A plain-prose update is progress, not an action: the checkpoint's Next stands
+    // (EI-25513044826743664 — an appended insight used to be promoted to the next action).
+    const prose = 'Recorded the saved proof for the wiring review.';
+    await setWorkItemCheckpointWithPrior(ref, prose, {
+      latestUpdate: prose,
+      transform: prior => `${prior}\n\n---\n${prose}`,
+    });
+    expect((await readWorkItemResume(source, deps)).nextAction).toEqual({
+      status: 'available', text: 'Acquire run.ts and implement the wiring.', source: 'checkpoint',
+    });
+    // An appended update that names its own Next becomes the action.
+    const added = renderCarryNote({ next: 'Wiring is complete. Review the saved proof.' });
     await setWorkItemCheckpointWithPrior(ref, added, {
       latestUpdate: added,
       transform: prior => `${prior}\n\n---\n${added}`,
     });
-    expect((await readWorkItemResume(source, deps)).nextAction).toMatchObject({
-      status: 'available', text: added, source: 'latest-update',
+    expect((await readWorkItemResume(source, deps)).nextAction).toEqual({
+      status: 'available', text: 'Wiring is complete. Review the saved proof.', source: 'next-action',
     });
     const refreshed = renderCarryNote({ next: 'Run the independent acceptance check.' });
     await setWorkItemCheckpointWithPrior(ref, refreshed, {
@@ -397,6 +408,69 @@ describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote seman
     expect(after.last_progress_at.getTime()).toBeGreaterThan(before.last_progress_at.getTime());
   });
 
+  it('returns a committed checkpoint when the best-effort progress anchor is row-locked', async () => {
+    const item = 'WI-PROGRESS-ANCHOR-CONTENTION';
+    const checkpoint = 'carry note committed while progress update is blocked';
+    const ref = { harness: HARNESS, workItemId: item, workspaceId: 'default' };
+    const oldProgress = new Date('2000-01-01T00:00:00.000Z');
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, status, item_kind, taken_by, taken_at, last_progress_at)
+      VALUES
+        ('default', ${HARNESS}, ${item}, 'open', 'bug', 'su-holder', now(), ${oldProgress})`;
+
+    let release!: () => void;
+    let lockedResolve!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const locked = new Promise<void>((resolve) => { lockedResolve = resolve; });
+    const blocker = db.sql.begin(async (tx) => {
+      await tx`
+        SELECT feature_id
+          FROM harness_shared.work_items
+         WHERE workspace_id = 'default' AND harness_slug = ${HARNESS} AND feature_id = ${item}
+         FOR UPDATE`;
+      lockedResolve();
+      await held;
+    });
+
+    await locked;
+    const startedAt = Date.now();
+    const write = setWorkItemCheckpointWithPrior(ref, checkpoint);
+    const settled = write.then(
+      (value) => ({ status: 'settled' as const, value }),
+      (error: unknown) => ({ status: 'error' as const, error }),
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let outcome: Awaited<typeof settled> | { status: 'pending' } = { status: 'pending' };
+    let noteWhileLocked: string | null = null;
+    let progressWhileLocked: Date | null = null;
+    try {
+      outcome = await Promise.race([
+        settled,
+        new Promise<{ status: 'pending' }>((resolve) => {
+          timer = setTimeout(() => resolve({ status: 'pending' }), 3_500);
+        }),
+      ]);
+      noteWhileLocked = await getWorkItemCheckpoint(ref);
+      const [progress] = await db.sql<{ last_progress_at: Date }[]>`
+        SELECT last_progress_at FROM harness_shared.work_items
+         WHERE workspace_id = 'default' AND harness_slug = ${HARNESS} AND feature_id = ${item}`;
+      progressWhileLocked = progress?.last_progress_at ?? null;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      release();
+      await blocker;
+      await settled;
+    }
+
+    expect(noteWhileLocked).toBe(checkpoint);
+    expect(progressWhileLocked?.getTime()).toBe(oldProgress.getTime());
+    expect(outcome.status).toBe('settled');
+    if (outcome.status === 'settled') expect(outcome.value.stored).toBe(checkpoint);
+    expect(Date.now() - startedAt).toBeLessThan(3_500);
+    expect(await getWorkItemCheckpoint(ref)).toBe(checkpoint);
+  });
+
   it('checkpoint keeps feature progress harness-scoped and preserves its claim time', async () => {
     await db.sql`
       INSERT INTO harness_shared.work_items
@@ -460,6 +534,43 @@ describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote seman
       'written under null',
     );
     expect(await getWorkItemCheckpoint({ harness: '*', workItemId: 'EI-3' })).toBe('written under null');
+  });
+
+  it('EI-8805 / scope-unique-identifiers R-7: a feature id held by two harnesses of one workspace keeps each checkpoint on the row it was written to', async () => {
+    // Legacy F-FIX ids were numbered per harness, so one workspace holds the same
+    // feature id under two harnesses (measured: F-FIX-001 in hiveloop-hive and
+    // papercusp). A checkpoint written for one row must read back from THAT row —
+    // never be lost, never surface on the sibling, never bump the sibling's progress.
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, status, item_kind, taken_by, taken_at, last_progress_at)
+      VALUES
+        ('default', ${HARNESS}, 'F-FIX-TWIN', 'open', 'feature', 'su-a',
+         now() - interval '40 minutes', now() - interval '30 minutes'),
+        ('default', 'h2', 'F-FIX-TWIN', 'open', 'feature', 'su-b',
+         now() - interval '40 minutes', now() - interval '30 minutes')`;
+    const progress = async () =>
+      Object.fromEntries(
+        (
+          await db.sql<{ harness_slug: string; last_progress_at: Date }[]>`
+            SELECT harness_slug, last_progress_at FROM harness_shared.work_items
+             WHERE workspace_id = 'default' AND feature_id = 'F-FIX-TWIN'`
+        ).map((r) => [r.harness_slug, r.last_progress_at.getTime()]),
+      );
+    const before = await progress();
+
+    expect(await setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'F-FIX-TWIN' }, 'state of the h1 row')).toBe(
+      'state of the h1 row',
+    );
+    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'F-FIX-TWIN' })).toBe('state of the h1 row');
+    expect(await getWorkItemCheckpoint({ harness: 'h2', workItemId: 'F-FIX-TWIN' })).toBeNull();
+    const afterFirst = await progress();
+    expect(afterFirst[HARNESS]).toBeGreaterThan(before[HARNESS]);
+    expect(afterFirst.h2).toBe(before.h2);
+
+    await setWorkItemCheckpoint({ harness: 'h2', workItemId: 'F-FIX-TWIN' }, 'state of the h2 row');
+    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'F-FIX-TWIN' })).toBe('state of the h1 row');
+    expect(await getWorkItemCheckpoint({ harness: 'h2', workItemId: 'F-FIX-TWIN' })).toBe('state of the h2 row');
   });
 
   it("EI-9013: the unscoped-session literal '*' workspace canonicalizes to the concrete workspace on BOTH write and read", async () => {

@@ -204,7 +204,7 @@ describe('P-004 dependency satisfaction (real PG)', () => {
     );
   });
 
-  it('refuses active progress behind an unsuccessful blocker and abandonment behind a nonterminal success dependant', async () => {
+  it('refuses active progress behind an unsuccessful blocker and abandonment behind an owned success dependant', async () => {
     await seed([{ id: 'F-dependant' }, { id: 'F-blocker' }]);
     await syncFeatureBlockEdges('demo', 'F-dependant', ['F-blocker'], { satisfaction: 'success' });
 
@@ -217,11 +217,29 @@ describe('P-004 dependency satisfaction (real PG)', () => {
     await db.sql`
       UPDATE harness_shared.work_items SET status = 'passed'
        WHERE harness_slug = 'demo' AND feature_id = 'F-blocker'`;
+    // The lifecycle policy protects held/active/progressing dependants; an idle
+    // unclaimed row is deliberately not protected against blocker abandonment.
+    await db.sql`
+      UPDATE harness_shared.work_items SET taken_by = 'su-fixture-owner'
+       WHERE harness_slug = 'demo' AND feature_id = 'F-dependant'`;
+    expect(await db.sql`
+      SELECT taken_by FROM harness_shared.work_items
+       WHERE harness_slug = 'demo' AND feature_id = 'F-dependant'`
+    ).toEqual([{ taken_by: 'su-fixture-owner' }]);
     await expect(db.sql`
       UPDATE harness_shared.work_items SET status = 'deprecated'
        WHERE harness_slug = 'demo' AND feature_id = 'F-blocker'`).rejects.toThrow(
       /cannot make dependency blocker .* unsatisfied/,
     );
+    await db.sql`
+      UPDATE harness_shared.work_items SET taken_by = NULL
+       WHERE harness_slug = 'demo' AND feature_id = 'F-dependant'`;
+    await db.sql`
+      UPDATE harness_shared.work_items SET status = 'deprecated'
+       WHERE harness_slug = 'demo' AND feature_id = 'F-blocker'`;
+    expect(await db.sql`
+      SELECT harness_shared.work_item_is_blocked('demo', 'F-dependant', 'default') AS blocked`
+    ).toEqual([{ blocked: true }]);
   });
 });
 

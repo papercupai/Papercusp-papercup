@@ -1,0 +1,984 @@
+{
+ "tally": {
+  "resolved": 39,
+  "not-found": 1
+ },
+ "rows": [
+  {
+   "name": "acceptCommand",
+   "roots": [
+    "packages/operator-core/lib",
+    "apps/operator"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 25,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 4002
+   },
+   "grepCheck": {
+    "grepLines": 25,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [
+     "packages/operator-core/lib/su-session-host.test.ts:817"
+    ],
+    "declarations": 1,
+    "candidateFiles": 8,
+    "libSites": 25
+   }
+  },
+  {
+   "name": "appliedIdentityArtifact",
+   "roots": [
+    "packages/operator-core/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 11,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 2245
+   },
+   "grepCheck": {
+    "grepLines": 12,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 4,
+    "candidateFiles": 8,
+    "libSites": 11
+   }
+  },
+  {
+   "name": "applySessionPresenceSet",
+   "roots": [
+    "packages/operator-core/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 10,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 2110
+   },
+   "grepCheck": {
+    "grepLines": 11,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 3,
+    "libSites": 10
+   }
+  },
+  {
+   "name": "attributionMapForRepo",
+   "roots": [
+    "packages/operator-core/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 10,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 2046
+   },
+   "grepCheck": {
+    "grepLines": 11,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 6,
+    "libSites": 10
+   }
+  },
+  {
+   "name": "buildRubricTemplateData",
+   "roots": [
+    "packages/operator-core/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 4,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 2251
+   },
+   "grepCheck": {
+    "grepLines": 5,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 2,
+    "libSites": 4
+   }
+  },
+  {
+   "name": "claimIssue",
+   "roots": [
+    "packages/operator-core/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 48,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 2427
+   },
+   "grepCheck": {
+    "grepLines": 56,
+    "omittedByKind": {
+     "string": 2,
+     "comment": 5
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 7,
+    "candidateFiles": 27,
+    "libSites": 48
+   }
+  },
+  {
+   "name": "createCheckpointTreeFixPrecheckRunner",
+   "roots": [
+    "packages/operator-core/lib",
+    "apps/operator/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 14,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 1515
+   },
+   "grepCheck": {
+    "grepLines": 15,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 4,
+    "libSites": 14
+   }
+  },
+  {
+   "name": "createWorkItem",
+   "roots": [
+    "packages/operator-core/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 327,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 5650
+   },
+   "grepCheck": {
+    "grepLines": 339,
+    "omittedByKind": {
+     "comment": 6,
+     "string": 3
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [
+     "packages/operator-core/lib/plan-items/convert.integration.test.ts:406",
+     "packages/operator-core/lib/plan-items/convert.integration.test.ts:500"
+    ],
+    "declarations": 28,
+    "candidateFiles": 96,
+    "libSites": 327
+   }
+  },
+  {
+   "name": "dispatchProjectedTool",
+   "roots": [
+    "packages/operator-core/lib",
+    "apps/operator/lib",
+    "apps/operator/bin"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 98,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 4211
+   },
+   "grepCheck": {
+    "grepLines": 98,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 48,
+    "candidateFiles": 58,
+    "libSites": 98
+   }
+  },
+  {
+   "name": "enqueueDependencyPrebuild",
+   "roots": [
+    "packages/operator-core/lib/harness/git-sync/git-sync-action.ts"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 1,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 1752
+   },
+   "grepCheck": {
+    "grepLines": 1,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 1,
+    "libSites": 1
+   }
+  },
+  {
+   "name": "ensurePotGitRepo",
+   "roots": [
+    "packages/operator-core/lib",
+    "apps/operator/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 73,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 2599
+   },
+   "grepCheck": {
+    "grepLines": 74,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 37,
+    "libSites": 73
+   }
+  },
+  {
+   "name": "evaluateScorecardInstrumentContract",
+   "roots": [
+    "packages/operator-core/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 20,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 2291
+   },
+   "grepCheck": {
+    "grepLines": 22,
+    "omittedByKind": {
+     "string": 1
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 9,
+    "libSites": 20
+   }
+  },
+  {
+   "name": "failOnConsole",
+   "roots": [
+    "packages/operator-core"
+   ],
+   "outcome": "not-found",
+   "handler": {
+    "error": null,
+    "sites": 0,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 527
+   },
+   "grepCheck": {
+    "grepLines": 0,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 0,
+    "candidateFiles": 0,
+    "libSites": 0
+   }
+  },
+  {
+   "name": "getContent",
+   "roots": [
+    "packages/operator-core/lib",
+    "apps/operator/lib",
+    "apps/operator/bin"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 23,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 3964
+   },
+   "grepCheck": {
+    "grepLines": 28,
+    "omittedByKind": {
+     "comment": 1
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 8,
+    "candidateFiles": 22,
+    "libSites": 23
+   }
+  },
+  {
+   "name": "gitPipelineSnapshot",
+   "roots": [
+    "apps/operator/lib",
+    "packages/operator-core/lib",
+    "packages/operator-core/lib/endpoint-route"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 19,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 3700
+   },
+   "grepCheck": {
+    "grepLines": 33,
+    "omittedByKind": {
+     "string": 2,
+     "comment": 11
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 8,
+    "candidateFiles": 35,
+    "libSites": 19
+   }
+  },
+  {
+   "name": "harnessFsAdapter",
+   "roots": [
+    "packages/operator-core/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 10,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 1846
+   },
+   "grepCheck": {
+    "grepLines": 10,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 11,
+    "candidateFiles": 10,
+    "libSites": 10
+   }
+  },
+  {
+   "name": "installPluginFromCupboard",
+   "roots": [
+    "packages/operator-core/lib",
+    "apps/operator/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 3,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 1696
+   },
+   "grepCheck": {
+    "grepLines": 4,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 3,
+    "candidateFiles": 4,
+    "libSites": 3
+   }
+  },
+  {
+   "name": "invalidateFromSse",
+   "roots": [
+    "libs/generic/sync/src"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 6,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 2519
+   },
+   "grepCheck": {
+    "grepLines": 8,
+    "omittedByKind": {
+     "string": 1
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 3,
+    "libSites": 6
+   }
+  },
+  {
+   "name": "json",
+   "roots": [
+    "packages/operator-core/lib/consult/get-feedback-core.ts"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 4,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 2031
+   },
+   "grepCheck": {
+    "grepLines": 6,
+    "omittedByKind": {
+     "comment": 2
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 0,
+    "candidateFiles": 1,
+    "libSites": 4
+   }
+  },
+  {
+   "name": "llmCallViaCodexGateway",
+   "roots": [
+    "packages/operator-core/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 1,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 1925
+   },
+   "grepCheck": {
+    "grepLines": 2,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 2,
+    "libSites": 1
+   }
+  },
+  {
+   "name": "mapLiveLockHoldingsForRepo",
+   "roots": [
+    "packages/operator-core/lib/harness/git-sync"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 3,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 2423
+   },
+   "grepCheck": {
+    "grepLines": 4,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 2,
+    "candidateFiles": 4,
+    "libSites": 3
+   }
+  },
+  {
+   "name": "openEscalation",
+   "roots": [
+    "packages/operator-core/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 123,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 3615
+   },
+   "grepCheck": {
+    "grepLines": 128,
+    "omittedByKind": {
+     "string": 1,
+     "comment": 3
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 34,
+    "candidateFiles": 104,
+    "libSites": 123
+   }
+  },
+  {
+   "name": "planAcceptanceChangedKey",
+   "roots": [
+    "packages/operator-core/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 6,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 1941
+   },
+   "grepCheck": {
+    "grepLines": 7,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 2,
+    "candidateFiles": 8,
+    "libSites": 6
+   }
+  },
+  {
+   "name": "preflightExactPlanAdmission",
+   "roots": [
+    "packages/operator-core/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 10,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 2611
+   },
+   "grepCheck": {
+    "grepLines": 11,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 4,
+    "candidateFiles": 10,
+    "libSites": 10
+   }
+  },
+  {
+   "name": "reactionRulesFor",
+   "roots": [
+    "packages/operator-core/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 13,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 1485
+   },
+   "grepCheck": {
+    "grepLines": 14,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 2,
+    "candidateFiles": 7,
+    "libSites": 13
+   }
+  },
+  {
+   "name": "readGoalPortfolioBrief",
+   "roots": [
+    "packages/operator-core/lib",
+    "packages/agent-mcp/src",
+    "apps/operator/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 19,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 2224
+   },
+   "grepCheck": {
+    "grepLines": 20,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 3,
+    "candidateFiles": 11,
+    "libSites": 19
+   }
+  },
+  {
+   "name": "realCheckpointDeps",
+   "roots": [
+    "apps/operator/lib/release",
+    "packages/operator-core/lib/doc-claims"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 124,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 2228
+   },
+   "grepCheck": {
+    "grepLines": 126,
+    "omittedByKind": {
+     "comment": 1
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 4,
+    "candidateFiles": 10,
+    "libSites": 124
+   }
+  },
+  {
+   "name": "recordEditAttribution",
+   "roots": [
+    "packages/operator-core/lib",
+    "apps/operator/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 12,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 1861
+   },
+   "grepCheck": {
+    "grepLines": 13,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 8,
+    "libSites": 12
+   }
+  },
+  {
+   "name": "registerConnectionAdapter",
+   "roots": [
+    "packages/operator-core/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 2,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 1599
+   },
+   "grepCheck": {
+    "grepLines": 3,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 2,
+    "libSites": 2
+   }
+  },
+  {
+   "name": "requirePrincipal",
+   "roots": [
+    "packages/operator-core/lib/endpoint-route/routes"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 7,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 3611
+   },
+   "grepCheck": {
+    "grepLines": 13,
+    "omittedByKind": {
+     "comment": 6
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 6,
+    "candidateFiles": 21,
+    "libSites": 7
+   }
+  },
+  {
+   "name": "resolveControllerWorkspaceHostBootstrap",
+   "roots": [
+    "packages/operator-core/lib",
+    "apps/operator/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 3,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 1733
+   },
+   "grepCheck": {
+    "grepLines": 4,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 2,
+    "libSites": 3
+   }
+  },
+  {
+   "name": "resolveMessageRef",
+   "roots": [
+    "packages/operator-core/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 16,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 2798
+   },
+   "grepCheck": {
+    "grepLines": 18,
+    "omittedByKind": {
+     "string": 1
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 10,
+    "libSites": 16
+   }
+  },
+  {
+   "name": "rotateTestPgReuseGeneration",
+   "roots": [
+    "libs/test-config/src"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 3,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 2386
+   },
+   "grepCheck": {
+    "grepLines": 4,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 2,
+    "libSites": 3
+   }
+  },
+  {
+   "name": "runPhysicalDrillCliToExit",
+   "roots": [
+    "packages/operator-core/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 6,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 1648
+   },
+   "grepCheck": {
+    "grepLines": 8,
+    "omittedByKind": {
+     "string": 1
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 3,
+    "libSites": 6
+   }
+  },
+  {
+   "name": "scoutConfigDelta",
+   "roots": [
+    "packages/operator-core/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 3,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 2030
+   },
+   "grepCheck": {
+    "grepLines": 4,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 3,
+    "candidateFiles": 6,
+    "libSites": 3
+   }
+  },
+  {
+   "name": "setCommsTrust",
+   "roots": [
+    "packages/operator-core/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 11,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 1946
+   },
+   "grepCheck": {
+    "grepLines": 12,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 3,
+    "candidateFiles": 6,
+    "libSites": 11
+   }
+  },
+  {
+   "name": "setHiveSetting",
+   "roots": [
+    "packages/operator-core/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 23,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 2016
+   },
+   "grepCheck": {
+    "grepLines": 24,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 3,
+    "candidateFiles": 25,
+    "libSites": 23
+   }
+  },
+  {
+   "name": "splitMarkdown",
+   "roots": [
+    "packages/operator-core/lib",
+    "libs/generic/search/src"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 15,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 2084
+   },
+   "grepCheck": {
+    "grepLines": 18,
+    "omittedByKind": {
+     "string": 2
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 2,
+    "candidateFiles": 11,
+    "libSites": 15
+   }
+  },
+  {
+   "name": "terminalDependencies",
+   "roots": [
+    "packages/operator-core/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 5,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 1735
+   },
+   "grepCheck": {
+    "grepLines": 6,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 4,
+    "candidateFiles": 2,
+    "libSites": 5
+   }
+  },
+  {
+   "name": "wakeRecipients",
+   "roots": [
+    "packages/operator-core/lib"
+   ],
+   "outcome": "resolved",
+   "handler": {
+    "error": null,
+    "sites": 82,
+    "noLine": 0,
+    "truncated": null,
+    "ms": 5203
+   },
+   "grepCheck": {
+    "grepLines": 88,
+    "omittedByKind": {
+     "comment": 5,
+     "string": 1
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [
+     "packages/operator-core/lib/agent-tools/fleet/place_batch.ts:108"
+    ],
+    "declarations": 37,
+    "candidateFiles": 98,
+    "libSites": 82
+   }
+  }
+ ]
+}

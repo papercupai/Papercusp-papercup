@@ -203,8 +203,22 @@ function collapseWideCells(line: string): string {
   return out;
 }
 
-/** Normalize column padding while retaining row boundaries. */
-export function screenContains(screen: string, needle: string): boolean {
+/** Match one marker or a nonempty conjunction in the same rendered frame. */
+export const SEND_READY_MARKERS = ['Message — Enter send', '? for shortcuts', 'Enter sends'] as const;
+
+/** Composer readiness shared by the PTY journeys and their frame regressions. */
+export function screenIsSendReady(screen: string, setupPending = false): boolean {
+  // The setup modal is painted over a composer whose ready footer remains
+  // visible. Wait while its asynchronous PTY driver is running. Merely
+  // arming that driver still permits the first draft that opens the wizard.
+  if (setupPending || screenContains(screen, '┌ New session —')) return false;
+  return SEND_READY_MARKERS.some((marker) => screenContains(screen, marker));
+}
+
+export function screenContains(screen: string, needle: string | readonly string[]): boolean {
+  if (typeof needle !== 'string') {
+    return needle.length > 0 && needle.every((marker) => screenContains(screen, marker));
+  }
   const lines = screen.split('\n').map((line) => line.replace(/\s+/g, ' ').trim());
   const want = needle.replace(/\s+/g, ' ').trim();
   if (lines.join('\n').includes(want)) return true;
@@ -217,6 +231,58 @@ export function screenContains(screen: string, needle: string): boolean {
   // space immediately after a wide glyph) is served by the first attempt.
   if (!WIDE_CELL.test(want)) return false;
   return lines.map(collapseWideCells).join('\n').includes(want);
+}
+
+function normalizedApprovalRow(row: string): string {
+  return row.replace(/\s+/g, ' ').trim();
+}
+
+function isApprovalBorderRow(row: string): boolean {
+  const trimmed = row.trim();
+  if (!trimmed) return true;
+  return trimmed.startsWith('│') || trimmed.endsWith('│')
+    || /^[┌┐└┘╭╮╰╯─━═╌]+$/.test(trimmed);
+}
+
+/**
+ * Match a native edit approval only when its question is a contiguous run of
+ * unbordered rows followed immediately by the requested choice. The terminal
+ * can wrap a long path at a character boundary, so matching advances through
+ * the normalized question by characters rather than joining arbitrary screen
+ * rows. Blank rows, borders, and unrelated text terminate the run; this keeps
+ * an answer in a neighbouring pane from authorizing the edit.
+ */
+export function screenHasApprovalQuestion(
+  screen: string,
+  question: string,
+  choice = '1. Yes',
+): boolean {
+  const wanted = normalizedApprovalRow(question);
+  if (!wanted || !choice.trim()) return false;
+  const rows = screen.split('\n');
+  const firstWord = wanted.split(' ', 1)[0];
+  for (let start = 0; start < rows.length; start++) {
+    const first = normalizedApprovalRow(rows[start]);
+    if (!first || isApprovalBorderRow(rows[start]) || !first.startsWith(firstWord)) continue;
+    let remaining = wanted;
+    let cursor = start;
+    while (cursor < rows.length) {
+      const row = rows[cursor];
+      const text = normalizedApprovalRow(row);
+      if (!text || isApprovalBorderRow(row) || /^(?:[❯›>]\s*)?\d+\.\s/.test(text)) break;
+      remaining = remaining.replace(/^\s+/, '');
+      if (!remaining.startsWith(text)) break;
+      remaining = remaining.slice(text.length);
+      cursor += 1;
+      if (!remaining) {
+        const next = normalizedApprovalRow(rows[cursor] ?? '').replace(/^[❯›>]\s*/, '');
+        if (isApprovalBorderRow(rows[cursor] ?? '')) break;
+        if (next === choice.trim()) return true;
+        break;
+      }
+    }
+  }
+  return false;
 }
 
 /**

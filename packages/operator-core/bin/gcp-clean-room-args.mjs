@@ -107,10 +107,12 @@ export function assertIapSshReachable(rules, { networkName, projectId, tag = CLE
  *
  * Cloud NAT is regional: a NAT on a router in another region cannot serve the guest,
  * even when its policy names the same subnet. The two supported coverage modes are
- * deliberately explicit:
- *   - ALL_SUBNETWORKS_ALL_IP_RANGES covers every subnet in the router's region.
- *   - LIST_OF_SUBNETWORKS covers only a listed subnet, and that entry must include
- *     ALL_IP_RANGES (the bootstrap downloads arbitrary public HTTPS content).
+ * deliberately explicit. The clean-room VM uses its primary address, without
+ * alias IP ranges; either all-range or primary-range NAT is sufficient:
+ *   - ALL_SUBNETWORKS_ALL_IP_RANGES and ALL_SUBNETWORKS_ALL_PRIMARY_IP_RANGES
+ *     cover every subnet's primary range in the router's region.
+ *   - LIST_OF_SUBNETWORKS covers only a listed subnet whose entry includes
+ *     ALL_IP_RANGES or PRIMARY_IP_RANGE. Secondary-only NAT cannot serve this VM.
  *
  * The predicate is pure so a malformed/mismatched response can be tested without a cloud
  * call. Callers should pass the router's observed region, not the requested region alone;
@@ -133,7 +135,7 @@ export function cloudNatCoversSubnetwork(
   }
 
   const mode = String(nat.sourceSubnetworkIpRangesToNat ?? '').trim().toUpperCase();
-  if (mode === 'ALL_SUBNETWORKS_ALL_IP_RANGES') return true;
+  if (mode === 'ALL_SUBNETWORKS_ALL_IP_RANGES' || mode === 'ALL_SUBNETWORKS_ALL_PRIMARY_IP_RANGES') return true;
   if (mode !== 'LIST_OF_SUBNETWORKS') return false;
 
   const requestedSubnetwork = resourceName(subnetwork);
@@ -144,7 +146,7 @@ export function cloudNatCoversSubnetwork(
     const ranges = Array.isArray(entry?.sourceIpRangesToNat)
       ? entry.sourceIpRangesToNat.map((range) => String(range).trim().toUpperCase())
       : [];
-    return ranges.includes('ALL_IP_RANGES');
+    return ranges.includes('ALL_IP_RANGES') || ranges.includes('PRIMARY_IP_RANGE');
   });
 }
 
@@ -172,7 +174,8 @@ export function assertCloudNatEgressReachable(
     `no Cloud NAT in region '${region ?? '<region>'}' covers subnetwork '${subnetwork ?? '<subnetwork>'}' ` +
       `on network '${networkName ?? '<network>'}': the private clean-room guest has no public IP ` +
       `and cannot bootstrap without regional NAT. Configure Cloud NAT with ` +
-      `ALL_SUBNETWORKS_ALL_IP_RANGES or LIST_OF_SUBNETWORKS/ALL_IP_RANGES before retrying ` +
+      `ALL_SUBNETWORKS_ALL_IP_RANGES, ALL_SUBNETWORKS_ALL_PRIMARY_IP_RANGES, or ` +
+      `LIST_OF_SUBNETWORKS with ALL_IP_RANGES/PRIMARY_IP_RANGE before retrying ` +
       `(project=${projectId ?? '<project>'}).`,
   );
 }
@@ -234,6 +237,13 @@ export function buildCleanRoomInstanceCreateArgs({
     `--machine-type=${machineType}`,
     `--image=${imageName}`,
     `--image-project=${imageProject}`,
+    // Stock Ubuntu carries a 10 GB minimum disk, not the workspace-host release capacity.
+    // Pre-build acceptance installs the same release that the maintained Packer template
+    // bakes on a 32 GB disk (infra/images/workspace-host.pkr.hcl: disk_size_gb). Inheriting
+    // Ubuntu's minimum rejected a genuine signed bundle before extraction (WI-10008005).
+    // Post-build canaries inherit the candidate image's size, which may be larger; forcing
+    // this size onto those images would discard their own capacity contract.
+    ...(role === 'bootstrap-acceptance' ? ['--boot-disk-size=32GB'] : []),
     `--subnet=${subnetwork.trim()}`,
     '--no-address',
     '--no-service-account',

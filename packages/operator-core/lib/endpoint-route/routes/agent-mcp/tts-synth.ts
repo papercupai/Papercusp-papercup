@@ -4,7 +4,7 @@
  * ONE source of truth for "how to synthesize speech on provider X" — used by
  * every server voice route:
  *   - operator-tts.ts          (TUI PTT / p2p, base64 JSON, mp3|wav)
- *   - operator-tts-preview.ts  (settings preview + desktop synthViaAdapter)
+ *   - operator-tts-preview.ts  (settings and short side-channel samples)
  *
  * Previously each of those routes carried its OWN inline per-provider fetch
  * block, so the ElevenLabs model / OpenAI model+voice / Cartesia model
@@ -24,7 +24,10 @@ import { readElevenLabsKey, readOpenAiKey, readCartesiaKey } from '../../../voic
 import type { VoicePrefs } from '../../../voice-prefs';
 import { encodeWavPcm16 } from '../../../voice-node/wav';
 import { kokoroLocalSynthWav } from '../../../voice-node/kokoro-local';
-import { KOKORO_URL } from './operator-voice-proxy-helpers';
+import { KOKORO_URL, MAX_TEXT_CHARS, resolveTtsEngine } from './operator-voice-proxy-helpers';
+import { kokoroTtsAvailable } from '../../../voice-node/kokoro-local';
+import { splitSpeechText } from '../../../voice-turn-sentences';
+import { prepareForReading } from '../../../voice-engines/prepareForTTS';
 // WI-3557: shared with the settings key-test probe (voice-engines/cartesia.ts)
 // so the two never drift on which Cartesia-Version the two paths speak.
 import { CARTESIA_API_VERSION } from '../../../voice-engines/cartesia';
@@ -48,6 +51,8 @@ export type Synth =
  */
 export interface SynthOptions {
   container?: 'mp3' | 'wav';
+  /** Cancels upstream work and prevents late local fallback audio from escaping. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -138,6 +143,11 @@ export async function synthesize(
   prefs: VoicePrefs,
   opts?: SynthOptions,
 ): Promise<Synth> {
+  const cancelled = (): Synth => ({ ok: false, error: 'speech cancelled', status: 499 });
+  if (opts?.signal?.aborted) return cancelled();
+  const signal = opts?.signal
+    ? AbortSignal.any([opts.signal, AbortSignal.timeout(TTS_TIMEOUT_MS)])
+    : AbortSignal.timeout(TTS_TIMEOUT_MS);
   const wantWav = opts?.container === 'wav';
   /**
    * Shared non-ok / empty-body guard. Returns a failure Synth when the response
@@ -153,6 +163,7 @@ export async function synthesize(
     const bad = guard(r);
     if (bad) return bad;
     const audio = await r.arrayBuffer();
+    if (opts?.signal?.aborted) return cancelled();
     return { ok: true, audio: contentType === 'audio/wav' ? patchWavStreamingSizes(audio) : audio, contentType };
   };
   try {
@@ -175,10 +186,12 @@ export async function synthesize(
               voice: voiceId ?? 'af_bella',
               response_format: 'wav',
             }),
-            signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
+            signal,
           });
         } catch (e) {
+          if (opts?.signal?.aborted) return cancelled();
           const local = await kokoroLocalSynthWav(text, voiceId);
+          if (opts?.signal?.aborted) return cancelled();
           if (local.ok) return { ok: true, audio: local.audio, contentType: local.contentType };
           return { ok: false, error: `kokoro unreachable: ${(e as Error).message} (local fallback: ${local.error})`, status: 502 };
         }
@@ -197,12 +210,14 @@ export async function synthesize(
               method: 'POST',
               headers: { 'xi-api-key': key, 'content-type': 'application/json', accept: 'audio/pcm' },
               body: JSON.stringify({ text, model_id: 'eleven_turbo_v2_5' }),
-              signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
+              signal,
             },
           );
           const bad = guard(r);
           if (bad) return bad;
-          return { ok: true, audio: pcm16ToWav(await r.arrayBuffer(), 24_000), contentType: 'audio/wav' };
+          const audio = await r.arrayBuffer();
+          if (opts?.signal?.aborted) return cancelled();
+          return { ok: true, audio: pcm16ToWav(audio, 24_000), contentType: 'audio/wav' };
         }
         const r = await fetch(
           `https://api.elevenlabs.io/v1/text-to-speech/${voice}/stream?optimize_streaming_latency=2`,
@@ -210,7 +225,7 @@ export async function synthesize(
             method: 'POST',
             headers: { 'xi-api-key': key, 'content-type': 'application/json', accept: 'audio/mpeg' },
             body: JSON.stringify({ text, model_id: 'eleven_turbo_v2_5' }),
-            signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
+            signal,
           },
         );
         return upstream(r, 'audio/mpeg');
@@ -231,7 +246,7 @@ export async function synthesize(
             voice: voiceId ?? prefs.openaiVoice,
             response_format: wantWav ? 'wav' : 'mp3',
           }),
-          signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
+          signal,
         });
         return upstream(r, wantWav ? 'audio/wav' : 'audio/mpeg');
       }
@@ -254,7 +269,7 @@ export async function synthesize(
               ? { container: 'wav', encoding: 'pcm_s16le', sample_rate: 44100 }
               : { container: 'mp3', sample_rate: 44100, bit_rate: 128000 },
           }),
-          signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
+          signal,
         });
         return upstream(r, wantWav ? 'audio/wav' : 'audio/mpeg');
       }
@@ -262,6 +277,55 @@ export async function synthesize(
         return { ok: false, error: `unsupported engine '${engine}'`, status: 400 };
     }
   } catch (e) {
+    if (opts?.signal?.aborted) return cancelled();
     return { ok: false, error: `${engine} unreachable: ${(e as Error).message}`, status: 502 };
+  }
+}
+
+export interface ReadingSynthOptions extends SynthOptions {
+  format?: 'text' | 'markdown';
+  /** Source disclosure permission, separate from the user's provider preference. */
+  allowCloud?: boolean;
+}
+
+export type ReadingSynth =
+  | (Extract<Synth, { ok: true }> & { engine: string; text: string; index: number; total: number; start: number; end: number; modifications: string[] })
+  | Extract<Synth, { ok: false }>;
+
+/**
+ * Incremental original reading on the existing provider registry. The caller
+ * requests the next chunk after consuming the previous one (bounded backpressure).
+ * Settings are snapshotted once; errors stop the reading without provider switching.
+ */
+export async function* synthesizeReading(
+  source: string,
+  prefs: VoicePrefs,
+  options: ReadingSynthOptions = {},
+): AsyncGenerator<ReadingSynth> {
+  const snapshot = { ...prefs };
+  if (options.signal?.aborted) { yield { ok: false, error: 'speech cancelled', status: 499 }; return; }
+  if (snapshot.ttsEngine === 'browser') {
+    yield { ok: false, error: 'Browser speech requires the active browser player. Start this reading in the app, or explicitly select a server speech engine in /settings/voice.', status: 400 };
+    return;
+  }
+  // Never infer source-disclosure permission from having a configured cloud key.
+  // ('browser' already returned above, so kokoro is the only local engine left.)
+  if (!options.allowCloud && snapshot.ttsEngine !== 'kokoro') {
+    yield { ok: false, error: 'This source is restricted to local speech. Choose a local engine in /settings/voice or explicitly allow cloud speech.', status: 403 };
+    return;
+  }
+  const resolved = await resolveTtsEngine(undefined, snapshot, () => kokoroTtsAvailable());
+  if (!resolved.ok) { yield resolved; return; }
+  const prepared = prepareForReading(source, options.format);
+  if (prepared.text === null) { yield { ok: false, error: 'No readable text to speak.', status: 400 }; return; }
+  // Shared route ceiling is below each supported provider's request cap. UTF-8
+  // bounding also keeps non-Latin requests within the same byte budget.
+  const chunks = splitSpeechText(prepared.text, { maxChars: MAX_TEXT_CHARS, maxUtf8Bytes: MAX_TEXT_CHARS });
+  let start = 0;
+  for (const [index, text] of chunks.entries()) {
+    const result = await synthesize(resolved.engine, text, undefined, snapshot, options);
+    if (!result.ok) { yield result; return; }
+    yield { ...result, engine: resolved.engine, text, index, total: chunks.length, start, end: start + text.length, modifications: prepared.modifications };
+    start += text.length;
   }
 }

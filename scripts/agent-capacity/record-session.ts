@@ -3,7 +3,7 @@
  *
  *   npx tsx scripts/agent-capacity/record-session.ts --cli claude|codex --tasks all|<id,id> \
  *     [--parallel 3] [--out ~/.cache/agent-capacity/corpus] [--upstream http://127.0.0.1:8788] \
- *     [--claude-model sonnet] [--isolation systemd|none] [--keep-work]
+ *     [--claude-model sonnet] [--isolation systemd|none] [--keep-work] [--tasks-file <tasks.json>]
  *
  * For each task: copy the prepared (dependencies-installed) checkout of its pinned repo,
  * start a recording proxy in front of the local inference gateway, run the real CLI
@@ -30,7 +30,12 @@ import { assertHostAdmission } from './host-admission';
 import { startRecordProxy } from './record-proxy';
 import { copyTree, parseCgroupStats, removeTree, sessionSpawn, type Isolation } from './session-process';
 
-const execFileAsync = promisify(execFile);
+// Lazy + memoized, NOT promisified at module scope (EI-10161): under a narrow
+// `vi.mock('node:child_process')` `execFile` is undefined, and an eager `promisify` throws at
+// IMPORT time — crashing every test file that reaches this module, even one that never calls it.
+let execFileAsyncMemo: typeof execFile.__promisify__ | null = null;
+const execFileAsync = ((...args: unknown[]) =>
+  Reflect.apply((execFileAsyncMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;
 /** The slice real (recorded) sessions run in, kept apart from replayed ones in capdrv.slice. */
 export const RECORD_SLICE = 'caprec.slice';
 
@@ -48,6 +53,19 @@ export interface Corpus {
 export const CORPUS_FILE = path.join(__dirname, 'corpus', 'tasks.json');
 export const OWNER_HEADER_VALUE = 'agent-capacity-corpus';
 const CACHE = path.join(homedir(), '.cache', 'agent-capacity');
+
+/**
+ * The task file a CLI run reads: `--tasks-file <path>` when given, else the shipped corpus. P-019
+ * runs real Papercusp backlog items from its own task file through the same recorder and
+ * replayer. (Not `--corpus`: load-driver.ts already uses that for the recordings directory.)
+ */
+export function corpusFileFromArgv(argv: readonly string[]): string {
+  const i = argv.indexOf('--tasks-file');
+  if (i < 0) return CORPUS_FILE;
+  const file = argv[i + 1];
+  if (!file || file.startsWith('--')) throw new Error('--tasks-file needs a path');
+  return path.resolve(file);
+}
 
 export function loadCorpus(file = CORPUS_FILE): Corpus {
   return JSON.parse(readFileSync(file, 'utf8')) as Corpus;
@@ -161,6 +179,22 @@ export function summarizeToolOutcomes(cli: Cli, jsonl: string): { results: numbe
 /** Where `recordSession` runs a session's checkout: tool calls in its recording name this path. */
 export function recordedWorkDir(sessionId: string, cacheDir = CACHE): string {
   return path.join(cacheDir, 'work', sessionId);
+}
+
+/**
+ * Everything the session changed relative to the pinned sha: committed work, uncommitted edits
+ * and new files, with submodule changes inlined. A plain `git diff` (worktree vs index) is empty
+ * when the agent commits its fix, which the P-019 real-work tasks ask it to do. Stages the
+ * throwaway session checkout to pick up untracked files; returns '' if git fails.
+ */
+export async function sessionDiff(workDir: string, baseSha: string): Promise<string> {
+  const opts = { encoding: 'utf8' as const, maxBuffer: 64 * 1024 * 1024 };
+  try {
+    await execFileAsync('git', ['-C', workDir, 'add', '-A'], opts);
+    return (await execFileAsync('git', ['-C', workDir, 'diff', '--cached', '--submodule=diff', baseSha], opts)).stdout;
+  } catch {
+    return '';
+  }
 }
 
 /**
@@ -283,10 +317,7 @@ export async function recordSession(opts: {
   await new Promise<void>((r) => cliOut.end(r));
   await new Promise<void>((r) => cliErr.end(r));
 
-  let diff = '';
-  try {
-    diff = (await execFileAsync('git', ['-C', workDir, 'diff'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })).stdout;
-  } catch {}
+  const diff = await sessionDiff(workDir, repo.sha);
   writeFileSync(path.join(sessionDir, 'diff.patch'), diff);
   const stats = existsSync(statsFile) ? parseCgroupStats(readFileSync(statsFile, 'utf8')) : { memPeakBytes: null, cpuUsec: null };
   const meta: SessionMeta = {
@@ -322,7 +353,7 @@ function arg(name: string, fallback?: string): string | undefined {
 
 async function main(): Promise<void> {
   assertHostAdmission(__dirname);
-  const corpus = loadCorpus();
+  const corpus = loadCorpus(corpusFileFromArgv(process.argv));
   const cli = arg('cli') as Cli;
   if (cli !== 'claude' && cli !== 'codex') throw new Error('--cli claude|codex required');
   const sel = arg('tasks', 'all')!;

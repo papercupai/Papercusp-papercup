@@ -69,6 +69,36 @@ function physicalPath(input: string): string {
   }
 }
 
+/**
+ * A moved HOME subtree may retain its full absolute layout under an offload
+ * root. Accept the physical spelling only when the corresponding existing
+ * HOME alias resolves to exactly the same physical file (or existing parent
+ * for a new leaf). Merely containing `/home/user` in a path grants nothing.
+ * Both spellings retain the existing hook-compatible HOME lock key.
+ */
+function mirroredHomeRelative(absolute: string, homeRoot: string): string | undefined {
+  const suffixRoot = `${homeRoot}${sep}`;
+  const matches = new Set<string>();
+  for (let at = absolute.indexOf(suffixRoot); at >= 0; at = absolute.indexOf(suffixRoot, at + 1)) {
+    const rel = absolute.slice(at + suffixRoot.length);
+    if (!rel) continue;
+    const alias = join(homeRoot, rel);
+    try {
+      // realpath of at least the parent must succeed on BOTH sides. The
+      // permissive physicalPath fallback must not turn missing paths into proof.
+      const resolveExisting = (file: string) => {
+        try { return realpathSync(file); } catch {
+          return join(realpathSync(dirname(file)), basename(file));
+        }
+      };
+      if (resolveExisting(alias) === resolveExisting(absolute)) matches.add(rel);
+    } catch {
+      // No independently resolvable HOME alias: keep the outside-HOME refusal.
+    }
+  }
+  return matches.size === 1 ? [...matches][0] : undefined;
+}
+
 /** Find the nearest valid repository root, mirroring the edit-hook walk. */
 function findRepoRoot(input: string): string | undefined {
   let dir = input;
@@ -198,7 +228,7 @@ export function externalPathToLockKey(
   }
 
   const homeRoot = resolve(roots.home ?? homedir());
-  const homeRel = relativeFile(homeRoot, absolute);
+  const homeRel = relativeFile(homeRoot, absolute) ?? mirroredHomeRelative(absolute, homeRoot);
   if (homeRel) {
     return `${EXTERNAL_HOME_LOCK_PREFIX}/${homeRel.split(sep).join('/')}`;
   }

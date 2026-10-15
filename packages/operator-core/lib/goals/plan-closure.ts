@@ -90,11 +90,18 @@ export const GATE_CODE_CLOSURE_LEG: Record<
   spec_proof_stale: { leg: 'verificationReadBack', rating: 'fail' },
   spec_clause_unproven: { leg: 'verificationReadBack', rating: 'fail' },
   design_evidence_unsatisfied: { leg: 'verificationReadBack', rating: 'fail' },
+  // P-008: nobody outside the implementer lineage re-observed the live/deployed evidence.
+  independent_verification_missing: { leg: 'verificationReadBack', rating: 'fail' },
+  // P-006: no counted blind gap review, or a gap with no item / accepted-risk Decision.
+  blind_review_missing: { leg: 'verificationReadBack', rating: 'fail' },
+  blind_review_gap_undispositioned: { leg: 'verificationReadBack', rating: 'fail' },
   // WI-10004135: the author declared delivery-plane evidence outstanding (no BAR contract).
   acceptance_pending_delivery: { leg: 'verificationReadBack', rating: 'fail' },
   // The census degraded rather than judged. Not a finding about the plan.
   design_evidence_unavailable: { leg: 'verificationReadBack', rating: 'unknown' },
   spec_coverage_unavailable: { leg: 'verificationReadBack', rating: 'unknown' },
+  independent_verification_unavailable: { leg: 'verificationReadBack', rating: 'unknown' },
+  blind_review_unavailable: { leg: 'verificationReadBack', rating: 'unknown' },
 
   // --- leg 3: an INDEPENDENT evaluator regraded the current subject ---------
   // WI-10004178 / endgame D-095: a federated receiver cannot tell whether the authoring

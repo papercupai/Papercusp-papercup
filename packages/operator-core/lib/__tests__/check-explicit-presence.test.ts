@@ -84,6 +84,28 @@ describe('analyzeForExplicitPresence (WI-6004)', () => {
     expect(hits[0].reason).toMatch(/DB row/);
   });
 
+  it('distinguishes postgres.js affected-row metadata from nullable count columns', () => {
+    const hits = analyzeForExplicitPresence({
+      path: 'packages/operator-core/lib/x/result-count.ts',
+      text: 'const result = await sql`UPDATE t SET active = true`;\n'
+        + 'const affected = result.count ?? 0;\n'
+        + 'const column = result[0].count ?? 0;\n'
+        + 'const namedColumn = result["0"].count || 0;\n'
+        + 'const other = result.active ?? false;\n',
+    });
+    expect(hits.map((hit: { line: number }) => hit.line)).toEqual([3, 4, 5]);
+  });
+
+  it('still flags absent JSON counts even when the same identifier was a SQL result', () => {
+    const hits = analyzeForExplicitPresence({
+      path: 'packages/operator-core/lib/x/parsed-count.ts',
+      text: 'const result = await sql`DELETE FROM t`;\n'
+        + 'const result = JSON.parse(raw);\nconst affected = result.count ?? 0;\n',
+    });
+    expect(hits).toHaveLength(1);
+    expect(hits[0].reason).toMatch(/JSON.parse/);
+  });
+
   it('flags an IPC/event-payload field defaulted with `||`', () => {
     const hits = analyzeForExplicitPresence({
       path: 'packages/operator-core/lib/x/e.ts',
@@ -196,15 +218,19 @@ describe('explicit-presence is ENFORCED, not merely available (WI-5977)', () => 
   it('runs an end-to-end positive control that forces the real ratchet red even when the corpus has zero candidates', () => {
     const run = spawnSync(
       'node',
+      // WI-10006055: a whole-tree ratchet scan (~15s CPU idle). Under green-checkpoint
+      // lane-stateful load it overran a 60s kill and returned status null, not a verdict.
       [join(REPO_ROOT, 'scripts/check-explicit-presence.mjs'), '--ratchet', '--positive-control'],
-      { cwd: REPO_ROOT, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' },
+      { cwd: REPO_ROOT, encoding: 'utf8', timeout: 180_000, killSignal: 'SIGKILL' },
     );
     const output = `${run.stdout}\n${run.stderr}`;
     expect(run.status, output).toBe(1);
     expect(output).toMatch(/POSITIVE CONTROL: evaluating \d+ analyzer-produced known violation/);
     expect(output).toMatch(/count ROSE above baseline/);
     expect(output).toMatch(/\(\+1\)/);
-  }, 60_000);
+    // The parent budget must OUTLIVE the child's 180s kill, or Vitest times the test out first
+    // and the child's own SIGKILL verdict is unreachable (lint:test-timing-budgets).
+  }, 200_000);
 
   it('refuses to combine the synthetic positive control with --update', () => {
     const run = spawnSync(

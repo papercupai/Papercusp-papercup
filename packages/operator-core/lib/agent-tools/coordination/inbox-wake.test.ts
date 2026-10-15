@@ -3,6 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('./wake-mode', () => ({ resolveWakeMode: vi.fn() }));
 vi.mock('./pending-wakes', () => ({ stagePendingWake: vi.fn() }));
 vi.mock('../../events/await/engine', () => ({ emitAwaitedEvent: vi.fn() }));
+vi.mock('./wake-fanout-pacing', async (orig) => {
+  const m = await orig<typeof import('./wake-fanout-pacing')>();
+  return { ...m, reserveWakeFanout: vi.fn(async (count: number, workspaceId = 'ws-1') =>
+    m.reserveWakeTimes(5, count, Date.now()).times.map((notBeforeMs) => ({ workspaceId, notBeforeMs }))) };
+});
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: vi.fn(),
@@ -29,21 +34,28 @@ import {
   isOwnerGuiWakeSource,
   ESCALATION_SLA_REROUTE_WAKE_SOURCE,
   COORD_WAKE_TARGET_TIMEOUT_MS,
+  wakePickupHandle,
 } from './inbox-wake';
+import { buildKey } from '../../events/await/catalog';
 import { ADMIN_COORD_UI_OWNER } from './identity';
-import { mockResolvedTyped } from '../../testing/typed-mock';
+import { mockImplementationTyped, mockResolvedTyped } from '../../testing/typed-mock';
+import type { EmitResult } from '../../events/await/engine';
 import { resolveWakeMode } from './wake-mode';
 import { stagePendingWake } from './pending-wakes';
 import { emitAwaitedEvent } from '../../events/await/engine';
 import { knownOwnerIdSet, resolveBestEffortAgainstRoster } from './recipient-resolve';
 import { getOrgPg } from '@papercusp/db-org';
+import { reserveWakeFanout, readWakeFanoutPacing } from './wake-fanout-pacing';
 
 const sqlMock = vi.fn(async (..._args: unknown[]) => []);
 
 beforeEach(() => {
   vi.mocked(resolveWakeMode).mockResolvedValue('auto' as never);
   vi.mocked(stagePendingWake).mockResolvedValue(undefined as never);
-  vi.mocked(emitAwaitedEvent).mockResolvedValue({ woken: 1 } as never);
+  vi.mocked(emitAwaitedEvent).mockImplementation(async (opts) => {
+    const deferred = (readWakeFanoutPacing(opts.payload)?.notBeforeMs ?? 0) > Date.now() ? 1 : 0;
+    return { woken: 1 - deferred, deferred } as EmitResult;
+  });
   vi.mocked(knownOwnerIdSet).mockResolvedValue(null);
   vi.mocked(getOrgPg).mockReturnValue({ sql: sqlMock } as never);
 });
@@ -373,6 +385,41 @@ describe('wakeRecipients skips staging debris for an UNKNOWN recipient (EI-9971)
   });
 });
 
+// P-006 / D-005: the enqueue seam cannot confirm pickup (pickupConfirmed stays the literal
+// false), so it hands the sender the key the pump's pickup sweep fires when a queued wake
+// was NOT picked up — built from the same catalog template the sweep emits with.
+describe('wakeRecipients pickup handle (P-006 / D-005)', () => {
+  it('returns one not-picked-up handle per QUEUED target, keyed exactly as the pickup sweep emits', async () => {
+    mockImplementationTyped(vi.mocked(emitAwaitedEvent), async (input) => {
+      const woken = input.key.endsWith(':s-quiet') ? 0 : 1;
+      const result: EmitResult = { ok: true, key: input.key, woken, notified: [], msgId: null, waiters: woken };
+      return result;
+    });
+    const r = await wakeRecipients(['s-live', 's-quiet']);
+    expect(r.pickupConfirmed).toBe(false);
+    expect(r.pickup).toEqual([
+      { target: 's-live', event: buildKey('wake-not-picked-up', { subscriberId: 's-live' }), windowSec: 600 },
+    ]);
+    expect(r.pickup[0]!.event).toBe('wake:not-picked-up:s-live');
+  });
+
+  it('a staged (manual-mode) target gets no handle: nothing was queued, so nothing can expire', async () => {
+    mockResolvedTyped(vi.mocked(resolveWakeMode), 'manual');
+    const r = await wakeRecipients(['s-paused']);
+    expect(r.staged).toBe(1);
+    expect(r.pickup).toEqual([]);
+  });
+
+  it('the window follows PAPERCUSP_WAKE_PICKUP_WINDOW_SEC, the same knob the sweep reads', async () => {
+    vi.stubEnv('PAPERCUSP_WAKE_PICKUP_WINDOW_SEC', '120');
+    try {
+      expect(wakePickupHandle('s-x').windowSec).toBe(120);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
 describe('buildStagedWakeNote (EI-5957 — loud staged-directive signal)', () => {
   it('names the staged target(s) and both remedies (release / flip to auto)', () => {
     const note = buildStagedWakeNote(['su-member-1']);
@@ -389,20 +436,52 @@ describe('buildStagedWakeNote (EI-5957 — loud staged-directive signal)', () =>
   });
 });
 
-describe('P-022 — wake fan-out cap (cross-machine-coord-parity-and-trust-2026-07-01)', () => {
-  it('wakes at most MAX_WAKE_FANOUT recipients; the overflow is injected-not-woken and reported', async () => {
-    const { MAX_WAKE_FANOUT } = await import('./inbox-wake');
-    const many = Array.from({ length: MAX_WAKE_FANOUT + 6 }, (_, i) => `su-agent-${String(i).padStart(4, '0')}`);
+describe('WI-6554700010009434 — durable bulk wake pacing', () => {
+  it('paces a 200-target fan-out over more than a minute without dropping overflow', async () => {
+    const many = Array.from({ length: 200 }, (_, i) => `su-agent-${i}`);
+    const now = Date.now();
+    const r = await wakeRecipients(many, { summary: 'resume fleet', workspaceId: 'ws-1', requiredWake: true });
+    expect(r.targets).toEqual(many);
+    expect(r.fanoutCapped).toEqual([]);
+    expect(r.woken).toBe(5);
+    expect(r.deferred).toBe(195);
+    expect(r.deferredTargets).toEqual(many.slice(5));
+    const schedules = vi.mocked(emitAwaitedEvent).mock.calls.map(([opts]) => readWakeFanoutPacing(opts.payload)!);
+    expect(schedules.filter((p) => p.notBeforeMs <= now + 60_000).length).toBeLessThanOrEqual(15);
+    expect(schedules.at(-1)!.notBeforeMs - now).toBeGreaterThan(60_000);
+    expect(r.pickup).toHaveLength(5);
+    // A large fan also records bounded-timeout telemetry through the same PG
+    // handle. Assert the required-wake table, not the last unrelated write.
+    const ledgerWrites = sqlMock.mock.calls.filter(([parts]) => Array.isArray(parts) && parts.join('').includes('event_wake_attempts'));
+    expect(ledgerWrites).toEqual([
+      [expect.anything(), 'ws-1', many.slice(0, 5), many.slice(0, 5).map((id) => `coord:inbox-wake:${id}`), Array(5).fill('queued')],
+    ]);
+  });
+
+  it.each(['loop:rt_loop', ESCALATION_SLA_REROUTE_WAKE_SOURCE, 'system:delivery-ladder'])('keeps urgent %s wakes immediate', async (source) => {
+    const r = await wakeRecipients(Array.from({ length: 20 }, (_, i) => `urgent-${i}`), { source });
+    expect(r.woken).toBe(20);
+    expect(r.deferred).toBe(0);
+    expect(reserveWakeFanout).not.toHaveBeenCalled();
+  });
+
+  it('an owner resume of a large fleet is paced while a directed owner wake stays immediate', async () => {
+    await wakeRecipients(['direct'], { source: ADMIN_COORD_UI_OWNER });
+    expect(reserveWakeFanout).not.toHaveBeenCalled();
+    const r = await wakeRecipients(Array.from({ length: 20 }, (_, i) => `owner-${i}`), { source: ADMIN_COORD_UI_OWNER });
+    expect(r.deferred).toBe(15);
+  });
+
+  it('never fails open into a herd when PG admission is unavailable', async () => {
+    vi.mocked(reserveWakeFanout).mockRejectedValueOnce(new Error('database unavailable'));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const r = await wakeRecipients(many, { summary: 'oversized audience' });
-      expect(r.targets).toHaveLength(MAX_WAKE_FANOUT);
-      expect(r.fanoutCapped).toHaveLength(6);
-      expect(vi.mocked(emitAwaitedEvent)).toHaveBeenCalledTimes(MAX_WAKE_FANOUT);
-      expect(warn).toHaveBeenCalledTimes(1);
-    } finally {
-      warn.mockRestore();
-    }
+      const targets = Array.from({ length: 10 }, (_, i) => `no-db-${i}`);
+      const r = await wakeRecipients(targets);
+      expect(r.timedOutTargets).toEqual(targets);
+      expect(r.woken).toBe(0);
+      expect(emitAwaitedEvent).not.toHaveBeenCalled();
+    } finally { warn.mockRestore(); }
   });
 
   it('a normal directed set is untouched (fanoutCapped empty)', async () => {

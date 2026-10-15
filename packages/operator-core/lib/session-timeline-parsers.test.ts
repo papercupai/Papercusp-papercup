@@ -223,7 +223,7 @@ describe('createOmpTimelineParser', () => {
       kind: 'status',
       text: '[error] (402) 402 Insufficient credits. This account never purchased credits.',
       ts: 't',
-    }]);
+    }, { kind: 'result', outcome: 'failed', text: '', ts: 't' }]);
   });
 
   it('omits the parenthetical when the failure carries no HTTP status', () => {
@@ -238,7 +238,7 @@ describe('createOmpTimelineParser', () => {
       kind: 'status',
       text: '[error] Retry budget exhausted after 10 retries: 429 Provider returned error',
       ts: 't',
-    }]);
+    }, { kind: 'result', outcome: 'failed', text: '', ts: 't' }]);
   });
 
   it('still reports the error when the turn produced text BEFORE failing', () => {
@@ -253,6 +253,7 @@ describe('createOmpTimelineParser', () => {
     }))).toEqual([
       { kind: 'text', text: 'starting on the resolver', ts: 't' },
       { kind: 'status', text: '[error] (429) 429 Provider returned error', ts: 't' },
+      { kind: 'result', outcome: 'failed', text: '', ts: 't' },
     ]);
   });
 
@@ -260,10 +261,30 @@ describe('createOmpTimelineParser', () => {
     expect(p().parseLine(JSON.stringify({
       type: 'message', timestamp: 't', message: { role: 'assistant', content: [] },
     }))).toEqual([]);
-    // stopReason set but no message to show ⇒ nothing to surface.
+    // An error without displayable text still attests failure, never success.
     expect(p().parseLine(JSON.stringify({
       type: 'message', timestamp: 't',
       message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: '   ' },
-    }))).toEqual([]);
+    }))).toEqual([{ kind: 'result', outcome: 'failed', text: '', ts: 't' }]);
+  });
+});
+
+describe('native terminal outcomes used by the Cloud lesson', () => {
+  const timestamp = '2026-10-01T12:00:00.000Z';
+  it('distinguishes Codex completion, commentary, interruption and a malformed terminal row', () => {
+    const parser = createCodexTimelineParser();
+    const row = (payload: unknown) => parser.parseLine(JSON.stringify({ type: 'event_msg', timestamp, payload }));
+    expect(row({ type: 'agent_message', message: 'Working.' })).toEqual([{ kind: 'text', text: 'Working.', ts: timestamp }]);
+    expect(row({ type: 'task_complete', turn_id: 'turn-1', last_agent_message: 'Tools: read, search.' })).toEqual([{ kind: 'result', outcome: 'succeeded', text: 'Tools: read, search.', ts: timestamp }]);
+    expect(row({ type: 'task_complete', turn_id: 'turn-1', status: 'failed' })[0]?.outcome).toBe('failed');
+    expect(row({ type: 'turn_aborted' })[0]?.outcome).toBe('failed');
+    expect(row({ type: 'task_complete', last_agent_message: 'Unknown identity' })).toEqual([]);
+  });
+  it('attests OMP stop success while tool continuation and truncated answers remain nonterminal', () => {
+    const parser = createOmpTimelineParser();
+    const row = (stopReason: string) => parser.parseLine(JSON.stringify({ type: 'message', timestamp, message: { role: 'assistant', stopReason, content: [{ type: 'text', text: 'Tools: read.' }] } }));
+    expect(row('stop').at(-1)?.outcome).toBe('succeeded');
+    expect(row('toolUse').some(entry => entry.outcome)).toBe(false);
+    expect(row('length').some(entry => entry.outcome)).toBe(false);
   });
 });

@@ -270,13 +270,21 @@ import './plan-run-action';
 // blueprint-backed-work-item-execution P-016 / D-020: operation-backed plan
 // schedules materialize on demand and reuse the routine fire workflow id.
 import './blueprint-operation-action';
+// test-rubric-unification-2026-10-12 P-008 (D-008): plan-schedulable rubric re-score.
+import './rubric-rescore-action';
+// spec-driven-tooling-integration-2026-10-05 P-030 (R-21): plan-schedulable independent
+// conformance review — one deduplicated review work-item per plan.
+import '../../spec-conformance/conformance-review';
+// spec-driven-tooling-integration-2026-10-05 P-031 (R-23): continuous conformance sweep.
+import '../../spec-conformance/sweep-action';
 // work-on-everything-goal-2026-08-23 P-020 (D-006 ruling 3): `system:goal-start` —
 // one scheduled activation of an existing goal via the startGoalById primitive.
 import './goal-start-action';
 import './external-trigger-dispatch-action';
-import './facebook-personal-vault-poll-action';
-import './google-calendar-poll-action';
-import './google-gmail-poll-action';
+// GitHub Issues, Gmail and Google Calendar have no poll action of their own: they are provider
+// plugins synced by connector-sync (generalized-integrations-google-migration-cupboard-workflows-
+// 2026-10-05 P-010 / D-015, P-008 / D-017, P-009 / D-021).
+import './connector-sync-action';
 import './personal-vault-import-action';
 // overwatch-role-2026-06-15 B-04 (C-3): the `system:overwatch-launch` action the
 // one-shot `overwatch-wake` routine fires — computes the OverwatchBrief + launches
@@ -313,6 +321,10 @@ import './session-dir-gc-action';
 // infra-perf-robustness-audit-2026-06-18 P-006). Seeded INACTIVE
 // (seed-telemetry-retention-routine.ts --active).
 import './telemetry-retention-action';
+// `system:organization-content-reseal` — re-seals organization documents left under an older DEK
+// version after rotateDek (WI-6554700010012443 U5). Seeded ACTIVE
+// (seed-organization-content-reseal-routine.ts).
+import './organization-content-reseal-action';
 // `system:gc-plan-runs` — WI-5273: wires the already-built-and-tested
 // gcScheduledPlanRuns (gc-plan-runs.ts) to an actual cadence — it had NEVER
 // been invoked outside its own test since scheduled-recurring-plans-2026-06-16,
@@ -478,6 +490,15 @@ import './autonomy-trust-scan-action';
 // direction that hands out blocked work — was going unobserved.
 import './readiness-drift-monitor-action';
 import './cargo-test-action';
+// WI-10006805 (plan operator-e2e-standing-isolated-run-2026-10-06 P-002): nightly operator
+// Playwright run inside the isolated verify-tauri-headless rig. Like the nightly cut below, the
+// action returns after launching the run through managedSpawn; the runner's ledger reporter
+// records each spec into test_runs under the run group operator-e2e-nightly:<fire>. Landed with
+// its TARGET_ROLE_SPEND entry, its seed script and its BESPOKE_ACTIVE_SEEDS row.
+import './operator-e2e-isolated-action';
+// WI-10006806 (same plan, P-003): every red in the newest completed nightly group gets an owned
+// work-item, deduped by spec. Hourly and idempotent; seeded by the same seed script.
+import './operator-e2e-red-filer';
 // WI-36794: daily Linux GUI-only nightly release cut. The action returns after
 // launching the long build through managedSpawn, so the durable routine step stays
 // short while the child remains tracked and resource-capped.
@@ -541,6 +562,10 @@ import './launch-cost-ceiling-action';
 // burst detector. None of these actions spawns an agent.
 import './work-item-admission-promoter-action';
 import './work-item-admission-bulk-dedup-action';
+// WI-10004722 (work-queue-bulk-cleanup-remediation-2026-10-01 P-005): the daily driver
+// that arms one bounded bulk-dedup run unless one is already in flight. Landed with its
+// TARGET_ROLE_SPEND entry, its seed script and its BESPOKE_ACTIVE_SEEDS row.
+import './work-item-admission-bulk-dedup-driver-action';
 import './work-item-admission-delta-sweep-action';
 import './completion-claim-recheck-action';
 import './dead-citation-sweep-action';
@@ -563,6 +588,15 @@ import './episode-scoped-operational-reconcile-action';
 // autonomous-inbox-resolution-2026-08-31 P-009: durable routinesTick backstop
 // for the existing supervised Inbox bulk-resolver launch path.
 import './inbox-bulk-resolve-action';
+// observation-candidate-acceptance-promotion-2026-09-30 P-008 (D-020):
+// `system:intake-triage-drain` — the registered executor that drains awaiting
+// observations/candidates as `intake-triage` runs, apart from accepted work.
+import './intake-triage-drain-action';
+// plan-cleanup-system-repair-2026-10-01 P-004: `system:plan-cleanup-sweep` — the
+// deterministic recurring plan clean-up (same start path as the Plans-pane button;
+// a resolver only for judgment residue). Replaces the never-producing LLM plan-run
+// template `plan-cleanup-recurring-sweep-2026-09-01`.
+import './plan-cleanup-sweep-action';
 import './work-item-admission-daily-digest-action';
 // silent-intake-central-resolution-2026-09-01 P-007: `system:resolver-whole-corpus` — the
 // infrequent, quality-first whole-corpus resolver pass (same-defect merges + same-cause
@@ -605,6 +639,13 @@ import './frozen-candidate-drift-sweep-action';
 // Skips under host load and while a checkpoint suite runs; observer only — no revert, no gate
 // fire, no spawn. Seeded ACTIVE (seed-sync-batch-delta-check-routine.ts).
 import './sync-batch-delta-check-action';
+// green-main-cycle-time-2026-10-08 P-028: `system:sync-batch-lint-guards` — the gate's
+// repo-wide lint guards per git-sync batch (every 5 min, its own row so the delta check's
+// affected leg never delays it). Each guard is diffed against its own last measurement;
+// a new offending path is filed as one condition-keyed work-item routed to its author by
+// the P-011 path. Undetermined runs keep the prior record. Observer only. Seeded ACTIVE
+// (seed-sync-batch-lint-guards-routine.ts).
+import './sync-batch-lint-guards-action';
 // gate-verdict-liveness-and-repair-reliability-2026-08-31 P-016: `system:gate-fire-drill`
 // — the weekly fire drill: on a GREEN idle unheld gate, launch a fresh recording checkpoint
 // run, kill it seconds later, and assert the P-003 detection chain saw it (P-001 fire anchor
@@ -782,3 +823,14 @@ import './account-capacity-reprobe-action';
 // cadence, same deviation reasoning as supervision-reconcile-action. Seeded ACTIVE by
 // seed-hosted-lifecycle-reconcile-routine.ts.
 import './hosted-lifecycle-reconcile-action';
+// WI-10004437: `system:hosted-public-ingress-probe` — the hosted origin's tunnel ingress is
+// hand-maintained outside the repo, and four times a public route family the plane serves fell
+// through to the session-gated portal (WI-10003292, WI-10004436, WI-10005066), each found by hand
+// during an e2e run. This probes every plane route family against the cloudflared config and the
+// live origin and THROWS on a miss (routine-failure watchdog). A bespoke ephemeral (900s) cadence;
+// seeded ACTIVE by seed-hosted-public-ingress-probe-routine.ts.
+import './hosted-public-ingress-probe-action';
+// P-016: deterministic authenticated Stripe reconciliation through the existing
+// durable billing cursor/store. No agent dispatch and no production schedule is
+// armed by registration; plans:set-schedule + plans:arm-schedule owns cadence.
+import './hosted-billing-reconcile-action';

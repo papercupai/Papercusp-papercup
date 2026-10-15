@@ -131,6 +131,10 @@ export function chunkSurfaceSpaceColumns(): Array<{ surface: string; profileColu
   const sql = recordingSql();
   const seen: Array<{ surface: string; profileColumn: string; modeColumn: string }> = [];
   for (const surface of CHUNK_SURFACES) {
+    // Some chunk surfaces are semantic-only indexes without a parent vector
+    // (for example reports). The chunk-aware vector leg intentionally requires
+    // a parent vector, so they have no space-filter columns to census here.
+    if (!surface.parentVector) continue;
     for (const cols of chunkAwareVectorLegSpaceColumns(sql, { surface, mode: 'retrieve' })) {
       if (cols.profileColumn && cols.modeColumn) {
         seen.push({ surface: surface.surface, profileColumn: cols.profileColumn, modeColumn: cols.modeColumn });

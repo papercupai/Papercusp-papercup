@@ -132,6 +132,23 @@ describe('P-007 — API-key credit walls', () => {
     ).toBe('api-usage-limit');
   });
 
+  it('R-21: a 400 credit-balance-low response classifies as a billing wall', () => {
+    expect(
+      classifyClaudeCreditWall({
+        status: 400,
+        headers: {},
+        body: errBody('invalid_request_error', 'Credit balance is too low'),
+      }),
+    ).toEqual({ cause: 'billing-error' });
+    expect(
+      classifyClaudeCreditWall({
+        status: 400,
+        headers: {},
+        body: errBody('billing_error', 'Your credit balance is too low to access the Anthropic API.'),
+      }),
+    ).toEqual({ cause: 'billing-error' });
+  });
+
   it('R-21 (negative): an ordinary 400 is not a credit wall', () => {
     expect(
       classifyClaudeCreditWall({ status: 400, headers: {}, body: errBody('invalid_request_error', 'max_tokens: must be positive') }),
@@ -309,6 +326,11 @@ describe('R-23 — a credit wall makes the Claude adapter fail over to another p
           ),
         ),
       resetAt: REGAIN_AT,
+    },
+    {
+      name: '400 credit balance is too low',
+      response: () => upstream(400, errBody('invalid_request_error', 'Credit balance is too low')),
+      resetAt: NOW + CREDIT_WALL_DEFAULT_PAUSE_MS,
     },
   ];
 

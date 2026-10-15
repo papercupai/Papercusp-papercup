@@ -34,7 +34,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
   getOrgPg: () => ({ sql: Object.assign(() => undefined, { unsafe: () => undefined }) }),
 }));
 
-import { defaultAutoCloseDeps } from './auto-close';
+import { defaultAutoCloseDeps, AUTO_CLOSE_CENSUS_LIMIT, AUTO_CLOSE_ELIGIBLE_SOURCES } from './auto-close';
 
 describe('WI-4532: defaultAutoCloseDeps().listOpen must select watchdog items in SQL', () => {
   beforeEach(() => listIssuesSpy.mockClear());
@@ -64,5 +64,35 @@ describe('WI-4532: defaultAutoCloseDeps().listOpen must select watchdog items in
     // in SQL; this pins that the cap is not doing the work.
     expect(filter.watchdogKeyed).toBe(true);
     expect(typeof filter.limit === 'number' && (filter.limit as number) > 0).toBe(true);
+  });
+
+  // WI-10005102: `watchdogKeyed` alone became a window again (11,598 open watchdog rows on
+  // 2026-10-01, 9,615 of them repeated-tool-error with no source-level close route). The
+  // census must be narrowed, in SQL, to rows a closing route can act on.
+  it('narrows the census to closing routes in SQL, including red-test (WI-10005102)', async () => {
+    await defaultAutoCloseDeps('papercusp-workspace').listOpen();
+    const filter = listIssuesSpy.mock.calls[0][0] as {
+      watchdogCloseRoutes?: { closableSources: readonly string[] };
+      includeBody?: boolean;
+    };
+
+    expect(filter.watchdogCloseRoutes, 'listOpen must pass watchdogCloseRoutes (WI-10005102)').toBeDefined();
+    const sources = new Set(filter.watchdogCloseRoutes!.closableSources);
+    // Every absence-closable source, or a quiet tick can never close it.
+    for (const s of AUTO_CLOSE_ELIGIBLE_SOURCES) expect(sources.has(s), `missing absence source ${s}`).toBe(true);
+    // red-test is not absence-closable but has the positive green-run route.
+    expect(sources.has('red-test')).toBe(true);
+    // repeated-tool-error closes only via the row-level repair-evidence branch; listing the
+    // whole source here would re-admit its ~9,600 rows and restore the window.
+    expect(sources.has('repeated-tool-error')).toBe(false);
+    expect(filter.includeBody).toBe(false);
+  });
+
+  it('reports a saturated census instead of treating a full page as the whole set', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    listIssuesSpy.mockResolvedValueOnce(new Array(AUTO_CLOSE_CENSUS_LIMIT).fill({}));
+    await defaultAutoCloseDeps('papercusp-workspace').listOpen();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('census read SATURATED'));
+    warn.mockRestore();
   });
 });

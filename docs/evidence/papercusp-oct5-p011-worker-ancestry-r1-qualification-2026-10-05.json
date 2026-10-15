@@ -1,0 +1,116 @@
+{
+  "schemaVersion": "p011-worker-ancestry-qualification-v1",
+  "workItem": "WI-10006124",
+  "parent": "WI-10004890",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "spec": {
+    "id": "PERF-OCT1-P011-MEMORY",
+    "revision": 2,
+    "fingerprint": "6059e251ea51a61458afd5075a8190a60e1f1139d28c55784b4ff12d2c624010"
+  },
+  "status": "supporting-raw-census-ancestry-preparation-only",
+  "implementation": [
+    {
+      "path": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+      "bytes": 103969,
+      "sha256": "d6c2081c133e58353f443f711105477f3c77842857a09667c26f35670ff3c4dd"
+    },
+    {
+      "path": "packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts",
+      "bytes": 130473,
+      "sha256": "ce79590adee77ae446f11959ef4d1e5d26cf9fa6221272a80df5f5110d791a94"
+    }
+  ],
+  "behavior": [
+    "Persist detached pre/post bounded raw OS census records for each selected-worker counter-reading phase, using the existing 64-descendant limit.",
+    "Independently join exact selected OS rows to saved census brackets and pin each selected ancestor's PID/startTicks/executable/parent/command/entry across brackets and windows.",
+    "Reject missing or inconsistent bracket records, duplicate/cyclic/foreign/capped populations, selected-row drift, unsampled ancestor reuse or entry drift, and dropped residue.",
+    "Historical windows without any saved brackets remain ancestry-unknown; partial new bracket sets fail. Input is never mutated.",
+    "Preserve unsampled resources, raced/capped observations and terminal-ring query coverage as unknown. Serial ancestry observations do not prove an atomic or complete service population."
+  ],
+  "verification": {
+    "reader": {
+      "command": "env -u PAPERCUSP_P011_LIVE_PID -u PAPERCUSP_P011_BASELINE_ORACLE_INPUTS PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts",
+      "testRunId": 20754954,
+      "passed": 271,
+      "optInSkipped": 4,
+      "exitCode": 0
+    },
+    "collector": {
+      "command": "env -u PAPERCUSP_P011_LIVE_PID PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/service-memory-live-baseline.integration.test.ts -t 'multi-target request-resource window'",
+      "testRunId": 20754953,
+      "passed": 17,
+      "filteredSkipped": 40,
+      "exitCode": 0
+    },
+    "ledger": {
+      "harness": "papercusp",
+      "workspace": "papercusp-workspace",
+      "status": "pass",
+      "commitSha": "2bb2163cd46660a1677ebc848f72da67b4551a81",
+      "worktreeDirty": true
+    },
+    "typecheck": {
+      "command": "npm run lint:tsc -- --files=packages/operator-core/lib/service-memory-live-baseline.integration.test.ts,packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts",
+      "namedFiles": 2,
+      "actualErrors": 0,
+      "exitCode": 0
+    },
+    "logs": [
+      {
+        "path": "/tmp/su-7db4f-p011-worker-ancestry-oracle-r1.log",
+        "bytes": 7628,
+        "sha256": "277b57c6cb2dd7dbe21e703d8607ba72b1da2b23b54316452947c0bdc5f61951"
+      },
+      {
+        "path": "/tmp/su-7db4f-p011-worker-ancestry-collector-r1.log",
+        "bytes": 20742,
+        "sha256": "0a5985cc990610079389afe7247b64c0a0978e91d651582ef57212d14df07e99"
+      },
+      {
+        "path": "/tmp/su-7db4f-p011-worker-ancestry-types-r1.log",
+        "bytes": 1242,
+        "sha256": "42e7385ce7ce296ab395276445e400d4df02f373f48f66454d4f95a7ea7d9a58"
+      }
+    ],
+    "scope": "Canonical deterministic corruption guards and one isolated same-entry Node process-tree collector. No shared target was attached or measured."
+  },
+  "sourceFingerprints": {
+    "scope": "Three named current source files; complete executed-source graph remains unknown",
+    "files": [
+      {
+        "path": "scripts/lib/identity-leak-patterns.mjs",
+        "bytes": 44163,
+        "sha256": "9ccce5c5ad56db19caa554f3ac03f00dcc831ea959566e013acec184926cd21d"
+      }
+    ]
+  },
+  "supportingBindings": {
+    "child": [
+      23950,
+      23951
+    ],
+    "parent": [
+      23952,
+      23953
+    ],
+    "coverage": {
+      "l1": true,
+      "l2": true,
+      "l3": false,
+      "l4": false
+    }
+  },
+  "priorQualification": {
+    "path": "docs/evidence/papercusp-oct5-p011-worker-window-oracle-r1-qualification-2026-10-05.json",
+    "bytes": 5300,
+    "sha256": "390837116133652fa29849f02489cb33337929848b6d1b690341a082439ad790",
+    "qualification": "Historical scoped 250-test proof. Six unchanged log/tool/qualification links still match; both named implementation files have been superseded by this ancestry change."
+  },
+  "limits": [
+    "No saved current shared request-worker resource report was produced.",
+    "No configured six-worker change, production worker-clone census, native ownership or physical-savings claim.",
+    "Whole P011@2/D-021, all-eight-source disposition, full executed graph, independent acceptance and shipment remain open.",
+    "Native owner-origin affirmation remains pending; no duplicate question, origin/audit rewrite, activation, or LIVE_GATE_OPS."
+  ]
+}

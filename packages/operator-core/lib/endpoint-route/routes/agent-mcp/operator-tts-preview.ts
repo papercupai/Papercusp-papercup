@@ -1,8 +1,9 @@
 /**
  * POST /api/agent-mcp/operator-tts-preview — per-engine TTS preview synthesis.
  *
- * Short (200-char) samples for the settings voice picker + the desktop
- * chrome's per-utterance `synthViaAdapter` path. Per-provider synthesis is the
+ * Short (200-char) samples for the settings voice picker and short
+ * side-channel narration. Desktop reply playback uses bounded requests to
+ * operator-tts so this cap cannot truncate normal speech. Per-provider synthesis is the
  * shared `synthesize()` registry (./tts-synth) — the SAME code path the
  * full-reply `operator-tts` route uses. (This route used to carry its own
  * inline per-provider fetch block, which had drifted from operator-tts:

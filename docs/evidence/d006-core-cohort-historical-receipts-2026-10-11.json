@@ -1,0 +1,922 @@
+{
+  "schemaVersion": 1,
+  "kind": "d006-fixed-cohort-historical-receipt-qualification",
+  "workItemId": "WI-6554700010008711",
+  "parent": "WI-10006170",
+  "fleet": "goal-mode-shipment-20261011",
+  "owner": "su-03b5a051-9444-44ad-977b-b87006a70341",
+  "observedAt": "2026-10-11T23:20:37Z",
+  "scope": "Exact 38-file assigned core cohort; local historical receipts only. No tests were executed, no source repair was admitted or performed, and no gate or final/native acceptance was read or driven.",
+  "archive": {
+    "run": "1307302-b9c3dd76",
+    "affectedLog": "local-state:verification-harness/goal-report-d006/1307302-b9c3dd76/affected-tests.log",
+    "sha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
+    "hashVerified": true,
+    "verdict": "failed",
+    "sourceMap": "docs/evidence/d006-source-repair-classes-2026-10-05.json"
+  },
+  "receiptMethod": {
+    "firstRead": "testing:runs, literal full path, source=local, since=2026-10-05T22:29:37Z, limit=1",
+    "detailRead": "Exact-ID SELECT id, execution_details FROM harness_shared.test_runs for the 38 returned local IDs; read through dev:pg_query inside code:run. No CI/gate selection.",
+    "writerPaths": [
+      "libs/test-config/src/execution-details.ts",
+      "libs/test-config/src/admin-test-runs-reporter.ts"
+    ],
+    "countOrder": [
+      "passed",
+      "failed",
+      "skipped"
+    ],
+    "servingReaderLimit": "testing:runs omitted executionDetails in the serving build. Raw stored details were recovered separately; omission was not treated as absent data.",
+    "readback": "The complete 38-row matrix was verified from the held task checkpoint; raw stored detail read produced38 rows.",
+    "recovery": {
+      "source": "~/.papercusp/scratch/papercusp-workspace/code:run/cbf54014-8e43-4375-a03d-5a017c297518/result-door-1791760650421.md",
+      "sha256": "9da6c450cf9d3be2bba1ae206fce0ebeed5a77cffa6e0b2971f0f5ae0f170a47",
+      "scope": "The attempted 102560-character checkpoint append was rejected before mutation. Its validated scratch result retained the successful detail read; compact fields below were recovered without rerunning tests.",
+      "durability": "Scratch source expires; this repository artifact preserves compact details and exact durable testRunIds."
+    }
+  },
+  "rows": [
+    {
+      "path": "libs/papercusp/libs/db/src/idle-in-tx-timeout.integration.test.ts",
+      "id": 20977114,
+      "status": "fail",
+      "counts": [
+        0,
+        0,
+        4
+      ],
+      "collection": true,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-e6e50c21f6-i4Pyj1",
+      "failedCases": null,
+      "passedCasesCount": 0,
+      "passedTitlesTruncated": null,
+      "commitSha": "e6e50c21f60369bd961e8270f63914a80961e6d1",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "apps/operator/test/schema-object-drift.integration.test.ts",
+      "id": 21100160,
+      "status": "fail",
+      "counts": [
+        5,
+        1,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": [
+        "the migration-derived index manifest > matches the committed manifest"
+      ],
+      "passedCasesCount": 5,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "apps/operator/lib/release/deploy.integration.test.ts",
+      "id": 21100179,
+      "status": "pass",
+      "counts": [
+        2,
+        0,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": null,
+      "passedCasesCount": 2,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "apps/operator/test/role-principal-caps.integration.test.ts",
+      "id": 21100188,
+      "status": "fail",
+      "counts": [
+        5,
+        4,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": [
+        "loadRoleCapabilities (least-privilege) > returns the provisioned caps UNIONED with the operator blueprint baseline (P-004)",
+        "loadRoleCapabilities (least-privilege) > returns ONLY the universal tool-discovery cap for a pipeline role with no system principal (worker)",
+        "synthesizeDispatchPrincipal > role-scoped (non-superuser) gets its provisioned caps + system:<role> slug",
+        "synthesizeDispatchPrincipal > a pipeline role (no system principal) gets ONLY the universal tool-discovery cap — workflow built-ins stay denied"
+      ],
+      "passedCasesCount": 5,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/consult/consult-verbs-core.integration.test.ts",
+      "id": 21103596,
+      "status": "pass",
+      "counts": [
+        92,
+        0,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": null,
+      "passedCasesCount": 92,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/work-items-stale-claims.integration.test.ts",
+      "id": 21103622,
+      "status": "pass",
+      "counts": [
+        82,
+        0,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": null,
+      "passedCasesCount": 82,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/adv-sessions-reanchor.integration.test.ts",
+      "id": 21103623,
+      "status": "pass",
+      "counts": [
+        39,
+        0,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": null,
+      "passedCasesCount": 39,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/fleet/assignments.integration.test.ts",
+      "id": 21103672,
+      "status": "pass",
+      "counts": [
+        26,
+        0,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": null,
+      "passedCasesCount": 26,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/plan-items/convert.integration.test.ts",
+      "id": 21103687,
+      "status": "pass",
+      "counts": [
+        32,
+        0,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": null,
+      "passedCasesCount": 32,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/work-items-release-request.integration.test.ts",
+      "id": 21103721,
+      "status": "fail",
+      "counts": [
+        18,
+        2,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": [
+        "EI-21585647336393798 — voluntary release does not self-wake the holder > retires the holder watch before emitting while still waking another waiter",
+        "EI-21585647336393798 — voluntary release does not self-wake the holder > keeps the holder notification for an unmarked release path"
+      ],
+      "passedCasesCount": 18,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/work-items-claim-issue-scope-reread.integration.test.ts",
+      "id": 21103748,
+      "status": "fail",
+      "counts": [
+        14,
+        1,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": [
+        "EI-6480 — issue-claim re-read is workspace-exact, not scope-re-deriving > WI-10003631: getIssue is ONE statement and, with no ambient twin, returns the freshest row across workspaces; a miss is one statement too"
+      ],
+      "passedCasesCount": 14,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/dbos/feature-blockers-edges.integration.test.ts",
+      "id": 21103779,
+      "status": "fail",
+      "counts": [
+        20,
+        1,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": [
+        "migration 935 canonicalizes historical work-item blocks > converges tenant duplicates at default and deletes only work-item block rows"
+      ],
+      "passedCasesCount": 20,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/goal-review-obligation-verdict.integration.test.ts",
+      "id": 21103806,
+      "status": "pass",
+      "counts": [
+        11,
+        0,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": null,
+      "passedCasesCount": 11,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-obligation-planning.integration.test.ts",
+      "id": 21103826,
+      "status": "pass",
+      "counts": [
+        5,
+        0,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": null,
+      "passedCasesCount": 5,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/calibration/resolve-sweep-probes.integration.test.ts",
+      "id": 21103876,
+      "status": "fail",
+      "counts": [
+        13,
+        2,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": [
+        "defaultOutcomeProbes.planShipped (live harness_plans) > any other status → false",
+        "defaultOutcomeProbes.flakeRecurred (live engineer_issues) > a peer recaptured AFTER the bet → true"
+      ],
+      "passedCasesCount": 13,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/harness/routines/reconcile-loop-routines.integration.test.ts",
+      "id": 21103932,
+      "status": "pass",
+      "counts": [
+        18,
+        0,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": null,
+      "passedCasesCount": 18,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/coordination/presence.integration.test.ts",
+      "id": 21103939,
+      "status": "pass",
+      "counts": [
+        20,
+        0,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": null,
+      "passedCasesCount": 20,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/search/prose-vector-dims.integration.test.ts",
+      "id": 21103941,
+      "status": "fail",
+      "counts": [
+        7,
+        1,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": [
+        "the prose column width contract — asserted against the LIVE schema > leg 3 — THE CLOSING LEG: no unenumerated or mis-sized vector column > every vector column is enumerated, and at its declared width"
+      ],
+      "passedCasesCount": 7,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/coordination/spawn-child.integration.test.ts",
+      "id": 21103961,
+      "status": "pass",
+      "counts": [
+        5,
+        0,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": null,
+      "passedCasesCount": 5,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/harness/improvements/watchdog-red-test-infra-enoent.integration.test.ts",
+      "id": 21104112,
+      "status": "fail",
+      "counts": [
+        3,
+        4,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": [
+        "fetchRedTestRows excludes wiped-tmp-cache infra reds (EI-20770395938680312) > STILL surfaces a genuinely broken file with real durations and a real tail (no over-suppression)",
+        "fetchRedTestRows excludes wiped-tmp-cache infra reds (EI-20770395938680312) > STILL surfaces a real assertion failure whose output merely QUOTES the ENOENT string (tail alone is not enough)",
+        "fetchRedTestRows excludes wiped-tmp-cache infra reds (EI-20770395938680312) > STILL surfaces a zero-duration failure that is not the tmp-cache ENOENT (duration alone is not enough)",
+        "fetchRedTestRows excludes wiped-tmp-cache infra reds (EI-20770395938680312) > selects the newest failure tail rather than lexical MAX(output_tail)"
+      ],
+      "passedCasesCount": 3,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/scheduler/fleet-filter-api.integration.test.ts",
+      "id": 21104134,
+      "status": "fail",
+      "counts": [
+        0,
+        1,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": [
+        "WI-10002617: named fleet filtering through the private operator API > filters before claiming and preserves admitted feature, mixed issue and solo pickup"
+      ],
+      "passedCasesCount": 0,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/red-queen/red-queen.integration.test.ts",
+      "id": 21104200,
+      "status": "pass",
+      "counts": [
+        7,
+        0,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": null,
+      "passedCasesCount": 7,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plan-items/plan-items-tools.integration.test.ts",
+      "id": 21104278,
+      "status": "fail",
+      "counts": [
+        1,
+        6,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": [
+        "plan_items:* tool handlers (real PG, through dispatch glue) > full flow: adopt → assign → my_items → claim → heartbeat → status → release",
+        "plan_items:* tool handlers (real PG, through dispatch glue) > assign validates the item exists in the plan (per-item error under the envelope)",
+        "plan_items:* tool handlers (real PG, through dispatch glue) > a different session cannot claim another name’s assigned item (policy via dispatch)",
+        "plan_items:* tool handlers (real PG, through dispatch glue) > my_items finds an item push-assigned straight to the caller’s raw ownerId, with no adoption (EI-15910/EI-2299 — the coord:dispatch shape)",
+        "plan_items:* tool handlers (real PG, through dispatch glue) > my_items merges items under BOTH an adopted name and the raw ownerId for the same session",
+        "plan_items:* tool handlers (real PG, through dispatch glue) > cross-user assign to another user’s name is refused (D-005 pull-only)"
+      ],
+      "passedCasesCount": 1,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/harness/routines/hive-canary-action.integration.test.ts",
+      "id": 21104372,
+      "status": "fail",
+      "counts": [
+        1,
+        2,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": [
+        "hive-canary action (P-009) > queues today's canary once — a same-day re-fire is a no-op (replay-safe)",
+        "hive-canary action (P-009) > reports an overdue canary ONCE with forensics attached, never a terminal or fresh one"
+      ],
+      "passedCasesCount": 1,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/deployment/p2p-perf-tier3/p2p-perf-tier3.integration.test.ts",
+      "id": 21104409,
+      "status": "fail",
+      "counts": [
+        0,
+        1,
+        2
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": [
+        "Tier-3 p2p-perf — $0 local parity (no cloud, no SSH) > runs cross-region + dht-discovery over local frames → tier:3 artifacts + report"
+      ],
+      "passedCasesCount": 0,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/__tests__/spawn-signing-e2e.integration.test.ts",
+      "id": 21104426,
+      "status": "fail",
+      "counts": [
+        8,
+        2,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": [
+        "spawn-signing e2e > unsigned + claimed context → loud auth-fail, NO tools (strict mode, WI-574)",
+        "spawn-signing e2e > agent_tools:list reports worker role, non-superuser"
+      ],
+      "passedCasesCount": 8,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/coordination/presence-reaper.integration.test.ts",
+      "id": 21104480,
+      "status": "fail",
+      "counts": [
+        5,
+        1,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": [
+        "reapEndedPresenceRows (real PG) > retires only lifecycle-bound rows before reaping a dead owner"
+      ],
+      "passedCasesCount": 5,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/testing-flakiness.integration.test.ts",
+      "id": 21104486,
+      "status": "fail",
+      "counts": [
+        0,
+        2,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": [
+        "computeFlakiness workspace scoping (regression) > includes NULL-workspace_id rows alongside this workspace's own rows, excludes another workspace's rows",
+        "computeFlakiness harness scoping (regression, WI-3925) > includes NULL-harness_slug rows alongside this harness's own rows, excludes another harness's rows"
+      ],
+      "passedCasesCount": 0,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/curation/deps.integration.test.ts",
+      "id": 21104517,
+      "status": "fail",
+      "counts": [
+        2,
+        1,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": [
+        "curation deps production readers (real PG) > surfaces only claims held by a genuinely-`ended` session (liveness oracle), never a live/parked holder or a terminal item (P-005)"
+      ],
+      "passedCasesCount": 2,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/harness/improvements/watchdog-red-test-scratch-config.integration.test.ts",
+      "id": 21104625,
+      "status": "fail",
+      "counts": [
+        2,
+        1,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": [
+        "fetchRedTestRows excludes scratch-config runs (EI-18767688096795873) > STILL surfaces a genuinely broken file with the same fail count, all non-scratch (no over-suppression)"
+      ],
+      "passedCasesCount": 2,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/fleet/spawn-admission.integration.test.ts",
+      "id": 21104629,
+      "status": "pass",
+      "counts": [
+        7,
+        0,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": null,
+      "passedCasesCount": 7,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/harness/routines/plan-run-cost.integration.test.ts",
+      "id": 21104664,
+      "status": "fail",
+      "counts": [
+        3,
+        3,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": [
+        "autoPauseOnCostBreach > disarms the schedule when a run breaches the cap",
+        "autoPauseOnCostBreach > does NOT pause a run under the cap",
+        "autoPauseOnCostBreach > does NOT pause when no cap is set"
+      ],
+      "passedCasesCount": 3,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/events/await/wake-executor-resume-exit.integration.test.ts",
+      "id": 21104687,
+      "status": "pass",
+      "counts": [
+        5,
+        0,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": null,
+      "passedCasesCount": 5,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/fleet/fleet-campaign.integration.test.ts",
+      "id": 21104729,
+      "status": "fail",
+      "counts": [
+        1,
+        1,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": [
+        "fleet campaign (real Postgres) > reads exact writer-backed membership, speaking, gate, and job flow"
+      ],
+      "passedCasesCount": 1,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/testing/mutation-probe-fence.integration.test.ts",
+      "id": 21104957,
+      "status": "fail",
+      "counts": [
+        0,
+        2,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+      "failedCases": [
+        "refuses a real test-file launch whose import closure contains the probed source",
+        "runs a real test file whose import closure cannot observe the probed source"
+      ],
+      "passedCasesCount": 0,
+      "passedTitlesTruncated": null,
+      "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "apps/operator/lib/psu-pty-host-turn.integration.test.ts",
+      "id": 21122760,
+      "status": "pass",
+      "counts": [
+        3,
+        0,
+        47
+      ],
+      "collection": false,
+      "selector": "Codex quota recovery verifies",
+      "version": 1,
+      "root": "~/papercupai-workspace/papercusp",
+      "failedCases": null,
+      "passedCasesCount": 3,
+      "passedTitlesTruncated": null,
+      "commitSha": "75ca3396ef1683b88b0c0b78f33d6e5ec418423c",
+      "worktreeDirty": true,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.integration.test.ts",
+      "id": 21131423,
+      "status": "pass",
+      "counts": [
+        65,
+        0,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "~/papercupai-workspace/papercusp",
+      "failedCases": null,
+      "passedCasesCount": 65,
+      "passedTitlesTruncated": null,
+      "commitSha": "c9e7527a29c77ccb057cd41b62b3277dd070f8eb",
+      "worktreeDirty": true,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    },
+    {
+      "path": "packages/operator-core/lib/issues-engineer.integration.test.ts",
+      "id": 21131463,
+      "status": "pass",
+      "counts": [
+        67,
+        0,
+        0
+      ],
+      "collection": false,
+      "selector": null,
+      "version": 1,
+      "root": "~/papercupai-workspace/papercusp",
+      "failedCases": null,
+      "passedCasesCount": 67,
+      "passedTitlesTruncated": null,
+      "commitSha": "12e927a4464b24f6a5c8a9ce754533a6f79d0168",
+      "worktreeDirty": true,
+      "isScratchConfig": false,
+      "disposition": "unresolved: requires accepted repair/current qualified proof or reviewed historical disposition"
+    }
+  ],
+  "sourceObservations": [
+    {
+      "path": "apps/operator/test/role-principal-caps.integration.test.ts",
+      "observation": "Current integration equality expectations omit the five native-tool replacement capabilities exported and granted by packages/operator-core/lib/endpoint-route/routes/transport/role-principal-caps.ts to operator/worker. Historical21100188 stores5 passed/4 failed/0 skipped. Specific accepted original repair allocation requested from leader; no source edit or test execution."
+    },
+    {
+      "path": "libs/papercusp/libs/db/src/idle-in-tx-timeout.integration.test.ts",
+      "observation": "Current fixture already has database/backend/key/granted isolation, other-key/database/backend/waiter noise controls and timeout-OFF control, changed by submodule77e1bcfa. Historical20931656 is a local dirty PASS; latest20977114 stores0 passed/0 failed/4 skipped, collectionFailed=true, STORAGE LOW refusal. Accepted repair attribution and current loaded/import/environment proof remain unresolved; no blind terminal replay."
+    },
+    {
+      "path": "packages/operator-core/lib/search/prose-vector-dims.integration.test.ts",
+      "observation": "Archived failure names unenumerated personal_documents.embedding vector(768), relkind=v. Latest21103941 stores7 passed/1 failed/0 skipped. Current expectedWidths inventory still omits the personal_documents compatibility view. Specific accepted original allocation requested; no source edit."
+    }
+  ],
+  "limits": [
+    "Historical status and repository comparisons do not establish actual originally/currently loaded imports, configuration, schema or environment.",
+    "The clean f419975deb receipts and later canonical dirty receipts are separate evidence scopes. Selected PTY21122760 is3 pass/47 skip and is not whole-file or original-three-failure proof.",
+    "The storage-refused idle20977114 is collection failure, not an executed regression assertion.",
+    "Original D006 sole TEST b9cc, pool b36, progress269 native custody,39585 exclusive LIVE_GATE_OPS and leader D018 diagnostic remain untouched.",
+    "Leader alone updates the shared source map. No original causal repair attribution, current whole-cohort acceptance or shipment is claimed."
+  ],
+  "finalSweepReadiness": "not-established",
+  "acceptanceClaim": false,
+  "shipmentClaim": false
+}

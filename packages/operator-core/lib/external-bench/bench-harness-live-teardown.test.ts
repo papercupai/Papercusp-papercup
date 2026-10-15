@@ -22,6 +22,10 @@ let dropSchemaCalls: string[];
 let order: string[];
 /** When set, teardownPotLearningLoop throws — teardown must still finish. */
 let teardownLoopThrows: boolean;
+let costReads: number;
+let costReadFaultAt: number;
+let measuredCost: unknown;
+let spawnCalls: string[];
 
 beforeEach(() => {
   vi.resetModules();
@@ -30,6 +34,18 @@ beforeEach(() => {
   dropSchemaCalls = [];
   order = [];
   teardownLoopThrows = false;
+  costReads = 0; costReadFaultAt = -1;
+  measuredCost = [{ tokens_in: '0', tokens_out: '0', cost_usd: '0', turns: '0' }];
+  spawnCalls = [];
+  vi.doMock('../dbos/orchestrator-runner', () => ({ spawnInvokeOnce: async (_dir: string, role: string) => {
+    spawnCalls.push(role); return { exitCode: 0, output: 'DONE', stderr: '' };
+  } }));
+  vi.doMock('../dbos/orchestrator-spawn-env', () => ({ buildPipelineExtraEnv: () => ({}) }));
+  vi.doMock('@papercusp/orchestrator', () => ({ parseDecisionFor: () => 'DONE' }));
+  vi.doMock('@papercusp/orchestrator/blueprint', () => ({
+    loadBlueprintFromFile: () => ({ blueprint: { spine: { edges: { DONE: {} }, decider: 'director', maxTurns: 1 } } }),
+    deriveNext: () => costReadFaultAt === 1 ? { kind: 'spawn', role: 'worker', extras: [] } : { kind: 'terminal', outcome: 'done' },
+  }));
 
   vi.doMock('../pot/provision-learning-loop', () => ({
     teardownPotLearningLoop: async ({
@@ -60,7 +76,10 @@ beforeEach(() => {
   }));
   vi.doMock('@papercusp/db-org', async () => ({
     ...(await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org')),
-    getOrgPg: () => ({ sql: {} }),
+    getOrgPg: () => ({ sql: async () => {
+      if (costReads++ === costReadFaultAt) throw new Error('PRIVATE SQL READ FAILURE');
+      return measuredCost;
+    } }),
   }));
 });
 
@@ -72,6 +91,43 @@ const runTeardown = async () => {
     workspaceId: 'ws-1',
   } as unknown as Parameters<typeof ops.teardown>[0]);
 };
+
+describe('liveBenchHarnessOps.driveToDone spend guard', () => {
+  const drive = async () => {
+    const { liveBenchHarnessOps } = await import('./bench-harness-live');
+    return liveBenchHarnessOps({ workspaceId: 'ws-1' }).driveToDone({
+      handle: { slug: 'xbench-private', featureId: 'F-XB', worktreePath: '/private-fixture' },
+      workspaceId: 'ws-1', budget: { maxUsd: 3, maxTokens: 1000 }, timeoutMs: 10_000, pollMs: 1,
+    });
+  };
+  it('refuses unknown spend before starting the decider', async () => {
+    costReadFaultAt = 0;
+    await expect(drive()).rejects.toThrow();
+    expect(spawnCalls).toEqual([]);
+  });
+  it('refuses unknown spend between the decider and role dispatch', async () => {
+    costReadFaultAt = 1;
+    await expect(drive()).rejects.toThrow();
+    expect(spawnCalls).toEqual(['director']);
+  });
+  it.each(['invalid-number', 'negative', 'missing-aggregate', 'partial-usage'] as const)
+  ('refuses %s spend evidence before spawning', async kind => {
+    if (kind === 'invalid-number') measuredCost = [{ tokens_in: 'nan', tokens_out: '0', cost_usd: '0', turns: '0' }];
+    if (kind === 'negative') measuredCost = [{ tokens_in: '-1', tokens_out: '0', cost_usd: '0', turns: '0' }];
+    if (kind === 'missing-aggregate') measuredCost = [];
+    if (kind === 'partial-usage') measuredCost = [{ tokens_in: '1', tokens_out: '0', cost_usd: '0', turns: '1', missing_measurements: '1' }];
+    await expect(drive()).rejects.toThrow();
+    expect(spawnCalls).toEqual([]);
+  });
+  it('accepts a measured empty population and retains the actual monetary cap', async () => {
+    expect(await drive()).toMatchObject({ disposition: 'done' });
+    expect(spawnCalls).toEqual(['director']);
+    measuredCost = [{ tokens_in: '100', tokens_out: '20', cost_usd: '3', turns: '1' }];
+    spawnCalls = [];
+    expect(await drive()).toMatchObject({ disposition: 'budget-exhausted' });
+    expect(spawnCalls).toEqual([]);
+  });
+});
 
 describe('liveBenchHarnessOps.teardown', () => {
   it('tears down the pot learning loop, not only the registry entry and the schema', async () => {

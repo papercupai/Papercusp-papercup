@@ -10,7 +10,9 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createTextCollector, type TextCollector } from '../child-output.ts';
 import {
+  bindOwnerRpcResource,
   callOwnerProcess,
+  locateOwnerRpcResource,
   registerOwnerRpcHandler,
   startWorkerOwnerRpc,
 } from '../cluster-owner-rpc.ts';
@@ -19,7 +21,12 @@ const held = new Map<string, { child: ChildProcess; output: TextCollector }>();
 let seq = 0;
 
 registerOwnerRpcHandler('fixture-echo', async (payload) => {
-  const p = payload as { op: string; id?: string; data?: string; delayMs?: number };
+  const p = payload as { op: string; id?: string; data?: string; delayMs?: number; kind?: string; scope?: string };
+  if (p.op === 'resource-bind') {
+    await bindOwnerRpcResource(p.kind!, p.id!, p.scope!);
+    return { bound: true, ownerPid: process.pid };
+  }
+  if (p.op === 'resource-locate') return locateOwnerRpcResource(p.kind!, p.id!, p.scope!);
   if (p.op === 'open') {
     const id = `obj-${process.pid}-${++seq}`;
     const child = spawn('cat', [], { stdio: ['pipe', 'pipe', 'ignore'] });

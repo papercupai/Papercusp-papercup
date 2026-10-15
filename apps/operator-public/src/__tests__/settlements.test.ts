@@ -1,3 +1,4 @@
+import { paymentTestOpening, signPaymentTestVoucher } from '@papercusp/operator-core/lib/p2p/_payment-voucher-fixture';
 /**
  * P-033 batch settlement execution through the shipped Worker production door.
  *
@@ -124,12 +125,12 @@ function bearer(body?: unknown): RequestInit {
   return {
     method: 'POST',
     headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: body === undefined ? undefined : JSON.stringify(paymentTestOpening(body, { payer: 'gh:7', chainId: CHAIN_ID, stablecoinAddress: STABLECOIN, settlementContractAddress: SETTLEMENT_CONTRACT, walletAddress: SIGNER })),
   };
 }
 
 function voucher(nonce: string, cumulative: number): CumulativePaymentVoucher {
-  return {
+  return signPaymentTestVoucher({
     channelId: CHANNEL,
     payer: 'gh:7',
     seller: 'gh:9',
@@ -142,7 +143,7 @@ function voucher(nonce: string, cumulative: number): CumulativePaymentVoucher {
     expiresAtMs: 4_000_000_000_000,
     cumulativeClaimMicros: BigInt(cumulative),
     signature: `sig-${nonce}`,
-  };
+  });
 }
 
 async function bindWallet(db: D1Database): Promise<void> {
@@ -163,7 +164,7 @@ async function seedSettledReceipt(
   cumulative: number,
   splitManifestHash = SPLIT.manifestHash,
 ): Promise<void> {
-  const v: CumulativePaymentVoucher = { ...voucher(nonce, cumulative), splitManifestHash };
+  const v: CumulativePaymentVoucher = signPaymentTestVoucher({ ...voucher(nonce, cumulative), splitManifestHash });
   await db
     .prepare(
       `INSERT INTO usage_receipts
@@ -224,6 +225,54 @@ describe('POST /commerce/payment-channels/:channelId/settlements', () => {
   beforeEach(() => {
     auth.resolveGithubBearer.mockReset();
     auth.resolveGithubBearer.mockResolvedValue({ id: 7, login: 'buyer' });
+  });
+
+  it('retains an unused signed closure without submitting a zero payment claim', async () => {
+    const { facilitator, submitBatchClaim } = fakeFacilitator();
+    const { api, db, env } = harness(facilitator);
+    await bindWallet(db);
+    await openChannel(api, env);
+    await seedSettledReceipt(db, 'unused', 1000);
+    await db.prepare('UPDATE usage_receipts SET amount_micros=0, settled_meter_quantity=0 WHERE usage_nonce=?').bind('unused').run();
+    const response = await claim(api, env);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: 'no_settled_usage' });
+    expect(submitBatchClaim).not.toHaveBeenCalled();
+    expect(await db.prepare('SELECT state, amount_micros FROM usage_receipts WHERE usage_nonce=?').bind('unused').first())
+      .toMatchObject({ state: 'settled', amount_micros: 0 });
+  });
+
+  it('preserves exact component author amounts through the claim, D1 reload and finality response', async () => {
+    const { facilitator } = fakeFacilitator({ requiredConfirmations: 1 });
+    const { api, db, env } = harness(facilitator);
+    const componentDependencies = [
+      { packageKind: 'blueprint', ref: 'parent', revision: '1.0.0', contentHash: 'a'.repeat(64), author: 'alice' },
+      { packageKind: 'pack', ref: 'knowledge', revision: '2.0.0', contentHash: 'b'.repeat(64), author: 'bob' },
+    ];
+    const split = revenueSplitManifest({ version: 'v1', sharesBps: SHARES, componentDependencies });
+    env.REVENUE_SPLIT_MANIFEST = JSON.stringify({ version: 'v1', sharesBps: SHARES, componentDependencies });
+    await bindWallet(db);
+    await openChannel(api, env);
+    await seedSettledReceipt(db, 'authors', 3000, split.manifestHash);
+    const claimed = await claim(api, env);
+    expect(claimed.status).toBe(201);
+    const { batch, proofEventId: claimProofId } = await claimed.json() as {
+      batch: { batchId: string; componentAllocationsMicros: Record<string, string> };
+      proofEventId: string;
+    };
+    expect(batch.componentAllocationsMicros).toEqual({ alice: '75', bob: '75' });
+    const final = await finality(api, env, batch.batchId);
+    expect(final.status).toBe(200);
+    const finalBody = await final.json() as { proofEventId: string };
+    expect(finalBody).toMatchObject({ batch: { state: 'final', componentAllocationsMicros: { alice: '75', bob: '75' } } });
+    for (const proofEventId of [claimProofId, finalBody.proofEventId]) {
+      const event = await db.prepare('SELECT payload FROM commerce_event_log WHERE event_id = ?')
+        .bind(proofEventId).first<{ payload: string }>();
+      expect(JSON.parse(event!.payload)).toMatchObject({ componentAllocationsMicros: { alice: '75', bob: '75' } });
+    }
+    const row = await db.prepare('SELECT allocations_micros FROM settlement_batches WHERE batch_id = ?')
+      .bind(batch.batchId).first<{ allocations_micros: string }>();
+    expect(JSON.parse(row!.allocations_micros)).toMatchObject({ componentAuthors: { alice: '75', bob: '75' } });
   });
 
   it('submits a claim on the rail and records it as a CLAIM, never as finality', async () => {

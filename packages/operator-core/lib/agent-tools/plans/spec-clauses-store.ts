@@ -27,6 +27,8 @@ export function isEnforceableSpecLifecycle(status: SpecLifecycleStatus): boolean
 
 /** Stable ids shared by canonical spec obligations and immutable evidence bindings. */
 export const SPEC_PROOF_OBLIGATION_ID_RE = /^[a-z0-9]+(?:[._:-][a-z0-9]+)*$/;
+/** Spec IDs may be platform-generated in uppercase; targeting checks exact clause identity later. */
+export const SPEC_TARGET_ID_RE = /^[A-Za-z0-9]+(?:[._:-][A-Za-z0-9]+)*$/;
 export const SPEC_CAUSAL_PAIRING_MODES = ['one-to-one'] as const;
 export type SpecCausalPairingMode = (typeof SPEC_CAUSAL_PAIRING_MODES)[number];
 
@@ -289,19 +291,19 @@ export function specClauseContentHash(input: SpecClauseWrite): string {
 }
 
 /**
- * WI-10002889 (R-1) + WI-10003763: does this write differ from the stored prior revision ONLY in
- * acceptance provenance, i.e. `lifecycleStatus` and/or `acceptanceRef`? Neither is part of what a
- * proof measures (behavior, falsifier, layers, evidence, BAR pin), so proof bound to the prior
- * revision still proves this one. Both stay in the content hash on purpose (a promotion, or a
- * restored acceptance ref, must remain an auditable immutable revision), so re-hash THIS write
- * under the prior provenance and compare it with the prior revision's stored hash: equal means
- * nothing else moved. An omitted `sourceBar` rides the prior pin forward (see setSpecClause), so
- * that variant is tried too. A hash that differs for any other reason (a canonicalization change,
- * a real edit) answers false, which is the safe direction: proof is then re-run rather than carried.
+ * WI-10002889 (R-1) + WI-10003763: does this write differ from the stored prior revision only in
+ * acceptance provenance (`lifecycleStatus` and/or `acceptanceRef`), or in the rubric revision
+ * number on an otherwise identical BAR pin? Those values do not change what the existing proof
+ * measures (behavior, falsifier, layers, evidence, or BAR identity). They remain in the content
+ * hash so each promotion/reprojection is an auditable immutable revision, so re-hash THIS write
+ * under the prior provenance and compare it with the prior revision's stored hash. An omitted
+ * `sourceBar` rides the prior pin forward (see setSpecClause); an explicit pin may differ only in
+ * `rubricRevision` when every BAR identity field is unchanged. Any other difference answers false,
+ * which is the safe direction: proof is then re-run rather than carried.
  */
 export function differsOnlyInAcceptanceProvenance(
   input: SpecClauseWrite,
-  prior: { lifecycleStatus: SpecLifecycleStatus; acceptanceRef: string | null },
+  prior: { lifecycleStatus: SpecLifecycleStatus; acceptanceRef: string | null; exemption?: Record<string, unknown> | null },
   priorBarPin: SpecClauseBarPin | null,
   priorContentHash: string,
 ): boolean {
@@ -309,18 +311,41 @@ export function differsOnlyInAcceptanceProvenance(
     ...input,
     lifecycleStatus: prior.lifecycleStatus,
     acceptanceRef: prior.acceptanceRef,
+    // An accepted manual clause must clear exempt-only metadata (the schema and DB
+    // CHECK require it). That lifecycle bookkeeping changes no proof obligation.
+    // Restore it only for a pure manual promotion; every other field still hashes
+    // against the immutable prior revision, so a changed obligation never carries.
+    ...(prior.lifecycleStatus === 'exempt' &&
+      (input.lifecycleStatus === 'accepted' || input.lifecycleStatus === 'active') &&
+      input.behaviorClass === 'non-automated' &&
+      (input.requiredTestLayers?.length ?? 0) === 0 && !input.mutationRequired &&
+      input.exemption == null && prior.exemption != null
+      ? { exemption: prior.exemption }
+      : {}),
   };
   if (specClauseContentHash(asPrior) === priorContentHash) return true;
-  return (
-    input.sourceBar === undefined &&
-    priorBarPin !== null &&
-    specClauseContentHash({ ...asPrior, sourceBar: priorBarPin }) === priorContentHash
-  );
+  if (input.sourceBar === undefined && priorBarPin !== null) {
+    return specClauseContentHash({ ...asPrior, sourceBar: priorBarPin }) === priorContentHash;
+  }
+  if (input.sourceBar == null || priorBarPin === null) return false;
+
+  const sameBarIdentity =
+    input.sourceBar.barKey.trim() === priorBarPin.barKey &&
+    input.sourceBar.barHash.trim() === priorBarPin.barHash &&
+    input.sourceBar.barSetHash.trim() === priorBarPin.barSetHash &&
+    input.sourceBar.rubricSlug.trim() === priorBarPin.rubricSlug &&
+    input.sourceBar.evidencePlane === priorBarPin.evidencePlane;
+  return sameBarIdentity &&
+    specClauseContentHash({
+      ...asPrior,
+      sourceBar: { ...input.sourceBar, rubricRevision: priorBarPin.rubricRevision },
+    }) === priorContentHash;
 }
 
 interface IdentityRow {
   source_val_id: string | null;
   current_revision: number;
+  plan_item_id?: string | null;
   // Carried from the CURRENT revision so an omitted `sourceBar` can ride its
   // lineage forward instead of writing NULL. Optional because the post-insert
   // race re-read selects only the identity columns.
@@ -431,7 +456,7 @@ export async function setSpecClause(
     }
 
     const identities = await tx<IdentityRow[]>`
-      SELECT c.source_val_id, c.current_revision,
+      SELECT c.source_val_id, c.current_revision, r.plan_item_id,
              r.source_bar_key, r.source_bar_hash, r.source_bar_set_hash,
              r.source_rubric_slug, r.source_rubric_revision, r.evidence_plane,
              r.acceptance_ref
@@ -526,12 +551,12 @@ export async function setSpecClause(
     }
 
     // WI-10002889 (R-1) + WI-10003763: the prior revision this write differs from ONLY in
-    // acceptance provenance (lifecycle and/or acceptanceRef), or null. The hash-equality return
-    // below guarantees SOMETHING moved, so no separate "lifecycle changed" test is needed.
+    // acceptance provenance and/or the rubric revision of an identical BAR pin, or null. The
+    // hash-equality return below guarantees SOMETHING moved, so no separate change test is needed.
     let provenanceOnlyFrom: number | null = null;
     if (identity) {
-      const current = await tx<{ content_hash: string; lifecycle_status: SpecLifecycleStatus | null }[]>`
-        SELECT content_hash, lifecycle_status
+      const current = await tx<{ content_hash: string; lifecycle_status: SpecLifecycleStatus | null; exemption: Record<string, unknown> | null }[]>`
+        SELECT content_hash, lifecycle_status, exemption
           FROM harness_shared.plan_spec_clause_revisions
          WHERE workspace_id = ${scope.workspaceId}
            AND harness_slug = ${scope.harnessSlug}
@@ -548,7 +573,7 @@ export async function setSpecClause(
         isEnforceableSpecLifecycle(normalized.lifecycleStatus) &&
         differsOnlyInAcceptanceProvenance(
           effectiveInput,
-          { lifecycleStatus: priorLifecycle, acceptanceRef: priorAcceptanceRef },
+          { lifecycleStatus: priorLifecycle, acceptanceRef: priorAcceptanceRef, exemption: current[0].exemption },
           priorBarPin,
           current[0].content_hash,
         )
@@ -638,8 +663,9 @@ export async function setSpecClause(
          AND spec_id = ${input.specId}`;
 
     // WI-10002889 (R-1) + WI-10003763: a provenance-only revision (the D-019 draft->active
-    // promotion, or a restored acceptanceRef) keeps behavior, falsifier, layers and BAR pin
-    // byte-identical, so the proof bound to the prior revision still proves this one. Re-attach
+    // promotion, a restored acceptanceRef, or a rubric-only reprojection of an identical BAR)
+    // keeps behavior, falsifier, layers and BAR identity unchanged, so the proof bound to the
+    // prior revision still proves this one. Re-attach
     // every work-item bound at the prior revision to this one (the carry joins through that edge,
     // and the FK demands it), then carry its live bindings. Without this, every promotion
     // stranded all proof and forced a full re-proof.
@@ -672,24 +698,18 @@ export async function setSpecClause(
       });
     }
 
-    const sourceValId = identity?.source_val_id ?? input.sourceValId ?? null;
-    if (sourceValId) {
-      await tx`
-        INSERT INTO harness_shared.harness_plan_assertions (
-          workspace_id, harness_slug, val_id, plan_slug, item_id,
-          verify_text, evidence_text, status, requires_test
-        ) VALUES (
-          ${scope.workspaceId}, ${scope.harnessSlug}, ${sourceValId}, ${planSlug},
-          ${normalized.planItemId}, ${normalized.behavior}, ${normalized.requiredEvidence.join('; ')},
-          'todo', ${normalized.requiredTestLayers.length > 0}
-        )
-        ON CONFLICT (workspace_id, harness_slug, val_id) DO UPDATE SET
-          plan_slug = EXCLUDED.plan_slug,
-          item_id = EXCLUDED.item_id,
-          verify_text = EXCLUDED.verify_text,
-          evidence_text = EXCLUDED.evidence_text,
-          requires_test = EXCLUDED.requires_test,
-          updated_at = now()`;
+    // P-003 (verification-system-improvements-2026-10-10): the VAL-* assertion store is
+    // retired. A clause keeps its source_val_id lineage on plan_spec_clauses; it is no
+    // longer mirrored into the retired store.
+
+    if (actualRevision > 0) {
+      const { propagateClauseAmendment } = await import('./clause-amendment-propagation');
+      await propagateClauseAmendment(tx, {
+        workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, planSlug,
+        specId: input.specId, planItemId: normalized.planItemId,
+        priorPlanItemId: identity?.plan_item_id ?? undefined,
+        oldRevision: actualRevision, newRevision: revision, actorId: input.actorId,
+      });
     }
 
     return {
@@ -738,12 +758,21 @@ interface RevisionRow {
 
 export interface ListSpecClausesOptions {
   harnessSlug?: string;
+  /**
+   * Pin the workspace. A caller that already resolved its subject plan row MUST pass
+   * that row's workspace: for the operator-home harness `resolvePlanScope` otherwise
+   * falls back to PAPERCUSP_WORKSPACE_ID, so a plan installed in any other workspace
+   * reads zero clauses and every BAR reports `bar_snapshot_mapping_missing` (WI-10005140).
+   */
+  workspaceId?: string;
   planSlug: string;
   specIds?: string[];
   sourceValIds?: string[];
   planItemIds?: string[];
   revision?: number;
   includeHistory?: boolean;
+  /** Latest immutable revision per identity at this cutoff, never the live pointer. */
+  asOf?: string;
   /** Optional SQL-side row cap. Filters are pushed down before the cap, so a
    * bounded snapshot cannot lose a requested current row behind history. */
   limit?: number;
@@ -751,7 +780,13 @@ export interface ListSpecClausesOptions {
 
 /** Exact structured read; current-only unless includeHistory or revision is requested. */
 export async function listSpecClauses(options: ListSpecClausesOptions): Promise<SpecClauseRevision[]> {
-  const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
+  if (options.asOf && (!Number.isFinite(Date.parse(options.asOf)) || options.revision !== undefined || options.includeHistory)) {
+    throw new Error('spec_snapshot_selector_invalid');
+  }
+  const scope = await resolvePlanScope({
+    harnessSlug: options.harnessSlug,
+    ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
+  });
   const specIds = options.specIds ?? [];
   const valIds = options.sourceValIds ?? [];
   const itemIds = options.planItemIds ?? [];
@@ -778,7 +813,18 @@ export async function listSpecClauses(options: ListSpecClausesOptions): Promise<
        AND (${valIds.length} = 0 OR c.source_val_id = ANY(${valIds}::text[]))
        AND (${itemIds.length} = 0 OR r.plan_item_id = ANY(${itemIds}::text[]))
        AND ${
-         options.revision !== undefined
+         options.asOf
+           // Acceptance can be recorded after revision creation. Do not expose an
+           // enforceable revision
+           // in a historical snapshot until both its content and acceptance are known.
+           ? tx`GREATEST(r.created_at, COALESCE(r.accepted_at, r.created_at)) <= ${options.asOf}::timestamptz AND NOT EXISTS (
+               SELECT 1 FROM harness_shared.plan_spec_clause_revisions newer
+                WHERE newer.workspace_id = r.workspace_id AND newer.harness_slug = r.harness_slug
+                  AND newer.plan_slug = r.plan_slug AND newer.spec_id = r.spec_id
+                  AND newer.revision > r.revision
+                  AND GREATEST(newer.created_at, COALESCE(newer.accepted_at, newer.created_at)) <= ${options.asOf}::timestamptz
+             )`
+           : options.revision !== undefined
            ? tx`r.revision = ${options.revision}`
            : options.includeHistory
              ? tx`TRUE`
@@ -796,7 +842,7 @@ export async function listSpecClauses(options: ListSpecClausesOptions): Promise<
     .filter((r) => !valIdSet || (r.source_val_id !== null && valIdSet.has(r.source_val_id)))
     .filter((r) => !itemIdSet || itemIdSet.has(r.plan_item_id))
     .filter((r) =>
-      options.revision !== undefined
+      options.asOf ? true : options.revision !== undefined
         ? Number(r.revision) === options.revision
         : options.includeHistory || Number(r.revision) === Number(r.current_revision),
     )
@@ -804,7 +850,7 @@ export async function listSpecClauses(options: ListSpecClausesOptions): Promise<
       planSlug: r.plan_slug,
       specId: r.spec_id,
       sourceValId: r.source_val_id,
-      currentRevision: Number(r.current_revision),
+      currentRevision: Number(options.asOf ? r.revision : r.current_revision),
       revision: Number(r.revision),
       planItemId: r.plan_item_id,
       behavior: r.behavior,

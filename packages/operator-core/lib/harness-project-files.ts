@@ -11,6 +11,7 @@
  * A4 batch 2) so the `/api/harness/:slug/spec` routes can migrate to
  * `defineTool` without dragging the route file back through `_hono/`.
  */
+import { activeWorkspaceId } from './workspace-registry';
 
 export interface ProjectFiles {
   spec: string | null;
@@ -48,10 +49,13 @@ export class ProjectFilesVersionConflict extends Error {
 export async function saveProjectFiles(
   slug: string,
   patch: { spec?: string; agents?: string; contract?: string; config?: string },
-  opts: { expectedVersion?: number } = {},
+  opts: { expectedVersion?: number; workspaceId?: string } = {},
 ): Promise<{ version: number }> {
   const { sql } = (await import('@papercusp/db-org')).getOrgPg();
   const now = Date.now();
+  // The Settings mirror filters this column. Leaving its legacy empty default
+  // makes a saved config look absent and a subsequent full-config save lose data.
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
 
   // Two paths: with OCC (expectedVersion set) → UPDATE-only with the
   // version guard; without OCC → upsert with version bumped on update.
@@ -63,6 +67,7 @@ export async function saveProjectFiles(
              agents     = COALESCE(${patch.agents ?? null}, agents),
              contract   = COALESCE(${patch.contract ?? null}, contract),
              config     = COALESCE(${patch.config ?? null}, config),
+             workspace_id = ${workspaceId},
              updated_at = ${now},
              version    = version + 1
        WHERE harness_slug = ${slug}
@@ -77,10 +82,10 @@ export async function saveProjectFiles(
       if (cur.length === 0 && opts.expectedVersion === 0) {
         await sql`
           INSERT INTO harness_shared.harness_project_files
-            (harness_slug, spec, agents, contract, config, updated_at, version)
+            (harness_slug, spec, agents, contract, config, updated_at, version, workspace_id)
           VALUES
             (${slug}, ${patch.spec ?? null}, ${patch.agents ?? null},
-             ${patch.contract ?? null}, ${patch.config ?? null}, ${now}, 1)
+             ${patch.contract ?? null}, ${patch.config ?? null}, ${now}, 1, ${workspaceId})
           ON CONFLICT (harness_slug) DO NOTHING
         `;
         const created = await sql<Array<{ version: number }>>`
@@ -97,15 +102,16 @@ export async function saveProjectFiles(
   } else {
     const rows = await sql<Array<{ version: number }>>`
       INSERT INTO harness_shared.harness_project_files
-        (harness_slug, spec, agents, contract, config, updated_at, version)
+        (harness_slug, spec, agents, contract, config, updated_at, version, workspace_id)
       VALUES
         (${slug}, ${patch.spec ?? null}, ${patch.agents ?? null},
-         ${patch.contract ?? null}, ${patch.config ?? null}, ${now}, 1)
+         ${patch.contract ?? null}, ${patch.config ?? null}, ${now}, 1, ${workspaceId})
       ON CONFLICT (harness_slug) DO UPDATE SET
         spec       = COALESCE(EXCLUDED.spec, harness_shared.harness_project_files.spec),
         agents     = COALESCE(EXCLUDED.agents, harness_shared.harness_project_files.agents),
         contract   = COALESCE(EXCLUDED.contract, harness_shared.harness_project_files.contract),
         config     = COALESCE(EXCLUDED.config, harness_shared.harness_project_files.config),
+        workspace_id = EXCLUDED.workspace_id,
         updated_at = EXCLUDED.updated_at,
         version    = harness_shared.harness_project_files.version + 1
       RETURNING version

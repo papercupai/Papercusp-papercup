@@ -15,6 +15,7 @@ import {
   UNRESOLVED_TURN_REF_NOTE,
   UNVERIFIED_OWNER_ATTRIBUTION_MARKER,
   markUnverifiedOwnerAttribution,
+  normalizeUnverifiedOwnerAttributionMarkers,
   ownerAttributionEnforcement,
   retainedProvenanceText,
   stampCarrySurfaceProvenance,
@@ -373,19 +374,33 @@ describe('falsifiedOwnerAnchors (WI-42142)', () => {
     expect(falsifiedOwnerAnchors(text, [anchorVerdict()])).toEqual([]);
   });
 
-  it('KNOWN false positive, documented rather than accidental: the bare word "owner" beside an unrelated citation', () => {
-    // assertsOwnerAuthority matches the bare noun on purpose — it is what lets the
-    // conjunction see "Owner-directed ordering", D-085's actual phrasing, which no
-    // narrower detector in the lint module matches. The cost is this shape. It is
-    // acceptable because the escape is one line-break, the refusal note SAYS SO, and
-    // only ~5 decision-body lines in the corpus carry a turn ref at all. Narrowing
-    // the predicate to close it would reopen D-085.
-    const line = `The plan owner is listed in the frontmatter; the failing run is ${REF}.`;
+  it('does not mistake peer-role owners for the human owner, while preserving D-085 detection', () => {
+    const roleOwnerLines = [
+      `The plan owner is listed in the frontmatter; the failing run is ${REF}.`,
+      `The item is blocked by another live owner's gate lane; the failing run is ${REF}.`,
+      `The gate owner's lane is recorded beside the failing run ${REF}.`,
+    ];
+    for (const line of roleOwnerLines) {
+      expect(falsifiedOwnerAnchors(line, [anchorVerdict()])).toEqual([]);
+    }
+
+    // A real human-owner claim on the same line still wins over a role mention.
+    const mixed = `The plan owner is listed; the owner approved the rollout at ${REF}.`;
+    expect(falsifiedOwnerAnchors(mixed, [anchorVerdict()])).toHaveLength(1);
+
+    // D-085's owner-directed / owner-checkpoint phrasing is not a peer role label.
+    expect(falsifiedOwnerAnchors(D085_LINE, [anchorVerdict()])).toHaveLength(1);
+  });
+
+  it('keeps the broad unqualified-owner conjunction and its line-break escape', () => {
+    // The bare noun remains broad so D-085's phrasing stays covered. This can still
+    // collide with an unqualified owner mention; moving the unrelated citation clears it.
+    const line = `The owner is listed in the frontmatter; the failing run is ${REF}.`;
     expect(falsifiedOwnerAnchors(line, [anchorVerdict()])).toHaveLength(1);
     expect(FALSIFIED_OWNER_ANCHOR_NOTE).toContain('put the citation on its own line');
 
     // …and the documented escape actually works.
-    const split = ['The plan owner is listed in the frontmatter.', `The failing run is ${REF}.`].join('\n');
+    const split = ['The owner is listed in the frontmatter.', `The failing run is ${REF}.`].join('\n');
     expect(falsifiedOwnerAnchors(split, [anchorVerdict()])).toEqual([]);
   });
 
@@ -444,6 +459,24 @@ describe('owner-attribution persistence enforcement (P-016 / EI-212678)', () => 
     expect(marked.startsWith(`${UNVERIFIED_OWNER_ATTRIBUTION_MARKER}\n`)).toBe(true);
     expect(markUnverifiedOwnerAttribution(marked)).toBe(marked);
     expect(markUnverifiedOwnerAttribution(null)).toBeNull();
+  });
+
+  it('collapses duplicate standalone markers from legacy read-modify-write notes', () => {
+    const duplicated = [
+      UNVERIFIED_OWNER_ATTRIBUTION_MARKER,
+      'first state block',
+      '---',
+      UNVERIFIED_OWNER_ATTRIBUTION_MARKER,
+      'second state block',
+      '---',
+      UNVERIFIED_OWNER_ATTRIBUTION_MARKER,
+    ].join('\n');
+    const expected = [UNVERIFIED_OWNER_ATTRIBUTION_MARKER, 'first state block', '---', 'second state block', '---'].join(
+      '\n',
+    );
+
+    expect(normalizeUnverifiedOwnerAttributionMarkers(duplicated)).toBe(expected);
+    expect(markUnverifiedOwnerAttribution(duplicated)).toBe(expected);
   });
 
   function textForRef(ref: string): string {

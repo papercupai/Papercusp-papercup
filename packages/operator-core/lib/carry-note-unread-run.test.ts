@@ -76,6 +76,67 @@ describe('describeUnreadRun', () => {
     expect(naiveUnreadRun(body, 0)).toBeNull();
   });
 
+  it('does not treat an explicitly historical quotation as a current unread run (EI-25557979904670574)', () => {
+    for (const quote of ["'still running'", '"still running"', '`still running`', '“still running”', '‘still running’']) {
+      const body = `Recovered October 7 transcript parts86/88/91/93 quote the peer restart as ${quote}.\n` +
+        'Current commands completed, and their evidence was read from /tmp/restart-proof.log.';
+      expect(describeUnreadRun(body, 0), quote).toBeNull();
+      // This control still sees both signals, so silence requires temporal discrimination.
+      expect(naiveUnreadRun(body, 0), quote).not.toBeNull();
+    }
+  });
+
+  it('preserves a current unread run alongside the historical quotation', () => {
+    const body = 'The historical transcript said "still running".\n' +
+      'The new run has results pending; output at /tmp/current.log.';
+    expect(describeUnreadRun(body, 0)?.signals.inFlight).toEqual(['results pending']);
+  });
+
+  it('does not turn an explicitly negated run status into an unread-run admission (EI-25989239695201915)', () => {
+    for (const status of [
+      'not still running',
+      'not currently still running',
+      "isn't still running",
+      'isn’t still running',
+      'no longer in-flight',
+      'never launched',
+      'not "still running"',
+    ]) {
+      const body = `Recovery GET completed exit1; it is ${status}.\n` +
+        'Read final.log: 117 PG and 24 unit tests passed; that is historical local proof.';
+      expect(describeUnreadRun(body, 0), status).toBeNull();
+      expect(naiveUnreadRun(body, 0), status).not.toBeNull();
+    }
+  });
+
+  it('keeps a separate current admission when another status is negated', () => {
+    const body = 'The completed GET is not still running; final.log was read.\n' +
+      'The new suite is still running; output at /tmp/current.log.';
+    expect(describeUnreadRun(body, 0)?.signals.inFlight).toEqual(['still running']);
+  });
+
+  it('keeps affirmative unread admissions and negation of a different predicate actionable', () => {
+    for (const status of [
+      'not yet read',
+      'not yet diagnosed',
+      'not just still running',
+      'not complete, still running',
+    ]) {
+      expect(describeUnreadRun(`The suite is ${status}; output at /tmp/current.log.`, 0), status).not.toBeNull();
+    }
+  });
+
+  it('keeps quoted current admissions and ambiguous prior-run prose actionable', () => {
+    for (const body of [
+      'The current runner says "still running"; output at /tmp/current.log.',
+      'The prior run is still running; output at /tmp/prior.log.',
+      'The historical transcript was read, but the current runner says "still running" at /tmp/current.log.',
+      'The historical transcript was read. The runner says "still running" at /tmp/current.log.',
+    ]) {
+      expect(describeUnreadRun(body, 0), body).not.toBeNull();
+    }
+  });
+
   it('does not fire on `launched` alone, the word that made the naive trigger unusable', () => {
     const body = 'Launched the drain fleet; four members joined and are claiming from the spec.';
     expect(describeUnreadRun(body, 0)).toBeNull();

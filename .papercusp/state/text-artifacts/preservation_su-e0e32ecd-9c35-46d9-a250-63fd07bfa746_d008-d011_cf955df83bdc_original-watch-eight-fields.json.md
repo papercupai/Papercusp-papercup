@@ -1,0 +1,7 @@
+---
+rel_path: "preservation/su-e0e32ecd-9c35-46d9-a250-63fd07bfa746/d008-d011/cf955df83bdc/original-watch-eight-fields.json"
+updated_at: 1791414488239
+_body: "content"
+---
+
+{"expires_ts":null,"min_sleep_sec":60,"on_timeout":"wake","once":false,"pattern":"work-item:claimable","payload_filter":{"all":[{"harness":{"equals":"papercusp"}},{"all":[{"kind":{"in":["feature"]}},{"not":{"plan":{"matches":{"flags":"i","source":"^coordination-metadata-friction-reduction-2026-09-07$"}}}},{"not":{"plan":{"matches":{"flags":"i","source":"^backend-audit-diagnosis-before-repair-2026-09-13$"}}}},{"not":{"plan":{"matches":{"flags":"i","source":"^cupboard-release-pipeline-content-trust-2026-09-16$"}}}},{"not":{"plan":{"matches":{"flags":"i","source":"^portable-identity-packages-2026-09-26$"}}}},{"not":{"plan":{"matches":{"flags":"i","source":"^hud-orders-instant-load-2026-09-13$"}}}},{"not":{"plan":{"matches":{"flags":"i","source":"^pui-first-party-public-release-2026-09-07$"}}}},{"not":{"plan":{"matches":{"flags":"i","source":"^gitnexus-selective-hardening-and-comparison-2026-09-13$"}}}},{"not":{"id":{"in":["WI-10002995","WI-10002996","WI-10003251"]}}},{"not":{"plan":{"matches":{"flags":"i","source":"^goal-brief-to-claimed-plan-work-2026-09-23$"}}}},{"not":{"plan":{"matches":{"flags":"i","source":"^review-verification-efficiency-2026-09-09$"}}}},{"not":{"plan":{"matches":{"flags":"i","source":"^rem-dream-recombination-2026-08-17$"}}}}]}]},"urgency":false,"wake":true}

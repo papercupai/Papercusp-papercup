@@ -41,11 +41,22 @@ import {
 } from '../../journal-read';
 import { shapeLogsRead } from './read-shape';
 
+const logEntryResultSchema = z.object({
+  ts: z.string().nullable(),
+  unit: z.string().nullable(),
+  level: z.enum(JOURNAL_LEVELS).nullable(),
+  message: z.string(),
+  repeat: z.number().int().positive(),
+  lastTs: z.string().optional().describe('Timestamp of the last line in a collapsed run; present only when repeat > 1.'),
+  clipped: z.literal(true).optional(),
+  _truncated: z.literal(true).optional(),
+}).passthrough();
+
 export default defineTool({
   name: 'logs:read',
   profile: 'engineer',
   description:
-    "A host service's log lines, filtered SERVER-SIDE and distilled — `journalctl --user -u <unit> --since <w> | grep <pat> | tail -n` on Linux, or the equivalent macOS `log show` unified-log query — as { backend, entries:[{ts,unit,level,message,repeat}], matched, collapsed, truncated }. `grep` is pushed into the host logger's predicate so only matching lines are read, and consecutive identical lines collapse to one row + a count. Reads logs only — it does not follow (`-f`) and does not restart anything.",
+    "A host service's log lines, filtered SERVER-SIDE and distilled — `journalctl --user -u <unit> --since <w> | grep <pat> | tail -n` on Linux, or the equivalent macOS `log show` unified-log query — as { backend, entries:[{ts,unit,level,message,repeat,lastTs?}], matched, collapsed, truncated }. `lastTs` is present only on a collapsed row (`repeat > 1`) and is its final timestamp. `grep` is pushed into the host logger's predicate so only matching lines are read, and consecutive identical lines collapse to one row + a count. Reads logs only — it does not follow (`-f`) and does not restart anything.",
   capability: 'intel:read',
   guidance: {
     when: 'You need what a service actually logged: diagnosing why a unit failed, restarted, or went quiet; finding a specific marker line in a window; confirming a deploy/tick/job ran. Pass `grep` with the needle you would have piped to grep — that is the point of the tool.',
@@ -81,13 +92,16 @@ export default defineTool({
     level: z.enum(JOURNAL_LEVELS).optional()
       .describe("Minimum severity: this level AND MORE SEVERE (journalctl `-p` semantics), so level:'err' also returns crit/alert/emerg."),
     limit: z.number().int().min(1).max(JOURNAL_READ_MAX_LIMIT).optional()
-      .describe(`Max rows returned, newest kept (default ${JOURNAL_READ_DEFAULT_LIMIT}). Collapsed repeats count as ONE row.`),
+      .describe(`Max rows returned (up to ${JOURNAL_READ_MAX_LIMIT}; default ${JOURNAL_READ_DEFAULT_LIMIT}), newest kept. Collapsed repeats count as ONE row.`),
     scope: z.enum(JOURNAL_SCOPES).optional()
-      .describe("Which journal: 'user' (default, the papercusp-* units), 'system' (kernel/OOM records, pgbouncer, systemd-oomd — a DIFFERENT journal, not a filter), or 'all' (everything you can see). If a unit you know exists comes back with unitsUnknown naming it, you are reading the wrong journal."),
+      .describe("Which journal: 'user' (default; the invoking account's systemd user journal, with no unit-name prefix filter), 'system' (kernel/OOM records, pgbouncer, systemd-oomd — a DIFFERENT journal, not a filter), or 'all' (everything you can see). If a known unit appears in unitsUnknown, verify its exact unit name and try the other scope."),
   }),
   result: z
     .object({
-      entries: z.unknown().optional(),
+      // `readJournal` returns the selected backend, but the early unscoped-read
+      // rejection has no backend to report.
+      backend: z.enum(['systemd', 'macos-unified', 'none']).optional(),
+      entries: z.array(logEntryResultSchema).optional(),
       matched: z.unknown().optional(),
       collapsed: z.unknown().optional(),
       truncated: z.unknown().optional(),

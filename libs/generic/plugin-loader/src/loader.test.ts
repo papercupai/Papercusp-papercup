@@ -208,3 +208,64 @@ describe('loadAll', () => {
     expect(r.errors.some((e) => /__bad set/.test(e.error))).toBe(true);
   });
 });
+
+// A host that refuses manifests marked `globalOnly` from its 'project' root
+// (the Papercusp `distribution: "cupboard"` rule, in the kernel's own terms).
+describe('admitManifest', () => {
+  type GatedManifest = FakeManifest & { globalOnly?: boolean };
+  let entryLookups: string[] = [];
+  const gated = createPluginLoader<FakePlugin, GatedManifest>({
+    async readManifest(dir) {
+      try {
+        const parsed = JSON.parse(await fs.readFile(join(dir, 'manifest.json'), 'utf8')) as GatedManifest;
+        return parsed?.name && parsed?.version ? parsed : null;
+      } catch {
+        return null;
+      }
+    },
+    async locateEntry(dir) {
+      entryLookups.push(dir);
+      const p = join(dir, 'index.cjs');
+      return existsSync(p) ? p : null;
+    },
+    admitManifest: (manifest, source) =>
+      manifest.globalOnly && source === 'project' ? 'globalOnly: installed copies only' : null,
+    pluginName: (p) => p.name,
+  });
+
+  async function gatedPlugin(dir: string, name: string, version: string, globalOnly: boolean) {
+    await makePlugin({ name, version, atDir: dir });
+    const manifest: GatedManifest = { name, version, ...(globalOnly ? { globalOnly: true } : {}) };
+    await fs.writeFile(join(dir, 'manifest.json'), JSON.stringify(manifest), 'utf8');
+  }
+
+  it('skips an excluded manifest with its reason, before locating or importing an entry', async () => {
+    entryLookups = [];
+    const dir = join(ROOT, 'admit-single', 'plugins', 'gated');
+    await gatedPlugin(dir, 'gated', '1.0.0', true);
+    const r = await gated.loadFromDir(dir, 'project');
+    expect(r).toEqual({ skipped: 'excluded', path: dir, reason: 'globalOnly: installed copies only' });
+    expect(entryLookups).toEqual([]);
+    const fromGlobal = await gated.loadFromDir(dir, 'global');
+    expect('plugin' in fromGlobal && fromGlobal.plugin.name).toBe('gated');
+  });
+
+  it('an excluded higher-precedence copy never shadows the same name in a later root', async () => {
+    const projDir = join(ROOT, 'admit-proj', 'plugins');
+    const globalDir = join(ROOT, 'admit-global');
+    await gatedPlugin(join(projDir, 'shared'), 'shared', '9.9.9', true);
+    await gatedPlugin(join(globalDir, 'shared'), 'shared', '1.2.3', true);
+    await gatedPlugin(join(projDir, 'plain'), 'plain', '1.0.0', false);
+
+    const r = await gated.loadAll([
+      { pluginsDir: projDir, source: 'project' },
+      { pluginsDir: globalDir, source: 'global' },
+    ]);
+    const byName = Object.fromEntries(r.loaded.map((l) => [l.plugin.name, l]));
+    expect(Object.keys(byName).sort()).toEqual(['plain', 'shared']);
+    expect(byName.shared.source).toBe('global');
+    expect(byName.shared.plugin.version).toBe('1.2.3');
+    expect(byName.plain.source).toBe('project');
+    expect(r.errors).toEqual([]);
+  });
+});

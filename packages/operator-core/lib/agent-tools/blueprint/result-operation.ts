@@ -21,6 +21,7 @@ export default defineTool({
   async handler(args, ctx) {
     const scope = resolveOperationScope(ctx);
     checkHandleScope(scope, args.handle);
-    return runOperation(() => getBlueprintOperationResult(scope.sql, args.handle, scope.callerId));
+    return runOperation(() => getBlueprintOperationResult(scope.sql, args.handle, scope.callerId,
+      args.review ? { principalId: scope.principalId } : undefined));
   },
 });

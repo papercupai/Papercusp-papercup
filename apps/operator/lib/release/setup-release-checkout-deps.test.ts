@@ -227,7 +227,7 @@ describe('setup-release-checkout.sh need_node_modules() — deploy staleness heu
       sourceFingerprint,
     );
 
-    expect(result.status, result.stderr).toBe(0);
+    expect(result.status, result.stdout + result.stderr).toBe(0);
     expect(result.stdout).toContain(
       `DEPENDENCY_GENERATION_PIN identity=${generationId}`,
     );
@@ -237,6 +237,51 @@ describe('setup-release-checkout.sh need_node_modules() — deploy staleness heu
         'utf8',
       ),
     ).toBe(`identity=${generationId}\nsource=${sourceFingerprint}\n`);
+  });
+
+  it('WI-10004928 part 7: overwrites both markers when a reused generation left them read-only (0444)', () => {
+    const generationId = `v1-${'f'.repeat(64)}`;
+    const sourceFingerprint = 'f'.repeat(64);
+    const lock = '{"lockfileVersion":3,"fresh":true}';
+    writeFileSync(join(int, 'package-lock.json'), lock);
+    const lockMarker = join(rel, 'node_modules/.papercusp-source-package-lock.json');
+    const genMarker = join(rel, 'node_modules/.papercusp-dependency-generation');
+    writeFileSync(lockMarker, '{"stale":true}');
+    writeFileSync(genMarker, 'identity=stale\nsource=stale\n');
+    chmodSync(lockMarker, 0o444);
+    chmodSync(genMarker, 0o444);
+
+    const result = recordCopyMetadata(int, rel, generationId, sourceFingerprint);
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(lockMarker, 'utf8')).toBe(lock);
+    expect(readFileSync(genMarker, 'utf8')).toBe(
+      `identity=${generationId}\nsource=${sourceFingerprint}\n`,
+    );
+  });
+
+  it('WI-10004928 part 7: never writes through a read-only marker hard-linked into a generation', () => {
+    const generationId = `v1-${'a'.repeat(64)}`;
+    writeFileSync(join(int, 'package-lock.json'), '{"lockfileVersion":3}');
+    const store = mkdtempSync(join(tmpdir(), 'nm-gen-'));
+    try {
+      const storeMarker = join(store, '.papercusp-dependency-generation');
+      writeFileSync(storeMarker, 'identity=immutable\nsource=immutable\n');
+      chmodSync(storeMarker, 0o444);
+      const genMarker = join(rel, 'node_modules/.papercusp-dependency-generation');
+      spawnSync('ln', [storeMarker, genMarker]);
+      expect(statSync(genMarker).nlink).toBe(2);
+
+      const result = recordCopyMetadata(int, rel, generationId, 'a'.repeat(64));
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(readFileSync(storeMarker, 'utf8')).toBe('identity=immutable\nsource=immutable\n');
+      expect(statSync(storeMarker).mode & 0o777).toBe(0o444);
+      expect(readFileSync(genMarker, 'utf8')).toContain(`identity=${generationId}`);
+    } finally {
+      chmodSync(join(store, '.papercusp-dependency-generation'), 0o644);
+      rmSync(store, { recursive: true, force: true });
+    }
   });
 });
 
@@ -475,10 +520,26 @@ describe('setup-release-checkout.sh pinned_dependency_generation_reuse_safe() �
 });
 
 describe('setup-release-checkout.sh assert_hardlink_compatible_roots() — cross-device guard', () => {
-  function assertCompatible(releaseRoot: string, copyMode = 'hardlink'): { status: number | null; stdout: string; stderr: string } {
+  function assertCompatible(
+    releaseRoot: string,
+    copyMode = 'hardlink',
+    devices?: { integration: number; release: number },
+  ): { status: number | null; stdout: string; stderr: string } {
     const wrapper = [
       'set -uo pipefail',
       'source <(sed -n "/^filesystem_device()/,/^}/p; /^assert_hardlink_compatible_roots()/,/^}/p" "$SETUP_SCRIPT")',
+      // The committed-source harness puts both roots under tmpdir. Control the
+      // device lookup for negative cases instead of relying on the host mounts;
+      // assert_hardlink_compatible_roots remains the shipped implementation.
+      ...(devices ? [
+        'filesystem_device() {',
+        '  if [ "$1" = "$INTEGRATION_ROOT" ]; then',
+        '    printf "%s\\n" "$TEST_INTEGRATION_DEVICE"',
+        '  else',
+        '    printf "%s\\n" "$TEST_RELEASE_DEVICE"',
+        '  fi',
+        '}',
+      ] : []),
       'assert_hardlink_compatible_roots',
     ].join('\n');
     const r = spawnSync('bash', ['-c', wrapper], {
@@ -488,6 +549,8 @@ describe('setup-release-checkout.sh assert_hardlink_compatible_roots() — cross
         INTEGRATION_ROOT: REPO_ROOT,
         RELEASE_ROOT: releaseRoot,
         NODE_MODULES_COPY_MODE: copyMode,
+        TEST_INTEGRATION_DEVICE: String(devices?.integration ?? ''),
+        TEST_RELEASE_DEVICE: String(devices?.release ?? ''),
       },
       encoding: 'utf8',
     });
@@ -506,10 +569,15 @@ describe('setup-release-checkout.sh assert_hardlink_compatible_roots() — cross
   it('fails once with an actionable message before cross-device hardlink copy', () => {
     const releaseRoot = mkdtempSync(join(tmpdir(), 'release-root-cross-device-'));
     try {
-      const result = assertCompatible(releaseRoot);
+      const result = assertCompatible(releaseRoot, 'hardlink', { integration: 101, release: 202 });
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('same filesystem');
       expect(result.stderr).toContain('--node-modules-copy copy');
+      expect(result.stderr).toContain('device=101');
+      expect(result.stderr).toContain('device=202');
+      // Change only the measured destination device: the same predicate must
+      // accept it, so the negative case cannot pass due to a broken shell seam.
+      expect(assertCompatible(releaseRoot, 'hardlink', { integration: 101, release: 101 }).status).toBe(0);
     } finally {
       rmSync(releaseRoot, { recursive: true, force: true });
     }
@@ -518,10 +586,80 @@ describe('setup-release-checkout.sh assert_hardlink_compatible_roots() — cross
   it('allows explicit copy mode across filesystems', () => {
     const releaseRoot = mkdtempSync(join(tmpdir(), 'release-root-copy-mode-'));
     try {
-      expect(assertCompatible(releaseRoot, 'copy').status).toBe(0);
+      expect(assertCompatible(releaseRoot, 'copy', { integration: 101, release: 202 }).status).toBe(0);
     } finally {
       rmSync(releaseRoot, { recursive: true, force: true });
     }
+  });
+});
+
+describe('setup-release-checkout.sh destination capacity before source preparation', () => {
+  const GIB = 1024 ** 3;
+  const git = (cwd: string, ...args: string[]) => {
+    const r = spawnSync('git', ['-C', cwd, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], {
+      encoding: 'utf8',
+      env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' },
+    });
+    if (r.status !== 0) throw new Error(`fixture git failed: ${r.stderr}`);
+    return r.stdout.trim();
+  };
+
+  function fixtureSha() {
+    git(int, 'init', '-q');
+    writeFileSync(join(int, 'tracked.txt'), 'pinned source\n');
+    git(int, 'add', 'tracked.txt');
+    git(int, 'commit', '-qm', 'capacity fixture');
+    return git(int, 'rev-parse', 'HEAD');
+  }
+
+  function runSetup(target: string, sha: string, extra: string[] = []) {
+    return spawnSync('bash', [SCRIPT_PATH, '--integration', int, '--release', target,
+      '--ref', sha, '--node-modules', 'auto', '--node-modules-copy', 'copy', ...extra], {
+      encoding: 'utf8',
+      timeout: 20_000,
+      env: { ...process.env,
+        DEPENDENCY_GENERATION_HEADROOM_SAME_FS: '0',
+        DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES: String(1000 * GIB),
+        DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: String(6 * GIB),
+        DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '2',
+        DEPENDENCY_GENERATION_HEADROOM_OTHER_FS_RESERVE_CAP_BYTES: String(20 * GIB),
+        DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES: String(10 * GIB),
+      },
+    });
+  }
+
+  it('returns infrastructure exit 77 without creating a fresh destination or its parents', () => {
+    const sha = fixtureSha();
+    const target = join(rel, 'missing-parent', 'checkout');
+    const before = git(int, 'worktree', 'list', '--porcelain');
+    const r = runSetup(target, sha);
+    expect(r.status, r.stderr).toBe(77);
+    expect(r.stderr).toContain('DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT');
+    expect(r.stderr).toContain(`required=${30 * GIB} size=unknown`);
+    expect(existsSync(dirname(target))).toBe(false);
+    expect(git(int, 'worktree', 'list', '--porcelain')).toBe(before);
+  });
+
+  it('keeps an existing checkout and untracked evidence intact on capacity refusal', () => {
+    const sha = fixtureSha();
+    const target = join(rel, 'checkout');
+    git(int, 'worktree', 'add', '--quiet', '--detach', target, sha);
+    writeFileSync(join(target, 'tracked.txt'), 'dirty source stays\n');
+    writeFileSync(join(target, 'evidence.txt'), 'evidence stays\n');
+    const r = runSetup(target, sha);
+    expect(r.status, r.stderr).toBe(77);
+    expect(readFileSync(join(target, 'tracked.txt'), 'utf8')).toBe('dirty source stays\n');
+    expect(readFileSync(join(target, 'evidence.txt'), 'utf8')).toBe('evidence stays\n');
+    expect(git(target, 'rev-parse', 'HEAD')).toBe(sha);
+  });
+
+  it('lets source-only setup finish without imposing the dependency-copy reserve', () => {
+    const sha = fixtureSha();
+    const target = join(rel, 'source-only');
+    const r = runSetup(target, sha, ['--source-only']);
+    expect(r.status, r.stderr).toBe(0);
+    expect(git(target, 'rev-parse', 'HEAD')).toBe(sha);
+    expect(r.stderr).not.toContain('DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT');
   });
 });
 
@@ -757,6 +895,7 @@ describe('setup-release-checkout.sh pinned submodule node_modules survive the re
  */
 describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modules swap', () => {
   interface SyncOneOptions {
+    stubIndependentFailure?: boolean;
     /** Sets PINNED_DEPENDENCY_GENERATION_ID → the pinned sub-branch of `copy` mode. */
     generationId?: string;
     /** Replace the materializer with a no-op, so it "succeeds" leaving no tree. */
@@ -777,6 +916,7 @@ describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modu
       'source "$GENERATION_SCRIPT"',
       'source <(sed -n "/^pinned_generation_tree_current()/,/^}/p; /^node_modules_tree_fingerprint()/,/^}/p; /^sync_one_node_modules()/,/^}/p" "$SETUP_SCRIPT")',
       ...(opts.stubMaterializeToNoop ? ['dependency_generation_materialize_tree() { return 0; }'] : []),
+      ...(opts.stubIndependentFailure ? ['dependency_generation_copy_independent() { mkdir -p "$2"; touch "$2/partial"; return 1; }'] : []),
       'sync_one_node_modules "$SRC" "$DEST"',
     ].join('\n');
     const r = spawnSync('bash', ['-c', wrapper], {
@@ -807,6 +947,33 @@ describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modu
   });
   afterEach(() => {
     rmSync(work, { recursive: true, force: true });
+  });
+
+  it('refuses an independent snapshot before copying when capacity is insufficient', () => {
+    const src = join(work, 'src');
+    const dest = join(work, 'dest');
+    mkdirSync(src);
+    mkdirSync(dest);
+    writeFileSync(join(src, 'new'), 'new');
+    writeFileSync(join(dest, 'old'), 'old');
+    const result = runSyncOne(src, dest, 'copy', { env: {
+      DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES: '999999999999999',
+    } });
+    expect(result.status, result.stderr).toBe(77);
+    expect(readFileSync(join(dest, 'old'), 'utf8')).toBe('old');
+    expect(readdirSync(work).filter((name) => name.includes('deploy-tmp'))).toEqual([]);
+  });
+
+  it('removes a failed independent snapshot without replacing the existing destination', () => {
+    const src = join(work, 'src');
+    const dest = join(work, 'dest');
+    mkdirSync(src);
+    mkdirSync(dest);
+    writeFileSync(join(src, 'new'), 'new');
+    writeFileSync(join(dest, 'old'), 'old');
+    expect(runSyncOne(src, dest, 'copy', { stubIndependentFailure: true }).status).toBe(1);
+    expect(readFileSync(join(dest, 'old'), 'utf8')).toBe('old');
+    expect(readdirSync(work).filter((name) => name.includes('deploy-tmp'))).toEqual([]);
   });
 
   it('first-time (no dest): creates dest as a hardlink copy of src', () => {
@@ -2037,6 +2204,14 @@ describe('setup-release-checkout.sh --prepare-existing (EI-20336479620858625)', 
   let integrationRoot: string;
   let releaseRoot: string;
   let targetSha: string;
+  // Small fixtures exercise allocation boundaries explicitly, independent of
+  // the host's current free space and its production reserve.
+  const sourceCloneEnv = () => ({
+    ...process.env,
+    DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '0',
+    DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES: '0',
+    DEPENDENCY_GENERATION_COPY_LOCK_FILE: join(dirname(releaseRoot), 'copy.lock'),
+  });
 
   const git = (cwd: string, ...args: string[]): string => {
     const r = spawnSync(
@@ -2078,6 +2253,71 @@ describe('setup-release-checkout.sh --prepare-existing (EI-20336479620858625)', 
       { encoding: 'utf8' },
     );
   }
+
+  it.each(['missing store', 'missing generation'])('EI-252238 refuses %s before changing the source checkout', (missing) => {
+    writeFileSync(join(integrationRoot, 'new-tip.txt'), 'new tip\n');
+    git(integrationRoot, 'add', '-A');
+    git(integrationRoot, 'commit', '-q', '-m', 'new tip');
+    const generationRoot = join(integrationRoot, 'missing-generations');
+    if (missing === 'missing generation') mkdirSync(generationRoot);
+    const result = spawnSync('bash', [SCRIPT_PATH,
+      '--integration', integrationRoot, '--release', releaseRoot, '--ref', 'HEAD',
+      '--node-modules', 'force', '--node-modules-copy', 'copy',
+      '--node-modules-generation', 'required', '--node-modules-generation-id', `v1-${'a'.repeat(64)}`,
+      '--dependency-generation-root', generationRoot,
+    ], { encoding: 'utf8', timeout: 10_000 });
+
+    expect(result.status, result.stderr).toBe(74);
+    expect(result.stderr).toContain('disappeared before it could be leased');
+    expect(git(releaseRoot, 'rev-parse', 'HEAD')).toBe(targetSha);
+    expect(readFileSync(join(releaseRoot, 'untracked-sentinel.txt'), 'utf8')).toBe('keep me\n');
+    expect(readFileSync(join(releaseRoot, 'ignored-cache', 'stale.txt'), 'utf8')).toBe('keep me too\n');
+  });
+
+  it('EI-252238 holds one explicit-generation lease during source checkout and releases it after pinning', () => {
+    const generationRoot = join(dirname(releaseRoot), 'fixture-generations');
+    mkdirSync(join(integrationRoot, 'node_modules/lease-fixture'), { recursive: true });
+    writeFileSync(join(integrationRoot, 'node_modules/lease-fixture/package.json'), '{}');
+    const published = spawnSync('bash', ['-c',
+      'set -euo pipefail; source "$1"; dependency_generation_ensure "$2" "$3"; printf "FIXTURE_ID=%s\\n" "$DEPENDENCY_GENERATION_ID"',
+      'fixture', DEPENDENCY_GENERATION_SCRIPT, integrationRoot, generationRoot,
+    ], { encoding: 'utf8', timeout: 30_000, env: { ...process.env,
+      DEPENDENCY_GENERATION_COPY_LOCK_FILE: join(generationRoot, 'fixture-copy.lock') } });
+    expect(published.status, published.stderr).toBe(0);
+    const identity = /^FIXTURE_ID=(v1-[0-9a-f]{64})$/m.exec(published.stdout)?.[1];
+    expect(identity).toBeDefined();
+
+    const realGit = spawnSync('which', ['git'], { encoding: 'utf8' }).stdout.trim();
+    const bin = join(integrationRoot, 'git-probe');
+    const observed = join(integrationRoot, 'checkout-leases');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'git'), `#!/usr/bin/env bash
+case " $* " in
+  *" checkout --detach "*)
+    grep -l -F "identity=$REGRESSION_GENERATION_ID" "$REGRESSION_GENERATION_ROOT"/.leases/selector-* > "$REGRESSION_LEASE_OBSERVED" 2>/dev/null || true
+    ;;
+esac
+exec "$REGRESSION_REAL_GIT" "$@"
+`, { mode: 0o755 });
+    const result = spawnSync('bash', [SCRIPT_PATH,
+      '--integration', integrationRoot, '--release', releaseRoot, '--ref', targetSha,
+      '--node-modules', 'force', '--node-modules-copy', 'copy',
+      '--node-modules-generation', 'required', '--node-modules-generation-id', identity!,
+      '--dependency-generation-root', generationRoot,
+    ], { encoding: 'utf8', timeout: 30_000, env: { ...process.env, PATH: `${bin}:${process.env.PATH}`,
+      DEPENDENCY_GENERATION_COPY_LOCK_FILE: join(generationRoot, 'fixture-copy.lock'),
+      REGRESSION_REAL_GIT: realGit, REGRESSION_GENERATION_ROOT: generationRoot,
+      REGRESSION_GENERATION_ID: identity, REGRESSION_LEASE_OBSERVED: observed } });
+
+    expect(result.status, result.stderr).toBe(0);
+    const observedLeases = readFileSync(observed, 'utf8').trim();
+    expect(observedLeases).toContain('/.leases/selector-');
+    expect(observedLeases.split('\n')).toHaveLength(1);
+    const leaseDir = join(generationRoot, '.leases');
+    expect(existsSync(leaseDir)
+      ? readdirSync(leaseDir).filter(name => name.startsWith('selector-')) : []).toEqual([]);
+    expect(existsSync(join(releaseRoot, 'node_modules/lease-fixture/package.json'))).toBe(true);
+  });
 
   it('preserves an existing pinned clone while running dependency-only preparation', () => {
     mkdirSync(join(integrationRoot, 'node_modules', 'dependency-only-fixture'), { recursive: true });
@@ -2153,6 +2393,175 @@ describe('setup-release-checkout.sh --prepare-existing (EI-20336479620858625)', 
     expect(r.stderr).toContain(
       '--source-only and --prepare-existing are mutually exclusive',
     );
+  });
+
+  it('source-only clone produces independent exact source without registering a worktree', () => {
+    const destination = join(dirname(releaseRoot), 'source-clone');
+    const before = git(integrationRoot, 'worktree', 'list', '--porcelain');
+    writeFileSync(join(integrationRoot, 'tracked.txt'), 'uncommitted tracked donor content\n');
+    writeFileSync(join(integrationRoot, 'donor-dirty.txt'), 'uncommitted donor content\n');
+    const args = [SCRIPT_PATH, '--source-only', '--source-root-mode', 'clone',
+      '--source-integrity', 'object-sourced', '--ref', targetSha,
+      '--integration', integrationRoot, '--release', destination];
+    const result = spawnSync('bash', args, { encoding: 'utf8', env: sourceCloneEnv() });
+    expect(result.status, result.stderr).toBe(0);
+    expect(git(destination, 'rev-parse', 'HEAD')).toBe(targetSha);
+    expect(git(destination, 'rev-parse', '--git-common-dir')).toBe('.git');
+    expect(git(destination, 'status', '--porcelain', '-uno')).toBe('');
+    expect(git(integrationRoot, 'worktree', 'list', '--porcelain')).toBe(before);
+    expect(existsSync(join(destination, 'node_modules'))).toBe(false);
+    expect(readFileSync(join(destination, 'tracked.txt'), 'utf8')).toBe('pinned source\n');
+    expect(existsSync(join(destination, 'donor-dirty.txt'))).toBe(false);
+    const objects = git(integrationRoot, 'rev-parse', '--path-format=absolute', '--git-path', 'objects');
+    const objectId = git(integrationRoot, 'rev-parse', `${targetSha}^{tree}`);
+    const objectPath = join(objectId.slice(0, 2), objectId.slice(2));
+    expect(statSync(join(destination, '.git/objects', objectPath)).ino)
+      .toBe(statSync(join(objects, objectPath)).ino);
+    expect(existsSync(join(destination, '.git/objects/info/alternates'))).toBe(false);
+    expect(statSync(join(destination, 'tracked.txt')).ino)
+      .not.toBe(statSync(join(integrationRoot, 'tracked.txt')).ino);
+    git(destination, 'update-ref', 'refs/heads/clone-only', targetSha);
+    expect(git(integrationRoot, 'for-each-ref', '--format=%(refname)', 'refs/heads/clone-only')).toBe('');
+    expect(result.stdout).toContain('SOURCE_CLONE_CAPACITY required_kib=');
+    writeFileSync(join(destination, 'preserved.txt'), 'existing build inputs\n');
+    const again = spawnSync('bash', args, { encoding: 'utf8' });
+    expect(again.status).toBe(1);
+    expect(again.stderr).toContain('clone source destination already exists');
+    expect(readFileSync(join(destination, 'preserved.txt'), 'utf8')).toBe('existing build inputs\n');
+  });
+
+  it('source-only clone refuses insufficient capacity before creating the destination', () => {
+    const destination = join(dirname(releaseRoot), 'capacity-refused');
+    const bin = join(dirname(releaseRoot), 'capacity-bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'df'), '#!/usr/bin/env bash\nprintf "Filesystem 1024-blocks Used Available Capacity Mounted\\nfixture 10 9 1 90%% /\\n"\n', { mode: 0o755 });
+    const result = spawnSync('bash', [SCRIPT_PATH, '--source-only', '--source-root-mode', 'clone',
+      '--ref', targetSha, '--integration', integrationRoot, '--release', destination], {
+      encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('insufficient source-clone capacity');
+    expect(existsSync(destination)).toBe(false);
+  });
+
+  it('refuses a source clone that fits but would consume the shared write reserve', () => {
+    const destination = join(dirname(releaseRoot), 'reserve-refused');
+    const result = spawnSync('bash', [SCRIPT_PATH, '--source-only', '--source-root-mode', 'clone',
+      '--ref', targetSha, '--integration', integrationRoot, '--release', destination], {
+      encoding: 'utf8', env: {
+        ...sourceCloneEnv(),
+        DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '2',
+        DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES: String(100 * 1024 ** 3),
+        DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: String(64 * 1024 ** 2),
+      },
+    });
+    expect(result.status).toBe(77);
+    expect(result.stderr).toContain('DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT');
+    expect(existsSync(destination)).toBe(false);
+    expect(readFileSync(join(integrationRoot, 'tracked.txt'), 'utf8')).toBe('pinned source\n');
+  });
+
+  it.each([false, true])('refuses a nested source clone before auto-commit can capture it (symlink=%s)', (viaSymlink) => {
+    const inside = join(integrationRoot, 'private-proof');
+    const alias = join(dirname(releaseRoot), 'integration-alias');
+    if (viaSymlink) symlinkSync(integrationRoot, alias);
+    const destination = viaSymlink ? join(alias, 'private-proof') : inside;
+    const result = spawnSync('bash', [SCRIPT_PATH, '--source-only', '--source-root-mode', 'clone',
+      '--ref', targetSha, '--integration', integrationRoot, '--release', destination], { encoding: 'utf8' });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('source clone destination must be outside integration tree');
+    expect(existsSync(inside)).toBe(false);
+    expect(git(integrationRoot, 'rev-parse', 'HEAD')).toBe(targetSha);
+  });
+
+  it('refuses an unnamed gitlink before allocating the root clone and names the supported verifier route', () => {
+    git(integrationRoot, 'update-index', '--add', '--cacheinfo', `160000,${targetSha},libs/unnamed`);
+    git(integrationRoot, 'commit', '-q', '-m', 'unnamed gitlink');
+    const pin = git(integrationRoot, 'rev-parse', 'HEAD');
+    const destination = join(dirname(releaseRoot), 'unnamed-refused');
+    const result = spawnSync('bash', [SCRIPT_PATH, '--source-only', '--source-root-mode', 'clone',
+      '--ref', pin, '--integration', integrationRoot, '--release', destination], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(3);
+    expect(result.stderr).toContain('contains gitlinks without .gitmodules');
+    expect(result.stderr).toContain('use verifier-prepare');
+    expect(existsSync(destination)).toBe(false);
+  });
+
+  it('source-only clone copies objects when the object store is on another device', () => {
+    const destination = join(dirname(releaseRoot), 'cross-device-clone');
+    const bin = join(dirname(releaseRoot), 'device-bin');
+    mkdirSync(bin);
+    const realStat = spawnSync('bash', ['-c', 'command -v stat'], { encoding: 'utf8' }).stdout.trim();
+    writeFileSync(join(bin, 'stat'), [
+      '#!/usr/bin/env bash',
+      'if [ "$1" = "-c" ] && [ "$2" = "%d" ]; then',
+      '  case "$3" in */.git/objects) echo 111 ;; *) echo 222 ;; esac',
+      'else exec "$REAL_STAT" "$@"; fi',
+    ].join('\n'), { mode: 0o755 });
+    const result = spawnSync('bash', [SCRIPT_PATH, '--source-only', '--source-root-mode', 'clone',
+      '--ref', targetSha, '--integration', integrationRoot, '--release', destination], {
+      encoding: 'utf8', env: { ...sourceCloneEnv(), PATH: `${bin}:${process.env.PATH}`, REAL_STAT: realStat },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const objectId = git(integrationRoot, 'rev-parse', `${targetSha}^{tree}`);
+    const objectPath = join(objectId.slice(0, 2), objectId.slice(2));
+    expect(statSync(join(destination, '.git/objects', objectPath)).ino)
+      .not.toBe(statSync(join(integrationRoot, '.git/objects', objectPath)).ino);
+    expect(git(destination, 'rev-parse', 'HEAD')).toBe(targetSha);
+    expect(readFileSync(join(destination, 'tracked.txt'), 'utf8')).toBe('pinned source\n');
+  });
+
+  it('source-only clone recursively materializes the exact gitlink from local objects', () => {
+    const child = join(dirname(releaseRoot), 'child-donor');
+    mkdirSync(child);
+    git(child, 'init', '-q');
+    writeFileSync(join(child, 'child.txt'), 'pinned child\n');
+    git(child, 'add', '-A');
+    git(child, 'commit', '-q', '-m', 'child');
+    const childSha = git(child, 'rev-parse', 'HEAD');
+    git(integrationRoot, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', child, 'libs/child');
+    git(integrationRoot, 'commit', '-q', '-m', 'child gitlink');
+    const sourceSha = git(integrationRoot, 'rev-parse', 'HEAD');
+    writeFileSync(join(integrationRoot, 'libs/child/child.txt'), 'dirty child\n');
+    const destination = join(dirname(releaseRoot), 'source-clone-gitlink');
+    const result = spawnSync('bash', [SCRIPT_PATH, '--source-only', '--source-root-mode', 'clone',
+      '--source-integrity', 'object-sourced', '--ref', sourceSha,
+      '--integration', integrationRoot, '--release', destination], { encoding: 'utf8', env: sourceCloneEnv() });
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    expect(git(join(destination, 'libs/child'), 'rev-parse', 'HEAD')).toBe(childSha);
+    expect(readFileSync(join(destination, 'libs/child/child.txt'), 'utf8')).toBe('pinned child\n');
+    expect(git(destination, 'ls-files', '--recurse-submodules')).toContain('libs/child/child.txt');
+    expect(git(destination, 'status', '--porcelain', '-uno')).toBe('');
+  });
+
+  it('clone source mode refuses dependency preparation and invalid mode values', () => {
+    for (const mode of ['clone', 'invalid']) {
+      const result = runPrepare(['--source-root-mode', mode]);
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(mode === 'clone' ? 'requires --source-only' : 'bad --source-root-mode');
+    }
+  });
+
+  it.each([0, 19])('SPA-only reuses pinned source and dependencies, preserves build status %i', (status) => {
+    const bin = join(integrationRoot, 'spa-bin');
+    const calls = join(integrationRoot, 'spa-calls');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'npm'), '#!/usr/bin/env bash\nprintf "%s\\n" "$*" > "$SPA_CALLS"\necho SPA_FIXTURE_DIAGNOSTIC\nexit "$SPA_STATUS"\n', { mode: 0o755 });
+    mkdirSync(join(releaseRoot, 'node_modules/spa-sentinel'), { recursive: true });
+    writeFileSync(join(releaseRoot, 'node_modules/spa-sentinel/package.json'), 'existing dependency\n');
+    writeFileSync(join(releaseRoot, 'spa-source-sentinel'), 'existing source\n');
+    const result = spawnSync('bash', [SCRIPT_PATH, '--spa-only', '--integration', integrationRoot,
+      '--release', releaseRoot, '--ref', targetSha, '--node-modules', 'force'], {
+      encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`,
+        SPA_CALLS: calls, SPA_STATUS: String(status) },
+    });
+    expect(result.status, result.stderr).toBe(status === 0 ? 0 : 1);
+    expect(readFileSync(calls, 'utf8')).toBe('--workspace @papercusp/operator-vite run build\n');
+    expect(git(releaseRoot, 'rev-parse', 'HEAD')).toBe(targetSha);
+    expect(readFileSync(join(releaseRoot, 'spa-source-sentinel'), 'utf8')).toBe('existing source\n');
+    expect(readFileSync(join(releaseRoot, 'node_modules/spa-sentinel/package.json'), 'utf8')).toBe('existing dependency\n');
+    expect(result.stdout).not.toContain('preserving existing checkout and submodules');
+    if (status !== 0) expect(result.stderr).toContain('SPA_FIXTURE_DIAGNOSTIC');
   });
 });
 

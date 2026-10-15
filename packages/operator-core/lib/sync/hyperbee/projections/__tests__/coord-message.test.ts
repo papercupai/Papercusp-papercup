@@ -105,14 +105,24 @@ describe('normalizeBodyTsMsgId (WI-3914)', () => {
     expect(body.summary).toBe('no ts or msg_id in body'); // rest of body untouched
   });
 
-  it('fills only the missing key when body carries one but not the other', () => {
+  it('fills a missing key when body carries only one', () => {
     const tsOnly = _testing.normalizeBodyTsMsgId({ ...valid, body: { ts: '2020-01-01T00:00:00.000Z' } });
     expect(tsOnly.ts).toBe('2020-01-01T00:00:00.000Z'); // kept, not overridden
     expect(tsOnly.msg_id).toBe(valid.msg_id); // filled from wire
 
-    const msgIdOnly = _testing.normalizeBodyTsMsgId({ ...valid, body: { msg_id: 'peer-own-id' } });
+    const msgIdOnly = _testing.normalizeBodyTsMsgId({ ...valid, body: { msg_id: valid.msg_id } });
     expect(msgIdOnly.ts).toBe(new Date(valid.ts).toISOString());
-    expect(msgIdOnly.msg_id).toBe('peer-own-id'); // kept, not overridden
+    expect(msgIdOnly.msg_id).toBe(valid.msg_id);
+  });
+
+  it('canonicalizes a conflicting body msg_id to the wire-level message id', () => {
+    const body = _testing.normalizeBodyTsMsgId({
+      ...valid,
+      body: { ...valid.body, ts: '2020-01-01T00:00:00.000Z', msg_id: 'peer-own-id' },
+    });
+
+    expect(body.msg_id).toBe(valid.msg_id);
+    expect(body.ts).toBe('2020-01-01T00:00:00.000Z');
   });
 
   it('never overrides a body that already carries both — returns the SAME object reference', () => {

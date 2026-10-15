@@ -256,6 +256,31 @@ pub fn model_options(tiers: &[ModelTier], surface_default: Option<&str>) -> Vec<
     out
 }
 
+/// WI-10006652: /model for a LIVE conversation lists the models its engine
+/// reports it can run (Claude's SDK catalog, Codex `model/list`) with the
+/// engine's own one-line descriptions, the way stock Claude Code and Codex do.
+/// The workspace's routing tiers are fleet config: their names and `when`
+/// notes are not a chat user's model list, and on Codex none of them was even
+/// settable. Row 0 keeps the running model (the caller names it).
+pub fn engine_model_options(models: &[crate::su_session::SuSessionModelOption]) -> Vec<PickerOption> {
+    let mut out = Vec::with_capacity(models.len() + 1);
+    out.push(PickerOption {
+        id: MODEL_INHERIT.to_string(),
+        label: "Keep the current model".to_string(),
+        hint: Some("No change; the conversation stays on the model it runs on.".to_string()),
+        disabled: false,
+    });
+    for model in models {
+        out.push(PickerOption {
+            id: model.id.clone(),
+            label: model.label.clone(),
+            hint: model.description.clone().filter(|text| !text.trim().is_empty()),
+            disabled: false,
+        });
+    }
+    out
+}
+
 /// What a model pick puts on the SU-session launch: `None` ⇒ omit `model`
 /// entirely (the server's default).
 pub fn model_pick(id: &str) -> Option<String> {
@@ -691,6 +716,41 @@ pub enum PickerAxis {
     Effort,
     Account,
     Mode,
+    /// D-026 (P-027 G-6): the approvals mode of the RUNNING conversation.
+    Approvals,
+}
+
+/// D-026: the three engine-neutral approvals modes, in Shift+Tab order, with
+/// the one-line description each row and toast shows. There is deliberately no
+/// full-access mode (D-026 "Ruled out").
+pub const APPROVALS_MODES: [(&str, &str); 3] = [
+    ("ask", "ask before edits and commands"),
+    ("auto-edit", "make edits without asking, ask before other commands"),
+    ("read-only", "look and plan, change nothing"),
+];
+
+/// The /approvals picker rows. `current` is the mode the engine reports now
+/// and `pending` the one already picked for the next message; both are marked
+/// so the owner can see what a pick would change.
+pub fn approvals_options(current: Option<&str>, pending: Option<&str>) -> Vec<PickerOption> {
+    APPROVALS_MODES
+        .iter()
+        .map(|(mode, about)| {
+            let mark = if pending == Some(*mode) {
+                " (next message)"
+            } else if current == Some(*mode) {
+                " (current)"
+            } else {
+                ""
+            };
+            PickerOption {
+                id: mode.to_string(),
+                label: format!("{mode}{mark}"),
+                hint: Some(about.to_string()),
+                disabled: false,
+            }
+        })
+        .collect()
 }
 
 /// The open picker overlay. Pure state — navigation and the disabled-row rule
@@ -719,6 +779,7 @@ impl SessionPicker {
             PickerAxis::Effort => " Effort — Enter select · Esc close ",
             PickerAxis::Account => " Account route — Enter select · Esc close ",
             PickerAxis::Mode => " Launch mode — Enter select · Esc close ",
+            PickerAxis::Approvals => " Approvals — Enter select · Esc close ",
         }
     }
 

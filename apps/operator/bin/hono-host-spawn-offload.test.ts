@@ -20,6 +20,8 @@ import { stripCommentsOnly } from '../../../scripts/lib/strip-comments-and-strin
 
 const raw = readFileSync(join(__dirname, 'hono-host.ts'), 'utf8');
 const code = stripCommentsOnly(raw, 'hono-host.ts') as string;
+const bootstrapRaw = readFileSync(join(__dirname, 'host-bootstrap.ts'), 'utf8');
+const bootstrapCode = stripCommentsOnly(bootstrapRaw, 'host-bootstrap.ts') as string;
 
 describe('hono-host marks itself a spawn-offload host (WI-10002709)', () => {
   it('imports markSpawnOffloadHost from the git-via-sidecar module', () => {
@@ -43,5 +45,19 @@ describe('hono-host marks itself a spawn-offload host (WI-10002709)', () => {
   it('control: the comment beside the call alone would not satisfy the pin', () => {
     const commentOnly = '// if (sidecarMode === null) markSpawnOffloadHost();\n';
     expect(stripCommentsOnly(commentOnly, 'x.ts')).not.toMatch(/markSpawnOffloadHost\(\s*\)/);
+  });
+});
+
+describe('background host marks itself only for its own sidecar opt-in', () => {
+  it('requires the bg-host profile and guarded shared opt-in, then marks before background work starts', () => {
+    expect(bootstrapCode).toMatch(
+      /const backgroundSpawnerSidecarEnabled\s*=\s*backgroundWorkers\s*&&\s*!utilityHost\s*&&\s*isSidecarEnabledFromEnv\(/,
+    );
+    expect(bootstrapCode).toMatch(/if\s*\(\s*backgroundSpawnerSidecarEnabled\s*\)\s*markSpawnOffloadHost\(\s*\)/);
+    const markAt = bootstrapCode.search(/if\s*\(\s*backgroundSpawnerSidecarEnabled\s*\)\s*markSpawnOffloadHost\(\s*\)/);
+    const firstBackgroundWorkAt = bootstrapCode.search(/import\(['"]@papercusp\/operator-core\/lib\/sync\/hyperbee\/boot-all['"]\)/);
+    expect(markAt).toBeGreaterThan(-1);
+    expect(firstBackgroundWorkAt).toBeGreaterThan(-1);
+    expect(markAt).toBeLessThan(firstBackgroundWorkAt);
   });
 });

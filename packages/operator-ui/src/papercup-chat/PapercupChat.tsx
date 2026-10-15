@@ -22,7 +22,8 @@
  *   html / comment  inert    inert     no rehype-raw: react-markdown renders raw
  *                                      HTML as TEXT (it never becomes elements)
  *   links           allowlist          `papercupChatUrlTransform` — http/https/
- *                                      mailto only; anything else is INERT text
+ *                                      mailto, canonical /docs anchors; other
+ *                                      relative paths remain INERT text
  *   images          off      opt-in    `allowImages` (owner only) — else `[image]`
  *   tables          inert    render    the GFM table is shown as its source text
  *   work-ref pills  inert    render    `remarkWorkRefs` is not even run on public
@@ -124,16 +125,21 @@ export function lookedAtTools(calls: readonly ChatTurnToolCall[] | null | undefi
 // Markdown (D-005)
 // ---------------------------------------------------------------------------
 
-/** URL schemes a chat link may carry. Everything else — `javascript:`, `data:`,
- *  `vbscript:`, `file:`, a relative path that would resolve against the HOST's
- *  origin — is rendered as inert text. */
+/** URL schemes a chat link may carry. Other schemes remain inert. The only
+ * relative-link exception is the canonical public manual's /docs route below. */
 export const CHAT_LINK_PROTOCOLS = ['https:', 'http:', 'mailto:'] as const;
 
-/** react-markdown `urlTransform`: an allowlisted absolute URL passes through
- *  verbatim; anything else becomes '' and the `a`/`img` overrides go inert. */
-export function papercupChatUrlTransform(url: string): string {
+/** react-markdown `urlTransform`: absolute URLs use the scheme allowlist;
+ * canonical public-manual routes are permitted for anchor hrefs only. Do not
+ * resolve arbitrary relative URLs against the host or widen image sources. */
+export function papercupChatUrlTransform(url: string, key?: string): string {
   const trimmed = url.trim();
   if (!trimmed) return '';
+  // Both hosts mount /docs. Strict canonical segments exclude dot traversal,
+  // encoded separators/controls, protocol-relative URLs, backslashes and queries.
+  if (key === 'href' && /^\/docs(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)*\/?(?:#[a-z0-9][a-z0-9_-]*)?$/.test(trimmed)) {
+    return trimmed;
+  }
   let parsed: URL;
   try {
     parsed = new URL(trimmed);

@@ -26,6 +26,8 @@ function row(id: string, at: string, externalId = `ext-${id}`): CanonicalRow {
   return {
     id,
     source: 'gmail',
+    // D-010: the stamped datatype, not the provider-named source, routes the row.
+    datatypeId: 'email-message',
     kind: 'message',
     externalId,
     occurredAt: at,

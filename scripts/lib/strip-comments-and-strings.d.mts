@@ -178,11 +178,12 @@ export function stripSqlComments(text: string): string;
  * `findUniqueIndexShapeSwap` (6 firing files -> 5) with every test still green (WI-37800).
  *
  * @param {string} text
- * @param {{ dollarBodies?: 'literal'|'code' }} [opts]
+ * @param {{ dollarBodies?: 'literal'|'code', preserveIdentifiers?: boolean }} [opts]
  * @returns {string}
  */
-export function stripSqlCommentsAndStrings(text: string, { dollarBodies }?: {
+export function stripSqlCommentsAndStrings(text: string, { dollarBodies, preserveIdentifiers }?: {
     dollarBodies?: "literal" | "code";
+    preserveIdentifiers?: boolean;
 }): string;
 /**
  * Was the character at `index` LIVE CODE, or was it blanked out as string/comment content?

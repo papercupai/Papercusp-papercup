@@ -16,7 +16,7 @@ import {
   restoreRawJsonbSerializer,
   seedBuiltinArrayTypes,
 } from '../../../../libs/papercusp/libs/db/src/raw-serializers';
-import { priceStoredUsageSample, repriceUsageSamples } from './reprice-usage-samples';
+import { repriceUsageSamples } from './reprice-usage-samples';
 
 const WS = 'ws-reprice-it';
 let org: OrgTestDb;
@@ -63,12 +63,6 @@ async function read(id: number) {
   return r!;
 }
 
-const expected = (model: string, source: string, provider: string, grain?: string) => priceStoredUsageSample({
-  source, provider, model, input_tokens: 1200, output_tokens: 300, cache_read_tokens: 50000, cache_creation_tokens: 2000,
-  cache_creation_5m_tokens: provider === 'anthropic' ? 1500 : null, cache_creation_1h_tokens: provider === 'anthropic' ? 500 : null,
-  grain: grain ?? null,
-});
-
 describe('repriceUsageSamples', () => {
   it('re-derives stale and never-stamped estimates, costs now-priced NULL rows, and leaves provider cost alone', async () => {
     const frozen = await seed({ source: 'interactive', provider: 'anthropic', model: 'claude-opus-4-8', cost: 999, costSource: 'estimated', version: null, grain: 'request' });
@@ -81,9 +75,10 @@ describe('repriceUsageSamples', () => {
     const result = await repriceUsageSamples(sql, { workspaceId: WS, batchSize: 2 });
 
     expect(result).toMatchObject({ version: PRICE_TABLE_VERSION, stamped: 4, changed: 3, newlyPriced: 1, newlyUnpriced: 0, skippedConcurrent: 0, complete: true });
-    expect(await read(frozen)).toEqual({ ...pick(expected('claude-opus-4-8', 'interactive', 'anthropic', 'request')), price_table_version: PRICE_TABLE_VERSION });
-    expect(await read(oldTable)).toEqual({ ...pick(expected('gpt-5.5', 'jsonl', 'openai')), price_table_version: PRICE_TABLE_VERSION });
-    expect(await read(wasUnpriced)).toEqual({ ...pick(expected('gpt-5.5', 'headers', 'openai')), price_table_version: PRICE_TABLE_VERSION });
+    // Fixed sheet-rate arithmetic: Opus 5/25/0.5/6.25/10; GPT-5.5 2.5/20/0.25/2.5 per million.
+    expect(await read(frozen)).toEqual({ cost_usd: 0.052875, cost_source: 'estimated', price_table_version: PRICE_TABLE_VERSION });
+    expect(await read(oldTable)).toEqual({ cost_usd: 0.0265, cost_source: 'estimated', price_table_version: PRICE_TABLE_VERSION });
+    expect(await read(wasUnpriced)).toEqual({ cost_usd: 0.0265, cost_source: 'estimated', price_table_version: PRICE_TABLE_VERSION });
     expect(await read(stillUnknown)).toEqual({ cost_usd: null, cost_source: null, price_table_version: PRICE_TABLE_VERSION });
     // An observation is never re-priced or stamped.
     expect(await read(provider)).toEqual({ cost_usd: 0.42, cost_source: 'provider', price_table_version: null });
@@ -98,7 +93,7 @@ describe('repriceUsageSamples', () => {
     const a = await seed({ source: 'jsonl', provider: 'openai', model: 'gpt-5.5', cost: null, costSource: null, version: null });
     const b = await seed({ source: 'jsonl', provider: 'openai', model: 'gpt-4o', cost: null, costSource: null, version: null });
     await repriceUsageSamples(sql, { workspaceId: WS });
-    const before = (await read(a)).cost_usd!;
+    expect((await read(a)).cost_usd).toBe(0.0265);
 
     // The next table: gpt-5.5 doubles, gpt-4o is withdrawn.
     const nextTable = (model: string, usage: TokenUsage, options?: CostOptions) => {
@@ -109,7 +104,7 @@ describe('repriceUsageSamples', () => {
     const result = await repriceUsageSamples(sql, { workspaceId: WS, version: 'next-table', price: nextTable });
 
     expect(result).toMatchObject({ stamped: 2, changed: 2, newlyPriced: 0, newlyUnpriced: 1, complete: true });
-    expect((await read(a)).cost_usd).toBeCloseTo(before * 2, 12);
+    expect((await read(a)).cost_usd).toBeCloseTo(0.053, 12);
     expect(await read(b)).toEqual({ cost_usd: null, cost_source: null, price_table_version: 'next-table' });
   });
 
@@ -129,11 +124,7 @@ describe('repriceUsageSamples', () => {
     const [after] = await sql<Array<{ cost_usd: number | null; cost_source: string | null; bound: string | null; grain: string | null }>>`
       SELECT cost_usd, cost_source, usage_provenance->>'costBound' AS bound, usage_provenance->>'grain' AS grain
         FROM harness_shared.agent_usage_samples WHERE id = ${id}`;
-    const floor = costFromTokens('claude-opus-4-8', {
-      inputTokens: 1200, outputTokens: 300, cacheReadTokens: 50000, cacheCreationTokens: 2000,
-      cacheCreation5mTokens: 2000, cacheCreation1hTokens: 0, requestInputTokens: 53200,
-    });
-    expect(after).toEqual({ cost_usd: floor.usd, cost_source: 'estimated', bound: 'lower', grain: 'request' });
+    expect(after).toEqual({ cost_usd: 0.051, cost_source: 'estimated', bound: 'lower', grain: 'request' });
     // Once the TTL split is known, the bound clears and the exact price replaces the floor.
     await sql`UPDATE harness_shared.agent_usage_samples
                  SET cache_creation_5m_tokens = 1500, cache_creation_1h_tokens = 500, price_table_version = NULL
@@ -142,7 +133,7 @@ describe('repriceUsageSamples', () => {
     const [exact] = await sql<Array<{ bound: string | null; cost_usd: number }>>`
       SELECT usage_provenance->>'costBound' AS bound, cost_usd FROM harness_shared.agent_usage_samples WHERE id = ${id}`;
     expect(exact!.bound).toBeNull();
-    expect(exact!.cost_usd).toBeGreaterThan(floor.usd);
+    expect(exact!.cost_usd).toBe(0.052875);
   });
 
   it('stops at the batch budget and resumes on the next call', async () => {
@@ -211,7 +202,3 @@ describe('repriceUsageSamples', () => {
     await sql`DELETE FROM harness_shared.agent_usage_samples WHERE workspace_id = ${other}`;
   });
 });
-
-function pick(p: { costUsd: number | null; costSource: string | null }) {
-  return { cost_usd: p.costUsd, cost_source: p.costSource };
-}

@@ -29,6 +29,7 @@ vi.mock('./log', () => ({
   coordLog: { appendLine: vi.fn(async () => undefined) },
   coordSql: () => ({}),
   coordWorkspaceId: () => 'default',
+  coordHasPgFastPath: () => false,
 }));
 
 import { sendMessage } from './messages';

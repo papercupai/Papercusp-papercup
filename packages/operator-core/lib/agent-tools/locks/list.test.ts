@@ -14,6 +14,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockImplementationTyped, mockResolvedTyped } from '../../testing/typed-mock';
+import { shapeLocksList } from './list-shape';
 
 vi.mock('./identity', () => ({
   readIdentity: vi.fn(() => ({ ownerId: 'me', ownerLabel: 'Me', coordinationDomain: '/caller/tree' })),
@@ -133,6 +134,37 @@ describe('locks:list — host-global domain resolution (EI-18674647773291145)', 
     expect(tool.args.safeParse({}).success).toBe(true);
     expect(tool.args.safeParse({ resource: 'dev-server' }).success).toBe(true);
     expect(tool.args.safeParse({ workspace: 'papercusp-workspace' }).success).toBe(false);
+  });
+
+  it('returns a lock_id only for the caller and preserves it in flat and nested default-shaped holder rows', async () => {
+    mockResolvedTyped(listResourcesM, [
+      {
+        resource: 'dev-server',
+        description: '',
+        rule_text: 'rule text',
+        enforcement: 'advisory',
+        match_patterns: [],
+        max_holders: null,
+      },
+    ]);
+    heldOnlyIn('/caller/tree', [
+      { ...holder('me'), lock_id: 'self-lock-id' },
+      { ...holder('peer-agent'), lock_id: 'peer-lock-id' },
+    ]);
+
+    const b = await call({});
+    const shaped = shapeLocksList(b.data, 'trimmed') as {
+      holders: Array<{ owner: string; lock_id: string | null }>;
+      resources: Array<{ holders: Array<{ owner: string; lock_id: string | null }> }>;
+    };
+    const expected = expect.arrayContaining([
+      expect.objectContaining({ owner: 'me', lock_id: 'self-lock-id' }),
+      expect.objectContaining({ owner: 'peer-agent', lock_id: null }),
+    ]);
+
+    expect(shaped.holders).toEqual(expected);
+    expect(shaped.resources[0]?.holders).toEqual(expected);
+    expect(JSON.stringify(shaped)).not.toContain('peer-lock-id');
   });
 
   // EI-21733256625452096: these three assert a SCOPED query reaches the domain
@@ -605,5 +637,34 @@ describe('locks:list — bounded registry browse via q/limit (EI-201972284494436
       qApplied: false,
       qIgnoredResourceScoped: true,
     });
+  });
+});
+
+describe('locks:list — transient PostgreSQL connection retry', () => {
+  type RegistryRow = Awaited<ReturnType<typeof listResources>>[number];
+
+  it('retries CONNECT_TIMEOUT on the exact resource read and returns the measured holder result', async () => {
+    const resource = 'git-sync:papercusp';
+    const row: RegistryRow = {
+      resource,
+      description: '',
+      rule_text: 'rule text',
+      enforcement: 'advisory',
+      match_patterns: [],
+      max_holders: null,
+    };
+    const connectTimeout = Object.assign(new Error('write CONNECT_TIMEOUT localhost:5432'), {
+      code: 'CONNECT_TIMEOUT' as const,
+    });
+
+    getResourceM.mockRejectedValueOnce(connectTimeout).mockResolvedValueOnce(row);
+    liveDomainsM.mockResolvedValue(['ws-scoped-domain']);
+    queueM.mockResolvedValue({ holders: [], draining: false });
+
+    const result = await call({ resource });
+
+    expect(getResourceM).toHaveBeenCalledTimes(2);
+    expect(result.data.resources).toMatchObject([{ resource, holders: [], held: false }]);
+    expect(result.data.ok).toBe(true);
   });
 });

@@ -40,13 +40,14 @@
  */
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { createHash } from 'node:crypto';
-import { execFile, execFileSync, spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { NOTE_SUFFIX_RE, parsePlan } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from './workspace-registry';
+import { isCommittedAtHead, isGitTrackedPath } from './git-trackedness';
 import type { ItemProvenanceDeclaration, StoredItemProvenanceCheck } from './activation-item-provenance';
 import {
   PLAN_ADVISORY_LOCK_NAMESPACE,
@@ -59,7 +60,12 @@ import {
   type HarnessRegistry,
 } from './harness-registry';
 import { discoverKnownHiveCheckoutRoots } from './agent-tools/testing/run';
-import { gitSidecarEnabled, noteSidecarFallback, runGitViaSpawnerSidecar } from './fleet/git-via-sidecar';
+import {
+  gitSidecarEnabled,
+  isSidecarInfrastructureFault,
+  noteSidecarFallback,
+  runGitViaSpawnerSidecar,
+} from './fleet/git-via-sidecar';
 import { selectUnambiguousEvidenceRoot } from './evidence-root-selection';
 // The monorepo-root walk-up lives in the docs tool helper only because that is where
 // it was first needed; it is imported rather than re-derived so there stays exactly
@@ -73,6 +79,8 @@ import {
 } from './agent-tools/plans/activation-audit-repair';
 import {
   AcceptanceBarSeedAbort,
+  canSeedAcceptanceBarSuccessor,
+  discoverAcceptanceBarSeedRubrics,
   parseBarMappings,
   parseRequirementBars,
   seedAcceptanceBarsInTransaction,
@@ -82,6 +90,11 @@ import {
 } from './acceptance-bar-seed';
 import type { PlanClassRubricRef } from './agent-tools/plans/spec-test-adequacy';
 import { hashPlanContent } from './agent-tools/plans/content-hash';
+import {
+  locateCommittedBlobs,
+  resolveMeasurementCommit,
+  type CommittedTreeDeps,
+} from './agent-tools/plans/committed-tree-reader';
 import {
   acceptanceBarSourceFingerprint,
   synchronizeAcceptanceBarSubjectRevision,
@@ -116,6 +129,12 @@ export function isVerifyingCitation(c: AuditCitation): boolean {
   return VERIFYING_CITATION_KINDS.has(c.kind);
 }
 
+/** A repository-file citation is checked for durability even when it is not verification.
+ *  A path-backed `doc` is a tracked companion artifact; a PG-canonical doc ref is opaque. */
+export function isRepoFileCitation(c: AuditCitation): boolean {
+  return isVerifyingCitation(c) || (c.kind === 'doc' && Boolean(c.path?.trim()));
+}
+
 export interface AuditCitation {
   kind: CitationKind;
   /** Repo-relative path — required for `code`/`test`, optional for `doc` (a doc that IS a
@@ -133,10 +152,10 @@ export interface AuditCitation {
    *  while a doc ref demanded only a non-empty string, so the honest escape cost MORE than
    *  the dodge. */
   reason?: string;
-  /** Git-compatible blob hash of the cited file's bytes at audit time. Written by
-   *  `plans:audit` for every `code`/`test` citation; never accepted on the wire from
-   *  the auditor. D-007 compares this with the current blob so a rewritten file is
-   *  stale even when its path and symbol still resolve. */
+  /** Git-compatible blob hash of a cited repository file at audit time. Written by
+   *  `plans:audit` for `code`/`test` and path-backed `doc` citations; never accepted on
+   *  the wire from the auditor. D-007 compares this with the current blob so a rewritten
+   *  file is stale even when its path and symbol still resolve. */
   blobSha?: string;
 }
 
@@ -240,11 +259,41 @@ export interface ActivationAuditCoverageConflict {
   detail: string;
 }
 
+/** A prior mapping target the CURRENT plan revision no longer contains. */
+export interface DeadActivationTarget {
+  mappingId: string;
+  target: string;
+}
+
+export interface MergeActivationAuditCoverageOptions {
+  /**
+   * Prior targets that fail {@link validateActivationAuditPlanTargets} against the current
+   * plan revision because their destination is gone (e.g. an acceptance bar removed by a
+   * rubric amendment). Dropping one shrinks no coverage, and keeping one can never pass
+   * target validation — so without this the mapping could not be re-audited at all, not even
+   * to correct its disposition. Every retirement is recorded in rejectedOrSuperseded.
+   */
+  deadTargets?: readonly DeadActivationTarget[];
+  /**
+   * The CURRENT plan revision's non-dropped item ids. A prior itemProvenance declaration
+   * for an item no longer among them (the item was dropped or deleted) is retired rather
+   * than carried: keeping it can never pass provenance validation, so without this a plan
+   * that drops any provenance-declared item could never be activation-re-audited again
+   * (WI-10006324). A declaration the caller SUBMITS for such an item is kept, so
+   * validation still refuses that explicit mistake. Every retirement is recorded in
+   * rejectedOrSuperseded. Omitted ⇒ declarations are carried unchanged.
+   */
+  liveItemIds?: readonly string[];
+}
+
 export type MergeActivationAuditCoverageResult =
   | {
       ok: true;
       activation: ActivationAuditPayload;
       carriedMappingIds: string[];
+      retiredTargets: DeadActivationTarget[];
+      /** Item ids whose CARRIED provenance declaration was retired (see liveItemIds). */
+      retiredItemProvenance: string[];
     }
   | {
       ok: false;
@@ -265,20 +314,25 @@ export type MergeActivationAuditCoverageResult =
  * prior coverage. Omitted ids are carried mechanically, just like unchanged
  * completion-audit entries. Intentional supersession stays explicit: keep the
  * mapping, change its disposition/targets additively, and describe the ruling in
- * rejectedOrSuperseded.
+ * rejectedOrSuperseded. The one target a re-audit may drop is a dead one (see
+ * {@link MergeActivationAuditCoverageOptions.deadTargets}).
  */
 export function mergeActivationAuditCoverage(
   previous: ActivationAuditPayload | null | undefined,
   submitted: ActivationAuditPayload,
+  options: MergeActivationAuditCoverageOptions = {},
 ): MergeActivationAuditCoverageResult {
   if (!previous) {
-    return { ok: true, activation: submitted, carriedMappingIds: [] };
+    return { ok: true, activation: submitted, carriedMappingIds: [], retiredTargets: [], retiredItemProvenance: [] };
   }
 
   const conflicts: ActivationAuditCoverageConflict[] = [];
   const submittedById = new Map(submitted.mappings.map((mapping) => [mapping.id, mapping]));
   const carriedMappingIds: string[] = [];
   const mappings: ActivationAuditMapping[] = [];
+  const deadKey = (mappingId: string, target: string) => `${mappingId}\u0000${target}`;
+  const dead = new Set((options.deadTargets ?? []).map((entry) => deadKey(entry.mappingId, entry.target)));
+  const retiredTargets: DeadActivationTarget[] = [];
 
   for (const prior of previous.mappings) {
     const next = submittedById.get(prior.id);
@@ -306,7 +360,12 @@ export function mergeActivationAuditCoverage(
       });
     }
     const nextTargets = new Set(next.planTargets);
-    const droppedTargets = prior.planTargets.filter((target) => !nextTargets.has(target));
+    const droppedTargets: string[] = [];
+    for (const target of prior.planTargets) {
+      if (nextTargets.has(target)) continue;
+      if (dead.has(deadKey(prior.id, target))) retiredTargets.push({ mappingId: prior.id, target });
+      else droppedTargets.push(target);
+    }
     if (droppedTargets.length) {
       conflicts.push({
         mappingId: prior.id,
@@ -343,16 +402,40 @@ export function mergeActivationAuditCoverage(
   }
 
   const unique = (values: readonly string[]) => [...new Set(values)];
+  const retiredRecords = retiredTargets.map(({ mappingId, target }) =>
+    `${mappingId} target ${target} retired: absent from the current plan revision`);
+
+  // A carried declaration for an item the current plan no longer holds as a live item is
+  // dead weight that validation would refuse forever (WI-10006324): retire it. A
+  // submitted declaration is never retired here — the caller named that item explicitly.
+  const liveItems = options.liveItemIds ? new Set(options.liveItemIds) : null;
+  const submittedProvenanceItems = new Set((submitted.itemProvenance ?? []).map((d) => d.itemId));
+  const retiredItemProvenance: string[] = [];
+  const carriedProvenance = (previous.itemProvenance ?? []).filter((declaration) => {
+    if (!liveItems || liveItems.has(declaration.itemId) || submittedProvenanceItems.has(declaration.itemId)) {
+      return true;
+    }
+    retiredItemProvenance.push(declaration.itemId);
+    return false;
+  });
+  const retiredProvenanceRecords = retiredItemProvenance.map((itemId) =>
+    `itemProvenance for ${itemId} retired: ${itemId} is dropped or absent from the current plan revision`);
+
   return {
     ok: true,
     carriedMappingIds,
+    retiredTargets,
+    retiredItemProvenance,
     activation: {
       sourceRanges: [...ranges.values()],
       mappings,
       repairedOmissions: unique([...previous.repairedOmissions, ...submitted.repairedOmissions]),
-      rejectedOrSuperseded: unique([...previous.rejectedOrSuperseded, ...submitted.rejectedOrSuperseded]),
+      rejectedOrSuperseded: unique([
+        ...previous.rejectedOrSuperseded, ...submitted.rejectedOrSuperseded, ...retiredRecords,
+        ...retiredProvenanceRecords,
+      ]),
       unresolvedBlockers: unique([...previous.unresolvedBlockers, ...submitted.unresolvedBlockers]),
-      ...mergeItemProvenanceDeclarations(previous.itemProvenance, submitted.itemProvenance),
+      ...mergeItemProvenanceDeclarations(carriedProvenance, submitted.itemProvenance),
     },
   };
 }
@@ -457,6 +540,18 @@ export type CitationFailureReason =
   | 'reason_missing'
   | 'ref_missing';
 
+/** A commit-scoped Git read failed after the request reached Git. This is distinct from
+ * a missing commit/path: callers must report it as unavailable and retry, rather than
+ * recording a false `citation_audited_sha_unresolvable` refusal. */
+export class CitationGitReadError extends Error {
+  readonly code = 'citation_git_read_unavailable';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'CitationGitReadError';
+  }
+}
+
 export interface CitationDeps {
   /** Repo-relative → does a regular file exist there? */
   statFile: (rel: string) => { isFile: boolean } | null;
@@ -504,7 +599,88 @@ export interface CitationDeps {
   blobSha?: (rel: string) => string | null;
   /** Repo-relative → Git-compatible blob hash of the file at an audited commit/ref.
    *  Optional only so small injected resolver tests can remain filesystem-pure. */
-  blobShaAt?: (rel: string, auditedSha: string) => string | null;
+  blobShaAt?: (rel: string, auditedSha: string) => string | null | Promise<string | null>;
+  /** Repo-relative → the absolute path the citation resolves to (sibling and registered
+   *  roots included). Lets `measureCitationBlobsAtHead` group citations by repository.
+   *  Optional: injected deps without it are measured from their working-tree bytes. */
+  locate?: (rel: string) => string | null;
+}
+
+/**
+ * proof-freshness-pinned-candidate-2026-10-06 P-019 (D-001): the committed blob of each
+ * verifying citation at a measurement commit M, the HEAD its top-level repository points
+ * at. The ship gate compares audited blobs against these instead of the shared working
+ * tree, so a peer's uncommitted edit to a cited file no longer stales a shipped audit,
+ * while a COMMITTED change still does.
+ */
+export interface CitationMeasurement {
+  /** rel → blob id at M; null when the path is absent or not a regular file at M. A rel
+   *  missing from the map was not measured (no repository, no commit, read failed) and
+   *  falls back to the working-tree fingerprint. */
+  blobs: Map<string, string | null>;
+  /** rel → the measurement commit its blob was read at. */
+  commits: Map<string, string>;
+}
+
+/**
+ * Measure every repository-file citation at its top-level repository's HEAD. Batched per
+ * repository (one `rev-parse` plus one `ls-tree` per owning repository, through
+ * committed-tree-reader), never one synchronous Git child per citation on the request
+ * thread: M moves every few minutes, so a per-commit memo would not save the gate.
+ */
+export async function measureCitationBlobsAtHead(
+  citations: readonly AuditCitation[],
+  deps: CitationDeps,
+  treeDeps: CommittedTreeDeps = {},
+): Promise<CitationMeasurement> {
+  const measurement: CitationMeasurement = { blobs: new Map(), commits: new Map() };
+  if (!deps.locate) return measurement;
+  // Climb submodule gitlinks to the top-level repository: M is that repository's HEAD,
+  // and committed-tree-reader descends gitlinks at the commits M pins. Memoized per Git
+  // root and asynchronous: on the live shared tree the parent index moves constantly, so
+  // the warm-snapshot shortcut misses and a synchronous climb forked one `git ls-files`
+  // per CITATION on the request thread (measured: 66 spawns for 66 citations, P-005).
+  const topOf = new Map<string, Promise<string>>();
+  const climb = (root: string): Promise<string> => {
+    let pending = topOf.get(root);
+    if (!pending) {
+      pending = gitlinkParentForRepoAsync(root).then((parent) => (parent ? climb(parent.superprojectRoot) : root)).catch(() => root);
+      topOf.set(root, pending);
+    }
+    return pending;
+  };
+  const relsByTop = new Map<string, Map<string, string>>();
+  for (const citation of citations) {
+    const rel = isRepoFileCitation(citation) ? citation.path?.trim() : undefined;
+    if (!rel || measurement.blobs.has(rel)) continue;
+    const abs = deps.locate(rel);
+    const repo = abs ? gitRootForFile(abs) : null;
+    if (!abs || !repo) continue;
+    const top = await climb(repo.root);
+    const fromTop = path.relative(top, abs).split(path.sep).join('/');
+    if (!fromTop || fromTop.startsWith('../')) continue;
+    const rels = relsByTop.get(top) ?? new Map<string, string>();
+    rels.set(rel, fromTop);
+    relsByTop.set(top, rels);
+  }
+  await Promise.all(
+    [...relsByTop].map(async ([top, rels]) => {
+      try {
+        const commit = await resolveMeasurementCommit(top, treeDeps.git);
+        if (!commit) return;
+        const located = await locateCommittedBlobs(top, commit, [...new Set(rels.values())], treeDeps);
+        for (const [rel, fromTop] of rels) {
+          const entry = located.get(path.posix.normalize(fromTop));
+          measurement.blobs.set(rel, entry?.isFile ? entry.object : null);
+          measurement.commits.set(rel, commit);
+        }
+      } catch {
+        // Unmeasured: these citations keep the working-tree fingerprint (the pre-P-019
+        // behaviour), which can only over-report staleness, never waive it.
+      }
+    }),
+  );
+  return measurement;
 }
 
 /** Git's SHA-1 object id for a blob, without writing it into the object database. */
@@ -516,9 +692,9 @@ export function gitBlobSha(body: string | Buffer): string {
     .digest('hex');
 }
 
-/** Fingerprint only citations that constitute code verification. */
+/** Fingerprint a repository-file citation without changing whether it constitutes verification. */
 export function citationBlobSha(citation: AuditCitation, deps: CitationDeps): string | null {
-  if (!isVerifyingCitation(citation)) return null;
+  if (!isRepoFileCitation(citation)) return null;
   const rel = citation.path?.trim();
   if (!rel) return null;
   const direct = deps.blobSha?.(rel);
@@ -527,16 +703,16 @@ export function citationBlobSha(citation: AuditCitation, deps: CitationDeps): st
   return body == null ? null : gitBlobSha(body);
 }
 
-/** Fingerprint a verifying citation at the exact commit/ref recorded by an audit. */
-export function citationBlobShaAt(
+/** Fingerprint a repository-file citation at the exact commit/ref recorded by an audit. */
+export async function citationBlobShaAt(
   citation: AuditCitation,
   auditedSha: string,
   deps: CitationDeps,
-): string | null {
-  if (!isVerifyingCitation(citation)) return null;
+): Promise<string | null> {
+  if (!isRepoFileCitation(citation)) return null;
   const rel = citation.path?.trim();
   if (!rel) return null;
-  return deps.blobShaAt?.(rel, auditedSha) ?? null;
+  return (await deps.blobShaAt?.(rel, auditedSha)) ?? null;
 }
 
 /**
@@ -591,7 +767,7 @@ export function resolveCitation(citation: AuditCitation, deps: CitationDeps): Ci
   if (!stat) return { ok: false, reason: 'file_not_found', detail: missDetail(rel, deps) };
   if (!stat.isFile) return { ok: false, reason: 'not_a_file', detail: rel };
 
-  if (isVerifyingCitation(citation) && deps.isTracked?.(rel) === false) {
+  if (isRepoFileCitation(citation) && deps.isTracked?.(rel) === false) {
     const roots = deps.describeRoots?.(rel);
     const trackingDetail =
       `${rel} is not tracked in git (git-sync may not have swept it yet, or the path may be ignored and never tracked)`;
@@ -735,10 +911,14 @@ interface TrackedRepoSnapshot {
   tracked: ReadonlySet<string>;
   /** Index entries with mode 160000 (submodule gitlinks), from the same listing. */
   gitlinks: ReadonlySet<string>;
+  /** Paths absent from the index but confirmed in HEAD during the async prewarm. */
+  headTracked?: ReadonlySet<string>;
 }
 
 interface RepoCitationTrackingCacheState {
   snapshots: Map<string, TrackedRepoSnapshot>;
+  /** Per-citation answers prepared asynchronously when an index snapshot is unavailable. */
+  pathAnswers?: Map<string, { indexIdentity: string; tracked: boolean | null }>;
   loads: number;
   /**
    * Commit-addressed Git lookups (`<full-sha>:<path>` objects and gitlink pins at a
@@ -746,8 +926,12 @@ interface RepoCitationTrackingCacheState {
    * (bounded) instead of re-forking Git on every acceptance sweep.
    */
   immutable: Map<string, string>;
+  /** In-flight immutable reads, shared when one audit checks citations concurrently. */
+  pendingImmutable?: Map<string, Promise<string | null>>;
   /** Child processes spawned SYNCHRONOUSLY by the citation resolver (test observability). */
   syncSpawns: number;
+  /** Async Git reads issued by the citation resolver (test observability). */
+  asyncGitReads?: number;
 }
 
 // WI-2146577: `repoCitationDeps()` is constructed repeatedly while one acceptance
@@ -759,10 +943,11 @@ interface RepoCitationTrackingCacheState {
 // while repeated resolver contexts pay no child-process spawn at all.
 const __repoCitationTrackingCache = pinModuleState<RepoCitationTrackingCacheState>(
   '@papercusp/operator-core.repoCitationTrackingCache',
-  () => ({ snapshots: new Map(), loads: 0, immutable: new Map(), syncSpawns: 0 }),
+  () => ({ snapshots: new Map(), pathAnswers: new Map(), loads: 0, immutable: new Map(), syncSpawns: 0 }),
 );
 const TRACKED_REPO_SNAPSHOT_MAX_ROOTS = 16;
 const TRACKED_REPO_SNAPSHOT_MAX_BUFFER = 32 * 1024 * 1024;
+const TRACKED_REPO_PATH_ANSWER_MAX = 4096;
 const IMMUTABLE_GIT_LOOKUP_MAX = 4096;
 const FULL_OBJECT_ID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 
@@ -774,21 +959,30 @@ const FULL_OBJECT_ID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 function memoImmutableGitLookup(
   key: string,
   ref: string,
-  compute: () => string | null,
-): string | null {
+  compute: () => Promise<string | null>,
+): Promise<string | null> {
   if (!FULL_OBJECT_ID_RE.test(ref)) return compute();
   const hit = __repoCitationTrackingCache.immutable.get(key);
-  if (hit !== undefined) return hit;
-  const value = compute();
-  if (value !== null) {
-    const cache = __repoCitationTrackingCache.immutable;
-    cache.set(key, value);
-    if (cache.size > IMMUTABLE_GIT_LOOKUP_MAX) {
-      const oldest = cache.keys().next().value as string | undefined;
-      if (oldest !== undefined) cache.delete(oldest);
+  if (hit !== undefined) return Promise.resolve(hit);
+  const pendingImmutable = (__repoCitationTrackingCache.pendingImmutable ??= new Map());
+  const pending = pendingImmutable.get(key);
+  if (pending) return pending;
+  let lookup: Promise<string | null>;
+  lookup = compute().then((value) => {
+    if (value !== null) {
+      const cache = __repoCitationTrackingCache.immutable;
+      cache.set(key, value);
+      if (cache.size > IMMUTABLE_GIT_LOOKUP_MAX) {
+        const oldest = cache.keys().next().value as string | undefined;
+        if (oldest !== undefined) cache.delete(oldest);
+      }
     }
-  }
-  return value;
+    return value;
+  }).finally(() => {
+    if (pendingImmutable.get(key) === lookup) pendingImmutable.delete(key);
+  });
+  pendingImmutable.set(key, lookup);
+  return lookup;
 }
 
 /** Parse `git ls-files -s -z --full-name`: `<mode> <object> <stage>\t<path>\0`. */
@@ -817,10 +1011,12 @@ function gitDirForRoot(root: string): string | null {
   const marker = path.join(root, '.git');
   try {
     const stat = fs.statSync(marker);
-    if (stat.isDirectory()) return marker;
+    if (stat.isDirectory()) return fs.existsSync(path.join(marker, 'HEAD')) ? marker : null;
     if (!stat.isFile()) return null;
     const match = /^gitdir:\s*(.+)$/im.exec(fs.readFileSync(marker, 'utf8'));
-    return match?.[1] ? path.resolve(root, match[1].trim()) : null;
+    if (!match?.[1]) return null;
+    const gitDir = path.resolve(root, match[1].trim());
+    return fs.existsSync(path.join(gitDir, 'HEAD')) ? gitDir : null;
   } catch {
     return null;
   }
@@ -845,30 +1041,23 @@ function gitRootForFile(abs: string): { root: string; gitDir: string; rel: strin
  * validated by callers before it reaches Git; the path is after `--` so a citation
  * cannot become an option.
  */
-function gitObjectShaAt(root: string, ref: string, rel: string): string | null {
+function gitObjectShaAt(root: string, ref: string, rel: string): Promise<string | null> {
   return memoImmutableGitLookup(`object\0${root}\0${ref}\0${rel}`, ref, () =>
     gitObjectShaAtUncached(root, ref, rel),
   );
 }
 
-function gitObjectShaAtUncached(root: string, ref: string, rel: string): string | null {
-  __repoCitationTrackingCache.syncSpawns += 1;
-  try {
-    const object = execFileSync(
-      'git',
-      ['rev-parse', '--verify', '--end-of-options', `${ref}:${rel}`],
-      {
-        cwd: root,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 5_000,
-        killSignal: 'SIGKILL',
-      },
-    ).trim();
-    return /^[0-9a-f]{40}$/i.test(object) ? object : null;
-  } catch {
-    return null;
-  }
+async function gitObjectShaAtUncached(root: string, ref: string, rel: string): Promise<string | null> {
+  // `ls-tree` returns exit 0 with empty stdout for a missing path. `rev-parse
+  // --verify <ref>:<path>` uses exit 128 for both that normal miss and a Git/process
+  // failure, which made the old null result indistinguishable from an unavailable read.
+  const raw = await readGitOutputAsync(root, [
+    'ls-tree', '--full-tree', ref, '--', rel,
+  ]);
+  if (raw === null) return null;
+  const output = raw.trim();
+  const match = /^(?:0*\d+) blob ([0-9a-f]{40})\t/.exec(output.split('\n').find(Boolean) ?? '');
+  return match?.[1] ?? null;
 }
 
 /**
@@ -882,7 +1071,7 @@ function gitlinkCommitAt(
   superprojectRoot: string,
   auditedSha: string,
   gitlinkRel: string,
-): string | null {
+): Promise<string | null> {
   return memoImmutableGitLookup(
     `gitlink\0${superprojectRoot}\0${auditedSha}\0${gitlinkRel}`,
     auditedSha,
@@ -890,74 +1079,43 @@ function gitlinkCommitAt(
   );
 }
 
-function gitlinkCommitAtUncached(
+async function gitlinkCommitAtUncached(
   superprojectRoot: string,
   auditedSha: string,
   gitlinkRel: string,
-): string | null {
-  __repoCitationTrackingCache.syncSpawns += 1;
-  try {
-    const output = execFileSync(
-      'git',
-      ['ls-tree', '--full-tree', auditedSha, '--', gitlinkRel],
-      {
-        cwd: superprojectRoot,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 5_000,
-        killSignal: 'SIGKILL',
-      },
-    ).trim();
-    const line = output.split('\n').find(Boolean);
-    const match = /^160000 commit ([0-9a-f]{40})\t/.exec(line ?? '');
-    return match?.[1] ?? null;
-  } catch {
-    return null;
-  }
+): Promise<string | null> {
+  const output = (await readGitOutputAsync(superprojectRoot, [
+    'ls-tree', '--full-tree', auditedSha, '--', gitlinkRel,
+  ]))?.trim();
+  const line = output?.split('\n').find(Boolean);
+  const match = /^160000 commit ([0-9a-f]{40})\t/.exec(line ?? '');
+  return match?.[1] ?? null;
 }
 
-function gitlinkParentForRepo(
+/** `gitlinkParentForRepo` without a synchronous child: a cold or moved parent index is
+ *  read with one async `git ls-files --stage`. Used by measureCitationBlobsAtHead. */
+async function gitlinkParentForRepoAsync(
   repoRoot: string,
-): { superprojectRoot: string; gitlinkRel: string } | null {
-  // Starting at the child root's parent deliberately skips the child's own `.git`
-  // marker and finds the containing repository, if this checkout is a submodule.
+): Promise<{ superprojectRoot: string; gitlinkRel: string } | null> {
   const parent = gitRootForFile(repoRoot);
   if (!parent || parent.root === repoRoot) return null;
   const gitlinkRel = path.relative(parent.root, repoRoot).split(path.sep).join('/');
   if (!gitlinkRel || gitlinkRel.startsWith('../') || path.isAbsolute(gitlinkRel)) return null;
-  // P-007: a warm snapshot of the parent index already carries every gitlink, so the
-  // common (prewarmed) path answers without forking Git on the request host.
   const warm = currentTrackedSnapshot(parent.root, parent.gitDir);
   if (warm) return warm.gitlinks.has(gitlinkRel) ? { superprojectRoot: parent.root, gitlinkRel } : null;
-  __repoCitationTrackingCache.syncSpawns += 1;
-  try {
-    const indexEntry = execFileSync(
-      'git',
-      ['ls-files', '--stage', '--', gitlinkRel],
-      {
-        cwd: parent.root,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 5_000,
-        killSignal: 'SIGKILL',
-      },
-    ).trim();
-    if (!indexEntry.split('\n').some((line) => line.startsWith('160000 '))) return null;
-  } catch {
-    return null;
-  }
+  const indexEntry = await readGitOutputAsync(parent.root, ['ls-files', '--stage', '--', gitlinkRel]);
+  if (indexEntry === null || !indexEntry.split('\n').some((line) => line.startsWith('160000 '))) return null;
   return { superprojectRoot: parent.root, gitlinkRel };
 }
 
-function gitCitationBlobShaAt(
+async function gitCitationBlobShaAt(
   fileRepo: { root: string; rel: string },
   auditedSha: string,
-): string | null {
+): Promise<string | null> {
   if (!/^[0-9a-f]{7,64}$/i.test(auditedSha)) return null;
-  const gitlinkParent = gitlinkParentForRepo(fileRepo.root);
+  const gitlinkParent = await gitlinkParentForRepoAsync(fileRepo.root);
   if (!gitlinkParent) return gitObjectShaAt(fileRepo.root, auditedSha, fileRepo.rel);
-
-  const childSha = gitlinkCommitAt(
+  const childSha = await gitlinkCommitAt(
     gitlinkParent.superprojectRoot,
     auditedSha,
     gitlinkParent.gitlinkRel,
@@ -984,6 +1142,27 @@ function touchTrackedRepoSnapshot(root: string, snapshot: TrackedRepoSnapshot): 
   }
 }
 
+function pathAnswerKey(root: string, rel: string): string {
+  return `${root}\0${rel}`;
+}
+
+function cacheTrackedPathAnswer(
+  root: string,
+  rel: string,
+  indexIdentity: string,
+  tracked: boolean | null,
+): void {
+  const answers = (__repoCitationTrackingCache.pathAnswers ??= new Map());
+  const key = pathAnswerKey(root, rel);
+  answers.delete(key);
+  answers.set(key, { indexIdentity, tracked });
+  while (answers.size > TRACKED_REPO_PATH_ANSWER_MAX) {
+    const oldest = answers.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    answers.delete(oldest);
+  }
+}
+
 function trackedFromRepoSnapshot(abs: string): boolean | null {
   const repo = gitRootForFile(abs);
   if (!repo) return null;
@@ -993,30 +1172,13 @@ function trackedFromRepoSnapshot(abs: string): boolean | null {
   const cached = __repoCitationTrackingCache.snapshots.get(repo.root);
   if (cached?.indexIdentity === before) {
     touchTrackedRepoSnapshot(repo.root, cached);
-    return cached.tracked.has(repo.rel);
+    return cached.tracked.has(repo.rel) || cached.headTracked?.has(repo.rel) === true;
   }
-
-  __repoCitationTrackingCache.syncSpawns += 1;
-  try {
-    const probe = spawnSync('git', ['-C', repo.root, ...TRACKED_LISTING_ARGS], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 5_000,
-      killSignal: 'SIGKILL',
-      maxBuffer: TRACKED_REPO_SNAPSHOT_MAX_BUFFER,
-    });
-    const after = gitIndexIdentity(repo.gitDir);
-    // If Git rewrote the index while the snapshot was being read, do not cache or
-    // answer from a mixed generation. The existing per-path probe below remains
-    // the fail-soft fallback for this rare race.
-    if (probe.status !== 0 || typeof probe.stdout !== 'string' || after !== before) return null;
-    const snapshot: TrackedRepoSnapshot = { indexIdentity: before, ...parseStagedListing(probe.stdout) };
-    __repoCitationTrackingCache.loads += 1;
-    touchTrackedRepoSnapshot(repo.root, snapshot);
-    return snapshot.tracked.has(repo.rel);
-  } catch {
-    return null;
-  }
+  const answer = __repoCitationTrackingCache.pathAnswers?.get(pathAnswerKey(repo.root, repo.rel));
+  if (answer?.indexIdentity === before) return answer.tracked;
+  // The caller prewarms snapshots asynchronously. A cold or raced cache is unknown;
+  // never repair it with a synchronous child process on the request thread.
+  return null;
 }
 
 const TRACKED_LISTING_ARGS = ['ls-files', '-s', '-z', '--full-name'] as const;
@@ -1024,26 +1186,58 @@ const TRACKED_LISTING_ARGS = ['ls-files', '-s', '-z', '--full-name'] as const;
 /**
  * Run a read-only `git -C <root> <args>` WITHOUT blocking the event loop: through the
  * spawner sidecar when enabled for this host (no fork of the large request process),
- * otherwise an async local child. Null on any failure — callers keep the sync path.
+ * otherwise an async local child. Returns null only for a confirmed missing commit/path;
+ * operational Git/process failures throw CitationGitReadError so callers do not conflate
+ * unavailability with an unresolved citation.
  */
 async function readGitOutputAsync(root: string, args: readonly string[]): Promise<string | null> {
+  __repoCitationTrackingCache.asyncGitReads = (__repoCitationTrackingCache.asyncGitReads ?? 0) + 1;
   const argv = ['-C', root, ...args];
   if (gitSidecarEnabled('PAPERCUSP_PLAN_AUDIT_SPAWN_SIDECAR')) {
     try {
       const result = await runGitViaSpawnerSidecar(argv, root, 5_000, process.env);
       if (result.code === 0) return result.stdout;
+      if (!isSidecarInfrastructureFault(result)) {
+        if (isMissingGitRead(result.stderr)) return null;
+        throw new CitationGitReadError(gitReadFailureDetail(root, args, result.code, result.stderr));
+      }
+      noteSidecarFallback('plan-audits', new Error(result.stderr), undefined, 'local');
     } catch (e) {
+      if (e instanceof CitationGitReadError) throw e;
       noteSidecarFallback('plan-audits', e);
     }
   }
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     execFile(
       'git',
       argv,
       { encoding: 'utf8', timeout: 5_000, killSignal: 'SIGKILL', maxBuffer: TRACKED_REPO_SNAPSHOT_MAX_BUFFER },
-      (error, stdout) => resolve(error ? null : stdout),
+      (error, stdout, stderr) => {
+        if (!error) {
+          resolve(stdout);
+          return;
+        }
+        const code = typeof error.code === 'number' ? error.code : null;
+        if (isMissingGitRead(stderr)) {
+          resolve(null);
+          return;
+        }
+        reject(new CitationGitReadError(
+          gitReadFailureDetail(root, args, code, stderr || error.message),
+        ));
+      },
     );
   });
+}
+
+function isMissingGitRead(stderr: string): boolean {
+  return /not a tree object|not a valid object name|unknown revision|bad object|needed a single revision/i.test(stderr);
+}
+
+function gitReadFailureDetail(root: string, args: readonly string[], code: number | null, stderr: string): string {
+  const why = code === null ? 'no exit status' : `exit ${code}`;
+  const detail = stderr.trim().split('\n')[0]?.slice(0, 240) ?? 'no stderr';
+  return `Git citation read failed (${why}): git -C ${root} ${args.join(' ')} — ${detail}`;
 }
 
 async function loadTrackedRepoSnapshotAsync(root: string, gitDir: string): Promise<void> {
@@ -1051,45 +1245,83 @@ async function loadTrackedRepoSnapshotAsync(root: string, gitDir: string): Promi
   if (!before) return;
   if (__repoCitationTrackingCache.snapshots.get(root)?.indexIdentity === before) return;
   const stdout = await readGitOutputAsync(root, TRACKED_LISTING_ARGS);
-  // Same mixed-generation rule as the sync loader: an index rewritten mid-read is not cached.
+  // An index rewritten mid-read is not cached as a mixed generation.
   if (stdout === null || gitIndexIdentity(gitDir) !== before) return;
   __repoCitationTrackingCache.loads += 1;
-  touchTrackedRepoSnapshot(root, { indexIdentity: before, ...parseStagedListing(stdout) });
+  touchTrackedRepoSnapshot(root, { indexIdentity: before, ...parseStagedListing(stdout), headTracked: new Set() });
 }
 
 /**
- * P-007 / WI-10002829: warm, asynchronously, every index snapshot the SYNCHRONOUS
- * citation resolver is about to consult — the Git root of each cited file under each
- * candidate root, plus that root's containing superproject (the submodule gitlink
- * check). Measured on the :3170 request host (loop-saturation profile, pid 2058561):
- * `trackedFromRepoSnapshot`'s spawnSync was 28% of real main-thread work in the window
- * that stalled the first native plan-popup. Best-effort: a miss leaves the existing
- * sync path to answer exactly as before.
+ * P-007 / WI-10002829: warm, asynchronously, every index snapshot the citation resolver
+ * is about to consult — the Git root of each cited file under each candidate root, plus
+ * that root's containing superproject (the submodule gitlink check). Negative index
+ * answers are cross-checked against HEAD here, before resolution returns to its
+ * synchronous, filesystem-only path. A cold, failed, or raced snapshot remains unknown;
+ * it never falls back to a child process on the request thread.
  */
 export async function prewarmRepoCitationTracking(
   roots: readonly string[],
   citations: readonly AuditCitation[],
 ): Promise<void> {
   const gitRoots = new Map<string, string>();
+  const citationPathsByGitRoot = new Map<string, Set<string>>();
   const note = (repo: { root: string; gitDir: string } | null): void => {
     if (repo && !gitRoots.has(repo.root)) gitRoots.set(repo.root, repo.gitDir);
   };
   for (const root of new Set(roots.map((entry) => path.resolve(entry)))) {
     const rootWithSep = root.endsWith(path.sep) ? root : root + path.sep;
     for (const citation of citations) {
-      const rel = isVerifyingCitation(citation) ? citation.path?.trim() : undefined;
+      const rel = isRepoFileCitation(citation) ? citation.path?.trim() : undefined;
       if (!rel) continue;
       const abs = path.resolve(root, rel);
       if (!abs.startsWith(rootWithSep) || !fs.existsSync(abs)) continue;
       const repo = gitRootForFile(abs);
-      if (!repo || gitRoots.has(repo.root)) continue;
+      if (!repo) continue;
       note(repo);
+      const citationPaths = citationPathsByGitRoot.get(repo.root) ?? new Set<string>();
+      citationPaths.add(repo.rel);
+      citationPathsByGitRoot.set(repo.root, citationPaths);
       const parent = gitRootForFile(repo.root);
       if (parent && parent.root !== repo.root) note(parent);
     }
   }
   await Promise.all(
-    [...gitRoots].map(([root, gitDir]) => loadTrackedRepoSnapshotAsync(root, gitDir).catch(() => undefined)),
+    [...gitRoots].map(async ([root, gitDir]) => {
+      await loadTrackedRepoSnapshotAsync(root, gitDir).catch(() => undefined);
+      const indexIdentity = gitIndexIdentity(gitDir);
+      const snapshot = __repoCitationTrackingCache.snapshots.get(root);
+      if (!indexIdentity) return;
+      const snapshotMatches = snapshot?.indexIdentity === indexIdentity;
+      const headTracked = new Set(snapshot?.headTracked ?? []);
+      const answers = new Map<string, boolean | null>();
+      await Promise.all([...(citationPathsByGitRoot.get(root) ?? [])].map(async (rel) => {
+        if (snapshotMatches && snapshot!.tracked.has(rel)) {
+          answers.set(rel, true);
+          return;
+        }
+        if (snapshotMatches) {
+          const committed = await isCommittedAtHead(root, rel);
+          if (committed === true) headTracked.add(rel);
+          // A stable successful index snapshot is definitive for the negative; HEAD
+          // only overrides it when the committed tree proves the path is present.
+          answers.set(rel, committed === true);
+          return;
+        }
+        const tracked = await isGitTrackedPath(root, rel);
+        answers.set(rel, tracked ?? null);
+      }));
+      if (gitIndexIdentity(gitDir) !== indexIdentity) return;
+      for (const [rel, tracked] of answers) cacheTrackedPathAnswer(root, rel, indexIdentity, tracked);
+      if (snapshotMatches) {
+        const latest = __repoCitationTrackingCache.snapshots.get(root);
+        if (!latest || latest.indexIdentity !== indexIdentity) return;
+        const mergedHeadTracked = new Set(latest.headTracked ?? []);
+        for (const rel of headTracked) mergedHeadTracked.add(rel);
+        if (mergedHeadTracked.size !== (latest.headTracked?.size ?? 0)) {
+          touchTrackedRepoSnapshot(root, { ...latest, headTracked: mergedHeadTracked });
+        }
+      }
+    }),
   );
 }
 
@@ -1106,14 +1338,26 @@ export function __repoCitationSyncSpawnsForTests(): number {
   return __repoCitationTrackingCache.syncSpawns;
 }
 
-export function __resetRepoCitationTrackingCacheForTests(): void {
-  __repoCitationTrackingCache.snapshots.clear();
-  __repoCitationTrackingCache.loads = 0;
-  __repoCitationTrackingCache.immutable.clear();
-  __repoCitationTrackingCache.syncSpawns = 0;
+/** Test-only observability for asynchronous Git reads in commit-scoped citation lookup. */
+export function __repoCitationAsyncGitReadsForTests(): number {
+  return __repoCitationTrackingCache.asyncGitReads ?? 0;
 }
 
-/** Real-filesystem deps rooted at the monorepo, plus admitted sibling/registered repos. */
+export function __resetRepoCitationTrackingCacheForTests(): void {
+  __repoCitationTrackingCache.snapshots.clear();
+  __repoCitationTrackingCache.pathAnswers?.clear();
+  __repoCitationTrackingCache.loads = 0;
+  __repoCitationTrackingCache.immutable.clear();
+  __repoCitationTrackingCache.pendingImmutable?.clear();
+  __repoCitationTrackingCache.syncSpawns = 0;
+  __repoCitationTrackingCache.asyncGitReads = 0;
+}
+
+/**
+ * Real-filesystem deps rooted at the monorepo, plus admitted sibling/registered repos.
+ * Call `prewarmRepoCitationTracking` with the candidate roots and citations first; a
+ * cold or stale tracking snapshot stays unknown instead of spawning Git synchronously.
+ */
 export function repoCitationDeps(
   repoRoot: string = REPO_ROOT,
   registeredRoots: readonly string[] = [],
@@ -1201,40 +1445,22 @@ export function repoCitationDeps(
         return null;
       }
     },
-    blobShaAt: (rel, auditedSha) => {
+    blobShaAt: async (rel, auditedSha) => {
       const abs = within(rel);
       if (!abs) return null;
       const repo = gitRootForFile(abs);
-      return repo ? gitCitationBlobShaAt(repo, auditedSha) : null;
+      return repo ? await gitCitationBlobShaAt(repo, auditedSha) : null;
     },
+    locate: (rel) => within(rel),
     isTracked: (rel) => {
       const abs = within(rel);
       if (!abs) return null;
       const cached = trackedCache.get(abs);
       if (cached !== undefined) return cached;
 
-      let tracked: boolean | null = null;
-      const repoDir = path.dirname(abs);
-      if (fs.existsSync(abs) && fs.existsSync(repoDir)) {
-        tracked = trackedFromRepoSnapshot(abs);
-        if (tracked === null) {
-          try {
-            const probe = spawnSync(
-              'git',
-              ['-C', repoDir, 'ls-files', '--error-unmatch', '--', abs],
-              {
-                encoding: 'utf8',
-                stdio: ['ignore', 'ignore', 'ignore'],
-                timeout: 5_000,
-                killSignal: 'SIGKILL',
-              },
-            );
-            tracked = probe.status === 0 ? true : probe.status === 1 ? false : null;
-          } catch {
-            tracked = null;
-          }
-        }
-      }
+      const tracked = fs.existsSync(abs) && fs.existsSync(path.dirname(abs))
+        ? trackedFromRepoSnapshot(abs)
+        : null;
       trackedCache.set(abs, tracked);
       return tracked;
     },
@@ -1345,10 +1571,10 @@ export function selectHarnessCitationRepoRoot(
   const canonical = harnessCitationRepoRoot(reg, harnessSlug);
   if (!canonical) return null;
 
-  const verifying = citations.filter(isVerifyingCitation);
+  const repoFiles = citations.filter(isRepoFileCitation);
   const resolvesEveryCitation = (root: string): boolean => {
     const deps = repoCitationDeps(root, registeredRoots);
-    return verifying.every((citation) => resolveCitation(citation, deps).ok);
+    return repoFiles.every((citation) => resolveCitation(citation, deps).ok);
   };
   const project = reg.projects.find((entry) => entry.slug === harnessSlug);
   const mayFallback = Boolean(project && project.harness_kind === 'hive' && !project.self_repo);
@@ -1384,9 +1610,11 @@ export async function repoCitationContextForHarness(
 ): Promise<RepoCitationContext | null> {
   // P-007: every root below is resolved by SYNCHRONOUS deps; warm their Git index
   // snapshots off the event loop first (roots' parents cover admitted sibling repos).
-  const prewarm = (roots: readonly string[]): Promise<void> =>
-    prewarmRepoCitationTracking([...roots, ...roots.map((root) => path.dirname(root))], citations)
+  const prewarm = (roots: readonly string[], extraRoots: readonly string[] = []): Promise<void> => {
+    const allRoots = [...roots, ...extraRoots];
+    return prewarmRepoCitationTracking([...allRoots, ...allRoots.map((root) => path.dirname(root))], citations)
       .catch(() => undefined);
+  };
   if (!harnessSlug || harnessSlug === '*') {
     await prewarm([REPO_ROOT]);
     return { repoRoot: REPO_ROOT, deps: repoCitationDeps(REPO_ROOT), rootSource: 'canonical-repo' };
@@ -1399,7 +1627,7 @@ export async function repoCitationContextForHarness(
       ? discoverKnownHiveCheckoutRoots()
       : [];
     const canonicalRoot = harnessCitationRepoRoot(reg, harnessSlug);
-    await prewarm([...(canonicalRoot ? [canonicalRoot] : []), ...fallbackRoots, REPO_ROOT]);
+    await prewarm([...(canonicalRoot ? [canonicalRoot] : []), ...fallbackRoots, REPO_ROOT], registeredRoots);
     const selected = selectHarnessCitationRepoRoot(
       reg,
       harnessSlug,
@@ -1447,10 +1675,10 @@ function citationFailureForAvailableRoots(
       })
     : [];
   const roots = [...new Set([canonical, ...discovered, ...(mayFallback ? [REPO_ROOT] : [])])];
-  const verifying = citations.filter(isVerifyingCitation);
-  if (verifying.length === 0) return null;
+  const repoFiles = citations.filter(isRepoFileCitation);
+  if (repoFiles.length === 0) return null;
 
-  const failures = verifying.flatMap((citation): CitationFailure[] => {
+  const failures = repoFiles.flatMap((citation): CitationFailure[] => {
     const results = roots.map((root) => resolveCitation(citation, repoCitationDeps(root, registeredRoots)));
     if (results.some((result) => result.ok)) return [];
     const firstFailure = results.find(
@@ -1888,18 +2116,77 @@ export function prepareAuditPassEntries(input: {
  * and never as "the plan has no items" — validating an audit against an empty list
  * would accept every itemId, which is the opposite of this module's job.
  */
-export async function getPlanItemStatuses(planSlug: string): Promise<PlanItemStatus[]> {
+export interface PlanItemReadScope {
+  /**
+   * The plan's OWN harness — `harness_plans.harness_slug` of a positively
+   * resolved plan row, or an acceptance rubric's `subjectHarnessSlug`.
+   *
+   * Unlike `plan_audits` (keyed `(workspace_id, plan_slug, audit_seq)`, whose
+   * `harness_slug` is only the citation context — see `PlanAuditReadScope`),
+   * `plan_items` is keyed `(workspace_id, harness_slug, plan_slug, item_id)`: two
+   * harnesses may each own a plan with the same slug, and an unscoped read MERGES
+   * their item lists (WI-10005167; one live collision existed when this landed).
+   *
+   * ⚠ Pass ONLY a harness you resolved from the plan itself. A citation-context or
+   * ambient ctx harness can differ from the plan's home, and a wrong harness here
+   * answers `[]` — which every caller reads as "could not read the items" and
+   * FAILS OPEN on (the ship gate then sees nothing unfinished). Omit it rather than
+   * guess; the unscoped read is the pre-existing behaviour.
+   */
+  harnessSlug?: string | null;
+}
+
+export async function getPlanItemStatuses(
+  planSlug: string,
+  scope: PlanItemReadScope = {},
+): Promise<PlanItemStatus[]> {
   try {
     const { sql } = getOrgPg();
+    const harnessSlug = scope.harnessSlug?.trim() || null;
     const rows = await sql<{ item_id: string; status: string; item_text: string }[]>`
       SELECT item_id, status, item_text
         FROM harness_shared.plan_items
        WHERE workspace_id = ${activeWorkspaceId()}
          AND plan_slug = ${planSlug}
+         AND (${harnessSlug}::text IS NULL OR harness_slug = ${harnessSlug})
        ORDER BY seq`;
     return rows.map((r) => ({ itemId: r.item_id, status: r.status, itemText: r.item_text }));
   } catch {
     return [];
+  }
+}
+
+/**
+ * Resolve the harness that OWNS `planSlug`, for a caller that holds only a CANDIDATE
+ * harness — an explicit `harness` arg, a slug-recovered harness, or an ambient ctx
+ * harness — rather than a positively selected `harness_plans` row (WI-10005174).
+ *
+ * The answer comes from `harness_plans` itself, never from the candidate alone:
+ * - the candidate owns a plan with this slug → the candidate;
+ * - otherwise exactly ONE harness owns the slug → that harness;
+ * - otherwise (two owners and the candidate is neither, no owner, or a read failure)
+ *   → `null`, so `getPlanItemStatuses` keeps its pre-existing unscoped read.
+ *
+ * Returning `null` instead of guessing is what keeps a wrong candidate from turning
+ * into an `[]` item read, which every caller fails open on.
+ */
+export async function resolvePlanItemHomeHarness(
+  planSlug: string,
+  candidateHarness?: string | null,
+): Promise<string | null> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ harness_slug: string | null }[]>`
+      SELECT harness_slug
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${activeWorkspaceId()}
+         AND plan_slug = ${planSlug}`;
+    const homes = [...new Set(rows.map((r) => r.harness_slug?.trim()).filter((h): h is string => !!h))];
+    const candidate = candidateHarness?.trim() || null;
+    if (candidate && homes.includes(candidate)) return candidate;
+    return homes.length === 1 ? homes[0]! : null;
+  } catch {
+    return null;
   }
 }
 
@@ -2079,6 +2366,10 @@ export type RecordCurrentActivationAuditResult =
       repairFiling?: ActivationAuditRepairFiling;
     };
 
+export type PreviewCurrentActivationAuditResult =
+  | (Omit<Extract<RecordCurrentActivationAuditResult, { ok: true }>, 'audit' | 'repairReconciliation'> & { preview: true })
+  | Extract<RecordCurrentActivationAuditResult, { ok: false }>;
+
 export interface AuditEntryValidationProblem {
   itemId: string;
   code:
@@ -2155,7 +2446,7 @@ export function validatePersistedAuditEntries(items: AuditItemEntry[]): AuditEnt
 
     if (isLegacyCarry) continue;
     for (const citation of item.citations) {
-      if (!isVerifyingCitation(citation)) continue;
+      if (!isRepoFileCitation(citation)) continue;
       if (!citation.blobSha) {
         problems.push({
           itemId: item.itemId,
@@ -2267,11 +2558,26 @@ export async function recordPlanAudit(input: RecordAuditInput): Promise<PlanAudi
 export async function recordCurrentActivationAudit(
   input: RecordCurrentActivationAuditInput,
 ): Promise<RecordCurrentActivationAuditResult> {
+  return executeCurrentActivationAudit(input, false) as Promise<RecordCurrentActivationAuditResult>;
+}
+
+/** Preview the same locked snapshot, successor selection and seed as the writer.
+ * No audit, repair, rubric, pin, clause or event is persisted. */
+export async function previewCurrentActivationAudit(
+  input: RecordCurrentActivationAuditInput,
+): Promise<PreviewCurrentActivationAuditResult> {
+  return executeCurrentActivationAudit(input, true) as Promise<PreviewCurrentActivationAuditResult>;
+}
+
+async function executeCurrentActivationAudit(
+  input: RecordCurrentActivationAuditInput,
+  dryRun: boolean,
+): Promise<RecordCurrentActivationAuditResult | PreviewCurrentActivationAuditResult> {
   if (
     input.activation.unresolvedBlockers.length > 0 ||
     input.activation.mappings.some((mapping) => mapping.disposition === 'open')
   ) {
-    const repairFiling = await ensureActivationAuditRepairFiling({
+    const repairFiling = dryRun ? undefined : await ensureActivationAuditRepairFiling({
       workspaceId: input.workspaceId,
       harnessSlug: input.harnessSlug,
       planSlug: input.planSlug,
@@ -2282,14 +2588,14 @@ export async function recordCurrentActivationAudit(
       error: 'activation_blocked',
       message:
         'Activation audit has unresolved blockers or open requirement mappings. Repair/map them before activation; no audit was recorded.',
-      repairWorkItem: repairFiling.id,
+      repairWorkItem: repairFiling?.id,
       repairFiling,
     };
   }
 
   const lockKey = planAdvisoryLockKey(input.workspaceId, input.harnessSlug, input.planSlug);
   const { sql } = getOrgPg();
-  let recorded: RecordCurrentActivationAuditResult;
+  let recorded: RecordCurrentActivationAuditResult | PreviewCurrentActivationAuditResult;
   try {
     recorded = (await sql.begin(async (tx) => {
     const executor = tx as unknown as AuditSql;
@@ -2369,6 +2675,7 @@ export async function recordCurrentActivationAudit(
       contentHash: revision.content_hash,
     };
     let barSeed: TransactionalAcceptanceBarSeedSuccess | null = null;
+    let preserveExistingBars = false;
     let barSeedPendingAmendment:
       | NonNullable<Extract<RecordCurrentActivationAuditResult, { ok: true }>['barSeedPendingAmendment']>
       | undefined;
@@ -2383,10 +2690,13 @@ export async function recordCurrentActivationAudit(
         const [previous] = await executor<Array<{
           content_snapshot: string; content_hash: string; subject_version: string | null;
           previous_activation: ActivationAuditPayload;
+          rubric_status: string | null; rubric_archived: boolean; rubric_template_data: unknown;
         }>>`
           SELECT r.content_snapshot, r.content_hash,
                  rubric.template_data->'barContract'->>'subjectPlanRevision' AS subject_version,
-                 a.activation AS previous_activation
+                 a.activation AS previous_activation,
+                 rubric.status AS rubric_status, rubric.archived AS rubric_archived,
+                 rubric.template_data AS rubric_template_data
             FROM (
               SELECT activation, audited_plan_revision_id, audited_plan_revision_seq, audited_plan_content_hash
                 FROM harness_shared.plan_audits
@@ -2401,8 +2711,25 @@ export async function recordCurrentActivationAudit(
              AND r.plan_slug = ${input.planSlug}
             JOIN harness_shared.harness_plans rubric
               ON rubric.workspace_id = ${input.workspaceId} AND rubric.harness_slug = ${input.harnessSlug}
-             AND rubric.plan_slug = ${current.acceptance_bar_rubric_slug}`;
-        if (previous && hashPlanContent(previous.content_snapshot) === previous.content_hash) {
+             AND rubric.plan_slug = ${current.acceptance_bar_rubric_slug}
+            FOR SHARE OF rubric`;
+        const adoptingSuccessor = previous && current.status === 'draft' &&
+          hashPlanContent(previous.content_snapshot) === previous.content_hash &&
+          canSeedAcceptanceBarSuccessor({
+            planStatus: current.status, planSlug: input.planSlug,
+            pinnedRubricSlug: current.acceptance_bar_rubric_slug,
+            pinnedRubricStatus: previous.rubric_status,
+            pinnedRubricArchived: previous.rubric_archived,
+            pinnedTemplateData: previous.rubric_template_data,
+            activeRubrics: await discoverAcceptanceBarSeedRubrics({
+              executor, workspaceId: input.workspaceId,
+              harnessSlug: input.harnessSlug, planSlug: input.planSlug,
+            }),
+          });
+        // A historical pending amendment cannot rewrite its retired rubric. A
+        // distinct unstarted successor instead gets a fresh canonical seed; old
+        // audit/proof/rubric revisions remain historical and are never repinned.
+        if (!adoptingSuccessor && previous && hashPlanContent(previous.content_snapshot) === previous.content_hash) {
           const priorPending = previous.previous_activation?.barSeedPendingAmendment;
           const [previousSource, currentSource] = await Promise.all([
             acceptanceBarSourceFingerprint(previous.content_snapshot),
@@ -2479,11 +2806,13 @@ export async function recordCurrentActivationAudit(
               // This reuses the Requirements/map fingerprint and canonical BAR/hash
               // validation. Only the derived subject pin moves; METHOD, rubric version,
               // and existing evidence identities remain intact.
-              await synchronizeAcceptanceBarSubjectRevision(tx, {
+              const synchronized = await synchronizeAcceptanceBarSubjectRevision(tx, {
                 workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, planSlug: input.planSlug,
                 previousBody: previous.content_snapshot, nextBody: current.content,
                 previousVersion: Number(previous.subject_version), nextVersion: Number(current.version),
+                dryRun,
               });
+              preserveExistingBars = dryRun && synchronized;
             }
             // If rubrics:amend already pinned this plan revision, let the seed
             // reconcile work-item edges instead of recording a false pending
@@ -2510,6 +2839,8 @@ export async function recordCurrentActivationAudit(
           // cheapest door to demand METHOD/check/layers — the plan is still a draft, so
           // the repair is a text edit, not a co-signed barHash-changing amendment.
           requireContractCompleteness: true,
+          dryRun,
+          preserveExistingBars,
         });
         // Catch-up may already have updated the derived pin in this transaction.
         if (!seeded.ok) {
@@ -2539,6 +2870,11 @@ export async function recordCurrentActivationAudit(
         }
       }
     }
+    if (dryRun) return {
+      ok: true as const, preview: true as const, auditedPlanRevision, barSeed,
+      ...(barSeedPendingAmendment ? { barSeedPendingAmendment } : {}),
+      ...(barSeedPendingRepair ? { barSeedPendingRepair } : {}),
+    };
     const audit = await insertPlanAudit(
       {
         auditKind: 'activation',
@@ -2564,12 +2900,13 @@ export async function recordCurrentActivationAudit(
       ...(barSeedPendingAmendment ? { barSeedPendingAmendment } : {}),
       ...(barSeedPendingRepair ? { barSeedPendingRepair } : {}),
     };
-    })) as RecordCurrentActivationAuditResult;
+    })) as RecordCurrentActivationAuditResult | PreviewCurrentActivationAuditResult;
   } catch (error) {
     if (error instanceof AcceptanceBarSeedAbort) return error.result;
     throw error;
   }
   if (!recorded.ok) return recorded;
+  if ('preview' in recorded) return recorded;
 
   // POST-COMMIT on purpose, and only on the clean path. This audit landing IS
   // the event that clears the activation-repair condition, and it is the only

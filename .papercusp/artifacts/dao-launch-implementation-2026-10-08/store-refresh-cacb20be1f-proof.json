@@ -1,0 +1,178 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "cacb20be1f991478c337cac0ddfd7a027e6088a0",
+  "reason": "Refresh store-test proof after an added notification case changed the test-file fingerprint; source behavior is unchanged. Original c889 assets remain historical and untouched.",
+  "sourcePath": "packages/operator-core/lib/dao-launch-store.ts",
+  "sourceSha256": "ac71130b803985368942bb303064c08289b2ddc8be556acc0b11b92654ec04fe",
+  "testPath": "packages/operator-core/lib/dao-launch-store.test.ts",
+  "testSha256": "582d9dc8ab0b88f9ed5b4e98d06aed323c0706f2d8917a1d077be95ce446621c",
+  "baseline": {
+    "testRunId": 20939349,
+    "testsPassed": 5,
+    "skippedTests": 0,
+    "log": ".papercusp/artifacts/dao-launch-implementation-2026-10-08/store-refresh-cacb20be1f-tests.log"
+  },
+  "probes": [
+    {
+      "name": "persistence",
+      "log": ".papercusp/artifacts/dao-launch-implementation-2026-10-08/store-refresh-cacb20be1f-persistence.log",
+      "sha256": "2b995036a7b12e5315a1227171f656247a1e9d187b026901215ff6355bcd4568",
+      "evidence": {
+        "runnerPath": "scripts/mutation-probe.sh",
+        "schemaVersion": 1,
+        "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e",
+        "cwd": ".",
+        "result": {
+          "baselineExit": 0,
+          "target": "copy-out",
+          "guardExit": 1,
+          "expected": "caught",
+          "mutantParse": "unchecked",
+          "relocation": "overlay",
+          "verdict": "caught",
+          "assertionEvidence": "test-file-assertion-failure",
+          "mutantLedger": "test_runs:20939354"
+        },
+        "runnerCommit": "cacb20be1f991478c337cac0ddfd7a027e6088a0",
+        "argv": [
+          "--file",
+          "packages/operator-core/lib/dao-launch-store.ts",
+          "--relocation",
+          "overlay",
+          "--mutate",
+          "s/return \\{ \\.\\.\\.current, dao_launches: records \\}/return { ...current, dao_launches: {} }/",
+          "--test",
+          "DAO_MUTATION_SUBJECT={} npm run test:file -- packages/operator-core/lib/dao-launch-store.test.ts"
+        ]
+      }
+    },
+    {
+      "name": "workspace",
+      "log": ".papercusp/artifacts/dao-launch-implementation-2026-10-08/store-refresh-cacb20be1f-workspace.log",
+      "sha256": "10a4a817626bcc69e4f95de424b09fd7c69bb1c4d1b8f1f937d36fb38a2d340a",
+      "evidence": {
+        "schemaVersion": 1,
+        "argv": [
+          "--file",
+          "packages/operator-core/lib/dao-launch-store.ts",
+          "--relocation",
+          "overlay",
+          "--mutate",
+          "s/'setup_wizard_state', workspaceId, \\{ fresh: true \\}/'setup_wizard_state', activeWorkspaceId(), { fresh: true }/",
+          "--test",
+          "DAO_MUTATION_SUBJECT={} npm run test:file -- packages/operator-core/lib/dao-launch-store.test.ts"
+        ],
+        "result": {
+          "expected": "caught",
+          "assertionEvidence": "test-file-assertion-failure",
+          "relocation": "overlay",
+          "mutantParse": "unchecked",
+          "mutantLedger": "test_runs:20939842",
+          "target": "copy-out",
+          "baselineExit": 0,
+          "guardExit": 1,
+          "verdict": "caught"
+        },
+        "runnerCommit": "cacb20be1f991478c337cac0ddfd7a027e6088a0",
+        "cwd": ".",
+        "runnerPath": "scripts/mutation-probe.sh",
+        "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e"
+      }
+    },
+    {
+      "name": "review",
+      "log": ".papercusp/artifacts/dao-launch-implementation-2026-10-08/store-refresh-cacb20be1f-review.log",
+      "sha256": "9b1d054048aefc48864fd59a25d22591bb99b9fca73b9375fed270a51134f9a1",
+      "evidence": {
+        "runnerPath": "scripts/mutation-probe.sh",
+        "argv": [
+          "--file",
+          "packages/operator-core/lib/dao-launch-store.ts",
+          "--relocation",
+          "overlay",
+          "--mutate",
+          "s/updatedAt: new Date\\(\\).toISOString\\(\\), reviewedRevision: null/updatedAt: new Date().toISOString(), reviewedRevision: current.reviewedRevision/",
+          "--test",
+          "DAO_MUTATION_SUBJECT={} npm run test:file -- packages/operator-core/lib/dao-launch-store.test.ts"
+        ],
+        "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e",
+        "result": {
+          "assertionEvidence": "test-file-assertion-failure",
+          "mutantParse": "unchecked",
+          "relocation": "overlay",
+          "verdict": "caught",
+          "baselineExit": 0,
+          "expected": "caught",
+          "target": "copy-out",
+          "mutantLedger": "test_runs:20939866",
+          "guardExit": 1
+        },
+        "runnerCommit": "cacb20be1f991478c337cac0ddfd7a027e6088a0",
+        "cwd": ".",
+        "schemaVersion": 1
+      }
+    },
+    {
+      "name": "revision",
+      "log": ".papercusp/artifacts/dao-launch-implementation-2026-10-08/store-refresh-cacb20be1f-revision.log",
+      "sha256": "13db9a39c20e899e9ceede06ee1c10327db99cb9e9aa65bf54ab0c42e3b4414f",
+      "evidence": {
+        "schemaVersion": 1,
+        "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e",
+        "cwd": ".",
+        "argv": [
+          "--file",
+          "packages/operator-core/lib/dao-launch-store.ts",
+          "--relocation",
+          "overlay",
+          "--mutate",
+          "s/if \\(record.revision !== revision\\)/if (false)/",
+          "--test",
+          "DAO_MUTATION_SUBJECT={} npm run test:file -- packages/operator-core/lib/dao-launch-store.test.ts"
+        ],
+        "runnerPath": "scripts/mutation-probe.sh",
+        "result": {
+          "baselineExit": 0,
+          "guardExit": 1,
+          "expected": "caught",
+          "assertionEvidence": "test-file-assertion-failure",
+          "relocation": "overlay",
+          "mutantParse": "unchecked",
+          "mutantLedger": "test_runs:20939888",
+          "verdict": "caught",
+          "target": "copy-out"
+        },
+        "runnerCommit": "cacb20be1f991478c337cac0ddfd7a027e6088a0"
+      }
+    }
+  ],
+  "bindings": {
+    "DAO-DRAFT-PERSIST@1": [
+      31934,
+      31935
+    ],
+    "AUTO-BAR-R-1-P-001@2": [
+      31936,
+      31937
+    ],
+    "DAO-WORKSPACE-SCOPE@1": [
+      31938,
+      31939
+    ],
+    "DAO-REVIEW@1": [
+      31940,
+      31941
+    ],
+    "DAO-CONFLICT@1": [
+      31943,
+      31944
+    ]
+  },
+  "certificatesFiled": {
+    "DAO-DRAFT-PERSIST": "EI-25453406742229616",
+    "DAO-WORKSPACE-SCOPE": "EI-25453512409358293",
+    "DAO-REVIEW": "EI-25453608927967046",
+    "DAO-CONFLICT": "EI-25453890682071639"
+  },
+  "bindingRoute": "Current3170 exact singles; temporary mitigation documented on existing peer-owned EI-25422301838599348. Independent grading-integrity verdicts are separate from filed certificate receipts."
+}

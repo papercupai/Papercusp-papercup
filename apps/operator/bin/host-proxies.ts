@@ -16,6 +16,11 @@
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const HOST_MODULE_DIR = typeof __dirname === 'string'
+  ? __dirname
+  : fileURLToPath(new URL('.', import.meta.url));
 
 const PAPERCUP_UPSTREAM =
   process.env.PAPERCUSP_PAPERCUP_UPSTREAM ?? 'http://localhost:3061';
@@ -68,7 +73,7 @@ crossAppRewrites.all('/api/build-info',      (c) => proxyTo(WEB_UPSTREAM, c));
 function loadRustPaths(): string[] {
   if (process.env.PAPERCUSP_ENABLE_RUST_REWRITES !== '1') return [];
   const openapiPath = process.env.PAPERCUSP_RUST_OPENAPI
-    ?? resolve(__dirname, '..', '..', '..', 'papercup-rust-server', 'openapi.yaml');
+    ?? resolve(HOST_MODULE_DIR, '..', '..', '..', 'papercup-rust-server', 'openapi.yaml');
   if (!existsSync(openapiPath)) {
     console.warn(`[hono-host] rust openapi missing at ${openapiPath} — opt-in inert`);
     return [];

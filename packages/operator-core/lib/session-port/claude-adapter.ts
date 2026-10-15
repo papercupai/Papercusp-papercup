@@ -17,7 +17,7 @@ const textOf = (value: unknown): string => {
   }
 };
 
-export const CLAUDE_SESSION_PORT_ADAPTER_VERSION = 1;
+export const CLAUDE_SESSION_PORT_ADAPTER_VERSION = 2;
 const MAX_TOOL_NARRATIVE_CHARS = 16_000;
 const MAX_TEXT_ATTACHMENT_BYTES = 64 * 1024;
 
@@ -165,9 +165,9 @@ function blocksOf(
 /**
  * Reconstruct Claude's active parent-linked path. JSONL append order is not a
  * conversation order: retries and sidechains coexist in the file. We choose
- * the newest non-sidechain conversational leaf, follow parentUuid, and then
- * cut summarized ancestors at the newest isCompactSummary record so the port
- * never sends both a summary and the history it already represents.
+ * the newest non-sidechain conversational leaf and follow parents only up to
+ * the newest isCompactSummary. Summarized ancestry is counted separately so
+ * invalid discarded history cannot prevent porting the retained dialogue.
  */
 export function adaptClaudeJsonl(jsonl: string): ClaudeAdaptResult {
   const stats: ClaudeAdaptResult['stats'] = {
@@ -230,6 +230,7 @@ export function adaptClaudeJsonl(jsonl: string): ClaudeAdaptResult {
     }
     visited.add(id);
     reversed.push(cursor);
+    if (cursor.isCompactSummary === true) break;
     const parentRaw = cursor.parentUuid ?? cursor.logicalParentUuid;
     const parent = parentRaw == null ? null : String(parentRaw);
     if (!parent) break;
@@ -240,15 +241,28 @@ export function adaptClaudeJsonl(jsonl: string): ClaudeAdaptResult {
     }
     cursor = next;
   }
-  let path = reversed.reverse();
-  let compactIndex = -1;
-  for (let index = path.length - 1; index >= 0; index--) {
-    if (path[index].isCompactSummary === true) { compactIndex = index; break; }
+  if (cursor?.isCompactSummary === true) {
+    // This edge is outside the retained conversation. Count each omitted
+    // ancestor once, including bookkeeping, without validating it as dialogue.
+    const parentRaw = cursor.parentUuid ?? cursor.logicalParentUuid;
+    let ancestorId = parentRaw == null ? null : String(parentRaw);
+    while (ancestorId) {
+      if (visited.has(ancestorId)) {
+        warnings.push(`summarized ancestor cycle detected at ${ancestorId}; discarded history counted once`);
+        break;
+      }
+      const ancestor = nodes.get(ancestorId);
+      if (!ancestor) {
+        warnings.push(`missing summarized ancestor ${ancestorId}; discarded history count is partial`);
+        break;
+      }
+      visited.add(ancestorId);
+      stats.compactedAncestors++;
+      const nextParent = ancestor.parentUuid ?? ancestor.logicalParentUuid;
+      ancestorId = nextParent == null ? null : String(nextParent);
+    }
   }
-  if (compactIndex > 0) {
-    stats.compactedAncestors = compactIndex;
-    path = path.slice(compactIndex);
-  }
+  const path = reversed.reverse();
   stats.activePathRecords = path.length;
 
   const material = path.filter((record) => {

@@ -71,13 +71,79 @@ describe('ingestInteractiveUsage — session_id attribution (P3)', () => {
     });
     expect(res.samples).toBeGreaterThan(0);
 
-    const rows = await sql<Array<{ session_id: string | null; run_id: string | null; source: string; cost_usd: number | null }>>`
-      SELECT session_id, run_id, source, cost_usd FROM harness_shared.agent_usage_samples WHERE workspace_id = ${WS}`;
+    const rows = await sql<Array<{ session_id: string | null; run_id: string | null; source: string; cost_usd: number | null; role: string }>>`
+      SELECT session_id, run_id, source, cost_usd, role FROM harness_shared.agent_usage_samples WHERE workspace_id = ${WS}`;
     expect(rows.length).toBeGreaterThan(0);
     // THE FIX: session_id now carries the native UUID = adv_sessions.session_id (the join key).
     expect(rows[0].session_id).toBe(uuid);
     expect(rows[0].run_id).toBe(uuid); // run_id still carries it too (back-compat preserved)
     expect(rows[0].source).toBe('interactive');
+    expect(rows[0].role).toBe('interactive');
+  });
+
+  it('prefers adv_sessions.id over an exact session_id match when stamping role', async () => {
+    const uuid = '11111111-aaaa-4111-8111-111111111111';
+    const [advSession] = await sql<Array<{ id: string | number }>>`
+      INSERT INTO harness_shared.adv_sessions
+        (workspace_id, mode, coord_owner_id, session_id, role)
+      VALUES (${WS}, 'console', 'role-by-adv-id', 'different-session-id', 'judge')
+      RETURNING id
+    `;
+    await sql`
+      INSERT INTO harness_shared.adv_sessions
+        (workspace_id, mode, coord_owner_id, session_id, role)
+      VALUES (${WS}, 'console', 'role-by-session-id', ${uuid}, 'planner')
+    `;
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'wi-role-adv-id-'));
+    tmpDirs.push(dir);
+    await fs.writeFile(
+      path.join(dir, `${uuid}.jsonl`),
+      JSON.stringify({
+        type: 'assistant',
+        message: { model: 'claude-opus-4-8', usage: { input_tokens: 1000, output_tokens: 25, cache_creation_input_tokens: 0 } },
+      }) + String.fromCharCode(10),
+    );
+
+    await ingestInteractiveUsage({
+      adapters: [{
+        name: 'claude',
+        root: dir,
+        parse: parseTranscriptChunk,
+        advSessionId: Number(advSession.id),
+      }],
+    });
+    const rows = await sql<Array<{ role: string }>>`
+      SELECT role FROM harness_shared.agent_usage_samples
+       WHERE workspace_id = ${WS} AND session_id = ${uuid}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].role).toBe('judge');
+  });
+
+  it('uses an exact adv_sessions.session_id match when no adv session id is available', async () => {
+    const uuid = '22222222-bbbb-4222-8222-222222222222';
+    await sql`
+      INSERT INTO harness_shared.adv_sessions
+        (workspace_id, mode, coord_owner_id, session_id, role)
+      VALUES (${WS}, 'console', 'role-by-exact-session-id', ${uuid}, 'worker')
+    `;
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'wi-role-session-id-'));
+    tmpDirs.push(dir);
+    await fs.writeFile(
+      path.join(dir, `${uuid}.jsonl`),
+      JSON.stringify({
+        type: 'assistant',
+        message: { model: 'claude-opus-4-8', usage: { input_tokens: 1000, output_tokens: 25, cache_creation_input_tokens: 0 } },
+      }) + String.fromCharCode(10),
+    );
+
+    await ingestInteractiveUsage({
+      adapters: [{ name: 'claude', root: dir, parse: parseTranscriptChunk }],
+    });
+    const rows = await sql<Array<{ role: string }>>`
+      SELECT role FROM harness_shared.agent_usage_samples
+       WHERE workspace_id = ${WS} AND session_id = ${uuid}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].role).toBe('worker');
   });
 
   it('stamps goal_id from the session GOAL-mode subject at write time', async () => {

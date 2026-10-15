@@ -39,6 +39,8 @@ interface FakeChannel {
   onopen?: () => void;
   onclose?: () => void;
   closed: boolean;
+  sent: unknown[];
+  throwOnSend: boolean;
   open(): void;
   pairRemote(): void;
   fireClose(): void;
@@ -68,6 +70,8 @@ function makeMux(): FakeMux {
         onopen: spec.onopen,
         onclose: spec.onclose,
         closed: false,
+        sent: [],
+        throwOnSend: false,
         open() {},
         pairRemote() {
           this.onopen?.();
@@ -78,7 +82,12 @@ function makeMux(): FakeMux {
         },
       };
       (ch as unknown as { addMessage: (m: unknown) => { send: (v: unknown) => void } }).addMessage =
-        () => ({ send: () => {} });
+        () => ({
+          send: (v: unknown) => {
+            if (ch.throwOnSend) throw new Error('simulated send failure');
+            ch.sent.push(v);
+          },
+        });
       mux.channels.push(ch);
       return ch;
     },
@@ -177,6 +186,23 @@ afterEach(() => {
 });
 
 describe('broadcast() trace volume (EI-18808621019872598)', () => {
+  it('returns false with no paired channel, true after a send, and false when a send throws', () => {
+    const f = fakeSwarm();
+    const g = makeGossip(f);
+    g.joinTopic(TOPIC);
+
+    expect(g.broadcast(TOPIC_HEX, { kind: 'announce' })).toBe(false);
+
+    const socket = f.connect();
+    const channel = socket.userData!.channels[0]!;
+    channel.pairRemote();
+    expect(g.broadcast(TOPIC_HEX, { kind: 'announce' })).toBe(true);
+    expect(channel.sent).toHaveLength(1);
+
+    channel.throwOnSend = true;
+    expect(g.broadcast(TOPIC_HEX, { kind: 'announce' })).toBe(false);
+  });
+
   it('collapses a run of unchanged broadcasts to ONE line instead of one per call', () => {
     const f = fakeSwarm();
     const g = makeGossip(f);

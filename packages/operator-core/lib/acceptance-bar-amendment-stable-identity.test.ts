@@ -26,6 +26,7 @@ import {
 } from './acceptance-bar-amendment';
 import { buildAcceptanceBarSeed } from './acceptance-bar-seed';
 import { specClauseContentHash, type SpecClauseWrite } from './agent-tools/plans/spec-clauses-store';
+import { computeAcceptanceBarHash, computeAcceptanceBarSetHash, formatRubricRevisionSnapshot } from './rubrics';
 
 const RUBRIC = 'acceptance-subject-plan';
 const OLD_SET_HASH = 'a'.repeat(64);
@@ -99,6 +100,7 @@ const criterionOf = (barKey: string): Criterion => {
 /** The clause as the store wrote it at rubric revision 3 under an OLDER bar set. */
 function storedClause(barKey: string, planItemId: string, overrides: {
   barHash?: string; rubricSlug?: string; storedSetHash?: string | null; storedRubricRevision?: number | null;
+  behaviorClass?: SpecClauseWrite['behaviorClass']; mutationRequired?: boolean; requiredTestLayers?: string[];
 } = {}) {
   const criterion = criterionOf(barKey);
   const specId = `AUTO-BAR-${barKey}-${planItemId}`;
@@ -110,11 +112,11 @@ function storedClause(barKey: string, planItemId: string, overrides: {
     source_bar_hash: overrides.barHash ?? criterion.barHash!,
     plan_item_id: planItemId,
     behavior: `Reviewed atomic behavior for ${barKey}.`,
-    behavior_class: 'happy-path' as const,
+    behavior_class: overrides.behaviorClass ?? 'happy-path',
     falsifier: null,
     required_evidence: ['tree'],
-    required_test_layers: [] as string[],
-    mutation_required: false,
+    required_test_layers: overrides.requiredTestLayers ?? [],
+    mutation_required: overrides.mutationRequired ?? false,
     lifecycle_status: 'active' as const,
     supersedes_spec_id: null,
     supersedes_revision: null,
@@ -127,7 +129,7 @@ function storedClause(barKey: string, planItemId: string, overrides: {
     planSlug: 'subject-plan', specId, expectedRevision: 4, planItemId,
     behavior: row.behavior, behaviorClass: row.behavior_class,
     requiredEvidence: row.required_evidence, requiredTestLayers: row.required_test_layers,
-    mutationRequired: false, lifecycleStatus: 'active', exemption: null, supersedes: null, falsifier: null,
+    mutationRequired: row.mutation_required, lifecycleStatus: 'active', exemption: null, supersedes: null, falsifier: null,
     acceptanceRef: row.acceptance_ref,
     sourceBar: {
       barKey, barHash: row.source_bar_hash, barSetHash: OLD_SET_HASH,
@@ -139,7 +141,8 @@ function storedClause(barKey: string, planItemId: string, overrides: {
 }
 
 /** `rowsAfterCreate` models a create landing: the amendment re-reads the projection after it. */
-function sqlStub(rows: unknown[], rowsAfterCreate: unknown[] = rows, planContent = subjectPlan()) {
+function sqlStub(rows: unknown[], rowsAfterCreate: unknown[] = rows, planContent = subjectPlan(),
+  snapshots = [formatRubricRevisionSnapshot('', { ...template, barSetHash: OLD_SET_HASH }, null, 3)]) {
   let clauseReads = 0;
   return vi.fn(async (strings: TemplateStringsArray) => {
     const statement = strings.join(' ');
@@ -148,6 +151,9 @@ function sqlStub(rows: unknown[], rowsAfterCreate: unknown[] = rows, planContent
     if (statement.includes('FROM harness_shared.plan_spec_clauses c')) {
       clauseReads += 1;
       return clauseReads === 1 ? rows : rowsAfterCreate;
+    }
+    if (statement.includes('FROM harness_shared.plan_revisions')) {
+      return snapshots.map((content_snapshot) => ({ content_snapshot }));
     }
     return [];
   });
@@ -177,12 +183,127 @@ describe('P-001 stable clause identity across acceptance-BAR amendments', () => 
     expect(template.barSetHash).not.toBe(OLD_SET_HASH);
   });
 
+  it('repairs an existing neutral class when its unchanged tree BAR is explicitly manual', async () => {
+    const criteria = template.criteria.map((criterion) => {
+      if (criterion.barKey !== 'R-1') return criterion;
+      const manual = { ...criterion, check: { kind: 'instrument' as const, instrumentKey: 'none' } };
+      return { ...manual, barHash: computeAcceptanceBarHash(manual) };
+    });
+    const row = storedClause('R-1', 'P-001', { barHash: criteria[0]!.barHash });
+    const manualTemplate = { ...template, criteria, barSetHash: computeAcceptanceBarSetHash(criteria) };
+    const rows = [row, storedClause('R-2', 'P-002')];
+    // The sync judges the whole projection population, including the unchanged
+    // sibling. A missing fixture row is a mapping error, not a classifier verdict.
+    expect(rows.map((entry) => entry.source_bar_key).sort()).toEqual(criteria.map((entry) => entry.barKey).sort());
+    await synchronizeAcceptanceBarRevision(sqlStub(rows) as never, {
+      workspaceId: 'workspace', harnessSlug: 'papercusp', rubricSlug: RUBRIC, rubricRevision: 4,
+      templateData: manualTemplate, previousTemplateData: manualTemplate, actorId: 'amender',
+    });
+    expect(h.setSpecClause).toHaveBeenCalled();
+    expect(h.setSpecClause.mock.calls.find(([write]) => write.specId === row.spec_id)?.[0]).toMatchObject({
+      behaviorClass: 'non-automated', behavior: row.behavior, requiredTestLayers: [], mutationRequired: false,
+    });
+  });
+
+  // WI-6554700010009658: an approved amendment that rewords a BAR AND removes its
+  // layers took the full-rewrite path, whose `criterion.requiredTestLayers ??
+  // clause.required_test_layers` fallback kept the removed parent layer. The clause
+  // then made an explicitly-manual BAR "owe automated proof" and plans:start refused
+  // (mobile-agent-sessions-2026-10-12 R-17: iPhone -> iOS reword + e2e removed).
+  it.each([
+    { authored: [] as string[], expected: [] as string[] },
+    { authored: ['integration'], expected: ['integration'] },
+  ])('drops a removed parent layer when the same amendment also rewords the BAR, keeping authored extras %j', async ({ authored, expected }) => {
+    type Bar = Criterion & { model?: string; requiredTestLayers?: string[]; check?: unknown };
+    const priorCriteria = (template.criteria as Bar[]).map((criterion) => {
+      if (criterion.barKey !== 'R-1') return criterion;
+      const automated = { ...criterion, requiredTestLayers: ['e2e'] };
+      return { ...automated, barHash: computeAcceptanceBarHash(automated as never) };
+    });
+    const priorR1 = priorCriteria.find((criterion) => criterion.barKey === 'R-1')!;
+    const amendedCriteria = priorCriteria.map((criterion) => {
+      if (criterion.barKey !== 'R-1') return criterion;
+      const { requiredTestLayers: _removed, ...rest } = criterion;
+      const manual = {
+        ...rest,
+        model: `${criterion.model ?? ''} (reworded)`,
+        check: { kind: 'instrument' as const, instrumentKey: 'none' },
+      };
+      return { ...manual, barHash: computeAcceptanceBarHash(manual as never) };
+    });
+    const amendedR1 = amendedCriteria.find((criterion) => criterion.barKey === 'R-1')!;
+    // Fixture sanity: restoring the prior layers + check does NOT reproduce the prior
+    // hash, so this exercises the full-rewrite branch, not the layers-only one.
+    expect(computeAcceptanceBarHash({ ...amendedR1, requiredTestLayers: priorR1.requiredTestLayers, check: priorR1.check } as never))
+      .not.toBe(priorR1.barHash);
+    const row = storedClause('R-1', 'P-001', { barHash: priorR1.barHash, requiredTestLayers: ['e2e', ...authored] });
+    const rows = [row, storedClause('R-2', 'P-002')];
+    const priorTemplate = { ...template, criteria: priorCriteria, barSetHash: computeAcceptanceBarSetHash(priorCriteria as never) };
+    const amendedTemplate = { ...template, criteria: amendedCriteria, barSetHash: computeAcceptanceBarSetHash(amendedCriteria as never) };
+    await synchronizeAcceptanceBarRevision(sqlStub(rows, rows, subjectPlan(), [
+      formatRubricRevisionSnapshot('', { ...priorTemplate, barSetHash: OLD_SET_HASH }, null, 3),
+    ]) as never, {
+      workspaceId: 'workspace', harnessSlug: 'papercusp', rubricSlug: RUBRIC, rubricRevision: 4,
+      templateData: amendedTemplate, previousTemplateData: priorTemplate, actorId: 'amender',
+    });
+    const write = h.setSpecClause.mock.calls.find(([candidate]) => candidate.specId === row.spec_id)?.[0];
+    expect(write).toMatchObject({ requiredTestLayers: expected, mutationRequired: false });
+    expect(write?.behaviorClass).toBe(expected.length === 0 ? 'non-automated' : 'happy-path');
+  });
+
+  it.each([
+    { behaviorClass: 'concurrency' as const },
+    { mutationRequired: true },
+    { requiredTestLayers: ['integration'] },
+  ])('retains a stronger authored obligation beside manual intent: %j', async (obligation) => {
+    const criteria = template.criteria.map((criterion) => {
+      if (criterion.barKey !== 'R-1') return criterion;
+      const manual = { ...criterion, check: { kind: 'instrument' as const, instrumentKey: 'none' } };
+      return { ...manual, barHash: computeAcceptanceBarHash(manual) };
+    });
+    const row = storedClause('R-1', 'P-001', { barHash: criteria[0]!.barHash, ...obligation });
+    // The changed sibling is the positive control: the mechanism must still
+    // perform real projection work while retaining R-1's stronger obligation.
+    const rows = [row, storedClause('R-2', 'P-002', { barHash: 'b'.repeat(64) })];
+    const manualTemplate = { ...template, criteria, barSetHash: computeAcceptanceBarSetHash(criteria) };
+    const revisions = await synchronizeAcceptanceBarRevision(sqlStub(rows, rows, subjectPlan(), [
+      formatRubricRevisionSnapshot('', { ...manualTemplate, barSetHash: OLD_SET_HASH }, null, 3),
+    ]) as never, {
+      workspaceId: 'workspace', harnessSlug: 'papercusp', rubricSlug: RUBRIC, rubricRevision: 4,
+      templateData: manualTemplate, previousTemplateData: manualTemplate, actorId: 'amender',
+    });
+    expect(revisions.get(row.spec_id)).toBe(row.current_revision);
+    expect(writtenSpecIds()).toEqual(['AUTO-BAR-R-2-P-002']);
+    expect(revisions.get('AUTO-BAR-R-2-P-002')).toBe(6);
+  });
+
   it('keeps every unchanged-bar clause at its revision: no write, no new revision', async () => {
     const revisions = await amend([storedClause('R-1', 'P-001'), storedClause('R-2', 'P-002')]);
 
     expect(writtenSpecIds()).toEqual([]);
     expect(revisions.get('AUTO-BAR-R-1-P-001')).toBe(5);
     expect(revisions.get('AUTO-BAR-R-2-P-002')).toBe(5);
+  });
+
+  it.each([
+    ['missing', []],
+    ['markdown-only', ['# Prior rubric without a structured revision']],
+    ['ambiguous', Array(2).fill(formatRubricRevisionSnapshot('', { ...template, barSetHash: OLD_SET_HASH }, null, 3))],
+    ['mismatched BAR set', [formatRubricRevisionSnapshot('', template, null, 3)]],
+  ])('refreshes unchanged promises whose pinned history is %s', async (_kind, snapshots) => {
+    const rows = [storedClause('R-1', 'P-001'), storedClause('R-2', 'P-002')];
+    const revisions = await synchronizeAcceptanceBarRevision(sqlStub(rows, rows, subjectPlan(), snapshots as string[]) as never, {
+      workspaceId: 'workspace', harnessSlug: 'papercusp', rubricSlug: RUBRIC, rubricRevision: 4,
+      templateData: template, previousTemplateData: template, actorId: 'amender',
+    });
+    expect(writtenSpecIds()).toEqual(rows.map(row => row.spec_id));
+    for (const [write] of h.setSpecClause.mock.calls) {
+      const original = rows.find(row => row.spec_id === write.specId)!;
+      expect(write).toMatchObject({ behavior: original.behavior, falsifier: original.falsifier,
+        requiredTestLayers: original.required_test_layers, lifecycleStatus: original.lifecycle_status,
+        sourceBar: { rubricRevision: 4, barHash: original.source_bar_hash, barSetHash: template.barSetHash } });
+      expect(revisions.get(write.specId)).toBe(original.current_revision + 1);
+    }
   });
 
   it('re-projects ONLY the clause whose own bar changed and leaves its sibling untouched', async () => {

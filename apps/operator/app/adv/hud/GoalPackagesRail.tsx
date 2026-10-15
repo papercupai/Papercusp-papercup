@@ -39,7 +39,11 @@
 
 import { useCallback, useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import { useSyncQuery } from '@papercusp/sync';
 import type { HudGoalInput } from './hud-entity-board';
+import type { GoalDetailInput } from './goal-detail-model';
+import GoalStatusControl from './GoalStatusControl';
+import OngoingWorkOverview from './OngoingWorkOverview';
 
 /** One `harness_shared.goals` row stamped with this package's ref, as the
  *  resolver's fold reports it. */
@@ -215,16 +219,65 @@ function PackageCard({
   );
 }
 
+function OngoingPackageCard({ entry, goal, busy, starting, onStart, onOpenGoal, workspaceId, variant, nowMs }: {
+  entry: GoalPackageRailEntry;
+  goal?: HudGoalInput;
+  busy: boolean;
+  starting: boolean;
+  onStart: (ref: string) => void;
+  onOpenGoal?: (id: string) => void;
+  workspaceId?: string | null;
+  variant: 'featured' | 'compact';
+  nowMs: number;
+}) {
+  const detail = useSyncQuery<GoalDetailInput>({
+    queryName: 'goals.detail',
+    args: { workspaceId: workspaceId ?? '', goalId: entry.activeGoalId ?? '' },
+    enabled: !!workspaceId && !!entry.activeGoalId,
+  });
+  const data = detail.data?.[0]?.goal?.id === entry.activeGoalId ? detail.data[0] : null;
+  const current = data?.goal ?? goal;
+  const actions = entry.activeGoalId ? <>
+    <button type="button" className="pc-ctl-act pc-ctl-act--primary"
+      data-testid={`pkg-card-${entry.ref}`} onClick={() => onOpenGoal?.(entry.activeGoalId!)}>
+      {variant === 'compact' ? 'View work' : 'View ongoing work'}
+    </button>
+    {current ? <GoalStatusControl goalId={entry.activeGoalId} status={current.status}
+      effectiveStatus={data?.effectiveStatus ?? goal?.effectiveStatus}
+      holderLiveness={data?.holderLiveness ?? goal?.holderLiveness} variant="card" /> : null}
+  </> : <button type="button" className="pc-ctl-act pc-ctl-act--primary"
+    data-testid={`pkg-start-${entry.ref}`} disabled={busy} aria-label={`Start goal package ${entry.title}`}
+    onClick={(e) => { e.stopPropagation(); onStart(entry.ref); }}>{starting ? 'Starting…' : 'Start'}</button>;
+  return <div className="hud-ongoing__package" data-testid={!entry.activeGoalId ? `pkg-card-${entry.ref}` : undefined}>
+    {entry.activeGoalId ? <OngoingWorkOverview goal={current} detail={data} title={entry.title}
+      description={entry.description} variant={variant} nowMs={nowMs} actions={actions} />
+      : <section className={`hud-ongoing hud-ongoing--${variant}`} aria-label={`Ongoing work: ${entry.title}`}>
+        <div className="hud-ongoing__top"><div><h3>{entry.title}</h3><p>{entry.description}</p>
+          <span className="hud__chip">Ready to start</span></div><div className="hud-ongoing__actions">{actions}</div></div>
+        {entry.budgetCents != null ? <div className="hud-ongoing__foot" data-testid={`pkg-budget-${entry.ref}`}>
+          budget ${(entry.budgetCents / 100).toFixed(2)}{entry.budgetWindowSec != null ? ` / ${windowLabel(entry.budgetWindowSec)}` : ''}
+        </div> : null}
+      </section>}
+    {detail.error ? <p className="hud-ongoing__error" role="status">Ongoing work details unavailable.</p> : null}
+  </div>;
+}
+
 export default function GoalPackagesRail({
   entries,
   goals,
   onOpenGoal,
+  workspaceId,
+  variant = 'featured',
+  nowMs = Date.now(),
 }: {
   entries: GoalPackageRailEntry[];
   /** The goals rows off the SAME payload — the spend readout correlates
    *  `activeGoalId` against them, reading window + figure together. */
   goals: HudGoalInput[];
   onOpenGoal?: (goalId: string) => void;
+  workspaceId?: string | null;
+  variant?: 'featured' | 'compact';
+  nowMs?: number;
 }) {
   const [pendingRef, setPendingRef] = useState<string | null>(null);
 
@@ -267,15 +320,20 @@ export default function GoalPackagesRail({
 
   // Older payloads (no goalPackages yet) and empty stores render NO rail at
   // all — the plain board, not an empty strip that reads as a failed load.
-  if (entries.length === 0) return null;
+  const visible = variant === 'compact' ? entries.filter((e) => e.standing) : entries;
+  if (visible.length === 0) return null;
 
   return (
     <section
-      className="hud__pkgrail"
+      className={`hud__pkgrail hud__pkgrail--${variant}`}
       aria-label="Installed goal packages"
       data-testid="goal-packages-rail"
     >
-      {entries.map((e) => (
+      {visible.map((e) => e.standing ? (
+        <OngoingPackageCard key={e.ref} entry={e} goal={e.activeGoalId ? goalsById.get(e.activeGoalId) : undefined}
+          busy={pendingRef !== null} starting={pendingRef === e.ref} onStart={(ref) => void start(ref)}
+          onOpenGoal={onOpenGoal} workspaceId={workspaceId} variant={variant} nowMs={nowMs} />
+      ) : (
         <PackageCard
           key={e.ref}
           entry={e}

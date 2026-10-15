@@ -1,0 +1,430 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10005572",
+  "parent": "WI-10004890",
+  "plane": "serving-artifact-private-operator-api-snapshot-census",
+  "raw": {
+    "path": "docs/evidence/papercusp-oct1-p011-heap-census-r2-2026-10-02.json",
+    "bytes": 673545,
+    "sha256": "dd9b4765bb2138caed42a4015e19cb977c6557fe9ffce91a1036f8abf9bff228"
+  },
+  "priorFailed": {
+    "path": "docs/evidence/papercusp-oct1-p011-heap-census-r1-2026-10-02.json",
+    "bytes": 628118,
+    "sha256": "eaca7ea42056ffdeb0b552156e9e39f5e33a4addbc718b5a60dd21a752b21003"
+  },
+  "before": {
+    "unit": "papercup-staging-api.service",
+    "pid": 407431,
+    "startTicks": "1183959",
+    "sourceDirectory": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-d8329b22fb14.fwxtjp/checkout/apps/operator/dist-host",
+    "entry": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-d8329b22fb14.fwxtjp/checkout/apps/operator/dist-host/hono-host.mjs",
+    "buildSha": "d8329b22fb",
+    "bundleSha256": "8669dc065f66ec6095bab2e569ba47238315c1698e28a072e7cf1b573fe9086a",
+    "observedAt": "2026-10-02T18:06:40.444Z"
+  },
+  "after": {
+    "unit": "papercup-staging-api.service",
+    "pid": 407431,
+    "startTicks": "1183959",
+    "sourceDirectory": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-d8329b22fb14.fwxtjp/checkout/apps/operator/dist-host",
+    "entry": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-d8329b22fb14.fwxtjp/checkout/apps/operator/dist-host/hono-host.mjs",
+    "buildSha": "d8329b22fb",
+    "bundleSha256": "8669dc065f66ec6095bab2e569ba47238315c1698e28a072e7cf1b573fe9086a",
+    "observedAt": "2026-10-02T18:12Z"
+  },
+  "servingArtifactStable": true,
+  "measuredBundleMatches": true,
+  "sources": [
+    {
+      "path": "scripts/analyze-heap-snapshots.mjs",
+      "bytes": 13948,
+      "sha256": "9808f9e03e81a31c43a7cd2f638ed831f9459302c7d7b13f52bfdbb5231c24f7",
+      "matchesRunStartCommit": true
+    },
+    {
+      "path": "scripts/analyze-heap-snapshots.d.mts",
+      "bytes": 1251,
+      "sha256": "0e28ecb6bac4688b305c97d1e09b9e0f884224fcb3189a7763aed7f29b6ae926",
+      "matchesRunStartCommit": true
+    },
+    {
+      "path": "tsconfig.declarations.json",
+      "bytes": 27945,
+      "sha256": "50f43b775a41cbf71fb6e1cb257f791469d1702fdb70db40cf98e89c29da5bb1",
+      "matchesRunStartCommit": true
+    },
+    {
+      "path": "packages/operator-core/lib/analyze-heap-snapshots.test.ts",
+      "bytes": 5193,
+      "sha256": "ab2bb0141e1afa87e2aaefa2b097eb60157e97e2f3079ea6b60e2924ffea85e3",
+      "matchesRunStartCommit": false,
+      "runStartReceipt": {
+        "bytes": 5291,
+        "sha256": "702c6dd661d4370ecbba96c74b722b6c4b3342cce71235c309093315883297ff"
+      },
+      "currentGuardTestRunId": 20553587
+    },
+    {
+      "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+      "bytes": 100451,
+      "sha256": "393c21e6b0b3481d7c0c162c3e5409d101dc91a46689e81579f74d2f786f6471",
+      "matchesRunStartCommit": true
+    },
+    {
+      "path": "scripts/cdp-inspector.mjs",
+      "bytes": 37242,
+      "sha256": "31075a5ed406304cd4733ad3b3ae9807e636d03420d767ceefe7ea481dabd968",
+      "matchesRunStartCommit": true
+    },
+    {
+      "path": "scripts/with-test-pg.mjs",
+      "bytes": 15664,
+      "sha256": "0f9dd85f70d585515d9e869ffc7c3533a01250d794fc5c95936005906daa8085",
+      "matchesRunStartCommit": true
+    },
+    {
+      "path": "scripts/test-files.mjs",
+      "bytes": 179279,
+      "sha256": "4255ee1644532ff3a5ffbb5e1f2a457d4eea209abc8f7d7b49153d760f14404d",
+      "matchesRunStartCommit": true
+    }
+  ],
+  "runStartCommit": "14e5b221cdc4eb7fa4c0df79da9b55a4ee094813",
+  "routerProvenance": "unknown: shared-tree HEAD moved during run; seven named sources match start commit, guard test was local/untracked at guard time",
+  "fullGraphCurrentness": "unknown",
+  "test": {
+    "file": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+    "testRunId": 20553546,
+    "testNamePattern": "binds snapshot PSS",
+    "passed": 1,
+    "filteredSkipped": 17,
+    "source": "local",
+    "layer": "integration",
+    "ledgerCommitSha": "762176af778559ca76ec1897c6d75f0f92b978e2",
+    "routerResultHead": "14e5b221cd",
+    "exitCode": 0
+  },
+  "guard": {
+    "file": "packages/operator-core/lib/analyze-heap-snapshots.test.ts",
+    "testRunId": 20553587,
+    "passed": 4,
+    "skipped": 0,
+    "source": "local",
+    "layer": "unit",
+    "localUncommittedAtRun": true,
+    "sourceReceipt": {
+      "path": "packages/operator-core/lib/analyze-heap-snapshots.test.ts",
+      "bytes": 5193,
+      "sha256": "ab2bb0141e1afa87e2aaefa2b097eb60157e97e2f3079ea6b60e2924ffea85e3"
+    },
+    "logReceipt": {
+      "path": "/tmp/su-7db4f-p011-heap-census-guard-r4.log",
+      "bytes": 4956,
+      "sha256": "7d663ee141bb6a874e1afe9cdef24b30dd45104057201f6f866091204a3f968b"
+    },
+    "reason": "Credential-shaped fixture marker replaced by the conventional low-entropy payload marker; runtime analyzer/cohort sources unchanged and R2 retained."
+  },
+  "snapshot": {
+    "bytes": 570841109,
+    "sha256": "df349e175ba8fa7255a4227f7544e0b51fd7cb930ad3a6074198308d25e4b1ee",
+    "census": {
+      "nodeCount": 4884673,
+      "totalSelfSizeBytes": 498067387,
+      "types": [
+        {
+          "type": "string",
+          "count": 354568,
+          "selfSizeBytes": 124737111
+        },
+        {
+          "type": "array",
+          "count": 266856,
+          "selfSizeBytes": 114600320
+        },
+        {
+          "type": "closure",
+          "count": 1620581,
+          "selfSizeBytes": 91041448
+        },
+        {
+          "type": "code",
+          "count": 754345,
+          "selfSizeBytes": 72667320
+        },
+        {
+          "type": "object",
+          "count": 1238525,
+          "selfSizeBytes": 60702584
+        },
+        {
+          "type": "object shape",
+          "count": 175918,
+          "selfSizeBytes": 16125504
+        },
+        {
+          "type": "hidden",
+          "count": 311498,
+          "selfSizeBytes": 12063936
+        },
+        {
+          "type": "concatenated string",
+          "count": 89683,
+          "selfSizeBytes": 2869856
+        },
+        {
+          "type": "native",
+          "count": 1860,
+          "selfSizeBytes": 1340084
+        },
+        {
+          "type": "regexp",
+          "count": 15888,
+          "selfSizeBytes": 889728
+        },
+        {
+          "type": "number",
+          "count": 44899,
+          "selfSizeBytes": 718224
+        },
+        {
+          "type": "sliced string",
+          "count": 7803,
+          "selfSizeBytes": 249696
+        },
+        {
+          "type": "bigint",
+          "count": 1129,
+          "selfSizeBytes": 33096
+        },
+        {
+          "type": "symbol",
+          "count": 1087,
+          "selfSizeBytes": 25704
+        },
+        {
+          "type": "synthetic",
+          "count": 33,
+          "selfSizeBytes": 2776
+        }
+      ],
+      "topClasses": [
+        {
+          "type": "string",
+          "class": "(string)",
+          "count": 354568,
+          "selfSizeBytes": 124737111
+        },
+        {
+          "type": "array",
+          "class": "(object properties)",
+          "count": 81854,
+          "selfSizeBytes": 89868144
+        },
+        {
+          "type": "closure",
+          "class": "(closure)",
+          "count": 1174031,
+          "selfSizeBytes": 65815920
+        },
+        {
+          "type": "code",
+          "class": "(code)",
+          "count": 642344,
+          "selfSizeBytes": 64845976
+        },
+        {
+          "type": "object",
+          "class": "Object",
+          "count": 463352,
+          "selfSizeBytes": 23670576
+        },
+        {
+          "type": "object",
+          "class": "(object)",
+          "count": 438534,
+          "selfSizeBytes": 23361928
+        },
+        {
+          "type": "object shape",
+          "class": "(object shape)",
+          "count": 175918,
+          "selfSizeBytes": 16125504
+        },
+        {
+          "type": "array",
+          "class": "(object elements)",
+          "count": 113843,
+          "selfSizeBytes": 13558696
+        },
+        {
+          "type": "hidden",
+          "class": "(hidden)",
+          "count": 311494,
+          "selfSizeBytes": 12063936
+        },
+        {
+          "type": "array",
+          "class": "(array)",
+          "count": 71159,
+          "selfSizeBytes": 11173480
+        },
+        {
+          "type": "closure",
+          "class": "get",
+          "count": 123624,
+          "selfSizeBytes": 6929648
+        },
+        {
+          "type": "object",
+          "class": "Array",
+          "count": 195970,
+          "selfSizeBytes": 6327264
+        },
+        {
+          "type": "closure",
+          "class": "set",
+          "count": 71857,
+          "selfSizeBytes": 4024208
+        },
+        {
+          "type": "concatenated string",
+          "class": "(concatenated string)",
+          "count": 89683,
+          "selfSizeBytes": 2869856
+        },
+        {
+          "type": "closure",
+          "class": "validate",
+          "count": 39450,
+          "selfSizeBytes": 2209328
+        },
+        {
+          "type": "closure",
+          "class": "native_bind",
+          "count": 45689,
+          "selfSizeBytes": 2193072
+        },
+        {
+          "type": "object",
+          "class": "Set",
+          "count": 52019,
+          "selfSizeBytes": 1664624
+        },
+        {
+          "type": "native",
+          "class": "(native)",
+          "count": 1860,
+          "selfSizeBytes": 1340084
+        },
+        {
+          "type": "object",
+          "class": "ExtraConfigColumn",
+          "count": 7238,
+          "selfSizeBytes": 1331792
+        },
+        {
+          "type": "object",
+          "class": "_2",
+          "count": 47264,
+          "selfSizeBytes": 1199688
+        },
+        {
+          "type": "regexp",
+          "class": "(regexp)",
+          "count": 15859,
+          "selfSizeBytes": 888104
+        },
+        {
+          "type": "number",
+          "class": "(number)",
+          "count": 44899,
+          "selfSizeBytes": 718224
+        },
+        {
+          "type": "object",
+          "class": "PgText",
+          "count": 4001,
+          "selfSizeBytes": 672168
+        },
+        {
+          "type": "closure",
+          "class": "handleCanaryResult",
+          "count": 11473,
+          "selfSizeBytes": 642488
+        },
+        {
+          "type": "closure",
+          "class": "runChecks2",
+          "count": 11473,
+          "selfSizeBytes": 642488
+        },
+        {
+          "type": "closure",
+          "class": "__init",
+          "count": 7462,
+          "selfSizeBytes": 477568
+        },
+        {
+          "type": "sliced string",
+          "class": "(sliced string)",
+          "count": 7803,
+          "selfSizeBytes": 249696
+        },
+        {
+          "type": "object",
+          "class": "Generator",
+          "count": 2696,
+          "selfSizeBytes": 245208
+        },
+        {
+          "type": "code",
+          "class": "(object elements)",
+          "count": 5713,
+          "selfSizeBytes": 210152
+        },
+        {
+          "type": "closure",
+          "class": "generateFastpass",
+          "count": 3410,
+          "selfSizeBytes": 190960
+        }
+      ],
+      "definition": "V8 snapshot node self_size, after snapshot GC; not retained/exclusive bytes or total native memory."
+    },
+    "durationMs": 116385,
+    "pid": 473507
+  },
+  "cleanup": {
+    "hostReaped": true,
+    "snapshotRemoved": true,
+    "runtimeHomeRemoved": true,
+    "temporarySnapshotPersisted": false
+  },
+  "perturbation": {
+    "profilerOperations": [
+      "v8.writeHeapSnapshot (forced GC/synchronous pause)"
+    ],
+    "debuggerPauses": 0,
+    "snapshotIncludesForcedGC": true,
+    "snapshotIncludesSynchronousPause": true,
+    "analysisIncludedInDuration": true,
+    "productionCapture": false
+  },
+  "limits": [
+    "One private request-only process copied from the selected serving generation; no live heap snapshot.",
+    "Type/class self_size census is post-snapshot-GC, not exclusive retained ownership.",
+    "No complete executable source graph is claimed.",
+    "Production/native/worker memory savings and parent P011/R8/R9 acceptance remain open.",
+    "Post-snapshot PSS is perturbed by capture and cannot establish ordinary steady-state footprint."
+  ],
+  "previousGuard": {
+    "file": "packages/operator-core/lib/analyze-heap-snapshots.test.ts",
+    "testRunId": 20549659,
+    "passed": 4,
+    "skipped": 0,
+    "source": "local",
+    "layer": "unit",
+    "localUntrackedAtRun": true
+  }
+}

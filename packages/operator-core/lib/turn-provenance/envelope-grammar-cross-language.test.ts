@@ -59,7 +59,9 @@ const ROOT = repoRoot();
 
 const LAUNCHER = join(ROOT, 'apps/operator/scripts/psu-launcher.mjs');
 const HOOK = join(ROOT, 'apps/operator/scripts/hooks/cc/userpromptsubmit-provenance.sh');
-const PTY_HOST = join(ROOT, 'apps/operator/scripts/psu-pty-host.mjs');
+// Overridable so scripts/mutation-probe.sh can point the guard at a frozen copy
+// (copy-out / historical mode) without mutating the shared tree.
+const PTY_HOST = process.env.ENVELOPE_GRAMMAR_PTY_HOST || join(ROOT, 'apps/operator/scripts/psu-pty-host.mjs');
 
 /**
  * The shared corpus. Every copy of the grammar, in every language, must agree
@@ -215,6 +217,28 @@ describe('turn-origin envelope grammar — one definition across four languages'
     expect(lines.map((line) => host.test(line))).toEqual(lines.map((line) => canonicalLine.test(line)));
   });
 
+  it('3c. WI-10005628: psu-pty-host.mjs unwraps the same whole-prompt paste block before its first-line marker check', () => {
+    // The pty host reads a kickoff's marker off the FIRST line of the native user
+    // row. Claude Code stores a long PTY-typed prompt inside a paste block, so a
+    // host copy without this unwrap reads an empty first line, declares the kickoff
+    // unverified and kills the working child. 3b alone could not see that: it
+    // checks the marker grammar, not what the host does before applying it.
+    const literal = extractJsLiteral(read(PTY_HOST), 'PASTE_WRAPPER_RE', 'psu-pty-host.mjs');
+    const host = new RegExp(literal);
+    expect(host.source).toBe(PASTE_WRAPPER_RE.source);
+    expect(pasteVectorFor((s) => host.test(s))).toEqual(CANONICAL_PASTE_VECTOR);
+    expect(
+      [...PASTE_ACCEPT, ...PASTE_REJECT].map((s) => host.exec(s)?.[2] ?? null),
+    ).toEqual(
+      [...PASTE_ACCEPT, ...PASTE_REJECT].map((s) => (PASTE_WRAPPER_RE.test(s) ? unwrapWholePaste(s) : null)),
+    );
+    // Wiring, not just a declared constant: the first-line check must call the unwrap.
+    const src = read(PTY_HOST);
+    const fn = /export function leadingTurnOriginMarker\(text\) \{([\s\S]*?)\n\}/.exec(src);
+    expect(fn, 'psu-pty-host.mjs: leadingTurnOriginMarker(text) not found; update this guard').not.toBeNull();
+    expect(fn![1]).toContain('unwrapWholePaste(');
+  });
+
   it('4. the python-in-shell hook agrees — run through REAL python3, not re-simulated in JS', () => {
     const src = read(HOOK);
     const literal = extractPythonLiteral(src, 'userpromptsubmit-provenance.sh');
@@ -358,13 +382,26 @@ describe('turn-origin envelope grammar — one definition across four languages'
       ['psu-pty-host.mjs', read(PTY_HOST)],
     ];
     for (const [file, src] of producerLiterals) {
-      const matches = [...src.matchAll(/`⟦turn-origin:([A-Za-z0-9:._@-]+) nonce:\$\{(\w+)\}⟧/g)];
+      // A producer may use a literal origin or a locally-normalized origin
+      // variable. Keep the dynamic domain bounded to literal choices so a
+      // new producer shape cannot silently escape this grammar guard.
+      const matches = [...src.matchAll(/[\x60]⟦turn-origin:([A-Za-z0-9:._@-]+|[$][{]([A-Za-z_$][\w$]*)[}]) nonce:[$][{](\w+)[}]⟧/g)];
       expect(matches.length, `${file}: expected at least one envelope producer literal`).toBeGreaterThan(0);
       for (const m of matches) {
-        const emitted = `⟦turn-origin:${m[1]} nonce:acc293aaced4a1d8⟧\npayload`;
-        const parsed = ENVELOPE_RE.exec(emitted);
-        expect(parsed, `${file}: emits an envelope the canonical grammar rejects: ${emitted}`).not.toBeNull();
-        expect(parsed![1]).toBe(m[1]);
+        const originVariable = m[2];
+        let origins = [m[1]];
+        if (originVariable) {
+          const binding = new RegExp('(?:const|let)\\s+' + originVariable + '\\s*=\\s*([^;\\n]+);').exec(src);
+          expect(binding, file + ': could not find a bounded binding for origin ' + originVariable).not.toBeNull();
+          origins = [...new Set([...binding![1].matchAll(/["']([A-Za-z0-9:._@-]+)["']/g)].map((value) => value[1]))];
+          expect(origins.length, file + ': interpolated origin has no finite string-literal values').toBeGreaterThan(0);
+        }
+        for (const origin of origins) {
+          const emitted = '⟦turn-origin:' + origin + ' nonce:acc293aaced4a1d8⟧\npayload';
+          const parsed = ENVELOPE_RE.exec(emitted);
+          expect(parsed, file + ': emits an envelope the canonical grammar rejects: ' + emitted).not.toBeNull();
+          expect(parsed![1]).toBe(origin);
+        }
       }
     }
   });

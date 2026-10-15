@@ -1,0 +1,204 @@
+{
+  "schemaVersion": "p011-spawner-boot-pair-qualification-v1",
+  "workItem": "WI-10005706",
+  "parent": "WI-10004890",
+  "raw": {
+    "path": "docs/evidence/papercusp-oct1-p011-spawner-boot-pair-r2-2026-10-02.json",
+    "bytes": 275685,
+    "sha256": "1367a39d36b3cf3f32fbc2dcce7611f3afca948c5b42b60a9046072f205cc057"
+  },
+  "test": {
+    "ledger": 20576077,
+    "status": "pass",
+    "passed": 1,
+    "filteredSkips": 18,
+    "plane": "local-private-integration",
+    "routerProvenance": "unknown",
+    "worktreeDirty": true
+  },
+  "previousAttempt": {
+    "ledger": 20576055,
+    "path": "docs/evidence/papercusp-oct1-p011-spawner-boot-pair-r1-2026-10-02.json",
+    "sha256": "eaedca23b3231561d9fb61d89cacde00dbc3d310e229c23fda1f06fff9579281",
+    "status": "fail",
+    "cause": "Diagnostic read the fence at the response root; server returns processExecFence. No memory samples or exec workload ran; graceful cleanup passed."
+  },
+  "guards": {
+    "passed": 22,
+    "skips": 0,
+    "logSha256": "90cc545df3515f597baf2cbd97b7ee2e4df0a5e4ab74ce9709f3d57dccfe1e66",
+    "focusedTypes": {
+      "shimErrors": 0,
+      "integrationErrors": 0
+    }
+  },
+  "sources": {
+    "namedBeforeAfterStable": true,
+    "named": [
+      {
+        "path": "apps/operator/bin/hono-host.ts",
+        "sha256": "d0bd77254d9b0ec9216a4cd2d52d911f78fa8a7751ce90a2a734b3717d9b56bd"
+      },
+      {
+        "path": "apps/operator/bin/spawner-sidecar.ts",
+        "sha256": "ea0ca6f3618c97a7af8f1e8a2473626b0caebb73d05cd6c2915a0783a3779417"
+      },
+      {
+        "path": "apps/operator/bin/bundle-host.sh",
+        "sha256": "5dc57d5b9991c82bf1bc6436df149f65782d2a6995ed258dfe3a1c12a9018d71"
+      },
+      {
+        "path": "apps/operator/bin/bundle-host-common.sh",
+        "sha256": "1425551d86295b5a5661ae855cc019527b5466f750e428df78cbbc9e01e01c9e"
+      },
+      {
+        "path": "packages/operator-core/lib/fleet/spawner-sidecar-server.ts",
+        "sha256": "6d5597e764ddbaa94b576393c7f1ca78a2c5f3002ef1e9b78a941aea47a2bba4"
+      },
+      {
+        "path": "packages/operator-core/lib/fleet/sidecar-exec-process.ts",
+        "sha256": "0ed9e108a181bc9066a42f53eef2980ba4e5a10d3306414b370d7faf7e3e66ff"
+      },
+      {
+        "path": "packages/operator-core/lib/fleet/sidecar-exec-lifetime.ts",
+        "sha256": "c8919c7348d24ccc5d57f226a954b0347293a2e4cae420977c067bba5995340b"
+      },
+      {
+        "path": "packages/operator-core/lib/flag-override-store-boot-effect.ts",
+        "sha256": "b5257b644a6ede07802685b855a548fdebce197b63da4da07c79e2bf57322408"
+      },
+      {
+        "path": "scripts/cdp-inspector.mjs",
+        "sha256": "0fae03367aef907fa7b42b825b2482417b470d350a02d4a000075be35d04a1c1"
+      },
+      {
+        "path": "scripts/with-test-pg.mjs",
+        "sha256": "0f9dd85f70d585515d9e869ffc7c3533a01250d794fc5c95936005906daa8085"
+      }
+    ],
+    "fullTransitiveGraph": "unknown",
+    "currentTestSha256": "9734119089eaed09c0848325dea8feefe3ee95c1e03fbbb86ba5d839ac1d5364"
+  },
+  "metricDefinitions": {
+    "pss": "Linux /proc/<owned PID>/smaps_rollup Pss kB multiplied by 1024, bound to startTicks; observed physical sharing-weighted footprint.",
+    "v8Allocated": "Node v25.9.0 v8.getHeapStatistics().total_allocated_bytes, cumulative V8 allocation since process boot, not retained or native allocation."
+  },
+  "arms": [
+    {
+      "arm": 0,
+      "mode": "full",
+      "bundleSha256": "fd2c809a7541d1030b0b7ed1163b6a771c5776238a2c4ca603712b960968063c",
+      "readyMs": 6828.34637,
+      "readyPssBytes": 923609088,
+      "completionPssBytes": 940486656,
+      "readyV8AllocatedBytes": 1402202792,
+      "completionV8AllocatedBytes": 1683414216,
+      "windowWallMs": [
+        580.8258119999991,
+        608.2298879999998,
+        534.395364
+      ],
+      "samples": 12,
+      "windows": 3,
+      "concurrencyPreserved": true,
+      "descendants": 13,
+      "reaped": true,
+      "forcedCleanup": false,
+      "socketRemoved": true,
+      "unreaped": []
+    },
+    {
+      "arm": 1,
+      "mode": "standalone",
+      "bundleSha256": "5074470b2ef25ef172d84b4af7d4b2c9bdcdcbeadd881490a99412f8304a154f",
+      "readyMs": 3215.2705800000003,
+      "readyPssBytes": 488699904,
+      "completionPssBytes": 489413632,
+      "readyV8AllocatedBytes": 583841112,
+      "completionV8AllocatedBytes": 646771672,
+      "windowWallMs": [
+        498.8718399999998,
+        514.7118279999995,
+        497.9791579999983
+      ],
+      "samples": 12,
+      "windows": 3,
+      "concurrencyPreserved": true,
+      "descendants": 13,
+      "reaped": true,
+      "forcedCleanup": false,
+      "socketRemoved": true,
+      "unreaped": []
+    },
+    {
+      "arm": 2,
+      "mode": "standalone",
+      "bundleSha256": "5074470b2ef25ef172d84b4af7d4b2c9bdcdcbeadd881490a99412f8304a154f",
+      "readyMs": 3015.284502999999,
+      "readyPssBytes": 486638592,
+      "completionPssBytes": 487309312,
+      "readyV8AllocatedBytes": 581998432,
+      "completionV8AllocatedBytes": 643277960,
+      "windowWallMs": [
+        502.80601300000126,
+        489.3864969999995,
+        486.0280339999954
+      ],
+      "samples": 12,
+      "windows": 3,
+      "concurrencyPreserved": true,
+      "descendants": 13,
+      "reaped": true,
+      "forcedCleanup": false,
+      "socketRemoved": true,
+      "unreaped": []
+    },
+    {
+      "arm": 3,
+      "mode": "full",
+      "bundleSha256": "fd2c809a7541d1030b0b7ed1163b6a771c5776238a2c4ca603712b960968063c",
+      "readyMs": 4817.213975999999,
+      "readyPssBytes": 854179840,
+      "completionPssBytes": 920630272,
+      "readyV8AllocatedBytes": 1347058096,
+      "completionV8AllocatedBytes": 1686905440,
+      "windowWallMs": [
+        528.9482869999993,
+        535.0816159999958,
+        532.0563769999935
+      ],
+      "samples": 12,
+      "windows": 3,
+      "concurrencyPreserved": true,
+      "descendants": 13,
+      "reaped": true,
+      "forcedCleanup": false,
+      "socketRemoved": true,
+      "unreaped": []
+    }
+  ],
+  "comparisons": [
+    {
+      "fullArm": 0,
+      "standaloneArm": 1,
+      "completionPssSavingBytes": 451073024,
+      "readyV8AllocationSavingBytes": 818361680,
+      "completionV8AllocationSavingBytes": 1036642544
+    },
+    {
+      "fullArm": 3,
+      "standaloneArm": 2,
+      "completionPssSavingBytes": 433320960,
+      "readyV8AllocationSavingBytes": 765059664,
+      "completionV8AllocationSavingBytes": 1043627480
+    }
+  ],
+  "conclusion": "Two order-reversed pairs support lower private spawner footprint from the standalone entry while preserving tested harmless IPC concurrency and cooperative cleanup. The same maintained server is used; the production spawn resolver is unchanged.",
+  "limitations": [
+    "No historical production recovery, current live-service savings, leak, unique retained-owner, independent acceptance or shipment claim.",
+    "No GC events recorded; PSS and heap windows are unforced.",
+    "spawn:invokeOnce was not called; full agent-spawn functionality requires existing guards and independent acceptance.",
+    "Production routing needs maintained boot/flag/parent/stdio/diagnostic safety and packaged artifact coverage before adoption.",
+    "The full transitive source graph and router provenance remain unknown."
+  ]
+}

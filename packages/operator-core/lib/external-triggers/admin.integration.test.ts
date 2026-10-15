@@ -8,7 +8,6 @@ import {
   createExternalTriggerBinding,
   createExternalTriggerSource,
   detachExternalTriggerBinding,
-  ensureExternalTriggerBinding,
   loadExternalTriggerAdminSnapshot,
   loadExternalTriggerPlanAdminSnapshot,
   migrateExternalTriggerPlanBindingToOperation,
@@ -47,7 +46,7 @@ beforeEach(async () => {
   await sql`DELETE FROM harness_shared.trigger_bindings WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.goals WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS}`;
-  await sql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.routines WHERE workspace_id = ${WS} AND install_slug = ${HARNESS} AND name = ${`plan-schedule-${PLAN}`}`;
   await sql`DELETE FROM harness_shared.harness_plans WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${PLAN}`;
 
@@ -68,7 +67,7 @@ beforeEach(async () => {
             '2026-08-22T12:00:00.000Z'::timestamptz,
             '2026-08-23T13:00:00.000Z'::timestamptz)`;
   const sources = await sql<Array<{ id: string }>>`
-    INSERT INTO harness_shared.trigger_sources
+    INSERT INTO harness_shared.data_sources
       (workspace_id, kind, status, credential_ref, last_connected_at)
     VALUES (${WS}, 'gmail', 'connected', 'google-oauth:fixture', now())
     RETURNING id`;
@@ -126,6 +125,32 @@ async function seedSettledProviderRun(): Promise<{ deliveryId: string; triggerRu
 }
 
 describe('external-trigger admin shared seam', () => {
+  it('projects source policy and sync diagnostics from canonical rows within the requested workspace', async () => {
+    const lastSyncAt = '2026-10-14T12:00:00.000Z';
+    const nextAttemptAt = '2026-10-14T12:00:30.000Z';
+    await sql`UPDATE harness_shared.data_sources
+      SET scope = 'pot', scope_ref = ${HARNESS}, permission_mapping = '{"mode":"source-acl"}'::jsonb,
+          backfill_status = 'running', sync_last_success_at = ${lastSyncAt}::timestamptz,
+          sync_next_attempt_at = ${nextAttemptAt}::timestamptz, sync_failure_count = 2,
+          last_error = 'rate_limited: retry after 30s'
+      WHERE workspace_id = ${WS} AND id = ${sourceId}::uuid`;
+    const [foreign] = await sql<{ id: string }[]>`INSERT INTO harness_shared.data_sources
+      (workspace_id, kind, status) VALUES ('admin-diagnostics-other-workspace', 'slack', 'error') RETURNING id::text`;
+
+    const snapshot = await loadExternalTriggerAdminSnapshot(sql, WS);
+    expect(snapshot.sources.map((source) => source.id)).toEqual([sourceId]);
+    expect(snapshot.sources[0]).toMatchObject({
+      scope: 'pot', scopeRef: HARNESS, permissionMode: 'source-acl', backfillStatus: 'running',
+      lastSyncAt, nextAttemptAt, failureCount: 2, lastError: 'rate_limited: retry after 30s',
+    });
+    expect(snapshot.sources[0]).not.toHaveProperty('permissionMapping');
+    expect(snapshot.sources[0]).not.toHaveProperty('credentials');
+    expect((await loadExternalTriggerAdminSnapshot(sql, 'admin-diagnostics-other-workspace')).sources[0]).toMatchObject({
+      id: foreign!.id, scope: 'organization', scopeRef: null, permissionMode: 'owner',
+      backfillStatus: 'not-requested', lastSyncAt: null, nextAttemptAt: null, failureCount: 0,
+    });
+  });
+
   it('reports source/binding/run truth from the canonical tables', async () => {
     const snapshot = await loadExternalTriggerAdminSnapshot(sql, WS);
     expect(snapshot.counts).toEqual({ sources: 1, bindings: 1, armed: 1, recentFailures: 1 });
@@ -144,6 +169,35 @@ describe('external-trigger admin shared seam', () => {
       lastRun: { status: 'failed', error: null },
     });
     expect(snapshot.recentRuns[0]).toMatchObject({ bindingId, status: 'failed', attempts: 2 });
+  });
+
+  it('loads source aggregates when the source relation is a compatibility view without primary-key metadata', async () => {
+    const relations = await sql<Array<{ relkind: string }>>`
+      SELECT c.relkind::text AS relkind
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'harness_shared' AND c.relname = 'data_sources'`;
+    expect(relations[0]?.relkind).toBe('r');
+
+    const snapshot = await sql.begin(async (tx) => {
+      await tx`SAVEPOINT compatibility_view_fixture`;
+      await tx`ALTER TABLE harness_shared.data_sources RENAME TO data_sources_view_fixture_base`;
+      await tx`CREATE VIEW harness_shared.data_sources AS
+        SELECT * FROM harness_shared.data_sources_view_fixture_base`;
+      const result = await loadExternalTriggerAdminSnapshot(tx as unknown as Sql, WS);
+      // Keep this schema substitution local to the assertion; all existing test
+      // cases continue against the migrated base table after the savepoint rolls back.
+      await tx`ROLLBACK TO SAVEPOINT compatibility_view_fixture`;
+      return result;
+    });
+
+    expect(snapshot.sources).toHaveLength(1);
+    expect(snapshot.sources[0]).toMatchObject({
+      id: sourceId,
+      kind: 'gmail',
+      bindingCount: 1,
+      armedBindingCount: 1,
+    });
   });
 
   it('projects a redacted trigger cause, policy trace, linked plan progress, and outcome links', async () => {
@@ -781,6 +835,31 @@ describe('P-023 — a social binding defaults to coalesce-with-cap, never to unb
     expect(binding.stormPolicy).toMatchObject({ maxRuns: 2, windowSeconds: 60 });
     expect(binding.stormPolicy.mode).toBeUndefined();
   });
+
+  // WI-10004920: the dispatch validity window says nothing about RATE, so stating
+  // only it must not cost a social binding its per-platform rate default — which
+  // is what happened while ANY stated policy displaced that default wholesale.
+  it('a policy stating only maxAgeSeconds keeps the social rate default and adds the window', async () => {
+    const binding = await bindOn('bluesky', { maxAgeSeconds: 3600 });
+    expect(binding.stormPolicy).toMatchObject({
+      mode: 'coalesce-with-cap',
+      maxRuns: 12,
+      windowSeconds: 300,
+      maxAgeSeconds: 3600,
+    });
+  });
+
+  it('CONTROL: a non-social source stating only maxAgeSeconds gets the generic rate default', async () => {
+    const binding = await bindOn('gmail', { maxAgeSeconds: 3600 });
+    expect(binding.stormPolicy).toMatchObject({ maxRuns: 12, windowSeconds: 60, maxAgeSeconds: 3600 });
+    expect(binding.stormPolicy.mode).toBeUndefined();
+  });
+
+  it('refuses a validity window past the 31-day ceiling on the social overlay path too', async () => {
+    await expect(bindOn('bluesky', { maxAgeSeconds: 32 * 24 * 60 * 60 })).rejects.toThrow(
+      /external_trigger_invalid_storm_max_age_seconds/,
+    );
+  });
 });
 
 describe('P-020 — goal-targeted bindings through the create door', () => {
@@ -841,16 +920,6 @@ describe('P-020 — goal-targeted bindings through the create door', () => {
       }),
     ).rejects.toThrow('external_trigger_unknown_goal:goal-that-does-not-exist');
   });
-
-  it('ensure door stays plan-only: a goal target is refused as ensure-unsupported', async () => {
-    await expect(
-      ensureExternalTriggerBinding(sql, WS, {
-        sourceId: goalSourceId,
-        goalId: GOAL,
-        eventPattern: 'ext:slack:mention',
-      }),
-    ).rejects.toThrow('external_trigger_goal_binding_ensure_unsupported');
-  });
 });
 
 describe('P-027 — the admin snapshot carries social platform facts per source', () => {
@@ -900,7 +969,7 @@ describe('P-027 — the admin snapshot carries social platform facts per source'
     const created = await createExternalTriggerSource(sql, WS, { kind: 'threads' });
     const at = new Date(Date.now() - 90_000).toISOString();
     await sql`
-      UPDATE harness_shared.trigger_sources
+      UPDATE harness_shared.data_sources
          SET cursor = ${JSON.stringify({ watermark: at, boundaryIds: ['m1'] })}::jsonb
        WHERE workspace_id = ${WS} AND id = ${created.id}::uuid`;
 
@@ -917,7 +986,7 @@ describe('P-027 — the admin snapshot carries social platform facts per source'
     // reports a perfectly healthy reddit source as never synced, forever.
     const created = await createExternalTriggerSource(sql, WS, { kind: 'reddit' });
     await sql`
-      UPDATE harness_shared.trigger_sources
+      UPDATE harness_shared.data_sources
          SET cursor = ${JSON.stringify({ newestFullname: 't3_abc123' })}::jsonb
        WHERE workspace_id = ${WS} AND id = ${created.id}::uuid`;
 

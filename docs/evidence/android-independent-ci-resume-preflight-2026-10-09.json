@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Android independent CI resume preflight for direct-download delivery",
+  "framework": "operational",
+  "command": [
+    "python3",
+    "tools/android-ci.py",
+    "--preflight"
+  ],
+  "startedAt": "2026-10-09T13:37:54.963920+00:00",
+  "finishedAt": "2026-10-09T13:38:13.764697+00:00",
+  "exitCode": 0,
+  "summary": "The maintained independent executor passed current prepared-operator freshness, Rust toolchain, emulator-loader, API36/16KB image, KVM and AVD capacity prerequisites after D-023 resumed direct-download APK engineering. This proves preflight readiness only; full host/connected/paired native acceptance, signing and installation remain separate.",
+  "sourceCommit": "02d85548615ed7ca9cbe5c67e67c167ff9ce61c8",
+  "sourceDirty": false,
+  "sourceFingerprint": "2e61c48d4248e2c18226a7b2ee7e77f1f5d5274cc5ed5f61ddd69ea51d6083d4",
+  "operatorCommit": "cf57965610278cd8d8183d6a4b12160d127da3c3",
+  "execution": {
+    "attemptId": "20261009T133754Z-e97edf93",
+    "status": "preflight-passed",
+    "retainedReceipt": "$HOME/.local/state/papercusp/android-ci-resume-preflight-20261009/attempts/20261009T133754Z-e97edf93/result.json",
+    "retainedReceiptSha256": "756c10a9b6eb7a9d47db3b9d8fd657d994e3f6a95c8cb825e0df33d706fc5771"
+  },
+  "phases": [
+    {
+      "name": "operator-freshness",
+      "exitCode": 0,
+      "sha256": "b4a95f1eab085ff5dd8500d693a2958402be4e8a44330fe9e22bc3417c878e27"
+    },
+    {
+      "name": "rust-preflight",
+      "exitCode": 0,
+      "sha256": "71898dff3c6432efdb734448f5be423843b12dd8075283501aad41600c41899c"
+    },
+    {
+      "name": "emulator-preflight",
+      "exitCode": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "avd-space-preflight",
+      "exitCode": 0,
+      "sha256": "a60eb486aa6ac758987094d5ab662b9e4f771adcb0a3653ccedfeb08d4d2ddcf"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "operator-freshness",
+      "passed": true,
+      "evidence": "Maintained real preflight phase exit 0; retained log SHA256 b4a95f1eab085ff5dd8500d693a2958402be4e8a44330fe9e22bc3417c878e27"
+    },
+    {
+      "id": "rust-preflight",
+      "passed": true,
+      "evidence": "Maintained real preflight phase exit 0; retained log SHA256 71898dff3c6432efdb734448f5be423843b12dd8075283501aad41600c41899c"
+    },
+    {
+      "id": "emulator-preflight",
+      "passed": true,
+      "evidence": "Maintained real preflight phase exit 0; retained log SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "avd-space-preflight",
+      "passed": true,
+      "evidence": "Maintained real preflight phase exit 0; retained log SHA256 a60eb486aa6ac758987094d5ab662b9e4f771adcb0a3653ccedfeb08d4d2ddcf"
+    }
+  ],
+  "controls": {
+    "command": "make test-android-ci test-android-runner",
+    "exitCode": 0,
+    "evidence": "Observed conventional maintained suites completed exit0, including13 Python tests, CI omission/mutation controls, private populated-chat seed, proof barrier and native lifecycle/readiness controls. These are runner controls, not full native instrumentation acceptance."
+  },
+  "acceptanceBoundary": {
+    "fullNativePass": false,
+    "migrationComplete": false,
+    "signedCandidate": false,
+    "physicalPhone": false,
+    "googlePlay": false
+  },
+  "migrationRefs": [
+    "WI-10007209",
+    "android-public-release-2026-10-01#P-016",
+    "android-public-release-2026-10-01#D-022",
+    "android-public-release-2026-10-01#D-023"
+  ]
+}

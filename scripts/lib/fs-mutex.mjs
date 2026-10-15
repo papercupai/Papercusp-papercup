@@ -6,12 +6,11 @@
 // (libs/test-config/src/testcontainer-start-lock.ts): an atomic `mkdir` as the
 // lock primitive (POSIX mkdir either creates the dir or fails EEXIST — no
 // separate compare-and-swap needed), an owner.json recording {pid, host,
-// startedAt} for diagnostics, and a two-layer reclaim so a crashed holder can
-// never wedge every future caller forever:
-//   1. age-based staleness (`staleMs`) — a purely time-based fallback;
-//   2. positive dead-owner confirmation (same host + ESRCH on `kill(pid, 0)`) —
-//      reclaims immediately instead of waiting out the FULL stale window,
-//      closing the gap EI-7818 found in the pure age-based check alone.
+// startedAt} for diagnostics, and owner-aware reclamation:
+//   1. positive dead-owner confirmation (same host + ESRCH on `kill(pid, 0)`)
+//      reclaims immediately instead of waiting out the stale window;
+//   2. age-based staleness (`staleMs`) recovers only missing/malformed owner
+//      records. A live or remote owner retains its lease however old it gets.
 // Deliberately duplicated here rather than importing from `@papercusp/test-config`:
 // that package is TS or vitest-testcontainer-shaped, but the caller (a bare
 // `node scripts/npm-install-safe.mjs`, run from `preinstall`/CI/any agent's raw
@@ -19,14 +18,19 @@
 // the test toolchain. If a THIRD consumer shows up, promote both to one shared
 // `libs/generic/fs-mutex` package instead of a third copy.
 import { randomUUID } from "node:crypto";
-import { homedir, hostname } from "node:os";
-import { join, resolve } from "node:path";
+import { userInfo, hostname } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import {
+  lstat,
   mkdir,
+  opendir,
   readFile,
   readdir,
+  readlink,
+  rename,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { readFileSync } from "node:fs";
@@ -34,6 +38,8 @@ import { readFileSync } from "node:fs";
 const DEFAULT_TIMEOUT_MS = 180_000;
 const DEFAULT_STALE_MS = 10 * 60_000;
 const DEFAULT_RETRY_MS = 250;
+const LEGACY_FS_MUTEX_LOCK_ROOT = "/tmp/pcv/fs-mutex-locks";
+const LEGACY_ROOT_CENSUS_LIMIT = 10_000;
 
 /**
  * Host-wide reader/writer boundary for package-manager cache access.
@@ -46,6 +52,24 @@ const DEFAULT_RETRY_MS = 250;
  * already share, so the two sides cannot silently drift onto different locks.
  */
 export const PACKAGE_CACHE_MUTEX_NAME = "package-manager-cache";
+
+/**
+ * Default wait budget for both lease kinds. PAPERCUSP_FS_MUTEX_TIMEOUT_MS wins;
+ * otherwise PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC (EI-24961470606265468), the one
+ * knob an unattended desktop build sets so this wait (like the sidecar and vite
+ * build locks) can queue behind a peer instead of failing after 180 s.
+ */
+export function resolveFsMutexTimeoutMs(env = process.env) {
+  const explicit = Number(env.PAPERCUSP_FS_MUTEX_TIMEOUT_MS);
+  if (env.PAPERCUSP_FS_MUTEX_TIMEOUT_MS && Number.isFinite(explicit) && explicit > 0) {
+    return explicit;
+  }
+  const unattendedSec = Number(env.PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC);
+  if (env.PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC && Number.isFinite(unattendedSec) && unattendedSec > 0) {
+    return unattendedSec * 1000;
+  }
+  return DEFAULT_TIMEOUT_MS;
+}
 
 function intEnv(name, fallback) {
   const raw = process.env[name];
@@ -67,22 +91,337 @@ function sleep(ms) {
  * /tmp/pcv/fs-mutex-locks and /tmp/pcv/pcv/fs-mutex-locks, allowing two root
  * reifiers to hollow shared packages concurrently (WI-40965 / D-031).
  *
- * Keep the existing Linux/macOS default path so already-running default-env
- * callers retain lock continuity. Windows has no guaranteed /tmp, so use the
- * account home there. PAPERCUSP_FS_MUTEX_LOCK_DIR remains the explicit test /
- * operator override on every platform.
+ * Default the small control-plane markers to the account home instead of bulk
+ * scratch. The old Linux/macOS path is aliased to this root only after a
+ * read-only census proves that no active or unknown legacy lease remains.
+ * PAPERCUSP_FS_MUTEX_LOCK_DIR remains the explicit test / operator override on
+ * every platform.
  *
  * @param {NodeJS.ProcessEnv} [env]
  * @param {{ platform?: NodeJS.Platform, homeDir?: string }} [options]
  */
 export function resolveFsMutexLockRoot(env = process.env, options = {}) {
   const platform = options.platform ?? process.platform;
-  const homeDir = options.homeDir ?? homedir();
-  const stableDefault =
-    platform === "win32"
-      ? join(homeDir, ".papercusp", "fs-mutex-locks")
-      : "/tmp/pcv/fs-mutex-locks";
+  const homeDir = options.homeDir ?? userInfo().homedir;
+  const stableDefault = join(homeDir, ".papercusp", "fs-mutex-locks");
   return resolve(env.PAPERCUSP_FS_MUTEX_LOCK_DIR ?? stableDefault);
+}
+
+function staleMsFromEnv(env) {
+  const configured = Number(env.PAPERCUSP_FS_MUTEX_STALE_MS);
+  return env.PAPERCUSP_FS_MUTEX_STALE_MS &&
+    Number.isFinite(configured) &&
+    configured > 0
+    ? configured
+    : DEFAULT_STALE_MS;
+}
+
+function emptyLegacyCensus() {
+  const stateCounts = () => ({ active: 0, stale: 0, unknown: 0 });
+  return {
+    writer: stateCounts(),
+    reader: stateCounts(),
+    queue: stateCounts(),
+    otherUnknown: 0,
+    scanned: 0,
+    complete: true,
+  };
+}
+
+function totalLegacyCensus(census, state) {
+  return census.writer[state] + census.reader[state] + census.queue[state] +
+    (state === "unknown" ? census.otherUnknown : 0);
+}
+
+function legacyRootError(code, message, census, cause) {
+  const error = new Error(message);
+  error.code = code;
+  if (census) error.census = census;
+  if (cause) error.cause = cause;
+  return error;
+}
+
+async function legacyLeaseState(markerDir, staleMs) {
+  let markerStat;
+  try {
+    markerStat = await lstat(markerDir);
+  } catch {
+    return "unknown";
+  }
+  if (!markerStat.isDirectory()) return "unknown";
+
+  let owner;
+  try {
+    owner = JSON.parse(await readFile(join(markerDir, "owner.json"), "utf8"));
+  } catch {
+    return Date.now() - markerStat.mtimeMs > staleMs ? "stale" : "unknown";
+  }
+
+  if (
+    !owner ||
+    !Number.isInteger(owner.pid) ||
+    owner.pid <= 0 ||
+    typeof owner.host !== "string" ||
+    owner.host.length === 0
+  ) {
+    return Date.now() - markerStat.mtimeMs > staleMs ? "stale" : "unknown";
+  }
+  if (owner.host !== hostname()) return "unknown";
+
+  try {
+    process.kill(owner.pid, 0);
+  } catch (error) {
+    return error?.code === "ESRCH" ? "stale" : "unknown";
+  }
+
+  const current = processIdentity(owner.pid);
+  if (
+    current &&
+    ((Number.isInteger(current.tgid) && current.tgid !== owner.pid) ||
+      (owner.startTicks && current.startTicks && owner.startTicks !== current.startTicks) ||
+      (owner.bootId && current.bootId && owner.bootId !== current.bootId))
+  ) {
+    return "stale";
+  }
+  return "active";
+}
+
+async function censusLegacyContainer(containerPath, type, suffix, census, staleMs) {
+  let directory;
+  try {
+    directory = await opendir(containerPath);
+  } catch {
+    census.otherUnknown++;
+    census.complete = false;
+    return;
+  }
+
+  try {
+    for await (const entry of directory) {
+      if (census.scanned >= LEGACY_ROOT_CENSUS_LIMIT) {
+        census.otherUnknown++;
+        census.complete = false;
+        return;
+      }
+      census.scanned++;
+      if (!entry.isDirectory() || !entry.name.endsWith(suffix)) {
+        census.otherUnknown++;
+        continue;
+      }
+      census[type][await legacyLeaseState(join(containerPath, entry.name), staleMs)]++;
+    }
+  } catch {
+    census.otherUnknown++;
+    census.complete = false;
+  }
+}
+
+/** Inspect legacy leases without creating, removing, or migrating any marker. */
+export async function censusLegacyFsMutexRoot(legacyRoot, staleMs = staleMsFromEnv(process.env)) {
+  const census = emptyLegacyCensus();
+  let directory;
+  try {
+    directory = await opendir(legacyRoot);
+  } catch {
+    census.otherUnknown++;
+    census.complete = false;
+    return census;
+  }
+
+  try {
+    for await (const entry of directory) {
+      if (census.scanned >= LEGACY_ROOT_CENSUS_LIMIT) {
+        census.otherUnknown++;
+        census.complete = false;
+        return census;
+      }
+      census.scanned++;
+      const entryPath = join(legacyRoot, entry.name);
+      if (entry.name.endsWith(".readers") && entry.isDirectory()) {
+        await censusLegacyContainer(entryPath, "reader", ".lock", census, staleMs);
+      } else if (entry.name.endsWith(".queue") && entry.isDirectory()) {
+        await censusLegacyContainer(entryPath, "queue", ".ticket", census, staleMs);
+      } else if (entry.name.endsWith(".lock")) {
+        census.writer[await legacyLeaseState(entryPath, staleMs)]++;
+      } else {
+        census.otherUnknown++;
+      }
+    }
+  } catch {
+    census.otherUnknown++;
+    census.complete = false;
+  }
+  return census;
+}
+
+async function legacyAliasPointsTo(legacyRoot, root) {
+  try {
+    const link = await readlink(legacyRoot);
+    return resolve(dirname(legacyRoot), link) === resolve(root);
+  } catch {
+    return false;
+  }
+}
+
+async function restoreLegacyRoot(quarantineRoot, legacyRoot) {
+  if (!quarantineRoot) return;
+  try {
+    await lstat(legacyRoot);
+    return;
+  } catch (error) {
+    if (error?.code !== "ENOENT") return;
+  }
+  await rename(quarantineRoot, legacyRoot).catch(() => {});
+}
+
+function measureFsMutexOperation(phaseTimingsMs, phase, operation) {
+  if (!phaseTimingsMs) return operation();
+  const startedAt = performance.now();
+  const record = () => {
+    phaseTimingsMs[phase] =
+      (phaseTimingsMs[phase] ?? 0) + Math.max(0, performance.now() - startedAt);
+  };
+  try {
+    return Promise.resolve(operation()).finally(record);
+  } catch (error) {
+    record();
+    throw error;
+  }
+}
+
+/**
+ * Prepare the resolved mutex root and preserve the old lock identity across the
+ * migration. A legacy root is moved aside only after a complete read-only
+ * census finds zero active and zero unknown leases; its stale markers remain in
+ * a sibling quarantine directory, and the old path becomes a symlink to the
+ * account-home root. An explicit override is authoritative and bypasses this
+ * migration.
+ *
+ * The optional legacyRoot and homeDir values are deterministic test seams; the
+ * production callers use the platform defaults.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {{ platform?: NodeJS.Platform, homeDir?: string, legacyRoot?: string, phaseTimingsMs?: Record<string, number> }} [options]
+ */
+export async function ensureFsMutexLockRoot(env = process.env, options = {}) {
+  const measure = (phase, operation) => measureFsMutexOperation(
+    options.phaseTimingsMs,
+    `lock-root.${phase}`,
+    operation,
+  );
+  const platform = options.platform ?? process.platform;
+  const root = resolveFsMutexLockRoot(env, options);
+  const hasOverride =
+    env.PAPERCUSP_FS_MUTEX_LOCK_DIR !== undefined &&
+    env.PAPERCUSP_FS_MUTEX_LOCK_DIR !== null;
+  const legacyRootValue =
+    options.legacyRoot ?? (platform === "win32" ? null : LEGACY_FS_MUTEX_LOCK_ROOT);
+
+  if (hasOverride || legacyRootValue === null) {
+    await measure("mkdir", () => mkdir(root, { recursive: true }));
+    return root;
+  }
+
+  const legacyRoot = resolve(legacyRootValue);
+  if (legacyRoot === root) {
+    await measure("mkdir", () => mkdir(root, { recursive: true }));
+    return root;
+  }
+
+  let legacyStat = null;
+  try {
+    legacyStat = await measure("legacy-lstat", () => lstat(legacyRoot));
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw legacyRootError(
+        "ELEGACYFSLOCKBUSY",
+        "Refusing fs-mutex root migration because the legacy root cannot be inspected: " + legacyRoot,
+        emptyLegacyCensus(),
+        error,
+      );
+    }
+  }
+
+  if (legacyStat?.isSymbolicLink()) {
+    if (!(await measure("legacy-alias-check", () => legacyAliasPointsTo(legacyRoot, root)))) {
+      throw legacyRootError(
+        "ELEGACYFSLOCKBUSY",
+        "Refusing fs-mutex root migration because the legacy path is an unexpected symlink: " + legacyRoot,
+        { ...emptyLegacyCensus(), otherUnknown: 1 },
+      );
+    }
+    await measure("mkdir", () => mkdir(root, { recursive: true }));
+    return root;
+  }
+
+  let census = emptyLegacyCensus();
+  if (legacyStat) {
+    if (!legacyStat.isDirectory()) {
+      census.otherUnknown++;
+      throw legacyRootError(
+        "ELEGACYFSLOCKBUSY",
+        "Refusing fs-mutex root migration because the legacy path is not a directory: " + legacyRoot,
+        census,
+      );
+    }
+    census = await measure(
+      "legacy-census",
+      () => censusLegacyFsMutexRoot(legacyRoot, staleMsFromEnv(env)),
+    );
+    const active = totalLegacyCensus(census, "active");
+    const unknown = totalLegacyCensus(census, "unknown");
+    if (!census.complete || unknown > 0) {
+      throw legacyRootError(
+        "ELEGACYFSLOCKBUSY",
+        "Refusing fs-mutex root migration: legacy leases active=" + active +
+          " unknown=" + unknown + " at " + legacyRoot,
+        census,
+      );
+    }
+    // Known live leases have an unambiguous lock identity. Keep new callers on
+    // that same root until they drain; only uncertainty fails closed.
+    if (active > 0) return legacyRoot;
+  }
+
+  await measure("mkdir", () => mkdir(root, { recursive: true }));
+  let quarantineRoot = null;
+  if (legacyStat) {
+    quarantineRoot =
+      legacyRoot + ".legacy-" + Date.now() + "-" + process.pid + "-" + randomUUID();
+    try {
+      await measure("legacy-quarantine-rename", () => rename(legacyRoot, quarantineRoot));
+    } catch (error) {
+      if (await measure("legacy-alias-check", () => legacyAliasPointsTo(legacyRoot, root))) return root;
+      if (error?.code !== "ENOENT") {
+        throw legacyRootError(
+          "ELEGACYFSALIASFAILED",
+          "Could not preserve the quiesced legacy mutex root: " + legacyRoot,
+          census,
+          error,
+        );
+      }
+    }
+  }
+
+  try {
+    await measure("legacy-parent-mkdir", () => mkdir(dirname(legacyRoot), { recursive: true }));
+    await measure("legacy-symlink", () => symlink(root, legacyRoot, "dir"));
+  } catch (error) {
+    if (await measure("legacy-alias-check", () => legacyAliasPointsTo(legacyRoot, root))) return root;
+    try {
+      if ((await measure("legacy-final-lstat", () => lstat(legacyRoot))).isDirectory()) return legacyRoot;
+    } catch {
+      // Preserve the original failure when neither the alias nor root is usable.
+    }
+    await measure("legacy-restore", () => restoreLegacyRoot(quarantineRoot, legacyRoot));
+    throw legacyRootError(
+      "ELEGACYFSALIASFAILED",
+      "Could not alias the legacy mutex path to the canonical root: " + legacyRoot,
+      census,
+      error,
+    );
+  }
+  return root;
 }
 
 function lockRoot() {
@@ -105,56 +444,10 @@ async function readOwner(lockDir) {
   }
 }
 
-/**
- * True only when we can POSITIVELY confirm the lock's recorded owner process is
- * dead: same host (a cross-host pid means nothing) AND `process.kill(pid, 0)`
- * reports ESRCH (no such process). Any other outcome (different host,
- * unparseable owner.json, EPERM/alive, or any other error) returns false — this
- * must never produce a false "dead" that reclaims a live holder's lock.
- */
-async function isOwnerProcessConfirmedDead(lockDir) {
-  let raw;
-  try {
-    raw = await readFile(join(lockDir, "owner.json"), "utf8");
-  } catch {
-    return false;
-  }
-  let owner;
-  try {
-    owner = JSON.parse(raw);
-  } catch {
-    return false;
-  }
-  if (typeof owner.pid !== "number" || typeof owner.host !== "string")
-    return false;
-  if (owner.host !== hostname()) return false;
-  try {
-    process.kill(owner.pid, 0);
-    return false; // no throw ⇒ signal delivered ⇒ process exists (or we lack permission ⇒ assume alive)
-  } catch (error) {
-    return error && error.code === "ESRCH";
-  }
-}
-
 async function lockAgeMs(lockDir) {
   return stat(lockDir)
     .then((s) => Date.now() - s.mtimeMs)
     .catch(() => 0);
-}
-
-async function reclaimAbandonedLock(lockDir, staleMs) {
-  // Confirm a dead owner before falling back to the existing age-based safety
-  // valve. The positive pid check is what lets a crashed reader release its
-  // marker promptly; the age fallback also handles a process dying between
-  // mkdir and owner.json, where there is no pid to inspect.
-  if (
-    (await isOwnerProcessConfirmedDead(lockDir)) ||
-    (await lockAgeMs(lockDir)) > staleMs
-  ) {
-    await rm(lockDir, { recursive: true, force: true });
-    return true;
-  }
-  return false;
 }
 
 // EI-21915677034576963 — a FIFO fairness queue for `withFsMutex`'s WRITE-mode
@@ -232,53 +525,67 @@ function sanitizeIntent(intent) {
 }
 
 /**
- * Reclaim one abandoned WAIT TICKET. Deliberately NOT the same policy as
- * `reclaimAbandonedLock`: a ticket legitimately gets old while its owner is
- * genuinely still waiting — that is exactly the multi-hour starvation this queue
- * exists to prevent — so age alone must NEVER reclaim a ticket whose owner.json
- * parses and names a still-alive process; only a POSITIVELY confirmed-dead owner
- * does. Age is still the fallback ONLY for the narrow "mkdir landed, owner.json
- * never did" crash window: a ticket with no readable owner can never be confirmed
- * dead by pid, and left unreclaimed would otherwise wedge the whole queue behind a
- * phantom waiter forever.
+ * Reclaim an abandoned reader lease, writer lease or wait ticket using the same
+ * owner-aware policy. Long callbacks and queued tickets legitimately get old;
+ * only positive same-host dead-process evidence can reclaim a valid owner.
+ * Age remains a recovery fallback for missing/malformed records (including a
+ * crash between mkdir and owner publication). Remote owners and EPERM stay held.
  */
-async function reclaimAbandonedTicket(ticketDir, staleMs) {
-  let raw;
+function processIdentity(pid) {
   try {
-    raw = await readFile(join(ticketDir, "owner.json"), "utf8");
-  } catch {
-    if ((await lockAgeMs(ticketDir)) > staleMs)
-      await rm(ticketDir, { recursive: true, force: true });
-    return;
-  }
+    const status = readFileSync(`/proc/${pid}/status`, 'utf8');
+    const tgid = Number(/^Tgid:\s*(\d+)$/m.exec(status)?.[1]);
+    const value = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const startTicks = value.slice(value.lastIndexOf(')') + 2).trim().split(/\s+/)[19];
+    const bootId = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+    return { tgid, startTicks, bootId };
+  } catch { return null; } // Non-Linux/access failures retain the kill(0) policy.
+}
+
+async function reclaimAbandonedLock(lockDir, staleMs) {
   let owner;
   try {
-    owner = JSON.parse(raw);
+    owner = JSON.parse(await readFile(join(lockDir, "owner.json"), "utf8"));
   } catch {
-    if ((await lockAgeMs(ticketDir)) > staleMs)
-      await rm(ticketDir, { recursive: true, force: true });
-    return;
+    // The age fallback below handles unreadable and unparseable records.
   }
-  if (
-    typeof owner.pid !== "number" ||
-    typeof owner.host !== "string" ||
-    owner.host !== hostname()
-  )
-    return;
+  if (!owner || !Number.isInteger(owner.pid) || owner.pid <= 0 ||
+      typeof owner.host !== "string" || owner.host.length === 0) {
+    if ((await lockAgeMs(lockDir)) <= staleMs) return false;
+    await rm(lockDir, { recursive: true, force: true });
+    return true;
+  }
+  if (owner.host !== hostname()) return false;
   try {
     process.kill(owner.pid, 0);
-    return; // no throw ⇒ signal delivered ⇒ owner is alive (or unconfirmable ⇒ assume alive)
+    const current = processIdentity(owner.pid);
+    // process.pid always names a thread-group leader. A reused nonleader TID
+    // cannot own even a legacy lease. New leases also survive leader-PID reuse
+    // and reboot safely by recording their kernel identity at publication.
+    if (current && ((Number.isInteger(current.tgid) && current.tgid !== owner.pid) ||
+        (owner.startTicks && current.startTicks && owner.startTicks !== current.startTicks) ||
+        (owner.bootId && current.bootId && owner.bootId !== current.bootId))) {
+      await rm(lockDir, { recursive: true, force: true });
+      return true;
+    }
+    return false;
   } catch (error) {
-    if (error && error.code === "ESRCH")
-      await rm(ticketDir, { recursive: true, force: true });
+    if (!error || error.code !== "ESRCH") return false;
+    await rm(lockDir, { recursive: true, force: true });
+    return true;
   }
 }
 
 /**
  * The ticket that has been waiting LONGEST for `name`'s write lock, after
- * reclaiming any abandoned tickets — or null when the queue directory cannot be
- * read. Fail-open: no ordering information ⇒ the caller falls back to racing for
- * the lock directly, so a broken/unreadable queue can never deadlock acquisition.
+ * reclaiming abandoned tickets at the head — or null when the queue directory
+ * cannot be read. Ticket ids sort in FIFO order, so a stale ticket behind the
+ * first live ticket cannot block admission yet; leave it for the scan when it
+ * reaches the head. This keeps each poll from doing owner-file and process
+ * liveness I/O for every waiter in a wide queue.
+ *
+ * Fail-open: no ordering information ⇒ the caller falls back to racing for the
+ * lock directly, so a broken/unreadable queue can never deadlock acquisition.
  */
 async function oldestTicketDir(ticketsDir, staleMs) {
   let entries;
@@ -287,21 +594,25 @@ async function oldestTicketDir(ticketsDir, staleMs) {
   } catch {
     return null;
   }
-  const ticketDirs = entries
+  const ticketNames = entries
     .filter((entry) => entry.isDirectory())
-    .map((entry) => join(ticketsDir, entry.name));
-  for (const ticketDir of ticketDirs)
-    await reclaimAbandonedTicket(ticketDir, staleMs);
-  let remaining;
-  try {
-    remaining = (await readdir(ticketsDir, { withFileTypes: true }))
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
-      .sort();
-  } catch {
-    return null;
+    .map((entry) => entry.name)
+    .sort();
+  for (const ticketName of ticketNames) {
+    const ticketDir = join(ticketsDir, ticketName);
+    if (await reclaimAbandonedLock(ticketDir, staleMs)) continue;
+    try {
+      // Another waiter may have cleaned this candidate after our directory
+      // snapshot. Skip that vanished entry and continue through the ordered
+      // prefix instead of treating it as the live head.
+      if (!(await lstat(ticketDir)).isDirectory()) continue;
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      return null;
+    }
+    return ticketDir;
   }
-  return remaining.length ? join(ticketsDir, remaining[0]) : null;
+  return null;
 }
 
 async function writerLockIsHeld(lockDir, staleMs) {
@@ -379,8 +690,12 @@ async function waitForReaders(
  *
  * @template T
  * @param {string} name
- * @param {() => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader' | 'write', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number }) => void, intent?: Record<string, string | number | boolean> }} [opts]
+ * The callback may check for live queued writers and voluntarily return early.
+ * The check uses the same ticket reclamation as acquisition; it never releases
+ * the lock itself. Reader-mode and explicitly disabled locks have no check.
+ *
+ * @param {(context?: { hasWaiters: () => Promise<boolean> }) => Promise<T>} fn
+ * @param {{ mode?: 'read' | 'reader' | 'write', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean> }} [opts]
  * @returns {Promise<T>}
  */
 export async function withFsMutex(name, fn, opts = {}) {
@@ -390,12 +705,30 @@ export async function withFsMutex(name, fn, opts = {}) {
     return fn();
   }
 
-  const root = lockRoot();
+  const admissionSubphaseTimingsMs = typeof opts.onAcquired === "function" ? {} : undefined;
+  const measureAdmissionSubphase = admissionSubphaseTimingsMs
+    ? async (name, operation) => {
+      const phaseStartedAt = performance.now();
+      try {
+        return await operation();
+      } finally {
+        admissionSubphaseTimingsMs[name] =
+          (admissionSubphaseTimingsMs[name] ?? 0) + Math.max(0, performance.now() - phaseStartedAt);
+      }
+    }
+    : (_name, operation) => operation();
+  // Root resolution is outside the mutex's timeout budget, but remains visible in
+  // caller timing maps. The nested `lock-root.*` phases intentionally overlap
+  // `lock-root.ensure`; they identify which root-resolution operation consumed time.
+  const root = await measureAdmissionSubphase(
+    "lock-root.ensure",
+    () => ensureFsMutexLockRoot(undefined, admissionSubphaseTimingsMs
+      ? { phaseTimingsMs: admissionSubphaseTimingsMs }
+      : undefined),
+  );
   const lockDir = join(root, `${safeName(name)}.lock`);
   const readersDir = readerRoot(root, name);
-  const timeoutMs =
-    opts.timeoutMs ??
-    intEnv("PAPERCUSP_FS_MUTEX_TIMEOUT_MS", DEFAULT_TIMEOUT_MS);
+  const timeoutMs = opts.timeoutMs ?? resolveFsMutexTimeoutMs();
   const staleMs =
     opts.staleMs ?? intEnv("PAPERCUSP_FS_MUTEX_STALE_MS", DEFAULT_STALE_MS);
   const retryMs =
@@ -406,13 +739,12 @@ export async function withFsMutex(name, fn, opts = {}) {
   const intent = sanitizeIntent(opts.intent);
   const owner = {
     pid: process.pid,
+    ...processIdentity(process.pid),
     host: hostname(),
     startedAt: new Date(startedAt).toISOString(),
     name,
     ...(intent ? { intent } : {}),
   };
-
-  await mkdir(root, { recursive: true });
 
   // EI-21915677034576963: register a FIFO ticket BEFORE racing for the write lock, so a
   // caller that has been waiting longest is never overtaken by a newer one that simply
@@ -425,13 +757,14 @@ export async function withFsMutex(name, fn, opts = {}) {
   const ticketsDir = queueRoot(root, name);
   const myTicketDir = join(ticketsDir, `${ticketId(startedAt)}.ticket`);
   let ticketRegistered = false;
+  let writerOwner;
   try {
-    await mkdir(ticketsDir, { recursive: true });
-    await mkdir(myTicketDir);
-    await writeFile(
+    await measureAdmissionSubphase("queue-root-mkdir", () => mkdir(ticketsDir, { recursive: true }));
+    await measureAdmissionSubphase("ticket-mkdir", () => mkdir(myTicketDir));
+    await measureAdmissionSubphase("ticket-owner-write", () => writeFile(
       join(myTicketDir, "owner.json"),
-      `${JSON.stringify(owner, null, 2)}\n`,
-    );
+      JSON.stringify(owner, null, 2) + "\n",
+    ));
     ticketRegistered = true;
   } catch {
     ticketRegistered = false;
@@ -464,64 +797,64 @@ export async function withFsMutex(name, fn, opts = {}) {
   try {
     for (;;) {
       if (ticketRegistered) {
-        const oldest = await oldestTicketDir(ticketsDir, staleMs);
+        const oldest = await measureAdmissionSubphase(
+          "ticket-scan",
+          () => oldestTicketDir(ticketsDir, staleMs),
+        );
         if (oldest != null && oldest !== myTicketDir) {
           // Someone else registered first — don't even attempt the mkdir race this
           // cycle; let them go before us.
           const elapsed = Date.now() - startedAt;
-          await announceWaiting(elapsed);
+          await measureAdmissionSubphase("waiting-notice", () => announceWaiting(elapsed));
           if (elapsed > timeoutMs) {
             const currentOwner = await readOwner(lockDir);
             throw new Error(
               `Timed out after ${timeoutMs}ms waiting for fs-mutex "${name}" (${lockDir}); holder: ${currentOwner}`,
             );
           }
-          await sleep(retryMs);
+          await measureAdmissionSubphase("backoff-sleep", () => sleep(retryMs));
           continue;
         }
       }
       try {
-        await mkdir(lockDir);
+        await measureAdmissionSubphase("writer-lock-mkdir", () => mkdir(lockDir));
         // WI-1490656: `startedAt` is when this caller began TRYING, so it includes its own
         // queue wait and cannot answer "how long has the lock been HELD" — the one question a
         // triager staring at a stalled pipeline actually asks. Reading it as a hold duration
         // produced a wrong, confidently-reported measurement during this very investigation.
         // The mkdir above IS the grant, so stamp the grant instant here and make it
         // answerable instead of inviting the same misreading again.
-        await writeFile(
+        writerOwner = { ...owner, acquiredAt: new Date().toISOString(), phase: "draining-readers" };
+        await measureAdmissionSubphase("writer-owner-write", () => writeFile(
           join(lockDir, "owner.json"),
-          `${JSON.stringify({ ...owner, acquiredAt: new Date().toISOString() }, null, 2)}\n`,
-        );
+          JSON.stringify(writerOwner, null, 2) + "\n",
+        ));
         break;
       } catch (error) {
         if (error.code !== "EEXIST") throw error;
 
         const elapsed = Date.now() - startedAt;
-        await announceWaiting(elapsed);
-        const lockAgeMs = await stat(lockDir)
-          .then((s) => Date.now() - s.mtimeMs)
-          .catch(() => 0);
-        if (lockAgeMs > staleMs) {
-          await rm(lockDir, { recursive: true, force: true });
-          continue;
-        }
-        if (await isOwnerProcessConfirmedDead(lockDir)) {
-          await rm(lockDir, { recursive: true, force: true });
-          continue;
-        }
+        await measureAdmissionSubphase("waiting-notice", () => announceWaiting(elapsed));
+        if (await measureAdmissionSubphase(
+          "abandoned-lock-reclaim",
+          () => reclaimAbandonedLock(lockDir, staleMs),
+        )) continue;
         if (elapsed > timeoutMs) {
           const currentOwner = await readOwner(lockDir);
           throw new Error(
             `Timed out after ${timeoutMs}ms waiting for fs-mutex "${name}" (${lockDir}); holder: ${currentOwner}`,
           );
         }
-        await sleep(retryMs);
+        await measureAdmissionSubphase("backoff-sleep", () => sleep(retryMs));
       }
     }
   } finally {
     if (ticketRegistered) {
       try {
-        await rm(myTicketDir, { recursive: true, force: true });
+        await measureAdmissionSubphase(
+          "ticket-cleanup",
+          () => rm(myTicketDir, { recursive: true, force: true }),
+        );
       } catch {
         // best-effort — a missing/already-cleaned ticket is not an error
       }
@@ -529,21 +862,35 @@ export async function withFsMutex(name, fn, opts = {}) {
   }
 
   try {
-    await waitForReaders(readersDir, {
+    await measureAdmissionSubphase("reader-drain", () => waitForReaders(readersDir, {
       timeoutMs,
       staleMs,
       retryMs,
       startedAt,
       onWaiting: opts.onWaiting,
       waitingNoticeIntervalMs,
-    });
+    }));
     // WI-1490656: report how long admission actually QUEUED. A caller that re-acquires
     // the same lock across many short sub-invocations (one affected-tests shard after
     // another) otherwise has no way to bound its TOTAL queue time — each call's
     // `timeoutMs` restarts from zero, so an N-shard run's real worst case is N × timeoutMs.
     // Fires inside the try so a throwing callback still releases the lock.
-    if (opts.onAcquired) opts.onAcquired({ waitedMs: Date.now() - startedAt });
-    return await fn();
+    if (opts.onAcquired) opts.onAcquired({
+      waitedMs: Date.now() - startedAt,
+      ...(admissionSubphaseTimingsMs
+        ? { admissionSubphaseTimingsMs: { ...admissionSubphaseTimingsMs } }
+        : {}),
+    });
+    // A reserved writer can spend its entire wait draining existing readers.
+    // Publish the callback phase only after that drain, atomically so a peek
+    // cannot mistake a partially rewritten owner record for an absent lock.
+    const runningOwner = { ...writerOwner, phase: "running", runningAt: new Date().toISOString() };
+    const nextOwnerPath = join(lockDir, "owner.next.json");
+    await writeFile(nextOwnerPath, `${JSON.stringify(runningOwner, null, 2)}\n`);
+    await rename(nextOwnerPath, join(lockDir, "owner.json"));
+    return await fn({
+      hasWaiters: async () => (await oldestTicketDir(ticketsDir, staleMs)) != null,
+    });
   } finally {
     await rm(lockDir, { recursive: true, force: true });
   }
@@ -559,18 +906,16 @@ export async function withFsMutex(name, fn, opts = {}) {
  * @template T
  * @param {string} name
  * @param {() => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void }} [opts]
+ * @param {{ mode?: 'read' | 'reader', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number }) => void }} [opts]
  * @returns {Promise<T>}
  */
 export async function withFsMutexRead(name, fn, opts = {}) {
   if (process.env.PAPERCUSP_DISABLE_FS_MUTEX === "1") return fn();
 
-  const root = lockRoot();
+  const root = await ensureFsMutexLockRoot();
   const writerDir = join(root, `${safeName(name)}.lock`);
   const readersDir = readerRoot(root, name);
-  const timeoutMs =
-    opts.timeoutMs ??
-    intEnv("PAPERCUSP_FS_MUTEX_TIMEOUT_MS", DEFAULT_TIMEOUT_MS);
+  const timeoutMs = opts.timeoutMs ?? resolveFsMutexTimeoutMs();
   const staleMs =
     opts.staleMs ?? intEnv("PAPERCUSP_FS_MUTEX_STALE_MS", DEFAULT_STALE_MS);
   const retryMs =
@@ -582,27 +927,43 @@ export async function withFsMutexRead(name, fn, opts = {}) {
   );
   const owner = {
     pid: process.pid,
+    ...processIdentity(process.pid),
     host: hostname(),
     startedAt: new Date(startedAt).toISOString(),
     name,
     mode: "read",
   };
 
-  await mkdir(root, { recursive: true });
   await mkdir(readersDir, { recursive: true });
 
   let announcedWaiting = false;
+  let lastWaitingNoticeMs = 0;
+  // Shared readers need the same opt-in observations as writer waiters. Read
+  // the owner again at each notice: consecutive installs can change the holder
+  // during one admission wait (EI-25192113925430292).
+  const waitingNoticeIntervalMs =
+    Number(opts.waitingNoticeIntervalMs) > 0
+      ? Number(opts.waitingNoticeIntervalMs)
+      : 0;
   for (;;) {
     let markerCreated = false;
     let ready = false;
     try {
-      await mkdir(readerDir);
-      markerCreated = true;
-      await writeFile(
-        join(readerDir, "owner.json"),
-        `${JSON.stringify(owner, null, 2)}\n`,
-      );
-      ready = !(await writerLockIsHeld(writerDir, staleMs));
+      // A reserved writer already prevents admission. Publishing markers on
+      // every retry in that state makes its drain observe readers that will
+      // never enter, and a stream of newcomers can keep that drain occupied.
+      if (!(await writerLockIsHeld(writerDir, staleMs))) {
+        await mkdir(readerDir);
+        markerCreated = true;
+        await writeFile(
+          join(readerDir, "owner.json"),
+          `${JSON.stringify(owner, null, 2)}\n`,
+        );
+        // Keep this second check: a writer can reserve after the preflight
+        // but before publication. Its drain must see our marker until we
+        // notice that reservation and remove it.
+        ready = !(await writerLockIsHeld(writerDir, staleMs));
+      }
     } catch (error) {
       if (error.code !== "EEXIST") {
         if (markerCreated)
@@ -615,8 +976,14 @@ export async function withFsMutexRead(name, fn, opts = {}) {
     if (markerCreated) await rm(readerDir, { recursive: true, force: true });
 
     const elapsed = Date.now() - startedAt;
-    if (!announcedWaiting && opts.onWaiting) {
+    if (
+      opts.onWaiting &&
+      (!announcedWaiting ||
+        (waitingNoticeIntervalMs > 0 &&
+          elapsed - lastWaitingNoticeMs >= waitingNoticeIntervalMs))
+    ) {
       announcedWaiting = true;
+      lastWaitingNoticeMs = elapsed;
       opts.onWaiting({ owner: await readOwner(writerDir), elapsedMs: elapsed });
     }
     if (elapsed > timeoutMs) {
@@ -629,6 +996,10 @@ export async function withFsMutexRead(name, fn, opts = {}) {
   }
 
   try {
+    // WI-10006385: same admission report as the writer's onAcquired, so a reader that
+    // queued behind an install can say how long it waited. Inside the try so a throwing
+    // callback still removes the reader marker.
+    if (opts.onAcquired) opts.onAcquired({ waitedMs: Date.now() - startedAt });
     return await fn();
   } finally {
     await rm(readerDir, { recursive: true, force: true });
@@ -648,14 +1019,28 @@ export async function withFsMutexRead(name, fn, opts = {}) {
  * fail-open error handling).
  *
  * @param {string} name
- * @returns {{ held: boolean, owner?: { pid?: number, host?: string, startedAt?: string, name?: string, intent?: Record<string, string | number | boolean> }, lockDir: string }}
+ * @returns {{ held: boolean, owner?: { pid?: number, host?: string, startedAt?: string, acquiredAt?: string, runningAt?: string, phase?: 'draining-readers' | 'running', name?: string, intent?: Record<string, string | number | boolean> }, lockDir: string }}
  */
 export function peekFsMutexSync(name) {
-  const lockDir = join(lockRoot(), `${safeName(name)}.lock`);
-  try {
-    const raw = readFileSync(join(lockDir, "owner.json"), "utf8");
-    return { held: true, owner: JSON.parse(raw), lockDir };
-  } catch {
-    return { held: false, lockDir };
+  const lockName = safeName(name) + ".lock";
+  const defaultLockDir = join(lockRoot(), lockName);
+  const hasOverride =
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR !== undefined &&
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR !== null;
+  const roots =
+    hasOverride || process.platform === "win32"
+      ? [defaultLockDir]
+      : [join(LEGACY_FS_MUTEX_LOCK_ROOT, lockName), defaultLockDir];
+  const seen = new Set();
+  for (const lockDir of roots) {
+    if (seen.has(lockDir)) continue;
+    seen.add(lockDir);
+    try {
+      const raw = readFileSync(join(lockDir, "owner.json"), "utf8");
+      return { held: true, owner: JSON.parse(raw), lockDir };
+    } catch {
+      // A failed peek is intentionally non-blocking and fails open.
+    }
   }
+  return { held: false, lockDir: defaultLockDir };
 }

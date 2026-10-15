@@ -1,0 +1,126 @@
+{
+  "schemaVersion": "enterprise-source-census-v1",
+  "workItemId": "WI-10007896",
+  "plan": "papercusp-enterprise-readiness-roadmap-2026-10-09",
+  "planItem": "P-001",
+  "observedAt": "2026-10-09T18:22:24.904048+00:00",
+  "gitHead": "4cbb674b8571ea3560c2b8630efe4f157c6bbde2",
+  "sourceHashes": [
+    {
+      "path": "packages/operator-core/lib/auth/hosted/workos-lifecycle-postgres.ts",
+      "sha256": "1fb39662c06c73b9f20bddb2c9c4192bdcd59e12dd5ea3a203c026ca6f18f167",
+      "evidenceKind": "source-inspection",
+      "runtimeVerified": false
+    },
+    {
+      "path": "packages/operator-core/lib/auth/hosted/governance.ts",
+      "sha256": "c3331a72ca1f3cc7c6a770935eb2291a245fec712a635e3e76c04872ec3d8851",
+      "evidenceKind": "source-inspection",
+      "runtimeVerified": false
+    },
+    {
+      "path": "packages/operator-core/lib/hive-policy-store.ts",
+      "sha256": "6857ad9216d895c4e2ed457475096f487dc1ba1261c9c0e549ec41edf93b9e75",
+      "evidenceKind": "source-inspection",
+      "runtimeVerified": false
+    },
+    {
+      "path": "packages/operator-core/lib/connected-apps/enforce.ts",
+      "sha256": "55f7f3b1ed07ffea1d419530bbe0207e70b6016801bdfd8315c41020d4a2e2d7",
+      "evidenceKind": "source-inspection",
+      "runtimeVerified": false
+    },
+    {
+      "path": "packages/operator-core/lib/data-sources/documents-corpus.ts",
+      "sha256": "4f1a85fe1258f801f030cd8eb892c0cab41a53954d33578caa2235b2a8be5d39",
+      "evidenceKind": "source-inspection",
+      "runtimeVerified": false
+    },
+    {
+      "path": "packages/operator-core/lib/personal-vault/disclosure-ledger.ts",
+      "sha256": "f4705cf44e5c051427a63211dd66ed67b7ed8bc2121124b41c75f6c734f63243",
+      "evidenceKind": "source-inspection",
+      "runtimeVerified": false
+    },
+    {
+      "path": "packages/operator-core/lib/data-sources/chat-retrieval-units.ts",
+      "sha256": "9dd36c56d4bff6f63199f8147ec3f58152c2db6097101c706f630f491b1fb10d",
+      "evidenceKind": "source-inspection",
+      "runtimeVerified": false
+    },
+    {
+      "path": "packages/operator-core/lib/operator-audit.ts",
+      "sha256": "8ed8789361b8ba1eb6ba5d492518e635b5c23460eb1a88e2ba791753c85a787e",
+      "evidenceKind": "source-inspection",
+      "runtimeVerified": false
+    },
+    {
+      "path": "packages/operator-core/lib/decision-model-ledger.ts",
+      "sha256": "7a64486e01b369fe19ab5ae46882f4fca3eaad3c703ae13a9d213822170c43fd",
+      "evidenceKind": "source-inspection",
+      "runtimeVerified": false
+    },
+    {
+      "path": "packages/operator-core/lib/auth/hosted/billing/budget-policy.ts",
+      "sha256": "77ead5e348494835f6e2101a0ab365adc520e3164e5837c6efec6ce50504e460",
+      "evidenceKind": "source-inspection",
+      "runtimeVerified": false
+    },
+    {
+      "path": "packages/operator-core/lib/auth/hosted/billing/budget-store.ts",
+      "sha256": "5d6ec0059b39ef0e8bf2f4e2d1f72df5e4af20e0509950cc1d75c9edadb10a3b",
+      "evidenceKind": "source-inspection",
+      "runtimeVerified": false
+    },
+    {
+      "path": "packages/operator-core/lib/data-sources/slack-org-connector.ts",
+      "sha256": "a613bd1273baaaeeda5e319b813e8b817902285b8c4e8bff7b871defd6609c9b",
+      "evidenceKind": "source-inspection",
+      "runtimeVerified": false
+    },
+    {
+      "path": "packages/operator-core/lib/cupboard/template-store.ts",
+      "sha256": "0bf02bf396f50acbdb29f7969b6545cc6afc2a319481c19a05d427d1b94f8fcf",
+      "evidenceKind": "source-inspection",
+      "runtimeVerified": false
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/code/capture-recipe.ts",
+      "sha256": "dfc04f95c3c18f67f0d6d2c7f821773cedc1b6238e81e4d6f980ddec127e0e78",
+      "evidenceKind": "source-inspection",
+      "runtimeVerified": false
+    },
+    {
+      "path": "packages/operator-core/lib/workspace-host/byoc-client-authorization.ts",
+      "sha256": "842ab23c9ede5c040d5e18de485e9916d9fa23cef4bca6d01296133bec4bbae2",
+      "evidenceKind": "source-inspection",
+      "runtimeVerified": false
+    },
+    {
+      "path": "packages/operator-core/lib/workspace-host/byoc-sealed-channel.ts",
+      "sha256": "796bd91a670479467719f16c736c9076698d01b0c11f4deb31e9cdaa624c7200",
+      "evidenceKind": "source-inspection",
+      "runtimeVerified": false
+    },
+    {
+      "path": "apps/papercusp-docs/src/content/docs/cloud-workspaces.mdx",
+      "sha256": "6777b0136547dd76c3381ad7f70aa6ff6fc7938247828f76e35de7858a2bd8a5",
+      "evidenceKind": "source-inspection",
+      "runtimeVerified": false
+    },
+    {
+      "path": "apps/operator-docs/src/content/docs/agent-insights/byoc-hosted-relay-confidentiality-threat-model.mdx",
+      "sha256": "24ff1df3ff95e0cf49f22b81eb7b17cb5c8688c3f647e1a6ba63bfeb1e3a4073",
+      "evidenceKind": "source-inspection",
+      "runtimeVerified": false
+    },
+    {
+      "path": "apps/operator-docs/src/content/docs/commercialization/assisted-repository-maintenance-pilot.mdx",
+      "sha256": "e0666861101c981ce81e1c476f03d728295ed046d1fa339c16c2837d081c6f73",
+      "evidenceKind": "source-inspection",
+      "runtimeVerified": false
+    }
+  ],
+  "testsExecuted": [],
+  "limitation": "Targeted canonical-source and authoritative-ledger census. Source hashes are current working bytes, not proof that any served build contains them; no customer or functional acceptance claimed."
+}

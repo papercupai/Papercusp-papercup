@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R2 planner profile and literal-recall counterexamples",
+  "framework": "shell",
+  "command": [
+    "scripts/mutation-probe.sh",
+    "--file",
+    "packages/operator-core/lib/agent-tools/search/sources.ts",
+    "--mutate",
+    "s/SET LOCAL parallel_setup_cost = 100/SET LOCAL parallel_setup_cost = 1000/",
+    "--test",
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_SOURCES_SUBJECT={} npm run test:file -- packages/operator-core/lib/agent-tools/search/sources.integration.test.ts -- --testNamePattern=EI-24045346484356708"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T20:45:41.796Z",
+  "finishedAt": "2026-10-01T20:54:25.080322Z",
+  "summary": "For each of two mutations, seven selected assertions passed against production and its unmodified relocated copy. Changing the planner setup cost from100 to1000 caused one PostgreSQL scope failure with six guards passing. Disabling literal-token recall caused three assertion failures with four guards passing. Both copied sources remained executable and production bytes stayed unchanged.",
+  "assertions": [
+    {
+      "id": "production-and-relocated-baselines-pass",
+      "passed": true,
+      "evidence": "Production7passed/0failed/55unselected; relocated baseline7passed/0failed/55unselected. These are seven unique assertions, not fourteen."
+    },
+    {
+      "id": "changed-planner-profile-causes-assertion-failure",
+      "passed": true,
+      "evidence": "Mutant1failed/6passed/55unselected. Real PostgreSQL current_setting inside the source BEGIN returned workers2/setup1000; the guard expected workers2/setup100. TEST_FILE_ASSERTION_FAILURE names sources.integration.test.ts:1393."
+    },
+    {
+      "id": "counterexample-preserves-production-source",
+      "passed": true,
+      "evidence": "MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evidence=test-file-assertion-failure relocation=overlay. Final tree-integrity check reports source bytes identical to pre-probe."
+    },
+    {
+      "id": "disabled-literal-recall-causes-assertion-failures",
+      "passed": true,
+      "evidence": "Separate literal mutation: production7passed, relocated7passed, mutant3failed/4passed/55unselected. Fails compactLiteralToken('furnishedfinder'), the one-windowed-fill positive control, and the expected codex:sess-compact-token:1 recall. Overlay/caught/assertion evidence; production tree integrity verified."
+    }
+  ],
+  "additionalCommands": [
+    ["scripts/mutation-probe.sh", "--file", "packages/operator-core/lib/agent-tools/search/sources.ts", "--mutate", "s/return token;/return null;/", "--test", "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_SOURCES_SUBJECT={} npm run test:file -- packages/operator-core/lib/agent-tools/search/sources.integration.test.ts -- --testNamePattern=EI-24045346484356708"]
+  ],
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "workItem": "WI-10004474",
+  "specId": "AUTO-BAR-R-2-P-002",
+  "specRevision": 5,
+  "evidencePlane": "source",
+  "measurement": {
+    "sourcePath": "packages/operator-core/lib/agent-tools/search/sources.ts",
+    "sourceSha256": "487355a96f8a84cc0c643a14db0cc11abfaa675fa3720cb3e99412ec83f832b9",
+    "testPath": "packages/operator-core/lib/agent-tools/search/sources.integration.test.ts",
+    "testSha256": "3953e02e1c25f0435a4222f4347102059f96a23f0f1f89b55d8f04112a31048e",
+    "capturedLogPath": "/tmp/r2-planner-counterexample-20261001-attempt2.log",
+    "capturedLogSha256": "db42343ef5255aa05774b6dc5ded1c014ab000f1d055a04caed7b71ac1f8a277",
+    "productionStartedAt": "2026-10-01T20:45:41.796Z",
+    "relocatedStartedAt": "2026-10-01T20:46:49.770Z",
+    "mutantStartedAt": "2026-10-01T20:47:57.493Z",
+    "finishedAtBasis": "Final captured probe log mtime after native process exit0.",
+    "literalProbe": {
+      "capturedLogPath": "/tmp/r2-literal-counterexample-20261001T2051.log",
+      "capturedLogSha256": "4d43606915aa51ae5afe378ba44efc882e0c8a8fe0c9bdd31f41594a00b03d63",
+      "productionStartedAt": "2026-10-01T20:51:27.622Z",
+      "relocatedStartedAt": "2026-10-01T20:52:35.967Z",
+      "mutantStartedAt": "2026-10-01T20:53:45.103Z",
+      "finishedAt": "2026-10-01T20:54:25.080322Z"
+    }
+  },
+  "residualUnknowns": [
+    "The first attempt was NOT MEASURED: admission ReferenceError pinModuleState is not defined, baseline exit2, no test process. Kept in owned EI-24811036735173410; it is not an assertion failure or a resolved root cause.",
+    "The whole shared tree was not frozen for this probe. Named source/test bytes and the relocation controls were checked; no clean conventional snapshot claim is made.",
+    "mutant_parse is unchecked; successful module execution is established by six passing assertions and one specific changed-PostgreSQL-setting assertion.",
+    "This is source-plane planner and literal-recall falsifiability, not new live HTTP latency, hook acceptance, or full R2 adequacy."
+  ]
+}

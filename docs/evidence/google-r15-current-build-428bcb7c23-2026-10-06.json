@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-15 re-observation on the current build: Google cutover preservation, controlled Google writes read back by sync, no automatic draft, and the non-Google app round trip, on staging operator :3170 build 428bcb7c23",
+  "framework": "operational",
+  "command": [
+    "node", "scripts/mcp-call.mjs", "mail:draft", "--json-file", ".papercusp/scratch/r15b/draft-args.json", "--client", "su-a973d2b0-0677-4a5b-b483-93676730c9e9", "--port", "3170",
+    "&&", "node", "scripts/mcp-call.mjs", "calendar:propose", "--json-file", ".papercusp/scratch/r15b/cal-args.json", "--client", "su-a973d2b0-0677-4a5b-b483-93676730c9e9", "--port", "3170",
+    "&&", "sudo", "-n", "-u", "postgres", "psql", "-At", "-d", "papercusp", "<", ".papercusp/scratch/p011/enumerate.sql",
+    "&&", "node", ".papercusp/scratch/p015/compare.mjs", ".papercusp/scratch/p011/enum-p011_pre.json", ".papercusp/scratch/r15b/enum-post.json",
+    "&&", "node", ".papercusp/scratch/p015/cursor-keys.mjs", ".papercusp/scratch/p011/enum-p011_pre.json", ".papercusp/scratch/r15b/enum-post.json",
+    "&&", "node", "scripts/test-files.mjs", "packages/operator-core/lib/app-data-producer/live-app-round-trip.integration.test.ts"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T17:51:19Z",
+  "finishedAt": "2026-10-06T17:57:39Z",
+  "summary": "On the staging operator :3170 serving build 428bcb7c23 (the current-build runtime dev:pipeline_position selects for operator-api; it is origin/staging and carries every R-15 subject source change the 17:34Z grade named, blob-identical to the tree), a controlled Gmail draft and an attendee-less Calendar event were written through the providers and read back by the next syncs; no trigger run fired on any Google source; a before/after enumeration against the pre-cutover dump shows every Google source id, grant, legacy cursor key and provenance key unchanged; and the email and calendar apps completed a round trip with a non-Google provider against the live app sidecars.",
+  "evidencePlane": "live",
+  "runtime": "staging operator :3170 build 428bcb7c23 (/api/health 17:51:19Z; tool_invocations serving_host port-3170, serving_build_sha 428bcb7c23 for mail:draft 17:51:32.457Z and calendar:propose 17:51:33.114Z). Live email app :8791 and calendar app :8792 (/api/health 200 at 17:56Z).",
+  "workItems": ["WI-10006742"],
+  "plan": "generalized-integrations-google-migration-cupboard-workflows-2026-10-05",
+  "assertions": [
+    {
+      "id": "r15-current-build-carries-subject-sources",
+      "passed": true,
+      "evidence": "git rev-parse 428bcb7c23:<path> equals the working-tree blob for connection-lifecycle.ts, ticket-integrations.ts, connector-runtime.ts, connector-push.ts, plugin-sdk/src/provider.ts and plugin-sdk/src/index.ts (the files the 17:34Z grade said post-dated the earlier observations), and for all 6 non-test files in packages/operator-core/lib/app-data-producer plus live-app-round-trip.integration.test.ts."
+    },
+    {
+      "id": "r15-source-identity-preserved",
+      "passed": true,
+      "evidence": "compare.mjs over enum-p011_pre.json (sha256 9175e27eae307a06...) vs .papercusp/scratch/r15b/enum-post.json (00a59af650a626fd..., enumerate.sql 25ed616700e23b39...): sources 6 vs 6, none removed or added; the only changed field is cursor_new_keys on gcal f3d8cee9 and gmail c8fab094 (the keys the providers add, D-021/D-024). Against the P-011 post-cutover live baseline enum-papercusp.json (63890ac0b22b17f0...) sources show no changed field."
+    },
+    {
+      "id": "r15-cursor-legacy-keys-preserved",
+      "passed": true,
+      "evidence": "cursor-keys.mjs: allSame true for all 6 sources (gcal c8a574ac, d863e7f1, f3d8cee9 [lastSyncAt, syncToken]; gmail 15508859 [backfill, emailAddress, historyId, lastSyncAt, watchExpiration], 62b7f9e2 [emailAddress, lastSyncAt, watchExpiration], c8fab094 [emailAddress, historyId, lastSyncAt, watchExpiration])."
+    },
+    {
+      "id": "r15-grants-and-armed-state",
+      "passed": true,
+      "evidence": "personal_grants 4 vs 4 identical; plugin_grants 0 vs 0. Bindings vs pre-cutover: none removed; added 4e8f31aa, 6d52ff71, 6ec74631, 737bcda6 (the disarmed draft-reply bindings recorded in the P-011 evidence) and 99387af7 (disarmed). Changed: 0b8e40ce, 0e6cbc24, aea4b1cb, b7976842 (detached_at) and 5bbaba69 (armed true->false, detached_at). Those five changes are not cutover effects: harness_shared.tool_invocations shows peer su-64a5417a calling triggers:disarm on 5bbaba69 at 15:28:37Z (port-3070) and the admin detach-external route for 5bbaba69, 99387af7, b7976842, 0b8e40ce, aea4b1cb and 0e6cbc24 between 15:28:59Z and 15:29:32Z, eleven hours after the 03:50Z cutover, which left all nine pre-cutover bindings unchanged (google-cutover-p011-r15-live-2026-10-06.json)."
+    },
+    {
+      "id": "r15-provenance-keys-unchanged",
+      "passed": true,
+      "evidence": "Distinct event-bus trigger_deliveries.event_key on gmail/gcal sources since the 03:50Z cutover: ext:gcal:event-created (3), ext:gmail:message.received (15). Both are in the pre-cutover set {ext:gcal:event-created, ext:gcal:event-upcoming, ext:gcal:event-updated, ext:gmail:message.received}; no renamed or new key."
+    },
+    {
+      "id": "r15-restore-plus-revert-rehearsed",
+      "passed": true,
+      "evidence": "The snapshot restore plus revert rehearsal is the P-011 one (docs/evidence/google-cutover-p011-r15-live-2026-10-06.json, D-024). It still applies: no migration after the rehearsal rewrites data_sources rows or grants (1396-1398 have zero data_sources/grants references; 1399 only replaces the emit_change_notify trigger on data_sources), and the sources above match the rehearsal's post-cutover baseline field for field."
+    },
+    {
+      "id": "r15-controlled-google-draft",
+      "passed": true,
+      "evidence": "mail:draft to super@papercusp.com through Gmail source c8fab094 on :3170 returned ok, mode draft, draftId r-5220435632055552512, messageId 1a1125795a234219. Never sent. The next Gmail sync (sync_last_success_at 17:52:07Z, status connected, last_error null) delivered ext:gmail:message.received for it once each to event-bus, trigger-bindings, personal-vault and app-delivery (17:52:07.0-17:52:07.9Z)."
+    },
+    {
+      "id": "r15-controlled-calendar-write",
+      "passed": true,
+      "evidence": "calendar:propose with no attendees through Gcal source f3d8cee9 on :3170 returned ok, event id pe7g6b0fdvc4kbomhd5fk59umg, status confirmed, attendees [], invited []. The Calendar sync at 17:55:08Z read it back as ext:gcal:event-created, delivered once each to event-bus, trigger-bindings, personal-vault and app-delivery (sync_last_success_at 17:55:10Z, status connected, last_error null)."
+    },
+    {
+      "id": "r15-no-automatic-draft",
+      "passed": true,
+      "evidence": "trigger_runs joined to bindings on any gmail/gcal source since 03:50Z: 0 rows, read at 17:52Z and again at 17:55:45Z after both readbacks. No Google binding is armed (all 14 armed=false)."
+    },
+    {
+      "id": "r15-apps-round-trip-non-google",
+      "passed": true,
+      "evidence": "live-app-round-trip.integration.test.ts against the live email app :8791 and calendar app :8792 (EMAIL_APP_URL/CALENDAR_APP_URL from ~/.papercusp/app-producer.env), test_runs 20846622, pass, 9 passed / 2 skipped (the opt-in APP_LIVE_REAL_DATA_E2E cases), 17:57:38Z. It refuses an unauthenticated read first (LOCAL_MODE off), delivers one batch carrying a Google kind and a non-Google kind that share a native id through the production deliverAppSyncBatch, and reads each row back from the app's own GET endpoint under its own source; the apps serve the provider-neutral trigger doors and ingest an Outlook trigger through /api/triggers/email minting zero work items. The producer code it exercises is blob-identical to the :3170 build. In the same window the live system's own app-delivery sink delivered the two Google readbacks above to the apps."
+    }
+  ],
+  "disclosures": [
+    "The :3170 staging operator is a request-only host (no background workers), so the producer-to-app push is not executed inside the :3170 process; the round trip ran the same producer code (blob-identical to 428bcb7c23) from the test process against the live app sidecars, and the live system's app-delivery sink (background host) delivered the Google readbacks.",
+    "The controlled draft and calendar event are real objects in the owner's Google account (draft never sent; event has no attendees and is titled 'safe to delete'). There is no calendar:delete verb (WI-10006509), so the event was not removed.",
+    "The binding changes at 15:28-15:29Z were made by peer su-64a5417a, attributed from tool_invocations, not by the cutover or by this check.",
+    "Pre-write enumeration was attempted at 17:51:19Z without sudo and failed (no Postgres role exists for the build-box login user); only the post-write enumeration exists for this run, compared against the pre-cutover dump and the P-011 post-cutover baseline."
+  ],
+  "couldNotDetermine": [
+    "A live in-place restore of the shared database was not executed; restore and revert were rehearsed on scratch databases in P-011 only."
+  ],
+  "measuredBy": "su-a973d2b0-0677-4a5b-b483-93676730c9e9"
+}

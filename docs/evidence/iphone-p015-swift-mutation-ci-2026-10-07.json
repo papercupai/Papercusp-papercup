@@ -1,0 +1,148 @@
+{
+ "schemaVersion": 1,
+ "kind": "operational-test-evidence",
+ "name": "iPhone P-015 BYOC Swift falsifiability: three source mutants, each caught by its clause's XCTest/XCUITest cases on macOS CI (runs 37550635267, 37550639954, 37550644692)",
+ "framework": "operational",
+ "command": [
+  "gh",
+  "workflow",
+  "run",
+  "ci.yml",
+  "--ref",
+  "mutation-probe/p015-<clause>"
+ ],
+ "commandNote": "Each mutant is one commit on a throwaway branch, parent 5f5394cffe5d887521126147c5e91e17bf56ce70 (papercup-rust-mobile origin/master). The commit changes exactly one Swift source file plus .github/workflows/ci.yml. The trimmed ci.yml runs only the 'iPhone release gate (iOS 26 SDK)' job. Its unit and UI xcodebuild test steps are continue-on-error, and a final verdict step echoes 'MUTATION_PROBE unit=<outcome> ui=<outcome>' and fails the job when either step failed, so job failure means the mutant was caught. The branches were built with git plumbing under a private GIT_INDEX_FILE (script: papercusp/.papercusp/scratch/p015-swift-mutants.py) and dispatched with workflow_dispatch --ref <branch>. The unmutated control is run 37535551821 (test_runs 20865284, docs/evidence/iphone-p015-xctest-ci-37535551821-2026-10-06.json), at 093238a51c16ccd1d09657474d9ad1478e61a176. git rev-parse shows that commit's ios/ tree is byte-identical to the mutant base's ios/ tree (e0cccf5d2c7075fb3667b5850172e90d5cb94642), and in that run every case below passed.",
+ "startedAt": "2026-10-07T00:11:28Z",
+ "finishedAt": "2026-10-07T00:19:01Z",
+ "exitCode": 0,
+ "summary": "All three P-015 Swift mutants were caught. offline-message (FriendlyError.swift matches 504 instead of 503) failed FriendlyErrorTests testCloudWorkspaceOfflineSaysTheCloudWorkspaceIsOffline, two ConnectionMonitorTests cases and the XCUITest testCloudWorkspaceOfflineThenRecoversWithoutRepairing. offline-recovery (ConnectionMonitor.swift keeps the offline state on a successful heartbeat) failed ConnectionMonitorTests testRelaySequenceWorkspaceOfflineThenBackReconnectsWithoutRepairing and the same XCUITest. relay-label (SettingsView.swift hides the relay row for a real relay pairing) failed only the XCUITest testCloudWorkspaceShowsRelayLabelInSettings. No run had a Swift compile error. In the unmutated control on the identical ios/ tree, every one of these cases passed.",
+ "plan": "iphone-public-release-2026-08-11",
+ "planItem": "P-015",
+ "workItem": "WI-10006857",
+ "repo": {
+  "checkout": "papercup-rust-mobile",
+  "commit": "5f5394cffe5d887521126147c5e91e17bf56ce70"
+ },
+ "control": {
+  "testRunId": 20865284,
+  "ciRun": 37535551821,
+  "commit": "093238a51c16ccd1d09657474d9ad1478e61a176",
+  "iosTree": "e0cccf5d2c7075fb3667b5850172e90d5cb94642",
+  "mutantBaseIosTree": "e0cccf5d2c7075fb3667b5850172e90d5cb94642"
+ },
+ "mutants": [
+  {
+   "specId": "BYOC-P-015-offline-message",
+   "specRevision": 1,
+   "sourcePath": "ios/Papercup/Sources/Papercup/FriendlyError.swift",
+   "mutation": "isCloudWorkspaceOffline matches HTTP 504 instead of the relay's 503, so a workspace_offline refusal falls through to the generic error and the 'Desktop offline' banner",
+   "mutantBlob": "40006243fb6adb816f2908a8e1591932f20e6861",
+   "commit": "be343beb167f62706028d760b48f06598b65b7ad",
+   "branch": "mutation-probe/p015-offline-message",
+   "ciRun": 37550635267,
+   "job": 112564993670,
+   "jobStartedAt": "2026-10-07T00:11:28Z",
+   "jobCompletedAt": "2026-10-07T00:18:44Z",
+   "jobConclusion": "failure",
+   "verdictLine": "MUTATION_PROBE unit=failure ui=failure",
+   "failedCases": [
+    "PapercupTests.FriendlyErrorTests testCloudWorkspaceOfflineSaysTheCloudWorkspaceIsOffline",
+    "PapercupTests.ConnectionMonitorTests testCloudWorkspaceOfflineIsOfflineNotUnpairedAndNamesTheCloud",
+    "PapercupTests.ConnectionMonitorTests testRelaySequenceWorkspaceOfflineThenBackReconnectsWithoutRepairing",
+    "PapercupUITests.CloudWorkspaceOfflineUITests testCloudWorkspaceOfflineThenRecoversWithoutRepairing"
+   ],
+   "rawLog": {
+    "source": "gh run view 37550635267 --repo Papercusp/papercup-rust-mobile --log",
+    "localCopy": "papercusp/.papercusp/scratch/p015/su-d34a-mut-37550635267.log",
+    "lines": 1016,
+    "sha256": "a1b32493e7d039b198ac86101bc80a1d55ec3ec66c5ddf56021864b32478f2bd"
+   }
+  },
+  {
+   "specId": "BYOC-P-015-offline-recovery",
+   "specRevision": 2,
+   "sourcePath": "ios/Papercup/Sources/Papercup/ConnectionMonitor.swift",
+   "mutation": "ConnState.next keeps the previous cloud-workspace-offline state on a successful heartbeat, so the app stays disconnected after the connector returns",
+   "mutantBlob": "d58134debb688e233a485df56b48447bc807bcd8",
+   "commit": "50aeefc48f73e212bcbe5babd7eed14bd61d157a",
+   "branch": "mutation-probe/p015-offline-recovery",
+   "ciRun": 37550639954,
+   "job": 112565008307,
+   "jobStartedAt": "2026-10-07T00:11:28Z",
+   "jobCompletedAt": "2026-10-07T00:19:01Z",
+   "jobConclusion": "failure",
+   "verdictLine": "MUTATION_PROBE unit=failure ui=failure",
+   "failedCases": [
+    "PapercupTests.ConnectionMonitorTests testRelaySequenceWorkspaceOfflineThenBackReconnectsWithoutRepairing",
+    "PapercupUITests.CloudWorkspaceOfflineUITests testCloudWorkspaceOfflineThenRecoversWithoutRepairing"
+   ],
+   "rawLog": {
+    "source": "gh run view 37550639954 --repo Papercusp/papercup-rust-mobile --log",
+    "localCopy": "papercusp/.papercusp/scratch/p015/su-d34a-mut-37550639954.log",
+    "lines": 1431,
+    "sha256": "79ec510523e64e03446cecf2a8161641be64279cc8282f9861b54c54fac9cf42"
+   }
+  },
+  {
+   "specId": "BYOC-P-015-relay-label",
+   "specRevision": 1,
+   "sourcePath": "ios/Papercup/Sources/Papercup/SettingsView.swift",
+   "mutation": "SettingsView drops the 'Cloud workspace (relay)' connection row for a real relay pairing (condition requires an empty workspaceId) and falls back to the tunnel/LAN rows",
+   "mutantBlob": "f35db73df613165d066cdb18bd012646eb926530",
+   "commit": "bbaa5ea2940ca2cf0c6cf4ca77350c4e39ddcf82",
+   "branch": "mutation-probe/p015-relay-label",
+   "ciRun": 37550644692,
+   "job": 112565024303,
+   "jobStartedAt": "2026-10-07T00:11:31Z",
+   "jobCompletedAt": "2026-10-07T00:18:07Z",
+   "jobConclusion": "failure",
+   "verdictLine": "MUTATION_PROBE unit=success ui=failure",
+   "failedCases": [
+    "PapercupUITests.CloudWorkspaceOfflineUITests testCloudWorkspaceShowsRelayLabelInSettings"
+   ],
+   "rawLog": {
+    "source": "gh run view 37550644692 --repo Papercusp/papercup-rust-mobile --log",
+    "localCopy": "papercusp/.papercusp/scratch/p015/su-d34a-mut-37550644692.log",
+    "lines": 1075,
+    "sha256": "30a03d7d2339e2f7d56d52d86f58cf5d56d09049b5428212a5d1f3077ceddc09"
+   }
+  }
+ ],
+ "sourcePaths": [
+  "ios/Papercup/Sources/Papercup/FriendlyError.swift",
+  "ios/Papercup/Sources/Papercup/ConnectionMonitor.swift",
+  "ios/Papercup/Sources/Papercup/SettingsView.swift"
+ ],
+ "testPaths": [
+  "ios/PapercupTests/ConnectionMonitorTests.swift",
+  "ios/PapercupTests/FriendlyErrorTests.swift",
+  "ios/PapercupUITests/CloudWorkspaceOfflineUITests.swift"
+ ],
+ "assertions": [
+  {
+   "id": "control-ios-tree-identical",
+   "passed": true,
+   "evidence": "git rev-parse 093238a:ios and 5f5394c:ios both return e0cccf5d2c7075fb3667b5850172e90d5cb94642. Control run 37535551821 (test_runs 20865284) passed every case listed below on that tree."
+  },
+  {
+   "id": "mutants-touch-one-source-file",
+   "passed": true,
+   "evidence": "git diff --name-only <commit>^ <commit> lists exactly one Swift source plus .github/workflows/ci.yml for be343beb, 50aeefc4 and bbaa5ea2, and each parent is 5f5394cffe."
+  },
+  {
+   "id": "BYOC-P-015-offline-message@1 caught",
+   "passed": true,
+   "evidence": "Run 37550635267 job 112564993670 concluded failure with 'MUTATION_PROBE unit=failure ui=failure'. Test Case '-[PapercupTests.FriendlyErrorTests testCloudWorkspaceOfflineSaysTheCloudWorkspaceIsOffline]' failed, '-[PapercupTests.ConnectionMonitorTests testCloudWorkspaceOfflineIsOfflineNotUnpairedAndNamesTheCloud]' failed, '-[PapercupUITests.CloudWorkspaceOfflineUITests testCloudWorkspaceOfflineThenRecoversWithoutRepairing]' failed. The log has no Swift compile error."
+  },
+  {
+   "id": "BYOC-P-015-offline-recovery@2 caught",
+   "passed": true,
+   "evidence": "Run 37550639954 job 112565008307 concluded failure with 'MUTATION_PROBE unit=failure ui=failure'. Test Case '-[PapercupTests.ConnectionMonitorTests testRelaySequenceWorkspaceOfflineThenBackReconnectsWithoutRepairing]' failed, '-[PapercupUITests.CloudWorkspaceOfflineUITests testCloudWorkspaceOfflineThenRecoversWithoutRepairing]' failed. The log has no Swift compile error."
+  },
+  {
+   "id": "BYOC-P-015-relay-label@1 caught",
+   "passed": true,
+   "evidence": "Run 37550644692 job 112565024303 concluded failure with 'MUTATION_PROBE unit=success ui=failure'. Test Case '-[PapercupUITests.CloudWorkspaceOfflineUITests testCloudWorkspaceShowsRelayLabelInSettings]' failed, and all 58 unit tests passed. The log has no Swift compile error."
+  }
+ ]
+}

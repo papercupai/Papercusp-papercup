@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "byoc R-4: release-publication-identity: independent retrieval and verification of the published workspace-host release 0.0.21-p318r62b (release task 0munwgut01uzlcjdajh)",
+  "framework": "shell",
+  "command": ["bash", "~/.papercusp/scratch/r4-verify-r62b/verify.sh", "&&", "python3", "~/.papercusp/scratch/r4-verify-r62b/inventory.py"],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T18:55:09Z",
+  "finishedAt": "2026-10-01T18:59:30Z",
+  "summary": "Instrument release-publication-identity, run by su-9b75fa7c on the tower over the public HTTPS endpoint cupboard.papercusp.com, with no use of the publisher's local files. It reused the committed P-318 publication receipts on task_ledger 0munwgut01uzlcjdajh (no rebuild, no publication replay). Release identity per D-410: release task 0munwgut01uzlcjdajh, runtime bundle sha256 dea508a82409b4f3ba6273df398c044f4306034f42dc735f6b86c62dd01e4ab8, source 3533167c19fe1efd9bb300badcd047ac3812feaf; release.shipment.green committed 2026-10-01T18:18:35Z on the same identity. Every retrieved byte matched its receipt. The signature validated against the key pinned in the repository rather than the key carried in the manifest. All 23 declared build materials matched (18 archive members by bytes, size and exec bit; 5 builder scripts against the source pin). The node identity probe agreed with the SBOM.",
+  "release": {
+    "releaseTaskId": "0munwgut01uzlcjdajh",
+    "version": "0.0.21-p318r62b",
+    "bundleSha256": "dea508a82409b4f3ba6273df398c044f4306034f42dc735f6b86c62dd01e4ab8",
+    "sourceSha": "3533167c19fe1efd9bb300badcd047ac3812feaf",
+    "papercuspDesktopPin": "c7b56a4ec9700b9f1af971c5e35b7aee80f44d99",
+    "immutableBase": "https://cupboard.papercusp.com/artifacts/workspace-host/sha256/dea508a82409b4f3ba6273df398c044f4306034f42dc735f6b86c62dd01e4ab8/"
+  },
+  "receiptRefs": [
+    "task:0munwgut01uzlcjdajh#release.build.workspace-host-linux-x86_64",
+    "provider:bundle:dea508a82409b4f3ba6273df398c044f4306034f42dc735f6b86c62dd01e4ab8",
+    "provider:artifact:server.tgz.minisig:efd4235129eb780ce13b9827d5762fc88125874fa50cf663e39371c6d882e002:295",
+    "provider:artifact:manifest.json:8ba377b0eb9ab510a0d3af511d9e49f3a7529b101b53875ad8be3b4279dd79d9:12424",
+    "provider:finalization:8ba377b0eb9ab510a0d3af511d9e49f3a7529b101b53875ad8be3b4279dd79d9",
+    "provider:artifact:sbom.cdx.json:862c5ef75c14ca6eb5d5217261d0466aeed262593ab681b37a1b29aeb6314bec:781148",
+    "signing-key:sha256:66bad893ed3a4140ea848787d1fd19d3673d5d1fdd92ae3434d67db5b6999bf8",
+    "release-shipment-verification:host-pc-p318-canary-20260930-r62:0munwgut01uzlcjdajh:none"
+  ],
+  "assertions": [
+    {
+      "id": "auto-bar-r-4-p-318",
+      "passed": true,
+      "evidence": "Independently retrieved bytes agree with the publication receipts. The archive signature validates against the pinned trusted key. The manifest's declared executable/material inventory matches the archive, and the executable identity probe agrees with the SBOM. Details are in the assertions below."
+    },
+    {
+      "id": "r4-manifest-digest",
+      "passed": true,
+      "evidence": "GET .../manifest.json -> HTTP 200, 12424 bytes, sha256 8ba377b0eb9ab510a0d3af511d9e49f3a7529b101b53875ad8be3b4279dd79d9 = publish.finalize receipt provider:finalization:8ba377b0...; kind papercusp-workspace-host-release, release.version 0.0.21-p318r62b, release.bundleSha256 dea508a8..., buildManifest.source.revision 3533167c19fe1efd9bb300badcd047ac3812feaf"
+    },
+    {
+      "id": "r4-archive-digest",
+      "passed": true,
+      "evidence": "GET .../server.tgz -> HTTP 200, 2022190782 bytes (= manifest files.bundle.sizeBytes); recomputed sha256 dea508a82409b4f3ba6273df398c044f4306034f42dc735f6b86c62dd01e4ab8 = bundle receipt and URL path"
+    },
+    {
+      "id": "r4-signature-pinned-key",
+      "passed": true,
+      "evidence": "GET .../server.tgz.minisig -> 295 bytes sha256 efd42351... (= receipt). The pinned key is base64-decoded from papercusp-desktop/src-tauri/tauri.conf.json plugins.updater.pubkey (minisign key id 5D3A7DD4A7089944). Its sha256 is 66bad893ed3a4140ea848787d1fd19d3673d5d1fdd92ae3434d67db5b6999bf8, which equals the manifest's release.signingKeySha256 and the build receipt signing-key ref, and the key is byte-identical to the manifest's signingPublicKey. minisign 0.11 `-V -p pinned.pub -m server.tgz -x server.tgz.minisig` printed 'Signature and comment signature verified'; trusted comment timestamp:1790764522 file:server.tgz"
+    },
+    {
+      "id": "r4-sbom-digest",
+      "passed": true,
+      "evidence": "GET .../sbom.cdx.json -> 781148 bytes sha256 862c5ef75c14ca6eb5d5217261d0466aeed262593ab681b37a1b29aeb6314bec = publish.evidence.sbom.cdx.json receipt and build receipt evidence:sbom ref; CycloneDX, 886 components (= manifest trustReport sbom componentCount 886), metadata component papercusp-vm-release 0.0.25+3533167c19fe (same source sha)"
+    },
+    {
+      "id": "r4-executable-inventory",
+      "passed": true,
+      "evidence": "manifest buildManifest.materials declares 23 entries (20 executable). Each of the 18 archive-resident entries (including bin/node 105653744 B, bin/claude, bin/codex, bin/omp, bin/papercusp-*) was streamed out of the downloaded server.tgz and checked for sha256, size and exec bit: 18/18 match, 0 mismatches. The 5 builder-script materials (papercusp-desktop/bin/audit-release-bundle.py, build-desktop-sidecar.sh, install-workspace-host-entrypoints.sh, lib/vm-release-trust-toolchain.sh, verify-sidecar-bundle.sh) are build inputs, not archive members. Each was checked against git at source 3533167c (papercusp-desktop pin c7b56a4e) for sha256 and size: 5/5 match."
+    },
+    {
+      "id": "r4-executable-identity-probe",
+      "passed": true,
+      "evidence": "bin/node extracted from the retrieved archive: `bin/node --version` -> v24.18.1, exit 0; SBOM application component node version 24.18.1 -> agrees"
+    }
+  ],
+  "negativeControls": {
+    "purpose": "Positive control for the verifier (rev-7 vetting conv-muqaeg5s posts 1154639/1154645): the same minisign verification and digest comparison must FAIL on altered bytes and on a wrong key, recorded beside the passing measurement.",
+    "ranAt": "2026-10-02T01:36:36Z/2026-10-02T01:37:07Z",
+    "runBy": "su-9b75fa7c",
+    "log": "~/.papercusp/scratch/r4-verify-r62b/negctl.log",
+    "passControl": "minisign -V -p pinned.pub on the retrieved server.tgz: valid",
+    "tamperedByte": { "offset": 1048576, "from": "73", "to": "72", "tamperedSha256": "054dc2adb8c08fc05e270634c11a3ea0f8c3df0a2881da1d9650964aeda4c605", "expectedSha256": "dea508a82409b4f3ba6273df398c044f4306034f42dc735f6b86c62dd01e4ab8", "digestMatches": false, "signatureRc": 1, "signatureOutput": "Signature verification failed", "verdict": "rejected as required" },
+    "wrongKey": { "wrongPubSha256": "de0c58c969e5ec6f0bd1047df6b8b4a070843b82b11e007e47053f89520c732c", "pinnedPubSha256": "66bad893ed3a4140ea848787d1fd19d3673d5d1fdd92ae3434d67db5b6999bf8", "signatureRc": 1, "signatureOutput": "Signature key id in server.tgz.minisig is 5D3A7DD4A7089944 but the key id in the public key is 410F582998F1D04E", "verdict": "rejected as required" },
+    "note": "The tampered copy was made on /mnt/data and deleted afterwards; the published bytes were not modified."
+  },
+  "limitations": [
+    "The PostgreSQL 18.6 SBOM component was not exercised by a separate version probe. Its binary is covered only by the archive-membership byte check, not by executing it."
+  ]
+}

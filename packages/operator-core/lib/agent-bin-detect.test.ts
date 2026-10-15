@@ -100,11 +100,18 @@ describe('resolveAgentBinarySync — fallback when PATH misses (the WI-39538 bug
     expect(resolveAgentBinarySync('codex')).toBeNull();
   });
 
-  it('prefers PATH over a fallback candidate', () => {
+  it('prefers the process-managed candidate over a distinct stale PATH hit', () => {
     const sibling = agentBinaryCandidates('codex')[0];
     routeWhich({ codex: '/usr/bin/codex' });
-    routeExecutable([sibling]);
-    expect(resolveAgentBinarySync('codex')).toBe('/usr/bin/codex');
+    routeExecutable([sibling, '/usr/bin/codex']);
+    expect(resolveAgentBinarySync('codex')).toBe(sibling);
+  });
+
+  it('keeps PATH ahead of unmanaged fallback candidates when no managed install is executable', () => {
+    const unmanagedFallback = agentBinaryCandidates('codex')[3];
+    routeWhich({ codex: '/operator/override/codex' });
+    routeExecutable(['/operator/override/codex', unmanagedFallback]);
+    expect(resolveAgentBinarySync('codex')).toBe('/operator/override/codex');
   });
 });
 

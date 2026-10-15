@@ -99,6 +99,30 @@ describe('Governor admission contract', () => {
     });
   });
 
+  it('deduplicates agent retries with a fresh goal observation and retains the first snapshot', async () => {
+    const driver = new AdmitImmediatelyDriver();
+    const admit = vi.spyOn(driver, 'admit');
+    const governor = new Governor(driver);
+    const input = {
+      idempotencyKey: 'observed-agent', admissionClass: 'agent',
+      metadata: { goalId: 'goal', fleetSlug: 'fleet', targetOwnerId: 'target', goalReservation: true,
+        goalAdmission: JSON.stringify({ measuredAt: 'first', headcount: 1 }) },
+    };
+    const [first, retry] = await Promise.all([
+      governor.admit(input),
+      governor.admit({ ...input, metadata: { ...input.metadata,
+        goalAdmission: JSON.stringify({ measuredAt: 'retry', headcount: 2 }) } }),
+    ]);
+    expect(retry).toBe(first);
+    expect(retry.context.metadata?.goalAdmission).toBe(input.metadata.goalAdmission);
+    expect(admit).toHaveBeenCalledOnce();
+    for (const [field, value] of Object.entries({ goalId: 'other-goal', fleetSlug: 'other-fleet',
+      targetOwnerId: 'other-target', goalReservation: false })) {
+      await expect(governor.admit({ ...input, metadata: { ...input.metadata, [field]: value } }))
+        .rejects.toBeInstanceOf(AdmissionIdempotencyConflictError);
+    }
+  });
+
   it('fails closed for an unregistered bypass and permits a registered one', async () => {
     const governor = deterministicGovernor({ bypassKeys: new Set(['control.health']) });
 

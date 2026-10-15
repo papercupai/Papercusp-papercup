@@ -13,6 +13,8 @@ import { DEFAULT_GATEWAY_PORT } from './launch';
 import { ACCOUNT_HEADER, ACCOUNT_PIN_HEADER, OWNER_HEADER, PRIORITY_HEADER } from './gateway';
 import { accountFromArgv } from '../agent-config-constants';
 import { subscriptionRelayAllowed } from '../anthropic-auth-policy';
+import { isProviderCredentialEnvName } from '../personal-vault/provider-egress.mjs';
+import type { AccountProvider } from '../deployment/account-pool';
 import {
   accountProviderForInteractiveBackend,
   interactiveBackendFromSpawnBackend,
@@ -104,6 +106,20 @@ export function accountRoutingMode(value: unknown): AccountRoutingMode {
   return 'pin';
 }
 
+/** Apply the explicit selector after resolution and before the child env is merged. */
+export function applyExplicitSpawnAccountRoute(env: Record<string, string>, account?: string): void {
+  if (!account?.trim()) return;
+  const mode = accountRoutingMode(account);
+  env.PAPERCUSP_ACCOUNT_ROUTING_MODE = mode;
+  if (mode !== 'pin') env.PAPERCUSP_ACCOUNT_ID = '';
+  if (mode === 'default') {
+    env.PAPERCUSP_CODEX_GATEWAY = '';
+    env.ANTHROPIC_BASE_URL = '';
+    env.ANTHROPIC_CUSTOM_HEADERS = '';
+    env.ANTHROPIC_AUTH_TOKEN = '';
+  }
+}
+
 export interface WakeAccountRoute {
   mode: AccountRoutingMode;
   /** null for direct/default and unpinned auto routing. */
@@ -115,13 +131,16 @@ export interface WakeAccountRoute {
 }
 
 /** Remove account/gateway state inherited from the operator before applying a
- * wake's explicit route. Non-route environment is preserved byte-for-byte. */
+ * wake's explicit route, and every mail/chat/calendar/social provider
+ * credential (P-007 / BAR R-11: provider credentials live in the sidecars
+ * only, so an agent cannot reach a provider around the gated verbs). Other
+ * environment is preserved byte-for-byte. */
 export function sanitizeInheritedWakeEnv(
   env: Record<string, string | undefined>,
 ): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
-    if (typeof value === 'string') out[key] = value;
+    if (typeof value === 'string' && !isProviderCredentialEnvName(key)) out[key] = value;
   }
   for (const key of INHERITED_WAKE_ROUTE_ENV_KEYS) delete out[key];
   return out;
@@ -311,6 +330,31 @@ export function applyGatewayLlmEnv(
  * Lazy-imports the flag + account-pool deps so this module stays import-light for the pure helpers
  * above (and so a route module importing it picks up no extra registration side-effects).
  */
+/** The allowed set shared by gateway env construction and launch capacity checks.
+ * Availability is deliberately not a filter: stale/missing readings are unknown. */
+export async function resolveSpawnRouteAccounts(workspaceId: string, provider: AccountProvider, account: string, backend = 'this backend') {
+  const [{ loadAccountPool }, { accountProvider }, { getAccountOverride }] = await Promise.all([
+    import('../deployment/account-pool-store'), import('../deployment/account-pool'),
+    import('../deployment/account-session-override'),
+  ]);
+  const [pool, override] = await Promise.all([loadAccountPool(workspaceId), getAccountOverride(workspaceId)]);
+  const pin = accountRoutingMode(account) === 'pin' ? account.trim() : undefined;
+  if (pin) {
+    const selected = pool.accounts.find(candidate => candidate.id === pin);
+    if (!selected) throw new Error(`account '${pin}' is not in the account pool; refusing default-system fallback`);
+    if (accountProvider(selected) !== provider) {
+      throw new Error(`account '${pin}' is a ${accountProvider(selected)} account, but ${backend} requires ${provider}; refusing fallback`);
+    }
+    if (override.excludeAccounts.includes(pin)) throw new Error(`account '${pin}' is excluded by the session override; refusing fallback`);
+    if (override.forcedAccounts.length && !override.forcedAccounts.includes(pin)) {
+      throw new Error(`account '${pin}' is outside the session override allow-list; refusing fallback`);
+    }
+  }
+  return pool.accounts.filter(candidate => accountProvider(candidate) === provider
+    && (!pin || candidate.id === pin) && !override.excludeAccounts.includes(candidate.id)
+    && (!override.forcedAccounts.length || override.forcedAccounts.includes(candidate.id)));
+}
+
 export async function resolveSpawnGatewayEnv(opts: {
   workspaceId: string | undefined;
   slug: string | undefined;
@@ -330,6 +374,8 @@ export async function resolveSpawnGatewayEnv(opts: {
    *                                      the id like the PAPERCUSP_SPAWN_ACCOUNT_PIN env path.
    *  Omitted/'' → today's behavior (env pin → multi-account select → gateway active()). */
   account?: string | null;
+  /** Observe the same provider/override-filtered set used by this resolver. */
+  onResolvedAccounts?: (accountIds: string[]) => void;
 }): Promise<Record<string, string>> {
   const acctOverride = (opts.account ?? '').trim();
   const acctMode = acctOverride.toLowerCase();
@@ -352,7 +398,10 @@ export async function resolveSpawnGatewayEnv(opts: {
   // account-routing-3-options: an explicit `account` override picks the routing MODE up-front.
   // 'default'/'none'/'system' skips the gateway entirely (the operator's "use the system credential"
   // escape hatch) — return before any pool work.
-  if (useDefault) return {};
+  if (useDefault) {
+    opts.onResolvedAccounts?.([]);
+    return {};
+  }
   const backend = interactiveBackendFromSpawnBackend(opts.backend ?? 'claude');
   let ompModelRoute: import('@papercusp/orchestrator/omp-gateway-config').OmpGatewayModelRoute | null = null;
   if (backend === 'omp' && opts.model?.trim()) {
@@ -379,52 +428,21 @@ export async function resolveSpawnGatewayEnv(opts: {
   let accountId: string | undefined;
   let hardPin = false;
   if (explicitPin) {
-    const [{ loadAccountPool }, { accountProvider }] = await Promise.all([
-      import('../deployment/account-pool-store'),
-      import('../deployment/account-pool'),
-    ]);
-    const pool = await loadAccountPool(routingWorkspaceId);
-    const account = pool.accounts.find((candidate) => candidate.id === explicitPin);
-    if (!account) {
-      throw new Error(`account '${explicitPin}' is not in the account pool; refusing default-system fallback`);
-    }
-    const actualProvider = accountProvider(account);
-    if (actualProvider !== provider) {
-      throw new Error(
-        `account '${explicitPin}' is a ${actualProvider} account, but ${backend} requires ${provider}; refusing fallback`,
-      );
-    }
-    const { getAccountOverride } = await import('../deployment/account-session-override');
-    const override = await getAccountOverride(routingWorkspaceId);
-    if (override.excludeAccounts.includes(explicitPin)) {
-      throw new Error(`account '${explicitPin}' is excluded by the session override; refusing fallback`);
-    }
-    if (override.forcedAccounts.length && !override.forcedAccounts.includes(explicitPin)) {
-      throw new Error(`account '${explicitPin}' is outside the session override allow-list; refusing fallback`);
-    }
+    await resolveSpawnRouteAccounts(routingWorkspaceId, provider, explicitPin, backend);
     accountId = explicitPin;
     hardPin = true;
+    opts.onResolvedAccounts?.([explicitPin]);
   } else if (wantAuto) {
     // An explicit auto selection is a contract with the credential pool. Verify
     // there is at least one allowed provider account before emitting an unpinned
     // gateway route; an empty pool must not look like a successful system login.
-    const [{ loadAccountPool }, { accountProvider }] = await Promise.all([
-      import('../deployment/account-pool-store'),
-      import('../deployment/account-pool'),
-    ]);
-    const pool = await loadAccountPool(routingWorkspaceId);
-    const { getAccountOverride } = await import('../deployment/account-session-override');
-    const override = await getAccountOverride(routingWorkspaceId);
-    const candidates = pool.accounts.filter((candidate) => {
-      if (accountProvider(candidate) !== provider) return false;
-      if (override.excludeAccounts.includes(candidate.id)) return false;
-      return !override.forcedAccounts.length || override.forcedAccounts.includes(candidate.id);
-    });
+    const candidates = await resolveSpawnRouteAccounts(routingWorkspaceId, provider, acctOverride, backend);
     if (!candidates.length) {
       throw new Error(
         `account route 'auto' has no allowed ${provider} account in the pool; refusing default-system fallback`,
       );
     }
+    opts.onResolvedAccounts?.(candidates.map(candidate => candidate.id));
     accountId = undefined;
   } else {
     // Owner-directed dedicated-account pin (2026-06-23): when PAPERCUSP_SPAWN_ACCOUNT_PIN names a

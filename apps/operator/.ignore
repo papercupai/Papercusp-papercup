@@ -1,0 +1,17 @@
+# ripgrep / fd ignore — GENERATED output only (EI-25828526343827983).
+#
+# Read by ripgrep and fd, not by git. public/internal/docs is ~3,400 TRACKED,
+# generated HTML pages (~385 MB). Nearly any identifier an agent searches for
+# appears in them, on lines up to ~700,000 characters long, so one search from
+# `apps` or the repo root returned ~300 MB (measured 2026-10-13). The source is
+# the docs corpus, which docs:search / search:fulltext already cover.
+#
+# Why here and not in the repo-root .ignore: ripgrep applies an anchored pattern
+# from an ignore file ABOVE the search root only to that root's immediate
+# children, so a root-level entry is skipped when the search starts in `apps`.
+# This file is read whenever a walk enters apps/operator, so it holds from the
+# repo root, `apps`, and `apps/operator`. (Searching from apps/operator/public
+# itself is the one root it does not cover.) A file named explicitly is still
+# searched. Pinned by
+# packages/operator-core/lib/code-intelligence/ripgrep-generated-trees-ignore.test.ts.
+/public/internal/docs/

@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Frozen account-first tutorial Help, billing and account candidate acceptance",
+  "framework": "playwright",
+  "command": [
+    "playwright",
+    "test",
+    "--config=playwright.config.ts",
+    "e2e/portal-product-tutorial-served.spec.ts",
+    "--reporter=line",
+    "--output=/tmp/tutorial-help-served-974f-results-20261008"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-08T06:37:56.555Z",
+  "finishedAt": "2026-10-08T06:38:45.228Z",
+  "summary": "Three maintained Playwright tests passed with no skips or failures against the exact unpromoted frozen Portal974f5345/root32da candidate. Real WorkOS TEST admission and the isolated operator's real AI provider exercised lesson Help, billing Help/resume, and account guide persistence. This is candidate acceptance; production shipment, full catalogue, preassigned signup, native/manual and protected voice acceptance remain separate.",
+  "assertions": [
+    {
+      "id": "current-lesson-real-help",
+      "passed": true,
+      "evidence": "The explicit billing question returned HTTP200 with one bounded plain-text answer; UI displayed it. Request body matched persisted v3 lesson scope; progress record remained equal before/after. Only Help POST was allowed besides tutorial-progress writes."
+    },
+    {
+      "id": "real-billing-guide-destination",
+      "passed": true,
+      "evidence": "Real Billing page returned plans/subscription200; contextual Help, pause/reload/resume and focus assertions passed; captured writes were exclusively successful tutorial-progress POSTs."
+    },
+    {
+      "id": "account-first-persistence",
+      "passed": true,
+      "evidence": "New authenticated WorkOS TEST account with no workspace received v3 welcome progress before entry. Account destination, contextual Help, reload/resume, unavailable workspace lesson,390px/200% no-overflow,Skip keyboard focus and hosted bootstrap boundary assertions passed."
+    },
+    {
+      "id": "exact-artifact-runtime",
+      "passed": true,
+      "evidence": "Every journey resolved served HTML against the immutable release metadata and expected buildId uSMlQPEL_wWlZ0lEH2VZ4. Published release starts after restoring25traced vendor links; build not promoted."
+    }
+  ],
+  "playwrightStats": {
+    "expected": 3,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0,
+    "durationMs": 40800
+  },
+  "release": {
+    "schemaVersion": 2,
+    "buildId": "uSMlQPEL_wWlZ0lEH2VZ4",
+    "release": "uSMlQPEL_wWlZ0lEH2VZ4-20261008063732869-1751893-80024631",
+    "sourceRoot": "/dev/shm/pcv/tutorial-portal-help-final-974f5345-20261008",
+    "publishedAt": "2026-10-08T06:37:32.869Z",
+    "sourceRootDigest": "c7ed6c3736614f62ec424e3e8bd5a3d71ddd1725857f29374cf2d84addf02ca1"
+  },
+  "sourcePair": {
+    "portalSha": "974f534503a7e730e27de208361b86449bc55822",
+    "operatorSha": "32da80c9fa17f1ce687cb50caed904c889414f8e",
+    "dependencyCustody": "Maintained source shadow remapped7Portal packages and31root file dependencies; installed vendor dependencies and external email package shared during build. No fully immutable dependency-graph claim."
+  },
+  "runtime": {
+    "operatorHealthStatus": 200,
+    "operatorHealthSha": "32da80c9fa",
+    "hostedAdmission": "WorkOS TEST verified accounts",
+    "isolation": "with-test-pg operator-api private database/home; PORTAL_LOCAL_MODE=0; private HTTPS fixture"
+  },
+  "provenance": {
+    "sourceLog": "/tmp/tutorial-help-served-final-974f-20261008.log",
+    "sourceLogSha256": "a59f5ee6581256a62bc916e810c90205f334fba290a94af0d27b8ee4bc81467f",
+    "sourceTestPath": "portal:e2e/portal-product-tutorial-served.spec.ts",
+    "sourceTestSha256": "5edc3d2764b56968dae8dbf72fa508431d69e54df89aaf6b060621b2c71e1387",
+    "originalTestCount": 3,
+    "derivedAssertionCount": 4,
+    "evidencePlane": "candidate-hosted",
+    "timestamps": "Command log creation and final log write bound the observed run; individual attachment timestamps were not retained by line reporter.",
+    "sourceResults": "/tmp/tutorial-help-served-974f-results-20261008/.last-run.json",
+    "attachments": "Playwright line reporter did not persist JSON attachment bodies; this artifact records terminal results and the assertions in the hashed canonical test, without inventing response payloads."
+  }
+}

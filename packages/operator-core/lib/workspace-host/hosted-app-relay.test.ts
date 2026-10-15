@@ -146,6 +146,35 @@ afterEach(() => {
 });
 
 describe('R-16 — the portal relays an app call', () => {
+  it('refuses an offline BYOC workspace using the durable hosting classification', async () => {
+    connector.close();
+    const input = deps();
+    input.resolveCustomerWorkspaceHosting = async (id) => id === 'ws-1' ? 'byoc' : null;
+    const response = await handleHostedAppRelay(appCall(), input);
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({
+      error: 'byoc_plaintext_relay_refused',
+      alternatives: ['customer_controlled_ingress', 'sealed_channel'],
+    });
+    expect(usage.rows.size).toBe(0);
+    expect(machineFetch).not.toHaveBeenCalled();
+  });
+
+  it('refuses BYOC before parsing an app key or reading and forwarding the body', async () => {
+    broker.attachConnector({ ...BINDING, hosting: 'byoc' }, connector);
+    const response = await handleHostedAppRelay(appCall(), deps());
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: 'byoc_plaintext_relay_refused',
+      alternatives: ['customer_controlled_ingress', 'sealed_channel'],
+    });
+    expect(connector.opened()).toBe(0);
+    expect(machineFetch).not.toHaveBeenCalled();
+    expect(usage.rows.size).toBe(0);
+    expect(relayAudit).toContainEqual({ action: 'app_relay_refused', customerWorkspaceId: 'ws-1', detail: 'byoc_plaintext_relay_refused' });
+    expect(JSON.stringify(relayAudit)).not.toContain(BODY_MARKER);
+  });
+
   it('returns the machine response for a limited-key call to a connected workspace', async () => {
     const response = await handleHostedAppRelay(appCall(), deps());
 
@@ -309,6 +338,10 @@ describe('P-017 — a signed webhook is relayed without an app key (D-032 #4)', 
         'papercusp-signature': `t=1790000000,v1=${'c'.repeat(64)}`,
         'papercusp-event': 'push',
         'papercusp-delivery': 'd-1',
+        'x-hub-signature-256': 'sha256=abc',
+        'x-hook-secret': 'vendor-handshake',
+        'x-other-signature': 'another-provider',
+        'x-papercusp-secret': 'never-forward',
         cookie: 'session=owner',
       },
       body: RAW,
@@ -327,17 +360,25 @@ describe('P-017 — a signed webhook is relayed without an app key (D-032 #4)', 
     expect(headers['papercusp-signature']).toBe(`t=1790000000,v1=${'c'.repeat(64)}`);
     expect(headers['papercusp-event']).toBe('push');
     expect(headers['papercusp-delivery']).toBe('d-1');
+    expect(headers['x-hub-signature-256']).toBe('sha256=abc');
+    expect(headers['x-hook-secret']).toBe('vendor-handshake');
+    expect(headers['x-other-signature']).toBe('another-provider');
+    expect(headers['x-papercusp-secret']).toBeUndefined();
     expect(headers['x-papercusp-ingress']).toBe('app-relay');
     expect(headers.authorization).toBeUndefined();
     expect(headers.cookie).toBeUndefined();
     expect(Buffer.from(init.body as Uint8Array).toString()).toBe(RAW);
   });
 
-  it('admits only POST on the hooks path', async () => {
-    for (const method of ['GET', 'PUT', 'DELETE']) {
+  it('admits GET verification and POST delivery, refusing other methods', async () => {
+    const verification = await handleHostedAppRelay(hookCall('ws-1', { method: 'GET', body: undefined }), deps());
+    expect(verification.status).toBe(200);
+    expect(machineFetch).toHaveBeenCalledTimes(1);
+    machineFetch.mockClear();
+    for (const method of ['PUT', 'DELETE']) {
       const response = await handleHostedAppRelay(hookCall('ws-1', { method, body: method === 'GET' ? undefined : RAW }), deps());
       expect(response.status, method).toBe(405);
-      expect(response.headers.get('allow')).toBe('POST');
+      expect(response.headers.get('allow')).toBe('GET, POST');
     }
     expect(machineFetch).not.toHaveBeenCalled();
   });
@@ -349,9 +390,9 @@ describe('P-017 — a signed webhook is relayed without an app key (D-032 #4)', 
     expect(machineFetch).not.toHaveBeenCalled();
   });
 
-  it('the machine end admits POST /api/hooks/<uuid> and nothing else under /api/hooks', () => {
+  it('the machine end admits GET and POST /api/hooks/<uuid> and nothing else under /api/hooks', () => {
     expect(decideAppHttpRoute('POST', `/api/hooks/${HOOK}`)).toMatchObject({ ok: true });
-    expect(decideAppHttpRoute('GET', `/api/hooks/${HOOK}`)).toMatchObject({ ok: false });
+    expect(decideAppHttpRoute('GET', `/api/hooks/${HOOK}`)).toMatchObject({ ok: true });
     expect(decideAppHttpRoute('POST', '/api/hooks/not-a-uuid')).toMatchObject({ ok: false });
     expect(decideAppHttpRoute('POST', `/api/hooks/${HOOK}/x`)).toMatchObject({ ok: false });
   });

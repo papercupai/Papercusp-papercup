@@ -10,6 +10,12 @@ import {
 import { knownQueryNamesV2 } from './index';
 
 describe('queryNamesForTriggerEvent', () => {
+  it('refreshes the PR viewer when report, checks or exact merge-test metadata changes', () => {
+    for (const table of ['pr_review_reports', 'pr_check_status_cache', 'harness_feature_prs', 'routines']) {
+      expect(queryNamesForTriggerEvent(`harness_shared.${table}.changed`)).toContain('harnessPrs.byHarness');
+      expect(queryNamesForTriggerEvent(`harness_shared.${table}.changed`)).toContain('harnessPrs.detail');
+    }
+  });
   it('strips the .changed suffix and looks up the table', () => {
     expect(queryNamesForTriggerEvent('harness_shared.harness_text_artifacts.changed')).toEqual([
       'harnessTextArtifact.byHarness',
@@ -20,6 +26,12 @@ describe('queryNamesForTriggerEvent', () => {
     const names = queryNamesForTriggerEvent('harness_shared.harness_chunk_plans.changed');
     expect(names).toEqual(expect.arrayContaining(['chunkPlans.byHarness', 'chunkPlans.byFeature']));
     expect(names).toHaveLength(2);
+  });
+
+  it('refreshes pinned report reads when report-library metadata changes', () => {
+    expect(queryNamesForTriggerEvent('harness_shared.report_library.changed', {
+      workspace_id: 'ws1',
+    })).toEqual(['reports.list', 'reports.library', 'reports.lineage', 'reports.get']);
   });
 
   it('returns empty array for unknown tables', () => {
@@ -83,16 +95,30 @@ describe('queryNamesForTriggerEvent', () => {
     // 👑 Queen tab's hive.steering query — the half pot:set-steering's explicit
     // notifySyncInvalidate does NOT cover (a remote write never runs that handler).
     expect(queryNamesForTriggerEvent('harness_shared.pot_settings.changed')).toEqual([
+      'network.hiveDirectory',
       'hive.steering',
       'learning.dream',
       'hive.beaconConsent',
+      // pot-review-integration-mode P-017 (EI-25188362216785598): the integration-mode settings
+      // section reads pot_settings; it full-busts because its args are the harness slug.
+      'potIntegration.settings',
     ]);
     expect(
       queryNamesForTriggerEvent('harness_shared.pot_settings.changed', {
         workspace_id: 'w1',
         harness_slug: 'acme-hive',
       }),
-    ).toEqual(['hive.steering', 'learning.dream', { name: 'hive.beaconConsent', args: { potId: 'acme-hive' } }]);
+    ).toEqual([
+      'network.hiveDirectory',
+      'hive.steering',
+      'learning.dream',
+      { name: 'hive.beaconConsent', args: { potId: 'acme-hive' } },
+      'potIntegration.settings',
+    ]);
+  });
+  it('refreshes DAO identity, membership, governance and policy readers through the existing directory subscription', () => {
+    for (const table of ['harness_registry', 'pot_members', 'pot_policy', 'pot_settings'])
+      expect(queryNamesForTriggerEvent('harness_shared.' + table + '.changed')).toContain('network.hiveDirectory');
   });
 
   it('maps harness_plans → the schedule queries (data-sync-push-completion P-002)', () => {
@@ -450,6 +476,12 @@ describe('TABLE_TO_QUERY_NAMES vs v2 registry consistency', () => {
   it('refreshes the merged operator-turn query that serves both live tail and hydration', () => {
     expect(TABLE_TO_QUERY_NAMES['harness_shared.operator_turns']).toEqual(
       expect.arrayContaining(['operatorTurns.page']),
+    );
+  });
+
+  it('invalidates the observation page and summary when occurrence watermarks change', () => {
+    expect(TABLE_TO_QUERY_NAMES['harness_shared.work_item_occurrences']).toEqual(
+      ['learning.observations', 'learning.observations.summary'],
     );
   });
 

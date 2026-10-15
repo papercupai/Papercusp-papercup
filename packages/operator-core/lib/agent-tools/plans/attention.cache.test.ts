@@ -20,6 +20,9 @@ const M = vi.hoisted(() => ({
   // WI-3348: the request-ALS workspace observed INSIDE each open-questions read.
   seenConversationsWs: [] as Array<string | undefined>,
   groupsOverride: null as unknown[] | null,
+  inboxByWorkspace: new Map<string, unknown[]>(),
+  ackedByWorkspace: new Map<string, Set<string>>(),
+  seenInboxWs: [] as Array<string | undefined>,
 }));
 
 vi.mock("../../attention/group", async (orig) => {
@@ -54,13 +57,24 @@ vi.mock("../coordination/conversations", async () => {
       M.seenConversationsWs.push(currentRequestWorkspaceId());
       return [];
     }),
-    conversationsScopeWorkspace: vi.fn(() => "default"),
+    conversationsScopeWorkspace: vi.fn(() => currentRequestWorkspaceId() ?? "default"),
   };
 });
-vi.mock("../coordination/messages", () => ({
-  readInbox: vi.fn(async () => []),
-  readAckedMsgIds: vi.fn(async () => new Set()),
-}));
+vi.mock("../coordination/messages", async () => {
+  const { currentRequestWorkspaceId } = await import("../../workspace-als");
+  return {
+    readInbox: vi.fn(async () => {
+      const workspace = currentRequestWorkspaceId();
+      M.seenInboxWs.push(workspace);
+      return M.inboxByWorkspace.get(workspace ?? '') ?? [];
+    }),
+    readAckedMsgIds: vi.fn(async () => M.ackedByWorkspace.get(currentRequestWorkspaceId() ?? '') ?? new Set()),
+  };
+});
+// Exercise the real HTTP dispatcher without importing the unrelated catalog or
+// production telemetry hooks. attention above registers the actual reader.
+vi.mock('../index', () => ({}));
+vi.mock('../../projected-tool-deps', () => ({ PROJECTED_DEPS: {} }));
 vi.mock("../coordination/identity", () => ({ ADMIN_COORD_UI_OWNER: "admin" }));
 vi.mock("@papercusp/db-org", async (orig) => {
   const actual = await orig<typeof import("@papercusp/db-org")>();
@@ -87,6 +101,9 @@ vi.mock("../../attention/triage-store", () => ({
 }));
 
 import tool from "./attention";
+import { callPlansReadRaw } from './read-dispatch';
+import { dispatchProjectedTool, lookupByMcpName, type UnifiedToolContext } from '@papercusp/agent-mcp';
+import { runWithWorkspace } from '../../workspace-als';
 import { deriveAttentionRefs } from '../../sync-resolver/attention-counts';
 import {
   getOperatorCache,
@@ -136,11 +153,15 @@ beforeEach(async () => {
   __setCachedReadEnabledForTests(true);
   M.readAllPlans.mockClear();
   M.groupsOverride = null;
+  M.inboxByWorkspace.clear();
+  M.ackedByWorkspace.clear();
+  M.seenInboxWs.length = 0;
   setFlagOverridesForTest({ [CACHE_LAYER]: true });
   await _refreshCacheLayerForTests();
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   __setCachedReadEnabledForTests(false);
   setFlagOverridesForTest(null);
   await _refreshCacheLayerForTests();
@@ -149,6 +170,166 @@ afterEach(async () => {
 });
 
 describe("plans:attention — cache wiring", () => {
+  it('refreshes the real attention handler through the production PG bridge and reaction action', async () => {
+    const workspace = 'ws-inbox-production-bridge';
+    M.inboxByWorkspace.set(workspace, ['selected', 'neighbor'].map(msg_id => ({
+      msg_id, from: 'peer-' + msg_id, to: ['human'], kind: 'message', summary: msg_id,
+      body: msg_id + ' body', ts: new Date().toISOString(),
+    })));
+    const { bridgeTriggerEvent } = await import('../../sync-sse');
+    const { registerCacheTagEcaRule, _refreshCacheEcaForTests } = await import('../../events/cache-eca-rule');
+    setFlagOverridesForTest({ [CACHE_LAYER]: true, 'papercusp-cache-tag-eca': true });
+    await _refreshCacheEcaForTests();
+    registerCacheTagEcaRule();
+    const refs = async () => deriveAttentionRefs((await run({}, ctx(workspace))).groups).map(row => row.id);
+    expect(await refs()).toContain('coord-message:selected');
+    M.ackedByWorkspace.set(workspace, new Set(['selected']));
+    bridgeTriggerEvent('harness_shared.coord_event_log.changed', { workspace_id: workspace, op: 'INSERT', id: 3 });
+    await expect.poll(refs).not.toContain('coord-message:selected');
+    expect(await refs()).toContain('coord-message:neighbor');
+  });
+
+  it('refreshes a warm human inbox after coord-log acknowledgment and reversal invalidation', async () => {
+    const workspace = 'ws-inbox-ack-refresh';
+    const messages = ['selected', 'neighbor'].map(msg_id => ({ msg_id, from: 'peer-' + msg_id,
+      to: ['human'], kind: 'message', summary: msg_id, body: msg_id + ' body', ts: new Date().toISOString() }));
+    M.inboxByWorkspace.set(workspace, messages);
+    const refs = async () => deriveAttentionRefs((await run({}, ctx(workspace))).groups).map(row => row.id);
+    expect(await refs()).toEqual(expect.arrayContaining(['coord-message:selected', 'coord-message:neighbor']));
+    M.ackedByWorkspace.set(workspace, new Set(['selected']));
+    getOperatorCache().invalidateByTags(workspace, ['coord_event_log']);
+    const acknowledged = await refs();
+    expect(acknowledged).not.toContain('coord-message:selected');
+    expect(acknowledged).toContain('coord-message:neighbor');
+    M.ackedByWorkspace.set(workspace, new Set());
+    getOperatorCache().invalidateByTags(workspace, ['coord_event_log']);
+    expect(await refs()).toEqual(expect.arrayContaining(['coord-message:selected', 'coord-message:neighbor']));
+  });
+
+  it('invalidates wildcard HTTP attention reads in the concrete viewed workspace', async () => {
+    const workspace = 'ws-inbox-wildcard-http';
+    const foreign = 'ws-inbox-wildcard-neighbor';
+    for (const ws of [workspace, foreign]) {
+      M.inboxByWorkspace.set(ws, ['selected', 'neighbor'].map(msg_id => ({
+        msg_id, from: 'peer-' + msg_id, to: ['human'], kind: 'message', summary: msg_id,
+        body: msg_id + ' body', ts: new Date().toISOString(),
+      })));
+    }
+    const refs = (ws: string) => runWithWorkspace(ws, async () =>
+      deriveAttentionRefs((await run({}, ctx('*'))).groups).map(row => row.id));
+    expect(await refs(workspace)).toContain('coord-message:selected');
+    expect(await refs(foreign)).toContain('coord-message:selected');
+    const foreignBuilds = M.seenInboxWs.filter(ws => ws === foreign).length;
+    M.ackedByWorkspace.set(workspace, new Set(['selected']));
+    getOperatorCache().invalidateByTags(workspace, ['coord_event_log']);
+    expect(await refs(workspace)).not.toContain('coord-message:selected');
+    expect(await refs(workspace)).toContain('coord-message:neighbor');
+    expect(await refs(foreign)).toContain('coord-message:selected');
+    expect(M.seenInboxWs.filter(ws => ws === foreign)).toHaveLength(foreignBuilds);
+  });
+
+  it('supports the device attention route through the real in-process dispatcher', async () => {
+    const projected = lookupByMcpName('plans:attention');
+    expect(projected).toBeDefined();
+    const deviceContext: UnifiedToolContext = {
+      workspaceId: 'ws-device-attention', harnessSlug: 'operator-home', role: 'operator',
+      runId: 'device-attention-run', spawnId: 'device-attention-spawn',
+      transport: 'in_process', uiClientId: null,
+      signal: new AbortController().signal, log: () => {}, progress: () => {}, emit: () => {},
+    };
+    const result = await dispatchProjectedTool(projected!, 'plans:attention', {
+      limit: 100, offset: 0, payloadTier: 'full',
+    }, deviceContext, {});
+    expect(result.ok, JSON.stringify(result.error)).toBe(true);
+    expect(result.result?.isError).not.toBe(true);
+    const text = result.result?.content.find((entry) => entry.type === 'text');
+    expect(text?.type).toBe('text');
+    const data = JSON.parse((text as { text: string }).text);
+    expect(Array.isArray(data.groups)).toBe(true);
+    expect(data.groups.every((group: { items?: unknown }) => Array.isArray(group.items))).toBe(true);
+    expect(M.seenInboxWs).toContain('ws-device-attention');
+    expect(data._projection?.truncated).not.toBe(true);
+  });
+
+  const reportMessage = {
+    msg_id: 'goal-report-exact-pin', from: 'goal-report-fixture', to: ['human'],
+    kind: 'message', ts: '2026-10-05T18:00:00Z', summary: 'Canonical GOAL fixture',
+    body: 'MOVED: verified fixture', expects: 'none',
+    report: { plans: [], goalReport: { schemaVersion: 1, goalId: 'goal-fixture',
+      reportId: 'rpt_fixture', bodySha256: 'a'.repeat(64) } },
+  };
+  const wrapperRead = (workspace: string) => runWithWorkspace(workspace,
+    () => callPlansReadRaw('attention', {}, { uiProjection: false }));
+  const wrapperItems = (result: Awaited<ReturnType<typeof wrapperRead>>) => {
+    expect(result.status).toBe(200);
+    return (result.data as { groups: Array<{ items: Array<{ id: string; report?: unknown }> }> })
+      .groups.flatMap(group => group.items);
+  };
+
+  it('the exact nested HTTP wrapper preserves the viewed workspace for report messages', async () => {
+    M.inboxByWorkspace.set('ws-native-fixture', [reportMessage]);
+    const own = wrapperItems(await wrapperRead('ws-native-fixture'));
+    expect(own.find(item => item.id === 'coord-message:goal-report-exact-pin')?.report).toEqual(reportMessage.report);
+    expect(M.seenInboxWs).toEqual(['ws-native-fixture']);
+    expect(wrapperItems(await wrapperRead('ws-other'))).not.toContainEqual(expect.objectContaining({
+      id: 'coord-message:goal-report-exact-pin',
+    }));
+    expect(M.seenInboxWs).toEqual(['ws-native-fixture', 'ws-other']);
+  });
+
+  it('the sync reader shares the admin workspace cache after a post-boot report write', async () => {
+    const workspace = 'ws-native-fixture';
+    // The desktop warms the sync feed before this separately persisted report.
+    expect(wrapperItems(await wrapperRead(workspace))).not.toContainEqual(
+      expect.objectContaining({ id: 'coord-message:goal-report-exact-pin' }),
+    );
+    M.inboxByWorkspace.set(workspace, [reportMessage]);
+    // Advance past the real SWR window and let the concrete admin read converge.
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now + 20_001);
+    await runWithWorkspace(workspace, () => run({}, ctx(workspace)));
+    await vi.waitFor(async () => {
+      const admin = await runWithWorkspace(workspace, () => run({}, ctx(workspace)));
+      expect(admin.groups.flatMap((group: any) => group.items)).toContainEqual(
+        expect.objectContaining({ id: 'coord-message:goal-report-exact-pin', report: reportMessage.report }),
+      );
+    });
+    // A nested HTTP context must not serve its independent stale '*' cache.
+    expect(wrapperItems(await wrapperRead(workspace))).toContainEqual(
+      expect.objectContaining({ id: 'coord-message:goal-report-exact-pin', report: reportMessage.report }),
+    );
+  });
+
+  it('a post-boot direct persistence needs feed convergence: fresh cache omits it, SWR then exposes the same pin', async () => {
+    let now = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const pinned = expect.objectContaining({ id: 'coord-message:goal-report-exact-pin', report: reportMessage.report });
+    expect(wrapperItems(await wrapperRead('ws-native-fixture'))).not.toContainEqual(pinned);
+    M.inboxByWorkspace.set('ws-native-fixture', [reportMessage]);
+    expect(wrapperItems(await wrapperRead('ws-native-fixture'))).not.toContainEqual(pinned);
+    expect(M.seenInboxWs).toEqual(['ws-native-fixture']);
+    now += 20_001;
+    // The first expired read serves stale data and starts the actual rebuild.
+    expect(wrapperItems(await wrapperRead('ws-native-fixture'))).not.toContainEqual(pinned);
+    await vi.waitFor(async () => {
+      expect(wrapperItems(await wrapperRead('ws-native-fixture'))).toContainEqual(pinned);
+    });
+    expect(M.seenInboxWs).toEqual(['ws-native-fixture', 'ws-native-fixture']);
+  });
+
+  it('the desktop list projection and exact first-page args retain the report pin', async () => {
+    M.inboxByWorkspace.set('ws-native-fixture', [reportMessage]);
+    const read = (workspace: string) => runWithWorkspace(workspace,
+      () => callPlansReadRaw('attention', { limit: 100, offset: 0 }));
+    expect(wrapperItems(await read('ws-native-fixture'))).toContainEqual(expect.objectContaining({
+      id: 'coord-message:goal-report-exact-pin', report: reportMessage.report,
+    }));
+    expect(wrapperItems(await read('ws-other'))).not.toContainEqual(expect.objectContaining({
+      id: 'coord-message:goal-report-exact-pin',
+    }));
+    expect(M.seenInboxWs).toEqual(['ws-native-fixture', 'ws-other']);
+  });
+
   it("accepts the popup's exact owner-scoped query without stripping its owner (WI-2147274)", () => {
     const args = { ownerAgentId: "su-mine", limit: 100, offset: 0 };
     expect(tool.args.parse(args)).toEqual(args);

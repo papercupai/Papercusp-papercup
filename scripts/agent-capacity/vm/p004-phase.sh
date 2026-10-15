@@ -8,6 +8,8 @@
 #         caprec.slice), the CLIs reaching the tower gateway through the reverse tunnel on :8788.
 # replay: replays exactly the sessions this phase recorded ON THIS VM with load-driver.ts --sweep
 #         (each in capdrv.slice), N at a time.
+# Replay uses the PATH captured by the real run: the npx-inherited PATH can differ on this VM and
+# has produced a Codex nested-command tool divergence (WI-10004629).
 # During each half, vm/sample-footprint.py samples the slice every 5 s for the concurrent time
 # series. A placeholder `sleep` unit holds the slice open so the sampler has a cgroup from t=0.
 #
@@ -81,7 +83,7 @@ if [ "$WHAT" = replay ] || [ "$WHAT" = both ]; then
   sample_start capdrv.slice "replay-$PHASE"
   echo "PHASE_REPLAY_START $PHASE $(ts) sessions=$ids"
   npx tsx "$S/load-driver.ts" --sweep --agents "$N" --corpus "$REC" --sessions "$ids" \
-    --out "$RUNOUT" --isolation systemd
+    --out "$RUNOUT" --isolation systemd --path recorded
   echo "PHASE_REPLAY_END $PHASE rc=$? $(ts)"
   sample_stop "replay-$PHASE"; unhold capdrv.slice
 fi

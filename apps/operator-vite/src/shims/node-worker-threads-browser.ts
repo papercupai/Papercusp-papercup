@@ -30,8 +30,14 @@ const trap: ProxyHandler<object> = {
 export const Worker = new Proxy(function Worker() {
   serverOnly();
 }, trap) as never;
+export const MessageChannel = new Proxy(function MessageChannel() {
+  serverOnly();
+}, trap) as never;
+export const receiveMessageOnPort = serverOnly;
 export const parentPort = null;
 export const workerData = undefined;
 export const isMainThread = true;
 export const threadId = 0;
+// packages/operator-core/lib/release/admission-offthread.ts passes it as a Worker env.
+export const SHARE_ENV = Symbol.for('nodejs.worker_threads.SHARE_ENV');
 export default new Proxy({}, trap) as never;

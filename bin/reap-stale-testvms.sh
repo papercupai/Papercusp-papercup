@@ -71,15 +71,58 @@
 #   TESTVM_REAPER_VMCTL_TIMEOUT  hard bound in seconds on the `vmctl down`
 #                                attempt before falling back to a direct kill
 #                                (default: 90)
+#   TESTVM_REAPER_VMCTL_EXIT_GRACE  seconds to wait for the QEMU pid to exit after
+#                                `vmctl down` succeeded (default: 15)
+#   TESTVM_REAPER_LEASE_PREFIX   named-resource prefix; the lease for instance X
+#                                is <prefix>X (default: linux-test-vm:)
+#   TESTVM_REAPER_LEASE_CMD      executable that prints locks:list JSON for the
+#                                resource in argv[1] (default: scripts/mcp-call.mjs)
+#   TESTVM_REAPER_LEASE_TIMEOUT  seconds per lease lookup (default: 20)
+#   TESTVM_REAPER_LEASE_UNREADABLE_MAX_AGE_SECS  age past which a VM is reaped
+#                                even when its lease cannot be read (default: 172800)
+#   PAPERCUSP_REPO_ROOT          checkout holding papercusp-desktop/.../vmctl
+#                                (default: this script's parent directory)
 
 set -uo pipefail
 
 MAX_AGE_SECS="${TESTVM_REAPER_MAX_AGE_SECS:-21600}"
+# KEEP LEASE (WI-10006429): a deliberate long run (e.g. a multi-hour restore
+# rehearsal on an HDD) would otherwise be reaped at MAX_AGE_SECS mid-run. Write
+# the epoch-seconds "keep until" time into $KEEP_DIR/<instance> and the reaper
+# skips that ONE instance until then. A lease further out than MAX_KEEP_SECS is
+# IGNORED (logged), so a typo or a forgotten far-future lease cannot pin a VM
+# forever; an expired lease is simply ignored. Example (12h):
+#   mkdir -p ~/.local/state/papercusp/testvm-keep
+#   echo $(( $(date +%s) + 43200 )) > ~/.local/state/papercusp/testvm-keep/<instance>
+KEEP_DIR="${TESTVM_REAPER_KEEP_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/papercusp/testvm-keep}"
+MAX_KEEP_SECS="${TESTVM_REAPER_MAX_KEEP_SECS:-172800}"
+# NAMED-RESOURCE LEASE (WI-10006611): a VM rig takes the Papercusp named resource
+# linux-test-vm:<instance> (locks:acquire_resource) for its whole run. The file
+# keep lease above was the only opt-out, so on 2026-10-06 10:30Z this reaper shut
+# down instance `clean` while its holder's lease was live. The reaper now skips an
+# instance while any unexpired holder of that resource exists. It reads the lease
+# plane through scripts/mcp-call.mjs (locks:list); TESTVM_REAPER_LEASE_CMD names an
+# executable to call instead (argv[1] = the resource name, stdout = the locks:list
+# JSON), which is how the tests run without an operator. When the plane cannot be
+# read the instance is NOT reaped (a deferred cycle is cheaper than killing a VM in
+# use), unless it has run longer than LEASE_UNREADABLE_MAX_AGE_SECS, so an outage of
+# the lease plane cannot leak VMs forever.
+LEASE_RESOURCE_PREFIX="${TESTVM_REAPER_LEASE_PREFIX:-linux-test-vm:}"
+LEASE_CMD="${TESTVM_REAPER_LEASE_CMD:-}"
+LEASE_TIMEOUT="${TESTVM_REAPER_LEASE_TIMEOUT:-20}"
+LEASE_UNREADABLE_MAX_AGE_SECS="${TESTVM_REAPER_LEASE_UNREADABLE_MAX_AGE_SECS:-172800}"
 DRY_RUN="${TESTVM_REAPER_DRY_RUN:-0}"
 VMCTL_TIMEOUT="${TESTVM_REAPER_VMCTL_TIMEOUT:-90}"
+# After `vmctl down` reports success, QEMU can take a few seconds to exit. Wait this
+# long for the pid to go before escalating to signals.
+VMCTL_EXIT_GRACE="${TESTVM_REAPER_VMCTL_EXIT_GRACE:-15}"
 
+# The systemd unit runs this from a papercusp-script-snapshot.sh copy under
+# $TMPDIR, where a path climbed from BASH_SOURCE points nowhere, so the unit pins
+# PAPERCUSP_REPO_ROOT; the self-located default serves a direct run (WI-10006358).
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VMCTL="$SELF_DIR/../papercusp-desktop/scripts/linux-test-vm/vmctl"
+REPO_ROOT="${PAPERCUSP_REPO_ROOT:-$(cd "$SELF_DIR/.." && pwd)}"
+VMCTL="$REPO_ROOT/papercusp-desktop/scripts/linux-test-vm/vmctl"
 
 # Keep the strings that the census looks for in data variables rather than in
 # the command text of a process-substitution/pipeline.  A shell launched to
@@ -117,19 +160,28 @@ proc_etimes() {
     echo $(( uptime_secs - starttime_secs ))
 }
 
-proc_cmdline() {
-    local pid="$1"
-    local f="/proc/$pid/cmdline"
+# Set PROC_CMDLINE to <pid>'s space-joined argv in the CALLER's shell; return 1
+# when the process is gone or unreadable.  Both /proc censuses below call this
+# once per host process, so it must not fork: `cmd=$(proc_cmdline "$pid")`
+# forked a subshell per entry — ~10k forks per scan, ~57s CPU per run, mostly
+# kernel time (WI-10006397).  Spawning `tr` per entry was the same cost in an
+# earlier form.  reap-stale-testvms.test.ts counts subshells to hold this.
+PROC_CMDLINE=''
+proc_read_cmdline() {
+    local f="/proc/$1/cmdline" arg
+    PROC_CMDLINE=''
     [ -f "$f" ] || return 1
-    local arg out=''
-    # Bash can read NUL-delimited argv entries directly.  Spawning `tr` once
-    # per /proc entry made the host-level census fork-heavy enough to look
-    # stalled under fleet load.
+    # 2>/dev/null precedes the input redirection so a process that exits after
+    # the -f test fails quietly instead of printing "No such file".
     while IFS= read -r -d '' arg; do
-        [ -n "$out" ] && out+=" "
-        out+="$arg"
-    done < "$f"
-    printf '%s\n' "$out"
+        PROC_CMDLINE+="${PROC_CMDLINE:+ }$arg"
+    done 2>/dev/null < "$f" || return 1
+}
+
+# Print form for callers outside the scan loops (selftests, ad-hoc use).
+proc_cmdline() {
+    proc_read_cmdline "$1" || return 1
+    printf '%s\n' "$PROC_CMDLINE"
 }
 
 # Read a process's real parent from /proc/<pid>/stat.  The comm field is
@@ -199,7 +251,8 @@ any_orchestrator_alive() {
         # The invoking shell (and any bash -c wrapper above it) is inspection
         # context, not evidence of a live federation run.
         proc_is_self_or_ancestor "$opid" && continue
-        cmd=$(proc_cmdline "$opid" 2>/dev/null) || continue
+        proc_read_cmdline "$opid" || continue
+        cmd=$PROC_CMDLINE
         local marker
         for marker in "${ORCHESTRATOR_MARKERS[@]}"; do
             case "$cmd" in
@@ -239,7 +292,8 @@ candidate_vm_pids() {
         [ -r "$cmdline_file" ] || continue
         pid="${cmdline_file%/cmdline}"; pid="${pid#/proc/}"
         proc_is_self_or_ancestor "$pid" && continue
-        cmd=$(proc_cmdline "$pid" 2>/dev/null) || continue
+        proc_read_cmdline "$pid" || continue
+        cmd=$PROC_CMDLINE
         is_qemu_testvm_cmdline "$cmd" || continue
         echo "$pid"
     done
@@ -254,12 +308,21 @@ do_reap() {
     if [ -x "$VMCTL" ] || [ -f "$VMCTL" ]; then
         log "  vmctl down $name (pid=$pid, bounded to ${VMCTL_TIMEOUT}s)"
         if timeout "$VMCTL_TIMEOUT" bash "$VMCTL" down "$name" 2>&1 | while IFS= read -r l; do log "    $l"; done; then
+            # vmctl can report "down" while QEMU is still exiting; give the pid a
+            # bounded grace before treating the shutdown as failed (2026-10-06
+            # 10:30Z: a VM vmctl had just shut down was SIGKILLed 0s later).
+            local waited=0
+            while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt "$VMCTL_EXIT_GRACE" ]; do
+                sleep 1; waited=$(( waited + 1 ))
+            done
             if ! kill -0 "$pid" 2>/dev/null; then
                 log "  $name down cleanly"
                 return 0
             fi
+            log "  vmctl down returned but pid=$pid is still alive ${VMCTL_EXIT_GRACE}s later — escalating directly"
+        else
+            log "  vmctl down failed or exceeded ${VMCTL_TIMEOUT}s for pid=$pid — escalating directly"
         fi
-        log "  vmctl down did not clear pid=$pid within ${VMCTL_TIMEOUT}s — escalating directly"
     else
         log "  vmctl not found at $VMCTL — falling back to direct kill"
     fi
@@ -273,20 +336,78 @@ do_reap() {
 # ── main ─────────────────────────────────────────────────────────────────
 # Wrapped so this file can be `source`d (functions only, no sweep) by a
 # selftest — see reap-stale-testvms.selftest.sh.
+# keep_lease_state <instance> [now-epoch]
+#   prints the lease's until-epoch and returns 0 when a valid lease holds the VM;
+#   returns 1 when there is no usable lease (missing / unreadable / expired);
+#   returns 2 when a lease exists but is IGNORED (beyond MAX_KEEP_SECS, or the
+#   instance name is not a plain file name).
+keep_lease_state() {
+    local name="$1" now="${2:-$(date +%s)}" f lease_until
+    case "$name" in ''|*/*|.*) return 2 ;; esac
+    f="$KEEP_DIR/$name"
+    [ -f "$f" ] && [ -r "$f" ] || return 1
+    lease_until=$(head -c 64 "$f" | tr -dc '0-9' | head -c 12)
+    [ -n "$lease_until" ] || return 2
+    [ "$lease_until" -gt "$now" ] || return 1
+    [ $(( lease_until - now )) -le "$MAX_KEEP_SECS" ] || { echo "$lease_until"; return 2; }
+    echo "$lease_until"
+    return 0
+}
+
+# resource_lease_state <instance> [now-epoch-ms]
+#   returns 0 and prints "<owner> until <expires_ts>" when a live holder of the
+#   named resource ${LEASE_RESOURCE_PREFIX}<instance> exists; returns 1 when the
+#   lease plane answered and nobody holds it (or every holder has expired);
+#   returns 3 when the plane could not be read (lookup failed, timed out, or
+#   answered with something that is not a locks:list result) — the caller must
+#   not treat 3 as "free".
+resource_lease_state() {
+    local name="$1" now_ms="${2:-}" resource json held
+    # The name becomes part of a JSON argument; refuse anything that is not a
+    # plain instance name rather than guess (3 = cannot verify, never "free").
+    [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || return 3
+    resource="${LEASE_RESOURCE_PREFIX}${name}"
+    if [ -n "$LEASE_CMD" ]; then
+        json=$(timeout "$LEASE_TIMEOUT" "$LEASE_CMD" "$resource" 2>/dev/null) || return 3
+    else
+        json=$(timeout "$LEASE_TIMEOUT" node "$REPO_ROOT/scripts/mcp-call.mjs" locks:list \
+            "{\"resource\":\"$resource\"}" --client testvm-reaper 2>/dev/null) || return 3
+    fi
+    [ -n "$now_ms" ] || now_ms=$(( $(date +%s) * 1000 ))
+    # Holders appear both top-level and under resources[]; take the union and keep
+    # only live, unexpired holds of THIS resource. A holder without an expiry is
+    # treated as live. Anything that is not an ok:true locks:list body is an error.
+    held=$(jq -er --arg r "$resource" --argjson now "$now_ms" '
+        def ms: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601 * 1000;
+        if .ok == true and (.holders | type) == "array" then
+          [ (.holders[]?, (.resources[]?.holders[]?))
+            | select(.resource == $r and .status == "held")
+            | select(.expires_ts == null or ((.expires_ts | ms) > $now)) ]
+          | if length > 0 then "\(.[0].owner) until \(.[0].expires_ts // "no expiry")" else "" end
+        else error("not a locks:list result") end' <<< "$json" 2>/dev/null) || return 3
+    [ -n "$held" ] || return 1
+    echo "$held"
+    return 0
+}
+
 main() {
     if any_orchestrator_alive; then
         log "a federation orchestrator script is live — skipping this sweep entirely (may legitimately hold VMs past the age threshold)"
         return 0
     fi
 
-    local checked=0 reaped=0 skipped_young=0
+    local checked=0 reaped=0 skipped_young=0 skipped_kept=0 skipped_leased=0 deferred_unreadable=0
+    # Once one lookup fails, later candidates in the same sweep do not pay another
+    # LEASE_TIMEOUT each: the plane is treated as unreadable for the whole sweep.
+    local lease_plane_down=0
 
     while IFS= read -r pid; do
         [ -z "$pid" ] && continue
         checked=$(( checked + 1 ))
 
         local cmd name et
-        cmd=$(proc_cmdline "$pid" 2>/dev/null) || continue
+        proc_read_cmdline "$pid" || continue
+        cmd=$PROC_CMDLINE
         name=$(vm_name_from_cmdline "$cmd") || { log "SKIP pid=$pid — could not parse instance name from cmdline"; continue; }
 
         et=$(proc_etimes "$pid" 2>/dev/null) || continue
@@ -295,12 +416,40 @@ main() {
             continue
         fi
 
-        log "REAP candidate: $name (pid=$pid, running=${et}s >= ${MAX_AGE_SECS}s, no live orchestrator)"
+        local lease_until lrc
+        lease_until=$(keep_lease_state "$name"); lrc=$?
+        if [ "$lrc" -eq 0 ]; then
+            log "SKIP $name (pid=$pid, running=${et}s) — keep lease until $(date -d "@$lease_until" -Iseconds) ($KEEP_DIR/$name)"
+            skipped_kept=$(( skipped_kept + 1 ))
+            continue
+        elif [ "$lrc" -eq 2 ]; then
+            log "IGNORED keep lease for $name ($KEEP_DIR/$name): unreadable or beyond max ${MAX_KEEP_SECS}s"
+        fi
+
+        local lease_holder rrc=3
+        if [ "$lease_plane_down" -eq 0 ]; then
+            lease_holder=$(resource_lease_state "$name"); rrc=$?
+        fi
+        if [ "$rrc" -eq 0 ]; then
+            log "SKIP $name (pid=$pid, running=${et}s) — named-resource lease ${LEASE_RESOURCE_PREFIX}${name} held by $lease_holder"
+            skipped_leased=$(( skipped_leased + 1 ))
+            continue
+        elif [ "$rrc" -ne 1 ]; then
+            lease_plane_down=1
+            if [ "$et" -lt "$LEASE_UNREADABLE_MAX_AGE_SECS" ]; then
+                log "DEFER $name (pid=$pid, running=${et}s) — cannot read the named-resource lease ${LEASE_RESOURCE_PREFIX}${name}; not reaping a VM that may be leased (retry next sweep)"
+                deferred_unreadable=$(( deferred_unreadable + 1 ))
+                continue
+            fi
+            log "lease ${LEASE_RESOURCE_PREFIX}${name} unreadable, but $name has run ${et}s >= ${LEASE_UNREADABLE_MAX_AGE_SECS}s — reaping anyway"
+        fi
+
+        log "REAP candidate: $name (pid=$pid, running=${et}s >= ${MAX_AGE_SECS}s, no live orchestrator, no live lease)"
         do_reap "$pid" "$name"
         reaped=$(( reaped + 1 ))
     done < <(candidate_vm_pids)
 
-    log "Summary: checked=$checked reaped=$reaped skipped_young=$skipped_young max_age_secs=$MAX_AGE_SECS"
+    log "Summary: checked=$checked reaped=$reaped skipped_young=$skipped_young skipped_kept=$skipped_kept skipped_leased=$skipped_leased deferred_unreadable=$deferred_unreadable max_age_secs=$MAX_AGE_SECS"
 }
 
 # Only run the sweep when EXECUTED directly — a selftest sources this file to

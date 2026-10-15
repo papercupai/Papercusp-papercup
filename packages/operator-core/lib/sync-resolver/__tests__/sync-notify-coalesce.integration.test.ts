@@ -44,7 +44,7 @@ const BOOT_PREREQS_DDL = `
 
 interface Notice {
   name: string;
-  args: { op?: string; id?: unknown };
+  args: { workspace_id?: string | null; op?: string; id?: unknown };
 }
 
 let db: MigratedTestDb;
@@ -74,9 +74,12 @@ beforeAll(async () => {
   await sql.unsafe(`
     CREATE TABLE harness_shared.p525_probe_a (id text PRIMARY KEY, v int);
     CREATE TABLE harness_shared.p525_probe_b (id text PRIMARY KEY);
+    CREATE TABLE harness_shared.p525_probe_scoped (id text PRIMARY KEY, workspace_id text NOT NULL);
     CREATE TRIGGER p525_a AFTER INSERT OR UPDATE OR DELETE ON harness_shared.p525_probe_a
       FOR EACH ROW EXECUTE FUNCTION harness_shared.emit_change_notify();
     CREATE TRIGGER p525_b AFTER INSERT OR UPDATE OR DELETE ON harness_shared.p525_probe_b
+      FOR EACH ROW EXECUTE FUNCTION harness_shared.emit_change_notify();
+    CREATE TRIGGER p525_scoped AFTER INSERT OR UPDATE OR DELETE ON harness_shared.p525_probe_scoped
       FOR EACH ROW EXECUTE FUNCTION harness_shared.emit_change_notify();
   `);
   listener = postgres(db.url, { max: 1, onnotice: () => {} });
@@ -126,5 +129,47 @@ describe('mig 1213: emit_change_notify coalesces under papercusp.sync_notify_coa
     const got = await drain(3);
     expect(got.map((n) => n.args.id).sort()).toEqual(['c1', 'c2', 'c3']);
     expect(got.every((n) => n.args.op === 'INSERT')).toBe(true);
+  });
+
+  it('global tables retain the connection workspace for normal and coalesced writes', async () => {
+    await sql.begin(async tx => {
+      await tx`SELECT set_config('app.workspace_id', 'global-normal', true)`;
+      await tx`INSERT INTO harness_shared.p525_probe_b VALUES ('global-normal')`;
+    });
+    expect(await drain(1)).toEqual([{ name: 'harness_shared.p525_probe_b.changed',
+      args: { workspace_id: 'global-normal', op: 'INSERT', id: 'global-normal', plan_slug: null, harness_slug: null } }]);
+    await sql.begin(async tx => {
+      await tx`SELECT set_config('app.workspace_id', 'global-coalesced', true)`;
+      await tx`SELECT set_config(${SYNC_NOTIFY_COALESCE_GUC}, 'on', true)`;
+      await tx`INSERT INTO harness_shared.p525_probe_b VALUES ('global-batch-1'), ('global-batch-2')`;
+    });
+    expect(await drain(1)).toEqual([{ name: 'harness_shared.p525_probe_b.changed',
+      args: { workspace_id: 'global-coalesced', op: 'COALESCED' } }]);
+  });
+
+  it('coalesces row-scoped writes per workspace despite a foreign connection context', async () => {
+    await sql.begin(async tx => {
+      await tx`SELECT set_config('app.workspace_id', 'foreign-connection', true)`;
+      await tx`SELECT set_config(${SYNC_NOTIFY_COALESCE_GUC}, 'on', true)`;
+      await tx`INSERT INTO harness_shared.p525_probe_scoped VALUES
+        ('scope-a1', 'workspace-a'), ('scope-a2', 'workspace-a'), ('scope-b1', 'workspace-b')`;
+    });
+    const got = await drain(2);
+    expect(got).toHaveLength(2);
+    expect(got.map(n => n.args.workspace_id).sort()).toEqual(['workspace-a', 'workspace-b']);
+    for (const n of got) {
+      expect(n.name).toBe('harness_shared.p525_probe_scoped.changed');
+      expect(n.args.op).toBe('COALESCED');
+      expect(n.args.id).toBeUndefined();
+    }
+    for (const operation of ['UPDATE', 'DELETE'] as const) {
+      await sql.begin(async tx => {
+        await tx`SELECT set_config('app.workspace_id', '', true)`;
+        if (operation === 'UPDATE') await tx`UPDATE harness_shared.p525_probe_scoped SET id='scope-a-updated' WHERE id='scope-a1'`;
+        else await tx`DELETE FROM harness_shared.p525_probe_scoped WHERE id='scope-a-updated'`;
+      });
+      expect(await drain(1)).toEqual([{ name: 'harness_shared.p525_probe_scoped.changed',
+        args: { workspace_id: 'workspace-a', op: operation, id: 'scope-a-updated', plan_slug: null, harness_slug: null } }]);
+    }
   });
 });

@@ -58,11 +58,14 @@
  *    deliberately NOT stubbed, because it is the subject;
  *  - the REAL `setMode` attach, and the REAL `resolveGoalEffectiveActivity`.
  *
- * Only `deps.launch` is stubbed — opening a real process is the launch door's
+ * `deps.launch` is stubbed — opening a real process is the launch door's
  * own tested seam (goal-holder-launch-action.test.ts), the same seam both
  * sibling integration suites stub. `readReadiness` is stubbed actionable: this
  * goal declares no blockers and the real edge read is pinned by goal-deps'
  * own tests + start-goal-by-id.test.ts.
+ * The unrelated control-anchor publication uses its existing dependency seam:
+ * this isolated fixture checks the attached identity and SQL handle without
+ * invoking the workspace's external projection refresh.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -132,6 +135,16 @@ async function seedGoal(opts: { status?: string; launchSettings?: unknown } = {}
     VALUES (${GOAL}, ${WS}, ${HARNESS}, ${'killed-holder goal'}, ${opts.status ?? 'active'},
             ${'The lost holder is replaced once and the original goal reads dormant.'}, ${1000},
             ${opts.launchSettings === undefined ? null : admin.json(opts.launchSettings as never)})`;
+  // Operating inputs require a budget, while this suite tests holder liveness.
+  // Give the launch gate an actual priced, goal-attributed measurement below
+  // that ceiling instead of relying on admission of an empty ledger.
+  const ts = Date.now();
+  await admin`
+    INSERT INTO harness_shared.agent_usage_samples
+      (workspace_id, ts, bucket_key, provider, model_class, source, ingested_at,
+       harness_slug, goal_id, cost_usd)
+    VALUES (${WS}, ${ts}, ${'test:goal-holder'}, ${'anthropic'}, ${'test'},
+            ${'interactive'}, ${ts}, ${HARNESS}, ${GOAL}, ${0.01})`;
 }
 
 /**
@@ -211,6 +224,12 @@ function startDeps(capture: { launched: string[] }): StartGoalByIdDeps {
     },
     neutralize: async () => {},
     notifyHandoff: async () => {},
+    refreshControlAnchor: async (input) => {
+      expect(input.ownerId).toBe(REPLACEMENT);
+      expect(input.workspaceId).toBe(WS);
+      expect(input.sql).toBe(admin);
+      return null;
+    },
     stampAgentOwner: async (sql, { workspaceId, goalId, ownerId }) => {
       await sql`
         UPDATE harness_shared.goals
@@ -237,7 +256,72 @@ beforeEach(async () => {
   await admin`DELETE FROM harness_shared.adv_sessions WHERE workspace_id = ${WS}`;
   await admin`DELETE FROM harness_shared.agent_mode_changes WHERE workspace_id = ${WS}`;
   await admin`DELETE FROM harness_shared.agent_modes WHERE workspace_id = ${WS}`;
+  await admin`DELETE FROM harness_shared.agent_usage_samples WHERE workspace_id = ${WS}`;
   await admin`DELETE FROM harness_shared.goals WHERE workspace_id = ${WS}`;
+});
+
+describe('P-002: holder election and bounded handoff through real PG and liveness', () => {
+  async function electSuccessor(): Promise<void> {
+    await seedGoal();
+    await attachHolder(HOLDER);
+    const [first] = await admin<Array<{ goal_lease_epoch: string }>>`
+      SELECT goal_lease_epoch FROM harness_shared.agent_modes
+       WHERE workspace_id = ${WS} AND owner_id = ${HOLDER} AND mode = ${GOAL_MODE}`;
+    const elected = await setMode({
+      workspaceId: WS, ownerId: REPLACEMENT, modeId: GOAL_MODE, enabled: true,
+      reason: 'test: elected successor', setBy: HOLDER, subject: GOAL,
+      goalElectionExpectation: { ownerId: HOLDER, epoch: Number(first.goal_lease_epoch) },
+      sql: admin,
+    });
+    expect(elected.ok).toBe(true);
+  }
+
+  it('elects one effective holder and reports loss even while the historical holder is live', async () => {
+    await electSuccessor();
+    await seedPresence(HOLDER, { pid: process.pid, ageSeconds: 0 });
+    await seedAdvSession(HOLDER);
+    const deadPid = reapedPid();
+    expectProbeDead(deadPid);
+    await seedPresence(REPLACEMENT, { pid: deadPid, ageSeconds: 0 });
+    await seedAdvSession(REPLACEMENT);
+
+    const holders = await resolveGoalHolders(admin, { workspaceId: WS, goalId: GOAL });
+    expect(holders.elected?.ownerId).toBe(REPLACEMENT);
+    expect(holders.allLive.map((holder) => holder.ownerId)).toEqual([HOLDER]);
+    expect(holders.live).toEqual([]);
+    expect(holders.liveness).toBe('lost');
+  });
+
+  it('permits only the named predecessor during the deadline, then rejects expiry and a third live row', async () => {
+    await electSuccessor();
+    for (const ownerId of [HOLDER, REPLACEMENT]) {
+      await seedPresence(ownerId, { pid: process.pid, ageSeconds: 0 });
+      await seedAdvSession(ownerId);
+    }
+    const read = () => resolveGoalHolders(admin, { workspaceId: WS, goalId: GOAL });
+    const bounded = await read();
+    expect(bounded.elected?.ownerId).toBe(REPLACEMENT);
+    expect(bounded.live.map((holder) => holder.ownerId)).toEqual([REPLACEMENT]);
+    expect(bounded.overlap.status).toBe('handoff');
+
+    await admin`UPDATE harness_shared.agent_modes
+                   SET goal_handoff_expires_at = now() - interval '1 second'
+                 WHERE workspace_id = ${WS} AND owner_id = ${REPLACEMENT} AND mode = ${GOAL_MODE}`;
+    expect((await read()).overlap.status).toBe('violation');
+
+    await admin`UPDATE harness_shared.agent_modes
+                   SET goal_handoff_expires_at = now() + interval '1 minute'
+                 WHERE workspace_id = ${WS} AND owner_id = ${REPLACEMENT} AND mode = ${GOAL_MODE}`;
+    await admin`INSERT INTO harness_shared.agent_modes
+      (workspace_id, owner_id, axis_key, mode, reason, set_by, owner_directed, set_at, subject, goal_lease_epoch)
+      VALUES (${WS}, ${'su-third-holder'}, ${GOAL_MODE}, ${GOAL_MODE},
+              ${'test: stale third holder'}, ${HOLDER}, false, now(), ${GOAL}, 0)`;
+    await seedPresence('su-third-holder', { pid: process.pid, ageSeconds: 0 });
+    await seedAdvSession('su-third-holder');
+    const third = await read();
+    expect(third.elected?.ownerId).toBe(REPLACEMENT);
+    expect(third.overlap.status).toBe('violation');
+  });
 });
 
 describe('a KILLED goal holder (pid gone, adv_sessions.ended_at never written)', () => {

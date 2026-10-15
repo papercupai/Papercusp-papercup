@@ -19,7 +19,15 @@ const excludeFlakeproof =
   process.env.FLAKE_SOAK_SELFTEST === '1' ? [] : ['**/*.flakeproof.test.ts', '**/*.flakeproof.test.tsx'];
 
 export default mergeConfig(defineVitestConfig({ layer: 'unit' }), {
-  test: { exclude: excludeFlakeproof },
+  test: {
+    exclude: excludeFlakeproof,
+    // Operator-vite tests exercise the shared Radix primitives too. jsdom
+    // needs the same browser API shims as apps/operator's Vitest configs.
+    setupFiles: [
+      resolve(operatorRoot, 'vitest-shims/resize-observer.ts'),
+      resolve(operatorRoot, 'vitest-shims/radix-jsdom.ts'),
+    ],
+  },
   resolve: {
     alias: [
       { find: '@', replacement: operatorRoot },

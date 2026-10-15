@@ -35,6 +35,7 @@ const writeTableTag = (): string[] => tagsForTableChange(WORK_ITEM_TABLE, null);
 
 const M = vi.hoisted(() => ({
   listWorkItems: vi.fn(async (_filter: ListWorkItemsFilter = {}) => [] as unknown[]),
+  countWorkItems: vi.fn<typeof import("../../work-items").countWorkItems>(async () => 0),
   getWorkItem: vi.fn(async (id: string) => ({
     id,
     kind: "feature",
@@ -65,6 +66,7 @@ vi.mock("../../work-items", async (orig) => {
   return {
     ...actual,
     listWorkItems: M.listWorkItems,
+    countWorkItems: M.countWorkItems,
     getWorkItem: M.getWorkItem,
     getWorkItemDetail: M.getWorkItemDetail,
   };
@@ -114,6 +116,7 @@ beforeEach(async () => {
   resetCachedReadStatsForTests();
   __setCachedReadEnabledForTests(true);
   M.listWorkItems.mockClear();
+  M.countWorkItems.mockClear();
   M.getWorkItem.mockClear();
   M.getWorkItemDetail.mockClear();
   CHECKPOINT.getWorkItemCheckpointWithMeta.mockReset().mockResolvedValue({ checkpoint: null, updatedAtMs: null });
@@ -135,6 +138,18 @@ describe("work_items:list — cache wiring", () => {
     await list({});
     await list({});
     expect(M.listWorkItems).toHaveBeenCalledTimes(1);
+    expect(M.countWorkItems).toHaveBeenCalledTimes(2);
+    expect(M.countWorkItems.mock.calls[0]![0]).toEqual(
+      expect.objectContaining({ audience: "agent" }),
+    );
+    expect(M.countWorkItems.mock.calls[1]![0]?.audience).toBeUndefined();
+  });
+
+  it("a q search omits unknown population counts and remains cached", async () => {
+    await list({ q: "needle" });
+    await list({ q: "needle" });
+    expect(M.listWorkItems).toHaveBeenCalledTimes(1);
+    expect(M.countWorkItems).not.toHaveBeenCalled();
   });
 
   it("ambient trimmed/standard reads request the lean SQL projection", async () => {
@@ -171,6 +186,7 @@ describe("work_items:list — cache wiring", () => {
     getOperatorCache().invalidateByTags("ws-wi", writeTableTag());
     await list({});
     expect(M.listWorkItems).toHaveBeenCalledTimes(2);
+    expect(M.countWorkItems).toHaveBeenCalledTimes(4);
   });
 
   it("a per-row work-item write also busts the list (table tag rides alongside the row tag)", async () => {
@@ -178,6 +194,7 @@ describe("work_items:list — cache wiring", () => {
     getOperatorCache().invalidateByTags("ws-wi", writeTags("WI-9"));
     await list({});
     expect(M.listWorkItems).toHaveBeenCalledTimes(2);
+    expect(M.countWorkItems).toHaveBeenCalledTimes(4);
   });
 
   it("different filter args do NOT share an entry (no cross-arg leak)", async () => {

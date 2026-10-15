@@ -8,6 +8,7 @@ import {
   expectedBrowserRevision,
   hasBrowserInstall,
   missingPlaywrightBrowsers,
+  preparePlaywrightTempDirectory,
 } from './ensure-playwright-browsers.mjs';
 
 const chromiumRevision = expectedBrowserRevision('chromium');
@@ -70,4 +71,48 @@ test('stale browser revision fails the installed-registry health check', () => {
     'chromium-headless-shell',
     'ffmpeg',
   ]);
+});
+
+const healthyStats = { bsize: 4096, bavail: 1024 * 1024, files: 10000, ffree: 9000 };
+
+test('low temporary disk headroom selects the healthy cache volume for parent and browser', () => {
+  const env = { TMPDIR: '/nearly-full', HOME: '/healthy-home' };
+  const made = [];
+  const result = preparePlaywrightTempDirectory({
+    env,
+    mkdir: (path, options) => made.push({ path, options }),
+    access: () => {},
+    statfs: path => path === '/nearly-full' ? { ...healthyStats, bavail: 12 } : healthyStats,
+  });
+  assert.equal(result.path, '/healthy-home/.cache/papercusp/playwright-tmp');
+  assert.equal(result.usedFallback, true);
+  assert.deepEqual([env.TMPDIR, env.TMP, env.TEMP], [result.path, result.path, result.path]);
+  assert.deepEqual(made, [{ path: result.path, options: { recursive: true, mode: 0o700 } }]);
+});
+
+test('healthy explicit TMPDIR is preserved without creating a fallback directory', () => {
+  const env = { TMPDIR: '/healthy-explicit', XDG_CACHE_HOME: '/unused-cache' };
+  const result = preparePlaywrightTempDirectory({ env, statfs: () => healthyStats, access: () => {}, mkdir: () => { throw new Error('unexpected fallback'); } });
+  assert.equal(result.path, '/healthy-explicit');
+  assert.equal(result.usedFallback, false);
+});
+
+test('inode exhaustion and unwritable preferred paths also select measured fallback', () => {
+  for (const reason of ['inodes', 'permission']) {
+    const env = { TMPDIR: '/bad', XDG_CACHE_HOME: '/xdg' };
+    const result = preparePlaywrightTempDirectory({
+      env, mkdir: () => {},
+      access: path => { if (reason === 'permission' && path === '/bad') throw new Error('EACCES'); },
+      statfs: path => path === '/bad' ? { ...healthyStats, ffree: 0 } : healthyStats,
+    });
+    assert.equal(result.path, '/xdg/papercusp/playwright-tmp');
+  }
+});
+
+test('no healthy volume fails before browser launch and preserves the caller environment', () => {
+  const env = { TMPDIR: '/full', HOME: '/also-full' };
+  assert.throws(() => preparePlaywrightTempDirectory({
+    env, mkdir: () => {}, access: () => {}, statfs: () => ({ ...healthyStats, bavail: 0 }),
+  }), /No writable Playwright temporary directory.*\/full.*\/also-full/);
+  assert.deepEqual(env, { TMPDIR: '/full', HOME: '/also-full' });
 });

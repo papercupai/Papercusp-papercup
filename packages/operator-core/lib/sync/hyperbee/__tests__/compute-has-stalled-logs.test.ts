@@ -14,6 +14,7 @@
  * and the loop sat on the slow cadence the entire time.
  */
 
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { computeHasStalledLogs } from '../boot';
 
@@ -94,5 +95,18 @@ describe('computeHasStalledLogs (EI-18665254552552477)', () => {
     expect(
       computeHasStalledLogs(admittedOf([['remote-1', { notPeersCount: 1 }]]), OWN_KEY, 0),
     ).toBe(false);
+  });
+
+  it('WI-10005287: boot.ts feeds leg (b) the TOPIC-scoped socket count, never the swarm-wide one', () => {
+    // The predicate is only as topic-correct as its third input. Fed the shared
+    // swarm's liveConnectionCount, one peer connected for other harnesses held
+    // leg (b) true forever on 48 of 89 bg-host topics (2026-10-02). The
+    // topic-scoped count itself is pinned in topic-stall-candidate.test.ts;
+    // this pins the call site that chooses it.
+    const src = readFileSync(new URL('../boot.ts', import.meta.url), 'utf8');
+    const calls = src.match(/computeHasStalledLogs\(admitted,[^)]*\)/g) ?? [];
+    expect(calls.length).toBe(1);
+    expect(calls[0]).toContain('topicStallCandidateCount');
+    expect(calls[0]).not.toContain('liveConnectionCount');
   });
 });

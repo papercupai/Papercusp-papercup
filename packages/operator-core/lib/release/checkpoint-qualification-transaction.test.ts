@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import {
   assessTerminalRepairQueueReconciliation,
   beginQualificationTransaction,
@@ -10,17 +11,25 @@ import {
   projectCheckpointQualificationState,
   QUALIFICATION_PROGRESS_STALE_MS,
   recordQualificationRunnerProgress,
+  isPostVerdictHang,
+  QUALIFICATION_POST_VERDICT_HANG_MS,
   recordQualificationScheduledFire,
   qualificationIntentMatches,
   reserveQualificationRunner,
   recoverQualificationScheduledTerminal,
+  recoverQualificationHistoricalPreSuiteError,
   settleQualificationTransaction,
   waitQualificationTransaction,
+  type HistoricalPreSuiteRecoveryInput,
 } from './checkpoint-qualification-transaction';
+import { GREEN_CHECKPOINT_RESULT_MARKER } from './checkpoint-log-tags';
 import {
   createFrozenCandidateQueue,
+  decideFrozenCandidateRepairQueue,
   markFrozenCandidateVerificationRed,
   markFrozenRepairAdmitted,
+  markFrozenRepairFixerDead,
+  markFrozenRepairFixerDispatched,
   markFrozenRepairVerificationGreen,
 } from './frozen-candidate-repair-queue';
 import {
@@ -37,6 +46,134 @@ const begin = () =>
     evidenceRefs: ['tool:release:checkpoint-run'],
     nowMs: 100,
   }).transaction;
+
+describe('physical reservation refusal evidence (P-033)', () => {
+  const running = () => reserveQualificationRunner(begin(), {
+    attemptId: 'attempt-1', runnerId: 'fire-1', candidate: 'candidate-1',
+    runId: 'run-1', pid: 42, pidIdentity: 'boot:42', started: true,
+    leaseDurationMs: 1_000, nowMs: 200,
+  }).transaction;
+
+  it.each([
+    [{ attemptId: 'other-attempt' }, 'attempt-id-mismatch'],
+    [{ candidate: 'other-candidate' }, 'candidate-mismatch'],
+    [{ runId: 'other-run' }, 'run-id-mismatch'],
+    [{ pidIdentity: 'other-boot:42' }, 'pid-identity-mismatch'],
+    [{ runnerId: 'other-fire' }, 'runner-held'],
+  ] as const)('names the failed invariant while preserving the reservation: %s', (override, reason) => {
+    const current = running();
+    const result = reserveQualificationRunner(current, {
+      attemptId: 'attempt-1', runnerId: 'fire-1', candidate: 'candidate-1',
+      runId: 'run-1', pid: 42, pidIdentity: 'boot:42', started: true,
+      leaseDurationMs: 1_000, nowMs: 300, ...override,
+    });
+    expect(result).toEqual({ status: 'conflict', transaction: current, refusalReason: reason });
+    expect(result.transaction).toBe(current);
+  });
+
+  it('still attaches the matching process instead of treating equal ids as a refusal', () => {
+    expect(reserveQualificationRunner(running(), {
+      attemptId: 'attempt-1', runnerId: 'fire-1', candidate: 'candidate-1',
+      runId: 'run-1', pid: 42, pidIdentity: 'boot:42', started: true,
+      leaseDurationMs: 1_000, nowMs: 300,
+    }).status).toBe('updated');
+  });
+});
+
+describe('historical dependency pre-suite recovery', () => {
+  const terminal = () => settleQualificationTransaction(begin(), {
+    attemptId: 'attempt-1', candidate: 'candidate-1', runId: 'run-1',
+    reason: 'error', green: null, evidenceRefs: ['original-terminal-event'], nowMs: 200,
+  }).transaction;
+  const log = () => [
+    '[green-checkpoint] FAILED before checkpoint lock: dependency-generation.sh --ensure-ref candidate-1 exited 77:',
+    '[dependency-generation] DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT need=100 avail=0',
+    `${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify({
+      candidate: 'candidate-1', runId: 'run-1', reason: 'error', green: null,
+      advanced: false, crashed: true, recorded: true,
+    })}`,
+  ].join('\n');
+  const proof = (text = log()): HistoricalPreSuiteRecoveryInput => ({
+    attemptId: 'attempt-1', candidate: 'candidate-1', runId: 'run-1',
+    logPath: '/archive/exact-run.log', log: text,
+    logSha256: createHash('sha256').update(text).digest('hex'), nowMs: 300,
+  });
+
+  it('creates an idempotent distinct successor without rewriting the historical terminal', () => {
+    const current = terminal();
+    const snapshot = structuredClone(current);
+    const recovered = recoverQualificationHistoricalPreSuiteError(current, proof());
+    expect(recovered.status).toBe('updated');
+    expect(recovered.transaction.attemptId).not.toBe(current.attemptId);
+    expect(recovered.transaction).toMatchObject({
+      previousAttemptId: current.attemptId, phase: 'ready', outcome: { kind: 'pending' },
+      runId: null, requiredAncestorSha: current.requiredAncestorSha,
+      candidatePolicy: current.candidatePolicy, candidate: current.candidate,
+    });
+    expect(recovered.transaction.evidenceRefs).toContain('original-terminal-event');
+    expect(recoverQualificationHistoricalPreSuiteError(recovered.transaction, proof())).toEqual({
+      status: 'idempotent', transaction: recovered.transaction,
+    });
+    expect(current).toEqual(snapshot);
+    expect(settleQualificationTransaction(current, {
+      attemptId: current.attemptId, reason: 'green', green: true, runId: 'run-1',
+    }).status).toBe('conflict');
+  });
+
+  it.each(['attemptId', 'candidate', 'runId', 'logSha256'] as const)('rejects a mismatched %s', field => {
+    expect(recoverQualificationHistoricalPreSuiteError(terminal(), { ...proof(), [field]: 'other' }).status).toBe('conflict');
+  });
+  it.each([
+    ['red', { kind: 'red', reason: 'not-green' }],
+    ['green', { kind: 'green', reason: 'green' }],
+    ['another inconclusive verdict', { kind: 'code-inconclusive', reason: 'gate-tooling-crash' }],
+  ] as const)('preserves a real %s terminal', (_, outcome) => {
+    const current = { ...terminal(), outcome };
+    expect(recoverQualificationHistoricalPreSuiteError(current, proof())).toEqual({
+      status: 'conflict', transaction: current, refusalReason: 'predecessor-not-recoverable',
+    });
+  });
+  it.each([
+    ['no positive prelock evidence', (text: string) => text.replace('FAILED before checkpoint lock:', 'dependency setup failed:')],
+    ['no typed dependency evidence', (text: string) => text.replace('DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT', 'untyped error')],
+    ['duplicate results', (text: string) => `${text}\n${text.split('\n').at(-1)}`],
+    ['malformed result', (text: string) => text.replace('"advanced":false', '"advanced":')],
+    ['wrong producer identity', (text: string) => text.replace('"runId":"run-1"', '"runId":"run-other"')],
+    ['a produced code verdict', (text: string) => text.replace('"green":null', '"green":false')],
+    ['an unrecorded result', (text: string) => text.replace('"recorded":true', '"recorded":false')],
+    ['suite start', (text: string) => `[green-checkpoint] checkpointing candidate candidate-1\n${text}`],
+    ['suite output', (text: string) => `[green-checkpoint] full suite output → /suite.log\n${text}`],
+    ['fixture-only preflight', (text: string) => text.replace('[green-checkpoint]', '[green-checkpoint:TEST-FIXTURE]')],
+  ])('rejects %s even with a correct archive hash', (_, change) => {
+    expect(recoverQualificationHistoricalPreSuiteError(terminal(), proof(change(log()))).status).toBe('conflict');
+  });
+  it('refuses active runners and previous measured suite history', () => {
+    const runner = { id: 'run-1', candidate: 'candidate-1', reservedAtMs: 100, evidenceRefs: [], phase: 'suite' as const };
+    const current = terminal();
+    expect(recoverQualificationHistoricalPreSuiteError({ ...current, currentPhysicalRunner: runner }, proof()).status).toBe('conflict');
+    expect(recoverQualificationHistoricalPreSuiteError({ ...current, consumedPhysicalRuns: [{
+      ...runner, endedAtMs: 200, outcome: current.outcome,
+    }] }, proof()).status).toBe('conflict');
+  });
+  it.each([
+    ['attemptId', 'predecessor-attempt-mismatch'],
+    ['runId', 'predecessor-run-mismatch'],
+    ['candidate', 'predecessor-candidate-mismatch'],
+  ] as const)('identifies the exact predecessor %s guard without changing the terminal', (field, refusalReason) => {
+    const current = { ...terminal(), [field]: 'different' };
+    const snapshot = structuredClone(current);
+    expect(recoverQualificationHistoricalPreSuiteError(current, proof())).toEqual({
+      status: 'conflict', transaction: current, refusalReason,
+    });
+    expect(current).toEqual(snapshot);
+  });
+  it('distinguishes an archive hash mismatch from measured suite evidence', () => {
+    expect(recoverQualificationHistoricalPreSuiteError(terminal(), { ...proof(), logSha256: 'a'.repeat(64) }))
+      .toMatchObject({ status: 'conflict', refusalReason: 'archive-hash-mismatch' });
+    expect(recoverQualificationHistoricalPreSuiteError(terminal(), proof(`phase=suite\n${log()}`)))
+      .toMatchObject({ status: 'conflict', refusalReason: 'archive-suite-evidence' });
+  });
+});
 
 describe('logical checkpoint qualification transaction', () => {
   it('keeps scheduler fires separate from suite progress and a terminal verdict', () => {
@@ -114,6 +251,19 @@ describe('logical checkpoint qualification transaction', () => {
       safeNextAction: { code: 'inspect-runner-liveness' },
     });
     expect(recordQualificationRunnerProgress(progress.transaction, { ...input, nowMs: 450 }).status).toBe('idempotent');
+    // WI-6554700010009616: the phase clock starts on a phase change and holds across same-phase
+    // beats, because the heartbeat itself keeps advancing through an awaited hang.
+    expect(progress.transaction.currentPhysicalRunner).toMatchObject({ phase: 'suite', phaseEnteredAtMs: 500 });
+    const beat = recordQualificationRunnerProgress(progress.transaction, { ...input, nowMs: 600 }).transaction;
+    expect(beat.currentPhysicalRunner).toMatchObject({ heartbeatAtMs: 600, phaseEnteredAtMs: 500 });
+    const finalizing = recordQualificationRunnerProgress(beat, { ...input, phase: 'finalizing', nowMs: 700 }).transaction;
+    expect(finalizing.currentPhysicalRunner).toMatchObject({ phase: 'finalizing', phaseEnteredAtMs: 700 });
+    const pastBound = 701 + QUALIFICATION_POST_VERDICT_HANG_MS;
+    expect(isPostVerdictHang(finalizing.currentPhysicalRunner, 'live', pastBound - 1)).toBe(false);
+    expect(isPostVerdictHang(finalizing.currentPhysicalRunner, 'live', pastBound)).toBe(true);
+    expect(isPostVerdictHang(finalizing.currentPhysicalRunner, 'unknown', pastBound)).toBe(false);
+    expect(isPostVerdictHang(finalizing.currentPhysicalRunner, 'dead', pastBound)).toBe(false);
+    expect(isPostVerdictHang(beat.currentPhysicalRunner, 'live', pastBound)).toBe(false);
     const terminal = settleQualificationTransaction(progress.transaction, {
       attemptId: 'attempt-1', runId: 'run-1', reason: 'not-green', green: false, nowMs: 600,
     }).transaction;
@@ -949,6 +1099,9 @@ describe('logical checkpoint qualification transaction', () => {
         qualificationAttemptId: 'another-attempt',
       }),
     ).toMatchObject({ status: 'blocked', reason: 'queue-origin-mismatch' });
+    // A measured red is never RETIRED. Since WI-10007398 the unassigned awaiting-fixer queue it
+    // leaves is handed to the successor (preserved) rather than blocking it; see the dedicated
+    // test below for why a block here deadlocked the gate.
     expect(
       assessTerminalRepairQueueReconciliation(
         terminal,
@@ -958,7 +1111,304 @@ describe('logical checkpoint qualification transaction', () => {
           nowMs: 300,
         }),
       ),
+    ).toMatchObject({ status: 'preserved', reason: 'awaiting-unassigned-fixer' });
+  });
+
+  // WI-10007398: the run that measures a red moves the queue to awaiting-fixer and exits; the
+  // fixer is dispatched by the NEXT run's `dispatch-fixer` decision. Refusing that successor at
+  // begin (queue-not-safe-unstarted) closed the only automatic path — measured 2026-10-07/08:
+  // 13 consecutive hourly ticks refused with attempts=0, fixerSpawnId=null, nobody dispatched.
+  it('hands an unassigned awaiting-fixer queue to the successor so its run can dispatch the fixer', () => {
+    const awaitingFixer = markFrozenCandidateVerificationRed(
+      createFrozenCandidateQueue({ candidate: 'candidate-1', qualificationAttemptId: 'attempt-1', base: null, nowMs: 200 }),
+      { failingTests: ['broken.test.ts'], nowMs: 300 },
+    );
+    expect(awaitingFixer.phase).toBe('awaiting-fixer');
+    expect(awaitingFixer.fixerSpawnId).toBeNull();
+    const successor = { attemptId: 'attempt-2', declaredPaths: [], candidate: 'candidate-2', nowMs: 500 };
+    // The live shape: a terminal code-inconclusive attempt owns the queue.
+    const inconclusive = settleQualificationTransaction(begin(), {
+      attemptId: 'attempt-1',
+      reason: 'error',
+      green: null,
+      nowMs: 400,
+    }).transaction;
+    expect(inconclusive.outcome.kind).toBe('code-inconclusive');
+    const red = settleQualificationTransaction(begin(), {
+      attemptId: 'attempt-1',
+      reason: 'not-green',
+      green: false,
+      nowMs: 400,
+    }).transaction;
+
+    for (const terminal of [inconclusive, red]) {
+      expect(assessTerminalRepairQueueReconciliation(terminal, successor, awaitingFixer)).toMatchObject({
+        status: 'preserved',
+        reason: 'awaiting-unassigned-fixer',
+        predecessorAttemptId: 'attempt-1',
+        successorAttemptId: 'attempt-2',
+        candidate: 'candidate-1',
+      });
+    }
+    // An EXPIRED reservation is abandoned — the queue policy dispatches past it, so must begin.
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, successor, {
+        ...awaitingFixer,
+        dispatchReservation: { token: 'stale', claimedAtMs: 100, expiresAtMs: 499 },
+      }),
+    ).toMatchObject({ status: 'preserved', reason: 'awaiting-unassigned-fixer' });
+
+    // Negative controls — each keeps the fail-closed verdict.
+    // A fixer is assigned: it advances the queue itself by admission.
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, successor, { ...awaitingFixer, fixerSpawnId: 's-live' }),
     ).toMatchObject({ status: 'blocked', reason: 'queue-not-safe-unstarted' });
+    // A launch is in flight under an unexpired reservation.
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, successor, {
+        ...awaitingFixer,
+        dispatchReservation: { token: 'live', claimedAtMs: 450, expiresAtMs: 9_999_999 },
+      }),
+    ).toMatchObject({ status: 'blocked', reason: 'queue-not-safe-unstarted' });
+    // Someone else's queue.
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, successor, {
+        ...awaitingFixer,
+        qualificationAttemptId: 'someone-else',
+      }),
+    ).toMatchObject({ status: 'blocked', reason: 'queue-origin-mismatch' });
+    // Unknown origin needs the exact repairHead pin, then remains safe to hand off only while
+    // the fixer is unassigned and no dispatch reservation is live.
+    const unknownOriginQueue = { ...awaitingFixer, qualificationAttemptId: null };
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, successor, unknownOriginQueue),
+    ).toMatchObject({ status: 'blocked', reason: 'queue-origin-unknown' });
+    const pinnedSuccessor = { ...successor, requiredAncestorSha: unknownOriginQueue.repairHead };
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, pinnedSuccessor, unknownOriginQueue),
+    ).toMatchObject({ status: 'preserved', reason: 'awaiting-unassigned-fixer' });
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, {
+        ...successor,
+        requiredAncestorSha: 'different-repair-head',
+      }, unknownOriginQueue),
+    ).toMatchObject({ status: 'blocked', reason: 'queue-origin-unknown' });
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, pinnedSuccessor, {
+        ...unknownOriginQueue,
+        fixerSpawnId: 's-live',
+      }),
+    ).toMatchObject({ status: 'blocked', reason: 'queue-origin-unknown' });
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, pinnedSuccessor, {
+        ...unknownOriginQueue,
+        dispatchReservation: { token: 'live', claimedAtMs: 450, expiresAtMs: 9_999_999 },
+      }),
+    ).toMatchObject({ status: 'blocked', reason: 'queue-origin-unknown' });
+  });
+
+  // WI-10007408: the same deadlock with a fixer ASSIGNED but dead. Observed 2026-10-08: the
+  // papercusp fixer reached spawned_agents 'done' at 10:43Z with no admission and the queue
+  // stayed awaiting-fixer naming it. Only the run's `recover-dead-fixer` branch clears that row,
+  // and the run cannot start while begin refuses its successor.
+  it('hands an awaiting-fixer queue whose assigned fixer is PROVABLY dead to the successor', () => {
+    const awaitingDeadFixer = {
+      ...markFrozenCandidateVerificationRed(
+        createFrozenCandidateQueue({ candidate: 'candidate-1', qualificationAttemptId: 'attempt-1', base: null, nowMs: 200 }),
+        { failingTests: ['broken.test.ts'], nowMs: 300 },
+      ),
+      fixerSpawnId: 's-dead',
+      attempts: 1,
+    };
+    const inconclusive = settleQualificationTransaction(begin(), {
+      attemptId: 'attempt-1',
+      reason: 'error',
+      green: null,
+      nowMs: 400,
+    }).transaction;
+    const successorWith = (assignedFixerLiveness: { spawnId: string; liveness: 'live' | 'dead' | 'unknown' } | null) => ({
+      attemptId: 'attempt-2',
+      declaredPaths: [],
+      candidate: 'candidate-2',
+      nowMs: 500,
+      assignedFixerLiveness,
+    });
+
+    const preserved = assessTerminalRepairQueueReconciliation(
+      inconclusive,
+      successorWith({ spawnId: 's-dead', liveness: 'dead' }),
+      awaitingDeadFixer,
+    );
+    expect(preserved).toMatchObject({
+      status: 'preserved',
+      reason: 'awaiting-dead-fixer',
+      predecessorAttemptId: 'attempt-1',
+      successorAttemptId: 'attempt-2',
+      candidate: 'candidate-1',
+    });
+    // The handoff only helps if the successor's run can ACT on it: the run's own policy, fed
+    // the same verdict (dead = fixerAlive false), must take the recovery exit. A preserve
+    // with no matching exit would just move the deadlock one stage later.
+    expect(decideFrozenCandidateRepairQueue(awaitingDeadFixer, { nowMs: 600, fixerAlive: false }).kind).toBe(
+      'recover-dead-fixer',
+    );
+
+    // Negative controls — each keeps the old fail-closed verdict.
+    const blocked = { status: 'blocked', reason: 'queue-not-safe-unstarted' };
+    // A live fixer advances the queue itself by admission.
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, successorWith({ spawnId: 's-dead', liveness: 'live' }), awaitingDeadFixer),
+    ).toMatchObject(blocked);
+    // An unmeasurable fixer must not be raced.
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, successorWith({ spawnId: 's-dead', liveness: 'unknown' }), awaitingDeadFixer),
+    ).toMatchObject(blocked);
+    // No probe at all (every pre-WI-10007408 caller).
+    expect(assessTerminalRepairQueueReconciliation(inconclusive, successorWith(null), awaitingDeadFixer)).toMatchObject(blocked);
+    // A probe of a DIFFERENT (superseded) spawn cannot vouch for the fixer the row names now.
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, successorWith({ spawnId: 's-older', liveness: 'dead' }), awaitingDeadFixer),
+    ).toMatchObject(blocked);
+    // A launch is in flight under an unexpired reservation.
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, successorWith({ spawnId: 's-dead', liveness: 'dead' }), {
+        ...awaitingDeadFixer,
+        dispatchReservation: { token: 'live', claimedAtMs: 450, expiresAtMs: 9_999_999 },
+      }),
+    ).toMatchObject(blocked);
+    // Someone else's queue stays theirs even with a dead fixer.
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, successorWith({ spawnId: 's-dead', liveness: 'dead' }), {
+        ...awaitingDeadFixer,
+        qualificationAttemptId: 'someone-else',
+      }),
+    ).toMatchObject({ status: 'blocked', reason: 'queue-origin-mismatch' });
+  });
+
+  // green-main-cycle-time-2026-10-08 P-001 / WI-10007578. The two tests above prove each begin
+  // arm in isolation. This one pins the END-TO-END property the gate actually needs: an
+  // awaiting-fixer queue left behind by a terminal predecessor gets a fixer DISPATCHED within the
+  // successor's one tick. Measured 2026-09-22 -> 2026-10-08: dispatchReleaseFixer was not
+  // reached for hours at a time because begin refused the successor (queue-not-safe-unstarted),
+  // and each fix (WI-10007398 unassigned, WI-10007408 dead) closed one arm while every other
+  // narrowing kept failing closed. A future edit that preserves at begin but has no matching
+  // dispatch exit, or that dispatches but refuses at begin, fails here instead of freezing main.
+  it('dispatches a fixer within one tick for every awaiting-fixer queue a terminal predecessor leaves behind', () => {
+    const maxAttempts = 3; // DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS.maxAttempts
+    const terminalFor = (attemptId: string, kind: 'red' | 'code-inconclusive') => {
+      const begun = beginQualificationTransaction(null, {
+        attemptId,
+        requiredAncestorSha: 'abc123',
+        declaredPaths: [],
+        candidate: 'candidate-1',
+        nowMs: 100,
+      }).transaction;
+      const settled = settleQualificationTransaction(begun, {
+        attemptId,
+        ...(kind === 'red' ? ({ reason: 'not-green', green: false } as const) : ({ reason: 'error', green: null } as const)),
+        nowMs: 400,
+      }).transaction;
+      expect(settled.outcome.kind).toBe(kind);
+      return settled;
+    };
+    const redQueue = (qualificationAttemptId: string) =>
+      markFrozenCandidateVerificationRed(
+        createFrozenCandidateQueue({ candidate: 'candidate-1', qualificationAttemptId, base: null, nowMs: 200 }),
+        { failingTests: ['broken.test.ts'], nowMs: 300 },
+      );
+
+    // One scheduled tick, composed exactly as the gate composes it: begin reconciliation with the
+    // caller's liveness probe, then the run's queue policy, then (on a dead fixer) the persisted
+    // recovery and a re-decide, then the dispatch transition.
+    const tick = (
+      terminal: ReturnType<typeof terminalFor>,
+      queue: ReturnType<typeof redQueue>,
+      nowMs: number,
+      assess: typeof assessTerminalRepairQueueReconciliation = assessTerminalRepairQueueReconciliation,
+    ) => {
+      const fixerAlive = queue.fixerSpawnId ? false : undefined;
+      const reconciliation = assess(
+        terminal,
+        {
+          attemptId: `successor-of-${terminal.attemptId}`,
+          declaredPaths: [],
+          candidate: 'candidate-2',
+          nowMs,
+          assignedFixerLiveness: queue.fixerSpawnId ? { spawnId: queue.fixerSpawnId, liveness: 'dead' } : null,
+        },
+        queue,
+      );
+      if (reconciliation.status !== 'preserved') return { begin: reconciliation, decisions: [] as string[], dispatched: null };
+      const decisions: string[] = [];
+      let current = queue;
+      let decision = decideFrozenCandidateRepairQueue(current, { nowMs, fixerAlive });
+      decisions.push(decision.kind);
+      if (decision.kind === 'recover-dead-fixer') {
+        current = markFrozenRepairFixerDead(current, { spawnId: decision.fixerSpawnId, nowMs });
+        decision = decideFrozenCandidateRepairQueue(current, { nowMs });
+        decisions.push(decision.kind);
+      }
+      const dispatched =
+        decision.kind === 'dispatch-fixer'
+          ? markFrozenRepairFixerDispatched(current, { spawnId: `fixer-${decision.nextAttempt}`, nowMs })
+          : null;
+      return { begin: reconciliation, decisions, dispatched };
+    };
+
+    const cases: Array<{ name: string; queue: ReturnType<typeof redQueue>; expectDecisions: string[] }> = [];
+    for (const kind of ['red', 'code-inconclusive'] as const) {
+      const base = redQueue('attempt-1');
+      cases.push({ name: `${kind} / unassigned`, queue: base, expectDecisions: ['dispatch-fixer'] });
+      cases.push({
+        name: `${kind} / unassigned behind an expired reservation`,
+        queue: { ...base, dispatchReservation: { token: 'stale', claimedAtMs: 100, expiresAtMs: 499 } },
+        expectDecisions: ['dispatch-fixer'],
+      });
+      for (let attempts = 1; attempts < maxAttempts; attempts++) {
+        cases.push({
+          name: `${kind} / dead fixer after ${attempts} attempt(s)`,
+          queue: { ...base, fixerSpawnId: `fixer-${attempts}`, attempts },
+          expectDecisions: ['recover-dead-fixer', 'dispatch-fixer'],
+        });
+      }
+      for (const c of cases.filter((entry) => entry.name.startsWith(kind))) {
+        const result = tick(terminalFor('attempt-1', kind), c.queue, 500);
+        expect(result.begin, c.name).toMatchObject({ status: 'preserved' });
+        expect(result.decisions, c.name).toEqual(c.expectDecisions);
+        expect(result.dispatched, c.name).not.toBeNull();
+        expect(result.dispatched!.fixerSpawnId, c.name).toMatch(/^fixer-\d+$/);
+        expect(result.dispatched!.attempts, c.name).toBe(c.queue.attempts + 1);
+      }
+    }
+
+    // The live 2026-10-08 sequence: the successor that inherited the queue at begin was re-stamped
+    // as its owner, then crashed pre-verdict (ENOSPC in npm-install-safe at 17:28Z), so the queue
+    // now names THAT attempt while still awaiting a dead fixer. The next successor must dispatch.
+    const inherited = { ...redQueue('attempt-2'), fixerSpawnId: 'fixer-1', attempts: 1 };
+    const crashedHeir = tick(terminalFor('attempt-2', 'code-inconclusive'), inherited, 700);
+    expect(crashedHeir.begin).toMatchObject({ status: 'preserved', reason: 'awaiting-dead-fixer' });
+    expect(crashedHeir.decisions).toEqual(['recover-dead-fixer', 'dispatch-fixer']);
+    expect(crashedHeir.dispatched?.attempts).toBe(2);
+
+    // Boundary control: at the attempt budget the queue HOLDS (D-005 exhaustion escalates, never
+    // re-cuts), but it still holds through the run's decision, not through a refusal at begin.
+    const exhausted = tick(terminalFor('attempt-1', 'red'), { ...redQueue('attempt-1'), fixerSpawnId: 'fixer-3', attempts: maxAttempts }, 500);
+    expect(exhausted.begin).toMatchObject({ status: 'preserved', reason: 'awaiting-dead-fixer' });
+    expect(exhausted.decisions).toEqual(['recover-dead-fixer', 'hold-exhausted']);
+    expect(exhausted.dispatched).toBeNull();
+
+    // Falsifiability control (kept permanently, per the testing doctrine for imported modules):
+    // the pre-WI-10007408 begin, which refused an assigned-but-dead fixer, must make this
+    // composed tick report NO dispatch. If it did not, the assertions above could pass vacuously.
+    const preWi10007408: typeof assessTerminalRepairQueueReconciliation = (current, successor, raw) => {
+      const verdict = assessTerminalRepairQueueReconciliation(current, successor, raw);
+      return verdict.reason === 'awaiting-dead-fixer'
+        ? { ...verdict, status: 'blocked', reason: 'queue-not-safe-unstarted' }
+        : verdict;
+    };
+    const regressed = tick(terminalFor('attempt-2', 'code-inconclusive'), inherited, 700, preWi10007408);
+    expect(regressed.begin).toMatchObject({ status: 'blocked', reason: 'queue-not-safe-unstarted' });
+    expect(regressed.dispatched).toBeNull();
   });
 
   // EI-24610407938327281: a green advance whose P-008 staging bridge lost the git-sync lock

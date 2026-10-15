@@ -258,6 +258,28 @@ describeCoordEventLogConformance(
     ).not.toThrow();
   });
 
+  it('read paths canonicalize a conflicting persisted body.msg_id from the row column', async () => {
+    await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${TEST_WS}`;
+    await sql!`
+      INSERT INTO harness_shared.coord_event_log (workspace_id, surface, msg_id, body, ts)
+      VALUES (
+        ${TEST_WS},
+        'messages',
+        'wi253229-column-id',
+        '{"ts":"2026-07-09T22:19:21.700Z","msg_id":"legacy-stale-body-id","kind":"message","from":"remote","to":["human"]}'::jsonb,
+        '2026-07-09T22:19:21.700Z'::timestamptz
+      )
+    `;
+    const log = new PgCoordLog({ getSql: () => sql!, ensureSchema: async () => {}, workspaceId: TEST_WS });
+
+    const page = await log.readLinesBoundedCursor('messages', { limit: 10 });
+    expect(page.rows).toHaveLength(1);
+    expect(page.rows[0]?.envelope.msg_id).toBe('wi253229-column-id');
+
+    const [line] = await log.readLines('messages');
+    expect(line?.msg_id).toBe('wi253229-column-id');
+  });
+
   it('a well-formed body is left untouched (no column override of a present value)', async () => {
     await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${TEST_WS}`;
     const log = new PgCoordLog({ getSql: () => sql!, ensureSchema: async () => {}, workspaceId: TEST_WS });

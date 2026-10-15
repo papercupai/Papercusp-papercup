@@ -33,19 +33,96 @@ export interface PushTokenRow {
   registered_at: Date;
 }
 
+/** Per-phone session authority lives in the existing connected-app scopes. */
+export const DEVICE_AGENT_SESSIONS_CAPABILITY = 'agent-sessions';
+
+export async function deviceAgentSessionsAllowed(deviceId: string, workspaceId: string): Promise<boolean> {
+  return withWorkspace(workspaceId, async (tx) => {
+    const rows = await tx<{ allowed: boolean }[]>`
+      SELECT COALESCE(scopes->'capabilities' ? ${DEVICE_AGENT_SESSIONS_CAPABILITY}, false) AS allowed
+        FROM harness_shared.connected_apps
+       WHERE id = ${deviceId} AND workspace_id = ${workspaceId} AND kind = 'mobile'
+         AND revoked_at IS NULL AND paused_at IS NULL
+       LIMIT 1
+    `;
+    return rows[0]?.allowed === true;
+  });
+}
+
+/** Replace just the session grant, retaining every other scope atomically. */
+export async function setDeviceAgentSessionsEnabled(
+  deviceId: string, workspaceId: string, enabled: boolean,
+): Promise<boolean> {
+  return withWorkspace(workspaceId, async (tx) => {
+    const rows = await tx<{ id: string }[]>`
+      UPDATE harness_shared.connected_apps
+         SET scopes = jsonb_set(COALESCE(scopes, '{}'::jsonb), '{capabilities}',
+           COALESCE((SELECT jsonb_agg(capability)
+             FROM jsonb_array_elements_text(COALESCE(scopes->'capabilities', '[]'::jsonb)) AS capability
+            WHERE capability <> ${DEVICE_AGENT_SESSIONS_CAPABILITY}), '[]'::jsonb)
+           || CASE WHEN ${enabled}::boolean THEN jsonb_build_array(${DEVICE_AGENT_SESSIONS_CAPABILITY}::text) ELSE '[]'::jsonb END)
+       WHERE id = ${deviceId} AND workspace_id = ${workspaceId} AND kind = 'mobile' AND revoked_at IS NULL
+      RETURNING id
+    `;
+    return rows.length === 1;
+  });
+}
+
 export async function insertDevice(opts: {
   deviceId: string;
   userEmail: string;
   workspaceId: string;
   deviceLabel?: string;
+  /** The phone's static Noise public key (canonical base64), when the pair sealed (D-013 #6). */
+  noisePublicKey?: string | null;
 }): Promise<void> {
   await withWorkspace(opts.workspaceId, async (tx) => {
     await tx`
       INSERT INTO harness_shared.connected_apps
-        (id, user_email, workspace_id, kind, label, paired_at)
-      VALUES (${opts.deviceId}, ${opts.userEmail}, ${opts.workspaceId}, 'mobile', ${opts.deviceLabel ?? null}, now())
+        (id, user_email, workspace_id, kind, label, paired_at, noise_public_key)
+      VALUES (${opts.deviceId}, ${opts.userEmail}, ${opts.workspaceId}, 'mobile', ${opts.deviceLabel ?? null}, now(),
+              ${opts.noisePublicKey ?? null})
       ON CONFLICT (id) DO NOTHING
     `;
+  });
+}
+
+/**
+ * The Noise public key a live (unrevoked) phone registered at pairing, or null.
+ * The hosted machine pins this as the sealed channel's expected remote key.
+ */
+export async function getDeviceNoisePublicKey(deviceId: string, workspaceId: string): Promise<string | null> {
+  return withWorkspace(workspaceId, async (tx) => {
+    const rows = await tx<{ noise_public_key: string | null }[]>`
+      SELECT noise_public_key FROM harness_shared.connected_apps
+       WHERE id = ${deviceId} AND kind = 'mobile' AND revoked_at IS NULL
+    `;
+    return rows[0]?.noise_public_key ?? null;
+  });
+}
+
+/**
+ * The live (unrevoked) phone that registered `noisePublicKey` at pairing, or null.
+ *
+ * The reverse of {@link getDeviceNoisePublicKey}: a sealed cloud channel learns the
+ * phone's static key during the Noise handshake, before any device JWT is readable,
+ * so the hosted machine identifies the phone by key (D-013 #6). Fails closed: an
+ * unknown key, a revoked device, or a key shared by more than one live device all
+ * return null, so an ambiguous key never authenticates as either device.
+ */
+export async function findDeviceIdByNoisePublicKey(
+  workspaceId: string,
+  noisePublicKey: string,
+): Promise<string | null> {
+  if (!noisePublicKey) return null;
+  return withWorkspace(workspaceId, async (tx) => {
+    const rows = await tx<{ id: string }[]>`
+      SELECT id FROM harness_shared.connected_apps
+       WHERE workspace_id = ${workspaceId} AND kind = 'mobile' AND revoked_at IS NULL
+         AND noise_public_key = ${noisePublicKey}
+       LIMIT 2
+    `;
+    return rows.length === 1 ? rows[0].id : null;
   });
 }
 
@@ -176,6 +253,7 @@ export async function deletePushToken(workspaceId: string, token: string): Promi
 /** Push targets for everyone in a workspace (used by the dispatcher). */
 export async function pushTargetsForWorkspace(
   workspaceId: string,
+  requiredCapability?: typeof DEVICE_AGENT_SESSIONS_CAPABILITY,
 ): Promise<Array<{ platform: 'apns' | 'fcm'; token: string }>> {
   return withWorkspace(workspaceId, async (tx) => {
     return tx<{ platform: 'apns' | 'fcm'; token: string }[]>`
@@ -183,6 +261,9 @@ export async function pushTargetsForWorkspace(
       FROM harness_shared.mobile_push_tokens t
       JOIN harness_shared.connected_apps d ON d.id = t.device_id
       WHERE d.kind = 'mobile' AND d.revoked_at IS NULL
+        AND d.paused_at IS NULL
+        AND (${requiredCapability ?? null}::text IS NULL
+          OR COALESCE(d.scopes->'capabilities' ? ${requiredCapability ?? null}::text, false))
     `;
   });
 }

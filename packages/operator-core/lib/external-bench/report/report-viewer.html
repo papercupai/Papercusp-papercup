@@ -86,6 +86,12 @@ const fmt = {
   ms: n => n == null ? "—" : n < 1000 ? n+"ms" : n < 60000 ? (n/1000).toFixed(1)+"s" : (n/60000).toFixed(1)+"m",
   score: n => n == null ? "—" : (Math.round(1000*n)/1000).toString(),
 };
+function recordedCost(row) {
+  const basis = row.costBasis === "frozen-normalized-native-source" ? " (normalized)" : row.costBasis === "mixed" ? " (mixed bases)" : "";
+  if (row.costUsdMeasurementMissing || row.costUsd == null)
+    return "Incomplete" + (row.costKnownSubtotalUsd != null ? " · known " + fmt.usd(row.costKnownSubtotalUsd) : "") + basis;
+  return fmt.usd(row.costUsd) + basis;
+}
 const pill = (txt, cls) => el("span",{class:"pill "+cls}, txt);
 // collapsible JSON tree (for config / args / result / suiteData)
 function jsonTree(v, key) {
@@ -167,29 +173,63 @@ function tabOverview(b){
   const wrap = el("div",{});
   const t = b.run.totals||{};
   wrap.append(el("div",{class:"cards"},
-    card("Tasks", fmt.int(t.tasks)), card("Total cost", fmt.usd(t.costUsd)),
+    card("Tasks", fmt.int(t.tasks)), card("Recorded cost", recordedCost(t)),
     card("Tokens", fmt.int((t.tokensIn||0)+(t.tokensOut||0))), card("Wall", fmt.ms(t.wallMs)),
     card("Arms", String((b.run.arms||[]).length))));
   // per-arm table
   const rows = (b.arms||[]).map(a=>{
-    const acc = a.meanScore!=null ? fmt.score(a.meanScore) : (a.scored ? fmt.pct(a.resolved||0,a.scored) : "—");
+    const primary = a.meanScore!=null ? a.primaryMeanScore : a.primaryResolvedPct;
+    const primaryText = a.assignedAttempts==null ? "Unknown assigned population (legacy export)" :
+      a.measurementComplete===false ? "Inconclusive: "+fmt.int(a.missingMeasurements)+" missing grade(s)" :
+      (a.meanScore!=null ? fmt.score(primary) : primary==null ? "—" : fmt.pct(primary,1))+
+        " · "+fmt.int(a.assignedAttempts)+" assigned · "+fmt.int(a.absentAttempts)+" absent";
+    const secondary = a.meanScore!=null ? "mean score "+fmt.score(a.meanScore) :
+      a.conditionalResolvedPct!=null ? fmt.pct(a.conditionalResolvedPct,1) : a.scored ? fmt.pct(a.resolved||0,a.scored) : "—";
+    const c = a.contamination;
+    const pc = c && c.postCutoff && c.postCutoff.taskIds.length ? (a.meanScore!=null ? c.postCutoff.primaryMeanScore : c.postCutoff.primaryResolvedPct) : null;
+    const contaminationText = !c ? "—" : c.label+" (cutoff "+(c.trainingDataCutoff||"unknown")+")"+
+      (c.label==="contamination-exposed" ? " · post-cutoff "+fmt.int(c.postCutoff.taskIds.length)+" task(s): "+(pc==null?"—":a.meanScore!=null?fmt.score(pc):fmt.pct(pc,1)) : "");
     return el("tr",{class:"row"},
       el("td",{}, el("b",{},a.arm)),
-      el("td",{}, a.meanScore!=null ? "mean score "+acc : (a.resolved||0)+"/"+(a.scored||0)+" = "+acc),
+      el("td",{}, primaryText, a.assignmentSource==='observed' ? " (observed roster only)" : ""),
+      el("td",{}, contaminationText),
+      el("td",{}, secondary+" · "+fmt.int(a.scored)+" graded"),
       el("td",{class:"num"}, a.infraExcluded!=null?fmt.int(a.infraExcluded):"—"),
-      el("td",{class:"num"}, fmt.usd(a.costUsd)),
+      el("td",{class:"num"}, recordedCost(a)),
+      el("td",{class:"num"}, fmt.usd(a.costPerAssignedTaskUsd)),
       el("td",{class:"num"}, fmt.int(a.tokensTotal)),
       el("td",{class:"num"}, a.concurrency?`${a.concurrency.avg?.toFixed?.(2)??a.concurrency.avg} / ${a.concurrency.peak}`:"—"));
   });
   wrap.append(el("h3",{},"Per-arm summary"),
     el("table",{}, el("thead",{}, el("tr",{},
-      el("th",{},"Arm"), el("th",{},"Accuracy / score"), el("th",{class:"num"},"infra-excl"),
-      el("th",{class:"num"},"Cost"), el("th",{class:"num"},"Tokens"), el("th",{class:"num"},"concur avg/peak"))),
+      el("th",{},"Arm"), el("th",{},"Primary assigned outcome"), el("th",{},"Contamination"), el("th",{},"Secondary graded quality"), el("th",{class:"num"},"unscored"),
+      el("th",{class:"num"},"Cost"), el("th",{class:"num"},"$/assigned task (all seeds)"), el("th",{class:"num"},"Tokens per arm run"), el("th",{class:"num"},"concur avg/peak"))),
       el("tbody",{}, ...rows)));
+  if (b.costComparison) wrap.append(costComparisonView(b.costComparison));
   if (b.run.envFingerprint) wrap.append(el("h3",{},"Environment fingerprint"), jsonTree(b.run.envFingerprint,"env"));
   return wrap;
 }
 function card(k,v){ return el("div",{class:"card"}, el("div",{class:"k"},k), el("div",{class:"v"},v)); }
+
+function costComparisonView(comparison){
+  const wrap = el("section",{}, el("h3",{},"Cost versus assigned outcome"),
+    el("p",{class:"muted"},"Descriptive Pareto frontier: higher assigned outcome and lower cost per assigned task. All seeds are included. This does not establish statistical superiority."));
+  const points = comparison.points||[];
+  const reasons = { 'unfrozen-assignment': 'assignment roster was not frozen', 'missing-grade': 'missing grader measurement',
+    'absent-attempts': 'absent trials', 'incomplete-cost': 'incomplete cost accounting',
+    'cost-per-task-unavailable': 'cost per task unavailable', 'incompatible-cost-bases': 'different cost bases' };
+  wrap.append(el("table",{}, el("thead",{}, el("tr",{},
+    el("th",{},"Arm"), el("th",{},comparison.metric==='assigned-mean-score' ? "Assigned mean score" : "Assigned success rate"), el("th",{},"$/assigned task"), el("th",{},"Pareto status"))),
+    el("tbody",{}, ...points.map(point=>el("tr",{}, el("td",{},point.arm), el("td",{},fmt.score(point.value)),
+      el("td",{},fmt.usd(point.costPerTaskUsd)), el("td",{}, point.onFrontier==null ? "Excluded: "+(point.excludedReasons||[]).map(reason=>reasons[reason]||reason).join(", ") : point.onFrontier ? "On frontier" : "Dominated"))))));
+  wrap.append(el("h3",{},"Per-task winner costs"),
+    el("p",{class:"muted"},"Winners maximize the assigned outcome across this task's seeds; tied arms are retained. Costs cover the entire task's trials. Missing grades withhold winner selection; incomplete accounting keeps cost unknown."),
+    el("table",{}, el("thead",{}, el("tr",{},el("th",{},"Task"),el("th",{},"Outcome"),el("th",{},"Winner(s) and task cost"))),
+      el("tbody",{}, ...(comparison.taskWinners||[]).map(task=>el("tr",{},el("td",{},task.taskId),el("td",{},fmt.score(task.value)),
+        el("td",{}, task.incompleteArms.length ? "Inconclusive: "+task.incompleteArms.join(", ") : task.winners.length ?
+          task.winners.map(w=>w.arm+" · "+(w.costUsd==null ? "unknown cost" : fmt.usd(w.costUsd))+" · "+fmt.int(w.tokensTotal)+" tokens"+(w.costBasis==='frozen-normalized-native-source' ? " (normalized)" : "")).join("; ") : "No positive outcome"))))));
+  return wrap;
+}
 
 function tabRollouts(b){
   const wrap = el("div",{}); const q = el("input",{type:"search",placeholder:"filter by task / arm / stop / status…"});
@@ -214,7 +254,7 @@ function addRollout(tbody, ro){
   const row = el("tr",{class:"row"},
     el("td",{}, el("code",{}, shortId(ro.taskId))), el("td",{}, ro.arm),
     el("td",{}, outcomePill(ro)), el("td",{}, pill(ro.stopReason||"—", ro.stopReason==="done"?"good":ro.stopReason==="error"||ro.stopReason==="infra-failed"||ro.stopReason==="timeout"?"dim":"warn")),
-    el("td",{class:"num"}, fmt.usd(ro.costUsd)), el("td",{class:"num"}, fmt.int(ro.tokensTotal)), el("td",{class:"num"}, fmt.ms(ro.wallMs)));
+    el("td",{class:"num"}, recordedCost(ro)), el("td",{class:"num"}, fmt.int(ro.tokensTotal)), el("td",{class:"num"}, fmt.ms(ro.wallMs)));
   const det = el("tr",{class:"detail",style:"display:none"});
   const cell = el("td",{colspan:7}); det.append(cell);
   let built=false;
@@ -231,6 +271,7 @@ function rolloutDetail(ro){
   add("turns",ro.turns); add("graderStatus",ro.graderStatus); add("generationError",ro.generationError);
   add("trajectory",ro.trajectoryRef?(ro.trajectoryKind?ro.trajectoryKind+": ":"")+ro.trajectoryRef:null);
   w.append(kvg);
+  if (ro.armMeta) w.append(el("h4",{},"Execution and accounting evidence"), jsonTree(ro.armMeta,"evidence"));
   if (ro.configSnapshot) w.append(el("h4",{},"config snapshot"), jsonTree(ro.configSnapshot,"config"));
   if (ro.failToPass||ro.passToPass) w.append(el("h4",{},"tests"),
     el("div",{class:"muted"}, "FAIL_TO_PASS "+passCount(ro.failToPass)+" · PASS_TO_PASS "+passCount(ro.passToPass)),

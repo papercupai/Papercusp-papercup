@@ -14,7 +14,12 @@
  *   - coalesced: the replay resolves the 23505 onto the existing winner and
  *     treats the remote PUT as a no-op (engineer-issues.ts resolver table);
  *   - physical-row: the projection's own ON CONFLICT arbitrates it;
- *   - unreachable: the projection's writes cannot enter the index predicate.
+ *   - unreachable: the projection's writes cannot enter the index predicate;
+ *   - resident-row: every projection that writes work_items reads the
+ *     workspace's resident row for the key BEFORE the upsert and lands or
+ *     refuses the op there, so the index only ever sees a concurrent-insert
+ *     race, whose 23505 rethrows once and the replay then takes the resident
+ *     path.
  *
  * work-items-replay-identity-indexes.test.ts scans the migrations and fails on
  * any unique index with no entry here, so a new identity index cannot silently
@@ -24,16 +29,20 @@
 export const WATCHDOG_IDENTITY_INDEX = 'work_items_watchdog_identity_uq';
 export const KEYLESS_TITLE_IDENTITY_INDEX = 'work_items_keyless_title_identity_uq';
 export const RESOURCE_GOVERNOR_IDENTITY_INDEX = 'work_items_resource_governor_identity_uq';
+export const INTAKE_PROMOTION_IDENTITY_INDEX = 'work_items_intake_promotion_key_uniq';
+export const WORKSPACE_FEATURE_ID_INDEX = 'work_items_workspace_feature_id_uq';
 
 export type WorkItemsReplayIndexPolicy =
   | { readonly kind: 'coalesced'; readonly migration: string }
   | { readonly kind: 'physical-row'; readonly reason: string }
-  | { readonly kind: 'unreachable'; readonly reason: string };
+  | { readonly kind: 'unreachable'; readonly reason: string }
+  | { readonly kind: 'resident-row'; readonly migration: string; readonly reason: string };
 
 export const WORK_ITEMS_UNIQUE_INDEX_REPLAY_POLICY: Readonly<Record<string, WorkItemsReplayIndexPolicy>> = {
   [WATCHDOG_IDENTITY_INDEX]: { kind: 'coalesced', migration: '865' },
   [KEYLESS_TITLE_IDENTITY_INDEX]: { kind: 'coalesced', migration: '1157' },
   [RESOURCE_GOVERNOR_IDENTITY_INDEX]: { kind: 'coalesced', migration: '986' },
+  [INTAKE_PROMOTION_IDENTITY_INDEX]: { kind: 'coalesced', migration: '1298' },
   work_items_pkey: {
     kind: 'physical-row',
     reason: 'the (harness_slug, feature_id) physical key is the projection ON CONFLICT arbiter',
@@ -41,6 +50,13 @@ export const WORK_ITEMS_UNIQUE_INDEX_REPLAY_POLICY: Readonly<Record<string, Work
   work_items_scoped_identity: {
     kind: 'physical-row',
     reason: '(workspace_id, harness_slug, feature_id) is the same physical row identity the ON CONFLICT resolves',
+  },
+  [WORKSPACE_FEATURE_ID_INDEX]: {
+    kind: 'resident-row',
+    migration: '1444',
+    reason:
+      'scope-unique-identifiers P-012 (D-012): engineer-issues lands an issue op on the workspace\'s resident row ' +
+      '(landOnResidentRows, P-009) and harness-features refuses a feature op whose id another harness holds, both before the upsert',
   },
   work_items_condition_key_uq: {
     kind: 'unreachable',

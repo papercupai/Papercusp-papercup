@@ -157,7 +157,11 @@ export function buildXServerCommand(input: XServerCommandInput): XServerCommand 
     }
     return {
       binary: input.binaryPath ?? 'Xvfb',
-      argv: [display, '-screen', '0', `${width}x${height}x24`, '-nolisten', 'tcp'],
+      // The a11y bus is published by a short-lived xprop client. Xvfb's default
+      // reset-after-last-client behavior erases root properties when that client
+      // disconnects before the window manager has established its own connection.
+      // Keep the server state (including AT_SPI_BUS) across that handoff.
+      argv: [display, '-screen', '0', `${width}x${height}x24`, '-nolisten', 'tcp', '-noreset'],
       endpoint: null,
     };
   }

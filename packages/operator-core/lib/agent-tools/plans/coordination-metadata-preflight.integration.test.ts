@@ -67,11 +67,23 @@ beforeEach(async () => {
   await h.sql`TRUNCATE harness_shared.harness_plans CASCADE`;
   // Restore the actual legacy invariant for EVERY test. Applying CONTRACT in
   // one case must not accidentally give an EXPAND-only test post-rollout powers.
-  await h.sql.unsafe(legacyMigration);
+  await replayLegacyMigration();
   await h.sql.unsafe(expandMigration);
 });
 
 const inWorkspace = <T>(fn: () => T): T => runWithWorkspace(WS, fn);
+
+async function replayLegacyMigration() {
+  // Migration 1004 predates the deferred shipment status trigger installed by
+  // 1279. Its retirement UPDATE and index build now share one replay batch;
+  // check constraints immediately in this transaction so PostgreSQL can build
+  // the index without pending trigger events. Keep the migrated trigger intact
+  // and let its normal deferred mode resume when this transaction finishes.
+  await h.sql.begin(async (tx) => {
+    await tx`SET CONSTRAINTS ALL IMMEDIATE`;
+    await tx.unsafe(legacyMigration);
+  });
+}
 
 async function plan(harness: string, inputs: object = { harness: A, attempts: 1 }) {
   const content = `---\ntitle: Metadata fixture\nslug: ${metadataPlanSlug}\nstatus: draft\n---\n\n## Phase\n- **P-001** \`todo\` Submit an event\n`;
@@ -188,7 +200,7 @@ describe('P002 migration phases (isolated Postgres only)', () => {
     await h.sql.unsafe(contractMigration);
     await plan(A); await plan(B);
     await rubric('acceptance-a', A); await rubric('acceptance-b', B);
-    await h.sql.unsafe(legacyMigration);
+    await replayLegacyMigration();
     const before = await h.sql`SELECT plan_slug, status, archived, superseded_by, version
       FROM harness_shared.harness_plans WHERE workspace_id = ${WS} AND template = 'rubric' ORDER BY plan_slug`;
     expect(before.filter((row) => row.archived && row.status === 'superseded')).toHaveLength(1);

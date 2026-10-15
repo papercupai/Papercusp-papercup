@@ -8,7 +8,7 @@
  * plain 'unknown' pill rather than an error.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 
 const { syncResults, syncCalls } = vi.hoisted(() => ({
   syncResults: {} as Record<string, unknown[]>,
@@ -37,6 +37,53 @@ afterEach(() => {
   cleanup();
   for (const k of Object.keys(syncResults)) delete syncResults[k];
   syncCalls.length = 0;
+  vi.unstubAllGlobals();
+});
+
+describe('HydratedWorkRefPill — viewport admission', () => {
+  it('admits nearby references, pauses offscreen reads, and still hydrates on keyboard focus', () => {
+    let notify: IntersectionObserverCallback;
+    let target: Element;
+    const disconnect = vi.fn();
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(callback: IntersectionObserverCallback) { notify = callback; }
+      observe(element: Element) { target = element; }
+      disconnect = disconnect;
+    });
+    syncResults['workItems.detail'] = [{ id: 'WI-1', state: 'wip', title: 'Visible work' }];
+    const view = render(<HydratedWorkRefPill kind="work-item" id="WI-1" harnessSlug="papercusp" href="/adv?sel=WI-1" />);
+    const latest = () => syncCalls.filter((call) => call.queryName === 'workItems.detail').at(-1);
+    expect(latest()?.enabled).toBe(false);
+    const intersection = (isIntersecting: boolean) => act(() => notify([
+      { target, isIntersecting } as IntersectionObserverEntry,
+    ], {} as IntersectionObserver));
+    intersection(true);
+    expect(latest()?.enabled).toBe(true);
+    expect(screen.getByRole('link', { name: 'WI-1 — Visible work' })).toBeTruthy();
+    intersection(false);
+    expect(latest()?.enabled).toBe(false);
+    fireEvent.focus(screen.getByRole('link'));
+    expect(latest()?.enabled).toBe(true);
+    fireEvent.blur(screen.getByRole('link'));
+    expect(latest()?.enabled).toBe(false);
+    view.unmount();
+    expect(disconnect).toHaveBeenCalledOnce();
+  });
+
+  it('gates plan-item hydration by the same viewport while preserving the message plan scope', () => {
+    let notify: IntersectionObserverCallback;
+    let target: Element;
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(callback: IntersectionObserverCallback) { notify = callback; }
+      observe(element: Element) { target = element; }
+      disconnect() {}
+    });
+    render(<HydratedWorkRefPill kind="plan-item" id="P-003" harnessSlug="papercusp" planSlug="own-plan" />);
+    const latest = () => syncCalls.filter((call) => call.queryName === 'plans.items').at(-1);
+    expect(latest()).toMatchObject({ enabled: false, args: { slug: 'own-plan' } });
+    act(() => notify([{ target, isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver));
+    expect(latest()).toMatchObject({ enabled: true, args: { slug: 'own-plan' } });
+  });
 });
 
 describe('HydratedWorkRefPill — work-item refs', () => {

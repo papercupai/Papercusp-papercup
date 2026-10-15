@@ -13,7 +13,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { composeSuStackSource, suSessionBinding } from '@papercusp/orchestrator/blueprint';
@@ -25,6 +26,10 @@ import {
   resolveOperatorAppRootFromModuleDir,
   resolveInstallPaths,
   renderSuPlaybook,
+  provisionRtk,
+  readPinnedRtkVersion,
+  rtkInstallerCandidates,
+  type RtkInstallOutcome,
 } from '../papercusp-files';
 
 const execFileAsync = promisify(execFile);
@@ -776,8 +781,17 @@ describe('installPapercuspFiles', () => {
     });
     const prevCwd = process.cwd();
     process.chdir(tmpAppRoot);
+    // Auto-discovery can resolve the live repository hook sources. Another agent may be
+    // editing one while this suite runs, in which case the installer correctly warns
+    // that the source bytes are uncommitted. That environmental warning is unrelated to
+    // this layout assertion; allow only that specific warning and keep other warnings
+    // subject to vitest-fail-on-console.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const result = await installPapercuspFiles({ home: tmpHome });
+      for (const [message] of warn.mock.calls) {
+        expect(String(message)).toMatch(/^\[desktop-install\] cc hooks: \d+ file\(s\) UNCOMMITTED in .+ NOT contained in sha=/);
+      }
       expect(result.claudeHooksInstalled).toContain('pretooluse-locks-acquire.sh');
       expect(result.claudeHooksInstalled).toContain('userpromptsubmit-memory.sh');
       expect(result.claudeSettingsMerged).toBe(true);
@@ -785,6 +799,7 @@ describe('installPapercuspFiles', () => {
       const settings = JSON.parse(await fs.readFile(path.join(tmpHome, '.claude', 'settings.json'), 'utf8'));
       expect(JSON.stringify(settings.hooks?.UserPromptSubmit ?? [])).toContain('userpromptsubmit-memory.sh');
     } finally {
+      warn.mockRestore();
       process.chdir(prevCwd);
     }
   });
@@ -898,6 +913,21 @@ describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
     expect(omp.text).not.toContain('## CLAUDE tooling');
   });
 
+  it('renders Codex output advice from the launch policy and retires it when exec is denied', async () => {
+    const baseText = `# Output guidance fixture\n${MARKER}\n<!-- PAPERCUSP-SU:RESULT-DOOR -->`;
+    const before = await renderSuPlaybook({ agent: 'codex', operatorAppRoot: tmpAppRoot, baseText });
+    expect(before.text).toContain('Print only the fields you will use');
+    expect(before.text).toContain('// @exec:');
+    expect(before.text).not.toContain('Every tool result is capped at');
+    const after = await renderSuPlaybook({ agent: 'codex', operatorAppRoot: tmpAppRoot, baseText,
+      nativeToolPolicy: { deniedNames: ['functions.exec'] } });
+    expect(after.text).not.toContain('// @exec:');
+    expect(after.text).not.toContain('Codex native tool output');
+    expect(after.text).toContain("Papercusp's per-result door defaults to");
+    const claude = await renderSuPlaybook({ agent: 'claude', operatorAppRoot: tmpAppRoot, baseText });
+    expect(claude.text).not.toContain('// @exec:');
+  });
+
   it('profile selects the base file (power → papercusp-su-power.tools.md)', async () => {
     const power = await renderSuPlaybook({ agent: 'claude', profile: 'power', operatorAppRoot: tmpAppRoot });
     expect(power.text).toContain('# Power base');
@@ -944,7 +974,8 @@ describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
     );
     expect(canonicalOverlay).toContain('ptool tools:find --json - "${ptool_scope[@]}" <<\'JSON\'');
     expect(canonicalOverlay).toContain("ptool <group:verb> --json - <<'JSON'");
-    expect(canonicalOverlay).toContain('Use `--json-file`');
+    // b9482e800e reworded this to "Use the quoted heredoc, or `--json-file` for anything large".
+    expect(canonicalOverlay).toContain('`--json-file` for anything large');
     expect(canonicalOverlay).not.toContain("ptool tools:find --json '{");
     expect(canonicalOverlay).not.toContain("ptool <group:verb> --json '{...}'");
   });
@@ -1297,6 +1328,26 @@ describe('shared base notes reach the LIVE blueprint base (recurrence guard)', (
     }
   });
 
+  it.each(['claude', 'codex', 'omp'] as const)(
+    '%s renders self-owned gate responsibility before the peer stand-down rule in both tiers',
+    async (agent) => {
+      const renders = await Promise.all([
+        renderSuPlaybook({ agent, baseSource: fileURLToPath(blueprintBase) }),
+        renderSuPlaybook({ agent, baseSource: fileURLToPath(blueprintBase), tier: 'fleet' }),
+      ]);
+
+      for (const { text } of renders) {
+        // Assert booleans so a regression does not dump the entire assembled persona.
+        expect(text.includes('Compare `gate.ownership.takenBy` with your own verified owner identity')).toBe(true);
+        expect(text.includes('Held by YOU ⇒ continue `LIVE_GATE_OPS`')).toBe(true);
+        expect(text.includes('Held by ANOTHER live agent ⇒ you are DONE')).toBe(true);
+        expect(text.includes('Never stand down merely because your own claim is held-live')).toBe(true);
+        expect(text.indexOf('Held by YOU')).toBeLessThan(text.indexOf('Held by ANOTHER'));
+        expect(/Held by a live agent ⇒ you are DONE/.test(text)).toBe(false);
+      }
+    },
+  );
+
   /**
    * THE CONTROL. Without it this suite passes even if `injectSharedBaseNotes` were changed to
    * append unconditionally — which would push the notes into minimal/test bases that are
@@ -1309,5 +1360,140 @@ describe('shared base notes reach the LIVE blueprint base (recurrence guard)', (
     const { text } = await renderSuPlaybook({ agent: 'claude', baseSource: bare });
     expect(text).not.toContain('## Coupling');
     expect(text).not.toContain('coord:couple');
+  });
+});
+
+/**
+ * WI-6554700010009448: a desktop install provisions the pinned RTK binary. Every RTK
+ * seam looks for ~/.local/bin/rtk and fails OPEN without it, so a removed provisioning
+ * step is silent at runtime. These fail if the installer stops handing install-rtk.sh
+ * to provisioning, if provisioning stops running it, or if the sidecar stops shipping it.
+ */
+describe('RTK binary provisioning (WI-6554700010009448)', () => {
+  const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..', '..');
+  const REAL_INSTALLER = path.join(REPO_ROOT, 'apps', 'operator', 'scripts', 'install-rtk.sh');
+  const ok: RtkInstallOutcome = { exitCode: 0, signal: null, stderrTail: '' };
+
+  async function writeFakeInstaller(version = '9.9.9'): Promise<string> {
+    const script = path.join(tmpAppRoot, 'scripts', 'install-rtk.sh');
+    await fs.writeFile(script, `#!/usr/bin/env bash\nRTK_VERSION="${version}"\nexit 0\n`);
+    return script;
+  }
+
+  it('installPapercuspFiles hands the shipped install-rtk.sh to provisioning and reports its status', async () => {
+    const script = await writeFakeInstaller();
+    const provision = vi.fn(async () => ({
+      result: { status: 'started' as const, script, pinnedVersion: '9.9.9' },
+      done: null,
+    }));
+    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot, provisionRtk: provision });
+    expect(provision).toHaveBeenCalledTimes(1);
+    expect(provision).toHaveBeenCalledWith({ home: tmpHome, script });
+    expect(result.rtkProvision).toEqual({ status: 'started', script, pinnedVersion: '9.9.9' });
+  });
+
+  it('by default installs nothing into an overridden home (the seams read the real one)', async () => {
+    await writeFakeInstaller();
+    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+    expect(result.rtkProvision.status).toBe('home-override');
+    await expect(fs.access(path.join(tmpHome, '.local', 'bin', 'rtk'))).rejects.toThrow();
+  });
+
+  it('runs nothing when ~/.local/bin/rtk already reports the pinned version', async () => {
+    const script = await writeFakeInstaller('9.9.9');
+    const runScript = vi.fn(async () => ok);
+    const probeVersion = vi.fn(async () => '9.9.9');
+    const h = await provisionRtk({ home: tmpHome, realHome: tmpHome, script, probeVersion, runScript });
+    expect(h.result).toEqual({ status: 'current', script, pinnedVersion: '9.9.9' });
+    expect(probeVersion).toHaveBeenCalledWith(path.join(tmpHome, '.local', 'bin', 'rtk'));
+    expect(runScript).not.toHaveBeenCalled();
+  });
+
+  it('starts the script in the background when rtk is missing or outdated, one run at a time', async () => {
+    const script = await writeFakeInstaller('9.9.9');
+    let finish: (o: RtkInstallOutcome) => void = () => {};
+    const runScript = vi.fn(() => new Promise<RtkInstallOutcome>((resolve) => (finish = resolve)));
+    const probeVersion = async () => '9.9.8';
+    const first = await provisionRtk({ home: tmpHome, realHome: tmpHome, script, probeVersion, runScript });
+    expect(first.result.status).toBe('started');
+    expect(runScript).toHaveBeenCalledWith(script, tmpHome);
+    const second = await provisionRtk({ home: tmpHome, realHome: tmpHome, script, probeVersion, runScript });
+    expect(second.result.status).toBe('in-flight');
+    expect(second.done).toBe(first.done);
+    expect(runScript).toHaveBeenCalledTimes(1);
+    finish(ok);
+    await expect(first.done).resolves.toEqual(ok);
+    // The run is over, so a later install may start another.
+    const third = await provisionRtk({ home: tmpHome, realHome: tmpHome, script, probeVersion, runScript });
+    expect(third.result.status).toBe('started');
+    finish(ok);
+    await third.done;
+  });
+
+  it('logs a failed run and lets the next install retry', async () => {
+    const script = await writeFakeInstaller();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const runScript = vi.fn(async () => ({ exitCode: 1, signal: null, stderrTail: '✗ rtk: download failed: x\n' }));
+    const h = await provisionRtk({ home: tmpHome, realHome: tmpHome, script, probeVersion: async () => null, runScript });
+    await h.done;
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain('download failed');
+    const again = await provisionRtk({ home: tmpHome, realHome: tmpHome, script, probeVersion: async () => null, runScript });
+    expect(again.result.status).toBe('started');
+    await again.done;
+    warn.mockRestore();
+  });
+
+  it('skips Windows and a layout with no shipped script, without running anything', async () => {
+    const runScript = vi.fn(async () => ok);
+    const script = await writeFakeInstaller();
+    const win = await provisionRtk({ home: tmpHome, realHome: tmpHome, script, platform: 'win32', runScript });
+    expect(win.result.status).toBe('unsupported-platform');
+    const none = await provisionRtk({ home: tmpHome, realHome: tmpHome, script: null, platform: 'linux', runScript });
+    expect(none.result.status).toBe('script-missing');
+    expect(runScript).not.toHaveBeenCalled();
+  });
+
+  it('resolves install-rtk.sh where the sidecar ships it, and reads its pin from the real script', async () => {
+    const appRoot = path.join(REPO_ROOT, 'apps', 'operator');
+    expect(rtkInstallerCandidates(appRoot, true)).toEqual([REAL_INSTALLER]);
+    expect(readPinnedRtkVersion(await fs.readFile(REAL_INSTALLER, 'utf8'))).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
+  it('build-desktop-sidecar.sh ships install-rtk.sh to the path provisioning resolves', async () => {
+    const build = await fs.readFile(path.join(REPO_ROOT, 'papercusp-desktop', 'bin', 'build-desktop-sidecar.sh'), 'utf8');
+    expect(build).toMatch(/RTK_INSTALLER_SRC="\$WEB_DIR\/scripts\/install-rtk\.sh"/);
+    expect(build).toMatch(/cp -a "\$RTK_INSTALLER_SRC" "\$SIDECAR_DIR\/apps\/operator\/scripts\/install-rtk\.sh"/);
+  });
+
+  it('end to end: the real install-rtk.sh installs a fake pinned release, then the next call is current', async () => {
+    const pinned = readPinnedRtkVersion(await fs.readFile(REAL_INSTALLER, 'utf8'));
+    const releaseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pcusp-rtk-release-'));
+    try {
+      const stage = path.join(releaseDir, 'stage');
+      await fs.mkdir(stage);
+      await fs.writeFile(path.join(stage, 'rtk'), `#!/bin/sh\necho "rtk ${pinned}"\n`, { mode: 0o755 });
+      const asset = 'rtk-x86_64-unknown-linux-musl.tar.gz';
+      const tar = spawnSync('tar', ['-czf', path.join(releaseDir, asset), '-C', stage, 'rtk']);
+      expect(tar.status).toBe(0);
+      const sha = createHash('sha256')
+        .update(await fs.readFile(path.join(releaseDir, asset)))
+        .digest('hex');
+      vi.stubEnv('RTK_INSTALL_URL_BASE', `file://${releaseDir}`);
+      vi.stubEnv('RTK_INSTALL_PLATFORM', 'Linux x86_64');
+      vi.stubEnv('RTK_INSTALL_EXPECTED_SHA256', sha);
+      vi.stubEnv('RTK_INSTALL_DIR', '');
+
+      const first = await provisionRtk({ home: tmpHome, realHome: tmpHome, script: REAL_INSTALLER, platform: 'linux' });
+      expect(first.result).toEqual({ status: 'started', script: REAL_INSTALLER, pinnedVersion: pinned });
+      const outcome = await first.done;
+      expect(outcome?.exitCode).toBe(0);
+
+      const second = await provisionRtk({ home: tmpHome, realHome: tmpHome, script: REAL_INSTALLER, platform: 'linux' });
+      expect(second.result.status).toBe('current');
+    } finally {
+      vi.unstubAllEnvs();
+      await fs.rm(releaseDir, { recursive: true, force: true });
+    }
   });
 });

@@ -131,7 +131,8 @@ describe('mode implications', () => {
     const text = modeById('ideate')!.contract.replace(/\s+/g, ' ');
     expect(text.includes('GOAL-LOCAL GAP REVIEW fulfills this IDEATE duty')).toBe(true);
     expect(text.includes('goalReview')).toBe(true);
-    expect(text.includes('justified zero-idea result')).toBe(true);
+    expect(text.includes('the goal-day must yield at least one evaluated new candidate')).toBe(true);
+    expect(text.includes('justified zero-idea result')).toBe(false);
     expect(text.includes('does not authorize the goal holder to implement')).toBe(true);
     expect(text.includes('Standalone IDEATE keeps the ordinary grounded proposal loop')).toBe(true);
   });
@@ -460,7 +461,7 @@ describe('GOAL mode', () => {
     expect(goal!.oneLiner).not.toContain('\n');
   });
 
-  it('requires scoped gap review without a new-idea production quota', () => {
+  it('requires a scoped gap review that yields one evaluated candidate per goal-day (D-001)', () => {
     const c = goal!.contract;
     const text = c.replace(/\s+/g, ' ');
     expect(text.includes('SCOPE-AWARE GOAL PLANNING')).toBe(true);
@@ -468,7 +469,15 @@ describe('GOAL mode', () => {
     expect(text.includes('GOAL-LOCAL GAP REVIEW')).toBe(true);
     expect(text.includes('goalReview')).toBe(true);
     expect(text.includes('existing-plans-sufficient')).toBe(true);
-    expect(/no minimum new-idea or feature count/i.test(text)).toBe(true);
+    // D-001 (owner #1300/#1301) superseded the no-quota stance: 18 of 24 reviews concluded
+    // existing-plans-sufficient with nothing produced.
+    expect(/no minimum new-idea or feature count/i.test(text)).toBe(false);
+    expect(/manufactur\w* an idea to satisfy a quota/i.test(text)).toBe(false);
+    expect(text.includes('at least one evaluated new candidate per goal per goal-day')).toBe(true);
+    expect(text.includes('A single pass may file zero; the goal-day may not.')).toBe(true);
+    expect(text.includes('rubrics:trend')).toBe(true);
+    expect(text.includes('coverage map')).toBe(true);
+    expect(text.includes('ideationYield')).toBe(true);
     expect(/at least once per reporting cycle/i.test(text)).toBe(true);
     expect(text.includes('and FILE the result as improvements:capture')).toBe(false);
     expect(text.includes('on any wake that would otherwise be a near-noop')).toBe(false);

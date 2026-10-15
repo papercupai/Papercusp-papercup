@@ -7,6 +7,7 @@
  */
 import { createHash } from 'node:crypto';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
+import { verifyEd25519 } from '../identity/ed25519';
 
 export interface CumulativePaymentVoucher {
   readonly channelId: string;
@@ -59,6 +60,27 @@ export function paymentVoucherDigest(voucher: Omit<CumulativePaymentVoucher, 'si
   return createHash('sha256').update(paymentVoucherSigningBytes(voucher)).digest('hex');
 }
 
+/** Authority comes from the authenticated channel, never from voucher fields. */
+export interface PaymentVoucherAuthority {
+  readonly channelId: string;
+  readonly payer: string;
+  readonly pubkeyBase64: string;
+}
+
+export function verifyPaymentVoucherSignature(voucher: CumulativePaymentVoucher, authority: PaymentVoucherAuthority): boolean {
+  try {
+    if (voucher.channelId !== authority.channelId || voucher.payer !== authority.payer ||
+        !authority.payer.trim() || !/^[A-Za-z0-9+/]{43}=$/.test(authority.pubkeyBase64) ||
+        !/^[A-Za-z0-9+/]{86}==$/.test(voucher.signature)) return false;
+    const key = Buffer.from(authority.pubkeyBase64, 'base64');
+    const signature = Buffer.from(voucher.signature, 'base64');
+    if (key.toString('base64') !== authority.pubkeyBase64 || signature.toString('base64') !== voucher.signature) return false;
+    return verifyEd25519(paymentVoucherSigningBytes(unsignedVoucher(voucher)), authority.pubkeyBase64, signature);
+  } catch {
+    return false;
+  }
+}
+
 export interface SignedUsageReceipt {
   readonly channelId: string;
   readonly usageNonce: string;
@@ -93,7 +115,9 @@ export type MicrochargeOpenResult =
 export function reserveMicrocharge(channel: MicrochargeChannel, voucher: CumulativePaymentVoucher, nowMs: number): MicrochargeOpenResult {
   if (voucher.channelId !== channel.channelId) return { ok: false, code: 'channel-mismatch', detail: 'voucher channel does not match the local payment channel' };
   if (!voucher.payer.trim() || !voucher.seller.trim() || !voucher.releaseRef.trim() || !voucher.usageNonce.trim() || !voucher.priceVersion.trim() || !voucher.splitManifestHash.trim() || voucher.signature.trim() === '') return { ok: false, code: 'invalid-voucher', detail: 'voucher identity, price, split, and signature fields are required' };
-  if (voucher.meterQuantity <= 0n || voucher.pricePerUnitMicros < 0n || voucher.cumulativeClaimMicros < 0n || !Number.isFinite(nowMs) || nowMs > voucher.expiresAtMs) return { ok: false, code: nowMs > voucher.expiresAtMs ? 'expired' : 'invalid-voucher', detail: 'voucher amount fields must be valid and the voucher must not be expired' };
+  if (voucher.meterQuantity <= 0n || voucher.pricePerUnitMicros < 0n || voucher.cumulativeClaimMicros < 0n ||
+      !Number.isSafeInteger(nowMs) || nowMs < 0 || !Number.isSafeInteger(voucher.expiresAtMs) ||
+      voucher.expiresAtMs < 0 || nowMs > voucher.expiresAtMs) return { ok: false, code: nowMs > voucher.expiresAtMs ? 'expired' : 'invalid-voucher', detail: 'voucher amount fields and expiry must be valid and the voucher must not be expired' };
   if (voucher.usageNonce in channel.receipts || voucher.usageNonce in channel.reservations) return { ok: false, code: 'duplicate-nonce', detail: `usage nonce '${voucher.usageNonce}' was already observed` };
   if (voucher.cumulativeClaimMicros <= channel.lastCumulativeMicros) return { ok: false, code: 'cumulative-regression', detail: 'cumulative claim must advance monotonically' };
   const deltaMicros = voucher.cumulativeClaimMicros - channel.lastCumulativeMicros;

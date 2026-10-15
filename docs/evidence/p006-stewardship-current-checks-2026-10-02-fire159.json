@@ -1,0 +1,375 @@
+{
+  "workItem": "WI-1074216",
+  "plan": "work-on-everything-stewardship-remediation-2026-08-30",
+  "recordedAt": "2026-10-02T06:56:45.817986+00:00",
+  "scope": "Fresh governing adequacy read and canonical unit behavior only; no fresh PG, mutation, binding, independent rubric ratification, real-goal scorecard, closure or shipment acceptance.",
+  "governing": {
+    "evaluatorBuild": {
+      "sha": "f52b2457ba",
+      "version": "0.0.0"
+    },
+    "classRef": "plan-class-feature-ship",
+    "count": 28,
+    "verdicts": {
+      "pass": 1,
+      "fail": 27,
+      "unknown": 0
+    },
+    "excludedDraftCount": 25,
+    "rows": [
+      {
+        "specId": "WOE-P001-BLOCKER",
+        "specRevision": 3,
+        "verdict": "fail",
+        "wouldBlock": [
+          "freshness"
+        ]
+      },
+      {
+        "specId": "WOE-P001-CLAIM",
+        "specRevision": 3,
+        "verdict": "fail",
+        "wouldBlock": [
+          "freshness"
+        ]
+      },
+      {
+        "specId": "WOE-P001-EXCLUSIONS",
+        "specRevision": 3,
+        "verdict": "fail",
+        "wouldBlock": [
+          "freshness"
+        ]
+      },
+      {
+        "specId": "WOE-P001-IDEMPOTENCE",
+        "specRevision": 3,
+        "verdict": "fail",
+        "wouldBlock": [
+          "freshness"
+        ]
+      },
+      {
+        "specId": "WOE-P001-ORDER",
+        "specRevision": 4,
+        "verdict": "fail",
+        "wouldBlock": [
+          "freshness"
+        ]
+      },
+      {
+        "specId": "WOE-P001-TERMINAL",
+        "specRevision": 3,
+        "verdict": "fail",
+        "wouldBlock": [
+          "freshness"
+        ]
+      },
+      {
+        "specId": "WOE-P002-AUTHORITY",
+        "specRevision": 3,
+        "verdict": "pass",
+        "wouldBlock": []
+      },
+      {
+        "specId": "WOE-P002-ELECTION",
+        "specRevision": 3,
+        "verdict": "fail",
+        "wouldBlock": [
+          "freshness"
+        ]
+      },
+      {
+        "specId": "WOE-P002-HANDOFF",
+        "specRevision": 3,
+        "verdict": "fail",
+        "wouldBlock": [
+          "freshness"
+        ]
+      },
+      {
+        "specId": "WOE-P002-RESPAWN",
+        "specRevision": 4,
+        "verdict": "fail",
+        "wouldBlock": [
+          "freshness"
+        ]
+      },
+      {
+        "specId": "WOE-P002-STALE-RESPAWN",
+        "specRevision": 3,
+        "verdict": "fail",
+        "wouldBlock": [
+          "freshness"
+        ]
+      },
+      {
+        "specId": "WOE-P002-UNKNOWN",
+        "specRevision": 3,
+        "verdict": "fail",
+        "wouldBlock": [
+          "freshness"
+        ]
+      },
+      {
+        "specId": "WOE-P003-BREACH",
+        "specRevision": 3,
+        "verdict": "fail",
+        "wouldBlock": [
+          "falsifiability",
+          "correct-layer",
+          "execution-integrity",
+          "freshness",
+          "plan-class-risk-floor"
+        ]
+      },
+      {
+        "specId": "WOE-P003-MEASURED-ADMISSION",
+        "specRevision": 3,
+        "verdict": "fail",
+        "wouldBlock": [
+          "falsifiability",
+          "correct-layer",
+          "execution-integrity",
+          "freshness",
+          "plan-class-risk-floor"
+        ]
+      },
+      {
+        "specId": "WOE-P003-NUMERATOR",
+        "specRevision": 3,
+        "verdict": "fail",
+        "wouldBlock": [
+          "falsifiability",
+          "correct-layer",
+          "execution-integrity",
+          "freshness",
+          "plan-class-risk-floor"
+        ]
+      },
+      {
+        "specId": "WOE-P003-UNMEASURED",
+        "specRevision": 3,
+        "verdict": "fail",
+        "wouldBlock": [
+          "falsifiability",
+          "correct-layer",
+          "execution-integrity",
+          "freshness",
+          "plan-class-risk-floor"
+        ]
+      },
+      {
+        "specId": "WOE-P003-UNMEASURED-ADMISSION",
+        "specRevision": 3,
+        "verdict": "fail",
+        "wouldBlock": [
+          "falsifiability",
+          "correct-layer",
+          "execution-integrity",
+          "freshness",
+          "plan-class-risk-floor"
+        ]
+      },
+      {
+        "specId": "WOE-P003-WINDOW",
+        "specRevision": 3,
+        "verdict": "fail",
+        "wouldBlock": [
+          "falsifiability",
+          "correct-layer",
+          "execution-integrity",
+          "freshness",
+          "plan-class-risk-floor"
+        ]
+      },
+      {
+        "specId": "WOE-P004-CUSTODY",
+        "specRevision": 3,
+        "verdict": "fail",
+        "wouldBlock": [
+          "falsifiability",
+          "correct-layer",
+          "execution-integrity",
+          "freshness",
+          "plan-class-risk-floor"
+        ]
+      },
+      {
+        "specId": "WOE-P004-REAL-CALL",
+        "specRevision": 3,
+        "verdict": "fail",
+        "wouldBlock": [
+          "falsifiability",
+          "correct-layer",
+          "execution-integrity",
+          "freshness",
+          "plan-class-risk-floor"
+        ]
+      },
+      {
+        "specId": "WOE-P004-SCHEDULER-DIAGNOSIS",
+        "specRevision": 3,
+        "verdict": "fail",
+        "wouldBlock": [
+          "falsifiability",
+          "correct-layer",
+          "execution-integrity",
+          "freshness",
+          "plan-class-risk-floor"
+        ]
+      },
+      {
+        "specId": "WOE-P004-SLOW-BOOT",
+        "specRevision": 3,
+        "verdict": "fail",
+        "wouldBlock": [
+          "falsifiability",
+          "correct-layer",
+          "execution-integrity",
+          "freshness",
+          "plan-class-risk-floor"
+        ]
+      },
+      {
+        "specId": "WOE-P004-WAKE",
+        "specRevision": 3,
+        "verdict": "fail",
+        "wouldBlock": [
+          "falsifiability",
+          "correct-layer",
+          "execution-integrity",
+          "freshness",
+          "plan-class-risk-floor"
+        ]
+      },
+      {
+        "specId": "WOE-P005-HAND-DISPATCH",
+        "specRevision": 3,
+        "verdict": "fail",
+        "wouldBlock": [
+          "traceability",
+          "falsifiability",
+          "correct-layer",
+          "oracle-independence",
+          "execution-integrity",
+          "freshness",
+          "plan-class-risk-floor"
+        ]
+      },
+      {
+        "specId": "WOE-P005-MATERIALIZATION",
+        "specRevision": 3,
+        "verdict": "fail",
+        "wouldBlock": [
+          "traceability",
+          "falsifiability",
+          "correct-layer",
+          "oracle-independence",
+          "execution-integrity",
+          "freshness",
+          "plan-class-risk-floor"
+        ]
+      },
+      {
+        "specId": "WOE-P005-SOVEREIGNTY",
+        "specRevision": 3,
+        "verdict": "fail",
+        "wouldBlock": [
+          "traceability",
+          "falsifiability",
+          "correct-layer",
+          "oracle-independence",
+          "execution-integrity",
+          "freshness",
+          "plan-class-risk-floor"
+        ]
+      },
+      {
+        "specId": "WOE-P006-REAL-CARD",
+        "specRevision": 3,
+        "verdict": "fail",
+        "wouldBlock": [
+          "traceability",
+          "falsifiability",
+          "correct-layer",
+          "oracle-independence",
+          "execution-integrity",
+          "freshness",
+          "plan-class-risk-floor"
+        ]
+      },
+      {
+        "specId": "WOE-P006-SHIPMENT",
+        "specRevision": 3,
+        "verdict": "fail",
+        "wouldBlock": [
+          "traceability",
+          "falsifiability",
+          "correct-layer",
+          "oracle-independence",
+          "execution-integrity",
+          "freshness",
+          "plan-class-risk-floor"
+        ]
+      }
+    ],
+    "receiptRef": "~/.papercusp/scratch/papercusp-workspace/tools:invoke/38ff23c6-f8ce-4d54-8158-da7ec15c30ae/result-door-1790923897985-b81752cd.spill",
+    "receiptSha256": "7b666a2825c2269903e9cbd642c14498d92373a6a6253e60d5ce4b1367700951"
+  },
+  "tests": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/goal-plan-placement-claim-proof.test.ts packages/operator-core/lib/goals/plan-closure-observations.test.ts",
+    "pass": 29,
+    "fail": 0,
+    "skip": 0,
+    "exit": 0,
+    "executedCommit": "3eb035d32f",
+    "log": "/tmp/p006-current-contracts-fire159.log",
+    "logSha256": "d6ac3c0a739c51f595fc8b555a327fc76534e1bde62d3c0b81c99ec96a549fa1",
+    "limits": "Runner provenance names test files only. Selected current source/test bytes separately compared with executed commit; wider import graph unmeasured."
+  },
+  "selectedSourceBindings": [
+    {
+      "path": "packages/operator-core/lib/goal-launch-settings.ts",
+      "sha256": "ac05c4fb0a5d11b4e0ae26f7de56b8ea58da7d63a2e15ac25e279c97ef3d9dde",
+      "matchesUnitExecutedCommit": true
+    },
+    {
+      "path": "packages/operator-core/lib/goal-plan-placement-claim-proof.test.ts",
+      "sha256": "ea048ad71b63631b86a7fce8a73a2cf3f0f7b151fdb371075e7f6867cf9eb652",
+      "matchesUnitExecutedCommit": true
+    },
+    {
+      "path": "packages/operator-core/lib/goals/plan-closure-observations.ts",
+      "sha256": "23d49753b6b3525a2c975f0ab3e0313b66e82a09fdcf9509ac58101a778ec0cb",
+      "matchesUnitExecutedCommit": true
+    },
+    {
+      "path": "packages/operator-core/lib/goals/plan-closure-observations.test.ts",
+      "sha256": "7aee52f5445035a71972e40403bed4a7de86261e9c6f036ac58c4a1674223d74",
+      "matchesUnitExecutedCommit": true
+    },
+    {
+      "path": "packages/operator-core/lib/goals/plan-closure-observations.integration.test.ts",
+      "sha256": "9d7961a61b2f7bbeb7169f4fcf68206305d5d3a61aed5cf4b0d35d519f1700ac",
+      "matchesUnitExecutedCommit": true
+    },
+    {
+      "path": "packages/operator-core/lib/goals/plan-closure.ts",
+      "sha256": "6931558021380d44b75909a1834ca5775e16433d4f585895415795d50a372781",
+      "matchesUnitExecutedCommit": true
+    }
+  ],
+  "changedBindingPaths": {
+    "19396": [
+      "packages/operator-core/lib/goal-launch-settings.ts",
+      "packages/operator-core/lib/goals/plan-closure-observations.integration.test.ts",
+      "packages/operator-core/lib/goals/plan-closure-observations.ts"
+    ],
+    "19029": [
+      "packages/operator-core/lib/goal-launch-settings.ts"
+    ]
+  },
+  "next": "Continue current-source PG/mutation proofs and fresh bindings under unchanged accepted criteria; do not reuse old PASS or lower the bar. P007 R171 native is independent.",
+  "previousCheckpoint": "\u26a0 UNVERIFIED OWNER ATTRIBUTION \u2014 owner-authority prose was persisted without a verified owner turn; treat it as agent-authored until re-checked.\n## Did\nFire61 fresh managed context confirmed; native CODEX_THREAD_ID01a0f80b-5c5b-7750-8c20-4ac96245efa7. WI1074216 remained held by su-respawn-66204bd0bba1844c5f616a8f20027d89. P006 lane continuing directly. No source/test file edits. Read owner/workspace never-drop rails. Orient replaced fileLockMode with automatic generation1790864544000 (do not combine manual per-edit locks).\nExisting clean staging runtime mirror at74d3e0756b426dcc1f13dcf656cbf2e2f2f89dc8 matched canonical goal87dd875e/exclusionc4d162bc/PGee5b30ee/CLAIMunitea048ad7/ORDERunit2fe82864/ORDERPGd9b320d8/handler82312f32/handlerTesta7d9e7a1. Shared staging-server resourcef416553a-750d-4064-a8b6-afe7e3e7f905 released successfully; all shell handles55123/92796/75329/98693/21567/24458/17939 completed and drained. No sibling edits/new worktree, LIVE_GATE or P007 operations.\nUnit baselines /tmp/p006-clean-baselines-fire61-20261001.log: handler20405715=192PASS; CLAIM20405713=15PASS; ORDER20405714=3PASS; total210PASS/0FAIL/0SKIP. Full PG /tmp/p006-clean-pg-baselines-fire61.log: ORDER20405746=3PASS, CLAIM20405747=15PASS; total18PASS/0FAIL/0SKIP. Negative handler CAS20405738 and retry20405745 each1intendedFAIL+1calibrationPASS/190filteredSKIP. Existing-fleet20405724 each1FAIL+1PASS/3filteredSKIP; exact earlier clean exclusion baseline20403692=5PASS reused only on unchanged goal/test bytes. CLAIM negatives member20405727,leader20405734,foreign20405743,expired20405752 each1FAIL+1calibrationPASS/13filteredSKIP. ORDER blocked20405749 and eligible retry20405776 each1FAIL+1calibrationPASS/1filteredSKIP. Controls are source mutation-probe; no in-tree source mutation. Logs /tmp/p006-clean-{idemp-initial-cas-loss,idemp-partial-exact-retry,idemp-existing,claim-member-claim-and-lease,claim-leader-only,claim-wrong-member-or-filter,claim-expired-lease,order-blocked-head-next-eligible,order-eligible-retry}-fire61.log. Ledger rows used as acceptance evidence explicitly worktreeDirty=false at74d3e075. All13 declared source/test paths matched git show executed commit before binding.\nNew CURRENT proof: IDEMPOTENCE@3 19022/23 positives CAS/retry,19024/25 negatives,19026 existing negative,19027 existing unit (saved20403692),19028 PG existing scenario only. CLAIM@3 19029 PG scenarios only;19030/31 member negative/positive,19032/33 leader,19034/35 foreign,19036/37 expired. ORDER@4 19050/51 blocked negative/positive,19052/53 eligible,19054 unit scenario corroboration only. Separate one-to-one recurrence ref per causalPairId. Each clause diagnosticPASS on selected new refs; then verified and retracted27 exact obsolete bindings (22old plus5misboundORDER@3). Retired19040..44,18812..14,18801/02,18798/99,18768..72,18640..47,18634,17383. Retraction27/27ok. Final evaluator WITHOUT workItemIds/evidenceRefs returned governing:true; CLAIM@3 PASS, IDEMPOTENCE@3 PASS, ORDER@4 PASS, all wouldBlock[]. No global census or scorecard emitted.\nPreserved EXCLUSIONS@3 previous governingPASS:19006..08,18996/98/99,19000; source/unit/PG hashes unchanged. Protected17558..64/originalPG20370749+18368/P002six/PID17578/leaderbenchmark20375704/WI10004621(done61PASS)/WI10004639(done156PASS)/LIVE_GATE/P007 untouched.\nRecovery boundary: Native optional fact-recheck script37 and compaction call39 were cancelled only as pending JS waits; their server outcomes were initially unverified. CLI3170 read returned ECONNREFUSED; CLI3070 loop read succeeded with active:true/rewakeGuaranteed:true and carry7291175da9d8. CLI3070 IDEMP fact read proved its body still the original Fire61 version (no recheck); CLAIM fact read timed out15s. CLI3070 WI1074216 read confirmed this owner/open and saved checkpoint. Native compaction request DID occur (visible call); subsequent host injection says acknowledged, queued re-poll superseded-pending-rearm, no terminal outcome. Current native thread remains01a0f80b; do NOT repeat compaction blindly. No cause attributed to resources or peer. DRAIN incidental transport evidence stays here; no new out-of-scope item.\n\n## Left\nP006 remains PARTIAL. Reconcile lifecycle and then BLOCKER/TERMINAL and broader accepted gaps. Independent rubric review/ratification, independent post-fix stewardship scorecard, completion audit and final shipment remain. Historical28-clause6PASS/22FAIL census is not current; do not quote as fresh. No owner decision wait.\n\n## Key insight\nClean source execution must include ledger worktreeDirty=false; named-file cleanliness alone cannot satisfy acceptance. ORDER accepted revision is4 since00:34Z, unlike IDEMP/CLAIM3. Caller initially bound ORDER@3 then corrected to4 after reading exact unchanged required scenarios; misbound5 retired. Caller plans:get-specs detail flag refused; corrected by dropping undeclared field (DRAIN evidence here, no incidental filing). ORDER initial negative20405754=calibrated FAIL but worktreeDirty=true; NOT bound. Exact git status timeout2.005s observed before clean retry; cause of earlier dirty verdict remains unproven. Classifier unchanged, no cleanliness/provenance bypass. Existing reporter reason instrumentation WI10004866 is peer-owned; do not take it over.\n\n## Next action\nOn successor, apply cold-reset invariant; refresh WI1074216 claim/checkpoint and the host's pending compaction outcome before issuing any repeated request. Continue accepted lifecycle clause/currentness work, reuse clean20405713 baseline only if bytes/contract match. Settled4 clauses and protected evidence stay untouched. Optional facts historical/recheck refinement was not confirmed; inspect exact facts before retrying it.\n\n---\n## Fire68 pause override \u2014 2026-10-01T16:47Z\nFresh managed context: no predecessor assistant/tool turns visible. Live read confirmed WI-1074216 open and assigned to this session; the full Fire61 checkpoint above is preserved. No source edits, new tests, claims, lifecycle evidence bindings or compaction requests this turn. Owner-verified pause received from su-80c55fe3 via coord-send-481fee6b35c024051614e85311735ca59563724f9970b32c8c3e8878ce15505a (Avi turn 2026-10-01T16:23:23.299Z). This pause supersedes the earlier Next action: start no new work and remain paused until Avi explicitly resumes. locks:queue(owner=self) returned active_locks=[], waiting=[].\nP006 remains PARTIAL: lifecycle, BLOCKER/TERMINAL and broader accepted gaps; independent review/ratification, post-fix scorecard, completion audit and final shipment still outstanding. Fire61 evidence is historical, not a fresh Fire68 verification; protected/settled bindings remain unchanged. The fresh context confirms the requested reset took, but no separate host terminal-compaction receipt was read. After explicit resume, refresh claim/checkpoint and accepted clauses before continuing lifecycle/currentness. Reuse20405713 only if exact bytes and contract match. Claim will be released and loop stopped for this pause; do not auto-reclaim or restart paused peers.\n\n---\n## Fire68 resume override \u2014 2026-10-01T16:56Z\nAvi's explicit resume superseded the pause before claim/loop release. Authoritative message coord-send-b309e00615b17b94bbea6e8d463754dad186b85ad93a8ebc9daf91a50570695f, owner turn16:46:56.465Z; pickup reply coord-send-c4453c45cacc1999b8a4a8cafb8a3cb040b552d38f2104693317d4a1ea3bcb14. This session continues its existing P006 lane under AUTO and fleet scope. Orient confirms automatic lock generation1790864544000; no manual per-edit locks. Own locks/waiters empty. Loop active and rewakeGuaranteed true. All12 never-drop workspace guard bodies read. Full D001..D015 read. Accepted BLOCKER@3 scenarios dependency-blocker/draft-refusal/eligible-control; TERMINAL@3 satisfied-closure/shipped-without-closure match the permanent unit lifecycle controls in goal-plan-placement-claim-proof.test.ts. Existing bindings18648..57 remain source-stale/dirty; protected18368 untouched. Existing runtime mirror now has modified papercusp-desktop submodule; do not run/bind clean proof there without sanctioned clean-runtime preparation. No tests/edits/new evidence bindings this turn yet.\n\n---\n## Fire68 completed unit \u2014 2026-10-01\nRESET: fresh native CODEX_THREAD_ID01a0f858-7eb2-75e3-98aa-a34be7cebd5b differs from predecessor01a0f80b. No predecessor turns/tool calls loaded. All12 never-drop guard bodies and D001..D015 read; automatic locks1790864544000 authoritative. Avi pause was received, checkpointed, then explicitly lifted before claim/loop release. Resume msg coord-send-b309e00615b17b94bbea6e8d463754dad186b85ad93a8ebc9daf91a50570695f acknowledged by reply coord-send-c4453c45cacc1999b8a4a8cafb8a3cb040b552d38f2104693317d4a1ea3bcb14. Work remains in this approved fleet P006 lane.\nPROOF: accepted BLOCKER@3 and TERMINAL@3 still match five permanent lifecycle controls. Fresh canonical/mirror/git-show comparisons: goal-launch-settings87dd875e8bdff6895d4488232c64c261a78a29c2ba8576492406a0eb4ca34821; claim-proofea048ad71b63631b86a7fce8a73a2cf3f0f7b151fdb371075e7f6867cf9eb652; CLAIMPGee5b30ee7624c75045fda085625f99088d0188e427ead585753606a79c6e92bb. All equal executed74d3e0756b426dcc1f13dcf656cbf2e2f2f89dc8. testing:runs20405713 confirmed PASS, worktreeDirty=false, root papercusp-staging. Reused its15PASS baseline from Fire61; NO new test execution. Added five unique positive unit lifecycle references:19176dependency-blocker,19177draft-refusal,19178eligible-control,19179satisfied-closure,19180shipped-without-closure. Readback proved5/5 CURRENT with no stale/unknown reasons. BLOCKER/TERMINAL adequacy not claimed PASS. Old18648..57/protected18368 not retracted; protected/settled four clauses unchanged. No source/file edits, gate/P007/shipment operations.\nFRICTION: first bind omitted measurement.schemaVersion1 and was validation-refused before write; corrected batch succeeded5/5. code:run schema parse assumed JSON but live tools:find returned compact grammar; corrected read treated it as text. No unknown write outcome remains; slow checkpoint/read cells26/29 drained. Existing mirror whole git status has modified papercusp-desktop; do not edit/reset it or use it as clean negative evidence. Named source bytes alone do not waive whole-run cleanliness.\nNEXT: prepare sanctioned clean current-build runtime without sibling source edits, execute five PAPERCUSP_PLACEMENT_LIFECYCLE_CONTROL negatives with independent unresolved-plan calibration, then bind one-to-one negative refs and current PG scenarios, run governing clause evaluator, and only then retire obsolete18648..57. No global census/scorecard/shipment claim. Carry-compaction host still reports queued re-poll with no terminal outcome; native thread is already fresh. Do not duplicate compaction blindly. loop:status in this session confirmed active,cold,rewakeGuaranteed=true and live psu socket. Finish this clean unit with refreshed carry; continuation remains armed.\n\n---\n## Fire69 reconciliation \u2014 2026-10-01\nFresh managed context has no predecessor assistant/tool turns loaded. Live WI read confirms open/self-assigned and contains Fire68 resume plus completed lifecycle-positive unit; those supersede the stale pause-only loop carry. Read owner-verified resume coord-send-b309e00615b17b94bbea6e8d463754dad186b85ad93a8ebc9daf91a50570695f (Avi turn16:46:56.465Z). Preserve19176..19180 and all Fire68 historical proof. No new edits/tests/bindings this fire yet. Continue existing approved P006 lane: sanctioned clean runtime, five lifecycle negatives with independent calibration, current PG corroboration, governing evaluation before obsolete18648..57 retirement. Protected18368 and settled clauses unchanged. Loop carry corrected and verified contentHash f10e72598d08; rewakeGuaranteed true. Do not repeat pending compaction or stop loop on the superseded pause.\n\n---\n## Fire72 recovered work after stale Fire69 carry\nFresh native context01a0f888-dea1-7393-b92e-7af6f4a6052c; no predecessor assistant/tools loaded. Live WI open/self; automatic file locks generation1790864544000 read from orient. sessions:timeline since17:14:05Z and predecessor01a0f871 transcript plus saved logs confirm five lifecycle negatives ALREADY ran17:26Z at clean7575534bcf0076b625f59db41fc8a344e3baaf3e. Ledger:20417072 dependency-blocker,20417069 draft-refusal,20417073 eligible-control,20417070 satisfied-closure,20417071 shipped-without-closure. Each status fail, source mutation-probe,worktreeDirty=false; each saved /tmp/p006-clean-lifecycle-<scenario>-fire69.log shows1intendedFAIL+1independent unresolved-plan calibrationPASS/13filteredSKIP. No repeat tests. Goal87dd875e/unit ea048ad7/PGee5b30ee bytes match canonical and git-show7575534b and historical clean74d3e075. Positive19176..80 CURRENT; old18648..57 stale-source/dirty, protected18368 unchanged. Binding/evaluator remain; BLOCKER/TERMINAL require integration+unit. Clean PG20405747 PASS exists; inspect exact scenario coverage before claiming either integration clause. Runtime resource release visible predecessor17:29:11; no resource held in this turn. P006 still partial; no gate/P007/source edits.\n\n---\n## Fire72 completed evidence-binding unit \u2014 2026-10-01\nRecovered predecessor uncheckpointed clean lifecycle negatives; DID NOT repeat runs or edit any files. Added19303 dependency-blocker(run20417072),19304 draft-refusal(20417069),19305 eligible-control(20417073),19306 satisfied-closure(20417070),19307 shipped-without-closure(20417071). All counterexample/unit, unique causalPairIds+scenarioIds, literal oracle and independent unresolved-plan calibration, source measurement goal-launch-settings.ts. Added19308 BLOCKER integration scenario-only (NO causalPairIds) from saved clean PASS20405747, PG claim integration scenarios dependency-blocker/draft-refusal/eligible-control. Exact source goal87dd875e/derive-index4583047d/plan-index75c5f942 and testee5b30ee equal executed74d3e075. All11 selected references19176..80+19303..08 read CURRENT with staleReasons[]/unknownReasons[]. Focused diagnostic evaluator selected these refs+WI1074216 returned governing:false, BLOCKER@3PASS no blockers, TERMINAL@3FAIL only correct-layer. No governing/global PASS or shipment claim. Obsolete18648..57 NOT retracted; protected18368 and settled4 clauses unchanged.\nROOT COVERAGE GAP: goal-plan-placement-claim.integration.test.ts has persisted BLOCKER scenarios but ZERO terminal/closure tests; reusing its baseline as TERMINAL evidence would be false. Existing goals/plan-closure-observations.integration.test.ts has real fresh PG fixture, canonical beginPlanClosureObservation(...).record + readPlanClosureObservations, and is the smallest extension. NEXT: extend that existing file with two literal integration assertions consuming persisted pending/satisfied gate verdicts via resolvePlanClosure then compileGoalPlanPlacement(status shipped,itemStatuses done,actionableItemId null,source{},closure). Assert pending->awaiting-closure/close-plan/no tool call and satisfied->terminal/none/no tool call. Reuse existing PG fixture; do not alter goal source, claim PG test or other settled/protected evidence. No implementation was started for this test yet. Existing import mocks getOrgPg->db.sql and activeWorkspaceId WORKSPACE support writer/read; beginPlanClosureObservation and closure compiler source read this turn.\nVerify real integration suite via registered npm run test:file router. Acceptance bindings need clean ledger worktreeDirty=false and exact source/test commit-byte equality; use sanctioned current-build runtime/overlay after auto sync, never edit/reset siblings. Bind terminal integration scenario-only without causalPairIds, then selected diagnostic must PASS both clauses before retiring exact obsolete18648..57; read governing evaluator without workItemIds/evidenceRefs after retirement. Independent rubric ratification, post-fix scorecard (lineage preflight required), completion audit and final shipment STILL OPEN. Pending unrelated compaction not repeated. Fire72 loop checkpoint continuation closed at64% ceiling60 but rewakeGuaranteed true; fresh wake is armed, no need new compaction. DRAIN incidental caller Python spill parser error and fresh-V8 controls ReferenceError corrected without unknown write outcome; all successful bindings read back.\n\n---\n\n---\n## Fire73 integration proof implementation in progress\nFresh native context confirmed; no predecessor turns loaded. Recovered fire72 checkpoint and post-17:14 sessions timeline, did not repeat five clean negatives. All12 never-drop workspace fact bodies and full D001..D015 read. WI1074216 open/self; orient confirms automatic locks generation1790864544000. Existing PG closure-observations suite was unchanged/unmodified before edit. Added two permanent literal tests in packages/operator-core/lib/goals/plan-closure-observations.integration.test.ts: persisted placement contract shipped-without-closure and satisfied-closure. Both use canonical beginPlanClosureObservation.record->readPlanClosureObservations->resolvePlanClosure->compileGoalPlanPlacement; no goal compiler source or protected evidence edits. diff --check clean. testing:run origin15843c87-2f65-4387-aaee-f5ed2e9c09be hit45s foreground cap and automatically launched detached recovery3f2d8674-abc5-4300-9673-9f34cd0483ed(task0mupu65yn9aq6iy87t8); status running as17:57, no test verdict yet. DO NOT start another run before reading this recovery. Run is canonical local dirty evidence only; clean accepted ledger and exact committed bytes required afterward. Loop rewakeGuaranteed true read this session. Old18648..57/protected18368 unchanged. P006 partial; no gate lane entered.\n\n---\n\n---\n## Fire73 completed implementation unit \u2014 2026-10-01\nLocal full integration suite PASS is durable test_runs20420944, canonical907ce73 dirty; no skipped tests per router final receipt. Both new tests consume real persisted gate verdicts and assert literal awaiting-closure/close-plan/null or terminal/none/null placement. This is local verification, NOT clean acceptance. Caller JSON report path no longer exists after recovery; use testing:runs20420944 and testing:run-status3f2d8674 rather than the removed report. Foreground45s cap automatically recovered; no manual duplicate test run. git-sync request-only refusal at native host routed via sanctioned mcp-call3271; shell62222 completed/drained with in_progress receipt, no retry. Canonical test is now committed in2c8f285b4fba529d629de01e4719527c3ec321f6 and clean by named git status. Exact test SHA256b56ace0aa03ec1c1ecf99bbec425e3f198aa19427ccfcc3b888ffcb71b9b5c24 equals git-show2c8. Measured source hashes unchanged: goal87dd875e, closure69315580, closure-observationsd4bd4de2. Canonical whole tree remains peer-dirty; do NOT reset or clean it. Maintained staging mirror was clean907ce73 but still old test397615be; ordinary tests there would miss this change. Triggered existing papercup-staging-sync.service (singleton pipeline machinery, no direct api restart/reset/source edit) to advance it; next turn verify completion/cleanliness and new test bytes before running acceptance. No gate operations, claims of main deployment, or protected/settled binding edits.\nNEXT: read sync service state and mirror HEAD/status/blob; when exact new test+named source hashes match committed clean mirror, acquire shared staging-server resource and run existing test:file route there for clean PG ledger. Bind terminal integration scenario-only(no causalPairIds), selected diagnostic PASS both BLOCKER/TERMINAL before retire exact18648..57; then governing evaluator without evidenceRefs/workItemIds. Preserve19176..80+19303..08, protected18368 and settled4 clauses. P006 remains partial: broader accepted gaps, independent rubric ratification, reused real-goal scorecard perD013 (lineage preflight), audit and final shipment. No owner decision wait.\n\n---\n\n## Fire73 runtime preparation diagnosis\nAfter existing sync service completed, mirror still clean907ce73 with old test397615be. Read-only code:run journal diagnostic (dryRun plannedMutations[]) measured exact deferral at14:05:11EDT:51 live :3170 clients, served build age1223s below maintained1800s ceiling; kept907ce73, target332345c1. This is intentional consistent-runtime deferral, not proven wedged sync or resource bottleneck. No raw logs entered context. Need sanctioned clean isolated current-build test runtime or later completed maintained advance before clean acceptance; DO NOT force-kill clients, reset sibling source, or bind old mirror run. No new acceptance run started. Canonical test committed2c8 bytesb56ace0a; compiler source87dd unchanged. Leader FYI delivered via coord-send-06199e9dea52929b0e98023c6b9a4a992fb7c187773491bf696ea43ad1bfaee3. No file/resource lock held. Old pending compaction banner remains; native thread01a0f894 is fresh already, no duplicate compaction issued.\n\n---\n## Fire74 terminal acceptance proof \u2014 2026-10-01T18:18Z\nFresh managed context: no predecessor turns/tool calls loaded. Full live WI checkpoint is newer than stale Fire72 loop carry; recovered Fire73 added tests, localPASS20420944 and commit2c8, did not duplicate implementation. WI open/self. Orient codexLocks automatic verified generation1790877347000; all12 never-drop workspace bodies read. No file edits this fire.\nSanctioned npm run lint:as-committed -- test:file --any --keep -- packages/operator-core/lib/goals/plan-closure-observations.integration.test.ts executed committed e8cd873a1de0f1447aa06b3c3053104d84eef938 in retained /tmp/pcv/papercusp-lint-as-committed-e8cd873a1d-zRgY1A. Full PG suite10PASS/0FAIL/0SKIP; shell8015 completed/drained. Ledger20424766 source local,harness papercusp,worktreeDirty=false,isScratchConfig=false. Canonical/clone/git-show executed sha match source87dd875e, closure69315580, observationsd4bd4de2, testb56ace0a. Clone git status empty; workspace imports111 remapped locally, no fallback. Staging mirror still907ce73 old test; did not edit/reset/restart it. No resource hold/gate lane entered.\nAdded terminal scenario-only19396 via fromTestRun20424766 (NO causalPairIds). Selected12 bindings19176..80,19303..08,19396 all CURRENT; diagnostic governing:false bothBLOCKER@3 and TERMINAL@3 PASS. Read exact18648..57 owner/spec/revision/ref and stale-source before retract. Exact10 withdrawn; readback obsoleteRemaining[] confirmed. Then unscoped evaluator(governing:true) TERMINAL@3 PASS/no blockers; BLOCKER@3 FAIL onlyexecution-integrity/freshness. Exact remaining drag protected18368(original dirty/skipPG20370749,source-stale/test-stale); all other7 blocker refs current. Protected18368 retained unchanged; asked current fleet leader for binding-only withdrawal disposition while preserving historical run/audit. No global all-clausePASS/scorecard/shipment claim.\nCaller friction (DRAIN, no incidental filing): plans:get-specs limit refused then corrected; initial local fromTestRun+canonicalTestPath refused, dropped canonicalTestPath and binding19396 succeeded. code:run ratings object initially treated as array; currentness is overall not aggregate; corrected read shapes. Python scratch parser errors were read-only; no unknown mutation outcome. loops active/cold and rewakeGuaranteed true this session.\nP006 remains partial: governing BLOCKER protected-binding disposition, broader clauses, independent rubric ratification, reused real-goal post-fix scorecard perD013 with lineage preflight, completion audit, final shipment. Continue unblocked remaining proof/ratification preparation; do not retire18368 before ruling or repeat settled four proof runs. Persist this checkpoint/carry before boundary.\n\n---\n## Fire74 boundary census and carry \u2014 2026-10-01T18:23Z\nUnscoped full accepted-clause evaluator read completed on recovered read-only retry after upstream HTTP502/ECONNRESET. Snapshot: P001 CLAIM/EXCLUSIONS/IDEMPOTENCE/ORDER/TERMINAL pass; BLOCKER fails execution/freshness solely18368. P002 AUTHORITY/ELECTION/HANDOFF/STALE-RESPAWN/UNKNOWN freshness unknown; RESPAWN freshness fail. Historical Fire61/owner holder-clause pass is NOT current. P003 six/P004 five fail falsifiability/correct-layer/execution-integrity/freshness/risk-floor. P005 three and P006 REAL-CARD/SHIPMENT fail traceability/falsifiability/correct-layer/oracle-independence/execution-integrity/freshness/risk-floor. No repairs/retractions of these other cohorts were attempted. Protected18368 and earlier settled source/test proofs unchanged.\nD013 read current: reuse existing real-goal grader card; independent review/ratification of appended spend procedures required, no parallel monitor or fixture goal. WI10004264 authoritative read now done/unassigned and checkpoint empty; saved proof must be recovered from payload._completionEvidence before any new grading. Read-only scorecards/rubrics schemas discovered. No eligibility preflight, scorecard emission or new grader dispatch yet. Loop checkpoint64fdb8d82ae2 verified; continuation closed69%>=60 but rewakeGuaranteed=true/nextWakeFresh=true. Settle at this completed proof boundary; no duplicate compaction. No outstanding shell handles/resources. Next: refresh this WI/latest leader reply; resolve protected18368 only on explicit ruling, otherwise prepare review from completed WI10004264 proof and exact current rubric. Then choose remaining proof gap from saved census; don't rerun settled proof just to reconstruct it.\n\n---\n[turn:01a0f926@2026-10-01T20:28:02.814Z] [peer:su-0da9d55e-30de-4a57-9380-8c81a7e3c99d] Fire105 successor: fleet leader assigned this existing item to self; authoritative resume confirms assignee self/open. Saved predecessor proof remain\u2026[older checkpoint content truncated]\u2026\n\n\n---\n## Did\nD016 bounded unit completed at 2026-10-01T21:13Z. Only18368 retracted, exact readback owner/self, expected WI/spec@3/ref. Immutable binding digest and complete historical run digest unchanged: {\"sameImmutableBinding\":true,\"sameHistoricalRun\":true,\"historicalStatus\":\"pass\",\"historicalDirty\":true,\"withdrawnId\":\"18368\",\"withdrawnBy\":\"su-d1608f11-1541-4b17-aab0-4156881db23a\"}. IMPORTANT status distinction: historical20370749 ledger PASS/dirty=true is preserved; binding recorded measuredOutcome SKIP/sourceStable=false, not a rewritten ledger failure. Original origin uncertainty and D003 baseline/audit retained. Selected seven-reference replacement independently CURRENT/PASS; audit14=current69064/seq54/hash ed0bcb00. Fresh unscoped evaluator (no workItemIds/evidenceRefs), live build f52b2457ba, governing=true: {\"pass\":9,\"fail\":19,\"unknown\":0} over 28 accepted clauses. Exact census: [{\"specId\":\"WOE-P001-BLOCKER\",\"specRevision\":3,\"verdict\":\"pass\",\"wouldBlock\":[]},{\"specId\":\"WOE-P001-CLAIM\",\"specRevision\":3,\"verdict\":\"fail\",\"wouldBlock\":[\"freshness\"],\"draggingBindingIds\":{\"freshness\":[19029]}},{\"specId\":\"WOE-P001-EXCLUSIONS\",\"specRevision\":3,\"verdict\":\"pass\",\"wouldBlock\":[]},{\"specId\":\"WOE-P001-IDEMPOTENCE\",\"specRevision\":3,\"verdict\":\"pass\",\"wouldBlock\":[]},{\"specId\":\"WOE-P001-ORDER\",\"specRevision\":4,\"verdict\":\"pass\",\"wouldBlock\":[]},{\"specId\":\"WOE-P001-TERMINAL\",\"specRevision\":3,\"verdict\":\"fail\",\"wouldBlock\":[\"freshness\"],\"draggingBindingIds\":{\"freshness\":[19396]}},{\"specId\":\"WOE-P002-AUTHORITY\",\"specRevision\":3,\"verdict\":\"pass\",\"wouldBlock\":[]},{\"specId\":\"WOE-P002-ELECTION\",\"specRevision\":3,\"verdict\":\"pass\",\"wouldBlock\":[]},{\"specId\":\"WOE-P002-HANDOFF\",\"specRevision\":3,\"verdict\":\"pass\",\"wouldBlock\":[]},{\"specId\":\"WOE-P002-RESPAWN\",\"specRevision\":4,\"verdict\":\"fail\",\"wouldBlock\":[\"freshness\"],\"draggingBindingIds\":{\"freshness\":[17578,17957,17958]}},{\"specId\":\"WOE-P002-STALE-RESPAWN\",\"specRevision\":3,\"verdict\":\"pass\",\"wouldBlock\":[]},{\"specId\":\"WOE-P002-UNKNOWN\",\"specRevision\":3,\"verdict\":\"pass\",\"wouldBlock\":[]},{\"specId\":\"WOE-P003-BREACH\",\"specRevision\":3,\"verdict\":\"fail\",\"wouldBlock\":[\"falsifiability\",\"correct-layer\",\"execution-integrity\",\"freshness\",\"plan-class-risk-floor\"],\"draggingBindingIds\":{\"freshness\":[17382]}},{\"specId\":\"WOE-P003-MEASURED-ADMISSION\",\"specRevision\":3,\"verdict\":\"fail\",\"wouldBlock\":[\"falsifiability\",\"correct-layer\",\"execution-integrity\",\"freshness\",\"plan-class-risk-floor\"],\"draggingBindingIds\":{\"freshness\":[17377]}},{\"specId\":\"WOE-P003-NUMERATOR\",\"specRevision\":3,\"verdict\":\"fail\",\"wouldBlock\":[\"falsifiability\",\"correct-layer\",\"execution-integrity\",\"freshness\",\"plan-class-risk-floor\"],\"draggingBindingIds\":{\"freshness\":[17379]}},{\"specId\":\"WOE-P003-UNMEASURED\",\"specRevision\":3,\"verdict\":\"fail\",\"wouldBlock\":[\"falsifiability\",\"correct-layer\",\"execution-integrity\",\"freshness\",\"plan-class-risk-floor\"],\"draggingBindingIds\":{\"freshness\":[17380]}},{\"specId\":\"WOE-P003-UNMEASURED-ADMISSION\",\"specRevision\":3,\"verdict\":\"fail\",\"wouldBlock\":[\"falsifiability\",\"correct-layer\",\"execution-integrity\",\"freshness\",\"plan-class-risk-floor\"],\"draggingBindingIds\":{\"freshness\":[17378]}},{\"specId\":\"WOE-P003-WINDOW\",\"specRevision\":3,\"verdict\":\"fail\",\"wouldBlock\":[\"falsifiability\",\"correct-layer\",\"execution-integrity\",\"freshness\",\"plan-class-risk-floor\"],\"draggingBindingIds\":{\"freshness\":[17381]}},{\"specId\":\"WOE-P004-CUSTODY\",\"specRevision\":3,\"verdict\":\"fail\",\"wouldBlock\":[\"falsifiability\",\"correct-layer\",\"execution-integrity\",\"plan-class-risk-floor\"]},{\"specId\":\"WOE-P004-REAL-CALL\",\"specRevision\":3,\"verdict\":\"fail\",\"wouldBlock\":[\"falsifiability\",\"correct-layer\",\"execution-integrity\",\"plan-class-risk-floor\"]},{\"specId\":\"WOE-P004-SCHEDULER-DIAGNOSIS\",\"specRevision\":3,\"verdict\":\"fail\",\"wouldBlock\":[\"falsifiability\",\"correct-layer\",\"execution-integrity\",\"plan-class-risk-floor\"]},{\"specId\":\"WOE-P004-SLOW-BOOT\",\"specRevision\":3,\"verdict\":\"fail\",\"wouldBlock\":[\"falsifiability\",\"correct-layer\",\"execution-integrity\",\"plan-class-risk-floor\"]},{\"specId\":\"WOE-P004-WAKE\",\"specRevision\":3,\"verdict\":\"fail\",\"wouldBlock\":[\"falsifiability\",\"correct-layer\",\"execution-integrity\",\"plan-class-risk-floor\"]},{\"specId\":\"WOE-P005-HAND-DISPATCH\",\"specRevision\":3,\"verdict\":\"fail\",\"wouldBlock\":[\"traceability\",\"falsifiability\",\"correct-layer\",\"oracle-independence\",\"execution-integrity\",\"freshness\",\"plan-class-risk-floor\"]},{\"specId\":\"WOE-P005-MATERIALIZATION\",\"specRevision\":3,\"verdict\":\"fail\",\"wouldBlock\":[\"traceability\",\"falsifiability\",\"correct-layer\",\"oracle-independence\",\"execution-integrity\",\"freshness\",\"plan-class-risk-floor\"]},{\"specId\":\"WOE-P005-SOVEREIGNTY\",\"specRevision\":3,\"verdict\":\"fail\",\"wouldBlock\":[\"traceability\",\"falsifiability\",\"correct-layer\",\"oracle-independence\",\"execution-integrity\",\"freshness\",\"plan-class-risk-floor\"]},{\"specId\":\"WOE-P006-REAL-CARD\",\"specRevision\":3,\"verdict\":\"fail\",\"wouldBlock\":[\"traceability\",\"falsifiability\",\"correct-layer\",\"oracle-independence\",\"execution-integrity\",\"freshness\",\"plan-class-risk-floor\"]},{\"specId\":\"WOE-P006-SHIPMENT\",\"specRevision\":3,\"verdict\":\"fail\",\"wouldBlock\":[\"traceability\",\"falsifiability\",\"correct-layer\",\"oracle-independence\",\"execution-integrity\",\"freshness\",\"plan-class-risk-floor\"]}]. Full projected raw receipt retained at ~/.papercusp/scratch/papercusp-workspace/tools:invoke/88086614-ea37-4620-b189-f32e84b67f52/result-door-1790889206070-12e8df2c.spill .\n\n## Left\nP006 remains PARTIAL. New current governing freshness failures CLAIM binding19029 and TERMINAL19396 supersede their historical Fire74 PASS; P002 RESPAWN17578/17957/17958 stale, P003six/P004five/P005three/P006two retain listed criterion failures. Other P002 clauses now PASS. No all-clause acceptance, independent rubric ratification, reused real-goal post-fix\u2026[older checkpoint content truncated]\u2026\n\n\n---\nFire142 boundary: current self/open claim verified. Delivered live coord evidence stat\u2026[older checkpoint content \u2026[older checkpoint content truncated]\u2026\n\n\n---\nFi\u2026[older checkpoint content truncated]\u2026\n\n\n---\nFire149 boundary self/openclaim verified. No P006revalidation orsourceedits. Fire142goal-launch-settings writer/test peer-change warning andexactfresh governing evidence requirementremainoperative; no oldmatrixreuse. P007r170FAIL+v5adoption/cleanup isindependent. P006rubric/scorecard/closure/shipmentOPEN."
+}

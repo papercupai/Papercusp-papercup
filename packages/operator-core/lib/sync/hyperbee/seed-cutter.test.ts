@@ -19,7 +19,7 @@ import Corestore from 'corestore';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -305,6 +305,31 @@ describe('cutHiveSeed — combined git + corestore seed', () => {
       droppedPrivateIngest: 0,
       droppedIdentityContent: 0,
     });
+  });
+
+  it('forwards D166 private source bindings and publishes only the row-drop report', async () => {
+    const { store, keyHex } = await makeHiveStore('cutter-uuid-drop-', 2);
+    const stored = op(0).value;
+    const binding = createHash('sha256').update(JSON.stringify(stored)).digest('hex');
+    const occurrence = { segment: 'segment-000001.blob', line: 1, fieldPath: ['idempotencyKey'] };
+    const result = await cutHiveSeed({
+      potId: 'papercusp', cutAtEpoch: 0, cutHlc: '0', cutTs: 1,
+      outDir: tmpDir('cutter-uuid-output-'), git: null,
+      corestore: { sourceStore: store, coreKeys: [keyHex], filtered: true, redactValues: [],
+        onProjection: vi.fn(), uuidIdempotencyDropPlans: [{
+          schema: 'papercusp-uuid-idempotency-row-drop-plan-v1',
+          reviewRef: 'p2p-public-release-endgame-2026-09-01#D-166',
+          sourceKeyHex: keyHex, sourceLength: 2,
+          rows: [{ table: 'harness_plans', hbKey: 'P-0', valueSha256: binding, occurrences: [occurrence] }],
+        }] },
+    });
+    const report = result.manifest.stores[0]!.meta?.uuidIdempotencyRedactions;
+    expect(report).toEqual([expect.objectContaining({ droppedRows: 1, occurrenceCount: 1,
+      authenticationDisposition: 'dropped', occurrences: [occurrence] })]);
+    expect(JSON.stringify(result.manifest)).not.toContain(binding);
+    const core = await createCorestoreSeedProvider().verify(result.manifest.stores[0]!,
+      { path: join(result.outDir, CORESTORE_SUBDIR) });
+    expect(core.ok).toBe(true);
   });
 
   it('rejects a cut with neither store', async () => {

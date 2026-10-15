@@ -4,13 +4,17 @@
  * pass `parent` or includeChildren). Filter by harness / kind / state / q.
  */
 import { z } from "zod";
+import { DATATYPE_NATURES } from '../../datatype-registry-store';
 import { defineTool } from "@papercusp/agent-mcp";
 import { COORD_ROLES } from "../coordination/roles";
 import { resolveAgentIdentity } from "../coordination/identity";
 import {
+  countWorkItems,
   listWorkItems,
   type WorkItemKind,
 } from "../../work-items";
+import { WORK_AUDIENCE_FILTERS } from "../../work-nature/agent-work-predicate";
+import { isOwnerUiCaller, type AgentWorkDoorCaller } from "../../work-nature/agent-work-door-gate";
 import { boundRowField } from "../_bound-output";
 import {
   WORK_ITEM_AUDITS,
@@ -18,8 +22,11 @@ import {
   type CompletionAuthorityFilter,
 } from "../../completion-audit";
 import { cachedRead, type CachedReadCtx } from "../../cache";
+import { trackPhase } from "@papercusp/tooldef";
 import { attachHolderContext } from "./_holder-lens";
 import { holderContextReader, HOLDER_CONTEXT_SCHEMA } from "../coordination/holder-advisory";
+import { activeWorkspaceId } from '../../workspace-registry';
+import { auditPrDelivery, prDeliveryAuditScopeSchema, prDeliveryAuditResultSchema } from '../../work-admission/pr-delivery-audit';
 
 /**
  * SWR backstop for work_items:list (cache-expensive-tool-reads-2026-06-22 P-005).
@@ -228,9 +235,9 @@ export default defineTool({
     // failing runs still made exactly ONE work_items:list call instead of two. It also cost
     // +90 B, which evicted coord:read from the 100,000 B shipping seed. Re-proposing it needs
     // new evidence, not a retry.
-    "List work-items across kinds (feature/chunk/bug/change/task). Default shows top-level items (chunks are hidden — pass parent or includeChildren). Filter by harness, kind, state, or q (a case-insensitive literal substring over title and body/summary). Returns the WorkItem array directly — each row's summary is EXCERPTED to keep the list bounded (a row carries summary_truncated + summary_full_chars when cut); use work_items:get { id } for a full body.",
+    "List work-items across kinds (feature/chunk/bug/change/task). Default shows top-level items (chunks are hidden — pass parent or includeChildren). Filter by harness, kind, state, or q (a case-insensitive literal substring over title, body/summary, and retained capture occurrence title/body). Returns the WorkItem array directly — each row's summary is EXCERPTED to keep the list bounded (a row carries summary_truncated + summary_full_chars when cut); use work_items:get { id } for a full body.",
   guidance: {
-    when: "You want the current work-items in a harness (or operator-wide). Default hides chunks; pass `parent` to see a parent's chunks. Pass `q` for a case-insensitive literal substring over title and body/summary. Each row carries `priority` (the shared backlog order, LOWER = claimed sooner) so a steerer can read the whole backlog's order in one call before steering it with work_items:set_priority.",
+    when: "You want the current work-items in a harness (or operator-wide). Default hides chunks; pass `parent` to see a parent's chunks. Pass `q` for a case-insensitive literal substring over title, body/summary, and retained capture occurrence title/body. Each row carries `priority` (the shared backlog order, LOWER = claimed sooner) so a steerer can read the whole backlog's order in one call before steering it with work_items:set_priority.",
     chaining:
       "work_items:list → work_items:get { id } for detail; work_items:claim to take one; work_items:set_priority to re-order the backlog.",
     notWhen:
@@ -254,6 +261,9 @@ export default defineTool({
   // unrelated coordination/write tools.
   agentRoles: [...COORD_ROLES, 'judge'],
   args: z.object({
+    prDeliveryAudit: prDeliveryAuditScopeSchema.optional().describe(
+      'Read-only PR-bypass audit of EVERY admission from explicit workflow ruleIds, including disabled rules and rules omitting delivery:pr. Returns {prDeliveryAudit}; missing evidence or truncated populations are unknown. Ordinary list filters do not narrow this audit.',
+    ),
     harness: z.string().max(80).optional(),
     q: z
       .string()
@@ -299,13 +309,15 @@ export default defineTool({
     createdSince: z
       .string()
       .max(40)
+      .datetime({ offset: true })
       .optional()
-      .describe("ISO timestamp — rows created at or after it (INCLUSIVE, like plans:list)."),
+      .describe("ISO 8601 timestamp with timezone — rows created at or after it (INCLUSIVE, like plans:list)."),
     updatedSince: z
       .string()
       .max(40)
+      .datetime({ offset: true })
       .optional()
-      .describe("ISO timestamp — rows updated at or after it (INCLUSIVE, like plans:list)."),
+      .describe("ISO 8601 timestamp with timezone — rows updated at or after it (INCLUSIVE, like plans:list)."),
     sourcePlanSlug: z
       .string()
       .max(120)
@@ -380,9 +392,21 @@ export default defineTool({
       .describe(
         "EI-10422: by default a payload.lane:'observation' row (a turn-end reflection / rubric scorecard filed via improvements:capture { lane:'observation' }) is EXCLUDED — by design (D-005) it never enters the work queue/triage. Pass true to include raw observations in this read (a curation surface); the default keeps the backlog/triage view free of the ~2,700 open notes that otherwise masquerade as claimable `change` work.",
       ),
+    natures: z
+      .array(z.enum(DATATYPE_NATURES))
+      .optional()
+      .describe(
+        "P-010/D-011: natures to return (work|record|document|event). Default: work only, unless kind is named. ['record'] reads record rows such as pipeline deals.",
+      ),
+    audience: z
+      .enum(WORK_AUDIENCE_FILTERS)
+      .optional()
+      .describe(
+        "D-041: 'agent' = only rows an agent may claim/close; 'human' = human-audience rows; 'any' = both. Default for agent callers: 'agent', unless kind or natures is named.",
+      ),
     limit: z.number().int().positive().max(500).optional(),
   }),
-  result: z.array(WORK_ITEM_ROW),
+  result: z.union([z.array(WORK_ITEM_ROW), z.object({ prDeliveryAudit: prDeliveryAuditResultSchema })]),
   // Freshness negotiation (agent-tool-delta-client-rollout-2026-06-23, P-001) — the #1
   // LLM-agent re-read by total bytes×repeats (queen/bee/overwatch poll the backlog ~3×/wake,
   // ~25KB/call). The diffable unit is the WorkItem row set (the data IS the array), keyed by
@@ -411,6 +435,10 @@ export default defineTool({
     trimmed: (data) => shapeWorkItemsList(data, "trimmed"),
   },
   async handler(args, ctx) {
+    if (args.prDeliveryAudit) {
+      const workspaceId = (ctx as { workspaceId?: string }).workspaceId ?? activeWorkspaceId();
+      return { data: { prDeliveryAudit: await auditPrDelivery(workspaceId, args.prDeliveryAudit) } };
+    }
     const q = args.q?.trim() || undefined;
     // EI-21592729279587188: resolve the sourcePlanSlug/plan alias pair ONCE, here, so
     // every downstream site (the cache key AND the store filter) sees the same value.
@@ -475,10 +503,28 @@ export default defineTool({
       args.assignee === "self"
         ? selfOwnerId()
         : (args.assignee ?? (args.mine ? selfOwnerId() : undefined));
+    // D-041 (enterprise-data-sources-2026-10-01, WI-10005358): an AGENT's default listing
+    // shows only rows the write doors accept (the category half of the agent-work
+    // predicate). S36 measured the failure this closes: the default list showed a
+    // human-audience row, the model attempted to close it, and the D-035 door refused.
+    // The owner's own Queue UI (D-038) and any caller that names kind/natures/audience
+    // or explicitly asks for observations keep the unfiltered read, mirroring the
+    // natures default ("unless kind is named").
+    const audienceExplicit =
+      args.audience !== undefined ||
+      (args.natures?.length ?? 0) > 0 ||
+      args.kind !== undefined ||
+      args.includeObservations === true;
+    const audience =
+      args.audience ??
+      (audienceExplicit || isOwnerUiCaller(ctx as AgentWorkDoorCaller) ? undefined : "agent");
+    const audienceDefaulted = args.audience === undefined && audience === "agent";
     // Cache the expensive list read (cache-expensive-tool-reads P-005). Non-principal-
     // scoped (depends only on workspace + the filter args). The bounding is folded INTO
     // the cached factory so the stored value is the final, deterministic-per-args result.
-    const items = await cachedRead(
+    // Phases (handler-phases-v1): list:read covers the cached read (a hit is cheap),
+    // list:query the database round-trip on a miss, list:holders the enrichment.
+    const cached = await trackPhase(ctx.phases, 'list:read', () => cachedRead(
       ctx as CachedReadCtx,
       {
         tool: "work_items:list",
@@ -505,6 +551,8 @@ export default defineTool({
           audit: args.audit ?? null,
           completionAuthority: args.completionAuthority ?? null,
           includeObservations: args.includeObservations === true,
+          natures: args.natures ?? null,
+          audience: audience ?? null,
           // WI-42508: cache full and lean SQL projections separately.  The
           // ambient/session tier is otherwise deliberately outside this key because
           // shaping is a post-cache operation; the source projection is not.
@@ -521,7 +569,7 @@ export default defineTool({
         softTtlMs: WORK_ITEMS_LIST_SOFT_TTL_MS,
       },
       async () => {
-        const rows = await listWorkItems({
+        const filter = {
           harness: args.harness,
           q,
           kind: args.kind as WorkItemKind | undefined,
@@ -539,15 +587,50 @@ export default defineTool({
           audit: args.audit,
           completionAuthority: args.completionAuthority as CompletionAuthorityFilter | undefined,
           includeObservations: args.includeObservations,
+          natures: args.natures,
+          audience,
           includeBody,
           includePayload,
           limit: args.limit,
-        });
+        };
+        // D-041: when the agent default narrowed the read, count what it withheld, so the
+        // narrowing is visible instead of reading as the whole backlog. Both counts use the
+        // SAME filter minus `audience`, so their difference is exactly the withheld set.
+        // countWorkItems has no `q` (a known count-vs-list parity gap), so a q search
+        // cannot be counted and reports an unknown population instead of a wrong number.
+        const countable = audienceDefaulted && q === undefined;
+        const [rows, agentCount, anyCount] = await trackPhase(ctx.phases, 'list:query', () => Promise.all([
+          listWorkItems(filter),
+          countable ? countWorkItems(filter) : Promise.resolve(null),
+          countable ? countWorkItems({ ...filter, audience: undefined }) : Promise.resolve(null),
+        ]));
         // EI-1597: excerpt per-row summaries so a large backlog can't overflow the agent
         // result cap. Full body via work_items:get { id }.
-        return boundSummaries(rows);
+        return { rows: boundSummaries(rows), agentCount, anyCount };
       },
-    );
+    ));
+    const items = cached.rows;
+    const withheld =
+      cached.agentCount !== null && cached.anyCount !== null
+        ? Math.max(0, cached.anyCount - cached.agentCount)
+        : null;
+    const denominator = !audienceDefaulted
+      ? undefined
+      : withheld === null
+        ? {
+            matched: items.length,
+            population: "unknown" as const,
+            of: "work-items",
+            note: "the default agent filter applied; human-audience rows matching q were not counted. Pass audience:'any' to include them.",
+          }
+        : withheld > 0
+          ? {
+              matched: cached.agentCount as number,
+              population: cached.anyCount as number,
+              of: "work-items",
+              note: `${withheld} human-audience row(s) withheld by the default agent filter; pass audience:'any' to include them.`,
+            }
+          : undefined;
     // P-030: the holder lens runs OUTSIDE the cache, and that placement is an
     // access requirement rather than a style choice — the cache key above is
     // deliberately non-principal-scoped, so resolving reader-relative holder
@@ -558,7 +641,7 @@ export default defineTool({
     // cannot attribute (`requirePrincipal: false` makes such a caller legitimate),
     // so the enrichment can never fail the read it decorates.
     const reader = holderContextReader(ctx as Parameters<typeof holderContextReader>[0]);
-    const withHolders = await attachHolderContext(items, reader).catch(() => items);
-    return { data: withHolders };
+    const withHolders = await trackPhase(ctx.phases, 'list:holders', () => attachHolderContext(items, reader)).catch(() => items);
+    return denominator ? { data: withHolders, denominator } : { data: withHolders };
   },
 });

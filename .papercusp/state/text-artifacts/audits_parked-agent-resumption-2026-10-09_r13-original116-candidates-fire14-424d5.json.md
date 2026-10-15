@@ -1,0 +1,5055 @@
+---
+rel_path: "audits/parked-agent-resumption-2026-10-09/r13-original116-candidates-fire14-424d5.json"
+updated_at: 1791808360086
+_body: "content"
+---
+
+{
+  "schemaVersion": "parked-original116-candidate-custody-v1",
+  "workItem": "WI-6554700010008887",
+  "plan": "parked-agent-census-resumption-and-root-cause-2026-10-09",
+  "observedAt": "2026-10-12T12:32:38.557803+00:00",
+  "sourcePresenceAsOf": "2026-10-10T16:00:36.515Z",
+  "scope": "Original pre-approval diagnostic candidate cohort reconstructed from original frozen class files, not a completed R13 eligibility or respawn audit. No exclusions based on later outcomes. Explicit legitimate-wait exclusions must be reconciled before outcome measurement; null original profiles remain unknown. No new wakes/relaunches.",
+  "sourceRefs": [
+    "session_turn:claude:91df4c82-c30f-41ec-b88a-bf7f87511858:20",
+    "session_turn_parts:claude:91df4c82-c30f-41ec-b88a-bf7f87511858:175",
+    "session_turn_parts:claude:91df4c82-c30f-41ec-b88a-bf7f87511858:191"
+  ],
+  "sourceFiles": [
+    {
+      "path": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/scratch/park-audit/parked-ids.txt",
+      "sha256": "b1da376117b642b78601673ff91b1e54f7197ee42178547f25e9358a27b64db7",
+      "bytes": 11939,
+      "mtime": "2026-10-10T16:02:27.360906+00:00"
+    },
+    {
+      "path": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/scratch/park-audit/respawn-class.json",
+      "sha256": "ab7c54e25ef1052afd25ac72e352cfe5af93479bb8d09d86efa7e831c5711ec8",
+      "bytes": 20832,
+      "mtime": "2026-10-10T16:04:59.525894+00:00"
+    },
+    {
+      "path": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/scratch/park-audit/lastturn-class.json",
+      "sha256": "13a6a786b7a007dfc7ba771dcd4cb03f2e06c95588be4cf970c74495ce71aa94",
+      "bytes": 30935,
+      "mtime": "2026-10-10T16:05:47.436443+00:00"
+    },
+    {
+      "path": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/scratch/park-audit/pres-full.json",
+      "sha256": "633e47d809ba6f1b4b9c690c662a6b076b414c674ab465f65ee8fd7e56e1af27",
+      "bytes": 1613397,
+      "mtime": "2026-10-10T16:00:56.433113+00:00"
+    }
+  ],
+  "predicate": {
+    "nativeError": "owner in frozen parked-ids and lastturn-class[owner][0] starts ERR:",
+    "silentRespawn": "respawn-class[owner] equals silent-since-failed-respawn",
+    "union": "nativeError union silentRespawn; no later outcome filter"
+  },
+  "summary": {
+    "nativeError": 59,
+    "silentRespawn": 58,
+    "overlap": 1,
+    "silentOnly": 57,
+    "candidatePopulation": 116,
+    "matchedFrozenPresence": 116,
+    "originalModelsRecorded": 0,
+    "originalAccountsRecorded": 0,
+    "originalCarryRecorded": 0
+  },
+  "cohortHash": "24ff6981fd54f120f96381dd93732ec9c1bfb2101d7eec063119bf85caeb163a",
+  "rows": [
+    {
+      "ownerId": "su-01864986-d27d-497b-b501-7082b6e0caab",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T02:38:07.691Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "headless launch-agent inbox-wake"
+      }
+    },
+    {
+      "ownerId": "su-079b1c14-07ec-495e-b640-6a60f89180e2",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-09T21:53:22.926Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "question-requester auto-arm for conv-mv180smt-0000-0ce84e484f5d460abf23bd10e4b793eb: conversation:answered:conv-mv180smt-0000-0ce84e484f5d460abf23bd10e4b793eb"
+      }
+    },
+    {
+      "ownerId": "su-07eba67b-e1f4-48ec-9f2f-8e518ecb6eec",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T01:38:47.236Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": null,
+        "sessionState": "parked",
+        "modes": null,
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-08885e73-2abb-4866-bb49-4d876822fa05",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-07T22:02:36.050Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-0a26cdb5-a119-46b6-8484-4aca92cfc4c5",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T03:58:27.049Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-0e53c244-5ba3-4d96-b499-4e233e3a8936",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T07:38:26.289Z"
+      ],
+      "respawnClassification": "active-after-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto",
+          "drain"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-0f45ebc8-24a7-4e9b-9fee-35a3c72290d0",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-07T22:50:10.798Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "loop-armed inbox-wake (loop-su-0f45ebc8-24a7-4e9b-9fee-35a3c72290d0)"
+      }
+    },
+    {
+      "ownerId": "su-0f674e05-72fb-4dfa-9078-47f7f93ccf8c",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T01:38:44.908Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto",
+          "drain"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-0fbe2904-7a7b-48d5-b3b7-da81d592f41d",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-08T21:04:06.115Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-1020321d-4f7c-4257-a245-c2461a585b62",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T02:54:10.551Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-12c1bd39-1548-483c-b529-2888ce105cee",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T01:38:45.308Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-1415d088-0af5-4299-a5df-8dbfc634335b",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T12:29:49.349Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "headless launch-agent inbox-wake"
+      }
+    },
+    {
+      "ownerId": "su-14f4c057-33ba-432c-9207-cc57855abdf8",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T01:38:45.245Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-17442b70-89a3-4ea5-82bb-9d0ca2cab71e",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T01:38:45.253Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto",
+          "drain"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-174cad2e-5b58-42a5-858e-3925c0a45b81",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T01:38:45.085Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-18cc8df4-7a58-493c-a584-5975027af3ad",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-07T20:56:58.452Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-1ece32b6-7d83-4bcc-a4de-52bd136d570f",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T01:38:45.068Z"
+      ],
+      "respawnClassification": "active-after-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto",
+          "drain"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-210ffd48-6f47-4a3d-85bc-1b3617b9b139",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T01:38:45.262Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-298f8b56-c687-404f-99e1-d1c1e53baf0c",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T04:21:04.465Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": null,
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": "proof-freshness-pinned-candidate-2026-10-06",
+        "selfWake": "event",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "agent-obligation reminder (obl:plan-independent-verification:b9aef9fec0bd6cbc9a87) \u2014 Plan proof-freshness-pinned-candidate-2026-10-06 needs author repair before independent certification; re-evaluate fresh state before acting"
+      }
+    },
+    {
+      "ownerId": "su-2a56400c-0263-46b7-9667-fe2ac22cec80",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-07T23:27:27.541Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-3067d842-6f5a-41ad-bada-9a47df0ea9a6",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T01:22:02.358Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-3077f62c-1a5d-4be6-896c-e75866032dcb",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:model-unsupported-for-account",
+        "2026-10-07T01:58:50.816Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": null,
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "headless launch-agent inbox-wake"
+      }
+    },
+    {
+      "ownerId": "su-312c90f2-a3bd-4c92-ac4e-4eae40ae2647",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T08:29:08.908Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "headless launch-agent inbox-wake"
+      }
+    },
+    {
+      "ownerId": "su-340db785-4864-494c-9d24-d9c3d4ce2f6c",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:13:24.678Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto",
+          "drain"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-353a50d8-bcff-423e-9334-9498ed6ff4e9",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:unexpected status 403 Forbidden: goal work-on-ever",
+        "2026-10-09T16:47:33.760Z"
+      ],
+      "respawnClassification": "active-after-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "goal-drain-work-on-everything-fresh-grading-and-impro-60d3a8",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "event",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "[coord:await-inbox:explicit-park] Review204f2628 answered no terminal option/retain-investigate via7002ea3b; delivered494chars. WI-10007305 remains self/blocked. Compactcheckpoint10f54cd7e794/carryf95316c1ec97 verified; historical guard proof archivedcomment1164804, leaderdispositioncomment1163980. Await directed leader admission/reconciliation/custody disposition or original-native evidence. No scheduler/archive/runtime retries or periodic monitoring; custody-free wind-down condition remains unmet."
+      }
+    },
+    {
+      "ownerId": "su-35487441-ba34-4a1d-ba7f-839d3585becf",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-08T20:54:24.533Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-35abc0ff-4711-4e19-bcaf-07e6ff0da983",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-08T23:09:23.673Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "Phone-only isolated Tauri acceptance run completed; payload will include the run id, verdict, and cleanup status."
+      }
+    },
+    {
+      "ownerId": "su-36986ccc-d8dc-4139-bf7a-9363281b06c8",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T01:46:52.981Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": null,
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": "work-on-everything-rubric-stewardship-2026-10-09",
+        "selfWake": "event",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "blocked-item-holder auto-arm for WI-10007947: work-item:unblocked:WI-10007947"
+      }
+    },
+    {
+      "ownerId": "su-3790bff3-9f96-445b-a6f5-bddc36f217bf",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T11:47:41.946Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "android-release",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": "android-public-release-2026-10-01",
+        "selfWake": "event",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "[coord:await-inbox:explicit-park] P006 migration counterpart blocker answered: exact2a0b candidate freshness verified and sent. Await WI10007209 actual automatic verification and stale/failure publication evidence; no duplicate native execution. Existing canonical completion await/inbox wake retained."
+      }
+    },
+    {
+      "ownerId": "su-3e76622f-f481-4032-b89c-8015f2dfa6b5",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-07T21:02:39.896Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "loop-armed inbox-wake (loop-su-3e76622f-f481-4032-b89c-8015f2dfa6b5)"
+      }
+    },
+    {
+      "ownerId": "su-449b83a8-a709-43af-9681-768dc6ac744a",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T01:12:00.897Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-449d831c-b3e3-4fad-8816-cc35d56c30cc",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T01:38:45.613Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto",
+          "drain"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-4a152da3-3ef7-420f-a82b-bfab10cf563a",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:13:26.218Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": null,
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-4adf5ebc-6443-4c3c-b704-162275765ff1",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T12:22:25.230Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "question-requester auto-arm for conv-mv1ui9dh-0000-567d99f0350a4eb7bf519089b2950138: conversation:answered:conv-mv1ui9dh-0000-567d99f0350a4eb7bf519089b2950138"
+      }
+    },
+    {
+      "ownerId": "su-4e1fbeb0-d056-4e46-b5a6-27d2a6e9df58",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:13:26.534Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto",
+          "drain"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-4f6ea469-1018-4149-ad55-3fb2883e404a",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:13:26.511Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-517bc2b4-a5c0-447b-96a2-bc3f1940ceca",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T00:01:49.605Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "loop-armed inbox-wake (loop-su-517bc2b4-a5c0-447b-96a2-bc3f1940ceca)"
+      }
+    },
+    {
+      "ownerId": "su-533a9a79-33ef-487f-876c-41ac39337175",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-08T22:18:26.158Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "loop-armed inbox-wake (loop-su-533a9a79-33ef-487f-876c-41ac39337175)"
+      }
+    },
+    {
+      "ownerId": "su-54c73bd5-e418-4a16-ba65-0a825b32ed50",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T02:21:10.615Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "loop-armed inbox-wake (loop-su-54c73bd5-e418-4a16-ba65-0a825b32ed50)"
+      }
+    },
+    {
+      "ownerId": "su-59826d83-3b3c-4029-b504-536ae91f45dc",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:13:26.937Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto",
+          "drain"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-5e26d68f-60b7-4d7c-b1b7-0dbf07bcc96d",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T03:52:29.171Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": null,
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": "full-text-knowledge-retrieval-2026-10-08",
+        "selfWake": "event",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "question-requester auto-arm for conv-mv0zk7hz-0000-7be9532702434fa09ec7d9ab2ad15381: conversation:answered:conv-mv0zk7hz-0000-7be9532702434fa09ec7d9ab2ad15381"
+      }
+    },
+    {
+      "ownerId": "su-61f9729d-fef8-416a-88a8-72293cce5695",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-09T21:15:02.868Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-625df130-d2ce-4aef-badb-9e68b6ee51d4",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:quota/usage",
+        "2026-10-06T16:25:05.636Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "event",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "[coord:await-inbox:explicit-park] WI-10005639: leader confirmed release B is progressing; preserve the Containerfile freeze and existing bounded generation-1 await. Resume only on the exact gate payload."
+      }
+    },
+    {
+      "ownerId": "su-63bb4991-a409-47dc-afd4-b4616d64c73d",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:13:25.485Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-684c584a-3351-49ee-a145-f657d7e42237",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:unexpected status 403 Forbidden: goal work-on-ever",
+        "2026-10-10T13:45:36.040Z"
+      ],
+      "respawnClassification": "active-after-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "goal-drain-work-on-everything-fresh-grading-and-impro-60d3a8",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "event",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "blocked-item-holder auto-arm for WI-10007106: work-item:unblocked:WI-10007106"
+      }
+    },
+    {
+      "ownerId": "su-69e1022f-5619-4c52-aead-87d926c1b432",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:13:26.950Z"
+      ],
+      "respawnClassification": "active-after-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "Resume this work item when evidence includes native-session plus selected-row identity, or an immutable snapshot resolving both."
+      }
+    },
+    {
+      "ownerId": "su-6b620d7a-a070-4ecc-a63c-1c81ffc321af",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-07T22:08:40.431Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "headless launch-agent inbox-wake"
+      }
+    },
+    {
+      "ownerId": "su-6e3cb6d4-4014-41ae-81ce-6305bc7d6a41",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "no-task-complete",
+        null
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "loop-armed inbox-wake (loop-su-6e3cb6d4-4014-41ae-81ce-6305bc7d6a41)"
+      }
+    },
+    {
+      "ownerId": "su-6e8d0b9f-cdc3-4c53-806f-d187a0016e5e",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:13:32.241Z"
+      ],
+      "respawnClassification": "active-after-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-704f5a66-5e60-4adf-8044-c45a75cfd9d8",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:quota/usage",
+        "2026-10-06T21:04:21.328Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto",
+          "drain"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-70fcd6a0-d71e-469e-af2c-3f9faa51679b",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-07T22:41:59.114Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-72f78fbb-7e47-41ae-a842-35c83b8fcdd2",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:13:30.942Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": null,
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": "gitnexus-deterministic-integration-2026-10-05",
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-7449fcf0-768a-43a5-8d3f-5ab55604ac4c",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:13:30.918Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-77348e3d-80ac-42d8-b4e7-bdce9684a72a",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T01:46:37.907Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-7ac2753d-7d1d-4fd5-9a4a-e115e91d6aaf",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T08:44:34.235Z"
+      ],
+      "respawnClassification": "active-after-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-7ec704fa-dc6a-4965-bb37-13576272127a",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:13:31.790Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-80a51f05-4c07-4259-a883-8b9ef4b2a7ca",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:unexpected status 403 Forbidden: goal work-on-ever",
+        "2026-10-09T14:48:27.219Z"
+      ],
+      "respawnClassification": "active-after-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "goal-drain-work-on-everything-fresh-grading-and-impro-60d3a8",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-812af642-19bb-41ea-ba19-e20458d5759f",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:13:32.312Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-82c46308-5eb9-4237-9d2d-950d322576c4",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T01:13:37.603Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-86cd7f0e-8929-469b-af96-e7ff9ead8e01",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:13:31.510Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-8d2cb6cc-8f27-4a25-8541-b00927471b94",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T04:28:13.087Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "headless launch-agent inbox-wake"
+      }
+    },
+    {
+      "ownerId": "su-928e075d-6320-4ecf-9149-8c86187a9ed8",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-08T00:03:13.396Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": null,
+        "sessionState": "parked",
+        "modes": [
+          "auto",
+          "grade"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-960a52e7-9b11-42ac-8fe9-7e5e7e0da441",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T01:18:18.380Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-9844199a-9ccd-4c7b-a47c-03bea510ee31",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:13:33.631Z"
+      ],
+      "respawnClassification": "active-after-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-990b747e-c51f-482f-bf3d-8ffaa2b9ec34",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:13:33.697Z"
+      ],
+      "respawnClassification": "active-after-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-9b0d7528-da21-48ce-92a6-c98ca8c4777e",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-08T13:51:54.466Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "event",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "blocked-item-holder auto-arm for WI-10006770: work-item:unblocked:WI-10006770"
+      }
+    },
+    {
+      "ownerId": "su-9d2295e7-3ce3-4776-a70e-21d3adb8b0a5",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:17:06.140Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto",
+          "drain"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-a0207b03-ccc8-43e2-8830-e47a09f36573",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:quota/usage",
+        "2026-10-06T16:25:05.434Z"
+      ],
+      "respawnClassification": "active-after-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "event",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "[coord:await-inbox:explicit-park] Waiting for the fleet leader's solicited runtime refs for EI-25209690807142935. I replied that WI-10006506 has no saved post-fix runtime intervention refs. On inbox wake, resume this same item and compare routine identity/install slug, queue, feedback-epoch inFlight/availableStarts, and fire outcome against D-031; do not poll or pull another item."
+      }
+    },
+    {
+      "ownerId": "su-a1cfa7fb-6d21-4bf0-b4aa-7482a73212a7",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:17:06.081Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-a8d3f4c4-6268-47bb-9b42-c2a653e75e9f",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-08T20:57:02.700Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "warm-loop resume channel (loop:rt_papercusp_loop_su_a8d3f4c4_6268_47bb_9b42_c2a653e75e9f) \u2014 re-armed by loop-fire after a no-watcher miss"
+      }
+    },
+    {
+      "ownerId": "su-a969f93a-6e0b-4c86-a1c0-a5cf3283af8f",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-07T21:38:28.268Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "warm-loop resume channel (loop:rt_papercusp_loop_su_a969f93a_6e0b_4c86_a1c0_a5cf3283af8f) \u2014 re-armed by loop-fire after a no-watcher miss"
+      }
+    },
+    {
+      "ownerId": "su-a9a7a6ab-7edf-458a-9c3c-36ea9879c965",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T13:47:58.066Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-feature-drain-sol61-xhigh-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "headless launch-agent inbox-wake"
+      }
+    },
+    {
+      "ownerId": "su-ab8cc07f-e903-4467-ac45-a32149258170",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T01:29:09.308Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-acd7d9d0-01c4-47ad-a2b4-3e8a24110100",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T01:28:25.213Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-ad69d345-2a2e-44dc-91e1-82214609ff1a",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:17:06.257Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto",
+          "drain"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-af19b8e7-8887-4ddf-9de9-705fd2a19071",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:quota/usage",
+        "2026-10-06T16:25:05.130Z"
+      ],
+      "respawnClassification": "active-after-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "event",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "agent-obligation reminder (obl:goal-plan-placement:173af1c87eac23036979) \u2014 Plan placement evidence is unavailable; re-evaluate fresh state before acting"
+      }
+    },
+    {
+      "ownerId": "su-b24bba70-8532-4c3f-8894-8a098a016b31",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:17:07.447Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-b4028e2d-590a-4d1c-9256-b44536574813",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-08T23:16:15.242Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": null,
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "event",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "WI10007108 finalpeergradeconv-muxycdu8 b2e2ce79 actualinferencedelta10:24+APIretry2m40; gateway no upstreamfault. Grade unlocks authoraccept+ship. Next no-delta obtain exactclientdebugerror/requestcorrelation; retainreviewer."
+      }
+    },
+    {
+      "ownerId": "su-b7ae044b-c702-4275-8857-d8c0943bc6f6",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T03:23:44.797Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "headless launch-agent inbox-wake"
+      }
+    },
+    {
+      "ownerId": "su-b83c1f62-d5f3-49a7-b59d-e38fa0ecf97d",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-07T21:05:27.683Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "event",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": null
+      }
+    },
+    {
+      "ownerId": "su-b90c2f86-5497-4fa0-ad9a-387132dc9730",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:17:07.748Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-b9ccbf0d-131b-4a64-aca3-90987d99d842",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:unexpected status 403 Forbidden: goal work-on-ever",
+        "2026-10-10T10:19:05.108Z"
+      ],
+      "respawnClassification": "active-after-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "papercusp-expandable-canonical-goal-reports-with-decision-re",
+        "sessionState": "parked",
+        "modes": [
+          "auto",
+          "test"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": "expandable-canonical-goal-reports-with-decision-ready-owner-2026-10-03",
+        "selfWake": "event",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "blocked-item-holder auto-arm for WI-10005952: work-item:done:WI-10006170"
+      }
+    },
+    {
+      "ownerId": "su-ba80f2f7-46f6-4aec-b99a-21e02460933f",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T01:05:52.341Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-bce4e498-fbb7-4457-acc3-1ae2215875e0",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-07T23:32:20.617Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "loop-armed inbox-wake (loop-su-bce4e498-fbb7-4457-acc3-1ae2215875e0)"
+      }
+    },
+    {
+      "ownerId": "su-bf22e2b4-9980-4a5b-9ec8-1ee8a4438e97",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:quota/usage",
+        "2026-10-06T16:24:54.744Z"
+      ],
+      "respawnClassification": "active-after-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "event",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "agent-obligation reminder (obl:goal-plan-placement:ba059046db7aeba0545d) \u2014 Plan placement evidence is unavailable; re-evaluate fresh state before acting"
+      }
+    },
+    {
+      "ownerId": "su-c029e8fc-24ed-4ad8-8994-a003d2be60f6",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T04:53:53.221Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-c7a48b7b-f8fd-4215-aa09-5fe6bebc007c",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T12:29:57.737Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": null,
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": "slack-asana-reproduced-bug-fix-pr-workflow-2026-10-08",
+        "selfWake": "event",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "blocked-item-holder auto-arm for WI-10007666: work-item:unblocked:WI-10007666"
+      }
+    },
+    {
+      "ownerId": "su-c832d9a7-6920-4550-9674-9cf05dcc513a",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:17:08.447Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-cc7811cb-e5a2-4fba-aa88-82b8b0af286b",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:17:07.958Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto",
+          "drain"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-cca022c6-abd0-481c-bac8-5b2515247196",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:17:08.001Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto",
+          "drain"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-cf144a16-16f8-4e0b-9385-34a3c60a4c36",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T12:02:06.153Z"
+      ],
+      "respawnClassification": "active-after-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-d04734a3-55b6-4397-aa78-f94023423da4",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-08T23:55:56.099Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-d3f260f3-10dd-410f-a483-64a8aa6d94f2",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-07T21:42:19.624Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-d589b5a0-2b4e-4413-a74a-430577e14cd5",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:unexpected status 502 Bad Gateway: inference-gatew",
+        "2026-10-07T03:46:14.944Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "event",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "agent-obligation reminder (obl:goal-plan-placement:726c9f16dfcf484c81fa) \u2014 Plan placement evidence is unavailable; re-evaluate fresh state before acting"
+      }
+    },
+    {
+      "ownerId": "su-d759f7bc-0b18-43bd-8945-b839fa0e54c9",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:unexpected status 403 Forbidden: goal work-on-ever",
+        "2026-10-08T18:14:25.208Z"
+      ],
+      "respawnClassification": "active-after-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "goal-drain-work-on-everything-fresh-grading-and-impro-60d3a8",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "fleet leader control (goal-drain-work-on-everything-fresh-grading-and-impro-60d3a8)"
+      }
+    },
+    {
+      "ownerId": "su-d88420f0-c0b4-4dc7-92c7-f60ab3ddab44",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T13:13:44.027Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "headless launch-agent inbox-wake"
+      }
+    },
+    {
+      "ownerId": "su-ddac0f5b-1a6b-43fc-b881-754ab28175ee",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:17:08.803Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-ddb4cbf4-2581-4f7c-8d6a-efbb712bd295",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T01:26:08.287Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": null
+      }
+    },
+    {
+      "ownerId": "su-de5729a7-76d6-4498-8766-c084b2502a21",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T06:56:11.138Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "question-requester auto-arm for conv-mv1zojai-0000-a7cbdcca44e6414ebca278dca8e496c7: conversation:answered:conv-mv1zojai-0000-a7cbdcca44e6414ebca278dca8e496c7"
+      }
+    },
+    {
+      "ownerId": "su-e29e77de-45ec-4677-b1b4-3b662ab57a95",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-08T22:22:15.664Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-e2f4c8b8-3d4a-4f05-9607-d7de17e558f4",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:quota/usage",
+        "2026-10-06T16:24:53.160Z"
+      ],
+      "respawnClassification": "active-after-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-e72eb90d-23bb-4363-aaf7-72e4c693c881",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-09T21:59:56.530Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-ec24b79e-fb5f-4056-847e-c1bd3edfec3a",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-09T08:21:56.557Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "loop-armed inbox-wake (loop-su-ec24b79e-fb5f-4056-847e-c1bd3edfec3a)"
+      }
+    },
+    {
+      "ownerId": "su-f0e98560-52c5-4afe-8709-46fef49a576e",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T01:20:42.965Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-f5fc3980-cd07-43d9-8931-d48d75988a29",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:17:11.661Z"
+      ],
+      "respawnClassification": "active-after-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-f6b6fcca-f4f9-484f-86ca-974378824a67",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T03:47:12.769Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "[coord:await-inbox:explicit-park] Review round 3 for EI-25473800961809533 is pending. Fleet spec remains revision 12, open-only, maxConcurrentClaims=2; self load is 2/2 on WI-10006713 and EI-25406390778633427. Followed up with the live leader on the existing capacity request; pickup is not confirmed. Preserve both held items' next actions and do not pull until a capacity ruling/spec change or legitimate slot release."
+      }
+    },
+    {
+      "ownerId": "su-f6e9cbee-faee-465e-9281-2743f85a91ab",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T03:07:37.488Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "headless launch-agent inbox-wake"
+      }
+    },
+    {
+      "ownerId": "su-f943ed28-5fdf-4bb5-a258-7d7f814319d3",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-07T22:05:20.515Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-f9c6b250-0e9a-4fa8-85d3-0d6edf183297",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:17:11.038Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-faf26552-0633-4081-a250-172c02f07c19",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T04:54:07.952Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-fc5749a7-6632-4f73-9c99-8b475641e7e2",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T14:43:38.968Z"
+      ],
+      "respawnClassification": "active-after-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": null,
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": "cloud-app-live-tutorial-2026-10-01",
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "headless launch-agent inbox-wake"
+      }
+    },
+    {
+      "ownerId": "su-ffb42793-4137-46e2-8f7e-5b78c92ed607",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-10T07:38:39.027Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-respawn-03e7b214f48eef2846ff673f14bfc298",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:17:11.611Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto",
+          "drain"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-respawn-302388a21ed7ab77379045848faa0690",
+      "candidateReason": "silent-since-failed-respawn",
+      "nativeLastTurn": [
+        "ok",
+        "2026-10-09T21:24:56.064Z"
+      ],
+      "respawnClassification": "silent-since-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto",
+          "drain"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "loop",
+        "loopArmed": true,
+        "awaitingEvent": true,
+        "awaitingNote": "Reopen WI-10005351 only after the next instrumented post-fix adoption evidence is available."
+      }
+    },
+    {
+      "ownerId": "su-respawn-d4be19ee8a5d30542446e0190ae6afe4",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-10T02:17:12.055Z"
+      ],
+      "respawnClassification": "no-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto",
+          "drain"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    },
+    {
+      "ownerId": "su-respawn-f5b5aaaedcd83439ae8e1d33621374ae",
+      "candidateReason": "native-error",
+      "nativeLastTurn": [
+        "ERR:auth-token-dead",
+        "2026-10-08T10:15:07.824Z"
+      ],
+      "respawnClassification": "active-after-failed-respawn",
+      "recordedModel": null,
+      "recordedAccount": null,
+      "recordedCarry": null,
+      "frozenPresence": {
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+        "sessionState": "parked",
+        "modes": [
+          "auto",
+          "drain"
+        ],
+        "claimedItems": [],
+        "currentPlanSlug": null,
+        "selfWake": "none",
+        "loopArmed": false,
+        "awaitingEvent": true,
+        "awaitingNote": "always-armed inbox-wake (turn-lifecycle-control)"
+      }
+    }
+  ],
+  "sourceRespawnClasses": {
+    "su-002e59dc-96c3-4212-9569-636eafec156a": "active-after-failed-respawn",
+    "su-01864986-d27d-497b-b501-7082b6e0caab": "silent-since-failed-respawn",
+    "su-0409ed28-a00c-41b2-a14c-f98ca6181791": "active-after-failed-respawn",
+    "su-04b5c3cb-6d67-4d8c-921d-f74c475990d6": "active-after-failed-respawn",
+    "su-059e1b4e-e4fb-49d1-a4ab-085e052d4690": "active-after-failed-respawn",
+    "su-079b1c14-07ec-495e-b640-6a60f89180e2": "silent-since-failed-respawn",
+    "su-07c1fc99-9a9a-49f3-8556-297727400441": "active-after-failed-respawn",
+    "su-07eba67b-e1f4-48ec-9f2f-8e518ecb6eec": "no-failed-respawn",
+    "su-08664d7f-dbcc-4e78-b2db-f9978e6076e8": "no-failed-respawn",
+    "su-08885e73-2abb-4866-bb49-4d876822fa05": "silent-since-failed-respawn",
+    "su-08e74e2b-cfec-47bf-835d-839dca0d534c": "no-failed-respawn",
+    "su-0a26cdb5-a119-46b6-8484-4aca92cfc4c5": "silent-since-failed-respawn",
+    "su-0a2c66a2-10a7-4d9a-84c3-3c7ab8550ef4": "active-after-failed-respawn",
+    "su-0c1f1afa-db9d-4bbc-8852-5726660a5862": "no-failed-respawn",
+    "su-0d52d810-afcc-4f52-8863-4a92600f9485": "no-failed-respawn",
+    "su-0e4db6a0-49d5-400e-acf2-121effa56c27": "no-failed-respawn",
+    "su-0e4ff1d0-1c03-4add-8909-213370683e21": "no-failed-respawn",
+    "su-0e53c244-5ba3-4d96-b499-4e233e3a8936": "active-after-failed-respawn",
+    "su-0ed5b5f3-815c-42b6-93d2-43ce620305b5": "active-after-failed-respawn",
+    "su-0f45ebc8-24a7-4e9b-9fee-35a3c72290d0": "silent-since-failed-respawn",
+    "su-0f674e05-72fb-4dfa-9078-47f7f93ccf8c": "no-failed-respawn",
+    "su-0fbe2904-7a7b-48d5-b3b7-da81d592f41d": "silent-since-failed-respawn",
+    "su-1020321d-4f7c-4257-a245-c2461a585b62": "silent-since-failed-respawn",
+    "su-12c1bd39-1548-483c-b529-2888ce105cee": "no-failed-respawn",
+    "su-1415d088-0af5-4299-a5df-8dbfc634335b": "silent-since-failed-respawn",
+    "su-14554ce7-b9db-4aa8-a47f-ade4e4a31b89": "active-after-failed-respawn",
+    "su-14d6b6ef-6549-4c3f-bf9f-0e86a0e96f00": "no-failed-respawn",
+    "su-14f4c057-33ba-432c-9207-cc57855abdf8": "no-failed-respawn",
+    "su-166e1335-67a7-4e39-b973-5c74df3cadcb": "no-failed-respawn",
+    "su-16a32d35-86cc-4e57-8137-78722f12a433": "active-after-failed-respawn",
+    "su-16da39cf-6e87-45f1-9c6f-7fa8915f021d": "no-failed-respawn",
+    "su-17442b70-89a3-4ea5-82bb-9d0ca2cab71e": "no-failed-respawn",
+    "su-174cad2e-5b58-42a5-858e-3925c0a45b81": "no-failed-respawn",
+    "su-18cc8df4-7a58-493c-a584-5975027af3ad": "silent-since-failed-respawn",
+    "su-1b166a52-b343-40a5-8ba5-b60a7e0aede0": "active-after-failed-respawn",
+    "su-1b535dd7-f7da-4b71-ac8c-a8a8b7677eb3": "active-after-failed-respawn",
+    "su-1ece32b6-7d83-4bcc-a4de-52bd136d570f": "active-after-failed-respawn",
+    "su-1f0cf4e6-8eaf-431d-b706-01546feae136": "active-after-failed-respawn",
+    "su-1f339db0-6173-4ee6-931d-3a54a6c8d148": "active-after-failed-respawn",
+    "su-20441be6-e975-42ba-81d8-54fb4ab286c8": "no-failed-respawn",
+    "su-210ffd48-6f47-4a3d-85bc-1b3617b9b139": "no-failed-respawn",
+    "su-23c7fc91-515d-4107-b31b-74a3d0faac72": "no-failed-respawn",
+    "su-23d26824-25a2-4979-9b57-a86ba389c2ca": "no-failed-respawn",
+    "su-27479421-4171-429e-be37-2e86059290b1": "active-after-failed-respawn",
+    "su-298f8b56-c687-404f-99e1-d1c1e53baf0c": "no-failed-respawn",
+    "su-2a56400c-0263-46b7-9667-fe2ac22cec80": "silent-since-failed-respawn",
+    "su-2a7e6d3d-2b60-4531-b48f-7f036b0b9394": "no-failed-respawn",
+    "su-2ad46958-628a-4c17-bbd6-ebe812805f73": "no-failed-respawn",
+    "su-2b0b24d0-e9f4-4467-87a1-ff83cdd39d99": "no-failed-respawn",
+    "su-2cced081-20f6-4e64-9433-87d7c393bde4": "active-after-failed-respawn",
+    "su-2f9783e0-684c-42b7-a5ed-dff9bc582620": "active-after-failed-respawn",
+    "su-303a40a3-ba68-43e6-9498-c3dd7872f395": "active-after-failed-respawn",
+    "su-3067d842-6f5a-41ad-bada-9a47df0ea9a6": "silent-since-failed-respawn",
+    "su-3076fbb3-6b65-443d-9460-1c60b3df77b6": "no-failed-respawn",
+    "su-3077f62c-1a5d-4be6-896c-e75866032dcb": "no-failed-respawn",
+    "su-312c90f2-a3bd-4c92-ac4e-4eae40ae2647": "silent-since-failed-respawn",
+    "su-32b95ef6-169a-43ae-a8a5-e367fbc40b2b": "no-failed-respawn",
+    "su-32c78573-727f-415f-a3f9-4bf96246b9d1": "active-after-failed-respawn",
+    "su-340db785-4864-494c-9d24-d9c3d4ce2f6c": "no-failed-respawn",
+    "su-34e04dbe-24fc-4579-a522-1610ae9761f7": "active-after-failed-respawn",
+    "su-353a50d8-bcff-423e-9334-9498ed6ff4e9": "active-after-failed-respawn",
+    "su-35487441-ba34-4a1d-ba7f-839d3585becf": "silent-since-failed-respawn",
+    "su-357e43d6-080a-4a92-a347-c14d82a4232d": "no-failed-respawn",
+    "su-35abc0ff-4711-4e19-bcaf-07e6ff0da983": "silent-since-failed-respawn",
+    "su-36986ccc-d8dc-4139-bf7a-9363281b06c8": "silent-since-failed-respawn",
+    "su-370a4d53-f815-47ea-b921-3e4fd79ad9eb": "no-failed-respawn",
+    "su-3790bff3-9f96-445b-a6f5-bddc36f217bf": "no-failed-respawn",
+    "su-37c2c6ca-c16b-4b74-a551-02e09d4f6e3f": "no-failed-respawn",
+    "su-37ffa216-14c7-4113-9981-b9b358da4155": "no-failed-respawn",
+    "su-39465574-6834-47a3-ac4d-849b0e1824a6": "active-after-failed-respawn",
+    "su-3e76622f-f481-4032-b89c-8015f2dfa6b5": "silent-since-failed-respawn",
+    "su-3e892ec3-60a5-40c1-8b7e-3c0b24d1039e": "active-after-failed-respawn",
+    "su-3ec6d547-5bb5-4da7-a50e-0d19f35e42f2": "active-after-failed-respawn",
+    "su-3ecaf532-8655-4072-b2c0-6bc3319221b1": "no-failed-respawn",
+    "su-41ae0aae-a1b6-4a8c-8da0-71b968bbdb12": "active-after-failed-respawn",
+    "su-449b83a8-a709-43af-9681-768dc6ac744a": "silent-since-failed-respawn",
+    "su-449d831c-b3e3-4fad-8816-cc35d56c30cc": "no-failed-respawn",
+    "su-44dea2d5-1d65-4d48-a221-91975912e717": "active-after-failed-respawn",
+    "su-44e04b45-8305-4182-813b-b5b0a931b2e0": "no-failed-respawn",
+    "su-45be5953-95f1-4b27-89e2-c3a1b1885f05": "active-after-failed-respawn",
+    "su-46a58ca5-f152-40ee-9ca7-199b327b0690": "active-after-failed-respawn",
+    "su-49768592-5c0a-440c-a629-25588de3b0d3": "active-after-failed-respawn",
+    "su-4a152da3-3ef7-420f-a82b-bfab10cf563a": "no-failed-respawn",
+    "su-4adf5ebc-6443-4c3c-b704-162275765ff1": "silent-since-failed-respawn",
+    "su-4d390264-fc3c-4875-a655-a71b0afcd6ef": "active-after-failed-respawn",
+    "su-4e1fbeb0-d056-4e46-b5a6-27d2a6e9df58": "no-failed-respawn",
+    "su-4f6ea469-1018-4149-ad55-3fb2883e404a": "no-failed-respawn",
+    "su-50591fd4-cda2-459c-af03-691c4107f736": "no-failed-respawn",
+    "su-50f71624-3c60-4db3-b43d-06160dbc957c": "no-failed-respawn",
+    "su-517bc2b4-a5c0-447b-96a2-bc3f1940ceca": "silent-since-failed-respawn",
+    "su-51edba27-5372-4c49-8a17-af2ede9bb198": "no-failed-respawn",
+    "su-533a9a79-33ef-487f-876c-41ac39337175": "silent-since-failed-respawn",
+    "su-54c73bd5-e418-4a16-ba65-0a825b32ed50": "silent-since-failed-respawn",
+    "su-552b6b78-311b-4cff-bed9-90ab9b1dc338": "no-failed-respawn",
+    "su-5541a53f-2723-4a0c-88a6-dd9191ffbd2a": "no-failed-respawn",
+    "su-55769027-ea65-49d0-a287-7d16b4b38627": "no-failed-respawn",
+    "su-558feca8-8fc1-438a-9361-d83d10581031": "no-failed-respawn",
+    "su-55ec6fd3-4801-45b3-b579-f766c08e1e01": "no-failed-respawn",
+    "su-56a093dd-88b7-42e8-9d44-ee4ae9558c6f": "active-after-failed-respawn",
+    "su-56b83dff-25c8-4a9b-bacf-5c549c832931": "no-failed-respawn",
+    "su-586d69f1-1289-4cd0-824c-09a6f98ee5e7": "no-failed-respawn",
+    "su-592ef0c5-b0ed-47d6-ad26-a089169482a7": "no-failed-respawn",
+    "su-59826d83-3b3c-4029-b504-536ae91f45dc": "no-failed-respawn",
+    "su-59c100a0-6221-483e-8450-055226ca7e7e": "active-after-failed-respawn",
+    "su-5ad46fbd-322a-4b3b-96e6-1582b64bb612": "no-failed-respawn",
+    "su-5bfa1e3f-b44e-48c7-a1ac-9674aca84307": "active-after-failed-respawn",
+    "su-5cb3f995-7e62-41a0-ba2b-741473b01bdd": "active-after-failed-respawn",
+    "su-5d6e108e-cac3-4a1c-97ea-f48b6245638f": "no-failed-respawn",
+    "su-5e26d68f-60b7-4d7c-b1b7-0dbf07bcc96d": "silent-since-failed-respawn",
+    "su-5e86e622-0a42-4e11-9cb5-b44e36856641": "no-failed-respawn",
+    "su-5e90d003-e223-444a-9b03-0ee0fe2585b5": "no-failed-respawn",
+    "su-5ebc55ab-9378-4418-ac14-34ccae0b872d": "active-after-failed-respawn",
+    "su-60df5d22-d045-4660-bdbc-ff602879d3a8": "no-failed-respawn",
+    "su-61a88fd2-510d-4ca6-8a71-fde8957fb3bc": "active-after-failed-respawn",
+    "su-61f9729d-fef8-416a-88a8-72293cce5695": "silent-since-failed-respawn",
+    "su-625df130-d2ce-4aef-badb-9e68b6ee51d4": "no-failed-respawn",
+    "su-628c6726-ef68-46b9-9503-41d9dfb337aa": "active-after-failed-respawn",
+    "su-62f0062b-7713-4905-b6dc-f34b9a358764": "no-failed-respawn",
+    "su-63bb4991-a409-47dc-afd4-b4616d64c73d": "no-failed-respawn",
+    "su-64244b21-7448-404d-aa24-633e4d279424": "no-failed-respawn",
+    "su-67c067a4-a97b-41ee-82ca-06b9be615327": "active-after-failed-respawn",
+    "su-67ee128b-5e86-4c1a-a3f0-4682dfd2e752": "no-failed-respawn",
+    "su-682f1c1e-4656-4d27-b35c-cfc3d5169e92": "no-failed-respawn",
+    "su-684c584a-3351-49ee-a145-f657d7e42237": "active-after-failed-respawn",
+    "su-69e1022f-5619-4c52-aead-87d926c1b432": "active-after-failed-respawn",
+    "su-6b620d7a-a070-4ecc-a63c-1c81ffc321af": "silent-since-failed-respawn",
+    "su-6c382a1c-8a44-4f18-9434-d5a7dd2f65be": "active-after-failed-respawn",
+    "su-6e3cb6d4-4014-41ae-81ce-6305bc7d6a41": "silent-since-failed-respawn",
+    "su-6e8d0b9f-cdc3-4c53-806f-d187a0016e5e": "active-after-failed-respawn",
+    "su-6f749f41-4859-4b62-914f-84a6958b5218": "active-after-failed-respawn",
+    "su-704f5a66-5e60-4adf-8044-c45a75cfd9d8": "no-failed-respawn",
+    "su-706a7b9d-be81-45ae-9ff3-cc402e005fa4": "active-after-failed-respawn",
+    "su-70bd7b0b-bd59-4ea3-8288-fbe76edb24cb": "no-failed-respawn",
+    "su-70fcd6a0-d71e-469e-af2c-3f9faa51679b": "silent-since-failed-respawn",
+    "su-72f78fbb-7e47-41ae-a842-35c83b8fcdd2": "no-failed-respawn",
+    "su-73f621d7-bae1-4bbb-b045-a11b5c47a384": "active-after-failed-respawn",
+    "su-7449fcf0-768a-43a5-8d3f-5ab55604ac4c": "no-failed-respawn",
+    "su-7461b1c3-e158-4ff4-8d4c-2438f5b8bb16": "active-after-failed-respawn",
+    "su-74a1bee4-37ce-4f09-a910-9ccb11453b71": "active-after-failed-respawn",
+    "su-74a69e3f-67f1-439e-8b81-e19eef523fe3": "active-after-failed-respawn",
+    "su-75676c8f-ed12-4217-b88d-57bd6f4043aa": "no-failed-respawn",
+    "su-762b9af2-3f26-4bd1-9789-779e20f1662c": "no-failed-respawn",
+    "su-77348e3d-80ac-42d8-b4e7-bdce9684a72a": "silent-since-failed-respawn",
+    "su-7813359c-e643-4587-9b3f-4becb2397ea4": "active-after-failed-respawn",
+    "su-7ac2753d-7d1d-4fd5-9a4a-e115e91d6aaf": "active-after-failed-respawn",
+    "su-7b7b9508-0ab1-4646-8ef5-976abfff4f41": "active-after-failed-respawn",
+    "su-7ec704fa-dc6a-4965-bb37-13576272127a": "no-failed-respawn",
+    "su-7f7a83bc-f278-4004-abbf-72d44d5fe3f0": "active-after-failed-respawn",
+    "su-80a51f05-4c07-4259-a883-8b9ef4b2a7ca": "active-after-failed-respawn",
+    "su-812af642-19bb-41ea-ba19-e20458d5759f": "no-failed-respawn",
+    "su-82c46308-5eb9-4237-9d2d-950d322576c4": "silent-since-failed-respawn",
+    "su-865d00c9-ac7b-412f-8a99-ea6a76747d98": "no-failed-respawn",
+    "su-86846503-3215-4026-b9e0-e16d2d566ba7": "active-after-failed-respawn",
+    "su-86cd7f0e-8929-469b-af96-e7ff9ead8e01": "no-failed-respawn",
+    "su-86f4bd71-5d4f-428e-b008-24aae14be09d": "active-after-failed-respawn",
+    "su-88019212-f9e1-4476-84af-91cad67de6e4": "active-after-failed-respawn",
+    "su-8a3c6c59-d24f-4e34-97b3-9ad3905f5d30": "active-after-failed-respawn",
+    "su-8a9800a4-640b-4cb2-a51c-d5169128023c": "no-failed-respawn",
+    "su-8aec963c-1284-4a99-85f6-64e3dd62c82f": "no-failed-respawn",
+    "su-8c25125d-002d-4b93-9f83-6b463da9ca9b": "active-after-failed-respawn",
+    "su-8d2cb6cc-8f27-4a25-8541-b00927471b94": "silent-since-failed-respawn",
+    "su-8ec23f4a-5d17-4f1c-bf4c-790edb53f5e3": "active-after-failed-respawn",
+    "su-928e075d-6320-4ecf-9149-8c86187a9ed8": "no-failed-respawn",
+    "su-93304b14-95ce-41d1-a189-f65d51e2acdf": "active-after-failed-respawn",
+    "su-960a52e7-9b11-42ac-8fe9-7e5e7e0da441": "silent-since-failed-respawn",
+    "su-97b230d9-72a8-44eb-96b0-5d8a65e217f1": "active-after-failed-respawn",
+    "su-97b68245-28a2-431e-a1c4-a0d018969d9a": "no-failed-respawn",
+    "su-9844199a-9ccd-4c7b-a47c-03bea510ee31": "active-after-failed-respawn",
+    "su-98e0d4ff-6025-49e3-aba1-c1d3e5606cd9": "active-after-failed-respawn",
+    "su-98e61f58-9674-4d6a-88fd-b9cd6194fc9b": "no-failed-respawn",
+    "su-99042929-9493-4ec9-b63b-71ba18544ec9": "active-after-failed-respawn",
+    "su-990b747e-c51f-482f-bf3d-8ffaa2b9ec34": "active-after-failed-respawn",
+    "su-99548e16-a948-4a0f-b8d9-3f30e2c081b5": "active-after-failed-respawn",
+    "su-9b0d7528-da21-48ce-92a6-c98ca8c4777e": "silent-since-failed-respawn",
+    "su-9c37e275-fc22-4b3a-bd0f-c67f85c2b706": "no-failed-respawn",
+    "su-9c77cdda-2970-4f59-b57f-012184077358": "no-failed-respawn",
+    "su-9d21d3d8-e614-42de-aca6-d0e1b76dc574": "active-after-failed-respawn",
+    "su-9d2295e7-3ce3-4776-a70e-21d3adb8b0a5": "silent-since-failed-respawn",
+    "su-9d472d4b-a9aa-46ea-9bd8-a40d0c3a7d2c": "no-failed-respawn",
+    "su-9dfd3ffc-fb7b-40bf-b625-d93dbab9f002": "active-after-failed-respawn",
+    "su-9e66a68d-2451-4a45-88db-633a23171b79": "no-failed-respawn",
+    "su-9e82325a-829a-4424-b916-b06bd154ebe7": "no-failed-respawn",
+    "su-a0207b03-ccc8-43e2-8830-e47a09f36573": "active-after-failed-respawn",
+    "su-a0a2e2b0-4f63-4cef-8ea9-578a3fdd222f": "active-after-failed-respawn",
+    "su-a14b1fa2-6c97-4925-b315-2ff2e766522a": "active-after-failed-respawn",
+    "su-a158802d-7e66-48eb-8ea3-a79e78ea0d2e": "no-failed-respawn",
+    "su-a1cfa7fb-6d21-4bf0-b4aa-7482a73212a7": "no-failed-respawn",
+    "su-a3dc1235-44f0-46d9-b149-40240a0a1c57": "active-after-failed-respawn",
+    "su-a8d3f4c4-6268-47bb-9b42-c2a653e75e9f": "silent-since-failed-respawn",
+    "su-a969f93a-6e0b-4c86-a1c0-a5cf3283af8f": "silent-since-failed-respawn",
+    "su-a973d2b0-0677-4a5b-b483-93676730c9e9": "no-failed-respawn",
+    "su-a9a7a6ab-7edf-458a-9c3c-36ea9879c965": "silent-since-failed-respawn",
+    "su-ab8cc07f-e903-4467-ac45-a32149258170": "silent-since-failed-respawn",
+    "su-ac4f14a4-6c8b-45da-821b-73196391b494": "no-failed-respawn",
+    "su-acd7804d-5729-4946-b02a-ca953853bffe": "no-failed-respawn",
+    "su-acd7d9d0-01c4-47ad-a2b4-3e8a24110100": "silent-since-failed-respawn",
+    "su-ad69d345-2a2e-44dc-91e1-82214609ff1a": "no-failed-respawn",
+    "su-aeed2f5d-9af7-4557-88e8-93ec7a01fd3b": "active-after-failed-respawn",
+    "su-af19b8e7-8887-4ddf-9de9-705fd2a19071": "active-after-failed-respawn",
+    "su-b0dc22a9-95e3-42f5-8047-1ba27be48c9c": "no-failed-respawn",
+    "su-b11f76ed-5823-4fe4-a597-1ebc5c3a441e": "active-after-failed-respawn",
+    "su-b24bba70-8532-4c3f-8894-8a098a016b31": "no-failed-respawn",
+    "su-b4028e2d-590a-4d1c-9256-b44536574813": "no-failed-respawn",
+    "su-b53bc730-cf97-42c1-804a-906e355053c2": "no-failed-respawn",
+    "su-b56095c1-69e2-4e87-9e9b-1f7de6ab0953": "no-failed-respawn",
+    "su-b68c3e13-77bc-42cb-b5ed-e33ee76452cc": "no-failed-respawn",
+    "su-b6de4ef6-88a4-43e8-8619-c9a0adfdbc7a": "active-after-failed-respawn",
+    "su-b77e72a0-b7bc-43db-b575-94b173a2e747": "active-after-failed-respawn",
+    "su-b7ae044b-c702-4275-8857-d8c0943bc6f6": "silent-since-failed-respawn",
+    "su-b7c19363-b01a-46ad-a273-0ff5ba5e9d85": "active-after-failed-respawn",
+    "su-b83c1f62-d5f3-49a7-b59d-e38fa0ecf97d": "silent-since-failed-respawn",
+    "su-b90c2f86-5497-4fa0-ad9a-387132dc9730": "no-failed-respawn",
+    "su-b9ccbf0d-131b-4a64-aca3-90987d99d842": "active-after-failed-respawn",
+    "su-ba80f2f7-46f6-4aec-b99a-21e02460933f": "silent-since-failed-respawn",
+    "su-bce4e498-fbb7-4457-acc3-1ae2215875e0": "silent-since-failed-respawn",
+    "su-bdcd315c-af8a-4bfc-9e52-d73604f24ae2": "no-failed-respawn",
+    "su-bf22e2b4-9980-4a5b-9ec8-1ee8a4438e97": "active-after-failed-respawn",
+    "su-c00a1144-9b15-4d4e-bbaf-2a54f757753c": "active-after-failed-respawn",
+    "su-c029e8fc-24ed-4ad8-8994-a003d2be60f6": "silent-since-failed-respawn",
+    "su-c337f447-0612-44d3-99a2-e5b38d27ce1d": "no-failed-respawn",
+    "su-c358e0aa-3674-4c87-a65b-60d4d3a563de": "active-after-failed-respawn",
+    "su-c4dc38e8-5f3c-48fc-a4ad-3efd0ad46078": "active-after-failed-respawn",
+    "su-c7a48b7b-f8fd-4215-aa09-5fe6bebc007c": "silent-since-failed-respawn",
+    "su-c832d9a7-6920-4550-9674-9cf05dcc513a": "no-failed-respawn",
+    "su-c9cbdca9-7cd0-4b58-a69c-7645de562968": "no-failed-respawn",
+    "su-cc7811cb-e5a2-4fba-aa88-82b8b0af286b": "no-failed-respawn",
+    "su-cca022c6-abd0-481c-bac8-5b2515247196": "no-failed-respawn",
+    "su-ccfd0e9f-ea87-46bf-8ad6-e9f4241b3317": "active-after-failed-respawn",
+    "su-cdc9a540-470a-4660-bffc-f0d3cfd0b4c4": "no-failed-respawn",
+    "su-ceb257ba-7560-4474-b6de-d607f2afb5cb": "active-after-failed-respawn",
+    "su-cf144a16-16f8-4e0b-9385-34a3c60a4c36": "active-after-failed-respawn",
+    "su-d04734a3-55b6-4397-aa78-f94023423da4": "silent-since-failed-respawn",
+    "su-d0fb6abc-1ba4-474b-b6e9-daa36b6a9b6c": "active-after-failed-respawn",
+    "su-d3049251-af5c-495b-a1c5-d4e4340ec073": "no-failed-respawn",
+    "su-d34a76e0-ade1-430e-84fe-89b693e92c31": "active-after-failed-respawn",
+    "su-d3f260f3-10dd-410f-a483-64a8aa6d94f2": "silent-since-failed-respawn",
+    "su-d589b5a0-2b4e-4413-a74a-430577e14cd5": "no-failed-respawn",
+    "su-d759f7bc-0b18-43bd-8945-b839fa0e54c9": "active-after-failed-respawn",
+    "su-d79d84cf-7fb9-4cda-a53c-aabdcf078517": "no-failed-respawn",
+    "su-d88420f0-c0b4-4dc7-92c7-f60ab3ddab44": "silent-since-failed-respawn",
+    "su-dab96471-48c6-40bf-a2b6-2ec7c5b052ca": "no-failed-respawn",
+    "su-dc48eb8d-8c60-4b48-92a1-b1ee56a65e79": "active-after-failed-respawn",
+    "su-dcaa01f6-a834-4620-b9b3-7ee1adaa1f38": "active-after-failed-respawn",
+    "su-dcd843d2-bf3a-4f37-a5cd-05ebddcd1d60": "active-after-failed-respawn",
+    "su-dd6af82f-1cd4-4cdb-bcf8-ebe921942a3d": "no-failed-respawn",
+    "su-ddac0f5b-1a6b-43fc-b881-754ab28175ee": "no-failed-respawn",
+    "su-ddb4cbf4-2581-4f7c-8d6a-efbb712bd295": "silent-since-failed-respawn",
+    "su-de5729a7-76d6-4498-8766-c084b2502a21": "silent-since-failed-respawn",
+    "su-e0a45d80-1eb9-40e6-af6e-0887fef50a37": "active-after-failed-respawn",
+    "su-e0efb68c-1eb5-4534-98b2-fe366eb857e1": "active-after-failed-respawn",
+    "su-e29e77de-45ec-4677-b1b4-3b662ab57a95": "silent-since-failed-respawn",
+    "su-e2f4c8b8-3d4a-4f05-9607-d7de17e558f4": "active-after-failed-respawn",
+    "su-e3191a37-985b-4177-9f59-181a69c62184": "active-after-failed-respawn",
+    "su-e5107109-2c0d-4df5-aa99-165e2199721b": "no-failed-respawn",
+    "su-e6d2a824-e413-4321-9aea-6600c71cec71": "no-failed-respawn",
+    "su-e7208581-4177-450e-a2a9-65d871758d61": "no-failed-respawn",
+    "su-e72eb90d-23bb-4363-aaf7-72e4c693c881": "silent-since-failed-respawn",
+    "su-e78cc6d7-340f-49eb-baf6-4fc6ca294d16": "no-failed-respawn",
+    "su-e8964bb1-c0e6-4428-84bd-bddf54976b53": "active-after-failed-respawn",
+    "su-e8f92eda-9acd-460a-8c73-6fbd9130712a": "active-after-failed-respawn",
+    "su-e936dd5c-ed94-4761-906f-bed388f43e14": "active-after-failed-respawn",
+    "su-ea145858-8dc8-4602-ae3d-675eb6c2b804": "no-failed-respawn",
+    "su-eaf7ec96-15e7-48f9-9901-b176fe80abe8": "no-failed-respawn",
+    "su-eba6d9a4-c73d-4ef0-b785-1c57e7fd356a": "active-after-failed-respawn",
+    "su-ec24b79e-fb5f-4056-847e-c1bd3edfec3a": "silent-since-failed-respawn",
+    "su-ec67d65a-222d-4bc0-8d52-c81e99a00bbf": "no-failed-respawn",
+    "su-ed644717-df74-4500-9aeb-9dfa97cc5956": "no-failed-respawn",
+    "su-eda09d85-f3fc-4068-bbfb-f87524bbbf4a": "active-after-failed-respawn",
+    "su-edcdd485-a437-46e6-b59c-b5f09ce2be92": "active-after-failed-respawn",
+    "su-ee96d6e7-0474-48be-9d85-70cbb9d63d32": "no-failed-respawn",
+    "su-ef6886ef-be73-4be0-93c7-1b21aedcd73f": "active-after-failed-respawn",
+    "su-f0e98560-52c5-4afe-8709-46fef49a576e": "silent-since-failed-respawn",
+    "su-f19960fa-f9b8-458f-8422-94f389791b02": "no-failed-respawn",
+    "su-f31eb02a-1307-4b7a-98ca-001a0574178e": "no-failed-respawn",
+    "su-f396b11e-37a2-43bb-a889-dc1564575118": "active-after-failed-respawn",
+    "su-f57d18ae-a195-4e83-a82b-458ef3338a12": "active-after-failed-respawn",
+    "su-f5fc3980-cd07-43d9-8931-d48d75988a29": "active-after-failed-respawn",
+    "su-f67e11a6-4002-49fb-9412-fc5826a0d0ee": "no-failed-respawn",
+    "su-f685e5bb-5716-4aa5-ab3f-93a419738d63": "active-after-failed-respawn",
+    "su-f6b6fcca-f4f9-484f-86ca-974378824a67": "silent-since-failed-respawn",
+    "su-f6e9cbee-faee-465e-9281-2743f85a91ab": "silent-since-failed-respawn",
+    "su-f943ed28-5fdf-4bb5-a258-7d7f814319d3": "silent-since-failed-respawn",
+    "su-f9c6b250-0e9a-4fa8-85d3-0d6edf183297": "no-failed-respawn",
+    "su-fa29568b-c401-4f26-9b9c-8c337c7b11d1": "no-failed-respawn",
+    "su-fa4c1948-0cb1-4552-a7a3-dc274c5e1b0a": "active-after-failed-respawn",
+    "su-faee16ea-3b47-454a-ae48-f949b51c6d8d": "active-after-failed-respawn",
+    "su-faf26552-0633-4081-a250-172c02f07c19": "silent-since-failed-respawn",
+    "su-fbce18bf-ab91-435d-b28b-fe11815ad7da": "no-failed-respawn",
+    "su-fc5749a7-6632-4f73-9c99-8b475641e7e2": "active-after-failed-respawn",
+    "su-fd4ae72d-2102-4f99-8356-c14f46ead16f": "active-after-failed-respawn",
+    "su-ff119829-de01-43d3-9eda-2211cb4ccc36": "active-after-failed-respawn",
+    "su-ffb42793-4137-46e2-8f7e-5b78c92ed607": "silent-since-failed-respawn",
+    "su-ffc3bd5d-25bf-4fa5-8318-79f25c1059f1": "active-after-failed-respawn",
+    "su-respawn-03e7b214f48eef2846ff673f14bfc298": "no-failed-respawn",
+    "su-respawn-302388a21ed7ab77379045848faa0690": "silent-since-failed-respawn",
+    "su-respawn-d4be19ee8a5d30542446e0190ae6afe4": "no-failed-respawn",
+    "su-respawn-f21565b5b1fc1971c959c39ffb6c543b": "active-after-failed-respawn",
+    "su-respawn-f5b5aaaedcd83439ae8e1d33621374ae": "active-after-failed-respawn"
+  },
+  "sourceLastTurnClasses": {
+    "su-002e59dc-96c3-4212-9569-636eafec156a": [
+      "ok",
+      "2026-10-10T14:50:22.953Z"
+    ],
+    "su-01864986-d27d-497b-b501-7082b6e0caab": [
+      "ok",
+      "2026-10-10T02:38:07.691Z"
+    ],
+    "su-0409ed28-a00c-41b2-a14c-f98ca6181791": [
+      "ok",
+      "2026-10-10T12:48:50.900Z"
+    ],
+    "su-04b5c3cb-6d67-4d8c-921d-f74c475990d6": [
+      "ok",
+      "2026-10-10T03:32:40.865Z"
+    ],
+    "su-059e1b4e-e4fb-49d1-a4ab-085e052d4690": [
+      "ok",
+      "2026-10-10T10:52:35.130Z"
+    ],
+    "su-079b1c14-07ec-495e-b640-6a60f89180e2": [
+      "ok",
+      "2026-10-09T21:53:22.926Z"
+    ],
+    "su-07c1fc99-9a9a-49f3-8556-297727400441": [
+      "ok",
+      "2026-10-08T13:39:45.498Z"
+    ],
+    "su-07eba67b-e1f4-48ec-9f2f-8e518ecb6eec": [
+      "ERR:auth-token-dead",
+      "2026-10-10T01:38:47.236Z"
+    ],
+    "su-08664d7f-dbcc-4e78-b2db-f9978e6076e8": [
+      "ok",
+      "2026-10-08T05:50:05.355Z"
+    ],
+    "su-08885e73-2abb-4866-bb49-4d876822fa05": [
+      "ok",
+      "2026-10-07T22:02:36.050Z"
+    ],
+    "su-08e74e2b-cfec-47bf-835d-839dca0d534c": [
+      "ok",
+      "2026-10-10T15:50:00.161Z"
+    ],
+    "su-0a26cdb5-a119-46b6-8484-4aca92cfc4c5": [
+      "ok",
+      "2026-10-10T03:58:27.049Z"
+    ],
+    "su-0a2c66a2-10a7-4d9a-84c3-3c7ab8550ef4": [
+      "ok",
+      "2026-10-10T05:43:24.488Z"
+    ],
+    "su-0c1f1afa-db9d-4bbc-8852-5726660a5862": [
+      "ok",
+      "2026-10-08T12:00:36.077Z"
+    ],
+    "su-0d52d810-afcc-4f52-8863-4a92600f9485": [
+      "ok",
+      "2026-10-10T02:59:00.010Z"
+    ],
+    "su-0e4db6a0-49d5-400e-acf2-121effa56c27": [
+      "ok",
+      "2026-10-09T17:27:10.888Z"
+    ],
+    "su-0e4ff1d0-1c03-4add-8909-213370683e21": [
+      "ok",
+      "2026-10-10T15:36:00.903Z"
+    ],
+    "su-0e53c244-5ba3-4d96-b499-4e233e3a8936": [
+      "ERR:auth-token-dead",
+      "2026-10-10T07:38:26.289Z"
+    ],
+    "su-0ed5b5f3-815c-42b6-93d2-43ce620305b5": [
+      "ok",
+      "2026-10-09T17:34:53.736Z"
+    ],
+    "su-0f45ebc8-24a7-4e9b-9fee-35a3c72290d0": [
+      "ok",
+      "2026-10-07T22:50:10.798Z"
+    ],
+    "su-0f674e05-72fb-4dfa-9078-47f7f93ccf8c": [
+      "ERR:auth-token-dead",
+      "2026-10-10T01:38:44.908Z"
+    ],
+    "su-0fbe2904-7a7b-48d5-b3b7-da81d592f41d": [
+      "ok",
+      "2026-10-08T21:04:06.115Z"
+    ],
+    "su-1020321d-4f7c-4257-a245-c2461a585b62": [
+      "ok",
+      "2026-10-10T02:54:10.551Z"
+    ],
+    "su-12c1bd39-1548-483c-b529-2888ce105cee": [
+      "ERR:auth-token-dead",
+      "2026-10-10T01:38:45.308Z"
+    ],
+    "su-1415d088-0af5-4299-a5df-8dbfc634335b": [
+      "ok",
+      "2026-10-10T12:29:49.349Z"
+    ],
+    "su-14554ce7-b9db-4aa8-a47f-ade4e4a31b89": [
+      "ok",
+      "2026-10-09T09:40:28.277Z"
+    ],
+    "su-14d6b6ef-6549-4c3f-bf9f-0e86a0e96f00": [
+      "ok",
+      "2026-10-10T02:41:55.754Z"
+    ],
+    "su-14f4c057-33ba-432c-9207-cc57855abdf8": [
+      "ERR:auth-token-dead",
+      "2026-10-10T01:38:45.245Z"
+    ],
+    "su-166e1335-67a7-4e39-b973-5c74df3cadcb": [
+      "ok",
+      "2026-10-10T15:36:29.365Z"
+    ],
+    "su-16a32d35-86cc-4e57-8137-78722f12a433": [
+      "ok",
+      "2026-10-09T17:08:16.894Z"
+    ],
+    "su-16da39cf-6e87-45f1-9c6f-7fa8915f021d": [
+      "ok",
+      "2026-10-10T06:51:18.008Z"
+    ],
+    "su-17442b70-89a3-4ea5-82bb-9d0ca2cab71e": [
+      "ERR:auth-token-dead",
+      "2026-10-10T01:38:45.253Z"
+    ],
+    "su-174cad2e-5b58-42a5-858e-3925c0a45b81": [
+      "ERR:auth-token-dead",
+      "2026-10-10T01:38:45.085Z"
+    ],
+    "su-18cc8df4-7a58-493c-a584-5975027af3ad": [
+      "ok",
+      "2026-10-07T20:56:58.452Z"
+    ],
+    "su-1b166a52-b343-40a5-8ba5-b60a7e0aede0": [
+      "ok",
+      "2026-10-09T12:30:20.297Z"
+    ],
+    "su-1b535dd7-f7da-4b71-ac8c-a8a8b7677eb3": [
+      "ok",
+      "2026-10-10T16:05:07.289Z"
+    ],
+    "su-1ece32b6-7d83-4bcc-a4de-52bd136d570f": [
+      "ERR:auth-token-dead",
+      "2026-10-10T01:38:45.068Z"
+    ],
+    "su-1f0cf4e6-8eaf-431d-b706-01546feae136": [
+      "ok",
+      "2026-10-09T21:01:11.641Z"
+    ],
+    "su-1f339db0-6173-4ee6-931d-3a54a6c8d148": [
+      "ok",
+      "2026-10-08T14:34:51.593Z"
+    ],
+    "su-20441be6-e975-42ba-81d8-54fb4ab286c8": [
+      "ok",
+      "2026-10-10T06:55:04.887Z"
+    ],
+    "su-210ffd48-6f47-4a3d-85bc-1b3617b9b139": [
+      "ERR:auth-token-dead",
+      "2026-10-10T01:38:45.262Z"
+    ],
+    "su-23c7fc91-515d-4107-b31b-74a3d0faac72": [
+      "ok",
+      "2026-10-10T15:06:20.305Z"
+    ],
+    "su-23d26824-25a2-4979-9b57-a86ba389c2ca": [
+      "ok",
+      "2026-10-08T20:55:56.844Z"
+    ],
+    "su-27479421-4171-429e-be37-2e86059290b1": [
+      "ok",
+      "2026-10-09T16:11:13.198Z"
+    ],
+    "su-298f8b56-c687-404f-99e1-d1c1e53baf0c": [
+      "ERR:auth-token-dead",
+      "2026-10-10T04:21:04.465Z"
+    ],
+    "su-2a56400c-0263-46b7-9667-fe2ac22cec80": [
+      "ok",
+      "2026-10-07T23:27:27.541Z"
+    ],
+    "su-2a7e6d3d-2b60-4531-b48f-7f036b0b9394": [
+      "ok",
+      "2026-10-08T21:10:02.701Z"
+    ],
+    "su-2ad46958-628a-4c17-bbd6-ebe812805f73": [
+      "ok",
+      "2026-10-09T17:50:30.467Z"
+    ],
+    "su-2b0b24d0-e9f4-4467-87a1-ff83cdd39d99": [
+      "ok",
+      "2026-10-08T11:48:00.366Z"
+    ],
+    "su-2cced081-20f6-4e64-9433-87d7c393bde4": [
+      "ok",
+      "2026-10-09T23:07:24.648Z"
+    ],
+    "su-2f9783e0-684c-42b7-a5ed-dff9bc582620": [
+      "ok",
+      "2026-10-08T07:22:44.051Z"
+    ],
+    "su-303a40a3-ba68-43e6-9498-c3dd7872f395": [
+      "ok",
+      "2026-10-08T10:43:54.106Z"
+    ],
+    "su-3067d842-6f5a-41ad-bada-9a47df0ea9a6": [
+      "ok",
+      "2026-10-10T01:22:02.358Z"
+    ],
+    "su-3076fbb3-6b65-443d-9460-1c60b3df77b6": [
+      "ok",
+      "2026-10-10T15:38:41.843Z"
+    ],
+    "su-3077f62c-1a5d-4be6-896c-e75866032dcb": [
+      "ERR:model-unsupported-for-account",
+      "2026-10-07T01:58:50.816Z"
+    ],
+    "su-312c90f2-a3bd-4c92-ac4e-4eae40ae2647": [
+      "ok",
+      "2026-10-10T08:29:08.908Z"
+    ],
+    "su-32b95ef6-169a-43ae-a8a5-e367fbc40b2b": [
+      "ok",
+      "2026-10-10T12:24:08.120Z"
+    ],
+    "su-32c78573-727f-415f-a3f9-4bf96246b9d1": [
+      "ok",
+      "2026-10-09T17:08:14.717Z"
+    ],
+    "su-340db785-4864-494c-9d24-d9c3d4ce2f6c": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:13:24.678Z"
+    ],
+    "su-34e04dbe-24fc-4579-a522-1610ae9761f7": [
+      "ok",
+      "2026-10-10T05:39:11.351Z"
+    ],
+    "su-353a50d8-bcff-423e-9334-9498ed6ff4e9": [
+      "ERR:unexpected status 403 Forbidden: goal work-on-ever",
+      "2026-10-09T16:47:33.760Z"
+    ],
+    "su-35487441-ba34-4a1d-ba7f-839d3585becf": [
+      "ok",
+      "2026-10-08T20:54:24.533Z"
+    ],
+    "su-357e43d6-080a-4a92-a347-c14d82a4232d": [
+      "no-rollout",
+      null
+    ],
+    "su-35abc0ff-4711-4e19-bcaf-07e6ff0da983": [
+      "ok",
+      "2026-10-08T23:09:23.673Z"
+    ],
+    "su-36986ccc-d8dc-4139-bf7a-9363281b06c8": [
+      "ok",
+      "2026-10-10T01:46:52.981Z"
+    ],
+    "su-370a4d53-f815-47ea-b921-3e4fd79ad9eb": [
+      "ok",
+      "2026-10-10T02:13:54.403Z"
+    ],
+    "su-3790bff3-9f96-445b-a6f5-bddc36f217bf": [
+      "ERR:auth-token-dead",
+      "2026-10-10T11:47:41.946Z"
+    ],
+    "su-37c2c6ca-c16b-4b74-a551-02e09d4f6e3f": [
+      "ok",
+      "2026-10-09T17:13:00.769Z"
+    ],
+    "su-37ffa216-14c7-4113-9981-b9b358da4155": [
+      "ok",
+      "2026-10-08T20:58:31.657Z"
+    ],
+    "su-39465574-6834-47a3-ac4d-849b0e1824a6": [
+      "ok",
+      "2026-10-09T07:15:05.563Z"
+    ],
+    "su-3e76622f-f481-4032-b89c-8015f2dfa6b5": [
+      "ok",
+      "2026-10-07T21:02:39.896Z"
+    ],
+    "su-3e892ec3-60a5-40c1-8b7e-3c0b24d1039e": [
+      "ok",
+      "2026-10-10T12:25:10.774Z"
+    ],
+    "su-3ec6d547-5bb5-4da7-a50e-0d19f35e42f2": [
+      "ok",
+      "2026-10-10T09:27:50.398Z"
+    ],
+    "su-3ecaf532-8655-4072-b2c0-6bc3319221b1": [
+      "ok",
+      "2026-10-07T14:32:36.191Z"
+    ],
+    "su-41ae0aae-a1b6-4a8c-8da0-71b968bbdb12": [
+      "ok",
+      "2026-10-07T09:29:26.587Z"
+    ],
+    "su-449b83a8-a709-43af-9681-768dc6ac744a": [
+      "ok",
+      "2026-10-10T01:12:00.897Z"
+    ],
+    "su-449d831c-b3e3-4fad-8816-cc35d56c30cc": [
+      "ERR:auth-token-dead",
+      "2026-10-10T01:38:45.613Z"
+    ],
+    "su-44dea2d5-1d65-4d48-a221-91975912e717": [
+      "ok",
+      "2026-10-08T12:29:55.572Z"
+    ],
+    "su-44e04b45-8305-4182-813b-b5b0a931b2e0": [
+      "ok",
+      "2026-10-10T15:36:16.224Z"
+    ],
+    "su-45be5953-95f1-4b27-89e2-c3a1b1885f05": [
+      "ok",
+      "2026-10-10T09:26:08.243Z"
+    ],
+    "su-46a58ca5-f152-40ee-9ca7-199b327b0690": [
+      "ok",
+      "2026-10-10T00:45:58.108Z"
+    ],
+    "su-49768592-5c0a-440c-a629-25588de3b0d3": [
+      "ok",
+      "2026-10-08T11:54:10.120Z"
+    ],
+    "su-4a152da3-3ef7-420f-a82b-bfab10cf563a": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:13:26.218Z"
+    ],
+    "su-4adf5ebc-6443-4c3c-b704-162275765ff1": [
+      "ok",
+      "2026-10-10T12:22:25.230Z"
+    ],
+    "su-4d390264-fc3c-4875-a655-a71b0afcd6ef": [
+      "ok",
+      "2026-10-10T12:29:31.139Z"
+    ],
+    "su-4e1fbeb0-d056-4e46-b5a6-27d2a6e9df58": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:13:26.534Z"
+    ],
+    "su-4f6ea469-1018-4149-ad55-3fb2883e404a": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:13:26.511Z"
+    ],
+    "su-50591fd4-cda2-459c-af03-691c4107f736": [
+      "ok",
+      "2026-10-09T01:57:39.337Z"
+    ],
+    "su-50f71624-3c60-4db3-b43d-06160dbc957c": [
+      "ok",
+      "2026-10-10T07:53:26.394Z"
+    ],
+    "su-517bc2b4-a5c0-447b-96a2-bc3f1940ceca": [
+      "ok",
+      "2026-10-10T00:01:49.605Z"
+    ],
+    "su-51edba27-5372-4c49-8a17-af2ede9bb198": [
+      "ok",
+      "2026-10-10T03:27:02.963Z"
+    ],
+    "su-533a9a79-33ef-487f-876c-41ac39337175": [
+      "ok",
+      "2026-10-08T22:18:26.158Z"
+    ],
+    "su-54c73bd5-e418-4a16-ba65-0a825b32ed50": [
+      "ok",
+      "2026-10-10T02:21:10.615Z"
+    ],
+    "su-552b6b78-311b-4cff-bed9-90ab9b1dc338": [
+      "ok",
+      "2026-10-10T15:38:33.870Z"
+    ],
+    "su-5541a53f-2723-4a0c-88a6-dd9191ffbd2a": [
+      "ok",
+      "2026-10-10T15:37:12.164Z"
+    ],
+    "su-55769027-ea65-49d0-a287-7d16b4b38627": [
+      "ok",
+      "2026-10-08T11:22:33.130Z"
+    ],
+    "su-558feca8-8fc1-438a-9361-d83d10581031": [
+      "no-pty",
+      null
+    ],
+    "su-55ec6fd3-4801-45b3-b579-f766c08e1e01": [
+      "no-pty",
+      null
+    ],
+    "su-56a093dd-88b7-42e8-9d44-ee4ae9558c6f": [
+      "ok",
+      "2026-10-09T05:32:16.483Z"
+    ],
+    "su-56b83dff-25c8-4a9b-bacf-5c549c832931": [
+      "ok",
+      "2026-10-07T02:12:29.526Z"
+    ],
+    "su-586d69f1-1289-4cd0-824c-09a6f98ee5e7": [
+      "ok",
+      "2026-10-08T18:21:55.283Z"
+    ],
+    "su-592ef0c5-b0ed-47d6-ad26-a089169482a7": [
+      "ok",
+      "2026-10-09T23:50:17.753Z"
+    ],
+    "su-59826d83-3b3c-4029-b504-536ae91f45dc": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:13:26.937Z"
+    ],
+    "su-59c100a0-6221-483e-8450-055226ca7e7e": [
+      "ok",
+      "2026-10-10T10:22:37.733Z"
+    ],
+    "su-5ad46fbd-322a-4b3b-96e6-1582b64bb612": [
+      "ok",
+      "2026-10-10T08:48:39.586Z"
+    ],
+    "su-5bfa1e3f-b44e-48c7-a1ac-9674aca84307": [
+      "ok",
+      "2026-10-10T15:12:12.221Z"
+    ],
+    "su-5cb3f995-7e62-41a0-ba2b-741473b01bdd": [
+      "ok",
+      "2026-10-07T13:29:45.228Z"
+    ],
+    "su-5d6e108e-cac3-4a1c-97ea-f48b6245638f": [
+      "ok",
+      "2026-10-09T22:58:45.991Z"
+    ],
+    "su-5e26d68f-60b7-4d7c-b1b7-0dbf07bcc96d": [
+      "ok",
+      "2026-10-10T03:52:29.171Z"
+    ],
+    "su-5e86e622-0a42-4e11-9cb5-b44e36856641": [
+      "ok",
+      "2026-10-10T02:23:55.740Z"
+    ],
+    "su-5e90d003-e223-444a-9b03-0ee0fe2585b5": [
+      "ok",
+      "2026-10-08T07:36:44.582Z"
+    ],
+    "su-5ebc55ab-9378-4418-ac14-34ccae0b872d": [
+      "ok",
+      "2026-10-09T05:01:58.111Z"
+    ],
+    "su-60df5d22-d045-4660-bdbc-ff602879d3a8": [
+      "ok",
+      "2026-10-10T03:31:51.125Z"
+    ],
+    "su-61a88fd2-510d-4ca6-8a71-fde8957fb3bc": [
+      "ok",
+      "2026-10-10T10:29:52.202Z"
+    ],
+    "su-61f9729d-fef8-416a-88a8-72293cce5695": [
+      "ok",
+      "2026-10-09T21:15:02.868Z"
+    ],
+    "su-625df130-d2ce-4aef-badb-9e68b6ee51d4": [
+      "ERR:quota/usage",
+      "2026-10-06T16:25:05.636Z"
+    ],
+    "su-628c6726-ef68-46b9-9503-41d9dfb337aa": [
+      "ok",
+      "2026-10-09T15:08:50.178Z"
+    ],
+    "su-62f0062b-7713-4905-b6dc-f34b9a358764": [
+      "ok",
+      "2026-10-10T15:36:02.579Z"
+    ],
+    "su-63bb4991-a409-47dc-afd4-b4616d64c73d": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:13:25.485Z"
+    ],
+    "su-64244b21-7448-404d-aa24-633e4d279424": [
+      "ok",
+      "2026-10-09T16:45:41.415Z"
+    ],
+    "su-67c067a4-a97b-41ee-82ca-06b9be615327": [
+      "ok",
+      "2026-10-08T17:26:58.124Z"
+    ],
+    "su-67ee128b-5e86-4c1a-a3f0-4682dfd2e752": [
+      "ok",
+      "2026-10-10T06:26:38.683Z"
+    ],
+    "su-682f1c1e-4656-4d27-b35c-cfc3d5169e92": [
+      "no-pty",
+      null
+    ],
+    "su-684c584a-3351-49ee-a145-f657d7e42237": [
+      "ERR:unexpected status 403 Forbidden: goal work-on-ever",
+      "2026-10-10T13:45:36.040Z"
+    ],
+    "su-69e1022f-5619-4c52-aead-87d926c1b432": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:13:26.950Z"
+    ],
+    "su-6b620d7a-a070-4ecc-a63c-1c81ffc321af": [
+      "ok",
+      "2026-10-07T22:08:40.431Z"
+    ],
+    "su-6c382a1c-8a44-4f18-9434-d5a7dd2f65be": [
+      "ok",
+      "2026-10-07T07:39:27.516Z"
+    ],
+    "su-6e3cb6d4-4014-41ae-81ce-6305bc7d6a41": [
+      "no-task-complete",
+      null
+    ],
+    "su-6e8d0b9f-cdc3-4c53-806f-d187a0016e5e": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:13:32.241Z"
+    ],
+    "su-6f749f41-4859-4b62-914f-84a6958b5218": [
+      "ok",
+      "2026-10-09T17:51:58.519Z"
+    ],
+    "su-704f5a66-5e60-4adf-8044-c45a75cfd9d8": [
+      "ERR:quota/usage",
+      "2026-10-06T21:04:21.328Z"
+    ],
+    "su-706a7b9d-be81-45ae-9ff3-cc402e005fa4": [
+      "ok",
+      "2026-10-09T12:57:03.082Z"
+    ],
+    "su-70bd7b0b-bd59-4ea3-8288-fbe76edb24cb": [
+      "ok",
+      "2026-10-10T00:48:03.733Z"
+    ],
+    "su-70fcd6a0-d71e-469e-af2c-3f9faa51679b": [
+      "ok",
+      "2026-10-07T22:41:59.114Z"
+    ],
+    "su-72f78fbb-7e47-41ae-a842-35c83b8fcdd2": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:13:30.942Z"
+    ],
+    "su-73f621d7-bae1-4bbb-b045-a11b5c47a384": [
+      "ok",
+      "2026-10-10T15:43:28.746Z"
+    ],
+    "su-7449fcf0-768a-43a5-8d3f-5ab55604ac4c": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:13:30.918Z"
+    ],
+    "su-7461b1c3-e158-4ff4-8d4c-2438f5b8bb16": [
+      "ok",
+      "2026-10-10T15:38:02.999Z"
+    ],
+    "su-74a1bee4-37ce-4f09-a910-9ccb11453b71": [
+      "ok",
+      "2026-10-09T14:41:01.548Z"
+    ],
+    "su-74a69e3f-67f1-439e-8b81-e19eef523fe3": [
+      "no-task-complete",
+      null
+    ],
+    "su-75676c8f-ed12-4217-b88d-57bd6f4043aa": [
+      "ok",
+      "2026-10-10T02:14:38.307Z"
+    ],
+    "su-762b9af2-3f26-4bd1-9789-779e20f1662c": [
+      "ok",
+      "2026-10-10T03:16:25.052Z"
+    ],
+    "su-77348e3d-80ac-42d8-b4e7-bdce9684a72a": [
+      "ok",
+      "2026-10-10T01:46:37.907Z"
+    ],
+    "su-7813359c-e643-4587-9b3f-4becb2397ea4": [
+      "ok",
+      "2026-10-09T23:07:03.385Z"
+    ],
+    "su-7ac2753d-7d1d-4fd5-9a4a-e115e91d6aaf": [
+      "ERR:auth-token-dead",
+      "2026-10-10T08:44:34.235Z"
+    ],
+    "su-7b7b9508-0ab1-4646-8ef5-976abfff4f41": [
+      "ok",
+      "2026-10-10T14:23:00.966Z"
+    ],
+    "su-7ec704fa-dc6a-4965-bb37-13576272127a": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:13:31.790Z"
+    ],
+    "su-7f7a83bc-f278-4004-abbf-72d44d5fe3f0": [
+      "ok",
+      "2026-10-09T14:38:02.107Z"
+    ],
+    "su-80a51f05-4c07-4259-a883-8b9ef4b2a7ca": [
+      "ERR:unexpected status 403 Forbidden: goal work-on-ever",
+      "2026-10-09T14:48:27.219Z"
+    ],
+    "su-812af642-19bb-41ea-ba19-e20458d5759f": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:13:32.312Z"
+    ],
+    "su-82c46308-5eb9-4237-9d2d-950d322576c4": [
+      "ok",
+      "2026-10-10T01:13:37.603Z"
+    ],
+    "su-865d00c9-ac7b-412f-8a99-ea6a76747d98": [
+      "ok",
+      "2026-10-08T11:48:56.783Z"
+    ],
+    "su-86846503-3215-4026-b9e0-e16d2d566ba7": [
+      "ok",
+      "2026-10-09T16:06:35.999Z"
+    ],
+    "su-86cd7f0e-8929-469b-af96-e7ff9ead8e01": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:13:31.510Z"
+    ],
+    "su-86f4bd71-5d4f-428e-b008-24aae14be09d": [
+      "ok",
+      "2026-10-09T22:05:55.929Z"
+    ],
+    "su-88019212-f9e1-4476-84af-91cad67de6e4": [
+      "ok",
+      "2026-10-09T15:31:45.605Z"
+    ],
+    "su-8a3c6c59-d24f-4e34-97b3-9ad3905f5d30": [
+      "ok",
+      "2026-10-09T01:38:42.656Z"
+    ],
+    "su-8a9800a4-640b-4cb2-a51c-d5169128023c": [
+      "ok",
+      "2026-10-10T02:14:53.748Z"
+    ],
+    "su-8aec963c-1284-4a99-85f6-64e3dd62c82f": [
+      "ok",
+      "2026-10-09T15:28:35.582Z"
+    ],
+    "su-8c25125d-002d-4b93-9f83-6b463da9ca9b": [
+      "ok",
+      "2026-10-08T12:37:26.103Z"
+    ],
+    "su-8d2cb6cc-8f27-4a25-8541-b00927471b94": [
+      "ok",
+      "2026-10-10T04:28:13.087Z"
+    ],
+    "su-8ec23f4a-5d17-4f1c-bf4c-790edb53f5e3": [
+      "ok",
+      "2026-10-10T12:15:39.814Z"
+    ],
+    "su-928e075d-6320-4ecf-9149-8c86187a9ed8": [
+      "ERR:auth-token-dead",
+      "2026-10-08T00:03:13.396Z"
+    ],
+    "su-93304b14-95ce-41d1-a189-f65d51e2acdf": [
+      "no-pty",
+      null
+    ],
+    "su-960a52e7-9b11-42ac-8fe9-7e5e7e0da441": [
+      "ok",
+      "2026-10-10T01:18:18.380Z"
+    ],
+    "su-97b230d9-72a8-44eb-96b0-5d8a65e217f1": [
+      "ok",
+      "2026-10-10T10:32:16.113Z"
+    ],
+    "su-97b68245-28a2-431e-a1c4-a0d018969d9a": [
+      "ok",
+      "2026-10-08T02:15:32.474Z"
+    ],
+    "su-9844199a-9ccd-4c7b-a47c-03bea510ee31": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:13:33.631Z"
+    ],
+    "su-98e0d4ff-6025-49e3-aba1-c1d3e5606cd9": [
+      "ok",
+      "2026-10-10T14:43:03.852Z"
+    ],
+    "su-98e61f58-9674-4d6a-88fd-b9cd6194fc9b": [
+      "ok",
+      "2026-10-08T23:06:59.303Z"
+    ],
+    "su-99042929-9493-4ec9-b63b-71ba18544ec9": [
+      "ok",
+      "2026-10-10T05:05:35.736Z"
+    ],
+    "su-990b747e-c51f-482f-bf3d-8ffaa2b9ec34": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:13:33.697Z"
+    ],
+    "su-99548e16-a948-4a0f-b8d9-3f30e2c081b5": [
+      "ok",
+      "2026-10-10T02:28:05.182Z"
+    ],
+    "su-9b0d7528-da21-48ce-92a6-c98ca8c4777e": [
+      "ok",
+      "2026-10-08T13:51:54.466Z"
+    ],
+    "su-9c37e275-fc22-4b3a-bd0f-c67f85c2b706": [
+      "ok",
+      "2026-10-10T10:09:42.185Z"
+    ],
+    "su-9c77cdda-2970-4f59-b57f-012184077358": [
+      "ok",
+      "2026-10-10T15:40:57.088Z"
+    ],
+    "su-9d21d3d8-e614-42de-aca6-d0e1b76dc574": [
+      "ok",
+      "2026-10-08T08:55:48.133Z"
+    ],
+    "su-9d2295e7-3ce3-4776-a70e-21d3adb8b0a5": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:17:06.140Z"
+    ],
+    "su-9d472d4b-a9aa-46ea-9bd8-a40d0c3a7d2c": [
+      "ok",
+      "2026-10-08T14:31:30.869Z"
+    ],
+    "su-9dfd3ffc-fb7b-40bf-b625-d93dbab9f002": [
+      "ok",
+      "2026-10-08T16:41:37.554Z"
+    ],
+    "su-9e66a68d-2451-4a45-88db-633a23171b79": [
+      "ok",
+      "2026-10-08T03:04:36.124Z"
+    ],
+    "su-9e82325a-829a-4424-b916-b06bd154ebe7": [
+      "ok",
+      "2026-10-10T03:17:36.514Z"
+    ],
+    "su-a0207b03-ccc8-43e2-8830-e47a09f36573": [
+      "ERR:quota/usage",
+      "2026-10-06T16:25:05.434Z"
+    ],
+    "su-a0a2e2b0-4f63-4cef-8ea9-578a3fdd222f": [
+      "ok",
+      "2026-10-09T19:41:49.112Z"
+    ],
+    "su-a14b1fa2-6c97-4925-b315-2ff2e766522a": [
+      "ok",
+      "2026-10-08T09:05:31.432Z"
+    ],
+    "su-a158802d-7e66-48eb-8ea3-a79e78ea0d2e": [
+      "ok",
+      "2026-10-10T15:42:36.034Z"
+    ],
+    "su-a1cfa7fb-6d21-4bf0-b4aa-7482a73212a7": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:17:06.081Z"
+    ],
+    "su-a3dc1235-44f0-46d9-b149-40240a0a1c57": [
+      "ok",
+      "2026-10-08T17:20:59.841Z"
+    ],
+    "su-a8d3f4c4-6268-47bb-9b42-c2a653e75e9f": [
+      "ok",
+      "2026-10-08T20:57:02.700Z"
+    ],
+    "su-a969f93a-6e0b-4c86-a1c0-a5cf3283af8f": [
+      "ok",
+      "2026-10-07T21:38:28.268Z"
+    ],
+    "su-a973d2b0-0677-4a5b-b483-93676730c9e9": [
+      "ok",
+      "2026-10-07T07:28:12.155Z"
+    ],
+    "su-a9a7a6ab-7edf-458a-9c3c-36ea9879c965": [
+      "ok",
+      "2026-10-10T13:47:58.066Z"
+    ],
+    "su-ab8cc07f-e903-4467-ac45-a32149258170": [
+      "ok",
+      "2026-10-10T01:29:09.308Z"
+    ],
+    "su-ac4f14a4-6c8b-45da-821b-73196391b494": [
+      "ok",
+      "2026-10-09T14:17:37.761Z"
+    ],
+    "su-acd7804d-5729-4946-b02a-ca953853bffe": [
+      "ok",
+      "2026-10-10T15:39:32.651Z"
+    ],
+    "su-acd7d9d0-01c4-47ad-a2b4-3e8a24110100": [
+      "ok",
+      "2026-10-10T01:28:25.213Z"
+    ],
+    "su-ad69d345-2a2e-44dc-91e1-82214609ff1a": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:17:06.257Z"
+    ],
+    "su-aeed2f5d-9af7-4557-88e8-93ec7a01fd3b": [
+      "ok",
+      "2026-10-10T05:49:50.628Z"
+    ],
+    "su-af19b8e7-8887-4ddf-9de9-705fd2a19071": [
+      "ERR:quota/usage",
+      "2026-10-06T16:25:05.130Z"
+    ],
+    "su-b0dc22a9-95e3-42f5-8047-1ba27be48c9c": [
+      "ok",
+      "2026-10-10T02:22:35.792Z"
+    ],
+    "su-b11f76ed-5823-4fe4-a597-1ebc5c3a441e": [
+      "ok",
+      "2026-10-10T09:24:35.002Z"
+    ],
+    "su-b24bba70-8532-4c3f-8894-8a098a016b31": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:17:07.447Z"
+    ],
+    "su-b4028e2d-590a-4d1c-9256-b44536574813": [
+      "ERR:auth-token-dead",
+      "2026-10-08T23:16:15.242Z"
+    ],
+    "su-b53bc730-cf97-42c1-804a-906e355053c2": [
+      "ok",
+      "2026-10-09T17:42:00.586Z"
+    ],
+    "su-b56095c1-69e2-4e87-9e9b-1f7de6ab0953": [
+      "no-pty",
+      null
+    ],
+    "su-b68c3e13-77bc-42cb-b5ed-e33ee76452cc": [
+      "ok",
+      "2026-10-10T05:47:18.114Z"
+    ],
+    "su-b6de4ef6-88a4-43e8-8619-c9a0adfdbc7a": [
+      "ok",
+      "2026-10-10T12:57:40.688Z"
+    ],
+    "su-b77e72a0-b7bc-43db-b575-94b173a2e747": [
+      "ok",
+      "2026-10-09T18:48:37.233Z"
+    ],
+    "su-b7ae044b-c702-4275-8857-d8c0943bc6f6": [
+      "ok",
+      "2026-10-10T03:23:44.797Z"
+    ],
+    "su-b7c19363-b01a-46ad-a273-0ff5ba5e9d85": [
+      "ok",
+      "2026-10-09T15:41:33.422Z"
+    ],
+    "su-b83c1f62-d5f3-49a7-b59d-e38fa0ecf97d": [
+      "ok",
+      "2026-10-07T21:05:27.683Z"
+    ],
+    "su-b90c2f86-5497-4fa0-ad9a-387132dc9730": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:17:07.748Z"
+    ],
+    "su-b9ccbf0d-131b-4a64-aca3-90987d99d842": [
+      "ERR:unexpected status 403 Forbidden: goal work-on-ever",
+      "2026-10-10T10:19:05.108Z"
+    ],
+    "su-ba80f2f7-46f6-4aec-b99a-21e02460933f": [
+      "ok",
+      "2026-10-10T01:05:52.341Z"
+    ],
+    "su-bce4e498-fbb7-4457-acc3-1ae2215875e0": [
+      "ok",
+      "2026-10-07T23:32:20.617Z"
+    ],
+    "su-bdcd315c-af8a-4bfc-9e52-d73604f24ae2": [
+      "ok",
+      "2026-10-10T15:35:59.862Z"
+    ],
+    "su-bf22e2b4-9980-4a5b-9ec8-1ee8a4438e97": [
+      "ERR:quota/usage",
+      "2026-10-06T16:24:54.744Z"
+    ],
+    "su-c00a1144-9b15-4d4e-bbaf-2a54f757753c": [
+      "ok",
+      "2026-10-10T11:43:33.322Z"
+    ],
+    "su-c029e8fc-24ed-4ad8-8994-a003d2be60f6": [
+      "ok",
+      "2026-10-10T04:53:53.221Z"
+    ],
+    "su-c337f447-0612-44d3-99a2-e5b38d27ce1d": [
+      "ok",
+      "2026-10-10T00:05:41.909Z"
+    ],
+    "su-c358e0aa-3674-4c87-a65b-60d4d3a563de": [
+      "ok",
+      "2026-10-09T22:14:30.152Z"
+    ],
+    "su-c4dc38e8-5f3c-48fc-a4ad-3efd0ad46078": [
+      "ok",
+      "2026-10-10T15:18:54.893Z"
+    ],
+    "su-c7a48b7b-f8fd-4215-aa09-5fe6bebc007c": [
+      "ok",
+      "2026-10-10T12:29:57.737Z"
+    ],
+    "su-c832d9a7-6920-4550-9674-9cf05dcc513a": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:17:08.447Z"
+    ],
+    "su-c9cbdca9-7cd0-4b58-a69c-7645de562968": [
+      "ok",
+      "2026-10-10T12:27:50.524Z"
+    ],
+    "su-cc7811cb-e5a2-4fba-aa88-82b8b0af286b": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:17:07.958Z"
+    ],
+    "su-cca022c6-abd0-481c-bac8-5b2515247196": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:17:08.001Z"
+    ],
+    "su-ccfd0e9f-ea87-46bf-8ad6-e9f4241b3317": [
+      "ok",
+      "2026-10-08T17:20:23.457Z"
+    ],
+    "su-cdc9a540-470a-4660-bffc-f0d3cfd0b4c4": [
+      "ok",
+      "2026-10-09T16:38:10.124Z"
+    ],
+    "su-ceb257ba-7560-4474-b6de-d607f2afb5cb": [
+      "ok",
+      "2026-10-10T02:07:13.778Z"
+    ],
+    "su-cf144a16-16f8-4e0b-9385-34a3c60a4c36": [
+      "ERR:auth-token-dead",
+      "2026-10-10T12:02:06.153Z"
+    ],
+    "su-d04734a3-55b6-4397-aa78-f94023423da4": [
+      "ok",
+      "2026-10-08T23:55:56.099Z"
+    ],
+    "su-d0fb6abc-1ba4-474b-b6e9-daa36b6a9b6c": [
+      "ok",
+      "2026-10-08T05:47:08.321Z"
+    ],
+    "su-d3049251-af5c-495b-a1c5-d4e4340ec073": [
+      "ok",
+      "2026-10-10T03:10:41.728Z"
+    ],
+    "su-d34a76e0-ade1-430e-84fe-89b693e92c31": [
+      "ok",
+      "2026-10-09T14:40:28.966Z"
+    ],
+    "su-d3f260f3-10dd-410f-a483-64a8aa6d94f2": [
+      "ok",
+      "2026-10-07T21:42:19.624Z"
+    ],
+    "su-d589b5a0-2b4e-4413-a74a-430577e14cd5": [
+      "ERR:unexpected status 502 Bad Gateway: inference-gatew",
+      "2026-10-07T03:46:14.944Z"
+    ],
+    "su-d759f7bc-0b18-43bd-8945-b839fa0e54c9": [
+      "ERR:unexpected status 403 Forbidden: goal work-on-ever",
+      "2026-10-08T18:14:25.208Z"
+    ],
+    "su-d79d84cf-7fb9-4cda-a53c-aabdcf078517": [
+      "no-rollout",
+      null
+    ],
+    "su-d88420f0-c0b4-4dc7-92c7-f60ab3ddab44": [
+      "ok",
+      "2026-10-10T13:13:44.027Z"
+    ],
+    "su-dab96471-48c6-40bf-a2b6-2ec7c5b052ca": [
+      "ok",
+      "2026-10-10T06:14:49.766Z"
+    ],
+    "su-dc48eb8d-8c60-4b48-92a1-b1ee56a65e79": [
+      "ok",
+      "2026-10-08T19:40:00.495Z"
+    ],
+    "su-dcaa01f6-a834-4620-b9b3-7ee1adaa1f38": [
+      "ok",
+      "2026-10-09T12:57:27.304Z"
+    ],
+    "su-dcd843d2-bf3a-4f37-a5cd-05ebddcd1d60": [
+      "ok",
+      "2026-10-07T11:54:59.019Z"
+    ],
+    "su-dd6af82f-1cd4-4cdb-bcf8-ebe921942a3d": [
+      "ok",
+      "2026-10-09T00:43:41.498Z"
+    ],
+    "su-ddac0f5b-1a6b-43fc-b881-754ab28175ee": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:17:08.803Z"
+    ],
+    "su-ddb4cbf4-2581-4f7c-8d6a-efbb712bd295": [
+      "ok",
+      "2026-10-10T01:26:08.287Z"
+    ],
+    "su-de5729a7-76d6-4498-8766-c084b2502a21": [
+      "ok",
+      "2026-10-10T06:56:11.138Z"
+    ],
+    "su-e0a45d80-1eb9-40e6-af6e-0887fef50a37": [
+      "ok",
+      "2026-10-08T13:09:12.415Z"
+    ],
+    "su-e0efb68c-1eb5-4534-98b2-fe366eb857e1": [
+      "ok",
+      "2026-10-10T09:29:17.191Z"
+    ],
+    "su-e29e77de-45ec-4677-b1b4-3b662ab57a95": [
+      "ok",
+      "2026-10-08T22:22:15.664Z"
+    ],
+    "su-e2f4c8b8-3d4a-4f05-9607-d7de17e558f4": [
+      "ERR:quota/usage",
+      "2026-10-06T16:24:53.160Z"
+    ],
+    "su-e3191a37-985b-4177-9f59-181a69c62184": [
+      "ok",
+      "2026-10-08T21:46:19.160Z"
+    ],
+    "su-e5107109-2c0d-4df5-aa99-165e2199721b": [
+      "ok",
+      "2026-10-10T14:21:57.916Z"
+    ],
+    "su-e6d2a824-e413-4321-9aea-6600c71cec71": [
+      "ok",
+      "2026-10-10T02:18:38.576Z"
+    ],
+    "su-e7208581-4177-450e-a2a9-65d871758d61": [
+      "ok",
+      "2026-10-08T06:02:26.272Z"
+    ],
+    "su-e72eb90d-23bb-4363-aaf7-72e4c693c881": [
+      "ok",
+      "2026-10-09T21:59:56.530Z"
+    ],
+    "su-e78cc6d7-340f-49eb-baf6-4fc6ca294d16": [
+      "ok",
+      "2026-10-10T02:33:21.682Z"
+    ],
+    "su-e8964bb1-c0e6-4428-84bd-bddf54976b53": [
+      "ok",
+      "2026-10-10T12:41:27.378Z"
+    ],
+    "su-e8f92eda-9acd-460a-8c73-6fbd9130712a": [
+      "ok",
+      "2026-10-09T11:39:49.240Z"
+    ],
+    "su-e936dd5c-ed94-4761-906f-bed388f43e14": [
+      "ok",
+      "2026-10-09T19:52:10.053Z"
+    ],
+    "su-ea145858-8dc8-4602-ae3d-675eb6c2b804": [
+      "ok",
+      "2026-10-10T06:02:19.856Z"
+    ],
+    "su-eaf7ec96-15e7-48f9-9901-b176fe80abe8": [
+      "no-pty",
+      null
+    ],
+    "su-eba6d9a4-c73d-4ef0-b785-1c57e7fd356a": [
+      "ok",
+      "2026-10-09T14:29:33.054Z"
+    ],
+    "su-ec24b79e-fb5f-4056-847e-c1bd3edfec3a": [
+      "ok",
+      "2026-10-09T08:21:56.557Z"
+    ],
+    "su-ec67d65a-222d-4bc0-8d52-c81e99a00bbf": [
+      "ok",
+      "2026-10-09T00:35:27.824Z"
+    ],
+    "su-ed644717-df74-4500-9aeb-9dfa97cc5956": [
+      "ok",
+      "2026-10-10T15:37:34.000Z"
+    ],
+    "su-eda09d85-f3fc-4068-bbfb-f87524bbbf4a": [
+      "ok",
+      "2026-10-07T04:47:08.046Z"
+    ],
+    "su-edcdd485-a437-46e6-b59c-b5f09ce2be92": [
+      "ok",
+      "2026-10-10T03:09:35.466Z"
+    ],
+    "su-ee96d6e7-0474-48be-9d85-70cbb9d63d32": [
+      "ok",
+      "2026-10-10T15:36:06.491Z"
+    ],
+    "su-ef6886ef-be73-4be0-93c7-1b21aedcd73f": [
+      "ok",
+      "2026-10-10T15:46:08.208Z"
+    ],
+    "su-f0e98560-52c5-4afe-8709-46fef49a576e": [
+      "ok",
+      "2026-10-10T01:20:42.965Z"
+    ],
+    "su-f19960fa-f9b8-458f-8422-94f389791b02": [
+      "ok",
+      "2026-10-10T15:18:11.303Z"
+    ],
+    "su-f31eb02a-1307-4b7a-98ca-001a0574178e": [
+      "ok",
+      "2026-10-10T03:17:56.227Z"
+    ],
+    "su-f396b11e-37a2-43bb-a889-dc1564575118": [
+      "ok",
+      "2026-10-08T10:30:07.987Z"
+    ],
+    "su-f57d18ae-a195-4e83-a82b-458ef3338a12": [
+      "ok",
+      "2026-10-10T11:41:12.246Z"
+    ],
+    "su-f5fc3980-cd07-43d9-8931-d48d75988a29": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:17:11.661Z"
+    ],
+    "su-f67e11a6-4002-49fb-9412-fc5826a0d0ee": [
+      "ok",
+      "2026-10-10T14:56:10.856Z"
+    ],
+    "su-f685e5bb-5716-4aa5-ab3f-93a419738d63": [
+      "ok",
+      "2026-10-08T11:36:18.108Z"
+    ],
+    "su-f6b6fcca-f4f9-484f-86ca-974378824a67": [
+      "ok",
+      "2026-10-10T03:47:12.769Z"
+    ],
+    "su-f6e9cbee-faee-465e-9281-2743f85a91ab": [
+      "ok",
+      "2026-10-10T03:07:37.488Z"
+    ],
+    "su-f943ed28-5fdf-4bb5-a258-7d7f814319d3": [
+      "ok",
+      "2026-10-07T22:05:20.515Z"
+    ],
+    "su-f9c6b250-0e9a-4fa8-85d3-0d6edf183297": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:17:11.038Z"
+    ],
+    "su-fa29568b-c401-4f26-9b9c-8c337c7b11d1": [
+      "ok",
+      "2026-10-09T18:18:12.171Z"
+    ],
+    "su-fa4c1948-0cb1-4552-a7a3-dc274c5e1b0a": [
+      "ok",
+      "2026-10-08T15:40:34.354Z"
+    ],
+    "su-faee16ea-3b47-454a-ae48-f949b51c6d8d": [
+      "ok",
+      "2026-10-10T04:38:40.546Z"
+    ],
+    "su-faf26552-0633-4081-a250-172c02f07c19": [
+      "ok",
+      "2026-10-10T04:54:07.952Z"
+    ],
+    "su-fbce18bf-ab91-435d-b28b-fe11815ad7da": [
+      "ok",
+      "2026-10-10T02:20:31.222Z"
+    ],
+    "su-fc5749a7-6632-4f73-9c99-8b475641e7e2": [
+      "ERR:auth-token-dead",
+      "2026-10-10T14:43:38.968Z"
+    ],
+    "su-fd4ae72d-2102-4f99-8356-c14f46ead16f": [
+      "ok",
+      "2026-10-10T13:59:30.505Z"
+    ],
+    "su-ff119829-de01-43d3-9eda-2211cb4ccc36": [
+      "ok",
+      "2026-10-08T13:21:12.749Z"
+    ],
+    "su-ffb42793-4137-46e2-8f7e-5b78c92ed607": [
+      "ok",
+      "2026-10-10T07:38:39.027Z"
+    ],
+    "su-ffc3bd5d-25bf-4fa5-8318-79f25c1059f1": [
+      "ok",
+      "2026-10-10T06:40:53.994Z"
+    ],
+    "su-respawn-03e7b214f48eef2846ff673f14bfc298": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:17:11.611Z"
+    ],
+    "su-respawn-302388a21ed7ab77379045848faa0690": [
+      "ok",
+      "2026-10-09T21:24:56.064Z"
+    ],
+    "su-respawn-d4be19ee8a5d30542446e0190ae6afe4": [
+      "ERR:auth-token-dead",
+      "2026-10-10T02:17:12.055Z"
+    ],
+    "su-respawn-f21565b5b1fc1971c959c39ffb6c543b": [
+      "ok",
+      "2026-10-10T13:38:09.937Z"
+    ],
+    "su-respawn-f5b5aaaedcd83439ae8e1d33621374ae": [
+      "ERR:auth-token-dead",
+      "2026-10-08T10:15:07.824Z"
+    ],
+    "su-01248af5-137e-4f7c-82d7-1715d6ecf725": [
+      "ok",
+      "2026-10-10T15:52:10.303Z"
+    ],
+    "su-041450d2-0641-4825-af2c-32c9b35c9f31": [
+      "no-task-complete",
+      null
+    ],
+    "su-055e916b-4218-4d93-9e0d-4a2c57fe9026": [
+      "ok",
+      "2026-10-10T15:57:15.980Z"
+    ],
+    "su-0d2affd0-2198-4734-b54f-186234343375": [
+      "no-task-complete",
+      null
+    ],
+    "su-0ed71d92-a8c2-4053-8cb6-b349400136e0": [
+      "no-task-complete",
+      null
+    ],
+    "su-0f38adbc-c692-4dfe-8ed2-4b5404762ff7": [
+      "no-task-complete",
+      null
+    ],
+    "su-11b294fa-e973-4d7d-974c-780cb98d97e1": [
+      "ok",
+      "2026-10-10T16:01:46.054Z"
+    ],
+    "su-16e3554c-a66e-4183-b374-2e5ae2a95e36": [
+      "ok",
+      "2026-10-10T12:47:41.187Z"
+    ],
+    "su-1b17f319-1964-4537-bb02-fdd9b4cd67c0": [
+      "ok",
+      "2026-10-10T15:57:51.509Z"
+    ],
+    "su-1ccb709f-9d2a-4cc9-bd09-e28f899d24ad": [
+      "ok",
+      "2026-10-10T15:54:56.568Z"
+    ],
+    "su-1e14c56c-d9c0-476e-a1bc-092a1c548894": [
+      "no-task-complete",
+      null
+    ],
+    "su-1f83c162-410c-4680-85d3-3b9dc5888e5a": [
+      "no-task-complete",
+      null
+    ],
+    "su-2245b010-6ebe-4f99-815a-7e84e66fdf8b": [
+      "no-task-complete",
+      null
+    ],
+    "su-25a3d4d3-cb70-4685-a0de-d8fd1cd4f918": [
+      "ok",
+      "2026-10-10T16:04:54.589Z"
+    ],
+    "su-25e533d0-1702-4875-8218-d1fb4d077be2": [
+      "no-task-complete",
+      null
+    ],
+    "su-26943f5d-c097-42e4-913a-f2ea7b2fca4a": [
+      "no-task-complete",
+      null
+    ],
+    "su-27b2e007-9c4f-4271-94fd-7afaccdd5735": [
+      "no-task-complete",
+      null
+    ],
+    "su-29018994-8946-41ea-bd40-a8fb40c5872a": [
+      "ok",
+      "2026-10-10T16:05:32.611Z"
+    ],
+    "su-2c2b6ea4-8d79-462b-932f-8c5a6b06a6b1": [
+      "no-task-complete",
+      null
+    ],
+    "su-2d72a089-db4c-4222-b3b0-a53529abaead": [
+      "no-task-complete",
+      null
+    ],
+    "su-3114b466-8194-4a2b-981d-970482898c53": [
+      "no-task-complete",
+      null
+    ],
+    "su-34886777-e967-49f3-ba44-7670215a38d2": [
+      "ok",
+      "2026-10-10T16:03:05.020Z"
+    ],
+    "su-3653d745-263e-44bc-881a-aae06caf5fbd": [
+      "no-task-complete",
+      null
+    ],
+    "su-38c4b8ff-c242-4dbb-9b0e-b053bcb99401": [
+      "no-task-complete",
+      null
+    ],
+    "su-521c53be-ed80-44ca-a1ef-f80e094401f6": [
+      "non-codex",
+      null
+    ],
+    "su-52e7fcab-ab2d-48c3-8e3e-9cd78738619c": [
+      "no-task-complete",
+      null
+    ],
+    "su-53514612-ded8-44fa-b918-de69f09fb658": [
+      "non-codex",
+      null
+    ],
+    "su-5695d56b-5b46-4af0-81ab-3ba5aa4e5e0e": [
+      "no-task-complete",
+      null
+    ],
+    "su-57322cee-a407-4f19-8dac-c0a782435ac5": [
+      "no-pty",
+      null
+    ],
+    "su-610a2d46-e567-49a5-baac-9163d664f79f": [
+      "ok",
+      "2026-10-10T15:58:14.845Z"
+    ],
+    "su-6788d0ac-d425-4756-a9b3-3a451df401be": [
+      "no-task-complete",
+      null
+    ],
+    "su-683328f3-fb0a-4113-98e6-65a9a8dd6655": [
+      "no-task-complete",
+      null
+    ],
+    "su-68ff21e6-861d-4568-9754-6cd080ad1e07": [
+      "ok",
+      "2026-10-10T16:04:48.730Z"
+    ],
+    "su-6a88e6e9-67c3-4894-a788-754d8b618ea8": [
+      "no-task-complete",
+      null
+    ],
+    "su-6c04ea3c-1bf2-4fcf-94b8-2d37952728a6": [
+      "no-task-complete",
+      null
+    ],
+    "su-7534ff62-a124-4ac1-a913-a60b3107d8e7": [
+      "no-task-complete",
+      null
+    ],
+    "su-760b87ea-4a03-4bbc-b7ce-36b1f8279bf5": [
+      "ok",
+      "2026-10-10T15:58:07.599Z"
+    ],
+    "su-77c82667-190c-4293-a0ea-07d4628f56c4": [
+      "ok",
+      "2026-10-10T15:58:35.762Z"
+    ],
+    "su-7a94555d-4fbb-42b8-a39d-ff28fade9e0f": [
+      "no-task-complete",
+      null
+    ],
+    "su-7fa3db40-c6b1-4a75-8bbc-c6ae359dc73a": [
+      "no-task-complete",
+      null
+    ],
+    "su-81bb8095-b84c-4d05-82d5-c857e979124b": [
+      "ok",
+      "2026-10-10T16:04:35.481Z"
+    ],
+    "su-833bc5dc-7541-4e8e-bb15-eeb4e74ee7aa": [
+      "no-task-complete",
+      null
+    ],
+    "su-83e97357-e571-4b82-89a0-6cf75adb65a2": [
+      "no-task-complete",
+      null
+    ],
+    "su-88909c8d-d46f-4a5d-9473-d0220bf07af2": [
+      "no-task-complete",
+      null
+    ],
+    "su-8aa83a0b-722e-4e39-bb2c-d29b85a295b3": [
+      "no-task-complete",
+      null
+    ],
+    "su-90492b06-7126-4f76-9730-bdafb0f42a8d": [
+      "no-task-complete",
+      null
+    ],
+    "su-90bd39de-e425-4486-b4b9-ad6cb0f21863": [
+      "ok",
+      "2026-10-10T16:01:54.720Z"
+    ],
+    "su-92de4154-4d25-4c00-b14f-2fee51639247": [
+      "non-codex",
+      null
+    ],
+    "su-983528e2-0a77-48ae-b506-db4c27435239": [
+      "no-task-complete",
+      null
+    ],
+    "su-98a6938f-2663-4635-bf6b-9fd7539d66ac": [
+      "no-task-complete",
+      null
+    ],
+    "su-9b9af65b-ec38-4e45-a98b-eacd7ff3dea5": [
+      "no-task-complete",
+      null
+    ],
+    "su-9d805562-63d3-4a8d-bc06-3f600c12b561": [
+      "ok",
+      "2026-10-10T16:05:47.235Z"
+    ],
+    "su-a25b1f17-fd15-4405-b9f7-2e129a78c51b": [
+      "no-pty",
+      null
+    ],
+    "su-a567199e-856f-474d-a915-c2df0cdbf7ad": [
+      "ok",
+      "2026-10-10T16:04:56.925Z"
+    ],
+    "su-a6f3ca78-f361-4c00-8bd5-2c48cca0f3f4": [
+      "no-task-complete",
+      null
+    ],
+    "su-a9fc445a-b3a7-4e9c-bd5f-36b3bbb8c46f": [
+      "no-task-complete",
+      null
+    ],
+    "su-acf24bc3-d073-4f5d-9d31-9ed9fbfc489c": [
+      "ok",
+      "2026-10-10T16:02:16.520Z"
+    ],
+    "su-b2f8d6a6-c13f-45d2-889e-b0af286f57ee": [
+      "no-task-complete",
+      null
+    ],
+    "su-b36b4692-520c-4a71-ae87-d0399bd81c9e": [
+      "no-task-complete",
+      null
+    ],
+    "su-b688a5ae-2b56-48a9-afa0-44db004c5901": [
+      "no-task-complete",
+      null
+    ],
+    "su-b880508a-8832-4c9e-9222-3806cbed0490": [
+      "ok",
+      "2026-10-10T16:03:12.211Z"
+    ],
+    "su-b91607b7-df27-4a74-9397-560f19919e6a": [
+      "no-task-complete",
+      null
+    ],
+    "su-b9896e0c-d92d-4333-9ee6-370b6911aad4": [
+      "no-task-complete",
+      null
+    ],
+    "su-c31589e9-e276-4ec4-8bef-d1b9382d1890": [
+      "ok",
+      "2026-10-10T15:51:49.320Z"
+    ],
+    "su-c350e979-5692-4c8f-88b1-b95c613e3774": [
+      "ok",
+      "2026-10-10T16:05:29.009Z"
+    ],
+    "su-c7d00eaf-c97c-44b5-b22e-3cb5e2ddb653": [
+      "no-task-complete",
+      null
+    ],
+    "su-ca603f35-9edb-4782-97d9-a6a5a90fba73": [
+      "ok",
+      "2026-10-10T15:57:40.149Z"
+    ],
+    "su-ccb5f763-b2e2-49e1-8b7f-49d2aa450ddb": [
+      "no-task-complete",
+      null
+    ],
+    "su-cdc1b6ee-4254-4b72-a03d-325374263be7": [
+      "no-task-complete",
+      null
+    ],
+    "su-ce4c4481-9aa5-4fc0-bfac-6446e16bd98f": [
+      "no-task-complete",
+      null
+    ],
+    "su-d10b1b6d-54f4-4dd8-ac9a-4140cc953898": [
+      "ok",
+      "2026-10-10T15:50:37.536Z"
+    ],
+    "su-d47c2183-0631-49fa-b814-a95f2c94ea3d": [
+      "no-task-complete",
+      null
+    ],
+    "su-d8130961-3272-4a5f-8f4c-a7f8d337b333": [
+      "no-task-complete",
+      null
+    ],
+    "su-d97ef8cb-cd98-4096-a72f-2f0688f09628": [
+      "no-task-complete",
+      null
+    ],
+    "su-dae9d804-7887-4fc2-b09f-d62f9430b5ba": [
+      "no-task-complete",
+      null
+    ],
+    "su-df819fc7-5ed1-4615-b1c6-495f5501e933": [
+      "no-task-complete",
+      null
+    ],
+    "su-e16e0da4-f858-4e10-9665-55116edbc36b": [
+      "no-task-complete",
+      null
+    ],
+    "su-e479f449-409f-446e-acdb-b4b758e1550e": [
+      "no-pty",
+      null
+    ],
+    "su-e490f727-e4fe-4984-ab79-486d212b77d4": [
+      "no-task-complete",
+      null
+    ],
+    "su-e6561f4f-d8f3-4797-a4e5-d2be00cf523a": [
+      "no-task-complete",
+      null
+    ],
+    "su-ead6238d-e35e-4379-ae73-e60a4cbb1872": [
+      "no-task-complete",
+      null
+    ],
+    "su-ec5efb56-8a98-4efe-a8e2-02017ee78bb8": [
+      "no-task-complete",
+      null
+    ],
+    "su-f146f0a3-5ec9-4b19-bac2-b1903f1f6cb1": [
+      "no-task-complete",
+      null
+    ],
+    "su-f5024e20-2e7c-4ce1-a01e-dc86464ae474": [
+      "no-task-complete",
+      null
+    ],
+    "su-fb781532-9dfd-4eb5-a0e5-7e8b103e315e": [
+      "no-task-complete",
+      null
+    ],
+    "su-fd849763-47c1-4318-834d-3426c144a5af": [
+      "ok",
+      "2026-10-10T15:58:09.494Z"
+    ],
+    "su-respawn-78a1739f77e4338214bd25b427cca743": [
+      "no-task-complete",
+      null
+    ]
+  }
+}

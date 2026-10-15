@@ -72,6 +72,35 @@ describe('git-pipeline-position subprocess bounds (EI-20262192515275987)', () =>
     expect(childProcessMocks.execFile).not.toHaveBeenCalled();
   });
 
+  it('disables optional index locking for status reads in both runner paths', async () => {
+    childProcessMocks.execFile.mockImplementation((_command, _args, _options, callback) => {
+      // The generic promisified mock resolves its first value as execFile's
+      // `{ stdout, stderr }` result object.
+      callback(null, { stdout: ' M tracked.ts\n', stderr: '' });
+    });
+
+    await expect(realGit('/repo', ['status', '--porcelain'])).resolves.toBe('M tracked.ts');
+    expect(childProcessMocks.execFile).toHaveBeenCalledWith(
+      'git',
+      ['-C', '/repo', 'status', '--porcelain'],
+      expect.objectContaining({
+        env: expect.objectContaining({ GIT_OPTIONAL_LOCKS: '0' }),
+      }),
+      expect.any(Function),
+    );
+
+    childProcessMocks.execFile.mockClear();
+    sidecarMocks.enabled.mockReturnValue(true);
+    sidecarMocks.run.mockResolvedValue({ code: 0, stdout: ' M tracked.ts\n', stderr: '' });
+    await expect(realGit('/repo', ['status', '--porcelain'])).resolves.toBe('M tracked.ts');
+    expect(sidecarMocks.run).toHaveBeenCalledWith(
+      ['-C', '/repo', 'status', '--porcelain'],
+      process.cwd(),
+      GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS,
+      expect.objectContaining({ GIT_OPTIONAL_LOCKS: '0' }),
+    );
+  });
+
   it('treats a real non-zero sidecar git result as null without spawning the same command locally', async () => {
     sidecarMocks.enabled.mockReturnValue(true);
     sidecarMocks.run.mockResolvedValue({ code: 128, stdout: '', stderr: 'bad revision' });
@@ -82,14 +111,21 @@ describe('git-pipeline-position subprocess bounds (EI-20262192515275987)', () =>
   });
 
   it('bounds every gate-candidate probe and degrades a failed probe to null candidates', async () => {
-    childProcessMocks.spawnSync.mockReturnValue({ status: 1, stdout: '', stderr: 'timed out' });
+    childProcessMocks.execFile.mockImplementation(
+      (_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => {
+        cb(Object.assign(new Error('timed out'), { code: 1 }), '', 'timed out');
+      },
+    );
 
     await expect(realResolveGateCandidates('/repo')).resolves.toEqual({
       judgingSha: null,
       nextCandidateSha: null,
     });
-    expect(childProcessMocks.spawnSync).toHaveBeenCalled();
-    for (const call of childProcessMocks.spawnSync.mock.calls) {
+    // WI-10005261: the probes run through async execFile; spawnSync here blocked the
+    // operator main thread (98.6% of a measured sentinel stall).
+    expect(childProcessMocks.spawnSync).not.toHaveBeenCalled();
+    expect(childProcessMocks.execFile).toHaveBeenCalled();
+    for (const call of childProcessMocks.execFile.mock.calls) {
       expect(call[2]).toEqual(
         expect.objectContaining({
           timeout: GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS,

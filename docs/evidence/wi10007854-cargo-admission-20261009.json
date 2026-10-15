@@ -1,0 +1,45 @@
+{
+  "workItem": "WI-10007854",
+  "parent": "WI-10007751",
+  "sourceRefAtFailedRun": "aaee540c680189813cabde405d67a48dcba31f51",
+  "failedRun": "20261009T174023Z-3636532",
+  "compilerEvidence": ".papercusp/scratch/wi10007751-e2e/20261009T174019Z-3635374/tauri-compiler.log",
+  "compilerErrorLine": 1226,
+  "compilerError": "rustc-LLVM ERROR: IO failure on output stream: No space left on device",
+  "cargoTarget": "/mnt/data/cargo-target/.papercusp-target-slots/dev3",
+  "rootCause": "The native dev launch checked source and profile filesystems but did not reserve capacity on the effective Cargo target filesystem.",
+  "fix": "The existing tauri-guarded dev chokepoint resolves the claimed or explicit Cargo target and uses the shared disk reservation ledger before invoking Tauri.",
+  "capacityEstimatesGiB": { "warm": 12, "cold": 65 },
+  "sources": [
+    { "path": "papercusp-desktop/bin/tauri-guarded", "sha256": "4f4a62d1b8ad59c327513b105d9e039580cfdaf1b06ce862283a62a5b67b0c14" },
+    { "path": "papercusp-desktop/test/tauri-dev-slot-chokepoint.test.js", "sha256": "01c1c46f8e66104ffe27adf37090d43b7a3605c36585bccc4d0ef2594b617ae6" },
+    { "path": "papercusp-desktop/test/tauri-dev-runtime-home.test.js", "sha256": "469874936571f125206f93f4bd489af772e51c7d04bba229cfc65978f5ee09a1" }
+  ],
+  "tests": {
+    "cwd": "papercusp-desktop",
+    "command": "TMPDIR=/dev/shm node --test test/tauri-dev-slot-chokepoint.test.js test/tauri-dev-runtime-home.test.js test/tauri-guarded-missing-cli-diagnostic.test.js",
+    "passed": 24,
+    "failed": 0,
+    "skipped": 0,
+    "exitCode": 0,
+    "meaningfulCase": "Zero capacity on the explicit Cargo target refuses with exit 28 before the stub CLI; 100 GiB allows the same wrapper to invoke the CLI."
+  },
+  "mutation": {
+    "runner": "scripts/mutation-probe.sh",
+    "relocation": "overlay",
+    "expression": "s/papercusp_require_free_gb/true/g",
+    "testName": "dev refuses a full explicit Cargo mount",
+    "baselineExit": 0,
+    "unmutatedCopyExit": 0,
+    "mutantExit": 1,
+    "actualFailure": "Actual CLI exit 0 differed from expected admission refusal 28.",
+    "verdict": "caught",
+    "trackedFileIntegrity": "verified unchanged"
+  },
+  "checks": { "bashSyntax": "pass", "gitDiffCheck": "pass" },
+  "limits": [
+    "This verifies source admission and its regression; the slow UI reload assertion has not run.",
+    "Physical Cargo-volume recovery and old live-desktop WAL recovery remain on the parent work item.",
+    "No LIVE_GATE_OPS action, deployed-main verdict, desktop restart or protected-data deletion was performed."
+  ]
+}

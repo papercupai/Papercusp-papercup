@@ -88,6 +88,7 @@ async function previewGitSync(repoDir: string): Promise<GitSyncPreview> {
       cwd: repoDir,
       timeout: HEAD_SHA_TIMEOUT_MS,
       maxBuffer: GIT_STATUS_MAX_BUFFER,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
     });
     const entries = stdout.split('\0').filter(Boolean);
     const dirtyPaths = entries.map((entry) => (entry.length >= 3 ? entry.slice(3) : entry));
@@ -239,7 +240,8 @@ export default defineTool({
               note:
                 'This operator declares PAPERCUSP_BACKGROUND_WORKERS=0 and cannot execute a mutating git-sync fire. ' +
                 'Route the same call to the current background-worker MCP host with the sanctioned CLI ' +
-                '(node scripts/mcp-call.mjs git-sync:run --json-file <args.json> --client <your-su-id> --port 3271); ' +
+                '(ptool git-sync:run --url=http://127.0.0.1:3271 --json-file <args.json>); ' +
+                'ptool preserves your session identity and selects the matching workspace or shared superuser bearer. ' +
                 'run it in your client\'s background mode and inspect its log because the fire may exceed a foreground timeout. ' +
                 'Or let the scheduled routine run. dryRun:true remains available here.',
             }),
@@ -386,6 +388,8 @@ export default defineTool({
             `git-sync:egressed:${outcome.headSha} or verify the remote ref before claiming publication.`
         : outcome?.status === 'nothing'
           ? 'git-sync completed with status nothing; no repo changes were committed.'
+          : outcome?.status === 'skipped-locked'
+            ? 'git-sync completed with a structured skipped-locked outcome; inspect outcome.skippedPaths and committedCount for the locked paths and any work this fire committed.'
           : outcome?.status === 'skipped'
             ? outcome.reason === 'held_exclusive'
               ? // This is emitted at the actual release boundary, not at refusal

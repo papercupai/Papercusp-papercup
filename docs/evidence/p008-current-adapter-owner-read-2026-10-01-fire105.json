@@ -1,0 +1,70 @@
+{
+  "taskId": "0muq03wyl11u2f1k1v0",
+  "logPath": ".papercusp/scratch/bash-83d011cc-084.log",
+  "logSha256": "ef5cabcda40a2168a56d229686c3ae37649492ffaba0125ff13adb55ca3a4a19",
+  "receipt": {
+    "schemaVersion": "p008-current-adapter-owner-read-v1",
+    "workItem": "WI-10002830",
+    "startedAt": "2026-10-01T20:43:05.900Z",
+    "sourceSha256": "958f9bdc47721b971bf2f0d0494828ba40bee453ac20cf5f93cf2bb7771539e9",
+    "population": "complete current Claude discovery candidate map; not an observed natural sweep",
+    "clientClosed": true,
+    "stage": "owner-density",
+    "discovery": {
+      "windowDays": 45,
+      "sinceMs": 1786999385900,
+      "candidates": 5187,
+      "excluded": 0,
+      "raced": 0,
+      "unowned": 332,
+      "duplicateSessionIds": 1691,
+      "requestedSessions": 3164,
+      "distinctOwners": 240,
+      "elapsedMs": 868,
+      "candidateSha256": "fd1f86900c7b848e7d59abef269d126042a3afcd5a258ff7babd8f29cc1111a6",
+      "inputSha256": "1455ca2aec361df717a98188e65320f1ec518ca0db6ade08454c91e527375726"
+    },
+    "identity": {
+      "pid": 445547,
+      "database": "papercusp",
+      "read_only": "on",
+      "statement_timeout": "5s",
+      "lock_timeout": "1s",
+      "isolation": "repeatable read"
+    },
+    "state": {
+      "rows": 53807,
+      "elapsedMs": 122,
+      "pendingCandidates": 494,
+      "pendingOwnedCandidates": 494,
+      "unknownStateCandidates": 449
+    },
+    "densitySqlSha256": "42321bff3ff51acd4848eccbd5c9be525a62d303874d278d06efd7b25841f224",
+    "density": {
+      "elapsedMs": 3042,
+      "sessions": 3164,
+      "matched_turns": 82423,
+      "min_turns": 0,
+      "median_turns": 25,
+      "p90_turns": 46,
+      "max_turns": 434,
+      "owner_mismatches": 8201,
+      "owner_nulls": 0,
+      "sessions_without_turns": 13
+    },
+    "sourceSha256After": "958f9bdc47721b971bf2f0d0494828ba40bee453ac20cf5f93cf2bb7771539e9",
+    "status": "ok",
+    "endedAt": "2026-10-01T20:43:10.052Z",
+    "elapsedMs": 4152,
+    "limitations": [
+      "Filesystem discovery is not an atomic snapshot and can race active writers/deletions.",
+      "Owner map covers every current eligible Claude candidate in mtime order; actual sweep budgets/insert results can select a shorter prefix.",
+      "No transcript payload decoded, ingestion launched, SQL mutation or shared-runtime restart.",
+      "Current values and SELECT density do not recover historical natural UPDATE inputs or explain its execution cost."
+    ]
+  },
+  "executedScript": "import { createDedicatedOrgPg } from '@papercusp/db-org';\nimport { FILE_ADAPTERS, jsonlAtDepth } from './packages/operator-core/lib/search/session-ingest.ts';\nimport { readFileSync } from 'node:fs';\nimport { stat } from 'node:fs/promises';\nimport { createHash } from 'node:crypto';\nconst hash = v => createHash('sha256').update(v).digest('hex');\nconst sourcePath='packages/operator-core/lib/search/session-ingest.ts';\nconst expectedSource='958f9bdc47721b971bf2f0d0494828ba40bee453ac20cf5f93cf2bb7771539e9';\nconst source=readFileSync(sourcePath,'utf8');\nconst began=Date.now(), deadline=began+20000;\nconst r={schemaVersion:'p008-current-adapter-owner-read-v1',workItem:'WI-10002830',startedAt:new Date(began).toISOString(),sourceSha256:hash(source),population:'complete current Claude discovery candidate map; not an observed natural sweep',clientClosed:false};\nif(r.sourceSha256!==expectedSource)throw new Error('Source fingerprint changed');\nconst windowDays=Number(source.match(/const INGEST_WINDOW_DAYS = (\\d+);/)[1]);\nconst sinceMs=began-windowDays*86400000;\nconst check=()=>{if(Date.now()>deadline)throw new Error('20-second diagnostic deadline exceeded');};\nconst adapter=FILE_ADAPTERS.find(a=>a.sourceKind==='claude');\nconst candidates=[];let raced=0,nonCandidates=0;\nlet sql;\ntry {\n r.stage='discovery';\n for(const spec of adapter.roots()){check();const paths=await jsonlAtDepth(spec.root,spec.dirDepth,spec.descend);check();for(const path of paths){check();try{const s=await stat(path);if(!s.isFile()||s.mtimeMs<sinceMs||s.size===0){nonCandidates++;continue;}candidates.push({path,size:s.size,mtimeMs:s.mtimeMs});}catch{raced++;}}}\n candidates.sort((a,b)=>b.mtimeMs-a.mtimeMs);\n const owners=new Map();let unowned=0,duplicateSessionIds=0;\n for(const c of candidates){const m=adapter.meta(c.path);if(m.owner){if(owners.has(m.sessionId))duplicateSessionIds++;owners.set(m.sessionId,m.owner);}else unowned++;}\n const ids=[...owners.keys()],values=ids.map(id=>owners.get(id));\n r.discovery={windowDays,sinceMs,candidates:candidates.length,excluded:nonCandidates,raced,unowned,duplicateSessionIds,requestedSessions:owners.size,distinctOwners:new Set(values).size,elapsedMs:Date.now()-began,candidateSha256:hash(JSON.stringify(candidates)),inputSha256:hash(JSON.stringify([ids,values]))};\n ({sql}=createDedicatedOrgPg('p008-natural-owner-fire105',{max:1}));\n await sql.begin('isolation level repeatable read read only',async tx=>{\n  check();await tx.unsafe(\"SET LOCAL statement_timeout='5s'\");await tx.unsafe(\"SET LOCAL lock_timeout='1s'\");\n  r.identity=(await tx.unsafe(\"SELECT pg_backend_pid() AS pid,current_database() AS database,current_setting('transaction_read_only') AS read_only,current_setting('statement_timeout') AS statement_timeout,current_setting('lock_timeout') AS lock_timeout,current_setting('transaction_isolation') AS isolation\"))[0];\n  if(r.identity.read_only!=='on'||r.identity.statement_timeout!=='5s'||r.identity.lock_timeout!=='1s')throw new Error('Read bounds failed');\n  r.stage='current-state';let t=Date.now();\n  const state=await tx.unsafe(\"SELECT file_path,byte_offset FROM harness_shared.session_ingest_state WHERE source_kind='claude'\");\n  const offsets=new Map(state.map(s=>[s.file_path,Number(s.byte_offset)]));\n  const pending=candidates.filter(c=>c.size>(offsets.get(c.path)??0));\n  r.state={rows:state.length,elapsedMs:Date.now()-t,pendingCandidates:pending.length,pendingOwnedCandidates:pending.filter(c=>adapter.meta(c.path).owner).length,unknownStateCandidates:candidates.filter(c=>!offsets.has(c.path)).length};\n  check();r.stage='owner-density';t=Date.now();\n  const density=\"WITH resolved AS MATERIALIZED (SELECT * FROM UNNEST($1::text[],$2::text[]) AS r(session_id,owner)), per_session AS MATERIALIZED (SELECT r.session_id,count(t.turn_idx)::bigint AS matched_turns,count(t.turn_idx) FILTER(WHERE t.owner IS DISTINCT FROM r.owner)::bigint AS owner_mismatches,count(t.turn_idx) FILTER(WHERE t.owner IS NULL)::bigint AS owner_nulls FROM resolved r LEFT JOIN harness_shared.session_turns t ON t.workspace_id='default' AND t.source_kind='claude' AND t.session_id=r.session_id GROUP BY r.session_id) SELECT count(*)::int AS sessions,sum(matched_turns)::bigint AS matched_turns,min(matched_turns)::bigint AS min_turns,percentile_disc(0.5) WITHIN GROUP(ORDER BY matched_turns) AS median_turns,percentile_disc(0.9) WITHIN GROUP(ORDER BY matched_turns) AS p90_turns,max(matched_turns)::bigint AS max_turns,sum(owner_mismatches)::bigint AS owner_mismatches,sum(owner_nulls)::bigint AS owner_nulls,count(*) FILTER(WHERE matched_turns=0)::int AS sessions_without_turns FROM per_session\";\n  r.densitySqlSha256=hash(density);r.density={elapsedMs:0,...(await tx.unsafe(density,[ids,values]))[0]};r.density.elapsedMs=Date.now()-t;\n });\n r.sourceSha256After=hash(readFileSync(sourcePath,'utf8'));if(r.sourceSha256After!==expectedSource)throw new Error('Source changed during read');\n r.status='ok';\n}catch(e){r.status='error';r.error={code:e.code??null,message:e.message};}\nfinally{if(sql)try{await sql.end({timeout:5});r.clientClosed=true;}catch(e){r.cleanupError=e.message;}r.endedAt=new Date().toISOString();r.elapsedMs=Date.now()-began;}\nr.limitations=['Filesystem discovery is not an atomic snapshot and can race active writers/deletions.','Owner map covers every current eligible Claude candidate in mtime order; actual sweep budgets/insert results can select a shorter prefix.','No transcript payload decoded, ingestion launched, SQL mutation or shared-runtime restart.','Current values and SELECT density do not recover historical natural UPDATE inputs or explain its execution cost.'];\nconsole.log('P008_NATURAL_OWNER_READ '+JSON.stringify(r,(_,v)=>typeof v==='bigint'?String(v):v));\nprocess.exit(r.status==='ok'&&r.clientClosed?0:1);",
+  "taskStatus": "completed",
+  "taskExitCode": 0,
+  "schemaVersion": "p008-current-adapter-owner-read-evidence-v1"
+}

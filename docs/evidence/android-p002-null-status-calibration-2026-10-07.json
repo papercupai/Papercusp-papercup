@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "kind": "fixture-calibration-evidence",
+  "workItemId": "WI-10004768",
+  "planSlug": "android-public-release-2026-10-01",
+  "fixture": {
+    "rootHarnessSlug": "papercup-rust-mobile",
+    "path": "crates/papercup-core/tests/client_test.rs",
+    "case": "plans_list_tolerates_null_status",
+    "sha256": "38f2d3ae0f73e108355f9c10dd7d30681e794ef65a48f1d42753c781d857058b",
+    "sourceCommit": "1930c11b6d913c12b5a7bc632a0d4ede90e2fe4e",
+    "baselineTestRunId": 20888172,
+    "mutationTestRunId": 20888244
+  },
+  "independentContract": {
+    "rootHarnessSlug": "papercusp",
+    "observedHead": "26dc3e095ca1cb2d3fb7b60585abf62b4a3fa593",
+    "source": [
+      {
+        "path": "packages/operator-core/lib/endpoint-route/routes/device/plans.ts",
+        "sha256": "3fd7a9aead97e906e3b855cffcf22cb744122cf343af049538f645ec0eecaa24",
+        "observation": "planSummary preserves row.status in the emitted GET /api/device/plans response."
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/plans/source.ts",
+        "sha256": "4591ef3d46cfd39dc91568b9154f100ccf375a2146080fd70cb449061ef39959",
+        "observation": "PlanRow and PlanIndexRow declare status as string | null."
+      },
+      {
+        "path": "packages/operator-core/lib/endpoint-route/routes/device/plans.test.ts",
+        "sha256": "9d30165aa1364362c22cf3857914a85c2fdb3a3621567b22f18213c75a30998b",
+        "observation": "The All Pots handler tests pass a nullable source row and assert the serialized response contains status: null."
+      }
+    ],
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_TEST_RUN_WORKSPACE=papercusp-workspace npm run test:file -- packages/operator-core/lib/endpoint-route/routes/device/plans.test.ts",
+    "logFile": "/tmp/android-p002-plans-calibration-20261007.log",
+    "testRunId": 20888295,
+    "exitCode": 0,
+    "passed": 11,
+    "failed": 0,
+    "skipped": 0,
+    "finishedAt": "2026-10-07T06:39:53.899Z",
+    "ledgerWorktreeDirty": true,
+    "scope": "Handler-level source contract with mocked datastore reads; no deployed API, physical device or release artifact claim."
+  },
+  "calibration": "The independent server handler emits a supported null status. The Rust HTTP fixture uses that null value, checks the required plan remains present, and checks status and now_state remain None. The paired semantic mutation makes the decoder require a string and is caught by this same case.",
+  "pending": [
+    "Bind the fixture with separately measured mobile and server roots after the serving cross-root contract is verified.",
+    "Repair obsolete Kotlin and native journey proof cohorts without replacing them with a narrower Rust-only test.",
+    "Run the current spec adequacy evaluator before any acceptance claim."
+  ]
+}

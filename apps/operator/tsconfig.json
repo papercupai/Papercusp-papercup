@@ -53,6 +53,7 @@
   // ~112 pointless `env:` retypes. Do not re-add these entries.
   "include": [
     "**/*.ts",
+    "**/*.mts",
     "**/*.tsx"
   ],
   // EI-19467338750785149 (residual gap, MEASURED 2026-08-31): the comment above closed the

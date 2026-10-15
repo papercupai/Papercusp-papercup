@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:EI-25419064232626580:58d09b2882581a202c1f8c1ca0f9ad83",
+  "inputSha256": "58d09b2882581a202c1f8c1ca0f9ad83f00fc8b0579aa14eed012c6605775c6a",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-10-11T05:51:31.168Z",
+  "actor": "su-61a88fd2-510d-4ca6-8a71-fde8957fb3bc",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "EI-25419064232626580",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "9c2fe106ff3a3f74b1351ab725ba98d5096c2a847ce07ccfa954f82df6c550c5",
+      "observedParkFingerprint": "9c2fe106ff3a3f74b1351ab725ba98d5096c2a847ce07ccfa954f82df6c550c5",
+      "reasonCode": "review-completed",
+      "evidence": "Evaluator su-61a88fd2 re-read EI-25419064232626580 including its exact37738/delivery524144 checkpoint, terminal EI-25315999254091150, and source-linked WI-10006825#completion on2026-10-11. adv_sessions row37738 matches reporter su-93278dd0/native01a11b5c and saved launch_argv includes --account=auto, so the saved-route handler repair in WI-10006825 is relevant to this distinct instance. The historical selected CODEX_HOME and repair invocation remain unverified as the existing checkpoint states. The promised post-terminal evaluation is completed; retain the item blocked/open for exact provenance triage rather than claim a native fix or duplicate disposition. Durable evaluator review: EI-25419064232626580#1173611. Server-source inspection identifies the prior refusal as a failed server-side authority read before dispatch; no authority bypass or provider change is requested.",
+      "preservedLease": true,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-EI-25419064232626580-58d09b2882581a202c1f8c1ca0f9ad83-reconcile.json"
+}

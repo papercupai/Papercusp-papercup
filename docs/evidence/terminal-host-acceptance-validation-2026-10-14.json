@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Terminal host captured evidence validation and current incarnation",
+  "framework": "operational",
+  "command": [
+    "node",
+    "--import",
+    "tsx",
+    "--input-type=module",
+    "--eval",
+    "import validator from './apps/operator/lib/psu-pty-host-acceptance-evidence.ts'; import { homedir } from 'node:os'; import { join } from 'node:path'; const ownerId = 'su-f054245c-2b04-4a57-9eda-1655fbfcd8ae'; const result = validator.readTerminalHostAcceptance('docs/evidence/terminal-host-final-acceptance-2026-10-14.json', join(homedir(), '.papercusp', 'psu-pty', ownerId + '.json'), ownerId); console.log(JSON.stringify(result)); if (!result.passed) process.exitCode = 1;"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-14T22:09:44.478Z",
+  "finishedAt": "2026-10-14T22:10:04.487Z",
+  "summary": "Validates captured measurements and current host incarnation; does not re-trace, compare scrollback, or assert the captured native child generation is current.",
+  "runtime": {
+    "name": "psu-pty-host",
+    "ownerId": "su-f054245c-2b04-4a57-9eda-1655fbfcd8ae",
+    "pid": 3052562,
+    "starttime": "73545140",
+    "hostCodeVersion": "9d8599fa72f75bb199abe75004ceeba8525622c81098e5d990f9ccaed5a3e80f"
+  },
+  "assertions": [
+    {
+      "id": "exact-current-host-incarnation",
+      "passed": true,
+      "evidence": "Maintained validator checked exact-current-host-incarnation against captured measurement and current kernel/discovery identity."
+    },
+    {
+      "id": "loaded-host-hash-and-output-repair",
+      "passed": true,
+      "evidence": "Maintained validator checked loaded-host-hash-and-output-repair against captured measurement and current kernel/discovery identity."
+    },
+    {
+      "id": "loaded-periodic-local-reader",
+      "passed": true,
+      "evidence": "Maintained validator checked loaded-periodic-local-reader against captured measurement and current kernel/discovery identity."
+    },
+    {
+      "id": "positive-local-read-and-no-global-oracle",
+      "passed": true,
+      "evidence": "Maintained validator checked positive-local-read-and-no-global-oracle against captured measurement and current kernel/discovery identity."
+    },
+    {
+      "id": "recorded-native-and-pty-continuity",
+      "passed": true,
+      "evidence": "Maintained validator checked recorded-native-and-pty-continuity against captured measurement and current kernel/discovery identity."
+    },
+    {
+      "id": "observed-peer-incarnations-preserved",
+      "passed": true,
+      "evidence": "Maintained validator checked observed-peer-incarnations-preserved against captured measurement and current kernel/discovery identity."
+    },
+    {
+      "id": "inspector-closed",
+      "passed": true,
+      "evidence": "Maintained validator checked inspector-closed against captured measurement and current kernel/discovery identity."
+    },
+    {
+      "id": "post-detach-progress",
+      "passed": true,
+      "evidence": "Maintained validator checked post-detach-progress against captured measurement and current kernel/discovery identity."
+    }
+  ],
+  "capturedEvidence": "docs/evidence/terminal-host-final-acceptance-2026-10-14.json",
+  "capturedNativeId": "01a13bba-580d-7331-80df-8a9922b25097",
+  "currentProgress": {
+    "durationSec": 20,
+    "hostPidBefore": 3052562,
+    "hostPidAfter": 3052562,
+    "ptyPidBefore": 616197,
+    "ptyPidAfter": 616197,
+    "nativeBefore": "01a13c64-4ea3-70b2-8d64-3a69809a2045",
+    "nativeAfter": "01a13c64-4ea3-70b2-8d64-3a69809a2045",
+    "observedBefore": 1792015776006,
+    "observedAfter": 1792015790986,
+    "passed": true
+  },
+  "instrument": {
+    "path": "apps/operator/lib/psu-pty-host-acceptance-evidence.ts",
+    "testPath": "apps/operator/lib/psu-pty-host-acceptance-evidence.test.ts"
+  }
+}

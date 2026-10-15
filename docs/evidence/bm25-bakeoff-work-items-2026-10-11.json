@@ -1,0 +1,250 @@
+{
+  "kind": "bm25-bakeoff",
+  "workItem": "WI-10008294",
+  "plan": "bm25-lexical-search-evoke-adoption-2026-10-10",
+  "generatedAt": "2026-10-11T11:27:55.979Z",
+  "commit": "c20d6c21f9bc37ff4c2cf1b3ad9b65346b2d6572",
+  "serverVersion": "18.6 (Debian 18.6-1.pgdg13+2)",
+  "versions": {
+    "bake_sql": "",
+    "bake_pgts": "pg_textsearch 1.5.1"
+  },
+  "corpus": {
+    "key": "work-items",
+    "queryForm": "title (body = summary)",
+    "rows": 76856,
+    "source": "operator-db-copy"
+  },
+  "queries": 1000,
+  "serverSettings": [
+    "shared_preload_libraries=evoke,pg_textsearch,pg_search",
+    "evoke.shared_runtime_size=2GB",
+    "shared_buffers=4GB",
+    "maintenance_work_mem=2GB",
+    "max_wal_size=8GB",
+    "checkpoint_timeout=30min"
+  ],
+  "loadavg": {
+    "start": [
+      454.33,
+      317.13,
+      254.08
+    ],
+    "end": [
+      179.96,
+      209.63,
+      229.69
+    ],
+    "cores": 128
+  },
+  "engines": [
+    {
+      "method": "tsv_and",
+      "database": "bake_sql",
+      "setupFiles": [
+        "engine-sql.sql"
+      ],
+      "label": "today's lexical leg: tsvector + plainto_tsquery (AND) + ts_rank_cd",
+      "licence": "PostgreSQL (core)",
+      "shippable": true,
+      "analyzer": "Postgres 'english' (stem + stopwords)"
+    },
+    {
+      "method": "pgts",
+      "database": "bake_pgts",
+      "setupFiles": [
+        "engine-pgts.sql"
+      ],
+      "label": "pg_textsearch 1.5.1",
+      "licence": "PostgreSQL",
+      "shippable": true,
+      "analyzer": "Postgres 'english' (stem + stopwords)"
+    }
+  ],
+  "arms": [
+    {
+      "method": "tsv_and",
+      "queries": 1000,
+      "capped": false,
+      "warmupMeanMs": 5.02,
+      "probeMedianMs": 0.854
+    },
+    {
+      "method": "pgts",
+      "queries": 1000,
+      "capped": false,
+      "warmupMeanMs": 7.66,
+      "probeMedianMs": 3.7115
+    }
+  ],
+  "builds": {
+    "bake_sql": {
+      "load_csv": 36513.919,
+      "tsv_column": 25085.352,
+      "index_build:tsv_gin": 2527.128
+    },
+    "bake_pgts": {
+      "load_csv": 8300.649,
+      "index_build:pgts": 62448.542
+    }
+  },
+  "sizes": {
+    "bake_sql": {
+      "index:tsv_gin": 53223424,
+      "column:tsv": 106034294
+    },
+    "bake_pgts": {
+      "index:pgts": 46907392
+    }
+  },
+  "evokeStatus": null,
+  "summaries": [
+    {
+      "method": "pgts",
+      "variant": "short",
+      "n": 1000,
+      "errors": 0,
+      "recallAt1": 0.184,
+      "recallAt10": 0.382,
+      "recallAt10CI": {
+        "point": 0.382,
+        "lower": 0.35239145536552613,
+        "upper": 0.4125116596370649,
+        "ci": 0.95
+      },
+      "mrrAt10": 0.2390674603174601,
+      "p50Ms": 2.2025,
+      "p95Ms": 4.32715,
+      "meanMs": 2.433186000000004,
+      "errorSamples": []
+    },
+    {
+      "method": "tsv_and",
+      "variant": "short",
+      "n": 1000,
+      "errors": 0,
+      "recallAt1": 0.111,
+      "recallAt10": 0.21,
+      "recallAt10CI": {
+        "point": 0.21,
+        "lower": 0.18588891937362567,
+        "upper": 0.23633060054799632,
+        "ci": 0.95
+      },
+      "mrrAt10": 0.13947380952380947,
+      "p50Ms": 0.713,
+      "p95Ms": 6.4481,
+      "meanMs": 1.6455999999999995,
+      "errorSamples": []
+    },
+    {
+      "method": "pgts",
+      "variant": "title",
+      "n": 1000,
+      "errors": 0,
+      "recallAt1": 0.41,
+      "recallAt10": 0.689,
+      "recallAt10CI": {
+        "point": 0.689,
+        "lower": 0.6596320732865386,
+        "upper": 0.7169214120059215,
+        "ci": 0.95
+      },
+      "mrrAt10": 0.4965277777777777,
+      "p50Ms": 3.7649999999999997,
+      "p95Ms": 9.62915,
+      "meanMs": 4.371293999999999,
+      "errorSamples": []
+    },
+    {
+      "method": "tsv_and",
+      "variant": "title",
+      "n": 1000,
+      "errors": 0,
+      "recallAt1": 0.111,
+      "recallAt10": 0.199,
+      "recallAt10CI": {
+        "point": 0.199,
+        "lower": 0.175427205789421,
+        "upper": 0.22487650281888322,
+        "ci": 0.95
+      },
+      "mrrAt10": 0.13460277777777782,
+      "p50Ms": 0.8805000000000001,
+      "p95Ms": 3.5097999999999994,
+      "meanMs": 1.252447,
+      "errorSamples": []
+    }
+  ],
+  "paired": [
+    {
+      "baseline": "tsv_and",
+      "candidate": "pgts",
+      "variant": "title",
+      "n": 1000,
+      "hitAt10": {
+        "onlyA": 43,
+        "onlyB": 533,
+        "concordant": 424,
+        "p": 1.45515870299978e-108
+      },
+      "mrrAt10": {
+        "n": 1000,
+        "independentUnits": 1000,
+        "resamplingUnit": "pair",
+        "meanA": 0.13460277777777782,
+        "meanB": 0.4965277777777777,
+        "delta": {
+          "point": 0.36192499999999983,
+          "lower": 0.3314497023809522,
+          "upper": 0.3931869146825398,
+          "ci": 0.95
+        },
+        "rho": 0.1853683892972097,
+        "halfWidth": 0.030868606150793787,
+        "mde80": 0.0440110568275932,
+        "significant": true
+      }
+    },
+    {
+      "baseline": "tsv_and",
+      "candidate": "pgts",
+      "variant": "short",
+      "n": 1000,
+      "hitAt10": {
+        "onlyA": 38,
+        "onlyB": 210,
+        "concordant": 752,
+        "p": 5.052843376956062e-30
+      },
+      "mrrAt10": {
+        "n": 1000,
+        "independentUnits": 1000,
+        "resamplingUnit": "pair",
+        "meanA": 0.13947380952380947,
+        "meanB": 0.2390674603174601,
+        "delta": {
+          "point": 0.09959365079365062,
+          "lower": 0.07999046626984126,
+          "upper": 0.11978360119047624,
+          "ci": 0.95
+        },
+        "rho": 0.5906102361797794,
+        "halfWidth": 0.01989656746031749,
+        "mde80": 0.028526297795153213,
+        "significant": true
+      }
+    }
+  ],
+  "sqlBm25Agreement": {
+    "title": {
+      "n": 0,
+      "agree": null
+    },
+    "short": {
+      "n": 0,
+      "agree": null
+    }
+  },
+  "verdict": null
+}

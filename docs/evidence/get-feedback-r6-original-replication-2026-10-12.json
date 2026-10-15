@@ -1,0 +1,1530 @@
+{
+  "schemaVersion": "get-feedback-r6-original-replication-addendum-v1",
+  "observedAt": "2026-10-12T00:12:00Z",
+  "workItem": "WI-10007521",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "scope": "Interpretive addendum to immutable original cohort; bounded ended-Claude to isolated-Codex observation. Does not establish the three-cell matrix, live-source continuity, independent acceptance or shipment.",
+  "original": {
+    "path": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-live.json",
+    "sha256": "e99b3e1675e935005d3ba693bc3cc00987311384a35bb5435ad4bb16456b27c3",
+    "bytes": 41822,
+    "windowStart": "2026-10-03T05:21:32.561Z",
+    "windowEnd": "2026-10-05T20:27:24Z",
+    "unchanged": true,
+    "population": 4,
+    "target": 8,
+    "shortfall": 4,
+    "strata": {
+      "same-backend-dispatch": 2,
+      "cross-backend-dispatch": 2,
+      "archive-retrieval-only": 0
+    },
+    "chosenIds": [
+      "conv-musb29y1-0000-cf39e1f18138446ebc68b0a6af8436d8",
+      "conv-mus1v26j-0000-68ff1c643c2b4f10be212508682b280f",
+      "conv-muvio65y-0000-f1aa8000e03d45e78c48082936ad9898",
+      "conv-muvkvv0y-0000-598ee0fa316049bb86d9ad6b07871574"
+    ]
+  },
+  "review": {
+    "rubricRevision": 8,
+    "answerPost": 1175213,
+    "reviewer": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+    "method": "First-principles independent review; minimum-fill/evidence-unavailable routing remains disclosed. Existing normal project evidence replaces obsolete mandatory structured-reporting interpretation. Selection/window remain unchanged.",
+    "requesterDecisionCounts": {
+      "confirmed": 2,
+      "rescoped": 1,
+      "reversed": 0,
+      "moot": 0,
+      "unknown": 1
+    },
+    "qualityCounts": {
+      "useful": 3,
+      "partial": 1,
+      "contradictory": 0
+    },
+    "rows": [
+      {
+        "conversation": "conv-mus1v26j-0000-68ff1c643c2b4f10be212508682b280f",
+        "quality": "useful",
+        "requesterDecision": "rescoped",
+        "refs": [
+          "thread-post:1156967",
+          "thread-post:1157042",
+          "get-feedback-reliability-usefulness-adoption-2026-10-03#D-003",
+          "get-feedback-reliability-usefulness-adoption-2026-10-03#D-004",
+          "get-feedback-reliability-usefulness-adoption-2026-10-03#D-005"
+        ],
+        "reason": "Requester48ca explicitly adopts and rescope-closes the methods critique; no implementation acceptance is asserted."
+      },
+      {
+        "conversation": "conv-musb29y1-0000-cf39e1f18138446ebc68b0a6af8436d8",
+        "quality": "partial",
+        "requesterDecision": "unknown",
+        "refs": [
+          "thread-post:1157488",
+          "thread-post:1157515",
+          "thread-post:1157540"
+        ],
+        "reason": "Concrete review and author-seat refusal answer part of request; acknowledgement and later expiry do not provide requester project disposition."
+      },
+      {
+        "conversation": "conv-muvio65y-0000-f1aa8000e03d45e78c48082936ad9898",
+        "quality": "useful",
+        "requesterDecision": "confirmed",
+        "refs": [
+          "thread-post:1157626",
+          "original.qualityReview.fullEligiblePopulation[2].requesterDecision.reconciliation"
+        ],
+        "evidenceAt": "2026-10-05T17:27:51.854Z",
+        "requester": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+        "reason": "Existing requester confirmation retains adapter/live-acceptance scope split and five live assertions."
+      },
+      {
+        "conversation": "conv-muvkvv0y-0000-598ee0fa316049bb86d9ad6b07871574",
+        "quality": "useful",
+        "requesterDecision": "confirmed",
+        "refs": [
+          "thread-post:1157673",
+          "original.qualityReview.fullEligiblePopulation[3].requesterDecision.reconciliation"
+        ],
+        "evidenceAt": "2026-10-05T18:31:23.018Z",
+        "requester": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+        "reason": "Existing requester confirmation keeps source immutability, other matrix rows, bounded review and final shipment open."
+      }
+    ]
+  },
+  "consult": {
+    "conversationId": "conv-request-b6c0f136b35914bfff42a651775b688363758c1979ab2f12be961d106256e410",
+    "stateAtRead": "active",
+    "requester": "su-e16e0da4-f858-4e10-9665-55116edbc36b",
+    "sourceOwner": "su-eafb2d71-ced2-4af1-8fee-8c4a3d5ff74e",
+    "sourceNative": "0a50da5d-5a69-4c87-8238-cf1d1ea59fc3",
+    "sourceEvidenceTurn": 6,
+    "sourceStatus": "ended",
+    "answeringOwner": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+    "answeringNative": "01a12d6b-0886-7550-8bd0-96d72dec936d",
+    "sourceBeforePrefix": "unknown; prelaunch candidate was35111/5a2 and route changed",
+    "sourceBeforeClaims": "unknown; no actualsource census before launch",
+    "advs": [
+      {
+        "id": "35222",
+        "coord_owner_id": "su-eafb2d71-ced2-4af1-8fee-8c4a3d5ff74e",
+        "session_id": "0a50da5d-5a69-4c87-8238-cf1d1ea59fc3",
+        "agent": "claude",
+        "port_id": null,
+        "port_source_adv_session_id": null,
+        "port_status": null,
+        "port_metadata": null,
+        "model": null,
+        "launched_by": "su-b4f705db-5b21-404f-be2f-125a68fab1b5",
+        "started_at": "2026-10-06 13:36:06.786401+00",
+        "ended_at": "2026-10-06 13:42:12.30535+00",
+        "ended_by": "signal",
+        "exit_code": 0
+      },
+      {
+        "id": "41032",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "session_id": "01a12d6b-0886-7550-8bd0-96d72dec936d",
+        "agent": "codex",
+        "port_id": "d4ee2e1a-43ee-46de-bed2-b271f4af4047",
+        "port_source_adv_session_id": "35222",
+        "port_status": "delivered",
+        "port_metadata": {
+          "sourceHash": "bc4aac83a9f838d7e0510d6aa9c162ee1c60bb698c6879bf4bef4169e679fab4",
+          "targetModel": "gpt-5.6-sol",
+          "renderedHash": "8022840a4a256defa2192e87ffd0d13c2a5e0ebfc32dea00cb16dcf7b1c7d242",
+          "sourceBackend": "claude",
+          "targetBackend": "codex",
+          "normalizedHash": "dff2b2e0276adf2f744832a6d2e71d0a38fc9224b985067dc528ad5e036284c1",
+          "protocolVersion": 2,
+          "persistenceProof": {
+            "nativeRef": "~/.papercusp/su-codex-homes/session-41032/sessions/2026/10/11/rollout-2026-10-11T20-02-31-01a12d6b-0886-7550-8bd0-96d72dec936d.jsonl",
+            "persisted": true,
+            "renderedHash": "8022840a4a256defa2192e87ffd0d13c2a5e0ebfc32dea00cb16dcf7b1c7d242"
+          }
+        },
+        "model": "gpt-5.6-sol",
+        "launched_by": "su-e16e0da4-f858-4e10-9665-55116edbc36b",
+        "started_at": "2026-10-12 00:02:31.740516+00",
+        "ended_at": null,
+        "ended_by": null,
+        "exit_code": null
+      }
+    ]
+  },
+  "native": {
+    "path": "~/.papercusp/su-codex-homes/session-41032/sessions/2026/10/11/rollout-2026-10-11T20-02-31-01a12d6b-0886-7550-8bd0-96d72dec936d.jsonl",
+    "prefixBytes": 883969,
+    "prefixSha256": "829bd253ac2d4c0f8ef050a8a56ce9e0a6caca678cbae28a54d75f80d7c07e60",
+    "nativeSessionFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+    "frameLine": 9,
+    "frameLineSha256": "740723a273e548e20857d06942536e5c8cb2d924deffd4f0b011dc500681cd70",
+    "frameChecksum": "8022840a4a256defa2192e87ffd0d13c2a5e0ebfc32dea00cb16dcf7b1c7d242",
+    "replyLine": 141,
+    "replyLineSha256": "d105635bbb455d073f303c12a3b04cd43659c08bf54292f5fd15ea7f7eccb2ba",
+    "replyPost": 1175213,
+    "replyBodySha256": "b116e8fec432f895e9971e6c7989471235d4a914f4b9be6cefdafd8d6aac80d9",
+    "physicalCallId": "exec-32385d69-3a75-427c-bc25-b9bc1b323143",
+    "callIdFingerprint": "fcc8293871ff81d52ec2d6a3480aaf3f36b5537ce493985f8aa2338fd7bc79f8",
+    "toolInvocationId": 36499010,
+    "servingHost": "port-3170",
+    "servingProcessId": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55258548",
+    "servingBuildSha": "c5f9890e28",
+    "actor": "caller-row adv41032, bound meta:threadId, enforce.applied=true",
+    "calls": [
+      {
+        "line": 17,
+        "nativeType": "custom_tool_call",
+        "name": "exec",
+        "callId": "call_31899103309c43a6bc99908598e9c642"
+      },
+      {
+        "line": 23,
+        "nativeType": "custom_tool_call",
+        "name": "exec",
+        "callId": "call_971f3b3c8f7e4c90ab6471d32533ba1e"
+      },
+      {
+        "line": 29,
+        "nativeType": "custom_tool_call",
+        "name": "exec",
+        "callId": "call_c7394593ce39401eba60420f2b2e0cf6"
+      },
+      {
+        "line": 31,
+        "tool": "tools:find",
+        "callId": "exec-abe44a2c-830d-4854-a856-b0f4ef70e3c1",
+        "fingerprint": "5ae2ef9465118838d65b5582ab1ec04ecc59b74a2a994fb2fd84639e89f7830c"
+      },
+      {
+        "line": 37,
+        "nativeType": "custom_tool_call",
+        "name": "exec",
+        "callId": "call_cdc5d93241954c47bf27d13c346f4fbf"
+      },
+      {
+        "line": 39,
+        "tool": "tools:find",
+        "callId": "exec-8cbc4705-5eb6-4780-917c-1abdc842fbe1",
+        "fingerprint": "5be3e308223aa25f10b4ca7bba25f9dc1f8adae7dcc7a3885c915e5d8714a712"
+      },
+      {
+        "line": 45,
+        "nativeType": "custom_tool_call",
+        "name": "exec",
+        "callId": "call_2eae9b06ec2a4419bcc9780436d9c355"
+      },
+      {
+        "line": 48,
+        "tool": "tools:invoke",
+        "callId": "exec-9dd4e320-dac1-4380-9a3a-8481f46fdb24",
+        "fingerprint": "4349f0dd9e07d590b4c0ba71cdf48b8ec419fe68830fe6ec83f8e66351f9fe62"
+      },
+      {
+        "line": 49,
+        "tool": "tools:invoke",
+        "callId": "exec-6b0a5761-ad8f-4662-84fb-731f5198afcd",
+        "fingerprint": "5df9603039ab147c427a85f2514d51279f999e8c106b2cd2f75cf58e00669969"
+      },
+      {
+        "line": 54,
+        "nativeType": "custom_tool_call",
+        "name": "exec",
+        "callId": "call_8f5e711249e14ba4b38ac3386536fd81"
+      },
+      {
+        "line": 62,
+        "nativeType": "custom_tool_call",
+        "name": "exec",
+        "callId": "call_392721b80ef345cdb2a5e284e10dd282"
+      },
+      {
+        "line": 64,
+        "tool": "tools:invoke",
+        "callId": "exec-4533bd52-fe82-480c-81ea-41ca757e000b",
+        "fingerprint": "c48926a0d42c34b366887ac842a2300ba184a96f9b76d1d59a08b1e295d6f62f"
+      },
+      {
+        "line": 69,
+        "nativeType": "custom_tool_call",
+        "name": "exec",
+        "callId": "call_6653f4a79de248b992d94e9051782a01"
+      },
+      {
+        "line": 76,
+        "nativeType": "custom_tool_call",
+        "name": "exec",
+        "callId": "call_99ea87646e8e466d822b3ce28265c7d9"
+      },
+      {
+        "line": 82,
+        "nativeType": "custom_tool_call",
+        "name": "exec",
+        "callId": "call_3d8eb377b9c7477aaa23848c085d3dcc"
+      },
+      {
+        "line": 90,
+        "nativeType": "custom_tool_call",
+        "name": "exec",
+        "callId": "call_12e8cc0c0966429887e7a7e59417bd54"
+      },
+      {
+        "line": 92,
+        "tool": "tools:invoke",
+        "callId": "exec-56937873-5a1f-4186-9faa-ceb5d3e393dc",
+        "fingerprint": "ce834570d9a8a099b2e38ed6a226de5bd93c070f13f72f4d1df9314fc42dcc01"
+      },
+      {
+        "line": 93,
+        "tool": "plans:get",
+        "callId": "exec-76ea1ab2-ce56-4707-ac73-990e2e57ac01",
+        "fingerprint": "38a6f4d2486c3bc782c747493ef419b286dbdf49cd72416a3bb5e2b2929b9904"
+      },
+      {
+        "line": 98,
+        "nativeType": "custom_tool_call",
+        "name": "exec",
+        "callId": "call_d5282219d7294f299ee3a476e5b044d4"
+      },
+      {
+        "line": 100,
+        "tool": "tools:invoke",
+        "callId": "exec-e579288b-7d78-4462-9b65-172bf8c100e9",
+        "fingerprint": "c0a8acb1054027790c4f652fd7b743453b2d364fc78f406e78375f616dc35b85"
+      },
+      {
+        "line": 101,
+        "tool": "tools:invoke",
+        "callId": "exec-b64a20b8-60f5-4981-9f7a-ae83b66204c1",
+        "fingerprint": "942472c1b2a584d6b5341bbb8c7af733999544e0139d8db3d5dae410b94954dd"
+      },
+      {
+        "line": 102,
+        "tool": "tools:invoke",
+        "callId": "exec-065ab6dd-81ff-4cec-9751-3ba590dea090",
+        "fingerprint": "be6fe24df0d802ae4d425ea8de9ece9b356260b3da1d0806d23dad76ab93937c"
+      },
+      {
+        "line": 107,
+        "nativeType": "custom_tool_call",
+        "name": "exec",
+        "callId": "call_547363bebd9043d9856fb1c1229cb523"
+      },
+      {
+        "line": 109,
+        "tool": "tools:invoke",
+        "callId": "exec-348f5562-7dc4-4e94-ae81-7ff0e72f3bda",
+        "fingerprint": "f02254db871203b960fd3c91b1f3943e2cd910a24526ae072d92befaf309fb08"
+      },
+      {
+        "line": 114,
+        "nativeType": "custom_tool_call",
+        "name": "exec",
+        "callId": "call_729edfe41e7043cfa6a333a9bd027e96"
+      },
+      {
+        "line": 116,
+        "tool": "plans:get",
+        "callId": "exec-b7b1e5ac-4769-49b4-93f9-e41b903dcfa0",
+        "fingerprint": "ad6e15067e60b425c4c3e313b556aba7d7aeb140b7cb743b1ab77bbdec436d0a"
+      },
+      {
+        "line": 118,
+        "tool": "plans:get",
+        "callId": "exec-037b95a7-bd10-440b-903a-2b41e8342218",
+        "fingerprint": "2eae2856696a91fa840c9156017057a00d94585c395632803f2b78f4b0af81ff"
+      },
+      {
+        "line": 119,
+        "tool": "plans:get",
+        "callId": "exec-654164fd-e8c9-48ee-ac6e-27c0de569088",
+        "fingerprint": "676202224a76db7ad92ecf1cf3f3528b2b3100129ca5f2d048f31dd727815dd8"
+      },
+      {
+        "line": 120,
+        "tool": "plans:get",
+        "callId": "exec-c7f36f7f-2a9e-4050-b360-37c66073552e",
+        "fingerprint": "8eb3e5b27c24464c33fae47d2b324ef330a2f4a550dcccbe07d975ce1a4b5b5a"
+      },
+      {
+        "line": 121,
+        "tool": "plans:get",
+        "callId": "exec-6ba29b36-f48a-471a-a5d6-9615b94cd791",
+        "fingerprint": "37e2d3f546cfe91c40b2c55abaeff52e69d1cfa47c8052455df392e77adaf925"
+      },
+      {
+        "line": 122,
+        "tool": "plans:get",
+        "callId": "exec-3d50f227-b5ce-43ff-a4a3-2f14e567646b",
+        "fingerprint": "aed65beb42f7e32e2e2df06fd77a2b0be60e5044a9dc27e52d7f4625c666fc6d"
+      },
+      {
+        "line": 123,
+        "tool": "plans:get",
+        "callId": "exec-dd6929b8-00dd-4de2-bc95-a084f52a1d45",
+        "fingerprint": "99cadf1341f4d214a48ae629db81bfbab86250f1dd1cae4a00095a5e41769cd1"
+      },
+      {
+        "line": 124,
+        "tool": "plans:get",
+        "callId": "exec-6b6450bc-0c0a-4f20-a2cf-b35b2282191f",
+        "fingerprint": "a27628d267ac44037525db0b3215c4dfbe1b4f7f5a975bb29be36dd37bd68754"
+      },
+      {
+        "line": 125,
+        "tool": "plans:get",
+        "callId": "exec-70d64cf0-68a3-4d0b-b9c1-0669ac981561",
+        "fingerprint": "e6e03023f4c9ccca5fa060b006d51780630f9c1e3559a98bc13a976661a64f65"
+      },
+      {
+        "line": 132,
+        "nativeType": "custom_tool_call",
+        "name": "exec",
+        "callId": "call_VoSpZn7YDHWJP2rJv1ln7yil"
+      },
+      {
+        "line": 139,
+        "nativeType": "custom_tool_call",
+        "name": "exec",
+        "callId": "call_d63cb2f878734262a527dec99d552504"
+      },
+      {
+        "line": 141,
+        "tool": "consult:reply",
+        "callId": "exec-32385d69-3a75-427c-bc25-b9bc1b323143",
+        "fingerprint": "fcc8293871ff81d52ec2d6a3480aaf3f36b5537ce493985f8aa2338fd7bc79f8"
+      }
+    ]
+  },
+  "actorCensus": {
+    "windowStart": "2026-10-12T00:02:00Z",
+    "windowEnd": "2026-10-12T00:08:00Z",
+    "rowsReturned": 46,
+    "truncated": false,
+    "rows": [
+      {
+        "id": "36496841",
+        "tool_name": "activity:report",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:02:33.772+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860738994",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "false",
+        "native": {
+          "binding": "bound",
+          "carrier": "query:native_session",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36497145",
+        "tool_name": "tools:find",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:03:11.446+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "5ae2ef9465118838d65b5582ab1ec04ecc59b74a2a994fb2fd84639e89f7830c",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36497168",
+        "tool_name": "activity:report",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:03:13.997+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "query:native_session",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36497247",
+        "tool_name": "tools:find",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:03:24.161+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "5be3e308223aa25f10b4ca7bba25f9dc1f8adae7dcc7a3885c915e5d8714a712",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36497249",
+        "tool_name": "activity:report",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:03:24.342+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "query:native_session",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36497384",
+        "tool_name": "activity:report",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:03:41.403+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "query:native_session",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36497394",
+        "tool_name": "conversations:get",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:03:41.659+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "4349f0dd9e07d590b4c0ba71cdf48b8ec419fe68830fe6ec83f8e66351f9fe62",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36497395",
+        "tool_name": "tools:invoke",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:03:41.66+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "4349f0dd9e07d590b4c0ba71cdf48b8ec419fe68830fe6ec83f8e66351f9fe62",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36497403",
+        "tool_name": "rubrics:get",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:03:42.681+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "5df9603039ab147c427a85f2514d51279f999e8c106b2cd2f75cf58e00669969",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36497404",
+        "tool_name": "tools:invoke",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:03:42.682+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "5df9603039ab147c427a85f2514d51279f999e8c106b2cd2f75cf58e00669969",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36497518",
+        "tool_name": "activity:report",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:03:55.341+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "query:native_session",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36497628",
+        "tool_name": "rubrics:get",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:04:09.503+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "c48926a0d42c34b366887ac842a2300ba184a96f9b76d1d59a08b1e295d6f62f",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36497629",
+        "tool_name": "tools:invoke",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:04:09.505+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "c48926a0d42c34b366887ac842a2300ba184a96f9b76d1d59a08b1e295d6f62f",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36497632",
+        "tool_name": "activity:report",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:04:09.701+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "query:native_session",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36497703",
+        "tool_name": "tools:find",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:04:24.887+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "query:native_session",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36497706",
+        "tool_name": "activity:report",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:04:25.152+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "query:native_session",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36497855",
+        "tool_name": "rubrics:get",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:04:45.373+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "query:native_session",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36497859",
+        "tool_name": "activity:report",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:04:45.587+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "query:native_session",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36497965",
+        "tool_name": "activity:report",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:05:01.689+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "query:native_session",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36498140",
+        "tool_name": "conversations:get",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:05:19.297+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "ce834570d9a8a099b2e38ed6a226de5bd93c070f13f72f4d1df9314fc42dcc01",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36498141",
+        "tool_name": "tools:invoke",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:05:19.299+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "ce834570d9a8a099b2e38ed6a226de5bd93c070f13f72f4d1df9314fc42dcc01",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36498142",
+        "tool_name": "activity:report",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:05:19.473+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "query:native_session",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36498146",
+        "tool_name": "plans:get",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:05:20.061+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "38a6f4d2486c3bc782c747493ef419b286dbdf49cd72416a3bb5e2b2929b9904",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36498248",
+        "tool_name": "conversations:get",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:05:36.305+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "c0a8acb1054027790c4f652fd7b743453b2d364fc78f406e78375f616dc35b85",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36498249",
+        "tool_name": "tools:invoke",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:05:36.307+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "c0a8acb1054027790c4f652fd7b743453b2d364fc78f406e78375f616dc35b85",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36498257",
+        "tool_name": "conversations:get",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:05:36.846+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "942472c1b2a584d6b5341bbb8c7af733999544e0139d8db3d5dae410b94954dd",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36498258",
+        "tool_name": "tools:invoke",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:05:36.847+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "942472c1b2a584d6b5341bbb8c7af733999544e0139d8db3d5dae410b94954dd",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36498268",
+        "tool_name": "conversations:get",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:05:37.267+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "be6fe24df0d802ae4d425ea8de9ece9b356260b3da1d0806d23dad76ab93937c",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36498269",
+        "tool_name": "tools:invoke",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:05:37.268+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "be6fe24df0d802ae4d425ea8de9ece9b356260b3da1d0806d23dad76ab93937c",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36498365",
+        "tool_name": "conversations:get",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:05:50.038+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "f02254db871203b960fd3c91b1f3943e2cd910a24526ae072d92befaf309fb08",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36498366",
+        "tool_name": "tools:invoke",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:05:50.04+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "f02254db871203b960fd3c91b1f3943e2cd910a24526ae072d92befaf309fb08",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36498501",
+        "tool_name": "plans:get",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:06:03.896+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "ad6e15067e60b425c4c3e313b556aba7d7aeb140b7cb743b1ab77bbdec436d0a",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36498502",
+        "tool_name": "activity:report",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:06:04.183+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "query:native_session",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36498503",
+        "tool_name": "plans:get",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:06:04.815+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "2eae2856696a91fa840c9156017057a00d94585c395632803f2b78f4b0af81ff",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36498506",
+        "tool_name": "plans:get",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:06:05.557+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "676202224a76db7ad92ecf1cf3f3528b2b3100129ca5f2d048f31dd727815dd8",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36498511",
+        "tool_name": "plans:get",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:06:06.274+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "8eb3e5b27c24464c33fae47d2b324ef330a2f4a550dcccbe07d975ce1a4b5b5a",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36498525",
+        "tool_name": "plans:get",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:06:07.113+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "37e2d3f546cfe91c40b2c55abaeff52e69d1cfa47c8052455df392e77adaf925",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36498531",
+        "tool_name": "plans:get",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:06:07.958+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "aed65beb42f7e32e2e2df06fd77a2b0be60e5044a9dc27e52d7f4625c666fc6d",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36498537",
+        "tool_name": "plans:get",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:06:08.847+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "99cadf1341f4d214a48ae629db81bfbab86250f1dd1cae4a00095a5e41769cd1",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36498544",
+        "tool_name": "plans:get",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:06:09.677+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "a27628d267ac44037525db0b3215c4dfbe1b4f7f5a975bb29be36dd37bd68754",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36498549",
+        "tool_name": "plans:get",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:06:10.44+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "e6e03023f4c9ccca5fa060b006d51780630f9c1e3559a98bc13a976661a64f65",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36498749",
+        "tool_name": "tools:find",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:06:36.895+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "query:native_session",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36498752",
+        "tool_name": "activity:report",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:06:37.117+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55165382",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "query:native_session",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36499010",
+        "tool_name": "consult:reply",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:07:06.441+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55258548",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "meta:threadId",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "callIdFingerprint": "fcc8293871ff81d52ec2d6a3480aaf3f36b5537ce493985f8aa2338fd7bc79f8",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36499016",
+        "tool_name": "activity:report",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:07:06.903+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55258548",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "caller-row",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": {
+          "binding": "bound",
+          "carrier": "query:native_session",
+          "valueFingerprint": "1fad0249feedc1aa09a3a08b595639b2d2a59244f53bf60182dc4359e8069e86",
+          "candidateAdvSessionId": 41032
+        }
+      },
+      {
+        "id": "36499154",
+        "tool_name": "journal:record-turn",
+        "coord_owner_id": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+        "invoked_at": "2026-10-12 00:07:22.581+00",
+        "status": "ok",
+        "transport": "mcp",
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:55258548",
+        "serving_build_sha": "c5f9890e28",
+        "actor": {
+          "xmin": "860740426",
+          "selection": "owner-workspace-fallback",
+          "advSessionId": "41032"
+        },
+        "enforced": "true",
+        "native": null
+      }
+    ],
+    "limitations": [
+      "MCP ledger is not complete native activity.",
+      "Source claims before/after and source-side action census not measured.",
+      "Top-level metadata paths from initial diagnostic yielded null; table columns and nested kernel paths verified in final query.",
+      "No full D006 isolation/ABA verdict is asserted."
+    ]
+  },
+  "dispatch": {
+    "walks": 2,
+    "rows": [
+      {
+        "source": "su-35111a78-378f-49f6-92f7-2c2f046334e9",
+        "claude": "fable/opus convert account-walled",
+        "codex": "sol/astra launch-failed: both logs resume latestc20c5d39 at adv35200 instead of selected archived5a2; exact-source handoff suspected, not capacity wall"
+      },
+      {
+        "source": "su-eafb2d71-ced2-4af1-8fee-8c4a3d5ff74e",
+        "claude": "fable/opus fork account-walled",
+        "codex": "sol convert dispatched; native frame and substantive reply verified"
+      }
+    ],
+    "failedLogs": [
+      "~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-1709b24b-8d78-2239739-1791763321349.log",
+      "~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-c4f7f29b-deed-2239739-1791763333271.log"
+    ]
+  },
+  "openAcceptance": [
+    "Native closed three-cell matrix preserves all avoidable failures and residual cells",
+    "D017 live-source prefix and source-claim continuity",
+    "Full D006 native/source/answerer actor census",
+    "Original cohort shortfall4 and one unknown requester project decision",
+    "Separate48ca eight-of-eleven cohort remains distinct",
+    "Replication receipt-removal counterexample not performed",
+    "Independent acceptance and exactR7 shipment"
+  ],
+  "evidenceRefs": [
+    "/dev/shm/get-feedback-r6-native-state-20261012T0008.json",
+    "/dev/shm/get-feedback-r6-native-state-unwrapped-20261012T0005.json",
+    "/dev/shm/get-feedback-r6-prelaunch-bundle-20261012T0005.json"
+  ]
+}

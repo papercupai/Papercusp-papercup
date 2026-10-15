@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createPgDiagnosticHooks, pgResultDiagnosticSnapshot, resetAcquireRegistryForTest,
+  resetPgDiagnosticContextResolver } from '@papercusp/db-org/acquire-registry';
+import { installDbDiagnosticCorrelationWiring } from '../../../agent-tools/db-diagnostic-correlation-wiring';
 
 const resolveNamedQueryMock = vi.fn();
 const observeResolveMock = vi.fn();
@@ -6,6 +9,7 @@ const serializeJsonResponseMock = vi.fn(async (value: unknown, _itemCount?: numb
 
 vi.mock('../../../sync-resolver', () => ({
   resolveNamedQueryV2: (...args: unknown[]) => resolveNamedQueryMock(...args),
+  isRegisteredV2: (name: string) => ['workItems.byHarness', 'plans.list', 'workItems.stats'].includes(name),
   NAME_NOT_FOUND: Symbol('NAME_NOT_FOUND'),
 }));
 vi.mock('../../../sync-resolver/resolve-observability', () => ({
@@ -34,6 +38,81 @@ async function route(): Promise<RestRoute> {
 beforeEach(() => {
   vi.clearAllMocks();
   serializeJsonResponseMock.mockImplementation(async (value: unknown, _itemCount?: number) => JSON.stringify(value));
+  resetAcquireRegistryForTest();
+  installDbDiagnosticCorrelationWiring();
+});
+
+afterEach(() => { resetPgDiagnosticContextResolver(); resetAcquireRegistryForTest(); });
+
+describe('P011 named HTTP request exact object guards', () => {
+  it('links raw Pg, mapped rows and the HTTP envelope without adding diagnostics to the response', async () => {
+    const raw = [{ id: 1 }];
+    const rows = [{ id: 1 }];
+    const hooks = createPgDiagnosticHooks('org-app');
+    resolveNamedQueryMock.mockImplementationOnce(async () => {
+      hooks.onresult({ connectionId: 1, queryId: 1, backendPid: null, query: 'select 1',
+        rowCount: 1, wireBytes: 1, status: 'ok', result: raw, context: hooks.onquerycontext() });
+      return rows;
+    });
+    const response = await (await route()).handler(new Request(
+      'http://localhost:3170/api/zero-harness/rest-query?name=workItems.byHarness&args=%7B%22secret%22%3A%22never-retain-args%22%7D',
+    ));
+    const [diagnostic] = pgResultDiagnosticSnapshot('org-app', 1, { includeObjectRefs: true }).results;
+    expect(diagnostic.correlation).toMatchObject({ operation: 'workItems.byHarness', requestId: expect.any(String) });
+    expect(response.headers.get('x-papercusp-request-id')).toBe(diagnostic.correlation!.requestId);
+    expect(response.headers.get('x-papercusp-request-id')).toMatch(/^[a-f0-9-]{36}$/i);
+    expect(diagnostic.objectRefs?.decodedResult?.deref()).toBe(raw);
+    expect(diagnostic.objectRefs?.resolvedRows?.deref()).toBe(rows);
+    expect(diagnostic.objectRefs?.responseValue?.deref()).toBe(serializeJsonResponseMock.mock.calls[0][0]);
+    expect(diagnostic.objectRefs).not.toHaveProperty('workerClone');
+    const body = await response.text();
+    expect(JSON.parse(body).rows).toEqual(rows);
+    expect(body).not.toContain(diagnostic.correlation!.requestId!);
+    expect(JSON.stringify(pgResultDiagnosticSnapshot('org-app'))).not.toContain('never-retain-args');
+    expect(hooks.onquerycontext()).toEqual({ state: 'unobserved' });
+  });
+
+  it('returns distinct server-generated request IDs for concurrent requests despite a caller-supplied ID', async () => {
+    const hooks = createPgDiagnosticHooks('org-app');
+    let queryId = 0;
+    resolveNamedQueryMock.mockImplementation(async () => {
+      const id = ++queryId;
+      await new Promise(resolve => setTimeout(resolve, id === 1 ? 10 : 0));
+      const rows = [{ id }];
+      hooks.onresult({ connectionId: 1, queryId: id, backendPid: null, query: 'select 1',
+        rowCount: 1, wireBytes: 1, status: 'ok', result: rows, context: hooks.onquerycontext() });
+      return rows;
+    });
+    const handler = (await route()).handler;
+    const responses = await Promise.all([1, 2].map(() => handler(new Request(
+      'http://localhost:3170/api/zero-harness/rest-query?name=workItems.byHarness',
+      { headers: { 'x-papercusp-request-id': 'caller-secret' } },
+    ))));
+    const diagnostics = pgResultDiagnosticSnapshot('org-app').results;
+    const ids = responses.map(response => response.headers.get('x-papercusp-request-id'));
+    expect(new Set(ids).size).toBe(2);
+    expect(ids).not.toContain('caller-secret');
+    for (const response of responses) {
+      const id = response.headers.get('x-papercusp-request-id');
+      const body = await response.json();
+      expect(diagnostics.find(row => row.correlation?.requestId === id)?.queryId).toBe(body.rows[0].id);
+    }
+    expect(JSON.stringify(diagnostics)).not.toContain('caller-secret');
+  });
+
+  it('does not record an unregistered caller-provided operation name', async () => {
+    const hooks = createPgDiagnosticHooks('org-app');
+    resolveNamedQueryMock.mockImplementationOnce(async () => {
+      hooks.onresult({ connectionId: 1, queryId: 1, backendPid: null, query: 'select 1',
+        rowCount: 1, wireBytes: 1, status: 'ok', context: hooks.onquerycontext() });
+      return [];
+    });
+    await (await route()).handler(new Request('http://localhost:3170/api/zero-harness/rest-query?name=secretToken'));
+    const snapshot = pgResultDiagnosticSnapshot('org-app');
+    expect(snapshot.results[0].correlation).toHaveProperty('requestId');
+    expect(snapshot.results[0].correlation).not.toHaveProperty('operation');
+    expect(JSON.stringify(snapshot)).not.toContain('secretToken');
+  });
 });
 
 describe('GET /zero-harness/rest-query stale-process diagnosis', () => {
@@ -82,6 +161,31 @@ describe('GET /zero-harness/rest-query stale-process diagnosis', () => {
     });
     expect(body.error).toMatchObject(expect.any(String));
     expect(body.error).toContain('Restart the operator process');
+  });
+
+  it('returns the server request ID on resolver failures so PG diagnostics remain joinable', async () => {
+    const hooks = createPgDiagnosticHooks('org-app');
+    resolveNamedQueryMock.mockImplementationOnce(async () => {
+      hooks.onresult({ connectionId: 1, queryId: 1, backendPid: null,
+        query: 'select * from harness_shared.work_items', rowCount: 0, wireBytes: 0,
+        status: 'error', errorCode: '57014', context: hooks.onquerycontext() });
+      throw new Error('workItems.byHarness rows exceeded the read budget');
+    });
+
+    const response = await (await route()).handler(new Request(
+      'http://localhost:3170/api/zero-harness/rest-query?name=workItems.byHarness&args=%7B%7D',
+    ));
+    const requestId = response.headers.get('x-papercusp-request-id');
+    const body = await response.json();
+    const [diagnostic] = pgResultDiagnosticSnapshot('org-app').results;
+
+    expect(response.status).toBe(500);
+    expect(requestId).toMatch(/^[a-f0-9-]{36}$/i);
+    expect(diagnostic.correlation).toMatchObject({
+      operation: 'workItems.byHarness',
+      requestId,
+    });
+    expect(body).toEqual({ error: 'workItems.byHarness rows exceeded the read budget', name: 'workItems.byHarness' });
   });
 
   it('keeps ordinary resolver failures as ordinary 500 responses', async () => {

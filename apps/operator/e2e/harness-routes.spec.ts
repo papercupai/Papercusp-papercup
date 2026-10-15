@@ -5,10 +5,11 @@
  * are read-only and don't mutate harness state.
  */
 import { test, expect } from './_egress';
+import { onAppOrigin } from './_app-origin';
 
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
-  `http://127.0.0.1:${Number(process.env.OPERATOR_E2E_PORT ?? process.env.PORT) || 3055}`;
+  `http://localhost:${Number(process.env.OPERATOR_E2E_PORT ?? process.env.PORT) || 3055}`;
 
 test.describe('harness route surface', () => {
   test('GET /api/harness/all/kpis returns KPI shape', async ({ request }) => {
@@ -28,6 +29,7 @@ test.describe('harness route surface', () => {
   });
 
   test('GET /api/zero-harness/sse is SSE-shaped or 401', async ({ page }) => {
+    await onAppOrigin(page, baseURL);
     const result = await page.evaluate(async (url) => {
       const controller = new AbortController();
       setTimeout(() => controller.abort(), 500);

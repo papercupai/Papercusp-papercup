@@ -18,6 +18,7 @@ import {
   captureHeapSnapshot,
   classifyLoopPressure,
   cooperativeYield,
+  createTimeSlice,
   currentLoopLag,
   isLoopLagWindowMature,
   isLoopElevated,
@@ -969,6 +970,34 @@ describe('cooperativeYield / yieldToEventLoop (event-loop-lag root fix)', () => 
     expect(n).toBe(1);
     n = await cooperativeYield(n, 1);
     expect(n).toBe(2);
+  });
+
+  it('createTimeSlice yields only once the slice budget is spent, then starts a new slice (WI-10005476)', async () => {
+    // No monitor running ⇒ loopPressure() is 'ok', so only elapsed time triggers a yield.
+    let t = 0;
+    const yieldFn = vi.fn(async () => {});
+    const slice = createTimeSlice(10, { now: () => t, yieldFn });
+    t = 9;
+    await slice.maybeYield();
+    expect(yieldFn).not.toHaveBeenCalled(); // under budget: no hop
+    t = 10;
+    await slice.maybeYield();
+    expect(yieldFn).toHaveBeenCalledTimes(1); // budget spent: one hop
+    expect(slice.yields).toBe(1);
+    t = 15;
+    await slice.maybeYield();
+    expect(yieldFn).toHaveBeenCalledTimes(1); // new slice began at t=10
+    t = 20;
+    await slice.maybeYield();
+    expect(yieldFn).toHaveBeenCalledTimes(2);
+  });
+
+  it('createTimeSlice defaults to a real macrotask hop', async () => {
+    const slice = createTimeSlice(0);
+    let ticked = false;
+    setImmediate(() => { ticked = true; });
+    await slice.maybeYield();
+    expect(ticked).toBe(true);
   });
 });
 

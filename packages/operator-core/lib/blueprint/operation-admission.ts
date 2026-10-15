@@ -49,6 +49,8 @@ export interface AcceptBlueprintDirectItemInput {
   requestKey?: string;
   /** Internal program-child call: use the parent's immutable specification. */
   expectedSpecificationRevision?: string;
+  /** Internal schedule guard, run in the acceptance transaction only for NEW work. */
+  beforeNewAdmission?: (tx: TransactionSql) => Promise<void>;
 }
 
 /** A child invocation must keep its parent's definition even if the mutable
@@ -235,6 +237,25 @@ function validateOperationInput(schema: Record<string, unknown>, input: Record<s
   }
 }
 
+/** Direct agent work items need an immutable worker identity pin so the
+ * placement pass can bind the accepted item to the worker that will execute it.
+ * Keep this check at admission as well as blueprint authoring validation: older
+ * or otherwise precompiled snapshots can reach submit without that validator. */
+export function assertAdmissibleAgentOperation(operation: {
+  id: string;
+  target: { kind: string };
+  execution?: { kind: string };
+  policy?: { identity?: unknown };
+}): void {
+  if (operation.target.kind !== 'work-item' || operation.execution?.kind !== 'agent' || operation.policy?.identity) {
+    return;
+  }
+  throw new BlueprintOperationRefusal(
+    'invalid_request',
+    `agent work-item operation "${operation.id}" must declare a pinned policy.identity before admission`,
+  );
+}
+
 /** Select the current revision once, then accept that exact immutable artifact.
  * An author moving the mutable blueprint pointer afterward cannot change the
  * accepted item's contract, even if it happens before the work-item INSERT. */
@@ -356,6 +377,7 @@ async function acceptBlueprintDirectWorkItemScoped(
             }
             return recovered;
           }
+          await request.beforeNewAdmission?.(tx);
           const revision = selectOperationSpecificationRevision(
             request.expectedSpecificationRevision,
             receipt?.specification_revision,
@@ -370,6 +392,7 @@ async function acceptBlueprintDirectWorkItemScoped(
           );
           if (!specification) throw new Error('blueprint operation specification snapshot is missing');
           const { operation } = operationFromSpecification(specification, request.operationId);
+          assertAdmissibleAgentOperation(operation);
           if (operation.target.kind !== 'work-item') {
             throw new Error('blueprint operation ' + request.operationId + ' targets a plan, not a direct work item');
           }
@@ -433,6 +456,7 @@ async function acceptBlueprintDirectWorkItemScoped(
   );
   if (!specification) throw new Error('blueprint operation specification snapshot is missing');
   const { operation } = operationFromSpecification(specification, request.operationId);
+  assertAdmissibleAgentOperation(operation);
   if (operation.target.kind !== 'work-item') {
     throw new Error(`blueprint operation ${request.operationId} targets a plan, not a direct work item`);
   }
@@ -465,6 +489,7 @@ export interface AcceptBlueprintPlanRunInput {
   input: Record<string, unknown>;
   /** Internal program-child call: use the parent's immutable specification. */
   expectedSpecificationRevision?: string;
+  beforeNewAdmission?: (tx: TransactionSql) => Promise<void>;
 }
 
 export interface AcceptedBlueprintPlanRun {
@@ -576,6 +601,7 @@ async function acceptBlueprintPlanRunScoped(
         }
         validateOperationInput(operation.inputSchema, input);
         if (receipt) return { receipt, revision, template: operation.target.template };
+        await request.beforeNewAdmission?.(tx);
         const inserted = await tx<PlanInvocationReceiptRow[]>`
       INSERT INTO harness_shared.blueprint_operation_invocations
         (workspace_id, harness_slug, caller_id, operation_id, request_key, request_fingerprint,

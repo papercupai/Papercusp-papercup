@@ -16,6 +16,69 @@ import {
 } from './capacity-dispatch';
 import { planBatchPlacement } from './batch-placement';
 import type { PlacementTask } from './placement-affinity';
+import type { GatewayHeadroom } from '../inference-gateway/observability';
+
+test('WI-10007425: a cup minimum share does not cap spare provider admission', () => {
+  const headroom: GatewayHeadroom = {
+    reachable: true,
+    provider: 'codex',
+    admissionWindow: 800,
+    inFlight: 53,
+    queueDepth: 0,
+    healthyAccounts: 6,
+    priorityTiers: {
+      healthyAccounts: 6,
+      tier1Reserve: 1,
+      tiers: [{ tier: 3, minShare: 1, inFlight: 0, queued: 0 }],
+    },
+  };
+  const report = buildCapacityReport(headroom, { clampArmed: true, headroom: 16 });
+  assert.equal(report.dispatchBudget, 747);
+  assert.equal(report.recommendedHeadroom, 16);
+  // The live admission window is also measured when the optional tier layer is off.
+  const withoutTiers = buildCapacityReport({ ...headroom, priorityTiers: undefined }, { clampArmed: true });
+  assert.equal(withoutTiers.dispatchBudget, 747);
+  assert.equal(withoutTiers.healthyAccounts, 6);
+});
+
+test('WI-10007425: live admission occupancy and genuine account exhaustion still bind', () => {
+  const headroom: GatewayHeadroom = {
+    reachable: true,
+    admissionWindow: 8,
+    inFlight: 5,
+    queueDepth: 2,
+    healthyAccounts: 6,
+    priorityTiers: {
+      healthyAccounts: 6,
+      tier1Reserve: 1,
+      tiers: [{ tier: 3, minShare: 20, inFlight: 0, queued: 0 }],
+    },
+  };
+  assert.equal(buildCapacityReport(headroom, { clampArmed: true }).dispatchBudget, 1);
+  assert.equal(buildCapacityReport({ ...headroom, queueDepth: 3 }, { clampArmed: true }).dispatchBudget, 0);
+  assert.equal(buildCapacityReport({ ...headroom, admissionWindow: 0 }, { clampArmed: true }).dispatchBudget, 0);
+  const exhausted = buildCapacityReport(headroom, {
+    clampArmed: true,
+    accountAvailability: { provider: 'codex', available: 0, usable: 0, total: 6 },
+  });
+  assert.equal(exhausted.poolExhausted, true);
+  assert.equal(exhausted.factor, 0);
+});
+
+test('WI-10007425: malformed live admission remains unknown rather than using a tier reservation', () => {
+  for (const reading of [
+    { admissionWindow: Number.NaN, inFlight: 0, queueDepth: 0 },
+    { admissionWindow: -1, inFlight: 0, queueDepth: 0 },
+    { admissionWindow: 8, inFlight: undefined, queueDepth: 0 },
+  ]) {
+    const report = buildCapacityReport({
+      reachable: true,
+      ...reading,
+      priorityTiers: { healthyAccounts: 6, tier1Reserve: 1, tiers: [{ tier: 3, minShare: 1, inFlight: 0, queued: 0 }] },
+    }, { clampArmed: true });
+    assert.equal(report.dispatchBudget, null);
+  }
+});
 
 test('capacity-aware dispatch SCENARIO — FEW placed when the pool is saturated, MANY when idle (P-005)', () => {
   // The end-to-end Queen behavior: the SAME importance-ranked frontier dispatches broadly when the pool is

@@ -31,7 +31,7 @@ import {
   type SelectedIdentityPin,
 } from './su-persona-render';
 import { requestSessionIdentityActivationInTransaction } from './agent-tools/coordination/control-anchor';
-import { findLiveHost, injectIntoHost } from './events/await/psu-pty-discovery';
+import { findLiveHostAsync, injectIntoHost } from './events/await/psu-pty-discovery';
 import { tagTurnForInjection } from './turn-provenance/turn-provenance';
 
 const HISTORY_LIMIT = IDENTITY_HISTORY_LIMIT;
@@ -145,7 +145,7 @@ export async function readIdentitySurface(input: {
             ON b.workspace_id = a.workspace_id AND b.owner_id = a.coord_owner_id
          WHERE a.workspace_id = ${input.workspaceId}
            AND a.coord_owner_id = ${ownerId}
-         ORDER BY (a.ended_at IS NULL AND a.ended_by IS NULL) DESC, a.started_at DESC, a.id DESC
+         ORDER BY a.id DESC
          LIMIT 1
       `
     : [];
@@ -469,7 +469,7 @@ async function nudgeOwner(
   delivery: MutationDelivery | null,
 ): Promise<{ queued: boolean; reason: string | null }> {
   if (!delivery) return { queued: false, reason: null };
-  const host = findLiveHost(ownerId);
+  const host = await findLiveHostAsync(ownerId);
   if (!host)
     return {
       queued: false,
@@ -479,13 +479,25 @@ async function nudgeOwner(
     delivery === 'relaunch-with-carry'
       ? 'A domain/client identity change is ready and requires a fresh context. Finish the atomic step in hand, checkpoint current work, then call session:request-compaction at the clean boundary. The successor will rebuild from the new explicit identity stack; do not treat the desired identity as applied before that acknowledgement.'
       : 'A soft identity stack change is ready. Continue normally; the control transition attached to this turn carries the validated layer and the host acknowledgement records when it becomes applied.';
-  let data = message;
-  try {
-    data = tagTurnForInjection({ sid: ownerId, origin: 'coord-inject:identity-management', text: message }).taggedText;
-  } catch {
-    /* a provenance write must not hide the delivery failure */
+  // tagTurnForInjection returns an envelope even when the ledger write fails
+  // (the hook then classifies the turn as unverified). If it throws before it
+  // can make that envelope, do not send raw machine text that defaults to owner.
+  const tagged = await tagTurnForInjection({
+    sid: ownerId,
+    origin: 'coord-inject:identity-management',
+    text: message,
+  }).then(
+    (turn) => ({ ok: true as const, data: turn.taggedText }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+  if (!tagged.ok) {
+    const detail = tagged.error instanceof Error ? tagged.error.message : String(tagged.error);
+    return {
+      queued: false,
+      reason: `turn-provenance tagging failed; nudge was not delivered${detail ? `: ${detail}` : ''}`,
+    };
   }
-  const queued = await injectIntoHost(host.sock, { mode: 'turn', data, ownerId });
+  const queued = await injectIntoHost(host.sock, { mode: 'turn', data: tagged.data, ownerId });
   return {
     queued,
     reason: queued ? null : 'the session host refused the delivery nudge; retry after the session is idle',
@@ -501,7 +513,7 @@ export async function mutateIdentityStack(input: IdentityMutationInput): Promise
       LEFT JOIN harness_shared.session_briefs b
         ON b.workspace_id = a.workspace_id AND b.owner_id = a.coord_owner_id
      WHERE a.workspace_id = ${input.workspaceId} AND a.coord_owner_id = ${input.ownerId}
-     ORDER BY (a.ended_at IS NULL AND a.ended_by IS NULL) DESC, a.started_at DESC, a.id DESC
+     ORDER BY a.id DESC
      LIMIT 1
   `;
   const row = rows[0];

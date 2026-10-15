@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-007 packaged desktop five cold and five warm R-7 cohort",
+  "framework": "operational",
+  "command": [
+    "python3 $HOME/.papercusp/perf/p007-native-current/r188-r7-evaluate.py",
+    "npm run test:file -- packages/operator-core/lib/system-health/desktop-perf-budgets.test.ts packages/operator-core/lib/endpoint-route/routes/admin/testing-desktop-perf-ingest.test.ts"
+  ],
+  "startedAt": "2026-10-02T23:54:29Z",
+  "finishedAt": "2026-10-02T23:56:44Z",
+  "exitCode": 0,
+  "summary": "An independent decimal-safe evaluator read the frozen ten-run native WDIO cohort on the private accepted package. Every measured popup, FCP and LCP value passed. The original wrapper failed only because its integer-only regex omitted three decimal readings; its failed summary remains preserved. Two related source test files passed 24 tests.",
+  "assertions": [
+    { "id": "fixed-native-cohort", "passed": true, "evidence": "Frozen r188 summary lists exactly c1,w1 through c5,w5 without replacement; each WDIO suite exited zero, each cold profile began empty, and each warm profile began populated. Independent evaluator exit 0." },
+    { "id": "popup-budget", "passed": true, "evidence": "All ten hashed logs contain one measured plan-popup-open value, range 433-1076ms, below the 1500ms budget." },
+    { "id": "required-web-vitals", "passed": true, "evidence": "All ten hashed logs contain one ready FCP and LCP value. FCP range 720-1114ms <=3000ms; LCP range 2023.0000000000002-3615ms <=4000ms. Decimal values are parsed without rounding or marking them missing." },
+    { "id": "package-identity", "passed": true, "evidence": "Private .deb SHA-256 8bb4870b889f8595e38cea5a7926df150dd6514d3a37a1e85e126094fe90e210, extracted binary badda89ad54d89503f0e3a1fa8907f9311a95f1ade08f87f030ead6e21c4f2c0, and package/host SPA 0ce2514188015823b049257e8be6913e88eb6921d082624ebc53d5f8c3d1e873 match the frozen summary. Runtime font style and custom protocol match all ten runs." },
+    { "id": "durable-publication", "passed": true, "evidence": "Every run published 25 measures with status pass and zero over budget to the frozen host; original wrapper exit 1 and summary SHA-256 02ea9495f0bb303811d0ea8849d3b38aa24d76710dc05e5171e9c49d866469fc remain recorded." },
+    { "id": "source-regression-tests", "passed": true, "evidence": "npm run test:file routed both named files at HEAD cc40bd946e: 2 files, 24 tests passed, 0 skipped, 0 uncommitted named test paths." }
+  ],
+  "planSlug": "papercusp-log-performance-remediation-2026-09-23",
+  "planItemId": "P-007",
+  "workItemId": "WI-10002829",
+  "clauses": ["AUTO-BAR-R-7-P-007@4", "PERF-P-007@1"],
+  "scenario": "existing WDIO plan-popup-open.perf.spec.ts in the extracted, privately repacked Papercusp GUI package",
+  "stoppingRule": "five paired cold and warm native runs; run all ten without replacement",
+  "runOrder": ["c1", "w1", "c2", "w2", "c3", "w3", "c4", "w4", "c5", "w5"],
+  "build": {
+    "buildSha": "fe10e95f1d90b02e2325261d2db47312190e22d8",
+    "dirty": false,
+    "packageSha256": "8bb4870b889f8595e38cea5a7926df150dd6514d3a37a1e85e126094fe90e210",
+    "extractedBinarySha256": "badda89ad54d89503f0e3a1fa8907f9311a95f1ade08f87f030ead6e21c4f2c0",
+    "packageSpaIndexSha256": "0ce2514188015823b049257e8be6913e88eb6921d082624ebc53d5f8c3d1e873",
+    "frozenHostSpaIndexSha256": "0ce2514188015823b049257e8be6913e88eb6921d082624ebc53d5f8c3d1e873",
+    "frozenHostApiBundleSha256": "ff52afe9a8b9cf0a92493ea19caa9fc68332c331b4d651c6c064b4dbab004b53",
+    "runtimeFontStyle": "font-family: Noto Sans, sans-serif",
+    "runtimeProtocol": "papercusp://localhost/"
+  },
+  "budgetsMs": { "popup": 1500, "fcp": 3000, "lcp": 4000 },
+  "runs": [
+    { "id": "c1", "popupMs": 631, "fcpMs": 797, "lcpMs": 2307, "logSha256": "760f0a42c0055972e7883d7a30fde0be5bb400d5ad37fa050ee32d04580ce941" },
+    { "id": "w1", "popupMs": 509, "fcpMs": 830.0000000000001, "lcpMs": 3038.0000000000005, "logSha256": "44bf4523b47adaad0b065ed424b450dcf4d048829c0d88b56ddbbcef8ce8deec" },
+    { "id": "c2", "popupMs": 539, "fcpMs": 720, "lcpMs": 2023.0000000000002, "logSha256": "b607caf4a7b6e87e8da1c016f257406e38586e9a8e2ce4f1d17f55aa2ff82656" },
+    { "id": "w2", "popupMs": 433, "fcpMs": 834, "lcpMs": 3615, "logSha256": "9032ac8080177ded7ab9fbc81a88ad7036b365a4b913f776c09ba06e769c366f" },
+    { "id": "c3", "popupMs": 556, "fcpMs": 736, "lcpMs": 2380, "logSha256": "492e0cc753393db076917207fda5f2eb5e9afec8ccb5435471cf3bd205956b84" },
+    { "id": "w3", "popupMs": 465, "fcpMs": 801, "lcpMs": 2492, "logSha256": "037496a73158fb6003f1e1f12c65085c560571bad76c3b076b8c1728c5e1fd68" },
+    { "id": "c4", "popupMs": 572, "fcpMs": 766, "lcpMs": 2140, "logSha256": "8993b2c2916fc4a14e70fa48ffebc9d7f03b2185f22f375499b9be10b5dcb113" },
+    { "id": "w4", "popupMs": 580, "fcpMs": 1114, "lcpMs": 2972, "logSha256": "f1f7edb8b5ae01a8db4489f5f6b7f87a5da794c34434aeaf944bb29c13eb16de" },
+    { "id": "c5", "popupMs": 1076, "fcpMs": 823.0000000000001, "lcpMs": 2390, "logSha256": "f89d88fbca60aaf938c286b7e1c34fed92821edc91a2186fd7659d0bcd6b604a" },
+    { "id": "w5", "popupMs": 440, "fcpMs": 751, "lcpMs": 2636, "logSha256": "185b50754ae1b5e751637d150eb14272b67cc9664b176f9927e7f9352b7924ab" }
+  ],
+  "result": {
+    "coldProfilesInitiallyEmpty": 5,
+    "warmProfilesInitiallyPopulated": 5,
+    "wdioSuiteExitZero": 10,
+    "publishedPerRun": 25,
+    "publishedStatus": "pass",
+    "publishedOverBudget": 0,
+    "popupMinMaxMs": [433, 1076],
+    "fcpMinMaxMs": [720, 1114],
+    "lcpMinMaxMs": [2023.0000000000002, 3615],
+    "correctedCohortPass": true
+  },
+  "originalWrapper": {
+    "summarySha256": "02ea9495f0bb303811d0ea8849d3b38aa24d76710dc05e5171e9c49d866469fc",
+    "exit": 1,
+    "reportedPass": false,
+    "cause": "Its integer-only FCP/LCP regex parsed three valid decimal readings as missing. The original summary was preserved.",
+    "runnerSha256": "c2ca5d093f973fa05857d338ef1bda1d5871e24ce6455586eb9cbe40d47fb490",
+    "independentEvaluatorSha256": "4189b0b375db7e3fdf616c855890dcbe1a543bc0af9ff78ccd88116e33d40909"
+  },
+  "rawEvidenceDirectory": "$HOME/.papercusp/perf/p007-native-current",
+  "verification": {
+    "evaluatorCommand": "python3 $HOME/.papercusp/perf/p007-native-current/r188-r7-evaluate.py",
+    "evaluatorExit": 0,
+    "sourceTestCommand": "npm run test:file -- packages/operator-core/lib/system-health/desktop-perf-budgets.test.ts packages/operator-core/lib/endpoint-route/routes/admin/testing-desktop-perf-ingest.test.ts",
+    "sourceTestResult": "2 files, 24 tests passed; zero skipped; HEAD cc40bd946e; named tested files clean",
+    "buildToCurrentSourceDiff": "git diff --name-only fe10e95f1d90b02e2325261d2db47312190e22d8..HEAD -- tools/perf-test/wdio packages/operator-core/lib/system-health/desktop-perf-budgets.ts apps/operator-vite/src produced no paths"
+  },
+  "limits": "This is acceptance on the named private packaged build and frozen local host. It does not assert that the release checkout or deployed :3070 is at that build. The archived raw logs live outside the repository; their hashes and corrected values are recorded here."
+}

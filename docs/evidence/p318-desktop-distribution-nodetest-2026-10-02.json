@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-318 ship evidence: papercusp-desktop GUI/Server distribution node:test files",
+  "framework": "node:test",
+  "command": [
+    "cd papercusp-desktop",
+    "node --test test/tauri-config-resources.test.js test/build-linux-distribution-profile.test.js"
+  ],
+  "startedAt": "2026-10-02T02:46:09Z",
+  "finishedAt": "2026-10-02T02:46:11Z",
+  "exitCode": 0,
+  "summary": "23 tests, 23 pass, 0 fail, 0 skipped. These node:test files record no test_runs rows through testing:run, so this file records the run for plan byoc-cloud-workspaces-gcp-aws-azure-2026-08-22 clauses THIN-GUI-DISTRIBUTION-P048 (tauri-config-resources), SERVER-PROFILE-SPLIT-P049 (build-linux-distribution-profile) and VM-PROFILE-INTEGRATION-P053 (build-linux-distribution-profile). papercusp-desktop/test/release-sidecar-prune-and-scrub.test.js is NOT covered here: it has one failing test (WI-10005239).",
+  "repository": "papercusp-desktop",
+  "sourceCommit": "4caa92494e47951be12a64b9c8a0e066ceb17bcf",
+  "testFiles": [
+    "papercusp-desktop/test/tauri-config-resources.test.js",
+    "papercusp-desktop/test/build-linux-distribution-profile.test.js"
+  ],
+  "rawEvidence": {
+    "path": "/tmp/p318-desktop-nodetest.log",
+    "sha256": "abdceb450e2724249554c541d685597be6d11e608b23ae0430b190a46b7da4a0"
+  },
+  "counts": {
+    "tests": 23,
+    "pass": 23,
+    "fail": 0,
+    "skipped": 0
+  },
+  "assertions": [
+    {
+      "id": "all-tests-pass",
+      "passed": true,
+      "evidence": "node:test summary lines: # tests 23, # pass 23, # fail 0, # skipped 0; process exit 0."
+    }
+  ]
+}

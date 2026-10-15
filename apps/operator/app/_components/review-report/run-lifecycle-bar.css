@@ -161,9 +161,15 @@
     flex-wrap: wrap;
   }
 
+  /* The actions take their own row, indented under the text. The base rule's
+     flex: 0 0 auto forbids shrinking, so basis 100% PLUS the 38px indent was
+     always 38px wider than the line and pushed "Re-run" past the report edge
+     in a 520px container (review-report-responsive, WI-10006792). Shrink to
+     the line instead; the buttons still wrap inside it. */
   .run-lifecycle__actions {
     margin-left: 38px;
-    flex-basis: 100%;
+    flex: 1 1 100%;
+    min-width: 0;
     justify-content: flex-start;
   }
 }

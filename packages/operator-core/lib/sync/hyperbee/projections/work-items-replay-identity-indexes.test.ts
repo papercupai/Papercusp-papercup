@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { COALESCED_REPLAY_IDENTITY_INDEXES } from './engineer-issues';
 import {
+  INTAKE_PROMOTION_IDENTITY_INDEX,
   RESOURCE_GOVERNOR_IDENTITY_INDEX,
   WORK_ITEMS_UNIQUE_INDEX_REPLAY_POLICY,
   coalescedReplayIdentityIndexes,
@@ -71,6 +72,7 @@ describe('work_items unique-index replay policy (WI-2142873 wedge class)', () =>
         'work_items_watchdog_identity_uq',
         'work_items_keyless_title_identity_uq',
         RESOURCE_GOVERNOR_IDENTITY_INDEX,
+        INTAKE_PROMOTION_IDENTITY_INDEX,
         'work_items_condition_key_uq',
       ]),
     );

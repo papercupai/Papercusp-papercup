@@ -175,7 +175,11 @@ export default function PotWorkspaceCards({ groups, workspaceLabel, onDrill, onC
     {
       key: 'kind',
       header: 'Kind',
-      width: 0.9,
+      // A floor under the fr share (WI-10006513, measured on the deployed
+      // cloud portal's Work tab at 1024x650): the bare 0.9fr track was 58px,
+      // under the 62px "HARNESS" badge + 20px cell padding, so every row cut
+      // its badge. The grid's own scroller takes any overflow instead.
+      width: 'minmax(84px, 0.9fr)',
       sortKey: 'kind',
       toCopyText: (r) => r.kind,
       render: ({ row }) => (
@@ -242,7 +246,9 @@ export default function PotWorkspaceCards({ groups, workspaceLabel, onDrill, onC
     {
       key: 'shared',
       header: 'Shared',
-      width: 0.9,
+      // Floor (WI-10006513): the 52px "shared" pill + 20px padding did not fit
+      // the 58px track at 1024px.
+      width: 'minmax(76px, 0.9fr)',
       sortKey: 'is_shared',
       toCopyText: (r) => (r.is_shared ? 'shared' : ''),
       render: ({ row }) =>
@@ -329,6 +335,12 @@ export default function PotWorkspaceCards({ groups, workspaceLabel, onDrill, onC
           'data-testid': row.isRoot ? `hive-card-${row.slug}` : `hive-member-${row.slug}`,
           className: row.isRoot ? 'pc-pot-row pc-pot-row--root' : 'pc-pot-row pc-pot-row--member',
           tabIndex: 0,
+          onKeyDown: (event) => {
+            if (event.target !== event.currentTarget || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+              || (event.key !== 'Enter' && event.key !== ' ')) return;
+            event.preventDefault();
+            onDrill(row.hiveRootSlug, row.slug);
+          },
         })}
         className="pc-pot-grid"
         style={{ flex: 1, minHeight: 0 }}

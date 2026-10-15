@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   contributeUpstream,
   type ContributeUpstreamInput,
@@ -25,6 +25,77 @@ const MEMBER_NO_FORK: SelfPotMember = {
   upstreamRemote: 'https://github.com/Papercusp/papercup.git',
   defaultBranch: 'main',
 };
+
+describe('report contribution consent and shared intake (P-015)', () => {
+  const receipt = { routed: 'work-item', classification: { kind: 'bug', basis: 'defect-cue' }, capture: { ok: true, issue: { id: 'EI-report' } } } as const;
+
+  it('does not resolve membership or write before consent', async () => {
+    const membership = vi.fn();
+    const intake = vi.fn();
+    expect(await contributeUpstream({ kind: 'report', report: { text: 'Export crashes' }, hasCanonicalReportMembership: membership, intakeReport: intake }))
+      .toMatchObject({ prepared: true, needs: ['confirm'] });
+    expect(membership).not.toHaveBeenCalled();
+    expect(intake).not.toHaveBeenCalled();
+  });
+
+  it('requires canonical membership rather than treating an arbitrary local Pot as upstream', async () => {
+    const intake = vi.fn().mockResolvedValue(receipt);
+    const result = await contributeUpstream({ kind: 'report', confirm: true, report: { text: 'Export crashes' }, hasCanonicalReportMembership: async () => false, intakeReport: intake });
+    expect(result).toMatchObject({ prepared: true, needs: ['canonical-Pot membership'] });
+    expect(intake).not.toHaveBeenCalled();
+  });
+
+  it('uses the existing shared intake and returns queued, not received upstream', async () => {
+    const intake = vi.fn().mockResolvedValue(receipt);
+    const context = { appVersion: '0.0.1', screen: '/settings' };
+    const result = await contributeUpstream({ kind: 'report', confirm: true, workspaceId: 'install-ws', report: { text: 'Export crashes', reportContext: context }, hasCanonicalReportMembership: async () => true, intakeReport: intake });
+    expect(intake).toHaveBeenCalledWith({ text: 'Export crashes', reportContext: context, scope: 'harness:papercusp', workspaceId: 'install-ws' });
+    expect(result).toMatchObject({ queued: true, result: receipt });
+    expect(result).not.toHaveProperty('sent');
+  });
+
+  it('does not claim an upstream bug receipt when classification stores a note', async () => {
+    const result = await contributeUpstream({ kind: 'report', confirm: true, report: { text: 'FYI: a note' }, hasCanonicalReportMembership: async () => true, intakeReport: vi.fn().mockResolvedValue({ routed: 'memory' }) });
+    expect(result).toMatchObject({ ok: true, localOnly: true, result: { routed: 'memory' } });
+    expect(result).not.toHaveProperty('queued');
+    expect(result).not.toHaveProperty('sent');
+  });
+
+  it('requires report text before touching membership or capture', async () => {
+    const membership = vi.fn();
+    const intake = vi.fn();
+    expect(await contributeUpstream({ kind: 'report', confirm: true, report: { text: ' ' }, hasCanonicalReportMembership: membership, intakeReport: intake }))
+      .toMatchObject({ prepared: true, needs: ['report'] });
+    expect(membership).not.toHaveBeenCalled();
+    expect(intake).not.toHaveBeenCalled();
+  });
+
+  it('does not forward a forged reporter or an arbitrary target scope', async () => {
+    const intake = vi.fn().mockResolvedValue(receipt);
+    await contributeUpstream({ kind: 'report', confirm: true, workspaceId: 'install-ws',
+      report: { text: 'Export crashes', scope: 'harness:private', reporterId: 'admin' } as never,
+      hasCanonicalReportMembership: async () => true, intakeReport: intake });
+    expect(intake).toHaveBeenCalledWith({ text: 'Export crashes', scope: 'harness:papercusp', workspaceId: 'install-ws' });
+  });
+
+  it('returns a failure, not a receipt, if membership cannot be checked', async () => {
+    const intake = vi.fn();
+    const result = await contributeUpstream({ kind: 'report', confirm: true, report: { text: 'Export crashes' },
+      hasCanonicalReportMembership: async () => { throw new Error('membership unavailable'); }, intakeReport: intake });
+    expect(result).toMatchObject({ ok: false, error: 'report_contribution_failed' });
+    expect(intake).not.toHaveBeenCalled();
+  });
+
+  it('never claims queued delivery for failed capture or a missing local receipt', async () => {
+    for (const capture of [{ ok: false }, { ok: true }]) {
+      const result = await contributeUpstream({ kind: 'report', confirm: true, report: { text: 'Export crashes' },
+        hasCanonicalReportMembership: async () => true,
+        intakeReport: vi.fn().mockResolvedValue({ ...receipt, capture }) });
+      expect(result).toMatchObject({ ok: false, error: 'report_contribution_failed' });
+      expect(result).not.toHaveProperty('queued');
+    }
+  });
+});
 
 function deps(over: Partial<ContributeUpstreamInput> = {}): ContributeUpstreamInput {
   return {

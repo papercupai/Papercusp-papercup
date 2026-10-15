@@ -16,10 +16,14 @@
  * stripe-subscription-signup-2026-10-01 P-003.
  */
 import { withHostedServiceContext } from '@papercusp/db-org';
+import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
 import type { HostedServiceContextRunner } from '../workos-lifecycle-postgres';
+import { appendOrganizationAuditEvent } from '../governance';
 import { isHostedSubscriptionStatus, type HostedSubscriptionSnapshot } from './entitlement-seam';
 import { subscriptionOrderKey, type HostedBillingEvent, type HostedBillingFact } from './stripe-billing-events';
+import type { StripeBillingEventPageEvidence } from './stripe-billing-client';
+import type { HostedBillingRecoveryTarget, HostedBillingDeliveryIssue } from './billing-recovery';
 
 export interface HostedBillingCustomer {
   readonly organizationId: string;
@@ -67,6 +71,64 @@ class FactRejection extends Error {
   }
 }
 
+export interface HostedBillingReconciliationCheckpoint {
+  readonly accountId: string;
+  readonly customerId: string;
+  readonly organizationId: string;
+  readonly livemode: boolean;
+  readonly createdFrom: number;
+  readonly createdBefore: number;
+  readonly startingAfter: string | null;
+  readonly revision: number;
+  readonly complete: boolean;
+  readonly cursors: readonly string[];
+}
+
+/** Recovery is a server-only extension of the same billing transaction store. */
+export interface HostedBillingRecoveryStore extends HostedBillingStore {
+  reconciliationTargets(input: { expectedLivemode: boolean; limit: number }): Promise<HostedBillingRecoveryTarget[]>;
+  deliveryIssues(input: { expectedLivemode: boolean; limit: number }): Promise<HostedBillingDeliveryIssue[]>;
+  beginReconciliation(input: {
+    organizationId: string; accountId: string; expectedLivemode: boolean;
+    createdFrom: number; createdBefore: number;
+  }): Promise<HostedBillingReconciliationCheckpoint>;
+  applyReconciliationPage(input: {
+    checkpoint: HostedBillingReconciliationCheckpoint;
+    evidence: StripeBillingEventPageEvidence;
+    planKeyForPrice: (priceId: string | null) => string | null;
+  }): Promise<{ outcome: 'applied' | 'cursor-conflict'; checkpoint: HostedBillingReconciliationCheckpoint }>;
+}
+
+const commitment = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const factDigest = (event: HostedBillingEvent): string => commitment(event);
+const validWindow = (from: number, before: number) => Number.isSafeInteger(from) && from >= 0
+  && Number.isSafeInteger(before) && before > from && before <= 8_640_000_000_000;
+
+function recoveryPageValid(page: StripeBillingEventPageEvidence, pin: HostedBillingReconciliationCheckpoint): boolean {
+  if (page.source !== 'stripe-authenticated-api' || page.accountId !== pin.accountId || page.customerId !== pin.customerId
+      || page.organizationId !== pin.organizationId || page.livemode !== pin.livemode
+      || page.createdFrom !== pin.createdFrom || page.createdBefore !== pin.createdBefore
+      || page.startingAfter !== pin.startingAfter || typeof page.hasMore !== 'boolean'
+      || !Number.isSafeInteger(page.observedAtMs) || page.observedAtMs <= 0
+      || !Array.isArray(page.requestIds) || page.requestIds.length !== 3 || page.requestIds.some(id => !/^req_[A-Za-z0-9]+$/.test(id))
+      || !Array.isArray(page.observations) || page.observations.length > 100
+      || (page.hasMore ? !page.nextCursor || !/^evt_[A-Za-z0-9]+$/.test(page.nextCursor)
+        || page.nextCursor === pin.startingAfter || pin.cursors.includes(page.nextCursor) : page.nextCursor !== null)) return false;
+  const { evidenceRef, ...selected } = page;
+  if (evidenceRef !== `stripe-billing-page:${commitment(selected)}`) return false;
+  const seen = new Set<string>(); let lastCreated = pin.createdBefore;
+  for (const { event, apiObjectDigest } of page.observations) {
+    const seconds = event.createdAt instanceof Date ? event.createdAt.getTime() / 1000 : NaN;
+    if (!/^evt_[A-Za-z0-9]+$/.test(event.eventId) || event.eventId === pin.startingAfter || seen.has(event.eventId)
+        || !/^[0-9a-f]{64}$/.test(apiObjectDigest) || event.livemode !== pin.livemode
+        || !Number.isSafeInteger(seconds) || seconds < pin.createdFrom || seconds >= pin.createdBefore || seconds > lastCreated
+        || !event.facts.length || event.facts.some((f: HostedBillingFact) => f.stripeCustomerId !== pin.customerId
+          || (f.organizationId !== null && f.organizationId !== pin.organizationId))) return false;
+    seen.add(event.eventId); lastCreated = seconds;
+  }
+  return true;
+}
+
 interface SubscriptionRow {
   stripe_subscription_id: string;
   organization_id: string;
@@ -81,8 +143,132 @@ interface SubscriptionRow {
 
 const toDate = (v: Date | string | null): Date | null => (v === null ? null : v instanceof Date ? v : new Date(v));
 
-export class PostgresHostedBillingStore implements HostedBillingStore {
+export class PostgresHostedBillingStore implements HostedBillingRecoveryStore {
   constructor(private readonly run: HostedServiceContextRunner = (fn) => withHostedServiceContext(fn)) {}
+
+  async reconciliationTargets(input: { expectedLivemode: boolean; limit: number }): Promise<HostedBillingRecoveryTarget[]> {
+    if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) throw new Error('billing_recovery_invalid_limit');
+    return this.run(async sql => {
+      const rows = await sql<Array<{ organization_id: string; reconciliation_checkpoint: HostedBillingReconciliationCheckpoint | null }>>`
+        SELECT organization_id::text, reconciliation_checkpoint FROM papercusp_auth.hosted_billing_customers
+         WHERE livemode = ${input.expectedLivemode}
+         ORDER BY (reconciliation_checkpoint->>'createdBefore')::bigint ASC NULLS FIRST, organization_id
+         LIMIT ${input.limit}
+      `;
+      return rows.map(row => ({ organizationId: row.organization_id, checkpoint: row.reconciliation_checkpoint }));
+    });
+  }
+
+  async deliveryIssues(input: { expectedLivemode: boolean; limit: number }): Promise<HostedBillingDeliveryIssue[]> {
+    if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) throw new Error('billing_recovery_invalid_limit');
+    return this.run(async sql => {
+      const rows = await sql<Array<{ provider_event_id: string; outcome: string; rejection_code: string | null }>>`
+        SELECT provider_event_id, outcome, rejection_code FROM papercusp_auth.hosted_billing_webhook_events
+         WHERE livemode = ${input.expectedLivemode} AND (outcome = 'rejected' OR body_digest IS NULL)
+         ORDER BY received_at, provider_event_id COLLATE "C" LIMIT ${input.limit}
+      `;
+      return rows.map(row => ({ eventId: row.provider_event_id,
+        failureClass: row.outcome === 'rejected'
+          ? row.rejection_code === 'unknown_customer' ? 'customer-unmapped' : 'permanent-rejection' : 'undelivered' }));
+    });
+  }
+
+  async beginReconciliation(input: {
+    organizationId: string; accountId: string; expectedLivemode: boolean; createdFrom: number; createdBefore: number;
+  }): Promise<HostedBillingReconciliationCheckpoint> {
+    const pin = { ...input };
+    if (!/^acct_[A-Za-z0-9]+$/.test(pin.accountId) || !validWindow(pin.createdFrom, pin.createdBefore)) {
+      throw new Error('billing_recovery_invalid_window');
+    }
+    return this.run(async sql => {
+      const rows = await sql<Array<{ stripe_customer_id: string; livemode: boolean; reconciliation_checkpoint: HostedBillingReconciliationCheckpoint | null }>>`
+        SELECT stripe_customer_id, livemode, reconciliation_checkpoint FROM papercusp_auth.hosted_billing_customers
+         WHERE organization_id = ${pin.organizationId}::uuid FOR UPDATE
+      `;
+      const row = rows[0];
+      if (!row || row.livemode !== pin.expectedLivemode) throw new Error('billing_recovery_customer_pin_mismatch');
+      const prior = row.reconciliation_checkpoint;
+      if (prior && prior.accountId !== pin.accountId) throw new Error('billing_recovery_account_pin_mismatch');
+      // Resume the unfinished fixed window even if a later wake asks for a
+      // newer one. Never silently abandon its tail after a crash.
+      if (prior && (!prior.complete || (prior.createdFrom === pin.createdFrom && prior.createdBefore === pin.createdBefore))) return prior;
+      if (prior && (pin.createdFrom > prior.createdBefore || pin.createdBefore <= prior.createdBefore)) {
+        throw new Error('billing_recovery_window_gap');
+      }
+      const checkpoint: HostedBillingReconciliationCheckpoint = { accountId: pin.accountId,
+        customerId: row.stripe_customer_id, organizationId: pin.organizationId, livemode: row.livemode,
+        createdFrom: pin.createdFrom, createdBefore: pin.createdBefore, startingAfter: null,
+        revision: (prior?.revision ?? 0) + 1, complete: false, cursors: [] };
+      await sql`UPDATE papercusp_auth.hosted_billing_customers SET reconciliation_checkpoint = ${sql.json({ ...checkpoint, cursors: [...checkpoint.cursors] })}, updated_at = now()
+        WHERE organization_id = ${pin.organizationId}::uuid`;
+      return checkpoint;
+    });
+  }
+
+  async applyReconciliationPage(input: {
+    checkpoint: HostedBillingReconciliationCheckpoint; evidence: StripeBillingEventPageEvidence;
+    planKeyForPrice: (priceId: string | null) => string | null;
+  }): Promise<{ outcome: 'applied' | 'cursor-conflict'; checkpoint: HostedBillingReconciliationCheckpoint }> {
+    // Snapshot Dates and arrays too: queued callers cannot switch scope.
+    const pin = structuredClone(input.checkpoint); const page = structuredClone(input.evidence);
+    const planKeyForPrice = input.planKeyForPrice;
+    if (!recoveryPageValid(page, pin)) throw new Error('billing_recovery_invalid_page');
+    return this.run(async sql => {
+      const rows = await sql<Array<{ stripe_customer_id: string; livemode: boolean; reconciliation_checkpoint: HostedBillingReconciliationCheckpoint | null }>>`
+        SELECT stripe_customer_id, livemode, reconciliation_checkpoint FROM papercusp_auth.hosted_billing_customers
+         WHERE organization_id = ${pin.organizationId}::uuid FOR UPDATE
+      `;
+      const row = rows[0]; const current = row?.reconciliation_checkpoint;
+      if (!current || row?.stripe_customer_id !== page.customerId || row.livemode !== page.livemode) {
+        throw new Error('billing_recovery_customer_pin_mismatch');
+      }
+      if (current.complete || current.revision !== pin.revision || current.accountId !== pin.accountId
+          || current.createdFrom !== pin.createdFrom || current.createdBefore !== pin.createdBefore
+          || current.startingAfter !== pin.startingAfter) return { outcome: 'cursor-conflict', checkpoint: current };
+      // Recheck visited cursors from the authoritative row, not caller memory.
+      if (!recoveryPageValid(page, current) || current.cursors.length >= 1000) throw new Error('billing_recovery_cursor_cycle_or_budget');
+      for (const observation of [...page.observations].sort((a, b) => a.event.eventId < b.event.eventId ? -1 : 1)) {
+        const { event, apiObjectDigest } = observation; const digest = factDigest(event);
+        const provenance = { source: page.source, accountId: page.accountId, apiObjectDigest, factDigest: digest,
+          observedAtMs: page.observedAtMs, requestIds: [...page.requestIds], evidenceRef: page.evidenceRef };
+        await sql`INSERT INTO papercusp_auth.hosted_billing_webhook_events
+          (provider_event_id, event_type, body_digest, livemode, outcome, organization_id, api_observation)
+          VALUES (${event.eventId}, ${event.eventType}, NULL, ${event.livemode}, 'ignored', ${page.organizationId}::uuid, ${sql.json(provenance)})
+          ON CONFLICT (provider_event_id) DO NOTHING`;
+        const receipts = await sql<Array<{ event_type: string; livemode: boolean; outcome: string; rejection_code: string | null;
+          organization_id: string | null; fact_digest: string | null; api_observation: typeof provenance | null }>>`
+          SELECT event_type, livemode, outcome, rejection_code, organization_id::text AS organization_id, fact_digest, api_observation
+            FROM papercusp_auth.hosted_billing_webhook_events WHERE provider_event_id = ${event.eventId} FOR UPDATE
+        `;
+        const receipt = receipts[0]!;
+        if (receipt.event_type !== event.eventType || receipt.livemode !== event.livemode
+            || (receipt.organization_id !== null && receipt.organization_id !== page.organizationId)
+            || (receipt.fact_digest !== null && receipt.fact_digest !== digest)
+            || (receipt.api_observation && (receipt.api_observation.accountId !== page.accountId
+              || receipt.api_observation.apiObjectDigest !== apiObjectDigest || receipt.api_observation.factDigest !== digest))) {
+          throw new Error('billing_recovery_event_mismatch');
+        }
+        // Only unknown-customer refusals become repairable once their real
+        // mapping exists. Permanent parse/mode/tenant refusals stay refused.
+        if (receipt.outcome === 'rejected' && receipt.rejection_code !== 'unknown_customer') {
+          throw new Error('billing_recovery_permanent_rejection');
+        }
+        for (const fact of event.facts) await applyFact(sql, fact, event, planKeyForPrice, true);
+        await sql`UPDATE papercusp_auth.hosted_billing_webhook_events SET api_observation = ${sql.json(provenance)}
+          WHERE provider_event_id = ${event.eventId}`;
+        await appendOrganizationAuditEvent({ organizationId: page.organizationId, actorKind: 'system', actorId: 'stripe',
+          action: 'billing.event.reconciled', purpose: 'hosted_subscription_billing', targetType: 'billing_event', targetId: event.eventId,
+          metadata: { providerEventId: event.eventId, source: page.source, accountId: page.accountId,
+            apiObjectDigest, evidenceRef: page.evidenceRef, requestIds: [...page.requestIds] } }, sql);
+      }
+      const checkpoint: HostedBillingReconciliationCheckpoint = { ...current, startingAfter: page.nextCursor,
+        revision: current.revision + 1, complete: !page.hasMore,
+        cursors: page.nextCursor ? [...current.cursors, page.nextCursor] : current.cursors };
+      await sql`UPDATE papercusp_auth.hosted_billing_customers SET reconciliation_checkpoint = ${sql.json({ ...checkpoint, cursors: [...checkpoint.cursors] })}, updated_at = now()
+        WHERE organization_id = ${page.organizationId}::uuid`;
+      return { outcome: 'applied', checkpoint };
+    });
+  }
 
   async customerFor(organizationId: string): Promise<HostedBillingCustomer | null> {
     return this.run(async (sql) => {
@@ -97,10 +283,11 @@ export class PostgresHostedBillingStore implements HostedBillingStore {
 
   async recordCustomer(customer: HostedBillingCustomer): Promise<HostedBillingCustomer> {
     return this.run(async (sql) => {
-      await sql`
+      const inserted = await sql`
         INSERT INTO papercusp_auth.hosted_billing_customers (organization_id, stripe_customer_id, livemode)
         VALUES (${customer.organizationId}::uuid, ${customer.stripeCustomerId}, ${customer.livemode})
         ON CONFLICT (organization_id) DO NOTHING
+        RETURNING organization_id
       `;
       const rows = await sql<Array<{ stripe_customer_id: string; livemode: boolean }>>`
         SELECT stripe_customer_id, livemode
@@ -108,6 +295,14 @@ export class PostgresHostedBillingStore implements HostedBillingStore {
          WHERE organization_id = ${customer.organizationId}::uuid
       `;
       if (!rows[0]) throw new Error('hosted_billing_customer_unavailable');
+      if (inserted.length) {
+        await appendOrganizationAuditEvent({
+          organizationId: customer.organizationId, actorKind: 'system', actorId: 'hosted-billing',
+          action: 'billing.customer.linked', purpose: 'hosted_subscription_billing',
+          targetType: 'billing_customer', targetId: rows[0].stripe_customer_id,
+          metadata: { livemode: rows[0].livemode },
+        }, sql);
+      }
       return { organizationId: customer.organizationId, stripeCustomerId: rows[0].stripe_customer_id, livemode: rows[0].livemode };
     });
   }
@@ -158,7 +353,11 @@ export class PostgresHostedBillingStore implements HostedBillingStore {
         INSERT INTO papercusp_auth.hosted_billing_webhook_events
           (provider_event_id, event_type, body_digest, livemode, outcome, rejection_code)
         VALUES (${input.eventId}, ${input.eventType}, ${input.bodyDigest}, ${input.livemode}, 'rejected', ${input.code})
-        ON CONFLICT (provider_event_id) DO NOTHING
+        ON CONFLICT (provider_event_id) DO UPDATE SET body_digest = EXCLUDED.body_digest,
+          outcome = EXCLUDED.outcome, rejection_code = EXCLUDED.rejection_code, received_at = now()
+        WHERE hosted_billing_webhook_events.body_digest IS NULL
+          AND hosted_billing_webhook_events.event_type = EXCLUDED.event_type
+          AND hosted_billing_webhook_events.livemode = EXCLUDED.livemode
         RETURNING provider_event_id
       `;
       if (inserted.length) return 'recorded';
@@ -179,9 +378,15 @@ export class PostgresHostedBillingStore implements HostedBillingStore {
         // key until this transaction ends, then sees the committed row.
         const claimed = await sql`
           INSERT INTO papercusp_auth.hosted_billing_webhook_events
-            (provider_event_id, event_type, body_digest, livemode, outcome)
-          VALUES (${event.eventId}, ${event.eventType}, ${bodyDigest}, ${event.livemode}, 'ignored')
-          ON CONFLICT (provider_event_id) DO NOTHING
+            (provider_event_id, event_type, body_digest, fact_digest, livemode, outcome)
+          VALUES (${event.eventId}, ${event.eventType}, ${bodyDigest}, ${factDigest(event)}, ${event.livemode}, 'ignored')
+          ON CONFLICT (provider_event_id) DO UPDATE SET body_digest = EXCLUDED.body_digest,
+            fact_digest = EXCLUDED.fact_digest, received_at = now()
+          WHERE hosted_billing_webhook_events.body_digest IS NULL
+            AND hosted_billing_webhook_events.event_type = EXCLUDED.event_type
+            AND hosted_billing_webhook_events.livemode = EXCLUDED.livemode
+            AND (hosted_billing_webhook_events.api_observation IS NULL
+              OR hosted_billing_webhook_events.api_observation->>'factDigest' = EXCLUDED.fact_digest)
           RETURNING provider_event_id
         `;
         if (!claimed.length) {
@@ -201,14 +406,24 @@ export class PostgresHostedBillingStore implements HostedBillingStore {
         if (event.facts.length === 0) return { outcome: 'ignored', organizationId: null };
 
         let organizationId: string | null = null;
+        const organizations = new Set<string>();
         for (const fact of event.facts) {
           organizationId = await applyFact(sql, fact, event, input.planKeyForPrice);
+          organizations.add(organizationId);
         }
         await sql`
           UPDATE papercusp_auth.hosted_billing_webhook_events
              SET outcome = 'applied', organization_id = ${organizationId}::uuid
            WHERE provider_event_id = ${event.eventId}
         `;
+        for (const organization of organizations) {
+          await appendOrganizationAuditEvent({
+            organizationId: organization, actorKind: 'system', actorId: 'stripe',
+            action: 'billing.event.applied', purpose: 'hosted_subscription_billing',
+            targetType: 'billing_event', targetId: event.eventId,
+            metadata: { providerEventId: event.eventId, eventType: event.eventType, livemode: event.livemode },
+          }, sql);
+        }
         return { outcome: 'applied', organizationId };
       });
     } catch (error) {
@@ -280,6 +495,7 @@ async function applyFact(
   fact: HostedBillingFact,
   event: HostedBillingEvent,
   planKeyForPrice: (priceId: string | null) => string | null,
+  repairSameOrder = false,
 ): Promise<string> {
   const mapped = await organizationForCustomer(sql, fact.stripeCustomerId);
   if (!mapped) throw new FactRejection('unknown_customer', fact.organizationId);
@@ -310,6 +526,9 @@ async function applyFact(
        WHERE s.stripe_subscription_id = ${fact.stripeSubscriptionId}
          AND (${key.terminal}::boolean, ${event.createdAt}::timestamptz, ${key.statusRank}::int, ${event.eventId}::text COLLATE "C")
            > (s.sub_terminal, s.sub_event_created, s.sub_status_rank, s.sub_event_id COLLATE "C")
+          OR (s.stripe_subscription_id = ${fact.stripeSubscriptionId} AND ${repairSameOrder}
+            AND (${key.terminal}::boolean, ${event.createdAt}::timestamptz, ${key.statusRank}::int, ${event.eventId}::text COLLATE "C")
+              = (s.sub_terminal, s.sub_event_created, s.sub_status_rank, s.sub_event_id COLLATE "C"))
     `;
   } else if (fact.kind === 'invoice') {
     await sql`
@@ -322,6 +541,8 @@ async function applyFact(
        WHERE s.stripe_subscription_id = ${fact.stripeSubscriptionId}
          AND (${event.createdAt}::timestamptz, ${event.eventId}::text COLLATE "C")
            > (s.invoice_event_created, s.invoice_event_id COLLATE "C")
+          OR (s.stripe_subscription_id = ${fact.stripeSubscriptionId} AND ${repairSameOrder}
+            AND (${event.createdAt}::timestamptz, ${event.eventId}::text COLLATE "C") = (s.invoice_event_created, s.invoice_event_id COLLATE "C"))
     `;
   }
   // 'checkout' needs nothing beyond ensureSubscriptionRow: the row now exists in

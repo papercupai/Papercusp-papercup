@@ -149,3 +149,53 @@ export function r33Verdicts(summaries: Readonly<Record<string, SiteSummary>>): R
     return { site, p95, baselineP95, bound, withinBound: p95 === null ? null : p95 <= bound };
   });
 }
+
+/** Load averages (1, 5, 15 min) when the D-024 baseline run started. */
+export const D024_LOADAVG_START: readonly [number, number, number] = [69.9, 75.9, 90.2];
+/** D-024's re-measure rule: load within 20% of the baseline run's. */
+export const D024_LOAD_TOLERANCE = 0.2;
+
+const LOAD_WINDOWS = ['1m', '5m', '15m'] as const;
+
+export interface LoadMatch {
+  /** True only when all three averages are in band at both the start and the end. */
+  matched: boolean;
+  band: Record<(typeof LOAD_WINDOWS)[number], { min: number; max: number }>;
+  start: readonly number[];
+  end: readonly number[];
+  /** Each average that left the band, e.g. "start 5m 111 > 91.1". */
+  outOfBand: string[];
+}
+
+/**
+ * Whether a run's load matched the D-024 baseline run (plan D-038). D-024 keeps a
+ * re-measure only "with load average within 20% of this baseline"; D-038 reads that as
+ * all three averages, at the start AND the end of the run. A 1-min-only check passed
+ * runs whose 5- and 15-min averages were 100-150 against D-024's 75.9 / 90.2.
+ */
+export function d024LoadMatch(start: readonly number[], end: readonly number[]): LoadMatch {
+  const round1 = (x: number) => Math.round(x * 10) / 10;
+  const band = Object.fromEntries(
+    LOAD_WINDOWS.map((w, i) => [
+      w,
+      {
+        min: round1(D024_LOADAVG_START[i] * (1 - D024_LOAD_TOLERANCE)),
+        max: round1(D024_LOADAVG_START[i] * (1 + D024_LOAD_TOLERANCE)),
+      },
+    ]),
+  ) as LoadMatch['band'];
+  const outOfBand: string[] = [];
+  for (const [label, triple] of [
+    ['start', start],
+    ['end', end],
+  ] as const) {
+    LOAD_WINDOWS.forEach((w, i) => {
+      const v = triple[i];
+      const { min, max } = band[w];
+      if (typeof v !== 'number' || !Number.isFinite(v)) outOfBand.push(`${label} ${w} missing`);
+      else if (v < min) outOfBand.push(`${label} ${w} ${round1(v)} < ${min}`);
+      else if (v > max) outOfBand.push(`${label} ${w} ${round1(v)} > ${max}`);
+    });
+  }
+  return { matched: outOfBand.length === 0, band, start: [...start], end: [...end], outOfBand };
+}

@@ -37,9 +37,9 @@ describe('EI-7 — release-manager committed model pin', () => {
     expect(roleModelDefault('release-manager')).toBe('opus:xhigh');
   });
 
-  it('resolves to opus @ xhigh effort even with AGENT_MODELS UNSET (the silent-downgrade fix)', () => {
+  it('maps the committed xhigh floor to Claude Opus 5 max even with AGENT_MODELS UNSET', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(applyRoleModel('claude -p', 'release-manager')).toBe('claude -p --model opus[1m] --effort xhigh');
+    expect(applyRoleModel('claude -p', 'release-manager')).toBe('claude -p --model opus[1m] --effort max');
   });
 
   it('an explicit AGENT_MODELS entry still OVERRIDES the committed default', () => {

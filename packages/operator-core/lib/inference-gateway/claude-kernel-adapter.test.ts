@@ -26,6 +26,7 @@ import {
 } from './claude-kernel-adapter';
 import {
   executeGatewayRequestKernel,
+  GatewayRequestKernelError,
   type ExecuteGatewayRequestKernelOptions,
   type GatewayKernelAccountPin,
   type GatewayKernelPolicy,
@@ -263,6 +264,35 @@ describe('claude kernel adapter', () => {
     await executeGatewayRequestKernel(options);
     expect(prepared).toHaveLength(1);
     expect(prepared[0]!.accountId).toBe('A');
+  });
+
+  it('preserves a typed authorization refusal without retrying a provider route', async () => {
+    const refusal = new GatewayRequestKernelError('private reservation refused', {
+      code: 'invalid-route', outcome: 'gateway-error', status: 403, retryable: false,
+    });
+    let sends = 0;
+    const { options, prepared } = harness(async (_target, init) => {
+      sends++; expect(init.diagnosticAccountId).toBe('A'); throw refusal;
+    });
+    await expect(executeGatewayRequestKernel(options)).rejects.toBe(refusal);
+    expect(sends).toBe(1); expect(prepared).toHaveLength(1);
+  });
+
+  it('preserves undici fetch diagnostics and the original cause on transport failure', async () => {
+    const fetchFailure = Object.assign(new TypeError('fetch failed'), {
+      cause: { code: 'ECONNRESET', message: 'read ECONNRESET' },
+    });
+    const { options } = harness(async () => { throw fetchFailure; }, { policy: { maxAttempts: 1 } });
+    const error = await executeGatewayRequestKernel(options).then(
+      () => { throw new Error('expected upstream failure'); },
+      (reason: unknown) => reason as { code: string; message: string; cause?: unknown },
+    );
+
+    expect(error).toMatchObject({
+      code: 'upstream-error',
+      message: 'inference-gateway: claude upstream failed: fetch failed (ECONNRESET: read ECONNRESET)',
+    });
+    expect(error.cause).toBe(fetchFailure);
   });
 
   it('retries a SIBLING egress IP on the SAME account for a bare-burst 429, without consulting the pool (D-011)', async () => {

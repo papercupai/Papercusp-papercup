@@ -1,0 +1,43 @@
+# A Codex startup update dialog can strand a managed wake
+URL: /internal/docs/agent-insights/managed-codex-startup-update-dialog
+
+Alive process plus pending-delivery-id can mean the Codex update menu blocked native binding. The host now overrides the update check on every managed Codex child and dismisses the real 0.162.x menu; pin dialog fixtures to a measured screen.
+
+A queued wake is not proof that an agent started. In EI-25449656496811250, the release reviewer finished its previous turn at 21:26Z. A carry-respawn process remained alive, but no new native transcript appeared and required wakes repeatedly parked as pending-delivery-id.
+
+## The measured cause
+
+The managed host's codex-starting-stuck-snapshot showed the Codex startup Update available dialog (0.161.0 to 0.162.0). Its options required a human action before normal startup. The host correctly refused to attest a native session: respawn-binding-unconfirmed, reason successor-native-id-missing. Neither a live PID nor queued wake proved pickup.
+
+Read the exact owner's host metadata and bounded lifecycle snapshot, revalidate process birth identity, and check the newest native transcript. Do not diagnose quota, overload or resource exhaustion from these symptoms. Do not resume a live source through capability:launch-agent: it auto-forks and would create a second reviewer.
+
+## It was the dominant strand, not a one-off (measured 2026-10-10)
+
+A census of every per-owner host event log under `~/.papercusp/psu-pty/` found 496 `codex-starting-stuck-snapshot` rows since 2026-10-07: 475 labelled `respawn binding` and 21 `launch kickoff`. All 496 showed this same menu (by then 0.162.0 to 0.162.1). Not one log contained a `codex-startup-update-dialog-*` event, so the host's Escape dismissal had never fired. 79 of the 81 Codex homes behind those snapshots lacked `check_for_update_on_startup = false` in their `config.toml`.
+
+Two defects stacked:
+
+* **The dismissal matcher never matched the real screen.** `makeManagedCodexStartupUpdateDialogStateMachine` required each choice row to equal its label exactly. Codex 0.162.x renders the first choice as `Update now (runs \`npm install -g @openai/codex\`)`. The unit test still passed because its fixture was a hand-written bare `Update now\`, which matched the code rather than the product.
+* **The config prevention never reached existing homes.** The `codexManagedFeaturesToml` / `ensureSuCodexHomeConfig` fix covers homes the role-home writer (re)builds. Homes created before it, which are patched in place on resume and respawn, kept running without the key.
+
+## Immediate recovery and durable guard
+
+For the original incident, the existing interruptViaPty(owner, 'esc') helper sent Escape to the identity-checked update modal. It skipped the optional update, without killing, forking or upgrading. At 21:57:38Z the host bound native 01a11d85, then delivered a turn; the actual reviewer reply approved preparation at 22:00Z. Transport acceptance alone was not treated as success.
+
+Three layers now guard it:
+
+1. **Argv override on every managed Codex child.** `psu-pty-host.mjs` `spawnChild` passes argv through `withManagedCodexStartupConfig`, which prepends `-c check_for_update_on_startup=false`. It applies only when `PAPERCUSP_AGENT=codex` and the command is the Codex binary itself, using the same bin test as the launcher's `codexManagedDaemonArgs`. That covers launch, resume and every respawn whatever the home's config says. An explicit caller setting of the key wins, and `liveChildArgs` keeps the caller's argv, so park and recycle mints never accumulate the flag.
+2. **Config in generated homes.** `codexManagedFeaturesToml` emits `check_for_update_on_startup=false` before the first TOML table, and `ensureSuCodexHomeConfig` counts the parsed setting in readiness. Preserve account routing and credentials when repairing an existing home.
+3. **Escape dismissal backstop.** The matcher accepts a parenthetical suffix on a choice row (`label (…)`) and keeps labels exact otherwise. `Skip` never matches `Skip until next version`.
+
+OpenAI's Configuration Reference documents this boolean and recommends false only when updates are centrally managed: [https://developers.openai.com/codex/config-reference](https://developers.openai.com/codex/config-reference) . Managed agent launches use the workspace's CLI installation rather than choosing an update from a child startup dialog.
+
+## Pin a TUI dialog detector to a MEASURED screen
+
+A detector for third-party TUI output is only as good as its fixture. Capture the fixture from a real snapshot (here, the `footer.rawTail` of a `codex-starting-stuck-snapshot`), keep its escape sequences, and add a negative control. A hand-typed fixture lets the test agree with the code while both disagree with the product. Before trusting such a detector, count its events in the host logs: zero firings across hundreds of matching snapshots means it is broken, not that the condition is rare.
+
+## Recurrence evidence
+
+The original role-home test was red before the config change because the parsed property was undefined. The role-home and shared configuration suites passed 81 tests with zero failures or skips (test-run rows 20939106 and 20939109).
+
+`apps/operator/lib/psu-pty-host-codex-update-dialog.test.ts` now carries the measured 0.162 screen as a fixture, plus negative controls (`Skip until next version` in the `Skip` row; a non-parenthetical suffix). It also has argv-helper cases: Codex binary only, never `node`, a shell or a `codex-su` wrapper; explicit setting wins in all three override spellings; idempotent; caller argv not mutated. Tracked under plan parked-agent-census-resumption-and-root-cause-2026-10-09, P-005 (WI-10008156).

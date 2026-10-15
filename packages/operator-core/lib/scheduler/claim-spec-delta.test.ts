@@ -26,6 +26,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  claimSpecDeltaCandidateFilter,
   readClaimSpecDelta,
   projectDeltaRow,
   type ClaimSpecDeltaReading,
@@ -141,6 +142,11 @@ describe('readClaimSpecDelta — both sides in ONE snapshot (P-005)', () => {
     // JS comment above the statement rather than a SQL one on purpose — a backtick inside the
     // template literal terminates it, and the SQL comment would also land in this log.)
     expect(create).toMatch(/WHERE\s+\(\?\)\s+AND\s+c\.ok_observation/);
+    // WI-10007576 follow-up: EVERY claim floor is ANDed onto the snapshot too (the trailing
+    // `(?)` is the ALL_ISSUE_CLAIM_FLOORS_PASS fragment). Once an unfiltered side makes the
+    // union unbounded, materializing floor-failing rows (~9.7k of ~10k on the live lane) both
+    // overflowed temp_buffers and blew the 15s statement timeout; no count can see them.
+    expect(create).toMatch(/WHERE\s+\(\?\)\s+AND\s+c\.ok_observation\s+AND\s+\(\?\)\s*$/);
     // It must be ANDed with the union, never replace it. Restricting the candidate population
     // to one side is the EI-20414245235902773 regression: proposed-only rows then never reach
     // the `proposed_match` projection and a widening revision reports 0 newly admitted.
@@ -211,6 +217,32 @@ describe('readClaimSpecDelta — both sides in ONE snapshot (P-005)', () => {
     const [, , excluded, admitted] = pool.queries;
     expect(excluded).toContain('ORDER BY');
     expect(admitted).toContain('ORDER BY');
+  });
+});
+
+describe('claimSpecDeltaCandidateFilter — the snapshot must hold BOTH sides (WI-10007576)', () => {
+  const BUG = { field: 'kind', op: '=', value: 'bug' } as const;
+  const CHANGE = { field: 'kind', op: '=', value: 'change' } as const;
+
+  it('leaves the population unbounded when the CURRENT lane is unfiltered (narrowing preview)', () => {
+    // The live failure: default lane vs `kind = bug` read 423/423 and newlyExcluded 0,
+    // because the snapshot held only bug rows. An unfiltered side matches everything.
+    expect(claimSpecDeltaCandidateFilter(undefined, BUG)).toBeUndefined();
+  });
+
+  it('leaves the population unbounded when the PROPOSED lane is unfiltered (widening preview)', () => {
+    expect(claimSpecDeltaCandidateFilter(BUG, undefined)).toBeUndefined();
+  });
+
+  it('unions two filtered sides so proposed-only rows still reach the snapshot', () => {
+    expect(claimSpecDeltaCandidateFilter(BUG, CHANGE)).toEqual({ any: [BUG, CHANGE] });
+  });
+
+  it('never narrows the population to either side alone', () => {
+    for (const [c, p] of [[undefined, BUG], [BUG, undefined], [BUG, CHANGE]] as const) {
+      const bound = claimSpecDeltaCandidateFilter(c, p);
+      expect(bound).not.toEqual(c ?? p);
+    }
   });
 });
 

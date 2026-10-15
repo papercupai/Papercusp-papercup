@@ -8,6 +8,7 @@ const base: PullLedgerInvocationRow = {
   status: 'ok',
   duration_ms: 4636,
   disposition: null,
+  late_settlement: null,
 };
 
 describe('pullLedgerRowFromInvocation (EI-7014)', () => {
@@ -28,6 +29,7 @@ describe('pullLedgerRowFromInvocation (EI-7014)', () => {
       reason: null,
       durationMs: 4636,
       status: 'ok',
+      lateSettlement: null,
     });
   });
 
@@ -58,5 +60,33 @@ describe('pullLedgerRowFromInvocation (EI-7014)', () => {
       disposition: { kind: 'no-claim', reason: 'x', specId: 'default-fixed-ordering', revision: null },
     });
     expect(row.specRef).toBe('default-fixed-ordering (spec rev unknown)');
+  });
+
+  it('surfaces a late claimed result separately from the unrecorded handler disposition', () => {
+    const row = pullLedgerRowFromInvocation({
+      ...base,
+      late_settlement: { kind: 'claimed', workItemId: 'EI-late', settledAt: '2026-10-07T16:00:00.000Z' },
+    });
+    expect(row.disposition).toBe('unrecorded');
+    expect(row.lateSettlement).toEqual({ kind: 'claimed', workItemId: 'EI-late', settledAt: '2026-10-07T16:00:00.000Z' });
+  });
+
+  it('preserves late no-claim and rejected-unknown as distinct outcomes', () => {
+    expect(pullLedgerRowFromInvocation({
+      ...base,
+      late_settlement: { kind: 'no-claim', settledAt: '2026-10-07T16:00:00.000Z' },
+    }).lateSettlement).toEqual({ kind: 'no-claim', settledAt: '2026-10-07T16:00:00.000Z' });
+    expect(pullLedgerRowFromInvocation({
+      ...base,
+      late_settlement: { kind: 'rejected-unknown', settledAt: '2026-10-07T16:00:00.000Z' },
+    }).lateSettlement).toEqual({ kind: 'rejected-unknown', settledAt: '2026-10-07T16:00:00.000Z' });
+  });
+
+  it('does not infer a late no-claim from missing or malformed settlement metadata', () => {
+    expect(pullLedgerRowFromInvocation({ ...base, late_settlement: null }).lateSettlement).toBeNull();
+    expect(pullLedgerRowFromInvocation({
+      ...base,
+      late_settlement: { kind: 'claimed', workItemId: '', settledAt: '2026-10-07T16:00:00.000Z' },
+    }).lateSettlement).toBeNull();
   });
 });

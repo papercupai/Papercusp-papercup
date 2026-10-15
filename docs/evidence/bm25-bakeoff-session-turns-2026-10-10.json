@@ -1,0 +1,253 @@
+{
+  "kind": "bm25-bakeoff",
+  "workItem": "WI-10008294",
+  "plan": "bm25-lexical-search-evoke-adoption-2026-10-10",
+  "generatedAt": "2026-10-11T03:08:17.308Z",
+  "commit": "61040172e5089f9a7d122d0e761facf239eb2fed",
+  "serverVersion": "18.6 (Debian 18.6-1.pgdg13+2)",
+  "versions": {
+    "bake_sql": "",
+    "bake_pgts": "pg_textsearch 1.5.1"
+  },
+  "corpus": {
+    "key": "session-turns",
+    "queryForm": "first 12 words (body = the remaining words)",
+    "rows": 9289,
+    "source": "operator-db-copy"
+  },
+  "queries": 191,
+  "serverSettings": [
+    "shared_preload_libraries=evoke,pg_textsearch,pg_search",
+    "evoke.shared_runtime_size=2GB",
+    "shared_buffers=4GB",
+    "maintenance_work_mem=2GB",
+    "max_wal_size=8GB",
+    "checkpoint_timeout=30min"
+  ],
+  "loadavg": {
+    "start": [
+      313.41,
+      226.11,
+      207.77
+    ],
+    "end": [
+      172.94,
+      207.99,
+      208.81
+    ],
+    "cores": 128
+  },
+  "engines": [
+    {
+      "method": "tsv_and",
+      "database": "bake_sql",
+      "setupFile": "engine-sql.sql",
+      "label": "today's lexical leg: tsvector + plainto_tsquery (AND) + ts_rank_cd",
+      "licence": "PostgreSQL (core)",
+      "shippable": true,
+      "analyzer": "Postgres 'english' (stem + stopwords)"
+    },
+    {
+      "method": "pgts",
+      "database": "bake_pgts",
+      "setupFile": "engine-pgts.sql",
+      "label": "pg_textsearch 1.5.1",
+      "licence": "PostgreSQL",
+      "shippable": true,
+      "analyzer": "Postgres 'english' (stem + stopwords)"
+    }
+  ],
+  "arms": [
+    {
+      "method": "tsv_and",
+      "queries": 191,
+      "capped": false,
+      "warmupMeanMs": 7.04,
+      "probeMedianMs": 0.849
+    },
+    {
+      "method": "pgts",
+      "queries": 191,
+      "capped": false,
+      "warmupMeanMs": 13.66,
+      "probeMedianMs": 7.2575
+    }
+  ],
+  "builds": {
+    "bake_sql": {
+      "load_csv": 3725.331,
+      "tsv_column": 11422.041,
+      "index_build:tsv_gin": 1550.813,
+      "bm25_doclen": 14144.211,
+      "bm25_df": 674.213,
+      "bm25_postings": 91098.058,
+      "index_build:bm25_postings": 33432.492
+    },
+    "bake_pgts": {
+      "load_csv": 2287.384,
+      "index_build:pgts": 9991.165
+    }
+  },
+  "sizes": {
+    "bake_sql": {
+      "index:tsv_gin": 19316736,
+      "column:tsv": 42218547,
+      "table:bm25_df": 3604480,
+      "table:bm25_postings": 247988224,
+      "index:bm25_postings": 229138432
+    },
+    "bake_pgts": {
+      "index:pgts": 10412032
+    }
+  },
+  "evokeStatus": null,
+  "summaries": [
+    {
+      "method": "pgts",
+      "variant": "short",
+      "n": 191,
+      "errors": 0,
+      "recallAt1": 0.010471204188481676,
+      "recallAt10": 0.03664921465968586,
+      "recallAt10CI": {
+        "point": 0.03664921465968586,
+        "lower": 0.01786427342628781,
+        "upper": 0.07370483578015169,
+        "ci": 0.95
+      },
+      "mrrAt10": 0.018106457242582894,
+      "p50Ms": 5.711,
+      "p95Ms": 14.745999999999999,
+      "meanMs": 7.661104712041886,
+      "errorSamples": []
+    },
+    {
+      "method": "tsv_and",
+      "variant": "short",
+      "n": 191,
+      "errors": 0,
+      "recallAt1": 0.005235602094240838,
+      "recallAt10": 0.010471204188481676,
+      "recallAt10CI": {
+        "point": 0.010471204188481676,
+        "lower": 0.002876294579848993,
+        "upper": 0.03736903548571138,
+        "ci": 0.95
+      },
+      "mrrAt10": 0.007853403141361256,
+      "p50Ms": 0.892,
+      "p95Ms": 3.7889999999999997,
+      "meanMs": 1.4572931937172773,
+      "errorSamples": []
+    },
+    {
+      "method": "pgts",
+      "variant": "title",
+      "n": 191,
+      "errors": 0,
+      "recallAt1": 0.020942408376963352,
+      "recallAt10": 0.09947643979057591,
+      "recallAt10CI": {
+        "point": 0.09947643979057591,
+        "lower": 0.06461192265901078,
+        "upper": 0.1501342564855386,
+        "ci": 0.95
+      },
+      "mrrAt10": 0.04281351283969085,
+      "p50Ms": 6.285,
+      "p95Ms": 17.572499999999998,
+      "meanMs": 8.866439790575917,
+      "errorSamples": []
+    },
+    {
+      "method": "tsv_and",
+      "variant": "title",
+      "n": 191,
+      "errors": 0,
+      "recallAt1": 0.005235602094240838,
+      "recallAt10": 0.005235602094240838,
+      "recallAt10CI": {
+        "point": 0.005235602094240838,
+        "lower": 0.0009248109680105119,
+        "upper": 0.029055763269374042,
+        "ci": 0.95
+      },
+      "mrrAt10": 0.005235602094240838,
+      "p50Ms": 0.368,
+      "p95Ms": 0.731,
+      "meanMs": 0.48790052356020946,
+      "errorSamples": []
+    }
+  ],
+  "paired": [
+    {
+      "baseline": "tsv_and",
+      "candidate": "pgts",
+      "variant": "title",
+      "n": 191,
+      "hitAt10": {
+        "onlyA": 0,
+        "onlyB": 18,
+        "concordant": 173,
+        "p": 0.000007629394531250002
+      },
+      "mrrAt10": {
+        "n": 191,
+        "independentUnits": 191,
+        "resamplingUnit": "pair",
+        "meanA": 0.005235602094240838,
+        "meanB": 0.04281351283969085,
+        "delta": {
+          "point": 0.03757791074545001,
+          "lower": 0.018480428820742956,
+          "upper": 0.06088272874594865,
+          "ci": 0.95
+        },
+        "rho": 0.4221806256288855,
+        "halfWidth": 0.021201149962602847,
+        "mde80": 0.030339587190439003,
+        "significant": true
+      }
+    },
+    {
+      "baseline": "tsv_and",
+      "candidate": "pgts",
+      "variant": "short",
+      "n": 191,
+      "hitAt10": {
+        "onlyA": 0,
+        "onlyB": 5,
+        "concordant": 186,
+        "p": 0.0625
+      },
+      "mrrAt10": {
+        "n": 191,
+        "independentUnits": 191,
+        "resamplingUnit": "pair",
+        "meanA": 0.007853403141361256,
+        "meanB": 0.018106457242582894,
+        "delta": {
+          "point": 0.010253054101221638,
+          "lower": 0.001527050610820244,
+          "upper": 0.02356020942408377,
+          "ci": 0.95
+        },
+        "rho": 0.7016515353086081,
+        "halfWidth": 0.011016579406631763,
+        "mde80": 0.016534449344647956,
+        "significant": true
+      }
+    }
+  ],
+  "sqlBm25Agreement": {
+    "title": {
+      "n": 0,
+      "agree": null
+    },
+    "short": {
+      "n": 0,
+      "agree": null
+    }
+  },
+  "verdict": null
+}

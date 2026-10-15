@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { toWireRow } from './search';
+import { resolveJudgeMemorySearchScope, toWireRow } from './search';
 import memorySearch from './search';
 import type { MemoryEntry } from '../../memory/backend';
 
@@ -79,5 +79,35 @@ describe('memory:search — psu reachability (crossWorkspace + workspace arg)', 
     const withWs = schema.safeParse({ query: 'x', workspace: 'ws-a' });
     expect(withWs.success).toBe(true);
     if (withWs.success) expect((withWs.data as { workspace?: string }).workspace).toBe('ws-a');
+  });
+});
+
+describe('memory:search — judge harness confinement', () => {
+  it('requires and pins the judge session harness, excluding the personal pool', () => {
+    expect(resolveJudgeMemorySearchScope({}, {
+      role: 'judge', harnessSlug: 'target-harness', principal: { slug: 'system:judge' },
+    })).toEqual({ ok: true, harnessSlug: 'target-harness', harnessOnly: true });
+  });
+
+  it('refuses absent, wildcard, mismatched, and caller-widened scope', () => {
+    const judge = { role: 'judge', principal: { slug: 'system:judge' } };
+    expect(resolveJudgeMemorySearchScope({}, judge)).toEqual({ ok: false, reason: 'judge_harness_scope_required' });
+    expect(resolveJudgeMemorySearchScope({}, { ...judge, harnessSlug: '*' })).toEqual({ ok: false, reason: 'judge_harness_scope_required' });
+    expect(resolveJudgeMemorySearchScope({ harness_slug: 'other' }, { ...judge, harnessSlug: 'target' }))
+      .toEqual({ ok: false, reason: 'judge_harness_scope_mismatch' });
+    expect(resolveJudgeMemorySearchScope({ workspace: 'other' }, { ...judge, harnessSlug: 'target' }))
+      .toEqual({ ok: false, reason: 'judge_scope_override_forbidden' });
+    expect(resolveJudgeMemorySearchScope({ harnessOnly: false }, { ...judge, harnessSlug: 'target' }))
+      .toEqual({ ok: false, reason: 'judge_scope_override_forbidden' });
+  });
+
+  it('leaves non-judge memory-reader scoping unchanged', () => {
+    expect(resolveJudgeMemorySearchScope({ harness_slug: 'requested' }, {
+      role: 'operator', harnessSlug: 'active', principal: { slug: 'system:operator' },
+    })).toBeNull();
+  });
+
+  it('uses the narrow search capability', () => {
+    expect(memorySearch.capability).toBe('memory:search:read');
   });
 });

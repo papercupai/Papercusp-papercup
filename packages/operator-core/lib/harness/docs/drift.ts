@@ -17,6 +17,8 @@
  */
 
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { pinModuleState } from '@papercusp/module-singleton';
 import type { GitRunner, SubjectRef, FeatureCommitLookup } from './subject-ref';
 import { resolveAnchorPaths } from './subject-ref';
 
@@ -33,6 +35,104 @@ export interface DriftResult {
    * "can't tell" status rather than a confident fresh/stale.
    */
   error?: string;
+  /** P-016: review candidates from the same pinned source range, never a doc write. */
+  sourceChanges?: DocumentedSourceChange[];
+  sourceChangesTruncated?: boolean;
+}
+
+export interface DocumentedSourceChange {
+  path: string;
+  status: 'measured' | 'unknown';
+  before: { commit: string; sha256: string | null };
+  after: { commit: string; sha256: string | null };
+  removedSymbols: string[];
+  addedSymbols: string[];
+  changedSymbols: string[];
+  truncated?: boolean;
+  reason: string;
+}
+
+/** Bound the existing drift/steward payload; unsupported source stays explicit. */
+export const DOC_SOURCE_CHANGE_MAX_FILES = 4;
+export const DOC_SOURCE_CHANGE_MAX_BYTES = 65_536;
+
+/** Pin both endpoints before reading source; a moving working tree is not evidence. */
+export async function documentedSourceChanges(
+  refs: readonly SubjectRef[], changedPaths: readonly string[], baselineSha: string,
+  opts: { runGit: GitRunner; repoRoot: string; submodulePaths?: string[] },
+): Promise<DocumentedSourceChange[]> {
+  const paths = [...new Set(changedPaths)].filter(path => path && !path.startsWith('/')
+    && !path.split('/').includes('..') && !/[\\\0\r\n*?\[\]{}]/.test(path))
+    .slice(0, DOC_SOURCE_CHANGE_MAX_FILES);
+  if (!SHA_RE.test(baselineSha) || !paths.length) return [];
+  const { default: ts } = await import('typescript');
+  const results: DocumentedSourceChange[] = [];
+  const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+  const symbols = (path: string, text: string) => {
+    const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
+    const out = new Map<string, string>();
+    for (const statement of source.statements) {
+      if (ts.isVariableStatement(statement)) {
+        for (const declaration of statement.declarationList.declarations) {
+          if (ts.isIdentifier(declaration.name)) out.set(declaration.name.text, declaration.getText(source));
+        }
+      } else if ((ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)
+        || ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)
+        || ts.isEnumDeclaration(statement)) && statement.name) {
+        out.set(statement.name.text, statement.getText(source));
+      }
+    }
+    return { out, valid: (source as typeof source & { parseDiagnostics: readonly unknown[] }).parseDiagnostics.length === 0 };
+  };
+  for (const path of paths) {
+    const sub = submoduleForPath(path, opts.submodulePaths ?? []);
+    const cwd = sub ? join(opts.repoRoot, sub.sub) : opts.repoRoot;
+    const rel = sub ? sub.rel : path;
+    const base = sub ? await submoduleBaselineSha(opts.runGit, opts.repoRoot, baselineSha, sub.sub) : baselineSha;
+    const head = await opts.runGit(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], cwd);
+    const current = head.code === 0 ? head.stdout.trim() : '';
+    const change: DocumentedSourceChange = { path, status: 'unknown',
+      before: { commit: base ?? baselineSha, sha256: null }, after: { commit: current, sha256: null },
+      removedSymbols: [], addedSymbols: [], changedSymbols: [], reason: 'source endpoints unavailable' };
+    results.push(change);
+    if (!base || !SHA_RE.test(current) || !rel) continue;
+    const baseCheck = await opts.runGit(['rev-parse', '--verify', '--quiet', `${base}^{commit}`], cwd);
+    if (baseCheck.code !== 0) continue;
+    change.before.commit = baseCheck.stdout.trim();
+    if (!SHA_RE.test(change.before.commit)) continue;
+    // ls-tree distinguishes a deletion from a failed source read. Never infer a
+    // removed symbol from an unreadable blob or an unsupported parser.
+    const read = async (commit: string): Promise<string | null | undefined> => {
+      const tree = await opts.runGit(['ls-tree', commit, '--', rel], cwd);
+      if (tree.code !== 0) return undefined;
+      if (!tree.stdout.trim()) return null;
+      if (!/^100(?:644|755) blob [0-9a-f]+\t/m.test(tree.stdout)) return undefined;
+      const blob = await opts.runGit(['show', `${commit}:${rel}`], cwd);
+      if (blob.code !== 0 || Buffer.byteLength(blob.stdout) > DOC_SOURCE_CHANGE_MAX_BYTES) return undefined;
+      return blob.stdout;
+    };
+    const [before, after] = await Promise.all([read(change.before.commit), read(current)]);
+    if (before === undefined || after === undefined) { change.reason = 'source unreadable or over byte budget'; continue; }
+    change.before.sha256 = before === null ? null : digest(before);
+    change.after.sha256 = after === null ? null : digest(after);
+    if (!/\.[cm]?[jt]sx?$/.test(path)) { change.reason = 'symbol parser unsupported; file change needs review'; continue; }
+    const old = symbols(path, before ?? ''), next = symbols(path, after ?? '');
+    if (!old.valid || !next.valid) { change.reason = 'source parse errors; symbol changes unknown'; continue; }
+    const anchored = refs.filter((ref): ref is Extract<SubjectRef, { kind: 'symbol' }> => ref.kind === 'symbol' && ref.file === path);
+    const names = anchored.length ? anchored.map(ref => ref.name) : [...old.out.keys()];
+    const removed = names.filter(name => old.out.has(name) && !next.out.has(name));
+    const added = [...next.out.keys()].filter(name => !old.out.has(name));
+    const changed = names.filter(name => old.out.has(name) && next.out.has(name) && old.out.get(name) !== next.out.get(name));
+    change.removedSymbols = removed.slice(0, 20);
+    change.addedSymbols = added.slice(0, 20);
+    change.changedSymbols = changed.slice(0, 20);
+    change.truncated = [removed, added, changed].some(names => names.length > 20);
+    change.status = 'measured';
+    change.reason = change.removedSymbols.length ? 'documented symbol missing or renamed; update candidate'
+      : change.changedSymbols.length ? 'documented implementation or interface changed; update candidate'
+        : 'anchored file changed; review documented workflow';
+  }
+  return results;
 }
 
 const SHA_RE = /^[0-9a-f]{7,64}$/i;
@@ -49,6 +149,102 @@ function collectNameOnly(stdout: string): string[] {
   }
   return [...files];
 }
+
+// ── Sticky-drift memo (WI-10006256) ──────────────────────────────────────────────
+// Drift against a FIXED baseline is monotone along history: if `B..H1` holds a
+// matching commit, `B..H2` holds it too for every descendant H2 of H1. The git-sync
+// sweep re-confirms every doc whose anchors the tick touched, and on a busy shared
+// tree that is mostly docs ALREADY drifted from a months-old baseline — each re-walk
+// cost 5-11 s of git CPU (measured ~0.8 core of the bg-host spawner sidecar). So a
+// POSITIVE (drifted) range result is remembered with the exact head it was evaluated
+// at, and reused only while that head is still an ancestor of the current HEAD (a
+// rewind or branch switch recomputes). Negative and error results are never cached:
+// they can change as HEAD advances. A baseline change is a different key. Trade-off:
+// a reused result keeps the changed-path list from when it was first computed.
+const DRIFT_MEMO_MAX = 4096;
+const driftMemo = pinModuleState('@papercusp/operator-core.harness-docs-drift-memo', () => ({
+  entries: new Map<string, { head: string; stdout: string }>(),
+}));
+
+/** Clear the sticky-drift memo — for tests only. */
+export function __clearDriftMemoForTests(): void {
+  driftMemo.entries.clear();
+}
+
+/**
+ * Run a drift `git log <base>..HEAD ...` (args[1] is the range), memoizing a result
+ * for which `isDrifted(stdout)` holds. The range is evaluated against the resolved
+ * HEAD sha, so the recorded head is exactly the tip the walk covered.
+ */
+async function runDriftRangeLog(
+  runGit: GitRunner,
+  args: string[],
+  cwd: string,
+  isDrifted: (stdout: string) => boolean,
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const key = `${cwd}\0${args.join('\0')}`;
+  const hit = driftMemo.entries.get(key);
+  if (hit) {
+    const anc = await runGit(['merge-base', '--is-ancestor', hit.head, 'HEAD'], cwd);
+    if (anc.code === 0) {
+      driftMemo.entries.delete(key);
+      driftMemo.entries.set(key, hit); // LRU touch
+      return { code: 0, stdout: hit.stdout, stderr: '' };
+    }
+    driftMemo.entries.delete(key);
+  }
+  const range = args[1] ?? '';
+  const headRes = range.endsWith('..HEAD') ? await runGit(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], cwd) : null;
+  const head = headRes && headRes.code === 0 ? headRes.stdout.trim() : '';
+  if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/i.test(head)) return runGit(args, cwd); // cannot pin: uncached
+  const pinned = [args[0], `${range.slice(0, -'HEAD'.length)}${head}`, ...args.slice(2)];
+  const res = await runGit(pinned, cwd);
+  if (res.code === 0 && isDrifted(res.stdout)) {
+    driftMemo.entries.set(key, { head, stdout: res.stdout });
+    if (driftMemo.entries.size > DRIFT_MEMO_MAX) {
+      const oldest = driftMemo.entries.keys().next().value;
+      if (oldest !== undefined) driftMemo.entries.delete(oldest);
+    }
+  }
+  return res;
+}
+
+/**
+ * Multi-path drift (WI-10006256). A `git log <base>..HEAD -- p1 p2 …` walk cannot use
+ * the commit-graph's changed-path Bloom filters (git 2.43 applies them to a SINGLE
+ * pathspec only), so on a ~34k-commit range it cost 6-14 s of CPU per doc, measured
+ * as the bulk of the spawner sidecar's drift CPU. Two cheaper steps give the same
+ * stale verdict:
+ *  1. Endpoint `git diff --name-only <base> HEAD -- paths` (milliseconds). Any path
+ *     that differs at the endpoints was touched by some commit in the range: stale.
+ *  2. Only when nothing differs (no change, or every change reverted) fall back to
+ *     one single-pathspec `git log` per path — Bloom-accelerated (~0.7 s vs 8.5 s for
+ *     two paths, measured) — so a touched-then-reverted path still counts as drift,
+ *     exactly as the old walk did.
+ * The changed-path list in step 1 can omit paths that were touched and reverted
+ * while another path really differs; it only feeds the human-readable reason.
+ */
+async function multiPathDrift(
+  runGit: GitRunner,
+  base: string,
+  rels: string[],
+  cwd: string,
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const diff = await runGit(['diff', '--name-only', base, 'HEAD', '--', ...rels], cwd);
+  if (diff.code !== 0) return diff;
+  if (collectNameOnly(diff.stdout).length > 0) return diff;
+  const range = `${base}..HEAD`;
+  const out: string[] = [];
+  for (const rel of rels) {
+    const res = await runDriftRangeLog(runGit, ['log', range, '--name-only', '--format=%H', '--', rel], cwd, hasChangedName);
+    if (res.code !== 0) return res;
+    out.push(res.stdout);
+  }
+  return { code: 0, stdout: out.join('\n'), stderr: '' };
+}
+
+const hasCommitLine = (stdout: string): boolean => stdout.split('\n').some((l) => l.trim() !== '');
+const hasChangedName = (stdout: string): boolean => collectNameOnly(stdout).length > 0;
 
 /** Is `sha` a single concrete (non-glob) path? Then `--follow` is valid. */
 function isConcretePath(p: string): boolean {
@@ -200,14 +396,14 @@ export async function checkSubjectRefDrift(
     }
     const range = `${base}..HEAD`;
     // Precise: trace just the function's line range across history.
-    const lRes = await runGit(['log', range, '-L', `:${ref.name}:${file}`, '-s', '--format=%H'], cwd);
+    const lRes = await runDriftRangeLog(runGit, ['log', range, '-L', `:${ref.name}:${file}`, '-s', '--format=%H'], cwd, hasCommitLine);
     if (lRes.code === 0) {
       const commits = lRes.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
       return { stale: commits.length > 0, changedPaths: commits.length ? [ref.file] : [], method: 'symbol' };
     }
     // `-L` failed (file renamed/removed, or the symbol regex didn't match a
     // function in the current tree). Fall back to file-level drift with --follow.
-    const fRes = await runGit(['log', range, '--follow', '--name-only', '--format=%H', '--', file], cwd);
+    const fRes = await runDriftRangeLog(runGit, ['log', range, '--follow', '--name-only', '--format=%H', '--', file], cwd, hasChangedName);
     if (fRes.code !== 0) {
       return { stale: false, changedPaths: [], method: 'symbol-fallback', error: gitErr(fRes) };
     }
@@ -217,6 +413,11 @@ export async function checkSubjectRefDrift(
 
   // path / feature both resolve to a path set. Group by repo (superproject vs each
   // submodule), then one `git log` per group against that repo's own baseline (#3).
+  // A plan item/decision ref documents a plan record, not files: nothing can drift.
+  // Not an error (contrast `no-paths` below, which means an anchor failed to resolve).
+  if (ref.kind === 'plan') {
+    return { stale: false, changedPaths: [], method: 'none' };
+  }
   const paths = await resolveAnchorPaths(ref, opts);
   if (ref.kind === 'feature' && paths.length === 0) {
     return { stale: false, changedPaths: [], method: 'feature', error: 'unresolved-feature' };
@@ -234,10 +435,9 @@ export async function checkSubjectRefDrift(
     const range = `${g.baseline}..HEAD`;
     // --follow is only valid for a single concrete file pathspec.
     const single = g.rels.length === 1 && isConcretePath(g.rels[0]);
-    const args = single
-      ? ['log', range, '--follow', '--name-only', '--format=%H', '--', g.rels[0]]
-      : ['log', range, '--name-only', '--format=%H', '--', ...g.rels];
-    const res = await runGit(args, g.cwd);
+    const res = single
+      ? await runDriftRangeLog(runGit, ['log', range, '--follow', '--name-only', '--format=%H', '--', g.rels[0]], g.cwd, hasChangedName)
+      : await multiPathDrift(runGit, g.baseline, g.rels, g.cwd);
     if (res.code !== 0) {
       firstErr ??= gitErr(res);
       continue;
@@ -271,7 +471,12 @@ export async function checkDocDrift(
   }
   const results = await Promise.all(refs.map((r) => checkSubjectRefDrift(r, baselineSha, opts)));
   const stale = results.find((r) => r.stale);
-  if (stale) return stale;
+  if (stale) {
+    const changedPaths = [...new Set(results.filter(result => result.stale).flatMap(result => result.changedPaths))];
+    const sourceChanges = await documentedSourceChanges(refs, changedPaths, baselineSha, opts);
+    return { ...stale, changedPaths, ...(sourceChanges.length ? { sourceChanges,
+      sourceChangesTruncated: sourceChanges.length < changedPaths.length } : {}) };
+  }
   const clean = results.find((r) => !r.error);
   if (clean) return clean;
   // All errored — propagate the first error (e.g. no-baseline / unresolved).

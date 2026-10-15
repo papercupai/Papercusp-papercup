@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   gitSidecarEnabled,
   isSidecarInfrastructureFault,
@@ -47,8 +47,17 @@ describe('gitSidecarEnabled', () => {
     expect(gitSidecarEnabled(undefined, {})).toBe(false);
   });
 
-  it('is ON when the shared enable var is set', () => {
-    expect(gitSidecarEnabled(undefined, { PAPERCUSP_SPAWNER_SIDECAR: '1' })).toBe(true);
+  it('does not treat an inherited shared enable var as proof this process owns the host sidecar', () => {
+    expect(gitSidecarEnabled(undefined, { PAPERCUSP_SPAWNER_SIDECAR: '1' })).toBe(false);
+  });
+
+  it('honors the shared enable var on a process marked as the offload host', () => {
+    try {
+      markSpawnOffloadHost();
+      expect(gitSidecarEnabled(undefined, { PAPERCUSP_SPAWNER_SIDECAR: '1' })).toBe(true);
+    } finally {
+      resetSpawnOffloadHostForTest();
+    }
   });
 
   it('is OFF INSIDE the sidecar process itself, even with the enable var set', () => {
@@ -90,8 +99,13 @@ describe('gitSidecarEnabled', () => {
       PAPERCUSP_SPAWNER_SIDECAR: '1',
       PAPERCUSP_POT_GIT_SPAWN_SIDECAR: '0',
     };
-    expect(gitSidecarEnabled('PAPERCUSP_POT_GIT_SPAWN_SIDECAR', env)).toBe(false);
-    expect(gitSidecarEnabled('PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR', env)).toBe(true);
+    try {
+      markSpawnOffloadHost();
+      expect(gitSidecarEnabled('PAPERCUSP_POT_GIT_SPAWN_SIDECAR', env)).toBe(false);
+      expect(gitSidecarEnabled('PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR', env)).toBe(true);
+    } finally {
+      resetSpawnOffloadHostForTest();
+    }
   });
 });
 
@@ -148,25 +162,29 @@ describe('isSidecarInfrastructureFault (WI-10002709)', () => {
 });
 
 describe('spawner-sidecar process progress guard', () => {
-  it('drains already-written progress before judging an idle deadline after a parent-loop stall', async () => {
-    // Gate red at repair head c5865549 (and 6bf86578), 2026-09-27: the old
-    // version let the child exit on its own and asserted code 0, so under gate
-    // load a child that was slow to start or to be reaped hit the 150ms idle
-    // window AFTER the drain this test is about. The child now writes forever
-    // and the test ends it deterministically, so the verdict depends only on
-    // loop-phase ordering, never on how fast a loaded host schedules a child.
-    const idleTimeoutMs = 1_000; // generous: a loaded host must still start the child inside it
+  it.each([0, 1_200])('drains already-written progress before judging an idle deadline after a parent-loop stall (startup %ims)', async (startupMs) => {
+    // Startup is a precondition, not the idle-drain behavior under test. Freeze
+    // guard timers until real pipe output arrives, then restore the real event
+    // loop before the stall. The delayed case exceeds the initial idle window
+    // and prevents child startup from masquerading as a drain-order regression.
+    const idleTimeoutMs = 1_000;
     const stallMs = 1_500; // > idleTimeoutMs, so the idle deadline expires inside the stall
     const script = [
       "const send = phase => process.stderr.write(JSON.stringify({ phase, at: Date.now() }) + '\\n');",
-      "send('ready'); setInterval(() => send('progress'), 40);",
+      `setTimeout(() => { send('ready'); setInterval(() => send('progress'), 40); }, ${startupMs});`,
     ].join(' ');
     const abort = new AbortController();
+    const realSetTimeout = globalThis.setTimeout;
+    const realClearTimeout = globalThis.clearTimeout;
+    const watchdog = realSetTimeout(() => abort.abort(), 15_000);
     let queuedBlock = false;
     let blockedFrom = 0;
     let blockedUntil = 0;
     let drainedAfterStall = false;
-    const res = await execProcess({
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let res: Awaited<ReturnType<typeof execProcess>>;
+    try {
+      res = await execProcess({
       command: process.execPath,
       args: ['-e', script],
       idleTimeoutMs,
@@ -188,6 +206,9 @@ describe('spawner-sidecar process progress guard', () => {
         }
         if (queuedBlock) return;
         queuedBlock = true;
+        // reportOutput runs before armIdleTimer, so the first real output
+        // arms a real idle timer after retiring the frozen startup timers.
+        vi.useRealTimers();
         // The child has reported readiness. Occupy the CHECK phase while it
         // keeps writing, so the expired timer races the next POLL phase.
         setImmediate(() => {
@@ -196,11 +217,17 @@ describe('spawner-sidecar process progress guard', () => {
           blockedUntil = Date.now();
         });
       },
-    });
+      onStage: (stage) => { if (stage === 'child-close') vi.useRealTimers(); },
+      });
+    } finally {
+      vi.useRealTimers();
+      realClearTimeout(watchdog);
+      abort.abort();
+    }
     const writes = res.stderr.split('\n').filter((line) => line.startsWith('{')).map((line) => JSON.parse(line));
     // The stall really outlasted the idle deadline, and the child really wrote
     // during it: distinguish absent child progress from progress in the OS pipe.
-    expect(blockedUntil - blockedFrom).toBeGreaterThanOrEqual(stallMs);
+    expect(blockedUntil - blockedFrom, res.stderr).toBeGreaterThanOrEqual(stallMs);
     expect(writes.filter((entry) => entry.phase === 'progress' && entry.at > blockedFrom && entry.at < blockedUntil).length).toBeGreaterThanOrEqual(3);
     expect(drainedAfterStall).toBe(true);
     expect(res.stderr).not.toContain('no output progress');
@@ -208,31 +235,46 @@ describe('spawner-sidecar process progress guard', () => {
     expect(res.code).toBe(-1);
   }, 20_000);
 
-  it('does not kill a child that exited while the parent loop stalled past the idle deadline', async () => {
+  it.each([0, 1_200])('does not kill a child that exited while the parent loop stalled past the idle deadline (startup %ims)', async (startupMs) => {
     // Gate red at repair head 6bf86578 (2026-09-27): a lagging host loop resumes
     // with the idle timer expired AND the child's EOF/exit pending. The idle
     // verdict runs in CHECK, but 'close' (and the exit fence) land after it, so
     // an already-finished child was killed and reported as a guard failure.
-    // The idle window must still let a loaded host START the child (its
-    // 'ready' is the first output), and the stall must outlast both that
-    // window and the child's own exit; tighter margins flaked under gate load.
+    // As in the drain fixture, startup must finish before guard time starts.
+    // Keep the real stall and kernel exit fence after that readiness boundary.
     let queuedBlock = false;
-    const res = await execProcess({
+    const abort = new AbortController();
+    const realSetTimeout = globalThis.setTimeout;
+    const realClearTimeout = globalThis.clearTimeout;
+    const watchdog = realSetTimeout(() => abort.abort(), 15_000);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let res: Awaited<ReturnType<typeof execProcess>>;
+    try {
+      res = await execProcess({
       command: process.execPath,
-      args: ['-e', "process.stderr.write('ready\\n'); setTimeout(() => process.exit(0), 100);"],
+      args: ['-e', `setTimeout(() => { process.stderr.write('ready\\n'); setTimeout(() => process.exit(0), 100); }, ${startupMs});`],
       idleTimeoutMs: 1_000,
       timeoutMs: 15_000,
     }, {
       ...executionDeps,
+      signal: abort.signal,
       onOutputActivity: () => {
         if (queuedBlock) return;
         queuedBlock = true;
+        vi.useRealTimers();
         setImmediate(() => {
           const from = Date.now();
           while (Date.now() - from < 2_500) { /* stall until the child has exited */ }
         });
       },
-    });
+      onStage: (stage) => { if (stage === 'child-close') vi.useRealTimers(); },
+      });
+    } finally {
+      vi.useRealTimers();
+      realClearTimeout(watchdog);
+      abort.abort();
+    }
+    expect(queuedBlock, res.stderr).toBe(true);
     expect(res.stderr).not.toContain('no output progress');
     expect(res.code, res.stderr).toBe(0);
   }, 20_000);
@@ -269,32 +311,72 @@ describe('spawner-sidecar process progress guard', () => {
   });
 
   it('refreshes the idle deadline on child output while retaining the absolute hard ceiling', async () => {
-    // The window must outlast a loaded node boot (WI-10004030), and the child must keep
-    // producing output for well over one window — otherwise it finishes inside the first
-    // window and the test no longer proves the deadline was refreshed.
+    // WI-6554700010008342: advance guard time only between observed real pipe
+    // events. Node boot and reaping no longer consume the idle window, and the
+    // child keeps writing until the actual hard guard kills its process group.
     const IDLE_MS = 1_000;
-    const TICK_MS = 100;
-    const TICKS = 25;
-    const HARD_MS = 8_000;
-    expect(TICK_MS).toBeLessThan(IDLE_MS);
-    expect(TICKS * TICK_MS).toBeGreaterThan(2 * IDLE_MS);
-    expect(TICKS * TICK_MS + IDLE_MS).toBeLessThan(HARD_MS);
-    const script =
-      `process.stderr.write('progress\\n'); let n=0; const t=setInterval(() => { process.stderr.write('progress\\n'); if (++n === ${TICKS}) clearInterval(t); }, ${TICK_MS});`;
-    const started = Date.now();
-    const res = await execProcess(
-      {
+    const STEP_MS = 900;
+    const HARD_MS = 5_000;
+    const realSetTimeout = globalThis.setTimeout;
+    const realClearTimeout = globalThis.clearTimeout;
+    let watchdogTimer: ReturnType<typeof setTimeout> | undefined;
+    const watchdog = new Promise<never>((_, reject) => {
+      watchdogTimer = realSetTimeout(() => reject(new Error('sidecar output/exit rendezvous timed out')), 20_000);
+    });
+    let outputCount = 0;
+    let outputReady: (() => void) | undefined;
+    const nextOutput = (): Promise<void> => new Promise((resolve) => { outputReady = resolve; });
+    const ready = nextOutput();
+    const abort = new AbortController();
+    let settled = false;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const result = execProcess({
         command: process.execPath,
-        args: ['-e', script],
+        args: ['-e', "process.stderr.write('progress\\n'); setInterval(() => process.stderr.write('progress\\n'), 20);"],
         idleTimeoutMs: IDLE_MS,
         timeoutMs: HARD_MS,
+    }, {
+      ...executionDeps,
+      signal: abort.signal,
+      onOutputActivity: () => {
+        outputCount++;
+        outputReady?.();
+        outputReady = undefined;
       },
-      executionDeps,
-    );
-    expect(Date.now() - started).toBeGreaterThanOrEqual(2 * IDLE_MS);
-    expect(res.code, res.stderr).toBe(0);
-    expect(res.stderr).toContain('progress');
-  });
+      // The real group exit fence can need asynchronous probes after close.
+      // Restore its real timers instead of faking successful process cleanup.
+      onStage: (stage) => { if (stage === 'child-close') vi.useRealTimers(); },
+    }).then((res) => { settled = true; return res; });
+    const exitedBeforeProgress = result.then((res) => {
+      throw new Error(`child exited before the next progress event: ${res.stderr}`);
+    });
+    try {
+      await Promise.race([ready, exitedBeforeProgress, watchdog]);
+      for (let step = 0; step < 5; step++) {
+        const progress = nextOutput();
+        vi.advanceTimersByTime(STEP_MS);
+        await Promise.race([progress, exitedBeforeProgress, watchdog]);
+        expect(settled).toBe(false);
+      }
+      // Five real output events kept the child alive beyond four initial idle
+      // windows. The original hard deadline must still fire at exactly 5000.
+      expect(outputCount).toBeGreaterThanOrEqual(6);
+      vi.advanceTimersByTime(HARD_MS - 5 * STEP_MS - 1);
+      expect(settled).toBe(false);
+      vi.advanceTimersByTime(1);
+      const res = await Promise.race([result, watchdog]);
+      expect(res.code).toBe(-1);
+      expect(res.stderr).toContain(`timed out after ${HARD_MS}ms`);
+      expect(res.stderr).not.toContain('no output progress');
+    } finally {
+      realClearTimeout(watchdogTimer);
+      vi.useRealTimers();
+      abort.abort();
+      await result;
+      // A successful hard kill also resolves this diagnostic branch.
+      await exitedBeforeProgress.catch(() => {});
+    }
+  }, 30_000);
 
   it('kills a silent child at the idle deadline instead of waiting for the hard ceiling', async () => {
     const res = await execProcess(

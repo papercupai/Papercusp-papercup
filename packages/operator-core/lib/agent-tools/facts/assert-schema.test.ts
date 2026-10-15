@@ -67,6 +67,10 @@ describe('facts:assert settledBy modality contract', () => {
     expect(props.kind?.description ?? '').toMatch(/undecidable/i);
     // settledBy is conditionally required, so it must not be unconditionally so.
     expect(json.required ?? []).not.toContain('settledBy');
+    expect(JSON.stringify(props.settledBy)).toContain('x-papercusp-call-constraint');
+    expect(JSON.stringify(props.settledBy)).toContain(
+      "required when kind:'undecidable'; refused for every other kind.",
+    );
   });
 
   it('rejects ONE mistake with ONE targeted issue, never a six-branch dump (EI-22064465906366039)', () => {
@@ -124,6 +128,38 @@ describe('facts:assert shareable federation contract', () => {
     expect(props.shareable?.type).toBe('boolean');
     expect(props.shareable?.description ?? '').toMatch(/harness/i);
     expect(props.harness?.description ?? '').toMatch(/shareable/i);
+  });
+});
+
+describe('facts:assert convention enforcement contract (EI-25333926594437978)', () => {
+  it('rejects conditionally invalid tiers at the input schema', () => {
+    const invalid = [
+      { ...base, kind: 'convention', enforcement: { tier: 'detector' } },
+      { ...base, kind: 'convention', enforcement: { tier: 'gate', reviewBy: '2026-12-01' } },
+      { ...base, kind: 'convention', enforcement: { tier: 'detector', floor: 0.6 } },
+      { ...base, kind: 'conclusion', enforcement: { tier: 'detector', floor: 0.6, reviewBy: '2026-12-01' } },
+    ];
+
+    for (const input of invalid) {
+      const parsed = assertTool.args.safeParse(input);
+      expect(parsed.success).toBe(false);
+      if (parsed.success) continue;
+      expect(parsed.error.issues).toHaveLength(1);
+      expect(parsed.error.issues[0]?.path).toEqual(['enforcement']);
+    }
+  });
+
+  it('accepts the structural tier without measured fields and a complete detector tier', () => {
+    expect(
+      assertTool.args.safeParse({ ...base, kind: 'convention', enforcement: { tier: 'structural' } }).success,
+    ).toBe(true);
+    expect(
+      assertTool.args.safeParse({
+        ...base,
+        kind: 'convention',
+        enforcement: { tier: 'detector', floor: 0.6, reviewBy: '2026-12-01' },
+      }).success,
+    ).toBe(true);
   });
 });
 
@@ -272,6 +308,16 @@ describe('facts:assert volatile-measurement contract', () => {
     const subjectVolatile = describedOn('subjectVolatile');
     expect(subjectVolatile).toMatch(/hard refusal/i);
     expect(subjectVolatile).toMatch(/clamped/i);
+
+    const ttlSecSchema = publishedProps.ttlSec as Record<string, unknown>;
+    expect(ttlSecSchema['x-papercusp-call-constraint']).toContain(
+      `subjectVolatile:true or measuredAt is supplied, ttlSec>${FACT_VOLATILE_MAX_TTL_SEC} is clamped`,
+    );
+    expect(assertTool.args.safeParse({
+      ...volatileBase,
+      measuredAt: '2026-08-31T11:00:00Z',
+      ttlSec: FACT_VOLATILE_MAX_TTL_SEC * 4,
+    }).success).toBe(true);
   });
 });
 
@@ -510,5 +556,64 @@ describe('facts:assert reports a stray key instead of another branch (EI-2205025
         ttlSec: 604800,
       }).success,
     ).toBe(true);
+  });
+});
+
+/**
+ * WI-10005668 — `value` is accepted as an ALIAS of `body`. Measured 2026-10-02: 32
+ * `facts:assert` refusals / 14 distinct owners in 24h named the unrecognized key
+ * `value`; every one was a caller who meant `body`. `claim` (8 / 5 owners) is
+ * deliberately NOT aliased.
+ *
+ * These assertions go through `safeParse` and read the PARSED data: the args schema is a
+ * `z.preprocess` pipe, so `.shape` is undefined and a shape-based assertion would pass
+ * vacuously. Each case below also has a control that must still be refused, so the alias
+ * cannot silently widen into "accept any stray key".
+ */
+describe('facts:assert accepts `value` as an alias of `body` (WI-10005668)', () => {
+  const { body: _body, ...withoutBody } = base;
+
+  it('folds a string `value` into `body` when body is absent', () => {
+    const parsed = assertTool.args.safeParse({ ...withoutBody, value: 'the aliased conclusion' });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.body).toBe('the aliased conclusion');
+      expect('value' in parsed.data).toBe(false);
+    }
+  });
+
+  it('still refuses `value` when `body` is also present — no silent choice between the two', () => {
+    const parsed = assertTool.args.safeParse({ ...base, value: 'a second, competing body' });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) expect(formatIssues(parsed.error.issues)).toContain('value');
+  });
+
+  it('still refuses a non-string `value` instead of coercing it into a body', () => {
+    for (const value of [42, true, { text: 'nested' }, ['a'], null]) {
+      const parsed = assertTool.args.safeParse({ ...withoutBody, value });
+      expect(parsed.success, JSON.stringify(value)).toBe(false);
+    }
+  });
+
+  it('does not alias `claim` (the other candidate the refusal ledger surfaced)', () => {
+    const parsed = assertTool.args.safeParse({ ...withoutBody, claim: 'a claim, not a body' });
+    expect(parsed.success).toBe(false);
+  });
+
+  it('keeps the downstream body checks running on the aliased value', () => {
+    // An empty alias must reach the SAME `body` minimum the canonical spelling hits, proving
+    // the preprocess hands off to the strict schema rather than short-circuiting around it.
+    const aliased = assertTool.args.safeParse({ ...withoutBody, value: '' });
+    const canonical = assertTool.args.safeParse({ ...base, body: '' });
+    expect(canonical.success).toBe(false);
+    expect(aliased.success).toBe(false);
+  });
+
+  it('leaves the published JSON Schema on the canonical field (alias not advertised)', () => {
+    const json = z.toJSONSchema(assertTool.args as never) as {
+      properties?: Record<string, unknown>;
+    };
+    expect(json.properties).toHaveProperty('body');
+    expect(json.properties).not.toHaveProperty('value');
   });
 });

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { rm } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { teardownTestPg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { createDreamCapabilityFixture } from '../../test/dream-capability-fixture';
@@ -10,6 +11,7 @@ import {
 import { dreamRunAssessments, type DreamRunAssessment } from './dream-run-provenance';
 import { readDreamMetrics, type DreamMetricsScope } from './dream-metrics';
 import { PgExperimentLedger } from '../experiment/ledger';
+import { summarizeDreamGraphComparison } from './dream-evaluation';
 
 const scope: DreamMetricsScope = {
   workspaceId: 'metrics-pg', potSlug: 'papercusp', since: '2026-09-07T00:00:00Z', until: '2026-09-08T00:00:00Z',
@@ -114,5 +116,53 @@ describe('Dream metrics and post-run assessments (real PG)', () => {
     expect(report.downstream).toEqual({ routes: { improvement: 1 }, grades: { '4': 1 }, outcomes: { won: 1 } });
     expect(report.experiments).toMatchObject({ linked: 1, executed: 1, winning: 1, recordedCostUsd: 0.05 });
     expect(report.funnel.qualifiedFamilies).toBe(0); // Rejected proposals are not qualified by a good later grade.
+  });
+
+  it('P025: round-trips frozen trial accounting through isolated PG without inventing qualified or executed outcomes', async () => {
+    const read = (file: string) => JSON.parse(readFileSync(new URL('./study/' + file, import.meta.url), 'utf8'));
+    const saved = read('native-graph-evidence-summary.json');
+    const protocol = read('native-graph-protocol.json');
+    const blindReview = read('native-graph-calibration-review-2026-10-14.json');
+    const unblinded = read('native-graph-calibration-unblinded-review-2026-10-14.json');
+    const workspaceId = 'metrics-native-study-replay';
+    // Fixture provenance supplies the store envelope only. Frozen calls, costs,
+    // terminal statuses and independent outcomes are replayed verbatim; this
+    // isolated database is not another scientific trial or a production write.
+    for (const row of saved.dreams) {
+      // The publication view adds derived accounting fields; the strict store
+      // envelope contains the original call fields and outcome-level assessments.
+      const calls = row.calls.map(({ accountedUsd: _cost, unknownCost: _unknown, ...call }: Record<string, unknown>) => call);
+      const provenance = { ...fixture.provenance, calls };
+      await db.adminSql`INSERT INTO harness_shared.dream_runs
+        (workspace_id, run_id, cycle_id, pot_slug, mode, status, started_at, completed_at, cost_usd, outcome)
+        VALUES (${workspaceId}, ${row.runId}, ${row.runId}, ${scope.potSlug}, 'manual', ${row.status},
+          '2026-09-07T14:00:00Z', '2026-09-07T14:01:00Z', ${row.accountedUsd},
+          ${db.adminSql.json(JSON.parse(JSON.stringify({ capabilityRun: provenance, assessments: row.assessments,
+            generationSkipped: row.treatment === 'graph' })))})`;
+    }
+    const stored = await Promise.all(saved.dreams.map((row: { runId: string }) =>
+      getDreamRun(db.adminSql, { workspaceId, runId: row.runId })));
+    expect(stored.every(row => row?.status === 'rejected')).toBe(true);
+    const metrics = await readDreamMetrics(db.adminSql, { ...scope, workspaceId });
+    expect(metrics.population.attempts).toBe(4);
+    expect(metrics.cost.knownCallUsd).toBeCloseTo(0.949124, 8);
+    expect(metrics.cost.unknownUsageCount).toBe(0);
+    expect(metrics.funnel.qualifiedFamilies).toBe(0);
+    expect(metrics.experiments).toMatchObject({ linked: 0, executed: 0, winning: 0 });
+    const independent = { ref: 'native-graph-calibration-unblinded-review-2026-10-14.json',
+      labels: blindReview.cases.map((label: { caseId: string }) => ({ ...label,
+        ...unblinded.cases.find((row: { caseId: string }) => row.caseId === label.caseId) })) };
+    const rebuilt = summarizeDreamGraphComparison({ protocol: protocol.protocol,
+      attempts: saved.dreams.map((row: Parameters<typeof summarizeDreamGraphComparison>[0]['attempts'][number]) => ({ ...row,
+        accountedUsd: stored.find(run => run?.runId === row.runId)!.costUsd })), independent });
+    expect(rebuilt.treatments).toEqual(saved.treatments);
+    expect(rebuilt.matchedPairs).toEqual(saved.matchedPairs);
+    expect(rebuilt.verdict).toBe('inconclusive');
+    expect(rebuilt.usefulOutcomesPerDollar).toBeNull();
+    expect(rebuilt.treatments.map(row => row.qualifiedFamilies)).toEqual([0, 0]);
+    const incomplete = summarizeDreamGraphComparison({ protocol: protocol.protocol,
+      attempts: saved.dreams.slice(1), independent });
+    expect(incomplete.completeAttempts).toBe(false);
+    expect(incomplete.verdict).toBe('inconclusive');
   });
 });

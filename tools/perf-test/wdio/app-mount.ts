@@ -33,6 +33,62 @@ import {
   type MountVerdict,
 } from "../../../libs/generic/gui-readiness/src/document-mount";
 
+export interface PlanPopupAttempt {
+  clicked: boolean;
+  triggerAtMs: number;
+  startTimeMs: number | null;
+}
+
+/** Runs inside the webview. Clear previous phases even if this click never
+ * begins timing, then capture the synchronous handler's start in the page clock. */
+export function triggerPlanPopupAttemptInPage(name: string): PlanPopupAttempt {
+  performance.clearMeasures(name);
+  performance.clearMarks(`${name}:start`);
+  for (const entry of performance.getEntriesByType('measure')) {
+    if (entry.name.startsWith(`${name}:phase:`)) performance.clearMeasures(entry.name);
+  }
+  const trigger = document.querySelector<HTMLElement>('[data-testid="plan-dash-open-full"]');
+  const triggerAtMs = performance.now();
+  if (!trigger) return { clicked: false, triggerAtMs, startTimeMs: null };
+  trigger.click();
+  const start = performance.getEntriesByName(`${name}:start`, 'mark').at(-1);
+  performance.mark(`${name}:trigger-return`);
+  return { clicked: true, triggerAtMs,
+    startTimeMs: start && start.startTime >= triggerAtMs ? start.startTime : null };
+}
+
+/** Runs inside the webview. The total, start and phases share ONE observation;
+ * a late completion is visible even after endInteraction consumes its start.
+ * PerformanceMeasure.startTime retains the begin's timestamp after consumption. */
+export function readPlanPopupAttemptInPage(name: string, attempt: PlanPopupAttempt) {
+  const observedAtMs = performance.now();
+  // Inline callbacks remain self-contained when the TS loader serializes this
+  // function for browser.execute (a named local arrow can inject __name).
+  const start = performance.getEntriesByName(`${name}:start`, 'mark')
+    .filter((entry) => entry.startTime >= attempt.triggerAtMs &&
+      (attempt.startTimeMs === null || entry.startTime === attempt.startTimeMs)).at(-1);
+  const measures = performance.getEntriesByName(name, 'measure')
+    .filter((entry) => entry.startTime >= attempt.triggerAtMs &&
+      (attempt.startTimeMs === null || entry.startTime === attempt.startTimeMs))
+    .map((entry) => ({ startTimeMs: entry.startTime, durationMs: entry.duration }));
+  const phases = performance.getEntriesByType('measure')
+    .filter((entry) => entry.name.startsWith(`${name}:phase:`) && entry.startTime >= attempt.triggerAtMs &&
+      (attempt.startTimeMs === null || entry.startTime === attempt.startTimeMs))
+    .map((entry) => ({ name: entry.name, ms: Math.round(entry.duration),
+      startTimeMs: entry.startTime, endTimeMs: entry.startTime + entry.duration }));
+  const metrics = (window as unknown as {
+    __sync_metrics__?: { snapshot(): { scheduler?: unknown } };
+  }).__sync_metrics__;
+  return {
+    observedAtMs, triggerAtMs: attempt.triggerAtMs, capturedStartTimeMs: attempt.startTimeMs,
+    measureCount: measures.length, measures, phases,
+    startMarkTimeMs: start?.startTime ?? null,
+    startMarkAgeMs: start ? observedAtMs - start.startTime : null,
+    scheduler: metrics?.snapshot().scheduler ?? null,
+    placeholder: document.querySelector('[data-testid="plan-popup-body"] .pc-plans__placeholder')?.textContent?.trim() ?? null,
+  };
+}
+
 /** Runs inside the webview; keep readiness and candidate selection identical.
  * Unfiltered cached rows can mount before a pinned search resolves. */
 export function readPlanPopupCandidates({ maxRows, requestedSlug }: {

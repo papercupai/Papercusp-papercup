@@ -493,6 +493,123 @@ describe('approval receipt parsing (EI-22617748468342848)', () => {
     expect(queries[1]!.values).toEqual(['papercusp-workspace', '456']);
   });
 
+  it('accepts a first-line reviewer pointer followed by verification notes', async () => {
+    const queries: Array<{ query: string; values: unknown[] }> = [];
+    let call = 0;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      queries.push({ query: strings.join('?'), values });
+      call += 1;
+      return Promise.resolve(call === 1
+        ? [{
+            author_id: 'su-reviewer',
+            body: '\n  approve thread-post:456\n\nRecomputed the changed BAR hashes and confirmed they match the preview.',
+            approved_at: '2026-10-02T07:11:00.000Z',
+          }]
+        : [{ author_id: 'su-requester', body: JSON.stringify(RECEIPT) }]);
+    }) as unknown as Parameters<typeof resolveAcceptanceBarApproval>[0];
+
+    await expect(resolveAcceptanceBarApproval(sql, {
+      workspaceId: 'papercusp-workspace',
+      approvalRef: 'thread-post:123',
+      expected,
+    })).resolves.toMatchObject({
+      approvalRef: 'thread-post:123',
+      approvedBy: 'su-reviewer',
+      approvedAt: '2026-10-02T07:11:00.000Z',
+    });
+    expect(queries).toHaveLength(2);
+    expect(queries[1]!.values).toEqual(['papercusp-workspace', '456']);
+  });
+
+  it('accepts the recorded multiline approval for its immutable preview post', async () => {
+    const previewBody = JSON.stringify({
+      kind: 'acceptance-bar-amendment-approval',
+      rubricRef: 'acceptance-full-text-knowledge-retrieval-2026-10-08',
+      schemaVersion: 1,
+      subjectPlan: 'full-text-knowledge-retrieval-2026-10-08',
+      bars: [
+        { barKey: 'R-1', priorBarHash: 'e0f798143b9d05157c03ea97aa41ea15e4bca69e8242a2674720e20ff05e3cd3', nextBarHash: 'cdbda161c8b15be11e0d00c001e497b7d46d9362ad26db61d217cac5b40a9934' },
+        { barKey: 'R-2', priorBarHash: '3414db5465c8e876f272f6d8fbf0575e84df1529246c362b4db6c1add1b26929', nextBarHash: '5c82880f0d6d739a768312b5d36dd39067220b724d52de9287a6d703973bf33f' },
+        { barKey: 'R-3', priorBarHash: 'ea74769adf1e45097e0b2276c7eb9b0357ed05d6b3a4158e081f523071343dd0', nextBarHash: 'd13ccd3e531c6b4547cfda5cf5ba5f2b63e92ab9629ea89c7cbcaa87353500b5' },
+        { barKey: 'R-10', priorBarHash: 'ab38ed94f1f8c9a6a84f221da59db8d1a3326f3e70f178a44b5349718de8ae26', nextBarHash: '16583c7eb94ae9077c995fe5c7f35db8cecf5e55e7754cbf8867815681b8cf4d' },
+        { barKey: 'R-12', priorBarHash: '566c489f6044ffe3e6a3757adf461845c9284b683c729e8a413dd0b9960c1b97', nextBarHash: '3269f5713245948424510264ac62ca037e53f72ec96e5a700eae1a67afeae802' },
+      ],
+    });
+    const approvalBody = [
+      'approve thread-post:1167173',
+      '',
+      'Verified against acceptance-full-text-knowledge-retrieval-2026-10-08 revision 2 and the complete critique at WI-10007702/comment1167130. The approval delta changes only R-1, R-2, R-3, R-10, and R-12; every prior hash matches the live rubric, every next hash is non-null, and all 12 omitted BARs remain present. Required scope, evidence plane, test layer, and privacy/access expectations are preserved.',
+      '',
+      'The amendment closes the cited gaps: R-1/R-2/R-3 make D-002/D-009 canonical-parent/store/registry reuse and no-parallel-store-or-scheduler architecture falsifiable; R-10 binds plan/doc automatic currentness plus explicit historical plan identity/provenance; R-12 binds prose-profile memoization, equal-width incompatible-profile rejection, and explicit turn-start delivered-ref dedup while retaining mem0 and bound-plan contributions. Named tree tests contain the canonical registry, historical-plan, profile-identity, and source-exclusion controls; any not-yet-present turn-start fixture is now an explicit acceptance obligation rather than an assumed behavior.',
+    ].join('\n');
+    const expectedOriginal = {
+      schemaVersion: 1 as const,
+      kind: 'acceptance-bar-amendment-approval' as const,
+      rubricRef: 'acceptance-full-text-knowledge-retrieval-2026-10-08',
+      subjectPlan: 'full-text-knowledge-retrieval-2026-10-08',
+      bars: [
+        { barKey: 'R-1', priorBarHash: 'e0f798143b9d05157c03ea97aa41ea15e4bca69e8242a2674720e20ff05e3cd3', nextBarHash: 'cdbda161c8b15be11e0d00c001e497b7d46d9362ad26db61d217cac5b40a9934' },
+        { barKey: 'R-2', priorBarHash: '3414db5465c8e876f272f6d8fbf0575e84df1529246c362b4db6c1add1b26929', nextBarHash: '5c82880f0d6d739a768312b5d36dd39067220b724d52de9287a6d703973bf33f' },
+        { barKey: 'R-3', priorBarHash: 'ea74769adf1e45097e0b2276c7eb9b0357ed05d6b3a4158e081f523071343dd0', nextBarHash: 'd13ccd3e531c6b4547cfda5cf5ba5f2b63e92ab9629ea89c7cbcaa87353500b5' },
+        { barKey: 'R-10', priorBarHash: 'ab38ed94f1f8c9a6a84f221da59db8d1a3326f3e70f178a44b5349718de8ae26', nextBarHash: '16583c7eb94ae9077c995fe5c7f35db8cecf5e55e7754cbf8867815681b8cf4d' },
+        { barKey: 'R-12', priorBarHash: '566c489f6044ffe3e6a3757adf461845c9284b683c729e8a413dd0b9960c1b97', nextBarHash: '3269f5713245948424510264ac62ca037e53f72ec96e5a700eae1a67afeae802' },
+      ],
+    };
+    const queries: Array<{ query: string; values: unknown[] }> = [];
+    let call = 0;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      queries.push({ query: strings.join('?'), values });
+      call += 1;
+      return Promise.resolve(call === 1
+        ? [{
+            author_id: 'system:judge/su-4a0f1492-f767-4a4c-92b2-6b3c4795ce71',
+            body: approvalBody,
+            approved_at: '2026-10-09T04:06:19.140Z',
+          }]
+        : [{ author_id: 'su-5e26d68f-60b7-4d7c-b1b7-0dbf07bcc96d', body: previewBody }]);
+    }) as unknown as Parameters<typeof resolveAcceptanceBarApproval>[0];
+
+    await expect(resolveAcceptanceBarApproval(sql, {
+      workspaceId: 'papercusp-workspace',
+      approvalRef: 'thread-post:1167191',
+      expected: expectedOriginal,
+    })).resolves.toMatchObject({
+      approvalRef: 'thread-post:1167191',
+      approvedBy: 'system:judge/su-4a0f1492-f767-4a4c-92b2-6b3c4795ce71',
+      approvedAt: '2026-10-09T04:06:19.140Z',
+    });
+    expect(queries).toHaveLength(2);
+    expect(queries.map((query) => query.values)).toEqual([
+      ['papercusp-workspace', '1167191'],
+      ['papercusp-workspace', '1167173'],
+    ]);
+  });
+
+  it('refuses a later pointer to a different preview', async () => {
+    let calls = 0;
+    const sql = (() => {
+      calls += 1;
+      return Promise.resolve([{
+        author_id: 'su-reviewer',
+        body: 'approve thread-post:456\nVerified the hashes.\nFor a different rubric, approve thread-post:789.',
+        approved_at: '2026-10-02T07:11:00.000Z',
+      }]);
+    }) as unknown as Parameters<typeof resolveAcceptanceBarApproval>[0];
+
+    await expect(resolveAcceptanceBarApproval(sql, {
+      workspaceId: 'papercusp-workspace',
+      approvalRef: 'thread-post:123',
+      expected,
+    })).rejects.toThrow('acceptance_bar_approval_ambiguous_preview_pointer');
+    expect(calls).toBe(1);
+  });
+
+  it('does not accept a reviewer pointer below preceding verification prose', async () => {
+    await expect(resolve('Verified the hashes first.\napprove thread-post:456')).rejects.toThrow(
+      /acceptance_bar_approval_unparseable/,
+    );
+  });
+
   it('resolves a reviewer pointer to one inline approval JSON line surrounded by preview prose', async () => {
     let call = 0;
     const preview = [
@@ -500,6 +617,68 @@ describe('approval receipt parsing (EI-22617748468342848)', () => {
       'Exact approval JSON:',
       JSON.stringify(RECEIPT),
       'The test check remains required; runtime evidence is owed after apply.',
+    ].join('\n');
+    const sql = (() => {
+      call += 1;
+      return Promise.resolve(call === 1
+        ? [{ author_id: 'su-reviewer', body: 'approve thread-post:456', approved_at: '2026-09-25T00:00:00.000Z' }]
+        : [{ author_id: 'su-requester', body: preview }]);
+    }) as unknown as Parameters<typeof resolveAcceptanceBarApproval>[0];
+
+    await expect(resolveAcceptanceBarApproval(sql, {
+      workspaceId: 'papercusp-workspace',
+      approvalRef: 'thread-post:123',
+      expected,
+    })).resolves.toMatchObject({ approvedBy: 'su-reviewer', approvalRef: 'thread-post:123' });
+  });
+
+  it('accepts explanation following a first-line reviewer preview pointer', async () => {
+    let call = 0;
+    const sql = (() => {
+      call += 1;
+      return Promise.resolve(call === 1
+        ? [{
+            author_id: 'su-reviewer',
+            body: 'approve thread-post:456\nVerified the preview hashes and source.',
+            approved_at: '2026-09-25T00:00:00.000Z',
+          }]
+        : [{ author_id: 'su-requester', body: JSON.stringify(RECEIPT) }]);
+    }) as unknown as Parameters<typeof resolveAcceptanceBarApproval>[0];
+
+    await expect(resolveAcceptanceBarApproval(sql, {
+      workspaceId: 'papercusp-workspace',
+      approvalRef: 'thread-post:123',
+      expected,
+    })).resolves.toMatchObject({
+      approvalRef: 'thread-post:123',
+      approvedBy: 'su-reviewer',
+      approvedAt: '2026-09-25T00:00:00.000Z',
+    });
+    expect(call).toBe(2);
+  });
+
+  it('attributes an unparseable receipt to the referenced preview post', async () => {
+    let call = 0;
+    const sql = (() => {
+      call += 1;
+      return Promise.resolve(call === 1
+        ? [{ author_id: 'su-reviewer', body: 'approve thread-post:456', approved_at: '2026-09-25T00:00:00.000Z' }]
+        : [{ author_id: 'su-requester', body: 'Preview posted without an approval receipt.' }]);
+    }) as unknown as Parameters<typeof resolveAcceptanceBarApproval>[0];
+
+    await expect(resolveAcceptanceBarApproval(sql, {
+      workspaceId: 'papercusp-workspace',
+      approvalRef: 'thread-post:123',
+      expected,
+    })).rejects.toThrow('acceptance_bar_preview_unparseable: referenced preview thread-post:456');
+  });
+
+  it('resolves one pretty-printed approval object embedded in preview prose', async () => {
+    let call = 0;
+    const preview = [
+      'The exact approval JSON follows:',
+      JSON.stringify(RECEIPT, null, 2),
+      'The remaining BARs are unchanged.',
     ].join('\n');
     const sql = (() => {
       call += 1;

@@ -50,9 +50,84 @@
  */
 
 import { candidateResourceLockDomains } from './coordination-domain';
-import { getTxPool, listLiveResourceDomains, readResourceQueue, type ResourceHolder } from './su-lock-store';
+import {
+  getTxPool,
+  listLiveResourceDomains,
+  readResourceQueue,
+  type ResourceHolder,
+  type ResourceLockStatus,
+} from './su-lock-store';
 
 export type ResourceAcquireMode = 'shared' | 'exclusive';
+
+/**
+ * The database's final host-global fence can reject a write after the
+ * application's cross-domain pre-read. Keep the trigger's detail typed so
+ * every acquire surface can turn that atomic race refusal into the same
+ * structured result rather than leaking a Postgres handler error.
+ */
+export interface HostGlobalResourceConflict {
+  resource: string;
+  requested_domain: string;
+  coordination_domain: string;
+  owner: string;
+  mode: ResourceAcquireMode;
+  status: ResourceLockStatus;
+}
+
+const HOST_GLOBAL_EXCLUSION_SQLSTATE = '23P01';
+const HOST_GLOBAL_EXCLUSION_CONSTRAINT = 'resource_host_global_exclusion';
+
+export function parseHostGlobalResourceExclusionError(
+  error: unknown,
+  expected: { resource: string; targetDomain: string },
+): HostGlobalResourceConflict | null {
+  if (!error || typeof error !== 'object') return null;
+  const pgError = error as {
+    code?: unknown;
+    constraint?: unknown;
+    constraint_name?: unknown;
+    detail?: unknown;
+  };
+  const constraint = pgError.constraint ?? pgError.constraint_name;
+  if (pgError.code !== HOST_GLOBAL_EXCLUSION_SQLSTATE || constraint !== HOST_GLOBAL_EXCLUSION_CONSTRAINT) {
+    return null;
+  }
+
+  let detail: unknown = pgError.detail;
+  if (typeof detail === 'string') {
+    try {
+      detail = JSON.parse(detail);
+    } catch {
+      return null;
+    }
+  }
+  if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return null;
+
+  const row = detail as Record<string, unknown>;
+  if (
+    row.resource !== expected.resource ||
+    row.requested_domain !== expected.targetDomain ||
+    typeof row.coordination_domain !== 'string' ||
+    !row.coordination_domain ||
+    row.coordination_domain === expected.targetDomain ||
+    typeof row.owner !== 'string' ||
+    !row.owner ||
+    (row.mode !== 'shared' && row.mode !== 'exclusive') ||
+    (row.status !== 'held' && row.status !== 'draining')
+  ) {
+    return null;
+  }
+
+  return {
+    resource: row.resource,
+    requested_domain: row.requested_domain,
+    coordination_domain: row.coordination_domain,
+    owner: row.owner,
+    mode: row.mode,
+    status: row.status,
+  };
+}
 
 /** A live holder found in a domain OTHER than the one the acquire targets. */
 export interface CrossDomainHolder {

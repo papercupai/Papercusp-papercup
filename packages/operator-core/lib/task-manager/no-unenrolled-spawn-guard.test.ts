@@ -342,6 +342,21 @@ describe('bounded awaited process-group runners', () => {
     // this pins only the static guard's classification and path isolation.
   });
 
+  const mutationProbeFence = 'packages/operator-core/lib/agent-tools/testing/mutation-probe-fence.ts';
+  const mutationProbeFenceSource = readFileSync(join(REPO_ROOT, mutationProbeFence), 'utf8');
+
+  it('allowlists the mutation-probe worker only while its deadline cleanup remains awaited', () => {
+    expect(KNOWN_DEFECTS.has(mutationProbeFence)).toBe(false);
+    expect(allow.get(mutationProbeFence)).toContain('request deadline');
+    expect(spawnTriggers(mutationProbeFence, mutationProbeFenceSource).detachedNotFalse).toBe(true);
+    expect(mutationProbeFenceSource).toContain('timer = setTimeout(');
+    expect(mutationProbeFenceSource).toContain('terminateSpawnTree(worker, detached)');
+    expect(mutationProbeFenceSource).toContain('await exited');
+    // A new path is still caught; only the reviewed, bounded real site is exempt.
+    expect(check(NEW, mutationProbeFenceSource)).toBe(true);
+    expect(check(mutationProbeFence, mutationProbeFenceSource)).toBe(false);
+  });
+
   const oddsmith = 'packages/operator-core/lib/harness/routines/oddsmith-cron-shared.ts';
   const source = readFileSync(join(REPO_ROOT, oddsmith), 'utf8');
 
@@ -415,5 +430,17 @@ describe('ALLOWLIST hygiene', () => {
     // spawn sites) was to keep this list reviewable. If it grows past ~40 the
     // guard has drifted back into rubber-stamp territory and needs re-scoping.
     expect(allow.size).toBeLessThanOrEqual(40);
+  });
+
+  it('every entry still fires a trigger — a dead entry only spends the review budget', () => {
+    // WI-6554700010009949: seven entries whose files no longer call spawn/fork at all
+    // sat here and pushed a legitimate new category-(2) entry past the ceiling above.
+    // A file that fires no trigger already passes without an entry, so its entry only
+    // consumes the budget, and would silently re-cover the file if it ever spawned again.
+    for (const [path] of allow) {
+      const t = spawnTriggers(path, readFileSync(join(REPO_ROOT, path), 'utf8'));
+      expect(t.detachedNotFalse || t.storedOnProperty || t.selfDaemonizing,
+        `${path} fires no trigger — remove its ALLOWLIST entry`).toBe(true);
+    }
   });
 });

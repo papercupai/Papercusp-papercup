@@ -10,9 +10,14 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/system-health/compaction-compliance-watchdog.test.ts
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
 import { tmpdir } from 'node:os';
+import { hostname } from 'node:os';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { join } from 'node:path';
+import type { ResolveResumeResult } from '../agent-launch-core';
+import type { CompactionForceSuccessorInput, CompactionForceSuccessorResult } from './compaction-force-successor';
 
 const {
   estimateMock,
@@ -41,6 +46,7 @@ const {
   clearEstimateMock,
   codexProvenanceMock,
   runFlushGateMock,
+  resolveResumeTargetMock,
 } = vi.hoisted(() => ({
   clearEstimateMock: vi.fn(async () => {}),
   // EI-21595542328480968: where a codex reading came from. Default null = "not codex /
@@ -58,7 +64,7 @@ const {
   observedPromptFloorMock: vi.fn(() => null as null | { tokens: number; observations: number; at: number }),
   contextWindowMock: vi.fn(async (_owner: string) => null as number | null),
   specMock: vi.fn(),
-  setEstimateMock: vi.fn(async () => {}),
+  setEstimateMock: vi.fn(async () => true),
   setLimitMock: vi.fn(async () => {}),
   deathMock: vi.fn(async (_owner: string) => false),
   // WI-10003466: default null = no tool-reference death, so every pre-existing
@@ -108,8 +114,16 @@ const {
   resolveSelfSessionMock: vi.fn(async () => null as null | { filePath: string; sourceKind: string }),
   writePresenceMock: vi.fn(async () => {}),
   runFlushGateMock: vi.fn(async () => ({ verdict: 'clear' as const, tripwires: [] })),
+  // The watchdog tests use fakeSql for the sweep query; keep the new hostless
+  // resolver off real PG unless a case explicitly injects its own fixture.
+  resolveResumeTargetMock: vi.fn(async (_ref: { agentId?: string | null; sessionId?: string | null }) => ({
+    ok: false as const,
+    error: 'not_found' as const,
+    detail: 'no fixture source',
+  })),
 }));
 vi.mock('../compaction-usage', () => ({
+  observeHealthyClaudeTranscriptForOwner: async () => null,
   estimateContextTokensForOwner: estimateMock,
   observedPromptFloorForOwner: observedPromptFloorMock,
   estimateContextWindowForOwner: contextWindowMock,
@@ -124,6 +138,18 @@ vi.mock('../compaction-usage', () => ({
   resolveSessionRefReconciled: resolveSessionRefReconciledMock,
   resolveLaunchCompactionLimitForOwner: resolveLaunchLimitMock,
   codexReadingProvenanceForOwner: codexProvenanceMock,
+}));
+vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async () => true) }));
+vi.mock('../agent-launch-core', () => ({ resolveResumeTarget: resolveResumeTargetMock }));
+// Original-producer observation outcomes are asserted by the canonical rail cases.
+// This unit fixture must never flush incidental observations to the live database.
+vi.mock('../degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
+vi.mock('../agent-tools/coordination/tools/conditions', () => ({
+  readConditionEnvelopes: async () => [], computeConditionStates: () => [],
+}));
+vi.mock('../agent-tools/coordination/log', () => ({
+  coordScopeReady: vi.fn(async () => {}),
+  coordScopeWorkspace: vi.fn(() => 'workspace'),
 }));
 vi.mock('../agent-tools/coordination/presence', () => ({
   setContextEstimate: setEstimateMock,
@@ -147,6 +173,7 @@ vi.mock('@papercusp/flags', () => ({
 }));
 vi.mock('../events/await/psu-pty-discovery', () => ({
   findLiveHost: findLiveHostMock,
+  findLiveHostAsync: async (ownerId: string) => findLiveHostMock(ownerId),
   hostSupports: hostSupportsMock,
   injectIntoHost: injectMock,
 }));
@@ -188,15 +215,19 @@ import {
   resetStaleCutoverEscalationsForTests,
   resetCompactionStrandingForTests,
   startCompactionComplianceWatchdog,
+  WATCHDOG_BEHAVIOR_CUTOVERS,
   discoverPresencelessLoopOwners,
   carryRespawnLoopEscalationBody,
   carryRespawnStreakVerdict,
+  compactionConditionKey,
+  type CompactionComplianceDeps,
 } from './compaction-compliance-watchdog';
 import {
   getContextUsage,
   isContextGaugeEnabled,
   resetContextUsageCacheForTests,
 } from './context-usage-cache';
+import { defaultCompactionLimitForWindow, MODEL_WINDOW_1M, MODEL_WINDOW_DEFAULT } from '../agent-config-constants';
 
 /** Fake postgres tag: routes on the query text — the seed query selects
  *  `compaction_limit IS NULL`, the sweep `IS NOT NULL`, the honor leg reads
@@ -215,6 +246,14 @@ function fakeSql(opts: {
      *  keepalive beat), against which a codex rollout's mtime is judged. */
     last_active_at?: string | null;
   }>;
+  /** Active adv-session owners used by ended-session signal recovery. */
+  activeSessionOwners?: string[];
+  /** Exercise the fail-open lifecycle-read path. */
+  activeSessionOwnersError?: boolean;
+  /** Exercise the fail-open condition-family read path. */
+  conditionEpisodesError?: boolean;
+  /** Open compaction episodes returned by the family-scoped lifecycle read. */
+  conditionEpisodes?: Array<{ condition_key: string; opened_at: string | Date }>;
   spawnRecords?: Record<string, { model_spec: string | null; model_tier: string | null }>;
   /** P-003: claim-freshness rows keyed by owner (the work_item_claims⋈carry_notes read). */
   claimFreshness?: Record<
@@ -254,6 +293,15 @@ function fakeSql(opts: {
       const label = opts.fleetLabels?.[String(values[0])];
       return Promise.resolve(label ? [{ owner_label: label }] : []);
     }
+    if (q.includes('harness_shared.adv_sessions') && q.includes('ended_at IS NULL')) {
+      if (opts.activeSessionOwnersError) return Promise.reject(new Error('adv session read failed'));
+      const owners = opts.activeSessionOwners ?? (opts.seeded ?? []).map((row) => row.owner_id);
+      return Promise.resolve(owners.map((owner_id) => ({ owner_id })));
+    }
+    if (q.includes('harness_shared.coord_event_log') && q.includes('jsonb_array_elements_text')) {
+      if (opts.conditionEpisodesError) return Promise.reject(new Error('condition query failed'));
+      return Promise.resolve(opts.conditionEpisodes ?? []);
+    }
     if (q.includes('compaction_limit IS NULL')) return Promise.resolve(opts.unseeded ?? []);
     if (q.includes('compaction_limit IS NOT NULL')) return Promise.resolve(opts.seeded ?? []);
     if (q.includes('spawned_agents')) {
@@ -272,7 +320,7 @@ beforeEach(() => {
   observedPromptFloorMock.mockReturnValue(null);
   contextWindowMock.mockResolvedValue(null);
   specMock.mockResolvedValue(null);
-  setEstimateMock.mockResolvedValue(undefined);
+  setEstimateMock.mockResolvedValue(true);
   setLimitMock.mockResolvedValue(undefined);
   deathMock.mockResolvedValue(false);
   toolRefDeathMock.mockResolvedValue(null);
@@ -292,10 +340,9 @@ beforeEach(() => {
   hostSupportsMock.mockReturnValue(false);
   injectMock.mockResolvedValue(true);
   findTranscriptMock.mockResolvedValue('/tmp/live-session.jsonl');
-  // P-022: the force rung builds the carry spec itself; with the default null
-  // session-ref it falls back to newest-transcript-under-owner, so give it one.
+  // P-022: provide a stable native session for estimate fencing in this fixture.
   newestTranscriptMock.mockReturnValue('/tmp/live-session.jsonl');
-  resolveSessionRefMock.mockResolvedValue(null);
+  resolveSessionRefMock.mockResolvedValue({ agent: 'claude', sessionId: 'native-current', sessionKey: 1 });
   resolveSessionRefReconciledMock.mockImplementation((owner: string) => resolveSessionRefMock(owner));
   buildOwnerRespawnMock.mockResolvedValue({
     systemPromptAddendum: 'deterministic carry',
@@ -321,6 +368,304 @@ beforeEach(() => {
   // tagged (origin watchdog) — point the ledger at a throwaway dir so this suite
   // never writes the real ~/.papercusp/turn-provenance.
   process.env.PAPERCUSP_TURN_PROVENANCE_DIR = join(tmpdir(), `wd-prov-${process.pid}`);
+});
+
+afterEach(() => { vi.useRealTimers(); expect(readRealPgRailBlocks().blocked).toBe(0); });
+
+describe('original compaction durable episodes', () => {
+  function forceSuccessorSource(
+    overrides: Partial<Omit<Extract<ResolveResumeResult, { ok: true }>, 'ok'>> = {},
+  ): ResolveResumeResult {
+    return {
+      ok: true,
+      sessionId: 'source-session',
+      ompThreadId: null,
+      resumeId: 'source-session',
+      ownerId: 'su-episode',
+      workspaceId: 'workspace',
+      harnessSlug: 'papercusp',
+      agent: 'claude',
+      role: null,
+      feature: null,
+      cwd: '/repo',
+      model: null,
+      modelSource: null,
+      account: null,
+      headless: false,
+      endedAt: null,
+      endedBy: null,
+      live: false,
+      advSessionId: 44,
+      binding: { coordOwnerId: 'su-episode', sessionId: 'source-session', startedAt: '2026-10-15 08:00:00+00' },
+      ...overrides,
+    };
+  }
+
+  function fixture() {
+    const openedKeys: string[] = [], resolvedKeys: string[] = [];
+    const open = new Map<string, number>();
+    const row = { owner_id: 'su-episode', owner_label: 'episode', workspace_id: 'workspace',
+      compaction_limit: 100_000, compaction_limit_explicit: true, last_active_at: new Date().toISOString() };
+    const resolveForceSuccessorTarget = vi.fn(async (_ownerId: string): Promise<ResolveResumeResult> => ({
+      ok: false as const, error: 'not_found' as const, detail: 'no fixture source',
+    }));
+    const dispatchForceSuccessor = vi.fn(async (_input: CompactionForceSuccessorInput): Promise<CompactionForceSuccessorResult> => ({
+      verified: false, detail: 'fixture successor was not verified',
+    }));
+    const deps: CompactionComplianceDeps = { readOpenConditions: async () => [...open].map(([conditionKey, openedAtMs]) =>
+      ({ conditionKey, openedAtMs })), rail: {
+      broadcast: async event => { expect(event.oneShot).toBe(true); expect(event.conditionKey).toBeTruthy();
+        if (!open.has(event.conditionKey!)) openedKeys.push(event.conditionKey!);
+        open.set(event.conditionKey!, open.get(event.conditionKey!) ?? Date.now()); return true; },
+      resolve: async event => { if (!open.delete(event.conditionKey)) return false;
+        resolvedKeys.push(event.conditionKey); return true; },
+    }, resolveForceSuccessorTarget, dispatchForceSuccessor };
+    const key = (kind: Parameters<typeof compactionConditionKey>[2], subject = '') =>
+      compactionConditionKey('workspace', row.owner_id, kind, subject);
+    return { deps, open, row, key, openedKeys, resolvedKeys, resolveForceSuccessorTarget, dispatchForceSuccessor,
+      run: (rows = [row], sqlOpts: Parameters<typeof fakeSql>[0] = {}) =>
+        checkCompactionCompliance(fakeSql({ activeSessionOwners: ['su-episode'], ...sqlOpts, seeded: rows }), deps) };
+  }
+  it('dispatches a workspace/harness-bound capability successor and records applied only after positive launch evidence', async () => {
+    const h = fixture();
+    estimateMock.mockResolvedValue(150_000);
+    h.resolveForceSuccessorTarget.mockResolvedValue(forceSuccessorSource({ headless: true }));
+    h.dispatchForceSuccessor.mockResolvedValue({ verified: true, detail: 'first turn observed' });
+
+    const result = await h.run();
+
+    expect(result.forceCompacted).toEqual(['su-episode']);
+    expect(h.dispatchForceSuccessor).toHaveBeenCalledWith(expect.objectContaining({
+      target: expect.objectContaining({
+        ownerId: 'su-episode',
+        workspaceId: 'workspace',
+        harnessSlug: 'papercusp',
+        advSessionId: 44,
+      }),
+      brief: expect.stringContaining('FORCE'),
+    }));
+    expect(h.open.has(h.key('force-unavailable'))).toBe(false);
+  });
+
+  it('keeps force-unavailable when a scoped successor refuses or lacks positive launch evidence', async () => {
+    const h = fixture();
+    estimateMock.mockResolvedValue(150_000);
+    h.resolveForceSuccessorTarget.mockResolvedValue(forceSuccessorSource());
+    h.dispatchForceSuccessor.mockResolvedValue({ verified: false, detail: 'first turn is unconfirmed' });
+
+    const result = await h.run();
+
+    expect(result.forceCompacted).toEqual([]);
+    expect(h.dispatchForceSuccessor).toHaveBeenCalledTimes(1);
+    expect(h.open.has(h.key('force-unavailable'))).toBe(true);
+  });
+
+  it('refuses hostless actuation when the recorded source lacks its harness binding', async () => {
+    const h = fixture();
+    estimateMock.mockResolvedValue(150_000);
+    h.resolveForceSuccessorTarget.mockResolvedValue(forceSuccessorSource({ harnessSlug: null }));
+
+    const result = await h.run();
+
+    expect(result.forceCompacted).toEqual([]);
+    expect(h.dispatchForceSuccessor).not.toHaveBeenCalled();
+    expect(h.open.has(h.key('force-unavailable'))).toBe(true);
+  });
+  it('opens before legacy force latches and survives restart, absence and unknown measurements', async () => {
+    const h = fixture(); estimateMock.mockResolvedValue(150_000);
+    await h.run(); expect(h.open.size).toBe(2);
+    expect(h.open.has(h.key('over-limit'))).toBe(true);
+    expect(h.open.has(h.key('force-unavailable'))).toBe(true);
+    await h.run(); expect(h.openedKeys).toHaveLength(2);
+    resetForceCompactedForTests(); resetNoHostWarnedForTests(); resetCarryRespawnForTests();
+    await h.run([]); expect(h.open.size).toBe(2);
+    estimateMock.mockResolvedValue(null); await h.run(); expect(h.open.size).toBe(2);
+    estimateMock.mockResolvedValue(50_000); await h.run(); expect(h.open.size).toBe(0);
+    expect(h.resolvedKeys).toEqual(expect.arrayContaining(h.openedKeys));
+  });
+  it.each(['foreign-workspace', 'foreign-owner', 'duplicate', 'invalid-limit', 'invalid-estimate',
+    'future-episode', 'unknown-clock', 'failed-ledger', 'unknown-ledger', 'unexpected-subject', 'duplicate-episode'])('preserves %s recovery', async kind => {
+    const h = fixture(); h.open.set(h.key('over-limit'), Date.now() - 100);
+    estimateMock.mockResolvedValue(50_000);
+    if (kind === 'foreign-workspace') h.row.workspace_id = 'other';
+    if (kind === 'foreign-owner') h.row.owner_id = 'other';
+    if (kind === 'invalid-limit') h.row.compaction_limit = Number.NaN;
+    if (kind === 'invalid-estimate') estimateMock.mockResolvedValue(Number.NaN);
+    if (kind === 'future-episode') h.open.set(h.key('over-limit'), Date.now() + 100_000);
+    if (kind === 'unknown-clock') h.open.set(h.key('over-limit'), Number.NaN);
+    if (kind === 'failed-ledger') h.deps.readOpenConditions = async () => { throw new Error('ledger unreadable'); };
+    if (kind === 'unknown-ledger') h.deps.readOpenConditions = async () => undefined as never;
+    if (kind === 'unexpected-subject') { h.open.clear(); h.open.set(h.key('over-limit', 'foreign-session'), Date.now() - 100); }
+    if (kind === 'duplicate-episode') h.deps.readOpenConditions = async () => [
+      { conditionKey: h.key('over-limit'), openedAtMs: Date.now() - 100 },
+      { conditionKey: h.key('over-limit'), openedAtMs: Date.now() - 100 },
+    ];
+    await h.run(kind === 'duplicate' ? [h.row, h.row] : [h.row]);
+    expect(h.open.size).toBe(1); expect(h.resolvedKeys).toHaveLength(0);
+  });
+  it('false/null death checks cannot recover without a fresh positive live transcript response', async () => {
+    const h = fixture(); deathMock.mockResolvedValue(true); await h.run();
+    deathMock.mockResolvedValue(false); toolRefDeathMock.mockResolvedValue({ turns: 3, toolName: 'lost', evidence: 'rejected' });
+    await h.run(); expect(h.open.size).toBe(2);
+    toolRefDeathMock.mockResolvedValue(null); estimateMock.mockResolvedValue(50_000);
+    await h.run(); expect(h.open.size).toBe(2);
+    h.deps.observeHealthyTranscript = async () => ({ sessionId: 'current', measuredAtMs: 1 });
+    await h.run(); expect(h.open.size).toBe(2);
+    h.deps.observeHealthyTranscript = async () => ({ sessionId: 'current', measuredAtMs: Date.now() });
+    await h.run(); expect(h.open.size).toBe(0);
+  });
+  it('failed keyed delivery or resolution does not suppress independent signals or a later retry', async () => {
+    const h = fixture(); estimateMock.mockResolvedValue(150_000);
+    const broadcast = h.deps.rail!.broadcast!;
+    h.deps.rail!.broadcast = async event => {
+      if (event.conditionKey === h.key('over-limit')) throw new Error('rail delivery unavailable');
+      return broadcast(event);
+    };
+    await h.run(); expect(h.open.has(h.key('force-unavailable'))).toBe(true);
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('condition delivery failed'));
+    h.deps.rail!.broadcast = broadcast; await h.run(); expect(h.open.size).toBe(2);
+    const resolve = h.deps.rail!.resolve!;
+    h.deps.rail!.resolve = async () => { throw new Error('resolution unavailable'); };
+    estimateMock.mockResolvedValue(50_000); await h.run(); expect(h.open.size).toBe(2);
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('condition resolution failed'));
+    h.deps.rail!.resolve = resolve; await h.run(); expect(h.open.size).toBe(0);
+  });
+  it('closes current-session signal episodes only after adv-session lifecycle proves the owner ended', async () => {
+    const h = fixture();
+    const endedSessionSignals = [
+      'dark-telemetry', 'over-limit', 'force-unavailable', 'implausible-reading',
+      'frozen-codex-reading', 'default-1m-served-small', 'unsatisfiable-limit',
+    ] as const;
+    const needsFollowUp = [
+      'context-death', 'tool-reference-death', 'compaction-stranding',
+      'dark-presence', 'carry-respawn-loop', 'stale-cutover',
+    ] as const;
+    for (const kind of endedSessionSignals) h.open.set(h.key(kind), Date.now() - 100);
+    for (const kind of needsFollowUp) h.open.set(h.key(kind), Date.now() - 100);
+
+    // A live adv-session blocks cleanup, even when the alarm has not re-fired.
+    await h.run([], { activeSessionOwners: [h.row.owner_id] });
+    expect(h.open.size).toBe(endedSessionSignals.length + needsFollowUp.length);
+    expect(h.resolvedKeys).toEqual([]);
+
+    // Once lifecycle state proves the owner has no active session, only
+    // conditions describing current measurements/signals become obsolete.
+    await h.run([], { activeSessionOwners: [] });
+    expect([...h.open.keys()].sort()).toEqual(needsFollowUp.map(kind => h.key(kind)).sort());
+    expect(h.resolvedKeys.sort()).toEqual(endedSessionSignals.map(kind => h.key(kind)).sort());
+  });
+  it('preserves one-shot episodes when the adv-session lifecycle read fails', async () => {
+    const h = fixture();
+    h.open.set(h.key('over-limit'), Date.now() - 100);
+    h.open.set(h.key('dark-telemetry'), Date.now() - 100);
+    await h.run([], { activeSessionOwnersError: true });
+    expect(h.open.size).toBe(2);
+    expect(h.resolvedKeys).toEqual([]);
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('ended-session lifecycle read failed'));
+  });
+  it('logs condition-family read failures and exact-key resolutions that return false', async () => {
+    const h = fixture();
+    const key = h.key('over-limit');
+    await checkCompactionCompliance(fakeSql({ conditionEpisodesError: true }), {
+      rail: { resolve: async () => true },
+    });
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('ended-session condition read failed'));
+
+    h.open.set(key, Date.now() - 100);
+    h.deps.rail!.resolve = async () => false;
+    await h.run([], { activeSessionOwners: [] });
+    expect(h.open.has(key)).toBe(true);
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining(`condition recovery returned false for exact key ${key}`));
+  });
+  it('preserves an episode when the condition reader returns duplicate lifecycle evidence', async () => {
+    const h = fixture();
+    const key = h.key('over-limit');
+    h.open.set(key, Date.now() - 100);
+    h.deps.readOpenConditions = async () => [
+      { conditionKey: key, openedAtMs: Date.now() - 100 },
+      { conditionKey: key, openedAtMs: Date.now() - 100 },
+    ];
+    await h.run([], { activeSessionOwners: [] });
+    expect(h.open.has(key)).toBe(true);
+    expect(h.resolvedKeys).toEqual([]);
+  });
+  it('only measured same-session rollout recovery clears a frozen episode', async () => {
+    const h = fixture(); h.open.set(h.key('frozen-codex-reading'), Date.now() - 100);
+    estimateMock.mockResolvedValue(50_000); await h.run(); expect(h.open.size).toBe(1);
+    codexProvenanceMock.mockResolvedValue({ rolloutPath: 'rollout', refSessionId: 'current',
+      rolloutSessionId: 'other', rolloutMtimeMs: Date.now() });
+    await h.run(); expect(h.open.size).toBe(1);
+    codexProvenanceMock.mockResolvedValue({ rolloutPath: 'rollout', refSessionId: 'current',
+      rolloutSessionId: 'current', rolloutMtimeMs: Date.now() });
+    await h.run(); expect(h.open.size).toBe(0);
+  });
+  it('null stranding detector results preserve until a positive edit on the exact target is measured', async () => {
+    const h = fixture(); const key = h.key('compaction-stranding', JSON.stringify(['packages/target.ts']));
+    h.open.set(key, Date.now() - 100); estimateMock.mockResolvedValue(50_000);
+    await h.run(); expect(h.open.size).toBe(1);
+    await checkCompactionCompliance(fakeSql({ seeded: [h.row], targetEdits: [
+      { file: 'packages/target.ts', edited_ms: Date.now() } ] }), h.deps);
+    expect(h.open.size).toBe(0);
+  });
+  it('independent dark and implausible episodes recover only on a trustworthy numeric measurement', async () => {
+    const h = fixture(); resolveSessionRefMock.mockResolvedValue({ agent: 'claude', sessionId: 'current' });
+    await h.run(); await h.run(); await h.run(); expect(h.open.has(h.key('dark-telemetry'))).toBe(true);
+    estimateMock.mockResolvedValue(2_000_001); await h.run(); expect(h.open.size).toBe(2);
+    estimateMock.mockResolvedValue(Number.NaN); await h.run(); expect(h.open.size).toBe(2);
+    estimateMock.mockResolvedValue(50_000); await h.run(); expect(h.open.size).toBe(0);
+  });
+  it('retires a legacy unsatisfiable-limit episode only after a fresh total-input observation', async () => {
+    const h = fixture(); estimateMock.mockResolvedValue(50_000);
+    const key = h.key('unsatisfiable-limit');
+    h.open.set(key, Date.now() - 100);
+    observedPromptFloorMock.mockReturnValue(null);
+    await h.run(); expect(h.open.has(key)).toBe(true);
+    observedPromptFloorMock.mockReturnValue({ tokens: 150_000, observations: 3, at: 1 });
+    await h.run(); expect(h.open.has(key)).toBe(true);
+    observedPromptFloorMock.mockReturnValue({ tokens: 150_000, observations: 3, at: Date.now() });
+    await h.run(); expect(h.open.has(key)).toBe(false);
+    expect(h.resolvedKeys).toContain(key);
+  });
+  it('a missing measured model window preserves the default-window alarm after restart', async () => {
+    const h = fixture(); h.open.set(h.key('default-1m-served-small'), Date.now() - 1);
+    estimateMock.mockResolvedValue(50_000); await h.run(); expect(h.open.size).toBe(1);
+    contextWindowMock.mockResolvedValue(1_000_000); await h.run(); expect(h.open.size).toBe(0);
+  });
+  it('requires a sustained measured under-limit stretch after a missed sweep before clearing the loop', async () => {
+    vi.useFakeTimers(); const h = fixture(); h.open.set(h.key('carry-respawn-loop'), Date.now() - 1);
+    estimateMock.mockResolvedValue(50_000); await h.run(); expect(h.open.size).toBe(1);
+    vi.advanceTimersByTime(30 * 60_000); await h.run(); expect(h.open.size).toBe(1);
+    for (let i = 0; i < 15; i++) { vi.advanceTimersByTime(2 * 60_000); await h.run(); }
+    expect(h.open.size).toBe(0);
+  });
+  it.each(['unsupported-host', 'missing-transcript', 'failed-builder', 'rejected-injection', 'failed-discovery'])
+    ('opens the original force fallback for %s', async kind => {
+      const h = fixture(); estimateMock.mockResolvedValue(150_000);
+      findLiveHostMock.mockReturnValue({ sock: 'fixture-socket', caps: ['carry-respawn'] });
+      hostSupportsMock.mockReturnValue(kind !== 'unsupported-host');
+      if (kind === 'missing-transcript') { findTranscriptMock.mockResolvedValue(null); newestTranscriptMock.mockReturnValue(null); }
+      if (kind === 'failed-builder') buildOwnerRespawnMock.mockRejectedValueOnce(new Error('builder unavailable'));
+      if (kind === 'rejected-injection') injectMock.mockResolvedValue(false);
+      if (kind === 'failed-discovery') findLiveHostMock.mockImplementationOnce(() => { throw new Error('host unreadable'); });
+      await h.run(); expect(h.open.has(h.key('force-unavailable'))).toBe(true);
+      estimateMock.mockResolvedValue(50_000); await h.run(); expect(h.open.size).toBe(0);
+    });
+  it('runtime cutover recovery survives restart and only clears the same known host/entrypoint after a measured boot', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const h = fixture(); const cutover = WATCHDOG_BEHAVIOR_CUTOVERS[0];
+    const runtime = `${hostname()}:${process.argv[1]}`;
+    const exact = compactionConditionKey(DEFAULT_COORD_WORKSPACE, runtime, 'stale-cutover', cutover.id);
+    const foreign = compactionConditionKey(DEFAULT_COORD_WORKSPACE, 'other-host:entry', 'stale-cutover', cutover.id);
+    const unknown = compactionConditionKey(DEFAULT_COORD_WORKSPACE, runtime, 'stale-cutover', 'unknown-cutover');
+    const opened = cutover.atMs - 1_000;
+    h.open.set(exact, opened); h.open.set(foreign, opened); h.open.set(unknown, opened);
+    vi.setSystemTime(cutover.atMs + 1_000); vi.spyOn(process, 'uptime').mockReturnValue(0);
+    try {
+      startCompactionComplianceWatchdog(fakeSql({}), { ...h.deps, intervalMs: 999_999_999 });
+      await vi.waitFor(() => expect(h.open.has(exact)).toBe(false));
+      expect(h.open.has(foreign)).toBe(true); expect(h.open.has(unknown)).toBe(true);
+    } finally { const { stopManaged } = await import('@papercusp/scheduled-registry'); stopManaged('compaction-compliance-watchdog'); }
+  });
 });
 
 describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () => {
@@ -558,6 +903,83 @@ describe('measured window outranks the spec-derived guess (WI-38347)', () => {
       expect(setLimitMock).not.toHaveBeenCalledWith('cx', CODEX_SAFE_LIMIT);
     });
 
+    /**
+     * WI-10006049 (owner Avi 2026-10-05 #1369/#1371): a 1M-family session that a bare
+     * /model menu pick (Claude Code 2.1.289) dropped to a 200k window was LOWERED by this
+     * very branch to the 200k window's derived limit. Once it is served at 1M again its
+     * spec derives the 1M limit, so the old 158k no longer equals the seed — it must still
+     * heal, because the watchdog wrote it, not a human. Replays su-56e2f83b, 2026-10-06.
+     */
+    it('HEALS the 200k-window limit this branch wrote once the live window is back at 1M (WI-10006049)', async () => {
+      const lowered = defaultCompactionLimitForWindow(MODEL_WINDOW_DEFAULT);
+      const healed = defaultCompactionLimitForWindow(MODEL_WINDOW_1M);
+      specMock.mockResolvedValue('opus[1m]'); // derives the 1M limit, so `lowered` != seed
+      contextWindowMock.mockResolvedValue(MODEL_WINDOW_1M);
+      const out = await checkCompactionCompliance(sweep(lowered));
+      expect(out.relimited).toContainEqual({ owner: 'cx', from: lowered, to: healed });
+      expect(setLimitMock).toHaveBeenCalledWith('cx', healed);
+    });
+
+    it('does NOT heal that value while the live window is still 200k, nor an unrelated low value at 1M (WI-10006049 falsifiers)', async () => {
+      const lowered = defaultCompactionLimitForWindow(MODEL_WINDOW_DEFAULT);
+      specMock.mockResolvedValue('opus[1m]');
+      contextWindowMock.mockResolvedValue(MODEL_WINDOW_DEFAULT);
+      const stillSmall = await checkCompactionCompliance(sweep(lowered));
+      expect(stillSmall.relimited).toEqual([]);
+      setLimitMock.mockClear();
+      contextWindowMock.mockResolvedValue(MODEL_WINDOW_1M);
+      const deliberate = await checkCompactionCompliance(sweep(100_000));
+      expect(deliberate.relimited).toEqual([]);
+      expect(setLimitMock).not.toHaveBeenCalled();
+    });
+
+    /**
+     * WI-10006236 (owner Avi 2026-10-05, #1309 prevention): the WI-10006049 incident left
+     * one trace, the quiet `re-limited 450000 → 158000` log line. Lowering a session whose
+     * model family is served at 1M by default to the 200k window is now an owner-facing
+     * escalation, once per owner.
+     */
+    it('ESCALATES once when a 1M-default family is measured at 200k and lowered (WI-10006236)', async () => {
+      const healed = defaultCompactionLimitForWindow(MODEL_WINDOW_1M);
+      const lowered = defaultCompactionLimitForWindow(MODEL_WINDOW_DEFAULT);
+      for (const spec of ['opus[1m]', 'sonnet', 'fable:high']) {
+        resetCarryRespawnForTests();
+        openEscalationMock.mockClear();
+        specMock.mockResolvedValue(spec);
+        contextWindowMock.mockResolvedValue(MODEL_WINDOW_DEFAULT);
+        const out = await checkCompactionCompliance(sweep(healed));
+        expect(out.relimited).toContainEqual({ owner: 'cx', from: healed, to: lowered });
+        expect(out.default1mServedSmall).toEqual([
+          { owner: 'cx', spec, from: healed, to: lowered, window: MODEL_WINDOW_DEFAULT },
+        ]);
+        expect(openEscalationMock).toHaveBeenCalledTimes(1);
+        const [, input] = openEscalationMock.mock.calls[0] as unknown as [
+          unknown,
+          { summary: string; meta: { subjectSignature: string } },
+        ];
+        expect(input.meta.subjectSignature).toBe('compaction-watchdog:default-1m-served-small:cx');
+        expect(input.summary).toContain(`${MODEL_WINDOW_DEFAULT}-token window`);
+        // Same owner, next sweep: still recorded, not re-escalated.
+        await checkCompactionCompliance(sweep(healed));
+        expect(openEscalationMock).toHaveBeenCalledTimes(1);
+      }
+    });
+
+    it('does NOT escalate a 200k-window family, nor a 1M family lowered at a window above 200k (WI-10006236 falsifiers)', async () => {
+      const healed = defaultCompactionLimitForWindow(MODEL_WINDOW_1M);
+      specMock.mockResolvedValue('claude-sonnet-4-6'); // a genuine 200k model
+      contextWindowMock.mockResolvedValue(MODEL_WINDOW_DEFAULT);
+      const small = await checkCompactionCompliance(sweep(healed));
+      expect(small.relimited).not.toEqual([]);
+      expect(small.default1mServedSmall).toEqual([]);
+      specMock.mockResolvedValue('opus[1m]');
+      contextWindowMock.mockResolvedValue(CODEX_WINDOW); // lowered, but not to the 200k window
+      const codexSized = await checkCompactionCompliance(sweep(healed));
+      expect(codexSized.relimited).not.toEqual([]);
+      expect(codexSized.default1mServedSmall).toEqual([]);
+      expect(openEscalationMock).not.toHaveBeenCalled();
+    });
+
     it('leaves a DELIBERATE lower override alone — its value differs from the derived seed (D-006 leanness)', async () => {
       const out = await checkCompactionCompliance(sweep(100_000));
       expect(out.relimited).toEqual([]);
@@ -619,7 +1041,33 @@ describe('checkCompactionCompliance sweep (agent-managed-compaction P-009)', () 
     );
     expect(out.estimated).toEqual(['hot', 'cool']);
     expect(out.overLimit).toEqual(['hot']);
-    expect(setEstimateMock).toHaveBeenCalledWith('hot', 170_000);
+    expect(setEstimateMock).toHaveBeenCalledWith('hot', 170_000, {
+      nativeSessionId: 'native-current',
+      advSessionId: 1,
+    });
+  });
+
+  it('discards the sample and skips gauge/cut actions when the native-session fence rejects it', async () => {
+    resolveSessionRefMock.mockResolvedValue({
+      agent: 'claude',
+      sessionId: 'native-predecessor',
+      sessionKey: 41,
+    });
+    estimateMock.mockResolvedValue(170_000);
+    setEstimateMock.mockResolvedValue(false);
+
+    const out = await checkCompactionCompliance(fakeSql({
+      seeded: [{ owner_id: 'hot', owner_label: 'su · hot', compaction_limit: 158_000 }],
+    }));
+
+    expect(setEstimateMock).toHaveBeenCalledWith('hot', 170_000, {
+      nativeSessionId: 'native-predecessor',
+      advSessionId: 41,
+    });
+    expect(out.estimated).toEqual([]);
+    expect(out.overLimit).toEqual([]);
+    expect(out.forceCompacted).toEqual([]);
+    expect(injectMock).not.toHaveBeenCalled();
   });
 
   it('P-003: SURFACES an over-limit session\'s unflushed (stale-checkpoint) claim, and skips a fresh one', async () => {
@@ -1062,13 +1510,16 @@ describe('force rung (agent-managed-compaction P-012, carry-respawn under P-022)
     expect(payload.data).toBe('and also fix the login page');
   });
 
-  it('a failed spec build (no transcript anywhere) ⇒ NOT forced this pass; retries later', async () => {
+  it('an unresolved session ref and no transcript cannot drive an estimate-based cut', async () => {
     estimateMock.mockResolvedValue(200_000);
     findLiveHostMock.mockReturnValue({ sock: '/tmp/hot.sock', caps: ['carry-respawn'] });
     hostSupportsMock.mockReturnValue(true);
-    newestTranscriptMock.mockReturnValue(null); // ref is null too ⇒ no transcript at all
+    resolveSessionRefMock.mockResolvedValue(null);
+    newestTranscriptMock.mockReturnValue(null);
     const out = await checkCompactionCompliance(fakeSql({ seeded }));
     expect(out.forceCompacted).toEqual([]);
+    expect(out.overLimit).toEqual([]);
+    expect(estimateMock).not.toHaveBeenCalled();
     expect(injectMock).not.toHaveBeenCalled();
   });
 
@@ -1421,9 +1872,9 @@ describe('live-config reach (agent-managed-compaction P-017)', () => {
   });
 });
 
-describe('EI-237397 fixed prompt-floor livelock guard', () => {
-  it('raises a fleet member limit above the measured fixed floor and skips another respawn', async () => {
-    estimateMock.mockResolvedValue(396_171);
+describe('gateway observed total-input floor semantics', () => {
+  it('does not re-limit or skip ordinary over-limit handling for a high total-input floor', async () => {
+    estimateMock.mockResolvedValue(300_000);
     observedPromptFloorMock.mockReturnValue({ tokens: 396_171, observations: 3, at: Date.now() });
     contextWindowMock.mockResolvedValue(1_000_000);
     const out = await checkCompactionCompliance(
@@ -1439,23 +1890,17 @@ describe('EI-237397 fixed prompt-floor livelock guard', () => {
       }),
     );
 
-    expect(setLimitMock).toHaveBeenCalledWith('floor-bound', 450_000);
-    expect(out.relimited).toEqual([{ owner: 'floor-bound', from: 250_000, to: 450_000 }]);
-    expect(out.unsatisfiableLimits).toEqual([{
-      owner: 'floor-bound',
-      fixedFloor: 396_171,
-      limit: 250_000,
-      forceAt: 325_000,
-      repairedTo: 450_000,
-    }]);
-    expect(out.overLimit).toEqual([]);
+    expect(setLimitMock).not.toHaveBeenCalled();
+    expect(out.relimited).toEqual([]);
+    expect(out.unsatisfiableLimits).toEqual([]);
+    expect(out.overLimit).toEqual(['floor-bound']);
     expect(out.carryRespawned).toEqual([]);
     expect(out.forceCompacted).toEqual([]);
     expect(openEscalationMock).not.toHaveBeenCalled();
   });
 
-  it('does not override a deliberate limit; emits a blocker and suppresses the cut loop', async () => {
-    estimateMock.mockResolvedValue(340_000);
+  it('keeps an explicit limit and ordinary over-limit handling under a high total-input floor', async () => {
+    estimateMock.mockResolvedValue(300_000);
     observedPromptFloorMock.mockReturnValue({ tokens: 340_000, observations: 3, at: Date.now() });
     contextWindowMock.mockResolvedValue(1_000_000);
     const out = await checkCompactionCompliance(
@@ -1469,19 +1914,12 @@ describe('EI-237397 fixed prompt-floor livelock guard', () => {
       }),
     );
 
-    expect(out.unsatisfiableLimits).toEqual([{
-      owner: 'explicit-floor-bound',
-      fixedFloor: 340_000,
-      limit: 250_000,
-      forceAt: 325_000,
-    }]);
+    expect(out.unsatisfiableLimits).toEqual([]);
     expect(setLimitMock).not.toHaveBeenCalled();
+    expect(out.overLimit).toEqual(['explicit-floor-bound']);
     expect(out.carryRespawned).toEqual([]);
     expect(out.forceCompacted).toEqual([]);
-    expect(openEscalationMock).toHaveBeenCalledTimes(1);
-    const [, payload] = openEscalationMock.mock.calls[0] as unknown as [unknown, { summary: string; body: string }];
-    expect(payload.summary).toContain('soft compaction limit below fixed context cost');
-    expect(payload.body).toContain('EI-237397');
+    expect(openEscalationMock).not.toHaveBeenCalled();
   });
 });
 
@@ -1830,6 +2268,31 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
     expect(openEscalationMock).not.toHaveBeenCalled(); // never 3 CONSECUTIVE nulls
   });
 
+  it('resets the dark-telemetry grace when the Codex native session ref changes', async () => {
+    estimateMock.mockResolvedValue(null);
+    resolveSessionRefMock
+      .mockResolvedValueOnce({ agent: 'codex', sessionId: 'codex-old', sessionKey: 1 })
+      .mockResolvedValueOnce({ agent: 'codex', sessionId: 'codex-old', sessionKey: 1 })
+      .mockResolvedValueOnce({ agent: 'codex', sessionId: 'codex-new', sessionKey: 1 })
+      .mockResolvedValueOnce({ agent: 'codex', sessionId: 'codex-new', sessionKey: 1 })
+      .mockResolvedValueOnce({ agent: 'codex', sessionId: 'codex-new', sessionKey: 1 });
+
+    const old1 = await checkCompactionCompliance(fakeSql({ seeded: active() }));
+    const old2 = await checkCompactionCompliance(fakeSql({ seeded: active() }));
+    const new1 = await checkCompactionCompliance(fakeSql({ seeded: active() }));
+    const new2 = await checkCompactionCompliance(fakeSql({ seeded: active() }));
+    const new3 = await checkCompactionCompliance(fakeSql({ seeded: active() }));
+
+    expect(old1.bootConfigAlerts).toEqual([]);
+    expect(old2.bootConfigAlerts).toEqual([]);
+    expect(new1.bootConfigAlerts).toEqual([]);
+    expect(new2.bootConfigAlerts).toEqual([]);
+    expect(new3.bootConfigAlerts).toEqual([
+      { owner: 'blind', kind: 'dark-telemetry', detail: '3 null sweeps' },
+    ]);
+    expect(openEscalationMock).toHaveBeenCalledTimes(1);
+  });
+
   it('WI-2140608: an IDLE blind session never accumulates a streak — no turns, nothing to overflow', async () => {
     estimateMock.mockResolvedValue(null);
     for (let i = 0; i < 5; i++) {
@@ -1895,6 +2358,66 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
     const p2 = await checkCompactionCompliance(fakeSql({ seeded: active() }));
     expect(p2.bootConfigRecovered).toEqual([{ owner: 'blind', kind: 'dark-telemetry' }]);
     expect(resolveEscalationMock).not.toHaveBeenCalled(); // no open row was listed ⇒ nothing to resolve, guard still cleared
+  });
+
+  it('resolves a one-shot dark-telemetry episode after its adv session ends, but keeps active owners and unknown reads open', async () => {
+    const endedKey = compactionConditionKey('workspace', 'ended-dark', 'dark-telemetry');
+    const endedResolved: string[] = [];
+    const endedDeps: CompactionComplianceDeps = {
+      readOpenConditions: async () => [{ conditionKey: endedKey, openedAtMs: Date.now() - 1_000 }],
+      rail: {
+        resolve: async (event) => {
+          endedResolved.push(event.conditionKey);
+          return true;
+        },
+      },
+    };
+    await checkCompactionCompliance(fakeSql({ activeSessionOwners: [] }), endedDeps);
+    expect(endedResolved).toEqual([endedKey]);
+
+    const activeKey = compactionConditionKey('workspace', 'active-dark', 'dark-telemetry');
+    const activeResolved: string[] = [];
+    const activeDeps: CompactionComplianceDeps = {
+      readOpenConditions: async () => [{ conditionKey: activeKey, openedAtMs: Date.now() - 1_000 }],
+      rail: {
+        resolve: async (event) => {
+          activeResolved.push(event.conditionKey);
+          return true;
+        },
+      },
+    };
+    await checkCompactionCompliance(fakeSql({
+      activeSessionOwners: ['active-dark'],
+      seeded: [{ owner_id: 'active-dark', owner_label: 'su · active-dark', compaction_limit: 300_000,
+        last_active_at: new Date().toISOString() }],
+    }), activeDeps);
+    expect(activeResolved).toEqual([]);
+
+    const unknownResolved: string[] = [];
+    const unknownDeps: CompactionComplianceDeps = {
+      readOpenConditions: async () => [{ conditionKey: endedKey, openedAtMs: Date.now() - 1_000 }],
+      rail: {
+        resolve: async (event) => {
+          unknownResolved.push(event.conditionKey);
+          return true;
+        },
+      },
+    };
+    await checkCompactionCompliance(fakeSql({ activeSessionOwnersError: true }), unknownDeps);
+    expect(unknownResolved).toEqual([]);
+  });
+
+  it('reads old compaction episodes outside the generic condition window before lifecycle recovery', async () => {
+    const endedKey = compactionConditionKey('workspace', 'ended-old', 'over-limit');
+    const resolved: string[] = [];
+    const deps: CompactionComplianceDeps = {
+      rail: { resolve: async (event) => { resolved.push(event.conditionKey); return true; } },
+    };
+    await checkCompactionCompliance(fakeSql({
+      activeSessionOwners: [],
+      conditionEpisodes: [{ condition_key: endedKey, opened_at: new Date(Date.now() - 86_400_000) }],
+    }), deps);
+    expect(resolved).toEqual([endedKey]);
   });
 
   it('a context-DEAD session (P-019) is not double-counted as dark telemetry', async () => {
@@ -2003,7 +2526,10 @@ describe('implausible-reading sanity clamp (EI-10434)', () => {
     const out = await checkCompactionCompliance(fakeSql({ seeded }));
     expect(out.implausibleReadings).toEqual([]);
     expect(out.overLimit).toEqual(['garbage']);
-    expect(setEstimateMock).toHaveBeenCalledWith('garbage', 200_000);
+    expect(setEstimateMock).toHaveBeenCalledWith('garbage', 200_000, {
+      nativeSessionId: 'native-current',
+      advSessionId: 1,
+    });
   });
 
   it('a reading that RECOVERS to plausible after an implausible sweep is no longer discarded (re-arms the dedup)', async () => {
@@ -2015,7 +2541,10 @@ describe('implausible-reading sanity clamp (EI-10434)', () => {
     const second = await checkCompactionCompliance(fakeSql({ seeded }));
     expect(second.implausibleReadings).toEqual([]);
     expect(second.estimated).toEqual(['garbage']);
-    expect(setEstimateMock).toHaveBeenCalledWith('garbage', 40_000);
+    expect(setEstimateMock).toHaveBeenCalledWith('garbage', 40_000, {
+      nativeSessionId: 'native-current',
+      advSessionId: 1,
+    });
   });
 
   it('warns only ONCE per owner across repeated implausible sweeps (dedup)', async () => {
@@ -2253,6 +2782,15 @@ describe('EI-16190 pre-cutover-process self-check', () => {
     // particular entry's content (which may grow over time).
     const ancientBoot = Date.parse('2000-01-01T00:00:00Z');
     expect(staleCutoversForProcessStart(ancientBoot).length).toBeGreaterThan(0);
+  });
+
+  it('registers the ended-session exact-key recovery cutover for stale watchdog processes', () => {
+    const recoveryCutover = WATCHDOG_BEHAVIOR_CUTOVERS.find(
+      (cutover) => cutover.id === 'ended-session-compaction-exact-key-recovery',
+    );
+    expect(recoveryCutover).toBeDefined();
+    expect(staleCutoversForProcessStart(recoveryCutover!.atMs - 1)).toContainEqual(recoveryCutover);
+    expect(staleCutoversForProcessStart(recoveryCutover!.atMs)).not.toContainEqual(recoveryCutover);
   });
 
   it('startCompactionComplianceWatchdog escalates ONCE when this process predates a known cutover', async () => {
@@ -2599,7 +3137,10 @@ describe('EI-21595542328480968: frozen codex readings never drive a cut', () => 
 
     expect(out.frozenCodexReadings).toEqual([]);
     expect(out.estimated).toEqual(['cx']);
-    expect(setEstimateMock).toHaveBeenCalledWith('cx', 179_963);
+    expect(setEstimateMock).toHaveBeenCalledWith('cx', 179_963, {
+      nativeSessionId: 'native-current',
+      advSessionId: 1,
+    });
     expect(clearEstimateMock).not.toHaveBeenCalled();
   });
 
@@ -2614,7 +3155,10 @@ describe('EI-21595542328480968: frozen codex readings never drive a cut', () => 
 
     expect(out.frozenCodexReadings).toEqual([]);
     expect(out.overLimit).toEqual(['cx']);
-    expect(setEstimateMock).toHaveBeenCalledWith('cx', 219_915);
+    expect(setEstimateMock).toHaveBeenCalledWith('cx', 219_915, {
+      nativeSessionId: 'native-current',
+      advSessionId: 1,
+    });
   });
 
   it("TRUSTS a long lag when the rollout IS this session's (the identity conjunct)", async () => {

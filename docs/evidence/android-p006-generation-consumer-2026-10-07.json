@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Android P006 operator generation consumer and preflight guards",
+  "framework": "shell",
+  "command": [
+    "bash",
+    "tools/tests/run-android-checks-test.sh",
+    "generation"
+  ],
+  "commandCwd": "/home/builduser/papercupai-workspace/papercup-rust-mobile",
+  "startedAt": "2026-10-07T08:25:47.146037+00:00",
+  "finishedAt": "2026-10-07T08:26:35.635295+00:00",
+  "exitCode": 0,
+  "summary": "Maintained generation consumer controls, boot controls, CI contract mutations, ShellCheck and actionlint passed with unchanged final source fingerprints. Private native/JNI acceptance is still pending; this artifact proves the consumer lifecycle repair only.",
+  "sourceCommit": "65651f4051189979cd9aaa174d4cc2ef2efd6d4c",
+  "sourceDirtyAtExecution": true,
+  "committedMobileSource": "c0210fbe3301909573add1b4ed8ad572ff21aa77",
+  "finalVerification": {
+    "evidenceRef": "docs/evidence/android-p006-rust-preflight-2026-10-07.json#finalFullRunner",
+    "command": [
+      "bash",
+      "tools/tests/run-android-checks-test.sh"
+    ],
+    "exitCode": 0,
+    "logSha256": "5acdc6ab675f01ade9112a24df75c989abe792edc981f9953fcc0d60b7111d95",
+    "sourceFingerprints": {
+      "tools/run-android-checks.sh": "fb259e5e30af4ea1de9f725f57ef54810478f096c72c479f71f01e3c3c6d36a4",
+      "tools/tests/run-android-checks-test.sh": "074281eb8b29c76876c92cf3e22d0d44fa64d0a4ef3273629bd75e39769bd712"
+    },
+    "committedBlobsVerified": true,
+    "scope": "Final runner suite includes the generation controls after the Rust preflight extension; paired native acceptance remains separate."
+  },
+  "sourceFingerprints": {
+    "tools/run-android-checks.sh": "373a8bd4ae1b42fe837d65474e5474f4f1fa888afe680f31a4bdff5e13cac414",
+    "tools/tests/run-android-checks-test.sh": "7e77d01b3db056fce28f63ec7d3629c2967c729792697921253cf6cc97167276"
+  },
+  "rawEvidence": "/home/builduser/papercupai-workspace/papercup-rust-mobile/android/app/build/ci-evidence/p006-generation-guards-20261007T082600Z",
+  "logHashes": {
+    "generation.log": "e6a8ae3d01950c3b2adadb9ced26ee463ae4a2593aab6483ea5e7a3d72b215ff",
+    "boot.log": "1b1ab6b7f88ce3a2076336584805a05516a5bac1e10bfbe83720bc608a81398f",
+    "ci-lints.log": "6ec0e8369555527d953c82e21283a968437695ba47d1654ecb42482bf782515c"
+  },
+  "assertions": [
+    {
+      "id": "initial-process-reference-and-early-lock-release",
+      "passed": true,
+      "evidence": "generation.log: actual /proc/self/environ reference and nonblocking exclusive lock assertions"
+    },
+    {
+      "id": "immutable-physical-root-after-alias-retarget",
+      "passed": true,
+      "evidence": "generation.log: selected physical root remains old after alias changes"
+    },
+    {
+      "id": "wait-for-publication-lock-before-resolving-alias",
+      "passed": true,
+      "evidence": "generation.log: exclusive lock blocks launch; new target selected after release"
+    },
+    {
+      "id": "reject-stale-missing-and-unpinned-before-expensive-work",
+      "passed": true,
+      "evidence": "generation.log: no fixture or result marker on refusals"
+    },
+    {
+      "id": "boot-readiness-controls",
+      "passed": true,
+      "evidence": "boot.log: maintained good and negative framework/memory/graphics controls"
+    },
+    {
+      "id": "ci-contract-mutations",
+      "passed": true,
+      "evidence": "ci-lints.log: 38 bootstrap/storage mutations,21 phase mutations,3 paired-target mutations rejected"
+    },
+    {
+      "id": "shell-and-workflow-lints",
+      "passed": true,
+      "evidence": "ci-lints.log: ShellCheck45scripts/actionlint2workflows exit0"
+    }
+  ]
+}

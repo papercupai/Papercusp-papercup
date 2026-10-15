@@ -6,7 +6,9 @@ import { authorizePersonalAccess } from '../../personal-vault/authorization';
 import { sendMailDraft } from '../../capability-verbs/mail';
 import { AddresseeRefused } from '../../capability-verbs/addressing';
 import { UndeliverableAddressee } from '../../capability-verbs/deliverability';
+import { DisclosureRefused, disclosureRefusalData } from '../../personal-vault/disclosure-ledger';
 import { addresseeArg, toProvenance } from '../_addressee-arg';
+import { disclosureSubject } from '../_disclosure-subject';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
 
 export default defineTool({
@@ -48,6 +50,7 @@ export default defineTool({
         .max(320)
         .optional()
         .describe('Which connected account holds the draft; required once more than one is connected.'),
+      sourceId: z.string().uuid().optional().describe('The connected mail source holding the draft; an alternative to from.'),
       addressee: addresseeArg,
       allowUndeliverable: z
         .boolean()
@@ -61,7 +64,7 @@ export default defineTool({
     const workspaceId = ctx.workspaceId?.trim() || ctx.principal?.workspaceId?.trim();
     if (!workspaceId || workspaceId === '*') throw new Error('mail_send_draft_workspace_required');
     const user = await getSessionUserOrDefault();
-    const auth = await authorizePersonalAccess(ctx.tx!, ctx, workspaceId, user.id, ['personal:gmail']);
+    const auth = await authorizePersonalAccess(ctx.tx!, ctx, workspaceId, user.id, ['personal:mail']);
     if (!auth.allowed) return { data: { allowed: false, refusal: auth.reason } };
     try {
       const result = await sendMailDraft(ctx.tx as unknown as postgres.Sql, {
@@ -71,11 +74,14 @@ export default defineTool({
         expectedTo: args.expectedTo,
         expectedCc: args.expectedCc,
         from: args.from,
+        sourceId: args.sourceId ?? null,
         provenance: toProvenance(args.addressee),
         allowUndeliverable: args.allowUndeliverable,
+        agentOwnerId: disclosureSubject(ctx),
       });
       return { data: { ok: true, ...result } };
     } catch (error) {
+      if (error instanceof DisclosureRefused) return { data: disclosureRefusalData(error) };
       // Same structured shape as the trust rail beside it: a provable bounce is
       // a refusal the caller can act on, not an exception to surface raw.
       if (error instanceof UndeliverableAddressee) {

@@ -50,7 +50,7 @@ describe('dev:embed_latency', () => {
   });
 
   it('reads the actual @papercusp/search ring with caller budget and outcome', async () => {
-    observeEmbedLatency(sample());
+    observeEmbedLatency(sample({ stageDurationsMs: { admission: 300, provider: 700 } }));
     const data = await read({ windowMs: 60_000 });
 
     expect(data).toMatchObject({
@@ -65,6 +65,13 @@ describe('dev:embed_latency', () => {
           timeout: 1,
           budgetMs: 1200,
           p99Ms: 1900,
+        }),
+      ],
+      recentSamples: [
+        expect.objectContaining({
+          caller: 'midturn:related-context',
+          outcome: 'timeout',
+          stageDurationsMs: { admission: 300, provider: 700 },
         }),
       ],
     });

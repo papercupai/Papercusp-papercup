@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { SpecClauseRevision } from './spec-clauses-store';
-import { evaluatePlanSpecQuality } from './spec-quality';
+import { specBehaviorNonAtomicReason } from './spec-clause-compiler';
+import { evaluatePlanSpecQuality, specQualityPlanItemIds } from './spec-quality';
+import { deriveIndexFromContent } from './derive-index';
+import { parsePlan } from './parser';
 import evaluateSpecQualityTool from './evaluate-spec-quality';
 import startPlanTool from './start';
 
@@ -32,6 +35,27 @@ function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
 }
 
 describe('evaluatePlanSpecQuality', () => {
+  it('uses the same quality evidence for the stored index and locked Markdown with dropped items', () => {
+    const markdown = [
+      '---', 'title: Quality plan', 'status: ready', '---', '## Items',
+      '- **P-001** `todo` Accept an event',
+      '- **P-002** `done` Reject an invalid event',
+      '- **P-003** `dropped` Abandoned editorial work',
+    ].join('\n');
+    const clauses = [
+      clause(),
+      clause({ specId: 'SPEC-002-01', sourceValId: 'VAL-002-01', planItemId: 'P-002', behavior: 'POST /events returns 400 for an invalid request' }),
+    ];
+    const input = { planSlug: 'quality-plan', harnessSlug: 'papercusp', classRef: 'plan-class-feature-ship' as const, clauses };
+    const fromIndex = evaluatePlanSpecQuality({ ...input, planItemIds: specQualityPlanItemIds(deriveIndexFromContent(markdown).items) });
+    const fromMarkdown = evaluatePlanSpecQuality({ ...input, planItemIds: specQualityPlanItemIds(parsePlan(markdown).items) });
+
+    expect(fromIndex.planItemCount).toBe(2);
+    expect(fromIndex.verdict).toBe('pass');
+    expect(fromIndex.ratings).toEqual(fromMarkdown.ratings);
+    expect(fromIndex.scorecardDraft.subject).toEqual(fromMarkdown.scorecardDraft.subject);
+  });
+
   it('passes a fully covered feature plan and pins an exact specSetHash subject', () => {
     const result = evaluatePlanSpecQuality({
       planSlug: 'quality-plan',
@@ -71,8 +95,9 @@ describe('evaluatePlanSpecQuality', () => {
   });
 
   // EI-24372921924901236: one canonical BAR is projected onto several items.
-  // Those projections are supplemental only when each item has its own contract.
+  // Those projections are not item contracts; each item needs its own contract.
   describe('shared BAR projection coverage', () => {
+    const planItemIds = ['P-001', 'P-002', 'P-003'];
     const sourceBar = {
       barKey: 'R-1',
       barHash: 'a'.repeat(64),
@@ -82,51 +107,242 @@ describe('evaluatePlanSpecQuality', () => {
       evidencePlane: 'tree' as const,
     };
     const projections = () =>
-      ['P-001', 'P-002'].map((planItemId) =>
+      planItemIds.map((planItemId) =>
         clause({
           specId: `AUTO-BAR-R-1-${planItemId}`,
           sourceValId: null,
           planItemId,
           sourceBar: { ...sourceBar },
-          behavior: 'Accepted event requests preserve their declared identity.',
+          behavior: 'Accepted event requests preserve their declared identity. Rejected requests leave no side effect.',
         }),
       );
     const contracts = () => [
-      clause({ specId: 'ACCEPT', sourceValId: null, behavior: 'A valid event request returns 202.' }),
-      clause({
-        specId: 'REJECT',
-        sourceValId: null,
-        planItemId: 'P-002',
-        behavior: 'An invalid event request returns 400.',
-      }),
+      clause({ specId: 'CONTRACT-P-001', sourceValId: null, behavior: 'A valid event request returns 202.' }),
+      clause({ specId: 'CONTRACT-P-002', sourceValId: null, planItemId: 'P-002', behavior: 'An invalid event request returns 400.' }),
+      clause({ specId: 'CONTRACT-P-003', sourceValId: null, planItemId: 'P-003', behavior: 'A replayed event request returns 409.' }),
     ];
-    const coverage = (clauses: SpecClauseRevision[]) =>
+    const evaluate = (clauses: SpecClauseRevision[]) =>
       evaluatePlanSpecQuality({
         planSlug: 'quality-plan',
         harnessSlug: 'papercusp',
-        planItemIds: ['P-001', 'P-002'],
+        planItemIds,
         clauses,
         classRef: 'plan-class-feature-ship',
-      }).ratings['item-contract-coverage'].rating;
+      });
 
-    it('accepts a shared pinned BAR when both items also have distinct active contracts', () => {
-      expect(coverage([...projections(), ...contracts()])).toBe('pass');
+    it('accepts one multi-sentence BAR projection across three items with independent item contracts', () => {
+      const result = evaluate([...projections(), ...contracts()]);
+      expect(result.ratings['item-contract-coverage'].rating).toBe('pass');
+      expect(result.ratings['atomic-observable-behavior'].rating).toBe('pass');
+      expect(result.ratings.falsifiability.rating).toBe('pass');
+      expect(result.ratings['implementation-independence'].rating).toBe('pass');
+      expect(result.ratings['implementation-independence'].evidence).toContain(
+        'including 3 sourceBar-pinned acceptance BAR projection(s)',
+      );
+      expect(result.ratings['implementation-independence'].evidence).toContain('Detector coverage:');
+      expect(result.verdict).toBe('pass');
+      expect(result.details.atomicityClauseDiagnostics).toHaveLength(6);
+      expect(result.details.atomicityClauseDiagnostics.find((entry) => entry.specId === 'AUTO-BAR-R-1-P-001'))
+        .toMatchObject({ disposition: 'excluded', rating: 'not-applicable' });
+      expect(result.details.atomicityClauseDiagnostics.find((entry) => entry.specId === 'CONTRACT-P-001'))
+        .toMatchObject({ disposition: 'evaluated', rating: 'pass', reason: null });
     });
 
-    it('keeps projection-only coverage and a missing independent item contract unknown', () => {
-      expect(coverage(projections())).toBe('unknown');
-      expect(coverage([...projections(), contracts()[0]])).toBe('unknown');
+    it('blocks runtime BARs on an explicitly exempt prerequisite when a dependent implementation owns the same BAR', () => {
+      const inventoryExemption = clause({
+        specId: 'INVENTORY-P-001',
+        sourceValId: null,
+        planItemId: 'P-001',
+        behaviorClass: 'non-automated',
+        requiredTestLayers: [],
+        mutationRequired: false,
+        lifecycleStatus: 'exempt',
+        exemption: { justification: 'Read-only inventory.', provenance: 'D-006' },
+      });
+      const inventoryProjection = clause({
+        specId: 'AUTO-BAR-R-1-P-001', sourceValId: null, planItemId: 'P-001', sourceBar: { ...sourceBar },
+      });
+      const implementationProjection = clause({
+        specId: 'AUTO-BAR-R-1-P-002', sourceValId: null, planItemId: 'P-002', sourceBar: { ...sourceBar },
+      });
+      const implementationContract = clause({
+        specId: 'CONTRACT-P-002',
+        sourceValId: null,
+        planItemId: 'P-002',
+        behavior: 'A valid event request returns 202.',
+      });
+      const result = evaluatePlanSpecQuality({
+        planSlug: 'quality-plan',
+        harnessSlug: 'papercusp',
+        planItemIds: ['P-001', 'P-002'],
+        planItems: [
+          { id: 'P-001', blockedBy: [] },
+          { id: 'P-002', blockedBy: ['P-001'] },
+        ],
+        clauses: [inventoryExemption, inventoryProjection, implementationProjection, implementationContract],
+        classRef: 'plan-class-feature-ship',
+      });
+
+      expect(result.ratings['item-contract-coverage'].rating).toBe('fail');
+      expect(result.wouldBlock).toContain('item-contract-coverage');
+      expect(result.details.prerequisiteRuntimeBarMismatches).toEqual([{
+        prerequisiteItemId: 'P-001',
+        barKey: 'R-1',
+        projectionSpecId: 'AUTO-BAR-R-1-P-001',
+        dependentImplementationItemIds: ['P-002'],
+      }]);
+      expect(result.ratings['item-contract-coverage'].evidence).toContain('AUTO-BAR-R-1-P-001 on P-001 -> P-002');
+    });
+
+    it('does not classify a later exempt verification item as a dependent implementation prerequisite', () => {
+      const verificationExemption = clause({
+        specId: 'VERIFY-P-002',
+        sourceValId: null,
+        planItemId: 'P-002',
+        behaviorClass: 'non-automated',
+        requiredTestLayers: [],
+        mutationRequired: false,
+        lifecycleStatus: 'exempt',
+        exemption: { justification: 'Review generated acceptance evidence.', provenance: 'D-006' },
+      });
+      const verificationProjection = clause({
+        specId: 'AUTO-BAR-R-1-P-002', sourceValId: null, planItemId: 'P-002', sourceBar: { ...sourceBar },
+      });
+      const result = evaluatePlanSpecQuality({
+        planSlug: 'quality-plan',
+        harnessSlug: 'papercup',
+        planItemIds: ['P-001', 'P-002'],
+        planItems: [
+          { id: 'P-001', blockedBy: [] },
+          { id: 'P-002', blockedBy: ['P-001'] },
+        ],
+        clauses: [
+          clause({
+            specId: 'CONTRACT-P-001', sourceValId: null,
+            behavior: 'A valid request produces an acceptance receipt.',
+          }),
+          verificationExemption,
+          verificationProjection,
+        ],
+        classRef: 'plan-class-feature-ship',
+      });
+
+      expect(result.ratings['item-contract-coverage'].rating).toBe('pass');
+      expect(result.details.prerequisiteRuntimeBarMismatches).toEqual([]);
+    });
+
+    it('reports the exact cloud dashboard AUTO-BAR bundles as excluded from atomicity claims', () => {
+      const bundles = [
+        {
+          specId: 'AUTO-BAR-R-1-P-001',
+          planItemId: 'P-001',
+          behavior: 'Both distinct configured offers are test-only and the runtime refuses wrong-account or unapproved live credentials.',
+        },
+        {
+          specId: 'AUTO-BAR-R-2-P-002',
+          planItemId: 'P-002',
+          behavior: 'Billing-authorized organizations can complete either deployed cloud subscription lifecycle through real TEST Checkout, webhook-persisted active state and customer-portal cancellation while organization isolation and non-manager mutation denial remain enforced.',
+        },
+        {
+          specId: 'AUTO-BAR-R-3-P-003',
+          planItemId: 'P-003',
+          behavior: 'Real-suite tests pass and exact deployed artifact/config has verified test-mode checkout, signed webhook state and cancellation evidence for both offers.',
+        },
+      ] as const;
+      const bundleProjections = bundles.map((entry, index) =>
+        clause({
+          specId: entry.specId,
+          sourceValId: null,
+          planItemId: entry.planItemId,
+          behavior: entry.behavior,
+          sourceBar: { ...sourceBar, barKey: 'R-' + (index + 1) },
+        }),
+      );
+      const independentContracts = [
+        clause({
+          specId: 'CLOUD-DASHBOARD-TEST-LIFECYCLE',
+          sourceValId: null,
+          planItemId: 'P-002',
+          behavior: 'A billing-authorized organization can complete the subscription lifecycle of either dashboard cloud offer through Stripe TEST Checkout, signed webhook activation and customer-portal cancellation.',
+        }),
+        clause({
+          specId: 'CLOUD-JOURNEY-SERVED-ARTIFACT',
+          sourceValId: null,
+          planItemId: 'P-003',
+          behavior: 'Each deployed cloud billing journey records the immutable artifact served at its authenticated start.',
+        }),
+        clause({
+          specId: 'CLOUD-TEST-OFFER-ACCOUNT',
+          sourceValId: null,
+          planItemId: 'P-001',
+          behavior: 'Configured cloud offers can create TEST Checkout sessions only within the expected Papercups LLC Stripe account.',
+        }),
+      ];
+
+      const result = evaluate([...bundleProjections, ...independentContracts]);
+      const atomicity = result.ratings['atomic-observable-behavior'];
+      expect(atomicity.rating).toBe('pass');
+      expect(atomicity.evidence).toContain('3 independent item behavior clause(s) passed the supported structural atomicity checks.');
+      // WI-10006862: the rating states the population it covers, so a grader can tell the
+      // excluded projections were not judged atomic.
+      expect(atomicity.evidence).toContain(
+        'Coverage: 3 of 6 active behavioral clause(s) evaluated; 3 active sourceBar-pinned BAR projection(s) excluded',
+      );
+      expect(atomicity.evidence).toContain(
+        'new or meaning-changed canonical BAR projections are checked on rubric writes; unchanged legacy BARs are not re-certified here',
+      );
+      expect(atomicity.evidence).not.toContain('AUTO-BAR-');
+      expect(result.details.atomicityClauseDiagnostics).toHaveLength(6);
+      for (const bundle of bundles) {
+        expect(result.details.atomicityClauseDiagnostics.find((entry) => entry.specId === bundle.specId))
+          .toMatchObject({
+            planItemId: bundle.planItemId,
+            behavior: bundle.behavior,
+            disposition: 'excluded',
+            rating: 'not-applicable',
+            reason: expect.stringContaining('sourceBar-pinned'),
+          });
+      }
+      for (const contract of independentContracts) {
+        expect(result.details.atomicityClauseDiagnostics.find((entry) => entry.specId === contract.specId))
+          .toMatchObject({
+            planItemId: contract.planItemId,
+            behavior: contract.behavior,
+            disposition: 'evaluated',
+            rating: 'pass',
+            reason: null,
+          });
+      }
+    });
+
+    it('does not count pinned BAR projections as item coverage', () => {
+      const projectionOnly = evaluate(projections());
+      expect(projectionOnly.ratings['item-contract-coverage'].rating).toBe('fail');
+      expect(projectionOnly.details.uncoveredPlanItemIds).toEqual(planItemIds);
+      const oneContract = evaluate([...projections(), contracts()[0]]);
+      expect(oneContract.ratings['item-contract-coverage'].rating).toBe('fail');
+      expect(oneContract.details.uncoveredPlanItemIds).toEqual(['P-002', 'P-003']);
       expect(
-        coverage([...projections(), ...contracts().map((c) => ({ ...c, lifecycleStatus: 'draft' as const }))]),
-      ).toBe('unknown');
+        evaluate([...projections(), ...contracts().map((c) => ({ ...c, lifecycleStatus: 'draft' as const }))])
+          .ratings['item-contract-coverage'].rating,
+      ).toBe('fail');
     });
 
     it('does not treat copied item contracts as independent coverage', () => {
-      const copied = contracts().map((c) => ({ ...c, behavior: 'An invalid event request returns 400.' }));
-      expect(coverage([...projections(), ...copied])).toBe('unknown');
+      const copied = contracts().map((c) => ({ ...c, behavior: 'A request with a repeated identifier returns 409.' }));
+      expect(evaluate([...projections(), ...copied]).ratings['item-contract-coverage'].rating).toBe('unknown');
     });
 
-    it.each(['rubricSlug', 'rubricRevision', 'barKey', 'barHash', 'barSetHash', 'evidencePlane'] as const)(
+    it('corroborates identical shared BAR content pinned at different rubric revisions', () => {
+      const shared = projections();
+      shared[1] = { ...shared[1], sourceBar: { ...sourceBar, rubricRevision: 5 } };
+
+      const result = evaluate([...shared, ...contracts()]);
+      expect(result.ratings['item-contract-coverage'].rating).toBe('pass');
+      expect(result.verdict).toBe('pass');
+    });
+
+    it.each(['rubricSlug', 'barKey', 'barHash', 'barSetHash', 'evidencePlane'] as const)(
       'keeps projections with different %s unknown',
       (field) => {
         const shared = projections();
@@ -134,21 +350,21 @@ describe('evaluatePlanSpecQuality', () => {
           ...shared[1],
           sourceBar: {
             ...sourceBar,
-            [field]: field === 'rubricRevision' ? 5 : field === 'evidencePlane' ? 'live' : 'different',
+            [field]: field === 'evidencePlane' ? 'live' : 'different',
           },
         };
-        expect(coverage([...shared, ...contracts()])).toBe('unknown');
+        expect(evaluate([...shared, ...contracts()]).ratings['item-contract-coverage'].rating).toBe('unknown');
       },
     );
 
     it('does not waive ordinary duplicate behavior or a projection missing its source pin', () => {
       const shared = projections().map((c) => ({ ...c, sourceBar: undefined }));
-      expect(coverage([...shared, ...contracts()])).toBe('unknown');
-      expect(coverage(shared.map((c, index) => ({ ...c, specId: `COPY-${index}` })))).toBe('unknown');
+      expect(evaluate([...shared, ...contracts()]).ratings['item-contract-coverage'].rating).toBe('unknown');
+      expect(evaluate(shared.map((c, index) => ({ ...c, specId: `COPY-${index}` }))).ratings['item-contract-coverage'].rating).toBe('unknown');
     });
   });
 
-  it('routes failing AUTO-BAR repairs to the canonical rubric criterion', () => {
+  it('does not lint immutable AUTO-BAR text as an independent item clause', () => {
     const result = evaluatePlanSpecQuality({
       planSlug: 'quality-plan',
       harnessSlug: 'papercusp',
@@ -171,11 +387,11 @@ describe('evaluatePlanSpecQuality', () => {
     });
 
     const atomicity = result.ratings['atomic-observable-behavior'];
-    expect(atomicity.rating).toBe('fail');
-    expect(atomicity.evidence).toContain('rubric quality-plan-acceptance, BAR R-1, criterion.model');
-    expect(atomicity.suggestion).toContain('rubrics:amend');
-    expect(atomicity.suggestion).toContain('criterion.model');
-    expect(atomicity.suggestion).toContain('plans:set-specs');
+    expect(atomicity.rating).toBe('not-applicable');
+    expect(atomicity.evidence).toContain('Only sourceBar-pinned projections are present');
+    expect(atomicity.evidence).toContain('not independent item contracts');
+    expect(result.ratings['item-contract-coverage'].rating).toBe('fail');
+    expect(result.details.uncoveredPlanItemIds).toEqual(['P-001']);
   });
 
   it('flags a multi-subject source-presence clause instead of returning a false all-pass', () => {
@@ -242,8 +458,269 @@ describe('evaluatePlanSpecQuality', () => {
     expect(result.ratings['implementation-independence'].evidence).toContain('"class OrientationState"');
   });
 
+  it.each([
+    'A supported OpenRouter agent job completes through the existing runtime with correct provider-reported cost and the declared key/retention policy.',
+    'The existing cloud organization subscription flow implements the owner-approved public self-service offer under cloud-portal-public-release-2026-10-13 with verified live billing and bounded disclosed consumption.',
+    'A witnessed control-plane failure produces one accountable alarm through the existing alarm subscription mechanism.',
+    'Reuse the runtime usage ledger and existing workspace diagnostics for per-call token counts.',
+    'Reuse PostHog for disclosed, consented hosted portal events.',
+    'Extend existing lifecycle, health, public-ingress and API instrumentation.',
+    'Reuse restricted audit records for accountable access observations.',
+    'Evaluate existing PostHog error capability before adding another vendor.',
+    'Reuse prior clean receipts when current; reuse PostHog for consented portal events.',
+    'Reuse current verification evidence through the existing runtime.',
+    'Reuse prior test results from verification.ts.',
+    'Reuse prior clean receipts to implement the workflow.',
+  ])('detects reuse prescriptions in both item and sourceBar contracts: %s', (behavior) => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      classRef: 'plan-class-feature-ship',
+      clauses: [clause({ behavior }), clause({
+        specId: 'AUTO-BAR-R-1-P-001', sourceValId: null, behavior,
+        sourceBar: { barKey: 'R-1', barHash: 'a'.repeat(64), barSetHash: 'b'.repeat(64),
+          rubricSlug: 'acceptance-quality-plan', rubricRevision: 1, evidencePlane: 'tree' },
+      })],
+    });
+    expect(result.ratings['implementation-independence'].rating).toBe('fail');
+    for (const specId of ['SPEC-001-01', 'AUTO-BAR-R-1-P-001']) {
+      expect(result.ratings['implementation-independence'].evidence).toContain(specId + ':');
+      expect(result.details.implementationIndependenceClauseDiagnostics).toContainEqual(
+        expect.objectContaining({ specId, behavior, disposition: 'evaluated', rating: 'fail', reason: expect.any(String) }),
+      );
+    }
+  });
+
+  it.each([
+    'An existing customer sees their subscription after signing in.',
+    'The customer reuses an existing account when accepting an invitation.',
+    'The customer completes a job with the reported provider cost.',
+    'Reuse of an expired invitation is refused.',
+  ])('keeps observable existing-customer and reuse outcomes independent: %s', (behavior) => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      clauses: [clause({ behavior })], classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['implementation-independence'].rating).toBe('pass');
+    expect(result.details.implementationIndependenceClauseDiagnostics).toContainEqual({
+      specId: 'SPEC-001-01', planItemId: 'P-001', behavior,
+      disposition: 'evaluated', rating: 'pass', reason: null,
+    });
+  });
+
+  it.each([
+    'Reuse prior clean receipts when current; do not recreate proof just for recovery.',
+    'Reuse current verification evidence.',
+    'Reuse prior passing test results when their source fingerprints are current.',
+    'Reuse the current test receipts.',
+  ])('keeps verification-proof reuse independent in item and sourceBar contracts: %s', (behavior) => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      classRef: 'plan-class-feature-ship',
+      clauses: [clause({ behavior }), clause({
+        specId: 'AUTO-BAR-R-1-P-001', sourceValId: null, behavior,
+        sourceBar: { barKey: 'R-1', barHash: 'a'.repeat(64), barSetHash: 'b'.repeat(64),
+          rubricSlug: 'acceptance-quality-plan', rubricRevision: 1, evidencePlane: 'tree' },
+      })],
+    });
+
+    expect(result.ratings['implementation-independence'].rating).toBe('pass');
+    for (const specId of ['SPEC-001-01', 'AUTO-BAR-R-1-P-001']) {
+      expect(result.details.implementationIndependenceClauseDiagnostics).toContainEqual(
+        expect.objectContaining({ specId, behavior, disposition: 'evaluated', rating: 'pass', reason: null }),
+      );
+    }
+  });
+
+  it('reports implementation-independence controls and explicit exclusions for the current clause population', () => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      classRef: 'plan-class-feature-ship', clauses: [
+        clause({ lifecycleStatus: 'accepted' }),
+        clause({ specId: 'DRAFT', lifecycleStatus: 'draft', behavior: 'Reuse the runtime usage ledger.' }),
+        clause({ specId: 'EXEMPT', lifecycleStatus: 'exempt', behaviorClass: 'non-automated',
+          exemption: { justification: 'Documentation only.', provenance: 'D-001' } }),
+      ],
+    });
+    expect(result.details.implementationIndependenceClauseDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ specId: 'SPEC-001-01', disposition: 'evaluated', rating: 'pass', reason: null }),
+      expect.objectContaining({ specId: 'DRAFT', disposition: 'excluded', rating: 'not-applicable', reason: expect.stringContaining('draft') }),
+      expect.objectContaining({ specId: 'EXEMPT', disposition: 'excluded', rating: 'not-applicable', reason: expect.stringContaining('exempt') }),
+    ]));
+    const controls = result.details.implementationIndependenceDetectorControls;
+    expect(controls.length).toBeGreaterThanOrEqual(4);
+    expect(new Set(controls.map(({ expected }) => expected))).toEqual(new Set(['coupled', 'independent']));
+    expect(controls.every(({ expected, actual, passed }) => passed && actual === expected)).toBe(true);
+    expect(result.ratings['implementation-independence'].evidence).toContain('details.implementationIndependenceClauseDiagnostics');
+    expect(result.ratings['implementation-independence'].evidence).toContain('details.implementationIndependenceDetectorControls');
+    expect(result.ratings['implementation-independence'].evidence).toContain('structural pattern detection');
+  });
+
+  it.each([
+    {
+      label: 'internal routes and page reuse',
+      behavior:
+        'The Settings → Integrations UI calls the existing routes (/admin/triggers/slack/manifest, /admin/triggers/slack/connect, /api/oauth/start) and extends the existing page.',
+      expected: 'internal route',
+    },
+    {
+      label: 'a named internal operation',
+      behavior: 'The Settings → Integrations UI invokes the configure-slack-bugs op.',
+      expected: 'internal operation',
+    },
+    {
+      label: 'an existing-page reuse mandate',
+      behavior: 'The integration setup flow extends the existing page.',
+      expected: 'existing implementation surface',
+    },
+    {
+      label: 'filesystem permission mode',
+      behavior: 'Secrets are stored in a 0600 file.',
+      expected: 'storage mechanism',
+    },
+    {
+      label: 'encrypted Postgres mirroring',
+      behavior: 'Secrets are mirrored to encrypted Postgres storage.',
+      expected: 'storage mechanism',
+    },
+    {
+      label: 'the reported 0600 file plus encrypted Postgres mirror',
+      behavior: 'Secrets are stored in a 0600 file plus encrypted Postgres mirror storage.',
+      expected: 'storage mechanism',
+    },
+    {
+      label: 'an explicit implementation construct in a BAR projection',
+      behavior: 'A class IntegrationSettingsRouter is declared once.',
+      expected: 'class IntegrationSettingsRouter',
+    },
+  ])('checks active sourceBar behavior for implementation coupling: $label', ({ behavior, expected }) => {
+    const sourceBar = {
+      barKey: 'R-2',
+      barHash: '8b52c24e019f47c5453bdd6afb90c9cb276ceae2e2855ac6f0e3703f0737d669',
+      barSetHash: '687b538a16ba79bec9c1216f1c64d9d479c209891511ef79106e692ee8850417',
+      rubricSlug: 'acceptance-simplify-integration-setup-2026-10-10',
+      rubricRevision: 1,
+      evidencePlane: 'tree' as const,
+    };
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [
+        clause({
+          specId: 'AUTO-BAR-R-2-P-001',
+          sourceValId: null,
+          sourceBar,
+          behavior,
+        }),
+        clause({
+          specId: 'CONTRACT-P-001',
+          sourceValId: 'VAL-CONTRACT-P-001',
+          behavior: 'The integrations screen reports whether each provider is connected.',
+        }),
+      ],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    const rating = result.ratings['implementation-independence'];
+    expect(rating.rating).toBe('fail');
+    expect(rating.evidence).toContain('AUTO-BAR-R-2-P-001');
+    expect(rating.evidence).toContain(expected);
+    expect(rating.evidence).toContain('Detector coverage:');
+  });
+
+  it('rejects a bare camelCase function reference in implementation-independence', () => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [clause({ behavior: 'runSyncBatchDeltaCheck evaluates the batch under sustained load.' })],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['implementation-independence'].rating).toBe('fail');
+    expect(result.ratings['implementation-independence'].evidence).toContain('"runSyncBatchDeltaCheck"');
+  });
+
+  it('accepts observable persistence without prescribing its storage mechanism', () => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [clause({ behavior: 'The user sees saved settings after reopening the page.' })],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['implementation-independence'].rating).toBe('pass');
+    expect(result.ratings['implementation-independence'].evidence).toContain('named storage backends');
+  });
+
+  it.each(['macOS', 'iOS', 'iPadOS', 'watchOS', 'tvOS', 'visionOS'])(
+    'accepts the public platform name %s in an observable contract',
+    (platform) => {
+      const result = evaluatePlanSpecQuality({
+        planSlug: 'quality-plan',
+        harnessSlug: 'papercusp',
+        planItemIds: ['P-001'],
+        clauses: [clause({ behavior: `On ${platform}, the application opens a usable composer.` })],
+        classRef: 'plan-class-feature-ship',
+      });
+
+      expect(result.ratings['implementation-independence'].rating).toBe('pass');
+    },
+  );
+
+  it.each(['iPhone', 'iPad', 'iPod', 'iMac'])(
+    'accepts the public device product name %s in an observable contract',
+    (device) => {
+      const result = evaluatePlanSpecQuality({
+        planSlug: 'quality-plan',
+        harnessSlug: 'papercusp',
+        planItemIds: ['P-001'],
+        clauses: [clause({ behavior: `The ${device} app shows a refusal message.` })],
+        classRef: 'plan-class-feature-ship',
+      });
+
+      expect(result.ratings['implementation-independence'].rating).toBe('pass');
+    },
+  );
+
+  it('still rejects implementation symbols after public device product names', () => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [clause({ behavior: 'On the iPhone, runSyncBatch evaluates the batch.' })],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['implementation-independence'].rating).toBe('fail');
+    expect(result.ratings['implementation-independence'].evidence).toContain('"runSyncBatch"');
+  });
+
+  it('still rejects implementation symbols after public platform names', () => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [clause({ behavior: 'On macOS and iOS, runSyncBatchDeltaCheck evaluates the batch.' })],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['implementation-independence'].rating).toBe('fail');
+    expect(result.ratings['implementation-independence'].evidence).toContain('"runSyncBatchDeltaCheck"');
+  });
+
+  it('flags passive acceptance joined to streaming as multiple observable outcomes', () => {
+    const compound = 'Opening one’s own personal desktop in watch mode through the hosted session host is accepted and streams the desktop.';
+
+    expect(specBehaviorNonAtomicReason(compound)).toBe('behavior joins multiple independently observable outcomes');
+    expect(specBehaviorNonAtomicReason('Opening one’s own personal desktop in watch mode is accepted.')).toBeNull();
+    expect(specBehaviorNonAtomicReason('Opening one’s own personal desktop in watch mode streams the desktop.')).toBeNull();
+  });
+
   it('fails atomicity for independently falsifiable outcomes joined across a clause', () => {
     const behaviors = [
+      'Opening one’s own personal desktop in watch mode through the hosted session host is accepted and streams the desktop.',
       'orders:promote and orders:dismiss { reason } exist, dismiss refuses an empty reason, and a dismissed row stays queryable rather than being deleted.',
       'Every declared orientation category reaches a rendered prompt for a live-shaped session fixture, a build-time guard turns red when any declared category does not render, and a permanent control entry declared but deliberately left unrendered keeps that guard from passing vacuously.',
       'Class-A rows render exactly once per change and never on an unchanged turn, while class-B rows for walls-with-recheck and waiting-on render every turn until they are discharged.',
@@ -290,6 +767,76 @@ describe('evaluatePlanSpecQuality', () => {
 
     expect(result.ratings['atomic-observable-behavior'].rating).toBe('fail');
     expect(result.ratings['atomic-observable-behavior'].evidence).toContain('AUTO-BAR-R-004-P-003:');
+    expect(result.details.atomicityClauseDiagnostics).toContainEqual(
+      expect.objectContaining({
+        specId: 'AUTO-BAR-R-004-P-003',
+        disposition: 'evaluated',
+        rating: 'fail',
+        reason: expect.any(String),
+      }),
+    );
+  });
+
+  it('fails atomicity when one observable verb joins two independently testable objects', () => {
+    const behavior = 'Each daily task receives the approved source watchlist and a ten-item brief limit.';
+    expect(specBehaviorNonAtomicReason(behavior)).toBe('behavior joins multiple independently observable outcomes');
+
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [clause({ behavior })],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['atomic-observable-behavior'].rating).toBe('fail');
+    expect(result.details.atomicityClauseDiagnostics).toContainEqual(
+      expect.objectContaining({
+        specId: 'SPEC-001-01',
+        disposition: 'evaluated',
+        rating: 'fail',
+        reason: 'behavior joins multiple independently observable outcomes',
+      }),
+    );
+  });
+
+  it('reports draft sourceBar projections as excluded from the active atomicity population', () => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [
+        clause(),
+        clause({
+          specId: 'AUTO-BAR-R-1-P-001',
+          sourceValId: null,
+          lifecycleStatus: 'draft',
+          acceptedBy: null,
+          acceptedAt: null,
+          acceptanceRef: null,
+          sourceBar: {
+            barKey: 'R-1',
+            barHash: 'a'.repeat(64),
+            barSetHash: 'b'.repeat(64),
+            rubricSlug: 'quality-plan-acceptance',
+            rubricRevision: 4,
+            evidencePlane: 'tree',
+          },
+        }),
+      ],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    const atomicity = result.ratings['atomic-observable-behavior'];
+    expect(atomicity.evidence).toContain('Coverage: 1 of 1 active behavioral clause(s) evaluated');
+    expect(atomicity.evidence).toContain('1 draft sourceBar-pinned projection(s) excluded from the active population');
+    expect(result.details.atomicityClauseDiagnostics).toContainEqual(
+      expect.objectContaining({
+        specId: 'AUTO-BAR-R-1-P-001',
+        disposition: 'excluded',
+        rating: 'not-applicable',
+        reason: 'draft sourceBar-pinned BAR projection is not an active item behavior clause.',
+      }),
+    );
   });
 
   it('keeps a single outcome with a while-condition atomic', () => {
@@ -302,6 +849,43 @@ describe('evaluatePlanSpecQuality', () => {
     });
 
     expect(result.ratings['atomic-observable-behavior'].rating).toBe('pass');
+  });
+
+  it.each([
+    'A versioned pilot price sheet reproduces idle, normal, heavy and burst costs from measured inputs, separates platform/consumption margin and specifies finite allowances and numeric experiment thresholds.',
+    'The pinned current-build customer journey satisfies the hosted security/privacy and operating promises.',
+  ])('rejects the independently audited compound contract: %s', (behavior) => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      clauses: [clause({ behavior })], classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['atomic-observable-behavior'].rating).toBe('fail');
+    expect(result.details.atomicityClauseDiagnostics).toContainEqual(
+      expect.objectContaining({ disposition: 'evaluated', rating: 'fail', reason: expect.any(String) }),
+    );
+  });
+
+  it.each([
+    'The price sheet reproduces the measured cost for each workload case.',
+    'The price sheet reports the platform contribution margin.',
+    'The price sheet specifies the inference allowance.',
+    'A revoked customer session is denied access to its workspace.',
+    'The customer journey stops when the inference allowance is exhausted.',
+  ])('accepts a single observable obligation: %s', (behavior) => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      clauses: [clause({ behavior })], classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['atomic-observable-behavior'].rating).toBe('pass');
+    expect(result.details.atomicityDetectorControls).toEqual([
+      expect.objectContaining({ expected: 'compound', actual: 'compound', passed: true }),
+      expect.objectContaining({ expected: 'compound', actual: 'compound', passed: true }),
+      expect.objectContaining({ expected: 'atomic', actual: 'atomic', passed: true }),
+      expect.objectContaining({ expected: 'atomic', actual: 'atomic', passed: true }),
+    ]);
+    expect(result.ratings['atomic-observable-behavior'].evidence).toContain('not a proof of arbitrary natural-language semantics');
   });
 
   it('does not count byte-identical behavior text as independent coverage for multiple plan items', () => {
@@ -393,7 +977,7 @@ describe('evaluatePlanSpecQuality', () => {
     expect(result.ratings['atomic-observable-behavior'].rating).toBe('not-applicable');
     expect(result.ratings.falsifiability.rating).toBe('not-applicable');
     expect(result.ratings['implementation-independence'].rating).toBe('not-applicable');
-    expect(result.ratings['atomic-observable-behavior'].evidence).toContain('0 behavioral clause(s)');
+    expect(result.ratings['atomic-observable-behavior'].evidence).toContain('0 active behavioral clause(s)');
     expect(result.ratings.falsifiability.evidence).toContain('0 behavioral clause(s)');
     expect(result.ratings['implementation-independence'].evidence).toContain('0 behavioral clause(s)');
     expect(result.wouldBlock).toEqual(expect.arrayContaining(['item-contract-coverage', 'plan-class-specialization']));

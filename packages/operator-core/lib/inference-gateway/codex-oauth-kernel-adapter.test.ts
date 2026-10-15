@@ -11,6 +11,7 @@
  * failover — so both are asserted here in their own right.
  */
 import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { makeGatewayLaneRegistry } from './provider-adapters';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import type { CodexCliAccount } from './codex-cli-bridge';
@@ -24,6 +25,7 @@ import {
   type CodexOAuthPreparedAttempt,
   type CodexOAuthResponseMetadata,
   type CodexOAuthRouteValue,
+  type CodexOAuthStreamObservation,
 } from './codex-oauth-kernel-adapter';
 import {
   executeGatewayRequestKernel,
@@ -111,15 +113,18 @@ function upstream(
  */
 function makePool(rotation: Array<{ accountId: string } | null>) {
   const exhaustedCalls: Array<{ id: string; resetAt: number }> = [];
+  const parkCauses: Array<'cooldown' | 'quota' | 'auth' | undefined> = [];
   let cursor = 0;
-  const pool: AccountPool & { exhaustedCalls: typeof exhaustedCalls } = {
+  const pool: AccountPool & { exhaustedCalls: typeof exhaustedCalls; parkCauses: typeof parkCauses } = {
     exhaustedCalls,
+    parkCauses,
     active: () => {
       throw new Error('the OAuth adapter must never advance the pool (D-010)');
     },
     select: () => null,
-    onExhausted: (exhaustedId: string, resetAt: number) => {
+    onExhausted: (exhaustedId: string, resetAt: number, _keyOf, park) => {
       exhaustedCalls.push({ id: exhaustedId, resetAt });
+      parkCauses.push(park?.cause);
       return (rotation[cursor++] ?? null) as ReturnType<AccountPool['onExhausted']>;
     },
   };
@@ -245,6 +250,39 @@ function harness(fetchImpl: CodexOAuthAdapterOptions['fetch'], overrides: Harnes
 
   return { options, written, started, prepared, cooled };
 }
+
+it.each(['cancelled', 'ttfb-timeout'] as const)(
+  'attributes a native AbortError from %s before cooling the OAuth egress',
+  async code => {
+    const controller = new AbortController();
+    const failed = vi.fn();
+    let entered!: () => void;
+    const attemptStarted = new Promise<void>(resolve => { entered = resolve; });
+    const { options, cooled } = harness(async (_url, init) => {
+      entered();
+      return new Promise((_resolve, reject) => {
+        const abort = () => reject(new DOMException('fixture aborted', 'AbortError'));
+        if (init.signal.aborted) abort();
+        else init.signal.addEventListener('abort', abort, { once: true });
+      });
+    }, { pin: { accountId: 'chatgpt-a', mode: 'hard' }, extra: { onEgressFailure: failed } });
+    options.request.signal = controller.signal;
+    options.policy = { ...POLICY, ttfbTimeoutMs: code === 'ttfb-timeout' ? 80 : 2_000 };
+    const pending = executeGatewayRequestKernel(options).catch(error => error);
+    await attemptStarted;
+    if (code === 'cancelled') controller.abort();
+    const error = await pending;
+    expect(error).toBeInstanceOf(GatewayRequestKernelError);
+    expect(error.code).toBe(code);
+    if (code === 'cancelled') {
+      expect(cooled).toEqual([]);
+      expect(failed).not.toHaveBeenCalled();
+    } else {
+      expect(cooled).toEqual([{ key: 'chatgpt-a:default', ms: 30_000 }]);
+      expect(failed).toHaveBeenCalledExactlyOnceWith('chatgpt-a', expect.anything());
+    }
+  },
+);
 
 describe('codex OAuth kernel adapter — happy path and header discipline', () => {
   it('serves the resolved account, reporting it and the egress key on the metadata', async () => {
@@ -503,6 +541,24 @@ describe('codex OAuth kernel adapter — sibling-egress re-attempt precedes rota
     expect(started[0]?.metadata.egressKey).toBe('chatgpt-a:ip2');
   });
 
+  it('preserves undici fetch diagnostics and the original cause on transport failure', async () => {
+    const fetchFailure = Object.assign(new TypeError('fetch failed'), {
+      cause: { code: 'ECONNRESET', message: 'read ECONNRESET' },
+    });
+    const { options } = harness(async () => { throw fetchFailure; });
+    options.policy = { ...options.policy, maxAttempts: 1 };
+    const error = await executeGatewayRequestKernel(options).then(
+      () => { throw new Error('expected upstream failure'); },
+      (reason: unknown) => reason as { code: string; message: string; cause?: unknown },
+    );
+
+    expect(error).toMatchObject({
+      code: 'upstream-error',
+      message: 'inference-gateway: codex OAuth upstream failed: fetch failed (ECONNRESET: read ECONNRESET)',
+    });
+    expect(error.cause).toBe(fetchFailure);
+  });
+
   it('rotates the account when no sibling IP is available', async () => {
     const pool = makePool([{ accountId: 'chatgpt-b' }]);
     const seen: string[] = [];
@@ -520,6 +576,38 @@ describe('codex OAuth kernel adapter — sibling-egress re-attempt precedes rota
     expect(result).toMatchObject({ status: 200, failovers: 1 });
     expect(started[0]?.metadata.accountId).toBe('chatgpt-b');
     expect(pool.exhaustedCalls[0]?.id).toBe('chatgpt-a');
+  });
+
+  it('WI-10007199: reports the transport error and every HTTP response, so reachability is separable from capacity', async () => {
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const dnsFailure = Object.assign(new TypeError('fetch failed'), {
+      cause: { code: 'ENOTFOUND', message: 'getaddrinfo ENOTFOUND chatgpt.com' },
+    });
+    const failed = vi.fn();
+    const responded = vi.fn();
+    let calls = 0;
+    const { options } = harness(
+      async () => {
+        calls += 1;
+        if (calls === 1) throw dnsFailure;
+        return upstream(429, {}, sseBody('walled'));
+      },
+      {
+        accounts: [cli('chatgpt-a'), cli('chatgpt-b')],
+        pool,
+        siblingEgressAvailable: () => false,
+        extra: { onEgressFailure: failed, onUpstreamResponse: responded },
+      },
+    );
+    options.policy = { ...options.policy, maxAttempts: 2 };
+
+    await executeGatewayRequestKernel(options).catch(() => undefined);
+
+    // The failure carries the fetch rejection itself (the gateway classifies it: DNS here).
+    expect(failed).toHaveBeenCalledWith('chatgpt-a', dnsFailure);
+    // A 429 is still an HTTP response: the network path works, whatever the account's capacity.
+    expect(responded).toHaveBeenCalledWith('chatgpt-b', 429);
+    expect(responded).not.toHaveBeenCalledWith('chatgpt-a', expect.anything());
   });
 
   it('cools the throttled IP from the rate-reset header on a 429 before re-attempting', async () => {
@@ -600,6 +688,23 @@ describe('codex OAuth kernel adapter — rotation, credentials, and pool discipl
     expect(result).toMatchObject({ status: 200, failovers: 1 });
     expect(started[0]?.metadata.accountId).toBe('chatgpt-b');
     expect(started[0]?.metadata.pinYieldedFrom).toBe('chatgpt-a');
+    expect(pool.parkCauses).toEqual(['auth']);
+  });
+
+  it.each([
+    { status: 503, transient: true, cause: 'cooldown' },
+    { status: 429, transient: true, cause: 'cooldown' },
+    { status: 429, transient: false, cause: 'quota' },
+  ])('records $cause for a $status failover (transient: $transient)', async ({ status, transient, cause }) => {
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const h = harness(async (_url, init) => init.diagnosticAccountId === 'chatgpt-a'
+      ? upstream(status, {}, sseBody('temporarily unavailable'))
+      : upstream(200, {}, sseBody('ok')), {
+      accounts: [cli('chatgpt-a'), cli('chatgpt-b')], pool,
+      rateReset: () => ({ resetAt: Date.now() + 15_000, retryAfterMs: 15_000, transient }),
+    });
+    expect((await executeGatewayRequestKernel(h.options)).status).toBe(200);
+    expect(pool.parkCauses).toEqual([cause]);
   });
 
   it('surfaces a 503 when no account can produce a token', async () => {
@@ -776,5 +881,390 @@ describe('codex OAuth kernel adapter — model refusal fails over without parkin
 
     expect(result.status).toBe(400);
     expect(selectAlternate).not.toHaveBeenCalled();
+  });
+});
+
+describe('Codex OAuth quota errors inside successful HTTP streams', () => {
+  it('rotates an account-wide usage wall before spending the retry budget on sibling IPs', async () => {
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const h = harness(async (_url, init) => init.diagnosticAccountId === 'chatgpt-a'
+      ? upstream(429, {}, sseBody('usage exhausted'))
+      : upstream(200, {}, sseBody('healthy-account-success')), {
+      accounts, pool, siblingEgressAvailable: () => true,
+      rateReset: () => ({ resetAt: Date.now() + 3600_000, retryAfterMs: null, transient: false }),
+    });
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared.map((p) => p.accountId)).toEqual(['chatgpt-a', 'chatgpt-b']);
+    expect(h.started[0]!.status).toBe(200);
+    expect(h.written.join('')).toBe('healthy-account-success');
+    expect(h.cooled).toEqual([]);
+  });
+
+  const quota = { code: 'usage_limit_reached', message: "You've hit your usage limit", resets_at: 2_000_000_000 };
+  const frame = (value: unknown) => `data: ${JSON.stringify(value)}\n\n`;
+  const failed = (kind: 'error' | 'response.failed') => kind === 'error'
+    ? { type: kind, error: quota }
+    : { type: kind, response: { id: 'failed-a', error: quota } };
+
+  it.each([undefined, ''])('inspects streaming quota frames when upstream Content-Type is %s', async (contentType) => {
+    // WI-10007298: real OAuth SSE can arrive without a Content-Type header.
+    // Header absence must not bypass the existing pre-commit quota failover.
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const success = frame({ type: 'response.completed', response: { id: 'healthy', status: 'completed' } });
+    const h = harness(async (_url, init) => init.diagnosticAccountId === 'chatgpt-a'
+      ? upstream(200, contentType === undefined ? {} : { 'content-type': contentType }, sseBody(frame(failed('response.failed'))))
+      : upstream(200, { 'content-type': 'text/event-stream' }, sseBody(success)), { accounts, pool });
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared.map((p) => p.accountId)).toEqual(['chatgpt-a', 'chatgpt-b']);
+    expect(h.written.join('')).toBe(success);
+    expect(pool.exhaustedCalls.map((p) => p.id)).toEqual(['chatgpt-a']);
+  });
+
+  it('preserves a healthy headerless SSE stream without interpreting quota-looking model text', async () => {
+    const wire = frame({ type: 'response.output_text.delta', delta: "You've hit your usage limit" })
+      + frame({ type: 'response.completed', response: { id: 'healthy', status: 'completed' } });
+    const h = harness(async () => upstream(200, {}, sseBody(wire)));
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared).toHaveLength(1);
+    expect(h.written.join('')).toBe(wire);
+  });
+
+  it.each(['completed', 'incomplete', 'iterator-error', 'wrong-mime', 'opaque', 'empty'] as const)(
+    'retains bounded %s protocol evidence without changing bytes or mistaking HTTP 200 for completion', async mode => {
+      const observed: CodexOAuthStreamObservation[] = [];
+      const privateText = 'PRIVATE_OUTPUT_MUST_NOT_BE_RETAINED';
+      const created = frame({ type: 'response.created', response: { id: 'resp_fixture' } });
+      const delta = frame({ type: 'response.output_text.delta', delta: privateText });
+      const complete = frame({ type: 'response.completed', response: { id: 'resp_fixture' } });
+      const wire = mode === 'empty' ? '' : mode === 'wrong-mime' ? JSON.stringify({ content: privateText })
+        : mode === 'opaque' ? frame({ padding: privateText.repeat(4_000), type: 'response.completed' })
+        : created + delta + (mode === 'completed' ? complete : '');
+      const source = sseBody(wire)!;
+      const originalError = new Error(privateText);
+      const body = mode === 'iterator-error' ? {
+        async *[Symbol.asyncIterator]() { yield Buffer.from(wire); throw originalError; },
+        cancel: vi.fn(),
+      } : source;
+      const h = harness(async () => upstream(200, {
+        'content-type': mode === 'wrong-mime' ? 'application/json; private=' + privateText : 'text/event-stream',
+      }, body), { extra: { onStreamObservation: x => observed.push(x) } });
+      const result = await executeGatewayRequestKernel(h.options).catch(e => e);
+      expect(observed).toHaveLength(1);
+      expect(observed[0]).toMatchObject({ requestedStream: true, upstreamStatus: 200,
+        bytesRead: Buffer.byteLength(wire), termination: mode === 'iterator-error' ? 'threw' : 'done' });
+      expect(JSON.stringify(observed)).not.toContain(privateText);
+      if (mode === 'wrong-mime') {
+        expect(observed[0]).toMatchObject({ contentType: 'json', inspected: false,
+          sawResponseEvent: null, sawTerminal: null });
+      } else {
+        expect(observed[0]).toMatchObject({ inspected: true,
+          sawTerminal: mode === 'completed', opaqueLargeFrame: mode === 'opaque' });
+      }
+      if (mode === 'incomplete' || mode === 'iterator-error') expect(result).toBeInstanceOf(GatewayRequestKernelError);
+      else expect(result.status).toBe(200);
+      expect(h.written.join('')).toBe(wire);
+    },
+  );
+
+  it('emits cancellation once and preserves original body cancellation without diagnostic exceptions escaping', async () => {
+    const observed: CodexOAuthStreamObservation[] = [];
+    const source = sseBody(frame({ type: 'response.output_text.delta', delta: 'visible' }))!;
+    const h = harness(async () => upstream(200, { 'content-type': 'text/event-stream' }, source), {
+      extra: { onStreamObservation: x => { observed.push(x); throw new Error('private diagnostic failure'); } },
+    });
+    h.options.downstream.write = () => { throw new Error('downstream rejected output'); };
+    await expect(executeGatewayRequestKernel(h.options)).rejects.toBeInstanceOf(GatewayRequestKernelError);
+    expect(observed).toHaveLength(1);
+    expect(observed[0]).toMatchObject({ termination: 'cancelled', sawTerminal: false });
+    expect((source as unknown as { cancelled: number }).cancelled).toBe(1);
+  });
+
+  it.each(['flat', 'nested', 'response'] as const)('distinguishes the %s error envelope without retaining its content', async envelope => {
+    const observed: CodexOAuthStreamObservation[] = [];
+    const privateCode = 'PRIVATE_ERROR_CODE';
+    const error = { code: privateCode, message: 'PRIVATE_MESSAGE context length exceeded' };
+    const event = envelope === 'flat' ? { type: 'error', ...error } : envelope === 'nested'
+      ? { type: 'error', error } : { type: 'response.failed', response: { error } };
+    const wire = frame(event);
+    const h = harness(async () => upstream(200, {}, sseBody(wire)), {
+      extra: { onStreamObservation: x => observed.push(x) },
+    });
+    await executeGatewayRequestKernel(h.options);
+    if (envelope === 'response') expect(h.written.join('')).toBe(wire);
+    else expect(JSON.parse(h.written.join('')).error.code).toBe(privateCode);
+    expect(observed).toHaveLength(1);
+    expect(observed[0]).toMatchObject({ errorEnvelope: envelope, errorCode: 'other',
+      errorCodeSha256: createHash('sha256').update(privateCode).digest('hex'), errorMessageClass: 'context-limit' });
+    expect(JSON.stringify(observed)).not.toMatch(/PRIVATE_/);
+  });
+
+  it('rejects EOF after Responses preludes before committing a false successful head', async () => {
+    const h = harness(async () => upstream(200, {}, sseBody(frame({ type: 'response.created' }))));
+    await expect(executeGatewayRequestKernel(h.options)).rejects.toMatchObject({
+      code: 'upstream-error', status: 502,
+      message: expect.stringContaining('EOF before a Responses terminal event'),
+    });
+    expect(h.started).toEqual([]);
+  });
+
+  it('rejects incomplete EOF after visible output without replaying that output on another account', async () => {
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const wire = frame({ type: 'response.created', response: { id: 'resp_incomplete' } })
+      + frame({ type: 'response.output_text.delta', delta: 'already visible' });
+    const h = harness(async () => upstream(200, {}, sseBody(wire)), { accounts, pool });
+    await expect(executeGatewayRequestKernel(h.options)).rejects.toMatchObject({
+      code: 'upstream-error', status: 502,
+      cause: { protocol: 'openai-responses', responseId: 'resp_incomplete', lastEventType: 'response.output_text.delta' },
+    });
+    expect(h.prepared).toHaveLength(1);
+    expect(h.written.join('')).toBe(wire);
+    expect(pool.exhaustedCalls).toEqual([]);
+  });
+
+  it('does not invent a response id from model text or malformed provider metadata', async () => {
+    const wire = frame({ type: 'response.created', response: { id: 123 } })
+      + frame({ type: 'response.output_text.delta', delta: '{"response":{"id":"model-text-not-a-provider-id"}}' });
+    const h = harness(async () => upstream(200, {}, sseBody(wire)));
+    await expect(executeGatewayRequestKernel(h.options)).rejects.toMatchObject({
+      cause: { protocol: 'openai-responses', responseId: null },
+    });
+  });
+
+  it.each(['response.failed', 'response.incomplete', 'error'])('preserves an explicit %s terminal instead of misclassifying it as bare EOF', async (type) => {
+    const wire = frame({ type, error: { code: 'context_length_exceeded', message: 'original failure' },
+      response: { status: type === 'response.incomplete' ? 'incomplete' : 'failed', error: { code: 'context_length_exceeded' } } });
+    const h = harness(async () => upstream(200, {}, sseBody(wire)));
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared).toHaveLength(1);
+    if (type === 'error') {
+      expect(h.started[0]?.status).toBe(400);
+      expect(JSON.parse(h.written.join('')).error).toMatchObject({ code: 'context_length_exceeded' });
+    } else expect(h.written.join('')).toBe(wire);
+  });
+
+  it.each(['flat', 'nested'] as const)('surfaces a %s context error before output without rotating or retiring accounts', async envelope => {
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const error = { code: 'context_length_exceeded', message: 'context window exceeded' };
+    const wire = frame(envelope === 'flat' ? { type: 'error', ...error } : { type: 'error', error });
+    const h = harness(async () => upstream(200, {}, sseBody(wire)), { accounts, pool });
+    const result = await executeGatewayRequestKernel(h.options);
+    expect(result.status).toBe(400);
+    expect(h.prepared).toHaveLength(1);
+    expect(JSON.parse(h.written.join('')).error).toMatchObject(error);
+    expect(pool.exhaustedCalls).toEqual([]);
+  });
+
+  it('preserves a late context error in the failure cause, scrubbing credentials and never replaying output', async () => {
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const output = frame({ type: 'response.output_text.delta', delta: 'visible once' });
+    const wire = output + frame({ type: 'error', error: { code: 'context_length_exceeded',
+      message: 'context window exceeded; chatgpt-a-tok' } });
+    const h = harness(async () => upstream(200, {}, sseBody(output, wire.slice(output.length))), {
+      accounts: [cli('chatgpt-a'), cli('chatgpt-b')], pool,
+    });
+    const error = await executeGatewayRequestKernel(h.options).catch(e => e);
+    expect(error).toMatchObject({ code: 'upstream-error', status: 400, retryable: false,
+      cause: { protocol: 'openai-responses', error: { code: 'context_length_exceeded' } } });
+    expect(JSON.stringify(error.cause)).not.toContain('chatgpt-a-tok');
+    expect(h.written.join('')).toBe(output);
+    expect(h.written.join('')).not.toContain('chatgpt-a-tok');
+    expect(h.prepared).toHaveLength(1);
+    expect(pool.exhaustedCalls).toEqual([]);
+  });
+
+  it('does not accept an unterminated final SSE frame as a Responses completion', async () => {
+    const wire = `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'truncated' } })}`;
+    const h = harness(async () => upstream(200, {}, sseBody(wire)));
+    await expect(executeGatewayRequestKernel(h.options)).rejects.toMatchObject({ code: 'upstream-error', status: 502 });
+  });
+
+  it.each(['error', 'response.failed'])('fails over a %s overload inside HTTP 200 before exposing a failed response', async (type) => {
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const error = { code: 'server_error', message: 'We are currently experiencing high demand' };
+    const failure = frame(type === 'error' ? { type, error } : { type, response: { error } });
+    const success = frame({ type: 'response.completed', response: { id: 'healthy', status: 'completed' } });
+    const h = harness(async (_url, init) => upstream(200, { 'content-type': 'text/event-stream' },
+      sseBody(init.diagnosticAccountId === 'chatgpt-a' ? failure : success)), { accounts, pool });
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared.map((p) => p.accountId)).toEqual(['chatgpt-a', 'chatgpt-b']);
+    expect(h.started.map((s) => s.metadata.accountId)).toEqual(['chatgpt-b']);
+    expect(h.written.join('')).toBe(success);
+    expect(pool.exhaustedCalls.map((p) => p.id)).toEqual(['chatgpt-a']);
+  });
+
+  it('benches a late overload briefly without replaying visible output or adopting a quota reset', async () => {
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const output = frame({ type: 'response.output_text.delta', delta: 'already visible' });
+    const failure = frame({ type: 'response.failed', response: {
+      error: { code: 'server_error', message: 'high demand', resets_at: 2_000_000_000 },
+    } });
+    const now = Date.now();
+    const h = harness(async () => upstream(200, { 'content-type': 'text/event-stream' }, sseBody(output, failure)),
+      { accounts, pool, extra: { now: () => now } });
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared).toHaveLength(1);
+    expect(h.written.join('')).toBe(output + failure);
+    expect(pool.exhaustedCalls).toEqual([{ id: 'chatgpt-a', resetAt: now + 5000 }]);
+    expect(pool.parkCauses).toEqual(['cooldown']);
+  });
+
+  it('keeps a hard-pinned account on an overload and returns the truthful failure', async () => {
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const failure = frame({ type: 'error', error: { code: 'server_error', message: 'high demand' } });
+    const h = harness(async () => upstream(200, { 'content-type': 'text/event-stream' }, sseBody(failure)),
+      { accounts, pool, pin: { accountId: 'chatgpt-a', mode: 'hard' } });
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared).toHaveLength(1);
+    expect(h.started[0]?.status).toBe(503);
+    expect(h.written.join('')).toContain('high demand');
+    expect(pool.exhaustedCalls).toEqual([]);
+  });
+
+  it('preserves an oversized valid terminal frame split across chunks without widening the quota buffer', async () => {
+    const wire = frame({ type: 'response.output_text.delta', delta: 'start' })
+      + frame({ type: 'response.completed', response: { id: 'large', output: ['x'.repeat(100_000)] } });
+    const h = harness(async () => upstream(200, {}, sseBody(wire.slice(0, 75_000), wire.slice(75_000))));
+    await executeGatewayRequestKernel(h.options);
+    expect(h.written.join('')).toBe(wire);
+    expect(h.prepared).toHaveLength(1);
+  });
+
+  it('still detects EOF after an oversized output delta rather than inventing a completion', async () => {
+    const wire = frame({ type: 'response.output_text.delta', delta: 'x'.repeat(100_000) });
+    const h = harness(async () => upstream(200, {}, sseBody(wire.slice(0, 75_000), wire.slice(75_000))));
+    await expect(executeGatewayRequestKernel(h.options)).rejects.toMatchObject({ code: 'upstream-error', status: 502 });
+    expect(h.prepared).toHaveLength(1);
+    expect(h.written.join('')).toBe(wire);
+  });
+
+  it('calibrates quota and non-quota fixtures against native Codex response.failed classifications', async () => {
+    // Pinned native protocol controls, rather than assuming every error means quota:
+    // https://github.com/openai/codex/blob/rust-v0.160.1/codex-rs/codex-api/src/sse/responses.rs
+    // Native quota_exceeded_error_is_fatal and context_window_error_is_fatal use this envelope.
+    for (const code of ['insufficient_quota', 'context_length_exceeded']) {
+      const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+      const pool = makePool([{ accountId: 'chatgpt-b' }]);
+      const errorWire = frame({ type: 'response.failed', response: {
+        id: 'native-protocol-control', status: 'failed', error: { code, message: code },
+      } });
+      const h = harness(async (_url, init) => upstream(200, { 'content-type': 'text/event-stream' },
+        sseBody(init.diagnosticAccountId === 'chatgpt-a' ? errorWire : 'healthy-account-success')),
+      { accounts, pool });
+      await executeGatewayRequestKernel(h.options);
+      expect(h.prepared.map((p) => p.accountId)).toEqual(code === 'insufficient_quota'
+        ? ['chatgpt-a', 'chatgpt-b'] : ['chatgpt-a']);
+      expect(h.written.join('')).toBe(code === 'insufficient_quota' ? 'healthy-account-success' : errorWire);
+      expect(pool.exhaustedCalls.map((p) => p.id)).toEqual(code === 'insufficient_quota' ? ['chatgpt-a'] : []);
+    }
+  });
+
+  it('preserves sibling-IP recovery for a transient rate_limit_exceeded SSE response', async () => {
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    let calls = 0;
+    const h = harness(async () => ++calls === 1
+      ? upstream(200, { 'content-type': 'text/event-stream', 'retry-after': '1' }, sseBody(frame({
+          type: 'response.failed', response: { error: { code: 'rate_limit_exceeded', message: 'retry in 1 second' } },
+        })))
+      : upstream(200, {}, sseBody('same-account-success')), {
+      accounts, pool, siblingEgressAvailable: () => true,
+      rateReset: () => ({ resetAt: Date.now() + 1000, retryAfterMs: 1000, transient: true }),
+    });
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared.map((p) => p.accountId)).toEqual(['chatgpt-a', 'chatgpt-a']);
+    expect(h.written.join('')).toBe('same-account-success');
+    expect(pool.exhaustedCalls).toEqual([]);
+    expect(h.cooled).toHaveLength(1);
+  });
+
+  it('looks past harmless response preludes before quota exhaustion without relaying the failed response', async () => {
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const h = harness(async (_url, init) => init.diagnosticAccountId === 'chatgpt-a'
+      ? upstream(200, { 'content-type': 'Text/Event-Stream' }, sseBody(
+          frame({ type: 'response.created' }), frame({ type: 'response.in_progress' }), frame(failed('response.failed'))))
+      : upstream(200, {}, sseBody('healthy-account-success')), { accounts, pool });
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared.map((p) => p.accountId)).toEqual(['chatgpt-a', 'chatgpt-b']);
+    expect(h.written.join('')).toBe('healthy-account-success');
+  });
+
+  it('replays a pending read exactly once when the prelude lookahead expires', async () => {
+    const prelude = frame({ type: 'response.created' });
+    const output = frame({ type: 'response.output_text.delta', delta: 'slow first token' })
+      + frame({ type: 'response.completed', response: { id: 'completed' } });
+    const body = { async *[Symbol.asyncIterator]() {
+      yield Buffer.from(prelude);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      yield Buffer.from(output);
+    } };
+    const h = harness(async () => upstream(200, { 'content-type': 'text/event-stream' }, body));
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared).toHaveLength(1);
+    expect(h.written.join('')).toBe(prelude + output);
+  });
+
+  it.each(['error', 'response.failed'] as const)('fails over a %s quota event before committing any failed response', async (kind) => {
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const wire = frame({ type: 'response.completed', response: { id: 'ok-b', output: [] } });
+    const h = harness(async (_url, init) => init.diagnosticAccountId === 'chatgpt-a'
+      ? upstream(200, { 'content-type': 'text/event-stream' }, sseBody(frame(failed(kind)).slice(0, 17), frame(failed(kind)).slice(17)))
+      : upstream(200, { 'content-type': 'text/event-stream' }, sseBody(wire)), { accounts, pool });
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared.map((p) => p.accountId)).toEqual(['chatgpt-a', 'chatgpt-b']);
+    expect(h.started.map((s) => s.metadata.accountId)).toEqual(['chatgpt-b']);
+    expect(h.written.join('')).toBe(wire);
+    expect(pool.exhaustedCalls.map((p) => p.id)).toEqual(['chatgpt-a']);
+  });
+
+  it('does not leave an explicit hard pin when its stream reports quota exhaustion', async () => {
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const h = harness(async () => upstream(200, { 'content-type': 'text/event-stream' }, sseBody(frame(failed('error')))),
+      { accounts, pool, pin: { accountId: 'chatgpt-a', mode: 'hard' } });
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared.map((p) => p.accountId)).toEqual(['chatgpt-a']);
+    expect(h.started[0]!.status).toBe(429);
+    expect(pool.exhaustedCalls).toEqual([]);
+  });
+
+  it('cools only the egress for a late transient throttle without replaying output or retiring the account', async () => {
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const output = frame({ type: 'response.output_text.delta', delta: 'already visible' });
+    const throttle = frame({ type: 'response.failed', response: {
+      error: { code: 'rate_limit_exceeded', message: 'retry in 1 second' },
+    } });
+    const h = harness(async () => upstream(200, { 'content-type': 'text/event-stream' }, sseBody(output, throttle)), {
+      accounts, pool,
+      rateReset: () => ({ resetAt: Date.now() + 1000, retryAfterMs: 1000, transient: true }),
+    });
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared.map((p) => p.accountId)).toEqual(['chatgpt-a']);
+    expect(h.written.join('')).toBe(output + throttle);
+    expect(pool.exhaustedCalls).toEqual([]);
+    expect(h.cooled).toEqual([{ key: 'chatgpt-a:default', ms: 1000 }]);
+  });
+
+  it('preserves non-quota errors and never replays already-visible output', async () => {
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const output = frame({ type: 'response.output_text.delta', delta: "You've hit your usage limit" });
+    const wire = output + frame(failed('error'));
+    const h = harness(async () => upstream(200, { 'content-type': 'text/event-stream' }, sseBody(output, frame(failed('error')))),
+      { accounts, pool });
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared).toHaveLength(1);
+    expect(h.written.join('')).toBe(wire);
+    // The failed account must yield on the next request in this SAME session, without replaying emitted content.
+    expect(pool.exhaustedCalls.map((p) => p.id)).toEqual(['chatgpt-a']);
   });
 });

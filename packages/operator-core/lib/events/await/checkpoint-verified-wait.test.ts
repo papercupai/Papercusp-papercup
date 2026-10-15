@@ -218,6 +218,50 @@ describe('checkpoint verified-wait producer adapter', () => {
     });
   });
 
+  it.each(['skipped-joined-attempt', 'decision-pending'])(
+    'does not treat %s as completion of an active candidate-bound producer',
+    async (status) => {
+      const current = papercuspSnapshot({
+        generatedAtMs: 2_000,
+        activeRun: { active: false, candidate: null, startedAtMs: null, elapsedSec: null },
+        recent: [{
+          id: 'skip-1',
+          kind: 'green_checkpoint',
+          status,
+          detail: { candidate: 'abc123', runId: 'requested-run' },
+          createdAtMs: 1_900,
+        }],
+      });
+      const certificate = checkpointProducerCertificate({
+        pipeline: 'papercusp',
+        candidateSha: 'abc1',
+        runId: 'requested-run',
+        ownerId: 'su-1',
+        issuedAtMs: 1_500,
+        expectedCadenceMs: 5_000,
+        verificationDeadlineMs: 2_000,
+        snapshot: current,
+      });
+
+      const observed = await observeCheckpointProducer(certificate, {
+        snapshot: async () => current,
+        runLock: () => ({ held: true, elapsedSec: 3, pid: 42 }),
+      });
+
+      expect(observed).toMatchObject({
+        producerPresent: true,
+        state: 'active',
+        completedAtMs: null,
+        lastFireAtMs: null,
+        evidence: { active: true, activeSource: 'run-lock', verdictStatus: null },
+      });
+      expect(classifyVerifiedWaitTimeout(certificate, observed)).toMatchObject({
+        classification: 'progressing',
+        nextAction: 're-await',
+      });
+    },
+  );
+
   it('does not call a configured routine with no observed run stalled', async () => {
     const current = snapshot({ activeRun: null });
     const certificate = checkpointProducerCertificate({

@@ -44,7 +44,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    const [{ getOrgPg }, { consultDeclineCore }, conversations, { makeConsultReachDispatcher }] = await Promise.all([
+    const [{ getOrgPg }, { consultDeclineCore }, conversations, { makeDeferredConsultReachDispatcher }] = await Promise.all([
       import('@papercusp/db-org'),
       import('../../consult/consult-verbs-core'),
       import('../coordination/conversations'),
@@ -86,7 +86,7 @@ export default defineTool({
         // answering session from the next selectee's transcript. No `reach`
         // binding here at all — a decline has no requester follow-up, so this
         // verb has no live agent it may legitimately message.
-        dispatch: makeConsultReachDispatcher({
+        dispatch: makeDeferredConsultReachDispatcher({
           workspaceId,
           harnessSlug: ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : null,
           launchedBy: identity.ownerId,

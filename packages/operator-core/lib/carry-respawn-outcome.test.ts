@@ -390,3 +390,122 @@ describe('lostRespawnAmbientLine — orphaned pending (P-009)', () => {
     expect(note).not.toContain('SUPERSEDES');
   });
 });
+
+/**
+ * WI-10005752 — the SUCCESSOR of a delivered carry-respawn was told its own creating
+ * respawn had been "DROPPED just now". Rows below are copied from the real log
+ * ~/.papercusp/psu-pty/su-622ab60b-….events.jsonl, 2026-10-03 00:33–00:36Z: the cut was
+ * DELIVERED at 00:33:31, then a stale pending request — moot because a newer child
+ * already existed — expired its busy gate at 00:36:31 and the host RETIRED it by writing
+ * `respawn-carry-dropped {reason:'superseded'}` (host: isCarryRespawnSuperseded). That
+ * row is the newest lifecycle row in the file but carries no loss evidence.
+ */
+describe('deriveLastRespawnOutcome — superseded retirement is not a loss (WI-10005752)', () => {
+  const ghostAfterDelivery = [
+    { ts: '2026-10-03T00:33:25.211Z', kind: 'respawned', mode: 'carry-respawn', capMs: 600_000 },
+    { ts: '2026-10-03T00:33:31.325Z', kind: 'respawn-carry-delivered', mode: 'carry-respawn' },
+    { ts: '2026-10-03T00:33:32.243Z', kind: 'wake-turn-deferred-for-pending-respawn', reason: 'carry-respawn-pending' },
+    { ts: '2026-10-03T00:36:31.325Z', kind: 'busy-gate-expired', mode: 'carry-respawn', capMs: 180_000 },
+    { ts: '2026-10-03T00:36:31.326Z', kind: 'respawn-rearm-queued', mode: 'carry-respawn', reason: 'busy-gate-expired', capMs: 360_000 },
+    { ts: '2026-10-03T00:36:31.326Z', kind: 'respawn-carry-dropped', mode: 'carry-respawn', reason: 'superseded', capMs: 360_000, rearmed: true },
+  ];
+  const at = (iso: string) => ({ now: Date.parse(iso) });
+
+  // The pre-fix reader, kept as a CONTROL: it trusted every `respawn-carry-dropped`.
+  const naiveOutcome = (rows: typeof ghostAfterDelivery) => {
+    for (let i = rows.length - 1; i >= 0; i -= 1) {
+      const k = rows[i].kind;
+      if (k === 'respawn-carry-dropped') return 'dropped';
+      if (k === 'respawn-carry-delivered') return 'delivered';
+      if (k === 'respawn-rearm-queued') return 'pending';
+    }
+    return 'none';
+  };
+
+  it('CONTROL: the pre-fix newest-first reader reads this real sequence as DROPPED', () => {
+    expect(naiveOutcome(ghostAfterDelivery)).toBe('dropped');
+  });
+
+  it('reports the delivered cut, not a loss, when a retirement row follows the delivery', () => {
+    const out = deriveLastRespawnOutcome(ghostAfterDelivery, at('2026-10-03T00:36:51.000Z'));
+    expect(out.outcome).toBe('delivered');
+    expect(out.ts).toBe('2026-10-03T00:33:31.325Z');
+    expect(lostRespawnAmbientLine(out)).toBeNull();
+    expect(priorRespawnNote(out)).toBe('');
+  });
+
+  it('stays quiet as the retired request ages — no spurious DELAYED once capMs + grace elapses', () => {
+    // 40 min later: a surviving `respawn-rearm-queued` would read as an orphaned pending
+    // (capMs 360s + 120s grace) and raise DELAYED. Retiring it with the drop prevents that.
+    const out = deriveLastRespawnOutcome(ghostAfterDelivery, at('2026-10-03T01:16:31.000Z'));
+    expect(out.outcome).toBe('delivered');
+    expect(lostRespawnAmbientLine(out)).toBeNull();
+  });
+
+  it('a retirement row alone (no earlier verdict) is `none`, not `dropped` or `pending`', () => {
+    const out = deriveLastRespawnOutcome(ghostAfterDelivery.slice(3), at('2026-10-03T00:40:00.000Z'));
+    expect(out).toEqual({ outcome: 'none' });
+    expect(lostRespawnAmbientLine(out)).toBeNull();
+  });
+
+  it('a non-rearmed superseded drop (stale injectChild) is also a retirement', () => {
+    const out = deriveLastRespawnOutcome(
+      [
+        { ts: '2026-10-03T00:33:31.325Z', kind: 'respawn-carry-delivered', mode: 'carry-respawn' },
+        { ts: '2026-10-03T00:34:00.000Z', kind: 'respawn-carry-dropped', mode: 'carry-respawn', reason: 'superseded' },
+      ],
+      at('2026-10-03T00:34:10.000Z'),
+    );
+    expect(out.outcome).toBe('delivered');
+  });
+
+  it('CONTROL: a REAL drop after the delivery is still a drop, with its host reason', () => {
+    const out = deriveLastRespawnOutcome(
+      [
+        ...ghostAfterDelivery.slice(0, 2),
+        { ts: '2026-10-03T00:50:00.000Z', kind: 'respawn-carry-dropped', mode: 'carry-respawn', reason: 'turn-start-unverified' },
+      ],
+      at('2026-10-03T00:50:30.000Z'),
+    );
+    expect(out).toMatchObject({ outcome: 'dropped', reason: 'turn-start-unverified' });
+    expect(lostRespawnAmbientLine(out)).toContain('carry-respawn DROPPED');
+  });
+
+  it('a NEWER request pending after the retirement is still reported pending', () => {
+    const out = deriveLastRespawnOutcome(
+      [
+        ...ghostAfterDelivery,
+        { ts: '2026-10-03T00:45:00.000Z', kind: 'respawn-rearm-queued', mode: 'carry-respawn', reason: 'busy-gate-expired', capMs: 360_000 },
+      ],
+      at('2026-10-03T00:45:20.000Z'),
+    );
+    expect(out.outcome).toBe('pending');
+    expect(out.ts).toBe('2026-10-03T00:45:00.000Z');
+  });
+
+  it('retirement does not mask an OLDER real drop — no respawn has succeeded since it', () => {
+    const out = deriveLastRespawnOutcome(
+      [
+        { ts: '2026-10-03T00:10:00.000Z', kind: 'respawn-carry-dropped', mode: 'carry-respawn', reason: 'busy-gate-expired' },
+        { ts: '2026-10-03T00:20:00.000Z', kind: 'respawn-rearm-queued', mode: 'carry-respawn', capMs: 360_000 },
+        { ts: '2026-10-03T00:20:00.001Z', kind: 'respawn-carry-dropped', mode: 'carry-respawn', reason: 'superseded', rearmed: true },
+      ],
+      at('2026-10-03T00:21:00.000Z'),
+    );
+    expect(out).toMatchObject({ outcome: 'dropped', reason: 'busy-gate-expired' });
+  });
+
+  it('chained retirements fold together onto the last real verdict', () => {
+    const out = deriveLastRespawnOutcome(
+      [
+        { ts: '2026-10-03T00:33:31.325Z', kind: 'respawn-carry-delivered', mode: 'carry-respawn' },
+        { ts: '2026-10-03T00:36:00.000Z', kind: 'respawn-rearm-queued', mode: 'carry-respawn', capMs: 360_000 },
+        { ts: '2026-10-03T00:36:00.001Z', kind: 'respawn-carry-dropped', mode: 'carry-respawn', reason: 'superseded', rearmed: true },
+        { ts: '2026-10-03T00:41:00.000Z', kind: 'respawn-rearm-superseded', mode: 'carry-respawn' },
+        { ts: '2026-10-03T00:41:00.001Z', kind: 'respawn-carry-dropped', mode: 'carry-respawn', reason: 'superseded' },
+      ],
+      at('2026-10-03T00:42:00.000Z'),
+    );
+    expect(out.outcome).toBe('delivered');
+  });
+});

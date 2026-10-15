@@ -18,11 +18,12 @@
  * selector. A guard never shown to fail is not a proven guard, and this repo
  * forbids proving it by mutating the shared tree.
  */
+import type postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { setPersonalVaultEnabled, upsertPersonalDocuments } from '../personal-vault/store';
 import { parseSocialPostRef } from './social';
-import { searchSocialPosts, selectGrantedSocialScopes, SocialSearchNotGranted } from './social-read';
+import { readSocialPost, searchSocialPosts, selectGrantedSocialScopes, SocialSearchNotGranted } from './social-read';
 
 let org: OrgTestDb;
 let userId: string;
@@ -64,7 +65,9 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await org.adminSql`DELETE FROM harness_shared.personal_documents WHERE user_id = ${userId}`;
+  await org.adminSql`DELETE FROM harness_shared.documents WHERE user_id = ${userId}`;
+  await org.adminSql`DELETE FROM harness_shared.personal_disclosures WHERE workspace_id = ${WS}`;
+  await org.adminSql`DELETE FROM harness_shared.personal_privacy_rules WHERE workspace_id = ${WS}`;
 });
 
 /**
@@ -114,7 +117,7 @@ describe('social:search scope fence, against real Postgres', () => {
     await seedMixedSources();
     // The realistic grant: the owner granted mail AND social. Nothing but the
     // local intersection stops the mail row from coming back.
-    const granted = ['personal:gmail', 'personal:bluesky', 'personal:reddit'];
+    const granted = ['personal:mail', 'personal:bluesky', 'personal:reddit'];
 
     const outcome = await searchSocialPosts(org.adminSql, {
       workspaceId: WS,
@@ -143,11 +146,11 @@ describe('social:search scope fence, against real Postgres', () => {
       // when a caller passes the unfiltered set.
       grantedScopes: naivePassThroughScopes(granted),
     });
-    expect(leaked.scopesSearched).not.toContain('personal:gmail');
+    expect(leaked.scopesSearched).not.toContain('personal:mail');
     // And the naive selector, used directly, really does keep the mail scope —
     // so the control is a genuine mutant, not a no-op.
-    expect(naivePassThroughScopes(granted)).toContain('personal:gmail');
-    expect(selectGrantedSocialScopes(granted)).not.toContain('personal:gmail');
+    expect(naivePassThroughScopes(granted)).toContain('personal:mail');
+    expect(selectGrantedSocialScopes(granted)).not.toContain('personal:mail');
   });
 
   it('mints a postId that resolves back to the stored row', async () => {
@@ -214,7 +217,7 @@ describe('social:search scope fence, against real Postgres', () => {
         workspaceId: WS,
         userId,
         query: 'deploy pipeline',
-        grantedScopes: ['personal:gmail'],
+        grantedScopes: ['personal:mail'],
       }),
     ).rejects.toBeInstanceOf(SocialSearchNotGranted);
   });
@@ -228,5 +231,64 @@ describe('social:search scope fence, against real Postgres', () => {
       grantedScopes: ['personal:bluesky', 'personal:reddit'],
     });
     expect(outcome.hits).toEqual([]);
+  });
+});
+
+/**
+ * Reader-set labels (plan personal-data-reader-set-labels-2026-10-01, P-008):
+ * `social:read` hands the agent a post's content, so it must leave the same
+ * disclosure row a `personal:search` result does — otherwise reading the post
+ * through this verb would sidestep the outbound reader-set check entirely.
+ */
+describe('social:read records a disclosure for a restricted post', () => {
+  const AGENT = 'su-social-read-test-agent';
+
+  function inWorkspace<T>(fn: (tx: postgres.TransactionSql) => Promise<T>): Promise<T> {
+    return org.appSql.begin(async (tx) => {
+      await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [WS]);
+      return fn(tx);
+    }) as Promise<T>;
+  }
+
+  function read(agentOwnerId: string | null) {
+    return inWorkspace((tx) => readSocialPost(tx, { workspaceId: WS, userId, postId: `bluesky:${POST_ID}`, agentOwnerId }));
+  }
+
+  async function restrictBluesky(): Promise<void> {
+    await org.adminSql`
+      INSERT INTO harness_shared.personal_privacy_rules
+        (workspace_id, user_id, match_kind, match_value, level, created_by, updated_by)
+      VALUES (${WS}, ${userId}::uuid, 'source', 'bluesky', 'sender-only', 'test', 'test')`;
+  }
+
+  function ledger() {
+    return org.adminSql<Array<{ agentOwnerId: string; level: string; readerSet: string[]; deliveredVia: string }>>`
+      SELECT agent_owner_id AS "agentOwnerId", level, reader_set AS "readerSet", delivered_via AS "deliveredVia"
+        FROM harness_shared.personal_disclosures
+       WHERE workspace_id = ${WS} AND user_id = ${userId}::uuid`;
+  }
+
+  it('an unrestricted post is returned unlabelled and leaves no ledger row', async () => {
+    await seedMixedSources();
+    const post = await read(AGENT);
+    expect(post.postId).toBe(`bluesky:${POST_ID}`);
+    expect(post.privacy).toBeNull();
+    expect(await ledger()).toEqual([]);
+  });
+
+  it('a restricted post carries its label and is ledgered against the reading agent', async () => {
+    await seedMixedSources();
+    await restrictBluesky();
+    const post = await read(AGENT);
+    // No sender header on a social post: sender-only narrows to owner-only.
+    expect(post.privacy).toEqual({ level: 'sender-only', readerSet: [] });
+    expect(await ledger()).toEqual([{ agentOwnerId: AGENT, level: 'sender-only', readerSet: [], deliveredVia: 'social:read' }]);
+  });
+
+  it('withholds a restricted post from a caller with no attributable identity', async () => {
+    await seedMixedSources();
+    await restrictBluesky();
+    await expect(read(null)).rejects.toThrow(/social_read_withheld/);
+    expect(await ledger()).toEqual([]);
   });
 });

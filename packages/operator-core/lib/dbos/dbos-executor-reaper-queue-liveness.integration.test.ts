@@ -58,7 +58,8 @@ beforeAll(async () => {
   await sql`
     CREATE TABLE IF NOT EXISTS dbos.operation_outputs (
       workflow_uuid TEXT NOT NULL,
-      function_id INT NOT NULL
+      function_id INT NOT NULL,
+      completed_at_epoch_ms BIGINT
     )`;
 });
 afterAll(async () => {
@@ -131,6 +132,40 @@ async function routineMeta(id: string): Promise<Record<string, unknown> | null> 
     SELECT metadata FROM harness_shared.routines WHERE id = ${id}`;
   return r[0]?.metadata ?? null;
 }
+
+describe('routinesTick staleness is judged by step progress, not updated_at (EI-25221129396992808, real PG)', () => {
+  // DBOS bumps workflow_status.updated_at only on a status transition, so a live
+  // tick still checkpointing steps keeps a frozen updated_at. Reaping on updated_at
+  // alone cancelled working ticks mid-run and blinded the routine-engine liveness
+  // reader (false health-tick-stale pages).
+  async function seedStep(uuid: string, functionId: number, completedAgoMs: number): Promise<void> {
+    await sql`
+      INSERT INTO dbos.operation_outputs (workflow_uuid, function_id, completed_at_epoch_ms)
+      VALUES (${uuid}, ${functionId}, ${Date.now() - completedAgoMs})`;
+  }
+
+  it('leaves a long-running tick alone while it is still checkpointing steps', async () => {
+    await seedWf({ uuid: 'tick-working', name: 'routinesTick', status: 'PENDING', queue: 'q-tick', createdAgoMs: 200_000, updatedAgoMs: 200_000 });
+    await seedStep('tick-working', 1, 195_000); // list-due-routines, long ago
+    await seedStep('tick-working', 2, 10_000); // a routineFire step 10s ago: still progressing
+    await reap();
+    expect(await wfStatus('tick-working')).toBe('PENDING');
+  });
+
+  it('still reaps a tick whose last step checkpoint is older than the scheduler window (wedged)', async () => {
+    await seedWf({ uuid: 'tick-wedged', name: 'routinesTick', status: 'PENDING', queue: 'q-tick', createdAgoMs: 200_000, updatedAgoMs: 200_000 });
+    await seedStep('tick-wedged', 1, 195_000);
+    await seedStep('tick-wedged', 2, 120_000); // silent for 120s > 90s window
+    await reap();
+    expect(await wfStatus('tick-wedged')).toBe('CANCELLED');
+  });
+
+  it('still reaps a tick past the window that never checkpointed a step', async () => {
+    await seedWf({ uuid: 'tick-no-step', name: 'routinesTick', status: 'PENDING', queue: 'q-tick', createdAgoMs: 120_000, updatedAgoMs: 120_000 });
+    await reap();
+    expect(await wfStatus('tick-no-step')).toBe('CANCELLED');
+  });
+});
 
 describe('fast-orphan reap requires no live workflow_status sibling (WI-3519, real PG)', () => {
   it('leaves a backlogged ENQUEUED fire alone while a sibling PENDING worker is live on the queue', async () => {

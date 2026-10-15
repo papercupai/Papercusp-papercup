@@ -8,6 +8,12 @@ export interface ClaudeResumeTranscriptAnalysis {
   lastMissingToolReferenceEvidence: string | null;
   /** The tool name the latest counted rejection named, or null. */
   lastMissingToolReferenceName: string | null;
+  /** Provider context rejections still present after the latest compaction; absent in older cached diagnostics. */
+  trailingContextLimitTurns?: number;
+  lastContextLimitEvidence?: string | null;
+  /** Synthetic provider billing rejection after the current submitted prompt. */
+  trailingAccountWallTurns?: number;
+  lastAccountWallEvidence?: string | null;
   /**
    * Assistant records (model output or the provider's synthetic error) written
    * after the most recent submitted prompt. A fork's file carries the source's
@@ -32,3 +38,27 @@ export function analyzeClaudeResumeTranscriptFile(
 ): ClaudeResumeTranscriptAnalysis | null;
 export function __resetClaudeResumeTranscriptCacheForTests(): void;
 export function appendClaudeToolReferencesToSeed(seed: string | null | undefined, references: readonly string[]): string;
+export interface NeutralizeToolReferencesOptions {
+  /** Leave Papercusp MCP references in place (a resume restores those via the launch seed). */
+  nativeOnly?: boolean;
+}
+export function neutralizeClaudeToolReferences(
+  jsonl: string,
+  options?: NeutralizeToolReferencesOptions,
+): { text: string; rewritten: number; toolNames: string[] };
+export function neutralizeForkSeedToolReferences(
+  projectsDir: string | null | undefined,
+  sessionId: string | null | undefined,
+  options?: NeutralizeToolReferencesOptions,
+): { files: number; rewritten: number; toolNames: string[] };
+export function neutralizeToolReferencesInFile(
+  file: string | null | undefined,
+  options?: NeutralizeToolReferencesOptions,
+): { rewritten: number; toolNames: string[] };
+export function neutralizeResumeNativeToolReferences(
+  projectsDir: string | null | undefined,
+  sessionId: string | null | undefined,
+): { files: number; rewritten: number; toolNames: string[] };
+export function neutralizeResumeNativeToolReferencesInFile(
+  file: string | null | undefined,
+): { rewritten: number; toolNames: string[] };

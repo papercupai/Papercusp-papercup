@@ -20,13 +20,14 @@
  * the criterion; the snapshot from its projection), and the caller passes the
  * verdict in. A second copy here would be a fourth definition of "manual".
  */
-import { RECORDED_TEST_LAYERS, type RecordedTestLayer } from '@papercusp/test-config/execution-details';
+import { RECORDED_TEST_LAYERS, registeredVitestFileLayer, type RecordedTestLayer } from '@papercusp/test-config/execution-details';
 import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
 
 export type AcceptanceBarContractGap =
   | 'method_missing'
   | 'check_missing'
   | 'test_layers_missing'
+  | 'test_layer_unrecordable'
   | 'check_layer_mismatch';
 
 export interface AcceptanceBarContractGapInput {
@@ -43,17 +44,21 @@ export interface AcceptanceBarContractGapFinding {
   detail: string;
 }
 
-/** Layers a check file's NAME can prove. Mirrors the repo's test taxonomy: the unit
+/** Configured layers a check file can run at. Mirrors the repo's test taxonomy: the unit
  * Vitest config excludes `*.integration.test.*` / `*.browser.test.*`
  * (libs/test-config/src/vitest-config.ts), e2e is Playwright under `e2e/` or a
- * `*.spec.*`, and LLM scenarios live under `llm-testing/`. */
+ * `*.spec.*`, and LLM scenarios live under `llm-testing/`. Explicit file routes
+ * are shared with their Vitest projects and take precedence over the suffix. */
 // ONE taxonomy with the ledger recorder (EI-24434635346407728): a BAR may only require a
 // layer that a test_runs row can record, so this is the recorder's type, not a copy of it.
 export type CheckFileTestLayer = RecordedTestLayer;
 
-/** Only declared layers in this vocabulary are judged against check files. Any other
- * declared layer (e.g. `mutation`, `property`) has no filename convention, so a
- * mismatch cannot be established and none is reported. */
+/** The only layers a BAR may require. spec-test-adequacy's correct-layer passes a layer
+ * only when a bound evidence row RECORDS it, and binding refuses any testLayer outside
+ * RECORDED_TEST_LAYERS, so a declared layer outside this set (e.g. `component`,
+ * `mutation`, `live`) is unsatisfiable and is reported as `test_layer_unrecordable`
+ * (WI-10006536). Before, such layers were silently skipped here, passed authoring, and
+ * failed correct-layer forever at grading. */
 const JUDGED_LAYERS: ReadonlySet<string> = new Set<CheckFileTestLayer>(RECORDED_TEST_LAYERS);
 
 const SCRIPT_EXT = '[cm]?[jt]sx?';
@@ -63,10 +68,12 @@ export function normalizedTestLayer(value: string): string {
 }
 
 /**
- * The layer(s) a check file can satisfy, judged from its path alone; `null` when the
+ * The layer(s) a check file is configured to run at; `null` when the
  * path does not look like a test at all (then no mismatch can be claimed for the BAR).
  */
 export function checkFileTestLayers(path: string): ReadonlySet<CheckFileTestLayer> | null {
+  const configuredLayer = registeredVitestFileLayer(path);
+  if (configuredLayer) return new Set([configuredLayer]);
   const p = path.trim().replaceAll('\\', '/').toLowerCase();
   const layers = new Set<CheckFileTestLayer>();
   if (new RegExp(`\\.integration\\.test\\.${SCRIPT_EXT}$`).test(p)) layers.add('integration');
@@ -117,13 +124,24 @@ export function acceptanceBarContractGaps(input: AcceptanceBarContractGapInput):
         "at (unit, integration, e2e, ...), or declare the check explicitly manual (instrumentKey:'none')",
     });
   }
+  const unrecordable = layers.filter((layer) => !JUDGED_LAYERS.has(layer));
+  if (unrecordable.length > 0) {
+    findings.push({
+      gap: 'test_layer_unrecordable',
+      detail:
+        `requiredTestLayers declares ${unrecordable.join(', ')}, which the test-run ledger never records ` +
+        `(recorded layers: ${[...RECORDED_TEST_LAYERS].join(', ')}), so correct-layer can never pass: ` +
+        'name the recorded layer the proof actually runs at (a *.component.test.tsx or mutation-probe run ' +
+        "records as unit/integration); a live or deployed observation belongs in requiredEvidence, not requiredTestLayers",
+    });
+  }
 
   if (isExplicitlyManualCheck(input.check) && layers.length > 0) {
     findings.push({
       gap: 'check_layer_mismatch',
       detail:
         `the check is explicitly manual (instrumentKey:'none') yet requiredTestLayers declares ${layers.join(', ')}; ` +
-        'a BAR cannot be both: drop the layers (a manual BAR) or give it a runnable check',
+        'a BAR cannot be both: omit the `requiredTestLayers` field (a manual BAR) or give it a runnable check',
     });
   } else if (input.check?.kind === 'tests' && layers.length > 0) {
     const classified = input.check.files.map((file) => ({ file, layers: checkFileTestLayers(file) }));

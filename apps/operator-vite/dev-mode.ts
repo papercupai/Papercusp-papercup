@@ -66,6 +66,23 @@ export function isDesktopHmrEnabled(env: Record<string, string | undefined>): bo
   return env.PAPERCUSP_ENABLE_HMR === '1' || env.NEXT_PUBLIC_ENABLE_HMR === '1';
 }
 
+/**
+ * `PAPERCUSP_DEV_WATCH=0` turns Vite's file watcher OFF (`server.watch: null`).
+ *
+ * The e2e webServer needs HMR on (the real `/@vite/client` is what lets the SPA
+ * mount), but HMR also full-reloads every open page when a watched file
+ * changes. This checkout is a shared tree that dozens of agents edit at once,
+ * so a peer's save mid-run reloads every test page and destroys its execution
+ * context. Root cause of WI-10006950: global-shortcuts.spec.ts:134 died with
+ * "Execution context was destroyed" in the same second Vite logged a
+ * `page reload` for a peer's libs/generic/chat-protocol edit. With the watcher
+ * off, modules are still transformed on demand, but nothing triggers a reload.
+ * Only an explicit `'0'` disables it; the default dev server keeps watching.
+ */
+export function isDevWatchDisabled(env: Record<string, string | undefined>): boolean {
+  return env.PAPERCUSP_DEV_WATCH === '0';
+}
+
 export function shouldServeNoopViteClient(url: string | undefined, enableHmr: boolean): boolean {
   return !enableHmr && typeof url === 'string' && url.startsWith('/@vite/client');
 }

@@ -7,6 +7,7 @@ import {
   WORKSPACE_HOST_DATA_ROOT,
   WORKSPACE_HOST_PROVIDER_CONTRACT_CHECKS,
   runFakeWorkspaceHostProviderContractSuite,
+  workspaceHostProviderRetryClass,
   type WorkspaceHostApplyResult,
   type WorkspaceHostDesiredSpec,
   type WorkspaceHostProviderContext,
@@ -21,6 +22,8 @@ import {
   GCP_WORKSPACE_HOST_TRANSPORTS,
   buildGcpWorkspaceHostTransportProfile,
   createGcpWorkspaceHostProvider,
+  GcpOperationFailedError,
+  GCP_WORKSPACE_HOST_CALL_PERMISSIONS,
   gcpInstanceInsertPermissions,
   gcpWorkspaceHostRequestUuid,
   type GcpComputeInstanceStatus,
@@ -48,6 +51,7 @@ import {
 } from './gcp-provider';
 import { GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS } from '../cloud-workspaces/gcp-preflight';
 import { gcpFirstWorkspaceDesiredSpec } from '../auth/hosted/first-workspace';
+import { buildHostedProviderDelegationOnboarding } from './hosted-provider-delegation';
 import { PAPERCUSP_HOSTED_HOST_PERMISSIONS, PAPERCUSP_HOSTED_OBSERVER_PERMISSIONS } from './hosted-gcp-hosting';
 
 const NOW ='2026-08-22T08:30:00.000Z';
@@ -651,6 +655,58 @@ async function provision(
   return { host: { hostId: spec.hostId, target: 'gcp', resources }, resources };
 }
 
+describe('GCP operation that finished with an error (WI-10005323)', () => {
+  /** Apply the plan's first step with every operation wait answering `error`; return what it threw. */
+  async function failFirstStep(error: NonNullable<GcpOperationObservation['error']>): Promise<unknown> {
+    const { client, provider } = providerAndClient();
+    client.waitForOperation = async (operation) => ({ ...operation, status: 'DONE', observedAt: NOW, error });
+    const plan = await provider.plan(
+      { action: 'provision', operationId: 'op-fail', idempotencyKey: 'op-fail', desired: desired() },
+      context(),
+    );
+    return provider
+      .apply({ planId: plan.planId, operationId: plan.operationId, step: plan.steps[0]!, knownResources: [] }, context())
+      .then(
+        () => undefined,
+        (thrown: unknown) => thrown,
+      );
+  }
+
+  it('a refused operation (HTTP 4xx) is terminal, so the provision fails instead of reconciling forever', async () => {
+    // Measured 2026-10-02 (prov-0f9b1ba8db30d143becc130a-r3): the VM insert finished DONE with
+    // SERVICE_ACCOUNT_ACCESS_DENIED and the runner looped on "outcome uncertain; reconciliation required".
+    const thrown = await failFirstStep({
+      code: 'SERVICE_ACCOUNT_ACCESS_DENIED',
+      message: 'GCP operation failed (SERVICE_ACCOUNT_ACCESS_DENIED)',
+      status: 403,
+    });
+    expect(thrown).toBeInstanceOf(GcpOperationFailedError);
+    expect(thrown).toMatchObject({ status: 403, code: 'SERVICE_ACCOUNT_ACCESS_DENIED' });
+    expect(workspaceHostProviderRetryClass(thrown)).toBe('terminal');
+  });
+
+  it('a rate-limited operation is throttled even though Google reports it as 403', async () => {
+    const thrown = await failFirstStep({
+      code: 'RESOURCE_OPERATION_RATE_EXCEEDED',
+      message: 'GCP operation failed (RESOURCE_OPERATION_RATE_EXCEEDED)',
+      status: 403,
+      throttled: true,
+    });
+    expect(workspaceHostProviderRetryClass(thrown)).toBe('throttled');
+  });
+
+  it('a server-side failure, or one with no status, stays ambiguous and is reconciled', async () => {
+    const stockout = await failFirstStep({
+      code: 'ZONE_RESOURCE_POOL_EXHAUSTED',
+      message: 'GCP operation failed (ZONE_RESOURCE_POOL_EXHAUSTED)',
+      status: 503,
+    });
+    expect(workspaceHostProviderRetryClass(stockout)).toBe('ambiguous');
+    const unknown = await failFirstStep({ message: 'GCP operation failed' });
+    expect(workspaceHostProviderRetryClass(unknown)).toBe('ambiguous');
+  });
+});
+
 describe('GCP workspace-host provider planning', () => {
   it('normalizes an undersized boot disk during planning before any provider mutation can run', async () => {
     const { client, provider } = providerAndClient();
@@ -669,6 +725,60 @@ describe('GCP workspace-host provider planning', () => {
     expect(instance.disks[0].initializeParams.diskSizeGb).toBe(32);
     expect(client.insertNetworkCalls).toHaveLength(0);
     expect(client.insertDiskCalls).toHaveLength(0);
+  });
+
+  // WI-10005297: the provision and action routes spread stored connection config over the desired
+  // spec, and until 2026-10-02 every hosted connection stored the CONTROLLER email there.
+  it('a host reached through a hosted delegation holds no identity, even when the spec names one', async () => {
+    const { provider } = providerAndClient();
+    const { record } = buildHostedProviderDelegationOnboarding({
+      organizationId: 'org-a',
+      workspaceId: 'workspace-gcp-1',
+      connectionId: 'connection-gcp-1',
+      label: 'Customer project',
+      credentialRef: 'encrypted://workspace-gcp-1/cloud/connection-gcp-1',
+      now: '2026-10-02T06:00:00.000Z',
+      configuration: {
+        provider: 'gcp',
+        source: {
+          method: 'service-account-impersonation',
+          projectId: 'papercusp-dev-123',
+          serviceAccountEmail: 'papercusp-host-operator@papercusp-dev-123.iam.gserviceaccount.com',
+          trustedPrincipal: 'principal://iam.googleapis.com/subject/control-plane',
+        },
+      },
+    });
+    const instanceRequest = async (extra: Record<string, unknown>) => {
+      const base = desired();
+      const plan = await provider.plan(
+        {
+          action: 'provision',
+          operationId: 'operation-identity',
+          idempotencyKey: 'operation-identity',
+          desired: { ...base, provider: { ...base.provider, ...extra } },
+        },
+        context({}, '#!/usr/bin/env bash\necho papercusp-bootstrap\n'),
+      );
+      return (plan.steps.find(({ id }) => id === 'create-instance')!.input as unknown as {
+        request: GcpInstanceInsertInput;
+      }).request;
+    };
+
+    // The legacy stored shape: the delegation plus the controller email beside it.
+    const hosted = await instanceRequest({
+      hostedDelegation: record,
+      serviceAccountEmail: 'papercusp-host-operator@papercusp-dev-123.iam.gserviceaccount.com',
+    });
+    expect(hosted).not.toHaveProperty('serviceAccounts');
+    expect(gcpInstanceInsertPermissions(hosted)).not.toContain('iam.serviceAccounts.actAs');
+    expect(gcpInstanceInsertPermissions(hosted)).not.toContain('compute.instances.setServiceAccount');
+
+    // Control: the same spec without a delegation keeps the runtime identity it names.
+    const direct = await instanceRequest({});
+    expect(direct.serviceAccounts).toEqual([
+      { email: 'workspace-host@papercusp-dev-123.iam.gserviceaccount.com', scopes: [GCP_CLOUD_PLATFORM_SCOPE] },
+    ]);
+    expect(gcpInstanceInsertPermissions(direct)).toContain('iam.serviceAccounts.actAs');
   });
 
   it('builds a deterministic managed resource graph with RFC-4122 request UUIDs and hardened instance inputs', async () => {
@@ -796,10 +906,12 @@ describe('GCP workspace-host provider planning', () => {
     ).request;
     const script = instance.metadata.items.find(({ key }) => key === 'startup-script')?.value ?? '';
 
-    expect(script).toContain('cp -a /home/. "$home_seed"/');
+    // The bind targets the CANONICAL home (WI-10006838: /home is a symlink to var/home on bootc).
+    expect(script).toContain('home_target="$(readlink -f -- /home)"');
+    expect(script).toContain('cp -a "$home_target"/. "$home_seed"/');
     expect(script).toContain('mv -T -- "$home_seed" "$data_mount/home"');
-    expect(script).toContain('grep -q " /home none bind" /etc/fstab');
-    expect(script).toContain(`mountpoint -q '/home' || mount --bind "$data_mount/home" '/home'`);
+    expect(script).toContain('grep -q " ${home_target} none bind" /etc/fstab');
+    expect(script).toContain('mountpoint -q "$home_target" || mount --bind "$data_mount/home" "$home_target"');
 
     const homeBindAt = script.indexOf('mount --bind "$data_mount/home"');
     const bootstrapAt = script.indexOf('# User-supplied bootstrap follows the durable mount.');
@@ -816,8 +928,8 @@ describe('GCP workspace-host provider planning', () => {
     );
     const instance = (plan.steps.find(({ id }) => id === 'create-instance')!.input as unknown as { request: GcpInstanceInsertInput }).request;
     const script = instance.metadata.items.find(({ key }) => key === 'startup-script')!.value;
-    const start = script.indexOf('[[ -d /home');
-    const end = script.indexOf("install -d -m 0755 '/home'");
+    const start = script.indexOf('home_target="$(readlink -f -- /home)"');
+    const end = script.indexOf('install -d -m 0755 "$home_target"');
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     const root = mkdtempSync(join(tmpdir(), 'gcp-home-copy-'));
@@ -2124,5 +2236,296 @@ describe('every role that creates a host holds what GCP checks on the instance i
     expect(missing(request, granted.filter((p) => p !== 'compute.instances.setTags'))).toEqual([
       'compute.instances.setTags',
     ]);
+  });
+
+  it('spot (WI-10005210): a spot insert needs setScheduling, and every create role holds it', async () => {
+    const spec = gcpFirstWorkspaceDesiredSpec({
+      hostId: 'host-gcp-1',
+      record: {
+        credentialRef: 'delegation://workspace-gcp-1/conn-1',
+        configuration: {
+          provider: 'gcp',
+          source: {
+            method: 'papercusp-hosted',
+            projectId: 'papercusp-dev-123',
+            serviceAccountEmail: 'pco-aaaa@papercusp-org-identity.iam.gserviceaccount.com',
+            hostId: 'host-gcp-1',
+          },
+        },
+      } as never,
+    });
+    spec.provider = { ...spec.provider, provisioningModel: 'spot' };
+    const request = await instanceInsert(spec);
+    expect(gcpInstanceInsertPermissions(request)).toContain('compute.instances.setScheduling');
+    const hosted = [...PAPERCUSP_HOSTED_HOST_PERMISSIONS, ...PAPERCUSP_HOSTED_OBSERVER_PERMISSIONS];
+    expect(missing(request, hosted)).toEqual([]);
+    expect(missing(request, GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS)).toEqual([]);
+    expect(missing(request, hosted.filter((p) => p !== 'compute.instances.setScheduling'))).toEqual([
+      'compute.instances.setScheduling',
+    ]);
+  });
+});
+
+describe('every role that drives the GCP provider holds what GCP checks on each call it makes (WI-10005297)', () => {
+  type CallPermissions = Record<string, (...args: unknown[]) => readonly string[]>;
+  const table = GCP_WORKSPACE_HOST_CALL_PERMISSIONS as unknown as CallPermissions;
+
+  /** Wraps the fake so every client call records the permissions GCP would check for it. */
+  function recordingProvider() {
+    const client = new FakeGcpWorkspaceHostApiClient();
+    const needed = new Map<string, Set<string>>();
+    const called = new Set<string>();
+    const recorded = new Proxy(client, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        if (typeof prop !== 'string' || typeof value !== 'function' || !(prop in table)) return value;
+        return (...args: unknown[]) => {
+          called.add(prop);
+          for (const permission of table[prop]!(...args)) {
+            if (!needed.has(permission)) needed.set(permission, new Set());
+            needed.get(permission)!.add(prop);
+          }
+          return (value as (...a: unknown[]) => unknown).apply(target, args);
+        };
+      },
+    });
+    const provider = createGcpWorkspaceHostProvider({ client: recorded, now: () => NOW });
+    return { client, provider, needed, called };
+  }
+
+  async function applyAll(
+    provider: ReturnType<typeof createGcpWorkspaceHostProvider>,
+    plan: Awaited<ReturnType<ReturnType<typeof createGcpWorkspaceHostProvider>['plan']>>,
+    resources: WorkspaceHostResourceRef[],
+  ): Promise<void> {
+    for (const step of plan.steps) {
+      const result = await provider.apply(
+        { planId: plan.planId, operationId: plan.operationId, step, knownResources: [...resources] },
+        context(),
+      );
+      expect(['applied', 'destroyed', 'unchanged'], `${plan.operationId}/${step.id}`).toContain(result.state);
+      if ('resource' in result && result.resource) resources.push(result.resource);
+    }
+  }
+
+  /** Provision, every lifecycle action, a restore into a second host, then destroy both. */
+  async function driveEveryLifecycle(spec: WorkspaceHostDesiredSpec) {
+    const recording = recordingProvider();
+    const { client, provider } = recording;
+    const { host, resources } = await provision(client, provider, spec);
+    for (const action of ['stop', 'start', 'restart', 'snapshot', 'repair'] as const) {
+      const plan = await provider.plan(
+        action === 'snapshot'
+          ? { action, operationId: `op:${action}`, idempotencyKey: `op:${action}`, host, name: 'manual-snapshot' }
+          : { action, operationId: `op:${action}`, idempotencyKey: `op:${action}`, host },
+        context({}, '#!/usr/bin/env bash\necho bootstrap\n'),
+      );
+      await applyAll(provider, plan, resources);
+    }
+
+    client.seedSnapshot(`pc-${spec.hostId}-q3`, spec.hostId);
+    // The second host derives its own resource names; pinned names would collide with the first.
+    const { instanceName: _instance, dataDiskName: _disk, ...derivedNames } = (spec.provider ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const recovered = {
+      ...spec,
+      hostId: `${spec.hostId}-recovered`,
+      provider: { ...derivedNames, network: { mode: 'managed' } },
+    } as WorkspaceHostDesiredSpec;
+    const restore = await provider.plan(
+      {
+        action: 'restore',
+        operationId: 'op:restore',
+        idempotencyKey: 'op:restore',
+        host,
+        snapshot: {
+          target: 'gcp',
+          providerId: `projects/${spec.scope.id}/global/snapshots/pc-${spec.hostId}-q3`,
+          hostId: spec.hostId,
+        },
+        desired: recovered,
+      },
+      context(),
+    );
+    const restoredResources: WorkspaceHostResourceRef[] = [];
+    await applyAll(provider, restore, restoredResources);
+
+    for (const [target, targetResources] of [
+      [host, resources],
+      [{ hostId: recovered.hostId, target: 'gcp', resources: restoredResources } as WorkspaceHostRef, restoredResources],
+    ] as const) {
+      const destroy = await provider.plan(
+        {
+          action: 'destroy',
+          operationId: `op:destroy:${target.hostId}`,
+          idempotencyKey: `op:destroy:${target.hostId}`,
+          host: target,
+          disposition: 'discard',
+          confirmation: { expectedHostId: target.hostId, confirmedBy: 'vitest', confirmedAt: NOW },
+        },
+        context(),
+      );
+      await applyAll(provider, destroy, [...targetResources]);
+    }
+    return recording;
+  }
+
+  /** What the run needed that `granted` lacks, with the calls that needed it. actAs is checked on the account. */
+  function uncovered(needed: Map<string, Set<string>>, granted: Iterable<string>): Record<string, string[]> {
+    const held = new Set(granted);
+    return Object.fromEntries(
+      [...needed]
+        .filter(([permission]) => !permission.startsWith('iam.') && !held.has(permission))
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([permission, calls]) => [permission, [...calls].sort()] as const),
+    );
+  }
+
+  const customerProjectSpec = () =>
+    gcpFirstWorkspaceDesiredSpec({
+      hostId: 'host-gcp-1',
+      record: {
+        credentialRef: 'delegation://workspace-gcp-1/conn-1',
+        configuration: {
+          provider: 'gcp',
+          source: {
+            method: 'service-account-impersonation',
+            projectId: 'papercusp-dev-123',
+            serviceAccountEmail: 'papercusp-host-operator@papercusp-dev-123.iam.gserviceaccount.com',
+          },
+        },
+      } as never,
+    });
+
+  it('the run is not vacuous: it reaches every mutating call the provider can make', async () => {
+    const { called } = await driveEveryLifecycle(customerProjectSpec());
+    const mutating = Object.keys(table).filter((method) => /^(insert|delete|create|start|stop|reset|set)/.test(method));
+    expect(mutating.filter((method) => !called.has(method))).toEqual([]);
+    expect(called).toContain('waitForOperation');
+  });
+
+  it('BYOC (customer project, hosted and desktop): the required list covers every call of every lifecycle', async () => {
+    for (const spec of [customerProjectSpec(), desired()]) {
+      const { needed } = await driveEveryLifecycle(spec);
+      expect(uncovered(needed, GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS)).toEqual({});
+    }
+  });
+
+  it('BYOC hosted: the customer-project VM holds no identity, so no lifecycle call needs actAs (WI-10005297)', async () => {
+    // `uncovered` exempts iam.* (actAs is granted on the account, not the project), which is how a
+    // spec attaching the controller identity to the VM passed the coverage test above and was then
+    // refused live with SERVICE_ACCOUNT_ACCESS_DENIED. Nothing grants that, so nothing may need it.
+    const identityPermissions = (needed: Map<string, Set<string>>) =>
+      [...needed.keys()]
+        .filter((permission) => permission.startsWith('iam.') || permission === 'compute.instances.setServiceAccount')
+        .sort();
+    expect(identityPermissions((await driveEveryLifecycle(customerProjectSpec())).needed)).toEqual([]);
+
+    // Control: the pre-fix spec (controller identity on the VM) is what this check exists to catch.
+    const spec = customerProjectSpec() as WorkspaceHostDesiredSpec & { provider: Record<string, unknown> };
+    const attached = {
+      ...spec,
+      provider: { ...spec.provider, serviceAccountEmail: 'papercusp-host-operator@papercusp-dev-123.iam.gserviceaccount.com' },
+    } as WorkspaceHostDesiredSpec;
+    expect(identityPermissions((await driveEveryLifecycle(attached)).needed)).toEqual([
+      'compute.instances.setServiceAccount',
+      'iam.serviceAccounts.actAs',
+    ]);
+  });
+
+  it('BYOC: calls whose permissions do not depend on their arguments are covered too', () => {
+    // driveEveryLifecycle reaches the argument-dependent calls; this reaches the read/catalog ones
+    // (inventory, regions, sizes, images) a lifecycle never makes.
+    const argumentFree = Object.entries(table).filter(([, permissionsFor]) => permissionsFor.length === 0);
+    expect(argumentFree.length).toBeGreaterThan(20);
+    const needed = new Map<string, Set<string>>();
+    for (const [method, permissionsFor] of argumentFree) {
+      for (const permission of permissionsFor()) needed.set(permission, new Set([method]));
+    }
+    expect(uncovered(needed, GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS)).toEqual({});
+  });
+
+  it('control: the list as it stood at the first live BYOC provision is caught at create-subnetwork', async () => {
+    const { needed } = await driveEveryLifecycle(customerProjectSpec());
+    const before = GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS.filter(
+      (permission) =>
+        ![
+          'compute.networks.updatePolicy',
+          'compute.instances.reset',
+          'compute.snapshots.create',
+          'compute.snapshots.setLabels',
+          'compute.snapshots.useReadOnly',
+        ].includes(permission),
+    );
+    expect(uncovered(needed, before)).toMatchObject({
+      'compute.networks.updatePolicy': expect.arrayContaining(['insertSubnetwork', 'insertFirewall', 'insertRouter']),
+      'compute.instances.reset': ['resetInstance'],
+      'compute.snapshots.create': ['createSnapshot'],
+    });
+  });
+
+  it('Papercusp-hosted: the host and observer roles cover every call of every lifecycle', async () => {
+    const spec = gcpFirstWorkspaceDesiredSpec({
+      hostId: 'host-gcp-1',
+      record: {
+        credentialRef: 'delegation://workspace-gcp-1/conn-1',
+        configuration: {
+          provider: 'gcp',
+          source: {
+            method: 'papercusp-hosted',
+            projectId: 'papercusp-dev-123',
+            serviceAccountEmail: 'pco-aaaa@papercusp-org-identity.iam.gserviceaccount.com',
+            hostId: 'host-gcp-1',
+          },
+        },
+      } as never,
+    });
+    const { needed } = await driveEveryLifecycle(spec);
+    expect(uncovered(needed, [...PAPERCUSP_HOSTED_HOST_PERMISSIONS, ...PAPERCUSP_HOSTED_OBSERVER_PERMISSIONS])).toEqual(
+      {},
+    );
+  });
+});
+
+describe('spot provisioning option (WI-10005210)', () => {
+  async function plan(spec: WorkspaceHostDesiredSpec) {
+    const { provider } = providerAndClient();
+    return provider.plan({ action: 'provision', operationId: 'spot', idempotencyKey: 'spot', desired: spec }, context());
+  }
+  async function insertFor(spec: WorkspaceHostDesiredSpec): Promise<GcpInstanceInsertInput> {
+    const steps = (await plan(spec)).steps;
+    return (steps.find(({ id }) => id === 'create-instance')!.input as unknown as { request: GcpInstanceInsertInput })
+      .request;
+  }
+
+  it('defaults to on-demand: no scheduling block and no setScheduling permission', async () => {
+    const request = await insertFor(desired());
+    expect(request).not.toHaveProperty('scheduling');
+    expect(gcpInstanceInsertPermissions(request)).not.toContain('compute.instances.setScheduling');
+    const standard = desired();
+    standard.provider = { ...standard.provider, provisioningModel: 'standard' };
+    expect(await insertFor(standard)).not.toHaveProperty('scheduling');
+  });
+
+  it("provisioningModel 'spot' creates a spot VM that STOPS on reclaim, so its disks and state survive", async () => {
+    const spec = desired();
+    spec.provider = { ...spec.provider, provisioningModel: 'spot' };
+    const request = await insertFor(spec);
+    expect(request.scheduling).toEqual({
+      provisioningModel: 'SPOT',
+      instanceTerminationAction: 'STOP',
+      automaticRestart: false,
+      onHostMaintenance: 'TERMINATE',
+    });
+    // The data disk stays a separate, retained disk.
+    expect(request.disks[1]).toMatchObject({ boot: false, autoDelete: false });
+  });
+
+  it('refuses an unknown provisioningModel instead of silently creating an on-demand host', async () => {
+    const spec = desired();
+    spec.provider = { ...spec.provider, provisioningModel: 'preemptible' };
+    await expect(plan(spec)).rejects.toThrow(/provisioningModel must be one of standard, spot/);
   });
 });

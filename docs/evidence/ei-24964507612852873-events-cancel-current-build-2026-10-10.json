@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "events:cancel current-build settled-await reproduction",
+  "framework": "operational",
+  "command": [
+    "dev:pipeline_position { path: packages/operator-core/lib/agent-tools/events/cancel.ts, testClass: operator-api }",
+    "ptool events:await --url=http://127.0.0.1:3170 { event: diagnostic:events-cancel-repro:su-7d56cc93-20261010-2309, timeout_sec: 60, on_timeout: expire }",
+    "ptool events:emit --url=http://127.0.0.1:3170 { event: diagnostic:events-cancel-repro:su-7d56cc93-20261010-2309, scope: local }",
+    "ptool events:cancel --url=http://127.0.0.1:3170 { await_id: 265939 }",
+    "ptool events:await --url=http://127.0.0.1:3170 { event: diagnostic:events-cancel-control:su-7d56cc93-20261010-2314, timeout_sec: 60, on_timeout: expire }",
+    "ptool events:cancel --url=http://127.0.0.1:3170 { await_id: 265961 }",
+    "ptool events:status --url=http://127.0.0.1:3170 { await_id: 265939 }",
+    "ptool events:cancel --url=http://127.0.0.1:3170 { delivery_id: 626410 }"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-10T23:13:22.419Z",
+  "finishedAt": "2026-10-10T23:15:45.000Z",
+  "summary": "On the staging operator build 9d860ad90e, a pending self-owned one-shot await cancelled successfully. After emitting a local event to fire a second self-owned one-shot await, cancellation returned cancelled:false with not_found_or_not_yours_or_already_settled; events:status showed the await inactive and one parked self-delivery, which was acknowledged successfully. The outcome matches the active-only cancellation contract.",
+  "assertions": [
+    {
+      "id": "staging-build-contains-events-cancel",
+      "passed": true,
+      "evidence": "dev:pipeline_position reported staging-operator SHA 9d860ad90e, containsChange=true for packages/operator-core/lib/agent-tools/events/cancel.ts."
+    },
+    {
+      "id": "pending-one-shot-cancel-succeeds",
+      "passed": true,
+      "evidence": "Self-owned pending await 265961 returned ok=true, cancelled=true, with zero dropped or in-flight deliveries."
+    },
+    {
+      "id": "fired-one-shot-is-already-settled",
+      "passed": true,
+      "evidence": "Self-owned await 265939 was fired by a local emit; events:cancel returned cancelled=false and not_found_or_not_yours_or_already_settled. events:status showed no active await and parked delivery 626410."
+    },
+    {
+      "id": "parked-self-delivery-acknowledged",
+      "passed": true,
+      "evidence": "events:cancel delivery_id 626410 returned ok=true, acked=true."
+    }
+  ]
+}

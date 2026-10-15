@@ -169,7 +169,7 @@ export async function createWebhookSource(
       VALUES (${workspaceId}, ${source.id}::uuid, pgp_sym_encrypt(${fresh}, ${dbKey}))`;
   } catch (error) {
     // A source with no key could never verify a delivery; do not leave one behind.
-    await sql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${workspaceId} AND id = ${source.id}::uuid`;
+    await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${workspaceId} AND id = ${source.id}::uuid`;
     throw error;
   }
   return { source, path: webhookPath(source.id), signingKey: fresh };
@@ -198,7 +198,7 @@ export async function rotateWebhookSigningKey(
            secret_ct = pgp_sym_encrypt(${fresh}, ${dbKey}),
            rotated_at = now(),
            updated_at = now()
-      FROM harness_shared.trigger_sources AS s
+      FROM harness_shared.data_sources AS s
      WHERE w.workspace_id = ${input.workspaceId}
        AND w.source_id = ${input.sourceId}::uuid
        AND s.workspace_id = w.workspace_id
@@ -224,7 +224,7 @@ async function loadDeliveryTarget(sql: postgres.Sql, sourceId: string, dbKey: st
            pgp_sym_decrypt(w.secret_ct, ${dbKey}) AS current,
            CASE WHEN w.previous_secret_ct IS NOT NULL AND w.previous_valid_until > now()
                 THEN pgp_sym_decrypt(w.previous_secret_ct, ${dbKey}) END AS previous
-      FROM harness_shared.trigger_sources s
+      FROM harness_shared.data_sources s
       JOIN harness_shared.trigger_webhook_secrets w
         ON w.workspace_id = s.workspace_id AND w.source_id = s.id
      WHERE s.id = ${sourceId}::uuid
@@ -256,6 +256,15 @@ export interface WebhookDeliveryDependencies {
   encryptionKey?: string;
   now?: () => Date;
   ingest?: typeof ingestExternalTriggerEvent;
+  /**
+   * A provider's own webhook addressed to a connector source (linear-asana-task-sync D-016,
+   * providers/connector-push.ts). Asked only when the id names no webhook source; null = not a
+   * push source either, answered 404. Omitted = webhook sources only.
+   */
+  connectorPush?: (
+    request: WebhookDeliveryRequest,
+    base: Pick<WebhookDeliveryDependencies, 'sql' | 'remoteAccessEnabled' | 'encryptionKey' | 'now'>,
+  ) => Promise<WebhookDeliveryResponse | null>;
 }
 
 function refuse(status: number, error: string, extra: Record<string, unknown> = {}, headers?: Record<string, string>): WebhookDeliveryResponse {
@@ -279,13 +288,26 @@ export async function handleWebhookDelivery(
   if (request.rawBody.byteLength > WEBHOOK_MAX_BODY_BYTES) {
     return refuse(413, 'body_too_large', { limitBytes: WEBHOOK_MAX_BODY_BYTES });
   }
-  const body = parseJsonObject(request.rawBody);
-  if (!body) return refuse(400, 'invalid_body', { message: 'the body must be a JSON object' });
+  // An empty body is only ever a provider's subscription handshake (Asana sends its secret in a
+  // header with no body); a webhook source refuses it below, once the source is known.
+  const empty = request.rawBody.byteLength === 0;
+  const body = empty ? null : parseJsonObject(request.rawBody);
+  if (!empty && !body) return refuse(400, 'invalid_body', { message: 'the body must be a JSON object' });
 
   const sourceId = request.sourceId.toLowerCase();
   if (!isWebhookSourceId(sourceId)) return refuse(404, 'not_found');
   const target = await loadDeliveryTarget(deps.sql, sourceId, deps.encryptionKey ?? getDbEncryptionKey());
-  if (!target || target.status === 'disabled') return refuse(404, 'not_found');
+  if (!target) {
+    const pushed = deps.connectorPush
+      ? await deps.connectorPush(
+          { ...request, sourceId },
+          { sql: deps.sql, remoteAccessEnabled: deps.remoteAccessEnabled, encryptionKey: deps.encryptionKey, now: deps.now },
+        )
+      : null;
+    return pushed ?? refuse(404, 'not_found');
+  }
+  if (target.status === 'disabled') return refuse(404, 'not_found');
+  if (!body) return refuse(400, 'invalid_body', { message: 'the body must be a JSON object' });
 
   if (!(await deps.remoteAccessEnabled(target.workspaceId))) return refuse(403, 'remote_access_off');
 

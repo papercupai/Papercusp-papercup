@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "JNA native consumer preflight and scope recurrence guards",
+  "framework": "operational",
+  "command": ["make test-android-release-provenance"],
+  "workingDirectory": "papercup-rust-mobile",
+  "startedAt": "2026-10-03T10:48:47+00:00",
+  "finishedAt": "2026-10-03T10:49:43+00:00",
+  "timestampSource": "Filesystem birth time and last modification of the redirected final5 command log, UTC seconds; shell returned actual exitCode0.",
+  "exitCode": 0,
+  "summary": "Existing maintained suite passed on the exact listed source bytes. New guards cover the complete14 host-tool inventory, retained preflight failure and stale-result invalidation, configured stub JAR and JNI header/checksum population, NDK/sysroot rejection, actual GNU make/host-compiler link-flag isolation, and a real host ELF plus nine rejection controls. Original two failed Android native attempts were preserved. A third actual Android native build has not executed.",
+  "scope": "Local maintained source-consumer/host fixture verification and read-only retained configuration census only. No Android native dispatcher compilation/execution, original invocation, license election, complete rights/notices, candidate equivalence, recipient retrieval, provider/reviewer/current hosted CI/phone/Play acceptance.",
+  "sourceFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/build-scripts/android-release-provenance.sh",
+      "sha256": "2304a77b4dc3753a33710a38eb20d5a7992165050698a3293d93649f319bb488"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-release-provenance-test.sh",
+      "sha256": "dbe3b91a5bb9369401f74d1422cf0732b371244b6906f8a98ba17224363ba567"
+    },
+    {
+      "path": "papercup-rust-mobile/store/APP-STORE-REVIEW.md",
+      "sha256": "742174f4bfa108954fa9e1d63d875581da9903e55fb6b6b863f319205e3e6617"
+    }
+  ],
+  "sourceCommitVerification": "Verified all three listed source fingerprints against both current working bytes and Git HEAD blobs at mobile175d64894e6c643945dfeaf0a90a1f9eb012cfa2 after automatic git-sync. The mobile working tree is clean. Retained final5 log fingerprint matches. Prior mobile495d0f60 is historical, not the final tested source identity. No tests were replayed for this commit verification.",
+  "mobileSourceCommit": "175d64894e6c643945dfeaf0a90a1f9eb012cfa2",
+  "assertions": [
+    {
+      "id": "complete-host-prerequisite-population",
+      "passed": true,
+      "evidence": "Fourteen separate missing executable controls rejected before native make. Actual host preflight also passed including makeinfo7.1; missing/wrong NDK and JNI sysroot cases rejected."
+    },
+    {
+      "id": "failed-preflight-retention",
+      "passed": true,
+      "evidence": "Full jna-native consumer fixture rejected missing makeinfo, removed seeded stale success, retained unique preflight error result and preserved prior attempt bytes; no native make executed."
+    },
+    {
+      "id": "scoped-target-flags",
+      "passed": true,
+      "evidence": "Production command ran actual GNU make/host cc with spaced absolute paths. Configure linked an executable with no dispatcher LDFLAGS; recursive make received no dispatcher overrides. Removing both scope guards failed that same fixture."
+    },
+    {
+      "id": "configured-generated-inputs",
+      "passed": true,
+      "evidence": "Manifest-only stub valid control passed; wrong version/native payload rejected. JNI headers/checksum valid control passed; six omitted/extra/changed/error/version cases rejected. Read-only current retained four-ABI archives passed complete six-file headers and checksum/empty-error/stub checks; no Ant or native replay."
+    },
+    {
+      "id": "elf-validation",
+      "passed": true,
+      "evidence": "Real host shared ELF accepted correct class/machine/type,16KB LOAD alignment,JNI exports/version/checksum. Nine nonELF/class/machine/type/headers/alignment/version/checksum/export mutations rejected. This is a64bit host fixture, not actual Android ELF."
+    },
+    {
+      "id": "bounded-claim-and-preserved-attempts",
+      "passed": true,
+      "evidence": "Original raw failed receipts remain371cdd66e1f5ddad619a9a2b1fa3d025a63a6a65a8f4e41f70dc436368321538 and5be2561982d8c1c324c65305dcd5153b7900068543175b55881375a64a382fd7. Their compiler/linkflag and missingmakeinfo failures are historical failed attempts, never native success."
+    }
+  ],
+  "retainedLogs": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-jna-native-guards-20261003.log",
+      "sha256": "aec957ee054c185c2245f1c4ba065dae5ef1c720313f94d3a49a48f5ac783c58",
+      "size": 1383,
+      "startedAt": "2026-10-03T10:36:44+00:00",
+      "finishedAt": "2026-10-03T10:37:23+00:00",
+      "exitCode": 2,
+      "scope": "First new test fixture failed incorrect production-function count assertion; corrected."
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-jna-native-guards-final3-20261003.log",
+      "sha256": "62b0bdce76b71468ce9ff006ce24ab988aea7484afce6a8701f925c91f099117",
+      "size": 1655,
+      "startedAt": "2026-10-03T10:44:18+00:00",
+      "finishedAt": "2026-10-03T10:45:09+00:00",
+      "exitCode": 2,
+      "scope": "Full-consumer missing-tool fixture omitted cat from restricted PATH; corrected fixture prerequisite."
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-jna-native-guards-final5-20261003.log",
+      "sha256": "0e49ceaa27dd8de25400fbba7effddc4adaffc1c872acc25914c6fea140cae96",
+      "size": 1654,
+      "startedAt": "2026-10-03T10:48:47+00:00",
+      "finishedAt": "2026-10-03T10:49:43+00:00",
+      "exitCode": 0,
+      "scope": "Final maintained suite passed."
+    }
+  ],
+  "remaining": [
+    "Third actual ARM64 native consumer attempt and real Android ELF",
+    "Other native ABIs/execution and original release acceptance floors"
+  ],
+  "relatedWorkItems": [
+    "WI-10004774",
+    "EI-24952681648561133",
+    "EI-24952973275355154"
+  ]
+}

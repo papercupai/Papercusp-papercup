@@ -18,6 +18,9 @@ let deregCalls: string[];
 let dropSchemaCalls: string[];
 let teardownLoopCalls: string[];
 let membershipDropCalls: string[];
+let releaseRoutineCleanupCalls: Array<{ workspaceId: string; potSlug: string }>;
+let releaseRoutineCleanupThrows: boolean;
+let teardownOrder: string[];
 // P-021: when set, teardownPotLearningLoop throws — proving the dissolve still
 // succeeds (best-effort; a failure WARNS, never fails the dissolve).
 let teardownLoopThrows: boolean;
@@ -35,6 +38,9 @@ beforeEach(() => {
   dropSchemaCalls = [];
   teardownLoopCalls = [];
   membershipDropCalls = [];
+  releaseRoutineCleanupCalls = [];
+  releaseRoutineCleanupThrows = false;
+  teardownOrder = [];
   teardownLoopThrows = false;
   gateResult = { ok: true, tier: 'owner', reason: 'solo-unbound' };
   cups = [
@@ -72,7 +78,16 @@ beforeEach(() => {
   vi.doMock('../../harness-membership', () => ({
     removeHarnessFromWorkspace: async (_ws: string, slug: string) => {
       deregCalls.push(slug);
+      teardownOrder.push('deregister');
       return { changed: true };
+    },
+  }));
+  vi.doMock('../../harness/routines/seed-hive-release-routines', () => ({
+    teardownHiveReleaseRoutines: async (opts: { workspaceId: string; potSlug: string }) => {
+      releaseRoutineCleanupCalls.push(opts);
+      teardownOrder.push('release-routines');
+      if (releaseRoutineCleanupThrows) throw new Error('routine delete failed');
+      return { deleted: ['green-checkpoint', 'release-trigger'] };
     },
   }));
   // G24 (shared-hive-public-release-2026-06-22): dissolve's membership-teardown leg
@@ -112,6 +127,7 @@ afterEach(() => {
     '../../pot/wake',
     '../../scaffold-harness-schema',
     '../../harness-membership',
+    '../../harness/routines/seed-hive-release-routines',
     '../../hive-membership-store',
     '../../pot/provision-learning-loop',
     '../../fleet/operator-spawn',
@@ -132,6 +148,11 @@ describe('pot:dissolve', () => {
     expect((res.cancelledSpawns as string[]).sort()).toEqual(['s-cup-a', 's-cup-b']);
     expect(deregCalls).toEqual(['h']);
     expect(res.deregistered).toBe(true);
+    expect(releaseRoutineCleanupCalls).toHaveLength(1);
+    expect(releaseRoutineCleanupCalls[0]).toMatchObject({ workspaceId: 'default', potSlug: 'h' });
+    expect(res.releaseRoutinesTornDown).toBe(true);
+    expect(res.releaseRoutinesDeleted).toEqual(['green-checkpoint', 'release-trigger']);
+    expect(teardownOrder).toEqual(['release-routines', 'deregister']);
     // G24: the pot's membership rows are torn down (the leg dissolve invokes,
     // BEFORE deregister) and the dropped count is surfaced.
     expect(membershipDropCalls).toEqual(['h']);
@@ -162,6 +183,22 @@ describe('pot:dissolve', () => {
     expect(deregCalls).toEqual(['h']);
     // The failure is surfaced as a WARN, not swallowed silently.
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('learning-loop teardown for h failed'));
+    warn.mockRestore();
+  });
+
+  it('release-routine teardown failure WARNS but does NOT block deregistration', async () => {
+    releaseRoutineCleanupThrows = true;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const tool = (await import('./dissolve')).default as unknown as Tool;
+
+    const res = parse(await tool.handler({ slug: 'h', confirm: true, workspace: 'default' }, ROOT_CTX));
+
+    expect(res.ok).toBe(true);
+    expect(res.releaseRoutinesTornDown).toBe(false);
+    expect(res.releaseRoutinesError).toBe('routine delete failed');
+    expect(deregCalls).toEqual(['h']);
+    expect(teardownOrder).toEqual(['release-routines', 'deregister']);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('release-routine teardown for h failed'));
     warn.mockRestore();
   });
 

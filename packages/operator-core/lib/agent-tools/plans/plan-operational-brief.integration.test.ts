@@ -6,12 +6,16 @@
  * acceptance rubric) explicit rather than zero.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import plansGetTool from './get';
+import { PLAN_ITEM_KIND, planItemRef } from '../../issue-blocks-merge';
 import { cleanupPlans, seedPlan, setupPlanPgFixture, type PlanPgFixture } from './__tests__/_pg-tool-fixture';
 
 const RUN = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const HARNESS = `zzz-plan-brief-${RUN}`;
 const PLAN = `plan-operational-brief-${RUN}`;
+const ACCEPTANCE_PLAN = `plan-operational-brief-acceptance-${RUN}`;
+const ACCEPTANCE_RUBRIC = `${ACCEPTANCE_PLAN}-rubric`;
 
 const PLAN_CONTENT = `---
 title: Plan operational brief integration
@@ -75,11 +79,46 @@ const CTX = {
   progress: vi.fn(),
 } as never;
 
+// derived-status-not-hand-written-2026-10-12 P-001: the same plan with P-002
+// already done — `derivedStatus` must reflect the stored item state at read
+// time, never list a finished item as actionable.
+const DONE_PLAN = `plan-operational-brief-done-${RUN}`;
+const HOLDER = 'su-holder-fixture';
+const HELD_WORK_ITEM = `WI-brief-held-${RUN}`;
+const FREE_WORK_ITEM = `WI-brief-free-${RUN}`;
+
+// Blind review #14 G-1: the same plan with P-002 blocked by an OPEN engineer issue
+// (coord_links rel='blocks'). The returned items and derivedStatus must agree.
+const ISSUE_PLAN = `plan-operational-brief-issue-${RUN}`;
+const BLOCKING_ISSUE = `EI-brief-block-${RUN}`;
+// Blind review #14 G-2: a stored Now note written from content, so no now_updated
+// event exists for it. Its staleness is measured from its own writtenAt.
+const NOTE_PLAN = `plan-operational-brief-note-${RUN}`;
+const NOTE_WRITTEN_AT = '2026-10-12T10:00:00.000Z';
+
 type Field = { status: 'known'; value: unknown; source: string } | { status: 'unknown'; reason: string };
+type DerivedStatus = {
+  counts: Record<string, number>;
+  actionable: Array<{ id: string; heldBy: string[] }>;
+  blocked: Array<{ id: string; blockedOn: string[]; external: boolean }>;
+  holdersMeasured: boolean;
+  latestDecision: { id: string } | null;
+  next: { itemId: string | null; reason: string };
+  text: string;
+};
 type BriefResult = {
   items: Array<{ id: string; effectiveStatus: string; phase: string | null }>;
+  acceptanceRubric?: unknown;
+  lifecycle?: { verdict: string; acceptance?: { rubricActive: boolean; rubricRef: string | null } };
+  derivedStatus?: DerivedStatus;
+  now?: {
+    state?: string;
+    note?: { writtenAt: string; eventId: string | null; source: string };
+    staleness?: { noteWrittenAt: string | null; basis: string; transitionsSinceNote: number | null };
+  };
   operationalBrief?: {
     schemaVersion: string;
+    owner: Field;
     blockers: Field;
     lastVerified: Field;
     nextAction: Field;
@@ -98,10 +137,79 @@ beforeAll(async () => {
   process.env.PAPERCUSP_WORKSPACE_ID = fx.workspaceId;
   await seedPlan(fx.admin, fx.workspaceId, HARNESS, PLAN, PLAN_CONTENT);
   await seedPlan(fx.admin, fx.workspaceId, HARNESS, BLOCKED_PLAN, BLOCKED_PLAN_CONTENT);
+  await seedPlan(fx.admin, fx.workspaceId, HARNESS, ACCEPTANCE_PLAN, PLAN_CONTENT.replace(PLAN, ACCEPTANCE_PLAN));
+  await seedPlan(
+    fx.admin,
+    fx.workspaceId,
+    HARNESS,
+    DONE_PLAN,
+    PLAN_CONTENT.replace(PLAN, DONE_PLAN).replace('**P-002** `todo`', '**P-002** `done`'),
+  );
+  // Linked work items for PLAN: P-002 claimed by HOLDER, P-003 unclaimed.
+  for (const [id, itemId, takenBy, status] of [
+    [HELD_WORK_ITEM, 'P-002', HOLDER, 'wip'],
+    [FREE_WORK_ITEM, 'P-003', null, 'open'],
+  ] as const) {
+    await fx.admin`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, title, summary,
+         source_plan_slug, source_plan_item_ids, payload, taken_by, created_ts, updated_ts)
+      VALUES
+        (${fx.workspaceId}, ${HARNESS}, ${id}, 'feature', ${status}, ${`Fixture ${itemId}`}, 'Fixture.',
+         ${PLAN}, ARRAY[${itemId}]::text[],
+         ${JSON.stringify({ plan_item: { plan_slug: PLAN, item_id: itemId } })}::text::jsonb,
+         ${takenBy}, 1, 1)
+    `;
+  }
+  await fx.admin`
+    INSERT INTO harness_shared.harness_plans
+      (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status, created, updated,
+       owner, archived, template, template_data, template_slug, origin)
+    VALUES
+      (${fx.workspaceId}, ${HARNESS}, ${ACCEPTANCE_RUBRIC}, '', md5(${ACCEPTANCE_RUBRIC}), 1, ${ACCEPTANCE_RUBRIC},
+       'active', '2026-10-07', '2026-10-07', 'integration-fixture', false, 'rubric',
+       ${JSON.stringify({ kind: 'acceptance', subjectPlan: ACCEPTANCE_PLAN })}::text::jsonb, NULL, 'local')
+  `;
+  // G-1 fixture: an open bug blocks ISSUE_PLAN#P-002 through the issues:link edge shape.
+  await seedPlan(fx.admin, fx.workspaceId, HARNESS, ISSUE_PLAN, PLAN_CONTENT.replace(PLAN, ISSUE_PLAN));
+  await fx.admin`
+    INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, status, title, summary, created_ts, updated_ts)
+    VALUES
+      (${fx.workspaceId}, ${HARNESS}, ${BLOCKING_ISSUE}, 'bug', 'open', 'Fixture blocking issue', 'Fixture.', 1, 1)
+  `;
+  await fx.admin`
+    INSERT INTO harness_shared.coord_links (workspace_id, src_kind, src_ref, rel, dst_kind, dst_ref)
+    VALUES (${DEFAULT_COORD_WORKSPACE}, 'issue', ${BLOCKING_ISSUE}, 'blocks', ${PLAN_ITEM_KIND}, ${planItemRef(ISSUE_PLAN, 'P-002')})
+  `;
+  // G-2 fixture: a content-sourced stored note with no event id.
+  await seedPlan(fx.admin, fx.workspaceId, HARNESS, NOTE_PLAN, PLAN_CONTENT.replace(PLAN, NOTE_PLAN));
+  await fx.admin`
+    UPDATE harness_shared.harness_plans
+       SET now_note = ${JSON.stringify({
+         state: 'Stored note state.',
+         next: 'P-002.',
+         author: null,
+         writtenAt: NOTE_WRITTEN_AT,
+         eventId: null,
+         rationale: null,
+         source: 'content',
+       })}::text::jsonb
+     WHERE workspace_id = ${fx.workspaceId} AND harness_slug = ${HARNESS} AND plan_slug = ${NOTE_PLAN}
+  `;
 }, 60_000);
 
 afterAll(async () => {
-  if (fx) await cleanupPlans(fx.admin, fx.workspaceId, HARNESS).catch(() => {});
+  if (fx) {
+    await fx.admin`
+      DELETE FROM harness_shared.coord_links
+       WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND src_kind = 'issue' AND src_ref = ${BLOCKING_ISSUE}
+    `.catch(() => {});
+    await fx.admin`
+      DELETE FROM harness_shared.work_items WHERE workspace_id = ${fx.workspaceId} AND harness_slug = ${HARNESS}
+    `.catch(() => {});
+    await cleanupPlans(fx.admin, fx.workspaceId, HARNESS).catch(() => {});
+  }
   if (previousWorkspaceId === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
   else process.env.PAPERCUSP_WORKSPACE_ID = previousWorkspaceId;
   await fx?.dispose();
@@ -113,6 +221,39 @@ async function read(args: Record<string, unknown>, slug = PLAN): Promise<BriefRe
   };
   return out.data.results[0]!;
 }
+
+describe('plans:get derivedStatus (real PG) — derived-status-not-hand-written-2026-10-12 P-001', () => {
+  it('returns derivedStatus by default, computed from item state, with linked holders and the latest decision', async () => {
+    const ds = (await read({})).derivedStatus!;
+    expect(ds).toBeDefined();
+    expect(ds.counts).toMatchObject({ total: 3, done: 1, todo: 1, blocked: 1 });
+    expect(ds.actionable).toEqual([expect.objectContaining({ id: 'P-002', heldBy: [HOLDER] })]);
+    expect(ds.blocked.map((b) => [b.id, b.blockedOn, b.external])).toEqual([['P-003', ['P-002'], false]]);
+    expect(ds.holdersMeasured).toBe(true);
+    expect(ds.latestDecision?.id).toBe('D-001');
+    expect(ds.next).toMatchObject({ itemId: 'P-002', reason: 'actionable' });
+  });
+
+  it('CONTROL: with P-002 stored done, the next read lists P-003 actionable and never P-002', async () => {
+    const ds = (await read({}, DONE_PLAN)).derivedStatus!;
+    expect(ds.actionable.map((a) => a.id)).toEqual(['P-003']);
+    expect(ds.blocked).toEqual([]);
+    expect(ds.counts).toMatchObject({ done: 2, todo: 1 });
+  });
+
+  it('the operational brief names the next item’s holder from derivedStatus', async () => {
+    const brief = (await read({ operationalBrief: true })).operationalBrief!;
+    expect(brief.owner).toMatchObject({ status: 'known', value: HOLDER });
+  });
+
+  it('CONTROL: an unclaimed next item reports a measured owner of none, not the other plan’s holder', async () => {
+    const brief = (await read({ operationalBrief: true }, DONE_PLAN)).operationalBrief!;
+    // DONE_PLAN has no linked rows: holders were MEASURED (the enrichment ran) and
+    // P-003 has none, so the owner is a known null — "unclaimed" — not unknown.
+    expect(brief.owner.status).toBe('known');
+    expect(brief.owner).toMatchObject({ value: null });
+  });
+});
 
 describe('plans:get operationalBrief (real PG)', () => {
   it('omits the brief unless requested', async () => {
@@ -138,8 +279,16 @@ describe('plans:get operationalBrief (real PG)', () => {
     expect(brief.blockers).toMatchObject({ status: 'known', value: ['P-003 blocked by P-002'] });
     expect(brief.facts.authority).toMatchObject({ status: 'known', value: { decisionCount: 1 } });
     expect(brief.lastVerified.status).toBe('unknown');
-    expect(brief.facts.acceptance.status).toBe('unknown');
-    expect(brief.unknowns).toEqual(expect.arrayContaining(['lastVerified', 'facts.acceptance']));
+    expect(brief.facts.acceptance).toMatchObject({
+      status: 'known',
+      value: {
+        source: 'acceptanceRubric',
+        satisfied: null,
+        summary: 'no active acceptance rubric is attached; ship verdict not measured (pass shipReadiness:true)',
+      },
+      source: 'plans:get.lifecycle.acceptance',
+    });
+    expect(brief.unknowns).toEqual(expect.arrayContaining(['lastVerified']));
     expect(brief.text).toContain('next: Start P-002');
   });
 
@@ -161,6 +310,58 @@ describe('plans:get operationalBrief (real PG)', () => {
     expect(brief.blockers).toMatchObject({
       status: 'known',
       value: expect.arrayContaining(['P-001 explicitly blocked']),
+    });
+  });
+
+  it('keeps acceptance state aligned when meta mode omits rubric details', async () => {
+    const result = await read({ mode: 'meta', operationalBrief: true }, ACCEPTANCE_PLAN);
+    const brief = result.operationalBrief!;
+
+    expect(result.acceptanceRubric).toBeUndefined();
+    expect(result.lifecycle?.acceptance).toEqual({ rubricActive: true, rubricRef: ACCEPTANCE_RUBRIC });
+    expect(brief.facts.acceptance).toMatchObject({
+      status: 'known',
+      value: {
+        source: 'acceptanceRubric',
+        satisfied: null,
+        summary: `active acceptance rubric ${ACCEPTANCE_RUBRIC} is attached; criteria details were not included in this read`,
+      },
+      source: 'plans:get.lifecycle.acceptance',
+    });
+  });
+});
+
+describe('plans:get wiring for blind review #14 (real PG) — derived-status-not-hand-written-2026-10-12 P-016', () => {
+  it('G-1: an open-issue block on P-002 reaches derivedStatus, so the summary and next pointer agree with the returned items', async () => {
+    const result = await read({}, ISSUE_PLAN);
+    const ds = result.derivedStatus!;
+    // The returned items carry the issue overlay ...
+    expect(result.items.find((item) => item.id === 'P-002')?.effectiveStatus).toBe('blocked');
+    // ... and the derived summary must say the same thing, not re-derive P-002 as actionable.
+    expect(ds.actionable.map((a) => a.id)).not.toContain('P-002');
+    expect(ds.blocked.find((b) => b.id === 'P-002')).toEqual(
+      expect.objectContaining({ blockedOn: [BLOCKING_ISSUE], external: true }),
+    );
+    expect(ds.next.itemId === 'P-002' && ds.next.reason === 'actionable').toBe(false);
+    expect(ds.text).not.toMatch(/next:\s*(start\s+)?P-002\b/i);
+  });
+
+  it('CONTROL G-1: the same graph without the issue edge keeps P-002 actionable', async () => {
+    const ds = (await read({})).derivedStatus!;
+    expect(ds.actionable.map((a) => a.id)).toContain('P-002');
+    expect(ds.blocked.find((b) => b.id === 'P-002')).toBeUndefined();
+  });
+
+  it('G-2: a stored note with no now_updated event is exposed with its identity and aged from its own writtenAt', async () => {
+    const result = await read({}, NOTE_PLAN);
+    expect(result.now?.state).toContain('Stored note state.');
+    expect(result.now?.note).toEqual({ writtenAt: NOTE_WRITTEN_AT, eventId: null, source: 'content' });
+    // Before the fix the baseline was the latest now_updated event, which does not exist
+    // for a content-written note, so staleness read basis 'note-not-in-event-log'.
+    expect(result.now?.staleness).toMatchObject({
+      noteWrittenAt: NOTE_WRITTEN_AT,
+      basis: 'events-after-note',
+      transitionsSinceNote: 0,
     });
   });
 });

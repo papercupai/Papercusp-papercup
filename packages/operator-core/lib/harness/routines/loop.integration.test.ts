@@ -9,7 +9,7 @@
  *
  * Plan: loop-routines-interval-recurrence-2026-06-20 (B-LOOP-5).
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { SESSION_END_MARKER } from '../../agent-tools/activity/lifecycle-markers';
@@ -18,11 +18,15 @@ import {
   getLoopStatus,
   readActiveLoopFacts,
   deactivateLoop,
+  reviveDisarmedLoop,
+  LOOP_END_PAUSE_PREFIX,
   transferLoopOwnership,
   loopRoutineName,
   autoArmFleetMemberLoop,
   countAgentToolCallsInWindow,
   LOOP_WAKE_ACTION,
+  routeStalledLoopToHostRecovery,
+  retainStalledLoopRecoveryWall,
 } from './loop';
 import {
   decideMonitorAdmission,
@@ -32,6 +36,14 @@ import {
   readMonitorOwnerTurnEvidence,
 } from './monitor-policy';
 import { persistMonitorNoDeltaBudget, standDownMonitorLoop } from './monitor-standdown';
+import { classifyLoopNextWake } from '../../agent-tools/loop/next-wake';
+
+// Alarm resolution has its own rail tests. Keep this real-PG loop suite bound to
+// its throwaway org fixture instead of resolving against the process-wide condition stream.
+vi.mock('../../alarm-attention', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../alarm-attention')>()),
+  resolveAlarm: vi.fn(async () => true),
+}));
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -74,6 +86,44 @@ async function rawRow(ownerId: string) {
   `;
   return rows[0] ?? null;
 }
+
+describe('stalled host recovery ownership (real PG)', () => {
+  async function seed() {
+    await materializeLoop({ workspaceId: WS, harnessSlug: HARNESS, ownerId: OWNER,
+      intervalSec: 120, kickoff: 'retained goal', carry: 'warm', sql });
+    const [row] = await sql<Array<{ id: string; next_fire_at: Date; payload_template: Record<string, unknown> }>>`
+      SELECT id, next_fire_at, payload_template FROM harness_shared.routines WHERE target_owner_id = ${OWNER}`;
+    return row;
+  }
+  it('concurrent reservations cannot overspend and do not start an ordinary fire before the carry ACK', async () => {
+    const row = await seed();
+    const results = await Promise.all(Array.from({ length: 5 }, () => routeStalledLoopToHostRecovery(
+      sql, row.id, 'binding recovery', 'unbound-successor', { max: 2, deferFire: true })));
+    expect(results.filter(result => result.routed)).toHaveLength(2);
+    const [current] = await sql<Array<{ count: number; next_fire_at: Date; payload_template: Record<string, unknown> }>>`
+      SELECT (metadata->'stalled_host_recovery'->>'count')::int AS count, next_fire_at, payload_template
+        FROM harness_shared.routines WHERE id = ${row.id}`;
+    expect(current.count).toBe(2);
+    expect(current.next_fire_at).toEqual(row.next_fire_at);
+    expect(current.payload_template).toEqual(row.payload_template);
+  });
+  it('retains one owned wall without sliding its retry or undoing loop:end', async () => {
+    const row = await seed();
+    const wall = { ownerId: OWNER, condition: 'unbound-successor', reason: 'carry refused', remedy: 'preserve the original route' };
+    expect(await retainStalledLoopRecoveryWall(sql, row.id, wall)).toEqual({ retained: true, changed: true });
+    const [first] = await sql<Array<{ active: boolean; next_fire_at: Date; metadata: Record<string, any> }>>`
+      SELECT active, next_fire_at, metadata FROM harness_shared.routines WHERE id = ${row.id}`;
+    expect(first.active).toBe(true);
+    expect(first.metadata.stalled_host_recovery.wall).toMatchObject({ ...wall, responsible: 'stalled-loops-guard' });
+    expect(await retainStalledLoopRecoveryWall(sql, row.id, wall)).toEqual({ retained: true, changed: false });
+    const [second] = await sql<Array<{ next_fire_at: Date }>>`SELECT next_fire_at FROM harness_shared.routines WHERE id = ${row.id}`;
+    expect(second.next_fire_at).toEqual(first.next_fire_at);
+    await deactivateLoop(OWNER, { sql });
+    expect(await retainStalledLoopRecoveryWall(sql, row.id, wall)).toEqual({ retained: false, changed: false });
+    expect(await routeStalledLoopToHostRecovery(sql, row.id, 'stale retry', wall.condition)).toEqual({ routed: false });
+    expect((await rawRow(OWNER))?.active).toBe(false);
+  });
+});
 
 describe('loop surface round-trip (real PG)', () => {
   it('materializeLoop writes a PURE loop row the B-LOOP-3 fire consumes', async () => {
@@ -554,6 +604,200 @@ describe('loop surface round-trip (real PG)', () => {
     expect(recovered!.turnsStalled).toBe(false);
   });
 
+  it('EI-24933871787030971: preserves a late fire completion across a later arm', async () => {
+    await sql`TRUNCATE harness_shared.session_turns CASCADE`;
+    await sql`TRUNCATE harness_shared.session_turn_journal`;
+    await sql`DELETE FROM harness_shared.agent_activity WHERE owner_id = ${OWNER}`;
+    await sql`DELETE FROM harness_shared.autoloop_state WHERE workspace_id = ${WS} AND role = ${loopRoutineName(OWNER)}`;
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'k',
+      sql,
+    });
+
+    const lastFired = new Date(Date.now() - 5 * 60_000);
+    const loopPrompt = new Date(lastFired.getTime() + 10_000);
+    const loopAssistant = new Date(lastFired.getTime() + 30_000);
+    const rearmedAt = new Date(lastFired.getTime() + 60_000);
+    await sql`
+      UPDATE harness_shared.routines
+         SET last_fired_at = ${lastFired.toISOString()}::timestamptz,
+             metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+               'fire_count', ${1}::int,
+               'armed_at', ${rearmedAt.toISOString()}::text
+             )
+       WHERE name = ${loopRoutineName(OWNER)}
+    `;
+    await sql`
+      INSERT INTO harness_shared.autoloop_state
+        (workspace_id, harness_slug, role, last_fired_at, last_status, consecutive_errors)
+      VALUES
+        (${WS}, ${HARNESS}, ${loopRoutineName(OWNER)}, ${lastFired.toISOString()}::timestamptz,
+         'loop-delivered-wake-no-loop-turn', 1)
+    `;
+    await sql`
+      INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, harness_slug, speaker, text,
+         turn_origin, turn_origin_verdict, turn_origin_classifier_version)
+      VALUES
+        (${WS}, 'claude', 'late-loop-session', 0, ${loopPrompt.toISOString()}::timestamptz,
+         ${OWNER}, ${HARNESS}, 'user', '⟦turn-origin:loop-fire nonce:fedcba9876543210⟧ wake',
+         'loop-fire', 'agent-injected', 1),
+        (${WS}, 'claude', 'late-loop-session', 1, ${loopAssistant.toISOString()}::timestamptz,
+         ${OWNER}, ${HARNESS}, 'assistant', 'late loop turn completed', NULL, 'not-user-turn', 1)
+    `;
+
+    const status = await getLoopStatus(OWNER, { sql });
+    expect(status!.lastDeliveryOutcome).toBe('loop-delivered-wake-no-loop-turn');
+    // The arm-scoped turn clock deliberately stays empty after re-arm; only the separate
+    // last-fire proof may recover the false historical no-turn verdict.
+    expect(status!.lastLoopTurnAt).toBeNull();
+    expect(status!.lastFailedFireLoopTurnCompletedAt).toBe(loopAssistant.toISOString());
+  });
+
+  it.each(['suppressed-redundant', 'coalesced', 'inbox'])('reports %s loop completion after a later re-arm', async (channel) => {
+    await sql`TRUNCATE harness_shared.session_turns CASCADE`;
+    await sql`TRUNCATE harness_shared.session_turn_journal`;
+    await sql`DELETE FROM harness_shared.agent_activity WHERE owner_id = ${OWNER}`;
+    await sql`DELETE FROM harness_shared.autoloop_state WHERE workspace_id = ${WS} AND role = ${loopRoutineName(OWNER)}`;
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'k',
+      sql,
+    });
+
+    const routine = await sql<Array<{ id: number }>>`
+      SELECT id FROM harness_shared.routines WHERE name = ${loopRoutineName(OWNER)}
+    `;
+    const routineId = routine[0]!.id;
+    const now = Date.now();
+    const wakeCreated = new Date(now - 16 * 60_000);
+    const lastFired = new Date(wakeCreated.getTime() + 5_000);
+    const loopPrompt = new Date(wakeCreated.getTime() + 10_000);
+    const loopAssistant = new Date(wakeCreated.getTime() + 30_000);
+    const rearmedAt = new Date(wakeCreated.getTime() + 60_000);
+    const deliveredAt = new Date(now - 60_000);
+
+    await sql`
+      UPDATE harness_shared.routines
+         SET last_fired_at = ${lastFired.toISOString()}::timestamptz,
+             next_fire_at = 'infinity'::timestamptz,
+             metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+               'fire_count', 1,
+               'armed_at', ${rearmedAt.toISOString()}::text
+             )
+       WHERE id = ${routineId}
+    `;
+    const awaitRow = await sql<Array<{ id: number }>>`
+      INSERT INTO harness_shared.event_awaits (workspace_id, subscriber_id, event_key)
+      VALUES (${WS}, ${OWNER}, 'loop-recovery-test')
+      RETURNING id
+    `;
+    await sql`
+      INSERT INTO harness_shared.event_wake_deliveries
+        (workspace_id, await_id, subscriber_id, event_key, source, status, channel, created_at, delivered_at)
+      VALUES
+        (${WS}, ${awaitRow[0]!.id}, ${OWNER}, 'loop-recovery-test', ${'loop:' + routineId},
+         'delivered', ${channel}, ${wakeCreated.toISOString()}::timestamptz,
+         ${deliveredAt.toISOString()}::timestamptz)
+    `;
+    await sql`
+      INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, harness_slug, speaker, text,
+         turn_origin, turn_origin_verdict, turn_origin_classifier_version)
+      VALUES
+        (${WS}, 'claude', 'suppressed-loop-session', 0, ${loopPrompt.toISOString()}::timestamptz,
+         ${OWNER}, ${HARNESS}, 'user', 'loop wake', 'loop-fire', 'agent-injected', 1),
+        (${WS}, 'claude', 'suppressed-loop-session', 1, ${loopAssistant.toISOString()}::timestamptz,
+         ${OWNER}, ${HARNESS}, 'assistant', 'loop turn completed', NULL, 'not-user-turn', 1)
+    `;
+
+    const status = await getLoopStatus(OWNER, { sql });
+    expect(status!.lastLoopTurnAt).toBeNull(); // current-arm clock remains intentionally scoped
+    expect(status!.lastSuppressedWakeLoopTurnAt).toBe(loopAssistant.toISOString());
+    // The status reader's dispatch-scoped proof must agree with the classifier used by
+    // loop:status and loop:checkpoint, even though the current-arm turn clock is empty.
+    expect(classifyLoopNextWake(status!, now)).toEqual({ guaranteed: true, reason: null });
+  });
+
+  it('does not use an already-running loop turn as proof for a later suppressed wake', async () => {
+    await sql`TRUNCATE harness_shared.session_turns CASCADE`;
+    await sql`TRUNCATE harness_shared.session_turn_journal`;
+    await sql`DELETE FROM harness_shared.agent_activity WHERE owner_id = ${OWNER}`;
+    await sql`DELETE FROM harness_shared.autoloop_state WHERE workspace_id = ${WS} AND role = ${loopRoutineName(OWNER)}`;
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'k',
+      sql,
+    });
+
+    const routine = await sql<Array<{ id: number }>>`
+      SELECT id FROM harness_shared.routines WHERE name = ${loopRoutineName(OWNER)}
+    `;
+    const routineId = routine[0]!.id;
+    const now = Date.now();
+    const wakeCreated = new Date(now - 16 * 60_000);
+    const lastFired = new Date(wakeCreated.getTime() - 1_000);
+    const loopPrompt = new Date(wakeCreated.getTime() - 60_000);
+    const loopAssistant = new Date(wakeCreated.getTime() + 1_000);
+    const deliveredAt = new Date(wakeCreated.getTime() + 10_000);
+    const armedAt = new Date(loopPrompt.getTime() - 60_000);
+
+    await sql`
+      UPDATE harness_shared.routines
+         SET last_fired_at = ${lastFired.toISOString()}::timestamptz,
+             next_fire_at = 'infinity'::timestamptz,
+             metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+               'fire_count', 1,
+               'armed_at', ${armedAt.toISOString()}::text
+             )
+       WHERE id = ${routineId}
+    `;
+    const awaitRow = await sql<Array<{ id: number }>>`
+      INSERT INTO harness_shared.event_awaits (workspace_id, subscriber_id, event_key)
+      VALUES (${WS}, ${OWNER}, 'loop-preexisting-turn-test')
+      RETURNING id
+    `;
+    await sql`
+      INSERT INTO harness_shared.event_wake_deliveries
+        (workspace_id, await_id, subscriber_id, event_key, source, status, channel, created_at, delivered_at)
+      VALUES
+        (${WS}, ${awaitRow[0]!.id}, ${OWNER}, 'loop-preexisting-turn-test', ${'loop:' + routineId},
+         'delivered', 'suppressed-redundant', ${wakeCreated.toISOString()}::timestamptz,
+         ${deliveredAt.toISOString()}::timestamptz)
+    `;
+    await sql`
+      INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, harness_slug, speaker, text,
+         turn_origin, turn_origin_verdict, turn_origin_classifier_version)
+      VALUES
+        (${WS}, 'codex', 'preexisting-loop-session', 0, ${loopPrompt.toISOString()}::timestamptz,
+         ${OWNER}, ${HARNESS}, 'user', 'loop wake', 'loop-fire', 'agent-injected', 1),
+        (${WS}, 'codex', 'preexisting-loop-session', 1, ${loopAssistant.toISOString()}::timestamptz,
+         ${OWNER}, ${HARNESS}, 'assistant', 'pre-existing loop turn completed', NULL, 'not-user-turn', 1)
+    `;
+
+    const status = await getLoopStatus(OWNER, { sql });
+    expect(status!.lastWakeChannel).toBe('suppressed-redundant');
+    expect(status!.lastLoopTurnAt).toBe(loopAssistant.toISOString());
+    // The assistant completes after wake creation, but its authored prompt predates
+    // the delivery; it cannot prove this suppressed wake dispatched a new loop turn.
+    expect(status!.lastSuppressedWakeLoopTurnAt).toBeNull();
+    expect(classifyLoopNextWake(status!, now)).toEqual({
+      guaranteed: false,
+      reason: 'last-fire-no-loop-turn',
+    });
+  });
+
   it('getLoopStatus surfaces carry:"cold" for a cold-armed loop (su-cold-auto P-008 observability)', async () => {
     await materializeLoop({
       workspaceId: WS,
@@ -973,6 +1217,63 @@ describe('loop surface round-trip (real PG)', () => {
     expect(await deactivateLoop('su-nobody', { sql })).toBe(false);
   });
 
+  it('a stale stalled-loop revival cannot undo loop:end after the candidate read', async () => {
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'k',
+      sql,
+    });
+
+    const candidatePauseAtMs = Date.parse('2026-06-20T00:00:00.000Z');
+    const candidatePauseReason = 'stalled-loops-guard (WI-6639): turns-stalled: candidate';
+    await sql`
+      UPDATE harness_shared.routines
+         SET active = FALSE,
+             metadata = COALESCE(metadata, '{}'::jsonb)
+                      || jsonb_build_object(
+                           'loop_paused_reason', ${candidatePauseReason}::text,
+                           'pause', jsonb_build_object(
+                             'reason', ${candidatePauseReason}::text,
+                             'pausedAtMs', ${candidatePauseAtMs}::bigint
+                           )
+                         )
+       WHERE name = ${loopRoutineName(OWNER)}
+    `;
+    const [candidateRow] = await sql<Array<{ id: string }>>`
+      SELECT id
+        FROM harness_shared.routines
+       WHERE name = ${loopRoutineName(OWNER)}
+    `;
+    expect(candidateRow).toBeDefined();
+
+    // The guard already read this candidate. The owner ends the inactive loop while the guard
+    // is checking activity; the old candidate must no longer authorize a later revival write.
+    expect(await deactivateLoop(OWNER, { sql, reason: 'explicitly ended during the sweep' })).toBe(false);
+    const revived = await reviveDisarmedLoop(
+      sql,
+      candidateRow!.id,
+      { pausedAtMs: candidatePauseAtMs, pauseReason: candidatePauseReason },
+      'owner activity passed the liveness veto',
+    );
+    expect(revived).toBe(false);
+
+    const [after] = await sql<Array<{ active: boolean; pause_reason: string; paused_at_ms: string }>>`
+      SELECT active,
+             metadata->>'loop_paused_reason' AS pause_reason,
+             metadata->'pause'->>'pausedAtMs' AS paused_at_ms
+        FROM harness_shared.routines
+       WHERE id = ${candidateRow!.id}
+    `;
+    expect(after).toMatchObject({
+      active: false,
+      pause_reason: `${LOOP_END_PAUSE_PREFIX} explicitly ended during the sweep`,
+    });
+    expect(Number(after!.paused_at_ms)).not.toBe(candidatePauseAtMs);
+  });
+
   it('EI-22379628359419691: loop:end disarms only the loop and preserves independent fleet watches', async () => {
     const fleet = { kind: 'fleet-leadership', ref: 'fleet-alpha' };
     const other = { kind: 'work-item-claim', ref: 'WI-1' };
@@ -1008,16 +1309,18 @@ describe('loop surface round-trip (real PG)', () => {
       { event_key: 'fleet:member-dead:fleet-alpha', cancelled_at: null },
       { event_key: 'work-item:claim:WI-1', cancelled_at: null },
     ]);
-    expect(
-      await sql<{ event_key: string; active: boolean }[]>`
-        SELECT event_key, active
-          FROM harness_shared.predicate_watches
-         WHERE owner_id = ${OWNER}
-         ORDER BY event_key`,
-    ).toEqual([
-      { event_key: 'predicate:fleet-alpha', active: true },
-      { event_key: 'predicate:WI-1', active: true },
-    ]);
+    const watches = await sql<{ event_key: string; active: boolean }[]>`
+      SELECT event_key, active
+        FROM harness_shared.predicate_watches
+       WHERE owner_id = ${OWNER}
+       ORDER BY event_key`;
+    expect(watches).toHaveLength(2);
+    expect(watches).toEqual(
+      expect.arrayContaining([
+        { event_key: 'predicate:fleet-alpha', active: true },
+        { event_key: 'predicate:WI-1', active: true },
+      ]),
+    );
 
     // Re-seed a fleet watch after the row is inactive: a repeated loop:end remains
     // a no-op for the loop and must not take ownership of independent watch cleanup.
@@ -1362,10 +1665,56 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001, re
     expect((await getLoopStatus(OTHER, { sql }))!.goal).toBe(expectedGoal);
   });
 
+  it('keeps an exhausted member monitor inactive without changing its persisted row', async () => {
+    const exhaustedOwner = 'su-fleet-member-exhausted-monitor-test';
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: exhaustedOwner,
+      intervalSec: 1200,
+      kickoff: 'exhausted bounded member monitor',
+      mode: 'monitor',
+      monitor: {
+        predicateKey: 'owned-member-predicate',
+        stopCondition: 'owned operation completes',
+        noDeltaBudget: 100,
+        remainingNoDeltaBudget: 0,
+        authority: { kind: 'work-item', workItem: 'WI-12345' },
+      },
+      active: false,
+      sql,
+    });
+    const before = await rawRow(exhaustedOwner);
+
+    const result = await autoArmFleetMemberLoop({
+      workspaceId: WS,
+      ownerId: exhaustedOwner,
+      harnessSlug: HARNESS,
+      planSlug: PLAN_SLUG,
+      fleetSlug: FLEET_SLUG,
+      fleetRole: 'member',
+      sql,
+    });
+
+    expect(result).toEqual({ armed: false, reason: 'no-delta-budget-exhausted', loopName: loopRoutineName(exhaustedOwner) });
+    expect(await rawRow(exhaustedOwner)).toEqual(before);
+    expect(await getLoopStatus(exhaustedOwner, { sql })).toMatchObject({
+      active: false,
+      monitor: { remainingNoDeltaBudget: 0 },
+    });
+  });
+
   it('EI-21206138277595747: inactive recovery preserves an explicit cadence and lifecycle payload', async () => {
     const OTHER = 'su-fleet-member-inactive-config-test';
     const priorGoal = 'continue the monitor at the widened fallback cadence';
     const priorKickoff = '⏸ BACKOFF PREMISE — re-check the release gate before proceeding';
+    const priorMonitor = {
+      predicateKey: 'owned-member-predicate',
+      stopCondition: 'owned operation completes',
+      noDeltaBudget: 100,
+      remainingNoDeltaBudget: 73,
+      authority: { kind: 'work-item' as const, workItem: 'WI-12345' },
+    };
 
     await materializeLoop({
       workspaceId: WS,
@@ -1378,6 +1727,7 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001, re
       carry: 'cold',
       continuation: 'gated',
       mode: 'monitor',
+      monitor: priorMonitor,
       sql,
     });
     await deactivateLoop(OTHER, { sql });
@@ -1389,6 +1739,7 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001, re
       continuation: 'gated',
       mode: 'monitor',
       goal: priorGoal,
+      monitor: priorMonitor,
     });
 
     const res = await autoArmFleetMemberLoop({
@@ -1417,6 +1768,7 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001, re
       carry: 'cold',
       continuation: 'gated',
       mode: 'monitor',
+      monitor: priorMonitor,
     });
   });
 });

@@ -45,8 +45,21 @@ describe('provider-neutral transfer learning LLMs', () => {
       inputTokens: 3,
       outputTokens: 2,
       replayed: true,
+      execution: { model: LEARNING_MODEL_SPEC, codeHash: null,
+        loadedCode: { student: expect.stringMatching(/^[a-f0-9]{16}$/) },
+        unresolved: ['student-transport-completeness'] },
     });
     expect(TRANSFER_STUDENT_MODEL).toBe(LEARNING_MODEL_SPEC);
     expect(call).toHaveBeenCalledWith(expect.objectContaining({ model: LEARNING_MODEL_SPEC, maxTokens: 2_048 }));
+  });
+
+  it('forwards the actual transport receipt while retaining incomplete execution coverage', async () => {
+    const runner = learningStudentRunner({ llmCall: async () => ({ ...result,
+      execution: { model: 'wire-student', codeHash: null,
+        loadedCode: { client: 'loaded-client' }, unresolved: ['remote-gateway'] } }) });
+    const output = await runner({ systemPrompt: 'system', contextText: 'context' } as never);
+    expect(output.execution).toMatchObject({ model: 'wire-student', codeHash: null,
+      loadedCode: { client: 'loaded-client', student: expect.stringMatching(/^[a-f0-9]{16}$/) },
+      unresolved: ['remote-gateway'] });
   });
 });

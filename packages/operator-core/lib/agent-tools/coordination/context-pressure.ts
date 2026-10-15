@@ -154,8 +154,8 @@ export async function resolveContextPressureRecoveryPath(
   workspaceId?: string | null,
 ): Promise<ContextPressureRecoveryResolution> {
   try {
-    const { selfCompactionAvailability } = await import('../../events/await/psu-pty-discovery');
-    const availability = selfCompactionAvailability(ownerId);
+    const { selfCompactionAvailabilityAsync } = await import('../../events/await/psu-pty-discovery');
+    const availability = await selfCompactionAvailabilityAsync(ownerId);
     if (availability.available || availability.reason === 'host_predates_carry_respawn') {
       return deriveContextPressureRecoveryPath({ selfCompaction: availability });
     }
@@ -302,6 +302,30 @@ export async function readContextTokens(ownerId: string): Promise<number | null>
      LIMIT 1
   `;
   return rows[0]?.context_tokens ?? null;
+}
+
+/**
+ * IO seam (WI-10004888): bucket an ARBITRARY transcript's token estimate against
+ * ONE owner's soft compaction limit, with the same bands as the owner-level read.
+ *
+ * The owner-level reads above measure the owner's CURRENT native session. A
+ * consult fork replays an evidence-selected session instead, which can be an
+ * older, larger pre-carry-respawn transcript, so the fork gate needs to bucket
+ * the transcript it will actually replay. Null when the owner has no recorded
+ * limit. Throws on a read failure; callers own their fail-soft.
+ */
+export async function bucketTokensAgainstOwnerLimit(
+  ownerId: string,
+  tokens: number,
+): Promise<ContextPressureBucket | null> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ compaction_limit: number | null }[]>`
+    SELECT compaction_limit
+      FROM harness_shared.coord_presence
+     WHERE owner_id = ${ownerId}
+     LIMIT 1
+  `;
+  return deriveContextPressure(tokens, rows[0]?.compaction_limit ?? null);
 }
 
 /**

@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-5 live: all four Papercusp/* Cupboard mirrors protect main with cupboard-verify required and the latest cupboard-verify run on main green",
+  "framework": "operational",
+  "command": [
+    "gh",
+    "api",
+    "repos/Papercusp/<recipes|goals|plans|templates>/branches/main/protection",
+    "--jq",
+    "{allow_deletions,allow_force_pushes,enforce_admins,linear,required_status_checks,strict}; then gh run list -R Papercusp/<repo> --branch main --workflow cupboard-verify --limit 1"
+  ],
+  "startedAt": "2026-10-01T14:59:00.000Z",
+  "finishedAt": "2026-10-01T14:59:59.000Z",
+  "exitCode": 0,
+  "summary": "Measured live over the GitHub API at ~14:59Z (the start/finish timestamps are the minute window of the read, not per-call stamps): on all four mirrors main is protected, cupboard-verify is a required status check (strict), force-push and deletion are disallowed, linear history is required, enforce_admins is on, and the latest cupboard-verify run on main concluded success. No R-5 BROKEN-if marker holds. Point-in-time read; says nothing about the Worker or the GitHub App (WI-10004856).",
+  "assertions": [
+    { "id": "r5-main-protected-on-all-four-mirrors", "passed": true, "evidence": "gh api .../branches/main/protection returned a protection object (not 403/404) for Papercusp/recipes, goals, plans and templates; see mirrors.<repo>.protection in this file." },
+    { "id": "r5-cupboard-verify-required-check", "passed": true, "evidence": "required_status_checks == [\"cupboard-verify\"] with strict:true on all four mirrors." },
+    { "id": "r5-force-push-and-deletion-disallowed", "passed": true, "evidence": "allow_force_pushes:false and allow_deletions:false on all four mirrors." },
+    { "id": "r5-linear-history-and-enforce-admins", "passed": true, "evidence": "linear:true and enforce_admins:true on all four mirrors." },
+    { "id": "r5-latest-cupboard-verify-run-on-main-success", "passed": true, "evidence": "gh run list --branch main --workflow cupboard-verify --limit 1: conclusion success, status completed on all four (recipes 2026-09-29T23:32:22Z, goals 2026-09-19T10:03:50Z, plans 2026-09-29T23:32:25Z, templates 2026-09-19T10:07:12Z); headShas in mirrors.<repo>.latestCupboardVerifyRunOnMain." }
+  ],
+  "plan": "cupboard-release-pipeline-content-trust-2026-09-16",
+  "bar": "R-5",
+  "evidencePlane": "live",
+  "measuredAtUtc": "2026-10-01T14:59Z",
+  "measuredBy": "su-dd32ef9d-2329-4f7b-9cfd-a5f685c1062a (fleet leader, WI-10004858)",
+  "instrument": "gh api repos/Papercusp/<repo>/branches/main/protection --jq (read-only) + gh run list -R Papercusp/<repo> --branch main --workflow cupboard-verify --limit 1; authenticated as GitHub account papercupai",
+  "falsifierBasis": "R-5 BROKEN-if any holds for any of the four mirrors: (1) main has no branch protection; (2) cupboard-verify is not among the required status checks; (3) force pushes or branch deletions are allowed; (4) linear history is not required; (5) the latest cupboard-verify run on main is not a success. A read that fails (403/404) is unknown, never healthy.",
+  "mirrors": {
+    "Papercusp/recipes": {
+      "protection": { "allow_deletions": false, "allow_force_pushes": false, "enforce_admins": true, "linear": true, "required_status_checks": ["cupboard-verify"], "strict": true },
+      "latestCupboardVerifyRunOnMain": { "conclusion": "success", "status": "completed", "headSha": "596139754bb1fa7ec8d26128de8cba88aaddb063", "createdAt": "2026-09-29T23:32:22Z" }
+    },
+    "Papercusp/goals": {
+      "protection": { "allow_deletions": false, "allow_force_pushes": false, "enforce_admins": true, "linear": true, "required_status_checks": ["cupboard-verify"], "strict": true },
+      "latestCupboardVerifyRunOnMain": { "conclusion": "success", "status": "completed", "headSha": "ce6b45a9189b5f15c1e6bf750247567d35d981fa", "createdAt": "2026-09-19T10:03:50Z" }
+    },
+    "Papercusp/plans": {
+      "protection": { "allow_deletions": false, "allow_force_pushes": false, "enforce_admins": true, "linear": true, "required_status_checks": ["cupboard-verify"], "strict": true },
+      "latestCupboardVerifyRunOnMain": { "conclusion": "success", "status": "completed", "headSha": "6d6716c3f6f60ca4303a2463a8be73ef5ef1b823", "createdAt": "2026-09-29T23:32:25Z" }
+    },
+    "Papercusp/templates": {
+      "protection": { "allow_deletions": false, "allow_force_pushes": false, "enforce_admins": true, "linear": true, "required_status_checks": ["cupboard-verify"], "strict": true },
+      "latestCupboardVerifyRunOnMain": { "conclusion": "success", "status": "completed", "headSha": "76a9a38c2ec8fa452e17c9c3a19ef7ccb35825df", "createdAt": "2026-09-19T10:07:12Z" }
+    }
+  },
+  "verdict": "no BROKEN-if marker holds on any of the four mirrors at measurement time: protection present, cupboard-verify required, force-push and deletion disallowed, linear history required, latest cupboard-verify run on main is success",
+  "limits": "A point-in-time read. It does not prove the protection survives later repo-settings edits, and it says nothing about the operator-public Worker or the GitHub App (WI-10004856)."
+}

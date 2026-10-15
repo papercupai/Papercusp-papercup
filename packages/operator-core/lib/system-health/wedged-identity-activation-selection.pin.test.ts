@@ -50,8 +50,7 @@ describe('wedged-identity sweep selects the kernel’s launch record', () => {
   it('extracts a real ORDER BY from the kernel source', () => {
     const order = kernelSelectionOrder(source);
     expect(order).toBeTruthy();
-    expect(order).toContain('started_at');
-    expect(order).toContain('ended_at');
+    expect(order).toBe('s.id DESC');
   });
 
   it('uses byte-identical ordering to projected-tool-deps', () => {
@@ -78,8 +77,7 @@ describe('the applied-writers’ launch-record read selects the kernel’s row',
   it('extracts a real ORDER BY from readGateSelectedLaunchSpec', () => {
     const order = kernelSelectionOrder(ack);
     expect(order).toBeTruthy();
-    expect(order).toContain('started_at');
-    expect(order).toContain('ended_at');
+    expect(order).toBe('s.id DESC');
   });
 
   it('uses byte-identical ordering to the kernel', () => {

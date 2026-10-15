@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { withNamedQueryDiagnosticContext, traceNamedQueryStage } from '../agent-tools/db-diagnostic-correlation-wiring';
 import {
   observeResolve,
   __resetResolveObservability,
@@ -17,6 +18,22 @@ const ARGS = '{}';
 beforeEach(() => __resetResolveObservability());
 
 describe('observeResolve', () => {
+  it('names the still-pending goal stage in the timeout log, without waiting for it to finish', async () => {
+    const { lines, emit } = recorder();
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    await withNamedQueryDiagnosticContext('goals.detail', async requestId => {
+      const read = traceNamedQueryStage('goal-portfolio', () => pending);
+      observeResolve({ name: 'goals.detail', argsJson: ARGS, elapsedMs: 10_000,
+        error: { name: 'QueryResolveTimeoutError', message: 'deadline' }, emit });
+      const timings = JSON.parse(lines[0].split(' stages=')[1]);
+      expect(timings).toMatchObject({ requestId, stages: [{ stage: 'goal-portfolio', outcome: 'pending' }] });
+      expect(timings.stages[0].elapsedMs).toBeGreaterThanOrEqual(0);
+      release();
+      await read;
+    });
+  });
+
   it('says NOTHING for a fast success — the overwhelmingly common case', () => {
     const { lines, emit } = recorder();
     observeResolve({ name: 'learning.analyze', argsJson: ARGS, elapsedMs: 26, emit });

@@ -48,7 +48,9 @@ function makeHandle(log: Log, opts: { failAtQuery?: number } = {}) {
   let queries = 0;
   const handle = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const fragment = { strings: Array.from(strings), args: values };
-    const text = renderSqlFragment(fragment).replace(/\s+/g, ' ').trim();
+    // Strip SQL comments before flattening so comment-only column names cannot
+    // satisfy projection assertions or hide the rest of the statement.
+    const text = renderSqlFragment(fragment).replace(/--[^\n]*/g, ' ').replace(/\s+/g, ' ').trim();
     return {
       ...fragment,
       then(resolve: (rows: unknown[]) => void, reject: (err: unknown) => void) {
@@ -63,6 +65,8 @@ function makeHandle(log: Log, opts: { failAtQuery?: number } = {}) {
     };
   }) as unknown as Record<string, unknown> & ((s: TemplateStringsArray) => unknown);
   handle.unsafe = (text: string) => ({
+    strings: [text],
+    args: [],
     then(resolve: (rows: unknown[]) => void) {
       log.push(`EXEC:${text}`);
       resolve([]);
@@ -100,6 +104,45 @@ function makePool(opts: { failAtQuery?: number } = {}) {
 const OPTS = { harness: 'papercup', assignee: 'probe' };
 
 describe('readIssueClaimability — one snapshot for every claimability read (WI-5947)', () => {
+  it('reports bounded timings for each SQL read stage, including the stage that fails', async () => {
+    const pg = makePool({ failAtQuery: 1 });
+    const timings: Array<[string, number]> = [];
+
+    await expect(readIssueClaimability(undefined, { ...OPTS, client: pg.client }, {
+      limit: 20,
+      onStageTiming: (stage, elapsedMs) => timings.push([stage, elapsedMs]),
+    })).rejects.toThrow('snapshot read failed');
+
+    expect(timings).toEqual([
+      ['transaction-isolation', expect.any(Number)],
+      ['statement-timeout', expect.any(Number)],
+      ['candidate-materialization', expect.any(Number)],
+    ]);
+    expect(timings.every(([, elapsedMs]) => elapsedMs >= 0 && Number.isFinite(elapsedMs))).toBe(true);
+  });
+
+  it('reports each reached query stage on a successful snapshot read', async () => {
+    const pg = makePool();
+    const stages: string[] = [];
+
+    await readIssueClaimability(undefined, { ...OPTS, client: pg.client }, {
+      limit: 20,
+      sampleLimit: 5,
+      onStageTiming: (stage) => stages.push(stage),
+    });
+
+    expect(stages).toEqual([
+      'transaction-isolation',
+      'statement-timeout',
+      'candidate-materialization',
+      'lane-scope-population',
+      'claim-exclusion-breakdown',
+      'claimable-rows',
+      'excluded-sample',
+      'admitted-composition',
+    ]);
+  });
+
   it('issues exactly ONE transaction, and runs the counts + rows + sample inside it', async () => {
     const pg = makePool();
     const out = await readIssueClaimability(undefined, { ...OPTS, client: pg.client }, {
@@ -148,7 +191,7 @@ describe('readIssueClaimability — one snapshot for every claimability read (WI
     expect(where).toContain('= ?');
   });
 
-  it('materializes pushed-down matches before evaluating claim floors', async () => {
+  it('pushes the observation-lane floor into snapshot materialization before evaluating claim floors', async () => {
     const pg = makePool();
     await readIssueClaimability(
       { field: 'kind', op: '=', value: 'bug' },
@@ -164,6 +207,7 @@ describe('readIssueClaimability — one snapshot for every claimability read (WI
     const cteEnd = materialization.indexOf(') SELECT');
     const fromFiltered = materialization.indexOf('FROM filtered_claim_candidates wi');
     expect(cteEnd).toBeGreaterThan(-1);
+    expect(materialization.slice(0, cteEnd)).toMatch(/wi\.lane IS DISTINCT FROM 'observation'/);
     expect(materialization.indexOf('COALESCE(item_kind, kind)')).toBeLessThan(cteEnd);
     expect(fromFiltered).toBeGreaterThan(cteEnd);
   });
@@ -180,7 +224,9 @@ describe('readIssueClaimability — one snapshot for every claimability read (WI
     // Narrowness is the POINT of this projection — the 80-column row is what it
     // exists to avoid materializing. Completeness is asserted separately (and
     // DERIVED, not enumerated) by the sibling test below.
-    expect(projection).not.toContain('wi.summary');
+    // Intake floor #16 consumes summary to distinguish candidate work. Keep it
+    // projected while excluding the search and embedding data that no floor uses.
+    expect(projection).toContain('wi.summary');
     expect(projection).not.toContain('wi._search');
     expect(projection).not.toContain('wi.embedding');
   });

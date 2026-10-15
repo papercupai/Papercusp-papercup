@@ -26,6 +26,7 @@
  * dispatch stack — runs for real.
  */
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer, createConnection } from 'node:net';
@@ -51,6 +52,7 @@ import { resetResultDoorAggregatesForTests } from '../../result-door';
 import { parseScratchReference } from '../../scratch-reference';
 import { MAX_PICK_PATHS, NAMED_VIEWS } from '../../result-projection';
 import { PLATFORM_POT_SLUG } from '../../platform-pot-slug';
+import { MCP_REQUEST_TRACE_HEADER } from '../../mcp-request-trace';
 import type { BuiltSpawnContext } from '../routes/transport/_mcp-host';
 import type { McpCallResult } from '../routes/transport/mcp-diagnostic-warnings';
 import { bindAdmissionAuthority, admissionCredentialDigest } from '../../work-item-admission-authority';
@@ -61,7 +63,20 @@ const h = vi.hoisted(() => {
   const fakeTx = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
     unsafe: async (..._a: unknown[]) => [] as unknown[],
   });
-  const fakeSql = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
+  const kernelAuthority = {
+    rows: null as Array<Record<string, unknown>> | null,
+    launchRecord: null as { launch_spec: unknown; launch_spec_xmin: string } | null,
+  };
+  const fakeSql = Object.assign(async (...args: unknown[]) => {
+    const template = args[0];
+    const query = Array.isArray(template) ? template.join(' ') : typeof template === 'string' ? template : '';
+    if (kernelAuthority.launchRecord && query.includes('AS launch_spec, n.launch_spec_xmin')) {
+      return [kernelAuthority.launchRecord];
+    }
+    if (kernelAuthority.rows && query.includes('FROM harness_shared.session_briefs') &&
+        query.includes('FROM harness_shared.adv_sessions s')) return kernelAuthority.rows;
+    return [] as unknown[];
+  }, {
     unsafe: async (..._a: unknown[]) => [] as unknown[],
     begin: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn(fakeTx),
   });
@@ -70,10 +85,20 @@ const h = vi.hoisted(() => {
     signingRows: null as null | Array<{ value_b64: string; rotated_at: string }>,
     fakeTx,
     fakeSql,
+    kernelAuthority,
     nativeSessionBinding: 'unbound' as 'bound' | 'unbound' | 'foreign',
+    nativeSessionRows: null as Map<string, Array<{ id: number; session_id: string | null; active: boolean }>> | null,
+    nativeSessionVerifierFailure: null as { sessionId: string; error: Error } | null,
     nativeSessionCalls: [] as Array<{ ownerId: string; sessionId: string }>,
+    nativeSessionWorkspaceScopes: [] as Array<string | undefined>,
+    nativeSessionDiagnosticContexts: [] as unknown[],
+    nativeVerifierSampling: [] as unknown[][],
     /** EI-21641783475680586: deterministic getRubric seam for the nested transport test. */
     rubricGet: vi.fn(async (_rubricRef: string): Promise<unknown> => null),
+    /** EI-25857690731655159: deterministic handler seam for dev:build_status clamp tests. */
+    devBuildStatus: vi.fn(async (): Promise<Record<string, unknown>> => ({})),
+    devTestFlakeRollup: vi.fn(async (_days: number) => ({ entries: [] as unknown[] })),
+    devFlagFlakeSuspects: vi.fn((_entries: unknown[], _days: number) => [] as unknown[]),
     /** EI-22390450916579377: plugin-host warm seam for late projected-tool registration. */
     pluginHostWarm: vi.fn(async (): Promise<unknown> => ({})),
     /** scoped-superuser-workspace-clamp: dispatch tests toggle the flag via this. */
@@ -151,6 +176,7 @@ const h = vi.hoisted(() => {
         uiClientId?: string | null;
         isSuperuser?: boolean;
         transport?: string;
+        requestOrigin?: UnifiedToolContext['requestOrigin'];
       };
       args?: unknown;
       metadataJson?: Record<string, unknown> | null;
@@ -174,6 +200,8 @@ const h = vi.hoisted(() => {
     workspaceForCoordOwner: vi.fn(async (_sid: string): Promise<string | null> => null),
     /** Ambient presence seam for transport harness-scope inheritance tests. */
     getPresence: vi.fn(async (_ownerId: string): Promise<Record<string, unknown> | null> => null),
+    /** Presence transport-clamp tests must not launch host liveness/process probes. */
+    assemblePresenceSnapshot: vi.fn(),
     /** Durable session-brief harness fallback seam for resumed SU sessions. */
     getSessionBrief: vi.fn(
       async (_query: { ownerId?: string | null }): Promise<{ harnessSlug?: string | null } | null> => null,
@@ -187,6 +215,15 @@ const h = vi.hoisted(() => {
       allow: false,
       calls: [] as Array<Record<string, string>>,
     },
+    /** WI-10007010: isolate the accepted-operation tools/list candidate path. */
+    identityListingTest: false,
+    identityOperationRecord: null as unknown,
+    identityAdmittedToolNames: new Set<string>(),
+    identityListingRoleCaps: [] as readonly string[],
+    identityObservedRoleCaps: [] as string[],
+    identityListedCandidateNames: [] as string[],
+    readSessionConfinement: vi.fn(async (_owner: string | null | undefined, _workspace?: string):
+      Promise<import('../../capability-envelope/session-confinement').SessionToolConfinement | null> => null),
   };
 });
 
@@ -309,6 +346,45 @@ vi.mock('../../projected-tool-deps', async (importOriginal) => {
     },
   };
 });
+vi.mock('../../capability-envelope/blueprint-envelopes', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../capability-envelope/blueprint-envelopes')>();
+  return {
+    ...actual,
+    blueprintWorkerRoleCapabilities: (stateDir: string, role: string) =>
+      h.identityListingTest && role === 'calendar-prep-worker'
+        ? h.identityListingRoleCaps
+        : actual.blueprintWorkerRoleCapabilities(stateDir, role),
+  };
+});
+vi.mock('../../capability-envelope/identity-tool-surface', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../capability-envelope/identity-tool-surface')>();
+  return {
+    ...actual,
+    resolveIdentityToolSurface: async (...args: Parameters<typeof actual.resolveIdentityToolSurface>) => {
+      if (!h.identityListingTest) return actual.resolveIdentityToolSurface(...args);
+      const [ctx, candidates, , expandCandidates] = args;
+      const receiptCandidates = expandCandidates?.(h.identityOperationRecord) ?? [];
+      h.identityObservedRoleCaps = [...(ctx.principal?.capabilities ?? [])];
+      const admitted = new Set(
+        [...candidates, ...receiptCandidates]
+          .filter((candidate) => h.identityAdmittedToolNames.has(candidate.name))
+          .map((candidate) => candidate.name),
+      );
+      return { kind: 'governed', key: 'gating-matrix-operation', admitted };
+    },
+    rememberListedIdentitySurface: (...args: Parameters<typeof actual.rememberListedIdentitySurface>) => {
+      if (h.identityListingTest) {
+        h.identityListedCandidateNames = args[1].candidates.map((candidate) => candidate.name);
+      }
+      return actual.rememberListedIdentitySurface(...args);
+    },
+  };
+});
+vi.mock('../../capability-envelope/session-confinement-store', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../capability-envelope/session-confinement-store')>()),
+  readSessionConfinement: (owner: string | null | undefined, workspace?: string) =>
+    h.readSessionConfinement(owner, workspace),
+}));
 vi.mock('../../spawn-signing', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   h.realSpawnSigning = actual as typeof import('../../spawn-signing');
@@ -344,12 +420,29 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   },
 }));
 vi.mock('../../adv-sessions', async (importOriginal) => {
-  const actual = await importOriginal<Record<string, unknown>>();
+  const actual = await importOriginal<typeof import('../../adv-sessions')>();
   return {
     ...actual,
     workspaceForCoordOwner: h.workspaceForCoordOwner,
-    classifyOwnerNativeSession: async ({ ownerId, sessionId }: { ownerId: string; sessionId: string }) => {
+    classifyOwnerNativeSession: async ({
+      ownerId,
+      sessionId,
+      workspaceId,
+    }: { ownerId: string; sessionId: string; workspaceId?: string }) => {
       h.nativeSessionCalls.push({ ownerId, sessionId });
+      h.nativeSessionWorkspaceScopes.push(workspaceId);
+      const { capturePgDiagnosticContext } = await import('@papercusp/db-org');
+      h.nativeSessionDiagnosticContexts.push(capturePgDiagnosticContext());
+      const verifierFailure = h.nativeSessionVerifierFailure;
+      if (verifierFailure?.sessionId === sessionId) {
+        const { traceNamedQueryStage } = await import('../../agent-tools/db-diagnostic-correlation-wiring');
+        return await traceNamedQueryStage('native-session-verifier-global-transaction', async () => {
+          throw verifierFailure.error;
+        });
+      }
+      if (h.nativeSessionRows) {
+        return actual.classifyOwnerNativeSessionRows(h.nativeSessionRows.get(ownerId) ?? [], sessionId);
+      }
       return {
         binding: h.nativeSessionBinding,
         boundSessionId: h.nativeSessionBinding === 'foreign' ? 'native-parent' : h.nativeSessionBinding === 'bound' ? sessionId : null,
@@ -361,6 +454,15 @@ vi.mock('../../adv-sessions', async (importOriginal) => {
 vi.mock('../../agent-tools/coordination/presence', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, getPresence: h.getPresence };
+});
+// This suite verifies MCP transport authorization, not the host's process
+// liveness. The real snapshot can probe desktop windows and the spawner sidecar;
+// this PG-free fixture would then report every task-ledger INSERT as a duplicate
+// because its SQL double returns no rows. Keep scope resolution real, but stop
+// at the snapshot boundary so ambient process state cannot red-pin the clamp test.
+vi.mock('../../agent-tools/coordination/presence-snapshot', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, assemblePresenceSnapshot: h.assemblePresenceSnapshot };
 });
 vi.mock('../../session-brief', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
@@ -398,6 +500,17 @@ vi.mock('../../hive-federation', async (importOriginal) => {
 vi.mock('../../rubrics', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, getRubric: h.rubricGet };
+});
+// The transport matrix tests the real registered handler path, but keeps the
+// host probes and flake scan deterministic and independent of local services.
+vi.mock('../../dev-data', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    buildStatus: h.devBuildStatus,
+    testFlakeRollup: h.devTestFlakeRollup,
+    flagFlakeSuspects: h.devFlagFlakeSuspects,
+  };
 });
 // P-017 workspace-tier clamp seam — only the foreign-workspace harness resolver
 // is stubbed; the rest of harness-core stays real (the wide agent-tools import graph).
@@ -442,6 +555,18 @@ vi.mock('../../plugin-host-runtime', async (importOriginal) => {
     getPluginHost: (): Promise<unknown> => h.pluginHostWarm(),
   };
 });
+vi.mock('../routes/transport/pgbouncer-pool-sample.mjs', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    // A never-settling promise proves verifier failure handling does not await
+    // the out-of-band diagnostic before returning its fail-closed auth result.
+    samplePgBouncerPools: (...args: unknown[]) => {
+      h.nativeVerifierSampling.push(args);
+      return new Promise(() => {});
+    },
+  };
+});
 
 // _mcp-handler's transport setup calls a bare `require(...)` for the MCP SDK
 // schemas; under vite-node's ESM transform there is no module-scope require,
@@ -453,10 +578,10 @@ delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
 
 const { __buildMcpToolContext_forTests, mcpHandler, resolveMcpTargetAfterPluginHostWarm } =
   await import('../routes/transport/_mcp-handler');
-const { registerProjectedTool, unregisterProjectedToolsForPlugin, lookupByMcpName, getCatalog, defineTool, subscribeWorkspace, resolveCardResponse } =
+const { registerProjectedTool, unregisterProjectedToolsForPlugin, lookupByMcpName, listMcpProjections, getCatalog, defineTool, subscribeWorkspace, resolveCardResponse } =
   await import('@papercusp/agent-mcp');
 const { currentRequestWorkspaceId } = await import('../../workspace-als');
-const { registerMcpHost, mcpHostServerOptions, MCP_SERVER_CAPABILITIES, tryBuildSpawnContext, pinVerifiedMcpRequest } =
+const { registerMcpHost, mcpHostServerOptions, MCP_SERVER_CAPABILITIES, tryBuildSpawnContext, pinVerifiedMcpRequest, runNativeMcpTargetOnOwner } =
   await import('../routes/transport/_mcp-host');
 
 // `_mcp-handler` now defers both the operator tool graph and mcp-handler's
@@ -641,6 +766,21 @@ defineTool({
   },
 });
 defineTool({
+  name: 'gatingtest:replay_structured_write',
+  requirePrincipal: false,
+  capability: 'work_items:write',
+  needsWorkspaceTx: true,
+  args: z.object({ large: z.boolean().optional() }),
+  result: z.object({
+    rows: z.array(z.object({ id: z.string(), state: z.string(), detail: z.string().optional() })),
+  }),
+  agentRoles: ['reviewer'],
+  handler: async (args, ctx) => {
+    parityCalls.push({ args, ctx });
+    return { data: { rows: args.large ? LARGE_PARITY_PAYLOAD.rows : PARITY_ROWS } };
+  },
+});
+defineTool({
   name: 'gatingtest:parity_structured_large',
   requirePrincipal: false,
   capability: 'agent_tools:read',
@@ -711,6 +851,56 @@ defineTool({
   agentRoles: ['scoper'],
   handler: async (input) => {
     invokeProbeSeen.push(input);
+    if (input.probe === 'deep') {
+      return {
+        data: {
+          results: [
+            {
+              threadWindow: {
+                posts: [
+                  {
+                    body: `selected-body-${'x'.repeat(7_000)}`,
+                    author_id: 'agent-1',
+                    created_ts: '2026-10-06T00:00:00.000Z',
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      };
+    }
+    if (input.probe === 'deep-many') {
+      return {
+        data: {
+          results: [{
+            id: 'selected-row',
+            checkpoint: 'C'.repeat(10_000),
+            threadWindow: {
+              posts: Array.from({ length: 6 }, (_, index) => ({
+                id: 50 + index,
+                thread_id: `thread-${index}`,
+                author_id: `agent-${index}`,
+                created_ts: `2026-10-06T00:00:0${index}.000Z`,
+                body: `selected-body-${index}-${'x'.repeat(1_000)}`,
+              })),
+            },
+          }],
+        },
+      };
+    }
+    if (input.probe === 'observation') {
+      return {
+        data: {
+          payload: {
+            observation: {
+              ratings: [{ clarity: 5, comments: `selected-rating-${'r'.repeat(7_000)}` }],
+              subject: `selected-subject-${'s'.repeat(7_000)}`,
+            },
+          },
+        },
+      };
+    }
     return { data: { lines: ['alpha', 'beta', 'gamma'] } };
   },
 });
@@ -888,6 +1078,30 @@ defineTool({
   },
   handler: async () => ({ data: { checkpoint: FULL_SOURCE_CHECKPOINT } }),
 });
+defineTool({
+  name: 'gatingtest:truncated_source_spill',
+  requirePrincipal: false,
+  capability: 'agent_tools:read',
+  args: z.object({}),
+  agentRoles: ['scoper'],
+  payloadTierCeilingChars: 18_000,
+  shape: {
+    standard: () => ({ checkpoint: 'SHAPED_TRUNCATED_SOURCE_MARKER' }),
+    trimmed: () => ({ checkpoint: 'SHAPED_TRUNCATED_SOURCE_MARKER' }),
+  },
+  handler: async () => ({
+    data: {
+      priorAttempts: {
+        attempts: [{
+          rawRef: 'fixture#completion',
+          textTruncated: true,
+          text: 'completion prefix…[TRUNCATED +1200 chars]',
+        }],
+      },
+      checkpoint: FULL_SOURCE_CHECKPOINT,
+    },
+  }),
+});
 
 afterAll(() => {
   unregisterProjectedToolsForPlugin('gating-matrix-test');
@@ -973,6 +1187,30 @@ async function callTool(
   )) as CallResult;
 }
 const textOf = (r: CallResult): string => r.content.map((c) => c.text ?? '').join('');
+
+function projectionRefusalText(result: CallResult): string {
+  const door = result._meta?.resultDoor as { reason?: string; spillPath?: string } | undefined;
+  if (!door) return textOf(result);
+  expect(door.reason).toBe('under-budget-partial-result');
+  const envelope = JSON.parse(textOf(result));
+  expect(envelope).toMatchObject({ schemaVersion: 'papercusp.output-envelope/v1', state: 'incomplete' });
+  const reference = parseScratchReference(readFileSync(door.spillPath!));
+  expect(reference).not.toBeNull();
+  return reference!.payload.toString('utf8');
+}
+/** Read one JSON payload block without concatenating separate advisory text blocks. */
+function jsonOf(r: CallResult): unknown {
+  for (const item of r.content) {
+    if (typeof item.text !== 'string') continue;
+    try {
+      return JSON.parse(item.text);
+    } catch {
+      // MCP results may carry non-JSON advisory text in separate content blocks.
+    }
+  }
+  if (r.structuredContent !== undefined) return r.structuredContent;
+  throw new Error('MCP result did not contain a JSON text item or structuredContent');
+}
 
 /** Exercise the SDK lifecycle independently of the HTTP adapter's handler capture. */
 async function withSdkHost<T>(extra: unknown, run: (client: Client) => Promise<T>, connection: 'memory' | 'uds' | 'listener' | 'http'): Promise<T> {
@@ -1091,15 +1329,72 @@ function assertCatalogParity(native: { tools: { name: string }[] }, http: unknow
 }
 
 function assertPolicyResultParity(
-  native: { content?: unknown; _meta?: Record<string, unknown> },
-  http: { content?: unknown; _meta?: Record<string, unknown> },
+  native: { isError?: boolean; content?: unknown; _meta?: Record<string, unknown> },
+  http: { isError?: boolean; content?: unknown; _meta?: Record<string, unknown> },
 ) {
-  expect(native.content).toEqual(http.content);
-  expect(native._meta?.resultProjection).toEqual(http._meta?.resultProjection);
-  expect(native._meta?.resultProjection).toMatchObject({ applied: true, linesIn: 1, linesOut: 1 });
+  // The build-stamp annotator may add its once-per-owner advisory block before
+  // projection. That legitimately changes linesIn and the metrics footer, but
+  // the projection result and its essential metadata must still agree.
+  expect(native.isError).toBe(http.isError);
+  expect(http.isError).not.toBe(true);
+  expect(native._meta?.resultProjection).toMatchObject({ applied: true, linesOut: 1 });
+  expect(http._meta?.resultProjection).toMatchObject({ applied: true, linesOut: 1 });
+  const payloadContent = (result: { content?: unknown }): unknown => {
+    if (!Array.isArray(result.content)) return result.content;
+    return result.content.filter((item: unknown) => {
+      if (!item || typeof item !== 'object') return true;
+      const text = item as { type?: unknown; text?: unknown };
+      return !(text.type === 'text' && typeof text.text === 'string' && text.text.startsWith('\n[projection:'));
+    });
+  };
+  expect(payloadContent(native)).toEqual(payloadContent(http));
+  expect(payloadContent(native)).toEqual([{ type: 'text', text: 'gatingtest:scoped-ok' }]);
 }
 
-describe.each(['memory', 'uds', 'listener'] as const)('shared MCP host — %s SDK parity with the HTTP assembly', (connection) => {
+describe.each(['memory', 'uds', 'listener'] as const)('launch ceiling listing — %s transport', connection => {
+  const extra = () => superuserExtra('&workspace=ws-test&client=su-ceiling&tools=gatingtest:engineer,gatingtest:txless_scope');
+  const policy = (denyOutside: string[]) => ({ denyTools: [], denyOutside,
+    reason: 'metered benchmark', imposedBy: 'benchmark-host' });
+  it('advertises the assigned maintained workflow without treating a listing as execution', async () => {
+    const verbs = ['work_items:get', 'work_items:checkpoint', 'work_items:complete'];
+    h.readSessionConfinement.mockResolvedValue({ ...policy(verbs), denyAmbientContext: true,
+      denyWorkItemsOutside: { id: 'F-own', harness: 'bench', checkout: '/private/assignment' } });
+    const scoped = superuserExtra(`&workspace=ws-test&client=su-assignment&tools=${verbs.join(',')}`);
+    await withSdkHost(scoped, async client => {
+      expect((await client.listTools()).tools.map(tool => tool.name).sort()).toEqual([...verbs].sort());
+    }, connection);
+  });
+  it('advertises only launch-authorized tools through HTTP assembly and the native SDK', async () => {
+    h.readSessionConfinement.mockResolvedValue(policy(['gatingtest:engineer']));
+    const http = await listTools(extra());
+    expect(http.tools.map(tool => tool.name)).toEqual(['gatingtest:engineer']);
+    expect(h.readSessionConfinement).toHaveBeenCalledWith('su-ceiling', 'ws-test');
+    await withSdkHost(extra(), async client => {
+      const native = await client.listTools();
+      expect(native).toEqual(http);
+      expect(native.tools.map(tool => tool.name)).toEqual(['gatingtest:engineer']);
+    }, connection);
+  });
+  it('rechecks authoritative policy on every listing and preserves an expired empty ceiling', async () => {
+    h.readSessionConfinement.mockResolvedValue(policy(['gatingtest:engineer']));
+    await withSdkHost(extra(), async client => {
+      expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(['gatingtest:engineer']);
+      h.readSessionConfinement.mockResolvedValue(policy(['gatingtest:txless_scope']));
+      expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(['gatingtest:txless_scope']);
+      h.readSessionConfinement.mockResolvedValue(policy([]));
+      expect((await client.listTools()).tools).toEqual([]);
+    }, connection);
+  });
+  it('fails closed when the stored launch authority cannot be read', async () => {
+    h.readSessionConfinement.mockRejectedValue(new Error('private policy unavailable'));
+    await expect(listTools(extra())).rejects.toThrow('session_confinement_unavailable');
+    await withSdkHost(extra(), async client => {
+      await expect(client.listTools()).rejects.toThrow('session_confinement_unavailable');
+    }, connection);
+  });
+});
+
+describe.each(['memory', 'uds', 'listener'] as const)('shared MCP host — %s SDK parity with the real HTTP assembly', (connection) => {
   it('negotiates existing capabilities and exposes the same allowed catalog', async () => {
     const extra = extraFor(signedUrl({ tools: 'gatingtest:scoped,gatingtest:engineer' }));
     const http = await listTools(extra);
@@ -1114,8 +1409,12 @@ describe.each(['memory', 'uds', 'listener'] as const)('shared MCP host — %s SD
 
   it('preserves policy metadata, dispatcher scope and compact content through the SDK', async () => {
     const extra = superuserExtra('&workspace=ws-test');
-    const args = { projection: { pipe: [{ op: 'count' }] } };
-    const http = await callTool('gatingtest:scoped', args, extra);
+    const args = { projection: { pipe: [{ op: 'grep', pattern: 'gatingtest:scoped-ok', fixed: true }] } };
+    const http = await withSdkHost(
+      extra,
+      client => client.callTool({ name: 'gatingtest:scoped', arguments: args }),
+      'http',
+    );
     await withSdkHost(extra, async (client) => {
       const native = await client.callTool({ name: 'gatingtest:scoped', arguments: args });
       assertPolicyResultParity(native, http);
@@ -1138,7 +1437,7 @@ describe.each(['memory', 'uds', 'listener'] as const)('shared MCP host — %s SD
 
   it('calibrates the result oracle by rejecting lost policy metadata and changed content', async () => {
     const extra = superuserExtra('&workspace=ws-test');
-    const args = { projection: { pipe: [{ op: 'count' }] } };
+    const args = { projection: { pipe: [{ op: 'grep', pattern: 'gatingtest:scoped-ok', fixed: true }] } };
     const http = await callTool('gatingtest:scoped', args, extra);
     await withSdkHost(extra, async (client) => {
       const native = await client.callTool({ name: 'gatingtest:scoped', arguments: args });
@@ -1260,7 +1559,7 @@ describe('public Papercup PI card transport (EI-22679615443261276)', () => {
       expect(correlationId).toBeTruthy();
       expect(foreignAnswer).toMatchObject({ ok: false, status: 404 });
       expect(acceptedAnswer).toEqual({ ok: true });
-      expect(JSON.parse(textOf(result))).toMatchObject({
+      expect(jsonOf(result)).toMatchObject({
         ok: true, picks: [{ option_id: 'browse', label: 'Show me the templates' }],
       });
       expect(h.resolveBearer).toHaveBeenCalledWith('test-pi-card-bearer');
@@ -1289,6 +1588,33 @@ describe('public Papercup PI card transport (EI-22679615443261276)', () => {
 });
 
 describe('MCP scratch resource authentication', () => {
+  describe.each(['memory', 'uds', 'listener'] as const)('frozen context protocol — %s', connection => {
+    const extra = () => superuserExtra('&workspace=ws-test&client=su-frozen-resources');
+    it('refuses resource content before calling its registered reader', async () => {
+      h.readSessionConfinement.mockResolvedValue({ denyTools: [], denyOutside: ['work_items:get'],
+        denyAmbientContext: true, reason: 'frozen corpus', imposedBy: 'benchmark-host' });
+      await withSdkHost(extra(), async client => {
+        await expect(client.readResource({ uri: 'papercusp://ambient/neighbor-corpus' })).rejects.toThrow(/frozen assignment context/);
+        expect(h.resourceReads).toHaveLength(0);
+      }, connection);
+    });
+    it('lists no ambient resources or prompts and refuses direct prompt lookup', async () => {
+      h.readSessionConfinement.mockResolvedValue({ denyTools: [], denyOutside: ['work_items:get'],
+        denyAmbientContext: true, reason: 'frozen corpus', imposedBy: 'benchmark-host' });
+      await withSdkHost(extra(), async client => {
+        expect(await client.listResources()).toEqual({ resources: [] });
+        expect(await client.listPrompts()).toEqual({ prompts: [] });
+        await expect(client.getPrompt({ name: 'agent:role', arguments: { role: 'su' } })).rejects.toThrow(/frozen assignment context/);
+      }, connection);
+    });
+    it('fails closed if authoritative policy cannot be read', async () => {
+      h.readSessionConfinement.mockRejectedValue(new Error('policy unavailable'));
+      await withSdkHost(extra(), async client => {
+        await expect(client.readResource({ uri: 'papercusp://ambient/neighbor-corpus' })).rejects.toThrow(/frozen assignment context/);
+        expect(h.resourceReads).toHaveLength(0);
+      }, connection);
+    });
+  });
   it('uses the same signed-session owner for a tools:invoke spill and its resource read', async () => {
     const extra = extraFor(signedUrl({ client: 'scoper-session-spill' }));
     const result = await callTool(
@@ -1356,6 +1682,9 @@ describe('MCP scratch resource authentication', () => {
           },
         });
         expect(h.resourceReads[0]).not.toHaveProperty('bearer');
+        // Confinement and resource authorization must use the same verified
+        // request identity, without a second token verification or new spawn.
+        expect(h.verifyAccessToken).toHaveBeenCalledTimes(1);
       },
       'memory',
     );
@@ -1494,9 +1823,10 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
   afterEach(() => clearPrePromptRegistry());
   // Catalogs are role-filtered even when SU dispatch may bypass the role gate.
   // Use the same signed scoper identity as these probes' advertised role.
-  const parityExtra = (format?: string) => extraFor(signedUrl({
+  const parityExtra = (format?: string, structured = false) => extraFor(signedUrl({
     tools: 'gatingtest:parity_rows,gatingtest:parity_args,gatingtest:parity_structured,gatingtest:delta_list',
     ...(format ? { format } : {}),
+    ...(structured ? { structured: '1' } : {}),
   }));
 
   function configureColumns() {
@@ -1514,8 +1844,17 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
   // Compare literal payload and all semantic metadata, not JSON byte size or
   // a "format" label alone. Controlled corruptions below calibrate this oracle.
   function assertSameResult(actual: CallResult, expected: CallResult) {
-    expect(actual.content).toEqual(expected.content);
-    expect(actual._meta).toEqual(expected._meta);
+    const payload = (result: CallResult) => {
+      const { _buildStamp, ...meta } = result._meta ?? {};
+      const buildId = (_buildStamp as { buildId?: unknown } | undefined)?.buildId;
+      // The real annotator emits this notice once per owner, so two transports
+      // can legitimately receive different notices. Match its metadata too;
+      // arbitrary extra text must still fail parity.
+      const content = result.content.filter(item => !(typeof buildId === 'string' &&
+        item.type === 'text' && item.text?.startsWith(`ℹ served by build ${buildId} (up `)));
+      return { content, meta: result._meta === undefined ? undefined : meta };
+    };
+    expect(payload(actual)).toEqual(payload(expected));
     expect(actual.structuredContent).toEqual(expected.structuredContent);
     expect(actual.isError).toEqual(expected.isError);
   }
@@ -1621,33 +1960,186 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
     }, connection);
   });
 
-  it('preserves explicitly negotiated structured content and the SDK missing-content rejection', async () => {
+  it.each([false, true])('negotiates output schema and structured content on the connection (structured=%s)', async structured => {
     const arms: CallResult[] = [];
     for (const connection of ['http', 'listener'] as const) {
-      arms.push(await withSdkHost(parityExtra(), async client => {
+      arms.push(await withSdkHost(parityExtra('json', structured), async client => {
         const catalog = await client.listTools();
-        expect(catalog.tools.find(tool => tool.name === 'gatingtest:parity_structured')?.outputSchema)
-          .toMatchObject({ type: 'object', required: ['rows'] });
+        const schema = catalog.tools.find(tool => tool.name === 'gatingtest:parity_structured')?.outputSchema;
+        if (structured) expect(schema).toMatchObject({ type: 'object', required: ['rows'] });
+        else expect(schema).toBeUndefined();
         const result = await client.callTool({
           name: 'gatingtest:parity_structured', arguments: {},
-          _meta: { format: 'json', structured: true },
+          _meta: { format: 'json' },
         }) as CallResult;
-        expect(result.structuredContent).toEqual({ rows: PARITY_ROWS });
-        expect(JSON.parse(textOf(result))).toEqual({ rows: PARITY_ROWS });
+        expect(result.structuredContent).toEqual(structured ? { rows: PARITY_ROWS } : undefined);
+        expect(jsonOf(result)).toEqual({ rows: PARITY_ROWS });
         expect(parityCalls.at(-1)?.ctx).toMatchObject({
-          transport: 'mcp', requestedFormat: 'json', requestedStructured: true,
+          transport: 'mcp', requestedFormat: 'json', requestedStructured: structured,
         });
-        // Negative calibration exercises the REAL client validator after the
-        // REAL dispatcher omits unrequested structured content.
-        await expect(client.callTool({
-          name: 'gatingtest:parity_structured', arguments: {}, _meta: { format: 'json' },
-        })).rejects.toThrow(/structured content/i);
         return result;
       }, connection));
     }
     assertSameResult(arms[1]!, arms[0]!);
     expect(() => assertSameResult({ ...arms[1]!, structuredContent: { rows: [] } }, arms[0]!)).toThrow();
+    expect(() => assertSameResult({ ...arms[1]!, content: [
+      ...arms[1]!.content, { type: 'text', text: 'unexpected payload text' },
+    ] }, arms[0]!)).toThrow();
   });
+
+  it.each(['http', 'listener'] as const)(
+    '%s returns SDK-valid structuredContent when an opted-in write replays an older JSON receipt',
+    async connection => {
+      const payload = { rows: PARITY_ROWS };
+      h.storedReplay = { content: [{ type: 'text', text: JSON.stringify(payload) }], _meta: { format: 'json' } };
+      await withSdkHost(
+        extraFor(signedUrl({ tools: 'gatingtest:replay_structured_write', role: 'reviewer', structured: '1' })),
+        async client => {
+          const catalog = await client.listTools();
+          const replayTool = catalog.tools.find(tool => tool.name === 'gatingtest:replay_structured_write');
+          expect(replayTool).toBeDefined();
+          expect(replayTool?.outputSchema)
+            .toMatchObject({ type: 'object', required: ['rows'] });
+          parityCalls.length = 0;
+
+          const replayed = await client.callTool({
+            name: 'gatingtest:replay_structured_write',
+            arguments: {},
+            _meta: { structured: true, idempotencyKey: 'idem-replay-structured-rehydrate' },
+          }) as CallResult;
+          expect(replayed.structuredContent).toEqual(payload);
+          expect(replayed._meta).toMatchObject({ replayed: true, structured: true });
+          expect(JSON.parse(textOf(replayed))).toEqual(payload);
+          expect(parityCalls).toEqual([]); // a replay returns without re-running the write
+        },
+        connection,
+      );
+    },
+  );
+
+  it.each([
+    { firstCallMode: 'catalog-backed', resultShape: 'plain-object', large: false },
+    { firstCallMode: 'catalog-backed', resultShape: 'output-envelope', large: true },
+    { firstCallMode: 'catalog-bypass', resultShape: 'plain-object', large: false },
+    { firstCallMode: 'catalog-bypass', resultShape: 'output-envelope', large: true },
+  ] as const)(
+    '$firstCallMode first call replays a $resultShape result to a schema-aware client',
+    async ({ firstCallMode, resultShape, large }) => {
+      parityCalls.length = 0;
+      const name = 'gatingtest:replay_structured_write';
+      const idempotencyKey = `idem-replay-mode-matrix-${firstCallMode}-${resultShape}`;
+      const args = large ? { large: true } : {};
+      const expected = large ? LARGE_PARITY_PAYLOAD : { rows: PARITY_ROWS };
+      const outputGroupId = `output-group-replay-mode-matrix-${firstCallMode}-${resultShape}`;
+      const extra = extraFor(signedUrl({ tools: name, role: 'reviewer',
+        ...(firstCallMode === 'catalog-backed' ? { structured: '1' } : {}) }));
+      const firstMeta = {
+        idempotencyKey,
+        format: 'json',
+        outputGroupId,
+        ...(firstCallMode === 'catalog-backed' ? { structured: true } : {}),
+      };
+      h.replayLookupFromStores = true;
+
+      if (firstCallMode === 'catalog-backed') {
+        await withSdkHost(extra, async client => {
+          const catalog = await client.listTools();
+          expect(catalog.tools.find(tool => tool.name === name)?.outputSchema)
+            .toMatchObject({ type: 'object', required: ['rows'] });
+
+          if (large) {
+            // Exhaust the aggregate cohort so the idempotent call's stored
+            // model content is a result-door envelope. Direct handler calls
+            // avoid the SDK's outputSchema check for these seed results.
+            for (let i = 0; i < 2; i += 1) {
+              const seed = await callTool(name, { large: true }, extra, { format: 'json', outputGroupId });
+              expect(seed.isError).not.toBe(true);
+            }
+          }
+
+          const first = await client.callTool({ name, arguments: args, _meta: firstMeta }) as CallResult;
+          expect(first.isError, textOf(first)).not.toBe(true);
+          expect(parityCalls.at(-1)?.ctx).toMatchObject({ requestedFormat: 'json', requestedStructured: true });
+          expect(first.structuredContent).toEqual(expected);
+          expect(h.replayStores).toHaveLength(1);
+          const stored = h.replayStores[0]!.result as CallResult;
+          expect(stored.structuredContent).toEqual(expected);
+          if (large) {
+            const modelContent = jsonOf(stored) as { schemaVersion?: unknown; state?: unknown };
+            expect(modelContent.schemaVersion).toBe('papercusp.output-envelope/v1');
+            expect(modelContent.state).toBe('incomplete');
+          } else {
+            expect(jsonOf(stored)).toEqual(expected);
+          }
+
+          const replayed = await client.callTool({
+            name,
+            arguments: args,
+            _meta: { idempotencyKey, format: 'json', structured: true, outputGroupId },
+          }) as CallResult;
+          expect(replayed.structuredContent).toEqual(expected);
+          expect(replayed._meta).toMatchObject({ replayed: true, structured: true });
+          expect(parityCalls).toHaveLength(large ? 3 : 1);
+        }, 'http');
+        return;
+      }
+
+      // The first transport call bypasses tools/list and the SDK's outputSchema
+      // validator, matching a catalog-bypass client that requests JSON text only.
+      if (large) {
+        for (let i = 0; i < 2; i += 1) {
+          const seed = await callTool(name, { large: true }, extra, { format: 'json', outputGroupId });
+          expect(seed.isError).not.toBe(true);
+        }
+      }
+      const first = await callTool(name, args, extra, firstMeta);
+      expect(first.structuredContent).toBeUndefined();
+      expect(h.replayStores).toHaveLength(1);
+      const stored = h.replayStores[0]!.result as CallResult;
+      expect(stored.structuredContent).toBeUndefined();
+      if (large) {
+        const modelContent = jsonOf(stored) as { schemaVersion?: unknown; state?: unknown };
+        expect(modelContent.schemaVersion).toBe('papercusp.output-envelope/v1');
+        expect(modelContent.state).toBe('incomplete');
+      } else {
+        expect(jsonOf(stored)).toEqual(expected);
+      }
+
+      const handlerCallsBeforeReplay = parityCalls.length;
+      const recoveryExtra = extraFor(signedUrl({ tools: name, role: 'reviewer', structured: '1' }));
+      await withSdkHost(recoveryExtra, async client => {
+        const catalog = await client.listTools();
+        expect(catalog.tools.find(tool => tool.name === name)?.outputSchema)
+          .toMatchObject({ type: 'object', required: ['rows'] });
+        const replay = client.callTool({
+          name,
+          arguments: args,
+          _meta: { idempotencyKey, format: 'json', structured: true, outputGroupId },
+        });
+        if (large) {
+          // A stored envelope is not tool data. The handler should return it as
+          // an explicit MCP tool error so the SDK's outputSchema validator does
+          // not replace its recoverable reference with -32600.
+          const replayed = await replay as CallResult;
+          expect(replayed.isError).toBe(true);
+          expect(replayed.structuredContent).toBeUndefined();
+          expect(replayed._meta).toMatchObject({
+            replayed: true,
+            structuredUnavailable: { reason: 'result-door-envelope-is-not-tool-data' },
+          });
+          expect(jsonOf(replayed)).toMatchObject({
+            schemaVersion: 'papercusp.output-envelope/v1',
+            state: 'incomplete',
+          });
+        } else {
+          const replayed = await replay as CallResult;
+          expect(replayed.structuredContent).toEqual(expected);
+          expect(replayed._meta).toMatchObject({ replayed: true, structured: true });
+        }
+      }, 'http');
+      expect(parityCalls).toHaveLength(handlerCallsBeforeReplay);
+    },
+  );
 
   it.each(['http', 'listener'] as const)(
     '%s keeps structuredContent output-schema-valid after trimmed payload shaping',
@@ -1656,6 +2148,7 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
         extraFor(signedUrl({
           tools: 'gatingtest:parity_structured_large',
           ctx_tier: 'trimmed',
+          structured: '1',
         })),
         async client => {
           const catalog = await client.listTools();
@@ -1690,15 +2183,39 @@ beforeEach(() => {
   // contaminate another case's literal model-content oracle.
   _resetBatchNudgeState();
   vi.resetAllMocks(); // restores the vi.fn() originals, drops *Once queues
+  h.readSessionConfinement.mockResolvedValue(null);
   h.getSessionBrief.mockResolvedValue(null);
+  h.kernelAuthority.rows = null;
+  h.kernelAuthority.launchRecord = null;
   seen.length = 0;
   h.resourceReads.length = 0;
   deltaRequested.length = 0;
   h.withWorkspaceCalls.length = 0;
   h.nativeSessionBinding = 'unbound';
+  h.nativeSessionRows = null;
+  h.nativeSessionVerifierFailure = null;
   h.nativeSessionCalls.length = 0;
+  h.nativeSessionWorkspaceScopes.length = 0;
+  h.nativeSessionDiagnosticContexts.length = 0;
+  h.nativeVerifierSampling.length = 0;
   h.workspaceAcquireError = null;
   h.getPresence.mockResolvedValue(null);
+  h.assemblePresenceSnapshot.mockResolvedValue({
+    as_of: '2026-01-01T00:00:00.000Z',
+    scope: 'workspace',
+    summary: {
+      active: 0,
+      stale: 0,
+      federated: 0,
+      wakeable: 0,
+      onDesktop: 0,
+      viewerAttached: 0,
+      byState: { live: 0, parked: 0, ended: 0, recorded: 0 },
+      byContextPressure: { high: 0, critical: 0 },
+    },
+    active: [],
+    etag: 'gating-matrix-empty-presence',
+  });
   h.rubricGet.mockResolvedValue(null);
   h.pluginHostWarm.mockResolvedValue({});
   h.commitFailure = null;
@@ -1730,6 +2247,12 @@ beforeEach(() => {
   // the suite.
   setEntityEnum('pot', async () => []);
   setEntityEnum('harness', async () => []);
+  h.identityListingTest = false;
+  h.identityOperationRecord = null;
+  h.identityAdmittedToolNames = new Set();
+  h.identityListingRoleCaps = [];
+  h.identityObservedRoleCaps = [];
+  h.identityListedCandidateNames = [];
 });
 
 /* ─── caller-specified result projection (P-020 / D-041) ────────────────── */
@@ -1915,7 +2438,10 @@ describe('applyResultDoor choke point honors projected.skipResultDoor', () => {
     expect(textOf(res)).not.toContain(DOOR_TEST_BIG_TEXT);
   });
 
-  it('doors the promoted full source when an orient projection misses and fails open', async () => {
+  // EI-23774219620725180: an all-miss on an oversized promoted body no longer fails
+  // open into the full source (which then needed the door to bound it) — it REFUSES
+  // with the key list, so the door never has anything oversized to bound.
+  it('refuses with the key list — never the promoted full source — when an orient projection misses', async () => {
     const res = await callTool(
       'gatingtest:orient_ceiling_projection',
       { projection: { pick: ['notARealOrientField'] } },
@@ -1923,8 +2449,16 @@ describe('applyResultDoor choke point honors projected.skipResultDoor', () => {
       { format: 'json' },
     );
     expect(res.isError).not.toBe(true);
-    expect(res._meta?.resultProjection).toMatchObject({ applied: true });
-    expect(res._meta?.resultDoor).toMatchObject({ truncated: true, structural: true });
+    expect(res._meta?.resultProjection).toMatchObject({
+      applied: true,
+      notes: expect.arrayContaining([expect.stringContaining('WITHHELD')]),
+    });
+    const refused = projectionRefusalText(res);
+    expect(refused).toContain('projection_refused');
+    // 61 root keys: the list is bounded (40) and says how many it elided.
+    expect(refused).toContain('noise0 (string)');
+    expect(refused).toContain('… +21 more');
+    expect(refused).not.toContain(DOOR_TEST_BIG_TEXT);
   });
 });
 
@@ -2076,7 +2610,28 @@ describe('tools:invoke inherits the nested target result-door exemption', () => 
     expect(spill).not.toContain('SHAPED_CHECKPOINT_MARKER');
   });
 
-  it('bounds an implicit nested projection miss without labeling it explicit full', async () => {
+  it('uses the nested target name for tool-specific truncation recovery guidance', async () => {
+    const res = await callTool(
+      'tools:invoke',
+      {
+        name: 'gatingtest:truncated_source_spill',
+        args: { payloadTier: 'full' },
+      },
+      scoped('ws-test'),
+      { format: 'json' },
+    );
+    expect(res.isError).not.toBe(true);
+    const envelope = JSON.parse(textOf(res));
+    expect(envelope.incomplete).toMatchObject({
+      reason: 'explicit-full-request-overflow',
+      recoverable: false,
+    });
+    expect(envelope.incomplete.note).toContain('gatingtest:truncated_source_spill');
+    expect(envelope.incomplete.note).toContain('documented field-specific recovery handle');
+    expect(envelope.incomplete.note).not.toContain('wider per-field limit');
+  });
+
+  it('refuses an implicit nested projection miss with its key list, without labeling it explicit full', async () => {
     const res = await callTool(
       'tools:invoke',
       {
@@ -2092,7 +2647,11 @@ describe('tools:invoke inherits the nested target result-door exemption', () => 
       applied: true,
       notes: expect.arrayContaining([expect.stringContaining('pick matched NOTHING')]),
     });
-    expect(res._meta?.resultDoor).toMatchObject({ truncated: true, structural: true });
+    // The partial result may use a reference envelope; its payload must remain
+    // the bounded refusal, and must never become the promoted full source.
+    const refused = projectionRefusalText(res);
+    expect(refused).toContain('projection_refused');
+    expect(refused).not.toContain(FULL_SOURCE_CHECKPOINT_TAIL);
     expect(res._meta?.resultDoor).not.toMatchObject({ reason: 'explicit-full-request-overflow' });
   });
 });
@@ -2249,6 +2808,122 @@ describe('tools:invoke re-dispatch — `projection` nested in the target call\'s
     // joining the whole thing (textOf) would concatenate two JSON-adjacent
     // texts into invalid JSON.
     expect(JSON.parse((res.content[0] as { text: string }).text)).toEqual({ lines: ['alpha'] });
+  });
+
+  it('preserves outer projection pick paths through the final result door', async () => {
+    const res = await callTool(
+      'tools:invoke',
+      {
+        name: 'gatingtest:invoke_target',
+        args: { probe: 'deep' },
+        projection: {
+          pick: [
+            'results[].threadWindow.posts[].body',
+            'results[].threadWindow.posts[].author_id',
+            'results[].threadWindow.posts[].created_ts',
+          ],
+        },
+      },
+      scoped('ws-test'),
+      { format: 'json' },
+    );
+
+    expect(res.isError).not.toBe(true);
+    expect(res._meta?.resultDoor).toMatchObject({ truncated: true });
+    const payload = JSON.parse((res.content[0] as { type: 'text'; text: string }).text) as {
+      results: Array<{
+        threadWindow: { posts: Array<{ body?: string; author_id?: string; created_ts?: string }> };
+      }>;
+    };
+    const post = payload.results[0]?.threadWindow.posts[0];
+    expect(post).toMatchObject({ author_id: 'agent-1', created_ts: '2026-10-06T00:00:00.000Z' });
+    expect(post?.body).toMatch(/^selected-body-/);
+  });
+
+  it('preserves nested tools:invoke projection paths through raw JSON re-encoding and the final result door', async () => {
+    const paths = [
+      'results[].threadWindow.posts[].body',
+      'results[].threadWindow.posts[].author_id',
+      'results[].threadWindow.posts[].created_ts',
+    ];
+    const res = await callTool(
+      'tools:invoke',
+      {
+        name: 'gatingtest:invoke_target',
+        args: { probe: 'deep', projection: { pick: paths } },
+      },
+      scoped('ws-test'),
+      { format: 'json' },
+    );
+
+    expect(res.isError).not.toBe(true);
+    expect(res._meta?.resultDoor).toMatchObject({ truncated: true });
+    const payload = JSON.parse((res.content[0] as { type: 'text'; text: string }).text) as {
+      results: Array<{
+        threadWindow: { posts: Array<{ body?: string; author_id?: string; created_ts?: string }> };
+      }>;
+    };
+    const post = payload.results[0]?.threadWindow.posts[0];
+    expect(post).toMatchObject({ author_id: 'agent-1', created_ts: '2026-10-06T00:00:00.000Z' });
+    expect(post?.body).toMatch(/^selected-body-/);
+  });
+
+  it('preserves selected leaf fields across six rows through the tools:invoke result door', async () => {
+    const paths = [
+      'results[].threadWindow.posts[].body',
+      'results[].threadWindow.posts[].author_id',
+      'results[].threadWindow.posts[].created_ts',
+    ];
+    const res = await callTool(
+      'tools:invoke',
+      {
+        name: 'gatingtest:invoke_target',
+        args: { probe: 'deep-many' },
+        projection: { pick: paths },
+      },
+      scoped('ws-test'),
+      { format: 'json' },
+    );
+
+    expect(res.isError).not.toBe(true);
+    expect(res._meta?.resultDoor).toMatchObject({ truncated: true });
+    const payload = JSON.parse((res.content[0] as { type: 'text'; text: string }).text) as {
+      results: Array<{
+        threadWindow: { posts: Array<{ body?: string; author_id?: string; created_ts?: string }> };
+      }>;
+    };
+    const posts = payload.results[0]?.threadWindow.posts;
+    expect(posts).toHaveLength(6);
+    expect(posts?.map((post) => post.author_id)).toEqual(Array.from({ length: 6 }, (_, i) => `agent-${i}`));
+    expect(posts?.map((post) => post.created_ts)).toEqual(
+      Array.from({ length: 6 }, (_, i) => `2026-10-06T00:00:0${i}.000Z`),
+    );
+    expect(posts?.map((post, i) => post.body?.startsWith(`selected-body-${i}-`))).toEqual(
+      Array.from({ length: 6 }, () => true),
+    );
+  });
+
+  it('preserves selected payload.observation leaves through the final result door', async () => {
+    const res = await callTool(
+      'tools:invoke',
+      {
+        name: 'gatingtest:invoke_target',
+        args: { probe: 'observation' },
+        projection: { pick: ['payload.observation.ratings', 'payload.observation.subject'] },
+      },
+      scoped('ws-test'),
+      { format: 'json' },
+    );
+
+    expect(res.isError).not.toBe(true);
+    expect(res._meta?.resultDoor).toMatchObject({ truncated: true });
+    const payload = JSON.parse((res.content[0] as { type: 'text'; text: string }).text) as {
+      payload: { observation?: { ratings?: Array<{ clarity?: number; comments?: string }>; subject?: string } };
+    };
+    const observation = payload.payload.observation;
+    expect(observation?.ratings?.[0]).toMatchObject({ clarity: 5 });
+    expect(observation?.ratings?.[0]?.comments).toMatch(/^selected-rating-/);
+    expect(observation?.subject).toMatch(/^selected-subject-/);
   });
 
   it('materializes an implicit compact nested result as JSON before structured pick', async () => {
@@ -2409,7 +3084,7 @@ describe('validation refusals do not reserve MCP replay keys', () => {
       { idempotencyKey: validationKey },
     );
     expect(corrected.isError).toBeUndefined();
-    expect(JSON.parse(textOf(corrected))).toEqual({ ok: true, accepted: 'ok' });
+    expect(jsonOf(corrected)).toEqual({ ok: true, accepted: 'ok' });
     expect(replayValidationSeen).toHaveLength(1);
     expect(h.replayStores.map((row) => row.idempotencyKey)).toEqual([validationKey]);
 
@@ -2493,6 +3168,31 @@ describe('a replayed call records a tool_invocation row', () => {
     expect(seen.length).toBe(before);
     expect(h.withWorkspaceCalls).toEqual([]);
     expect(h.replayStores).toEqual([]);
+  });
+
+  it('does not synthesize unrequested structure or parse result-door envelopes', async () => {
+    const payload = { ok: true, item: null, reason: 'no_match' };
+    h.storedReplay = { content: [{ type: 'text', text: JSON.stringify(payload) }], _meta: { format: 'json' } };
+    const unrequested = await callTool('gatingtest:scoped', {}, scoped('ws-test'), {
+      idempotencyKey: 'idem-replay-structured-not-requested',
+    });
+    expect(unrequested.structuredContent).toBeUndefined();
+
+    const envelope = {
+      schemaVersion: 'papercusp.output-envelope/v1',
+      state: 'incomplete',
+      content: [{ kind: 'evidence-reference', uri: 'papercusp://scratch/example' }],
+    };
+    h.storedReplay = { content: [{ type: 'text', text: JSON.stringify(envelope) }], _meta: { format: 'json' } };
+    const doorResult = await callTool('gatingtest:scoped', {}, scoped('ws-test'), {
+      idempotencyKey: 'idem-replay-result-door-envelope',
+      structured: true,
+    });
+    expect(doorResult.structuredContent).toBeUndefined();
+    expect(JSON.parse(textOf(doorResult))).toMatchObject({
+      schemaVersion: 'papercusp.output-envelope/v1',
+      state: 'incomplete',
+    });
   });
 
   it('counts replayed output in the same explicit aggregate cohort', async () => {
@@ -2705,6 +3405,7 @@ describe('request-origin telemetry context', () => {
       superuserExtra('&workspace=ws-test&client=su-test&agent=codex&model=gpt-5&sig=secret-sig&exp=999', {
         authorization: 'Bearer test-su-bearer',
         'x-papercusp-client': 'su-header',
+        'x-papercusp-mcp-trace-id': 'e57ef6b3-46ef-4cc5-8214-fec83f2a463e',
         'user-agent': 'codex-cli-test',
         referer: 'http://127.0.0.1:3055/admin',
       }),
@@ -2714,6 +3415,7 @@ describe('request-origin telemetry context', () => {
     expect(origin).toMatchObject({
       transport: 'mcp',
       path: '/api/mcp',
+      mcpRequestTraceId: 'e57ef6b3-46ef-4cc5-8214-fec83f2a463e',
       query: {
         superuser: '1',
         workspace: 'ws-test',
@@ -3059,6 +3761,26 @@ describe('scoped-superuser hive clamp', () => {
     expect(textOf(res)).toContain('harness_forbidden');
   });
 
+  it('flag ON: treats dev:build_status harness as ambient through direct handler dispatch', async () => {
+    h.scopedClampFlag.value = true;
+    h.devBuildStatus.mockResolvedValueOnce({
+      prodBuild: { exists: true, mtimeMs: 1000 },
+      devBuild: { exists: true, mtimeMs: 1000 },
+      prodLogTail: null,
+      dev3055Reachable: true,
+      prod3070Reachable: true,
+    });
+    h.devTestFlakeRollup.mockResolvedValueOnce({ entries: [] });
+    h.devFlagFlakeSuspects.mockReturnValueOnce([]);
+
+    const res = await callTool('dev:build_status', { harness: 'foreign-ws-harness' }, hiveScoped());
+
+    expect(res.isError).not.toBe(true);
+    expect(textOf(res)).not.toContain('harness_forbidden');
+    expect(h.devBuildStatus).toHaveBeenCalledOnce();
+    expect(h.withWorkspaceCalls).not.toContain('other-ws');
+  });
+
   const GOAL_LOCAL_LAUNCH_TOOLS = [
     'fleet:launch-on-plan',
     'fleet:create',
@@ -3159,11 +3881,36 @@ describe('scoped-superuser hive clamp', () => {
   });
 
   it.each([
+    ['installSlug', { installSlug: '@singleton' }],
+    ['the harness alias', { harness: '@singleton' }],
+  ])('flag ON: allows routines:fire for one exact reserved harness-less routine via %s', async (_case, target) => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'routines:fire',
+      { ...target, name: 'bp-singleton-memory-precision-0' },
+      hiveScoped(),
+    );
+    expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+
+  it.each([
     ['a broad reserved-host read', { installSlug: '@singleton' }],
     ['a reserved-host rollup', { installSlug: '@singleton', name: 'bp-singleton-scout-0', rollup: true }],
   ])('flag ON: still rejects non-exact reserved-host routines:list targets (%s)', async (_case, args) => {
     h.scopedClampFlag.value = true;
     const res = await callTool('routines:list', args, hiveScoped());
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+  });
+
+  it.each([
+    ['an id-only fire', { id: 'routine-id', installSlug: '@singleton' }],
+    ['a wildcard fire', { name: '*', installSlug: '@singleton' }],
+    ['a catch-all fire', { name: 'ALL', installSlug: '@singleton' }],
+    ['a sibling-hive routine', { name: 'bp-singleton-memory-precision-0', installSlug: 'hiveB-home' }],
+  ])('flag ON: still rejects routines:fire without a safe exact target (%s)', async (_case, args) => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('routines:fire', args, hiveScoped());
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain('harness_forbidden');
   });
@@ -3532,17 +4279,20 @@ describe('scoped-superuser hive clamp', () => {
     const res = await callTool('coord:presence', { scope: 'workspace' }, hiveScoped());
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain('hive_forbidden');
+    expect(h.assemblePresenceSnapshot).not.toHaveBeenCalled();
   });
 
   it('flag ON: allows targeted coord:presence scope:\'workspace\' (same scope as its owner default)', async () => {
     h.scopedClampFlag.value = true;
     const res = await callTool(
       'coord:presence',
-      { scope: 'workspace', workspace: 'ws-1', owner: 'su-known-peer' },
+      { scope: 'workspace', workspace: 'ws-1', owner: 'su-known-peer', include_coupling: false },
       hiveScoped(),
     );
     expect(res.isError).not.toBe(true);
     expect(textOf(res)).not.toContain('hive_forbidden');
+    expect(h.assemblePresenceSnapshot).toHaveBeenCalledTimes(1);
+    expect(h.assemblePresenceSnapshot.mock.calls[0]?.[1]).toMatchObject({ owner: 'su-known-peer' });
   });
 
   it.each([
@@ -3553,7 +4303,7 @@ describe('scoped-superuser hive clamp', () => {
     h.scopedClampFlag.value = true;
     const res = await callTool(
       'coord:presence',
-      { scope: 'workspace', workspace: 'ws-1', ...selector },
+      { scope: 'workspace', workspace: 'ws-1', ...selector, include_coupling: false },
       hiveScoped(),
     );
     expect(res.isError).not.toBe(true);
@@ -3694,6 +4444,51 @@ describe('tools/list — strict-mode listing matrix', () => {
     }
   });
 
+  it('records native-session verifier diagnostics when tools/list rejects before listing tools', async () => {
+    const nativeThread = 'native-list-verifier-session';
+    h.nativeSessionVerifierFailure = {
+      sessionId: nativeThread,
+      error: Object.assign(new Error(`verification timed out for ${nativeThread} and su-owner`), {
+        name: 'OrgTxnTimeoutError',
+        pgCode: '57014',
+        nativeSessionVerificationPhase: 'owner_candidate_rows_lookup',
+      }),
+    };
+    const meta = { threadId: nativeThread };
+    const extra = {
+      ...(superuserExtra('&workspace=ws-test&client=su-owner') as Record<string, unknown>),
+      _meta: meta,
+    };
+
+    await expect(listTools(extra)).rejects.toThrow(/mcp_auth_failed.*superuser_native_session_verifier_unavailable/);
+
+    expect(h.nativeSessionCalls).toEqual([{ ownerId: 'su-owner', sessionId: nativeThread }]);
+    expect(h.invocations).toHaveLength(1);
+    expect(h.invocations[0]).toMatchObject({
+      toolName: 'tools/list',
+      status: 'error',
+      errorCode: 'mcp_auth_failed',
+      errorMessage: 'superuser_native_session_verifier_unavailable',
+      metadataJson: {
+        mcpAuthFailure: {
+          reason: 'superuser_native_session_verifier_unavailable',
+          contextVerified: false,
+          nativeSession: {
+            carrier: 'meta:threadId',
+            candidateAdvSessionId: null,
+            verifierFailure: {
+              name: 'OrgTxnTimeoutError',
+              code: '57014',
+              phase: 'owner_candidate_rows_lookup',
+            },
+          },
+        },
+      },
+    });
+    expect(JSON.stringify(h.invocations[0]?.metadataJson)).not.toContain(nativeThread);
+    expect(JSON.stringify(h.invocations[0]?.metadataJson)).not.toContain('su-owner');
+  });
+
   it('?superuser=1 from a NON-loopback host is a failed ctx → throws loud auth error (WI-574, real isLoopbackRequest)', async () => {
     await expect(
       listTools(
@@ -3738,6 +4533,40 @@ describe('tools/list — strict-mode listing matrix', () => {
   it('a different role does NOT see the scoper-only tool', async () => {
     const res = await listTools(extraFor(signedUrl({ role: 'worker' })));
     expect(res.tools.map((t) => t.name)).not.toContain('gatingtest:scoped');
+  });
+
+  it('adds only receipt-listed tools admitted by the identity surface for a custom app worker', async () => {
+    h.identityListingTest = true;
+    h.identityOperationRecord = {
+      acceptedOperation: {
+        kind: 'blueprint-operation-worker',
+        requiredTools: ['work_items:claim', 'work_items:checkpoint', 'plans:set-status'],
+      },
+    };
+    h.identityAdmittedToolNames = new Set(['work_items:claim']);
+    h.identityListingRoleCaps = ['work_items:read', 'work_items:write'];
+    h.potHomeSlugForHarness.mockResolvedValueOnce('calendar');
+
+    const role = 'calendar-prep-worker';
+    expect(listMcpProjections(role as never, 'engineer').some((tool) => tool.name === 'work_items:claim')).toBe(false);
+    expect(lookupByMcpName('work_items:claim')?.capabilities).toContain('work_items:write');
+    expect(lookupByMcpName('plans:set-status')?.capabilities).toContain('plans:write');
+
+    const res = await listTools({
+      ...extraFor(signedUrl({ harness: 'calendar', role })) as object,
+      sessionId: 'mcp-accepted-operation-listing',
+    });
+    const names = res.tools.map((tool) => tool.name);
+
+    expect(h.identityListedCandidateNames).toContain('work_items:claim');
+    expect(h.identityListedCandidateNames).toContain('work_items:checkpoint');
+    expect(h.identityListedCandidateNames).toContain('plans:set-status');
+    expect(names).toContain('work_items:claim');
+    expect(names).not.toContain('work_items:checkpoint'); // receipt-required, but the identity surface did not admit it
+    expect(names).not.toContain('plans:set-status'); // receipt-required, but not admitted by the identity surface
+    expect(names).not.toContain('gatingtest:engineer'); // absent from the receipt
+    expect(h.identityObservedRoleCaps).toContain('work_items:write');
+    expect(h.identityObservedRoleCaps).not.toContain('plans:write');
   });
 
   it('?tools= allowlist narrows the listing to exactly the named set', async () => {
@@ -3912,6 +4741,23 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
     expect(textOf(res)).toBe(
       'role_not_allowed: Role "worker" cannot call tool "gatingtest:scoped" (allowed roles: scoper)',
     );
+    expect(seen).toEqual([]);
+    // The allowlist is knowable from the target definition; a denial must not
+    // wait for principal synthesis via withWorkspace.
+    expect(h.withWorkspaceCalls).toEqual([]);
+  });
+
+  it('rejects judge from docs:search before synthesizing a workspace principal', async () => {
+    const res = await callTool(
+      'docs:search',
+      { query: 'authorization ordering regression fixture' },
+      extraFor(signedUrl({ role: 'judge' })),
+    );
+
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('role_not_allowed:');
+    expect(textOf(res)).toContain('docs:search');
+    expect(h.withWorkspaceCalls).toEqual([]);
     expect(seen).toEqual([]);
   });
 
@@ -4147,6 +4993,24 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
     expect(call.ctx.tx).toBe(h.fakeTx);
     expect(h.withWorkspaceCalls).toEqual(['ws-arg']);
     expect(call.alsWorkspace).toBe('ws-arg');
+  });
+
+  it('EI-25982690010642755: harness:get and harness:status expose the per-call workspace tx path', async () => {
+    const getRes = await callTool(
+      'harness:get',
+      { slug: 'missing-project', workspace: 'ws-get' },
+      superuserExtra(),
+    );
+    expect(textOf(getRes)).not.toContain('requires a workspace-scoped call');
+    expect(h.withWorkspaceCalls).toEqual(['ws-get']);
+
+    const statusRes = await callTool(
+      'harness:status',
+      { slug: 'missing-project', workspace: 'ws-status' },
+      superuserExtra(),
+    );
+    expect(textOf(statusRes)).not.toContain('requires a workspace-scoped call');
+    expect(h.withWorkspaceCalls).toEqual(['ws-get', 'ws-status']);
   });
 
   it('an UNSCOPED superuser call with NO workspace gets neither tx nor principal nor ALS pin', async () => {
@@ -4386,6 +5250,23 @@ describe('tools:invoke threads the TARGET tool\'s tx/principal, not the tx-less 
     expect(h.withWorkspaceCalls).toContain('ws-test');
   });
 
+  it('rejects a nested out-of-role target before synthesizing its workspace principal', async () => {
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'gatingtest:scoped', args: {} },
+      extraFor(signedUrl({ role: 'worker' })),
+    );
+
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain(
+      'role_not_allowed: Role "worker" cannot call tool "gatingtest:scoped"',
+    );
+    // The wrapper call still synthesizes its own principal; the forbidden target
+    // must not add another workspace acquisition.
+    expect(h.withWorkspaceCalls).toEqual(['ws-test']);
+    expect(seen).toEqual([]);
+  });
+
   it('preserves the caller harness on a nested target (EI-21238811054889658)', async () => {
     h.scopedClampFlag.value = false;
     const res = await callTool(
@@ -4453,6 +5334,30 @@ describe('tools:invoke re-dispatch inherits the scoped-superuser hive clamp (EI-
     );
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain('harness_forbidden');
+  });
+
+  it('flag ON: treats dev:build_status harness as ambient through nested handler dispatch', async () => {
+    h.scopedClampFlag.value = true;
+    h.devBuildStatus.mockResolvedValueOnce({
+      prodBuild: { exists: true, mtimeMs: 1000 },
+      devBuild: { exists: true, mtimeMs: 1000 },
+      prodLogTail: null,
+      dev3055Reachable: true,
+      prod3070Reachable: true,
+    });
+    h.devTestFlakeRollup.mockResolvedValueOnce({ entries: [] });
+    h.devFlagFlakeSuspects.mockReturnValueOnce([]);
+
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'dev:build_status', args: { harness: 'foreign-ws-harness' } },
+      hiveScoped(),
+    );
+
+    expect(res.isError).not.toBe(true);
+    expect(textOf(res)).not.toContain('harness_forbidden');
+    expect(h.devBuildStatus).toHaveBeenCalledOnce();
+    expect(h.withWorkspaceCalls).not.toContain('other-ws');
   });
 
   const GOAL_LOCAL_LAUNCH_TOOLS = [
@@ -4549,11 +5454,36 @@ describe('tools:invoke re-dispatch inherits the scoped-superuser hive clamp (EI-
   });
 
   it.each([
+    ['installSlug', { installSlug: '@singleton' }],
+    ['the harness alias', { harness: '@singleton' }],
+  ])('flag ON: allows nested routines:fire for one exact reserved harness-less routine via %s', async (_case, target) => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'routines:fire', args: { ...target, name: 'bp-singleton-memory-precision-0' } },
+      hiveScoped(),
+    );
+    expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+
+  it.each([
     ['a broad reserved-host read', { installSlug: '@singleton' }],
     ['a reserved-host rollup', { installSlug: '@singleton', name: 'bp-singleton-scout-0', rollup: true }],
   ])('flag ON: nested routines:list still rejects non-exact reserved-host targets (%s)', async (_case, args) => {
     h.scopedClampFlag.value = true;
     const res = await callTool('tools:invoke', { name: 'routines:list', args }, hiveScoped());
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+  });
+
+  it.each([
+    ['an id-only fire', { id: 'routine-id', installSlug: '@singleton' }],
+    ['a wildcard fire', { name: '*', installSlug: '@singleton' }],
+    ['a catch-all fire', { name: 'ALL', installSlug: '@singleton' }],
+    ['a sibling-hive routine', { name: 'bp-singleton-memory-precision-0', installSlug: 'hiveB-home' }],
+  ])('flag ON: nested routines:fire still rejects unsafe targets (%s)', async (_case, args) => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('tools:invoke', { name: 'routines:fire', args }, hiveScoped());
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain('harness_forbidden');
   });
@@ -4699,18 +5629,374 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
     expect(seen[0].ctx.uiClientId).toBe('su-header-sid');
   });
 
+  it('binds Codex per-call thread metadata instead of an inherited process header', async () => {
+    const native = '01a1154e-07f6-7450-a631-8b89b496cfa7';
+    const inherited = '01a1152c-db72-7be2-8a02-57c018d99469';
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 36488, session_id: native, active: true }]]]);
+    const meta = { threadId: native, sessionId: native };
+    const extra = {
+      // As in the existing successful-native audit, keep the positive fixture
+      // unscoped: the PG-free harness has no persisted workspace launch row.
+      ...(superuserExtra('&client=su-owner&native_session=stale-query', {
+        'x-papercusp-native-session': inherited,
+      }) as Record<string, unknown>),
+      // The SDK copies request.params._meta to RequestHandlerExtra._meta.
+      _meta: meta,
+    };
+    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+    expect(res.isError, textOf(res)).toBeUndefined();
+    expect(h.nativeSessionCalls).toEqual([{ ownerId: 'su-owner', sessionId: native }]);
+    expect(seen[0].ctx).toMatchObject({ uiClientId: 'su-owner', advSessionId: 36488 });
+    expect(h.invocations[0]?.ctx.requestOrigin).toMatchObject({ nativeSession: {
+      carrier: 'meta:threadId',
+      valueFingerprint: createHash('sha256').update(native).digest('hex'),
+      binding: 'bound',
+      candidateAdvSessionId: 36488,
+    } });
+    expect(JSON.stringify(h.invocations[0]?.ctx.requestOrigin)).not.toContain(native);
+    expect(JSON.stringify(h.invocations[0]?.ctx.requestOrigin)).not.toContain(inherited);
+  });
+
+  it('rejects a foreign per-call thread even when its inherited header matches the owner', async () => {
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: 'native-owner', active: true }]]]);
+    const meta = { threadId: 'native-nested', sessionId: 'native-owner' };
+    const extra = {
+      ...(superuserExtra('&workspace=ws-test&client=su-owner', {
+        'x-papercusp-native-session': 'native-owner',
+      }) as Record<string, unknown>),
+      _meta: meta,
+    };
+    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+    expect(res.isError).toBe(true);
+    expect(h.nativeSessionCalls).toEqual([{ ownerId: 'su-owner', sessionId: 'native-nested' }]);
+    expect(seen).toHaveLength(0);
+    expect(h.invocations[0]).toMatchObject({ errorCode: 'mcp_auth_failed', metadataJson: {
+      mcpAuthFailure: { reason: 'superuser_foreign_native_session', nativeSession: {
+        carrier: 'meta:threadId',
+        valueFingerprint: createHash('sha256').update('native-nested').digest('hex'),
+        candidateAdvSessionId: 541,
+      } },
+    } });
+  });
+
+  it.each([null, 42, '', '   ', ['native-owner']].map((threadId) => ({ threadId })))('fails closed on malformed per-call thread metadata $threadId', async ({ threadId }) => {
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: 'native-owner', active: true }]]]);
+    const meta = { threadId };
+    const extra = {
+      ...(superuserExtra('&workspace=ws-test&client=su-owner', {
+        'x-papercusp-native-session': 'native-owner',
+      }) as Record<string, unknown>),
+      _meta: meta,
+    };
+    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('superuser_native_session_unverified');
+    expect(h.nativeSessionCalls).toHaveLength(0);
+    expect(seen).toHaveLength(0);
+  });
+
+  it('fails closed with a retryable verifier reason when per-call verification throws despite a matching inherited SID', async () => {
+    const nativeThread = 'native-child-session';
+    const inheritedSession = 'native-parent-session';
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: inheritedSession, active: true }]]]);
+    h.nativeSessionVerifierFailure = {
+      sessionId: nativeThread,
+      error: Object.assign(new Error(`verification timed out for ${nativeThread} and su-owner`), {
+        name: 'OrgTxnTimeoutError',
+        pgCode: '57014',
+      }),
+    };
+    const meta = { threadId: nativeThread };
+    const extra = {
+      ...(superuserExtra('&workspace=ws-test&client=su-owner', {
+        'x-papercusp-native-session': inheritedSession,
+      }) as Record<string, unknown>),
+      _meta: meta,
+    };
+
+    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('superuser_native_session_verifier_unavailable');
+    expect(h.nativeSessionCalls).toEqual([{ ownerId: 'su-owner', sessionId: nativeThread }]);
+    expect(seen).toHaveLength(0);
+    expect(h.invocations[0]).toMatchObject({
+      status: 'error',
+      errorMessage: 'superuser_native_session_verifier_unavailable',
+      metadataJson: {
+        mcpAuthFailure: {
+          reason: 'superuser_native_session_verifier_unavailable',
+          nativeSession: {
+            carrier: 'meta:threadId',
+            candidateAdvSessionId: null,
+            verifierFailure: {
+              name: 'OrgTxnTimeoutError',
+              code: '57014',
+              message: 'verification timed out for [redacted] and [redacted]',
+              durationMs: expect.any(Number),
+              stageTimings: {
+                omittedStages: 0,
+                stages: [expect.objectContaining({
+                  stage: 'native-session-verifier-global-transaction',
+                  elapsedMs: expect.any(Number),
+                  outcome: 'rejected',
+                })],
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(JSON.stringify(h.invocations[0]?.metadataJson)).toContain('[redacted]');
+    expect(JSON.stringify(h.invocations[0]?.metadataJson)).not.toContain(nativeThread);
+    expect(JSON.stringify(h.invocations[0]?.metadataJson)).not.toContain('su-owner');
+  });
+
+  it.each(['acquire', 'begin', 'setup-read-only', 'setup-timeouts'])(
+    'retains typed %s deadline diagnostics when native verification fails closed', async (phase) => {
+    const { DbCallDeadlineError, beginAcquire, recordPoolMax, resetAcquireRegistryForTest } = await import('@papercusp/db-org');
+    const { withNamedQueryDiagnosticContext } = await import('../../agent-tools/db-diagnostic-correlation-wiring');
+    resetAcquireRegistryForTest();
+    recordPoolMax('org-admin', 19);
+    const waitingTicket = beginAcquire('org-admin');
+    const heldTicket = beginAcquire('org-admin');
+    heldTicket.acquired();
+    const traceId = 'e57ef6b3-46ef-4cc5-8214-fec83f2a463e';
+    const nativeThread = 'native-deadline-session';
+    const label = `boundedOrgTxn:${phase}(admin)`;
+    const deadline = withNamedQueryDiagnosticContext('mcp.nativeSessionVerifier', () => {
+      const verifierTicket = beginAcquire('org-admin');
+      const error = new DbCallDeadlineError(label, 1_000, 1_771, 'org-admin');
+      verifierTicket.release();
+      return error;
+    }, traceId);
+    h.nativeSessionVerifierFailure = { sessionId: nativeThread, error: deadline };
+    const meta = { threadId: nativeThread };
+    const extra = {
+      ...(superuserExtra('&workspace=ws-test&client=su-owner', {
+        'x-papercusp-native-session': 'native-inherited-session',
+        [MCP_REQUEST_TRACE_HEADER]: traceId,
+      }) as Record<string, unknown>),
+      _meta: meta,
+    };
+
+    try {
+      const res = await callTool('gatingtest:scoped', {}, extra, meta);
+
+      expect(res.isError).toBe(true);
+      expect(textOf(res)).toContain('superuser_native_session_verifier_unavailable');
+      expect(seen).toHaveLength(0);
+      expect(h.invocations[0]).toMatchObject({
+        metadataJson: { mcpAuthFailure: { nativeSession: { verifierFailure: {
+          name: 'DbCallDeadlineError',
+          acquisition: {
+            label,
+            pool: 'org-admin',
+            deadlineMs: 1_000,
+            elapsedMs: 1_771,
+            retryable: deadline.retryable,
+            pressure: {
+              pid: process.pid,
+              pool: 'org-admin',
+              waiting: 1,
+              held: 1,
+              max: 19,
+              lastAcquiredAgoMs: expect.any(Number),
+              totalAcquired: 1,
+            },
+            ticketSample: {
+              capacity: 8,
+              active: 3,
+              omitted: 0,
+              tickets: expect.arrayContaining([
+                expect.objectContaining({
+                  state: 'waiting',
+                  requestId: traceId,
+                  operation: 'mcp.nativeSessionVerifier',
+                }),
+              ]),
+            },
+          },
+        } } } },
+      });
+      expect(JSON.stringify(h.invocations[0]?.metadataJson)).not.toContain(nativeThread);
+      expect(h.nativeSessionDiagnosticContexts[0]).toMatchObject({
+        state: 'linked',
+        correlation: { requestId: traceId, operation: 'mcp.nativeSessionVerifier' },
+      });
+      expect(h.nativeVerifierSampling).toEqual([[
+        'native-session-verifier-deadline',
+        {
+          pid: process.pid,
+          requestFingerprint: createHash('sha256').update(traceId, 'utf8').digest('hex').slice(0, 16),
+        },
+      ]]);
+    } finally {
+      waitingTicket.release();
+      heldTicket.release();
+      resetAcquireRegistryForTest();
+    }
+  });
+
+  it('does not accept deadline-shaped fields on an ordinary verifier error as acquisition measurements', async () => {
+    const nativeThread = 'native-shaped-error-session';
+    h.nativeSessionVerifierFailure = {
+      sessionId: nativeThread,
+      error: Object.assign(new Error('verification unavailable'), {
+        name: 'DbCallDeadlineError',
+        label: 'unmeasured-label',
+        pool: 'org-admin',
+        deadlineMs: 1_000,
+        elapsedMs: 1_771,
+        retryable: true,
+      }),
+    };
+    const meta = { threadId: nativeThread };
+    const extra = {
+      ...(superuserExtra('&workspace=ws-test&client=su-owner') as Record<string, unknown>),
+      _meta: meta,
+    };
+    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+
+    expect(res.isError).toBe(true);
+    expect(seen).toHaveLength(0);
+    const metadata = h.invocations[0]?.metadataJson as {
+      mcpAuthFailure?: { nativeSession?: { verifierFailure?: Record<string, unknown> } };
+    };
+    expect(metadata.mcpAuthFailure?.nativeSession?.verifierFailure).not.toHaveProperty('acquisition');
+    expect(h.nativeVerifierSampling).toHaveLength(0);
+  });
+
+  it.each([
+    ['statement timeout', 'canceling statement due to statement timeout', true],
+    ['caller cancellation', 'canceling statement due to user request', false],
+  ] as const)('fingerprints native verifier SQLSTATE 57014 failures and samples only %s', async (_case, message, shouldSample) => {
+    const nativeThread = 'native-query-timeout-session';
+    const traceId = '8bc88a29-a84c-4c90-a10e-620e682fd841';
+    const requestFingerprint = createHash('sha256').update(traceId, 'utf8').digest('hex').slice(0, 16);
+    h.nativeSessionVerifierFailure = {
+      sessionId: nativeThread,
+      error: Object.assign(new Error(message), {
+        name: 'PostgresError',
+        code: '57014',
+        nativeSessionVerificationPhase: 'owner_candidate_rows_lookup',
+      }),
+    };
+    const meta = { threadId: nativeThread };
+    const extra = {
+      ...(superuserExtra('&workspace=ws-test&client=su-owner', {
+        'x-papercusp-native-session': 'native-inherited-session',
+        [MCP_REQUEST_TRACE_HEADER]: traceId,
+      }) as Record<string, unknown>),
+      _meta: meta,
+    };
+
+    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+
+    expect(res.isError).toBe(true);
+    expect(h.nativeVerifierSampling).toEqual(shouldSample ? [[
+      'native-session-verifier-statement-timeout',
+      { pid: process.pid, requestFingerprint },
+    ]] : []);
+    expect(h.invocations[0]).toMatchObject({
+      metadataJson: {
+        mcpAuthFailure: {
+          nativeSession: {
+            verifierFailure: { name: 'PostgresError', code: '57014', requestFingerprint },
+          },
+        },
+      },
+    });
+  });
+
+  it('redacts identifiers and connection URLs in typed native verifier deadline fields', async () => {
+    const { DbCallDeadlineError } = await import('@papercusp/db-org');
+    const nativeThread = 'native-redacted-deadline-session';
+    const connection = 'postgresql://secret:credential@localhost/database';
+    const deadline = new DbCallDeadlineError(`${nativeThread} su-owner ${connection}`, 1_000, 1_771, nativeThread);
+    h.nativeSessionVerifierFailure = { sessionId: nativeThread, error: deadline };
+    const meta = { threadId: nativeThread };
+    const extra = {
+      ...(superuserExtra('&workspace=ws-test&client=su-owner') as Record<string, unknown>),
+      _meta: meta,
+    };
+
+    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+
+    expect(res.isError).toBe(true);
+    expect(seen).toHaveLength(0);
+    expect(h.invocations[0]).toMatchObject({
+      metadataJson: { mcpAuthFailure: { nativeSession: { verifierFailure: {
+        acquisition: {
+          label: '[redacted] [redacted] [redacted-connection]',
+          pool: '[redacted]',
+          deadlineMs: 1_000,
+          elapsedMs: 1_771,
+        },
+      } } } },
+    });
+    const recorded = JSON.stringify(h.invocations[0]?.metadataJson);
+    for (const sensitive of [nativeThread, 'su-owner', connection, 'secret', 'credential']) {
+      expect(recorded).not.toContain(sensitive);
+    }
+  });
+
   it('rejects an inherited owner SID when the native CLI session is bound elsewhere', async () => {
     h.nativeSessionBinding = 'foreign';
     const res = await callTool(
       'gatingtest:scoped',
       {},
-      superuserExtra('&client=su-parent-sid', {
+      superuserExtra('&workspace=ws-test&client=su-parent-sid', {
         'x-papercusp-native-session': 'native-child-session',
       }),
     );
     expect(res.isError).toBe(true);
     expect(h.nativeSessionCalls).toEqual([{ ownerId: 'su-parent-sid', sessionId: 'native-child-session' }]);
     expect(seen).toHaveLength(0);
+    expect(h.invocations).toHaveLength(1);
+    expect(h.invocations[0]).toMatchObject({
+      status: 'error',
+      errorCode: 'mcp_auth_failed',
+      errorMessage: 'superuser_foreign_native_session',
+      metadataJson: {
+        mcpAuthFailure: {
+          reason: 'superuser_foreign_native_session',
+          contextVerified: false,
+          nativeSession: {
+            carrier: 'header:x-papercusp-native-session',
+            valueFingerprint: createHash('sha256').update('native-child-session', 'utf8').digest('hex'),
+            candidateAdvSessionId: 1,
+          },
+        },
+      },
+    });
+    expect(h.invocations[0]?.args).toBeUndefined();
+    expect(JSON.stringify(h.invocations[0]?.metadataJson)).not.toContain('native-child-session');
+  });
+
+  it('records the native-session URL carrier without persisting its value', async () => {
+    h.nativeSessionBinding = 'foreign';
+    const res = await callTool(
+      'gatingtest:scoped',
+      {},
+      superuserExtra('&workspace=ws-test&client=su-parent-sid&native_session=native-child-session'),
+    );
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toBe('request_rejected: superuser_foreign_native_session');
+    expect(h.nativeSessionCalls).toEqual([{ ownerId: 'su-parent-sid', sessionId: 'native-child-session' }]);
+    expect(seen).toHaveLength(0);
+    expect(h.invocations).toHaveLength(1);
+    expect(h.invocations[0]?.metadataJson).toMatchObject({
+      mcpAuthFailure: {
+        reason: 'superuser_foreign_native_session',
+        contextVerified: false,
+        nativeSession: {
+          carrier: 'query:native_session',
+          valueFingerprint: createHash('sha256').update('native-child-session', 'utf8').digest('hex'),
+          candidateAdvSessionId: 1,
+        },
+      },
+    });
+    expect(JSON.stringify(h.invocations[0]?.metadataJson)).not.toContain('native-child-session');
   });
 
   it('allows the owner incarnation when Claude supplies its native session in the URL', async () => {
@@ -4724,6 +6010,23 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
     expect(h.nativeSessionCalls).toEqual([{ ownerId: 'su-owner', sessionId: 'native-owner-session' }]);
     expect(seen).toHaveLength(1);
     expect(seen[0].ctx.uiClientId).toBe('su-owner');
+    expect(seen[0].ctx.advSessionId).toBe(1);
+  });
+
+  it('allows the owner incarnation when Codex supplies its native session in the header', async () => {
+    h.nativeSessionBinding = 'bound';
+    const res = await callTool(
+      'gatingtest:scoped',
+      {},
+      superuserExtra('&client=su-owner', {
+        'x-papercusp-native-session': 'native-owner-session',
+      }),
+    );
+    expect(res.isError).toBeUndefined();
+    expect(h.nativeSessionCalls).toEqual([{ ownerId: 'su-owner', sessionId: 'native-owner-session' }]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0].ctx.uiClientId).toBe('su-owner');
+    expect(seen[0].ctx.advSessionId).toBe(1);
   });
 
   it('Mcp-Session-Id still identifies a caller that supplied NO SID at all', async () => {
@@ -4735,5 +6038,292 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
     expect(res.isError).toBeUndefined();
     expect(seen).toHaveLength(1);
     expect(seen[0].ctx.uiClientId).toBe('transport-only-id');
+  });
+});
+
+describe('successful native-session audit (get-feedback D-006)', () => {
+  it.each([
+    ['wildcard workspace', { spawn: { workspaceId: '*' }, native: {} }],
+    ['mismatched adv-session id', { spawn: {}, native: { candidateAdvSessionId: 542 } }],
+    ['invalid adv-session id', { spawn: { advSessionId: 0 }, native: {} }],
+    ['malformed call fingerprint', { spawn: {}, native: { callIdFingerprint: 'not-a-sha256' } }],
+    ['malformed session fingerprint', { spawn: {}, native: { valueFingerprint: 'not-a-sha256' } }],
+  ])('isolates native_tool_owner_invalid_lineage for a %s', async (_case, over) => {
+    const local = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'local-dispatch' }] }));
+    const { spawn: spawnOver, native: nativeOver } = over;
+    const request = {
+      toolName: 'gatingtest:scoped',
+      args: {},
+      spawn: {
+        workspaceId: 'ws-test',
+        advSessionId: 541,
+        uiClientId: 'su-owner',
+        ...spawnOver,
+        requestOrigin: { nativeSession: {
+          carrier: 'meta:threadId',
+          binding: 'bound',
+          candidateAdvSessionId: 541,
+          callIdFingerprint: 'a'.repeat(64),
+          valueFingerprint: 'b'.repeat(64),
+          ...nativeOver,
+        } },
+      } as unknown as BuiltSpawnContext,
+      fullSource: false,
+      structuredSource: false,
+      indirect: false,
+    };
+
+    await expect(runNativeMcpTargetOnOwner(request, local, 1_000))
+      .rejects.toThrow('native_tool_owner_invalid_lineage');
+    expect(local).not.toHaveBeenCalled();
+  });
+
+  it('retains exact native call correlation only with a bound per-call thread', async () => {
+    const native = 'native-owner-session', callId = 'call_exact-native-item';
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: native, active: true }]]]);
+    // A concrete workspace requires the persisted adv_sessions authority row.
+    // Keep this row deliberately ungoverned: the case tests correlation binding,
+    // not the identity-grant policy attached to a launched agent.
+    h.kernelAuthority.rows = [{
+      control_state: null,
+      control_generation: null,
+      workspace_id: 'ws-test',
+      adv_session_id: 541,
+      adv_session_xmin: 'native-test-row-version',
+      launch_header_known: false,
+      launch_spec_type: 'object',
+      launch_spec_workspace_id: 'ws-test',
+      launch_spec_harness_slug: 'papercup',
+      launch_spec_has_accepted_operation: false,
+      launch_spec_accepted_operation: null,
+    }];
+    h.kernelAuthority.launchRecord = {
+      launch_spec: { workspaceId: 'ws-test', harnessSlug: 'papercup' },
+      launch_spec_xmin: 'native-test-row-version',
+    };
+    const meta = { threadId: native, callId };
+    const extra = { ...(superuserExtra('&workspace=ws-test&client=su-owner') as Record<string, unknown>), _meta: meta };
+    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+    expect(res.isError, textOf(res)).toBeUndefined();
+    expect(h.nativeSessionWorkspaceScopes).toEqual(['ws-test']);
+    expect(h.invocations[0]?.ctx.requestOrigin).toMatchObject({ nativeSession: {
+      carrier: 'meta:threadId', binding: 'bound', candidateAdvSessionId: 541,
+      callIdFingerprint: createHash('sha256').update(callId, 'utf8').digest('hex'),
+    } });
+    expect(JSON.stringify(h.invocations[0]?.ctx.requestOrigin)).not.toContain(callId);
+    expect(JSON.stringify(h.invocations[0]?.ctx.requestOrigin)).not.toContain(native);
+  });
+
+  it.each([undefined, '', ' leading-space', 'trailing-space ', 'a/b', 'x'.repeat(257), 7, { callId: 'nested' }])(
+    'omits malformed native call correlation %j without changing ordinary authorization', async (callId) => {
+      const native = 'native-owner-session';
+      h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: native, active: true }]]]);
+      const meta = { threadId: native, callId };
+      const extra = { ...(superuserExtra('&client=su-owner') as Record<string, unknown>), _meta: meta };
+      const res = await callTool('gatingtest:scoped', {}, extra, meta);
+      expect(res.isError, textOf(res)).toBeUndefined();
+      expect(h.invocations[0]?.ctx.requestOrigin?.nativeSession).not.toHaveProperty('callIdFingerprint');
+    },
+  );
+
+  it.each(['header', 'unbound'])('cannot borrow native call correlation from a %s session carrier', async (kind) => {
+    const native = 'native-owner-session';
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: kind === 'unbound' ? null : native, active: true }]]]);
+    const meta = { ...(kind === 'unbound' ? { threadId: native } : {}), callId: 'call_unproven' };
+    const extra = { ...(superuserExtra('&client=su-owner', { 'x-papercusp-native-session': native }) as Record<string, unknown>), _meta: meta };
+    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+    expect(res.isError, textOf(res)).toBeUndefined();
+    expect(h.invocations[0]?.ctx.requestOrigin?.nativeSession).not.toHaveProperty('callIdFingerprint');
+  });
+
+  it.each([
+    { carrier: 'header:x-papercusp-native-session', query: '&client=su-owner', headers: { 'x-papercusp-native-session': 'native-owner-session' } },
+    { carrier: 'query:native_session', query: '&client=su-owner&native_session=native-owner-session', headers: {} as Record<string, string> },
+  ])('persists the $carrier fingerprint and bound row on the invocation context', async ({ carrier, query, headers }) => {
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: 'native-owner-session', active: true }]]]);
+    const res = await callTool('gatingtest:scoped', {}, superuserExtra(query, headers));
+    expect(res.isError, textOf(res)).toBeUndefined();
+    const invocation = h.invocations.find(row => row.toolName === 'gatingtest:scoped');
+    expect(invocation?.ctx.requestOrigin).toMatchObject({
+      nativeSession: {
+        carrier,
+        valueFingerprint: createHash('sha256').update('native-owner-session', 'utf8').digest('hex'),
+        binding: 'bound',
+        candidateAdvSessionId: 541,
+      },
+    });
+    expect(JSON.stringify(invocation?.ctx.requestOrigin)).not.toContain('native-owner-session');
+  });
+
+  it('distinguishes an unbound presentation from an omitted native carrier without changing dispatch', async () => {
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: null, active: true }]]]);
+    const presented = await callTool('gatingtest:scoped', {}, superuserExtra('&client=su-owner&native_session=unbound-value'));
+    expect(presented.isError, textOf(presented)).toBeUndefined();
+    expect(seen[0].ctx.advSessionId).toBeUndefined();
+    expect(h.invocations[0]?.ctx.requestOrigin).toMatchObject({
+      nativeSession: {
+        carrier: 'query:native_session',
+        valueFingerprint: createHash('sha256').update('unbound-value', 'utf8').digest('hex'),
+        binding: 'unbound',
+        candidateAdvSessionId: 541,
+      },
+    });
+    expect(JSON.stringify(h.invocations[0]?.ctx.requestOrigin)).not.toContain('unbound-value');
+    const omitted = await callTool('gatingtest:scoped', {}, superuserExtra('&client=su-owner'));
+    expect(omitted.isError, textOf(omitted)).toBeUndefined();
+    expect(h.invocations[1]?.ctx.requestOrigin).not.toHaveProperty('nativeSession');
+  });
+
+  it('audits the winning header when both native carriers are supplied', async () => {
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: 'native-header', active: true }]]]);
+    const res = await callTool('gatingtest:scoped', {}, superuserExtra('&client=su-owner&native_session=native-query', {
+      'x-papercusp-native-session': 'native-header',
+    }));
+    expect(res.isError, textOf(res)).toBeUndefined();
+    expect(h.nativeSessionCalls).toEqual([{ ownerId: 'su-owner', sessionId: 'native-header' }]);
+    expect(h.invocations[0]?.ctx.requestOrigin).toMatchObject({ nativeSession: {
+      carrier: 'header:x-papercusp-native-session',
+      valueFingerprint: createHash('sha256').update('native-header', 'utf8').digest('hex'),
+      binding: 'bound',
+      candidateAdvSessionId: 541,
+    } });
+    expect(JSON.stringify(h.invocations[0]?.ctx.requestOrigin)).not.toMatch(/native-header|native-query/);
+  });
+
+  it('records caller consistency without claiming physical actor proof for a different connection', async () => {
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 543, session_id: 'native-owner-continuation', active: true }]]]);
+    const res = await callTool('gatingtest:scoped', {}, superuserExtra('&client=su-owner&native_session=native-owner-continuation', {
+      'mcp-session-id': 'different-answerer-connection',
+    }));
+    expect(res.isError, textOf(res)).toBeUndefined();
+    expect(seen[0].ctx).toMatchObject({ uiClientId: 'su-owner', advSessionId: 543 });
+    expect(h.invocations[0]?.ctx.requestOrigin).toMatchObject({ nativeSession: {
+      binding: 'bound',
+      candidateAdvSessionId: 543,
+    } });
+    expect(h.invocations[0]?.ctx.requestOrigin).not.toHaveProperty('nativeSession.physicalActorVerified');
+  });
+});
+
+describe('isolated consult native identity guard (get-feedback D-006)', () => {
+  it.each([
+    { sourceBackend: 'claude', targetBackend: 'claude', operation: 'fork' },
+    { sourceBackend: 'claude', targetBackend: 'codex', operation: 'convert' },
+    { sourceBackend: 'codex', targetBackend: 'claude', operation: 'convert' },
+    { sourceBackend: 'codex', targetBackend: 'codex', operation: 'convert' },
+  ])('$sourceBackend → $targetBackend $operation rejects source identity before dispatch while both owners remain usable', async ({ sourceBackend, targetBackend }) => {
+    const sourceOwner = 'su-consult-source';
+    const answeringOwner = 'su-consult-answerer';
+    const sourceNative = 'native-consult-source';
+    const sourceContinuation = 'native-consult-source-continuation';
+    const answeringNative = 'native-consult-answerer';
+    // Use the production row classifier, not a preselected "foreign" verdict.
+    // The transport must bind each call to its owner's actual native row.
+    h.nativeSessionRows = new Map([
+      [sourceOwner, [
+        { id: 543, session_id: sourceContinuation, active: true },
+        { id: 541, session_id: sourceNative, active: true },
+      ]],
+      [answeringOwner, [{ id: 542, session_id: answeringNative, active: true }]],
+    ]);
+    // Reuse the suite's ungoverned launch-row fixture for concrete-workspace
+    // Codex calls. This verifies transport attribution, not identity grants.
+    const caller = (owner: string, native: string, backend: string) => {
+      const extra = superuserExtra(
+        `&client=${owner}${backend === 'claude' ? `&native_session=${native}` : '&workspace=ws-test'}`,
+        backend === 'codex' ? { 'x-papercusp-native-session': native } : {},
+      );
+      if (backend !== 'codex') return { extra, meta: undefined };
+      const id = native === answeringNative ? 542 : native === sourceContinuation ? 543 : 541;
+      h.kernelAuthority.rows = [{
+        control_state: null, control_generation: null, workspace_id: 'ws-test',
+        adv_session_id: id, adv_session_xmin: `consult-row-${id}`,
+        launch_header_known: false, launch_spec_type: 'object',
+        launch_spec_workspace_id: 'ws-test', launch_spec_harness_slug: 'papercup',
+        launch_spec_has_accepted_operation: false, launch_spec_accepted_operation: null,
+      }];
+      h.kernelAuthority.launchRecord = {
+        launch_spec: { workspaceId: 'ws-test', harnessSlug: 'papercup' },
+        launch_spec_xmin: `consult-row-${id}`,
+      };
+      const meta = { threadId: native, callId: `call_consult-${native}` };
+      return { extra: { ...(extra as Record<string, unknown>), _meta: meta }, meta };
+    };
+    const callAs = (owner: string, native: string, backend: string) => {
+      const { extra, meta } = caller(owner, native, backend);
+      return callTool('gatingtest:scoped', {}, extra, meta);
+    };
+
+    // Independent source work is valid even during a consult window.
+    const sourceCall = await callAs(sourceOwner, sourceNative, sourceBackend);
+    expect(sourceCall.isError, textOf(sourceCall)).toBeUndefined();
+    expect(seen).toHaveLength(1);
+    expect(seen[0].ctx).toMatchObject({ uiClientId: sourceOwner, advSessionId: 541 });
+
+    // Every legitimate source incarnation remains usable; attribution cannot
+    // assume the newest row is the only native session belonging to the owner.
+    const continuationCall = await callAs(sourceOwner, sourceContinuation, sourceBackend);
+    expect(continuationCall.isError, textOf(continuationCall)).toBeUndefined();
+    expect(seen).toHaveLength(2);
+    expect(seen[1].ctx).toMatchObject({ uiClientId: sourceOwner, advSessionId: 543 });
+
+    // A claim followed by a release could leave identical census endpoints.
+    // Neither nested call may reach even the existing dispatcher witness when
+    // the answerer's native session presents the source's coordination SID.
+    for (const action of ['claim', 'release']) {
+      const meta = targetBackend === 'codex'
+        ? { threadId: answeringNative, callId: `call_spoof-${action}` }
+        : undefined;
+      const extra = superuserExtra(
+        `&workspace=ws-test&client=${sourceOwner}&native_session=${targetBackend === 'codex' ? sourceContinuation : answeringNative}`,
+        // The inherited process header is legitimately source-owned. Codex's
+        // actual per-call thread must still win and reject the answering actor.
+        targetBackend === 'codex' ? { 'x-papercusp-native-session': sourceContinuation } : {},
+      );
+      const attempted = await callTool(
+        'tools:invoke',
+        { name: 'gatingtest:scoped', args: { action, id: 'WI-source-claim' } },
+        // Auth-failure telemetry records only an explicitly claimed workspace.
+        // Rejection precedes the kernel lookup, so this adds no fake launch row.
+        meta ? { ...(extra as Record<string, unknown>), _meta: meta } : extra,
+        meta,
+      );
+      expect(attempted.isError).toBe(true);
+      expect(textOf(attempted)).toBe('request_rejected: superuser_foreign_native_session');
+      expect(seen).toHaveLength(2);
+      expect(h.invocations.at(-1)).toMatchObject({
+        status: 'error',
+        errorCode: 'mcp_auth_failed',
+        errorMessage: 'superuser_foreign_native_session',
+        metadataJson: { mcpAuthFailure: { nativeSession: { candidateAdvSessionId: 543 } } },
+      });
+    }
+
+    // Endpoint equality must not cause a guard to freeze legitimate source
+    // work. A source-owned port/continuation remains usable after the spoof.
+    const continued = await callAs(sourceOwner, sourceContinuation, sourceBackend);
+    expect(continued.isError, textOf(continued)).toBeUndefined();
+    expect(seen).toHaveLength(3);
+    expect(seen[2].ctx).toMatchObject({ uiClientId: sourceOwner, advSessionId: 543 });
+
+    const answerCall = await callAs(answeringOwner, answeringNative, targetBackend);
+    expect(answerCall.isError, textOf(answerCall)).toBeUndefined();
+    expect(seen).toHaveLength(4);
+    expect(seen[3].ctx).toMatchObject({ uiClientId: answeringOwner, advSessionId: 542 });
+    if (targetBackend === 'codex') {
+      expect(h.invocations.at(-1)?.ctx.requestOrigin).toMatchObject({ nativeSession: {
+        carrier: 'meta:threadId', binding: 'bound', candidateAdvSessionId: 542,
+        valueFingerprint: createHash('sha256').update(answeringNative).digest('hex'),
+        callIdFingerprint: createHash('sha256').update(`call_consult-${answeringNative}`).digest('hex'),
+      } });
+    }
+    expect(h.nativeSessionCalls).toEqual([
+      { ownerId: sourceOwner, sessionId: sourceNative },
+      { ownerId: sourceOwner, sessionId: sourceContinuation },
+      { ownerId: sourceOwner, sessionId: answeringNative },
+      { ownerId: sourceOwner, sessionId: answeringNative },
+      { ownerId: sourceOwner, sessionId: sourceContinuation },
+      { ownerId: answeringOwner, sessionId: answeringNative },
+    ]);
   });
 });

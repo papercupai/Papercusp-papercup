@@ -120,6 +120,7 @@ export const CREDIT_WALL_DEFAULT_PAUSE_MS = 60 * 60 * 1000;
 
 const SPEND_LIMIT_CODE = 'enforced_spend_limit_reached';
 const API_USAGE_LIMIT_RE = /reached your specified (?:[a-z]+ )?API usage limits/i;
+const CREDIT_BALANCE_TOO_LOW_RE = /\bcredit balance\b.{0,40}\btoo low\b/i;
 const REGAIN_ACCESS_RE = /regain access on (\d{4}-\d{2}-\d{2}) at (\d{2}:\d{2}) UTC/i;
 
 interface ParsedErrorBody {
@@ -171,6 +172,9 @@ export function classifyClaudeCreditWall(input: ClaudeHttpFailure): ClaudeCredit
     return err.errorCode === SPEND_LIMIT_CODE ? { cause: 'spend-limit' } : null;
   }
   const message = err.message ?? input.body;
+  if (err.type === 'billing_error' || CREDIT_BALANCE_TOO_LOW_RE.test(message)) {
+    return { cause: 'billing-error' };
+  }
   if (!API_USAGE_LIMIT_RE.test(message)) return null;
   const resetAt = regainAccessAt(message);
   return { cause: 'api-usage-limit', ...(resetAt !== undefined ? { resetAt } : {}) };

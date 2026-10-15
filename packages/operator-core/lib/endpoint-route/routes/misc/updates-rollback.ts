@@ -45,6 +45,7 @@
  *   because revert_to's minisign check would fail) · 503 no_token | fetch_failed.
  */
 import { defineTool } from '@papercusp/agent-mcp';
+import { observeFallback } from '../../../degradation/fallback-observations';
 import { readOperatorState } from '../../../operator-state-pg';
 import { fetchAssetText, resolveGithubToken, releaseHostBase } from './updates-github';
 import {
@@ -352,6 +353,9 @@ export default defineTool({
         const latest = JSON.parse((await fetchAssetText(latestAsset.id, token)) ?? 'null') as {
           platforms?: Record<string, { signature?: string; url?: string }>;
         } | null;
+        const readable = latest != null && typeof latest === 'object' && !Array.isArray(latest);
+        observeFallback('release-state-read', { eligible: 1, applied: readable ? 1 : 0,
+          reason: readable ? 'applied' : 'metadata-unavailable', scope: `update-rollback:${product}:${platformKey}` });
         const entry = latest?.platforms?.[platformKey];
         if (entry?.signature && entry.url) {
           const file = entry.url.split('/').pop() ?? '';
@@ -361,6 +365,8 @@ export default defineTool({
           );
         }
       } catch (e: unknown) {
+        observeFallback('release-state-read', { eligible: 1, applied: 0,
+          reason: 'metadata-read-failed', scope: `update-rollback:${product}:${platformKey}` });
         console.warn(
           `[updates/rollback] latest.json fallback failed for ${release.tag_name}: ${e instanceof Error ? e.message : String(e)}`,
         );

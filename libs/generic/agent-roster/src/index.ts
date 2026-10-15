@@ -36,6 +36,7 @@ export {
   fmtCompactAge,
   groupByFleet,
   hasThinking,
+  isAgentThinking,
   isRunningAgent,
   isSessionGone,
   isTranscriptFresh,

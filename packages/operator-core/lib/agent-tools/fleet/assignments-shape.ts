@@ -51,6 +51,28 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
   const projectAgent = (row: unknown): Record<string, unknown> => {
     const r = (row ?? {}) as Record<string, unknown>;
     const claims = Array.isArray(r.claims) ? r.claims : [];
+    const schedulerClaim = r.schedulerClaimState as
+      | { activeClaims?: unknown; heldIds?: unknown; blockerParkedIds?: unknown }
+      | null
+      | undefined;
+    const schedulerHeldIds = Array.isArray(schedulerClaim?.heldIds)
+      ? schedulerClaim.heldIds.map(String)
+      : [];
+    // P-010 (plan D-010): holds parked on a typed external blocker are held but NOT counted in
+    // activeClaims. Carried at every tier, capped like heldIds, so the shaped view never hides them.
+    const schedulerBlockerParkedIds = Array.isArray(schedulerClaim?.blockerParkedIds)
+      ? schedulerClaim.blockerParkedIds.map(String)
+      : [];
+    const schedulerClaimState =
+      schedulerClaim && typeof schedulerClaim.activeClaims === "number"
+        ? {
+            activeClaims: schedulerClaim.activeClaims,
+            heldIds: schedulerHeldIds.slice(0, 8),
+            heldIdsOmitted: Math.max(0, schedulerHeldIds.length - 8),
+            blockerParkedIds: schedulerBlockerParkedIds.slice(0, 8),
+            blockerParkedIdsOmitted: Math.max(0, schedulerBlockerParkedIds.length - 8),
+          }
+        : null;
     const base = {
       agentId: r.agentId ?? null,
       alive: r.alive === true,
@@ -107,6 +129,9 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
       plan: r.declaredPlanSlug ?? null,
       fleet: r.fleetSlug ?? null,
       claims: claims.length,
+      // This is the scheduler-capacity view; blocked/needs-human claims may be
+      // absent from claims/load because they are correctly parked work.
+      schedulerClaimState,
       doing: workRef(r.doing, c.doing),
       load: typeof r.load === "number" ? r.load : 0,
       isSelf: r.isSelf === true,
@@ -182,6 +207,32 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
   }
 
   const coverage = Array.isArray(d.coverage) ? d.coverage : [];
+  const readTimings = Array.isArray(d.readTimings)
+    ? d.readTimings.slice(0, 64).flatMap((entry) => {
+        const timing = (entry ?? {}) as Record<string, unknown>;
+        const outcome = timing.outcome;
+        if (
+          typeof timing.phase !== 'string' ||
+          typeof timing.startOffsetMs !== 'number' ||
+          !Number.isFinite(timing.startOffsetMs) ||
+          typeof timing.elapsedMs !== 'number' ||
+          !Number.isFinite(timing.elapsedMs) ||
+          !['ok', 'timeout', 'aborted', 'error'].includes(String(outcome))
+        ) {
+          return [];
+        }
+        return [{
+          phase: timing.phase,
+          startOffsetMs: timing.startOffsetMs,
+          elapsedMs: timing.elapsedMs,
+          outcome,
+        }];
+      })
+    : null;
+  const handlerElapsedMs =
+    typeof d.handlerElapsedMs === 'number' && Number.isFinite(d.handlerElapsedMs)
+      ? d.handlerElapsedMs
+      : null;
   const coverageOut =
     tier === "standard"
       ? {
@@ -228,6 +279,12 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
     ...(typeof d.degradedLeg === "string" ? { degradedLeg: d.degradedLeg } : {}),
     ...(typeof d.degradedReason === "string" ? { degradedReason: d.degradedReason } : {}),
     ...(typeof d.retryable === "boolean" ? { retryable: d.retryable } : {}),
+    ...(readTimings ? { readTimings } : {}),
+    ...(handlerElapsedMs !== null ? { handlerElapsedMs } : {}),
+    ...(typeof d.detail === 'string' ? { detail: d.detail } : {}),
+    ...(Array.isArray(d.unmeasuredMetrics)
+      ? { unmeasuredMetrics: d.unmeasuredMetrics.map(String) }
+      : {}),
     ...(d.self !== undefined ? { self: d.self } : {}),
     // EI-18763132241176410: `scope` QUALIFIES the counts contract below — it names the
     // population the query asked about ({ agent, plan, fleet, harness, selfScoped,

@@ -1,0 +1,3359 @@
+{
+  "nativeOwnershipCudaObserver": {
+    "status": "Bounded native and instrumented CUDA ownership observations complete; historical heap cause remains open",
+    "workItem": "WI-10005599",
+    "parent": "WI-10004540",
+    "capture": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-ownership-cuda-v1",
+      "artifact": "completion.json",
+      "bytes": 23511,
+      "sha256": "4467710aa1f5e6e61ecf55e3d8fda1cd51cb643e361e66c64afb96bebfd83d8a"
+    },
+    "assessment": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-ownership-cuda-preparation-v1",
+      "artifact": "assessment.json",
+      "bytes": 8146,
+      "sha256": "6431a15904abc20ecaad3b2f45e124623f1970bffec14ae7d98d2d8a27a7aa1b"
+    },
+    "task": "0mus8rfin1qz6bk51ta",
+    "jobExitCode": 0,
+    "controls": [
+      {
+        "cell": "cuda-native",
+        "processId": 3539626,
+        "exitCode": 1,
+        "signal": null,
+        "nativeCalls": 6,
+        "allExactCallbacksReturned": true,
+        "actualPidLibraryInitializations": [
+          {
+            "runtimeRoot": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v6",
+            "path": "tree/node_modules/onnxruntime-node/bin/napi-v6/linux/x64/libonnxruntime_providers_cuda.so",
+            "sha256": "3ca573cfc14f7b8efa8e4b987851d8958b22228a4a15be1e2609a81cfb641974",
+            "records": 1
+          },
+          {
+            "runtimeRoot": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v6",
+            "path": "tree/node_modules/onnxruntime-node/bin/napi-v6/linux/x64/libonnxruntime.so.1",
+            "sha256": "92ba8e44d31b80a34f5e805076a044122c3be1fffe0d88ed790de7267b0b2682",
+            "records": 1
+          },
+          {
+            "runtimeRoot": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v6",
+            "path": "tree/node_modules/onnxruntime-node/bin/napi-v6/linux/x64/onnxruntime_binding.node",
+            "sha256": "a7191fbfe8045d4d5d312e5ecd8f5dd6970e804dd340c98be8a0af8daf7908cc",
+            "records": 1
+          }
+        ],
+        "sanitizer": null
+      },
+      {
+        "cell": "cuda-instrumented",
+        "processId": 3549243,
+        "exitCode": 1,
+        "signal": null,
+        "nativeCalls": 6,
+        "allExactCallbacksReturned": true,
+        "actualPidLibraryInitializations": [
+          {
+            "runtimeRoot": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v6",
+            "path": "tree/node_modules/onnxruntime-node/bin/napi-v6/linux/x64/libonnxruntime_providers_cuda.so",
+            "sha256": "3ca573cfc14f7b8efa8e4b987851d8958b22228a4a15be1e2609a81cfb641974",
+            "records": 1
+          },
+          {
+            "runtimeRoot": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v6",
+            "path": "tree/node_modules/onnxruntime-node/bin/napi-v6/linux/x64/libonnxruntime.so.1",
+            "sha256": "92ba8e44d31b80a34f5e805076a044122c3be1fffe0d88ed790de7267b0b2682",
+            "records": 1
+          },
+          {
+            "runtimeRoot": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v6",
+            "path": "tree/node_modules/onnxruntime-node/bin/napi-v6/linux/x64/onnxruntime_binding.node",
+            "sha256": "a7191fbfe8045d4d5d312e5ecd8f5dd6970e804dd340c98be8a0af8daf7908cc",
+            "records": 1
+          }
+        ],
+        "sanitizer": {
+          "injectionRecords": [
+            "   3549243:\tcalling init: cache:validation/mdenseon-boundary-WI10004540-20261001/sanitizer-runtime-v1/runtime/cuda_sanitizer_api-linux-x86_64-13.0.85-archive/compute-sanitizer/libsanitizer-collection.so"
+          ],
+          "apiErrorSummaries": [
+            0
+          ],
+          "actualTargetPid": 3549243
+        }
+      }
+    ],
+    "admission": {
+      "receiptId": "RG-b6e81866-dc68-41c2-93d4-c724bc01c21d",
+      "exactSerializationInBothNativeThreadStreamsVerified": true,
+      "coreLimitZero": true,
+      "boundedCudaCells": 2
+    },
+    "observation": "In both observed CUDA targets, native session disposal/deleting destructor and per-env finalizer return before one shared singleton destructor on the main LWP. Both exit1 on the retained shape error; no SIGABRT or heap message.",
+    "verification": {
+      "rawArtifactPinsVerified": 21,
+      "exactMappedSymbolOffsetsVerified": true,
+      "actualNativePidOrtLibraryInitializationVerified": true,
+      "canonicalTestRunIds": [
+        20675379
+      ],
+      "passed": 3,
+      "failed": 0,
+      "excludedByNameFilter": 34,
+      "scopedCompilerNamedFiles": 2,
+      "scopedCompilerErrors": 0,
+      "retainedCpuPreconditionRederivedWithoutReplay": true
+    },
+    "reuse": "Extended existing small fixture, pinned GDB event observer, actual-PID loader checks and governed process bridge; same retained Node/ORT/sanitizer/allocator environment.",
+    "locatorRepresentation": "Public loader records use existing cache:validation roots and runtime-relative paths. Exact machine-local loader lines remain immutable in the private raw capture and assessment.",
+    "embeddingModelInferencePerformed": false,
+    "heapCorruptionRootCauseConfirmed": false,
+    "heapCorruptionFixed": false,
+    "fullGpuPopulationComplete": false,
+    "limitations": [
+      "No actual abort boundary was present; normal cleanup cannot disprove intermittent historical corruption.",
+      "GDB, debug allocator and sanitizer may alter observation; no causal effect inferred.",
+      "No embedding weights, large8192, completed CPU probe or positive detector was replayed."
+    ],
+    "next": "Preserve the finite observations; select a further source-grounded distinguishing heap probe, or advance independent P003 collection after fresh provider admission."
+  },
+  "nativeOwnershipCpuObserver": {
+    "status": "Exact native ownership observer qualified on two retained-R6 CPU processes; historical heap cause remains open",
+    "workItem": "WI-10005599",
+    "parent": "WI-10004540",
+    "capture": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-ownership-cpu-v3",
+      "artifact": "completion.json",
+      "bytes": 21552,
+      "sha256": "543c8946e6e0b394ffdd74045eace2e2718d0e37de101e7690efdd0f0b7cbac0"
+    },
+    "assessment": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-ownership-preparation-v3",
+      "artifact": "cpu-assessment.json",
+      "bytes": 5482,
+      "sha256": "499f56b63e7597203d7eab0993aff339224a76fccb2ea765b3c252622545bd35"
+    },
+    "task": "0mus838ec1yqlqmcu6x",
+    "actualTerminal": {
+      "status": "completed",
+      "exitCode": 0
+    },
+    "reuse": "Existing small Mul fixture, governed process bridge, GDB event transport and version-matched retained native binary. Extended its reader and opt-in observer.",
+    "sourceQualification": {
+      "version": "1.24.3",
+      "upstreamCommit": "3a728b75062256951b6e19ce718907cf1a1d4cf0",
+      "retainedBackendAndBindingTypescriptByteEqual": true,
+      "bindingBuildId": "88762a8393dbfbd6d8f6ba78affbe36a8b3c1fe7",
+      "binaryBuildReproducibilityClaimed": false
+    },
+    "observerRepair": {
+      "v1": "Named destructor breakpoint hit D0 while labelling D2; diagnostic only",
+      "v2": "Exact D2 never hit; census incomplete and finite driver stopped before CUDA",
+      "v3": "Exact-address D0 observer with measured map-relative entry-PC guard qualifies both CPU cells"
+    },
+    "controls": [
+      {
+        "cell": "worker-first",
+        "processId": 2229086,
+        "nativeCalls": 7,
+        "singletonInitializerNativeThreadId": 2229593,
+        "complete": true
+      },
+      {
+        "cell": "parent-first-warning",
+        "processId": 2230710,
+        "nativeCalls": 10,
+        "singletonInitializerNativeThreadId": 2230710,
+        "complete": true
+      }
+    ],
+    "observed": "In both observed CPU processes, per-worker session/D0 and N-API instance cleanup return before one process-wide singleton destructor on the main LWP. Parent-warning first initializer and worker-first initializer differ as explicitly observed.",
+    "verification": {
+      "rawArtifactPinsVerified": 18,
+      "canonicalTestRunIds": [
+        20675280
+      ],
+      "passed": 2,
+      "failed": 0,
+      "excludedByNameFilter": 34,
+      "scope": "Only new ownership reader guards. Old positive controls and completed model probes were not replayed.",
+      "scopedCompilerNamedFiles": 2,
+      "scopedCompilerErrors": 0
+    },
+    "embeddingModelInferencePerformed": false,
+    "cudaCells": 0,
+    "heapCorruptionRootCauseConfirmed": false,
+    "heapCorruptionFixed": false,
+    "fullGpuPopulationComplete": false,
+    "next": "Prepare a finite native/instrumented CUDA observer comparison using qualified exact-symbol lifetime boundaries; keep all historical controls and heap defect open."
+  },
+  "nativeLifecycleCapture": {
+    "status": "Bounded retained-runtime lifecycle observation completed; historical heap corruption remains unresolved",
+    "workItem": "WI-10005599",
+    "parent": "WI-10004540",
+    "preparationHistory": "nativeLifecycleTracePreparation is retained as the pre-capture preparation receipt. Its pending-runtime statement is superseded only by this bounded capture.",
+    "capture": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-lifecycle-capture-v1",
+      "artifact": "completion.json",
+      "bytes": 22247,
+      "sha256": "37e33cbfa73fc302bbd3c6c50b0b47b99d31b716a764c43595109981eef06e39"
+    },
+    "assessment": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-lifecycle-verification-v1",
+      "artifact": "assessment.json",
+      "bytes": 9756,
+      "sha256": "29518bf17a45b9407bfd86d4fc2cfcb75be0a98f1b225fed0e456935a700b829"
+    },
+    "task": "0mus633elxddbmp12g3",
+    "exitCode": 0,
+    "finishedAt": "2026-10-03T09:06:08.621Z",
+    "reuse": "Used the maintained opt-in lifecycle fixture, its canonical evidence reader, the existing governed process bridge and the unchanged retained R6 Node/ORT libraries. No GDB, new allocator interposer, embedding worker, service or admission exception.",
+    "admission": {
+      "receiptId": "RG-03f9faf3-c8b5-480b-ad1c-1b7f8d40b2ec",
+      "exactSerializationVerifiedInEachNativeThread": true,
+      "coreDumpLimitZero": true,
+      "boundedCpuPreconditions": 1,
+      "maximumCudaCells": 2,
+      "stopCondition": "finite cell budget exhausted"
+    },
+    "runtime": {
+      "retainedNodeSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+      "sourceSha256": "4abceb75ffe45df2457d9982793b883e8a42f3f500c5e8b7693f2d9446fd47c7",
+      "driverSha256": "30c1d62369e6bb0d636d062db1ff908c380beffc7da68dbbaab96f1696e2e385",
+      "sameAllocatorLibrariesAndEnvironmentAsPriorDetectorControls": true,
+      "graphBytes": 130,
+      "embeddingWeightsLoaded": false
+    },
+    "controls": [
+      {
+        "cell": "cpu-lifecycle-precondition",
+        "processId": 3312019,
+        "exitCode": 0,
+        "signal": null,
+        "sessionReleased": true,
+        "workerTerminated": true,
+        "parentSettledMarked": true,
+        "pendingOperations": [],
+        "heapCorruptionMessageObserved": false
+      },
+      {
+        "cell": "cuda-native-lifecycle",
+        "processId": 3314142,
+        "exitCode": 1,
+        "signal": null,
+        "expectedShapeError": true,
+        "sessionReleased": true,
+        "workerTerminated": true,
+        "parentSettledMarked": true,
+        "pendingOperations": [],
+        "heapCorruptionMessageObserved": false
+      },
+      {
+        "cell": "cuda-instrumented-lifecycle",
+        "processId": 3318100,
+        "exitCode": 1,
+        "signal": null,
+        "expectedShapeError": true,
+        "sessionReleased": true,
+        "workerTerminated": true,
+        "parentSettledMarked": true,
+        "pendingOperations": [],
+        "heapCorruptionMessageObserved": false,
+        "actualNativePidSanitizerInjectionObserved": true,
+        "sanitizerApiErrorSummaries": [
+          0
+        ]
+      }
+    ],
+    "verification": {
+      "rawArtifactPinsVerified": 22,
+      "lifecycleResultsRederivedWithMaintainedReader": true,
+      "nativeLibraryInitializationsJoinedToTargetPid": true,
+      "libraryScope": "Both CUDA targets initialize the retained ORT library, binding and CUDA provider; the CPU target initializes the ORT library and binding only. This is not a complete loader-closure claim.",
+      "canonicalTestRunGroup": "24996e63-83c1-4d3a-bf39-f19b450c9e91",
+      "canonicalTestRunIds": [
+        20636334
+      ],
+      "passed": 34,
+      "failed": 0,
+      "skipped": 0,
+      "testScope": "Retained canonical source-preparation results; those exact source pins remain unchanged. No test matrix was replayed to reconstruct proof.",
+      "scopedCompilerNamedFiles": 2,
+      "scopedCompilerErrors": 0,
+      "historicalAssessmentAndPositiveControlPinsRechecked": 5
+    },
+    "embeddingModelInferencePerformed": false,
+    "heapCorruptionRootCauseConfirmed": false,
+    "heapCorruptionFixed": false,
+    "fullGpuPopulationComplete": false,
+    "limitations": [
+      "These are JavaScript API and awaited lifetime boundaries, not ownership of a native corrupting write, allocation or free.",
+      "The two CUDA shape-error controls exited normally with code 1. Their lack of an abort does not disprove the historical intermittent corruption.",
+      "Debug allocator settings and Compute Sanitizer can change observation; no causal effect of those observers is inferred.",
+      "No large embedding input, full GPU population, old positive pair, debugger batch or clock calibration was replayed."
+    ],
+    "next": "Keep the heap defect open. Inspect the retained native binding and environment-cleanup ownership or prepare a further distinguishing observer/initializer comparison before another native capture. Do not repeat this finite three-cell probe unchanged."
+  },
+  "nativeLifecycleTracePreparation": {
+    "status": "Opt-in native initializer and teardown lifecycle records qualified in the current CPU test framework; retained-runtime CUDA probe is still pending",
+    "workItem": "WI-10005599",
+    "parent": "WI-10004540",
+    "reuse": "Extended the maintained native-ort-teardown-control fixture and its existing canonical test file. No new resource starts, allocator interposer, model worker, service or admission exception.",
+    "before": {
+      "bytes": 171318,
+      "sha256": "3fe5240e3d6e9fafa519988dc162cb85d4da05d673734195c4d2108a35c425b1"
+    },
+    "instrumentation": {
+      "optIn": "lifecycleTrace: true",
+      "output": "Synchronous PC_NATIVE_LIFECYCLE records on the existing stderr pipe, with per-thread sequence and same-process identity.",
+      "operations": [
+        "binding-load",
+        "initializer-create",
+        "initializer-release",
+        "worker-create",
+        "worker-result",
+        "worker-terminate",
+        "session-create",
+        "session-run",
+        "session-release",
+        "worker-ready",
+        "worker-failed",
+        "process-settled"
+      ],
+      "binding": "Source, executing Node, ORT entry, graph identity, configuration and exact serialized admission context in each thread start; created-worker identity joins the two streams.",
+      "interpretation": "These are JavaScript API and awaited lifetime boundaries. A last open operation at SIGABRT does not identify a corrupting write, native free, allocator owner or resource-pressure cause.",
+      "disabled": "No lifecycle records are emitted unless explicitly enabled. The original awaited cleanup branches and nested start population remain explicit."
+    },
+    "verification": {
+      "canonicalTestRunGroup": "24996e63-83c1-4d3a-bf39-f19b450c9e91",
+      "canonicalTestRunIds": [
+        20636334
+      ],
+      "passed": 34,
+      "failed": 0,
+      "skipped": 0,
+      "newCases": "Real CPU success/dispose/first-warning and shape-error/environment/first-info sequences; controlled initializer exception verifies error reporting and awaited worker termination.",
+      "negativeCases": "Reject changed source/ORT/graph/context, foreign process or worker, missing sequence/boundary/initializer/release/worker closure, partial EOF and unsupported terminal.",
+      "abortReaderControl": "A prefix of a real CPU trace with a synthetic terminal validates explicit pending worker-terminate reporting only. This is not an actual abort reproduction.",
+      "scopedCompiler": {
+        "engine": "tsc-service",
+        "namedFiles": 2,
+        "checkedFiles": 2,
+        "errorCount": 0,
+        "incomplete": false,
+        "scope": "Named test and declaration files, not the whole project or live gate."
+      },
+      "resourceAdmissionScanner": "Passed after retaining the existing two explicit awaited worker.terminate branches. The source-conditioned upstream disposition was not widened.",
+      "sources": [
+        {
+          "path": "packages/operator-core/lib/memory/bench/fixtures/native-ort-teardown-control.mjs",
+          "bytes": 24362,
+          "sha256": "4abceb75ffe45df2457d9982793b883e8a42f3f500c5e8b7693f2d9446fd47c7"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/fixtures/native-ort-teardown-control.d.mts",
+          "bytes": 2222,
+          "sha256": "dde14f09ceb452c0b6bed30e91e51b6e7732e2eb86920c95e6ef43e2f7540d43"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/native-cuda-allocation-preflight.test.ts",
+          "bytes": 28523,
+          "sha256": "14f05e74c77598549cd9ae4e373f495ef50d3b4c5a143481571407b4d18d2f77"
+        }
+      ],
+      "retainedAssessmentPins": [
+        "1f79e742989c8fa86d0361865deaaae5061da9e261834df2800b034e9062bb67",
+        "3dc04c5ce1b93adb9ecea035bf5325ffa71b00ed4676b270ae4af43a2046a8e4",
+        "7c0db0313803046057c893d3a2f9c8363c35b489a54a9a7803a587a8bc7dc07f"
+      ]
+    },
+    "embeddingModelInferencePerformed": false,
+    "newGpuCapturePerformed": false,
+    "heapCorruptionRootCauseConfirmed": false,
+    "heapCorruptionFixed": false,
+    "next": "After qualifying the exact frozen retained Node/ORT/source/context with this new instrumentation, run one immutable governed 130-byte CPU precondition and at most two small CUDA cells, stopping at the first actual abort. Preserve old captures; do not repeat the old debugger batch or large8192 inference without a further distinguishing probe."
+  },
+  "nativeHostAllocatorPositiveControl": {
+    "status": "Corruption-specific host allocator detector qualified for a bounded tail overwrite; historical ORT corruption root cause remains open",
+    "workItem": "WI-10005599",
+    "parent": "WI-10004540",
+    "capture": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-allocator-positive-v1",
+      "artifact": "completion.json",
+      "bytes": 10789,
+      "sha256": "7c0db0313803046057c893d3a2f9c8363c35b489a54a9a7803a587a8bc7dc07f"
+    },
+    "task": "0murwvpzm1li2lsc1nn",
+    "exitCode": 0,
+    "finishedAt": "2026-10-03T04:48:19.142Z",
+    "reuse": "Extended the existing native-ort-teardown-control capture and observation seam. Its old abort-control intentionally raises a signal and cannot qualify allocator sensitivity. A tiny opt-in stable N-API fixture keeps the controlled 64-byte malloc/free inside the same measured Node process; no allocator interposer, parallel harness or embedding worker was introduced.",
+    "runtime": {
+      "retainedNodeSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+      "sameAllocatorLibrariesAsPriorControls": true,
+      "sameAllocatorEnvironmentAsPriorControls": true,
+      "coreDumpsDisabledBeforeFault": true,
+      "embeddingWeightsLoaded": false,
+      "ortSessionConstructed": false,
+      "gpuRequests": 0
+    },
+    "admission": {
+      "bridge": "scripts/lib/governed-test-process.mjs::runGovernedTestProcess",
+      "receiptId": "RG-61395e73-d631-4e56-90c1-c95ab23e4b98",
+      "forwardedSerializationVerifiedInBothNativeProcesses": true,
+      "boundedCells": 2
+    },
+    "controls": [
+      {
+        "fault": "clean",
+        "requestedBytes": 64,
+        "processId": 334448,
+        "exitCode": 0,
+        "signal": null,
+        "pipeEof": true,
+        "debugAllocatorMapped": true,
+        "detectorTriggered": false
+      },
+      {
+        "fault": "tail-overwrite",
+        "requestedBytes": 64,
+        "mutationBytes": 1,
+        "processId": 335197,
+        "exitCode": null,
+        "signal": "SIGABRT",
+        "pipeEof": true,
+        "debugAllocatorMapped": true,
+        "detectorTriggered": true,
+        "allocatorCorruptionDiagnosticRequired": true,
+        "manualAbortUsed": false
+      }
+    ],
+    "verification": {
+      "canonicalTestRunGroup": "1f13cd5c-92e2-48ec-a75e-d531a0436faa",
+      "canonicalTestRunIds": [20635116],
+      "passed": 31,
+      "failed": 0,
+      "skipped": 0,
+      "scopedCompilerAndCanonicalCliTask": "0murwvp0v41heq112a8",
+      "scopedCompilerErrors": 0,
+      "scopedCompilerNamedFiles": 2,
+      "compilerScope": "The named test and declaration files through the shared compiler, not a whole-project typecheck.",
+      "canonicalCliProvenance": "The earlier detached CLI passed all 31 with zero skips but Git HEAD advanced during its run, so its router marked provenance unknown. The subsequent canonical ledger run separately records 31 passing tests. Current source and retained runtime pins are bound by the immutable actual-control capture.",
+      "adjacentGovernanceRecoveryRun": "aa58ad2a-1f7b-4b21-817e-394378aa4637",
+      "adjacentGovernanceRecoveryStatus": "pass",
+      "recurrenceGuard": "Conventional tests exercise actual clean/corrupt native processes and reject missing or foreign PID, partial EOF, synthetic signal without corruption diagnostic, missing mutation marker, foreign admission context and changed binding/allocator pins.",
+      "sourceFiles": [
+        {
+          "path": "packages/operator-core/lib/memory/bench/fixtures/native-allocator-detector-control.c",
+          "bytes": 2839,
+          "sha256": "132743bd60d8e58411f253c871e15c4957d59ab303341fdeef83c0ed31ce5580"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/fixtures/native-ort-teardown-control.mjs",
+          "bytes": 15889,
+          "sha256": "4bd03acf2603bc55f829390eff0c4898568a6a0a7474b1de5d0518b06638d740"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/native-cuda-allocation-preflight.test.ts",
+          "bytes": 21496,
+          "sha256": "a7c0d38a69a31e49dc1b9d254d844195638c21e7f06cc5c69d93d4c5453e2a14"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/fixtures/native-ort-teardown-control.d.mts",
+          "bytes": 1141,
+          "sha256": "f87e10bed4b4e5522ce3ca9b715d3461fd0d76b69bf65864801a358e87afca5b"
+        }
+      ]
+    },
+    "embeddingModelInferencePerformed": false,
+    "heapCorruptionRootCauseConfirmed": false,
+    "heapCorruptionFixed": false,
+    "fullGpuPopulationComplete": false,
+    "limitations": [
+      "Sensitivity is qualified only for this intentional one-byte tail overwrite at free, not all heap-corruption classes.",
+      "No historical abort is attributed to this injected fault and no historical no-crash control proves absence of corruption.",
+      "Compiler, stable N-API, actual Node, allocator library, typed admission, raw stderr and terminal evidence are retained privately.",
+      "No old capture, full embedding matrix, clock calibration or large GPU operation was replayed."
+    ],
+    "next": "Keep WI-10005599 open. Inspect the historical allocator/session teardown ownership and qualify a new distinguishing allocator or initializer probe before any further native ORT attempt. Do not repeat old glibc/GDB batches or large inference merely because this detector positive control passed."
+  },
+  "formatVersion": 1,
+  "plan": "mdenseon-adoption-measurements-2026-10-01",
+  "item": "P-006",
+  "workItem": "WI-10004540",
+  "defect": "EI-24794784159846761",
+  "status": "CPU boundaries, corrected Python CUDA, and native TF32-disabled padded request-group diagnostics verified; full native GPU population and kernel attribution incomplete",
+  "model": "lightonai/mDenseOn",
+  "revision": "a5fdb000f7a21da96c3bddde3a782ef777316df3",
+  "runtime": { "torch": "2.14.1+cpu", "transformers": "4.57.6", "onnxruntime": "1.23.2", "tokenizers": "0.22.2" },
+  "request": {
+    "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/boundary-request-v2.json",
+    "sha256": "7fbfac87beafc5709269e8a22eb5abbeb025d4cea9813c2e4f2b7e5bcae4c243",
+    "cell": "single-short-query",
+    "tokenLength": 6,
+    "identicalInputIds": true,
+    "identicalReferenceVectors": true,
+    "identicalRequestPin": true,
+    "v1InputContractPreserved": true,
+    "v2Refresh": "Only the helper source asset pin changed; cases, batches, thresholds, execution, snapshot, export and other asset pins remained identical."
+  },
+  "fixedGates": { "minimumCosine": 0.99999, "maximumAbsoluteError": 0.00003, "ranking": "exact" },
+  "arms": [
+    {
+      "recipe": "python-ort-cuda-fp32-tf32-1",
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/cuda-tf32-on-v2",
+      "effectiveUseTf32": "1",
+      "cudaComputeVerifiedByProfile": true,
+      "minimumCosine": 0.9999997019767761,
+      "maximumAbsoluteError": 0.00010596215724945068,
+      "passedFixedVectorGates": false,
+      "receiptSha256": "61902d6c0708ed334021a9143eeef97b03c521ca9932dd6063f93abd910fbb3d",
+      "referenceSha256": "00e070a263aa4b44598ff3b2ace9decadab9723340ac725efc173b76b2262052",
+      "summarySha256": "aa9da9147539a7cc4fca7fe857ecf14175de8ea0725ea204f8654759c351ad24",
+      "profileSha256": "62c6e92e1c33d2e0659fb706ec876be68f5846be5ccc2378bb3a4bf30f90132f"
+    },
+    {
+      "recipe": "python-ort-cuda-fp32-tf32-0",
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/cuda-tf32-off-v2",
+      "effectiveUseTf32": "0",
+      "cudaComputeVerifiedByProfile": true,
+      "minimumCosine": 1.0,
+      "maximumAbsoluteError": 0.00000025331974029541016,
+      "passedFixedVectorGates": true,
+      "receiptSha256": "072ada255d1d8d7b37042587fa56f20d2db87f5a49d4afca0a712dd0d7d12375",
+      "referenceSha256": "6d3c055dabe5410078752292df6de8ddc8c74532130e8f44396f80c6ea145f37",
+      "summarySha256": "895c9180e32fb503911f0ae23c35356fa2abcc183182998ed60d2907e356cdf1",
+      "profileSha256": "dc7b55c20fe74a6eeb47e22fc8c1d8c185979287b12a2e0c822ff448710ebe10"
+    }
+  ],
+  "rootCauseVerification": {
+    "hypothesis": "CUDA TF32 arithmetic causes the measured short-query vector drift.",
+    "alternativeHypothesis": "The pinned exported graph or CUDA runtime differs from the reference independently of TF32.",
+    "distinguishingTest": "Run the same frozen single-short-query cell twice, changing only declared CUDA use_tf32 from 1 to 0; compare effective provider options, request and token/reference identities, vector metrics and executed CUDA compute profile.",
+    "predictedObservations": {
+      "hypothesis": "TF32-on fails maximum absolute error <=3e-5; TF32-off passes it.",
+      "alternativeHypothesis": "The maximum absolute error failure persists with TF32-off."
+    },
+    "actualObservation": "TF32-on maximum error 0.00010596215724945068 failed; TF32-off 0.00000025331974029541016 passed. Request pins, input IDs and reference vectors were identical, and both profiles proved CUDA compute.",
+    "limitation": "This distinguishes the cause for one six-token cell. It does not establish other-input, full-length, batch, ranking or native Node worker compatibility."
+  },
+  "durableFix": "Extend the existing Python boundary helper to submit explicit use_tf32=0 by default and reject runtime fallback, missing precision options or options differing from the declared recipe; preserve explicit use_tf32=1 as a separately named arm.",
+  "recurrenceGuard": "packages/operator-core/lib/memory/bench/mdenseon-config.test.ts checks default CUDA session submission and rejects a runtime that ignores the precision recipe or falls back.",
+  "correctedRun": {
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/boundary-cuda-v3",
+    "requestSha256": "f2861a121295833de4829cda626d1883cb27b57d5bef8b15ac94786549fc2a95",
+    "helperSourceSha256": "c812b246fc016a70a99b80480ca07aa84dc16e1f00101e36a5ab5db1963c2e5b",
+    "recipe": "python-ort-cuda-fp32-tf32-0",
+    "precisionOption": "default CLI option; runtime acknowledged use_tf32=0",
+    "executedCudaComputeSequenceLengths": [5, 6, 7, 11, 16, 28, 8192],
+    "cells": [
+      {"cell": "single-short-query", "receiptSha256": "fb6d7b20fdea4535f2b6c9317aaeb88019a37e8d3689433bf03d0f7671390650", "maximumAbsoluteError": 0.00000025331974029541016, "passedFixedVectorGates": true},
+      {"cell": "single-short-document", "receiptSha256": "3e4ab7e589c195d3976dd710ef8dfac8bb921fbc5861425ca2c6da29bca3e94a", "maximumAbsoluteError": 0.00000032782554626464844, "passedFixedVectorGates": true},
+      {"cell": "single-unicode", "receiptSha256": "2fd2722ab3abc890d6ae3644488db7295f78bb1c3add553e5d65e40b6c32f975", "maximumAbsoluteError": 0.0000005513429641723633, "passedFixedVectorGates": true},
+      {"cell": "single-code", "receiptSha256": "2abd42f3ce9564fe68a3f6277fce98bac55218467f34dad3b879847b49a66c00", "maximumAbsoluteError": 0.00000013038516044616699, "passedFixedVectorGates": true},
+      {"cell": "single-whitespace", "receiptSha256": "9096e9f570ace86e1c2698a87b71547603644d8d5e8ea6f9714fb32184e226eb", "maximumAbsoluteError": 0.0000001019798219203949, "passedFixedVectorGates": true},
+      {"cell": "single-empty", "receiptSha256": "223bd8b568db2e4748afaadb1a9f06775742c8b08d77e067e336234be16a99f9", "maximumAbsoluteError": 0.00000014901161193847656, "passedFixedVectorGates": true}
+    ],
+    "full8192": {
+      "status": "inference-failed",
+      "actual8192Completed": false,
+      "inputShape": [1, 8192],
+      "requiredAllocationBytes": 3221225472,
+      "failingNode": "/layers.0/attn/Add_2",
+      "precedingProfiledScoreShape": [1, 12, 8192, 8192],
+      "freeMiBBeforeInference": 3798,
+      "freeMiBAfterFailure": 110,
+      "memoryEvidenceScope": "Timed snapshots from this attempt; no claim about historical v1 memory pressure.",
+      "failureSha256": "f2396afb95af74252a8a8d8476cb0e63a6a04ed01918e2294df1729cc1e21cdf",
+      "referenceSha256": "2b914d3be0d1dbd7c6e258df49268dbb93fbd680316aabebcaca0a4642d3eaf9",
+      "profileSha256": "824e0c25e88a38a53b442c7cc7cf73c4abe5b62025178144db00a2762572a26e",
+      "independentReferenceDimensions": 768,
+      "independentReferenceSquaredNorm": 1.0000000216382907
+    }
+  },
+  "guardVerification": {
+    "redLog": "cache:validation/mdenseon-boundary-WI10004540-20261001/tf32-guard-red-v3.log",
+    "redResult": "Two new precision-contract tests failed before the helper fix.",
+    "greenLog": "cache:validation/mdenseon-boundary-WI10004540-20261001/boundary-guards-v4.log",
+    "greenResult": "16 tests passed in the conventional Vitest suite, including precision submission/acknowledgment and retained failure/reference/profile/memory evidence."
+  },
+  "cpuBoundaryRun": {
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/boundary-cpu-v3",
+    "recipe": "python-ort-cpu-fp32-tf32-default",
+    "requestSha256": "f2861a121295833de4829cda626d1883cb27b57d5bef8b15ac94786549fc2a95",
+    "summarySha256": "19f1cf4ae80045562709e669bb47a90af320171f99ad16f284f23b9f5fd72966",
+    "profile": {
+      "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/boundary-cpu-v3/ort-profile_2026-10-01_13-16-58.json",
+      "sha256": "403a74c932cb2062d28b5623be1b7ca07ae245cbf849d1448088262284cb390d"
+    },
+    "actualProviderVerifiedByProfile": true,
+    "rankingsEqual": true,
+    "fullPopulationCompatible": true,
+    "diagnosticOnly": false,
+    "notChecked": [],
+    "independentTokenizerIdentity": true,
+    "overLimitUntruncatedTokens": 8256,
+    "peakProcessRssMiB": 24785.10546875,
+    "rssScope": "Combined reference and candidate process; not production sidecar memory cost.",
+    "cells": [
+      {
+        "cell": "single-short-query",
+        "tokenLengths": [
+          6
+        ],
+        "inputShape": [
+          1,
+          6
+        ],
+        "receiptSha256": "1d8810b7c6846b7b6f74d01ae47b1b60861f5ad9843a4296cf0ae56561f9a6df",
+        "referenceSha256": "b402de8c46abbcddb50570ed37b0e5ca8033f64cf61c206af5931e3f69e04201",
+        "referenceParity": {
+          "count": 1,
+          "minimumCosine": 1.0,
+          "maximumAbsoluteError": 4.76837158203125e-07,
+          "worstCosineLabel": "short-query",
+          "worstAbsoluteErrorLabel": "short-query",
+          "cases": [
+            {
+              "label": "short-query",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 4.76837158203125e-07
+            }
+          ]
+        },
+        "singleBatchParity": null
+      },
+      {
+        "cell": "single-short-document",
+        "tokenLengths": [
+          7
+        ],
+        "inputShape": [
+          1,
+          7
+        ],
+        "receiptSha256": "d075374e26fdc8bf05d70497f3bfe2f520c59fad19e9f22adc54e07ba20a15d4",
+        "referenceSha256": "588c9566a32beddf5d5d5c8bd7e0ae19c0da74b29cbe5285e76e37f74f5c6cba",
+        "referenceParity": {
+          "count": 1,
+          "minimumCosine": 0.9999999403953552,
+          "maximumAbsoluteError": 2.086162567138672e-07,
+          "worstCosineLabel": "short-document",
+          "worstAbsoluteErrorLabel": "short-document",
+          "cases": [
+            {
+              "label": "short-document",
+              "cosine": 0.9999999403953552,
+              "maximumAbsoluteError": 2.086162567138672e-07
+            }
+          ]
+        },
+        "singleBatchParity": null
+      },
+      {
+        "cell": "single-unicode",
+        "tokenLengths": [
+          16
+        ],
+        "inputShape": [
+          1,
+          16
+        ],
+        "receiptSha256": "8a418a52439a7aa17f7b061d5a34e1baa1aff208072454b3260332e7bb65fb22",
+        "referenceSha256": "a80795428617071f44b015ad6c05161ece61e0cbc8b54af3187b126cf6676a17",
+        "referenceParity": {
+          "count": 1,
+          "minimumCosine": 1.0,
+          "maximumAbsoluteError": 1.417938619852066e-07,
+          "worstCosineLabel": "unicode",
+          "worstAbsoluteErrorLabel": "unicode",
+          "cases": [
+            {
+              "label": "unicode",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 1.417938619852066e-07
+            }
+          ]
+        },
+        "singleBatchParity": null
+      },
+      {
+        "cell": "single-code",
+        "tokenLengths": [
+          28
+        ],
+        "inputShape": [
+          1,
+          28
+        ],
+        "receiptSha256": "3b4223b2f4ba225b2cc062ca01c047c32ef3cb99aba9e1706c19df088d53da2f",
+        "referenceSha256": "806891153426f3d456a0f1738f08da8a7f6b2db860a9efe2ca88e9995e2b3132",
+        "referenceParity": {
+          "count": 1,
+          "minimumCosine": 0.9999999403953552,
+          "maximumAbsoluteError": 5.960464477539062e-07,
+          "worstCosineLabel": "code",
+          "worstAbsoluteErrorLabel": "code",
+          "cases": [
+            {
+              "label": "code",
+              "cosine": 0.9999999403953552,
+              "maximumAbsoluteError": 5.960464477539062e-07
+            }
+          ]
+        },
+        "singleBatchParity": null
+      },
+      {
+        "cell": "single-whitespace",
+        "tokenLengths": [
+          11
+        ],
+        "inputShape": [
+          1,
+          11
+        ],
+        "receiptSha256": "a4e9242e2236fc78ec54e9b79eff5904cf7040439c1808b685eb7d86a173cec8",
+        "referenceSha256": "08c8dc2c6e689e11b1544742694dc50376961b2ace8fcbd3fafc814ad07c331f",
+        "referenceParity": {
+          "count": 1,
+          "minimumCosine": 1.0,
+          "maximumAbsoluteError": 5.662441253662109e-07,
+          "worstCosineLabel": "whitespace",
+          "worstAbsoluteErrorLabel": "whitespace",
+          "cases": [
+            {
+              "label": "whitespace",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 5.662441253662109e-07
+            }
+          ]
+        },
+        "singleBatchParity": null
+      },
+      {
+        "cell": "single-empty",
+        "tokenLengths": [
+          5
+        ],
+        "inputShape": [
+          1,
+          5
+        ],
+        "receiptSha256": "ff1730e289d06800c4d49e9f95a57874038339eb8f00257c4fcf0a2871159db6",
+        "referenceSha256": "e1d9e4716510b62fe7f0530f06d9c2dfd7450c054e1868d529b23e62096bbf4e",
+        "referenceParity": {
+          "count": 1,
+          "minimumCosine": 1.0,
+          "maximumAbsoluteError": 5.364418029785156e-07,
+          "worstCosineLabel": "empty",
+          "worstAbsoluteErrorLabel": "empty",
+          "cases": [
+            {
+              "label": "empty",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 5.364418029785156e-07
+            }
+          ]
+        },
+        "singleBatchParity": null
+      },
+      {
+        "cell": "single-full-8192",
+        "tokenLengths": [
+          8192
+        ],
+        "inputShape": [
+          1,
+          8192
+        ],
+        "receiptSha256": "1b75ffba42ce7f3946a85cd79cb25d5314cbc7ce67a7aab4bdd8eb47e6125f1a",
+        "referenceSha256": "89385fd0d2d2ea178e6107573473362e6b5ffc097300d113c2b5029f57887f60",
+        "referenceParity": {
+          "count": 1,
+          "minimumCosine": 1.0,
+          "maximumAbsoluteError": 6.556510925292969e-07,
+          "worstCosineLabel": "full-8192",
+          "worstAbsoluteErrorLabel": "full-8192",
+          "cases": [
+            {
+              "label": "full-8192",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 6.556510925292969e-07
+            }
+          ]
+        },
+        "singleBatchParity": null
+      },
+      {
+        "cell": "single-over-limit",
+        "tokenLengths": [
+          8192
+        ],
+        "inputShape": [
+          1,
+          8192
+        ],
+        "receiptSha256": "2391fc59bc9b52f9b420bbdaaf208e2253fb0471bf9438f16871e333dc593d35",
+        "referenceSha256": "1145d027654a8420b097a79d94bd8b4e68dbd23ddfa68cb07e02c2575b9a3769",
+        "referenceParity": {
+          "count": 1,
+          "minimumCosine": 1.0,
+          "maximumAbsoluteError": 8.642673492431641e-07,
+          "worstCosineLabel": "over-limit",
+          "worstAbsoluteErrorLabel": "over-limit",
+          "cases": [
+            {
+              "label": "over-limit",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 8.642673492431641e-07
+            }
+          ]
+        },
+        "singleBatchParity": null
+      },
+      {
+        "cell": "padded",
+        "tokenLengths": [
+          6,
+          16,
+          28,
+          11,
+          5
+        ],
+        "inputShape": [
+          5,
+          28
+        ],
+        "receiptSha256": "234380c5c7d241e6ec6bd8840b917500fb9f7f98473bc13ac551609b7bd6483a",
+        "referenceSha256": "8732a82231e2f44a67a484dcfede5197e67df9f276d9eccdf68d555ff5029e0e",
+        "referenceParity": {
+          "count": 5,
+          "minimumCosine": 0.9999999403953552,
+          "maximumAbsoluteError": 5.960464477539062e-07,
+          "worstCosineLabel": "code",
+          "worstAbsoluteErrorLabel": "code",
+          "cases": [
+            {
+              "label": "short-query",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 1.6391277313232422e-07
+            },
+            {
+              "label": "unicode",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 1.417938619852066e-07
+            },
+            {
+              "label": "code",
+              "cosine": 0.9999999403953552,
+              "maximumAbsoluteError": 5.960464477539062e-07
+            },
+            {
+              "label": "whitespace",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 5.662441253662109e-07
+            },
+            {
+              "label": "empty",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 3.2782554626464844e-07
+            }
+          ]
+        },
+        "singleBatchParity": {
+          "count": 5,
+          "minimumCosine": 0.9999998807907104,
+          "maximumAbsoluteError": 0.0,
+          "worstCosineLabel": "code",
+          "worstAbsoluteErrorLabel": "short-query",
+          "cases": [
+            {
+              "label": "short-query",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 0.0
+            },
+            {
+              "label": "unicode",
+              "cosine": 0.9999999403953552,
+              "maximumAbsoluteError": 0.0
+            },
+            {
+              "label": "code",
+              "cosine": 0.9999998807907104,
+              "maximumAbsoluteError": 0.0
+            },
+            {
+              "label": "whitespace",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 0.0
+            },
+            {
+              "label": "empty",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 0.0
+            }
+          ]
+        }
+      },
+      {
+        "cell": "mixed-length",
+        "tokenLengths": [
+          6,
+          8192
+        ],
+        "inputShape": [
+          2,
+          8192
+        ],
+        "receiptSha256": "44d6a352ff30675ed46173000f329d62e4aaa998f1896b19dbdf3f0e10d6c115",
+        "referenceSha256": "967b43f38579a3c63a7382fce412ba935a01099826eeb6946d99d76b09df0aac",
+        "referenceParity": {
+          "count": 2,
+          "minimumCosine": 1.0,
+          "maximumAbsoluteError": 6.556510925292969e-07,
+          "worstCosineLabel": "short-query",
+          "worstAbsoluteErrorLabel": "full-8192",
+          "cases": [
+            {
+              "label": "short-query",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 1.6391277313232422e-07
+            },
+            {
+              "label": "full-8192",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 6.556510925292969e-07
+            }
+          ]
+        },
+        "singleBatchParity": {
+          "count": 2,
+          "minimumCosine": 1.0,
+          "maximumAbsoluteError": 0.0,
+          "worstCosineLabel": "short-query",
+          "worstAbsoluteErrorLabel": "short-query",
+          "cases": [
+            {
+              "label": "short-query",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 0.0
+            },
+            {
+              "label": "full-8192",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 0.0
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "correctedCudaPadded": {
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/boundary-cuda-padded-v4-durable",
+    "taskId": "0mupuqzyqdp0rey8cv6",
+    "exitCode": 0,
+    "requestSha256": "fe81c18961d88e4df90909f3a2c2817ce884c4c73b485a3f1ffbe3efb50987a4",
+    "summarySha256": "435ec8421cea5101d6d5d17e8d9666f5c8b6076326ee0b3ce9e392cd27726df8",
+    "paddedSha256": "fe0d7e25e6b09ff141798406a38316c04417e8db1a0c5365ad89bc10cf5ccc33",
+    "deviceRecipe": "python-ort-cuda-fp32-tf32-0",
+    "effectiveUseTf32": "0",
+    "inputShapeActuallyInferred": [5, 28],
+    "tokenLengths": [6, 16, 28, 11, 5],
+    "referenceParity": { "minimumCosine": 0.9999999403953552, "maximumAbsoluteError": 3.2782554626464844e-7 },
+    "singleBatchParity": { "minimumCosine": 1, "maximumAbsoluteError": 4.470348358154297e-7 },
+    "profile": {
+      "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/boundary-cuda-padded-v4-durable/ort-profile_2026-10-01_14-28-28.json",
+      "sha256": "73eab31a441fcda34ae31ed59dad608eb26a06a3cc20f0c3998c766705db589f",
+      "executedCudaComputeEvents": 798
+    },
+    "cells": ["single-short-query", "single-unicode", "single-code", "single-whitespace", "single-empty", "padded"],
+    "rankingsEqualWithinDiagnosticSubset": true,
+    "diagnosticOnly": true,
+    "fullPopulationCompatible": false,
+    "notCheckedByThisAttempt": ["single-short-document", "single-full-8192", "single-over-limit", "mixed-length"],
+    "abortedPredecessor": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/boundary-cuda-padded-v4",
+      "log": "cache:validation/mdenseon-boundary-WI10004540-20261001/boundary-cuda-padded-v4-command.log",
+      "status": "undetermined",
+      "reason": "pc-heavy caller-exited at managed carry",
+      "exitCode": 143,
+      "defect": "EI-24801380876942742",
+      "limitation": "Harness-aborted attempt; no model verdict. Partial files remain immutable."
+    }
+  },
+  "nativeHarnessGuards": {
+    "runner": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts --qualify-boundaries",
+    "source": "packages/operator-core/lib/memory/bench/candidate-embedders.ts",
+    "runGroupId": "b53ac7c4-4c46-417d-a459-fca29f3cde06",
+    "testRunIds": [20426623, 20427374],
+    "passed": 33,
+    "failed": 0,
+    "skipped": 0,
+    "tests": ["packages/operator-core/lib/memory/bench/candidate-embedders.test.ts", "packages/operator-core/lib/memory/bench/embedder-eval-cli.integration.test.ts"],
+    "limitation": "Harness qualification only; actual native boundary inference needs its own retained results. Native batch calls use one text per worker inference; they cannot prove a padded native ONNX tensor or compute-kernel profile."
+  },
+  "nativeCpu": {
+    "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-boundary-cpu-v1.json",
+    "sha256": "65e361a16d09c22ba15bf2cd1d2a35d9ccad4cc537d6ebaa843ee4f67daaad74",
+    "bytes": 333120,
+    "taskId": "0mupvdoj6b2duqdhh39",
+    "exitCode": 0,
+    "requestSha256": "f2861a121295833de4829cda626d1883cb27b57d5bef8b15ac94786549fc2a95",
+    "retainedIndependentCpuSummarySha256": "19f1cf4ae80045562709e669bb47a90af320171f99ad16f284f23b9f5fd72966",
+    "nativeTransport": "shipped-worker-single-text",
+    "providerProof": "worker-session-construction-report",
+    "tokenIdsProof": "qualification-process Rust tokenizer; worker uses the same pinned recipe",
+    "cells": ["short-query", "short-document", "unicode", "code", "whitespace", "empty", "full-8192", "over-limit"],
+    "tokenLengths": [6, 7, 16, 28, 11, 5, 8192, 8192],
+    "minimumCosine": 0.999999741332413,
+    "maximumAbsoluteError": 7.748603820800781e-7,
+    "passedFixedVectorGates": true,
+    "tokenIdsEqual": true,
+    "rankingsEqual": true,
+    "requestGroups": [
+      { "id": "padded", "actualInferenceBatchSize": 1, "passedSingleGroupParity": true, "maximumAbsoluteError": 0 },
+      { "id": "mixed-length", "actualInferenceBatchSize": 1, "passedSingleGroupParity": true, "maximumAbsoluteError": 0 }
+    ],
+    "notCheckedByThisRoute": ["native worker compute-kernel profile", "native worker input tensor trace", "native padded/mixed ONNX tensors: worker accepts one text per call"],
+    "limitation": "Native CPU observations are distinct from the Python actual padded/mixed tensor proof. No claim is made that the shipped worker accepts a batched tensor or exposes actual input tensors/kernel profiles."
+  },
+  "nativeCuda": {
+    "failurePath": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-boundary-cuda-v1.json.failure.json",
+    "failureSha256": "8cd1ec1de5284fc59e74513093df3632f2930a76ce9b8eee8e3369ac933d8a17",
+    "taskId": "0mupw1yg91kh5mlw651",
+    "exitCode": 1,
+    "requestSha256": "f2861a121295833de4829cda626d1883cb27b57d5bef8b15ac94786549fc2a95",
+    "nativeTransport": "shipped-worker-single-text",
+    "providerProof": "worker-session-construction-report",
+    "shortCells": [
+      { "id": "short-query", "sha256": "6171588929b03016b831fadaae37cb41cd46a3a1e533d6f4810fe996ad3c7dda", "maximumAbsoluteError": 0.00010595843195915222, "passed": false },
+      { "id": "short-document", "sha256": "c14cb75707e56c210171022dc12034d146ab5a88e0290255ffd36cfd781a0aea", "maximumAbsoluteError": 0.00007253140211105347, "passed": false },
+      { "id": "unicode", "sha256": "5a688364a561e1f63bd45751a9cf4285e8525ef257a1bf026b33f553a3e9bd9d", "maximumAbsoluteError": 0.00016099214553833008, "passed": false },
+      { "id": "code", "sha256": "279a63ba5f91ac8e8187e1e156d0f6b7414e3d4690888ced742ce1ddd0daae62", "maximumAbsoluteError": 0.00010994449257850647, "passed": false },
+      { "id": "whitespace", "sha256": "a9255a31f950460c55fd1c255c63ac73b29a9fbad1361b5dde42c8e944aaeab2", "maximumAbsoluteError": 0.00017272308468818665, "passed": false },
+      { "id": "empty", "sha256": "16f0d5d139d7ebe235e69761cbf7f3c5ae6fba5dadd6b4e3d23a19b189866f7e", "maximumAbsoluteError": 0.00005835294723510742, "passed": false }
+    ],
+    "shortTokenIdsEqualToReference": true,
+    "shortMinimumCosine": 0.9999988049594574,
+    "shortMaximumAbsoluteError": 0.00017272308468818665,
+    "passedFixedVectorGates": false,
+    "numericalDefect": "EI-24804423187750315",
+    "numericalRootCauseStatus": "A later matched native six-token probe distinguishes TF32 as the cause for that cell. All six short inputs pass under the separately named NVIDIA_TF32_OVERRIDE=0 benchmark recipe; the default recipe above remains a measured loss.",
+    "allocationFailure": { "cell": "single-full-8192", "node": "/layers.0/attn/Add_2", "requestedBufferBytes": 3221225472, "defect": "EI-24795092971119894" },
+    "capacityBeforeLaunch": { "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-boundary-cuda-v1-capacity-before.csv", "sha256": "1a6a271732f8fd6c67c260e2bf5df070c0d68e9a68cdfcede700f15a92a16188", "totalMiB": 24576, "freeMiB": 7004, "limitation": "Launch-time observation; failure-time capacity was not sampled." },
+    "retainedIndependentReferenceCells": 8,
+    "notCheckedByThisAttempt": ["successful full-8192 vector", "over-limit inference", "padded request group", "mixed-length request group", "full-population rankings", "compute-kernel profile", "worker input tensor trace"],
+    "limitation": "Current-tree worker source fingerprints are retained in the private receipt. The MCP operator's deployed SHA is not the native workload's code identity."
+  },
+  "nativeTf32CausalProbe": {
+    "taskId": "0mupx919ofyrtvq1myq",
+    "exitCode": 0,
+    "cell": "single-short-query",
+    "tokenLength": 6,
+    "control": "Same graph/request, reference, tokens, source fingerprints, runtime versions and CUDA session reports; only NVIDIA_TF32_OVERRIDE changed.",
+    "runtimeVersions": { "node": "25.9.0", "transformers": "4.2.0", "tokenizers": "0.23.2", "onnxruntimeNode": "1.24.3" },
+    "default": { "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-tf32-default-v2.json", "sha256": "be423a428b07057ff939b0ff452beb2e95b72c417f20e47172b526a86c9d4ff0", "precisionEnvironment": { "NVIDIA_TF32_OVERRIDE": "unset" }, "maximumAbsoluteError": 0.00010595843195915222, "passed": false },
+    "disabled": { "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-tf32-disabled-v2.json", "sha256": "6e4e0ec780c07988aebefa6dc52382a97d32a26270fffed62f12936f69053f63", "precisionEnvironment": { "NVIDIA_TF32_OVERRIDE": "0" }, "maximumAbsoluteError": 2.980232238769531e-7, "passed": true },
+    "hypothesis": "Default CUDA TF32 arithmetic causes the native short-query reference error.",
+    "alternativeHypothesis": "The frozen graph/token/reference mismatch persists independently of TF32 arithmetic.",
+    "predictions": { "hypothesis": "Disabling TF32 brings the same native CUDA case within the fixed vector gates.", "alternativeHypothesis": "The same case remains outside the fixed vector gates when TF32 is disabled." },
+    "observed": "Default fails maximum absolute error; disabled passes with identical controlled identities and verified CUDA session construction.",
+    "providerDefaultSource": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.24.3/onnxruntime/core/providers/cuda/cuda_execution_provider_info.h",
+    "nativeOptionWriterSource": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.24.3/js/node/src/session_options_helper.cc",
+    "overrideDocumentation": { "url": "https://docs.nvidia.com/cuda/archive/12.8.1/cublas/index.html", "sha256": "84ac31caf6af08ce215fd76f599914a184a082e22e437499b4cb6932550d349a", "quote": "Setting the environment variable NVIDIA_TF32_OVERRIDE = 0 will override any defaults or programmatic configuration of NVIDIA libraries, and consequently, cuBLAS will not accelerate single-precision computations with TF32 tensor cores." },
+    "diagnosticOnly": true,
+    "fullPopulationCompatible": false,
+    "limitation": "One native causal cell; CUDA session construction is verified, but the shipped worker does not expose a compute-kernel profile. Production worker policy was unchanged."
+  },
+  "nativeTf32DisabledShortCohort": {
+    "recipe": "native-node-cuda-fp32-nvidia-tf32-override-0",
+    "additionalTaskId": "0mupxgfqv1rm2qzqaur",
+    "aggregateExitCode": null,
+    "aggregateStatus": "terminal; exit code unobserved after tracking loss",
+    "artifactStatus": "All six completed diagnostic cell receipts verified, including the paired short-query arm.",
+    "cells": [
+      { "id": "short-query", "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-tf32-disabled-v2.json", "sha256": "6e4e0ec780c07988aebefa6dc52382a97d32a26270fffed62f12936f69053f63", "maximumAbsoluteError": 2.980232238769531e-7 },
+      { "id": "short-document", "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-tf32-disabled-short-document-v2.json", "sha256": "340f0aab6ef2ca08a5a312eb69785af9ae9c02e1ed016c5bf631dde33cc2e248", "maximumAbsoluteError": 1.7881393432617188e-7 },
+      { "id": "unicode", "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-tf32-disabled-unicode-v2.json", "sha256": "dd39833d8baa843305c198a1624be2df02d4e9734b95246ef41f0ac9da5dda50", "maximumAbsoluteError": 5.066394805908203e-7 },
+      { "id": "code", "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-tf32-disabled-code-v2.json", "sha256": "8071bec9e8330efec4bec0b41abb9aebef75d34a5b0cf51e143e6c67148877a3", "maximumAbsoluteError": 1.3224780559539795e-7 },
+      { "id": "whitespace", "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-tf32-disabled-whitespace-v2.json", "sha256": "de4503983d4cb9483d5f5fe24298025d01f210b3255f9a0feb0fcbbdbf7700ef", "maximumAbsoluteError": 1.0186340659856796e-7 },
+      { "id": "empty", "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-tf32-disabled-empty-v2.json", "sha256": "fc5fdac663aac986825d21efe2e87e216757373e4a113ba5c5303e2ea2267ff9", "maximumAbsoluteError": 8.940696716308594e-8 }
+    ],
+    "sameSourceRuntimeGraphReferenceIdentities": true,
+    "tokenIdsEqual": true,
+    "passedFixedVectorGates": true,
+    "maximumAbsoluteError": 5.066394805908203e-7,
+    "diagnosticOnly": true,
+    "fullPopulationCompatible": false,
+    "notChecked": ["full-8192", "over-limit", "padded native request group", "mixed-length native request group", "full-population rankings", "worker input tensor trace", "compute-kernel profile"]
+  },
+  "nativeDiagnosticSelectorGuards": { "runGroupId": "d89a6fd0-a556-4e22-85f6-bad2bc010649", "testRunIds": [20430670, 20430673], "passed": 34, "failed": 0, "skipped": 0, "collectionFailed": false, "verification": "Both requested file rows recovered from the original scoped ledger; transport timeout was not a testcase failure or a reason to rerun the suite." },
+  "nativeRequestGroupPreparation": {
+    "workItem": "WI-10004540",
+    "status": "selector and evidence guards verified; actual GPU request-group inference remains pending",
+    "reuse": "Extend the existing native boundary runner and --boundary-cell selector; no new executable or production recipe.",
+    "behavior": "Selecting padded or mixed-length runs the declared prerequisite singles followed by that request group. Retained group vectors are independently compared with both singles and frozen reference vectors; request order, single-text worker execution, finite vectors and device identity are checked. Missing groups remain in notCheckedCells, and a diagnostic never establishes full-population rankings or compatibility.",
+    "source": { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.ts", "sha256": "36f9cd0ee5a86457d7b2c9ab1215762802ac086618970bb44633378433744e83" },
+    "test": { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts", "sha256": "0b06e6b0591b74dc45bfc1924b6d7ab20f22e547c44c581970ff5078eaa57ce1" },
+    "verification": { "runGroupId": "392eb950-60a7-46b0-a7ee-fe7bd9e709d6", "testRunIds": [20476424], "passed": 43, "failed": 0, "skipped": 0, "typecheck": "requested files and direct type users/importers clean; compiler exit 0" },
+    "inferencePerformed": false,
+    "frozenPerformanceAndRelevanceSourcesChanged": false,
+    "gpuAcceptanceComplete": false
+  },
+  "notChecked": ["successful GPU single-full-8192 vector parity", "GPU single-over-limit", "GPU mixed-length tensor", "full-population GPU rankings", "native Node GPU batches/over-limit", "native worker input traces outside the selected padded diagnostic", "native worker compute-kernel/PID/sequence binding"],
+  "nativeInputTracePreparation": {
+    "status": "Initial input-evidence guard proof retained; V6 actual inputs are recorded separately, and the request graph-lifecycle extension below is verified locally",
+    "reuse": "Extend the existing embed worker messages and explicit qualification callback. The native boundary runner retains private per-cell JSONL before graph execution, including allocation failures. Normal calls request no input trace.",
+    "verification": {
+      "originRunId": "86dc64e4-c99f-4aea-81b5-83aaaf04016e",
+      "recoveryRunId": "25dc99b2-c3ed-4061-91b2-b7e4987c17ee",
+      "testRunIds": [20478094, 20478095, 20478099],
+      "passed": 67,
+      "failed": 0,
+      "skipped": 0,
+      "collectionFailed": false,
+      "testedHead": "938e464bafd13988021e0fdd19c3d40e55d957cd",
+      "worktreeDirty": true,
+      "scope": "Local working source; three named test files passed. Real worker/Rust-tokenizer tests submit exact truncated tensors to a fake graph, exercise success and graph failure, and prove input evidence precedes the terminal message. No model weights or GPU are used.",
+      "typecheck": "Requested source files plus direct type users/importers clean; 17 files checked, compiler exit 0",
+      "originTimeout": "Foreground 45-second transport ceiling; reused the automatically detached recovery and its saved ledger, without another test launch."
+    },
+    "sources": [
+      { "path": "libs/generic/memory/src/local-embedder-worker.ts", "sha256": "4d1acf2e8fcb7f7edd919e1a89c41f1390b50b5304a1f52a7d3e7e22429a0513" },
+      { "path": "libs/generic/memory/src/local-embedder-worker.script.mjs", "sha256": "f9e75221a9e375ab1285a9674beddd68e8bcc278dac9933b55b4c3cb2e7351a5" },
+      { "path": "libs/generic/memory/src/mdenseon-embedder.ts", "sha256": "c2cc4ba139d3c520e2ea2500d35c8ef8d78bdf75697aac455f1063f4409a4b20" },
+      { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.ts", "sha256": "57550008cf044c5fa1ce248d2db86f8becfc54bce591f59dca257f0230f73011" }
+    ],
+    "tests": [
+      { "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts", "sha256": "b47a7dca416e0b0a83b7c64c8cc13666ca3a95ac3045da53df1b06299c550a18" },
+      { "path": "libs/generic/memory/src/mdenseon-embedder.test.ts", "sha256": "5ebcfbb71ffbcae72ee8715b030281f9a784d566be9589ceb87ad6ae4dcfc80d" },
+      { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts", "sha256": "1d0b1db0fc213e45dbd54d08634ada81c5134ad93c7f8b93652311420fc7e614" }
+    ],
+    "realModelInferencePerformed": false,
+    "frozenV7AndV5RuntimeChanged": false,
+    "nativeKernelTrace": "Input evidence alone does not establish kernel ownership; the later external V6 profile establishes process binding separately",
+    "gpuAcceptanceComplete": false,
+    "requestSequenceExtension": {
+      "status": "Request identity, graph and synchronous native-call lifecycle, and RAW-clock guards verified locally; profiler clock calibration and kernel-to-request joins still open",
+      "reuse": "Extend the same opt-in worker protocol, pinned candidate builder and native qualifier. Ordinary calls request no trace. Retain pre-graph input JSONL and separate graph start/end JSONL; preserve concurrent single-text request-group submission.",
+      "retainedV6Audit": {
+        "profileDatabaseSha256": "0f163a3fa476d5013642d9e80a11dc44f99809f94adf800a8150d5108dadf74e",
+        "inputTraceSha256": "5589550ec860f1bc6f0cc60187ef3ca7cac2f01e5be1bd715ba6bb33431e7384",
+        "kernelRuntimeCorrelationJoins": 8644,
+        "kernelLaunchingNativeThreads": 1,
+        "inputRecords": 10,
+        "sameMillisecondGroupedInputRecords": 4,
+        "finding": "Retained inputs contain tensors/model/device/wall timestamp but no request ID or graph interval. Process and CUDA runtime correlations therefore do not establish a unique request-sequence join.",
+        "nineRetainedPinsUnchanged": true
+      },
+      "traceContract": {
+        "identity": ["requestId (zero-based)", "attempt", "processId", "workerThreadId (Node)", "nativeThreadId (Linux OS TID or null)"],
+        "clock": "node-hrtime decimal nanoseconds; not assumed equal to the profiler clock",
+        "phases": ["start", "end with success/error outcome"],
+        "failClosed": "Malformed, out-of-order, incomplete or unpersisted requested evidence rejects a successful vector. Failed CUDA and CPU fallback attempts retain separate identities. The qualifier rejects mismatched retained input/graph identities.",
+        "kernelAttribution": "Graph intervals can overlap. A complete interval alone is not a unique CUDA kernel join."
+      },
+      "verification": {
+        "runId": "b5b01b97-97ca-43cd-bd6f-6a58dcdb8702",
+        "testRunIds": [20518007, 20518008, 20518009, 20518010],
+        "passed": 110,
+        "failed": 0,
+        "skipped": 0,
+        "collectionFailed": false,
+        "scope": "Real file-worker/Rust-tokenizer fixture with fake graph verifies input-before-start, end-before-terminal, graph failure, and overlapping requests completing out of order; bridge, builder, retained-evidence and existing worker-state regressions pass. No model weights or CUDA inference used.",
+        "typecheck": "Six requested TypeScript source/test files and loaded imports clean; compiler exit 0",
+        "syntaxAndDiff": "Plain ESM worker node --check and scoped git diff --check pass"
+      },
+      "sources": [
+        { "path": "libs/generic/memory/src/local-embedder-worker.ts", "bytes": 47365, "sha256": "9844d0836b9a68b0d08392bd33c2f151fe2c3d61892a9f21fc815f7e06bfdf79" },
+        { "path": "libs/generic/memory/src/local-embedder-worker.script.mjs", "bytes": 13709, "sha256": "8a810f9032a50dc0c8707910084219b6f00a557e00b9540f65667fc0a5240895" },
+        { "path": "libs/generic/memory/src/mdenseon-embedder.ts", "bytes": 3367, "sha256": "082d6e2dff68e5267e9383ce5e3201f5bf5acff998cf0e3156cd142b79db5a32" },
+        { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.ts", "bytes": 46992, "sha256": "53a7dd0391ec7f4de7c7c9f4acfa6f7ce079b99e591e03a8acb19f9d2c7c566f" }
+      ],
+      "tests": [
+        { "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts", "bytes": 13718, "sha256": "9bbffebc5ad89a25eabe353d4d529fd2564508d084ced53d523a4e18edd0368f" },
+        { "path": "libs/generic/memory/src/mdenseon-embedder.test.ts", "bytes": 3975, "sha256": "87e69f33d835dc0fcb955330eb4579d602162fc8ff3a8d76bb871ea6670e2f57" },
+        { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts", "bytes": 23174, "sha256": "005aad596e8a5fac17ffe6e5f4b145d55d25e068dcfaeb1f3856afd84ada15ba" }
+      ],
+      "nativeCallClockExtension": {
+        "reuse": "Extend the same opt-in worker/builder/qualifier callbacks. Wrap each existing ORT native session instance through its writable constructor export; preserve the original native receiver, installed prototype and queued request order. AsyncLocalStorage carries request identity through the SDK setImmediate queue. Ordinary calls request no native trace.",
+        "sourceFindings": {
+          "onnxruntimeNode": "1.24.3",
+          "nativePrototypeRunWritable": false,
+          "nativePrototypeRunConfigurable": false,
+          "constructorExportWritable": true,
+          "sessionInstanceExtensible": true,
+          "node": "25.9.0",
+          "libuv": "1.51.0",
+          "nodeClock": "CLOCK_MONOTONIC via uv_hrtime(UV_CLOCK_PRECISE)",
+          "sources": [
+            "https://raw.githubusercontent.com/nodejs/node/v25.9.0/src/node_process_methods.cc",
+            "https://raw.githubusercontent.com/libuv/libuv/v1.51.0/src/unix/core.c",
+            "https://raw.githubusercontent.com/libuv/libuv/v1.51.0/src/unix/linux.c",
+            "https://docs.nvidia.com/nsight-systems/AnalysisGuide/index.html"
+          ]
+        },
+        "nativeEvidence": "Private .native-inference.jsonl retains request/attempt/PID/Node worker/Linux TID, native run index/tag, start/end and success/error. Native calls must lie inside their request graph interval. A fresh worker is required before model construction; unsupported bindings or asynchronous native Run implementations fail qualification.",
+        "clockEvidence": "Each Linux native-call boundary carries isolated standard-Python CLOCK_MONOTONIC_RAW samples bracketed by CLOCK_MONOTONIC and Node hrtime. Retain exact decimal ns and executable fingerprint. These RAW samples bound the native call without an assumed offset/drift model; their mapping to the Nsight capture still requires measurement.",
+        "clockExecutable": { "path": "/usr/bin/python3.12", "bytes": 8020928, "sha256": "e50d468e8b0adfb05733f5b87b3cff34829c4a8c1aea50c865aa8bdfe4bb150f" },
+        "clockCaptureCost": "Requested diagnostic native-call evidence launches two small clock probes per native call. These runs do not provide controlled performance acceptance; frozen V7 performance evidence is unchanged.",
+        "cpuFixture": {
+          "url": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.24.3/onnxruntime/test/testdata/mul_1.onnx",
+          "license": "MIT",
+          "bytes": 130,
+          "sha256": "71f431c4e9321ec6fbeb158d02ed240459a7dcc98673fa79a4f439ce42efaf10",
+          "scope": "Isolated fresh CPU process verifies the actual native receiver/tag, concurrent queued calls, disjoint synchronous native intervals, RAW clock brackets, successful outputs and an actual native dimension error. This is a tiny upstream fixture, not a pretrained model/reference replay."
+        },
+        "verification": {
+          "runId": "70afa6ef-f717-4e5e-9b34-bba7dd8666d7",
+          "testRunIds": [20528203, 20528204, 20528205],
+          "passed": 115, "failed": 0, "skipped": 0, "collectionFailed": false,
+          "scope": "Worker protocol/native CPU fixture, pinned builder forwarding and retained native-call/clock guards. Final maintained testing:run succeeded after direct CLI runs with changed HEAD were retained as provenance-incomplete diagnostics.",
+          "typecheck": "Six requested TypeScript source/test files and loaded imports clean; compiler exit 0",
+          "syntaxAndDiff": "Plain ESM node --check and scoped git diff --check pass"
+        },
+        "sources": [
+          { "path": "libs/generic/memory/src/local-embedder-worker.ts", "bytes": 51428, "sha256": "fd09e90f013a8e7f94e9fee20999239da76aa1c270f704d9414ff0302672d69e" },
+          { "path": "libs/generic/memory/src/local-embedder-worker.script.mjs", "bytes": 19665, "sha256": "bbb0fcae0f8e199097e6c4beb8a1659d26dbc49e0270f45eab14c656cf189fb4" },
+          { "path": "libs/generic/memory/src/mdenseon-embedder.ts", "bytes": 3575, "sha256": "b3bfc7fd1aefab3c9178eaa6d01d2fbed85a2a9b6c3fbc21626d4cfaafb2bc4b" },
+          { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.ts", "bytes": 52894, "sha256": "7bfcaf89c2f7383a799c5eb9b220abbe82265df66cecaa1be1553456d0022821" }
+        ],
+        "tests": [
+          { "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts", "bytes": 22598, "sha256": "aa5109329b2d3d8ba6f2dca1ab6a76def6d4c9e71f41e2fe096b9b52c89e9bb6" },
+          { "path": "libs/generic/memory/src/mdenseon-embedder.test.ts", "bytes": 4057, "sha256": "ceb75be956edc9fd8b7467701701a4f0b6c9d75eff1af9d5445b4eedf20f6954" },
+          { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts", "bytes": 27092, "sha256": "2bccc205bf119bee8c5bdf3bf737a03d3a01679f3dd9f18ecf7341d3810aa267" }
+        ],
+        "pretrainedModelInferencePerformed": false,
+        "nativeCudaInferencePerformed": false,
+        "nsightClockCalibrationVerified": false,
+        "kernelPidAndSequenceBindingVerified": false,
+        "completeBeforeInferenceClosureVerified": false,
+        "fullGpuPopulationComplete": false
+      },
+      "realModelInferencePerformed": false,
+      "frozenV6RuntimeChanged": false,
+      "kernelPidAndSequenceBindingVerified": false,
+      "completeBeforeInferenceClosureVerified": false,
+      "fullGpuPopulationComplete": false
+    }
+  },
+  "nativeRuntimeKernelPreparation": {
+    "status": "fresh runtime v4 content, private-path semantics and actual file-parent worker boot qualified without model inference; native GPU/kernel/capacity acceptance remains open",
+    "runtimeArtifact": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v2",
+      "receiptSha256": "d4162dd6d89b317d832254c97fe1bcefb2abb65cede82526dfa59b64955f05c1",
+      "receiptBytes": 4617,
+      "sourceRecordsChecked": 31404,
+      "dependencyRecordsChecked": 241451,
+      "overlays": 7,
+      "sourceGuardProof": "All four executed source overlays and three tests equal the previously verified 67-pass input-evidence preparation; no application source changed in this unit.",
+      "retainedNonEntrypoint": "node_modules/.bin/papercusp-omp has the same unresolved target in the baseline and clone. It is outside the declared direct Node/tsx/native route; exact link identity is retained, with no OMP executable-usability claim.",
+      "nativeCudaClosureQualified": false,
+      "modelInferencePerformed": false
+    },
+    "profilerPreparation": {
+      "issue": "EI-24843667343985893",
+      "capture": "/usr/bin/nsys",
+      "importer": "/usr/lib/nsight-systems/host-linux-x64/QdstrmImporter",
+      "version": "2022.4.2.50-32196742v0",
+      "captureBinarySha256": "ab73a9c7eb1f230edb4edf01b6a926fd59b1b5276eb6ba9e188d615fbeb99ff6",
+      "importerBinarySha256": "43b9c62ecc3f33c691266b9b759b98810f0ab491bc893fd5a95ac18bde5fe049",
+      "receipt": "cache:validation/mdenseon-boundary-WI10004540-20261001/nsys-preflight-v1/receipt.json",
+      "receiptSha256": "51a3673e7d9945f6d4dd6d88ff0bab5d89e5da8d1acd59b3d2d50a88cdc9fffe",
+      "verified": "Capture with CPU sampling/context-switch tracing disabled; explicitly import retained raw capture with the matching installed importer; export SQLite and observe integrity_check=ok.",
+      "scope": "No model or GPU inference; actual CUDA kernel capture and PID/sequence bindings remain unverified.",
+      "rootCause": "The default nsys binary resolves into a target-only multiarch directory, while the matching importer resides under a separate host directory. Automatic discovery failed despite an installed, runnable importer. The launch recipe pins the pair and requires a proven import/export receipt."
+    },
+    "preparedDiagnostic": {
+      "recipe": "cache:validation/mdenseon-boundary-WI10004540-20261001/launch-native-cuda-padded-v3.sh",
+      "sha256": "74d8c73a0c7408f771b7dedca63a6a30d6262c31d1d012960aa1a23ed664bee0",
+      "syntaxCheck": "bash -n exit 0",
+      "request": "cache:validation/mdenseon-boundary-WI10004540-20261001/boundary-request-v3.json",
+      "requestSha256": "f2861a121295833de4829cda626d1883cb27b57d5bef8b15ac94786549fc2a95",
+      "referenceSummarySha256": "19f1cf4ae80045562709e669bb47a90af320171f99ad16f284f23b9f5fd72966",
+      "selectedCell": "padded",
+      "precisionEnvironment": {
+        "NVIDIA_TF32_OVERRIDE": "0",
+        "scope": "isolated diagnostic only"
+      },
+      "execution": "Existing native runner with declared prerequisite singles and a Promise.all request group; actual inference batch size remains one.",
+      "preRunGuards": "Exclusive output root, completed content qualification, exact runtime/source/request/reference/profiler pins, repeated source check after admission, retained input traces, explicit report import/export and nonzero CUDA kernel-record check.",
+      "fullGpuPopulationComplete": false,
+      "inferencePerformed": false
+    }
+  },
+  "nativeCudaPaddedV3Launch": {
+    "taskId": "0muqjswwy1c3hcid3qf",
+    "bashId": "c2958ac7-ec7",
+    "deadline": "2026-10-02T06:24:22.532Z",
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-cuda-padded-v3",
+    "recipeSha256": "74d8c73a0c7408f771b7dedca63a6a30d6262c31d1d012960aa1a23ed664bee0",
+    "launchPreflightVerified": true,
+    "launchRecordedAt": "2026-10-02T05:54:23.544Z",
+    "status": "terminal failure before native request, worker input or model inference",
+    "payloadStartedAt": "2026-10-02T06:09:30.009Z",
+    "payloadFailedAt": "2026-10-02T06:09:31.128Z",
+    "terminalAt": "2026-10-02T06:09:33.355Z",
+    "exitCode": 1,
+    "failure": "raw boundary output must stay private outside repository",
+    "failureLayer": "checkout-only source-root resolution inherited an unrelated ancestor home checkout above the Git-free frozen source tree",
+    "historicalFirstRead": "Task running; latest wrapper output queued for a heavy slot at 45 seconds. Launch receipt present and payload driver absent at that read. This snapshot never authorizes cancellation or a duplicate launch.",
+    "fullGpuPopulationComplete": false,
+    "kernelPidAndSequenceBindingVerified": false,
+    "next": "Preserve this failed attempt. Before a new GPU attempt, freeze a fresh source/runtime with the tested source-layout repair and run nativeBenchmarkOutputPaths during pre-admission qualification. This attempt establishes no GPU input/vector/kernel result."
+  },
+  "nativeSourceRootRepair": {
+    "workItem": "WI-10005329",
+    "status": "source fix and conventional regression guards verified locally; fresh frozen native runtime remains P006 work",
+    "rootCause": "The native runner used moduleRepoRoot's nearest .git predicate for an intentionally Git-free frozen source snapshot. An unrelated ancestor home .git was returned, so a private cache sibling was incorrectly classified as repository output.",
+    "reuse": "Use the existing moduleRepoRoot walker with the benchmark's required source-layout predicate, and the existing measurement-manifest realDestination resolver for symlink-aware containment. Both native boundary and incumbent reference runners use this shared preflight.",
+    "distinguishingProbe": "The exact retained frozen candidate module URL resolved to the unrelated ancestor under the old checkout predicate. The fixed helper resolved runtime-source-v2/tree and accepted the private v4 destination without creating it or performing inference.",
+    "verification": {
+      "runId": "ddbe3e00-f4b7-4de7-b51c-8fafa3097302",
+      "testRunIds": [20487209, 20487210],
+      "passed": 51,
+      "failed": 0,
+      "skipped": 0,
+      "typecheck": "Three requested files and their direct import/type users; 17 files checked, compiler exit 0",
+      "diffCheck": "exit 0",
+      "recurrenceGuard": "Git-free source beneath an unrelated ancestor checkout; source-root and symlink output refusal; sibling-prefix acceptance; incomplete source layout refusal. Guards run in the existing candidate-embedders.test.ts framework suite."
+    },
+    "sources": [
+      { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.ts", "sha256": "ce7357569745ed73706bb6907a2d35b86b0a8223d7d079fc70dadf0fac1a0295" },
+      { "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts", "sha256": "5591134a6fcec126cec6d71203e6e38230c8ec51c89bd4878ed1a1a586b39729" }
+    ],
+    "test": { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts", "sha256": "756046bb8db862011cc20d7f9ed0ddc95e3f44e148eb663793b416aa14929a40" },
+    "modelInferencePerformed": false,
+    "priorFrozenArtifactsChanged": false,
+    "gpuAcceptanceComplete": false
+  },
+  "nativeRuntimeV3Preparation": {
+    "taskId": "0muqlneci772ct7t4ad",
+    "status": "completed exit 0; source/dependency bytes and exact copied-runtime path preflight verified",
+    "completedAt": "2026-10-02T07:00:25.533Z",
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v3",
+    "recipeSha256": "7fdf87fac0e9ed75249ab4bfbf8ef1c1e1ce55e3b39975b8d149216831bf881d",
+    "contentReceipt": { "sha256": "25762b9c5587c38277b5e6d6ba1f53eb51a5eb6c1697319f5659f9e6c9f33061", "bytes": 3970 },
+    "sourceRecordsChecked": 31404,
+    "dependencyRecordsChecked": 241451,
+    "pathPreflight": { "sha256": "8cb0966c87af90efdbfe4138d9f2de3bdb880c53b224f15c0b7fe13f260da543", "bytes": 639, "externalOutputAccepted": true, "sourceTreeOutputRejected": true, "outputCreated": false },
+    "reuse": "Independent copy via the existing sourceable dependency-generation copier, with tested overlays frozen before slow copying and every declared content record checked.",
+    "modelInferencePerformed": false,
+    "nativeCudaClosureQualified": false
+  },
+  "nativeCudaPaddedV4Attempt": {
+    "taskId": "0muqmk86vcu4q271vb8",
+    "status": "terminal exit 1; path/source/reference/profiler preflight passed but file-worker boot failed before model construction",
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-cuda-padded-v4",
+    "recipeSha256": "cf6f191dd3fe4e7387ee7d73af5727ce79742d40df94758683aa763db99b5bb0",
+    "runtimeReceiptSha256": "25762b9c5587c38277b5e6d6ba1f53eb51a5eb6c1697319f5659f9e6c9f33061",
+    "launchAt": "2026-10-02T07:11:39.630Z",
+    "payloadStartedAt": "2026-10-02T07:11:44.009Z",
+    "payloadFailedAt": "2026-10-02T07:11:52.990Z",
+    "activeCell": "single-short-query",
+    "completedSingles": [],
+    "error": "ERR_INPUT_TYPE_NOT_ALLOWED: --input-type can only be used with string input via --eval, --print, or STDIN",
+    "deviceConstructionVerified": false,
+    "workerInputTraceEstablished": false,
+    "gpuVectorOrKernelProofEstablished": false,
+    "next": "Preserve this attempt and runtime v3. Freeze a new runtime with the tested worker argv fix, qualify a file-based parent/worker boot before heavy admission, then declare a new native diagnostic."
+  },
+  "nativeWorkerArgvRepair": {
+    "workItem": "WI-10005356",
+    "status": "canonical source and conventional regression guards verified; fresh frozen runtime v4 and actual no-model file-parent worker boot now qualified",
+    "rootCause": "The shipped file-based embedder Worker implicitly inherited process.execArgv from a stdin parent. Node rejected its stdin-only --input-type option before the worker could become ready. The initial tokenizer-worker hypothesis was incorrect.",
+    "reuse": "Set explicit empty execArgv for the existing plain-JS worker, following the existing generic decision-model worker pattern. Model/device/precision/tokenizer contracts are unchanged.",
+    "distinguishingControl": "A raw file Worker still fails under combined and separate stdin flag forms. The corrected shipped factory boots a real worker and returns a synthetic protocol vector without forwarding any model request.",
+    "verification": {
+      "redRunId": "35a59aca-02a2-4205-9ec8-d19485cc8431",
+      "redTestRunId": 20493736,
+      "before": "Both new boot regression cases fail with ERR_INPUT_TYPE_NOT_ALLOWED; ten unrelated cases were excluded by the name filter.",
+      "greenRunId": "8510c36a-fedd-41d0-b5f7-da1e917362ad",
+      "greenTestRunIds": [20493745, 20493746, 20493747],
+      "passed": 29,
+      "failed": 0,
+      "skipped": 0,
+      "typecheck": "Scoped memory-library tsc compiler exit 0",
+      "recurrenceGuard": "Real stdin parent under both flag forms; raw file-worker negative control; actual shipped worker readiness; no model request forwarded. Neighboring input-trace, ONNX pin and mDenseOn adapter suites pass."
+    },
+    "source": { "path": "libs/generic/memory/src/local-embedder-worker.ts", "sha256": "002dac336b5b4371abe107db4fc9186dffaae68bf6f49398d8ff742b243100e1" },
+    "test": { "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts", "sha256": "f5fabcc40b811a0de18b595c07f5c4620f0d37747893a6d2cd926c79d9c1cfc1" },
+    "modelInferencePerformed": false,
+    "gpuAcceptanceComplete": false
+  },
+  "nativeRuntimeV4Preparation": {
+    "taskId": "0muqohnluga6w5jbl52",
+    "status": "completed exit 0; exact copied source/dependency/path and actual file-parent worker boot qualified without model inference",
+    "completedAt": "2026-10-02T08:17:10.359Z",
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v4",
+    "recipeSha256": "2ffb066201f8408277d3fecedc6b269538cce4b2d4e77737cc16b596659f12b0",
+    "contentReceipt": {
+      "bytes": 4215,
+      "sha256": "6660b9a737d5109b3e01f3a76a6c7548857814f86c60cb9e6daea711d585dc9f"
+    },
+    "sourceRecordsChecked": 31404,
+    "dependencyRecordsChecked": 241451,
+    "overlays": [
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker.ts",
+        "bytes": 43909,
+        "sha256": "002dac336b5b4371abe107db4fc9186dffaae68bf6f49398d8ff742b243100e1"
+      },
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts",
+        "bytes": 8124,
+        "sha256": "f5fabcc40b811a0de18b595c07f5c4620f0d37747893a6d2cd926c79d9c1cfc1"
+      }
+    ],
+    "overlayTestEvidenceReused": {
+      "runId": "8510c36a-fedd-41d0-b5f7-da1e917362ad",
+      "testRunIds": [
+        20493745,
+        20493746,
+        20493747
+      ],
+      "passed": 29,
+      "failed": 0,
+      "skipped": 0
+    },
+    "pathPreflight": {
+      "bytes": 639,
+      "sha256": "2607c594ccaa81bee3dbe6c6f9853494c312888979d701dccd6d8eaec7533dcd"
+    },
+    "workerBootPreflight": {
+      "bytes": 1380,
+      "sha256": "a850cbe74f2eb23e0e026a9cf1eca90e769c33d712f03b2ad626df4c12dc4c91"
+    },
+    "parentDriver": {
+      "sha256": "cf8aa9c11ec9ba8800c289953eab21c8ce17735020f0fdc089ffd6fcf8ea4599",
+      "bytes": 7985
+    },
+    "actualWorkerReady": true,
+    "modelRequestForwarded": false,
+    "modelInferencePerformed": false,
+    "gpuDeviceConstructionVerified": false,
+    "kernelTracingQualified": false,
+    "nativeCudaClosureQualified": false,
+    "reuse": "Independent snapshot of qualified R3 via its pinned existing dependency-generation copier; two tested worker overlays; original V1 dependency receipt retained. Existing R3/V4 and V7/V5 remain immutable."
+  },
+  "nativeCudaPaddedV5Attempt": {
+    "taskId": "0muqp39x1fgvpas1yv7",
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-cuda-padded-v5",
+    "jobExitCode": 3,
+    "jobEndedAt": "2026-10-02T08:38:13.337Z",
+    "status": "Native selected vector/input diagnostic passed; profiler import failed after payload completion",
+    "driverPid": 71528,
+    "driverCompletedAt": "2026-10-02T08:37:52.058Z",
+    "driver": { "bytes": 1289, "sha256": "95528921d876cef0f59783a62b97734e6a4c58654a33473927250983c30d1a81" },
+    "requestSha256": "f2861a121295833de4829cda626d1883cb27b57d5bef8b15ac94786549fc2a95",
+    "referenceSummarySha256": "19f1cf4ae80045562709e669bb47a90af320171f99ad16f284f23b9f5fd72966",
+    "runtimeQualificationSha256": "6660b9a737d5109b3e01f3a76a6c7548857814f86c60cb9e6daea711d585dc9f",
+    "result": { "bytes": 303499, "sha256": "916bcd061ce89b5f64045146a110c0573fe8721c8f8f314865e5e896965bd2d5" },
+    "requestMetadata": { "bytes": 216935, "sha256": "f666664c5702b1cca91495f6b298b40c412011701e4e1c67f66bf2ca2346f5e4" },
+    "paddedRaw": { "bytes": 300827, "sha256": "cedb4c8a80dfa8e65f5b4359e6974b64ff020e74c77e025629b0b94c51dcf870" },
+    "inputTrace": { "bytes": 3624, "sha256": "b6cf1a2606339e0865308e881f5fa87ca643cb645e7a521932c16e7ea55d5e90" },
+    "workerBootAfterAdmission": { "bytes": 1378, "sha256": "31039ca5dc65e32ad568e2e792b925299ea0d083b01b138c05cabfb0d4744ef0" },
+    "selectedCell": "padded",
+    "singleCaseIds": ["short-query", "unicode", "code", "whitespace", "empty"],
+    "actualInferenceBatchSize": 1,
+    "precisionEnvironment": { "NVIDIA_TF32_OVERRIDE": "0" },
+    "minimumSingleCosine": 0.9999996807464253,
+    "maximumSingleAbsoluteError": 5.066394805908203e-7,
+    "passedFixedVectorGates": true,
+    "tokenIdsEqual": true,
+    "batchPopulationCompatible": true,
+    "workerInputTraceVerified": true,
+    "requestGroupInputTraceVerified": true,
+    "retainedInputTraceJoins": 10,
+    "diagnosticCompatible": true,
+    "diagnosticOnly": true,
+    "rankingsEqual": null,
+    "fullGpuPopulationComplete": false,
+    "notCheckedCells": ["single-short-document", "single-full-8192", "single-over-limit", "mixed-length"],
+    "verification": "Exact frozen summarizeNativeBoundaries recomputation deep-equaled every derived result field; seven source pins, driver/raw/boot/input/closure pins, original reference file/vector/token bindings, all retained 768-dimensional finite vectors, and ten saved input trace records checked at 2026-10-02T08:46:15.336Z. No model inference replay.",
+    "loadedClosureAfter": { "bytes": 7594, "sha256": "56136aeb7754ad1a74dece93035f79f39e19a38536fe796ae98413b47a209e4c" },
+    "loadedClosureScope": "Observed after qualifier returned; may omit libraries unloaded during worker shutdown; complete-before-inference closure unverified",
+    "kernelPidAndSequenceBindingVerified": false,
+    "profilerImport": {
+      "defect": "WI-10005387",
+      "profilerVersion": "2022.4.2.50-32196742v0",
+      "importerVersion": "2022.4.2.50-32196742v0",
+      "rawCapture": { "bytes": 5525648, "sha256": "cf37e3063385000ede8f8981e04f247f8f27c006fa0951f7f4439b848c78e068" },
+      "partialReport": { "bytes": 3092626, "sha256": "b02149c3c9efb635c697b645e473428d795452a139a34bb39dcad051228cff15" },
+      "importLog": { "bytes": 4388, "sha256": "170769389eee27d7cc962a32325e5749eca98ca4117af583ecf6bb17ae21f589" },
+      "errors": ["GetCudaCallbackName: Unknown driver API function index: 752", "StringStorage: Cannot find string for an exterior index"],
+      "acceptance": "Unverified; explicit importer exited 3 before SQLite export/completion. Retain capture and distinguish unsupported CUDA-event decoding from trace corruption before a new expensive inference attempt.",
+      "detectorGap": "Existing preflight proved no-CUDA capture/import/SQLite integrity; it did not exercise the CUDA driver callbacks generated by this native payload."
+    }
+  },
+  "nativeCudaProfilerRecovery": {
+    "workItem": "WI-10005387",
+    "status": "Canonical CUDA-event guard, matched profiler preflight, and native V6 model capture verified; remaining P006 population and request-sequence acceptance open",
+    "guard": {
+      "source": { "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts", "bytes": 30947, "sha256": "3f87daffee10686d426b01e56f37e93e9b0d409d82a38e35e326289e5a2fdcd1" },
+      "test": { "path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts", "bytes": 6127, "sha256": "566f62ee4b2e084fda2b500cc3eba574232c80549873c39bb3c54cd4857d7ae1" },
+      "export": "assertNativeProfilerQualification",
+      "rejects": ["nonzero importer exit", "partial event processing errors", "fatal import/CLI errors", "invalid SQLite integrity", "no decoded CUDA API or compute kernel activity", "invalid activity counts"],
+      "redRunId": "459c4055-5e92-4294-9f10-ed5fc7477196",
+      "redLedgerIds": [20505943],
+      "finalGreenRunId": "01dddc1d-6633-401d-8392-6006bda984aa",
+      "finalGreenLedgerIds": [20506804, 20506805],
+      "finalGreenResult": { "passed": 67, "failed": 0, "skipped": 0 },
+      "typecheck": "Scoped shared TypeScript service: two requested files and fourteen files in the reported service scope clean; not a whole-project gate verdict",
+      "reuse": "Extended the existing measurement-manifest guard surface and conventional benchmark Vitest suite; no new platform tool, service, or registry"
+    },
+    "privateRuntime": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/nsys-runtime-v2-WI10005387/runtime",
+      "officialPackage": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/nsight-systems-2026.3.2_2026.3.2.476-1_amd64.deb",
+      "package": { "bytes": 448261416, "sha256": "e9bf0ff9c613ff5545095a4177676a9579cb666e78c8621c3792f3559e2c1690" },
+      "version": "NVIDIA Nsight Systems version 2026.3.2.476-263238834031v0",
+      "nsys": { "bytes": 87282816, "sha256": "68a5fb843322bda1b090900a0297b9d5bee43daf8b870a809a6f8aa93059ae16" },
+      "importLibrary": { "bytes": 439584, "sha256": "8620b402be3288daee8d6eba27f02626efcb8684b304647d9cdfacf310c2eb15" },
+      "route": "Matched full-bundle nsys profile with automatic report import, followed by nsys export --type=sqlite; documented nsys import is available for raw captures",
+      "hostPackageInstallationChanged": false
+    },
+    "retainedV5ImportAttempts": [
+      { "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/nsys-runtime-v2-WI10005387/retained-v5-import-r1", "receiptSha256": "59ad2987e2f370aec9af4d23c353d97c93ea77f7eb57646f0ffd100a16b31b71", "exitCode": 1, "result": "CLI parse refusal before reading capture: --force-overwrite=false rejected despite help advertising true/false; no decoder compatibility verdict" },
+      { "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/nsys-runtime-v2-WI10005387/retained-v5-import-r2", "receiptSha256": "96f7a19a04a17d648fb3db4ccb747657b3f945f7617a49911575b3669fd0516a", "exitCode": 1, "result": "Actual argument preflight passed; retained 2022 raw capture rejected with invalid time conversion factors; no accepted kernel evidence and no distinguished corruption-versus-format cause" }
+    ],
+    "cudaEventPreflight": {
+      "taskId": "0muqs4bdh8rbdns1dt8",
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/nsys-runtime-v2-WI10005387/cuda-event-preflight-v1",
+      "completedAt": "2026-10-02T09:53:23.334876+00:00",
+      "exitCode": 0,
+      "receipt": { "bytes": 2617, "sha256": "2c9db5d3fc001ff7e1f2c1e978dd62c1b5640d1a5cfce6003b62839573a12815" },
+      "operationSourceSha256": "4c4bf3743a6fd9a4e517160db53c232b94ee9447f66f79164541dbe43aeadc61",
+      "operation": "Installed CUDA/cuBLAS SGEMM, shape 64x64x64; 4096 float32 outputs equal 64",
+      "modelInferencePerformed": false,
+      "captureExitCode": 0,
+      "importExitCode": 0,
+      "exportExitCode": 0,
+      "databaseIntegrity": "ok",
+      "cudaTableCounts": { "CUPTI_ACTIVITY_KIND_RUNTIME": 830, "CUPTI_ACTIVITY_KIND_KERNEL": 1 },
+      "canonicalGuardPassed": true,
+      "actualOldImporterAndNoCudaControlsRejected": true,
+      "kernelProcessJoin": { "scope": "single cuBLAS preflight operation", "pid": 818966, "matchesOperationPid": true, "join": "CUPTI_ACTIVITY_KIND_KERNEL.globalPid = PROCESSES.globalPid; PROCESSES.pid", "kernelName": "ampere_sgemm_32x128_nn", "durationNs": 6080 },
+      "scope": "Qualifies matching CUDA capture/report decoding/export on this host; native mDenseOn kernel/PID/request-sequence and complete-before-inference closure remain unverified"
+    },
+    "next": "Mandatory actual CUDA-event guard before a new native model capture with unchanged R4 source/request/reference and matched pinned Nsight runtime. Preserve old V5 vectors and raw captures; do not replay model inference merely to recover saved proof."
+  },
+  "nativeCudaPaddedV6": {
+    "taskId": "0muqtlxj0drhql41e1o",
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-cuda-padded-v6",
+    "exitCode": 0,
+    "driverCompletedAt": "2026-10-02T10:29:21.455Z",
+    "canonicalGuardVerifiedAt": "2026-10-02T10:29:27.471Z",
+    "recipe": { "bytes": 12258, "sha256": "8e0b031af24360e7d304541b46df8ecea982ec58398a8684ef7002ee90093452" },
+    "runtimeSource": "Unchanged qualified R4 source, dependency generation, copied Node, FILE-parent worker driver, model/request/reference, and TF32-off diagnostic recipe; profiler moved to CUDA-qualified matched 2026 full bundle",
+    "driver": { "bytes": 1291, "sha256": "85f182ff7eca366e0b11d886d5bd82d643fe092a8b8989a80b0060c5e43ea7fb" },
+    "result": { "bytes": 303499, "sha256": "715ac20e79aa8f7c18ef2d85f8630b2095cd815fee00cdf6f0609273c3e94b94" },
+    "inputTrace": { "bytes": 3624, "sha256": "5589550ec860f1bc6f0cc60187ef3ca7cac2f01e5be1bd715ba6bb33431e7384" },
+    "completion": { "bytes": 963, "sha256": "5c98c2cbe243312f60e5eb27c5bd725e6a5f6a5d73a3c3fb1bf99c2244ed1fcb" },
+    "canonicalGuard": { "bytes": 246, "sha256": "64ac348864d69fb96a06b4ce6353b4246f6425829e689380dc29f726103159fd" },
+    "profileDatabase": { "bytes": 14581760, "sha256": "0f163a3fa476d5013642d9e80a11dc44f99809f94adf800a8150d5108dadf74e" },
+    "profileReport": { "bytes": 4544880, "sha256": "77a2b1d4df944a077887e24f33df15860b4f18846b90e8738c65022d9a51454b" },
+    "workerBootAfterAdmission": { "bytes": 1380, "sha256": "0f298877a04df5c22880b58c9f0c241ad724fc857acad82f23ad32227b0374ae" },
+    "loadedClosureAfter": { "bytes": 8697, "sha256": "d05b6351837ef3d71c28fe027c85d5522720f9689d5990e258860bf1a5135a2a" },
+    "diagnosticCompatible": true,
+    "selectedCell": "padded",
+    "singleCells": 5,
+    "retainedInputTraceJoins": 10,
+    "actualInferenceBatchSize": 1,
+    "verification": "Exact frozen summarizeNativeBoundaries recomputation matched the retained summary; original reference vectors/token IDs and source pins checked without inference replay. Canonical CUDA-event guard passed before and after capture.",
+    "databaseIntegrity": "ok",
+    "cudaApiRecords": 14705,
+    "cudaKernelRecords": 8644,
+    "nativeKernelPidBound": true,
+    "nativeDriverPid": 2835147,
+    "kernelPidBinding": "Kernel table globalPid joined directly to PROCESSES.globalPid; grouped pid rows = [(2835147, 8644)]",
+    "kernelPidAndSequenceBindingVerified": false,
+    "completeBeforeInferenceClosureVerified": false,
+    "fullGpuPopulationComplete": false,
+    "notCheckedCells": ["single-short-document", "single-full-8192", "single-over-limit", "mixed-length"],
+    "oldEvidence": "V5 vectors, raw capture, partial report and importer failure remain retained; newer physical evidence does not retroactively qualify the failed V5 import"
+  },
+  "nativeProfilerClockCalibration": {
+    "status": "Matched model-free CUDA capture and unique launch-to-call bindings verified; native model request attribution remains open",
+    "workItem": "WI-10004540",
+    "taskId": "0muqzut3z1opze4z1ye",
+    "exitCode": 0,
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-cuda-clock-preflight-v1",
+    "qualification": { "bytes": 2668, "sha256": "d222a131bbbe562373b922753650b74c302fe8ae0527db77fe16e1d0680f029d" },
+    "capturedSource": { "bytes": 4379, "sha256": "494b878642d3c543f8e25edb7d1adbab4705e5e8e7951b9860c19fffae6cb0af" },
+    "profileDatabase": { "bytes": 10498048, "sha256": "4b6f747b27bfc106d2f22a9b5c01321d5bce8d9f6cc788d844b4f6dbd0081149" },
+    "profileReport": { "bytes": 3416091, "sha256": "173193ee87a94b06cdb13556b8c8d8b3ed293b08ba195936c0e793ec27e9e495" },
+    "profiler": "Unchanged pinned Nsight2026.3.2 full bundle; unnormalized/unshifted SQLite export (TIME_NORMALIZE=false, TIME_SHIFT=0)",
+    "clockMapping": "TARGET_INFO_SESSION_START_TIME.systemClockNs plus exported API ns matches Linux CLOCK_MONOTONIC, the Node hrtime timebase, for this capture. It does not match CLOCK_MONOTONIC_RAW.",
+    "systemClockNs": "237107267496070",
+    "operation": "Three maintained cuBLAS SGEMM64x64x64 calls; each4096-element output equals64; no model loads",
+    "processId": 693990,
+    "nativeThreadId": 693990,
+    "kernelRuntimeCorrelationJoins": 3,
+    "uniqueRequestWindows": 3,
+    "apiBoundaryMarginsNs": [ { "start": 14836427, "end": 24569 }, { "start": 80041, "end": 5483 }, { "start": 101443, "end": 5995 } ],
+    "rawOriginControlRejected": true,
+    "observedMonotonicMinusRawBeforeNs": [ "13559209703", "13559212528", "13559215082" ],
+    "join": "Kernel globalPid joins PROCESSES.globalPid; runtime correlationId joins with matching serialized process identity. PID/TID extraction follows the matched bundle cuda_kern_exec_trace.py. Add the session origin to API start/end, then require exactly one containing synchronous call window with the same process and OS thread. Kernel execution may outlive the launching call.",
+    "guard": {
+      "export": "bindNativeProfilerKernelRequests",
+      "source": { "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts", "bytes": 34738, "sha256": "62a20220b095b361baeda0057bd03a34401ebf62f352e9e578409510b8f41f2a" },
+      "test": { "path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts", "bytes": 11225, "sha256": "affe91edb92bda9e73fe7d6f262464dcecf1ec460857d7b1d8fce1eba991091d" },
+      "fixture": { "path": "packages/operator-core/lib/memory/bench/fixtures/native-cuda-clock-preflight.py", "bytes": 4479, "sha256": "ad48a50b110cdec32b5d0fd78fa028a02946e0bd89872d0f0274c2013affcb30" },
+      "fixtureDifference": "The immutable captured4379-byte version records both monotonic/RAW bracket samples. The maintained fixture additionally copies those same monotonic bracket endpoints into named request-window fields; captured evidence was derived from the original bracket samples without replay.",
+      "rejects": [ "wrong clock origin including observed RAW substitution", "ambiguous/missing/cross-process API correlations", "different launching OS thread", "overlapping same-thread call windows", "API straddling call boundary", "unobserved request windows", "duplicate kernel identities", "empty populations", "noncanonical ns and invalid IDs" ],
+      "runGroupId": "4b9d36e8-d41d-42b5-88be-5d840f6611b9",
+      "testRunIds": [ 20533434 ],
+      "passed": 34,
+      "failed": 0,
+      "skipped": 0,
+      "collectionFailed": false,
+      "verification": "Final native MCP response timed out after300s. Exact ledger and testing:run-status recovered terminal PASS; reporter execution_details confirms34/0/0, no name filter, canonical root/scope. No duplicate test run. Scoped shared TypeScript service requested files and its14-file scope clean; Python syntax and scoped diff checks pass. Captured qualification and seven artifact pins independently verified.",
+      "transportFriction": "EI-24874779712920736 (nonclaimable correlated probation; no generic repair claimed)"
+    },
+    "reuse": "Extend existing measurement-manifest and its conventional Vitest suite; promote the retained model-free cuBLAS preflight into the benchmark fixture directory. No new platform tool, service, table, registry or model policy.",
+    "limitation": "Three model-free sequential launch calls on one process/OS thread; no native model concurrent-graph,8192/over-limit/mixed/rankings, pre-inference DLL closure or capacity acceptance. Fresh native capture must retain its own clock anchor, complete selected kernel population, synchronous request IDs/thread intervals and correlation joins. R4/V6 remain immutable.",
+    "modelInferencePerformed": false,
+    "nativeModelKernelRequestBindingVerified": false,
+    "completeBeforeInferenceClosureVerified": false,
+    "fullGpuPopulationComplete": false
+  },
+  "nativeRuntimeResourcePreparation": {
+    "status": "Worker native-call library/capacity observation preparation verified; complete DLL closure and actual model GPU acceptance remain open",
+    "workItem": "WI-10004540",
+    "supersedesCurrentPins": "These tested resource-preparation pins superseded five files in the earlier nativeCallClockExtension. The worker MJS and input-trace test pins are now historical and superseded by nativeLoaderActivityPreparation below. The other three resource pins remain current; frozen R4/V6 and model-free Nsight calibration capture remain immutable.",
+    "reuse": "Add runtime evidence to the existing opt-in embed_native_inference lifecycle and existing private native-inference JSONL. Extend the same qualifier and conventional Vitest suite; no new callback, platform tool, table, service or production setting.",
+    "libraryObservation": "On Linux the worker samples /proc/self/maps before and after the actual synchronous addon Run. It fingerprints executable mappings, shared objects and .node addons with streaming SHA256; opened descriptor inode/device must match the map. Deleted/ambiguous mappings, inaccessible files, changes during hashing, malformed records and evidence order failures cannot qualify. Cached hashes are keyed by path/device/inode/size/mtime/ctime.",
+    "capacityObservation": "CUDA native-call boundaries run the existing nvidia-smi device-capacity query, adding GPU UUID and PCI identity, exact monotonic query brackets and executable fingerprint. CPU is not-applicable; failed/invalid CUDA queries retain unknown plus reason. Scope is all nvidia-smi devices, with CUDA_VISIBLE_DEVICES retained but not assumed to bind the provider. No allocator-cause claim follows from the sampled numbers.",
+    "recurrenceGuards": [ "empty/malformed library population", "invalid library fingerprint/map identity", "duplicate mapped paths", "snapshot outside native-call boundary", "sampler error and persistence failure", "library first observed after Run", "library bytes/map identity change", "invalid or unknown GPU capacity", "actual query argument mismatch" ],
+    "retainedFields": [ "nativeRuntimeTraceVerified", "observedLibraryClosureVerified", "gpuDeviceCapacityObserved" ],
+    "exports": [ "validNativeRuntimeSample", "nativeRuntimeTraceVerified", "nativeObservedLibraryClosureVerified", "nativeGpuCapacityObserved" ],
+    "verification": {
+      "initialRunGroupId": "1e24a474-0e3f-44ca-909a-5ffff81147cd",
+      "initialTestRunIds": [ 20534919, 20534920 ],
+      "initialResult": { "passed": 114, "failed": 0, "skipped": 0 },
+      "finalRunGroupId": "0e76bcda-f90c-49c6-b27b-ec0cbcd31620",
+      "testRunIds": [ 20535947, 20535948, 20535949, 20535951 ],
+      "passed": 152,
+      "failed": 0,
+      "skipped": 0,
+      "collectionFailed": false,
+      "tests": [ "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts", "libs/generic/memory/src/local-embedder-worker.test.ts", "libs/generic/memory/src/mdenseon-embedder.test.ts", "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts" ],
+      "actualNativeFixture": "The real upstream130-byte CPU ONNX fixture verifies mapped native addon fingerprints and snapshot order across queued calls and an actual dimension error. The real file-worker/Rust/fake-native fixture verifies valid and invalid GPU-query output with a private executable seam; no CUDA model runs in this test.",
+      "typecheck": "Four requested TypeScript source/test files plus loaded import graph clean; scoped compiler exit0. Plain ESM node --check and scoped git diff --check pass.",
+      "refusedAttempt": "a6c0c374-beb0-4cdd-84dd-af24bb789e42 used nonexistent local-embedder-worker-state.test.ts and was refused before execution; no test result claimed. Canonical existing worker test path used in final run. Caller frictionEI-24876620679253599 probation; no generic repair claimed."
+    },
+    "sources": [
+      { "path": "libs/generic/memory/src/local-embedder-worker.ts", "bytes": 55006, "sha256": "4f45cd0b989d8194aaa074c91efe712a384c40a273ec2aecfa40be732f81ea13" },
+      { "path": "libs/generic/memory/src/local-embedder-worker.script.mjs", "bytes": 25366, "sha256": "1c62e7e1c09535ccba60dddd586ab772d2cc0e2fc954528973a80a2743507f2d" },
+      { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.ts", "bytes": 55217, "sha256": "528b712424fb3895da32e894df23017a5cff515afbbd19cb801a03b8f782b6cb" }
+    ],
+    "tests": [
+      { "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts", "bytes": 27314, "sha256": "ad98e8e2cf02979606b6a7c8c6717605be43dc2398c10418e741412bebebd530" },
+      { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts", "bytes": 30664, "sha256": "a377a542731f19c127f910fa10633a76bf021511772d17d75c31dbe5d8631a41" }
+    ],
+    "limitations": [
+      "A library loaded and unloaded within Run can evade the maps snapshots; observedLibraryClosureVerified covers the observed maps population only. Complete-before-first-inference DLL closure requires independent loader evidence.",
+      "GPU capacity observation samples all devices; actual model GPU binding requires the profiler's device identity. Values describe measurement-time capacity, not successful allocation or the historical allocator failure cause.",
+      "These opt-in diagnostic observations add hashing/query overhead; they do not replace controlled V7 performance acceptance.",
+      "No pretrained model or CUDA-model capture replay. Native-model request joins, actual complete closure/capacity,8192/over-limit/mixed/full rankings and broader plan bars remain open."
+    ],
+    "pretrainedModelInferencePerformed": false,
+    "nativeCudaModelInferencePerformed": false,
+    "completeBeforeInferenceClosureVerified": false,
+    "modelGpuCapacityBindingVerified": false,
+    "fullGpuPopulationComplete": false
+  },
+  "nativeLoaderActivityPreparation": {
+    "status": "Standard glibc loader activity detector and native-call markers verified; actual model DLL closure and GPU acceptance remain open",
+    "workItem": "WI-10004540",
+    "reuse": "Use the installed glibc LD_DEBUG=files stderr trace, documented in ld.so(8), rather than adding an audit/preload library. Extend the existing opt-in native-call lifecycle, measurement-manifest qualifier and their conventional Vitest suites. No new platform tool, setting, service, native addon or production policy.",
+    "mechanism": "With files/all loader diagnostics enabled, the worker synchronously writes request-tag/PID/Linux-TID/phase/exact Node-hrtime markers to the same stderr descriptor around the original synchronous addon Run. The marker nanoseconds equal retained native lifecycle values. LD_DEBUG_OUTPUT is refused because a separate log loses the shared ordering. Ordinary untraced calls and native diagnostics without LD_DEBUG=files add no markers.",
+    "detector": "inspectNativeLoaderActivity requires process-start loader evidence and complete unique markers bound to the supplied request population. It rejects malformed identities, clocks, missing/repeated markers, unsupported activity and overlapping same-thread windows. It reports loader map creation/destruction and init/fini across the whole first-start to last-end interval, including activity between calls, and ignores other-PID loader output from sampler subprocesses.",
+    "verification": {
+      "runGroupId": "5a029f13-9782-478d-ba2c-349406514282",
+      "testRunIds": [20540091, 20540092],
+      "passed": 82,
+      "failed": 0,
+      "skipped": 0,
+      "collectionFailed": false,
+      "tests": ["packages/operator-core/lib/memory/bench/measurement-manifest.test.ts", "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts"],
+      "actualTransientControl": "A conventional test builds a tiny no-dependency shared object in its private fixture directory, then loads, calls and unloads it within matched Python CLOCK_MONOTONIC markers under actual glibc diagnostics. The detector observes both generating-map and destroying-map even though the before/after maps could match.",
+      "actualNativeWorker": "The retained upstream130-byte CPU ORT fixture validates exact stderr marker equality with six native lifecycle records across queued successes and an actual dimension error. A real file-worker/fake-native guard refuses separate LD_DEBUG_OUTPUT before a native-call marker or model result can qualify. No pretrained or CUDA-model replay.",
+      "typecheck": "Canonical operator-core requested source/test and its14-file service scope clean; generic-memory requested test plus loaded imports clean. Both compiler exits0; plain ESM node --check and scoped git diff --check pass. An earlier mixed-project check found two new test environment type errors, corrected with NodeJS.ProcessEnv and checked in the owning projects.",
+      "earlierRuns": ["7a0a18ea-da52-4567-a582-0078e4f59f64", "b47421fe-372c-415e-9267-a8fcf1a92ff3"]
+    },
+    "sources": [
+      { "path": "libs/generic/memory/src/local-embedder-worker.script.mjs", "bytes": 26375, "sha256": "af3ab27d4d3df54182238d5f993e428981d14aaf5eafb6ca18aaaf11898ab44f" },
+      { "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts", "bytes": 39393, "sha256": "acb964992256ef1518833108df950acc48579b28a0cd50a1c0359cffd7ff94a0" }
+    ],
+    "tests": [
+      { "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts", "bytes": 28315, "sha256": "ace77d8d8d37d8617f04a3ee92f88783dbe6e45e576a26d12fdaebb6f0f750ce" },
+      { "path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts", "bytes": 16282, "sha256": "75731699035081ea9e653ea76eb3035e1c06db76cfab8e5cf992854c1a88976f" }
+    ],
+    "limitations": [
+      "No loader activity is distinct from complete fingerprinted DLL closure. Join initial loader objects, resolved paths and namespaces to pre-inference map identities; preserve complete raw stderr from target exec through EOF with its fingerprint and terminal receipt before a model closure claim.",
+      "This guard covers glibc loader events, not arbitrary mmap/JIT executable pages. Unsupported or absent startup/marker evidence cannot qualify.",
+      "The fresh model capture still needs all tested overlays, exact source/dependency/Node/Python pins, FILE-parent worker boot, matched CUDA/clock preflight, complete kernel/request joins and actual GPU UUID/PCI capacity binding. R4/V6/V7/V5 and all retained capture evidence remain immutable."
+    ],
+    "pretrainedModelInferencePerformed": false,
+    "nativeCudaModelInferencePerformed": false,
+    "completeBeforeInferenceClosureVerified": false,
+    "modelGpuCapacityBindingVerified": false,
+    "fullGpuPopulationComplete": false
+  },
+  "nativeMappedObjectPreparation": {
+    "status": "Generated glibc object/namespace-to-fingerprinted pre-Run map joins verified; complete model DLL closure and GPU acceptance remain open",
+    "workItem": "WI-10004540",
+    "reuse": "Extend the existing native runtime sample, measurement-manifest guard and conventional Vitest suites. Retain all mapped segments for selected executable/ELF/addon files; no new tool, service, configuration key, production policy or native addon.",
+    "mechanism": "bindNativeLoaderMappedObjects binds the earliest request's valid pre-Run observation to its exact PID/Linux TID/runTag/clock, then joins each still-active generated glibc object and namespace by both actual dynamic-section and program-header addresses to one non-overlapping fingerprinted mapped file. It retains load bias and mapped size without interpreting base as a mapped address; missing/unsupported details, ambiguous mappings, repeated identities, mismatched addresses, malformed fingerprints and late observations are refused.",
+    "glibcWriter": {
+      "url": "https://github.com/bminor/glibc/blob/master/elf/dl-load.c",
+      "fields": {
+        "dynamic": "l->l_ld",
+        "base": "l->l_addr (load bias)",
+        "size": "maplength",
+        "phdr": "l->l_phdr"
+      },
+      "qualification": "Addresses need not be representable as safe JavaScript numbers; parse and compare exact BigInt values. A zero load bias is valid. A heap-allocated program-header table is outside the supported file-map join and fails qualification."
+    },
+    "verification": {
+      "testRunIds": [
+        20541275,
+        20541296,
+        20541298
+      ],
+      "runGroup": "p006-loader-address-regression-20261002 (worker-input/candidate suites only; manifest suite has its exact independent test-run receipt)",
+      "passed": 186,
+      "failed": 0,
+      "skipped": 0,
+      "collectionFailed": false,
+      "tests": [
+        "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts",
+        "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts",
+        "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts"
+      ],
+      "actualGlibcControl": "Canonical manifest test retains real glibc stderr in its child result and hashes the child's pre-Run mapped files. It compiles one model-free no-dependency shared object and loads the same file into two real dlmopen namespaces. Both namespaces independently join the same inode/fingerprint at different ELF addresses; ordinary libc objects also join. Complete closure remains false and unjoined program/interpreter files are explicit.",
+      "actualNativeWorker": "Canonical worker suite retains all selected file segments, including non-executable executable-header segments, with exact file fingerprints. Real130-byte upstream CPU ORT fixture verifies queued successes/error, sampler clocks and matching stderr markers; no pretrained model or CUDA-model replay.",
+      "compatibility": "86 existing candidate tests pass, including legacy maps observations without address ranges. Such older observations remain readable and cannot qualify the new address-join guard.",
+      "typecheck": "Requested core source/test and reported14-file service scope clean; generic-memory worker source/input test and loaded imports clean; compiler exits0. Plain ESM node --check and scoped diff checks pass. These are current-build local checks, not a release-gate or shipped-main claim.",
+      "earlierTestRunIds": [
+        20541247,
+        20541248
+      ],
+      "provenance": "Final manifest run stamped7439ab7f1d with named test clean. Regression run stamped7439ab7f1d; auto-sync advanced the memory submodule during execution. The six source/test fingerprints below were re-read unchanged after all checks; do not infer source currentness merely from the moving superproject/submodule pin."
+    },
+    "sources": [
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker.script.mjs",
+        "bytes": 26855,
+        "sha256": "66aed3fd2e58a575473be3b5a729dba6f3b8165ea751aa3ccb96f3c7aba9d582"
+      },
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker.ts",
+        "bytes": 56354,
+        "sha256": "c968717869c2c456466a3cd524a8dad9016fdd9eee0c56f0f3026a5ce5c45309"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+        "bytes": 45018,
+        "sha256": "acc7f6d285ec80553f2987422911558f7884ee3422bf5c211f25b573f358b7cd"
+      }
+    ],
+    "tests": [
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts",
+        "bytes": 28839,
+        "sha256": "8f6dccb44720246c13f2ba5abc705d2c8be9309581976bea4b6d223e3fb566dc"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts",
+        "bytes": 25075,
+        "sha256": "ee5ba1a18203f9e0019dae007f37843bac7b96d18e3417b7178877e616a85b5b"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts",
+        "bytes": 30664,
+        "sha256": "a377a542731f19c127f910fa10633a76bf021511772d17d75c31dbe5d8631a41"
+      }
+    ],
+    "supersedesCurrentPins": "These six pins are current for this preparation. All four nativeLoaderActivityPreparation pins and the prior resource/clock worker+manifest source/test pins are retained as historical proof. R4/V6/V7/V5, CPU2427/reference/export, and model-free Nsight calibration captures remain immutable.",
+    "limitations": [
+      "This proves the generated glibc object population represented in stderr before the earliest native Run. It does not independently establish an exec-to-EOF complete stderr population or its fingerprint/terminal receipt.",
+      "The returned unjoinedMappedFiles population includes interpreter/executable objects not necessarily emitted as generated link maps; initialization-only path resolution, executable/interpreter/vDSO census and scope must still be reconciled before full DLL closure can qualify.",
+      "Destruction that cannot be joined to the exact generated object/name/namespace is refused. Unsupported/prelinked layout details or program headers outside file maps fail qualification.",
+      "Transient loader activity during the selected native-call population remains separately reported by inspectNativeLoaderActivity; no-activity is not complete closure.",
+      "Fresh model capture still requires all current tested overlays, source/dependency/Node/Python pins, FILE-parent worker boot, matched CUDA/clock preflight, full kernel/request joins and actual device UUID/PCI capacity binding."
+    ],
+    "pretrainedModelInferencePerformed": false,
+    "nativeCudaModelInferencePerformed": false,
+    "completeBeforeInferenceClosureVerified": false,
+    "modelGpuCapacityBindingVerified": false,
+    "fullGpuPopulationComplete": false
+  },
+  "nativeLoaderClosurePreparation": {
+    "status": "File-backed glibc closure guard, kernel auxv/vDSO runtime observation and complete stderr receipt verified; native-model DLL/GPU acceptance remains open",
+    "workItem": "WI-10004540",
+    "reuse": "Extend existing measurement-manifest, worker runtime samples and three conventional Vitest suites. No new tool, service, configuration key, production model policy or native addon.",
+    "mechanism": "bindNativeLoaderClosure requires raw UTF-8-roundtrippable target stderr bytes, matching hash/byte-count/PID, a pipe installed before exec, EOF and successful unsignalled exit. It reuses generated-object/namespace/address joins, adds auxv-bound executable program headers/entry and interpreter base, resolves initialization aliases by inode/device before checking path/bytes/hash, and refuses unmatched mapped files or loader activity across selected request windows. vDSO is fingerprinted separately as kernel memory.",
+    "kernelAndLoaderSources": [
+      {
+        "url": "https://man7.org/linux/man-pages/man3/getauxval.3.html",
+        "use": "AT_PHDR/PHENT/PHNUM, AT_BASE, AT_ENTRY and AT_SYSINFO_EHDR identify kernel-provided exec/interpreter/vDSO metadata; /proc/pid/auxv exposes it."
+      },
+      {
+        "url": "https://man7.org/linux/man-pages/man7/vdso.7.html",
+        "use": "vDSO is kernel-mapped ELF memory, not an on-disk shared library."
+      },
+      {
+        "url": "https://raw.githubusercontent.com/torvalds/linux/master/include/uapi/linux/auxvec.h",
+        "use": "Auxv entry constants used by the sampler."
+      },
+      {
+        "url": "https://raw.githubusercontent.com/bminor/glibc/master/elf/dl-init.c",
+        "use": "calling init/preinit diagnostics print the actual loader object names; the main executable may have no init diagnostic."
+      }
+    ],
+    "verification": {
+      "runGroup": "p006-loader-closure-20261002",
+      "testRunIds": [
+        20541381,
+        20541382,
+        20541384
+      ],
+      "passed": 215,
+      "failed": 0,
+      "skipped": 0,
+      "collectionFailed": false,
+      "perFile": [
+        {
+          "path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts",
+          "passed": 95,
+          "testRunId": 20541382
+        },
+        {
+          "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts",
+          "passed": 34,
+          "testRunId": 20541384
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts",
+          "passed": 86,
+          "testRunId": 20541381
+        }
+      ],
+      "provenance": "Exact-file router pre/post stamp e358c3b1f703c59184c347997823b0c017d47ac3; named test paths clean, memory submodule903df0c9ae. Ledger worktreeDirty=true measures the shared tree, not those three path stamps. Six current source/test hashes re-read after final checks; these are local current-build results, not final release evidence.",
+      "actualGlibcControl": "Model-free compiled shared object loaded into two real dlmopen namespaces; actual hashed pre-Run maps, ELF PT_INTERP and /proc/self/auxv/mem bind the program/interpreter/vDSO. Complete child stderr and actual terminal status qualify the control with zero mapped-file residue, including symlinked interpreter initialization paths.",
+      "actualNativeWorker": "Real130-byte upstream CPU ORT fixture emits queued success/error observations with executable/header/entry/interpreter mappings and hashed vDSO inside each pre/post sampler bracket. Existing synchronous stderr marker equality, stdin-parent worker boot and capacity valid/invalid controls pass. Full closure of this Node worker's loader trace has not yet been claimed.",
+      "counterexamples": "Reject missing/late/failed/signalled/mismatched receipts, non-UTF8 bytes, missing process metadata, misbound header/entry/base, malformed vDSO/hash/ranges, map residue, unresolved or init-only files without identity, malformed/repeated control transfer, late loader errors, transient activity/preinit, and changed symlink-target bytes.",
+      "aliasRepair": "New adversarial alias test caught unrelated-path realpath traversal. Matching the alias descriptor's inode/device first avoids traversing unrelated mappings; only that candidate is resolved and hashed. The same conventional test verifies changed same-length bytes are refused.",
+      "typecheck": "Core requested source/test plus14-file service scope clean after alias repair; generic-memory requested source/input-test+imports clean. Plain ESM node --check and scoped superproject/submodule diff checks pass.",
+      "priorBaseTestRunIds": [
+        20541346,
+        20541347
+      ],
+      "priorBasePassed": 126,
+      "verificationHarnessAudit": "testing:run5284df02 exceeded its enforced45s foreground cap and automatic recovery7b4a93d2 was read to terminalfail. A later caller-relative custom reporter failed collection; corrected final runner uses built-in absolute evidence reporters and JSON with explicit harness/runGroup. No failed attempt is counted as final verification.",
+      "transportFriction": "EI-24882418765367812 (nonclaimable tool-failure probation; no generic repair lane claimed)"
+    },
+    "sources": [
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker.script.mjs",
+        "bytes": 30940,
+        "sha256": "fe4aa4f7ff106a643d4f19ee6bec45e1a33093456da733bb754ad0d5a7c143dd"
+      },
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker.ts",
+        "bytes": 57658,
+        "sha256": "4629f26f87cdc24a301540fc47c79b6c4e7acdfc9b4b20135373c40b0223678e"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+        "bytes": 53516,
+        "sha256": "e8f415ebce2d3a753d37665c0589cf55566df1bfab4635809fa97aaf844c03c7"
+      }
+    ],
+    "tests": [
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts",
+        "bytes": 29749,
+        "sha256": "57c51b0dcfcf05deb12eeb37a369d28d6a24d9a09152efd32bb87a04397c1fb8"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts",
+        "bytes": 34640,
+        "sha256": "32c1975124278b0b0d45179dd62472d15bae84aac67b7f13815283b31e540672"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts",
+        "bytes": 30664,
+        "sha256": "a377a542731f19c127f910fa10633a76bf021511772d17d75c31dbe5d8631a41"
+      }
+    ],
+    "supersedesCurrentPins": "These six pins supersede nativeMappedObjectPreparation's current-source pins. Earlier loader/resource/clock proofs and all immutable R4/V6/V7/V5/reference/export/Nsight captures remain historical and unchanged.",
+    "limitations": [
+      "The complete file-backed closure assertion is exercised by the real model-free glibc control, not by a pretrained native CUDA model. Native-model completeBeforeInferenceClosureVerified remains false.",
+      "The launcher owns the exec-to-EOF receipt and must retain its raw bytes/hash/PID/terminal evidence. A log tail, a successful profiler import, or booleans without that capture evidence cannot substitute.",
+      "ELF64 little-endian x64/arm64 only; unsupported interpreter, header-table, virtual-memory or alias layouts refuse qualification. vDSO is separately fingerprinted kernel memory.",
+      "Scope excludes arbitrary mmap/JIT code and does not establish CUDA kernel attribution, model GPU UUID/PCI capacity binding, vector parity, 8192/over-limit/mixed inference or complete rankings.",
+      "Next run the model-free actual FILE-parent Node worker closure preflight, then freeze immutable R5 with every current tested overlay and all source/dependency/executable pins; qualified CUDA/MONOTONIC preflight and terminal receipts remain mandatory before fresh model capture."
+    ],
+    "pretrainedModelInferencePerformed": false,
+    "nativeCudaModelInferencePerformed": false,
+    "modelFreeGlibcClosureVerified": true,
+    "completeBeforeInferenceClosureVerified": false,
+    "modelGpuCapacityBindingVerified": false,
+    "fullGpuPopulationComplete": false
+  },
+  "nativeNodeLoaderClosureQualification": {
+    "status": "Actual FILE-parent Node worker model-free closure control verified; pretrained native CUDA-model closure and GPU acceptance remain open",
+    "workItem": "WI-10004540",
+    "rootCause": "The first actual Node closure control failed on glibc's '(fatal)' diagnostic for optional node_register_module_v141 lookup in the tokenizers Node addon. Node25.9 GetInitializerCallback probes that legacy symbol, then successfully falls back to GetNapiInitializerCallback; a missing optional dlsym symbol is not by itself a failed dlopen or process. The completed tiny ORT native requests and successful child exit distinguished this from addon load failure.",
+    "writer": {
+      "url": "https://raw.githubusercontent.com/nodejs/node/v25.9.0/src/node_binding.cc",
+      "functions": [
+        "DLib::GetSymbolAddress",
+        "GetInitializerCallback",
+        "GetNapiInitializerCallback",
+        "GetNapiAddonGetApiVersionCallback",
+        "DLOpen"
+      ],
+      "procedure": "GetSymbolAddress calls dlsym. DLOpen tries the legacy initializer then the Node-API initializer and optional API-version lookup; the successful alternative returns true."
+    },
+    "fix": "Capture process.versions.modules in loaderProcess. Record only exact startup missing legacy/Node-API registration/version lookup diagnostics, require the named .node file to bind a retained generated-map fingerprint, and require legacy ABI suffix to match the captured Node ABI. Return those diagnostics as registrationProbeLookups; reject all other errors and every in-population error/activity. A successful complete target receipt remains required.",
+    "verification": {
+      "runGroup": "6b6b788c-f774-486f-b9e8-01363de13260",
+      "testRunIds": [
+        20541940,
+        20541941
+      ],
+      "fileVerdicts": [
+        {
+          "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts",
+          "status": "pass",
+          "testRunId": 20541940
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts",
+          "status": "pass",
+          "testRunId": 20541941
+        }
+      ],
+      "counts": "Original foreground response was interrupted by a wake. testing:runs and testing:run-status recovered terminal pass/exit0 for both exact files; detailed case counts are not reconstructed from file-level status. Historical previous215-case run remains under nativeLoaderClosurePreparation.",
+      "receiptRecovery": "sessions:timeline31321275 confirms testing:run returned ok after28388ms. Source edits from the aborted wrapper were read and verified before any retry; no duplicate final test launch.",
+      "actualNodeControl": "Existing isolated130-byte CPU ORT fixture now runs from a real FILE parent, retains complete spawn-pipe stderr/terminal status and all three native request windows with first pre-Run runtime. A separate diagnostic assessor consumes only those retained observations; it sends no new model request. bindNativeLoaderClosure returns complete=true, zero mapped-file residue, exact first runTag and at least one fingerprinted .node generated-object join.",
+      "counterexamples": "Manifest adds three exact Node-registration probe positives and refuses wrong ABI, unrelated required symbol and an unbound addon path. Existing malformed/failed receipt, loader census, maps, alias-change and in-population activity failures remain covered.",
+      "typecheck": "After the final Node edits, core source/test plus14-file service scope and generic-memory source/input test+loaded imports pass with compilerexit0 (2026-10-02T16:00Z). MJS syntax and scoped diff checks pass.",
+      "priorFailures": [
+        {
+          "testRunId": 20541871,
+          "result": "Real Node control failed before parser adaptation; direct cross-package TypeScript import also refused TS6059."
+        },
+        {
+          "testRunId": 20541902,
+          "result": "Improved diagnostic identifies actual missing optional node_register_module_v141 probe at stderrline116."
+        }
+      ],
+      "testLayerRepair": "Do not import operator-core source into the memory package's compiler root. The real lower-layer worker capture is assessed through an isolated Node/tsx diagnostic process with retained JSON input; the memory source remains independent of operator-core.",
+      "transportFriction": "EI-24883959500462543: entire native Papercusp MCP namespace disappeared after mid-turn wake; sameSID ptool explicit --url=http://127.0.0.1:3070 --transport=http recovered claim/control/test evidence. Mistaken --port flag rejected by CLI before dispatch; no mutation was retried with unknown outcome."
+    },
+    "sources": [
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker.script.mjs",
+        "bytes": 30984,
+        "sha256": "14e0f79c408c8a2fb5dcad5423ada757b6778b272244e649d763ed505577e3ce"
+      },
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker.ts",
+        "bytes": 57686,
+        "sha256": "7c6d106c0cb3c99eb49b7ac6a3197281b721b942efdb7cb67203a22d07572817"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+        "bytes": 54805,
+        "sha256": "ffe65f5f2fa113171b62800e9bfe30f53093f2a040bd481bd8abcf64811607c8"
+      }
+    ],
+    "tests": [
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts",
+        "bytes": 31953,
+        "sha256": "c6141d18129891099e719cf01f93d01cc81357c93e6591257c2ba219cb8d7d58"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts",
+        "bytes": 35876,
+        "sha256": "0e59c763606be6a3e56b90ca807ddf233ea0893b514e97449c4bbe4e0b957cea"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts",
+        "bytes": 30664,
+        "sha256": "a377a542731f19c127f910fa10633a76bf021511772d17d75c31dbe5d8631a41"
+      }
+    ],
+    "supersedesCurrentPins": "These six pins describe the completed historical Node-closure unit. nativeObservationChildEnvRepair supersedes the worker MJS/input-trace-test pins and verifies the stronger actual Node closure control. Other four pins remain unchanged; immutable model/export/reference/V7/V5/R4/V6/Nsight captures remain unchanged.",
+    "next": "Completed R5 and fresh matched CUDA/MONOTONIC preflight are recorded in nativeRuntimeV5Preparation/nativeR5ProfilerClockQualification. Preserve this completed Node control; prepare a new immutable full-model launcher/capture recipe using R5 and complete raw stderr/actual terminal receipt, request/kernel joins and device evidence.",
+    "limitations": [
+      "This qualifies a model-free actual Node FILE-parent CPU fixture, not mDenseOn CUDA-model closure or GPU acceptance.",
+      "Scope is file-backed glibc ELF/addons plus separately hashed kernel vDSO; arbitrary mmap/JIT and CUDA attribution remain separate.",
+      "Detailed final per-case counts are unreported rather than inferred from recovered pass rows."
+    ],
+    "modelFreeNodeClosureVerified": true,
+    "pretrainedModelInferencePerformed": false,
+    "nativeCudaModelInferencePerformed": false,
+    "completeBeforeInferenceClosureVerified": false,
+    "fullGpuPopulationComplete": false,
+    "modelGpuCapacityBindingVerified": false
+  },
+  "nativeRuntimeV5Preparation": {
+    "status": "completed exit0; independent R5 source/dependency contents and FILE-worker paths/boot qualified without model inference",
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v5",
+    "workItem": "WI-10004540",
+    "completedAt": "2026-10-02T16:36:51.834074+00:00",
+    "contentReceipt": {
+      "bytes": 9720,
+      "sha256": "a3894cdaa2ffef58fc73ffd2b0f678002d7f64ce71678dc83226aa0e241a2345"
+    },
+    "sourceReceipt": {
+      "bytes": 6306739,
+      "sha256": "964a37f5e24355d1d3db76102a6bb19ec26896509f16877658fd2daaf4bbbba7"
+    },
+    "freezeManifest": {
+      "bytes": 6647,
+      "sha256": "c598b3ae5525b0043678fbdee3cb1f054d37f93df007c7b349bf172a7c5964f3"
+    },
+    "recipe": {
+      "bytes": 14712,
+      "sha256": "285211bd4220494064761aff2a337dae8ec7c8182a14b250b34696a0390f7cb0"
+    },
+    "sourceRecordsChecked": 31405,
+    "dependencyRecordsChecked": 241451,
+    "independentRegularFilesChecked": 272472,
+    "overlays": [
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker.script.mjs",
+        "bytes": 30984,
+        "sha256": "14e0f79c408c8a2fb5dcad5423ada757b6778b272244e649d763ed505577e3ce"
+      },
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker.ts",
+        "bytes": 57686,
+        "sha256": "7c6d106c0cb3c99eb49b7ac6a3197281b721b942efdb7cb67203a22d07572817"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+        "bytes": 54805,
+        "sha256": "ffe65f5f2fa113171b62800e9bfe30f53093f2a040bd481bd8abcf64811607c8"
+      },
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts",
+        "bytes": 31953,
+        "sha256": "c6141d18129891099e719cf01f93d01cc81357c93e6591257c2ba219cb8d7d58"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts",
+        "bytes": 35876,
+        "sha256": "0e59c763606be6a3e56b90ca807ddf233ea0893b514e97449c4bbe4e0b957cea"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts",
+        "bytes": 30664,
+        "sha256": "a377a542731f19c127f910fa10633a76bf021511772d17d75c31dbe5d8631a41"
+      },
+      {
+        "path": "libs/generic/memory/src/mdenseon-embedder.ts",
+        "bytes": 3575,
+        "sha256": "b3bfc7fd1aefab3c9178eaa6d01d2fbed85a2a9b6c3fbc21626d4cfaafb2bc4b"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/candidate-embedders.ts",
+        "bytes": 55217,
+        "sha256": "528b712424fb3895da32e894df23017a5cff515afbbd19cb801a03b8f782b6cb"
+      },
+      {
+        "path": "libs/generic/memory/src/mdenseon-embedder.test.ts",
+        "bytes": 4057,
+        "sha256": "ceb75be956edc9fd8b7467701701a4f0b6c9d75eff1af9d5445b4eedf20f6954"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/fixtures/native-cuda-clock-preflight.py",
+        "bytes": 4479,
+        "sha256": "ad48a50b110cdec32b5d0fd78fa028a02946e0bd89872d0f0274c2013affcb30"
+      },
+      {
+        "path": "libs/generic/memory/src/embed-device.ts",
+        "bytes": 16832,
+        "sha256": "4be9125734e099f5fa50512436ef42079e083ece9a34a26bee75343f2201cc94"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts",
+        "bytes": 49773,
+        "sha256": "58ec56c40e61799ebf9f05d1ecc481818b607cdba62f46c1a7f17467b937d652"
+      }
+    ],
+    "node": {
+      "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v5/bin/node",
+      "bytes": 129006184,
+      "sha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627"
+    },
+    "python": {
+      "actualSamplerPath": "/usr/bin/python3.12",
+      "copiedPath": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v5/python3-pinned",
+      "bytes": 8020928,
+      "sha256": "e50d468e8b0adfb05733f5b87b3cff34829c4a8c1aea50c865aa8bdfe4bb150f"
+    },
+    "pathPreflight": {
+      "bytes": 637,
+      "sha256": "998509150649a414612f614da7237a531f77737a7e1667864066570d49b96f53"
+    },
+    "workerBootPreflight": {
+      "bytes": 1380,
+      "sha256": "3748c234ad71b00ecb8f6841624b6695e320ca9842a6c61f6c8664ca9c80c022"
+    },
+    "workerBootAfterAdmission": {
+      "bytes": 1380,
+      "sha256": "ad6d71e9cf18abd3ede9fb6c73b6ad59c574cb52e0dac82bf54b4c0691232f38"
+    },
+    "nativeDriver": {
+      "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v5/native-file-driver.mjs",
+      "bytes": 8280,
+      "sha256": "9b726d728d9473d5ad3ab56afb9f1259f73d3f64fa36a5a1e1c69658e78815f8"
+    },
+    "priorParentCheckpointArchive": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v5/parent-checkpoint-before-R5.json",
+    "priorParentCheckpointArchivePin": {
+      "bytes": 37334,
+      "sha256": "f2317186137469f4fbce6f5e2506a63a550e65de2494b5b2a48e5777dff86491"
+    },
+    "verification": "Native exec43152 terminal exit0; every source/dependency record checked for exact bytes/sha or link identity; regular files have distinct writable inode identities from R4. A separate read verified receipt/overlays/entrypoints/Node/Python/path/boots/driver pins and unchanged R4 receipts. Actual copied-Node FILE-parent worker readiness passed before and after pc-heavy admission with synthetic message suppressed; no model request forwarded. Existing tested Node fixture control reused by six identical current pins, no repeated completed control for recovery.",
+    "fileParentWorkerBootBeforeAndAfterAdmissionQualified": true,
+    "actualSamplerPythonPathPinned": true,
+    "copiedPythonActuallyUsedByClockSampler": false,
+    "freshModelCaptureRecipePrepared": false,
+    "nativeCudaModelInferencePerformed": false,
+    "nativeCudaModelClosureQualified": false,
+    "fullGpuPopulationComplete": false,
+    "reuse": "Completed qualified R4 and its pinned existing independent dependency copier; twelve tested/unchanged source overlays staged before copy. R4/V6/V7/V5 and historical model-free Nsight captures remain immutable."
+  },
+  "nativeR5ProfilerClockQualification": {
+    "status": "Fresh matched R5 model-free CUDA/MONOTONIC preflight completed exit0; three unique launch-to-call joins, RAW counterexample rejected",
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/r5-cuda-clock-preflight-v1",
+    "qualification": {
+      "bytes": 2846,
+      "sha256": "b39205957ed3ccda958ead8d9dbba77485cd38ccabaaf90cbe1287cb0c374d6e"
+    },
+    "verifiedAt": "2026-10-02T16:37:59.198Z",
+    "R5Qualification": {
+      "bytes": 9720,
+      "sha256": "a3894cdaa2ffef58fc73ffd2b0f678002d7f64ce71678dc83226aa0e241a2345"
+    },
+    "systemClockNs": "6533994075292",
+    "clockMapping": "unshifted/unnormalized session origin plus CUDA API launch nanoseconds matches CLOCK_MONOTONIC",
+    "bindings": [
+      {
+        "kernelId": "1",
+        "runTag": "cuda-clock-preflight:0"
+      },
+      {
+        "kernelId": "2",
+        "runTag": "cuda-clock-preflight:1"
+      },
+      {
+        "kernelId": "3",
+        "runTag": "cuda-clock-preflight:2"
+      }
+    ],
+    "artifacts": {
+      "recipe.sh": {
+        "bytes": 8121,
+        "sha256": "5cdbf2654eb8c461ce817b016aad0f6a4ea2f17446e122bd9de82204642b992f"
+      },
+      "operation.py": {
+        "bytes": 4479,
+        "sha256": "ad48a50b110cdec32b5d0fd78fa028a02946e0bd89872d0f0274c2013affcb30"
+      },
+      "operation.json": {
+        "bytes": 2871,
+        "sha256": "fa914ec78f035de9dd92dcea4fdcd90704b90b504266b4d53a6fdfc933cc9397"
+      },
+      "join-input.json": {
+        "bytes": 6547,
+        "sha256": "eeadb75acd1578b59febd2c0a45d6cecefef8eb2ea73a3df0fc6c084f159d30e"
+      },
+      "profile.sqlite": {
+        "bytes": 8015872,
+        "sha256": "fc44b727654fad278c57c2b3f9504c9fbd51fa3f316cd9a7f32f38b981d8c1e9"
+      },
+      "profile.nsys-rep": {
+        "bytes": 2374718,
+        "sha256": "eb4f4e4efe684c5637aeffc3936e7b9d6d448010b63958cadb8e339be1a91f52"
+      },
+      "profile.log": {
+        "bytes": 1235,
+        "sha256": "3fca922c73f151d4f629579b4e90fee851bba5e95ab980307ac8731df27f29cd"
+      },
+      "export.log": {
+        "bytes": 8126,
+        "sha256": "9dd8ca59e9bcd93efd5ed3dcd12bf8bf583de2fe6c7ecf01ce608bfa121da249"
+      },
+      "launch.json": {
+        "bytes": 1491,
+        "sha256": "55c03abfb9af759df3d6a7a43aa1d4d063a23ae7526d6e8d9111de22e9638c9f"
+      }
+    },
+    "guard": {
+      "bytes": 54805,
+      "sha256": "ffe65f5f2fa113171b62800e9bfe30f53093f2a040bd481bd8abcf64811607c8"
+    },
+    "canonicalGuardPassed": true,
+    "rawOriginControlRejected": true,
+    "modelInferencePerformed": false,
+    "limitations": "Three model-free cuBLAS calls on one process/native thread. Pretrained model request/kernel attribution, file-backed model DLL closure and actual model GPU UUID/PCI/capacity remain open. Export metadata explicitly TIME_NORMALIZE=false,TIME_SHIFT=0; ID decoder follows matched bundle cuda_kern_exec_trace.py; complete three-kernel census used."
+  },
+  "nativeCudaFullV1Attempt": {
+    "status": "failed exit1 before first retained native Run; raw target stderr/actual terminal receipt and profiler export retained",
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-cuda-full-v1",
+    "workItem": "WI-10004540",
+    "defect": "WI-10005547",
+    "failedAt": "2026-10-02T16:44:43.163Z",
+    "activeCell": "single-short-query",
+    "error": "Error: native RAW clock probe failed: spawnSync /usr/bin/python3.12 ENOBUFS",
+    "modelProcessId": 4150090,
+    "R5Receipt": "a3894cdaa2ffef58fc73ffd2b0f678002d7f64ce71678dc83226aa0e241a2345",
+    "terminalReceipt": {
+      "bytes": 304,
+      "sha256": "e870d1972a9047f8931f36ed013cb28dcaf3dcdeaf20aaf074b72eb57f5f269a"
+    },
+    "stderr": {
+      "bytes": 43433,
+      "sha256": "7b3f210991c61da1f66dac97200102dfcc90a20f6ce7a955b35bcfeba1e4f683"
+    },
+    "completion": {
+      "bytes": 2966,
+      "sha256": "c6b9251e78be5d7fa2a6e6a906f6755400a23e6fb915585e508e9a032b95315f"
+    },
+    "recipe": {
+      "bytes": 7141,
+      "sha256": "4cda86e6f6ac89e8710088f9e1c7b16df85956dd3ebb2c16f0344bc72f1b7071"
+    },
+    "driverSource": {
+      "bytes": 6568,
+      "sha256": "d4ca6964728bc5ccf3d2919c68f7e1c1cae7d5859c1fc364bc487c0c603bef38"
+    },
+    "captureWrapper": {
+      "bytes": 2045,
+      "sha256": "88d65f7ce05af679b0cf97c906b55a6f202cf439326e0b41b8155f32326aad66"
+    },
+    "profileDatabase": {
+      "bytes": 8425472,
+      "sha256": "14657adc097ae2fcd5a44e6e9b9b33fec116184be15a3dbb93403ba0c4d2fde1"
+    },
+    "profileReport": {
+      "bytes": 2414711,
+      "sha256": "4c1020ca767f7f77d8c7830f52c55ffcc8465d1825306a427e441ad1c0dd3e0c"
+    },
+    "captureExitCode": 1,
+    "exportExitCode": 0,
+    "completedSingles": [],
+    "nativeRunEvidenceRetained": false,
+    "fullGpuPopulationComplete": false,
+    "completeBeforeInferenceClosureVerified": false,
+    "scope": "Fresh full-population attempt reached real source/FILE-worker preflight and input tracing but no native Run receipt. First clock sampler failed; do not attribute to CUDA allocation or mark any vectors/8192/request-kernel acceptance measured."
+  },
+  "nativeObservationChildEnvRepair": {
+    "status": "Durable observation-child environment fix verified; next fresh runtime/model capture remains open",
+    "workItem": "WI-10005547",
+    "parent": "WI-10004540",
+    "rootCause": "Native clock spawnSync inherits LD_DEBUG=files and Nsight-injected LD_PRELOAD libraries. Child loader diagnostics exceed the 4096-byte combined buffer, produce ENOBUFS/SIGTERM and prevent its bounded JSON observation before native Run. Plain LD_DEBUG alone returned3275 bytes/pass; matched-profiler injection control returned4508 stderr bytes/ENOBUFS. Same injection with only LD_DEBUG removed returned0 stderr bytes and clock JSON/exit0.",
+    "fix": "Reuse both existing observation subprocess call sites with a shared internal nativeObservationChildEnv that removes LD_DEBUG and LD_DEBUG_OUTPUT from copied child env. Keep parent model loader diagnostics/ordering and profiler environment intact; maintain bounded buffers and genuine error refusal. GPU query child uses the same isolation rule.",
+    "detectorFailure": "Existing actual FILE-worker CPU closure control enabled only files diagnostics without profiler injection and its clock child stderr fit3275B. Add real overflow-positive control using files/libs/versions, require corrected worker actual requests and complete loader closure still pass, and make existing capacity-query fixture refuse leaked diagnostic env.",
+    "distinguishingControl": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/profiler-clock-child-distinguishing-v1.json",
+      "bytes": 1939,
+      "sha256": "a680bd64c895ee157e23925231fe2807231c58b40bd4c79bfa140afb51383a5e",
+      "hypothesis": "Nsight-injected loader diagnostics overflow observation child buffer",
+      "alternativeHypothesis": "Independent Python/clock failure",
+      "actualObservation": [
+        {
+          "mode": "inherited-loader",
+          "status": null,
+          "signal": "SIGTERM",
+          "errorCode": "ENOBUFS",
+          "stdoutBytes": 0,
+          "stderrBytes": 4508,
+          "stderrHasLoaderDiagnostic": true,
+          "stdout": ""
+        },
+        {
+          "mode": "scrubbed-loader",
+          "status": 0,
+          "signal": null,
+          "errorCode": null,
+          "stdoutBytes": 62,
+          "stderrBytes": 0,
+          "stderrHasLoaderDiagnostic": false,
+          "stdout": "[\"7161390640044\", \"7160349500680\", \"7161390641827\", \"3.12.3\"]\n"
+        }
+      ]
+    },
+    "verification": {
+      "ok": true,
+      "runId": "5c1c1051-9429-4082-aa5a-e77fe5c26e14",
+      "root": "repository:papercusp",
+      "passed": 132,
+      "failed": 0,
+      "skipped": 0,
+      "files": 2,
+      "failures": [],
+      "failuresTruncated": false,
+      "durationMs": 5658,
+      "byFile": {
+        "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts": {
+          "passed": 98,
+          "failed": 0,
+          "skipped": 0,
+          "collectionFailed": false,
+          "runId": 20542857
+        },
+        "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts": {
+          "passed": 34,
+          "failed": 0,
+          "skipped": 0,
+          "collectionFailed": false,
+          "runId": 20542855
+        }
+      },
+      "testRunIds": [
+        20542855,
+        20542857
+      ],
+      "rootSource": "requested"
+    },
+    "focusedRegression": {
+      "ok": true,
+      "runId": "7e6ea5f2-3192-41c3-8130-1272230be8b0",
+      "root": "repository:papercusp",
+      "passed": 1,
+      "failed": 0,
+      "skipped": 33,
+      "files": 1,
+      "failures": [],
+      "failuresTruncated": false,
+      "durationMs": 1225,
+      "byFile": {
+        "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts": {
+          "passed": 1,
+          "failed": 0,
+          "skipped": 33,
+          "collectionFailed": false,
+          "runId": 20542838
+        }
+      },
+      "testRunIds": [
+        20542838
+      ],
+      "rootSource": "requested"
+    },
+    "typecheck": {
+      "ok": true,
+      "project": "libs/generic/memory/tsconfig.json",
+      "engine": "tsc-cli",
+      "serviceFallback": "declined: declaration-emit-project (service parity unverified for declaration diagnostics)",
+      "errorCount": 0,
+      "scopedToFiles": [
+        "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts"
+      ],
+      "scopedVerdict": "requested-files-clean",
+      "scopedVerdictIncomplete": false,
+      "errorsInRequestedFiles": 0,
+      "totalErrorCount": 0,
+      "otherErrorCount": 0,
+      "otherErrors": [],
+      "otherErrorsTruncated": false,
+      "otherByFile": [],
+      "otherByFileTruncated": false,
+      "otherFilesWithErrors": 0,
+      "unattributedErrorCount": 0,
+      "compilerExitCode": 0,
+      "scopeCaveat": "SCOPED RUN — ok/errorCount/errors/exitCode describe the requested files. Other loaded import-graph diagnostics remain under otherErrorCount/otherErrors and do not fail that requested-file verdict; parser/global diagnostics or missing requested paths make scopedVerdict incomplete instead. Errors your change caused in files that do not import these are NOT covered (e.g. adding a required field to a shared interface breaks distant fixtures). This is not the gate verdict.",
+      "errors": [],
+      "errorsTruncated": false,
+      "byFile": [],
+      "byFileTruncated": false,
+      "filesWithErrors": 0,
+      "syntaxBroken": [],
+      "semanticCheckIncomplete": false,
+      "durationMs": 1215,
+      "exitCode": 0
+    },
+    "sources": [
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker.script.mjs",
+        "bytes": 31426,
+        "sha256": "dca0a08083be22913cbbc46dcd0fb115f84d3cc16279f2e1465ec8ecafbb2e39"
+      }
+    ],
+    "tests": [
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts",
+        "bytes": 32651,
+        "sha256": "0337ee92b394fffd9f63eb51eb85915de52c88f0d735f79bef32e3212e231d29"
+      }
+    ],
+    "currentSourcePinSupersession": "These two new pins supersede the worker MJS/input-trace-test current-pin assertion in nativeNodeLoaderClosureQualification; other four six-unit pins remain unchanged. Full132/0/0 suite verifies actual Node closure under the stronger overflowing-loader environment. R5/R4 and every capture remain immutable.",
+    "nativeCudaModelInferenceSucceeded": false,
+    "nativeModelCompleteClosureVerified": false,
+    "next": "Prepare independent R6 from completed R5, overlay the two verified repair pins plus retained current sources/fixtures, qualify FILE-worker before/after admission, then new full capture. Preserve failed native-cuda-full-v1."
+  },
+  "nativeRuntimeV6Preparation": {
+    "status": "Completed independent runtime qualification; no model inference during qualification",
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v6",
+    "completedAt": "2026-10-02T17:15:18.652Z",
+    "qualification": {
+      "bytes": 7584,
+      "sha256": "5856442c637fca6d3d86cd5900a6fd82ccb9b4cd4f4b4188fb2c6803b2deb04f"
+    },
+    "baselineQualification": "a3894cdaa2ffef58fc73ffd2b0f678002d7f64ce71678dc83226aa0e241a2345",
+    "sourceRecordsVerified": 31405,
+    "dependencyRecordsVerified": 241451,
+    "independentRegularFilesVerified": 272472,
+    "testedOverlays": 12,
+    "fileWorkerBootBeforeAndAfterAdmissionVerified": true,
+    "currentRepairPins": "nativeObservationChildEnvRepair.sources and tests",
+    "historicalDossierSnapshot": "R6 retains the pre-serialization-repair dossier snapshot. Its private qualification pins remain immutable; the subsequent public path correction changed no source or test content."
+  },
+  "nativeCudaFullV2Attempt": {
+    "status": "Partial measured outcome: six short inputs pass; actual8192 inference fails allocation; full population remains incomplete",
+    "workItem": "WI-10004540",
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-cuda-full-v2",
+    "runtimeQualification": "5856442c637fca6d3d86cd5900a6fd82ccb9b4cd4f4b4188fb2c6803b2deb04f",
+    "startedAt": "2026-10-02T17:27:21.467Z",
+    "completedAt": "2026-10-02T17:27:59.009464Z",
+    "captureExitCode": 1,
+    "exportExitCode": 0,
+    "modelProcessId": 2190559,
+    "captureCompletion": {
+      "bytes": 4124,
+      "sha256": "5acf1511f9076ab69040095cac12aae2d3d3def5f81ebaf2aa42216aacd0c613",
+      "artifactsVerified": 25
+    },
+    "terminalReceipt": {
+      "bytes": 304,
+      "sha256": "377852adece997b8ce61396622ca79e3965813d5802b69a8ff4969373a2c4b29",
+      "source": "spawn-pipe",
+      "captureStartedBeforeExec": true,
+      "eof": true,
+      "exitCode": 1,
+      "signal": null
+    },
+    "stderr": {
+      "bytes": 47720,
+      "sha256": "d265687c5d29bf5f2a34d94570a35574eaa45a32394a8eef01fbadb41d303461"
+    },
+    "offlineAssessment": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-full-v2-assessment-v1",
+      "artifact": "assessment.json",
+      "bytes": 638232,
+      "sha256": "a518ef34684482dc81bee273983993077da4c4ece6de8f2d89ef7c35995951b9",
+      "assessor": "cache:validation/mdenseon-boundary-WI10004540-20261001/assess-native-full-v2-v1.mjs",
+      "assessorSha256": "b348b42946862a87e2499098baa8df9d3350c971cc4a8c98fcd1991c0ab4ed5d",
+      "modelInferencePerformed": false,
+      "canonicalSource": "Qualified R6 candidate-embedders.ts and measurement-manifest.ts"
+    },
+    "completedSingles": [
+      "single-short-query",
+      "single-short-document",
+      "single-unicode",
+      "single-code",
+      "single-whitespace",
+      "single-empty"
+    ],
+    "shortInputAssessment": {
+      "passedFixedVectorGates": true,
+      "maximumAbsoluteError": 5.066394805908203e-7,
+      "tokenIdsEqual": true,
+      "actualWorkerInputsAndGraphNativeCallsVerified": true,
+      "rawClockSamplesVerified": true,
+      "observedLibraryMapsAndCapacitySamplesVerified": true,
+      "sixInputSubsetRankingsEqual": true,
+      "scope": "Six completed singles only; no eight-input ranking or complete loader closure claim"
+    },
+    "profilerAssessment": {
+      "version": "2026.3.2.476",
+      "databaseIntegrity": "ok",
+      "timeNormalize": false,
+      "timeShift": 0,
+      "cudaKernelRows": 5242,
+      "uniqueCudaLaunchRows": 5242,
+      "nativeRequestWindows": 7,
+      "kernelCountsInRequestOrder": [838, 882, 882, 882, 882, 838, 38],
+      "completeKernelProcessCensusVerified": true,
+      "uniqueKernelLaunchRequestBindingVerified": true,
+      "clockBasis": "MatchedR5 CUDA calibration plus unshifted session CLOCK_MONOTONIC origin and API launch intervals; no kernel completion-time join",
+      "includesFailed8192Request": true
+    },
+    "loaderAssessment": {
+      "loaderActivityGuardPassed": true,
+      "noLoaderActivityDuringMeasuredWindows": true,
+      "generatedObjectMapGuardPassed": true,
+      "generatedObjectMapJoins": 34,
+      "completeBeforeInferenceClosureVerified": false,
+      "completeClosureRefusal": "Canonical complete closure requires actual model exit0; preserved terminal receipt is exit1. Receipt was never rewritten."
+    },
+    "deviceCapacity": {
+      "uuid": "GPU-56997258-f6ca-96b7-ac4c-3fa3ec37db73",
+      "pciBusId": "00000000:51:00.0",
+      "profilerGpuId": 0,
+      "modelProcessDeviceBindingVerified": true,
+      "totalMiBReportedByNvidiaSmi": 24576,
+      "totalBytesReportedByProfiler": 25260720128,
+      "samples": "Every native start/end sample has the same UUID and PCI device, joined to TARGET_INFO_GPU and TARGET_INFO_CUDA_DEVICE for modelPID2190559",
+      "before8192FreeMiB": 8475,
+      "after8192FreeMiB": 3355,
+      "scope": "Before/after snapshots; neither available contiguous allocation nor external pressure is inferred. Profiler and nvidia-smi totals retain their respective reporting planes."
+    },
+    "failedCell": {
+      "id": "single-full-8192",
+      "actualInputShape": [1, 8192],
+      "node": "/layers.0/attn/Add_2",
+      "requestedBufferBytes": 3221225472,
+      "outcome": "Actual ORT allocation refusal; no successful8192 vector",
+      "shapeArithmetic": "1*12*8192*8192*4 equals the requested buffer size; arithmetic alone does not establish the allocator mechanism."
+    },
+    "notMeasured": ["single-over-limit", "padded", "mixed-length", "full-eight-input-ranking"],
+    "fullGpuPopulationComplete": false,
+    "next": "Audit allocation evidence before any further expensive attempt. Preserve V2; use existing cell selection only for a new named measurement of remaining cells, with actual terminal and profiler evidence."
+  },
+  "nativeCudaPaddedV7Qualification": {
+    "status": "Selected padded request group qualified with actual successful model terminal, complete loader closure and unique kernel/request bindings",
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-cuda-padded-v7",
+    "workItem": "WI-10004540",
+    "runtimeQualification": "5856442c637fca6d3d86cd5900a6fd82ccb9b4cd4f4b4188fb2c6803b2deb04f",
+    "selectedCell": "padded",
+    "diagnosticOnly": true,
+    "modelProcessId": 2966640,
+    "completedAt": "2026-10-02T17:42:15.877934Z",
+    "captureExitCode": 0,
+    "exportExitCode": 0,
+    "captureCompletion": {
+      "bytes": 4095,
+      "sha256": "57f90a2703d1e40a35b7a1a2234fbd6ed81fc562956d147f3610082f7c3eb5c9",
+      "artifactsVerified": 25
+    },
+    "rawResult": {
+      "bytes": 602717,
+      "sha256": "6024b5a231645d39a4499d7ad78cf91471f010cdda45cbf44e5ca142e14537ce"
+    },
+    "terminalReceipt": {
+      "bytes": 304,
+      "sha256": "60e1331305f3f78b5510c7e02011dbc7f9321b1435f9cdc78e869cbf59002ee1",
+      "source": "spawn-pipe",
+      "captureStartedBeforeExec": true,
+      "eof": true,
+      "exitCode": 0,
+      "signal": null
+    },
+    "stderr": {
+      "bytes": 45165,
+      "sha256": "c784c1c746602c79c2e7eaadf8857e0fdbc800ae05c15e781c497fc24b414ac0"
+    },
+    "offlineAssessment": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-padded-v7-assessment-v1",
+      "artifact": "assessment.json",
+      "bytes": 1119372,
+      "sha256": "f5ad6d116a5f80e33098121904255cfbe5a948665e67aeb2e01cbacdcaf819d1",
+      "assessor": "cache:validation/mdenseon-boundary-WI10004540-20261001/assess-native-padded-v7-v1.mjs",
+      "assessorSha256": "cc2400874d14780b21377cf20052d41d4c804f813ad27ee85850d6aaaecf9000",
+      "canonicalSummaryRederivedEqual": true,
+      "modelInferencePerformed": false
+    },
+    "requestGroup": {
+      "caseIds": ["short-query", "unicode", "code", "whitespace", "empty"],
+      "actualInferenceBatchSize": 1,
+      "nativeCalls": 10,
+      "inputTraces": 10,
+      "nativeStartEndTraces": 20,
+      "passedSingleReferenceAndGroupVectorGates": true,
+      "tokenIdsAndActualWorkerGraphNativeCallsVerified": true,
+      "scope": "Five exact prerequisite singles plus five group members. The shipped worker executes one text per inference; the named padded group does not claim one padded tensor submission."
+    },
+    "profilerAssessment": {
+      "version": "2026.3.2.476",
+      "databaseIntegrity": "ok",
+      "cudaKernelRows": 8644,
+      "uniqueCudaLaunchRows": 8644,
+      "nativeRequestWindows": 10,
+      "completeKernelProcessCensusVerified": true,
+      "uniqueKernelLaunchRequestBindingVerified": true,
+      "clockBasis": "Qualified matched CUDA CLOCK_MONOTONIC origin plus API launch intervals, with unshifted/unnormalized export"
+    },
+    "loaderAssessment": {
+      "completeBeforeInferenceClosureVerified": true,
+      "generatedObjectMapJoins": 34,
+      "initializationJoins": 35,
+      "unjoinedMappedFiles": 0,
+      "noLoaderActivityDuringMeasuredWindows": true,
+      "kernelVdsoBytes": 8192,
+      "scope": "Canonical actual model process executable/interpreter/generated-addon/file-map census before first selected Run, unchanged through last selected Run; vDSO separately fingerprinted kernel memory. Excludes anonymous JIT/arbitrary mmap memory."
+    },
+    "deviceIdentityAndCapacityVerified": true,
+    "fullGpuPopulationComplete": false,
+    "notMeasuredByThisCapture": ["single-short-document", "single-full-8192", "single-over-limit", "mixed-length", "full-eight-input-ranking"],
+    "priorFailuresPreserved": "FullV2 remains exit1 on actual8192 allocation. PaddedV7 does not supersede that failed cell or promote it to success."
+  },
+  "nativeCudaAllocatorCausalDiagnostic": {
+    "status": "Underlying CUDA allocation refusal observed directly in a new instrumented run; no full GPU acceptance",
+    "workItem": "WI-10004540",
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-allocator-causal-v1",
+    "runtimeQualification": "5856442c637fca6d3d86cd5900a6fd82ccb9b4cd4f4b4188fb2c6803b2deb04f",
+    "captureCompletion": {
+      "bytes": 3856,
+      "sha256": "647a9319c8566e2a2fec9cf5141a6c83709b6c95f14325cdb48d7f253b9c2c0d"
+    },
+    "artifactsVerified": 24,
+    "modelProcessId": 1521875,
+    "modelTerminal": {
+      "eof": true,
+      "exitCode": null,
+      "signal": "SIGABRT",
+      "bytes": 46630,
+      "sha256": "18b5faa22f340512c8033c6f7eaac289c0028d5a9d0db4366b3f1f38f6a725b3"
+    },
+    "sanitizerLog": {
+      "bytes": 14695,
+      "sha256": "00409cb193ffd9c61ff9de3cf389a038fc3c66f1c2350529fab7b08470ef11d1"
+    },
+    "offlineAssessment": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-allocator-causal-assessment-v1",
+      "artifact": "assessment.json",
+      "bytes": 13635,
+      "sha256": "3dc04c5ce1b93adb9ecea035bf5325ffa71b00ed4676b270ae4af43a2046a8e4",
+      "assessor": {
+        "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/assess-native-allocator-causal-v1.mjs",
+        "bytes": 7895,
+        "sha256": "30febd0b806eb6890316b5ffbd12fbc02968fdd49c75f96aadb7cf3fbd1bbdc0"
+      },
+      "modelInferencePerformed": false
+    },
+    "sourceIdentity": "Same frozen R6 model/reference/graph/input/source/precision as V2. Extra tested benchmark INFO preload and isolated NVIDIA API-error instrumentation; not a repeated capture for recovery.",
+    "instrumentation": {
+      "tool": "NVIDIA Compute Sanitizer",
+      "version": "2025.3.1.0 build36400806",
+      "archiveSha256": "8eeba425f66fdd17e78d0dff49baa8b3e4599fc0579984eab7ad9c486a95ebf2",
+      "runtimeReceipt": {
+        "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/sanitizer-runtime-v1/receipt.json",
+        "bytes": 35890,
+        "sha256": "3cb12adcca972035635ea08becc8b462fa642201e843acbf85b0fda284d17b32"
+      },
+      "kernelMemoryCheckingExcluded": true,
+      "apiErrors": "all",
+      "arithmeticAndProviderOptionsChanged": false
+    },
+    "modelFreeControl": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/allocator-sanitizer-control-v4",
+      "terminal": {
+        "bytes": 412,
+        "sha256": "026e52468a2156907eea4a0b79a220f8cde81f1b44a091f81be6c680801c2a04"
+      },
+      "qualified": true,
+      "targetReturnCode": 2,
+      "toolExitCode": 86,
+      "expectedFailureBeyondTotalCapacity": true,
+      "smallAllocationBytes": 32,
+      "priorFailedControlsPreserved": [
+        "v1 missing injection library",
+        "v2 no instrumented API from old tool",
+        "v3 removed binary-patching flag"
+      ]
+    },
+    "actualAllocationFailure": {
+      "underlyingApi": "cudaMalloc",
+      "returnCode": 2,
+      "allocationErrors": 3,
+      "propagatedErrors": 3,
+      "cudaProviderOffsets": [
+        "0x1ee77a",
+        "0x5cd142",
+        "0x1ee77a",
+        "0x5cd142",
+        "0x1ee77a",
+        "0x5cd142"
+      ]
+    },
+    "failedCell": {
+      "id": "single-full-8192",
+      "submittedShape": [
+        1,
+        8192
+      ],
+      "inputIdsMatchReference": true,
+      "node": "/layers.0/attn/Add_2",
+      "requestedBufferBytes": 3221225472
+    },
+    "nativeCalls": 7,
+    "sixShortFixedVectorGatesPassed": true,
+    "nativeLibraryPins": [
+      {
+        "library": "libonnxruntime_providers_cuda.so",
+        "bytes": 315724552,
+        "sha256": "3ca573cfc14f7b8efa8e4b987851d8958b22228a4a15be1e2609a81cfb641974"
+      },
+      {
+        "library": "libonnxruntime.so.1",
+        "bytes": 35164376,
+        "sha256": "92ba8e44d31b80a34f5e805076a044122c3be1fffe0d88ed790de7267b0b2682"
+      },
+      {
+        "library": "onnxruntime_binding.node",
+        "bytes": 384040,
+        "sha256": "a7191fbfe8045d4d5d312e5ecd8f5dd6970e804dd340c98be8a0af8daf7908cc"
+      }
+    ],
+    "nativeLibrariesMatchUninstrumentedV2": true,
+    "interpretation": {
+      "observed": "Instrumented model Run reports three underlying cudaMalloc error2 calls, plus three propagated errors, through actual ORT CUDA/provider and Node Run backtraces. The same failed8192 input/Add request is retained.",
+      "distinguishingAlternative": "An arena-limit-only rejection before reaching CUDA would not produce these native cudaMalloc error2 records.",
+      "notEstablished": [
+        "exact failed cudaMalloc sizes",
+        "actual arena configured memory limit",
+        "fragmentation",
+        "competing allocation cause",
+        "physical memory pressure",
+        "exact API-call timestamps/request attribution",
+        "source commit of the vendor binary",
+        "cause of instrumented teardown heap corruption"
+      ],
+      "loggingLimit": "The tested public INFO environments are configured, but no native BFCArena INFO lines were observed. Configuration alone is not proof those native logs were enabled.",
+      "instrumentationLimit": "Compute Sanitizer is an additional instrumented runtime. Its log has native Run/provider frames but no exact API timestamps; no new Nsight kernel join or complete loader qualification is inferred."
+    },
+    "nativeArenaInfoMessagesObserved": false,
+    "cleanupDefect": {
+      "id": "WI-10005599",
+      "assignee": "same session as parent",
+      "observed": "Actual EOF/SIGABRT after retained allocation exception; final stderr corrupted double-linked list",
+      "rootCauseConfirmed": false
+    },
+    "recurrenceGuard": {
+      "function": "inspectNativeCudaAllocationFailure",
+      "source": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+      "rejects": [
+        "generic arena error",
+        "propagation without cudaMalloc error",
+        "wrong CUDA error code",
+        "wrong provider",
+        "missing native Run frame",
+        "partial or absent terminal error census"
+      ]
+    },
+    "verification": {
+      "testRunGroup": "d774bd9b-8b1a-4595-ad5f-5823868ea317",
+      "testRunIds": [
+        20553645,
+        20553646
+      ],
+      "passed": 116,
+      "failed": 0,
+      "skipped": 0,
+      "typecheck": {
+        "engine": "tsc-service",
+        "checkedFiles": 15,
+        "namedFiles": 2,
+        "errors": 0,
+        "semanticCheckIncomplete": false
+      },
+      "sources": [
+        {
+          "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+          "bytes": 56298,
+          "sha256": "cd15b05b58dbd4cc271b799b740aab8c5c335cead6bccfaf6d5415d8adb03b83"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/fixtures/native-cuda-clock-preflight.py",
+          "bytes": 6758,
+          "sha256": "f748d55efb4795d870db78d83be39d4000a0bf97826573089753e8dadcb09d9e"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/fixtures/native-ort-allocator-logging.mjs",
+          "bytes": 3853,
+          "sha256": "88bc45ee26fa21176b06e6324625dd86d1efa9bd7ccefd5b16ed56edba4362a8"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/native-cuda-allocation-preflight.test.ts",
+          "bytes": 8153,
+          "sha256": "72ef9db7f49cc16e758811a81a69344241de385e59b35cb74522b404a883bd3f"
+        }
+      ]
+    },
+    "fullGpuPopulationComplete": false,
+    "completeBeforeInferenceClosureVerified": false,
+    "newProfilerKernelQualificationClaimed": false,
+    "priorV2PaddedV7AndR6Preserved": true,
+    "next": "Diagnose the owned teardown residue and actual native global logger filtering before another large instrumented attempt, or continue independent plan bars. No blind retry, pressure/fragmentation attribution, model/index/precision/production switch or live gate action."
+  },
+  "nativeCudaHostDebuggerControls": {
+    "status": "Host debugger protocol measured; intermittent heap root cause remains open",
+    "workItem": "WI-10005599",
+    "parent": "WI-10004540",
+    "assessment": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-ort-host-debugger-assessment-v1",
+      "artifact": "assessment.json",
+      "bytes": 4923,
+      "sha256": "65dd3dec8d322ab916e9f1791d8f6b5376cb48a3758c049f6c07fe24227137d3"
+    },
+    "captures": [
+      {
+        "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-ort-teardown-control-v4",
+        "artifact": "launch.json",
+        "bytes": 2701,
+        "sha256": "dd4b2744f44632f2f48ca2336dda829c1c4cd562d591e03038c1b2ea87d7611a"
+      },
+      {
+        "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-ort-teardown-control-v5",
+        "artifact": "completion.json",
+        "bytes": 29582,
+        "sha256": "b2fcb09d2537bd032f1fbfd6f7c3412cc0e7af7dccd5d7271e88a49090e9e4d2"
+      }
+    ],
+    "controls": [
+      {
+        "version": 4,
+        "cell": "cpu-debugger-preflight",
+        "processId": 795519,
+        "targetExitCode": 1,
+        "targetSignal": null,
+        "hostBacktraceCaptured": false,
+        "intentionalAbort": false,
+        "instrumented": false,
+        "inferiorSanitizerInitObserved": false,
+        "sanitizerApiErrorSummary": null,
+        "heapCorruptionMessage": false,
+        "completion": {
+          "bytes": 2928,
+          "sha256": "667f3ad1b49420b7ae0628938ebf91cce26000d83fa606459d5eba7d38a508d2"
+        }
+      },
+      {
+        "version": 5,
+        "cell": "cpu-debugger-abort-control",
+        "processId": 887952,
+        "targetExitCode": null,
+        "targetSignal": "SIGABRT",
+        "hostBacktraceCaptured": true,
+        "intentionalAbort": true,
+        "instrumented": false,
+        "inferiorSanitizerInitObserved": false,
+        "sanitizerApiErrorSummary": null,
+        "heapCorruptionMessage": false,
+        "completion": {
+          "bytes": 3000,
+          "sha256": "55a4cb1a09c244e14b965f85e3f47520f238c8638cd84f3d5dd60fb8b677a1a2"
+        }
+      },
+      {
+        "version": 5,
+        "cell": "cuda-native-debugger-control",
+        "processId": 1042966,
+        "targetExitCode": 1,
+        "targetSignal": null,
+        "hostBacktraceCaptured": false,
+        "intentionalAbort": false,
+        "instrumented": false,
+        "inferiorSanitizerInitObserved": false,
+        "sanitizerApiErrorSummary": null,
+        "heapCorruptionMessage": false,
+        "completion": {
+          "bytes": 4673,
+          "sha256": "e815305ab2d507fb84e778a7eb6a06eadafaae9fbd12a0178272f72042583f04"
+        }
+      },
+      {
+        "version": 5,
+        "cell": "cuda-instrumented-debugger-1",
+        "processId": 1046614,
+        "targetExitCode": 1,
+        "targetSignal": null,
+        "hostBacktraceCaptured": false,
+        "intentionalAbort": false,
+        "instrumented": true,
+        "inferiorSanitizerInitObserved": true,
+        "sanitizerApiErrorSummary": "0",
+        "heapCorruptionMessage": false,
+        "completion": {
+          "bytes": 4986,
+          "sha256": "8e2668cc414675a854e01823a04724db970fe712a658b29a9811765fc8cd90e3"
+        }
+      },
+      {
+        "version": 5,
+        "cell": "cuda-instrumented-debugger-2",
+        "processId": 1051903,
+        "targetExitCode": 1,
+        "targetSignal": null,
+        "hostBacktraceCaptured": false,
+        "intentionalAbort": false,
+        "instrumented": true,
+        "inferiorSanitizerInitObserved": true,
+        "sanitizerApiErrorSummary": "0",
+        "heapCorruptionMessage": false,
+        "completion": {
+          "bytes": 4986,
+          "sha256": "8923de244604fba18f08afd7817dbc5ae99bb4fca12d2f8b4e3e39fef0cea628"
+        }
+      },
+      {
+        "version": 5,
+        "cell": "cuda-instrumented-debugger-3",
+        "processId": 1057647,
+        "targetExitCode": 1,
+        "targetSignal": null,
+        "hostBacktraceCaptured": false,
+        "intentionalAbort": false,
+        "instrumented": true,
+        "inferiorSanitizerInitObserved": true,
+        "sanitizerApiErrorSummary": "0",
+        "heapCorruptionMessage": false,
+        "completion": {
+          "bytes": 4986,
+          "sha256": "44c709dcade66b1157adf0c6e694562bcc5ebc8b6cd31d0df1dd88bd716384f3"
+        }
+      },
+      {
+        "version": 5,
+        "cell": "cuda-instrumented-debugger-4",
+        "processId": 1062396,
+        "targetExitCode": 1,
+        "targetSignal": null,
+        "hostBacktraceCaptured": false,
+        "intentionalAbort": false,
+        "instrumented": true,
+        "inferiorSanitizerInitObserved": true,
+        "sanitizerApiErrorSummary": "0",
+        "heapCorruptionMessage": false,
+        "completion": {
+          "bytes": 4986,
+          "sha256": "b0fe8f5aeedfa91f748d1b4eeccedd933490054f35701b75de494c814affcac3"
+        }
+      }
+    ],
+    "interpretation": {
+      "observed": "Real GDB CPU normal-exit and intentional SIGABRT controls qualify the inferior terminal/backtrace protocol. One uninstrumented and four instrumented CUDA shape-error/dispose/uncaught controls all exited1 normally; actual inferior sanitizer initialization and API summary0 verified on all four instrumented cells. No intermittent heap abort reproduced under GDB.",
+      "limits": [
+        "Debugger changes observation; no causal absence or fix inference",
+        "Intentional CPU abort is a protocol positive control, not a heap-corruption reproduction",
+        "Origin of historical heap corruption and full-model first logger initializer remain unresolved",
+        "No embedding-model inference or full GPU acceptance performed"
+      ]
+    },
+    "verification": {
+      "testRunGroup": "d319214e-78b9-4f5c-94a9-dccf5eac6b3c",
+      "testRunIds": [
+        20554496
+      ],
+      "passed": 27,
+      "failed": 0,
+      "skipped": 0,
+      "typecheck": {
+        "engine": "tsc-service",
+        "checkedFiles": 1,
+        "errors": 0,
+        "semanticCheckIncomplete": false
+      },
+      "rawPinsVerified": 60,
+      "olderSmallControlRawPinsVerified": 76,
+      "sources": [
+        {
+          "path": "packages/operator-core/lib/memory/bench/fixtures/native-ort-teardown-control.mjs",
+          "bytes": 10793,
+          "sha256": "07acc0671de0b89dccaf0ff982006e23f43b6f837e3bce896566bb616a89558c"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/fixtures/native-ort-teardown-control.gdb",
+          "bytes": 2162,
+          "sha256": "661283659deb134395f59243209a506338f3573cbc723f1b1362bb535539ca6d"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/fixtures/native-ort-teardown-control.d.mts",
+          "bytes": 376,
+          "sha256": "3829bd75de0cf9205a2359e42f86d152608564d40b271b4fc74cbda52def8a15"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/native-cuda-allocation-preflight.test.ts",
+          "bytes": 14616,
+          "sha256": "fcd7ec8479b2825b80efc554c8c837ed0e2888d95bd52d04f4628e8225f82e8c"
+        }
+      ]
+    },
+    "heapCorruptionRootCauseConfirmed": false,
+    "heapCorruptionFixed": false,
+    "embeddingModelInferencePerformed": false,
+    "fullGpuPopulationComplete": false,
+    "next": "Keep the bug open; use a host allocator detector or initializer trace with new causal instrumentation rather than repeating this non-reproducing debugger batch or large inference."
+  },
+  "nativeCudaTeardownControls": {
+    "status": "Small native teardown reproduction and first-initializer logging control; heap root cause remains open",
+    "workItem": "WI-10005599",
+    "parent": "WI-10004540",
+    "scope": "Upstream ORT MIT mul_1.onnx, 130bytes; no embedding weights. Frozen R6 Node/ORT/provider and same qualified sanitizer API-only flags. This does not qualify embedding compatibility.",
+    "assessment": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-ort-teardown-assessment-v1",
+      "artifact": "assessment.json",
+      "bytes": 10143,
+      "sha256": "1f79e742989c8fa86d0361865deaaae5061da9e261834df2800b034e9062bb67"
+    },
+    "captures": [
+      {
+        "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-ort-teardown-control-v1",
+        "completion": {
+          "bytes": 13182,
+          "sha256": "dae288c90afc4e9fbfc711eeaa6eb5a516e45218a2412fbfc1669870cfd492aa"
+        },
+        "fixture": {
+          "bytes": 5551,
+          "sha256": "6bd69d458286a824692b291d6e64e3865f9b89c1ec412a52f4b2e7c5d939ba93"
+        }
+      },
+      {
+        "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-ort-teardown-control-v2",
+        "completion": {
+          "bytes": 14272,
+          "sha256": "b30cfc30d796a66d62039573fcf4de9e473dd72c0739d64e9dee13e7b206aa67"
+        },
+        "fixture": {
+          "bytes": 6446,
+          "sha256": "94ffdab35a05de5373ea75ebad7d05fb439b4fb24317c3fb5091b5a67028e876"
+        }
+      },
+      {
+        "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-ort-teardown-control-v3",
+        "completion": {
+          "bytes": 10785,
+          "sha256": "bf844a2d74d72b9d85b04a66d535dee27a2cbaf470eacfda47198c5eff0236db"
+        },
+        "fixture": {
+          "bytes": 6597,
+          "sha256": "c8ee937b54959fee8ab87f7375595bae9baffed1081c98c77f4d1c9c50082efd"
+        }
+      }
+    ],
+    "controls": [
+      {
+        "version": 1,
+        "cell": "environment-success",
+        "processId": 3296580,
+        "outcome": "success",
+        "release": "environment",
+        "disposed": false,
+        "targetExitCode": 0,
+        "targetSignal": null,
+        "heapCorruptionObserved": false,
+        "sanitizerApiErrorSummary": "0",
+        "nativeCudaArenaInfoMessages": 1,
+        "measuredArenaLimitBytes": "18446744073709551615"
+      },
+      {
+        "version": 1,
+        "cell": "dispose-success",
+        "processId": 3298437,
+        "outcome": "success",
+        "release": "dispose",
+        "disposed": true,
+        "targetExitCode": 0,
+        "targetSignal": null,
+        "heapCorruptionObserved": false,
+        "sanitizerApiErrorSummary": "0",
+        "nativeCudaArenaInfoMessages": 1,
+        "measuredArenaLimitBytes": "18446744073709551615"
+      },
+      {
+        "version": 1,
+        "cell": "environment-shape-error",
+        "processId": 3299215,
+        "outcome": "shape-error",
+        "release": "environment",
+        "disposed": false,
+        "targetExitCode": 0,
+        "targetSignal": null,
+        "heapCorruptionObserved": false,
+        "sanitizerApiErrorSummary": "0",
+        "nativeCudaArenaInfoMessages": 1,
+        "measuredArenaLimitBytes": "18446744073709551615"
+      },
+      {
+        "version": 1,
+        "cell": "dispose-shape-error",
+        "processId": 3299655,
+        "outcome": "shape-error",
+        "release": "dispose",
+        "disposed": true,
+        "targetExitCode": 0,
+        "targetSignal": null,
+        "heapCorruptionObserved": false,
+        "sanitizerApiErrorSummary": "0",
+        "nativeCudaArenaInfoMessages": 1,
+        "measuredArenaLimitBytes": "18446744073709551615"
+      },
+      {
+        "version": 2,
+        "cell": "environment-shape-error-uncaught",
+        "processId": 3557801,
+        "outcome": "shape-error",
+        "release": "environment",
+        "disposed": false,
+        "targetExitCode": 1,
+        "targetSignal": null,
+        "heapCorruptionObserved": false,
+        "sanitizerApiErrorSummary": "0",
+        "nativeCudaArenaInfoMessages": 1,
+        "measuredArenaLimitBytes": "18446744073709551615"
+      },
+      {
+        "version": 2,
+        "cell": "dispose-shape-error-uncaught",
+        "processId": 3559588,
+        "outcome": "shape-error",
+        "release": "dispose",
+        "disposed": true,
+        "targetExitCode": null,
+        "targetSignal": "SIGABRT",
+        "heapCorruptionObserved": true,
+        "sanitizerApiErrorSummary": "0",
+        "nativeCudaArenaInfoMessages": 1,
+        "measuredArenaLimitBytes": "18446744073709551615"
+      },
+      {
+        "version": 2,
+        "cell": "first-warning-success",
+        "processId": 3561576,
+        "outcome": "success",
+        "release": "dispose",
+        "disposed": true,
+        "targetExitCode": 0,
+        "targetSignal": null,
+        "heapCorruptionObserved": false,
+        "sanitizerApiErrorSummary": "0",
+        "nativeCudaArenaInfoMessages": 0,
+        "measuredArenaLimitBytes": null
+      },
+      {
+        "version": 2,
+        "cell": "first-info-success",
+        "processId": 3562669,
+        "outcome": "success",
+        "release": "dispose",
+        "disposed": true,
+        "targetExitCode": 0,
+        "targetSignal": null,
+        "heapCorruptionObserved": false,
+        "sanitizerApiErrorSummary": "0",
+        "nativeCudaArenaInfoMessages": 1,
+        "measuredArenaLimitBytes": "18446744073709551615"
+      },
+      {
+        "version": 3,
+        "cell": "unmodified-native-uncaught",
+        "processId": 3664624,
+        "outcome": "shape-error",
+        "release": "dispose",
+        "disposed": true,
+        "targetExitCode": 1,
+        "targetSignal": null,
+        "heapCorruptionObserved": false,
+        "sanitizerApiErrorSummary": null,
+        "nativeCudaArenaInfoMessages": 1,
+        "measuredArenaLimitBytes": "18446744073709551615"
+      },
+      {
+        "version": 3,
+        "cell": "instrumented-uncaught",
+        "processId": 3665097,
+        "outcome": "shape-error",
+        "release": "dispose",
+        "disposed": true,
+        "targetExitCode": 1,
+        "targetSignal": null,
+        "heapCorruptionObserved": false,
+        "sanitizerApiErrorSummary": "0",
+        "nativeCudaArenaInfoMessages": 1,
+        "measuredArenaLimitBytes": "18446744073709551615"
+      },
+      {
+        "version": 3,
+        "cell": "instrumented-exit-code",
+        "processId": 3666057,
+        "outcome": "shape-error",
+        "release": "dispose",
+        "disposed": true,
+        "targetExitCode": 1,
+        "targetSignal": null,
+        "heapCorruptionObserved": false,
+        "sanitizerApiErrorSummary": "0",
+        "nativeCudaArenaInfoMessages": 1,
+        "measuredArenaLimitBytes": "18446744073709551615"
+      }
+    ],
+    "interpretation": {
+      "observed": "Same corrupted double-linked list SIGABRT reproduced on a 130-byte native ONNX shape-error control with sanitizer API error summary0. A subsequent same-mode control completed exit1, so the reproduction is intermittent; explicit failure exit-code is not a proven fix. First-warning parent initializer suppresses later CUDA BFCArena INFO; first-info permits it.",
+      "notEstablished": [
+        "origin of heap corruption",
+        "whether instrumentation alone causes it",
+        "why the prior full model initialized its native logger at warning",
+        "physical cause of the8192 CUDA allocation refusal",
+        "any embedding compatibility or full GPU acceptance"
+      ]
+    },
+    "verification": {
+      "testRunGroup": "a93cff6a-b248-4922-b861-364f1e5b684a",
+      "testRunIds": [
+        20554398
+      ],
+      "passed": 26,
+      "failed": 0,
+      "skipped": 0,
+      "typecheck": {
+        "engine": "tsc-service",
+        "checkedFiles": 1,
+        "errors": 0,
+        "semanticCheckIncomplete": false
+      },
+      "sources": [
+        {
+          "path": "packages/operator-core/lib/memory/bench/fixtures/native-ort-teardown-control.mjs",
+          "bytes": 6597,
+          "sha256": "c8ee937b54959fee8ab87f7375595bae9baffed1081c98c77f4d1c9c50082efd"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/native-cuda-allocation-preflight.test.ts",
+          "bytes": 12611,
+          "sha256": "bacc05a7d6c72071b6f5b2bc3559107ae3fa3b9aa3a38cf3e5ff3eee07a55e57"
+        }
+      ]
+    },
+    "embeddingModelInferencePerformed": false,
+    "heapCorruptionRootCauseConfirmed": false,
+    "heapCorruptionFixed": false,
+    "fullGpuPopulationComplete": false,
+    "loggingLimit": "First-initializer effect is measured on the small fixture, not retroactively attributed to the full model. Its measured arena limit is not the uninstrumented/full model arena configuration.",
+    "next": "Keep WI-10005599 open. Diagnose intermittent host heap corruption from the small reproduction; trace actual first initializer before enabling arena logs on a future model capture. No blind large retry or acceptance promotion."
+  },
+  "nativeCudaAllocatorDetectorControls": {
+    "status": "Bounded allocator-instrumented controls completed; historical heap abort remains unresolved",
+    "workItem": "WI-10005599",
+    "parent": "WI-10004540",
+    "capture": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-ort-allocator-detector-v1",
+      "artifact": "completion.json",
+      "bytes": 27329,
+      "sha256": "3dcf2323b5ffa8980a35c4dfb69f2f068b4ff487cc2e9f26f64e6b03207fb32d"
+    },
+    "allocatorEnvironment": {
+      "GLIBC_TUNABLES": "glibc.malloc.tcache_count=0:glibc.malloc.perturb=165:glibc.malloc.check=3",
+      "MALLOC_CHECK_": "3",
+      "MALLOC_PERTURB_": "165",
+      "LD_PRELOAD": "/usr/lib/x86_64-linux-gnu/libc_malloc_debug.so.0"
+    },
+    "allocatorLibraries": [
+      {
+        "path": "/usr/lib/x86_64-linux-gnu/libc_malloc_debug.so.0",
+        "bytes": 60744,
+        "sha256": "bd019e51ce7d91743961d13d0c6524eb54cafdf2ca87358f19ccc1403f9c6ea3"
+      },
+      {
+        "path": "/usr/lib/x86_64-linux-gnu/libc.so.6",
+        "bytes": 2129424,
+        "sha256": "3a15d66867d83762c7f2f1e37359cb8f6c5743edb369c65285cb0b1c4f7498bf"
+      },
+      {
+        "path": "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+        "bytes": 236616,
+        "sha256": "c20a2dc8917c755f02b94049356320fe1f62ac7d9f8994731f807d9df39302da"
+      }
+    ],
+    "admission": {
+      "bridge": "scripts/lib/governed-test-process.mjs::runGovernedTestProcess",
+      "receiptId": "RG-21505679-9c9d-4ee6-9fd5-b8ff570bae0f",
+      "leaseId": "46a77ddc-d64d-403d-adae-e7170802e70c",
+      "inherited": false,
+      "forwardedSerializationVerifiedInNativeFileWorkers": true,
+      "reviewedFixtureDisposition": "WI-10005620",
+      "historicalStandaloneTypedInheritance": "unmeasured"
+    },
+    "controls": [
+      {
+        "cell": "cpu-allocator-precondition",
+        "instrumentedByComputeSanitizer": false,
+        "processId": 3110192,
+        "exitCode": 1,
+        "signal": null,
+        "debuggerPipeEof": true,
+        "debugAllocatorMapped": true,
+        "heapCorruptionMessage": false
+      },
+      {
+        "cell": "cuda-native-allocator-control",
+        "instrumentedByComputeSanitizer": false,
+        "processId": 3111733,
+        "exitCode": 1,
+        "signal": null,
+        "debuggerPipeEof": true,
+        "debugAllocatorMapped": true,
+        "heapCorruptionMessage": false
+      },
+      {
+        "cell": "cuda-instrumented-allocator-control",
+        "instrumentedByComputeSanitizer": true,
+        "processId": 3115451,
+        "exitCode": 1,
+        "signal": null,
+        "debuggerPipeEof": true,
+        "debugAllocatorMapped": true,
+        "inferiorSanitizerInitObserved": true,
+        "sanitizerApiErrorSummary": 0,
+        "heapCorruptionMessage": false
+      }
+    ],
+    "verification": {
+      "rawArtifactPinsVerified": 28,
+      "historicalSmallControlPinsRechecked": 136,
+      "testRunGroup": "a77b6298-399d-469d-aebf-03269373953d",
+      "testRunIds": [
+        20559170,
+        20559171
+      ],
+      "passed": 63,
+      "failed": 0,
+      "skipped": 0,
+      "typecheck": {
+        "engine": "tsc-service",
+        "namedFiles": 1,
+        "checkedFiles": 1,
+        "errors": 0,
+        "scope": "native-cuda-allocation-preflight.test.ts"
+      },
+      "sources": [
+        {
+          "path": "packages/operator-core/lib/memory/bench/fixtures/native-ort-teardown-control.mjs",
+          "bytes": 11769,
+          "sha256": "45e4d1331647dbf282863b9e1d036e519b169e1169786a75f2649429ceef3e71"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/native-cuda-allocation-preflight.test.ts",
+          "bytes": 16147,
+          "sha256": "9cb423e7204cf9463667fd61926d496786e2c343d47b347656eb78e8bc16f436"
+        }
+      ]
+    },
+    "limits": [
+      "One CPU precondition and at most two CUDA cells; not a statistical absence claim",
+      "Debugger, debug malloc and allocator settings change observation",
+      "Loaded debug allocator and requested tunables do not qualify corruption-detector sensitivity",
+      "No heap origin, durable fix, physical CUDA allocation cause or full-model first initializer established",
+      "Historical signals and all prior model captures remain immutable"
+    ],
+    "embeddingModelInferencePerformed": false,
+    "heapCorruptionRootCauseConfirmed": false,
+    "heapCorruptionFixed": false,
+    "fullGpuPopulationComplete": false,
+    "next": "Keep WI-10005599 open. Qualify the host allocator detector with a maintained corruption-specific positive control or collect new allocator/initializer causal evidence. Do not repeat this pair or a large model run without a new distinguishing probe."
+  },
+  "separateOpenDefect": "EI-24795092971119894 is DONE/COMMITTED for the independent-reference/failure-receipt detector repair. Actual8192 allocation compatibility remains owned by WI-10004540; no successful GPU8192 inference is claimed."
+}

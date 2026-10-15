@@ -25,7 +25,8 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { createFreshPgDb, applyPlanItemClaimMigrations, type FreshPgDb } from '../../test/_pg-helpers';
+import type { FreshPgDb } from '../../test/_pg-helpers';
+import { createOrgTestDb } from '../../test/_org-test-db';
 import type { AcquireOpts } from './claims';
 import { noteGoalClaimed, readAgentStateStamp, resetAgentStateStamps } from '../agent-state-stamp';
 
@@ -45,33 +46,14 @@ const PLAN = 'test-plan-2026-06-07';
 let db: FreshPgDb;
 
 beforeAll(async () => {
-  db = await createFreshPgDb('claims');
+  // Goal rehydration can read work-items/fleets on the same connection during
+  // release. A missing leg aborts the D006 observer transaction even when its
+  // JS reader catches the error. Reuse the migrated fixture, including those
+  // real tables, rather than maintaining a partial claim-only schema.
+  const org = await createOrgTestDb({ adminPoolMax: 4 });
+  db = { sql: org.adminSql, url: org.adminDsn, cleanup: org.cleanup };
   h.sql = db.sql;
-  // The migration's GRANTs reference cluster-wide roles — ensure they exist
-  // (shared testcontainer: another file may have created them already).
-  await db.sql.unsafe(`
-    DO $r$ BEGIN CREATE ROLE harness_app; EXCEPTION WHEN duplicate_object THEN NULL; END $r$;
-    DO $r$ BEGIN CREATE ROLE harness_zero; EXCEPTION WHEN duplicate_object THEN NULL; END $r$;
-  `).simple();
-  // Apply the REAL migrations — we test the shipped schema, not a hand-rolled
-  // copy. 140/141/143 — see EI-9613: shared helper instead of a hand-copied
-  // list (this file previously loaded only 141+143 by hand; 140 rides along
-  // now too — it's a self-contained CREATE TABLE with no FK on 141/143's
-  // tables, harmless to apply even though this file's own tests don't touch
-  // plan_item_assignments).
-  await applyPlanItemClaimMigrations(db.sql);
-  // renewOwnerActivityClaims consults the latest recorded session as its
-  // liveness authority. Keep this fixture minimal; the claim-store tests do
-  // not need the rest of migration 079's session columns.
-  await db.sql`
-    CREATE TABLE IF NOT EXISTS harness_shared.adv_sessions (
-      id BIGSERIAL PRIMARY KEY,
-      coord_owner_id text,
-      started_at timestamptz NOT NULL DEFAULT now(),
-      ended_at timestamptz
-    )
-  `;
-});
+}, 180_000);
 
 afterAll(async () => {
   await db?.cleanup();
@@ -253,6 +235,137 @@ describe('release', () => {
   });
 });
 
+describe('D-006 plan-only claim isolation', () => {
+  const source = 'su-d006-source';
+  const answerer = 'su-d006-answerer';
+
+  // A transactional observer in the disposable fixture catches intermediate
+  // writes, including delete/reacquire with equal holder endpoints. The label
+  // identifies this controlled wrapper; it is not trusted native attribution.
+  async function observe(run: (sql: postgres.Sql) => Promise<void>) {
+    await db.sql.begin(async (transaction) => {
+      const sql = transaction as unknown as postgres.Sql;
+      await sql.unsafe(`
+        CREATE TEMP TABLE d006_claim_observations (
+          id bigserial PRIMARY KEY,
+          operation text NOT NULL,
+          wrapper text NOT NULL,
+          old_claim jsonb,
+          new_claim jsonb
+        ) ON COMMIT DROP;
+        CREATE OR REPLACE FUNCTION pg_temp.observe_d006_claim() RETURNS trigger
+        LANGUAGE plpgsql AS $fn$
+        BEGIN
+          INSERT INTO d006_claim_observations (operation, wrapper, old_claim, new_claim)
+          VALUES (TG_OP, current_setting('application_name'),
+                  CASE WHEN TG_OP = 'INSERT' THEN NULL ELSE to_jsonb(OLD) END,
+                  CASE WHEN TG_OP = 'DELETE' THEN NULL ELSE to_jsonb(NEW) END);
+          RETURN NULL;
+        END $fn$;
+        CREATE TRIGGER d006_claim_observer AFTER INSERT OR UPDATE OR DELETE
+          ON harness_shared.plan_item_claims
+          FOR EACH ROW EXECUTE FUNCTION pg_temp.observe_d006_claim();
+      `).simple();
+      h.sql = sql;
+      try {
+        await run(sql);
+        await sql.unsafe('DROP TRIGGER d006_claim_observer ON harness_shared.plan_item_claims');
+      } finally {
+        h.sql = db.sql;
+      }
+    });
+  }
+
+  async function sourceRows(sql: postgres.Sql) {
+    return sql<{ claim: Record<string, unknown> }[]>`
+      SELECT to_jsonb(c) AS claim FROM harness_shared.plan_item_claims c
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}
+         AND plan_slug = ${PLAN} AND owner = ${source}
+       ORDER BY item_id
+    `;
+  }
+
+  async function sourceChanges(sql: postgres.Sql) {
+    return sql<{ operation: string; wrapper: string; old_claim: Record<string, unknown> | null;
+      new_claim: Record<string, unknown> | null }[]>`
+      SELECT operation, wrapper, old_claim, new_claim FROM d006_claim_observations
+       WHERE old_claim ->> 'owner' = ${source} OR new_claim ->> 'owner' = ${source}
+       ORDER BY id
+    `;
+  }
+
+  it('answerer operations preserve raw source rows; release/reacquire is observable despite equal holders', async () => {
+    await observe(async (sql) => {
+      const first = await acquire({ owner: source });
+      const other = await acquire({ owner: source, itemId: 'P-002', livenessMode: 'activity' });
+      if (!first.ok || !other.ok) throw new Error('source setup');
+      const before = await sourceRows(sql);
+      await sql`DELETE FROM d006_claim_observations`;
+      await sql`SELECT set_config('application_name', 'd006:answerer', true)`;
+
+      expect((await acquire({ owner: answerer })).ok).toBe(false);
+      expect(await claims.heartbeatClaim(WS, HARNESS, PLAN, 'P-001', first.claim.claimId, answerer))
+        .toMatchObject({ renewed: false, held: false });
+      expect(await claims.releaseClaim(WS, HARNESS, PLAN, 'P-001', first.claim.claimId, answerer)).toBe(false);
+      const own = await acquire({ owner: answerer, itemId: 'P-003' });
+      if (!own.ok) throw new Error('answerer positive control');
+      expect(await claims.heartbeatClaim(WS, HARNESS, PLAN, 'P-003', own.claim.claimId, answerer))
+        .toMatchObject({ renewed: true, held: true });
+      expect(await claims.releaseAllClaimsForOwner(WS, answerer)).toBe(1);
+      expect(await sourceRows(sql)).toEqual(before);
+      expect(await sourceChanges(sql)).toEqual([]);
+
+      await sql`SELECT set_config('application_name', 'd006:source', true)`;
+      expect(await claims.releaseClaim(WS, HARNESS, PLAN, 'P-001', first.claim.claimId, source)).toBe(true);
+      const replacement = await acquire({ owner: source });
+      if (!replacement.ok) throw new Error('source replacement');
+      expect(replacement.claim.claimId).not.toBe(first.claim.claimId);
+      expect((await sourceRows(sql)).map((r) => r.claim.owner)).toEqual(before.map((r) => r.claim.owner));
+      const changes = await sourceChanges(sql);
+      expect(changes.map((r) => [r.operation, r.wrapper])).toEqual([
+        ['DELETE', 'd006:source'], ['INSERT', 'd006:source'],
+      ]);
+      expect(changes[0].old_claim?.claim_id).toBe(first.claim.claimId);
+      expect(changes[1].new_claim?.claim_id).toBe(replacement.claim.claimId);
+
+      // A privileged system operation must match the incarnation it inspected,
+      // even when the replacement has the same owner as that old incarnation.
+      await sql`SELECT set_config('application_name', 'd006:system', true)`;
+      const replacedRows = await sourceRows(sql);
+      expect(await claims.forceReleaseClaim({ workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN,
+        itemId: 'P-001', owner: source, claimId: first.claim.claimId })).toBe(false);
+      expect((await claims.forceTakeoverClaim({ workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN,
+        itemId: 'P-001', owner: answerer, expectedOwner: source, expectedClaimId: first.claim.claimId })).ok)
+        .toBe(false);
+      expect(await sourceRows(sql)).toEqual(replacedRows);
+      expect(await sourceChanges(sql)).toEqual(changes);
+    });
+  });
+
+  it('system expiry and sweep leave empty endpoints but retain the intermediate claim transitions', async () => {
+    await observe(async (sql) => {
+      expect(await sourceRows(sql)).toEqual([]);
+      await sql`SELECT set_config('application_name', 'd006:source', true)`;
+      const held = await acquire({ owner: source });
+      if (!held.ok) throw new Error('source setup');
+      await sql`SELECT set_config('application_name', 'd006:system', true)`;
+      await sql`UPDATE harness_shared.plan_item_claims
+                 SET expires_ts = clock_timestamp() - interval '1 second'
+               WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}
+                 AND plan_slug = ${PLAN} AND item_id = 'P-001'`;
+      expect((await claims.getClaim(WS, HARNESS, PLAN, 'P-001'))?.expired).toBe(true);
+      expect(await claims.sweepLapsedClaims(WS, HARNESS)).toBe(1);
+      expect(await sourceRows(sql)).toEqual([]);
+      const changes = await sourceChanges(sql);
+      expect(changes.map((r) => [r.operation, r.wrapper])).toEqual([
+        ['INSERT', 'd006:source'], ['UPDATE', 'd006:system'], ['DELETE', 'd006:system'],
+      ]);
+      expect(changes[0].new_claim?.claim_id).toBe(held.claim.claimId);
+      expect(changes[2].old_claim?.claim_id).toBe(held.claim.claimId);
+    });
+  });
+});
+
 describe('renewOwnerActivityClaims — the per-turn auto-renewal', () => {
   // EI-295 residual (2026-06-11): BOTH liveness modes renew on the owner's
   // turn — no explicit availability-heartbeat path exists yet, so this
@@ -262,9 +375,9 @@ describe('renewOwnerActivityClaims — the per-turn auto-renewal', () => {
   // boundary conditions (lapsed + other-owner untouched).
   it('renews the owner\'s live claims (both modes); lapsed + other owners untouched', async () => {
     await db.sql`
-      INSERT INTO harness_shared.adv_sessions (coord_owner_id, started_at, ended_at)
-      VALUES ('su-alice', clock_timestamp() - interval '1 minute', NULL),
-             ('su-bob', clock_timestamp() - interval '1 minute', NULL)
+      INSERT INTO harness_shared.adv_sessions (workspace_id, mode, cwd, coord_owner_id, started_at, ended_at)
+      VALUES (${WS}, 'console', '/repo', 'su-alice', clock_timestamp() - interval '1 minute', NULL),
+             (${WS}, 'console', '/repo', 'su-bob', clock_timestamp() - interval '1 minute', NULL)
     `;
     await acquire({ itemId: 'P-020', livenessMode: 'activity' });
     await acquire({ itemId: 'P-021', livenessMode: 'activity' });
@@ -347,6 +460,56 @@ describe('extendOwnerClaimsForAwait — EI-383 (survive an events:await sleep)',
 });
 
 describe('reads + sweep', () => {
+  it('reads exact-owner endpoints across plans/harnesses, retaining lapsed leases without changing rows', async () => {
+    await acquire({ itemId: 'P-002' });
+    await acquire({ itemId: 'P-001', harnessSlug: 'aaa', planSlug: 'another-plan' });
+    await acquire({ itemId: 'P-003', owner: 'su-bob' });
+    await acquire({ itemId: 'P-004', workspaceId: 'foreign-workspace' });
+    await lapse('P-002');
+    const before = await db.sql`SELECT * FROM harness_shared.plan_item_claims ORDER BY workspace_id, harness_slug, plan_slug, item_id`;
+    const own = await claims.listClaimsForOwner(WS, 'su-alice', 201);
+    expect(own.map(row => [row.harnessSlug, row.planSlug, row.itemId, row.expired]))
+      .toEqual([['aaa', 'another-plan', 'P-001', false], [HARNESS, PLAN, 'P-002', true]]);
+    expect(own.every(row => row.owner === 'su-alice' && row.workspaceId === WS)).toBe(true);
+    expect(await claims.listClaimsForOwner(WS, 'unheld-owner', 201)).toEqual([]);
+    expect(await db.sql`SELECT * FROM harness_shared.plan_item_claims ORDER BY workspace_id, harness_slug, plan_slug, item_id`)
+      .toEqual(before);
+  });
+
+  it('retains exact incarnation and lease changes across heartbeat and same-owner release/reacquire', async () => {
+    const result = await acquire();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const [before] = await claims.listClaimsForOwner(WS, 'su-alice', 201);
+    await claims.heartbeatClaim(WS, HARNESS, PLAN, 'P-001', result.claim.claimId, 'su-alice', 'extend', 3600);
+    const [renewed] = await claims.listClaimsForOwner(WS, 'su-alice', 201);
+    expect(renewed.claimId).toBe(before.claimId);
+    expect(new Date(renewed.expiresTs).getTime()).toBeGreaterThan(new Date(before.expiresTs).getTime());
+    expect(await claims.releaseClaim(WS, HARNESS, PLAN, 'P-001', result.claim.claimId, 'su-alice')).toBe(true);
+    expect(await claims.listClaimsForOwner(WS, 'su-alice', 201)).toEqual([]);
+    await acquire();
+    const [replaced] = await claims.listClaimsForOwner(WS, 'su-alice', 201);
+    expect(replaced.claimId).not.toBe(before.claimId);
+    expect(replaced.owner).toBe(before.owner);
+    expect(replaced.itemId).toBe(before.itemId);
+  });
+
+  it('bounds owner endpoint reads with an overflow sentinel and rejects invalid bounds', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.plan_item_claims
+        (workspace_id, harness_slug, plan_slug, item_id, owner, acquired_ts, expires_ts, last_activity_ts)
+      SELECT ${WS}, ${HARNESS}, ${PLAN}, 'P-' || lpad(n::text, 3, '0'), 'su-alice',
+        clock_timestamp(), clock_timestamp() + interval '20 minutes', clock_timestamp()
+      FROM generate_series(1, 202) AS n`;
+    const rows = await claims.listClaimsForOwner(WS, 'su-alice', 201);
+    expect(rows).toHaveLength(201);
+    expect(rows[200].itemId).toBe('P-201');
+    expect(await claims.listClaimsForOwner(WS, 'su-alice', 1)).toHaveLength(1);
+    for (const invalid of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 202]) {
+      await expect(claims.listClaimsForOwner(WS, 'su-alice', invalid)).rejects.toThrow('claim read limit');
+    }
+  });
+
   it('getClaim/listClaimsForPlan derive `expired`; listing is item-ordered', async () => {
     await acquire({ itemId: 'P-002' });
     await acquire({ itemId: 'P-001' });

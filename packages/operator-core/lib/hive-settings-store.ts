@@ -249,14 +249,19 @@ export async function getReleaseGreenCmdOverride(
   return trimmed.length > 0 ? trimmed : null;
 }
 
-/** Set (upsert) a hive's per-install green-command override. Federates. */
+/** Set a pot's green-command override, accepting its home or a code member. Federates. */
 export async function setReleaseGreenCmdOverride(
   workspaceId: string,
   potHomeSlug: string,
   greenCmd: string,
   sql?: Sql,
 ): Promise<void> {
-  await setHiveSetting({ workspaceId, potHomeSlug, settingKey: RELEASE_GREEN_CMD_SETTING_KEY, value: greenCmd }, sql);
+  // The gate and settings UI run against the code-bearing member, while settings
+  // belong to its pot home. Reads already resolve that member to the federated
+  // home; validate the write against the same local home before persisting it.
+  const { potHomeSlugForHarness } = await import('./hive-federation');
+  const localHome = await potHomeSlugForHarness(workspaceId, potHomeSlug) ?? potHomeSlug;
+  await setHiveSetting({ workspaceId, potHomeSlug: localHome, settingKey: RELEASE_GREEN_CMD_SETTING_KEY, value: greenCmd }, sql);
 }
 
 /** Delete a hive's green-command override (idempotent — reverts to the detected default). */

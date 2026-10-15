@@ -36,11 +36,15 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, applyClaimPathReadDeps, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
 import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  failIssueRead: false,
+  issueReadClients: [] as unknown[],
+}));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
@@ -67,7 +71,16 @@ vi.mock('./workspace-registry', async () => {
 const CLAIM_WS = 'ws-drift';
 vi.mock('./issues-engineer', async () => {
   const actual = await vi.importActual<typeof import('./issues-engineer')>('./issues-engineer');
-  return { ...actual, issuesScopeWorkspace: () => CLAIM_WS, resolveIssuesScopeWorkspace: () => CLAIM_WS };
+  return {
+    ...actual,
+    issuesScopeWorkspace: () => CLAIM_WS,
+    resolveIssuesScopeWorkspace: () => CLAIM_WS,
+    getIssueInWorkspace: (...args: Parameters<typeof actual.getIssueInWorkspace>) => {
+      h.issueReadClients.push(args[2]?.client);
+      if (h.failIssueRead) return Promise.reject(new Error('synthetic issue reread failure'));
+      return actual.getIssueInWorkspace(...args);
+    },
+  };
 });
 
 const wi = await import('./work-items');
@@ -75,6 +88,7 @@ const ie = await import('./issues-engineer');
 
 const H = 'papercup';
 let db: FreshPgDb;
+let statementObserver: ((query: string) => void) | null = null;
 
 /** An issue-family (bug/change/task) row in the work_items BASE, in an EXPLICIT workspace. */
 async function seedIssueInWorkspace(
@@ -90,16 +104,20 @@ async function seedIssueInWorkspace(
 }
 
 beforeAll(async () => {
-  db = await createFreshPgDb('wi-claim-issue-scope-reread');
+  db = await createFreshPgDb('wi-claim-issue-scope-reread', {
+    onQuery: (query) => statementObserver?.(query),
+  });
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
-  await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
 }, 180_000);
 afterAll(async () => {
   await db?.cleanup();
 });
 beforeEach(async () => {
+  h.failIssueRead = false;
+  h.issueReadClients.length = 0;
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps`;
   // Issue tier ON (self-select over bug/change/task); inline readiness (no maintained sidecar).
   setFlagOverridesForTest({
@@ -151,25 +169,36 @@ describe('EI-6480 — issue-claim re-read is workspace-exact, not scope-re-deriv
     expect(exact?.assignee).toBe('w1');
   });
 
+  it('counts executed statements without counting interpolated tagged SQL fragments', async () => {
+    const statementTexts: string[] = [];
+    statementObserver = (query) => statementTexts.push(query);
+    try {
+      const fragment = db.sql`1`;
+      expect(statementTexts).toEqual([]);
+      await db.sql`SELECT 1 ORDER BY ${fragment}`;
+      expect(statementTexts).toHaveLength(1);
+      expect(statementTexts[0]).toMatch(/SELECT 1 ORDER BY 1/);
+    } finally {
+      statementObserver = null;
+    }
+  });
+
   it('WI-10003631: getIssue is ONE statement and, with no ambient twin, returns the freshest row across workspaces; a miss is one statement too', async () => {
     // The old two-step (resolveIssueWorkspace → getIssueInWorkspace) picked the freshest
     // row's workspace, then the freshest twin inside it — the same row the single ordered
     // read returns. Two non-ambient workspaces, freshest in ws-b.
     await seedIssueInWorkspace('EI-one', 'ws-a', { takenBy: 'older', updatedTs: 10, harnessSlug: '' });
     await seedIssueInWorkspace('EI-one', 'ws-b', { takenBy: 'newer', updatedTs: 1_000 });
-    const real = h.sql;
-    let statements = 0;
-    h.sql = new Proxy(real, {
-      apply(target, thisArg, args) { statements += 1; return Reflect.apply(target, thisArg, args); },
-    }) as typeof real;
+    const statementTexts: string[] = [];
+    statementObserver = (query) => statementTexts.push(query);
     try {
       expect((await ie.getIssue('EI-one'))?.assignee).toBe('newer');
-      expect(statements).toBe(1);
-      statements = 0;
+      expect(statementTexts, JSON.stringify(statementTexts)).toHaveLength(1);
+      statementTexts.length = 0;
       expect(await ie.getIssue('EI-missing')).toBeNull();
-      expect(statements).toBe(1);
+      expect(statementTexts, JSON.stringify(statementTexts)).toHaveLength(1);
     } finally {
-      h.sql = real;
+      statementObserver = null;
     }
   });
 
@@ -278,6 +307,80 @@ describe('EI-6480 — issue-claim re-read is workspace-exact, not scope-re-deriv
     expect(rows[0]?.origin).toBe('local');
   });
 
+  // WI-10006515: `origin` records how a row ARRIVED, not who wrote it. A row whose author key
+  // this workspace has written locally is OURS even when no caller matches its created_by
+  // (system-filed rows), so the field-edit and needs-human paths must not strand it.
+  const OWN_KEY = 'f89879623b37aaaa';
+  const PEER_KEY = 'beef0000peer1111';
+  async function seedStranded(id: string, author: string): Promise<void> {
+    await seedIssueInWorkspace(id, 'default', { status: 'open' });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET origin = 'remote', author_pubkey = ${author},
+             payload = '{"_ei":{"created_by":"system:capture"}}'::jsonb
+       WHERE workspace_id = 'default' AND feature_id = ${id}`;
+  }
+  async function originOf(id: string): Promise<string | null> {
+    const [r] = await db.sql<{ origin: string | null }[]>`
+      SELECT origin FROM harness_shared.work_items WHERE workspace_id = 'default' AND feature_id = ${id}`;
+    return r?.origin ?? null;
+  }
+  async function seedOwnKeyWitness(): Promise<void> {
+    await seedIssueInWorkspace('WI-own-witness', 'default', { status: 'open' });
+    await db.sql`
+      UPDATE harness_shared.work_items SET origin = 'local', author_pubkey = ${OWN_KEY}
+       WHERE workspace_id = 'default' AND feature_id = 'WI-own-witness'`;
+  }
+
+  it('WI-10006515: updateWorkItem heals an OWN-NODE row stranded at remote for a non-author caller', async () => {
+    await seedOwnKeyWitness();
+    await seedStranded('WI-own-edit', OWN_KEY);
+    const res = await wi.updateWorkItem('WI-own-edit', { title: 'own-node edit' }, 'w9', { harness: H });
+    expect(res.ok).toBe(true);
+    expect(await originOf('WI-own-edit')).toBe('local');
+  });
+
+  it('WI-10006515 control: updateWorkItem still refuses a TRUE peer row (author key never written here)', async () => {
+    await seedOwnKeyWitness();
+    await seedStranded('WI-peer-edit', PEER_KEY);
+    const res = await wi.updateWorkItem('WI-peer-edit', { title: 'peer edit' }, 'w9', { harness: H });
+    expect(res).toMatchObject({ ok: false, reason: 'remote_origin_not_editable' });
+    expect(await originOf('WI-peer-edit')).toBe('remote');
+  });
+
+  it('WI-10006515: ownNodeAuthoredRemoteIds classifies own-node strands, excludes peers and local rows, never writes', async () => {
+    const { ownNodeAuthoredRemoteIds } = await import('./work-items-admission');
+    await seedOwnKeyWitness();
+    await seedStranded('WI-own-batch', OWN_KEY);
+    await seedStranded('WI-peer-batch', PEER_KEY);
+    const own = await ownNodeAuthoredRemoteIds('default', ['WI-own-batch', 'WI-peer-batch', 'WI-own-witness', 'WI-absent']);
+    expect([...own]).toEqual(['WI-own-batch']);
+    expect(await originOf('WI-own-batch')).toBe('remote');
+    expect(await ownNodeAuthoredRemoteIds('other-ws', ['WI-own-batch'])).toEqual(new Set());
+  });
+
+  it('WI-10006515: a needs-human request on an OWN-NODE stranded row is not short-circuited as remote-owned', async () => {
+    await seedOwnKeyWitness();
+    await seedStranded('WI-own-nh', OWN_KEY);
+    const outcome = await wi
+      .setWorkItemStateWithAliasInfo('WI-own-nh', 'needs-human', { harness: H, by: 'w9' })
+      .then(
+        (r) => ({ note: r.aliasNote ?? '' }),
+        (e: unknown) => ({ note: String(e) }),
+      );
+    // Reaches the canonical writer (which applies its own structured-ask rule) instead of
+    // being answered "remote-owned" by the wrapper.
+    expect(outcome.note).not.toMatch(/remote-owned|remote-authored/);
+  });
+
+  it('WI-10006515 control: a needs-human request on a TRUE peer row is still answered remote-owned', async () => {
+    await seedOwnKeyWitness();
+    await seedStranded('WI-peer-nh', PEER_KEY);
+    const r = await wi.setWorkItemStateWithAliasInfo('WI-peer-nh', 'needs-human', { harness: H, by: 'w9' });
+    expect(r.aliasNote ?? '').toMatch(/remote-owned/);
+    expect(await originOf('WI-peer-nh')).toBe('remote');
+  });
+
   it('claim_next SERVES an open issue even when the captured claim scope has drifted from getIssue’s re-derived scope (no leaked claim, no false miss)', async () => {
     // Row is in CLAIM_WS — the scope claimNextIssueWorkItem captures (issuesScopeWorkspace mock).
     // getIssue's own re-derivation would be 'default' (drift) and would MISS it → the pre-fix
@@ -288,6 +391,9 @@ describe('EI-6480 — issue-claim re-read is workspace-exact, not scope-re-deriv
     expect(got?.id).toBe('EI-serve'); // NOT a null miss — the pre-fix getIssue re-read returned null here
     expect(got?.family).toBe('issue');
     expect(got?.assignee).toBe('w1');
+    expect(h.issueReadClients).toHaveLength(1);
+    expect(h.issueReadClients[0]).toBeDefined(); // transaction client, not the raw admin pool
+    expect(h.issueReadClients[0]).not.toBe(db.sql);
 
     // Claimed exactly once, and to w1 — the mutation is neither leaked nor lost.
     const rows = await db.sql<{ taken_by: string | null }[]>`
@@ -298,5 +404,25 @@ describe('EI-6480 — issue-claim re-read is workspace-exact, not scope-re-deriv
 
     // Pool now genuinely empty ⇒ a subsequent claim is a real (null) miss, not a spurious one.
     expect(await wi.claimNextWorkItem({ harness: H, assignee: 'w2' })).toBeNull();
+  });
+
+  it('rolls back the issue claim if the in-transaction reread fails', async () => {
+    await seedIssueInWorkspace('EI-reread-fails', CLAIM_WS, { createdTs: 100 });
+    h.failIssueRead = true;
+    try {
+      await expect(wi.claimNextWorkItem({ harness: H, assignee: 'w1' }))
+        .rejects.toThrow('synthetic issue reread failure');
+    } finally {
+      h.failIssueRead = false;
+    }
+
+    const rows = await db.sql<{ taken_by: string | null }[]>`
+      SELECT taken_by FROM harness_shared.work_items
+       WHERE workspace_id = ${CLAIM_WS} AND feature_id = 'EI-reread-fails'`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].taken_by).toBeNull();
+    expect(h.issueReadClients).toHaveLength(1);
+    expect(h.issueReadClients[0]).toBeDefined();
+    expect(h.issueReadClients[0]).not.toBe(db.sql);
   });
 });

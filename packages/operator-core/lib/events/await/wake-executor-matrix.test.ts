@@ -91,6 +91,13 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
   /** Base deps: every rung that would touch the OS is injected deterministic;
    *  the psu-socket rung stays REAL (real findLiveHost against the isolated dir). */
   function baseDeps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
+    const deps = baseDepsRaw(over);
+    // Hermetic owner election (WI-10008189): stamp fixture rows with their id + owner and
+    // model "no successor", so a not-alive handle never reaches the real PG election read.
+    return { ...deps, ...tb.ownerElectionDeps(deps) };
+  }
+
+  function baseDepsRaw(over: Partial<ExecuteWakeDeps>): ExecuteWakeDeps {
     return {
       findPsuHost: tb.findPsuHostDep(), // REAL discovery, isolated dir
       // injectPsuHost left as default → the REAL injectIntoHost transport
@@ -144,6 +151,31 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
     const d = makeDelivery({ subscriberId: s.ownerId, wakeHandle: null });
     const out = await executeWake(d, baseDeps({ presence: async () => presenceRec() }));
     expect(out.kind).toBe('park');
+  });
+
+  it('EI-25270078901082313: deliberate registered managed reattachment releases only a post-shutdown wake over the real socket', async () => {
+    const s = tb.session('reattached');
+    const shutdown = { at: '2026-10-06T22:07:55.842Z', by: s.ownerId };
+    const wake = makeDelivery({
+      id: 460480, subscriberId: s.ownerId, wakeHandle: null,
+      createdAt: '2026-10-06T22:08:07.000Z',
+    });
+    let detachedResumes = 0;
+    const d = baseDeps({
+      getSessionLifecycle: async () => ({ shutdown }),
+      resolveWakeModeFn: async () => 'auto',
+      spawnDetached: () => { detachedResumes++; return 4242; },
+    });
+    expect(await executeWake(wake, d)).toMatchObject({ kind: 'park' });
+    const host = await tb.spawnSocketHost(s.ownerId, { advSessionId: s.advSessionId });
+    await expect(tb.findPsuHostDep()(s.ownerId)).resolves.toMatchObject({ ownerId: s.ownerId, sock: host.sock });
+    expect(await executeWake(wake, d)).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'psu-socket-inject' });
+    expect(host.received).toHaveLength(1);
+    expect(host.received[0]).toMatchObject({ v: 1, mode: 'turn', deliveryId: '460480', ownerId: s.ownerId });
+    // A registered successor does not erase the durable old-delivery cutoff.
+    expect(await executeWake({ ...wake, id: 460479, createdAt: '2026-10-06T22:07:15.733Z' }, d)).toMatchObject({ kind: 'drop' });
+    expect(host.received).toHaveLength(1);
+    expect(detachedResumes).toBe(0);
   });
 
   it('no handle + no socket + presence STALE → DEGRADES to a coord inbox notification (P-001), not a drop', async () => {
@@ -287,6 +319,25 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
     expect(out.kind).toBe('park');
   });
 
+  it('deliberately killed owner drops a later inbox wake without starting a process (WI-6554700010010429)', async () => {
+    const s = tb.session('retired');
+    let spawned = 0;
+    let claimed = 0;
+    const d = makeDelivery({ subscriberId: s.ownerId,
+      wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-retired', pid: null }),
+    });
+    const out = await executeWake(d, baseDeps({
+      getSession: async () => ({ pid: null, endedAt: new Date().toISOString(),
+        retiredAt: new Date().toISOString(), retiredBy: 'fleet:kill:operator',
+        agent: 'claude', sessionId: 'native-retired', coordOwnerId: s.ownerId, cwd: s.cwd }) as never,
+      claimResume: async () => { claimed++; return true; },
+      spawnDetached: () => { spawned++; return 4242; },
+    }));
+    expect(out).toMatchObject({ kind: 'drop', reason: expect.stringContaining('retired') });
+    expect(spawned).toBe(0);
+    expect(claimed).toBe(0);
+  });
+
   it('ENDED row even though the recorded pid was reused-alive → treated as exited (resume), not inject', async () => {
     const s = tb.session('A');
     const d = makeDelivery({
@@ -316,6 +367,92 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
       baseDeps({
         getSession: async () => ({ pid: dead, endedAt: null, agent: 'claude', sessionId: 'native-A', coordOwnerId: null, cwd: s.cwd }) as never,
         alive: () => false,
+      }),
+    );
+    expect(out).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'resume-headless' });
+  });
+
+  // ── WI-10005134: a LIVE psu host means the session is running ─────────────
+  // A psu host carry-respawns its CLI child under a new pid, so the adv row's
+  // recorded pid can be dead while the session is alive. Measured 2026-10-01:
+  // three wakes for one owner went resume-headless while its host was live and
+  // deferring them, putting a second `claude --resume` on the live session.
+
+  it('WI-10005134: recorded pid DEAD + LIVE psu host whose inject misses → park, NEVER resume-headless', async () => {
+    const s = tb.session('A');
+    await tb.spawnSocketHost(s.ownerId);
+    const dead = await deadPid();
+    const d = makeDelivery({
+      subscriberId: s.ownerId,
+      wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-A', pid: dead }),
+    });
+    let spawns = 0;
+    const out = await executeWake(
+      d,
+      baseDeps({
+        getSession: async () => ({ pid: dead, endedAt: null, agent: 'claude', sessionId: 'native-A', coordOwnerId: null, cwd: s.cwd }) as never,
+        alive: () => false,
+        injectPsuHost: async () => false,
+        spawnDetached: () => {
+          spawns += 1;
+          return 4242;
+        },
+      }),
+    );
+    expect(out.kind).toBe('park');
+    expect(out.kind === 'park' ? out.reason : '').toContain('WI-10005134');
+    expect(spawns).toBe(0);
+  });
+
+  it('WI-10005134: host ACKS a deferred-carry-respawn-pending refusal → park with the host reason, no second attempt, no spawn', async () => {
+    const s = tb.session('A');
+    await tb.spawnSocketHost(s.ownerId);
+    const dead = await deadPid();
+    const d = makeDelivery({
+      subscriberId: s.ownerId,
+      wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-A', pid: dead }),
+    });
+    let injects = 0;
+    let spawns = 0;
+    const out = await executeWake(
+      d,
+      baseDeps({
+        getSession: async () => ({ pid: dead, endedAt: null, agent: 'claude', sessionId: 'native-A', coordOwnerId: null, cwd: s.cwd }) as never,
+        alive: () => false,
+        injectPsuHostWithConfirmation: async () => {
+          injects += 1;
+          return { ok: false, confirmation: 'acked', reason: 'deferred-carry-respawn-pending' };
+        },
+        spawnDetached: () => {
+          spawns += 1;
+          return 4242;
+        },
+      }),
+    );
+    expect(out).toEqual<WakeOutcome>({
+      kind: 'park',
+      reason:
+        'psu-host deferred-carry-respawn-pending: the live host deferred this wake; parked for a durable retry, never a second process',
+    });
+    expect(injects).toBe(1);
+    expect(spawns).toBe(0);
+  });
+
+  it('WI-10005134 calibration: same stale pid with NO psu host still resumes headless', async () => {
+    // Without a live host the session really has exited; the guard must not
+    // swallow the legitimate resume (the control for the two cases above).
+    const s = tb.session('A');
+    const dead = await deadPid();
+    const d = makeDelivery({
+      subscriberId: s.ownerId,
+      wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-A', pid: dead }),
+    });
+    const out = await executeWake(
+      d,
+      baseDeps({
+        getSession: async () => ({ pid: dead, endedAt: null, agent: 'claude', sessionId: 'native-A', coordOwnerId: null, cwd: s.cwd }) as never,
+        alive: () => false,
+        injectPsuHost: async () => false,
       }),
     );
     expect(out).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'resume-headless' });
@@ -370,6 +507,21 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
   });
 
   // ── Channel 2 single-winner resume claim (EI-21247460909447431) ───────────
+  it('retirement racing the pre-spawn check drops at the resume claim', async () => {
+    const s = tb.session('retired-during-preparation');
+    let spawned = 0;
+    const out = await executeWake(makeDelivery({ subscriberId: s.ownerId,
+      wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-race', pid: null }),
+    }), baseDeps({
+      getSession: async () => ({ pid: null, endedAt: new Date().toISOString(),
+        agent: 'claude', sessionId: 'native-race', coordOwnerId: s.ownerId, cwd: s.cwd }) as never,
+      claimResume: async () => 'retired',
+      spawnDetached: () => { spawned++; return 4242; },
+    }));
+    expect(out).toMatchObject({ kind: 'drop', reason: expect.stringContaining('retired') });
+    expect(spawned).toBe(0);
+  });
+
   //
   // The claim exists so a queued loop wake and a manual `psu --resume` cannot
   // both spawn a writer for the same session. Both rows below must PARK without
@@ -396,7 +548,9 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
       }),
     );
     expect(out.kind).toBe('park');
-    expect(out.kind === 'park' && out.reason).toMatch(/won by another resumer/);
+    // 64f9133915 reworded the lost-claim reason when it added the owner election: a claim
+    // can now be lost to a competing resumer OR superseded by a newer owner session.
+    expect(out.kind === 'park' && out.reason).toMatch(/was lost or superseded/);
     expect(spawned).toBe(0); // the entire point of the claim
   });
 
@@ -424,7 +578,7 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
     const reason = out.kind === 'park' ? out.reason : '';
     expect(reason).toMatch(/could not be evaluated/);
     expect(reason).toContain('ECONNREFUSED writing the claim');
-    expect(reason).not.toMatch(/won by another resumer/);
+    expect(reason).not.toMatch(/was lost or superseded/);
     expect(spawned).toBe(0); // an unevaluable claim is still never a second writer
   });
 

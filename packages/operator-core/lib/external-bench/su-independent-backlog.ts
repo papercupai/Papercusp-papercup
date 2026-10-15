@@ -51,7 +51,7 @@
  *                  "worker":"opus:xhigh","validator":"opus:xhigh","reviewer":"opus:xhigh",
  *                  "documenter":"opus:xhigh","bee":"opus:xhigh"}'
  * plus `AGENT_CMD="claude -p"` (the `opus` alias). The opus model pin is the CALLER's responsibility
- * (it must reach every spawned role). VERIFY `agent_usage_samples.model = claude-opus-4-8` on a 1-task
+ * (it must reach every spawned role). VERIFY `agent_usage_samples.model` = the run's pinned evaluated model on a 1-task
  * probe before any big spend. Same clone/diff/grader as every arm — the only independent variable across
  * arms is the orchestration layer.
  *
@@ -539,7 +539,11 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
   };
 
   const memberSlugForTask = (prefix: string, instanceId: string): string => `${prefix}-${instanceId.substring(0, 20)}`;
-  const featureIdForTask = (instanceId: string): string => `xbench-${instanceId}`;
+  // scope-unique-identifiers-2026-07-26 P-009 (D-004 writer #2): a work-item id names one row
+  // per workspace, and every run seeds a fresh member harness. A bare `xbench-${instanceId}`
+  // re-used the same id in each run's member, minting one twin per run; the run's unique
+  // hive prefix (`xbench-su-<nanoid>`) makes the id unique to this run.
+  const featureIdForTask = (instanceId: string): string => `${hivePrefix}-${instanceId}`;
 
   return {
     now: () => Date.now(),
@@ -676,7 +680,7 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
                 tasks: [featureId],
                 harness: memberSlug,
                 brief,
-                tier: process.env.XBENCH_TIER || 'max', // default 'max' (opus:xhigh); XBENCH_TIER pins a specific model tier (e.g. 'opus46' for a fair same-model comparison)
+                tier: process.env.XBENCH_TIER || 'max', // default 'max' (opus:xhigh); XBENCH_TIER pins a specific model tier (e.g. the 'bench-pin' tier _xbench_set_tier.ts adds, for a fair same-model comparison)
                 min_inject_affinity: 100, // never warm-inject — the independent arm needs a FRESH isolated spawn
                 workspace: ws,
                 dry_run: false,

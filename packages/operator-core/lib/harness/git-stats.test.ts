@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { delimiter, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -126,5 +126,49 @@ describe('readGitStats', () => {
     const root = mkdtempSync(join(tmpdir(), 'papercusp-not-git-'));
     roots.push(root);
     await expect(readGitStats(root)).rejects.toBeInstanceOf(NotGitRepositoryError);
+  });
+
+  it('disables optional index locking on the live status probe', async () => {
+    const { repo } = makeRepository();
+    const shimRoot = mkdtempSync(join(tmpdir(), 'papercusp-git-stats-shim-'));
+    roots.push(shimRoot);
+    const bin = join(shimRoot, 'bin');
+    mkdirSync(bin);
+    const capturePath = join(shimRoot, 'status-env.txt');
+    const realGitPath = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+    const shim = [
+      '#!/usr/bin/env node',
+      "const fs = require('node:fs');",
+      "const { spawnSync } = require('node:child_process');",
+      'const args = process.argv.slice(2);',
+      "if (args.includes('status')) fs.writeFileSync(process.env.GIT_STATUS_ENV_CAPTURE, process.env.GIT_OPTIONAL_LOCKS || 'unset');",
+      'const child = spawnSync(process.env.GIT_STATUS_REAL_BINARY, args, { stdio: \'inherit\' });',
+      'process.exit(child.status ?? 1);',
+    ].join('\n');
+    writeFileSync(join(bin, 'git'), shim, { mode: 0o755 });
+
+    const previous = {
+      path: process.env.PATH,
+      optionalLocks: process.env.GIT_OPTIONAL_LOCKS,
+      capturePath: process.env.GIT_STATUS_ENV_CAPTURE,
+      realGitPath: process.env.GIT_STATUS_REAL_BINARY,
+    };
+    try {
+      process.env.PATH = [bin, previous.path].filter(Boolean).join(delimiter);
+      process.env.GIT_OPTIONAL_LOCKS = '1';
+      process.env.GIT_STATUS_ENV_CAPTURE = capturePath;
+      process.env.GIT_STATUS_REAL_BINARY = realGitPath;
+      await readGitStats(repo, { refresh: true });
+      expect(readFileSync(capturePath, 'utf8')).toBe('0');
+    } finally {
+      if (previous.path === undefined) delete process.env.PATH;
+      else process.env.PATH = previous.path;
+      if (previous.optionalLocks === undefined) delete process.env.GIT_OPTIONAL_LOCKS;
+      else process.env.GIT_OPTIONAL_LOCKS = previous.optionalLocks;
+      if (previous.capturePath === undefined) delete process.env.GIT_STATUS_ENV_CAPTURE;
+      else process.env.GIT_STATUS_ENV_CAPTURE = previous.capturePath;
+      if (previous.realGitPath === undefined) delete process.env.GIT_STATUS_REAL_BINARY;
+      else process.env.GIT_STATUS_REAL_BINARY = previous.realGitPath;
+    }
   });
 });

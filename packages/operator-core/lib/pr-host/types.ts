@@ -146,6 +146,13 @@ export interface Pr {
   base_ref: string;
   /** Head commit SHA of the PR branch at last fetch. */
   head_sha: string;
+  /**
+   * "owner/repo" of the repository the head branch lives in (GitHub `head.repo.full_name`).
+   * null = the host reported none (the head fork was deleted); undefined = this host does not
+   * report it. A head ref alone is not an identity across forks: two forks of one repository
+   * can each hold a branch with the same name (WI-10006271).
+   */
+  head_repo?: string | null;
   /** Merge commit SHA (only populated when state='merged'). */
   merge_commit_sha: string | null;
   author: PrAuthor;
@@ -242,6 +249,27 @@ export interface ListOpenPrsArgs {
  * the poll daemon's retry / backoff logic can pattern-match
  * cleanly per v5 §8.4 audit M.
  */
+/** Details used by the in-app viewer; patches absent on binary or oversized files. */
+export interface PrFile {
+  filename: string;
+  previous_filename?: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  patch?: string;
+}
+export interface PrCommit { sha: string; message: string; author: string; url: string }
+export interface PrDetailsData {
+  pr: Pr;
+  commits: PrCommit[];
+  files: PrFile[];
+  diff: string;
+  diffTruncated: boolean;
+  checks: Array<{ name: string; conclusion: string | null; status: string; url: string | null }>;
+  /** The target tip observed alongside this detail snapshot. */
+  targetSha: string;
+}
+
 export interface PrHost {
   /** Host identifier — `"github"` / `"gitlab"` / `"gitea"`. */
   readonly kind: PrHostKind;
@@ -269,6 +297,10 @@ export interface PrHost {
   postReview(args: PostReviewArgs): Promise<PrHostResult<void>>;
   merge(args: MergePrArgs): Promise<PrHostResult<{ merge_commit_sha: string }>>;
   listOpenPrs(args: ListOpenPrsArgs): Promise<PrHostResult<Pr[]>>;
+  /** Optional viewer capabilities; older hosts fail closed for unsupported actions. */
+  listPrs?(args: ListOpenPrsArgs & { state: 'open' | 'closed' | 'all' }): Promise<PrHostResult<Pr[]>>;
+  getPrDetails?(ref: PrRef): Promise<PrHostResult<PrDetailsData>>;
+  closePr?(ref: PrRef): Promise<PrHostResult<void>>;
 }
 
 export const PR_HOST_KINDS = ['github', 'gitlab', 'gitea', 'bitbucket'] as const;

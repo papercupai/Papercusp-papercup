@@ -192,3 +192,59 @@ describe('PgCoordLog kinds predicate (WI-6988)', () => {
     });
   }
 });
+
+describe('PgCoordLog bounded cursor timestamp upper bound', () => {
+  const beforeTs = '2026-06-23T12:00:00.000Z';
+
+  it('filters event-surface candidates by the envelope timestamp before the page limit', async () => {
+    const { sql, outer } = makeFakeSql();
+    await makeLog(sql).readEventsBoundedCursor('escalations', { limit: 50, beforeTs });
+    const { text, params } = outer();
+
+    expect(text).toContain("AND (body->>'ts')::timestamptz < ?::timestamptz");
+    expect(params).toContain(beforeTs);
+  });
+
+  it('keeps the event boundary timestamp for the caller composite tie-break', async () => {
+    const { sql, outer } = makeFakeSql();
+    await makeLog(sql).readEventsBoundedCursor('escalations', { limit: 50, beforeTs, beforeMsgId: 'm2' });
+
+    expect(outer().text).toContain("AND (body->>'ts')::timestamptz <= ?::timestamptz");
+  });
+
+  it('filters line-surface candidates on the timestamp column before the page limit', async () => {
+    const { sql, outer } = makeFakeSql();
+    await makeLog(sql).readLinesBoundedCursor('messages', { limit: 50, beforeTs });
+    const { text, params } = outer();
+
+    expect(text).toContain('AND ts < ?::timestamptz');
+    expect(params).toContain(beforeTs);
+  });
+
+  it('keeps the line boundary timestamp for the caller composite tie-break', async () => {
+    const { sql, outer } = makeFakeSql();
+    await makeLog(sql).readLinesBoundedCursor('messages', { limit: 50, beforeTs, beforeMsgId: 'm2' });
+
+    expect(outer().text).toContain('AND ts <= ?::timestamptz');
+  });
+});
+
+describe('PgCoordLog bounded cursor exact sender predicate', () => {
+  it('pushes exact sender into the event-surface query', async () => {
+    const { sql, outer } = makeFakeSql();
+    await makeLog(sql).readEventsBoundedCursor('handoffs', { limit: 50, from: 'agent-a' });
+    const { text, params } = outer();
+
+    expect(text).toContain("AND body->>'from' = ?");
+    expect(params).toContain('agent-a');
+  });
+
+  it('pushes exact sender into the line-surface query', async () => {
+    const { sql, outer } = makeFakeSql();
+    await makeLog(sql).readLinesBoundedCursor('messages', { limit: 50, from: 'agent-a' });
+    const { text, params } = outer();
+
+    expect(text).toContain("AND body->>'from' = ?");
+    expect(params).toContain('agent-a');
+  });
+});

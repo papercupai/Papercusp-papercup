@@ -29,6 +29,14 @@ import {
 } from './stalled-loops-guard';
 import { deactivateLoop, reviveDisarmedLoop, LOOP_END_PAUSE_PREFIX, type LoopStatus } from './loop';
 
+// P-007: keep the sweep's default host reader off the real ~/.papercusp/psu-pty directory — see
+// the same mock in stalled-loops-guard.test.ts.
+vi.mock('../../events/await/psu-pty-discovery', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../events/await/psu-pty-discovery')>()),
+  findLiveHostAsync: vi.fn(async () => null),
+  readHostEventTailAsync: vi.fn(async () => []),
+}));
+
 // Bound to the REAL dep signatures for the reason the sibling file documents at length: a bare
 // `vi.fn(async () => {})` records a ZERO-arg call tuple, so every `.mock.calls[0][1]` read below
 // is a lint:tsc error that a green vitest run cannot see.
@@ -542,10 +550,18 @@ describe('sweepStalledLoops — liveness veto (WI-37546: 18 of 19 disarms on 202
 
 describe('sweepStalledLoops — recoverable disarm (WI-37546 sub-case B)', () => {
   const pausedAtMs = Date.parse('2026-08-09T17:07:00.000Z');
-  const candidate = (over: Partial<{ routineId: string; ownerId: string; pausedAtMs: number; revivedCount: number }> = {}) => ({
+  const pauseReason = TURN_STALLED_PAUSE_PREFIX + ' candidate fixture';
+  const candidate = (over: Partial<{
+    routineId: string;
+    ownerId: string;
+    pausedAtMs: number;
+    pauseReason: string;
+    revivedCount: number;
+  }> = {}) => ({
     routineId: 'rt-dead',
     ownerId: 'su-b8422496',
     pausedAtMs,
+    pauseReason,
     revivedCount: 0,
     ...over,
   });
@@ -561,7 +577,7 @@ describe('sweepStalledLoops — recoverable disarm (WI-37546 sub-case B)', () =>
   });
 
   it('re-arms a wrongly-disarmed loop whose owner has since made progressing tool calls', async () => {
-    const revive = vi.fn<ReviveFn>(async () => {});
+    const revive = vi.fn<ReviveFn>(async () => true);
     const readRevivableLoops = vi.fn<ReadRevivableFn>(async () => [candidate()]);
     const readOwnerToolActivity = vi.fn<ReadActivityFn>(async () => new Map([['su-b8422496', WORKING]]));
 
@@ -573,13 +589,34 @@ describe('sweepStalledLoops — recoverable disarm (WI-37546 sub-case B)', () =>
     expect(res.revivedAfterDisarm).toEqual(['su-b8422496']);
     expect(revive).toHaveBeenCalledTimes(1);
     expect(revive.mock.calls[0][1]).toBe('rt-dead');
-    expect(revive.mock.calls[0][2]).toContain('WI-37546');
+    expect(revive.mock.calls[0][2]).toEqual({ pausedAtMs, pauseReason });
+    expect(revive.mock.calls[0][3]).toContain('WI-37546');
+  });
+
+  it('does not report a revival when the candidate pause snapshot lost the compare-and-set', async () => {
+    const sql = fakeSql([]);
+    const revive = vi.fn<ReviveFn>(async () => false);
+    const readRevivableLoops = vi.fn<ReadRevivableFn>(async () => [candidate()]);
+    const readOwnerToolActivity = vi.fn<ReadActivityFn>(async () => new Map([['su-b8422496', WORKING]]));
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      deps({ revive, readRevivableLoops, readOwnerToolActivity }),
+    );
+
+    expect(revive).toHaveBeenCalledWith(
+      sql,
+      'rt-dead',
+      { pausedAtMs, pauseReason },
+      expect.stringContaining('WI-37546'),
+    );
+    expect(res.revivedAfterDisarm).toEqual([]);
   });
 
   it('THE EARLY-RETURN TRAP — revives even when the workspace has ZERO active loops left', async () => {
     // The state a fleet lands in once every loop has been disarmed. The rest of the sweep reads
     // this as "nothing to do"; it is precisely when a revival pass matters most.
-    const revive = vi.fn<ReviveFn>(async () => {});
+    const revive = vi.fn<ReviveFn>(async () => true);
     const readRevivableLoops = vi.fn<ReadRevivableFn>(async () => [candidate()]);
     const readOwnerToolActivity = vi.fn<ReadActivityFn>(async () => new Map([['su-b8422496', WORKING]]));
 
@@ -594,7 +631,7 @@ describe('sweepStalledLoops — recoverable disarm (WI-37546 sub-case B)', () =>
   });
 
   it('CONTROL — a retry storm since the disarm does NOT earn a revival', async () => {
-    const revive = vi.fn<ReviveFn>(async () => {});
+    const revive = vi.fn<ReviveFn>(async () => true);
     const readRevivableLoops = vi.fn<ReadRevivableFn>(async () => [candidate()]);
     const readOwnerToolActivity = vi.fn<ReadActivityFn>(async () => new Map([['su-b8422496', RETRY_STORM]]));
 
@@ -608,7 +645,7 @@ describe('sweepStalledLoops — recoverable disarm (WI-37546 sub-case B)', () =>
   });
 
   it('CONTROL — a genuinely silent owner stays disarmed', async () => {
-    const revive = vi.fn<ReviveFn>(async () => {});
+    const revive = vi.fn<ReviveFn>(async () => true);
     const readRevivableLoops = vi.fn<ReadRevivableFn>(async () => [candidate()]);
 
     const res = await sweepStalledLoops(
@@ -627,7 +664,7 @@ describe('sweepStalledLoops — recoverable disarm (WI-37546 sub-case B)', () =>
 
     await sweepStalledLoops(
       { sql: fakeSql([]), workspaceId: 'ws' },
-      deps({ revive: vi.fn<ReviveFn>(async () => {}), readRevivableLoops, readOwnerToolActivity }),
+      deps({ revive: vi.fn<ReviveFn>(async () => true), readRevivableLoops, readOwnerToolActivity }),
     );
 
     const args = readRevivableLoops.mock.calls[0][0];
@@ -648,7 +685,7 @@ describe('sweepStalledLoops — recoverable disarm (WI-37546 sub-case B)', () =>
     // very row just revived — still carrying the stale turnsStalled verdict, because its rescue
     // fire is scheduled for now() and has not happened. Without the skip the sweep would undo its
     // own repair and spend a bounded revival attempt doing it.
-    const revive = vi.fn<ReviveFn>(async () => {});
+    const revive = vi.fn<ReviveFn>(async () => true);
     const autoPause = vi.fn<AutoPauseFn>(async () => {});
     const readRevivableLoops = vi.fn<ReadRevivableFn>(async () => [candidate({ ownerId: 'su-back' })]);
     const readOwnerToolActivity = vi.fn<ReadActivityFn>(async () => new Map([['su-back', WORKING]]));
@@ -665,7 +702,7 @@ describe('sweepStalledLoops — recoverable disarm (WI-37546 sub-case B)', () =>
   });
 
   it('dryRun reports the revival without writing it', async () => {
-    const revive = vi.fn<ReviveFn>(async () => {});
+    const revive = vi.fn<ReviveFn>(async () => true);
     const readRevivableLoops = vi.fn<ReadRevivableFn>(async () => [candidate()]);
     const readOwnerToolActivity = vi.fn<ReadActivityFn>(async () => new Map([['su-b8422496', WORKING]]));
 
@@ -679,7 +716,7 @@ describe('sweepStalledLoops — recoverable disarm (WI-37546 sub-case B)', () =>
   });
 
   it('a FAILING candidate read revives nobody rather than throwing the sweep', async () => {
-    const revive = vi.fn<ReviveFn>(async () => {});
+    const revive = vi.fn<ReviveFn>(async () => true);
     const readRevivableLoops = vi.fn<ReadRevivableFn>(async () => {
       throw new Error('routines unreachable');
     });
@@ -694,7 +731,7 @@ describe('sweepStalledLoops — recoverable disarm (WI-37546 sub-case B)', () =>
   });
 
   it('rethrows programmer errors from the revival activity reader', async () => {
-    const revive = vi.fn<ReviveFn>(async () => {});
+    const revive = vi.fn<ReviveFn>(async () => true);
     const readRevivableLoops = vi.fn<ReadRevivableFn>(async () => [candidate()]);
     const readOwnerToolActivity = vi.fn<ReadActivityFn>(async () => {
       throw new ReferenceError('readOwnerToolActivity is undefined');
@@ -716,7 +753,7 @@ describe('sweepStalledLoops — recoverable disarm (WI-37546 sub-case B)', () =>
 
     await sweepStalledLoops(
       { sql: fakeSql([]), workspaceId: 'ws' },
-      deps({ broadcast, revive: vi.fn<ReviveFn>(async () => {}), readRevivableLoops, readOwnerToolActivity }),
+      deps({ broadcast, revive: vi.fn<ReviveFn>(async () => true), readRevivableLoops, readOwnerToolActivity }),
     );
 
     expect(broadcast).toHaveBeenCalledTimes(1);
@@ -762,6 +799,7 @@ describe('the DEFAULT revival candidate read carries the supersession bound (202
     const revivalReads = statements.filter((s) => s.includes('loop_paused_reason'));
     expect(revivalReads).toHaveLength(1);
     const revivalSql = revivalReads[0];
+    expect(revivalSql).toContain("metadata->>'loop_paused_reason'                       AS pause_reason");
     // The supersession bound, by its moving parts: the stamp every arm writes, compared against
     // the pause instant the revival would compensate, with absence failing toward revival.
     expect(revivalSql).toContain(`'armed_at'`);
@@ -859,12 +897,18 @@ describe('reviveDisarmedLoop must not blind the census that judges it (WI-37546,
    */
   it('leaves the disarm record intact and only ADDS the revival keys', async () => {
     const statements: string[] = [];
-    const captureSql = ((strings: TemplateStringsArray) => {
+    const bindings: unknown[] = [];
+    const selectedPause = {
+      pausedAtMs: Date.parse('2026-08-09T17:07:00.000Z'),
+      pauseReason: TURN_STALLED_PAUSE_PREFIX + ' selected candidate',
+    };
+    const captureSql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
       statements.push(strings.join(' ? '));
+      bindings.push(...values);
       return Promise.resolve([]);
     }) as never;
 
-    await reviveDisarmedLoop(captureSql, 'rt-dead', 'revived because the owner is working');
+    await reviveDisarmedLoop(captureSql, 'rt-dead', selectedPause, 'revived because the owner is working');
 
     expect(statements).toHaveLength(1);
     const sql = statements[0];
@@ -882,6 +926,10 @@ describe('reviveDisarmedLoop must not blind the census that judges it (WI-37546,
     expect(sql).toContain(`'fire_count_at_arm'`);
     // And it only ever crosses back over a genuinely disarmed row.
     expect(sql).toContain('active = FALSE');
+    expect(sql).toContain("metadata->>'loop_paused_reason' =");
+    expect(sql).toContain("(metadata->'pause'->>'pausedAtMs')::bigint =");
+    expect(bindings).toContain(selectedPause.pauseReason);
+    expect(bindings).toContain(selectedPause.pausedAtMs);
   });
 });
 

@@ -4,10 +4,10 @@
  * invocation is OS-specific and tested at the runner-integration level.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildSandbox, _resetSmokeCacheForTests } from './sandbox';
+import { buildSandbox, prepareSandboxCommand, _resetSmokeCacheForTests } from './sandbox';
 
 const ORIG_PLATFORM = process.platform;
 
@@ -218,5 +218,45 @@ describe('buildSandbox — unsupported platform', () => {
     expect(r.driver).toBe('none');
     expect(r.argv).toEqual([]);
     expect(r.env).toEqual({ X: '1' });
+    expect(() => prepareSandboxCommand(r, ['/bin/true'], '/srt')).toThrow(/unsupported/);
+  });
+});
+
+describe('final provision command composition', () => {
+  function active(allowedHosts = ['vendor.example']) {
+    return { active: true, driver: 'bwrap' as const,
+      argv: ['/bwrap', '--share-net', '--clearenv', '--'], env: { PATH: '/usr/bin' },
+      policy: { pluginDir: '/plugin', scratchDir: '/scratch', projectDir: '/project', allowedHosts } };
+  }
+
+  it('uses assigned hosts and ports and protects per-run settings', () => {
+    const sandbox = active(['vendor.example', '127.0.0.1:32001', '**.multi.example']);
+    const prepared = prepareSandboxCommand(sandbox, ['/bin/bash', '/plugin/a b.sh'], '/srt');
+    try {
+      expect(prepared.argv.slice(0, 3)).toEqual(['/srt', '-s', prepared.settingsPath]);
+      expect(prepared.argv[4]).toContain("exec '/bwrap'");
+      expect(prepared.argv[4]).not.toContain('--clearenv');
+      expect(prepared.argv[4]).toContain("'/plugin/a b.sh'");
+      const settings = JSON.parse(readFileSync(prepared.settingsPath!, 'utf8'));
+      expect(settings.network).toEqual({ allowedDomains: ['vendor.example:80', 'vendor.example:443',
+        '127.0.0.1:32001', '*.multi.example:80', '*.multi.example:443'], deniedDomains: [], strictAllowlist: true });
+      expect(settings.filesystem.allowWrite).toEqual(['/scratch', '/project']);
+      expect(settings.filesystem.denyWrite).toHaveLength(1);
+      expect(prepared.settingsPath!.startsWith(settings.filesystem.denyWrite[0] + '/')).toBe(true);
+    } finally { prepared.cleanup(); }
+    expect(existsSync(prepared.settingsPath!)).toBe(false);
+  });
+
+  it('refuses missing SRT and unrepresentable single-label wildcards before spawn', () => {
+    expect(() => prepareSandboxCommand(active(), ['/bin/true'], null)).toThrow(/unavailable/);
+    expect(() => prepareSandboxCommand(active(['*.vendor.example']), ['/bin/true'], '/srt'))
+      .toThrow(/cannot enforce single-label wildcard/);
+  });
+
+  it('retains deny-all when no hosts were assigned', () => {
+    const prepared = prepareSandboxCommand(active([]), ['/bin/true'], '/srt');
+    try {
+      expect(JSON.parse(readFileSync(prepared.settingsPath!, 'utf8')).network.allowedDomains).toEqual([]);
+    } finally { prepared.cleanup(); }
   });
 });

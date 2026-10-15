@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Exact iPhone native candidate CI evidence inspection (partial release coverage)",
+  "framework": "operational",
+  "command": [
+    "gh",
+    "run",
+    "view",
+    "36848652819",
+    "-R",
+    "Papercusp/papercup-rust-mobile",
+    "--log"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T11:12:59.463799+00:00",
+  "finishedAt": "2026-10-01T11:13:01.596673+00:00",
+  "summary": "Exact retained candidate passed current-SDK build,39Swift unit tests,1clean-install UI smoke with0skips, Rust/bindings/design jobs and unsigned archive. Actual pairedUI, hardware, signing/TestFlight and public shipment are not covered.",
+  "assertions": [
+    {
+      "id": "exact-source",
+      "passed": true,
+      "evidence": "Run and retained source metadata both name 043c02a8851706cf35ff45b5d0645741f035a49d."
+    },
+    {
+      "id": "ci-jobs-completed",
+      "passed": true,
+      "evidence": "Actions run36848652819 is completed/success; all four jobs passed."
+    },
+    {
+      "id": "current-sdk",
+      "passed": true,
+      "evidence": "Xcode26.6 build17F113; iPhoneOS SDK26.5."
+    },
+    {
+      "id": "unit-tests-nonzero",
+      "passed": true,
+      "evidence": "Native Test iOS app step reported39executed tests and0failures."
+    },
+    {
+      "id": "clean-install-ui-nonzero-no-skip",
+      "passed": true,
+      "evidence": "Retained ci-pair-smoke-summary.json:1passed,0failed,0skipped; this is the fresh-launch/paste-guidance case."
+    },
+    {
+      "id": "unsigned-arm64-archive",
+      "passed": true,
+      "evidence": "Archive arm64/com.papercuspai.operator.mobile/version1.0.0/build1. SigningIdentity and Team are empty."
+    },
+    {
+      "id": "native-artifact-retained",
+      "passed": true,
+      "evidence": "Private artifact11154947160 is unexpired; SHA256 digest42f10386737430a40cee0dc7d6d87288501ba5d677e4862f89827b5e5ccf6039."
+    }
+  ],
+  "candidate": {
+    "sourceRepository": "Papercusp/papercup-rust-mobile",
+    "sourceSha": "043c02a8851706cf35ff45b5d0645741f035a49d",
+    "workflowRunId": 36848652819,
+    "workflowUrl": "https://github.com/Papercusp/papercup-rust-mobile/actions/runs/36848652819",
+    "workflowStartedAt": "2026-10-01T10:21:45Z",
+    "workflowUpdatedAt": "2026-10-01T10:29:25Z",
+    "artifactId": 11154947160,
+    "artifactDigest": "sha256:42f10386737430a40cee0dc7d6d87288501ba5d677e4862f89827b5e5ccf6039",
+    "xcode": "Xcode26.6 build17F113",
+    "iosSdk": "26.5",
+    "unitTests": 39,
+    "cleanInstallUi": {
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0
+    },
+    "archiveVersion": "1.0.0",
+    "archiveBuild": "1",
+    "applicationBinarySha256": "d282e9ff68a840e7a3ad5400a28fa33b4011d47318e2e092054be19656cf86d6",
+    "signed": false
+  },
+  "coverage": {
+    "checked": [
+      "source provenance",
+      "current SDK build",
+      "Swift unit tests",
+      "clean-install UI smoke",
+      "unsigned archive"
+    ],
+    "notChecked": [
+      "actual paired XCUITest",
+      "LAN/cellular native journey",
+      "physical iPhone and production APNs",
+      "candidate screenshots and durable reviewer access",
+      "distribution rights clearance",
+      "signed IPA export/Apple processing/TestFlight",
+      "Apple approval and public App Store install"
+    ]
+  }
+}

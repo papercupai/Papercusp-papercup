@@ -1,0 +1,3901 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Exact served full-product catalogue acceptance after passive diagnostic repair",
+  "framework": "playwright",
+  "command": [
+    "npm run lint:as-committed -- test:file --any --keep --ref=ddce55d82d1239cdbc4c0ca2fab88c8be23d1c5e -- apps/operator/app/dev/_components/RightRail.test.tsx",
+    "PAPERCUSP_LINT_AS_COMMITTED_CLONE=1 PORTAL_PROMOTE=0 npm run build",
+    "playwright test --config=playwright.config.ts e2e/portal-product-tutorial-served.spec.ts --grep \"real catalogue destinations\" --retries=0 --reporter=json"
+  ],
+  "startedAt": "2026-10-08T14:05:38.792Z",
+  "finishedAt": "2026-10-08T14:08:35.396Z",
+  "exitCode": 0,
+  "summary": "Two actual hosted catalogue cases passed, zero skipped/flaky: every one of the 49 targets in each workspace state rendered a permitted destination or an explicit explanation, retained contextual Help/resume/review progress and rejected unexpected domain writes. Full committed RightRail unit suite passed 11/11. Four recorder assertions summarize these results; they are not four additional browser tests. No protected voice/manual/full affected/production shipment claim.",
+  "source": {
+    "rootCommit": "ddce55d82d1239cdbc4c0ca2fab88c8be23d1c5e",
+    "portalCommit": "96350b330ae9e1781d56b23b8f3ba650aaa93f08",
+    "rootRoot": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m",
+    "portalRoot": "/tmp/pcv/tutorial-portal-diagnostics-96350b33-ddce55d8-20261008",
+    "pair": {
+      "portalRoot": "/tmp/pcv/tutorial-portal-diagnostics-96350b33-ddce55d8-20261008",
+      "portalSha": "96350b330ae9e1781d56b23b8f3ba650aaa93f08",
+      "rootRoot": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m",
+      "rootSha": "ddce55d82d1239cdbc4c0ca2fab88c8be23d1c5e",
+      "shadows": [
+        {
+          "rel": "node_modules",
+          "entries": 814,
+          "remapped": 7,
+          "fallback": 0
+        },
+        {
+          "rel": "template-kit/node_modules",
+          "existing": true
+        }
+      ],
+      "mapped": [
+        {
+          "name": "@papercusp/agent-chat",
+          "rel": "libs/agent-chat",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/agent-chat"
+        },
+        {
+          "name": "@papercusp/agent-roster",
+          "rel": "libs/generic/agent-roster",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/generic/agent-roster"
+        },
+        {
+          "name": "@papercusp/card-stack",
+          "rel": "libs/generic/card-stack",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/generic/card-stack"
+        },
+        {
+          "name": "@papercusp/chat-cards",
+          "rel": "libs/generic/chat-cards",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/generic/chat-cards"
+        },
+        {
+          "name": "@papercusp/chat-protocol",
+          "rel": "libs/generic/chat-protocol",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/generic/chat-protocol"
+        },
+        {
+          "name": "@papercusp/debounce-coalesce",
+          "rel": "libs/generic/debounce-coalesce",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/generic/debounce-coalesce"
+        },
+        {
+          "name": "@papercusp/dock-workbench",
+          "rel": "libs/generic/dock-workbench",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/generic/dock-workbench"
+        },
+        {
+          "name": "@papercusp/embedded-pg-discovery",
+          "rel": "libs/generic/embedded-pg-discovery",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/generic/embedded-pg-discovery"
+        },
+        {
+          "name": "@papercusp/embedded-postgres-server",
+          "rel": "libs/papercusp/packages/embedded-postgres-server",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/papercusp/packages/embedded-postgres-server"
+        },
+        {
+          "name": "@papercusp/facets",
+          "rel": "libs/generic/facets",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/generic/facets"
+        },
+        {
+          "name": "@papercusp/flags",
+          "rel": "libs/flags",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/flags"
+        },
+        {
+          "name": "@papercusp/git-graph",
+          "rel": "libs/generic/git-graph",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/generic/git-graph"
+        },
+        {
+          "name": "@papercusp/grid-core",
+          "rel": "libs/generic/papergrid/grid-core",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/generic/papergrid/grid-core"
+        },
+        {
+          "name": "@papercusp/lexicon",
+          "rel": "libs/generic/lexicon",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/generic/lexicon"
+        },
+        {
+          "name": "@papercusp/module-singleton",
+          "rel": "libs/generic/module-singleton",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/generic/module-singleton"
+        },
+        {
+          "name": "@papercusp/operator-core",
+          "rel": "packages/operator-core",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/packages/operator-core"
+        },
+        {
+          "name": "@papercusp/operator-ui",
+          "rel": "packages/operator-ui",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/packages/operator-ui"
+        },
+        {
+          "name": "@papercusp/orchestrator",
+          "rel": "libs/papercusp/packages/orchestrator",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/papercusp/packages/orchestrator"
+        },
+        {
+          "name": "@papercusp/p2p-voice",
+          "rel": "libs/generic/p2p-voice",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/generic/p2p-voice"
+        },
+        {
+          "name": "@papercusp/papercusp-shared",
+          "rel": "libs/papercusp-shared",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/papercusp-shared"
+        },
+        {
+          "name": "@papercusp/plan-parser",
+          "rel": "libs/generic/plan-parser",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/generic/plan-parser"
+        },
+        {
+          "name": "@papercusp/projection-index",
+          "rel": "libs/generic/projection-index",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/generic/projection-index"
+        },
+        {
+          "name": "@papercusp/rrf",
+          "rel": "libs/generic/rrf",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/generic/rrf"
+        },
+        {
+          "name": "@papercusp/rules",
+          "rel": "libs/generic/rules",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/generic/rules"
+        },
+        {
+          "name": "@papercusp/search",
+          "rel": "libs/generic/search",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/generic/search"
+        },
+        {
+          "name": "@papercusp/sse",
+          "rel": "libs/generic/sse",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/generic/sse"
+        },
+        {
+          "name": "@papercusp/sync",
+          "rel": "libs/generic/sync",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/generic/sync"
+        },
+        {
+          "name": "@papercusp/test-config",
+          "rel": "libs/test-config",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/test-config"
+        },
+        {
+          "name": "@papercusp/testing-shell",
+          "rel": "libs/testing-shell",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/testing-shell"
+        },
+        {
+          "name": "@papercusp/tooldef",
+          "rel": "libs/generic/tooldef",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/generic/tooldef"
+        },
+        {
+          "name": "@papercusp/ui-primitives",
+          "rel": "libs/generic/ui-primitives",
+          "actual": "/dev/shm/pcv/papercusp-lint-as-committed-ddce55d82d-p4863m/libs/generic/ui-primitives"
+        }
+      ],
+      "scope": "31 root source dependencies and Portal source frozen; installed vendor dependencies and external email package shared; no full dependency graph immutability claim"
+    },
+    "testFiles": [
+      {
+        "path": "e2e/portal-product-tutorial-served.spec.ts",
+        "sha256": "e8f8b9aba47a88949cb8e579695029870a302db1b14c5c63494d32e6ebaa4e4a"
+      },
+      {
+        "path": "e2e/guide-write-observer.ts",
+        "sha256": "719fad3c82e04d9631e42496cf5b9ebfedfd53cee105d0ffbb7131e1beff3fcc"
+      },
+      {
+        "path": "e2e/guide-destination-observer.ts",
+        "sha256": "1c533a9cd9b16ed3055d8873399f1a851c85d0b4473629567e614fe3dab20a45"
+      }
+    ],
+    "rootFiles": [
+      {
+        "path": "apps/operator/app/dev/_components/RightRail.tsx",
+        "sha256": "e6b69f1daf631bf41d92ad237da7aa0cc51825831d74c50f6930053038c7d21f"
+      },
+      {
+        "path": "apps/operator/app/dev/_components/RightRail.test.tsx",
+        "sha256": "f9d0d5c2fc1ca2c63bed4489c78d30f670eb89b9a35ecb37479e466c2faa7633"
+      }
+    ]
+  },
+  "servedArtifact": {
+    "manifest": {
+      "schemaVersion": 2,
+      "buildId": "EJhqVxwQCX2gcGbngiare",
+      "release": "EJhqVxwQCX2gcGbngiare-20261008140427223-3801066-e4bba695",
+      "sourceRoot": "/tmp/pcv/tutorial-portal-diagnostics-96350b33-ddce55d8-20261008",
+      "publishedAt": "2026-10-08T14:04:27.223Z",
+      "sourceRootDigest": "a70d8087f6a083fd89c6113d54a6fd4c465176b489492b7129cc1cb922ba842a"
+    },
+    "manifestSha256": "0f5eebaed2a5f04c355efe87d5c2baf5eddc3a39e855b4ab6106015dc2d14d01",
+    "operatorHealth": {
+      "status": 200,
+      "sha": "ddce55d82d"
+    },
+    "admission": "WorkOS TEST accounts; isolated operator-api runtime; fixtures cleaned in finally; no interception/local-mode identity",
+    "promoted": false
+  },
+  "assertions": [
+    {
+      "id": "both-workspace-states-and-catalogue",
+      "passed": true,
+      "evidence": "Real browser assertions enumerate and verify all49 targets in each of two cases."
+    },
+    {
+      "id": "context-help-progress-recovery",
+      "passed": true,
+      "evidence": "Each permitted destination preserves reviewed lesson ids and supports contextual Help plus resumed lesson focus; unavailable targets explain recovery."
+    },
+    {
+      "id": "passive-domain-write-boundary",
+      "passed": true,
+      "evidence": "Actual negative-write whitelist passed in both cases; no plugin-host refresh or local dev RPC writes. Same authenticated protected select-workspace response verified403 where navigation canceled a request."
+    },
+    {
+      "id": "exact-build-and-committed-recurrence-guards",
+      "passed": true,
+      "evidence": "Build identity verified before and after each journey;11 unit tests passed at exact root commit, including GET-only polling, no cloud requests and local-to-cloud interval teardown."
+    }
+  ],
+  "browserStats": {
+    "startTime": "2026-10-08T14:05:38.792Z",
+    "duration": 177989.00400000002,
+    "expected": 2,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "browserResults": [
+    {
+      "title": "real catalogue destinations and recovery with authorized workspace=false",
+      "status": "passed",
+      "durationMs": 33694,
+      "acceptance": {
+        "schemaVersion": 1,
+        "release": {
+          "schemaVersion": 2,
+          "buildId": "EJhqVxwQCX2gcGbngiare",
+          "release": "EJhqVxwQCX2gcGbngiare-20261008140427223-3801066-e4bba695",
+          "sourceRoot": "/tmp/pcv/tutorial-portal-diagnostics-96350b33-ddce55d8-20261008",
+          "publishedAt": "2026-10-08T14:04:27.223Z",
+          "sourceRootDigest": "a70d8087f6a083fd89c6113d54a6fd4c465176b489492b7129cc1cb922ba842a"
+        },
+        "preassignedWorkspace": false,
+        "checked": [
+          {
+            "target": "home",
+            "route": "/?app=home",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "launcher",
+            "route": "/?panel=launcher",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "more",
+            "route": "/?panel=more",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "notifications",
+            "route": "/?panel=notifications",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "quick",
+            "route": "/?panel=quick",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "search",
+            "route": "/?q=plans",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "desktops",
+            "route": "/?app=desktops",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "workspaces",
+            "route": "/?app=workspaces",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "plans",
+            "route": "/?app=plans",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "inbox",
+            "route": "/?app=inbox",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "workflows",
+            "route": "/?app=workflows",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "brainstorm",
+            "route": "/?app=brainstorm",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "create",
+            "route": "/?app=create",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "scheduled",
+            "route": "/?app=scheduled",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "cupboard",
+            "route": "/?app=cupboard",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "overview",
+            "route": "/?app=overview",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "hud",
+            "route": "/?app=hud",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "work",
+            "route": "/?app=work",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "conversations",
+            "route": "/?app=conversations",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "frames",
+            "route": "/?app=frames",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "coord",
+            "route": "/?app=coord",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "agents",
+            "route": "/?panel=agents",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "processes",
+            "route": "/?panel=processes",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "sessions",
+            "route": "/?panel=sessions",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "papercup-chat",
+            "route": "/?chatPane=true",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "learning",
+            "route": "/?app=learning",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "insights",
+            "route": "/?app=insights",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "docs",
+            "route": "/?app=docs",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "mail",
+            "route": "/?app=mail",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "calendar",
+            "route": "/?app=calendar",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "phone",
+            "route": "/?app=phone",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "health",
+            "route": "/?app=health",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "prs",
+            "route": "/?app=prs",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "history",
+            "route": "/?app=history",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "git",
+            "route": "/?app=git",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "stats",
+            "route": "/?app=stats",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "testing",
+            "route": "/?app=testing",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "evals",
+            "route": "/?app=evals",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "dev",
+            "route": "/?app=dev",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "adv-settings",
+            "route": "/?app=adv-settings",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "settings",
+            "route": "/?app=settings",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "account",
+            "route": "/?panel=account",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "accounts-dock",
+            "route": "/?accountsPane=true",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "theme-layout",
+            "route": "/?panel=account",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "billing",
+            "route": "/billing",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "cloud",
+            "route": "/?app=cloud",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          },
+          {
+            "target": "support",
+            "route": "/?app=support",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "voice",
+            "route": "/?panel=voice",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "spoken-questions",
+            "route": "tutorial:explicit-question-control",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          }
+        ],
+        "writes": [
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": false,
+            "documentGeneration": 2,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 2,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 4,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 4,
+            "emptyBody": true,
+            "status": 403,
+            "errorCode": "operator_surface_requires_local_profile"
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 6,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 6,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 6,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 6,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 6,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 8,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 8,
+            "emptyBody": true,
+            "status": 403,
+            "errorCode": "operator_surface_requires_local_profile"
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 10,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 10,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 10,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 10,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 10,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 12,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 12,
+            "emptyBody": true,
+            "status": 403,
+            "errorCode": "operator_surface_requires_local_profile"
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 16,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 16,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 16,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 16,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 16,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 18,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 18,
+            "emptyBody": true,
+            "status": 403,
+            "errorCode": "operator_surface_requires_local_profile"
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 20,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 20,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 20,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 20,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 20,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 22,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 22,
+            "emptyBody": true,
+            "status": 403,
+            "errorCode": "operator_surface_requires_local_profile"
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 24,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 24,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 24,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 24,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 24,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 26,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 26,
+            "emptyBody": true,
+            "status": 403,
+            "errorCode": "operator_surface_requires_local_profile"
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 30,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 30,
+            "emptyBody": true,
+            "status": 403,
+            "errorCode": "operator_surface_requires_local_profile"
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 32,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 32,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 32,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 32,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 32,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 34,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 34,
+            "emptyBody": true,
+            "status": 403,
+            "errorCode": "operator_surface_requires_local_profile"
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 36,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 36,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 36,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 36,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 36,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 38,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 38,
+            "emptyBody": true,
+            "status": 403,
+            "errorCode": "operator_surface_requires_local_profile"
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 40,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 40,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 40,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 40,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 40,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 40,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 40,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 40,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 40,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 40,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 40,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 40,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 40,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 40,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 42,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 42,
+            "emptyBody": true,
+            "status": 403,
+            "errorCode": "operator_surface_requires_local_profile"
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 44,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 44,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 44,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 44,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 44,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 46,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 46,
+            "emptyBody": true,
+            "status": 403,
+            "errorCode": "operator_surface_requires_local_profile"
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 48,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 48,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 48,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 48,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 48,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 48,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 50,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 50,
+            "emptyBody": true,
+            "status": 403,
+            "errorCode": "operator_surface_requires_local_profile"
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 52,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 52,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 52,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 52,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 52,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 54,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 54,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 54,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 54,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 56,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 56,
+            "emptyBody": true,
+            "status": 403,
+            "errorCode": "operator_surface_requires_local_profile"
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 58,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 58,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 58,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 58,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 58,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 60,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/select-workspace",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 60,
+            "emptyBody": true,
+            "status": 403,
+            "errorCode": "operator_surface_requires_local_profile"
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 62,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 62,
+            "emptyBody": false,
+            "status": 200
+          }
+        ],
+        "journeyStartedAt": "2026-10-08T14:06:01.840Z",
+        "journeyFinishedAt": "2026-10-08T14:06:33.682Z",
+        "scope": "destination composition, account scope and navigation-only learning progress; excludes completing product tasks, protected voice and production shipment"
+      }
+    },
+    {
+      "title": "real catalogue destinations and recovery with authorized workspace=true",
+      "status": "passed",
+      "durationMs": 121800,
+      "acceptance": {
+        "schemaVersion": 1,
+        "release": {
+          "schemaVersion": 2,
+          "buildId": "EJhqVxwQCX2gcGbngiare",
+          "release": "EJhqVxwQCX2gcGbngiare-20261008140427223-3801066-e4bba695",
+          "sourceRoot": "/tmp/pcv/tutorial-portal-diagnostics-96350b33-ddce55d8-20261008",
+          "publishedAt": "2026-10-08T14:04:27.223Z",
+          "sourceRootDigest": "a70d8087f6a083fd89c6113d54a6fd4c465176b489492b7129cc1cb922ba842a"
+        },
+        "preassignedWorkspace": true,
+        "checked": [
+          {
+            "target": "home",
+            "route": "/?app=home",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "launcher",
+            "route": "/?panel=launcher",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "more",
+            "route": "/?panel=more",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "notifications",
+            "route": "/?panel=notifications",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "quick",
+            "route": "/?panel=quick",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "search",
+            "route": "/?q=plans",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "desktops",
+            "route": "/?app=desktops",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "workspaces",
+            "route": "/?app=workspaces",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "plans",
+            "route": "/?app=plans",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "inbox",
+            "route": "/?app=inbox",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "workflows",
+            "route": "/?app=workflows",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "brainstorm",
+            "route": "/?app=brainstorm",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "create",
+            "route": "/?app=create",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "scheduled",
+            "route": "/?app=scheduled",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "cupboard",
+            "route": "/?app=cupboard",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "overview",
+            "route": "/?app=overview",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "hud",
+            "route": "/?app=hud",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "work",
+            "route": "/?app=work",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "conversations",
+            "route": "/?app=conversations",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "frames",
+            "route": "/?app=frames",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "coord",
+            "route": "/?app=coord",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "agents",
+            "route": "/?panel=agents",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "processes",
+            "route": "/?panel=processes",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "sessions",
+            "route": "/?panel=sessions",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "papercup-chat",
+            "route": "/?chatPane=true",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "learning",
+            "route": "/?app=learning",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "insights",
+            "route": "/?app=insights",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "docs",
+            "route": "/?app=docs",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "mail",
+            "route": "/?app=mail",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "calendar",
+            "route": "/?app=calendar",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "phone",
+            "route": "/?app=phone",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "health",
+            "route": "/?app=health",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "prs",
+            "route": "/?app=prs",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "history",
+            "route": "/?app=history",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "git",
+            "route": "/?app=git",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "stats",
+            "route": "/?app=stats",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "testing",
+            "route": "/?app=testing",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "evals",
+            "route": "/?app=evals",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "dev",
+            "route": "/?app=dev",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "adv-settings",
+            "route": "/?app=adv-settings",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "settings",
+            "route": "/?app=settings",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "account",
+            "route": "/?panel=account",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "accounts-dock",
+            "route": "/?accountsPane=true",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "theme-layout",
+            "route": "/?panel=account",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "billing",
+            "route": "/billing",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "cloud",
+            "route": "/?app=cloud",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "support",
+            "route": "/?app=support",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "voice",
+            "route": "/?panel=voice",
+            "observation": "real served destination and contextual Help; navigation preserves review progress"
+          },
+          {
+            "target": "spoken-questions",
+            "route": "tutorial:explicit-question-control",
+            "observation": "explicit unavailable explanation; guide remains usable"
+          }
+        ],
+        "writes": [
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": false,
+            "documentGeneration": 2,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 2,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 2,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 4,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 6,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 6,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 6,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 6,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 8,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 10,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 10,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 10,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 10,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 12,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 16,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 16,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 16,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 16,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 18,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 20,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 20,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 20,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 20,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 22,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 24,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 24,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 24,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 24,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 26,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 28,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 30,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 32,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 32,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 32,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 32,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 34,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 36,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 36,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 36,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 36,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 38,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 40,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 40,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 40,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 40,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 42,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 44,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 44,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 44,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 44,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 46,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 48,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 48,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 48,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 48,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 50,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 52,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 52,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 52,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 52,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 54,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 56,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 56,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 56,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 56,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 58,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 60,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 60,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 60,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 60,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 62,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 64,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 64,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 64,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 64,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 66,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 68,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 68,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 68,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 68,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 70,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 72,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 72,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 72,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 72,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 74,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 76,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 76,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 76,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 76,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 78,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 80,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 80,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 80,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 80,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 82,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 84,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 84,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 84,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 84,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 86,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 88,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 88,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 88,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 88,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 90,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 92,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 92,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 92,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 92,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 94,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 96,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 96,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 96,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 96,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 98,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 100,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 100,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 100,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 100,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 102,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 104,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 104,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 104,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 104,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 106,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 108,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 108,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 108,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 108,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 110,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 112,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 112,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 112,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 112,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 114,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 116,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 116,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 116,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 116,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 118,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 120,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 120,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 120,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 120,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 122,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 124,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 124,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 124,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 124,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 126,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 128,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 128,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 128,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 128,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 130,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 132,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 132,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 132,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 132,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 134,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 136,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 136,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 136,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 136,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 138,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 140,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 140,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 140,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 140,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 142,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 144,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 144,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 144,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 144,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 146,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 148,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 148,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 148,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 148,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 150,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 152,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 152,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 152,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 152,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 154,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 156,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 156,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 156,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 156,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 158,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 160,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 160,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 160,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 160,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 162,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 164,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 164,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 164,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 164,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 166,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 168,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 168,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 168,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 168,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 170,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 172,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 172,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 172,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 172,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 174,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 176,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 176,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 176,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 176,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 178,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 180,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 180,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 180,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 180,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 182,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 182,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 182,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 184,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 186,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 186,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 186,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 186,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 188,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 190,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 190,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 190,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 190,
+            "emptyBody": true,
+            "failure": "net::ERR_ABORTED",
+            "navigationCancelled": true
+          },
+          {
+            "path": "/api/notifications/refresh",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 192,
+            "emptyBody": true,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 194,
+            "emptyBody": false,
+            "status": 200
+          },
+          {
+            "path": "/api/hosted/browser/onboarding/tutorial-progress",
+            "method": "POST",
+            "destinationEntered": true,
+            "documentGeneration": 194,
+            "emptyBody": false,
+            "status": 200
+          }
+        ],
+        "journeyStartedAt": "2026-10-08T14:06:34.562Z",
+        "journeyFinishedAt": "2026-10-08T14:08:35.396Z",
+        "scope": "destination composition, account scope and navigation-only learning progress; excludes completing product tasks, protected voice and production shipment"
+      }
+    }
+  ],
+  "unitSuite": {
+    "passed": 11,
+    "skipped": 0,
+    "log": "/tmp/tutorial-plugin-status-committed-ddce55d8-20261008.log",
+    "sha256": "9bbd85e0148dd48a011714ae862c8a237925c3ed01c3bba5215bcc1e85e9d876"
+  },
+  "logs": [
+    {
+      "path": "/tmp/tutorial-diagnostics-report-96350b33-ddce55d8-20261008.json",
+      "sha256": "06c6c460898a387fa837c93db43b93b11c6a15bc877dd577c4e43153e9f40ed9"
+    },
+    {
+      "path": "/tmp/tutorial-plugin-status-committed-ddce55d8-20261008.log",
+      "sha256": "9bbd85e0148dd48a011714ae862c8a237925c3ed01c3bba5215bcc1e85e9d876"
+    },
+    {
+      "path": "/tmp/tutorial-diagnostics-build-96350b33-ddce55d8-20261008.log",
+      "sha256": "03e8ce5e2d0967b89880dbdd9483902d85214c8fb982a1afe5de9adda0e8fd68"
+    },
+    {
+      "path": "/tmp/tutorial-diagnostics-served-96350b33-ddce55d8-20261008.log",
+      "sha256": "72f18c6ef06c940aa8c9be192189062bf45fa0941e774dc7f7f7462576769018"
+    }
+  ],
+  "limitations": [
+    "The artifact was built and served locally without production promotion.",
+    "Third-party installed packages and linked external email packages remain shared;31 root packages were remapped to the immutable root and fingerprinted for drift.",
+    "Prior historical failed reports and original-artifact scoped Help/Billing/entry evidence remain unchanged.",
+    "Protected spoken-question/provider acceptance, expanded native manual review, required affected verdict and final production shipment remain separate."
+  ]
+}

@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "verification.health live read on the staging operator for AUTO-BAR-R-4-P-004@7, AUTO-BAR-R-12-P-004@2, AUTO-BAR-R-5-P-005@7, AUTO-BAR-R-13-P-005@2",
+  "plan": "verification-system-improvements-2026-10-10",
+  "workItems": ["WI-6554700010008356", "WI-6554700010008357", "WI-6554700010008426"],
+  "decisions": ["D-029", "D-030", "D-033", "D-046"],
+  "servingOperator": {
+    "port": 3170,
+    "service": "papercusp-operator (staging)",
+    "buildShaBefore": "ca99f61907",
+    "buildShaAfter": "ca99f61907",
+    "note": "Per D-046, until the green gate promotes verification-health.ts only a staging-operator read is live evidence; /api/health was read immediately before and after the tool call. Taken after P-002 (WI-6554700010008354) closed done at 11:44:01Z. Both cell source files (packages/operator-core/lib/verification-health.ts, packages/operator-core/lib/agent-tools/plans/verification-health.ts) have identical blobs at 90842e99a9, ca99f61907 and HEAD 260c15f506."
+  },
+  "command": [
+    "curl -s 127.0.0.1:3170/api/health",
+    "node scripts/mcp-call.mjs plans:verification-health '{}' --client su-f2a82c74-67a6-4526-ac82-099159a51144 --port 3170",
+    "curl -s 127.0.0.1:3170/api/health"
+  ],
+  "startedAt": "2026-10-11T11:45:55.776Z",
+  "finishedAt": "2026-10-11T11:45:59.831Z",
+  "measuredAt": "2026-10-11T11:45:56.383Z",
+  "exitCode": 0,
+  "rawRead": {
+    "path": ".papercusp/scratch/vsi-lane2-vh-3170-20261011T114555Z.json",
+    "sha256": "97787e8f1c2b0385d734891de75580b064dddfea8f99911d9057dffe032642f9"
+  },
+  "priorRead": {
+    "buildSha": "90842e99a9",
+    "measuredAt": "2026-10-11T11:25:48.811Z",
+    "path": ".papercusp/scratch/vsi-lane2-vh-3170-20261011T112547Z.json",
+    "sha256": "832d551ac2e535e466ab9fffc31c5c3a395586dba21994a5a85d4ee2df76df91",
+    "sameValues": true
+  },
+  "cell": {
+    "assessment": "healthy",
+    "breaches": 0,
+    "measurementErrors": [],
+    "triageGaps": 0,
+    "activePlansConsidered": 14,
+    "unreachablePlans": 0,
+    "staleAcceptanceSurfaced": 0,
+    "staleAcceptanceNeverSurfaced": 0,
+    "staleAcceptanceUndispositioned": 0,
+    "staleAcceptanceScopeExcluded": 1,
+    "acceptancePlansConsidered": 1552,
+    "awaitingAcceptancePlans": 142
+  },
+  "crossCheck": {
+    "method": "Independent dev:pg_query at 2026-10-11T11:26:37Z against :5432, reproducing the measureStaleAcceptance predicates (packages/operator-core/lib/agent-tools/plans/acceptance-drain-disposition.ts, grace 3 days, never-surfaced 17 days, now pinned to 2026-10-11T11:25:48Z), grouped per harness, then judged against the stored workScope policy (harness_shared.operator_pot_control_policy.payload->'workScope': mode enforce, allowHarnesses [papercusp, portal], updatedAt 2026-10-09T13:07:41.750Z; its exceptions name portal work only).",
+    "staleByHarness": [
+      { "harness": "oddsmith-hive", "inScope": false, "awaiting": 6, "surfacedStale": 0, "neverSurfacedStale": 0 },
+      { "harness": "panda-gallery", "inScope": false, "awaiting": 1, "surfacedStale": 0, "neverSurfacedStale": 0 },
+      { "harness": "papercusp", "inScope": true, "awaiting": 126, "surfacedStale": 0, "neverSurfacedStale": 0 },
+      { "harness": "sidestage", "inScope": false, "awaiting": 9, "surfacedStale": 0, "neverSurfacedStale": 1 }
+    ],
+    "acceptancePlansConsidered": { "inScope": 1552, "outOfScope": 106 },
+    "activePlansByHarness": [ { "harness": "papercusp", "active": 14 } ]
+  },
+  "summary": "On staging :3170 (build ca99f61907, unchanged across the call; the 11:25Z read on 90842e99a9 gave identical values) the verification.health read reports triageGaps 0 over 14 active plans, unreachablePlans 0, staleAcceptanceUndispositioned 0 over 1552 in-scope plans, and staleAcceptanceScopeExcluded 1, with no measurement errors. An independent SQL census agrees with every value: the only stale undispositioned awaiting-acceptance plan is in sidestage, which the enforce-mode workScope does not admit.",
+  "assertions": [
+    { "id": "r4-triage-gaps-zero", "passed": true, "evidence": "AUTO-BAR-R-4-P-004@7 falsifier (1): live triageGaps = 0, not above zero." },
+    { "id": "r4-triage-measured-not-vacuous", "passed": true, "evidence": "AUTO-BAR-R-4-P-004@7 falsifier (2): activePlansConsidered = 14 (independent census: 14 active papercusp plans) and measurementErrors = [], so the 0 is a measurement and not a failed or empty one." },
+    { "id": "r12-unreachable-zero-and-present", "passed": true, "evidence": "AUTO-BAR-R-12-P-004@2 falsifiers (1) and (2): unreachablePlans is present and = 0, not null; measurementErrors = []. Every active plan is in papercusp, which has a Hive plan scope." },
+    { "id": "r5-undispositioned-zero", "passed": true, "evidence": "AUTO-BAR-R-5-P-005@7 falsifier (1): live staleAcceptanceUndispositioned = 0." },
+    { "id": "r5-no-hidden-never-surfaced", "passed": true, "evidence": "AUTO-BAR-R-5-P-005@7 falsifier (2): the independent census finds 0 surfaced-stale and 0 never-surfaced-stale undispositioned plans in the in-scope harnesses (papercusp 0/0; portal has no awaiting plans)." },
+    { "id": "r5-measured-not-vacuous", "passed": true, "evidence": "AUTO-BAR-R-5-P-005@7 falsifier (3): acceptancePlansConsidered = 1552 (independent in-scope census: 1552) and measurementErrors = []." },
+    { "id": "r13-scope-excluded-present", "passed": true, "evidence": "AUTO-BAR-R-13-P-005@2 falsifier (1): staleAcceptanceScopeExcluded is present and = 1, not null." },
+    { "id": "r13-out-of-scope-stale-all-counted", "passed": true, "evidence": "AUTO-BAR-R-13-P-005@2 falsifier (2): the out-of-scope stale undispositioned plans in the census total 1 (sidestage never-surfaced 1; oddsmith-hive 0; panda-gallery 0). The cell counts 1 in staleAcceptanceScopeExcluded and 0 in staleAcceptanceUndispositioned, so none is uncounted." },
+    { "id": "r13-excluded-harness-is-policy-excluded", "passed": true, "evidence": "AUTO-BAR-R-13-P-005@2 falsifier (3): the only harness contributing to the excluded count is sidestage. sidestage is absent from allowHarnesses [papercusp, portal] under mode enforce, and no policy exception names it." },
+    { "id": "serving-build-stable", "passed": true, "evidence": "/api/health on :3170 reported sha ca99f61907 immediately before (11:45:55.785Z) and after (11:45:59.826Z) the read." }
+  ]
+}

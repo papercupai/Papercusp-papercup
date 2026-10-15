@@ -8,9 +8,10 @@
  * signer with `verifyMessage`; the signer is the anchor key's address (D-021).
  */
 import { canonicalJson, sha256Hex } from '@papercusp/hash-chain';
-import { verifyMessage, type Address, type Hex } from 'viem';
-import { privateKeyToAccount } from 'viem/accounts';
-import type { MonthlyStatement, TransparencyReport } from './transparency-report';
+import { verifyMessage } from 'viem/utils';
+import type { Address, Hex } from 'viem';
+import { LIVE_MINIMUM_PAYMENTS, monthPeriod, type MonthlyStatement, type TransparencyReport } from './transparency-report';
+import { MOVEMENT_KINDS } from './money-journal';
 
 export const STATEMENT_SIGNATURE_SCHEME = 'eip191-sha256-canonical-json' as const;
 
@@ -40,8 +41,32 @@ export interface LiveTransparencyPush {
   readonly statementStatus: StatementStatus;
 }
 
-const MONTH = /^\d{4}-\d{2}$/;
+const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
 const STATEMENT_STATES: ReadonlySet<string> = new Set(['published', 'pending', 'withheld', 'none']);
+
+/** The public boundary refuses older snapshots that carry no population guard. */
+export function hasLiveDisclosure(report: TransparencyReport): boolean {
+  const d = report.disclosure;
+  if (!d || d.version !== 1 || d.minimumPayments !== LIVE_MINIMUM_PAYMENTS || !['complete', 'folded'].includes(d.status) || !d.streams || typeof d.streams !== 'object' || Array.isArray(d.streams)) return false;
+  return Object.entries(d.streams).every(([movement, stream]) =>
+    MOVEMENT_KINDS.includes(movement as typeof MOVEMENT_KINDS[number]) && movement !== 'dao-transfer' &&
+    !!stream && Number.isSafeInteger(stream.payments) && stream.payments >= LIVE_MINIMUM_PAYMENTS && /^[0-9a-f]{64}$/.test(stream.root));
+}
+
+/** Counts alone are insufficient: an old entry edited at the same count must also stay private. */
+export function liveDisclosureUpdateProblem(previous: TransparencyReport | null, next: TransparencyReport): string | null {
+  if (!hasLiveDisclosure(next)) return 'the live report has no valid payment-window disclosure policy';
+  if (!previous || !hasLiveDisclosure(previous) || previous.month !== next.month) return null;
+  if (previous.currency !== next.currency || previous.fromMs !== next.fromMs || next.untilMs < previous.untilMs) return 'the live disclosure period or currency moved backwards';
+  const before = previous.disclosure!.streams;
+  const after = next.disclosure!.streams;
+  for (const movement of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    const a = before[movement as keyof typeof before];
+    const b = after[movement as keyof typeof after];
+    if (a?.root !== b?.root && (b?.payments ?? 0) - (a?.payments ?? 0) < LIVE_MINIMUM_PAYMENTS) return `the ${movement} update must fold into a later payment window`;
+  }
+  return null;
+}
 
 /** Shape check for a pushed live report: the report and the status must describe the push's own workspace and month. */
 export function parseLiveTransparencyPush(raw: unknown): LiveTransparencyPush | null {
@@ -61,6 +86,11 @@ export function parseLiveTransparencyPush(raw: unknown): LiveTransparencyPush | 
     report.provisional === true &&
     report.workspaceId === r.workspaceId &&
     report.month === r.month &&
+    hasLiveDisclosure(report as unknown as TransparencyReport) &&
+    typeof report.fromMs === 'number' && typeof report.untilMs === 'number' &&
+    report.fromMs === monthPeriod(r.month as string).fromMs &&
+    report.untilMs >= report.fromMs && report.untilMs <= monthPeriod(r.month as string).untilMs &&
+    report.untilMs <= Math.floor((r.generatedAtMs as number) / 3_600_000) * 3_600_000 &&
     !!status &&
     typeof status.status === 'string' &&
     STATEMENT_STATES.has(status.status) &&
@@ -86,6 +116,7 @@ export function statementDigest(statement: MonthlyStatement): string {
 }
 
 export async function signStatement(statement: MonthlyStatement, privateKey: Hex): Promise<SignedStatement> {
+  const { privateKeyToAccount } = await import('viem/accounts');
   const account = privateKeyToAccount(privateKey);
   const digest = statementDigest(statement);
   const signature = await account.signMessage({ message: { raw: `0x${digest}` } });

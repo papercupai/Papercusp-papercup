@@ -206,12 +206,13 @@ observations.goals = goals.map((g) => ({
   const CONTROLS: Array<[number, string]> = [
     [20095653, 'existing-plans-sufficient: goal-planning-review.test.ts'],
     [20095654, 'goal planning proof: goal-planning-proof.test.ts'],
-    [20095655, 'terminal/no-demand after sufficient review + blocked-budget typed refusal (budget.unmeasured/exceeded, cap unchanged): goal-planning-obligation-proof.test.ts'],
+    // 20095655 and 20095664 vanished from test_runs (WI-10005588); re-run 2026-10-02 18:30Z at ed336ea0e0 as 20553650/51.
+    [20553650, 'terminal/no-demand after sufficient review + blocked-budget typed refusal (budget.unmeasured/exceeded, cap unchanged): goal-planning-obligation-proof.test.ts'],
     [20095657, 'sufficient review; blocked draft never produces an inadmissible launch: agent-obligation-planning-demand.integration.test.ts'],
     [20095659, 'cross-goal/unowned plan never re-attributed; Blender adoption adds no duplicate row: goal-feedback.integration.test.ts'],
     [20095661, 'goal feedback unit: goal-feedback.test.ts'],
     [20095663, 'missing-delivery/attribution reported unknown, not ignored: agent-obligation-reader.test.ts'],
-    [20095664, 'absent vs wrong attribution: goal-launch-settings.test.ts'],
+    [20553651, 'absent vs wrong attribution: goal-launch-settings.test.ts'],
   ];
   const runs = rows(`SELECT id, status, file_path, commit_sha, finished_at FROM harness_shared.test_runs
     WHERE id IN (${CONTROLS.map(([id]) => id).join(',')})`);

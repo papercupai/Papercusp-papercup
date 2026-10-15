@@ -1,0 +1,25 @@
+{
+  "workItem": "WI-6554700010013508",
+  "source": "https://cloudbilling.googleapis.com/v1/services/6F81-5844-456A/skus",
+  "readAt": "2026-10-14T23:08:48.521849+00:00",
+  "region": "us-central1",
+  "currency": "USD",
+  "usageType": "OnDemand",
+  "effectiveTime": "2026-10-14T07:00:00Z",
+  "prices": [
+    { "skuId": "2DFF-4FD5-CD13", "description": "Z3 Instance Ram running in Americas", "unit": "GiBy.h", "usd": 0.0066553 },
+    { "skuId": "40C4-CA9F-3B87", "description": "Z3 Instance Core running in Americas", "unit": "h", "usd": 0.0496531 },
+    { "skuId": "5B01-D157-A097", "description": "N2 Instance Ram running in Americas", "unit": "GiBy.h", "usd": 0.004237 },
+    { "skuId": "6D7C-6AE1-9963", "description": "Z3 Instance Local SSD running in Americas", "unit": "GiBy.mo", "usd": 0.08 },
+    { "skuId": "E0C4-9777-003A", "description": "C4 Instance Local SSD running in Americas", "unit": "GiBy.mo", "usd": 0.16 },
+    { "skuId": "E259-34D3-C50F", "description": "C4 Instance Ram running in Americas", "unit": "GiBy.h", "usd": 0.003938 },
+    { "skuId": "F449-33EC-A5EF", "description": "E2 Instance Ram running in Americas", "unit": "GiBy.h", "usd": 0.00292353 }
+  ],
+  "machine": { "type": "z3-highmem-8-highlssd", "vcpus": 8, "ramGiB": 64, "includedTitaniumGiB": 3000, "bootDiskGiB": 50 },
+  "qualifications": [
+    "List prices before discounts, taxes, network and model inference.",
+    "730 hours per month used for normalized comparisons; monthly equivalent is not a guaranteed invoice.",
+    "Titanium storage is attached to specific VM shapes; 32GiB at its unit price cannot be purchased independently.",
+    "Titanium is a newer Local SSD generation; this one-device test does not establish the highest aggregate performance among all Google machine shapes."
+  ]
+}

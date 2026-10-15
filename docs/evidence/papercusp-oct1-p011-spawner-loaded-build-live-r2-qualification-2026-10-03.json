@@ -1,0 +1,102 @@
+{
+  "schemaVersion": "p011-spawner-loaded-build-live-qualification-v1",
+  "workItem": "WI-10005776",
+  "parent": "WI-10004890",
+  "status": "new-harness-scoped-loaded-identity-window-verified-parent-acceptance-open",
+  "plane": "live-current-build-operator-api",
+  "purpose": "New necessary acceptance window with explicit harness attribution; not a replay to recover or replace completed WI-10005751.",
+  "raw": {
+    "path": "docs/evidence/papercusp-oct1-p011-spawner-loaded-build-live-r2-2026-10-03.json",
+    "bytes": 90667,
+    "sha256": "815683d4ead0586284e6589759e368201d29218c3d8ffdc82aee76ab72966495",
+    "startedAt": "2026-10-03T02:25:08.807Z",
+    "endedAt": "2026-10-03T02:25:16.932Z",
+    "incomplete": false
+  },
+  "execution": {
+    "testPath": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+    "selectedTest": "measures unforced live idle and ordinary HTTP windows on the named staging process",
+    "router": "scripts/test-files.mjs",
+    "log": "/tmp/su-7db4f-p011-spawner-loaded-live-r2.log",
+    "exitCode": 0,
+    "passed": 1,
+    "filteredSkipped": 12,
+    "testRunId": 20610426,
+    "testRunCommit": "9430f04e7a72ccfb635c2aa3be2a14aab86b5fe3",
+    "ledgerHarness": "papercusp",
+    "ledgerWorkspace": "papercusp-workspace",
+    "ledgerTestLayer": "integration",
+    "ledgerWorktreeDirty": true,
+    "explicitHarnessEnvironment": "PAPERCUSP_TEST_RUN_HARNESS=papercusp",
+    "routerNamedTestUncommittedPaths": 0,
+    "routerNamedTestProvenance": "stamped",
+    "fullImportGraphProvenance": "unknown"
+  },
+  "selection": {
+    "mainPid": 874325,
+    "mainStartTicks": "4121617",
+    "managedRunnerPid": 1029936,
+    "spawnerPid": 1030026,
+    "spawnerStartTicks": "4146224",
+    "entry": "Exact spawner-sidecar.mjs sibling of the cwd-resolved named staging hono-host.mjs",
+    "readonlySelectionTaskId": "0murrq30v95cppr1mh1",
+    "selectorResidue": [],
+    "qualification": "The earlier read returned an explicit observer-relative disk-hash error, not an absence finding. The final selector resolves relative argv against each process cwd and enumerates children independently of optional hash failures."
+  },
+  "loadedIdentity": {
+    "expectedMainHealthSha": "ea48489b8d",
+    "expectedSiblingBakedShaReadFromDisk": "ea48489b8d",
+    "advertisedSpawnerSha": "ea48489b8d",
+    "source": "PID-bound loaded server cancellation capability",
+    "pid": 1030026,
+    "serverGeneration": "53b56bec-2faa-4f49-b20c-2688e69004dc",
+    "connectionId": "94412751-6aaf-4a18-b131-ac0c033234e9",
+    "spawnerDiskSha256": "ce0377ab0e2c2e42e6042794b0cd86c9262e2189ba16dc9dc348269b507b41a4",
+    "diskIdentityIsLoadedProof": false,
+    "targetModuleImport": false
+  },
+  "observed": {
+    "counterSamples": 9,
+    "ordinaryReadRequests": 24,
+    "healthBeforeAndAfterMatch": true,
+    "inspectorClosed": true,
+    "mainIdentityPreserved": true,
+    "counterIdentityPreserved": true,
+    "boundedDescendantCensusCompleteInObservedSamples": true,
+    "configuredCounterRole": "spawner",
+    "allocationProfiler": false,
+    "forcedGc": false,
+    "sharedRuntimeRestart": false
+  },
+  "namedCurrentSources": [
+    {"path": "packages/operator-core/lib/fleet/spawner-sidecar-server.ts", "sha256": "7a2e1e1301153cf3e2a1123882544f83e2493a3c713119108847b069ad2b8be2"},
+    {"path": "packages/operator-core/lib/spawner-sidecar-bundle.integration.test.ts", "sha256": "73d1605c2a4b6f4d55f7711d86a7666a33dffa8c654c9db228aac163d0acbe6f"},
+    {"path": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts", "sha256": "ca006abc6d34df2164ab0706bb6b566de1639df8d350adf2da481aeea3b07281"},
+    {"path": "packages/operator-core/lib/build-info.ts", "sha256": "6d271f5721a0d47c68fa8f42996a34f7b48fe4c06e414285a3f7fe36bdc44a50"},
+    {"path": "apps/operator/bin/bundle-host-common.sh", "sha256": "44ea4f7d868a11d696a0117a3071539c7627c1d989fcbaa89b0c3be83dc03652"},
+    {"path": "scripts/cdp-inspector.mjs", "sha256": "0fae03367aef907fa7b42b825b2482417b470d350a02d4a000075be35d04a1c1"},
+    {"path": "scripts/test-files.mjs", "sha256": "328d0e1fca172b83b603c264c4192bb66688cf8e298092f00b8faef8d1a202e1"},
+    {"path": "packages/operator-core/lib/fleet/spawner-ipc-client.ts", "sha256": "fc9e1be790e7c5d176c181d9aec05bb531e44e0df4d1489a8e90370f38bc6c66"}
+  ],
+  "sourceQualification": "These eight named paths were byte-identical before and after this run. They are not the complete imported graph or proof that every loaded module matches the current tree.",
+  "preservedHistoricalProof": {
+    "workItem": "WI-10005751",
+    "testRun": 20609442,
+    "ledgerHarness": null,
+    "rawSha256": "be2f3fad2fd1a060ab969df894daeb50d38b48278bf8ca4eafc9fd1c45e6aacd",
+    "qualificationSha256": "cda3fc144953b69d4dac33b7e445f4ab1eedcceb2f9874a9488d6c279f6ff638",
+    "reclosed": false,
+    "replayed": false,
+    "relabeled": false,
+    "savedGuardSha256": "fb64bc1f8b3560a72ede8583efb7b1e0f82df9ff4ab76d2649e47fafa344a687",
+    "existingBindingPreserved": 23004
+  },
+  "limitations": [
+    "Loaded identity is verified only for the named main and exact selected spawner during this observation window.",
+    "HTTP request assignment and physical allocation owners remain unknown.",
+    "Ambient workload is uncontrolled and no paired intervention or physical memory savings are established.",
+    "The focused live run skipped twelve guards; their saved outcomes remain separate evidence.",
+    "Harness-scoped ledger attribution removes the prior binding-scope obstacle, not the remaining behavioral acceptance obligations.",
+    "P011 causal memory acceptance, historical attribution, P010, activation review, independent acceptance and final shipment remain open."
+  ]
+}

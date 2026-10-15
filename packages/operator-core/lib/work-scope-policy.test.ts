@@ -3,7 +3,8 @@
  * (plan workspace-work-scope-policy-2026-09-04).
  * Run: cd packages/operator-core && npx vitest run lib/work-scope-policy.test.ts
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { WorkScopeException, WorkScopeSubject } from './work-scope-policy';
 
 const store: { policy: Record<string, unknown> } = { policy: {} };
 vi.mock('./pot-control-policy', () => ({
@@ -27,6 +28,7 @@ const {
   clearWorkScopePolicy,
   reconcilePresencePot,
   classifyForRehome,
+  isPlatformNonPotHarness,
   WORK_SCOPE_LEDGER_CAP,
 } = mod;
 
@@ -100,6 +102,73 @@ describe('enforce', () => {
   });
 });
 
+describe('exception expiry — current decisions and SQL selection', () => {
+  const instant = Date.parse('2030-01-02T03:04:05Z');
+  let nowMs = instant;
+  beforeEach(() => {
+    nowMs = instant;
+    vi.spyOn(Date, 'now').mockImplementation(() => nowMs);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  const axes = ['harness', 'plan', 'goal', 'workItem'] as const;
+  const boundaries = [['future', 1], ['exact', 0], ['past', -1]] as const;
+  const cases = axes.flatMap((axis) => boundaries.map(([label, offset]) => ({ axis, label, offset })));
+  it.each(cases)('$axis exception at $label boundary agrees with SQL selection', ({ axis, offset }) => {
+    const value = axis === 'harness' ? 'portal' : 'fixture-subject';
+    const exception: WorkScopeException = {
+      [axis]: value, reason: 'temporary grant', expiresAt: new Date(instant + offset).toISOString(),
+    };
+    const subject: WorkScopeSubject = { harness: 'portal', [axis]: value };
+    const policy = { ...ENFORCE, exceptions: [exception] };
+    expect(evaluateWorkScope(subject, policy).allowed).toBe(offset > 0);
+    const terms = workScopeSqlTerms(policy);
+    expect(terms).not.toBeNull();
+    expect(terms?.exceptions !== undefined).toBe(offset > 0);
+  });
+
+  it.each(['not-a-date', '', '2030-01-02', '2030-02-31T00:00:00Z', null, 1893456000000])(
+    'malformed stored expiry %j cannot grant or remove the SQL scope predicate', (expiresAt) => {
+      const exception = { harness: '*', reason: 'invalid grant', expiresAt } as unknown as WorkScopeException;
+      const policy = { ...ENFORCE, exceptions: [exception] };
+      expect(evaluateWorkScope({ harness: 'portal' }, policy).allowed).toBe(false);
+      expect(workScopeSqlTerms(policy)).toEqual(workScopeSqlTerms(ENFORCE));
+    },
+  );
+
+  it('an expired wildcard does not hide a later active exception', () => {
+    const policy = { ...ENFORCE, exceptions: [
+      { harness: '*', reason: 'expired', expiresAt: new Date(instant).toISOString() },
+      { harness: 'portal', reason: 'active', expiresAt: new Date(instant + 1).toISOString() },
+    ] };
+    expect(evaluateWorkScope({ harness: 'portal' }, policy)).toMatchObject({ allowed: true, exception: { reason: 'active' } });
+    expect(evaluateWorkScope({ harness: 'other' }, policy).allowed).toBe(false);
+    expect(workScopeSqlTerms(policy)?.exceptions?.exactHarnesses).toEqual(['portal']);
+  });
+
+  it('the same cached row stops granting at expiry without a cache refresh', () => {
+    const policy = { ...ENFORCE, exceptions: [
+      { harness: '*', reason: 'temporary', expiresAt: new Date(instant + 1).toISOString() },
+    ] };
+    store.policy = { workScope: policy };
+    expect(evaluateWorkScope({ harness: 'portal' }).allowed).toBe(true);
+    expect(workScopeSqlTerms()).toBeNull();
+    nowMs += 1;
+    expect(evaluateWorkScope({ harness: 'portal' }).allowed).toBe(false);
+    expect(workScopeSqlTerms()).toEqual(workScopeSqlTerms(ENFORCE));
+  });
+
+  it('expiry does not remove an independent allow-list grant or an indefinite exception', () => {
+    const policy = { ...ENFORCE, exceptions: [
+      { harness: '*', reason: 'expired', expiresAt: new Date(instant).toISOString() },
+      { harness: 'portal', reason: 'indefinite' },
+    ] };
+    expect(evaluateWorkScope({ harness: 'papercusp' }, policy)).toMatchObject({ allowed: true, reason: 'in-scope' });
+    expect(evaluateWorkScope({ harness: 'portal' }, policy)).toMatchObject({ allowed: true, exception: { reason: 'indefinite' } });
+    expect(workScopeSqlTerms(policy)?.exceptions?.exactHarnesses).toEqual(['portal']);
+  });
+});
+
 describe('ledger', () => {
   it('gateWorkScope records a denial on the stored policy, bounded to the cap, and never records an allow', async () => {
     store.policy = { workScope: { ...ENFORCE } };
@@ -148,6 +217,35 @@ describe('workScopeSqlTerms', () => {
     expect(workScopeSqlTerms(ENFORCE)).toEqual({ exact: ['papercusp', 'papercusp'], likePrefixes: ['papercusp/%'] });
     expect(workScopeSqlTerms({ mode: 'enforce', allowHarnesses: ['a_b*'] })).toEqual({ exact: [], likePrefixes: ['a\\_b%'] });
   });
+
+  it('returns SQL terms for harness, plan, goal, and work-item exceptions', () => {
+    expect(workScopeSqlTerms({
+      mode: 'enforce',
+      allowHarnesses: ['papercusp'],
+      exceptions: [
+        { harness: 'recipe-app', reason: 'explicit harness exception' },
+        { harness: 'north/*', plan: 'plan-1', goal: 'goal-1', workItem: 'WI-1', reason: 'subject exceptions' },
+      ],
+    })).toEqual({
+      exact: ['papercusp'],
+      likePrefixes: [],
+      exceptions: {
+        exactHarnesses: ['recipe-app', 'north'],
+        harnessLikePrefixes: ['north/%'],
+        plans: ['plan-1'],
+        goals: ['goal-1'],
+        workItems: ['WI-1'],
+      },
+    });
+  });
+
+  it('emits no scope predicate when an exception admits every harness', () => {
+    expect(workScopeSqlTerms({
+      mode: 'enforce',
+      allowHarnesses: ['papercusp'],
+      exceptions: [{ harness: '*', reason: 'all harnesses' }],
+    })).toBeNull();
+  });
 });
 
 describe('reconcilePresencePot (P-010)', () => {
@@ -172,5 +270,23 @@ describe('classifyForRehome (P-009 — the non-naive half)', () => {
     const pathRef = classifyForRehome({ harness: 'email', title: 'x', paths: ['packages/operator-core/lib/x.ts'] }, ENFORCE);
     expect(pathRef).toMatchObject({ action: 'rehome' });
     expect(classifyForRehome({ harness: 'sidestage', title: 'Seller copilot mission: add auction chat overlay', body: 'SideStage studio' }, ENFORCE)).toEqual({ action: 'hold', reason: 'no-platform-signal' });
+  });
+
+  // WI-10004723 (plan work-queue-bulk-cleanup-remediation-2026-10-01 P-003): 14 learning-loop alarms
+  // filed under the legacy non-pot slug `operator:papercusp-workspace` carried no text signal, so
+  // they were HELD as if they were another pot's work for 6 days.
+  it('re-homes anything in the workspace operator harness, whatever its text says', () => {
+    const alarm = classifyForRehome(
+      { harness: 'operator:papercusp-workspace', title: 'LEARNING LOOP needs attention: negative-space (absent)' },
+      ENFORCE,
+    );
+    expect(alarm).toEqual({ action: 'rehome', to: 'papercusp', signals: ['harness:operator:papercusp-workspace'] });
+    expect(isPlatformNonPotHarness('operator:papercusp-workspace')).toBe(true);
+    // Control: a real pot whose slug merely CONTAINS "operator" is still judged on its content.
+    expect(isPlatformNonPotHarness('pot-operator-tools')).toBe(false);
+    expect(classifyForRehome({ harness: 'pot-operator-tools', title: 'add a recipe card' }, ENFORCE)).toEqual({
+      action: 'hold',
+      reason: 'no-platform-signal',
+    });
   });
 });

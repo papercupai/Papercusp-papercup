@@ -1,6 +1,11 @@
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { pushSentinelSay } from '../../sentinel-output-buffer';
+import { getOrgPg } from '@papercusp/db-org';
+import uiDispatch from '../ui/dispatch';
+import { providedContentSchema, readProvidedContent } from '../documents/content';
+import { ContentIntakeError } from '../../content-intake';
+import type { PapercuspUnifiedToolContext } from '../_tool-context';
 
 /**
  * voice:say — the Sentinel's voice-OUT (sentinel-as-claude-tui-2026-06-22,
@@ -18,15 +23,15 @@ export default defineTool({
   name: 'voice:say',
   profile: 'engineer',
   description:
-    "Speak a short line ALOUD to the local app user via the desktop's TTS (the Sentinel's voice-out). LOCAL app user only — not the P2P voice channels.",
+    "Speak a short line aloud, or explicitly read original authorized content in the requesting app tab without microphone capture. Read/control modes return a scoped playback receipt; local-only is the default. LOCAL app user only.",
   capability: 'operator:read',
   // WI-10004577: speaks ALOUD (writes the shared sentinel_says FIFO) while sharing the `operator:read`
   // capability with genuine readers, so it declares its own write effect — it must not infer 'read'
   // (that would run it during a code:run dryRun preview AND exempt it from the late-completion abort).
   effect: 'write',
   guidance: {
-    when: `You are the voice-first Papercup and want the user to HEAR something — call voice:say with the spoken words (short: one or two sentences). The user hears ONLY what you pass here.`,
-    notWhen: `Don't speak internal tool steps, long detail, or code aloud. For multi-peer P2P voice use voice:join, not this.`,
+    when: `For a short reply pass text. When the user explicitly asks to read content aloud, pass operation:'read' and content from an authorized reader (text, selection, HTML or PDF). Read is lossless, not summarize. Check source coverage and the returned receipt; started does not mean audibly completed. operation:'control' targets that reading's id for pause/resume/stop/status.`,
+    notWhen: `Don't speak internal tool steps. Long original content uses operation:read. For a requested summary, use your native summary when the complete source fits your context, or documents:read operation:summarize for bounded/repeated processing; then read the explicit summary. For multi-peer P2P voice use voice:join.`,
     seeAlso: [
       'voice:join (multi-peer P2P voice)',
       'voice:transcript (read what was heard / spoken)',
@@ -34,12 +39,44 @@ export default defineTool({
   },
   requirePrincipal: false,
   // The voice-first Sentinel is the primary caller; operator may speak too.
-  agentRoles: ['papercup', 'operator'],
+  agentRoles: [...SU_ROLES, 'papercup', 'papercup-deep', 'kettle', 'operator'],
   rolesQuota: { sentinel: { perRun: 2000 }, papercup: { perRun: 2000 }, operator: { perRun: 400 } }, // papercup: pot-rename dual-accept twin of sentinel (P1 MIGRATE)
-  args: z.object({
-    text: z.string().min(1).describe('The line to speak aloud to the local user.'),
-  }),
-  async handler(args) {
+  args: z.union([
+    z.object({ text: z.string().min(1).describe('Short spoken reply.') }),
+    z.object({ operation: z.literal('read'), content: providedContentSchema, allowCloud: z.boolean().optional(), format: z.enum(['text', 'markdown']).optional() }),
+    z.object({ operation: z.literal('control'), readingId: z.string().min(1), action: z.enum(['pause', 'resume', 'stop', 'status']) }),
+  ]),
+  async handler(args, ctx: PapercuspUnifiedToolContext) {
+    if ('operation' in args) {
+      const clientId = ctx.uiClientId;
+      const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId;
+      if (!clientId || !workspaceId || workspaceId === '*') {
+        return { data: { ok: false, error: 'requesting_destination_required', message: 'Start narration from the app tab that should play it. No microphone is needed.' } };
+      }
+      // A caller cannot select another user's tab. Verify the requesting tab's
+      // workspace even when the generic UI guard's rollout flag is off.
+      const { sql } = getOrgPg();
+      const clients = await sql<{ workspace_id: string }[]>`
+        SELECT workspace_id FROM harness_shared.ui_clients WHERE client_id = ${clientId} LIMIT 1
+      `;
+      if (clients[0]?.workspace_id !== workspaceId) {
+        return { data: { ok: false, error: 'destination_unavailable', message: 'The requesting app tab is absent or outside this workspace.' } };
+      }
+      if (args.operation === 'control') {
+        return uiDispatch.handler({ client_id: clientId, intent: 'voice_read_control', args: { readingId: args.readingId, action: args.action }, timeout_ms: 5000 }, ctx);
+      }
+      try {
+        const source = await readProvidedContent(args.content, ctx);
+        const receipt = await uiDispatch.handler({ client_id: clientId, intent: 'voice_read', args: {
+          text: source.text, allowCloud: args.allowCloud === true, format: args.format ?? 'text',
+          sourceRefs: source.sourceRefs, digest: source.digest, coverage: source.coverage,
+        }, timeout_ms: 5000 }, ctx);
+        return { ...receipt, structuredContent: { source: { sourceRefs: source.sourceRefs, digest: source.digest, coverage: source.coverage }, destination: clientId } };
+      } catch (error) {
+        if (!(error instanceof ContentIntakeError)) throw error;
+        return { data: { ok: false, error: error.code, message: error.message } };
+      }
+    }
     await pushSentinelSay(args.text);
     // Voice ≡ text (WI-4838): the spoken line is persisted HERE, at push
     // time — the single seam every drain path shares (server says-pump when a

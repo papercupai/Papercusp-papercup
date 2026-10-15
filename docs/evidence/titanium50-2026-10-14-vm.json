@@ -1,0 +1,21 @@
+{
+  "creationTimestamp": "2026-10-14T15:26:55.377-07:00",
+  "labels": {
+    "papercusp-ephemeral": "true",
+    "papercusp-maxcost-cents": "697",
+    "papercusp-on-reclaim": "delete",
+    "papercusp-plan": "agent-capacity-and-cost-gcp-2026-09-30",
+    "papercusp-provisioning": "standard",
+    "papercusp-run": "titanium50-1014"
+  },
+  "machineType": "https://www.googleapis.com/compute/v1/projects/pc-agent-capacity-0930/zones/us-central1-a/machineTypes/z3-highmem-8-highlssd",
+  "name": "cap-titanium50-z3",
+  "scheduling": {
+    "instanceTerminationAction": "DELETE",
+    "maxRunDuration": {
+      "nanos": 0,
+      "seconds": "21600"
+    }
+  },
+  "status": "RUNNING"
+}

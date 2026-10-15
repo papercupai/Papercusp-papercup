@@ -11,7 +11,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
-import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { applyDisclosureLedgerForTest, applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import {
   SESSION_SEARCH_INDEXES,
   runSessionSearchIndexBuildOnce as runSessionSearchIndexBuildOnceRaw,
@@ -75,6 +75,7 @@ beforeAll(async () => {
   await applyMigrationForTest(sql, M501);
   await applyMigrationForTest(sql, M794);
   await applyMigrationForTest(sql, M1273);
+  await applyDisclosureLedgerForTest(sql); // D-006 reader rule (WI-10005570)
 }, 120_000);
 
 afterAll(async () => {
@@ -318,7 +319,9 @@ describe('D-003 deadlines', () => {
         tiers: await retrieveSessionTurnLiteralTiers(sql, { workspaceId: WS, query: 'furnisedfinder' }, { policy: tight }),
       };
     });
-    expect(blocked.direct).toEqual({ hits: [], deadline: true });
+    // WI-10005294 (D-015): a deadline now carries an honest `partial` marker. Here the corpus is locked
+    // for the whole budget, so no recency slice ever completes → `completeSince: null` (nothing proven complete).
+    expect(blocked.direct).toEqual({ hits: [], deadline: true, partial: { completeSince: null } });
     expect(blocked.tiers.exact).toEqual([]);
     expect(blocked.tiers.receipt.exact.status).toBe('deadline');
     expect(blocked.tiers.receipt.fuzzy.status).toBe('deadline');

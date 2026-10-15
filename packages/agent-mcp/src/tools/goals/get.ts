@@ -18,7 +18,7 @@ import {
   resolveGoalEffectiveActivity,
 } from '@papercusp/operator-core/lib/goals/activity';
 import { readGoalPortfolioThroughput } from '@papercusp/operator-core/lib/goals/portfolio-throughput';
-import { parseGoalLaunchSettings } from '@papercusp/operator-core/lib/goal-launch-settings';
+import { parseGoalLaunchSettings, readGoalPortfolioBrief } from '@papercusp/operator-core/lib/goal-launch-settings';
 import { goalPackageUpdateInfo } from '@papercusp/operator-core/lib/goals/package-update';
 import { readGoalReadiness } from './goal-deps';
 import { readGoalLastPause, readGoalPause } from './pause-record';
@@ -206,7 +206,20 @@ export default defineTool({
       workspaceId: goal.workspaceId,
       goalId: goal.id,
     });
+    // The recovery brief names this full read for the final, post-action
+    // report. Reuse the canonical portfolio assembler on every call; the
+    // report does not consume the expensive per-item claimability count.
+    const portfolio = await readGoalPortfolioBrief({
+      workspaceId: goal.workspaceId,
+      goalId: goal.id,
+      sql: ctx.tx,
+      claimability: 'skip',
+    });
+    const reportingReasons = portfolio
+      ? [...portfolio.degradedReasons, ...(!portfolio.reporting ? [`goal ${goal.id} reporting unavailable`] : [])]
+      : [`goal ${goal.id} reporting unavailable`];
     return {
+      ...(reportingReasons.length ? { degraded: true, degradedReasons: reportingReasons } : {}),
       data: {
         ...goal,
         // `...goal` spreads the RAW column, so these must land AFTER it — the
@@ -235,6 +248,8 @@ export default defineTool({
         // P-002: the same reading the summary branch carries, at the same path,
         // so a cell declared against one branch cannot miss on the other.
         portfolioThroughput,
+        assembledAt: portfolio?.assembledAt ?? null,
+        reporting: portfolio?.reporting ?? null,
       },
     };
   },

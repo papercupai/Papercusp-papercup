@@ -25,6 +25,8 @@ import { mutationTargetingRefusal, type bindingSchema } from './bind-spec-eviden
 type Binding = z.infer<typeof bindingSchema>;
 
 const SCENARIO = 'reconnect-failure';
+const MUTATION_CASE = 'reconnect is not replayed';
+const TARGETING_TEST_FILE = 'packages/operator-core/lib/agent-tools/plans/bind-spec-evidence-targeting.test.ts';
 
 function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
   return {
@@ -74,6 +76,11 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
     },
     coverageEvidenceRef: 42,
     testRunId: 43,
+    // Revision 6 corroborates positive execution claims against parsed ledger counters.
+    testRunExecution: {
+      status: 'pass', passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+      testLayer: 'integration',
+    },
     details: {
       adequacy: {
         fixtureCalibrated: true,
@@ -112,9 +119,67 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
 /** A successful, ledger-backed negative control carrying `targeted` (or none when undefined). */
 function counterexampleRow(targeted: unknown): SpecEvidenceForAdequacy {
   const base = evidence();
+  const originRunId = 'targeting-fixture';
   const adequacy: Record<string, unknown> = { ...(base.details.adequacy as Record<string, unknown>), outcome: 'killed' };
   if (targeted !== undefined) adequacy.targeted = targeted;
-  return evidence({ evidenceKind: 'counterexample', evidenceRef: 'counterexample:reconnect', details: { adequacy } });
+  return evidence({
+    evidenceKind: 'counterexample',
+    evidenceRef: `test-run-group:${originRunId}:counterexample`,
+    coverageEvidenceRef: null,
+    testRunId: 45,
+    testRunProvenance: {
+      filePath: TARGETING_TEST_FILE,
+      source: 'mutation-probe',
+      mutationPhase: 'mutant',
+      commitSha: null,
+      worktreeDirty: null,
+      mutationFailureLines: [`${MUTATION_CASE}: expected the counterexample to be observed`],
+    },
+    testRunExecution: {
+      status: 'fail',
+      passed: 0,
+      failed: 1,
+      skipped: 0,
+      collectionFailed: false,
+      testLayer: 'integration',
+    },
+    details: {
+      adequacy,
+      testExecution: {
+        schemaVersion: 1,
+        originRunId,
+        binding: {
+          counterexample: { test: MUTATION_CASE, messageIncludes: 'not replayed' },
+        },
+      },
+    },
+  });
+}
+
+function currentClauseTestRow(): SpecEvidenceForAdequacy {
+  return evidence({
+    evidenceKind: 'test',
+    evidenceRef: 'test-run:targeting-fixture',
+    coverageEvidenceRef: null,
+    testRunId: 44,
+    testRunProvenance: { filePath: TARGETING_TEST_FILE, commitSha: null, worktreeDirty: null },
+    testRunExecution: {
+      status: 'pass',
+      passed: 1,
+      failed: 0,
+      skipped: 0,
+      collectionFailed: false,
+      testLayer: 'integration',
+      passedCaseTitles: [MUTATION_CASE],
+    },
+    details: { adequacy: { testCases: [MUTATION_CASE], outcome: 'passed' } },
+  });
+}
+
+function evaluatorEvidence(targeted: unknown): SpecEvidenceForAdequacy[] {
+  // Revision 4 requires a successful, current same-clause binding for the
+  // counterexample's canonical test file before falsifiability can pass.
+  return [evidence(), currentClauseTestRow(), counterexampleRow(targeted)];
 }
 
 function binding(targeted: unknown, over: Partial<Binding> = {}): Binding {
@@ -143,6 +208,11 @@ describe('RSR-P-043-A: bind-time targeting agrees with the evaluator', () => {
     { name: 'scenario clause, declared scenario id', clause: scenarioClause, targeted: SCENARIO },
     { name: 'scenario clause, boolean target', clause: scenarioClause, targeted: true },
     { name: 'scenario clause, sibling scenario id', clause: scenarioClause, targeted: 'other-case' },
+    {
+      name: 'scenario clause, uppercase scenario id remains case-sensitive',
+      clause: scenarioClause,
+      targeted: SCENARIO.toUpperCase(),
+    },
     { name: 'scenario clause, own specId (fallback only applies with NO scenarios)', clause: scenarioClause, targeted: 'spec-003-01' },
     { name: 'scenario clause, no target', clause: scenarioClause, targeted: undefined },
     { name: 'no-scenario clause, own specId (D-009 fallback)', clause: () => clause(), targeted: 'spec-003-01' },
@@ -156,13 +226,33 @@ describe('RSR-P-043-A: bind-time targeting agrees with the evaluator', () => {
     const evaluatorPasses =
       evaluateSpecTestAdequacy({
         clause: c,
-        evidence: [evidence(), counterexampleRow(targeted)],
+        evidence: evaluatorEvidence(targeted),
         classRef: 'plan-class-feature-ship',
       }).ratings.falsifiability.rating === 'pass';
     const refusal = await mutationTargetingRefusal(binding(targeted), SCOPE, loaderFor(c));
 
     expect(refusal === null).toBe(evaluatorPasses);
     expect(isAcceptedMutationTarget(c, targeted)).toBe(evaluatorPasses);
+  });
+
+  it('accepts the exact uppercase generated specId as a self-target at bind and evaluation', async () => {
+    const specId = 'AUTO-BAR-R-5-P-004';
+    const c = clause({ specId });
+    const evaluatorPasses =
+      evaluateSpecTestAdequacy({
+        clause: c,
+        evidence: [
+          { ...evidence(), specId },
+          { ...currentClauseTestRow(), specId },
+          { ...counterexampleRow(specId), specId },
+        ],
+        classRef: 'plan-class-feature-ship',
+      }).ratings.falsifiability.rating === 'pass';
+    const refusal = await mutationTargetingRefusal(binding(specId, { specId }), SCOPE, loaderFor(c));
+
+    expect(mutationTargetRequirement(c).acceptedTargets).toContain(specId);
+    expect(evaluatorPasses).toBe(true);
+    expect(refusal).toBeNull();
   });
 
   it('the matrix is not vacuous: it holds both accepted and refused targets', () => {
@@ -183,7 +273,7 @@ describe('RSR-P-043-A: bind-time targeting agrees with the evaluator', () => {
       const evaluatorPasses =
         evaluateSpecTestAdequacy({
           clause: c,
-          evidence: [evidence(), counterexampleRow(targeted)],
+          evidence: evaluatorEvidence(targeted),
           classRef: 'plan-class-feature-ship',
         }).ratings.falsifiability.rating === 'pass';
       if (((await refuse(binding(targeted), c)) === null) !== evaluatorPasses) out.push(name);
@@ -218,9 +308,9 @@ describe('RSR-P-043-A: bind-time targeting agrees with the evaluator', () => {
 
   it('names the D-009 own-specId fallback for a clause with no declared scenarios', async () => {
     const refusal = await mutationTargetingRefusal(binding(undefined), SCOPE, loaderFor(clause()));
-    expect(refusal?.acceptedTargets).toEqual(['spec-003-01']);
+    expect(refusal?.acceptedTargets).toEqual(['SPEC-003-01', 'spec-003-01']);
     expect(refusal?.reason).toContain("this clause's own specId");
-    expect(mutationTargetRequirement(clause()).selfTarget).toBe('spec-003-01');
+    expect(mutationTargetRequirement(clause()).selfTarget).toBe('SPEC-003-01');
   });
 
   it('resolves the exact bound revision, and never loads a clause for a non-targeting evidence kind', async () => {

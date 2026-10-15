@@ -29,6 +29,7 @@ import {
   commentIssue,
   releaseIssue,
   mergeIssuePayload,
+  healOwnNodeIssueOrigin,
   type EngineerIssue,
   type IssueState,
 } from '../../issues-engineer';
@@ -71,6 +72,12 @@ export interface ResolveImprovementInput {
    * Ignored for outcomes other than 'needs-human'.
    */
   blockerCapability?: ExternalBlockerCapability;
+  /**
+   * D-029: for an owner-action needs-human outcome (credential / physical-device /
+   * external-service-action), what the system does if the owner never answers. REQUIRED on that
+   * path — the same rule work_items:set_blocker enforces — and stored on the human blocker.
+   */
+  defaultIfUnanswered?: string;
 }
 
 export interface ResolveImprovementResult {
@@ -106,7 +113,7 @@ export interface ResolveDeps {
   mergeIssuePayload: (
     id: string,
     patch: Record<string, unknown>,
-    opts?: { unset?: string[] },
+    opts?: Parameters<typeof mergeIssuePayload>[2],
   ) => Promise<EngineerIssue | null>;
   enterAgentReview: typeof enterAgentReview;
   /** Dispatch-ledger back-edge (consume-edges P-010 / B-04): drive the item's
@@ -114,6 +121,9 @@ export interface ResolveDeps {
    *  so a unit test can never silently fall through to the PG-backed default —
    *  defaultDeps wires the real closeDispatchesForItem. */
   closeDispatches: (itemId: string, opts: { outcome: ResolveOutcome; by?: string }) => Promise<number>;
+  /** WI-10006515: heal an own-node row stranded at origin='remote' (true iff healed). Absent ⇒
+   *  no heal, so a unit test without it never reaches PG; defaultDeps wires the real one. */
+  healOwnNodeOrigin?: (id: string) => Promise<boolean>;
 }
 
 const defaultDeps: ResolveDeps = {
@@ -124,7 +134,22 @@ const defaultDeps: ResolveDeps = {
   mergeIssuePayload,
   enterAgentReview,
   closeDispatches: closeDispatchesForItem,
+  healOwnNodeOrigin: (id) => healOwnNodeIssueOrigin(id),
 };
+
+/**
+ * WI-10006515: read the issue, healing an own-node row stranded at origin='remote' first.
+ * `origin` records how a row ARRIVED, not who wrote it (WI-10003565). Unhealed, every branch
+ * below would route our own row to "peer reconciliation" on an authoring node that IS this one,
+ * and every write through the engineer_issues view would silently no-op. A true peer's row is
+ * untouched (the heal's WHERE clause is the identity check) and keeps the peer route.
+ */
+async function getIssueHealingOwnNode(deps: ResolveDeps, id: string): Promise<EngineerIssue | null> {
+  const issue = await deps.getIssue(id);
+  if (issue?.origin !== 'remote' || !deps.healOwnNodeOrigin) return issue;
+  if (!(await deps.healOwnNodeOrigin(id))) return issue;
+  return (await deps.getIssue(id)) ?? issue;
+}
 
 function attemptsOf(issue: EngineerIssue): number {
   const p = issue.payload && typeof issue.payload === 'object' ? (issue.payload as Record<string, unknown>) : {};
@@ -164,11 +189,19 @@ async function routeToLeaderTriage(
   blockedReason: string,
   by: string,
 ): Promise<boolean> {
-  const updated = await deps.setIssueState(id, 'blocked', by);
-  if (updated) {
-    await deps.mergeIssuePayload(id, { blockedReason, blockedAt: new Date().toISOString() });
+  // WI-6554700010009273: the reason is written BEFORE the status flips, exactly as
+  // markLeaderTriage does. Migrations 1474/1477 refuse a row ENTERING `blocked` without a named
+  // blocker, and a leader-triage park names its blocker with this (fresh) reason — status-first
+  // was refused outright. If the flip does not stick (no-op on a remote-owned/missing row, or a
+  // refusal), the reason is withdrawn so it can never later vouch for an unrelated write.
+  await deps.mergeIssuePayload(id, { blockedReason, blockedAt: new Date().toISOString() });
+  let updated: EngineerIssue | null = null;
+  try {
+    updated = await deps.setIssueState(id, 'blocked', by);
+  } finally {
+    if (!updated) await deps.mergeIssuePayload(id, {}, { unset: ['blockedReason', 'blockedAt'] });
+    await deps.releaseIssue(id);
   }
-  await deps.releaseIssue(id);
   return updated != null;
 }
 
@@ -176,7 +209,7 @@ export async function resolveImprovement(
   input: ResolveImprovementInput,
   deps: ResolveDeps = defaultDeps,
 ): Promise<ResolveImprovementResult> {
-  const issue = await deps.getIssue(input.id);
+  const issue = await getIssueHealingOwnNode(deps, input.id);
   if (!issue) return { ok: false, id: input.id, error: `issue ${input.id} not found` };
 
   const by = input.by ?? 'improvement-runner';
@@ -321,6 +354,21 @@ export async function resolveImprovement(
     // — so it now routes to the LEADER-TRIAGE lane (status='blocked') instead: out of the
     // auto-dispatch loop, but a leader (not the owner) triages + re-opens/escalates it.
     if (isStrictOwnerActionCapability(input.blockerCapability)) {
+      // D-029 (plan unified-bug-pipeline-and-honest-queue-2026-10-05): an owner ask must say what
+      // happens if the owner never answers, exactly as work_items:set_blocker requires. Without
+      // it the needs-human writer refuses the park, so refuse HERE, before the comment or any
+      // payload write, and tell the worker the one field to add.
+      const defaultIfUnanswered = input.defaultIfUnanswered?.trim();
+      if (!defaultIfUnanswered) {
+        return {
+          ok: false,
+          id: input.id,
+          error:
+            `outcome "needs-human" with blockerCapability "${input.blockerCapability}" requires defaultIfUnanswered: ` +
+            'what the system will do if the owner never answers (e.g. "stays parked; the weekly owner digest ' +
+            're-surfaces it"). Nothing was written; resolve again with it.',
+        };
+      }
       await deps.commentIssue(
         input.id,
         `⤴ Routed to OWNER ACTION (${input.blockerCapability}) by the implement worker:\n${input.summary}`,
@@ -345,14 +393,23 @@ export async function resolveImprovement(
           ref: askRef,
           summary: input.summary,
           nextVerb: `Provide ${input.blockerCapability} for ${input.id}, then clear blocker ${askRef}.`,
+          defaultIfUnanswered,
         },
         by,
       );
-      await deps.mergeIssuePayload(
+      const parked = await deps.mergeIssuePayload(
         input.id,
         { needsOwnerAction: true, humanCapability: input.blockerCapability, externalBlockers: blockers },
-        { unset: ['needsHuman'] },
+        {
+          unset: ['needsHuman'],
+          expectedExternalBlockers: (issue.payload as { externalBlockers?: unknown } | null)?.externalBlockers,
+          requireNonTerminal: true,
+        },
       );
+      if (!parked) return {
+        ok: false, id: input.id,
+        error: 'Blocker history changed or the item became unwritable; the claim and dispatch were retained. Read the current issue before retrying.',
+      };
       // Persist the ask before the lifecycle park. A needs-human state without its
       // question/unblock contract is the write-only queue EI-13766 closes.
       const updated = await deps.setIssueState(input.id, 'needs-human', by);
@@ -466,7 +523,7 @@ export async function routeExhaustedImprovementToLeaderTriage(
   input: ExhaustedFlipInput,
   deps: ResolveDeps = defaultDeps,
 ): Promise<ExhaustedFlipResult> {
-  const issue = await deps.getIssue(input.id);
+  const issue = await getIssueHealingOwnNode(deps, input.id);
   if (!issue) return { ok: false, id: input.id, flipped: false, reason: `issue ${input.id} not found` };
   if (issue.state !== 'open') return { ok: true, id: input.id, flipped: false, reason: 'not open' };
   const p = issue.payload && typeof issue.payload === 'object' ? (issue.payload as Record<string, unknown>) : {};

@@ -32,11 +32,13 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { join, relative, resolve } from 'node:path';
+import { testImportClosures } from './agent-tools/testing/mutation-probe-fence';
+import { localEsbuildNpxPath } from './test-fixtures/local-esbuild-npx';
 
 const REPO_ROOT = resolve(__dirname, '../../..');
 
@@ -70,6 +72,29 @@ const ESBUILD_WORKERS: { source: string; output: string }[] = [
   {
     source: 'packages/operator-core/lib/sync/hyperbee/snapshot-fold.worker.ts',
     output: 'snapshot-fold.worker.mjs',
+  },
+  {
+    source: 'packages/operator-core/lib/agent-tools/testing/mutation-probe-closure.worker.ts',
+    output: 'mutation-probe-closure.worker.mjs',
+  },
+  {
+    // WI-10005223: frozen-repair admission git off the operator main thread.
+    source: 'packages/operator-core/lib/release/admission-jobs.worker.ts',
+    output: 'admission-jobs.worker.mjs',
+  },
+  {
+    source: 'packages/operator-core/lib/memory/bench/precision-bench-worker.ts',
+    output: 'precision-bench-worker.mjs',
+  },
+  {
+    // WI-10006543: graph:query callers, one forked process per question.
+    source: 'packages/operator-core/lib/code-intelligence/first-party-callers.worker.ts',
+    output: 'first-party-callers.worker.mjs',
+  },
+  {
+    // WI-10005186: keep Codex-home filesystem materialization off request loops.
+    source: 'packages/operator-core/lib/role-codex-home.worker.ts',
+    output: 'role-codex-home.worker.mjs',
   },
 ];
 
@@ -121,6 +146,11 @@ const EXCLUDED_DIR_NAMES = new Set([
   'sidecar',
   'env-sidecars',
   'coverage',
+  // Gitignored agent state: scratch probes and isolation worktrees, never this
+  // tree's sources. Measured 2026-10-01: a peer's
+  // .papercusp/scratch/wi5070-worker-unload.script.mjs turned all three
+  // "stages every source *.script.mjs" cases red in the shared tree only.
+  '.papercusp',
 ]);
 
 function findWorkerScripts(dir: string, found: string[] = []): string[] {
@@ -184,25 +214,116 @@ function siblingExecutable(file: string): string {
 
 describe('shared worker recipe executes in the bundled plain-node runtime', () => {
   let output: string;
+  let gateMeta: string;
+  let compilerPath: string;
+  let buildOutput: string;
   const recipe = join(REPO_ROOT, 'apps/operator/bin/bundle-host-common.sh');
-  const build = (extraEnv: NodeJS.ProcessEnv = {}) => spawnSync('bash', [
-    '-c', 'source "$1"; bundle_host_workers "$2" "$3" "${PAPERCUSP_EMBED_WORKER_SCRIPT:-}"', 'worker-recipe-test', recipe, REPO_ROOT, output,
+  const build = (extraEnv: NodeJS.ProcessEnv = {}, subject = recipe, destination = output) => spawnSync('bash', [
+    '-c', 'set -euo pipefail; source "$1"; bundle_host_workers "$2" "$3" "${PAPERCUSP_EMBED_WORKER_SCRIPT:-}"', 'worker-recipe-test', subject, REPO_ROOT, destination,
   ], {
     cwd: REPO_ROOT,
-    env: { ...process.env, PAPERCUSP_EMBED_WORKER_SCRIPT: '', ...extraEnv },
+    // The pinned fixture resolves once before this build. Exercise the recipe's
+    // lease calls in a private domain, so real maintenance cannot delay it.
+    env: { ...process.env, PATH: compilerPath, PAPERCUSP_FS_MUTEX_LOCK_DIR: join(output, 'package-cache-locks'),
+      PAPERCUSP_EMBED_WORKER_SCRIPT: '', BUNDLE_HOST_GATE_META_DIR: join(destination, 'missing-gate-meta'), ...extraEnv },
     encoding: 'utf8',
     timeout: 30_000,
   });
 
   beforeAll(() => {
     output = mkdtempSync(join(tmpdir(), 'bundled-workers-'));
+    compilerPath = localEsbuildNpxPath(join(output, 'local-compiler'), REPO_ROOT);
+    // EI-24917607035361603: the real staging caller set this path without
+    // creating it. Exercise that boundary in the same real worker build.
+    gateMeta = join(output, 'missing-gate-meta');
+    expect(existsSync(gateMeta)).toBe(false);
     symlinkSync(join(REPO_ROOT, 'node_modules'), join(output, 'node_modules'), 'dir');
     const result = build();
+    expect(result.error, `worker fixture signal=${result.signal}; ${result.stdout + result.stderr}`).toBeUndefined();
     expect(result.status, result.stdout + result.stderr).toBe(0);
+    buildOutput = result.stdout + result.stderr;
   }, 40_000);
 
   afterAll(() => {
     if (output) rmSync(output, { recursive: true, force: true });
+  });
+
+  it('holds the shared package-cache reader for every actual worker compiler invocation', () => {
+    expect((buildOutput.match(/NPM_INSTALL_SAFE guarding package-cache reader:/g) ?? []).length)
+      .toBe(ESBUILD_WORKERS.length + 1); // one pin resolution, then every compile
+  });
+
+  it('control: successful compilation without the package-cache lease is detected', () => {
+    const original = readFileSync(recipe, 'utf8');
+    const guarded = 'bundle_host_esbuild "$repo_root" "$source"';
+    expect(original.split(guarded)).toHaveLength(2);
+    const subject = join(output, 'recipe-without-cache-lease.sh');
+    writeFileSync(subject, original.replace(guarded, 'npx --yes esbuild@0.25.0 "$source"'));
+    const result = build({}, subject, join(output, 'cache-lease-control'));
+    expect(result.error, `worker control signal=${result.signal}; ${result.stdout + result.stderr}`).toBeUndefined();
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    // A build result alone used to hide the unprotected cache read. The same
+    // receipt assertion as the positive case distinguishes the regression.
+    expect((result.stdout + result.stderr).match(/NPM_INSTALL_SAFE guarding package-cache reader:/g) ?? [])
+      .toHaveLength(0);
+  });
+
+  it('creates missing gate metadata and records every copied and bundled worker input', () => {
+    const common = readFileSync(recipe, 'utf8');
+    const copied = [...common.matchAll(/\$repo_root\/([^"\s}]+\.script\.mjs)/g)]
+      .map(match => join(REPO_ROOT, match[1]!));
+    const bundled = [...common.matchAll(/"\$repo_root\/([^"]+(?:\.worker|precision-bench-worker)\.ts)"/g)]
+      .map(match => join(REPO_ROOT, match[1]!));
+    expect(copied.length).toBeGreaterThan(0);
+    expect(bundled.length).toBeGreaterThan(0);
+    expect(readFileSync(join(gateMeta, 'copied-sources.txt'), 'utf8').trim().split('\n')).toEqual(copied);
+    const metafiles = readdirSync(gateMeta).filter(name => name.endsWith('.meta.json'));
+    expect(metafiles).toHaveLength(bundled.length);
+    const inputs = metafiles.flatMap(name => Object.keys(JSON.parse(readFileSync(join(gateMeta, name), 'utf8')).inputs))
+      .map(path => resolve(REPO_ROOT, path));
+    for (const source of bundled) expect(inputs).toContain(source);
+  });
+
+  it('stages precision benchmark data fixtures beside the worker entry', () => {
+    const sourceDir = join(REPO_ROOT, 'packages/operator-core/lib/memory/bench/fixtures');
+    const outputDir = join(output, 'fixtures');
+    for (const fixture of ['corpus.v1.json', 'gold-set.v1.json']) {
+      expect(readFileSync(join(outputDir, fixture), 'utf8'), fixture)
+        .toBe(readFileSync(join(sourceDir, fixture), 'utf8'));
+    }
+  });
+
+  it('names a gate metadata directory that cannot be created before publishing workers', () => {
+    const blocked = join(output, 'gate-meta-blocked-by-file');
+    writeFileSync(blocked, 'not a directory');
+    const result = build({ BUNDLE_HOST_GATE_META_DIR: join(blocked, 'meta') });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`FATAL: cannot create the restricted-hold gate meta dir ${join(blocked, 'meta')}`);
+  });
+
+  it('names the copied source when gate bookkeeping cannot be written', () => {
+    const blocked = join(output, 'gate-meta-append-blocked');
+    mkdirSync(join(blocked, 'copied-sources.txt'), { recursive: true });
+    const result = build({ BUNDLE_HOST_GATE_META_DIR: blocked });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`FATAL: cannot record ${join(REPO_ROOT, 'libs/generic/memory/src/local-embedder-worker.script.mjs')}`);
+    expect(result.stderr).toContain(`${join(blocked, 'copied-sources.txt')} for the restricted-hold gate`);
+  });
+
+  it('control: omitting only metadata directory creation reproduces the first-worker failure', () => {
+    const original = readFileSync(recipe, 'utf8');
+    const mkdir = '! mkdir -p "$BUNDLE_HOST_GATE_META_DIR"';
+    expect(original.split(mkdir)).toHaveLength(2);
+    const subject = join(output, 'recipe-without-gate-mkdir.sh');
+    writeFileSync(subject, original.replace(mkdir, '! true'));
+    const destination = join(output, 'first-worker-control');
+    const meta = join(output, 'absent-control-meta');
+    const result = build({ BUNDLE_HOST_GATE_META_DIR: meta }, subject, destination);
+    expect(result.status).toBe(1);
+    expect(existsSync(join(destination, 'local-embedder-worker.script.mjs'))).toBe(true);
+    expect(existsSync(join(destination, 'cpu-task-worker.script.mjs'))).toBe(false);
+    expect(result.stderr).toContain(`FATAL: cannot record ${join(REPO_ROOT, 'libs/generic/memory/src/local-embedder-worker.script.mjs')}`);
+    expect(existsSync(meta)).toBe(false);
   });
 
   it('runs snapshot compaction in the emitted worker without a TypeScript loader', async () => {
@@ -244,6 +365,21 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
       await worker.terminate();
     }
   }, 15_000);
+
+  it('runs the emitted closure compiler in plain Node and preserves its import graph', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bundled-closure-'));
+    writeFileSync(join(dir, 'entry.ts'), 'export { value } from "./subject.ts";');
+    writeFileSync(join(dir, 'subject.ts'), 'export const value = 1;');
+    try {
+      // Exercise the production fork/advanced-IPC door, including its awaited
+      // owned-tree cleanup. A thread-only check misses process-entry failures.
+      const result = await testImportClosures(dir, [join(dir, 'entry.ts')], {
+        workerPath: join(output, 'mutation-probe-closure.worker.mjs'),
+      });
+      expect(result.status).toBe('complete');
+      if (result.status === 'complete') expect(result.files.get(join(dir, 'entry.ts'))).toContain(join(dir, 'subject.ts'));
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 10_000);
 
   it('refuses an unavailable required source even when an older bundle exists', () => {
     const before = readFileSync(join(output, 'local-embedder-worker.script.mjs'), 'utf8');

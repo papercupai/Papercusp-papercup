@@ -1,0 +1,274 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Actual Android JNI Inbox scope, global controls, unauthorized recovery and cleanup",
+  "framework": "operational",
+  "command": [
+    "bash",
+    "tools/run-android-checks.sh",
+    "live",
+    "android/app/build/ci-evidence/native-inbox-isolated-20261002-1620",
+    "native"
+  ],
+  "startedAt": "2026-10-02T16:04:32.119030+00:00",
+  "finishedAt": "2026-10-02T16:05:01.931303+00:00",
+  "exitCode": 0,
+  "summary": "Owned API36/16KB emulator executed two named Android JUnit tests with zero failures/errors/skips. Actual pairing/JNI/Inbox rendering/invalid-JWT/recovery passed; nine negative scope controls reject foreign content. Private operator fixture and emulator disposed. Scope is local debug preparation, not candidate or public release acceptance.",
+  "scope": "Local current-build debug native preparation only; signed candidate, automatic hosted CI, external mesh/browser, physical phone, Play and public install floors remain open.",
+  "workItems": [
+    "EI-24883576261427660",
+    "EI-24878939324748394",
+    "EI-24876345937658248",
+    "EI-24878088012430212"
+  ],
+  "repository": "papercup-rust-mobile",
+  "containingSourceCommit": "3f52f7008b90ece71810efa442204cb4cf4de8af",
+  "sourceDirtyAtExecution": true,
+  "sourceFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/run-android-checks.sh",
+      "sha256": "c2045f649264e16b5454dd1ea988fb939986e86bcbd6216ab14d35bc1d4f41bc"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/build-scripts/build-android.sh",
+      "sha256": "536a01cbce75c84211a8e7043761934f7b6b4e2b69efdf63139185d923ea7596"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build.gradle.kts",
+      "sha256": "9e412c8c5f580d75cb5c858f41bdea55c2ba357c8dc6bac20497b6d1b82986e3"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/SettingsScreen.kt",
+      "sha256": "47fdad90680d0c1affa8764f7d2bc29340ebe27d72c434ad56474065d86ed57e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/DiagnosticsScreen.kt",
+      "sha256": "80d061ef6f14b1fe54b093b8464253df80f9c868a1ef8b1fb91036f9554905fd"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/MainActivity.kt",
+      "sha256": "745aa0a035af0f6bf9737cbc7af05402fd7dbaba725fb1456be36788997b100a"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/AndroidManifest.xml",
+      "sha256": "f2156e5cd114b6c1f21e9fee92505d1b8671f9d5395eba1d5b8167e6e58caaa0"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/PapercupApplication.kt",
+      "sha256": "64d99440c8c918d82ca528d4454bd650c21c3eb0232c7153d0d5b78cf44e95ab"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/InboxScreen.kt",
+      "sha256": "1d6e8b64f543ddb9bd20f14e36415ee07c3c87f758adb363f7c2ccf48252e698"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/CompanionFeed.kt",
+      "sha256": "45715903c679d2e1ac2bc5c548ea27bfb401942107177d439550f2b4738baa41"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/Credentials.kt",
+      "sha256": "6ac079028424cdb141b6104298f68d3a38ed5e6807631406a8191459d0d088c1"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/HumanError.kt",
+      "sha256": "3ad6407a781490d8b46f4ad9bb6f6a0dd76d2d992dd4f74366c7b177a13e6783"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/PairScreen.kt",
+      "sha256": "3d7acc64a27e9b12f17c94fc77c2108460e0aa300ba4a10dff0c82eef61da50b"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/PapercupAppSmokeTest.kt",
+      "sha256": "2f5bf545c3306e2ece25742f87d0a0868058230c6209ebc0bedc8f3e082c5efa"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/UniffiCallbackTest.kt",
+      "sha256": "96d13216044dc5efe645c7e57f6e509bda62a041edc2dc29b40d14b0c2cd7426"
+    },
+    {
+      "path": "scripts/with-test-pg.mjs",
+      "sha256": "0f9dd85f70d585515d9e869ffc7c3533a01250d794fc5c95936005906daa8085"
+    },
+    {
+      "path": "packages/operator-core/lib/device-operator-api-profile.integration.test.ts",
+      "sha256": "8f12ee5c98dc47d3a8c655cc847f85fb180f6f8693934895aceee6bce98be4aa"
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/device/attention.ts",
+      "sha256": "bbe9ed8f071d8bf8e1faec35101c9d647a07d578902916e9b1b8facee48658df"
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/__tests__/device-revival-routes.test.ts",
+      "sha256": "d43076254c7ce9683313e2d70751b58d8c056e56a75c1dcc8111284c0ea418c0"
+    }
+  ],
+  "rawEvidence": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/native-inbox-isolated-20261002-1620/result.json",
+      "sha256": "4d777106f5dddd96dc17043ba3cd3ed410dc764278324511cbaaac9b44599659"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/native-inbox-isolated-20261002-1620/native-test.log",
+      "sha256": "408be76ee7bb60f320157fbdbc53d520a9cb3957ef8b19227c5a3d82f3b328a8"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/native-inbox-isolated-20261002-1620/fixture-disposal.json",
+      "sha256": "c96aa6fe20fb9e461f3ecee0b92f2ff75f8b11029b95dd04980074a75034022a"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/native-isolated-runtime-1620.json",
+      "sha256": "a21e79bef2347d3f98ec6da0e07afb262d7a9889530092b7add35e355961b14c"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/native-inbox-isolated-20261002-1620-preflight/emulator-boot.json",
+      "sha256": "8f57259d98e2720abab18ff06621c177e06b83164e908beac2613bcaaad12171"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/native-scope-runner-guards-20261002.log",
+      "sha256": "1ef88e803260850f4ee0cba1cd0b69caaa19c4a8f0e3c04d5782d6e7522c8b85"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/native-boot-guards-20261002.log",
+      "sha256": "3e1656eef9bc3b6c857362c5103406d17b363c4b009973db1834c72245ce563f"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/native-inbox-isolated-20261002-1605-api/attention-response.json",
+      "sha256": "4bbfb4aebe47330f406e065a212fde1af40f880905767a5658c945ffa663c0e1"
+    },
+    {
+      "path": ".papercusp/scratch/android-empty-groups-before-20261002.log",
+      "sha256": "4e6cb1684ef3ec61f79bc753559f01d0fafc5a0cbc6a6398ea605b4591dd4214"
+    },
+    {
+      "path": ".papercusp/scratch/android-empty-groups-after-20261002.log",
+      "sha256": "89f553aee6f6a16a4166037f5a137934e9a990e71e06a03b24ecdac1d13b7e66"
+    },
+    {
+      "path": ".papercusp/scratch/android-private-gate-before-20261002.log",
+      "sha256": "7c4e21b5c5c3824da2721f7a6fe499abca85861721d8b2a8bb90cbdb7c325269"
+    },
+    {
+      "path": ".papercusp/scratch/android-private-gate-after-20261002.log",
+      "sha256": "276ee28713891ae99b0ad033a1744704df708a065c900397c8c39dc4e3ff5933"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/native-inbox-isolated-20261002-1620/native-results/TEST-android-wi10004773-20261002-1620(AVD) - 16-_app-.xml",
+      "sha256": "e1893f654f585e580a08de6dbe88dc9dc5e1b2f9c933928318779dd5a462289c"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/native-inbox-isolated-20261002-1620/app-debug.apk",
+      "sha256": "3508007473a4652a8754f02506ec2c62395b7892ff8c19ad5dbf1a824f2f47d5"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/native-inbox-isolated-20261002-1620/app-debug-androidTest.apk",
+      "sha256": "d6c58cf87953d6ea5f00f146276277de72d76aa5e1bedce039a2c82b09969a93"
+    }
+  ],
+  "runtime": {
+    "kind": "maintained isolated operator-api profile",
+    "healthSourceSha": "926cea58e8",
+    "bundleSha256": "ee1fa2f8dfc79405066f9fca72fd2020201b58537a23bb96184e0311de7fa33d",
+    "bundlePath": "apps/operator/dist-host/android-wi10004773-1530/hono-host.mjs",
+    "backgroundDisabled": true,
+    "dbosDisabled": true
+  },
+  "nativeCases": [
+    {
+      "name": "launcherActivityStarts",
+      "classname": "com.papercuspai.operator.mobile.PapercupAppSmokeTest",
+      "passed": true
+    },
+    {
+      "name": "privateInboxScopeAcceptsOnlyDocumentedGlobalControls",
+      "classname": "com.papercuspai.operator.mobile.PapercupAppSmokeTest",
+      "passed": true
+    }
+  ],
+  "nativeChecks": {
+    "journeyCompleted": true,
+    "enrollmentBrowserStubbed": true,
+    "enrollmentIntentObserved": true,
+    "authenticatedRequestPassed": true,
+    "returnedToPairedShell": true,
+    "activityRecreated": true,
+    "inboxScopedReadPassed": true,
+    "inboxRenderingPassed": true,
+    "inboxUnauthorizedPassed": true,
+    "inboxRecoveryPassed": true,
+    "meshEnrollmentClaimCorrect": true,
+    "valueRowLabelsPassed": true,
+    "navigationPassed": true,
+    "credentialsCleared": true
+  },
+  "scopeWitness": {
+    "groupCount": 1,
+    "itemCount": 24,
+    "kinds": [
+      "dark-flag-ratification"
+    ],
+    "allItemsHaveNullPlanAndHarness": true
+  },
+  "boot": {
+    "serial": "emulator-5584",
+    "bootCompleted": true,
+    "checks": 48,
+    "property": "1",
+    "adbError": "",
+    "transportEvidence": "boot-transports.txt"
+  },
+  "disposal": {
+    "serviceInactive": true,
+    "transportAbsent": true,
+    "avdRootAbsent": true
+  },
+  "privateRuntimeRootAbsent": true,
+  "assertions": [
+    {
+      "id": "actual-native-two-named-tests",
+      "passed": true,
+      "evidence": "Retained JUnit XML: launcherActivityStarts and privateInboxScopeAcceptsOnlyDocumentedGlobalControls, two passed and no failures/errors/skips."
+    },
+    {
+      "id": "native-tenant-scope-negative-controls",
+      "passed": true,
+      "evidence": "Nine maintained native mutations reject foreign group/item harnesses or plans and incorrect kind/category/ref/ID. Legitimate static dark-flag controls accepted."
+    },
+    {
+      "id": "inbox-ui-unauthorized-recovery",
+      "passed": true,
+      "evidence": "nativeJourney confirms Inbox rendering, invalid-JWT handling, recovery, activity recreation and credential cleanup."
+    },
+    {
+      "id": "strict-runner-report-controls",
+      "passed": true,
+      "evidence": "Maintained runner guards: 36 fixture cases and 10 XML controls passed, including missing scope test, duplicate journey, unrelated second test and skipped scope test refusals."
+    },
+    {
+      "id": "empty-group-adapter-regression",
+      "passed": true,
+      "evidence": "Original focused regression executed two tests and failed both; fixed full route suite executed and passed 28 with zero skips. Source helper attachListMeta does not manufacture empty groups."
+    },
+    {
+      "id": "private-monitoring-source-guard",
+      "passed": true,
+      "evidence": "Real integration test: original missing routine red1; fixed green1, attributed inactive/no-next-fire pipeline plus missing-source deletion control. Initial focused source provenance was unknown after HEAD moved; this fresh native profile independently measured current private gate before API-ready."
+    },
+    {
+      "id": "boot-port-and-lifecycle-guard",
+      "passed": true,
+      "evidence": "Supported emulator port5584 booted API36/16KB with retained boot JSON. Maintained port/boot controls passed; fixture disposal service/transport/root true."
+    },
+    {
+      "id": "owned-runtime-disposal",
+      "passed": true,
+      "evidence": "Raw native result cleanupVerified=true; all three independent AVD checks true; private runtime root absent."
+    }
+  ],
+  "priorAttemptDisposition": {
+    "native1545": "Actual JUnit failed faulty zero-group assumption; all resources disposed. Exact current host-global payload measured separately in private API1605.",
+    "native1600": "Actual two JUnit tests passed and native journey completed; overall runner exit1 because old report guard expected one test. Old result remains immutable.",
+    "producerSentinelClaim": "Retracted: attachListMeta returns [] unchanged. Empty-group adapter defect is a separately reproduced class, not the measured cause of global-control content."
+  }
+}

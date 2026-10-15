@@ -6,15 +6,26 @@
  * event-key wake + durable @role:mug park). The IO deps are mocked only so importing
  * the module has no load-time side effects (mirrors draft-review-watchdog.test.ts).
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const { dbRows } = vi.hoisted(() => ({ dbRows: { current: [] as unknown[] } }));
+const { dbRows } = vi.hoisted(() => ({ dbRows: { current: [] as unknown[], count: null as unknown[] | null } }));
+const { fixtureSql, disclosureTransaction } = vi.hoisted(() => {
+  const sql = vi.fn(async (strings: TemplateStringsArray) => {
+    // Filing rows are not disclosure labels. The real sealing gate reads an
+    // independent ledger before any watchdog message can be persisted.
+    if (strings.join(' ').includes('harness_shared.personal_disclosures')) return [];
+    if (strings.join(' ').includes('SELECT count(*)') && dbRows.count !== null) return dbRows.count;
+    return dbRows.current;
+  });
+  const begin = vi.fn(async (run: (tx: typeof sql) => Promise<unknown>) => run(sql));
+  return { fixtureSql: Object.assign(sql, { begin }), disclosureTransaction: begin };
+});
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: () => Promise.resolve(dbRows.current) }),
+  getOrgPg: () => ({ sql: fixtureSql }),
 }));
 vi.mock('../pot/started', () => ({
   listBlenderMaintenanceScopes: vi.fn(),
@@ -26,6 +37,14 @@ const { claimWatchdogFire } = vi.hoisted(() => ({
   claimWatchdogFire: vi.fn<(...args: never[]) => Promise<boolean>>(),
 }));
 vi.mock('../pot/watchdog', () => ({ recentWatchdogFires: vi.fn(), recordFire: vi.fn(), claimWatchdogFire }));
+vi.mock('../severe-event-broadcast', async (orig) => ({
+  ...(await orig<typeof import('../severe-event-broadcast')>()),
+  broadcastSevereEvent: vi.fn(async () => true),
+}));
+vi.mock('../agent-tools/coordination/tools/conditions', async (orig) => ({
+  ...(await orig<typeof import('../agent-tools/coordination/tools/conditions')>()),
+  readConditionEnvelopes: vi.fn(async () => []),
+}));
 // A call-through spy on the ladder: the REAL deliverScoutNudge still runs (the existing
 // wakeMug assertions depend on it), and the options the watchdog passes are observable.
 const { deliverSpy } = vi.hoisted(() => ({ deliverSpy: vi.fn() }));
@@ -67,6 +86,8 @@ import {
   UNGRADED_BATCH_MAX,
   UNGRADED_NUDGE_SOURCE,
   ungradedBatchCapFor,
+  ungradedFilingsConditionKey,
+  ungradedCoverageConditionKey,
   type UngradedCandidate,
 } from './ungraded-filings-watchdog';
 import {
@@ -80,11 +101,137 @@ const NOW = 100 * DAY;
 
 afterEach(() => {
   dbRows.current = [];
+  dbRows.count = null;
+  vi.unstubAllEnvs();
   vi.mocked(listBlenderMaintenanceScopes).mockReset();
   vi.mocked(listBlenderMaintenanceWorkspaceIds).mockReset().mockReturnValue([]);
   outsideScopes.mockReset().mockResolvedValue(0);
   routedSince.mockReset().mockResolvedValue(new Map());
   claimWatchdogFire.mockReset().mockResolvedValue(true);
+});
+
+describe('original ungraded detector condition episodes (P-014)', () => {
+  const at = Date.parse('2026-10-12T12:00:00Z');
+  const scope = { workspaceId: 'ws-rail', installSlug: 'papercusp' };
+  const row = (origin: string) => ({ idea_id: 'idea-' + origin, origin, title: null,
+    routed_ref: 'wi:fixture', routed_at: at - 14 * DAY });
+  const staleKey = (origin: string) => ungradedFilingsConditionKey(scope.workspaceId, scope.installSlug, origin);
+  const coverageKey = ungradedCoverageConditionKey(scope.workspaceId);
+  let open: Set<string>;
+  let broadcast: ReturnType<typeof vi.fn<(event: { conditionKey?: string; oneShot?: boolean }) => Promise<boolean>>>;
+  let resolve: ReturnType<typeof vi.fn<(event: { conditionKey: string }) => Promise<boolean>>>;
+  const tick = (keys?: string[]) => ungradedFilingsSweep({ now: at,
+    readOpenConditionKeys: async () => keys ?? [...open], rail: { broadcast, resolve } });
+  beforeEach(() => {
+    vi.stubEnv('PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC', '604800');
+    vi.mocked(listBlenderMaintenanceScopes).mockResolvedValue([scope]);
+    vi.mocked(listBlenderMaintenanceWorkspaceIds).mockReturnValue([scope.workspaceId]);
+    dbRows.count = [{ c: 1 }];
+    outsideScopes.mockResolvedValue(0);
+    routedSince.mockResolvedValue(new Map());
+    claimWatchdogFire.mockResolvedValue(false);
+    open = new Set();
+    broadcast = vi.fn(async (event: { conditionKey?: string; oneShot?: boolean }) => {
+      expect(event.oneShot).toBe(true); open.add(event.conditionKey!); return true;
+    });
+    resolve = vi.fn(async (event: { conditionKey: string }) => open.delete(event.conditionKey));
+  });
+
+  it('opens independent origin keys before a refused legacy debounce, including new producers', async () => {
+    dbRows.current = [row('fourth-producer'), row('fifth-producer')];
+    await tick();
+    expect(open).toEqual(new Set([staleKey('fourth-producer'), staleKey('fifth-producer')]));
+    expect(broadcast.mock.invocationCallOrder[0]).toBeLessThan(claimWatchdogFire.mock.invocationCallOrder.at(-1)!);
+  });
+
+  it('legacy read failures cannot suppress the condition', async () => {
+    const legacy = await import('../pot/watchdog');
+    vi.mocked(legacy.recentWatchdogFires).mockRejectedValueOnce(new Error('legacy ledger unavailable'));
+    dbRows.current = [row('new-producer')];
+    await tick();
+    expect(open.has(staleKey('new-producer'))).toBe(true);
+  });
+
+  it('bounded candidate absence preserves the episode until an exact measured zero, including after restart', async () => {
+    open.add(staleKey('absent-origin'));
+    dbRows.current = [];
+    await tick();
+    expect(open.has(staleKey('absent-origin'))).toBe(true);
+    expect(fixtureSql).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(),
+      scope.workspaceId, false, scope.installSlug, expect.anything(), expect.anything(), expect.anything(),
+      false, 'absent-origin', expect.anything(), at - 7 * DAY);
+    dbRows.count = [{ c: 0 }];
+    await tick([staleKey('absent-origin')]);
+    expect(open.has(staleKey('absent-origin'))).toBe(false);
+  });
+
+  it.each([[], [{ c: null }], [{ c: -1 }], [{ c: 'unavailable' }], [{ c: 0 }, { c: 0 }]])(
+    'incomplete or malformed recovery count preserves the episode: %j', async (...rows) => {
+      open.add(staleKey('unknown-origin'));
+      dbRows.count = rows;
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await tick();
+        expect(open.has(staleKey('unknown-origin'))).toBe(true);
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('recovery count failed'));
+      } finally { warn.mockRestore(); }
+    });
+
+  it('keeps sibling workspace, scope and origin identities distinct even with colons', () => {
+    expect(ungradedFilingsConditionKey('a:b', 'c', 'd')).not.toBe(ungradedFilingsConditionKey('a', 'b:c', 'd'));
+    expect(staleKey('one')).not.toBe(staleKey('two'));
+    expect(ungradedCoverageConditionKey('a')).not.toBe(ungradedCoverageConditionKey('b'));
+  });
+
+  it('missing workspace authority and malformed keys never recover or query unrelated data', async () => {
+    const unknown = ungradedFilingsConditionKey('missing-workspace', 'papercusp', 'origin');
+    open.add(unknown);
+    const before = fixtureSql.mock.calls.length;
+    await tick([unknown, 'alarm:ungraded-filings:stale:%', 'alarm:ungraded-filings:stale:%5B1%5D']);
+    expect(open.has(unknown)).toBe(true);
+    expect(fixtureSql.mock.calls.slice(before).filter(([strings]) => strings.join(' ').includes('SELECT count(*)'))).toEqual([]);
+  });
+
+  it('measures recovery for an unregistered scope through its exact count rather than its absence', async () => {
+    vi.mocked(listBlenderMaintenanceScopes).mockResolvedValue([]);
+    const key = staleKey('origin'); open.add(key);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await tick(); expect(open.has(key)).toBe(true);
+      expect(open.has(coverageKey)).toBe(true);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('no registered Blender scopes'));
+      dbRows.count = [{ c: 0 }];
+      await tick();
+      expect(open.has(key)).toBe(false);
+      expect(open.has(coverageKey)).toBe(false);
+    } finally { warn.mockRestore(); }
+  });
+
+  it('unreachable backlog is independent; failed coverage counts preserve, exact zero recovers', async () => {
+    outsideScopes.mockResolvedValue(3);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await tick(); expect(open.has(coverageKey)).toBe(true);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('not reachable'));
+      outsideScopes.mockRejectedValue(new Error('coverage unreadable'));
+      await tick(); expect(open.has(coverageKey)).toBe(true);
+      outsideScopes.mockResolvedValue(0);
+      await tick(); expect(open.has(coverageKey)).toBe(false);
+    } finally { warn.mockRestore(); }
+  });
+
+  it('probes a workspace with no scope even while another workspace has healthy scopes', async () => {
+    vi.mocked(listBlenderMaintenanceWorkspaceIds).mockReturnValue([scope.workspaceId, 'uncovered-workspace']);
+    outsideScopes.mockImplementation(async (_sql, args: { workspaceId: string; harnessSlugs: string[] }) =>
+      args.workspaceId === 'uncovered-workspace' && args.harnessSlugs.length === 0 ? 2 : 0);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await tick();
+      expect(open.has(ungradedCoverageConditionKey('uncovered-workspace'))).toBe(true);
+      expect(open.has(coverageKey)).toBe(false);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('uncovered-workspace'));
+    } finally { warn.mockRestore(); }
+  });
 });
 
 function filing(ideaId: string, ageDays: number, origin = 'su-ideate'): UngradedCandidate {
@@ -270,7 +417,13 @@ describe('fireGradingNudge (the WI-2187 stable Mug seam)', () => {
   });
 
   it('passes the concrete owner and payload to the shared Mug wake seam', async () => {
+    disclosureTransaction.mockClear();
+    fixtureSql.mockClear();
     await fireGradingNudge('ws-1', 'mug-owner-123', [filing('idea-su-1', 10)], 604_800);
+    expect(disclosureTransaction).toHaveBeenCalled();
+    expect(fixtureSql.mock.calls.some(([strings]) =>
+      strings.join(' ').includes('harness_shared.personal_disclosures'),
+    )).toBe(true);
     expect(wakeMug).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: 'ws-1', mugOwner: 'mug-owner-123', source: 'su-ideate-ungraded',
       summary: expect.stringContaining('idea-su-1'),

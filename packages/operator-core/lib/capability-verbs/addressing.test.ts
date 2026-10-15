@@ -31,7 +31,7 @@ const base = { workspaceId: WORKSPACE, userId: USER };
 function doc(payload: Record<string, unknown>): CanonicalDocument {
   return {
     id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-    source: 'gmail',
+    source: 'mail',
     kind: 'message',
     externalId: 'msg-1',
     occurredAt: '2026-08-23T00:00:00.000Z',
@@ -156,7 +156,7 @@ describe('assertTrustedAddressee — D-020 rail 2', () => {
       assertTrustedAddressee(s.sql, {
         ...base,
         address: 'evil@x.example',
-        provenance: { from: 'thread-participant', source: 'gmail', externalId: 'msg-1' },
+        provenance: { from: 'thread-participant', source: 'mail', externalId: 'msg-1' },
       }),
     ).rejects.toMatchObject({ code: 'addressee_not_thread_participant' });
   });
@@ -167,7 +167,7 @@ describe('assertTrustedAddressee — D-020 rail 2', () => {
       assertTrustedAddressee(s.sql, {
         ...base,
         address: 'sender@example.com',
-        provenance: { from: 'thread-participant', source: 'gmail', externalId: 'msg-1' },
+        provenance: { from: 'thread-participant', source: 'mail', externalId: 'msg-1' },
       }),
     ).resolves.toMatchObject({ provenance: 'thread-participant', verified: true });
   });
@@ -300,7 +300,18 @@ describe('resolveMailReplyCoordinates — D-020 rail 1', () => {
 
   it('refuses a non-mail document', () => {
     expect(() => resolveMailReplyCoordinates({ ...doc(inbound), source: 'slack' })).toThrow(
-      'mail_reply_source_unsupported',
+      'mail_reply_datatype_unsupported:slack',
+    );
+  });
+
+  it('judges a stamped document by its datatype, not by the provider that stored it', () => {
+    // D-014.3: a non-Google provider's email-message replies; a Gmail-stored
+    // document stamped with another datatype does not.
+    expect(
+      resolveMailReplyCoordinates({ ...doc(inbound), source: 'outlook', datatypeId: 'email-message' }).to,
+    ).toBeTruthy();
+    expect(() => resolveMailReplyCoordinates({ ...doc(inbound), datatypeId: 'calendar-event' })).toThrow(
+      'mail_reply_datatype_unsupported:calendar-event',
     );
   });
 });

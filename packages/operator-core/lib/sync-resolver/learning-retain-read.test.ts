@@ -313,6 +313,7 @@ describe('canonical Retain memory reads', () => {
       {
         id: 'm-z',
         text: 'Canonical fact',
+        scope: 'hive:pot-a',
         kind: 'feedback',
         metadata: {
           kind: 'feedback',
@@ -1226,7 +1227,7 @@ describe('readRetainDetail', () => {
     expect(d!.body!.length).toBe(4000);
   });
 
-  it('an empty id, an unknown id, and a throwing store all resolve null — never a 500', async () => {
+  it('an empty id and an unknown id resolve null', async () => {
     expect(
       await readRetainDetail(
         sqlStub(() => []),
@@ -1245,24 +1246,22 @@ describe('readRetainDetail', () => {
         emptyDetailDeps(),
       ),
     ).toBeNull();
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const deps: RetainDetailDeps = {
-      ...emptyDetailDeps(),
-      getRubric: async () => {
-        throw new Error('store down');
-      },
-    };
-    expect(
-      await readRetainDetail(
-        sqlStub(() => []),
-        'ws-1',
-        'rubric',
-        'r-1',
-        deps,
-      ),
-    ).toBeNull();
-    warn.mockRestore();
   });
+
+  it.each(['plan', 'wi', 'rubric', 'runbook', 'recipe', 'memory'] as const)(
+    'propagates %s retained detail read failures instead of a successful missing row', async kind => {
+      const error = new Error(kind === 'memory' ? 'mem0_unavailable' : `${kind} store down`);
+      const fail = async () => { throw error; };
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await expect(readRetainDetail(sqlStub(() => { throw error; }), 'ws-1', kind, 'existing-id', {
+          getRubric: fail, getRecipe: fail, readRunbook: fail, getMemory: fail,
+        })).rejects.toBe(error);
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
 
   it('stripFrontmatter leaves a doc without frontmatter intact', () => {
     expect(stripFrontmatter('no frontmatter here')).toBe('no frontmatter here');

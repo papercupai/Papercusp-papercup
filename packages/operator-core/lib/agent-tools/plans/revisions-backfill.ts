@@ -143,6 +143,9 @@ export async function backfillPlanRevisionsForSlug(
       },
     );
 
+    if (locked.kind === 'refused') {
+      return { slug, status: 'error', revisionsInserted: 0, message: `${locked.value.code}: ${locked.value.message}` };
+    }
     if (locked.kind === 'busy') {
       return {
         slug,

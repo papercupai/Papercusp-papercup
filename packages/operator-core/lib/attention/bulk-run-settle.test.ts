@@ -20,6 +20,15 @@ import { describe, expect, it } from 'vitest';
 import { deriveSettleOutcome, setRunPhase } from './bulk-run-store';
 
 describe('deriveSettleOutcome', () => {
+  it('settles reconciled cleanup skips without treating legacy skips as owner decisions', () => {
+    const input = { runKind: 'plan-cleanup' as const, outcomes: ['skipped'], everReportedLife: true };
+    expect(deriveSettleOutcome({ ...input, dispositions: ['routed'], reconciled: [true] }).phase).toBe('complete');
+    expect(deriveSettleOutcome({ ...input, dispositions: ['routed'] }).phase).toBe('review');
+    expect(deriveSettleOutcome({ ...input, dispositions: ['legacy_skipped'] }).phase).toBe('review');
+    expect(deriveSettleOutcome(input).phase).toBe('review');
+    expect(deriveSettleOutcome({ ...input, runKind: 'inbox-resolve', dispositions: ['routed'], reconciled: [true] }).phase).toBe('review');
+  });
+
   describe('inbox-resolve', () => {
     it('settles complete once every row is terminal', () => {
       expect(

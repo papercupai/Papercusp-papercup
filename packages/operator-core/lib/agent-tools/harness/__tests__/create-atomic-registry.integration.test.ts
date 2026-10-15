@@ -103,6 +103,28 @@ beforeEach(() => {
   vi.doMock('../../../blueprint/materialize-triggers', () => ({
     materializeBlueprintTriggers: async () => [],
   }));
+  // dependencies.* UNION across extends: [] does not remove coding's tools.
+  // This isolated fixture does not bootstrap the operator tool registry. Model
+  // its ready providers through the real catalog assembler (the dependency-gate
+  // suite uses the same seam), keeping resolution and validation active. Only
+  // the parent's tools are available; an unknown child dependency still fails.
+  vi.doMock('../../../cupboard/pack-catalog', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../../../cupboard/pack-catalog')>();
+    const { operatorResolveExtends } = await import('../../../blueprint/installed-blueprints');
+    const { loadBlueprintFromFile } = await import('@papercusp/orchestrator/blueprint');
+    const resolve = operatorResolveExtends();
+    const { blueprint } = loadBlueprintFromFile(resolve('coding')!, resolve);
+    return {
+      ...actual,
+      derivePackCatalog: async () => actual.assemblePackCatalog({
+        installed: [],
+        projectedTools: [],
+        legacyCatalogNames: blueprint.dependencies?.tools ?? [],
+        cupboardUnits: [],
+        cupboardReachable: true,
+      }),
+    };
+  });
   // create.ts's 5b doc-tracking step (added 2026-06-22) is a PG-touching best-effort
   // call for any requiresRepo blueprint (coding extends). Left un-mocked, a PG-free
   // unit-test create hangs on a DB connection that never comes. Mock it, like the
@@ -115,6 +137,7 @@ afterEach(() => {
   vi.doUnmock('../../../harness-registry');
   vi.doUnmock('../../../scaffold-harness-schema');
   vi.doUnmock('../../../blueprint/materialize-triggers');
+  vi.doUnmock('../../../cupboard/pack-catalog');
   vi.doUnmock('../../../harness/docs/seed-doc-tracking');
 });
 
@@ -132,16 +155,25 @@ function makeArgs(slug: string, dir: string) {
   };
 }
 
+async function waitForFirstWrite(pendingCreate: Promise<{ content: Array<{ text: string }> }>): Promise<void> {
+  await Promise.race([
+    firstArrivedP,
+    pendingCreate.then((result) => {
+      throw new Error(`create settled before the registry write barrier: ${JSON.stringify(parsePayload(result))}`);
+    }),
+  ]);
+}
+
 describe('harness:create — atomic registry write (lost-update guard)', () => {
   it('two interleaved creates both survive — the final registry contains BOTH new slugs', async () => {
     const tool = await loadTool();
     const dirB = await fs.mkdtemp(join(tmpdir(), 'create-atomic-b-'));
     const dirC = await fs.mkdtemp(join(tmpdir(), 'create-atomic-c-'));
+    const pB = tool.handler(makeArgs('b', dirB), MAKE_CTX());
     try {
       // Start B; it reaches its registry-write seam and parks there, holding the
       // {projects:[{slug:'a'}]} snapshot it read before any commit.
-      const pB = tool.handler(makeArgs('b', dirB), MAKE_CTX());
-      await firstArrivedP;
+      await waitForFirstWrite(pB);
       // Run C to completion — its write passes the (now-disarmed) gate, so it
       // reads + commits against the current store while B is still parked.
       const resC = await tool.handler(makeArgs('c', dirC), MAKE_CTX());
@@ -157,8 +189,46 @@ describe('harness:create — atomic registry write (lost-update guard)', () => {
       // The pre-existing 'a' plus BOTH new slugs. The lost-update bug drops one.
       expect(slugs).toEqual(['a', 'b', 'c']);
     } finally {
+      openGate();
+      await pB.catch(() => {});
       await fs.rm(dirB, { recursive: true, force: true });
       await fs.rm(dirC, { recursive: true, force: true });
+    }
+  });
+
+  it('reports an early create refusal instead of waiting for a write that cannot arrive', async () => {
+    const tool = await loadTool();
+    const dir = await fs.mkdtemp(join(tmpdir(), 'create-atomic-refused-'));
+    try {
+      const refused = tool.handler(makeArgs('a', dir), MAKE_CTX());
+      await expect(waitForFirstWrite(refused)).rejects.toThrow('slug already exists');
+      expect(store.projects.map((p) => p.slug)).toEqual(['a']);
+    } finally {
+      openGate();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps an unknown child tool dependency fail-fast before the registry write', async () => {
+    const tool = await loadTool();
+    const dir = await fs.mkdtemp(join(tmpdir(), 'create-atomic-missing-tool-'));
+    try {
+      const args = makeArgs('missing-tool', dir);
+      const refused = tool.handler({
+        ...args,
+        blueprint: {
+          ...args.blueprint,
+          dependencies: { ...args.blueprint.dependencies, tools: ['fixture:unavailable'] },
+        },
+      }, MAKE_CTX());
+      await expect(waitForFirstWrite(refused)).rejects.toThrow('blueprint tool dependencies unmet');
+      const payload = parsePayload(await refused);
+      expect(payload.missing.tools).toEqual(['fixture:unavailable']);
+      expect(store.projects.map((p) => p.slug)).toEqual(['a']);
+      expect(await fs.readdir(dir)).toEqual([]);
+    } finally {
+      openGate();
+      await fs.rm(dir, { recursive: true, force: true });
     }
   });
 

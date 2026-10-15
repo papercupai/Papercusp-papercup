@@ -202,11 +202,11 @@ export interface ReleaseReadinessScoreEvidence {
   /** Age of the newest admissible card at read time, ms. Null when none. */
   latestAgeMs: number | null;
   /**
-   * Whether the generation the newest admissible card graded is still running.
-   * Null when no admissible card, or when the card predates the generation stamp —
-   * absence is "not recorded", never "fresh".
+   * Whether the newest admissible card still belongs to the live bg-host generation.
+   * `not-applicable` means a complete matched replay recipe proves the evidence is
+   * tree-only. Null means there is no admissible card or no recorded generation stamp.
    */
-  latestGenerationFreshness: 'fresh' | 'stale' | 'unknown' | null;
+  latestGenerationFreshness: 'fresh' | 'stale' | 'unknown' | 'not-applicable' | null;
   /**
    * History-derived confidence for each criterion's newest settled rating. A
    * one-tick positive is `provisional-pass`; only a repeated run spanning at

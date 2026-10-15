@@ -1,0 +1,7 @@
+---
+rel_path: "audits/held-agent-resumption-2026-10-12/report-publication.json"
+updated_at: 1791842916684
+_body: "content"
+---
+
+{"publish":{"ok":true,"report_id":"rpt_3c47cab8-0192-4b3e-9006-efbf4f9f4493","workspace_id":"papercusp-workspace","title":"Held-agent recovery: 195 confirmed responses/activity, 69 unresolved — corrected retained reply order","summary":"Complete 318-session review with timestamp-ordered retained replies, explicit history limits, and owned unresolved recovery. Supersedes the earlier reply-order edition.","kind":"status-digest","subject":{"kind":"work_item","ref":"WI-6554700010009267","label":"Held-agent recovery"},"origin":{"harness_slug":null,"author_owner_id":"su-0353474c-1a6f-456e-bb47-647a146050e1","author_session_ref":"67e67f0e-3b71-48de-82e2-45f6b92af4ff"},"visibility":"owner","supersedes_report_id":"rpt_a1d58812-90ae-478a-93d8-1d34483ee1a8","lineage_id":"rpt_a1d58812-90ae-478a-93d8-1d34483ee1a8","source":"agent","tags":["held-agent-recovery","2026-10-12","correction"],"published_at":"2026-10-12T22:08:34.708Z","updated_at":"2026-10-12T22:08:34.708Z","retired_at":null,"path":"/reports/rpt_3c47cab8-0192-4b3e-9006-efbf4f9f4493","body_bytes":85819,"event_emitted":true},"source":"papercusp:audits/held-agent-resumption-2026-10-12/report.md","chars":85791,"agents":264,"exclusions":54,"correction":"timestamp-order retained replies; 18 rows corrected; existing per-agent pickup class unchanged"}

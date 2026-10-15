@@ -6,17 +6,17 @@
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "A workspace domain resolving to a wrong IP in the su Bash tool is a LOCAL DNS hijack, not a sandbox feature — verify via an external path before ever reporting an outage"
 description: "EI-12952: an su session diagnosed a total DNS/production outage of papercusp.com from inside its own Bash tool — dig/curl/python all agreed, and every resolver (1.1.1.1, 8.8.8.8, even the zone's own authoritative NS) 'confirmed' it. The domain was never down. Root cause verified live: this dev box's LAN silently HIJACKS plain UDP:53 answers for papercusp.com (and only papercusp.com — google.com/example.com/sqlite.org resolve correctly over the same path) to a stale/wrong IP, while TCP:53 and any externally-routed check (WebFetch) return the true, healthy Cloudflare-proxied answer. Never trust in-sandbox DNS for a workspace-owned domain as your only signal — verify externally before reporting an outage or touching DNS records."
+type: Convention
 discovered: 2026-07-18
-tags: [dns, sandbox, bash-tool, su, network, false-positive, outage, cloudflare, gotcha, EI-12952]
+tags: ["dns", "sandbox", "bash-tool", "su", "network", "false-positive", "outage", "cloudflare", "gotcha", "EI-12952"]
 status: active
 documents:
-  - /etc/systemd/resolved.conf.d/papercusp-fallback-dns.conf
+  - "/etc/systemd/resolved.conf.d/papercusp-fallback-dns.conf"
 sidebar:
   order: 97
 normative: true
 governs:
-  - reporting a site outage from this box
-type: Convention
+  - "reporting a site outage from this box"
 generated:
   by: agent
   at: 2026-07-18
@@ -179,3 +179,12 @@ pure-decider (`packages/operator-core/lib/dns-truth-divergence.ts`) any future
 health check or agent tooling can call to compare an in-sandbox resolution
 against an externally-supplied truth and flag exactly this divergence
 pattern, instead of every agent re-deriving the UDP/TCP tell from scratch.
+
+
+## Roaming can leave the reconciler checking an inactive profile
+
+Measured on 2026-10-08 under WI-10007372/P-012: the maintained reconciler still selected saved GateWayFiber58 while the active connection was AbeandPearl. The saved profile ignored DHCP DNS, but the active profile did not. The old check excluded only a remembered router address, so it returned success while systemd-resolved selected the current DHCP router under strict DNS-over-TLS. During a bounded EBS upload, simultaneous endpoint probes timed out resolving DNS; the router refused TCP 853. This is a local configuration and detector defect, not evidence of an AWS outage or general resource pressure.
+
+The existing script now resolves the active NetworkManager connection unless explicitly overridden and rejects every residual per-link DNS server. It retains the authenticated global Cloudflare/Quad9 policy. Old live check returned 0; fixed pre-apply check returned 1; maintained apply and after-check returned 0. Seven canonical Vitest tests cover active profile selection, explicit override, residual DNS and the existing direct-DNS contract. Installed script and canonical source hash matched.
+
+The same 2 GiB fixture with 16 coldsnap workers then completed in 782 seconds; all 38 simultaneous DNS probes succeeded, and eight PUT retries recovered without changed timeouts. Exact task 0muz0zugn1xeoo3tqml; generated evidence: `.papercusp/scratch/wi10005036/p012-transport-20261008t041749z/`. The temporary snapshot was deleted and fresh same-role positive control plus InvalidSnapshot.NotFound proved absence. This bounded diagnostic does not certify a full image release and does not establish that every historical PUT error had the DNS cause.

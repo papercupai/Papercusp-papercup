@@ -118,6 +118,7 @@ beforeAll(async () => {
       '602-work-item-follow-blockers.sql', // adds follow_blockers/derived_from_* the sub store writes
       '610-push-delivery.sql',
       '613-topic-hysteresis.sql',
+      '1257-coord-entity-subscriptions-allow-muted.sql',
     ],
     { label: 'topic-matcher-io.integration.test.ts' },
   );

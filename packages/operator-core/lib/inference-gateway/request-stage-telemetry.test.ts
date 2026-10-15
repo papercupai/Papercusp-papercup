@@ -1,13 +1,103 @@
 import { describe, expect, it } from 'vitest';
 import { channel } from 'node:diagnostics_channel';
 import http from 'node:http';
+
+describe('provider queue-wait retention', () => {
+  it('keeps sparse-lane waits after another provider fills the shared timeline ring', () => {
+    let now = 0;
+    const collector = new GatewayRequestTelemetry({ recentCapacity: 2, now: () => now });
+    const complete = (provider: 'claude' | 'codex', wait: number) => {
+      const span = collector.begin({ provider, protocol: provider === 'claude' ? 'anthropic-messages' : 'openai-responses' });
+      span.routeSelected();
+      now += wait;
+      span.admitted();
+      span.finish('ok', 200);
+    };
+    complete('claude', 10);
+    complete('claude', 20);
+    for (let i = 0; i < 5; i++) complete('codex', 100 + i);
+    const snapshot = collector.snapshot();
+    expect(snapshot.recent.every(row => row.provider === 'codex')).toBe(true);
+    expect(snapshot.providerQueueWait.claude).toMatchObject({ count: 2, retained: 2, p50: 10 });
+    expect(snapshot.providerQueueWait.codex).toMatchObject({ count: 5, retained: 2, p50: 103 });
+    expect(snapshot.providerQueueWait.local).toMatchObject({ count: 0, retained: 0, p50: null });
+    snapshot.providerQueueWait.claude.p50 = -1;
+    expect(collector.snapshot().providerQueueWait.claude.p50).toBe(10);
+  });
+});
+
+describe('provider identity observations', () => {
+  it('delivers exact owner/request/model/effort/account evidence to the maintained startup sink', () => {
+    const records: unknown[] = [];
+    const collector = new GatewayRequestTelemetry({ onStartupEvidence: (_line, record) => records.push(record) });
+    const span = collector.begin({ provider: 'codex', protocol: 'openai-responses', ownerId: 's-primary' });
+    span.setModel('gpt-5.4');
+    span.setCacheShape(Buffer.from('{"reasoning":{"effort":"high"}}'));
+    span.setServingAccount('pool-a');
+    span.finish('ok', 200);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ ownerId: 's-primary', requestId: span.requestId,
+      model: 'gpt-5.4', effort: 'high', authorizationScope: 'pool-a', finalStatus: 200 });
+  });
+  it('keeps request controls separate from the provider model and clones returned evidence', () => {
+    const collector = new GatewayRequestTelemetry();
+    const span = collector.begin({ provider: 'codex', protocol: 'openai-responses', ownerId: 'su-observed' });
+    span.setModel('requested-model');
+    span.setCacheShape(Buffer.from(JSON.stringify({ reasoning: { effort: 'high' }, tools: [], instructions: 'PRIVATE_PROMPT' })));
+    span.recordAttempt();
+    span.recordProviderIdentity('resp-exact', 'served-model', null, 'account-exact');
+    span.finish('ok', 200);
+    const row = collector.snapshot().recent[0];
+    expect(row).toMatchObject({ model: 'requested-model', forwardedEffort: 'high',
+      providerIdentity: { responseId: 'resp-exact', model: 'served-model', effort: null, accountId: 'account-exact' } });
+    row.providerIdentity!.model = 'tampered';
+    expect(collector.snapshotForOwner('su-observed').recent[0].providerIdentity?.model).toBe('served-model');
+    expect(JSON.stringify(collector.snapshot())).not.toContain('PRIVATE_PROMPT');
+  });
+  it('discards earlier response evidence on retry, invalid response, and invalid request shape', () => {
+    const collector = new GatewayRequestTelemetry();
+    const span = collector.begin({ provider: 'codex', protocol: 'openai-responses' });
+    span.setCacheShape(Buffer.from('{"reasoning":{"effort":"high"}}'));
+    span.recordProviderIdentity('resp-old', 'served-old', 'high', 'account-old');
+    span.recordAttempt();
+    span.recordProviderIdentity('resp-new', 'served-new', 'high', 'account-new');
+    span.recordProviderIdentity('response with whitespace', 'served-new', null, 'account-new');
+    span.setCacheShape(Buffer.from('invalid'));
+    expect(span.finish('ok', 200)).toMatchObject({ forwardedEffort: null, providerIdentity: null });
+  });
+});
+
+describe('owner execution leases', () => {
+  it('counts queued/pre-provider requests independently of completed history', () => {
+    let now = 100;
+    const telemetry = new GatewayRequestTelemetry({ now: () => now });
+    const first = telemetry.begin({ ownerId: 'su-a', provider: 'claude', protocol: 'anthropic-messages' });
+    now = 200;
+    const second = telemetry.begin({ ownerId: 'su-a', provider: 'claude', protocol: 'anthropic-messages' });
+    const other = telemetry.begin({ ownerId: 'su-b', provider: 'claude', protocol: 'anthropic-messages' });
+    expect(telemetry.snapshotForOwner('su-a')).toMatchObject({ active: 2, oldestActiveAt: 100, finalized: 0 });
+    first.finish('gateway-error', 503);
+    expect(telemetry.snapshotForOwner('su-a')).toMatchObject({ active: 1, oldestActiveAt: 200 });
+    second.finish('ok', 200);
+    second.finish('ok', 200);
+    expect(telemetry.snapshotForOwner('su-a')).toMatchObject({ active: 0, oldestActiveAt: null, finalized: 2 });
+    expect(telemetry.snapshotForOwner('su-b').active).toBe(1);
+    other.finish('cancelled', null);
+    expect(telemetry.snapshotForOwner('su-b').active).toBe(0);
+  });
+});
 import {
   GatewayRequestTelemetry,
   MAX_CACHE_FINGERPRINT_BYTES,
   assertCompleteGatewayRequestTimeline,
   classifyGatewayTelemetryOutcome,
   assessStartupCacheSharing,
+  assessStartupPrefixCohorts,
+  parseStartupCacheEvidenceLine,
+  parseStartupPrefixRowLine,
+  splitAtSystemReminders,
   type StartupCacheEvidence,
+  type StartupPrefixRow,
 } from './request-stage-telemetry';
 
 describe('bounded upstream HTTP write observations', () => {
@@ -215,6 +305,72 @@ describe('ten-agent startup sharing evidence (R-10)', () => {
   });
 });
 
+describe('R-10 startup PREFIX cohorts from the journal layout (D-077)', () => {
+  const hash = (seed: string) => ({ sha16: seed.padEnd(16, '0').slice(0, 16), bytes: 100 });
+  const startup = (index: number, over: Partial<StartupPrefixRow> = {}, messages = 2, toolsCount = 88): StartupPrefixRow => ({
+    ownerId: `su-owner-${index}`, requestId: index, authorizationScope: 'acct-a', model: 'claude-test', transport: 'bearer-http',
+    tools: { sha256: 'b'.repeat(64), bytes: 433464, hashedBytes: 433464 },
+    layout: {
+      tools: { count: toolsCount, deferred: 74 },
+      // blocks 0..2 are the stable, breakpointed prefix; block 3 is per-owner (after the last breakpoint)
+      system: { form: 'blocks', blockCount: 4, blocks: [hash('aa'), hash('bb'), hash('cc'), hash(`own${index}`)] },
+      messages: { count: messages, first: { role: 'user', blockCount: 1, hash: hash(`m${index}`), blocks: [hash(`m${index}`)] } },
+      markers: [{ section: 'system', index: 1, block: null, ttl: '1h' }, { section: 'system', index: 2, block: null, ttl: '1h' },
+        { section: 'messages', index: messages - 1, block: 0, ttl: '1h' }],
+      truncated: false,
+    },
+    startedAt: index * 1000, inputTokens: 2, cacheReadTokens: index === 0 ? 0 : 71027, cacheWriteTokens: index === 0 ? 133000 : 62667,
+    outcome: 'ok', ...over,
+  });
+  const cohort = (n = 10) => Array.from({ length: n }, (_, i) => startup(i));
+
+  it('sizes ten same-form startups as ONE cohort even though every owner has a different last system block and first message', () => {
+    const result = assessStartupPrefixCohorts(cohort());
+    expect(result).toMatchObject({ startups: 10, unkeyed: 0, cohortCount: 1, largestCohortOwners: 10,
+      verdict: 'cohort-present', sharingVerified: false });
+    expect(result.cohorts[0].laterStarterReadFraction).toBeCloseTo(71027 / (2 + 71027 + 62667), 5);
+    // The retired key (whole-instructions hash) would split these: the per-owner block makes each unique.
+    expect(new Set(cohort().map((row) => row.layout!.system.blocks[3].sha16)).size).toBe(10);
+  });
+
+  it('counts only true startups: mid-conversation rows and tool-less preflights are excluded, not folded in', () => {
+    const rows = [...cohort(9), startup(9, {}, 40), startup(10, {}, 2, 0), startup(11, { outcome: 'cancelled' })];
+    expect(assessStartupPrefixCohorts(rows)).toMatchObject({ startups: 9, largestCohortOwners: 9, verdict: 'cohort-too-small' });
+  });
+
+  it('splits cohorts on model, scope, tools hash and any stable system block', () => {
+    const split = (change: (row: StartupPrefixRow) => StartupPrefixRow) =>
+      assessStartupPrefixCohorts(cohort().map((row, i) => (i < 5 ? row : change(row)))).cohortCount;
+    expect(split((row) => ({ ...row, model: 'other' }))).toBe(2);
+    expect(split((row) => ({ ...row, authorizationScope: 'acct-b' }))).toBe(2);
+    expect(split((row) => ({ ...row, tools: { ...row.tools!, sha256: 'c'.repeat(64) } }))).toBe(2);
+    expect(split((row) => ({ ...row, layout: { ...row.layout!, system: { ...row.layout!.system,
+      blocks: [hash('zz'), ...row.layout!.system.blocks.slice(1)] } } }))).toBe(2);
+  });
+
+  it('reports rows it cannot key as unkeyed (no system breakpoint, truncated tools hash) and ignores layout-less rows', () => {
+    const noMarker = startup(20, { layout: { ...startup(20).layout!, markers: [] } });
+    const partialTools = startup(21, { tools: { sha256: 'b'.repeat(64), bytes: 433464, hashedBytes: 65536 } });
+    const legacy = startup(22, { layout: null });
+    expect(assessStartupPrefixCohorts([noMarker, partialTools, legacy])).toMatchObject({
+      rows: 3, startups: 2, unkeyed: 2, cohortCount: 0, largestCohortOwners: 0, verdict: 'cohort-too-small' });
+  });
+
+  it('parses a journal line into a cohort row and rejects an ownerless or foreign line', () => {
+    const base = startup(1);
+    const line = `startup-cache-evidence/v1 ${JSON.stringify({ schema: 'startup-cache-evidence/v1', requestId: 1,
+      ownerId: base.ownerId, transport: 'bearer-http', model: base.model, authorizationScope: base.authorizationScope,
+      tools: base.tools, instructions: null, layout: base.layout, startedAt: 5, inputTokens: 2, cacheReadTokens: 7,
+      cacheWriteTokens: 9, outcome: 'ok' })}`;
+    expect(parseStartupPrefixRowLine(line)).toMatchObject({ ownerId: 'su-owner-1', requestId: 1, startedAt: 5, cacheReadTokens: 7, outcome: 'ok' });
+    expect(parseStartupPrefixRowLine(line.replace('"requestId":1,', ''))!.requestId).toBeNull();
+    expect(parseStartupPrefixRowLine(line)!.layout!.system.blocks).toHaveLength(4);
+    expect(parseStartupPrefixRowLine(line.replace('"layout":', '"layout":{"junk":1},"x":'))!.layout).toBeNull();
+    expect(parseStartupPrefixRowLine(line.replace(`"ownerId":"${base.ownerId}"`, '"ownerId":""'))).toBeNull();
+    expect(parseStartupPrefixRowLine('unrelated journal line')).toBeNull();
+  });
+});
+
 function completeCloudSpan(telemetry: GatewayRequestTelemetry, advance: (ms: number) => void, owner = 'su-test') {
   const span = telemetry.begin({
     ownerId: owner,
@@ -382,6 +538,41 @@ describe('GatewayRequestTelemetry', () => {
     expect(JSON.stringify(telemetry.snapshot())).not.toMatch(/stable instructions|first user turn|stable tool/);
   });
 
+  it('binds a native instruction template while retaining exact transport and resource-path hashes', () => {
+    const capture = (id: string, root: string, advice = 'Use the maintained instructions.') => {
+      const span = new GatewayRequestTelemetry().begin({ provider: 'codex', protocol: 'openai-responses' });
+      span.setCacheShape(Buffer.from(JSON.stringify({ input: [{ type: 'message', role: 'developer', id,
+        content: [{ type: 'input_text', text: `${advice}\n<skills_instructions>\n- \`r0\` = \`${root}\`\nRead \`${root}/imagegen/SKILL.md\`.\n</skills_instructions>` }] },
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'A public task.' }] }] })));
+      return span.finish('gateway-error', 400)!.cache;
+    };
+    const first = capture('msg_first', '/private/home-1/skills/.system');
+    const second = capture('msg_second', '/private/home-2/skills/.system');
+    expect(first.instructions).not.toEqual(second.instructions);
+    expect(first.nativeInstructionTemplate?.fingerprint).toEqual(second.nativeInstructionTemplate?.fingerprint);
+    expect(first.nativeInstructionTemplate?.fingerprint?.bytes).toBeGreaterThan(0);
+    expect(first.nativeInstructionTemplate?.skillsRootHash).not.toBe(second.nativeInstructionTemplate?.skillsRootHash);
+    expect(capture('msg_third', '/private/home-2/skills/.system', 'Changed authority.').nativeInstructionTemplate?.fingerprint)
+      .not.toEqual(first.nativeInstructionTemplate?.fingerprint);
+    expect(JSON.stringify(first)).not.toMatch(/private\/home|maintained instructions|msg_first/);
+  });
+
+  it('leaves ambiguous or malformed native skill-root templates unmeasured', () => {
+    for (const text of ['<skills_instructions>missing root</skills_instructions>',
+      '<skills_instructions>\n- `r0` = `relative/skills/.system`\n</skills_instructions>',
+      '<skills_instructions>\n- `r0` = `/a/skills/.system`\n- `r0` = `/b/skills/.system`\n</skills_instructions>',
+      '<skills_instructions>\n- `r0` = `/a/../b/skills/.system`\n</skills_instructions>',
+      '<skills_instructions>\n- `r0` = `/a/./skills/.system`\n</skills_instructions>',
+      '<skills_instructions>\n- `r0` = `/a\\b/skills/.system`\n</skills_instructions>',
+      '<skills_instructions>\n- `r0` = `/a\u0000b/skills/.system`\n</skills_instructions>',
+      '<skills_instructions>\n- `r0` = `/a/skills/.system`\n</skills_instructions>\n<skills_instructions>\n- `r0` = `/b/skills/.system`\n</skills_instructions>']) {
+      const span = new GatewayRequestTelemetry().begin({ provider: 'codex', protocol: 'openai-responses' });
+      span.setCacheShape(Buffer.from(JSON.stringify({ input: [{ type: 'message', role: 'developer',
+        content: [{ type: 'input_text', text }] }] })));
+      expect(span.finish('gateway-error', 400)!.cache.nativeInstructionTemplate).toBeNull();
+    }
+  });
+
   it('includes both top-level and developer-prefix components when a request carries both', () => {
     const telemetry = new GatewayRequestTelemetry();
     const fingerprint = (prefixTool: string, prefixInstruction: string) => {
@@ -396,6 +587,159 @@ describe('GatewayRequestTelemetry', () => {
     const first = fingerprint('first', 'same');
     expect(first.tools).not.toEqual(fingerprint('second', 'same').tools);
     expect(first.instructions).not.toEqual(fingerprint('first', 'different').instructions);
+  });
+
+  it('journals ONE bounded startup-evidence line per owner start, and the reader feeds the assessor', () => {
+    const lines: string[] = [];
+    const telemetry = new GatewayRequestTelemetry({ onStartupEvidence: (line) => lines.push(line) });
+    const run = (ownerId: string | null, secretUser: string) => {
+      const span = telemetry.begin({ ownerId, provider: 'codex', protocol: 'openai-responses', transport: 'oauth-http' });
+      span.setCacheShape(Buffer.from(JSON.stringify({ model: 'gpt-x', tools: [{ name: 'private-tool' }],
+        instructions: 'secret-instructions', input: secretUser })));
+      span.recordCacheUsage(10, 90, 0);
+      span.finish('ok', 200);
+    };
+    for (let i = 0; i < 3; i++) run(`su-owner-${i}`, `not-for-logs-${i}`);
+    run('su-owner-0', 'second request of an owner already seen');
+    run(null, 'ownerless request');
+    // Only each owner's FIRST observed request is durable; repeats and ownerless rows are not.
+    expect(lines).toHaveLength(3);
+    expect(lines.join('\n')).not.toMatch(/private-tool|secret-instructions|not-for-logs|second request|ownerless/);
+    for (const line of lines) expect(line.length).toBeLessThan(2048);
+    const evidence = lines.map((line) => parseStartupCacheEvidenceLine(line));
+    expect(evidence.every((row) => row !== null)).toBe(true);
+    // No eligibility source exists in the line, so the assessor must say timing is unknown, never infer a window.
+    const assessed = assessStartupCacheSharing(evidence as StartupCacheEvidence[]);
+    expect(assessed).toMatchObject({ requests: 3, singleWriteGuaranteed: false, withEarlierEligibleComponentMatch: 0 });
+    expect(evidence[0]).toMatchObject({ availableAt: null, expiresAt: null });
+    // Garbage and foreign lines are rejected, not coerced.
+    for (const bad of ['', 'startup-cache-evidence/v1 {not json', 'startup-cache-evidence/v1 {"schema":"other"}',
+      'unrelated journal line']) expect(parseStartupCacheEvidenceLine(bad)).toBeNull();
+  });
+
+  it('journals a content-free per-section LAYOUT so a startup cohort can show which span is shared (D-077)', () => {
+    const lines: string[] = [];
+    const telemetry = new GatewayRequestTelemetry({ onStartupEvidence: (line) => lines.push(line) });
+    const system = (marker: boolean) => [
+      { type: 'text', text: 'claude-code-base-prefix-secret' },
+      { type: 'text', text: 'role-instructions-secret', ...(marker ? { cache_control: { type: 'ephemeral', ttl: '1h' } } : {}) },
+    ];
+    const run = (ownerId: string, firstUser: string, marker = true) => {
+      const span = telemetry.begin({ ownerId, provider: 'claude', protocol: 'anthropic-messages', transport: 'oauth-http' });
+      span.setCacheShape(Buffer.from(JSON.stringify({
+        model: 'claude-x', system: system(marker),
+        tools: [{ name: 'a-secret-tool' }, { name: 'b-secret-tool', defer_loading: true },
+          { name: 'c-secret-tool', cache_control: { type: 'ephemeral' } }],
+        messages: [{ role: 'user', content: [{ type: 'text', text: firstUser, cache_control: { type: 'ephemeral', ttl: '5m' } }] },
+          { role: 'assistant', content: 'later turn' }],
+      })));
+      span.recordCacheUsage(10, 0, 90);
+      span.finish('ok', 200);
+    };
+    run('su-a', 'frozen brief secret A');
+    run('su-b', 'frozen brief secret B');
+    run('su-c', 'frozen brief secret A', false);
+    run('su-a', 'second request of an owner already seen');
+    // One line per owner start; the repeat request pays and journals nothing.
+    expect(lines).toHaveLength(3);
+    expect(lines.join('\n')).not.toMatch(/secret|later turn|already seen/);
+    for (const line of lines) expect(line.length).toBeLessThan(2048);
+    const layouts = lines.map((line) => JSON.parse(line.slice(line.indexOf('{'))).layout);
+    expect(layouts[0]).toMatchObject({
+      tools: { count: 3, deferred: 1 },
+      system: { form: 'blocks', blockCount: 2 },
+      messages: { count: 2, first: { role: 'user', blockCount: 1 } },
+      truncated: false,
+    });
+    expect(layouts[0].markers).toEqual([
+      { section: 'tools', index: 2, block: null, ttl: 'default' },
+      { section: 'system', index: 1, block: null, ttl: '1h' },
+      { section: 'messages', index: 0, block: 0, ttl: '5m' },
+    ]);
+    // The shared span is visible: identical system blocks across owners ...
+    expect(layouts[0].system.blocks).toEqual(layouts[1].system.blocks);
+    // ... a different first message is visible as the unshared per-task write ...
+    expect(layouts[0].messages.first.hash.sha16).not.toBe(layouts[1].messages.first.hash.sha16);
+    // ... and moving or removing a breakpoint never changes a content hash (cache_control is stripped).
+    expect(layouts[2].system.blocks).toEqual(layouts[0].system.blocks);
+    expect(layouts[2].messages.first.hash.sha16).toBe(layouts[0].messages.first.hash.sha16);
+    expect(layouts[2].markers.map((m: { section: string }) => m.section)).toEqual(['tools', 'messages']);
+    // Steady-state traffic is not measured: only an owner's first request computes a layout.
+    expect(telemetry.snapshot().recent.map((t) => t.cache.layout === null)).toEqual([false, false, false, true]);
+  });
+
+  it('cuts message 0 at <system-reminder> boundaries so a shared leading span inside ONE block is locatable (WI-10005042)', () => {
+    expect(splitAtSystemReminders('no reminder here')).toEqual(['no reminder here']);
+    expect(splitAtSystemReminders('<system-reminder>a</system-reminder>')).toEqual(['<system-reminder>a</system-reminder>']);
+    const joined = ['lead', '<system-reminder>one</system-reminder>', '<system-reminder>two</system-reminder>', 'tail'].join('');
+    const parts = splitAtSystemReminders(joined);
+    expect(parts).toEqual(['lead', '<system-reminder>one</system-reminder>', '<system-reminder>two</system-reminder>tail']);
+    expect(parts.join('')).toBe(joined); // lossless: hashing the parts covers every byte once
+    // Bounded: the Nth segment absorbs the remainder, never dropping bytes.
+    const many = Array.from({ length: 25 }, (_, i) => `<system-reminder>${i}</system-reminder>`).join('');
+    const bounded = splitAtSystemReminders(many, 4);
+    expect(bounded).toHaveLength(4);
+    expect(bounded.join('')).toBe(many);
+
+    const lines: string[] = [];
+    const telemetry = new GatewayRequestTelemetry({ onStartupEvidence: (line) => lines.push(line) });
+    const reminder = (n: string) => `<system-reminder>${n}</system-reminder>`;
+    const run = (ownerId: string, perOwner: string, content?: unknown) => {
+      const span = telemetry.begin({ ownerId, provider: 'claude', protocol: 'anthropic-messages', transport: 'oauth-http' });
+      span.setCacheShape(Buffer.from(JSON.stringify({
+        model: 'claude-x', system: [{ type: 'text', text: 'sys', cache_control: { type: 'ephemeral', ttl: '1h' } }],
+        tools: [{ name: 't' }],
+        messages: [{ role: 'user', content: content ?? [{ type: 'text', text: reminder('shared claude.md') + reminder('shared skills') + reminder(perOwner) }] }],
+      })));
+      span.recordCacheUsage(2, 0, 100);
+      span.finish('ok', 200);
+    };
+    run('su-a', 'carry A');
+    run('su-b', 'carry B');
+    run('su-c', 'x', 'plain string first message');
+    const [a, b, c] = lines.map((line) => JSON.parse(line.slice(line.indexOf('{'))).layout.messages.first);
+    expect(a.segments).toMatchObject({ block: 0, parts: expect.any(Array) });
+    expect(a.segments.parts).toHaveLength(3);
+    // Two owners share the leading segments and differ only in the last one: the splittable shared prefix.
+    expect(a.segments.parts.slice(0, 2)).toEqual(b.segments.parts.slice(0, 2));
+    expect(a.segments.parts[2].sha16).not.toBe(b.segments.parts[2].sha16);
+    // The whole-message hash differs, which is why a single block can never be a partial cache hit.
+    expect(a.hash.sha16).not.toBe(b.hash.sha16);
+    expect(c.segments ?? null).toBeNull(); // no reminder cut -> no extra bytes in the journal row
+    expect(lines.join('\n')).not.toMatch(/shared claude|carry A|carry B|plain string/);
+    for (const line of lines) expect(line.length).toBeLessThan(2048);
+  });
+
+  it('bounds the layout: marker and system-block overflow is flagged, non-Anthropic and empty bodies stay null', () => {
+    const lines: string[] = [];
+    const telemetry = new GatewayRequestTelemetry({ onStartupEvidence: (line) => lines.push(line) });
+    const begin = (ownerId: string, protocol: 'anthropic-messages' | 'openai-responses') =>
+      telemetry.begin({ ownerId, provider: protocol === 'openai-responses' ? 'codex' : 'claude', protocol });
+    const over = begin('su-over', 'anthropic-messages');
+    over.setCacheShape(Buffer.from(JSON.stringify({
+      system: Array.from({ length: 12 }, (_, i) => ({ type: 'text', text: `block-${i}`, cache_control: { type: 'ephemeral' } })),
+      messages: [{ role: 'user', content: 'hi' }] })));
+    over.finish('ok', 200);
+    const codex = begin('su-codex', 'openai-responses');
+    codex.setCacheShape(Buffer.from(JSON.stringify({ instructions: 'x', input: 'y' })));
+    codex.finish('ok', 200);
+    const empty = begin('su-empty', 'anthropic-messages');
+    empty.setCacheShape(Buffer.from(JSON.stringify({ model: 'claude-x' })));
+    empty.finish('ok', 200);
+    const [overRow, codexRow, emptyRow] = telemetry.snapshot().recent;
+    expect(overRow.cache.layout).toMatchObject({ truncated: true, system: { blockCount: 12 } });
+    expect(overRow.cache.layout!.system.blocks).toHaveLength(8);
+    expect(overRow.cache.layout!.markers).toHaveLength(8);
+    expect(codexRow.cache.layout).toBeNull();
+    expect(emptyRow.cache.layout).toBeNull();
+    for (const line of lines) expect(line.length).toBeLessThan(2048);
+  });
+
+  it('a throwing durable sink never fails a completed request', () => {
+    const telemetry = new GatewayRequestTelemetry({ onStartupEvidence: () => { throw new Error('journal down'); } });
+    const span = telemetry.begin({ ownerId: 'su-x', provider: 'claude', protocol: 'anthropic-messages' });
+    expect(span.finish('ok', 200)).not.toBeNull();
+    expect(telemetry.snapshot().requests.finalized).toBe(1);
   });
 
   it('compares complete representative large tool and instruction blocks', () => {

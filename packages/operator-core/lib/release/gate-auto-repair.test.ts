@@ -29,13 +29,16 @@ const ctx: HygieneClassificationContext = { rootScripts };
 /** Every `gen:X:check` in the real repo that has a generator behind it. */
 const derivedCheckers = [...deriveGeneratedArtifactHygiene(rootScripts).keys()];
 
-/** All hygiene categories the classifier can emit, with a REAL entry that produces each.
- *  Kept as one table so the enumeration tests below cannot silently skip a category that
- *  someone adds later — a new category with no row here fails the coverage test. */
+/** Every hygiene category a bare entry can produce, each with a REAL entry that produces it.
+ *  Kept as one table so the enumeration tests below cover each such category; a sample that
+ *  stops classifying to its stated category fails the first positive control. Not runtime-
+ *  enumerated: a NEW category needs a row added here by hand.
+ *  `detector-coverage-drift` has no row because a bare entry cannot produce it — it needs
+ *  `ctx.failingCasesByFile`, and gate-hygiene-split.test.ts covers it with that context.
+ *  `fixture-drift` was RETIRED with `lint:migration-fixture-drift:check` (WI-6554700010009165). */
 const CATEGORY_SAMPLES: { category: HygieneCategory; entry: string }[] = [
   { category: "generated-artifact-stale", entry: derivedCheckers[0] },
   { category: "budget-exceeded", entry: "lint:tool-prompts" },
-  { category: "fixture-drift", entry: "lint:migration-fixture-drift:check" },
 ];
 
 describe("gate-auto-repair", () => {
@@ -115,18 +118,6 @@ describe("gate-auto-repair", () => {
       expect(d.steps).toEqual([]);
       expect(d.unrepairable.map((u) => u.entry)).toEqual(["lint:tool-prompts"]);
       expect(d.unrepairable[0].why).toMatch(/hand-written|not reliably a fixer/i);
-    });
-
-    it("lint:migration-fixture-drift:check is hygiene but NOT auto-repairable", () => {
-      const d = decideAutoRepair({
-        failures: ["lint:migration-fixture-drift:check"],
-        ctx,
-      });
-      expect(d.repair).toBe(false);
-      expect(d.steps).toEqual([]);
-      expect(d.unrepairable.map((u) => u.entry)).toEqual([
-        "lint:migration-fixture-drift:check",
-      ]);
     });
 
     it("EVERY explicitly-registered hygiene script is refused, by enumeration", () => {

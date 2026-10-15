@@ -17,6 +17,12 @@ import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { setPlanSchedule } from './source';
 import { validateRrule, frequencyWarning } from '../../harness/routines/schedule-next';
 import { deletePlanSchedule } from '../../harness/routines/materialize-plan-schedule';
+import { getSystemActionEntry, listSystemActions } from '../../harness/routines/system-actions';
+// Registers the plan-schedulable actions in THIS process (the tool host may not load the
+// routines engine's full register-system-actions set), so the check above sees them.
+import '../../harness/routines/rubric-rescore-action';
+import '../../spec-conformance/conformance-review';
+import '../../harness/routines/hosted-billing-reconcile-action';
 
 const scheduleSchema = z
   .object({
@@ -54,6 +60,16 @@ const scheduleSchema = z
       .strict()
       .optional()
       .describe('Registered blueprint operation fired by this schedule; legacy schedules without it retain system:plan-run.'),
+    action: z
+      .object({
+        system: z.string().trim().min(1).max(120),
+        input: z.record(z.string(), z.unknown()).optional(),
+      })
+      .strict()
+      .optional()
+      .describe(
+        "Plan-schedulable system action fired directly (deterministic, no agent turn), e.g. { system:'rubric-rescore', input:{ rubricRef } }. Exclusive with operation.",
+      ),
   })
   .describe('The recurrence set + policy. Omit/null to clear (un-schedule).');
 
@@ -99,6 +115,22 @@ export default defineTool({
         if (!v.ok) return errorOut('invalid_rrule', v.error);
       } else if (sched.kind === 'cron' && !sched.cron) {
         return errorOut('cron_required', 'schedule.kind=cron requires schedule.cron');
+      }
+      // D-008: an action-backed schedule fires `system:<name>` directly, so the name must be a
+      // registered action that opted in. Refuse at authoring time, not at the 03:00 fire.
+      if (sched.action) {
+        if (sched.operation) {
+          return errorOut('schedule_target_ambiguous', 'schedule.action and schedule.operation are mutually exclusive');
+        }
+        const entry = getSystemActionEntry(sched.action.system);
+        if (!entry?.planSchedulable) {
+          const schedulable = listSystemActions().filter((name) => getSystemActionEntry(name)?.planSchedulable);
+          return errorOut(
+            'action_not_plan_schedulable',
+            `'${sched.action.system}' is not a ${entry ? 'plan-schedulable' : 'registered'} system action; ` +
+              `plan-schedulable actions: ${schedulable.join(', ') || '(none)'}`,
+          );
+        }
       }
     }
 

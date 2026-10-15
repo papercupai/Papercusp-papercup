@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Manual acceptance review of the pilot offer and readiness assessment",
+  "framework": "operational",
+  "command": ["docs:get"],
+  "toolArgs": {
+    "slugs": ["commercialization/assisted-repository-maintenance-pilot", "commercialization/monetization-readiness-and-reuse"],
+    "harness": "engineering",
+    "source": true
+  },
+  "executionMethod": "MCP docs:get followed by complete source recovery and manual comparison with MONETIZATION-P-001/P-002, the source-audited plan and current prerequisite records. This records a document review, not an automated test, customer validation or shipment.",
+  "exitCode": 0,
+  "startedAt": "2026-10-03T06:01:12.456Z",
+  "finishedAt": "2026-10-03T06:10:00.000Z",
+  "summary": "The offer provides a bounded reviewable workflow and explicitly provisional pricing. The readiness matrix identifies existing source authorities, trust boundaries and unresolved launch prerequisites. The real engineering demonstration has saved failing/passing regression receipts; no pilot payment or final-release acceptance is asserted.",
+  "assertions": [
+    {"id": "p001-buyer-workflow", "passed": true, "evidence": "The offer names small engineering teams/agencies, one repository and four weekly maintenance deliveries in 30 days; segment fit remains a hypothesis."},
+    {"id": "p001-deliverable-acceptance", "passed": true, "evidence": "Each delivery includes a bounded patch, before/after tests and source revision; a named customer maintainer accepts against an agreed command. A no-change investigation requires explicit customer acceptance."},
+    {"id": "p001-support-duration-cancellation", "passed": true, "evidence": "The offer bounds support at two staff hours, excludes an SLA, requires actual contact/timezone before a quote, ends after 30 days without auto-renewal and separates incurred usage from undelivered service fees."},
+    {"id": "p001-demonstration", "passed": true, "evidence": "EI-24787677967034419 provides the real maintenance demonstration: saved canonical run20636389 failed before the classifier repair; run20636394 passed afterward. The prior execution checkpoint records6 failing/74 passing then80/80 passing. Current-build plan activation succeeded in this turn. This is an engineering example, not a paying customer case study."},
+    {"id": "p001-pricing-material", "passed": true, "evidence": "The document retains $500/$1000 price hypotheses, five interview questions and explicit quote fields; measured P003 costs, actual merchant/tax/support details and launch prerequisites must be filled before issuing a quote."},
+    {"id": "p001-bounded-consumption", "passed": true, "evidence": "The offer requires a funded finite allowance, stops new spend at exhaustion, forbids automatic top-ups and unapproved overage, and identifies OpenRouter BYOK responsibility."},
+    {"id": "p002-existing-authorities", "passed": true, "evidence": "Fresh plans:get reads show BYOC cloud and capless governor shipped, Stripe signup foundation shipped, carrier draft and portal ready with unfinished acceptance. These statuses are treated as dependency records, not assembled-service readiness."},
+    {"id": "p002-cloud-owner", "passed": true, "evidence": "Fresh WI10005826 read remains wip and held by su-a6555ee3-1fee-4cfb-9d7b-25fd5bd1bde7. Its checkpoint distinguishes fixture suites/build publication from live runtime handoff and deployed signup/cancel proof. The matrix preserves this lane and two $1 test prices."},
+    {"id": "p002-trust-boundary", "passed": true, "evidence": "The matrix keeps source/prompts/transcripts/model I/O customer-side, allows only commercial/control metadata centrally, identifies OpenRouter as a third party and requires sealed-channel and vendor-outage evidence before assembled acceptance."},
+    {"id": "p002-entitlement-gap", "passed": true, "evidence": "Current entitlement-seam.ts documents a null allowance patch as no claim, never unlimited. The matrix assigns P004/P005 to accounting and atomic budgets rather than duplicating the existing Stripe subscription stack."},
+    {"id": "p002-inference-gap", "passed": true, "evidence": "Current model-selection.ts still describes openrouter as a subprocess-only provider. The matrix records P007 execution/key/retention/cost qualification as unresolved and does not equate catalog rates with completed-job costs."},
+    {"id": "p002-commercial-gates", "passed": true, "evidence": "The matrix retains live merchant/payout/tax, support/incident, assembled hosted-account/customer-journey, public-artifact and customer-account acceptance as future gates. Test billing and dependency shipment do not satisfy them."}
+  ],
+  "sourceFiles": [
+    "apps/operator-docs/src/content/docs/commercialization/assisted-repository-maintenance-pilot.mdx",
+    "apps/operator-docs/src/content/docs/commercialization/monetization-readiness-and-reuse.mdx",
+    "packages/operator-core/lib/auth/hosted/billing/entitlement-seam.ts",
+    "packages/operator-core/lib/agent-loop/model-selection.ts"
+  ],
+  "evidenceRefs": ["WI-10005829", "EI-24787677967034419", "test-run:20636389", "test-run:20636394", "WI-10005826", "papercusp-monetization-2026-09-04#D-013"],
+  "limitations": ["Manual document review only; no automated content test is claimed.", "No actual customer payment, quoted price validation, live service certification or final shipment is claimed.", "P003 must still supply measured workload inputs and a concrete fee-inclusive proposed quote."]
+}

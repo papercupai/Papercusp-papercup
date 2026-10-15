@@ -13,7 +13,28 @@ import {
   resolvePgLaunchRetryMs,
   assertSafeDbosAppVersionPartition,
   isRetryableDbosLaunchError,
+  awaitDbosLaunchInFlight,
 } from './bootstrap';
+
+// WI-10004957: provisioning routes wait on this only for a launch that is already in flight.
+describe('awaitDbosLaunchInFlight', () => {
+  it('returns false at once when DBOS is not started and no launch is in flight', async () => {
+    const started = Date.now();
+    await expect(awaitDbosLaunchInFlight(10_000)).resolves.toBe(false);
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it('returns true at once when DBOS already started', async () => {
+    const g = globalThis as unknown as { __papercuspDbosStarted?: boolean };
+    const prior = g.__papercuspDbosStarted;
+    g.__papercuspDbosStarted = true;
+    try {
+      await expect(awaitDbosLaunchInFlight(0)).resolves.toBe(true);
+    } finally {
+      g.__papercuspDbosStarted = prior;
+    }
+  });
+});
 
 describe('withDbosIdleTxGrace', () => {
   const ENV_KEY = 'PAPERCUSP_DBOS_IDLE_IN_TX_TIMEOUT_SEC';
@@ -111,6 +132,37 @@ describe('isRetryableDbosLaunchError (EI-22022209900260112)', () => {
       }),
     ).toBe(false);
     expect(isRetryableDbosLaunchError(new Error('workflow registration failed'))).toBe(false);
+  });
+
+  // WI-6554700010009759: the 2026-10-13 00:15Z bg-host boot logged exactly this message
+  // from DBOS.launch() and stayed DBOS-dark for ~2h because it was not retried.
+  it('retries the node-postgres connect timeout seen in the 2026-10-13 incident', () => {
+    expect(isRetryableDbosLaunchError(new Error('Connection terminated due to connection timeout'))).toBe(true);
+    expect(
+      isRetryableDbosLaunchError({
+        dbosErrorCode: 3,
+        message: 'Failed to initialize workflow executor',
+        cause: new Error('Connection terminated due to connection timeout'),
+      }),
+    ).toBe(true);
+    expect(isRetryableDbosLaunchError(new Error('Connection terminated unexpectedly'))).toBe(true);
+    expect(isRetryableDbosLaunchError(new Error('timeout exceeded when trying to connect'))).toBe(true);
+  });
+
+  it('retries connection-class SQLSTATEs and socket errnos', () => {
+    for (const code of ['08000', '08001', '08003', '08004', '08006', '57P03', '53300']) {
+      expect(isRetryableDbosLaunchError({ error: { code } })).toBe(true);
+    }
+    for (const code of ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT']) {
+      expect(isRetryableDbosLaunchError({ originalError: Object.assign(new Error('socket'), { code }) })).toBe(true);
+    }
+    expect(isRetryableDbosLaunchError(new Error('FATAL: the database system is starting up'))).toBe(true);
+  });
+
+  it('still refuses auth, permission and syntax failures', () => {
+    expect(isRetryableDbosLaunchError({ error: { code: '28P01', message: 'password authentication failed' } })).toBe(false);
+    expect(isRetryableDbosLaunchError({ error: { code: '42501', message: 'permission denied for schema dbos' } })).toBe(false);
+    expect(isRetryableDbosLaunchError({ error: { code: '42601', message: 'syntax error at or near' } })).toBe(false);
   });
 });
 

@@ -213,7 +213,7 @@ const GENERATED_SOURCE_FILES = new Set([
 
 export function isBuildOutput(rel) {
   if (GENERATED_SOURCE_FILES.has(rel)) return true;
-  return rel.split('/').some((seg) => BUILD_OUTPUT_SEGMENTS.has(seg));
+  return rel.split('/').some((seg) => BUILD_OUTPUT_SEGMENTS.has(seg) || seg.startsWith('dist-'));
 }
 
 const SCAN_EXT = new Set(['.ts', '.tsx', '.mts', '.mjs', '.js']);

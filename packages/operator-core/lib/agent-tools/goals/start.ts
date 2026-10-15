@@ -33,7 +33,7 @@
  * `@papercusp/agent-mcp/goals` so the two writers cannot drift.
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
@@ -54,7 +54,14 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { assertGoalWriteAuthorityForCaller } from '../../goals/write-authority';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
 import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
-import { buildAgentLaunchCommand, injectFleetArg, injectLaunchedByArg } from '../../agent-launch-core';
+import {
+  buildAgentLaunchCommand,
+  claimAgentLaunch,
+  injectFleetArg,
+  injectLaunchedByArg,
+  recordAgentLaunchResult,
+  releaseAgentLaunchClaim,
+} from '../../agent-launch-core';
 import { drainFleetAutoMintEnabled, mintDrainFleetForGoal, registerGoalDrainFleetLeader, teardownDrainFleetMint } from '../../goals/drain-fleet-mint';
 import {
   goalArmWithholdsBrief,
@@ -132,6 +139,28 @@ function describeWindow(sec: number): string {
     }
   }
   return `${sec}s`;
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const fields = Object.keys(record)
+      .filter((key) => record[key] !== undefined)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`);
+    return `{${fields.join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+function goalStartRequestFingerprint(args: object, workspaceId: string, installSlug: string): string {
+  const requestArgs = Object.fromEntries(
+    Object.entries(args).filter(([key]) => key !== 'requestKey' && key !== 'harness'),
+  );
+  return createHash('sha256')
+    .update(canonicalJson({ workspaceId, installSlug, args: requestArgs }))
+    .digest('hex');
 }
 
 export function buildGoalKickoffBrief(opts: {
@@ -401,7 +430,8 @@ export default defineTool({
   name: 'goals:start',
   description:
     'Open a GOAL and spawn the GOAL-mode agent that owns it. The goal row and agent_modes stamp are committed before spawn; handled launch failures are compensated. ' +
-    "{ title, killCriterion, budgetCents, body?, tripwires?, parentId?, agent?, model?, account?, headless? }. Returns the goal id AND the new agent's ownerId. " +
+    "{ requestKey?, title, killCriterion, budgetCents, body?, tripwires?, parentId?, agent?, model?, account?, headless? }. Returns the goal id AND the new agent's ownerId. " +
+    'For retry-safe calls, reuse requestKey for the same arguments and scope; use a new key when they change. ' +
     'Kill criterion and ceiling are REQUIRED: GOAL mode mandates both at creation, and this is the surface that enforces it.',
   guidance: {
     when: 'Starting a NEW outcome that needs an agent to own it end-to-end — the "+ Start a goal" path. One call: goal + its agent + the join between them.',
@@ -420,6 +450,13 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
   args: z.object({
+    requestKey: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe('Stable caller-generated key for retry-safe starts. Reuse it for the same normalized request; change it when the request changes.'),
     title: z
       .string()
       .min(1)
@@ -479,10 +516,7 @@ export default defineTool({
     holder: goalHolderPolicySchema
       .optional()
       .describe(
-        'REQUIRED unless you opt out: does this goal need a LIVE holder to count as active, and what happens when it loses one. ' +
-          "{ requireLive: true } for a goal a session owns — the case this tool creates, since it spawns that session — so it stops reading 'active' when nobody holds it. " +
-          "{ requireLive: false } for a goal driven by routines rather than a held session. onLoss defaults to 'deactivate'; 'respawn' is opt-in per goal. " +
-          'Omitting this entirely is refused: the goal would inherit the live-holder requirement without anyone having chosen it.',
+        "REQUIRED policy: requireLive:true for session-owned goals (inactive without a holder); false for routine-driven goals. onLoss defaults to 'deactivate'; 'respawn' is opt-in. Omitting holder is refused; choose explicitly.",
       ),
     body: z.string().max(20000).optional().describe('the full statement: what winning looks like, scope, constraints'),
     tripwires: z
@@ -702,12 +736,71 @@ export default defineTool({
       if (!propCheck.ok) return err(`propertySchema refused: ${propCheck.issues.join('; ')}`);
     }
 
-    let callerOwnerId: string | null = null;
+    let callerIdentity: ReturnType<typeof resolveAgentIdentity> | null = null;
     try {
-      callerOwnerId = resolveAgentIdentity(ctx).ownerId;
+      callerIdentity = resolveAgentIdentity(ctx);
     } catch {
-      callerOwnerId = null;
+      callerIdentity = null;
     }
+    const callerOwnerId = callerIdentity?.ownerId ?? null;
+
+    const requestKey = args.requestKey?.trim();
+    const idempotencyKey = requestKey ? `goals:start:${requestKey}` : null;
+    const requestFingerprint = idempotencyKey
+      ? goalStartRequestFingerprint(args, workspaceId, installSlug)
+      : null;
+    if (idempotencyKey && requestFingerprint) {
+      let claim;
+      try {
+        claim = await claimAgentLaunch({
+          workspaceId,
+          idempotencyKey,
+          launchedBy: callerOwnerId,
+          initialSummary: {
+            requestKind: 'goals:start',
+            requestFingerprint,
+            phase: 'claimed',
+          },
+          failClosed: true,
+        });
+      } catch (e) {
+        return err(
+          `Could not safely register this goal start request (${(e as Error)?.message ?? e}); no goal was opened. Retry with the same requestKey.`,
+        );
+      }
+      if (!claim.won) {
+        const prior = claim.priorSummary;
+        if (
+          prior?.requestKind === 'goals:start' &&
+          typeof prior.requestFingerprint === 'string' &&
+          prior.requestFingerprint !== requestFingerprint
+        ) {
+          return err(
+            'This requestKey was already used with different goal arguments or scope. Use a new requestKey for the changed request.',
+          );
+        }
+        const replay = prior?.result && typeof prior.result === 'object' && !Array.isArray(prior.result)
+          ? prior.result as Record<string, unknown>
+          : null;
+        if (
+          prior?.requestKind === 'goals:start' &&
+          prior.requestFingerprint === requestFingerprint &&
+          (prior.phase === 'primary-started' || prior.phase === 'complete') &&
+          replay &&
+          typeof replay.id === 'string' &&
+          typeof replay.agent_owner_id === 'string'
+        ) {
+          return { data: replay };
+        }
+        return err(
+          'A goals:start request with this requestKey is already in progress. Retry with the same key to retrieve its result; do not start it with a new key.',
+        );
+      }
+    }
+    const releaseRequestClaim = async () => {
+      if (!idempotencyKey) return;
+      await releaseAgentLaunchClaim({ workspaceId, idempotencyKey });
+    };
 
     const id = goalId(args.title);
     // PRE-PIN the agent's coord identity so the mode stamp below can name it
@@ -744,6 +837,7 @@ export default defineTool({
         propertySchema: args.propertySchema ?? null,
       });
     } catch (e) {
+      await releaseRequestClaim();
       return err(`Could not open the goal: ${(e as Error)?.message ?? e}`);
     }
 
@@ -763,6 +857,7 @@ export default defineTool({
       });
       if (!applied.ok) {
         await deleteGoalRow(sql, { id, workspaceId }).catch(() => {});
+        await releaseRequestClaim();
         return err(`blockedBy refused (nothing spawned, goal rolled back): ${applied.problem}`);
       }
     }
@@ -786,6 +881,7 @@ export default defineTool({
         if (!args.startBlocked) {
           await replaceGoalBlockedBy(sql, { workspaceId, goalId: id, blockers: [] }).catch(() => {});
           await deleteGoalRow(sql, { id, workspaceId }).catch(() => {});
+          await releaseRequestClaim();
           return err(
             `Refusing to start: unsatisfied blocker(s) ${unsatisfied}. Nothing was spawned and the goal was rolled back. ` +
               'Either file it as a STUB and arm it when its prerequisites clear — goals:create { blockedBy } ' +
@@ -826,6 +922,7 @@ export default defineTool({
         await clearSourceWorkItemStamp();
         await replaceGoalBlockedBy(sql, { workspaceId, goalId: id, blockers: [] }).catch(() => {});
         await deleteGoalRow(sql, { id, workspaceId }).catch(() => {});
+        await releaseRequestClaim();
         return err(
           `sourceWorkItemId ${args.sourceWorkItemId} could not be attributed (${(e as Error)?.message ?? e}); ` +
             'nothing was spawned and the goal was rolled back.',
@@ -835,6 +932,7 @@ export default defineTool({
         await clearSourceWorkItemStamp();
         await replaceGoalBlockedBy(sql, { workspaceId, goalId: id, blockers: [] }).catch(() => {});
         await deleteGoalRow(sql, { id, workspaceId }).catch(() => {});
+        await releaseRequestClaim();
         return err(
           `sourceWorkItemId ${args.sourceWorkItemId} refused (${sourceStamp.reason}); ` +
             'nothing was spawned and the goal was rolled back.',
@@ -863,6 +961,7 @@ export default defineTool({
       // P-002 left on this early-failure path).
       await replaceGoalBlockedBy(sql, { workspaceId, goalId: id, blockers: [] }).catch(() => {});
       await deleteGoalRow(sql, { id, workspaceId }).catch(() => {});
+      await releaseRequestClaim();
       return err(
         `Could not put the new agent in GOAL mode (${modeRes.error ?? 'unknown error'}), so nothing was spawned and the goal was rolled back. ` +
           'A GOAL-mode agent that does not know its goal is the failure this tool exists to prevent.',
@@ -931,6 +1030,7 @@ export default defineTool({
       // the workspace edge read every consumer folds).
       await replaceGoalBlockedBy(sql, { workspaceId, goalId: id, blockers: [] }).catch(() => {});
       await deleteGoalRow(sql, { id, workspaceId }).catch(() => {});
+      await releaseRequestClaim();
     };
 
     let base;
@@ -1054,6 +1154,45 @@ export default defineTool({
       );
     }
 
+    const tripwireAdvisories = unmeasuredTripwireAdvisories(args.tripwires, {
+      budgetWindowSec: args.budgetWindowSec ?? null,
+    });
+    const primaryResult = {
+      id,
+      title: args.title,
+      status: 'active',
+      kill_criterion: args.killCriterion,
+      budget_cents: args.budgetCents,
+      parent_id: args.parentId ?? null,
+      tripwires: args.tripwires ?? null,
+      ...(tripwireAdvisories.length ? { tripwire_advisories: tripwireAdvisories } : {}),
+      workspace_id: workspaceId,
+      install_slug: installSlug,
+      agent_owner_id: ownerId,
+      agent_terminal: spawned.terminal,
+      agent_pid: spawned.pid ?? null,
+      headless: !!args.headless,
+      drain_fleet: drainFleet?.slug ?? null,
+      drain_leader_owner_id: null,
+      drain_leader_pid: null,
+      drain_leader_coupled: false,
+      drain_member_pid: null,
+      ...(startBlockedOverride ? { start_blocked_override: startBlockedOverride } : {}),
+      ...(drainWarnings.length ? { warning: drainWarnings.join('\n') } : {}),
+    };
+    if (idempotencyKey && requestFingerprint) {
+      await recordAgentLaunchResult({
+        workspaceId,
+        idempotencyKey,
+        summary: {
+          requestKind: 'goals:start',
+          requestFingerprint,
+          phase: 'primary-started',
+          result: primaryResult,
+        },
+      });
+    }
+
     await recordGoalLaunchIdentityBinding({
       goalId: id, ownerId, workspaceId, kickoff, portfolio: portfolioText, modeState: modeRes, behaviorArm,
     }, ctx.metadata);
@@ -1132,6 +1271,7 @@ export default defineTool({
         const registered = await registerGoalDrainFleetLeader({
           workspaceId, goalId: id, fleetSlug: drainFleet.slug, holderOwnerId: ownerId,
           leaderOwnerId, declaredBy: callerOwnerId ?? 'operator-ui', expectedLeaderOwnerId: null,
+          identity: callerIdentity ?? undefined, harnessSlug: installSlug,
         });
         if (!registered.registered) throw new Error(`opened leader could not be registered: ${registered.warning}`);
         drainLeader = { ownerId: leaderOwnerId, pid: leader.pid ?? null, coupled: registered.coupled };
@@ -1178,14 +1318,7 @@ export default defineTool({
       }
     }
 
-    // WI-10004424: tripwires named like platform metrics that nothing will
-    // measure, judged against the window this goal was actually written with.
-    const tripwireAdvisories = unmeasuredTripwireAdvisories(args.tripwires, {
-      budgetWindowSec: args.budgetWindowSec ?? null,
-    });
-
-    return {
-      data: {
+    const resultData = {
         id,
         title: args.title,
         status: 'active',
@@ -1222,7 +1355,19 @@ export default defineTool({
         // the audit trail that this goal started with unsatisfied prerequisites.
         ...(startBlockedOverride ? { start_blocked_override: startBlockedOverride } : {}),
         ...(drainWarnings.length ? { warning: drainWarnings.join('\n') } : {}),
-      },
     };
+    if (idempotencyKey && requestFingerprint) {
+      await recordAgentLaunchResult({
+        workspaceId,
+        idempotencyKey,
+        summary: {
+          requestKind: 'goals:start',
+          requestFingerprint,
+          phase: 'complete',
+          result: resultData,
+        },
+      });
+    }
+    return { data: resultData };
   },
 });

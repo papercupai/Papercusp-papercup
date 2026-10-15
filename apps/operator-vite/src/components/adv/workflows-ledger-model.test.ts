@@ -4,6 +4,9 @@ import {
   buildFacetCounts,
   buildLedgerRows,
   buildNeedsYou,
+  dispatcherDependentWorkflows,
+  TRIGGER_DISPATCH_ROUTINE,
+  triggerDispatcherState,
   buildPopulationSummary,
   buildSourceHealth,
   buildSuggestionChips,
@@ -180,6 +183,7 @@ describe('buildLedgerRows', () => {
             operationId: "triage-message",
             specificationRevision: null,
             target: null,
+            handle: null,
           },
         }),
       ],
@@ -345,6 +349,81 @@ describe('buildSourceHealth', () => {
     ]);
     expect(health).toHaveLength(1);
     expect(health[0]).toMatchObject({ tone: 'bad', status: 'token expired', armedCount: 1, bindingCount: 2 });
+  });
+});
+
+describe('trigger dispatcher pause (WI-10004922)', () => {
+  const healthyRow = { id: 'a', label: 'Nightly release audit', needsAttention: false };
+
+  it('reads the dispatcher from the catalog, and treats a missing row as UNKNOWN, never paused', () => {
+    expect(triggerDispatcherState(undefined)).toBeNull();
+    expect(triggerDispatcherState([{ name: 'git-sync', active: false }])).toBeNull();
+    expect(triggerDispatcherState([{ name: TRIGGER_DISPATCH_ROUTINE, active: false }])).toEqual({ active: false });
+    // Active in any install means runs drain somewhere.
+    expect(
+      triggerDispatcherState([
+        { name: TRIGGER_DISPATCH_ROUTINE, active: false },
+        { name: TRIGGER_DISPATCH_ROUTINE, active: true },
+      ]),
+    ).toEqual({ active: true });
+  });
+
+  it('raises a leading bad item when armed triggered workflows cannot fire', () => {
+    const items = buildNeedsYou({
+      sources: [source({ status: 'token expired', bindingCount: 1 })],
+      rows: [healthyRow],
+      dispatcher: { active: false, heldWorkflows: 2 },
+    });
+    expect(items[0]).toMatchObject({ kind: 'dispatch-paused', severity: 'bad' });
+    expect(items[0].message).toContain('2 armed workflows');
+    // It stays first after collapsing, ahead of the reconnect item.
+    expect(collapseNeedsYou(items).rows[0].kind).toBe('dispatch-paused');
+  });
+
+  it('counts only workflows with an ARMED event trigger as held, never schedule-only plans', () => {
+    const external = (armed: boolean | null): AutomationTrigger =>
+      trigger({
+        id: `external:b-${String(armed)}`,
+        kind: 'external',
+        provider: 'google calendar',
+        armed,
+        bindingId: `b-${String(armed)}`,
+      });
+    const scheduleOnly = item({ id: 'plan:papercusp:nightly', triggers: [trigger({ armed: true })] });
+    const armedEvent = item({ id: 'plan:papercusp:on-meeting', triggers: [external(true)] });
+    const disarmedEvent = item({ id: 'plan:papercusp:on-mail', triggers: [external(false)] });
+    const unknownEvent = item({ id: 'plan:papercusp:on-post', triggers: [external(null)] });
+    const mixed = item({ id: 'plan:papercusp:both', triggers: [trigger({ armed: true }), external(true)] });
+
+    // The false alarm this guards: an armed schedule is a `triggered` ledger row, but a
+    // dispatcher pause does not stop it.
+    expect(buildLedgerRows([scheduleOnly], { nowMs: NOW })[0]).toMatchObject({ kind: 'triggered', paused: false });
+    expect(dispatcherDependentWorkflows([scheduleOnly])).toBe(0);
+    expect(dispatcherDependentWorkflows([armedEvent, mixed])).toBe(2);
+    // Disarmed or unknown-armed event triggers are not counted as held.
+    expect(dispatcherDependentWorkflows([disarmedEvent, unknownEvent])).toBe(0);
+    // WI-10004955: an armed event trigger with no binding (a sync-triggered routine such as
+    // doc-freshness-sweep) never passes through the dispatcher, so a pause does not hold it.
+    const syncSweep = item({
+      id: 'routine:doc-freshness-sweep:papercusp',
+      kind: 'system-task',
+      triggers: [trigger({ id: 'routine-trigger:doc-freshness-sweep:papercusp', kind: 'external', provider: 'sync triggered', armed: true })],
+    });
+    expect(dispatcherDependentWorkflows([syncSweep])).toBe(0);
+    expect(dispatcherDependentWorkflows([syncSweep, armedEvent])).toBe(1);
+    expect(
+      buildNeedsYou({
+        sources: [],
+        rows: [],
+        dispatcher: { active: false, heldWorkflows: dispatcherDependentWorkflows([scheduleOnly, disarmedEvent]) },
+      }),
+    ).toEqual([]);
+  });
+
+  it('stays silent when the dispatcher runs, is unknown, or nothing armed depends on it', () => {
+    expect(buildNeedsYou({ sources: [], rows: [healthyRow], dispatcher: { active: true, heldWorkflows: 3 } })).toEqual([]);
+    expect(buildNeedsYou({ sources: [], rows: [healthyRow], dispatcher: null })).toEqual([]);
+    expect(buildNeedsYou({ sources: [], rows: [healthyRow], dispatcher: { active: false, heldWorkflows: 0 } })).toEqual([]);
   });
 });
 

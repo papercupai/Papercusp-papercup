@@ -3,6 +3,9 @@ import { readFileSync } from 'node:fs';
 import { mkdtemp, rm, mkdir, writeFile, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createServer } from 'node:http';
+import { execFile, spawnSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import {
   installClaudeIntegration,
   uninstallClaudeIntegration,
@@ -12,6 +15,8 @@ import {
 } from './claude-integration';
 
 let home: string;
+const claudeBin = spawnSync('which', ['claude'], { encoding: 'utf8', timeout: 2_000 }).stdout?.trim();
+const execFileAsync = promisify(execFile);
 
 async function seedPhase1(token = 'TOK-abc', agentId = 'agent-xyz') {
   await mkdir(join(home, '.papercusp'), { recursive: true });
@@ -71,7 +76,48 @@ describe('buildClaudeMcpEntry', () => {
       'utf8',
     );
     expect(installer).toContain("&native_session=${CLAUDE_CODE_SESSION_ID:-}");
+    expect(installer).toContain("'x-papercusp-native-session': '${PAPERCUSP_NATIVE_SESSION_ID:-}'");
   });
+
+  it.skipIf(!claudeBin)('sends the managed native header through actual Claude HTTP config expansion', async () => {
+    const nativeId = '11111111-1111-4111-8111-111111111111';
+    const observed: Array<{ header: string | string[] | undefined; query: string | null }> = [];
+    const server = createServer((req, res) => {
+      observed.push({
+        header: req.headers['x-papercusp-native-session'],
+        query: new URL(req.url!, 'http://localhost').searchParams.get('native_session'),
+      });
+      // Configuration health-check only; never invoke an agent or a model.
+      res.writeHead(404).end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = server.address() as { port: number };
+      const entry = buildClaudeMcpEntry(`http://127.0.0.1:${address.port}`, 'diagnostic', 'probe', '');
+      await writeClaudeJson({ mcpServers: { probe: entry } });
+      const env = {
+        PATH: process.env.PATH, HOME: home, CLAUDE_CONFIG_DIR: home,
+        PAPERCUSP_NATIVE_SESSION_ID: nativeId,
+        DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1',
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+      };
+      await execFileAsync(claudeBin!, ['mcp', 'get', 'probe'], { cwd: home, env, timeout: 15_000 });
+      expect(observed.length).toBeGreaterThan(0);
+      expect(observed.every((r) => r.header === nativeId && r.query === '')).toBe(true);
+      // An absent launch identity must not emit a placeholder or authenticate as
+      // a predecessor. The legacy native query still works for a bare client.
+      observed.length = 0;
+      const { PAPERCUSP_NATIVE_SESSION_ID: _managedId, ...bareEnv } = env;
+      await execFileAsync(claudeBin!, ['mcp', 'get', 'probe'], {
+        cwd: home, env: { ...bareEnv, CLAUDE_CODE_SESSION_ID: nativeId }, timeout: 15_000,
+      });
+      expect(observed.length).toBeGreaterThan(0);
+      expect(observed.every((r) => !r.header && r.query === nativeId)).toBe(true);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  }, 40_000);
 });
 
 describe('installClaudeIntegration', () => {

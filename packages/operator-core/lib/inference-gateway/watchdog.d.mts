@@ -41,3 +41,11 @@ export function egressPoolDownAlert(stats: any): {
     totalProxyEntries: number;
     reachableProxyEntries: number;
 } | null;
+/** Confirmed shared direct-egress alert. Requires a complete fresh sample of every direct route and every
+ *  account in the pool; missing/deploy-skewed/partial telemetry must remain unknown, never "all shared". */
+export function sharedDirectEgressAlert(stats: any): {
+    accountCount: number;
+    directRouteCount: number;
+    sampledDirectRouteCount: number;
+    distinctDirectExitIpCount: number;
+} | null;

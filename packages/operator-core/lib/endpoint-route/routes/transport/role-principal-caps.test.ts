@@ -24,6 +24,41 @@ function fakeTx(rows: Array<{ capabilities: unknown }>): Sql {
 }
 
 describe('loadRoleCapabilities', () => {
+  test('judge can reproduce autoloop status only through its read capability', async () => {
+    const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'judge');
+    const { default: status } = await import('../../../agent-tools/autoloop/status.js');
+
+    expect(status.agentRoles).toContain('judge');
+    expect(status.capability).toBe('autoloop:read');
+    expect(caps.has('autoloop:read')).toBe(true);
+    expect(caps.has('autoloop:write')).toBe(false);
+  });
+
+  test.each(['papercup', 'papercup-deep'])('%s can read the public manual without receiving a docs write grant', async (role) => {
+    const caps = await loadRoleCapabilities(fakeTx([]), 'ws', role);
+    expect(caps.has('docs:read')).toBe(true);
+    expect(caps.has('docs:write')).toBe(false);
+  });
+  test('transcript readers get sessions:read without granting generic search to judge', async () => {
+    const reader = await loadRoleCapabilities(fakeTx([{ capabilities: ['search:read'] }]), 'ws', 'transcript-reader');
+    expect(reader.has('search:read')).toBe(true);
+    expect(reader.has('sessions:read')).toBe(true);
+
+    const judge = await loadRoleCapabilities(fakeTx([{ capabilities: ['search:read'] }]), 'ws', 'judge');
+    expect(judge.has('search:read')).toBe(false);
+    expect(judge.has('sessions:read')).toBe(true);
+  });
+
+  test('memory:read preserves search access through a narrow derived capability', async () => {
+    const reader = await loadRoleCapabilities(fakeTx([{ capabilities: ['memory:read'] }]), 'ws', 'memory-reader');
+    expect(reader.has('memory:read')).toBe(true);
+    expect(reader.has('memory:search:read')).toBe(true);
+
+    const judge = await loadRoleCapabilities(fakeTx([{ capabilities: ['memory:read'] }]), 'ws', 'judge');
+    expect(judge.has('memory:search:read')).toBe(true);
+    expect(judge.has('memory:read')).toBe(false);
+  });
+
   describe('native-tool cutover replacement grants', () => {
     test('principal grant roles stay in lockstep with orchestrator FLEET_CAPABILITY_ROLES', () => {
       expect(new Set(CAPABILITY_REPLACEMENT_PRINCIPAL_ROLES)).toEqual(new Set(FLEET_CAPABILITY_ROLES));
@@ -202,6 +237,136 @@ describe('loadRoleCapabilities', () => {
   );
 
   test(
+    'merge-resolver can use its documented native conflict tools and report findings (both dispatch gates)',
+    { timeout: 60_000 },
+    async () => {
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'merge-resolver');
+      for (const capability of [
+        'coord:read',
+        'coord:write',
+        'work_items:read',
+        'work_items:write',
+        'features:read',
+        'locks:read',
+        'locks:write',
+      ]) {
+        expect(caps.has(capability), `merge-resolver missing ${capability}`).toBe(true);
+      }
+      for (const capability of [
+        'features:write',
+        'plans:write',
+        'operator:write',
+        'testing:run',
+        'capability:fs-write',
+        'capability:bash',
+      ]) {
+        expect(caps.has(capability), `merge-resolver must not receive ${capability}`).toBe(false);
+      }
+
+      const [
+        { COORD_ROLES },
+        { default: acquireResource },
+        { default: releaseResource },
+        { default: locksList },
+        { default: workItemGet },
+        { default: workItemCreate },
+        { default: capture },
+        { default: featureGet },
+        { default: presence },
+        { default: ask },
+        { default: send },
+        { default: awaitInbox },
+        { default: escalate },
+      ] = await Promise.all([
+        import('../../../agent-tools/coordination/roles.js'),
+        import('../../../agent-tools/locks/acquire_resource.js'),
+        import('../../../agent-tools/locks/release_resource.js'),
+        import('../../../agent-tools/locks/list.js'),
+        import('../../../agent-tools/work_items/get.js'),
+        import('../../../agent-tools/work_items/create.js'),
+        import('../../../agent-tools/improvements/capture.js'),
+        import('../../../../../agent-mcp/src/tools/features/get.js'),
+        import('../../../agent-tools/coordination/tools/presence.js'),
+        import('../../../agent-tools/coordination/tools/ask.js'),
+        import('../../../agent-tools/coordination/tools/send.js'),
+        import('../../../agent-tools/coordination/tools/await-inbox.js'),
+        import('../../../agent-tools/coordination/tools/escalate.js'),
+      ]);
+      expect(COORD_ROLES).toContain('merge-resolver');
+      for (const [name, tool] of [
+        ['locks:acquire_resource', acquireResource],
+        ['locks:release_resource', releaseResource],
+        ['locks:list', locksList],
+        ['work_items:get', workItemGet],
+        ['work_items:create', workItemCreate],
+        ['improvements:capture', capture],
+        ['coord:presence', presence],
+        ['coord:send', send],
+        ['coord:await-inbox', awaitInbox],
+        ['coord:escalate', escalate],
+      ] as const) {
+        expect(tool.agentRoles, `${name} must admit merge-resolver`).toContain('merge-resolver');
+      }
+      // coord:ask is deliberately owner-UI-only; agents use coord:send instead.
+      expect(ask.agentRoles).toEqual([]);
+      // features:get is a package-side tool with no per-role agentRoles field;
+      // its declared capability is the dispatch gate for this role.
+      expect(featureGet.capability).toBe('features:read');
+      expect(caps.has(featureGet.capability)).toBe(true);
+    },
+  );
+
+  test(
+    'judge can read rubric docs and use read-only SQL/LSP evidence fallbacks without write access',
+    { timeout: 60_000 },
+    async () => {
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'judge');
+      const [
+        { default: docsGet },
+        { default: getTemplateData },
+        { default: reportsGet },
+        { default: pgQuery },
+        { default: pgMutate },
+        { default: lspQuery },
+        { default: lspApply },
+      ] = await Promise.all([
+        import('../../../agent-tools/docs/get'),
+        import('../../../agent-tools/plans/get-template-data'),
+        import('../../../agent-tools/reports/get'),
+        import('../../../agent-tools/dev/pg_query'),
+        import('../../../agent-tools/dev/pg_mutate'),
+        import('../../../agent-tools/lsp/query'),
+        import('../../../agent-tools/lsp/apply'),
+      ]);
+      // Gate 1: the tool's role allowlist. Gate 2: the principal capability it requires.
+      expect(docsGet.agentRoles).toContain('judge');
+      expect(docsGet.capability).toBe('docs:read');
+      expect(caps.has(docsGet.capability as string)).toBe(true);
+      expect(getTemplateData.agentRoles).toContain('judge');
+      expect(getTemplateData.capability).toBe('plans:read');
+      expect(caps.has(getTemplateData.capability as string)).toBe(true);
+      expect(reportsGet.agentRoles).toContain('judge');
+      expect(reportsGet.capability).toBe('reports:read');
+      expect(caps.has('reports:read')).toBe(true);
+      expect(caps.has('reports:write')).toBe(false);
+      // Public evidence reads can be independently reproduced through the
+      // read-only SQL/compiler surfaces when their projections omit fields.
+      expect(pgQuery.agentRoles).toContain('judge');
+      expect(pgQuery.capability).toBe('intel:read');
+      expect(lspQuery.agentRoles).toContain('judge');
+      expect(lspQuery.capability).toBe('intel:read');
+      expect(caps.has('intel:read')).toBe(true);
+
+      // The evidence fallback remains read-only: the SQL and LSP writers need
+      // intel:write, which the judge principal does not receive.
+      expect(pgMutate.capability).toBe('intel:write');
+      expect(lspApply.capability).toBe('intel:write');
+      expect(caps.has('intel:write')).toBe(false);
+      expect(caps.has('docs:write')).toBe(false);
+    },
+  );
+
+  test(
     'judge can emit, verify, persist lifecycle evidence, and capture defects without gaining implementation powers',
     { timeout: 60_000 },
     async () => {
@@ -215,6 +380,12 @@ describe('loadRoleCapabilities', () => {
       expect(caps.has('operator:write')).toBe(false);
       expect(caps.has('work_items:write')).toBe(true);
       expect(caps.has('capability:fs-read')).toBe(true);
+      expect(caps.has('capability:git-evidence:read')).toBe(true);
+      expect(caps.has('capability:git')).toBe(false);
+      expect(caps.has('memory:search:read')).toBe(true);
+      expect(caps.has('memory:read')).toBe(false);
+      expect(caps.has('sessions:read')).toBe(true);
+      expect(caps.has('search:read')).toBe(false);
       expect(caps.has('capability:fs-write')).toBe(false);
       expect(caps.has('capability:bash')).toBe(false);
 

@@ -84,7 +84,9 @@ const MODEL_BEARING_EDGES: readonly ModelBearingEdge[] = [
     id: 'gym.proposer',
     classification: 'canonical-policy',
     path: 'packages/operator-core/lib/gym/autoloop-cycle.ts',
-    markers: ['process.env.GYM_LOOP_PROPOSER_MODEL ?? LEARNING_MODEL_SPEC', 'proposerModel: PROPOSER_MODEL'],
+    // autoloop-cycle snapshots process.env into `cycleEnv` (`const cycleEnv = { ...process.env }`),
+    // so the env override still falls back to the canonical spec; the marker tracks that spelling.
+    markers: ['cycleEnv.GYM_LOOP_PROPOSER_MODEL ?? LEARNING_MODEL_SPEC', 'proposerModel: PROPOSER_MODEL'],
   },
   {
     id: 'gym.task-generator',

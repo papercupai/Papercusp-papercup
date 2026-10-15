@@ -26,6 +26,7 @@ import {
   isBoundedDocsSearchArgs,
   isBoundedSearchFulltextArgs,
   isBoundedEventsStatusArgs,
+  isBoundedFactsListArgs,
   isBoundedBashOutputArgs,
   isBoundedGitSyncRunArgs,
   isBoundedSessionRequestCompactionArgs,
@@ -1232,6 +1233,59 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
         arguments: {
           name: 'mcp__papercusp_su__activity_tool_log',
           args: { owner: 'self', max_lines: 5, top_k: 3 },
+        },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
+    'facts:list',
+    'facts_list',
+    'mcp__papercusp-su__facts_list',
+    'mcp__papercusp_su__facts_list',
+  ])('does NOT shed a bounded exact-key facts:list read under critical pressure: %s', (name) => {
+    const args = { scope: 'owner', key: 'launch-provenance', full: true };
+    expect(isBoundedFactsListArgs(args)).toBe(true);
+    const body = toolsCall(24, name, args);
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps broad, historical, malformed, and expanded facts:list requests sheddable under critical pressure', () => {
+    for (const args of [
+      {},
+      { scope: 'workspace' },
+      { scope: 'workspace', key: '' },
+      { scope: 'workspace', key: '   ' },
+      { scope: 'plan', key: 'release-plan' },
+      { scope: 'workspace', key: 'x'.repeat(201) },
+      { scope: 'workspace', key: 'known-key', all: true },
+      { scope: 'workspace', key: 'known-key', limit: 1 },
+      { scope: 'workspace', key: 'known-key', versions: true },
+      { scope: 'workspace', key: 'known-key', scopeRef: 'unexpected' },
+      { scope: 'harness', scopeRef: 'x'.repeat(121), key: 'known-key' },
+      { scope: 'owner', key: 'known-key', full: 'true' },
+      { scope: 'owner', key: 'known-key', projection: { pick: ['facts[].key'] } },
+    ]) {
+      expect(isBoundedFactsListArgs(args)).toBe(false);
+      const body = toolsCall(25, 'facts:list', args);
+      expect(classifyMcpBody(body)).toEqual({ sheddable: true, id: 25 });
+      expect(classifyMcpRequest(body)).toBe('ordinary');
+    }
+  });
+
+  it('recognizes a bounded exact-key facts:list read through deferred tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 26,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: {
+          name: 'mcp__papercusp_su__facts_list',
+          args: { scope: 'workspace', key: 'guard-rail:checkpoint-git-probes-async-execfile-replay' },
         },
       },
     });
@@ -3300,9 +3354,47 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
       limit: 100,
       kinds: ['tool', 'coord'],
       include_auto: true,
+      projection: { pick: ['entries[].ts'] },
     }));
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.name).toBe('sessions:timeline');
+  });
+  it('admits bounded sessions:timeline calls with parsed projections through tools:invoke under critical pressure', async () => {
+    const commonArgs = {
+      owner: 'self',
+      since: '2026-10-02T07:04:17.197Z',
+      limit: 100,
+      kinds: ['tool'],
+      goalRef: 'WI-10005166',
+      group_repeated: true,
+    };
+    for (const pick of [
+      ['entries[].ts', 'entries[].tool_name', 'entries[].status', 'entries[].text'],
+      ['ts', 'tool_name', 'status'],
+    ]) {
+      const targetArgs = { ...commonArgs, projection: { pick } };
+      const req = post(JSON.stringify({
+        jsonrpc: '2.0',
+        id: 46,
+        method: 'tools/call',
+        params: {
+          name: 'tools:invoke',
+          arguments: {
+            name: 'mcp__papercusp_su__sessions_timeline',
+            args: targetArgs,
+          },
+        },
+      }));
+      expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+      expect(JSON.parse(await req.text()).params.arguments.args).toEqual(targetArgs);
+    }
+  });
+  it('keeps invalid sessions:timeline projections outside the critical-pressure diagnostic reserve', () => {
+    expect(isBoundedSessionsTimelineArgs({
+      owner: 'self',
+      limit: 100,
+      projection: { pick: [] },
+    })).toBe(false);
   });
   it('still sheds an unbounded sessions:timeline read under critical pressure', async () => {
     const shed = await evaluateAdmission(

@@ -68,7 +68,10 @@ vi.mock('./registry', () => ({
   ensureVideoChannel: vi.fn(),
 }));
 
-vi.mock('../sync/hyperbee/swarm', () => ({ swarmConstructorOpts: vi.fn(() => ({})) }));
+vi.mock('../sync/hyperbee/swarm', () => ({
+  swarmConstructorOpts: vi.fn(() => ({})),
+  dhtBootstrapMisconfigured: vi.fn(() => false),
+}));
 
 vi.mock('./voice-relay', () => ({ getVoiceRelayKeys: vi.fn().mockResolvedValue([]) }));
 

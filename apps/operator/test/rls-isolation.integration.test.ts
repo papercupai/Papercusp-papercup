@@ -20,7 +20,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 
 // Idempotent — roles are cluster-global and a prior test may have created it.
 const APP_ROLE_DDL = `
@@ -54,6 +54,7 @@ beforeAll(async () => {
   try {
     await root.unsafe(APP_ROLE_DDL);
     await root.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(root, dbName);
   } finally {
     await root.end({ timeout: 5 });
   }

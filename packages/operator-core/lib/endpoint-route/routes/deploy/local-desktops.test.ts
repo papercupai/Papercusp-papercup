@@ -13,8 +13,9 @@
  *
  * Neither is caught by typechecking, so they are pinned here.
  */
-import { describe, expect, it } from 'vitest';
-import { toLocalDesktopRows } from './local-desktops';
+import { describe, expect, it, vi } from 'vitest';
+import { readLocalDesktopRoster, toLocalDesktopRows } from './local-desktops';
+import { rosterEntryForSession } from '../../../workspace-host/hosted-desktop-backend';
 import type { DesktopSessionRecord } from '../../../desktop/desktop-session-registry';
 
 const rec = (over: Partial<DesktopSessionRecord> = {}): DesktopSessionRecord => ({
@@ -24,6 +25,7 @@ const rec = (over: Partial<DesktopSessionRecord> = {}): DesktopSessionRecord => 
   kind: 'xvfb-local',
   scope: 'pot',
   scopeRef: 'alpha',
+  name: null,
   hostRef: null,
   ownerPid: 1,
   ownerBootId: 'boot',
@@ -91,5 +93,91 @@ describe('toLocalDesktopRows (P-004)', () => {
 
   it('handles an empty registry without inventing rows', () => {
     expect(toLocalDesktopRows([])).toEqual([]);
+  });
+});
+
+// ── D-015: the local grid labels tiles exactly as the cloud roster does ───────
+
+describe('roster labels (agent-multi-desktops-grid D-015)', () => {
+  it('an agent desktop carries its owner, name and the owner’s current work-item', () => {
+    const [row] = toLocalDesktopRows(
+      [rec({ scope: 'agent', scopeRef: 'su-abc', name: 'browser-2' })],
+      new Map([['su-abc', { workItemId: 'WI-42', intent: 'fix the login flow' }]]),
+    );
+    expect(row).toMatchObject({
+      owner: 'su-abc',
+      name: 'browser-2',
+      workItemId: 'WI-42',
+      workItemIntent: 'fix the login flow',
+    });
+  });
+
+  it('a pot desktop is owned by its pot and never borrows an agent claim', () => {
+    const [row] = toLocalDesktopRows(
+      [rec({ scope: 'pot', scopeRef: 'alpha' })],
+      // A claim keyed by the pot slug must not label a pot desktop: claims are agent-owned.
+      new Map([['alpha', { workItemId: 'WI-9', intent: 'x' }]]),
+    );
+    expect(row).toMatchObject({ owner: 'alpha', workItemId: null, workItemIntent: null });
+  });
+
+  it('a workspace desktop has no owner label (its scopeRef is the workspace id)', () => {
+    const [row] = toLocalDesktopRows([rec({ scope: 'workspace', scopeRef: 'ws' })]);
+    expect(row.owner).toBeNull();
+  });
+
+  it('labels agree with the hosted roster mapper for the same session', () => {
+    const session = rec({ scope: 'agent', scopeRef: 'su-abc', name: 'n' });
+    const claim = { workItemId: 'WI-1', intent: '  long intent  ' };
+    const [row] = toLocalDesktopRows([session], new Map([['su-abc', claim]]));
+    const hosted = rosterEntryForSession(session, claim);
+    expect({ owner: row.owner, name: row.name, workItemId: row.workItemId, workItemIntent: row.workItemIntent })
+      .toEqual({ owner: hosted.owner, name: hosted.name, workItemId: hosted.workItemId, workItemIntent: hosted.workItemIntent });
+  });
+});
+
+describe('readLocalDesktopRoster (the read behind the route and desktops.local)', () => {
+  it('lists this workspace’s sessions and looks each agent owner up once', async () => {
+    const listSessions = vi.fn(async () => [
+      rec({ id: 'a1', scope: 'agent', scopeRef: 'su-abc', display: ':110' }),
+      rec({ id: 'a2', scope: 'agent', scopeRef: 'su-abc', display: ':111' }),
+      rec({ id: 'p1', scope: 'pot', scopeRef: 'alpha', display: ':112' }),
+    ]);
+    const activeClaimFor = vi.fn(async (owner: string) =>
+      owner === 'su-abc' ? { workItemId: 'WI-7', intent: 'work' } : null,
+    );
+    const rows = await readLocalDesktopRoster('ws-1', { listSessions, activeClaimFor, warn: vi.fn() });
+
+    expect(listSessions).toHaveBeenCalledWith({ workspaceId: 'ws-1', limit: 200 });
+    expect(activeClaimFor.mock.calls).toEqual([['su-abc']]);
+    expect(rows.map((r) => [r.id, r.workItemId])).toEqual([
+      ['a1', 'WI-7'],
+      ['a2', 'WI-7'],
+      ['p1', null],
+    ]);
+  });
+
+  it('a failed claim lookup drops the label, never the desktop', async () => {
+    const warn = vi.fn();
+    const rows = await readLocalDesktopRoster('ws-1', {
+      listSessions: async () => [rec({ id: 'a1', scope: 'agent', scopeRef: 'su-abc' })],
+      activeClaimFor: async () => {
+        throw new Error('pg down');
+      },
+      warn,
+    });
+    expect(rows.map((r) => [r.id, r.workItemId])).toEqual([['a1', null]]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('su-abc'));
+  });
+
+  it('a failed registry read throws so each caller picks its own degradation', async () => {
+    await expect(
+      readLocalDesktopRoster('ws-1', {
+        listSessions: async () => {
+          throw new Error('relation does not exist');
+        },
+        activeClaimFor: async () => null,
+      }),
+    ).rejects.toThrow(/relation does not exist/);
   });
 });

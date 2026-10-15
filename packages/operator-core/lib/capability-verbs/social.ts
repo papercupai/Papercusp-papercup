@@ -22,6 +22,7 @@
  * belongs to the adapter, exactly as threading does for mail.
  */
 import type postgres from 'postgres';
+import { providerSocialWriteResultIssue } from '@papercusp/plugin-sdk';
 import {
   assertSocialPlatformUsable,
   assertSocialWriteAllowed,
@@ -30,14 +31,16 @@ import {
   type SocialPlatformRow,
   type SocialWriteVerb,
 } from '../external-triggers/social/platform-registry';
+import { assertDisclosurePermits } from '../personal-vault/disclosure-ledger';
 import { assertTrustedAddressee, type AddresseeDecision, type AddresseeProvenance } from './addressing';
 import {
-  resolveCanonicalDocument,
-  resolveOutboundContext,
-  string,
-  type CanonicalDocument,
-  type OutboundContext,
-} from './resolve';
+  invokeOutboundProvider,
+  OUTBOUND_CAPABILITIES,
+  resolveCapabilitySource,
+  type OutboundDispatchDeps,
+  type OutboundTarget,
+} from './provider-dispatch';
+import { resolveCanonicalDocument, string, type CanonicalDocument, type OutboundContext } from './resolve';
 
 /* -------------------------------------------------------------------------- */
 /* Post references                                                            */
@@ -267,6 +270,7 @@ export type SocialReplyTarget =
     }
   | { platform: 'mastodon'; inReplyToId: string; instanceHost: string }
   | { platform: 'reddit'; parentFullname: string; subreddit: string }
+  | { platform: 'x-twitter'; objectId: string }
   | {
       platform: 'youtube';
       /**
@@ -600,6 +604,17 @@ export function resolveSocialReplyCoordinates(doc: CanonicalDocument): SocialRep
       };
     }
 
+    case 'facebook-pages': {
+      if (!/^\d+(?:_\d+)*$/.test(doc.externalId)) throw new Error('social_reply_coordinates_missing:facebook-pages');
+      if (payload.canComment === false) throw new Error('social_reply_refused:facebook-pages:cannot_comment');
+      return { ref, target: { platform, objectId: doc.externalId }, parentVisibility, label: `${row.label} · ${doc.externalId}` };
+    }
+
+    case 'x-twitter': {
+      if (!/^\d{1,19}$/.test(doc.externalId)) throw new Error('social_reply_coordinates_missing:x-twitter');
+      return { ref, target: { platform, objectId: doc.externalId }, parentVisibility, label: `${row.label} · ${doc.externalId}` };
+    }
+
     case 'youtube':
       return {
         ref,
@@ -686,24 +701,57 @@ export async function resolveSocialPost(
 }
 
 /**
- * Resolve the outbound credential for a social platform.
+ * Resolve the owner's connected source for a social write, and the installed
+ * provider package that serves it (P-002).
  *
- * The platform id doubles as the vault source name and the trigger-source kind
- * — deliberately, so there is no second mapping table to drift out of sync with
- * the registry (see `TRIGGER_KIND_BY_VAULT_SOURCE` in resolve.ts, which derives
- * its social entries from the registry rather than restating them).
+ * The registry write gate runs first, so an unverified write path is refused
+ * even when a package is installed: having a package is not evidence that we
+ * know how to call the platform correctly. Then provider dispatch selects the
+ * source. The platform id IS the provider id, so the post ref's platform
+ * narrows the pool to that provider; a platform with no installed package, or
+ * a package that does not declare the capability, is refused by name before any
+ * network call.
  */
-export async function resolveSocialOutboundContext(
+export async function resolveSocialWriteTarget(
   sql: postgres.Sql,
   params: { workspaceId: string; userId: string; platform: SocialPlatformId; verb: SocialWriteVerb },
-): Promise<{ row: SocialPlatformRow; context: OutboundContext }> {
+  deps: Pick<OutboundDispatchDeps, 'registry'> = {},
+): Promise<{ row: SocialPlatformRow; target: OutboundTarget; capability: string }> {
   const row = assertSocialWriteAllowed(params.platform, params.verb);
-  const context = await resolveOutboundContext(sql, {
-    workspaceId: params.workspaceId,
-    userId: params.userId,
-    vaultSource: params.platform,
-  });
-  return { row, context };
+  const capability = SOCIAL_CAPABILITY_BY_VERB[params.verb];
+  const target = await resolveCapabilitySource(
+    sql,
+    {
+      workspaceId: params.workspaceId,
+      userId: params.userId,
+      datatype: 'social-post',
+      capabilities: [capability],
+      providerId: params.platform,
+    },
+    deps,
+  );
+  return { row, target, capability };
+}
+
+/** The provider capability each social write verb invokes. */
+export const SOCIAL_CAPABILITY_BY_VERB: Record<SocialWriteVerb, string> = {
+  post: OUTBOUND_CAPABILITIES.socialPost,
+  reply: OUTBOUND_CAPABILITIES.socialReply,
+  delete: OUTBOUND_CAPABILITIES.socialDelete,
+};
+
+/** A provider's `social.post` / `social.reply` result, validated and given its canonical ref. */
+function socialWriteOutcome(
+  platform: SocialPlatformId,
+  target: OutboundTarget,
+  capability: string,
+  result: Record<string, unknown>,
+): SocialReplyOutcome {
+  const issue = providerSocialWriteResultIssue(result);
+  if (issue) throw new Error(`provider_result_invalid:${target.provider.id}:${capability}:${issue}`);
+  const externalId = string(result.externalId);
+  const url = string(result.url);
+  return { externalId, ref: formatSocialPostRef({ platform, externalId }), ...(url ? { url } : {}) };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -852,22 +900,6 @@ export interface SocialDeleteOutcome {
   detail?: string;
 }
 
-const WRITE_ADAPTERS = new Map<SocialPlatformId, SocialWriteAdapter>();
-
-/** Register a platform's write adapter (P-011..P-019 land these). */
-export function registerSocialWriteAdapter(adapter: SocialWriteAdapter): void {
-  WRITE_ADAPTERS.set(adapter.platform, adapter);
-}
-
-/** Test seam: drop a registration so a suite cannot leak into the next. */
-export function unregisterSocialWriteAdapter(platform: SocialPlatformId): void {
-  WRITE_ADAPTERS.delete(platform);
-}
-
-export function getSocialWriteAdapter(platform: SocialPlatformId): SocialWriteAdapter | undefined {
-  return WRITE_ADAPTERS.get(platform);
-}
-
 /**
  * Derive the idempotency key for a reply.
  *
@@ -926,9 +958,11 @@ export interface SocialReplyResult extends SocialReplyOutcome {
  * existing thread, it is visible, and a follow-up can correct it.
  *
  * Order of the gates matters and is not arbitrary. The registry write gate runs
- * BEFORE the adapter lookup, so an unverified write path (Bluesky) is refused
- * even once its adapter exists — the gate is about whether we know how to call
- * the API correctly, which having written an adapter does not establish.
+ * BEFORE the provider lookup, so an unverified write path (Bluesky) is refused
+ * even once its package is installed — the gate is about whether we know how
+ * to call the API correctly, which having written a package does not establish.
+ * The write itself goes through the installed provider package's
+ * `social.reply` capability (P-002); there is no in-app adapter registry.
  */
 export async function replyToCanonicalSocialPost(
   sql: postgres.Sql,
@@ -938,7 +972,13 @@ export async function replyToCanonicalSocialPost(
     ref: string | SocialPostRef;
     text: string;
     visibility?: SocialVisibility | null;
+    /**
+     * Reader-set labels: see `sendNewMail` in ./mail. A post's audience cannot be
+     * enumerated as mailboxes, so any active disclosure refuses it.
+     */
+    agentOwnerId: string | null;
   },
+  deps: OutboundDispatchDeps = {},
 ): Promise<SocialReplyResult> {
   const text = params.text.trim();
   if (!text) throw new Error('social_reply_text_required');
@@ -949,38 +989,31 @@ export async function replyToCanonicalSocialPost(
     userId: params.userId,
     ref: params.ref,
   });
+  await assertDisclosurePermits(sql, {
+    workspaceId: params.workspaceId,
+    userId: params.userId,
+    agentOwnerId: params.agentOwnerId,
+    recipients: null,
+    sink: `${ref.platform}:reply`,
+  });
   const coordinates = resolveSocialReplyCoordinates(doc);
   const visibility = resolveReplyVisibility(coordinates.parentVisibility, params.visibility);
 
-  const { context } = await resolveSocialOutboundContext(sql, {
-    workspaceId: params.workspaceId,
-    userId: params.userId,
-    platform: ref.platform,
-    verb: 'reply',
-  });
-
-  const adapter = getSocialWriteAdapter(ref.platform);
-  if (!adapter) {
-    throw new Error(
-      `social_reply_adapter_missing:${ref.platform} — the platform's write path is verified but no adapter is registered yet`,
-    );
-  }
-
-  if (typeof adapter.reply !== 'function') {
-    throw new Error(
-      `social_reply_adapter_verb_missing:${ref.platform} — the registry declares this platform can reply, but its adapter does not implement it`,
-    );
-  }
-
-  const outcome = await adapter.reply(
-    {
-      target: coordinates.target,
-      text,
-      visibility,
-      idempotencyKey: socialReplyIdempotencyKey(ref, text),
-    },
-    context,
+  const { target, capability } = await resolveSocialWriteTarget(
+    sql,
+    { workspaceId: params.workspaceId, userId: params.userId, platform: ref.platform, verb: 'reply' },
+    deps,
   );
+
+  const request: SocialReplyRequest = {
+    target: coordinates.target,
+    text,
+    visibility,
+    idempotencyKey: socialReplyIdempotencyKey(ref, text),
+  };
+  // Package-specific coordinates stay in the server-resolved canonical payload.
+  const result = await invokeOutboundProvider(sql, target, capability, { ...request, payload: doc.payload }, deps);
+  const outcome = socialWriteOutcome(ref.platform, target, capability, result);
 
   return {
     ...outcome,
@@ -1086,7 +1119,10 @@ export async function postToCanonicalSocialDestination(
     text: string;
     visibility?: SocialVisibility | null;
     provenance: AddresseeProvenance;
+    /** See `replyToCanonicalSocialPost`. */
+    agentOwnerId: string | null;
   },
+  deps: OutboundDispatchDeps = {},
 ): Promise<SocialPostResult> {
   const text = params.text.trim();
   if (!text) throw new Error('social_post_text_required');
@@ -1115,25 +1151,22 @@ export async function postToCanonicalSocialDestination(
     destination: ref.destination,
     provenance: params.provenance,
   });
-
-  const { context } = await resolveSocialOutboundContext(sql, {
+  // Beside rail 2 and for the same reason: before any credential is resolved,
+  // and regardless of the publish flag, so the echo never promises a post the
+  // labels would refuse.
+  await assertDisclosurePermits(sql, {
     workspaceId: params.workspaceId,
     userId: params.userId,
-    platform: ref.platform,
-    verb: 'post',
+    agentOwnerId: params.agentOwnerId,
+    recipients: null,
+    sink: `${ref.platform}:${ref.destination}`,
   });
 
-  const adapter = getSocialWriteAdapter(ref.platform);
-  if (!adapter) {
-    throw new Error(
-      `social_post_adapter_missing:${ref.platform} — the platform's write path is verified but no adapter is registered yet`,
-    );
-  }
-  if (typeof adapter.post !== 'function') {
-    throw new Error(
-      `social_post_adapter_verb_missing:${ref.platform} — the registry declares this platform can post, but its adapter implements only reply`,
-    );
-  }
+  const { target, capability } = await resolveSocialWriteTarget(
+    sql,
+    { workspaceId: params.workspaceId, userId: params.userId, platform: ref.platform, verb: 'post' },
+    deps,
+  );
 
   const echo: SocialPostEcho = {
     platform: ref.platform,
@@ -1141,9 +1174,9 @@ export async function postToCanonicalSocialDestination(
     destinationRef: formatSocialDestinationRef(ref),
     visibility,
     account: {
-      sourceId: context.source.id,
-      kind: context.source.kind,
-      credentialRef: context.source.credentialRef,
+      sourceId: target.source.id,
+      kind: target.source.kind,
+      credentialRef: target.source.credentialRef ?? null,
     },
     destinationStanding: decision.standing,
     destinationProvenance: decision.provenance,
@@ -1167,15 +1200,14 @@ export async function postToCanonicalSocialDestination(
     };
   }
 
-  const outcome = await adapter.post(
-    {
-      destination: ref.destination,
-      text,
-      visibility,
-      idempotencyKey: echo.idempotencyKey,
-    },
-    context,
-  );
+  const request: SocialPostRequest = {
+    destination: ref.destination,
+    text,
+    visibility,
+    idempotencyKey: echo.idempotencyKey,
+  };
+  const result = await invokeOutboundProvider(sql, target, capability, { ...request }, deps);
+  const outcome = socialWriteOutcome(ref.platform, target, capability, result);
 
   return { echo, published: { ...outcome, platform: ref.platform }, withheld: null };
 }

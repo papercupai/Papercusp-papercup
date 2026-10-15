@@ -132,8 +132,11 @@ function makeCtx() {
     progress: () => {},
     metadata: () => {},
     signal: new AbortController().signal,
-    workspaceId: 'default',
-    principal: { kind: 'agent', slug: 'agent-spawn-preview-test', workspaceId: 'default' },
+    // promote reads the source plan from the caller's scope (ctxToPlanSourceOpts),
+    // so match the workspace used by seedPlan above instead of the fixture's
+    // unrelated default workspace.
+    workspaceId: PAPERCUSP_WORKSPACE_ID,
+    principal: { kind: 'agent', slug: 'agent-spawn-preview-test', workspaceId: PAPERCUSP_WORKSPACE_ID },
   } as never;
 }
 

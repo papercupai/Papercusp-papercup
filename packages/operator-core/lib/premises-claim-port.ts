@@ -378,8 +378,45 @@ function extractSearchableArtifact(subject: string, claim: string): string | nul
 const OBSERVATION_RECHECK =
   'State what would falsify this claim and how you would observe it; name the runtime, temporal, or external-state probe that can answer it.';
 
+/**
+ * A live census can prove the absence of an unaccounted runtime group/task, but
+ * its claim text is not a repository symbol. Keep the recognized shape narrow:
+ * it must name an unaccounted process entity and an explicitly current/live
+ * state, so a missing durable API such as "unaccounted-group reader" still gets
+ * a repository recheck.
+ */
+function isCurrentUnaccountedProcessState(text: string): boolean {
+  return (
+    /\bunaccounted\b/i.test(text) &&
+    /\b(?:group|task|pid|process(?:es)?)\b/i.test(text) &&
+    /\b(?:current|live|active|running|runtime)\b/i.test(text)
+  );
+}
+
+const LIVE_PROCESS_CENSUS_RECHECK =
+  'Recheck the live process census with `processes:list { live:true, limit:1 }` and no state/task selectors; ' +
+  'compare `unaccountedCount`, `unaccountedPidCount`, and `unaccountedGroups`. A repository search cannot verify current process state.';
+
+/** The stored check proves this runtime absence only when it is a complete, unfiltered census. */
+function hasUnfilteredLiveProcessCensus(probeText: string): boolean {
+  return probeText.split(/\r?\n/).some((line) => {
+    const row = line.toLowerCase();
+    const unfiltered =
+      /\bunfiltered\b/.test(row) ||
+      /\b(?:no|without|omitted)\s+state\/task\s+(?:selectors?|filters?)\b/.test(row);
+    return (
+      /\bprocesses?:list\b/.test(row) &&
+      /\blive\s*[:=]\s*true\b/.test(row) &&
+      unfiltered &&
+      /\bunaccounted(?:count|pidcount)\s*[:=]\s*0\b/.test(row) &&
+      /\bunaccountedgroups\s*[:=]\s*\[\s*\]/.test(row)
+    );
+  });
+}
+
 /** The concrete probe attached to a derived premise. */
 function recheckFor(subject: string, claim: string): string {
+  if (isCurrentUnaccountedProcessState(`${subject} ${claim}`)) return LIVE_PROCESS_CENSUS_RECHECK;
   const scopeRule =
     'across the WHOLE repo (not the one file that suggested it), then state the scope you searched — ' +
     'an absence found in one module is not an absence.';
@@ -540,6 +577,14 @@ const HYPOTHETICAL_FRAME =
   /(?:^|\n)\s*(?:[-*+]\s*)?(?:\*\*)?\s*(?:falsifi(?:ed|es|able)|disprove[dn]?|refuted|invalidated)\b[^\n]{0,20}\bif\b/i;
 
 /**
+ * An absence phrase directly introduced as an `if`/`when`/`unless` condition is
+ * not itself an assertion that the absent thing is missing. Keep this prefix
+ * check tight: a separate main-clause claim such as "If X happens, there is no
+ * reader" still reaches the advisory.
+ */
+const DIRECT_CONDITIONAL_ABSENCE_PREFIX = /\b(?:if|when|unless)\s*$/i;
+
+/**
  * Derive absence premises from an artifact's own text. PURE and exported for
  * tests — the measurement above is only meaningful if the thing measured is the
  * thing that ships.
@@ -592,6 +637,7 @@ export function detectAbsencePremises(text: string, source: PremiseSource): Deri
       // stated hypothesis, not a claim. Scoped to the hit's OWN line: a wider lookback let
       // one falsifier label silence genuine claims in the bullets that followed it.
       const hitAt = m.index ?? 0;
+      if (DIRECT_CONDITIONAL_ABSENCE_PREFIX.test(prose.slice(bounds.start, hitAt))) continue;
       const lineStart = prose.lastIndexOf('\n', Math.max(0, hitAt - 1)) + 1;
       if (HYPOTHETICAL_FRAME.test(`\n${prose.slice(lineStart, hitAt)}`)) continue;
       const key = claim.toLowerCase();
@@ -631,6 +677,7 @@ export function uncoveredAbsencePremises(
 ): Array<{ claim: string; recheck?: string }> {
   const probeWords = new Set(probeText.toLowerCase().match(/[a-z0-9_.:/-]{4,}/g) ?? []);
   const covered = (claim: string): boolean => {
+    if (isCurrentUnaccountedProcessState(claim) && hasUnfilteredLiveProcessCensus(probeText)) return true;
     const words = claim.toLowerCase().match(/[a-z0-9_.:/-]{4,}/g) ?? [];
     if (words.length === 0) return false;
     const hits = words.filter((word) => probeWords.has(word)).length;

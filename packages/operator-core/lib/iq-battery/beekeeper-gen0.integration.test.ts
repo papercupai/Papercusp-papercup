@@ -18,7 +18,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { readRepoFile } from '@papercusp/test-config';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { runBeekeeperBattery, type BeekeeperConfig, type BeekeeperDeps } from './beekeeper-runner';
 import { seedCorpus } from './corpus';
 import { BeekeeperStorePg } from './beekeeper-store-pg';
@@ -110,6 +110,7 @@ describe('beekeeper gen-0 battery — the de-stub contract (real PG)', () => {
     const dbName = `bk_gen0_${randomBytes(5).toString('hex')}`;
     admin = postgres(adminUri, { max: 1, onnotice: () => {} });
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
     const u = new URL(adminUri); u.pathname = `/${dbName}`;
     sql = postgres(u.toString(), { max: 6, onnotice: () => {} });
     await sql.unsafe('CREATE SCHEMA IF NOT EXISTS harness_shared');

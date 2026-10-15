@@ -1,0 +1,84 @@
+{
+  "version": "0.0.22",
+  "channel": "alpha",
+  "workItem": "WI-10005303",
+  "publicArtifactKey": "desktop-v0.0.22-alpha/Papercusp GUI_0.0.22_x64-setup.exe",
+  "pathBase": "archive paths are relative to the workspace checkout parent; no release-host secret prefix is stored",
+  "retainedWindowsCut": {
+    "manifestPath": "papercusp-relcut-0022-green/papercusp-desktop/src-tauri/target/windows-vm/bundle/inno/build-provenance.json",
+    "manifestSha256": "1df65afecaecaa8a8be8d844a27d9027bbd8eafc501d09b4c2e5190dec16976b",
+    "version": "0.0.22",
+    "reused": false,
+    "signed": false,
+    "buildSha": "56e3dd9b",
+    "gitHead": "56e3dd9b23a0d289d001115163a93c1262acfdf2",
+    "gitDirty": false,
+    "gitHeadAtEmit": "56e3dd9b23a0d289d001115163a93c1262acfdf2",
+    "gitDirtyAtEmit": true,
+    "builtAtUtc": "2026-09-27T17:31:39Z",
+    "artifactRecord": {
+      "name": "Papercusp GUI_0.0.22_x64-setup.exe",
+      "bytes": 73803156,
+      "sha256": "44324b1af14021ab5bfabce1dd72d1b403e06314f6f1baa2b5cec228f8761036",
+      "sig": true,
+      "mtimeEpochSec": 1790529407,
+      "mtimeUtc": "2026-09-27T17:16:47Z",
+      "completedAtUtc": "2026-09-27T17:16:47Z"
+    },
+    "currentArtifactSha256": "44324b1af14021ab5bfabce1dd72d1b403e06314f6f1baa2b5cec228f8761036",
+    "currentArtifactBytes": 73803156
+  },
+  "preservedPublicArtifact": {
+    "path": "/tmp/papercusp-gui-0.0.22-published.exe",
+    "sha256": "44324b1af14021ab5bfabce1dd72d1b403e06314f6f1baa2b5cec228f8761036",
+    "bytes": 73803156,
+    "sourceRef": "WI-10004873#completion"
+  },
+  "publication": {
+    "workItem": "WI-10003614",
+    "state": "done",
+    "sourceRef": "WI-10003614#completion",
+    "recordedPublicationWindow": "2026-09-28 around 09:35 UTC",
+    "evidence": "The completed publication record reports public re-downloads matching the Windows cut: GUI digest prefix 44324b1a and upload EXIT=0."
+  },
+  "shakedownInventory": {
+    "path": "docs/evidence/p2p-endgame-shakedown-0022-7708e704-provenance.json",
+    "sha256": "05d41bc1cb3b5f6d3d278afe3ded520e65e4f2791768879b8779fa55f4746307",
+    "sourceSha": "7708e704d9b0dbe0b570e8cd914bd7036079abd0",
+    "guiArtifactRecord": {
+      "name": "Papercusp GUI_0.0.22_x64-setup.exe",
+      "sha256": "d649cab150c799ad8e15b75bd4febd1577568a10917a7510bff01f052c637e9d"
+    }
+  },
+  "conclusion": "The retained Windows cut record, its current artifact, the preserved public installer and the September 28 publication ledger agree on the uploaded GUI identity. The shakedown inventory records a different digest and must not be used as the upload receipt for this object. The original inventory remains unchanged.",
+  "limitations": [
+    "The recorded signed=false means Authenticode was not configured; artifactRecord.sig=true records co-located minisign signature presence at emit time, not a new cryptographic signature verification.",
+    "The earlier shakedown digest origin is not established by this reconciliation.",
+    "gitHead/buildSha are retained as recorded manifest fields; they are not substituted for a superproject sourceSha.",
+    "gitDirtyAtEmit is true and remains distinct from gitDirty=false at accepted source; no clean-at-emit claim is made.",
+    "The old temporary upload/download logs are no longer present; the retained cut and durable publication ledger supply the recovered evidence.",
+    "No new upload, installer execution or Windows runtime validation was performed."
+  ],
+  "assertions": [
+    {
+      "id": "manifest-version",
+      "passed": true,
+      "evidence": "Retained Windows build-provenance.json version."
+    },
+    {
+      "id": "three-way-gui-sha256",
+      "passed": true,
+      "evidence": "Manifest SHA-256 equals independently read retained-cut and preserved-public file SHA-256."
+    },
+    {
+      "id": "three-way-gui-size",
+      "passed": true,
+      "evidence": "Manifest and both file lengths agree."
+    },
+    {
+      "id": "publication-ledger-correlation",
+      "passed": true,
+      "evidence": "Completed Windows publication receipt identifies the matching cut/public GUI digest."
+    }
+  ]
+}

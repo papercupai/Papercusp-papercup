@@ -23,7 +23,7 @@ import {
 } from './github-bridge-tick';
 import type { IngressResult } from './github-ingress';
 import type { AdmissionResult } from './github-ingress-admission';
-import type { EgressResult } from './github-egress';
+import type { EgressInput, EgressResult } from './github-egress';
 import type { DivergenceVerdict } from './github-divergence';
 
 const CANONICAL = 'c'.repeat(40);
@@ -185,6 +185,29 @@ it('threads the selected helper through ingress and egress while leaving canonic
 });
 
 describe('runGithubBridgeTick — an unreachable remote must not read green', () => {
+  it('egresses a newly integrated head without repeating ingress/admission or clearing their refusal', async () => {
+    let canonical = HEAD_A;
+    const ingress = vi.fn(async () => cleanIngress({ updated: [{ branch: 'main', from: null, to: HEAD_A, forced: false }] }));
+    const admit = vi.fn(async (): Promise<AdmissionResult> => ({ ...admitClean(), admit: false, basis: 'error', errors: ['admission unavailable'] }));
+    const egress = vi.fn(async (i: EgressInput) => cleanEgress({ pushed: [{ remoteRef: BRIDGE_REMOTE_STAGING_REF, from: null, to: i.refs[0].sha }] }));
+    const { input } = bridgeInput({}, {
+      ingress, admit, egress,
+      runGit: async () => ({ code: 0, stdout: canonical + '\n', stderr: '' }),
+    });
+    const early = await runGithubBridgeTick(input);
+    canonical = CANONICAL; // the integrator advances staging later in the same fire
+    const late = await runGithubBridgeTick({ ...input, ingressSnapshot: early.ingressSnapshot });
+
+    expect(early.egressHead).toBe(HEAD_A);
+    expect(late.egressHead).toBe(CANONICAL);
+    expect(ingress).toHaveBeenCalledOnce();
+    expect(admit).toHaveBeenCalledOnce();
+    expect(egress).toHaveBeenCalledTimes(2);
+    expect(late.lastAdmitted).toBeNull();
+    expect(late.verdict.signals).toContainEqual(expect.objectContaining({ kind: 'admission-blocked', head: HEAD_A }));
+    expect(late.errors).toContain('admission aaaaaaaaaaaa: admission unavailable');
+  });
+
   // The oddsmith regression (2026-07-19): the bare store resolved a different
   // git credential than the clone, so ingress hit `Repository not found` on
   // every tick. Every structured residue was empty BECAUSE nothing was
@@ -515,6 +538,33 @@ describe('runGithubBridgeTick — EI-18751829787526583: a stale-but-PRESENT cano
     const { input } = bridgeInput();
     const out = await runGithubBridgeTick(input);
     expect(out.verdict.signals.map((s) => s.kind)).not.toContain('egress-canonical-stale');
+  });
+
+  it('passes the stored scan cursor into egress and returns the next cursor', async () => {
+    const previousCursor = {
+      version: 1 as const,
+      policyFingerprint: 'a'.repeat(64),
+      baseSha: HEAD_A,
+      targetSha: CANONICAL,
+      lastScannedCommitSha: HEAD_A,
+    };
+    const nextCursor = { ...previousCursor, lastScannedCommitSha: CANONICAL };
+    const captured: unknown[] = [];
+    const { input } = bridgeInput(
+      { egressScanProgress: previousCursor },
+      {
+        egress: async (egressInput) => {
+          captured.push(egressInput);
+          return cleanEgress({ scanProgress: nextCursor });
+        },
+      },
+    );
+
+    const out = await runGithubBridgeTick(input);
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toMatchObject({ scanProgress: previousCursor });
+    expect(out.egressScanProgress).toEqual(nextCursor);
   });
 
   it('canonical DIVERGED (not an ancestor) from the watermark → not flagged stale (a different problem)', async () => {

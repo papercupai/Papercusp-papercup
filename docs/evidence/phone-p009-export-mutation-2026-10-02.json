@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Phone P009 export privacy mutation guard",
+  "framework": "shell",
+  "command": [
+    "scripts/mutation-probe.sh --file '${PHONE_APP_ROOT}/packages/data/src/postgres-store.ts' --mutate 's/callContentExport\\(toCall\\(row\\), row.segments, row.voicemail\\)/({ format: \"papercusp-phone-call-v1\", call: toCall(row), segments: row.segments, voicemail: row.voicemail })/' --test 'test -f \"{}\" && cd '\\''${PHONE_APP_ROOT}/packages/data'\\'' && npm test -- src/call-export.integration.test.ts' --relocation overlay --expect caught"
+  ],
+  "startedAt": "2026-10-02T04:54:20.480Z",
+  "finishedAt": "2026-10-02T04:54:29.316Z",
+  "exitCode": 0,
+  "summary": "Maintained copy-out overlay guard ran the registered export integration suite against canonical and relocated canonical snapshots (9 pass each), then a PostgreSQL export mutant that returned the persisted call without its privacy allowlist. The guard caught the private recordingUri at the intended assertion (8 pass, 1 intentional failure). This verifies software falsifiability; no public PSTN, policy approval or shipment.",
+  "assertions": [
+    {
+      "id": "baseline-green",
+      "passed": true,
+      "evidence": "Both baseline executions reported 9 passed, 0 failed in call-export.integration.test.ts."
+    },
+    {
+      "id": "private-reference-mutant-caught",
+      "passed": true,
+      "evidence": "Exact failure: call export (postgres) > exports ordered content and read state without private media or conversation authority; AssertionError: expected { …(14) } to not have property \"recordingUri\"."
+    },
+    {
+      "id": "copy-out-relocation-verified",
+      "passed": true,
+      "evidence": "MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evidence=vitest-failed-tests relocation=overlay; wrapper exit 0 after canonical-byte restoration verification. No tracked file was mutated."
+    }
+  ],
+  "pathNormalization": {
+    "PHONE_APP_ROOT": "Registered phone-app harness root; this variable replaces only the actual machine's managed app prefix in the executed command."
+  },
+  "mutation": {
+    "subject": "phone-app/packages/data/src/postgres-store.ts",
+    "expression": "s/callContentExport\\(toCall\\(row\\), row.segments, row.voicemail\\)/({ format: \"papercusp-phone-call-v1\", call: toCall(row), segments: row.segments, voicemail: row.voicemail })/",
+    "testFile": "phone-app/packages/data/src/call-export.integration.test.ts",
+    "verdict": "caught",
+    "baselineExit": 0,
+    "guardExit": 1,
+    "relocation": "overlay"
+  },
+  "rawLogRef": "/tmp/phone-p009-export-mutation-20261002.log"
+}

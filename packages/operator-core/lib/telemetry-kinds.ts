@@ -8,10 +8,90 @@
  * `TELEMETRY_KINDS`/`TelemetryKind` and get autocomplete + compile
  * errors at every site that drifts.
  *
- * Payload shapes per kind are intentionally permissive (unknown) so
- * the wire format stays forward-compat — schema enforcement lives in
- * the analysis layer (PostHog/grafana), not the ingress.
+ * Local diagnostic payloads retain their existing wire format. Cloud
+ * delivery uses the closed schemas below before anything leaves its host.
  */
+import { z } from 'zod';
+import { productTutorialLessonIds } from './onboarding/product-tutorial-lesson';
+
+/** Browser-safe contract shared by the hosted ingress and its final writer.
+ * Identity, environment, release and observation time are server-owned. */
+const counter = z.number().int().nonnegative().safe();
+const instant = z.string().datetime({ offset: true });
+const operation = z.string().uuid();
+const cloudEvent = <N extends string, P extends z.ZodRawShape>(event: N, properties: P) =>
+  z.object({ event: z.literal(event), operation_id: operation, properties: z.object(properties).strict() }).strict();
+
+export const CLOUD_MONITORING_DISCLOSURE_VERSION = '2026-10-13' as const;
+export const CLOUD_ERROR_CODES = ['render_failure', 'request_failure', 'provisioning_failure', 'connector_unavailable'] as const;
+
+export const cloudDiagnosticAggregateSchema = z.object({
+  period_start: instant,
+  period_end: instant,
+  calls: counter,
+  input_tokens: counter,
+  output_tokens: counter,
+  cache_read_tokens: counter,
+  cache_creation_tokens: counter,
+  provider_cost_usd: z.number().finite().nonnegative().nullable(),
+  estimated_cost_usd: z.number().finite().nonnegative().nullable(),
+  unpriced_calls: counter,
+}).strict().refine(value => Date.parse(value.period_end) >= Date.parse(value.period_start), 'invalid aggregate window')
+  .refine(value => value.unpriced_calls <= value.calls, 'unpriced calls exceed observed calls');
+
+const cloudTelemetryEventUnion = z.discriminatedUnion('event', [
+  cloudEvent('cloud_portal_session', { action: z.enum(['signed_in', 'returned', 'setup_started', 'setup_completed']) }),
+  cloudEvent('cloud_tutorial', {
+    lesson_id: z.literal('first-cloud-agent'), lesson_version: z.union([z.literal(1), z.literal(2)]),
+    action: z.enum(['start', 'step_displayed', 'step_confirmed', 'waiting', 'recovery', 'pause', 'resume', 'skip', 'exit', 'replay', 'check_again', 'complete', 'help_requested']),
+    step: z.enum(['connection', 'configuration', 'workspace', 'agent', 'task', 'result', 'revision', 'practice']).optional(),
+    status: z.enum(['loading', 'ready', 'waiting', 'delayed', 'error', 'blocked', 'missing-target', 'complete']).optional(),
+  }),
+  cloudEvent('product_tutorial', {
+    lesson_id: z.literal('product-guide'), lesson_version: z.literal(3),
+    action: z.enum(['start', 'resume', 'pause', 'skip', 'guide_closed', 'lesson_displayed', 'explanation_reviewed', 'waiting', 'recovery', 'help_requested']),
+    lesson: z.string().max(120).refine(id => productTutorialLessonIds.has(id)).optional(),
+  }),
+  cloudEvent('cloud_workspace_provisioning', {
+    phase: z.enum(['requested', 'ready', 'failed', 'destroyed']),
+    provider: z.enum(['gcp', 'aws', 'azure', 'local']), hosting_mode: z.enum(['managed', 'byoc', 'unknown']),
+    duration_ms: counter.max(7 * 24 * 60 * 60 * 1000).optional(),
+    failure_code: z.enum(['provider_refused', 'timeout', 'connection_unavailable', 'internal_failure']).optional(),
+  }),
+  cloudEvent('cloud_feature_adoption', { feature: z.enum(['workspace_list', 'connection_setup', 'cloud_tutorial', 'billing', 'monitoring']) }),
+  cloudEvent('cloud_error', { code: z.enum(CLOUD_ERROR_CODES), fingerprint: z.string().regex(/^[a-f0-9]{64}$/) }),
+  z.object({ event: z.literal('cloud_diagnostic_aggregate'), operation_id: operation, properties: cloudDiagnosticAggregateSchema }).strict(),
+]);
+// Zod deliberately omits __proto__ while enumerating unknown keys. Our writer
+// contract rejects the input, rather than silently accepting a stripped key.
+export const cloudTelemetryEventSchema = z.preprocess(value => {
+  const plain = (input: unknown): input is Record<string, unknown> => input !== null && typeof input === 'object' &&
+    !Array.isArray(input) && [Object.prototype, null].includes(Object.getPrototypeOf(input));
+  const dangerous = (input: Record<string, unknown>) => Object.keys(input).some(key => ['__proto__', 'constructor', 'prototype'].includes(key));
+  if (!plain(value) || dangerous(value) || !plain(value.properties) || dangerous(value.properties)) return undefined;
+  return value;
+}, cloudTelemetryEventUnion);
+export type CloudTelemetryEvent = z.infer<typeof cloudTelemetryEventSchema>;
+
+/** Stored locally in existing scoped preferences. No maintainer override. */
+const consentChoice = z.object({ enabled: z.boolean(), since: instant.nullable() }).strict();
+export const cloudTelemetryConsentSchema = z.object({
+  disclosure_version: z.literal(CLOUD_MONITORING_DISCLOSURE_VERSION),
+  analytics: consentChoice,
+  diagnostics: consentChoice,
+}).strict();
+export type CloudTelemetryConsent = z.infer<typeof cloudTelemetryConsentSchema>;
+/** Customers choose categories; only the server can stamp consent epochs. */
+export const cloudTelemetryConsentUpdateSchema = z.object({
+  disclosure_version: z.literal(CLOUD_MONITORING_DISCLOSURE_VERSION),
+  analytics: z.boolean().optional(),
+  diagnostics: z.boolean().optional(),
+}).strict().refine(value => value.analytics !== undefined || value.diagnostics !== undefined, 'no consent choice');
+export type CloudTelemetryConsentUpdate = z.infer<typeof cloudTelemetryConsentUpdateSchema>;
+export const DEFAULT_CLOUD_TELEMETRY_CONSENT: CloudTelemetryConsent = {
+  disclosure_version: CLOUD_MONITORING_DISCLOSURE_VERSION,
+  analytics: { enabled: false, since: null }, diagnostics: { enabled: false, since: null },
+};
 
 export const TELEMETRY_KINDS = {
   /** End-user-triggered diagnostic. Carries no automatic info — used
@@ -57,6 +137,10 @@ export const TELEMETRY_KINDS = {
    *  recorded locally on the boot-history channel; this kind forwards the
    *  count off-device when the user has opted in. */
   substrate_admission_rejected: 'substrate_admission_rejected',
+
+  /** Slow improvements:capture occurrence persistence; records client-observed
+   *  canonical lookup and occurrence INSERT await times, without work-item data. */
+  capture_stage_timing: 'capture_stage_timing',
 } as const;
 
 export type TelemetryKind = (typeof TELEMETRY_KINDS)[keyof typeof TELEMETRY_KINDS];
@@ -80,6 +164,17 @@ export interface TelemetryPayloads {
     reason: 'bad_sig' | 'binding_invalid' | 'revoked';
     /** Truncated peer label (e.g. first bytes of the log key) — NOT the full pubkey. */
     peer?: string;
+  };
+  capture_stage_timing: {
+    operation: 'issue_occurrence_persistence';
+    sourceTool: 'improvements:capture';
+    reportKind: 'canonical-created';
+    startedAt: string;
+    canonicalLookupAwaitMs: number | null;
+    occurrenceInsertAwaitMs: number | null;
+    totalElapsedMs: number;
+    outcome: 'recorded' | 'canonical-missing' | 'insert-empty' | 'failed';
+    failedStage: 'canonical-lookup' | 'occurrence-insert' | null;
   };
 }
 

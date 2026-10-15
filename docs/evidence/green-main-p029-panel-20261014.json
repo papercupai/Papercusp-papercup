@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-029 real staging API and Git panel acceptance",
+  "framework": "playwright",
+  "command": [
+    "env",
+    "OPERATOR_E2E_BASE_URL=http://127.0.0.1:3170",
+    "OPERATOR_E2E_REUSE_SERVER=1",
+    "OPERATOR_E2E_SKIP_WARMUP=1",
+    "npx",
+    "playwright",
+    "test",
+    "--config",
+    "playwright.config.mts",
+    "e2e/admin-pages.spec.ts",
+    "--grep",
+    "API non-verdict",
+    "--workers=1",
+    "--retries=0",
+    "--trace",
+    "on"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-14T00:36:41.908Z",
+  "finishedAt": "2026-10-14T00:36:44.998Z",
+  "summary": "Actual Chromium acceptance passed one selected test (8.3s test, 13.4s runner). Observed the browser's real dev.gitPipeline API response and matched five reason rows and threshold on /admin/git. Both health witnesses report staging build443fb28757. These timestamps bound the measured API/render witnesses inside the test, not the entire runner lifetime. No final release/shipment claim.",
+  "assertions": [
+    {
+      "id": "p029-real-api-response",
+      "passed": true,
+      "evidence": "Real /rest-query?name=dev.gitPipeline HTTP200, one snapshot row for papercusp; nonVerdictReasons.windowHours24, measuredAtMs1791938162052, unreadable[]."
+    },
+    {
+      "id": "p029-render-reason-counts",
+      "passed": true,
+      "evidence": "Rendered exact API rows: skipped-joined-attempt25, error10, skipped-locked6, repair-in-progress2, skipped-memory-budget1. Five rendered li entries match five actual rows."
+    },
+    {
+      "id": "p029-render-followup-threshold",
+      "passed": true,
+      "evidence": "API threshold6 and visible text: Owned follow-up at 6 outcomes per reason."
+    },
+    {
+      "id": "p029-stable-serving-build",
+      "passed": true,
+      "evidence": "GET/api/health before and after browser acceptance both HTTP200, sha443fb28757, papercusp-operator. Current-build UI containment was measured true through dev:pipeline_position."
+    }
+  ],
+  "receipt": {
+    "origin": "http://127.0.0.1:3170",
+    "slug": "papercusp",
+    "servingSha": "443fb28757",
+    "measuredAtMs": 1791938162052,
+    "threshold": 6,
+    "reasons": [
+      {
+        "reason": "skipped-joined-attempt",
+        "count": 25
+      },
+      {
+        "reason": "error",
+        "count": 10
+      },
+      {
+        "reason": "skipped-locked",
+        "count": 6
+      },
+      {
+        "reason": "repair-in-progress",
+        "count": 2
+      },
+      {
+        "reason": "skipped-memory-budget",
+        "count": 1
+      }
+    ],
+    "unreadable": [],
+    "tracePath": "apps/operator/test-results/admin-pages-admin-pages-ad-342ac-ut-treating-unknown-as-zero-chromium/trace.zip",
+    "receiptResource": "resources/d07a0254dcfba19f563514c116d7d88026475b9d"
+  },
+  "limitations": [
+    "Null/unknown branches were covered by saved native UI tests; this actual browser run observed readable nonempty metrics.",
+    "Archived observation; does not claim native operational executor runtime-witness provenance for R12/R17.",
+    "Full plan and final deployment remain open."
+  ]
+}

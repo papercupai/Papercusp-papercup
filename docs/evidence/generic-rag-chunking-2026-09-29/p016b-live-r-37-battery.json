@@ -1,0 +1,200 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "generic-rag-chunking-2026-09-29 R-37 live battery (P-016 re-measure): A consult-question search site that P-012 opts into retrieve mode returns the target question (by conversation id) within its default result count for a query matching only text past the question's first 2,000 characters.",
+  "framework": "operational",
+  "command": [
+    "N=10 QUERY_MODE=passage npx tsx .papercusp/scratch/rag-carry/p012-live-r37-battery.mts (the P-012 battery, unchanged; source embedded below as batterySource), against the live operator DB (native PG :5432, database papercusp)"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-02T18:03:56Z",
+  "finishedAt": "2026-10-02T18:04:08.122Z",
+  "summary": "10 targets sampled by the battery's fixed rule, each queried only with text past its first 2,000 characters: 6 of 10 returned within the default result count. 6 of 10 ranked first; own vector first for 8 of 10; a chunk cleared the floor after the margin for 10 of 10. Named record: conv-mune72dq-0000-6fef80d3869943d29848b528894c74e7 (45557 chars) queried with text at offset 6007 returned at ranked first. Misses: conv-mupm1hjk-0000-93e6f1af97de47d383cf6733ff0af417, conv-muqjvho4-0000-4a23a8e7d04b44829ceb524d7d82c9d2, conv-muir30ya-0000-fe87557b3eb043c2a475b59316c79c2d, conv-muq44rky-0000-c405db06785b4d0a80757b55384855db.",
+  "assertions": [
+    {
+      "id": "r37-target-returned-past-2000",
+      "statement": "A consult-question search site that P-012 opts into retrieve mode returns the target question (by conversation id) within its default result count for a query matching only text past the question's first 2,000 characters.",
+      "passed": true,
+      "evidence": "6 of 10 sampled targets returned within the default result count; named record conv-mune72dq-0000-6fef80d3869943d29848b528894c74e7 (45557 chars) queried with text at offset 6007 returned at ranked first. Population rate reported, not thresholded; misses listed in summary and rows."
+    }
+  ],
+  "note": "[self-imposed under AUTO; owner directive #970] Re-measured because binding 19187 went stale on freshness: its pinned libs/generic/search/src/chunks/vector-leg.ts (blob 9d7be5dd79) changed on 2026-10-02 under the D-046..D-048 consult chunk-leg work. This run measured superproject d8329b22fb, libs/generic/search 093bf1c098 (vector-leg.ts blob cd07636462). Raw output: .papercusp/scratch/rag-carry/p016b-oper-r37.log",
+  "supersedes": "operational binding 19187 (p016-live-r-37-battery.json, measured 2026-10-01)",
+  "measuredBy": "su-e8708a1c-a5a4-4a8b-9acb-8bcceab2a91c",
+  "plan": "generic-rag-chunking-2026-09-29",
+  "planItem": "P-012 (re-measured live under P-016)",
+  "bar": "R-37",
+  "battery": {
+    "queryMode": "passage",
+    "setup": {
+      "mode": "gemma",
+      "floor": 0.8,
+      "margin": 0.04,
+      "covered": 10250
+    },
+    "population": {
+      "candidates": 15
+    },
+    "summary": {
+      "at": "2026-10-02T18:04:08.122Z",
+      "n": 10,
+      "returned": 6,
+      "rankedFirstNoFloor": 6,
+      "ownVectorFirst": 8,
+      "chunkOverFloorAfterMargin": 10
+    },
+    "rows": [
+      {
+        "item": "conv-mupm1hjk-0000-93e6f1af97de47d383cf6733ff0af417",
+        "chars": 31590,
+        "queryOffset": 5770,
+        "query": "mode cycle is the desktop's. Clicking cycles off to push-to-talk to always-on and wraps back to off; holding the button and holding the backtick key both force-listen in every mode. (D-002)\",\"barKey\":\"R-3\",\"role\":\"outcome\",\"mandatory\":true,\"requiredScope\":[\"tree\"],\"evidencePlane\":\"tree\",\"requiredTestLayers\":[\"integration\"],\"passRatings\":[\"healthy\"],\"barProvenance\":{\"lifecycle\":\"pre-implementation\",\"declaredAt\":\"2026-09-08T14:14:51.270Z\",\"declaredBy\":\"su-eaa1e2b7-cf58-48a5-b376-3e0db3aacd20\"},\"method\":\"Execute the structured voice-control Vitest checks. Verify the three-state cycle remains off",
+        "returned": false,
+        "defaultRef": "conv-mupm83a7-0000-c578ba83db2c4258abd246ab3bbbf301",
+        "defaultSim": 0.852847961613659,
+        "rankedFirstNoFloor": false,
+        "noFloorRef": "conv-mupm83a7-0000-c578ba83db2c4258abd246ab3bbbf301",
+        "noFloorSim": 0.852847961613659,
+        "bestChunkSim": 0.8911105128791811,
+        "ownVectorRank": 1,
+        "ownVectorSim": 0.8050642013549862
+      },
+      {
+        "item": "conv-muits4ks-0000-41ae3d85e2744d97b1f29011e5e32fc2",
+        "chars": 4020,
+        "queryOffset": 2711,
+        "query": "one headless operator role agent for the exact eligible pre-launch source recorded under D-002/D-004 and P2P D-068, with independent conditional-override review.\"},\"model\":\"Exactly one operator role agent takes the release item and records an independent preflight judgment before tag/build writes.\",\"barKey\":\"R-002\",\"barHash\":\"61a2883f3f7e1a1fb7ef5beb244b7fd8907094c628a41068014d449ae5342744\",\"role\":\"outcome\",\"mandatory\":true,\"requiredScope\":[\"live\"],\"evidencePlane\":\"live\",\"passRatings\":[\"healthy\"],\"barProven… [6480 chars clipped] ``` Approval JSON the requester posted as thread-post:1147505: `",
+        "returned": true,
+        "defaultRef": "conv-muits4ks-0000-41ae3d85e2744d97b1f29011e5e32fc2",
+        "defaultSim": 0.8540054559707642,
+        "rankedFirstNoFloor": true,
+        "noFloorRef": "conv-muits4ks-0000-41ae3d85e2744d97b1f29011e5e32fc2",
+        "noFloorSim": 0.8540054559707642,
+        "bestChunkSim": 0.878784027063371,
+        "ownVectorRank": 1,
+        "ownVectorSim": 0.8540054559707642
+      },
+      {
+        "item": "conv-muqjvho4-0000-4a23a8e7d04b44829ceb524d7d82c9d2",
+        "chars": 7640,
+        "queryOffset": 3672,
+        "query": "retrievable only by members of that channel.\"},{\"key\":\"r-13\",\"title\":\"Tickets ingest as records\",\"intent\":{\"request\":\"Tickets from systems such as Asana are a canonical ticket type, distinct from chat.\",\"sourceRefs\":[\"session_turn:claude:35a29da2-e5df-4b9c-bbf3-97a4314420d9:0\",\"session_turn:claude:35a29da2-e5df-4b9c-bbf3-97a4314420d9:13\"]},\"model\":\"A ticket ingested by the first ticket connector is stored as a work_items row of the canonical ticket datatype with nature record, and no default work read (work_items:list, search, counts) or census path returns it unless explicitly asked.\",\"barKe",
+        "returned": false,
+        "defaultRef": "conv-muq3xqua-0000-e9091aa98971457ab0b2d2e19c6d7087",
+        "defaultSim": 0.8256095524313916,
+        "rankedFirstNoFloor": false,
+        "noFloorRef": "conv-muq3xqua-0000-e9091aa98971457ab0b2d2e19c6d7087",
+        "noFloorSim": 0.8256095524313916,
+        "bestChunkSim": 0.8428256511688232,
+        "ownVectorRank": 1,
+        "ownVectorSim": 0.7760052680969238
+      },
+      {
+        "item": "conv-muq3xqua-0000-e9091aa98971457ab0b2d2e19c6d7087",
+        "chars": 9555,
+        "queryOffset": 5453,
+        "query": "missing.\",\"check\":{\"kind\":\"tests\",\"files\":[\"packages/operator-core/lib/work-nature/drain-definition-work-predicate.test.ts\"]}},{\"key\":\"r-9\",\"title\":\"Chat is indexed as thread rollups\",\"intent\":{\"request\":\"Chat is a different type of data from tickets and is retrieved as conversations rather than single messages.\",\"sourceRefs\":[\"session_turn:claude:35a29da2-e5df-4b9c-bbf3-97a4314420d9:0\"]},\"model\":\"Search over ingested chat returns thread rollups instead of individual message rows.\",\"barKey\":\"R-9\",\"role\":\"outcome\",\"mandatory\":true,\"requiredScope\":[\"delete tombstones\",\"edits\",\"threaded channels",
+        "returned": true,
+        "defaultRef": "conv-muq3xqua-0000-e9091aa98971457ab0b2d2e19c6d7087",
+        "defaultSim": 0.8730467876140132,
+        "rankedFirstNoFloor": true,
+        "noFloorRef": "conv-muq3xqua-0000-e9091aa98971457ab0b2d2e19c6d7087",
+        "noFloorSim": 0.8730467876140132,
+        "bestChunkSim": 0.9130467876140133,
+        "ownVectorRank": 1,
+        "ownVectorSim": 0.7971496702939482
+      },
+      {
+        "item": "conv-muir30ya-0000-fe87557b3eb043c2a475b59316c79c2d",
+        "chars": 6502,
+        "queryOffset": -1,
+        "query": "[28121 chars clipped] ``` Approval JSON the requester posted as thread-post:1147297: ```json {\"schemaVersion\":1,\"kind\":\"acceptance-bar-amendment-approval\",\"rubricRef\":\"acceptance-goal-brief-to-claimed-plan-work-2026-09-23\",\"subjectPlan\":\"goal-brief-to-claimed-plan-work-2026-09-23\",\"bars\":[{\"barKey\":\"R-1\",\"priorBarHash\":\"dbfbf861fc59ddf7d8ed5312d45628b19f92b090afb38eca973e014460fa6028\",\"nextBarHash\":\"92422ab3a35fe2ba9b71296a54a8abc350f5226b6852bfdd8ccf0ed8cc45e3e4\"},{\"barKey\":\"R-2\",\"priorBarHash\":\"271fab8273f474e736385bcefce795f2144fc29f63edcebb02b691e0b2472db6\",\"nextBarHash\":\"c20fddef39c14ceb",
+        "returned": false,
+        "defaultRef": "conv-munevxt3-0000-9a259f6dd6c043659ad95d0557beee66",
+        "defaultSim": 0.9036544177223226,
+        "rankedFirstNoFloor": false,
+        "noFloorRef": "conv-munevxt3-0000-9a259f6dd6c043659ad95d0557beee66",
+        "noFloorSim": 0.9036544177223226,
+        "bestChunkSim": 0.9061801703625972,
+        "ownVectorRank": 7,
+        "ownVectorSim": 0.8839161853690384
+      },
+      {
+        "item": "conv-munevxt3-0000-9a259f6dd6c043659ad95d0557beee66",
+        "chars": 4414,
+        "queryOffset": 2954,
+        "query": "the audit and gate item-provenance tests.\",\"driftMarkers\":\"A grandfathered plan's re-audit or plans:start is refused for missing item provenance.\",\"check\":{\"kind\":\"tests\",\"files\":[\"packages/operator-core/lib/agent-tools/plans/audit-item-provenance.test.ts\",\"packages/operator-core/lib/agent-tools/plans/plan-activation-gate-item-provenance.test.ts\"]},\"bar\":\"A re-audit of a plan whose earlier activation audits predate provenance is recorded as an unenforced audit listing its missing items as unresolved, which the lifecycle gate accepts.\"}]} ``` Approval JSON the requester posted as thread-post:1",
+        "returned": true,
+        "defaultRef": "conv-munevxt3-0000-9a259f6dd6c043659ad95d0557beee66",
+        "defaultSim": 0.8568309041060095,
+        "rankedFirstNoFloor": true,
+        "noFloorRef": "conv-munevxt3-0000-9a259f6dd6c043659ad95d0557beee66",
+        "noFloorSim": 0.8568309041060095,
+        "bestChunkSim": 0.8968309041060095,
+        "ownVectorRank": 1,
+        "ownVectorSim": 0.8161262650640326
+      },
+      {
+        "item": "conv-mupm83a7-0000-c578ba83db2c4258abd246ab3bbbf301",
+        "chars": 31685,
+        "queryOffset": 5866,
+        "query": "mode cycle is the desktop's\",\"model\":\"The mode cycle is the desktop's. Clicking cycles off to push-to-talk to always-on and wraps back to off; holding the button and holding the backtick key both force-listen in every mode. (D-002)\",\"barKey\":\"R-3\",\"role\":\"outcome\",\"mandatory\":true,\"requiredScope\":[\"tree\"],\"evidencePlane\":\"tree\",\"requiredTestLayers\":[\"integration\"],\"passRatings\":[\"healthy\"],\"barProvenance\":{\"lifecycle\":\"pre-implementation\",\"declaredAt\":\"2026-09-08T14:14:51.270Z\",\"declaredBy\":\"su-eaa1e2b7-cf58-48a5-b376-3e0db3aacd20\"},\"method\":\"Execute the structured voice-control Vitest checks",
+        "returned": true,
+        "defaultRef": "conv-mupm83a7-0000-c578ba83db2c4258abd246ab3bbbf301",
+        "defaultSim": 0.8432621643983043,
+        "rankedFirstNoFloor": true,
+        "noFloorRef": "conv-mupm83a7-0000-c578ba83db2c4258abd246ab3bbbf301",
+        "noFloorSim": 0.8432621643983043,
+        "bestChunkSim": 0.8832621643983043,
+        "ownVectorRank": 2,
+        "ownVectorSim": 0.8118573427200375
+      },
+      {
+        "item": "conv-muq44rky-0000-c405db06785b4d0a80757b55384855db",
+        "chars": 9928,
+        "queryOffset": 5643,
+        "query": "R-6.\",\"driftMarkers\":\"The rendered su.mode-drain definition enumerates its backlog from a kind list or an unfiltered work_items read, or the agent-insights doc on the four natures is missing.\",\"check\":{\"kind\":\"tests\",\"files\":[\"packages/operator-core/lib/work-nature/drain-definition-work-predicate.test.ts\"]}},{\"key\":\"r-9\",\"title\":\"Chat is indexed as thread rollups\",\"intent\":{\"request\":\"Chat is a different type of data from tickets and is retrieved as conversations rather than single messages.\",\"sourceRefs\":[\"session_turn:claude:35a29da2-e5df-4b9c-bbf3-97a4314420d9:0\"]},\"model\":\"Search over ing",
+        "returned": false,
+        "defaultRef": "conv-muq3xqua-0000-e9091aa98971457ab0b2d2e19c6d7087",
+        "defaultSim": 0.8868759489059513,
+        "rankedFirstNoFloor": false,
+        "noFloorRef": "conv-muq3xqua-0000-e9091aa98971457ab0b2d2e19c6d7087",
+        "noFloorSim": 0.8868759489059513,
+        "bestChunkSim": 0.9241391420364445,
+        "ownVectorRank": 1,
+        "ownVectorSim": 0.7914896483117146
+      },
+      {
+        "item": "conv-mune72dq-0000-6fef80d3869943d29848b528894c74e7",
+        "chars": 45557,
+        "queryOffset": 6007,
+        "query": "tail MRR per collection from the R-3 live re-run and compare it with the P-001 prediction.\",\"driftMarkers\":\"A registered collection's live tail MRR is more than 0.02 below its P-001 prediction.\",\"check\":{\"kind\":\"instrument\",\"instrumentKey\":\"none\"}},{\"key\":\"r-5\",\"title\":\"Session-turn chunks unchanged\",\"intent\":{\"request\":\"Moving the splitters must not change existing chunks.\",\"sourceRefs\":[\"owner:Avi 2026-09-29 (session claude:292f5b71 turns 19/21/32/34)\",\"D-003\"]},\"model\":\"The library window splitter reproduces, byte for byte, every session-turn chunk pinned in chunk-golden.v1.json, which was",
+        "returned": true,
+        "defaultRef": "conv-mune72dq-0000-6fef80d3869943d29848b528894c74e7",
+        "defaultSim": 0.8572315192222658,
+        "rankedFirstNoFloor": true,
+        "noFloorRef": "conv-mune72dq-0000-6fef80d3869943d29848b528894c74e7",
+        "noFloorSim": 0.8572315192222658,
+        "bestChunkSim": 0.8972315192222658,
+        "ownVectorRank": 1,
+        "ownVectorSim": 0.7766604423523005
+      },
+      {
+        "item": "conv-mupw31o8-0000-3a3a86ee523747ffaa291137889a4ddc",
+        "chars": 10812,
+        "queryOffset": 5834,
+        "query": "journeys, links and search\",\"intent\":{\"request\":\"Make the documentation ready for public readers.\",\"sourceRefs\":[\"session_turn:codex:01a0f80a-1cc0-7150-a93d-8a581b5378fe:5\"]},\"barKey\":\"R-4\",\"acceptance\":{\"condition\":\"Built sidebar/article links resolve, Pagefind finds and opens a documented topic, and desktop/mobile keyboard-readable layouts expose navigation and content without broken assets or horizontal page overflow.\",\"falsifier\":\"(1) A built sidebar/article/local asset link fails; (2) Pagefind cannot find Plugins and open its article, or the nonsense query zz-no-such-public-doc-78291 ret",
+        "returned": true,
+        "defaultRef": "conv-mupw31o8-0000-3a3a86ee523747ffaa291137889a4ddc",
+        "defaultSim": 0.8235425567626953,
+        "rankedFirstNoFloor": true,
+        "noFloorRef": "conv-mupw31o8-0000-3a3a86ee523747ffaa291137889a4ddc",
+        "noFloorSim": 0.8235425567626953,
+        "bestChunkSim": 0.8635425567626953,
+        "ownVectorRank": 1,
+        "ownVectorSim": 0.799361014347107
+      }
+    ]
+  },
+  "batterySource": "// generic-rag-chunking P-012 R-37 live battery: the peers-know archive lookup (the\n// working-tree peersKnowLookup behind coord:orient's peersKnow fold, called exactly as\n// orient.ts calls it: buildQueryEmbedderResolved + resolveProseProfileSelection) against\n// the live operator DB after the consult_questions chunk sync + embed.\n//\n// Sample: N settled consult questions (closed_answered, not an archive copy, with a\n// string outcome.answer) in the workspace whose question is over 3,500 characters and\n// has embedded chunks, in md5(conversation_id) order (fixed pseudo-random, no\n// hand-picking). Query: one sentence from the part past the first 2,000 characters\n// that the 8 capped windows still cover, whose opening words do not occur in the first\n// 2,000 characters.\n//\n// The site's default result count is 1 (top hit above DEFAULT_ARCHIVE_FLOOR). Each row\n// records: the default call's ref (R-37's verdict), the same call with floor 0 (so a\n// ranking miss can be told apart from a floor miss), the target's best chunk cosine,\n// and its rank + cosine by its own parent vector alone.\nexport {};\nconst base = 'file://~/papercupai-workspace/papercusp/packages/operator-core/lib/';\nconst { installSearchDefaults } = await import(base + 'search/configure-search-defaults.ts');\nconst { buildQueryEmbedderResolved } = await import(base + 'agent-tools/search/embedder.ts');\nconst { resolveProseProfileSelection } = await import(base + 'search/prose-vector-dims.ts');\nconst { CONSULT_QUESTIONS_CHUNK_SURFACE } = await import(base + 'search/chunks/registry.ts');\nconst { peersKnowLookup } = await import(base + 'consult/peers-know.ts');\nconst { DEFAULT_ARCHIVE_FLOOR } = await import(base + 'consult/get-feedback-core.ts');\nconst { getOrgPg } = await import('@papercusp/db-org');\ninstallSearchDefaults();\n\nconst CUT = 2000;\nconst N = Number(process.env.N ?? 10);\nconst WS = 'papercusp-workspace';\nconst sp = CONSULT_QUESTIONS_CHUNK_SURFACE.splitter as { size: number; overlap: number };\nconst covered = sp.size + (CONSULT_QUESTIONS_CHUNK_SURFACE.maxChunks! - 1) * (sp.size - sp.overlap);\nconst resolved = await buildQueryEmbedderResolved({ acquireBudgetMs: 20_000 });\nif (!resolved) throw new Error('no query embedder');\nconst profile = resolveProseProfileSelection(resolved.mode, resolved.profile);\nif (!profile) throw new Error(`no prose profile for ${resolved.mode}`);\nconst { sql } = getOrgPg();\nconsole.log('SETUP', JSON.stringify({ mode: resolved.mode, floor: DEFAULT_ARCHIVE_FLOOR, margin: CONSULT_QUESTIONS_CHUNK_SURFACE.chunkMargin, covered }));\n\nconst items = await sql.unsafe<Array<{ id: string; text: string }>>(\n  `SELECT c.conversation_id AS id, c.question AS text\n     FROM harness_shared.consult_state c\n    WHERE c.workspace_id = $1 AND c.state = 'closed_answered'\n      AND (c.outcome->>'source') IS DISTINCT FROM 'archive'\n      AND jsonb_typeof(c.outcome->'answer') = 'string'\n      AND c.query_embedding IS NOT NULL\n      AND length(c.question) > 3500\n      AND EXISTS (SELECT 1 FROM harness_shared.text_chunks t\n                   WHERE t.surface = 'consult_questions' AND t.parent_key = ARRAY[c.workspace_id, c.conversation_id]\n                     AND t.embedding IS NOT NULL)\n    ORDER BY md5(c.conversation_id) LIMIT $2`,\n  [WS, N * 3],\n);\nconsole.log('POPULATION', JSON.stringify({ candidates: items.length }));\n\nconst rows: Array<Record<string, unknown>> = [];\nfor (const t of items) {\n  if (rows.filter((r) => !r.skipped).length >= N) break;\n  const head = t.text.slice(0, CUT).toLowerCase();\n  const region = t.text.slice(CUT, Math.min(t.text.length, covered) - 50);\n  const sentences = region\n    .split(/(?<=[.!?])\\s+|\\n+/)\n    .map((s) => s.replace(/[`*_#>|[\\]()]/g, ' ').replace(/\\s+/g, ' ').trim())\n    .filter((s) => s.split(' ').length >= 8 && s.length <= 220 && !head.includes(s.toLowerCase().slice(0, 40)));\n  // QUERY_MODE=passage: a verbatim ~PASSAGE_CHARS slice from the middle of the covered\n  // tail, starting at a word boundary, whose opening 40 characters are absent from the head.\n  const passage = (() => {\n    const len = Number(process.env.PASSAGE_CHARS ?? 600);\n    let start = Math.floor(Math.max(0, region.length - len) / 2);\n    while (start < region.length && !/\\s/.test(region[start]!)) start++;\n    const p = region.slice(start, start + len).replace(/\\s+/g, ' ').trim();\n    return p.length >= len * 0.8 && !head.includes(p.toLowerCase().slice(0, 40)) ? p : undefined;\n  })();\n  const query = process.env.QUERY_MODE === 'passage' ? passage : sentences[Math.floor(sentences.length * 0.6)];\n  if (!query) {\n    rows.push({ item: t.id, skipped: 'no usable sentence' });\n    continue;\n  }\n  const qv = await resolved.embed(query);\n  const vec = `[${qv.join(',')}]`;\n  const [own] = await sql.unsafe<Array<{ rank: number; sim: number }>>(\n    `WITH r AS (SELECT conversation_id, 1 - (query_embedding <=> $2::vector) AS sim,\n                       row_number() OVER (ORDER BY query_embedding <=> $2::vector) AS rank\n                  FROM harness_shared.consult_state\n                 WHERE workspace_id = $1 AND state = 'closed_answered' AND query_embedding IS NOT NULL\n                   AND (outcome->>'source') IS DISTINCT FROM 'archive')\n     SELECT rank::int, sim::float8 AS sim FROM r WHERE conversation_id = $3`,\n    [WS, vec, t.id],\n  );\n  const [chunk] = await sql.unsafe<Array<{ sim: number }>>(\n    `SELECT max(1 - (embedding <=> $1::vector))::float8 AS sim FROM harness_shared.text_chunks\n      WHERE surface = 'consult_questions' AND parent_key = ARRAY[$2, $3] AND embedding IS NOT NULL`,\n    [vec, WS, t.id],\n  );\n  const q = { embed: async () => qv, profile };\n  const dflt = await peersKnowLookup(sql, q, { workspaceId: WS, intent: query });\n  const open = await peersKnowLookup(sql, q, { workspaceId: WS, intent: query, floor: 0 });\n  rows.push({\n    item: t.id,\n    chars: t.text.length,\n    queryOffset: t.text.indexOf(query.split(' ').slice(0, 4).join(' ')),\n    query,\n    returned: dflt?.ref === t.id,\n    defaultRef: dflt?.ref ?? null,\n    defaultSim: dflt?.sim ?? null,\n    rankedFirstNoFloor: open?.ref === t.id,\n    noFloorRef: open?.ref ?? null,\n    noFloorSim: open?.sim ?? null,\n    bestChunkSim: chunk?.sim ?? null,\n    ownVectorRank: own?.rank ?? null,\n    ownVectorSim: own?.sim ?? null,\n  });\n}\nfor (const r of rows) console.log('ROW', JSON.stringify(r));\nconst done = rows.filter((r) => !r.skipped);\nconsole.log(\n  'SUMMARY',\n  JSON.stringify({\n    at: new Date().toISOString(),\n    n: done.length,\n    returned: done.filter((r) => r.returned).length,\n    rankedFirstNoFloor: done.filter((r) => r.rankedFirstNoFloor).length,\n    ownVectorFirst: done.filter((r) => r.ownVectorRank === 1).length,\n    chunkOverFloorAfterMargin: done.filter(\n      (r) => typeof r.bestChunkSim === 'number' && (r.bestChunkSim as number) - (CONSULT_QUESTIONS_CHUNK_SURFACE.chunkMargin ?? 0) >= DEFAULT_ARCHIVE_FLOOR,\n    ).length,\n  }),\n);\nprocess.exit(0);\n"
+}

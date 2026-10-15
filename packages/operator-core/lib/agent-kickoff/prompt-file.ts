@@ -17,13 +17,13 @@
  *      `apps/operator/lib/endpoint-route/routes/agent-mcp/console-launch.ts`.
  */
 
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { harnessQuery, getFeatureLineage, formatLineageForPrompt } from '@papercusp/db-org';
 
 import { promptsDir } from '../prompt-assembly';
+import { createControlPlaneTempDirWithFile } from '../control-plane-temp.mjs';
 
 export type KickoffKind = 'feature' | 'new-plan';
 
@@ -63,11 +63,9 @@ export async function buildKickoffPromptFile(ctx: KickoffCtx): Promise<string | 
   const body = await renderKickoffBody(ctx);
   if (!body) return null;
 
-  const ramRoot = process.platform === 'linux' && existsSync('/dev/shm') ? '/dev/shm' : tmpdir();
-  const tmpDir = mkdtempSync(join(ramRoot, 'papercusp-kickoff-'));
   const filename = filenameForKind(ctx);
+  const tmpDir = createControlPlaneTempDirWithFile('papercusp-kickoff-', filename, body, 'payload');
   const path = join(tmpDir, filename);
-  writeFileSync(path, body, 'utf8');
   setTimeout(() => {
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* GC */ }
   }, 30_000).unref();

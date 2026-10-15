@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Offline consumption of retained selected JNA source and pinned root build inputs",
+  "framework": "operational",
+  "command": [
+    "make test-android-release-provenance",
+    "tools/build-scripts/android-release-provenance.sh source-verify-build jna-inputs"
+  ],
+  "workingDirectory": "papercup-rust-mobile",
+  "startedAt": "2026-10-03T08:38:06.698659+00:00",
+  "finishedAt": "2026-10-03T08:38:08.549112+00:00",
+  "timestampSource": "Actual input-check receipt timestamps delimit the production input check only. Earlier maintained-suite log is independently retained and fingerprinted.",
+  "exitCode": 0,
+  "summary": "On committed mobile622dd1ff, offline input consumption verified536 selected upstream files and the root Java8/JNI7.0.4/checksum recipe against the reconstructed pinned Git tree. Both excluded Ant/ASM helper JARs were explicitly missing. Maintained suite passed14new rejection controls, including self-consistent archive/reference forgery, changed Git tree/mode, unsafe entries, altered tools and stale-result invalidation.",
+  "scope": "Offline local consumption of retained selected source and root recipe inputs, not a native build, complete toolchain, rights or recipient-delivery proof. Existing packaging proof06178f/PASS20663651 was not replayed, re-exported, re-retrieved or re-recorded. No new APK, JNA/native execution, signed candidate, original full native/model rights/notices, current hosted paired CI, provider/reviewer, phone or Play acceptance.",
+  "mobileSourceCommit": "622dd1ffa5c1fa37ecbd00516ea5067ccb879cf4",
+  "upstreamSourceRevision": "1a91122853f6ab6f1fb2a4a284a6cf2ed8af0a4d",
+  "upstreamSourceTreeSha1": "fc89bf9afa33183da9d35028855f6648b7a8b07b",
+  "sourceFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/build-scripts/android-release-provenance.sh",
+      "sha256": "9fab57f860d710437a67e1ff5a4734a0a52482e49e20ee244df927a57ab8573d"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-release-provenance-test.sh",
+      "sha256": "7ee1dd0f53db3bbfe275014236b4a344e5e5ad1f9f23d83f59f8f419bc5ae908"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/SOURCES.json",
+      "sha256": "c94f25a0ab80dc6b35644db3e4ec8070171150616790eb0a8aca819b5e053967"
+    },
+    {
+      "path": "papercup-rust-mobile/store/APP-STORE-REVIEW.md",
+      "sha256": "167b6c26164d2d88dec4794ee5bceaa8c6dbbbb9f401d357ec0840d2fb7ef4bb"
+    }
+  ],
+  "testFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-release-provenance-test.sh",
+      "sha256": "7ee1dd0f53db3bbfe275014236b4a344e5e5ad1f9f23d83f59f8f419bc5ae908"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "committed-source-identity",
+      "passed": true,
+      "evidence": "All four edited files byte-match git show622dd1ff:path; mobile checkout was clean before the actual check."
+    },
+    {
+      "id": "offline-retained-input-consumption",
+      "passed": true,
+      "evidence": "Actual check exited0;536 per-file populations, SHA256/Gitblobs and modes match the reconstructed pinned root, with unchanged archiveab1f03bd and reference32efcdba. No native/build command was launched."
+    },
+    {
+      "id": "root-recipe-inputs",
+      "passed": true,
+      "evidence": "Actual retained root Ant XML supplies compile/javah/native/native-build-package; JNI headers use the Java8 release target and JNI version7.0.4/checksum5fb98531302accd485c534c452dd952a. Recipe parsing does not identify the original prebuilt invocation."
+    },
+    {
+      "id": "missing-versus-supplied-tools",
+      "passed": true,
+      "evidence": "Real package reports both excluded helper JARs missing. Maintained fixtures separately accept exact supplied Gitblobs and reject changed or linked tools, without claiming a complete toolchain."
+    },
+    {
+      "id": "maintained-rejection-guards",
+      "passed": true,
+      "evidence": "Final make test-android-release-provenance exited0. Fourteen new rejecting controls include self-consistent archive/receipt forgery, changed upstream tree, executable mode drift, unsafe/incomplete inputs and failed-attempt stale-result invalidation; existing fixture suites also passed."
+    },
+    {
+      "id": "scope-floors",
+      "passed": true,
+      "evidence": "Actual and fixture receipts require buildExecuted/originalInvocationVerified/standaloneToolchainVerified/recipientRetrievalVerified:false. Exact candidate, rights, recipient build/access, provider/reviewer, current hosted CI, phone and Play remain open."
+    }
+  ],
+  "initialFixtureFailure": {
+    "rootCause": "New producer fingerprint required the fixture root to contain the maintained producer, but the older packaging-only fixture omitted it.",
+    "durableFix": "Maintained fixture now copies and tracks the producer before generating its source receipt.",
+    "verifiedHow": "Final maintained suite exit0, including the producer-fingerprint path and14rejection controls.",
+    "log": {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-jna-input-consumption-tests-attempt1-20261003.log",
+      "sha256": "d9d15434855e1126fa8657af3b0bfad67b061d97db4d6481abb0913e37ef97c1"
+    }
+  },
+  "rawReceipt": {
+    "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-jna-build-inputs-result.json",
+    "sha256": "658018d29d8e8d50b3505e9f47ead189b966c168051bfe118baf548cbe125ce5",
+    "verifiedFiles": 536
+  },
+  "retainedLogs": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-jna-input-consumption-tests-final-20261003.log",
+      "sha256": "f15defe97c3a20ea02515aac6b099fdf04235fdca70c4eb203e96fbab8af78d5"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-jna-input-consumption-20261003.log",
+      "sha256": "19566f9e74c4ef816bdbdd77778a8693c12cf640ca4ecf81347d9b96b3b8bb24"
+    }
+  ],
+  "inputTreeSha256": "f6f599aed8687c8aa01563358d03b39ea39e1c663a7e0102a78af0b11a080707",
+  "archiveSha256": "ab1f03bd9933411192f7f29518a04123b74626ce11960e84125dce46e6224038",
+  "referenceSha256": "32efcdba359c159502484fd2fd3ce0fa605692264571c13404ea53779faf19e8",
+  "rootRecipe": {
+    "javacRelease": "8",
+    "jniVersion": "7.0.4",
+    "jniChecksum": "5fb98531302accd485c534c452dd952a",
+    "targets": [
+      "compile",
+      "javah",
+      "native",
+      "native-build-package"
+    ]
+  },
+  "externalToolInputs": [
+    {
+      "path": "lib/ant.jar",
+      "gitBlob": "3bebb5c8836a49e3c572fbd678497bbf116555ff",
+      "size": 2029794,
+      "status": "missing"
+    },
+    {
+      "path": "lib/asm-8.0.1.jar",
+      "gitBlob": "744fecc0252eb14db15e2cf76a7e0f3558c70ed8",
+      "size": 121772,
+      "status": "missing"
+    }
+  ],
+  "nativeExecution": false,
+  "signedCandidateAcceptance": false,
+  "recipientRetrievalAcceptance": false,
+  "standaloneToolchainAcceptance": false
+}

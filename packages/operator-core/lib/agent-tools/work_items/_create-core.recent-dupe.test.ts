@@ -86,17 +86,22 @@ const recentCand = (id: string, similarity = 0.6): SemanticDupeCandidate => ({
   source: 'lexical-recent',
 });
 
+const recentResult = (candidates: SemanticDupeCandidate[]) => ({
+  candidates,
+  coverage: { scanned: candidates.length, unembedded: 0, truncated: false, complete: true },
+});
+
 beforeEach(() => {
   semanticM.mockReset();
   recentM.mockReset();
   dedupEdgeMocks.persist.mockClear();
   semanticM.mockResolvedValue(null);
-  recentM.mockResolvedValue([]);
+  recentM.mockResolvedValue(recentResult([]));
 });
 
 describe('createOneWorkItem × recent-lexical dupe guard (EI-9940)', () => {
   it('NEVER blocks — a recent lexical match still creates the item (advisory only)', async () => {
-    recentM.mockResolvedValue([recentCand('WI-4241')]);
+    recentM.mockResolvedValue(recentResult([recentCand('WI-4241')]));
     const r = await createOneWorkItem({ kind: 'bug', title: 'a fresh near-duplicate title' }, ctx);
     expect(r.ok).toBe(true);
     if (!r.ok) throw new Error('unreachable');
@@ -114,7 +119,7 @@ describe('createOneWorkItem × recent-lexical dupe guard (EI-9940)', () => {
     });
     // WI-10 also shows up in the recent-lexical pass (same id) — must not duplicate;
     // WI-11 is a genuinely new recent-only match and must be appended.
-    recentM.mockResolvedValue([recentCand('WI-10'), recentCand('WI-11')]);
+    recentM.mockResolvedValue(recentResult([recentCand('WI-10'), recentCand('WI-11')]));
     const r = await createOneWorkItem({ kind: 'bug', title: 't' }, ctx);
     expect(r.ok).toBe(true);
     if (!r.ok) throw new Error('unreachable');
@@ -124,7 +129,7 @@ describe('createOneWorkItem × recent-lexical dupe guard (EI-9940)', () => {
   });
 
   it('force:true skips the recent-lexical prescreen entirely too', async () => {
-    recentM.mockResolvedValue([recentCand('WI-9')]);
+    recentM.mockResolvedValue(recentResult([recentCand('WI-9')]));
     const r = await createOneWorkItem({ kind: 'bug', title: 't', force: true }, ctx);
     expect(r.ok).toBe(true);
     expect(recentM).not.toHaveBeenCalled();

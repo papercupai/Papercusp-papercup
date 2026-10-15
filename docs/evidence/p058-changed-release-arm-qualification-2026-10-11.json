@@ -1,0 +1,365 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "name": "P058 changed exact-source release ARM original-deadline qualification",
+  "command": [
+    "node",
+    ".papercusp/scratch/p058-arm-release-source-4f991247-20261011/papercusp-desktop/bin/build-server-container.mjs",
+    "native",
+    "--config",
+    "/mnt/backup/portable-server-p058/changed-input-release-20261011/arm-original-deadline.podman-config.json"
+  ],
+  "executedShellCommand": "env -u CONTAINER_HOST CONTAINERS_STORAGE_CONF=/mnt/backup/portable-server-p058/amd-native-build8-20261009/oci-storage.conf CONTAINERS_CONF=/mnt/backup/portable-server-p058/amd-native-build8-20261009/oci-containers.conf XDG_RUNTIME_DIR=/run/user/1000/p058-amd8-oci node /home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-arm-release-source-4f991247-20261011/papercusp-desktop/bin/build-server-container.mjs native --config /mnt/backup/portable-server-p058/changed-input-release-20261011/arm-original-deadline.podman-config.json > /mnt/backup/portable-server-p058/changed-input-release-20261011/arm-original-deadline-podman.log 2>&1",
+  "cwd": ".",
+  "startedAt": "2026-10-11T16:35:37.070076Z",
+  "finishedAt": "2026-10-11T16:36:52.929278Z",
+  "timestampsScope": "producer generation directory initialization and final saved cleanup receipt",
+  "exitCode": 1,
+  "summary": "The exact-source release build and complete source/overlay inventories passed, and 26 static ESM external specifiers resolved in the preserved ARM runtime. The unchanged original60000ms boot helper then failed with ETIMEDOUT after69128ms and no marker. The exact producer container was removed. This does not establish boot, installed-native or final release acceptance.",
+  "workItemId": "EI-25500068013952985",
+  "parentWorkItemId": "WI-10007352",
+  "relatedWorkItemIds": [
+    "EI-25608208328004035"
+  ],
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "producerTaskId": "0mv41o7vy6wkjkz1ag1",
+  "sourceCommit": "4f991247708f12d9edc56af763f1f8fd94219773",
+  "evidencePlane": "frozen-committed-source-HOST-release-in-preserved-local-ARM-runtime",
+  "candidateAccepted": false,
+  "originalDeadlineMs": 60000,
+  "diagnostic": {
+    "executable": "/opt/papercusp/sidecar/bin/node",
+    "cwd": "/opt/papercusp/sidecar",
+    "elapsedMs": 69128,
+    "pid": 30,
+    "status": 0,
+    "signal": null,
+    "errorCode": "ETIMEDOUT",
+    "allocatorCap": "2",
+    "home": "/tmp/papercusp-boot-imports-AMJm3V",
+    "receiptObserved": false
+  },
+  "ownership": {
+    "schemaVersion": 1,
+    "engine": "podman",
+    "imageId": "sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921",
+    "platform": "linux/arm64",
+    "leaseTimeoutMs": 15000,
+    "leaseRoot": "/mnt/backup/portable-server-p058/changed-input-release-20261011/arm-original-deadline-podman/.native-producer-owner-OyRDb6",
+    "clockRoot": "/mnt/backup/portable-server-p058/changed-input-release-20261011/arm-original-deadline-podman/.native-producer-owner-OyRDb6/clock",
+    "status": "failed",
+    "containerName": "papercusp-native-af5bf284-6ae5-4615-974b-68fc65b789b5",
+    "ownerToken": "42877869-71c4-46ab-bcf9-cd82d1babece",
+    "cleanupPending": false,
+    "containerId": "480e31bdcc9cd4fb8ff6faabef25f3ab846c81e226ed8d42b562c9a79cc48e97",
+    "error": "podman failed with 1",
+    "removed": true,
+    "path": "/mnt/backup/portable-server-p058/changed-input-release-20261011/arm-original-deadline-podman/.native-producer-owner-OyRDb6/ownership.json",
+    "sha256": "3c99966a77c7842c415d33a0b37dcad695922e57581f3cdf85a79b3b73890fe9"
+  },
+  "build": {
+    "schemaVersion": 1,
+    "scope": "exact-source full maintained release-profile build; no native/ARM acceptance",
+    "sourceCommit": "4f991247708f12d9edc56af763f1f8fd94219773",
+    "sourceReceiptSha256": "8feef4287e9a4347a14c3fdf8dc1b221d8fdea9198e7fe85708bf4d7acdbbcbf",
+    "dependencyReceiptSha256": "070ceb6ad009dada2e1bcfebd32d252ac8657b745b1a2f6ad36d6a1f6b7c5665",
+    "profile": "release",
+    "argv": [
+      "bash",
+      "scripts/pc-heavy.sh",
+      "bash",
+      "apps/operator/bin/bundle-host.sh",
+      "bin/serve.ts",
+      "/mnt/backup/portable-server-p058/changed-input-release-20261011/release-output/serve.mjs",
+      "release"
+    ],
+    "cwd": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-arm-release-source-4f991247-20261011",
+    "buildExitCode": 0,
+    "artifacts": {
+      "serve.mjs": {
+        "sha256": "1333a5d98d754731b9cd6eef319b2668a089fbb025c354769c5fe00adb117d88",
+        "bytes": 56496623
+      },
+      "serve.mjs.meta.json": {
+        "sha256": "b51ffddb6dffb8ef322304f8653c4d4e3a16d38b3df4a03bf310a5796111c943",
+        "bytes": 10062653
+      },
+      "spawner-sidecar.mjs": {
+        "sha256": "8883d526ecbf8567dcd9adff24e64ffbf90996adf1fd11fc7356ef7f0c0bc0d6",
+        "bytes": 53926336
+      },
+      "spawner-sidecar.mjs.meta.json": {
+        "sha256": "635d66071200d0c2590a487579885a40693d5f49d2dd3a9ac511ddd2bf4a9741",
+        "bytes": 9865496
+      }
+    },
+    "logSha256": "be9c6f443fd6595f2527ba4bef245cc41f0bd90d04261eaddaaa04c2903dc5e0"
+  },
+  "overlay": {
+    "sha256": "cedde981291a486ce1f23a3e143efd0ff9222ef148bc2c27bddbfeb8cad807c4",
+    "bytes": 136031718,
+    "entries": 27985,
+    "elfFiles": []
+  },
+  "overlayInventoryFileSha256": "a72784932299bfe42b79a1718f0bc9e610063b46ed43970e7deb41ab3e7f2136",
+  "completeSourceFiles": 39089,
+  "staticResolution": {
+    "status": "passed",
+    "engine": "podman",
+    "guestExitCode": 0,
+    "reporterExitCode": 1,
+    "specifiers": [
+      "@aws-sdk/client-ec2",
+      "@aws-sdk/client-ssm",
+      "@dbos-inc/dbos-sdk",
+      "@lydell/node-pty",
+      "@mcp-ui/server",
+      "@papercusp/embedded-postgres-server/src/migration-runner.js",
+      "@smithy/core",
+      "@smithy/core/cbor",
+      "@smithy/core/checksum",
+      "@smithy/core/client",
+      "@smithy/core/config",
+      "@smithy/core/endpoints",
+      "@smithy/core/protocols",
+      "@smithy/core/retry",
+      "@smithy/core/schema",
+      "@smithy/core/serde",
+      "acorn",
+      "fast-check",
+      "mingo",
+      "mingo/operators/query",
+      "mingo/util",
+      "typescript",
+      "undici",
+      "viem",
+      "viem/accounts",
+      "viem/chains"
+    ],
+    "guestProof": {
+      "rows": [
+        {
+          "spec": "@aws-sdk/client-ec2",
+          "url": "file:///opt/papercusp/sidecar/node_modules/@aws-sdk/client-ec2/dist-cjs/index.js"
+        },
+        {
+          "spec": "@aws-sdk/client-ssm",
+          "url": "file:///opt/papercusp/sidecar/node_modules/@aws-sdk/client-ssm/dist-cjs/index.js"
+        },
+        {
+          "spec": "@dbos-inc/dbos-sdk",
+          "url": "file:///opt/papercusp/sidecar/node_modules/@dbos-inc/dbos-sdk/dist/src/index.js"
+        },
+        {
+          "spec": "@lydell/node-pty",
+          "url": "file:///opt/papercusp/sidecar/node_modules/@lydell/node-pty/index.js"
+        },
+        {
+          "spec": "@mcp-ui/server",
+          "url": "file:///opt/papercusp/sidecar/node_modules/@mcp-ui/server/dist/index.mjs"
+        },
+        {
+          "spec": "@papercusp/embedded-postgres-server/src/migration-runner.js",
+          "url": "file:///opt/papercusp/sidecar/node_modules/@papercusp/embedded-postgres-server/src/migration-runner.js"
+        },
+        {
+          "spec": "@smithy/core",
+          "url": "file:///opt/papercusp/sidecar/node_modules/@smithy/core/dist-cjs/index.js"
+        },
+        {
+          "spec": "@smithy/core/cbor",
+          "url": "file:///opt/papercusp/sidecar/node_modules/@smithy/core/dist-cjs/submodules/cbor/index.js"
+        },
+        {
+          "spec": "@smithy/core/checksum",
+          "url": "file:///opt/papercusp/sidecar/node_modules/@smithy/core/dist-cjs/submodules/checksum/index.js"
+        },
+        {
+          "spec": "@smithy/core/client",
+          "url": "file:///opt/papercusp/sidecar/node_modules/@smithy/core/dist-cjs/submodules/client/index.js"
+        },
+        {
+          "spec": "@smithy/core/config",
+          "url": "file:///opt/papercusp/sidecar/node_modules/@smithy/core/dist-cjs/submodules/config/index.js"
+        },
+        {
+          "spec": "@smithy/core/endpoints",
+          "url": "file:///opt/papercusp/sidecar/node_modules/@smithy/core/dist-cjs/submodules/endpoints/index.js"
+        },
+        {
+          "spec": "@smithy/core/protocols",
+          "url": "file:///opt/papercusp/sidecar/node_modules/@smithy/core/dist-cjs/submodules/protocols/index.js"
+        },
+        {
+          "spec": "@smithy/core/retry",
+          "url": "file:///opt/papercusp/sidecar/node_modules/@smithy/core/dist-cjs/submodules/retry/index.js"
+        },
+        {
+          "spec": "@smithy/core/schema",
+          "url": "file:///opt/papercusp/sidecar/node_modules/@smithy/core/dist-cjs/submodules/schema/index.js"
+        },
+        {
+          "spec": "@smithy/core/serde",
+          "url": "file:///opt/papercusp/sidecar/node_modules/@smithy/core/dist-cjs/submodules/serde/index.js"
+        },
+        {
+          "spec": "acorn",
+          "url": "file:///opt/papercusp/sidecar/node_modules/acorn/dist/acorn.mjs"
+        },
+        {
+          "spec": "fast-check",
+          "url": "file:///opt/papercusp/sidecar/node_modules/fast-check/lib/fast-check.js"
+        },
+        {
+          "spec": "mingo",
+          "url": "file:///opt/papercusp/sidecar/node_modules/mingo/cjs/index.js"
+        },
+        {
+          "spec": "mingo/operators/query",
+          "url": "file:///opt/papercusp/sidecar/node_modules/mingo/cjs/operators/query/index.js"
+        },
+        {
+          "spec": "mingo/util",
+          "url": "file:///opt/papercusp/sidecar/node_modules/mingo/cjs/util/index.js"
+        },
+        {
+          "spec": "typescript",
+          "url": "file:///opt/papercusp/sidecar/node_modules/typescript/lib/typescript.js"
+        },
+        {
+          "spec": "undici",
+          "url": "file:///opt/papercusp/sidecar/node_modules/undici/index.js"
+        },
+        {
+          "spec": "viem",
+          "url": "file:///opt/papercusp/sidecar/node_modules/viem/_esm/index.js"
+        },
+        {
+          "spec": "viem/accounts",
+          "url": "file:///opt/papercusp/sidecar/node_modules/viem/_esm/accounts/index.js"
+        },
+        {
+          "spec": "viem/chains",
+          "url": "file:///opt/papercusp/sidecar/node_modules/viem/_esm/chains/index.js"
+        }
+      ],
+      "arch": "arm64",
+      "node": "v24.18.1",
+      "uid": 1001,
+      "serveSha256": "1333a5d98d754731b9cd6eef319b2668a089fbb025c354769c5fe00adb117d88"
+    },
+    "receiptSha256": "d8b744c1b66b2e0e267c03a32c414cc528227aa9fcc87c3a53e5a13a3d1a987d",
+    "recovery": "Read original successful streamed stdout and terminal ownership; no guest replay. Caller formatter expected an empty-by-design return value to contain stdout."
+  },
+  "postExecutionBindings": {
+    "status": "passed",
+    "overlaySha256": "cedde981291a486ce1f23a3e143efd0ff9222ef148bc2c27bddbfeb8cad807c4",
+    "entries": 27985,
+    "elfFiles": 0,
+    "sourceInputs": 21,
+    "buildArtifacts": 4,
+    "scope": "post-execution exact helper/build/overlay bindings; no boot or final native acceptance"
+  },
+  "artifactRefs": [
+    {
+      "path": "/mnt/backup/portable-server-p058/changed-input-release-20261011/source-receipt.json",
+      "sha256": "8feef4287e9a4347a14c3fdf8dc1b221d8fdea9198e7fe85708bf4d7acdbbcbf"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/changed-input-release-20261011/dependency-receipt.json",
+      "sha256": "070ceb6ad009dada2e1bcfebd32d252ac8657b745b1a2f6ad36d6a1f6b7c5665"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/changed-input-release-20261011/build-receipt.json",
+      "sha256": "92cf7cb606f4d2127370ce7abc5499e3d6f303e8a8da38edabcff4e79418e846"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/changed-input-release-20261011/qualification-precheck.json",
+      "sha256": "0935bd469e5675ced84dc3d988e7ae7aae64aee2425d21421e3624df385a30eb"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/changed-input-release-20261011/overlay-full-inventory.json",
+      "sha256": "a72784932299bfe42b79a1718f0bc9e610063b46ed43970e7deb41ab3e7f2136"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/changed-input-release-20261011/arm-original-deadline.qualified-deps-config.json",
+      "sha256": "c3dc374bb75816b54709403a5cbd2f75e4170b0e0e2b2e8c1326afb44b381dc2"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/changed-input-release-20261011/arm-original-deadline.podman-config.json",
+      "sha256": "a9cedf9bb1e430bca5f374f77361a760b6f3aaa79cc908d1685a9b2cba86677e"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/changed-input-release-20261011/static-external-resolution-config-podman.json",
+      "sha256": "0e7e74c1cc8361dd67ab632abd7fff0b6885b0d955dcec01e1135a4d8b0baad8"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/changed-input-release-20261011/static-external-resolution-receipt-podman.json",
+      "sha256": "d8b744c1b66b2e0e267c03a32c414cc528227aa9fcc87c3a53e5a13a3d1a987d"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/changed-input-release-20261011/static-preflight-podman.log",
+      "sha256": "affbab29168ad843b9e4714177535cdb27a44b312f1a600bb35991f59c8d78fa"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/changed-input-release-20261011/static-preflight.log",
+      "sha256": "67d287950a12a03a49b7dfc32dbdc7df57fbb3ad7963dfba626b7b1f892f3c30"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/changed-input-release-20261011/post-arm-input-binding.json",
+      "sha256": "b6f3f83e2d46da34cda42791ceb55655560b75c49a7b93cb1a8dc8ade93df0b3"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/changed-input-release-20261011/arm-original-deadline-podman.log",
+      "sha256": "916ae97e78f9c62db3bebfff939ed9fd62300e953fa002d6269ac6cbac21c441"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "full-source-and-release-build",
+      "passed": true,
+      "evidence": "Maintained complete39089-file source verification and all four emitted release artifact bindings passed."
+    },
+    {
+      "id": "post-prune-overlay-inventory",
+      "passed": true,
+      "evidence": "Maintained inventory bound27985 entries/136031718bytes/0ELF; full file manifest and before/after hashes stable."
+    },
+    {
+      "id": "arm-static-externals",
+      "passed": true,
+      "evidence": "26 emitted non-builtin static ESM specifiers resolved to existing files in arm64/Nodev24.18.1/uid1001; guest0, original reporter1 retained and recovered without replay."
+    },
+    {
+      "id": "original60000ms-boot-imports",
+      "passed": false,
+      "evidence": "Original helper returned ETIMEDOUT after69128ms; receiptObservedfalse; no PAPERCUSP_BOOT_IMPORTS_OK or P058_ORIGINAL_BOOT_HELPER_PASS marker."
+    },
+    {
+      "id": "owned-cleanup-and-input-stability",
+      "passed": true,
+      "evidence": "Exact producer removedtrue/cleanupPendingfalse;21 source input,4 build artifact and complete overlay bindings passed after execution."
+    }
+  ],
+  "counts": {
+    "passed": 4,
+    "failed": 1,
+    "skipped": 0,
+    "cancelled": 0
+  },
+  "limitations": [
+    "Source changes beyond compaction and the alternate engine route preclude causal A/B inference against the historical candidate.",
+    "The Docker static CREATE attempt separately timed out before guest execution and was reconciled/removed; it is retained on EI-25608208328004035.",
+    "This artifact uses the fresh HOST bundle and JS overlay in a retained native runtime; it is not an installed-native release candidate or a signed/publication verdict.",
+    "Source/build tests from prior revisions retain their original scope; no unchanged collector or source test suite was replayed."
+  ],
+  "evidenceSerialization": {
+    "serializer": "scripts/lib/identity-leak-patterns.mjs::serializeIdentitySafeJson",
+    "rawEvidence": {
+      "path": "/mnt/backup/portable-server-p058/changed-input-release-20261011/qualification-evidence-original-fb12.json",
+      "sha256": "fb12d4304cb4892c10d3212609d26a9ba9043f4e9a20822a848941ffa6b05e87"
+    },
+    "scope": "Public serialization only; original execution receipts and failed verdict unchanged."
+  }
+}

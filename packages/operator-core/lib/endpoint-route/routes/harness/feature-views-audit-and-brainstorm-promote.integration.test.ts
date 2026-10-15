@@ -6,9 +6,9 @@
  * `harness_features` to the CORRECT per-harness schema (never a sibling
  * harness's same-named table) in BOTH connection modes, mirroring
  * archives-clear-features.integration.test.ts's method. Also proves
- * brainstorm.ts's promote-to-feature id-increment (SELECT next F-IDEA-###
- * then INSERT, now wrapped in one `sql.begin` transaction) is scoped
- * per-harness, not computed across schemas. Real Postgres (testcontainer;
+ * brainstorm.ts's promote-to-feature mints an F-IDEA id that is unique across
+ * sibling harnesses (scope-unique-identifiers P-005 replaced the per-harness
+ * MAX + 1 counter) and lands in the target schema. Real Postgres (testcontainer;
  * Docker required). Run:
  *   npx vitest run --config vitest.integration.config.ts lib/endpoint-route/routes/harness/feature-views-audit-and-brainstorm-promote.integration.test.ts
  */
@@ -233,31 +233,48 @@ describe.each([
     it('creates the F-IDEA row ONLY in the target harness schema, sibling harness untouched', async () => {
       const { status, body } = await promoteFeature(SLUG_A, 'A brand new idea\nsome more detail');
       expect(status).toBe(200);
-      expect(body).toMatchObject({ ok: true, id: 'F-IDEA-001', target: 'feature' });
+      expect(body).toMatchObject({ ok: true, target: 'feature' });
+      const id = (body as { id: string }).id;
+      expect(id).toMatch(/^F-IDEA-\d+$/);
 
       const [rowA] = await obs.unsafe(
-        `SELECT feature_id, title, notes, status, metadata FROM ${SCHEMA_A}.harness_features WHERE feature_id = 'F-IDEA-001'`,
+        `SELECT feature_id, title, notes, status, metadata FROM ${SCHEMA_A}.harness_features WHERE feature_id = '${id}'`,
       ) as unknown as Array<{ feature_id: string; title: string; notes: string; status: string; metadata: unknown }>;
-      expect(rowA).toMatchObject({ feature_id: 'F-IDEA-001', title: 'A brand new idea', notes: 'some more detail', status: 'todo' });
+      expect(rowA).toMatchObject({ feature_id: id, title: 'A brand new idea', notes: 'some more detail', status: 'todo' });
       expect(rowA.metadata).toMatchObject({ source: 'brainstorm' });
 
       const [{ n: sideB }] = await obs.unsafe(`SELECT count(*)::int AS n FROM ${SCHEMA_B}.harness_features`) as unknown as { n: number }[];
       expect(sideB).toBe(0); // sibling harness schema untouched — proves schema scoping
     });
 
-    it('computes the next id from the TARGET harness\'s own rows, not a sibling\'s (per-harness id sequencing)', async () => {
-      // Seed 2 existing ideas in A only; B starts empty. If id computation ever
-      // leaked cross-schema, promoting into B would wrongly continue A's sequence.
+    it('mints ids that never repeat across sibling harnesses of one workspace (scope-unique-identifiers P-005)', async () => {
+      // The id used to be MAX(F-IDEA-n) + 1 over the target harness's own rows, so
+      // a fresh harness B minted F-IDEA-001 while A already held F-IDEA-001 — the
+      // same feature id under two harnesses of one workspace. Seed A's legacy
+      // ids, then promote into both: no minted id may equal any existing one or
+      // each other.
       await obs.unsafe(`
         INSERT INTO ${SCHEMA_A}.harness_features (feature_id, harness_slug, title, status, attempts, needs_human_review, ts, created_ts, updated_ts)
         VALUES ('F-IDEA-001', '${SLUG_A}', 'old idea 1', 'todo', 0, false, 1, 1, 1),
                ('F-IDEA-002', '${SLUG_A}', 'old idea 2', 'todo', 0, false, 1, 1, 1)`);
 
       const { body: bodyB } = await promoteFeature(SLUG_B, 'fresh idea in B');
-      expect(bodyB).toMatchObject({ ok: true, id: 'F-IDEA-001' }); // B's own sequence starts at 1
-
       const { body: bodyA } = await promoteFeature(SLUG_A, 'third idea in A');
-      expect(bodyA).toMatchObject({ ok: true, id: 'F-IDEA-003' }); // A continues its own sequence (max existing + 1)
+      const idB = (bodyB as { id: string }).id;
+      const idA = (bodyA as { id: string }).id;
+      expect(idB).toMatch(/^F-IDEA-\d+$/);
+      expect(idA).toMatch(/^F-IDEA-\d+$/);
+      expect(new Set(['F-IDEA-001', 'F-IDEA-002', idA, idB]).size).toBe(4);
+
+      // Each row still lands in its own harness schema.
+      const [{ n: inB }] = await obs.unsafe(
+        `SELECT count(*)::int AS n FROM ${SCHEMA_B}.harness_features WHERE feature_id = '${idB}'`,
+      ) as unknown as { n: number }[];
+      const [{ n: inA }] = await obs.unsafe(
+        `SELECT count(*)::int AS n FROM ${SCHEMA_A}.harness_features WHERE feature_id = '${idA}'`,
+      ) as unknown as { n: number }[];
+      expect(inB).toBe(1);
+      expect(inA).toBe(1);
     });
   });
 });

@@ -15,6 +15,8 @@ export interface LockHoldingCoordinates {
   owner: string;
   intent: string;
   goalRef?: string;
+  /** ISO time the hold began (the turn-scoped hold's edit time); absent on real locks. */
+  heldSince?: string;
 }
 
 /**
@@ -41,6 +43,7 @@ export function mapLiveLockHoldingsForRepo(
       owner: holding.owner,
       intent: holding.intent,
       ...(holding.goalRef?.trim() ? { goalRef: holding.goalRef.trim() } : {}),
+      ...(holding.heldSince ? { heldSince: holding.heldSince } : {}),
     }))
     .filter((holding) => holding.path.length > 0);
 
@@ -176,6 +179,7 @@ export async function translateLiveLockHoldingsToRoot(
       owner: holding.owner,
       intent: holding.intent,
       ...(holding.goalRef?.trim() ? { goalRef: holding.goalRef.trim() } : {}),
+      ...(holding.heldSince ? { heldSince: holding.heldSince } : {}),
     };
     const domain = holding.coordinationDomain ? normalizeDir(holding.coordinationDomain) : '';
     if (!domain) {

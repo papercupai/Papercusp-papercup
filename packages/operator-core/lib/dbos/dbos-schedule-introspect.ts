@@ -53,6 +53,8 @@ export interface DbosScheduleIntrospectDeps {
   getRegisteredSchedules: () => Promise<RegisteredSchedule[]> | RegisteredSchedule[];
   /** Per-schedule last-fire + last-status. Default: query dbos.event_dispatch_kv + dbos.workflow_status; empty when the dbos schema is absent. */
   getFireState: (names: string[]) => Promise<FireState>;
+  /** Optional case-insensitive substring filter applied before querying fire-state. */
+  nameFilter?: string;
 }
 
 /** Production default: read the SDK's in-process scheduler registry. Never throws. */
@@ -148,7 +150,9 @@ export async function listDbosScheduledWorkflows(
   const getRegistered = deps.getRegisteredSchedules ?? defaultGetRegisteredSchedules;
   const getFireState = deps.getFireState ?? defaultGetFireState;
 
-  const registered = await getRegistered();
+  const allRegistered = await getRegistered();
+  const needle = deps.nameFilter?.toLowerCase();
+  const registered = needle ? allRegistered.filter((entry) => entry.name.toLowerCase().includes(needle)) : allRegistered;
   if (registered.length === 0) return [];
 
   const names = registered.map((r) => r.name);

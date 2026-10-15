@@ -50,6 +50,7 @@ const {
 } = await import('./owner-directive-agenda');
 const { TERMINAL_WORK_ITEM_STATES } = await import('./work-items');
 const { countOpenOwnerDirectives, listOwnerDirectives } = await import('./owner-directives');
+const { checkOpenDirectivesGuard } = await import('./agent-tools/orders/open-directives-guard');
 
 interface RecordedCall {
   text: string;
@@ -78,6 +79,28 @@ function fakeSql(respond: (text: string) => unknown[] = () => []) {
 const WS = 'papercusp-workspace';
 const ME = 'su-mine';
 const THEM = 'su-theirs';
+
+function rawDirective(id: number, recordedBy: string) {
+  return {
+    id,
+    workspace_id: WS,
+    owner_id: 'owner',
+    session_ref: null,
+    source_turn_ref: null,
+    verbatim_text: `directive ${id}`,
+    recorded_by: recordedBy,
+    created_at: new Date('2026-10-01T00:00:00.000Z'),
+    dispositioned_at: null,
+    disposition_status: null,
+    disposition_note: null,
+    dispositioned_by: null,
+    summary_text: null,
+    summary_by: null,
+    summary_at: null,
+    captured_by_hook: true,
+    other_session_copies: 0,
+  };
+}
 
 /**
  * Rows for a directive recorded by `recordedBy`; work_items rows from `holders`.
@@ -377,6 +400,91 @@ describe('agenda writes — per-session, and deliberately UNGUARDED (D-008 defec
     const fragment = sql.calls.find((c) => c.text.includes('owner_directive_agenda'));
     expect(fragment, 'the count must exclude the viewer’s cleared rows too').toBeDefined();
     expect(fragment!.values).toContain(ME);
+  });
+
+  it('a stop guard ignores foreign FYI directives while filtering the owner list in SQL', async () => {
+    const foreign = rawDirective(501, THEM);
+    let ownerFilterPresent = false;
+    const sql = fakeSql((text) => {
+      if (text.includes('AND recorded_by =')) {
+        ownerFilterPresent = true;
+        return [];
+      }
+      if (!text.includes('FROM harness_shared.owner_directives')) return [];
+      return ownerFilterPresent ? [] : [foreign];
+    });
+
+    const guard = await checkOpenDirectivesGuard({
+      workspaceId: WS,
+      viewerOwnerId: ME,
+      acknowledged: false,
+      action: 'loop:end',
+      sql,
+    });
+
+    expect(guard).toBeNull();
+    const list = sql.calls.find((call) => call.text.includes('FROM harness_shared.owner_directives'))!;
+    const ownerFilter = sql.calls.find((call) => call.text.includes('AND recorded_by ='))!;
+    expect(ownerFilter.values).toContain(ME);
+    const slot = list.values.indexOf(ownerFilter.returned);
+    expect(slot, 'the caller filter must be embedded in the directive query').toBeGreaterThanOrEqual(0);
+    expect(list.text.split(' ? ').slice(0, slot + 1).join(' ')).not.toContain('LIMIT');
+  });
+
+  it('blocks on this session’s directives and uses the same owner filter for the overflow count', async () => {
+    const ownRows = Array.from({ length: 5 }, (_, i) => rawDirective(600 + i, ME));
+    const foreignRows = Array.from({ length: 5 }, (_, i) => rawDirective(700 + i, THEM));
+    let ownerFilterPresent = false;
+    const sql = fakeSql((text) => {
+      if (text.includes('AND recorded_by =')) {
+        ownerFilterPresent = true;
+        return [];
+      }
+      if (text.includes('SELECT count(*) AS n')) {
+        return [{ n: ownerFilterPresent ? '7' : '12' }];
+      }
+      if (text.includes('FROM harness_shared.owner_directives')) {
+        return ownerFilterPresent ? ownRows : foreignRows;
+      }
+      return [];
+    });
+
+    const guard = await checkOpenDirectivesGuard({
+      workspaceId: WS,
+      viewerOwnerId: ME,
+      acknowledged: false,
+      action: 'loop:end',
+      sql,
+    });
+
+    expect(guard).toMatchObject({ ok: false, error: 'open_owner_directives', openCount: 7 });
+    expect(guard?.directives).toHaveLength(5);
+    expect(guard?.directives.every((directive) => directive.includes('[FOR THIS SESSION]'))).toBe(true);
+    const list = sql.calls.find((call) => call.text.includes('SELECT *,'))!;
+    const count = sql.calls.find((call) => call.text.includes('SELECT count(*) AS n'))!;
+    const listFilter = sql.calls.find(
+      (call) => call.text.includes('AND recorded_by =') && list.values.includes(call.returned),
+    );
+    const countFilter = sql.calls.find(
+      (call) => call.text.includes('AND recorded_by =') && count.values.includes(call.returned),
+    );
+    expect(listFilter?.values).toContain(ME);
+    expect(countFilter?.values).toContain(ME);
+  });
+
+  it('fails open when no viewer identity is available instead of blocking on workspace-wide rows', async () => {
+    const sql = fakeSql(() => [rawDirective(801, THEM)]);
+
+    const guard = await checkOpenDirectivesGuard({
+      workspaceId: WS,
+      viewerOwnerId: null,
+      acknowledged: false,
+      action: 'loop:end',
+      sql,
+    });
+
+    expect(guard).toBeNull();
+    expect(sql.calls).toHaveLength(0);
   });
 
   it('listClearedDirectiveIds reads only DISMISSED rows for one owner, as numbers', async () => {

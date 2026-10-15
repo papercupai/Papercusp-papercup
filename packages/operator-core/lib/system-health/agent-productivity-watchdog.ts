@@ -93,6 +93,8 @@ import type { Sql } from 'postgres';
 
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { openEscalation } from '../agent-tools/coordination/escalations';
+import { broadcastSevereEvent } from '../severe-event-broadcast';
+import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import {
   resolveSessionStates,
@@ -332,6 +334,8 @@ export function resolveDegenerateWake(
 }
 
 export interface AgentProductivitySweepDeps {
+  rail?: Partial<AlarmAttentionDeps>;
+  readOpenConditions?: () => Promise<Array<{ conditionKey: string; openedAtMs: number }>>;
   /** Presence rows old enough to judge, with a heartbeat recent enough to bother. */
   readCandidates: (graceMs: number) => Promise<AgentPresenceCandidate[]>;
   /**
@@ -505,6 +509,14 @@ export function makeReadAgentProductivity(
        GROUP BY 1`;
 
     for (const r of rows) {
+      // PostgreSQL count columns arrive as decimal strings. Coercing arbitrary
+      // values with Number() would turn a boolean or blank into measured work
+      // and falsely discharge an episode during a degraded read.
+      const raw = [r.agent_calls, r.any_calls, r.recent_calls, r.recent_telemetry_calls,
+        r.recent_work_calls, r.recent_progress_calls];
+      if (!raw.every(value => (typeof value === 'number' ||
+          (typeof value === 'string' && /^\d+$/.test(value))) &&
+          Number.isSafeInteger(Number(value)) && Number(value) >= 0)) continue;
       out.set(r.owner_id, {
         agentOriginCalls: Number(r.agent_calls),
         anyOriginCalls: Number(r.any_calls),
@@ -980,6 +992,73 @@ function emptySweepResult(): AgentProductivitySweepResult {
   };
 }
 
+type ProductivityConditionKind = AgentWedgePhase | 'ideate' | 'degenerate';
+export function agentProductivityConditionKey(kind: ProductivityConditionKind,
+  candidate: Pick<AgentPresenceCandidate, 'workspaceId' | 'ownerId' | 'startedAtMs'>, registeredAtMs = 0): string {
+  return `alarm:agent-productivity:${kind}:` + encodeURIComponent(JSON.stringify([
+    candidate.workspaceId, candidate.ownerId, candidate.startedAtMs, registeredAtMs,
+  ]));
+}
+
+async function readOpenProductivityConditions(): Promise<Array<{ conditionKey: string; openedAtMs: number }>> {
+  const { computeConditionStates, readConditionEnvelopes } = await import('../agent-tools/coordination/tools/conditions');
+  return computeConditionStates(await readConditionEnvelopes())
+    .filter(condition => condition.open && condition.condition_key.startsWith('alarm:agent-productivity:'))
+    .map(condition => ({ conditionKey: condition.condition_key,
+      openedAtMs: condition.open_since ? Date.parse(condition.open_since) : Number.NaN }));
+}
+
+/** A bounded candidate disappearance is not recovery. Only the exact current
+ * registration and measured census may close its durable episode. Legacy
+ * owner reports remain correlated into waves; the rail tracks each subject. */
+async function reconcileProductivityConditions(c: AgentPresenceCandidate, measured: AgentCallCensus | undefined,
+  reg: AgentIdeateRegistration | undefined, lastPass: number | undefined, now: number,
+  deps: AgentProductivitySweepDeps, episodes: Array<{ conditionKey: string; openedAtMs: number }>): Promise<void> {
+  const count = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+  const clock = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0;
+  const heartbeat = Date.parse(c.heartbeatAt);
+  if (!c.workspaceId?.trim() || !c.ownerId?.trim() || !clock(now) || !clock(c.startedAtMs) ||
+      c.startedAtMs > now || !clock(heartbeat) || heartbeat > now || now - heartbeat > CANDIDATE_HEARTBEAT_WINDOW_MS ||
+      !measured || !count(measured.agentOriginCalls) || !count(measured.anyOriginCalls) ||
+      measured.agentOriginCalls > measured.anyOriginCalls) return;
+  const apply = async (kind: ProductivityConditionKind, breached: boolean, recovered: boolean, registration = 0) => {
+    const conditionKey = agentProductivityConditionKey(kind, c, registration);
+    try {
+      if (breached) {
+        const event = { conditionKey, oneShot: true, summary: `Agent productivity ${kind}: ${c.ownerLabel}`,
+          body: `Workspace ${c.workspaceId}; owner ${c.ownerId}; registration ${c.startedAtMs}; measured agent calls ${measured.agentOriginCalls}.` };
+        if (deps.rail?.broadcast) await deps.rail.broadcast(event);
+        else await broadcastSevereEvent(event);
+      } else if (recovered && episodes.some(episode => episode?.conditionKey === conditionKey &&
+          clock(episode.openedAtMs) && episode.openedAtMs <= now)) {
+        await resolveAlarm(conditionKey, 'agent-productivity', deps.rail);
+      }
+    } catch (error) {
+      console.warn(`[agent-productivity-watchdog] condition delivery failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+  const wedge = resolveAgentWedge({ presence: 'present', productivity: { ...measured,
+    presentForMs: now - c.startedAtMs }, graceMs: deps.graceMs });
+  for (const kind of ['never-booted', 'booted-never-worked'] as const) {
+    await apply(kind, wedge.wedged && wedge.phase === kind, measured.agentOriginCalls > 0);
+  }
+  const trailing = [measured.recentCalls, measured.recentTelemetryCalls,
+    measured.recentWorkCalls, measured.recentProgressCalls];
+  if (trailing.every(count) && trailing.slice(1).every(value => value! <= measured.recentCalls!)) {
+    const verdict = resolveDegenerateWake(measured);
+    await apply('degenerate', verdict.degenerate, measured.agentOriginCalls > 0 &&
+      (verdict.reason === 'work-present' || (verdict.reason === 'telemetry-below-threshold' &&
+        measured.recentCalls! >= DEGENERATE_WAKE_MIN_CALLS)));
+  }
+  if (reg && clock(reg.setAtMs) && reg.setAtMs <= now && now - reg.setAtMs >= deps.ideateGraceMs &&
+      (lastPass === undefined || (clock(lastPass) && lastPass <= now))) {
+    const silent = lastPass === undefined || lastPass < reg.setAtMs;
+    const key = agentProductivityConditionKey('ideate', c, reg.setAtMs);
+    await apply('ideate', silent && !wedge.wedged, !silent && episodes.some(episode =>
+      episode.conditionKey === key && clock(episode.openedAtMs) && lastPass! >= episode.openedAtMs), reg.setAtMs);
+  }
+}
+
 /**
  * One sweep: read candidates, resolve presence, measure productivity, group the
  * wedged into correlated waves, escalate one report per wave.
@@ -1016,6 +1095,13 @@ export async function runAgentProductivitySweepOnce(
   ]);
 
   const now = deps.now();
+  // Read once per sweep. An unreadable durable ledger preserves recovery while
+  // independent detector openings and the existing reports continue.
+  let episodes: Array<{ conditionKey: string; openedAtMs: number }> = [];
+  try {
+    const read = await (deps.readOpenConditions ?? readOpenProductivityConditions)();
+    if (Array.isArray(read)) episodes = read.filter(episode => typeof episode?.conditionKey === 'string');
+  } catch { /* not measured */ }
   const waves = new Map<string, AgentWedgeWave>();
   const ideateWaves = new Map<string, AgentIdeateSilenceWave>();
   const degenerateWaves = new Map<string, DegenerateWakeWave>();
@@ -1034,6 +1120,7 @@ export async function runAgentProductivitySweepOnce(
     present += 1;
 
     const measured = census.get(c.ownerId);
+    await reconcileProductivityConditions(c, measured, ideateRegs.get(c.ownerId), ideatePasses.get(c.ownerId), now, deps, episodes);
     const v = resolveAgentWedge({
       presence: 'present',
       productivity: measured

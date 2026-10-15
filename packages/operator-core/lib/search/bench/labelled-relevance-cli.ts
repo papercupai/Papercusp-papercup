@@ -29,6 +29,7 @@
  * with D-083 (see the denominator trap on `rollUp`).
  */
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 
 import type { SearchHit } from '@papercusp/search';
 
@@ -55,6 +56,7 @@ import {
   SECONDARY_STRATUM_TOOLS,
   type QueryStratum,
   type SampledQuery,
+  type QueryWindow,
 } from './query-sample';
 
 function argValue(name: string): string | undefined {
@@ -144,6 +146,14 @@ async function main(): Promise<void> {
   // labels. 2.4x the judge calls at k=10; the aggregates stay top-k.
   const poolAll = process.argv.includes('--pool-all');
   const tools = secondary ? SECONDARY_STRATUM_TOOLS : SEARCH_STACK_TOOLS;
+  const minTerms = argInt('--min-terms', 1);
+  const until = argValue('--until') ?? new Date().toISOString();
+  const window: QueryWindow = {
+    since: argValue('--since') ?? new Date(Date.parse(until) - 30 * 86400_000).toISOString(),
+    until,
+    ...(argValue('--max-terms') ? { maxTerms: argInt('--max-terms', 2) } : {}),
+  };
+  if (window.maxTerms !== undefined && window.maxTerms < minTerms) throw new Error('--max-terms must be >= --min-terms');
 
   const [{ runHybridSearch }, { SEARCH_SOURCES }, { buildQueryEmbedder }, { activeWorkspaceId }, { getOrgPg }] =
     await Promise.all([
@@ -162,7 +172,7 @@ async function main(): Promise<void> {
   // Re-measure the census rather than hard-coding D-079's table: it is a
   // property of a growing telemetry table, and an allocation computed from a
   // stale denominator mis-weights every stratum.
-  const census = await sql.unsafe<QueryStratum[]>(queryCensusSql(workspaceId, tools));
+  const census = await sql.unsafe<QueryStratum[]>(queryCensusSql(workspaceId, tools, minTerms, window));
   // `--tools a,b` RESTRICTS the census to named strata before allocation.
   //
   // Why this exists: allocation is PROPORTIONAL to each stratum's distinct-query
@@ -212,7 +222,7 @@ async function main(): Promise<void> {
   const queries: SampledQuery[] = [];
   for (const a of allocation) {
     if (a.want === 0) continue;
-    queries.push(...(await sql.unsafe<SampledQuery[]>(querySampleSql(workspaceId, a.tool, a.want, seed))));
+    queries.push(...(await sql.unsafe<SampledQuery[]>(querySampleSql(workspaceId, a.tool, a.want, seed, minTerms, window))));
   }
   if (queries.length === 0) {
     console.error('[labelled] nothing to measure — the sample is empty');
@@ -397,6 +407,15 @@ async function main(): Promise<void> {
     k,
     judgeConcurrency: argInt('--concurrency', 4),
     sampleSeed: seed,
+    contract: {
+      runtime: createHash('sha256').update(['labelled-relevance.ts', 'labelled-relevance-cli.ts', 'query-sample.ts']
+        .map((name) => fs.readFileSync(new URL(name, import.meta.url))).join('\n')).digest('hex'),
+      corpus: argValue('--corpus-fingerprint') ?? null,
+      judge: createHash('sha256').update(JSON.stringify({ model: JUDGE_AGREEMENT_MODEL,
+        rubric: JUDGE_AGREEMENT_RUBRIC_VERSION, docChars: DOC_CHARS })).digest('hex'),
+      adapter: `offline-all-source-hybrid-stage-experiment:rerank=${!noRerank}:pool=${poolAll}`,
+      sample: createHash('sha256').update(JSON.stringify({ seed, window, minTerms, census: censusForAlloc, allocation, queries })).digest('hex'),
+    },
     log: (m) => console.log(new Date().toISOString().slice(11, 19), m),
     onQueryDone: (o: QueryOutcome) => rowStream.write(JSON.stringify(o) + '\n'),
   });
@@ -409,6 +428,9 @@ async function main(): Promise<void> {
     );
   }
   report.caveats.push(
+    `Frozen population: ${JSON.stringify({ workspaceId, tools, window, minTerms, census: censusForAlloc, allocation, queries })}. ` +
+      `Distinct-query sampling measures diversity; usageCount is retained for a separately labelled usage-weighted analysis. ` +
+      `This adapter is an offline all-source stage experiment, not a reproduction of each sampled production tool or injection port.`,
     `The judge scored the RESULT AS PRESENTED (200-char excerpt + match-centred headline, ` +
       `capped at ${DOC_CHARS} chars), not the full document. This biases in one direction: a ` +
       `document whose relevance is only visible deeper in its body can be under-scored.`,

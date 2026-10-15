@@ -44,6 +44,7 @@
  * distinction to the browser.
  */
 import { getOrgPg } from '@papercusp/db-org/connection';
+import type { TransactionSql } from 'postgres';
 import {
   hostedMembershipAuthority,
   type HostedMembershipAuthorityReader,
@@ -54,7 +55,7 @@ import type {
   HostedIdentityBinding,
 } from '../endpoint-route/routes/hosted-auth';
 
-type SqlClient = ReturnType<typeof getOrgPg>['sql'];
+type SqlClient = ReturnType<typeof getOrgPg>['sql'] | TransactionSql;
 
 export const HOSTED_IDENTITY_BINDING_DENIAL_REASONS = [
   /** The provider id, subject, or verified-email contract was not satisfied. */
@@ -262,6 +263,25 @@ export class PostgresHostedIdentityDirectory implements HostedIdentityDirectory 
     providerId: string;
     subject: string;
   }): Promise<{ userId: string } | null> {
+    return this.resolveLinkedUserRow(input, false);
+  }
+
+  /** Hold both local lifecycle rows through a caller's admission transaction.
+   * This proves an active link, not upstream email verification. */
+  async resolveLinkedUserForUpdate(input: {
+    providerId: string;
+    subject: string;
+  }): Promise<{ userId: string } | null> {
+    if (typeof (this.sql as { begin?: unknown }).begin === 'function') {
+      throw new Error('hosted_identity_lock_requires_transaction');
+    }
+    return this.resolveLinkedUserRow(input, true);
+  }
+
+  private async resolveLinkedUserRow(input: {
+    providerId: string;
+    subject: string;
+  }, lock: boolean): Promise<{ userId: string } | null> {
     // Joined to hosted_users rather than trusting the link row alone: the FK
     // guarantees the user EXISTS, not that it is still active, and a
     // deactivated user must not be able to sign in through a link that was
@@ -280,6 +300,7 @@ export class PostgresHostedIdentityDirectory implements HostedIdentityDirectory 
          AND hu.deleted_at IS NULL
          AND hu.deactivated_at IS NULL
        LIMIT 1
+       ${lock ? this.sql`FOR UPDATE OF ei, hu` : this.sql``}
     `;
     return rows.length === 0 ? null : { userId: rows[0].hosted_user_id };
   }

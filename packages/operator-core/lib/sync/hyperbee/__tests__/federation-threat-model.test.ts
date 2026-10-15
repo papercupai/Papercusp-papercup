@@ -58,6 +58,10 @@ import { _resetCacheForTests, closeHarnessStore } from '../corestore';
 import { _resetBootHistoryForTests } from '../boot-history';
 import { applyOpVia, type ProjectionLookup, type TableProjection } from '../projection';
 import type { SwarmBinding } from '../derive-swarm-topic';
+import { stubHivePolicyReadsForSuite } from './_hive-policy-read-stubs';
+
+// WI-10007530: no PG here, and the merge pass no longer swallows a failed policy read.
+stubHivePolicyReadsForSuite();
 
 // ── Shared identity / swarm constants. Same binding on both peers → same topic. ──
 const WORKSPACE_ID = 'ws-fed-threat-model';

@@ -31,7 +31,7 @@
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
-import { lookupByMcpName, dispatchProjectedTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
+import { lookupByMcpName, dispatchProjectedTool, type ProjectedTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
 import { emitAwaitedEvent } from './engine';
 import { listCellsUnchecked, canReadCell } from '../../cell-registry';
@@ -215,6 +215,58 @@ export function nextEvaluatorBaselines(
   return Object.fromEntries(kept);
 }
 
+/** One evaluator's poll of a row, as `nextObservationBaselines` records it. */
+export interface PredicateObservation {
+  /** The predicate's verdict on this poll. */
+  eval: boolean;
+  /** The raw observation at the row's path (undefined/null = absent). */
+  observed: unknown;
+  /** ISO time of the poll. */
+  at: string;
+}
+
+/**
+ * The row's baseline map after evaluator `key` makes `observation` (EI-25217293871529814).
+ *
+ * `comparePredicate` already refuses to FIRE `changed` on an ABSENT observation (a
+ * path missing from a degraded payload is a loss of evidence, not a change). The
+ * recorder must not save that absent read as the BASELINE either, or the value's
+ * return reads as a change one poll later. Measured: one evaluator's absent read of
+ * git.pipelinePosition was saved as an established null baseline, and its next
+ * present read fired `changed from null` while every other evaluator still held
+ * the same unchanged value.
+ *
+ * For the baseline-relative op (`changed`):
+ *  - an evaluator holding a PRESENT baseline keeps that value across an absent read
+ *    (eval/at still refresh, so the edge and recency stay honest);
+ *  - an evaluator with NO entry does not establish one from an absent read while any
+ *    other evaluator holds a present value, because the state is known to be present
+ *    and this read is evidence loss, not a null state;
+ *  - when no evaluator has seen a present value, the absent read IS established as
+ *    null, so a value genuinely APPEARING still fires.
+ *
+ * Operand-relative ops never compare against the baseline value, so they record the
+ * observation exactly as before (their entry exists to track the per-evaluator edge).
+ */
+export function nextObservationBaselines(
+  prev: Record<string, EvaluatorBaseline>,
+  key: string,
+  op: PredicateOp,
+  observation: PredicateObservation,
+  cap: number = MAX_EVALUATOR_BASELINES,
+): Record<string, EvaluatorBaseline> {
+  const { observed, at } = observation;
+  const absent = observed === undefined || observed === null;
+  if (op === 'changed' && absent) {
+    const own = prev[key];
+    if (own && own.value != null) {
+      return nextEvaluatorBaselines(prev, key, { eval: observation.eval, value: own.value, at }, cap);
+    }
+    if (!own && Object.values(prev).some((b) => b.value != null)) return prev;
+  }
+  return nextEvaluatorBaselines(prev, key, { eval: observation.eval, value: absent ? null : observed, at }, cap);
+}
+
 /** Dot-path extraction: `counts.open`, `rows.0.status`. Array indices are plain
  *  numeric segments. Missing anywhere along the path ⇒ undefined. */
 export function valueAtPath(obj: unknown, path: string): unknown {
@@ -231,7 +283,9 @@ function deepEq(a: unknown, b: unknown): boolean {
   if (a == null || b == null) return false;
   if (typeof a !== 'object' || typeof b !== 'object') return false;
   try {
-    return JSON.stringify(a) === JSON.stringify(b);
+    // Persisted JSONB reorders object keys. Reuse the watch grouping's JSON
+    // canonicalization so key order cannot manufacture eq/ne/changed wakes.
+    return JSON.stringify(canonicalizeForKey(a)) === JSON.stringify(canonicalizeForKey(b));
   } catch {
     return false;
   }
@@ -670,6 +724,25 @@ export interface ReadOnlyDispatchEnv {
   callerContext?: UnifiedToolContext;
 }
 
+/** Resolve the effect of a predicate call without weakening the read-only boundary.
+ * Argument-sensitive tools may advertise a broad write effect while exposing a
+ * read-only operation for specific args. If their classifier is missing, invalid,
+ * or throws, fail closed rather than trusting the static effect. */
+export function resolvePredicateToolEffect(
+  projected: Pick<ProjectedTool, 'effect' | 'effectForCall'>,
+  args: Record<string, unknown>,
+): 'read' | 'write' | 'unknown' {
+  if (projected.effectForCall) {
+    try {
+      const effect = projected.effectForCall(args);
+      return effect === 'read' || effect === 'write' ? effect : 'unknown';
+    } catch {
+      return 'unknown';
+    }
+  }
+  return projected.effect === 'read' || projected.effect === 'write' ? projected.effect : 'unknown';
+}
+
 /**
  * ONE dispatch of a READ-ONLY projected tool under a caller's role envelope.
  *
@@ -703,10 +776,11 @@ export async function dispatchReadOnlyTool(
 ): Promise<unknown> {
   const projected = lookupByMcpName(tool);
   if (!projected) throw new ReadOnlyDispatchError('unknown_tool', `unknown tool "${tool}"`);
-  if (projected.effect !== 'read') {
+  const effect = resolvePredicateToolEffect(projected, args);
+  if (effect !== 'read') {
     throw new ReadOnlyDispatchError(
       'not_read_only',
-      `tool "${tool}" is not read-only (effect=${projected.effect ?? 'unset'})`,
+      `tool "${tool}" is not read-only (effect=${effect})`,
     );
   }
   const caller = env.callerContext;
@@ -893,7 +967,8 @@ function canonicalizeForKey(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalizeForKey);
   if (value && typeof value === 'object') {
     const src = value as Record<string, unknown>;
-    const out: Record<string, unknown> = {};
+    // JSON object keys are data, including the literal key "__proto__".
+    const out: Record<string, unknown> = Object.create(null);
     for (const k of Object.keys(src).sort()) out[k] = canonicalizeForKey(src[k]);
     return out;
   }
@@ -1104,9 +1179,10 @@ export async function evalPredicateWatch(
       lastEval: matched,
       lastValue: observed,
       deactivate,
-      evaluatorBaselines: nextEvaluatorBaselines(row.evaluatorBaselines, evaluator, {
+      // EI-25217293871529814: an absent read never becomes a `changed` baseline.
+      evaluatorBaselines: nextObservationBaselines(row.evaluatorBaselines, evaluator, row.op, {
         eval: matched,
-        value: observed === undefined ? null : observed,
+        observed,
         at: new Date().toISOString(),
       }),
     });

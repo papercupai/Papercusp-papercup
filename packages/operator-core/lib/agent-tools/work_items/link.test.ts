@@ -126,6 +126,22 @@ describe('work_items:link handler (bulk keyed-array)', () => {
     });
   });
 
+  it('derives dependency authorship from the session identity, not actor-shaped input', async () => {
+    const b = await body({
+      id: 'WI-dependent',
+      rel: 'blocks',
+      target_id: 'WI-blocker',
+      by: 'su-spoofed',
+      createdBy: 'su-spoofed',
+    });
+
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(linkM).toHaveBeenCalledWith('WI-dependent', { kind: 'work_item', ref: 'WI-T' }, 'blocks', {
+      harness: undefined,
+      by: 'me',
+    });
+  });
+
   it('normalizes the legacy source_id alias to the canonical source field', async () => {
     const b = await body({ source_id: 'WI-10002525', rel: 'blocks', target_id: 'WI-2144525' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });

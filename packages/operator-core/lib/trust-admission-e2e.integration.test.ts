@@ -35,7 +35,7 @@
  * Gated on Docker like the other *-integration tests (real testcontainer PG).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL, applyClaimPathReadDeps } from '../test/_work-items-schema';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { CLAIM_STATES_ALLOWLIST } from './scheduler/claim-states';
@@ -79,7 +79,7 @@ const HIVE_MEMBERS_DDL = `
     PRIMARY KEY (workspace_id, pot_home_slug, github_user_id))`;
 
 // The owner-keyed LOCAL trust list the admission predicate consults (P-009) —
-// USER_TRUST_LIST_DDL imported from ../test/_work-items-schema (shared superset).
+// The trust list (USER_TRUST_LIST_DDL) arrives via applyClaimPathReadDeps from ../test/_work-items-schema.
 
 // addTrustedUser / removeTrustedUser append a security-grant audit row (fail-safe,
 // but the table must exist or it console.warns → vitest-fail-on-console.
@@ -111,7 +111,7 @@ beforeAll(async () => {
   await db.sql.unsafe(HFC_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // claim path's P-005 readiness clause reads work_item_deps
   await db.sql.unsafe(HIVE_MEMBERS_DDL);
-  await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   await db.sql.unsafe(AUDIT_LOG_DDL);
   await db.sql.unsafe(ISSUES_DDL);
 }, 60_000);

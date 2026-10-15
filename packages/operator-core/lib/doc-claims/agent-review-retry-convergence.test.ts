@@ -133,15 +133,16 @@ describe('the pending guard the header describes is still where the header says 
 
     const preflight = source.indexOf('preflightAgentReviewGrade({');
     const refusalReturn = source.indexOf('if (agentReviewPreflight.refusal) {');
-    const ledgerWrite = source.indexOf('deps.gradeRoutedIdea({');
-    const reconcile = source.indexOf('deps.reconcileAgentReviewGrade({');
+    // Argument style can use a named input object; pin the callee ordering instead.
+    const ledgerWrite = source.indexOf('deps.gradeRoutedIdea(');
+    const reconcile = source.indexOf('deps.reconcileAgentReviewGrade(');
 
     // Positive controls: every anchor must exist, or an absent one would silently
     // satisfy the ordering assertions below at -1.
     expect(preflight, 'anchor `preflightAgentReviewGrade({` missing — instrument is broken').toBeGreaterThan(-1);
     expect(refusalReturn, 'anchor `if (agentReviewPreflight.refusal) {` missing — instrument is broken').toBeGreaterThan(-1);
-    expect(ledgerWrite, 'anchor `deps.gradeRoutedIdea({` missing — instrument is broken').toBeGreaterThan(-1);
-    expect(reconcile, 'anchor `deps.reconcileAgentReviewGrade({` missing — instrument is broken').toBeGreaterThan(-1);
+    expect(ledgerWrite, 'anchor `deps.gradeRoutedIdea(` missing — instrument is broken').toBeGreaterThan(-1);
+    expect(reconcile, 'anchor `deps.reconcileAgentReviewGrade(` missing — instrument is broken').toBeGreaterThan(-1);
 
     expect(
       refusalReturn,

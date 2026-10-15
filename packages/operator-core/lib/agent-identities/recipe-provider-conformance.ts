@@ -15,7 +15,7 @@ import { currentCallerRecipeCatalog, inspectScriptContract,
 import type { SavedRecipeAdapter, SavedRecipeSelector } from '../agent-tools/orchestration/saved-recipe-adapter';
 import { orchestrationSourceArgsSchema } from '../agent-tools/orchestration/public-contract';
 
-const pinSchema = orchestrationSourceArgsSchema.shape.inspectionPin.unwrap().extend({
+const pinSchema = orchestrationSourceArgsSchema.options[0].shape.inspectionPin.unwrap().extend({
   recipeRevision: z.string().regex(/^[0-9a-f]{64}$/),
 });
 export type IdentityRecipeInspectionPin = z.infer<typeof pinSchema>;

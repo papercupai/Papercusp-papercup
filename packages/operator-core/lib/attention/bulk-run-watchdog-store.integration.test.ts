@@ -50,6 +50,7 @@ const {
   reconcileRunCounters,
   strandStaleRun,
   RUN_HEARTBEAT_STALE_MS,
+  RESOLVER_ACTIVITY_MAX_SILENCE_MS,
 } = await import('./bulk-run-store');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
@@ -327,6 +328,90 @@ describe('bulk-run watchdog store (real PG)', () => {
     const after = await getRunItems(run.runId);
     expect(after.every((i) => i.outcome === 'pending')).toBe(true);
     expect(after.every((i) => i.error === null)).toBe(true);
+  });
+
+  // WI-10004887: the heartbeat is one witness, not the only one. The strand write
+  // itself must re-check the resolver's own activity, so a resolver that acts
+  // between the watchdog's read and this UPDATE wins the race like a heartbeat.
+  describe('resolver activity re-checked inside the strand write (WI-10004887)', () => {
+    // Default 10m: stale for the heartbeat rule, well inside the 30m ceiling.
+    // (makeStale's own default is 30m, which sits exactly on that ceiling.)
+    async function staleRunOwnedBy(prefix: string, owner: string, ageMs = RUN_HEARTBEAT_STALE_MS * 2) {
+      const run = await createRun({ items: seed(prefix), harnessSlug: 'papercusp' });
+      await setRunPhase({ runId: run.runId, phase: 'running' });
+      await makeStale(run.runId, ageMs);
+      await db.adminSql`
+        UPDATE harness_shared.attention_bulk_runs SET resolver_owner = ${owner}
+         WHERE workspace_id = ${h.ws} AND run_id = ${run.runId}
+      `;
+      return run;
+    }
+
+    it('REFUSES while the resolver has a fresh agent_activity row (busy on non-run tools)', async () => {
+      const owner = `su-busy-activity-${h.ws}`;
+      const run = await staleRunOwnedBy('r1', owner);
+      await db.adminSql`
+        INSERT INTO harness_shared.agent_activity (owner_id, kind) VALUES (${owner}, 'tool')
+      `;
+      const res = await strandStaleRun({ runId: run.runId, reason: 'should not fire' });
+      expect(res).toEqual({ marked: 0, phase: null });
+      expect((await getRun(run.runId))?.phase).toBe('running');
+    });
+
+    it('REFUSES while the resolver has a fresh tool_invocations row (polling its inbox)', async () => {
+      const owner = `su-busy-tools-${h.ws}`;
+      const run = await staleRunOwnedBy('r2', owner);
+      await db.adminSql`
+        INSERT INTO harness_shared.tool_invocations
+               (workspace_id, harness_slug, plugin_name, role, spawn_id, status, tool_name, window_key, coord_owner_id, invoked_at)
+        VALUES (${h.ws}, 'papercusp', 'agent-mcp', 'su', 'spawn-test', 'ok', 'coord:inbox', 'w', ${owner}, now())
+      `;
+      const res = await strandStaleRun({ runId: run.runId, reason: 'should not fire' });
+      expect(res.marked).toBe(0);
+      expect((await getRun(run.runId))?.phase).toBe('running');
+    });
+
+    it('STRANDS once the resolver itself went quiet past the heartbeat threshold', async () => {
+      const owner = `su-quiet-${h.ws}`;
+      const run = await staleRunOwnedBy('r3', owner);
+      const secs = Math.round((RUN_HEARTBEAT_STALE_MS * 2) / 1000);
+      await db.adminSql`
+        INSERT INTO harness_shared.agent_activity (owner_id, kind, created_at)
+        VALUES (${owner}, 'tool', now() - make_interval(secs => ${secs}))
+      `;
+      const res = await strandStaleRun({ runId: run.runId, reason: 'resolver went quiet' });
+      expect(res.phase).toBe('failed');
+      expect(res.marked).toBe(3);
+    });
+
+    it('STRANDS a resolver that NEVER acted — no agent_activity and no tool_invocations rows at all', async () => {
+      // Measured 2026-10-01 (bulk-e6dc3abf): a codex resolver that never took its
+      // kickoff turn has no activity rows, the scalar activity subquery is NULL, and
+      // NOT(NULL) refused the strand on every sweep until the 30m ceiling.
+      const owner = `su-never-acted-${h.ws}`;
+      const run = await staleRunOwnedBy('r5', owner);
+      const res = await strandStaleRun({ runId: run.runId, reason: 'resolver never acted' });
+      expect(res.phase).toBe('failed');
+      expect(res.marked).toBe(3);
+    });
+
+    it('STRANDS a busy resolver once the run has had no heartbeat past the silence ceiling', async () => {
+      const owner = `su-busy-elsewhere-${h.ws}`;
+      const run = await staleRunOwnedBy('r4', owner, RESOLVER_ACTIVITY_MAX_SILENCE_MS + 60_000);
+      await db.adminSql`
+        INSERT INTO harness_shared.agent_activity (owner_id, kind) VALUES (${owner}, 'tool')
+      `;
+      const res = await strandStaleRun({ runId: run.runId, reason: 'run not advancing' });
+      expect(res.phase).toBe('failed');
+      expect(res.marked).toBe(3);
+    });
+
+    it('readWatchdogRunRows exposes the resolver owner the action looks up', async () => {
+      const owner = `su-row-${h.ws}`;
+      const run = await staleRunOwnedBy('r5', owner);
+      const rows = await readWatchdogRunRows();
+      expect(rows.find((r) => r.runId === run.runId)?.resolverOwner).toBe(owner);
+    });
   });
 
   it('strands a STALE plan-cleanup run through the FINDINGS table', async () => {

@@ -201,6 +201,21 @@ describe('verifyOfferAuthorship — C5 runtime + capability gates', () => {
       host: { ...input.host, capabilities: ['clamp:coord-fleet-only'] }, // missing clamp:no-grants
     });
     expect(v).toMatchObject({ ok: false, code: 'capability_unsatisfied' });
+    // WI-10005197: the refusal names what would LIFT it, who can make that true, and what it compared.
+    expect(v).toMatchObject({
+      refusal: {
+        observed: { missingCapabilities: 'clamp:no-grants' },
+        whoCanMakeItTrue: ['host', 'owner'],
+      },
+    });
+    if (!v.ok) expect(v.refusal?.liftsWhen).toMatch(/isolation capability/);
+  });
+
+  it('a cryptographic refusal carries no lift contract (no remedy short of a different offer)', () => {
+    const { input } = validCase();
+    const v = verifyOfferAuthorship({ ...input, host: { ...input.host, runtimeVersion: '1.1.9' } });
+    expect(v).toMatchObject({ ok: false, code: 'runtime_too_old' });
+    if (!v.ok) expect(v.refusal).toBeUndefined();
   });
 
   it('an offer with no min-runtime and no isolationReqs still verifies', () => {

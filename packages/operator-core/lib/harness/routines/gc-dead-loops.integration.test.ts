@@ -128,10 +128,12 @@ describe('gcDeadLoops — what it reaps', () => {
     expect(await names()).toHaveLength(3);
   });
 
-  it('atomically reaps matching fire-state, including wildcard and prior-slug residue', async () => {
+  // Migration 939 permits exactly one fire-state row per owner-loop role.
+  // Exercise each surviving historical location independently instead of
+  // constructing a split that the migrated database correctly rejects.
+  it.each(['*', HARNESS])('atomically reaps matching fire-state under historical slug %s', async (harnessSlug) => {
     await seedRoutine({ name: 'loop-su-dead', targetOwnerId: 'su-dead', lastFiredDaysAgo: 30 });
-    await seedFireState({ harnessSlug: '*', role: 'loop-su-dead' });
-    await seedFireState({ harnessSlug: HARNESS, role: 'loop-su-dead', lastStatus: 'error: prior install' });
+    await seedFireState({ harnessSlug, role: 'loop-su-dead', lastStatus: 'error: prior install' });
 
     const res = await gcDeadLoops({ sql, workspaceId: WS });
     expect(res.reaped).toBe(1);

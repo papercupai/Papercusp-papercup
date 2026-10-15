@@ -1,6 +1,7 @@
 /** plans:set-specs — optimistic-CAS append of canonical plan spec revisions. */
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { RECORDED_TEST_LAYERS } from '@papercusp/test-config/execution-details';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { refineEvenWithShapeIssues } from '../_refine-with-shape-issues';
 import { resolveEffectiveHarnessSlug } from './_ctx-opts';
@@ -35,7 +36,7 @@ const specWriteSchema = z
     behavior: z.string().trim().min(1).max(12_000),
     behaviorClass: z.enum(SPEC_BEHAVIOR_CLASSES),
     requiredEvidence: z.array(z.string().trim().min(1).max(1000)).max(100).optional(),
-    requiredTestLayers: z.array(z.string().trim().min(1).max(200)).max(50).optional(),
+    requiredTestLayers: z.array(z.enum(RECORDED_TEST_LAYERS)).max(50).optional(),
     mutationRequired: z.boolean().optional(),
     lifecycleStatus: z.enum(SPEC_LIFECYCLE_STATUSES),
     supersedes: z

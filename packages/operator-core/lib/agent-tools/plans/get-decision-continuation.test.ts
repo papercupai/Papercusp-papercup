@@ -226,7 +226,6 @@ describe("narrowDecisionPayload continuation envelope", () => {
         missing: ["P-404"],
       },
       linkedFeatures: { "P-003": { featureId: "F-003" } },
-      planItemTests: { "P-003": { covered: 1 } },
       blockingIssues: { "P-003": ["EI-003"] },
     };
     const out = narrowDecisionPayload(BASE, ["D-001"], selected, 10_000, itemPayload);
@@ -234,7 +233,8 @@ describe("narrowDecisionPayload continuation envelope", () => {
     expect(out.items).toEqual(itemPayload.items);
     expect(out.itemSelection).toEqual(itemPayload.itemSelection);
     expect(out.linkedFeatures).toEqual(itemPayload.linkedFeatures);
-    expect(out.planItemTests).toEqual(itemPayload.planItemTests);
+    // planItemTests is retired with inline VAL-* (verification-system-improvements-2026-10-10 P-003).
+    expect(out).not.toHaveProperty("planItemTests");
     expect(out.blockingIssues).toEqual(itemPayload.blockingIssues);
     expect(out.decisions).toEqual(selected);
   });

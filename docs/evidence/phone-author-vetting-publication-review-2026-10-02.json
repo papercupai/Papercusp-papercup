@@ -1,0 +1,2651 @@
+{
+  "schemaVersion": "phone-author-vetting-publication-review-v1",
+  "workItem": "WI-10004893",
+  "subject": {
+    "rubricRef": "acceptance-phone-public-telephone-service-2026-10-01",
+    "revision": 4,
+    "criteriaHash": "f208eb77d15410f7b9868dc34e877a308ab2ed381b8a3805266ab445861b67cc"
+  },
+  "method": {
+    "rubricRef": "meta-acceptance-rubric",
+    "revision": 5,
+    "criteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614"
+  },
+  "preservedScope": {
+    "path": "docs/evidence/phone-author-vetting-snapshot-2026-10-02.json",
+    "sha256": "711c1d3baf7285214114fe09218f7a4caeedcf4ea0b318eafb810803f7553933",
+    "planRevision": 21,
+    "planContentHash": "7477ae57f696280234517dcd89c67560da76066e6a33f822e68ae8a1c4156b37",
+    "sourceIdentity": "Privacy-normalized derivative of the exact original audited snapshot; original bytes remain in the PG-canonical artifact named in publicationLineage."
+  },
+  "canonicalReads": {
+    "subject": "rubrics:get {rubricRef:'acceptance-phone-public-telephone-service-2026-10-01',revision:4,detail:'full'}",
+    "method": "rubrics:get {rubricRef:'meta-acceptance-rubric',revision:5,detail:'full'}",
+    "decisions": "plans:get {slug:'phone-public-telephone-service-2026-10-01',harness:'papercusp',heading:'Decisions',mode:'full',includeHistory:false,includeEnrichments:false}",
+    "goal": "plans:get {slug:'phone-public-telephone-service-2026-10-01',harness:'papercusp',heading:'Background',includeHistory:false,includeEnrichments:false} returned version21/hash7477 and Avi's public telephone goal; there is no Goal heading"
+  },
+  "retainedCritique": {
+    "workItem": "WI-10004893",
+    "objection": 1153815,
+    "approval": 1153920,
+    "role": "Third-party critique and approved amendment history; not the evidence instrument for current criterion claims"
+  },
+  "census": [
+    {
+      "key": "r-1",
+      "barKey": "R-1",
+      "model": "The approved release contract identifies launch countries, customers, supported incoming/outgoing call journeys, emergency obligations, paid-service budget and source/deployment ownership before paid provisioning or public exposure.",
+      "method": "Review the retained owner decisions, provider capabilities and dated source/runtime inventory; compare each promised user journey with its implementation and evidence route.",
+      "driftMarkers": "A required choice is silently assumed, the old browser-only shipment is treated as PSTN proof, or service is represented as primary-phone replacement without an approved emergency/compliance route.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Approved public-service launch contract",
+        "decisions": [
+          "D-001",
+          "D-003",
+          "D-008"
+        ],
+        "concreteFailure": "Paid provisioning occurs without an approved launch country or spending contract.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-2",
+      "barKey": "R-2",
+      "model": "A signed-in user at app.papercusp.com exchanges bidirectional audio with the self-hosted media plane from an external network, including a UDP-blocked network using TURN/TLS.",
+      "method": "Run authenticated remote-browser real-microphone calls on home broadband and cellular, then with UDP blocked; retain ICE-selected transport, WSS origin, peer audio receipt and lifecycle evidence.",
+      "driftMarkers": "One-way/no audio, an insecure or loopback browser endpoint, failed certificate renewal, or dependence on LAN/hairpin connectivity.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Self-hosted publicly reachable two-way media",
+        "decisions": [
+          "D-001",
+          "D-005"
+        ],
+        "concreteFailure": "External UDP-blocked call has one-way audio despite successful room join.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-3",
+      "barKey": "R-3",
+      "model": "A provisioning operation through the approved carrier account creates a durable number record for the authorized tenant.",
+      "method": "Exercise provisioning/reconciliation failures in the real suite, then verify approved numbers and routing with the carrier; exercise porting with a provider-supported test or retained owner/provider evidence rather than porting an owner's primary number.",
+      "driftMarkers": "A number routes to the wrong tenant, caller ID is unverified, a provider event creates a second number/charge, or cancellation/porting loses number ownership.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Real carrier numbers and routing",
+        "decisions": [
+          "D-003",
+          "D-009"
+        ],
+        "concreteFailure": "Provisioning receipt is successful but the authorized tenant has no durable number row.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-4",
+      "barKey": "R-4",
+      "model": "An ordinary-phone incoming call reaches the assistant selected by the tenant policy.",
+      "method": "Call the approved service number from consenting test phones on two originating carrier networks; execute screening, takeover, forwarding, decline, voicemail, simultaneous calls and disconnect cases; reconcile SIP, room and ledger IDs.",
+      "driftMarkers": "A real phone call never enters the call ledger, leaks across tenants, silently drops on handoff/failure, or gets a fabricated duration or successful status.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Incoming public telephone calls",
+        "decisions": [
+          "D-003",
+          "D-006"
+        ],
+        "concreteFailure": "The incoming test call enters a different assistant from the tenant policy.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-5",
+      "barKey": "R-5",
+      "model": "An authorized outbound request dials its supported E.164 destination using the correct verified caller ID.",
+      "method": "Execute the outbound scenario matrix against consenting test phones and a test IVR; compare provider call records with the app ledger and approved spend envelope; include replayed intent, cancellation race and provider outage.",
+      "driftMarkers": "A browser-only room is reported as a placed telephone call, an unauthorized/unsupported destination is dialed, the assistant places a call without applicable recipient consent, or retry/cancel/restart creates a duplicate call.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Outgoing public telephone calls",
+        "decisions": [
+          "D-003",
+          "D-006"
+        ],
+        "concreteFailure": "The outbound test call presents an unverified caller ID or dials the wrong E.164 destination.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-6",
+      "barKey": "R-6",
+      "model": "A Phone number record is scoped to its authorized tenant.",
+      "method": "Extend and run the existing sidecar API and data contract suites with cross-tenant numbers/rooms, forged/replayed callback bodies, caller prompt injection, guest revocation and provider-origin validation; confirm server-resolved identity end to end.",
+      "driftMarkers": "Any adversarial tenant/caller fixture reads another tenant's data, spoofs owner authority, bypasses a destination/cost policy, or starts an unowned SIP call worker with privileged tools.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Tenant and caller authority",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "Tenant B can read or change Tenant A's number record.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-7",
+      "barKey": "R-7",
+      "model": "A persisted voicemail or transcript remains complete after service restart.",
+      "method": "Extend data/sidecar contract tests for interrupted writes, replayed events, retention expiry, scoped export and deletion; inspect storage/logs for sensitive data and retain jurisdiction-specific policy review before live recording.",
+      "driftMarkers": "A call is recorded outside its consent policy, transcripts/voicemails vanish after restart, deletion leaves retrievable retained media, or an external recipient sees private content.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Durable private voicemail and transcripts",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "An acknowledged voicemail/transcript segment disappears after restart.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-8",
+      "barKey": "R-8",
+      "model": "A real PSTN conversation provides intelligible two-way audio.",
+      "method": "Measure answer latency and end-of-speech-to-first-audio on PSTN calls; inject STT/LLM/TTS and worker failures on an isolated current build; use existing voice-contract tests and metrics rather than a parallel voice engine.",
+      "driftMarkers": "The agent repeatedly talks over the caller, never responds, loses identity/context, grants caller privilege, or declares success using browser synthetic latency while the PSTN leg was not measured.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "PSTN voice quality and recovery",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "One PSTN peer cannot understand or hear the other peer.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-9",
+      "barKey": "R-9",
+      "model": "An outbound call requires an active tenant entitlement before dialing.",
+      "method": "Extend existing sidecar/data and platform entitlement tests; inject quota and tariff changes, duplicate provider records, concurrent cap races and suspension; compare retained carrier and AI usage for the controlled pilot.",
+      "driftMarkers": "Unauthenticated/over-budget dialing succeeds, an upgrade bypasses limits, a provider retry charges twice, or the approved pilot cannot fit its spending envelope.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Authorized usage and hard commercial limits",
+        "decisions": [
+          "D-003",
+          "D-006"
+        ],
+        "concreteFailure": "The dial operation succeeds with a suspended tenant entitlement.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-10",
+      "barKey": "R-10",
+      "model": "The pinned deployment satisfies the approved capacity objective.",
+      "method": "Run bounded load and a 24-hour soak on an isolated candidate runtime, restore a backup, rotate credentials, simulate dependency outages and exercise rollback/failover; retain exact artifact and call-loss evidence.",
+      "driftMarkers": "A clean deploy cannot reproduce the service, a media/worker failure stays silent, numbers/call history cannot be restored, or recovery/rollback violates the approved service objectives.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Operable pinned public service",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "Measured candidate capacity is below the retained approved capacity objective.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-11",
+      "barKey": "R-11",
+      "model": "An independent acceptance review passes each mandatory requirement.",
+      "method": "Run the scoped suite and authenticated public-phone journey; independently grade the retained evidence, compare shipped fingerprints, test rollback, then audit the seven-day consenting pilot and unresolved residue before open rollout.",
+      "driftMarkers": "The plan is marked shipped from typechecks, local health, synthetic-only media, a stale release artifact, a different tenant or an unresolved mandatory launch/legal/cost gate.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Independently verified exact public shipment",
+        "decisions": [
+          "D-003",
+          "D-006"
+        ],
+        "concreteFailure": "The independent review leaves one mandatory requirement failed or unreviewed.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-12",
+      "barKey": "R-12",
+      "model": "Each new or changed call, media, number, authorization, privacy, usage or recovery behavior implementing the mandatory Phone outcomes has registered unit, integration and e2e tests covering persistence, replay, restart and cross-tenant adversarial cases.",
+      "method": "Extend the existing sidecar/data contract, worker integration and portal e2e suites to cover each new phone behavior; add conventional framework tests when the current suites do not fit, updating this check to those real paths before binding proof. Run the exact resulting suite and current-source evidence; enumerate coverage per behavior/R-N and retain failures/skips. Inspect test bodies to ensure the named unit/integration/e2e files actually prove the new behavior; old baseline tests alone do not pass this BAR.",
+      "driftMarkers": "A changed required behavior has no recurrence test at its required depth, only typechecks or implementation-mirroring assertions are cited, a suite is red/skipped/unregistered, or mock/synthetic test evidence is used to claim real telephone/public-host readiness.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5",
+        "session_turn:codex:01a0f7b1-b53e-71f2-b1d3-01818dcd94c3:11"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts",
+          ".papercusp/apps/phone-app/worker/src/phone-voice-contract-adapter.integration.test.ts",
+          ".papercusp/apps/portal/tests/four-surface.e2e.test.tsx"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Automated recurrence protection for all changed mandatory outcomes",
+        "decisions": [
+          "D-005",
+          "D-006"
+        ],
+        "concreteFailure": "One changed mandatory behavior lacks a registered integration or e2e recurrence detector.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-13",
+      "barKey": "R-13",
+      "model": "A public client receives only publicly reachable secure media endpoints.",
+      "method": "Run authenticated remote-browser real-microphone calls on home broadband and cellular, then with UDP blocked; retain ICE-selected transport, WSS origin, peer audio receipt and lifecycle evidence.",
+      "driftMarkers": "One-way/no audio, an insecure or loopback browser endpoint, failed certificate renewal, or dependence on LAN/hairpin connectivity.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Self-hosted publicly reachable secure media",
+        "decisions": [
+          "D-001",
+          "D-005",
+          "D-006"
+        ],
+        "concreteFailure": "The client receives a loopback, LAN-only or insecure media endpoint.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-14",
+      "barKey": "R-14",
+      "model": "A carrier binding operation assigns a number only to its authorized tenant.",
+      "method": "Exercise provisioning/reconciliation failures in the real suite, then verify approved numbers and routing with the carrier; exercise porting with a provider-supported test or retained owner/provider evidence rather than porting an owner's primary number.",
+      "driftMarkers": "A number routes to the wrong tenant, caller ID is unverified, a provider event creates a second number/charge, or cancellation/porting loses number ownership.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Real carrier number lifecycle and routing",
+        "decisions": [
+          "D-006",
+          "D-009"
+        ],
+        "concreteFailure": "A carrier number binding is written for a foreign tenant.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-15",
+      "barKey": "R-15",
+      "model": "A suspended number rejects further call routing.",
+      "method": "Exercise provisioning/reconciliation failures in the real suite, then verify approved numbers and routing with the carrier; exercise porting with a provider-supported test or retained owner/provider evidence rather than porting an owner's primary number.",
+      "driftMarkers": "A number routes to the wrong tenant, caller ID is unverified, a provider event creates a second number/charge, or cancellation/porting loses number ownership.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Real carrier number lifecycle and routing",
+        "decisions": [
+          "D-006",
+          "D-009"
+        ],
+        "concreteFailure": "A suspended number continues routing new calls.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-16",
+      "barKey": "R-16",
+      "model": "A released number loses its prior tenant binding.",
+      "method": "Exercise provisioning/reconciliation failures in the real suite, then verify approved numbers and routing with the carrier; exercise porting with a provider-supported test or retained owner/provider evidence rather than porting an owner's primary number.",
+      "driftMarkers": "A number routes to the wrong tenant, caller ID is unverified, a provider event creates a second number/charge, or cancellation/porting loses number ownership.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Real carrier number lifecycle and routing",
+        "decisions": [
+          "D-006",
+          "D-009"
+        ],
+        "concreteFailure": "The released number still retains its former tenant binding.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-17",
+      "barKey": "R-17",
+      "model": "An inbound trunk routes according to the durable number record.",
+      "method": "Exercise provisioning/reconciliation failures in the real suite, then verify approved numbers and routing with the carrier; exercise porting with a provider-supported test or retained owner/provider evidence rather than porting an owner's primary number.",
+      "driftMarkers": "A number routes to the wrong tenant, caller ID is unverified, a provider event creates a second number/charge, or cancellation/porting loses number ownership.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Real carrier number lifecycle and routing",
+        "decisions": [
+          "D-006",
+          "D-009"
+        ],
+        "concreteFailure": "The incoming trunk routes to a number's former tenant after rebinding.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-18",
+      "barKey": "R-18",
+      "model": "An outbound trunk routes according to the durable number record.",
+      "method": "Exercise provisioning/reconciliation failures in the real suite, then verify approved numbers and routing with the carrier; exercise porting with a provider-supported test or retained owner/provider evidence rather than porting an owner's primary number.",
+      "driftMarkers": "A number routes to the wrong tenant, caller ID is unverified, a provider event creates a second number/charge, or cancellation/porting loses number ownership.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Real carrier number lifecycle and routing",
+        "decisions": [
+          "D-006",
+          "D-009"
+        ],
+        "concreteFailure": "The outbound trunk selects a route inconsistent with its durable number.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-19",
+      "barKey": "R-19",
+      "model": "A dispatch rule selects the assistant identified by the durable number record.",
+      "method": "Exercise provisioning/reconciliation failures in the real suite, then verify approved numbers and routing with the carrier; exercise porting with a provider-supported test or retained owner/provider evidence rather than porting an owner's primary number.",
+      "driftMarkers": "A number routes to the wrong tenant, caller ID is unverified, a provider event creates a second number/charge, or cancellation/porting loses number ownership.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Real carrier number lifecycle and routing",
+        "decisions": [
+          "D-006",
+          "D-009"
+        ],
+        "concreteFailure": "Dispatch selects an assistant different from the stored number binding.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-20",
+      "barKey": "R-20",
+      "model": "An outbound caller ID matches the verified identity in the durable number record.",
+      "method": "Exercise provisioning/reconciliation failures in the real suite, then verify approved numbers and routing with the carrier; exercise porting with a provider-supported test or retained owner/provider evidence rather than porting an owner's primary number.",
+      "driftMarkers": "A number routes to the wrong tenant, caller ID is unverified, a provider event creates a second number/charge, or cancellation/porting loses number ownership.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Real carrier number lifecycle and routing",
+        "decisions": [
+          "D-006",
+          "D-009"
+        ],
+        "concreteFailure": "The presented outbound caller ID differs from the number's verified identity.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-21",
+      "barKey": "R-21",
+      "model": "A portability operation follows the approved workflow recorded for the number.",
+      "method": "Exercise provisioning/reconciliation failures in the real suite, then verify approved numbers and routing with the carrier; exercise porting with a provider-supported test or retained owner/provider evidence rather than porting an owner's primary number.",
+      "driftMarkers": "A number routes to the wrong tenant, caller ID is unverified, a provider event creates a second number/charge, or cancellation/porting loses number ownership.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Real carrier number lifecycle and routing",
+        "decisions": [
+          "D-006",
+          "D-009"
+        ],
+        "concreteFailure": "A port completes outside the retained approved workflow.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-22",
+      "barKey": "R-22",
+      "model": "An incoming call rings the owner when tenant policy requires it.",
+      "method": "Call the approved service number from consenting test phones on two originating carrier networks; execute screening, takeover, forwarding, decline, voicemail, simultaneous calls and disconnect cases; reconcile SIP, room and ledger IDs.",
+      "driftMarkers": "A real phone call never enters the call ledger, leaks across tenants, silently drops on handoff/failure, or gets a fabricated duration or successful status.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Incoming telephone policy and outcomes",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "Policy requires owner ringing but no owner ringing event occurs.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-23",
+      "barKey": "R-23",
+      "model": "An incoming call follows the configured screening decision.",
+      "method": "Call the approved service number from consenting test phones on two originating carrier networks; execute screening, takeover, forwarding, decline, voicemail, simultaneous calls and disconnect cases; reconcile SIP, room and ledger IDs.",
+      "driftMarkers": "A real phone call never enters the call ledger, leaks across tenants, silently drops on handoff/failure, or gets a fabricated duration or successful status.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Incoming telephone policy and outcomes",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "The incoming call follows the opposite of the stored screening decision.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-24",
+      "barKey": "R-24",
+      "model": "An authorized browser pickup connects the owner to the incoming telephone call.",
+      "method": "Call the approved service number from consenting test phones on two originating carrier networks; execute screening, takeover, forwarding, decline, voicemail, simultaneous calls and disconnect cases; reconcile SIP, room and ledger IDs.",
+      "driftMarkers": "A real phone call never enters the call ledger, leaks across tenants, silently drops on handoff/failure, or gets a fabricated duration or successful status.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Incoming telephone policy and outcomes",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "An authorized pickup yields a token but no telephone audio connection.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-25",
+      "barKey": "R-25",
+      "model": "An approved telephone handoff connects the incoming call to its configured destination.",
+      "method": "Call the approved service number from consenting test phones on two originating carrier networks; execute screening, takeover, forwarding, decline, voicemail, simultaneous calls and disconnect cases; reconcile SIP, room and ledger IDs.",
+      "driftMarkers": "A real phone call never enters the call ledger, leaks across tenants, silently drops on handoff/failure, or gets a fabricated duration or successful status.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Incoming telephone policy and outcomes",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "Telephone handoff connects a different destination from the approved policy.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-26",
+      "barKey": "R-26",
+      "model": "A busy incoming call follows the configured busy handling policy.",
+      "method": "Call the approved service number from consenting test phones on two originating carrier networks; execute screening, takeover, forwarding, decline, voicemail, simultaneous calls and disconnect cases; reconcile SIP, room and ledger IDs.",
+      "driftMarkers": "A real phone call never enters the call ledger, leaks across tenants, silently drops on handoff/failure, or gets a fabricated duration or successful status.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Incoming telephone policy and outcomes",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "A busy incoming call bypasses the stored busy handling route.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-27",
+      "barKey": "R-27",
+      "model": "An unanswered incoming call follows the configured no-answer handling policy.",
+      "method": "Call the approved service number from consenting test phones on two originating carrier networks; execute screening, takeover, forwarding, decline, voicemail, simultaneous calls and disconnect cases; reconcile SIP, room and ledger IDs.",
+      "driftMarkers": "A real phone call never enters the call ledger, leaks across tenants, silently drops on handoff/failure, or gets a fabricated duration or successful status.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Incoming telephone policy and outcomes",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "A no-answer incoming call bypasses the stored no-answer route.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-28",
+      "barKey": "R-28",
+      "model": "An incoming call routed to voicemail leaves a retrievable tenant-owned message.",
+      "method": "Call the approved service number from consenting test phones on two originating carrier networks; execute screening, takeover, forwarding, decline, voicemail, simultaneous calls and disconnect cases; reconcile SIP, room and ledger IDs.",
+      "driftMarkers": "A real phone call never enters the call ledger, leaks across tenants, silently drops on handoff/failure, or gets a fabricated duration or successful status.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Incoming telephone policy and outcomes",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "A voicemail-routed incoming call leaves no retrievable tenant-owned message.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-29",
+      "barKey": "R-29",
+      "model": "A call-history entry records the observed incoming-call outcome.",
+      "method": "Call the approved service number from consenting test phones on two originating carrier networks; execute screening, takeover, forwarding, decline, voicemail, simultaneous calls and disconnect cases; reconcile SIP, room and ledger IDs.",
+      "driftMarkers": "A real phone call never enters the call ledger, leaks across tenants, silently drops on handoff/failure, or gets a fabricated duration or successful status.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Incoming telephone policy and outcomes",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "The history row says answered when the observed incoming outcome was rejected.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-30",
+      "barKey": "R-30",
+      "model": "An outbound ringing event produces the corresponding ringing state.",
+      "method": "Execute the outbound scenario matrix against consenting test phones and a test IVR; compare provider call records with the app ledger and approved spend envelope; include replayed intent, cancellation race and provider outage.",
+      "driftMarkers": "A browser-only room is reported as a placed telephone call, an unauthorized/unsupported destination is dialed, the assistant places a call without applicable recipient consent, or retry/cancel/restart creates a duplicate call.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Outgoing telephone lifecycle and budget",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "A provider ringing event leaves the app call in dialing.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-31",
+      "barKey": "R-31",
+      "model": "An outbound answer event produces the corresponding connected state.",
+      "method": "Execute the outbound scenario matrix against consenting test phones and a test IVR; compare provider call records with the app ledger and approved spend envelope; include replayed intent, cancellation race and provider outage.",
+      "driftMarkers": "A browser-only room is reported as a placed telephone call, an unauthorized/unsupported destination is dialed, the assistant places a call without applicable recipient consent, or retry/cancel/restart creates a duplicate call.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Outgoing telephone lifecycle and budget",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "A provider answer event leaves the app call disconnected.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-32",
+      "barKey": "R-32",
+      "model": "An outbound busy event produces the corresponding busy outcome.",
+      "method": "Execute the outbound scenario matrix against consenting test phones and a test IVR; compare provider call records with the app ledger and approved spend envelope; include replayed intent, cancellation race and provider outage.",
+      "driftMarkers": "A browser-only room is reported as a placed telephone call, an unauthorized/unsupported destination is dialed, the assistant places a call without applicable recipient consent, or retry/cancel/restart creates a duplicate call.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Outgoing telephone lifecycle and budget",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "A provider busy event is represented as connected.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-33",
+      "barKey": "R-33",
+      "model": "An outbound rejection event produces the corresponding rejected outcome.",
+      "method": "Execute the outbound scenario matrix against consenting test phones and a test IVR; compare provider call records with the app ledger and approved spend envelope; include replayed intent, cancellation race and provider outage.",
+      "driftMarkers": "A browser-only room is reported as a placed telephone call, an unauthorized/unsupported destination is dialed, the assistant places a call without applicable recipient consent, or retry/cancel/restart creates a duplicate call.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Outgoing telephone lifecycle and budget",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "A provider rejection event is represented as successful.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-34",
+      "barKey": "R-34",
+      "model": "An outbound no-answer event produces the corresponding no-answer outcome.",
+      "method": "Execute the outbound scenario matrix against consenting test phones and a test IVR; compare provider call records with the app ledger and approved spend envelope; include replayed intent, cancellation race and provider outage.",
+      "driftMarkers": "A browser-only room is reported as a placed telephone call, an unauthorized/unsupported destination is dialed, the assistant places a call without applicable recipient consent, or retry/cancel/restart creates a duplicate call.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Outgoing telephone lifecycle and budget",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "A provider no-answer event is represented as answered.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-35",
+      "barKey": "R-35",
+      "model": "A DTMF input reaches the connected telephone peer.",
+      "method": "Execute the outbound scenario matrix against consenting test phones and a test IVR; compare provider call records with the app ledger and approved spend envelope; include replayed intent, cancellation race and provider outage.",
+      "driftMarkers": "A browser-only room is reported as a placed telephone call, an unauthorized/unsupported destination is dialed, the assistant places a call without applicable recipient consent, or retry/cancel/restart creates a duplicate call.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Outgoing telephone lifecycle and budget",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "An accepted DTMF command is absent at the consenting telephone peer.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-36",
+      "barKey": "R-36",
+      "model": "An approved outbound transfer connects the intended destination.",
+      "method": "Execute the outbound scenario matrix against consenting test phones and a test IVR; compare provider call records with the app ledger and approved spend envelope; include replayed intent, cancellation race and provider outage.",
+      "driftMarkers": "A browser-only room is reported as a placed telephone call, an unauthorized/unsupported destination is dialed, the assistant places a call without applicable recipient consent, or retry/cancel/restart creates a duplicate call.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Outgoing telephone lifecycle and budget",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "An approved transfer reaches a different destination.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-37",
+      "barKey": "R-37",
+      "model": "An outbound cancellation terminates the dialing attempt.",
+      "method": "Execute the outbound scenario matrix against consenting test phones and a test IVR; compare provider call records with the app ledger and approved spend envelope; include replayed intent, cancellation race and provider outage.",
+      "driftMarkers": "A browser-only room is reported as a placed telephone call, an unauthorized/unsupported destination is dialed, the assistant places a call without applicable recipient consent, or retry/cancel/restart creates a duplicate call.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Outgoing telephone lifecycle and budget",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "Cancellation reports success while the dialing attempt remains active.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-38",
+      "barKey": "R-38",
+      "model": "A permitted scheduled call begins only at its authorized scheduled time.",
+      "method": "Execute the outbound scenario matrix against consenting test phones and a test IVR; compare provider call records with the app ledger and approved spend envelope; include replayed intent, cancellation race and provider outage.",
+      "driftMarkers": "A browser-only room is reported as a placed telephone call, an unauthorized/unsupported destination is dialed, the assistant places a call without applicable recipient consent, or retry/cancel/restart creates a duplicate call.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Outgoing telephone lifecycle and budget",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "The scheduled call starts before its authorized time.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-39",
+      "barKey": "R-39",
+      "model": "A replayed outbound request does not create a duplicate dialing attempt.",
+      "method": "Execute the outbound scenario matrix against consenting test phones and a test IVR; compare provider call records with the app ledger and approved spend envelope; include replayed intent, cancellation race and provider outage.",
+      "driftMarkers": "A browser-only room is reported as a placed telephone call, an unauthorized/unsupported destination is dialed, the assistant places a call without applicable recipient consent, or retry/cancel/restart creates a duplicate call.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Outgoing telephone lifecycle and budget",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "Replaying one outbound request produces two provider dialing attempts.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-40",
+      "barKey": "R-40",
+      "model": "An outbound call cannot incur spend outside its authorized budget.",
+      "method": "Execute the outbound scenario matrix against consenting test phones and a test IVR; compare provider call records with the app ledger and approved spend envelope; include replayed intent, cancellation race and provider outage.",
+      "driftMarkers": "A browser-only room is reported as a placed telephone call, an unauthorized/unsupported destination is dialed, the assistant places a call without applicable recipient consent, or retry/cancel/restart creates a duplicate call.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Outgoing telephone lifecycle and budget",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "The outbound call exceeds its individually authorized budget.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-41",
+      "barKey": "R-41",
+      "model": "Caller ID cannot confer owner authority or private agent-tool access.",
+      "method": "Extend and run the existing sidecar API and data contract suites with cross-tenant numbers/rooms, forged/replayed callback bodies, caller prompt injection, guest revocation and provider-origin validation; confirm server-resolved identity end to end.",
+      "driftMarkers": "Any adversarial tenant/caller fixture reads another tenant's data, spoofs owner authority, bypasses a destination/cost policy, or starts an unowned SIP call worker with privileged tools.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Untrusted caller authority isolation",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "A supplied caller ID produces an owner principal or private tool grant.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-42",
+      "barKey": "R-42",
+      "model": "A recording or transcription action requires the consent specified by the approved policy.",
+      "method": "Extend data/sidecar contract tests for interrupted writes, replayed events, retention expiry, scoped export and deletion; inspect storage/logs for sensitive data and retain jurisdiction-specific policy review before live recording.",
+      "driftMarkers": "A call is recorded outside its consent policy, transcripts/voicemails vanish after restart, deletion leaves retrievable retained media, or an external recipient sees private content.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Call-content consent, privacy and lifecycle",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "Recording begins before the approved consent condition is met.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-43",
+      "barKey": "R-43",
+      "model": "Stored call content expires according to the approved retention policy.",
+      "method": "Extend data/sidecar contract tests for interrupted writes, replayed events, retention expiry, scoped export and deletion; inspect storage/logs for sensitive data and retain jurisdiction-specific policy review before live recording.",
+      "driftMarkers": "A call is recorded outside its consent policy, transcripts/voicemails vanish after restart, deletion leaves retrievable retained media, or an external recipient sees private content.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Call-content consent, privacy and lifecycle",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "Content remains retrievable after the approved retention deadline.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-44",
+      "barKey": "R-44",
+      "model": "An authorized export returns only the tenant's permitted call content.",
+      "method": "Extend data/sidecar contract tests for interrupted writes, replayed events, retention expiry, scoped export and deletion; inspect storage/logs for sensitive data and retain jurisdiction-specific policy review before live recording.",
+      "driftMarkers": "A call is recorded outside its consent policy, transcripts/voicemails vanish after restart, deletion leaves retrievable retained media, or an external recipient sees private content.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Call-content consent, privacy and lifecycle",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "Authenticated export contains another tenant's content or a private unpermitted field.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-45",
+      "barKey": "R-45",
+      "model": "An authorized deletion removes the call content required by the approved deletion policy.",
+      "method": "Extend data/sidecar contract tests for interrupted writes, replayed events, retention expiry, scoped export and deletion; inspect storage/logs for sensitive data and retain jurisdiction-specific policy review before live recording.",
+      "driftMarkers": "A call is recorded outside its consent policy, transcripts/voicemails vanish after restart, deletion leaves retrievable retained media, or an external recipient sees private content.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Call-content consent, privacy and lifecycle",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "After authorized deletion, content required to be erased by the approved policy remains retrievable.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-46",
+      "barKey": "R-46",
+      "model": "A call-content notification follows the approved notification policy.",
+      "method": "Extend data/sidecar contract tests for interrupted writes, replayed events, retention expiry, scoped export and deletion; inspect storage/logs for sensitive data and retain jurisdiction-specific policy review before live recording.",
+      "driftMarkers": "A call is recorded outside its consent policy, transcripts/voicemails vanish after restart, deletion leaves retrievable retained media, or an external recipient sees private content.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Call-content consent, privacy and lifecycle",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "A notification sends call content to a recipient prohibited by the approved policy.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-47",
+      "barKey": "R-47",
+      "model": "Consent-sensitive audio storage remains disabled until explicitly enabled.",
+      "method": "Extend data/sidecar contract tests for interrupted writes, replayed events, retention expiry, scoped export and deletion; inspect storage/logs for sensitive data and retain jurisdiction-specific policy review before live recording.",
+      "driftMarkers": "A call is recorded outside its consent policy, transcripts/voicemails vanish after restart, deletion leaves retrievable retained media, or an external recipient sees private content.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Call-content consent, privacy and lifecycle",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "Audio storage is active before any explicit enabling action.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-48",
+      "barKey": "R-48",
+      "model": "A caller interruption follows the approved safe barge-in policy.",
+      "method": "Measure answer latency and end-of-speech-to-first-audio on PSTN calls; inject STT/LLM/TTS and worker failures on an isolated current build; use existing voice-contract tests and metrics rather than a parallel voice engine.",
+      "driftMarkers": "The agent repeatedly talks over the caller, never responds, loses identity/context, grants caller privilege, or declares success using browser synthetic latency while the PSTN leg was not measured.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "PSTN voice quality, identity and safe recovery",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "Barge-in interrupts or resumes the assistant contrary to the approved safe policy.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-49",
+      "barKey": "R-49",
+      "model": "A PSTN call retains its authenticated worker identity throughout the conversation.",
+      "method": "Measure answer latency and end-of-speech-to-first-audio on PSTN calls; inject STT/LLM/TTS and worker failures on an isolated current build; use existing voice-contract tests and metrics rather than a parallel voice engine.",
+      "driftMarkers": "The agent repeatedly talks over the caller, never responds, loses identity/context, grants caller privilege, or declares success using browser synthetic latency while the PSTN leg was not measured.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "PSTN voice quality, identity and safe recovery",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "The worker principal changes tenant or loses its authenticated binding during a call.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-50",
+      "barKey": "R-50",
+      "model": "Measured PSTN response latency satisfies the approved latency target.",
+      "method": "Measure answer latency and end-of-speech-to-first-audio on PSTN calls; inject STT/LLM/TTS and worker failures on an isolated current build; use existing voice-contract tests and metrics rather than a parallel voice engine.",
+      "driftMarkers": "The agent repeatedly talks over the caller, never responds, loses identity/context, grants caller privilege, or declares success using browser synthetic latency while the PSTN leg was not measured.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "PSTN voice quality, identity and safe recovery",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "Measured real PSTN latency exceeds the retained approved latency target.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-51",
+      "barKey": "R-51",
+      "model": "A provider failure, overload event or worker restart routes the call to an understandable fallback or voicemail.",
+      "method": "Measure answer latency and end-of-speech-to-first-audio on PSTN calls; inject STT/LLM/TTS and worker failures on an isolated current build; use existing voice-contract tests and metrics rather than a parallel voice engine.",
+      "driftMarkers": "The agent repeatedly talks over the caller, never responds, loses identity/context, grants caller privilege, or declares success using browser synthetic latency while the PSTN leg was not measured.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "PSTN voice quality, identity and safe recovery",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "Injected provider failure drops the call without an understandable fallback or voicemail.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-52",
+      "barKey": "R-52",
+      "model": "An outbound call requires an allowed destination before dialing.",
+      "method": "Extend existing sidecar/data and platform entitlement tests; inject quota and tariff changes, duplicate provider records, concurrent cap races and suspension; compare retained carrier and AI usage for the controlled pilot.",
+      "driftMarkers": "Unauthenticated/over-budget dialing succeeds, an upgrade bypasses limits, a provider retry charges twice, or the approved pilot cannot fit its spending envelope.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Commercial admission, limits and charge integrity",
+        "decisions": [
+          "D-003",
+          "D-006"
+        ],
+        "concreteFailure": "A disallowed destination reaches the provider dial API.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-53",
+      "barKey": "R-53",
+      "model": "An outbound call exceeding the approved rate limit is rejected before dialing.",
+      "method": "Extend existing sidecar/data and platform entitlement tests; inject quota and tariff changes, duplicate provider records, concurrent cap races and suspension; compare retained carrier and AI usage for the controlled pilot.",
+      "driftMarkers": "Unauthenticated/over-budget dialing succeeds, an upgrade bypasses limits, a provider retry charges twice, or the approved pilot cannot fit its spending envelope.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Commercial admission, limits and charge integrity",
+        "decisions": [
+          "D-003",
+          "D-006"
+        ],
+        "concreteFailure": "An over-rate request reaches the provider dial API.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-54",
+      "barKey": "R-54",
+      "model": "An outbound call exceeding the approved concurrency limit is rejected before dialing.",
+      "method": "Extend existing sidecar/data and platform entitlement tests; inject quota and tariff changes, duplicate provider records, concurrent cap races and suspension; compare retained carrier and AI usage for the controlled pilot.",
+      "driftMarkers": "Unauthenticated/over-budget dialing succeeds, an upgrade bypasses limits, a provider retry charges twice, or the approved pilot cannot fit its spending envelope.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Commercial admission, limits and charge integrity",
+        "decisions": [
+          "D-003",
+          "D-006"
+        ],
+        "concreteFailure": "An over-concurrency request reaches the provider dial API.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-55",
+      "barKey": "R-55",
+      "model": "A call cannot continue beyond its approved duration limit.",
+      "method": "Extend existing sidecar/data and platform entitlement tests; inject quota and tariff changes, duplicate provider records, concurrent cap races and suspension; compare retained carrier and AI usage for the controlled pilot.",
+      "driftMarkers": "Unauthenticated/over-budget dialing succeeds, an upgrade bypasses limits, a provider retry charges twice, or the approved pilot cannot fit its spending envelope.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Commercial admission, limits and charge integrity",
+        "decisions": [
+          "D-003",
+          "D-006"
+        ],
+        "concreteFailure": "The call continues beyond its approved duration limit.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-56",
+      "barKey": "R-56",
+      "model": "A call cannot incur charges beyond its tenant's hard spend cap.",
+      "method": "Extend existing sidecar/data and platform entitlement tests; inject quota and tariff changes, duplicate provider records, concurrent cap races and suspension; compare retained carrier and AI usage for the controlled pilot.",
+      "driftMarkers": "Unauthenticated/over-budget dialing succeeds, an upgrade bypasses limits, a provider retry charges twice, or the approved pilot cannot fit its spending envelope.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Commercial admission, limits and charge integrity",
+        "decisions": [
+          "D-003",
+          "D-006"
+        ],
+        "concreteFailure": "Aggregate tenant charges exceed its hard cap.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-57",
+      "barKey": "R-57",
+      "model": "Each phone-minute, AI, media or number charge is attributable to its authorized tenant.",
+      "method": "Extend existing sidecar/data and platform entitlement tests; inject quota and tariff changes, duplicate provider records, concurrent cap races and suspension; compare retained carrier and AI usage for the controlled pilot.",
+      "driftMarkers": "Unauthenticated/over-budget dialing succeeds, an upgrade bypasses limits, a provider retry charges twice, or the approved pilot cannot fit its spending envelope.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Commercial admission, limits and charge integrity",
+        "decisions": [
+          "D-003",
+          "D-006"
+        ],
+        "concreteFailure": "A media or AI charge cannot be attributed to its authorized tenant.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-58",
+      "barKey": "R-58",
+      "model": "The retained usage ledger reconciles with the provider's charge records.",
+      "method": "Extend existing sidecar/data and platform entitlement tests; inject quota and tariff changes, duplicate provider records, concurrent cap races and suspension; compare retained carrier and AI usage for the controlled pilot.",
+      "driftMarkers": "Unauthenticated/over-budget dialing succeeds, an upgrade bypasses limits, a provider retry charges twice, or the approved pilot cannot fit its spending envelope.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Commercial admission, limits and charge integrity",
+        "decisions": [
+          "D-003",
+          "D-006"
+        ],
+        "concreteFailure": "The retained provider statement and usage ledger disagree on a charge.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-59",
+      "barKey": "R-59",
+      "model": "A replayed provider charge event cannot produce duplicate billing.",
+      "method": "Extend existing sidecar/data and platform entitlement tests; inject quota and tariff changes, duplicate provider records, concurrent cap races and suspension; compare retained carrier and AI usage for the controlled pilot.",
+      "driftMarkers": "Unauthenticated/over-budget dialing succeeds, an upgrade bypasses limits, a provider retry charges twice, or the approved pilot cannot fit its spending envelope.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Commercial admission, limits and charge integrity",
+        "decisions": [
+          "D-003",
+          "D-006"
+        ],
+        "concreteFailure": "Replayed provider charge event creates two billed entries.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-60",
+      "barKey": "R-60",
+      "model": "A recovery drill meets the approved recovery objective.",
+      "method": "Run bounded load and a 24-hour soak on an isolated candidate runtime, restore a backup, rotate credentials, simulate dependency outages and exercise rollback/failover; retain exact artifact and call-loss evidence.",
+      "driftMarkers": "A clean deploy cannot reproduce the service, a media/worker failure stays silent, numbers/call history cannot be restored, or recovery/rollback violates the approved service objectives.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Reproducible, recoverable and observable public service",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "The measured isolated recovery drill exceeds the approved recovery objective.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-61",
+      "barKey": "R-61",
+      "model": "A clean build reproduces the pinned release artifact.",
+      "method": "Run bounded load and a 24-hour soak on an isolated candidate runtime, restore a backup, rotate credentials, simulate dependency outages and exercise rollback/failover; retain exact artifact and call-loss evidence.",
+      "driftMarkers": "A clean deploy cannot reproduce the service, a media/worker failure stays silent, numbers/call history cannot be restored, or recovery/rollback violates the approved service objectives.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Reproducible, recoverable and observable public service",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "A clean build produces an artifact differing from the pinned artifact.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-62",
+      "barKey": "R-62",
+      "model": "Certificate renewal completes automatically before certificate expiry.",
+      "method": "Run bounded load and a 24-hour soak on an isolated candidate runtime, restore a backup, rotate credentials, simulate dependency outages and exercise rollback/failover; retain exact artifact and call-loss evidence.",
+      "driftMarkers": "A clean deploy cannot reproduce the service, a media/worker failure stays silent, numbers/call history cannot be restored, or recovery/rollback violates the approved service objectives.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Reproducible, recoverable and observable public service",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "The certificate expires before automated renewal succeeds.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-63",
+      "barKey": "R-63",
+      "model": "A backup restores the required service data in an isolated recovery drill.",
+      "method": "Run bounded load and a 24-hour soak on an isolated candidate runtime, restore a backup, rotate credentials, simulate dependency outages and exercise rollback/failover; retain exact artifact and call-loss evidence.",
+      "driftMarkers": "A clean deploy cannot reproduce the service, a media/worker failure stays silent, numbers/call history cannot be restored, or recovery/rollback violates the approved service objectives.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Reproducible, recoverable and observable public service",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "The isolated backup restore lacks a required number or call-history row.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-64",
+      "barKey": "R-64",
+      "model": "Secret rotation preserves the approved credential access boundary.",
+      "method": "Run bounded load and a 24-hour soak on an isolated candidate runtime, restore a backup, rotate credentials, simulate dependency outages and exercise rollback/failover; retain exact artifact and call-loss evidence.",
+      "driftMarkers": "A clean deploy cannot reproduce the service, a media/worker failure stays silent, numbers/call history cannot be restored, or recovery/rollback violates the approved service objectives.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Reproducible, recoverable and observable public service",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "Post-rotation credentials grant access beyond the approved boundary.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-65",
+      "barKey": "R-65",
+      "model": "A health signal reflects the service's observed health state.",
+      "method": "Run bounded load and a 24-hour soak on an isolated candidate runtime, restore a backup, rotate credentials, simulate dependency outages and exercise rollback/failover; retain exact artifact and call-loss evidence.",
+      "driftMarkers": "A clean deploy cannot reproduce the service, a media/worker failure stays silent, numbers/call history cannot be restored, or recovery/rollback violates the approved service objectives.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Reproducible, recoverable and observable public service",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "Health reports healthy while the probed service is failing.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-66",
+      "barKey": "R-66",
+      "model": "A readiness signal reflects the service's observed ability to accept traffic.",
+      "method": "Run bounded load and a 24-hour soak on an isolated candidate runtime, restore a backup, rotate credentials, simulate dependency outages and exercise rollback/failover; retain exact artifact and call-loss evidence.",
+      "driftMarkers": "A clean deploy cannot reproduce the service, a media/worker failure stays silent, numbers/call history cannot be restored, or recovery/rollback violates the approved service objectives.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Reproducible, recoverable and observable public service",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "Readiness reports ready while the service cannot accept a call.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-67",
+      "barKey": "R-67",
+      "model": "An injected service fault produces an actionable alert.",
+      "method": "Run bounded load and a 24-hour soak on an isolated candidate runtime, restore a backup, rotate credentials, simulate dependency outages and exercise rollback/failover; retain exact artifact and call-loss evidence.",
+      "driftMarkers": "A clean deploy cannot reproduce the service, a media/worker failure stays silent, numbers/call history cannot be restored, or recovery/rollback violates the approved service objectives.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Reproducible, recoverable and observable public service",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "Injected service fault produces no actionable alert.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-68",
+      "barKey": "R-68",
+      "model": "An injected service failure reaches its configured bounded fallback outcome.",
+      "method": "Run bounded load and a 24-hour soak on an isolated candidate runtime, restore a backup, rotate credentials, simulate dependency outages and exercise rollback/failover; retain exact artifact and call-loss evidence.",
+      "driftMarkers": "A clean deploy cannot reproduce the service, a media/worker failure stays silent, numbers/call history cannot be restored, or recovery/rollback violates the approved service objectives.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Reproducible, recoverable and observable public service",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "Injected service failure never reaches fallback within its configured bound.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-69",
+      "barKey": "R-69",
+      "model": "A rollback drill restores the previous verified service artifact.",
+      "method": "Run bounded load and a 24-hour soak on an isolated candidate runtime, restore a backup, rotate credentials, simulate dependency outages and exercise rollback/failover; retain exact artifact and call-loss evidence.",
+      "driftMarkers": "A clean deploy cannot reproduce the service, a media/worker failure stays silent, numbers/call history cannot be restored, or recovery/rollback violates the approved service objectives.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Reproducible, recoverable and observable public service",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "Rollback restores a different or unverified service artifact.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-70",
+      "barKey": "R-70",
+      "model": "The shipment record identifies the exact public app, sidecar, worker and media/SIP configuration.",
+      "method": "Run the scoped suite and authenticated public-phone journey; independently grade the retained evidence, compare shipped fingerprints, test rollback, then audit the seven-day consenting pilot and unresolved residue before open rollout.",
+      "driftMarkers": "The plan is marked shipped from typechecks, local health, synthetic-only media, a stale release artifact, a different tenant or an unresolved mandatory launch/legal/cost gate.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Exact public shipment and bounded rollout",
+        "decisions": [
+          "D-003",
+          "D-006"
+        ],
+        "concreteFailure": "The shipment record omits the worker or exact media/SIP configuration fingerprint.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-71",
+      "barKey": "R-71",
+      "model": "A real public-host PSTN smoke test passes on the exact shipment artifact.",
+      "method": "Run the scoped suite and authenticated public-phone journey; independently grade the retained evidence, compare shipped fingerprints, test rollback, then audit the seven-day consenting pilot and unresolved residue before open rollout.",
+      "driftMarkers": "The plan is marked shipped from typechecks, local health, synthetic-only media, a stale release artifact, a different tenant or an unresolved mandatory launch/legal/cost gate.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Exact public shipment and bounded rollout",
+        "decisions": [
+          "D-003",
+          "D-006"
+        ],
+        "concreteFailure": "The public PSTN smoke fails on the exact shipped artifact.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-72",
+      "barKey": "R-72",
+      "model": "A bounded invited pilot meets its declared acceptance criteria.",
+      "method": "Run the scoped suite and authenticated public-phone journey; independently grade the retained evidence, compare shipped fingerprints, test rollback, then audit the seven-day consenting pilot and unresolved residue before open rollout.",
+      "driftMarkers": "The plan is marked shipped from typechecks, local health, synthetic-only media, a stale release artifact, a different tenant or an unresolved mandatory launch/legal/cost gate.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Exact public shipment and bounded rollout",
+        "decisions": [
+          "D-003",
+          "D-006"
+        ],
+        "concreteFailure": "The invited pilot misses a declared acceptance condition.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-73",
+      "barKey": "R-73",
+      "model": "General signup remains closed until the required invited pilot passes.",
+      "method": "Run the scoped suite and authenticated public-phone journey; independently grade the retained evidence, compare shipped fingerprints, test rollback, then audit the seven-day consenting pilot and unresolved residue before open rollout.",
+      "driftMarkers": "The plan is marked shipped from typechecks, local health, synthetic-only media, a stale release artifact, a different tenant or an unresolved mandatory launch/legal/cost gate.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Exact public shipment and bounded rollout",
+        "decisions": [
+          "D-003",
+          "D-006"
+        ],
+        "concreteFailure": "General signup opens while the mandatory invited pilot is still failed or incomplete.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-74",
+      "barKey": "R-74",
+      "model": "The full required test suite passes on the current implementing source.",
+      "method": "Extend the existing sidecar/data contract, worker integration and portal e2e suites to cover each new phone behavior; add conventional framework tests when the current suites do not fit, updating this check to those real paths before binding proof. Run the exact resulting suite and current-source evidence; enumerate coverage per behavior/R-N and retain failures/skips. Inspect test bodies to ensure the named unit/integration/e2e files actually prove the new behavior; old baseline tests alone do not pass this BAR.",
+      "driftMarkers": "A changed required behavior has no recurrence test at its required depth, only typechecks or implementation-mirroring assertions are cited, a suite is red/skipped/unregistered, or mock/synthetic test evidence is used to claim real telephone/public-host readiness.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5",
+        "session_turn:codex:01a0f7b1-b53e-71f2-b1d3-01818dcd94c3:11"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts",
+          ".papercusp/apps/phone-app/worker/src/phone-voice-contract-adapter.integration.test.ts",
+          ".papercusp/apps/portal/tests/four-surface.e2e.test.tsx"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Current-source required suite pass",
+        "decisions": [
+          "D-005",
+          "D-006"
+        ],
+        "concreteFailure": "A required current-source suite is failed, skipped or unregistered.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-75",
+      "barKey": "R-75",
+      "model": "A Phone call record is scoped to the tenant that owns the call.",
+      "method": "Extend and run the existing sidecar API and data contract suites with cross-tenant numbers/rooms, forged/replayed callback bodies, caller prompt injection, guest revocation and provider-origin validation; confirm server-resolved identity end to end.",
+      "driftMarkers": "Any adversarial tenant/caller fixture reads another tenant's data, spoofs owner authority, bypasses a destination/cost policy, or starts an unowned SIP call worker with privileged tools.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Enumerated tenant resources and untrusted inputs",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "Tenant B reads Tenant A's call row.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-76",
+      "barKey": "R-76",
+      "model": "A Phone recording is scoped to the tenant that owns its call.",
+      "method": "Extend and run the existing sidecar API and data contract suites with cross-tenant numbers/rooms, forged/replayed callback bodies, caller prompt injection, guest revocation and provider-origin validation; confirm server-resolved identity end to end.",
+      "driftMarkers": "Any adversarial tenant/caller fixture reads another tenant's data, spoofs owner authority, bypasses a destination/cost policy, or starts an unowned SIP call worker with privileged tools.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Enumerated tenant resources and untrusted inputs",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "Tenant B reads or downloads Tenant A's call recording.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-77",
+      "barKey": "R-77",
+      "model": "A Phone transcript is scoped to the tenant that owns its call.",
+      "method": "Extend and run the existing sidecar API and data contract suites with cross-tenant numbers/rooms, forged/replayed callback bodies, caller prompt injection, guest revocation and provider-origin validation; confirm server-resolved identity end to end.",
+      "driftMarkers": "Any adversarial tenant/caller fixture reads another tenant's data, spoofs owner authority, bypasses a destination/cost policy, or starts an unowned SIP call worker with privileged tools.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Enumerated tenant resources and untrusted inputs",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "Tenant B reads Tenant A's transcript.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-78",
+      "barKey": "R-78",
+      "model": "A Phone provider callback is scoped to the tenant identified by its authenticated call binding.",
+      "method": "Extend and run the existing sidecar API and data contract suites with cross-tenant numbers/rooms, forged/replayed callback bodies, caller prompt injection, guest revocation and provider-origin validation; confirm server-resolved identity end to end.",
+      "driftMarkers": "Any adversarial tenant/caller fixture reads another tenant's data, spoofs owner authority, bypasses a destination/cost policy, or starts an unowned SIP call worker with privileged tools.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Enumerated tenant resources and untrusted inputs",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "A forged callback binding modifies a foreign tenant's call.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-79",
+      "barKey": "R-79",
+      "model": "A Phone worker context is scoped to the tenant identified by its authenticated call binding.",
+      "method": "Extend and run the existing sidecar API and data contract suites with cross-tenant numbers/rooms, forged/replayed callback bodies, caller prompt injection, guest revocation and provider-origin validation; confirm server-resolved identity end to end.",
+      "driftMarkers": "Any adversarial tenant/caller fixture reads another tenant's data, spoofs owner authority, bypasses a destination/cost policy, or starts an unowned SIP call worker with privileged tools.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Enumerated tenant resources and untrusted inputs",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "The call worker receives a foreign tenant's context.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-80",
+      "barKey": "R-80",
+      "model": "A Phone call grant is scoped to its authorized tenant.",
+      "method": "Extend and run the existing sidecar API and data contract suites with cross-tenant numbers/rooms, forged/replayed callback bodies, caller prompt injection, guest revocation and provider-origin validation; confirm server-resolved identity end to end.",
+      "driftMarkers": "Any adversarial tenant/caller fixture reads another tenant's data, spoofs owner authority, bypasses a destination/cost policy, or starts an unowned SIP call worker with privileged tools.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Enumerated tenant resources and untrusted inputs",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "A foreign tenant obtains the call grant.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-81",
+      "barKey": "R-81",
+      "model": "Speech content cannot confer owner authority or private agent-tool access.",
+      "method": "Extend and run the existing sidecar API and data contract suites with cross-tenant numbers/rooms, forged/replayed callback bodies, caller prompt injection, guest revocation and provider-origin validation; confirm server-resolved identity end to end.",
+      "driftMarkers": "Any adversarial tenant/caller fixture reads another tenant's data, spoofs owner authority, bypasses a destination/cost policy, or starts an unowned SIP call worker with privileged tools.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Enumerated tenant resources and untrusted inputs",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "Caller speech results in an owner principal or private tool grant.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-82",
+      "barKey": "R-82",
+      "model": "A room label cannot confer owner authority or private agent-tool access.",
+      "method": "Extend and run the existing sidecar API and data contract suites with cross-tenant numbers/rooms, forged/replayed callback bodies, caller prompt injection, guest revocation and provider-origin validation; confirm server-resolved identity end to end.",
+      "driftMarkers": "Any adversarial tenant/caller fixture reads another tenant's data, spoofs owner authority, bypasses a destination/cost policy, or starts an unowned SIP call worker with privileged tools.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Enumerated tenant resources and untrusted inputs",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "A room label results in an owner principal or private tool grant.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-83",
+      "barKey": "R-83",
+      "model": "A browser-supplied field cannot confer owner authority or private agent-tool access.",
+      "method": "Extend and run the existing sidecar API and data contract suites with cross-tenant numbers/rooms, forged/replayed callback bodies, caller prompt injection, guest revocation and provider-origin validation; confirm server-resolved identity end to end.",
+      "driftMarkers": "Any adversarial tenant/caller fixture reads another tenant's data, spoofs owner authority, bypasses a destination/cost policy, or starts an unowned SIP call worker with privileged tools.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Enumerated tenant resources and untrusted inputs",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "A browser field results in an owner principal or private tool grant.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-84",
+      "barKey": "R-84",
+      "model": "A persisted voicemail or transcript remains tenant scoped after service restart.",
+      "method": "Extend data/sidecar contract tests for interrupted writes, replayed events, retention expiry, scoped export and deletion; inspect storage/logs for sensitive data and retain jurisdiction-specific policy review before live recording.",
+      "driftMarkers": "A call is recorded outside its consent policy, transcripts/voicemails vanish after restart, deletion leaves retrievable retained media, or an external recipient sees private content.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "tests",
+        "files": [
+          ".papercusp/apps/phone-app/apps/sidecar/src/api.test.ts",
+          ".papercusp/apps/phone-app/packages/data/src/store-contract.test.ts"
+        ]
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Tenant scope after restart",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "After restart, Tenant B can read Tenant A's persisted voicemail/transcript.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-85",
+      "barKey": "R-85",
+      "model": "A carrier number lifecycle operation requires the approved carrier account.",
+      "method": "Exercise provisioning/reconciliation failures in the real suite, then verify approved numbers and routing with the carrier; exercise porting with a provider-supported test or retained owner/provider evidence rather than porting an owner's primary number.",
+      "driftMarkers": "A number routes to the wrong tenant, caller ID is unverified, a provider event creates a second number/charge, or cancellation/porting loses number ownership.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Approved carrier authority",
+        "decisions": [
+          "D-003",
+          "D-006",
+          "D-009"
+        ],
+        "concreteFailure": "A lifecycle operation succeeds using an unapproved carrier account.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-86",
+      "barKey": "R-86",
+      "model": "Real external phone/provider acceptance remains separately mandatory for each live Phone BAR.",
+      "method": "Run the scoped suite and authenticated public-phone journey; independently grade the retained evidence, compare shipped fingerprints, test rollback, then audit the seven-day consenting pilot and unresolved residue before open rollout.",
+      "driftMarkers": "The plan is marked shipped from typechecks, local health, synthetic-only media, a stale release artifact, a different tenant or an unresolved mandatory launch/legal/cost gate.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Separate mandatory real external phone/provider proof",
+        "decisions": [
+          "D-005",
+          "D-006"
+        ],
+        "concreteFailure": "A live BAR is accepted using only mock/local evidence without real external phone/provider proof.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    },
+    {
+      "key": "r-87",
+      "barKey": "R-87",
+      "model": "A secret rotation completes without interrupting ongoing service.",
+      "method": "Run bounded load and a 24-hour soak on an isolated candidate runtime, restore a backup, rotate credentials, simulate dependency outages and exercise rollback/failover; retain exact artifact and call-loss evidence.",
+      "driftMarkers": "A clean deploy cannot reproduce the service, a media/worker failure stays silent, numbers/call history cannot be restored, or recovery/rollback violates the approved service objectives.",
+      "sourceRefs": [
+        "session_turn:codex:01a0f780-14e0-7ba1-9e8d-fda266059afc:5"
+      ],
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "authorReview": {
+        "outcome": "observable behavior/state/guarantee; no diff alone observes the listed failure",
+        "goalClause": "Uninterrupted secret rotation",
+        "decisions": [
+          "D-006"
+        ],
+        "concreteFailure": "Rotating a secret disconnects an ongoing service call.",
+        "scope": "contract-quality review; not implementation fulfillment"
+      }
+    }
+  ],
+  "decisionInverse": [
+    {
+      "decision": "D-001",
+      "consequences": "Preserve self-hosted media and browser-alpha history; launch facts remain real.",
+      "coverage": [
+        "R-1",
+        "R-2",
+        "R-13",
+        "R-71",
+        "R-86"
+      ],
+      "separateAdministrativeEvidence": "Template/source inheritance and draft authorization are plan/source history, not new end-user acceptance outcomes."
+    },
+    {
+      "decision": "D-002",
+      "consequences": "Carrier inputs, consent and limits precede paid/live dialing; integrated independent acceptance precedes pilot.",
+      "coverage": [
+        "R-1",
+        "R-42",
+        "R-52",
+        "R-53",
+        "R-54",
+        "R-55",
+        "R-56",
+        "R-11",
+        "R-72",
+        "R-73"
+      ],
+      "separateAdministrativeEvidence": "D-003 supersedes draft-only approval and initial software blocking; topology is governed by plan item edges, not certified by this rubric census."
+    },
+    {
+      "decision": "D-003",
+      "consequences": "Implement public telephone sequel; no primary/emergency claims or fabricated carrier/cap/legal inputs.",
+      "coverage": [
+        "R-1",
+        "R-3",
+        "R-40",
+        "R-42",
+        "R-56",
+        "R-85",
+        "R-86"
+      ],
+      "separateAdministrativeEvidence": "AUTO/self route and implementation sequencing are administrative control; no source-map completeness claim."
+    },
+    {
+      "decision": "D-004",
+      "consequences": "Source/media preparation independent of released readiness; no live proof replaced by preparation.",
+      "coverage": [
+        "R-12",
+        "R-74",
+        "R-2",
+        "R-13",
+        "R-71",
+        "R-86"
+      ],
+      "separateAdministrativeEvidence": "Specific guard repair is retained WI-10004900 proof; grading this rubric does not reverify the guard."
+    },
+    {
+      "decision": "D-005",
+      "consequences": "Automated recurrence coverage separated from mandatory real external proof.",
+      "coverage": [
+        "R-12",
+        "R-74",
+        "R-86"
+      ],
+      "separateAdministrativeEvidence": "Structured detector completeness is downgraded below."
+    },
+    {
+      "decision": "D-006",
+      "consequences": "Enumerated resource/input authority; tenant scope after restart; approved carrier; all changed regression scope; real external proof; uninterrupted rotation; bounded fallback.",
+      "coverage": [
+        "R-6",
+        "R-41",
+        "R-75",
+        "R-76",
+        "R-77",
+        "R-78",
+        "R-79",
+        "R-80",
+        "R-81",
+        "R-82",
+        "R-83",
+        "R-84",
+        "R-85",
+        "R-12",
+        "R-74",
+        "R-86",
+        "R-87",
+        "R-68"
+      ]
+    },
+    {
+      "decision": "D-007",
+      "consequences": "P001 inventory does not replace mandatory approved launch/public outcomes.",
+      "coverage": [
+        "R-1",
+        "R-71",
+        "R-86"
+      ],
+      "separateAdministrativeEvidence": "Inventory-specific PHONE-P-001-OUTCOME and its operational ledger are separate per-item evidence; this is not a BAR-discharge-map audit."
+    },
+    {
+      "decision": "D-008",
+      "consequences": "Approved launch contract remains mandatory while inventory unlocks software.",
+      "coverage": [
+        "R-1"
+      ],
+      "separateAdministrativeEvidence": "R1 P004/P010/P014 discharge edges must be read via canonical BAR snapshot; not inferred from criterion prose."
+    },
+    {
+      "decision": "D-009",
+      "consequences": "Carrier obligations stay mandatory after removing P003 from live mapping.",
+      "coverage": [
+        "R-3",
+        "R-14",
+        "R-15",
+        "R-16",
+        "R-17",
+        "R-18",
+        "R-19",
+        "R-20",
+        "R-21",
+        "R-85"
+      ],
+      "separateAdministrativeEvidence": "Ten retired mappings and surviving live edges are not re-audited by this census."
+    }
+  ],
+  "failureSurfaceMap": [
+    {
+      "surface": "Missing carrier/spend/legal/service contract",
+      "coveredBy": [
+        "R-1",
+        "R-3",
+        "R-40",
+        "R-56",
+        "R-85"
+      ]
+    },
+    {
+      "surface": "Cross-tenant data and untrusted authority",
+      "coveredBy": [
+        "R-6",
+        "R-41",
+        "R-75",
+        "R-76",
+        "R-77",
+        "R-78",
+        "R-79",
+        "R-80",
+        "R-81",
+        "R-82",
+        "R-83",
+        "R-84"
+      ]
+    },
+    {
+      "surface": "Replay, restart and recurrence",
+      "coveredBy": [
+        "R-7",
+        "R-12",
+        "R-39",
+        "R-59",
+        "R-74",
+        "R-84"
+      ]
+    },
+    {
+      "surface": "Consent/retention/deletion/notification failures",
+      "coveredBy": [
+        "R-42",
+        "R-43",
+        "R-44",
+        "R-45",
+        "R-46",
+        "R-47"
+      ]
+    },
+    {
+      "surface": "Capacity, provider, worker and dependency failure",
+      "coveredBy": [
+        "R-10",
+        "R-51",
+        "R-60",
+        "R-65",
+        "R-66",
+        "R-67",
+        "R-68",
+        "R-69"
+      ]
+    },
+    {
+      "surface": "Synthetic/stale proof mistaken for public shipment",
+      "coveredBy": [
+        "R-11",
+        "R-70",
+        "R-71",
+        "R-72",
+        "R-73",
+        "R-86"
+      ]
+    },
+    {
+      "surface": "Rotation downtime",
+      "coveredBy": [
+        "R-64",
+        "R-87"
+      ]
+    }
+  ],
+  "pairwiseReview": {
+    "population": 3741,
+    "checked": [
+      {
+        "pair": [
+          "R-2",
+          "R-13"
+        ],
+        "observation": "Secure public endpoints are returned but the UDP-blocked remote audio leg is one-way.",
+        "ratings": {
+          "R-2": "broken",
+          "R-13": "healthy"
+        }
+      },
+      {
+        "pair": [
+          "R-7",
+          "R-84"
+        ],
+        "observation": "Persisted content survives restart completely but another tenant can retrieve it.",
+        "ratings": {
+          "R-7": "healthy",
+          "R-84": "broken"
+        }
+      },
+      {
+        "pair": [
+          "R-12",
+          "R-74"
+        ],
+        "observation": "Every changed behavior has registered layer coverage but one current required test fails.",
+        "ratings": {
+          "R-12": "healthy",
+          "R-74": "broken"
+        }
+      },
+      {
+        "pair": [
+          "R-6",
+          "R-75"
+        ],
+        "observation": "Number records are isolated while a call-record read leaks a foreign tenant.",
+        "ratings": {
+          "R-6": "healthy",
+          "R-75": "broken"
+        }
+      }
+    ],
+    "notSemanticallyChecked": 3737,
+    "rating": "weak",
+    "reason": "Four explicit counterfactual separations are reproducible contract spot-checks, not an exhaustive 3741-pair independence proof. The original pass is withdrawn; lexical inequality is not used as semantic evidence."
+  },
+  "structuredDowngrade": {
+    "rating": "weak",
+    "targetBars": [
+      "R-12",
+      "R-74"
+    ],
+    "missingBindableFiles": [
+      ".papercusp/apps/phone-app/apps/sidecar/src/voicemail-persistence.e2e.test.ts",
+      ".papercusp/apps/phone-app/packages/data/src/call-deletion.integration.test.ts"
+    ],
+    "assertions": [
+      {
+        "file": "apps/sidecar/src/voicemail-persistence.e2e.test.ts",
+        "sha256": "ce49405a1d5832325ee3e4f3f363fc9f8cc47f969f5c5260f251b6cbf86f730f",
+        "lines": [
+          124,
+          130,
+          136,
+          193,
+          199,
+          202,
+          203
+        ],
+        "detector": "Complete content and foreign-tenant exclusion after real sidecar/database restart; deletion replay gives410 and content/search stay erased.",
+        "positiveControl": "Before restart/deletion, the acknowledged content is created and exported; HTTP response succeeds and explicit phone-store scope is asserted. Original actual run ledger20483861 passes4/0skip."
+      },
+      {
+        "file": "packages/data/src/call-deletion.integration.test.ts",
+        "sha256": "a9605b24127f13bc663dfb9111a117a58aaa02610e5f4c57e7bdc2fe26f80fc1",
+        "lines": [
+          54,
+          59,
+          88,
+          89,
+          128,
+          129,
+          144,
+          146
+        ],
+        "detector": "Erasure/tombstone/replay refusal, fail-closed media and mirror guards, transaction rollback, restart scope.",
+        "positiveControl": "Fixture seeds message/search content; blocked deletion preserves the exact pre-delete export. Original actual run ledger20483862 passes12/0skip."
+      }
+    ],
+    "satisfiability": "In-memory check-list positive control adding these two existing saved files removes this exact membership deficit. It does not prove all layers/outcomes adequate and does not mutate the real rubric.",
+    "limits": "Both files are saved and bindable from managed Phone paths. Source is dirty and original runs are historical. No policy/media/mirror deletion, public PSTN or current full detector census claim."
+  },
+  "ratings": {
+    "outcomes-not-diff-restatements": "pass",
+    "traces-to-goal-or-decision": "pass",
+    "falsifiable-with-evidence": "pass",
+    "failure-mode-coverage": "pass",
+    "non-overlapping": "weak",
+    "prefer-structured-check": "weak"
+  },
+  "status": "Publication-normalized evidence; original semantic judgments and limits retained; superseding evidence requires an independent grading-integrity audit; Phone unshipped.",
+  "probeResult": {
+    "snapshotSha256": "711c1d3baf7285214114fe09218f7a4caeedcf4ea0b318eafb810803f7553933",
+    "criteriaChecked": 87,
+    "embeddedHashesChecked": 4,
+    "decisionRowsChecked": 9,
+    "missingBindingFiles": {
+      "R-12": [
+        ".papercusp/apps/phone-app/apps/sidecar/src/voicemail-persistence.e2e.test.ts",
+        ".papercusp/apps/phone-app/packages/data/src/call-deletion.integration.test.ts"
+      ],
+      "R-74": [
+        ".papercusp/apps/phone-app/apps/sidecar/src/voicemail-persistence.e2e.test.ts",
+        ".papercusp/apps/phone-app/packages/data/src/call-deletion.integration.test.ts"
+      ]
+    },
+    "membershipPositiveControl": {
+      "R-12": [],
+      "R-74": []
+    },
+    "assertionAnchors": {
+      "apps/sidecar/src/voicemail-persistence.e2e.test.ts": {
+        "expect((await read(\"/api/voicemail\", \"tenant-a\")).voicemails).toEqual(saved);": [
+          124,
+          127
+        ],
+        "expect(replay.status).toBe(410);": [
+          199
+        ],
+        "segments: [], voicemail: null": [
+          202
+        ],
+        "expect((await read(\"/api/calls/search?q=privatedeletee2e\", \"tenant-a\")).hits).toEqual([]);": [
+          203
+        ]
+      },
+      "packages/data/src/call-deletion.integration.test.ts": {
+        "rejects.toThrow(\"phone_content_deleted\")": [
+          59,
+          60,
+          61,
+          100,
+          105,
+          146
+        ],
+        "expect(await store.exportCallContent(call.id)).toEqual(before);": [
+          89,
+          129
+        ],
+        "rejects.toThrow(\"fixture_deletion_failure\")": [
+          128
+        ]
+      }
+    },
+    "semanticPairSpotChecks": [
+      {
+        "pair": [
+          "R-2",
+          "R-13"
+        ],
+        "observation": "Secure public endpoints are returned but the UDP-blocked remote audio leg is one-way.",
+        "ratings": {
+          "R-2": "broken",
+          "R-13": "healthy"
+        }
+      },
+      {
+        "pair": [
+          "R-7",
+          "R-84"
+        ],
+        "observation": "Persisted content survives restart completely but another tenant can retrieve it.",
+        "ratings": {
+          "R-7": "healthy",
+          "R-84": "broken"
+        }
+      },
+      {
+        "pair": [
+          "R-12",
+          "R-74"
+        ],
+        "observation": "Every changed behavior has registered layer coverage but one current required test fails.",
+        "ratings": {
+          "R-12": "healthy",
+          "R-74": "broken"
+        }
+      },
+      {
+        "pair": [
+          "R-6",
+          "R-75"
+        ],
+        "observation": "Number records are isolated while a call-record read leaks a foreign tenant.",
+        "ratings": {
+          "R-6": "healthy",
+          "R-75": "broken"
+        }
+      }
+    ],
+    "unreviewedSemanticPairs": 3737,
+    "limitation": "This executable validates exact scope, census shape, assertion anchors and binding mismatch. Semantic judgments are explicit review rows; it does not run software, prove all detectors adequate, or certify public shipment."
+  },
+  "rerun": {
+    "command": "python3 - <<'PY'\nimport json, hashlib, pathlib\nroot = pathlib.Path.cwd()\nreview = json.loads((root / 'docs/evidence/phone-author-vetting-publication-review-2026-10-02.json').read_text())\nscope = review['preservedScope']\nraw = (root / scope['path']).read_bytes()\nassert hashlib.sha256(raw).hexdigest() == scope['sha256']\nsnapshot = json.loads(raw)\ncriteria = snapshot['subjectRubric']['criteria']\nby_key = {c['barKey']: c for c in criteria}\nexpected = {'R-' + str(i) for i in range(1, 88)}\nassert len(criteria) == len(by_key) == 87 and set(by_key) == expected\nassert {r['barKey'] for r in review['census']} == expected\nassert len(review['census']) == 87\nfor row in review['census']:\n    original = by_key[row['barKey']]\n    for field in ['model', 'method', 'driftMarkers', 'check']:\n        assert row[field] == original[field], (row['barKey'], field)\n    assert row['sourceRefs'] == original['intent']['sourceRefs']\n    assert row['authorReview']['concreteFailure']\n    assert row['authorReview']['goalClause'] and row['authorReview']['decisions']\nfiles = {f['path']: f for f in snapshot['sourceScope']['files']}\nfor path, f in files.items():\n    assert hashlib.sha256(f['content'].encode()).hexdigest() == f['sha256'], path\nmissing = {}\ncontrol = {}\nfor key in ['R-12', 'R-74']:\n    check = by_key[key]['check']['files']\n    wanted = review['structuredDowngrade']['missingBindableFiles']\n    missing[key] = [p for p in wanted if p not in check]\n    assert missing[key] == wanted\n    repaired = list(dict.fromkeys(check + wanted))\n    control[key] = [p for p in wanted if p not in repaired]\n    assert control[key] == []\nanchors = {\n 'apps/sidecar/src/voicemail-persistence.e2e.test.ts': [\n   'expect((await read(\"/api/voicemail\", \"tenant-a\")).voicemails).toEqual(saved);',\n   'expect(replay.status).toBe(410);',\n   'segments: [], voicemail: null',\n   'expect((await read(\"/api/calls/search?q=privatedeletee2e\", \"tenant-a\")).hits).toEqual([]);'],\n 'packages/data/src/call-deletion.integration.test.ts': [\n   'rejects.toThrow(\"phone_content_deleted\")',\n   'expect(await store.exportCallContent(call.id)).toEqual(before);',\n   'rejects.toThrow(\"fixture_deletion_failure\")']\n}\nfound = {}\nfor path, needles in anchors.items():\n    content = files[path]['content']\n    found[path] = {}\n    for needle in needles:\n        lines = [i for i,line in enumerate(content.splitlines(),1) if needle in line]\n        assert lines, (path, needle)\n        found[path][needle] = lines\nkeys = set(by_key)\ndecision_census = review['decisionInverse']\nassert [d['decision'] for d in decision_census] == ['D-' + str(i).zfill(3) for i in range(1,10)]\nfor d in decision_census:\n    assert d['coverage'] and set(d['coverage']) <= keys\n    assert d['decision'] in snapshot['planDecisions']\npairs = review['pairwiseReview']\nassert pairs['population'] == 87*86//2\nassert len(pairs['checked']) + pairs['notSemanticallyChecked'] == pairs['population']\nfor pair in pairs['checked']:\n    assert set(pair['pair']) <= keys\n    assert set(pair['ratings'].values()) == {'broken','healthy'}\nprint(json.dumps({'snapshotSha256':scope['sha256'],'criteriaChecked':87,'embeddedHashesChecked':len(files),\n 'decisionRowsChecked':len(decision_census), 'missingBindingFiles':missing,'membershipPositiveControl':control,\n 'assertionAnchors':found,'semanticPairSpotChecks':pairs['checked'],'unreviewedSemanticPairs':pairs['notSemanticallyChecked'],\n 'limitation':'This executable validates exact scope, census shape, assertion anchors and binding mismatch. Semantic judgments are explicit review rows; it does not run software, prove all detectors adequate, or certify public shipment.'}, indent=2))\n\nPY",
+    "purpose": "Rerun saved-scope integrity and exact binding downgrade; read all census annotations and four semantic pair observations for the human semantic spot checks.",
+    "sideEffects": "none; snapshots loaded read-only; positive-control check-list is in memory"
+  },
+  "publicationLineage": {
+    "originalSnapshot": {
+      "artifact": {
+        "slug": "papercusp",
+        "rel_path": "evidence/phone-author-vetting/original-bf403b0543de5697aea533664ce380af91cc4d91b48d25f5a41fc4df44219e2d.json"
+      },
+      "sha256": "bf403b0543de5697aea533664ce380af91cc4d91b48d25f5a41fc4df44219e2d",
+      "bytes": 377762,
+      "storage": "Workspace-scoped PG-canonical artifacts:save; no repository mirror.",
+      "roundTrip": {
+        "tool": "artifacts:load",
+        "pages": 19,
+        "updatedAt": 1790924242322,
+        "exactBytesVerified": true
+      }
+    },
+    "publishedSnapshot": {
+      "path": "docs/evidence/phone-author-vetting-snapshot-2026-10-02.json",
+      "sha256": "711c1d3baf7285214114fe09218f7a4caeedcf4ea0b318eafb810803f7553933",
+      "bytes": 377758
+    },
+    "transformation": {
+      "changedField": "planDecisions",
+      "replacementCount": 1,
+      "operation": "Remove the personal name from one owner provenance tag; retain the owner tier and exact session-turn reference.",
+      "retainedSessionTurn": "codex:01a0f7b1-b53e-71f2-b1d3-01818dcd94c3:11",
+      "otherBytesUnchanged": true
+    },
+    "originalReview": {
+      "path": "docs/evidence/phone-author-vetting-review-2026-10-02.json",
+      "sha256": "c7e0641abf7d9dc7c6c3c97d0741f4a384cf61dc03a8ed21f3f3294455bab094",
+      "unchanged": true
+    },
+    "originalCard": {
+      "issueId": "EI-24847465443640687",
+      "payloadPath": "docs/evidence/phone-author-vetting-card-2026-10-02.json",
+      "payloadSha256": "bcc108b4e38f550438bd7a9d2a5fded87b261b4c3096fb6a83b3bbc29bd30ec3",
+      "independentAudit": "EI-24847745777507321",
+      "independentVerdict": "passed",
+      "unchangedHistory": true
+    },
+    "scopeEquality": {
+      "criteria": 87,
+      "criteriaContentUnchanged": true,
+      "embeddedSourceFiles": 4,
+      "embeddedBytesAndHashesUnchanged": true,
+      "censusJudgmentsUnchanged": true,
+      "decisionInverseUnchanged": true,
+      "pairwiseLimitsUnchanged": true,
+      "ratingValuesUnchanged": true
+    },
+    "privacyScan": {
+      "matcher": "scripts/lib/identity-leak-patterns.mjs",
+      "ownerTags": 0,
+      "homePaths": 0,
+      "identityLiterals": 0,
+      "positiveControl": "The exact archived original produces one owner-tag hit. Restoring only the removed name reconstructs its SHA-256; the published derivative produces zero hits in all three matcher classes."
+    },
+    "historicalReplay": "The immutable original review and original card hash-pin the original snapshot. Their legacy file command needs the original artifact loaded at the legacy snapshot path in an isolated replay directory. The canonical repository path now identifies the explicitly normalized derivative. The original and derivative are different bytes; no original audit is relabeled as grading the derivative.",
+    "limits": "Publication normalization changes evidence delivery only. It does not amend criteria, strengthen the four-pass/two-weak judgments, prove current software adequacy, certify full deletion policy/media/mirror coverage, or establish public telephone shipment."
+  }
+}

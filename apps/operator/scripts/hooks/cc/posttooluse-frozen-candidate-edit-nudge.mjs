@@ -46,10 +46,10 @@
 //     nudge says the hunks were NOT recorded, so admission needs `wholeBlob:true, reason`.
 //   - `--self-test` runs the embedded cases (no stdin, no network) and exits non-zero on failure.
 //
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 /** MUST match packages/operator-core/lib/release/frozen-candidate-repair-queue.ts. */
@@ -61,12 +61,65 @@ export function normalizeRepoPath(value) {
     .replace(/^\/+/, '');
 }
 
-export function markerPath() {
+/**
+ * The scoped marker directory. MUST match `frozenRepairMarkerPath` in
+ * packages/operator-core/lib/release/frozen-repair-edit-marker.ts, which writes one
+ * `<sha256 scope>.json` per (workspace, install) frozen queue.
+ *
+ * EI-24313562050732849: this hook used to read one global `frozen-repair-edit-marker.json`.
+ * The writer stopped producing that file when markers became install-scoped (2026-10-01), so
+ * the hook gated hunk recording on a file nothing in the tree wrote: absent ⇒ every hunk was
+ * silently dropped (⇒ `no-ledgered-hunks` at admission); a leftover ⇒ nudges about a dead
+ * repair radius. `frozen-repair-edit-hook-parity.test.ts` pins this default LOCATION against
+ * the writer's default, not only the file format.
+ */
+export function markersDir() {
   const base = process.env.PAPERCUSP_STATE_DIR ?? join(homedir(), '.papercusp', 'state');
-  return join(base, 'frozen-repair-edit-marker.json');
+  return join(base, 'frozen-repair-edit-markers');
 }
 
-export function readMarker(path = markerPath()) {
+/** Every readable scoped marker, in a stable order. A missing directory or a corrupt file
+ *  reads as absent — the hook must never fail an edit. */
+export function readMarkers(dir = markersDir()) {
+  let names;
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  return names
+    .filter((n) => n.endsWith('.json'))
+    .sort()
+    .map((n) => readMarker(join(dir, n)))
+    .filter((m) => m !== null);
+}
+
+/**
+ * Which frozen lineage an edit belongs to, for the CANDIDATE HINT and the NUDGE only —
+ * recording itself is gated on ANY live marker, because the server resolves the install
+ * authoritatively and a wrong local guess must never drop a hunk.
+ *
+ * The marker whose scope names the edited file's repository root (the install slug is that
+ * checkout's directory name). With no repository root, a lone marker is used. Anything else —
+ * several matches, a lone marker scoped to a different install, no match — is ambiguous ⇒
+ * null: no candidate hint and no nudge, because a wrong repair radius is worse than silence.
+ *
+ * @param {any[]} markers
+ * @param {string | null} repoRoot
+ */
+export function selectMarker(markers, repoRoot) {
+  if (!Array.isArray(markers) || markers.length === 0) return null;
+  if (!repoRoot) return markers.length === 1 ? markers[0] : null;
+  const slug = basename(repoRoot);
+  const matches = markers.filter((m) => m?.scope?.installSlug === slug);
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) return null;
+  const unscoped = markers.filter((m) => typeof m?.scope?.installSlug !== 'string');
+  return markers.length === 1 && unscoped.length === 1 ? markers[0] : null;
+}
+
+/** @param {string} path */
+export function readMarker(path) {
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8'));
     if (!parsed || typeof parsed !== 'object') return null;
@@ -157,7 +210,7 @@ export function unwrapToolsInvoke(payload) {
   if (!/(^|_)tools_invoke$/.test(name)) return payload;
   const input = payload?.tool_input;
   const inner = typeof input?.name === 'string' ? input.name : '';
-  if (!/^capability:(edit|write|multi_?edit)$/i.test(inner)) return { ...payload, tool_input: {} };
+  if (!/^capability:(edit|write|multi_?edit|patch)$/i.test(inner)) return { ...payload, tool_input: {} };
   return { ...payload, tool_name: inner.replace(':', '_'), tool_input: input.args };
 }
 
@@ -308,11 +361,12 @@ export function hunksFrom(rawPayload) {
   const name = String(payload?.tool_name ?? '').toLowerCase();
   if (name === 'apply_patch') return hunksFromCodexApplyPatch(input);
   if (!input || typeof input !== 'object') return [];
-  const isMulti = /multi_?edit/.test(name);
+  const isPatch = /(^|_)capability_patch$/.test(name);
+  const isMulti = /multi_?edit/.test(name) || isPatch;
   const isEdit = !isMulti && /(^|_)edit(?:_file)?$/.test(name);
   const isWrite = /(^|_)write(_file)?$/.test(name);
   const filePath = typeof input.file_path === 'string' ? input.file_path : typeof input.path === 'string' ? input.path : null;
-  if (!filePath) return [];
+  if (!filePath && !isMulti) return [];
   const str = (v) => (typeof v === 'string' ? v : null);
   if (isMulti) {
     const out = [];
@@ -321,7 +375,9 @@ export function hunksFrom(rawPayload) {
       const o = str(e.old_string);
       const n = str(e.new_string);
       if (o === null || n === null) return;
-      out.push({ path: str(e.file_path) ?? filePath, hunk: { kind: 'edit', old: o, new: n, replaceAll: e.replace_all === true }, editIndex: index });
+      const editPath = str(e.file_path) ?? filePath;
+      if (!editPath) return;
+      out.push({ path: editPath, hunk: { kind: 'edit', old: o, new: n, replaceAll: e.replace_all === true }, editIndex: index });
     });
     return out;
   }
@@ -379,32 +435,48 @@ export function ownerIdentity(payload, env = process.env, readFile = (p) => read
  */
 export function repoRelativePath(filePath, cwd = process.cwd(), git = execFileSync) {
   try {
-    const abs = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
-    let real = abs;
-    try {
-      real = realpathSync(abs);
-    } catch {
-      real = abs; // a Write may create the file after we run — the parent dir still resolves
-    }
-    const dir = dirname(real);
-    const out = String(
-      git('git', ['-C', dir, 'rev-parse', '--show-superproject-working-tree', '--show-toplevel'], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 3000,
-      }),
-    )
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean);
-    const root = out[0];
-    if (!root) return null;
-    const rel = relative(realpathSafe(root), real);
+    const resolved = resolveRepoRoot(filePath, cwd, git);
+    if (!resolved) return null;
+    const rel = relative(resolved.root, resolved.real);
     if (!rel || rel.startsWith('..') || isAbsolute(rel)) return null;
     return normalizeRepoPath(rel);
   } catch {
     return null;
   }
+}
+
+/** The repository root `repoRelativePath` measures from (superproject when in a submodule),
+ *  or null outside any repository. Used to pick the edit's install marker. */
+export function repoRootOf(filePath, cwd = process.cwd(), git = execFileSync) {
+  try {
+    return resolveRepoRoot(filePath, cwd, git)?.root ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveRepoRoot(filePath, cwd, git) {
+  const abs = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
+  let real = abs;
+  try {
+    real = realpathSync(abs);
+  } catch {
+    real = abs; // a Write may create the file after we run — the parent dir still resolves
+  }
+  const dir = dirname(real);
+  const out = String(
+    git('git', ['-C', dir, 'rev-parse', '--show-superproject-working-tree', '--show-toplevel'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 3000,
+    }),
+  )
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const root = out[0];
+  if (!root) return null;
+  return { root: realpathSafe(root), real };
 }
 
 function realpathSafe(p) {
@@ -660,7 +732,9 @@ async function recordAtOperatorUrl({
         toolUseId: toolUseId || undefined,
         editIndex,
         atMs,
-        candidate: marker.candidate,
+        // A hint only: the server records against its own queue and reports a mismatch.
+        // Omitted when the hook could not tell which install's lineage this edit belongs to.
+        candidate: marker?.candidate ?? undefined,
       },
     },
   });
@@ -767,9 +841,14 @@ async function main() {
   } catch {
     return; // fail open
   }
-  const marker = readMarker();
-  if (!marker) return; // the common case: nothing frozen
+  const markers = readMarkers();
+  if (markers.length === 0) return; // the common case: nothing frozen
   if (toolCallFailed(payload)) return; // a failed edit made no hunk
+  const firstEdited = editedPathsFrom(payload)[0];
+  const marker = selectMarker(
+    markers,
+    firstEdited ? repoRootOf(firstEdited, payload.cwd ?? process.cwd()) : null,
+  );
 
   // P-019: record every hunk this edit made, whatever the path — hunk-exact admission needs
   // the SOURCE fix as much as the failing test, and the failing set cannot name the source.

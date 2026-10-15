@@ -256,7 +256,7 @@ const gitShow = defineTool({
   path: '/harness/:slug/git/show/:sha',
   auth: 'public',
   async handler(req, ctx) {
-    const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
+    const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req), activeWorkspaceId());
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
     const sha = ctx.params.sha as string;
     if (!/^[0-9a-f]{4,64}$/i.test(sha)) return Response.json({ error: 'bad sha' }, { status: 400 });
@@ -297,7 +297,7 @@ const gitWorktrees = defineTool({
   path: '/harness/:slug/git/worktrees',
   auth: 'public',
   async handler(req, ctx) {
-    const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
+    const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req), activeWorkspaceId());
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
     if (!existsSync(join(project.path, '.git'))) {
       return Response.json({ worktrees: [], notAGitRepo: true });
@@ -339,7 +339,7 @@ const gitLog = defineTool({
   path: '/harness/:slug/git/log',
   auth: 'public',
   async handler(req, ctx) {
-    const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
+    const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req), activeWorkspaceId());
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
 
     // Org-kind harnesses (and any harness whose root isn't a git checkout)
@@ -350,7 +350,10 @@ const gitLog = defineTool({
 
     const url = new URL(req.url);
     const limit = Math.min(2000, Math.max(1, Number(url.searchParams.get('limit') ?? 300)));
-    const branch = (url.searchParams.get('branch') ?? '').trim();
+    // `ref` is the worktree selector used by AdvGitGraphPanel; retain `branch`
+    // as the explicit API spelling and accept both at the route boundary.
+    const branch = (url.searchParams.get('branch') ?? '').trim()
+      || (url.searchParams.get('ref') ?? '').trim();
     const sha = (url.searchParams.get('sha') ?? '').trim();
     let ref: string | null = null;
     if (branch) {
@@ -378,7 +381,7 @@ const gitStats = defineTool({
   path: '/harness/:slug/git/stats',
   auth: 'public',
   async handler(req, ctx) {
-    const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
+    const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req), activeWorkspaceId());
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
     const refresh = new URL(req.url).searchParams.get('refresh') === '1';
     try {

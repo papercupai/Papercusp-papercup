@@ -70,6 +70,12 @@ export type QueryNameTarget = string | { name: string; scope: ScopeKeyBuilder };
  * a bare string full-busts; `{ name, scope }` opts into per-row scoping.
  */
 export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTarget[]>> = {
+  // Reports have a composite workspace/report key, so a table event without a
+  // consumer reportId conservatively refreshes every open pinned report.
+  'harness_shared.report_library': ['reports.list', 'reports.library', 'reports.lineage', 'reports.get'],
+  // Occurrence watermarks alter the observation page and its exact summary even
+  // when the canonical work-item row is unchanged.
+  'harness_shared.work_item_occurrences': ['learning.observations', 'learning.observations.summary'],
   // Cloud Workspaces (WI-40483 / P-023): all low-volume durable control
   // tables push the single provider-neutral projection. workspace_host_logs
   // is intentionally absent because appendWorkspaceHostLogs emits one scoped
@@ -86,6 +92,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // inside the window left open harness lists stale).
   // network.board: a hive create/dissolve changes its tier 1–2 rows.
   'harness_shared.harness_registry': [
+    'network.hiveDirectory',
     'harnessProjects.lite',
     'harnessWorkspaces.byHarness',
     'network.board',
@@ -100,7 +107,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // to scope by harness_slug on these viewer-keyed tables — the id-less
   // scope fallback only covers harness_plans/pot_settings today), matching
   // most of this map; low write rate keeps that cheap.
-  'harness_shared.pr_reviewer_settings': ['prReviewerSettings.byHarness'],
+  'harness_shared.pr_reviewer_settings': ['prReviewerSettings.byHarness', 'harnessPrs.detail'],
+  'harness_shared.pr_review_reports': ['harnessPrs.byHarness', 'harnessPrs.detail'],
+  'harness_shared.pr_check_status_cache': ['harnessPrs.byHarness', 'harnessPrs.detail'],
+  'harness_shared.shared_repo_binding_cache': ['harnessPrs.detail'],
   'harness_shared.trusted_authors': ['prReviewerSettings.byHarness'],
   // planSessions.list (owner-plans-single-pane P-004): the plan popup's
   // Sessions tab is keyed by plan_slug, not a row PK — full-bust here so a new
@@ -183,12 +193,19 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // userId used by the consumer key.
   'harness_shared.personal_vault_import_jobs': ['personalVault.importJobs'],
   'harness_shared.personal_vault_import_uploads': ['personalVault.importJobs'],
+  // Settings → Integrations ticket page (linear-asana-task-sync P-007, migration 1399): a sync pass
+  // stamps data_sources, a rule change writes admission_rules, an admission writes work_admissions,
+  // often from a background worker. Full-bust: the consumer key is the owner's userId, which the
+  // trigger payload does not carry.
+  'harness_shared.data_sources': ['integrations.tickets'],
+  'harness_shared.admission_rules': ['integrations.tickets'],
+  'harness_shared.work_admissions': ['integrations.tickets'],
   'harness_shared.harness_skills': ['harnessSkills.byHarness'],
   'harness_shared.harness_decisions': ['harnessDecisions.byHarness'],
   'harness_shared.harness_lanes': ['harnessLanes.byHarness', 'harnessLanes.snapshot'],
   'harness_shared.harness_escalations': ['harnessEscalations.byHarness'],
   'harness_shared.harness_checkpoints': ['harnessCheckpoints.byHarness'],
-  'harness_shared.harness_feature_prs': ['featurePrs.byHarness', 'featureTimeline.byFeature'],
+  'harness_shared.harness_feature_prs': ['featurePrs.byHarness', 'featureTimeline.byFeature', 'harnessPrs.byHarness', 'harnessPrs.detail'],
   'harness_shared.harness_status': ['harnessStatus.byHarness'],
   'harness_shared.harness_tests': ['harnessTests.byHarness'],
   'harness_shared.harness_archives': ['harnessArchives.byHarness'],
@@ -445,7 +462,6 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // per-row key to scope by.
   'harness_shared.operator_account_pool': ['accounts.pool'],
   'harness_shared.harness_dock_layouts': ['dockLayouts.byName', 'dockLayouts.list'],
-  'harness_shared.harness_plan_assertions': ['testing.assertionsByHarness'],
   'harness_shared.projects': ['kpis.all'],
   'harness_shared.autoloop_state': ['kpis.all'],
   'harness_shared.audit_log': ['auditLog.operatorDecisions'],
@@ -807,7 +823,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.regret_findings': ['learning.frontier'],
   'harness_shared.transfer_lessons': ['learning.frontier'],
   'harness_shared.prompt_ablation_runs': ['learning.frontier'],
-  'harness_shared.routines': ['learning.frontier'],
+  'harness_shared.routines': ['learning.frontier', 'harnessPrs.byHarness', 'harnessPrs.detail'],
   'harness_shared.bench_runs': ['evals.benchRuns', 'evals.benchRun', 'evals.benchRunLive'],
   'harness_shared.bench_run_tasks': ['evals.benchRun', 'evals.benchRunLive'],
   // fleetAssignments.byHarness (progress-tab-agents-convergence P-001) reads the
@@ -861,7 +877,8 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // EI-19304902443341820: `p2p.devices` renders the pot's device/member roster straight off this
   // table but was not listed, so a device joining or leaving never pushed to it. Low-churn table,
   // so the added fan-out is negligible. Found by the resolver→table coverage guard.
-  'harness_shared.pot_members': ['dev.assignableMembers', 'p2p.devices'],
+  'harness_shared.pot_members': ['dev.assignableMembers', 'p2p.devices', 'network.hiveDirectory'],
+  'harness_shared.pot_policy': ['network.hiveDirectory'],
   // external-app-access P-010 (D-025): Settings → Remote access lists every phone, app key and
   // service key and shows the workspace switch. Migration 1264 attaches the shared change-notify
   // trigger to both tables, so every writer (not only the screen's routes) refreshes an open page.
@@ -875,7 +892,16 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // and per-Pot beacon consent. Steering remains a workspace-wide fold; beacon
   // consent is keyed by the changed row's natural harness_slug so only that pot's
   // PotBeaconToggle refreshes after a federated write.
-  'harness_shared.pot_settings': ['hive.steering', 'learning.dream', { name: 'hive.beaconConsent', scope: potHomeSlugScope }],
+  // potIntegration.settings (pot-review-integration-mode P-017, EI-25188362216785598) reads the
+  // pot's integration mode; its args are the HARNESS slug, not the pot home slug, so it full-busts
+  // (only mounted settings sections re-read).
+  'harness_shared.pot_settings': [
+    'network.hiveDirectory',
+    'hive.steering',
+    'learning.dream',
+    { name: 'hive.beaconConsent', scope: potHomeSlugScope },
+    'potIntegration.settings',
+  ],
   'harness_shared.feature_claims': [
     'fleetAssignments.byHarness',
     'sidebar.fleetCups',

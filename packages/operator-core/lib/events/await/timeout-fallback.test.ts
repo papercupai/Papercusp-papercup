@@ -186,14 +186,19 @@ describe('predicate timeout recovery', () => {
 
     const fallback = buildPredicateTimeoutFallback('predicate:expired-id', recovery);
     expect(fallback.summary).toContain('do not re-arm the expired key');
+    expect(fallback.summary).toContain('let its own wake registration notify you');
     expect(fallback.guidance).toContain('Do NOT call events:await on this expired key');
     expect(fallback.guidance).toContain('predicateRecovery.args');
+    expect(fallback.guidance).toContain('watch:create registers the new predicate wake itself');
+    expect(fallback.guidance).toContain('Do NOT call events:await on the returned watch.pattern');
     expect(fallback.predicateRecovery).toEqual(recovery);
   });
 
   it('keeps the no-spec fallback safe when the retired registration cannot be recovered', () => {
     const fallback = buildPredicateTimeoutFallback('predicate:expired-id');
     expect(fallback.guidance).toContain('Do NOT call events:await on this expired key');
+    expect(fallback.guidance).toContain('the new registration owns its wake/subscription');
+    expect(fallback.guidance).toContain('Do NOT call events:await on the returned key');
     expect(fallback.guidance).toContain('Recover the original predicate specification');
     expect(fallback).not.toHaveProperty('predicateRecovery');
   });

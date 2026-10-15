@@ -1,0 +1,31 @@
+---
+rel_path: "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-EI-25286409713168872-4b650ae9f8124b3a189928a02d4aa362-reconcile.json"
+updated_at: 1791670569820
+_body: "content"
+---
+
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:EI-25286409713168872:4b650ae9f8124b3a189928a02d4aa362",
+  "inputSha256": "4b650ae9f8124b3a189928a02d4aa362224feab6d4e5c88629bde423f447db5d",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-10-10T22:16:09.820Z",
+  "actor": "su-6baa8b9a-8d72-4223-b6d2-bf9f687dcfcb",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "EI-25286409713168872",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "e58293ba43aa47150bf03fbf6c7dd7da185f0d059cbcee490f8dd69fd3904678",
+      "observedParkFingerprint": "e58293ba43aa47150bf03fbf6c7dd7da185f0d059cbcee490f8dd69fd3904678",
+      "reasonCode": "condition-satisfied",
+      "evidence": "Park release trigger is work-item:done:EI-25286491844937496 (condition: 'The active overlapping fix EI-25286491844937496 reaches a terminal state, then this duplicate report may be reconciled.'). Re-read 2026-10-10T22:15Z (su-6baa8, psql on harness_shared.work_items, workspace papercusp-workspace): EI-25286491844937496 status=done, taken_by none; EI-25286409713168872 status=open, taken_by null. The trigger target is terminal, so the release condition is met. The re-evaluation the condition describes is the next claimant's work and travels with the row. Settled under plan bug-queue-legitimacy-and-actionable-validation-2026-10-10 P-004 / D-009.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-EI-25286409713168872-4b650ae9f8124b3a189928a02d4aa362-reconcile.json"
+}

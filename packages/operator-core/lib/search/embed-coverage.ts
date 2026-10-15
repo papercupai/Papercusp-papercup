@@ -64,6 +64,22 @@ import {
   type BackfillTarget,
   type ResolvedMode,
 } from './embed-backfill';
+import { CHUNK_SURFACES, chunkCoverageKey, surfaceStoreTable } from './chunks/registry';
+
+/** Extend the existing measurement population without duplicating the embedding sweep. */
+export interface CoverageTarget extends BackfillTarget {
+  coverageKey?: string;
+  rowFilterSql?: string;
+}
+export function coverageTargets(targets: readonly BackfillTarget[] = TARGETS): CoverageTarget[] {
+  return [...targets, ...CHUNK_SURFACES.flatMap(surface => {
+    if (surface.store || !surface.searchSource) return [];
+    const target = targets.find(t => t.table === surfaceStoreTable(surface));
+    if (!target) return [];
+    if (!/^[a-z0-9_]+$/.test(surface.surface)) throw new Error('invalid chunk coverage collection');
+    return [{ ...target,coverageKey: chunkCoverageKey(surface),rowFilterSql: `surface = '${surface.surface}'` }];
+  })];
+}
 
 const TOAST_RING_BUFFER = 2000;
 
@@ -124,8 +140,8 @@ export const HISTORY_DEPTH = BACKLOG_GROWTH_SAMPLES + 1;
 export const SAMPLE_RETENTION_DAYS = 30;
 
 /** '<schema>.<table>.<embedCol>' — a surface is a (table, embedding column) pair. */
-export function surfaceKey(target: BackfillTarget): string {
-  return `${target.table}.${target.embedCol}`;
+export function surfaceKey(target: CoverageTarget): string {
+  return target.coverageKey ?? `${target.table}.${target.embedCol}`;
 }
 
 export interface SurfaceCoverage {
@@ -237,7 +253,7 @@ export interface CoverageQuery {
  * never bind a parameter you do not use.
  */
 export function buildCoverageQuery(
-  target: BackfillTarget,
+  target: CoverageTarget,
   spaceAware: boolean,
   mode: ResolvedMode,
   windowHours: number = RECENT_WINDOW_HOURS,
@@ -282,7 +298,7 @@ export function buildCoverageQuery(
   }
 
   return {
-    sql: `SELECT ${cols.join(', ')} FROM ${target.table}`,
+    sql: `SELECT ${cols.join(', ')} FROM ${target.table}${target.rowFilterSql ? ` WHERE ${target.rowFilterSql}` : ''}`,
     params,
     hasRecent: recent !== null,
   };
@@ -613,7 +629,7 @@ export async function measureCoverage(windowHours: number = RECENT_WINDOW_HOURS)
   const { sql } = getOrgPg();
   const out: SurfaceCoverage[] = [];
 
-  for (const target of TARGETS) {
+  for (const target of coverageTargets()) {
     try {
       const { present, spaceAware, recipeColPresent } = await probeSurface(sql, target);
       // A surface whose embedding column does not exist yet (migration not run against

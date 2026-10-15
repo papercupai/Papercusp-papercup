@@ -166,6 +166,7 @@ import {
   resolveConversationCore,
   settleConsultConversationCore,
   supersedeConversationCore,
+  withdrawConversationCore,
   promoteConversationCore,
   type AppendPostError,
   type ConversationDeps,
@@ -183,9 +184,16 @@ import {
   type ResolveResult,
   type SupersedeConversationInput,
   type SupersedeConversationResult,
+  type WithdrawConversationError,
+  type WithdrawConversationInput,
+  type WithdrawConversationResult,
 } from './conversations-core';
 import type { AgentIdentity } from './identity';
-import type { ConversationRow, ListConversationsOpts } from './conversations-store';
+import type {
+  ConversationRow,
+  ConversationStateById,
+  ListConversationsOpts,
+} from './conversations-store';
 import type { DeliveryMode } from '@papercusp/coordination/capabilities';
 import { trackDetached } from '../../detached-imports';
 import {
@@ -205,8 +213,10 @@ const storeOpts = {
   getWorkspaceId: () => conversationsScopeWorkspace(),
 };
 
+const conversationStore = new PgConversationStore(storeOpts);
+
 const deps: ConversationDeps = {
-  conversations: new PgConversationStore(storeOpts),
+  conversations: conversationStore,
   threads: new PgThreadStore(storeOpts),
   // The post/answer durable write runs through ONE bounded, atomic admin-pool txn
   // (pg-bounded-txn): a tx-bound PgThreadStore reuses the exact tested store SQL,
@@ -255,6 +265,14 @@ export type {
   SupersedeConversationInput,
   SupersedeConversationResult,
 } from './conversations-core';
+
+/** Read only the requested conversation lifecycle rows in the caller's workspace. */
+export function getConversationStatesByIds(
+  conversationIds: readonly string[],
+  workspaceId?: string,
+): Promise<ConversationStateById[]> {
+  return runWithWorkspaceIfConcrete(workspaceId, () => conversationStore.getStatesByIds(conversationIds));
+}
 
 async function armQuestionInterest(
   ownerId: string,
@@ -408,6 +426,7 @@ export async function supersedeConversation(
   | { error: 'not_owner' }
   | { error: 'already_superseded' }
   | { error: 'already_terminal' }
+  | { error: 'resolution_changed' }
   | { error: 'invalid_replacement' }
 > {
   const provenance = await resolveConversationLaneProvenance(identity);
@@ -447,6 +466,49 @@ export async function supersedeConversation(
           choice: SUPERSEDED_QUESTION_CHOICE,
           resolver: SUPERSEDED_QUESTION_RESOLVER,
           note: `superseded by conversation ${result.replacement.conversation.id}`,
+        })),
+      );
+    })().catch(() => {});
+  }
+  return result;
+}
+
+/**
+ * The asker retracts an open question with no answer and no replacement. Like
+ * supersede, the question's conversation:answered awaits and any ask-owner
+ * escalation twin are retired so nothing keeps waiting on a dead gate.
+ */
+export async function withdrawConversation(
+  identity: AgentIdentity,
+  input: WithdrawConversationInput,
+): Promise<WithdrawConversationResult | WithdrawConversationError> {
+  const result = await withConversationsIdentityScope(identity, undefined, () =>
+    withdrawConversationCore(deps, identity, input),
+  );
+  if (!('error' in result)) {
+    try {
+      await retireInterestEventAwaits({ kind: 'conversation-question', ref: result.conversation.id });
+    } catch {
+      /* lifecycle cleanup is fail-soft */
+    }
+    void (async () => {
+      const [{ selectEscalationsForConversation, WITHDRAWN_QUESTION_RESOLVER, WITHDRAWN_QUESTION_CHOICE }, { listEscalations, resolveEscalationsBatch }] =
+        await Promise.all([
+          import('../../attention/conversation-escalation-link.js'),
+          import('./escalations.js'),
+        ]);
+      const opens = await listEscalations({ status: 'open' });
+      const msgIds = selectEscalationsForConversation(
+        opens as unknown as { msg_id: string }[],
+        result.conversation.id,
+      );
+      if (msgIds.length === 0) return;
+      await resolveEscalationsBatch(
+        msgIds.map((msg_id) => ({
+          msg_id,
+          choice: WITHDRAWN_QUESTION_CHOICE,
+          resolver: WITHDRAWN_QUESTION_RESOLVER,
+          note: `withdrawn by the asker: ${input.reason.trim()}`,
         })),
       );
     })().catch(() => {});
@@ -521,6 +583,9 @@ export function getThreadPost(postId: number, identity?: AgentIdentity) {
 export interface ConsultLifecycleState {
   conversation_id: string;
   state: string;
+  /** Existing recoverable-request result JSON. Missing means unrecorded, not
+   * measured absence; state remains the independent conversation lifecycle. */
+  request_result?: Record<string, unknown> | null;
   latency_contract: string | null;
   responder_id: string | null;
   expires_at: string | null;
@@ -626,7 +691,8 @@ export function getConsultStates(
       const { sql } = getOrgPg();
       const rows = await sql<ConsultLifecycleBaseRow[]>`
         SELECT conversation_id, state, latency_contract, responder_id,
-               expires_at, closed_at, wakes_used
+               expires_at, closed_at, wakes_used,
+               routing #> '{request,result}' AS request_result
           FROM harness_shared.consult_state
          WHERE workspace_id = ${conversationsScopeWorkspace()}
            AND conversation_id = ANY(${conversationIds as string[]}::text[])
@@ -711,6 +777,7 @@ export function getConsultStates(
         out.set(r.conversation_id, {
           conversation_id: r.conversation_id,
           state: r.state,
+          request_result: r.request_result ?? null,
           latency_contract: r.latency_contract ?? null,
           responder_id: r.responder_id ?? null,
           expires_at: r.expires_at ?? null,

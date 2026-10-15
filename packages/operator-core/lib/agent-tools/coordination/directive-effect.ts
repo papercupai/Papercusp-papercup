@@ -253,9 +253,10 @@ export function resolveDirectiveEffect(
           evidence: `${spec.itemId} is still \`${status || 'unknown'}\` — not terminal.`,
         };
       }
-      // closed_ts is the precise stamp; updated_ts is the fallback for rows closed
-      // before closed_ts was maintained. Neither ⇒ terminal but undatable.
-      const closedMs = toMs(row.closed_ts) ?? toMs(row.updated_ts);
+      // Only a terminal transition can prove this effect. updated_ts also moves
+      // when an already-terminal scorecard's audit lease or payload changes;
+      // crediting that maintenance would falsely fulfil a later directive.
+      const closedMs = toMs(row.closed_ts);
       if (closedMs == null) {
         return {
           ...base,

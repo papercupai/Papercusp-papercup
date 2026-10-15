@@ -17,6 +17,9 @@ import {
   type PlanAdmissionGovernanceStoreDeps,
 } from '../agent-tools/plans/plan-admission-governance-store';
 import type { FederatedGovernanceEvent } from '../agent-tools/plans/governance-federation';
+import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../identity/ed25519';
+import { governanceAuthorityHash, governanceEventSigningBytes, type GovernanceSigningAuthority } from '../agent-tools/plans/governance-authentication';
+import { DEFAULT_PLAN_ADMISSION_POLICY } from '../agent-tools/plans/plan-admission-policy';
 import {
   exportLedger,
   memoryLedgerChainLinkStore,
@@ -29,23 +32,33 @@ const WS = 'ws-ledger-chain';
 const POT_HOME = 'pot-home';
 const POT_ID = 'pot-chain';
 const T0 = 1_790_000_000_000;
+const signer = generateEd25519KeypairDer();
+const authority: GovernanceSigningAuthority = { potId: POT_ID, policy: DEFAULT_PLAN_ADMISSION_POLICY,
+  members: [{ memberId: 'owner', publicKey: signer.pubkeyBase64, keyEpoch: 1,
+    roles: ['round-open', 'pause', 'vote'], originPeerIds: ['peer-a'] }] };
 
 function pauseEvent(i: number): FederatedGovernanceEvent {
-  return {
+  const unsigned: Omit<FederatedGovernanceEvent, 'signature'> = {
     eventId: `evt-${i}`,
     potId: POT_ID,
     roundId: 'round-1',
     originPeerId: 'peer-a',
     occurredAtMs: T0 + i,
-    body: { kind: 'pause', expiresAtMs: T0 + 1_000 + i },
-    signature: `sig-${i}`,
-  } as FederatedGovernanceEvent;
+    body: i === 0 ? { kind: 'round-open', round: { roundId: 'round-1', planRevisionHash: 'revision',
+      policyVersion: 1, eligibleMemberIds: ['owner'], createdAtMs: T0, authorityHash: governanceAuthorityHash(authority) } }
+      : { kind: 'pause', expiresAtMs: T0 + 1_000 + i },
+    authorization: { memberId: 'owner', keyEpoch: 1 },
+  };
+  return { ...unsigned, signature: signWithPrivateKeyDer(signer.privateKeyDer,
+    governanceEventSigningBytes(unsigned)).toString('base64') };
 }
 
 function harness() {
   const rows: HiveSettingRecord[] = [];
   const chain = memoryLedgerChainLinkStore();
   const deps: PlanAdmissionGovernanceStoreDeps = {
+    resolveAuthority: async () => authority,
+    nowMs: () => T0 + 1_000,
     resolvePotScope: async () => POT_ID,
     listSettings: async () => rows.map((row) => ({ ...row })),
     setSetting: async (input) => {

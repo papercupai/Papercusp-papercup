@@ -34,7 +34,7 @@ Environment=PAPERCUSP_PORTAL_OPERATOR_ENV_FILE=@OPERATOR_ENV_FILE@
 Environment=PAPERCUSP_INTEGRATION_ROOT=@INTEGRATION_ROOT@
 Environment=PORTAL_RUNTIME_ROOT=@RUNTIME_ROOT@
 Environment=PORTAL_HEALTH_PATH=/
-Environment=PORTAL_READINESS_TIMEOUT_MS=60000
+Environment=PORTAL_READINESS_TIMEOUT_MS=180000
 Environment=PORTAL_READINESS_INTERVAL_MS=500
 Environment=PORTAL_READINESS_REQUEST_TIMEOUT_MS=5000
 Environment=PATH=@NODE_DIR@:%h/.local/bin:%h/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin
@@ -55,7 +55,7 @@ ExecStart=@TSX@ @LAUNCHER@
 Restart=always
 RestartSec=3s
 WatchdogSec=15s
-TimeoutStartSec=120s
+TimeoutStartSec=240s
 TimeoutStopSec=15s
 KillSignal=SIGTERM
 # The standalone launcher forks the traced server; the named unit must own and

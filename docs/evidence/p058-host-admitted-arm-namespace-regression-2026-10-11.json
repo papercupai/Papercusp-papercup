@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "name": "P058 host-admitted ARM24 boot namespace regressions",
+  "command": [".papercusp/scratch/p058-direct-arm-closed-20261011/native-arm64-release10/bin/node", "--test", "--test-global-setup=test/monorepo-host-preflight.mjs", "--test-name-pattern=boot preflight|full boot graph|packaged import|Linux import probe", "test/verify-sidecar-bundle-spa-layout.test.js"],
+  "cwd": "papercusp-desktop",
+  "startedAt": "2026-10-11T00:45:23.406Z",
+  "finishedAt": "2026-10-11T00:46:34.954Z",
+  "exitCode": 0,
+  "summary": "The registered10 boot namespace tests pass under emulated ARM Node24.18.1 after the maintained host census explicitly admitted the same test file. No restricted-hold guard was bypassed. The census refusal diagnostic now preserves the originating loader error; its conventional32-test suite passes.",
+  "workItemId": "EI-25641627442787817",
+  "relatedWorkItemIds": ["EI-25639520292031822"],
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "candidateAccepted": false,
+  "evidencePlane": "host-admitted-direct-arm-conventional-regression",
+  "runtime": { "target": "Node24.18.1/arm64/UID1000", "hostAdmission": "Node25.9.0/x64" },
+  "durationMs": 68921.309405,
+  "counts": { "passed": 10, "failed": 0, "skipped": 0 },
+  "hostAdmission": {
+    "api": "runNodeTestRunnerPreflight",
+    "testFile": "papercusp-desktop/test/verify-sidecar-bundle-spa-layout.test.js",
+    "verdict": "admit",
+    "setEnv": { "PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT": "admitted-by-test-router" },
+    "note": "The target runner inherits only the marker returned by the maintained positive host census over its exact test file. Global setup remains enabled."
+  },
+  "sourceHashes": {
+    "papercusp-desktop/bin/verify-sidecar-bundle.sh": "8acb89ad5c88469a944472b909ffad8d2c5e4506212a0ce02a7943e1eab8cfd0",
+    "papercusp-desktop/test/verify-sidecar-bundle-spa-layout.test.js": "54017ddd9f05e9eca956cc3f503ac35a41c51e9e7cd86cddfbb118b62e57aaa9",
+    "scripts/lib/restricted-hold-preflight.mjs": "c812cd4cd4ea07f78483689ba828614ae97379251be29c1733e847d92241fafe",
+    "packages/operator-core/lib/__tests__/restricted-hold-preflight.test.ts": "a883a5cc7ec99cccc61858fe7525d25cd3521aba2ac4f6e80a2a6595afae5bb3"
+  },
+  "refusalDiagnosticVerification": { "testRunId": 21016689, "passed": 32, "failed": 0, "skipped": 0 },
+  "rawEvidence": {
+    "root": ".papercusp/scratch/p058-direct-arm-closed-20261011",
+    "sha256": {
+      "arm-regression2-stdout.log": "431bc3d98eb67eaf4f8510d7a97313ee7f34316f5a6f7186b2afa9d5ff1540d6",
+      "arm-regression2-stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "arm-regression2-result.json": "fb60ebdc61430d17f56ac5660aaa1952093802b45ea142019f37f6040f7f815c",
+      "host-test-admission.json": "d66539ee0ed19f5666896f3b4497c227615b73c053511695175fdb1d36bec1ca",
+      "arm-preflight-census-full.json": "0ceb9622e54b3935c9ba5af46cf6195f9bfe352b67277d97f2f9af0c50ee30b8"
+    }
+  },
+  "assertions": [
+    { "id": "target-regression", "passed": true, "evidence": "Actual ARM runner reports10pass0fail0skip, exit0; tests exercise the real verifier function." },
+    { "id": "positive-admission", "passed": true, "evidence": "Maintained host census returns explicit admit for the exact target test file before execution." },
+    { "id": "fail-closed-diagnostics", "passed": true, "evidence": "Registered preflight suite32pass includes missing-verdict refusal, originating esbuild error retention and bounded noisy stderr." }
+  ],
+  "rootCause": "The ARM test runner used its own process.execPath for the host TypeScript census, whose dependency tree supplies x64 esbuild. The old refusal reported only the final worker frames, hiding the originating platform mismatch.",
+  "limitations": ["This is10 selected boot-regression tests, not a repeat of the entire39-test host suite.", "Direct binfmt differs from container and physical ARM acceptance.", "The guarded full server import still misses its unchanged60s deadline; startup cause remains open.", "No installed-native, trusted signing/publication, transfer or shipment acceptance."]
+}

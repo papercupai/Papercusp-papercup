@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "J5 (aws-byoc-gcp-parity P-017): an agent task on a live GCP workspace host completes during a Papercusp-service outage, and the host reconnects after the outage lifts (run #5, 2026-10-02)",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "aws-byoc-gcp-parity-2026-10-01",
+  "planItem": "P-017",
+  "workItem": "WI-10005395",
+  "observer": "su-4d390264-fc3c-4875-a655-a71b0afcd6ef",
+  "outcome": "passed",
+  "command": [
+    "npx tsx packages/operator-core/lib/workspace-host/outage-drill-cli.ts --project pc-byoc-canary-1002 --zone us-central1-c --instance pc-host-19ff2a97befd83b51d2306fd-324ccce1-vm --instance-id 7865078711141451341 --network pc-host-19ff2a97befd83b51d2306fd-324ccce1-net --host-id host-19ff2a97befd83b51d2306fd --workspace-dir /srv/papercusp/workspaces/papercusp-workspace --agent /home/papercusp-workspace/.papercusp/j5-claude --out docs/evidence/j5-outage-drill-2026-10-02.json"
+  ],
+  "rawEvidence": {
+    "path": "docs/evidence/j5-outage-drill-2026-10-02.json",
+    "sha256": "b3f5e13aea609c496687170abce984464b6859759977bbdbe588e700f7ac7481",
+    "drillSourceCommit": "60dcb85a76e5d01c988aea6729cb384e76e65fb0"
+  },
+  "assertions": [
+    {
+      "id": "papercusp-connected-before",
+      "passed": true,
+      "evidence": "Before the block the host held 1 established connection classified papercusp (10.132.0.2:53840 -> 172.67.145.145:443, an address app.papercusp.com resolved to), and the hosted connector heartbeat was last seen 2026-10-02T10:07:51.209Z."
+    },
+    {
+      "id": "agent-running-when-blocked",
+      "passed": true,
+      "evidence": "The agent (Claude Code from the host's agent toolchain, run as papercusp-workspace) started at 10:08:14.078Z and was blocked on its gate pipe when the egress-deny rule pc-j5-outage-drill-j59bcd7cf874ef (VPC firewall, EGRESS deny to 104.21.73.140/32 and 172.67.145.145/32) landed at 10:08:22.140Z; its exit file did not yet exist."
+    },
+    {
+      "id": "papercusp-unreachable-during",
+      "passed": true,
+      "evidence": "During the block an HTTPS probe from the host to https://app.papercusp.com failed (papercuspReachable=false) while https://api.anthropic.com stayed reachable (modelProviderReachable=true); papercusp-workspace.service stayed active."
+    },
+    {
+      "id": "agent-handed-secret-only-during-outage",
+      "passed": true,
+      "evidence": "The drill wrote the task secret into the agent's gate pipe only after confirming the outage: gateReleasedAt 10:08:37.765Z > blockedAt 10:08:22.140Z. The secret never appeared in the launch command, so the agent could not have finished before the outage."
+    },
+    {
+      "id": "agent-output-intact",
+      "passed": true,
+      "evidence": "The agent exited 0 at 10:08:45.687Z, still inside the outage, and wrote sha256(secret) = 1e047e1118b371c8129277b79fa44d5cf9d8a000cc1d7d14b7677cf27ef09773, equal to the drill's independently computed expected digest."
+    },
+    {
+      "id": "block-lifted",
+      "passed": true,
+      "evidence": "The drill deleted the egress-deny rule at 10:08:58.249Z (ruleDeleted=true); a gcloud firewall-rules list on pc-byoc-canary-1002 filtered on pc-j5 returned nothing afterwards."
+    },
+    {
+      "id": "host-reconnects-after",
+      "passed": true,
+      "evidence": "After the lift the hosted connector heartbeat advanced to 10:09:21.210Z (later than liftedAt 10:08:58.249Z), the host again held 1 papercusp connection, and papercusp-workspace.service was active."
+    },
+    {
+      "id": "no-drill-errors",
+      "passed": true,
+      "evidence": "evidence.errors is empty and evaluateOutageDrill returned { passed: true, failures: [] }; the CLI exited 0."
+    }
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-02T10:08:10.549Z",
+  "finishedAt": "2026-10-02T10:09:26.737Z",
+  "rig": {
+    "host": "host-19ff2a97befd83b51d2306fd: GCP BYOC canary VM pc-host-19ff2a97befd83b51d2306fd-324ccce1-vm in project pc-byoc-canary-1002, zone us-central1-c, provisioned through the portal BYOC flow",
+    "controlPlane": "app.papercusp.com (hosted control plane); the host reaches it only through the hosted connector",
+    "callsInventory": "The host's only calls back to Papercusp are the hosted connector's outbound WebSocket to the app.papercusp.com origin. Before the block, every other established connection was IAP SSH (35.235.240.0/20), local Postgres (127.0.0.1:5532), the GCE metadata server (169.254.169.254) or a Google API address (74.125.132.95:443); none of them goes to a Papercusp address.",
+    "agent": "Claude Code from /usr/local/lib/papercusp-agent-toolchain, run through the wrapper /home/papercusp-workspace/.papercusp/j5-claude with this box's setup-token, per owner directive #1208 (the hosted host ships only omp with a local qwen 0.5B model, which cannot use tools)",
+    "outageMechanism": "VPC egress-deny firewall rule on the host's network covering every address the Papercusp origin resolved to, created and deleted with gcloud from the controller machine, with the delete in a finally block",
+    "priorRuns": "Runs #1-#3 never reached a valid block: #1 the agent ignored its task and exited before the block; #2 and #3 the launch SSH call did not return, because a trailing bare & backgrounded the whole && list. Run #4 got through the outage but the agent stalled 5 minutes after the gate release, because Claude Code re-opened the gate FIFO after reading it and blocked with no writer. It passed only after a manual open-for-write, so it is not cited here (kept at .papercusp/scratch/j5/run4-evidence-manual-unblock.json). The drill now serves that re-open (gateReleaseCommand in outage-drill.ts, real-FIFO test in outage-drill.test.ts, test run 20508346), and run #5 needed no intervention."
+  },
+  "summary": "Live J5 outage drill on a real GCP workspace host: 8 assertions passed, 0 failed. With Papercusp's addresses blocked at the VPC, an agent task that was already running received its input during the outage, finished with exit 0 and the correct output, and the hosted connector reconnected 23 seconds after the block was lifted."
+}

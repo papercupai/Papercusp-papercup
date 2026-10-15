@@ -837,6 +837,8 @@ function OutlineRow({
         aria-label={`Zoom into ${displayTitle(row)} (drag to move)`}
         {...listeners}
         {...attributes}
+        // Filtering disables drag, while clicking this bullet still zooms.
+        aria-disabled={false}
         tabIndex={-1}
         onClick={(e) => {
           e.stopPropagation();

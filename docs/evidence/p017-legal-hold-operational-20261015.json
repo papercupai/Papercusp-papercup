@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-017 physical snapshot legal-hold acceptance",
+  "framework": "operational",
+  "command": [
+    "node",
+    "--import",
+    "tsx",
+    "scripts/legal-hold-drill.mts",
+    "docs/evidence/p017-legal-hold-operational-20261015.json"
+  ],
+  "startedAt": "2026-10-15T01:01:32.724Z",
+  "finishedAt": "2026-10-15T01:01:53.494Z",
+  "exitCode": 0,
+  "summary": "Physical snapshot restore preserves held chat and documents until authorized release.",
+  "assertions": [
+    {
+      "id": "export-captures-held-chat-and-documents",
+      "passed": true,
+      "evidence": "Both authorized exports contain held rows and content digests."
+    },
+    {
+      "id": "deletion-preserves-active-holds",
+      "passed": true,
+      "evidence": "Deletion receipt reports 2 active hold conflicts."
+    },
+    {
+      "id": "restore-recovers-post-backup-held-content",
+      "passed": true,
+      "evidence": "Held content matches both pre-restore digests; repaired row counts: 2,1."
+    },
+    {
+      "id": "restore-is-idempotent",
+      "passed": true,
+      "evidence": "The second reconciliation matches both digests without copying rows again."
+    },
+    {
+      "id": "restored-chat_messages-delete-refused",
+      "passed": true,
+      "evidence": "Database trigger must refuse deletion with chat_message_under_legal_hold."
+    },
+    {
+      "id": "restored-documents-delete-refused",
+      "passed": true,
+      "evidence": "Database trigger must refuse deletion with document_under_legal_hold."
+    },
+    {
+      "id": "authorized-release-permits-deletion",
+      "passed": true,
+      "evidence": "Released chat and document records are deleted."
+    },
+    {
+      "id": "journey-has-audit-receipts",
+      "passed": true,
+      "evidence": "Recorded actions: organization.data.deletion, organization.data.restore, organization.legal_hold.place, organization.legal_hold.release."
+    },
+    {
+      "id": "executed-source-bytes-stable",
+      "passed": true,
+      "evidence": "SHA-256 before/after execution agrees for 8 explicitly enumerated source files."
+    }
+  ],
+  "executedSources": [
+    {
+      "path": "scripts/legal-hold-drill.mts",
+      "sha256": "fcf0546efb4d4be72473c0dcfe09de3a69351b65a089aef01b8e0bfe0a8f4b6c"
+    },
+    {
+      "path": "packages/operator-core/lib/data-governance/legal-holds-operational.ts",
+      "sha256": "2f29ed66ca481c678ad7a6c108eaafab2a4a92de230721d0aa206e3078c4a2a0"
+    },
+    {
+      "path": "packages/operator-core/lib/data-governance/legal-holds.ts",
+      "sha256": "50a2ece718e9e12bb7c16b3d966476cfba70ac7ff1a1f0da750df20424cf2837"
+    },
+    {
+      "path": "packages/operator-core/lib/data-governance/organization-data-receipts.ts",
+      "sha256": "daaaabe20f222b33b7e7e1b535c1093615477a587dff707750a354e73e07db72"
+    },
+    {
+      "path": "packages/operator-core/lib/data-sources/chat-retrieval-units.ts",
+      "sha256": "6fe1ba93f1f30d93af42dfd68ac049ae8ad0fe50c1b9e47a545231421a2d573a"
+    },
+    {
+      "path": "packages/operator-core/lib/data-sources/documents-corpus.ts",
+      "sha256": "afc8d6f5154c871b111b73c02bcf03a1a548253e8c096d00dc125e3ec5840766"
+    },
+    {
+      "path": "packages/operator-core/test/_org-test-db.ts",
+      "sha256": "2bee751150b2f83604a596550fd618090f1033d1a136af17803da182047cbd5e"
+    },
+    {
+      "path": "packages/operator-core/test/_org-snapshot.ts",
+      "sha256": "8d94eb29b98856e9a585edadb76d2cf9ce6acbe7c0ab7d690a5ad4c888656dc6"
+    }
+  ],
+  "boundary": "Isolated physical PostgreSQL snapshot; production governance APIs. No host/cloud backup or deployed-main claim."
+}

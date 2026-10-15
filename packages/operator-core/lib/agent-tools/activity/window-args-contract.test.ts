@@ -51,7 +51,14 @@ function argKeys(tool: ToolLike): string[] {
   for (let hop = 0; hop < 8 && node; hop += 1) {
     const shape = (node as { shape?: Record<string, unknown> }).shape;
     if (shape && typeof shape === 'object') return Object.keys(shape).sort();
-    const def = (node as { _def?: { schema?: unknown; innerType?: unknown } })._def;
+    const def = (node as { _def?: { schema?: unknown; innerType?: unknown; options?: unknown[] } })._def;
+    if (Array.isArray(def?.options)) {
+      const unionKeys = def.options.flatMap((option) => {
+        const shape = (option as { shape?: Record<string, unknown> }).shape;
+        return shape ? Object.keys(shape) : [];
+      });
+      if (unionKeys.length > 0) return [...new Set(unionKeys)].sort();
+    }
     node = def?.schema ?? def?.innerType;
   }
   throw new Error(`could not read an object shape from ${tool.name}'s args schema`);
@@ -85,6 +92,16 @@ describe('activity read pair — the divergence these redirects exist for', () =
 
 describe('activity:recent guidance.argRedirects (EI-22047814129755519)', () => {
   const redirects = recentTool.guidance?.argRedirects ?? {};
+
+  it('describes since_id as an unsigned decimal row-ID cursor rather than a timestamp', () => {
+    expect(recentTool.description).toContain('unsigned decimal activity-row ID cursor');
+    expect(recentTool.description).toContain('not a timestamp');
+    expect(recentTool.guidance?.when).toContain('unsigned decimal activity-row ID');
+    expect(recentTool.guidance?.when).toContain('activity:tool-log');
+    expect(recentTool.args.shape.since_id.description).toContain('Unsigned decimal activity-row ID cursor');
+    expect(recentTool.args.safeParse({ since_id: '2026-10-10T05:11:05.418Z' }).success).toBe(false);
+    expect(recentTool.args.safeParse({ since_id: '1791612265418' }).success).toBe(true);
+  });
 
   it('relocates `since` to the declared since_id and names the wall-clock alternative', () => {
     const split = splitLocalSchemaTarget(redirects.since as string, recentKeys);

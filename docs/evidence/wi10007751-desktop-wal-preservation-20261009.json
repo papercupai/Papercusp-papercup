@@ -1,0 +1,63 @@
+{
+  "workItem": "WI-10007751",
+  "backupTask": "0mv1gb5m818yqfmq1mc",
+  "at": "2026-10-09T21:02:17.126Z",
+  "source": "$HOME/.local/share/com.papercusp.gui/localstorage/http_127.0.0.1_3170.localstorage",
+  "backup": "$HOME/.papercusp/desktop-wal-backups/wi10007751-20261009-desktop3170.sqlite",
+  "method": "node:sqlite native backup from a read-only connection in a bounded read transaction; rollback/close in finally",
+  "backupBytes": 2236416,
+  "pages": 546,
+  "rows": 14,
+  "sourceRowSha256": "334ccc5753baeb01c4b7f23a0c879611921c7d41a0e759742d169b6df89cc2d2",
+  "backupRowSha256": "334ccc5753baeb01c4b7f23a0c879611921c7d41a0e759742d169b6df89cc2d2",
+  "integrityCheck": "ok",
+  "mode": "600",
+  "backupFileSha256": "7300a472dd6d9b8ffa3c5f28b63bbb0f009d8696524b3c5fa49684e97785c907",
+  "checkpoint": {
+    "task": "0mv1fqamn1co1x16p2j",
+    "at": "2026-10-09T20:45:52.651Z",
+    "method": "existing checkpointOne on the exact3170store",
+    "ok": true,
+    "busy": true,
+    "framesInWal": 3591628,
+    "framesCheckpointed": 3522803,
+    "walBytesBefore": 14797507392,
+    "walBytesAfter": 14797507392,
+    "bytesReclaimed": 0
+  },
+  "desktopIdentity": {
+    "task": "0mv1g00tav3dnlb8mr9",
+    "at": "2026-10-09T20:53:23.776Z",
+    "pid": 3234467,
+    "startTicks": "28117521",
+    "argv": ["/mnt/data/cargo-target/.papercusp-target-slots/dev2/debug/papercusp-desktop"],
+    "parentPid": 3233601,
+    "readOnlyWindowTask": "0mv1g5e7ig7c71u1yvp",
+    "origin": "http://127.0.0.1:3170",
+    "path": "/adv",
+    "ready": "complete",
+    "visibility": "hidden"
+  },
+  "boundary": {
+    "decision": "durable-disk-and-checkpoint-recovery-2026-10-09#D-002",
+    "text": "Keep legacy localStorage/user settings untouched; no desktop restart or SQLite deletion is included.",
+    "currentSourceRisk": "papercusp-desktop/src-tauri/src/main.rs shutdown_children_once invokes shutdown_native_terminal and kill_sidecar on application exit",
+    "limits": "Loaded desktop binary's exact teardown implementation was not independently fingerprinted; current source establishes a concrete interruption risk. The backup preserves committed SQLite rows at its snapshot, not unsaved UI drafts or the entire desktop profile.",
+    "restartPerformed": false,
+    "sourceProfileDeletedOrReplaced": false
+  },
+  "r11Candidate": {
+    "at": "2026-10-09T20:53:23.776Z",
+    "path": "/mnt/backup",
+    "device": 2049,
+    "totalBytes": 1889085628416,
+    "availableBytes": 433974673408,
+    "defaultPolicyReserveBytes": 37781712568.32,
+    "threeCaptureMaxTotalBytes": 25769803776,
+    "qualification": "read-only candidate sample; existing reservations and snapshot budget not verified here",
+    "owner": "WI-10007722 / su-762b9af2-3f26-4bd1-9789-779e20f1662c",
+    "gate": "harness:papercusp:wi-10007722-r11-capture-headroom",
+    "candidateSentAndAcknowledged": true,
+    "capturesStartedByThisSession": false
+  }
+}

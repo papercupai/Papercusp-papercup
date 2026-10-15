@@ -18,6 +18,7 @@ import { applyPlanItemBlocks, getAllBlockedPlanItems, planItemRef } from './issu
 import { evaluatePlanAcceptanceGate } from './plan-acceptance-gate';
 import { listRubrics, type Rubric } from './rubrics';
 import { saveTextArtifact } from './text-artifacts';
+import { renderPlanAuditReport } from './plan-audit-report';
 import { SETTLED_WORK_ITEM_STATES } from './work-items';
 import { activeWorkspaceId } from './workspace-registry';
 import {
@@ -206,6 +207,9 @@ export interface UnshippedPlanAuditRow {
   title: string | null;
   harness: string;
   status: string;
+  archived: boolean;
+  template: string | null;
+  templateSlug: string | null;
   provenance: PlanProvenance;
   category: UnshippedPlanAuditCategory;
   reason: string;
@@ -237,6 +241,8 @@ export interface UnshippedPlansAuditManifest {
     snapshotFinishedAt: string;
     liveOwnershipMeasuredAt: string;
     nonterminalListedAtSnapshot: number;
+    listedAtSnapshot: number;
+    census: Record<'archived' | 'superseded' | 'rubricTemplate' | 'scheduledInstance', { listed: number; included: number; excluded: number; exclusionReason: string | null }>;
     materialized: number;
     catalogFailures: number;
     classifiedRows: number;
@@ -379,6 +385,9 @@ export function classifyUnshippedPlan(input: ClassifierInput): UnshippedPlanAudi
     title: input.plan.title,
     harness: input.plan.harnessSlug,
     status: input.registeredHarness ? (input.plan.status ?? 'draft') : 'unknown',
+    archived: input.plan.archived,
+    template: input.plan.template ?? null,
+    templateSlug: input.plan.templateSlug ?? null,
     provenance: planProvenanceFromBlenderFlag(input.plan.isBlenderOrigin),
     category,
     reason: copy.reason,
@@ -645,6 +654,7 @@ async function readGateVerdicts(
 }
 
 export interface BuildManifestInput {
+  includeHistorical?: boolean;
   workspaceId: string;
   snapshotStartedAt: string;
   snapshotFinishedAt: string;
@@ -661,7 +671,7 @@ export interface BuildManifestInput {
 
 export function buildUnshippedPlansAuditManifest(input: BuildManifestInput): UnshippedPlansAuditManifest {
   const nonterminal = input.allPlans.filter(
-    (plan) => !plan.archived && !plan.templateSlug && !PLAN_TERMINAL_STATUSES.has(plan.status ?? 'draft'),
+    (plan) => input.includeHistorical || (!plan.archived && !plan.templateSlug && !PLAN_TERMINAL_STATUSES.has(plan.status ?? 'draft')),
   );
   const rows = nonterminal.map((plan) => {
     const evidence = blockerEvidenceForPlan(plan, input.blockedItems);
@@ -702,6 +712,20 @@ export function buildUnshippedPlansAuditManifest(input: BuildManifestInput): Uns
     currentRegistryAtPublish[status] = (currentRegistryAtPublish[status] ?? 0) + 1;
   }
   const blender = rows.filter((row) => row.provenance === 'blender').length;
+  // Classes can overlap. Each count compares the input census with the exact
+  // selected population; a legacy nonterminal report discloses its exclusions.
+  const predicates = {
+    archived: (plan: PlanIndexRow) => plan.archived,
+    superseded: (plan: PlanIndexRow) => plan.status === 'superseded',
+    rubricTemplate: (plan: PlanIndexRow) => plan.template === 'rubric',
+    scheduledInstance: (plan: PlanIndexRow) => Boolean(plan.templateSlug),
+  };
+  const census = Object.fromEntries(Object.entries(predicates).map(([key, predicate]) => {
+    const listed = input.allPlans.filter(predicate).length;
+    const included = nonterminal.filter(predicate).length;
+    const excluded = listed - included;
+    return [key, { listed, included, excluded, exclusionReason: excluded ? 'Legacy nonterminal scope excludes archived, terminal and scheduled-instance plans.' : null }];
+  })) as UnshippedPlansAuditManifest['scope']['census'];
 
   return {
     schemaVersion: 'unshipped-plans-audit-manifest-v2',
@@ -711,7 +735,9 @@ export function buildUnshippedPlansAuditManifest(input: BuildManifestInput): Uns
       snapshotStartedAt: input.snapshotStartedAt,
       snapshotFinishedAt: input.snapshotFinishedAt,
       liveOwnershipMeasuredAt: input.liveOwnershipMeasuredAt,
-      nonterminalListedAtSnapshot: rows.length,
+      nonterminalListedAtSnapshot: nonterminal.filter(plan => !plan.archived && !plan.templateSlug && !PLAN_TERMINAL_STATUSES.has(plan.status ?? 'draft')).length,
+      listedAtSnapshot: input.allPlans.length,
+      census,
       materialized: rows.filter((row) => row.category !== 'catalog-residue').length,
       catalogFailures: rows.filter((row) => row.category === 'catalog-residue').length,
       classifiedRows: rows.length,
@@ -740,35 +766,30 @@ export function buildUnshippedPlansAuditManifest(input: BuildManifestInput): Uns
   };
 }
 
-function htmlEscape(value: unknown): string {
-  return String(value ?? '').replace(/[&<>"']/g, (char) => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#39;',
-  })[char] ?? char);
-}
-
 export function renderUnshippedPlansAuditHtml(manifest: UnshippedPlansAuditManifest): string {
-  const embedded = JSON.stringify(manifest).replace(/</g, '\\u003c');
-  const categories = Object.entries(manifest.summaryByCategory)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([category, summary]) => `<tr><td><code>${htmlEscape(category)}</code></td><td class="num">${summary.count}</td><td>${htmlEscape(CATEGORY_COPY[category as UnshippedPlanAuditCategory]?.recommendation ?? '')}</td></tr>`)
-    .join('');
-  return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Unshipped plans audit — ${htmlEscape(manifest.generatedAt)}</title>
-<style>:root{color-scheme:light dark;--bg:#f5f7fb;--panel:#fff;--ink:#172033;--muted:#5f6b7e;--line:#dce2ec;--accent:#335cff;--soft:#e9eeff;--good:#16794b;--warn:#a15c00;--bad:#b42318;--code:#eef1f6;--blender:#7c3aed;--outside:#2563eb}@media(prefers-color-scheme:dark){:root{--bg:#0d111a;--panel:#151b26;--ink:#eef2f8;--muted:#a8b2c3;--line:#2b3545;--accent:#8ca4ff;--soft:#202c55;--good:#66d19e;--warn:#f2b35f;--bad:#ff8f86;--code:#202837;--blender:#c084fc;--outside:#60a5fa}}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 ui-sans-serif,system-ui,sans-serif}main{width:min(1280px,calc(100% - 28px));margin:28px auto 64px}header,section{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:26px;margin-top:18px}header{margin-top:0}h1{margin:0;font-size:clamp(2rem,5vw,3.1rem);line-height:1.08}h2{margin:0 0 14px}.muted{color:var(--muted)}.callout{padding:15px 17px;border-left:5px solid var(--accent);background:var(--soft);border-radius:8px;margin-top:18px}.metrics{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:10px;margin-top:18px}.metric{border:1px solid var(--line);border-radius:10px;padding:13px}.metric strong{display:block;font-size:1.55rem}.metric span{font-size:.8rem;color:var(--muted)}code{background:var(--code);padding:.1rem .3rem;border-radius:4px}.table{overflow:auto;border:1px solid var(--line);border-radius:9px}table{border-collapse:collapse;width:100%;min-width:860px}th,td{padding:9px 11px;border-bottom:1px solid var(--line);vertical-align:top;text-align:left}th{background:var(--code);position:sticky;top:0}.num{text-align:right}.controls{display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr;gap:10px;margin-bottom:12px}input,select{width:100%;padding:9px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--ink)}.pill{display:inline-block;padding:2px 7px;border:1px solid var(--line);border-radius:999px;font-size:.75rem}.pill.blender{color:var(--blender);border-color:var(--blender)}.pill.outside{color:var(--outside);border-color:var(--outside)}.small{font-size:.82rem}.good{color:var(--good)}@media(max-width:1100px){.metrics{grid-template-columns:repeat(4,1fr)}}@media(max-width:900px){.metrics{grid-template-columns:repeat(2,1fr)}.controls{grid-template-columns:1fr}header,section{padding:18px}}</style></head>
-<body><main><header><p class="muted">Papercusp portfolio audit · manual read-only routine · classifier revision ${UNSHIPPED_PLANS_AUDIT_CLASSIFIER_REVISION}</p><h1>Unshipped plans, audited live</h1><p>Snapshot <code>${htmlEscape(manifest.scope.snapshotFinishedAt)}</code>; live ownership measured <code>${htmlEscape(manifest.scope.liveOwnershipMeasuredAt)}</code>. No plan, item, blocker, claim, assignment, fleet, or agent state was changed.</p><div class="callout"><strong>Bottom line:</strong> preserve ${manifest.bands.protected} ongoing plans; reconcile ${manifest.bands.closeoutOrReconcile}; supersede/review ${manifest.bands.supersedeOrRetire}; revalidate ${manifest.bands.blockerClaims} blocker claims; resolve ${manifest.bands.unblockedPartial} unblocked partial plans and ${manifest.bands.catalogResidue} catalog rows.</div><div class="metrics"><div class="metric"><strong>${manifest.rows.length}</strong><span>nonterminal rows</span></div><div class="metric"><strong class="good">${manifest.bands.protected}</strong><span>ongoing protected</span></div><div class="metric"><strong>${manifest.bands.closeoutOrReconcile}</strong><span>closeout/reconcile</span></div><div class="metric"><strong>${manifest.bands.supersedeOrRetire}</strong><span>supersede/retire</span></div><div class="metric"><strong>${manifest.bands.blockerClaims}</strong><span>blocker claims</span></div><div class="metric"><strong>${manifest.bands.unblockedPartial}</strong><span>open, no blocker</span></div><div class="metric"><strong>${manifest.provenance.blender}</strong><span>Blender</span></div><div class="metric"><strong>${manifest.provenance.outsideBlender}</strong><span>Outside Blender</span></div></div></header>
-<section><h2>Disposition categories</h2><div class="table"><table><thead><tr><th>Category</th><th class="num">Count</th><th>Recommended treatment</th></tr></thead><tbody>${categories}</tbody></table></div></section>
-<section><h2>Per-plan manifest</h2><div class="controls"><input id="q" placeholder="Search slug, title, Now, reason"><select id="provenance"><option value="">All plan sources</option><option value="blender">Blender</option><option value="outside-blender">Outside Blender</option></select><select id="cat"><option value="">All categories</option></select><select id="status"><option value="">All statuses</option></select><select id="harness"><option value="">All harnesses</option></select></div><p id="shown" class="muted"></p><div class="table"><table><thead><tr><th>Plan</th><th>Source</th><th>Status</th><th>Category</th><th>Counts</th><th>Evidence / recommendation</th></tr></thead><tbody id="rows"></tbody></table></div></section></main>
-<script type="application/json" id="manifest">${embedded}</script><script>const data=JSON.parse(document.querySelector('#manifest').textContent);const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const all=data.rows,provenance=document.querySelector('#provenance'),cat=document.querySelector('#cat'),status=document.querySelector('#status'),harness=document.querySelector('#harness');for(const [el,vals] of [[cat,all.map(r=>r.category)],[status,all.map(r=>r.status)],[harness,all.map(r=>r.harness)]]){for(const v of [...new Set(vals)].sort())el.insertAdjacentHTML('beforeend','<option>'+esc(v)+'</option>')}const render=()=>{const q=document.querySelector('#q').value.toLowerCase(),p=provenance.value,c=cat.value,s=status.value,h=harness.value;const xs=all.filter(r=>(!p||r.provenance===p)&&(!c||r.category===c)&&(!s||r.status===s)&&(!h||r.harness===h)&&(!q||[r.slug,r.title,r.nowState,r.nowNext,r.reason].join(' ').toLowerCase().includes(q)));document.querySelector('#shown').textContent=xs.length+' of '+all.length+' rows';document.querySelector('#rows').innerHTML=xs.map(r=>'<tr><td><code>'+esc(r.slug)+'</code><div class="small muted">'+esc(r.harness)+' · '+esc(r.title)+'</div></td><td><span class="pill '+(r.provenance==='blender'?'blender':'outside')+'">'+(r.provenance==='blender'?'Blender':'Outside Blender')+'</span></td><td><span class="pill">'+esc(r.status)+'</span></td><td><code>'+esc(r.category)+'</code></td><td class="small">plan '+esc(r.terminalPlanItems)+'/'+esc(r.itemTotal)+' terminal<br>open work '+esc(r.openWorkItems)+'</td><td><strong>'+esc(r.reason)+'</strong><br>'+esc(r.recommendation)+(r.owners?.length?'<div class="small good">Protected: '+esc(r.owners.map(o=>o.ownerId).join(', '))+'</div>':'')+'</td></tr>').join('')};for(const event of ['input','change'])for(const el of document.querySelectorAll('#q,#provenance,#cat,#status,#harness'))el.addEventListener(event,render);render();</script></body></html>`;
+  return renderPlanAuditReport({ ...manifest, rows: manifest.rows.map((row) => ({ ...row })) });
 }
 
 export interface RunUnshippedPlansAuditOptions {
   workspaceId?: string;
   artifactHarness?: string;
+  /** Explicit click-time population; absent means the current nonterminal portfolio. */
+  planSlugs?: string[];
+  includeHistorical?: boolean;
+  /** Unique run namespace. A scoped run never overwrites the system latest report. */
+  artifactPrefix?: string;
+}
+
+export function selectAuditPlans(plans: PlanIndexRow[], requested?: string[]): PlanIndexRow[] {
+  if (requested === undefined) return plans;
+  if (requested.length === 0 || requested.length > 10000 || requested.some((slug) => typeof slug !== 'string' || !slug.trim())) {
+    throw new Error('Audit selection requires 1–10000 nonempty plan slugs');
+  }
+  const wanted = new Set(requested.map((slug) => slug.trim()));
+  const selected = plans.filter((plan) => wanted.has(plan.planSlug));
+  const missing = [...wanted].filter((slug) => !selected.some((plan) => plan.planSlug === slug));
+  if (missing.length) throw new Error('Audit selection contains unavailable plans: ' + missing.join(', '));
+  return selected;
 }
 
 export interface RunUnshippedPlansAuditResult {
@@ -783,12 +804,12 @@ export async function runUnshippedPlansAudit(
   const artifactHarness = opts.artifactHarness ?? 'papercusp';
   const snapshotStartedAt = new Date().toISOString();
 
-  const [allPlans, registeredHarnesses, liveProtection, workItemsByPlan, blockedItems, auditsByPlan, rubrics] =
+  const [listedPlans, registeredHarnesses, liveProtection, workItemsByPlan, blockedItems, auditsByPlan, rubrics] =
     await Promise.all([
       listPlanIndexRowsForWorkspace({
         workspaceId,
-        includeArchived: false,
-        includeInstances: false,
+        includeArchived: opts.includeHistorical ?? opts.planSlugs !== undefined,
+        includeInstances: opts.includeHistorical ?? opts.planSlugs !== undefined,
         includeItems: true,
         heavyFields: true,
         order: 'slug',
@@ -800,6 +821,7 @@ export async function runUnshippedPlansAudit(
       readLatestAudits(workspaceId),
       listRubrics({ kind: 'acceptance', limit: 500 }),
     ]);
+  const allPlans = selectAuditPlans(listedPlans, opts.planSlugs);
   if (allPlans.length === 0) throw new Error(`unshipped plans audit refused: workspace '${workspaceId}' returned zero plans`);
 
   const rubricsByPlan = acceptanceRubricsByPlan(rubrics);
@@ -807,6 +829,7 @@ export async function runUnshippedPlansAudit(
   const snapshotFinishedAt = new Date().toISOString();
   const manifest = buildUnshippedPlansAuditManifest({
     workspaceId,
+    includeHistorical: opts.includeHistorical ?? opts.planSlugs !== undefined,
     snapshotStartedAt,
     snapshotFinishedAt,
     liveOwnershipMeasuredAt: liveProtection.measuredAt,
@@ -822,14 +845,18 @@ export async function runUnshippedPlansAudit(
 
   const json = `${JSON.stringify(manifest, null, 2)}\n`;
   const html = renderUnshippedPlansAuditHtml(manifest);
-  await saveTextArtifact(artifactHarness, UNSHIPPED_PLANS_AUDIT_JSON_ARTIFACT, json);
-  await saveTextArtifact(artifactHarness, UNSHIPPED_PLANS_AUDIT_HTML_ARTIFACT, html);
+  const prefix = opts.artifactPrefix ?? (opts.planSlugs ? 'reports/plan-audits/scoped-' + crypto.randomUUID() : null);
+  if (prefix && !/^reports\/plan-audits\/[a-zA-Z0-9_-]+$/.test(prefix)) throw new Error('Invalid audit artifact namespace');
+  const jsonPath = prefix ? prefix + '/audit.json' : UNSHIPPED_PLANS_AUDIT_JSON_ARTIFACT;
+  const htmlPath = prefix ? prefix + '/report.html' : UNSHIPPED_PLANS_AUDIT_HTML_ARTIFACT;
+  await saveTextArtifact(artifactHarness, jsonPath, json);
+  await saveTextArtifact(artifactHarness, htmlPath, html);
 
   return {
     manifest,
     artifacts: {
-      json: UNSHIPPED_PLANS_AUDIT_JSON_ARTIFACT,
-      html: UNSHIPPED_PLANS_AUDIT_HTML_ARTIFACT,
+      json: jsonPath,
+      html: htmlPath,
       harness: artifactHarness,
     },
   };

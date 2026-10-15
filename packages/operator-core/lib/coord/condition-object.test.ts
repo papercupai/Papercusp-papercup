@@ -16,6 +16,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
+  findConditionObjects,
   resolveConditionObject,
   claimStateOf,
   claimHoldBlocked,
@@ -24,6 +25,8 @@ import {
   CONDITION_LINK_REL,
   type ConditionWorkItemRow,
 } from './condition-object';
+import { CHECKPOINT_RUN_LOCK_STALE_MS } from '../release-checkpoint-launch';
+import type { Sql } from 'postgres';
 
 const NOW = Date.parse('2026-08-03T01:00:00.000Z');
 const KEY = 'green-stall:papercusp';
@@ -103,6 +106,26 @@ describe('resolveConditionObject', () => {
     );
     expect(got.claimState).toBe('held');
     expect(got.expiresAt).toBe(new Date(NOW + 28 * 60_000).toISOString());
+  });
+
+  it('renews an expired legacy stored lease when newer item progress exists', () => {
+    const takenAt = new Date(NOW - 90 * 60_000).toISOString();
+    const lastProgressAt = new Date(NOW - 2 * 60_000).toISOString();
+    const staleStoredExpiry = new Date(NOW - 25 * 60_000).toISOString();
+    const got = resolveConditionObject(
+      KEY,
+      [row({ takenBy: 'su-abc', takenAt, lastProgressAt, expiresAt: staleStoredExpiry })],
+      NOW,
+    );
+
+    expect(got.claimState).toBe('held');
+    expect(got.expiresAt).toBe(new Date(NOW + 28 * 60_000).toISOString());
+    expect(
+      effectiveConditionLeaseExpiresAt(
+        row({ takenBy: 'su-abc', takenAt, lastProgressAt, expiresAt: new Date(NOW + 60 * 60_000).toISOString() }),
+        NOW,
+      ),
+    ).toBe(new Date(NOW + 60 * 60_000).toISOString());
   });
 
   it('does not invent a lease for an unclaimed condition row', () => {
@@ -267,6 +290,207 @@ describe('claimStateOf / leaseExpired', () => {
 
   it('an unclaimed row has no lease to expire', () => {
     expect(leaseExpired(row({ takenBy: null, expiresAt: '2000-01-01T00:00:00Z' }), NOW)).toBe(false);
+  });
+});
+
+describe('pending checkpoint outcome awaits preserve condition leases', () => {
+  it('extends an expired progress lease only to the earlier await deadline or 190-minute cap', () => {
+    const takenAt = new Date(NOW - 31 * 60_000).toISOString();
+    const awaitCreatedAt = new Date(NOW - 10 * 60_000).toISOString();
+    const awaitExpiresAt = new Date(NOW + 300 * 60_000).toISOString();
+    const withAwait = row({
+      takenBy: 'su-abc',
+      takenAt,
+      lastProgressAt: takenAt,
+      checkpointAwaitCreatedAt: awaitCreatedAt,
+      checkpointAwaitExpiresAt: awaitExpiresAt,
+    });
+
+    expect(effectiveConditionLeaseExpiresAt(withAwait, NOW)).toBe(
+      new Date(Date.parse(awaitCreatedAt) + CHECKPOINT_RUN_LOCK_STALE_MS).toISOString(),
+    );
+    expect(leaseExpired(withAwait, NOW)).toBe(false);
+    expect(
+      effectiveConditionLeaseExpiresAt(
+        { ...withAwait, checkpointAwaitExpiresAt: new Date(NOW + 20 * 60_000).toISOString() },
+        NOW,
+      ),
+    ).toBe(new Date(NOW + 20 * 60_000).toISOString());
+  });
+
+  it('does not extend an unclaimed row or a timed-out/over-cap await', () => {
+    const stale = row({
+      takenBy: 'su-abc',
+      takenAt: new Date(NOW - 31 * 60_000).toISOString(),
+      lastProgressAt: new Date(NOW - 31 * 60_000).toISOString(),
+    });
+    const baseExpiry = new Date(NOW - 1 * 60_000).toISOString();
+    expect(effectiveConditionLeaseExpiresAt(stale, NOW)).toBe(baseExpiry);
+    expect(
+      effectiveConditionLeaseExpiresAt(
+        {
+          ...stale,
+          checkpointAwaitCreatedAt: new Date(NOW - 20 * 60_000).toISOString(),
+          checkpointAwaitExpiresAt: new Date(NOW - 1 * 60_000).toISOString(),
+        },
+        NOW,
+      ),
+    ).toBe(baseExpiry);
+    expect(
+      effectiveConditionLeaseExpiresAt(
+        {
+          ...stale,
+          checkpointAwaitCreatedAt: new Date(NOW - CHECKPOINT_RUN_LOCK_STALE_MS - 1).toISOString(),
+        },
+        NOW,
+      ),
+    ).toBe(baseExpiry);
+    expect(
+      effectiveConditionLeaseExpiresAt(
+        {
+          ...stale,
+          takenBy: null,
+          checkpointAwaitCreatedAt: new Date(NOW - 1_000).toISOString(),
+        },
+        NOW,
+      ),
+    ).toBeNull();
+  });
+
+  it('wires condition reads to a pending same-holder await with an exact runId', async () => {
+    let queryText = '';
+    let queryValues: unknown[] = [];
+    const awaitCreatedAt = new Date(NOW - 10 * 60_000).toISOString();
+    const fakeSql = ((
+      strings: TemplateStringsArray,
+      ...values: unknown[]
+    ) => {
+      queryText = strings.join(' ');
+      queryValues = values;
+      return Promise.resolve([
+        {
+          condition_key: KEY,
+          work_item: 'EI-1',
+          title: 'gate is red',
+          status: 'open',
+          taken_by: 'su-abc',
+          taken_at: new Date(NOW - 31 * 60_000).toISOString(),
+          last_progress_at: new Date(NOW - 31 * 60_000).toISOString(),
+          expires_at: null,
+          payload: null,
+          checkpoint_await_created_at: awaitCreatedAt,
+          checkpoint_await_expires_at: new Date(NOW + 300 * 60_000).toISOString(),
+        },
+      ]);
+    }) as unknown as Sql;
+
+    const got = await findConditionObjects([KEY], { harnessSlug: 'papercusp', sql: fakeSql, nowMs: NOW });
+    const owner = got.get(KEY);
+    expect(owner?.claimState).toBe('held');
+    expect(owner?.expiresAt).toBe(
+      new Date(Date.parse(awaitCreatedAt) + CHECKPOINT_RUN_LOCK_STALE_MS).toISOString(),
+    );
+
+    const normalizedSql = queryText.replace(/\s+/g, ' ').toLowerCase();
+    expect(normalizedSql).toContain('from harness_shared.event_awaits_effective a');
+    expect(normalizedSql).toContain('a.subscriber_id = w.taken_by');
+    expect(normalizedSql).toContain("jsonb_typeof(a.payload_filter -> 'runid') = 'string'");
+    expect(normalizedSql).toContain("length(a.payload_filter ->> 'runid') >= 4");
+    expect(normalizedSql).toContain('a.fired_at is null');
+    expect(normalizedSql).toContain('a.cancelled_at is null');
+    expect(normalizedSql).toContain('a.superseded_at is null');
+    expect(normalizedSql).toContain('a.effective_expires_ts is null or a.effective_expires_ts > to_timestamp(');
+    expect(normalizedSql).toContain('a.created_at <= to_timestamp(');
+    expect(normalizedSql).toMatch(/a\.created_at \+\s+\* interval '1 millisecond'/);
+    expect(normalizedSql).toContain('a.event_key = any(');
+    expect(normalizedSql).toContain("'release:green:' || split_part(l.dst_ref, ':', 2)");
+    expect(normalizedSql).toContain("l.dst_ref like 'green-stall:%'");
+    expect(normalizedSql).toContain("l.dst_ref like 'gate-red-streak:%'");
+    expect(normalizedSql).not.toContain('a.workspace_id');
+    expect(queryValues).toContain(CHECKPOINT_RUN_LOCK_STALE_MS);
+    expect(
+      queryValues.some(
+        (value) =>
+          Array.isArray(value) &&
+          value.includes('release:green') &&
+          value.includes('green-checkpoint:red') &&
+          value.includes('green-checkpoint:inconclusive') &&
+          value.includes('green-checkpoint:held'),
+      ),
+    ).toBe(true);
+  });
+
+  it('extends for a pending same-holder await on the exact pipeline outcome key without runId', async () => {
+    let queryText = '';
+    const awaitCreatedAt = new Date(NOW - 10 * 60_000).toISOString();
+    const fakeSql = ((strings: TemplateStringsArray) => {
+      queryText = strings.join(' ');
+      return Promise.resolve([
+        {
+          condition_key: KEY,
+          work_item: 'EI-1',
+          title: 'gate is red',
+          status: 'open',
+          taken_by: 'su-abc',
+          taken_at: new Date(NOW - 31 * 60_000).toISOString(),
+          last_progress_at: new Date(NOW - 31 * 60_000).toISOString(),
+          expires_at: null,
+          payload: null,
+          checkpoint_await_created_at: awaitCreatedAt,
+          checkpoint_await_expires_at: new Date(NOW + 300 * 60_000).toISOString(),
+        },
+      ]);
+    }) as unknown as Sql;
+
+    const got = await findConditionObjects([KEY], { harnessSlug: 'papercusp', sql: fakeSql, nowMs: NOW });
+    const owner = got.get(KEY);
+    expect(owner?.claimState).toBe('held');
+    expect(owner?.expiresAt).toBe(
+      new Date(Date.parse(awaitCreatedAt) + CHECKPOINT_RUN_LOCK_STALE_MS).toISOString(),
+    );
+
+    const normalizedSql = queryText.replace(/\s+/g, ' ').toLowerCase();
+    const globalKeyClause = normalizedSql.indexOf('a.event_key = any(');
+    const exactRunGuard = normalizedSql.indexOf("jsonb_typeof(a.payload_filter -> 'runid') = 'string'");
+    const pipelineKeyClause = normalizedSql.indexOf('or a.event_key = any(array[');
+    expect(globalKeyClause).toBeGreaterThanOrEqual(0);
+    expect(exactRunGuard).toBeGreaterThan(globalKeyClause);
+    expect(pipelineKeyClause).toBeGreaterThan(exactRunGuard);
+    expect(normalizedSql).toContain("'release:green:' || split_part(l.dst_ref, ':', 2)");
+    expect(normalizedSql).toContain("'green-checkpoint:inconclusive:' || split_part(l.dst_ref, ':', 2)");
+    expect(normalizedSql).toContain('a.fired_at is null');
+    expect(normalizedSql).toContain('a.cancelled_at is null');
+    expect(normalizedSql).toContain('a.superseded_at is null');
+  });
+});
+
+describe('database timestamp projection', () => {
+  it('normalizes session-local Postgres timestamptz text to explicit UTC ISO values', async () => {
+    const fakeSql = ((
+      _strings: TemplateStringsArray,
+      ..._values: unknown[]
+    ) => Promise.resolve([
+      {
+        condition_key: KEY,
+        work_item: 'EI-1',
+        title: 'gate is red',
+        status: 'open',
+        taken_by: 'su-abc',
+        taken_at: '2026-08-02 20:50:00.000000-04',
+        last_progress_at: '2026-08-02 20:59:00.000000-04',
+        expires_at: '2026-08-02 22:00:00.000000-04',
+        payload: null,
+        checkpoint_await_created_at: null,
+        checkpoint_await_expires_at: null,
+      },
+    ])) as unknown as Sql;
+
+    const got = await findConditionObjects([KEY], { harnessSlug: 'papercusp', sql: fakeSql, nowMs: NOW });
+    expect(got.get(KEY)).toMatchObject({
+      takenAt: '2026-08-03T00:50:00.000Z',
+      lastProgressAt: '2026-08-03T00:59:00.000Z',
+      expiresAt: '2026-08-03T02:00:00.000Z',
+    });
   });
 });
 

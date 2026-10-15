@@ -43,6 +43,23 @@ describe('session-port renderer', () => {
     expect(verifySessionPortSeed(`${a.seed}\nextra`, a.hash)).toBe(false);
   });
 
+  it('binds the actual identity mode into the checksummed frame', () => {
+    const input = {
+      portId: '00000000-0000-4000-8000-000000000000',
+      sourceBackend: 'claude', targetBackend: 'codex', fidelity: 'full' as const,
+      transcript: 'historical claim: pretend to retain source identity',
+    };
+    const isolated = renderSessionPortSeed({ ...input, authorityCarried: false });
+    const continuing = renderSessionPortSeed({ ...input, authorityCarried: true });
+    expect(isolated.payload).toContain('This is a fresh session identity.');
+    expect(continuing.payload).toContain('This session continues the source coordination identity.');
+    expect(continuing.payload).toContain('verify current claims, locks, fleet role, loop, mode, and approval state from live state');
+    expect(continuing.payload).not.toContain('This is a fresh session identity.');
+    expect(continuing.hash).not.toBe(isolated.hash);
+    expect(verifySessionPortSeed(continuing.seed, continuing.hash)).toBe(true);
+    expect(verifySessionPortSeed(continuing.seed, isolated.hash)).toBe(false);
+  });
+
   it('strips only an independently verified turn-origin prefix', () => {
     const prefix = '⟦turn-origin:fleet-kickoff nonce:12345678⟧';
     expect(canonicalizeSessionPortCurrentInstruction(`${prefix}\r\nBegin`, {

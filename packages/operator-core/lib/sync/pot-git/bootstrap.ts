@@ -468,9 +468,25 @@ export async function bootstrapFromPeer(
     maxWallMs?: number;
     /** Injectable clock, for tests. */
     now?: () => number;
+    /**
+     * WI-10006972: called before this call starts ANY write against the store:
+     * every `runGit` command, every fetch, and the pack-temp/`shallow.lock` sweep.
+     * Throw to refuse. git-sync passes its per-install lease fence here, so a fire
+     * that can no longer prove it holds `git-sync:<slug>` writes no further refs.
+     * The guard is never wrapped in this module's fail-soft `.catch`es: a refusal
+     * propagates to the caller instead of reading as "no quarantine" or "no packs".
+     */
+    beforeGitCommand?: () => void;
   } = {},
 ): Promise<BootstrapResult> {
-  const runGit = opts.runGit ?? defaultRunGit;
+  const beforeGitCommand = opts.beforeGitCommand;
+  const baseRunGit = opts.runGit ?? defaultRunGit;
+  const runGit: RunGit = beforeGitCommand
+    ? async (args, cwd, gitOpts) => {
+        beforeGitCommand();
+        return baseRunGit(args, cwd, gitOpts);
+      }
+    : baseRunGit;
   // EI-18745600910177355: reclaim partial packs SIGKILLed fetches leaked
   // (21 GB observed on the rig). Runs before the ladder so a long-running
   // joiner reclaims disk on every tick, not only on a gc pass.
@@ -478,6 +494,9 @@ export async function bootstrapFromPeer(
   // not the packs' 15-min gate: no fetch of ours can outlive `timeoutMs` (we
   // SIGKILL it), so a lock older than that is stranded by construction — and a
   // stranded one wedges every subsequent rung, so it must be cleared fast.
+  // The guard runs OUTSIDE the sweep's fail-soft catch: a `shallow.lock` this fire
+  // no longer owns may belong to the fire that took the lease over.
+  beforeGitCommand?.();
   await sweepStalePackTmpFiles(localRepoPath, {
     shallowLockMaxAgeMs: (opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS) + STALE_SHALLOW_LOCK_MARGIN_MS,
   }).catch(() => ({ removed: [], bytesReclaimed: 0 }));
@@ -567,6 +586,7 @@ export async function bootstrapFromPeer(
         // Run the fetch anyway so fetchOverDuplex produces its documented
         // fail-soft diagnosis (`duplex already destroyed …`) instead of a
         // silent no-op, preserving the old contract for that case.
+        beforeGitCommand?.();
         res = await fetchOverDuplex(localRepoPath, stream, [ALL_NAMESPACES_QUARANTINE_REFSPEC], {
           timeoutMs: opts.timeoutMs,
           depth: 1,
@@ -579,6 +599,8 @@ export async function bootstrapFromPeer(
 
     const before = await readShallowBoundary(localRepoPath);
     const rungStartedAt = Date.now();
+    // The fetch writes quarantine refs without going through runGit.
+    beforeGitCommand?.();
     res = await fetchOverDuplex(localRepoPath, stream, [ALL_NAMESPACES_QUARANTINE_REFSPEC], {
       timeoutMs: opts.timeoutMs,
       noTags: true,

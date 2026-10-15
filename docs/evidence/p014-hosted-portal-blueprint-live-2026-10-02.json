@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "EAA P-014 leg (a): an app on another network (a GCP VM) runs a blueprint operation on a Papercusp-hosted workspace through the portal (app.papercusp.com) with a limited OAuth-minted app key and reads its status back (live, 2026-10-02 re-run)",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "external-app-access-to-workspaces-2026-09-29",
+  "workItem": "WI-10004027",
+  "specs": [
+    "AUTO-BAR-R-31-P-014"
+  ],
+  "observer": "su-e445ff19-9904-4cb9-9694-88cb40f1ec82",
+  "outcome": "passed",
+  "command": [
+    "bash .papercusp/scratch/eaa/p014/a2-hosted.sh r5"
+  ],
+  "assertions": [
+    {
+      "id": "hosted-folder-written",
+      "passed": true,
+      "evidence": "P014_OK the customer shell on the hosted machine wrote /srv/papercusp/workspaces/papercusp-workspace/p014a-083405/.papercusp/blueprint.yaml"
+    },
+    {
+      "id": "owner-registered-through-portal",
+      "passed": true,
+      "evidence": "P014_OK signed in to the portal as the P-319 owner with ws-2802cefffb052f989eae2969 selected; P014_OK the owner registered p014a-083405 on the hosted machine through the portal"
+    },
+    {
+      "id": "no-key-and-bad-key-refused",
+      "passed": true,
+      "evidence": "P014_OK a no-key call to the hosted workspace MCP URL is refused (401); P014_OK a bad app key is refused (401)"
+    },
+    {
+      "id": "mcp-oauth-discovery",
+      "passed": true,
+      "evidence": "P014_OK unauthenticated MCP call gets 401 + resource_metadata (https://app.papercusp.com/.well-known/oauth-protected-resource/api/workspaces/ws-2802cefffb052f989eae2969/mcp); P014_OK protected-resource metadata names this MCP URL and the workspace issuer; P014_OK authorization-server metadata lists register/authorize/token"
+    },
+    {
+      "id": "oauth-consent-and-limited-key",
+      "passed": true,
+      "evidence": "P014_OK the app registered as an OAuth client (pcoc_nAUufTLTyEmTVCu2jW0rPw); P014_OK the portal consent page names the app; P014_OK consent redirected to the app with a code and its own state; P014_OK the hosted machine minted an app key over the relay (scope: tool:blueprint:submit tool:blueprint:status harness:p014a-083405); P014_OK the authorization code cannot be used twice"
+    },
+    {
+      "id": "blueprint-operation-from-another-network",
+      "passed": true,
+      "evidence": "P014_OK tools/list lists the granted blueprint tools; P014_OK the app on another network submitted a blueprint operation on the hosted workspace through the portal; P014_OK replaying the same requestKey returns the same handle ({\"receiptId\":6,\"target\":{\"kind\":\"work-item\",\"id\":\"WI-6\"}}); P014_OK the app reads the operation status through the portal"
+    },
+    {
+      "id": "key-is-limited",
+      "passed": true,
+      "evidence": "P014_OK a tool outside the consented scope is refused (work_items:list)"
+    }
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-02T08:34:05Z",
+  "finishedAt": "2026-10-02T08:35:58Z",
+  "rig": {
+    "log": ".papercusp/scratch/eaa/p014/a2-r5.log (18 P014_OK, 0 P014_FAIL); per-step bodies in .papercusp/scratch/eaa/p014/a2-r5/ (access tokens redacted at capture)",
+    "portal": "https://app.papercusp.com, workspace ws-2802cefffb052f989eae2969",
+    "hostedMachine": "pc-host-2802cefffb052f989eae2969-6b67e4ba-vm",
+    "appClient": "GCP VM pc-host-560adc2a196edd88206fb582-190a4acd-vm, public address 34.70.0.169 (vm-vmip.txt): a different network from both the portal and the hosted machine",
+    "owner": "P-319 controlled WorkOS test identity, real AuthKit sign-in in the verdict browser",
+    "doors": "customer shell (hosted terminal door) wrote the harness folder; the owner registered it through the portal; the app used MCP OAuth (RFC 9728 / 8414 / 7591, S256 PKCE) with consent on the portal; the machine minted the key over the relay (D-021)",
+    "knownWorkaround": "WI-10004594: the hosted workspace root's ACL mask was restored before the folder write (logged as P014A WORKAROUND)",
+    "hostedMachineBuild": "papercusp-operator sha 549ebc0879a03172d415cbdd5e6a4dd1fb704948 version 0.0.26, read from the machine's own /api/health just before the run (2026-10-02T08:34:05.711Z)",
+    "buildNote": "The hosted machine runs a released build, not the development tree. The source files this evidence is pinned to (the dev tree at bind time) are newer than that build for _mcp-host.ts, portal-mcp-oauth.ts and mcp-oauth.ts; this run proves the hosted outcome on the build users are served today.",
+    "rerunOf": "docs/evidence/p014-hosted-portal-blueprint-live-2026-10-01.json"
+  },
+  "results": {
+    "R-31": {
+      "verdict": "pass",
+      "observed": "From a GCP VM on another network, an app that obtained a limited key through MCP OAuth consent on the portal called blueprint:submit on the hosted workspace through https://app.papercusp.com/api/workspaces/ws-2802cefffb052f989eae2969/mcp and got a handle (receipt 6, work item WI-6); a replay with the same requestKey returned the same handle, and blueprint:status read the operation back through the portal. The same key was refused a tool outside its scope (work_items:list), and calls with no key or a bad key were refused with 401.",
+      "artifacts": [
+        "vm-submit1.txt",
+        "vm-submit2.txt",
+        "vm-status.txt",
+        "vm-outside-scope.txt",
+        "vm-tools-list.txt",
+        "vm-oauth-token.txt",
+        "web-consent-page.png",
+        "vm-vmip.txt"
+      ]
+    }
+  },
+  "summary": "Live P-014 re-run on 2026-10-02 (r5) on the hosted workspace; 7 of 7 assertions passed from 18 P014_OK and 0 P014_FAIL lines."
+}

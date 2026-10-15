@@ -1,0 +1,302 @@
+{
+  "subjectCard": {
+    "ok": true,
+    "scorecard": {
+      "issueId": "EI-25820926789813836",
+      "subjectRubricCurrentness": {
+        "state": "current",
+        "reason": "current",
+        "recordedRevision": 6,
+        "currentRevision": 6,
+        "recordedCriteriaHash": "50c85cea02abc61fa13a85280a3bdffd6fcfa6acebb423a9920613bd2c3d6dfc",
+        "currentCriteriaHash": "50c85cea02abc61fa13a85280a3bdffd6fcfa6acebb423a9920613bd2c3d6dfc"
+      },
+      "gradingAudit": {
+        "state": "passed",
+        "metaRubricRef": "grading-integrity",
+        "stampedAt": "2026-10-13T00:12:33.475Z",
+        "rubricRevision": 12,
+        "criteriaHash": "23b30ebfb4d6d84caa23787ecc249521b09183bd291a9bf38efdb18916272c85",
+        "auditIssueId": "EI-25821501641646181",
+        "auditor": "system:judge/su-53792f79-4481-44e1-925e-bb540a9a6bfb",
+        "auditedAt": "2026-10-13T00:21:43.678Z"
+      },
+      "auditTarget": {
+        "current": true,
+        "superseded": false,
+        "supersededBy": null,
+        "retracted": false,
+        "subjectRubricCurrentness": {
+          "state": "current",
+          "reason": "current",
+          "recordedRevision": 6,
+          "currentRevision": 6,
+          "recordedCriteriaHash": "50c85cea02abc61fa13a85280a3bdffd6fcfa6acebb423a9920613bd2c3d6dfc",
+          "currentCriteriaHash": "50c85cea02abc61fa13a85280a3bdffd6fcfa6acebb423a9920613bd2c3d6dfc"
+        }
+      }
+    }
+  },
+  "auditIssueId": "EI-25821501641646181",
+  "criteria": [
+    {
+      "ok": true,
+      "scorecard": {
+        "issueId": "EI-25821501641646181",
+        "createdAt": "2026-10-13T00:21:42.876Z",
+        "createdBy": "system:judge/su-53792f79-4481-44e1-925e-bb540a9a6bfb",
+        "rubricRef": "grading-integrity",
+        "rubricRevision": 12,
+        "criteriaHash": "23b30ebfb4d6d84caa23787ecc249521b09183bd291a9bf38efdb18916272c85",
+        "evidenceFingerprint": "69b023c7243704c5904580bafb15e157443f64cdc59f32d33460f9db050b5eb2",
+        "sourceHive": "papercusp",
+        "subject": {
+          "ref": "EI-25820926789813836",
+          "kind": "scorecard"
+        },
+        "criteria": [
+          {
+            "key": "base-rate-check",
+            "rating": "pass",
+            "evidence": "Graded card EI-25820926789813836 (meta-acceptance-rubric rev5, hash 215de083...) has 6 applicable ratings, all pass. Downgrade set is empty, so no satisfiability re-run was owed. Upgrade leg: I searched all six evidence strings for absence wording (zero/none/no/never/nothing next to an act noun). The only hits are scope disclaimers ('No runtime pass inferred', 'no historic tests replayed or real/provider/deployed proof asserted', 'none is satisfied by reading a diff'). None of them is the basis for a pass. Every pass cites a positive artifact: outcomes cites R1-R6 content of rubric rev6; traces cites plan16/hash67e21d91 plus D001-D005; falsifiable lists named falsifiers per BAR; failure-mode lists named surfaces; non-overlapping cites test lines 245-250, 284-290, 322-327 and 276-281; prefer-structured-check cites line-level assertions and positiveControlRef test.ts:226. The one upgrade from the prior card (EI-25585761932988344 rated prefer-structured-check weak because 'current complete binding adequacy remains unverified') is backed by a positive artifact. That artifact is the per-BAR detector mapping in .papercusp/evidence/cloud-attestation-20261012-wi6554700010009485/detector-mapping.md lines 26-35, which I verified against the test file (see re-runnable-evidence). It is not backed by an absence."
+          }
+        ],
+        "nKeys": 6,
+        "missingKeys": [],
+        "extraKeys": [],
+        "rubricResolved": true,
+        "synthesized": false,
+        "auditTarget": {
+          "current": true,
+          "superseded": false,
+          "supersededBy": null,
+          "retracted": false,
+          "subjectRubricCurrentness": null
+        }
+      },
+      "evidenceRead": {
+        "complete": true,
+        "scope": "selected-criterion",
+        "offset": 0,
+        "totalChars": 1320,
+        "instruction": "Concatenate this criterion’s pages in offset order. Complete applies only to this criterion; audit every key from the card index."
+      }
+    },
+    {
+      "ok": true,
+      "scorecard": {
+        "issueId": "EI-25821501641646181",
+        "createdAt": "2026-10-13T00:21:42.876Z",
+        "createdBy": "system:judge/su-53792f79-4481-44e1-925e-bb540a9a6bfb",
+        "rubricRef": "grading-integrity",
+        "rubricRevision": 12,
+        "criteriaHash": "23b30ebfb4d6d84caa23787ecc249521b09183bd291a9bf38efdb18916272c85",
+        "evidenceFingerprint": "69b023c7243704c5904580bafb15e157443f64cdc59f32d33460f9db050b5eb2",
+        "sourceHive": "papercusp",
+        "subject": {
+          "ref": "EI-25820926789813836",
+          "kind": "scorecard"
+        },
+        "criteria": [
+          {
+            "key": "instrument-split",
+            "rating": "pass",
+            "evidence": "This is a contract-quality grade, so the correct stores are: the acceptance rubric (rubrics:get), the subject plan's requirements and decisions (plans:get), and the bound test and source bytes (file reads). The card uses exactly these stores. I re-ran each one against the primary store, not the authored summary. (1) rubrics:get {rubricRef:'acceptance-cloud-cross-feature-e2e-shipment-2026-10-08', detail:'full'} returns rev6 with criteriaHash 50c85cea..., the same as the card's subjectRubricIdentity. (2) plans:get {slug:'cloud-cross-feature-e2e-shipment-2026-10-08', harness:'papercusp', payloadTier:'full'} returns contentHash 67e21d9136af1493c5b4645a27cdbed50c10a885941c74c0ab84c5b4f574a4c4, the same as 'plan16/hash67e21d91'. (3) capability:read of packages/operator-core/lib/workspace-host/cloud-e2e-campaign-evidence.test.ts (392 lines) and cloud-e2e-campaign-evidence.ts (346 lines). No criterion relies on tool_invocations, session_turn_parts, the cost ledger or activity counts. The card's evidenceRef is an authored summary file, but every claim I traced to the primary store holds in the same direction. No verdict flips."
+          }
+        ],
+        "nKeys": 6,
+        "missingKeys": [],
+        "extraKeys": [],
+        "rubricResolved": true,
+        "synthesized": false,
+        "auditTarget": {
+          "current": true,
+          "superseded": false,
+          "supersededBy": null,
+          "retracted": false,
+          "subjectRubricCurrentness": null
+        }
+      },
+      "evidenceRead": {
+        "complete": true,
+        "scope": "selected-criterion",
+        "offset": 0,
+        "totalChars": 1135,
+        "instruction": "Concatenate this criterion’s pages in offset order. Complete applies only to this criterion; audit every key from the card index."
+      }
+    },
+    {
+      "ok": true,
+      "scorecard": {
+        "issueId": "EI-25821501641646181",
+        "createdAt": "2026-10-13T00:21:42.876Z",
+        "createdBy": "system:judge/su-53792f79-4481-44e1-925e-bb540a9a6bfb",
+        "rubricRef": "grading-integrity",
+        "rubricRevision": 12,
+        "criteriaHash": "23b30ebfb4d6d84caa23787ecc249521b09183bd291a9bf38efdb18916272c85",
+        "evidenceFingerprint": "69b023c7243704c5904580bafb15e157443f64cdc59f32d33460f9db050b5eb2",
+        "sourceHive": "papercusp",
+        "subject": {
+          "ref": "EI-25820926789813836",
+          "kind": "scorecard"
+        },
+        "criteria": [
+          {
+            "key": "terminal-re-rate",
+            "rating": "pass",
+            "evidence": "Census: scorecards:list {rubricRef:'meta-acceptance-rubric', subjectRef:'acceptance-cloud-cross-feature-e2e-shipment-2026-10-08'} returns count 2, hasMore false, truncatedByLimit false. The two cards are EI-25820926789813836 (this terminal card, 2026-10-13T00:12:34Z) and EI-25585761932988344 (an earlier terminal card from 2026-10-10, audited passed under grading-integrity rev10 and now stale on criteria hash). No provisional or interim card exists to have been frozen. Re-derivation check against the prior card: the evidence strings are not copied forward. The old card's traces and failure-mode evidence cite 'plan version10/contentHash45a9bc...'. The new card cites plan16/hash67e21d91, which matches the live contentHash. prefer-structured-check was re-rated from weak to pass on new line-level detector evidence. Meta-acceptance criteria grade a static rubric revision, not a run window. Every rating was re-derived against the current rev6 rubric and the current plan revision."
+          }
+        ],
+        "nKeys": 6,
+        "missingKeys": [],
+        "extraKeys": [],
+        "rubricResolved": true,
+        "synthesized": false,
+        "auditTarget": {
+          "current": true,
+          "superseded": false,
+          "supersededBy": null,
+          "retracted": false,
+          "subjectRubricCurrentness": null
+        }
+      },
+      "evidenceRead": {
+        "complete": true,
+        "scope": "selected-criterion",
+        "offset": 0,
+        "totalChars": 987,
+        "instruction": "Concatenate this criterion’s pages in offset order. Complete applies only to this criterion; audit every key from the card index."
+      }
+    },
+    {
+      "ok": true,
+      "scorecard": {
+        "issueId": "EI-25821501641646181",
+        "createdAt": "2026-10-13T00:21:42.876Z",
+        "createdBy": "system:judge/su-53792f79-4481-44e1-925e-bb540a9a6bfb",
+        "rubricRef": "grading-integrity",
+        "rubricRevision": 12,
+        "criteriaHash": "23b30ebfb4d6d84caa23787ecc249521b09183bd291a9bf38efdb18916272c85",
+        "evidenceFingerprint": "69b023c7243704c5904580bafb15e157443f64cdc59f32d33460f9db050b5eb2",
+        "sourceHive": "papercusp",
+        "subject": {
+          "ref": "EI-25820926789813836",
+          "kind": "scorecard"
+        },
+        "criteria": [
+          {
+            "key": "platform-telemetry-excluded",
+            "rating": "pass",
+            "evidence": "Coverage: I inspected all 6 criteria on EI-25820926789813836 (outcomes-not-diff-restatements, traces-to-goal-or-decision, falsifiable-with-evidence, failure-mode-coverage, non-overlapping, prefer-structured-check). None is an efficiency or activity rating. None reads tool_invocations, wake or hook rows, agent_modes, or a raw count(*) by tool_name. The evidence consists only of rubric and plan content and test/source line citations. Platform telemetry therefore had no path to inflate or deflate a rating, and the zero-violation count covers the whole card."
+          }
+        ],
+        "nKeys": 6,
+        "missingKeys": [],
+        "extraKeys": [],
+        "rubricResolved": true,
+        "synthesized": false,
+        "auditTarget": {
+          "current": true,
+          "superseded": false,
+          "supersededBy": null,
+          "retracted": false,
+          "subjectRubricCurrentness": null
+        }
+      },
+      "evidenceRead": {
+        "complete": true,
+        "scope": "selected-criterion",
+        "offset": 0,
+        "totalChars": 560,
+        "instruction": "Concatenate this criterion’s pages in offset order. Complete applies only to this criterion; audit every key from the card index."
+      }
+    },
+    {
+      "ok": true,
+      "scorecard": {
+        "issueId": "EI-25821501641646181",
+        "createdAt": "2026-10-13T00:21:42.876Z",
+        "createdBy": "system:judge/su-53792f79-4481-44e1-925e-bb540a9a6bfb",
+        "rubricRef": "grading-integrity",
+        "rubricRevision": 12,
+        "criteriaHash": "23b30ebfb4d6d84caa23787ecc249521b09183bd291a9bf38efdb18916272c85",
+        "evidenceFingerprint": "69b023c7243704c5904580bafb15e157443f64cdc59f32d33460f9db050b5eb2",
+        "sourceHive": "papercusp",
+        "subject": {
+          "ref": "EI-25820926789813836",
+          "kind": "scorecard"
+        },
+        "criteria": [
+          {
+            "key": "re-runnable-evidence",
+            "rating": "pass",
+            "evidence": "The card is all-pass with no not-applicable ratings, so the coverage override applied and I re-ran all 6 probes. All six were re-runnable. (a) outcomes: rubrics:get detail:full for rev6 returns R1-R6 = census, persistent coverage, adversarial/recovery, durable repair, real runtime, exact shipped artifact. These are observable outcomes, not diff restatements, as the card says. (b) traces: plans:get payloadTier:'full' gives contentHash 67e21d91 and decision bodies D-001 'Changed BARs: R-4' (amendment cloud-e2e-r4-ui-regressions), D-002 'Changed BARs: R-1' (population), D-003 'Changed BARs: R-2, R-3, R-4, R-5, R-6' (canonical joins), D-004 thirteen portal findings plus recurrence, D-005 PTY/reconnect/desktop. This matches the card's reverse mapping. (c) falsifiable: the rev6 replication text contains each named falsifier, for example R6 'wrong-but-nonempty refs ... red promotion ... pre-deploy final, proposed audit ... self/unverified/pending-audit grade' and R1 'dropping or duplicating one population member'. (d) failure-mode: every named surface sits at a test line: partition falsifiers 43-45, selection drift 238-243, uncaught control 245-250, owned-open/proposed/same-prediction/no-trigger 264-273, synthetic/foreign/stale 284-291, full-kind census and billing 293-313, red promotion/failed deploy 345-346, serving/order 348-356, audit/grade/report 358-373, residue 276-281. (e) non-overlapping: line 249 expects R-2 toEqual([]) with line 250 expecting R-3 to contain an unproven-detector problem; lines 289/290 do the same for R-2/R-5, 326/327 for R-5/R-6, and 280/281 for R-4 [] and R-6 'unresolved-residue-or-runtime-population'. All exact. (f) structured-check: all 15 distinct check.files of rev6 resolve (capability:read total_lines: campaign test 392, connection 701, provision 530, action 974, cloud-tutorial.spec 845, provisioning-runner.integration 665, restore.integration 413, chaos 477, hosted-lifecycle-policy 256, lifecycle-runner 1135, credential-lifecycle-runner 331, teardown-release-receipt 126, page.test 1697, DesktopWorkspacePage 240, LocalDesktopWorkspace 266). The cited ranges 29-53, 226-229 (positive control: complete fixture gives all six partitions [] and passed:true), 231-235 (authored 'shipped' fails R-2..R-6), 238-261, 264-281, 284-319 and 322-390 contain exactly the described assertions. The evaluator branch the evidence file names for R-4 exists at cloud-e2e-campaign-evidence.ts lines 221-239 (originatingFixRef, missingRootCauseVerificationV2Fields, regressionDetectorId plus caught negativeControl, fresh triggeringJourneyReceiptId). I could not recompute the SHA256/blob claims (6016943d/88716794; blobs 0204bc06/99afbc58): the judge principal is denied capability:git and the brief forbids shell. That is a capability denial, not an evidence defect, and the cited line content aligns exactly with the 392-line file. Probes reference only persistent in-tree paths and PG records, with no /tmp or bash_id."
+          }
+        ],
+        "nKeys": 6,
+        "missingKeys": [],
+        "extraKeys": [],
+        "rubricResolved": true,
+        "synthesized": false,
+        "auditTarget": {
+          "current": true,
+          "superseded": false,
+          "supersededBy": null,
+          "retracted": false,
+          "subjectRubricCurrentness": null
+        }
+      },
+      "evidenceRead": {
+        "complete": true,
+        "scope": "selected-criterion",
+        "offset": 0,
+        "totalChars": 2964,
+        "instruction": "Concatenate this criterion’s pages in offset order. Complete applies only to this criterion; audit every key from the card index."
+      }
+    },
+    {
+      "ok": true,
+      "scorecard": {
+        "issueId": "EI-25821501641646181",
+        "createdAt": "2026-10-13T00:21:42.876Z",
+        "createdBy": "system:judge/su-53792f79-4481-44e1-925e-bb540a9a6bfb",
+        "rubricRef": "grading-integrity",
+        "rubricRevision": 12,
+        "criteriaHash": "23b30ebfb4d6d84caa23787ecc249521b09183bd291a9bf38efdb18916272c85",
+        "evidenceFingerprint": "69b023c7243704c5904580bafb15e157443f64cdc59f32d33460f9db050b5eb2",
+        "sourceHive": "papercusp",
+        "subject": {
+          "ref": "EI-25820926789813836",
+          "kind": "scorecard"
+        },
+        "criteria": [
+          {
+            "key": "degenerate-distribution",
+            "rating": "pass",
+            "evidence": "Rating histogram over applicable ratings from the persisted map of EI-25820926789813836: pass 6, weak 0, fail 0, not-applicable 0. The card is uniform across 6 or more criteria, so the all-pass override applied and I spot-checked every criterion (keys: outcomes-not-diff-restatements, traces-to-goal-or-decision, falsifiable-with-evidence, failure-mode-coverage, non-overlapping, prefer-structured-check; detail under re-runnable-evidence). No probe contradicted the uniform verdict, so it passes with a note: uniform can be honest here. The card bounds its own scope ('Contract review only; actual R2-R6 remains nonpass'; no runtime, provider or deployed proof asserted). The prior card's single weak was repaired with verifiable line-level detector mapping rather than re-labelled. Residual note, not a contradiction: the R-4 compound guards at source lines 232 and 236 are exercised by the 'proposed'/'open' and 'no-trigger' mutations (test 264-273). No isolated mutation removes only originatingFixRef from a committed defect, or only regressionDetectorId, so dropping just that disjunct would survive the suite. The card's claims about these lines are accurate as written; this is a hardening opportunity for the subject test, not a grading defect."
+          }
+        ],
+        "nKeys": 6,
+        "missingKeys": [],
+        "extraKeys": [],
+        "rubricResolved": true,
+        "synthesized": false,
+        "auditTarget": {
+          "current": true,
+          "superseded": false,
+          "supersededBy": null,
+          "retracted": false,
+          "subjectRubricCurrentness": null
+        }
+      },
+      "evidenceRead": {
+        "complete": true,
+        "scope": "selected-criterion",
+        "offset": 0,
+        "totalChars": 1253,
+        "instruction": "Concatenate this criterion’s pages in offset order. Complete applies only to this criterion; audit every key from the card index."
+      }
+    }
+  ],
+  "scope": "Independent current contract-quality audit; full Cloud functional/runtime/shipment acceptance remains nonpass."
+}

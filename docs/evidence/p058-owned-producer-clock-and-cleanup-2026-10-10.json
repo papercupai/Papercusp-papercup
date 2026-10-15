@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "name": "P-058 owned producer cross-UID clock and late-create cleanup regression",
+  "command": [
+    "$HOME/.local/node25/bin/node",
+    "--test",
+    "--test-global-setup=papercusp-desktop/test/monorepo-host-preflight.mjs",
+    "papercusp-desktop/test/server-container.test.js",
+    "papercusp-desktop/test/server-native-builder.test.js"
+  ],
+  "commandPathNormalization": "The recorded executable's home directory is represented by $HOME; the executable suffix and executed arguments are unchanged.",
+  "cwd": ".",
+  "startedAt": "2026-10-10T12:03:05.507Z",
+  "finishedAt": "2026-10-10T12:03:35.424Z",
+  "exitCode": 0,
+  "summary": "125 canonical Node tests passed, zero failures/cancellations/skips/todo; all ten recorded inputs remained byte-identical during the run. Separate preserved ARM image probe ran arm64 Node24.18.1 as UID/GID1001 and removed only its exact container.",
+  "workItemId": "EI-25592136788124771",
+  "relatedWorkItemIds": [
+    "EI-25592665732402907"
+  ],
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "evidencePlane": "source-regression-and-preserved-image-compatibility",
+  "candidateAccepted": false,
+  "freshSourceBootMeasured": false,
+  "assertions": [
+    {
+      "id": "cross-uid-clock",
+      "passed": true,
+      "evidence": "Restrictive umask077: mounted clock directory0755/file0644 with timestamp only; private owner parent0700/receipt0600. Real OS driver drops supplementary groups/GID/UID1001: fresh clock runs workload0, expired clock exits125 without workload, private receipt unreadable."
+    },
+    {
+      "id": "create-delay-clock-refresh",
+      "passed": true,
+      "evidence": "Create advances the clock20s; timestamp is refreshed before start. The two new cases failed before the heartbeat fix."
+    },
+    {
+      "id": "late-create-settlement",
+      "passed": true,
+      "evidence": "First exact-name inspection returns No such object; second returns exact image/token/immutableID. Only that ID is removed, with one create total. This case failed before cleanup fix."
+    },
+    {
+      "id": "pending-resume-and-identity",
+      "passed": true,
+      "evidence": "Unknown absence at bounded cleanup expiry throws cleanup failure and atomically saves cleanupPending=true. Explicit saved-receipt reconciliation refuses foreign token, then removes exact owned ID without creating/starting another workload. Invalid engine reply never becomes a mutable rm target. Successful result reflects final cleanup."
+    },
+    {
+      "id": "canonical-suite",
+      "passed": true,
+      "evidence": "Actual Node runner:125pass0fail0cancel0skip0todo; global preflight executed; ten before/after input hashes matched."
+    },
+    {
+      "id": "preserved-arm-runtime",
+      "passed": true,
+      "evidence": "Imported immutable config355aadb4/provenance labels matched; actual isolated network-none read-only guest emitted arm64/v24.18.1/uid1001/gid1001. Actual exit0, removedtrue, cleanupPendingfalse, source helper hash stable."
+    }
+  ],
+  "rawLogFile": "/mnt/backup/portable-server-p058/owned-producer-regression-20261010/run-dAzec6/regression.log",
+  "rawLogSha256": "7c509617f5b5f4c0363f335152cffe04b477b04ae4b79a54d657a327e3dbe5ba",
+  "sourceHashes": {
+    "papercusp-desktop/bin/lib/server-container.mjs": "ce13dae9ad5c25e185a955338d325488f0fbe0791d5b9d75cb9fd20e89334026",
+    "infra/images/server/NativeBuilder.Containerfile": "f49d34af6f179240050c1a87c19c73efe2600fbaccca14706a2a6c394ba872ea",
+    "infra/images/server/Containerfile": "6ac58e752f19a16acc486b45be662298db85c5da2876af194fc6905f81093e6a",
+    "papercusp-desktop/scripts/build-rootfs.sh": "1b90c7c259fa91828db4ef2410b47c0d42a6aa12d7d3d4806a8f8213e18df454",
+    "papercusp-desktop/test/server-container.test.js": "bf639fe3c72ac11fe6ba7e60c8e90f1961157c15a74ea7fcbb6a6e288dc16baa",
+    "papercusp-desktop/test/server-native-builder.test.js": "855df00a3fac236d25fcae6875e1a9f18237b0c07407cf1489f6cd5d9052238b",
+    "papercusp-desktop/test/test-scratch.cjs": "21e07a856597442c5df5c7676c47a3b73090e3f5cd9c89855f22840366ed7f35",
+    "papercusp-desktop/test/monorepo-host-preflight.mjs": "fbc35e5679ed948f9844780498405b52772d848931620e3f7a59b7d703e40f0f",
+    "scripts/lib/node-test-host-preflight.mjs": "8f04a13c47f68170c95a5cf00d2b99634d6d39aabb53eb662f5767d2825d4a58",
+    "scripts/lib/restricted-hold-preflight.mjs": "1bbe8651fbfea20164c994c52c4fd8576a73fc3eecd08d88ac0fa05ca99763dc"
+  },
+  "sourceHashesStable": true,
+  "armCompatibility": {
+    "resultFile": "/mnt/backup/portable-server-p058/owned-producer-regression-20261010/arm-runtime-dZAAPe/result.json",
+    "sha256": "63a41ef6c0957aadc809ceca40c1f49ea0334e4d531ef435e20d36fe0f4a401a",
+    "schemaVersion": 1,
+    "scope": "preserved ARM image clock/cleanup compatibility only",
+    "out": "/mnt/backup/portable-server-p058/owned-producer-regression-20261010/arm-runtime-dZAAPe",
+    "imageId": "sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921",
+    "platform": "linux/arm64",
+    "helperSha256": "ce13dae9ad5c25e185a955338d325488f0fbe0791d5b9d75cb9fd20e89334026",
+    "startedAt": "2026-10-10T12:06:12.312Z",
+    "candidateAccepted": false,
+    "freshSourceBootMeasured": false,
+    "status": "passed",
+    "exitCode": 0,
+    "removed": true,
+    "cleanupPending": false,
+    "containerId": "093fac78983af5a508ffe58b6f5b2db9d5a725dea9ce85d6b87dd6740117b438",
+    "receiptFile": "/mnt/backup/portable-server-p058/owned-producer-regression-20261010/arm-runtime-dZAAPe/.native-producer-owner-tjJbmg/ownership.json",
+    "finishedAt": "2026-10-10T12:06:19.099Z",
+    "helperSha256After": "ce13dae9ad5c25e185a955338d325488f0fbe0791d5b9d75cb9fd20e89334026",
+    "sourceHashesStable": true
+  },
+  "limitations": [
+    "Unknown daemon creates arriving after the bounded cleanup interval require the owning operation to call saved-receipt reconciliation; pending is not cancellation or automatic disposal.",
+    "Preserved baseline image source58d5; no fresh-source60000ms full boot measurement, installed-native acceptance, signing, registry publication or final transfer acceptance."
+  ]
+}

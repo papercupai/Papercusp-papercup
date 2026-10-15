@@ -75,6 +75,95 @@ export function selectCandidateSources(population: Snapshot['suites'], options: 
   return { memory: { entries: stable(memories).slice(0, memoryLimit).map(annotate) },
     prose: { entries: picked.keys.flatMap((key) => stable(groups.get(key)!).slice(0, maxClusterRows)).map(annotate) } };
 }
+
+/** Account against the retained, pre-selection census. A sampled snapshot or
+ * finished label cohort cannot establish exhaustion of the accessible sources.
+ * Lists stay private; public evidence can publish their counts and file hash. */
+export function accountIndependentSources(
+  census: { snapshotAt: string; seed: string; population: Snapshot['suites'];
+    selectedKeys: Record<'memory' | 'prose', string[]> },
+  snapshot: Snapshot,
+  authored: Record<'memory' | 'prose', HeldoutQuery[]>,
+  accepted: Record<'memory' | 'prose', HeldoutQuery[]>,
+) {
+  if (census.seed !== snapshot.seed || census.snapshotAt !== snapshot.snapshotAt) throw new Error('source census snapshot identity mismatch');
+  const classes = ['exact-identifier', 'lexical-gap', 'session-start-intent', 'hard-negative'];
+  return Object.fromEntries((['memory', 'prose'] as const).map((corpus) => {
+    const population = census.population[corpus].entries, selected = snapshot.suites[corpus].entries;
+    const byKey = new Map(population.map((e) => [e.key, e]));
+    if (byKey.size !== population.length || new Set(selected.map((e) => e.key)).size !== selected.length
+      || JSON.stringify(census.selectedKeys[corpus]) !== JSON.stringify(selected.map((e) => e.key))) throw new Error('source census selected keys mismatch/duplicate');
+    const groupOf = (e: CorpusEntry): string => {
+      const group = e.metadata?.cluster;
+      if (typeof group !== 'string' || !group.trim()) throw new Error('source census cluster missing');
+      return group;
+    };
+    const eligible = (e: CorpusEntry): boolean => corpus !== 'memory' || e.metadata?.sourceAttribution === 'session';
+    const groups = new Map<string, CorpusEntry[]>();
+    for (const e of population) {
+      const group = groupOf(e);
+      if (!eligible(e)) continue;
+      if (corpus === 'memory' && (typeof e.metadata?.sourceSession !== 'string' || !e.metadata.sourceSession.trim()
+        || group !== `session:${e.metadata.sourceSession}`)) throw new Error('source census memory provenance mismatch');
+      groups.set(group, [...(groups.get(group) ?? []), e]);
+    }
+    for (const e of selected) {
+      const original = byKey.get(e.key);
+      if (!original || !eligible(original) || e.text !== original.text || groupOf(e) !== groupOf(original)
+        || e.metadata?.partition !== candidateSourcePartition(groupOf(e), snapshot.seed)
+        || (corpus === 'memory' && (e.metadata?.sourceSession !== original.metadata?.sourceSession
+          || e.metadata?.sourceAttribution !== original.metadata?.sourceAttribution))) throw new Error('source census selected content/provenance mismatch');
+    }
+    const selectedGroups = new Set(selected.map(groupOf));
+    const bundles = (queries: HeldoutQuery[]) => {
+      if (new Set(queries.map((q) => q.id)).size !== queries.length) throw new Error('source census duplicate question');
+      const result = new Map<string, HeldoutQuery[]>();
+      for (const q of queries) {
+        if (!selectedGroups.has(q.group) || q.partition !== candidateSourcePartition(q.group, snapshot.seed)) throw new Error('source census foreign question/partition');
+        result.set(q.group, [...(result.get(q.group) ?? []), q]);
+      }
+      for (const qs of result.values()) {
+        if (qs.length !== 4 || classes.some((cls) => qs.filter((q) => q.class === cls).length !== 1)) throw new Error('source census unbalanced bundle');
+      }
+      return result;
+    };
+    const authoredGroups = bundles(authored[corpus]), acceptedGroups = bundles(accepted[corpus]);
+    const authoredById = new Map(authored[corpus].map((q) => [q.id, q]));
+    const selectedByKey = new Map(selected.map((e) => [e.key, e]));
+    for (const q of accepted[corpus]) {
+      const original = authoredById.get(q.id);
+      if (!original || ['class', 'query', 'group', 'partition'].some((k) => q[k as keyof HeldoutQuery] !== original[k as keyof HeldoutQuery])
+        || new Set(q.expected).size !== q.expected.length || (q.class === 'hard-negative') !== (q.expected.length === 0)
+        || q.expected.some((key) => !selectedByKey.has(key) || selectedByKey.get(key)!.metadata?.partition !== q.partition)
+        || (q.class !== 'hard-negative' && !q.expected.some((key) => groupOf(selectedByKey.get(key)!) === q.group))) throw new Error('source census accepted label identity mismatch');
+    }
+    const dispositions = [...groups.keys()].sort().map((group) => ({ group,
+      partition: candidateSourcePartition(group, snapshot.seed),
+      status: !selectedGroups.has(group) ? 'outside-snapshot' : !authoredGroups.has(group) ? 'unattempted-in-snapshot'
+        : !acceptedGroups.has(group) ? 'authored-without-accepted-labels' : 'accepted',
+      populationRows: groups.get(group)!.length, snapshotRows: selected.filter((e) => groupOf(e) === group).length,
+    }));
+    const partitions = Object.fromEntries((['calibration', 'test'] as const).map((partition) => {
+      const rows = dispositions.filter((r) => r.partition === partition);
+      return [partition, { accessibleSources: rows.length, snapshotSources: rows.filter((r) => r.snapshotRows > 0).length,
+        authoredSources: rows.filter((r) => authoredGroups.has(r.group)).length,
+        acceptedSources: rows.filter((r) => r.status === 'accepted').length,
+        outsideSnapshot: rows.filter((r) => r.status === 'outside-snapshot').length,
+        unattemptedInSnapshot: rows.filter((r) => r.status === 'unattempted-in-snapshot').length,
+        authoredWithoutAcceptedLabels: rows.filter((r) => r.status === 'authored-without-accepted-labels').length }];
+    }));
+    return [corpus, { populationRows: population.length, eligibleRows: [...groups.values()].reduce((n, es) => n + es.length, 0),
+      provenanceExcludedRows: population.filter((e) => !eligible(e)).length, snapshotRows: selected.length, partitions, dispositions,
+      allEligibleRowsInSnapshot: population.filter(eligible).every((e) => selectedByKey.has(e.key)),
+      allEligibleSourcesAuthored: dispositions.length > 0 && dispositions.every((r) => authoredGroups.has(r.group)) }];
+  })) as Record<'memory' | 'prose', {
+    populationRows: number; eligibleRows: number; provenanceExcludedRows: number; snapshotRows: number;
+    partitions: Record<'calibration' | 'test', { accessibleSources: number; snapshotSources: number; authoredSources: number;
+      acceptedSources: number; outsideSnapshot: number; unattemptedInSnapshot: number; authoredWithoutAcceptedLabels: number }>;
+    dispositions: { group: string; partition: 'calibration' | 'test'; status: string; populationRows: number; snapshotRows: number }[];
+    allEligibleRowsInSnapshot: boolean; allEligibleSourcesAuthored: boolean;
+  }>;
+}
 export function validateHeldout(entries: CorpusEntry[], queries: HeldoutQuery[]): void {
   const keys = new Set(entries.map((e) => e.key));
   if (keys.size !== entries.length || keys.size === 0) throw new Error('empty or duplicate corpus keys');

@@ -39,11 +39,14 @@ vi.mock('../../plan-audits', async (orig) => {
   return {
     ...actual,
     getPlanItemStatuses: vi.fn(),
+    // The real helper reads harness_plans through getOrgPg (WI-10005174).
+    resolvePlanItemHomeHarness: vi.fn(),
     getEffectiveItemAudits: vi.fn(),
     getLatestActivationAudit: vi.fn(),
     repoCitationContextForHarness: vi.fn(),
     recordPlanAudit: vi.fn(),
     recordCurrentActivationAudit: vi.fn(),
+    previewCurrentActivationAudit: vi.fn(),
   };
 });
 vi.mock('./activation-audit-repair', () => ({
@@ -77,14 +80,28 @@ vi.mock('../../activation-item-provenance', async (orig) => ({
   dbRefOriginLookup: () => async (refs: readonly string[]) =>
     new Map(refs.map((ref) => [ref, 'owner-typed' as const])),
 }));
+// plan-verification-friction-reduction-2026-10-11 P-003: the activation classRef resolver
+// reads the plan's acceptance rubric (its persisted class) and its latest spec-quality
+// scorecard. beforeEach defaults both to empty, so a supplied classRef passes unchanged.
+vi.mock('../../rubrics', async (orig) => ({
+  ...(await orig<typeof import('../../rubrics')>()),
+  getAcceptanceRubricsForPlan: vi.fn(),
+}));
+vi.mock('../../scorecards', async (orig) => ({
+  ...(await orig<typeof import('../../scorecards')>()),
+  listScorecards: vi.fn(),
+}));
 
 import {
+  CitationGitReadError,
   getEffectiveItemAudits,
   getLatestActivationAudit,
   getPlanItemStatuses,
   recordCurrentActivationAudit,
+  previewCurrentActivationAudit,
   recordPlanAudit,
   repoCitationContextForHarness,
+  resolvePlanItemHomeHarness,
 } from '../../plan-audits';
 import { ensureActivationAuditRepairFiling } from './activation-audit-repair';
 import { getPlanRow } from './source';
@@ -94,14 +111,21 @@ import { resolveSessionTurnRefs } from '../sessions/_shared';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { recoverHarnessFromSlugs } from './slug-scope';
 import { BUDGET, promptWeight } from '../tool-guidance-budget';
+import { productShapingScaffold } from './product-shaping';
+import { getAcceptanceRubricsForPlan } from '../../rubrics';
+import { listScorecards } from '../../scorecards';
+import { SPEC_QUALITY_RUBRIC_REF, specQualitySubjectRef } from './spec-quality';
+import type { PlanClassRubricRef } from './spec-test-adequacy';
 import tool from './audit';
 
 const mockItems = vi.mocked(getPlanItemStatuses);
+const mockResolveHome = vi.mocked(resolvePlanItemHomeHarness);
 const mockPrevious = vi.mocked(getEffectiveItemAudits);
 const mockPreviousActivation = vi.mocked(getLatestActivationAudit);
 const mockContext = vi.mocked(repoCitationContextForHarness);
 const mockRecord = vi.mocked(recordPlanAudit);
 const mockRecordActivation = vi.mocked(recordCurrentActivationAudit);
+const mockPreviewActivation = vi.mocked(previewCurrentActivationAudit);
 const mockResolveSourceRefs = vi.mocked(resolveSessionTurnRefs);
 const mockRepairFiling = vi.mocked(ensureActivationAuditRepairFiling);
 const mockGetPlanRow = vi.mocked(getPlanRow);
@@ -109,6 +133,8 @@ const mockSetSpecClause = vi.mocked(setSpecClause);
 const mockRecoverHarness = vi.mocked(recoverHarnessFromSlugs);
 const mockPreviewPlanStartConsult = vi.mocked(previewPlanStartConsult);
 const mockEmitPlanEvent = vi.mocked(emitPlanEventForCaller);
+const mockAcceptanceRubrics = vi.mocked(getAcceptanceRubricsForPlan);
+const mockListScorecards = vi.mocked(listScorecards);
 
 const ctx = {
   log: vi.fn(),
@@ -124,7 +150,10 @@ const body = async (items: Array<Record<string, unknown>>, over: Record<string, 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockAcceptanceRubrics.mockResolvedValue([]);
+  mockListScorecards.mockResolvedValue([]);
   mockItems.mockResolvedValue([{ itemId: 'P-001', status: 'done', itemText: 'ship the audit gate' }]);
+  mockResolveHome.mockResolvedValue(null);
   mockSetSpecClause.mockResolvedValue({
     status: 'created',
     specId: 'AUTO-REQ-M-001-P-001',
@@ -142,13 +171,17 @@ beforeEach(() => {
       blobSha: (path) => (path === 'src/gate.ts' ? '0123456789012345678901234567890123456789' : null),
     },
   });
-  mockRecord.mockResolvedValue({ auditSeq: 1, auditedSha: 'head-1' } as never);
+  mockRecord.mockResolvedValue({ auditSeq: 1, auditedSha: 'head-1' } as Awaited<ReturnType<typeof recordPlanAudit>>);
   mockResolveSourceRefs.mockResolvedValue([
     { ref: 'session_turn:codex:session-full-id:7', ok: true, source: 'index' },
   ]);
   mockRecordActivation.mockResolvedValue({
     ok: true,
     audit: { auditSeq: 2 } as never,
+    auditedPlanRevision: { id: 41, seq: 6, contentHash: 'a'.repeat(64) },
+  });
+  mockPreviewActivation.mockResolvedValue({
+    ok: true, preview: true,
     auditedPlanRevision: { id: 41, seq: 6, contentHash: 'a'.repeat(64) },
   });
   mockPreviewPlanStartConsult.mockResolvedValue({
@@ -171,7 +204,6 @@ describe('plans:audit exact-slug scope recovery', () => {
       status: 'resolved',
       harnessSlug: 'papercusp',
       bySlug: { 'plan-a': 'papercusp' },
-      ambiguous: {},
     });
 
     const result = await tool.handler({
@@ -266,6 +298,24 @@ const barPlanCompleteWithDesign = barPlanWithDesign.replace(
   }) + '\n```',
 );
 
+// spec-conformance-loop-2026-10-14 R-1 / D-003: the activation gate refuses every
+// plan whose requirement compiles to no executable check, BAR epoch or not. The prose
+// fixtures above exercise the BAR map, not conformance, so this variant gives R-1 a
+// runnable `violatedWhen` falsifier (outside the requirement block, so the BAR hash is
+// unchanged) and leaves the BAR behaviour under test exactly as it was.
+const withR1Conformance = (planContent: string) => `${planContent}
+## Conformance
+
+\`\`\`conformance
+${JSON.stringify({ requirements: { 'R-1': { violatedWhen: [{
+    id: 'second-bar-authority',
+    failureMode: 'A second criterion claims the same BAR.',
+    stage: 'implementation',
+    check: { kind: 'tests', files: ['packages/operator-core/lib/agent-tools/plans/audit.test.ts'] },
+  }] } } })}
+\`\`\`
+`;
+
 const COMPLETE_CONVERSATION_OBLIGATION_IDS = [
   'M-001', // requirement
   'M-002', // scope boundary
@@ -290,6 +340,37 @@ function missingConversationObligations(mappings: Array<{ id: string; dispositio
 }
 
 describe('plans:audit D-008 writer contract', () => {
+  it('keeps shaping warnings advisory while completion still resolves and records code evidence', async () => {
+    resolvePlanContent('# Plan A\n' + productShapingScaffold() + '\n## Items\n- **P-001** `todo` Implement the audit gate.');
+    const preview = await tool.handler({ slug: 'plan-a', harness: 'papercusp', phase: 'shaping' } as never, ctx) as { data: any };
+    expect(preview.data).toMatchObject({ ok: true, dryRun: true, productShaping: { status: 'incomplete', advisory: true } });
+    expect(preview.data.productShaping.diagnostics.length).toBeGreaterThan(0);
+    expect(mockRecord).not.toHaveBeenCalled();
+
+    const completion = await body([{ itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/gate.ts', symbol: 'gate' }] }], { phase: 'completion', dryRun: false });
+    expect(completion).toMatchObject({ ok: true, coverage: { verifiedItems: 1 } });
+    expect(mockContext).toHaveBeenCalled();
+    expect(mockRecord).toHaveBeenCalledWith(expect.objectContaining({ items: [expect.objectContaining({
+      itemId: 'P-001', citations: [expect.objectContaining({ path: 'src/gate.ts', blobSha: expect.any(String) })],
+    })] }));
+
+    const activation = await tool.handler(activationArgs() as never, ctx) as { data: any };
+    expect(activation.data).toMatchObject({ ok: true, phase: 'activation', sourceRefsResolved: 1 });
+    expect(mockResolveSourceRefs).toHaveBeenCalled();
+    expect(mockRecordActivation).toHaveBeenCalled();
+  });
+
+  it('keeps full completion verification mandatory after an advisory shaping preview', async () => {
+    resolvePlanContent('# Plan A\n' + productShapingScaffold() + '\n## Items\n- **P-001** `todo` Implement the audit gate.');
+    const preview = await tool.handler({ slug: 'plan-a', harness: 'papercusp', phase: 'shaping' } as never, ctx) as { data: any };
+    expect(preview.data.productShaping).toMatchObject({ status: 'incomplete', advisory: true });
+
+    const completion = await body([{ itemId: 'P-001', verdict: 'implemented', citations: [] }], { phase: 'completion', dryRun: false });
+    expect(completion).toMatchObject({ ok: false, error: 'audit_invalid' });
+    expect(completion.problems).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'uncited_verdict' })]));
+    expect(mockRecord).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['doc', { kind: 'doc', ref: '/internal/docs/gate', reason: 'the document describes it' }],
     ['none', { kind: 'none', reason: 'no source was inspected' }],
@@ -313,6 +394,31 @@ describe('plans:audit D-008 writer contract', () => {
     expect(mockRecord).not.toHaveBeenCalled();
   });
 
+  // WI-10005174: itemIds are validated against the items of the harness that OWNS the
+  // plan. A same-slug plan in another harness must not lend its item ids.
+  it('validates itemIds against the items of the resolved home harness only', async () => {
+    mockResolveHome.mockResolvedValue('email');
+    mockItems.mockImplementation(async (_slug, scope) =>
+      scope?.harnessSlug === 'email'
+        ? [{ itemId: 'P-001', status: 'done', itemText: 'email item' }]
+        : [
+            { itemId: 'P-001', status: 'done', itemText: 'email item' },
+            { itemId: 'P-009', status: 'done', itemText: 'other harness item' },
+          ],
+    );
+
+    const result = await body([
+      { itemId: 'P-009', verdict: 'not-code', citations: [], note: 'pure process item' },
+    ]);
+
+    expect(mockResolveHome).toHaveBeenCalledWith('plan-a', expect.anything());
+    expect(mockItems).toHaveBeenCalledWith('plan-a', { harnessSlug: 'email' });
+    // P-009 exists only in the other harness's same-slug plan, so it is unknown here.
+    expect(result).toMatchObject({ ok: false, error: 'audit_invalid' });
+    expect(result.problems).toEqual([expect.objectContaining({ itemId: 'P-009', code: 'unknown_item' })]);
+    expect(mockRecord).not.toHaveBeenCalled();
+  });
+
   it('rejects work-item intent as a citation kind at the live input schema', () => {
     const parsed = tool.args.safeParse({
       slug: 'plan-a',
@@ -331,14 +437,15 @@ describe('plans:audit D-008 writer contract', () => {
     expect(parsed.success).toBe(false);
   });
 
-  it('limits classRef to activation audits at the live input schema', () => {
+  it('admits classRef at both phases of the live input schema (completion ignores it, P-003)', () => {
     const completion = {
       slug: 'plan-a',
       items: [{ itemId: 'P-001', verdict: 'not-code', citations: [], note: 'No code deliverable.' }],
     };
 
     expect(tool.args.safeParse(completion).success).toBe(true);
-    expect(tool.args.safeParse({ ...completion, classRef: 'plan-class-bugfix' }).success).toBe(false);
+    expect(tool.args.safeParse({ ...completion, classRef: 'plan-class-bugfix' }).success).toBe(true);
+    expect(tool.args.safeParse({ ...completion, classRef: 'not-a-class' }).success).toBe(false);
     expect(tool.args.safeParse({
       slug: 'plan-a',
       phase: 'activation',
@@ -404,7 +511,10 @@ describe('plans:audit D-008 writer contract', () => {
     expect(mockEmitPlanEvent).not.toHaveBeenCalled();
   });
 
-  it('refuses a citation whose current bytes do not exist at the explicit auditedSha', async () => {
+  // proof-freshness-pinned-candidate-2026-10-06 P-019: a peer's uncommitted edit to a
+  // cited file used to refuse the whole item (citation_audited_sha_mismatch). The audit
+  // now records the COMMITTED blob at auditedSha and reports the working-tree drift.
+  it('records the blob at auditedSha, not the working-tree blob, and notes the drift', async () => {
     const currentBlobSha = '0'.repeat(40);
     const auditedBlobSha = '1'.repeat(40);
     mockContext.mockResolvedValue({
@@ -424,9 +534,124 @@ describe('plans:audit D-008 writer contract', () => {
       { auditedSha: 'a'.repeat(40) },
     );
 
+    expect(result).toMatchObject({ ok: true });
+    expect(result.problems).toBeUndefined();
+    expect(result.note).toContain('1 cited file(s) differ in the working tree');
+    expect(result.note).toContain('src/gate.ts');
+    expect(mockRecord).toHaveBeenCalledWith(expect.objectContaining({
+      items: [expect.objectContaining({
+        itemId: 'P-001',
+        citations: [expect.objectContaining({ path: 'src/gate.ts', blobSha: auditedBlobSha })],
+      })],
+    }));
+  });
+
+  it('pins repo-file doc citations to auditedSha without counting them as verification', async () => {
+    const currentBlobSha = '0'.repeat(40);
+    const auditedBlobSha = '1'.repeat(40);
+    mockContext.mockResolvedValue({
+      repoRoot: '/repo',
+      rootSource: 'canonical-repo',
+      deps: {
+        statFile: (path) => (path === 'docs/guide.md' ? { isFile: true } : null),
+        readFile: (path) => (path === 'docs/guide.md' ? '# Current guide\n' : null),
+        blobSha: (path) => (path === 'docs/guide.md' ? currentBlobSha : null),
+        blobShaAt: (path, sha) =>
+          path === 'docs/guide.md' && sha === 'a'.repeat(40) ? auditedBlobSha : null,
+      },
+    });
+
+    const result = await body(
+      [{
+        itemId: 'P-001',
+        verdict: 'not-code',
+        note: 'This item delivers a guide.',
+        citations: [{ kind: 'doc', path: 'docs/guide.md' }],
+      }],
+      { auditedSha: 'a'.repeat(40) },
+    );
+
+    expect(result).toMatchObject({ ok: true, coverage: { verifiedItems: 0, unverifiedItemIds: ['P-001'] } });
+    expect(result.note).toContain('1 cited file(s) differ in the working tree');
+    expect(mockRecord).toHaveBeenCalledWith(expect.objectContaining({
+      items: [expect.objectContaining({
+        itemId: 'P-001',
+        citations: [expect.objectContaining({ kind: 'doc', path: 'docs/guide.md', blobSha: auditedBlobSha })],
+      })],
+    }));
+  });
+
+  it('adds no drift note when the working tree matches auditedSha', async () => {
+    const blob = '2'.repeat(40);
+    mockContext.mockResolvedValue({
+      repoRoot: '/repo',
+      rootSource: 'canonical-repo',
+      deps: {
+        statFile: (path) => (path === 'src/gate.ts' ? { isFile: true } : null),
+        readFile: (path) => (path === 'src/gate.ts' ? 'export const gate = true;\n' : null),
+        blobSha: (path) => (path === 'src/gate.ts' ? blob : null),
+        blobShaAt: (path) => (path === 'src/gate.ts' ? blob : null),
+      },
+    });
+
+    const result = await body(
+      [{ itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/gate.ts', symbol: 'gate' }] }],
+      { auditedSha: 'a'.repeat(40) },
+    );
+
+    expect(result).toMatchObject({ ok: true });
+    expect(result.note ?? '').not.toContain('differ in the working tree');
+  });
+
+  it('still refuses a cited file that is absent at auditedSha (uncommitted is not evidence)', async () => {
+    mockContext.mockResolvedValue({
+      repoRoot: '/repo',
+      rootSource: 'canonical-repo',
+      deps: {
+        statFile: (path) => (path === 'src/gate.ts' ? { isFile: true } : null),
+        readFile: (path) => (path === 'src/gate.ts' ? 'export const gate = true;\n' : null),
+        blobSha: (path) => (path === 'src/gate.ts' ? '3'.repeat(40) : null),
+        blobShaAt: () => null,
+      },
+    });
+
+    const result = await body(
+      [{ itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/gate.ts', symbol: 'gate' }] }],
+      { auditedSha: 'a'.repeat(40) },
+    );
+
     expect(result).toMatchObject({ ok: false, error: 'audit_invalid' });
     expect(result.problems).toEqual(expect.arrayContaining([
-      expect.objectContaining({ itemId: 'P-001', code: 'citation_audited_sha_mismatch' }),
+      expect.objectContaining({ itemId: 'P-001', code: 'citation_audited_sha_unresolvable' }),
+    ]));
+    expect(mockRecord).not.toHaveBeenCalled();
+  });
+
+  it('reports an operational audited-SHA Git failure separately from a missing citation', async () => {
+    mockContext.mockResolvedValue({
+      repoRoot: '/repo',
+      rootSource: 'canonical-repo',
+      deps: {
+        statFile: (path) => (path === 'src/gate.ts' ? { isFile: true } : null),
+        readFile: (path) => (path === 'src/gate.ts' ? 'export const gate = true;\n' : null),
+        blobSha: (path) => (path === 'src/gate.ts' ? '3'.repeat(40) : null),
+        blobShaAt: async () => {
+          throw new CitationGitReadError('Git citation read failed (no exit status): repository unavailable');
+        },
+      },
+    });
+
+    const result = await body(
+      [{ itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/gate.ts', symbol: 'gate' }] }],
+      { auditedSha: 'a'.repeat(40) },
+    );
+
+    expect(result).toMatchObject({ ok: false, error: 'audit_invalid' });
+    expect(result.problems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ itemId: 'P-001', code: 'citation_audited_sha_unavailable' }),
+    ]));
+    expect(result.problems).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ itemId: 'P-001', code: 'citation_audited_sha_unresolvable' }),
     ]));
     expect(mockRecord).not.toHaveBeenCalled();
   });
@@ -687,8 +912,9 @@ describe('plans:audit phase:activation', () => {
     expect(mockRecordActivation).toHaveBeenCalled();
   });
 
-  it('requires the evaluated class and admits omitted or empty coverage arrays for carry-forward re-audits', () => {
-    expect(tool.args.safeParse({ slug: 'plan-a', harness: 'papercusp', phase: 'activation' }).success).toBe(false);
+  it('admits an omitted classRef and omitted or empty coverage arrays for carry-forward re-audits', () => {
+    // P-003: an omitted classRef is derived in the handler, so the schema no longer refuses it.
+    expect(tool.args.safeParse({ slug: 'plan-a', harness: 'papercusp', phase: 'activation' }).success).toBe(true);
     expect(tool.args.safeParse({
       slug: 'plan-a',
       harness: 'papercusp',
@@ -878,10 +1104,21 @@ describe('plans:audit phase:activation', () => {
     // filter. "Never called" was only ever a proxy for the invariant that MATTERS and is
     // asserted directly below: an activation audit's outcome does not depend on plan
     // items being readable. Read here, but only AFTER the audit is durably recorded.
-    expect(mockItems).toHaveBeenCalledWith('plan-a');
+    expect(mockItems).toHaveBeenCalledWith('plan-a', { harnessSlug: null });
     expect(mockRecordActivation.mock.invocationCallOrder[0]!).toBeLessThan(
       mockItems.mock.invocationCallOrder[0]!,
     );
+  });
+
+  // WI-10005174: the ctx harness is only a CANDIDATE; plan_items is keyed by the
+  // plan's own harness, so the derivation must read the RESOLVED home's items.
+  it('reads draft-derivation items from the home harness resolved for the plan', async () => {
+    mockResolveHome.mockResolvedValue('email');
+
+    await tool.handler(activationArgs() as never, ctx);
+
+    expect(mockResolveHome).toHaveBeenCalledWith('plan-a', expect.anything());
+    expect(mockItems).toHaveBeenCalledWith('plan-a', { harnessSlug: 'email' });
   });
 
   it('returns the side-effect-free plans:start consult preview after recording activation', async () => {
@@ -991,12 +1228,47 @@ describe('plans:audit phase:activation', () => {
     // (plan-audits.ts:2182, closing 2319), so a plan outside the contract correctly
     // carries no map. Measured 2026-09-20: 1916 of 2044 plans have a NULL epoch, so
     // checking unconditionally would false-refuse ~94% of activation previews.
-    resolvePlanContent(barPlanWithoutDesign);
+    resolvePlanContent(withR1Conformance(barPlanWithoutDesign));
     mockOrgSql.mockResolvedValue([{ acceptance_bar_epoch: null }]);
 
     const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
 
     expect(result).toMatchObject({ ok: true, phase: 'activation', dryRun: true, preview: true });
+  });
+
+  it('refuses a NULL-epoch preview whose requirement compiles to no executable check (spec-conformance R-1, D-003)', async () => {
+    // D-003: no legacy-cohort exemption — a plan outside the BAR contract is still
+    // refused when a requirement has no runnable done-when check, falsifier, or
+    // approved unenforced declaration. Pair with the passing test above: the only
+    // difference is the ## Conformance falsifier.
+    resolvePlanContent(barPlanWithoutDesign);
+    mockOrgSql.mockResolvedValue([{ acceptance_bar_epoch: null }]);
+
+    const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: 'activation',
+      dryRun: true,
+      preview: true,
+      error: 'conformance_requirement_unenforced',
+      problems: [expect.objectContaining({ code: 'conformance_requirement_unenforced', barKey: 'R-1' })],
+    });
+    expect(result.message).toContain('Unenforced requirement(s): R-1');
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+    expect(mockEmitPlanEvent).not.toHaveBeenCalled();
+  });
+
+  it('refuses the recording write for an unenforced requirement and records nothing (spec-conformance R-1)', async () => {
+    resolvePlanContent(barPlanWithoutDesign);
+    mockOrgSql.mockResolvedValue([{ acceptance_bar_epoch: null }]);
+
+    const result = ((await tool.handler(activationArgs() as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({ ok: false, phase: 'activation', error: 'conformance_requirement_unenforced' });
+    expect(result).not.toHaveProperty('dryRun');
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+    expect(mockEmitPlanEvent).not.toHaveBeenCalled();
   });
 
   it('passes the preview for a contract plan that DOES carry a Bar-to-work map', async () => {
@@ -1012,11 +1284,45 @@ describe('plans:audit phase:activation', () => {
     expect(result).toMatchObject({ ok: true, phase: 'activation', dryRun: true, preview: true });
   });
 
+  it('previews the evidence-plane conflict that BAR seeding refuses', async () => {
+    const conflictingPlan = barPlanCompleteWithDesign
+      .replace(
+        '"falsifier":"A second criterion claims the same BAR.","requiredTestLayers"',
+        '"falsifier":"A second criterion claims the same BAR.","evidencePlane":"tree","requiredTestLayers"',
+      )
+      .replace('| R-1 | P-001 | tree |', '| R-1 | P-001 | live |');
+    resolvePlanContent(conflictingPlan);
+    mockOrgSql.mockResolvedValue([{ acceptance_bar_epoch: '1' }]);
+    mockPreviewActivation.mockResolvedValue({ ok: true, preview: true } as never);
+
+    const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: 'activation',
+      dryRun: true,
+      preview: true,
+      error: 'bar_evidence_plane_invalid',
+      problems: [expect.objectContaining({
+        code: 'bar_evidence_plane_invalid',
+        barKey: 'R-1',
+        detail: 'R-1 has conflicting Acceptance and map evidence planes',
+      })],
+    });
+    expect(mockPreviewActivation).not.toHaveBeenCalled();
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+    expect(mockEmitPlanEvent).not.toHaveBeenCalled();
+  });
+
   it('previews the writer contract-completeness refusal for a never-seeded prose BAR (P-003)', async () => {
     resolvePlanContent(barPlanWithDesign);
     mockOrgSql
       .mockResolvedValueOnce([{ acceptance_bar_epoch: '1', acceptance_bar_cohort: 'post-epoch', acceptance_bar_rubric_slug: null }])
       .mockResolvedValueOnce([]);
+    mockPreviewActivation.mockResolvedValue({ ok: false, error: 'bar_contract_method_missing',
+      message: 'R-1 has no METHOD/check/layers', problems: [{ code: 'bar_contract_method_missing',
+        barKey: 'R-1', detail: 'R-1 has no METHOD/check/layers',
+        contractGaps: ['method_missing', 'check_missing', 'test_layers_missing'] }] });
 
     const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
 
@@ -1025,8 +1331,8 @@ describe('plans:audit phase:activation', () => {
     expect(mockRecordActivation).not.toHaveBeenCalled();
   });
 
-  it('stays silent on an already-seeded prose plan, exactly as the writer does (P-003)', async () => {
-    resolvePlanContent(barPlanWithDesign);
+  it('delegates seeded-plan completeness to the same transactional decision as the writer', async () => {
+    resolvePlanContent(withR1Conformance(barPlanWithDesign));
     mockOrgSql
       .mockResolvedValueOnce([{ acceptance_bar_epoch: '1', acceptance_bar_cohort: 'post-epoch',
         acceptance_bar_rubric_slug: 'acceptance-plan-a' }])
@@ -1035,6 +1341,19 @@ describe('plans:audit phase:activation', () => {
     const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
 
     expect(result).toMatchObject({ ok: true, preview: true });
+    expect(mockPreviewActivation).toHaveBeenCalledWith(expect.objectContaining({ planSlug: 'plan-a', activation: expect.any(Object) }));
+  });
+
+  it('propagates successor completeness refusals even when the subject already has a rubric pin', async () => {
+    resolvePlanContent(barPlanWithDesign);
+    mockOrgSql.mockResolvedValueOnce([{ acceptance_bar_epoch: '1',
+      acceptance_bar_rubric_slug: 'retired-acceptance-plan-a' }]).mockResolvedValueOnce([]);
+    mockPreviewActivation.mockResolvedValue({ ok: false, error: 'bar_contract_method_missing',
+      message: 'The authored successor lacks a METHOD for R-1.' });
+    const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
+    expect(result).toMatchObject({ ok: false, preview: true, error: 'bar_contract_method_missing' });
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+    expect(mockEmitPlanEvent).not.toHaveBeenCalled();
   });
 
   it('previews the writer projection conflict for a live generated identity outside the current map', async () => {
@@ -1058,6 +1377,24 @@ describe('plans:audit phase:activation', () => {
     });
     expect(result.message).toContain('AUTO-BAR-R-9-P-999');
     expect(mockRecordActivation).not.toHaveBeenCalled();
+  });
+
+  it('names the safe repair for a retired but still-pinned projection conflict', async () => {
+    resolvePlanContent(barPlanWithDesign);
+    mockOrgSql
+      .mockResolvedValueOnce([{ acceptance_bar_epoch: '1' }])
+      .mockResolvedValueOnce([{
+        spec_id: 'AUTO-BAR-R-9-P-999',
+        source_bar_key: 'R-9',
+        lifecycle_status: 'retired',
+      }]);
+
+    const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({ ok: false, preview: true, error: 'bar_projection_conflict' });
+    expect(result.problems[0].detail).toContain("lifecycleStatus:'superseded'");
+    expect(result.problems[0].detail).toContain('sourceBar:null');
+    expect(result.message).toContain('plans:set-specs');
   });
 
   it('does not treat a superseded unpinned generated identity as a live preview conflict', async () => {
@@ -1550,5 +1887,115 @@ describe('plans:audit phase:activation', () => {
     }));
 
     expect(missingConversationObligations(mappings)).toEqual(['M-011']);
+  });
+});
+
+// plan-verification-friction-reduction-2026-10-11 P-003 (rubric R-3): an activation audit
+// derives an omitted classRef from the plan's latest spec-quality evaluation, a completion
+// audit ignores a stray classRef, and either way the class must match the plan's persisted
+// acceptance class.
+describe('plans:audit activation classRef derivation (P-003)', () => {
+  type AcceptanceRubricRows = Awaited<ReturnType<typeof getAcceptanceRubricsForPlan>>;
+  type ScorecardRows = Awaited<ReturnType<typeof listScorecards>>;
+  // One cast seam per fixture shape: the resolver reads only rubricId/classRef from a rubric
+  // and issueId/subject.ref from a scorecard, so the wide row types are filled partially here.
+  const acceptanceRubric = (classRef: PlanClassRubricRef): AcceptanceRubricRows =>
+    [{ rubricId: 'acceptance-plan-a', classRef }] as unknown as AcceptanceRubricRows;
+  /** Spec-quality cards for plan-a, NEWEST FIRST (the order listScorecards returns). */
+  const specQualityCards = (...classRefs: PlanClassRubricRef[]): ScorecardRows =>
+    classRefs.map((classRef, index) => ({
+      issueId: `EI-SPEC-QUALITY-${index}`,
+      createdAt: `2026-10-11T0${9 - index}:00:00.000Z`,
+      createdBy: 'su-author',
+      subject: { ref: specQualitySubjectRef('plan-a', classRef, `${index}`.repeat(64)), kind: 'spec-set' },
+    })) as unknown as ScorecardRows;
+  const activationWithoutClassRef = () => {
+    const { classRef: _omitted, ...args } = activationArgs();
+    return args;
+  };
+  const run = async (args: Record<string, unknown>) =>
+    ((await tool.handler(args as never, ctx)) as { data: any }).data;
+
+  it('derives classRef from the latest spec-quality evaluation when an activation call omits it', async () => {
+    mockListScorecards.mockResolvedValue(specQualityCards('plan-class-feature-ship', 'plan-class-bugfix'));
+
+    const result = await run(activationWithoutClassRef());
+
+    expect(result).toMatchObject({
+      ok: true,
+      phase: 'activation',
+      classRefResolution: { classRef: 'plan-class-feature-ship', source: 'derived', evaluationScorecardId: 'EI-SPEC-QUALITY-0' },
+    });
+    expect(mockListScorecards).toHaveBeenCalledWith(expect.objectContaining({
+      rubricRef: SPEC_QUALITY_RUBRIC_REF,
+      subjectRefLike: expect.stringMatching(/^spec-set:%:[0-9a-f]{16}$/),
+    }));
+    // The newest card's class seeds the BARs; the older bugfix evaluation is not used.
+    expect(mockRecordActivation).toHaveBeenCalledWith(expect.objectContaining({ classRef: 'plan-class-feature-ship' }));
+
+    // A plan with no evaluation record still refuses, naming the tool that creates one.
+    mockListScorecards.mockResolvedValue([]);
+    mockRecordActivation.mockClear();
+    const refused = await run(activationWithoutClassRef());
+    expect(refused).toMatchObject({
+      ok: false,
+      phase: 'activation',
+      error: 'activation_audit_invalid',
+      problems: [expect.objectContaining({
+        code: 'class_ref_required',
+        detail: expect.stringContaining('plans:evaluate-spec-quality'),
+      })],
+    });
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+  });
+
+  it('accepts a completion-phase audit carrying classRef and notes that it was ignored', async () => {
+    const items = [{ itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/gate.ts', symbol: 'gate' }] }];
+    expect(tool.args.safeParse({ slug: 'plan-a', harness: 'papercusp', items, classRef: 'plan-class-bugfix' }).success)
+      .toBe(true);
+
+    const result = await body(items, { classRef: 'plan-class-bugfix' });
+
+    expect(result).toMatchObject({ ok: true, slug: 'plan-a', coverage: { auditedItems: 1, verifiedItems: 1 } });
+    expect(result.note).toContain("classRef 'plan-class-bugfix' was ignored");
+    expect(mockRecord).toHaveBeenCalled();
+    // Completion never consults the class sources.
+    expect(mockListScorecards).not.toHaveBeenCalled();
+    expect(mockAcceptanceRubrics).not.toHaveBeenCalled();
+  });
+
+  it("refuses an activation whose classRef differs from the plan's persisted acceptance class", async () => {
+    mockAcceptanceRubrics.mockResolvedValue(acceptanceRubric('plan-class-feature-ship'));
+
+    // A supplied classRef that disagrees with the persisted class.
+    const supplied = await run(activationArgs({ classRef: 'plan-class-bugfix' }));
+    expect(supplied).toMatchObject({
+      ok: false,
+      phase: 'activation',
+      error: 'activation_audit_invalid',
+      problems: [expect.objectContaining({
+        code: 'class_ref_mismatch',
+        detail: expect.stringContaining("supplied classRef 'plan-class-bugfix' differs from plan 'plan-a's persisted acceptance class 'plan-class-feature-ship'"),
+      })],
+    });
+    expect(mockAcceptanceRubrics).toHaveBeenCalledWith('plan-a', expect.objectContaining({ harnessSlug: 'papercusp', strict: true }));
+
+    // A derived classRef whose evaluation ran under a different class.
+    mockListScorecards.mockResolvedValue(specQualityCards('plan-class-bugfix'));
+    const derived = await run(activationWithoutClassRef());
+    expect(derived).toMatchObject({
+      ok: false,
+      problems: [expect.objectContaining({
+        code: 'class_ref_mismatch',
+        detail: expect.stringContaining("derived classRef 'plan-class-bugfix'"),
+      })],
+    });
+    expect(mockPreviewActivation).not.toHaveBeenCalled();
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+
+    // Control: the matching class proceeds, so the refusals above are about the mismatch alone.
+    const matching = await run(activationArgs({ classRef: 'plan-class-feature-ship' }));
+    expect(matching).toMatchObject({ ok: true, phase: 'activation' });
+    expect(mockRecordActivation).toHaveBeenCalledWith(expect.objectContaining({ classRef: 'plan-class-feature-ship' }));
   });
 });

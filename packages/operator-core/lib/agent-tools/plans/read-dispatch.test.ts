@@ -13,7 +13,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const H = vi.hoisted(() => ({
-  calls: [] as Array<{ pathname: string; body: Record<string, unknown> }>,
+  calls: [] as Array<{ pathname: string; body: Record<string, unknown>; headers: Record<string, string> }>,
   /** When set, the mock returns this JSON as the tool's text envelope for the
    *  next call (else the default `{ ok: true }`). */
   nextResult: null as unknown,
@@ -22,8 +22,8 @@ const H = vi.hoisted(() => ({
 
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
-  handleHttpToolRequest: vi.fn(async (req: { pathname: string; body: Record<string, unknown> }) => {
-    H.calls.push({ pathname: req.pathname, body: req.body });
+  handleHttpToolRequest: vi.fn(async (req: { pathname: string; body: Record<string, unknown>; headers: Record<string, string> }) => {
+    H.calls.push({ pathname: req.pathname, body: req.body, headers: req.headers });
     if (H.nextHttpFailure) {
       const failure = H.nextHttpFailure;
       H.nextHttpFailure = null;
@@ -43,11 +43,27 @@ vi.mock('../index', () => ({}));
 vi.mock('../../projected-tool-deps', () => ({ PROJECTED_DEPS: {} }));
 
 import { callPlansRead, callPlansReadRaw } from './read-dispatch';
+import { runWithWorkspace } from '../../workspace-als';
 
 beforeEach(() => {
   H.calls = [];
   H.nextResult = null;
   H.nextHttpFailure = null;
+});
+
+describe('nested UI workspace context', () => {
+  it('forwards each request workspace without leaking it to another or an unscoped read', async () => {
+    await runWithWorkspace('ws-a', () => callPlansReadRaw('attention', {}));
+    await runWithWorkspace('ws-b', () => callPlansReadRaw('attention', {}));
+    await callPlansReadRaw('attention', {});
+    await runWithWorkspace('*', () => callPlansReadRaw('attention', {}));
+    expect(H.calls.map(call => call.headers)).toEqual([
+      { 'x-papercusp-workspace': 'ws-a' },
+      { 'x-papercusp-workspace': 'ws-b' },
+      {},
+      {},
+    ]);
+  });
 });
 
 describe('plan document UI read cost', () => {

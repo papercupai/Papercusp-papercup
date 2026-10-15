@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('./degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
+
 const ensureBootstrap = vi.fn();
 const getTxPool = vi.fn();
 const readQueue = vi.fn();

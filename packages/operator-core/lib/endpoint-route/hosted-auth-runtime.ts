@@ -11,6 +11,7 @@
 
 import { withHostedServiceContext, withTenantContext } from '@papercusp/db-org/tenant-context';
 import { Hono } from 'hono';
+import type { RefusalContract } from '../capability-envelope/refusal-contract-types';
 import { createHostedIdentityBinder } from '../auth/hosted-identity-binding';
 import { PostgresHostedSelfSignupAdmission } from '../auth/hosted/self-signup';
 import {
@@ -19,6 +20,10 @@ import {
   type HostedPrincipalResolver,
 } from '../auth/hosted-principal-resolver';
 import { HostedSessionCookieCodec } from '../auth/hosted-session';
+import { createHostedPrincipal } from '../auth/hosted-principal';
+import { readCloudTelemetryConsent } from '../cloud-telemetry';
+import { getBuildInfo } from '../build-info';
+import { createHash } from 'node:crypto';
 import {
   HostedRuntimeMembershipAuthority,
   HostedServiceIdentityDirectory,
@@ -34,6 +39,8 @@ import {
   HOSTED_AUTH_ROUTES,
   createHostedAuthRoutes,
 } from './routes/hosted-auth';
+import { createHostedTutorialProgressRoutes } from './routes/hosted-tutorial-progress-routes';
+import { createHostedTutorialAssistanceRoutes, HOSTED_BROWSER_TUTORIAL_HELP_PATH, HOSTED_BROWSER_TUTORIAL_SPEECH_PATH, HOSTED_BROWSER_TUTORIAL_VOICE_TOKEN_PATH, type TutorialAssistanceDependencies } from './routes/hosted-tutorial-progress';
 
 // The billing runtime rides in this module's portal prebundle (one bundle, one
 // dynamic import). It mounts its own pinned surface; the four auth routes below
@@ -64,10 +71,14 @@ export interface HostedAuthRuntimeDependencies {
   readonly resolveSecret?: HostedAuthRuntimeSecretResolver;
   readonly runService?: HostedServiceContextRunner;
   readonly runTenant?: HostedTenantContextRunner;
+  readonly tutorialAssistance?: TutorialAssistanceDependencies;
 }
 
 export interface HostedAuthRuntime {
   readonly app: Hono;
+  /** Canonical guide preferences and explicit Help, with the same session authority. */
+  readonly tutorial: Hono;
+  readonly tutorialMounted: readonly { method: string; path: string }[];
   readonly mounted: readonly { method: string; path: string }[];
   readonly resolvePrincipal: HostedPrincipalResolver;
   readonly components: {
@@ -150,7 +161,20 @@ function createHostedAuthApp(
         if (!resolution.ok) return denial(resolution.reason);
         const required = typeof route.auth === 'object' ? route.auth.capabilities ?? [] : [];
         if (required.some((permission) => !resolution.principal.capabilities.has(permission as never))) {
-          return Response.json({ error: { code: 'forbidden', message: 'permission_missing' } }, { status: 403 });
+          return Response.json({
+            error: {
+              code: 'forbidden',
+              message: 'permission_missing',
+              refusal: {
+                observed: { route: `${route.method} ${route.path}`, required: required.join(',') },
+                liftsWhen:
+                  'the session principal holds every capability the route requires (a hosted-membership role ' +
+                  'change by the organization owner/admin; the session then re-resolves on its next request). ' +
+                  'Retrying the same session without the capability changes nothing',
+                whoCanMakeItTrue: ['owner'],
+              } satisfies RefusalContract,
+            },
+          }, { status: 403 });
         }
         principal = resolution.principal;
       }
@@ -207,11 +231,48 @@ export async function createHostedAuthRuntime(
     sessionStore,
     sessionCookieCodec,
     publicOrigin: configuration.publicOrigin,
+    onSessionEstablished: async session => {
+      const principal = createHostedPrincipal({ workspaceId: configuration.controlPlaneWorkspaceId,
+        activeOrganizationId: session.organizationId, userId: session.userId, sessionId: session.id,
+        sessionVersion: session.permissionVersion, selectedWorkspaceId: session.workspaceId ?? undefined, permissions: [] });
+      const digest = createHash('sha256').update(session.id).digest('hex');
+      const operation_id = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-5${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+      const { deliverCloudPosthog } = await import('../cloud-telemetry-posthog');
+      return deliverCloudPosthog({ event: 'cloud_portal_session', operation_id, properties: { action: 'signed_in' } },
+        { principal, origin: 'control-plane', hostingMode: 'byoc', release: getBuildInfo().sha ?? '',
+          environment: process.env.PORT === '3170' ? 'staging' : process.env.NODE_ENV === 'production' ? 'production' : 'development',
+          observedAt: session.createdAt.toISOString() },
+        () => runTenant({ principal: { kind: 'user', profile: 'hosted', authMethod: 'cookie-session', trust: 'verified',
+          slug: session.userId, workspaceId: configuration.controlPlaneWorkspaceId, userId: session.userId,
+          activeOrganizationId: session.organizationId, sessionId: session.id, sessionVersion: session.permissionVersion } },
+        tx => readCloudTelemetryConsent(tx, principal)));
+    },
   });
   const app = createHostedAuthApp(mounted, resolvePrincipal);
+  // Reuse exact hosted leaves and the same tenant/session authority. The Help
+  // route loads the existing tool-less lesson brain only for an explicit ask.
+  const tutorialRouteOptions = { origin: configuration.publicOrigin,
+    controlPlaneWorkspaceId: configuration.controlPlaneWorkspaceId, runTenant };
+  const tutorialMounted = [
+    ...createHostedTutorialProgressRoutes(tutorialRouteOptions),
+    ...createHostedTutorialAssistanceRoutes({ ...tutorialRouteOptions, dependencies: dependencies.tutorialAssistance })
+      .filter(route => route.path === HOSTED_BROWSER_TUTORIAL_HELP_PATH
+        || (route.path === HOSTED_BROWSER_TUTORIAL_SPEECH_PATH && dependencies.tutorialAssistance?.speech)
+        || (route.path === HOSTED_BROWSER_TUTORIAL_VOICE_TOKEN_PATH && dependencies.tutorialAssistance?.voiceToken)),
+  ];
+  const tutorial = new Hono().basePath('/api');
+  for (const route of tutorialMounted) {
+    tutorial.on(route.method, route.path, async context => {
+      const resolution = await resolvePrincipal(context.req.raw.headers);
+      if (!resolution.ok) return denial(resolution.reason);
+      return route.handler(context.req.raw, { principal: resolution.principal } as never);
+    });
+  }
 
   return {
     app,
+    tutorial,
+    tutorialMounted,
     mounted,
     resolvePrincipal,
     components: { sessionStore, sessionCookieCodec, membershipAuthority, identityDirectory },

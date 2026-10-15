@@ -1,0 +1,16 @@
+{
+  "agent": "omp",
+  "capturedAt": "2026-10-09T18:48:01.966Z",
+  "generator": "scripts/capture-turn-classifier-fixtures.mjs",
+  "sourceSha256": "0f9a17693e769f45fb451e93fbda1b268b6c9737202237cf0d3c929b2cbbc6e5",
+  "sourceRowCount": 13,
+  "capturedRowCount": 9,
+  "windowStartIndex": 4,
+  "completionIndex": 11,
+  "trailingRowCount": 1,
+  "discriminator": "tool results that must not reset a completed native turn",
+  "verdictPreservingSanitizer": "proven at capture: raw vs sanitized agree on every row, in-fence and out-of-fence",
+  "completionsConsidered": 1,
+  "windowsRejectedAsNonDiscriminating": 0,
+  "note": "Captured from a real on-disk transcript; every field the classifier does not read was dropped at capture time."
+}

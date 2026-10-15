@@ -60,6 +60,9 @@ export const NOT_CHECKED_NON_GATING_SCRIPTS = Object.freeze(
     'lint:required-field-strands:typecheck',
     'lint:peer-dep-conflicts',
     'lint:no-unreachable-tier-mock',
+    // green-main-cycle-time-2026-10-08 P-004: reads the CI duration ledger; an unreachable
+    // ledger is NOT CHECKED (exit 2), reported but never a fleet red.
+    'lint:test-timing-budgets',
   ]),
 );
 

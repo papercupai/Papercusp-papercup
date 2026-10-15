@@ -57,6 +57,7 @@ import { FLAGS } from "@papercusp/flags";
 import { useFlag } from "@/lib/flag-hooks";
 import { ReportBlockCard } from "./chat/ReportBlockCard";
 import { useCurrentUserIdentity } from "./use-current-user";
+import "./operator-chat.css";
 
 type ChatIconComponent = ComponentType<{ className?: string }>;
 

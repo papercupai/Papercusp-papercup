@@ -1,11 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
+import { lookupByMcpName, readJsonResult } from '@papercusp/agent-mcp';
 import { dispatchProjectedTool, type ProjectedTool, type UnifiedToolContext } from '@papercusp/tooldef';
 import scorecardEmitTool, {
   attachScorecardCompletionReceipt,
   cleanupAcceptanceGraderTasks,
+  resolveDeterministicCheckScope,
+  resolveHarnessTargetHive,
   scorecardAbortCompletionReceipt,
 } from './emit';
 import { COORD_ROLES } from '../coordination/roles';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 
 const task = (taskId: string, label: string, headless = true) => ({
   taskId,
@@ -65,6 +69,65 @@ describe('dedicated acceptance judge lifecycle', () => {
     expect(shape?.acceptanceOf?.description ?? '').toMatch(/adopts its ratings verbatim/i);
     expect(String(scorecardEmitTool.description)).toMatch(/Every emit persists complete ratings/i);
     expect(JSON.stringify(scorecardEmitTool.guidance)).toMatch(/acceptance adopts ratings via acceptanceOf/i);
+  });
+
+  it('defers ambient result trimming until the result door can preserve a committed rating', () => {
+    // scorecards:emit is a write receipt. A session-tier bounded projection can
+    // strip one populated canonicalRatings entry before the outer result door
+    // has a chance to apply its scorecards:emit preservation path and spill the
+    // full result. Keep ambient trim off; explicit payloadTier overrides remain
+    // caller-controlled by the shared tier resolver.
+    expect(scorecardEmitTool.ignoreSessionPayloadTier).toBe(true);
+  });
+
+  it('preserves all six populated ratings through the real wrapper in a trimmed session', async () => {
+    const ratings = Object.fromEntries(
+      Array.from({ length: 6 }, (_, index) => [
+        `criterion-${index + 1}`,
+        { rating: 'pass', evidence: `verified criterion-${index + 1} ${'e'.repeat(1_800)}` },
+      ]),
+    );
+    const data = { ok: true, created: true, issueId: 'EI-trimmed-session-fixture', canonicalRatings: ratings };
+    expect(JSON.stringify(data).length).toBeGreaterThan(8_000);
+
+    // Exercise the registered defineTool wrapper and its actual payload-tier
+    // dispatch. Stub only the ledger-writing handler so this test does not add
+    // a synthetic scorecard to the shared workspace.
+    const handler = vi.spyOn(scorecardEmitTool, 'handler');
+    mockResolvedTyped(handler, { data });
+    try {
+      const projected = lookupByMcpName('scorecards:emit');
+      expect(projected?.ignoreSessionPayloadTier).toBe(true);
+      const dispatched = await dispatchProjectedTool(
+        projected!,
+        'scorecards:emit',
+        { rubricRef: 'test-rubric' },
+        {
+          log: vi.fn(),
+          signal: new AbortController().signal,
+          progress: vi.fn(),
+          emit: vi.fn(),
+          workspaceId: 'default',
+          runId: 'scorecards-emit-trimmed-session-regression',
+          isSuperuser: true,
+          uiClientId: 'su-scorecards-emit-test',
+          role: 'su',
+          gateBypass: { role: true, capability: true, quota: true },
+          transport: 'mcp',
+          requestedFormat: 'json',
+          contextTier: 'trimmed',
+          tx: {},
+        },
+        {},
+      );
+
+      expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+      const payload = readJsonResult<{ canonicalRatings: typeof ratings; _projection?: unknown }>(dispatched.result!);
+      expect(payload?._projection).toBeUndefined();
+      expect(payload?.canonicalRatings).toEqual(ratings);
+    } finally {
+      handler.mockRestore();
+    }
   });
 
   it('kills every live headless task for the exact acceptance-rubric label prefix', async () => {
@@ -193,9 +256,12 @@ describe('scorecard abort completion receipts', () => {
 
     expect(committed).toBe(true);
     expect(result.ok).toBe(false);
+    // The caller's own signal aborted, so the code is 'aborted' (not a dispatcher timeout);
+    // the write still committed, so the receipt must survive (WI-10006764).
     expect(result.error).toMatchObject({
-      code: 'timeout',
+      code: 'aborted',
       meta: {
+        abortSource: 'parent-signal',
         abortCompletionReceipt: {
           status: 'recovery-incomplete',
           failures: ['missing-completion-receipt'],
@@ -261,5 +327,45 @@ describe('scorecard abort completion receipts', () => {
       status: 'recovery-incomplete',
       failures: ['missing-completion-receipt'],
     });
+  });
+});
+
+// plan-verification-friction-reduction-2026-10-11 P-005 (R-6): `harness` names the subject
+// plan's harness, as in every plans tool, so it maps to targetHive — never to sourceHive.
+describe('scorecards:emit harness alias (P-005)', () => {
+  it('accepts harness and resolves the subject target hive from it', async () => {
+    const parsed = scorecardEmitTool.args.safeParse({
+      rubricRef: 'acceptance-friction-plan',
+      harness: 'papercusp',
+      sourceHive: 'grader-hive',
+    });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    const resolved = resolveHarnessTargetHive(parsed.data);
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+    expect(resolved.args).toMatchObject({ targetHive: 'papercusp', sourceHive: 'grader-hive' });
+    expect(resolved.args).not.toHaveProperty('harness');
+    // The resolved targetHive is what scopes the card's deterministic checks to the subject tree.
+    const scope = await resolveDeterministicCheckScope(resolved.args, {
+      ctxHarness: 'papercusp',
+      workspaceId: 'ws-test',
+      checkRoot: '/tmp/subject-tree',
+    });
+    expect(scope).toMatchObject({ root: '/tmp/subject-tree', workspaceId: 'ws-test', harnessSlug: 'papercusp' });
+    // A matching targetHive is the same instruction, not a conflict.
+    expect(resolveHarnessTargetHive({ harness: 'papercusp', targetHive: 'papercusp' }))
+      .toEqual({ ok: true, args: { targetHive: 'papercusp' } });
+  });
+
+  it('refuses a call whose harness disagrees with targetHive', async () => {
+    const args = { rubricRef: 'acceptance-friction-plan', harness: 'papercusp', targetHive: 'portal' };
+    expect(scorecardEmitTool.args.safeParse(args).success).toBe(true);
+    const refused = resolveHarnessTargetHive(args);
+    expect(refused).toMatchObject({ ok: false, code: 'harness_target_hive_mismatch' });
+    // The public handler refuses before any read or write, with a not-recorded receipt.
+    const result = (await scorecardEmitTool.handler(args as never, {} as never)) as { data: unknown };
+    expect(result.data).toMatchObject({ ok: false, code: 'harness_target_hive_mismatch' });
+    expect(JSON.stringify(result.data)).toContain('not-recorded');
   });
 });

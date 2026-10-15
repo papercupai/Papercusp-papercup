@@ -1,0 +1,20 @@
+START 2026-10-06T08:48:29Z
+uname_r=7.0.0-34-generic
+dpkg virtualbox-7.2 7.2.20-175154~Ubuntu~noble ii
+dpkg virtualbox-dkms  un
+modinfo_n=/lib/modules/7.0.0-34-generic/misc/vboxdrv.ko
+UNDER_RUNNING_KERNEL=yes
+vermagic=7.0.0-34-generic SMP preempt mod_unload modversions
+VERMAGIC_MATCH=yes
+lsmod vboxnetadp 28672 0
+lsmod vboxnetflt 40960 0
+lsmod vboxdrv 720896 2
+LSMOD_HAS_VBOXDRV=1
+repo_hook_sha=8efb748e53d66d69904b0459ff991dde00e5a73e0f36254a11eb5adb88caddb0
+hook /etc/kernel/postinst.d/vboxdrv-rebuild exec identical 8efb748e53d66d69904b0459ff991dde00e5a73e0f36254a11eb5adb88caddb0
+runparts_select[/etc/kernel/postinst.d]: /etc/kernel/postinst.d/vboxdrv-rebuild
+hook /etc/kernel/header_postinst.d/vboxdrv-rebuild exec identical 8efb748e53d66d69904b0459ff991dde00e5a73e0f36254a11eb5adb88caddb0
+runparts_select[/etc/kernel/header_postinst.d]: /etc/kernel/header_postinst.d/vboxdrv-rebuild
+repo_hook_commit=202743ceba73f6107991c915144d47787a2e95f5 2026-10-06T03:58:57-04:00
+repo_hook_dirty=0
+END 2026-10-06T08:48:29Z

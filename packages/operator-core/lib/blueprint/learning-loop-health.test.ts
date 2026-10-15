@@ -7,6 +7,8 @@ import {
   computeActivityLaneHealth,
   summarizeLearningLoopHealth,
   singletonRoutineName,
+  DEFAULT_BG_HOST_START_FIRE_GRACE_MS,
+  DEFAULT_RESUME_FIRE_GRACE_MS,
   type LearningLoopSpec,
   type LearningRoutineRow,
 } from './learning-loop-health';
@@ -44,6 +46,92 @@ describe('computeLearningLoopHealth — per-loop routine verdict', () => {
     });
     expect(cal.status).toBe('stale');
     expect(cal.daysSinceFire).toBe(5);
+  });
+
+  it('keeps an overdue loop pending during bg-host startup grace when it has not fired since process start', () => {
+    const processStartedAtMs = NOW - 5 * 60_000;
+    const row = sRow('calibration', {
+      lastFiredAt: new Date(processStartedAtMs - 5 * 86_400_000).toISOString(),
+      nextFireAt: new Date(processStartedAtMs - 60_000).toISOString(),
+    });
+    const [duringGrace] = computeLearningLoopHealth([LOOPS[0]], [row], {
+      nowMs: NOW,
+      processStartedAtMs,
+    });
+
+    expect(duringGrace.status).toBe('pending');
+    expect(summarizeLearningLoopHealth([duringGrace]).needsAttention).toEqual([]);
+  });
+
+  it('restores stale classification after the 15-minute bg-host startup grace expires', () => {
+    const processStartedAtMs = NOW - DEFAULT_BG_HOST_START_FIRE_GRACE_MS - 1;
+    const row = sRow('calibration', {
+      lastFiredAt: new Date(processStartedAtMs - 5 * 86_400_000).toISOString(),
+      nextFireAt: new Date(processStartedAtMs - 60_000).toISOString(),
+    });
+    const [afterGrace] = computeLearningLoopHealth([LOOPS[0]], [row], {
+      nowMs: NOW,
+      processStartedAtMs,
+    });
+
+    expect(afterGrace.status).toBe('stale');
+  });
+
+  it('does not mask a post-start fire whose activity remains unproven', () => {
+    const processStartedAtMs = NOW - 5 * 60_000;
+    const firedAtMs = processStartedAtMs + 60_000;
+    const row = sRow('calibration', {
+      lastFiredAt: new Date(firedAtMs).toISOString(),
+      nextFireAt: new Date(processStartedAtMs - 60_000).toISOString(),
+    });
+    const [health] = computeLearningLoopHealth([LOOPS[0]], [row], {
+      nowMs: NOW,
+      processStartedAtMs,
+      activityByBlueprintId: {
+        calibration: {
+          lastActivityAt: new Date(firedAtMs - 60_000).toISOString(),
+          source: 'test-ledger',
+          mode: 'since-fire',
+          graceMs: 60_000,
+        },
+      },
+    });
+
+    expect(health.status).toBe('stale');
+  });
+
+  it('keeps a due loop pending briefly after a recorded resume, then restores the stale verdict', () => {
+    const resumedAtMs = NOW - 30_000;
+    const row = sRow('calibration', {
+      lastFiredAt: daysAgo(65),
+      nextFireAt: daysAgo(65),
+      lastPauseResumedAtMs: resumedAtMs,
+    });
+    const [duringGrace] = computeLearningLoopHealth([LOOPS[0]], [row], { nowMs: NOW, staleAfterDays: 3 });
+
+    expect(duringGrace.status).toBe('pending');
+    expect(summarizeLearningLoopHealth([duringGrace]).needsAttention).toEqual([]);
+
+    const [afterGrace] = computeLearningLoopHealth([LOOPS[0]], [row], {
+      nowMs: resumedAtMs + DEFAULT_RESUME_FIRE_GRACE_MS + 1,
+      staleAfterDays: 3,
+    });
+    expect(afterGrace.status).toBe('stale');
+  });
+
+  it('does not let pre-pause domain activity override a recent resume grace', () => {
+    const resumedAtMs = NOW - 30_000;
+    const [scout] = computeLearningLoopHealth(
+      [LOOPS[1]],
+      [sRow('scout', { lastFiredAt: daysAgo(65), nextFireAt: daysAgo(65), lastPauseResumedAtMs: resumedAtMs })],
+      {
+        nowMs: NOW,
+        staleAfterDays: 3,
+        activityByBlueprintId: { scout: { lastActivityAt: daysAgo(65), source: 'scout_ticks' } },
+      },
+    );
+
+    expect(scout.status).toBe('pending');
   });
 
   it('keeps a long-cadence loop healthy while its next scheduled fire is still ahead', () => {
@@ -87,15 +175,36 @@ describe('computeLearningLoopHealth — per-loop routine verdict', () => {
     expect(scout.activitySource).toBe('scout_ticks');
   });
 
-  it('marks Scout stale when routine fire is fresh but newer than scout_ticks by the grace window', () => {
+  it('lets a fresh Scout fire finish when the previous tick is older than the activity grace', () => {
+    const firedAt = NOW - 30_000;
+    const lastActivityAt = firedAt - 31.4 * 60_000;
     const [scout] = computeLearningLoopHealth(
       [LOOPS[1]],
-      [sRow('scout', { lastFiredAt: new Date(NOW).toISOString() })],
+      [sRow('scout', { lastFiredAt: new Date(firedAt).toISOString() })],
       {
         nowMs: NOW,
         staleAfterDays: 1,
         activityByBlueprintId: {
-          scout: { lastActivityAt: new Date(NOW - 20 * 60_000).toISOString(), source: 'scout_ticks' },
+          scout: { lastActivityAt: new Date(lastActivityAt).toISOString(), source: 'scout_ticks' },
+        },
+        activityLagGraceMs: 30 * 60_000,
+      },
+    );
+
+    expect(scout.status).toBe('firing');
+    expect(scout.daysSinceFire).toBe(0);
+    expect(scout.daysSinceActivity).toBe(0);
+  });
+
+  it('marks Scout stale when a fire remains without activity past the grace', () => {
+    const [scout] = computeLearningLoopHealth(
+      [LOOPS[1]],
+      [sRow('scout', { lastFiredAt: new Date(NOW - 20 * 60_000).toISOString() })],
+      {
+        nowMs: NOW,
+        staleAfterDays: 1,
+        activityByBlueprintId: {
+          scout: { lastActivityAt: new Date(NOW - 40 * 60_000).toISOString(), source: 'scout_ticks' },
         },
         activityLagGraceMs: 5 * 60_000,
       },

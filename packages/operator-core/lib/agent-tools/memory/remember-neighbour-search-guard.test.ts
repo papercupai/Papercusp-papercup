@@ -19,6 +19,10 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+vi.mock('../../memory/surfaced-outcomes', async (original) => ({
+  ...(await original<typeof import('../../memory/surfaced-outcomes')>()),
+  captureSurfacedOutcome: vi.fn(async () => ({ ok: true })),
+}));
 vi.mock('../../memory/write-journal', () => ({
   journalPendingWrite: vi.fn(async () => null),
   markJournalCommitted: vi.fn(async () => {}),
@@ -33,6 +37,10 @@ vi.mock('../../memory/backend', () => ({
   },
 }));
 vi.mock('../../auth', () => ({ getSessionUserOrDefault: vi.fn() }));
+vi.mock('../../knowledge-packs/identity-learning', async (original) => ({
+  ...(await original<typeof import('../../knowledge-packs/identity-learning')>()),
+  wornMemoryIdentityIds: vi.fn(async () => []),
+}));
 // Spread the real module so pure exports survive the mock — a minimal stub
 // breaks at collection when a transitive import derefs them (EI-14928; AGENT_ROLES
 // in testing/run.ts did exactly that across this directory on 2026-08-17).
@@ -53,10 +61,12 @@ vi.mock('../../memory/ref-expand', () => ({
 }));
 
 import remember, { neighbourSearchQuery } from './remember';
+import { captureSurfacedOutcome } from '../../memory/surfaced-outcomes';
 import { getMemoryBackend } from '../../memory/backend';
 import { getSessionUserOrDefault } from '../../auth';
 import { getOrgPg } from '@papercusp/db-org';
 import { journalPendingWrite, markJournalCommitted } from '../../memory/write-journal';
+import { wornMemoryIdentityIds } from '../../knowledge-packs/identity-learning';
 
 type FakeBackend = {
   name: string;
@@ -106,6 +116,7 @@ beforeEach(() => {
   } as unknown as ReturnType<typeof getOrgPg>);
   vi.mocked(journalPendingWrite).mockResolvedValue(null);
   vi.mocked(markJournalCommitted).mockResolvedValue(undefined);
+  vi.mocked(wornMemoryIdentityIds).mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -225,6 +236,37 @@ describe('P-009 class 2 — the neighbour-search query stays bounded', () => {
 });
 
 describe('memory:remember supersession convergence', () => {
+  it('records citations as used and the successfully superseded memory as contradicted in this session', async () => {
+    const b = fakeBackend();
+    b.remember.mockResolvedValue({ ids: [NEW_ID] });
+    useBackend(b);
+    const ctx = { ...fakeCtx, uiClientId: 'writer' } as Parameters<typeof remember.handler>[1];
+    await remember.handler({ content: `replacement citing memory:${NEW_ID}`, kind: 'reference', supersede: OLD_ID }, ctx);
+    expect(captureSurfacedOutcome).toHaveBeenCalledWith(ctx, [NEW_ID], 'used');
+    expect(captureSurfacedOutcome).toHaveBeenCalledWith(ctx, [OLD_ID], 'contradicted');
+  });
+
+  it('does not record a contradiction when a supersession close fails', async () => {
+    const b = fakeBackend();
+    b.remember.mockResolvedValue({ ids: [NEW_ID] });
+    b.invalidateEntry.mockRejectedValue(new Error('close failed'));
+    useBackend(b);
+    await remember.handler({ content: 'replacement', kind: 'reference', supersede: OLD_ID }, fakeCtx);
+    expect(captureSurfacedOutcome).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), 'contradicted');
+  });
+
+  it('supersedes the exact near-duplicate target instead of silently dropping its outcome', async () => {
+    process.env.PAPERCUSP_MEMORY_DEDUP = 'on';
+    const b = fakeBackend();
+    const text = 'The workspace uses the canonical embedding model.';
+    b.search.mockResolvedValue([{ id: OLD_ID, text, scope: 'user-1', score: 1 }]);
+    b.remember.mockResolvedValue({ ids: [NEW_ID] });
+    useBackend(b);
+    const res = await remember.handler({ content: text, kind: 'reference', supersede: OLD_ID }, fakeCtx);
+    expect(JSON.parse((res as { content: { text: string }[] }).content[0].text)).toMatchObject({ ok: true, superseded: OLD_ID });
+    expect(captureSurfacedOutcome).toHaveBeenCalledWith(fakeCtx, [OLD_ID], 'contradicted');
+  });
+
   it.each([
     ['unknown target', null, 'supersede_not_found'],
     ['cross-scope target', { id: OLD_ID, text: 'old', scope: 'harness:other' }, 'supersede_scope_mismatch'],

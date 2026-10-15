@@ -8,9 +8,14 @@
  */
 import type { AgentFleetRecord } from '../../agent-fleets-store';
 import { getFleet } from '../../agent-fleets-store';
-import type { WorkItem } from '../../work-items';
-import type { ClaimSpec } from '../../scheduler/claim-spec';
-import { validateClaimSpec } from '../../scheduler/claim-spec';
+import { listAllWorkItemsForFileExport, ISSUE_FAMILY_KINDS, type WorkItem, type WorkItemKind, type OrgSql } from '../../work-items';
+import { getOrgPg } from '@papercusp/db-org';
+import { activeWorkspaceId } from '../../workspace-registry';
+import { issuesScopeWorkspace, issueMatchWhereSql, issueShapeWhereSql } from '../../issues-engineer';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
+import * as intakePolicy from '../../harness/improvements/agent-review-policy';
+import type { ClaimSpec, FilterNode } from '../../scheduler/claim-spec';
+import { validateClaimSpec, positiveKindCohortKinds } from '../../scheduler/claim-spec';
 import { matchesWorkItemClaimSpec } from '../../scheduler/claim-spec-match';
 import type { ResolvedFleetClaimSpec } from '../../scheduler/claim-spec-store';
 import { resolveFleetClaimSpec, fleetSpecBeeKey } from '../../scheduler/claim-spec-store';
@@ -356,6 +361,157 @@ export async function resolveFleetMetricScope(
 
 export function selectFleetMetricCurrentItems(scope: ResolvedFleetMetricScope, items: readonly WorkItem[]): WorkItem[] {
   return items.filter((item) => matchesWorkItemClaimSpec(item, scope.claimSpec.current));
+}
+
+function filterUsesSummary(filter: FilterNode | undefined): boolean {
+  if (!filter) return false;
+  if ('field' in filter) return filter.field === 'summary';
+  if ('not' in filter) return filterUsesSummary(filter.not);
+  if ('all' in filter) return filter.all.some(filterUsesSummary);
+  if ('any' in filter) return filter.any.some(filterUsesSummary);
+  return false;
+}
+
+/** Whether any current or historical claim-spec predicate consumes hydrated summary text. */
+export function fleetMetricClaimFiltersUseSummary(filters: readonly (FilterNode | undefined)[]): boolean {
+  return filters.some(filterUsesSummary);
+}
+
+/**
+ * Select identities with the scheduler's compiler before hydrating payloads.
+ * Keep the union of current and historical filters: old-spec flow events and
+ * terminal canonical bugs still contribute to the snapshot. No state floor,
+ * lifetime cutoff or display cap may turn this into an incomplete census.
+ * The existing facade retains its visibility, family and parent semantics.
+ */
+export async function readFleetMetricSourceItems(scope: ResolvedFleetMetricScope): Promise<WorkItem[]> {
+  return readFleetMetricRows(scope);
+}
+
+async function readFleetMetricRows(scope: ResolvedFleetMetricScope, notTerminal = false, metricProjection = false): Promise<WorkItem[]> {
+  const { sql } = getOrgPg();
+  const { compileFilter } = await import('../../scheduler/get-next');
+  const filters = [scope.claimSpec.current, ...scope.claimSpec.segments.map(segment => segment.spec)]
+    .map(spec => spec.view.filter);
+  const bodyProjection = metricProjection && !fleetMetricClaimFiltersUseSummary(filters) ? 'fleetMetricsCensus' : undefined;
+  const uniqueFilters = [...new Map(filters.map(value => [JSON.stringify(value), value])).values()];
+  const filter: FilterNode | undefined = filters.some(value => value === undefined)
+    ? undefined : uniqueFilters.length === 1 ? uniqueFilters[0] : { any: uniqueFilters as FilterNode[] };
+  // A proven single issue kind makes the feature hydration branch impossible.
+  // Bound every historical filter as well: today's bug-only spec must not hide
+  // earlier feature/task flow. Unknown, mixed and generic kinds retain both
+  // canonical family readers and their existing visibility policy.
+  const kindBounds = filters.map(positiveKindCohortKinds);
+  const kinds = kindBounds.every(bound => bound !== null)
+    ? new Set(kindBounds.flatMap(bound => bound!)) : null;
+  const onlyKind = kinds?.size === 1 ? [...kinds][0] : undefined;
+  const kind = onlyKind && ISSUE_FAMILY_KINDS.some(value => value === onlyKind)
+    ? onlyKind as WorkItemKind : undefined;
+  const issueWorkspace = issuesScopeWorkspace();
+  const identities = sql`
+    SELECT wi.feature_id FROM harness_shared.work_items wi
+     WHERE wi.workspace_id = ANY(${[activeWorkspaceId(), issueWorkspace]}::text[])
+       AND wi.harness_slug = ANY(${[scope.scope.harness, `operator:${issueWorkspace}`]}::text[])
+       AND (${compileFilter(sql, filter)})`;
+  return listAllWorkItemsForFileExport({
+    harness: scope.scope.harness, includeObservations: true,
+    kind,
+    ids: identities,
+    notTerminal,
+    payloadProjection: 'fleetMetricsCensus',
+    ...(bodyProjection ? { bodyProjection } : {}),
+  });
+}
+
+/** Terminal rows contribute counts and complete identities, never synthetic work-item rows. */
+export interface FleetMetricTerminalContribution {
+  stage: ReturnType<typeof intakePolicy.deriveWorkItemPresentationStage>['stage'];
+  observation: boolean;
+  authority: WorkItem['completionAuthority'];
+  terminal_owner: string | null;
+  created_by: string | null;
+  n: number;
+  opened: number;
+  closed: number;
+  ids: string[];
+}
+
+export interface FleetMetricSource {
+  items: WorkItem[];
+  terminalContributions: Promise<FleetMetricTerminalContribution[]>;
+}
+
+/** Measured census policy, scoped to this transaction; it never changes the pool defaults. */
+export async function withFleetMetricReadSql<T>(read: (sql: OrgSql) => Promise<T>): Promise<T> {
+  return getOrgPg().sql.begin('isolation level repeatable read read only', async tx => {
+    await tx`SELECT set_config(name, value, true) FROM (VALUES
+      ('max_parallel_workers_per_gather','4'), ('min_parallel_table_scan_size','0'),
+      ('min_parallel_index_scan_size','0'), ('parallel_setup_cost','0'),
+      ('parallel_tuple_cost','0')) AS policy(name, value)`;
+    return read(tx as unknown as OrgSql);
+  }) as Promise<T>;
+}
+
+/**
+ * Extend the existing source reader for the measured current-spec bug cohort.
+ * Mixed families and historical flow retain the complete canonical row reader.
+ * Nonterminal payloads stay intact; terminal predicates and presentation stages
+ * use the existing compiler, visibility policy and SQL presentation twin.
+ */
+export async function readFleetMetricSource(scope: ResolvedFleetMetricScope): Promise<FleetMetricSource> {
+  const bound = positiveKindCohortKinds(scope.claimSpec.current.view.filter);
+  if (scope.scope.flow.mode !== 'current-spec' || scope.claimSpec.historyReturned !== 0 ||
+      bound?.length !== 1 || bound[0] !== 'bug') {
+    return { items: await readFleetMetricSourceItems(scope), terminalContributions: Promise.resolve([]) };
+  }
+  const terminalContributions = withFleetMetricReadSql(async sql => {
+    const { compileFilter } = await import('../../scheduler/get-next');
+    const issueWorkspace = issuesScopeWorkspace();
+    const options = { includeChildren: false, excludeObservationLane: false };
+    const terminalStates = [...ANY_FAMILY_TERMINAL_STATES];
+    const identities = sql`SELECT wi.feature_id FROM harness_shared.work_items wi
+      WHERE wi.workspace_id = ANY(${[activeWorkspaceId(), issueWorkspace]}::text[])
+        AND wi.harness_slug = ANY(${[scope.scope.harness, `operator:${issueWorkspace}`]}::text[])
+        AND (${compileFilter(sql, scope.claimSpec.current.view.filter)})`;
+    const readiness = sql`readiness`;
+    const stage = intakePolicy.workItemPresentationStageFromSignalsSql(sql, {
+      observation: sql`observation`, terminal: sql`TRUE`,
+      readinessValid: intakePolicy.implementationReadinessValidFromJsonSql(sql, readiness),
+      readinessEnrolled: sql`enrolled`, readiness,
+      acceptanceState: intakePolicy.implementationAcceptanceStateFromReadinessSql(sql, readiness,
+        intakePolicy.acceptanceSourceRevisionFromFragmentsSql(sql, sql`kind`, sql`title`, sql`body`),
+        sql`kind`, sql`completion_subject`),
+      status: sql`state`, assigned: sql`FALSE`, blocked: sql`FALSE`, authority: sql`authority`,
+    });
+    return sql<FleetMetricTerminalContribution[]>`WITH selected AS MATERIALIZED (
+      SELECT issue_id, kind, title, body, state, authority, terminal_owner, created_by,
+        created_at, closed_ts, COALESCE(payload->>'lane' = 'observation', FALSE) observation,
+        payload->'implementationReadiness' readiness,
+        COALESCE(payload ? 'implementationReadiness', FALSE) enrolled,
+        ${intakePolicy.completionVerificationSubjectSql(sql, sql`payload`)} completion_subject
+      FROM harness_shared.engineer_issues
+      WHERE workspace_id = ${issueWorkspace} AND scope = ${`harness:${scope.scope.harness}`} AND kind = 'bug'
+        AND ${issueMatchWhereSql(sql, false, options)} AND ${issueShapeWhereSql(sql, false, options)}
+        AND state = ANY(${terminalStates}::text[]) AND issue_id IN (${identities})
+    ), classified AS (
+      SELECT issue_id, authority, terminal_owner, created_by, created_at, closed_ts, observation,
+        ${stage} stage FROM selected
+    ) SELECT stage, observation, authority, terminal_owner, created_by, count(*)::int n,
+      count(*) FILTER (WHERE created_at >= ${scope.scope.window.startAt}::timestamptz
+        AND created_at < ${scope.scope.window.endAt}::timestamptz)::int opened,
+      count(*) FILTER (WHERE closed_ts >= ${Date.parse(scope.scope.window.startAt)}::bigint
+        AND closed_ts < ${Date.parse(scope.scope.window.endAt)}::bigint)::int closed,
+      array_agg(issue_id ORDER BY issue_id) ids
+    FROM classified GROUP BY stage, observation, authority, terminal_owner, created_by`;
+  });
+  void terminalContributions.catch(() => undefined);
+  try {
+    return { items: await readFleetMetricRows(scope, true, true), terminalContributions };
+  } catch (error) {
+    // Drain the independent transaction on failure as well as success.
+    await terminalContributions.catch(() => undefined);
+    throw error;
+  }
 }
 
 export interface FleetMetricWorkItemEvent<T = unknown> {

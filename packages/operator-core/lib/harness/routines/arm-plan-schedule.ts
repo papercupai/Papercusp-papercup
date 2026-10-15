@@ -18,6 +18,7 @@ import {
   materializePlanSchedule,
   deactivatePlanSchedule,
   type BlueprintOperationRoutineTarget,
+  type PlanScheduleSystemAction,
 } from './materialize-plan-schedule';
 import type { ScheduleTrigger } from './schedule-next';
 
@@ -41,6 +42,7 @@ export interface ArmPlanScheduleInput {
   schedule?: (ScheduleTrigger & {
     concurrency?: 'queue' | 'skip' | 'cancel-prev';
     operation?: BlueprintOperationRoutineTarget;
+    action?: PlanScheduleSystemAction;
   }) | null;
   /** The plan's one-shot time (from the scheduled_at column). */
   scheduledAt?: Date | string | null;
@@ -76,6 +78,7 @@ export async function armPlanSchedule(input: ArmPlanScheduleInput): Promise<ArmR
     templateSlug: input.templateSlug,
     schedule: input.schedule ?? undefined,
     operation: input.schedule?.operation,
+    action: input.schedule?.action,
     scheduledAt: input.scheduledAt ? new Date(input.scheduledAt) : undefined,
     concurrency: input.concurrency ?? input.schedule?.concurrency,
     active: true,
@@ -91,8 +94,16 @@ export async function disarmPlanSchedule(input: {
   sql?: Sql;
   /** ⚠ REQUIRED (WI-5825) — see {@link ArmPlanScheduleInput.workspaceId}. */
   workspaceId: string;
+  /** The harness the TEMPLATE plan row lives under (its storage slug). */
   harnessSlug: string;
   templateSlug: string;
+  /**
+   * The routine's `install_slug`, when it differs from the plan's storage slug (a
+   * routine installed under a member harness whose plans are re-homed to the Pot —
+   * see plan-run-action's WI-6978 note). Defaults to `harnessSlug`, the arm-time
+   * invariant; without it a mismatched pair would flip one row and miss the other.
+   */
+  routineInstallSlug?: string;
 }): Promise<{ ok: true }> {
   const sql = input.sql ?? getOrgPg().sql;
   const { workspaceId } = input;
@@ -102,6 +113,6 @@ export async function disarmPlanSchedule(input: {
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${input.harnessSlug}
        AND plan_slug = ${input.templateSlug}
   `;
-  await deactivatePlanSchedule(input.harnessSlug, input.templateSlug, { sql });
+  await deactivatePlanSchedule(input.routineInstallSlug ?? input.harnessSlug, input.templateSlug, { sql });
   return { ok: true };
 }

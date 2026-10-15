@@ -48,7 +48,9 @@ export default defineTool({
   capability: 'plans:read',
   requirePrincipal: false,
   skipWorkspaceTx: true,
-  agentRoles: [...SU_ROLES],
+  // Acceptance judges need the revision history named by their rubric methods;
+  // keep this read grant local rather than widening the general SU role set.
+  agentRoles: [...SU_ROLES, 'judge'],
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {

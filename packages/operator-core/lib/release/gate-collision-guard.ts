@@ -361,8 +361,12 @@ export interface GateCollisionProbeDeps {
  * harness, and every harness's row carries the same `:15` schedule), so an under-scoped read
  * returns some other harness's row — well-formed, confident, wrong. A zero-row result fails
  * open, which is the safe direction here.
+ *
+ * Also read by the green checkpoint's post-verdict pure-lane proof capture
+ * (scripts/lib/pure-lane-proof-capture.mjs), which stops before a slice that would run into
+ * the next fire.
  */
-async function defaultReadNextFireInSec(): Promise<number | null> {
+export async function readGreenCheckpointNextFireInSec(): Promise<number | null> {
   const [{ operatorHomeHarnessSlug }, { getOrgPg }, { activeWorkspaceId }] = await Promise.all([
     import('../harness/operator-home-harness'),
     import('@papercusp/db-org'),
@@ -395,7 +399,7 @@ async function defaultDeps(): Promise<GateCollisionProbeDeps> {
     readRunLock: () => isCheckpointRunLockHeldCheap(integrationRoot()),
     readRunLockCgroup: defaultReadProcessCgroup,
     readTargetCgroup: defaultReadTargetCgroup,
-    readNextFireInSec: defaultReadNextFireInSec,
+    readNextFireInSec: readGreenCheckpointNextFireInSec,
     readRefire: () => readInFlightRetriage(),
   };
 }
@@ -807,6 +811,174 @@ export async function checkGitSyncCollision(
 }
 
 /**
+ * WI-6554700010010484 (P-031): both checks above key on LOCK LEASES, not on the
+ * process doing the commit. When a fire's shared `git-sync` barrier lease and its
+ * per-slug exclusive lapse while its local commit stage keeps running
+ * (EI-25694970219201164), the cgroup preflight reads `clear` and the barrier
+ * acquires at once, so the restart SIGKILLs the commit it exists to protect.
+ *
+ * This probe reads the writer-backed `git_sync_activity` marker instead: a fire
+ * is in flight while its marker says `active:true, phase:'local-sync'`, its
+ * `updated_at` heartbeat is within the fire's own idle-timeout bound (a pass with
+ * no progress for longer is aborted by its liveness guard), and its `owner_pid`
+ * is alive inside the target's cgroup. Post-legs are deliberately excluded: they
+ * run after the local lock set is released by design and re-take their own
+ * per-slug lock without the barrier, so blocking on them would over-refuse.
+ *
+ * Call it only while HOLDING the exclusive restart barrier: no new pass can start
+ * then, so waiting on this predicate converges instead of racing the sweep.
+ */
+export interface InFlightLocalSyncObservation {
+  installSlug: string;
+  owner: string | null;
+  ownerPid: number;
+  startedAtMs: number | null;
+  updatedAtMs: number;
+  cgroupRelation: GateRunCgroupRelation;
+}
+
+export interface InFlightLocalSyncProbe {
+  /** True only when the marker rows themselves could not be read. */
+  probeFailed: boolean;
+  targetCgroupPath: string | null;
+  /** Live local-sync passes that are inside, or cannot be proven outside, the target's cgroup. */
+  inFlight: InFlightLocalSyncObservation[];
+}
+
+export interface InFlightLocalSyncProbeDeps {
+  readActivityRows: () => Promise<Array<{ installSlug: string; activity: unknown }>>;
+  readProcess: (pid: number) => ProcessCgroupObservation | Promise<ProcessCgroupObservation>;
+  readTargetCgroup: (target: GitSyncSensitiveTarget) => string | null | Promise<string | null>;
+  /** A marker whose heartbeat is older than this is abandoned, not in flight. */
+  freshForMs: number;
+  nowMs?: () => number;
+}
+
+/**
+ * Slack over the idle-timeout bound: 2× the activity writer's 30s heartbeat throttle
+ * (git-sync-action.ts GIT_SYNC_ACTIVITY_HEARTBEAT_INTERVAL_MS), so a live pass between
+ * heartbeats is never read as abandoned.
+ */
+const LOCAL_SYNC_HEARTBEAT_SLACK_MS = 60_000;
+
+const markerTimestampMs = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
+
+async function defaultInFlightLocalSyncDeps(): Promise<InFlightLocalSyncProbeDeps> {
+  const [{ getOrgPg }, { gitSyncActionIdleTimeoutMs }] = await Promise.all([
+    import('@papercusp/db-org'),
+    import('../harness/git-sync/git-sync-action'),
+  ]);
+  return {
+    // No workspace filter on purpose: the owner_pid + target-cgroup check below
+    // is what scopes a marker to this restart's blast radius.
+    readActivityRows: async () => {
+      const { sql } = getOrgPg();
+      const rows = await sql.unsafe<Array<{ install_slug: string; activity: unknown }>>(
+        `SELECT install_slug, metadata->'git_sync_activity' AS activity
+           FROM harness_shared.routines
+          WHERE target_role = 'system:git-sync'
+            AND metadata->'git_sync_activity'->>'active' = 'true'`,
+      );
+      return rows.map((row) => ({ installSlug: row.install_slug, activity: row.activity }));
+    },
+    readProcess: defaultReadProcessObservation,
+    readTargetCgroup: defaultReadTargetCgroup,
+    freshForMs: gitSyncActionIdleTimeoutMs() + LOCAL_SYNC_HEARTBEAT_SLACK_MS,
+  };
+}
+
+export async function probeInFlightLocalSync(
+  target: GitSyncSensitiveTarget,
+  deps?: InFlightLocalSyncProbeDeps,
+): Promise<InFlightLocalSyncProbe> {
+  let readers: InFlightLocalSyncProbeDeps;
+  let rows: Array<{ installSlug: string; activity: unknown }>;
+  try {
+    readers = deps ?? (await defaultInFlightLocalSyncDeps());
+    rows = await readers.readActivityRows();
+  } catch {
+    return { probeFailed: true, targetCgroupPath: null, inFlight: [] };
+  }
+
+  const nowMs = readers.nowMs?.() ?? Date.now();
+  const candidates = rows.flatMap((row) => {
+    const marker =
+      row.activity && typeof row.activity === 'object' ? (row.activity as Record<string, unknown>) : null;
+    if (marker?.active !== true || marker.phase !== 'local-sync') return [];
+    const ownerPid = marker.owner_pid;
+    if (typeof ownerPid !== 'number' || !Number.isSafeInteger(ownerPid) || ownerPid <= 0) return [];
+    const updatedAtMs = markerTimestampMs(marker.updated_at) ?? markerTimestampMs(marker.started_at);
+    if (updatedAtMs === null || nowMs - updatedAtMs > readers.freshForMs) return [];
+    return [
+      {
+        installSlug: row.installSlug,
+        owner: typeof marker.owner === 'string' ? marker.owner : null,
+        ownerPid,
+        startedAtMs: markerTimestampMs(marker.started_at),
+        updatedAtMs,
+      },
+    ];
+  });
+  if (candidates.length === 0) return { probeFailed: false, targetCgroupPath: null, inFlight: [] };
+
+  let targetCgroupPath: string | null = null;
+  try {
+    targetCgroupPath = normalizeCgroupPath(await readers.readTargetCgroup(target));
+  } catch {
+    // An unreadable target cgroup leaves every live candidate's relation 'unknown' (blocking).
+  }
+  const observed = await Promise.all(
+    candidates.map(async (candidate): Promise<InFlightLocalSyncObservation | null> => {
+      let process: ProcessCgroupObservation = { alive: null, cgroupPath: null };
+      try {
+        process = await readers.readProcess(candidate.ownerPid);
+      } catch {
+        // Unreadable process: fail closed below rather than treat it as gone.
+      }
+      if (process.alive === false) return null;
+      const cgroupRelation =
+        process.alive === true ? gateRunCgroupRelation(process.cgroupPath, targetCgroupPath) : 'unknown';
+      if (cgroupRelation === 'different') return null;
+      return { ...candidate, cgroupRelation };
+    }),
+  );
+  return {
+    probeFailed: false,
+    targetCgroupPath,
+    inFlight: observed.filter((entry): entry is InFlightLocalSyncObservation => entry !== null),
+  };
+}
+
+/** Poll {@link probeInFlightLocalSync} until no live local-sync pass remains or the budget elapses. */
+export async function waitForInFlightLocalSync(
+  target: GitSyncSensitiveTarget,
+  opts: {
+    waitSec: number;
+    pollMs?: number;
+    deps?: InFlightLocalSyncProbeDeps;
+    sleep?: (ms: number) => Promise<void>;
+    nowMs?: () => number;
+  },
+): Promise<InFlightLocalSyncProbe> {
+  const now = opts.nowMs ?? Date.now;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const deadline = now() + Math.max(0, opts.waitSec) * 1_000;
+  for (;;) {
+    const probe = await probeInFlightLocalSync(target, opts.deps);
+    if (!probe.probeFailed && probe.inFlight.length === 0) return probe;
+    if (now() >= deadline) return probe;
+    await sleep(opts.pollMs ?? 1_000);
+  }
+}
+
+/**
  * The isolated staging-sync service owns this flock exclusively while it may
  * mutate the checkout. A staging restart probes for a SHARED lock: that fails
  * while sync is in its exclusive checkout/build phase, but succeeds after the
@@ -824,7 +996,11 @@ export interface StagingSyncCollisionVerdict {
   blocked: boolean;
   kind: StagingSyncCollisionKind;
   note: string;
-  detail: { lockPath: string; lockHeld: boolean | null };
+  detail: {
+    lockPath: string;
+    lockHeld: boolean | null;
+    probeError?: { code: string | number | null; message: string; stderr?: string; signal?: string };
+  };
 }
 
 async function defaultStagingSyncLockProbe(): Promise<boolean> {
@@ -852,7 +1028,7 @@ export async function checkStagingSyncCollision(
   target: string,
   probe: () => Promise<boolean> = defaultStagingSyncLockProbe,
 ): Promise<StagingSyncCollisionVerdict> {
-  const detail = { lockPath: STAGING_SYNC_LOCK_PATH, lockHeld: null as boolean | null };
+  const detail: StagingSyncCollisionVerdict['detail'] = { lockPath: STAGING_SYNC_LOCK_PATH, lockHeld: null };
   if (target !== 'staging') {
     return {
       blocked: false,
@@ -879,7 +1055,18 @@ export async function checkStagingSyncCollision(
           note: `papercup-staging-sync is not in its exclusive checkout/build phase (${detail.lockPath}).`,
           detail,
         };
-  } catch {
+  } catch (error) {
+    // Keep the underlying measurement failure distinct from a held lock. Both
+    // preview and confirmed restart responses already carry this detail object.
+    const failure = error !== null && typeof error === 'object'
+      ? error as { code?: unknown; message?: unknown; stderr?: unknown; signal?: unknown }
+      : {};
+    detail.probeError = {
+      code: typeof failure.code === 'string' || typeof failure.code === 'number' ? failure.code : null,
+      message: (typeof failure.message === 'string' ? failure.message : String(error)).slice(0, 500),
+      ...(typeof failure.stderr === 'string' && failure.stderr ? { stderr: failure.stderr.slice(0, 500) } : {}),
+      ...(typeof failure.signal === 'string' && failure.signal ? { signal: failure.signal.slice(0, 64) } : {}),
+    };
     return {
       blocked: true,
       kind: 'probe-failed',
@@ -933,7 +1120,12 @@ export interface GitSyncRestartBarrierDeps {
     /** 0 = today's bare try-acquire. >0 = drain shared holders for up to N sec. */
     maxWaitSec: number;
   }) => Promise<BarrierAcquireRaw>;
-  release: (params: { coordinationDomain: string; owner: string; lockId: string }) => Promise<void>;
+  release: (params: {
+    coordinationDomain: string;
+    owner: string;
+    lockId: string;
+  }) => Promise<{ released: number; exclusiveResources: string[] } | void>;
+  emitReleased?: (resource: string, workspaceId: string) => void;
 }
 
 /**
@@ -962,6 +1154,19 @@ export interface GitSyncRestartBarrierDeps {
  * polling the cgroup predicate never could — polling races the sweep it is trying to
  * observe. If this value goes stale again, re-sample `locks:list { resource:'git-sync' }`
  * over a live window rather than guessing.
+ *
+ * WI-10007606 (2026-10-08): the "fires hold it ~5-10s" premise failed outright under load —
+ * ONE papercusp pass (~41 submodules, ~12s per git call) held the barrier 11+ minutes, so
+ * six 120s drains in a row refused and bg-host could not be restarted for hours. No drain
+ * cap fixes that class. An in-flight pass now YIELDS at its next submodule-batch boundary
+ * (or before its pointer-bump phase) when it sees this barrier's exclusive `draining`
+ * (`gitSyncRestartYieldReason` in git-sync-action.ts), so the drain is bounded by one
+ * batch of git work, not by the whole pass.
+ *
+ * WI-6554700010010584 (2026-10-13): EXCEPT a pass already inside its pointer-bump
+ * phase (stage + guard + commit), which has no yield boundary and measured 70-90s
+ * under load — the sole remaining holder in every measured 45s refusal. A caller that
+ * must restart should pass this full ceiling, not a shorter budget.
  */
 export const GIT_SYNC_RESTART_BARRIER_DRAIN_SEC = 120;
 
@@ -983,10 +1188,11 @@ export type GitSyncRestartBarrierOutcome =
     };
 
 async function defaultGitSyncRestartBarrierDeps(): Promise<GitSyncRestartBarrierDeps> {
-  const [{ inWorkspaceTxn }, lockStore, { resourceLockDomain }] = await Promise.all([
+  const [{ inWorkspaceTxn }, lockStore, { resourceLockDomain }, { emitResourceReleasedEvent }] = await Promise.all([
     import('../agent-tools/locks/in-workspace-txn'),
     import('../agent-tools/locks/su-lock-store'),
     import('../agent-tools/locks/coordination-domain'),
+    import('../harness/git-sync/git-sync-events'),
   ]);
   return {
     resolveDomain: resourceLockDomain,
@@ -1020,22 +1226,42 @@ async function defaultGitSyncRestartBarrierDeps(): Promise<GitSyncRestartBarrier
       };
     },
     release: async ({ coordinationDomain, owner, lockId }) => {
-      await inWorkspaceTxn(coordinationDomain, owner, (tx) =>
+      return inWorkspaceTxn(coordinationDomain, owner, (tx) =>
         lockStore.tryReleaseResource(tx, { coordinationDomain, owner, lockId }),
       );
     },
+    emitReleased: emitResourceReleasedEvent,
   };
 }
 
 export async function acquireGitSyncRestartBarrier(
   ownerLabel: string | null,
   deps?: GitSyncRestartBarrierDeps,
-  opts?: { maxDrainSec?: number },
+  opts?: {
+    maxDrainSec?: number;
+    /**
+     * Seconds the caller will keep working under the HELD barrier before its kill
+     * handoff (WI-6554700010010484: the in-flight local-sync wait). Added to the
+     * lease so that wait cannot consume the handoff window and re-admit git-sync.
+     */
+    holdExtraSec?: number;
+  },
 ): Promise<GitSyncRestartBarrierOutcome> {
   const d = deps ?? (await defaultGitSyncRestartBarrierDeps());
   const resource = GIT_SYNC_RESTART_BARRIER_RESOURCE;
   const coordinationDomain = d.resolveDomain(resource);
   const owner = d.newOwner();
+  const releaseBarrier = async (lockId: string): Promise<void> => {
+    const receipt = await d.release({ coordinationDomain, owner, lockId });
+    // EI-25556999491855818: this internal release bypasses the public locks
+    // wrapper. Publish the existing exact resource event after the transaction
+    // confirms a release, including removal of a timed-out queued exclusive.
+    // A release signal does not assert that a restart happened or no peer holds
+    // the resource; the awakened caller still has to acquire its own barrier.
+    if (receipt && receipt.released > 0 && receipt.exclusiveResources.includes(resource)) {
+      d.emitReleased?.(resource, coordinationDomain);
+    }
+  };
   const maxWaitSec = Math.max(0, opts?.maxDrainSec ?? 0);
   const result = await d.acquire({
     coordinationDomain,
@@ -1045,7 +1271,8 @@ export async function acquireGitSyncRestartBarrier(
     // The lease starts when the exclusive is QUEUED, not when it becomes held.
     // Preserve it for the entire drain plus the existing kill-handoff window;
     // otherwise a 120s drain loses its 60s lease and admits new git-sync fires.
-    ttlSec: Math.ceil(maxWaitSec) + GIT_SYNC_RESTART_BARRIER_TTL_SEC,
+    ttlSec:
+      Math.ceil(maxWaitSec) + Math.ceil(Math.max(0, opts?.holdExtraSec ?? 0)) + GIT_SYNC_RESTART_BARRIER_TTL_SEC,
     maxWaitSec,
   });
   if (!result.ok) {
@@ -1064,9 +1291,7 @@ export async function acquireGitSyncRestartBarrier(
       // same bounded contention retry used by acquisition. Non-contention
       // failures still fall through to the TTL backstop and never mask the
       // original acquire refusal.
-      await acquireWithContentionRetry(() =>
-        d.release({ coordinationDomain, owner, lockId: result.lock_id! }),
-      )
+      await acquireWithContentionRetry(() => releaseBarrier(result.lock_id!))
         .catch(() => {});
     }
     return { acquired: false, resource, reason: result.reason, holders: result.holders };
@@ -1078,6 +1303,6 @@ export async function acquireGitSyncRestartBarrier(
     owner,
     coordinationDomain,
     expiresAt: result.expires_ts.toISOString(),
-    release: () => d.release({ coordinationDomain, owner, lockId: result.lock_id }),
+    release: () => releaseBarrier(result.lock_id),
   };
 }

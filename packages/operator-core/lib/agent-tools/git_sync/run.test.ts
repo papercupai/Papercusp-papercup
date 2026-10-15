@@ -219,10 +219,11 @@ describe('git-sync:run', () => {
       });
       expect(refused.note).toMatch(/PAPERCUSP_BACKGROUND_WORKERS=0/);
       expect(refused.note).toContain(
-        'node scripts/mcp-call.mjs git-sync:run --json-file <args.json> --client <your-su-id> --port 3271',
+        'ptool git-sync:run --url=http://127.0.0.1:3271 --json-file <args.json>',
       );
+      expect(refused.note).toMatch(/workspace.*shared.*bearer/i);
       expect(refused.note).toMatch(/background mode.*inspect its log/i);
-      expect(refused.note).not.toContain('--url=');
+      expect(refused.note).not.toContain('node scripts/mcp-call.mjs');
       expect(preview).toMatchObject({
         ok: true,
         fired: false,
@@ -605,6 +606,32 @@ describe('git-sync:run', () => {
       },
     });
     expect(result.note).toMatch(/git-sync:lock-retry/);
+  });
+
+  it('describes a structured skipped-locked outcome instead of calling it unknown', async () => {
+    const outcome = {
+      status: 'skipped-locked' as const,
+      dirtyPathCount: 2,
+      committedCount: 0,
+      skippedPaths: [
+        { scope: 'superproject', path: 'next-env.d.ts', owner: 'su-loopback' },
+        { scope: 'superproject', path: 'tsconfig.json', owner: 'su-loopback' },
+      ],
+    };
+
+    const result = await mockSkippedFire(outcome);
+
+    expect(result).toMatchObject({
+      ok: true,
+      fired: true,
+      status: 'skipped-locked',
+      success: false,
+      committed: false,
+      outcome,
+    });
+    expect(result.note).toContain('structured skipped-locked outcome');
+    expect(result.note).toContain('outcome.skippedPaths');
+    expect(result.note).not.toContain('no structured outcome');
   });
 
   // WI-4940: the trailing `git rev-parse HEAD` (headSha, called unconditionally after

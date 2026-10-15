@@ -20,6 +20,7 @@
  */
 
 import type { AppKeyRow, AppKeyScopes } from './store';
+import type { RefusalContract } from '../capability-envelope/identity-refusal-contract';
 
 /**
  * Capability namespaces no app key may hold, and therefore no tool needing one may be called.
@@ -137,7 +138,15 @@ export type AppScopeDenialCode =
   | 'harness_not_in_scope'
   | 'harness_required_by_scope';
 
-export type AppScopeVerdict = { allow: true } | { allow: false; code: AppScopeDenialCode; reason: string };
+export type AppScopeVerdict =
+  | { allow: true }
+  | {
+      allow: false;
+      code: AppScopeDenialCode;
+      reason: string;
+      /** WI-10005197: what would LIFT the refusal. Present on `hard_denied` (a platform policy, not a per-key grant). */
+      refusal?: RefusalContract;
+    };
 
 const HARNESS_ARG_KEYS = ['harness', 'harnessSlug', 'harness_slug'] as const;
 const WORKSPACE_ARG_KEYS = ['workspace', 'workspaceId', 'workspace_id'] as const;
@@ -242,16 +251,18 @@ function nonEmpty(list: readonly string[] | undefined): readonly string[] | null
  * Decide one call. Order matters only for the reported reason: key state first (a revoked key
  * is revoked whatever it asks for), then workspace, then the hard-deny set, then the scopes.
  */
+export interface AppScopeInput {
+  tool: AppScopeTool;
+  args: unknown;
+  /** The workspace the call is dispatched under. */
+  workspaceId: string | null | undefined;
+  /** The transport's harness (`'*'` or empty = none named). */
+  harnessSlug?: string | null;
+  now?: Date;
+}
+
 export function evaluateAppScope(
-  input: {
-    tool: AppScopeTool;
-    args: unknown;
-    /** The workspace the call is dispatched under. */
-    workspaceId: string | null | undefined;
-    /** The transport's harness (`'*'` or empty = none named). */
-    harnessSlug?: string | null;
-    now?: Date;
-  },
+  input: AppScopeInput,
   row: AppScopeRow,
 ): AppScopeVerdict {
   const now = input.now ?? new Date();
@@ -271,7 +282,22 @@ export function evaluateAppScope(
   }
 
   const denied = hardDenyReason(input.tool);
-  if (denied) return { allow: false, code: 'hard_denied', reason: denied };
+  if (denied) {
+    return {
+      allow: false,
+      code: 'hard_denied',
+      reason: denied,
+      refusal: {
+        observed: { tool: input.tool.name, toolGroup: toolGroupOf(input.tool.name) },
+        liftsWhen:
+          'the tool is no longer in a hard-deny group and declares no wildcard / hard-denied capability prefix ' +
+          '(HARD_DENY_GROUPS / HARD_DENY_CAPABILITY_PREFIXES in connected-apps/scope-policy.ts). No app-key grant ' +
+          'or scope edit lifts it — adding the tool to the key allowlist changes nothing. An app key can only call a ' +
+          'non-denied tool that does the job; changing the deny policy itself is a platform code change',
+        whoCanMakeItTrue: ['host'],
+      },
+    };
+  }
   if (input.tool.crossWorkspace) {
     return {
       allow: false,
@@ -312,6 +338,52 @@ export function evaluateAppScope(
     }
   }
   return { allow: true };
+}
+
+export interface AppScopeChainExplanation {
+  verdict: AppScopeVerdict | { allow: false; code: 'key_unknown'; reason: string };
+  /** Listing alone may defer a missing harness; it never authorizes invocation. */
+  listable: boolean;
+  /** Null for an allowed call or a missing chain. */
+  blockingScopeId: string | null;
+  /** A token scope can retain its parent's row id; position distinguishes them. */
+  blockingScopeIndex: number | null;
+  /** Only identifiers and decisions, never the raw grants or credential-bearing rows. */
+  decisions: Array<{ scopeId: string; scopeIndex: number; verdict: AppScopeVerdict }>;
+}
+
+/**
+ * Explain the existing parent-key/token intersection at one instant. Evaluate every
+ * row, including those after a denial, so a listing deferral cannot hide a later
+ * refusal and administrators can see which restrictions govern the request.
+ */
+export function evaluateAppScopeChain(
+  input: AppScopeInput,
+  rows: readonly AppScopeRow[],
+): AppScopeChainExplanation {
+  if (!rows.length) {
+    return {
+      verdict: { allow: false, code: 'key_unknown', reason: 'no app scope rows were supplied' },
+      listable: false,
+      blockingScopeId: null,
+      blockingScopeIndex: null,
+      decisions: [],
+    };
+  }
+  const now = input.now ?? new Date();
+  const decisions = rows.map((row, scopeIndex) => ({
+    scopeId: row.id,
+    scopeIndex,
+    verdict: evaluateAppScope({ ...input, now }, row),
+  }));
+  const blocking = decisions.find((decision) => !decision.verdict.allow);
+  return {
+    verdict: blocking?.verdict ?? { allow: true },
+    listable: decisions.every(({ verdict }) => verdict.allow || verdict.code === 'harness_required_by_scope'),
+    blockingScopeId: blocking?.scopeId ?? null,
+    blockingScopeIndex: blocking?.scopeIndex ?? null,
+    decisions,
+  };
 }
 
 export interface AppKeyScopeProblem {

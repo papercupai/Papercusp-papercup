@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "reboot-residue R-001 live: agenticmail.service stable, API entry under the exec'd node's global root, configured health 200",
+  "framework": "operational",
+  "command": ["bash", "docs/evidence/reboot-residue-live-probes-2026-10-06/r001-live-probe.sh"],
+  "commandCwd": ".",
+  "exitCode": 0,
+  "startedAt": "2026-10-06T07:06:51Z",
+  "finishedAt": "2026-10-06T07:07:51Z",
+  "summary": "Live probe of AUTO-BAR-R-001-P-001@5 on the dev box: agenticmail.service active/running with NRestarts 0->0 and the same MainPID across a 60s window; the exec line of the unit's start-server.sh names /home/linuxbrew/.linuxbrew/lib/node_modules/agenticmail/node_modules/@agenticmail/api/dist/index.js, which exists and lies under `npm root -g` for that node's bin directory; the live process argv equals the exec line; the configured API (config.json api 127.0.0.1:3150) health route answers HTTP 200 {status:ok, api:ok, stalwart:ok}.",
+  "scope": "Live host plane, read-only observation. Does not reinstall or restart anything. The clause's '/api/health' wording is resolved to the route the server actually mounts: the dist mounts its health router under /api/agenticmail (app.use(\"/api/agenticmail\", createHealthRoutes(...))) and prints http://<host>:<port>/api/agenticmail/health as its own Health banner; a bare /api/health is not a served route and returns 404 (recorded, disclosed below).",
+  "repository": "papercusp",
+  "headAtExecution": "47a899a680fee3cce3b1a023ff52db9b43a24edb",
+  "workItems": ["WI-10005991", "WI-10006401"],
+  "spec": {"planSlug": "reboot-residue-service-repairs-2026-10-03", "specId": "AUTO-BAR-R-001-P-001", "specRevision": 5, "evidencePlane": "live"},
+  "oracle": "Independent of the repair: systemd unit properties, the unit's own exec script, the exec'd node's npm root -g, /proc/<MainPID>/cmdline and an HTTP status code. No papercusp code or claim is consulted.",
+  "redaction": "The operator's home directory is rendered as ~ in the retained log.",
+  "sourceFiles": [
+    {"path": "docs/evidence/reboot-residue-live-probes-2026-10-06/r001-live-probe.sh", "sha256": "ca564efa54371df330d2f51509c3e9ea0abb76fe9b292b9e8cd6a07f1e9afb94"}
+  ],
+  "rawEvidence": [
+    {"path": "docs/evidence/reboot-residue-live-probes-2026-10-06/r001-live-probe.txt", "sha256": "1072064db4fbedb0a950ea2bf78ab3eef9d2662097218125e5731a046b734e69"}
+  ],
+  "hostObservations": {
+    "unit": "agenticmail.service (user)",
+    "mainPid": 3758554,
+    "nRestartsT0": 0,
+    "nRestartsT1": 0,
+    "windowSeconds": 60,
+    "execNode": "/home/linuxbrew/.linuxbrew/bin/node",
+    "execEntry": "/home/linuxbrew/.linuxbrew/lib/node_modules/agenticmail/node_modules/@agenticmail/api/dist/index.js",
+    "execEntrySha256": "770632bdf7ad5260f6375bf0098934825a29e528b2b318bf71be0898d9af722d",
+    "npmRootG": "/home/linuxbrew/.linuxbrew/lib/node_modules",
+    "packageVersions": {"agenticmail": "0.5.54", "@agenticmail/api": "0.5.62"},
+    "configuredApi": "127.0.0.1:3150",
+    "healthUrl": "http://127.0.0.1:3150/api/agenticmail/health",
+    "healthHttp": 200,
+    "literalApiHealthHttp": 404
+  },
+  "assertions": [
+    {"id": "unit-active", "passed": true, "evidence": "T0 and T1: LoadState=loaded ActiveState=active SubState=running; dev:service_health independently reported agenticmail.service active, failed:false, nRestarts 0 at 07:02Z."},
+    {"id": "no-restart-loop-60s", "passed": true, "evidence": "NRestarts 0 -> 0 and MainPID 3758554 unchanged between 07:06:51Z and 07:07:51Z (an earlier independent 60s window 07:02:28Z-07:03:28Z also read 0 -> 0)."},
+    {"id": "entry-exists", "passed": true, "evidence": "The file named on start-server.sh's exec line exists (sha256 770632bd...)."},
+    {"id": "entry-under-global-root", "passed": true, "evidence": "npm root -g run with the exec'd node's bin dir first on PATH reports /home/linuxbrew/.linuxbrew/lib/node_modules; the entry path has that prefix."},
+    {"id": "live-process-runs-that-entry", "passed": true, "evidence": "/proc/3758554/cmdline equals '<exec node> <exec entry>'."},
+    {"id": "configured-health-200", "passed": true, "evidence": "GET http://127.0.0.1:3150/api/agenticmail/health -> 200 {\"status\":\"ok\",\"version\":\"0.5.62\",\"services\":{\"api\":\"ok\",\"stalwart\":\"ok\"}}. Host and port read from ~/.agenticmail/config.json api block."},
+    {"id": "disclosed-literal-route-404", "passed": true, "evidence": "Disclosure, not a failure: GET /api/health on the same host:port returns 404 because the server never mounts that path; the served health route is /api/agenticmail/health."}
+  ]
+}

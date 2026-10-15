@@ -19,6 +19,18 @@ import {
 } from './hive-policy-schema';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer, verifyEd25519 } from './identity/ed25519';
 
+describe('owner-signed finance references', () => {
+  it('rejects unsafe chains and zero addresses, preserving unknown owner policy fields', () => {
+    const address = '0x' + '1'.repeat(40);
+    const policy = { finance: { treasury: { chainId: 1, address }, commerce: { buyerOrgId: 'real-commerce-org' } }, future: { retained: true } };
+    expect(coerceHivePolicyInput(policy)).toEqual({ ok: true, policy });
+    expect(coerceHivePolicyInput({ finance: { treasury: { chainId: Number.MAX_SAFE_INTEGER + 1, address } } }).ok).toBe(false);
+    expect(coerceHivePolicyInput({ finance: { treasury: { chainId: 1, address: '0x' + '0'.repeat(40) } } }).ok).toBe(false);
+    expect(coerceHivePolicyInput({ finance: { equity: { chainId: 1, equity: address } } }).ok).toBe(false);
+    expect(coerceHivePolicyInput({ finance: { commerce: { buyerOrgId: '' } } }).ok).toBe(false);
+  });
+});
+
 describe('canonicalizeHivePolicy', () => {
   it('is INDEPENDENT of key insertion order (deterministic)', () => {
     const a: HivePolicy = { membership: 'approval', rate: { opsPerMin: 10, prsPerDay: 3 }, allowlist: ['b', 'a'] };

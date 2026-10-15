@@ -4,7 +4,8 @@
  * the test asserts the COMPOSITION + the role-scoped signed-URL shape,
  * not the leaves' internals (those have their own tests).
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { setSessionConfinementResolver } from './capability-envelope/session-confinement-port';
 
 const assembleRolePromptMock = vi.fn();
 const tagTurnForInjectionMock = vi.fn(({ text, sid, origin }: { text: string; sid: string; origin: string }) => ({
@@ -92,6 +93,7 @@ import {
   SU_EXTRA_MCP_TOOL_NAMES,
   stewardSeedToolNames,
   SuInstancePromptDriftError,
+  reconcilePapercuspSuInstanceOverride,
   verifyPapercuspSuInstanceOverride,
 } from './role-launch-spec';
 
@@ -151,6 +153,138 @@ describe('Papercusp su instance override source guard', () => {
     ).not.toThrow();
   });
 });
+
+// WI-10005774: the launch must reconcile a store that is merely BEHIND the canonical source
+// (the Claude-only edit hook cannot see Codex/OMP/sed/git-merge edits) while every case it
+// cannot safely heal still fails closed.
+describe('reconcilePapercuspSuInstanceOverride (launch-time self-heal)', () => {
+  const SOURCE = 'Papercusp su override\nline two → ok.\n';
+  const withSource = async (
+    sourceText: string | null,
+    run: (promptsDirectory: string) => Promise<void>,
+  ): Promise<void> => {
+    const root = mkdtempSync(join(tmpdir(), 'su-instance-reconcile-'));
+    try {
+      if (sourceText !== null) {
+        const sourcePath = join(root, 'pot-instances', 'papercup-pot.su.md');
+        mkdirSync(dirname(sourcePath), { recursive: true });
+        writeFileSync(sourcePath, sourceText);
+      }
+      await run(root);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  };
+  const base = { workspaceId: 'papercusp-workspace', potSlug: 'papercusp' };
+
+  it('re-seeds a STALE store from the source, returns the source, and reports the heal', async () => {
+    await withSource(SOURCE, async (promptsDirectory) => {
+      const reseed = vi.fn(async () => {});
+      const onHeal = vi.fn();
+      const out = await reconcilePapercuspSuInstanceOverride({
+        ...base,
+        promptsDirectory,
+        storedOverride: 'stale text',
+        reseed,
+        onHeal,
+      });
+      expect(out).toBe(SOURCE);
+      expect(reseed).toHaveBeenCalledTimes(1);
+      expect(reseed).toHaveBeenCalledWith(SOURCE);
+      expect(onHeal).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('heals a store that was never seeded (null) the same way', async () => {
+    await withSource(SOURCE, async (promptsDirectory) => {
+      const reseed = vi.fn(async () => {});
+      await expect(
+        reconcilePapercuspSuInstanceOverride({ ...base, promptsDirectory, storedOverride: null, reseed }),
+      ).resolves.toBe(SOURCE);
+      expect(reseed).toHaveBeenCalledWith(SOURCE);
+    });
+  });
+
+  it('does NOT write when the store already matches the source', async () => {
+    await withSource(SOURCE, async (promptsDirectory) => {
+      const reseed = vi.fn(async () => {});
+      const onHeal = vi.fn();
+      const out = await reconcilePapercuspSuInstanceOverride({
+        ...base,
+        promptsDirectory,
+        storedOverride: SOURCE,
+        reseed,
+        onHeal,
+      });
+      expect(out).toBe(SOURCE);
+      expect(reseed).not.toHaveBeenCalled();
+      expect(onHeal).not.toHaveBeenCalled();
+    });
+  });
+
+  it('stays FAIL-CLOSED when the re-seed itself fails (reason reseed-failed, store untouched)', async () => {
+    await withSource(SOURCE, async (promptsDirectory) => {
+      const reseed = vi.fn(async () => {
+        throw new Error('pg down');
+      });
+      const err = await reconcilePapercuspSuInstanceOverride({
+        ...base,
+        promptsDirectory,
+        storedOverride: 'stale',
+        reseed,
+      }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(SuInstancePromptDriftError);
+      expect((err as SuInstancePromptDriftError).reason).toBe('reseed-failed');
+      expect((err as SuInstancePromptDriftError).message).toMatch(/self-heal re-seed FAILED: pg down/);
+    });
+  });
+
+  it('never CLEARS the override from a blank source — fail-closed, no write', async () => {
+    await withSource('  \n', async (promptsDirectory) => {
+      const reseed = vi.fn(async () => {});
+      await expect(
+        reconcilePapercuspSuInstanceOverride({ ...base, promptsDirectory, storedOverride: 'stale', reseed }),
+      ).rejects.toBeInstanceOf(SuInstancePromptDriftError);
+      expect(reseed).not.toHaveBeenCalled();
+    });
+  });
+
+  it('stays FAIL-CLOSED with no write when the source is unreadable or the directory is unavailable', async () => {
+    await withSource(null, async (promptsDirectory) => {
+      const reseed = vi.fn(async () => {});
+      const unreadable = await reconcilePapercuspSuInstanceOverride({
+        ...base,
+        promptsDirectory,
+        storedOverride: 'stale',
+        reseed,
+      }).catch((e: unknown) => e);
+      expect(unreadable).toBeInstanceOf(SuInstancePromptDriftError);
+      expect((unreadable as SuInstancePromptDriftError).reason).toBe('source-unavailable');
+      const noDir = await reconcilePapercuspSuInstanceOverride({
+        ...base,
+        promptsDirectory: undefined,
+        storedOverride: 'stale',
+        reseed,
+      }).catch((e: unknown) => e);
+      expect(noDir).toBeInstanceOf(SuInstancePromptDriftError);
+      expect(reseed).not.toHaveBeenCalled();
+    });
+  });
+
+  it('leaves another tenant / pot untouched (returns the stored value, no write)', async () => {
+    const reseed = vi.fn(async () => {});
+    await expect(
+      reconcilePapercuspSuInstanceOverride({
+        workspaceId: 'another-workspace',
+        potSlug: 'papercusp',
+        promptsDirectory: undefined,
+        storedOverride: 'whatever',
+        reseed,
+      }),
+    ).resolves.toBe('whatever');
+    expect(reseed).not.toHaveBeenCalled();
+  });
+});
 import { resolveProjectDir } from './spawn-config';
 import { readSuperuserToken } from './superuser-token';
 // su-context-size-variants (WI-1282): the always-loaded core spine the codex
@@ -178,6 +312,32 @@ beforeEach(() => {
 });
 
 describe('buildRoleLaunchSpec', () => {
+  it.each([
+    ['direct host', 'http://127.0.0.1:9071', '3070', '3271'],
+    ['same-host proxy', 'http://127.0.0.1:9271', '3271', '9271'],
+  ])('preserves an explicit spawn-host role route through signed MCP composition (%s)', async (_name, proxy, targetPort, expectedPort) => {
+    vi.stubEnv('PAPERCUSP_HONO_PORT', '3271');
+    vi.stubEnv('PAPERCUSP_BG_HOST_AGENTS_MCP_BASE', 'http://127.0.0.1:9071');
+    vi.stubEnv('PAPERCUSP_MCP_PROXY_BASE', proxy);
+    vi.stubEnv('PAPERCUSP_MCP_PROXY_TARGET_PORT', targetPort);
+    try {
+      const input = { role: 'worker', workspaceId: 'default', harnessSlug: 'papercup',
+        operatorBaseUrl: 'http://localhost:3271', featureId: 'F-001' };
+      const ordinary = await buildRoleLaunchSpec(input);
+      const pinned = await buildRoleLaunchSpec({ ...input, mcpTarget: 'spawn-host' });
+      expect(new URL(ordinary.mcpUrl).port).toBe('9071');
+      expect(new URL(pinned.mcpUrl).port).toBe(expectedPort);
+      expect(pinned.mcpTarget).toBe('spawn-host');
+      const url = new URL(pinned.mcpUrl);
+      expect(url.searchParams.get('client')).toBe(pinned.sid);
+      expect(url.searchParams.get('role')).toBe('worker');
+      expect(url.searchParams.get('sig')).toBeTruthy();
+      expect(JSON.parse(pinned.mcpJsonContents).mcpServers.papercusp.url).toBe(pinned.mcpUrl);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('composes assembleRolePrompt + a signed role-scoped MCP URL', async () => {
     const spec = await buildRoleLaunchSpec({
       role: 'worker',
@@ -224,6 +384,9 @@ describe('buildRoleLaunchSpec', () => {
     expect(u.searchParams.get('spawn')).toBe(spec.spawnId);
     expect(u.searchParams.get('sig')).toBe('TESTSIG');
     expect(u.searchParams.has('superuser')).toBe(false);
+    // WI-6554700010009993: role sessions (judges, workers) ask for the trimmed payload tier.
+    // Without it every call resolved to the unshaped 'full' tier.
+    expect(u.searchParams.get('ctx_tier')).toBe('trimmed');
 
     // .mcp.json wraps the same URL.
     const mcp = JSON.parse(spec.mcpJsonContents);
@@ -399,6 +562,84 @@ describe('buildRoleLaunchSpec', () => {
     }
   });
 
+  // WI-10004747: a workspace-level su has no materialized blueprint, so it compiles from the
+  // compatibility adapter, yet its persona always composes SU_STATIC_LAYERS (the seal names
+  // domain:papercusp-engineer). Shadow metering prices identity only from SLOTTED
+  // blueprint-layer inputs, so an artifact that omitted them priced ~900 sessions as
+  // inferred-profile. The su callers pass impliedStack:'su-static'; whatever the render
+  // composes for the domain slot must be recorded, and an implied layer must never displace
+  // a slot the source or the explicit stack already holds.
+  it('records the su static layers that the source and explicit stack leave empty', async () => {
+    const { SU_STATIC_LAYERS } = await import('@papercusp/orchestrator/blueprint');
+    const staticDomain = SU_STATIC_LAYERS.find((layer) => layer.slot === 'domain');
+    expect(staticDomain, 'the su persona composes a static domain layer').toBeDefined();
+    const slotted = (inputs: readonly unknown[]) => inputs.flatMap((raw) => {
+      const entry = raw as { kind?: string; ref?: string; document?: { slots?: Array<{ slot: string }> } };
+      const slots = entry.document?.slots ?? [];
+      return entry.kind === 'blueprint-layer' && slots.length > 0
+        ? slots.map((slot) => `${slot.slot}:${String(entry.ref)}`) : [];
+    });
+    const workspaceDir = mkdtempSync(join(tmpdir(), 'su-implied-workspace-'));
+    const potDir = mkdtempSync(join(tmpdir(), 'su-implied-pot-'));
+    try {
+      const workspaceLevel = await compileLaunchSpecificationArtifact({
+        promptText: 'SU KERNEL', cwd: workspaceDir, workspaceId: 'fixture-workspace',
+        harnessSlug: null, role: 'su', stack: [], impliedStack: 'su-static',
+        state: { schemaVersion: 1 },
+      });
+      expect(workspaceLevel.compositionSource).toBe('compatibility');
+      expect(workspaceLevel.stack).toEqual([]);
+      expect(workspaceLevel.promptText).toBe('SU KERNEL');
+      expect(slotted(workspaceLevel.specificationArtifact.inputs))
+        .toContain(`domain:${staticDomain!.id}`);
+      // Without the implied stack the same launch records no slotted layer (the defect).
+      const unmarked = await compileLaunchSpecificationArtifact({
+        promptText: 'SU KERNEL', cwd: workspaceDir, workspaceId: 'fixture-workspace',
+        harnessSlug: null, role: 'su', stack: [], state: { schemaVersion: 1 },
+      });
+      expect(slotted(unmarked.specificationArtifact.inputs)).toEqual([]);
+      expect(workspaceLevel.specificationRevision).not.toBe(unmarked.specificationRevision);
+      await expect(resolveLaunchIdentityModelDefault({ cwd: workspaceDir, harnessSlug: null,
+        role: 'su', stack: [], impliedStack: 'su-static' })).resolves.toBeNull();
+
+      const blueprintDir = join(potDir, '.papercusp', 'blueprints');
+      for (const id of ['pot-domain', 'chosen-domain']) {
+        mkdirSync(join(blueprintDir, id), { recursive: true });
+        writeFileSync(join(blueprintDir, id, 'blueprint.yaml'), [
+          `id: ${id}`, 'extends: base', 'version: 1.0.0', 'slots:', '  - slot: domain', '',
+        ].join('\n'));
+      }
+      writeFileSync(join(potDir, '.papercusp', 'blueprint.yaml'), [
+        'id: fixture-pot', 'extends: pot-domain', 'kind: pot', 'version: 1.0.0',
+        'workItem:', '  kind: feature', '  idPrefix: WI',
+        'spine:', '  decider: su', '  claimModel: self-claim-priority',
+        '  default: { to: idle }',
+        'roles:', '  - id: su', '    description: Fixture su.', '',
+      ].join('\n'));
+      const potHeld = await compileLaunchSpecificationArtifact({
+        promptText: 'SU KERNEL', cwd: potDir, workspaceId: 'fixture-workspace',
+        harnessSlug: 'fixture', role: 'su', stack: [], impliedStack: 'su-static',
+        state: { schemaVersion: 1 },
+      });
+      const potSlots = slotted(potHeld.specificationArtifact.inputs);
+      expect(potSlots).toContain('domain:pot-domain');
+      expect(potSlots.filter((ref) => ref.startsWith('domain:'))).toEqual(['domain:pot-domain']);
+      expect(potHeld.specificationArtifact.configuration.workItem?.idPrefix).toBe('WI');
+
+      const explicitHeld = await compileLaunchSpecificationArtifact({
+        promptText: 'SU KERNEL', cwd: potDir, workspaceId: 'fixture-workspace',
+        harnessSlug: 'fixture', role: 'su', stack: ['domain:chosen-domain'], impliedStack: 'su-static',
+        state: { schemaVersion: 1 },
+      });
+      expect(explicitHeld.stack).toEqual(['domain:chosen-domain']);
+      expect(slotted(explicitHeld.specificationArtifact.inputs)
+        .filter((ref) => ref.startsWith('domain:'))).toEqual(['domain:chosen-domain']);
+    } finally {
+      rmSync(workspaceDir, { recursive: true, force: true });
+      rmSync(potDir, { recursive: true, force: true });
+    }
+  });
+
   // WI-10003611: installed identities carry a per-layer attestation (identity-lint requires it).
   // Replacing an inherited exclusive slot peer-assembles the surviving layers; copying a layer's
   // attestation onto the synthesized effective-launch root failed attestation-hash-mismatch, so
@@ -533,6 +774,37 @@ describe('buildRoleLaunchSpec', () => {
       expect(accepted.sid).toBe(launchIdentity.sid);
       expect(accepted.nativeSessionId).toBe(launchIdentity.nativeSessionId);
       expect(accepted.acceptedOperation).toEqual(acceptedOperation);
+
+      // WI-10006959: the canonical pin carries the identity's DECLARED version, not the
+      // compiler's revision label (which defaults to the contentHash). The content identity
+      // is ref + contentHash, so a version-pinned worker must bind...
+      const versionPinned = { ...acceptedOperation,
+        identity: { ...acceptedOperation.identity, revision: '0.1.0' } };
+      expect(versionPinned.identity.revision).not.toBe(identityInput!.revision);
+      vi.mocked(resolveProjectDir).mockResolvedValueOnce(dir);
+      assembleRolePromptMock.mockReturnValueOnce({
+        text: 'ROLE KERNEL',
+        meta: { role: 'worker', promptFile: '/h/prompts/worker.md', projectDir: dir,
+          stateDir: join(dir, '.papercusp'), harnessDir: '/h', runId: 'worker-WI-1-versioned' },
+      });
+      const versioned = await buildRoleLaunchSpec({
+        role: 'worker', workspaceId: 'workspace-a', harnessSlug: 'harness-a',
+        featureId: 'WI-1', operatorBaseUrl: 'http://localhost:3070', acceptedOperation: versionPinned,
+      });
+      expect(versioned.acceptedOperation?.identity.revision).toBe('0.1.0');
+      // ...while a pin whose content hash no longer matches the composed layer is still refused.
+      vi.mocked(resolveProjectDir).mockResolvedValueOnce(dir);
+      assembleRolePromptMock.mockReturnValueOnce({
+        text: 'ROLE KERNEL',
+        meta: { role: 'worker', promptFile: '/h/prompts/worker.md', projectDir: dir,
+          stateDir: join(dir, '.papercusp'), harnessDir: '/h', runId: 'worker-WI-1-stale' },
+      });
+      await expect(buildRoleLaunchSpec({
+        role: 'worker', workspaceId: 'workspace-a', harnessSlug: 'harness-a',
+        featureId: 'WI-1', operatorBaseUrl: 'http://localhost:3070',
+        acceptedOperation: { ...acceptedOperation,
+          identity: { ...acceptedOperation.identity, contentHash: 'c'.repeat(64) } },
+      })).rejects.toThrow(/accepted blueprint worker identity changed during launch composition/);
       expect(accepted.stack).toEqual(['domain:plain-domain']);
       expect(accepted.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
         kind: 'blueprint-layer', ref: 'plain-domain', contentHash: identityInput!.contentHash,
@@ -1206,6 +1478,9 @@ describe('buildSuLaunchSpec — contextSize ?tools= seed lever (trimmed-by-defau
     // The superuser door is otherwise unchanged.
     expect(u.searchParams.get('superuser')).toBe('1');
     expect(u.searchParams.get('workspace')).toBe('default');
+    // WI-6554700010009993: Codex su homes take this URL verbatim, so the payload tier must be
+    // baked here (Claude's user-level entry env-expands it instead).
+    expect(u.searchParams.get('ctx_tier')).toBe('trimmed');
   });
 
   it.each(['claude', 'codex', 'omp'] as const)('%s + trimmed ⇒ seeds the SU-only locks:release cleanup verb', async (agent) => {
@@ -1483,6 +1758,56 @@ describe('buildSuLaunchSpec — P-022 blueprint-addressable project guide', () =
     return { harnessSlug: params[1], tokens: params[3], client: params[4][0] };
   };
 
+  describe('frozen native initial context', () => {
+    afterEach(() => setSessionConfinementResolver(undefined));
+
+    it('excludes live guides, overrides and plan prose for frozen context', async () => {
+      setSessionConfinementResolver(() => {
+        return { denyTools: [], denyAmbientContext: true, imposedBy: 'private host', reason: 'frozen context' };
+      });
+      const spec = await buildLaunchSpec({ ...su, ownerId: 'su-frozen-native', planSlug: 'private-plan',
+        planTitle: 'LIVE PLAN SECRET', planNow: { state: 'LIVE SOLUTION', next: 'LIVE ANSWER' } });
+      const render = renderSuPlaybookMock.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+      expect(render.projectGuideSource).toBe('');
+      expect(render.composeProjectGuide).toBeUndefined();
+      expect(spec.promptText).toContain('SU PLAYBOOK BODY');
+      expect(spec.promptText).not.toMatch(/LIVE PLAN SECRET|LIVE SOLUTION|LIVE ANSWER/);
+    });
+
+    it.each(['unavailable', 'missing'])('refuses the native launch when prompt authority is %s', async policy => {
+      setSessionConfinementResolver(policy === 'missing' ? undefined : () => { throw new Error('private policy unavailable'); });
+      await expect(buildLaunchSpec({ ...su, ownerId: 'su-frozen-native' })).rejects.toThrow(/policy/);
+      expect(renderSuPlaybookMock).not.toHaveBeenCalled();
+    });
+
+    it('selects the host-owned kernel workflow from exact confinement and refuses unfiltered fallback', async () => {
+      const { builtinBlueprintPath } = await import('@papercusp/orchestrator/blueprint');
+      setSessionConfinementResolver(() => ({ denyTools: [], denyOutside: ['coord:whoami'], denyAmbientContext: true,
+        denyWorkItemsOutside: { id: 'F-own', harness: 'papercup', checkout: '/proj/papercup' },
+        imposedBy: 'private host', reason: 'frozen control arm' }));
+      resolvePromptFilesMock.mockReturnValueOnce([join(dirname(builtinBlueprintPath('base')), 'prompts', 'su.md')]);
+      const spec = await buildLaunchSpec({ ...su, ownerId: 'su-host-owned' });
+      const render = renderSuPlaybookMock.mock.calls.at(-1)?.[0] as { baseText?: string; projectGuideSource?: string };
+      expect(render.baseText).toContain('The host owns this assignment');
+      expect(render.baseText).not.toContain('Declare a real intent + claim your lane');
+      expect(render.baseText).toContain('File locking is ENFORCED');
+      expect(render.projectGuideSource).toBe('');
+      expect(new URL(spec.mcpUrl).searchParams.get('superuser')).toBe('1');
+      renderSuPlaybookMock.mockClear();
+      resolvePromptFilesMock.mockReturnValueOnce([]);
+      await expect(buildLaunchSpec({ ...su, ownerId: 'su-host-owned' })).rejects.toThrow(/workflow/);
+      expect(renderSuPlaybookMock).not.toHaveBeenCalled();
+    });
+
+    it('retains ordinary native guidance when the host proves the session is unconfined', async () => {
+      setSessionConfinementResolver(() => null);
+      const spec = await buildLaunchSpec({ ...su, ownerId: 'su-ordinary-native', planSlug: 'private-plan',
+        planTitle: 'LIVE PLAN TITLE', planNow: { state: 'LIVE STATE', next: 'LIVE NEXT' } });
+      expect(spec.promptText).toContain('LIVE PLAN TITLE');
+      expect(renderSuPlaybookMock.mock.calls.at(-1)?.[0]).toMatchObject({ composeProjectGuide: expect.any(Function) });
+    });
+  });
+
   it('ENGINEER profile: reads with the su static layers + role tokens; no rows ⇒ the default guide byte-identical', async () => {
     addressedReadMock.fn.mockResolvedValueOnce([]);
     await buildLaunchSpec(su);
@@ -1617,6 +1942,52 @@ describe('buildSuLaunchSpec — P-022 blueprint-addressable project guide', () =
       expect(rendered.baseText).not.toContain("AUTO mode — the owner's switch");
       await composerFromLastRender()({ text: 'G', source: '/repo/CLAUDE.md' });
       expect(lastRead().tokens).toContain(`blueprint:${id}`);
+    } finally {
+      if (priorHome === undefined) delete process.env.PAPERCUSP_HOME;
+      else process.env.PAPERCUSP_HOME = priorHome;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // WI-10004896 (owner #1206): a vm-release workspace host installs EVERY first-party
+  // blueprint as a plain, unattested installed-tier copy (offline-content-bundle-install-io,
+  // P-309 content roots). The mode catalog treats an exact copy of a built-in mode as that
+  // built-in, but the launch re-resolved the id installed-tier first and refused the copy
+  // (attestation-missing), so every AUTO launch died at boot with "selected mode identity
+  // su.mode-auto is no longer available". The implied su static layers (WI-10004747) were
+  // the same trap for EVERY launch. Both must launch from the copies.
+  it('launches AUTO when the host content root holds unattested first-party copies', async () => {
+    const { SU_STATIC_LAYERS, builtinBlueprintPath } = await import('@papercusp/orchestrator/blueprint');
+    const { getIdentitySource } = await import('./agent-identities/source');
+    const root = mkdtempSync(join(tmpdir(), 'launch-vm-release-content-'));
+    const priorHome = process.env.PAPERCUSP_HOME;
+    try {
+      process.env.PAPERCUSP_HOME = root;
+      const copies = ['base', 'su.mode-auto', ...SU_STATIC_LAYERS.map((layer) => layer.id)];
+      for (const id of copies) {
+        cpSync(dirname(builtinBlueprintPath(id)), join(root, 'blueprints', id), { recursive: true });
+      }
+      // The precondition that made the host fail: the copy itself is refused by id.
+      const direct = await getIdentitySource('su.mode-auto');
+      expect(direct.ok, 'an unattested installed copy is refused when resolved by id').toBe(false);
+
+      resolvePromptFilesMock.mockReturnValueOnce([join(dirname(builtinBlueprintPath('base')), 'prompts', 'su.md')]);
+      await buildLaunchSpec({ ...su, modes: ['auto'] });
+      const rendered = renderSuPlaybookMock.mock.calls.at(-1)?.[0] as { baseText?: string };
+      expect(rendered.baseText).toContain("AUTO mode — the owner's switch");
+
+      const workspaceDir = mkdtempSync(join(root, 'workspace-'));
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const artifact = await compileLaunchSpecificationArtifact({
+        promptText: 'SU KERNEL', cwd: workspaceDir, workspaceId: 'fixture-workspace',
+        harnessSlug: null, role: 'su', stack: [], impliedStack: 'su-static',
+        state: { schemaVersion: 1 },
+      });
+      expect(artifact.promptText).toBe('SU KERNEL');
+      // The unrecorded implied layers are named with the refusal, not swallowed.
+      const warned = warn.mock.calls.map((call) => String(call[0]));
+      warn.mockRestore();
+      expect(warned.some((line) => line.includes('implied domain:') && line.includes('attestation-missing'))).toBe(true);
     } finally {
       if (priorHome === undefined) delete process.env.PAPERCUSP_HOME;
       else process.env.PAPERCUSP_HOME = priorHome;

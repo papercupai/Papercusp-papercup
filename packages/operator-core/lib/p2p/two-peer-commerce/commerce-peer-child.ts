@@ -54,6 +54,7 @@ import type { HyperswarmLike } from '../../sync/hyperbee/swarm';
 import { makePeerIdentity } from '../../sync/hyperbee/perf/fixture';
 import { reduceCommerceEvents, type CommerceEvent } from '../commerce-events';
 import { createPaymentChannel } from '../payment-channel';
+import { verifyPaymentVoucherSignature } from '../microcharge';
 import { perUseRollup } from '../../cupboard/ledger-p2p-bridge';
 import { adjudicateEscrowClaims, readUsageClaims } from './escrow-authority';
 
@@ -77,6 +78,9 @@ export interface CommercePeerConfig {
   /** The seller escrow every claim in this run is adjudicated against. */
   readonly channelId: string;
   readonly escrowMicros: string;
+  /** Trusted launch authority; claims cannot choose their own payer or key. */
+  readonly payer: string;
+  readonly payerPubkeyBase64: string;
   readonly mergePollMs?: number;
 }
 
@@ -116,6 +120,8 @@ export function foldPeerState(input: {
   readonly events: readonly CommerceEvent[];
   readonly channelId: string;
   readonly escrowMicros: bigint;
+  readonly payer: string;
+  readonly payerPubkeyBase64: string;
   readonly nowMs: number;
   readonly bufferedByPartition: number;
 }): CommercePeerState {
@@ -125,6 +131,9 @@ export function foldPeerState(input: {
     channel: createPaymentChannel(input.channelId, 'evm-x402', input.escrowMicros),
     claims,
     nowMs: input.nowMs,
+    verifySignature: (voucher) => verifyPaymentVoucherSignature(voucher, {
+      channelId: input.channelId, payer: input.payer, pubkeyBase64: input.payerPubkeyBase64,
+    }),
   });
   return {
     peerId: input.peerId,
@@ -286,6 +295,8 @@ async function main(): Promise<void> {
             events: observed,
             channelId: cfg.channelId,
             escrowMicros,
+            payer: cfg.payer,
+            payerPubkeyBase64: cfg.payerPubkeyBase64,
             // A FIXED clock: two peers must fold to the same verdict, and a
             // wall-clock read would make voucher expiry differ between them.
             nowMs: 0,

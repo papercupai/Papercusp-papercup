@@ -132,7 +132,7 @@ const taskResultSchema = z.object({
         confined: z.boolean(),
         cgroupPath: z.string().nullable(),
         scopeUnit: z.string().nullable(),
-        source: z.enum(['derived-from-scope-unit', 'not-derivable', 'recorded-at-spawn']),
+        source: z.enum(['derived-from-scope-unit', 'not-derivable', 'recorded-at-spawn', 'observed-at-reconcile']),
         insideOperatorCgroup: z.boolean().optional(),
         reason: z.string().optional(),
       }),
@@ -177,9 +177,9 @@ export default defineTool({
     notWhen:
       "NOT a `ps` substitute — a process nothing in this operator launched is invisible unless it landed in our cgroup slice. For the six tracked AGENT process kinds use `dev:processes`; for a raw host process list, plain `ps`/`pgrep` is correct and is never gated. For a capability:bash job's OUTPUT use `capability:bash_output`.",
     chaining:
-      'Pass `taskId`, `scopeUnit`, or `invocationId` to inspect one exact ledger identity before the result limit is applied. Then act with `processes:kill { taskId }` (kills the whole cgroup subtree). For an unaccounted live group, read its `scopeUnit` from `live.unaccountedGroups` and pass `processes:kill { scopeUnit }`; `processes:freeze` pauses a ledger task without losing work, and `processes:limit` retunes its budget live.',
+      'Pass `taskId`, `scopeUnit`, `invocationId` or `dispatchCallId` for one exact ledger row (matched before the limit). Lost a capability:bash launch response? Pass its `dispatchCallId` with `includeEnded:true` instead of relaunching. Then `processes:kill { taskId }` (whole cgroup subtree), or `{ scopeUnit }` for a `live.unaccountedGroups` entry; `processes:freeze` pauses without losing work; `processes:limit` retunes the budget live.',
     returns:
-      '{ ok, counts:{ byState, byClass }, tasks:[{ taskId, class, title, state, launchedBy, workItemId, planSlug, ageSec, rssMb, peakRssMb, cpuSec, cpuBusyPercent, pids, confined, scopeUnit, confinement, deadlineAt, logPath }], live? } — `confinement` answers "what confines this task, and therefore what can kill it": `{ confined, cgroupPath, scopeUnit, source, insideOperatorCgroup?, reason? }`. Read `source` before the path. `derived-from-scope-unit` is the trustworthy case — the path is DERIVED, because the stored `cgroup_path` column holds the SPAWNER cgroup on ~1300 historical rows and would answer "would restarting the operator kill this agent?" with the pre-EI-9748 YES (D-111). `insideOperatorCgroup` IS that answer, and is absent — never false — when unknown. `not-derivable` means confined but no scope unit was recorded: that is UNKNOWN, not unconfined, so `confined` stays true. `recorded-at-spawn` is the unconfined case, where the /proc read is correct. To find your OWN row pass `coordOwnerId` (your coord owner id) — `launchedBy` is whoever spawned you, and `pgrep -f <ownerId>` self-matches your own command line. `cpuSec` is cumulative CPU time; `cpuBusyPercent` is derived from two cumulative samples (100% = one saturated core) and is null until a second valid sample exists. Unfiltered `live:true` reads include `live.verifierGroups` and other reconciler groups; a task-filtered live read keeps the compact reconciliation summary but omits unrelated global group samples. `confined:false` means the task is ledgered but NOT cgroup-isolated, so a kill falls back to a pid signal and freeze is unavailable.',
+      '{ ok, counts:{ byState, byClass }, tasks:[{ taskId, class, title, state, launchedBy, workItemId, planSlug, ageSec, rssMb, peakRssMb, cpuSec, cpuBusyPercent, pids, confined, scopeUnit, confinement, deadlineAt, logPath }], live? } — `confinement` answers "what confines this task, and therefore what can kill it": `{ confined, cgroupPath, scopeUnit, source, insideOperatorCgroup?, reason? }`. Read `source` before the path. `derived-from-scope-unit` is the trustworthy case — the path is DERIVED, because the stored `cgroup_path` column holds the SPAWNER cgroup on ~1300 historical rows and would answer "would restarting the operator kill this agent?" with the pre-EI-9748 YES (D-111). `insideOperatorCgroup` IS that answer, and is absent — never false — when unknown. `not-derivable` means confined but no scope unit was recorded: that is UNKNOWN, not unconfined, so `confined` stays true. `recorded-at-spawn` is the unconfined case, where the /proc read is correct. `observed-at-reconcile` means an unaccounted residue had an exact `pc-<taskId>` scope and matching kernel-scanned path; it uses that observed path because its original task class is unknown. To find your OWN row pass `coordOwnerId` (your coord owner id) — `launchedBy` is whoever spawned you, and `pgrep -f <ownerId>` self-matches your own command line. `cpuSec` is cumulative CPU time; `cpuBusyPercent` is derived from two cumulative samples (100% = one saturated core) and is null until a second valid sample exists. Unfiltered `live:true` reads include `live.verifierGroups` and other reconciler groups; a task-filtered live read keeps the compact reconciliation summary but omits unrelated global group samples. `confined:false` means the task is ledgered but NOT cgroup-isolated, so a kill falls back to a pid signal and freeze is unavailable. An exact-identity lookup (`dispatchCallId` especially) that finds nothing is not proof no command ran: legacy jobs may lack that identity.',
   },
   requirePrincipal: false,
   // Release-fixer must inspect the managed task ledger when classifying a
@@ -200,6 +200,12 @@ export default defineTool({
         'only tasks BELONGING to this coord owner id — pass your own to find your own row. Not `launchedBy`, which is whoever SPAWNED it (for a fleet member those differ, so launchedBy cannot answer "which row is me"). Recorded only when the spawn supplied it: ~70% of agent-session rows and none of bash-job/sidecar/test-run (measured 2026-09-02). So an empty result means "no row RECORDED this owner id", NOT "this agent has no task" — do not read it as absence.',
     ),
     taskId: z.string().max(64).optional().describe('one exact task-ledger row (also accepted by processes:kill)'),
+    dispatchCallId: z
+      .string()
+      .min(1)
+      .max(255)
+      .optional()
+      .describe('exact server-owned capability:bash dispatch identity; workspace-scoped lookup before limit, without relaunch'),
     scopeUnit: z
       .string()
       .max(255)
@@ -262,6 +268,7 @@ export default defineTool({
       args.launchedBy !== undefined ||
       args.coordOwnerId !== undefined ||
       args.taskId !== undefined ||
+      args.dispatchCallId !== undefined ||
       args.scopeUnit !== undefined ||
       args.invocationId !== undefined ||
       args.workItemId !== undefined ||
@@ -275,8 +282,25 @@ export default defineTool({
         scanOptions: { foreignSignature: defaultForeignSignature(REPO_ROOT) },
       });
       liveTick = tick;
+      // Keep scalar totals distinct from the group arrays below. Unsuffixed
+      // names such as `unaccounted` are easy for consumers to treat as lists,
+      // then silently turn into [] through an Array.isArray fallback.
+      const summary = tick.summary;
       const liveSummary = {
-        ...tick.summary,
+        aliveCount: summary.alive,
+        strandedCount: summary.stranded,
+        endedUnobservedCount: summary.endedUnobserved,
+        unaccountedCount: summary.unaccounted,
+        unaccountedPidCount: summary.unaccountedPids,
+        abandonedWindowCount: summary.abandonedWindow,
+        abandonedWindowPidCount: summary.abandonedWindowPids,
+        consoleWindowCount: summary.consoleWindow,
+        consoleWindowPidCount: summary.consoleWindowPids,
+        verifierScopeCount: summary.verifierScope,
+        verifierScopePidCount: summary.verifierScopePids,
+        foreignCount: summary.foreign,
+        overdueCount: summary.overdue,
+        tooYoungCount: summary.tooYoung,
         degraded: tick.degraded,
         degradedReason: tick.degradedReason,
         // Keep scan bounds visible on filtered reads too; an exact group list can
@@ -335,6 +359,7 @@ export default defineTool({
       launchedBy: args.launchedBy,
       coordOwnerId: args.coordOwnerId,
       taskId: args.taskId,
+      dispatchCallId: args.dispatchCallId,
       scopeUnit: args.scopeUnit,
       invocationId: args.invocationId,
       workItemId: args.workItemId,
@@ -375,7 +400,9 @@ export default defineTool({
               ok: true,
               counts: { total: displayRows.length, byState, byClass },
               ...(live ? { live } : {}),
-              tasks: displayRows.map((r) => ({
+              tasks: displayRows.map((r) => {
+                const confinement = resolveTaskConfinement(r);
+                return {
                 taskId: r.taskId,
                 class: r.class,
                 title: safeDiagnosticText(r.title, undefined, diagnosticSecrets),
@@ -402,12 +429,12 @@ export default defineTool({
                 livePids: r.state === 'unaccounted' && args.live
                   ? unaccountedPids.get(r.taskId) ?? null
                   : null,
-                confined: r.confined,
+                confined: confinement.confined,
                 scopeUnit: r.scopeUnit,
                 // P-023: "what confines this, and therefore what can kill it" — DERIVED
                 // from scope_unit, never the stored cgroup_path, which holds the spawner's
                 // cgroup on ~1300 historical rows (D-111).
-                confinement: resolveTaskConfinement(r),
+                confinement,
                 memoryMaxMb: mb(r.memoryMaxBytes),
                 deadlineAt: r.deadlineAt,
                 exitCode: r.exitCode,
@@ -427,7 +454,8 @@ export default defineTool({
                     }
                   : null,
                 logPath: r.logPath == null ? r.logPath : safeDiagnosticText(r.logPath, undefined, diagnosticSecrets),
-              })),
+                };
+              }),
             },
             null,
             2,

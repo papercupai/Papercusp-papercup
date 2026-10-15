@@ -11,11 +11,22 @@
  * re-warn assertions must REJECT the control while accepting the real subject.
  * A guard that has never failed is a guard nobody has tested.
  */
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
+import * as recorder from '../degradation/fallback-observations';
+
+const primary = vi.hoisted(() => ({ call: vi.fn() }));
+vi.mock('./spawner-sidecar-spawn', () => ({ spawnSpawnerSidecar: async () => undefined }));
+vi.mock('./spawner-ipc-client', () => ({
+  getSpawnerIpcClient: () => ({ call: primary.call }),
+  SpawnerIpcClient: class {},
+}));
 
 import {
   getSidecarFallbackStats,
   noteSidecarFallback,
+  noteSidecarDeadlineFallback,
+  runCommandViaSpawnerSidecar,
+  SidecarCircuitOpenError,
   resetSidecarFallbackStatsForTest,
 } from './git-via-sidecar';
 
@@ -40,19 +51,62 @@ function makeWarnOnceControl() {
 
 describe('sidecar fallback accounting', () => {
   let warn: ReturnType<typeof vi.spyOn>;
+  let observation: MockInstance<typeof recorder.observeFallback>;
 
   beforeEach(() => {
+    observation = vi.spyOn(recorder, 'observeFallback').mockReturnValue(true);
+    primary.call.mockReset();
     resetSidecarFallbackStatsForTest();
     warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
   afterEach(() => {
+    observation.mockRestore();
     warn.mockRestore();
     resetSidecarFallbackStatsForTest();
   });
 
   it('starts empty', () => {
     expect(getSidecarFallbackStats()).toEqual({ total: 0, bySubsystem: {} });
+  });
+
+  it('records each fallback before warning throttling with bounded reasons and its event time', () => {
+    for (let i = 0; i < 25; i++) noteSidecarFallback('pot-git', new Error(`private path ${i}`), 1000 + i);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(observation).toHaveBeenCalledTimes(25);
+    expect(observation).toHaveBeenLastCalledWith('spawner-sidecar-exec',
+      { eligible: 1, applied: 0, reason: 'sidecar-unavailable' }, { observedAt: new Date(1024) });
+    noteSidecarFallback('pot-git', new SidecarCircuitOpenError(10), 2000);
+    noteSidecarDeadlineFallback('pot-git', new Error('deadline'), 2001);
+    noteSidecarFallback('pot-git', new Error('unknown result'), 2002, 'rejected');
+    expect(observation.mock.calls.slice(-3).map(([, row]) => row.reason)).toEqual([
+      'circuit-open', 'deadline-exceeded', 'local-execution-rejected',
+    ]);
+  });
+
+  it('measures actual primary child exits but excludes infrastructure rejection and pre-cancellation', async () => {
+    primary.call.mockResolvedValue({ code: 3, stdout: 'child output', stderr: 'child failed' });
+    await runCommandViaSpawnerSidecar('git', ['status'], { timeoutMs: 1000 });
+    expect(observation).toHaveBeenCalledExactlyOnceWith('spawner-sidecar-exec',
+      { eligible: 1, applied: 1, reason: 'applied' });
+    observation.mockClear();
+    primary.call.mockResolvedValue({ code: -1, stdout: '', stderr: 'spawner sidecar admission failed' });
+    await runCommandViaSpawnerSidecar('git', ['status'], { timeoutMs: 1000 });
+    const controller = new AbortController();
+    controller.abort();
+    await runCommandViaSpawnerSidecar('git', ['status'], { timeoutMs: 1000, signal: controller.signal });
+    expect(observation).not.toHaveBeenCalled();
+  });
+
+  it('distinguishes rejected fallback attempts from actual local execution while retaining breaker accounting', () => {
+    for (let i = 0; i < 3; i++) {
+      noteSidecarFallback('committed-tree-reader', new Error('RPC request timeout:process:exec'), 1_000 + i, 'rejected');
+    }
+    const stats = getSidecarFallbackStats();
+    expect(stats.total).toBe(3);
+    expect(stats.bySubsystem['committed-tree-reader']).toMatchObject({ count: 3, rejected: 3 });
+    expect(String(warn.mock.calls[0]?.[0])).toContain('rejected; local execution avoided');
+    expect(String(warn.mock.calls[0]?.[0])).not.toContain('fallback to local execution');
   });
 
   it('counts every fallback, not just the first — the whole point of the change', () => {

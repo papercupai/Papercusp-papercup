@@ -13,6 +13,7 @@ import {
   type HostedServiceContextRunner,
 } from '../auth/hosted/workos-lifecycle-postgres';
 import { WorkosLifecycleWorker } from '../auth/hosted/workos-lifecycle-worker';
+import { HostedDirectoryBindingManager } from '../auth/hosted/governance';
 import { createWorkOSHostedIdentityProvider } from '../auth/hosted/workos-provider';
 import {
   HostedRuntimeMembershipAuthority,
@@ -46,9 +47,13 @@ import {
   type HostedProviderDelegationAdapter,
   type HostedProviderDelegationRecord,
 } from '../workspace-host/hosted-provider-delegation';
-import { gcpDelegationOrganization, resolveHostedGcpAuth } from '../workspace-host/hosted-gcp-auth';
+import { resolveHostedGcpAuth } from '../workspace-host/hosted-gcp-auth';
+import { awsProviderDelegationAdapter } from '../workspace-host/hosted-aws-auth';
+import { hostedDelegationOrganization } from '../workspace-host/hosted-delegation-organization';
 import { papercuspHostingGrantEffective } from '../workspace-host/hosted-gcp-hosting';
 import { HostedSessionCookieCodec } from '../auth/hosted-session';
+import { createHostedCustomerDeletionRequester, exportHostedOrganizationData, exportHostedUserData } from '../data-governance/hosted-customer-data';
+import { resolveApprovedHostedCustomerDeletionPolicy, type HostedCustomerDeletionPolicy } from '../data-governance/hosted-customer-deletion';
 import { createWorkspaceHostProvisioningClient } from '../dbos/workspace-host-provision-client';
 import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
 import { createHostedFirstWorkspace } from '../auth/hosted/first-workspace';
@@ -58,7 +63,7 @@ import {
   parseFirstWorkspaceOrganizations,
 } from '../auth/hosted/first-workspace-dependencies';
 
-export const HOSTED_CONTROL_PLANE_DISTRIBUTION_PROFILE = 'hosted-control-plane';
+export { HOSTED_CONTROL_PLANE_DISTRIBUTION_PROFILE, isHostedControlPlaneDistributionProfile } from '../remote-auth-policy';
 
 export const HOSTED_WORKOS_WEBHOOK_ALLOWLIST_ENTRY = {
   method: 'POST',
@@ -72,11 +77,23 @@ export const HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS = [
   'POST /auth/workos/webhook',
   'GET /hosted/browser/rest-query',
   'GET /hosted/browser/sse',
+  'POST /hosted/browser/fallback-observation',
   'POST /hosted/browser/workspace-hosts/connection',
   'POST /hosted/browser/workspace-hosts/provision',
   'POST /hosted/browser/workspace-hosts/action',
   'POST /hosted/browser/onboarding/first-workspace',
   'POST /hosted/browser/onboarding/select-workspace',
+  'POST /hosted/browser/data/organization/export',
+  'POST /hosted/browser/data/user/export',
+  'POST /hosted/browser/data/organization/delete',
+  'POST /hosted/browser/data/user/delete',
+  'GET /hosted/browser/onboarding/tutorial-progress',
+  'POST /hosted/browser/onboarding/tutorial-progress',
+  'POST /hosted/browser/onboarding/tutorial-help',
+  'POST /hosted/browser/onboarding/tutorial-speech',
+  'GET /hosted/browser/monitoring',
+  'POST /hosted/browser/monitoring',
+  'POST /hosted/browser/monitoring/event',
   'POST /hosted/workspaces/:workspaceId/connectors/enroll',
   'POST /hosted/workspaces/:workspaceId/connectors/rotate',
   'POST /hosted/workspaces/:workspaceId/connectors/revoke',
@@ -89,6 +106,13 @@ export const HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS = [
   'POST /hosted/workspaces/:workspaceId/provider-delegations/verify',
   'POST /hosted/workspaces/:workspaceId/provider-delegations/rotate',
   'POST /hosted/workspaces/:workspaceId/provider-delegations/revoke',
+  'PUT /hosted/organizations/:organizationId/members/:userId/directory-binding',
+  'DELETE /hosted/organizations/:organizationId/members/:userId/directory-binding',
+  'POST /hosted/organizations/:organizationId/members/access-review',
+  'POST /hosted/organizations/:organizationId/members/:userId/reduce-access',
+  'PUT /hosted/organizations/:organizationId/directory-group-mappings',
+  'DELETE /hosted/organizations/:organizationId/directory-group-mappings',
+  'POST /hosted/organizations/:organizationId/members/directory-provision',
   'POST /hosted/cli/device/code',
   'GET /hosted/cli/device',
   'POST /hosted/cli/device/decision',
@@ -233,6 +257,9 @@ export interface HostedRuntimeDependencies {
   readonly resolveSecret?: HostedRuntimeSecretResolver;
   readonly runService?: HostedServiceContextRunner;
   readonly runTenant?: HostedTenantContextRunner;
+  /** Server-owned, immutable P-011 retention decision. Pending means refusal;
+   * browser fields and an arbitrary approval-ref string never enable purge. */
+  readonly resolveApprovedCustomerDeletionPolicy?: () => Promise<HostedCustomerDeletionPolicy | null>;
   /** Injectable hosted SPA route leaves for hermetic composition tests. */
   readonly hostedBrowser?: HostedBrowserRouteDependencies;
   readonly providerDelegationAdapters?: Readonly<Record<'gcp' | 'aws' | 'azure', HostedProviderDelegationAdapter>>;
@@ -274,16 +301,12 @@ export function readHostedRuntimeConfiguration(env: NodeJS.ProcessEnv = process.
   };
 }
 
-export function isHostedControlPlaneDistributionProfile(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.PAPERCUSP_DISTRIBUTION_PROFILE === HOSTED_CONTROL_PLANE_DISTRIBUTION_PROFILE;
-}
-
 function routeKey(route: { method: string; path: string }): string {
   return `${route.method} ${route.path}`;
 }
 
 export function productionProviderDelegationAdapters(): Readonly<Record<'gcp' | 'aws' | 'azure', HostedProviderDelegationAdapter>> {
-  const unavailable = (provider: 'aws' | 'azure'): HostedProviderDelegationAdapter => ({
+  const unavailable = (provider: 'azure'): HostedProviderDelegationAdapter => ({
     async verify() { throw new Error(`hosted_provider_delegation_${provider}_adapter_unavailable`); },
     async revoke(record) {
       return { evidenceRef: `delegation://${record.workspaceId}/${record.connectionId}/${record.generation}/revoked` };
@@ -317,7 +340,10 @@ export function productionProviderDelegationAdapters(): Readonly<Record<'gcp' | 
       return { evidenceRef: `delegation://${record.workspaceId}/${record.connectionId}/${record.generation}/revoked` };
     },
   };
-  return { gcp, aws: unavailable('aws'), azure: unavailable('azure') };
+  // AWS walks the real chain: control plane -> the org's own role -> the customer's role
+  // with the org's ExternalId, then proves the customer role refuses it WITHOUT the ExternalId
+  // (aws-byoc-gcp-parity P-008, D-001, D-007).
+  return { gcp, aws: awsProviderDelegationAdapter(), azure: unavailable('azure') };
 }
 
 function tenantServerContext(principal: HostedPrincipal): VerifiedTenantServerContext {
@@ -377,7 +403,8 @@ export async function createHostedRuntime(
   };
   const connectorGateway = new HostedWorkspaceConnectorGateway(new PostgresHostedWorkspaceConnectorStore(runService));
   const delegationAdapters = dependencies.providerDelegationAdapters ?? productionProviderDelegationAdapters();
-  const delegationOrganization = dependencies.delegationOrganization ?? gcpDelegationOrganization;
+  const delegationOrganization = dependencies.delegationOrganization
+    ?? ((organizationId: string) => hostedDelegationOrganization(organizationId));
   const providerDelegationManager = (principal: HostedPrincipal) =>
     new HostedProviderDelegationManager(
       new PostgresHostedProviderDelegationStore(
@@ -414,6 +441,21 @@ export async function createHostedRuntime(
   // The first-workspace door (D-384) is the one browser leaf that runs OUTSIDE the tenant
   // runner: it is the bootstrap that creates the tenant's first binding. Its gate defaults
   // closed — an empty organization set admits nobody.
+  // ONE enqueuer for every hosted provision this process starts: the first-workspace door AND
+  // the browser provision route (a retry of a failed first build). This process never runs DBOS,
+  // so without it the browser route forwards the raw body to the controller and loses the
+  // server-derived actor and D-015 bring-up (measured: canary host-0f9b1ba8db30d143becc130a
+  // retries r2..r6 all reached the workflow with neither).
+  // The same client also enqueues lifecycle actions and destroy for the browser action route
+  // (WI-10005363): forwarding those raw lost the actor and answered a false 504.
+  const dbosClient = configuration.provisioningDbosAppVersion
+    ? createWorkspaceHostProvisioningClient({
+        systemDatabaseUrl: getHarnessAdminUrlWithSource().url,
+        appVersion: configuration.provisioningDbosAppVersion,
+      })
+    : undefined;
+  const provisioning = dependencies.hostedBrowser?.provisioning ?? dbosClient;
+  const operations = dependencies.hostedBrowser?.operations ?? dbosClient;
   const firstWorkspace = dependencies.hostedBrowser?.firstWorkspace ?? createHostedFirstWorkspace(
     createHostedFirstWorkspaceDependencies({
       controlPlaneWorkspaceId: configuration.controlPlaneWorkspaceId,
@@ -421,14 +463,7 @@ export async function createHostedRuntime(
       delegationAdapters,
       delegationOrganization,
       enabledOrganizations: configuration.firstWorkspaceOrganizations ?? new Set(),
-      ...(configuration.provisioningDbosAppVersion
-        ? {
-            provisioning: createWorkspaceHostProvisioningClient({
-              systemDatabaseUrl: getHarnessAdminUrlWithSource().url,
-              appVersion: configuration.provisioningDbosAppVersion,
-            }),
-          }
-        : {}),
+      ...(provisioning ? { provisioning } : {}),
       ...(dependencies.hostedBrowser?.provisioningAvailable
         ? { provisioningAvailable: dependencies.hostedBrowser.provisioningAvailable }
         : {}),
@@ -445,7 +480,19 @@ export async function createHostedRuntime(
     dependencies: {
       ...(dependencies.hostedBrowser ?? {}),
       runTenant: dependencies.hostedBrowser?.runTenant ?? runTenant,
+      exportOrganizationData: dependencies.hostedBrowser?.exportOrganizationData
+        ?? ((principal) => runService(tx => exportHostedOrganizationData(tx, principal))),
+      exportUserData: dependencies.hostedBrowser?.exportUserData
+        ?? ((principal) => runService(tx => exportHostedUserData(tx, principal))),
+      requestCustomerDeletion: dependencies.hostedBrowser?.requestCustomerDeletion ?? (dbosClient
+        ? createHostedCustomerDeletionRequester({ runService,
+            resolveApprovedPolicy: dependencies.resolveApprovedCustomerDeletionPolicy ?? resolveApprovedHostedCustomerDeletionPolicy,
+            enqueueCustomerDeletion: request => dbosClient.enqueueCustomerDeletion(request),
+          })
+        : undefined),
       firstWorkspace,
+      ...(provisioning ? { provisioning } : {}),
+      ...(operations ? { operations } : {}),
       issueSessionCookie:
         dependencies.hostedBrowser?.issueSessionCookie ??
         ((sessionId, expiresAt) => sessionCookies.serialize(sessionId, expiresAt, new Date())),
@@ -462,6 +509,7 @@ export async function createHostedRuntime(
     identityDirectory,
     connectorGateway,
     providerDelegationManager,
+    directoryBindingManager: new HostedDirectoryBindingManager(runService),
     // psu CLI sign-in reads the org's workspaces with the same control-plane privilege the
     // first-workspace door uses; the organization always comes from the verified CLI token.
     cliStore: new PostgresHostedCliStore(

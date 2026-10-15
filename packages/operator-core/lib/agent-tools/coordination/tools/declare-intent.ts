@@ -48,13 +48,13 @@ import { fetchPresenceFleet, type FleetMembership } from '../presence-fleet';
 import { COORD_ROLES } from '../roles';
 import { resolvePlanScope, getPlanRow, planItemsForRow } from '../../plans/source';
 import { ctxToPlanSourceOpts } from '../../plans/_ctx-opts';
-import { reconcileDeclaredClaims } from '../../../plan-items/claim-discipline';
+import { reconcileDeclaredClaims, releaseOwnClaim } from '../../../plan-items/claim-discipline';
 import { bestEffortOwnerUser, resolveAdoptedName } from '../../../plan-items/agent-names';
 import { convertPlanItem } from '../../../plan-items/convert';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { withBoundedTimeout } from '../../../bounded-timeout';
-import { cellTranscriptionHint } from '../../../cell-transcription-detector';
+import { cellTranscriptionHintResolvingCommits } from '../../../git-commit-resolver';
 import { goalRefSchema } from '../../../agent-goal-ref';
 
 /**
@@ -360,10 +360,17 @@ export default defineTool({
         // failure (or a flag-IO error) NEVER breaks declare-intent — the lane stays
         // claimed regardless. Fail-safe to OFF on a flag-read error.
         const autoConvert = await getFlag(FLAGS.PLAN_ITEM_CLAIM_AUTO_CONVERT, 'system').catch(() => false);
+        // WI-10008137: a coded refusal (e.g. activation_audit_required on an unaudited
+        // draft plan) is reported back instead of discarded. WI-10008206: when the gate
+        // refuses an item THIS call just claimed, its lease is released too, so a refused
+        // start leaves no claim behind (owner decision 1A, refuse until audited). A lease
+        // held before this call is left alone.
+        const notConverted: Array<{ item: string; code: string; reason: string; leaseReleased: boolean }> = [];
+        const newlyClaimed = new Set(reconciled.claimed);
         if (autoConvert) {
           const held = [...reconciled.claimed, ...reconciled.alreadyHeld];
           for (const itemId of held) {
-            await convertPlanItem({
+            const conv = await convertPlanItem({
               workspaceId: scope.workspaceId,
               harnessSlug: scope.harnessSlug,
               planSlug: declaredPlanSlug,
@@ -373,23 +380,46 @@ export default defineTool({
               ownerName,
               ownerUser: bestEffortOwnerUser(ctx),
               intent: args.intent,
-            }).catch((e) =>
+            }).catch((e) => {
               console.warn(
                 `[coord:declare-intent] auto-convert ${declaredPlanSlug}#${itemId} failed:`,
                 (e as Error)?.message ?? e,
-              ),
-            );
+              );
+              return null;
+            });
+            if (conv?.status === 'refused' && conv.code) {
+              const leaseReleased =
+                conv.code === 'activation_audit_required' && newlyClaimed.has(itemId)
+                  ? await releaseOwnClaim(
+                      scope.workspaceId,
+                      scope.harnessSlug,
+                      declaredPlanSlug,
+                      itemId,
+                      identity.ownerId,
+                    ).catch(() => false)
+                  : false;
+              notConverted.push({ item: itemId, code: conv.code, reason: conv.reason, leaseReleased });
+            }
           }
         }
 
+        const releasedByGate = new Set(notConverted.filter((n) => n.leaseReleased).map((n) => n.item));
+        const withRefusals =
+          notConverted.length > 0
+            ? {
+                ...reconciled,
+                claimed: reconciled.claimed.filter((item) => !releasedByGate.has(item)),
+                notConverted,
+              }
+            : reconciled;
         claims =
           unknown.length > 0
             ? {
-                ...reconciled,
+                ...withRefusals,
                 unknown,
                 hint: 'unknown items do not parse as items of this plan (plans:set-status would return item_not_found) and were not claimed — fix the plan format or the ids.',
               }
-            : reconciled;
+            : withRefusals;
       }
     }
 
@@ -426,9 +456,10 @@ export default defineTool({
     // stating something that was true when it was copied and rots silently afterwards
     // — and peers read intents to decide what to do. DETECTOR, never a gate: this is a
     // string on the result, the declare always succeeds, and a deliberate historical
-    // quote is legitimate. Pure + total (never throws), so it needs no timeout budget
-    // like the pivot leg below.
-    const cellHint = cellTranscriptionHint(args.intent);
+    // quote is legitimate. Total (never throws); each sha-shaped token is resolved
+    // against the integration tree first, in parallel and bounded by git's own 2s
+    // timeout, so an agent short id is not reported as a sha (EI-24684014950807803).
+    const cellHint = await cellTranscriptionHintResolvingCommits(args.intent);
     // P-015: mechanical pivot detection between consecutive intents (plan D-006
     // — extractive embedding use only; deterministic lexical fallback). A sharp
     // pivot usually means the previous approach dead-ended — the nudge points

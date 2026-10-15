@@ -499,6 +499,10 @@ function toPlanValue(row: Record<string, unknown>): HarnessPlanRow {
     property_schema: row.property_schema ?? null,
     properties: row.properties ?? null,
     forced_past: row.forced_past ?? null,
+    // derived-status-not-hand-written-2026-10-12 P-004 (D-008): the structured Now
+    // note. Opaque on the wire; the projection decodes it and applies it under the
+    // note's own last-writer-wins clock.
+    now_note: row.now_note ?? null,
     supersedes: Array.isArray(row.supersedes) ? row.supersedes.filter((s): s is string => typeof s === 'string') : [],
     superseded_by: strOrNull(row.superseded_by),
     archived: typeof row.archived === 'boolean' ? row.archived : false,
@@ -1305,7 +1309,7 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
     // replicates. Strip the private payload, keep the routing fields and the row.
     // Nothing downstream consumes the federated copy: the private args live in the
     // owner-local, UNFEDERATED harness_shared.trigger_runs.args, and the write-side
-    // tools (gmail:create-draft, slack:respond-in-thread) already resolve recipient,
+    // tools (mail:reply { planRunId }, chat:reply { planRunId }) already resolve recipient,
     // thread, headers and OAuth credential from THERE by planRunId, on the operator
     // that holds the credential. Identity-preserving: an ordinary row is returned
     // unchanged, by reference.

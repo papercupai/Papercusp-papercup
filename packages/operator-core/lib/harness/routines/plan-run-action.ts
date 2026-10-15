@@ -26,15 +26,22 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { planScheduleRoutineName } from './materialize-plan-schedule';
+import { disarmPlanSchedule } from './arm-plan-schedule';
+import { isTerminalItemStatus } from '../../fleet-drained-events';
 import { ACTIVE_FEATURE_FAMILY_KINDS, type ActiveFeatureFamilyKind } from '../../work-items';
 import { evaluatePlanStartReadiness, type PlanStartReadiness } from '../../agent-tools/plans/plan-input-validation';
 import { readAndEvaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-evaluator';
 import { checkPlanAdmission, type PlanAdmissionRefusal } from '../../agent-tools/plans/plan-admission-gate';
 import { routineStorageSlug } from '../../pot-membership';
+import { retireRunInstancePlan } from './retire-run-instance-plan';
 import { setFrontmatterScalar } from '../../agent-tools/plans/transfer-owner';
 import { planRunInstanceSlug } from '../../agent-tools/plans/run-instance-slug';
 import { deriveIndexFromContent, type PlanIndexDecision, type PlanIndexItem } from '../../agent-tools/plans/source';
 import { writePlanIndexRows } from '../../agent-tools/plans/plan-index-rows';
+import {
+  PLAN_RUN_INSTANCE_CLONE_REVISION_AUTHOR,
+  recordSystemPlanRevisionInTransaction,
+} from '../../agent-tools/plans/revisions';
 import { parsePlan } from '@papercusp/plan-parser';
 import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import {
@@ -56,15 +63,26 @@ import {
 const PLAN_RUN_LAUNCHER = 'system:plan-run';
 
 /**
- * A MANUAL run (plans:run-now) takes a fresh token each call (EI-1369). A module-monotonic
- * counter guarantees a strictly-increasing, unique token even for two run-nows within the same
- * millisecond on one host — so the instance slug never collides and the run never replay-no-ops.
+ * A MANUAL run (plans:run-now) takes a fresh token each call (EI-1369). The module-monotonic
+ * counter makes the token strictly increasing within ONE PROCESS only. Two processes (cluster
+ * workers, a request host beside bg-host, separate cold children) can still draw the same
+ * millisecond, so the counter alone does not guarantee a unique instance slug — the seed
+ * transaction resolves that collision under its advisory lock (WI-10005127, see
+ * runScheduledPlanFireTx). `floor` lets that path step past a token another process seeded.
  */
 let lastManualToken = 0;
-function nextManualToken(): number {
-  const t = Math.max(Date.now(), lastManualToken + 1);
+function nextManualToken(floor = 0): number {
+  const t = Math.max(Date.now(), lastManualToken + 1, floor + 1);
   lastManualToken = t;
   return t;
+}
+
+/** Bound on cross-process manual-token collisions resolved in one seed transaction. */
+const MAX_MANUAL_TOKEN_COLLISIONS = 64;
+
+/** Test seam: a fresh PROCESS starts this counter at 0; resetting it stands in for one. */
+export function resetManualTokenCounterForTests(): void {
+  lastManualToken = 0;
 }
 
 export type ScheduledPlanFireRefusalReason =
@@ -77,7 +95,14 @@ export type ScheduledPlanFireRefusalReason =
    * ratification round, not a repair of the plan document — collapsing them would
    * send whoever reads the refusal to edit a plan that needs no editing.
    */
-  | 'not-admitted';
+  | 'not-admitted'
+  /**
+   * WI-10004721: the template HAS items and every one is terminal (done/dropped), so a
+   * run would clone a finished plan, mint zero work-items and settle in seconds as if
+   * it had succeeded. The scheduled routine door also disarms the schedule on this
+   * refusal (see handlePlanRun); re-arming is one call once the plan has work again.
+   */
+  | 'template-all-terminal';
 
 type FailedPlanStartReadiness = Extract<PlanStartReadiness, { ready: false }>;
 
@@ -296,8 +321,12 @@ async function runScheduledPlanFireTx(
     throw new Error(`plan_run_template_pin_mismatch:${templateSlug}`);
   }
   if (template.acceptance_bar_epoch != null) {
+    // Scope the contract read to the SAME harness the template row came from. A built-in
+    // template is installed once per harness, so an unscoped read of its slug spans every
+    // harness that holds a copy and refuses `bar_snapshot_plan_ambiguous` (WI-10005140).
     const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(templateSlug, 'pre-start', {
       expectedApplicable: true,
+      harnessSlug: planStorageSlug,
     });
     if (!lifecycle.satisfied) {
       const detail = lifecycle.message ?? 'acceptance BAR contract is not ready for scheduled start';
@@ -420,7 +449,7 @@ async function runScheduledPlanFireTx(
   if (suppliedToken !== null && !/^\d+$/.test(suppliedToken)) {
     throw new Error('plan_run_token_must_be_decimal');
   }
-  const token =
+  let token =
     trigger === 'manual'
       ? nextManualToken()
       : suppliedToken !== null
@@ -428,19 +457,25 @@ async function runScheduledPlanFireTx(
         : rt[0]?.last_fired_at
           ? new Date(rt[0].last_fired_at).getTime()
           : Date.now();
-  const instanceSlug = planRunInstanceSlug(templateSlug, token);
+  let instanceSlug = planRunInstanceSlug(templateSlug, token);
 
   // Serialize callers racing on the same deterministic fire before the replay
   // check. Combined with the transaction wrapper, this makes the mint both atomic
   // and exactly-once visible even when two workers receive the same event.
-  const fireLockKey = `${workspaceId}:${appHarnessSlug}:${instanceSlug}`;
-  await sql`SELECT pg_advisory_xact_lock(hashtextextended(${fireLockKey}, 0))`;
-
+  //
   // 3. Idempotency: the instance already existing ⇒ recover the SAME ledger
   // row and re-enter canonical promotion after this transaction. A replay is
   // not a promotion no-op: it is the healing path for a crash between the
   // atomic instance+ledger seed and the shared work-item writes.
-  const existing = await sql<Array<{ run_seq: number | null; run_id: number | null; inputs: unknown }>>`
+  //
+  // WI-10005127: that replay reading is ONLY valid for a deterministic token
+  // (scheduled/event fires, whose token is stable across a DBOS step replay). A
+  // MANUAL token is fresh per call and has no replay, so a seeded slug there means
+  // another PROCESS drew the same millisecond. Reading it as a replay merged two
+  // run-nows into ONE run (the second caller's run silently lost) and promoted that
+  // run twice concurrently — the P-013 B cold children left 2-3 rows for P-001 of
+  // one run. Under the lock, a manual fire steps to the next free token instead.
+  const readSeeded = () => sql<Array<{ run_seq: number | null; run_id: number | null; inputs: unknown }>>`
     SELECT p.run_seq, r.id AS run_id, r.inputs
       FROM harness_shared.harness_plans p
       LEFT JOIN LATERAL (
@@ -455,6 +490,18 @@ async function runScheduledPlanFireTx(
      WHERE p.workspace_id = ${workspaceId} AND p.harness_slug = ${appPlanStorageSlug}
        AND p.plan_slug = ${instanceSlug}
   `;
+  let existing: Awaited<ReturnType<typeof readSeeded>>;
+  for (let collisions = 0; ; collisions++) {
+    const fireLockKey = `${workspaceId}:${appHarnessSlug}:${instanceSlug}`;
+    await sql`SELECT pg_advisory_xact_lock(hashtextextended(${fireLockKey}, 0))`;
+    existing = await readSeeded();
+    if (!existing[0] || trigger !== 'manual') break;
+    if (collisions >= MAX_MANUAL_TOKEN_COLLISIONS) {
+      throw new Error(`plan_run_manual_token_exhausted:${templateSlug}:${token}`);
+    }
+    token = nextManualToken(Number(token));
+    instanceSlug = planRunInstanceSlug(templateSlug, token);
+  }
   if (existing[0]) {
     if (!existing[0].run_id) {
       throw new Error(`plan_run_replay_missing_ledger:${instanceSlug}`);
@@ -470,6 +517,47 @@ async function runScheduledPlanFireTx(
       runInputs: existing[0].inputs ?? runInputs,
       appHarnessSlug,
       execution,
+    };
+  }
+
+  // 3a. WI-10004721 — nothing left to run. A template whose items are ALL terminal
+  // clones into an instance born all-done: zero work-items, a run that settles
+  // within seconds, and a ledger that reads like a healthy fire. The daily schedule
+  // of a SHIPPED plan did exactly that 21 times with nobody noticing. Refuse before
+  // anything is written. Placed AFTER the replay check on purpose: a fire that
+  // already seeded its instance (while the template still had open items) must keep
+  // its promotion-repair path even if the template finished in between.
+  //
+  // A template with NO items keeps its existing behaviour — that is a different
+  // shape (an outputs-only plan), not an exhausted one. The index is read the same
+  // way the clone below reads it: stored index first, else derived from content.
+  // A missing/unknown status is NOT terminal, so a legacy row fails open (runs).
+  const templateItems =
+    Array.isArray(template.items) && template.items.length > 0
+      ? template.items
+      : deriveIndexFromContent(template.content).items;
+  if (
+    templateItems.length > 0 &&
+    templateItems.every((item) => isTerminalItemStatus(typeof item.status === 'string' ? item.status : ''))
+  ) {
+    const detail =
+      `template '${templateSlug}' has nothing left to run: all ${templateItems.length} ` +
+      `item(s) are done/dropped`;
+    console.warn(`[plan-run] ${detail} — skip`);
+    return {
+      started: false,
+      instanceSlug: '',
+      runId: -1,
+      runSeq: -1,
+      minted: 0,
+      workItemIds: [],
+      actionableWorkItemIds: [],
+      replayed: false,
+      reason: 'template-all-terminal',
+      detail,
+      // Terminal for this fire: only an edit to the plan (reopen/add an item) changes it.
+      retryable: false,
+      ...(execution ? { execution } : {}),
     };
   }
 
@@ -550,7 +638,17 @@ async function runScheduledPlanFireTx(
   // (and imported plans) may have a populated index even when their markdown
   // predates strict item-line syntax, and silently dropping it would turn a
   // valid run into a zero-work promotion.
-  const instanceContent = setFrontmatterScalar(template.content, 'slug', instanceSlug);
+  //
+  //    EI-25654921386861878: the same verbatim clone left the TEMPLATE's frontmatter
+  //    `status:` (typically `ready`) on an instance row whose `status` column is
+  //    `active`. Column readers (contract triage, plans:list filters) and frontmatter
+  //    readers (plans:set-plan-status's expectedCurrent check) then disagreed about the
+  //    same plan. Stamp the instance's own status alongside its slug.
+  const instanceContent = setFrontmatterScalar(
+    setFrontmatterScalar(template.content, 'slug', instanceSlug),
+    'status',
+    'active',
+  );
   const instanceContentHash = hashPlanContent(instanceContent);
   // P-009: this raw INSERT bypasses withPlanLock, so it must invoke the same
   // candidate policy explicitly before the active instance or its plan_runs row
@@ -573,7 +671,7 @@ async function runScheduledPlanFireTx(
     Array.isArray(template.decisions) && template.decisions.length > 0 ? template.decisions : contentIndex.decisions;
   const itemsJson = JSON.stringify(instanceItems);
   const decisionsJson = JSON.stringify(instanceDecisions);
-  await sql`
+  const insertedInstance = await sql<Array<{ plan_slug: string }>>`
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, title, status, content, content_hash,
        items, decisions, template_slug, run_seq, origin, template, template_data, input_schema,
@@ -584,7 +682,23 @@ async function runScheduledPlanFireTx(
             ${template.template}, ${runInputsJson}::text::jsonb, ${inputSchemaJson}::text::jsonb,
             ${outputSchemaJson}::text::jsonb)
     ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING
+    RETURNING plan_slug
   `;
+  // WI-10006321: the instance's first revision rides the same transaction as its body. Without
+  // one, the plan-parts reconcile sweep has no content clock for the instance and falls back to
+  // updated_at, which non-content writes also bump. A replayed fire (ON CONFLICT) inserted
+  // nothing and owes nothing.
+  if (insertedInstance.length > 0) {
+    await recordSystemPlanRevisionInTransaction(sql, {
+      workspaceId,
+      harnessSlug: appPlanStorageSlug,
+      planSlug: instanceSlug,
+      content: instanceContent,
+      contentHash: instanceContentHash,
+      rationale: `scheduled run instance cloned from ${templateSlug}`,
+      authorId: PLAN_RUN_INSTANCE_CLONE_REVISION_AUTHOR,
+    });
+  }
   // Raw instance creation is a plan WRITE and therefore owes the same derived
   // relational index as with-plan-lock and the built-in external-trigger plan
   // writers. Keep it in this transaction, after the parent row exists and while
@@ -685,20 +799,20 @@ export async function recordScheduledFireFailure(
   const message = input.error instanceof Error ? input.error.message : String(input.error);
   await sql`
     UPDATE harness_shared.plan_runs
-       SET status = 'failed', outcome = 'failed', result_summary = ${`fire failed: ${message}`.slice(0, 4000)},
+       SET status = 'failed', outcome = 'failed', note = ${`fire failed: ${message}`.slice(0, 4000)},
            finished_at = ${now}, updated_at = ${now}
      WHERE id = ${input.runId} AND status = 'running'
   `;
   const planStorageSlug = await routineStorageSlug(input.appHarnessSlug, input.workspaceId);
-  await sql`
-    UPDATE harness_shared.harness_plans
-       SET status = 'superseded'
-     WHERE workspace_id = ${input.workspaceId}
-       AND harness_slug = ${planStorageSlug}
-       AND plan_slug = ${input.instanceSlug}
-       AND template_slug = ${input.templateSlug}
-       AND status = 'active'
-  `;
+  // Same single retirement path as reconcile — closes the instance's plan_items with the
+  // status instead of leaving them open on a superseded plan (WI-10005040).
+  await retireRunInstancePlan(sql, {
+    workspaceId: input.workspaceId,
+    planStorageSlug,
+    instanceSlug: input.instanceSlug,
+    templateSlug: input.templateSlug,
+    outcome: 'failed',
+  });
 }
 
 type PreparedScheduledFire = Extract<Awaited<ReturnType<typeof runScheduledPlanFireTx>>, { started: true }>;
@@ -792,6 +906,35 @@ async function promoteScheduledFire(
   };
 }
 
+/**
+ * WI-10004721: disarm a schedule whose template has nothing left to run. Refusing the
+ * fire stops the empty runs; leaving the routine armed would still re-fire (and re-log
+ * the same refusal) every cadence forever while `schedule_active` claimed the plan was
+ * live. This mirrors the reconcile guardrails (failure streak / cost breach), which
+ * pause through the same disarmPlanSchedule mechanism: authored schedule kept, routine
+ * deactivated, so re-arming after the plan regains open items is one plans:arm-schedule.
+ *
+ * The template row and the routine can sit under different slugs (WI-6978), so both are
+ * passed explicitly rather than reusing installSlug for the plan row.
+ */
+export async function disarmExhaustedPlanSchedule(
+  sql: Sql,
+  input: { installSlug: string; workspaceId: string; templateSlug: string; detail: string },
+): Promise<void> {
+  const planStorageSlug = await routineStorageSlug(input.installSlug, input.workspaceId);
+  await disarmPlanSchedule({
+    sql,
+    workspaceId: input.workspaceId,
+    harnessSlug: planStorageSlug,
+    routineInstallSlug: input.installSlug,
+    templateSlug: input.templateSlug,
+  });
+  console.warn(
+    `[plan-run] auto-disarmed schedule '${input.templateSlug}' (${input.installSlug}) — ${input.detail}. ` +
+      `Re-arm with plans:arm-schedule once the plan has open items again.`,
+  );
+}
+
 /** The registered `system:plan-run` handler. Never throws (durable-step contract). */
 export async function handlePlanRun(ctx: SystemActionCtx): Promise<void> {
   const templateSlug =
@@ -814,6 +957,14 @@ export async function handlePlanRun(ctx: SystemActionCtx): Promise<void> {
     });
     if (fired.started === true && fired.dispatch && !fired.dispatch.ok) {
       throw new Error(`plan_run_agentic_dispatch_failed:${fired.dispatch.failure?.code ?? 'assignment_failed'}`);
+    }
+    if (fired.started === false && fired.reason === 'template-all-terminal') {
+      await disarmExhaustedPlanSchedule(sql, {
+        installSlug: ctx.installSlug,
+        workspaceId: ctx.workspaceId,
+        templateSlug,
+        detail: fired.detail,
+      });
     }
   } catch (e) {
     // Durable-step contract: log + return, never throw (the next cadence fire retries).

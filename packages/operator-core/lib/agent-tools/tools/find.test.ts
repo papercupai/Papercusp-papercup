@@ -12,9 +12,16 @@
  * Run with: npx vitest run packages/operator-core/lib/agent-tools/tools/find.test.ts
  */
 import { beforeEach, describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
 import { z } from 'zod';
 import { addresseeArg } from '../_addressee-arg';
 import { defineTool } from '@papercusp/agent-mcp';
+import { nestedProjectionContext } from '../../result-projection/nested-dispatch';
+import devServiceHealth from '../dev/service_health';
+import launchAgent from '../capability/launch-agent';
+import activityToolLog from '../activity/tool-log';
+import releaseCut from '../release/cut';
 import releaseTrace from '../release/trace';
 import plansNew from '../plans/new';
 import plansAudit from '../plans/audit';
@@ -22,19 +29,27 @@ import plansSetSpecs from '../plans/set-specs';
 import bindSpecEvidence from '../plans/bind-spec-evidence';
 import plansSearch from '../plans/search';
 import crossHarnessPlansSearch from '../cross_harness/plans_search';
+import docsGet from '../docs/get';
 import eventsAwait from '../events/await';
+import loopArm from '../loop/arm';
 import complete from '../work_items/complete';
 import workItemsCreate from '../work_items/create';
 import workItemsGet from '../work_items/get';
 import workItemsRelease from '../work_items/release';
 import workItemsCheckpoint from '../work_items/checkpoint';
+import workItemsSetBlocker from '../work_items/set_blocker';
 import coordSend from '../coordination/tools/send';
 import coordHandoff from '../coordination/tools/handoff';
 import sessionsRead from '../sessions/read';
+import sessionCarryDrill from '../session/carry-drill';
 import capabilityRead from '../capability/read';
+import bashOutput from '../capability/bash_output';
+import bashKill from '../capability/bash_kill';
 import factsAssert from '../facts/assert';
+import { bulkRunReport } from '../inbox/bulk-run';
 import agentReview from '../improvements/agent-review';
 import captureTool from '../improvements/capture';
+import recipesRun from '../recipes/run';
 import rubricsPropose from '../rubrics/propose';
 import './invoke';
 import { COORD_SEND_MAX_CHUNK_PARTS, DEFAULT_INBOX_BODY_CAP } from '../coordination/tools/inbox-content-bounds';
@@ -42,6 +57,7 @@ import { chunkContentBudget } from '../coordination/tools/send-chunking';
 import { scorecardEmitArgs } from '../scorecards/emit';
 import scorecardEvaluate from '../scorecards/evaluate';
 import { schemaAliasAnnotation } from '../../cupboard/tools-discovery';
+import { findTools } from '../../cupboard/tool-find';
 import {
   COMPLETION_COVERAGE_CALL_CONSTRAINT,
   ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT,
@@ -66,12 +82,20 @@ const pluginHostMocks = vi.hoisted(() => ({
   getPluginHost: vi.fn(),
 }));
 
+const servingGenerationMocks = vi.hoisted(() => ({
+  read: vi.fn(),
+}));
+
 vi.mock('../../hive-federation', () => ({
   potHomeSlugForHarness: hiveMocks.potHomeSlugForHarness,
 }));
 
 vi.mock('../../plugin-host-runtime', () => ({
   getPluginHost: pluginHostMocks.getPluginHost,
+}));
+
+vi.mock('../../serving-generation', () => ({
+  readServingGeneration: servingGenerationMocks.read,
 }));
 
 import toolFind, {
@@ -83,8 +107,10 @@ import toolFind, {
   DISCOVERY_RESULT_MAX_BYTES,
   PLUGIN_HOST_READINESS_TIMEOUT_MS,
   ensureIndex,
+  exactToolNamesInQuery,
   normalizeToolsFindArgs,
   filterCorpusForConfirmedHiveScope,
+  prioritizeExactToolHits,
   warmToolFindIndex,
 } from './find';
 
@@ -103,6 +129,7 @@ async function callHandler(args: Record<string, unknown>, ctx: Record<string, un
     count: number;
     semantic: 'on' | 'warming' | 'lexical-only';
     registry: { source: string; revision: string };
+    servingGeneration: string | null;
     hits: Array<{
       tool: string;
       description: string | null;
@@ -111,6 +138,8 @@ async function callHandler(args: Record<string, unknown>, ctx: Record<string, un
       returnsSource: 'registered-output-schema' | 'authored-tool-guidance' | null;
       via: string;
     }>;
+    omittedTools?: string[];
+    truncated: boolean;
     howToCall: string;
   };
 }
@@ -120,6 +149,14 @@ beforeEach(() => {
   hiveMocks.potHomeSlugForHarness.mockResolvedValue(null);
   pluginHostMocks.getPluginHost.mockReset();
   pluginHostMocks.getPluginHost.mockResolvedValue({ loaded: [] });
+  servingGenerationMocks.read.mockReset();
+  servingGenerationMocks.read.mockResolvedValue({
+    state: 'known',
+    revision: 'serving-generation-v1:test',
+    buildSha: 'test-build',
+    appliedMigrationDigest: 'test-migrations',
+    toolRegistryRevision: 'test-registry',
+  });
 });
 
 describe('tools:find tool registration', () => {
@@ -187,6 +224,115 @@ describe('tools:find tool registration', () => {
     const withoutHint = await callHandler({ query: 'feature flag' });
     const withHint = await callHandler({ query: 'feature flag', harness: 'some-other-harness', workspace: 'some-other-workspace' });
     expect(withHint.hits.map((h) => h.tool)).toEqual(withoutHint.hits.map((h) => h.tool));
+  });
+
+  it('binds returned schemas to the serving generation and explains the tools:invoke check', async () => {
+    const out = await callHandler({ query: 'coord:inbox', limit: 1 });
+
+    expect(out.servingGeneration).toBe('serving-generation-v1:test');
+    expect(out.howToCall).toContain('pass it unchanged as `servingGeneration` to tools:invoke');
+    expect(servingGenerationMocks.read).toHaveBeenCalledWith({
+      toolRegistryRevision: out.registry.revision,
+    });
+  });
+
+  it('warns against cross-operator dispatch when the serving generation is unknown', async () => {
+    servingGenerationMocks.read.mockResolvedValueOnce({ state: 'unknown', reason: 'build-sha-unknown' });
+
+    const out = await callHandler({ query: 'coord:inbox', limit: 1 });
+
+    expect(out.servingGeneration).toBeNull();
+    expect(out.howToCall).toContain('server generation is unknown');
+    expect(out.howToCall).toContain('do not send this schema through a different operator');
+  });
+});
+
+describe('documented tools:find argSchema selection (EI-25211864676774274)', () => {
+  type Selection = {
+    tool: string;
+    status: 'available' | 'unavailable';
+    format?: 'compact-text' | 'json-schema';
+    argSchema?: unknown;
+    reason?: string;
+  };
+
+  async function runExample(hits: Array<Record<string, unknown>>): Promise<Selection[]> {
+    const source = readFileSync(new URL(
+      '../../../../../apps/operator-docs/src/content/docs/agent-insights/toolsearch-stale-schema-snapshot-vs-imperative-required-field.mdx',
+      import.meta.url,
+    ), 'utf8');
+    const examples = [...source.matchAll(
+      /\{\/\* tools-find-argschema-example:start \*\/\}\r?\n```js\r?\n([\s\S]*?)\r?\n```\r?\n\{\/\* tools-find-argschema-example:end \*\/\}/g,
+    )];
+    expect(examples, 'the maintained runbook must contain exactly one executable example').toHaveLength(1);
+    const find = vi.fn().mockResolvedValue({ hits });
+    const selected = await runInNewContext(
+      `(async () => {\n${examples[0][1]}\n})()`,
+      { tools: { tools: { find } } },
+      { timeout: 1000 },
+    ) as Selection[];
+    expect(find).toHaveBeenCalledExactlyOnceWith({ query: 'work_items:get tools:invoke', limit: 8 });
+    expect(selected.map((row) => row.tool)).toEqual(['work_items:get', 'tools:invoke']);
+    return selected;
+  }
+
+  const schema = { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] };
+
+  it('preserves actual compactSchemaForResult text byte-for-byte and selects exact names only', async () => {
+    const compact = compactSchemaForResult(schema);
+    expect(typeof compact).toBe('string');
+    const selected = await runExample([
+      { tool: 'work_items:get-extra', argSchema: schema },
+      { tool: 'tools:invoke', argSchema: compact, description: 'do not copy', returns: 'do not copy' },
+      { tool: 'work_items:get', argSchema: compact, description: 'do not copy', via: 'lexical' },
+      { tool: 'unrelated', argSchema: schema },
+    ]);
+    for (const row of selected) {
+      expect(row).toEqual({ tool: row.tool, status: 'available', format: 'compact-text', argSchema: compact });
+      expect(Object.keys(row).sort()).toEqual(['argSchema', 'format', 'status', 'tool']);
+      expect(row).not.toHaveProperty('properties');
+    }
+  });
+
+  it.each([
+    ['object', schema],
+    ['JSON-encoded object', JSON.stringify(schema)],
+  ])('retains properties and required from a %s schema', async (_label, argSchema) => {
+    const [selected] = await runExample([{ tool: 'work_items:get', argSchema }]);
+    expect(selected).toEqual({ tool: 'work_items:get', status: 'available', format: 'json-schema', argSchema: schema });
+  });
+
+  it('keeps arbitrary non-JSON text opaque without semantic validation', async () => {
+    const opaque = '  caller-supplied schema guidance: unknown grammar\n';
+    const [selected] = await runExample([{ tool: 'work_items:get', argSchema: opaque }]);
+    expect(selected).toEqual({ tool: 'work_items:get', status: 'available', format: 'compact-text', argSchema: opaque });
+  });
+
+  it('labels an absent exact hit unavailable', async () => {
+    const selected = await runExample([{ tool: 'work_items:get-extra', argSchema: schema }]);
+    expect(selected).toEqual([
+      { tool: 'work_items:get', status: 'unavailable', reason: 'missing-hit' },
+      { tool: 'tools:invoke', status: 'unavailable', reason: 'missing-hit' },
+    ]);
+  });
+
+  it.each([null, undefined, 7, true, [], 'null', '42', 'true', '["id"]', '"JSON string"'])(
+    'labels unsupported or non-object JSON schema %j unavailable without manufacturing properties',
+    async (argSchema) => {
+      const [selected] = await runExample([{ tool: 'work_items:get', argSchema }]);
+      expect(selected).toEqual({ tool: 'work_items:get', status: 'unavailable', reason: 'unsupported-schema' });
+      expect(Object.keys(selected).sort()).toEqual(['reason', 'status', 'tool']);
+    },
+  );
+
+  it.each(['', ' \n '])('labels empty schema text %j unavailable', async (argSchema) => {
+    const [selected] = await runExample([{ tool: 'work_items:get', argSchema }]);
+    expect(selected).toEqual({ tool: 'work_items:get', status: 'unavailable', reason: 'missing-schema' });
+  });
+
+  it.each(['{bad JSON', '[bad JSON', '"unfinished'])('labels malformed JSON-looking text %j unavailable', async (argSchema) => {
+    const [selected] = await runExample([{ tool: 'work_items:get', argSchema }]);
+    expect(selected).toEqual({ tool: 'work_items:get', status: 'unavailable', reason: 'malformed-json' });
   });
 });
 
@@ -285,6 +431,24 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(text).toContain('query');
   });
 
+  it('publishes capability:launch-agent conditional brief requirements in discovery output', async () => {
+    expect(launchAgent.name).toBe('capability:launch-agent');
+    const result = await callHandler({ query: 'capability:launch-agent', limit: 1 });
+    const hit = result.hits.find((entry) => entry.tool === 'capability:launch-agent');
+
+    expect(hit).toBeDefined();
+    expect(hit?.argSchema).toContain('brief?:string');
+    expect(hit?.argSchema).toContain(
+      'constraint:$ (resume or fork => non-empty top-level brief required)',
+    );
+
+    const recoveryArgs = { resume: { agentId: 'su-a1a71' }, headless: true, account: 'auto' };
+    expect(launchAgent.args.safeParse(recoveryArgs).success).toBe(false);
+    expect(
+      launchAgent.args.safeParse({ ...recoveryArgs, brief: 'continue the recovery' }).success,
+    ).toBe(true);
+  });
+
   it('derives return shapes from registered output schemas before authored prose', () => {
     const name = 'test:derived-return-shape';
     defineTool({
@@ -305,6 +469,18 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
       type: 'array',
       items: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
     })).toContain('array{id:string}');
+  });
+
+  it('projects dev:service_health registered result fields into discovery', async () => {
+    expect(devServiceHealth.name).toBe('dev:service_health');
+    const out = await callHandler({ query: 'dev:service_health', limit: 1 });
+    const health = out.hits.find((hit) => hit.tool === 'dev:service_health');
+
+    expect(health?.returnsSource).toBe('registered-output-schema');
+    expect(health?.returns).toContain('healthPhaseTimingsMs:object');
+    expect(health?.returns).toContain('unitStates?');
+    expect(health?.returns).toContain('unitsUnknown?');
+    expect(health?.returns).toContain('scopesUnavailable?');
   });
 
   it('publishes checkpoint and bounded comment paths under the work-item result envelope', async () => {
@@ -328,6 +504,21 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(hit?.argSchema).toContain('verified?:string(≤1200 (soft cap ≤300))');
   });
 
+  it('publishes the checkpoint root constraint in compact tool discovery', async () => {
+    const { schemaByTool } = buildCorpus();
+    const compact = compactSchemaForResult(schemaByTool.get('work_items:checkpoint')) ?? '';
+    const constraintPrefix = 'constraint:$ (With `items[]`, omit root-level `checkpoint`, `note`, `did`';
+
+    expect(compact).toContain(constraintPrefix);
+    expect(compact).toContain('`confirmShrink`');
+    expect(compact).toContain('remain defaults for entries');
+
+    const out = await callHandler({ query: 'work_items:checkpoint', limit: 1 });
+    const hit = out.hits.find((entry) => entry.tool === 'work_items:checkpoint');
+    expect(hit?.argSchema).toContain(constraintPrefix);
+    expect(hit?.argSchema).toContain('remain defaults for entries');
+  });
+
   it('shows required behaviorClass in plans:set-specs compact discovery', async () => {
     expect(plansSetSpecs.name).toBe('plans:set-specs');
     const { schemaByTool } = buildCorpus();
@@ -340,7 +531,7 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     const out = await callHandler({ query: 'work_items:get', limit: 1 });
     const hit = out.hits.find((entry) => entry.tool === 'work_items:get');
     expect(hit?.argSchema).toContain(
-      'constraint:$ (resume requires one item and cannot be combined with detail, checksOnly, threadLimit or priorAttemptRefs; use a separate read for those enrichments)',
+      'constraint:$ (resume requires one item (pass `id`, or a one-element `ids` array; multi-id batches are not supported) and cannot be combined with detail, checksOnly, checkpointOnly, offset, limit, threadLimit, priorAttemptRefs or operationalBrief; use a separate read for those enrichments',
     );
   });
 
@@ -356,6 +547,15 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(missingText.success).toBe(false);
     expect(hit!.argSchema).toContain('title?:string(1-1000)');
     expect(captureTool.args.safeParse({ lane: 'observation', body: 'body-only capture' }).success).toBe(true);
+  });
+
+  it('keeps the structured observation subject shape visible in improvements:capture discovery (EI-24759188330677893)', async () => {
+    const { schemaByTool } = buildCorpus();
+    const subjectShape = 'subject?:object{kind?:enum(agent-run|session|work-item|plan|pot),ref:string';
+    expect(compactSchemaForResult(schemaByTool.get('improvements:capture'))).toContain(subjectShape);
+
+    const result = await callHandler({ query: 'improvements:capture', limit: 1 });
+    expect(result.hits.find((entry) => entry.tool === 'improvements:capture')?.argSchema).toContain(subjectShape);
   });
 
   it('uses the raw discovery schema for a release:trace-style path-or-sha union', () => {
@@ -389,6 +589,66 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(schemaByTool.get('release:trace')).toMatchObject({ anyOf: expect.any(Array) });
   });
 
+  it('EI-25577107953770833: advertises release:cut branch-specific fields without leaking them into reclaim', () => {
+    expect(releaseCut.name).toBe('release:cut');
+    const { corpus, schemaByTool } = buildCorpus();
+    const entry = corpus.find((candidate) => candidate.tool === 'release:cut');
+    const branchRule =
+      'when op in (preflight|prepare-tag|status|handoff|abort-leg|gate-status|reclaim) => work_item_id';
+
+    expect(entry?.argSchema).toContain(branchRule);
+    expect(entry?.argSchema).toContain('forbidden');
+    expect(compactSchemaForResult(schemaByTool.get('release:cut'))).toContain(branchRule);
+  });
+
+  it('advertises session:carry-drill fields only on the operation variants that accept them', () => {
+    expect(sessionCarryDrill.name).toBe('session:carry-drill');
+    const { corpus, schemaByTool } = buildCorpus();
+    const entry = corpus.find((candidate) => candidate.tool === 'session:carry-drill');
+    const reportDrillIdRule = 'when op in (start|report|retire|unretire) => drillId forbidden';
+
+    expect(entry?.argSchema).toContain(reportDrillIdRule);
+    expect(compactSchemaForResult(schemaByTool.get('session:carry-drill'))).toContain(reportDrillIdRule);
+    expect(sessionCarryDrill.args.safeParse({ op: 'report', drillId: 'drill-1' }).success).toBe(false);
+    expect(sessionCarryDrill.args.safeParse({ op: 'grade', drillId: 'drill-1' }).success).toBe(true);
+  });
+
+  it('publishes activity:tool-log scope as a required owner/session one-of', () => {
+    expect(activityToolLog.name).toBe('activity:tool-log');
+    const { corpus, schemaByTool } = buildCorpus();
+    const entry = corpus.find((candidate) => candidate.tool === 'activity:tool-log');
+    const schema = schemaByTool.get('activity:tool-log') as {
+      anyOf?: Array<{ required?: string[] }>;
+    } | undefined;
+
+    expect(entry?.argSchema).toContain('one-of:owner|session_id');
+    expect(entry?.argSchema).toContain('max_lines?:integer(5-200)');
+    expect(schema?.anyOf?.some((branch) => branch.required?.includes('owner'))).toBe(true);
+    expect(schema?.anyOf?.some((branch) => branch.required?.includes('session_id'))).toBe(true);
+    expect(activityToolLog.args.safeParse({}).success).toBe(false);
+    expect(activityToolLog.args.safeParse({ owner: 'self' }).success).toBe(true);
+    expect(activityToolLog.args.safeParse({ session_id: 'session-123' }).success).toBe(true);
+  });
+
+  it('publishes the bash recovery handle requirement in full and compact discovery', () => {
+    expect(bashOutput.name).toBe('capability:bash_output');
+    expect(bashKill.name).toBe('capability:bash_kill');
+    const { corpus, schemaByTool } = buildCorpus();
+
+    for (const toolName of ['capability:bash_output', 'capability:bash_kill']) {
+      const entry = corpus.find((candidate) => candidate.tool === toolName);
+      const schema = schemaByTool.get(toolName) as { anyOf?: Array<{ required?: string[] }> } | undefined;
+      const compact = compactSchemaForResult(schema) ?? '';
+
+      expect(entry?.argSchema).toContain('one-of:bash_id|task_id');
+      expect(compact).toContain('one-of:bash_id|task_id');
+      expect(compact).toContain('bash_id?:string');
+      expect(compact).toContain('task_id?:string');
+      expect(schema?.anyOf?.some((branch) => branch.required?.includes('bash_id'))).toBe(true);
+      expect(schema?.anyOf?.some((branch) => branch.required?.includes('task_id'))).toBe(true);
+    }
+  });
+
   it('EI-22449939490325270: tells callers that resubmit forbids harness', () => {
     expect(agentReview.name).toBe('improvements:agent-review');
     const { corpus, schemaByTool } = buildCorpus();
@@ -407,6 +667,29 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(compact).toContain(
       'auditedSha?:string(7-64) Completion phase only: commit audited against; resolved from the local tree when omitted.',
     );
+  });
+
+  it('publishes plans:audit phase-dependent required fields in compact discovery output', () => {
+    const { schemaByTool } = buildCorpus();
+    const compact = compactSchemaForResult(schemaByTool.get('plans:audit')) ?? '';
+
+    // P-003 (plan-verification-friction-reduction-2026-10-11): classRef is derived when omitted.
+    expect(compact).toContain('phase=activation => classRef derived if omitted');
+    expect(compact).toContain('phase=completion (including omitted phase) => items required');
+    expect(compact).toContain('classRef');
+  });
+
+  it('publishes every plans:audit itemProvenance variant in compact discovery output', () => {
+    const { schemaByTool } = buildCorpus();
+    const compact = compactSchemaForResult(schemaByTool.get('plans:audit')) ?? '';
+
+    expect(compact).toContain('kind:enum(derived|agent-added)');
+    expect(compact).toContain('from?:array(1-50)<string>');
+    expect(compact).toContain('reason?:string(1-2000)');
+    expect(compact).toContain('constraint:itemProvenance[] (');
+    expect(compact).toContain('when kind=derived => from required; when kind!=derived => from forbidden');
+    expect(compact).toContain('when kind=agent-added => reason required');
+    expect(compact).toContain('when kind=agent-added => note forbidden');
   });
 
   it('keeps the late plans:new BAR contract in compact discovery output', () => {
@@ -597,7 +880,7 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     });
 
     expect(compact).toContain(
-      'when op=retire => expectedCandidate required; when op!=retire => expectedCandidate forbidden',
+      'when op=retire => expectedCandidate,expectedRepairHead,expectedUpdatedAtMs required; when op!=retire => expectedCandidate,expectedRepairHead,expectedUpdatedAtMs forbidden',
     );
     expect(compact).toContain('expectedCandidate?:string~/^[0-9a-fA-F]{40,64}$/');
     expect(compact).toContain('expectedRepairHead?:string~/^[0-9a-fA-F]{40,64}$/');
@@ -659,8 +942,45 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(entry?.argSchema).toContain(
       `constraint:completion.coverage (${COMPLETION_COVERAGE_CALL_CONSTRAINT})`,
     );
+    const currentEvidence = /current\?:array\(≤500\)\{([^}]*)\}/.exec(compact ?? '')?.[1] ?? '';
+    expect(currentEvidence).not.toBe('');
+    expect(currentEvidence).toContain('planSlug?');
+    expect(currentEvidence).toContain('specId?');
+    expect(currentEvidence).toContain('specRevision?');
+    expect(currentEvidence).toContain('specFingerprint?');
+    expect(currentEvidence).toMatch(/evidenceKind:enum\([^)]*\)/);
+    expect(currentEvidence).toContain('evidenceRef:string');
+    expect(currentEvidence).toContain('sourceFingerprint:string');
+    expect(currentEvidence).toContain('testFingerprint?:string|null(1-256)');
+    expect(currentEvidence).not.toContain('fixtureFingerprint');
+    expect(currentEvidence).not.toContain('rubricFingerprint');
+    expect(currentEvidence).not.toContain('environmentFingerprint');
+    expect(currentEvidence.length).toBeLessThanOrEqual(400);
+    expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
+  });
+
+  it('retains canonical completion coverage when optional legacy fields grow', () => {
+    const { schemaByTool } = buildCorpus();
+    const schema = structuredClone(schemaByTool.get('work_items:complete')) as {
+      anyOf: Array<{ properties: Record<string, unknown> }>;
+    };
+    const legacyFields = Object.fromEntries(Array.from({ length: 12 }, (_, index) => [
+      `legacyCompletionMetadataAlias${index}`,
+      { type: 'string' },
+    ]));
+    for (const branch of schema.anyOf) {
+      branch.properties = { ...legacyFields, ...branch.properties };
+    }
+
+    const compact = compactSchemaForResult(schema);
+    expect(compact).toContain('id?:string');
+    expect(compact).toContain('assumptions?');
+    expect(compact).toContain('validateOnly?');
+    expect(compact).toContain('specAdequacy?:object{current?:array');
+    expect(compact).toContain('completion?:object{rootCauseVerification?:object,verification?:object{coverage?:object{population:array(≥1)<string>');
+    expect(compact).toContain('residue?:array<string>');
     expect(compact).toContain(
-      'current?:array(≤500){planSlug?:string(1-2000),specId?:string(1-2000),specRevision?:integer(>0-9007199254740991),specFingerprint?:string(1-256),evidenceKind:enum(test|fixture|coverage-census|mutation|counterexample|check|manual|operational),evidenceRef:string(1-2000),sourceFingerprint:string(1-256),testFingerprint?:string|null(1-256)',
+      'constraint:items[].completion.verification.coverage (same as constraint:completion.verification.coverage)',
     );
     expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
   });
@@ -858,6 +1178,19 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     }).success).toBe(true);
   });
 
+  it('publishes conditional work_items:set_blocker requirements in tools:find', async () => {
+    expect(workItemsSetBlocker.name).toBe('work_items:set_blocker');
+    const result = await callHandler({ query: 'work_items:set_blocker', limit: 1 });
+    const compact = result.hits.find((hit) => hit.tool === 'work_items:set_blocker')?.argSchema;
+    expect(compact).toContain(
+      'constraint:$ (For a single-item call that sets a blocker, pass id, kind, and ref; ref is required even though it is optional in the structural schema.',
+    );
+    expect(compact).toContain(
+      'For items:[...], each entry that sets a blocker also requires kind and ref.',
+    );
+    expect(workItemsSetBlocker.args.safeParse({ id: 'WI-1', kind: 'event' }).success).toBe(false);
+  });
+
   it('keeps nested descriptions when a block fits the budget', () => {
     const compact = compactSchemaForResult({
       type: 'object',
@@ -881,8 +1214,8 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(compact).toContain('constraint:addressee (');
     expect(compact).toContain('when from=contact => contactExternalId required');
     expect(compact).toContain('when from!=contact => contactExternalId forbidden');
-    expect(compact).toContain('when from=thread-participant => source required');
-    expect(compact).toContain('when from!=thread-participant => source forbidden');
+    expect(compact).toContain('when from=thread-participant => source,externalId required');
+    expect(compact).toContain('when from!=thread-participant => source,externalId forbidden');
   });
 
   it('retains required shallow fields beside a wide nested field in the bounded fallback (EI-21985077629322871)', () => {
@@ -945,21 +1278,51 @@ describe('confirmed hive discovery visibility (WI-39255)', () => {
 
   it('fails open when the harness is standalone or hive resolution throws', async () => {
     const { corpus } = buildCorpus();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    await expect(
-      filterCorpusForConfirmedHiveScope(
-        corpus,
-        { workspaceId: 'ws-1', harnessSlug: 'standalone' },
-        vi.fn().mockResolvedValue(null),
-      ),
-    ).resolves.toBe(corpus);
-    await expect(
-      filterCorpusForConfirmedHiveScope(
-        corpus,
-        { workspaceId: 'ws-1', harnessSlug: 'member-a' },
-        vi.fn().mockRejectedValue(new Error('registry unavailable')),
-      ),
-    ).resolves.toBe(corpus);
+    try {
+      await expect(
+        filterCorpusForConfirmedHiveScope(
+          corpus,
+          { workspaceId: 'ws-1', harnessSlug: 'standalone' },
+          vi.fn().mockResolvedValue(null),
+        ),
+      ).resolves.toBe(corpus);
+      await expect(
+        filterCorpusForConfirmedHiveScope(
+          corpus,
+          { workspaceId: 'ws-1', harnessSlug: 'member-a' },
+          vi.fn().mockRejectedValue(new Error('registry unavailable')),
+        ),
+      ).resolves.toBe(corpus);
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('tools:find hive scope resolution failed: registry unavailable'),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('fails open when the Hive-scope registry read exceeds its budget', async () => {
+    const { corpus } = buildCorpus();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await expect(
+        filterCorpusForConfirmedHiveScope(
+          corpus,
+          { workspaceId: 'ws-1', harnessSlug: 'member-a' },
+          () => new Promise<string | null>(() => {}),
+          1,
+        ),
+      ).resolves.toBe(corpus);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('tools:find hive scope resolution exceeded 1ms'),
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('does not resolve hive membership for an unscoped caller', async () => {
@@ -1076,6 +1439,23 @@ describe('handler — graceful degrade + result shape', () => {
     expect(checkpoint?.argSchema).toContain('contentHash?');
     expect(checkpoint?.argSchema).toContain('unchanged?');
     expect(checkpoint?.argSchema).not.toContain('expectedHash');
+    expect(checkpoint?.argSchema).toContain('constraint:unchanged (');
+    expect(checkpoint?.argSchema).toContain('`contentHash` required');
+    expect(checkpoint?.argSchema).toContain('`checks`');
+    expect(checkpoint?.argSchema).toContain('`retireIds`');
+    expect(checkpoint?.argSchema).toContain('attestation_conflicting_args');
+    expect(checkpoint?.argSchema).toContain('`confirmRetire` cannot authorize a row mutation');
+  });
+
+  it('surfaces the checkpoint retireIds rowsMode constraint in compact discovery', async () => {
+    expect(workItemsCheckpoint.name).toBe('work_items:checkpoint');
+    const out = await callHandler({ query: 'work_items:checkpoint', limit: 1 });
+    const checkpoint = out.hits.find((hit) => hit.tool === 'work_items:checkpoint');
+
+    expect(checkpoint?.argSchema).toContain('constraint:items[].retireIds');
+    expect(checkpoint?.argSchema).toContain("effective `rowsMode:'replace'`");
+    expect(checkpoint?.argSchema).toContain("defaults to `'merge'`");
+    expect(checkpoint?.argSchema).toContain('constraint:retireIds');
   });
 
   it('shows the facts body storage cap in compact discovery', async () => {
@@ -1085,6 +1465,59 @@ describe('handler — graceful degrade + result shape', () => {
     expect(hit?.argSchema).toContain('body:string(1-4000)');
     expect(hit?.description).toContain('1200 chars are refused');
     expect(hit?.description).toContain('acceptTruncation:true');
+  });
+
+  it('keeps conditional validator rules in compact discovery beside the runtime contract', async () => {
+    const factSchema = (await callHandler({ query: 'facts:assert', limit: 1 }))
+      .hits.find((hit) => hit.tool === 'facts:assert')?.argSchema ?? '';
+    expect(factSchema).toContain(
+      "constraint:settledBy (required when kind:'undecidable'; refused for every other kind.)",
+    );
+    expect(factSchema).toContain(
+      'constraint:ttlSec (when subjectVolatile:true or measuredAt is supplied, ttlSec>900 is clamped to 900 and disclosed as ttlClampedFrom; the ordinary ttlSec ceiling still applies.)',
+    );
+    expect(factsAssert.args.safeParse({
+      scope: 'owner',
+      key: 'schema-discovery-probe',
+      body: 'probe',
+      ttlSec: 60,
+      kind: 'undecidable',
+    }).success).toBe(false);
+    expect(factsAssert.args.safeParse({
+      scope: 'owner',
+      key: 'schema-discovery-probe',
+      body: 'probe',
+      ttlSec: 60,
+      kind: 'conclusion',
+      settledBy: 'a probe',
+    }).success).toBe(false);
+
+    const bulkSchema = (await callHandler({ query: 'inbox:bulk-run-report', limit: 1 }))
+      .hits.find((hit) => hit.tool === 'inbox:bulk-run-report')?.argSchema ?? '';
+    expect(bulkSchema).toContain(
+      'constraint:items[] (when outcome is skipped or failed, error must be a non-empty reason)',
+    );
+    expect(bulkRunReport.args.safeParse({
+      items: [{ itemId: 'WI-1', outcome: 'skipped' }],
+    }).success).toBe(false);
+  });
+
+  it('publishes docs:get source/heading exclusion in compact discovery', async () => {
+    expect(docsGet.name).toBe('docs:get');
+    expect(
+      docsGet.args.safeParse({
+        slugs: ['agent-spawning/observability'],
+        source: true,
+        heading: 'Spawn-tree feed',
+      }).success,
+    ).toBe(false);
+
+    const out = await callHandler({ query: 'docs:get', limit: 1 });
+    const hit = out.hits.find((candidate) => candidate.tool === 'docs:get');
+
+    expect(hit?.argSchema).toContain(
+      'constraint:$ (source and heading are mutually exclusive; source reads the entire canonical document, while heading returns a rendered section slice)',
+    );
   });
 
   it('returns null when a matched tool has no declared response shape', async () => {
@@ -1100,6 +1533,34 @@ describe('handler — graceful degrade + result shape', () => {
   });
 
   it('preserves nested object-union branch requirements in compact arg schemas', async () => {
+    expect(bindSpecEvidence.name).toBe('plans:bind-spec-evidence');
+    const { schemaByTool } = buildCorpus();
+    const compactSchema = compactSchemaForResult(
+      schemaByTool.get('plans:bind-spec-evidence'),
+      { includeNestedDescriptions: false },
+    ) ?? '';
+    const rawBindSchema = schemaByTool.get('plans:bind-spec-evidence');
+    const bindRoot = rawBindSchema && typeof rawBindSchema === 'object'
+      ? rawBindSchema as Record<string, unknown>
+      : {};
+    const branchKeys = (key: 'anyOf' | 'oneOf' | 'allOf') => Array.isArray(bindRoot[key])
+      ? (bindRoot[key] as unknown[]).map((branch) =>
+        branch && typeof branch === 'object' ? Object.keys(branch) : typeof branch)
+      : undefined;
+    const rootSummary = {
+      keys: Object.keys(bindRoot),
+      type: bindRoot.type,
+      properties: bindRoot.properties && typeof bindRoot.properties === 'object'
+        ? Object.keys(bindRoot.properties)
+        : undefined,
+      anyOf: branchKeys('anyOf'),
+      oneOf: branchKeys('oneOf'),
+      allOf: branchKeys('allOf'),
+    };
+    expect(compactSchema, `schemaByTool root shape: ${JSON.stringify(rootSummary)}`).toContain(
+      'binding?:object(one-of:workItemId&fromTestRun|workItemId&evidenceKind&evidenceRef)',
+    );
+
     const out = await callHandler({ query: 'plans:bind-spec-evidence', limit: 1 });
     const schema = out.hits.find((hit) => hit.tool === 'plans:bind-spec-evidence')?.argSchema ?? '';
 
@@ -1108,26 +1569,95 @@ describe('handler — graceful degrade + result shape', () => {
     );
   });
 
-  it('honors an explicit full payload tier for the complete argument schema', async () => {
-    expect(bindSpecEvidence.name).toBe('plans:bind-spec-evidence');
-    const compact = await callHandler({ query: 'plans:bind-spec-evidence', limit: 1 });
+  it('publishes canonicalTestPath source limits for plans:bind-spec-evidence', async () => {
+    const out = await callHandler({ query: 'plans:bind-spec-evidence', limit: 1 });
+    const description = out.hits.find((hit) => hit.tool === 'plans:bind-spec-evidence')?.description ?? '';
+
+    expect(description).toContain('omit canonicalTestPath for local/Playwright rows');
+    expect(description).toContain('only for a cargo test');
+    expect(description).toContain('or a mutation-probe copy-out run');
+  });
+
+  it('publishes all loop:arm monitor-authority branch requirements in discovery', async () => {
+    expect(loopArm.name).toBe('loop:arm');
+    const out = await callHandler({ query: 'loop:arm', limit: 1 });
+    const schema = out.hits.find((hit) => hit.tool === 'loop:arm')?.argSchema ?? '';
+
+    expect(schema).toContain('when kind=owner-turn => turnRef,quote required');
+    expect(schema).toContain('when kind!=owner-turn => turnRef,quote forbidden');
+  });
+
+  it('keeps recipes:run authority alternatives visible in compact discovery', async () => {
+    expect(recipesRun.name).toBe('recipes:run');
+    const { schemaByTool } = buildCorpus();
+    const schema = compactSchemaForResult(schemaByTool.get('recipes:run')) ?? '';
+
+    expect(schema).toContain(
+      'authority?:object(one-of:version&revision&context|version&revision&refs&requiresContext&runnable)',
+    );
+  });
+
+  it('honors an explicit full payload tier when the complete schema fits the result budget', async () => {
+    expect(docsGet.name).toBe('docs:get');
+    const compact = await callHandler({ query: 'docs:get', limit: 1 });
     const full = await callHandler(
-      { query: 'plans:bind-spec-evidence', limit: 1 },
+      { query: 'docs:get', limit: 1 },
       { payloadTierOverride: 'full' },
     );
     const compactSchema = compact.hits[0]?.argSchema ?? '';
     const fullSchema = full.hits[0]?.argSchema ?? '';
 
-    expect(compact.hits[0]?.tool).toBe('plans:bind-spec-evidence');
-    expect(full.hits[0]?.tool).toBe('plans:bind-spec-evidence');
-    expect(compactSchema).toContain('…+');
+    expect(compact.hits[0]?.tool).toBe('docs:get');
+    expect(full.hits[0]?.tool).toBe('docs:get');
     expect(fullSchema).not.toContain('…+');
     expect(fullSchema).not.toBe(compactSchema);
     expect(() => JSON.parse(fullSchema)).not.toThrow();
-    expect(fullSchema).toContain('"fixtureFingerprint"');
-    expect(fullSchema).toContain('"rubricFingerprint"');
-    expect(fullSchema).toContain('"environmentFingerprint"');
-    expect(fullSchema).toContain('"observedAt"');
+    expect(fullSchema).toContain('"slugs"');
+  });
+
+  it('keeps a projected discovery schema compact instead of expanding the implicit full source', async () => {
+    const args = { query: 'work_items:checkpoint', limit: 1 };
+    const projection = { pick: ['hits[].argSchema'] };
+    const materialized = nestedProjectionContext({ contextTier: 'trimmed' } as never, args, projection);
+    expect(materialized.sourceMaterialization?.promotedToFull).toBe(true);
+    const ordinary = await callHandler(args);
+    const projected = await callHandler(args, { ...materialized });
+    expect(projected.hits[0]?.argSchema).toBe(ordinary.hits[0]?.argSchema);
+    expect(Buffer.byteLength(JSON.stringify(projected))).toBeLessThanOrEqual(DISCOVERY_RESULT_MAX_BYTES);
+  });
+
+  it('retains explicitly requested full schemas even when the caller also picks fields', async () => {
+    const args = { query: 'work_items:checkpoint', limit: 1, payloadTier: 'full' };
+    const materialized = nestedProjectionContext(
+      { contextTier: 'trimmed', payloadTierOverride: 'full' } as never,
+      args,
+      { pick: ['hits[].argSchema'] },
+    );
+    expect(materialized.sourceMaterialization?.promotedToFull).toBe(false);
+    const out = await callHandler(args, { ...materialized });
+    expect(() => JSON.parse(out.hits[0]?.argSchema ?? '')).not.toThrow();
+    expect(out.hits[0]?.argSchema).toContain('"properties"');
+  });
+
+  it('returns a full schema when an explicit full payload tier exceeds the inline result budget', async () => {
+    expect(bindSpecEvidence.name).toBe('plans:bind-spec-evidence');
+    const { schemaByTool } = buildCorpus();
+    const bindSpecSchema = schemaByTool.get('plans:bind-spec-evidence');
+    expect(bindSpecSchema).toBeDefined();
+    expect(Buffer.byteLength(JSON.stringify(bindSpecSchema), 'utf8')).toBeGreaterThan(DISCOVERY_RESULT_MAX_BYTES);
+
+    const out = await callHandler(
+      { query: 'plans:bind-spec-evidence', limit: 1 },
+      { payloadTierOverride: 'full' },
+    );
+    const hit = out.hits.find((candidate) => candidate.tool === 'plans:bind-spec-evidence');
+
+    expect(hit).toBeDefined();
+    expect(hit?.argSchema).toBe(JSON.stringify(bindSpecSchema));
+    expect(() => JSON.parse(hit?.argSchema ?? '')).not.toThrow();
+    expect(out).toHaveProperty('truncated', false);
+    expect(out.howToCall).not.toContain('Full argument schemas exceeded the response budget');
+    expect(Buffer.byteLength(JSON.stringify(out), 'utf8')).toBeGreaterThan(DISCOVERY_RESULT_MAX_BYTES);
   });
 });
 
@@ -1213,18 +1743,21 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     expect(rubricsPropose.name).toBe('rubrics:propose');
     const { schemaByTool } = buildCorpus();
     const compact = compactSchemaForResult(schemaByTool.get('rubrics:propose')) ?? '';
-    const checkShape =
-      'check?:object{kind:enum(tests|cargo|instrument|probe|coverage|requirements),' +
-      'files?:array(1-20)<string>,manifestPath?:string(1-500),sourceFiles?:array(1-50)<string>,' +
-      'test?:string(1-500),instrumentKey?:string(≥1),probe?,scope?:object,floor?:enum(l1|l2|l3|l4)}';
-
     // `check` is a nested discriminated union. The compact response must retain
-    // all callable arms, not just the first `tests` branch.
-    expect(compact).toContain(checkShape);
+    // every callable input even when growing optional metadata forces a shallow
+    // fallback; enum/bounds remain on the full schema and conditional synopsis.
+    const assertCheckInputs = (schema: string) => {
+      const fields = schema.match(/check\?:object\{([^}]+)\}/)?.[1] ?? '';
+      expect(fields).toContain('kind:enum(tests|cargo|instrument|probe|coverage|requirements)');
+      for (const key of ['files', 'manifestPath', 'sourceFiles', 'test', 'instrumentKey', 'probe', 'all', 'scope', 'floor', 'expect']) {
+        expect(fields, `missing callable check input ${key}`).toMatch(new RegExp(`(?:^|,)${key}\\?(?::|,|$)`));
+      }
+    };
+    assertCheckInputs(compact);
     expect(compact).not.toContain('check?:object{kind:enum(tests),');
 
     const result = await callHandler({ query: 'rubrics:propose', limit: 1 });
-    expect(result.hits.find((hit) => hit.tool === 'rubrics:propose')?.argSchema).toContain(checkShape);
+    assertCheckInputs(result.hits.find((hit) => hit.tool === 'rubrics:propose')?.argSchema ?? '');
   });
 
   it('EI-21579794371308546: live coord:send discovery identifies premises as string refs', () => {
@@ -1526,17 +2059,134 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
       returns: null,
       via: 'lexical',
     }));
-    const bounded = boundDiscoveryHits(base, hits);
-    const payload = { ...base, count: bounded.hits.length, truncated: bounded.truncated, hits: bounded.hits };
+    const exactNames = hits.slice(0, 3).map((hit) => hit.tool);
+    const bounded = boundDiscoveryHits(base, hits, exactNames);
+    const payload = {
+      ...base,
+      count: bounded.hits.length,
+      truncated: bounded.truncated,
+      hits: bounded.hits,
+      ...(bounded.omittedTools.length > 0 ? { omittedTools: bounded.omittedTools } : {}),
+    };
 
     expect(Buffer.byteLength(JSON.stringify(payload), 'utf8')).toBeLessThanOrEqual(DISCOVERY_RESULT_MAX_BYTES);
     expect(JSON.parse(JSON.stringify(payload))).toEqual(payload);
     expect(bounded.truncated).toBe(true);
     expect(bounded.hits.length).toBeLessThan(hits.length);
+    expect(bounded.omittedTools).toEqual(exactNames.filter((name) => !bounded.hits.some((hit) => hit.tool === name)));
+    expect(bounded.omittedTools.length).toBeGreaterThan(0);
+  });
+
+  it('does not return a single hit that exceeds the discovery result budget', () => {
+    const base = {
+      query: 'tool:large',
+      semantic: 'on',
+      activated: false,
+      howToCall: 'tools:invoke {name, args}',
+      totalMatches: 1,
+    };
+    const hits = [{
+      tool: 'tool:large',
+      description: 'd'.repeat(320),
+      argSchema: 'field?:object' + 'x'.repeat(DISCOVERY_RESULT_MAX_BYTES),
+      returns: null,
+      via: 'lexical',
+    }];
+
+    const bounded = boundDiscoveryHits(base, hits);
+    const payload = { ...base, count: bounded.hits.length, truncated: bounded.truncated, hits: bounded.hits };
+
+    expect(Buffer.byteLength(JSON.stringify(payload), 'utf8')).toBeLessThanOrEqual(DISCOVERY_RESULT_MAX_BYTES);
+    expect(JSON.parse(JSON.stringify(payload))).toEqual(payload);
+    expect(bounded.hits).toEqual([]);
+    expect(bounded.truncated).toBe(true);
+  });
+
+  it('keeps complete compact-schema clauses when one hit needs byte-budget trimming', () => {
+    const base = {
+      query: 'tool:large',
+      semantic: 'on',
+      activated: false,
+      howToCall: 'tools:invoke {name, args}',
+      totalMatches: 1,
+    };
+    const hits = [{
+      tool: 'tool:large',
+      description: 'optional description',
+      argSchema: `first?:string; binding?:object(one-of:workItemId&evidenceRef|workItemId&testRunId); oversized?:string(${ 'x'.repeat(DISCOVERY_RESULT_MAX_BYTES) })`,
+      returns: 'optional result description',
+      returnsSource: 'authored-tool-guidance' as const,
+      via: 'lexical',
+    }];
+
+    const bounded = boundDiscoveryHits(base, hits);
+    const payload = { ...base, count: bounded.hits.length, truncated: bounded.truncated, hits: bounded.hits };
+    const schema = bounded.hits[0]?.argSchema ?? '';
+
+    expect(Buffer.byteLength(JSON.stringify(payload), 'utf8')).toBeLessThanOrEqual(DISCOVERY_RESULT_MAX_BYTES);
+    expect(schema).toContain('binding?:object(one-of:workItemId&evidenceRef|workItemId&testRunId)');
+    expect(schema).not.toContain('oversized?:string');
+    expect(schema).toMatch(/; …$/);
+    expect(bounded.truncated).toBe(true);
   });
 });
 
 describe('handler — dynamic activation (dynamic-tool-surface-2026-07-01)', () => {
+  it('prioritizes explicitly named tools and identifies requested names omitted by the result budget', async () => {
+    const requested = [
+      'work_items:link',
+      'work_items:set_state',
+      'coord:send',
+      'events:status',
+      'scheduler:get_next',
+    ];
+    const query = requested.join(', ');
+    expect(exactToolNamesInQuery(query)).toEqual(requested);
+
+    const out = await callHandler({ query, limit: 8 });
+    const returned = out.hits.map((hit) => hit.tool).filter((name) => requested.includes(name));
+    const returnedInRequestOrder = requested.filter((name) => returned.includes(name));
+    const lastExactIndex = out.hits.reduce((last, hit, index) => requested.includes(hit.tool) ? index : last, -1);
+    const firstOtherIndex = out.hits.findIndex((hit) => !requested.includes(hit.tool));
+
+    expect(returned).toEqual(returnedInRequestOrder);
+    expect(firstOtherIndex < 0 || lastExactIndex < firstOtherIndex).toBe(true);
+    expect(out.omittedTools ?? []).toEqual(requested.filter((name) => !returned.includes(name)));
+    expect(out.truncated).toBe(true);
+    if (out.omittedTools?.length) {
+      expect(out.howToCall).toContain('omittedTools');
+    }
+  });
+
+  it('fills explicit tool-name matches that generic relevance ranking left out', async () => {
+    const names = [
+      'work_items:link',
+      'work_items:set_state',
+      'coord:send',
+      'events:status',
+      'scheduler:get_next',
+      'work_items:claim_next',
+    ];
+    const corpus = names.map((tool) => ({
+      tool,
+      status: 'available' as const,
+      category: tool.split(':')[0],
+      description: `description for ${tool}`,
+      argSchema: 'id:string',
+      capability: 'test:read',
+      provider: { kind: 'builtin' as const, name: 'test' },
+    }));
+    const query = names.slice(0, 5).join(', ');
+    const requested = exactToolNamesInQuery(query);
+    const ranked = await findTools(corpus, query, { limit: 2 });
+    const selected = prioritizeExactToolHits(ranked, corpus, requested, 8);
+
+    expect(requested).toEqual(names.slice(0, 5));
+    expect(ranked).toHaveLength(2);
+    expect(ranked.some((hit) => hit.tool === 'work_items:link')).toBe(false);
+    expect(selected.slice(0, requested.length).map((hit) => hit.tool)).toEqual(requested);
+  });
+
   it('activates the matched tools for the session + reports activated:true', async () => {
     const activated: string[][] = [];
     const ctx = {
@@ -1555,11 +2205,16 @@ describe('handler — dynamic activation (dynamic-tool-surface-2026-07-01)', () 
     expect(activated).toHaveLength(1);
     expect(activated[0]).toEqual(out.hits.map((h) => h.tool));
     expect(out.activated).toBe(true);
+    const description = (toolFind as unknown as { description: string }).description;
+    expect(description).toContain('client may need a tool-list refresh');
+    expect(description).toContain('follow `howToCall`');
+    expect(description).toContain('use tools:invoke when a wrapper is absent');
+    expect(description).not.toContain('are directly callable');
     // EI-20224177038218883: server activation cannot prove the client consumed
     // list_changed and materialized a same-turn wrapper. Lead with the one path
     // that is immediately callable on every client.
     expect(out.howToCall).toContain('tools:invoke');
-    expect(out.howToCall).toContain('does NOT guarantee');
+    expect(out.howToCall).toContain('tool-list refresh');
     expect(out.howToCall).not.toContain('call the one you want directly');
   });
 
@@ -1569,8 +2224,8 @@ describe('handler — dynamic activation (dynamic-tool-surface-2026-07-01)', () 
 
     for (const out of [activated, inactive]) {
       expect(out.hits.some((hit) => hit.tool === 'tools:invoke')).toBe(true);
-      expect(out.howToCall).toContain('tools:invoke hit is the dispatcher itself');
-      expect(out.howToCall).toContain('do NOT pass name:"tools:invoke" through it');
+      expect(out.howToCall).toContain('Use tools:invoke directly for a different target');
+      expect(out.howToCall).toContain('do not route tools:invoke through itself');
       expect(out.howToCall).not.toContain('name:"<exact tool name from hits>"');
     }
   });

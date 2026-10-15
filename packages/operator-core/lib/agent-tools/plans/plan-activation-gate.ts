@@ -27,9 +27,43 @@ export function entersActivationPlanStatus(
  * the rubric itself. Requiring a separate conversation audit would reject every
  * rubric activation and leave the caller with a misleading post-write lookup error.
  * Keep this predicate here so every plan write door shares the same exemption.
+ *
+ * Child-seed plans are machine-synthesized by spawn_child (synthesizeChildSeedPlan)
+ * from the parent's spawn request; they have no source conversation for an audit to
+ * read (verification-system-improvements-2026-10-10#D-038). The exemption is NOT
+ * self-serve: withPlanLock refuses any write that INTRODUCES this template unless the
+ * caller passes `allowChildSeedTemplate`, which only spawn_child's seed writer sets.
  */
+export const CHILD_SEED_TEMPLATE_NAME = 'child-seed';
+
 export function isActivationAuditExemptTemplate(template: string | null | undefined): boolean {
-  return template === RUBRIC_TEMPLATE_NAME;
+  return template === RUBRIC_TEMPLATE_NAME || template === CHILD_SEED_TEMPLATE_NAME;
+}
+
+/** True when a write moves a plan's template ONTO child-seed (not a later edit that keeps it). */
+export function introducesChildSeedTemplate(
+  before: string | null | undefined,
+  after: string | null | undefined,
+): boolean {
+  return after === CHILD_SEED_TEMPLATE_NAME && before !== CHILD_SEED_TEMPLATE_NAME;
+}
+
+export interface ChildSeedTemplateRefusalValue {
+  ok: false;
+  code: 'child_seed_template_reserved';
+  message: string;
+}
+
+/** The non-throwing refusal withPlanLock returns for a self-served child-seed template. */
+export function childSeedTemplateRefusalValue(planSlug: string): ChildSeedTemplateRefusalValue {
+  return {
+    ok: false,
+    code: 'child_seed_template_reserved',
+    message:
+      `Plan '${planSlug}' cannot declare template '${CHILD_SEED_TEMPLATE_NAME}': that template is reserved for ` +
+      `seed plans spawn_child synthesizes, because it exempts the plan from the conversation activation audit. ` +
+      `Remove the template line, or create the child through plans:promote spawn_child.`,
+  };
 }
 
 /** The stored reverse-coverage verdict, read defensively from the activation JSON. */

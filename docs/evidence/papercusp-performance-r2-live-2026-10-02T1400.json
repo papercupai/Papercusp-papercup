@@ -1,0 +1,1467 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R2 current-build twenty-query latency and frozen behavior at 2026-10-02T1400Z",
+  "framework": "node",
+  "command": [
+    "node",
+    "--input-type=module",
+    "-e",
+    "const originalFetch=globalThis.fetch;globalThis.fetch=async(...a)=>{const start=performance.now();const r=await originalFetch(...a);await r.clone().text();console.error('R2_HTTP_TIMING '+JSON.stringify({ms:Math.round(performance.now()-start),status:r.status}));return r;};process.argv=['node','scripts/mcp-call.mjs','search:fulltext','--json','-','--client',process.env.PAPERCUSP_SID,'--workspace','papercusp-workspace','--harness','papercusp','--port','3170'];await import('./scripts/mcp-call.mjs');"
+  ],
+  "commandRepeated": 20,
+  "exitCode": 0,
+  "startedAt": "2026-10-02T14:00:04.911159+00:00",
+  "finishedAt": "2026-10-02T14:00:14.088290+00:00",
+  "summary": "The unchanged twenty-query population passed its scoped HTTP latency check on staging build a27db452a1: all20 HTTP200/exit0, nearest-rank p95 708ms <=1000ms, max711ms. Exact ledger rows and kernel identity bind the samples to one process. Three serving source hashes match current canonical files; source and actual bundle contain the corrected setup0/tuple0.01 profile. The original25-turn corpus hash and four frozen hit/rank sets are unchanged. This is a new scoped passing observation, not a diagnosis of earlier latency or complete R2/plan/shipment acceptance.",
+  "workItem": "WI-10004474",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "specId": "AUTO-BAR-R-2-P-002",
+  "referenceSpecRevision": 5,
+  "evidencePlane": "staging/current-build",
+  "populationRef": "docs/evidence/papercusp-performance-r2-live-2026-10-02T0103.json",
+  "taskQueries": [
+    "corpus recall",
+    "furnishedfinder",
+    "memory admission",
+    "WI-10004474",
+    "session native preservation",
+    "compaction native id",
+    "hook_bundle.glance_stale",
+    "literal fallback",
+    "coverage graded",
+    "staging runtime identity",
+    "source proof freshness",
+    "execution trace integrity",
+    "cold loop wake",
+    "model preservation",
+    "acceptance rubric",
+    "checkpoint lineage",
+    "resource lease",
+    "session search",
+    "recall pointer section clamp",
+    "test provenance"
+  ],
+  "stdinTemplate": {
+    "query": "taskQueries[i]",
+    "scope": [
+      "session_turn"
+    ],
+    "limit": 5
+  },
+  "assertions": [
+    {
+      "id": "twenty-successful-requests",
+      "passed": true,
+      "evidence": "All20 unchanged queries returned exactly one HTTP200 measurement and subprocess exit0; none were skipped."
+    },
+    {
+      "id": "representative-http-p95-at-most-one-second",
+      "passed": true,
+      "evidence": "Nearest-rank sorted index19of20 =708ms; max711ms. Timer spans fetch through complete cloned response-body consumption and excludes CLI startup."
+    },
+    {
+      "id": "exact-request-build-process-attribution",
+      "passed": true,
+      "evidence": "Twenty canonical rows31297086..31297127 match every query in order and each own wall-time interval. Allstatusok/port3170/builda27db452a1 and kernel identitylinux:d02155ae-ac35-4b23-898e-7325f799da48:23918752."
+    },
+    {
+      "id": "physical-serving-source-and-bundle-qualified",
+      "passed": true,
+      "evidence": "Actual user-unit MainPID2899023/proc start ticks23918752 match ledger process identity. Physical candidatea27db452a19e checkout has matching fulltext/sources/rerank SHA256; actual dist-host/hono-host.mjs contains corrected plannerprofile."
+    },
+    {
+      "id": "original-frozen-corpus-unchanged",
+      "passed": true,
+      "evidence": "Fresh default/codex/originalnative01a0f68e-3037-7dc3-b898-a1cc12441884 with exclusivecutoff2026-10-01T09:14:42Z:25turns0..24/hash0303e7a27eb9d4d8122224393fec8d0f using the unchanged original hash writer."
+    },
+    {
+      "id": "frozen-lexical-literal-punctuation-no-match-parity",
+      "passed": true,
+      "evidence": "Corrected until-filter controls all exit0 and retain original hit/rank sets: memory admission6/8/22;.04474=1/23/3 at rank0; WI-10004474=1/23; absent sentinel=empty. Zero-rank ties checked as a set; no invented total-order oracle."
+    }
+  ],
+  "measurement": {
+    "startedAt": "2026-10-02T14:00:04.911159+00:00",
+    "finishedAt": "2026-10-02T14:00:14.088290+00:00",
+    "populationRef": "docs/evidence/papercusp-performance-r2-live-2026-10-02T0103.json",
+    "rows": [
+      {
+        "query": "corpus recall",
+        "startedAt": "2026-10-02T14:00:04.911172+00:00",
+        "finishedAt": "2026-10-02T14:00:05.203025+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 234,
+            "status": 200
+          }
+        ],
+        "cliMs": 292,
+        "stderr": ""
+      },
+      {
+        "query": "furnishedfinder",
+        "startedAt": "2026-10-02T14:00:05.203056+00:00",
+        "finishedAt": "2026-10-02T14:00:05.513949+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 252,
+            "status": 200
+          }
+        ],
+        "cliMs": 311,
+        "stderr": ""
+      },
+      {
+        "query": "memory admission",
+        "startedAt": "2026-10-02T14:00:05.513978+00:00",
+        "finishedAt": "2026-10-02T14:00:05.843499+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 275,
+            "status": 200
+          }
+        ],
+        "cliMs": 330,
+        "stderr": ""
+      },
+      {
+        "query": "WI-10004474",
+        "startedAt": "2026-10-02T14:00:05.843525+00:00",
+        "finishedAt": "2026-10-02T14:00:06.100624+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 195,
+            "status": 200
+          }
+        ],
+        "cliMs": 257,
+        "stderr": ""
+      },
+      {
+        "query": "session native preservation",
+        "startedAt": "2026-10-02T14:00:06.100649+00:00",
+        "finishedAt": "2026-10-02T14:00:06.876479+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 711,
+            "status": 200
+          }
+        ],
+        "cliMs": 776,
+        "stderr": ""
+      },
+      {
+        "query": "compaction native id",
+        "startedAt": "2026-10-02T14:00:06.876507+00:00",
+        "finishedAt": "2026-10-02T14:00:07.610177+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 671,
+            "status": 200
+          }
+        ],
+        "cliMs": 734,
+        "stderr": ""
+      },
+      {
+        "query": "hook_bundle.glance_stale",
+        "startedAt": "2026-10-02T14:00:07.610212+00:00",
+        "finishedAt": "2026-10-02T14:00:07.800778+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 123,
+            "status": 200
+          }
+        ],
+        "cliMs": 191,
+        "stderr": ""
+      },
+      {
+        "query": "literal fallback",
+        "startedAt": "2026-10-02T14:00:07.800808+00:00",
+        "finishedAt": "2026-10-02T14:00:08.423874+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 570,
+            "status": 200
+          }
+        ],
+        "cliMs": 623,
+        "stderr": ""
+      },
+      {
+        "query": "coverage graded",
+        "startedAt": "2026-10-02T14:00:08.423931+00:00",
+        "finishedAt": "2026-10-02T14:00:08.947170+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 464,
+            "status": 200
+          }
+        ],
+        "cliMs": 523,
+        "stderr": ""
+      },
+      {
+        "query": "staging runtime identity",
+        "startedAt": "2026-10-02T14:00:08.947208+00:00",
+        "finishedAt": "2026-10-02T14:00:09.252508+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 248,
+            "status": 200
+          }
+        ],
+        "cliMs": 305,
+        "stderr": ""
+      },
+      {
+        "query": "source proof freshness",
+        "startedAt": "2026-10-02T14:00:09.252534+00:00",
+        "finishedAt": "2026-10-02T14:00:09.630963+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 324,
+            "status": 200
+          }
+        ],
+        "cliMs": 378,
+        "stderr": ""
+      },
+      {
+        "query": "execution trace integrity",
+        "startedAt": "2026-10-02T14:00:09.630987+00:00",
+        "finishedAt": "2026-10-02T14:00:09.980862+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 296,
+            "status": 200
+          }
+        ],
+        "cliMs": 350,
+        "stderr": ""
+      },
+      {
+        "query": "cold loop wake",
+        "startedAt": "2026-10-02T14:00:09.980904+00:00",
+        "finishedAt": "2026-10-02T14:00:10.746374+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 708,
+            "status": 200
+          }
+        ],
+        "cliMs": 765,
+        "stderr": ""
+      },
+      {
+        "query": "model preservation",
+        "startedAt": "2026-10-02T14:00:10.746401+00:00",
+        "finishedAt": "2026-10-02T14:00:11.377545+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 552,
+            "status": 200
+          }
+        ],
+        "cliMs": 631,
+        "stderr": ""
+      },
+      {
+        "query": "acceptance rubric",
+        "startedAt": "2026-10-02T14:00:11.377570+00:00",
+        "finishedAt": "2026-10-02T14:00:11.901228+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 464,
+            "status": 200
+          }
+        ],
+        "cliMs": 524,
+        "stderr": ""
+      },
+      {
+        "query": "checkpoint lineage",
+        "startedAt": "2026-10-02T14:00:11.901259+00:00",
+        "finishedAt": "2026-10-02T14:00:12.296803+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 324,
+            "status": 200
+          }
+        ],
+        "cliMs": 396,
+        "stderr": ""
+      },
+      {
+        "query": "resource lease",
+        "startedAt": "2026-10-02T14:00:12.296835+00:00",
+        "finishedAt": "2026-10-02T14:00:12.608786+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 249,
+            "status": 200
+          }
+        ],
+        "cliMs": 312,
+        "stderr": ""
+      },
+      {
+        "query": "session search",
+        "startedAt": "2026-10-02T14:00:12.608811+00:00",
+        "finishedAt": "2026-10-02T14:00:13.371405+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 705,
+            "status": 200
+          }
+        ],
+        "cliMs": 763,
+        "stderr": ""
+      },
+      {
+        "query": "recall pointer section clamp",
+        "startedAt": "2026-10-02T14:00:13.371429+00:00",
+        "finishedAt": "2026-10-02T14:00:13.772373+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 344,
+            "status": 200
+          }
+        ],
+        "cliMs": 401,
+        "stderr": ""
+      },
+      {
+        "query": "test provenance",
+        "startedAt": "2026-10-02T14:00:13.772399+00:00",
+        "finishedAt": "2026-10-02T14:00:14.088238+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 259,
+            "status": 200
+          }
+        ],
+        "cliMs": 316,
+        "stderr": ""
+      }
+    ],
+    "complete": true,
+    "httpP95NearestRankMs": 708,
+    "httpMaxMs": 711,
+    "invocationRows": [
+      {
+        "id": "31297086",
+        "invoked_at": "2026-10-02 14:00:05.19+00",
+        "status": "ok",
+        "duration_ms": 164,
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:d02155ae-ac35-4b23-898e-7325f799da48:23918752",
+        "serving_build_sha": "a27db452a1",
+        "query": "corpus recall",
+        "read": {
+          "unit": "ms",
+          "stages": [
+            {
+              "name": "filters",
+              "status": "ok",
+              "elapsedMs": 0.05941499999607913
+            },
+            {
+              "name": "retrieval",
+              "status": "ok",
+              "elapsedMs": 19.323124999995343
+            },
+            {
+              "name": "rerank",
+              "status": "ok",
+              "elapsedMs": 136.149642999997
+            }
+          ],
+          "timing": "wall-time-sequential-stages",
+          "elapsedMs": 155.8775120000064,
+          "schemaVersion": "fulltext-read-v1",
+          "queryDiagnostics": {
+            "rowId": null,
+            "stage": "scope-query",
+            "timing": "query-build-to-terminal-not-acquisition",
+            "buildSha": "a27db452a1",
+            "coverage": "queries-created-during-retrieval",
+            "attemptId": "42dc3b94-4468-41b8-a0fe-5359db270d98",
+            "processInstanceId": "2641d477-8a61-49b6-8873-59a3a3e16905"
+          }
+        }
+      },
+      {
+        "id": "31297087",
+        "invoked_at": "2026-10-02 14:00:05.501+00",
+        "status": "ok",
+        "duration_ms": 182,
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:d02155ae-ac35-4b23-898e-7325f799da48:23918752",
+        "serving_build_sha": "a27db452a1",
+        "query": "furnishedfinder",
+        "read": {
+          "unit": "ms",
+          "stages": [
+            {
+              "name": "filters",
+              "status": "ok",
+              "elapsedMs": 0.009407999998074956
+            },
+            {
+              "name": "retrieval",
+              "status": "ok",
+              "elapsedMs": 35.47138200000336
+            },
+            {
+              "name": "rerank",
+              "status": "ok",
+              "elapsedMs": 141.9661660000129
+            }
+          ],
+          "timing": "wall-time-sequential-stages",
+          "elapsedMs": 177.4994080000033,
+          "schemaVersion": "fulltext-read-v1",
+          "queryDiagnostics": {
+            "rowId": null,
+            "stage": "scope-query",
+            "timing": "query-build-to-terminal-not-acquisition",
+            "buildSha": "a27db452a1",
+            "coverage": "queries-created-during-retrieval",
+            "attemptId": "95d27ef5-d1b8-4e27-ad00-74ecdf467444",
+            "processInstanceId": "2641d477-8a61-49b6-8873-59a3a3e16905"
+          }
+        }
+      },
+      {
+        "id": "31297088",
+        "invoked_at": "2026-10-02 14:00:05.83+00",
+        "status": "ok",
+        "duration_ms": 205,
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:d02155ae-ac35-4b23-898e-7325f799da48:23918752",
+        "serving_build_sha": "a27db452a1",
+        "query": "memory admission",
+        "read": {
+          "unit": "ms",
+          "stages": [
+            {
+              "name": "filters",
+              "status": "ok",
+              "elapsedMs": 0.010811000000103377
+            },
+            {
+              "name": "retrieval",
+              "status": "ok",
+              "elapsedMs": 35.51964600000065
+            },
+            {
+              "name": "rerank",
+              "status": "ok",
+              "elapsedMs": 165.61338299998897
+            }
+          ],
+          "timing": "wall-time-sequential-stages",
+          "elapsedMs": 201.1974740000005,
+          "schemaVersion": "fulltext-read-v1",
+          "queryDiagnostics": {
+            "rowId": null,
+            "stage": "scope-query",
+            "timing": "query-build-to-terminal-not-acquisition",
+            "buildSha": "a27db452a1",
+            "coverage": "queries-created-during-retrieval",
+            "attemptId": "1af40456-edbd-4990-8329-e4bd1a042377",
+            "processInstanceId": "2641d477-8a61-49b6-8873-59a3a3e16905"
+          }
+        }
+      },
+      {
+        "id": "31297089",
+        "invoked_at": "2026-10-02 14:00:06.087+00",
+        "status": "ok",
+        "duration_ms": 120,
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:d02155ae-ac35-4b23-898e-7325f799da48:23918752",
+        "serving_build_sha": "a27db452a1",
+        "query": "WI-10004474",
+        "read": {
+          "unit": "ms",
+          "stages": [
+            {
+              "name": "filters",
+              "status": "ok",
+              "elapsedMs": 0.016330999991623685
+            },
+            {
+              "name": "retrieval",
+              "status": "ok",
+              "elapsedMs": 41.37534400000004
+            },
+            {
+              "name": "rerank",
+              "status": "ok",
+              "elapsedMs": 74.1689100000076
+            }
+          ],
+          "timing": "wall-time-sequential-stages",
+          "elapsedMs": 115.60039399999368,
+          "schemaVersion": "fulltext-read-v1",
+          "queryDiagnostics": {
+            "rowId": null,
+            "stage": "scope-query",
+            "timing": "query-build-to-terminal-not-acquisition",
+            "buildSha": "a27db452a1",
+            "coverage": "queries-created-during-retrieval",
+            "attemptId": "d071d778-f746-47e6-aa1f-ae43e15395f3",
+            "processInstanceId": "2641d477-8a61-49b6-8873-59a3a3e16905"
+          }
+        }
+      },
+      {
+        "id": "31297092",
+        "invoked_at": "2026-10-02 14:00:06.86+00",
+        "status": "ok",
+        "duration_ms": 640,
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:d02155ae-ac35-4b23-898e-7325f799da48:23918752",
+        "serving_build_sha": "a27db452a1",
+        "query": "session native preservation",
+        "read": {
+          "unit": "ms",
+          "stages": [
+            {
+              "name": "filters",
+              "status": "ok",
+              "elapsedMs": 0.00983999999880325
+            },
+            {
+              "name": "retrieval",
+              "status": "ok",
+              "elapsedMs": 479.8010610000056
+            },
+            {
+              "name": "rerank",
+              "status": "ok",
+              "elapsedMs": 156.66631800000323
+            }
+          ],
+          "timing": "wall-time-sequential-stages",
+          "elapsedMs": 636.4986700000009,
+          "schemaVersion": "fulltext-read-v1",
+          "queryDiagnostics": {
+            "rowId": null,
+            "stage": "scope-query",
+            "timing": "query-build-to-terminal-not-acquisition",
+            "buildSha": "a27db452a1",
+            "coverage": "queries-created-during-retrieval",
+            "attemptId": "7f6f5007-2c33-4ce4-9db4-3731a700d985",
+            "processInstanceId": "2641d477-8a61-49b6-8873-59a3a3e16905"
+          }
+        }
+      },
+      {
+        "id": "31297093",
+        "invoked_at": "2026-10-02 14:00:07.589+00",
+        "status": "ok",
+        "duration_ms": 597,
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:d02155ae-ac35-4b23-898e-7325f799da48:23918752",
+        "serving_build_sha": "a27db452a1",
+        "query": "compaction native id",
+        "read": {
+          "unit": "ms",
+          "stages": [
+            {
+              "name": "filters",
+              "status": "ok",
+              "elapsedMs": 0.005550000001676381
+            },
+            {
+              "name": "retrieval",
+              "status": "ok",
+              "elapsedMs": 384.192824999991
+            },
+            {
+              "name": "rerank",
+              "status": "ok",
+              "elapsedMs": 209.76341500000854
+            }
+          ],
+          "timing": "wall-time-sequential-stages",
+          "elapsedMs": 593.9845639999985,
+          "schemaVersion": "fulltext-read-v1",
+          "queryDiagnostics": {
+            "rowId": null,
+            "stage": "scope-query",
+            "timing": "query-build-to-terminal-not-acquisition",
+            "buildSha": "a27db452a1",
+            "coverage": "queries-created-during-retrieval",
+            "attemptId": "7396d9df-5d1b-4f05-9f09-04306b3a7c0a",
+            "processInstanceId": "2641d477-8a61-49b6-8873-59a3a3e16905"
+          }
+        }
+      },
+      {
+        "id": "31297094",
+        "invoked_at": "2026-10-02 14:00:07.788+00",
+        "status": "ok",
+        "duration_ms": 55,
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:d02155ae-ac35-4b23-898e-7325f799da48:23918752",
+        "serving_build_sha": "a27db452a1",
+        "query": "hook_bundle.glance_stale",
+        "read": {
+          "unit": "ms",
+          "stages": [
+            {
+              "name": "filters",
+              "status": "ok",
+              "elapsedMs": 0.006632999997236766
+            },
+            {
+              "name": "retrieval",
+              "status": "ok",
+              "elapsedMs": 32.6795060000004
+            },
+            {
+              "name": "rerank",
+              "status": "ok",
+              "elapsedMs": 19.648675000004005
+            }
+          ],
+          "timing": "wall-time-sequential-stages",
+          "elapsedMs": 52.35381000000052,
+          "schemaVersion": "fulltext-read-v1",
+          "queryDiagnostics": {
+            "rowId": null,
+            "stage": "scope-query",
+            "timing": "query-build-to-terminal-not-acquisition",
+            "buildSha": "a27db452a1",
+            "coverage": "queries-created-during-retrieval",
+            "attemptId": "7f087325-0217-49f4-a997-e0f29aca63b2",
+            "processInstanceId": "2641d477-8a61-49b6-8873-59a3a3e16905"
+          }
+        }
+      },
+      {
+        "id": "31297095",
+        "invoked_at": "2026-10-02 14:00:08.411+00",
+        "status": "ok",
+        "duration_ms": 495,
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:d02155ae-ac35-4b23-898e-7325f799da48:23918752",
+        "serving_build_sha": "a27db452a1",
+        "query": "literal fallback",
+        "read": {
+          "unit": "ms",
+          "stages": [
+            {
+              "name": "filters",
+              "status": "ok",
+              "elapsedMs": 0.023716000010608695
+            },
+            {
+              "name": "retrieval",
+              "status": "ok",
+              "elapsedMs": 345.63659700000426
+            },
+            {
+              "name": "rerank",
+              "status": "ok",
+              "elapsedMs": 144.51458499999717
+            }
+          ],
+          "timing": "wall-time-sequential-stages",
+          "elapsedMs": 490.19837300000654,
+          "schemaVersion": "fulltext-read-v1",
+          "queryDiagnostics": {
+            "rowId": null,
+            "stage": "scope-query",
+            "timing": "query-build-to-terminal-not-acquisition",
+            "buildSha": "a27db452a1",
+            "coverage": "queries-created-during-retrieval",
+            "attemptId": "f23e5681-2746-4c5b-8214-034ea72b76db",
+            "processInstanceId": "2641d477-8a61-49b6-8873-59a3a3e16905"
+          }
+        }
+      },
+      {
+        "id": "31297098",
+        "invoked_at": "2026-10-02 14:00:08.934+00",
+        "status": "ok",
+        "duration_ms": 361,
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:d02155ae-ac35-4b23-898e-7325f799da48:23918752",
+        "serving_build_sha": "a27db452a1",
+        "query": "coverage graded",
+        "read": {
+          "unit": "ms",
+          "stages": [
+            {
+              "name": "filters",
+              "status": "ok",
+              "elapsedMs": 0.010710000002291054
+            },
+            {
+              "name": "retrieval",
+              "status": "ok",
+              "elapsedMs": 92.92811100000108
+            },
+            {
+              "name": "rerank",
+              "status": "ok",
+              "elapsedMs": 137.22061199999007
+            }
+          ],
+          "timing": "wall-time-sequential-stages",
+          "elapsedMs": 230.1824489999999,
+          "schemaVersion": "fulltext-read-v1",
+          "queryDiagnostics": {
+            "rowId": null,
+            "stage": "scope-query",
+            "timing": "query-build-to-terminal-not-acquisition",
+            "buildSha": "a27db452a1",
+            "coverage": "queries-created-during-retrieval",
+            "attemptId": "7b5870e1-9225-40f7-891b-4a07ebed66f2",
+            "processInstanceId": "2641d477-8a61-49b6-8873-59a3a3e16905"
+          }
+        }
+      },
+      {
+        "id": "31297099",
+        "invoked_at": "2026-10-02 14:00:09.239+00",
+        "status": "ok",
+        "duration_ms": 178,
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:d02155ae-ac35-4b23-898e-7325f799da48:23918752",
+        "serving_build_sha": "a27db452a1",
+        "query": "staging runtime identity",
+        "read": {
+          "unit": "ms",
+          "stages": [
+            {
+              "name": "filters",
+              "status": "ok",
+              "elapsedMs": 0.010661000007530674
+            },
+            {
+              "name": "retrieval",
+              "status": "ok",
+              "elapsedMs": 28.83929000000353
+            },
+            {
+              "name": "rerank",
+              "status": "ok",
+              "elapsedMs": 144.3180730000022
+            }
+          ],
+          "timing": "wall-time-sequential-stages",
+          "elapsedMs": 173.19590799999423,
+          "schemaVersion": "fulltext-read-v1",
+          "queryDiagnostics": {
+            "rowId": null,
+            "stage": "scope-query",
+            "timing": "query-build-to-terminal-not-acquisition",
+            "buildSha": "a27db452a1",
+            "coverage": "queries-created-during-retrieval",
+            "attemptId": "33063850-4b82-47e1-9df5-bfcf0c23c74c",
+            "processInstanceId": "2641d477-8a61-49b6-8873-59a3a3e16905"
+          }
+        }
+      },
+      {
+        "id": "31297100",
+        "invoked_at": "2026-10-02 14:00:09.618+00",
+        "status": "ok",
+        "duration_ms": 257,
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:d02155ae-ac35-4b23-898e-7325f799da48:23918752",
+        "serving_build_sha": "a27db452a1",
+        "query": "source proof freshness",
+        "read": {
+          "unit": "ms",
+          "stages": [
+            {
+              "name": "filters",
+              "status": "ok",
+              "elapsedMs": 0.00879700000223238
+            },
+            {
+              "name": "retrieval",
+              "status": "ok",
+              "elapsedMs": 88.11430999998993
+            },
+            {
+              "name": "rerank",
+              "status": "ok",
+              "elapsedMs": 166.05914899999334
+            }
+          ],
+          "timing": "wall-time-sequential-stages",
+          "elapsedMs": 254.20237499999348,
+          "schemaVersion": "fulltext-read-v1",
+          "queryDiagnostics": {
+            "rowId": null,
+            "stage": "scope-query",
+            "timing": "query-build-to-terminal-not-acquisition",
+            "buildSha": "a27db452a1",
+            "coverage": "queries-created-during-retrieval",
+            "attemptId": "e28a0f8e-370f-43b3-9676-514f60d84f62",
+            "processInstanceId": "2641d477-8a61-49b6-8873-59a3a3e16905"
+          }
+        }
+      },
+      {
+        "id": "31297101",
+        "invoked_at": "2026-10-02 14:00:09.968+00",
+        "status": "ok",
+        "duration_ms": 227,
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:d02155ae-ac35-4b23-898e-7325f799da48:23918752",
+        "serving_build_sha": "a27db452a1",
+        "query": "execution trace integrity",
+        "read": {
+          "unit": "ms",
+          "stages": [
+            {
+              "name": "filters",
+              "status": "ok",
+              "elapsedMs": 0.008056000006035902
+            },
+            {
+              "name": "retrieval",
+              "status": "ok",
+              "elapsedMs": 67.74684399999387
+            },
+            {
+              "name": "rerank",
+              "status": "ok",
+              "elapsedMs": 154.888008000009
+            }
+          ],
+          "timing": "wall-time-sequential-stages",
+          "elapsedMs": 222.6676460000017,
+          "schemaVersion": "fulltext-read-v1",
+          "queryDiagnostics": {
+            "rowId": null,
+            "stage": "scope-query",
+            "timing": "query-build-to-terminal-not-acquisition",
+            "buildSha": "a27db452a1",
+            "coverage": "queries-created-during-retrieval",
+            "attemptId": "091dd71a-64e4-46ed-ba6a-c3ead6441f9b",
+            "processInstanceId": "2641d477-8a61-49b6-8873-59a3a3e16905"
+          }
+        }
+      },
+      {
+        "id": "31297102",
+        "invoked_at": "2026-10-02 14:00:10.733+00",
+        "status": "ok",
+        "duration_ms": 639,
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:d02155ae-ac35-4b23-898e-7325f799da48:23918752",
+        "serving_build_sha": "a27db452a1",
+        "query": "cold loop wake",
+        "read": {
+          "unit": "ms",
+          "stages": [
+            {
+              "name": "filters",
+              "status": "ok",
+              "elapsedMs": 0.007254000011016615
+            },
+            {
+              "name": "retrieval",
+              "status": "ok",
+              "elapsedMs": 488.6122299999988
+            },
+            {
+              "name": "rerank",
+              "status": "ok",
+              "elapsedMs": 146.45932700000412
+            }
+          ],
+          "timing": "wall-time-sequential-stages",
+          "elapsedMs": 635.1019470000028,
+          "schemaVersion": "fulltext-read-v1",
+          "queryDiagnostics": {
+            "rowId": null,
+            "stage": "scope-query",
+            "timing": "query-build-to-terminal-not-acquisition",
+            "buildSha": "a27db452a1",
+            "coverage": "queries-created-during-retrieval",
+            "attemptId": "979f65be-05f8-44cf-843c-8f0ed287e775",
+            "processInstanceId": "2641d477-8a61-49b6-8873-59a3a3e16905"
+          }
+        }
+      },
+      {
+        "id": "31297103",
+        "invoked_at": "2026-10-02 14:00:11.363+00",
+        "status": "ok",
+        "duration_ms": 478,
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:d02155ae-ac35-4b23-898e-7325f799da48:23918752",
+        "serving_build_sha": "a27db452a1",
+        "query": "model preservation",
+        "read": {
+          "unit": "ms",
+          "stages": [
+            {
+              "name": "filters",
+              "status": "ok",
+              "elapsedMs": 0.007504000008339062
+            },
+            {
+              "name": "retrieval",
+              "status": "ok",
+              "elapsedMs": 366.1857230000023
+            },
+            {
+              "name": "rerank",
+              "status": "ok",
+              "elapsedMs": 108.0156810000044
+            }
+          ],
+          "timing": "wall-time-sequential-stages",
+          "elapsedMs": 474.23845599999186,
+          "schemaVersion": "fulltext-read-v1",
+          "queryDiagnostics": {
+            "rowId": null,
+            "stage": "scope-query",
+            "timing": "query-build-to-terminal-not-acquisition",
+            "buildSha": "a27db452a1",
+            "coverage": "queries-created-during-retrieval",
+            "attemptId": "7294cab4-7185-4287-b64a-820c99b9989d",
+            "processInstanceId": "2641d477-8a61-49b6-8873-59a3a3e16905"
+          }
+        }
+      },
+      {
+        "id": "31297111",
+        "invoked_at": "2026-10-02 14:00:11.887+00",
+        "status": "ok",
+        "duration_ms": 395,
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:d02155ae-ac35-4b23-898e-7325f799da48:23918752",
+        "serving_build_sha": "a27db452a1",
+        "query": "acceptance rubric",
+        "read": {
+          "unit": "ms",
+          "stages": [
+            {
+              "name": "filters",
+              "status": "ok",
+              "elapsedMs": 0.006712999995215796
+            },
+            {
+              "name": "retrieval",
+              "status": "ok",
+              "elapsedMs": 120.2825920000032
+            },
+            {
+              "name": "rerank",
+              "status": "ok",
+              "elapsedMs": 270.690563000011
+            }
+          ],
+          "timing": "wall-time-sequential-stages",
+          "elapsedMs": 391.0043149999983,
+          "schemaVersion": "fulltext-read-v1",
+          "queryDiagnostics": {
+            "rowId": null,
+            "stage": "scope-query",
+            "timing": "query-build-to-terminal-not-acquisition",
+            "buildSha": "a27db452a1",
+            "coverage": "queries-created-during-retrieval",
+            "attemptId": "af59cbd2-67b3-4e4b-8d5f-a7cebd81a529",
+            "processInstanceId": "2641d477-8a61-49b6-8873-59a3a3e16905"
+          }
+        }
+      },
+      {
+        "id": "31297119",
+        "invoked_at": "2026-10-02 14:00:12.282+00",
+        "status": "ok",
+        "duration_ms": 235,
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:d02155ae-ac35-4b23-898e-7325f799da48:23918752",
+        "serving_build_sha": "a27db452a1",
+        "query": "checkpoint lineage",
+        "read": {
+          "unit": "ms",
+          "stages": [
+            {
+              "name": "filters",
+              "status": "ok",
+              "elapsedMs": 0.007123999996110797
+            },
+            {
+              "name": "retrieval",
+              "status": "ok",
+              "elapsedMs": 81.14716699998826
+            },
+            {
+              "name": "rerank",
+              "status": "ok",
+              "elapsedMs": 148.32889399999112
+            }
+          ],
+          "timing": "wall-time-sequential-stages",
+          "elapsedMs": 229.50953599999775,
+          "schemaVersion": "fulltext-read-v1",
+          "queryDiagnostics": {
+            "rowId": null,
+            "stage": "scope-query",
+            "timing": "query-build-to-terminal-not-acquisition",
+            "buildSha": "a27db452a1",
+            "coverage": "queries-created-during-retrieval",
+            "attemptId": "568e18fe-3af7-43b1-913f-9e26e1fd6e06",
+            "processInstanceId": "2641d477-8a61-49b6-8873-59a3a3e16905"
+          }
+        }
+      },
+      {
+        "id": "31297123",
+        "invoked_at": "2026-10-02 14:00:12.595+00",
+        "status": "ok",
+        "duration_ms": 175,
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:d02155ae-ac35-4b23-898e-7325f799da48:23918752",
+        "serving_build_sha": "a27db452a1",
+        "query": "resource lease",
+        "read": {
+          "unit": "ms",
+          "stages": [
+            {
+              "name": "filters",
+              "status": "ok",
+              "elapsedMs": 0.015169999998761341
+            },
+            {
+              "name": "retrieval",
+              "status": "ok",
+              "elapsedMs": 30.228908999997657
+            },
+            {
+              "name": "rerank",
+              "status": "ok",
+              "elapsedMs": 138.67753699999594
+            }
+          ],
+          "timing": "wall-time-sequential-stages",
+          "elapsedMs": 168.9544590000005,
+          "schemaVersion": "fulltext-read-v1",
+          "queryDiagnostics": {
+            "rowId": null,
+            "stage": "scope-query",
+            "timing": "query-build-to-terminal-not-acquisition",
+            "buildSha": "a27db452a1",
+            "coverage": "queries-created-during-retrieval",
+            "attemptId": "bb455f9b-8104-4a64-b93a-dd9516f23ee5",
+            "processInstanceId": "2641d477-8a61-49b6-8873-59a3a3e16905"
+          }
+        }
+      },
+      {
+        "id": "31297124",
+        "invoked_at": "2026-10-02 14:00:13.357+00",
+        "status": "ok",
+        "duration_ms": 640,
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:d02155ae-ac35-4b23-898e-7325f799da48:23918752",
+        "serving_build_sha": "a27db452a1",
+        "query": "session search",
+        "read": {
+          "unit": "ms",
+          "stages": [
+            {
+              "name": "filters",
+              "status": "ok",
+              "elapsedMs": 0.007274000003235415
+            },
+            {
+              "name": "retrieval",
+              "status": "ok",
+              "elapsedMs": 479.08523199999763
+            },
+            {
+              "name": "rerank",
+              "status": "ok",
+              "elapsedMs": 155.27134400000796
+            }
+          ],
+          "timing": "wall-time-sequential-stages",
+          "elapsedMs": 634.3869850000046,
+          "schemaVersion": "fulltext-read-v1",
+          "queryDiagnostics": {
+            "rowId": null,
+            "stage": "scope-query",
+            "timing": "query-build-to-terminal-not-acquisition",
+            "buildSha": "a27db452a1",
+            "coverage": "queries-created-during-retrieval",
+            "attemptId": "60033dfc-7480-4030-9ed3-e1b7209eb6f3",
+            "processInstanceId": "2641d477-8a61-49b6-8873-59a3a3e16905"
+          }
+        }
+      },
+      {
+        "id": "31297126",
+        "invoked_at": "2026-10-02 14:00:13.759+00",
+        "status": "ok",
+        "duration_ms": 274,
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:d02155ae-ac35-4b23-898e-7325f799da48:23918752",
+        "serving_build_sha": "a27db452a1",
+        "query": "recall pointer section clamp",
+        "read": {
+          "unit": "ms",
+          "stages": [
+            {
+              "name": "filters",
+              "status": "ok",
+              "elapsedMs": 0.011392000000341795
+            },
+            {
+              "name": "retrieval",
+              "status": "ok",
+              "elapsedMs": 141.1501830000052
+            },
+            {
+              "name": "rerank",
+              "status": "ok",
+              "elapsedMs": 128.65730400000757
+            }
+          ],
+          "timing": "wall-time-sequential-stages",
+          "elapsedMs": 269.85041099999216,
+          "schemaVersion": "fulltext-read-v1",
+          "queryDiagnostics": {
+            "rowId": null,
+            "stage": "scope-query",
+            "timing": "query-build-to-terminal-not-acquisition",
+            "buildSha": "a27db452a1",
+            "coverage": "queries-created-during-retrieval",
+            "attemptId": "66846442-6782-4e49-94fa-ab2db3e30352",
+            "processInstanceId": "2641d477-8a61-49b6-8873-59a3a3e16905"
+          }
+        }
+      },
+      {
+        "id": "31297127",
+        "invoked_at": "2026-10-02 14:00:14.074+00",
+        "status": "ok",
+        "duration_ms": 192,
+        "serving_host": "port-3170",
+        "serving_process_id": "linux:d02155ae-ac35-4b23-898e-7325f799da48:23918752",
+        "serving_build_sha": "a27db452a1",
+        "query": "test provenance",
+        "read": {
+          "unit": "ms",
+          "stages": [
+            {
+              "name": "filters",
+              "status": "ok",
+              "elapsedMs": 0.007123999996110797
+            },
+            {
+              "name": "retrieval",
+              "status": "ok",
+              "elapsedMs": 90.37967200001003
+            },
+            {
+              "name": "rerank",
+              "status": "ok",
+              "elapsedMs": 97.3381240000017
+            }
+          ],
+          "timing": "wall-time-sequential-stages",
+          "elapsedMs": 187.74748300001374,
+          "schemaVersion": "fulltext-read-v1",
+          "queryDiagnostics": {
+            "rowId": null,
+            "stage": "scope-query",
+            "timing": "query-build-to-terminal-not-acquisition",
+            "buildSha": "a27db452a1",
+            "coverage": "queries-created-during-retrieval",
+            "attemptId": "bec1db0f-5fae-4450-a1b4-78797456bc53",
+            "processInstanceId": "2641d477-8a61-49b6-8873-59a3a3e16905"
+          }
+        }
+      }
+    ],
+    "ledgerSql": "SELECT id::text, invoked_at, status, duration_ms, serving_host, serving_process_id, serving_build_sha, args_json->>'query' AS query, metadata_json->'searchFulltextRead' AS read FROM harness_shared.tool_invocations WHERE harness_slug='papercusp' AND coord_owner_id='su-25bc0450-2829-42b9-a2dd-1431c99e4ba8' AND tool_name='search:fulltext' AND invoked_at >= '2026-10-02T14:00:04.911159+00:00'::timestamptz AND invoked_at <= '2026-10-02T14:00:14.088290+00:00'::timestamptz ORDER BY invoked_at,id LIMIT 21",
+    "physicalServing": {
+      "pid": 2899023,
+      "processIdentity": "linux:d02155ae-ac35-4b23-898e-7325f799da48:23918752",
+      "cwd": "$HOME/papercupai-workspace/papercusp-staging.generations/.candidate-a27db452a19e.ECMuWI/checkout/apps/operator",
+      "root": "$HOME/papercupai-workspace/papercusp-staging.generations/.candidate-a27db452a19e.ECMuWI/checkout",
+      "rows": [
+        {
+          "path": "packages/operator-core/lib/agent-tools/search/fulltext.ts",
+          "servingSha256": "3c26f399f3eb4206ce1f9301683e0de242106654796bc3bd7553256e06f99ffd",
+          "currentSha256": "3c26f399f3eb4206ce1f9301683e0de242106654796bc3bd7553256e06f99ffd",
+          "match": true
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/search/sources.ts",
+          "servingSha256": "c56f91d66e9c21ea2e2b8f5c0113494044aa357cb584d3e2a9154e6076aa0687",
+          "currentSha256": "c56f91d66e9c21ea2e2b8f5c0113494044aa357cb584d3e2a9154e6076aa0687",
+          "match": true
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/search/rerank.ts",
+          "servingSha256": "a235a2989a16df2158d2ee4edf6777e5178d0b9f0a549e9ab3f9529969ce3e78",
+          "currentSha256": "a235a2989a16df2158d2ee4edf6777e5178d0b9f0a549e9ab3f9529969ce3e78",
+          "match": true
+        }
+      ],
+      "bundleSha256": "09d66bb1963693944c1782af679a0cb20eb5d96c9ea0711280017feb09e0fa53",
+      "sourceSetup0": true,
+      "sourceTuple001": true,
+      "bundleSetup0": true,
+      "bundleTuple001": true
+    },
+    "physicalServingTask": "0mur1c7mq1dkq1f3h5r",
+    "physicalServingLog": "$HOME/papercupai-workspace/papercusp/.papercusp/scratch/bash-1066d530-db6.log",
+    "corpus": {
+      "count": 25,
+      "min": 0,
+      "max": 24,
+      "hash": "0303e7a27eb9d4d8122224393fec8d0f",
+      "sql": "SELECT count(*)::int AS count, min(turn_idx)::int AS min, max(turn_idx)::int AS max, md5(string_agg(turn_idx::text||':'||md5(text),'|' ORDER BY turn_idx)) AS hash FROM harness_shared.session_turns WHERE workspace_id='default' AND source_kind='codex' AND session_id='01a0f68e-3037-7dc3-b898-a1cc12441884' AND ts < '2026-10-01T09:14:42Z'::timestamptz"
+    },
+    "parity": {
+      "startedAt": "2026-10-02T14:03:58.449875+00:00",
+      "finishedAt": "2026-10-02T14:04:31.441367+00:00",
+      "argsTemplate": {
+        "scope": [
+          "session_turn"
+        ],
+        "limit": 5,
+        "session": "01a0f68e-3037-7dc3-b898-a1cc12441884",
+        "until": "2026-10-01T09:14:42Z"
+      },
+      "rows": [
+        {
+          "query": "memory admission",
+          "exitCode": 0,
+          "totalHits": 3,
+          "results": [
+            {
+              "sourceId": "codex:01a0f68e-3037-7dc3-b898-a1cc12441884:6",
+              "rank": 0.2
+            },
+            {
+              "sourceId": "codex:01a0f68e-3037-7dc3-b898-a1cc12441884:8",
+              "rank": 0.2
+            },
+            {
+              "sourceId": "codex:01a0f68e-3037-7dc3-b898-a1cc12441884:22",
+              "rank": 0.1
+            }
+          ],
+          "stderr": "",
+          "sameHitAndRankSet": true
+        },
+        {
+          "query": "04474",
+          "exitCode": 0,
+          "totalHits": 3,
+          "results": [
+            {
+              "sourceId": "codex:01a0f68e-3037-7dc3-b898-a1cc12441884:1",
+              "rank": 0
+            },
+            {
+              "sourceId": "codex:01a0f68e-3037-7dc3-b898-a1cc12441884:23",
+              "rank": 0
+            },
+            {
+              "sourceId": "codex:01a0f68e-3037-7dc3-b898-a1cc12441884:3",
+              "rank": 0
+            }
+          ],
+          "stderr": "",
+          "sameHitAndRankSet": true
+        },
+        {
+          "query": "WI-10004474",
+          "exitCode": 0,
+          "totalHits": 2,
+          "results": [
+            {
+              "sourceId": "codex:01a0f68e-3037-7dc3-b898-a1cc12441884:1",
+              "rank": 0.2
+            },
+            {
+              "sourceId": "codex:01a0f68e-3037-7dc3-b898-a1cc12441884:23",
+              "rank": 0.1
+            }
+          ],
+          "stderr": "",
+          "sameHitAndRankSet": true
+        },
+        {
+          "query": "zz-r2-absent-20261001",
+          "exitCode": 0,
+          "totalHits": 0,
+          "results": [],
+          "stderr": "",
+          "sameHitAndRankSet": true
+        }
+      ],
+      "invocationRows": [
+        {
+          "id": "31297604",
+          "invoked_at": "2026-10-02 14:03:58.683+00",
+          "status": "ok",
+          "serving_host": "port-3170",
+          "serving_process_id": "linux:d02155ae-ac35-4b23-898e-7325f799da48:23918752",
+          "serving_build_sha": "a27db452a1",
+          "query": "memory admission",
+          "session": "01a0f68e-3037-7dc3-b898-a1cc12441884",
+          "until": "2026-10-01T09:14:42Z"
+        },
+        {
+          "id": "31297664",
+          "invoked_at": "2026-10-02 14:04:30.87+00",
+          "status": "ok",
+          "serving_host": "port-3170",
+          "serving_process_id": "linux:d02155ae-ac35-4b23-898e-7325f799da48:23918752",
+          "serving_build_sha": "a27db452a1",
+          "query": "04474",
+          "session": "01a0f68e-3037-7dc3-b898-a1cc12441884",
+          "until": "2026-10-01T09:14:42Z"
+        },
+        {
+          "id": "31297665",
+          "invoked_at": "2026-10-02 14:04:31.174+00",
+          "status": "ok",
+          "serving_host": "port-3170",
+          "serving_process_id": "linux:d02155ae-ac35-4b23-898e-7325f799da48:23918752",
+          "serving_build_sha": "a27db452a1",
+          "query": "WI-10004474",
+          "session": "01a0f68e-3037-7dc3-b898-a1cc12441884",
+          "until": "2026-10-01T09:14:42Z"
+        },
+        {
+          "id": "31297667",
+          "invoked_at": "2026-10-02 14:04:31.425+00",
+          "status": "ok",
+          "serving_host": "port-3170",
+          "serving_process_id": "linux:d02155ae-ac35-4b23-898e-7325f799da48:23918752",
+          "serving_build_sha": "a27db452a1",
+          "query": "zz-r2-absent-20261001",
+          "session": "01a0f68e-3037-7dc3-b898-a1cc12441884",
+          "until": "2026-10-01T09:14:42Z"
+        }
+      ]
+    },
+    "measurementDriver": "python3 - <<'PY'\nimport json,subprocess,time,datetime,re\nfrom pathlib import Path\nold=json.loads(Path('docs/evidence/papercusp-performance-r2-live-2026-10-02T0103.json').read_text())\nnow=lambda:datetime.datetime.now(datetime.timezone.utc).isoformat()\nstart=now(); rows=[]\nfor q in old['taskQueries']:\n a=now(); t=time.perf_counter()\n try:\n  r=subprocess.run(old['command'],input=json.dumps({'query':q,'scope':['session_turn'],'limit':5}),text=True,capture_output=True,timeout=40)\n  lines=r.stderr.splitlines(); marks=[json.loads(s[len('R2_HTTP_TIMING '):]) for s in lines if s.startswith('R2_HTTP_TIMING ')]\n  rows.append({'query':q,'startedAt':a,'finishedAt':now(),'exitCode':r.returncode,'http':marks,'cliMs':round((time.perf_counter()-t)*1000),'stderr':'\\n'.join(s for s in lines if not s.startswith('R2_HTTP_TIMING '))[:1000]})\n except subprocess.TimeoutExpired:\n  rows.append({'query':q,'startedAt':a,'finishedAt':now(),'exitCode':None,'http':[],'cliMs':round((time.perf_counter()-t)*1000),'stderr':'bounded subprocess timeout'})\n  break\nv=sorted(x['http'][0]['ms'] for x in rows if len(x['http'])==1 and x['http'][0]['status']==200 and x['exitCode']==0)\nprint(json.dumps({'startedAt':start,'finishedAt':now(),'populationRef':'docs/evidence/papercusp-performance-r2-live-2026-10-02T0103.json','rows':rows,'complete':len(rows)==20 and len(v)==20,'httpP95NearestRankMs':v[18] if len(v)==20 else None,'httpMaxMs':max(v) if v else None}))\nPY"
+  },
+  "preflight": {
+    "parityRejected": {
+      "startedAt": "2026-10-02T14:02:58.709988+00:00",
+      "finishedAt": "2026-10-02T14:02:59.277112+00:00",
+      "argsTemplate": {
+        "scope": [
+          "session_turn"
+        ],
+        "limit": 5,
+        "session": "01a0f68e-3037-7dc3-b898-a1cc12441884",
+        "before": "2026-10-01T09:14:42Z"
+      },
+      "rows": [
+        {
+          "query": "memory admission",
+          "exitCode": 1,
+          "parseError": "Expecting value: line 1 column 1 (char 0)",
+          "stderr": "MCP_ERROR: {\"content\":[{\"type\":\"text\",\"text\":\"invalid_input: invalid_args: Unrecognized key: \\\"before\\\" CORRECTED CALL — send this: search:fulltext({ \\\"query\\\": \\\"memory admission\\\", \\\"scope\\\": [\\\"session_turn\\\"], \\\"limit\\\": 5, \\\"session\\\": \\\"01a0f68e-3037-7dc3-b898-a1cc12441884\\\" }) (removed `before` (this tool declares no counterpart — the fix is to drop it, not to look for a synonym)). This resolves the rejected keys against the args you actually sent; it does not guarantee the call validates",
+          "stdoutPrefix": "",
+          "sameHitAndRankSet": false
+        },
+        {
+          "query": "04474",
+          "exitCode": 1,
+          "parseError": "Expecting value: line 1 column 1 (char 0)",
+          "stderr": "MCP_ERROR: {\"content\":[{\"type\":\"text\",\"text\":\"invalid_input: invalid_args: Unrecognized key: \\\"before\\\" CORRECTED CALL — send this: search:fulltext({ \\\"query\\\": \\\"04474\\\", \\\"scope\\\": [\\\"session_turn\\\"], \\\"limit\\\": 5, \\\"session\\\": \\\"01a0f68e-3037-7dc3-b898-a1cc12441884\\\" }) (removed `before` (this tool declares no counterpart — the fix is to drop it, not to look for a synonym)). This resolves the rejected keys against the args you actually sent; it does not guarantee the call validates, since a v",
+          "stdoutPrefix": "",
+          "sameHitAndRankSet": false
+        },
+        {
+          "query": "WI-10004474",
+          "exitCode": 1,
+          "parseError": "Expecting value: line 1 column 1 (char 0)",
+          "stderr": "MCP_ERROR: {\"content\":[{\"type\":\"text\",\"text\":\"invalid_input: invalid_args: Unrecognized key: \\\"before\\\" CORRECTED CALL — send this: search:fulltext({ \\\"query\\\": \\\"WI-10004474\\\", \\\"scope\\\": [\\\"session_turn\\\"], \\\"limit\\\": 5, \\\"session\\\": \\\"01a0f68e-3037-7dc3-b898-a1cc12441884\\\" }) (removed `before` (this tool declares no counterpart — the fix is to drop it, not to look for a synonym)). This resolves the rejected keys against the args you actually sent; it does not guarantee the call validates, sin",
+          "stdoutPrefix": "",
+          "sameHitAndRankSet": false
+        },
+        {
+          "query": "zz-r2-absent-20261001",
+          "exitCode": 1,
+          "parseError": "Expecting value: line 1 column 1 (char 0)",
+          "stderr": "MCP_ERROR: {\"content\":[{\"type\":\"text\",\"text\":\"invalid_input: invalid_args: Unrecognized key: \\\"before\\\" CORRECTED CALL — send this: search:fulltext({ \\\"query\\\": \\\"zz-r2-absent-20261001\\\", \\\"scope\\\": [\\\"session_turn\\\"], \\\"limit\\\": 5, \\\"session\\\": \\\"01a0f68e-3037-7dc3-b898-a1cc12441884\\\" }) (removed `before` (this tool declares no counterpart — the fix is to drop it, not to look for a synonym)). This resolves the rejected keys against the args you actually sent; it does not guarantee the call vali",
+          "stdoutPrefix": "",
+          "sameHitAndRankSet": false
+        }
+      ]
+    },
+    "parityProjectedButStopped": {
+      "query": "04474",
+      "exitCode": 6,
+      "totalHits": 3,
+      "results": [
+        {
+          "sourceId": "codex:01a0f68e-3037-7dc3-b898-a1cc12441884:1",
+          "rank": 0
+        },
+        {
+          "sourceId": "codex:01a0f68e-3037-7dc3-b898-a1cc12441884:23",
+          "rank": 0
+        },
+        {
+          "sourceId": "codex:01a0f68e-3037-7dc3-b898-a1cc12441884:3",
+          "rank": 0
+        }
+      ],
+      "stderr": "mcp-call: the result above is INCOMPLETE (door-projected partial result: placeholder value(s) at $.results[0].highlight, $.results[1].highlight). A field copied from it can be a placeholder string, not data. Re-run with a narrower `projection: { pick: [...] }` in the args, or read the spill named at _projection.cursor. Exiting 6; pass --allow-partial to accept a partial read. (EI-24678010189721217)\n",
+      "sameHitAndRankSet": true
+    },
+    "note": "Four before-filter inputs were refused before search; current filters.ts declares until. Corrected control stopped at first CLI partial-result exit6; source/rank fields were preserved, but it was rerun once with explicit projection for only needed fields. First valid memory-admission control retained; remaining3 were allsuccessful. Physical-source initial probe wrongly treated the start-ticks suffix as a host PID and read no source files; corrected actualuser-unit MainPID and stat field22 establish the exact ledger identity."
+  },
+  "limitations": [
+    "One dated population run; no repeated/independent acceptance or historical latency root-cause inference.",
+    "Original full R2 failure20462736/73db remains historical and unmodified. This artifact does not supersede its canonical binding by itself.",
+    "Per-attempt query metadata identifies the retrieval scope; terminal diagnostic retention does not prove every SQL query was observed, nor CPU or pure acquisition timing.",
+    "Actual installed-hook glance_stale acceptance was not renewed in this unit; prior hook evidence stays dated.",
+    "Staging database/workspace is shared; current-build acceptance is distinct from green main/final shipment. No shared restart, gate operations or Git mutation occurred."
+  ],
+  "priorEvidence": [
+    "docs/evidence/papercusp-performance-r2-live-2026-10-02T0103.json",
+    "test-run:20462736",
+    "docs/evidence/papercusp-performance-r2-prebuild-single-live-2026-10-02.json"
+  ]
+}

@@ -167,10 +167,12 @@ describe('annotateTimedOutAnnouncedAwaits — the sweeper hook', () => {
       announcement_id: 7,
       generation: 2,
       classification: 'never-fireable',
+      evidence: { checked_at_ms: 1 },
       next_verb: { verb: 'events:cancel', args: { announcement_id: 7, expected_generation: 2 } },
       action: { action: 'advisory-recorded', workItemId: 'WI-1' },
     });
     expect(String(out.get(101)?.rule)).toMatch(/timeout stays a timeout/);
+    expect(String(out.get(101)?.rule)).toMatch(/point-in-time snapshot measured at evidence\.checked_at_ms/);
     expect(out.get(102)).toBe(out.get(101));
   });
 

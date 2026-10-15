@@ -52,59 +52,135 @@ export interface BenchSet {
 }
 
 /**
+ * What the latest suite-portfolio review decided for a report-on suite (plan
+ * benchmark-coverage-frontierswe-v2-2026-10-10 R-7 / P-008). Each value names the NEXT
+ * action, so the modernization plan (its P-007 owns what gets built, D-004) can act on it.
+ */
+export type PortfolioDisposition =
+  /** An adapter exists but targets a superseded upstream population or framework: migrate before any new claim. */
+  | 'migrate-upstream'
+  /** No adapter in this tree; the review found a viable official-grader route worth building. */
+  | 'build-adapter'
+  /** An adapter exists but its runtime readiness was not measured (harness absent, no commit pin): re-verify before relying on it. */
+  | 'verify-adapter'
+  /** An adapter exists and waits only on a named gate (controls, spend approval). */
+  | 'awaiting-gate'
+  /** A named blocker (license, grading method) prevents any published claim. */
+  | 'blocked';
+
+/** The closed disposition vocabulary, in declaration order (the test checks every entry against it). */
+export const PORTFOLIO_DISPOSITIONS: readonly PortfolioDisposition[] = Object.freeze([
+  'migrate-upstream',
+  'build-adapter',
+  'verify-adapter',
+  'awaiting-gate',
+  'blocked',
+]);
+
+/**
+ * The oldest acceptable review date. A disposition older than this predates the current
+ * portfolio cycle and must be re-reviewed. Bump it when a new review cycle starts.
+ */
+export const PORTFOLIO_REVIEW_FLOOR = '2026-10-01';
+
+/** One suite's portfolio review: the disposition, when it was set, why, and where the evidence lives. */
+export interface PortfolioReview {
+  readonly disposition: PortfolioDisposition;
+  /** ISO calendar date (YYYY-MM-DD, UTC) of the review that set the disposition. */
+  readonly reviewedAt: string;
+  /** One line: the reason, naming the blocker or the next step. */
+  readonly note: string;
+  /** Repo-relative path of the review document that records the evidence. */
+  readonly evidence: string;
+}
+
+/** A report-on set. It must carry a current portfolio review (R-7); the type makes that non-optional. */
+export interface ReportOnSuite extends BenchSet {
+  readonly usage: 'report-on';
+  readonly portfolio: PortfolioReview;
+}
+
+/** The review document behind the 2026-10-11 dispositions. */
+const PORTFOLIO_REVIEW_2026_10_11 = 'apps/operator/docs/benchmark-suite-portfolio-2026-10-11.md';
+
+function reviewed20261011(disposition: PortfolioDisposition, note: string): PortfolioReview {
+  return { disposition, reviewedAt: '2026-10-11', note, evidence: PORTFOLIO_REVIEW_2026_10_11 };
+}
+
+/**
  * The impartial suite's REPORT-ON sets (plan "benchmark suite (tiered)" + D-003 + D-008).
  * Every id here is fenced off from gym tuning AND is a legal `run_result.suite` value.
  * Add a benchmark to the published suite ⇒ add it here in the SAME change.
  */
-export const REPORT_ON_SUITES: readonly BenchSet[] = Object.freeze([
+export const REPORT_ON_SUITES: readonly ReportOnSuite[] = Object.freeze([
   {
     id: 'swe-bench-pro',
     usage: 'report-on',
     title: 'SWE-bench Pro (Scale; public + held-out commercial split)',
     rationale:
       'Contamination-resistant core (what OpenAI now points to after retiring Verified); the pilot backbone (M1 diff-batch grader, D-008).',
+    portfolio: reviewed20261011(
+      'migrate-upstream',
+      'Runnable only on the deprecated v1 population; migrate to v2 and pin the HF config + revision before any new claim (WI-6554700010008394).',
+    ),
   },
   {
     id: 'terminal-bench',
     usage: 'report-on',
     title: 'Terminal-Bench 2.0/2.1 (Snorkel + Stanford + Laude)',
     rationale: 'Execution/DevOps core; in-container grading (M2, D-008). Native-harness arm is ~free via Harbor --agent claude-code.',
+    portfolio: reviewed20261011('build-adapter', 'No adapter; install Harbor, pin @2.1 and grade with the Harbor verifier.'),
   },
   {
     id: 'swe-rebench',
     usage: 'report-on',
     title: 'SWE-rebench (~21k auto-mined post-cutoff issues)',
     rationale: 'Contamination-proof freshness — the strongest impartiality lever (added once the adapter is proven, P-013).',
+    portfolio: reviewed20261011('build-adapter', 'No adapter; cheap through a Harbor runner. The contamination-resistant headline candidate.'),
   },
   {
     id: 'swe-bench-live',
     usage: 'report-on',
     title: 'SWE-bench-Live (weekly auto-updating, multi-language/OS)',
     rationale: 'Contamination-proof freshness — maintained post-cutoff so no hand-built fresh set is needed.',
+    portfolio: reviewed20261011('build-adapter', 'No adapter; M1 diff-batch shaped, so the SWE-bench Pro v1 grader structure is the reuse candidate.'),
   },
   {
     id: 'swe-evo',
     usage: 'report-on',
     title: 'SWE-EVO (48 tasks, avg 21 files / 874 tests each)',
     rationale: 'Long-horizon set where coordination is actually exercised (single agents are weak here — the headroom the spine should open).',
+    portfolio: reviewed20261011(
+      'build-adapter',
+      'No adapter; M1 shaped. Resolve the GitHub MIT vs Hugging Face apache-2.0 license mismatch before publishing.',
+    ),
   },
   {
     id: 'roadmapbench',
     usage: 'report-on',
     title: 'RoadmapBench (115 version-upgrade tasks, 17 repos, 5 langs)',
     rationale: 'Long-horizon, multi-file, decomposable — where hand-offs / decomposition / review have something to do.',
+    portfolio: reviewed20261011('build-adapter', 'No adapter; Harbor-native, images pulled from Docker Hub.'),
   },
   {
     id: 'swe-lancer',
     usage: 'report-on',
     title: 'SWE-Lancer ($1M of real freelance tasks, E2E-graded)',
     rationale: 'Optional economic framing ("X dollars of work completed"); still report-on, still fenced off from gym tuning.',
+    portfolio: reviewed20261011(
+      'build-adapter',
+      'No adapter; host disk is the binding constraint, so prefer the Harbor swe-lancer-diamond@ic route over local image builds.',
+    ),
   },
   {
     id: 'harness-bench',
     usage: 'report-on',
     title: 'Harness-Bench (arXiv 2605.27922 — fixes task/budget/timeout/grader, varies the harness)',
     rationale: 'Harness-isolation air cover; run Papercusp through it if P-001 shows onboarding is tractable. Never a gym tuning target.',
+    portfolio: reviewed20261011(
+      'blocked',
+      'License blocks any published claim, and the LLM-judged component conflicts with oracle-only grading. Internal diagnostic at most.',
+    ),
   },
   {
     id: 'metr-hcast',
@@ -112,6 +188,10 @@ export const REPORT_ON_SUITES: readonly BenchSet[] = Object.freeze([
     title: 'METR HCAST / time-horizon (arXiv:2503.14499 + 2503.17354; ~31 open Task-Standard tasks)',
     rationale:
       'Long-horizon-autonomy headline: a derived 50%/80%-time-horizon fit + the hive-vs-single-opus LIFT. Third-party-authored + self-grading (each task ships its own score()) → never a gym tuning target (D-005). Absolute horizon on the open subset is illustrative-only; the LIFT is the defensible signal (plan benchmark-suite-metr-hcast-2026-06-17 D-002).',
+    portfolio: reviewed20261011(
+      'migrate-upstream',
+      'METR archived the Task Standard (2026-10-07) and now runs these tasks through its Inspect Task Bridge; our adapter vendors Task-Standard taskhelper.py, which is not installed on this host.',
+    ),
   },
   {
     id: 'agentsnet',
@@ -119,6 +199,10 @@ export const REPORT_ON_SUITES: readonly BenchSet[] = Object.freeze([
     title: 'AgentsNet (coordination-native multi-agent; arXiv:2507.08616)',
     rationale:
       'The DIRECT coordination dimension: one opus agent per graph node, local-neighbor-only message passing, five distributed-computing tasks (coloring/consensus/leader-election/matching/vertex-cover) with deterministic get_score(). Reported on as a model-coordination number (optionally carried over our substrate, route B); NEVER a gym tuning target — D-002: it is decentralized/local-only, so our global-view queen would cheat it (plan benchmark-suite-agentsnet-2026-06-17).',
+    portfolio: reviewed20261011(
+      'verify-adapter',
+      'Adapter present; upstream is static since 2025-07 (MIT) but the adapter keys its grader version to the arXiv id, not a commit. Pin a commit and re-verify.',
+    ),
   },
   {
     id: 'swarmbench',
@@ -126,13 +210,21 @@ export const REPORT_ON_SUITES: readonly BenchSet[] = Object.freeze([
     title: 'SwarmBench (decentralized swarm coordination; arXiv:2505.04364)',
     rationale:
       'Coordination-NATIVE 2D-grid swarm sim (Pursuit/Synchronization/Foraging/Flocking/Transport): N agents under local k×k view + local messaging, deterministic per-task sim score. The headline is the decentralized-peers-vs-centralized-coordinator topology delta — a coordination result no diff-batch suite can express. NEVER a gym tuning target — D-005; and per D-001 a global-view queen would violate the local-only premise (plan benchmark-suite-swarmbench-2026-06-17).',
+    portfolio: reviewed20261011(
+      'verify-adapter',
+      'Adapter present; upstream is static since 2025-05 (MIT), but the harness is not installed on this host and no commit is pinned. Pin, install and re-verify.',
+    ),
   },
   {
     id: 'frontier-swe',
     usage: 'report-on',
     title: 'FrontierSWE (Proximal Labs; ultra-long-horizon implementation / perf-eng / ML-research)',
     rationale:
-      '17 ultra-long-horizon tasks (5 implementation / 9 performance / 3 ML-research), hours→tens-of-hours, 5 trials/task, CONTINUOUS [0,1] score (no model fully solves the implementation tasks). M2 in-container + own-scorer (each task ships its own scorer: a Rust benchmark-runner + *.expected fixtures); headline = mean@5/best@5 + AVG-RANK/dominance across a coordination-topology arm pool. Third-party-authored + self-grading → NEVER a gym tuning target (D-005) (plan benchmark-suite-frontier-swe-2026-06-18).',
+      'Ultra-long-horizon tasks (hours→tens-of-hours) in coarse implementation / performance / ML-research buckets, 5 trials/task, CONTINUOUS [0,1] score (no model fully solves the implementation tasks). Task and bucket counts are DERIVED from the ingested corpus (task-sets + report/frontier-report), never restated here. v2 (Proximal-Labs/frontier-swe-v2, the current corpus) grades each task in a SEPARATE digest-pinned verifier image; v1 (in-container own-scorer) is HISTORY and never aggregates with v2 (plan benchmark-coverage-frontierswe-v2-2026-10-10 R-1 / D-003). Headline = mean@5/best@5 + AVG-RANK/dominance across a coordination-topology arm pool. Third-party-authored + self-grading → NEVER a gym tuning target (D-005) (plan benchmark-suite-frontier-swe-2026-06-18).',
+    portfolio: reviewed20261011(
+      'awaiting-gate',
+      'Closest to runnable (v2 adapter + pinned verifier images); waits on the P-007 control placement and the P-012 spend approval.',
+    ),
   },
 ]);
 
@@ -192,6 +284,55 @@ export function isReportOnSet(id: string, registry: readonly BenchSet[] = BENCH_
 /** Is `id` a declared gym optimize-on source? */
 export function isOptimizeOnSet(id: string, registry: readonly BenchSet[] = BENCH_SET_REGISTRY): boolean {
   return optimizeOnSetIds(registry).has(id);
+}
+
+/** True when `s` is a real calendar date written YYYY-MM-DD (rejects 2026-02-30 and 2026-13-01). */
+function isIsoCalendarDate(s: unknown): s is string {
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const d = new Date(`${s}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+}
+
+/**
+ * R-7 guard (plan benchmark-coverage-frontierswe-v2-2026-10-10 P-008): every report-on
+ * suite carries a portfolio disposition from {@link PORTFOLIO_DISPOSITIONS}, reviewed on or
+ * after `floor`, with a reason and an evidence path. Throws ONE error naming every offending
+ * suite. It accepts plain `BenchSet`s so a doctored registry (an entry with no review at
+ * all) can exercise the failure path, and it refuses a list with no report-on suite rather
+ * than passing vacuously.
+ */
+export function assertPortfolioReviewed(
+  suites: readonly BenchSet[] = REPORT_ON_SUITES,
+  floor: string = PORTFOLIO_REVIEW_FLOOR,
+): void {
+  if (!isIsoCalendarDate(floor)) {
+    throw new ReportSetFirewallError(`Portfolio review floor '${floor}' is not a YYYY-MM-DD date`);
+  }
+  const reportOn = suites.filter((s) => s.usage === 'report-on');
+  if (reportOn.length === 0) {
+    throw new ReportSetFirewallError('Portfolio review check found no report-on suite to check');
+  }
+  const problems: string[] = [];
+  for (const s of reportOn) {
+    const p = (s as Partial<ReportOnSuite>).portfolio;
+    if (!p) {
+      problems.push(`${s.id}: no portfolio review`);
+      continue;
+    }
+    if (!PORTFOLIO_DISPOSITIONS.includes(p.disposition)) {
+      problems.push(`${s.id}: unknown disposition '${String(p.disposition)}'`);
+    }
+    if (!isIsoCalendarDate(p.reviewedAt)) {
+      problems.push(`${s.id}: reviewedAt '${String(p.reviewedAt)}' is not a YYYY-MM-DD date`);
+    } else if (p.reviewedAt < floor) {
+      problems.push(`${s.id}: reviewed ${p.reviewedAt}, before the ${floor} floor`);
+    }
+    if (typeof p.note !== 'string' || p.note.trim() === '') problems.push(`${s.id}: empty note`);
+    if (typeof p.evidence !== 'string' || p.evidence.trim() === '') problems.push(`${s.id}: empty evidence path`);
+  }
+  if (problems.length > 0) {
+    throw new ReportSetFirewallError(`Portfolio review missing or stale (R-7): ${problems.join('; ')}`);
+  }
 }
 
 /**

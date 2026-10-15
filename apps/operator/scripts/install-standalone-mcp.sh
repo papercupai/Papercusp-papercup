@@ -319,6 +319,9 @@ CC_CONTENT_LINT_HOOK="${CC_HOOK_DEST_DIR}/pretooluse-content-lint.mjs"
 # PostToolUse MDX compiler nudge (EI-19450114644493388): reads the complete
 # resulting .mdx file and reports a real compiler error before git-sync quarantine.
 CC_MDX_NUDGE_HOOK="${CC_HOOK_DEST_DIR}/posttooluse-mdx-nudge.mjs"
+# PostToolUse launch-prose budget nudge (WI-10004682 / P-003): check prompt
+# and projected harness-doc edits immediately, before git-sync commits a breach.
+CC_LAUNCH_PROSE_NUDGE_HOOK="${CC_HOOK_DEST_DIR}/posttooluse-launch-prose-budget-nudge.mjs"
 # PostToolUse frozen-candidate edit nudge (frozen-candidate-compliance-enforcement-2026-08-30
 # P-004/P-005): you edited a path the FROZEN gate candidate is failing on, so the fix lands
 # above the judged sha and the gate cannot see it. Reads a marker file projected by the
@@ -1088,7 +1091,7 @@ with open(path, 'w') as f:
 PYEOF
 }
 
-# merge_frozen_candidate_edit_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
+# merge_frozen_candidate_edit_hook — PostToolUse, native + capability edit/patch and invoke calls
 # (frozen-candidate-compliance-enforcement-2026-08-30 P-004). Advisory only; warns that an
 # edit to one of the frozen candidate's failing paths lands ABOVE the sha the gate is judging,
 # and names the single sanctioned command that puts it on the judged lineage.
@@ -1115,7 +1118,7 @@ def drop_ours(entry):
 
 hooks = cfg.setdefault('hooks', {})
 arr = [e for e in (drop_ours(x) for x in hooks.get('PostToolUse', [])) if e]
-arr.append({'matcher': 'Edit|Write|MultiEdit', 'hooks': [{'type': 'command', 'command': hook}]})
+arr.append({'matcher': 'Edit|Write|MultiEdit|mcp__.*__capability_(edit|write|multi_?edit|patch)|mcp__.*__tools_invoke', 'hooks': [{'type': 'command', 'command': hook}]})
 hooks['PostToolUse'] = arr
 
 os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -1152,6 +1155,41 @@ def drop_ours(entry):
 hooks = cfg.setdefault('hooks', {})
 arr = [e for e in (drop_ours(x) for x in hooks.get('PostToolUse', [])) if e]
 arr.append({'matcher': 'Edit|Write|MultiEdit|docs:author|mcp__.*__docs[_:-]author', 'hooks': [{'type': 'command', 'command': hook}]})
+hooks['PostToolUse'] = arr
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+PYEOF
+}
+
+# merge_launch_prose_nudge_hook — PostToolUse, prompt and doc-part writes only.
+# Advisory: the projection gate remains the enforcing path; this surfaces a breach
+# in the author's turn so it can be corrected before git-sync.
+merge_launch_prose_nudge_hook() {
+  python3 - "$1" "$CC_LAUNCH_PROSE_NUDGE_HOOK" <<'PYEOF'
+import json, os, sys, time
+path, hook = sys.argv[1:3]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError
+except FileNotFoundError:
+    cfg = {}
+except (json.JSONDecodeError, ValueError):
+    os.rename(path, path + '.bak.' + str(int(time.time())))
+    cfg = {}
+
+ours = {hook, os.path.basename(hook)}
+
+def drop_ours(entry):
+    kept = [h for h in (entry.get('hooks') or []) if not any(o in h.get('command', '') for o in ours)]
+    return {**entry, 'hooks': kept} if kept else None
+
+hooks = cfg.setdefault('hooks', {})
+arr = [e for e in (drop_ours(x) for x in hooks.get('PostToolUse', [])) if e]
+arr.append({'matcher': 'Edit|Write|MultiEdit|apply_patch|Bash|mcp__.*__capability_(edit|write|multi_?edit|patch)|mcp__.*__tools_invoke', 'hooks': [{'type': 'command', 'command': hook}]})
 hooks['PostToolUse'] = arr
 
 os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -1461,6 +1499,7 @@ cfg['mcpServers']['papercusp-su'] = {
             + '&ctx_tier=${PAPERCUSP_CONTEXT_TIER:-}'),
     'headers': {
         'Authorization': 'Bearer ' + token,
+        'x-papercusp-native-session': '${PAPERCUSP_NATIVE_SESSION_ID:-}',
     },
 }
 with open(path, 'w') as f:
@@ -1772,6 +1811,17 @@ if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-locks-acquire.sh" ]; then
     esac
   done
   echo "✓ Installed Claude/Codex lock + coord hooks to $CC_HOOK_DEST_DIR"
+  # WI-6554700010010534: stamp what was just installed, with the same CC_HOOK_FILES scoping
+  # as the desktop installer, so its downgrade guard compares real dates. Without it the
+  # previous installer's .installed-from survives (on 2026-10-13: an undated 2026-10-07
+  # desktop package) and the next packaged install can revert these hooks.
+  CC_STAMP_TSX="${REPO_ROOT}/node_modules/.bin/tsx"
+  if [ -x "$CC_STAMP_TSX" ]; then
+    "$CC_STAMP_TSX" "${REPO_ROOT}/packages/operator-core/lib/desktop-install/stamp-installed-cc-hooks.ts" "$CC_HOOK_SRC_DIR" \
+      || echo "! Could not stamp $CC_HOOK_DEST_DIR; the downgrade guard still sees the previous installer's record"
+  else
+    echo "! tsx not found under ${REPO_ROOT}/node_modules; $CC_HOOK_DEST_DIR left unstamped"
+  fi
 else
   echo "! Expected CC lock hooks at $CC_HOOK_SRC_DIR; skipping (Claude/Codex lock enforcement inactive)"
 fi
@@ -1800,6 +1850,7 @@ if [ -x "$CC_PRE_HOOK" ]; then
   [ -x "$CC_GUARD_OPERATOR_DESKTOP_HOOK" ] && merge_guard_operator_desktop_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_CONTENT_LINT_HOOK" ] && merge_content_lint_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_MDX_NUDGE_HOOK" ] && merge_mdx_nudge_hook "$CLAUDE_SETTINGS"
+  [ -x "$CC_LAUNCH_PROSE_NUDGE_HOOK" ] && merge_launch_prose_nudge_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_FROZEN_CANDIDATE_EDIT_HOOK" ] && merge_frozen_candidate_edit_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_SECRETS_GUARD_HOOK" ] && merge_secrets_guard_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_NUL_BYTE_EDIT_GUARD_HOOK" ] && merge_nul_byte_edit_guard_hook "$CLAUDE_SETTINGS"
@@ -1909,6 +1960,24 @@ WRAPEOF
   esac
 else
   echo "! ptool launcher not found at $PTOOL_LAUNCHER; skipping ptool install"
+fi
+
+# 4i. Install the pinned RTK binary at ~/.local/bin/rtk (WI-6554700010009291).
+# The native-Bash egress guard and capability:bash both rewrite shell commands
+# through `rtk rewrite` for compressed output, and both fail OPEN when rtk is
+# absent, so losing the binary silently disables RTK fleet-wide. That happened
+# once already: rtk lived in the Homebrew prefix, the prefix was rebuilt on
+# 2026-08-15, and nothing put it back. install-rtk.sh pins the release by
+# sha256 and installs outside any package manager's prefix; it is a no-op when
+# the pinned version is already there. A failure here is loud but does not
+# abort the rest of the install.
+RTK_INSTALLER="${SCRIPT_DIR}/install-rtk.sh"
+if [ -f "$RTK_INSTALLER" ]; then
+  if ! bash "$RTK_INSTALLER"; then
+    echo "! rtk install failed — RTK output compression stays OFF until it succeeds (re-run: bash $RTK_INSTALLER)"
+  fi
+else
+  echo "! rtk installer not found at $RTK_INSTALLER; skipping rtk install"
 fi
 
 # 5. Verify the endpoint accepts the token.

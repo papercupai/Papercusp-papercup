@@ -96,6 +96,9 @@ blueprints:
   - id: memory-precision
     githubUrl: https://github.com/Papercusp/blueprints
     listingRef: memory-precision
+  - id: morning-ai-intelligence
+    githubUrl: https://github.com/Papercusp/blueprints
+    listingRef: morning-ai-intelligence
   - id: merge-resolution
     githubUrl: https://github.com/Papercusp/blueprints
     listingRef: merge-resolution
@@ -162,6 +165,9 @@ blueprints:
   - id: su-collaborator
     githubUrl: https://github.com/Papercusp/blueprints
     listingRef: su-collaborator
+  - id: su-ideate
+    githubUrl: https://github.com/Papercusp/blueprints
+    listingRef: su-ideate
   - id: su.practice
     githubUrl: https://github.com/Papercusp/blueprints
     listingRef: su.practice

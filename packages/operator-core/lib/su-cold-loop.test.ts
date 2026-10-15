@@ -335,6 +335,19 @@ describe('renderColdWakeInjection — the cold-wake injected text (P-002 produce
       expect(out).toContain('DO NOT call `write_stdin` with the carried id');
     });
 
+    it('routes carried Codex device-auth handle lists to durable task recovery', () => {
+      const note =
+        'A predecessor launched `codex login --device-auth` via `exec_command`; saved exec handles ' +
+        '12345/23456/34567 are process-local.';
+      const out = renderColdWakeInjection(note);
+
+      expect(out).toContain('CARRIED DEVICE-AUTH EXEC HANDLE');
+      expect(out).toContain('the prior device code has expired');
+      expect(out).toContain('capability:bash` tracked-task flow');
+      expect(out).toContain('capability:bash_output { task_id }');
+      expect(out).not.toContain('rerun the command with a fresh exec');
+    });
+
     it('does not warn for a stable native session identifier', () => {
       const note = '## Next action\nresume the stable native session 64399; no transient exec handle is carried';
       expect(renderColdWakeInjection(note)).not.toContain('CARRIED TRANSIENT EXEC HANDLE');

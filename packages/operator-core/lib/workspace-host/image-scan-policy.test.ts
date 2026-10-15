@@ -57,13 +57,13 @@ describe('workspace-host image scan policy', () => {
     }
   });
 
-  it('scopes ONLY the provider whose scanner attributes findings', () => {
-    // GCP's guest scanner emits the attribution maps (D-204); AWS and Azure do not.
-    // A scoped policy against a non-attributing scanner denies, so these values are a
-    // statement of where each provider actually is — not a concession, and not a
-    // default anyone inherits by accident.
+  it('scopes ONLY the providers whose scanners attribute findings', () => {
+    // GCP's guest scanner (D-204) and the AWS offline AMI scanner (WI-10006421) emit the
+    // attribution maps; Azure's does not. A scoped policy against a non-attributing scanner
+    // denies, so these values are a statement of where each provider actually is — not a
+    // concession, and not a default anyone inherits by accident.
     expect(GCP_IMAGE_SCAN_POLICY.evaluatedScope).toBe('papercusp-bundled');
-    expect(AWS_IMAGE_SCAN_POLICY.evaluatedScope).toBe('all');
+    expect(AWS_IMAGE_SCAN_POLICY.evaluatedScope).toBe('papercusp-bundled');
     expect(AZURE_IMAGE_SCAN_POLICY.evaluatedScope).toBe('all');
   });
 

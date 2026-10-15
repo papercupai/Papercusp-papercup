@@ -37,7 +37,13 @@ export interface AuthorityRpcEnvelope {
 }
 
 /** A handler that executes one op kind locally on the authority. */
-export type AuthorityOpHandler = (payload: unknown, harnessSlug: string) => Promise<unknown>;
+export type AuthorityOpHandler = (payload: unknown, harnessSlug: string, context?: AuthorityOpContext) => Promise<unknown>;
+
+/** Raw signed envelope, not an authorization verdict. Sensitive operations must
+ * verify it themselves when legacy dispatch can omit verifyCaller. */
+export interface AuthorityOpContext {
+  envelope: AuthorityRpcEnvelope;
+}
 
 /** Per-op registration options. */
 export interface RegisterAuthorityOpOpts {
@@ -165,7 +171,7 @@ export async function handleAuthorityRpc(
   }
 
   try {
-    const result = await handler(env.payload, env.harnessSlug);
+    const result = await handler(env.payload, env.harnessSlug, { envelope: env });
     return { ok: true, result };
   } catch (err) {
     return { ok: false, error: 'handler_error', message: err instanceof Error ? err.message : String(err) };

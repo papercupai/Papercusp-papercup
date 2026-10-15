@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "kind": "native-ordered-chain-reader-preparation",
+  "workItemId": "WI-6554700010010682",
+  "planSlug": "green-main-cycle-time-2026-10-08",
+  "status": "maintained-reader-guards-pass-original-chains-missing",
+  "reused": [
+    "scripts/lib/budgeted-task-scheduler.mjs::readBudgetedTaskComparisonArtifacts command-preparation branch",
+    "scripts/lib/executed-source-map.mjs::scriptCommandWords",
+    "libs/test-config/src/node-test-ledger-collector.ts native per-file report format",
+    "Vitest JSON per-file assertion report format",
+    "five previously saved original command receipt/log pins"
+  ],
+  "contract": {
+    "parent": "Pinned original npm-run execution, exact current wrapper/lifecycle mappings, distinct stdout/stderr and exact child receipt bindings.",
+    "steps": "Every original pre/test/post occurrence, preserving repeated files; native report class must match original runner; unchanged declared inputs and no skipped, failed or zero-assertion files.",
+    "ordering": "Every child execution interval is inside the parent and follows the previous child without overlap.",
+    "coverage": "A supplied chain cannot omit or add an occurrence. Unsupplied original chains remain explicitly missing.",
+    "scope": "Preparation only. Guard fixtures include a real node:test collector execution. Fixture parent receipts and Vitest report fixtures are test inputs, not original operational chain evidence."
+  },
+  "sourcePins": [
+    { "path": "scripts/lib/budgeted-task-scheduler.mjs", "sha256": "6a2bba4018ac567342c405cb7aa0e5f223f99ed55c97c436f40ce93546dcfbc2" },
+    { "path": "scripts/lib/budgeted-task-scheduler.d.mts", "sha256": "042f279401da9a8f0bba17f20ed71ec6fc70b7d2186952c8d600999a49cd5bde" },
+    { "path": "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts", "sha256": "a337e641c7c8a4b696e7325070a9a6311509268cde7220d585780e67c4ee26c2" },
+    { "path": "scripts/lib/executed-source-map.mjs", "sha256": "8905034052d5b812b9a6b8c95ab92a71de73cb59c51ed5cc54dcc1d5410a6a24", "changed": false }
+  ],
+  "maintainedTests": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PC_EXECUTED_SOURCE_MAP_WORKSPACE=@papercusp/operator-core PC_EXECUTED_SOURCE_MAP_OUT=$HOME/.papercusp/scratch/c0523-ordered-chain-source-map-v3.json npm run test:file -- packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+    "log": "~/.papercusp/scratch/c0523-ordered-chain-scheduler-v3.log",
+    "logSha256": "10709bef8dac2b05e301f49922cb2043826792eca657dfcc8e71b3ff2b86419d",
+    "nativeExitCode": 0,
+    "testsPassed": 264,
+    "requested": 1,
+    "executed": 1,
+    "matched": 1,
+    "skippedTests": 0,
+    "childSubstituted": 0,
+    "headAtRun": "913a57275c",
+    "provenance": "stamped-current-local-named-test-path-dirty",
+    "sourceMap": "~/.papercusp/scratch/c0523-ordered-chain-source-map-v3.json",
+    "sourceMapSha256": "24869ccdfff950b313c12e5ca7a4aee4a110ab1c34bbef16e4366653c37afadd",
+    "sourceStatus": "stable",
+    "opaqueReasons": ["child-process", "config-deps-unavailable"],
+    "sourceScope": "repository-worker-vite-original-sources; not installed dependencies or final runtime transforms"
+  },
+  "typecheck": {
+    "status": "terminal-named-files-clean",
+    "log": "~/.papercusp/scratch/c0523-ordered-chain-tsc-v3.log",
+    "logSha256": "42945127fa32bda14c9fe5ca5f15c1e94954e8866c7f81ca71bf8023842acfaf",
+    "nativeExitCode": 0,
+    "scriptsLeg": { "status": "clean", "exitCode": 0 },
+    "operatorCoreLeg": { "status": "clean", "exitCode": 0, "filesRoutedAway": 1 },
+    "namedFiles": ["packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts", "scripts/lib/budgeted-task-scheduler.d.mts"],
+    "limits": "Verdicts are scoped to the two named files. Unrelated shared-tree diagnostics remain outside this result. This is verification of reader declarations and maintained tests, not runtime or shipment proof."
+  },
+  "savedOriginalCommandReadback": {
+    "path": "~/.papercusp/scratch/c0523-five-command-ordered-reader-readback-v3.json",
+    "sha256": "9ccff4c5caae88f280ec682069b9d90a467e0823e01b58dfef3861a11e8abd04",
+    "commandsQualified": 5,
+    "originalCommandsRerun": 0,
+    "orderedChainQualified": false,
+    "missing": ["@papercupai/papercusp-docs :: test", "@bug-drill/fixture :: test", "@papercusp/desktop :: test"],
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false
+  },
+  "remaining": [
+    "Original parent and per-step native evidence for public-docs Astro->Vitest, fixture pretest->Vitest, and desktop eight-step chain.",
+    "Complete immutable source/import, installed dependency and final transformed runtime closure.",
+    "Complete original population and ABBA cohorts after D020/P006 authorization prerequisites.",
+    "All six original forms and complete outside-lineage review; seven-day P018, strict idle60, genuine alarm delivery, P028 pickup/cadence, shipped D045/P031 and final shipment."
+  ],
+  "fullPlan": "unshipped"
+}

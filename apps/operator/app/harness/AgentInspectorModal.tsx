@@ -385,7 +385,7 @@ export default function AgentInspectorModal({
         </span>
         <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           {conversationOwnerId && onOpenInGui ? (
-            <button type="button" className="h-button" onClick={() => onOpenInGui(conversationOwnerId)}>
+            <button type="button" className="h-button" data-testid="agent-history-open-conversation" onClick={() => onOpenInGui(conversationOwnerId)}>
               Open conversation
             </button>
           ) : null}

@@ -41,6 +41,9 @@ import {
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import * as targetedTaskReuse from "../../../../scripts/lib/targeted-task-reuse.mjs";
+import * as testPassReuse from "../../../../scripts/lib/test-pass-reuse.mjs";
 import {
   checkNpmScript,
   buildTerminalFailureCheckpointResult,
@@ -54,11 +57,13 @@ import {
   beginCheckpointPreflight,
   checkpointRunLockDir,
   checkpointDependencyInputFingerprint,
+  CHECKPOINT_DEPENDENCY_RETAIN_LABEL,
   ensureCheckpointDependencyGeneration,
   realCheckpointDeps,
   runCmd,
   runGreenCheckpoint,
   selectPersistedCheckpointDependencyGeneration,
+  liveDependencyGenerationToken,
   retireInFlightCandidateAfterResult,
   startMaterializationHeartbeat,
   writeCheckpointRunPhase,
@@ -126,6 +131,19 @@ vi.mock("@papercusp/operator-core/lib/cupboard/resolve-repo-coords", () => ({
 vi.mock("@papercusp/operator-core/lib/identity/octokit-client", () => ({
   getOctokit: () => mockGetOctokit(),
 }));
+
+// WI-10006393: these push fixtures use unregistered synthetic checkouts. Keep the real
+// promotion routing and factory, but provide their registry input without opening live PG.
+vi.mock("@papercusp/operator-core/lib/harness/git-sync/promotion-push-target", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@papercusp/operator-core/lib/harness/git-sync/promotion-push-target")>();
+  return {
+    ...actual,
+    createDefaultPublishPromotionDeps: async (log: (line: string) => void) => ({
+      ...await actual.createDefaultPublishPromotionDeps(log),
+      loadProjects: async () => [],
+    }),
+  };
+});
 
 // WI-36238: `escalate` dynamic-imports these two seams. Mocking them lets the
 // REAL dep run without a database, so the coupling test at the bottom of this
@@ -486,6 +504,113 @@ const cfg: ReleaseConfig = releaseConfig({
   // cfg.spaBuildWorkspace instead of a hardcoded name, which is the stronger property.
   spaBuildWorkspace: "@example/fixture-spa",
 });
+
+describe("realCheckpointDeps.runGateAtRef — proof-backed empty Vitest invocation", () => {
+  it("forwards guarded empty-run arguments from reuse to the actual workspace invocation", async () => {
+    const tree = fileURLToPath(new URL("../../../../", import.meta.url));
+    const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: tree, encoding: "utf8" });
+    expect(head.status).toBe(0);
+    const sha = head.stdout.trim();
+    const finish = vi.fn(() => []);
+    const arm = vi.spyOn(targetedTaskReuse, "armTargetedTaskReuse").mockResolvedValue({
+      env: { GREEN_CHECKPOINT: "1", PC_TEST_REUSE_SKIP_LIST: "/fixture/verified-passes.json" },
+      args: ["--passWithNoTests"], lines: [], reused: 2, recording: true, finish,
+    });
+    const { exec, calls } = makeExec([{ code: 0 }]);
+    const deps = realCheckpointDeps({ ...cfg, checkpointRoot: tree }, exec);
+    deps.setupTree = async () => {};
+    try {
+      const result = await deps.runGateAtRef!(sha, ["@papercusp/operator-vite :: test"]);
+      expect(result.pass).toBe(true);
+      expect(arm).toHaveBeenCalledWith(expect.objectContaining({
+        expectedSha: sha,
+        script: "test",
+        restoreDirtyCheckpoint: true,
+      }));
+      const call = calls.find(c => c.args.includes("test"));
+      expect(call?.args.slice(-2)).toEqual(["--", "--passWithNoTests"]);
+      expect(call?.opts?.env?.PC_TEST_REUSE_SKIP_LIST).toBe("/fixture/verified-passes.json");
+      expect(finish).toHaveBeenCalledOnce();
+    } finally { arm.mockRestore(); }
+  });
+
+  it("records an arming exception as a hard reuse fail-open before running the task", async () => {
+    const tree = fileURLToPath(new URL("../../../../", import.meta.url));
+    const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: tree, encoding: "utf8" });
+    expect(head.status).toBe(0);
+    const sha = head.stdout.trim();
+    const arm = vi.spyOn(targetedTaskReuse, "armTargetedTaskReuse").mockRejectedValue(new Error("fixture arming failure"));
+    const record = vi.spyOn(testPassReuse, "recordGateReuseDecision").mockResolvedValue(true);
+    const { exec, calls } = makeExec([{ code: 0 }]);
+    const deps = realCheckpointDeps({ ...cfg, checkpointRoot: tree }, exec);
+    deps.setupTree = async () => {};
+    try {
+      const result = await deps.runGateAtRef!(sha, ["@papercusp/operator-vite :: test"]);
+      expect(result.pass).toBe(true);
+      expect(record).toHaveBeenCalledWith("@papercusp/operator-vite::test", {
+        offReason: "arming-threw(fixture_arming_failure)",
+      }, expect.objectContaining({ runContext: "green-checkpoint" }));
+      const call = calls.find(c => c.args.includes("test"));
+      expect(call?.args.slice(0, 2)).toEqual(["run", "test"]);
+      expect(call?.args).not.toContain("--passWithNoTests");
+      expect(call?.opts?.env?.PC_TEST_REUSE_SKIP_LIST).toBeUndefined();
+    } finally {
+      arm.mockRestore();
+      record.mockRestore();
+    }
+  });
+});
+describe("WI-6554700010010213: real post-verdict deadline recorder", () => {
+  const GH = "@papercusp/operator-core/lib/release/gate-health-merge";
+  const PE = "@papercusp/operator-core/lib/harness/git-sync/pipeline-events";
+  const ENV_KEYS = ["PAPERCUSP_GATE_VERDICT_WORKSPACE", "PAPERCUSP_GATE_VERDICT_HARNESS"] as const;
+  const info = { label: "frozen-repair leg routing", deadlineMs: 60_000, elapsedMs: 60_004 };
+
+  async function runRecorder(env: Record<string, string>) {
+    const merge = vi.fn(async () => {});
+    const append = vi.fn(async () => {});
+    vi.doMock(GH, () => ({ mergeGateHealth: merge }));
+    vi.doMock(PE, async (orig) => ({ ...(await orig<Record<string, unknown>>()), appendPipelineEvent: append }));
+    const saved = ENV_KEYS.map((k) => process.env[k]);
+    for (const k of ENV_KEYS) delete process.env[k];
+    Object.assign(process.env, env);
+    try {
+      const { exec } = makeExec([]);
+      await realCheckpointDeps(cfg, exec).recordPostVerdictStepDeadline!(info);
+    } finally {
+      ENV_KEYS.forEach((k, i) => { if (saved[i] === undefined) delete process.env[k]; else process.env[k] = saved[i]; });
+      vi.doUnmock(GH);
+      vi.doUnmock(PE);
+    }
+    return { merge, append };
+  }
+
+  it("writes the gate_health marker AND the dedicated-kind event for the env-scoped gate", async () => {
+    const target = { workspaceId: "ws-fixture", installSlug: "hive-fixture" };
+    const { merge, append } = await runRecorder({
+      PAPERCUSP_GATE_VERDICT_WORKSPACE: target.workspaceId,
+      PAPERCUSP_GATE_VERDICT_HARNESS: target.installSlug,
+    });
+    expect(merge).toHaveBeenCalledOnce();
+    expect(merge).toHaveBeenCalledWith(target, {
+      lastPostVerdictDeadline: expect.objectContaining({ ...info, at: expect.any(String) }),
+    });
+    expect(append).toHaveBeenCalledOnce();
+    expect(append).toHaveBeenCalledWith(expect.objectContaining({
+      ...target,
+      kind: "green_checkpoint_post_verdict",
+      status: "deadline-exceeded",
+      detail: expect.objectContaining(info),
+    }));
+  });
+
+  it("records nothing for a non-recording run with no gate target", async () => {
+    const { merge, append } = await runRecorder({});
+    expect(merge).not.toHaveBeenCalled();
+    expect(append).not.toHaveBeenCalled();
+  });
+});
+
 const [GREEN_CMD0, ...GREEN_ARGS] = cfg.greenCmd.split(" ");
 
 describe("WI-41720 / D-073: dependency-selection fatal path reaches the real CLI terminal controller", () => {
@@ -540,8 +665,12 @@ describe("WI-41720 / D-073: dependency-selection fatal path reaches the real CLI
           runId,
         });
         await emitTerminalCheckpointResult(result, {
-          writeHuman: () => observed.push("human"),
-          writeMarker: (line) => observed.push(`marker:${line}`),
+          writeHuman: () => {
+            observed.push("human");
+          },
+          writeMarker: (line) => {
+            observed.push(`marker:${line}`);
+          },
           emitInconclusive: async (terminal) => {
             observed.push(`event:${terminal.candidate}:${terminal.green}`);
           },
@@ -597,16 +726,21 @@ describe("WI-41720 / D-073: dependency-selection fatal path reaches the real CLI
 });
 
 describe("EI-21175363643337524: real disk-headroom admission", () => {
-  const gcResult = (bytesFreed = 0, errors = 0) => ({
+  const gcResult = (bytesUnlinked = 0, errors = 0) => ({
     dryRun: false,
+    scanComplete: true,
     dirs: [
       {
         dir: "/tmp/fleet-logs",
         scanned: 4,
-        removedByAge: bytesFreed > 0 ? 1 : 0,
+        removedByAge: bytesUnlinked > 0 ? 1 : 0,
         removedByCeiling: 0,
-        bytesFreed,
+        bytesUnlinked,
+        allocatedBytesUnlinked: bytesUnlinked,
+        wouldUnlinkBytes: 0,
         bytesRemaining: 100,
+        skippedOpen: 0,
+        skippedRaced: 0,
         errors: Array.from({ length: errors }, (_, i) => ({
           path: `/tmp/fleet-logs/error-${i}.log`,
           error: "unlink failed",
@@ -657,7 +791,8 @@ describe("EI-21175363643337524: real disk-headroom admission", () => {
     expect(result?.summary).toContain("/tmp 200.0 GiB free");
     expect(result?.summary).toContain("/mnt/data 80.0 GiB free");
     expect(sampleCount).toBe(1);
-    expect(calls).toEqual([]);
+    // WI-10007424: the only subprocess is the dependency-copy headroom probe.
+    expect(calls.map((c) => c.args.at(-1))).toEqual(["--check-headroom"]);
   });
 
   it("runs bounded GC once, re-samples once, and rejects a persistent critical breach", async () => {
@@ -732,7 +867,11 @@ describe("EI-21175363643337524: real disk-headroom admission", () => {
     expect(result?.summary).not.toContain("floor is 2.0 GiB");
     expect(sampleCount).toBe(2);
     expect(gcCount).toBe(1);
-    expect(calls).toEqual([]);
+    // WI-10007424: the dependency-copy probe runs beside each of the two samples.
+    expect(calls.map((c) => c.args.at(-1))).toEqual([
+      "--check-headroom",
+      "--check-headroom",
+    ]);
   });
 
   it("continues when one bounded GC pass restores measured headroom", async () => {
@@ -771,7 +910,7 @@ describe("EI-21175363643337524: real disk-headroom admission", () => {
 
     expect(result?.ok).toBe(true);
     expect(result?.summary).toContain("automatic headroom recovery succeeded");
-    expect(result?.summary).toContain("freed 29.00 GiB");
+    expect(result?.summary).toContain("unlinked 29.00 GiB");
     expect(result?.summary).toContain("after cleanup: /tmp 30.0 GiB free");
     expect(gcCount).toBe(1);
     expect(samples).toHaveLength(0);
@@ -948,6 +1087,194 @@ describe("EI-21175363643337524: real disk-headroom admission", () => {
   });
 });
 
+describe("WI-10007424: dependency-copy headroom joins disk admission", () => {
+  const gib = 1024 ** 3;
+  // 45 GiB free on a 1000 GiB filesystem clears the alarm's critical-write reserve
+  // (2% = 20 GiB), so in every case below the critical floor alone would admit the run.
+  const roomy = [
+    {
+      path: "/tmp",
+      totalBytes: 1_000 * gib,
+      freeBytes: 45 * gib,
+      freePct: 0.045,
+      totalInodes: 1_000_000,
+      freeInodes: 500_000,
+      freeInodesPct: 0.5,
+    },
+  ];
+  const insufficient =
+    "[dependency-generation] DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT need=0 avail=48318382080 " +
+    "reserve=38413868236 reserve_scope=protected-fs margin=10737418240 required=49151286476 " +
+    "size=unknown path=/fixture/.dependency-generation-headroom-check";
+  const sufficient =
+    "[dependency-generation] DEPENDENCY_GENERATION_HEADROOM_OK need=0 avail=59055800320 " +
+    "reserve=38413868236 reserve_scope=protected-fs margin=10737418240 required=49151286476 " +
+    "size=unknown path=/fixture/.dependency-generation-headroom-check";
+  // Scripts the probe's exit codes in order. The script logs to stderr, so that is
+  // where the verdict line is placed; every other subprocess succeeds silently.
+  const probeExec = (codes: number[]) => {
+    const probes: string[][] = [];
+    const exec: CheckpointExec = async (cmd, args) => {
+      if (!args.includes("--check-headroom"))
+        return { code: 0, stdout: "", stderr: "" };
+      probes.push([cmd, ...args]);
+      const code = codes.shift() ?? 0;
+      const stderr =
+        code === 77
+          ? insufficient
+          : code === 0
+            ? sufficient
+            : "[dependency-generation] --check-headroom cannot be combined with another mode";
+      return { code, stdout: "", stderr };
+    };
+    return { exec, probes };
+  };
+  const gcResult = (bytesUnlinked = 0) => ({
+    dryRun: false,
+    scanComplete: true,
+    dirs: [
+      {
+        dir: "/tmp/fleet-logs",
+        scanned: 1,
+        removedByAge: bytesUnlinked > 0 ? 1 : 0,
+        removedByCeiling: 0,
+        bytesUnlinked,
+        allocatedBytesUnlinked: bytesUnlinked,
+        wouldUnlinkBytes: 0,
+        bytesRemaining: 0,
+        skippedOpen: 0,
+        skippedRaced: 0,
+        errors: [],
+      },
+    ],
+  });
+
+  it("refuses a run the critical floor admits when the dependency copy cannot start, after one bounded GC", async () => {
+    const { exec, probes } = probeExec([77, 77]);
+    let gcCount = 0;
+    const deps = realCheckpointDeps(
+      cfg,
+      exec,
+      "dependency-copy-headroom-refused-run",
+      undefined,
+      undefined,
+      async () => roomy,
+      undefined,
+      undefined,
+      async () => {
+        gcCount++;
+        return gcResult(0);
+      },
+    );
+
+    const result = await deps.checkDiskHeadroom?.();
+
+    expect(result?.ok).toBe(false);
+    expect(result?.summary).toContain(
+      "dependency copy cannot start: DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT",
+    );
+    expect(result?.summary).toContain("required=49151286476");
+    // The log prefix is the script's, not part of the reason a responder reads.
+    expect(result?.summary).not.toContain("[dependency-generation]");
+    // The critical floor did NOT trip, so its breach text must not be invented.
+    expect(result?.summary).not.toContain("free space belongs to the FILESYSTEM");
+    expect(result?.summary).toContain("bounded disk GC: fleet logs scanned 1 file(s)");
+    expect(gcCount).toBe(1);
+    expect(probes).toHaveLength(2);
+    expect(probes[0]).toEqual([
+      "bash",
+      expect.stringMatching(
+        /apps\/operator\/bin\/release\/dependency-generation\.sh$/,
+      ),
+      "--integration",
+      cfg.integrationRoot,
+      "--check-headroom",
+    ]);
+  });
+
+  it("admits when the bounded GC restores dependency-copy headroom", async () => {
+    const { exec, probes } = probeExec([77, 0]);
+    let gcCount = 0;
+    const deps = realCheckpointDeps(
+      cfg,
+      exec,
+      "dependency-copy-headroom-recovered-run",
+      undefined,
+      undefined,
+      async () => roomy,
+      undefined,
+      undefined,
+      async () => {
+        gcCount++;
+        return gcResult(11 * gib);
+      },
+    );
+
+    const result = await deps.checkDiskHeadroom?.();
+
+    expect(result?.ok).toBe(true);
+    expect(result?.summary).toContain("automatic headroom recovery succeeded");
+    expect(result?.summary).toContain("DEPENDENCY_GENERATION_HEADROOM_OK");
+    expect(gcCount).toBe(1);
+    expect(probes).toHaveLength(2);
+  });
+
+  it("admits without cleanup when both floors pass", async () => {
+    const { exec, probes } = probeExec([0]);
+    let gcCount = 0;
+    const deps = realCheckpointDeps(
+      cfg,
+      exec,
+      "dependency-copy-headroom-ok-run",
+      undefined,
+      undefined,
+      async () => roomy,
+      undefined,
+      undefined,
+      async () => {
+        gcCount++;
+        return gcResult(0);
+      },
+    );
+
+    const result = await deps.checkDiskHeadroom?.();
+
+    expect(result?.ok).toBe(true);
+    expect(result?.summary).toContain("/tmp 45.0 GiB free");
+    expect(result?.summary).toContain("DEPENDENCY_GENERATION_HEADROOM_OK");
+    expect(gcCount).toBe(0);
+    expect(probes).toHaveLength(1);
+  });
+
+  it("treats a probe failure other than exit 77 as unmeasured and leaves the critical floor as the only check", async () => {
+    const { exec, probes } = probeExec([2]);
+    let gcCount = 0;
+    const deps = realCheckpointDeps(
+      cfg,
+      exec,
+      "dependency-copy-headroom-probe-broken-run",
+      undefined,
+      undefined,
+      async () => roomy,
+      undefined,
+      undefined,
+      async () => {
+        gcCount++;
+        return gcResult(0);
+      },
+    );
+
+    const result = await deps.checkDiskHeadroom?.();
+
+    expect(result?.ok).toBe(true);
+    expect(result?.summary).toContain(
+      "dependency-copy headroom probe exited 2; the critical-write floor is the only admission check",
+    );
+    expect(gcCount).toBe(0);
+    expect(probes).toHaveLength(1);
+  });
+});
+
 describe("realCheckpointDeps.runChangedFileTypecheckPreflight — WI-38422", () => {
   const preflightCfg: ReleaseConfig = { ...cfg, checkpointRoot: typecheckTree };
 
@@ -980,7 +1307,8 @@ describe("realCheckpointDeps.runChangedFileTypecheckPreflight — WI-38422", () 
     // disappear from the response file. The strict CLI must still see the other.
     const selections: string[][] = [];
     const exec: CheckpointExec = async (_cmd, args) => {
-      const response = args.find((arg) => arg.startsWith("--files-from="))!;
+      const response = args.find((arg) => arg.startsWith("--files-from="));
+      if (!response) return { code: 0, stdout: "", stderr: "" };
       selections.push(JSON.parse(readFileSync(response.slice("--files-from=".length), "utf8")));
       return { code: 1, stdout: "explicit file selection contains missing paths", stderr: "" };
     };
@@ -1142,6 +1470,132 @@ describe("realCheckpointDeps.runChangedFileTypecheckPreflight — WI-38422", () 
     expect(result?.summary).toContain("status=regressed");
   });
 
+  it("measures whole-program typechecks and downstream blocking lints after a scoped red", async () => {
+    const inventoryTree = mkdtempSync(
+      join(tmpdir(), "green-cp-early-failure-inventory-"),
+    );
+    mkdirSync(join(inventoryTree, "scripts"), { recursive: true });
+    const typecheckScripts = [
+      "lint:tsc",
+      "lint:tsc:papercusp-libs",
+      "lint:tsc:workspaces",
+      "lint:tsc:operator",
+      "lint:tsc:orchestrator",
+      "lint:tsc:scripts",
+    ];
+    const downstreamLints = [
+      "lint:guard-reachability",
+      "lint:mock-cast-escape",
+    ];
+    const typecheckProjects: Record<string, string> = {
+      "lint:tsc": "packages/operator-core/tsconfig.json",
+      "lint:tsc:papercusp-libs": "libs/papercusp/tsconfig.json",
+      "lint:tsc:workspaces": "apps/operator-public/tsconfig.json",
+      "lint:tsc:operator": "apps/operator/tsconfig.json",
+      "lint:tsc:orchestrator": "libs/papercusp/packages/orchestrator/tsconfig.json",
+      "lint:tsc:scripts": "scripts/tsconfig.json",
+    };
+    writeFileSync(
+      join(inventoryTree, "package.json"),
+      JSON.stringify({
+        name: "cp-early-failure-inventory-fixture",
+        scripts: Object.fromEntries([
+          ...Object.keys(typecheckProjects).map((script) => [
+            script,
+            "node scripts/" + script.replaceAll(":", "-") + ".mjs",
+          ]),
+          ...downstreamLints.map((script) => [script, "node scripts/fixture.mjs"]),
+        ]),
+      }),
+    );
+    for (const [script, project] of Object.entries(typecheckProjects)) {
+      writeFileSync(
+        join(inventoryTree, "scripts", script.replaceAll(":", "-") + ".mjs"),
+        "export const TSC_COMMAND = 'npx tsc -p " + project + " --noEmit';\n",
+      );
+    }
+    onTestFinished(() => rmSync(inventoryTree, { recursive: true, force: true }));
+
+    const calls: string[] = [];
+    const failingScripts = new Set([...typecheckScripts, ...downstreamLints]);
+    const exec: CheckpointExec = async (cmd, args) => {
+      if (cmd !== "npm" || args[0] !== "run") {
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      const script = args[1]!;
+      const scoped = args.some((arg) => arg.startsWith("--files-from="));
+      calls.push(scoped ? script + ":files" : script);
+      const failed = scoped || failingScripts.has(script);
+      return {
+        code: failed ? 1 : 0,
+        stdout: failed ? script + " failed\n" : "",
+        stderr: "",
+      };
+    };
+    const deps = realCheckpointDeps(
+      { ...preflightCfg, checkpointRoot: inventoryTree },
+      exec,
+    );
+
+    const result = await deps.runChangedFileTypecheckPreflight?.([
+      "packages/operator-core/lib/a.ts",
+    ]);
+
+    expect(result?.status).toBe("failed");
+    expect(result?.failingSignatures).toEqual(
+      expect.arrayContaining([...typecheckScripts, ...downstreamLints]),
+    );
+    expect(result?.failureInventory).toMatchObject({
+      ran: true,
+      failingSignatures: expect.arrayContaining([
+        ...typecheckScripts,
+        ...downstreamLints,
+      ]),
+    });
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        "lint:tsc:files",
+        ...typecheckScripts,
+        ...downstreamLints,
+      ]),
+    );
+    expect(result?.failureInventory?.records).toEqual(
+      expect.arrayContaining([
+        ...typecheckScripts.map((id) =>
+          expect.objectContaining({ id, status: "failed" }),
+        ),
+        ...downstreamLints.map((id) =>
+          expect.objectContaining({ id, status: "failed" }),
+        ),
+      ]),
+    );
+  });
+
+  it("skips the SPA build when the scoped failure is the only blocker", async () => {
+    const { exec } = makeExec([
+      {
+        code: 1,
+        stdout:
+          "packages/operator-core/lib/a.ts(1,14): error TS2322\n" +
+          "LINT_TSC_RESULT label=operator-core scope=files exit=1 status=regressed\n",
+      },
+    ]);
+    const deps = realCheckpointDeps(preflightCfg, exec);
+
+    const result = await deps.runChangedFileTypecheckPreflight?.([
+      "packages/operator-core/lib/a.ts",
+    ]);
+
+    expect(result?.failureInventory).toMatchObject({ ran: true });
+    expect(result?.failureInventory?.failingSignatures).toEqual([]);
+    expect(
+      result?.failureInventory?.records.find((record) => record.id === "spa-build"),
+    ).toMatchObject({
+      status: "skipped",
+      skipReason: "early changed-file typecheck failure already blocks promotion",
+    });
+  });
+
   it("reports a subject hive without lint:tsc as skipped and shells nothing", async () => {
     const { exec, calls } = makeExec([]);
     const deps = realCheckpointDeps(cfg, exec);
@@ -1270,6 +1724,39 @@ describe("P-007/D-004: the real deps no longer wire a frozen-repair staging join
 });
 
 describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
+  it("archives the actual candidate suite command and child completion clock", async () => {
+    const sha = 'a'.repeat(40);
+    const output = 'TEST_PASS_REUSE applied=false reason=disabled';
+      const { exec, calls } = makeExec([{ code: 1, stdout: output }]);
+    let clock = 100;
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    try {
+      const measuredExec: typeof exec = async (...args) => {
+        const result = await exec(...args);
+        clock = 200;
+        return result;
+      };
+      const result = await realCheckpointDeps(cfg, measuredExec, 'suite-clock-run').runGreen(
+        cpTree, null, { candidate: sha });
+      expect(result.testPassReuse?.suite).toEqual({ command: cfg.greenCmd,
+        runGroupId: 'suite-clock-run', startedAtMs: 100, completedAtMs: 200 });
+      expect(calls[0].opts?.env?.PC_TEST_REUSE_DISPOSABLE_CHECKPOINT_ROOT).toBe(cfg.checkpointRoot);
+      expect(calls[0].opts?.env?.PC_TEST_REUSE_INTEGRATION_ROOT).toBe(cfg.integrationRoot);
+      expect(calls[0].opts?.env?.PC_TEST_REUSE_RELEASE_ROOT).toBe(cfg.releaseRoot);
+    } finally { now.mockRestore(); }
+  });
+
+  it("does not grant dirty-checkpoint restoration to a different candidate tree", async () => {
+    const { exec, calls } = makeExec([]);
+    await realCheckpointDeps(cfg, exec).runGreen(typecheckTree, "base-sha", {
+      candidate: "b".repeat(40),
+    });
+
+    expect(calls[0].opts?.env?.PC_TEST_REUSE_DISPOSABLE_CHECKPOINT_ROOT).toBeUndefined();
+    expect(calls[0].opts?.env?.PC_TEST_REUSE_INTEGRATION_ROOT).toBeUndefined();
+    expect(calls[0].opts?.env?.PC_TEST_REUSE_RELEASE_ROOT).toBeUndefined();
+  });
+
   it("detects the optional lint:tsc script without requiring it from subject hives", () => {
     expect(hasNpmScript(cpTree, "lint:tsc")).toBe(false);
     expect(hasNpmScript(typecheckTree, "lint:tsc")).toBe(true);
@@ -2807,6 +3294,9 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
         target: { workspaceId: "ws-1", installSlug: "papercusp" },
         waitMs: 1,
         log,
+        env: {},
+        generationPresent: () => true,
+        liveToken: () => FIXTURE_DEPENDENCY_GENERATION_TOKEN,
         awaitState: async () => ({
           schema: 1,
           status: "ready",
@@ -2838,6 +3328,131 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     expect(log).toHaveBeenCalledWith(
       expect.stringContaining("dependency-prebuild READY"),
     );
+  });
+
+  describe("WI-10004797: a persisted marker is only usable inside the generation store setup will lease from", () => {
+    const candidate = "f".repeat(40);
+    const inputFingerprint = "1".repeat(64);
+    const exec: CheckpointExec = async () => ({
+      code: 0,
+      stdout:
+        `DEPENDENCY_INPUT_FINGERPRINT schema=1 candidate=${candidate} ` +
+        `input=${inputFingerprint}\n`,
+      stderr: "",
+    });
+    const readyState = (generationRoot?: string) => ({
+      schema: 1 as const,
+      status: "ready" as const,
+      key: `${candidate}:${inputFingerprint}`,
+      candidate,
+      inputFingerprint,
+      attemptId: "attempt-root",
+      queuedAtMs: 1,
+      startedAtMs: 2,
+      updatedAtMs: 3,
+      completedAtMs: 3,
+      producerPid: 4,
+      childPid: 5,
+      identity: generationId,
+      token: FIXTURE_DEPENDENCY_GENERATION_TOKEN,
+      reused: true,
+      ...(generationRoot ? { generationRoot } : {}),
+    });
+    const select = (
+      state: ReturnType<typeof readyState>,
+      env: NodeJS.ProcessEnv,
+      present: (root: string, identity: string) => boolean,
+      log: (message: string) => void = () => {},
+      liveToken: (root: string, identity: string, expected: string) => string | null = () =>
+        FIXTURE_DEPENDENCY_GENERATION_TOKEN,
+    ) =>
+      selectPersistedCheckpointDependencyGeneration(cfg, candidate, exec, {
+        target: { workspaceId: "ws-1", installSlug: "papercusp" },
+        waitMs: 1,
+        log,
+        env,
+        generationPresent: present,
+        liveToken,
+        awaitState: async () => state,
+      });
+
+    it("WI-10004826: a legacy marker whose identity was REPUBLISHED in the effective store (stale token) is a miss, not an exit-74 handoff", async () => {
+      const log = vi.fn();
+      const liveToken = vi.fn(() => "66304:2684359471:1790851625:147|66304:2684359477:1790851625:708");
+      const selected = await select(
+        readyState(),
+        { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: "/mnt/data/gens" },
+        () => true,
+        log,
+        liveToken,
+      );
+      expect(selected).toBeNull();
+      expect(liveToken).toHaveBeenCalledWith("/mnt/data/gens", generationId, FIXTURE_DEPENDENCY_GENERATION_TOKEN);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining("token is stale"));
+    });
+
+    it("WI-10004826: an unreadable live token is a miss", async () => {
+      const selected = await select(readyState(), { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: "/mnt/data/gens" }, () => true, () => {}, () => null);
+      expect(selected).toBeNull();
+    });
+
+    it("WI-10004826: liveDependencyGenerationToken matches the shell's `stat -c %d:%i:%Y:%s` token and the v2 publication_token field", () => {
+      const root = mkdtempSync(join(tmpdir(), "dep-gen-token-"));
+      try {
+        const id = `v1-${"a".repeat(64)}`;
+        const generation = join(root, id);
+        mkdirSync(generation);
+        expect(liveDependencyGenerationToken(root, id, "legacy")).toMatch(/^\d+:\d+:\d+:\d+\|missing$/);
+        const marker = join(generation, ".papercusp-dependency-generation");
+        writeFileSync(marker, `identity=${id}\npublication_token=v2:abc123\n`);
+        const shell = spawnSync(
+          "bash",
+          ["-c", 'printf "%s|%s" "$(stat -c %d:%i:%Y:%s "$1")" "$(stat -c %d:%i:%Y:%s "$2")"', "_", generation, marker],
+          { encoding: "utf8" },
+        ).stdout;
+        expect(liveDependencyGenerationToken(root, id, "legacy")).toBe(shell);
+        expect(liveDependencyGenerationToken(root, id, "v2:old")).toBe("v2:abc123");
+        expect(liveDependencyGenerationToken(root, `v1-${"b".repeat(64)}`, "legacy")).toBeNull();
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("a marker published into the OLD root is a miss after PAPERCUSP_DEPENDENCY_GENERATION_ROOT moves (no exit-74 handoff)", async () => {
+      const log = vi.fn();
+      const present = vi.fn(() => true);
+      const selected = await select(
+        readyState("/old/store/dependency-generations"),
+        { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: "/mnt/data/papercusp-dependency-generations" },
+        present,
+        log,
+      );
+      expect(selected).toBeNull();
+      expect(log).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "effective generation_root=/mnt/data/papercusp-dependency-generations",
+        ),
+      );
+    });
+
+    it("a legacy marker with no recorded root is a miss when its identity is absent from the effective store", async () => {
+      const present = vi.fn(() => false);
+      const selected = await select(
+        readyState(),
+        { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: "/mnt/data/gens" },
+        present,
+      );
+      expect(selected).toBeNull();
+      expect(present).toHaveBeenCalledWith("/mnt/data/gens", generationId);
+    });
+
+    it("a marker whose recorded root equals the effective (default) root and is present is consumed", async () => {
+      const effective = join(cfg.integrationRoot, ".papercusp/dependency-generations");
+      const present = vi.fn(() => true);
+      const selected = await select(readyState(effective), {}, present);
+      expect(selected).toMatchObject({ identity: generationId, reused: true });
+      expect(present).toHaveBeenCalledWith(effective, generationId);
+    });
   });
 
   it("P-004: a mismatched persisted marker is never accepted as the candidate's dependency proof", async () => {
@@ -2929,6 +3544,11 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     expect(calls[0].args).toEqual(
       expect.arrayContaining(["--ensure-ref", candidate]),
     );
+    // WI-6554700010008481: the prewarm pins the candidate's generation so newer
+    // staging prebuilds cannot evict it before the run selects it.
+    const retainAt = calls[0].args.indexOf("--retain-as");
+    expect(retainAt).toBeGreaterThan(-1);
+    expect(calls[0].args[retainAt + 1]).toBe(CHECKPOINT_DEPENDENCY_RETAIN_LABEL);
     expect(calls[1].args).toEqual(
       expect.arrayContaining([
         "--node-modules-generation-id",
@@ -3023,6 +3643,63 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     expect(exclusiveSetup.opts?.env?.PC_HEAVY_COALESCE).toBe("0");
   });
 
+  it("WI-10004108: an absent configured integration branch is a typed not-applicable preflight", async () => {
+    const root = mkdtempSync(join(tmpdir(), "green-cp-missing-integration-ref-"));
+    const integration = join(root, "integration");
+    mkdirSync(integration, { recursive: true });
+    const git = (...args: string[]): string => {
+      const result = spawnSync("git", ["-C", integration, ...args], {
+        encoding: "utf8",
+      });
+      if (result.status !== 0) {
+        throw new Error(`git ${args.join(" ")} failed: ${result.stderr || result.stdout}`);
+      }
+      return result.stdout.trim();
+    };
+
+    try {
+      git("init", "-q", "-b", "main");
+      git("config", "user.email", "fixture@example.invalid");
+      git("config", "user.name", "fixture");
+      writeFileSync(join(integration, "README.md"), "valid repository without staging\n");
+      git("add", "README.md");
+      git("commit", "-qm", "initial commit");
+      const cfg = releaseConfig({
+        integrationRoot: integration,
+        releaseRoot: join(root, "release"),
+        checkpointRoot: join(root, "checkpoint"),
+        checkpointLogDir: join(root, "logs"),
+        integrationBranch: "staging",
+        releaseRef: "main",
+      });
+
+      const result = await beginCheckpointPreflight(cfg, "staging", runCmd);
+      expect(result.kind).toBe("not-applicable");
+      if (result.kind !== "not-applicable") {
+        throw new Error("expected missing configured branch to be not-applicable");
+      }
+      expect(result.integrationRef).toBe("staging");
+      expect(result.summary).toMatch(/not applicable/i);
+      expect(existsSync(checkpointRunLockDir(join(root, "logs"), integration))).toBe(false);
+
+      const invalidRoot = join(root, "not-a-git-repository");
+      mkdirSync(invalidRoot);
+      const invalidCfg = releaseConfig({
+        integrationRoot: invalidRoot,
+        releaseRoot: join(root, "invalid-release"),
+        checkpointRoot: join(root, "invalid-checkpoint"),
+        checkpointLogDir: join(root, "invalid-logs"),
+        integrationBranch: "staging",
+        releaseRef: "main",
+      });
+      await expect(
+        beginCheckpointPreflight(invalidCfg, "staging", runCmd),
+      ).rejects.toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("D-081 joined guard: unseen exact inputs traverse the real prelock publisher and materializer to a normal candidate-bound verdict", async () => {
     // This test deliberately drives the REAL dependency-generation prewarm (that is the
     // whole point of the "unseen exact inputs" path). green-checkpoint.ts routes every
@@ -3065,6 +3742,10 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       "module.exports = 'joined';\n",
     );
     writeFileSync(
+      join(integration, "node_modules", "fixture-dep", "package.json"),
+      JSON.stringify({ name: "fixture-dep", version: "1.0.0" }),
+    );
+    writeFileSync(
       join(integration, "package.json"),
       JSON.stringify({ name: "d081-joined-fixture", private: true }),
     );
@@ -3100,7 +3781,7 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       git("branch", "main", base);
       writeFileSync(
         join(integration, "package-lock.json"),
-        '{"name":"d081-joined-fixture","lockfileVersion":3,"packages":{"node_modules/joined":{}}}\n',
+        '{"name":"d081-joined-fixture","lockfileVersion":3,"packages":{"node_modules/fixture-dep":{"version":"1.0.0"}}}\n',
       );
       writeFileSync(
         join(integration, "node_modules", "fixture-dep", "index.js"),
@@ -3119,6 +3800,14 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       });
       const lockDir = checkpointRunLockDir(logDir, integration);
       expect(existsSync(lockDir)).toBe(false);
+      // Check the real publisher's lock/tree contract before its expensive copy.
+      // A directory with only index.js is not an installed package: the audit
+      // requires package.json at the locked version.
+      const { auditTree } = await import("../../bin/release/dependency-lock-tree-audit.mjs");
+      const assertInstalledFixture = () => expect(auditTree({
+        treeRoot: integration, lockRoot: integration, lockfiles: ["package-lock.json"],
+      }).defects).toEqual([]);
+      assertInstalledFixture();
 
       // NEGATIVE: a live tree whose lockfiles drifted past the exact commit may
       // publish its OWN key, but it cannot conjure the candidate's selector and
@@ -3133,12 +3822,13 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       expect(existsSync(lockDir)).toBe(false);
       writeFileSync(
         join(integration, "package-lock.json"),
-        '{"name":"d081-joined-fixture","lockfileVersion":3,"packages":{"node_modules/joined":{}}}\n',
+        '{"name":"d081-joined-fixture","lockfileVersion":3,"packages":{"node_modules/fixture-dep":{"version":"1.0.0"}}}\n',
       );
       writeFileSync(
         join(integration, "node_modules", "fixture-dep", "index.js"),
         "module.exports = 'joined-v3';\n",
       );
+      assertInstalledFixture();
 
       // NEGATIVE / ordering control: the publisher's real after-copy hook runs
       // while the selector is still unseen. If acquireCheckpointRunLock moves
@@ -3154,6 +3844,9 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
         candidate,
         runCmd,
       );
+      if (preflight.kind !== "ready") {
+        throw new Error("expected an available candidate to complete checkpoint preflight");
+      }
       const prewarmed = preflight.prewarmedDependencyGeneration;
       lock = preflight.lock;
       expect(lock.acquired).toBe(true);
@@ -3243,7 +3936,9 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       );
       await expect(
         real.setupTree(candidate, { preparedSource: true }),
-      ).rejects.toThrow(/invalid publication token|replaced after validation/i);
+      ).rejects.toThrow(
+        /invalid publication token|replaced (?:before its selection lease could be acquired|after validation)/i,
+      );
     } finally {
       if (priorAfterCopyHook === undefined)
         delete process.env.DEPENDENCY_GENERATION_AFTER_COPY_HOOK;
@@ -3487,15 +4182,38 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       "base123",
       "candidate123",
     );
-    expect(calls[0].cmd).toBe("git");
-    expect(calls[0].args).toEqual([
+    // The candidate's gitlinks are listed first so a gen-heal pin can be published.
+    expect(calls[0].args).toEqual(["-C", "/int", "ls-tree", "-r", "-z", "candidate123"]);
+    expect(calls[1].cmd).toBe("git");
+    expect(calls[1].args).toEqual([
       "-C",
       "/int",
       "push",
       "origin",
       "candidate123:refs/heads/ready",
     ]);
-    expect(calls[0].opts?.env?.PAPERCUSP_MAIN_PUSH_OK).toBe("1");
+    expect(calls[1].opts?.env?.PAPERCUSP_MAIN_PUSH_OK).toBe("1");
+  });
+
+  it("push publishes a gate-pin tag for a gen-heal gitlink BEFORE main, and holds promotion when it cannot", async () => {
+    const heal = "e".repeat(40);
+    const listing = { code: 0, stdout: `100644 blob ${"1".repeat(40)}\ttop.txt\x00160000 commit ${heal}\tlibs/sub\x00` };
+    const published = makeExec([listing, { code: 0 }, { code: 0 }, { code: 0, stdout: "" }]);
+    await realCheckpointDeps(cfg, published.exec).push("ready", "base123", "candidate123");
+    expect(published.calls.map((c) => c.args.slice(2))).toEqual([
+      ["ls-tree", "-r", "-z", "candidate123"],
+      ["rev-parse", "--verify", "--quiet", `refs/papercusp/gen-heal/${heal}`],
+      ["push", "origin", `${heal}:refs/tags/gate-pin/${heal}`],
+      ["ls-tree", "-r", "-z", heal],
+      ["push", "origin", "candidate123:refs/heads/ready"],
+    ]);
+    expect(published.calls[2]!.args[1]).toBe("/int/libs/sub");
+
+    const refused = makeExec([listing, { code: 0 }, { code: 1, stderr: "remote rejected" }]);
+    await expect(realCheckpointDeps(cfg, refused.exec).push("ready", "base123", "candidate123")).rejects.toThrow(
+      /gate-pin publication for libs\/sub/,
+    );
+    expect(refused.calls.some((c) => c.args.includes("candidate123:refs/heads/ready"))).toBe(false);
   });
 
   it("push also workflow_dispatches test.yml (EI-18661485259809120: [skip ci] on every commit means the git push above never actually triggers it)", async () => {
@@ -4010,7 +4728,7 @@ describe("EI-19332206710686203: rescue re-runs carry an explicit per-test timeou
 
 // ── EI-24542010215430349: rescue reruns run under the capture the suite ran under ──
 //
-// The suite arms the executed-source-map reporter + per-file input capture on every unit vitest
+// The suite arms the executed-source-map reporter + per-file input capture on unit and integration vitest
 // task. A rescue rerun that ran UNARMED changed a second variable besides concurrency: a red the
 // capture itself caused passed unarmed and was absorbed as a load flake. Each rescue now arms the
 // same capture NO-PERSIST (nothing it sees becomes a reusable pass proof) and never inherits the
@@ -4069,19 +4787,22 @@ describe("EI-24542010215430349: rescue reruns arm executed-source capture, no-pe
     armedAs(env, "@x/w");
   });
 
-  it("helper: an integration file stays unarmed — the suite ran it under the unarmed test:integration", () => {
+  it("helper: integration files retain the suite's capture with no persistence", () => {
     const env: NodeJS.ProcessEnv = { ...process.env };
     expect(
       armRescueRerunCapture(env, { workspace: "@x/w", files: ["lib/a.test.ts", "lib/b.integration.test.ts"] }),
-    ).toBe(false);
-    unarmed(env);
+    ).toBe(true);
+    armedAs(env, "@x/w");
   });
 
   it("helper: recording switched off stays unarmed, exactly as the suite would", () => {
     for (const off of ["0", "false", "off", "no"]) {
       const env: NodeJS.ProcessEnv = { ...process.env, [EXECUTED_MAP_RECORD_ENV]: off };
-      expect(armRescueRerunCapture(env, { workspace: "@x/w", files: ["lib/a.test.ts"] })).toBe(false);
-      unarmed(env);
+      for (const files of [["lib/a.test.ts"], ["lib/a.integration.test.ts"]]) {
+        const childEnv = { ...env };
+        expect(armRescueRerunCapture(childEnv, { workspace: "@x/w", files })).toBe(false);
+        unarmed(childEnv);
+      }
     }
   });
 
@@ -4111,7 +4832,7 @@ describe("EI-24542010215430349: rescue reruns arm executed-source capture, no-pe
     armedAs(calls[1].opts?.env, "@example/fixture-pkg");
   });
 
-  it("wired: an isolation re-run of an integration file spawns unarmed", async () => {
+  it("wired: an isolation re-run of an integration file spawns armed no-persist", async () => {
     const { exec, calls } = makeExec([]);
     await realCheckpointDeps(cfg, exec).isolationRun?.({
       workspace: "@example/fixture-pkg",
@@ -4119,7 +4840,7 @@ describe("EI-24542010215430349: rescue reruns arm executed-source capture, no-pe
     });
     const run = calls.find((c) => c.args.includes("lib/a.integration.test.ts"));
     expect(run).toBeDefined();
-    unarmed(run!.opts?.env);
+    armedAs(run!.opts?.env, "@example/fixture-pkg");
   });
 });
 

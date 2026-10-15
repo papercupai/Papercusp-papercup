@@ -59,9 +59,25 @@ export type LoopNextWakeInput =
       | 'parked'
       | 'fireStarved'
     > &
-      // Optional so hand-built inputs (and older fixtures) stay valid; getLoopStatus
-      // always populates both from the loop's newest wake-delivery row.
-      Partial<Pick<LoopStatus, 'lastWakeStatus' | 'lastWakeError' | 'lastDeliveryOutcome'>>)
+      // Optional so hand-built inputs and older fixtures stay valid; getLoopStatus
+      // fills these fields from the newest wake-delivery row when present.
+      Partial<
+        Pick<
+          LoopStatus,
+          | 'lastWakeStatus'
+          | 'lastWakeError'
+          | 'lastWakeChannel'
+          | 'lastWakeAt'
+          | 'lastWakeCreatedAt'
+          | 'lastLoopTurnAt'
+          | 'lastSuppressedWakeLoopTurnAt'
+          | 'lastDeliveryOutcome'
+          | 'lastFiredAt'
+          | 'lastFailedFireLoopTurnCompletedAt'
+          | 'lastWithheldAt'
+          | 'lastWithheldReason'
+        >
+      >)
   | null
   | undefined;
 
@@ -86,15 +102,41 @@ export function lastLoopFireParked(
   return !/retry remains durable/i.test(loop.lastWakeError ?? '');
 }
 
+function hasCompletedLoopTurnAfterLastFire(
+  loop:
+    | Partial<Pick<LoopStatus, 'lastFiredAt' | 'lastFailedFireLoopTurnCompletedAt'>>
+    | null
+    | undefined,
+): boolean {
+  const firedAtMs = loop?.lastFiredAt == null ? Number.NaN : Date.parse(loop.lastFiredAt);
+  const completedAtMs =
+    loop?.lastFailedFireLoopTurnCompletedAt == null
+      ? Number.NaN
+      : Date.parse(loop.lastFailedFireLoopTurnCompletedAt);
+  return Number.isFinite(firedAtMs) && Number.isFinite(completedAtMs) && completedAtMs > firedAtMs;
+}
+
+function latestFireWasAwaitBlocked(loop: LoopNextWakeInput): boolean {
+  if (loop?.lastWithheldReason !== 'await-blocking') return false;
+  const firedAtMs = loop.lastFiredAt == null ? Number.NaN : Date.parse(loop.lastFiredAt);
+  const withheldAtMs = loop.lastWithheldAt == null ? Number.NaN : Date.parse(loop.lastWithheldAt);
+  // loop-fire stamps lastFiredAt before checking the blocking await; the later withhold
+  // timestamp proves that this newest attempt was deliberately suppressed and re-armed.
+  return Number.isFinite(firedAtMs) && Number.isFinite(withheldAtMs) && withheldAtMs >= firedAtMs;
+}
+
 export type LoopNextWakeVerdict =
   | { guaranteed: true; reason: null }
   | { guaranteed: false; reason: 'no-active-loop' | ActiveLoopRewakeBlockedReason };
 
 /** Classify the same guard as loopGuaranteesNextWake, retaining WHY an active
- *  row is not a usable continuation guarantee for checkpoint guidance. */
+ *  row is not a usable continuation guarantee for checkpoint guidance. A measured
+ *  unreachable owner wake route also defeats the guarantee; an unknown route leaves
+ *  the loop-only verdict unchanged so callers can preserve that uncertainty separately. */
 export function classifyLoopNextWake(
   loop: LoopNextWakeInput,
   nowMs: number = Date.now(),
+  wakeReachable?: boolean | null,
 ): LoopNextWakeVerdict {
   if (!loop?.active) return { guaranteed: false, reason: 'no-active-loop' };
 
@@ -124,18 +166,66 @@ export function classifyLoopNextWake(
   // same delivery path is expected to park too, so this loop does not guarantee a wake.
   if (lastLoopFireParked(loop)) return { guaranteed: false, reason: 'last-fire-parked' };
 
+  // EI-25407823334233635: inbox-watermark suppression never runs a loop iteration.
+  // A manual routine fire can replace the reconciler's failure with `queued` before
+  // that suppressed delivery becomes a turn. Read the durable delivery clock too,
+  // so enqueue/arm metadata cannot erase the failure. Only a later authored loop
+  // turn proves recovery; owner activity and a malformed/missing clock do not.
+  // Inbox fallback and cursor coalescing also settle without invoking a turn.
+  // Reuse the dispatch-scoped proof clock so a later arm or owner turn cannot
+  // turn those outcomes into a guaranteed continuation.
+  if (loop.lastWakeStatus === 'delivered' &&
+      ['suppressed-redundant', 'coalesced', 'inbox'].includes(loop.lastWakeChannel ?? '')) {
+    const wakeAtMs = loop.lastWakeAt == null ? Number.NaN : Date.parse(loop.lastWakeAt);
+    // `delivered_at` is stamped when the delivery row settles and can be later than its
+    // loop-fire reply. Use the row's dispatch clock for turn proof, falling back to the
+    // legacy combined clock only when older callers do not provide it.
+    const wakeCreatedAtMs =
+      loop.lastWakeCreatedAt == null ? Number.NaN : Date.parse(loop.lastWakeCreatedAt);
+    const proofWakeAtMs = Number.isFinite(wakeCreatedAtMs) ? wakeCreatedAtMs : wakeAtMs;
+    const firedAtMs = loop.lastFiredAt == null ? Number.NaN : Date.parse(loop.lastFiredAt);
+    const completedAt = Object.prototype.hasOwnProperty.call(loop, 'lastSuppressedWakeLoopTurnAt')
+      ? loop.lastSuppressedWakeLoopTurnAt
+      : loop.lastLoopTurnAt;
+    const completedAtMs = completedAt == null ? Number.NaN : Date.parse(completedAt);
+    const latestFireAwaitBlocked = latestFireWasAwaitBlocked(loop);
+    const proofWindowEndMs = latestFireAwaitBlocked ? wakeAtMs : Math.max(proofWakeAtMs, firedAtMs);
+    if (
+      (latestFireAwaitBlocked ? !Number.isFinite(wakeAtMs) : !Number.isFinite(proofWakeAtMs)) ||
+      (!latestFireAwaitBlocked && !Number.isFinite(firedAtMs)) ||
+      !Number.isFinite(completedAtMs) ||
+      completedAtMs <= proofWindowEndMs
+    ) {
+      return { guaranteed: false, reason: 'last-fire-no-loop-turn' };
+    }
+  }
+
   // EI-24609463764219558: a delivered wake can still fail to produce a model turn. The
   // reconciler records this exact outcome only after its bounded grace found no
-  // loop-origin assistant turn and re-armed the loop as an error. Treat that confirmed
-  // failure as a broken continuation path even when the generic fire/turn-starvation
-  // counters have not crossed their own thresholds yet.
-  if (loop.lastDeliveryOutcome === 'loop-delivered-wake-no-loop-turn') {
+  // loop-origin assistant turn and re-armed the loop as an error. A delayed turn may
+  // complete after that verdict, including after a later loop:arm; clear the failure
+  // only when the per-fire status query proves completion strictly after lastFiredAt.
+  // Missing, stale, or malformed proof keeps the previous fail-closed behavior.
+  if (
+    loop.lastDeliveryOutcome === 'loop-delivered-wake-no-loop-turn' &&
+    !hasCompletedLoopTurnAfterLastFire(loop)
+  ) {
     return { guaranteed: false, reason: 'last-fire-no-loop-turn' };
   }
+
+  // EI-25688167595676944: an active, otherwise healthy loop cannot guarantee another
+  // turn when the independent owner-route probe confirms that no wake channel exists.
+  // Keep unknown/null fail-soft: callers still expose that missing measurement rather
+  // than turning it into a false reachability claim.
+  if (wakeReachable === false) return { guaranteed: false, reason: 'wake-unreachable' };
 
   return { guaranteed: true, reason: null };
 }
 
-export function loopGuaranteesNextWake(loop: LoopNextWakeInput, nowMs: number = Date.now()): boolean {
-  return classifyLoopNextWake(loop, nowMs).guaranteed;
+export function loopGuaranteesNextWake(
+  loop: LoopNextWakeInput,
+  nowMs: number = Date.now(),
+  wakeReachable?: boolean | null,
+): boolean {
+  return classifyLoopNextWake(loop, nowMs, wakeReachable).guaranteed;
 }

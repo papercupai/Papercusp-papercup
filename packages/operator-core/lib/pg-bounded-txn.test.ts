@@ -14,7 +14,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { DbCallDeadlineError } from '@papercusp/db-org';
-import { boundedOrgTxn, OrgTxnTimeoutError } from './pg-bounded-txn';
+import { boundedOrgTxn, OrgTxnTimeoutError, sampleCandidateWaitOnce, withOrgTxnTimeoutPhase } from './pg-bounded-txn';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const BOUNDED_TXN_MODULE = pathToFileURL(fileURLToPath(new URL('./pg-bounded-txn.ts', import.meta.url))).href;
@@ -36,6 +36,32 @@ function pgError(code: string): Error & { code: string } {
 }
 
 describe('boundedOrgTxn', () => {
+  it.each([undefined, 'org-admin'])('attributes injected acquisition only with explicit pool %s', async (acquirePool) => {
+    vi.useFakeTimers();
+    const { resetAcquireRegistryForTest } = await import('@papercusp/db-org');
+    resetAcquireRegistryForTest();
+    try {
+      const caller = vi.fn();
+      const caught = boundedOrgTxn(caller, {
+        client: { begin: () => new Promise(() => {}) } as never,
+        acquirePool,
+        acquireTimeoutMs: 100,
+        acquireRetries: 0,
+      }).catch((error) => error as DbCallDeadlineError);
+      await vi.advanceTimersByTimeAsync(101);
+      const error = await caught;
+      expect(error).toBeInstanceOf(DbCallDeadlineError);
+      if (!(error instanceof DbCallDeadlineError)) throw new Error('expected DbCallDeadlineError');
+      expect(error.pool).toBe(acquirePool ?? null);
+      if (acquirePool) expect(error.measured).toMatch(/1 acquisition\(s\) WAITING/);
+      else expect(error.measured).toBeNull();
+      expect(caller).not.toHaveBeenCalled();
+    } finally {
+      resetAcquireRegistryForTest();
+      vi.useRealTimers();
+    }
+  });
+
   it('runs fn in the txn, returns its value, and SET LOCALs both timeouts (bound params)', async () => {
     const vals: unknown[] = [];
     const client = fakeClient((_text, v) => vals.push(...v));
@@ -50,6 +76,69 @@ describe('boundedOrgTxn', () => {
     // The set_config calls carry the configured timeouts as 'Nms' bound params.
     expect(vals).toContain('6789ms'); // lock_timeout
     expect(vals).toContain('12345ms'); // statement_timeout
+  });
+
+  it.each(['begin', 'setup'] as const)('retries a classified %s failure before caller work starts', async (phase) => {
+    let beginAttempts = 0;
+    let setupAttempts = 0;
+    const transient = Object.assign(new Error('server_login_retry: database is restarting'), { code: '08P01' });
+    const client = {
+      begin: async (cb: (tx: unknown) => Promise<unknown>) => {
+        beginAttempts++;
+        if (phase === 'begin' && beginAttempts === 1) throw transient;
+        const tx = async (strings: TemplateStringsArray) => {
+          if (phase === 'setup' && strings.join('?').includes('set_config') && setupAttempts++ === 0) {
+            throw transient;
+          }
+          return [];
+        };
+        return cb(tx);
+      },
+    } as never;
+    const caller = vi.fn(async () => 'done');
+
+    await expect(boundedOrgTxn(caller, {
+      client,
+      acquireRetries: 0,
+      connectionSetupRetries: 2,
+      connectionSetupBackoffMs: 0,
+    })).resolves.toBe('done');
+
+    expect(beginAttempts).toBe(2);
+    expect(caller).toHaveBeenCalledOnce();
+  });
+
+  it('returns the last setup error on exhaustion without invoking caller work', async () => {
+    const finalError = pgError('57P01');
+    const begin = vi.fn(async () => { throw finalError; });
+    const caller = vi.fn(async () => 'unreachable');
+
+    await expect(boundedOrgTxn(caller, {
+      client: { begin } as never,
+      acquireRetries: 0,
+      connectionSetupRetries: 2,
+      connectionSetupBackoffMs: 0,
+    })).rejects.toBe(finalError);
+
+    expect(begin).toHaveBeenCalledTimes(3);
+    expect(caller).not.toHaveBeenCalled();
+  });
+
+  it('does not retry a server_login_retry error after caller work has started', async () => {
+    const failure = Object.assign(new Error('server_login_retry after mutation began'), { code: '08P01' });
+    const begin = vi.fn(async (cb: (tx: unknown) => Promise<unknown>) =>
+      cb((() => Promise.resolve([])) as never));
+    const caller = vi.fn(async () => { throw failure; });
+
+    await expect(boundedOrgTxn(caller, {
+      client: { begin } as never,
+      acquireRetries: 0,
+      connectionSetupRetries: 15,
+      connectionSetupBackoffMs: 1_000,
+    })).rejects.toBe(failure);
+
+    expect(begin).toHaveBeenCalledOnce();
+    expect(caller).toHaveBeenCalledOnce();
   });
 
   it('starts read-only transactions before applying the local timeouts', async () => {
@@ -352,8 +441,89 @@ describe('boundedOrgTxn', () => {
     ).catch((e) => e);
 
     expect(err).toBeInstanceOf(DbCallDeadlineError);
-    expect((err as DbCallDeadlineError).label).toBe('boundedOrgTxn:acquire(admin)');
+    expect((err as DbCallDeadlineError).label).toBe('boundedOrgTxn:begin(admin)');
     expect(fnRan).toBe(false);
+  });
+
+  it('cancels a pending BEGIN acquisition when the source signal aborts', async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      const reason = new Error('source budget expired');
+      const begin = vi.fn(() => new Promise<never>(() => {}));
+      const caller = vi.fn(async () => 'unreachable');
+      const transaction = boundedOrgTxn(caller, {
+        client: { begin } as never,
+        signal: controller.signal,
+        acquireTimeoutMs: 10_000,
+      });
+      const assertion = expect(transaction).rejects.toBe(reason);
+
+      controller.abort(reason);
+      await assertion;
+
+      expect(begin).toHaveBeenCalledOnce();
+      expect(caller).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['begin', 'boundedOrgTxn:begin(admin)'],
+    ['read-only', 'boundedOrgTxn:setup-read-only(admin)'],
+    ['timeouts', 'boundedOrgTxn:setup-timeouts(admin)'],
+  ] as const)('attributes a stalled %s phase and prevents late caller work', async (stalledPhase, label) => {
+    vi.useFakeTimers();
+    try {
+      let releaseStall!: () => void;
+      const stall = new Promise<void>((resolve) => { releaseStall = resolve; });
+      const queries: string[] = [];
+      let began = false;
+      let lateError: unknown;
+      const tag = async (strings: TemplateStringsArray) => {
+        const query = strings.join('?');
+        queries.push(query);
+        if ((stalledPhase === 'read-only' && query.includes('SET TRANSACTION')) ||
+            (stalledPhase === 'timeouts' && query.includes('set_config'))) await stall;
+        return [];
+      };
+      const client = {
+        begin: async (cb: (tx: unknown) => Promise<unknown>) => {
+          if (stalledPhase === 'begin') await stall;
+          began = true;
+          try {
+            return await cb(tag);
+          } catch (error) {
+            lateError = error;
+            throw error;
+          }
+        },
+      } as never;
+      const caller = vi.fn(async () => 'unreachable');
+      const transaction = boundedOrgTxn(caller, { client, readOnly: true, acquireTimeoutMs: 20 })
+        .catch((error: unknown) => error);
+
+      await vi.advanceTimersByTimeAsync(20);
+      const error = await transaction;
+      expect(error).toBeInstanceOf(DbCallDeadlineError);
+      expect(error).toMatchObject({ label, deadlineMs: 20, elapsedMs: 20 });
+      expect(began).toBe(stalledPhase !== 'begin');
+      expect(queries).toHaveLength(stalledPhase === 'begin' ? 0 : stalledPhase === 'read-only' ? 1 : 2);
+      expect(caller).not.toHaveBeenCalled();
+
+      releaseStall();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(lateError).toBeInstanceOf(DbCallDeadlineError);
+      expect(queries).toHaveLength(stalledPhase === 'begin' ? 0 : stalledPhase === 'read-only' ? 1 : 2);
+      expect(caller).not.toHaveBeenCalled();
+      if (stalledPhase === 'begin') {
+        // A late BEGIN must roll back without issuing transaction setup SQL.
+        expect(queries).toHaveLength(0);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('maps a PG 57014 (statement_timeout) to OrgTxnTimeoutError with pgCode', async () => {
@@ -366,6 +536,69 @@ describe('boundedOrgTxn', () => {
     expect(err).toBeInstanceOf(OrgTxnTimeoutError);
     expect((err as OrgTxnTimeoutError).pgCode).toBe('57014');
     expect((err as OrgTxnTimeoutError).cause).toMatchObject({ code: '57014' });
+  });
+
+  it('includes the active caller phase while preserving timeout code and cause', async () => {
+    let phase = 'release:resolve-workspace';
+    const cause = pgError('57014');
+    const err = await boundedOrgTxn(
+      async () => {
+        phase = 'release:read-prior-holder';
+        throw cause;
+      },
+      { client: fakeClient(), phase: () => phase },
+    ).catch((e) => e);
+
+    expect(err).toBeInstanceOf(OrgTxnTimeoutError);
+    expect(err).toMatchObject({ pgCode: '57014', cause });
+    expect((err as OrgTxnTimeoutError).message).toContain('[phase: release:read-prior-holder]');
+    expect((err as OrgTxnTimeoutError).messageWithoutBlockerHint).toContain('[phase: release:read-prior-holder]');
+  });
+
+  it('keeps the conservative setup phase when PG times out before caller work starts', async () => {
+    const cause = pgError('57014');
+    const client = {
+      begin: async (cb: (tx: unknown) => Promise<unknown>) => cb(async (strings: TemplateStringsArray) => {
+        if (strings.join('?').includes('set_config')) throw cause;
+        return [];
+      }),
+    } as never;
+    const caller = vi.fn(async () => 'unreachable');
+    const err = await boundedOrgTxn(caller, {
+      client,
+      phase: 'work_items:release:issue:transaction-setup',
+    }).catch((error) => error);
+
+    expect(err).toBeInstanceOf(OrgTxnTimeoutError);
+    expect(err).toMatchObject({ pgCode: '57014', cause });
+    expect((err as OrgTxnTimeoutError).message).toContain('[phase: work_items:release:issue:transaction-setup]');
+    expect(caller).not.toHaveBeenCalled();
+  });
+
+  it('labels a PG timeout from an awaited post-transaction step', async () => {
+    const cause = pgError('57014');
+    const err = await withOrgTxnTimeoutPhase('work_items:release:issue:deliver', async () => {
+      throw cause;
+    }).catch((error) => error);
+
+    expect(err).toBeInstanceOf(OrgTxnTimeoutError);
+    expect(err).toMatchObject({ pgCode: '57014', cause });
+    expect((err as OrgTxnTimeoutError).message).toContain('[phase: work_items:release:issue:deliver]');
+  });
+
+  it('preserves a bounded transaction phase when an outer phase wrapper is present', async () => {
+    const cause = pgError('57014');
+    const err = await withOrgTxnTimeoutPhase(
+      'work_items:release:post-transaction',
+      () => boundedOrgTxn(async () => { throw cause; }, {
+        client: fakeClient(),
+        phase: 'work_items:release:issue:compare-and-release-update',
+      }),
+    ).catch((error) => error);
+
+    expect(err).toBeInstanceOf(OrgTxnTimeoutError);
+    expect((err as OrgTxnTimeoutError).message).toContain('[phase: work_items:release:issue:compare-and-release-update]');
+    expect((err as OrgTxnTimeoutError).message).not.toContain('work_items:release:post-transaction');
   });
 
   it('maps a PG 55P03 (lock_timeout) to OrgTxnTimeoutError', async () => {
@@ -444,12 +677,16 @@ describe('boundedOrgTxn', () => {
     ).catch((e) => e);
     expect(err).toBeInstanceOf(OrgTxnTimeoutError);
     expect((err as OrgTxnTimeoutError).blockerHint).toContain('pid 1644480');
+    expect((err as OrgTxnTimeoutError).blockerHint).not.toContain('likely blocked by pid');
     expect((err as OrgTxnTimeoutError).blockerHint).toContain('current/last statement');
     expect((err as OrgTxnTimeoutError).blockerHint).toContain(
       'lock may have been taken by an earlier statement in this transaction',
     );
     expect((err as OrgTxnTimeoutError).blockerHint).toContain('SELECT id, confidence');
-    expect((err as OrgTxnTimeoutError).message).toContain('likely blocked by pid 1644480');
+    expect((err as OrgTxnTimeoutError).message).toContain('separate-connection blocker snapshot');
+    expect((err as OrgTxnTimeoutError).message).toContain('not confirmed to block this operation');
+    expect((err as OrgTxnTimeoutError).message).toContain('observed head blocker pid 1644480');
+    expect((err as OrgTxnTimeoutError).message).not.toContain('likely blocked by pid');
     expect((err as OrgTxnTimeoutError).message).toContain('1 other backend(s) also waiting');
     expect(diagnosticSql).toContain('a.datname = current_database()');
     expect(diagnosticSql).toContain('b.datname = current_database()');
@@ -511,5 +748,122 @@ describe('boundedOrgTxn', () => {
     expect(err).toBeInstanceOf(OrgTxnTimeoutError);
     expect((err as OrgTxnTimeoutError).pgCode).toBe('55P03');
     expect((err as OrgTxnTimeoutError).blockerHint).toBeUndefined();
+  });
+
+  it('takes one PID-and-query-start-targeted wait sample without selecting query text', async () => {
+    const statements: string[] = [];
+    const values: unknown[] = [];
+    const targetQueryStartedAfter = new Date('2026-10-11T20:00:00.000Z');
+    const client = {
+      begin: async (cb: (tx: unknown) => Promise<unknown>) => cb(((strings: TemplateStringsArray, ...params: unknown[]) => {
+        const statement = strings.join('?');
+        statements.push(statement);
+        values.push(...params);
+        return Promise.resolve(statement.includes('FROM pg_stat_activity')
+          ? [{ waitEventType: 'Lock', waitEvent: 'transactionid', blockingPids: [17] }]
+          : []);
+      }) as never),
+    } as never;
+
+    const sample = await sampleCandidateWaitOnce(
+      client,
+      42,
+      targetQueryStartedAfter,
+      new AbortController().signal,
+    );
+
+    expect(sample).toEqual({
+      status: 'sampled',
+      targetPid: 42,
+      waitEventType: 'Lock',
+      waitEvent: 'transactionid',
+      blockingPids: [17],
+    });
+    const observerSql = statements.find((statement) => statement.includes('FROM pg_stat_activity')) ?? '';
+    expect(observerSql).toContain('a.pid = ?');
+    expect(observerSql).toContain('a.query_start >= ?');
+    expect(observerSql).toContain('a.state = \'active\'');
+    expect(observerSql).toContain('LIMIT 1');
+    expect(observerSql).not.toMatch(/\ba\.query\s*(?:,|AS)/i);
+    expect(values).toContain(42);
+    expect(values).toContain(targetQueryStartedAfter);
+    expect(values).toContain('100ms');
+  });
+
+  it('cancels an active wait sample when its target statement settles', async () => {
+    const controller = new AbortController();
+    const cancel = vi.fn();
+    const client = {
+      begin: async (cb: (tx: unknown) => Promise<unknown>) => cb(((strings: TemplateStringsArray) => {
+        if (strings.join('?').includes('set_config')) return Promise.resolve([] as unknown[]);
+        const pending = new Promise<unknown[]>(() => {});
+        queueMicrotask(() => controller.abort(new Error('target statement settled')));
+        return Object.assign(pending, { cancel });
+      }) as never),
+    } as never;
+
+    const sample = await sampleCandidateWaitOnce(client, 42, new Date(), controller.signal);
+
+    expect(sample).toEqual({ status: 'unavailable', targetPid: 42, reason: 'cancelled', phase: 'sample' });
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it('returns unavailable when the observer cannot acquire its connection within 100 ms', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = { begin: () => new Promise<never>(() => {}) } as never;
+      const sample = sampleCandidateWaitOnce(client, 42, new Date(), new AbortController().signal);
+      await vi.advanceTimersByTimeAsync(101);
+      await expect(sample).resolves.toEqual({ status: 'unavailable', targetPid: 42, reason: 'deadline', phase: 'acquire' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('distinguishes timeout setup from connection acquisition under the same 100 ms bound', async () => {
+    vi.useFakeTimers();
+    try {
+      const statements: string[] = [];
+      const client = {
+        begin: async (cb: (tx: unknown) => Promise<unknown>) => cb((strings: TemplateStringsArray) => {
+          statements.push(strings.join('?'));
+          return new Promise<never>(() => {});
+        }),
+      } as never;
+      const sample = sampleCandidateWaitOnce(client, 42, new Date(), new AbortController().signal);
+      await vi.advanceTimersByTimeAsync(101);
+      await expect(sample).resolves.toEqual({ status: 'unavailable', targetPid: 42, reason: 'deadline', phase: 'setup' });
+      expect(statements).toHaveLength(1);
+      expect(statements[0]).toContain('set_config');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['57014', 'deadline'],
+    ['55P03', 'deadline'],
+    ['XX000', 'query-error'],
+  ])('attributes observer SQL failure %s to the sample instead of acquisition', async (code, reason) => {
+    const client = {
+      begin: async (cb: (tx: unknown) => Promise<unknown>) => cb((strings: TemplateStringsArray) => {
+        return strings.join('?').includes('set_config')
+          ? Promise.resolve([])
+          : Promise.reject(pgError(code));
+      }),
+    } as never;
+    await expect(sampleCandidateWaitOnce(client, 42, new Date(), new AbortController().signal))
+      .resolves.toEqual({ status: 'unavailable', targetPid: 42, reason, phase: 'sample' });
+  });
+
+  it('retains settlement failure after a successful sample instead of reporting a wait observation', async () => {
+    const client = {
+      begin: async (cb: (tx: unknown) => Promise<unknown>) => {
+        await cb(() => Promise.resolve([]));
+        throw pgError('57014');
+      },
+    } as never;
+    await expect(sampleCandidateWaitOnce(client, 42, new Date(), new AbortController().signal))
+      .resolves.toEqual({ status: 'unavailable', targetPid: 42, reason: 'deadline', phase: 'settle' });
   });
 });

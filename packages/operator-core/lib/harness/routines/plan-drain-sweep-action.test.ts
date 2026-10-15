@@ -16,7 +16,14 @@ const ctx = {
   payloadTemplate: null,
 };
 
-const quietTick = { scanned: 540, warranted: 0, applied: [], deferredToNextTick: 0, skipped: {} };
+const quietTick = {
+  scanned: 540,
+  warranted: 0,
+  applied: [],
+  outcomes: [],
+  deferredToNextTick: 0,
+  skipped: {},
+};
 
 beforeEach(() => {
   M.sweep.mockReset();
@@ -65,6 +72,16 @@ describe('system:plan-drain-sweep', () => {
           reason: 'every one of 7 items is terminal (7 done, 0 dropped)',
         },
       ],
+      outcomes: [
+        {
+          planSlug: 'plan-a',
+          harnessSlug: 'papercusp',
+          outcome: 'applied',
+          from: 'active',
+          to: 'awaiting-acceptance',
+          reason: 'every one of 7 items is terminal (7 done, 0 dropped)',
+        },
+      ],
       deferredToNextTick: 0,
       skipped: {},
     });
@@ -78,7 +95,9 @@ describe('system:plan-drain-sweep', () => {
     // A status change on a historical plan must never be traceable only to
     // "a sweep did it" — the evidence sentence rides along.
     expect(log).toHaveBeenCalledWith(
-      expect.stringContaining('papercusp/plan-a: every one of 7 items is terminal'),
+      expect.stringContaining(
+        'papercusp/plan-a: applied active→awaiting-acceptance — every one of 7 items is terminal',
+      ),
     );
   });
 
@@ -96,12 +115,23 @@ describe('system:plan-drain-sweep', () => {
   });
 
   it('breaks silence when a flip was refused, naming the reason', async () => {
-    M.sweep.mockResolvedValue({ ...quietTick, warranted: 2, skipped: { busy: 1, not_found: 1 } });
+    M.sweep.mockResolvedValue({
+      ...quietTick,
+      warranted: 2,
+      skipped: { busy: 1, not_found: 1 },
+      outcomes: [
+        { planSlug: 'plan-a', harnessSlug: 'papercusp', outcome: 'skipped', reason: 'busy' },
+        { planSlug: 'plan-b', harnessSlug: 'papercusp', outcome: 'skipped', reason: 'not_found' },
+      ],
+    });
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     await getSystemAction('plan-drain-sweep')!(ctx);
 
     expect(log).toHaveBeenCalledWith(expect.stringContaining('not applied: busy×1, not_found×1'));
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining('papercusp/plan-a: skipped (busy)'),
+    );
   });
 
   // CONTROL for the silence rule: a zero-valued skip counter is not "something

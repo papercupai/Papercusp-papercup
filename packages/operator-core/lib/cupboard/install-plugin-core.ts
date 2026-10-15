@@ -17,15 +17,27 @@
  */
 import { promises as fs, existsSync } from 'node:fs';
 import { join, resolve, sep, dirname } from 'node:path';
-import type { PluginTriggerPack } from '@papercusp/plugin-sdk';
+import type { PluginTriggerPack, ProviderDescriptor } from '@papercusp/plugin-sdk';
+import type { TriggerPackInstallation } from './trigger-pack-materialize';
+import { validateProviderDeclaration } from '@papercusp/plugin-sdk';
 import { isCompilableSchema } from '../json-schema-validation';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
+import { createHash } from 'node:crypto';
+import { canonicalTreeDigest, GIT_OBJECT_ID_RE, HEX_SHA256_RE,
+  type TreeDigestEntry } from '@papercusp/artifact-registry';
+import { fetchVerifiedReleaseFiles, packSelfDescribingDir, packSelfDescribingArchive,
+  unpackSelfDescribingArchive, type SelfDescribingArchiveFile } from './self-describing-release';
+import type { ResolvedListingCoords } from './resolve-listing-by-kind';
+import type { InstalledPluginProvenance } from './types';
+export type { InstalledPluginProvenance } from './types';
 
 export interface InstallPluginCoreInput {
   /** The plugin repo's GitHub URL (https://github.com/owner/repo[.git]). */
   githubUrl: string;
   /** Within-repo plugin discriminator — a subdir to look in first, and the slug to match. */
   listingRef?: string;
+  /** Internal resolver receipt. Production obtains this from the storefront, never tool arguments. */
+  listing?: ResolvedListingCoords;
   /** Optional target harness: when set with `acceptCapabilities`, the manifest's
    *  declared capabilities are granted for this harness (install-consent). */
   harness?: string;
@@ -37,6 +49,15 @@ export interface InstallPluginCoreInput {
    * surface. Used by capability-provider chaining so consent applies to exactly
    * the complete transitive set the caller reviewed. */
   expectedReview?: InstallPluginManifestReview;
+  /**
+   * Installer-local trigger-pack configuration (P-012, D-013): which local data
+   * source each external binding binds to, and the pack input values. Used only
+   * when the package carries a trigger pack and `harness` is given.
+   */
+  triggerPackConfig?: {
+    sourceMappings?: Record<string, string>;
+    inputs?: Record<string, unknown>;
+  };
 }
 
 export interface InstalledPluginManifest {
@@ -48,7 +69,27 @@ export interface InstalledPluginManifest {
   configSchema?: Record<string, unknown>;
   oauth?: Array<{ provider: string; scopes?: string[]; fieldName: string }>;
   triggerPack?: PluginTriggerPack;
+  /** Integration provider descriptor (generalized-integrations D-006). */
+  provider?: ProviderDescriptor;
+  runtime?: { kind?: string; [k: string]: unknown };
   [k: string]: unknown;
+}
+
+/**
+ * What a third-party integration provider asks the owner to consent to
+ * (generalized-integrations P-001): the datatypes it produces, the capability
+ * subset it serves, the OAuth scopes it requests, and every host it may reach
+ * through `host.fetch`. Sorted so the review is a stable consent subject.
+ */
+export interface InstalledProviderReceipt {
+  id: string;
+  contractVersion: number;
+  runtime: 'daemon';
+  datatypes: string[];
+  capabilities: string[];
+  oauthScopes: string[];
+  egressHosts: string[];
+  credentialGroup?: string;
 }
 
 export interface InstalledTriggerPackReceipt {
@@ -56,6 +97,8 @@ export interface InstalledTriggerPackReceipt {
   bindingCount: number;
   edgeCount: number;
   sourceKinds: string[];
+  /** Portable sources' datatypes, bound to installer-local sources at materialization. */
+  datatypes: string[];
   planTargets: Array<{ id: string; path: string; slug: string }>;
   /** Installation never crosses the autonomy-gated trigger arm boundary. */
   armed: false;
@@ -74,8 +117,17 @@ export interface InstallPluginCoreResult {
   granted: string[];
   /** Descriptor made discoverable by the post-copy host invalidation. */
   triggerPack?: InstalledTriggerPackReceipt;
+  /**
+   * The materialized pack in `harness` (P-012): installation id, owned plan and
+   * disarmed binding ids, and unmet source/input requirements.
+   */
+  triggerPackInstallation?: TriggerPackInstallation;
+  /** Integration provider the owner consented to (registered on host discovery). */
+  provider?: InstalledProviderReceipt;
   /** Stable install-review material derived before any destination write. */
   review: InstallPluginManifestReview;
+  /** Null for direct GitHub installs; retained in listing.json for an exact loaded installation. */
+  provenance: InstalledPluginProvenance | null;
   /**
    * Deps this unit declares that are not installed but resolvable from the
    * Cupboard (advisory — tool-distribution-granularity D-003). Empty when the
@@ -110,6 +162,7 @@ export interface InstallPluginManifestReview {
   capabilities: string[];
   dependencies: InstallPluginDeclaredDependencies;
   triggerPack?: InstalledTriggerPackReceipt;
+  provider?: InstalledProviderReceipt;
 }
 
 /** A manifest-declared event dependency (plugin-SDK `ManifestEventDependency`, D-003). */
@@ -139,9 +192,43 @@ function normalizedEvents(value: unknown): ManifestEventDep[] {
   return [...byFamily.values()].sort((a, b) => a.family.localeCompare(b.family));
 }
 
+/**
+ * Validate and summarize a provider declaration before anything is copied.
+ * Cupboard-installed providers are third-party code: they must run as a
+ * sandboxed `daemon` (D-002/D-006); in-process `js` providers are reserved for
+ * first-party plugins that ship in the source tree.
+ */
+function inspectProviderForInstall(manifest: InstalledPluginManifest): InstalledProviderReceipt | undefined {
+  if (manifest.provider === undefined) return undefined;
+  const issues = validateProviderDeclaration(manifest);
+  if (issues.length > 0) {
+    throw new InstallPluginError(`provider declaration invalid: ${issues.join('; ')}`, 422, 'provider_invalid');
+  }
+  const provider = manifest.provider;
+  const runtime = typeof manifest.runtime?.kind === 'string' ? manifest.runtime.kind : 'js';
+  if (runtime !== 'daemon') {
+    throw new InstallPluginError(
+      `Cupboard-installed provider "${provider.id}" must run as a sandboxed daemon (runtime.kind "daemon"), not "${runtime}"`,
+      422,
+      'provider_runtime_not_sandboxed',
+    );
+  }
+  return {
+    id: provider.id,
+    contractVersion: provider.contractVersion,
+    runtime: 'daemon',
+    datatypes: normalizedStrings(provider.datatypes),
+    capabilities: normalizedStrings(provider.capabilities),
+    oauthScopes: normalizedStrings(provider.oauth?.scopes),
+    egressHosts: normalizedStrings(provider.egressHosts),
+    ...(provider.oauth?.credentialGroup ? { credentialGroup: provider.oauth.credentialGroup } : {}),
+  };
+}
+
 function manifestReview(
   manifest: InstalledPluginManifest,
   triggerPack: InstalledTriggerPackReceipt | undefined,
+  provider: InstalledProviderReceipt | undefined,
   dependencies: {
     tools?: string[];
     packs?: string[];
@@ -161,12 +248,16 @@ function manifestReview(
       events: normalizedEvents(dependencies?.events),
     },
     ...(triggerPack ? { triggerPack } : {}),
+    ...(provider ? { provider } : {}),
   };
 }
 
 export interface InstallPluginCoreDeps {
   /** Shallow-clone `url` into `dest` (which does not yet exist). Throws on failure. */
   cloneRepo: (url: string, dest: string) => Promise<void>;
+  fetchAtSha?: (url: string, dest: string, sha: string) => Promise<void>;
+  listTreeBlobs?: (dir: string, sha: string, ref: string) => Promise<TreeDigestEntry[]>;
+  fetchArtifact?: (contentHash: string) => Promise<Buffer | null>;
   /** Absolute path of the global-plugins dir (install target parent). */
   globalPluginsDir: () => string;
   /** A scratch dir for the clone (real: os.tmpdir()). */
@@ -204,12 +295,31 @@ export interface InstallPluginCoreDeps {
     installable: { tools: string[]; packs: string[]; plugins: string[]; events?: ManifestEventDep[] };
     messages: string[];
   }>;
+  /**
+   * Materialize a trigger pack into `harnessSlug` (P-012, D-013). Optional: when
+   * absent, a trigger pack installs as manifest data only. Refusals carry a
+   * stable `code` and happen before any write.
+   */
+  materializeTriggerPack?: (args: {
+    manifest: InstalledPluginManifest & { triggerPack: PluginTriggerPack };
+    pluginDir: string;
+    harnessSlug: string;
+    sourceMappings?: Record<string, string>;
+    inputs?: Record<string, unknown>;
+  }) => Promise<TriggerPackInstallation>;
 }
 
 const GITHUB_URL_RE = /^https:\/\/github\.com\/[A-Za-z0-9][A-Za-z0-9_.-]{0,38}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}?(?:\.git)?\/?$/;
 
 export class InstallPluginError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(
+    message: string,
+    readonly status: number,
+    /** Stable machine code for refusals a caller is expected to branch on. */
+    readonly code?: string,
+    /** Structured refusal payload (e.g. the review a consent re-call must pin). */
+    readonly data?: Record<string, unknown>,
+  ) {
     super(message);
     this.name = 'InstallPluginError';
   }
@@ -332,7 +442,9 @@ async function inspectTriggerPackForInstall(
     bindingCount: manifest.triggerPack.bindings.length,
     edgeCount: manifest.triggerPack.edges.length,
     sourceKinds: [...new Set(manifest.triggerPack.bindings.flatMap((binding) =>
-      binding.source.kind === 'external' ? [binding.source.sourceKind] : []))].sort(),
+      binding.source.kind === 'external' && binding.source.sourceKind ? [binding.source.sourceKind] : []))].sort(),
+    datatypes: [...new Set(manifest.triggerPack.bindings.flatMap((binding) =>
+      binding.source.kind === 'external' && binding.source.datatype ? [binding.source.datatype] : []))].sort(),
     planTargets,
     armed: false,
   };
@@ -379,6 +491,106 @@ async function copyPluginDir(src: string, target: string): Promise<void> {
   });
 }
 
+/** Fingerprint original package bytes, excluding only the host-owned install receipt. */
+function pluginFilesFingerprint(originalFiles: readonly SelfDescribingArchiveFile[], hadListing: boolean): string {
+  const files = originalFiles.flatMap((file) => {
+    if (file.path !== 'listing.json') return [file];
+    if (!hadListing) return [];
+    const listing = JSON.parse(file.bytes.toString('utf8')) as Record<string, unknown>;
+    if (!listing || typeof listing !== 'object' || Array.isArray(listing)) {
+      throw new InstallPluginError('plugin listing.json must be an object', 422, 'installation_provenance_invalid');
+    }
+    const { cupboardInstallation: _receipt, ...original } = listing;
+    return [{ ...file, bytes: Buffer.from(canonicalJson(original)) }];
+  });
+  return createHash('sha256').update(packSelfDescribingArchive(files)).digest('hex');
+}
+
+function pluginContentFingerprint(dir: string, hadListing: boolean): string {
+  return pluginFilesFingerprint(unpackSelfDescribingArchive(packSelfDescribingDir(dir)), hadListing);
+}
+
+/** Read ONLY the loaded installation. Retained metadata is checked against its current bytes;
+ * commerce authority must still confirm this listing/offer and the target payer at turn admission. */
+export async function readInstalledPluginProvenance(installation: {
+  name: string; version: string; path: string;
+}): Promise<InstalledPluginProvenance | null> {
+  let raw: Record<string, unknown>;
+  try { raw = JSON.parse(await fs.readFile(join(installation.path, 'listing.json'), 'utf8')); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw new InstallPluginError('installed plugin receipt is unreadable', 409, 'installation_provenance_invalid');
+  }
+  const receipt = raw?.cupboardInstallation as InstalledPluginProvenance | undefined;
+  if (!receipt) return null;
+  if (receipt.schema !== 'papercusp.plugin-installation/v1' || receipt.name !== installation.name ||
+      receipt.version !== installation.version || typeof receipt.hadListing !== 'boolean' ||
+      !HEX_SHA256_RE.test(receipt.contentFingerprint ?? '') ||
+      !receipt.listing || receipt.listing.releaseVersion !== installation.version ||
+      !['r2', 'github'].includes(receipt.contentSource) ||
+      pluginContentFingerprint(installation.path, receipt.hadListing) !== receipt.contentFingerprint) {
+    throw new InstallPluginError('loaded plugin differs from its retained installation receipt', 409,
+      'installation_provenance_invalid');
+  }
+  return structuredClone(receipt);
+}
+
+/** Confirm local bytes against a separately resolved storefront identity and its pinned content.
+ * The caller owns the trusted listing read; a retained receipt cannot supply this authority. */
+export async function verifyInstalledPluginCommerceProvenance(
+  installation: { name: string; version: string; path: string },
+  listing: ResolvedListingCoords,
+  deps: Pick<InstallPluginCoreDeps, 'fetchArtifact' | 'fetchAtSha' | 'listTreeBlobs' | 'tmpDir'>,
+): Promise<InstalledPluginProvenance> {
+  const receipt = await readInstalledPluginProvenance(installation);
+  const invalid = (message: string): never => {
+    throw new InstallPluginError(message, 409, 'installation_commerce_binding_invalid');
+  };
+  if (!receipt || !listing.listingId || !listing.publisherId || !listing.skuRef ||
+      listing.releaseVersion !== installation.version) {
+    return invalid('commerce admission needs an exact hosted listing identity');
+  }
+  const identityFields = ['listingId', 'githubUrl', 'ref', 'publisherId', 'skuRef', 'releaseVersion',
+    'releaseContentHash', 'priceModel'] as const;
+  for (const field of identityFields) {
+    if (receipt.listing[field] !== listing[field]) return invalid(`retained listing differs from hosted ${field}`);
+  }
+  if (canonicalJson(receipt.listing.pin ?? null) !== canonicalJson(listing.pin ?? null)) {
+    return invalid('retained listing differs from the hosted content pin');
+  }
+
+  let files: SelfDescribingArchiveFile[] | null = null;
+  if (listing.releaseContentHash && deps.fetchArtifact) {
+    files = await fetchVerifiedReleaseFiles(listing.releaseContentHash, deps.fetchArtifact);
+  }
+  if (!files && listing.pin && deps.fetchAtSha && deps.listTreeBlobs &&
+      GIT_OBJECT_ID_RE.test(listing.pin.commitSha) && HEX_SHA256_RE.test(listing.pin.treeDigest)) {
+    const dir = await fs.mkdtemp(join(deps.tmpDir(), 'cupboard-plugin-admission-'));
+    try {
+      await deps.fetchAtSha(listing.githubUrl, dir, listing.pin.commitSha);
+      const entries = await deps.listTreeBlobs(dir, listing.pin.commitSha, listing.ref);
+      if (!entries.length || await canonicalTreeDigest(entries) !== listing.pin.treeDigest) {
+        return invalid('hosted plugin mirror differs from the pinned tree');
+      }
+      const pluginDir = resolve(dir, listing.ref);
+      assertInside(dir, pluginDir, 'plugin commerce listing ref');
+      files = unpackSelfDescribingArchive(packSelfDescribingDir(pluginDir));
+    } finally { await fs.rm(dir, { recursive: true, force: true }); }
+  }
+  if (!files || files.some((file) => file.path.split('/').includes('.git'))) {
+    return invalid('hosted plugin content is unavailable or invalid');
+  }
+  const hadListing = files.some((file) => file.path === 'listing.json');
+  if (receipt.hadListing !== hadListing ||
+      receipt.contentFingerprint !== pluginFilesFingerprint(files, hadListing)) {
+    return invalid('loaded plugin bytes do not match the hosted pinned release');
+  }
+  // Content lookup can yield to other work. Refuse a local edit during admission.
+  const current = await readInstalledPluginProvenance(installation);
+  if (canonicalJson(current) !== canonicalJson(receipt)) return invalid('installation changed during admission');
+  return { ...receipt, listing: structuredClone(listing) };
+}
+
 export async function installPluginFromCupboardCore(
   input: InstallPluginCoreInput,
   deps: InstallPluginCoreDeps,
@@ -390,9 +602,85 @@ export async function installPluginFromCupboardCore(
 
   const cloneDir = join(deps.tmpDir(), `cupboard-plugin-${Date.now()}-${Math.floor(performance.now())}`);
   try {
-    await deps.cloneRepo(url, cloneDir);
+    const listing = input.listing;
+    if (listing && (listing.githubUrl !== url || listing.ref !== input.listingRef)) {
+      throw new InstallPluginError('listing coordinates disagree with the requested plugin', 422, 'listing_binding_mismatch');
+    }
+    const perUse = listing?.priceModel === 'per-use';
+    if (perUse && (!listing.listingId || !listing.publisherId || !listing.skuRef || !listing.releaseVersion)) {
+      throw new InstallPluginError('per-use plugin needs exact listing, publisher, SKU and release', 422,
+        'installation_provenance_required');
+    }
+    let verified = false;
+    let contentSource: 'r2' | 'github' = 'github';
+    if (listing?.releaseContentHash && deps.fetchArtifact) {
+      const files = await fetchVerifiedReleaseFiles(listing.releaseContentHash, deps.fetchArtifact);
+      if (files) {
+        const dir = join(cloneDir, listing.ref);
+        assertInside(cloneDir, dir, 'plugin listing ref');
+        for (const file of files) {
+          if (file.path.split('/').includes('.git')) {
+            throw new InstallPluginError('release contains excluded git metadata', 422, 'installation_provenance_invalid');
+          }
+          const dest = join(dir, file.path);
+          await fs.mkdir(dirname(dest), { recursive: true });
+          await fs.writeFile(dest, file.bytes);
+        }
+        verified = true;
+        contentSource = 'r2';
+      }
+    }
+    if (!verified && listing?.pin) {
+      if (!GIT_OBJECT_ID_RE.test(listing.pin.commitSha) || !HEX_SHA256_RE.test(listing.pin.treeDigest)) {
+        throw new InstallPluginError('malformed plugin content pin', 400, 'malformed_pin');
+      }
+      if (!deps.fetchAtSha || !deps.listTreeBlobs) {
+        throw new InstallPluginError('pinned plugin installer is unavailable', 503, 'installation_provenance_required');
+      }
+      await deps.fetchAtSha(url, cloneDir, listing.pin.commitSha);
+      const entries = await deps.listTreeBlobs(cloneDir, listing.pin.commitSha, listing.ref);
+      if (!entries.length || await canonicalTreeDigest(entries) !== listing.pin.treeDigest) {
+        throw new InstallPluginError('plugin mirror differs from its content pin', 422, 'content-address-mismatch');
+      }
+      verified = true;
+    }
+    if (!verified) {
+      if (perUse || listing?.releaseContentHash) {
+        throw new InstallPluginError('plugin release bytes could not be verified', 422, 'installation_provenance_required');
+      }
+      await deps.cloneRepo(url, cloneDir);
+    }
     const { dir: pluginDir, manifest } = await locatePlugin(cloneDir, input.listingRef);
+    if (listing?.releaseVersion && manifest.version !== listing.releaseVersion) {
+      throw new InstallPluginError('plugin manifest version differs from the listed release', 422, 'listing_binding_mismatch');
+    }
+    // A pinned subdirectory must be the directory actually installed, never a locatePlugin fallback.
+    if (verified && listing && resolve(pluginDir) !== resolve(cloneDir, listing.ref)) {
+      throw new InstallPluginError('pinned listing does not contain its plugin manifest', 422, 'listing_binding_mismatch');
+    }
+    let provenance: InstalledPluginProvenance | null = null;
+    let localListing: Record<string, unknown> = {};
+    let stripSuppliedReceipt = false;
+    const hadListing = existsSync(join(pluginDir, 'listing.json'));
+    if (hadListing) {
+      try {
+        const supplied = JSON.parse(await fs.readFile(join(pluginDir, 'listing.json'), 'utf8'));
+        if (supplied && typeof supplied === 'object' && !Array.isArray(supplied)) {
+          const { cupboardInstallation: _receipt, ...original } = supplied;
+          localListing = original;
+          stripSuppliedReceipt = 'cupboardInstallation' in supplied;
+        }
+      } catch {
+        if (verified) throw new InstallPluginError('plugin listing.json is invalid', 422, 'installation_provenance_invalid');
+      }
+    }
+    if (verified && listing?.releaseVersion) {
+      provenance = { schema: 'papercusp.plugin-installation/v1', name: manifest.name, version: manifest.version,
+        listing: structuredClone(listing), contentSource, hadListing,
+        contentFingerprint: pluginContentFingerprint(pluginDir, hadListing) };
+    }
     const triggerPack = await inspectTriggerPackForInstall(manifest, pluginDir);
+    const provider = inspectProviderForInstall(manifest);
 
     // manifest.name is UNTRUSTED (from the cloned repo) and becomes a directory we
     // `rm -rf` + `cp` into — so it must be a safe single-segment slug, never a path.
@@ -443,12 +731,48 @@ export async function installPluginFromCupboardCore(
       }
     }
 
-    const review = manifestReview(manifest, triggerPack, declaredDeps);
+    const review = manifestReview(manifest, triggerPack, provider, declaredDeps);
     if (input.expectedReview && canonicalJson(input.expectedReview) !== canonicalJson(review)) {
       throw new InstallPluginError(
         `plugin review changed after consent for ${manifest.name}@${manifest.version}; review the current package closure before installing`,
         409,
+        'plugin_review_changed',
+        { review },
       );
+    }
+    // A provider reaches accounts and the network on the owner's behalf, so it
+    // never installs on an implicit yes: consent is a second call that pins the
+    // exact review returned here (datatypes, capabilities, scopes, egress).
+    if (provider && !(input.acceptCapabilities && input.expectedReview)) {
+      throw new InstallPluginError(
+        `provider "${provider.id}" requires consent: re-call with acceptCapabilities:true and expectedReview set to the returned review`,
+        409,
+        'provider_install_consent_required',
+        { review },
+      );
+    }
+
+    // Trigger-pack materialization (P-012, D-013 §6): with a target harness the
+    // pack becomes its plans and DISARMED bindings. Every refusal happens in the
+    // materializer's write-free preflight, so it runs before the bytes are
+    // replaced: an unsupported pack refuses the whole install cleanly.
+    let triggerPackInstallation: TriggerPackInstallation | undefined;
+    if (triggerPack && input.harness && deps.materializeTriggerPack) {
+      try {
+        triggerPackInstallation = await deps.materializeTriggerPack({
+          manifest: manifest as InstalledPluginManifest & { triggerPack: PluginTriggerPack },
+          pluginDir,
+          harnessSlug: input.harness,
+          sourceMappings: input.triggerPackConfig?.sourceMappings,
+          inputs: input.triggerPackConfig?.inputs,
+        });
+      } catch (error) {
+        const code = (error as { name?: unknown; code?: unknown })?.code;
+        if ((error as { name?: unknown })?.name === 'TriggerPackMaterializeError' && typeof code === 'string') {
+          throw new InstallPluginError((error as Error).message, 422, code);
+        }
+        throw error;
+      }
     }
 
     const target = join(deps.globalPluginsDir(), manifest.name);
@@ -458,6 +782,12 @@ export async function installPluginFromCupboardCore(
     // For an unscoped name this is global-plugins itself (unchanged).
     await fs.mkdir(dirname(target), { recursive: true });
     await copyPluginDir(pluginDir, target);
+    if (provenance) {
+      await fs.writeFile(join(target, 'listing.json'), canonicalJson({ ...localListing, cupboardInstallation: provenance }));
+    } else if (stripSuppliedReceipt) {
+      // A package cannot supply its own host install receipt on the unmanaged path.
+      await fs.writeFile(join(target, 'listing.json'), canonicalJson(localListing));
+    }
 
     const capabilities = review.capabilities;
 
@@ -487,7 +817,10 @@ export async function installPluginFromCupboardCore(
       installedTo: target,
       granted,
       review,
+      provenance,
       ...(triggerPack ? { triggerPack } : {}),
+      ...(triggerPackInstallation ? { triggerPackInstallation } : {}),
+      ...(provider ? { provider } : {}),
       ...(installableDependencies ? { installableDependencies } : {}),
     };
   } finally {

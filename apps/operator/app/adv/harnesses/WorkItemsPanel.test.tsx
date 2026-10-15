@@ -99,7 +99,7 @@ const setTitle = vi.fn();
 function renderPanel(slug = 'alpha', searchParams = '', onUrlUpdate?: (e: unknown) => void) {
   return render(
     <NuqsTestingAdapter searchParams={searchParams} onUrlUpdate={onUrlUpdate}>
-      <WorkItemsPanel params={{ harnessSlug: slug }} api={{ setTitle } as never} />
+      <WorkItemsPanel panelId="p010-work-items" panelType="harness:work-items" params={{ harnessSlug: slug }} api={{ setTitle } as never} />
     </NuqsTestingAdapter>,
   );
 }

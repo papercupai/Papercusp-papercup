@@ -23,7 +23,8 @@
  * won't have any anchors and that's fine).
  */
 
-export type AnchorKind = 'file' | 'feature' | 'plan' | 'migration' | 'symbol';
+export type AnchorKind = 'file' | 'feature' | 'plan' | 'migration' | 'symbol'
+  | 'work-item' | 'decision' | 'fact' | 'session-turn' | 'report';
 
 export interface Anchor {
   kind: AnchorKind;
@@ -140,6 +141,22 @@ export function extractAnchors(text: string): Anchor[] {
   if (!text || typeof text !== 'string') return [];
 
   const anchors: Anchor[] = [];
+
+  for (const value of collectMatches(/\b(?:WI|EI)-[A-Za-z0-9-]+\b/g, text, 0)) {
+    anchors.push({ kind: 'work-item', value });
+  }
+  for (const value of collectMatches(/\b([a-z0-9][a-z0-9-]*#D-\d{3,})\b/g, text)) {
+    anchors.push({ kind: 'decision', value });
+  }
+  for (const value of collectMatches(/\bfact:([A-Za-z0-9][A-Za-z0-9:_./-]*)/g, text)) {
+    anchors.push({ kind: 'fact', value: value.replace(/[.]+$/, '') });
+  }
+  for (const value of collectMatches(/\bsession_turn:((?:claude|codex|omp):[^\s]+:\d+)\b/g, text)) {
+    anchors.push({ kind: 'session-turn', value });
+  }
+  for (const value of collectMatches(/\b(rpt_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/gi, text)) {
+    anchors.push({ kind: 'report', value });
+  }
 
   for (const file of collectMatches(FILE_PATH_RE, text)) {
     anchors.push({ kind: 'file', value: file });

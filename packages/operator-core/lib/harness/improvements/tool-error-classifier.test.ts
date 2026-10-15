@@ -20,6 +20,7 @@
  *   SELECT count(*) n, ec, status, left(norm,80), left(max(error_message),140)
  *   FROM e GROUP BY ec, status, 4 ORDER BY n DESC LIMIT 45;
  */
+import { homedir } from 'node:os';
 import { describe, it, expect } from 'vitest';
 import {
   classifyToolError,
@@ -31,12 +32,15 @@ import {
   FINGERPRINTED_TOOL_ERROR_CLASSES,
   normalizeSuspectedToolFailure,
   toolFailureSignatureKey,
+  parseToolFailureSignatureKey,
   matchKnownExternalToolFailure,
   KNOWN_EXTERNAL_TOOL_FAILURE_CLASSES,
   type ToolErrorClass,
 } from './tool-error-classifier';
 import { TOOL_ERROR_CORPUS } from './tool-error-corpus.fixture';
 import { metadataToolFailure } from '../../agent-tools/plans/coordination-metadata-fixtures';
+
+const missingHomeCwd = homedir() + '/__papercusp_missing_cwd_test__';
 
 describe('P-001 R-7 frozen friction correlation controls', () => {
   it('replays the same report with stable identities but without an authority escalation', () => {
@@ -77,7 +81,7 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
     expect(unknown.classKey).not.toBe(normalizeSuspectedToolFailure(metadataToolFailure).classKey);
   });
 
-  it('does not collapse distinct error codes when contract and runtime metadata are unknown', () => {
+  it('classifies local MCP admission sheds as transient and keeps them distinct from structural failures', () => {
     const saturated = normalizeSuspectedToolFailure({
       toolName: 'ptool',
       errorCode: '-32000',
@@ -91,13 +95,29 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
       message: 'malformed JSON before dispatch',
     });
 
-    // Both are currently structural, but they are different failure modes. The
-    // class-key arbiter must not coalesce the saturation report onto the malformed
-    // JSON report merely because neither caller supplied schema/runtime metadata.
-    expect(saturated.class).toBe('structural');
+    // A retryable shed is shared admission backpressure; malformed JSON remains
+    // structural. Their class-key identities must stay separate even without
+    // schema/runtime metadata.
+    expect(saturated.class).toBe('transient');
     expect(malformed.class).toBe('structural');
     expect(saturated.classKey).not.toBe(malformed.classKey);
     expect(saturated.watchdogKey).not.toBe(malformed.watchdogKey);
+  });
+
+  it.each([
+    'operator MCP admission is saturated — request shed, retry shortly',
+    'operator MCP admission is saturated — request shed; reason=loop_pressure_critical',
+    'operator MCP admission is saturated — request shed; reason=operator_admission_capacity',
+  ])('treats the operator admission response as transient: %s', (message) => {
+    expect(classifyToolError('-32000', 'request shed', message)).toBe('transient');
+  });
+
+  it('treats a captured plans:attention admission refusal without "is" or "=" as transient', () => {
+    expect(classifyToolError(
+      '-32000',
+      'request_shed',
+      'plans:attention was refused at dispatch: operator MCP admission saturated, reason loop_pressure_critical',
+    )).toBe('transient');
   });
 
   it('D-010: the filing signature ignores schema/runtime churn but keeps tool, family, error code and field', () => {
@@ -118,10 +138,197 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
       .toBe('tool-failure-signature:ptool:structural:error-code-unknown:field-unknown');
   });
 
+  it('keys result-door spill failures by subsystem and code, independent of the named tool', () => {
+    const first = toolFailureSignatureKey({
+      toolName: 'facts:list', errorCode: 'output_spill_failed', fieldPath: 'result',
+    }, 'transient');
+    const second = toolFailureSignatureKey({
+      toolName: 'work_items:get', errorCode: 'output_spill_failed', fieldPath: 'payload',
+    }, 'structural');
+
+    expect(first).toBe('tool-failure-signature:result-door:structural:output_spill_failed:field-unknown');
+    expect(second).toBe(first);
+    expect(parseToolFailureSignatureKey(first)).toEqual({
+      toolName: 'result-door',
+      failureFamily: 'structural',
+      errorCode: 'output_spill_failed',
+      fieldPath: 'field-unknown',
+    });
+    expect(toolFailureSignatureKey({
+      toolName: 'work_items:get', errorCode: 'different_error', fieldPath: 'payload',
+    }, 'structural')).not.toBe(first);
+  });
+
   it('a repeated caller rejection does not become direct evidence through legacy booleans', () => {
     expect(normalizeSuspectedToolFailure({
       ...metadataToolFailure, reproduced: true, clearServerMismatch: true, hardInternal: true,
     })).toMatchObject({ class: 'caller', direct: false });
+  });
+
+  it('keeps an unseeded direct wrapper miss on the caller path, even when locally reproduced', () => {
+    const message =
+      'The normalized direct wrapper tools.mcp__papercusp_su__locks_list was undefined, so attempting it raised a local TypeError before MCP dispatch. tools:find activated locks:list; no server-side locks:list call was made.';
+    expect(classifyToolError(null, 'error', message)).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'locks:list',
+      status: 'error',
+      message,
+      reproduced: true,
+    })).toMatchObject({ class: 'caller', direct: false });
+  });
+
+  it('classifies the observed Codex deferred-wrapper TypeError variants as caller-side', () => {
+    const reports = [
+      {
+        toolName: 'logs:read',
+        errorCode: 'client_wrapper_unavailable',
+        status: 'not_dispatched',
+        message: 'The capability is present in tools:find, but tools.mcp__papercusp_su__logs_read is not callable in this Codex session; calling it raised TypeError before dispatch. Switching to ptool logs:read via the sanctioned CLI fallback.',
+      },
+      {
+        toolName: 'docs:outline',
+        errorCode: 'wrapper-unavailable',
+        status: 'client_surface_gap',
+        message: 'Direct nested docs:outline wrapper call threw TypeError: tools.mcp__papercusp_su__docs_outline is not a function before dispatch. Recover through tools:find/tools:invoke.',
+      },
+      {
+        toolName: 'scheduler:get_claim_spec',
+        errorCode: 'wrapper-unavailable',
+        status: 'not_dispatched',
+        message: 'This Codex session attempted tools.mcp__papercusp_su__scheduler_get_claim_spec directly; the normalized wrapper was undefined and calling it threw TypeError before MCP dispatch.',
+      },
+      {
+        toolName: 'papercusp:list_workspaces',
+        errorCode: 'client_wrapper_missing',
+        status: 'dispatch_unavailable',
+        message: 'The catalog exposed papercusp:list_workspaces, but the normalized functions.exec method mcp__papercusp_su__papercusp_list_workspaces was undefined and raised a TypeError before dispatch. The capability remains reachable through the documented ptool CLI fallback.',
+      },
+      {
+        toolName: 'locks:acquire',
+        errorCode: 'unknown_tool_wrapper',
+        status: 'client',
+        message: 'Normalized direct wrapper mcp__papercusp_su__locks_acquire was not callable; tools:find returned locks:acquire schema, so switched to ptool CLI fallback. Reproduced: true. Direct evidence kind: valid-input-reproduction. Direct evidence expected: callable locks:acquire wrapper or equivalent lock acquisition. Direct evidence actual: TypeError: tools.mcp__papercusp_su__locks_acquire is not a function',
+        directEvidence: {
+          kind: 'valid-input-reproduction',
+          expected: 'callable locks:acquire wrapper or equivalent lock acquisition',
+          actual: 'TypeError: tools.mcp__papercusp_su__locks_acquire is not a function',
+        },
+      },
+    ];
+
+    for (const report of reports) {
+      expect(classifyToolError(report.errorCode, report.status, report.message)).toBe('caller');
+      expect(normalizeSuspectedToolFailure({ ...report, reproduced: true })).toMatchObject({
+        class: 'caller',
+        direct: false,
+      });
+    }
+
+    expect(classifyToolError('handler_error', 'error', 'The MCP handler raised TypeError before dispatch.'))
+      .toBe('structural');
+  });
+
+  it('classifies the canonical wrapper_missing status and code as caller-side', () => {
+    const reports = [
+      {
+        toolName: 'mcp__papercusp_su__state_read',
+        status: 'wrapper_missing',
+        message: 'In this Codex functions.exec session, tools.mcp__papercusp_su__state_read was undefined and calling it raised TypeError before dispatch. The server-side state:read capability remained reachable through the ptool fallback, which returned gate.greenCheckpoint.ownership.',
+      },
+      {
+        toolName: 'mcp__papercusp_su__state_read',
+        errorCode: 'wrapper_missing',
+        status: 'not_dispatched',
+        message: 'The normalized direct wrapper was unavailable before MCP dispatch.',
+      },
+    ];
+
+    for (const report of reports) {
+      expect(classifyToolError(report.errorCode, report.status, report.message)).toBe('caller');
+      expect(normalizeSuspectedToolFailure({ ...report, reproduced: true })).toMatchObject({
+        class: 'caller',
+        direct: false,
+      });
+    }
+  });
+
+  it('keeps wrapper-unavailable discovery reports caller-side and non-claimable despite structured prose', () => {
+    const report = {
+      toolName: 'fleet:status',
+      status: 'wrapper-unavailable',
+      message: 'The normalized direct wrapper fleet_status is not callable in this Codex session.',
+      directEvidence: {
+        kind: 'server-contract-mismatch' as const,
+        expected: 'tools:find plus tools:invoke provides a route to fleet:status.',
+        actual: 'The normalized direct wrapper was unavailable; this observation did not dispatch a server call.',
+      },
+    };
+
+    expect(classifyToolError(undefined, report.status, report.message)).toBe('caller');
+    expect(normalizeSuspectedToolFailure(report)).toMatchObject({
+      class: 'caller',
+      direct: false,
+      knownExternal: null,
+    });
+  });
+
+  it('classifies the client-wrapper-absent capture status as caller-side and non-claimable', () => {
+    const report = {
+      toolName: 'scheduler:get_claim_spec',
+      status: 'client-wrapper-absent',
+      message: "The current Codex session's ALL_TOOLS catalog listed scheduler:get_claim_spec, but typeof tools.mcp__papercusp_su__scheduler_get_claim_spec was undefined. The documented ptool CLI tools:find path succeeded, so the server capability exists while the normalized direct wrapper is absent in this client session.",
+      reproduced: true,
+    };
+
+    expect(classifyToolError(undefined, report.status, report.message)).toBe('caller');
+    expect(normalizeSuspectedToolFailure(report)).toMatchObject({
+      class: 'caller',
+      direct: false,
+      knownExternal: null,
+    });
+    expect(normalizeSuspectedToolFailure({
+      ...report,
+      directEvidence: {
+        kind: 'server-contract-mismatch',
+        expected: 'tools:find and tools:invoke provide the deferred-tool route.',
+        actual: 'The normalized direct wrapper was absent before MCP dispatch.',
+      },
+    })).toMatchObject({ class: 'caller', direct: false });
+  });
+
+  it('classifies scratch-reference size refusals from the reported error code or reason status', () => {
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'capability:read',
+      errorCode: 'scratch_line_window_too_large',
+      status: 'handler_error',
+      message: 'A tail:45 read of the consult result scratch spill was refused because the selected line window exceeded the response-size limit; the tool advised smaller line windows or byte paging.',
+    }).class).toBe('caller');
+
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'capability:read',
+      status: 'scratch_line_window_too_large',
+      message: 'A line-window read of a scratch spill containing a long JSON body was refused because the selected text exceeded the response-size limit. The response recommends smaller windows or byte_offset+byte_limit; an exact byte-page read succeeded.',
+      directEvidence: {
+        kind: 'valid-input-reproduction',
+        expected: 'Reading the spill with a reasonable line window returns its contents.',
+        actual: 'The line-window call returned scratch_line_window_too_large; the documented byte-page route returned the bytes.',
+      },
+    }).class).toBe('caller');
+  });
+
+  it('classifies mutually exclusive capability:read window modes as caller input', () => {
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'capability:read',
+      errorCode: 'mixed_window_modes',
+      status: 'handler_error',
+      message: 'raw text windows cannot be combined with byte_offset/byte_limit; byte windows already return exact bytes.',
+    }).class).toBe('caller');
+
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'capability:read',
+      status: 'mixed_window_modes',
+      message: 'raw text windows cannot be combined with byte_offset/byte_limit; byte windows already return exact bytes.',
+    }).class).toBe('caller');
   });
 });
 
@@ -147,6 +354,367 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError(null, 'error', 'invalid_args: note: Too big')).toBe('caller');
   });
 
+  it('classifies the events:await self-await guard as caller control flow and never promotes its attestation', () => {
+    const message =
+      'You are the CURRENT ASSIGNEE of WI-6554700010008741 — awaiting "work-item:done:WI-6554700010008741" would wait on YOUR OWN completion of it, which is unsatisfiable by construction. Nothing was registered.';
+    expect(classifyToolError('self_await_deadlock', 'refused', message)).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'events:await',
+      errorCode: 'self_await_deadlock',
+      status: 'refused',
+      message,
+      directEvidence: {
+        kind: 'valid-input-reproduction',
+        expected: 'the guard refuses a wait on the current assignee’s own completion',
+        actual: 'the guard returns self_await_deadlock and registers nothing',
+      },
+    })).toMatchObject({ class: 'caller', direct: false });
+    // The specific code wins even when unrelated structural prose is also present.
+    expect(classifyToolError(
+      'self_await_deadlock',
+      'error',
+      'self_await_deadlock: current assignee; Cannot read properties of undefined',
+    )).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', 'Cannot read properties of undefined')).toBe('structural');
+  });
+
+  it('classifies the claim-spec self-sentinel refusal as caller misuse, not a structural tool defect', () => {
+    const message =
+      'cupId must be a concrete session/owner ID, not the literal "self". To read your own claim spec, use { cupId: \'su-owner-id\' } for this session.';
+    expect(classifyToolError('handler_error', 'error', message)).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'scheduler:get_claim_spec',
+      errorCode: 'handler_error',
+      status: 'error',
+      message,
+    }).class).toBe('caller');
+    // Keep genuine implementation failures on the structural lane.
+    expect(classifyToolError('handler_error', 'error', 'Cannot read properties of undefined')).toBe('structural');
+  });
+
+  it('classifies the intentional events:status judge restriction as caller control flow', () => {
+    const message =
+      'events:status — the evidence-only judge may inspect its own awaits only; exact-key inspection and fleet-meter access are unavailable.';
+    expect(classifyToolError('handler_error', 'error', message)).toBe('caller');
+    expect(classifyToolError(null, 'error', message)).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'events:status',
+      errorCode: 'handler_error',
+      status: 'error',
+      message,
+    })).toMatchObject({ class: 'caller', direct: false });
+    // Genuine handler failures must remain eligible for structural repair.
+    expect(classifyToolError('handler_error', 'error', 'Cannot read properties of undefined')).toBe('structural');
+  });
+
+  it('classifies stale acceptance BAR amendment revision conflicts as caller state, not structural failure', () => {
+    const message =
+      "acceptance_bar_amendment_revision_conflict: subject plan 'verification-system-improvements-2026-10-10' expected 118, live 119";
+    expect(classifyToolError('handler_error', 'error', message)).toBe('caller');
+    expect(classifyToolError(null, 'error', message)).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', JSON.stringify({ ok: false, error: message }))).toBe('caller');
+    expect(normalizeSuspectedToolFailure({ toolName: 'rubrics:amend', errorCode: 'handler_error', status: 'error', message }).class)
+      .toBe('caller');
+    // A real amend failure without the explicit CAS refusal remains structural.
+    expect(classifyToolError('handler_error', 'error', 'amendRubric failed to persist acceptance BAR contract'))
+      .toBe('structural');
+  });
+
+  it('classifies explicit missing or non-directory capability:bash cwd values as caller input only', () => {
+    expect(classifyToolError(
+      'handler_error',
+      'error',
+      "capability:bash cwd '" + missingHomeCwd + "' does not exist — the child process cannot start. Pass an existing directory as cwd.",
+    )).toBe('caller');
+    expect(classifyToolError(
+      'handler_error',
+      'error',
+      "capability:bash cwd '/tmp/a-file' exists but is not a directory — the child process cannot start there. Pass an existing directory as cwd.",
+    )).toBe('caller');
+    // An implicit stale project root indicates harness configuration, so it stays structural.
+    expect(classifyToolError(
+      'handler_error',
+      'error',
+      "capability:bash implicit cwd '/tmp/phantom-root' (this context's project dir) does not exist, and no existing PAPERCUSP_INTEGRATION_ROOT was available to recover to — the harness registry likely points at a stale or phantom repo root.",
+    )).toBe('structural');
+  });
+
+  it('classifies stopped or reassigned resolver-run refusals as expected caller control flow', () => {
+    const errorCode = 'resolver_owner_mismatch_or_not_executing';
+    const message = 'The bulk-resolve run is stopped and no report was written.';
+    expect(classifyToolError(errorCode, 'refused', message)).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'inbox:bulk-run-report',
+      errorCode,
+      status: 'refused',
+      message,
+    }).class).toBe('caller');
+  });
+
+  it('classifies typed unknown and ambiguous owner-filter refusals as caller input', () => {
+    for (const [errorCode, message] of [
+      ['owner_not_found', "Owner 'system:judge/su-owner' matches no known ownerId; pass the full ownerId."],
+      ['owner_ambiguous', "Owner 'su-peer' matches more than one live ownerId; pass the full ownerId."],
+    ] as const) {
+      expect(classifyToolError(errorCode, 'handler_error', message)).toBe('caller');
+      expect(normalizeSuspectedToolFailure({
+        toolName: 'activity:tool-log',
+        errorCode,
+        status: 'handler_error',
+        message,
+      })).toMatchObject({ class: 'caller', direct: false });
+    }
+  });
+
+  it('keeps a caller-authored pg_query 42703 refusal out of the structural wrapper lane', () => {
+    const wrappedPgQueryRefusal = 'column "passed" does not exist: ' + JSON.stringify({
+      error: 'column "passed" does not exist',
+      code: '42703',
+      knownColumns: { 'harness_shared.test_runs': ['execution_details: jsonb'] },
+      jsonbPath: '⚠ `passed` is NOT a column',
+    });
+    expect(classifyToolError('handler_error', 'error', wrappedPgQueryRefusal)).toBe('caller');
+    // A plain missing-column handler failure has no pg_query correction envelope
+    // and must continue to reach the structural repair lane.
+    expect(classifyToolError('handler_error', 'error', 'column "initiative" does not exist')).toBe('structural');
+  });
+
+  it('does not mistake the timeoutSec argument name for a runtime timeout', () => {
+    expect(
+      classifyToolError(
+        'invalid_args',
+        'invalid_input',
+        'Nested code:run rejected timeoutSec=60 because the live maximum is 45 seconds; use 45 or less.',
+      ),
+    ).toBe('caller');
+    expect(
+      classifyToolError(
+        'invalid_input',
+        'invalid-input',
+        'invalid_args: bindings.values: Invalid input: expected record, received undefined; ' +
+          'bindings: Unrecognized key: "issueId" — accepted fields include timeoutSec.',
+      ),
+    ).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', 'code:run exceeded timeout after 45 seconds')).toBe('transient');
+  });
+
+  it('classifies the captured whole-call-deadline summary as transient when capture omits call_timeout metadata', () => {
+    const message =
+      'did not complete within 8000ms of its whole-call deadline (5000ms query budget plus 3000ms setup allowance). ' +
+      'Tenant checks, SQL execution, and result advisories share this deadline.';
+    expect(classifyToolError(null, 'error', message)).toBe('transient');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'dev:pg_query',
+      status: 'error',
+      message,
+      directEvidence: {
+        kind: 'valid-input-reproduction',
+        actual: 'handler_error call_timeout after the 8000ms deadline.',
+        expected: 'Describe harness_shared.tool_invocations returns relation metadata within dev:pg_query\'s whole-call deadline.',
+      },
+    }).class).toBe('transient');
+  });
+
+  it('classifies a parent-signal abort as caller control flow, not a structural tool defect', () => {
+    const message = 'tool "coord:declare-intent" was aborted by its parent signal after the handler returned';
+    expect(classifyToolError('aborted', 'error', message)).toBe('caller');
+    // Preserve the code-specific boundary: unrelated handler errors still fall through.
+    expect(classifyToolError('handler_error', 'error', message)).toBe('structural');
+  });
+
+  it('classifies capability:git-evidence cancellation as caller control flow, not a structural tool defect', () => {
+    const interrupted =
+      'git_command_interrupted: git ls-tree -z 26dba0b0757c551cd1590b6abec54a9e94ebe6da -- ' +
+      'packages/operator-ui/src/onboarding/product-tutorial.test.tsx was aborted before returning a result';
+    expect(classifyToolError('handler_error', 'error', interrupted)).toBe('caller');
+    expect(classifyToolError(null, 'error', JSON.stringify({
+      ok: false,
+      reason: 'git_command_interrupted',
+      message: 'Git evidence request was aborted before repository validation',
+    }))).toBe('caller');
+    // Real Git failures without the cancellation reason remain on the structural lane.
+    expect(classifyToolError('handler_error', 'error', 'git ls-tree failed: fatal: bad object'))
+      .toBe('structural');
+  });
+
+  it('classifies the code:run typed-root shape diagnostic as caller misuse, not a tool defect', () => {
+    expect(classifyToolError(
+      'handler_error',
+      'error',
+      'Code-run script treated nested activity:recent typed output as an MCP content envelope and failed with structured_result_shape; the returned activity data is in the typed root.',
+    )).toBe('caller');
+    const paraphrasedDiagnostic =
+      'A code:run script reading testing:runs assumed an MCP content/text envelope; testing:runs returned a typed structured root and the script failed before producing its distilled summary.';
+    expect(classifyToolError(
+      'structured_result_shape',
+      'error',
+      paraphrasedDiagnostic,
+    )).toBe('caller');
+    expect(classifyToolError(
+      'handler_error',
+      'error',
+      paraphrasedDiagnostic,
+    )).toBe('structural');
+    expect(classifyToolError(
+      'handler_error',
+      'error',
+      'structured_result_shape: tool returned an invalid structured result',
+    )).toBe('structural');
+  });
+
+  it('lets the primary error code outrank unrelated secondary failure text', () => {
+    const mixedMessage =
+      'The extraction script treated dev:session_detail as an MCP content envelope; ' +
+      'code:run returned the typed root. A separate tools:invoke attempt was refused with ' +
+      'superuser_native_session_verifier_unavailable.';
+
+    expect(classifyToolError('structured_result_shape', 'error', mixedMessage)).toBe('caller');
+    expect(classifyToolError(
+      'superuser_native_session_verifier_unavailable',
+      'error',
+      'A separate script note mentions structured_result_shape typed-root caller misuse.',
+    )).toBe('transient');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'code:run',
+      errorCode: 'structured_result_shape',
+      status: 'error',
+      message: mixedMessage,
+      reproduced: true,
+      directEvidence: {
+        kind: 'valid-input-reproduction',
+        expected: 'The code:run result is the dev:session_detail typed root.',
+        actual: 'The script attempted to read an MCP content/text envelope.',
+      },
+    }).class).toBe('caller');
+  });
+
+  it('keeps invalid MCP credentials caller-side but classifies native verifier unavailability as transient', () => {
+    expect(classifyToolError('mcp_auth_failed', 'error', 'superuser_invalid_bearer')).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', 'superuser_invalid_bearer')).toBe('structural');
+    expect(classifyToolError('mcp_auth_failed', 'error', 'superuser_native_session_verifier_unavailable')).toBe('transient');
+    expect(classifyToolError('handler_error', 'error', 'superuser_native_session_verifier_unavailable')).toBe('transient');
+    expect(
+      classifyToolError(
+        'superuser_native_session_verifier_unavailable',
+        'request_rejected',
+        'At 2026-10-08T13:52Z, two valid requests were rejected with superuser_native_session_verifier_unavailable.',
+      ),
+    ).toBe('transient');
+  });
+
+  it('classifies the intentional native-owner transport capability refusal as caller-side', () => {
+    const code = 'native_tool_owner_unsupported_capability';
+    expect(classifyToolError(code, 'error', code)).toBe('caller');
+    // Some invocation rows omit error_code and retain only this exact refusal message.
+    expect(classifyToolError(null, 'error', code)).toBe('caller');
+    expect(classifyToolError(null, 'error', `${code}: unrelated detail`)).toBe('structural');
+    // The message match is exact; similar handler prose remains a real failure.
+    expect(classifyToolError('handler_error', 'error', `${code}: wrapped in unrelated handler prose`)).toBe('structural');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'mcp__papercusp_su__tools_find',
+      errorCode: code,
+      status: 'error',
+      message: code,
+    })).toMatchObject({ class: 'caller', direct: false });
+
+    const wrappedNativeOwnerRefusal = {
+      toolName: 'mcp__papercusp_su__tools_find',
+      errorCode: '-32603',
+      status: code,
+      message: `Direct Papercusp MCP wrapper was refused with ${code} before target dispatch.`,
+    };
+    expect(classifyToolError(
+      wrappedNativeOwnerRefusal.errorCode,
+      wrappedNativeOwnerRefusal.status,
+      wrappedNativeOwnerRefusal.message,
+    )).toBe('caller');
+    expect(normalizeSuspectedToolFailure(wrappedNativeOwnerRefusal)).toMatchObject({ class: 'caller' });
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'coord:inbox',
+      errorCode: null,
+      status: 'error',
+      message: code,
+    })).toMatchObject({ class: 'caller', direct: false });
+  });
+
+  it('classifies missing UI-client context as caller input, not a structural UI defect', () => {
+    const missingRow = 'client_not_found: no ui_clients row for client_id="su-cli-owner". The tab may have closed or never registered.';
+    const missingId = 'client_id_required: no client_id passed and ctx.uiClientId is unset.';
+    expect(classifyToolError('client_not_found', 'error', missingRow)).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', missingRow)).toBe('caller');
+    expect(classifyToolError('client_id_required', 'error', missingId)).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', missingId)).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'ui:get_state',
+      errorCode: 'client_not_found',
+      status: 'error',
+      message: missingRow,
+    })).toMatchObject({ class: 'caller', direct: false });
+  });
+
+  it.each([
+    [
+      'context_mismatch',
+      'rejected',
+      'Patch verification could not find the expected workspace-map heading and path lines in apps/operator/prompts/pot-instances/papercup-pot.su.md; no files were changed.',
+    ],
+    [
+      'verification_failed',
+      '',
+      'A three-file resource-governor repair patch was rejected before writing because I matched a long project-doc-parts disposition line with abbreviated text. Corrected patch will anchor on the unique array terminator and use short exact hunks.',
+    ],
+    [
+      'verification-failed',
+      'patch-context-mismatch',
+      'A one-file patch was rejected because one expected source line did not match exactly. The patch applied nothing. Re-read the exact line context and reformulate the single-file patch.',
+    ],
+  ])('classifies a rejected patch hunk as caller (%s)', (errorCode, status, message) => {
+    expect(classifyToolError(errorCode, status, message)).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'apply_patch',
+      errorCode,
+      status,
+      message,
+      reproduced: true,
+    })).toMatchObject({ class: 'caller', direct: false });
+  });
+
+  it('keeps an unrelated verification failure structural', () => {
+    expect(classifyToolError('verification-failed', 'error', 'tool failed while verifying its result')).toBe('structural');
+  });
+
+  it('classifies kernel identity outside-ceiling and stale-artifact refusals, including the persisted tools:find message, as caller', () => {
+    const sessionsRefusal = 'Kernel preflight denied tool "sessions:ingest-gate-event": Identity capability (unresolved): outside-ceiling (sessions:ingest-gate-event)';
+    const journalRefusal = 'Kernel preflight denied tool "journal:record-turn": Identity capability (unresolved): outside-ceiling (journal:record-turn)';
+    const staleArtifactRefusal = 'Kernel preflight denied tool "tools:invoke": Identity capability (unresolved): stale-artifact (tools:invoke)';
+    const persistedToolsFindRefusal = 'Kernel preflight denied tool "tools:find": Identity capability (unresolved): stale-artifact (tools:find)';
+    expect(classifyToolError('authorization_denied', 'error', sessionsRefusal)).toBe('caller');
+    expect(classifyToolError('authorization_denied', 'error', journalRefusal)).toBe('caller');
+    expect(classifyToolError('authorization_denied', 'error', staleArtifactRefusal)).toBe('caller');
+    expect(classifyToolError('authorization_denied', 'error', persistedToolsFindRefusal)).toBe('caller');
+    expect(classifyToolError('authorization_denied', 'error', 'database constraint failed')).toBe('structural');
+    expect(classifyToolError(
+      'authorization_denied', 'error',
+      'Kernel preflight denied tool "tools:invoke": Identity capability (unresolved): policy-unavailable (tools:invoke)',
+    )).toBe('structural');
+  });
+
+  it('classifies fail-closed kernel authority-read failures as transient infrastructure', () => {
+    const unavailable = [
+      'Kernel preflight denied tool "locks:queue": current session authority could not be read; no effect authorized',
+      'Kernel preflight denied tool "coord:whoami": session authority reader unavailable; no effect authorized',
+      'Kernel preflight denied tool "coord:glance": identity policy evaluation unavailable; no effect authorized',
+    ];
+
+    for (const message of unavailable) {
+      expect(classifyToolError('authorization_denied', 'error', message)).toBe('transient');
+    }
+    expect(classifyToolError(
+      'authorization_denied', 'error',
+      'Kernel preflight denied tool "tools:invoke": Identity capability (unresolved): policy-unavailable (tools:invoke)',
+    )).toBe('structural');
+  });
+
   it('classifies a nested tools:invoke invalid_input wrapper as caller, not structural', () => {
     // tools:invoke re-throws target refusals; the wrapper adds `invalid_input:`
     // while outer telemetry can record `handler_error`, so match this exact shape.
@@ -155,6 +723,48 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     ).toBe('caller');
     // Keep the prefix rule narrow: unrelated invalid_input messages remain structural.
     expect(classifyToolError('handler_error', 'error', 'invalid_input: database constraint failed')).toBe('structural');
+  });
+
+  it('classifies a nested tools:invoke role denial as caller, not a structural tool defect', () => {
+    // The direct target error_code is role_not_allowed, but tools:invoke telemetry
+    // records handler_error and preserves the target's message prefix.
+    const refusal =
+      'role_not_allowed: Role "judge" cannot call tool "sessions:search" (allowed roles: operator)';
+    expect(classifyToolError('handler_error', 'error', refusal)).toBe('caller');
+    expect(classifyToolError('role_not_allowed', 'error', 'judge is not on the target allowlist')).toBe('caller');
+    // Keep the message match narrow: similar prose without the refusal code is not enough.
+    expect(classifyToolError('handler_error', 'error', 'Role "judge" cannot call tool "sessions:search"')).toBe('structural');
+  });
+
+  it('classifies a nested loop:checkpoint merge-cap refusal as caller, not a structural defect', () => {
+    // The checkpoint tool intentionally persists the narrative while refusing a row
+    // merge that would evict carried checks. tools:invoke preserves that refusal in
+    // its handler_error text, so both the code and serialized response shape belong
+    // on the caller path.
+    const refusal = JSON.stringify({
+      ok: false,
+      error: 'checkpoint_merge_would_evict_rows',
+      retryable: true,
+      narrativePersisted: true,
+      checksDropped: ['an existing carried check'],
+    });
+    expect(classifyToolError('checkpoint_merge_would_evict_rows', 'error', refusal)).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', refusal)).toBe('caller');
+    // Generic checkpoint handler failures remain eligible for structural diagnosis.
+    expect(classifyToolError('handler_error', 'error', 'checkpoint database write failed')).toBe('structural');
+  });
+
+  it('classifies the code:run dynamic-import sandbox refusal as caller even when reproduced', () => {
+    const message =
+      'code:run rejects dynamic import/require of repo modules and node builtins; use the exposed tools whitelist.';
+    expect(classifyToolError('dynamic_import_unsupported', 'failed', message)).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'code:run',
+      errorCode: 'dynamic_import_unsupported',
+      status: 'failed',
+      message,
+      reproduced: true,
+    })).toMatchObject({ class: 'caller', direct: false });
   });
 
   it('classifies the nested tools:invoke checkpoint replacement safety refusal as caller', () => {
@@ -178,11 +788,102 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError('handler_error', 'error', '{"ok":false,"error":"flush-required-ish"}')).toBe('structural');
   });
 
+  it('classifies the nested tools:invoke missing scratch evidence-class refusal as caller', () => {
+    // capability:read returns this expected selection refusal as a JSON `reason`;
+    // tools:invoke preserves the payload but the outer invocation row is handler_error.
+    const nestedRefusal =
+      '{"ok":false,"reason":"evidence_class_not_found","message":"scratch reference has no work-item evidence."}';
+    expect(classifyToolError('handler_error', 'error', nestedRefusal)).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', '{"ok":false,"reason":"unrelated_refusal"}'))
+      .toBe('structural');
+  });
+
+  it('classifies nested capability:read mixed-window refusals as caller input', () => {
+    const nestedRefusal = JSON.stringify({
+      ok: false,
+      reason: 'mixed_window_modes',
+      message: 'raw text windows cannot be combined with byte_offset/byte_limit; byte windows already return exact bytes.',
+    });
+
+    expect(classifyToolError('mixed_window_modes', 'handler_error', null)).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', nestedRefusal)).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'tools:invoke',
+      errorCode: 'handler_error',
+      status: 'error',
+      message: nestedRefusal,
+    }).class).toBe('caller');
+    expect(classifyToolError(
+      'handler_error',
+      'error',
+      JSON.stringify({ ok: false, reason: 'unrelated_refusal' }),
+    )).toBe('structural');
+  });
+
+  it('classifies events:status mutually exclusive selectors as caller input', () => {
+    const message =
+      'events:status — await_id and event are mutually exclusive; use await_id to inspect one registration or event to inspect one key.';
+    expect(classifyToolError('handler_error', 'error', message)).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', JSON.stringify({ error: message }))).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'events:status',
+      errorCode: 'handler_error',
+      status: 'error',
+      message,
+    })).toMatchObject({ class: 'caller', direct: false });
+    expect(classifyToolError('handler_error', 'error', 'Cannot read properties of undefined')).toBe('structural');
+  });
+
+  it('classifies nested tenant-scope reader refusals as caller', () => {
+    // dev:pg_query returns these deliberate scope guards as structured refusals.
+    // tools:invoke wraps them in handler_error, so the serialized reason must
+    // keep them out of the structural auto-implement lane too.
+    for (const reason of ['tenant_scope_required', 'positive_control_tenant_scope_required']) {
+      expect(classifyToolError(reason, 'error', 'tenant-scoped read required')).toBe('caller');
+      expect(classifyToolError(
+        'handler_error',
+        'error',
+        JSON.stringify({ error: 'tenant-scoped read required', reason }),
+      )).toBe('caller');
+    }
+    expect(classifyToolError(
+      'handler_error',
+      'error',
+      JSON.stringify({ error: 'unrelated refusal', reason: 'workspace_scope_required' }),
+    )).toBe('structural');
+  });
+
   it('classifies an expected missing rubric reference as caller input, not a tool bug', () => {
     expect(classifyToolError('rubric-not-found', 'error', 'rubric not found')).toBe('caller');
     // The classification is code-specific; an unrelated tool failure with the
     // same prose must still reach the structural lane.
     expect(classifyToolError('handler_error', 'error', 'rubric not found')).toBe('structural');
+  });
+
+  it('classifies an incomplete acceptance BAR vetting refusal as caller input', () => {
+    const message =
+      'acceptance BAR contract is not ready for vetting — 7 of 7 BAR(s) blocking, 0 clean: R-1: bar_snapshot_role_invalid';
+    expect(classifyToolError('handler_error', 'error', message)).toBe('caller');
+    // The nested tools:invoke JSON wrapper must preserve the same caller class.
+    expect(classifyToolError('handler_error', 'error', JSON.stringify({ ok: false, error: message })))
+      .toBe('caller');
+    // Keep the rule specific to the deliberate readiness refusal.
+    expect(classifyToolError('handler_error', 'error', 'acceptance BAR contract could not be loaded from the database'))
+      .toBe('structural');
+  });
+
+  it('classifies a missing acceptance BAR amendment approval as caller control flow', () => {
+    const message =
+      'acceptance_bar_approval_required: use thread-post:<id> from an authenticated reviewer post containing the preview approval JSON';
+    expect(classifyToolError('handler_error', 'error', message)).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', JSON.stringify({
+      ok: false,
+      code: 'acceptance_bar_approval_required',
+      error: message,
+    }))).toBe('caller');
+    // A failure loading approval data remains structural.
+    expect(classifyToolError('handler_error', 'error', 'acceptance BAR approval could not be loaded from the database'))
+      .toBe('structural');
   });
 
   it('classifies a missing sandbox desktop lease as caller input, not a structural tool bug', () => {
@@ -193,6 +894,23 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
         'capability:computer — no sandbox desktop is leased to this agent. A desktop must be provisioned first',
       ),
     ).toBe('caller');
+  });
+
+  it('classifies the intentional coord:ask owner-UI-only denial as caller without broadening generic unauthorized', () => {
+    expect(
+      classifyToolError(
+        'unauthorized',
+        'error',
+        'coord:ask is owner-UI-only; agents must use coord:send or coord:message-agent.',
+      ),
+    ).toBe('caller');
+    expect(
+      classifyToolError(
+        'unauthorized',
+        'error',
+        'built-in tool "memory:search" requires a workspace-scoped call — this session has no workspace transaction. Scope the session to a workspace',
+      ),
+    ).toBe('structural');
   });
 
   it('high-volume NON-structural buckets never leak into the auto-implement (structural) lane', () => {
@@ -230,11 +948,12 @@ describe('classifier rule table integrity', () => {
 });
 
 describe('toolErrorFingerprint (P-012) — mirrors the SQL skeleton', () => {
-  it('takes the first 6 alpha tokens, digit-stripped + punctuation-collapsed, joined with -', () => {
+  it('hashes the full digit-stripped, punctuation-collapsed message skeleton', () => {
+    const fingerprint = toolErrorFingerprint('invalid_args: note: Too big: expected string to have <=400 characters');
+    expect(fingerprint).toMatch(/^md5-[a-f0-9]{32}$/);
+    expect(toolErrorFingerprint('column "initiative" does not exist')).toMatch(/^md5-[a-f0-9]{32}$/);
     expect(toolErrorFingerprint('invalid_args: note: Too big: expected string to have <=400 characters'))
-      .toBe('invalid-args-note-too-big-expected');
-    expect(toolErrorFingerprint('column "initiative" does not exist'))
-      .toBe('column-initiative-does-not-exist');
+      .toBe(fingerprint);
   });
 
   it('returns null when the message has no alpha content', () => {
@@ -249,6 +968,21 @@ describe('toolErrorFingerprint (P-012) — mirrors the SQL skeleton', () => {
     expect(a).not.toBe(b);
     // …and the keys they produce differ, so they stop masking each other:
     expect(toolErrorSignalKey('plans:new', 'caller', a)).not.toBe(toolErrorSignalKey('plans:new', 'caller', b));
+  });
+
+  it('separates failures with a shared first-six-token boilerplate prefix (EI-25714783883986261)', () => {
+    const first = 'P006 Cargo CI-binding test file lock acquire returned HTTP502 readECONNRESET/forwardingResult outcome_unknown. ' +
+      'No edit attempted. Reconcile authoritative lock for crates/papercup-core/tests/android_uniffi_abi_guard.rs in mobile coordination_domain before writing or retrying.';
+    const second = 'P006 Cargo CI-binding test file lock acquire returned HTTP502 readECONNRESET/forwardingResult outcome_unknown. ' +
+      'No edit attempted. Reconcile authoritative lock for packages/operator-core/lib/agent-tools/improvements/capture.test.ts in papercusp coordination before writing or retrying.';
+    const oldPrefix = (message: string) => message.toLowerCase()
+      .replace(/[0-9]+/g, '').replace(/[^a-z]+/g, ' ').trim().split(' ').slice(0, 6).join('-');
+
+    expect(oldPrefix(first)).toBe('p-cargo-ci-binding-test-file');
+    expect(oldPrefix(second)).toBe(oldPrefix(first));
+    expect(toolErrorFingerprint(first)).not.toBe(toolErrorFingerprint(second));
+    expect(toolErrorSignalKey('locks:acquire', 'transient', toolErrorFingerprint(first)))
+      .not.toBe(toolErrorSignalKey('locks:acquire', 'transient', toolErrorFingerprint(second)));
   });
 });
 
@@ -340,6 +1074,69 @@ describe('normalizeSuspectedToolFailure — correlated probation identity (P-013
     expect(normalized.class).toBe('caller');
     expect(normalized.direct).toBe(true);
   });
+
+  it('keeps code:run typed-root envelope reads in caller probation despite direct evidence', () => {
+    const normalized = normalizeSuspectedToolFailure({
+      toolName: 'code:run → fleet:assignments',
+      errorCode: 'structured_result_shape',
+      status: 'error',
+      message:
+        'A code:run batch failed before returning its summary: fleet:assignments returned a typed structured root, ' +
+        'but the code-run path expected an MCP content/text envelope and reported `Use direct typed fields`.',
+      directEvidence: {
+        kind: 'server-contract-mismatch',
+        expected: 'A code:run script can inspect the typed structured result returned by fleet:assignments.',
+        actual: 'code:run returned structured_result_shape after a content/text envelope read.',
+      },
+    });
+
+    expect(normalized.class).toBe('caller');
+    expect(normalized.direct).toBe(false);
+  });
+
+  it('keeps the code:run typed-root caller diagnostic in probation when errorCode is omitted', () => {
+    const message =
+      'Code-run script treated nested fleet:assignments typed output as an MCP content/text envelope and failed with ' +
+      'structured_result_shape; the nested result was a typed root.';
+    expect(classifyToolError(null, 'error', message)).toBe('caller');
+
+    const normalized = normalizeSuspectedToolFailure({
+      toolName: 'code:run → fleet:assignments',
+      status: 'error',
+      message,
+      directEvidence: {
+        kind: 'server-contract-mismatch',
+        expected: 'code:run exposes the nested fleet:assignments typed result directly',
+        actual: 'the script tried to read an MCP content/text envelope from the typed root',
+      },
+    });
+
+    expect(normalized.class).toBe('caller');
+    expect(normalized.direct).toBe(false);
+  });
+
+  it('routes code:run compile_error to caller while retaining explicit defect evidence override', () => {
+    const compileFailure = {
+      toolName: 'code:run',
+      errorCode: 'compile_error',
+      status: 'compile_error',
+      message: 'compile_error: Invalid regular expression flags while compiling the submitted script',
+    };
+    const callerReport = normalizeSuspectedToolFailure(compileFailure);
+    expect(callerReport.class).toBe('caller');
+    expect(callerReport.direct).toBe(false);
+
+    const verifiedMismatch = normalizeSuspectedToolFailure({
+      ...compileFailure,
+      directEvidence: {
+        kind: 'valid-input-reproduction',
+        expected: 'valid JavaScript parses and reaches execution',
+        actual: 'the unchanged valid script fails compilation before dispatch',
+      },
+    });
+    expect(verifiedMismatch.class).toBe('caller');
+    expect(verifiedMismatch.direct).toBe(true);
+  });
 });
 
 describe('SQL generators are driven by the table (structural check; real-PG parity in the integration test)', () => {
@@ -368,6 +1165,17 @@ describe('SQL generators are driven by the table (structural check; real-PG pari
     expect(sqlCase).toContain('error_code = ANY');
     expect(sqlCase).toContain('exceeded timeout');
     expect(sqlCase).toContain('openai_embed_failed_429');
+  });
+
+  it('emits the specific structured-result code before the verifier message branch', () => {
+    const sqlCase = toolErrorClassSqlCase(fakeSql);
+    const structuredResultCode = sqlCase.indexOf('error_code = ANY({structured_result_shape}');
+    const verifierMessage = sqlCase.indexOf(
+      'error_message ~* (^|[^A-Za-z0-9_])superuser_native_session_verifier_unavailable',
+    );
+
+    expect(structuredResultCode).toBeGreaterThanOrEqual(0);
+    expect(verifierMessage).toBeGreaterThan(structuredResultCode);
   });
 
   it('toolErrorFingerprintSqlCase fingerprints exactly the FINGERPRINTED classes', () => {

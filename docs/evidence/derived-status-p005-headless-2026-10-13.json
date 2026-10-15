@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-005 plan dashboard renders derivedStatus and a dated Now note, marking a note the plan has moved past (headless Tauri shell)",
+  "framework": "shell",
+  "command": ["scripts/verify-tauri-headless.sh", "--", "bash", ".papercusp/scratch/p005-headless.sh"],
+  "environment": {
+    "VERIFY_TAURI_SOURCE_REF": "6a0f8070d6832d81e7519793579ad01d81b109b6",
+    "VERIFY_TAURI_SOURCE_INPUTS": "apps/operator/app/_components/plans/PlanDashboard.tsx,apps/operator/app/_components/plans/plan-dashboard-derive.ts,apps/operator/app/_components/plans/PlanDashboardHost.tsx,apps/operator/app/_components/plans/plan-dashboard.css",
+    "P005_REQUIRE_MOVED_PAST": "1",
+    "P005_OUT": ".papercusp/scratch/p005-headless-out2"
+  },
+  "exitCode": 0,
+  "startedAt": "2026-10-13T02:59:06Z",
+  "finishedAt": "2026-10-13T03:16:43Z",
+  "summary": "verify-tauri-headless booted papercusp-desktop from committed source 6a0f8070d683 on its own Xvfb display and ran the read-only drive script (navigation + DOM reads, no writes). It opened /adv?pdash=papercusp::derived-status-not-hand-written-2026-10-12 and read the plan dashboard. Setup before the run: plans:set-now stored a Now note (plan rev 36), then P-005 moved todo->wip (rev 37), so the stored note predates one item-status change. The run was strict (P005_REQUIRE_MOVED_PAST=1): it fails unless the Now card reports moved-past with both the stale class and the stale chip. Observed: the Status card rendered one derived row (in-flight P-005, held by su-e8ac9) and the Now card reported data-note-age=moved-past with class plan-dash__now--stale, the plan-dash-now-stale chip, and the age line 'moved past, written 22m ago, 1 status change since this note was written'. HARNESS_RESULT verdict=pass passed=3 failed=0 run=20261013T025912Z-1552420; script printed ASSERT_PASS rows=1 noteAge=moved-past. This supersedes run 20261013T022141Z-4104148, which observed noteAge=unknown and so never exercised the moved-past rendering.",
+  "assertions": [
+    { "id": "status-card-renders", "passed": true, "evidence": "state.json status=true: [data-testid=plan-dash-status] present on the plan dashboard." },
+    { "id": "status-card-derived-rows", "passed": true, "evidence": "state.json rows=[{kind:'in-flight', item:'P-005', text:'in flight P-005 held by su-e8ac9'}]: the row is derived from the held work-item, not hand-written." },
+    { "id": "now-card-note-age-valid", "passed": true, "evidence": "[data-testid=plan-dash-now] data-note-age='moved-past', one of current|moved-past|unknown|none." },
+    { "id": "moved-past-note-marked-stale", "passed": true, "evidence": "now.staleClass=true (class plan-dash__now--stale) and now.staleChip=true ([data-testid=plan-dash-now-stale]); ageLine 'moved past, written 22m ago, 1 status change since this note was written'." },
+    { "id": "strict-moved-past-required", "passed": true, "evidence": "P005_REQUIRE_MOVED_PAST=1; drive script printed ASSERT_PASS rows=1 noteAge=moved-past gate=null." },
+    { "id": "harness-verdict", "passed": true, "evidence": "HARNESS_RESULT harness=verify-tauri-headless verdict=pass run=20261013T025912Z-1552420 first_failure=none passed=3 failed=0 blocked=0 skipped=0; FINAL rc=0 finished=2026-10-13T03:16:43Z. Evidence dir: $HOME/.local/state/verification-harness/verify-tauri-headless/20261013T025912Z-1552420." }
+  ],
+  "evidencePlane": "current-build",
+  "plan": "derived-status-not-hand-written-2026-10-12",
+  "planItem": "P-005",
+  "specIds": ["AUTO-BAR-R-4-P-005@3", "SPEC-P-005@1"],
+  "subjectCommit": "6a0f8070d6832d81e7519793579ad01d81b109b6",
+  "workItemId": "WI-6554700010009034",
+  "recordedBy": "su-e8ac915f-5cb9-4405-a669-9e1c13c88bfb"
+}

@@ -2,6 +2,11 @@
  * worktree-coverage-watchdog.test.ts — WI-3612 (EI-8820 follow-up).
  */
 import { describe, expect, it, vi } from 'vitest';
+vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async () => true) }));
+vi.mock('../alarm-attention', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../alarm-attention')>()),
+  resolveAlarm: vi.fn(async () => true),
+}));
 import {
   findUncoveredDirtyWorktrees,
   parseWorktreeListPorcelain,
@@ -16,10 +21,22 @@ import {
   checkGitSyncCoverage,
   matchTriagedScopeOut,
   TRIAGED_CHECKOUT_SCOPE_OUTS,
+  runWatchdogGit,
+  type WatchdogGitSeams,
   type WorktreeInfo,
   type CheckoutInfo,
   type TriagedCheckoutScopeOut,
 } from './worktree-coverage-watchdog';
+
+// WI-10005446 wiring guard. The sidecar reports itself enabled for this whole file. Its
+// default answer (undefined) falls through to the local spawn, so tests that never
+// configure it behave as before.
+const sidecarGit = vi.hoisted(() => vi.fn());
+vi.mock('../fleet/git-via-sidecar', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../fleet/git-via-sidecar')>()),
+  gitSidecarEnabled: () => true,
+  runGitViaSpawnerSidecar: sidecarGit,
+}));
 
 const CANONICAL = '/home/dev/papercupai-workspace/papercusp';
 
@@ -57,6 +74,29 @@ describe('findUncoveredDirtyWorktrees (pure classifier)', () => {
   it('does not flag a dirty migration/synthesis isolation worktree', () => {
     const worktrees = [wt('/home/dev/papercupai-workspace/papercusp/.papercusp/worktrees/migrate-xyz', true, 2)];
     expect(findUncoveredDirtyWorktrees(worktrees, CANONICAL)).toEqual([]);
+  });
+
+  it('does not flag a dirty verification-harness release-local pinned source snapshot', () => {
+    const worktrees = [wt(
+      '/home/dev/.local/state/verification-harness/release-local/wi-123-run-20261012/source',
+      true,
+      1,
+    )];
+    expect(findUncoveredDirtyWorktrees(worktrees, CANONICAL)).toEqual([]);
+  });
+
+  it('does not flag a dirty workspace-host release-cut pinned source checkout', () => {
+    const worktrees = [wt('/home/dev/.papercusp/wh-release-r64/source', true, 1)];
+    expect(findUncoveredDirtyWorktrees(worktrees, CANONICAL)).toEqual([]);
+  });
+
+  it('still flags an ordinary dirty checkout under a similarly named release-local directory', () => {
+    const ordinary = wt(
+      '/home/dev/.local/state/verification-harness/release-local/wi-123/worktree',
+      true,
+      1,
+    );
+    expect(findUncoveredDirtyWorktrees([ordinary], CANONICAL)).toEqual([ordinary]);
   });
 
   it('FLAGS a dirty worktree matching none of the known patterns — the WI-3449 class', () => {
@@ -508,5 +548,89 @@ describe('triaged per-checkout scope-outs (WI-38888)', () => {
   it('real patterns do not match an unrelated sibling that merely shares a prefix', () => {
     expect(matchTriagedScopeOut(`${WS_ROOT}/papercusp-registry-experiments`, 2)).toBeNull();
     expect(matchTriagedScopeOut(`${WS_ROOT}/templates-mirror-backup`, 1)).toBeNull();
+  });
+});
+
+// WI-10005446: the default runner must run git in the spawner sidecar, not fork the big host.
+describe('runWatchdogGit (sidecar routing)', () => {
+  const ARGS = ['status', '--porcelain'];
+  const CWD = '/repo';
+
+  function seams(over: WatchdogGitSeams = {}) {
+    const local = vi.fn(async () => 'local-out');
+    const onFallback = vi.fn();
+    return { local, onFallback, sidecarEnabled: () => true, ...over };
+  }
+
+  it('runs git in the sidecar and never forks locally when the sidecar answers', async () => {
+    const viaSidecar = vi.fn(async () => ({ code: 0, stdout: ' M a.ts\n', stderr: '' }));
+    const s = seams({ viaSidecar });
+    await expect(runWatchdogGit(ARGS, CWD, s)).resolves.toBe(' M a.ts\n');
+    expect(viaSidecar).toHaveBeenCalledWith(
+      ARGS,
+      CWD,
+      30_000,
+      expect.objectContaining({ GIT_OPTIONAL_LOCKS: '0' }),
+    );
+    expect(s.local).not.toHaveBeenCalled();
+    expect(s.onFallback).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a local spawn when the sidecar is unreachable', async () => {
+    const s = seams({ viaSidecar: vi.fn(async () => { throw new Error('circuit open'); }) });
+    await expect(runWatchdogGit(ARGS, CWD, s)).resolves.toBe('local-out');
+    expect(s.local).toHaveBeenCalledWith(
+      ARGS,
+      CWD,
+      expect.objectContaining({ GIT_OPTIONAL_LOCKS: '0' }),
+    );
+    expect(s.onFallback).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats the sidecar's own infrastructure fault as a fallback, not as git's answer", async () => {
+    const viaSidecar = vi.fn(async () => ({ code: -1, stdout: '', stderr: 'spawner sidecar could not spawn' }));
+    const s = seams({ viaSidecar });
+    await expect(runWatchdogGit(ARGS, CWD, s)).resolves.toBe('local-out');
+    expect(s.onFallback).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects on a real non-zero git exit, like the local path, without re-running it locally', async () => {
+    const viaSidecar = vi.fn(async () => ({ code: 128, stdout: '', stderr: 'fatal: not a git repository\n' }));
+    const s = seams({ viaSidecar });
+    await expect(runWatchdogGit(ARGS, CWD, s)).rejects.toThrow('fatal: not a git repository');
+    expect(s.local).not.toHaveBeenCalled();
+  });
+
+  it('spawns locally when the sidecar is not enabled for this process', async () => {
+    const viaSidecar = vi.fn();
+    const s = seams({ viaSidecar, sidecarEnabled: () => false });
+    await expect(runWatchdogGit(ARGS, CWD, s)).resolves.toBe('local-out');
+    expect(viaSidecar).not.toHaveBeenCalled();
+    expect(s.local).toHaveBeenCalledWith(
+      ARGS,
+      CWD,
+      expect.objectContaining({ GIT_OPTIONAL_LOCKS: '0' }),
+    );
+  });
+
+  it('WIRING: the sibling-checkout pass sends its git calls to the sidecar when no runner is injected', async () => {
+    // If defaultRunGit regressed to a raw local spawn, real git would run in the non-existent
+    // /ws/a, the checkout would be skipped, and `out` would be [].
+    sidecarGit.mockReset();
+    sidecarGit.mockImplementation(async (args: string[], cwd: string) => {
+      if (args[0] === 'rev-parse') return { code: 0, stdout: `${cwd}\n`, stderr: '' };
+      if (args[0] === 'status') return { code: 0, stdout: ' M x.ts\n', stderr: '' };
+      return { code: 0, stdout: '1790000000\n', stderr: '' };
+    });
+    try {
+      const out = await listSiblingCheckoutsWithDirtyState('/ws', {
+        listChildDirs: async () => ['/ws/a'],
+        realpath: async (p: string) => p,
+      });
+      expect(out).toEqual([{ path: '/ws/a', dirty: true, dirtyFileCount: 1, lastCommitEpochSec: 1790000000 }]);
+      expect(sidecarGit.mock.calls.map((c) => (c[0] as string[])[0])).toEqual(['rev-parse', 'status', 'log']);
+    } finally {
+      sidecarGit.mockReset();
+    }
   });
 });

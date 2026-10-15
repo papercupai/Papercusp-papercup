@@ -1,5 +1,7 @@
-import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { createServer } from 'node:net';
+import * as discovery from './events/await/psu-pty-discovery';
+import { describe, expect, it, vi } from 'vitest';
 import {
   gradeColdBootDrill,
   reportColdBootDrills,
@@ -47,7 +49,7 @@ function startHarness(seed: ColdBootDrillLedgerEvent[] = []) {
     deps: {
       now: () => NOW,
       newId: () => 'drill-1',
-      findHost: () => HOST,
+      findHost: async () => HOST,
       resolveTranscript: async () => ({
         sourceKind: 'claude' as const,
         sessionId: 'current-native-id',
@@ -64,6 +66,13 @@ function startHarness(seed: ColdBootDrillLedgerEvent[] = []) {
         injected.push({ sock, msg });
         return true;
       },
+      tagTurn: async ({ sid, origin, text }: { sid: string; origin: string; text: string }) => ({
+        taggedText: `⟦turn-origin:${origin} nonce:0123456789abcdef⟧\n${text}`,
+        envelope: `⟦turn-origin:${origin} nonce:0123456789abcdef⟧`,
+        nonce: '0123456789abcdef',
+        origin: 'watchdog',
+        ledgerWritten: true,
+      }),
       readLedger: async () => ledger,
       appendLedger: async (event: ColdBootDrillLedgerEvent) => {
         ledger.push(event);
@@ -94,6 +103,7 @@ describe('startColdBootDrill — explicit/default-off live cut', () => {
       },
     });
     expect(String(h.injected[0].msg.data)).toContain('⟦carry-drill:drill-1⟧');
+    expect(String(h.injected[0].msg.data)).toMatch(/^⟦turn-origin:watchdog nonce:[a-f0-9]{16}⟧\n/);
     expect(String(h.injected[0].msg.data)).toContain('⟦post-compaction-recovery⟧');
     expect(String(h.injected[0].msg.data)).toContain('do not call coord:orient');
     expect(String(h.injected[0].msg.data)).toContain('coord:declare-intent { intent, current_plan_slug, items }');
@@ -120,12 +130,25 @@ describe('startColdBootDrill — explicit/default-off live cut', () => {
     expect(h.injected[0].msg.ownerId).toBe('su-1');
   });
 
+  it('waits for asynchronous host discovery before deciding whether the host is live', async () => {
+    const h = startHarness();
+    let resolveHost!: (host: typeof HOST) => void;
+    const pendingHost = new Promise<typeof HOST>((resolve) => { resolveHost = resolve; });
+    const result = startColdBootDrill(
+      { ownerId: 'su-1', ownerLabel: 'su · 1' },
+      { ...h.deps, findHost: () => pendingHost },
+    );
+
+    resolveHost(HOST);
+    await expect(result).resolves.toMatchObject({ ok: true, queued: true });
+  });
+
   it('P-021: an OMITTED sessionClass defaults from the CANONICAL classifier (sessionClassForHost) — the drill ledger and live actuation share one vocabulary', async () => {
     // Headless host → 'claude-headless'.
     const h = startHarness();
     const headless = await startColdBootDrill(
       { ownerId: 'su-1', ownerLabel: 'su · 1' },
-      { ...h.deps, findHost: () => ({ ...HOST, bridgeTty: false }) },
+      { ...h.deps, findHost: async () => ({ ...HOST, bridgeTty: false }) },
     );
     expect(headless).toMatchObject({ ok: true, sessionClass: 'claude-headless' });
     expect(h.ledger[0]).toMatchObject({ kind: 'carry-drill-requested', sessionClass: 'claude-headless' });
@@ -139,7 +162,7 @@ describe('startColdBootDrill — explicit/default-off live cut', () => {
     const h3 = startHarness();
     const explicit = await startColdBootDrill(
       { ownerId: 'su-1', ownerLabel: 'su · 1', sessionClass: 'gateway-claude-headless' },
-      { ...h3.deps, findHost: () => ({ ...HOST, bridgeTty: false }) },
+      { ...h3.deps, findHost: async () => ({ ...HOST, bridgeTty: false }) },
     );
     expect(explicit).toMatchObject({ ok: true, sessionClass: 'gateway-claude-headless' });
   });
@@ -150,7 +173,7 @@ describe('startColdBootDrill — explicit/default-off live cut', () => {
       { ownerId: 'su-1', ownerLabel: 'su · 1' },
       {
         ...h.deps,
-        findHost: () => ({ ...HOST, command: 'codex' }),
+        findHost: async () => ({ ...HOST, command: 'codex' }),
         resolveTranscript: async () => ({
           sourceKind: 'codex',
           sessionId: 'codex-native-id',
@@ -353,6 +376,51 @@ describe('gradeColdBootDrill — host event + successor transcript', () => {
     expect(ledger.at(-1)?.kind).toBe('carry-drill-graded');
   });
 
+  it('grades a delivered drill when the recipient identity differs from its originating owner', async () => {
+    const ledger = [requested];
+    const hostOwners: string[] = [];
+    const transcriptOwners: string[] = [];
+    const result = await gradeColdBootDrill('system:judge/su-1', 'drill-1', {
+      readLedger: async () => ledger,
+      appendLedger: async (event) => { ledger.push(event); return true; },
+      readHostEvents: async (ownerId) => {
+        hostOwners.push(ownerId);
+        return [{ kind: 'carry-drill-respawned', drillId: 'drill-1', nativeId: 'native-2', launchContextPath: '/safe/carry.md' }];
+      },
+      readCarry: async () => SPEC.systemPromptAddendum,
+      loadTranscript: async (ownerId) => {
+        transcriptOwners.push(ownerId);
+        return transcript;
+      },
+      now: () => NOW + 1000,
+    });
+
+    expect(result).toMatchObject({ ok: true, drillId: 'drill-1', alreadyGraded: false });
+    expect(hostOwners).toEqual(['su-1']);
+    expect(transcriptOwners).toEqual(['su-1']);
+    expect(ledger.at(-1)).toMatchObject({
+      kind: 'carry-drill-graded',
+      ownerId: 'su-1',
+      gradedByOwnerId: 'system:judge/su-1',
+    });
+  });
+
+  it('refuses a drill id recorded under multiple owners', async () => {
+    const secondOwner = { ...requested, ownerId: 'su-2' };
+    let storageReads = 0;
+    const result = await gradeColdBootDrill('system:judge/su-1', 'drill-1', {
+      readLedger: async () => [requested, secondOwner],
+      appendLedger: async () => true,
+      readHostEvents: async () => { storageReads += 1; return []; },
+      readCarry: async () => null,
+      loadTranscript: async () => null,
+      now: () => NOW,
+    });
+
+    expect(result).toMatchObject({ ok: false, error: 'ambiguous_drill' });
+    expect(storageReads).toBe(0);
+  });
+
   it('grades a current Codex response_item successor through the shared replay parser', async () => {
     const ledger: ColdBootDrillLedgerEvent[] = [
       { ...requested, sessionClass: 'codex-interactive' },
@@ -527,6 +595,25 @@ describe('verifyColdBootDrill — post-start lifecycle self-check (EI-12655 fix 
     { ts: new Date(NOW + 2).toISOString(), kind: 'carry-drill-respawned', drillId: 'd-1', sessionClass: 'gateway-claude-headless', nativeId: 'n-1' },
     { ts: new Date(NOW + 3).toISOString(), kind: 'carry-drill-carry-delivered', drillId: 'd-1', sessionClass: 'gateway-claude-headless' },
   ];
+
+  it('checks the recorded live socket when it is outside the discovery directory', async () => {
+    const dir = mkdtempSync('/tmp/pc-drill-');
+    const sock = `${dir}/recorded.sock`;
+    const server = createServer();
+    const find = vi.spyOn(discovery, 'findLiveHostAsync').mockResolvedValue({ ...HOST, pid: process.pid, sock });
+    try {
+      await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(sock, resolve); });
+      const result = await verifyColdBootDrill('su-1', { drillId: 'd-1' }, {
+        readLedger: async () => LEDGER, readHostEvents: async () => HOST_EVENTS,
+      });
+      expect(find).toHaveBeenCalledWith('su-1');
+      expect(result).toMatchObject({ ok: true, pass: true });
+    } finally {
+      find.mockRestore();
+      if (server.listening) await new Promise<void>(resolve => server.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   it('passes all four assertions for a fully-recorded drill', async () => {
     const result = await verifyColdBootDrill('su-1', { drillId: 'd-1' }, {

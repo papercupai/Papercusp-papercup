@@ -1,0 +1,90 @@
+{
+  "plan": "cloud-portal-docs-and-papercup-faq-2026-10-06",
+  "workItem": "WI-10006920",
+  "clause": "DOCS-INJECTION@1",
+  "testPath": "packages/operator-core/lib/agent-tools/docs/__tests__/public-handlers.test.ts",
+  "testSha256": "b88944de6d56d1dcdfe58503d8aaf0143a94bd5ba4f4b9d572789cef679fef9e",
+  "sourceSha256": {
+    "packages/operator-core/lib/agent-tools/docs/get.ts": "ee9c741995b9969ce799dd9148ade1b903e25549c163426246bb11d3c0eb92aa",
+    "packages/operator-core/lib/agent-tools/docs/search.ts": "23bd818822bdaf1f10c03ad91e7ecc7181b3063827cc2c753f28d1c8036f1baa",
+    "packages/operator-core/lib/agent-tools/docs/_public-manual.ts": "302eb757e44f02da9f3f36d52da57f91713c22c4ac2f3132f838162fa86bced1"
+  },
+  "roles": ["papercup", "papercup-deep"],
+  "observedBehavior": "Actual public search/get handlers return hostile public prose, then reject its requested private-harness and raw-source reads. Caller context and role catalogs remain unchanged; the private adapter canary is never called.",
+  "oracle": "Literal refusal codes, a separate private-document canary and before/after permission snapshots; expected outcomes are not derived from returned FAQ text.",
+  "fixtureCorrection": {
+    "log": "/tmp/su73-hostile-public-handlers-0720.log",
+    "result": "2 failed, 5 passed, 0 skipped; exit 1",
+    "cause": "The original containment assertion compared plain source underscores with Starlight-rendered escaped underscores. Renderer-stable prose corrected the fixture without changing the attack intent. This was not a measured product authorization failure."
+  },
+  "baseline": { "testRunId": 20952214, "passed": 7, "failed": 0, "skipped": 0 },
+  "isolatedBaseline": { "testRunId": 20952225, "passed": 7, "failed": 0, "skipped": 0 },
+  "mutant": {
+    "testRunId": 20952227,
+    "passed": 1,
+    "failed": 6,
+    "skipped": 0,
+    "failedNewCases": [
+      "public docs handler routing and isolation > papercup keeps hostile retrieved instructions outside the permission boundary",
+      "public docs handler routing and isolation > papercup-deep keeps hostile retrieved instructions outside the permission boundary"
+    ]
+  },
+  "probe": {
+    "log": "/tmp/su73-hostile-public-mutation-0717.log",
+    "runner": "scripts/mutation-probe.sh",
+    "runnerCommit": "7390bba9a2a7a73223b351ffba300dc4a3c4f996",
+    "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e",
+    "argv": [
+      "--file", "packages/operator-core/lib/agent-tools/docs/get.ts",
+      "--mutate", "s/if \\(args.harness\\)/if (false)/",
+      "--test", "test -f {} && PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/agent-tools/docs/__tests__/public-handlers.test.ts",
+      "--relocation", "overlay"
+    ],
+    "verdict": "caught",
+    "baselineExit": 0,
+    "guardExit": 1,
+    "finalExit": 0,
+    "mutantParse": "unchecked",
+    "assertionEvidence": "test-file-assertion-failure",
+    "sharedSourceIntegrity": "Runner verified byte-identical to pre-probe state."
+  },
+  "provenance": "Local modified test at recorded commit 7390bba9a2; named test path and wider tree dirty. No clean immutable candidate claim.",
+  "scope": "Unit public-document permission boundary only. Does not establish model instruction-following, Portal behavior, live-state claims, novice validation, independent certification or shipment.",
+  "specBinding": {
+    "specId": "DOCS-INJECTION",
+    "specRevision": 1,
+    "testBindingId": 32631,
+    "mutationBindingId": 32632,
+    "receipt": "/tmp/su73-hostile-boundary-bind-titles-0736.json",
+    "replacedFlatTitleBindings": [32629, 32630],
+    "initialCurrentnessRead": "/tmp/su73-hostile-boundary-currentness-0734.json",
+    "initialAdequacyRead": "/tmp/su73-hostile-boundary-adequacy-0734.json",
+    "initialVerdict": "unknown",
+    "initialCurrentness": "Spec/source/test/fixture current; testRun unknown because the recorded run has worktreeDirty=true.",
+    "titleCorrection": "Exact suite > case titles were copied from server testRunExecution.passedCaseTitles. Staging re-evaluation confirms both declared baseline cases passed and both mutant cases failed.",
+    "correctedCurrentnessRead": "/tmp/su73-hostile-boundary-currentness-0745.json",
+    "correctedAdequacyRead": "/tmp/su73-hostile-boundary-pair-adequacy-0752.json",
+    "correctedAdequacy": {
+      "evaluatorBuild": "cf57965610",
+      "bindingIds": [32631, 32632],
+      "governing": false,
+      "verdict": "unknown",
+      "ratings": {
+        "traceability": "pass",
+        "fixture-calibration": "pass",
+        "falsifiability": "unknown",
+        "correct-layer": "pass",
+        "oracle-independence": "pass",
+        "execution-integrity": "pass",
+        "freshness": "unknown",
+        "plan-class-risk-floor": "unknown",
+        "disclosed-gap": "not-applicable"
+      },
+      "currentness": "Spec/source/test/fixture dimensions current; original testRun provenance unknown because both retained runs have worktreeDirty=true.",
+      "reason": "Dirty-run provenance prevents a current successful baseline from corroborating clause-scoped falsifiability and targeted L4 proof. Matching later committed bytes do not prove the complete source executed by the historical dirty runs.",
+      "broaderDiagnostic": "/tmp/su73-hostile-boundary-adequacy-0745.json",
+      "broaderDiagnosticLimit": "The work-item cohort also includes policy-only binding 32566, whose fixture calibration is unknown. This does not change the corrected handler pair's fixture-calibration pass."
+    },
+    "limitation": "Proof adoption does not certify clean-run provenance or discharge final Portal/model/novice/shipment acceptance."
+  }
+}

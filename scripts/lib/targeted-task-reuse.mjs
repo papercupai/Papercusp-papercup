@@ -33,7 +33,7 @@
 // numbers must not be folded into it.
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -45,14 +45,21 @@ import {
   executedMapRecordingEnabled,
   formatExecutedMapResultLines,
   gitChangedBetween,
+  gitInertGlobalChange,
   loadReuseProofs,
   readExecutedMapResults,
 } from "./executed-source-map.mjs";
 import {
+  REUSE_PROOF_FORMAT,
   TEST_REUSE_SKIP_LIST_ENV,
   formatTestReuseLine,
+  judgedTreeProofFormat,
+  laneOfFromSplit,
+  laneOfTaskScript,
+  laneScopedCandidates,
   reuseCandidates,
   reuseRunnerIdentity,
+  recordGateReuseDecision,
   selectReusablePasses,
   testReuseAuditRate,
   testReuseEnabled,
@@ -60,6 +67,8 @@ import {
   writeReuseSkipList,
 } from "./test-pass-reuse.mjs";
 import { STANDALONE_PACKAGE_DIRS, expandWorkspaceDirs } from "./test-runner-classes.mjs";
+import { emptySuiteGuardArgs, scriptSupportsPassReuse } from "./empty-suite-guard.mjs";
+import { pathToFileURL } from "node:url";
 
 /** The lane split of a workspace's unit suite. scripts/affected-tests.mjs imports this list. */
 export const LANE_SCRIPTS = Object.freeze(["test:lane-pure", "test:lane-stateful"]);
@@ -135,8 +144,15 @@ function defaultGit(root, args) {
 /**
  * The identity of the node the task will spawn (npm → PATH node), resolved under the task's env,
  * prefixed with the proof format (reuseRunnerIdentity, P-001) so older-format proofs never match.
+ * Also used by pure-lane-proof-capture.mjs, which records proofs under the same identity.
  */
-function defaultRunnerIdentity(root, env) {
+/**
+ * @param {string} root
+ * @param {NodeJS.ProcessEnv} env
+ * @param {string} [proofFormat] the JUDGED tree's recorder format (judgedTreeProofFormat)
+ * @returns {string | null}
+ */
+export function defaultRunnerIdentity(root, env, proofFormat = REUSE_PROOF_FORMAT) {
   try {
     return reuseRunnerIdentity(
       execFileSync("node", ["-p", "process.version + ' ' + process.platform + ' ' + process.arch"], {
@@ -146,6 +162,7 @@ function defaultRunnerIdentity(root, env) {
         stdio: ["ignore", "pipe", "ignore"],
         timeout: 30_000,
       }),
+      proofFormat,
     );
   } catch {
     return null;
@@ -153,15 +170,155 @@ function defaultRunnerIdentity(root, env) {
 }
 
 const defaultDeps = {
+  recordReuse: recordGateReuseDecision,
   git: defaultGit,
   runnerIdentity: defaultRunnerIdentity,
+  proofFormat: (root) => judgedTreeProofFormat(root),
   connect: (env) => connectExecutedMapPg({ env }),
   loadProofs: loadReuseProofs,
   changedBetween: (root) => gitChangedBetween({ repoRoot: root, relative: true }),
+  // gate-test-reuse-yield-2026-10-01 P-002: the same inert-global seam affected-tests passes.
+  inertGlobalChange: (root) => gitInertGlobalChange({ repoRoot: root }),
+  // P-003: the same main-process closure affected-tests passes, derived at the judged tree. Loaded
+  // from that tree by URL, so the declaration build (tsconfig.declarations.json) never follows it.
+  testConfigMainProcess: async (root) => {
+    const srcDir = path.join(root, "libs/test-config/src");
+    const mod = await import(pathToFileURL(path.join(srcDir, "main-process-closure.ts")).href);
+    return mod.testConfigMainProcessFiles({ repoRoot: root, srcDir });
+  },
+  // P-004 (D-007): the same toolchain tsconfig set affected-tests passes, loaded the same way.
+  toolchainTsconfigs: async (root) => {
+    const mod = await import(pathToFileURL(path.join(root, "libs/test-config/src/toolchain-tsconfigs.ts")).href);
+    return mod.toolchainTsconfigFiles({ repoRoot: root });
+  },
   now: () => Date.now(),
   makeTempDir: () => mkdtempSync(path.join(tmpdir(), "pc-targeted-reuse-")),
   removeTempDir: (dir) => rmSync(dir, { recursive: true, force: true }),
 };
+
+/**
+ * Restore an explicitly identified, isolated checkpoint checkout before reuse.
+ * The caller must supply the configured checkpoint and integration roots; this function
+ * verifies that both resolve to distinct Git worktree roots and that `root` is exactly the
+ * checkpoint worktree before it runs any destructive Git command. It then requires HEAD to
+ * equal `expectedSha`, restores tracked files and initialized submodules, removes untracked
+ * test output, and confirms the checkout is clean. Any uncertainty fails closed.
+ *
+ * @param {object} o
+ * @param {string} o.root checkout to restore
+ * @param {string|null} o.expectedSha exact candidate SHA expected at HEAD
+ * @param {string} o.checkpointRoot configured disposable checkpoint checkout
+ * @param {string} o.integrationRoot protected integration checkout
+ * @param {string} o.releaseRoot protected release checkout
+ * @param {Partial<typeof defaultDeps>} [o.deps] injection seam for tests
+ * @returns {{ok:boolean, restored?:boolean, reason?:string}}
+ */
+export function restoreDisposableCheckpoint({ root, expectedSha, checkpointRoot, integrationRoot, releaseRoot, deps = {} }) {
+  const d = { ...defaultDeps, ...deps };
+  const canonicalPath = (candidate) => {
+    try {
+      return realpathSync(candidate);
+    } catch {
+      return null;
+    }
+  };
+  const gitRoot = (candidate) => {
+    const output = d.git(candidate, ["rev-parse", "--show-toplevel"]);
+    if (typeof output !== "string" || !output.trim()) return null;
+    return canonicalPath(output.trim());
+  };
+
+  const rootPath = canonicalPath(root);
+  const checkpointPath = canonicalPath(checkpointRoot);
+  const integrationPath = canonicalPath(integrationRoot);
+  const releasePath = canonicalPath(releaseRoot);
+  const actualRoot = gitRoot(root);
+  const actualCheckpoint = gitRoot(checkpointRoot);
+  const actualIntegration = gitRoot(integrationRoot);
+  const actualRelease = gitRoot(releaseRoot);
+  const pathContains = (parent, candidate) => {
+    const relative = path.relative(parent, candidate);
+    return relative === "" ||
+      (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+  };
+  if (
+    !rootPath ||
+    !checkpointPath ||
+    !integrationPath ||
+    !releasePath ||
+    !actualRoot ||
+    !actualCheckpoint ||
+    !actualIntegration ||
+    !actualRelease ||
+    rootPath !== checkpointPath ||
+    actualRoot !== rootPath ||
+    actualCheckpoint !== checkpointPath ||
+    actualIntegration !== integrationPath ||
+    actualRelease !== releasePath ||
+    pathContains(checkpointPath, integrationPath) ||
+    pathContains(integrationPath, checkpointPath) ||
+    pathContains(checkpointPath, releasePath) ||
+    pathContains(releasePath, checkpointPath) ||
+    actualRoot === actualIntegration ||
+    actualRoot === actualRelease
+  ) {
+    return { ok: false, reason: "checkpoint-root-unverified" };
+  }
+
+  const head = (d.git(root, ["rev-parse", "HEAD"]) ?? "").trim();
+  if (!head || head !== expectedSha) return { ok: false, reason: "head-mismatch" };
+  const status = d.git(root, ["status", "--porcelain", "--ignore-submodules=none"]);
+  if (status == null) return { ok: false, reason: "checkout-status-unknown" };
+  if (!status.trim()) return { ok: true, restored: false };
+
+  const restoreSteps = [
+    ["reset", "--hard", head],
+    // Restore initialized submodule worktrees to the gitlink revisions recorded at HEAD;
+    // resetting each submodule's current HEAD alone could leave it on the wrong revision.
+    ["submodule", "update", "--init", "--recursive", "--force"],
+    ["submodule", "foreach", "--recursive", "git clean -fd"],
+    ["clean", "-fd"],
+  ];
+  for (const args of restoreSteps) {
+    if (d.git(root, args) == null) return { ok: false, reason: "checkpoint-restore-failed" };
+  }
+  const cleanStatus = d.git(root, ["status", "--porcelain", "--ignore-submodules=none"]);
+  if (cleanStatus == null) return { ok: false, reason: "checkout-status-unknown" };
+  if (cleanStatus.trim()) return { ok: false, reason: "checkpoint-remains-dirty" };
+  return { ok: true, restored: true };
+}
+
+/**
+ * Apply the candidate-suite identity gate before restoring the configured disposable checkpoint.
+ * This is shared with the repair-task path so both callers enforce one root/sha safety contract.
+ *
+ * @param {object} o
+ * @param {string} o.root checkout to restore
+ * @param {string} o.judgedSha candidate SHA read by the affected-test runner
+ * @param {NodeJS.ProcessEnv} [o.env] candidate-suite environment
+ * @param {Partial<typeof defaultDeps>} [o.deps] injection seam for tests
+ * @returns {{ok:boolean, restored?:boolean, reason?:string}}
+ */
+export function restoreCandidateCheckpointForReuse({ root, judgedSha, env = process.env, deps = {} }) {
+  if (
+    env.GREEN_CHECKPOINT !== "1" ||
+    !judgedSha ||
+    env.PAPERCUSP_TEST_RUN_COMMIT !== judgedSha ||
+    !env.PC_TEST_REUSE_DISPOSABLE_CHECKPOINT_ROOT ||
+    !env.PC_TEST_REUSE_INTEGRATION_ROOT ||
+    !env.PC_TEST_REUSE_RELEASE_ROOT
+  ) {
+    return { ok: false, reason: "candidate-checkpoint-identity-unverified" };
+  }
+  return restoreDisposableCheckpoint({
+    root,
+    expectedSha: judgedSha,
+    checkpointRoot: env.PC_TEST_REUSE_DISPOSABLE_CHECKPOINT_ROOT,
+    integrationRoot: env.PC_TEST_REUSE_INTEGRATION_ROOT,
+    releaseRoot: env.PC_TEST_REUSE_RELEASE_ROOT,
+    deps,
+  });
+}
 
 function withTimeout(promise, ms, what) {
   let timer;
@@ -192,19 +349,29 @@ const token = (err) => String((err && err.message) || err).replace(/\s+/g, "_").
  * @param {string | null} o.expectedSha the commit the caller just materialized; HEAD must equal it
  * @param {Record<string, string | undefined>} o.env the env the task will run with
  * @param {string} [o.scope]        log label for where the run came from (e.g. `repair-head`)
+ * @param {boolean} [o.restoreDirtyCheckpoint] Restore dirty files only for a disposable,
+ *   isolated checkpoint checkout already verified at `expectedSha`; never enable for shared trees.
+ * @param {string} [o.checkpointRoot] configured disposable checkpoint checkout
+ * @param {string} [o.integrationRoot] protected integration checkout
+ * @param {string} [o.releaseRoot] protected release checkout
  * @param {Partial<typeof defaultDeps>} [o.deps] injection seams (tests)
  * @returns {Promise<{
  *   env: Record<string, string | undefined>,
+ *   args: string[],
  *   lines: string[],
  *   reused: number,
  *   recording: boolean,
  *   finish: () => string[],
  * }>}
  */
-export async function armTargetedTaskReuse({ root, workspace, script, expectedSha, env, scope = "targeted", deps = {} }) {
+export async function armTargetedTaskReuse({ root, workspace, script, expectedSha, env, scope = "targeted", restoreDirtyCheckpoint = false, checkpointRoot, integrationRoot, releaseRoot, deps = {} }) {
   const d = { ...defaultDeps, ...deps };
   const label = `${workspace}::${script}`;
   const out = { ...env };
+  const runContext = out.GREEN_CHECKPOINT === "1" && out.PAPERCUSP_TEST_RUN_SOURCE === "ci"
+    ? "green-checkpoint"
+    : "clean-local";
+  const runGroupId = out.PAPERCUSP_TEST_RUN_GROUP;
   for (const key of [
     TEST_REUSE_SKIP_LIST_ENV,
     EXECUTED_MAP_WORKSPACE_ENV,
@@ -252,16 +419,21 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
       resultFile = null;
     }
   }
-  const result = (reused) => ({ env: out, lines, reused, recording, finish: finishWith(resultFile) });
-  const off = (reason) => {
+  let args = [];
+  const result = (reused) => ({ env: out, args, lines, reused, recording, finish: finishWith(resultFile) });
+  const record = async (decision) => {
+    try { await d.recordReuse(label, decision, { runContext, runGroupId }); } catch { /* telemetry must not affect task execution */ }
+  };
+  const off = async (reason) => {
     lines.push(`${TARGETED_REUSE_LINE_PREFIX}TEST_PASS_REUSE ws=${label} scope=${scope} applied=false reason=${reason}`);
+    await record({ offReason: reason });
     return result(0);
   };
 
   const pkg = resolveWorkspacePackage(root, workspace);
   if (!pkg) return off("workspace-unresolved");
-  // An all-reused task runs zero files; only a script that treats that as a pass may skip.
-  if (!/--passWithNoTests\b/.test(pkg.scripts[script] ?? "")) return off("script-cannot-run-zero-files");
+  // Direct Vitest commands receive a zero-file flag only with complete proof coverage below.
+  if (!scriptSupportsPassReuse(pkg.scripts[script] ?? "")) return off("script-cannot-run-zero-files");
   if (!testReuseEnabled(out)) return off("disabled-by-env");
   const head = (d.git(root, ["rev-parse", "HEAD"]) ?? "").trim();
   if (!head) return off("no-judged-sha");
@@ -271,12 +443,29 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
   // Drift is computed commit-to-commit, so an uncommitted edit would be invisible to it.
   const status = d.git(root, ["status", "--porcelain", "--ignore-submodules=none"]);
   if (status == null) return off("checkout-status-unknown");
-  const dirty = status.split("\n").filter((l) => l.trim().length > 0);
+  let dirty = status.split("\n").filter((l) => l.trim().length > 0);
+  if (dirty.length > 0 && restoreDirtyCheckpoint) {
+    // --prepare-existing intentionally preserves source files. Share the same exact-root,
+    // distinct-integration-root, expected-HEAD contract as the candidate-suite path.
+    const restored = restoreDisposableCheckpoint({
+      root,
+      expectedSha: head,
+      checkpointRoot,
+      integrationRoot,
+      releaseRoot,
+      deps: { git: d.git },
+    });
+    if (!restored.ok) return off(restored.reason);
+    dirty = [];
+    if (restored.restored) lines.push(`TARGETED_CHECKPOINT_RESTORED sha=${head.slice(0, 12)}`);
+  }
   if (dirty.length > 0) return off(`dirty-checkout(${dirty.length})`);
-  const runnerIdentity = d.runnerIdentity(root, out);
+  // WI-6554700010008589: match the JUDGED tree's recorder, not this module's constant. Its proofs and
+  // its skip-list consumer both use that format; on a frozen lineage older than a format bump the
+  // constant made every proof `otherRunner` (gate run 762a13a6: 0 of 7,689 reused).
+  const proofFormat = (typeof d.proofFormat === "function" ? d.proofFormat(root) : null) ?? REUSE_PROOF_FORMAT;
+  const runnerIdentity = d.runnerIdentity(root, out, proofFormat);
   if (!runnerIdentity) return off("no-runner-identity");
-  const runContext = out.GREEN_CHECKPOINT === "1" ? "green-checkpoint" : "clean-local";
-
   let client;
   try {
     client = await d.connect(out);
@@ -301,16 +490,55 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
   }
 
   const prefix = pkg.dirRel === "" ? "" : `${pkg.dirRel}/`;
+  let candidates = reuseCandidates({ wsRel: pkg.dirRel, relatedFiles: null, proofFiles: loaded.proofs.keys() });
+  const lane = laneOfTaskScript(script);
+  let laneNote = "";
+  if (lane !== null) {
+    try {
+      // Match the exact judged tree's selector, as affected-tests does. The lane task's package
+      // script names only one lane, while its proof table contains both lanes' files.
+      const laneSplit = await import(pathToFileURL(path.join(root, "libs/test-config/src/lane-split.ts")).href);
+      const laneOf = laneOfFromSplit(
+        laneSplit,
+        path.join(root, pkg.dirRel),
+        candidates.map((f) => f.slice(prefix.length)),
+      );
+      const scoped = laneScopedCandidates({ candidates, wsRel: pkg.dirRel, lane, laneOf });
+      candidates = scoped.candidates;
+      laneNote = ` lane=${lane} otherLane=${scoped.otherLane}`;
+    } catch (err) {
+      // A missing or unreadable lane selector cannot produce a truthful denominator or skip list.
+      return off(`lane-filter-unavailable(${token(err)})`);
+    }
+  }
   const { skip, summary } = selectReusablePasses({
-    candidates: reuseCandidates({ wsRel: pkg.dirRel, relatedFiles: null, proofFiles: loaded.proofs.keys() }),
+    candidates,
     proofs: loaded.proofs,
     judgedSha: head,
     changedBetween: d.changedBetween(root),
     runContext,
     runnerIdentity,
+    proofFormat,
     nowMs: d.now(),
     maxAgeMs: testReuseMaxAgeMs(out),
     auditRate: testReuseAuditRate(out),
+    inertGlobalChange: typeof d.inertGlobalChange === "function" ? d.inertGlobalChange(root) : null,
+    testConfigMainProcess: await (async () => {
+      // Unavailable = null: every test-config source file stays global (the pre-P-003 rule).
+      try {
+        return typeof d.testConfigMainProcess === "function" ? await d.testConfigMainProcess(root) : null;
+      } catch {
+        return null;
+      }
+    })(),
+    toolchainTsconfigs: await (async () => {
+      // Unavailable = null: every root tsconfig stays global (the pre-P-004 rule).
+      try {
+        return typeof d.toolchainTsconfigs === "function" ? await d.toolchainTsconfigs(root) : null;
+      } catch {
+        return null;
+      }
+    })(),
   });
   let reused = 0;
   if (skip.length > 0) {
@@ -324,13 +552,25 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
       });
       out[TEST_REUSE_SKIP_LIST_ENV] = list.path;
       reused = list.count;
+      args = emptySuiteGuardArgs({
+        scriptText: pkg.scripts[script] ?? "",
+        wsAbsDir: path.join(root, pkg.dirRel),
+        script,
+        reuseSkipped: skip.map((f) => f.slice(prefix.length)),
+      });
     } catch (err) {
       return off(`skip-list-unwritable(${token(err)})`);
     }
   }
   lines.push(
     TARGETED_REUSE_LINE_PREFIX +
-      formatTestReuseLine(label, summary, ` scope=${scope} rows=${loaded.rows} sha=${head.slice(0, 12)}`),
+      formatTestReuseLine(
+        label,
+        summary,
+        ` scope=${scope} rows=${loaded.rows} sha=${head.slice(0, 12)}` +
+          (proofFormat === REUSE_PROOF_FORMAT ? "" : ` proofFormat=${proofFormat}(legacy)`) + laneNote,
+      ),
   );
+  await record({ summary });
   return result(reused);
 }

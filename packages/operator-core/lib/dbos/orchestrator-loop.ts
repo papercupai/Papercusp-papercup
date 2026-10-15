@@ -965,7 +965,9 @@ export async function readFrontierFeatures(
   // index were dropped (migration 155); getFeatureBlockers reads the harness's
   // blocker sets in one indexed query (the cheap dispatch read D-027 specifies).
   // computeFrontier is unaffected — only the data source for `blockedBy` changed.
-  const edgeBlockers = await defaultBlockingStore.blockersFor(slug);
+  // Keep dependency reads on the same supplied connection as the frontier rows.
+  // Falling back to getOrgPg here escapes private runtimes and transaction scope.
+  const edgeBlockers = await defaultBlockingStore.blockersFor(slug, { sql: pg });
   return rows.map((r) => ({
     id: r.feature_id,
     status: r.status,

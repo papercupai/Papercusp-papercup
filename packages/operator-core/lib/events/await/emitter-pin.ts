@@ -115,7 +115,6 @@ export const DYNAMIC_KEY_FAMILIES: Readonly<Record<string, string>> = {
   'git-sync': 'key assembled from a phase variable inside the git-sync event helper',
   'git-sync-egress': 'declared file is the CALLER; the emit is in its git-sync-events helper',
   'session-compacted': 'emitted through a helper re-exported from session-compacted-events',
-  'consult-reply': 'declared files are the consult verbs; the emit is in get-feedback-core',
 };
 
 /**
@@ -184,6 +183,16 @@ export function emitterKeyHead(entry: EventCatalogEntry): string {
   return familyKeyPrefix(entry).replace(/:$/, '');
 }
 
+/**
+ * True when comment-stripped `code` builds `family`'s key through the catalog —
+ * `buildKey('<family>', …)` in any quote style. Exact family match: a buildKey call for
+ * a DIFFERENT family (including one sharing a prefix) does not attribute this one.
+ */
+export function buildsFamilyKey(code: string, family: string): boolean {
+  const escaped = family.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\bbuildKey\\(\\s*(['"\`])${escaped}\\1`).test(code);
+}
+
 /** Judge one catalog against the tree. Pure: all I/O arrives through `opts`. */
 export function judgeEmitterPins(opts: EmitterPinOptions): EmitterPinVerdict {
   const dynamic = opts.dynamic ?? DYNAMIC_KEY_FAMILIES;
@@ -245,7 +254,12 @@ export function judgeEmitterPins(opts: EmitterPinOptions): EmitterPinVerdict {
       } catch {
         continue;
       }
-      if (stripComments(source).includes(head)) inCode = true;
+      const code = stripComments(source);
+      // A `buildKey('<family>', …)` call IS a static emit of this family: its template is
+      // sourced from the catalog, which is exactly the fix DYNAMIC_KEY_FAMILIES' own doc
+      // prescribes. Matching only the literal head made that fix read as prose-only
+      // (wake-not-picked-up, 2026-10-13).
+      if (code.includes(head) || buildsFamilyKey(code, family)) inCode = true;
       else if (source.includes(head)) inProse = true;
     }
 

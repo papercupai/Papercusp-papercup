@@ -39,7 +39,7 @@ export default defineTool({
   capability: 'coord:write',
   guidance: {
     when: 'Deliberately re-tuning YOUR OWN per-hop budgets for a specific task — e.g. widening the result door for a session paging large artifacts, without touching the workspace defaults.',
-    notWhen: 'Fleet-wide — config:doors-set. To read the layers — config:doors-get. Never as a reaction to one capped result (runtime feedback, D-001) — page the spill pointer instead.',
+    notWhen: 'Fleet-wide — config:doors-set. To read the layers — config:doors-get. Never as a reaction to one capped result (runtime feedback, D-001) — search the spill instead (capability:read query, then view_lines).',
     chaining: 'config:doors-get first (see your effective constants); set; clear:true when the task is done.',
     seeAlso: [
       'config:doors-get (your effective constants + every layer)',

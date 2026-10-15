@@ -1,3 +1,0 @@
-SELF-BRIEF-solo-hive-git-takeover-2026-07-02
-sentinel-as-claude-tui-2026-06-22
-sentinel-tui-shared-backend-and-cards-2026-06-22

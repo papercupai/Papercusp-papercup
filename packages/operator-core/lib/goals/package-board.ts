@@ -48,9 +48,10 @@ export interface GoalPackageBoardEntry {
   instances: GoalPackageBoardInstance[];
   /**
    * The one live instance the rail's readout (and card click) should target:
-   * first ACTIVE non-stub, else first non-stub of any status (a paused live
-   * instance still owns the pause readout). Null when only stubs (or nothing)
-   * exist — which is exactly the "one-click start" case.
+   * first ACTIVE non-stub, then a paused held instance, then a paused
+   * replacement ahead of terminal history. Terminal-only history keeps its
+   * readout. Null when only stubs (or nothing) exist — the one-click start case.
+   * A selected paused replacement remains unstarted; this is navigation only.
    */
   activeGoalId: string | null;
   featured: boolean;
@@ -99,7 +100,10 @@ export function foldGoalPackageBoard(
     );
     const nonStubs = instances.filter((i) => !i.adoptableStub);
     const activeGoalId =
-      nonStubs.find((i) => i.status === 'active')?.goalId ?? nonStubs[0]?.goalId ?? null;
+      nonStubs.find((i) => i.status === 'active')?.goalId ??
+      nonStubs.find((i) => i.status === 'paused')?.goalId ??
+      (nonStubs.length > 0 ? instances.find((i) => i.status === 'paused')?.goalId : null) ??
+      nonStubs[0]?.goalId ?? null;
     return {
       ref: pkg.ref,
       title: pkg.title,

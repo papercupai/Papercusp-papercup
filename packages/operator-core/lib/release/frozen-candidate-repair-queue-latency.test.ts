@@ -12,6 +12,7 @@
  * `fixerStateChangedAtMs`) and the two read paths that surface them (diagnostic + gate_health).
  */
 import { describe, expect, it } from 'vitest';
+import { ADMISSION_GIT_DATE } from './admission-commit-date';
 import {
   createFrozenCandidateRepairQueue,
   diagnoseFrozenCandidateRepairQueue,
@@ -230,5 +231,76 @@ describe('latency clocks — read paths', () => {
     const health = buildFreezeAndConvergeGateHealth(disposition, T0);
     expect(health.freezeAndConverge.repairLatency).toBeNull();
     expect(readFreezeAndConverge({ freezeAndConverge: { ...health.freezeAndConverge, repairLatency: { stamps: {} } } })?.repairLatency).toBeNull();
+  });
+});
+
+// WI-10007622: the live papercusp queue published admitToVerdictMs = 844,636,939,525 ms (~26.8
+// years) on 2026-10-06 21:22Z because lastAdmittedAtMs held the synthetic ADMISSION_GIT_DATE
+// (2000-01-01) — a reconciled admission's atMs had been read from its deterministic commit date.
+describe('latency clocks — a clock older than the queue itself is inadmissible', () => {
+  const SYNTHETIC_MS = Date.parse(ADMISSION_GIT_DATE);
+
+  it('replays the live 10-06 stamps: no decades-long span, and the poisoned clock is named', () => {
+    const latency = frozenRepairLatency(
+      {
+        openedAtMs: 1_791_213_906_418,
+        phase: 'ready-to-verify',
+        convergenceRounds: [],
+        lastAdmittedAtMs: SYNTHETIC_MS,
+        lastResumeRunStartedAtMs: 1_791_314_664_063,
+        lastVerdictAtMs: 1_791_321_739_525,
+      },
+      1_791_321_740_000,
+    );
+    expect(latency.admitToVerdictMs).toBeNull();
+    expect(latency.admitToResumeRunStartMs).toBeNull();
+    expect(latency.admitAwaitingVerdictMs).toBeNull();
+    expect(latency.admitAwaitingResumeRunStartMs).toBeNull();
+    expect(latency.fixToAdmitMs).toBeNull();
+    expect(latency.stamps.lastAdmittedAtMs).toBeNull();
+    expect(latency.inadmissibleStamps).toEqual(['lastAdmittedAtMs']);
+    // The sound clocks are untouched.
+    expect(latency.stamps.lastResumeRunStartedAtMs).toBe(1_791_314_664_063);
+    expect(latency.stamps.lastVerdictAtMs).toBe(1_791_321_739_525);
+  });
+
+  it('every optional clock is held to the same floor; a clock AT openedAtMs is admissible', () => {
+    const poisoned: FrozenCandidateRepairQueue = {
+      ...fresh(),
+      fixerSpawnedAtMs: SYNTHETIC_MS,
+      lastAdmittedAtMs: T0 - 1,
+      lastResumeRunStartedAtMs: T0,
+      lastVerdictAtMs: SYNTHETIC_MS,
+    };
+    const latency = frozenRepairLatency(poisoned, T0 + MIN);
+    expect(latency.inadmissibleStamps).toEqual(['fixerSpawnedAtMs', 'lastAdmittedAtMs', 'lastVerdictAtMs']);
+    expect(latency.stamps.lastResumeRunStartedAtMs).toBe(T0);
+    expect(latency.redToFixerSpawnMs).toBeNull();
+    // A sound queue carries no marker at all.
+    expect(frozenRepairLatency(fresh(), T0 + MIN)).not.toHaveProperty('inadmissibleStamps');
+  });
+
+  it('gate_health keeps the marker through the read-side guard and drops unknown keys', () => {
+    const poisoned = { ...admit(fresh(), T0 + 9 * MIN), lastAdmittedAtMs: SYNTHETIC_MS };
+    const nowMs = T0 + 12 * MIN;
+    const disposition = deriveTickFreezeDisposition({
+      flagEnabled: true,
+      repairQueue: poisoned,
+      summary: 'repair head awaiting verification',
+      green: null,
+      nowMs,
+    });
+    expect(disposition.repairLatency?.inadmissibleStamps).toEqual(['lastAdmittedAtMs']);
+    const health = buildFreezeAndConvergeGateHealth(disposition, nowMs);
+    const read = readFreezeAndConverge(JSON.parse(JSON.stringify(health)))?.repairLatency;
+    expect(read?.inadmissibleStamps).toEqual(['lastAdmittedAtMs']);
+    expect(read?.admitToVerdictMs).toBeNull();
+    const tampered = readFreezeAndConverge({
+      freezeAndConverge: {
+        ...health.freezeAndConverge,
+        repairLatency: { ...health.freezeAndConverge.repairLatency, inadmissibleStamps: ['bogus', 7] },
+      },
+    })?.repairLatency;
+    expect(tampered).not.toHaveProperty('inadmissibleStamps');
   });
 });

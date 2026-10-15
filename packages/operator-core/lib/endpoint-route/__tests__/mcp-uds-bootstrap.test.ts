@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { lstat, readFile, rm, mkdtemp } from 'node:fs/promises';
+import { lstat, readFile, rm, mkdtemp, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { readFileSync } from 'node:fs';
 
-const h = vi.hoisted(() => ({ home: '' }));
+const h = vi.hoisted(() => ({ home: '', runtime: '' }));
 vi.mock('node:os', async original => ({
   ...await original<typeof import('node:os')>(), homedir: () => h.home,
 }));
@@ -24,6 +24,9 @@ import { readAgentMcpDiscoveryForPort, endpointIpcDiscoveryPathForPort } from '.
 
 beforeEach(async () => {
   h.home = await mkdtemp(join(tmpdir(), 'boot-mcp-'));
+  h.runtime = join(h.home, 'runtime');
+  await mkdir(h.runtime, { mode: 0o700 });
+  vi.stubEnv('XDG_RUNTIME_DIR', h.runtime);
   vi.stubEnv('PAPERCUSP_IPC_TCP', '');
   vi.stubEnv('WSL_INTEROP', '');
   vi.stubEnv('WSL_DISTRO_NAME', '');
@@ -53,6 +56,7 @@ describe('desktop bootstrap publishes a separately authenticated MCP endpoint', 
       const descriptor = await readAgentMcpDiscoveryForPort(33170);
       expect(descriptor?.socketPath).toBe('/tmp/ui.sock');
       expect(descriptor?.agentMcp).toEqual(listener!.endpoint);
+      expect(listener!.endpoint.socketPath.startsWith(join(h.runtime, 'pmcp-'))).toBe(true);
       const raw = await readFile(endpointIpcDiscoveryPathForPort(33170), 'utf8');
       expect(raw).not.toContain('authorization');
       expect(raw).not.toContain('token');

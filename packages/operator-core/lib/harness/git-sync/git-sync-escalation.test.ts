@@ -6,6 +6,7 @@ import {
   CONTENT_QUARANTINE_REALARM_TICKS,
   decideContentQuarantineNotice,
   decideGitSyncEscalation,
+  effectivePublishRefusal,
   oversizedKey,
   PUSH_FAILURE_ESCALATION_TICKS,
   selectContentNoticeRecipients,
@@ -301,6 +302,71 @@ describe('decideGitSyncEscalation — own-head publish refusal (EI-2123001158930
 });
 
 /**
+ * WI-6554700010010939 — a stale refusal re-broadcast. On 2026-10-13 the own-head publish
+ * was refused at 19:42:25Z; a secrets exemption added at 19:45Z cleared it; the next
+ * tick (one-tick lag, ~35 min on papercusp) still broadcast "egress is FROZEN" at
+ * 20:16:22Z, 50 s before that same tick's publish leg retried and published.
+ */
+describe('effectivePublishRefusal — exemption newer than the refusal (WI-6554700010010939)', () => {
+  const refusedAt = Date.parse('2026-10-13T19:42:25Z');
+  const exemptedAt = Date.parse('2026-10-13T19:45:00Z');
+  const secrets = { refused: 'secrets', blockedAtCommit: '6c1f826a7a90aaaaaaaaaaaaaaaaaaaaaaaaaaaa', atMs: refusedAt };
+
+  it('drops a secrets refusal recorded BEFORE the latest exemption (the measured incident)', () => {
+    expect(effectivePublishRefusal(secrets, exemptedAt)).toBeNull();
+  });
+
+  it('the incident tick therefore neither escalates nor broadcasts', () => {
+    const d = decideGitSyncEscalation({
+      ...base,
+      status: 'synced',
+      publishRefusal: effectivePublishRefusal(secrets, exemptedAt),
+      prevPublishBlockedAtCommit: null,
+    });
+    expect(d.reasons).not.toContain('publish-refused');
+    expect(d.broadcast).toBeNull();
+  });
+
+  it('keeps a refusal recorded AFTER the latest exemption — the retry failed again', () => {
+    const later = { ...secrets, atMs: exemptedAt + 60_000 };
+    expect(effectivePublishRefusal(later, exemptedAt)).toEqual({
+      refused: 'secrets',
+      blockedAtCommit: secrets.blockedAtCommit,
+    });
+    // And because the superseded tick recorded no freeze point, the repeat refusal at
+    // the SAME commit still broadcasts instead of being treated as a persisting freeze.
+    const d = decideGitSyncEscalation({
+      ...base,
+      publishRefusal: effectivePublishRefusal(later, exemptedAt),
+      prevPublishBlockedAtCommit: null,
+    });
+    expect(d.broadcast).toContain('6c1f826a7a90');
+  });
+
+  it('keeps the refusal when no exemption exists or either timestamp is unreadable (fail loud)', () => {
+    expect(effectivePublishRefusal(secrets, null)).not.toBeNull();
+    expect(effectivePublishRefusal(secrets, Number.NaN)).not.toBeNull();
+    expect(effectivePublishRefusal({ ...secrets, atMs: null }, exemptedAt)).not.toBeNull();
+  });
+
+  it('an exemption cannot supersede a non-secrets refusal', () => {
+    expect(effectivePublishRefusal({ ...secrets, refused: 'oversized' }, exemptedAt)).toEqual({
+      refused: 'oversized',
+      blockedAtCommit: secrets.blockedAtCommit,
+    });
+  });
+
+  it('an empty or absent refusal stays null', () => {
+    expect(effectivePublishRefusal(null, exemptedAt)).toBeNull();
+    expect(effectivePublishRefusal({ ...secrets, refused: '' }, exemptedAt)).toBeNull();
+  });
+
+  it('an exemption at the SAME instant as the refusal does not supersede it', () => {
+    expect(effectivePublishRefusal(secrets, refusedAt)).not.toBeNull();
+  });
+});
+
+/**
  * EI-19275994927087666 — both the escalation broadcast and the /admin/git deploy
  * panel called EVERY git-sync failure a PUSH failure. For 32h the fleet inbox read
  * "PUSH FAILING … commits NOT reaching origin" while origin/staging was byte-identical
@@ -325,6 +391,32 @@ describe('classifyGitSyncFailingLeg (EI-19275994927087666)', () => {
     expect(classifyGitSyncFailingLeg('failed to push some refs to origin', 'push')).toBe('push');
   });
 
+  it.each([
+    'git-sync publication refused: serving unavailable (unknown: lazy serving recovery failed: migration gate failed: snapshot admission)',
+    'git-sync publication refused: serving capability has no usable device actor',
+  ])('escalates a serving refusal before push with its startup cause: %s', (cause) => {
+    const actual = `push failed: ${cause}`;
+    expect(classifyGitSyncFailingLeg(actual, 'push')).toBe('serving');
+    const decision = decideGitSyncEscalation({
+      ...base,
+      status: 'error',
+      consecutiveErrorTicks: PUSH_FAILURE_ESCALATION_TICKS,
+      errors: [{ scope: 'libs/papercusp', message: actual }],
+    });
+    expect(decision.escalate).toBe(true);
+    expect(decision.broadcast).toContain('serving owner unavailable');
+    expect(decision.broadcast).toContain('repair substrate startup');
+    expect(decision.broadcast).toContain(cause);
+    expect(decision.broadcast).not.toContain('commits NOT reaching origin');
+    expect(decideGitSyncEscalation({
+      ...base,
+      status: 'error',
+      consecutiveErrorTicks: PUSH_FAILURE_ESCALATION_TICKS + 1,
+      errors: [{ scope: 'libs/papercusp', message: actual }],
+    }).broadcast).toBeNull();
+    expect(decideGitSyncEscalation(base).clear).toBe(true);
+  });
+
   it('classifies a conflict as conflict, even though the text also mentions commit', () => {
     expect(classifyGitSyncFailingLeg('merge conflict in lib/x.ts; commit aborted', 'push')).toBe('conflict');
   });
@@ -346,8 +438,8 @@ describe('classifyGitSyncFailingLeg (EI-19275994927087666)', () => {
   });
 
   it('WI-10004397: a disk-headroom refusal is classified as the DISK, never as push or unclassified', () => {
-    // The two real 2026-09-30 forms (object-store path shortened). Root sat at ~25 GB free
-    // against a ~40 GB reserve; every superproject commit on the box stopped for ~40 min.
+    // The two real 2026-09-30 forms (object-store path shortened). A fetch reserve
+    // refusal measures the fetch, not whether the superproject committed locally.
     const verifyForm =
       'fetch failed; submodule remote state could not be verified before superproject publication: ' +
       'git fetch stopped for disk headroom at /repo/.git/modules/libs/generic/cache/objects: ' +
@@ -373,9 +465,25 @@ describe('classifyGitSyncFailingLeg (EI-19275994927087666)', () => {
       consecutiveErrorTicks: PUSH_FAILURE_ESCALATION_TICKS,
       errors: [{ scope: 'libs/token-kit', message: unpushedForm }],
     });
-    expect(decision.broadcast).toContain('LOCAL DISK FULL');
+    expect(decision.broadcast).toContain('DISK SPACE / HEADROOM');
     expect(decision.broadcast).not.toContain('cause unclassified');
     expect(decision.broadcast).not.toContain('NOT reaching origin');
+  });
+
+  it('EI-25439777241393921: a locally synced tick can report submodule headroom errors without claiming commits stopped', () => {
+    const decision = decideGitSyncEscalation({
+      ...base,
+      status: 'synced',
+      consecutiveErrorTicks: PUSH_FAILURE_ESCALATION_TICKS,
+      errors: [{
+        scope: 'libs/token-kit',
+        message: 'fetch failed; git fetch stopped for disk headroom at /repo/.git/objects: 32 bytes available; critical reserve 40 bytes',
+      }],
+    });
+    expect(decision.broadcast).toContain('DISK SPACE / HEADROOM');
+    expect(decision.broadcast).toContain('does not establish a local commit failure');
+    expect(decision.broadcast).not.toContain('nothing commits');
+    expect(decision.broadcast).not.toContain('LOCAL DISK FULL');
   });
 
   it('infers commit for a commit-only member when the error text is unusable', () => {

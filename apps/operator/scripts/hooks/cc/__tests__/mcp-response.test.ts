@@ -14,6 +14,13 @@ const TARGET_HOOKS = [
   'posttooluse-activity-report.sh',
   'userpromptsubmit-provenance.sh',
 ];
+const ACTIVITY_REPORT_HOOKS = [
+  'lifecycle-report.sh',
+  'pretooluse-activity-report.sh',
+  'posttooluse-activity-report.sh',
+  'pretooluse-bash-resource-gate.sh',
+  'workitem-verify-nudge.sh',
+];
 
 function parse(raw: string, env: Record<string, string> = {}): { inner: unknown; error: unknown; phase: string } {
   const script = [
@@ -30,6 +37,16 @@ function parse(raw: string, env: Record<string, string> = {}): { inner: unknown;
       env: { ...process.env, ...env },
     }),
   ) as { inner: unknown; error: unknown; phase: string };
+}
+
+function withNativeSession(url: string, sessionId: string): string {
+  const script = [
+    'import sys',
+    'sys.path.insert(0, sys.argv[1])',
+    'from mcp_response import with_native_session',
+    'print(with_native_session(sys.argv[2], sys.argv[3]))',
+  ].join('\n');
+  return execFileSync('python3', ['-c', script, HOOK_DIR, url, sessionId], { encoding: 'utf8' }).trim();
 }
 
 describe('shared CC MCP response parser', () => {
@@ -173,5 +190,31 @@ describe('shared CC MCP response parser', () => {
     expect(readFileSync(join(HOOK_DIR, 'pretooluse-locks-acquire.sh'), 'utf8')).not.toContain(
       'def _parse_mcp_response',
     );
+  });
+});
+
+describe('shared CC native-session MCP URL context', () => {
+  it('preserves existing query values, safely encodes the native id, and replaces stale duplicates', () => {
+    const url = withNativeSession(
+      'http://operator.test/api/mcp?superuser=1&origin=hook&client=su-1&native_session=stale&native_session=older',
+      'native session/+1',
+    );
+    const parsed = new URL(url);
+    expect(parsed.searchParams.get('superuser')).toBe('1');
+    expect(parsed.searchParams.get('origin')).toBe('hook');
+    expect(parsed.searchParams.get('client')).toBe('su-1');
+    expect(parsed.searchParams.getAll('native_session')).toEqual(['native session/+1']);
+  });
+
+  it('leaves the request unchanged when no native id is available', () => {
+    const url = 'http://operator.test/api/mcp?superuser=1&client=su-1';
+    expect(withNativeSession(url, '')).toBe(url);
+  });
+
+  it.each(ACTIVITY_REPORT_HOOKS)('%s uses the shared URL helper for activity:report', (file) => {
+    const source = readFileSync(join(HOOK_DIR, file), 'utf8');
+    expect(source).toContain('with_native_session');
+    expect(source).toContain("'activity:report'");
+    expect(source).toMatch(/native_session_id\s*=|session_id\s+or\s+os\.environ/);
   });
 });

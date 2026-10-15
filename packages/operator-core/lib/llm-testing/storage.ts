@@ -97,7 +97,10 @@ async function persistSingleRun(
       ${sql.json({ toolInvocations: s.toolInvocations, continueChainRows: s.continueChainRows, ...(s.variantId ? { variantId: s.variantId } : {}) } as unknown as JSONValueCompat)},
       ${sql.json({ asserts: 'see-scenario', violations: r.violations } as unknown as JSONValueCompat)},
       ${sql.json({ scores: r.judge.scores, findings: r.judge.findings, notes: r.judge.notes, judgeOverruledAssert: r.judge.judgeOverruledAssert, costUsd: r.judge.costUsd } as unknown as JSONValueCompat)},
-      ${sql.json({ ...(s.timeout ? { timeout: s.timeout } : {}) } as unknown as JSONValueCompat)}
+      ${sql.json({
+        ...(s.timeout ? { timeout: s.timeout } : {}),
+        ...(s.llmCallDiagnostics ? { llmCallDiagnostics: s.llmCallDiagnostics } : {}),
+      } as unknown as JSONValueCompat)}
     )
   `;
 

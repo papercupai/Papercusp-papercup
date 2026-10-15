@@ -13,7 +13,7 @@
  * Part of code-recipes-2026-06-21 Phase 1 (P-002, integration tier).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { OrgTestDb } from '../test/_org-test-db';
@@ -46,14 +46,6 @@ const contractMigration = join(
   'sql',
   '897-code-recipe-contract.sql',
 );
-const profileMigrationArmed = join(
-  here, '..', '..', '..', 'libs', 'papercusp', 'libs', 'db', 'sql',
-  '1154-prose-embedding-profile-identity.sql',
-);
-const profileMigration = existsSync(profileMigrationArmed)
-  ? profileMigrationArmed
-  : `${profileMigrationArmed}.DRAFT`;
-
 /** A throwaway 768-dim embedding (the store only round-trips presence, not value). */
 const fakeEmbedding = (seed = 0.1): number[] => Array.from({ length: 768 }, () => seed);
 const profiledEmbedding = (embedding: number[]) => ({
@@ -70,7 +62,9 @@ describe('code_recipes store (real PG)', () => {
     // Migration 897 is armed. Re-apply its idempotent DDL in this isolated
     // database so store coverage remains bound to the production migration.
     await db.adminSql.unsafe(readFileSync(contractMigration, 'utf8')).simple();
-    await db.adminSql.unsafe(readFileSync(profileMigration, 'utf8')).simple();
+    // The org fixture has already applied the full migration chain, including
+    // 1154 before migration 1327 renamed personal_documents and left a compat
+    // view. Replaying 1154 against that head-schema view fails with ALTER TABLE.
   }, 120_000);
 
   afterAll(async () => {
@@ -206,6 +200,8 @@ describe('code_recipes store (real PG)', () => {
 
     const result = await reviseRecipeSource(db.adminSql, {
       id: initial.id,
+      title: 'Source revision v2',
+      description: 'Corrected source and catalog description in one CAS revision.',
       script: 'return await tools.state.read({ cell: "new" });',
       toolsUsed: ['state:read'],
       expectedUpdatedAt: before!.updatedAt,
@@ -213,6 +209,8 @@ describe('code_recipes store (real PG)', () => {
     expect(result.status).toBe('updated');
     if (result.status !== 'updated') throw new Error(`unexpected revision result: ${result.status}`);
     expect(result.row).toMatchObject({
+      title: 'Source revision v2',
+      description: 'Corrected source and catalog description in one CAS revision.',
       script: 'return await tools.state.read({ cell: "new" });',
       runCount: 2,
       successCount: 2,
@@ -226,6 +224,8 @@ describe('code_recipes store (real PG)', () => {
     });
     expect(stale.status).toBe('conflict');
     await expect(getRecipe(db.adminSql, initial.id)).resolves.toMatchObject({
+      title: 'Source revision v2',
+      description: 'Corrected source and catalog description in one CAS revision.',
       script: 'return await tools.state.read({ cell: "new" });',
       runCount: 2,
       successCount: 2,
@@ -236,6 +236,78 @@ describe('code_recipes store (real PG)', () => {
         FROM harness_shared.code_recipe_runs
        WHERE recipe_id = ${initial.id}`;
     expect(parseInt(runRows[0].count, 10)).toBe(2);
+  });
+
+  it('revises a runtime-input contract atomically with the source under the same compare-and-swap', async () => {
+    const initial = await upsertRecipe(db.adminSql, {
+      potSlug: null,
+      id: 'contract-revision',
+      title: 'Contract revision',
+      description: 'bind an invocation-scoped work item id',
+      script: 'return await tools.state.read({ cell: "old" });',
+    });
+    await recordRecipeRun(db.adminSql, {
+      recipeId: initial.id,
+      workspaceId: 'ws-contract-revise',
+      potSlug: null,
+      success: true,
+    });
+    const before = await getRecipe(db.adminSql, initial.id);
+    const bindingSchema = {
+      version: 1 as const,
+      properties: {
+        issueId: {
+          type: 'string' as const,
+          required: true,
+          description: 'Scorecard work-item id for this invocation.',
+          lifetime: { kind: 'invocation-ephemeral' as const },
+        },
+      },
+      additionalProperties: false as const,
+    };
+    const capabilityManifest = {
+      version: 1 as const,
+      representation: 'recipe-script' as const,
+      topology: { premises: ['host:same' as const] as ['host:same'] },
+      requirements: [{ capability: 'tools:state:read' as const }],
+      lifecycle: { allowed: ['foreground' as const], default: 'foreground' as const },
+      replay: { class: 'read-only' as const },
+      content: { emits: ['text' as const] },
+    };
+    const script = 'return await tools.state.read({ cell: inputs.issueId });';
+
+    const revised = await reviseRecipeSource(db.adminSql, {
+      id: initial.id,
+      script,
+      toolsUsed: ['state:read'],
+      contract: { bindingSchema, capabilityManifest },
+      expectedUpdatedAt: before!.updatedAt,
+    });
+    expect(revised.status).toBe('updated');
+    if (revised.status !== 'updated') throw new Error(`unexpected revision result: ${revised.status}`);
+    expect(revised.row).toMatchObject({
+      script,
+      bindingSchema,
+      capabilityManifest,
+      runCount: 1,
+      successCount: 1,
+    });
+
+    const stale = await reviseRecipeSource(db.adminSql, {
+      id: initial.id,
+      script: 'return "stale contract overwrite";',
+      toolsUsed: [],
+      contract: { bindingSchema: null, capabilityManifest: null },
+      expectedUpdatedAt: before!.updatedAt,
+    });
+    expect(stale.status).toBe('conflict');
+    await expect(getRecipe(db.adminSql, initial.id)).resolves.toMatchObject({
+      script,
+      bindingSchema,
+      capabilityManifest,
+      runCount: 1,
+      successCount: 1,
+    });
   });
 
   it('round-trips the exact versioned recipe contract and clears it when a later revision omits it', async () => {

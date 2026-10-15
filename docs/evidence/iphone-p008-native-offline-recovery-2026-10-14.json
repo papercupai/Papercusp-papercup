@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "P-008 native operator outage: pairing preservation, banner recovery and ordinary relaunch",
+  "command": ["tools/ios-ci.py:simulator", "--force", "--paired-ui", "--offline-recovery-ui", "PapercupUITests/PairFlowUITests/testOwnedOperatorOfflineThenRecoversWithoutRepairing"],
+  "startedAt": "2026-10-14T20:55:29.456711+00:00",
+  "finishedAt": "2026-10-14T21:06:07.632265+00:00",
+  "exitCode": 0,
+  "summary": "The maintained Mac VM runner passed 60 unit tests, 5 UI smoke tests and 1 selected actual-operator outage test with zero failures or skips. The owned operator stopped, a different process started after 55 seconds, the original paired device was preserved, the offline banner cleared and ordinary Keychain relaunch loaded authorized inbox data. Visual review also found an HTTP 502 inbox error still visible in the recovered-before-relaunch screenshot. The test does not require inbox content to recover before relaunch; full recovery acceptance remains open under owned EI-25990527987022733. All 281 declared native artifacts were rehashed with zero mismatches. Fixture and private-input cleanup were verified and the exclusive Mac lease was released.",
+  "assertions": [
+    {
+      "id": "selected native assertions",
+      "passed": true,
+      "evidence": "paired-ui-summary.json records 1 passed, 0 failed, 0 skipped. The selected test requires the actual offline banner, subsequent banner absence, retained pairing and authorized ordinary relaunch. It does not assert recovered inbox data before relaunch."
+    },
+    {
+      "id": "native unit and smoke phases",
+      "passed": true,
+      "evidence": "unit-1-summary.json records 60 passed, 0 failed, 0 skipped; ui-smoke-summary.json records 5 passed, 0 failed, 0 skipped."
+    },
+    {
+      "id": "actual owned operator replacement and device preservation",
+      "passed": true,
+      "evidence": "runtime.json records stoppedPid 1887232, stoppedAt 21:04:02.280Z, restoredPid 2371675, restoredAt 21:04:57.369Z, recovery readiness 21:05:35.232Z and originalDevicePreserved true. The private database and signing identity were retained across the interruption."
+    },
+    {
+      "id": "retained native artifact integrity",
+      "passed": true,
+      "evidence": "local-artifact-verification.json rehashed every one of the 281 result.json artifacts directly from native-artifacts.tar.gz; mismatches is empty."
+    },
+    {
+      "id": "owned fixture cleanup",
+      "passed": true,
+      "evidence": "Both durable jobs completed with exit 0. runtime.json records processCleanupVerified, cloudCleanupVerified and cleanupVerified true at 21:07:21.707Z. Direct probes found fixture processes absent, both private ports closed, private HOME and pair inputs absent, and private runtime and Postgres directories absent. Guest private input was removed and Mac lease b9a70c5a-b0de-4c3c-865b-0a2535e1b61e was released."
+    }
+  ],
+  "workItemId": "WI-10004735",
+  "sourceWorkItemId": "WI-10007213",
+  "planSlug": "iphone-public-release-2026-08-11",
+  "planItemId": "P-008",
+  "spec": "AUTO-BAR-R-2-P-008@2",
+  "repository": "papercup-rust-mobile (canonical independent mobile repository)",
+  "sourceCommitAtExecution": "56bb1b34e5143763d79b0112f71f704b5d3f03d3",
+  "sourceDirtyAtExecution": true,
+  "sourceFingerprint": "c752edf844cb0e6e7db7496ca073cc4e8ec04eb108f8ebfa6c915a5a1f71bf78",
+  "canonicalSourceAtPreflight": {
+    "commit": "0e742b6a6ea62f188e62cc6eccb406a97263bbed",
+    "dirty": false,
+    "fingerprint": "c752edf844cb0e6e7db7496ca073cc4e8ec04eb108f8ebfa6c915a5a1f71bf78"
+  },
+  "sourceAdmission": "Guest bytes matched the clean canonical mobile fingerprint before execution. Guest Git metadata remained dirty at an older commit; this is development simulator evidence and does not admit a signed release candidate.",
+  "toolchain": {
+    "xcode": "Xcode 16.4 Build 16F6",
+    "simulatorSDK": "18.5",
+    "simulatorRuntime": "iOS 18.6",
+    "device": "iPhone 16 Pro x86_64",
+    "simulatorUDID": "D80BA4DF-0C1D-40C2-A6D1-F681B98B8DCB"
+  },
+  "retainedEvidence": {
+    "root": ".papercusp/evidence/WI-10004735-offline-20261014T2055Z",
+    "pathBase": "Operating account home directory; retained evidence is outside the staging checkout.",
+    "attempt": "20261014T205529Z-423a9564",
+    "archive": "native-artifacts.tar.gz",
+    "archiveSha256": "5827b76ed5b904f7ea0a6622b08d405a6c7f8f6a1fb4d2763d0053c6b75f4606",
+    "archiveBytes": 8632320,
+    "resultPath": "result.json",
+    "resultSha256": "f72b3d03a34f8339d33a896c859597c5478abc0096805137432ed2d84b8d2fa7",
+    "verificationFile": "local-artifact-verification.json",
+    "verifiedArtifactCount": 281,
+    "mismatches": [],
+    "nativeJobId": "0mv8l9u181xjyvf2hsd",
+    "fixtureJobId": "0mv8l7xa89txvl48h1r",
+    "jobDisposition": "Both terminal completed/exit0; do not rerun these completed jobs."
+  },
+  "screenshots": [
+    {"file": "8CF06788-9E24-400C-A89D-CC16A0EDB14A.png", "review": "Authorized inbox content and tabs are visible before the operator stops."},
+    {"file": "38B8DC33-C0DB-4200-81F6-BB02F9FF7DE9.png", "review": "Desktop offline banner and HTTP 502 inbox error are visible; pairing remains present."},
+    {"file": "AA88A075-A699-46A0-BB94-11B515AEB428.png", "review": "Offline banner is absent but the HTTP 502 inbox error remains visible. Full data recovery is not established by this image."},
+    {"file": "6A1FFD38-017E-46F2-85E5-1D5F4421240F.png", "review": "Ordinary relaunch retains pairing and displays loaded authorized inbox content."}
+  ],
+  "fixture": {
+    "sourceSha256": "fe5cec5e011380b06c483a4d04bd71643cadc58ccc5ee204663016193fecd77f",
+    "sourceCommitAtPreflight": "635cf7f1bd35075d0ddb09e4577dc2ee07675208",
+    "guardWorkItem": "EI-25988799389518903",
+    "launch": "scripts/with-test-pg.mjs --isolated-runtime=operator-api; fixture fourth positional argument 55",
+    "readyAt": "2026-10-14T20:55:26.193Z",
+    "interruptionSeconds": 55,
+    "originalDevicePreserved": true,
+    "protectedBoundaryBeforeAndAfter": {"/api/health": 404, "/api/workspaces": 404, "/api/device/desktop/mint-pair-token": 404, "/api/device/heartbeat": 401},
+    "cleanupVerified": true,
+    "finishedAt": "2026-10-14T21:07:21.707Z"
+  },
+  "disclosedGaps": [
+    "Full recovery before relaunch is not accepted: a recovered screenshot retains the HTTP 502 inbox error. Owned detector/product investigation EI-25990527987022733 must add a data-restoration assertion and measure bounded recovery.",
+    "Broader P-008 and accepted hosted/BYOC cloud target acceptance remain open.",
+    "The executed source copy retains dirty guest Git metadata; no clean signed candidate admission.",
+    "Simulator evidence does not measure physical cellular radio, production APNs delivery, Bluetooth hardware or battery endurance.",
+    "No Xcode 26, signed IPA, App Store, TestFlight or final shipment claim."
+  ]
+}

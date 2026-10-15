@@ -33,7 +33,10 @@ import { activeWorkspaceId } from '../../../workspace-registry';
 import { buildMemoryContextBlock } from '../../../memory/injection';
 import { projectDirForSlug } from '../../../operator-notes';
 import { PROJECTED_DEPS } from '../../../projected-tool-deps';
-import { readFeatureLockState, rowToChat, type ChatRow, type TranscriptTurn } from '../../../agent-chats-data';
+import {
+  archiveChat, continueChat, createChat, getChat, listChats, renameChat,
+  readFeatureLockState, rowToChat, type ChatRow, type TranscriptTurn,
+} from '../../../agent-chats-data';
 import '../../../agent-tools/index';
 import { acquireAgentChatLock, releaseAgentChatLock, type AgentChatLockHandle } from '../../../agent-chat-lock';
 import {
@@ -49,10 +52,14 @@ import { pgLoopSessionStore } from '../../../agent-loop/session-store';
 import type { LoopTool } from '../../../agent-loop/loop';
 import { MODEL_EFFORT_LEVELS, SURFACE_KEYS, type SurfaceKey } from '../../../agent-config-constants';
 import { listPendingLoopApprovals, resolveLoopApproval } from '../../../agent-loop/approval-store';
-import { chatModelFailureFields } from '../../../chat-model-failure';
+import { chatModelFailureFields, safeChatFailureTranscriptFields } from '../../../chat-model-failure';
 import { taskOpsRoute } from './task-ops';
 import { suSessionRoutes } from './su-session';
 import externalTurnRoutes from './external-turns';
+import { customerAgentExecutionRequired } from '../../../auth/loopback-peer-trust';
+import { HOSTED_PRINCIPAL_USER_HEADER, HOSTED_PRINCIPAL_SESSION_HEADER } from '../../../workspace-host/hosted-operator-http';
+import type { OperatorOwnedLoopPortOptions } from '../../../agent-loop/headless-invoke';
+import { awaitHostedCustomerOperation } from '../../../workspace-host/hosted-customer-command';
 
 /**
  * P-008 (own-tui-full-divorce-2026-08-24): doors whose calls route through
@@ -195,7 +202,6 @@ const listChatsRoute = defineTool({
   path: '/harness/:slug/agent-chats',
   auth: 'public',
   async handler(req, ctx) {
-    const { listChats } = await import('../../../agent-chats-data');
     const sp = new URL(req.url).searchParams;
     const parseNum = (v: string | null): number | undefined => {
       if (v === null) return undefined;
@@ -218,7 +224,6 @@ const createChatRoute = defineTool({
   path: '/harness/:slug/agent-chats',
   auth: 'loopback',
   async handler(req, ctx) {
-    const { createChat } = await import('../../../agent-chats-data');
     let body: { role?: string; feature_id?: string; title?: string };
     try {
       body = await req.json();
@@ -241,7 +246,6 @@ const getChatRoute = defineTool({
   path: '/harness/:slug/agent-chats/:chatId',
   auth: 'public',
   async handler(_req, ctx) {
-    const { getChat } = await import('../../../agent-chats-data');
     const result = await getChat({ slug: ctx.params.slug, chatId: ctx.params.chatId });
     if (!result.ok) return Response.json({ error: result.error }, { status: result.status });
     return Response.json(result.data);
@@ -253,7 +257,6 @@ const archiveChatRoute = defineTool({
   path: '/harness/:slug/agent-chats/:chatId',
   auth: 'loopback',
   async handler(_req, ctx) {
-    const { archiveChat } = await import('../../../agent-chats-data');
     const result = await archiveChat({ slug: ctx.params.slug, chatId: ctx.params.chatId });
     if (!result.ok) return Response.json({ error: result.error }, { status: result.status });
     return Response.json(result.data);
@@ -271,7 +274,6 @@ const renameChatRoute = defineTool({
     } catch {
       return Response.json({ error: 'invalid JSON body' }, { status: 400 });
     }
-    const { renameChat } = await import('../../../agent-chats-data');
     const result = await renameChat({
       slug: ctx.params.slug,
       chatId: ctx.params.chatId,
@@ -294,7 +296,6 @@ const continueChatRoute = defineTool({
     } catch {
       return Response.json({ error: 'invalid JSON body' }, { status: 400 });
     }
-    const { continueChat } = await import('../../../agent-chats-data');
     const result = await continueChat({
       slug: ctx.params.slug,
       sourceChatId: ctx.params.chatId,
@@ -305,7 +306,14 @@ const continueChatRoute = defineTool({
   },
 });
 
-const messagesRoute = defineTool({
+/** Private host injection reuses this route's locking, prompt, session and
+ * transcript persistence. Only an authenticated channel closure can supply
+ * execution; the default mounted route retains its hosted-native refusal. */
+export function createAgentChatMessagesRoute(
+  execution?: NonNullable<OperatorOwnedLoopPortOptions['customerExecution']>,
+) {
+  const customerExecution = execution && Object.freeze({ ...execution });
+  return defineTool({
   method: 'POST',
   path: '/harness/:slug/agent-chats/:chatId/messages',
   auth: 'loopback',
@@ -363,6 +371,36 @@ const messagesRoute = defineTool({
     // P-008: `engine:'loop'` selects the OWNED in-process loop (native session
     // protocol lane); anything else keeps the legacy CLI-spawn engine.
     const useLoopEngine = body.engine === 'loop';
+    // D-421/D-423: this lane executes tools in the operator process, bypassing
+    // the customer CLI identity transform. Until a customer-bound native host
+    // is composed, neither a connector relay nor a multi-account host may
+    // enter it. The peer-policy opt-out changes TCP trust, not OS authority.
+    if (useLoopEngine && !customerExecution && (
+      req.headers.has(HOSTED_PRINCIPAL_USER_HEADER)
+      || req.headers.has(HOSTED_PRINCIPAL_SESSION_HEADER)
+      || customerAgentExecutionRequired()
+    )) {
+      return Response.json({
+        error: 'hosted_native_loop_unavailable',
+        detail: 'Native-loop sessions are unavailable on hosted workspaces. Start a customer CLI session.',
+      }, { status: 403 });
+    }
+    let customerBinding: Awaited<ReturnType<NonNullable<OperatorOwnedLoopPortOptions['customerExecution']>['bind']>> | undefined;
+    if (customerExecution) {
+      try {
+        // Check local workspace/cwd BEFORE the lock, prompt reads or writes.
+        // A request body/header/RouteContext principal cannot install this host.
+        if (!useLoopEngine || req.signal.aborted
+          || activeWorkspaceId() !== customerExecution.workspaceId
+          || await projectDirForSlug(slug) !== customerExecution.projectDir) throw new Error('denied');
+        const bound = await awaitHostedCustomerOperation(() => customerExecution.bind(req.signal), req.signal);
+        if (typeof bound?.modelPort?.stream !== 'function' || !Array.isArray(bound.tools)
+          || !(bound.signal instanceof AbortSignal) || bound.signal.aborted || req.signal.aborted) throw new Error('denied');
+        customerBinding = { ...bound, signal: AbortSignal.any([req.signal, bound.signal]) };
+      } catch {
+        return Response.json({ error: 'hosted_native_loop_unavailable' }, { status: 403 });
+      }
+    }
     // Tier menus are shared with the legacy OMP lane, so an explicit picker
     // value may be valid there but unavailable to the in-process loop. Reject
     // that mismatch before acquiring the lock or persisting the user turn.
@@ -518,7 +556,7 @@ const messagesRoute = defineTool({
       // ~/.restart-harness-projects.json — so any harness that exists only in
       // the live registry fails to assemble (same class as role-launch-spec
       // step 0 / EI-220).
-      const projectDir = await projectDirForSlug(slug);
+      const projectDir = customerExecution?.projectDir ?? await projectDirForSlug(slug);
       if (!projectDir) {
         return Response.json(
           {
@@ -675,7 +713,8 @@ const messagesRoute = defineTool({
     if (useLoopEngine) {
       const workspaceId = activeWorkspaceId();
       const effectiveModel = resolvedLoopModel!;
-      const accountRoute = account ?? 'auto';
+      const accountRoute = customerBinding ? 'auto' : account ?? 'auto';
+      const executionSignal = customerBinding?.signal ?? req.signal;
       const ownedLoopSpawnId = `agent-loop-${chatId}`;
       // The principal-bound execution chokepoint (capability-toolset's seam):
       // every loop tool call rides the SAME dispatcher stack as tools:invoke —
@@ -738,7 +777,9 @@ const messagesRoute = defineTool({
       };
       let tools: LoopTool[] = [];
       try {
-        tools = capabilityToolset({
+        tools = customerBinding ? customerBinding.tools.map(tool => ({ ...tool,
+          needsApproval: LOOP_APPROVAL_GATED_DOORS.has(tool.name),
+        })) : capabilityToolset({
           ...OWNED_LOOP_TOOL_SELECTION,
           dispatch,
           needsApproval: (toolName) => LOOP_APPROVAL_GATED_DOORS.has(toolName),
@@ -751,7 +792,7 @@ const messagesRoute = defineTool({
       }
 
       return sseResponse({
-        signal: req.signal,
+        signal: executionSignal,
         setup: async (sink) => {
           // Announce what will ACTUALLY run before the first model event. The
           // client attaches this to the in-flight bubble; the same values are
@@ -774,9 +815,10 @@ const messagesRoute = defineTool({
               sink,
               model: effectiveModel,
               ...(effort ? { effort } : {}),
-              ...(account ? { account } : {}),
+              ...(!customerBinding && account ? { account } : {}),
               ownerId: ownedLoopSpawnId,
-              signal: req.signal,
+              signal: executionSignal,
+              ...(customerBinding ? { port: customerBinding.modelPort } : {}),
               // This route is the interactive PUI chat surface. Untiered
               // inference is starved behind fleet work, so keep the admission
               // intent explicit at the route boundary.
@@ -799,7 +841,7 @@ const messagesRoute = defineTool({
             // lane: a reload / second viewer must not see a silent gap.
             const failureTurn: TranscriptTurn = {
               role: 'assistant',
-              content: terminalError,
+              ...safeChatFailureTranscriptFields(terminalError),
               ts: new Date().toISOString(),
               engine: 'loop',
               model: effectiveModel,
@@ -808,7 +850,6 @@ const messagesRoute = defineTool({
               tokens_out: result.tokensOut,
               cost_cents: Math.round(result.costUsd * 100),
               ...(result.servedAccount ? { account_served: result.servedAccount } : {}),
-              error: true,
             };
             try {
               await harnessQuery(slug, (sql) =>
@@ -1042,12 +1083,11 @@ const messagesRoute = defineTool({
         if (failureMessage) {
           const failureTurn: TranscriptTurn = {
             role: 'assistant',
-            content: failureMessage,
+            ...safeChatFailureTranscriptFields(failureMessage),
             ts: new Date().toISOString(),
             tokens_in: 0,
             tokens_out: 0,
             cost_cents: 0,
-            error: true,
           };
           try {
             await harnessQuery(slug, (sql) =>
@@ -1120,7 +1160,10 @@ const messagesRoute = defineTool({
       },
     });
   },
-});
+  });
+}
+
+const messagesRoute = createAgentChatMessagesRoute();
 
 /**
  * P-008: pending HITL approvals for a loop-engine chat — a (re)connecting

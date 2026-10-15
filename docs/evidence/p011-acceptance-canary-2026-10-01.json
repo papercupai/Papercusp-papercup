@@ -1,0 +1,150 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-011 legacy acceptance adoption: current-build canary, report-first cohort, apply and cutover-check on :3170",
+  "framework": "operational",
+  "command": [
+    "node scripts/mcp-call.mjs work_items:acceptance_adoption --json-file .papercusp/scratch/p011-canary-args.json --port 3170  # {op:canary,harness:papercusp,confirm:true}",
+    "node scripts/mcp-call.mjs work_items:acceptance_adoption --json-file .papercusp/scratch/p011-report-args.json --port 3170  # {op:report,harness:papercusp,kind:bug,limit:25}",
+    "backup:snapshot_create {reason:pre_destructive}",
+    "node scripts/mcp-call.mjs work_items:acceptance_adoption --json-file .papercusp/scratch/p011-apply-args.json --port 3170  # {op:apply,reportRunId:lac-report-8e1cb8ac-9206-4af5-af06-5576d20a0d24,confirm:true}",
+    "node scripts/mcp-call.mjs work_items:acceptance_adoption --json-file .papercusp/scratch/p011-cutover-args.json --port 3170  # {op:cutover-check,proposedCutover:2026-10-02T00:00:00.000Z}",
+    "dev:pg_query SELECT feature_id,status,taken_by,implementation_readiness_enrolled,implementation_readiness_projection FROM harness_shared.work_items WHERE workspace_id='papercusp-workspace' AND harness_slug='papercusp' AND feature_id IN ('WI-1532','WI-2814','WI-3360')"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T19:03:13Z",
+  "finishedAt": "2026-10-01T19:06:00Z",
+  "summary": "On the current staging build 57d558cc1d (:3170, containsChange=true, no bundleStale) the P-011 canary passed all four checks: new intake gets an attributable creation-enrollment stage, a bounded legacy cohort report separates eligible from protected rows, fail-closed probes refuse null/missing/unknown/unreviewed acceptance in both SQL and TS, and only an authorized policy receipt opens the fast path. A report-first bug cohort (25 examined, 3 eligible, 22 protected by claim-hold/owner-action/external-blocker) was applied after backup snapshot 78066; exactly the 3 eligible rows were enrolled with attributable unknown readiness and their status and claims unchanged. cutover-check accepts the canary receipt while enforcement stays off (sentinel cutover, D-018), so there is no broad freeze.",
+  "assertions": [
+    { "id": "r-11-new-intake-attributable-stage", "passed": true, "evidence": "canary step new-intake-stage ok: probe EI-24804920096175469 readinessSource=creation-enrollment, readinessStatus=unknown, primaryStage=candidate, reason=awaiting-qualifying-acceptance (run lac-canary-47598d23-83db-44f7-85ba-e5077151938b)." },
+    { "id": "r-34-legacy-cohort-report-first-protected", "passed": true, "evidence": "op:report lac-report-8e1cb8ac-9206-4af5-af06-5576d20a0d24 examined 25 (eligible WI-1532, WI-2814, WI-3360; protected 22: claim-hold 17, owner-action 4, external-blocker 1); op:apply lac-apply-1c7f425a-c4f8-407d-a196-4483f2348c95 adopted exactly those 3, skipped none; post-apply PG shows enrolled=true, status todo/blocked unchanged, taken_by null." },
+    { "id": "r-34-backup-before-bulk-mutation", "passed": true, "evidence": "backup:snapshot_create reason=pre_destructive snapshotId=78066 kopia dbad7e784d95ecc890161e0dad05ba39 dbDumpOk=true, taken before op:apply." },
+    { "id": "r-35-fail-closed", "passed": true, "evidence": "canary step fail-closed ok: null-payload, missing-readiness, creation-enrollment-unknown and admission-unreviewed-fail-open all evaluate sql=false ts=false (expected false)." },
+    { "id": "r-36-fast-path-policy-only", "passed": true, "evidence": "canary step fast-path ok: critical-severity, security-tag and explicit-assignment alone evaluate sql=false ts=false; only policy-receipt evaluates sql=true ts=true (expected true)." },
+    { "id": "r-37-canary-before-enforcement", "passed": true, "evidence": "canary lac-canary-47598d23-83db-44f7-85ba-e5077151938b status=passed on runtime operator-api build 57d558cc1d; op:cutover-check for 2026-10-02T00:00Z returns authorization.ok with that receipt and attested.enforcing=false (no broad freeze)." },
+    { "id": "unknowns-remain-visible", "passed": true, "evidence": "Adopted rows carry readiness status unknown with reason 'legacy-acceptance-adoption cohort bug:0..4102444800000 run lac-apply-1c7f425a-…' instead of a silent pass; 895 legacy rows outside the cohort remain reported, not bypassed." }
+  ],
+  "subject": "observation-candidate-acceptance-promotion-2026-09-30#P-011",
+  "workItem": "WI-10004574",
+  "recordedBy": "su-fd916e65-7aa6-4c61-9a19-9712841e4ae8",
+  "evidencePlane": "live",
+  "runtime": {
+    "testClass": "operator-api",
+    "route": "http://127.0.0.1:3170 (staging-operator, currentBuildTestRoute readiness=ready)",
+    "healthSha": "57d558cc1d",
+    "bundleStale": false,
+    "healthCheckedAt": "2026-10-01T19:03:13.082Z",
+    "pipelinePosition": {
+      "path": "packages/operator-core/lib/harness/improvements/legacy-acceptance-adoption.ts",
+      "servingRuntimes": [
+        { "runtime": "staging-operator", "buildSha": "57d558cc1d", "containsChange": true, "method": "blob" },
+        { "runtime": "release-operator", "buildSha": "f52b2457ba", "containsChange": false, "method": "blob" }
+      ]
+    },
+    "sourceCommit": "25e499da7045ec723d85643ace0865c71fb39e35",
+    "migration": "libs/papercusp/libs/db/sql/1310 (applied on :3170 boot 2026-10-01T18:56:01Z)"
+  },
+  "canary": {
+    "tool": "work_items:acceptance_adoption",
+    "args": { "op": "canary", "harness": "papercusp", "confirm": true },
+    "runId": "lac-canary-47598d23-83db-44f7-85ba-e5077151938b",
+    "buildSha": "57d558cc1d",
+    "status": "passed",
+    "recordedAt": "2026-10-01T19:03:37.740Z",
+    "steps": {
+      "new-intake-stage": {
+        "ok": true,
+        "probeId": "EI-24804920096175469",
+        "readinessSource": "creation-enrollment",
+        "readinessStatus": "unknown",
+        "primaryStage": "candidate",
+        "reason": "awaiting-qualifying-acceptance"
+      },
+      "legacy-cohort-report": {
+        "ok": true,
+        "reportRunId": "lac-report-1c96013f-b79f-43c4-845c-45cd0b4e850d",
+        "cohortKey": "bug:0..4102444800000",
+        "examined": 25,
+        "eligible": 3,
+        "protected": 22,
+        "remainingLegacyOutsideCohort": 895
+      },
+      "fail-closed": {
+        "ok": true,
+        "verdicts": [
+          { "probe": "null-payload", "sql": false, "ts": false, "expect": false },
+          { "probe": "missing-readiness", "sql": false, "ts": false, "expect": false },
+          { "probe": "creation-enrollment-unknown", "sql": false, "ts": false, "expect": false },
+          { "probe": "admission-unreviewed-fail-open", "sql": false, "ts": false, "expect": false }
+        ]
+      },
+      "fast-path": {
+        "ok": true,
+        "verdicts": [
+          { "probe": "critical-severity", "sql": false, "ts": false, "expect": false },
+          { "probe": "security-tag", "sql": false, "ts": false, "expect": false },
+          { "probe": "explicit-assignment", "sql": false, "ts": false, "expect": false },
+          { "probe": "policy-receipt", "sql": true, "ts": true, "expect": true }
+        ]
+      }
+    }
+  },
+  "reportFirstCohort": {
+    "report": {
+      "args": { "op": "report", "harness": "papercusp", "kind": "bug", "limit": 25 },
+      "runId": "lac-report-8e1cb8ac-9206-4af5-af06-5576d20a0d24",
+      "cohortKey": "bug:0..4102444800000",
+      "examined": 25,
+      "eligible": ["WI-1532", "WI-2814", "WI-3360"],
+      "protectedCount": 22,
+      "protectedReasons": { "claim-hold": 17, "owner-action": 4, "external-blocker": 1 },
+      "remainingLegacyOutsideCohort": 895
+    },
+    "backupSnapshot": {
+      "tool": "backup:snapshot_create",
+      "reason": "pre_destructive",
+      "snapshotId": 78066,
+      "kopiaSnapshotId": "dbad7e784d95ecc890161e0dad05ba39",
+      "dbDumpOk": true
+    },
+    "apply": {
+      "args": { "op": "apply", "harness": "papercusp", "reportRunId": "lac-report-8e1cb8ac-9206-4af5-af06-5576d20a0d24", "confirm": true },
+      "runId": "lac-apply-1c7f425a-c4f8-407d-a196-4483f2348c95",
+      "adopted": ["WI-1532", "WI-2814", "WI-3360"],
+      "skipped": [],
+      "writer": "applyLegacyAdoptionCohort"
+    },
+    "postApplyVerification": {
+      "method": "dev:pg_query over harness_shared.work_items (workspace papercusp-workspace, harness papercusp)",
+      "rows": [
+        { "id": "WI-1532", "status": "todo", "takenBy": null, "enrolled": true, "readinessSource": "creation-enrollment", "readinessStatus": "unknown" },
+        { "id": "WI-2814", "status": "blocked", "takenBy": null, "enrolled": true, "readinessSource": "creation-enrollment", "readinessStatus": "unknown" },
+        { "id": "WI-3360", "status": "blocked", "takenBy": null, "enrolled": true, "readinessSource": "creation-enrollment", "readinessStatus": "unknown" }
+      ],
+      "readinessReason": "legacy-acceptance-adoption cohort bug:0..4102444800000 run lac-apply-1c7f425a-c4f8-407d-a196-4483f2348c95",
+      "observations": [
+        "Adopted rows keep their prior status (todo/blocked) and stay unclaimed: no claim or park was disturbed.",
+        "Adopted rows carry readiness status 'unknown' with an attributable source and run id, so they remain visible as awaiting acceptance rather than silently passed.",
+        "The 22 protected rows (claim-hold, owner-action, external-blocker) were not touched: the apply wrote only the report's 3 eligible rows."
+      ]
+    }
+  },
+  "cutoverCheck": {
+    "args": { "op": "cutover-check", "harness": "papercusp", "proposedCutover": "2026-10-02T00:00:00.000Z" },
+    "attested": { "ok": true, "enforcing": false },
+    "authorization": {
+      "ok": true,
+      "receiptRunId": "lac-canary-47598d23-83db-44f7-85ba-e5077151938b",
+      "runtime": "operator-api",
+      "buildSha": "57d558cc1d",
+      "recordedAt": "2026-10-01T19:03:37.740Z"
+    },
+    "note": "enforcing:false is expected: D-018 keeps the sentinel cutover, so no broad freeze is introduced."
+  },
+  "rawOutputs": [
+    ".papercusp/scratch/p011-canary-out.json",
+    ".papercusp/scratch/p011-report-out.json",
+    ".papercusp/scratch/p011-apply-out.json",
+    ".papercusp/scratch/p011-cutover-out.json"
+  ]
+}

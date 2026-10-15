@@ -47,9 +47,11 @@ import {
 } from '../pot/started';
 import { getOrgPg } from '@papercusp/db-org';
 import {
+  AGENT_REVIEW_LEDGER_ORIGIN,
   refreshScoutOutcomes,
   countStalePendingIdeas,
   readPendingOutcomeCandidates,
+  readTerminalUnresolvedRefIdeaIds,
   type RefreshedIdeaOutcomeEvidence,
 } from './routed-ledger';
 import { readUngradedBreakdown, DEFAULT_UNGRADED_EPOCH_POLICY } from './ungraded-scope';
@@ -99,6 +101,19 @@ export function scoutPortfolioFrontierItemBudget(): number {
 export function scoutPortfolioFrontierTimeBudgetMs(): number {
   const n = Number(process.env.PAPERCUSP_SCOUT_PORTFOLIO_FRONTIER_MS ?? 5_000);
   return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 5_000;
+}
+
+/**
+ * WI-10007540: max agent-review routes whose already-terminal `wi:` outcome one
+ * sweep settles. Agent-review rows are routing provenance, not ideation, so they
+ * stay OUT of the learning frontier above; this separate pass only reconciles the
+ * rows whose work item is already terminal (the eager write missed them). Default
+ * 200 per 15-minute sweep clears a backlog of ~900 within about an hour. Env
+ * PAPERCUSP_AGENT_REVIEW_OUTCOME_BATCH; `<=0` disables only this pass.
+ */
+export function agentReviewOutcomeBatchSize(): number {
+  const n = Number(process.env.PAPERCUSP_AGENT_REVIEW_OUTCOME_BATCH ?? 200);
+  return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 200;
 }
 
 export const SCOUT_PORTFOLIO_FRONTIER_CANDIDATE_CAP = 5_000;
@@ -178,6 +193,11 @@ export interface OutcomeRefreshSweepResult {
   /** Persisted DBOS/operator-settings cold-resume state for this workspace. */
   frontier: PortfolioFrontierCheckpoint | null;
   reason: string;
+  /**
+   * WI-10007540: agent-review routes whose already-terminal `wi:` outcome this
+   * sweep re-classified. Present only when the pass settled at least one row.
+   */
+  agentReviewReconciled?: number;
 }
 
 let lastSweepAtMs: number | null = null;
@@ -204,6 +224,7 @@ export interface OutcomeRefreshSweepDeps {
   refreshScoutOutcomes?: typeof refreshScoutOutcomes;
   countStalePendingIdeas?: typeof countStalePendingIdeas;
   readPendingOutcomeCandidates?: typeof readPendingOutcomeCandidates;
+  readTerminalUnresolvedRefIdeaIds?: typeof readTerminalUnresolvedRefIdeaIds;
   readPortfolioGradingBacklog?: typeof readPortfolioGradingBacklog;
   readPortfolioFrontierCheckpoint?: typeof readPortfolioFrontierCheckpoint;
   writePortfolioFrontierCheckpoint?: typeof writePortfolioFrontierCheckpoint;
@@ -297,6 +318,11 @@ export async function scoutOutcomeRefreshSweep(
         )({ workspaceId, limit: SCOUT_PORTFOLIO_FRONTIER_CANDIDATE_CAP });
         const itemBudget = scoutPortfolioFrontierItemBudget();
         const timeBudgetMs = scoutPortfolioFrontierTimeBudgetMs();
+        // WI-10005247: rows never verified, or not verified within the same
+        // window the stale-pending alert uses, jump the cursor so a new or
+        // su-ideate route is not parked behind a ~5-day round-robin lap. A
+        // disabled alert (`thresholdSec <= 0`) still gets the default window.
+        const staleBeforeMs = now - (thresholdSec > 0 ? thresholdSec : 86_400) * 1_000;
         let planned = planPortfolioFrontierStep({
           gradingBacklog,
           pending,
@@ -304,6 +330,7 @@ export async function scoutOutcomeRefreshSweep(
           itemBudget,
           timeBudgetMs,
           nowMs: now,
+          staleBeforeMs,
         });
 
         // Re-read at the write boundary. A route can become grade-eligible
@@ -324,6 +351,7 @@ export async function scoutOutcomeRefreshSweep(
               itemBudget,
               timeBudgetMs,
               nowMs: now,
+              staleBeforeMs,
             });
           }
         }
@@ -351,9 +379,12 @@ export async function scoutOutcomeRefreshSweep(
             evidence.push(...(report.refreshed ?? []));
           }
           if (processed.length !== selected.length) {
-            const lastProcessed = processed.at(-1);
+            // Staleness-tier rows lead `selected` and never move the cursor;
+            // rebase it only to the last ROUND-ROBIN row actually processed.
+            const lastProcessed = processed.slice(planned.priorityCount).at(-1);
             planned = {
               selected: processed,
+              priorityCount: Math.min(planned.priorityCount, processed.length),
               checkpoint: {
                 ...planned.checkpoint,
                 cursorIdeaId: lastProcessed?.ideaId ?? previous?.cursorIdeaId ?? null,
@@ -434,7 +465,39 @@ export async function scoutOutcomeRefreshSweep(
             }
           }
         }
+
+        // WI-10007540: agent-review routes are excluded from the learning frontier and
+        // the stale-pending alert (WI-42483), so nothing re-checked one whose eager
+        // outcome write was missed. Settle only rows whose work item is ALREADY
+        // terminal, through the same refresh + outcome rule. Fail-soft and separate:
+        // a failure here never turns the learning refresh above into an error.
+        let agentReviewReconciled = 0;
+        const agentReviewBatch = agentReviewOutcomeBatchSize();
+        if (agentReviewBatch > 0) {
+          try {
+            const ideaIds = await (
+              deps.readTerminalUnresolvedRefIdeaIds ?? readTerminalUnresolvedRefIdeaIds
+            )({ workspaceId, origin: AGENT_REVIEW_LEDGER_ORIGIN, limit: agentReviewBatch });
+            if (ideaIds.length > 0) {
+              const report = await refresh({
+                workspaceId,
+                harnessSlug: installSlug,
+                origin: AGENT_REVIEW_LEDGER_ORIGIN,
+                ideaIds,
+              });
+              agentReviewReconciled = (report.refreshed ?? []).filter(
+                (entry) => entry.status === 'won' || entry.status === 'lost',
+              ).length;
+            }
+          } catch (e) {
+            console.warn(
+              `[scout-outcome-refresh] agent-review reconciliation failed for '${workspaceId}': ` +
+                `${e instanceof Error ? e.message : e}`,
+            );
+          }
+        }
         results.push({
+          ...(agentReviewReconciled > 0 ? { agentReviewReconciled } : {}),
           workspaceId,
           installSlug,
           outcome: 'refreshed',

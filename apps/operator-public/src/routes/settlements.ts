@@ -28,9 +28,13 @@ import {
   type CommerceEvent,
 } from '@papercusp/operator-core/lib/p2p/commerce-events.ts';
 import type { CumulativePaymentVoucher } from '@papercusp/operator-core/lib/p2p/microcharge.ts';
+import { paymentVoucherDigest, unsignedVoucher, verifyPaymentVoucherSignature } from '@papercusp/operator-core/lib/p2p/microcharge.ts';
+import { isIdentityReleaseSkuRef, verifyIdentityPerUseOffer } from '@papercusp/operator-core/lib/cupboard/identity-per-use-offer.ts';
 import {
   REVENUE_SHARES,
   revenueSplitManifest,
+  validateRevenueSplit,
+  type ComponentRevenueDependency,
   type RevenueShare,
   type RevenueSplitManifest,
 } from '@papercusp/operator-core/lib/p2p/revenue-settlement.ts';
@@ -127,7 +131,7 @@ export function resolveSplitConfig(env: Env): SplitConfigResult {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return { ok: false, code: 'invalid-config', detail: 'REVENUE_SPLIT_MANIFEST must be a JSON object' };
   }
-  const source = parsed as { version?: unknown; sharesBps?: unknown };
+  const source = parsed as { version?: unknown; sharesBps?: unknown; componentDependencies?: unknown };
   if (typeof source.version !== 'string' || !source.version.trim()) {
     return { ok: false, code: 'invalid-config', detail: 'REVENUE_SPLIT_MANIFEST needs a non-empty version' };
   }
@@ -147,9 +151,18 @@ export function resolveSplitConfig(env: Env): SplitConfigResult {
     }
     sharesBps[share] = value;
   }
+  if (source.componentDependencies !== undefined && !Array.isArray(source.componentDependencies)) {
+    return { ok: false, code: 'invalid-config', detail: 'componentDependencies must be an array of exact author pins' };
+  }
+  const manifest = revenueSplitManifest({ version: source.version, sharesBps,
+    ...(source.componentDependencies !== undefined ? {
+      componentDependencies: source.componentDependencies as ComponentRevenueDependency[],
+    } : {}) });
+  const checked = validateRevenueSplit(manifest);
+  if (!checked.ok) return { ok: false, code: 'invalid-config', detail: checked.detail };
   return {
     ok: true,
-    manifest: revenueSplitManifest({ version: source.version, sharesBps }),
+    manifest,
     daoTreasury,
   };
 }
@@ -168,7 +181,7 @@ function voucherFromReceipt(receipt: StoredUsageReceipt): CumulativePaymentVouch
     seller: receipt.seller,
     releaseRef: receipt.releaseRef,
     usageNonce: receipt.usageNonce,
-    meterQuantity: BigInt(receipt.meterQuantity),
+    meterQuantity: BigInt(receipt.reservedMeterQuantity),
     pricePerUnitMicros: BigInt(receipt.unitPriceMicros),
     priceVersion: receipt.priceVersion,
     splitManifestHash: receipt.splitManifestHash,
@@ -176,6 +189,31 @@ function voucherFromReceipt(receipt: StoredUsageReceipt): CumulativePaymentVouch
     cumulativeClaimMicros: BigInt(receipt.cumulativeClaimMicros),
     signature: receipt.voucherSignature,
   };
+}
+
+/** Reuse the exact signed price terms; a deployment cannot replace an identity's pins. */
+export function resolveUsageSplitManifest(
+  receipts: readonly StoredUsageReceipt[], fallback: RevenueSplitManifest,
+): { ok: true; manifest: RevenueSplitManifest } | { ok: false; detail: string } {
+  let manifest: RevenueSplitManifest | undefined;
+  for (const receipt of receipts) {
+    if (paymentVoucherDigest(unsignedVoucher(voucherFromReceipt(receipt))) !== receipt.voucherDigest) {
+      return { ok: false, detail: `usage receipt ${receipt.usageNonce} no longer matches its signed voucher digest` };
+    }
+    let selected = fallback;
+    if (isIdentityReleaseSkuRef(receipt.releaseRef)) {
+      const verified = verifyIdentityPerUseOffer({ skuRef: receipt.releaseRef, meterUnit: receipt.meterUnit,
+        unitPriceMicros: receipt.unitPriceMicros, priceVersion: receipt.priceVersion, splitManifestHash: receipt.splitManifestHash });
+      if (!verified.ok) return { ok: false, detail: verified.detail };
+      selected = verified.manifest;
+    }
+    if (receipt.splitManifestHash !== selected.manifestHash ||
+        (manifest && manifest.manifestHash !== selected.manifestHash)) {
+      return { ok: false, detail: `usage receipt ${receipt.usageNonce} needs a different exact split manifest` };
+    }
+    manifest = selected;
+  }
+  return manifest ? { ok: true, manifest } : { ok: false, detail: 'batch has no retained signed usage receipts' };
 }
 
 function batchJson(batch: StoredSettlementBatch) {
@@ -190,6 +228,7 @@ function batchJson(batch: StoredSettlementBatch) {
     settlementId: batch.settlementId,
     splitManifestHash: batch.splitManifestHash,
     allocationsMicros: batch.allocationsMicros,
+    ...(batch.componentAllocationsMicros !== undefined ? { componentAllocationsMicros: batch.componentAllocationsMicros } : {}),
     providerCostMicros: batch.providerCostMicros,
     distributableMicros: batch.distributableMicros,
     daoTreasury: batch.daoTreasury,
@@ -291,22 +330,29 @@ export function settlementsRoute(
     }
 
     const consumed = await claimedUsageNonces(c.env.DB, channelId);
-    const pending = (await listChannelUsageReceipts(c.env.DB, channelId))
-      .filter((receipt) => receipt.state === 'settled' && !consumed.has(receipt.usageNonce))
+    let pending = (await listChannelUsageReceipts(c.env.DB, channelId))
+      // A signed unused-turn closure releases escrow and retains history, but
+      // carries no proceeds for an on-chain payment claim.
+      .filter((receipt) => receipt.state === 'settled' && (receipt.amountMicros ?? 0) > 0 && !consumed.has(receipt.usageNonce))
       .slice()
       .sort((a, b) => a.cumulativeClaimMicros - b.cumulativeClaimMicros)
       .slice(0, MAX_BATCH_SIZE);
     if (pending.length === 0) return c.json({ error: 'no_settled_usage' }, 409);
 
+    // Preserve chronological claim boundaries while settling one exact split
+    // at a time. The next call can claim the next homogeneous prefix.
+    const boundary = pending.findIndex((receipt) => receipt.splitManifestHash !== pending[0]!.splitManifestHash);
+    if (boundary > 0) pending = pending.slice(0, boundary);
+
     // The split the payer signed into the voucher governs. A deployment whose
     // configured split has moved on cannot retroactively re-cut a buyer's
     // purchase, so the mismatch is a refusal, not a re-computation.
-    const mismatched = pending.find((receipt) => receipt.splitManifestHash !== split.manifest.manifestHash);
-    if (mismatched) {
+    const receiptSplit = resolveUsageSplitManifest(pending, split.manifest);
+    if (!receiptSplit.ok) {
       return c.json(
         {
           error: 'split_manifest_mismatch',
-          detail: `usage receipt '${mismatched.usageNonce}' was signed against split ${mismatched.splitManifestHash}, but this deployment settles ${split.manifest.manifestHash}`,
+          detail: receiptSplit.detail,
         },
         409,
       );
@@ -327,9 +373,13 @@ export function settlementsRoute(
         batches,
       }),
       vouchers: pending.map(voucherFromReceipt),
+      verifySignature: (voucher) => verifyPaymentVoucherSignature(voucher, {
+        channelId: channel.channelId, payer: channel.principalId,
+        pubkeyBase64: channel.payerPubkeyBase64 ?? '',
+      }),
       nowMs,
       settlementId: `settlement:${channelId}:${pending[pending.length - 1]!.cumulativeClaimMicros}`,
-      splitManifest: split.manifest,
+      splitManifest: receiptSplit.manifest,
       daoTreasury: split.daoTreasury,
     });
     if (!planned.ok) {
@@ -633,6 +683,10 @@ function planFromBatch(batch: StoredSettlementBatch): BatchSettlementPlan {
       providerCostMicros: BigInt(batch.providerCostMicros),
       distributableMicros: BigInt(batch.distributableMicros),
       allocationsMicros,
+      ...(batch.componentAllocationsMicros !== undefined ? {
+        componentAllocationsMicros: Object.fromEntries(Object.entries(batch.componentAllocationsMicros)
+          .map(([author, amount]) => [author, BigInt(amount)])),
+      } : {}),
       daoTreasury: batch.daoTreasury,
       splitManifestHash: batch.splitManifestHash,
       receiptHash: batch.receiptHash,

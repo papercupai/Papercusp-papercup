@@ -38,6 +38,13 @@ describe('embedDeviceView', () => {
     expect(choiceOf(null)).toBe('auto');
   });
 
+  it('P-530: says an on-demand sidecar is not running now and will pick the setting up when it starts', () => {
+    const v = embedDeviceView(envelope({ host: { kind: 'sidecar-idle' }, health: null, reloadSupported: null }));
+    expect(v.hostLine).toContain('not running now');
+    expect(v.hostLine).toContain('when it next starts');
+    expect(v.inUse).toBeNull();
+  });
+
   it('shows the verified device and each model, with the org prefix dropped', () => {
     const v = embedDeviceView(envelope());
     expect(v.inUse).toBe('GPU');

@@ -79,18 +79,18 @@ describe('pack manifest validation (kind=pack)', () => {
   it('loads the shipped reference pack (example-tool-pack) cleanly', async () => {
     const lp = expectClean(await loadPluginFromDir(REFERENCE_PACK, 'global'));
     assert.equal((lp.plugin as { kind?: string }).kind, 'pack');
-    assert.equal(lp.toolDefinitions.length, 2);
+    assert.equal(lp.toolDefinitions?.length, 2);
     assert.deepEqual(
-      lp.toolDefinitions.map((t) => t.name).sort(),
+      (lp.toolDefinitions ?? []).map((t) => t.name).sort(),
       ['slugify', 'word_count'],
     );
-    assert.equal(lp.runtime.kind, 'js');
+    assert.equal(lp.runtime?.kind, 'js');
   });
 
   it('accepts a synthetic tools-only pack', async () => {
     const dir = await makeUnit({ kind: 'pack', tools: [{ name: 'alpha' }, { name: 'beta' }] });
     const lp = expectClean(await loadPluginFromDir(dir, 'global'));
-    assert.equal(lp.toolDefinitions.length, 2);
+    assert.equal(lp.toolDefinitions?.length, 2);
   });
 
   it('rejects a pack declaring a ui contribution', async () => {
@@ -164,7 +164,7 @@ describe('pack manifest validation (kind=pack)', () => {
       },
     });
     const lp = expectClean(await loadPluginFromDir(dir, 'global'));
-    assert.equal(lp.toolDefinitions.length, 1);
+    assert.equal(lp.toolDefinitions?.length, 1);
   });
 
   it('rejects a pack declaring reactions (event REACTIONS are plugin runtime)', async () => {

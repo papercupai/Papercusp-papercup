@@ -19,6 +19,96 @@ export function resolveWorkspacePackage(root: string, workspace: string): {
     scripts: Record<string, string>;
 } | null;
 /**
+ * The identity of the node the task will spawn (npm → PATH node), resolved under the task's env,
+ * prefixed with the proof format (reuseRunnerIdentity, P-001) so older-format proofs never match.
+ * Also used by pure-lane-proof-capture.mjs, which records proofs under the same identity.
+ */
+/**
+ * @param {string} root
+ * @param {NodeJS.ProcessEnv} env
+ * @param {string} [proofFormat] the JUDGED tree's recorder format (judgedTreeProofFormat)
+ * @returns {string | null}
+ */
+export function defaultRunnerIdentity(root: string, env: NodeJS.ProcessEnv, proofFormat?: string): string | null;
+/**
+ * Restore an explicitly identified, isolated checkpoint checkout before reuse.
+ * The caller must supply the configured checkpoint and integration roots; this function
+ * verifies that both resolve to distinct Git worktree roots and that `root` is exactly the
+ * checkpoint worktree before it runs any destructive Git command. It then requires HEAD to
+ * equal `expectedSha`, restores tracked files and initialized submodules, removes untracked
+ * test output, and confirms the checkout is clean. Any uncertainty fails closed.
+ *
+ * @param {object} o
+ * @param {string} o.root checkout to restore
+ * @param {string|null} o.expectedSha exact candidate SHA expected at HEAD
+ * @param {string} o.checkpointRoot configured disposable checkpoint checkout
+ * @param {string} o.integrationRoot protected integration checkout
+ * @param {string} o.releaseRoot protected release checkout
+ * @param {Partial<typeof defaultDeps>} [o.deps] injection seam for tests
+ * @returns {{ok:boolean, restored?:boolean, reason?:string}}
+ */
+export function restoreDisposableCheckpoint({ root, expectedSha, checkpointRoot, integrationRoot, releaseRoot, deps }: {
+    root: string;
+    expectedSha: string | null;
+    checkpointRoot: string;
+    integrationRoot: string;
+    releaseRoot: string;
+    deps?: Partial<{
+        recordReuse: typeof recordGateReuseDecision;
+        git: typeof defaultGit;
+        runnerIdentity: typeof defaultRunnerIdentity;
+        proofFormat: (root: any) => string | null;
+        connect: (env: any) => Promise<import("pg").Client>;
+        loadProofs: typeof loadReuseProofs;
+        changedBetween: (root: any) => import("./related-tests.mjs").ChangedBetween;
+        inertGlobalChange: (root: any) => (rel: string, fromSha: string, toSha: string) => boolean;
+        testConfigMainProcess: (root: any) => Promise<any>;
+        toolchainTsconfigs: (root: any) => Promise<any>;
+        now: () => number;
+        makeTempDir: () => string;
+        removeTempDir: (dir: any) => void;
+    }> | undefined;
+}): {
+    ok: boolean;
+    restored?: boolean;
+    reason?: string;
+};
+/**
+ * Apply the candidate-suite identity gate before restoring the configured disposable checkpoint.
+ * This is shared with the repair-task path so both callers enforce one root/sha safety contract.
+ *
+ * @param {object} o
+ * @param {string} o.root checkout to restore
+ * @param {string} o.judgedSha candidate SHA read by the affected-test runner
+ * @param {NodeJS.ProcessEnv} [o.env] candidate-suite environment
+ * @param {Partial<typeof defaultDeps>} [o.deps] injection seam for tests
+ * @returns {{ok:boolean, restored?:boolean, reason?:string}}
+ */
+export function restoreCandidateCheckpointForReuse({ root, judgedSha, env, deps }: {
+    root: string;
+    judgedSha: string;
+    env?: NodeJS.ProcessEnv | undefined;
+    deps?: Partial<{
+        recordReuse: typeof recordGateReuseDecision;
+        git: typeof defaultGit;
+        runnerIdentity: typeof defaultRunnerIdentity;
+        proofFormat: (root: any) => string | null;
+        connect: (env: any) => Promise<import("pg").Client>;
+        loadProofs: typeof loadReuseProofs;
+        changedBetween: (root: any) => import("./related-tests.mjs").ChangedBetween;
+        inertGlobalChange: (root: any) => (rel: string, fromSha: string, toSha: string) => boolean;
+        testConfigMainProcess: (root: any) => Promise<any>;
+        toolchainTsconfigs: (root: any) => Promise<any>;
+        now: () => number;
+        makeTempDir: () => string;
+        removeTempDir: (dir: any) => void;
+    }> | undefined;
+}): {
+    ok: boolean;
+    restored?: boolean;
+    reason?: string;
+};
+/**
  * Arm pass reuse and proof recording for ONE unit vitest task about to run at `expectedSha` in the
  * clean checkout `root`. Returns a NEW env (the input is not mutated) plus the log lines that say
  * what was armed; call `finish()` after the task exits to read the recorder's outcome and remove
@@ -34,34 +124,50 @@ export function resolveWorkspacePackage(root: string, workspace: string): {
  * @param {string | null} o.expectedSha the commit the caller just materialized; HEAD must equal it
  * @param {Record<string, string | undefined>} o.env the env the task will run with
  * @param {string} [o.scope]        log label for where the run came from (e.g. `repair-head`)
+ * @param {boolean} [o.restoreDirtyCheckpoint] Restore dirty files only for a disposable,
+ *   isolated checkpoint checkout already verified at `expectedSha`; never enable for shared trees.
+ * @param {string} [o.checkpointRoot] configured disposable checkpoint checkout
+ * @param {string} [o.integrationRoot] protected integration checkout
+ * @param {string} [o.releaseRoot] protected release checkout
  * @param {Partial<typeof defaultDeps>} [o.deps] injection seams (tests)
  * @returns {Promise<{
  *   env: Record<string, string | undefined>,
+ *   args: string[],
  *   lines: string[],
  *   reused: number,
  *   recording: boolean,
  *   finish: () => string[],
  * }>}
  */
-export function armTargetedTaskReuse({ root, workspace, script, expectedSha, env, scope, deps }: {
+export function armTargetedTaskReuse({ root, workspace, script, expectedSha, env, scope, restoreDirtyCheckpoint, checkpointRoot, integrationRoot, releaseRoot, deps }: {
     root: string;
     workspace: string;
     script: string;
     expectedSha: string | null;
     env: Record<string, string | undefined>;
     scope?: string | undefined;
+    restoreDirtyCheckpoint?: boolean | undefined;
+    checkpointRoot?: string | undefined;
+    integrationRoot?: string | undefined;
+    releaseRoot?: string | undefined;
     deps?: Partial<{
+        recordReuse: typeof recordGateReuseDecision;
         git: typeof defaultGit;
         runnerIdentity: typeof defaultRunnerIdentity;
+        proofFormat: (root: any) => string | null;
         connect: (env: any) => Promise<import("pg").Client>;
         loadProofs: typeof loadReuseProofs;
         changedBetween: (root: any) => import("./related-tests.mjs").ChangedBetween;
+        inertGlobalChange: (root: any) => (rel: string, fromSha: string, toSha: string) => boolean;
+        testConfigMainProcess: (root: any) => Promise<any>;
+        toolchainTsconfigs: (root: any) => Promise<any>;
         now: () => number;
         makeTempDir: () => string;
         removeTempDir: (dir: any) => void;
     }> | undefined;
 }): Promise<{
     env: Record<string, string | undefined>;
+    args: string[];
     lines: string[];
     reused: number;
     recording: boolean;
@@ -73,11 +179,7 @@ export const LANE_SCRIPTS: readonly string[];
 export const TARGETED_REUSE_LINE_PREFIX: "TARGETED_";
 /** How long the proof read may take before the task simply runs everything. */
 export const TARGETED_REUSE_PROOF_READ_TIMEOUT_MS: 15000;
+import { recordGateReuseDecision } from "./test-pass-reuse.mjs";
 declare function defaultGit(root: any, args: any): string | null;
-/**
- * The identity of the node the task will spawn (npm → PATH node), resolved under the task's env,
- * prefixed with the proof format (reuseRunnerIdentity, P-001) so older-format proofs never match.
- */
-declare function defaultRunnerIdentity(root: any, env: any): string | null;
 import { loadReuseProofs } from "./executed-source-map.mjs";
 export {};

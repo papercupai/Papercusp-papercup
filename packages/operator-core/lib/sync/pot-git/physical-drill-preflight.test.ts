@@ -412,6 +412,42 @@ describe('probe wiring', () => {
     process.env.PHYSICAL_PROBE_UNDER_TEST ??
     fileURLToPath(new URL('../../../../../papercusp-desktop/bin/vm-rig/hive-git-physical-probe.sh', import.meta.url));
 
+  it('pins candidate gitlinks despite live head/config drift and refuses invalid refs', () => {
+    const root = mkdtempSync(join(tmpdir(), 'physical-source-pin-'));
+    const sub = join(root, 'libs', 'example');
+    const gitAt = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args], {
+      encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_NAME: 'test', GIT_AUTHOR_EMAIL: 'test@example.invalid',
+        GIT_COMMITTER_NAME: 'test', GIT_COMMITTER_EMAIL: 'test@example.invalid' },
+    }).trim();
+    try {
+      mkdirSync(sub, { recursive: true });
+      gitAt(root, 'init', '-q');
+      gitAt(sub, 'init', '-q');
+      writeFileSync(join(sub, 'payload'), 'candidate');
+      gitAt(sub, 'add', 'payload');
+      gitAt(sub, 'commit', '-qm', 'candidate');
+      const subSha = gitAt(sub, 'rev-parse', 'HEAD');
+      writeFileSync(join(root, '.gitmodules'), '[submodule "example"]\npath = libs/example\nurl = ./example\n');
+      gitAt(root, 'add', '.gitmodules');
+      gitAt(root, 'update-index', '--add', '--cacheinfo', `160000,${subSha},libs/example`);
+      gitAt(root, 'commit', '-qm', 'candidate');
+      const candidate = gitAt(root, 'rev-parse', 'HEAD');
+      writeFileSync(join(sub, 'payload'), 'later');
+      gitAt(sub, 'commit', '-qam', 'later');
+      writeFileSync(join(root, '.gitmodules'), '[submodule "wrong"]\npath = libs/missing\nurl = ./missing\n');
+      const source = readFileSync(probePath, 'utf8').split('# SOURCE-PIN-BEGIN')[1].split('# SOURCE-PIN-END')[0];
+      const run = (ref: string) => execFileSync('bash', ['-c',
+        'set -euo pipefail; fail() { echo "$*" >&2; exit 1; };\n' + source +
+        '\nprintf "%s\\n" "$source_sha" "${staged_submodules[@]}" "${staged_submodule_shas[@]}"',
+      ], { encoding: 'utf8', env: { ...process.env, REPO_ROOT: root, HIVE_GIT_PHYSICAL_SOURCE_REF: ref } });
+      expect(run(candidate).trim().split('\n')).toEqual([candidate, 'libs/example', subSha]);
+      expect(() => run('not-a-valid-ref')).toThrow();
+      expect(() => run('--all')).toThrow();
+      rmSync(join(sub, '.git'), { recursive: true, force: true });
+      expect(() => run(candidate)).toThrow();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('runs rig-preflight after the readiness gate and before run_dir and the first rig ssh, failing closed', () => {
     const probe = readFileSync(probePath, 'utf8');
     const code = probe
@@ -426,6 +462,21 @@ describe('probe wiring', () => {
     const call = code.slice(preflight, code.indexOf('\n', code.indexOf('|| fail', preflight)));
     expect(call).toMatch(/\|\| fail /);
     expect(code.slice(code.lastIndexOf('\n', preflight), preflight)).toContain('PCUSP_VM_SSH="$VM"');
+  });
+
+  it('reuses the candidate snapshot for local legs before schema checks without retargeting the physical repo', () => {
+    const probe = readFileSync(probePath, 'utf8');
+    const offline = probe.indexOf("printf 'local candidate source ready:");
+    expect(offline).toBeGreaterThan(probe.indexOf('run_source_overlay_js | node'));
+    expect(offline).toBeLessThan(probe.indexOf('phase-e-preflight >/dev/null'));
+    expect(probe.slice(offline, probe.indexOf('phase-e-preflight >/dev/null'))).toContain('exit 0');
+    const drill = readFileSync(fileURLToPath(new URL('../../../../../papercusp-desktop/bin/hive-git-drill.sh', import.meta.url)), 'utf8');
+    const local = drill.indexOf('--local-source-out "$WORK/local-source"');
+    const sql = drill.indexOf('REPO_SQL_DIR="$REPO_DIR/');
+    expect(local).toBeGreaterThan(-1);
+    expect(local).toBeLessThan(sql);
+    expect(drill.slice(local, sql)).toContain('REPO_DIR="$WORK/local-source"');
+    expect(drill).toContain('PAPERCUSP_REPO_DIR="$LIVE_REPO_DIR" HIVE_GIT_PHYSICAL_PLAN=');
   });
 
   it('exports the D-086 pin (pinned sha + tower snapshot) before the rig-preflight call', () => {

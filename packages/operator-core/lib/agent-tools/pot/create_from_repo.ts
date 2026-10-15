@@ -12,18 +12,24 @@
  * POST /harness/pots/from-repo (routes/harness/projects.ts).
  */
 import { z } from 'zod';
+import { randomUUID } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { createPotFromRepo } from './_create_from_repo';
+import { claimPendingMcpResult, finalizePendingMcpResult, PENDING_MCP_RESULT_STATE,
+  type StoredMcpResult } from '../../endpoint-route/routes/transport/_mcp-result-replay';
+
+const TOOL_NAME = 'pot:create_from_repo';
+const runningCreations = new Set<string>();
 
 const text = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
 });
 
 export default defineTool({
-  name: 'pot:create_from_repo',
+  name: TOOL_NAME,
   profile: 'engineer',
   description:
     'Create a pot FROM a GitHub URL: repo→Pot lookup first (an existing Pot returns a JOIN OFFER, zero side effects), then clone, blueprint detect + test-verify, pot home + first member harness, upstream coords stamped, auto-publish. Visibility is derived from the repo: public repo → discoverable directory listing; private repo → Private (invite-only, hidden, secret-gated). Returns {ok, existing?} or {ok, created:{potSlug, memberSlug, memberPath}, publish}.',
@@ -66,6 +72,12 @@ export default defineTool({
       .regex(/^[a-z0-9][a-z0-9-]*$/)
       .optional()
       .describe("P-009 into-pot mode: add the repo as a member of this EXISTING kind:'hive' home instead of standing up a new pot (no new identity/listing; the existing listing re-publishes with the new member)."),
+    integrationMode: z
+      .enum(['direct', 'review'])
+      .optional()
+      .describe(
+        "Where should the agents' work go? 'direct' (default) = straight into the repo, agents commit directly. 'review' = into a working copy (a fork) of the repo; their combined work reaches the repo only through PRs you or a reviewer approve. 'review' needs a detected test suite; a refusal is reported on result.integrationMode and never fails the create. Ignored with intoPot.",
+      ),
     workspace: z.string().max(120).optional().describe('Workspace id (default: active workspace).'),
   }),
   async handler(args, ctx) {
@@ -85,7 +97,7 @@ export default defineTool({
       ctx.workspaceId,
       ctx.principal?.workspaceId,
     );
-    const res = await createPotFromRepo({
+    const input = {
       githubUrl: args.githubUrl,
       ...(args.slug ? { slug: args.slug } : {}),
       ...(args.shallow !== undefined ? { shallow: args.shallow } : {}),
@@ -94,8 +106,60 @@ export default defineTool({
       ...(args.parentDir ? { parentDir: args.parentDir } : {}),
       ...(args.force !== undefined ? { force: args.force } : {}),
       ...(args.intoPot ? { intoPot: args.intoPot } : {}),
+      ...(args.integrationMode ? { integrationMode: args.integrationMode } : {}),
       workspaceId,
-    });
+    };
+    const ownerKey = ctx.uiClientId ?? ctx.spawnId;
+    const idempotencyKey = ctx.idempotencyKey?.trim();
+    if (ctx.transport === 'mcp' && ownerKey && idempotencyKey) {
+      const progressId = randomUUID();
+      const accepted = text({ ok: true, accepted: true, status: 'in_progress', progressId,
+        next: 'Inspect creation progress and retry with the same transport key to read the terminal receipt.' });
+      const pending: StoredMcpResult = { ...accepted, _meta: {
+        state: PENDING_MCP_RESULT_STATE, tool: TOOL_NAME, progressId,
+        ownerKey, idempotencyKey, request: input,
+      } };
+      let claim: Awaited<ReturnType<typeof claimPendingMcpResult>>;
+      try {
+        claim = await claimPendingMcpResult({ ownerKey, idempotencyKey,
+          toolName: TOOL_NAME, workspaceId, result: pending });
+      } catch (error) {
+        return text({ ok: false, error: 'pot_create_receipt_unavailable',
+          message: error instanceof Error ? error.message : String(error) });
+      }
+      const runKey = `${ownerKey}\u0000${idempotencyKey}`;
+      if (!claim.claimed) {
+        if (!claim.pending && claim.result) return claim.result;
+        if (claim.pending && claim.result && runningCreations.has(runKey)) {
+          const { _meta: _pending, ...publicResult } = claim.result;
+          return publicResult;
+        }
+        // A different process may still be running, or may have died after
+        // registering the pot. Force-create is not safely restartable: never
+        // re-arm it from a pending receipt and allocate another suffixed pot.
+        return text({ ok: false, error: 'pot_create_outcome_unknown', status: 'recovery_required',
+          progressId: claim.result?._meta?.progressId ?? progressId,
+          next: 'Reconcile the original registered pot/member and pending receipt before any new creation.' });
+      }
+      runningCreations.add(runKey);
+      setImmediate(() => {
+        void (async () => {
+          let result: StoredMcpResult;
+          try {
+            result = text(await createPotFromRepo({ ...input, progressId }) as unknown as Record<string, unknown>);
+          } catch (error) {
+            result = text({ ok: false, error: 'pot_create_failed',
+              message: error instanceof Error ? error.message : String(error) });
+          }
+          await finalizePendingMcpResult({ ownerKey, idempotencyKey,
+            toolName: TOOL_NAME, workspaceId, result });
+        })().catch(error => {
+          console.warn(`[pot:create_from_repo] terminal receipt finalize failed: ${String(error)}`);
+        }).finally(() => runningCreations.delete(runKey));
+      });
+      return accepted;
+    }
+    const res = await createPotFromRepo(input);
     return text(res as unknown as Record<string, unknown>);
   },
 });

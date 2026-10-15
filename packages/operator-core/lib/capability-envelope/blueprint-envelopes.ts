@@ -20,10 +20,13 @@ import { loadBlueprintFromFile, type ResolvedAgentSpecification } from '@papercu
 import type { PotCapabilityProviderBindingRow } from '../capability-class-registry-store';
 import { grantProviderToolReach } from '../agent-identities/grant-provider-kinds';
 import { matchesAny, PROTECTED_CAPABILITY_GLOBS, ROLE_ENVELOPES, type RoleEnvelope } from './policy';
+import { identityRefusalContract, type RefusalContract } from './identity-refusal-contract';
 
 interface CacheEntry {
   mtimeMs: number;
   envelopes: Partial<Record<string, RoleEnvelope>> | undefined;
+  /** WI-10007010: ONLY the roles this blueprint declares — never merged global envelopes. */
+  declared: ReadonlyMap<string, readonly string[]>;
 }
 const cache = new Map<string, CacheEntry>();
 
@@ -47,8 +50,12 @@ export function blueprintRoleEnvelopes(
   if (hit && hit.mtimeMs === mtimeMs) return hit.envelopes;
 
   let envelopes: Partial<Record<string, RoleEnvelope>> | undefined;
+  const declared = new Map<string, readonly string[]>();
   try {
     const workerRoles = loadBlueprintFromFile(f).blueprint.fleet?.workerRoles ?? [];
+    for (const wr of workerRoles) {
+      if (wr.capabilities && wr.capabilities.length > 0) declared.set(wr.id, [...wr.capabilities]);
+    }
     if (workerRoles.length === 0) {
       envelopes = undefined;
     } else {
@@ -64,17 +71,47 @@ export function blueprintRoleEnvelopes(
     }
   } catch {
     envelopes = undefined; // fail-safe: a bad blueprint never strands capability checks
+    declared.clear();
   }
-  cache.set(stateDir, { mtimeMs, envelopes });
+  cache.set(stateDir, { mtimeMs, envelopes, declared });
   return envelopes;
 }
+
+/**
+ * WI-10007010: the capabilities a pot blueprint DECLARES for one of its own
+ * `fleet.workerRoles`, or undefined when that blueprint does not declare the role.
+ * Shares the mtime cache above and deliberately never answers from the merged
+ * global ROLE_ENVELOPES: unioning one of those into a principal would widen a
+ * platform role.
+ */
+export function blueprintWorkerRoleCapabilities(
+  stateDir: string,
+  role: string,
+): readonly string[] | undefined {
+  if (!existsSync(join(stateDir, 'blueprint.yaml'))) return undefined;
+  blueprintRoleEnvelopes(stateDir);
+  return cache.get(stateDir)?.declared.get(role);
+}
+
+/**
+ * Every cause the identity gate can refuse with. A const list (not just a union) so
+ * the refusal-contract table and its test derive from the one truth instead of
+ * paraphrasing it (EI-23766133296678780).
+ */
+export const IDENTITY_GRANT_FAILURE_CAUSES = [
+  'stale-artifact', 'no-launch-record', 'policy-unavailable', 'provider-unbound',
+  'provider-changed', 'tool-unavailable', 'outside-ceiling',
+] as const;
+export type IdentityGrantFailureCause = (typeof IDENTITY_GRANT_FAILURE_CAUSES)[number];
 
 export interface IdentityGrantFailure {
   code: 'capability_unsatisfied';
   classRef: string | null;
-  cause: 'stale-artifact' | 'no-launch-record' | 'policy-unavailable' | 'provider-unbound' | 'provider-changed' | 'tool-unavailable' | 'outside-ceiling';
+  cause: IdentityGrantFailureCause;
   toolName?: string;
   routes: readonly ['operator-notify', 'suggest-provider', 'needs_human'];
+  /** What would lift this refusal, who can make it true, and what was compared (set on runtime denials). */
+  refusal?: RefusalContract;
 }
 
 /** One ceiling predicate shared by install validation and runtime grants. */
@@ -138,8 +175,10 @@ export function resolveIdentityGrantEnvelope(input: {
   const failures: IdentityGrantFailure[] = [];
   const allowedTools = new Set<string>();
   const fail = (cause: IdentityGrantFailure['cause'], classRef: string | null, toolName?: string) => {
+    // WI-10005197: the same lift condition the kernel verdict carries for this cause.
     failures.push({ code: 'capability_unsatisfied', cause, classRef,
-      ...(toolName ? { toolName } : {}), routes: ['operator-notify', 'suggest-provider', 'needs_human'] });
+      ...(toolName ? { toolName } : {}), routes: ['operator-notify', 'suggest-provider', 'needs_human'],
+      refusal: identityRefusalContract(cause) });
   };
   const result = (): IdentityGrantEnvelope => ({
     applied: true,

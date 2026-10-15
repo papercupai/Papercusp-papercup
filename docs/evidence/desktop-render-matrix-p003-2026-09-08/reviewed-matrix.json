@@ -1965,7 +1965,7 @@
       }
     }
   ],
-  "referencePath": "scratchpad/visual-desktop-mockups-2026-09-07/b-workspace.png",
+  "referencePath": "docs/evidence/visual-desktop-mockups-2026-09-07/b-workspace.png",
   "disclosure": "Controlled component and actual viewer states with local WebSocket/ticket/RFB fixtures; real shell entry and real-service state remain separately recorded in the P-002 journey evidence. No live cloud/video/input claim. Author visually inspected all 20 final captures against the original selected option-B image (19 unchanged on final rerun; ready desktop dark re-inspected). Pixel comparison is not claimed for different state, theme or fixture content.",
   "realServiceEvidence": {
     "path": "../desktop-design-journey-p002-2026-09-08.json",

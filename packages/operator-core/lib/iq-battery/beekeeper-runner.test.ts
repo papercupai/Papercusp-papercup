@@ -102,6 +102,44 @@ const createMockMetrics = (): IQBatteryMetrics => ({
 });
 
 describe('BeekeeperRunner', () => {
+  it('stops further instance runs and scores when a judge charge is unknown', async () => {
+    const store = createMockStore();
+    const instanceSpec = createMockInstanceSpec();
+    const runInstance = vi.fn().mockResolvedValue({ instanceId: instanceSpec.manifest.instanceId, instanceUrl: instanceSpec.instanceUrl, costUsd: 0.1 });
+    const deps: BeekeeperDeps = {
+      store, runInstance,
+      collectAndDistill: async () => ({ distilledTrace: 'trace', traceRef: 'ref', rawSignals: {} }),
+      collectMetrics: async () => createMockMetrics(),
+      llmCall: async () => { throw new Error('charge unavailable'); },
+      newRunId: (id, repeat) => `${id}:${repeat}`, now: () => 0,
+    };
+    const result = await runBeekeeperBattery({ instanceSpec, corpus: [createMockCase('a'), createMockCase('b')], repeats: 1, rubric: createMockRubric(), maxDistillChars: 100 }, deps);
+    expect(result.outcomes).toHaveLength(1);
+    expect(result.outcomes[0]).toMatchObject({ judgeCostMeasured: false, status: 'errored' });
+    expect(result.costMeasured).toBe(false);
+    expect(runInstance).toHaveBeenCalledTimes(1);
+    expect(store.recordScore).not.toHaveBeenCalled();
+  });
+
+  it('keeps measured failed-judge charges while excluding the failed case from quality', async () => {
+    const store = createMockStore();
+    const instanceSpec = createMockInstanceSpec();
+    let calls = 0;
+    const deps: BeekeeperDeps = {
+      store,
+      runInstance: vi.fn().mockResolvedValue({ instanceId: instanceSpec.manifest.instanceId, instanceUrl: instanceSpec.instanceUrl, costUsd: 0.1 }),
+      collectAndDistill: async () => ({ distilledTrace: 'trace', traceRef: 'ref', rawSignals: {} }),
+      collectMetrics: async () => createMockMetrics(),
+      llmCall: async () => ({ text: ++calls <= 2 ? 'invalid judge output' : JSON.stringify({ d1: 8, d2: 8, d3: 8, rationale: 'ok' }), costUsd: calls <= 2 ? 0.02 : 0.03, inputTokens: 10, outputTokens: 5 }),
+      newRunId: (id, repeat) => `${id}:${repeat}`, now: () => 0,
+    };
+    const result = await runBeekeeperBattery({ instanceSpec, corpus: [createMockCase('a'), createMockCase('b')], repeats: 1, rubric: createMockRubric(), maxDistillChars: 100 }, deps);
+    expect(result.outcomes.map((o) => o.status)).toEqual(['errored', 'scored']);
+    expect(result.outcomes.map((o) => o.judgeUsd)).toEqual([0.04, 0.03]);
+    expect(result.passedCases).toBe(1);
+    expect(store.recordScore).toHaveBeenCalledTimes(1);
+  });
+
   describe('runBeekeeperBattery', () => {
     it('runs corpus cases against an instance and collects outcomes', async () => {
       const store = createMockStore();

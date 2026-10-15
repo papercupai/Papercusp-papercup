@@ -27,28 +27,19 @@
  * The detector (`findMissingWorkspaceLinks`) is exported + unit-tested in
  * packages/operator-core/lib/__tests__/assert-workspace-links-guard.test.ts.
  */
-import { readFileSync, existsSync, readdirSync, lstatSync, realpathSync } from 'node:fs';
+import { readFileSync, existsSync, globSync, lstatSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 const DEFAULT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Expand root `workspaces` globs to workspace dirs (only those that carry a package.json). */
 export function expandWorkspaces(patterns, root) {
-  const out = [];
-  for (const p of patterns ?? []) {
-    if (p.includes('*')) {
-      const base = p.replace(/\/\*$/, '');
-      if (!existsSync(join(root, base))) continue;
-      for (const entry of readdirSync(join(root, base))) {
-        const dir = `${base}/${entry}`;
-        if (existsSync(join(root, dir, 'package.json'))) out.push(dir);
-      }
-    } else if (existsSync(join(root, p, 'package.json'))) {
-      out.push(p);
-    }
-  }
-  return out;
+  const entries = (patterns ?? []).filter(p => typeof p === 'string');
+  const exclude = entries.filter(p => p.startsWith('!')).map(p => p.slice(1));
+  return [...new Set(entries.filter(p => !p.startsWith('!')).flatMap(p =>
+    globSync(p, { cwd: root, exclude }).filter(dir => existsSync(join(root, dir, 'package.json')))))];
 }
 
 /**
@@ -108,14 +99,4 @@ function main() {
   process.exit(1);
 }
 
-const isMain = (() => {
-  const argv1 = process.argv[1];
-  if (!argv1) return false;
-  if (import.meta.url === pathToFileURL(argv1).href) return true;
-  try {
-    return import.meta.url === pathToFileURL(realpathSync(argv1)).href;
-  } catch {
-    return false;
-  }
-})();
-if (isMain) main();
+if (isCliEntry(import.meta.url)) main();

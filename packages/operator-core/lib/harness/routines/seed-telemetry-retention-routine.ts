@@ -46,12 +46,18 @@ export function buildTelemetryRetentionTriggerConfig(): {
   targets: Array<{ category: string; retention_days: number }>;
   package_cache_enabled: boolean;
   package_cache_max_bytes: number;
+  cold_archive_enabled: boolean;
+  cold_archive_max_archives: number;
 } {
   return {
     cron: CRON,
     targets: DEFAULT_RETENTION_TARGETS.map((target) => ({ ...target })),
     package_cache_enabled: true,
     package_cache_max_bytes: DEFAULT_PACKAGE_CACHE_MAX_BYTES,
+    // Cold migration is bounded per tick; the mount path remains a runtime
+    // default so installations can provision the tier independently.
+    cold_archive_enabled: true,
+    cold_archive_max_archives: 12,
   };
 }
 

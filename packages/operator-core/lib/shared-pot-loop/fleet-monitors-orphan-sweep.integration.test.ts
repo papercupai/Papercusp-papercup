@@ -23,7 +23,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
-import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { createFreshPgDb, LIVE_HOLDER_ROUTINES_DDL, type FreshPgDb } from '../../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
 import { sweepOrphanedTakenBy } from './fleet-monitors';
 
@@ -113,6 +113,9 @@ beforeAll(async () => {
   await sql.unsafe(WORK_ITEM_CLAIMS_DDL);
   await sql.unsafe(AGENT_ACTIVITY_DDL);
   await sql.unsafe(TOOL_INVOCATIONS_DDL);
+  // sweepOrphanedTakenBy's live-holder check reads harness_shared.routines
+  // (liveHolderFragment's armed-loop leg, EI-21829223595077387).
+  await sql.unsafe(LIVE_HOLDER_ROUTINES_DDL);
 }, 120_000);
 
 afterAll(async () => {

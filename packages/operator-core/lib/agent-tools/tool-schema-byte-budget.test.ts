@@ -28,6 +28,8 @@ import { describe, it, expect } from 'vitest';
 // the routed test-file process budget.
 import './index';
 import { listAllProjectedTools } from '@papercusp/tooldef';
+import { selectConverseTools } from './operator/converse-toolset';
+import { assertSelectedInputSchemaBudget, selectedInputSchemaBudget } from './tool-guidance-budget';
 import {
   ALLOW_OVER_SCHEMA_BUDGET,
   MIN_PLAUSIBLE_CATALOG_SIZE,
@@ -55,6 +57,41 @@ import {
  * broke, not that the catalog got cheap.
  */
 const MIN_PLAUSIBLE_CATALOG_SCHEMA_BYTES = 600_000;
+
+describe('voice converse selected schema budget', () => {
+  it.each(['operator', 'papercup'])('%s voice mounts fit the real catalog budget and retain tools', (role) => {
+    const catalog = new Map(listAllProjectedTools().map(tool => [tool.expose.mcp?.name, tool]));
+    const names = selectConverseTools({
+      role, hostTrust: 'owner', modality: 'voice', publicDoorNames: () => [],
+      supportsVoice: name => (catalog.get(name)?.modality ?? ['text', 'voice']).includes('voice'),
+    }).map(name => name.replace('mcp__agentmcp__', ''));
+    expect(names).toContain('memory:search');
+    expect(names).toContain('harness:status');
+    // plans:get is explicitly text-only; it must not remain callable but
+    // absent from the voice prompt's filtered catalog.
+    expect(names).not.toContain('plans:get');
+    // The current card tool supports spoken fallbackText; older descriptions
+    // called it text-only. Assert the registry contract, not that stale roster.
+    expect(names).toContain('chat:ask_choice');
+    expect(names.every(name => (catalog.get(name)?.modality ?? ['text', 'voice']).includes('voice'))).toBe(true);
+    const tools = names.map(name => {
+      const tool = catalog.get(name);
+      expect(tool, name).toBeDefined();
+      return { name, inputSchema: tool!.inputSchema };
+    });
+    const standardNames = selectConverseTools({
+      role, hostTrust: 'owner', modality: 'voice', voiceProfile: 'standard', publicDoorNames: () => [],
+      supportsVoice: name => (catalog.get(name)?.modality ?? ['text', 'voice']).includes('voice'),
+    }).map(name => name.replace('mcp__agentmcp__', ''));
+    const standardTools = standardNames.map(name => ({ name, inputSchema: catalog.get(name)!.inputSchema }));
+    const slimBudget = selectedInputSchemaBudget(tools);
+    const standardBudget = selectedInputSchemaBudget(standardTools);
+    console.log(`[voice-schema-budget] role=${role} slimTools=${tools.length} standardTools=${standardTools.length} slimBytes=${slimBudget.totalBytes} standardBytes=${standardBudget.totalBytes}`);
+    expect(() => assertSelectedInputSchemaBudget(tools)).not.toThrow();
+    expect(() => assertSelectedInputSchemaBudget(standardTools)).not.toThrow();
+    expect(slimBudget.totalBytes).toBeLessThan(standardBudget.totalBytes);
+  });
+});
 
 describe('per-tool argSchema wire budget (EI-23345472964244980)', () => {
   const measured: NamedToolSchemaBytes[] = namedToolSchemaBytes(listAllProjectedTools());

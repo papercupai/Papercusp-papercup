@@ -42,6 +42,7 @@ describe('buildRelaunchInput (WI-5541)', () => {
       parentSpawnId: 'queen-1',
       parentRole: 'mug',
       turnTrigger: 'supervised-restart',
+      replacesSpawnId: 'dead-spawn',
       idempotencyKey: 'supervised-restart:dead-spawn',
     });
   });

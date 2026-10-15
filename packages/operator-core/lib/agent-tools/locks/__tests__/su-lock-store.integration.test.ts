@@ -24,9 +24,10 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ensureBootstrap,
   expireWaiter,
@@ -42,6 +43,7 @@ import {
   sweepWorkspaceExpired,
   tryAcquire,
   tryCancelWait,
+  tryFinishHookOperation,
   tryHeartbeat,
   tryInsertWaiter,
   tryRelease,
@@ -153,6 +155,125 @@ afterAll(async () => {
     configureLocks(priorLocksHost);
     priorLocksHost = null;
   }
+});
+
+describe('native hook operation fence', () => {
+  function operation(paths = ['operation.ts']) {
+    return {
+      coordinationDomain: nextWs(), owner: 'native-operation-owner', ownerLabel: 'Native operation',
+      paths, intent: 'PreToolUse:apply_patch', ttlSec: 1200, automatic: true,
+      operation: { id: randomUUID(), deadline: new Date(Date.now() + 120_000).toISOString() },
+    };
+  }
+
+  function acquire(p: ReturnType<typeof operation>) {
+    return inWorkspaceTxn(p.coordinationDomain, p.owner, (tx) => tryAcquire(tx, p), { paths: p.paths });
+  }
+
+  function finish(p: ReturnType<typeof operation>, outcome: 'cancelled' | 'completed' = 'completed') {
+    return inWorkspaceTxn(p.coordinationDomain, p.owner,
+      (tx) => tryFinishHookOperation(tx, { ...p, outcome }), { paths: p.paths });
+  }
+
+  async function held(p: ReturnType<typeof operation>) {
+    return (await readQueue(getTxPool(), { coordinationDomain: p.coordinationDomain })).active_locks;
+  }
+
+  it.each(['cancelled', 'completed'] as const)('%s before acquire prevents a late grant', async (outcome) => {
+    const p = operation();
+    expect(await finish(p, outcome)).toMatchObject({ ok: true, released: [], state: outcome });
+    expect(await acquire(p)).toMatchObject({ ok: false, reason: 'operation_finished' });
+    expect(await held(p)).toEqual([]);
+  });
+
+  it('settles a grant whose HTTP reply and lock token were never received', async () => {
+    const p = operation();
+    // The old recovery snapshot precedes the delayed server grant.
+    expect(await held(p)).toEqual([]);
+    await acquire(p); // deliberately discard the returned lock_id
+    expect(await finish(p)).toMatchObject({ ok: true, released: p.paths, state: 'completed' });
+    expect(await acquire(p)).toMatchObject({ ok: false, reason: 'operation_finished' });
+    expect(await held(p)).toEqual([]);
+  });
+
+  it('duplicate acquire preserves the original expiry and newly-held set', async () => {
+    const p = operation();
+    const first = await acquire(p);
+    expect(first.ok).toBe(true);
+    const duplicate = await acquire(p);
+    expect(duplicate).toEqual(first);
+    expect(await finish(p)).toMatchObject({ ok: true, released: p.paths });
+    expect(await finish(p)).toMatchObject({ ok: true, released: [] });
+  });
+
+  it('completion preserves overlapping explicit holds and unrelated paths', async () => {
+    const p = operation(['explicit.ts', 'new.ts']);
+    const explicit = await inWorkspaceTxn(p.coordinationDomain, p.owner, (tx) => tryAcquire(tx, {
+      ...p, operation: undefined, automatic: false, intent: 'deliberate batch',
+      paths: ['explicit.ts', 'unrelated.ts'],
+    }));
+    expect(explicit.ok).toBe(true);
+    const grant = await acquire(p);
+    expect(grant.ok).toBe(true);
+    if (!grant.ok || !explicit.ok) throw new Error('fixture locks did not grant');
+    expect(grant.newly_held).toEqual(['new.ts']);
+    expect(await finish(p)).toMatchObject({ ok: true, released: ['new.ts'] });
+    const remaining = await held(p);
+    expect(remaining.map((row) => row.path).sort()).toEqual(['explicit.ts', 'unrelated.ts']);
+    expect(remaining.every((row) => row.lock_id === explicit.lock_id)).toBe(true);
+  });
+
+  it('an operation entirely covered by an explicit hold releases nothing', async () => {
+    const p = operation();
+    await inWorkspaceTxn(p.coordinationDomain, p.owner, (tx) => tryAcquire(tx, {
+      ...p, operation: undefined, automatic: false, intent: 'deliberate edit',
+    }));
+    expect(await acquire(p)).toMatchObject({ ok: true, newly_held: [] });
+    expect(await finish(p)).toMatchObject({ ok: true, released: [] });
+    expect((await held(p)).map((row) => row.path)).toEqual(p.paths);
+  });
+
+  it('rejects operation identity reuse with a different owner, domain, path or deadline', async () => {
+    const p = operation();
+    expect((await acquire(p)).ok).toBe(true);
+    for (const changed of [
+      { ...p, owner: 'foreign-owner' },
+      { ...p, coordinationDomain: nextWs() },
+      { ...p, paths: ['different.ts'] },
+      { ...p, operation: { ...p.operation, deadline: new Date(Date.now() + 90_000).toISOString() } },
+    ]) {
+      expect(await finish(changed)).toEqual({ ok: false, reason: 'operation_conflict' });
+    }
+    expect((await held(p)).map((row) => row.path)).toEqual(p.paths);
+    expect(await finish(p)).toMatchObject({ ok: true, released: p.paths });
+  });
+
+  it('rejects expired requests after their terminal ticket has been collected', async () => {
+    const p = operation();
+    p.operation.deadline = new Date(Date.now() - 1000).toISOString();
+    expect((await finish(p, 'cancelled')).ok).toBe(true);
+    const sql = getTxPool();
+    await sql`DELETE FROM agent_lock_waiters WHERE ticket_id = ${p.operation.id}::uuid`;
+    expect(await acquire(p)).toMatchObject({ ok: false, reason: 'operation_expired' });
+    const tickets = await sql`SELECT ticket_id FROM agent_lock_waiters WHERE ticket_id = ${p.operation.id}::uuid`;
+    expect(tickets).toHaveLength(0);
+    expect(await held(p)).toEqual([]);
+  });
+
+  it('rejects an admission deadline beyond the retained tombstone horizon', async () => {
+    const p = operation();
+    p.operation.deadline = new Date(Date.now() + 7200_000).toISOString();
+    expect(await acquire(p)).toMatchObject({ ok: false, reason: 'operation_conflict' });
+    expect(await held(p)).toEqual([]);
+  });
+
+  it('serializes concurrent acquire and completion without a surviving grant', async () => {
+    const p = operation();
+    const [, terminal] = await Promise.all([acquire(p), finish(p)]);
+    expect(terminal).toMatchObject({ ok: true, state: 'completed' });
+    expect(await held(p)).toEqual([]);
+    expect(await acquire(p)).toMatchObject({ ok: false, reason: 'operation_finished' });
+  });
 });
 
 describe('path validation', () => {
@@ -1007,7 +1128,7 @@ describe('readQueue', () => {
 });
 
 describe('head-waiter blocks new acquires (anti-starvation)', () => {
-  it('identifies a queued waiter when no file holder remains', async () => {
+  it('blocks behind a queued waiter without reporting it as a file holder', async () => {
     const ws = nextWs();
     const sql = getTxPool();
     await sql`
@@ -1027,7 +1148,15 @@ describe('head-waiter blocks new acquires (anti-starvation)', () => {
     expect(blocked).toMatchObject({
       ok: false,
       reason: 'queued_waiter',
-      busy: [{ path: 'hot.ts', owner: 'queued', intent: 'queued edit' }],
+      busy: [],
+    });
+
+    // A FIFO position blocks acquisition but conveys no ownership or lease.
+    const queue = await readQueue(sql, { coordinationDomain: ws });
+    expect(queue.active_locks).toEqual([]);
+    expect(queue.waiting).toHaveLength(1);
+    expect(queue.waiting[0]).toMatchObject({
+      owner: 'queued', paths: ['hot.ts'], intent: 'queued edit',
     });
 
     const free = await inWorkspaceTxn(ws, 'newcomer', (tx) =>
@@ -1037,6 +1166,103 @@ describe('head-waiter blocks new acquires (anti-starvation)', () => {
       }),
     );
     expect(free.ok).toBe(true);
+  });
+
+  it('reports the active holder lease instead of the queued waiter deadline', async () => {
+    const ws = nextWs();
+    const holder = await inWorkspaceTxn(ws, 'holder', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: ws, owner: 'holder', ownerLabel: 'HOLDER',
+        paths: ['hot.ts'], intent: 'held edit', ttlSec: 120,
+      }),
+    );
+    if (!holder.ok) throw new Error('holder acquire should succeed');
+
+    const waiter = await inWorkspaceTxn(ws, 'queued', (tx) =>
+      tryInsertWaiter(tx, {
+        coordinationDomain: ws, owner: 'queued', ownerLabel: 'QUEUED',
+        paths: ['hot.ts'], intent: 'queued edit', ttlSec: 60, maxWaitSec: 30,
+      }),
+    );
+    if (!waiter.ok || 'self_granted' in waiter) throw new Error('waiter should be queued');
+
+    const blocked = await inWorkspaceTxn(ws, 'newcomer', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: ws, owner: 'newcomer', ownerLabel: 'NEWCOMER',
+        paths: ['hot.ts'], intent: 'new edit', ttlSec: 60,
+      }),
+    );
+    expect(blocked).toMatchObject({
+      ok: false,
+      reason: 'queued_waiter',
+      busy: [{
+        path: 'hot.ts', owner: 'holder', owner_label: 'HOLDER',
+        intent: 'held edit', expires_ts: holder.expires_ts,
+      }],
+    });
+    if (blocked.ok) throw new Error('queued newcomer must not acquire');
+    expect(blocked.busy).toHaveLength(1);
+
+    const queue = await readQueue(getTxPool(), { coordinationDomain: ws });
+    expect(queue.waiting).toHaveLength(1);
+    expect(queue.waiting[0].ticket_id).toBe(waiter.ticket_id);
+    expect(blocked.busy[0].expires_ts.getTime()).toBeGreaterThan(
+      queue.waiting[0].wait_until.getTime(),
+    );
+  });
+
+  it('reports the stored lease expiry, not a JS-clock estimate (WI-6554700010010480)', async () => {
+    const ws = nextWs();
+    // Skew the JS clock an hour ahead for this acquire only. The row stores
+    // clock_timestamp() + ttl, so a result derived from Date.now() would land
+    // an hour away from it; the stored lease is unaffected by the skew.
+    const realNow = Date.now.bind(Date);
+    const skew = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + 3_600_000);
+    const held = await inWorkspaceTxn(ws, 'holder', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: ws, owner: 'holder', ownerLabel: 'HOLDER',
+        paths: ['lease.ts'], intent: 'lease edit', ttlSec: 120,
+      }),
+    ).finally(() => skew.mockRestore());
+    if (!held.ok) throw new Error('holder acquire should succeed');
+
+    const sql = getTxPool();
+    const [row] = await sql<Array<{ expires_ts: Date }>>`
+      SELECT expires_ts FROM agent_file_locks
+       WHERE coordination_domain = ${ws} AND path = 'lease.ts'
+    `;
+    expect(held.expires_ts.getTime()).toBe(row.expires_ts.getTime());
+  });
+
+  it('an automatic acquire that adds paths reports the earliest stored lease it holds (WI-6554700010010480)', async () => {
+    const ws = nextWs();
+    const first = await inWorkspaceTxn(ws, 'auto', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: ws, owner: 'auto', ownerLabel: 'AUTO',
+        paths: ['owned.ts'], intent: 'PreToolUse:Edit', ttlSec: 60, automatic: true,
+      }),
+    );
+    if (!first.ok) throw new Error('first automatic acquire should succeed');
+
+    // owned.ts is already held, so only added.ts is upserted; owned.ts keeps
+    // its 60s lease and the result must not claim the new 600s one for it.
+    const mixed = await inWorkspaceTxn(ws, 'auto', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: ws, owner: 'auto', ownerLabel: 'AUTO',
+        paths: ['owned.ts', 'added.ts'], intent: 'PreToolUse:Edit', ttlSec: 600, automatic: true,
+      }),
+    );
+    if (!mixed.ok) throw new Error('mixed automatic acquire should succeed');
+
+    const sql = getTxPool();
+    const rows = await sql<Array<{ path: string; expires_ts: Date }>>`
+      SELECT path, expires_ts FROM agent_file_locks
+       WHERE coordination_domain = ${ws} ORDER BY path
+    `;
+    expect(rows.map((r) => r.path)).toEqual(['added.ts', 'owned.ts']);
+    const earliest = Math.min(...rows.map((r) => r.expires_ts.getTime()));
+    expect(mixed.expires_ts.getTime()).toBe(earliest);
+    expect(mixed.expires_ts.getTime()).toBe(first.expires_ts.getTime());
   });
 
   it('new acquirer cannot jump an older waiter on the same path', async () => {

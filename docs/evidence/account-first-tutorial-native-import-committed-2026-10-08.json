@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Committed retained-source import and native launcher regression suites",
+  "framework": "operational",
+  "command": [
+    "npm",
+    "run",
+    "lint:as-committed",
+    "--",
+    "test:file",
+    "--any",
+    "--keep",
+    "--",
+    "packages/operator-core/lib/lint-as-committed.test.ts",
+    "scripts/review-cloud-tutorial-native.test.mjs",
+    "packages/operator-core/lib/__tests__/test-file-router.test.ts"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-08T20:28:20.867Z",
+  "finishedAt": "2026-10-08T20:29:14.733Z",
+  "summary": "Archival registration of already executed maintained suites: helper96, router132 and native launcher8 passed at clean c19484fc98. Three recorder assertions describe these observations; they are not additional test executions. Scope excludes native automated PASS, hosted provider, voice and production.",
+  "assertions": [
+    {
+      "id": "retained-full-conventional-suites",
+      "passed": true,
+      "evidence": "Full helper96/router132/node8 passed, zero skipped; terminal0."
+    },
+    {
+      "id": "clean-source-and-recorder",
+      "passed": true,
+      "evidence": "Immutable committed c19484fc98, named3 paths clean before/after, plain-Node TEST_FILE_LEDGER rows=1."
+    },
+    {
+      "id": "actual-consumed-source-guard",
+      "passed": true,
+      "evidence": "Conventional real exports distinguish live/frozen shell imports; no-partial-mutation missing tracked source refusal; native same-byte live import negative control refused."
+    }
+  ],
+  "provenance": {
+    "sourceCommit": "c19484fc98aa929a8596441a0ff1e52b0fe7315e",
+    "sourceLog": "/tmp/tutorial-native-import-committed-20261008T2029.log",
+    "sourceLogSha256": "62cc76f306c0a38c880c0caa380080856a4c68e1231e2634cfa47213740e6918",
+    "sourcePaths": [
+      {
+        "path": "scripts/lint-as-committed.mjs",
+        "sha256": "769ad93c4fa37a12e39b4d46dd8267fa7f548e98135eef25a66d0d5367e3544d"
+      },
+      {
+        "path": "packages/operator-core/lib/lint-as-committed.test.ts",
+        "sha256": "1692947602800e7aab6be17c77cfa7828149896421e3e663959fb8119ca22616"
+      },
+      {
+        "path": "scripts/review-cloud-tutorial-native.mjs",
+        "sha256": "cdd8bdd7d3a9da06b1ffe1014ec1b41123a8814ff47520326ab3d665dc3607e6"
+      },
+      {
+        "path": "scripts/review-cloud-tutorial-native.test.mjs",
+        "sha256": "23b16ce4e32ed5fa0dfc373f342106f46a82205bc7e9631e24f6d225257b6cc0"
+      },
+      {
+        "path": "scripts/test-files.mjs",
+        "sha256": "b80e50f42bdb246637536a46cb5db68babac81bb61ce1510d3341341a8154ebc"
+      },
+      {
+        "path": "packages/operator-core/lib/__tests__/test-file-router.test.ts",
+        "sha256": "005d634bfdf5175368397508766e7cc5a54fd86e993383df4569a5d1f5c87e8d"
+      }
+    ],
+    "originalTestRunIds": [
+      20937980,
+      20937981,
+      20937982
+    ],
+    "originalLedgerScope": "workspace=papercusp-workspace; harness=null; not used as scoped binding",
+    "originalTestCount": 236,
+    "originalSkippedTestCount": 0,
+    "retainedSummary": [
+      " ✓ lib/__tests__/test-file-router.test.ts (132 tests) 22318ms",
+      " ✓ lib/lint-as-committed.test.ts (96 tests) 38943ms",
+      "      Tests  228 passed (228)",
+      "ℹ tests 8",
+      "ℹ suites 0",
+      "ℹ pass 8",
+      "ℹ fail 0",
+      "ℹ cancelled 0",
+      "ℹ skipped 0",
+      "ℹ todo 0",
+      "ℹ duration_ms 227.307921",
+      "TEST_FILE_LEDGER runner=node:test rows=1",
+      "TEST_FILE_RESULT requested=3 executed=3 matched=3 status=passed head=c19484fc98 uncommittedPaths=0/3 provenance=stamped startedAt=2026-10-08T20:28:20.867Z skippedTests=unknown"
+    ],
+    "noReplay": true
+  }
+}

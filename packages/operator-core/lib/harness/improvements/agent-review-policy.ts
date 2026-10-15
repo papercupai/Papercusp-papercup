@@ -12,7 +12,17 @@ import { createHash } from 'node:crypto';
 import type postgres from 'postgres';
 
 import type { OrgSql } from '../../work-items';
-import { ALL_TERMINAL_STATUSES } from '../../work-item-blocking';
+import { assertHoldRegistered } from '../../hold-registry';
+import { ALL_SUCCESSFUL_STATUSES, ALL_TERMINAL_STATUSES } from '../../work-item-blocking';
+import { WORK_ITEM_PRESENTATION_STAGES, type WorkItemPresentationStage } from '../../work-item-presentation-contract';
+export { WORK_ITEM_PRESENTATION_STAGES, type WorkItemPresentationStage } from '../../work-item-presentation-contract';
+import {
+  BUG_REPRODUCTION_KINDS,
+  BUG_REPRODUCTION_SCHEMA_VERSION,
+  readBugReproductionReceipt,
+  readStoredBugReproduction,
+  type BugReproductionReceipt,
+} from '../../attention/bug-reproduction';
 import {
   activeExternalBlockers,
   externalBlockerCapabilityPolicy,
@@ -31,11 +41,39 @@ export type AgentReviewStatus = (typeof AGENT_REVIEW_STATUSES)[number];
  */
 export const LEGACY_AGENT_REVIEW_SUBMITTER = 'system:legacy-agent-review' as const;
 
+/**
+ * Exact synthetic submitter historically written by the stranded tool-failure sweep.
+ * Resubmit may recover it only when the row also carries that sweep's review marker and
+ * matching original reporter provenance; this identity alone grants no adoption rights.
+ */
+export const STRANDED_SWEEP_OWNER = 'system:stranded-tool-failure-sweep' as const;
+
+/**
+ * WHY a review was sent back (bug-queue-legitimacy D-006 / D-007). Meaningful only while
+ * `status === 'revision-requested'`; every other status drops it on read.
+ *
+ *  - `content`: the independent grade failed — the REPORT needs revising, which is its
+ *    submitter's (or an orphan-rebind adopter's) job.
+ *  - `reproduction`: the grade PASSED and the only refusal is a missing or unaccepted
+ *    current-build reproduction receipt. That is VALIDATION work owned by the drain lane,
+ *    not a revision owed by the submitter: the intake-stage claim floor admits it, and its
+ *    claimant may resubmit it. The implementation guard is unchanged — readiness stays
+ *    `not-ready` until a reviewer round accepts a verified receipt.
+ *
+ * Absent on rows written before D-006; such rows keep the pre-D-006 hold.
+ */
+export const AGENT_REVIEW_REVISION_KINDS = ['content', 'reproduction'] as const;
+export type AgentReviewRevisionKind = (typeof AGENT_REVIEW_REVISION_KINDS)[number];
+
 export interface AgentReviewState {
   status: AgentReviewStatus;
   submittedBy: string;
   ledgerIdeaId: string;
   round: number;
+  /** Current-round timing, written by the lifecycle; ledger routing may predate review. */
+  timing?: { round: number; enteredAt: string; decidedAt?: string };
+  /** Why a `revision-requested` round was sent back; see {@link AGENT_REVIEW_REVISION_KINDS}. */
+  revisionKind?: AgentReviewRevisionKind;
 }
 
 /**
@@ -87,7 +125,14 @@ export const IMPLEMENTATION_ACCEPTANCE_CONTRACT_VERSION = 'implementation-accept
  * authority. Duplicate admission, severity/security tagging, explicit assignment
  * and confidence are deliberately absent: none of them is acceptance authority.
  */
-export const IMPLEMENTATION_ACCEPTANCE_POLICIES = ['trusted-tool-failure-promotion'] as const;
+export const IMPLEMENTATION_ACCEPTANCE_POLICIES = ['trusted-tool-failure-promotion', 'completion-verification'] as const;
+/**
+ * P-007 Phase C (D-028): the policy that admits a completion verification task. Valid
+ * ONLY on a row whose own verification block is a `completion` check of the same subject
+ * the contract names: what is to be verified is fully determined by the subject's
+ * recorded completion, so no reviewer judgment is replaced.
+ */
+export const COMPLETION_VERIFICATION_POLICY = 'completion-verification' as const;
 export type ImplementationAcceptancePolicy = (typeof IMPLEMENTATION_ACCEPTANCE_POLICIES)[number];
 
 export type ImplementationAcceptanceAuthority =
@@ -103,12 +148,33 @@ export interface ImplementationAcceptanceProposal {
   completionCheck: string;
 }
 
+/**
+ * P-006 (unified-bug-pipeline D-019): acceptance is the ONE verification stage,
+ * and the check it applies is chosen by kind. A bug needs a reproduction receipt
+ * (D-023, or the D-024/D-011 encounter receipt recorded at filing). A change,
+ * feature or task needs proposal review: agent-review authority from a reviewer
+ * who is not the submitter. No other path makes a contract qualify.
+ */
+export type CandidateStageCheck = 'reproduction' | 'proposal-review';
+
+export function candidateStageCheckForKind(kind: string): CandidateStageCheck {
+  return kind === 'bug' ? 'reproduction' : 'proposal-review';
+}
+
+export type ImplementationAcceptanceVerification =
+  | { check: 'reproduction'; receipt: BugReproductionReceipt }
+  | { check: 'proposal-review' }
+  /** P-007 Phase C (D-028): a completion verification task, admitted by policy. */
+  | { check: 'completion'; subject: string };
+
 export interface ImplementationAcceptanceContract extends ImplementationAcceptanceProposal {
   contractVersion: typeof IMPLEMENTATION_ACCEPTANCE_CONTRACT_VERSION;
   authority: ImplementationAcceptanceAuthority;
   reason: string;
   sourceRevision: string;
   acceptedAt: string;
+  /** Which kind-specific check cleared the contract (P-006). */
+  verification: ImplementationAcceptanceVerification;
 }
 
 export const IMPLEMENTATION_ACCEPTANCE_PROPOSAL_FIELDS = [
@@ -127,7 +193,9 @@ export const IMPLEMENTATION_ACCEPTANCE_SEAL_FIELDS = [
 ] as const;
 export type ImplementationAcceptanceField =
   | (typeof IMPLEMENTATION_ACCEPTANCE_PROPOSAL_FIELDS)[number]
-  | (typeof IMPLEMENTATION_ACCEPTANCE_SEAL_FIELDS)[number];
+  | (typeof IMPLEMENTATION_ACCEPTANCE_SEAL_FIELDS)[number]
+  /** The kind-specific check (P-006) did not pass: reported by readers, never by the seal. */
+  | 'verification';
 
 export interface ImplementationAcceptanceSource {
   /** Storage kind (`item_kind`): bug/change/task/feature. */
@@ -158,6 +226,12 @@ export interface ImplementationReadinessEvidence {
    * revision-current contract is qualifying acceptance.
    */
   acceptance?: Partial<ImplementationAcceptanceContract>;
+  /**
+   * P-009 (D-019): the contract an undone intake promotion had sealed. Kept for
+   * audit and re-review under a key no claim floor reads, so a reversed row is
+   * not-ready and never counts as accepted.
+   */
+  reversedAcceptance?: Partial<ImplementationAcceptanceContract>;
   review?: {
     submittedBy?: string;
     reviewer?: string;
@@ -195,6 +269,10 @@ const IMPLEMENTATION_READINESS_UPDATED_AT_PATTERN = new RegExp(IMPLEMENTATION_RE
 export function createImplementationReadiness(
   input: Omit<ImplementationReadinessState, 'schemaVersion' | 'updatedAt'> & { updatedAt?: string },
 ): ImplementationReadinessState {
+  // D-026: a non-ready verdict HOLDS the row, so its reason must name a clearer and a
+  // re-check time in the hold registry. An unregistered reason is refused at the write
+  // (UnmappedHoldError) instead of minting a hold nobody is responsible for ending.
+  if (input.status !== 'ready') assertHoldRegistered('readiness', input.reason);
   return {
     schemaVersion: IMPLEMENTATION_READINESS_SCHEMA_VERSION,
     status: input.status,
@@ -236,6 +314,20 @@ export function readImplementationReadiness(payload: unknown): ImplementationRea
  * `deriveWorkItemIntakeStage` keeps both in intake — they are only the claim
  * behaviour that existed before producers were enrolled.
  */
+/**
+ * Recorded enforcement cutover (observation-candidate-acceptance-promotion D-009b,
+ * D-016). Rows created at or after this instant pass ordinary claim floors only
+ * with a `ready` verdict and a qualifying acceptance contract; older rows keep the
+ * legacy exception until P-011 reviews their cohort. Migration 1301 repeats this
+ * literal inside `work_item_claim_floors`; a unit test pins the two together.
+ */
+// D-018: the created-after-cutover arm is DEFERRED to P-011 (cohort baseline + named canary), so
+// this is a far sentinel, not an enforcement date. Lowering it is P-011's job: a new migration that
+// re-renders floor #16, plus first making every wall-clock claim test seed created_ts explicitly.
+// A stale-revision or invalid-authority acceptance refuses regardless of this value.
+export const IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER = '2100-01-01T00:00:00.000Z' as const;
+export const IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER_MS = Date.parse(IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER);
+
 export function implementationReadinessIsLegacyEquivalent(payload: unknown): boolean {
   const value = record(payload);
   if (!Object.prototype.hasOwnProperty.call(value, 'implementationReadiness')) return true;
@@ -350,6 +442,11 @@ export function evaluateImplementationAcceptance(
   if (currentRevision !== acceptedRevision) {
     return { state: 'stale-revision', missing: [], acceptedRevision, currentRevision };
   }
+  // A matching revision means `source` was supplied, so its kind is the judged kind.
+  const verification = acceptanceVerificationFor(acceptance, (source as ImplementationAcceptanceSource).kind, payload);
+  if (!verification) {
+    return { state: 'incomplete', missing: ['verification'], acceptedRevision, currentRevision };
+  }
   const contract: ImplementationAcceptanceContract = {
     contractVersion: IMPLEMENTATION_ACCEPTANCE_CONTRACT_VERSION,
     ...(readImplementationAcceptanceProposal(payload) as ImplementationAcceptanceProposal),
@@ -357,19 +454,63 @@ export function evaluateImplementationAcceptance(
     reason: (acceptance.reason as string).trim(),
     sourceRevision: acceptedRevision,
     acceptedAt: acceptance.acceptedAt as string,
+    verification,
   };
   return { state: 'qualifying', missing: [], contract, acceptedRevision, currentRevision };
+}
+
+/**
+ * The kind-specific check of the one verification stage, read back from a
+ * stored contract (P-006). A bug qualifies only with a recorded reproduction
+ * receipt that would still parse today. A change, feature or task qualifies
+ * through proposal review, which is agent-review authority; contracts sealed
+ * before P-006 carry no `verification` marker but already name that authority.
+ * P-007 Phase C (D-028): a non-bug row also qualifies under the completion policy,
+ * but only when the row itself is a completion verification task for the subject
+ * the contract names.
+ */
+function acceptanceVerificationFor(
+  acceptance: Record<string, unknown>,
+  kind: string,
+  payload: unknown,
+): ImplementationAcceptanceVerification | null {
+  const recorded = record(acceptance.verification);
+  if (candidateStageCheckForKind(kind) === 'reproduction') {
+    if (recorded.check !== 'reproduction') return null;
+    const receipt = readBugReproductionReceipt(recorded.receipt);
+    return receipt ? { check: 'reproduction', receipt } : null;
+  }
+  const authority = record(acceptance.authority);
+  if (authority.kind === 'agent-review') return { check: 'proposal-review' };
+  if (authority.kind === 'policy' && authority.policy === COMPLETION_VERIFICATION_POLICY) {
+    const subject = completionVerificationSubject(payload);
+    return subject && recorded.check === 'completion' && recorded.subject === subject
+      ? { check: 'completion', subject }
+      : null;
+  }
+  return null;
+}
+
+/** The subject a row verifies, when the row is a current-version completion verification task. */
+export function completionVerificationSubject(payload: unknown): string | null {
+  const task = readVerificationTask(payload);
+  return task?.check === 'completion' ? task.subject : null;
 }
 
 export type SealImplementationAcceptanceResult =
   | { ok: true; contract: ImplementationAcceptanceContract }
   | { ok: false; refusal: 'incomplete'; missing: ImplementationAcceptanceField[] }
-  | { ok: false; refusal: 'invalid-authority' };
+  | { ok: false; refusal: 'invalid-authority' }
+  /** P-006: a bug cannot be accepted without a reproduction receipt (D-023/D-024/D-011). */
+  | { ok: false; refusal: 'reproduction-missing' }
+  /** P-006: a change, feature or task is accepted only by proposal review (agent-review authority). */
+  | { ok: false; refusal: 'proposal-review-missing' };
 
 /**
- * The only constructor of a qualifying contract. Refuses — never defaults — when
- * any of problem/evidence/outcome/scope/completion check/authority/reason is
- * missing, and binds the result to the source revision judged.
+ * The only constructor of a qualifying contract, and so the one verification
+ * stage (P-006). Refuses — never defaults — when any of problem/evidence/outcome/
+ * scope/completion check/authority/reason is missing or the kind-specific check
+ * fails, and binds the result to the source revision judged.
  */
 export function sealImplementationAcceptance(input: {
   proposal: Partial<ImplementationAcceptanceProposal> | null | undefined;
@@ -377,6 +518,13 @@ export function sealImplementationAcceptance(input: {
   reason: string;
   source: ImplementationAcceptanceSource;
   acceptedAt?: string;
+  /** Required when `source.kind` is a bug: the receipt the reviewer or the filer recorded. */
+  reproduction?: unknown;
+  /**
+   * P-007 Phase C (D-028): the payload of the row being sealed. The completion policy is
+   * valid only when it carries a current `completion` verification block.
+   */
+  rowPayload?: unknown;
 }): SealImplementationAcceptanceResult {
   const proposal = record(input.proposal);
   const missing: ImplementationAcceptanceField[] = [];
@@ -387,6 +535,19 @@ export function sealImplementationAcceptance(input: {
   if (!nonEmptyString(input.source?.title)) missing.push('sourceRevision');
   if (missing.length > 0) return { ok: false, refusal: 'incomplete', missing };
   if (!acceptanceAuthorityValid(input.authority)) return { ok: false, refusal: 'invalid-authority' };
+  let verification: ImplementationAcceptanceVerification;
+  if (candidateStageCheckForKind(input.source.kind) === 'reproduction') {
+    const receipt = readBugReproductionReceipt(input.reproduction);
+    if (!receipt) return { ok: false, refusal: 'reproduction-missing' };
+    verification = { check: 'reproduction', receipt };
+  } else if (input.authority.kind === 'agent-review') {
+    verification = { check: 'proposal-review' };
+  } else {
+    const subject =
+      input.authority.policy === COMPLETION_VERIFICATION_POLICY ? completionVerificationSubject(input.rowPayload) : null;
+    if (!subject) return { ok: false, refusal: 'proposal-review-missing' };
+    verification = { check: 'completion', subject };
+  }
   const authority: ImplementationAcceptanceAuthority =
     input.authority.kind === 'agent-review'
       ? {
@@ -409,6 +570,7 @@ export function sealImplementationAcceptance(input: {
       reason: input.reason.trim(),
       sourceRevision: acceptanceSourceRevision(input.source),
       acceptedAt: input.acceptedAt ?? new Date().toISOString(),
+      verification,
     },
   };
 }
@@ -436,6 +598,13 @@ export interface WorkItemIntakeStageInput {
    */
   title?: string | null;
   summary?: string | null;
+  /**
+   * The row's `admission` column (plan unified-bug-pipeline P-008 / D-038). Admission
+   * dedup is intake step one: a `pending` row is a candidate awaiting dedup whatever
+   * its readiness says. Omitted ⇒ the caller did not read the column, and the leg is
+   * skipped (the SQL twin skips it the same way when no admission column is named).
+   */
+  admission?: string | null;
 }
 
 export interface WorkItemIntakeStageDecision {
@@ -445,6 +614,7 @@ export interface WorkItemIntakeStageDecision {
   reason:
     | 'observation-evidence'
     | 'terminal-history'
+    | 'awaiting-admission-dedup'
     | 'legacy-readiness-unknown'
     | 'malformed-readiness-unknown'
     | 'qualifying-acceptance'
@@ -496,6 +666,8 @@ export function deriveWorkItemIntakeStage(input: WorkItemIntakeStageInput): Work
   const qualifyingAcceptance = currentReadiness?.status === 'ready' && acceptance.state === 'qualifying';
   const reReviewRequested =
     !observation && !terminal && currentReadiness?.status === 'ready' && acceptance.state === 'stale-revision';
+  // P-008 / D-038: admission dedup is intake step one, ahead of every readiness leg.
+  const awaitingAdmission = !observation && !terminal && input.admission === 'pending';
 
   let primaryStage: WorkItemIntakePrimaryStage;
   let reason: WorkItemIntakeStageDecision['reason'];
@@ -505,6 +677,9 @@ export function deriveWorkItemIntakeStage(input: WorkItemIntakeStageInput): Work
   } else if (terminal) {
     primaryStage = 'terminal';
     reason = 'terminal-history';
+  } else if (awaitingAdmission) {
+    primaryStage = 'candidate';
+    reason = 'awaiting-admission-dedup';
   } else if (!readinessEnrolled) {
     primaryStage = 'unknown';
     reason = 'legacy-readiness-unknown';
@@ -534,7 +709,67 @@ export function deriveWorkItemIntakeStage(input: WorkItemIntakeStageInput): Work
     qualifyingAcceptance,
     acceptance: acceptance.state,
     reReviewRequested,
-    countsAsBugWork: input.kind === 'bug' && !observation && qualifyingAcceptance,
+    countsAsBugWork: input.kind === 'bug' && !observation && !awaitingAdmission && qualifyingAcceptance,
+  };
+}
+
+/** P-010: presentation partitions intake separately from accepted execution. */
+export interface WorkItemPresentationInput extends WorkItemIntakeStageInput {
+  assignee?: string | null;
+  /** Includes dependency/claim-floor holds resolved by the calling reader. */
+  blocked?: boolean;
+  completionAuthority?: string | null;
+}
+
+export function deriveWorkItemPresentationStage(input: WorkItemPresentationInput): {
+  stage: WorkItemPresentationStage;
+  reason: string;
+  intake: WorkItemIntakeStageDecision;
+} {
+  const intake = deriveWorkItemIntakeStage(input);
+  if (intake.primaryStage === 'terminal') {
+    const verified = intake.qualifyingAcceptance && ALL_SUCCESSFUL_STATUSES.has(input.status)
+      && (input.completionAuthority === 'committed' || input.completionAuthority === 'validated');
+    return { stage: verified ? 'verified-completion' : 'terminal-other',
+      reason: verified ? 'accepted-work-with-verified-success' : 'terminal-without-verified-accepted-success', intake };
+  }
+  if (intake.primaryStage !== 'accepted') {
+    return { stage: intake.primaryStage, reason: intake.reason, intake };
+  }
+  const payload = record(input.payload);
+  // Holds outrank assignment: a claimed item blocked on a dependency is blocked,
+  // while a claimed candidate remains intake regardless of lifecycle/assignment.
+  const blocked = input.blocked === true || payload._claimHold === true || hasStrictOwnerAction(payload)
+    || activeExternalBlockers(payload).length > 0
+    || !['open', 'wip', 'in_progress', 'in-progress', 'active', 'running'].includes(input.status);
+  if (blocked) return { stage: 'accepted-blocked', reason: 'accepted-work-held', intake };
+  const assigned = Boolean(input.assignee?.trim() && input.assignee.trim().toLowerCase() !== 'unassigned');
+  if (assigned) {
+    // Stable stage key, now explicitly a reservation. Lifecycle/assignment alone
+    // cannot attest native work; that evidence is carried independently.
+    return { stage: 'accepted-active', reason: 'accepted-work-reserved', intake };
+  }
+  return { stage: 'accepted-ready', reason: 'qualifying-acceptance', intake };
+}
+
+/** Counts only the supplied population; processing/comparison counters are never inputs. */
+export function countWorkItemPresentationStages(items: readonly WorkItemPresentationInput[]) {
+  const counts = Object.fromEntries(WORK_ITEM_PRESENTATION_STAGES.map((stage) => [stage, 0])) as
+    Record<WorkItemPresentationStage, number>;
+  let remainingBugs = 0;
+  for (const item of items) {
+    const { stage } = deriveWorkItemPresentationStage(item);
+    counts[stage] += 1;
+    if (item.kind === 'bug' && stage.startsWith('accepted-')) remainingBugs += 1;
+  }
+  return {
+    population: items.length,
+    unit: 'work-item rows' as const,
+    counts,
+    remainingBugs,
+    verifiedCompletions: counts['verified-completion'],
+    mutuallyExclusive: true as const,
+    writer: 'deriveWorkItemPresentationStage' as const,
   };
 }
 
@@ -547,6 +782,12 @@ type WorkItemIntakeStageSqlColumns = {
   title?: 'title' | 'wi.title' | 'ei.title';
   /** `summary` on work_items; the engineer_issues view exposes the same column as `body`. */
   summary?: 'summary' | 'wi.summary' | 'ei.body' | 'body';
+  /**
+   * P-008 / D-038: the admission column. No default — a projection that does not name
+   * it skips the admission-dedup leg, exactly as the TS twin does when `admission` is
+   * omitted.
+   */
+  admission?: 'admission' | 'wi.admission';
 };
 
 /** SQL twin of `acceptanceSourceRevision` (sha256 is built into PostgreSQL ≥ 11). */
@@ -554,9 +795,20 @@ export function acceptanceSourceRevisionSql(
   sql: OrgSql,
   columns: Pick<WorkItemIntakeStageSqlColumns, 'itemKind' | 'title' | 'summary'> = {},
 ) {
-  const itemKind = sql.unsafe(columns.itemKind ?? 'item_kind');
-  const title = sql.unsafe(columns.title ?? 'title');
-  const summary = sql.unsafe(columns.summary ?? 'summary');
+  return acceptanceSourceRevisionFromFragmentsSql(
+    sql,
+    sql.unsafe(columns.itemKind ?? 'item_kind'),
+    sql.unsafe(columns.title ?? 'title'),
+    sql.unsafe(columns.summary ?? 'summary'),
+  );
+}
+
+export function acceptanceSourceRevisionFromFragmentsSql(
+  sql: OrgSql,
+  itemKind: postgres.Fragment,
+  title: postgres.Fragment,
+  summary: postgres.Fragment,
+) {
   return sql`(${ACCEPTANCE_SOURCE_REVISION_PREFIX}::text || encode(sha256(convert_to(
     ${itemKind} || chr(31) || ${title} || chr(31) || COALESCE(${summary}, ''),
     'UTF8'
@@ -566,7 +818,46 @@ export function acceptanceSourceRevisionSql(
 /** SQL twin of `evaluateImplementationAcceptance(...).state`. */
 export function implementationAcceptanceStateSql(sql: OrgSql, columns: WorkItemIntakeStageSqlColumns = {}) {
   const payload = sql.unsafe(columns.payload ?? 'payload');
-  const readinessJson = sql`COALESCE(${payload}, '{}'::jsonb) -> 'implementationReadiness'`;
+  return implementationAcceptanceStateFromReadinessSql(
+    sql,
+    sql`(COALESCE(${payload}, '{}'::jsonb) -> 'implementationReadiness')`,
+    acceptanceSourceRevisionSql(sql, columns),
+    sql.unsafe(columns.itemKind ?? 'item_kind'),
+    completionVerificationSubjectSql(sql, payload),
+  );
+}
+
+/** SQL twin of `completionVerificationSubject`: the subject, or NULL when the row is not a completion task. */
+export function completionVerificationSubjectSql(sql: OrgSql, payload: postgres.Fragment) {
+  const verification = sql`(COALESCE(${payload}, '{}'::jsonb) -> 'verification')`;
+  return sql`(CASE
+    WHEN ${verification} ->> 'schemaVersion' = ${VERIFICATION_TASK_SCHEMA_VERSION}
+      AND ${verification} ->> 'check' = 'completion'
+      AND jsonb_typeof(${verification} -> 'subject') = 'string'
+      AND btrim(${verification} ->> 'subject') <> ''
+    THEN btrim(${verification} ->> 'subject')
+  END)`;
+}
+
+/**
+ * The same verdict over an already-extracted readiness document and the row's
+ * current source revision, so a census that projects `implementationReadiness`
+ * into its own column (the admission promoter) judges acceptance with the exact
+ * predicate the claim floor uses.
+ */
+export function implementationAcceptanceStateFromReadinessSql(
+  sql: OrgSql,
+  readinessJson: postgres.Fragment,
+  currentRevision: postgres.Fragment,
+  /** The row's current kind: it picks the stage's kind-specific check (P-006). */
+  itemKind: postgres.Fragment,
+  /**
+   * P-007 Phase C (D-028): `completionVerificationSubjectSql` over the same row. A census
+   * that projected only the readiness document passes nothing, so the completion policy
+   * reads 'incomplete' there (completion tasks are created admitted; no census promotes them).
+   */
+  completionSubject: postgres.Fragment = sql`NULL::text`,
+) {
   const acc = sql`(${readinessJson} -> 'evidence' -> 'acceptance')`;
   const authority = sql`(${acc} -> 'authority')`;
   const policies = [...IMPLEMENTATION_ACCEPTANCE_POLICIES];
@@ -576,7 +867,7 @@ export function implementationAcceptanceStateSql(sql: OrgSql, columns: WorkItemI
   const nonEmptyText = (value: postgres.Fragment) =>
     sql`COALESCE(jsonb_typeof(${value}) = 'string' AND (${value} #>> '{}') ~ '[^[:space:]]', FALSE)`;
   const nonEmpty = (path: string) => nonEmptyText(sql`(${acc} -> ${path})`);
-  const readinessValid = implementationReadinessValidSql(sql, columns.payload ?? 'payload');
+  const readinessValid = implementationReadinessValidFromJsonSql(sql, readinessJson);
   // Every branch below is COALESCEd: a missing key yields SQL NULL, and a NULL
   // CASE condition silently falls through to the next branch (toward 'qualifying').
   const proposalComplete = sql`COALESCE((
@@ -618,19 +909,49 @@ export function implementationAcceptanceStateSql(sql: OrgSql, columns: WorkItemI
       ELSE FALSE
     END
   )`;
+  // P-006 twin of `acceptanceVerificationFor` + `readBugReproductionReceipt`: a bug
+  // needs a recorded reproduction receipt; any other kind needs agent-review authority.
+  const reproductionKinds = [...BUG_REPRODUCTION_KINDS];
+  const receipt = sql`(${acc} -> 'verification' -> 'receipt')`;
+  const kindVerified = sql`COALESCE((
+    CASE WHEN ${itemKind} = 'bug' THEN (
+      ${acc} -> 'verification' ->> 'check' = 'reproduction'
+      AND jsonb_typeof(${receipt}) = 'object'
+      AND jsonb_typeof(${receipt} -> 'kind') = 'string'
+      AND ${receipt} ->> 'kind' = ANY(${reproductionKinds}::text[])
+      AND ${nonEmptyText(sql`(${receipt} -> 'ref')`)}
+      AND jsonb_typeof(${receipt} -> 'buildSha') = 'string'
+      AND (${receipt} ->> 'buildSha') ~ '^[[:space:]]*[0-9a-fA-F]{7,40}[[:space:]]*$'
+    ) ELSE (
+      ${authority} ->> 'kind' = 'agent-review'
+      OR (
+        ${authority} ->> 'kind' = 'policy'
+        AND ${authority} ->> 'policy' = ${COMPLETION_VERIFICATION_POLICY}
+        AND ${acc} -> 'verification' ->> 'check' = 'completion'
+        AND ${acc} -> 'verification' ->> 'subject' = ${completionSubject}
+      )
+    ) END
+  ), FALSE)`;
   return sql`(CASE
     WHEN NOT (${readinessValid})
       OR jsonb_typeof(${acc}) IS DISTINCT FROM 'object'
       OR ${acc} = '{}'::jsonb THEN 'absent'
     WHEN NOT (${proposalComplete} AND ${sealComplete}) THEN 'incomplete'
     WHEN NOT (${authorityValid}) THEN 'invalid-authority'
-    WHEN (${acc} ->> 'sourceRevision') IS DISTINCT FROM ${acceptanceSourceRevisionSql(sql, columns)} THEN 'stale-revision'
+    WHEN (${acc} ->> 'sourceRevision') IS DISTINCT FROM ${currentRevision} THEN 'stale-revision'
+    WHEN NOT (${kindVerified}) THEN 'incomplete'
     ELSE 'qualifying'
   END)`;
 }
 
 function implementationReadinessValidSql(sql: OrgSql, payloadColumn: string) {
-  const readinessJson = sql`COALESCE(${sql.unsafe(payloadColumn)}, '{}'::jsonb) -> 'implementationReadiness'`;
+  return implementationReadinessValidFromJsonSql(
+    sql,
+    sql`(COALESCE(${sql.unsafe(payloadColumn)}, '{}'::jsonb) -> 'implementationReadiness')`,
+  );
+}
+
+export function implementationReadinessValidFromJsonSql(sql: OrgSql, readinessJson: postgres.Fragment) {
   const readinessStatuses = [...IMPLEMENTATION_READINESS_STATUSES];
   const readinessSources = [...IMPLEMENTATION_READINESS_SOURCES];
   // COALESCE: a missing key is SQL NULL, and `NOT (NULL)` would let a malformed
@@ -645,6 +966,38 @@ function implementationReadinessValidSql(sql: OrgSql, payloadColumn: string) {
     AND jsonb_typeof(${readinessJson} -> 'updatedAt') = 'string'
     AND (${readinessJson} ->> 'updatedAt') ~ ${IMPLEMENTATION_READINESS_UPDATED_AT_PATTERN_SOURCE}
   ), FALSE)`;
+}
+
+/** P-010 SQL twin over narrow stored projections. Compute acceptance once upstream. */
+export function workItemPresentationStageFromSignalsSql(sql: OrgSql, row: {
+  observation: postgres.Fragment;
+  terminal: postgres.Fragment;
+  readinessValid: postgres.Fragment;
+  readinessEnrolled: postgres.Fragment;
+  readiness: postgres.Fragment;
+  acceptanceState: postgres.Fragment;
+  status: postgres.Fragment;
+  assigned: postgres.Fragment;
+  blocked: postgres.Fragment;
+  authority: postgres.Fragment;
+}) {
+  const accepted = sql`(${row.readinessValid} AND ${row.readiness} ->> 'status' = 'ready'
+    AND ${row.acceptanceState} = 'qualifying')`;
+  return sql`CASE
+    WHEN ${row.observation} THEN 'observation'
+    WHEN ${row.terminal} THEN CASE
+      WHEN ${accepted} AND ${row.status} = ANY(${[...ALL_SUCCESSFUL_STATUSES]}::text[])
+        AND ${row.authority} IN ('committed', 'validated') THEN 'verified-completion'
+      ELSE 'terminal-other' END
+    WHEN NOT COALESCE(${row.readinessEnrolled}, FALSE) OR NOT ${row.readinessValid} THEN 'unknown'
+    WHEN NOT COALESCE(${accepted}, FALSE) THEN 'candidate'
+    WHEN ${row.blocked}
+      OR ${row.status} <> ALL(ARRAY['open','wip','in_progress','in-progress','active','running']::text[])
+      THEN 'accepted-blocked'
+    WHEN ${row.assigned} OR ${row.status} = ANY(ARRAY['wip','in_progress','in-progress','active','running']::text[])
+      THEN 'accepted-active'
+    ELSE 'accepted-ready'
+  END`;
 }
 
 /** SQL twin of deriveWorkItemIntakeStage for set-based queue projections. */
@@ -667,12 +1020,17 @@ export function workItemIntakeStageSql(sql: OrgSql, columns: WorkItemIntakeStage
   const acceptanceState = sql`(CASE WHEN ${observation} THEN 'absent' ELSE ${implementationAcceptanceStateSql(sql, columns)} END)`;
   const readyNow = sql`(${readinessValid} AND ${readinessJson} ->> 'status' = 'ready')`;
   const qualifyingAcceptance = sql`(${readyNow} AND ${acceptanceState} = 'qualifying')`;
+  // P-008 / D-038: admission dedup is intake step one, ahead of every readiness leg.
+  const awaitingAdmission = columns.admission
+    ? sql`(NOT (${observation}) AND NOT (${terminal}) AND ${sql.unsafe(columns.admission)} IS NOT DISTINCT FROM 'pending')`
+    : sql`FALSE`;
 
   return sql`jsonb_build_object(
     'schemaVersion', ${WORK_ITEM_INTAKE_STAGE_SCHEMA_VERSION}::text,
     'primaryStage', CASE
       WHEN ${observation} THEN 'observation'
       WHEN ${terminal} THEN 'terminal'
+      WHEN ${awaitingAdmission} THEN 'candidate'
       WHEN NOT (${readinessEnrolled}) THEN 'unknown'
       WHEN NOT (${readinessValid}) THEN 'unknown'
       WHEN ${qualifyingAcceptance} THEN 'accepted'
@@ -687,6 +1045,7 @@ export function workItemIntakeStageSql(sql: OrgSql, columns: WorkItemIntakeStage
     'reason', CASE
       WHEN ${observation} THEN 'observation-evidence'
       WHEN ${terminal} THEN 'terminal-history'
+      WHEN ${awaitingAdmission} THEN 'awaiting-admission-dedup'
       WHEN NOT (${readinessEnrolled}) THEN 'legacy-readiness-unknown'
       WHEN NOT (${readinessValid}) THEN 'malformed-readiness-unknown'
       WHEN ${qualifyingAcceptance} THEN 'qualifying-acceptance'
@@ -700,7 +1059,9 @@ export function workItemIntakeStageSql(sql: OrgSql, columns: WorkItemIntakeStage
     'reReviewRequested', (
       NOT (${observation}) AND NOT (${terminal}) AND ${readyNow} AND ${acceptanceState} = 'stale-revision'
     ),
-    'countsAsBugWork', (${itemKind} = 'bug' AND NOT (${observation}) AND ${qualifyingAcceptance})
+    'countsAsBugWork', (
+      ${itemKind} = 'bug' AND NOT (${observation}) AND NOT (${awaitingAdmission}) AND ${qualifyingAcceptance}
+    )
   )`;
 }
 
@@ -784,11 +1145,73 @@ export function readAgentReviewState(payload: unknown): AgentReviewState | null 
   if (typeof row.submittedBy !== 'string' || !row.submittedBy.trim()) return null;
   if (typeof row.ledgerIdeaId !== 'string' || !row.ledgerIdeaId.trim()) return null;
   if (!Number.isInteger(row.round) || Number(row.round) < 1) return null;
+  const timing = record(row.timing);
   return {
     status: row.status as AgentReviewStatus,
     submittedBy: row.submittedBy,
     ledgerIdeaId: row.ledgerIdeaId,
     round: Number(row.round),
+    ...(timing.round === row.round && typeof timing.enteredAt === 'string'
+      ? { timing: {
+          round: Number(timing.round),
+          enteredAt: timing.enteredAt,
+          ...(typeof timing.decidedAt === 'string' ? { decidedAt: timing.decidedAt } : {}),
+        } }
+      : {}),
+    ...(row.status === 'revision-requested' &&
+      (AGENT_REVIEW_REVISION_KINDS as readonly unknown[]).includes(row.revisionKind)
+      ? { revisionKind: row.revisionKind as AgentReviewRevisionKind }
+      : {}),
+  };
+}
+
+/**
+ * Is this row reproduction-validation work (D-006): a revision requested ONLY because a
+ * current-build reproduction receipt is missing or unaccepted? The one predicate claim
+ * doors, briefs and P-010's census share — the SQL leg in
+ * {@link intakeStageClaimFloorFromFragmentsSql} is its twin.
+ */
+export function agentReviewIsReproductionValidation(payload: unknown): boolean {
+  const review = record(record(payload).agentReview);
+  return review.status === 'revision-requested' && review.revisionKind === 'reproduction';
+}
+
+/** What a claim door tells the claimant of reproduction-validation work (D-006, P-002 Left#1). */
+export interface ReproductionValidationBrief {
+  lane: 'reproduction-validation';
+  /** The claim is NOT a licence to fix: no fix starts without an accepted current-build receipt. */
+  validationOnly: true;
+  reviewRound: number | null;
+  reason: string;
+  next: readonly string[];
+}
+
+/**
+ * The claim-time label for a reproduction-validation row, or null for any other row.
+ *
+ * The intake floor admits these rows to ordinary claimers (D-006), so the claimant is usually
+ * NOT the submitter and has never seen the review. Without this label a drain member reads a
+ * claimed bug as "fix it", which is exactly what the reproduction gate forbids. Pure, and
+ * keyed on the same predicate as the SQL floor leg, so a row the floor admitted as
+ * validation work is always labelled as such and no other row ever is.
+ */
+export function reproductionValidationBrief(item: unknown): ReproductionValidationBrief | null {
+  const row = record(item);
+  if (row.kind !== 'bug' || !agentReviewIsReproductionValidation(row.payload)) return null;
+  const round = record(record(row.payload).agentReview).round;
+  return {
+    lane: 'reproduction-validation',
+    validationOnly: true,
+    reviewRound: Number.isInteger(round) ? Number(round) : null,
+    reason:
+      "An independent agent review passed this bug's content and refused it ONLY because no accepted " +
+      'current-build reproduction receipt is recorded. This claim is validation work: do not start a fix.',
+    next: [
+      'Reproduce the bug on the CURRENT build: a failing test, a scripted repro, or a current-build observation.',
+      "Reproduced: improvements:agent-review { mode:'resubmit', id, reproduction:{ kind:'failing-test'|'scripted-repro'|'current-build-observation', ref, buildSha } }. " +
+        'The receipt is recorded on the row and the next review round verifies it against the current build; resubmitting releases your claim.',
+      "Not reproducible on the current build: close it with work_items:complete { id, state:'dropped' }, citing the reproduction attempt (what you ran, on which build) in completion.verifiedHow.",
+    ],
   };
 }
 
@@ -809,11 +1232,179 @@ export interface AgentReviewClaimAdmission {
 
 const agentReviewClaimAdmissions = new WeakSet<object>();
 
+/*
+ * P-007 (unified-bug-pipeline D-021): the verifier-conflict rule. A verification task
+ * (an agent-review round, the repro task `investigate` spawns, a completion check) is
+ * refused to its subject's REPORTER and to its IMPLEMENTER at every verification door.
+ * One predicate and one SQL twin; the doors differ only in where they read the subject.
+ *
+ * Reporters: the filer (`_ei.created_by`), the agent-review submitter, the D-024
+ * encounter filer, and any reporter a verification task carries. Implementers: the
+ * row's terminal owner and any implementer a verification task carries. A subject's
+ * prior implementation claimants are captured onto the TASK when it is created (never
+ * read from the task's own claim history), so a reviewer of an earlier round is not
+ * mistaken for an implementer.
+ */
+export const VERIFICATION_TASK_SCHEMA_VERSION = 'verification-task-v1' as const;
+export const VERIFICATION_CHECKS = ['reproduction', 'proposal-review', 'completion'] as const;
+export type VerificationCheck = (typeof VERIFICATION_CHECKS)[number];
+export type VerificationConflictRole = 'reporter' | 'implementer';
+
+export interface VerificationParties {
+  readonly reporters: readonly string[];
+  readonly implementers: readonly string[];
+}
+
+export interface VerificationTask extends VerificationParties {
+  readonly schemaVersion: typeof VERIFICATION_TASK_SCHEMA_VERSION;
+  /** The work item being verified. */
+  readonly subject: string;
+  readonly check: VerificationCheck;
+}
+
+function distinctIds(values: readonly unknown[]): string[] {
+  const out = new Set<string>();
+  for (const value of values) {
+    const id = typeof value === 'string' ? value.trim() : '';
+    if (id) out.add(id);
+  }
+  return [...out];
+}
+
+export function createVerificationTask(input: {
+  subject: string;
+  check: VerificationCheck;
+  reporters: readonly unknown[];
+  implementers: readonly unknown[];
+}): VerificationTask {
+  return {
+    schemaVersion: VERIFICATION_TASK_SCHEMA_VERSION,
+    subject: input.subject.trim(),
+    check: input.check,
+    reporters: distinctIds(input.reporters),
+    implementers: distinctIds(input.implementers),
+  };
+}
+
+/** The verification block on a task row, when it is a current-version one. */
+export function readVerificationTask(payload: unknown): VerificationTask | null {
+  const stored = record(record(payload).verification);
+  if (stored.schemaVersion !== VERIFICATION_TASK_SCHEMA_VERSION) return null;
+  if (typeof stored.subject !== 'string' || !stored.subject.trim()) return null;
+  if (!(VERIFICATION_CHECKS as readonly unknown[]).includes(stored.check)) return null;
+  return createVerificationTask({
+    subject: stored.subject,
+    check: stored.check as VerificationCheck,
+    reporters: Array.isArray(stored.reporters) ? stored.reporters : [],
+    implementers: Array.isArray(stored.implementers) ? stored.implementers : [],
+  });
+}
+
+/** Everyone a verifier of this row must not be, read from the row itself. */
+export function verificationParties(subject: {
+  createdBy?: string | null;
+  terminalOwner?: string | null;
+  payload: unknown;
+}): VerificationParties {
+  const payload = record(subject.payload);
+  const task = readVerificationTask(payload);
+  return {
+    reporters: distinctIds([
+      subject.createdBy,
+      record(payload._ei).created_by,
+      readAgentReviewState(payload)?.submittedBy,
+      readStoredBugReproduction(payload)?.filedBy,
+      ...(task?.reporters ?? []),
+    ]),
+    implementers: distinctIds([subject.terminalOwner, ...(task?.implementers ?? [])]),
+  };
+}
+
+/** Which conflicting role `verifier` holds, or null when it may verify. */
+export function verificationConflict(parties: VerificationParties, verifier: string): VerificationConflictRole | null {
+  const who = verifier.trim();
+  if (!who) return null;
+  if (parties.reporters.includes(who)) return 'reporter';
+  if (parties.implementers.includes(who)) return 'implementer';
+  return null;
+}
+
+/**
+ * The claim-writer leg: a row carrying a verification block refuses its reporters and
+ * implementers whatever door the claim came through. Only the TASK's parties count
+ * here: the task row's own filer is the reviewer who decided to investigate, who is
+ * independent of the subject and may run the repro.
+ */
+export function verificationTaskConflict(payload: unknown, claimant: string): VerificationConflictRole | null {
+  const task = readVerificationTask(payload);
+  return task ? verificationConflict(task, claimant) : null;
+}
+
+type VerificationPayloadColumn = 'wi.payload' | 'payload' | 'target.payload';
+
+/**
+ * SQL twin of `verificationTaskConflict(payload, claimant)`: TRUE when the row carries a
+ * current-version verification block naming `claimant` as a reporter or implementer.
+ * Null-safe, so `NOT (...)` keeps every row without a verification block. The self-select
+ * claim UPDATEs AND this in, because they do not funnel through `claimWorkItem`.
+ */
+export function verificationTaskConflictSql(sql: OrgSql, claimant: string, payloadColumn: VerificationPayloadColumn) {
+  const payload = sql`COALESCE(${sql.unsafe(payloadColumn)}, '{}'::jsonb)`;
+  const who = claimant.trim();
+  // The outer COALESCE is load-bearing: a missing `check` makes `= ANY(...)` NULL, and a
+  // NULL here would turn `NOT (...)` into NULL and silently drop the row from self-select.
+  return sql`COALESCE((
+    ${payload} -> 'verification' ->> 'schemaVersion' IS NOT DISTINCT FROM ${VERIFICATION_TASK_SCHEMA_VERSION}
+    AND jsonb_typeof(${payload} -> 'verification' -> 'subject') IS NOT DISTINCT FROM 'string'
+    AND btrim(${payload} -> 'verification' ->> 'subject') <> ''
+    AND (${payload} -> 'verification' ->> 'check') = ANY(${[...VERIFICATION_CHECKS]}::text[])
+    AND ${who} <> ''
+    AND (
+      (jsonb_typeof(${payload} -> 'verification' -> 'reporters') IS NOT DISTINCT FROM 'array'
+        AND EXISTS (
+          SELECT 1 FROM jsonb_array_elements(${payload} -> 'verification' -> 'reporters') AS r(v)
+           WHERE jsonb_typeof(r.v) = 'string' AND btrim(r.v #>> '{}') = ${who}
+        ))
+      OR (jsonb_typeof(${payload} -> 'verification' -> 'implementers') IS NOT DISTINCT FROM 'array'
+        AND EXISTS (
+          SELECT 1 FROM jsonb_array_elements(${payload} -> 'verification' -> 'implementers') AS i(v)
+           WHERE jsonb_typeof(i.v) = 'string' AND btrim(i.v #>> '{}') = ${who}
+        ))
+    )
+  ), false)`;
+}
+
+/**
+ * SQL twin of `verificationConflict(verificationParties(row), verifier)`: TRUE when
+ * `verifier` is a reporter or implementer of the row. Every leg is null-safe, so the
+ * expression is never NULL and `NOT (...)` keeps rows with no parties at all.
+ */
+export function verificationConflictSql(
+  sql: OrgSql,
+  verifier: string,
+  columns: { payload: VerificationPayloadColumn; terminalOwner: 'wi.terminal_owner' | 'terminal_owner' | 'target.terminal_owner' },
+) {
+  const payload = sql`COALESCE(${sql.unsafe(columns.payload)}, '{}'::jsonb)`;
+  const who = verifier.trim();
+  return sql`(
+    ${payload} -> '_ei' ->> 'created_by' IS NOT DISTINCT FROM ${who}
+    OR ${payload} -> 'agentReview' ->> 'submittedBy' IS NOT DISTINCT FROM ${who}
+    OR (
+      ${payload} -> 'reproduction' ->> 'schemaVersion' IS NOT DISTINCT FROM ${BUG_REPRODUCTION_SCHEMA_VERSION}
+      AND ${payload} -> 'reproduction' ->> 'filedBy' IS NOT DISTINCT FROM ${who}
+    )
+    OR ${verificationTaskConflictSql(sql, verifier, columns.payload)}
+    OR ${sql.unsafe(columns.terminalOwner)} IS NOT DISTINCT FROM ${who}
+  )`;
+}
+
 export function mintAgentReviewClaimAdmission(input: {
   itemId: string;
   reviewer: string;
   harnessSlug: string;
   review: AgentReviewState;
+  /** P-007: the subject's reporters and implementers; a conflicting reviewer gets no admission. */
+  parties: VerificationParties;
 }): AgentReviewClaimAdmission | null {
   const itemId = input.itemId.trim();
   const reviewer = input.reviewer.trim();
@@ -825,6 +1416,7 @@ export function mintAgentReviewClaimAdmission(input: {
     !harnessSlug ||
     review.status !== 'pending' ||
     review.submittedBy === reviewer ||
+    verificationConflict(input.parties, reviewer) !== null ||
     !review.ledgerIdeaId.trim() ||
     !Number.isInteger(review.round) ||
     review.round < 1
@@ -849,14 +1441,16 @@ export function isAgentReviewClaimAdmission(value: unknown): value is AgentRevie
 
 export function matchesAgentReviewClaimAdmission(
   value: unknown,
-  item: { id: string; harness?: string | null; payload: unknown },
+  item: { id: string; harness?: string | null; payload: unknown; createdBy?: string | null; terminalOwner?: string | null },
   reviewer: string,
 ): value is AgentReviewClaimAdmission {
   if (
     !isAgentReviewClaimAdmission(value) ||
     value.itemId !== item.id ||
     value.reviewer !== reviewer ||
-    value.harnessSlug !== item.harness
+    value.harnessSlug !== item.harness ||
+    // P-007: re-derived from the row the writer is about to claim, not trusted from the mint.
+    verificationConflict(verificationParties(item), reviewer) !== null
   ) {
     return false;
   }
@@ -893,6 +1487,111 @@ export function agentReviewPendingAdmissionSql(
   )`;
 }
 
+/**
+ * Narrow, server-only authority for REVISION ADOPTION (bug-queue-legitimacy D-008):
+ * claim one exact content revision whose submitter is someone else, so the adopter can
+ * rebind and revise it. The intake-stage floor otherwise admits a revision-requested row
+ * only for its CURRENT submitter, and adoption must claim before it rebinds (the claim CAS
+ * is what makes a concurrent adopter lose). Minted only by adoptAgentReviewRevision after
+ * the orphan proof; the writer re-derives the snapshot from the row it claims, and the SQL
+ * twin re-checks it in the UPDATE, so a resubmit, regrade, round bump or rebind between
+ * mint and write invalidates it. It grants nothing beyond the intake-stage revision leg.
+ */
+export interface AgentReviewRevisionAdoptionAdmission {
+  readonly itemId: string;
+  readonly adopter: string;
+  readonly harnessSlug: string;
+  /** The payload `agentReview.submittedBy` the adopter is taking the revision from. */
+  readonly previousSubmitter: string;
+  readonly round: number;
+}
+
+const revisionAdoptionAdmissions = new WeakSet<object>();
+
+function adoptableContentRevision(review: AgentReviewState | null): review is AgentReviewState {
+  return (
+    review !== null &&
+    review.status === 'revision-requested' &&
+    review.revisionKind !== 'reproduction' &&
+    review.submittedBy !== LEGACY_AGENT_REVIEW_SUBMITTER
+  );
+}
+
+export function mintAgentReviewRevisionAdoptionAdmission(input: {
+  itemId: string;
+  adopter: string;
+  harnessSlug: string;
+  review: AgentReviewState;
+}): AgentReviewRevisionAdoptionAdmission | null {
+  const itemId = input.itemId.trim();
+  const adopter = input.adopter.trim();
+  const harnessSlug = input.harnessSlug.trim();
+  const review = input.review;
+  if (
+    !itemId ||
+    !adopter ||
+    !harnessSlug ||
+    !adoptableContentRevision(review) ||
+    !review.submittedBy.trim() ||
+    review.submittedBy === adopter ||
+    !Number.isInteger(review.round) ||
+    review.round < 1
+  ) {
+    return null;
+  }
+  const admission = Object.freeze({ itemId, adopter, harnessSlug, previousSubmitter: review.submittedBy, round: review.round });
+  revisionAdoptionAdmissions.add(admission);
+  return admission;
+}
+
+export function isAgentReviewRevisionAdoptionAdmission(value: unknown): value is AgentReviewRevisionAdoptionAdmission {
+  return typeof value === 'object' && value !== null && revisionAdoptionAdmissions.has(value);
+}
+
+export function matchesAgentReviewRevisionAdoptionAdmission(
+  value: unknown,
+  item: { id: string; harness?: string | null; payload: unknown },
+  adopter: string,
+): value is AgentReviewRevisionAdoptionAdmission {
+  if (
+    !isAgentReviewRevisionAdoptionAdmission(value) ||
+    value.itemId !== item.id ||
+    value.adopter !== adopter ||
+    value.harnessSlug !== item.harness
+  ) {
+    return false;
+  }
+  // Re-derived from the row the writer is about to claim, not trusted from the mint.
+  const current = readAgentReviewState(item.payload);
+  return (
+    adoptableContentRevision(current) &&
+    current.submittedBy === value.previousSubmitter &&
+    current.submittedBy !== adopter &&
+    current.round === value.round
+  );
+}
+
+/**
+ * Intake-stage exception for an already-validated revision adoption: the UPDATE must
+ * still see the exact content revision (status, submitter, round) the adopter's orphan
+ * proof inspected. Every other claim floor, the admission floor included, stays in force.
+ */
+export function agentReviewRevisionAdoptionSql(
+  sql: OrgSql,
+  value: unknown,
+  payloadCol: 'payload' | 'target.payload' = 'payload',
+) {
+  if (!isAgentReviewRevisionAdoptionAdmission(value)) return sql`FALSE`;
+  const review = sql`(COALESCE(${sql.unsafe(payloadCol)}, '{}'::jsonb) -> 'agentReview')`;
+  return sql`(
+    ${review} ->> 'status' = 'revision-requested'
+    AND ${review} ->> 'submittedBy' = ${value.previousSubmitter}
+    AND ${review} ->> 'round' = ${String(value.round)}
+    AND ${review} ->> 'revisionKind' IS DISTINCT FROM 'reproduction'
+    AND ${value.previousSubmitter} <> ${value.adopter}
+  )`;
+}
+
 export interface AgentReviewCandidate {
   kind: string;
   origin?: string | null;
@@ -924,20 +1623,52 @@ export function agentReviewEligibility(
 }
 
 /**
- * Versioned readiness floor for ordinary self-selection. An absent key is the
- * explicit legacy exception, and so is a `creation-enrollment` / `unknown` row
- * (SQL twin of `implementationReadinessIsLegacyEquivalent`) until P-007 bounds
- * both by the recorded enforcement cutover. Any other present key passes only
- * when this reader knows its schema and it carries an affirmative ready verdict.
+ * The relation a claim-floor fragment reads. `work_items` (and its
+ * `harness_features_consolidated` view) carry `item_kind`, `summary` and the
+ * millisecond `created_ts`; the `engineer_issues` view exposes the same columns
+ * as `kind`, `body` and the timestamptz `created_at`.
+ */
+export type ClaimFloorRelationShape = 'work_items' | 'engineer_issues';
+export type ClaimFloorPayloadColumn = 'wi.payload' | 'ei.payload' | 'target.payload' | 'payload';
+
+function claimFloorColumns(sql: OrgSql, payloadCol: ClaimFloorPayloadColumn, shape: ClaimFloorRelationShape) {
+  const dot = payloadCol.indexOf('.');
+  const prefix = dot >= 0 ? payloadCol.slice(0, dot + 1) : '';
+  const columns = (
+    shape === 'engineer_issues'
+      ? { payload: payloadCol, itemKind: `${prefix}kind`, title: `${prefix}title`, summary: `${prefix}body` }
+      : { payload: payloadCol, itemKind: `${prefix}item_kind`, title: `${prefix}title`, summary: `${prefix}summary` }
+  ) as WorkItemIntakeStageSqlColumns;
+  const createdBeforeCutover =
+    shape === 'engineer_issues'
+      ? sql`COALESCE(${sql.unsafe(`${prefix}created_at`)} < ${IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER}::timestamptz, TRUE)`
+      : sql`(COALESCE(${sql.unsafe(`${prefix}created_ts`)}, 0) < ${IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER_MS}::bigint)`;
+  return { columns, createdBeforeCutover };
+}
+
+/**
+ * The acceptance floor every ordinary execution path applies (P-007, D-016).
+ * A row passes when it carries a valid `ready` verdict with a qualifying
+ * acceptance contract. Rows created before the recorded enforcement cutover keep
+ * the pre-P-007 legacy exception (absent key, `ready`, or `creation-enrollment`
+ * `unknown` — SQL twin of `implementationReadinessIsLegacyEquivalent`) unless
+ * their acceptance is stale or carries invalid authority. Pass the relation shape
+ * the fragment is embedded in; the default is an aliased `work_items` row.
  */
 export function implementationReadinessNormalExclusionSql(
   sql: OrgSql,
-  payloadCol: 'wi.payload' | 'ei.payload' | 'payload' = 'wi.payload',
+  payloadCol: ClaimFloorPayloadColumn = 'wi.payload',
+  shape: ClaimFloorRelationShape = payloadCol === 'ei.payload' || payloadCol === 'target.payload'
+    ? 'engineer_issues'
+    : 'work_items',
 ) {
   const payload = sql.unsafe(payloadCol);
+  const { columns, createdBeforeCutover } = claimFloorColumns(sql, payloadCol, shape);
   return implementationReadinessFloorSql(sql, {
     readiness: sql`(COALESCE(${payload}, '{}'::jsonb) -> 'implementationReadiness')`,
     enrolled: sql`(COALESCE(${payload}, '{}'::jsonb) ? 'implementationReadiness')`,
+    acceptanceState: implementationAcceptanceStateSql(sql, columns),
+    createdBeforeCutover,
   });
 }
 
@@ -950,51 +1681,205 @@ export function implementationReadinessNormalExclusionSql(
  */
 export function implementationReadinessFloorSql(
   sql: OrgSql,
-  expressions: { readiness: postgres.Fragment; enrolled: postgres.Fragment },
+  expressions: {
+    readiness: postgres.Fragment;
+    enrolled: postgres.Fragment;
+    /** `implementationAcceptanceState(FromReadiness)Sql` over the same row. */
+    acceptanceState: postgres.Fragment;
+    /** TRUE when the row was created before IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER. */
+    createdBeforeCutover: postgres.Fragment;
+  },
 ) {
-  const { readiness, enrolled } = expressions;
+  const { readiness, enrolled, acceptanceState, createdBeforeCutover } = expressions;
   return sql`COALESCE((
-    NOT (${enrolled})
-    OR (
+    (
       ${readiness} ->> 'schemaVersion' = ${IMPLEMENTATION_READINESS_SCHEMA_VERSION}
+      AND ${readiness} ->> 'status' = 'ready'
+      AND ${acceptanceState} = 'qualifying'
+    )
+    OR (
+      ${createdBeforeCutover}
+      AND ${acceptanceState} NOT IN ('stale-revision', 'invalid-authority')
       AND (
-        ${readiness} ->> 'status' = 'ready'
+        NOT (${enrolled})
         OR (
-          ${readiness} ->> 'status' = 'unknown'
-          AND ${readiness} ->> 'source' = 'creation-enrollment'
+          ${readiness} ->> 'schemaVersion' = ${IMPLEMENTATION_READINESS_SCHEMA_VERSION}
+          AND (
+            ${readiness} ->> 'status' = 'ready'
+            OR (
+              ${readiness} ->> 'status' = 'unknown'
+              AND ${readiness} ->> 'source' = 'creation-enrollment'
+            )
+          )
         )
       )
     )
   ), FALSE)`;
 }
 
-/** Normal implementation lane: review/readiness work is invisible until approved. */
-export function agentReviewNormalExclusionSql(
+/**
+ * The same floor for a census that already projected the readiness document and
+ * the row's identity columns (the admission promoter's writer-ready census).
+ */
+export function implementationReadinessProjectedFloorSql(
   sql: OrgSql,
-  payloadCol: 'wi.payload' | 'ei.payload' | 'payload' = 'wi.payload',
+  row: {
+    readiness: postgres.Fragment;
+    enrolled: postgres.Fragment;
+    itemKind: postgres.Fragment;
+    title: postgres.Fragment;
+    summary: postgres.Fragment;
+    /** Epoch-millisecond `work_items.created_ts`. */
+    createdTs: postgres.Fragment;
+  },
 ) {
-  const payload = sql.unsafe(payloadCol);
+  return implementationReadinessFloorSql(sql, {
+    readiness: row.readiness,
+    enrolled: row.enrolled,
+    acceptanceState: implementationAcceptanceStateFromReadinessSql(
+      sql,
+      row.readiness,
+      acceptanceSourceRevisionFromFragmentsSql(sql, row.itemKind, row.title, row.summary),
+      row.itemKind,
+    ),
+    createdBeforeCutover: sql`(COALESCE(${row.createdTs}, 0) < ${IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER_MS}::bigint)`,
+  });
+}
+
+/**
+ * TS twin of `implementationReadinessFloorSql` for one row: does the acceptance
+ * floor admit it for an ordinary (non-reviewer) claim?
+ */
+export function implementationReadinessAdmitsClaim(input: {
+  payload: unknown;
+  kind: string;
+  title: string;
+  summary: string | null | undefined;
+  /** Row creation time in epoch milliseconds; null/undefined is treated as legacy. */
+  createdAtMs: number | null | undefined;
+}): boolean {
+  const value = record(input.payload);
+  const acceptance = evaluateImplementationAcceptance(value, {
+    kind: input.kind,
+    title: input.title,
+    summary: input.summary ?? '',
+  }).state;
+  const readiness = readImplementationReadiness(value);
+  if (readiness?.status === 'ready' && acceptance === 'qualifying') return true;
+  const beforeCutover = (input.createdAtMs ?? 0) < IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER_MS;
+  if (!beforeCutover || acceptance === 'stale-revision' || acceptance === 'invalid-authority') return false;
+  if (!Object.prototype.hasOwnProperty.call(value, 'implementationReadiness')) return true;
+  const raw = record(value.implementationReadiness);
+  if (raw.schemaVersion !== IMPLEMENTATION_READINESS_SCHEMA_VERSION) return false;
+  return raw.status === 'ready' || (raw.status === 'unknown' && raw.source === 'creation-enrollment');
+}
+
+/**
+ * agentReview statuses that put a row's stage check in progress (P-008, D-038):
+ * the proposal or reproduction review is pending, or it was sent back to the
+ * submitter for revision.
+ */
+export const INTAKE_STAGE_REVIEW_IN_PROGRESS_STATUSES = ['pending', 'revision-requested'] as const;
+
+/**
+ * P-008 (unified-bug-pipeline D-038): the ONE intake-stage claim predicate, over
+ * fragments a caller has already extracted. Every claim door and the admission
+ * promoter's projected census compose it, so the review legs and the readiness
+ * floor can no longer drift apart or hide inside one another. Its legs:
+ *
+ *  1. legacy-revision: a revision requested of {@link LEGACY_AGENT_REVIEW_SUBMITTER}
+ *     was seeded by the pre-agent-review migration, not a live review, so it passes.
+ *  2. reproduction-validation (bug-queue-legitimacy D-006/D-007): a revision requested
+ *     ONLY for a missing/unaccepted current-build reproduction receipt
+ *     (`revisionKind = 'reproduction'`) is validation work for the drain lane, so it
+ *     passes. Readiness stays `not-ready`; the claimant reproduces and resubmits, or
+ *     closes it not-reproducible — no fix starts without an accepted receipt.
+ *  3. review-in-progress: otherwise a pending or revision-requested review holds the
+ *     row; the review lane is its clearer.
+ *  4. readiness floor ({@link implementationReadinessFloorSql}): accepted (current
+ *     `ready` with a qualifying acceptance) or, for rows created before the
+ *     enforcement cutover, legacy-admitted.
+ *
+ * NULL-safe: the result is never NULL, so `NOT (stage)` keeps meaning "held".
+ */
+export function intakeStageClaimFloorFromFragmentsSql(
+  sql: OrgSql,
+  fragments: {
+    /** `agentReview ->> 'status'` of the row (NULL when it has no review). */
+    reviewStatus: postgres.Fragment;
+    /** `agentReview ->> 'submittedBy'` of the row. */
+    reviewSubmittedBy: postgres.Fragment;
+    /** `agentReview ->> 'revisionKind'` of the row (NULL before D-006). */
+    reviewRevisionKind: postgres.Fragment;
+    /** A readiness floor over the same row (`implementationReadiness*FloorSql`). */
+    readinessFloor: postgres.Fragment;
+  },
+) {
+  const { reviewStatus, reviewSubmittedBy, reviewRevisionKind, readinessFloor } = fragments;
   return sql`(
     (
-      COALESCE(
-        COALESCE(${payload}, '{}'::jsonb) -> 'agentReview' ->> 'status' = 'revision-requested',
-        FALSE
-      )
-      AND COALESCE(
-        COALESCE(${payload}, '{}'::jsonb) -> 'agentReview' ->> 'submittedBy' = ${LEGACY_AGENT_REVIEW_SUBMITTER},
-        FALSE
-      )
+      COALESCE(${reviewStatus} = 'revision-requested', FALSE)
+      AND COALESCE(${reviewSubmittedBy} = ${LEGACY_AGENT_REVIEW_SUBMITTER}, FALSE)
     )
     OR (
-      COALESCE(${payload}, '{}'::jsonb) -> 'agentReview' ->> 'status' IS DISTINCT FROM 'pending'
-      AND COALESCE(${payload}, '{}'::jsonb) -> 'agentReview' ->> 'status' IS DISTINCT FROM 'revision-requested'
-      AND ${implementationReadinessNormalExclusionSql(sql, payloadCol)}
+      COALESCE(${reviewStatus} = 'revision-requested', FALSE)
+      AND COALESCE(${reviewRevisionKind} = 'reproduction', FALSE)
+    )
+    OR (
+      ${reviewStatus} IS DISTINCT FROM 'pending'
+      AND ${reviewStatus} IS DISTINCT FROM 'revision-requested'
+      AND COALESCE(${readinessFloor}, FALSE)
     )
   )`;
 }
 
+/**
+ * The intake-stage claim predicate over a payload column — what every ordinary
+ * (non-reviewer) claim door applies. Pass the relation shape the fragment is
+ * embedded in; the default is an aliased `work_items` row.
+ */
+export function intakeStageClaimFloorSql(
+  sql: OrgSql,
+  payloadCol: ClaimFloorPayloadColumn = 'wi.payload',
+  shape?: ClaimFloorRelationShape,
+) {
+  const review = sql`(COALESCE(${sql.unsafe(payloadCol)}, '{}'::jsonb) -> 'agentReview')`;
+  return intakeStageClaimFloorFromFragmentsSql(sql, {
+    reviewStatus: sql`(${review} ->> 'status')`,
+    reviewSubmittedBy: sql`(${review} ->> 'submittedBy')`,
+    reviewRevisionKind: sql`(${review} ->> 'revisionKind')`,
+    readinessFloor: shape
+      ? implementationReadinessNormalExclusionSql(sql, payloadCol, shape)
+      : implementationReadinessNormalExclusionSql(sql, payloadCol),
+  });
+}
+
+/**
+ * TS twin of {@link intakeStageClaimFloorSql} for one row: does the intake stage
+ * admit it for an ordinary (non-reviewer) claim?
+ */
+export function intakeStageAdmitsClaim(input: {
+  payload: unknown;
+  kind: string;
+  title: string;
+  summary: string | null | undefined;
+  /** Row creation time in epoch milliseconds; null/undefined is treated as legacy. */
+  createdAtMs: number | null | undefined;
+}): boolean {
+  const review = record(record(input.payload).agentReview);
+  // `->>` renders any JSON scalar as text; a non-string status can never equal a literal.
+  const status = typeof review.status === 'string' ? review.status : null;
+  if (status === 'revision-requested' && review.submittedBy === LEGACY_AGENT_REVIEW_SUBMITTER) return true;
+  // D-006: SQL's `->>` renders a non-string revisionKind as text that never equals the literal.
+  if (status === 'revision-requested' && review.revisionKind === 'reproduction') return true;
+  if ((INTAKE_STAGE_REVIEW_IN_PROGRESS_STATUSES as readonly string[]).includes(status ?? '')) return false;
+  return implementationReadinessAdmitsClaim(input);
+}
+
 /** Reviewer lane: only submitted work, never revision work or approved work. */
-export function agentReviewPendingSelectorSql(sql: OrgSql, payloadCol: 'wi.payload' | 'payload' = 'wi.payload') {
-  const payload = sql.unsafe(payloadCol);
-  return sql`COALESCE(${payload}, '{}'::jsonb) -> 'agentReview' ->> 'status' = 'pending'`;
+export function agentReviewPendingSelectorSql(sql: OrgSql) {
+  // EI-25555666233005302: this is the candidate-lookup hot path. Read the STORED
+  // projection, not payload->agentReview: the partial claim-next index is keyed
+  // by this exact predicate, avoiding a scan/detoast of every open work item.
+  return sql`agent_review_projection ->> 'status' = 'pending'`;
 }

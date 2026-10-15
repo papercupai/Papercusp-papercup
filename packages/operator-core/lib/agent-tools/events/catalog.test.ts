@@ -16,6 +16,7 @@ const countMock = vi.fn();
 const listAnnouncementsMock = vi.fn();
 const listFiredAnnouncementsMock = vi.fn();
 const prefixCountMock = vi.fn();
+const presenceFleetMock = vi.fn();
 vi.mock('../../events/await/store', () => ({
   countActiveAwaitsByKeyShapes: (...args: unknown[]) => countMock(...args),
   countActiveAwaitsByPrefixes: (...args: unknown[]) => prefixCountMock(...args),
@@ -28,9 +29,13 @@ vi.mock('../../events/await/store', () => ({
 const presenceMock = vi.fn();
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-test-reader', workspaceId: 'ws-test' }),
+  deriveFleetMembership: () => ({ fleetSlug: null, fleetRole: null }),
 }));
 vi.mock('../coordination/presence', () => ({
   getPresence: (...args: unknown[]) => presenceMock(...args),
+}));
+vi.mock('../coordination/presence-fleet', () => ({
+  resolvePresenceFleet: (...args: unknown[]) => presenceFleetMock(...args),
 }));
 
 // EI-21840718595021627: resolveAnnouncementOwnership (imported by catalog.ts from
@@ -59,7 +64,7 @@ const ann = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-import catalog from './catalog';
+import catalog, { fieldsMatchQuery } from './catalog';
 import { familyKeyPrefix, EVENT_CATALOG } from '../../events/await/catalog';
 import { HARD_CAP, promptWeight } from '../tool-guidance-budget';
 import { resolveLiveRoleHolders } from '../coordination/role-slot-live-resolve';
@@ -86,6 +91,7 @@ beforeEach(() => {
   listAnnouncementsMock.mockResolvedValue([]);
   listFiredAnnouncementsMock.mockResolvedValue([]);
   presenceMock.mockResolvedValue({ fleetSlug: null, currentPlanSlug: null });
+  presenceFleetMock.mockResolvedValue({ fleetSlug: null, fleetRole: null });
 });
 
 // EI-21907772459508454 — an announced gate that EXISTS but is out of the reader's scope
@@ -123,6 +129,26 @@ describe('events:catalog — announced gates: withheld must not read as absent',
     expect(out.announced[0]).toMatchObject({ event: 'plan:some-plan:p002-green', scope: 'plan:some-plan' });
     expect(out.announced_visibility).toMatchObject({ hidden_by_scope: 0, returned: 1 });
     expect(out.announced_visibility.note).toBeUndefined();
+  });
+
+  it('uses canonical live fleet membership when exposing fleet-scoped announcements', async () => {
+    listAnnouncementsMock.mockResolvedValue([
+      ann({ eventKey: 'fleet:live-fleet:p002-green', scopeKind: 'fleet', scopeRef: 'live-fleet' }),
+    ]);
+    // getPresence intentionally omits fleet membership; it is read through
+    // resolvePresenceFleet from the append-only membership projection.
+    presenceMock.mockResolvedValue({ fleetSlug: null, currentPlanSlug: null });
+    presenceFleetMock.mockResolvedValue({ fleetSlug: 'live-fleet', fleetRole: 'member' });
+
+    const out = await call({ announced: true, installed: false, liveAwaiters: false });
+
+    expect(presenceFleetMock).toHaveBeenCalledWith('su-test-reader', { fleetSlug: null, fleetRole: null });
+    expect(out.announced).toHaveLength(1);
+    expect(out.announced_visibility).toMatchObject({
+      reader_scope: { fleet: 'live-fleet' },
+      hidden_by_scope: 0,
+      returned: 1,
+    });
   });
 
   it('flags an UNRESOLVED reader rather than passing global-only off as the whole truth', async () => {
@@ -184,6 +210,7 @@ describe('events:catalog — announced gates: withheld must not read as absent',
       },
     ]);
     presenceMock.mockResolvedValue({ fleetSlug: 'fleet-a', currentPlanSlug: null });
+    presenceFleetMock.mockResolvedValue({ fleetSlug: 'fleet-a', fleetRole: 'member' });
 
     const out = await call({ announced: true, installed: false, liveAwaiters: false });
 
@@ -219,6 +246,7 @@ describe('events:catalog — announced gates: withheld must not read as absent',
       },
     ]);
     presenceMock.mockResolvedValue({ fleetSlug: 'fleet-b', currentPlanSlug: null });
+    presenceFleetMock.mockResolvedValue({ fleetSlug: 'fleet-b', fleetRole: 'member' });
 
     const out = await call({ announced: true, installed: false, liveAwaiters: false });
 
@@ -241,6 +269,7 @@ describe('events:catalog — announced gates: withheld must not read as absent',
       },
     ]);
     presenceMock.mockResolvedValue({ fleetSlug: 'fleet-a', currentPlanSlug: null });
+    presenceFleetMock.mockResolvedValue({ fleetSlug: 'fleet-a', fleetRole: 'member' });
 
     const out = await call({ announced: true, installed: false, liveAwaiters: false });
 
@@ -275,6 +304,13 @@ describe('events:catalog — live_awaiters', () => {
     ]);
   });
 
+  it('finds the scorecard grading-audit family through a free-text query', async () => {
+    const out = await call({ q: 'scorecard', announced: false, installed: false, liveAwaiters: false });
+
+    expect(out.families.map((family: { family: string }) => family.family)).toContain('scorecard-grading-audit');
+    expect(out.query_miss).toBeUndefined();
+  });
+
   it('accepts pattern as a compatibility alias for q', async () => {
     expect(catalog.args.safeParse({ pattern: 'deploy' }).success).toBe(true);
     const canonical = await call({ q: 'deploy', announced: false, installed: false, liveAwaiters: false });
@@ -287,6 +323,42 @@ describe('events:catalog — live_awaiters', () => {
     const canonical = await call({ q: 'deploy', announced: false, installed: false, liveAwaiters: false });
     const alias = await call({ query: 'deploy', announced: false, installed: false, liveAwaiters: false });
     expect(alias.families).toEqual(canonical.families);
+  });
+
+  // WI-10005981: q used to be ONE contiguous substring, so "resource released" missed
+  // the `resource-released` family and two agents filed "no release event exists".
+  describe('multi-word q (WI-10005981)', () => {
+    const off = { announced: false, installed: false, liveAwaiters: false } as const;
+    // CONTROL: the pre-fix predicate, kept so this block proves it discriminates.
+    const oldSubstringOnly = (values: readonly unknown[], q: string) =>
+      values.some((v) => typeof v === 'string' && v.toLowerCase().includes(q));
+    const releasedRow = EVENT_CATALOG.find((e) => e.family === 'resource-released');
+    const releasedFields = [releasedRow?.family, releasedRow?.keyTemplate, releasedRow?.describe, releasedRow?.emitter];
+
+    it('finds the family when every word appears, even split across fields', async () => {
+      for (const q of ['resource released', 'Resource  Released', 'resource lock released']) {
+        const out = await call({ q, ...off });
+        expect(out.families.map((f: { family: string }) => f.family)).toContain('resource-released');
+        expect(out.query_miss).toBeUndefined();
+      }
+    });
+
+    it('still requires EVERY word, and labels a zero result as a search miss, not absence', async () => {
+      const out = await call({ q: 'resource released zzz-no-such-word', ...off });
+      expect(out.count).toBe(0);
+      expect(out.query_miss).toMatch(/NOT proof the event does not exist/);
+    });
+
+    it('fieldsMatchQuery: verbatim, all-words and missing-word cases; the old predicate fails the multi-word case', () => {
+      expect(releasedRow).toBeDefined();
+      expect(fieldsMatchQuery(releasedFields, 'resource-released')).toBe(true);
+      expect(fieldsMatchQuery(releasedFields, 'resource released')).toBe(true);
+      expect(fieldsMatchQuery(releasedFields, 'resource granted')).toBe(false);
+      expect(fieldsMatchQuery([null, 42, undefined], 'resource')).toBe(false);
+      // Calibration: the control agrees on a verbatim query, then misses the multi-word one.
+      expect(oldSubstringOnly(releasedFields, 'resource-released')).toBe(true);
+      expect(oldSubstringOnly(releasedFields, 'resource released')).toBe(false);
+    });
   });
 
   it('matches a concrete key against its templated family row', async () => {
@@ -367,6 +439,24 @@ describe('events:catalog — live_awaiters', () => {
         family: 'consult-reply',
         key: 'consult:reply:<conversationId>',
         awaitable_now: true,
+      }),
+    ]);
+  });
+
+  it('surfaces the scorecard grading-audit park key family', async () => {
+    const out = await call({
+      family: 'scorecard-grading-audit',
+      announced: false,
+      installed: false,
+      liveAwaiters: false,
+    });
+
+    expect(out.families).toEqual([
+      expect.objectContaining({
+        family: 'scorecard-grading-audit',
+        key: 'scorecard:grading-audit:<id>',
+        awaitable_now: true,
+        emitter: expect.stringContaining('scorecard-emitted-events'),
       }),
     ]);
   });

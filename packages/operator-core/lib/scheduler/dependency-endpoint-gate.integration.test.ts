@@ -48,6 +48,7 @@ import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   USER_TRUST_LIST_DDL,
   WORK_ITEM_DEPS_DDL,
+  applyClaimPathReadDeps,
 } from '../../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 
@@ -104,6 +105,33 @@ vi.mock('../agent-tools/plans/source', () => ({
   },
 }));
 
+// WI-10005221: promotePlanItems' pre-start acceptance-BAR gate fails CLOSED unless the plan is
+// positively identified as legacy. This fixture hand-rolls its schema and mocks readPlanBySlug, so
+// the BAR snapshot reader finds no plan (bar_snapshot_plan_missing) and promotion mints nothing.
+// Keep the lifecycle seam satisfied, exactly as plan-workitem-promotion-run.integration.test.ts
+// does; the evaluator is covered by its own suites.
+vi.mock('../acceptance-bar-lifecycle-evaluator', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../acceptance-bar-lifecycle-evaluator')>();
+  return {
+    ...actual,
+    readAndEvaluateAcceptanceBarLifecycle: vi.fn(async () => ({ satisfied: true })),
+  };
+});
+// Same class, next gate: the spec-quality gate reads first-class clauses through resolvePlanScope,
+// which this fixture's readPlanBySlug-only source mock does not export, so the read throws and the
+// gate correctly fails closed (spec_quality_unavailable). Return the legacy no-clause report-only
+// verdict, as the sibling fixture does.
+vi.mock('../agent-tools/plans/plan-spec-quality-gate', () => ({
+  evaluatePlanSpecQualityGate: vi.fn(async () => ({
+    satisfied: true,
+    applicable: false,
+    mode: 'report-only',
+    planSlug: 'mock',
+    specSetHash: null,
+    wouldBlock: ['no-first-class-spec-clauses'],
+  })),
+}));
+
 const run = await import('../plan-workitem-promotion-run');
 const wi = await import('../work-items');
 const { syncFeatureBlockEdges } = await import('../dbos/feature-blockers-edges');
@@ -128,6 +156,9 @@ beforeAll(async () => {
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(COORD_REF_HOLDERS_DDL).simple();
+  // WI-10005221: promotion now reaches the work-item emit path, whose key-fire latch reads
+  // harness_shared.event_awaits. Apply the shared claim-path substrate, as dependency-writer does.
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   await db.sql
     .unsafe(
       `
@@ -170,7 +201,12 @@ async function promoteFeatures(
   items: { id: string; text: string; blockedBy?: string[] }[],
 ): Promise<Map<string, string>> {
   h.plans.set(PLAN, { items: items.map((i) => ({ ...i, status: 'todo' })) });
-  await run.promotePlanItems(base);
+  const promotion = await run.promotePlanItems(base);
+  // WI-10005221: a gate exit (acceptance bar, spec quality, dependency, triad) mints nothing and
+  // otherwise surfaces only downstream as an opaque UNDEFINED_VALUE. Name the exit instead.
+  if (promotion.promoted === 0) {
+    throw new Error(`promotePlanItems minted nothing: ${JSON.stringify(promotion).slice(0, 1500)}`);
+  }
   const rows = await db.sql<{ feature_id: string; title: string }[]>`
     SELECT feature_id, title FROM harness_shared.harness_features_consolidated
      WHERE item_kind = 'feature'`;
@@ -333,22 +369,19 @@ describe('the gate can actually fail', () => {
 // ---------------------------------------------------------------------------
 
 // @covers INV-02
-describe('the LINK door trusts a caller-declared target kind (EI-19387076313999646)', () => {
-  it('mints an INERT edge when dst.kind mis-declares the target family, and the gate CATCHES it', async () => {
-    // EI-19387076313999646 was filed from a SOURCE READ during P-008's writer census and had
-    // never been executed. This is that execution, and it confirms the report.
-    //
-    // linkWorkItem resolves the SOURCE's family from the database (`wi.family`) but takes the
-    // DESTINATION's `kind` on trust. Its only check on dst is a FORM one —
+describe('the LINK door resolves a caller-declared target kind (EI-19387076313999646)', () => {
+  it('re-files a mis-declared dst.kind under the target row family, so the gate finds nothing', async () => {
+    // EI-19387076313999646: linkWorkItem used to take the DESTINATION's `kind` on trust. Its only
+    // check on dst is a FORM one —
     //     if (dst.kind === FEATURE_KIND && !isQualifiedFeatureRef(dst.ref)) return { error }
-    // — which asks whether the ref LOOKS qualified, never whether it RESOLVES to a
-    // feature-family row. So a harness-qualified ref naming an ISSUE satisfies the guard and
-    // writes blocked_kind='feature' for an issue item: the exact live D-017 shape. The edge is
-    // form-valid, mirrored, acyclic, counted by every row-shape check, and gates nothing.
+    // — so a harness-qualified ref naming an ISSUE passed it and wrote blocked_kind='feature' for
+    // an issue item: the live D-017 shape, form-valid and inert.
     //
-    // This is deliberately NOT asserted as an error — the door genuinely accepts the call
-    // today. Pinning the CURRENT behaviour is what makes the fix detectable: when the door
-    // starts resolving the target's family, this test fails and says so.
+    // The fix (work-item-deps-store.ts resolveActualDepEndpoint, called by
+    // mirrorWorkItemBlockingEdge) resolves both endpoints against the target row before writing.
+    // This test originally pinned the DEFECT so the fix would surface here as a red; it did
+    // (WI-10005221), so it now pins the FIXED behaviour. If the resolution regresses, the row
+    // assertion below reads blocked_kind='feature' again and the verdict reports a mismatch.
     await seedIssue('WI-6001');
     await seedIssue('WI-6002');
 
@@ -359,14 +392,14 @@ describe('the LINK door trusts a caller-declared target kind (EI-193870763139996
       'blocks',
       { harness: H, by: 'su-test' },
     );
-    expect(res, 'the door accepts the mis-declared target — this is the defect').toEqual({ ok: true });
+    expect(res, 'the door still accepts the call; it corrects the kind instead of refusing').toEqual({ ok: true });
 
-    // THE GATE CATCHES IT. This is the case that justifies running the detector over writer
-    // output rather than over hand-written rows: no hand-written fixture would have thought to
-    // produce this, because it is produced by a real door behaving as currently written.
-    const v = await verdict();
-    expect(v.defects, 'EI-19387076313999646: the link door minted an endpoint the detector rejects').toBeGreaterThan(0);
-    expect(v.mismatched.length).toBeGreaterThan(0);
-    expect(v.mismatched.some((d) => d.ref.includes('WI-6002'))).toBe(true);
+    // The writer actually wrote, and wrote the edge under the target's REAL family.
+    const deps = await db.sql<{ blocked_kind: string; blocked_ref: string; blocker_kind: string; blocker_ref: string }[]>`
+      SELECT blocked_kind, blocked_ref, blocker_kind, blocker_ref FROM harness_shared.work_item_deps`;
+    expect(deps).toEqual([{ blocked_kind: 'issue', blocked_ref: 'WI-6002', blocker_kind: 'issue', blocker_ref: 'WI-6001' }]);
+
+    // THE GATE agrees. The controls in 'the gate can actually fail' keep this from being vacuous.
+    expect(await verdict()).toMatchObject({ defects: 0, mismatched: [], dangling: [] });
   });
 });

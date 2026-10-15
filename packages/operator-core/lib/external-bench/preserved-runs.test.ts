@@ -17,6 +17,8 @@ import {
   readPreservedRun,
   resolveArmFile,
   summarizePreservedRun,
+  preservedExecutionTimes,
+  inspectPreservedRun,
   type PreservedArmRun,
 } from './preserved-runs';
 
@@ -40,6 +42,27 @@ const RESOLVED_FALSE = [
   'instance_tutao__tutanota-x',
 ];
 const ALL = [...RESOLVED_TRUE, ...RESOLVED_FALSE];
+
+describe('preserved execution provenance', () => {
+  const start = '2026-06-16T04:47:56.836Z';
+  it('preserves explicit execution time even for a recovered archive', () => {
+    expect(preservedExecutionTimes({ arm: ARM, startedAt: start, finishedAt: '2026-06-16T05:00:00Z', recovered: true }))
+      .toEqual({ startedAt: start, finishedAt: '2026-06-16T05:00:00.000Z' });
+  });
+  it('derives an end from actual unrecovered measured duration', () => {
+    expect(preservedExecutionTimes({ arm: ARM, startedAt: start, wallMs: 1000 }))
+      .toEqual({ startedAt: start, finishedAt: '2026-06-16T04:47:57.836Z' });
+  });
+  it.each([{}, { startedAt: 'not-a-date' }, { startedAt: start, wallMs: 0 },
+    { startedAt: start, wallMs: 1000, recovered: true }, { startedAt: start, wallMs: Number.MAX_VALUE }])(
+    'never invents current completion time from missing, recovered or unusable timing: %j', (metadata) => {
+      expect(preservedExecutionTimes({ arm: ARM, ...metadata }).finishedAt).toBeNull();
+    },
+  );
+  it('rejects a completion timestamp preceding task execution', () => {
+    expect(preservedExecutionTimes({ arm: ARM, startedAt: start, finishedAt: '2026-06-15T00:00:00Z' }).finishedAt).toBeNull();
+  });
+});
 
 function fixtureRun(): PreservedArmRun {
   return {
@@ -187,7 +210,8 @@ describe('summarizePreservedRun — fairness exclusion', () => {
     expect(s.gradedCount).toBe(3);
     expect(s.resolvedCount).toBe(2);
     expect(s.infraExcluded).toBe(2); // timeout-1 + infra-1
-    expect(s.resolvedPct).toBeCloseTo(2 / 3, 5); // resolved / SCORED-tasks, NOT 2/5
+    expect(s.resolvedPct).toBeCloseTo(2 / 5, 5);
+    expect(s.conditionalResolvedPct).toBeCloseTo(2 / 3, 5);
     expect(s.taskCount).toBe(5); // taskCount still reflects the whole set
   });
 
@@ -200,7 +224,40 @@ describe('summarizePreservedRun — fairness exclusion', () => {
     expect(s.gradedCount).toBe(3);
     expect(s.resolvedCount).toBe(2);
     expect(s.infraExcluded).toBe(2);
-    expect(s.resolvedPct).toBeCloseTo(2 / 3, 5);
+    expect(s.resolvedPct).toBeCloseTo(2 / 5, 5);
+    expect(s.conditionalResolvedPct).toBeCloseTo(2 / 3, 5);
+  });
+});
+
+describe('assigned task outcomes', () => {
+  it('keeps absent tasks and generation timeouts in the primary denominator', () => {
+    const run: PreservedArmRun = { arm: 'su', taskCount: 5 };
+    const summary = summarizePreservedRun(run, [
+      { instanceId: 'solved', stopReason: 'done', resolved: true },
+      { instanceId: 'capped', stopReason: 'timeout', resolved: null },
+    ]);
+    expect(summary).toMatchObject({ taskCount: 5, attemptedCount: 2, absentCount: 3,
+      gradedCount: 1, resolvedCount: 1, infraExcluded: 1, missingGradeCount: 0,
+      measurementComplete: true, resolvedPct: 0.2, conditionalResolvedPct: 1 });
+  });
+
+  it('reports a grader outage as missing measurement, then accepts a repaired grade', () => {
+    const run: PreservedArmRun = { arm: 'su', config: { taskIds: ['a', 'b', 'c'] } };
+    const rows = [{ instanceId: 'a', stopReason: 'done', resolved: null }];
+    expect(summarizePreservedRun(run, rows)).toMatchObject({ taskCount: 3,
+      missingGradeCount: 1, measurementComplete: false, resolvedPct: null });
+    expect(summarizePreservedRun(run, [{ ...rows[0], resolved: true }])).toMatchObject({
+      taskCount: 3, missingGradeCount: 0, resolvedPct: 1 / 3 });
+  });
+
+  it('counts queued placeholders as non-attempts and sums all spent cost', () => {
+    const summary = summarizePreservedRun({ arm: 'su', taskCount: 3 }, [
+      { instanceId: 'a', taskStatus: 'todo', resolved: null },
+      { instanceId: 'b', taskStatus: 'in_progress', costUsd: 2, resolved: null },
+      { instanceId: 'c', taskStatus: 'graded', costUsd: 1, generationError: '', resolved: true },
+    ]);
+    expect(summary).toMatchObject({ attemptedCount: 1, absentCount: 2,
+      missingGradeCount: 0, resolvedPct: 1 / 3, costUsd: 3 });
   });
 });
 
@@ -259,9 +316,57 @@ describe('disk read', () => {
     expect(detail!.coordRates.counts.breakdown).toBe(1);
   });
 
+  it('preserves the archived model identity without substituting a configured model', () => {
+    const id = 'explicit-model';
+    const dir = join(base, id);
+    mkdirSync(dir);
+    writeFileSync(join(dir, `${ARM}.json`), JSON.stringify({
+      ...fixtureRun(), model: 'provider-model-frozen-version',
+    }));
+    expect(readPreservedRun(id, base)!.run.model).toBe('provider-model-frozen-version');
+  });
+
+  it('leaves absent model provenance unknown for the importing caller', () => {
+    const id = 'missing-model';
+    const dir = join(base, id);
+    mkdirSync(dir);
+    writeFileSync(join(dir, `${ARM}.json`), JSON.stringify(fixtureRun()));
+    expect(readPreservedRun(id, base)!.run.model).toBeUndefined();
+  });
+
   it('returns null for a missing / unsafe run id', () => {
     expect(readPreservedRun('nope', base)).toBeNull();
     expect(readPreservedRun('../etc', base)).toBeNull();
+  });
+
+  it.each([
+    { instances: 103, overall: { score: 1 } },
+    { arm: ARM, perTask: [] },
+    { arm: ARM, perTask: [null] },
+    { arm: ARM, perTask: [{ instanceId: '' }] },
+    { arm: ARM, perTask: [{ instanceId: 'duplicate' }, { instanceId: 'duplicate' }] },
+  ])('rejects non-run or malformed archive records: %j', (value) => {
+    const dir = join(base, 'invalid-record');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'summary.json'), JSON.stringify(value));
+    try {
+      expect(readPreservedRun('invalid-record', base)).toBeNull();
+      expect(inspectPreservedRun('invalid-record', base).kind).toBe('invalid');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('classifies absent evidence separately from invalid run content', () => {
+    expect(inspectPreservedRun('does-not-exist', base).kind).toBe('unavailable');
+  });
+
+  it('does not accept a malformed grade map as verdict evidence', () => {
+    const dir = join(base, 'invalid-grades');
+    mkdirSync(join(dir, `grade-${ARM}`, 'out'), { recursive: true });
+    writeFileSync(join(dir, `grade-${ARM}`, 'out', 'eval_results.json'), JSON.stringify({ task: 'passed' }));
+    expect(readGradeMap(dir, ARM)).toBeNull();
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it('returns [] when the base dir does not exist', () => {

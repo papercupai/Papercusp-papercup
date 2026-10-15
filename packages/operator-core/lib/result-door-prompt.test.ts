@@ -12,15 +12,53 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { pathToFileURL } from 'node:url';
 import { BAKED_DOOR_CONSTANTS, computeTurnDoors, type DoorConstants } from './context-doors';
 import { RESULT_DOOR_TOKENS } from './result-door';
 import { MAX_PICK_PATHS } from './result-projection/parse';
-import { renderResultDoorSection, resultDoorPromptSlots, resultDoorPromptTokens } from './result-door-prompt';
+import { resolveCapabilityPolicy } from '@papercusp/orchestrator/managed-capability-policy';
+
+// Let the standard copy-out probe judge a mutated subject without dirtying the checkout.
+const { renderClientResultDoorSection, renderCodexOutputGuidance, renderResultDoorSection, resultDoorPromptSlots, resultDoorPromptTokens } =
+  await import(process.env.PROBE_SCRIPT ? pathToFileURL(process.env.PROBE_SCRIPT).href : './result-door-prompt');
 
 /** A deliberately non-default constant set: floor doubled, so every door moves. */
 const RAISED: DoorConstants = { ...BAKED_DOOR_CONSTANTS, maxTurnFloorTokens: 16_000 };
 
 describe('result-door standing-context section', () => {
+  it('TE-GUIDANCE-CAP: scopes the shared cap to the Papercusp door on every client', () => {
+    for (const client of ['claude', 'omp', 'codex']) {
+      const text = renderClientResultDoorSection(client);
+      expect(text).toContain("Papercusp's per-result door defaults to");
+      expect(text).toContain('not a universal cap on every client tool');
+      expect(text).not.toContain('Every tool result is capped at');
+    }
+  });
+
+  it('TE-GUIDANCE-INTERIM: Codex gets all five reduction instructions while exec remains available', () => {
+    const policy = resolveCapabilityPolicy({ client: 'codex', surface: 'launch', audience: 'interactive-su' });
+    expect(policy.deniedNames).not.toContain('exec');
+    const text = renderCodexOutputGuidance(policy);
+    expect(text).toContain('Print only the fields you will use');
+    expect(text).toContain('Spill large data to a file and read selected slices');
+    expect(text).toContain('Filter nested shell output');
+    expect(text).toContain('// @exec: {"max_output_tokens": 1000}');
+    expect(text).toContain('Prefer `code:run` for multi-tool scripts');
+    expect(text).toContain('10,000 tokens');
+    expect(renderClientResultDoorSection('claude')).not.toContain('Codex native tool output');
+    expect(renderClientResultDoorSection('omp')).not.toContain('// @exec:');
+  });
+
+  it('TE-GUIDANCE-RETIRE: actual exec restrictions omit interim advice; unrelated native restrictions retain it', () => {
+    for (const denied of ['exec', 'functions.exec', 'functions.*', '*']) {
+      const text = renderClientResultDoorSection('codex', { deniedNames: [denied] });
+      expect(text).not.toContain('Codex native tool output');
+      expect(text).not.toContain('// @exec:');
+      expect(text).toContain("Papercusp's per-result door");
+    }
+    expect(renderCodexOutputGuidance({ deniedNames: ['Bash', 'exec_command'] })).toContain('// @exec:');
+  });
+
   it('teaches the SAME number the door enforces', () => {
     // result-door.ts derives RESULT_DOOR_TOKENS from computeTurnDoors(0).resultEach;
     // this is the pin between the enforcement path and the prompt.

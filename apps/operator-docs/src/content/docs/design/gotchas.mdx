@@ -4,21 +4,23 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Gotchas, performance, and migration anti-patterns
-description: Sharp edges, perf budgets, and traps caught during the original migration.
+title: "Gotchas, performance, and migration anti-patterns"
+description: "Sharp edges, perf budgets, and traps caught during the original migration."
+type: Insight
+discovered: 2026-10-13
+status: active
+documents:
+  - "apps/operator/app/harness/harness.css"
+  - "apps/operator/app/_lints/css-tokens.test.ts"
+  - "apps/operator/app/globals.css"
+  - "apps/operator/app/_components/LazyDetails.tsx"
+plans:
+  - "design-migration-deferred-2026-05-13"
+  - "design-audit-2026-05-14"
+  - "design-spec-lingering-fixes-2026-06-18"
+  - "design-spec-compliance-2026-06-18"
 sidebar:
   order: 3
-plans:
-  - design-migration-deferred-2026-05-13
-  - design-audit-2026-05-14
-  - design-spec-lingering-fixes-2026-06-18
-  - design-spec-compliance-2026-06-18
-documents:
-  - apps/operator/app/harness/harness.css
-  - apps/operator/app/_lints/css-tokens.test.ts
-  - apps/operator/app/globals.css
-  - apps/operator/app/_components/LazyDetails.tsx
-  - apps/operator/app/harness/dock/PinnedFeaturePanel.tsx
 ---
 
 import { Aside } from '@astrojs/starlight/components';

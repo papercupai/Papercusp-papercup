@@ -1,0 +1,254 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10007700",
+  "measuredAt": "2026-10-09T03:39:27.080473+00:00",
+  "scope": "canonical staging local build and maintained docs suite; no runtime, novice, final acceptance or shipment claim",
+  "rootCause": "Pagefind backend WriteFiles response resolves before buffered asset writes finish; immediate pagefind.close kills the backend and leaves asset prefixes. getFiles returns complete compressed assets in the same regression.",
+  "detectorGap": "The earlier served-build guard checked asset existence and canonical MDX equality, without decompressing the served search assets.",
+  "fix": "Reuse patch-package and the Pagefind getFiles API; await Node filesystem writes before writeFiles resolves.",
+  "recurrenceGuards": [
+    "apps/papercusp-docs/lib/pagefind-output.test.ts",
+    "apps/papercusp-docs/lib/public-build-parity.test.ts"
+  ],
+  "headAtEvidence": "afac7b32dc2a3cc87b6b50a0bd788f9b4d40e67a",
+  "files": [
+    {
+      "path": "apps/papercusp-docs/src/content/docs/accounts-and-billing.mdx",
+      "bytes": 4772,
+      "sha256": "c5119fa0c92fefd75e244627e7d8a0c400b434956cd693064a8a5b05f9949850"
+    },
+    {
+      "path": "apps/operator/public/manual-source/accounts-and-billing.mdx",
+      "bytes": 4772,
+      "sha256": "c5119fa0c92fefd75e244627e7d8a0c400b434956cd693064a8a5b05f9949850"
+    },
+    {
+      "path": "apps/papercusp-docs/dist/accounts-and-billing.html",
+      "bytes": 38602,
+      "sha256": "42d5f01e23a292d39c75f758fb345fb4dec32470a992ffe4cc0026083e3414c1"
+    },
+    {
+      "path": "apps/operator/public/docs/accounts-and-billing.html",
+      "bytes": 38602,
+      "sha256": "42d5f01e23a292d39c75f758fb345fb4dec32470a992ffe4cc0026083e3414c1"
+    },
+    {
+      "path": "apps/papercusp-docs/src/content/docs/faq.mdx",
+      "bytes": 10045,
+      "sha256": "908687ae99d490db965919cb6f1297d409754453666e733027d505b7cbd2205a"
+    },
+    {
+      "path": "apps/operator/public/manual-source/faq.mdx",
+      "bytes": 10045,
+      "sha256": "908687ae99d490db965919cb6f1297d409754453666e733027d505b7cbd2205a"
+    },
+    {
+      "path": "apps/papercusp-docs/lib/pagefind-output.test.ts",
+      "bytes": 2029,
+      "sha256": "42fb06afa19b1591fc2009cbfa5db95b0b7216215237326457e658b79a25cb0b"
+    },
+    {
+      "path": "apps/papercusp-docs/lib/public-build-parity.test.ts",
+      "bytes": 4876,
+      "sha256": "d6ef273beb90ae21c1133221310783800847147265d92938d72c4bf5e7e3eb60"
+    },
+    {
+      "path": "patches/pagefind+1.5.2.patch",
+      "bytes": 2466,
+      "sha256": "cae5dc20fb0038ea118f3dfff2fd0f291bada17b1e2aadf8672328ce0cdaecd6"
+    },
+    {
+      "path": "node_modules/pagefind/lib/index.js",
+      "bytes": 10074,
+      "sha256": "a050399dbb402ad1f02778c270e5c3e72996fda113f1af4dffb2d1c7ccc88fa9"
+    }
+  ],
+  "logs": {
+    "unpatched": {
+      "path": "/tmp/su73-pagefind-integrity-red-0325.log",
+      "bytes": 376822,
+      "sha256": "78d06157b2a1e45e72ab848e02edee94dea1bf65ea8605c2a99a99105feeda85",
+      "summary": [
+        "- 0 errors",
+        "- 0 warnings",
+        "- 0 hints",
+        " ✓ lib/first-task.test.ts (3 tests) 27ms",
+        " ❯ lib/public-build-parity.test.ts (5 tests | 1 failed) 31ms",
+        " ❯ lib/pagefind-output.test.ts (1 test | 1 failed) 2098ms",
+        " ❯ lib/pagefind-output.test.ts:33:10",
+        " ❯ lib/public-build-parity.test.ts:87:5",
+        " Test Files  2 failed | 1 passed (3)",
+        "      Tests  2 failed | 7 passed (9)",
+        "   Duration  9.86s (transform 100ms, setup 0ms, import 164ms, tests 2.16s, environment 0ms)"
+      ]
+    },
+    "patched": {
+      "path": "/tmp/su73-pagefind-fixed-tests-0329.log",
+      "bytes": 3904,
+      "sha256": "5f01960cb44608a7ee02079856e48cb5a8ba959463bd8dd5c81d0e1d2bfe1dab",
+      "summary": [
+        "- 0 errors",
+        "- 0 warnings",
+        "- 0 hints",
+        " ✓ lib/first-task.test.ts (3 tests) 25ms",
+        " ✓ lib/public-build-parity.test.ts (5 tests) 55ms",
+        " ✓ lib/pagefind-output.test.ts (1 test) 496ms",
+        " Test Files  3 passed (3)",
+        "      Tests  9 passed (9)",
+        "   Duration  10.50s (transform 154ms, setup 0ms, import 252ms, tests 576ms, environment 0ms)"
+      ]
+    },
+    "build": {
+      "path": "/tmp/su73-pagefind-fixed-build-0328.log",
+      "bytes": 2171,
+      "sha256": "13a61735c7506e58f6be6d29b2b181bd4f12709f53dccd763492a9f3fd5d00bb",
+      "summary": [
+        "23:28:37 [build] Complete!",
+        "postbuild-copy: 57 files → ../operator/public/docs"
+      ]
+    }
+  },
+  "installation": {
+    "root": "/tmp/su73-pagefind-install.QCPdhe",
+    "patchPackageVersion": "8.0.1",
+    "patchPackageExit": 0,
+    "pristineBlob": "df28eb1ae02e62a0eec0698604fb7f1d5b11de47",
+    "patchedBlob": "938a71766e9b9f01c003c525d7a4c5e642d193d3",
+    "installedBlob": "938a71766e9b9f01c003c525d7a4c5e642d193d3",
+    "matchesInstalled": true,
+    "postimageCheck": {
+      "ok": true,
+      "checked": 1,
+      "errors": []
+    },
+    "checkScope": "Pagefind patch only; no claim that every workspace patch is verified"
+  },
+  "gzipAssets": [
+    {
+      "path": "apps/operator/public/docs/pagefind/fragment/en_1cc4d7e.pf_fragment",
+      "bytes": 2531,
+      "sha256": "71eef64e8560858a21256ffeb06e1e7618ef1459f1bcb7713ba29e1abdb92338",
+      "decompressedBytes": 6136
+    },
+    {
+      "path": "apps/operator/public/docs/pagefind/fragment/en_21f5e39.pf_fragment",
+      "bytes": 1581,
+      "sha256": "b2962adc4a0321ea007d9935cffd19982d1ac017e3dffb9bccf1fcd6d93af06f",
+      "decompressedBytes": 3420
+    },
+    {
+      "path": "apps/operator/public/docs/pagefind/fragment/en_274756f.pf_fragment",
+      "bytes": 1661,
+      "sha256": "7b28f138a85f6cb309d50d1ec4f5e5a132f00432efc13f565c2333a4dcd88a30",
+      "decompressedBytes": 3778
+    },
+    {
+      "path": "apps/operator/public/docs/pagefind/fragment/en_297a578.pf_fragment",
+      "bytes": 1443,
+      "sha256": "66c99c89c5c67db0877fea9a3c73f2af3c9e62c68aa0331f80b2dba7178b430f",
+      "decompressedBytes": 3272
+    },
+    {
+      "path": "apps/operator/public/docs/pagefind/fragment/en_2e0d0a3.pf_fragment",
+      "bytes": 1761,
+      "sha256": "22f1398d80c4286cda48b5480741103880f1c096330b5937e7d34eb3cf0dddbc",
+      "decompressedBytes": 4120
+    },
+    {
+      "path": "apps/operator/public/docs/pagefind/fragment/en_3c9ee67.pf_fragment",
+      "bytes": 1878,
+      "sha256": "d56eead30108a1f9cdcb92bde09ae95a88afd44145c25cf5140c1925e3a4c28f",
+      "decompressedBytes": 4178
+    },
+    {
+      "path": "apps/operator/public/docs/pagefind/fragment/en_5346f6f.pf_fragment",
+      "bytes": 1706,
+      "sha256": "b190dcf453d94266756be2fcb4284b472593e36df5bf919bd0a0d2f0c1acdb80",
+      "decompressedBytes": 4037
+    },
+    {
+      "path": "apps/operator/public/docs/pagefind/fragment/en_57258a4.pf_fragment",
+      "bytes": 2070,
+      "sha256": "3d65d4a2907d40e75081034afc6d5ccc80c8fcc1af8f7385c4df57e52d4bc715",
+      "decompressedBytes": 4706
+    },
+    {
+      "path": "apps/operator/public/docs/pagefind/fragment/en_6c6f4d8.pf_fragment",
+      "bytes": 3127,
+      "sha256": "07ab032b592ea4f2b84bdb2a19279485cdcbea6a1620d3dbd0745b0745b56c56",
+      "decompressedBytes": 8152
+    },
+    {
+      "path": "apps/operator/public/docs/pagefind/fragment/en_71cb193.pf_fragment",
+      "bytes": 4094,
+      "sha256": "015773db16913509fa537a8746fb7b1511c3ff0cec0e7f8586cc4bc72502799e",
+      "decompressedBytes": 11292
+    },
+    {
+      "path": "apps/operator/public/docs/pagefind/fragment/en_9ae16f1.pf_fragment",
+      "bytes": 1113,
+      "sha256": "df98aeec75adfd7c131b6613eaefd101094e97a444e476ea8369a9a918272d02",
+      "decompressedBytes": 2383
+    },
+    {
+      "path": "apps/operator/public/docs/pagefind/fragment/en_a37fb05.pf_fragment",
+      "bytes": 1949,
+      "sha256": "71aa75e6005bf3fcacbb824488cc4f1b0eb43258e1dc48daaf62fb4e3e483f2c",
+      "decompressedBytes": 5012
+    },
+    {
+      "path": "apps/operator/public/docs/pagefind/fragment/en_c6d5e34.pf_fragment",
+      "bytes": 2502,
+      "sha256": "0213d98b1d9faac0c867712f232b56175eb31b34cff3083a749f64eb5b6481de",
+      "decompressedBytes": 5974
+    },
+    {
+      "path": "apps/operator/public/docs/pagefind/fragment/en_d110789.pf_fragment",
+      "bytes": 2028,
+      "sha256": "61ab5221da88f5f8bca0191d3b6184e125c1ea645ee0caeb7cd146f58bb5d745",
+      "decompressedBytes": 4613
+    },
+    {
+      "path": "apps/operator/public/docs/pagefind/fragment/en_d6d5b34.pf_fragment",
+      "bytes": 1405,
+      "sha256": "6dd7cceb4edf847aea35371949a7c094bcae757107c272c7df71f6b8f0df9489",
+      "decompressedBytes": 3059
+    },
+    {
+      "path": "apps/operator/public/docs/pagefind/index/en_a67d75e.pf_index",
+      "bytes": 27648,
+      "sha256": "84ad5a581f31f1f802b83e1a30d7c2df1ef94daaf4b4ac934ced8e311ef8887f",
+      "decompressedBytes": 53468
+    },
+    {
+      "path": "apps/operator/public/docs/pagefind/pagefind.en_9b84718b61.pf_meta",
+      "bytes": 217,
+      "sha256": "84dda3b339f4a3a24f35749c5f92c61df38f87f734ad5336297af45fc2c6ac52",
+      "decompressedBytes": 273
+    },
+    {
+      "path": "apps/operator/public/docs/pagefind/wasm.en.pagefind",
+      "bytes": 72209,
+      "sha256": "bb16c9e6d3d214d4d05cccca51df7b487b86b3657318da767f6ca9e0a2e7259d",
+      "decompressedBytes": 151143
+    },
+    {
+      "path": "apps/operator/public/docs/pagefind/wasm.unknown.pagefind",
+      "bytes": 68024,
+      "sha256": "3a74cefceacd066e8d3bc8c52e7bc1c869544ca3d9031b44a9b7136356d5d7f4",
+      "decompressedBytes": 140536
+    }
+  ],
+  "componentUI": {
+    "path": "apps/operator/public/docs/pagefind/pagefind-component-ui.js",
+    "bytes": 175488,
+    "sha256": "958620129dd14bd851805daeb12ce708bd63b9287325d1d5ae6f73a04d1723f8"
+  },
+  "priorQueuedProcessAlive": false,
+  "limits": [
+    "Source reviews already settled; no new review requested.",
+    "Portal replacement-artifact identity and browser readiness remain required.",
+    "Existing imported-source provenance stays unknown.",
+    "The patched suite log contains its passing summary; the predecessor shell exit code was not recovered."
+  ]
+}

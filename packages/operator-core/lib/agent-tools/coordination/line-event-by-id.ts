@@ -23,6 +23,8 @@
  */
 
 import type { CoordEnvelope } from '@papercusp/coordination/core';
+import type postgres from 'postgres';
+import { parseBody } from '@papercusp/coordination/event-log';
 import { coordLog, coordWorkspaceId, coordSql, coordHasPgFastPath } from './log';
 
 /** The append-only surfaces this by-id read covers. */
@@ -42,16 +44,19 @@ export type CoordLineSurface = 'messages' | 'plan-events';
  * `harness_slug` is normalised from the COLUMN, not the stored blob: the column
  * is the federation source of truth, so a NULL there must erase a stale
  * `body.harness_slug` rather than let an old blob re-federate a local record.
+ * `msg_id` is likewise normalized from the indexed column because older
+ * federated rows can retain a conflicting non-empty `body.msg_id`.
  */
 export async function getLineEnvelopeById(
   surface: CoordLineSurface,
   msgId: string,
+  sqlOverride?: postgres.Sql,
 ): Promise<CoordEnvelope | null> {
   if (!msgId) return null;
   if (coordHasPgFastPath()) {
-    const sql = coordSql();
-    const rows = await sql<{ body: unknown; harness_slug: string | null }[]>`
-      SELECT body, harness_slug
+    const sql = sqlOverride ?? coordSql();
+    const rows = await sql<{ body: unknown; ts: unknown; msg_id: string; harness_slug: string | null }[]>`
+      SELECT body, ts, msg_id, harness_slug
         FROM harness_shared.coord_event_log
        WHERE workspace_id = ${coordWorkspaceId()}
          AND surface = ${surface}
@@ -60,7 +65,7 @@ export async function getLineEnvelopeById(
     `;
     if (rows.length) {
       const row = rows[0];
-      const envelope = (typeof row.body === 'string' ? JSON.parse(row.body) : row.body) as CoordEnvelope;
+      const envelope = parseBody(row.body, row);
       if (row.harness_slug == null) delete envelope.harness_slug;
       else envelope.harness_slug = row.harness_slug;
       return envelope;

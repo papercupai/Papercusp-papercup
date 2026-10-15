@@ -53,9 +53,12 @@
  *    (exit-1-means-clean-window, ENOENT-means-no-systemd, unit-scoping).
  */
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
+import { hostname } from 'node:os';
 import { readJournal, type JournalReadResult } from '../journal-read';
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+import { broadcastSevereEvent } from '../severe-event-broadcast';
 
 /** How often to evaluate. Well under the 1h window so a storm is caught early,
  *  well over the ~31min healthy metronome so a single tick never sees a burst. */
@@ -158,6 +161,7 @@ export interface RestartRateSweepDeps {
   flagEnabled: () => Promise<boolean>;
   units: readonly string[];
   threshold: number;
+  rail: AlarmAttentionDeps;
 }
 
 async function defaultReadStarts(unit: string): Promise<RestartRateReading> {
@@ -229,6 +233,7 @@ function sweepDeps(overrides: Partial<RestartRateSweepDeps>): RestartRateSweepDe
     flagEnabled: defaultFlagEnabled,
     units: RESTART_RATE_WATCHED_UNITS,
     threshold: RESTART_RATE_THRESHOLD_PER_HOUR,
+    rail: {},
     ...overrides,
   };
 }
@@ -264,7 +269,22 @@ export async function runRestartRateSweepOnce(
       continue;
     }
     const alert = evaluateReading(reading, deps.threshold);
-    if (!alert) continue;
+    const conditionKey = `alarm:service-restart-rate:${encodeURIComponent(hostname())}:${encodeURIComponent(unit)}`;
+    if (!alert) {
+      // A truncated read is a lower bound, not proof that the full window is healthy.
+      if (reading.starts !== null && !reading.atLeast) {
+        await resolveAlarm(conditionKey, 'service-restart-rate-watchdog', deps.rail);
+      }
+      continue;
+    }
+    const event = { conditionKey, summary: `${unit} restart-rate breach`,
+      body: `${alert.atLeast ? 'At least ' : ''}${alert.starts} starts in the trailing hour; threshold ${alert.threshold}.` };
+    try {
+      if (deps.rail.broadcast) await deps.rail.broadcast(event);
+      else await broadcastSevereEvent(event);
+    } catch (err) {
+      console.warn(`[service-restart-rate-watchdog] condition broadcast failed (non-fatal): ${String(err)}`);
+    }
     try {
       await deps.escalate(alert);
       alerts.push(alert);

@@ -116,6 +116,45 @@ describe('registerPluginTools', () => {
     assert.deepEqual(result.errors, []);
     assert(lookupByMcpName('fixture.pack'));
     assert(lookupByHttpPath('/api/plugins/fixture/pack'));
+    assert.equal(lookupByMcpName('fixture.pack')?.pluginName, 'fixture-explicit');
+    assert.deepEqual(lookupByMcpName('fixture.pack')?.pluginInstallation, {
+      version: '0.1.0', path: dir, source: 'global',
+    });
+    assert.deepEqual(lookupByHttpPath('/api/plugins/fixture/pack')?.pluginInstallation,
+      lookupByMcpName('fixture.pack')?.pluginInstallation);
+  });
+
+  it('uses the loaded project installation when it shadows a global provider, ignoring declaration lookalikes', async () => {
+    const handler = async () => ({ content: [{ type: 'text' as const, text: 'served' }] });
+    const global: LoadedPlugin = {
+      plugin: { name: 'shadowed', version: '1.0.0', papercusp: '^0.1.0', capabilities: [], tools: { run: handler } },
+      path: join(ROOT, 'global', 'shadowed'), source: 'global',
+      toolDefinitions: [{ name: 'run', description: 'run', inputSchema: { type: 'object' }, capabilities: [],
+        pluginInstallation: { version: 'forged', path: '/wrong', source: 'global' } } as never],
+    };
+    await registerPluginTools([global]);
+    const project: LoadedPlugin = { ...global, plugin: { ...global.plugin, version: '2.0.0' },
+      path: join(ROOT, 'project', 'shadowed'), source: 'project' };
+    await registerPluginTools([project]);
+    assert.deepEqual(lookupByMcpName('shadowed.run')?.pluginInstallation, {
+      version: '2.0.0', path: project.path, source: 'project',
+    });
+    assert.equal(Object.isFrozen(lookupByMcpName('shadowed.run')?.pluginInstallation), true);
+  });
+
+  it('carries the installed release on dynamic tools as well as static tools', async () => {
+    const plugin = {
+      name: 'dynamic-priced', version: '3.0.0', papercusp: '^0.1.0', capabilities: [],
+      async getDynamicTools() {
+        return { definitions: [{ name: 'call', description: 'dynamic', inputSchema: { type: 'object' }, capabilities: [] }],
+          handlers: { call: async () => ({ content: [{ type: 'text' as const, text: 'served' }] }) } };
+      },
+    };
+    const result = await registerPluginTools([{ plugin, path: join(ROOT, 'dynamic'), source: 'harness' }]);
+    assert.deepEqual(result.errors, []);
+    assert.deepEqual(lookupByMcpName('dynamic-priced.call')?.pluginInstallation, {
+      version: '3.0.0', path: join(ROOT, 'dynamic'), source: 'harness',
+    });
   });
 
   it('derives default expose paths when manifest omits them', async () => {

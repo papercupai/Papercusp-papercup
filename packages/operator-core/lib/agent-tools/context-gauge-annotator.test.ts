@@ -1,8 +1,9 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { contextGaugeAnnotator } from './context-gauge-annotator';
+import * as ptyDiscovery from '../events/await/psu-pty-discovery';
 import {
   recordContextUsage,
   resetContextUsageCacheForTests,
@@ -55,10 +56,63 @@ describe('contextGaugeAnnotator (P-013 wiring logic)', () => {
     expect(texts).toHaveLength(2);
     expect(texts[1]).toContain('context: 270000/300000 (90%)');
     expect(texts[1]).toContain('CRITICAL');
-    // Test owners are headless: the ambient result must not offer a carry-respawn
-    // that can only fail with no_live_pty_host.
+    // The synchronous result-annotation seam does not probe for a live host;
+    // precise host support is rendered by the async coord:inbox path.
     expect(texts[1]).not.toContain('request-compaction');
+    expect(texts[1]).toContain("session's supported continuation path");
     expect((out._meta as Record<string, unknown>)?._contextGauge).toContain('90%');
+  });
+
+  it('does not synchronously probe psu-pty host availability on the result hot path', () => {
+    trackOwner('su-no-host-probe', 270_000, 300_000);
+    const availability = vi.spyOn(ptyDiscovery, 'selfCompactionAvailability');
+    contextGaugeAnnotator(ok('result body'), ctx('su-no-host-probe'));
+    expect(availability).not.toHaveBeenCalled();
+  });
+
+  // EI-23761864550626068: the gauge numerator is transcript bytes/4, so the rendered line
+  // and the structured meta must both say it is an ESTIMATE rather than a measured count.
+  it('qualifies a CRITICAL gauge as a bytes/4 estimate and attaches the evidence contract', () => {
+    trackOwner('su-evidence', 270_000, 300_000); // 90% → critical
+    const out = contextGaugeAnnotator(ok('result body'), ctx('su-evidence'));
+    const texts = gaugeText(out);
+    expect(texts[1]).toContain('estimate: transcript-bytes/4, not provider usage');
+    expect(texts[1]).toContain('no provider-measured corroboration');
+    const ev = (out._meta as Record<string, unknown>)?._contextGaugeEvidence as {
+      exactness: string;
+      method: string;
+      denominator: { value: number; recordedAt: number | null; source: string };
+      corroboratedByObservedFloor: boolean;
+    };
+    expect(ev.exactness).toBe('estimate');
+    expect(ev.method).toBe('transcript-bytes/4');
+    expect(ev.denominator.value).toBe(300_000);
+    expect(ev.denominator.source).toBe('watchdog-cache(coord_presence.compaction_limit)');
+    // The cache entry was recorded moments ago by trackOwner — calibration time must be real.
+    expect(typeof ev.denominator.recordedAt).toBe('number');
+    expect(Date.now() - (ev.denominator.recordedAt as number)).toBeLessThan(60_000);
+    expect(ev.corroboratedByObservedFloor).toBe(false);
+  });
+
+  it('marks corroboration when the cache carries a provider-observed floor', () => {
+    trackOwner('su-evidence-floor', 270_000, 300_000, { tokens: 120_000, observations: 4 });
+    const out = contextGaugeAnnotator(ok('result body'), ctx('su-evidence-floor'));
+    const ev = (out._meta as Record<string, unknown>)?._contextGaugeEvidence as {
+      corroboratedByObservedFloor: boolean;
+    };
+    expect(ev.corroboratedByObservedFloor).toBe(true);
+    expect(gaugeText(out)[1]).toContain('a provider-observed input floor is shown');
+  });
+
+  it('keeps the quiet band a bare fact (no qualifier cost) while still carrying the meta contract', () => {
+    trackOwner('su-evidence-quiet', 210_000, 300_000); // 70% → quiet
+    const out = contextGaugeAnnotator(ok('result body'), ctx('su-evidence-quiet'));
+    const texts = gaugeText(out);
+    expect(texts[1]).toBe('context: 210000/300000 (70%)');
+    expect(texts[1]).not.toContain('estimate:');
+    expect(
+      ((out._meta as Record<string, unknown>)?._contextGaugeEvidence as { exactness: string }).exactness,
+    ).toBe('estimate');
   });
 
   it('appends NOTHING below the quiet band (the common case)', () => {

@@ -20,7 +20,11 @@
  *
  * Run: npm run test:file -- apps/operator/bin/host-docs.test.ts
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { isLoopbackHost } from '@papercusp/operator-core/lib/endpoint-route/loopback-guard';
 import { docsRoutes } from './host-docs';
 
@@ -120,6 +124,48 @@ describe('/internal/docs off vm-release (desktop + dev) is unchanged', () => {
   });
 });
 
+describe('Docs documents embedded in the isolated native Quick Panel', () => {
+  let fixtureRoot: string;
+  let fixtureRoutes: typeof docsRoutes;
+
+  beforeAll(async () => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'papercusp-host-docs-'));
+    writeFileSync(join(fixtureRoot, 'search-palette.html'), '<html>Docs search</html>');
+    writeFileSync(join(fixtureRoot, 'index.html'), '<html>Docs index</html>');
+    writeFileSync(join(fixtureRoot, '404.html'), '<html>Not found</html>');
+    const savedRoot = process.env.PAPERCUSP_DOCS_ROOT;
+    process.env.PAPERCUSP_DOCS_ROOT = fixtureRoot;
+    try {
+      vi.resetModules();
+      fixtureRoutes = (await import('./host-docs')).docsRoutes;
+    } finally {
+      if (savedRoot === undefined) delete process.env.PAPERCUSP_DOCS_ROOT;
+      else process.env.PAPERCUSP_DOCS_ROOT = savedRoot;
+    }
+  });
+
+  afterAll(() => {
+    rmSync(fixtureRoot, { recursive: true, force: true });
+  });
+
+  it.each([
+    ['/internal/docs/search-palette.html', 200, 'Docs search'],
+    ['/internal/docs/search-palette', 200, 'Docs search'],
+    ['/internal/docs/', 200, 'Docs index'],
+    ['/internal/docs/missing', 404, 'Not found'],
+  ])('serves %s with a compatible iframe embedder policy', async (path, status, body) => {
+    process.env.PAPERCUSP_INTERNAL_DOCS_BYPASS = '1';
+    const res = await fixtureRoutes.request(`http://127.0.0.1:16582${path}`);
+
+    expect(res.status).toBe(status);
+    expect(await res.text()).toContain(body);
+    // An iframe navigation must have compatible COEP even when it is same-origin.
+    // Without this, WebKit blocks Docs beneath the Quick Panel's require-corp policy.
+    expect(res.headers.get('cross-origin-embedder-policy')).toBe('require-corp');
+    expect(res.headers.get('cross-origin-opener-policy')).toBe('same-origin');
+  });
+});
+
 describe('falsifiability control — the pre-fix gate admitted the customer', () => {
   /**
    * The shipped predicate and the obvious wrong one, side by side on the same
@@ -160,5 +206,83 @@ describe('falsifiability control — the pre-fix gate admitted the customer', ()
     expect(preFixGateAdmits(offBox)).toBe(false);
     expect(shippedGateAdmits(offBox)).toBe(false);
     expect(shippedGateAdmits({ ...offBox, vmRelease: true })).toBe(false);
+  });
+});
+
+describe('packaged keyword search over the release-sanitized filesystem', () => {
+  let packageRoot: string;
+  let packagedRoutes: typeof docsRoutes;
+  let docsRoot: string;
+  let sourceRoot: string;
+
+  beforeAll(async () => {
+    packageRoot = mkdtempSync(join(tmpdir(), 'papercusp-packaged-docs-'));
+    docsRoot = join(packageRoot, 'internal-docs');
+    sourceRoot = join(packageRoot, 'apps/operator-docs/src/content/docs');
+    mkdirSync(join(docsRoot, 'pagefind'), { recursive: true });
+    mkdirSync(join(sourceRoot, 'build-system'), { recursive: true });
+    mkdirSync(join(sourceRoot, 'guide'), { recursive: true });
+    writeFileSync(join(sourceRoot, 'guide/shortcuts.mdx'),
+      '---\ntitle: Shortcut settings\n---\nChoose Off to release the global accelerator.');
+    writeFileSync(join(sourceRoot, 'build-system/private.mdx'),
+      '---\ntitle: Forbidden corpus canary\n---\nprivatecorpuscanary');
+    writeFileSync(join(docsRoot, 'pagefind/private.pf_meta'), 'privatecorpuscanary');
+    writeFileSync(join(docsRoot, 'guide.html'), '<html>Shortcut settings</html>');
+    // The package audit, rather than a test-maintained exclusion list, defines
+    // which files survive. Search must keep working after its Pagefind prune.
+    const prune = spawnSync('python3', [
+      join(__dirname, '../../../papercusp-desktop/bin/audit-release-bundle.py'),
+      '--prune-docs', docsRoot, sourceRoot,
+    ], { encoding: 'utf8' });
+    expect(prune.status, prune.stderr || prune.stdout).toBe(0);
+    const savedRoot = process.env.PAPERCUSP_DOCS_ROOT;
+    process.env.PAPERCUSP_DOCS_ROOT = docsRoot;
+    try {
+      vi.resetModules();
+      packagedRoutes = (await import('./host-docs')).docsRoutes;
+    } finally {
+      if (savedRoot === undefined) delete process.env.PAPERCUSP_DOCS_ROOT;
+      else process.env.PAPERCUSP_DOCS_ROOT = savedRoot;
+    }
+  });
+
+  afterAll(() => rmSync(packageRoot, { recursive: true, force: true }));
+
+  const query = (q: string) => packagedRoutes.request(
+    `http://127.0.0.1:16582/internal/docs/search.json?q=${encodeURIComponent(q)}`,
+  );
+
+  it('returns real keyword hits without Pagefind shards or a database', async () => {
+    process.env.PAPERCUSP_INTERNAL_DOCS_BYPASS = '1';
+    expect(existsSync(join(docsRoot, 'pagefind/private.pf_meta'))).toBe(false);
+    const res = await query('accelerator');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    expect(await res.json()).toMatchObject({
+      hitCount: 1,
+      hits: [{ title: 'Shortcut settings', url: '/internal/docs/guide/shortcuts',
+        excerpt: expect.stringContaining('release the global accelerator') }],
+    });
+  });
+
+  it('cannot refill the pruned corpus from the ambient engineering store', async () => {
+    process.env.PAPERCUSP_INTERNAL_DOCS_BYPASS = '1';
+    expect(existsSync(join(sourceRoot, 'build-system/private.mdx'))).toBe(false);
+    expect(await (await query('privatecorpuscanary')).json()).toMatchObject({ hitCount: 0, hits: [] });
+    // This doc exists in the monorepo, outside the selected sanitized package.
+    expect(await (await query('derived-truth-ladder')).json()).toMatchObject({ hitCount: 0, hits: [] });
+  });
+
+  it('keeps both access guards on the search route, including the bypass refusal', async () => {
+    expect((await query('accelerator')).status).toBe(403);
+    process.env.PAPERCUSP_INTERNAL_DOCS_BYPASS = '1';
+    process.env.PAPERCUSP_DISTRIBUTION_PROFILE = 'vm-release';
+    expect((await query('accelerator')).status).toBe(403);
+  });
+
+  it('bounds query input and returns an empty result for blank input', async () => {
+    process.env.PAPERCUSP_INTERNAL_DOCS_BYPASS = '1';
+    expect((await query('x'.repeat(201))).status).toBe(400);
+    expect(await (await query(' ')).json()).toMatchObject({ hitCount: 0, hits: [] });
   });
 });

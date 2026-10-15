@@ -32,7 +32,7 @@
  * shipped logic, never a copy) and drive it under controlled inputs.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync, symlinkSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
@@ -40,7 +40,10 @@ import { createServer, connect, type Server, type Socket } from 'node:net';
 import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 
 // apps/operator/lib/release → apps/operator/bin/release/sync-staging-checkout.sh
-const SCRIPT_PATH = join(__dirname, '../../bin/release/sync-staging-checkout.sh');
+// Overridable so scripts/mutation-probe.sh can point this suite at a copy or a
+// historical snapshot without mutating the shared tree.
+const SCRIPT_PATH = process.env.SYNC_STAGING_SCRIPT_UNDER_TEST
+  ?? join(__dirname, '../../bin/release/sync-staging-checkout.sh');
 
 function runScriptArgs(
   args: string[],
@@ -108,6 +111,126 @@ function execPreUsesBundle(execPre: string, expectedWorkdir = '/isolated/apps/op
   }
   return r.status === 0;
 }
+
+function execPinsIntegrationRoot(execStart: string): boolean {
+  const r = runFn(
+    ['staging_exec_pins_integration_root'],
+    'staging_exec_pins_integration_root "$EXEC_START"',
+    { env: { EXEC_START: execStart } },
+  );
+  if (r.status !== 0 && r.status !== 1) {
+    throw new Error(`staging_exec_pins_integration_root exited unexpectedly (${r.status}): ${r.stderr || r.stdout}`);
+  }
+  return r.status === 0;
+}
+
+function stagingUnitGuardResult(
+  root: string,
+  overrides: {
+    workingDirectory?: string;
+    environment?: string;
+    execPre?: string;
+    execStart?: string;
+  } = {},
+): { status: number | null; stdout: string; stderr: string } {
+  const binDir = mkdtempSync(join(tmpdir(), 'staging-unit-guard-'));
+  const systemctlPath = join(binDir, 'systemctl');
+  const spaDist = root + '/apps/operator-vite/dist';
+  const workingDirectory = overrides.workingDirectory ?? root + '/apps/operator';
+  const environment = overrides.environment ?? [
+    'PAPERCUSP_INTEGRATION_ROOT=' + root,
+    'PAPERCUSP_SPA_DIST=' + spaDist,
+    'PAPERCUSP_BUNDLE_REUSE_FRESH=1',
+  ].join(' ');
+  const execPre = overrides.execPre ?? (
+    '{ path=/usr/bin/flock ; argv[]=/usr/bin/flock -s /tmp/papercup-staging-sync.lock ' +
+    root + '/apps/operator/bin/bundle-host.sh ; ignore_errors=no ; status=0/0 }'
+  );
+  const execStart = overrides.execStart ?? (
+    'set -a; [ -f .env.local ] && . ./.env.local; set +a; ' +
+    'export PAPERCUSP_INTEGRATION_ROOT="$(cd ../.. && pwd -P)" ' +
+    'PAPERCUSP_HONO_PORT=3170 PAPERCUSP_PTY_WS_PORT=3156 ' +
+    'MOBILE_VOICE_WS_PORT=3168 PAPERCUSP_BIND_HOST=127.0.0.1; ' +
+    'exec node dist-host/hono-host.mjs'
+  );
+  writeFileSync(systemctlPath, [
+    '#!/usr/bin/env bash',
+    'case "$4" in',
+    '  WorkingDirectory) printf "%s\\n" "$TEST_WORKING_DIRECTORY" ;;',
+    '  Environment) printf "%s\\n" "$TEST_ENVIRONMENT" ;;',
+    '  ExecStartPre) printf "%s\\n" "$TEST_EXEC_START_PRE" ;;',
+    '  ExecStart) printf "%s\\n" "$TEST_EXEC_START" ;;',
+    '  *) exit 2 ;;',
+    'esac',
+  ].join('\n'), { mode: 0o700 });
+  try {
+    return runFn(
+      ['staging_exec_pre_uses_bundle', 'staging_exec_pins_integration_root', 'assert_staging_unit_checkout'],
+      'log() { printf "%s\\n" "$*" >&2; }; assert_staging_unit_checkout',
+      {
+        env: {
+          PATH: binDir + ':' + (process.env.PATH ?? ''),
+          UNIT: 'papercup-staging-api.service',
+          STAGING_ROOT: root,
+          TEST_WORKING_DIRECTORY: workingDirectory,
+          TEST_ENVIRONMENT: environment,
+          TEST_EXEC_START_PRE: execPre,
+          TEST_EXEC_START: execStart,
+        },
+      },
+    );
+  } finally {
+    rmSync(binDir, { recursive: true, force: true });
+  }
+}
+
+describe('recent restart coalescing verifies the published generation', () => {
+  function runRecentGuard(ageSec: number, healthSha: string) {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const start = script.indexOf('RECENT_RESTART_GRACE_SEC=');
+    const end = script.indexOf('# EI-22102474093310851:', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const wrapper = [
+      'set -euo pipefail',
+      'source <(sed -n "/^health_sha_matches_target()/,/^}/p" "$SYNC_SCRIPT")',
+      'systemctl() { printf "2059726\\n"; }',
+      'ps() { printf "%s\\n" "$TEST_AGE_SEC"; }',
+      'staging_health_source_sha() { printf "%s\\n" "$TEST_HEALTH_SHA"; }',
+      'log() { printf "%s\\n" "$*"; }',
+      'UNIT=fixture-staging.service',
+      'target="$TEST_TARGET_SHA"',
+      script.slice(start, end),
+      'printf "RESTART_REQUIRED\\n"',
+    ].join('\n');
+    return spawnSync('bash', ['-c', wrapper], {
+      encoding: 'utf8',
+      env: { ...process.env, SYNC_SCRIPT: SCRIPT_PATH, TEST_AGE_SEC: String(ageSec),
+        TEST_HEALTH_SHA: healthSha, TEST_TARGET_SHA: 'a'.repeat(40),
+        PAPERCUSP_STAGING_SYNC_RESTART_GRACE_SEC: '45' },
+    });
+  }
+
+  it('coalesces a young process that reports the exact target', () => {
+    const result = runRecentGuard(36, 'a'.repeat(10));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('peer restart verified');
+    expect(result.stdout).not.toContain('RESTART_REQUIRED');
+  });
+
+  it.each(['b'.repeat(10), ''])('requires restart for a young old or unknown generation: %s', healthSha => {
+    const result = runRecentGuard(36, healthSha);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('RESTART_REQUIRED');
+    expect(result.stdout).not.toContain('peer restart verified');
+  });
+
+  it('preserves the grace boundary even for a matching generation', () => {
+    const result = runRecentGuard(45, 'a'.repeat(10));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('RESTART_REQUIRED');
+  });
+});
 
 function healthMatchesTarget(healthSha: string, targetSha: string): boolean {
   const r = runFn(
@@ -178,6 +301,87 @@ describe('sync-staging-checkout.sh argument parsing', () => {
 });
 
 describe('sync-staging-checkout.sh migration restart preflight (EI-24180437038891110)', () => {
+  it.each(['scripts/lint-migrations.mjs', 'scripts/check-migration-forward-compat.mjs'])(
+    'kills a stuck %s and refuses publication after the phase deadline', (stuckCheck) => {
+      const root = mkdtempSync(join(tmpdir(), 'staging-preflight-deadline-'));
+      try {
+        const bin = join(root, 'bin');
+        mkdirSync(bin);
+        const trace = join(root, 'checks');
+        const pidFile = join(root, 'stuck.pid');
+        writeFileSync(join(bin, 'node'), [
+          '#!/bin/sh',
+          'printf "%s\\n" "$1" >> "$TRACE_FILE"',
+          '[ "$1" = "$STUCK_CHECK" ] || exit 0',
+          'printf "%s" "$$" > "$PID_FILE"',
+          'trap "" TERM',
+          'while :; do sleep 1; done',
+          '',
+        ].join('\n'), { mode: 0o700 });
+        const result = runFn(['preflight_staging_migrations'], [
+          'log() { printf "%s\\n" "$*"; }',
+          // Shorten only the fixture clock; real GNU timeout owns cancellation.
+          'timeout() { printf "BOUND:%s\\n" "$*"; shift 2; command timeout --kill-after=1s 1s "$@"; }',
+          'preflight_staging_migrations && printf "PUBLISHED\\n"',
+        ].join('\n'), { env: {
+          STAGING_ROOT: root, UNIT: 'fixture.service', TRACE_FILE: trace,
+          PID_FILE: pidFile, STUCK_CHECK: stuckCheck, PATH: `${bin}:${process.env.PATH}`,
+        } });
+        expect(result.status, result.stderr).toBe(1);
+        expect(result.stdout).toContain(`BOUND:--kill-after=10s 900s node ${stuckCheck}`);
+        expect(result.stdout).toContain(`${stuckCheck} failed or exceeded its deadline (exit 137)`);
+        expect(result.stdout).toContain('keeping the current fixture.service process');
+        expect(result.stdout).not.toContain('PUBLISHED');
+        expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual(
+          stuckCheck.endsWith('/lint-migrations.mjs') ? [stuckCheck]
+            : ['scripts/lint-migrations.mjs', stuckCheck],
+        );
+        const childPid = readFileSync(pidFile, 'utf8');
+        let childState = 'gone';
+        try {
+          const stat = readFileSync(`/proc/${childPid}/stat`, 'utf8');
+          childState = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0];
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+        // SIGKILL can leave a dead child awaiting its ancestor's reap. A /proc
+        // entry alone does not mean the timed-out check can still execute.
+        process.stdout.write(`[staging-preflight] child ${childPid} termination state=${childState}\n`);
+        expect(['gone', 'Z', 'X'], `surviving check ${childPid}: ${childState}`).toContain(childState);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    }, 15_000,
+  );
+
+  it.each([false, true])('loads the candidate runtime DB before reservation lint (broken env: %s)', (broken) => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-lint-env-'));
+    try {
+      const bin = join(root, 'bin');
+      mkdirSync(bin);
+      mkdirSync(join(root, 'apps/operator'), { recursive: true });
+      writeFileSync(join(root, 'apps/operator/.env.local'), broken ? 'return 1\n' : 'DATABASE_URL=candidate-db\n');
+      const trace = join(root, 'lint-trace');
+      writeFileSync(join(bin, 'node'), [
+        '#!/bin/sh',
+        'printf "%s:%s\\n" "$1" "$DATABASE_URL" >> "$TRACE_FILE"',
+        '[ "$DATABASE_URL" = candidate-db ]',
+        '',
+      ].join('\n'), { mode: 0o700 });
+      const r = runFn(['preflight_staging_migrations'],
+        'log() { printf "%s\\n" "$*"; }\npreflight_staging_migrations', {
+          env: { STAGING_ROOT: root, UNIT: 'fixture.service', TRACE_FILE: trace,
+            DATABASE_URL: 'inherited-discovery-db', PATH: `${bin}:${process.env.PATH}` },
+        });
+      expect(r.status).toBe(broken ? 1 : 0);
+      if (broken) expect(existsSync(trace)).toBe(false);
+      else expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual([
+        'scripts/lint-migrations.mjs:candidate-db',
+        'scripts/check-migration-forward-compat.mjs:candidate-db',
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     ['scripts/lint-migrations.mjs', ['scripts/lint-migrations.mjs']],
     ['scripts/check-migration-forward-compat.mjs', [
@@ -205,10 +409,10 @@ describe('sync-staging-checkout.sh migration restart preflight (EI-2418043703889
       expect(r.stdout).toContain('keeping the current fixture.service process');
 
       const script = readFileSync(SCRIPT_PATH, 'utf8');
-      const preflight = script.indexOf('\npreflight_staging_migrations\n');
-      expect(preflight).toBeGreaterThan(script.indexOf('if [ "$restart_required" = 0 ]; then'));
-      expect(preflight).toBeLessThan(script.indexOf('prebuilding proof-bound host bundle'));
-      expect(preflight).toBeLessThan(script.indexOf('requesting coordinated restart of $UNIT'));
+      const preflightCall = script.indexOf('preflight_staging_migrations "$SYNC_ROOT"');
+      expect(preflightCall).toBeGreaterThan(script.indexOf('if [ "$restart_required" = 1 ]; then'));
+      expect(preflightCall).toBeLessThan(script.indexOf('prebuilding proof-bound host bundle'));
+      expect(preflightCall).toBeLessThan(script.indexOf('requesting coordinated restart of $UNIT'));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -218,19 +422,23 @@ describe('sync-staging-checkout.sh migration restart preflight (EI-2418043703889
 describe('sync-staging-checkout.sh forward-compat review-date alarm (WI-10003599)', () => {
   it('checks review dates before checkout equality can take the no-op path', () => {
     const script = readFileSync(SCRIPT_PATH, 'utf8');
-    const lockIdx = script.indexOf('exec 9>"/tmp/papercup-staging-sync.lock"');
+    const lockIdx = script.indexOf('exec 9>"$STAGING_SYNC_LOCK_PATH"');
     const warningCallIdx = script.indexOf('\nforward_compat_review_warnings\n');
-    const repoCheckIdx = script.indexOf('[ -d "$INTEGRATION_ROOT/.git" ]');
     const targetIdx = script.indexOf('target="$(git -C');
     expect(lockIdx).toBeGreaterThan(-1);
     expect(warningCallIdx).toBeGreaterThan(lockIdx);
-    expect(warningCallIdx).toBeLessThan(repoCheckIdx);
     expect(warningCallIdx).toBeLessThan(targetIdx);
     expect(script).toContain('--warn-review-by-days=$warning_days');
     expect(script).toContain('--sidecar-directory=$STAGING_ROOT/libs/papercusp/libs/db/sql');
   });
 
-  it('sends one workspace alarm for a stable warning set instead of repeating it every timer tick', () => {
+  /**
+   * Run forward_compat_review_warnings twice (two timer ticks) against a fake
+   * `node` that prints REVIEW_REPORT for the checker and records every
+   * mcp-call as `<tool>\t<json>`. FAIL_TOOL makes that one tool exit 5, the
+   * way mcp-call.mjs exits non-zero on a tool-level ok:false.
+   */
+  function runReviewAlarm(report: string, opts: { failTool?: string } = {}) {
     const root = mkdtempSync(join(tmpdir(), 'staging-review-alarm-'));
     try {
       const bin = join(root, 'bin');
@@ -248,14 +456,14 @@ describe('sync-staging-checkout.sh forward-compat review-date alarm (WI-10003599
         '  exit 0',
         'fi',
         'if [ "$1" = "scripts/mcp-call.mjs" ]; then',
-        '  printf "%s\\n" "$3" >> "$ALARM_TRACE"',
+        '  printf "%s\\t%s\\n" "$2" "$3" >> "$ALARM_TRACE"',
+        '  case " $FAIL_TOOL " in *" $2 "*) exit 5 ;; esac',
         '  exit 0',
         'fi',
         'exec "$REAL_NODE" "$@"',
         '',
       ].join('\n'), { mode: 0o700 });
 
-      const report = 'check-migration-forward-compat: WARNING 941-example.sql.forward-compat.json reviewBy 2026-10-28 is within 14 days';
       const r = runFn(['forward_compat_review_warnings'],
         'log() { printf "%s\\n" "$*"; }\nforward_compat_review_warnings\nforward_compat_review_warnings', {
           env: {
@@ -264,22 +472,139 @@ describe('sync-staging-checkout.sh forward-compat review-date alarm (WI-10003599
             XDG_STATE_HOME: join(root, 'state'),
             REVIEW_REPORT: report,
             ALARM_TRACE: alarmTrace,
+            FAIL_TOOL: opts.failTool ?? '',
             REAL_NODE: process.execPath,
             PATH: `${bin}:${process.env.PATH}`,
           },
         });
-
-      expect(r.status).toBe(0);
-      const calls = readFileSync(alarmTrace, 'utf8').trim().split('\n');
-      expect(calls).toHaveLength(1);
-      const payload = JSON.parse(calls[0]);
-      expect(payload.to).toEqual(['*']);
-      expect(payload.expects).toBe('none');
-      expect(payload.summary).toMatch(/migration forward-compat reviews need attention/);
-      expect(payload.body[0].text).toMatch(/renew or remove each sidecar/i);
-      expect(r.stdout).toContain('ALARM: migration forward-compat sidecar review dates need attention');
+      const calls = readFileSync(alarmTrace, 'utf8').trim().split('\n').map((line) => {
+        const tab = line.indexOf('\t');
+        return { tool: line.slice(0, tab), payload: JSON.parse(line.slice(tab + 1)) };
+      });
+      return { r, calls };
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  const withinReport = 'check-migration-forward-compat: WARNING: 941-example.sql.forward-compat.json reviewBy 2026-10-28 is within 14 days; renew or remove the sidecar before expiry.';
+  const passedReport = 'check-migration-forward-compat: WARNING: 941-example.sql.forward-compat.json reviewBy 2026-10-28 has passed; renew or remove the sidecar.';
+
+  it('files ONE claimable work-item for a stable warning set instead of an unowned broadcast (WI-10005182)', () => {
+    const { r, calls } = runReviewAlarm(withinReport);
+    expect(r.status).toBe(0);
+    // Two timer ticks, one filing: the state file de-duplicates the second tick.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].tool).toBe('work_items:create');
+    expect(calls[0].payload.kind).toBe('task');
+    expect(calls[0].payload.title).toContain('941-example reviewBy 2026-10-28');
+    expect(calls[0].payload.body).toContain(withinReport);
+    expect(calls[0].payload.body).toMatch(/requiresDeployedCommit/);
+    expect(r.stdout).toContain('ALARM: migration forward-compat sidecar review dates need attention');
+    expect(r.stdout).toContain('ALARM: filed a sidecar-renewal work-item');
+  });
+
+  it('names the same work for the "within N days" and "has passed" phrasings of one expiry', () => {
+    const before = runReviewAlarm(withinReport).calls[0].payload.title;
+    const after = runReviewAlarm(passedReport).calls[0].payload.title;
+    expect(after).toBe(before);
+  });
+
+  it('falls back to the workspace broadcast when the work-item cannot be filed, and still sends only once', () => {
+    const { r, calls } = runReviewAlarm(withinReport, { failTool: 'work_items:create' });
+    expect(r.status).toBe(0);
+    expect(calls.map((c) => c.tool)).toEqual(['work_items:create', 'coord:send']);
+    const broadcast = calls[1].payload;
+    expect(broadcast.to).toEqual(['*']);
+    expect(broadcast.expects).toBe('none');
+    expect(broadcast.summary).toMatch(/migration forward-compat reviews need attention/);
+    expect(broadcast.body[0].text).toMatch(/renew or remove each sidecar/i);
+    expect(r.stdout).toContain('falling back to a workspace broadcast');
+    expect(r.stdout).not.toContain('ALARM DELIVERY FAILED');
+  });
+
+  it('never reaches the broadcast when the work-item is filed', () => {
+    const { calls } = runReviewAlarm(withinReport, { failTool: 'coord:send' });
+    expect(calls.map((c) => c.tool)).toEqual(['work_items:create']);
+  });
+
+  it('reports a delivery failure when both routes fail, and does not retry on the same day', () => {
+    const { r, calls } = runReviewAlarm(withinReport, { failTool: 'work_items:create coord:send' });
+    expect(r.status).toBe(0);
+    // Tick 1 tries both routes; tick 2 (same UTC day, same warning set) is suppressed.
+    expect(calls.map((c) => c.tool)).toEqual(['work_items:create', 'coord:send']);
+    expect(r.stdout).toContain('ALARM DELIVERY FAILED: neither work_items:create nor coord:send');
+  });
+});
+
+describe('staging runtime environment inheritance', () => {
+  let root: string;
+  const sourceSha = 'a'.repeat(40);
+  const sourcePin = `\nPAPERCUSP_BUILD_SHA=${sourceSha}\n`;
+  beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'staging-env-')); });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  function copyEnvironment(sources: Array<string | null>): string | null {
+    const [current, legacy, canonical] = ['current', 'legacy', 'canonical'].map((name, i) => {
+      const dir = join(root, name);
+      mkdirSync(join(dir, 'apps/operator'), { recursive: true });
+      if (sources[i] !== null) writeFileSync(join(dir, 'apps/operator/.env.local'), sources[i]!, { mode: 0o600 });
+      return dir;
+    });
+    const candidate = join(root, 'candidate');
+    mkdirSync(join(candidate, 'apps/operator'), { recursive: true });
+    const r = runFn(['copy_staging_runtime_environment'],
+      'log() { printf "%s\\n" "$*"; }\ncopy_staging_runtime_environment "$CANDIDATE" "$SOURCE_SHA"', {
+        env: { STAGING_ROOT: current, LEGACY_STAGING_ROOT: legacy, INTEGRATION_ROOT: canonical, CANDIDATE: candidate, SOURCE_SHA: sourceSha },
+      });
+    expect(r.status).toBe(0);
+    const copied = join(candidate, 'apps/operator/.env.local');
+    if (!existsSync(copied)) return null;
+    expect(statSync(copied).mode & 0o777).toBe(0o600);
+    return readFileSync(copied, 'utf8');
+  }
+
+  it('preserves the current staging environment over legacy and canonical settings', () => {
+    expect(copyEnvironment(['DATABASE_URL=current\n', 'DATABASE_URL=legacy\n', 'DATABASE_URL=canonical\n']))
+      .toBe(`DATABASE_URL=current\n${sourcePin}`);
+  });
+
+  it('retains the legacy environment during the first generation cutover', () => {
+    expect(copyEnvironment([null, 'DATABASE_URL=legacy\n', 'DATABASE_URL=canonical\n']))
+      .toBe(`DATABASE_URL=legacy\n${sourcePin}`);
+  });
+
+  it('recovers the canonical DB pin when published staging has no runtime file', () => {
+    expect(copyEnvironment([null, null, 'DATABASE_URL=canonical\n'])).toBe(`DATABASE_URL=canonical\n${sourcePin}`);
+  });
+
+  it('leaves explicitly inherited runtime configuration available when no file exists', () => {
+    expect(copyEnvironment([null, null, null])).toBe(sourcePin);
+  });
+
+  it('replaces an inherited build label with the prepared candidate source', () => {
+    copyEnvironment([`DATABASE_URL=current\nPAPERCUSP_BUILD_SHA=${'b'.repeat(40)}\n`, null, null]);
+    const r = spawnSync('bash', ['-c', 'set -a; . "$ENV_FILE"; printf "%s" "$PAPERCUSP_BUILD_SHA"'], {
+      env: { ...process.env, ENV_FILE: join(root, 'candidate/apps/operator/.env.local') }, encoding: 'utf8',
+    });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe(sourceSha);
+  });
+
+  it('refuses a missing or invalid source ref before copying runtime settings', () => {
+    const current = join(root, 'current');
+    const candidate = join(root, 'candidate');
+    mkdirSync(join(current, 'apps/operator'), { recursive: true });
+    mkdirSync(join(candidate, 'apps/operator'), { recursive: true });
+    writeFileSync(join(current, 'apps/operator/.env.local'), 'DATABASE_URL=current\n');
+    for (const invalid of ['', 'not-a-commit']) {
+      const r = runFn(['copy_staging_runtime_environment'],
+        'log() { printf "%s\\n" "$*"; }\ncopy_staging_runtime_environment "$CANDIDATE" "$SOURCE_SHA"', {
+          env: { STAGING_ROOT: current, LEGACY_STAGING_ROOT: current, INTEGRATION_ROOT: current,
+            CANDIDATE: candidate, SOURCE_SHA: invalid },
+        });
+      expect(r.status).toBe(1);
+      expect(existsSync(join(candidate, 'apps/operator/.env.local'))).toBe(false);
     }
   });
 });
@@ -296,6 +621,10 @@ describe('staging schema preparation before cutover (EI-24180022773715880)', () 
     writeFileSync(join(root, 'packages/operator-core/lib/db-boot-migrate.ts'), `
       import { appendFileSync, watch, existsSync } from 'node:fs';
       export async function applyPendingMigrationsNow(options) {
+        if (process.env.EXPECT_DATABASE_URL) {
+          if (process.env.DATABASE_URL !== process.env.EXPECT_DATABASE_URL) throw new Error('wrong preflight database');
+          if (process.env.PAPERCUSP_INTEGRATION_ROOT !== process.cwd()) throw new Error('wrong preflight source root');
+        }
         appendFileSync(process.env.TRACE_FILE, JSON.stringify(options) + '\\n');
         if (process.env.FIXTURE_RESULT === 'wait') {
           await new Promise(resolve => {
@@ -310,8 +639,68 @@ describe('staging schema preparation before cutover (EI-24180022773715880)', () 
         return JSON.parse(process.env.FIXTURE_RESULT);
       }
     `);
+    writeFileSync(join(root, 'packages/operator-core/lib/serving-generation.ts'), `
+      export async function assertRequiredServingMigrationsApplied() {
+        if (process.env.MISSING_REQUIRED_MIGRATION) {
+          throw new Error('serving schema is missing code-required migration(s): ' + process.env.MISSING_REQUIRED_MIGRATION);
+        }
+      }
+    `);
   });
   afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it('preflights the candidate DB pin instead of an inherited discovery target', () => {
+    writeFileSync(join(root, 'apps/operator/.env.local'),
+      'DATABASE_URL=postgresql://fixture/candidate\nPAPERCUSP_INTEGRATION_ROOT=/stale/source\n');
+    const r = runFn(['prepare_staging_schema'],
+      'log() { printf "%s\\n" "$*"; }\nprepare_staging_schema && echo restart-requested', {
+        env: { STAGING_ROOT: root, UNIT: 'fixture.service', TRACE_FILE: join(root, 'trace'),
+          DATABASE_URL: 'postgresql://fixture/inherited', EXPECT_DATABASE_URL: 'postgresql://fixture/candidate',
+          FIXTURE_RESULT: '{"applied":0,"failed":[]}' },
+      });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('restart-requested');
+    expect(JSON.parse(readFileSync(join(root, 'trace'), 'utf8')).sqlDir).toBe(join(root, 'libs/papercusp/libs/db/sql'));
+  });
+
+  it('blocks cutover for an unapplied code-required migration but ignores unrelated drafts', () => {
+    const sqlDir = join(root, 'libs/papercusp/libs/db/sql');
+    mkdirSync(sqlDir, { recursive: true });
+    writeFileSync(join(sqlDir, '1490-unrelated.sql.DRAFT'), '-- intentionally parked');
+
+    const blocked = runFn(['prepare_staging_schema'],
+      'log() { printf "%s\\n" "$*"; }\nprepare_staging_schema && echo restart-requested', {
+        env: { STAGING_ROOT: root, UNIT: 'fixture.service', TRACE_FILE: join(root, 'blocked-trace'),
+          FIXTURE_RESULT: '{"applied":0,"failed":[]}',
+          MISSING_REQUIRED_MIGRATION: '1489-fallback-observations-samples.sql' },
+      });
+    expect(blocked.status).toBe(1);
+    expect(blocked.stderr).toContain('1489-fallback-observations-samples.sql');
+    expect(blocked.stdout).not.toContain('restart-requested');
+    expect(existsSync(join(root, 'blocked-trace'))).toBe(true);
+
+    const ready = runFn(['prepare_staging_schema'],
+      'log() { printf "%s\\n" "$*"; }\nprepare_staging_schema && echo restart-requested', {
+        env: { STAGING_ROOT: root, UNIT: 'fixture.service', TRACE_FILE: join(root, 'ready-trace'),
+          FIXTURE_RESULT: '{"applied":0,"failed":[]}' },
+      });
+    expect(ready.status).toBe(0);
+    expect(ready.stdout).toContain('restart-requested');
+    expect(existsSync(join(root, 'ready-trace'))).toBe(true);
+  });
+
+  it('refuses schema preparation when the candidate environment cannot be loaded', () => {
+    writeFileSync(join(root, 'apps/operator/.env.local'), 'return 1\n');
+    const trace = join(root, 'trace');
+    const r = runFn(['prepare_staging_schema'],
+      'log() { printf "%s\\n" "$*"; }\nprepare_staging_schema && echo restart-requested', {
+        env: { STAGING_ROOT: root, UNIT: 'fixture.service', TRACE_FILE: trace,
+          FIXTURE_RESULT: '{"applied":0,"failed":[]}' },
+      });
+    expect(r.status).toBe(1);
+    expect(existsSync(trace)).toBe(false);
+    expect(r.stdout).not.toContain('restart-requested');
+  });
 
   it.each(['null', '{"applied":0,"failed":[{"file":"pending.sql","error":"guard refused"}]}', 'throw'])(
     'never requests restart when guarded preparation returns %s', (result) => {
@@ -359,7 +748,7 @@ describe('staging schema preparation before cutover (EI-24180022773715880)', () 
       child.kill('SIGKILL');
     }
     const script = readFileSync(SCRIPT_PATH, 'utf8');
-    const prepare = script.indexOf('\nprepare_staging_schema\n');
+    const prepare = script.indexOf('prepare_staging_schema "$SYNC_ROOT"');
     expect(prepare).toBeGreaterThan(script.indexOf('PAPERCUSP_BUNDLE_REUSE_FRESH=1 bash'));
     expect(prepare).toBeLessThan(script.indexOf('requesting coordinated restart of $UNIT'));
   });
@@ -387,13 +776,27 @@ describe('sync-staging-checkout.sh staging launch contract (EI-19457080109574347
   it('rejects an implicit/default bind because the effective staging policy is not proven', () => {
     expect(execForcesLoopback('exec node dist-host/hono-host.mjs')).toBe(false);
   });
+
+  it('pins runtime readers to the physical generation after loading .env.local', () => {
+    expect(execPinsIntegrationRoot(
+      'set -a; [ -f .env.local ] && . ./.env.local; set +a; export PAPERCUSP_INTEGRATION_ROOT="$(cd ../.. && pwd -P)"; exec node dist-host/hono-host.mjs',
+    )).toBe(true);
+    expect(execPinsIntegrationRoot(
+      'set -a; [ -f .env.local ] && . ./.env.local; set +a; exec node dist-host/hono-host.mjs',
+    )).toBe(false);
+  });
 });
 
 describe('sync-staging-checkout.sh bundle checkout lock (WI-10003374)', () => {
   const effective = '{ path=/usr/bin/flock ; argv[]=/usr/bin/flock -s /tmp/papercup-staging-sync.lock /isolated/apps/operator/bin/bundle-host.sh ; ignore_errors=no ; start_time=[n/a] ; status=0/0 }';
+  const guarded = '{ path=/usr/bin/bash ; argv[]=/usr/bin/bash -c root="/isolated"; helper="$$root/apps/operator/scripts/systemd/staging-lock-attribution.sh"; if [ -f "$$helper" ]; then exec /usr/bin/bash "$$helper" api-pre /tmp/papercup-staging-sync.lock "$$root/apps/operator/bin/bundle-host.sh"; fi; echo "[95-bundled-entry] $$helper is absent from this staging generation; bundling under the shared flock without attribution" >&2; exec /usr/bin/flock -s /tmp/papercup-staging-sync.lock "$$root/apps/operator/bin/bundle-host.sh" ; ignore_errors=no ; start_time=[n/a] ; status=0/0 }';
 
   it('accepts the loaded shared-flock ExecStartPre from the isolated checkout', () => {
     expect(execPreUsesBundle(effective)).toBe(true);
+  });
+
+  it('accepts the guarded attribution helper and its one-generation fallback', () => {
+    expect(execPreUsesBundle(guarded)).toBe(true);
   });
 
   it('rejects the wrong checkout, wrong lock, exclusive lock, and direct bundle execution', () => {
@@ -404,6 +807,366 @@ describe('sync-staging-checkout.sh bundle checkout lock (WI-10003374)', () => {
       'path=/usr/bin/flock ; argv[]=/usr/bin/flock -s /tmp/papercup-staging-sync.lock ',
       'path=/isolated/apps/operator/bin/bundle-host.sh ; argv[]=',
     ))).toBe(false);
+  });
+
+  it('rejects guarded wrappers that change the checkout or weaken either lock path', () => {
+    expect(execPreUsesBundle(guarded.replace('root="/isolated"', 'root="/canonical"'))).toBe(false);
+    expect(execPreUsesBundle(guarded.replaceAll('papercup-staging-sync.lock', 'other.lock'))).toBe(false);
+    expect(execPreUsesBundle(guarded.replace('flock -s', 'flock -x'))).toBe(false);
+    expect(execPreUsesBundle(guarded.replace(
+      'exec /usr/bin/flock -s /tmp/papercup-staging-sync.lock',
+      'exec /usr/bin/true',
+    ))).toBe(false);
+  });
+});
+
+describe('sync-staging-checkout.sh immutable staging generations (WI-10003262)', () => {
+  it('creates a unique candidate home even for repeated preparations of one source SHA', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-generations-'));
+    const generationRoot = join(root, 'generations');
+    const targetSha = 'abcdef0123456789abcdef0123456789abcdef01';
+    const create = () => runFn(
+      ['create_staging_candidate'],
+      'create_staging_candidate "$TARGET_SHA"; printf "%s|%s\\n" "$STAGING_CANDIDATE_HOME" "$STAGING_CANDIDATE_ROOT"',
+      { env: { STAGING_GENERATIONS_ROOT: generationRoot, TARGET_SHA: targetSha } },
+    );
+    try {
+      const first = create();
+      const second = create();
+      expect(first.status).toBe(0);
+      expect(second.status).toBe(0);
+      const [firstHome, firstCheckout] = first.stdout.trim().split('|');
+      const [secondHome, secondCheckout] = second.stdout.trim().split('|');
+      expect(firstHome).not.toBe(secondHome);
+      expect(firstCheckout).toBe(firstHome + '/checkout');
+      expect(secondCheckout).toBe(secondHome + '/checkout');
+      expect(firstHome).toContain('.candidate-abcdef012345.');
+      expect(secondHome).toContain('.candidate-abcdef012345.');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves the current alias untouched when a candidate is missing its required host bundle', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-publish-failure-'));
+    const oldRoot = join(root, 'old-generation');
+    const alias = join(root, 'staging.current');
+    const candidateHome = join(root, '.candidate-next');
+    const candidateRoot = join(candidateHome, 'checkout');
+    const targetSha = '0123456789abcdef0123456789abcdef01234567';
+    mkdirSync(oldRoot, { recursive: true });
+    mkdirSync(join(candidateRoot, 'apps/operator-vite/dist'), { recursive: true });
+    mkdirSync(candidateHome, { recursive: true });
+    writeFileSync(join(candidateRoot, 'apps/operator-vite/dist/index.html'), '<html></html>');
+    writeFileSync(join(candidateHome, '.ready'), targetSha + '\n');
+    symlinkSync(oldRoot, alias);
+    try {
+      const result = runFn(
+        ['staging_candidate_unready_reason', 'publish_staging_generation'],
+        `log() { printf '%s\\n' "$*"; }; publish_staging_generation "$CANDIDATE_ROOT" "$CANDIDATE_HOME" "$TARGET_SHA" 1`,
+        {
+          env: {
+            STAGING_ROOT: alias,
+            CANDIDATE_ROOT: candidateRoot,
+            CANDIDATE_HOME: candidateHome,
+            TARGET_SHA: targetSha,
+          },
+        },
+      );
+      expect(result.status).toBe(1);
+      expect(realpathSync(alias)).toBe(realpathSync(oldRoot));
+      // EI-24867768475421999: the refusal names the unmet condition, because the
+      // EXIT trap deletes the candidate and the journal line is the only evidence left.
+      expect(result.stdout).toContain(
+        'FATAL: refusing to publish an incomplete staging generation: host bundle missing or empty',
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('atomically publishes a ready SPA-only candidate without requiring a host bundle', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-publish-spa-'));
+    const oldRoot = join(root, 'old-generation');
+    const alias = join(root, 'staging.current');
+    const candidateHome = join(root, '.candidate-spa');
+    const candidateRoot = join(candidateHome, 'checkout');
+    const targetSha = 'fedcba9876543210fedcba9876543210fedcba98';
+    mkdirSync(oldRoot, { recursive: true });
+    mkdirSync(join(candidateRoot, 'apps/operator-vite/dist'), { recursive: true });
+    mkdirSync(candidateHome, { recursive: true });
+    writeFileSync(join(candidateRoot, 'apps/operator-vite/dist/index.html'), '<html></html>');
+    writeFileSync(join(candidateHome, '.ready'), targetSha + '\n');
+    symlinkSync(oldRoot, alias);
+    try {
+      const result = runFn(
+        ['staging_candidate_unready_reason', 'publish_staging_generation'],
+        'log() { :; }; publish_staging_generation "$CANDIDATE_ROOT" "$CANDIDATE_HOME" "$TARGET_SHA" 0',
+        {
+          env: {
+            STAGING_ROOT: alias,
+            CANDIDATE_ROOT: candidateRoot,
+            CANDIDATE_HOME: candidateHome,
+            TARGET_SHA: targetSha,
+          },
+        },
+      );
+      expect(result.status).toBe(0);
+      expect(realpathSync(alias)).toBe(realpathSync(candidateRoot));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('sync-staging-checkout.sh superseded generation pruning (WI-10005310)', () => {
+  const PRUNE_FNS = ['collect_staging_generation_refs', 'staging_generation_in_use', 'prune_staging_generations'];
+
+  it('removes superseded generations but keeps the current one and any a process still runs from', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-prune-'));
+    const generationRoot = join(root, 'papercusp-staging.generations');
+    const alias = join(root, 'papercusp-staging.current');
+    const makeGeneration = (name: string) => {
+      const checkout = join(generationRoot, name, 'checkout');
+      mkdirSync(checkout, { recursive: true });
+      return realpathSync(checkout);
+    };
+    const current = makeGeneration('.candidate-aaaaaaaaaaaa.cur');
+    const inUse = makeGeneration('.candidate-bbbbbbbbbbbb.use');
+    const superseded = makeGeneration('.candidate-cccccccccccc.old');
+    symlinkSync(current, alias);
+    // A process whose environment pins the generation, the way the staging host does.
+    const holder = spawn('sleep', ['60'], { env: { ...process.env, PAPERCUSP_INTEGRATION_ROOT: inUse }, stdio: 'ignore' });
+    try {
+      await new Promise((resolve) => holder.once('spawn', resolve));
+      const result = runFn(
+        PRUNE_FNS,
+        'log() { echo "$*"; }; prune_staging_generations',
+        { env: { STAGING_ROOT: alias, STAGING_GENERATIONS_ROOT: generationRoot, INTEGRATION_ROOT: root } },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain(`pruned unused staging generation ${superseded}`);
+      expect(result.stdout).toContain(`retaining prior staging generation still referenced by a process: ${inUse}`);
+      expect(() => realpathSync(join(generationRoot, '.candidate-cccccccccccc.old'))).toThrow();
+      expect(realpathSync(current)).toBe(current);
+      expect(realpathSync(inUse)).toBe(inUse);
+    } finally {
+      holder.kill();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('retains a generation a process runs inside (cwd), not only one pinned by environment', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-prune-cwd-'));
+    const generationRoot = join(root, 'papercusp-staging.generations');
+    const alias = join(root, 'papercusp-staging.current');
+    const current = join(generationRoot, '.candidate-aaaaaaaaaaaa.cur', 'checkout');
+    const cwdPinned = join(generationRoot, '.candidate-dddddddddddd.cwd', 'checkout');
+    mkdirSync(current, { recursive: true });
+    mkdirSync(join(cwdPinned, 'apps/operator'), { recursive: true });
+    symlinkSync(realpathSync(current), alias);
+    // The process sits in a SUBDIRECTORY of the generation, as a host started
+    // from apps/operator does; the prefix match must still see it.
+    const env = { ...process.env };
+    delete env.PAPERCUSP_INTEGRATION_ROOT;
+    const holder = spawn('sleep', ['60'], { cwd: join(cwdPinned, 'apps/operator'), env, stdio: 'ignore' });
+    try {
+      await new Promise((resolve) => holder.once('spawn', resolve));
+      const result = runFn(
+        PRUNE_FNS,
+        'log() { echo "$*"; }; prune_staging_generations',
+        { env: { STAGING_ROOT: alias, STAGING_GENERATIONS_ROOT: generationRoot, INTEGRATION_ROOT: root } },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain(
+        `retaining prior staging generation still referenced by a process: ${realpathSync(cwdPinned)}`,
+      );
+      expect(realpathSync(cwdPinned)).toBeTruthy();
+    } finally {
+      holder.kill();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('scans /proc once per prune, however many generations it judges, and not at all in the steady state (WI-10005311)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-prune-scan-'));
+    const generationRoot = join(root, 'papercusp-staging.generations');
+    const alias = join(root, 'papercusp-staging.current');
+    const current = join(generationRoot, '.candidate-aaaaaaaaaaaa.cur', 'checkout');
+    mkdirSync(current, { recursive: true });
+    symlinkSync(realpathSync(current), alias);
+    // Wrap the real collector so each invocation is counted on stderr.
+    const countingPrune = [
+      'eval "$(declare -f collect_staging_generation_refs | sed "1s/^collect_staging_generation_refs/real_collect_staging_generation_refs/")"',
+      'collect_staging_generation_refs() { echo SCAN >&2; real_collect_staging_generation_refs; }',
+      'log() { echo "$*"; }',
+      'prune_staging_generations',
+    ].join('\n');
+    const env = { STAGING_ROOT: alias, STAGING_GENERATIONS_ROOT: generationRoot, INTEGRATION_ROOT: root };
+    try {
+      const steady = runFn(PRUNE_FNS, countingPrune, { env });
+      expect(steady.status).toBe(0);
+      expect(steady.stderr.match(/^SCAN$/gm) ?? []).toHaveLength(0);
+
+      const superseded = ['bbbbbbbbbbbb', 'cccccccccccc', 'dddddddddddd'].map((sha) => {
+        const checkout = join(generationRoot, `.candidate-${sha}.old`, 'checkout');
+        mkdirSync(checkout, { recursive: true });
+        return realpathSync(checkout);
+      });
+      const result = runFn(PRUNE_FNS, countingPrune, { env });
+      expect(result.status).toBe(0);
+      expect(result.stderr.match(/^SCAN$/gm) ?? []).toHaveLength(1);
+      for (const checkout of superseded) {
+        expect(result.stdout).toContain(`pruned unused staging generation ${checkout}`);
+      }
+      expect(realpathSync(current)).toBeTruthy();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('collects process references under the script\'s own set -euo pipefail without aborting', () => {
+    const result = runFn(
+      ['collect_staging_generation_refs'],
+      'set -euo pipefail; collect_staging_generation_refs; printf "%s\\n" "$STAGING_GENERATION_REFS"; echo COLLECTED',
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('COLLECTED');
+    // The calling shell's own cwd is a live process cwd, so a working scan must report it.
+    expect(result.stdout.split('\n')).toContain(realpathSync(process.cwd()));
+  });
+
+  it('prunes at the start of every tick, before any exit that follows a publish (WI-10005311)', () => {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const bootstrap = script.indexOf('staging_alias_bootstrap || {');
+    expect(bootstrap).toBeGreaterThan(-1);
+    const firstNoOp = script.indexOf('already at ${target:0:10} — no-op', bootstrap);
+    const prepare = script.indexOf('prepare_staging_candidate "$target"', bootstrap);
+    expect(firstNoOp).toBeGreaterThan(bootstrap);
+    expect(prepare).toBeGreaterThan(bootstrap);
+    const startPrune = script.indexOf('\nprune_staging_generations\n', bootstrap);
+    expect(startPrune).toBeGreaterThan(bootstrap);
+    expect(startPrune).toBeLessThan(Math.min(firstNoOp, prepare));
+  });
+
+  it('finishes a verified cutover without letting cleanup turn success into failure', () => {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const healthy = script.indexOf('log "✅ :3170 healthy on exact staging source');
+    expect(healthy).toBeGreaterThan(-1);
+    const exitAfterHealthy = script.indexOf('exit 0', healthy);
+    expect(exitAfterHealthy).toBeGreaterThan(healthy);
+    // Execute the shipped success branch with a failing cleanup sentinel. The
+    // next timer tick's existing GC handles superseded generations; it must
+    // not consume the update's remaining systemd startup budget after health.
+    const result = spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'last_health_sha=0123456789abcdef',
+      'log() { printf "%s\\n" "$*"; }',
+      'prune_staging_generations() { echo UNEXPECTED_POST_HEALTH_GC >&2; exit 91; }',
+      script.slice(healthy, exitAfterHealthy + 'exit 0'.length),
+    ].join('\n')], { encoding: 'utf8', timeout: 2_000 });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('healthy on exact staging source 0123456789abcdef');
+    expect(result.stderr).not.toContain('UNEXPECTED_POST_HEALTH_GC');
+  });
+});
+
+describe('sync-staging-checkout.sh names the unmet publication condition (EI-24867768475421999)', () => {
+  const sha = '0123456789abcdef0123456789abcdef01234567';
+  let root = '';
+  let home = '';
+  let checkout = '';
+
+  function reason(requireHostBundle: 0 | 1): string {
+    const r = runFn(
+      ['staging_candidate_unready_reason'],
+      'staging_candidate_unready_reason "$CANDIDATE_ROOT" "$CANDIDATE_HOME" "$TARGET_SHA" "$REQUIRE"',
+      {
+        env: {
+          CANDIDATE_ROOT: checkout,
+          CANDIDATE_HOME: home,
+          TARGET_SHA: sha,
+          REQUIRE: String(requireHostBundle),
+        },
+      },
+    );
+    expect(r.status).toBe(0);
+    return r.stdout.trim();
+  }
+
+  function writeComplete(): void {
+    mkdirSync(join(checkout, 'apps/operator-vite/dist'), { recursive: true });
+    mkdirSync(join(checkout, 'apps/operator/dist-host'), { recursive: true });
+    writeFileSync(join(home, '.ready'), sha + '\n');
+    writeFileSync(join(checkout, 'apps/operator-vite/dist/index.html'), '<html></html>');
+    writeFileSync(join(checkout, 'apps/operator/dist-host/hono-host.mjs'), 'export {};');
+    writeFileSync(join(checkout, 'apps/operator/dist-host/.bundle-fresh.json'), '{}');
+  }
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'staging-unready-reason-'));
+    home = join(root, '.candidate-x');
+    checkout = join(home, 'checkout');
+    mkdirSync(checkout, { recursive: true });
+    writeComplete();
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('prints nothing for a complete candidate (calibration: the real ready case passes)', () => {
+    expect(reason(1)).toBe('');
+    expect(reason(0)).toBe('');
+  });
+
+  it('names a missing freshness proof, the condition behind the 2026-10-02 11:38Z refusal', () => {
+    rmSync(join(checkout, 'apps/operator/dist-host/.bundle-fresh.json'));
+    expect(reason(1)).toMatch(/^host bundle freshness proof missing: .*\.bundle-fresh\.json/);
+    expect(reason(0)).toBe('');
+  });
+
+  it('names a .ready mismatch with both values', () => {
+    writeFileSync(join(home, '.ready'), 'f'.repeat(40) + '\n');
+    expect(reason(1)).toContain(`holds ${'f'.repeat(40)}, expected ${sha}`);
+    rmSync(join(home, '.ready'));
+    expect(reason(1)).toContain(`holds <missing>, expected ${sha}`);
+  });
+
+  it('names a missing SPA dist, a missing host bundle, and a stale marker', () => {
+    writeFileSync(join(checkout, 'apps/operator/dist-host/.bundle-stale.json'), '{}');
+    expect(reason(1)).toMatch(/^host bundle is marked stale/);
+    expect(reason(0)).toBe('');
+    rmSync(join(checkout, 'apps/operator/dist-host/hono-host.mjs'));
+    expect(reason(1)).toMatch(/^host bundle missing or empty/);
+    rmSync(join(checkout, 'apps/operator-vite/dist/index.html'));
+    expect(reason(0)).toMatch(/^SPA dist missing or empty/);
+  });
+});
+
+describe('sync-staging-checkout.sh staging unit generation contract (WI-10003262)', () => {
+  it('accepts the stable alias for SPA and bundle paths while runtime readers use the physical root', () => {
+    const alias = '/tmp/papercusp-staging.current';
+    expect(stagingUnitGuardResult(alias).status).toBe(0);
+    expect(stagingUnitGuardResult(alias, {
+      environment: 'PAPERCUSP_INTEGRATION_ROOT=/tmp/papercusp-staging PAPERCUSP_SPA_DIST=/tmp/papercusp-staging.current/apps/operator-vite/dist PAPERCUSP_BUNDLE_REUSE_FRESH=1',
+    }).status).not.toBe(0);
+    expect(stagingUnitGuardResult(alias, {
+      execStart: 'set -a; [ -f .env.local ] && . ./.env.local; set +a; exec node dist-host/hono-host.mjs',
+    }).status).not.toBe(0);
+  });
+
+  it('keeps both versioned drop-ins on the stable alias and pins the runtime root physically', () => {
+    const dropinDir = join(__dirname, '../../scripts/systemd/papercup-staging-api.service.d');
+    const checkout = readFileSync(join(dropinDir, '50-staging-checkout.conf'), 'utf8');
+    const bundle = readFileSync(join(dropinDir, '95-bundled-entry.conf'), 'utf8');
+    expect(checkout).toContain('WorkingDirectory=%h/papercupai-workspace/papercusp-staging.current/apps/operator');
+    expect(checkout).toContain('Environment=PAPERCUSP_INTEGRATION_ROOT=%h/papercupai-workspace/papercusp-staging.current');
+    expect(checkout).toContain('Environment=PAPERCUSP_SPA_DIST=%h/papercupai-workspace/papercusp-staging.current/apps/operator-vite/dist');
+    expect(bundle).toContain('root="%h/papercupai-workspace/papercusp-staging.current"');
+    expect(bundle).toContain('"$$root/apps/operator/bin/bundle-host.sh"');
+    expect(bundle).toContain('PAPERCUSP_INTEGRATION_ROOT="$(cd ../.. && pwd -P)"');
   });
 });
 
@@ -469,6 +1232,35 @@ describe('sync-staging-checkout.sh paths_require_restart() — restart relevance
   });
 
   describe('restart-REQUIRED advances', () => {
+    it('drains a streamed diff after finding a server path so pipefail cannot skip the restart', () => {
+      const root = mkdtempSync(join(tmpdir(), 'sync-streamed-diff-'));
+      const pathList = join(root, 'paths');
+      try {
+        const inertPaths = Array.from({ length: 20000 }, (_, i) => `docs/generated/page-${i}.md`);
+        writeFileSync(pathList, ['packages/operator-core/lib/release/admission-fix-precheck-managed.ts', ...inertPaths].join('\n') + '\n');
+        const result = runFn(['path_needs_no_restart', 'paths_require_restart'], 'cat "$DIFF_PATHS" | paths_require_restart', {
+          env: { DIFF_PATHS: pathList },
+        });
+        expect(result.status, result.stderr).toBe(0);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('keeps a large streamed diff of only inert paths restart-exempt', () => {
+      const root = mkdtempSync(join(tmpdir(), 'sync-streamed-diff-'));
+      const pathList = join(root, 'paths');
+      try {
+        writeFileSync(pathList, Array.from({ length: 20000 }, (_, i) => `docs/generated/page-${i}.md`).join('\n') + '\n');
+        const result = runFn(['path_needs_no_restart', 'paths_require_restart'], 'cat "$DIFF_PATHS" | paths_require_restart', {
+          env: { DIFF_PATHS: pathList },
+        });
+        expect(result.status, result.stderr).toBe(1);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
     it('server code under packages/operator-core', () => {
       expect(requiresRestart(['packages/operator-core/lib/agent-tools/index.ts'])).toBe(true);
     });
@@ -562,6 +1354,52 @@ describe('sync-staging-checkout.sh current_commit_age_sec() — deferral stalene
     expect(r.status).toBe(0);
     return Number(r.stdout.trim());
   }
+
+  function restartDecision(current: string, health: string, target: string): number {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const start = script.indexOf('if [ "$target" = "$current" ]; then');
+    const end = script.indexOf('# WI-5710 gate 2', start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const result = runFn(['health_sha_matches_target', 'path_needs_no_restart', 'paths_require_restart'],
+      `log() { :; }\n${script.slice(start, end)}\nprintf '%s\\n' "$restart_required"`, {
+        env: { INTEGRATION_ROOT: repo, current, health_sha: health, served_sha: health || current, target },
+      });
+    expect(result.status, result.stderr).toBe(0);
+    return Number(result.stdout.trim());
+  }
+
+  function serverThenDocs(): { served: string; checkout: string; target: string } {
+    const served = sha;
+    writeFileSync(join(repo, 'f.txt'), 'server-v2');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'server');
+    const checkout = git('rev-parse', 'HEAD');
+    writeFileSync(join(repo, 'guide.md'), 'docs');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'docs');
+    return { served, checkout, target: git('rev-parse', 'HEAD') };
+  }
+
+  it('diffs from the served source so a later docs-only advance cannot hide a pending server restart', () => {
+    const { served, checkout, target } = serverThenDocs();
+    expect(restartDecision(checkout, served.slice(0, 10), target)).toBe(1);
+  });
+
+  it('requires a restart when the served source diff cannot be resolved', () => {
+    const { checkout, target } = serverThenDocs();
+    expect(restartDecision(checkout, 'f'.repeat(40), target)).toBe(1);
+  });
+
+  it('requires a restart when health provides no serving source identity', () => {
+    const { checkout, target } = serverThenDocs();
+    expect(restartDecision(checkout, '', target)).toBe(1);
+  });
+
+  it('keeps a docs-only advance exempt when the process already holds the server source', () => {
+    const { checkout, target } = serverThenDocs();
+    expect(restartDecision(checkout, checkout.slice(0, 10), target)).toBe(0);
+  });
 
   it('a just-made commit reports a near-zero age (so a live session IS deferred for)', () => {
     const a = age(sha);
@@ -822,9 +1660,11 @@ describe('sync-staging-checkout.sh coordinated restart identity (EI-240774465417
     const downgrade = script.lastIndexOf('flock -s 9');
     const restart = script.indexOf('"$PTOOL_BIN" dev:restart --url=');
     const assignment = script.lastIndexOf('PTOOL_CLIENT_SID="$(resolve_ptool_client_sid)"');
+    const downgradeEnd = script.indexOf('\n# The ptool result may be lost', downgrade);
     expect(downgrade).toBeGreaterThan(assignment);
     expect(restart).toBeGreaterThan(downgrade);
-    expect(script.slice(downgrade, downgrade + 200)).toContain('could not downgrade');
+    expect(downgradeEnd).toBeGreaterThan(downgrade);
+    expect(script.slice(downgrade, downgradeEnd)).toContain('could not downgrade');
   });
 
   it('accepts a lost self-restart receipt only after a new MainPID serves the exact target SHA', () => {
@@ -846,6 +1686,167 @@ describe('sync-staging-checkout.sh coordinated restart identity (EI-240774465417
     expect(script).toContain('while staging_sync_process_running "$restart_tool_pid"; do');
     expect(script).toContain('staging_restart_is_observed "$main_pid" "$observed_main_pid" "$observed_health_sha" "$target"');
     expect(script).toContain('terminating only the ptool client');
+  });
+});
+
+describe('sync-staging-checkout.sh completed-phase startup budget (WI-10006606)', () => {
+  function prepareWithOutput(output: string, status = 0) {
+    const candidate = mkdtempSync(join(tmpdir(), 'staging-phase-candidate-'));
+    mkdirSync(join(candidate, 'apps/operator'), { recursive: true });
+    try { return runFn(['staging_sync_checkpoint', 'copy_staging_runtime_environment', 'prepare_staging_candidate'], [
+      'INTEGRATION_ROOT=/unused-staging-test',
+      'STAGING_ROOT=/absent-staging-test',
+      'LEGACY_STAGING_ROOT=/absent-legacy-staging-test',
+      'create_staging_candidate() { STAGING_CANDIDATE_ROOT="$TEST_CANDIDATE"; }',
+      'log() { printf "%s\\n" "$*"; }',
+      'timeout() { printf "BOUND:%s\\n" "$*"; shift 2; "$@"; }',
+      'bash() { printf "%s\\n" "$SETUP_OUTPUT"; return "$SETUP_STATUS"; }',
+      'systemd-notify() { printf "NOTIFY:%s\\n" "$*"; }',
+      'prepare_staging_candidate 0123456789abcdef',
+    ].join('\n'), { env: { NOTIFY_SOCKET: '@test-staging-notify', SETUP_OUTPUT: output, SETUP_STATUS: String(status), TEST_CANDIDATE: candidate } });
+    } finally { rmSync(candidate, { recursive: true, force: true }); }
+  }
+
+  it('runs source, dependency and SPA preparation under separate finite command deadlines', () => {
+    const sourceReady = '[setup-release] submodule recursion: cloned=2 archive-fallback=0 tracked plain=5 recursive=8 uninitialized=0';
+    const spaStart = '[setup-release] building operator-vite SPA dist at the deployed sha (this can take a minute)';
+    const result = prepareWithOutput([sourceReady, 'DEPENDENCIES', spaStart, 'SPA_FINISHED'].join('\n'));
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(sourceReady);
+    expect(result.stdout).toContain(spaStart);
+    const bounds = result.stdout.split('\n').filter((line) => line.startsWith('BOUND:'));
+    expect(bounds).toHaveLength(3);
+    expect(bounds.every((line) => line.startsWith('BOUND:--kill-after=10s 900s bash '))).toBe(true);
+    expect(bounds[0]).toContain('--source-only');
+    expect(bounds[1]).toContain('--prepare-existing');
+    expect(bounds[2]).toContain('--spa-only');
+    expect(result.stdout).not.toContain('EXTEND_TIMEOUT_USEC');
+  });
+
+  it('does not renew the deadline for arbitrary build output', () => {
+    const result = prepareWithOutput('still building\nchunk 1\nchunk 2');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('still building\nchunk 1\nchunk 2');
+    expect(result.stdout).not.toContain('EXTEND_TIMEOUT_USEC');
+  });
+
+  it('terminates a stalled real setup child before dependencies, SPA or publication', () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'staging-phase-deadline-'));
+    const scripts = join(fixture, 'apps/operator/scripts/systemd');
+    const setup = join(fixture, 'apps/operator/bin/release');
+    mkdirSync(scripts, { recursive: true });
+    mkdirSync(setup, { recursive: true });
+    writeFileSync(join(scripts, 'papercusp-script-snapshot.sh'), 'exec bash "$@"\n');
+    writeFileSync(join(setup, 'setup-release-checkout.sh'), 'echo SETUP_ENTERED\nsleep 30\n');
+    try {
+      const result = runFn(['staging_sync_checkpoint', 'prepare_staging_candidate'], [
+        'STAGING_ROOT=/absent-staging-test',
+        'create_staging_candidate() { STAGING_CANDIDATE_ROOT=/unused-candidate; }',
+        'log() { printf "%s\\n" "$*"; }',
+        // Accelerate only the fixture duration; run the real GNU timeout and child group.
+        'timeout() { printf "BOUND:%s\\n" "$*"; shift 2; command timeout --kill-after=1s 1s "$@"; }',
+        'prepare_staging_candidate 0123456789abcdef',
+      ].join('\n'), { env: { INTEGRATION_ROOT: fixture, NOTIFY_SOCKET: '' } });
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('SETUP_ENTERED');
+      expect(result.stdout).toContain('failed in --source-only');
+      expect(result.stdout.split('\n').filter((line) => line.startsWith('BOUND:'))).toHaveLength(1);
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+
+  it('stops before later phases and publication on a setup failure', () => {
+    const result = prepareWithOutput('[setup-release] source failure', 17);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('candidate checkout preparation failed');
+    expect(result.stdout.split('\n').filter((line) => line.startsWith('BOUND:'))).toHaveLength(1);
+    expect(result.stdout).not.toContain('--ready');
+  });
+
+  it('reports a completed phase without making its deadline depend on systemd notifications', () => {
+    const result = runFn(['staging_sync_checkpoint'], [
+      'systemd-notify() { printf "%s\\n" "$*"; }',
+      'staging_sync_checkpoint "candidate checkout and SPA prepared"',
+    ].join('\n'), { env: { NOTIFY_SOCKET: '@test-staging-notify' } });
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('EXTEND_TIMEOUT_USEC');
+    expect(result.stdout).toContain('candidate checkout and SPA prepared');
+    expect(result.stdout).not.toContain('--ready');
+  });
+
+  it('does not require a systemd notification socket for direct invocations', () => {
+    const result = runFn(['staging_sync_checkpoint'], [
+      'systemd-notify() { echo UNEXPECTED_NOTIFY; exit 91; }',
+      'staging_sync_checkpoint "candidate prepared"',
+    ].join('\n'), { env: { NOTIFY_SOCKET: '' } });
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('UNEXPECTED_NOTIFY');
+  });
+
+  it.each([0, 17])('preserves exit %i and completes an inherited notify contract only on success', (status) => {
+    const result = runFn(['finish_staging_sync'], [
+      'cleanup_staging_candidate() { echo CLEANED; }',
+      'systemd-notify() { printf "%s\\n" "$*"; }',
+      'trap finish_staging_sync EXIT',
+      `exit ${status}`,
+    ].join('\n'), { env: { NOTIFY_SOCKET: '@test-staging-notify' } });
+    expect(result.status).toBe(status);
+    expect(result.stdout).toContain('CLEANED');
+    expect(result.stdout.includes('--ready')).toBe(status === 0);
+  });
+
+  it('preserves a diagnostic notification failure', () => {
+    const result = runFn(['staging_sync_checkpoint'], [
+      'systemd-notify() { return 42; }',
+      'staging_sync_checkpoint "candidate prepared"',
+    ].join('\n'), { env: { NOTIFY_SOCKET: '@test-staging-notify' } });
+    expect(result.status).toBe(42);
+  });
+
+  it('starts the snapshot worker at exec with an aggregate runtime backstop', () => {
+    const dropIn = readFileSync(join(__dirname, '../../scripts/systemd/papercup-staging-sync.service.d/50-script-snapshot.conf'), 'utf8');
+    expect(dropIn).toContain('Type=exec');
+    expect(dropIn).not.toContain('Type=notify');
+    expect(dropIn).toContain('RuntimeMaxSec=90min');
+    expect(dropIn).toContain('TimeoutStartSec=15min');
+    expect(readFileSync(SCRIPT_PATH, 'utf8')).toContain('trap finish_staging_sync EXIT');
+  });
+});
+
+describe('staging bundle failure evidence survives cleanup (EI-25202900905730650)', () => {
+  it('retains the full raw log and failure status before the real cleanup removes the candidate', () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'staging-bundle-evidence-'));
+    const candidateHome = join(fixture, '.candidate-fixture');
+    const candidateRoot = join(candidateHome, 'checkout');
+    const home = join(fixture, 'private-home');
+    const bundle = join(candidateRoot, 'bundle.sh');
+    mkdirSync(join(candidateRoot, 'apps/operator/dist-host'), { recursive: true });
+    writeFileSync(bundle, 'mkdir -p "$PAPERCUSP_INTEGRATION_ROOT/apps/operator/dist-host"\nprintf "PRIVATE_ERROR_MARKER\\0hidden tail\\n" > "$PAPERCUSP_INTEGRATION_ROOT/apps/operator/dist-host/hono-host.mjs.build-error.log"\nexit 23\n');
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const begin = script.indexOf('  log "prebuilding proof-bound host bundle');
+    const end = script.indexOf('  staging_sync_checkpoint "host bundle prebuilt"', begin);
+    expect(begin).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(begin);
+    try {
+      const result = runFn(['prebuild_staging_host_bundle', 'cleanup_staging_candidate'], [
+        'log() { printf "%s\\n" "$*"; }',
+        'SYNC_ROOT="$FIXTURE_ROOT"; bundle_script="$FIXTURE_BUNDLE"; UNIT=fixture.service',
+        'STAGING_CANDIDATE_HOME="$FIXTURE_CANDIDATE"; STAGING_CANDIDATE_ROOT="$FIXTURE_ROOT"',
+        'STAGING_CANDIDATE_PUBLISHED=0; INTEGRATION_ROOT=/absent-fixture-repo',
+        'status=0',
+        `(set -e; ${script.slice(begin, end)}) || status=$?`,
+        'cleanup_staging_candidate',
+        'printf "BUNDLE_STATUS=%s\\n" "$status"',
+      ].join('\n'), { env: { PAPERCUSP_HOME: home, FIXTURE_ROOT: candidateRoot,
+        FIXTURE_BUNDLE: bundle, FIXTURE_CANDIDATE: candidateHome, INVOCATION_ID: 'fixture-invocation' } });
+      expect(result.stdout).toContain('BUNDLE_STATUS=23');
+      expect(existsSync(candidateHome)).toBe(false);
+      const logs = join(home, 'checkpoint-logs');
+      expect(existsSync(logs)).toBe(true);
+      expect(readdirSync(logs)).toEqual(['staging-bundle-fixture-invocation.log']);
+      expect(readFileSync(join(logs, 'staging-bundle-fixture-invocation.log'))
+        .includes(Buffer.from('PRIVATE_ERROR_MARKER\0hidden tail\n'))).toBe(true);
+      expect(result.stderr).toContain('PRIVATE_ERROR_MARKER');
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
   });
 });
 
@@ -928,9 +1929,9 @@ describe('sync-staging-checkout.sh — the shipped script actually wires the gat
   });
 
   it('the SPA-only path skips the restart but still runs the rebuild', () => {
-    // The skip must come AFTER setup-release-checkout.sh (dist refreshed on
+    // The skip must come AFTER candidate preparation (dist refreshed on
     // disk), not instead of it — otherwise :3170 serves a stale SPA forever.
-    const buildIdx = script.indexOf('setup-release-checkout.sh');
+    const buildIdx = script.indexOf('prepare_staging_candidate "$target"');
     const skipIdx = script.indexOf('skipping restart — all');
     expect(buildIdx).toBeGreaterThan(-1);
     expect(skipIdx).toBeGreaterThan(buildIdx);
@@ -940,7 +1941,7 @@ describe('sync-staging-checkout.sh — the shipped script actually wires the gat
     // Advancing the checkout while keeping the old process would serve a NEW
     // SPA against an OLD server. The defer must therefore precede the build.
     const deferIdx = script.indexOf('deferring sync —');
-    const buildIdx = script.indexOf('"$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh"');
+    const buildIdx = script.indexOf('prepare_staging_candidate "$target"');
     expect(deferIdx).toBeGreaterThan(-1);
     expect(script.indexOf('staging_live_client_count "$STAGING_PORT"')).toBeGreaterThan(-1);
     if (buildIdx > -1) expect(deferIdx).toBeLessThan(buildIdx);
@@ -969,7 +1970,23 @@ describe('sync-staging-checkout.sh — the shipped script actually wires the gat
     const restartIdx = script.indexOf('requesting coordinated restart');
     expect(prebuildIdx).toBeGreaterThan(-1);
     expect(restartIdx).toBeGreaterThan(prebuildIdx);
-    expect(script.slice(prebuildIdx, restartIdx)).toContain('PAPERCUSP_BUNDLE_REUSE_FRESH=1');
+    expect(script.slice(prebuildIdx, restartIdx)
+      .includes('prebuild_staging_host_bundle "$SYNC_ROOT" "$bundle_script"')).toBe(true);
+  });
+
+  it('prepares, validates, and builds a candidate before publishing the stable alias', () => {
+    const prepareIdx = script.indexOf('prepare_staging_candidate "$target"');
+    const preflightIdx = script.indexOf('preflight_staging_migrations "$SYNC_ROOT"');
+    const prebuildIdx = script.indexOf('prebuilding proof-bound host bundle before publishing');
+    const schemaIdx = script.indexOf('prepare_staging_schema "$SYNC_ROOT"');
+    const readyIdx = script.indexOf('mark_staging_candidate_ready "$target"');
+    const publishIdx = script.indexOf('publish_staging_generation "$STAGING_CANDIDATE_ROOT"');
+    expect(prepareIdx).toBeGreaterThan(-1);
+    expect(preflightIdx).toBeGreaterThan(prepareIdx);
+    expect(prebuildIdx).toBeGreaterThan(preflightIdx);
+    expect(schemaIdx).toBeGreaterThan(prebuildIdx);
+    expect(readyIdx).toBeGreaterThan(schemaIdx);
+    expect(publishIdx).toBeGreaterThan(readyIdx);
   });
 
   it('accepts post-restart health only when /api/health reports the target source SHA', () => {
@@ -980,7 +1997,7 @@ describe('sync-staging-checkout.sh — the shipped script actually wires the gat
 
   it('fails before advancing when the coordinated restart mechanism is unavailable', () => {
     const ptoolGateIdx = script.indexOf('coordinated dev:restart seam cannot run');
-    const buildIdx = script.indexOf('"$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh"');
+    const buildIdx = script.indexOf('prepare_staging_candidate "$target"');
     expect(ptoolGateIdx).toBeGreaterThan(-1);
     expect(buildIdx).toBeGreaterThan(-1);
     expect(ptoolGateIdx).toBeLessThan(buildIdx);

@@ -42,6 +42,15 @@ describe('plans.* resolvers — verb dispatch + envelope unwrap', () => {
     expect(await resolveNamedQueryV2('plans.attention', { harnessSlug: 'x' })).toEqual([{ key: 'g1' }]);
   });
 
+  it('forwards the Inbox first-page request and preserves the exact report reference', async () => {
+    const report = { plans: [], goalReport: { schemaVersion: 1, goalId: 'goal-fixture',
+      reportId: 'rpt_fixture', bodySha256: 'a'.repeat(64) } };
+    const groups = [{ key: 'messages', items: [{ id: 'coord-message:fixture', report }] }];
+    callPlansRead.mockResolvedValue({ groups });
+    expect(await resolveNamedQueryV2('plans.attention', { limit: 100, offset: 0 })).toEqual(groups);
+    expect(callPlansRead).toHaveBeenCalledWith('attention', { limit: 100, offset: 0 });
+  });
+
   it('attention counts request the compact source projection and preserve degraded results', async () => {
     const counts = { decisionItems: 2, decisionPlans: 1, alerts: 0, total: 2 };
     callPlansRead.mockResolvedValue({ counts, degraded: true });

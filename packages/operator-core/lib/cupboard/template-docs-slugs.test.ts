@@ -155,4 +155,29 @@ describe('official templates: every cited docs: slug resolves', () => {
       );
     }
   });
+
+  it('recommends only current app-scope roots in the system-design runbook', () => {
+    const doc = readFileSync(join(DOCS_ROOT, 'agent-insights/templates-system-design.mdx'), 'utf8');
+    const scopeSection = doc.split('## Two scopes: app ROOTS and aspects')[1]?.split('\n## ')[0];
+    expect(scopeSection, 'the root-selection section must exist').toBeDefined();
+
+    const recommendedRoots = [...(scopeSection ?? '').matchAll(/^\s*\| `([^`]+)` \|/gm)]
+      .map((match) => match[1]);
+    expect(recommendedRoots.length, 'the root table must contain real recommendations').toBeGreaterThan(0);
+    expect(new Set(recommendedRoots).size, 'root recommendations must not be duplicated').toBe(recommendedRoots.length);
+
+    const appRoots = templates.filter((template) => {
+      const manifestPath = ['template.yaml', 'template.yml']
+        .map((name) => join(TEMPLATES_DIR, template, name))
+        .find((path) => existsSync(path));
+      if (!manifestPath) return false;
+      const manifest = parseYaml(readFileSync(manifestPath, 'utf8')) as { scope?: unknown };
+      return manifest?.scope === 'app';
+    });
+    expect(appRoots.length, 'derive the app roots from the maintained manifests').toBeGreaterThan(0);
+    expect(
+      recommendedRoots.filter((root) => !appRoots.includes(root)),
+      'the runbook must not recommend retired roots or aspect templates as app roots',
+    ).toEqual([]);
+  });
 });

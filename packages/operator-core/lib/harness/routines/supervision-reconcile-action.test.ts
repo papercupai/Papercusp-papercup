@@ -7,7 +7,28 @@ import {
   type DropInCheckExecutor,
   type DropInInstallCheckResult,
 } from './supervision-reconcile-action';
-import type { SystemActionCtx } from './system-actions';
+import { registerSystemAction, type SystemAction, type SystemActionCtx } from './system-actions';
+import { reconcileTick, type ReconcilerDeps } from '../../supervision/unit-reconciler';
+
+// Capture what the module REGISTERS, and what that registration hands the reconciler. The
+// cases below that build their own handler inject every dependency, so these mocks only
+// affect the registered production path.
+vi.mock('./system-actions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./system-actions')>()),
+  registerSystemAction: vi.fn(),
+}));
+vi.mock('../../supervision/unit-reconciler', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../supervision/unit-reconciler')>()),
+  reconcileTick: vi.fn(async () => ({ checked: 0, actions: [], degraded: false })),
+}));
+// The registered drop-in check would fork a host script through the sidecar; refuse it so the
+// sample reads 'unavailable' and nothing runs on the host.
+vi.mock('../../fleet/git-via-sidecar', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../fleet/git-via-sidecar')>()),
+  execFileViaSidecar: vi.fn(async () => {
+    throw new Error('sidecar disabled in test');
+  }),
+}));
 
 const ctx = {
   installSlug: 'papercusp',
@@ -153,4 +174,26 @@ describe('systemd drop-in periodic check', () => {
       expect(result).toMatchObject({ diagnostics: { conditionAction: 'unchanged' } });
     },
   );
+});
+
+describe('registered supervision-reconcile routine (reboot-residue R-004a, D-004)', () => {
+  it('asks the reconciler for the failed-unit census on every tick', async () => {
+    // D-004: agenticmail and llama-ornith sat failed for days because nothing reported a
+    // failed user unit outside the supervised registry. The census only runs when the
+    // routine passes failedUnitCensus:true, so this pins the wiring, not just the census.
+    const registration = vi
+      .mocked(registerSystemAction)
+      .mock.calls.find(([name]) => name === 'supervision-reconcile');
+    // Positive control: the module really registered the routine and a tick reaches the
+    // reconciler, or the census assertion below would be vacuous.
+    expect(registration).toBeDefined();
+    const handler = registration![1] as SystemAction;
+    vi.mocked(reconcileTick).mockClear();
+
+    await handler(ctx);
+
+    expect(reconcileTick).toHaveBeenCalledTimes(1);
+    const deps = vi.mocked(reconcileTick).mock.calls[0][0] as ReconcilerDeps;
+    expect(deps.failedUnitCensus).toBe(true);
+  });
 });

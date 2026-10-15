@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Goal 60d3a8 holder: two consecutive post-fix WOE windows graded with the five woe.* holder-behavior instruments",
+  "framework": "operational",
+  "plan": "goal-holder-plans-ideation-truthful-reports-2026-10-03",
+  "clauses": ["AUTO-BAR-R-7-P-007", "AUTO-BAR-R-7-P-008", "AUTO-BAR-R-7-P-011"],
+  "workItem": "WI-10005915",
+  "command": [
+    "npx tsx .papercusp/scratch/p008/grade.mts 2026-10-03T07:49:40Z 2026-10-03T09:49:40Z",
+    "npx tsx .papercusp/scratch/p008/grade.mts 2026-10-03T09:49:40Z 2026-10-03T11:49:40Z"
+  ],
+  "commandNote": "grade.mts wraps collectGoalHolderBehaviorMetrics + rateGoalHolderBehavior from packages/operator-core/lib/goal-holder-behavior-metrics.ts and reads the live Postgres ledger (agent_modes goal lease, tool_invocations, coord_event_log, routine_loop_transitions, event_awaits). Holder resolved from agent_modes(mode='goal', goal_lease_epoch 19), not goals.metadata.",
+  "workingDirectory": "papercusp",
+  "startedAt": "2026-10-03T09:49:50Z",
+  "finishedAt": "2026-10-03T12:29:40Z",
+  "exitCode": 0,
+  "summary": "Both consecutive 2h windows of goal 60d3a8 lease holder su-a70547cc were graded on rubric work-on-everything-stewardship-health against the five holder-behavior success measures. W1 (07:49:40Z-09:49:40Z, card EI-24951369356377001): 3 pass, 2 fail; each fail is filed as a goal-stamped defect naming its root cause (nudge-efficacy -> WI-10005938, NULL cancel_reason on superseded reminder watches, fixed and live on bg-host from 11:06Z; holder-plan-authorship -> WI-10005942, the signal-5 cluster detector was absent from the holder's serving build until 09:20:41Z). W2 (09:49:40Z-11:49:40Z, card EI-24961458823340256): 5 of 5 pass. W2 is the distinguishing test for W1's plan-authorship miss: once the detector reached the holder's build and the nudge WI-10005940 was filed, the holder dissolved the cluster with reasons. Both W2 owner reports (10:32:36Z, 11:31:30Z) were hand-checked against the ledger and found truthful.",
+  "scope": "Live ledger reads only; the grading script is an uncommitted scratch wrapper around the committed metrics module. Grader-instrument defects found during the windows were fixed before the W2 card (WI-10005965 window-start cluster read; WI-10005942 early-nudge guard).",
+  "windows": [
+    {
+      "id": "W1",
+      "start": "2026-10-03T07:49:40Z",
+      "end": "2026-10-03T09:49:40Z",
+      "holder": "su-a70547cc-234b-4d30-851d-12b99cbdf1c3",
+      "card": "EI-24951369356377001",
+      "ratings": {
+        "holder-plan-authorship": "fail",
+        "ideation-yield": "pass",
+        "owner-report-truthfulness": "pass",
+        "stewardship-loop-liveness": "pass",
+        "nudge-efficacy": "fail"
+      },
+      "defects": { "holder-plan-authorship": "WI-10005942", "nudge-efficacy": "WI-10005938" }
+    },
+    {
+      "id": "W2",
+      "start": "2026-10-03T09:49:40Z",
+      "end": "2026-10-03T11:49:40Z",
+      "holder": "su-a70547cc-234b-4d30-851d-12b99cbdf1c3",
+      "card": "EI-24961458823340256",
+      "ratings": {
+        "holder-plan-authorship": "pass",
+        "ideation-yield": "pass",
+        "owner-report-truthfulness": "pass",
+        "stewardship-loop-liveness": "pass",
+        "nudge-efficacy": "pass"
+      },
+      "measures": {
+        "plans": { "plansStarted": 3, "planFleetLaunches": 1, "overdueClustersAtStart": 1, "dissolvedWithReason": 1 },
+        "ideation": { "ideasFiled": 1, "reviews": 8 },
+        "reports": { "reports": 2, "costNotMeasured": 0, "bareWalledEntries": 0 },
+        "loop": { "deliveredFires": 16, "suppressedFires": 0 },
+        "nudges": { "timedReminders": 2, "fired": 2, "watchChurnWithoutReason": 0 }
+      }
+    }
+  ],
+  "assertions": [
+    { "id": "two-consecutive-windows-graded", "passed": true, "evidence": "W1 07:49:40Z-09:49:40Z card EI-24951369356377001 and W2 09:49:40Z-11:49:40Z card EI-24961458823340256, both emitted on rubric work-on-everything-stewardship-health for holder su-a70547cc." },
+    { "id": "five-woe-instrument-results-per-window", "passed": true, "evidence": "Each card rates holder-plan-authorship, ideation-yield, owner-report-truthfulness, stewardship-loop-liveness and nudge-efficacy from the instrument verdicts, with a window id and start/end." },
+    { "id": "every-miss-filed-as-goal-stamped-defect-with-root-cause", "passed": true, "evidence": "W1 misses: nudge-efficacy -> WI-10005938 (root cause: registerAwait retire UPDATEs left cancel_reason NULL), plan-authorship -> WI-10005942 (root cause: signal-5 detector absent from holder serving build until 09:20:41Z). W2 has no misses." },
+    { "id": "post-fix-window-passes", "passed": true, "evidence": "W2 rated 5 of 5 pass after the fixes reached the holder's runtime." }
+  ]
+}

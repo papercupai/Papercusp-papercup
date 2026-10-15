@@ -16,24 +16,38 @@ const baseURL =
   `http://127.0.0.1:${Number(process.env.OPERATOR_E2E_PORT ?? process.env.PORT) || 3055}`;
 const path = '/api/operator/conversations/spec-fixture-id/card-response';
 
+/**
+ * A caller the server must NOT treat as the local desktop: a forwarded client
+ * address outside loopback marks the request external (forwarded-request-trust),
+ * so it gets no seeded default user.
+ */
+const offBoxHeaders = { 'X-Forwarded-For': '203.0.113.7' };
+
 test.describe('bespoke-card response endpoint', () => {
-  test('POST without session returns 401', async ({ request }) => {
+  test('loopback POST without session is the local desktop user (WI-5044), not 401', async ({
+    request,
+  }) => {
+    // WI-5044: the desktop webview has no session cookie, so a loopback caller
+    // resolves to the seeded default user. An unknown correlationId then fails
+    // as a lookup miss, never as an auth refusal and never as a crash.
     const res = await request.post(`${baseURL}${path}`, {
       data: { correlationId: 'x', action: 'cancel', workspaceId: 'w' },
     });
-    expect(res.status()).toBe(401);
-    const body = await res.json();
-    expect(body.error).toBe('unauthorized');
+    expect(res.status()).not.toBe(401);
+    expect(res.status()).toBeLessThan(500);
   });
 
-  test('POST without session 401s BEFORE body validation (auth gate first)', async ({
+  test('off-box POST without session is refused BEFORE body validation (auth gate first)', async ({
     request,
   }) => {
-    // Send obviously invalid body; if auth gate ordered correctly we still get 401, not 400.
+    // Obviously invalid body from an external caller: with the auth gate ordered
+    // first this is an auth refusal (401 from the handler, or 403 if the route
+    // stack's loopback tier refuses earlier), never a 400 validation error.
     const res = await request.post(`${baseURL}${path}`, {
       data: { garbage: true },
+      headers: offBoxHeaders,
     });
-    expect(res.status()).toBe(401);
+    expect([401, 403]).toContain(res.status());
   });
 
   test('POST with non-JSON Content-Type still 401s without session', async ({ request }) => {

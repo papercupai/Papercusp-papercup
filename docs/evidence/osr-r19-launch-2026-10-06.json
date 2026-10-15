@@ -1,0 +1,50 @@
+{
+  "name": "R-19: GitHub Actions passes on the public repository's launch commit",
+  "specId": "AUTO-BAR-R-19-P-009",
+  "subjectCommit": "3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c",
+  "command": [
+    "git show 3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c:.github/workflows/ci.yml ; git ls-tree 3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c:.github/workflows",
+    "gh api 'repos/Papercusp/papercusp-app/actions/runs?head_sha=3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c&per_page=100'",
+    "gh api repos/Papercusp/papercusp-app/actions/runs/<id>/jobs"
+  ],
+  "startedAt": "2026-10-06T03:44:52Z",
+  "finishedAt": "2026-10-06T03:44:55Z",
+  "summary": "Launch commit 3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c (R-22). Shipped workflows ['ci.yml', 'cla.yml']. ci.yml runs on push to main and plain pull_request with permissions contents: read, steps npm ci + npm run lint:tsc (D-017; no test step, which D-017 defers). Expected push runs at the SHA = ['CI']; observed runs [('CI', 'push', 'success')], jobs {36719354327: [('check', 'success')]}.",
+  "assertions": [
+    {
+      "id": "d017-steps",
+      "passed": true,
+      "evidence": "ci.yml contains 'run: npm ci --no-audit --no-fund' and 'run: npm run lint:tsc'"
+    },
+    {
+      "id": "safe-triggers-permissions",
+      "passed": true,
+      "evidence": "parsed ci.yml: triggers=['pull_request', 'push'] (no pull_request_target), top-level permissions={'contents': 'read'}, no job-level permission widening"
+    },
+    {
+      "id": "expected-run-set-complete",
+      "passed": true,
+      "evidence": "push runs at SHA: [('CI', '3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c')]; expected ['CI']"
+    },
+    {
+      "id": "all-expected-runs-success",
+      "passed": true,
+      "evidence": "runs [{'id': 36719354327, 'name': 'CI', 'event': 'push', 'status': 'completed', 'conclusion': 'success', 'head_sha': '3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c', 'path': '.github/workflows/ci.yml'}]; jobs {36719354327: [('check', 'success')]}"
+    },
+    {
+      "id": "no-test-suite-claimed",
+      "passed": true,
+      "evidence": "ci.yml documents the D-017 deferral; no public test suite is claimed"
+    }
+  ],
+  "limitations": [
+    "Pull-request-triggered runs do not exist for the launch commit (no external PRs); their trigger safety is verified from the workflow bytes."
+  ],
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "workItemId": "WI-10003960",
+  "exitCode": 0
+}

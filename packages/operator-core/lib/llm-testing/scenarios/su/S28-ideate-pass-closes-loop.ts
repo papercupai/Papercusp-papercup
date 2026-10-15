@@ -47,7 +47,7 @@ const IDEATE_WORLD: ToolDispatchOverride = {
               ideate: { overdue: true, observationsSinceLastPass: 14, threshold: 10 },
               me: { summary: { claims: 0, work_item_load: 0 } },
               claimable: [],
-              inbox: { summary: { total: 0, returned: 0 }, recent: [] },
+              inbox: { summary: { total: 0, returned: 0 }, entries: [] },
               intentDeclared: true,
             }),
           },

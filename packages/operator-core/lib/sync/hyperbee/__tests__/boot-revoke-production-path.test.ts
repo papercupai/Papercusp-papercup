@@ -30,9 +30,16 @@ import { buildAnnounce, type SignedAnnounce } from '../announce';
 // The mock is hoisted to the top of the module by Vitest so that when
 // boot.ts imports '../load-revoked-pubkeys' it receives our spy.  We start
 // with an empty set (safe default) and set the return value per-test.
-vi.mock('../load-revoked-pubkeys', () => ({
-  loadRevokedPubkeys: vi.fn(async () => new Set<string>()),
-}));
+vi.mock('../load-revoked-pubkeys', () => {
+  const loadRevokedPubkeys = vi.fn(async (_opts: unknown) => new Set<string>());
+  return {
+    loadRevokedPubkeys,
+    // WI-10005183: boot.ts reads through the cached variant. A unit test never
+    // attaches the cache to a LISTEN, so the real cached variant always falls
+    // through to the uncached read; forward to the same spy to keep that shape.
+    loadRevokedPubkeysCached: (opts: unknown) => loadRevokedPubkeys(opts),
+  };
+});
 
 // Import AFTER the mock declaration so the mock is in place.
 import { loadRevokedPubkeys } from '../load-revoked-pubkeys';

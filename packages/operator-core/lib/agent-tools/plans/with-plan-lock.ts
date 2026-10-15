@@ -19,7 +19,13 @@
  * Replaces the old filesystem O_EXCL lock + the SU file-claim coordinator.
  */
 
-import { withWorkspace } from '@papercusp/db-org';
+import { getOrgPgApp, withWorkspace } from '@papercusp/db-org';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import {
+  mutateWorkItemDependenciesInTransaction,
+  withWorkItemDependencyAdmissionTransaction,
+  type WorkItemDependencyMutation,
+} from '../../dbos/work-item-deps-store';
 import type { Sql, TransactionSql } from 'postgres';
 import { FLAGS } from '@papercusp/flags';
 import { isTerminalPlanStatus, parsePlan } from '@papercusp/plan-parser';
@@ -36,6 +42,13 @@ import {
 } from './plan-candidate-dependencies';
 import { writePlanIndexRows } from './plan-index-rows';
 import {
+  noteFromContentWrite,
+  parseNowNote,
+  writePlanNowNote,
+  type NowNoteSql,
+  type PlanNowNote,
+} from './now-note-store';
+import {
   PLAN_LOCK_TIMEOUT_CODE,
   acquirePlanAdvisoryLock,
   planAdvisoryLockKey,
@@ -44,8 +57,10 @@ import {
 } from './plan-lock-key';
 import {
   activationGateRefusalValue,
+  childSeedTemplateRefusalValue,
   entersActivationPlanStatus,
   evaluateConversationActivationGate,
+  introducesChildSeedTemplate,
   isActivationAuditExemptTemplate,
 } from './plan-activation-gate';
 import {
@@ -68,6 +83,85 @@ export const TEMPLATE_DATA_LOSS_GUARD_AUTHOR = 'with-plan-lock:template-data-los
 /** System author of a revision recorded for a plan write whose caller wired no revision
  *  hook (WI-10002881 — the revision-spine guard). */
 export const REVISION_SPINE_GUARD_AUTHOR = 'with-plan-lock:revision-spine-guard';
+
+class PromotedDependencyTransactionRequired extends Error {}
+
+/** Reconcile only the dependency subset owned by this plan's before/after body. */
+async function promotedDependencyMutations(
+  tx: Sql,
+  scope: { workspaceId: string; harnessSlug: string; slug: string },
+  before: ReturnType<typeof parsePlan> | null,
+  after: ReturnType<typeof parsePlan>,
+): Promise<WorkItemDependencyMutation[]> {
+  const signature = (plan: ReturnType<typeof parsePlan> | null) => JSON.stringify(
+    plan?.items.map((item) => [item.id, [...item.blockedBy].sort(), item.storedStatus]) ?? [],
+  );
+  if (!before || signature(before) === signature(after)) return [];
+  const rows = await tx<{
+    feature_id: string; item_kind: string; item_id: string;
+  }[]>`
+    SELECT feature_id, item_kind, payload->'plan_item'->>'item_id' AS item_id
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+       AND payload->'plan_item' IS NOT NULL
+       AND payload->'plan_item'->>'plan_slug' = ${scope.slug}
+     ORDER BY CASE WHEN status IN ('done', 'dropped', 'resolved', 'closed', 'superseded') THEN 1 ELSE 0 END,
+              updated_ts DESC NULLS LAST, feature_id`;
+  const endpoints = new Map<string, { kind: string; ref: string }>();
+  for (const row of rows) {
+    if (endpoints.has(row.item_id)) continue;
+    endpoints.set(row.item_id, ['bug', 'change', 'task'].includes(row.item_kind)
+      ? { kind: 'issue', ref: row.feature_id }
+      : { kind: 'feature', ref: `${scope.harnessSlug}#${row.feature_id}` });
+  }
+  const priorItems = new Map(before.items.map((item) => [item.id, item]));
+  const nextItems = new Map(after.items.map((item) => [item.id, item]));
+  const planAuthor = `plan-dependency:${scope.harnessSlug}/${scope.slug}`;
+  const existing = await tx<{
+    blocked_kind: string; blocked_ref: string; blocker_kind: string; blocker_ref: string;
+    created_by: string | null;
+  }[]>`
+    SELECT blocked_kind, blocked_ref, blocker_kind, blocker_ref, created_by
+      FROM harness_shared.work_item_deps
+     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND dep_type = 'blocks'
+       AND blocked_ref = ANY(${[...endpoints.values()].map((endpoint) => endpoint.ref)}::text[])`;
+  const edgeKey = (blocked: { kind: string; ref: string }, blocker: { kind: string; ref: string }) =>
+    JSON.stringify([blocked.kind, blocked.ref, blocker.kind, blocker.ref]);
+  const existingByKey = new Map(existing.map((edge) => [
+    edgeKey({ kind: edge.blocked_kind, ref: edge.blocked_ref },
+      { kind: edge.blocker_kind, ref: edge.blocker_ref }), edge,
+  ]));
+  const mutations: WorkItemDependencyMutation[] = [];
+  for (const itemId of new Set([...priorItems.keys(), ...nextItems.keys()])) {
+    const blocked = endpoints.get(itemId);
+    if (!blocked) continue;
+    const prior = priorItems.get(itemId)?.blockedBy ?? [];
+    const next = nextItems.get(itemId)?.blockedBy ?? [];
+    const desired = new Set(next.filter((id) => {
+      const item = nextItems.get(id);
+      return item && !['done', 'dropped', 'superseded'].includes(item.storedStatus);
+    }));
+    for (const id of prior) {
+      const blocker = endpoints.get(id);
+      if (!blocker || desired.has(id)) continue;
+      const edge = existingByKey.get(edgeKey(blocked, blocker));
+      // Promotion historically wrote null authors. A separately authored gate
+      // on even the SAME pair remains that author's gate after the plan changes.
+      if (edge && (edge.created_by === null || edge.created_by === planAuthor)) {
+        mutations.push({ op: 'remove', blocked, blocker });
+      }
+    }
+    for (const id of desired) {
+      const blocker = endpoints.get(id);
+      if (!blocker) throw new Error(`promoted_plan_blocker_unresolved: ${scope.slug}#${itemId} requires ${id}; promote the blocker before changing this dependency`);
+      // Idempotent add keeps existing authorship and SUCCESS satisfaction.
+      mutations.push({ op: 'add', blocked, blocker,
+        ...(existingByKey.has(edgeKey(blocked, blocker)) ? {} : { createdBy: planAuthor }),
+      });
+    }
+  }
+  return mutations;
+}
 
 /**
  * Append a SYSTEM-attributed plan_revisions row inside the plan write's own transaction.
@@ -174,6 +268,8 @@ export async function settleRoutedPlanIdeaOnTerminalEntry(
 export interface PlanWriteMeta {
   version: number;
   contentHash: string;
+  /** Canonical plan lifecycle status, read under the same lock as `body`. */
+  planStatus: string | null;
   /** Operational lifecycle read under the same lock as the candidate body. */
   opStatus: string | null;
   /**
@@ -194,12 +290,26 @@ export interface PlanWriteMeta {
    */
   outputSchema: unknown;
   /**
+   * The plan's structured Now note (derived-status-not-hand-written-2026-10-12 P-004), read
+   * inside the lock so a mutator that rewrites the Now (the scope-cascade stamps) starts from
+   * the note readers see, not the frozen content section. null = no note written yet.
+   */
+  nowNote: PlanNowNote | null;
+  /**
    * The plan's LATEST `plan_revisions` snapshot, read INSIDE the lock — present only when the
    * caller opted in with `loadLatestRevision` (WI-10004529). A mutator whose write is
    * append-only compares it with the live body to detect a row that silently diverged BELOW its
    * own revision head (a stale replay records no revision). `null` = the plan has no revision.
    */
   latestRevision?: { seq: number; body: string } | null;
+}
+
+/** Locked state before a strict revision writer advances the plan. */
+export interface PlanWritePreimage {
+  body: string;
+  contentHash: string;
+  templateData: unknown;
+  version: number;
 }
 
 /**
@@ -274,6 +384,15 @@ export interface WithPlanLockOpts<T = unknown> {
   /** Advisory-lock acquisition budget before reporting busy. Default ~5s. */
   ttlSec?: number;
   /**
+   * INTERNAL — set ONLY by spawn_child's seed-plan writer. Permits a write that
+   * introduces the `child-seed` template, which exempts the plan from the
+   * conversation activation audit (verification-system-improvements-2026-10-10#D-038).
+   * Every other caller that introduces that template is refused with
+   * `child_seed_template_reserved`, so the exemption is not self-serve. Never map a
+   * tool argument onto this field.
+   */
+  allowChildSeedTemplate?: boolean;
+  /**
    * Hand the mutator the plan's latest `plan_revisions` snapshot as `meta.latestRevision`
    * (read inside the lock). Opt-in because it costs one indexed read per write; only
    * append-only writers that must refuse a stale base (plans:add-decision, WI-10004529) ask.
@@ -311,6 +430,9 @@ export interface WithPlanLockOpts<T = unknown> {
     writtenBody: string,
     scope: { workspaceId: string; harnessSlug: string },
     writtenTemplateData: unknown,
+    writtenVersion?: number,
+    /** Immutable copy of the prior state, captured before the mutator runs. */
+    preimage?: PlanWritePreimage | null,
   ) => Promise<void>;
   /**
    * Strict post-mutation hook that runs BEFORE the transaction commits. Unlike
@@ -392,7 +514,20 @@ export interface AppliedResult<T> {
   dependencyDiagnostics?: PlanCandidateDependencyDiagnostic[];
 }
 
-export type WithPlanLockResult<T> = AppliedResult<T> | BusyError;
+/** A domain gate rejected the candidate; no write or post-write hook ran. */
+export interface RefusedResult {
+  kind: 'refused';
+  value:
+    | ReturnType<typeof invalidPlanDependenciesValue>
+    | ReturnType<typeof childSeedTemplateRefusalValue>
+    | ReturnType<typeof activationGateRefusalValue>;
+  filePath: string;
+  version: number;
+  scope: { workspaceId: string; harnessSlug: string };
+  dependencyDiagnostics?: PlanCandidateDependencyDiagnostic[];
+}
+
+export type WithPlanLockResult<T> = AppliedResult<T> | RefusedResult | BusyError;
 
 /**
  * Acquire a PG advisory lock on the plan, read its current body, run the
@@ -413,12 +548,20 @@ export async function withPlanLock<T>(
   mutator: (
     current: string | null,
     meta: PlanWriteMeta | null,
+    /** The (workspaceId, harnessSlug) this lock resolved and read `current` under. A
+     *  mutator that reads the SAME plan through another path (a gate, a second query)
+     *  must use this scope, never re-resolve one: `activeWorkspaceId()` can name a
+     *  different workspace than the plan's registered one, and the second read then
+     *  finds no plan (WI-6554700010010577). */
+    scope: { workspaceId: string; harnessSlug: string },
   ) => Promise<{
     newBody: string | null;
     value: T;
     templateData?: TemplateDataPatch;
     inputSchema?: InputSchemaPatch;
     outputSchema?: OutputSchemaPatch;
+    /** P-004: the plan's structured Now note (plans:set-now). Not a content write. */
+    nowNote?: PlanNowNote;
   }>,
 ): Promise<WithPlanLockResult<T>> {
   if (typeof opts.slug !== 'string' || !VALID_PLAN_SLUG.test(opts.slug)) {
@@ -442,7 +585,7 @@ export async function withPlanLock<T>(
     }
   }
 
-  return withWorkspace(workspaceId, async (tx) => {
+  const write = async (tx: Sql, dependencyTransaction = false) => {
     // Serialize same-plan writers via a transaction-scoped advisory lock, taken through the ONE
     // shared acquire (WI-2143102). This used to poll `pg_try_advisory_xact_lock` every 50ms
     // against the same budget, which never joins the lock's wait queue — and the other writer of
@@ -462,16 +605,18 @@ export async function withPlanLock<T>(
         content: string;
         version: string | number;
         content_hash: string;
+        status: string | null;
         template: string | null;
         template_data: unknown;
         input_schema: unknown;
         output_schema: unknown;
         op_status: string | null;
         acceptance_bar_rubric_slug: string | null;
+        now_note: unknown;
       }[]
     >`
-      SELECT content, version, content_hash, template, template_data, input_schema, output_schema, op_status,
-             acceptance_bar_rubric_slug
+      SELECT content, version, content_hash, status, template, template_data, input_schema, output_schema, op_status,
+             acceptance_bar_rubric_slug, now_note
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
          AND plan_slug = ${slug}
@@ -495,17 +640,28 @@ export async function withPlanLock<T>(
       ? {
           version: curVersion,
           contentHash: cur.content_hash,
+          planStatus: cur.status ?? null,
           opStatus: cur.op_status ?? null,
           templateData: cur.template_data ?? null,
           inputSchema: cur.input_schema ?? null,
           outputSchema: cur.output_schema ?? null,
+          nowNote: parseNowNote(cur.now_note),
           ...(opts.loadLatestRevision ? { latestRevision } : {}),
         }
       : null;
 
-    const { newBody, value, templateData: templateDataPatch, inputSchema, outputSchema } = await mutator(
+    const revisionPreimage: PlanWritePreimage | null = cur && opts.revisionInTransaction
+      ? {
+          body: cur.content,
+          contentHash: cur.content_hash,
+          templateData: structuredClone(cur.template_data),
+          version: curVersion,
+        }
+      : null;
+    const { newBody, value, templateData: templateDataPatch, inputSchema, outputSchema, nowNote } = await mutator(
       cur?.content ?? null,
       meta,
+      { workspaceId, harnessSlug },
     );
     let templateData = templateDataPatch;
 
@@ -516,9 +672,21 @@ export async function withPlanLock<T>(
     // hard fingerprints. op_status was read under this lock too, so no
     // concurrent lifecycle flip can stale either side of the transition.
     let dependencyDiagnostics: PlanCandidateDependencyDiagnostic[] | undefined;
+    // P-004 (SPEC-P-004): a content write is where an existing `## Now` section
+    // migrates into the stored note (no backfill in 1480). An explicit note from
+    // the mutator (plans:set-now) always wins over the content-derived one.
+    let contentNowNote: PlanNowNote | null = null;
     if (newBody !== null) {
       const candidate = parsePlan(newBody, { filePath });
       const priorCandidate = cur ? parsePlan(cur.content, { filePath }) : null;
+      if (nowNote === undefined) {
+        contentNowNote = noteFromContentWrite({
+          existing: cur ? parseNowNote(cur.now_note) : null,
+          priorSection: priorCandidate?.now ?? null,
+          nextSection: candidate.now,
+          author: authenticatedActorId,
+        });
+      }
       const verdict = validatePlanCandidateDependencyTransition(
         priorCandidate,
         candidate,
@@ -526,20 +694,13 @@ export async function withPlanLock<T>(
       );
       if (verdict.state === 'rejected') {
         return {
-          kind: 'applied',
-          value: invalidPlanDependenciesValue(slug, verdict) as T,
+          kind: 'refused',
+          value: invalidPlanDependenciesValue(slug, verdict),
           filePath,
           version: curVersion,
           scope: { workspaceId, harnessSlug },
           dependencyDiagnostics: verdict.diagnostics,
-          writtenBody: null,
-          writtenTemplateData: cur?.template_data ?? null,
-          priorBody: cur?.content ?? null,
-        } satisfies AppliedResult<T> & {
-          writtenBody: string | null;
-          writtenTemplateData: unknown;
-          priorBody: string | null;
-        };
+        } satisfies RefusedResult;
       }
       if (verdict.state === 'invalid-draft' || verdict.state === 'legacy-residual') {
         dependencyDiagnostics = verdict.diagnostics;
@@ -552,6 +713,21 @@ export async function withPlanLock<T>(
     if (newBody !== null) {
       const beforeIndex = cur ? deriveIndexFromContent(cur.content) : null;
       const afterIndex = deriveIndexFromContent(newBody);
+      // D-038: the child-seed template exempts a plan from the activation audit, so
+      // only spawn_child's seed writer may introduce it. A later edit that keeps an
+      // existing child-seed template is not an introduction and passes through.
+      if (
+        !opts.allowChildSeedTemplate &&
+        introducesChildSeedTemplate(beforeIndex?.template, afterIndex.template)
+      ) {
+        return {
+          kind: 'refused',
+          value: childSeedTemplateRefusalValue(slug),
+          filePath,
+          version: curVersion,
+          scope: { workspaceId, harnessSlug },
+        } satisfies RefusedResult;
+      }
       if (
         entersActivationPlanStatus(beforeIndex?.status, afterIndex.status) &&
         !isActivationAuditExemptTemplate(afterIndex.template)
@@ -563,19 +739,12 @@ export async function withPlanLock<T>(
         });
         if (!gate.satisfied) {
           return {
-            kind: 'applied',
-            value: activationGateRefusalValue(slug, gate) as T,
+            kind: 'refused',
+            value: activationGateRefusalValue(slug, gate),
             filePath,
             version: curVersion,
             scope: { workspaceId, harnessSlug },
-            writtenBody: null,
-            writtenTemplateData: cur?.template_data ?? null,
-            priorBody: cur?.content ?? null,
-          } satisfies AppliedResult<T> & {
-            writtenBody: string | null;
-            writtenTemplateData: unknown;
-            priorBody: string | null;
-          };
+          } satisfies RefusedResult;
         }
       }
     }
@@ -603,6 +772,7 @@ export async function withPlanLock<T>(
             cohort: 'post-epoch' | 'legacy-backfilled' | null;
             seededAt: string | null;
             seededBy: string | null;
+            rubricSlug: string | null;
           }
         | undefined;
       const subjectPlan = storedTemplate.success ? storedTemplate.data.subjectPlan : undefined;
@@ -615,10 +785,11 @@ export async function withPlanLock<T>(
             acceptance_bar_cohort: 'post-epoch' | 'legacy-backfilled' | null;
             acceptance_bar_seeded_at: string | Date | null;
             acceptance_bar_seeded_by: string | null;
+            acceptance_bar_rubric_slug: string | null;
           }>
         >`
           SELECT status, version, acceptance_bar_epoch, acceptance_bar_cohort,
-                 acceptance_bar_seeded_at, acceptance_bar_seeded_by
+                 acceptance_bar_seeded_at, acceptance_bar_seeded_by, acceptance_bar_rubric_slug
             FROM harness_shared.harness_plans
            WHERE workspace_id = ${workspaceId}
              AND harness_slug = ${harnessSlug}
@@ -639,6 +810,7 @@ export async function withPlanLock<T>(
                   ? subject.acceptance_bar_seeded_at.toISOString()
                   : String(subject.acceptance_bar_seeded_at),
             seededBy: subject.acceptance_bar_seeded_by,
+            rubricSlug: subject.acceptance_bar_rubric_slug,
           };
         }
       }
@@ -764,8 +936,13 @@ export async function withPlanLock<T>(
           is_legacy     = EXCLUDED.is_legacy,
           items         = EXCLUDED.items,
           decisions     = EXCLUDED.decisions,
-          now_state     = EXCLUDED.now_state,
-          now_next      = EXCLUDED.now_next,
+          -- derived-status-not-hand-written-2026-10-12 P-004 (D-007/D-008): once a
+          -- plan has a structured Now note, its content "## Now" section is frozen
+          -- legacy text. now_state / now_next project the NOTE, so a content write
+          -- must not overwrite them from the stale section. No note yet → the
+          -- content section is still the source (migrate-on-read).
+          now_state     = COALESCE(harness_shared.harness_plans.now_note->>'state', EXCLUDED.now_state),
+          now_next      = COALESCE(harness_shared.harness_plans.now_note->>'next', EXCLUDED.now_next),
           promote_policy = EXCLUDED.promote_policy,
           forced_past   = EXCLUDED.forced_past,
           -- EI-117: a genuine local write must RESET origin — without this a row
@@ -786,6 +963,22 @@ export async function withPlanLock<T>(
         { workspaceId, harnessSlug, planSlug: slug },
         idx,
       );
+
+      const dependencyMutations = await promotedDependencyMutations(
+        tx, { workspaceId, harnessSlug, slug },
+        cur ? parsePlan(cur.content, { filePath }) : null,
+        parsePlan(newBody, { filePath }),
+      );
+      if (dependencyMutations.length > 0) {
+        // A coupled graph write needs the canonical isolation boundary. Abort
+        // this READ COMMITTED attempt before hooks, then replay the RMW under
+        // SERIALIZABLE. Ordinary plan writes keep their existing transaction.
+        if (!dependencyTransaction) throw new PromotedDependencyTransactionRequired();
+        await mutateWorkItemDependenciesInTransaction(tx, {
+          workspaceId: DEFAULT_COORD_WORKSPACE, itemWorkspaceId: workspaceId,
+          mutations: dependencyMutations,
+        });
+      }
 
       // EI-14579: land the resurrection marker UNCONDITIONALLY, inside this same
       // transaction, so it is never subject to the caller-identity best-effort
@@ -891,6 +1084,22 @@ export async function withPlanLock<T>(
       }
     }
 
+    // derived-status-not-hand-written-2026-10-12 P-004 (D-007/D-008): the Now note
+    // is a structured column beside content. Writing it is not a content write:
+    // no version bump, no revision, no per-part capture (writtenBody is untouched).
+    // It runs after any body upsert in the same transaction, so a combined write
+    // ends with now_state / now_next projecting the NEW note. A content-derived
+    // note (SPEC-P-004 migration) is written the same way, also for a new plan:
+    // the upsert above has just created its row.
+    const noteToWrite = nowNote ?? contentNowNote;
+    if (noteToWrite && (cur || newBody !== null)) {
+      await writePlanNowNote(
+        tx as unknown as NowNoteSql,
+        { workspaceId, harnessSlug, planSlug: slug },
+        noteToWrite,
+      );
+    }
+
     if (newBody !== null && cur?.acceptance_bar_rubric_slug &&
         !writesTemplateData && !inputSchema && !outputSchema) {
       const { synchronizeAcceptanceBarSubjectRevision } = await import('../../acceptance-bar-amendment');
@@ -926,6 +1135,8 @@ export async function withPlanLock<T>(
         writtenBody,
         { workspaceId, harnessSlug },
         writtenTemplateData,
+        newVersion,
+        revisionPreimage,
       );
     }
 
@@ -946,6 +1157,17 @@ export async function withPlanLock<T>(
       writtenTemplateData: unknown;
       priorBody: string | null;
     };
+  };
+  return withWorkspace(workspaceId, (tx) => write(tx)).catch(async (err: unknown) => {
+    if (!(err instanceof PromotedDependencyTransactionRequired)) throw err;
+    return withWorkItemDependencyAdmissionTransaction(getOrgPgApp().sql as Sql, async (tx) => {
+      // Same app connection/RLS scope as withWorkspace, including PgBouncer's
+      // transaction-local search path. No privileged second connection and no
+      // post-commit best-effort synchronization can leave the records apart.
+      await tx`SELECT set_config('app.workspace_id', ${workspaceId}, true),
+                      set_config('search_path', 'harness_shared, papercusp_shared, public', true)`;
+      return write(tx, true);
+    });
   }).then(async (result) => {
     // EI-118 (audit P-007): afterWrite (revision recording) runs AFTER the
     // withWorkspace transaction commits — never inside it. Inside, a stalled

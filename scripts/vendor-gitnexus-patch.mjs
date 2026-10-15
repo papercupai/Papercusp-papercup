@@ -9,7 +9,11 @@
  * them, and the doc-claim test named in each patch fails the build when the vendored file no
  * longer carries the patch marker.
  *
- * Patches (patches/gitnexus-vendor+<version>-<slug>.patch, unified diff rooted at the package):
+ * Patches (vendor-patches/gitnexus-vendor+<version>-<slug>.patch, unified diff rooted at the package).
+ * They live in vendor-patches/, NEVER patches/: root postinstall runs `patch-package`, which scans
+ * patches/ and refuses a patch whose package is absent from node_modules — fatally under CI=true,
+ * so a vendor patch there breaks every CI `npm ci` while the dev box only warns (WI-10006890).
+ * scripts/check-installed-patch-postimages.mjs now rejects any such patch under patches/.
  *   - 1.6.9-embedding-upsert (WI-39394): backport of gitnexus 1.6.11's batchInsertEmbeddings —
  *     DELETE by embedding id before CREATE. Without it `analyze --force --embeddings` on an index
  *     that already carries embeddings aborts on the first changed node with "Found duplicated
@@ -37,7 +41,7 @@ export const DEFAULT_VENDOR_ROOT = join(homedir(), '.papercusp/vendor/gitnexus/n
 export const GITNEXUS_VENDOR_PATCHES = [
   {
     version: '1.6.9',
-    file: 'patches/gitnexus-vendor+1.6.9-embedding-upsert.patch',
+    file: 'vendor-patches/gitnexus-vendor+1.6.9-embedding-upsert.patch',
     /** Relative to the package root — the file the patch rewrites. */
     target: 'dist/core/embeddings/embedding-pipeline.js',
     /** Literal the patched file MUST contain; its absence is the drift signal. */

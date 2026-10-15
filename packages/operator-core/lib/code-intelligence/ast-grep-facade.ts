@@ -57,9 +57,10 @@
  */
 
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
-import { isAbsolute, join, normalize, relative, sep } from 'node:path';
+import { isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 
 import { getFlag } from '@papercusp/flags/server';
@@ -71,6 +72,8 @@ import {
   type CodeIntelAnswer,
   type CodeIntelIntent,
   type SymbolSite,
+  versionedSymbolIdentity,
+  type CodeIntelSourceFile,
 } from './contracts.ts';
 
 let execFileAsync: ((...args: any[]) => Promise<any>) | undefined;
@@ -208,7 +211,98 @@ export function parseAstGrepMatches(stdout: string, rootPath: string): SymbolSit
   return sites;
 }
 
-export type AstGrepOp = 'search' | 'rewrite_preview';
+export type AstGrepOp = 'search' | 'rewrite_preview' | 'syntax_index';
+
+/** Builtin Tree-sitter grammars of the provisioned MIT ast-grep 0.45.1.
+ * Grammar dependencies: ast-grep/ast-grep@0.45.1/crates/language/Cargo.toml.
+ * Each tree-sitter/{tree-sitter-typescript,javascript,rust,python,go} LICENSE is MIT.
+ * These rules admit syntax only; imports/impls never certify symbol resolution. */
+export const SYNTAX_INDEX_KINDS = Object.freeze({
+  ts: { declaration: ['function_declaration', 'class_declaration', 'interface_declaration', 'type_alias_declaration'], imports: ['import_statement'], inheritance: ['extends_clause', 'implements_clause'] },
+  tsx: { declaration: ['function_declaration', 'class_declaration', 'interface_declaration', 'type_alias_declaration'], imports: ['import_statement'], inheritance: ['extends_clause', 'implements_clause'] },
+  js: { declaration: ['function_declaration', 'class_declaration'], imports: ['import_statement'], inheritance: ['class_heritage'] },
+  jsx: { declaration: ['function_declaration', 'class_declaration'], imports: ['import_statement'], inheritance: ['class_heritage'] },
+  rust: { declaration: ['function_item', 'struct_item', 'enum_item', 'trait_item', 'type_item'], imports: ['use_declaration'], inheritance: ['impl_item'] },
+  python: { declaration: ['function_definition', 'class_definition'], imports: ['import_statement', 'import_from_statement'], inheritance: [] },
+  go: { declaration: ['function_declaration', 'method_declaration', 'type_declaration'], imports: ['import_spec'], inheritance: [] },
+} satisfies Record<AstGrepLanguage, Record<'declaration' | 'imports' | 'inheritance', string[]>>);
+
+const SYNTAX_LANG_NAMES = { ts: 'TypeScript', tsx: 'Tsx', js: 'JavaScript', jsx: 'JavaScript', rust: 'Rust', python: 'Python', go: 'Go' } as const;
+const SYNTAX_EXTENSIONS = { ts: ['.ts', '.mts', '.cts'], tsx: ['.tsx'], js: ['.js', '.mjs', '.cjs'], jsx: ['.jsx'], rust: ['.rs'], python: ['.py', '.pyi'], go: ['.go'] } as const;
+
+export function buildSyntaxIndexArgs(language: AstGrepLanguage): string[] {
+  const kinds = SYNTAX_INDEX_KINDS[language];
+  if (!kinds) throw new Error('unsupported syntax-index language');
+  const rules = Object.entries(kinds).filter(([, nodes]) => nodes.length).map(([role, nodes]) => JSON.stringify({
+    id: role, language: SYNTAX_LANG_NAMES[language], rule: { any: nodes.map(kind => ({ kind })) },
+    message: role, severity: 'info',
+  }));
+  if (language === 'python') rules.push(JSON.stringify({ id: 'inheritance', language: 'Python', rule: { all: [{ kind: 'class_definition' }, { has: { field: 'superclasses', regex: '.+' } }] }, message: 'inheritance', severity: 'info' }));
+  // stdin supplies the exact hashed input. No index or later disk read stands in for it.
+  return ['scan', '--stdin', '--inline-rules', rules.join('\n---\n'), '--json=compact'];
+}
+
+/** Bounded syntax index through the existing parser/process seam, using immutable stdin inputs. */
+export async function astGrepSyntaxIndex(args: Omit<AstGrepArgs, 'pattern'>): Promise<CodeIntelAnswer> {
+  const started = Date.now();
+  const fail = (reason: string) => refusal('structural-search', 'syntax_index', reason, started);
+  if (!SYNTAX_INDEX_KINDS[args.language]) return fail('unsupported syntax-index language; refusing an uncertified empty');
+  if (!(await getFlag(FLAGS.CODE_INTEL_AST_GREP, 'system').catch(() => false))) return fail('structural search is disabled');
+  if (!args.paths?.length || args.paths.length > 16) return fail('syntax_index requires 1..16 explicit source files');
+  const identity = await astGrepIdentity();
+  if (!identity.ok) return fail(identity.reason);
+  if (identity.identity.version !== '0.45.1') return fail('unsupported syntax-index grammar generation: expected ast-grep 0.45.1');
+  const sources: CodeIntelSourceFile[] = [];
+  const sites: SymbolSite[] = [];
+  const limitations = ['Syntax relationships are inferred; compiler resolution, calls and runtime execution are unverified.', 'Generated files and dynamic/evaluated source are excluded.'];
+  const limit = Math.max(1, Math.min(args.limit ?? MAX_AST_GREP_SITES, MAX_AST_GREP_SITES));
+  let root: string;
+  try { root = realpathSync(args.rootPath); } catch { return fail('syntax-index project root is unavailable'); }
+  try {
+    for (const requested of [...new Set(args.paths)].sort()) {
+      const absolute = realpathSync(resolve(root, requested));
+      const path = relative(root, absolute).split(sep).join('/');
+      if (!path || path.split('/').includes('..') || isAbsolute(path) || !statSync(absolute).isFile()) return fail('syntax-index input is outside project scope or is not a file');
+      if (path.split('/').some(part => ['node_modules', 'dist', 'build', 'target', 'coverage', '.git'].includes(part))) {
+        limitations.push('Excluded generated/vendor path: ' + path); continue;
+      }
+      if (!SYNTAX_EXTENSIONS[args.language].some(extension => path.endsWith(extension))) return fail('unsupported source extension for syntax-index grammar: ' + path);
+      if (statSync(absolute).size > 1024 * 1024) return fail('syntax-index source exceeds the 1 MiB input bound');
+      const bytes = readFileSync(absolute);
+      const text = bytes.toString('utf8');
+      if (/[@]generated|DO NOT EDIT|Code generated/.test(text.slice(0, 500))) { limitations.push('Excluded generated source: ' + path); continue; }
+      const result = await new Promise<{ stdout: string }>((resolveRun, rejectRun) => {
+        const child = execFile(identity.identity.bin, buildSyntaxIndexArgs(args.language), {
+          cwd: root, timeout: 5000, maxBuffer: 4 * 1024 * 1024,
+        }, (error, stdout, stderr) => {
+          if (error && !(error.code === 1 && !stderr.trim())) rejectRun(error);
+          else resolveRun({ stdout });
+        });
+        child.stdin?.on('error', rejectRun);
+        child.stdin?.end(bytes);
+      });
+      const rows: unknown = JSON.parse(result.stdout.trim() || '[]');
+      if (!Array.isArray(rows)) return fail('syntax parser returned malformed match evidence');
+      sources.push({ path, contentHash: createHash('sha256').update(bytes).digest('hex'), language: args.language, representation: 'full-source' });
+      for (const row of rows) {
+        const match = row as { ruleId?: string; text?: string; range?: { start?: { line?: number } } };
+        if (!['declaration', 'imports', 'inheritance'].includes(match.ruleId ?? '') || typeof match.range?.start?.line !== 'number') return fail('syntax parser returned unclassified match evidence');
+        sites.push({ path, line1: toOneIndexed('ast-grep', match.range.start.line), kind: match.ruleId!, detail: match.text ?? null });
+      }
+    }
+  } catch (error) { return fail('syntax index failed: ' + (error instanceof Error ? error.message : String(error))); }
+  if (args.language === 'go') limitations.push('Go has no class inheritance; embedding resolution is unsupported for this grammar profile.');
+  const result = answer('structural-search', 'syntax_index', sites, started, limit, identity.identity.version);
+  const repositoryId = 'local-root:' + createHash('sha256').update(root).digest('hex');
+  return { ...result, coverage: { basis: 'syntax', sourceCompleteness: 'unverified', limitations }, evidence: {
+    schemaVersion: 1,
+    sourceScope: { repositoryId, identityKind: 'local-root', sourceFingerprint: createHash('sha256').update(JSON.stringify(sources)).digest('hex'), paths: sources.map(source => source.path), supportingFiles: sources },
+    graphScope: { basis: 'syntax', sourceCompleteness: 'unverified', limitations },
+    languageCapabilities: [{ language: args.language, intent: 'structural-search', status: 'syntax-only' }],
+    siteIdentities: result.sites.map((site, siteIndex) => { const source = sources.find(value => value.path === site.path); return { siteIndex, sourcePath: site.path, contentHash: source?.contentHash ?? null, versionedSymbolId: versionedSymbolIdentity(repositoryId, site, source) }; }),
+    relationships: result.sites.map((_site, siteIndex) => ({ siteIndex, kind: 'structural-search', origin: 'syntax', knowledge: 'inferred', runtimeExecution: 'unknown' })),
+  } };
+}
 
 export interface AstGrepArgs {
   /** The structural pattern, e.g. `foo($X)` or `if ($C) { $$$BODY }`. */
@@ -238,6 +332,7 @@ export const MAX_AST_GREP_SITES = Math.max(
  * tries to smuggle one through `pattern` or `rewrite`.
  */
 export function buildAstGrepArgs(args: AstGrepArgs, op: AstGrepOp): string[] {
+  if (op === 'syntax_index') return buildSyntaxIndexArgs(args.language);
   const argv = ['run', '--pattern', args.pattern, '--lang', AST_GREP_LANGUAGES[args.language]];
   if (op === 'rewrite_preview' && args.rewrite !== undefined) {
     argv.push('--rewrite', args.rewrite);
@@ -307,6 +402,7 @@ function refusal(intent: CodeIntelIntent, query: string, error: string, startedA
  * four different states, and each returns an answer that says which one.
  */
 export async function astGrepFacade(op: AstGrepOp, args: AstGrepArgs): Promise<CodeIntelAnswer> {
+  if (op === 'syntax_index') return astGrepSyntaxIndex(args);
   const started = Date.now();
   const intent: CodeIntelIntent = 'structural-search';
   const query = op === 'rewrite_preview' ? `${args.pattern} → ${args.rewrite ?? ''}` : args.pattern;

@@ -1,28 +1,44 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join, relative } from 'node:path';
+import { runInNewContext } from 'node:vm';
 
 // The fixtures are PRINTED by the real writer-side formatters, not hand-copied, so a format
 // change in scripts/lib/test-pass-reuse.mjs breaks this test instead of silently blinding the
 // gate-side parser.
 import {
+  estimateReuseSavings,
   formatReuseAlarmLine,
   formatTestReuseLine,
   formatTestReuseTotalLine,
+  laneOfFromSplit,
+  laneScopedCandidates,
+  selectReusablePasses,
 } from '../../../../scripts/lib/test-pass-reuse.mjs';
+// @ts-expect-error — pure JS guard script with no .d.mts (not enrolled in tsconfig.declarations.json; same as empty-suite-guard.test.ts)
+import { scriptSupportsPassReuse } from '../../../../scripts/lib/empty-suite-guard.mjs';
 import {
   formatExecutedMapAlarmLines,
   formatExecutedMapResultLines,
+  formatTestReuseAuditResultLines,
   formatExecutedMapTotalLine,
   readExecutedMapResults,
   summarizeExecutedMapResults,
 } from '../../../../scripts/lib/executed-source-map.mjs';
 import {
   buildTestPassReuseHealth,
+  evaluateTestPassReuseAuditWindow,
   formatDurationMs,
   parseTestPassReuse,
   parseTestPassReuseHealth,
+  parseTestPassReuseAuditArchive,
+  parsePureProofCaptureResult,
+  parsePureProofCaptureArchive,
+  readPureProofCaptureResult,
   summarizeExecutedSourceMapRecorder,
   summarizeTestPassReuse,
   TEST_PASS_REUSE_HEALTH_MAX_ALARMS,
+  type TestPassReuseAuditInvocation,
 } from './test-pass-reuse-report';
 
 const summary = (over: Record<string, number> = {}) => ({
@@ -40,6 +56,135 @@ const summary = (over: Record<string, number> = {}) => ({
   audited: 0,
   expiredClean: 0,
   ...over,
+});
+
+describe('candidate suite identity in the reuse archive', () => {
+  const sha = 'a'.repeat(40);
+  const suite = { command: 'npm run test:affected', runGroupId: 'run-1', startedAtMs: 10, completedAtMs: 20 };
+  const output = () => [formatTestReuseLine('core::test', summary(), ' auditRate=0.05 lane=pure'),
+    formatTestReuseTotalLine({ tasks: 1, summaries: [summary()], savedMs: 100, unmeasured: 0 })].join('\n');
+  it('retains the actual command and child boundaries through producer, health and immutable archive', () => {
+    const health = buildTestPassReuseHealth(output(), sha, 30, suite)!;
+    expect(parseTestPassReuseHealth(JSON.parse(JSON.stringify(health)))?.suite).toEqual(suite);
+    expect(parseTestPassReuseAuditArchive({ suite: health.suite, audit: {
+      ...health.audit, judgedSha: sha, recordedAtMs: health.recordedAtMs },
+      auditRuns: health.auditRuns, auditedFiles: health.auditedFiles })?.suite).toEqual(suite);
+    expect(buildTestPassReuseHealth(output(), sha, 30)).not.toHaveProperty('suite');
+  });
+  it.each([{ command: '' }, { runGroupId: '' }, { startedAtMs: -1 },
+    { completedAtMs: 9 }, { completedAtMs: 31 }])('keeps malformed invocation evidence unknown: %j', (change) => {
+    const health = buildTestPassReuseHealth(output(), sha, 30, { ...suite, ...change })!;
+    expect(health.suite).toBeNull();
+    expect(parseTestPassReuseHealth({ ...health, suite: { ...suite, ...change } })?.suite).toBeNull();
+  });
+});
+
+describe('named pure capture result reader (WI-10005218 / R-3)', () => {
+  const record = () => ({ state: 'done', reason: null, sha: 'a'.repeat(40),
+    slices: 1, files: 2, rows: 2, retired: 0, failed: 0, isolatedFail: 0, remaining: 0, stoppedBy: 'complete',
+    evidence: { version: 1, runGroupId: 'run-1:pure-proof-capture', startedAtMs: 100, completedAtMs: 200,
+      clean: true, proofs: ['a', 'b'].map((file, i) => ({ file: `packages/operator-core/lib/${file}.test.ts`,
+        testRunId: String(i + 1), recordedAtMs: 150, runnerIdentity: 'runner-1',
+        runContext: 'green-checkpoint', runGroupId: 'run-1:pure-proof-capture', source: 'local' })) } });
+  const line = (r = record()) => `PURE_PROOF_CAPTURE_RESULT ${JSON.stringify(r)}`;
+  const archive = () => ({ version: 1, runId: 'run-1', gateFireId: 'fire-1', pid: 123,
+    processStartedAtMs: 1, judgedSha: 'a'.repeat(40), resolvedAtMs: 70,
+    terminalEmissionCompletedAtMs: 90, verdictRecordedAtMs: 80,
+    promotion: { candidate: 'a'.repeat(12), recordedAtMs: 60, reason: 'not-green', promoted: false },
+    capture: record(), archivedAtMs: 210 });
+
+  it('retains the immutable process receipt and named proofs without borrowing missing clocks', () => {
+    const r = archive();
+    expect(parsePureProofCaptureArchive(JSON.parse(JSON.stringify(r)))).toEqual(r);
+    const unknown = { ...r, verdictRecordedAtMs: null, promotion: null, capture: null };
+    expect(parsePureProofCaptureArchive(unknown)).toEqual(unknown);
+  });
+
+  it('preserves an explicit moved-HEAD skip without qualifying proofs at the foreign SHA', () => {
+    const r = archive();
+    const skipped = { ...record(), state: 'skipped', reason: 'notRun(HEAD-moved)', sha: 'b'.repeat(40),
+      slices: 0, files: 0, rows: 0, evidence: { ...record().evidence, clean: true, proofs: null } };
+    const parsed = parsePureProofCaptureArchive({ ...r, capture: skipped })!;
+    expect(parsed.judgedSha).toBe(r.judgedSha);
+    expect(parsed.capture?.state).toBe('skipped');
+    expect(parsed.capture?.evidence.proofs).toBeNull();
+  });
+
+  it.each([
+    ['unmeasured process', (r: any) => { delete r.processStartedAtMs; }],
+    ['recycled pid without start', (r: any) => { r.processStartedAtMs = null; }],
+    ['unsafe run path', (r: any) => { r.runId = '../run'; }],
+    ['missing verdict status', (r: any) => { delete r.verdictRecordedAtMs; }],
+    ['before final resolution', (r: any) => { r.capture.evidence.startedAtMs = 65; }],
+    ['before terminal emission', (r: any) => { r.capture.evidence.startedAtMs = 85; }],
+    ['verdict after capture', (r: any) => { r.verdictRecordedAtMs = 110; }],
+    ['capture after archive', (r: any) => { r.archivedAtMs = 199; }],
+    ['foreign process group', (r: any) => { r.runId = 'other'; }],
+    ['foreign judged SHA', (r: any) => { r.judgedSha = 'b'.repeat(40); }],
+    ['foreign promotion', (r: any) => { r.promotion.candidate = 'b'.repeat(12); }],
+    ['pending promotion', (r: any) => { r.promotion.reason = 'decision-pending'; }],
+    ['discarded recursive pass', (r: any) => { r.promotion.reason = 'superseded-by-refire'; }],
+    ['promotion after resolution', (r: any) => { r.promotion.recordedAtMs = 71; }],
+    ['missing named capture population', (r: any) => { delete r.capture.evidence; }],
+  ])('rejects inconsistent archive evidence: %s', (_name, mutate) => {
+    const r = archive();
+    mutate(r);
+    expect(parsePureProofCaptureArchive(r)).toBeNull();
+  });
+
+  it('preserves the complete named population through the existing process log and JSON archive', () => {
+    const r = record();
+    const parsed = readPureProofCaptureResult(`unrelated log\n[green-checkpoint:123] ${line(r)}\r\n`)!;
+    expect(parsed).toEqual(r);
+    expect(parsePureProofCaptureResult(JSON.parse(JSON.stringify(parsed)))).toEqual(r);
+    r.evidence.proofs[0]!.file = 'mutated';
+    expect(parsed.evidence.proofs![0]!.file).toBe('packages/operator-core/lib/a.test.ts');
+  });
+
+  it.each([
+    ['aggregate-only', (r: any) => { delete r.evidence; }],
+    ['missing counter', (r: any) => { delete r.rows; }],
+    ['negative counter', (r: any) => { r.remaining = -1; }],
+    ['fractional counter', (r: any) => { r.slices = 0.5; }],
+    ['short SHA', (r: any) => { r.sha = 'abcdef0'; }],
+    ['missing population', (r: any) => { delete r.evidence.proofs; }],
+    ['count-only population', (r: any) => { r.evidence.proofs = 2; }],
+    ['missing row', (r: any) => { r.evidence.proofs.pop(); }],
+    ['duplicate file', (r: any) => { r.evidence.proofs[1].file = r.evidence.proofs[0].file; }],
+    ['aliased test row', (r: any) => { r.evidence.proofs[1].testRunId = r.evidence.proofs[0].testRunId; }],
+    ['traversal path', (r: any) => { r.evidence.proofs[0].file = 'packages/operator-core/../foreign.test.ts'; }],
+    ['foreign workspace', (r: any) => { r.evidence.proofs[0].file = 'packages/web/a.test.ts'; }],
+    ['foreign group', (r: any) => { r.evidence.proofs[0].runGroupId = 'other'; }],
+    ['CI source', (r: any) => { r.evidence.proofs[0].source = 'ci'; }],
+    ['foreign context', (r: any) => { r.evidence.proofs[0].runContext = 'local'; }],
+    ['mixed runner', (r: any) => { r.evidence.proofs[0].runnerIdentity = 'other'; }],
+    ['dirty tree', (r: any) => { r.evidence.clean = false; }],
+    ['unknown tree', (r: any) => { r.evidence.clean = null; }],
+    ['old row', (r: any) => { r.evidence.proofs[0].recordedAtMs = 99; }],
+    ['future row', (r: any) => { r.evidence.proofs[0].recordedAtMs = 201; }],
+    ['reversed boundary', (r: any) => { r.evidence.completedAtMs = 90; }],
+    ['missing test identity', (r: any) => { r.evidence.proofs[0].testRunId = ''; }],
+  ])('rejects %s instead of qualifying evidence', (_name, mutate) => {
+    const r = record();
+    mutate(r);
+    expect(readPureProofCaptureResult(line(r))).toBeNull();
+  });
+
+  it('retains explicitly unknown or empty populations without inventing named proofs', () => {
+    const r = record();
+    expect(parsePureProofCaptureResult({ ...r, evidence: { ...r.evidence, proofs: null } })?.evidence.proofs).toBeNull();
+    const skipped = { ...r, state: 'skipped', reason: 'dirty-checkout(1)',
+      slices: 0, files: 0, rows: 0, stoppedBy: null, evidence: { ...r.evidence, clean: null, proofs: null } };
+    expect(parsePureProofCaptureResult(skipped)).toEqual(skipped);
+    const empty = { ...r, slices: 0, files: 0, rows: 0, evidence: { ...r.evidence, proofs: [] } };
+    expect(parsePureProofCaptureResult(empty)?.evidence.proofs).toEqual([]);
+  });
+
+  it.each(['', 'PURE_PROOF_CAPTURE state=done rows=2', 'PURE_PROOF_CAPTURE_RESULT',
+    'PURE_PROOF_CAPTURE_RESULT {"state":"done"', `${line()}\n${line()}`,
+    `${line()}\nPURE_PROOF_CAPTURE_RESULT {broken`])('rejects absent, torn or duplicate log records: %s', (output) => {
+    expect(readPureProofCaptureResult(output)).toBeNull();
+  });
 });
 
 describe('parseTestPassReuse', () => {
@@ -234,6 +379,272 @@ describe('formatDurationMs', () => {
     expect(formatDurationMs(4_400)).toBe('4s');
     expect(formatDurationMs(61_000)).toBe('1m 01s');
     expect(formatDurationMs(3_720_000)).toBe('1h 02m');
+  });
+});
+
+describe('reuse outcome measurements over archived invocations (WI-10005218 / R-2)', () => {
+  const ws = '@papercusp/operator-core::test:unit:pure';
+  const counts = summary({ candidates: 100, reused: 98, audited: 2 });
+  const output = (extra = 'auditRate=0.05 lane=pure') => [
+    formatTestReuseLine(ws, counts, ` ${extra}`),
+    formatTestReuseTotalLine({ tasks: 1, summaries: [counts], savedMs: 100, unmeasured: 0 }),
+  ].join('\n');
+  const invocation = (): TestPassReuseAuditInvocation => ({
+    runId: 'archived-run-1',
+    judgedSha: 'c58655490ce1a3be734de61df08aa7f8159122d4',
+    runnerIdentity: 'proof-v2 node25 linux x64',
+    startedAtMs: 110,
+    completedAtMs: 120,
+    output: output(),
+    auditedFiles: ['packages/operator-core/lib/audit-36.test.ts', 'packages/operator-core/lib/audit-42.test.ts'].map((file) => ({
+      invocation: 0, ws, file, verdict: 'pass', evidenceRef: `test-run:${file}`,
+      judgedSha: 'c58655490ce1a3be734de61df08aa7f8159122d4', runnerIdentity: 'proof-v2 node25 linux x64',
+      runContext: 'green-checkpoint', runGroupId: null, dirty: false,
+    })),
+  });
+  const window = (over: Partial<Parameters<typeof evaluateTestPassReuseAuditWindow>[0]> = {}) =>
+    evaluateTestPassReuseAuditWindow({
+      windowStartMs: 100, windowEndMs: 200, expectedRunIds: ['archived-run-1'],
+      invocations: [invocation()], ...over,
+    });
+
+  const reporterResults = (verdict: 'pass' | 'fail' | 'unknown' = 'pass') => readExecutedMapResults('/unused', {
+    readFile: () => JSON.stringify({ workspaceName: '@papercusp/operator-core', outcome: 'written', rows: 2, retired: 0, skipped: 0,
+      dirty: false, sha: invocation().judgedSha, error: null,
+      fileResults: { version: 1, runnerIdentity: invocation().runnerIdentity, runContext: 'green-checkpoint',
+        runGroupId: 'initial-group', files: invocation().auditedFiles!.map((f) => ({ testFile: f.file, verdict })) } }),
+  });
+  const namedLines = (verdict: 'pass' | 'fail' | 'unknown' = 'pass') => formatTestReuseAuditResultLines(ws, reporterResults(verdict),
+    { watch: new Map(invocation().auditedFiles!.map((f) => [f.file, 'audit'])) });
+
+  it('archives named initial results end to end through the real reporter reader/formatter', () => {
+    const health = buildTestPassReuseHealth([output(), ...namedLines()].join('\n'), invocation().judgedSha, 120)!;
+    const archived = parseTestPassReuseHealth(JSON.parse(JSON.stringify(health)))!;
+    expect(archived.auditedFiles).toHaveLength(2);
+    expect(archived.auditedFiles?.[0]).toMatchObject({ invocation: 0, ws, verdict: 'pass',
+      runnerIdentity: invocation().runnerIdentity, runContext: 'green-checkpoint', dirty: false });
+    expect(archived.auditedFiles?.[0]?.evidenceRef).toMatch(/^suite-output:line:/);
+    expect(window({ invocations: [{ ...invocation(), auditedFiles: archived.auditedFiles! }] }).verdict).toBe('pass');
+    const compact = { audit: { ...archived.audit, judgedSha: archived.judgedSha, recordedAtMs: archived.recordedAtMs },
+      auditRuns: archived.auditRuns, auditedFiles: archived.auditedFiles };
+    expect(parseTestPassReuseAuditArchive(JSON.parse(JSON.stringify(compact))))
+      .toMatchObject({ judgedSha: invocation().judgedSha, recordedAtMs: 120,
+        auditRuns: archived.auditRuns, auditedFiles: archived.auditedFiles });
+    expect(parseTestPassReuseAuditArchive({ ...compact, auditRuns: null })).toBeNull();
+    expect(parseTestPassReuseAuditArchive({ ...compact, audit: { ...compact.audit, audited: 99 } })).toBeNull();
+  });
+
+  it('retains original selector runtime through the existing archive even with zero audit draws', () => {
+    const runtime = { version: 1 as const, judgedSha: invocation().judgedSha,
+      runnerIdentity: invocation().runnerIdentity, runContext: 'green-checkpoint',
+      runGroupId: 'initial-group', dirty: false };
+    const zero = summary({ candidates: 1, reused: 1, audited: 0 });
+    const printed = [formatTestReuseLine(ws, zero, ' auditRate=0.05 lane=pure', runtime),
+      formatTestReuseTotalLine({ tasks: 1, summaries: [zero], savedMs: 1, unmeasured: 0 })].join('\n');
+    const health = buildTestPassReuseHealth(printed, runtime.judgedSha, 120)!;
+    const archived = parseTestPassReuseAuditArchive(JSON.parse(JSON.stringify({
+      audit: { ...health.audit, judgedSha: health.judgedSha, recordedAtMs: health.recordedAtMs },
+      auditRuns: health.auditRuns, auditedFiles: health.auditedFiles,
+    })))!;
+    expect(archived.auditRuns[0]!.workspaces[0]!.runtime).toEqual(runtime);
+    expect(archived.auditedFiles).toEqual([]);
+  });
+
+  it('the actual affected-tests arming path emits selector runtime without sampled files', async () => {
+    const source = readFileSync(new URL('../../../../scripts/affected-tests.mjs', import.meta.url), 'utf8');
+    const start = source.indexOf('async function armTestPassReuse(');
+    const end = source.indexOf('\n// AFFECTED_RETRY_FAILED=1', start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const lines: string[] = [];
+    // Exercise the real orchestration and selector, with only external IO replaced.
+    const sandbox = {
+      ROOT: '/repo', RUN_LOG_ROOT: '/logs', LANE_SCRIPTS: [], join, relative,
+      process: { env: { GREEN_CHECKPOINT: '1', PAPERCUSP_TEST_RUN_GROUP: 'initial-group' } },
+      outSync: (line: string) => lines.push(line),
+      // The real eligibility selector; the gate-decision PG write is an IO seam.
+      scriptSupportsPassReuse, recordGateReuseDecision: async () => undefined,
+      testReuseEnabled: () => true,
+      execFileSync: (command: string, args: string[]) => command === 'node' ? 'v25 linux x64'
+        : args[0] === 'rev-parse' ? invocation().judgedSha : '',
+      reuseRunnerIdentity: () => invocation().runnerIdentity,
+      connectExecutedMapPg: async () => ({ end: async () => undefined }),
+      gitChangedBetween: () => () => [], gitInertGlobalChange: () => () => false,
+      gitSchemaDriftJudge: () => null, testConfigMainProcessFiles: () => new Set(),
+      testReuseMaxAgeMs: () => 1000, testReuseAuditRate: () => 0.05,
+      loadReuseProofs: async () => ({ proofs: new Map(), rows: 0 }),
+      setTimeout: () => ({ unref: () => undefined }),
+      reuseCandidates: () => ['lib/uncaptured.test.ts'], laneOfTaskScript: () => null,
+      selectReusablePasses, formatTestReuseLine, formatTestReuseTotalLine,
+      estimateReuseSavings, laneOfFromSplit, laneScopedCandidates,
+      // Checkout, PG and filesystem seams: the judged-tree read, the destructive checkpoint
+      // restore, proof/duration queries and the skip-list write.
+      judgedTreeProofFormat: () => null,
+      restoreCandidateCheckpointForReuse: () => ({ ok: false, reason: 'test-stub' }),
+      loadReuseProofFiles: async () => ({ files: [], rows: 0 }),
+      loadPassDurations: async () => new Map(), writeReuseSkipList: () => '/logs/reuse-skip.json',
+    };
+    // Derived completeness: every import the extracted function names must be in the sandbox, so
+    // a new dependency fails here BY NAME instead of as a mid-run ReferenceError.
+    const body = source.slice(start, end).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+    const imported = [...source.matchAll(/^import\s*\{([^}]*)\}\s*from/gm)]
+      .flatMap((m) => m[1]!.split(',').map((n) => n.trim().split(/\s+as\s+/).pop()!.trim()).filter(Boolean));
+    expect(imported.filter((n) => new RegExp(`\\b${n}\\b`).test(body) && !(n in sandbox))).toEqual([]);
+    const arm = runInNewContext(`${source.slice(start, end)}\narmTestPassReuse`, sandbox) as (tasks: unknown[]) => Promise<void>;
+    await arm([{ ws: { name: '@papercusp/operator-core', dir: '', scripts: { test: 'vitest --passWithNoTests' } },
+      script: 'test' }]);
+    const parsed = parseTestPassReuse(lines.join('\n'));
+    expect(parsed[0]!.total?.audited).toBe(0);
+    expect(parsed[0]!.workspaces[0]!.runtime).toEqual({ version: 1, judgedSha: invocation().judgedSha,
+      runnerIdentity: invocation().runnerIdentity, runContext: 'green-checkpoint',
+      runGroupId: 'initial-group', dirty: false });
+  });
+
+  it.each(['%', 'not-json', encodeURIComponent(JSON.stringify({ version: 2 }))])(
+    'keeps malformed selector runtime explicit instead of dropping it (%s)', (encoded) => {
+      const parsed = parseTestPassReuse(output(`auditRate=0.05 lane=pure runtime=${encoded}`));
+      expect(parsed[0]!.workspaces[0]!.runtime).toBeNull();
+      const health = buildTestPassReuseHealth(output(`auditRate=0.05 lane=pure runtime=${encoded}`),
+        invocation().judgedSha, 120)!;
+      expect(parseTestPassReuseHealth(JSON.parse(JSON.stringify(health)))?.auditRuns?.[0]?.workspaces[0]?.runtime).toBeNull();
+    });
+
+  it('retains an inline-retry miss even without a console FAIL row or soundness alarm', () => {
+    const health = buildTestPassReuseHealth([output(), ...namedLines('fail')].join('\n'), invocation().judgedSha, 120)!;
+    expect(health.audit?.alarmCount).toBe(2);
+    expect(health.alarms).toHaveLength(2);
+    expect(window({ invocations: [{ ...invocation(), auditedFiles: health.auditedFiles! }] }).verdict).toBe('fail');
+  });
+
+  it('keeps unknown named results rather than certifying them from the final task pass', () => {
+    const health = buildTestPassReuseHealth([output(), ...namedLines('unknown'), 'Tests 2 passed'].join('\n'), invocation().judgedSha, 120)!;
+    expect(health.auditedFiles?.map((f) => f.verdict)).toEqual(['unknown', 'unknown']);
+    expect(window({ invocations: [{ ...invocation(), auditedFiles: health.auditedFiles! }] }).verdict).toBe('unknown');
+  });
+
+  it.each([
+    ['missing', []], ['partial', namedLines().slice(0, 1)],
+    ['duplicate', [namedLines()[0]!, namedLines()[0]!]],
+    ['malformed', [namedLines()[0]!, 'TEST_PASS_REUSE_AUDIT_RESULT {oops}']],
+    ['unsupported version', namedLines().map((line) => line.replace('"version":1', '"version":2'))],
+  ])('marks %s named coverage as unmeasured', (_label, lines) => {
+    const health = buildTestPassReuseHealth([output(), ...lines].join('\n'), invocation().judgedSha, 120)!;
+    expect(health.auditedFiles).toBeNull();
+  });
+
+  it('names separate invocations when the same file is audited twice', () => {
+    const health = buildTestPassReuseHealth([output(), ...namedLines(), output(), ...namedLines()].join('\n'), invocation().judgedSha, 120)!;
+    expect(health.auditedFiles?.map((f) => f.invocation)).toEqual([0, 0, 1, 1]);
+  });
+
+  it.each([
+    { judgedSha: 'b'.repeat(40) }, { runnerIdentity: 'foreign runner' }, { runContext: 'clean-local' },
+    { dirty: true }, { dirty: null }, { judgedSha: null }, { runnerIdentity: null },
+  ])('refuses a source/runtime mismatch as proof of a passed audit: %j', (over) => {
+    const r = invocation();
+    r.auditedFiles = r.auditedFiles!.map((file) => ({ ...file, ...over }));
+    expect(window({ invocations: [r] }).verdict).toBe('unknown');
+  });
+
+  it('retains the real configured rate, audited count and explicit pure lane', () => {
+    expect(summarizeTestPassReuse(parseTestPassReuse(output())).audit).toEqual({
+      auditRate: 0.05, audited: 2, eligible: 100, pureReused: 98, alarmCount: 0,
+    });
+    // An observed 2/100 sample is valid under the configured 5% deterministic draw.
+    expect(window()).toMatchObject({ verdict: 'pass', audited: 2, alarms: 0 });
+  });
+
+  it('keeps a missing lane unmeasured rather than claiming zero subsequent pure reuse', () => {
+    expect(summarizeTestPassReuse(parseTestPassReuse(output('auditRate=0.05'))).audit)
+      .toMatchObject({ audited: 2, pureReused: null });
+  });
+
+  it.each([
+    ['old counter', (s: string) => s.replaceAll(' audited=2', '')],
+    ['missing rate', (s: string) => s.replace('auditRate=0.05', '')],
+    ['malformed rate', (s: string) => s.replace('auditRate=0.05', 'auditRate=NaN')],
+    ['malformed workspace counter', (s: string) => s.replace('audited=2', 'audited=oops')],
+    ['inconsistent total', (s: string) => s.replace('tasks=1', 'tasks=2')],
+    ['inconsistent candidates', (s: string) => s.replace('candidates=100', 'candidates=1')],
+    ['unavailable task', (s: string) => `TEST_PASS_REUSE ws=other applied=false reason=unavailable\n${s}`],
+  ])('does not qualify %s as a zero-miss measurement', (_name, change) => {
+    const log = change(output());
+    expect(summarizeTestPassReuse(parseTestPassReuse(log)).audit).toBeNull();
+    expect(window({ invocations: [{ ...invocation(), output: log }] }).verdict).toBe('unknown');
+  });
+
+  it('preserves a missing total audited counter as null at the parser boundary', () => {
+    expect(parseTestPassReuse(output().replaceAll(' audited=2', ''))[0]?.total?.audited).toBeNull();
+  });
+
+  it.each([
+    { expectedRunIds: [], invocations: [] },
+    { expectedRunIds: ['archived-run-1', 'missing'] },
+    { expectedRunIds: ['archived-run-1', 'archived-run-1'] },
+    { invocations: [invocation(), invocation()] },
+    { invocations: [{ ...invocation(), runId: 'substituted' }] },
+    { invocations: [{ ...invocation(), judgedSha: 'main' }] },
+    { invocations: [{ ...invocation(), runnerIdentity: '' }] },
+    { invocations: [{ ...invocation(), completedAtMs: 201 }] },
+    { invocations: [{ ...invocation(), completedAtMs: 109 }] },
+    { invocations: [{ ...invocation(), auditedFiles: null }] },
+    { invocations: [{ ...invocation(), auditedFiles: [] }] },
+    { invocations: [{ ...invocation(), auditedFiles: [invocation().auditedFiles![0]!] }] },
+    { invocations: [{ ...invocation(), auditedFiles: Array(2).fill(invocation().auditedFiles![0]!) }] },
+    { invocations: [{ ...invocation(), auditedFiles: invocation().auditedFiles!.map((f) => ({ ...f, evidenceRef: '' })) }] },
+    { invocations: [{ ...invocation(), auditedFiles: invocation().auditedFiles!.map((f) => ({ ...f, verdict: 'unknown' as const })) }] },
+    { invocations: [{ ...invocation(), auditedFiles: invocation().auditedFiles!.map((f) => ({ ...f, ws: 'foreign' })) }] },
+    { invocations: [{ ...invocation(), auditedFiles: invocation().auditedFiles!.map((f) => ({ ...f, invocation: 1 })) }] },
+  ])('keeps empty, partial, substituted or unqualified coverage UNKNOWN (%j)', (over) => {
+    expect(window(over).verdict).toBe('unknown');
+  });
+
+  it('requires an observed nonzero audit even if reusable files were present', () => {
+    const noAudit = output().replaceAll('audited=2', 'audited=0').replaceAll('reused=98', 'reused=100');
+    expect(window({ invocations: [{ ...invocation(), output: noAudit, auditedFiles: [] }] }).verdict).toBe('unknown');
+  });
+
+  it('fails a real first-attempt miss even if retry results or window coverage would look clean', () => {
+    const r = invocation();
+    r.output += `\n${formatReuseAlarmLine(ws, { file: r.auditedFiles![0]!.file, reason: 'audit' })}`;
+    r.auditedFiles![0]!.verdict = 'fail';
+    expect(window({ invocations: [r] })).toMatchObject({ verdict: 'fail', alarms: 1 });
+    r.auditedFiles = null;
+    expect(window({ invocations: [r] })).toMatchObject({ verdict: 'fail', alarms: 1 });
+  });
+
+  it.each(['0.01', '1e-7'])('fails a fully observed window with a changed audit policy (%s)', (auditRate) => {
+    expect(window({ invocations: [{ ...invocation(), output: output(`auditRate=${auditRate} lane=pure`) }] }).verdict).toBe('fail');
+  });
+
+  it('does not attribute an unqualified foreign failure to the observed audits', () => {
+    const r = invocation();
+    r.auditedFiles![0] = { ...r.auditedFiles![0]!, ws: 'foreign', verdict: 'fail' };
+    expect(window({ invocations: [r] })).toMatchObject({ verdict: 'unknown', alarms: 0 });
+  });
+
+  it('rejects a passing file outside the actual selector draw', () => {
+    const r = invocation();
+    r.auditedFiles![0]!.file = 'packages/operator-core/lib/not-a-sample.test.ts';
+    expect(window({ invocations: [r] }).verdict).toBe('unknown');
+  });
+
+  it('distinguishes the same audited file in selective and full invocations', () => {
+    const r = invocation();
+    r.output += `\n${output()}`;
+    r.auditedFiles!.push(...r.auditedFiles!.map((f) => ({ ...f, invocation: 1 })));
+    expect(window({ invocations: [r] })).toMatchObject({ verdict: 'pass', audited: 4 });
+  });
+
+  it('retains full alarm counts across health storage caps and degrades old health honestly', () => {
+    const alarms = Array.from({ length: TEST_PASS_REUSE_HEALTH_MAX_ALARMS + 3 }, (_, i) =>
+      formatReuseAlarmLine(ws, { file: `lib/${i}.test.ts`, reason: 'audit' }));
+    const health = buildTestPassReuseHealth([output(), ...alarms].join('\n'), invocation().judgedSha, 120)!;
+    expect(health.alarms).toHaveLength(TEST_PASS_REUSE_HEALTH_MAX_ALARMS);
+    expect(parseTestPassReuseHealth(JSON.parse(JSON.stringify(health)))?.audit?.alarmCount).toBe(alarms.length);
+    const { audit: _audit, ...old } = health;
+    expect(parseTestPassReuseHealth(old)?.audit).toBeUndefined();
+    expect(parseTestPassReuseHealth({ ...health, audit: { ...health.audit, audited: -1 } })?.audit).toBeNull();
   });
 });
 

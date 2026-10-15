@@ -33,3 +33,58 @@ export function nativeProviderRequestSignal(signal: AbortSignal): AbortSignal {
   else signal.addEventListener('abort', abort, { once: true });
   return controller.signal;
 }
+
+export interface NativeRpcReceiptMetadata {
+  peerId?: string;
+  clockId?: string;
+  atMs?: number;
+  sequence?: number;
+  phase: string;
+  frame: Record<string, unknown>;
+}
+
+export interface NativeRpcReceiptState {
+  peerId?: string;
+  clockId?: string;
+  emitted?: number;
+  enabled?: boolean;
+  sinkFailed?: boolean;
+  exited?: boolean;
+  pendingWrites?: number;
+}
+
+/** Summarize parent-process RPC receipts without retaining prompts or secrets. */
+export function nativeRpcReceiptSummary(
+  receipts: readonly NativeRpcReceiptMetadata[],
+  receiptState?: NativeRpcReceiptState,
+  options: { max?: number; totalObserved?: number } = {},
+): Record<string, unknown> {
+  const max = Math.max(1, Math.floor(options.max ?? 50));
+  const totalObserved = Math.max(receipts.length, options.totalObserved ?? receipts.length);
+  const retained = receipts.slice(-max).map((receipt) => ({
+    peerId: receipt.peerId,
+    clockId: receipt.clockId,
+    atMs: receipt.atMs,
+    sequence: receipt.sequence,
+    phase: receipt.phase,
+    frame: {
+      id: typeof receipt.frame.id === 'string' || typeof receipt.frame.id === 'number' ? receipt.frame.id : undefined,
+      type: typeof receipt.frame.type === 'string' ? receipt.frame.type : undefined,
+      method: typeof receipt.frame.method === 'string' ? receipt.frame.method : undefined,
+      command: typeof receipt.frame.command === 'string' ? receipt.frame.command : undefined,
+      keys: Object.keys(receipt.frame).slice(0, 16),
+    },
+  }));
+  const phases = receipts.reduce<Record<string, number>>((counts, receipt) => {
+    counts[receipt.phase] = (counts[receipt.phase] ?? 0) + 1;
+    return counts;
+  }, {});
+  return {
+    total: totalObserved,
+    retained: retained.length,
+    omitted: Math.max(0, totalObserved - retained.length),
+    retainedPhases: phases,
+    receipts: retained,
+    ...(receiptState ? { receiptState: { ...receiptState } } : {}),
+  };
+}

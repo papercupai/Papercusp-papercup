@@ -12,9 +12,22 @@ import {
   agentsnetTaskId,
   agentsnetResultToEmitInput,
   readAgentsnetResults,
+  agentsnetResultsModelId,
   type AgentsnetResultFile,
   type AgentsnetIngestCtx,
 } from './agentsnet-ingest';
+
+describe('agentsnetResultsModelId — the ingested model comes from the results, never a default (R-9)', () => {
+  const row = (model_name: string) => ({ model_name }) as AgentsnetResultFile;
+  it('returns the single model the result files name', () => {
+    expect(agentsnetResultsModelId([row('model-a'), row(' model-a ')])).toBe('model-a');
+  });
+  it('refuses an empty or mixed set instead of guessing', () => {
+    expect(() => agentsnetResultsModelId([])).toThrow(/no model.*pass modelId/);
+    expect(() => agentsnetResultsModelId([row('')])).toThrow(/no model/);
+    expect(() => agentsnetResultsModelId([row('model-a'), row('model-b')])).toThrow(/2 models \(model-a, model-b\)/);
+  });
+});
 
 const ctx: AgentsnetIngestCtx = {
   runId: 'run-an-1',

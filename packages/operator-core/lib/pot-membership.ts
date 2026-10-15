@@ -33,6 +33,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { potHomeSlugForHarness } from './hive-federation';
+import { observeFallback } from './degradation/fallback-observations';
 
 /**
  * The canonical dogfood / platform Pot slug + its legacy-alias canonicalizer now
@@ -179,8 +180,11 @@ export async function workItemStorageSlug(
   logLabel = 'work-item-storage-slug',
 ): Promise<string> {
   try {
-    return (await resolveWorkItemPot({ rawSlug: harnessSlug, workspaceId })) ?? harnessSlug;
+    const slug = (await resolveWorkItemPot({ rawSlug: harnessSlug, workspaceId })) ?? harnessSlug;
+    observeFallback('work-item-storage-resolution', { eligible: 1, applied: 1, reason: 'applied', scope: `${workspaceId}:${harnessSlug}` });
+    return slug;
   } catch (e) {
+    observeFallback('work-item-storage-resolution', { eligible: 1, applied: 0, reason: 'pot-resolution-failed', scope: `${workspaceId}:${harnessSlug}` });
     console.warn(
       `[${logLabel}] pot resolve failed for "${harnessSlug}" — falling back to literal slug: ${e instanceof Error ? e.message : e}`,
     );
@@ -188,18 +192,58 @@ export async function workItemStorageSlug(
   }
 }
 
+export interface PgPotLookupDeps {
+  /** One existence query; defaults to `harness_shared.pots` on the org pool. */
+  query?: (workspaceId: string, slug: string) => Promise<boolean>;
+  /** Backoff between retries of an UNMEASURED lookup (tests inject a no-op). */
+  sleep?: (ms: number) => Promise<void>;
+  /** Called when a lookup stays unmeasured after every retry (default: console.warn). */
+  onUnmeasured?: (event: PotLookupUnmeasuredEvent) => void;
+}
+
+export interface PotLookupUnmeasuredEvent {
+  workspaceId: string;
+  slug: string;
+  attempts: number;
+  errorCode: string | null;
+  /** What the lookup answered instead of measuring. */
+  assumed: string;
+}
+
 /** Production PG-backed {@link PotLookup} for one workspace. */
-export function pgPotLookup(workspaceId: string): PotLookup {
+export function pgPotLookup(workspaceId: string, deps: PgPotLookupDeps = {}): PotLookup {
+  const exists = (slug: string) => potExistence(workspaceId, slug, deps);
+  const unmeasured = (slug: string, r: PotExistenceUnknown, assumed: string) =>
+    (deps.onUnmeasured ?? warnPotLookupUnmeasured)({
+      workspaceId,
+      slug,
+      attempts: r.attempts,
+      errorCode: r.errorCode,
+      assumed,
+    });
   return {
     async resolveRealPot(rawSlug: string): Promise<string | null> {
       const canon = canonicalPotSlug(rawSlug.trim());
-      if (await potExists(workspaceId, canon)) return canon;
+      const direct = await exists(canon);
+      if (direct.state === 'exists') return canon;
+      if (direct.state === 'unknown') {
+        // WI-10004845: an UNMEASURED lookup must neither reject the slug as "not a real
+        // Pot" (PotMembershipError) nor drop it. Keep the caller's slug; the P-006 DB
+        // trigger stays the hard guarantee if it is in fact not a Pot.
+        unmeasured(canon, direct, canon);
+        return canon;
+      }
       // A member harness is not itself a Pot home — collapse it to its Pot home (D-009).
       try {
         const home = await potHomeSlugForHarness(workspaceId, canon);
         if (home) {
           const canonHome = canonicalPotSlug(home);
-          if (await potExists(workspaceId, canonHome)) return canonHome;
+          const viaHome = await exists(canonHome);
+          if (viaHome.state === 'exists') return canonHome;
+          if (viaHome.state === 'unknown') {
+            unmeasured(canonHome, viaHome, canonHome);
+            return canonHome;
+          }
         }
       } catch {
         /* no org-PG / resolver miss → not resolvable to a real Pot here */
@@ -207,28 +251,81 @@ export function pgPotLookup(workspaceId: string): PotLookup {
       return null;
     },
     async platformPot(): Promise<string | null> {
-      return (await potExists(workspaceId, PLATFORM_POT_SLUG)) ? PLATFORM_POT_SLUG : null;
+      const r = await exists(PLATFORM_POT_SLUG);
+      if (r.state === 'exists') return PLATFORM_POT_SLUG;
+      if (r.state === 'absent') return null;
+      // WI-10004845: a transient failure used to read as "this workspace has no
+      // platform Pot", so callers fell back to the non-pot `operator:<ws>` home (14
+      // issues in one second on 2026-09-25 20:37Z). Unmeasured is not absent: assume
+      // the platform Pot, which every real workspace has, and say so. (For an explicit
+      // slug that resolveRealPot MEASURED as not-a-Pot, this means the same rejection a
+      // healthy lookup gives, instead of silently accepting the slug.)
+      unmeasured(PLATFORM_POT_SLUG, r, PLATFORM_POT_SLUG);
+      return PLATFORM_POT_SLUG;
     },
   };
 }
 
+function warnPotLookupUnmeasured(event: PotLookupUnmeasuredEvent): void {
+  console.warn(
+    `[pot-membership] pot-lookup-unmeasured ws=${event.workspaceId} slug=${event.slug} ` +
+      `attempts=${event.attempts} errorCode=${event.errorCode ?? 'none'} assumed=${event.assumed}`,
+  );
+}
+
+/** SQLSTATEs meaning `harness_shared.pots` is genuinely missing or unreadable (a bare
+ *  test schema): a STABLE answer, so fail open as before. Anything else (pool
+ *  exhaustion, a reset connection, a statement timeout) means the question was NOT
+ *  answered, and is retried. */
+const POTS_RELATION_ABSENT_SQLSTATES = new Set(['42P01', '3F000', '42501']);
+
+export type PotExistenceUnknown = { state: 'unknown'; attempts: number; errorCode: string | null };
+export type PotExistence = { state: 'exists' } | { state: 'absent' } | PotExistenceUnknown;
+
+/** WI-10004845: classify one failed existence query. */
+export function classifyPotLookupError(error: unknown): 'absent' | 'unknown' {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && POTS_RELATION_ABSENT_SQLSTATES.has(code) ? 'absent' : 'unknown';
+}
+
+const POT_LOOKUP_RETRY_DELAYS_MS = [150, 450];
+
 /**
- * Does a Pot with home slug `slug` exist in `workspaceId`? FAILS OPEN (returns false)
- * on any DB error — an unreadable/absent `harness_shared.pots` (a bare test schema, a
- * transient pool error) must never turn write-time enforcement into a hard create
- * failure. A false here cascades to the fail-open path in {@link resolveWorkItemPot}
- * (platformPot → null ⇒ no reject); the P-006 DB trigger remains the hard guarantee.
+ * Does a Pot with home slug `slug` exist in `workspaceId`? Tri-state (WI-10004845):
+ * `exists`, `absent` (measured, or the relation itself is missing — the bare-schema
+ * fail-open), or `unknown` after retries when the DB did not answer. Callers must not
+ * read `unknown` as `absent`.
  */
-async function potExists(workspaceId: string, slug: string): Promise<boolean> {
-  try {
-    const { sql } = getOrgPg();
-    const rows = await sql<{ one: number }[]>`
-      SELECT 1 AS one
-        FROM harness_shared.pots
-       WHERE workspace_id = ${workspaceId} AND pot_home_slug = ${slug}
-       LIMIT 1`;
-    return rows.length > 0;
-  } catch {
-    return false;
+export async function potExistence(
+  workspaceId: string,
+  slug: string,
+  deps: Pick<PgPotLookupDeps, 'query' | 'sleep'> = {},
+): Promise<PotExistence> {
+  const query = deps.query ?? potExistsQuery;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let errorCode: string | null = null;
+  for (let attempt = 0; attempt <= POT_LOOKUP_RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      return (await query(workspaceId, slug)) ? { state: 'exists' } : { state: 'absent' };
+    } catch (error) {
+      if (classifyPotLookupError(error) === 'absent') return { state: 'absent' };
+      const code = (error as { code?: unknown } | null)?.code;
+      errorCode = typeof code === 'string' ? code : null;
+      const delay = POT_LOOKUP_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined) return { state: 'unknown', attempts: attempt + 1, errorCode };
+      await sleep(delay);
+    }
   }
+  return { state: 'unknown', attempts: POT_LOOKUP_RETRY_DELAYS_MS.length + 1, errorCode };
+}
+
+/** One existence query. THROWS on a DB error; {@link potExistence} classifies it. */
+async function potExistsQuery(workspaceId: string, slug: string): Promise<boolean> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ one: number }[]>`
+    SELECT 1 AS one
+      FROM harness_shared.pots
+     WHERE workspace_id = ${workspaceId} AND pot_home_slug = ${slug}
+     LIMIT 1`;
+  return rows.length > 0;
 }

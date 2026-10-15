@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "GitNexus P-005 engine comparison: aggregate re-derived from the four persisted live arm reports AFTER the final clean installed-arm rerun and after the content-derived run-identity fix (re-run against the current engine-comparison-cli.ts, engine-comparison.ts and engine-comparison-report.ts blobs)",
+  "framework": "shell",
+  "command": [
+    "npx",
+    "tsx",
+    "packages/operator-core/lib/code-intelligence/engine-comparison-cli.ts",
+    "--aggregate",
+    "--out",
+    "docs/evidence/gitnexus-engine-comparison-2026-10-01"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-02T18:29:44Z",
+  "finishedAt": "2026-10-02T18:29:47Z",
+  "summary": "Re-ran the engine-comparison CLI aggregate step against the persisted per-arm reports (baseline-lsp-rg, gitnexus-installed, gitnexus-candidate, codebase-memory) under docs/evidence/gitnexus-engine-comparison-2026-10-01, after the final pristine installed-arm rerun (WI-10005374) and after the run-identity fix for EI-24858052475884275. It supersedes the 18:21Z aggregate evidence (the -c file) because the CLI, ArmReport and report sources changed again: the first byte-stability fix derived createdAt from report FILE MTIME, which a copy or fresh clone resets, and was retracted; run identity (runId/createdAt) is now derived from a measuredAt instant stamped INSIDE each arm report when the arm run finishes, with a fixed 1970 epoch for a report that lacks it, and aggregate() reads neither the wall clock nor any file mtime. The four committed reports were backfilled with measuredAt from their true bench completion times (baseline-lsp-rg 2026-10-01T14:20:28.023Z, codebase-memory 2026-10-01T14:49:39.594Z, gitnexus-candidate 2026-10-01T21:05:36.226Z, gitnexus-installed 2026-10-02T16:37:34.722Z); the newest equals the createdAt already committed in engine-comparison.md and task-runs.json, so no committed output byte moved. The aggregate exited 0 in about 3 seconds and ALL FOUR outputs (engine-comparison.md, verdict.json, task-runs.json, fairness-audit.json) were byte-identical before and after. Per verdict.json (sha256 2c9c3280fd3fa397f8945de9207ecf07e6de8f05cdd5620a7c072a91dcea4e03) the decision is keep with an empty residue list and sourceParity.same=true (all four arms fingerprint 08104b5503ccf9a3b0cf486a81bbc06fc94329f5): Codebase-Memory does not replace the installed GitNexus (correct 1/5 < installed 2/5, recall 0.20 < 0.50, warm median 3.31x installed), and the 1.6.12 candidate does not upgrade it (correct 1/5 < installed 2/5, recall 0.43 < 0.50, cold index 2.71x and index bytes 1.41x installed). Disclosed limits: the aggregate step reads files and does not re-query any engine; GitNexus cold-index wall and RSS are single real runs taken under shared-host load and are upper bounds, so latency ratios are load-confounded while the parity and quality verdict is not. The measuredAt values for the three older arms are backfilled from their bench file mtimes (the only record of when those runs finished), not captured at run time; only a future arm run stamps measuredAt itself.",
+  "assertions": [
+    {
+      "id": "aggregate-exit-0",
+      "passed": true,
+      "evidence": "engine-comparison-cli.ts --aggregate --out docs/evidence/gitnexus-engine-comparison-2026-10-01 exited 0 in about 3 seconds (18:29:44Z to 18:29:47Z) with the current cli blob (sha256 c1eb185b2daf535a2ade6d614e466574ee4e38dbb3ff05935a1eff17eeabba27), engine-comparison.ts blob (sha256 85335b33d29b104bf23a6b38db0dee0f6728a29200f4ed7c35231903f4add63a) and engine-comparison-report.ts blob (sha256 74fd2f8f7dc042b077de59f26209b728a8531dd7ee0d2eebebc74b6cab8e02c2); all three were committed (HEAD blob equals working-tree blob) when this file was written."
+    },
+    {
+      "id": "verdict-keep-reproduced",
+      "passed": true,
+      "evidence": "verdict.json decision is keep with an empty residue list and sourceParity.same=true; its sha256 is 2c9c3280fd3fa397f8945de9207ecf07e6de8f05cdd5620a7c072a91dcea4e03 both before and after the re-run (byte-identical), and engine-comparison.md, task-runs.json and fairness-audit.json were also byte-identical before and after (sha256sum of all four compared)."
+    },
+    {
+      "id": "run-identity-copy-stable",
+      "passed": true,
+      "evidence": "The case that defeated the retracted mtime-derived fix was reproduced and passes: the committed evidence directory was copied, every report-*.json in the copy was touched so all mtimes were fresh, and the CLI --aggregate was run on the copy; engine-comparison.md, verdict.json, task-runs.json and fairness-audit.json were byte-identical to the committed files (cmp on each). The recurrence guard is committed in engine-comparison-report.test.ts (19 passing in test run 20553656): deriveRunMeta is pure under fake clocks, the aggregate() source guard fails on any clock read or file-mtime read with two inline negative controls (the original clock shape and the retracted mtime shape), and a committed-evidence test asserts every committed report carries a parseable measuredAt and that the committed markdown header and task-runs.json carry exactly the createdAt and runId deriveRunMeta yields from them."
+    },
+    {
+      "id": "no-replace-no-upgrade-reasons-measured",
+      "passed": true,
+      "evidence": "Both verdict.json reasons cite measured per-arm numbers (correct counts, recall, warm median ratio 3.31x, cold index ratio 2.71x, index bytes ratio 1.41x) taken from the report-*.json files rather than asserted; the only change to those report files was the added measuredAt field, which no number depends on."
+    },
+    {
+      "id": "limits-disclosed",
+      "passed": true,
+      "evidence": "engine-comparison.md notes disclose the clean-rerun resolution of the installed-arm tree-parity defect, the 512 KB analyze size-cap skips in both GitNexus arms, the candidate line-base correction, that the baseline arm is a scripted rg pass, and that the tool-level comparison spends zero LLM tokens. This file additionally discloses the load-confounded latency ratios and that three of the four measuredAt values are backfilled from bench file mtimes."
+    }
+  ],
+  "workItemId": "WI-10001409",
+  "specId": "AUTO-BAR-R-8-P-005",
+  "testFile": "docs/evidence/gitnexus-engine-comparison-2026-10-01/verdict.json",
+  "sourceFile": "packages/operator-core/lib/code-intelligence/engine-comparison-cli.ts"
+}

@@ -251,6 +251,13 @@ export function hasCommittedLaunchOutcome(call: Pick<DivergenceCall, 'toolName' 
   return call.launchOutcome.openedMemberIds.length > 0 || call.launchOutcome.verifiedMemberIds.length > 0;
 }
 
+/** A completed code:run dispatch wrapper proves the outer tool call converged. */
+function isSuccessfulCodeRunDispatchWrapper(call: DivergenceCall): boolean {
+  if (call.toolName !== 'code:run' || !isDispatchWrapperMetadata(call.metadataJson)) return false;
+  const metadata = call.metadataJson as Record<string, unknown>;
+  return metadata.effectiveStatus === 'ok' && metadata.childFailureCount === 0;
+}
+
 /** The namespace half of a `group:verb` tool name; '' when unnamespaced. */
 export function toolNamespace(toolName: string): string {
   const i = toolName.indexOf(':');
@@ -682,10 +689,13 @@ export function detectIntentActionDivergence(
   let launchFailuresReconciled = 0;
   for (const owned of byOwner.values()) {
     // A dispatch wrapper is an outer telemetry row for a deliberate schema
-    // probe. Its invalid-input status is expected negative-control evidence,
-    // not an agent retry. Keep it in `rows` above so stamped goal evidence
-    // remains intact; exclude it only from this sampling leg.
-    const samplingOwned = owned.filter((c) => !isDispatchWrapperMetadata(c.metadataJson));
+    // probe. Wrapper failures are expected negative-control evidence, not agent
+    // retries. A successful code:run wrapper is different: its persisted
+    // effectiveStatus/childFailureCount proves that code:run converged, so keep
+    // that row as a success boundary for adjacent ingress failures.
+    const samplingOwned = owned.filter(
+      (c) => !isDispatchWrapperMetadata(c.metadataJson) || isSuccessfulCodeRunDispatchWrapper(c),
+    );
     // Calls of ONE tool, in time order — SUCCESSES INCLUDED. Grouping by tool
     // before running the window is what makes "the same call keeps failing"
     // distinguishable from "this agent had a bad minute across five different
@@ -710,7 +720,8 @@ export function detectIntentActionDivergence(
       // A failure-shaped launch that opened a member is a committed action, not
       // an unsuccessful retry. Normalize it to an explicit success boundary so
       // later genuine failures start a fresh episode.
-      const timelineCall = committedLaunch ? { ...c, status: 'ok' } : c;
+      const timelineCall =
+        committedLaunch || isSuccessfulCodeRunDispatchWrapper(c) ? { ...c, status: 'ok' } : c;
       const b = callsByTool.get(c.toolName);
       if (b) b.push(timelineCall);
       else callsByTool.set(c.toolName, [timelineCall]);

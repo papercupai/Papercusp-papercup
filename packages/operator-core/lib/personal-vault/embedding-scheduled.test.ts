@@ -11,7 +11,7 @@ describe('Personal Vault local-only embedding recurrence guard', () => {
     expect(PERSONAL_EMBEDDER_MODE).toBe('gemma');
     expect(PERSONAL_EMBED_MAX_ROWS_PER_TICK).toBeGreaterThan(0);
     expect(PERSONAL_EMBED_MAX_ROWS_PER_TICK).toBeLessThanOrEqual(32);
-    expect(PERSONAL_EMBED_TARGET).toMatchObject({ table: 'harness_shared.personal_documents', embedCol: 'embedding' });
+    expect(PERSONAL_EMBED_TARGET).toMatchObject({ table: 'harness_shared.documents', embedCol: 'embedding' });
   });
 
   it('is invoked by the existing production embed-backfill schedule', () => {

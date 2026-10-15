@@ -49,6 +49,39 @@ describe('adaptClaudeJsonl', () => {
     });
   });
 
+  it('retains the compact summary and tail when discarded logical ancestry contains a cycle', () => {
+    const jsonl = [
+      { type: 'system', uuid: 'boundary', parentUuid: null, logicalParentUuid: 'old-attachment' },
+      { type: 'user', uuid: 'summary', parentUuid: 'boundary', isCompactSummary: true,
+        message: { role: 'user', content: 'Current compacted context' } },
+      { type: 'user', uuid: 'old-attachment', parentUuid: 'boundary',
+        message: { role: 'user', content: 'Discarded old context' } },
+      { type: 'assistant', uuid: 'tail', parentUuid: 'summary',
+        message: { role: 'assistant', content: 'Continue from the summary' } },
+    ].map((record) => JSON.stringify(record)).join('\n');
+
+    const out = adaptClaudeJsonl(jsonl);
+    expect(out.activeLeafId).toBe('tail');
+    expect(out.turns.map((turn) => turn.id)).toEqual(['summary', 'tail']);
+    expect(out.turns[0]).toMatchObject({ compactSummary: true });
+    expect(JSON.stringify(out.turns)).not.toContain('Discarded old context');
+    expect(out.stats).toMatchObject({ activePathRecords: 2, compactedAncestors: 2 });
+    expect(out.warnings.join('\n')).toMatch(/summarized.*cycle/i);
+  });
+
+  it('rejects cycles in the retained tail even when an older compact summary exists', () => {
+    const jsonl = [
+      { type: 'user', uuid: 'summary', parentUuid: null, isCompactSummary: true,
+        message: { role: 'user', content: 'Earlier summary' } },
+      { type: 'user', uuid: 'active-user', parentUuid: 'active-assistant',
+        message: { role: 'user', content: 'Current request' } },
+      { type: 'assistant', uuid: 'active-assistant', parentUuid: 'active-user',
+        message: { role: 'assistant', content: 'Current answer' } },
+    ].map((record) => JSON.stringify(record)).join('\n');
+
+    expect(() => adaptClaudeJsonl(jsonl)).toThrow(/cycle detected/);
+  });
+
   it('drops foreign thinking/signatures while preserving text attachments and local inert tool links', () => {
     const jsonl = [
       JSON.stringify({

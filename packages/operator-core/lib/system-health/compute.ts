@@ -27,6 +27,8 @@ import type { ImprovementCandidate } from '../harness/improvements/policy';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { gitSidecarEnabled, noteSidecarFallback, runGitViaSpawnerSidecar } from '../fleet/git-via-sidecar';
+import { pinModuleState } from '@papercusp/module-singleton';
+import { createPushBacklogReader } from './push-backlog-reader';
 import { probeHttpReachable } from '../escalating-http-probe';
 import { activeWorkspaceId, readRegistry } from '../workspace-registry';
 import { ALWAYS_ON_SYSTEM_ROUTINE_NAMES, isReaffirmed } from '../harness/routines/bespoke-active-seeds-check';
@@ -43,6 +45,7 @@ import type { ScorecardFreshnessStatus } from '../scorecard-freshness';
 import { accountFull } from '../deployment/account-pool';
 import { projectLiveEdgeThrottle } from '../deployment/account-pool-store';
 import { dedupeInFlight } from '../dedupe-in-flight';
+import { NOOP_TICK_LEGS, watchTick, type TickLegTracker } from './tick-legs';
 import type { LiveHealthReading, LiveHealthSignalKey, LiveHealthSnapshot } from '../resource-governor/live-health';
 import type {
   SystemHealth,
@@ -79,10 +82,19 @@ import type {
   HostPressureSample,
 } from './types';
 import { PANEL_LABELS } from './types';
+// Import-light (type imports only at module scope; the readers load lazily inside it).
+import {
+  AGENT_STRANDED_ALARM_THRESHOLD,
+  AGENT_WEDGED_ALARM_THRESHOLD,
+  WEDGE_CLASSES,
+  formatWedgedByClass,
+  type AgentStrandHealth,
+} from './agent-strand-census';
 import { getPanelRefreshCoalescer } from './refresh-coalescer';
 // EI-19275994927087666: ONE classifier shared by the escalation broadcast and this
 // panel — they told the same lie independently, so they must now agree by construction.
 import { classifyGitSyncFailingLeg, gitSyncLegPhrase } from '../harness/git-sync/git-sync-escalation';
+import { GIT_SYNC_MISSING_CHECKOUT_RETIRE_AFTER_MS, readMissingCheckout } from '../harness/git-sync/missing-checkout';
 import { isOperationalEscalation } from '../attention/adapters';
 import {
   queenStatus,
@@ -114,6 +126,7 @@ import {
   QUEEN_STALL_MS,
   WATCHDOG_FIRES_WARN,
   MCP_PROXY_HARD_FAIL_CRIT,
+  MCP_PROXY_CRITICAL_CONTINUATION_WAIT_CRIT_MS,
   DISK_USED_CRIT_PCT,
   DISK_USED_WARN_PCT,
   ADMISSION_STARVATION_IDLE_ACCOUNTS_MIN,
@@ -121,6 +134,21 @@ import {
 
 const WINDOW_MS = 60 * 60_000; // the dashboard's "this window" lookback (1h)
 const DEAD_ROUTINE_OVERDUE_MS = 10 * 60_000;
+/**
+ * WI-10005073: a FAST routine (observed cadence `next_fire_at - last_fired_at` <= 60 s) is dead
+ * after LEAST(base, GREATEST(base * 0.5, 10 * cadence)) instead of the flat base. With the
+ * 10 min base that is 5 min for anything every 30 s or faster, 10 x cadence between 30 and
+ * 60 s; the checkpoint-widened base (20 min) doubles it. Why: a bg-host main thread pinned
+ * after boot left every 1 s routine silent ~14 min, and the flat 10 min (20 min during a
+ * checkpoint) let most of that pass unreported. Why not tighter: a NORMAL bg-host restart
+ * (drain + boot + first tick) silenced the 1 s fleet-headcount-governor ~3.7 min on
+ * 2026-10-02 04:19-04:23Z, so a 3 min floor would page on every deploy. The cadence is
+ * derived from the row itself (the engine sets next_fire_at = cron-next at each fire), so a
+ * new fast routine is covered without a registry; a never-fired row keeps the base.
+ */
+export const FAST_ROUTINE_MAX_CADENCE_SEC = 60;
+export const FAST_ROUTINE_CADENCE_MULTIPLE = 10;
+export const FAST_ROUTINE_BASE_FRACTION = 0.5;
 /** WI-4310: the WIDENED dead-routine overdue threshold used only while a green-checkpoint
  *  run's known, self-recovering resource footprint (GREEN_CHECKPOINT_MAX_FORKS forked vitest
  *  workers sharing this box's PG pool + CPU with routinesTick) is active or just finished —
@@ -392,6 +420,70 @@ interface GitSyncRoutineRead {
   active: boolean;
   trigger_config: Record<string, unknown> | null;
   metadata: Record<string, unknown> | null;
+}
+
+export interface GitSyncMissedIntervalsCandidate {
+  installSlug: string;
+  missedIntervals: number;
+}
+
+type SystemHealthGitSyncRow = GitSyncRoutineRead & { install_slug: string };
+
+async function readSystemHealthGitSyncRows(workspaceId: string): Promise<SystemHealthGitSyncRow[]> {
+  const { sql } = getOrgPg();
+  return sql<SystemHealthGitSyncRow[]>`
+    SELECT install_slug, active, trigger_config, metadata FROM harness_shared.routines
+     WHERE target_role = 'system:git-sync' AND active = true AND workspace_id = ${workspaceId}`;
+}
+
+function missedIntervalsCandidate(
+  row: SystemHealthGitSyncRow,
+  freshness: Record<string, unknown>,
+): GitSyncMissedIntervalsCandidate | null {
+  const missed = typeof freshness.missed_intervals === 'number' ? freshness.missed_intervals : null;
+  const metadata = row.metadata ?? {};
+  const lastStatus = typeof metadata.last_status === 'string' ? metadata.last_status : null;
+  if (
+    missed === null ||
+    missed <= 0 ||
+    lastStatus === 'error' ||
+    lastStatus === 'conflict' ||
+    (lastStatus === 'skipped' && metadata.last_skip_reason === 'no_path')
+  ) {
+    return null;
+  }
+  const schedulerLeg = freshness.scheduler as { stalled_behind_in_flight_fire?: unknown } | undefined;
+  const executionLeg = freshness.execution as { status?: unknown } | undefined;
+  if (schedulerLeg?.stalled_behind_in_flight_fire === true && executionLeg?.status === 'in-flight') {
+    return null;
+  }
+  return { installSlug: row.install_slug, missedIntervals: missed };
+}
+
+/**
+ * Re-read the active routine rows used by the deploy panel, then apply the same
+ * candidate rules before the request-path alarm opens a git-sync starvation alert.
+ * A null result means the live read failed; callers must fail open and preserve the alarm.
+ */
+export async function readFreshGitSyncMissedIntervalsByInstall(
+  workspaceId: string,
+  nowMs: number,
+): Promise<GitSyncMissedIntervalsCandidate[] | null> {
+  try {
+    const [{ deriveGitSyncFreshness }, rows] = await Promise.all([
+      import('../agent-tools/routines/list'),
+      readSystemHealthGitSyncRows(workspaceId),
+    ]);
+    return rows
+      .map((row) => missedIntervalsCandidate(
+        row,
+        deriveSystemHealthGitSyncStatus(row, nowMs, deriveGitSyncFreshness).freshness,
+      ))
+      .filter((candidate): candidate is GitSyncMissedIntervalsCandidate => candidate !== null)
+      .sort((a, b) => b.missedIntervals - a.missedIntervals);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -753,7 +845,17 @@ export async function readDeadRoutines(
   }>>`
     WITH scope AS (
       SELECT name, install_slug, next_fire_at,
-             (next_fire_at < now() - make_interval(secs => ${overdueMs / 1000})) AS is_overdue
+             (next_fire_at < now() - make_interval(secs => CASE
+                WHEN last_fired_at IS NULL OR NOT isfinite(next_fire_at) OR next_fire_at <= last_fired_at
+                  THEN ${overdueMs / 1000}::float8
+                WHEN next_fire_at - last_fired_at <= make_interval(secs => ${FAST_ROUTINE_MAX_CADENCE_SEC}::float8)
+                  THEN LEAST(
+                    ${overdueMs / 1000}::float8,
+                    GREATEST(
+                      ${(overdueMs / 1000) * FAST_ROUTINE_BASE_FRACTION}::float8,
+                      ${FAST_ROUTINE_CADENCE_MULTIPLE}::float8 * extract(epoch FROM next_fire_at - last_fired_at)::float8))
+                ELSE ${overdueMs / 1000}::float8
+              END)) AS is_overdue
         FROM harness_shared.routines
        WHERE active = true AND next_fire_at IS NOT NULL
          AND workspace_id = ${workspaceId}
@@ -1706,18 +1808,19 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
     let gitSyncFailingLeg: DeployHealth['gitSyncFailingLeg'] = null;
     let gitSyncMaxMissedIntervals: number | null = null;
     let gitSyncMissedIntervalsInstallSlug: string | null = null;
+    const gitSyncMissedIntervalsByInstall: Array<{ installSlug: string; missedIntervals: number }> = [];
+    const gitSyncCheckoutMissingByInstall: NonNullable<DeployHealth['gitSyncCheckoutMissingByInstall']> = [];
     let gitSyncMissedIntervalsUnreadable = false;
     try {
-      const { sql } = getOrgPg();
       const { deriveGitSyncFreshness } = await import('../agent-tools/routines/list');
-      const rows = await sql<Array<GitSyncRoutineRead & { install_slug: string }>>`
-        SELECT install_slug, trigger_config, metadata FROM harness_shared.routines
-         WHERE target_role = 'system:git-sync' AND active = true AND workspace_id = ${ctx.ws}`;
+      const rows = await readSystemHealthGitSyncRows(ctx.ws);
       for (const r of rows) {
         const md = (r.metadata ?? {}) as Record<string, unknown>;
         const derived = deriveSystemHealthGitSyncStatus(r, ctx.now, deriveGitSyncFreshness);
         const rawEt = Number(md.consecutive_error_ticks ?? 0) || 0;
-        const backlog = rawEt > 0 ? await liveGitSyncPushBacklog(r.install_slug) : null;
+        // WI-10006803: bounded + cached — the live probe is ~117 git spawns / ~30s on a
+        // big tree, so the tick waits at most the reader's deadline (null = unknown).
+        const backlog = rawEt > 0 ? await gitSyncPushBacklogReader.read(r.install_slug) : null;
         if (backlog !== null) gitSyncPushBacklog = Math.max(gitSyncPushBacklog ?? 0, backlog);
         const et = backlog === 0 ? 0 : rawEt;
         // worst-wins: the most-failing routine drives the panel status.
@@ -1753,16 +1856,34 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
         // the push-failure escalation already owns it; this measure is for 'not firing at all'.
         const missed = typeof derived.freshness.missed_intervals === 'number' ? derived.freshness.missed_intervals : null;
         const lastStatus = typeof md.last_status === 'string' ? md.last_status : null;
-        if (
-          missed !== null &&
-          lastStatus !== 'error' &&
-          lastStatus !== 'conflict' &&
-          (gitSyncMaxMissedIntervals === null || missed > gitSyncMaxMissedIntervals)
-        ) {
-          gitSyncMaxMissedIntervals = missed;
-          gitSyncMissedIntervalsInstallSlug = r.install_slug;
+        // WI-10006867: a vanished checkout skips every fire with `no_path` while last_synced_at
+        // stays frozen, so its missed-interval count grows forever without the scheduler being
+        // at fault. Report it under its real cause and keep it OUT of the starvation measure.
+        if (lastStatus === 'skipped' && md.last_skip_reason === 'no_path') {
+          const mc = readMissingCheckout(md);
+          gitSyncCheckoutMissingByInstall.push({
+            installSlug: r.install_slug,
+            path: mc?.path ?? null,
+            sinceMs: mc?.since ?? null,
+            retireAtMs: mc ? mc.since + GIT_SYNC_MISSING_CHECKOUT_RETIRE_AFTER_MS : null,
+          });
+          continue;
+        }
+        if (missed !== null && lastStatus !== 'error' && lastStatus !== 'conflict') {
+          // WI-10006786: keep every install's reading, not only the max — the alarm keys one
+          // signal per install, so a long-dead install cannot mask another install's starvation.
+          // A stale completion clock explained by a progressing fire is long-running execution,
+          // not scheduler starvation. Keep the raw maximum for diagnosis, but do not send this
+          // install to the starvation alarm.
+          const candidate = missedIntervalsCandidate(r, derived.freshness);
+          if (candidate) gitSyncMissedIntervalsByInstall.push(candidate);
+          if (gitSyncMaxMissedIntervals === null || missed > gitSyncMaxMissedIntervals) {
+            gitSyncMaxMissedIntervals = missed;
+            gitSyncMissedIntervalsInstallSlug = r.install_slug;
+          }
         }
       }
+      gitSyncMissedIntervalsByInstall.sort((a, b) => b.missedIntervals - a.missedIntervals);
     } catch {
       /* routine metadata unreadable — leave git-sync delivery fields at defaults */
       gitSyncMissedIntervalsUnreadable = true;
@@ -1801,6 +1922,8 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
       gitSyncFailingLeg,
       gitSyncMaxMissedIntervals,
       gitSyncMissedIntervalsInstallSlug,
+      gitSyncMissedIntervalsByInstall,
+      gitSyncCheckoutMissingByInstall,
       gitSyncMissedIntervalsUnreadable,
       bgHostStartedAtMs,
       bgHostCodeStale,
@@ -1931,6 +2054,16 @@ async function liveGitSyncPushBacklog(slug: string): Promise<number | null> {
     return null;
   }
 }
+
+/**
+ * The tick-facing reader for {@link liveGitSyncPushBacklog} (WI-10006803): single-flight,
+ * stale-while-revalidate, and a short cold-miss deadline, so collectDeploy never blocks a
+ * health tick on the serial fetch sweep. Pinned so a split module record cannot run a
+ * second, uncached probe beside the first.
+ */
+const gitSyncPushBacklogReader = pinModuleState('@papercusp/operator-core.system-health.git-sync-push-backlog', () => ({
+  read: createPushBacklogReader({ probe: liveGitSyncPushBacklog }),
+}));
 
 /**
  * PURE: tally plan-index rows into PlansHealth. `startedDraft` = plans force-STARTED
@@ -2185,6 +2318,14 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
       // elevated ≥1.5s, critical ≥4s (a healthy pgHealth returns in tens of ms).
       pool = { probeMs, band: classifyPoolPressure(probeMs, 1500, 4000) };
     } catch { /* PG unreadable — collector still returns (gateway leg) */ }
+    // Host DNS canary (WI-6554700010008585): a 46-minute box-wide resolver outage fired no alarm
+    // because nothing observed DNS. probeDnsResolution never throws and is bounded by its own
+    // per-query timeout; a failure to even run it leaves `dns` null (= unobserved, not healthy).
+    let dns: InfraHealth['dns'] = null;
+    try {
+      const { probeDnsResolution } = await import('./dns-probe');
+      dns = await probeDnsResolution();
+    } catch { /* probe could not run — leave null */ }
     // Fresh host-pressure evidence from the resource-governor monitor. The reader
     // validates the atomic snapshot and rejects missing, malformed, future, or
     // stale files; the pure detector then preserves unknown signal states rather
@@ -2227,7 +2368,9 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
           });
           deployInProgress = holders.some((h) => h.mode === 'exclusive');
         } catch { /* lock store unreadable — do not suppress */ }
-        perf = evaluatePerfSignals(sig, ctx.now, undefined, deployInProgress);
+        const { hostname } = await import('node:os');
+        perf = await evaluatePerfSignals(sig, ctx.now, undefined, deployInProgress,
+          { workspaceId: ctx.ws, hostId: hostname() });
       }
     } catch { /* perf-signals unreadable — leave null */ }
     // This reader runs even when the sampling routine has stopped. Reuse Infra's
@@ -2336,7 +2479,13 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
       const d = await checkMigrationDrift();
       migrationDrift = { unapplied: d.missing.length };
     } catch { /* drift unreadable — leave null */ }
+    let hostedControlPlane: InfraHealth['hostedControlPlane'] = null;
+    try {
+      const { readWorkspaceHostReliability } = await import('../workspace-host/observability-store');
+      hostedControlPlane = await readWorkspaceHostReliability(ctx.ws, ctx.now);
+    } catch { /* unobserved — do not manufacture healthy counts */ }
     const data: InfraHealth = {
+      hostedControlPlane,
       pg,
       gatewayReachable: ctx.gatewayReachable,
       hostPressure,
@@ -2344,6 +2493,7 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
       performanceHistory,
       mcpProxy,
       pool,
+      dns,
       disk,
       backup,
       migrationDrift,
@@ -2354,6 +2504,8 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
     const toolsCrit = toolFailures?.rating === 'broken';
     const mcpHard = mcpProxy?.hardFailures ?? 0;
     const mcpCrit = mcpHard >= MCP_PROXY_HARD_FAIL_CRIT;
+    const mcpQueueStalls = mcpProxy?.criticalContinuationQueueStalls ?? 0;
+    const mcpQueueCrit = mcpQueueStalls > 0;
     const mcpWarn = mcpHard > 0 && !mcpCrit;
     const worstDisk = disk && disk.length > 0 ? Math.max(...disk.map((v) => v.usedPct)) : null;
     const hostPressureTone =
@@ -2366,11 +2518,34 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
       metrics: [
         m('pg conns', pg ? `${pg.active}/${pg.total}` : '?', pg === null ? 'unknown' : undefined),
         m('pg pool', pool ? (pool.band === 'ok' ? `${pool.probeMs}ms` : `${pool.band} (${pool.probeMs}ms)`) : 'n/a', pool?.band === 'critical' ? 'warn' : undefined),
+        m('dns', dns ? (dns.ok ? `${dns.probeMs}ms` : `${dns.names.filter((n) => !n.ok).length}/${dns.names.length} canaries failing`) : 'n/a', dns && !dns.ok ? 'warn' : undefined),
         m('gateway', ctx.gatewayEnabled ? (ctx.gatewayReachable ? 'up' : 'down') : 'direct', ctx.gatewayEnabled && ctx.gatewayReachable === false ? 'crit' : undefined),
-        m('mcp-proxy', mcpProxy ? (mcpHard > 0 ? `${mcpHard} fail/1h` : (mcpProxy.recovered > 0 ? `ok (${mcpProxy.recovered} recov)` : 'ok')) : 'n/a', mcpCrit ? 'crit' : mcpWarn ? 'warn' : undefined),
+        m('mcp-proxy', mcpProxy ? (mcpQueueCrit ? `${mcpQueueStalls} critical continuation wait(s) ≥${MCP_PROXY_CRITICAL_CONTINUATION_WAIT_CRIT_MS / 60_000}m observed in the last hour (max ${Math.round(mcpProxy.criticalContinuationQueueMaxWaitMs / 1000)}s)` : mcpHard > 0 ? `${mcpHard} fail/1h` : (mcpProxy.recovered > 0 ? `ok (${mcpProxy.recovered} recov)` : 'ok')) : 'n/a', mcpCrit || mcpQueueCrit ? 'crit' : mcpWarn ? 'warn' : undefined),
         m('worker cpu', perf?.worstWorkerCpuPct != null ? `${Math.round(perf.worstWorkerCpuPct)}%` : 'n/a'),
         m('host', perf ? (perf.stale ? 'stale' : (perf.hostState ?? '?')) : 'n/a', perfCrit ? 'crit' : (perf?.status === 'warn' ? 'warn' : undefined)),
         m('host pressure', hostPressure?.status ?? 'n/a', hostPressureTone),
+        m('hosted running / unhealthy / unobserved', hostedControlPlane?.hosts
+          ? `${hostedControlPlane.hosts.expectedRunning} / ${hostedControlPlane.hosts.unhealthy} / ${hostedControlPlane.hosts.unobserved}` : 'unknown',
+          (hostedControlPlane?.hosts?.unhealthy ?? 0) > 0 ? 'crit' : undefined),
+        m('Papercusp-owned running hosts', hostedControlPlane?.hosts?.platformOwnedRunning ?? 'unknown'),
+        m('hosted lifecycle success / failure (1h)', hostedControlPlane?.lifecycle
+          ? `${hostedControlPlane.lifecycle.succeeded} / ${hostedControlPlane.lifecycle.failed}` : 'unknown'),
+        m('hosted queued / running', hostedControlPlane?.lifecycle
+          ? `${hostedControlPlane.lifecycle.queued} / ${hostedControlPlane.lifecycle.running}` : 'unknown'),
+        m('provision / restore p95 ms (admission to success)', hostedControlPlane?.lifecycle?.successP95Ms ?? 'unknown'),
+        m('hosted provider connections degraded', hostedControlPlane?.providerConnections?.degraded ?? 'unknown'),
+        m('sampled hosted API errors / samples (1h)', hostedControlPlane?.api
+          ? `${hostedControlPlane.api.errors} / ${hostedControlPlane.api.samples}` : 'unknown'),
+        m('sampled hosted API success p95 ms', hostedControlPlane?.api?.p95Ms ?? 'unknown'),
+        m('reverse connectors active / heartbeat lost', hostedControlPlane?.reverseConnectors
+          ? `${hostedControlPlane.reverseConnectors.active} / ${hostedControlPlane.reverseConnectors.lost}` : 'unknown'),
+        m('Papercusp-funded lifecycle estimates USD (current budget periods)',
+          hostedControlPlane?.ownedCost?.estimatedUsdCents == null ? 'unknown'
+            : `$${(hostedControlPlane.ownedCost.estimatedUsdCents / 100).toFixed(2)} (estimated)`),
+        m('platform lifecycle estimates / unpriced', hostedControlPlane?.ownedCost
+          ? `${hostedControlPlane.ownedCost.estimates} / ${hostedControlPlane.ownedCost.unpriced}` : 'unknown'),
+        m('platform lifecycle budget breaches', hostedControlPlane?.ownedCost?.breachedBudgets ?? 'unknown'),
+        m('provider infrastructure invoices', 'unknown — account access not granted'),
         m('performance history', performanceHistory.note,
           performanceHistory.status === 'disabled' ? undefined : performanceHistory.status),
         m('disk', worstDisk === null ? 'n/a' : `${worstDisk}%`, worstDisk === null ? undefined : worstDisk >= DISK_USED_CRIT_PCT ? 'crit' : worstDisk >= DISK_USED_WARN_PCT ? 'warn' : undefined),
@@ -2513,6 +2688,30 @@ async function collectLoops(ctx: HealthCtx): Promise<HealthPanel<LoopsHealth>> {
 }
 
 /**
+ * P-011(b): one metric per wedge class plus the stranded count. An unreadable leg renders as
+ * `unreadable` rather than 0, and a snapshot without the census renders no strand metrics at all.
+ */
+function strandMetrics(strand: AgentStrandHealth | null | undefined): HealthMetric[] {
+  if (!strand) return [];
+  const out: HealthMetric[] = [];
+  if (strand.wedgedUnreadable) {
+    out.push(m('wedged', 'unreadable', 'warn'));
+  } else {
+    out.push(m('wedged', strand.wedged, strand.wedged >= AGENT_WEDGED_ALARM_THRESHOLD ? 'crit' : strand.wedged > 0 ? 'warn' : undefined));
+    for (const cls of WEDGE_CLASSES) {
+      const n = strand.wedgedByClass[cls] ?? 0;
+      if (n > 0) out.push(m(`wedged · ${cls}`, n, 'warn'));
+    }
+  }
+  out.push(
+    strand.strandedUnreadable
+      ? m('stranded', 'unreadable', 'warn')
+      : m('stranded', strand.stranded, strand.stranded >= AGENT_STRANDED_ALARM_THRESHOLD ? 'crit' : strand.stranded > 0 ? 'warn' : undefined),
+  );
+  return out;
+}
+
+/**
  * Coordination (health-tab-v2 P-009) — the fleet-coordination failure modes the
  * playbook ranks highest, previously visible only in coord:glance: unanswered
  * DIRECTED messages (a peer blind-waiting on a reply), sessions at critical
@@ -2529,6 +2728,11 @@ async function collectLoops(ctx: HealthCtx): Promise<HealthPanel<LoopsHealth>> {
  */
 async function collectCoordination(ctx: HealthCtx): Promise<HealthPanel<CoordinationHealth>> {
   return panelSafe<CoordinationHealth>('coordination', async () => {
+    // P-011(b): started first so it overlaps every read below (~1 s warm over ~400 sessions,
+    // measured 2026-10-11). Never rejects — each leg reports its own read failure as unreadable.
+    const agentStrandP = import('./agent-strand-census')
+      .then(({ readAgentStrandCensus }) => readAgentStrandCensus(ctx.ws))
+      .catch(() => null);
     const { listPresence } = await import('../agent-tools/coordination/presence');
     const presence = await listPresence({ workspaceId: ctx.ws });
     const live = presence.filter((p) => !p.stale);
@@ -2624,9 +2828,13 @@ async function collectCoordination(ctx: HealthCtx): Promise<HealthPanel<Coordina
       stalledClaims: stalledCount,
       coverageCollisions: collisionCount,
       parkedMembers,
+      agentStrand: await agentStrandP,
     };
     const status = coordinationStatus(data, ctx.now);
+    const strand = data.agentStrand;
     const problems: string[] = [];
+    if (strand && strand.wedged > 0) problems.push(`${strand.wedged} wedged session(s) (${formatWedgedByClass(strand.wedgedByClass)})`);
+    if (strand && strand.stranded > 0) problems.push(`${strand.stranded} stranded claim holder(s) with no wake source`);
     if (data.unansweredTotal > 0) problems.push(`${data.unansweredTotal} unanswered directed (oldest ${agoMin(data.unansweredOldestMs === null ? null : ctx.now - data.unansweredOldestMs, ctx.now)})`);
     if (data.leaderlessFleets > 0) problems.push(`${data.leaderlessFleets} leaderless fleet(s)`);
     if (data.staleAwaits > 0) problems.push(`${data.staleAwaits} stale waiter(s)`);
@@ -2647,6 +2855,8 @@ async function collectCoordination(ctx: HealthCtx): Promise<HealthPanel<Coordina
         m('orphaned', data.orphanedClaims, data.orphanedClaims > 0 ? 'warn' : undefined),
         m('stalled', data.stalledClaims, data.stalledClaims > 0 ? 'warn' : undefined),
         m('collisions', data.coverageCollisions, data.coverageCollisions > 0 ? 'warn' : undefined),
+        // P-011(b): per-class counts, so /admin shows WHY sessions cannot take a turn.
+        ...strandMetrics(strand),
         m('benched', data.parkedMembers),
         m('live fleets', data.liveFleets),
       ],
@@ -3225,25 +3435,33 @@ async function collectContextInjection(ctx: HealthCtx): Promise<HealthPanel<Cont
 // ── the aggregator ───────────────────────────────────────────────────────────
 
 /**
- * Build the whole-system health snapshot for a workspace. Flag-agnostic (the
- * tab/resolver/tick gate on SYSTEM_HEALTH_TAB; the overwatch brief wraps this
- * regardless). Resolves the hive + the shared open-placement + gateway reads
- * once, then runs every panel collector in parallel under `panelSafe`.
+ * The hive scope a health snapshot reads: the representative pot (prefer a started one),
+ * whether it is started, and the open-placement counts. Never throws; an unreadable registry
+ * yields `potSlug: null`, so queen/work-feed degrade to 'unknown'.
+ *
+ * WI-10007007: the pot registry is read ONCE. `listPots` is serial per pot (a hive-pubkey and
+ * wake-view read each) and measured up to 100s per call under load; the open-placement block
+ * used to call it a second time, on every tick, for the same slugs.
  */
-export async function computeSystemHealth(workspaceId?: string): Promise<SystemHealth> {
-  const ws = workspaceId ?? activeWorkspaceId();
-  const now = Date.now();
-
-  // Resolve the hive (prefer a started one) + the shared best-effort reads.
+export async function resolveHealthPotScope(
+  ws: string,
+  L: TickLegTracker = NOOP_TICK_LEGS,
+): Promise<Pick<HealthCtx, 'potSlug' | 'started' | 'openPlacements'>> {
   let potSlug: string | null = null;
   let started = false;
+  let allSlugs: string[] = [];
   try {
     const { listPots } = await import('../agent-tools/pot/_resolve');
     const { getPotStarted } = await import('../pot/started');
-    const hives = await listPots(ws);
-    for (const h of hives) {
-      if (await getPotStarted(ws, h.slug).catch(() => false)) { potSlug = h.slug; started = true; break; }
-    }
+    const hives = await L.leg('list-pots', () => listPots(ws));
+    allSlugs = hives.map((h) => h.slug);
+    const startedSlug = await L.leg('pot-started', async () => {
+      for (const h of hives) {
+        if (await getPotStarted(ws, h.slug).catch(() => false)) return h.slug;
+      }
+      return null;
+    });
+    if (startedSlug) { potSlug = startedSlug; started = true; }
     if (!potSlug && hives.length > 0) potSlug = hives[0].slug;
   } catch { /* registry unreadable — queen/work-feed degrade to 'unknown' */ }
 
@@ -3257,16 +3475,14 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
       // (summed) rather than just the representative one. OFF (the dark default) ⇒
       // the single representative hive, byte-identical to today.
       const { isWorkspaceCoordinationOn } = await import('../workspace-brain-scope');
-      const on = await isWorkspaceCoordinationOn();
-      let scopeSlugs = [potSlug];
-      if (on) {
-        try {
-          const { listPots } = await import('../agent-tools/pot/_resolve');
-          const all = (await listPots(ws)).map((h) => h.slug);
-          if (all.length > 0) scopeSlugs = all;
-        } catch { /* registry unreadable → fall back to the representative hive */ }
-      }
-      const sums = await Promise.all(scopeSlugs.map((slug) => summarizeOpenPlacements(ws, slug)));
+      // EI-25221129396992808: every await on the tick path is a named leg, so an in-flight
+      // line can name what a long tick is blocked on.
+      const on = await L.leg('coordination-flag', () => isWorkspaceCoordinationOn());
+      // potSlug is only ever set from the list-pots read, so allSlugs is non-empty here.
+      const scopeSlugs = on && allSlugs.length > 0 ? allSlugs : [potSlug];
+      const sums = await L.leg('open-placements', () =>
+        Promise.all(scopeSlugs.map((slug) => summarizeOpenPlacements(ws, slug))),
+      );
       openPlacements = sums.reduce(
         (acc, op) => ({
           recovering: acc.recovering + op.recovering,
@@ -3278,12 +3494,34 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
       );
     } catch { /* leave null — queen.workingTracked + bees.placements degrade to 0 */ }
   }
+  return { potSlug, started, openPlacements };
+}
+
+/**
+ * Build the whole-system health snapshot for a workspace. Flag-agnostic (the
+ * tab/resolver/tick gate on SYSTEM_HEALTH_TAB; the overwatch brief wraps this
+ * regardless). Resolves the hive + the shared open-placement + gateway reads
+ * once, then runs every panel collector in parallel under `panelSafe`.
+ */
+export async function computeSystemHealth(
+  workspaceId?: string,
+  opts: { legs?: TickLegTracker } = {},
+): Promise<SystemHealth> {
+  const ws = workspaceId ?? activeWorkspaceId();
+  const now = Date.now();
+  // EI-25221129396992808: every await below has no deadline, and the tick is single-flighted, so
+  // one hung leg stalls the whole snapshot. The tick passes a tracker that names unsettled legs;
+  // every other caller gets the no-op one.
+  const L = opts.legs ?? NOOP_TICK_LEGS;
+
+  // Resolve the hive (prefer a started one) + the shared best-effort reads.
+  const { potSlug, started, openPlacements } = await resolveHealthPotScope(ws, L);
 
   let gatewayEnabled = false;
   let gatewayReachable: boolean | null = null;
   try {
-    gatewayEnabled = await getFlag(FLAGS.INFERENCE_GATEWAY, 'system');
-    if (gatewayEnabled) gatewayReachable = await probeGatewayHealthz();
+    gatewayEnabled = await L.leg('gateway-flag', () => getFlag(FLAGS.INFERENCE_GATEWAY, 'system'));
+    if (gatewayEnabled) gatewayReachable = await L.leg('gateway-healthz', () => probeGatewayHealthz());
   } catch { /* flag IO hiccup — treat as direct egress */ }
 
   // Overwatch liveness (B-09 / D-004) — resolved ONCE here so the SAME value feeds
@@ -3296,7 +3534,8 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
   if (potSlug) {
     try {
       const { isOverwatchAlive } = await import('../overwatch/cross-monitor');
-      overwatchAlive = await isOverwatchAlive(ws, potSlug, { now });
+      const slug = potSlug;
+      overwatchAlive = await L.leg('overwatch-alive', () => isOverwatchAlive(ws, slug, { now }));
     } catch {
       /* leave null — overwatch liveness not computable; null = not-computed (D-004) */
     }
@@ -3312,12 +3551,17 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
     plans, escalations, autonomy, observations, improvements, infra, suFleet, overwatch, scout,
     toolEfficiency, loops, coordination, memory, contextInjection,
   ] = await Promise.all([
-    collectQueen(ctx), collectBees(ctx), collectWorkItems(ctx), collectWorkFeed(ctx),
-    collectTokens(ctx), collectWatchdog(ctx), collectDeploy(ctx), collectPlans(ctx),
-    collectEscalations(ctx), collectAutonomy(ctx), collectObservations(ctx),
-    collectImprovements(ctx), collectInfra(ctx), collectSuFleet(ctx), collectOverwatch(ctx),
-    collectScout(ctx), collectToolEfficiency(ctx), collectLoops(ctx), collectCoordination(ctx),
-    collectMemory(ctx), collectContextInjection(ctx),
+    L.leg('queen', () => collectQueen(ctx)), L.leg('bees', () => collectBees(ctx)),
+    L.leg('workItems', () => collectWorkItems(ctx)), L.leg('workFeed', () => collectWorkFeed(ctx)),
+    L.leg('tokens', () => collectTokens(ctx)), L.leg('watchdog', () => collectWatchdog(ctx)),
+    L.leg('deploy', () => collectDeploy(ctx)), L.leg('plans', () => collectPlans(ctx)),
+    L.leg('escalations', () => collectEscalations(ctx)), L.leg('autonomy', () => collectAutonomy(ctx)),
+    L.leg('observations', () => collectObservations(ctx)),
+    L.leg('improvements', () => collectImprovements(ctx)), L.leg('infra', () => collectInfra(ctx)),
+    L.leg('suFleet', () => collectSuFleet(ctx)), L.leg('overwatch', () => collectOverwatch(ctx)),
+    L.leg('scout', () => collectScout(ctx)), L.leg('toolEfficiency', () => collectToolEfficiency(ctx)),
+    L.leg('loops', () => collectLoops(ctx)), L.leg('coordination', () => collectCoordination(ctx)),
+    L.leg('memory', () => collectMemory(ctx)), L.leg('contextInjection', () => collectContextInjection(ctx)),
   ]);
 
   // P-001 (health-tab-v2): the paused-Mug cry-wolf fix — reconcile the queen
@@ -3358,7 +3602,7 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
   // pending) leaves the snapshot exactly as computed above.
   try {
     const { readHealthAcks, applyHealthAcks } = await import('./acks');
-    applyHealthAcks(snapshot, await readHealthAcks(ws), now);
+    applyHealthAcks(snapshot, await L.leg('read-acks', () => readHealthAcks(ws)), now);
   } catch { /* acks unreadable — un-acked snapshot stands */ }
 
   return snapshot;
@@ -3491,7 +3735,13 @@ const tickInFlight = new Map<string, Promise<SystemHealth>>();
  */
 export async function runSystemHealthTick(workspaceId?: string): Promise<SystemHealth> {
   const ws = workspaceId ?? activeWorkspaceId();
-  return dedupeInFlight(tickInFlight, ws, () => runSystemHealthTickUncached(ws));
+  // EI-25221129396992808: watchTick sits INSIDE the single-flight slot, so there is exactly one
+  // watcher per real aggregation, and a joined caller never starts a second one. It logs a tick
+  // still running past 60s with its unsettled legs, and a finished tick slower than 20s with its
+  // slowest legs. Observation only: no timeout, no change to the result.
+  return dedupeInFlight(tickInFlight, ws, () =>
+    watchTick(ws, (legs) => runSystemHealthTickUncached(ws, legs)),
+  );
 }
 
 /**
@@ -3526,27 +3776,29 @@ export async function publishGovernorStateSnapshot(
   }
 }
 
-async function runSystemHealthTickUncached(ws: string): Promise<SystemHealth> {
+async function runSystemHealthTickUncached(ws: string, L: TickLegTracker = NOOP_TICK_LEGS): Promise<SystemHealth> {
   const localPrev = cache.get(ws) ?? null;
   // Hydrate a cold tick host from the cross-process snapshot before computing the next
   // health payload. collectInfra reads the predecessor's disk bands from this cache while
   // classifying the new statfs sample; without this read, a host restart loses hysteresis
   // and a 94→95 boundary can falsely resolve/re-fire infra-liveness.
-  const sharedPrev = localPrev ? null : await readSharedSystemHealthSnapshot(ws).catch(() => null);
+  const sharedPrev = localPrev
+    ? null
+    : await L.leg('read-shared-prev', () => readSharedSystemHealthSnapshot(ws)).catch(() => null);
   const prev = selectPreviousHealthSnapshot(localPrev, sharedPrev);
-  const health = await computeSystemHealth(ws);
+  const health = await computeSystemHealth(ws, { legs: L });
   // P-004 (health-tab-v2): auto-clear acks whose panel recovered / snooze
   // expired, and re-apply the survivors. Fail-soft — never breaks the tick.
   try {
     const { sweepHealthAcks } = await import('./acks');
-    await sweepHealthAcks(health, Date.now());
+    await L.leg('sweep-acks', () => sweepHealthAcks(health, Date.now()));
   } catch { /* ack sweep unavailable (migration pending) — snapshot stands */ }
   // P-005 (health-tab-v2): persist status history — transition rows for every
   // panel that changed vs the previous tick + the compact per-tick statuses row
   // (14d retention). Fail-soft — history must never break the tick.
   try {
     const { recordHealthHistory } = await import('./history');
-    await recordHealthHistory(prev, health);
+    await L.leg('record-history', () => recordHealthHistory(prev, health));
   } catch { /* history unavailable (migration pending) — tick proceeds */ }
   // EI-12982: preserve a forensic perf-signals-v1 snapshot the moment the infra
   // panel edge-transitions into `crit` (covers the "PER-THREAD WEDGE" verdict).
@@ -3557,13 +3809,13 @@ async function runSystemHealthTickUncached(ws: string): Promise<SystemHealth> {
   try {
     if (health.panels.infra?.status === 'crit' && prev?.panels?.infra?.status !== 'crit') {
       const { preserveIncidentCapture } = await import('./perf-budgets');
-      await preserveIncidentCapture('infra-crit');
+      await L.leg('incident-capture', () => preserveIncidentCapture('infra-crit'));
     }
   } catch { /* incident-capture preservation must never break the tick */ }
   // EI-219699: make the complete durable queue census visible to the canonical
   // governor state resolver. No process-local admission/recovery verdict is
   // available to this health tick, so publish only queue evidence.
-  await publishGovernorStateSnapshot(ws, health.evaluatedAt);
+  await L.leg('governor-snapshot', () => publishGovernorStateSnapshot(ws, health.evaluatedAt));
   cache.set(ws, health);
   // P-001 (precompute-sync-reads-phase2): publish the freshly-computed snapshot to
   // the cross-process SHARED store so a reader process that never runs this tick
@@ -3573,18 +3825,18 @@ async function runSystemHealthTickUncached(ws: string): Promise<SystemHealth> {
   // Fire-and-forget + fail-soft: the in-process cache above is authoritative on
   // THIS host, so a shared-write hiccup only forgoes the cross-process benefit; it
   // must never slow or break the tick.
-  if (await precomputeSharedHealthEnabled()) {
+  if (await L.leg('precompute-flag', () => precomputeSharedHealthEnabled())) {
     void writeSharedSnapshot(SYSTEM_HEALTH_SNAPSHOT_KEY, ws, health, SYSTEM_HEALTH_SNAPSHOT_VERSION).catch(
       (e) => console.warn(`[system-health] shared-snapshot write failed for ${ws}: ${e instanceof Error ? e.message : e}`),
     );
   }
-  await notifySyncInvalidate('health.snapshot', undefined).catch(() => {});
-  await notifySyncInvalidate('health.history', undefined).catch(() => {});
+  await L.leg('invalidate-health', () => notifySyncInvalidate('health.snapshot', undefined)).catch(() => {});
+  await L.leg('invalidate-history', () => notifySyncInvalidate('health.history', undefined)).catch(() => {});
   // The Overwatch pane (B-08) reads the SAME SystemHealth as its brief snapshot
   // (overwatch.snapshot, D-006 "one aggregation, two consumers"), so invalidate it
   // on the same tick — the pane stays SSE-live without a second aggregation. Safe
   // no-op when no overwatch pane is subscribed.
-  await notifySyncInvalidate('overwatch.snapshot', undefined).catch(() => {});
+  await L.leg('invalidate-overwatch', () => notifySyncInvalidate('overwatch.snapshot', undefined)).catch(() => {});
   // P-059: the sibling `mugBrief.floorView` invalidation is gone with the query
   // itself — its client (the chat sidebar's pot-status panel) was stripped by
   // WI-37654 and the Mug brief it projected retired with the tier. Invalidating

@@ -202,10 +202,15 @@ describe('checkpoint eligibility waiter', () => {
         paths: ['mine.ts'],
         waitSec: 0,
         root: '/tmp/papercusp',
+        target: { workspaceId: 'ws-drill', installSlug: 'slack-asana-bug-drill' },
         requiredAncestorSha: 'repair-sha',
       },
       { sleep, assess, assessRequiredAncestor, launch, emit },
     );
+
+    expect(assessRequiredAncestor).toHaveBeenCalledWith(expect.objectContaining({
+      target: { workspaceId: 'ws-drill', installSlug: 'slack-asana-bug-drill' },
+    }));
 
     expect(assessRequiredAncestor).toHaveBeenCalledTimes(1);
     expect(launch).toHaveBeenCalledWith({ root: '/tmp/papercusp', force: undefined, replaceStale: undefined });

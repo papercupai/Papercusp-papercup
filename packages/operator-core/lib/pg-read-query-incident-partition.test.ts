@@ -3,6 +3,7 @@ import {
   buildExecutedPartitionAdvisory,
   executePredicatePartition,
   planPredicatePartition,
+  predicatePartitionSql,
   renderPredicatePartition,
   type PredicatePartitionCell,
   type PredicatePartitionData,
@@ -201,5 +202,30 @@ describe('the recorded incident partition (WI-10002017 — AUTO-BAR-R-005-P-004)
     const plan = planPredicatePartition(INCIDENT_SQL)!;
     expect(plan.relation).toBe('harness_shared.session_briefs');
     expect(plan.dimensions).toHaveLength(2);
+  });
+
+  it("keeps the complete CTE population WHERE when FILTER buckets define the partition", () => {
+    const sql = [
+      'WITH scoped_briefs AS (',
+      '  SELECT workspace_id, created_at, control_state',
+      '    FROM harness_shared.session_briefs',
+      "   WHERE workspace_id = 'papercusp-workspace'",
+      "     AND created_at >= '2026-09-29T19:45:00Z'::timestamptz",
+      "     AND created_at < '2026-09-29T19:50:00Z'::timestamptz",
+      "     AND (source = 'native' OR source = 'hook')",
+      ')',
+      'SELECT count(*) AS total,',
+      "       count(*) FILTER (WHERE control_state->'activation'->>'status' <> 'applied') AS pending,",
+      "       count(*) FILTER (WHERE control_state->'activation'->>'status' = 'applied') AS applied",
+      '  FROM scoped_briefs',
+    ].join('\n');
+    const plan = planPredicatePartition(sql)!;
+    const partitionSql = predicatePartitionSql(plan);
+
+    expect(plan.relation).toBe('harness_shared.session_briefs');
+    expect(partitionSql).toContain("WHERE workspace_id = 'papercusp-workspace'");
+    expect(partitionSql).toContain("created_at >= '2026-09-29T19:45:00Z'::timestamptz");
+    expect(partitionSql).toContain("created_at < '2026-09-29T19:50:00Z'::timestamptz");
+    expect(partitionSql).toContain("(source = 'native' OR source = 'hook')");
   });
 });

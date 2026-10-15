@@ -12,11 +12,25 @@ import { mkdtemp, open, rm, writeFile } from 'node:fs/promises';
 import { execFile, execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { lockHasLiveHolder, lsofLockHolder } from './run-git-sync';
+import { clearStaleIndexLock, lockHasLiveHolder, lsofLockHolder, probeLockHolder } from './run-git-sync';
 
 type RunResult = { code: number | null; stdout: string; stderr: string; missing?: boolean };
 
 describe('lockHasLiveHolder (WI-10003529)', () => {
+  it('retains an UNKNOWN probe verdict while the boolean seam still fails closed', async () => {
+    const probe = await probeLockHolder('/x/.git/index.lock', {
+      procHolder: async () => null,
+      lsofHolder: async () => null,
+    });
+    expect(probe).toEqual({ held: true, source: 'unknown', verdict: 'unknown' });
+    expect(
+      await lockHasLiveHolder('/x/.git/index.lock', {
+        procHolder: async () => null,
+        lsofHolder: async () => null,
+      }),
+    ).toBe(true);
+  });
+
   it('reclaims on a /proc-less host when lsof PROVES no holder (the macOS case that used to wedge)', async () => {
     const held = await lockHasLiveHolder('/x/.git/index.lock', {
       procHolder: async () => null,
@@ -46,6 +60,48 @@ describe('lockHasLiveHolder (WI-10003529)', () => {
     expect(await lockHasLiveHolder('/x', { procHolder: async () => true, lsofHolder })).toBe(true);
     expect(await lockHasLiveHolder('/x', { procHolder: async () => false, lsofHolder })).toBe(false);
     expect(lsofCalls).toBe(0);
+  });
+});
+
+describe('clearStaleIndexLock holder journal (EI-25978514527776398)', () => {
+  it.each([
+    { proc: null, lsof: null, expected: 'unknown' },
+    { proc: true, lsof: null, expected: 'held' },
+    { proc: false, lsof: null, expected: 'absent' },
+    { proc: null, lsof: true, expected: 'held' },
+    { proc: null, lsof: false, expected: 'absent' },
+  ] as const)('preserves the lock and reports the actual $expected verdict (proc=$proc, lsof=$lsof)', async ({ proc, lsof, expected }) => {
+    const logs: string[] = [];
+    const unlinked: string[] = [];
+    const snapshot = { mtimeMs: 0, size: 0, dev: 1, ino: 2 };
+    const clock = [600_000, 600_000, 612_300];
+    const retry = await clearStaleIndexLock(
+      async () => ({ code: 0, stdout: '/fake/.git\n', stderr: '' }),
+      '/fake',
+      (message) => logs.push(message),
+      {
+        inspectLock: async () => snapshot,
+        now: () => clock.shift() ?? 612_300,
+        probeHolder: (path) => probeLockHolder(path, {
+          procHolder: async () => proc,
+          lsofHolder: async () => lsof,
+        }),
+        unlinkFile: async (path) => { unlinked.push(path); },
+      },
+    );
+    expect(retry).toBe(expected === 'absent');
+    expect(unlinked).toEqual(expected === 'absent' ? ['/fake/.git/index.lock'] : []);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain('holder check 12.3s — SLOW (WI-10006519)');
+    if (expected === 'unknown') {
+      expect(logs[0]).toContain('holder probe UNKNOWN');
+      expect(logs[0]).not.toContain('LIVE process');
+      expect(logs[0]).not.toContain('FRESH-BY-HOLDER');
+    } else if (expected === 'held') {
+      expect(logs[0]).toContain('FRESH-BY-HOLDER');
+    } else {
+      expect(logs[0]).toContain('cleared STALE index.lock');
+    }
   });
 });
 

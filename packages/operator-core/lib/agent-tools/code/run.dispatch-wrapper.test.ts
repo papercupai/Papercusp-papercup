@@ -144,3 +144,34 @@ describe('code:run dispatch-wrapper mark (P-012)', () => {
     expect(metadata.mock.calls[0][0]).not.toHaveProperty('dispatchWrapper');
   });
 });
+
+describe('code:run late completion receipt (EI-25216756674045452)', () => {
+  const resolveReceipt = (payload: unknown) => {
+    const resolver = codeRun().abortCompletionReceipt;
+    if (!resolver) throw new Error('code:run has no abort completion receipt');
+    return resolver(
+      { script: 'return { ok: true };' },
+      { content: [{ type: 'text', text: JSON.stringify(payload) }] },
+      { callId: 'attempt-123', toolName: 'code:run' },
+    );
+  };
+
+  it('identifies a completed attempt while preserving partial-effect details', () => {
+    expect(resolveReceipt({
+      ok: true,
+      partial: true,
+      mutations: { count: 1, byTool: { 'work_items:create': 1 }, inFlightCount: 0 },
+    })).toMatchObject({
+      status: 'recorded',
+      effectRef: 'code-run:attempt-123',
+      reason: expect.stringContaining('partial inner-effect details'),
+    });
+  });
+
+  it('fails closed when the returned payload does not confirm successful completion', () => {
+    expect(resolveReceipt({ ok: false, error: 'script failed' })).toMatchObject({
+      status: 'recovery-incomplete',
+      failures: ['missing-successful-run-result'],
+    });
+  });
+});

@@ -10,6 +10,17 @@ describe('pgTimestampToIso', () => {
   it('treats a number as epoch millis', () => {
     expect(pgTimestampToIso(0)).toBe('1970-01-01T00:00:00.000Z');
   });
+  it('normalises epoch milliseconds returned as Postgres int8 text', () => {
+    const at = Date.parse('2026-10-09T10:00:00.000Z');
+    expect(pgTimestampToIso(String(at))).toBe('2026-10-09T10:00:00.000Z');
+    expect(pgTimestampToIsoOrNull(String(at))).toBe('2026-10-09T10:00:00.000Z');
+    expect(pgTimestampToIso('0')).toBe('1970-01-01T00:00:00.000Z');
+    expect(pgTimestampToIso('-1000')).toBe('1969-12-31T23:59:59.000Z');
+  });
+  it('preserves out-of-range integer text instead of rounding it into a timestamp', () => {
+    expect(pgTimestampToIso('9007199254740993')).toBe('9007199254740993');
+    expect(pgTimestampToIso('8640000000000001')).toBe('8640000000000001');
+  });
 
   it('normalises a raw Postgres text-formatted timestamptz (EDT offset) to UTC Z', () => {
     // EI-18691099450966094: exactly the string an agent saw for taken_at.

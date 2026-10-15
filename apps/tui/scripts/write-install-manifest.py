@@ -50,6 +50,16 @@ def represented_path(path: Path, manifest: Path, relative: bool) -> str:
         fail(f"relative artifact path escapes manifest directory: {resolved}")
 
 
+def write_payload(manifest: Path, payload: dict) -> None:
+    temporary = manifest.with_name(f"{manifest.name}.tmp.{os.getpid()}")
+    try:
+        temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.chmod(0o644)
+        os.replace(temporary, manifest)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def write_manifest(args: argparse.Namespace) -> None:
     manifest = Path(args.manifest).resolve()
     binary = Path(args.binary)
@@ -92,16 +102,10 @@ def write_manifest(args: argparse.Namespace) -> None:
             if not value.strip():
                 fail(f"--{key} must be non-empty when given")
             payload[key] = value.strip()
-    temporary = manifest.with_name(f"{manifest.name}.tmp.{os.getpid()}")
-    try:
-        temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        temporary.chmod(0o644)
-        os.replace(temporary, manifest)
-    finally:
-        temporary.unlink(missing_ok=True)
+    write_payload(manifest, payload)
 
 
-def verify_manifest(args: argparse.Namespace) -> None:
+def manifest_inputs(args: argparse.Namespace) -> tuple[Path, dict, Path, Path]:
     manifest = Path(args.manifest).resolve(strict=True)
     try:
         payload = json.loads(manifest.read_text(encoding="utf-8"))
@@ -119,6 +123,22 @@ def verify_manifest(args: argparse.Namespace) -> None:
         fail(
             f"companionPath resolves to {companion}, expected {Path(args.companion).resolve()}"
         )
+    return manifest, payload, binary, companion
+
+
+def rebind_binary(args: argparse.Namespace) -> None:
+    """Record a known signing transition; companion and generation metadata stay fixed."""
+    manifest, payload, binary, companion = manifest_inputs(args)
+    if payload.get("binarySha256") != args.previous_binary_sha256:
+        fail("binary generation changed since the pre-sign verification")
+    if sha256_file(companion) != payload.get("companionSha256"):
+        fail("companion changed during binary signing")
+    payload["binarySha256"] = sha256_file(binary)
+    write_payload(manifest, payload)
+
+
+def verify_manifest(args: argparse.Namespace) -> None:
+    manifest, payload, binary, companion = manifest_inputs(args)
     for path, field in ((binary, "binarySha256"), (companion, "companionSha256")):
         expected = payload.get(field)
         actual = sha256_file(path)
@@ -148,6 +168,13 @@ def parser() -> argparse.ArgumentParser:
     verify.add_argument("--binary")
     verify.add_argument("--companion")
     verify.set_defaults(run=verify_manifest)
+
+    rebind = commands.add_parser("rebind-binary", help="record signed binary bytes after pre-sign verification")
+    rebind.add_argument("--manifest", required=True)
+    rebind.add_argument("--binary", required=True)
+    rebind.add_argument("--companion", required=True)
+    rebind.add_argument("--previous-binary-sha256", required=True)
+    rebind.set_defaults(run=rebind_binary)
     return root
 
 

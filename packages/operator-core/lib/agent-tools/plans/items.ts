@@ -55,6 +55,7 @@ import {
   type CompactCoverage,
   type PlanItemCoverage,
 } from "../../plan-item-coverage";
+import { linkedFieldsFromCoverage } from "../../plan-item-linked-work-item-read";
 import { ITEM_STATUSES, IMPORTANCE_LEVELS, type Importance } from "./parser";
 import { TERMINAL_PLAN_STATUSES } from "./plan-start-state";
 import { shapePlansItems } from "./items-shape";
@@ -259,6 +260,11 @@ interface ItemRow {
    *  its work-item following). Present only when true, so a leader burn-down
    *  read / monitor loop can flag it instead of silently under-counting. */
   coverageDivergence?: true;
+  /** scope-unique-identifiers P-003: the workspace-unique work-item this item resolves
+   *  through (its `implements` edge or plan_item stamp), or null when it has none or
+   *  several qualify; `workItemIds` lists every linked id, live first. */
+  workItemId?: string | null;
+  workItemIds?: string[];
   /** okf-frontmatter-adoption H(b): this item's PLAN owes the spec triad
    *  (`## Requirements` / `## Design` / items), so the item is held back from
    *  `actionable`. Present only when the plan is IN SCOPE for the requirement —
@@ -388,12 +394,7 @@ export default defineTool({
       const decision = await recoverHarnessFromSlugs(ctx, [args.slug]);
       if (decision.status !== "resolved") return slugScopeErrorResult("plans:items", decision);
       sctx = { ...ctx, harnessSlug: decision.harnessSlug };
-      ctxAny.metadata?.({
-        harnessAutoResolved: decision.bySlug,
-        ...(Object.keys(decision.ambiguous).length > 0
-          ? { harnessAmbiguous: decision.ambiguous }
-          : {}),
-      });
+      ctxAny.metadata?.({ harnessAutoResolved: decision.bySlug });
     } else {
       sctx = harnessScopedCtx(args.harness, ctx);
     }
@@ -552,7 +553,7 @@ export default defineTool({
               if (
                 declared.has(row.planSlug) ||
                 planInSpecTriadScope(
-                  { content: "", created: row.created },
+                  { content: "", created: row.created, template: row.template },
                   specTriadOpts,
                 ).inScope
               ) {
@@ -619,6 +620,7 @@ export default defineTool({
               content: contentBySlug.get(row.planSlug) ?? "",
               created: row.created,
               itemCount: planItems.length,
+              template: row.template,
             },
             specTriadOpts,
           );
@@ -786,6 +788,7 @@ export default defineTool({
       return [{
         ...freshRow,
         ...(cov ? { coverage: compactCoverage(cov) } : {}),
+        ...linkedFieldsFromCoverage(cov),
         ...(cov && isCoverageDivergent(row.item.effectiveStatus, cov.level)
           ? { coverageDivergence: true as const }
           : {}),

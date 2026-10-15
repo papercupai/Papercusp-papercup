@@ -57,7 +57,7 @@ afterEach(() => {
 type ParsedConfig = {
   model_provider?: string;
   features?: Record<string, unknown>;
-  model_providers?: Record<string, { base_url?: string; model_catalog_url?: string; http_headers?: Record<string, string> }>;
+  model_providers?: Record<string, { base_url?: string; model_catalog_url?: string; requires_openai_auth?: boolean; http_headers?: Record<string, string> }>;
 };
 
 /** Parse the file exactly as written to disk; a TOML error fails the test. */
@@ -73,6 +73,8 @@ function expectGatewayCatalogDiscovery(config: ParsedConfig) {
   expect(config.model_provider).toBe(PROVIDER_ID);
   const provider = config.model_providers?.[PROVIDER_ID];
   expect(provider).toBeDefined();
+  // Ambient auth.json is retained for direct-route/plugin use, not gateway auth.
+  expect(provider?.requires_openai_auth).toBe(false);
   // 2. The catalog is the gateway's full /v1/models URL on the same gateway as inference.
   expect(provider?.base_url).toBe(`${GATEWAY_ORIGIN}/v1`);
   expect(provider?.model_catalog_url).toBe(`${GATEWAY_ORIGIN}/v1/models`);

@@ -21,18 +21,25 @@
  *   - short connect timeout, swallow every PG error, never throw out of the
  *     insert path.
  *
- * Usage: node scripts/report-cargo-tests.mjs --manifest-path <path/to/Cargo.toml> [-- <cargo test args>]
- * Example: node scripts/report-cargo-tests.mjs --manifest-path papercusp-desktop/src-tauri/Cargo.toml
+ * Usage: node scripts/report-cargo-tests.mjs --manifest-path <path/to/Cargo.toml> [-- <libtest args>]
+ * Arguments after -- go to the libtest test binary, not Cargo.
+ * Cargo flags such as --all-targets are not supported.
+ * Example: node scripts/report-cargo-tests.mjs --manifest-path papercusp-desktop/src-tauri/Cargo.toml -- --nocapture
  *
- * Granularity note: stable `cargo test` gives no per-test source-file or duration
+ * Granularity note: stable `cargo test` gives no per-test function source-file or duration
  * — only a qualified test path (e.g. `app_role::tests::role_from_env_defaults_to_gui`)
  * and pass/fail/ignored. Each test's `file_path` row is therefore
- * `<crate-dir>::<qualified::test::path>` (not a real filesystem path) so it stays
+ * `<target-source>::<qualified::test::path>` (not a real filesystem path) so it stays
+ * unique across workspace packages and targets. Cargo's stable compiler-artifact
+ * records identify the target source; llvm-cov uses unique metadata matches.
+ * Unmeasured targets retain `<crate-dir>::<qualified::test::path>` without claiming
+ * source attribution. Inherited child harnesses do not add outer test cases.
+ * Each identity stays
  * unique + greppable; duration_ms is null per-row (unknown), and the WHOLE
  * binary's wall-clock elapsed is recorded as one extra aggregate row
  * (`<crate-dir> (cargo aggregate)`) so the Tests tab still has a duration signal.
  */
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { resolve, dirname, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdirSync, statfsSync } from 'node:fs';
@@ -50,15 +57,49 @@ import {
   diskProbePathFor,
   formatCargoDiskRefusal,
   formatCargoResultLine,
-  parseCargoTestResultLines,
+  parseCargoMeasuredTestResults,
   pruneStaleBuildScriptOutputs,
   reclaimInactiveCargoArtifacts,
   resolveCargoBin,
   resolveCargoTargetDir,
+  buildCargoExecutionDetails,
+  resolveCargoTestRunScope,
+  resolveCargoTestRunSource,
+  cargoTestRunReceipt,
+  cargoWorktreeProvenance,
 } from './lib/cargo-result.mjs';
 
+/**
+ * WI-10006860: the vitest reporter's worktree snapshot (whole-tree porcelain, the copy-out
+ * origin root, the in-tree probe-subject exemption) so both frameworks record one measured answer
+ * to "did every loaded file come from one commit?". `test_runs.worktree_dirty` is NOT NULL
+ * DEFAULT false, so a row written without it claims a clean tree. An unloadable snapshotter only
+ * makes the rows fail-safe dirty — the ledger never fails the test run (D-007).
+ */
+async function loadTestRunReporter() {
+  try {
+    // Source-only checkouts have TypeScript helpers whose relative .js imports
+    // name .ts source files. Reuse tsx's resolver explicitly instead of relying
+    // on the CLI caller to preload it or silently recording clean runs as dirty.
+    const { tsImport } = await import('tsx/esm/api');
+    return await tsImport('../libs/test-config/src/admin-test-runs-reporter.ts', import.meta.url);
+  } catch (err) {
+    console.error(`[report-cargo-tests] WARNING: shared test-run reporter helpers unavailable (${err instanceof Error ? err.message : String(err)}); rows are recorded dirty and mutation-probe receipts cannot be written.`);
+    return null;
+  }
+}
+
+async function snapshotWorktree(reporter) {
+  if (!reporter) return null;
+  try {
+    return await reporter.captureWorktreeSnapshot();
+  } catch {
+    return null;
+  }
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(__dirname, '..');
+let REPO_ROOT = resolve(__dirname, '..');
 let loopLagMonitor = null;
 
 function ensureLoopLagMonitor() {
@@ -282,7 +323,7 @@ function runCargoTest(manifestAbs, extraArgs, coverage = null) {
           '--output-path', coverage.outputPath,
           '--', '--test-threads=4', ...extraArgs,
         ]
-      : ['test', '--manifest-path', manifestAbs, '--no-fail-fast', '--', '--test-threads=4', ...extraArgs];
+      : ['test', '--manifest-path', manifestAbs, '--no-fail-fast', '--message-format=json-render-diagnostics', '--', '--test-threads=4', ...extraArgs];
     if (coverage) {
       try {
         mkdirSync(dirname(coverage.outputPath), { recursive: true });
@@ -301,10 +342,23 @@ function runCargoTest(manifestAbs, extraArgs, coverage = null) {
     const child = spawn(resolveCargoBin(), args, { cwd: REPO_ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', (d) => { stdout += d.toString(); });
-    child.stderr.on('data', (d) => { stderr += d.toString(); });
+    let combinedOutput = '';
+    // Keep complete lines in arrival order. Joining raw chunks across pipes can
+    // splice a stderr target header into the middle of a stdout JSON artifact.
+    const pending = { stdout: '', stderr: '' };
+    const collect = (stream, data) => {
+      pending[stream] += data;
+      let newline;
+      while ((newline = pending[stream].indexOf('\n')) >= 0) {
+        combinedOutput += pending[stream].slice(0, newline + 1);
+        pending[stream] = pending[stream].slice(newline + 1);
+      }
+    };
+    child.stdout.on('data', (d) => { const text = d.toString(); stdout += text; collect('stdout', text); });
+    child.stderr.on('data', (d) => { const text = d.toString(); stderr += text; collect('stderr', text); });
     child.on('close', (code) => {
-      resolvePromise({ code, stdout, stderr, startedAt, finishedAt: new Date(), diskAdmission });
+      combinedOutput += pending.stdout + pending.stderr;
+      resolvePromise({ code, stdout, stderr, combinedOutput, startedAt, finishedAt: new Date(), diskAdmission });
     });
     child.on('error', (err) => {
       resolvePromise({ code: 1, stdout, stderr: `${stderr}\nspawn error: ${err.message}`, startedAt, finishedAt: new Date(), diskAdmission });
@@ -334,24 +388,51 @@ async function tryGetPg() {
   }
 }
 
-async function insertRows(sql, rows) {
-  if (!sql) return 0;
+async function insertRows(sql, rows, worktree, testRunReporter) {
+  const appendReceipts = (receipts) =>
+    testRunReporter?.appendTestRunReceipts?.(process.env, receipts);
+  if (!sql) {
+    for (const row of rows) {
+      appendReceipts([cargoTestRunReceipt({
+        filePath: row.filePath,
+        status: row.status,
+        error: 'pg_unavailable',
+      })]);
+    }
+    return 0;
+  }
   let inserted = 0;
   const { loopLagP95Ms, rssMb } = captureReporterSaturationSnapshot();
+  // WI-10006828: attribute rows like the vitest reporter does, or they can never be bound as proof.
+  const { harnessSlug, workspaceId } = resolveCargoTestRunScope();
   for (const row of rows) {
+    // WI-10006849: a complete per-row record, or the strict contract parser discards it.
+    const executionDetails = buildCargoExecutionDetails({ ...row.execution, root: REPO_ROOT, filePath: row.filePath, harnessSlug, workspaceId, worktree });
     try {
-      await Promise.race([
+      const returned = await Promise.race([
         sql`
           INSERT INTO harness_shared.test_runs
-            (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, source, loop_lag_p95_ms, rss_mb)
+            (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, source, loop_lag_p95_ms, rss_mb, harness_slug, workspace_id, execution_details, commit_sha, worktree_dirty)
           VALUES
-            (${row.filePath}, 'cargo', ${row.status}, ${row.durationMs}, ${row.startedAt}, ${row.finishedAt}, ${row.outputTail}, ${row.source}, ${loopLagP95Ms}, ${rssMb})
+            (${row.filePath}, 'cargo', ${row.status}, ${row.durationMs}, ${row.startedAt}, ${row.finishedAt}, ${row.outputTail}, ${row.source}, ${loopLagP95Ms}, ${rssMb}, ${harnessSlug}, ${workspaceId}, ${executionDetails ? sql.json(executionDetails) : null}, ${worktree.commitSha}, ${worktree.worktreeDirty})
+          RETURNING id
         `,
-        new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout')), 2000)),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout_2000ms')), 2000)),
       ]);
-      inserted++;
-    } catch {
+      const receipt = cargoTestRunReceipt({
+        filePath: row.filePath,
+        status: row.status,
+        returnedId: returned?.[0]?.id,
+      });
+      appendReceipts([receipt]);
+      if (receipt.outcome === 'inserted') inserted++;
+    } catch (error) {
       /* swallow — D-007: a broken ledger must never fail the test run */
+      appendReceipts([cargoTestRunReceipt({
+        filePath: row.filePath,
+        status: row.status,
+        error,
+      })]);
     }
   }
   return inserted;
@@ -360,11 +441,31 @@ async function insertRows(sql, rows) {
 async function main() {
   const { manifestPath, cargoArgs, coverage: coverageRequested, coverageOutput } = parseArgs(process.argv.slice(2));
   if (!manifestPath) {
-    console.error('usage: report-cargo-tests.mjs --manifest-path <path/to/Cargo.toml> [--coverage [--coverage-output <lcov>]] [-- <cargo test args>]');
+    console.error('usage: report-cargo-tests.mjs --manifest-path <path/to/Cargo.toml> [--coverage [--coverage-output <lcov>]] [-- <libtest args>]');
+    console.error('Arguments after -- go to the libtest test binary (for example, -- --nocapture). Cargo flags such as --all-targets are not supported.');
     process.exit(2);
   }
   const manifestAbs = resolve(REPO_ROOT, manifestPath);
-  const crateDir = relative(REPO_ROOT, dirname(manifestAbs)).split(sep).join('/');
+  // Attribute sibling Cargo checkouts to the repository that actually compiled.
+  // No Git checkout means unmeasured provenance, never the script's own HEAD.
+  try {
+    REPO_ROOT = execFileSync('git', ['-C', dirname(manifestAbs), 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
+  } catch {
+    REPO_ROOT = dirname(manifestAbs);
+  }
+  const crateDir = relative(REPO_ROOT, dirname(manifestAbs)).split(sep).join('/') || '.';
+  // llvm-cov does not expose Cargo's build-message format. Its target headers
+  // may still be attributed when metadata supplies exactly one matching source.
+  // A metadata fault or an ambiguous target never fabricates package identity.
+  let targets = [];
+  try {
+    const metadata = JSON.parse(execFileSync(resolveCargoBin(), [
+      'metadata', '--format-version', '1', '--no-deps', '--manifest-path', manifestAbs,
+    ], { encoding: 'utf8', timeout: 15_000, maxBuffer: 16 * 1024 * 1024 }));
+    targets = (metadata.packages ?? []).flatMap(pkg => pkg.targets ?? []);
+  } catch {
+    console.error('[report-cargo-tests] target metadata unavailable; only exact compiler-artifact attribution is used.');
+  }
   const coverage = coverageRequested
     ? { outputPath: coverageOutput ? resolve(REPO_ROOT, coverageOutput) : cargoCoverageOutputPath(manifestAbs) }
     : null;
@@ -375,14 +476,26 @@ async function main() {
       ? `[report-cargo-tests] running: cargo llvm-cov --manifest-path ${manifestPath} --no-fail-fast --lcov --output-path ${relative(REPO_ROOT, coverage.outputPath).split(sep).join('/')}`
       : `[report-cargo-tests] running: cargo test --manifest-path ${manifestPath} --no-fail-fast`,
   );
-  const { code, stdout, stderr, startedAt, finishedAt, diskAdmission } = await runCargoTest(manifestAbs, cargoArgs, coverage);
+  const testRunReporter = await loadTestRunReporter();
+  testRunReporter?.setRunRoot?.(REPO_ROOT);
+  const worktreeBefore = await snapshotWorktree(testRunReporter);
+  const { code, stdout, stderr, combinedOutput, startedAt, finishedAt, diskAdmission } = await runCargoTest(manifestAbs, cargoArgs, coverage);
+  const worktree = cargoWorktreeProvenance({
+    before: worktreeBefore,
+    after: await snapshotWorktree(testRunReporter),
+    describeDirt: testRunReporter?.describeWorktreeDirt,
+    resolveCommit: testRunReporter?.resolveTestRunCommit,
+  });
   const combined = `${stdout}\n${stderr}`;
   process.stdout.write(stdout);
   if (stderr) process.stderr.write(stderr.endsWith('\n') ? stderr : `${stderr}\n`);
 
-  const results = parseCargoTestResultLines(combined);
+  const measuredResults = parseCargoMeasuredTestResults(combinedOutput ?? combined, { root: REPO_ROOT, targets });
+  const results = measuredResults;
   const failureDetails = parseFailureDetails(combined);
-  const source = process.env.CI ? 'ci' : 'local';
+  // WI-10006828: same source contract as the vitest reporter, so a mutation probe's rows are
+  // recorded as source='mutation-probe' (with their phase) instead of an ordinary local failure.
+  const source = resolveCargoTestRunSource();
   const cargoResult = diskAdmission?.status === 'blocked'
     ? {
         status: 'error',
@@ -392,14 +505,22 @@ async function main() {
       }
     : classifyCargoRun({ code, output: combined, resultCount: results.length });
 
-  const rows = results.map((r) => ({
-    filePath: `${crateDir}::${r.name}`,
+  const rows = measuredResults.map((r) => ({
+    filePath: `${r.testFilePath ?? crateDir}::${r.name}`,
     status: r.outcome === 'ok' ? 'pass' : r.outcome === 'ignored' ? 'skip' : 'fail',
     durationMs: null,
     startedAt,
     finishedAt,
     outputTail: r.outcome === 'FAILED' ? (failureDetails.get(r.name) ?? null) : null,
     source,
+    execution: {
+      passed: r.outcome === 'ok' ? 1 : 0,
+      failed: r.outcome === 'FAILED' ? 1 : 0,
+      skipped: r.outcome === 'ignored' ? 1 : 0,
+      failedCaseTitles: r.outcome === 'FAILED' ? [r.name] : [],
+      passedCaseTitles: r.outcome === 'ok' ? [r.name] : [],
+      ...(r.testLayer ? { testLayer: r.testLayer } : {}),
+    },
   }));
 
   // One aggregate row for the whole binary so the Tests tab has a duration signal
@@ -413,6 +534,14 @@ async function main() {
     finishedAt,
     outputTail: results.length === 0 ? combined.slice(-4000) : null,
     source,
+    execution: {
+      passed: results.filter((r) => r.outcome === 'ok').length,
+      failed: results.filter((r) => r.outcome === 'FAILED').length,
+      skipped: results.filter((r) => r.outcome === 'ignored').length,
+      collectionFailed: results.length === 0,
+      failedCaseTitles: results.filter((r) => r.outcome === 'FAILED').map((r) => r.name),
+      passedCaseTitles: results.filter((r) => r.outcome === 'ok').map((r) => r.name),
+    },
   });
 
   if (results.length === 0 && diskAdmission?.status !== 'blocked') {
@@ -427,7 +556,7 @@ async function main() {
   console.log(formatCargoResultLine(cargoResult));
 
   const sql = await tryGetPg();
-  const inserted = await insertRows(sql, rows);
+  const inserted = await insertRows(sql, rows, worktree, testRunReporter);
   if (sql) {
     try { await sql.end({ timeout: 2 }); } catch { /* swallow */ }
   }

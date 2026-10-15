@@ -217,7 +217,11 @@ export function desktopSandboxEnv(
   base: Record<string, string | undefined>,
   overlays: Record<string, string> = {},
 ): Record<string, string> {
-  return { ...scrubExecEnv(base, DESKTOP_ENV_EXTRA_ALLOW), ...overlays };
+  // The desktop mount plan provides a private writable /tmp. Host temp paths
+  // can be absent or read-only inside that namespace, so apps must not inherit
+  // them through the shared execution allowlist.
+  return { ...scrubExecEnv(base, DESKTOP_ENV_EXTRA_ALLOW),
+    TMPDIR: '/tmp', TMP: '/tmp', TEMP: '/tmp', ...overlays };
 }
 
 /**

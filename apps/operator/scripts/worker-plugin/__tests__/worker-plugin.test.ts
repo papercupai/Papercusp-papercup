@@ -81,22 +81,26 @@ describe('papercusp-worker hooks.json', () => {
     expect(activityEntry?.matcher).toBe('*');
   });
 
-  it('references the stable installed hook location (operator-dependent, fails open without it), except the rtk hook (a system binary, host-guarded on its own)', () => {
+  it('references the stable installed hook location for every hook (operator-dependent, fails open without it)', () => {
     const all = [...commands(hooks.hooks.PreToolUse), ...commands(hooks.hooks.PostToolUse)];
-    expect(all.every((c) => c.includes('/.papercusp/hooks/cc/') || c.includes('rtk hook claude'))).toBe(true);
+    expect(all.every((c) => c.includes('/.papercusp/hooks/cc/'))).toBe(true);
   });
 
-  // WI-3164: surface-B rtk fleet rollout — the rtk PreToolUse rewrite hook.
-  it('wires the rtk hook AFTER the bash-resource-gate in the SAME Bash matcher entry (deny wins)', () => {
+  // WI-3164 rolled RTK out to the fleet as its own inline `rtk hook claude` entry.
+  // WI-6554700010009291: Claude Code resolves several hooks that each return
+  // updatedInput by completion order, so a separate RTK hook could race the
+  // egress guard and drop its network sandbox. RTK now lives INSIDE the guard;
+  // the guard must be the Bash entry's ONLY rewriter.
+  it('wires RTK through the egress guard, the single Bash rewriter, alongside the deny-only resource gate', () => {
     const bashEntry = (hooks.hooks.PreToolUse as Array<{ matcher: string; hooks: Array<{ command: string }> }>).find(
       (e) => e.matcher === 'Bash',
     );
     expect(bashEntry).toBeDefined();
     const cmds = bashEntry!.hooks.map((h) => h.command);
-    const gateIdx = cmds.findIndex((c) => c.includes('pretooluse-bash-resource-gate.sh'));
-    const rtkIdx = cmds.findIndex((c) => c.includes('rtk hook claude'));
-    expect(gateIdx).toBeGreaterThanOrEqual(0);
-    expect(rtkIdx).toBeGreaterThan(gateIdx);
+    expect(cmds.some((c) => c.includes('pretooluse-bash-resource-gate.sh'))).toBe(true);
+    expect(cmds.filter((c) => c.includes('pretooluse-restricted-egress-guard.mjs'))).toHaveLength(1);
+    const everyCommand = [...commands(hooks.hooks.PreToolUse), ...commands(hooks.hooks.PostToolUse)];
+    expect(everyCommand.some((c) => /\brtk\b/.test(c))).toBe(false);
   });
 
   // EI-21971958067151594 — `capability:bash` is the SAME shell over MCP. A
@@ -112,43 +116,35 @@ describe('papercusp-worker hooks.json', () => {
     expect(mcpEntry, 'no PreToolUse entry covers mcp__*__capability_bash').toBeDefined();
     const cmds = mcpEntry!.hooks.map((h) => h.command);
     expect(cmds.some((c) => c.includes('pretooluse-bash-resource-gate.sh'))).toBe(true);
-    expect(cmds.some((c) => c.includes('rtk hook claude'))).toBe(false);
-  });
-
-  it('host-guards the rtk hook so a host without rtk installed degrades silently (no hard failure)', () => {
-    const bashEntry = (hooks.hooks.PreToolUse as Array<{ matcher: string; hooks: Array<{ command: string }> }>).find(
-      (e) => e.matcher === 'Bash',
-    );
-    const rtkCmd = bashEntry!.hooks.map((h) => h.command).find((c) => c.includes('rtk hook claude'));
-    expect(rtkCmd).toBeDefined();
-    // Must probe for the binary before invoking it, and exit clean (0) when absent.
-    expect(rtkCmd).toMatch(/command -v rtk/);
-    expect(rtkCmd).toMatch(/\|\|\s*exit 0/);
+    expect(cmds.some((c) => c.includes('pretooluse-restricted-egress-guard.mjs') || /\brtk\b/.test(c))).toBe(false);
   });
 });
 
 /**
- * EI-9471 regression: the rtk PreToolUse rewrite hook hijacked a scoped single-file
- * `npx vitest run <file> | grep | head` into a FULL-SUITE run (10k suites, 11MB) when
- * rtk's vitest output-parser failed on the piped/compound form — it dropped the file
- * filter and re-synthesized an UNSCOPED run. Fix: our fleet rtk hook now SKIPS vitest
- * commands entirely (fail-open — skip = run verbatim, never a deny), so rtk's buggy
- * vitest parser can never touch a vitest command. We execute the ACTUAL shipped hook
- * command string against a hermetic fake `rtk` and assert vitest never reaches it while
- * a non-vitest command still does. Fails BEFORE the fix (rtk was invoked for vitest).
+ * EI-9471 regression: rtk hijacked a scoped single-file `npx vitest run <file> | grep |
+ * head` into a FULL-SUITE run (10k suites, 11MB) when its vitest output-parser failed on
+ * the piped form — it dropped the file filter and re-synthesized an UNSCOPED run. RTK
+ * must therefore never see a vitest command (fail-open: run verbatim, never a deny).
+ * RTK now lives in the egress guard the Bash entry wires (WI-6554700010009291), so we
+ * run THAT script — the repo copy of the file the plugin references — outside a psu
+ * session (no PAPERCUSP_SID, so no operator call) against a hermetic fake `rtk` that
+ * records each invocation, and assert vitest never reaches it while git status does.
  */
-describe('papercusp-worker rtk hook — vitest skip (EI-9471)', () => {
-  const rtkCommand = (() => {
+describe('papercusp-worker RTK rewrite — vitest skip (EI-9471)', () => {
+  const GUARD = join(ROOT, '..', 'hooks', 'cc', 'pretooluse-restricted-egress-guard.mjs');
+
+  it('the Bash entry references exactly this guard script', () => {
     const bashEntry = (hooks.hooks.PreToolUse as Array<{ matcher: string; hooks: Array<{ command: string }> }>).find(
       (e) => e.matcher === 'Bash',
     );
-    const cmd = bashEntry!.hooks.map((h) => h.command).find((c) => c.includes('rtk hook claude'));
-    if (!cmd) throw new Error('rtk hook command not found in the Bash PreToolUse entry');
-    return cmd;
-  })();
+    expect(bashEntry!.hooks.map((h) => h.command)).toContain(
+      '${HOME}/.papercusp/hooks/cc/pretooluse-restricted-egress-guard.mjs',
+    );
+    expect(existsSync(GUARD)).toBe(true);
+  });
 
-  // Run the exact shipped hook command with a fake `rtk` first on PATH; return whether
-  // rtk was actually invoked (`rtk hook …`) and what the hook emitted on stdout.
+  // Run the guard with a fake `rtk` named by PAPERCUSP_RTK_BIN; return whether rtk was
+  // invoked (`rtk rewrite …`) and what the hook emitted on stdout.
   function runRtkHook(command: string): { stdout: string; rtkInvoked: boolean } {
     const dir = mkdtempSync(join(tmpdir(), 'rtk-guard-'));
     try {
@@ -156,16 +152,14 @@ describe('papercusp-worker rtk hook — vitest skip (EI-9471)', () => {
       const fakeRtk = join(dir, 'rtk');
       writeFileSync(
         fakeRtk,
-        `#!/usr/bin/env bash\nif [ "$1" = "hook" ]; then cat >/dev/null; printf X >> ${JSON.stringify(
-          marker,
-        )}; printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","updatedInput":{"command":"rtk-rewritten"}}}'; fi\n`,
+        `#!/usr/bin/env bash\nif [ "$1" = "rewrite" ]; then printf X >> ${JSON.stringify(marker)}; echo "rtk $2"; exit 0; fi\nexit 64\n`,
       );
       chmodSync(fakeRtk, 0o755);
       const payload = JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
-      const stdout = execFileSync('bash', ['-c', rtkCommand], {
+      const stdout = execFileSync(process.execPath, [GUARD], {
         input: payload,
         encoding: 'utf8',
-        env: { ...process.env, PATH: `${dir}:${process.env.PATH ?? ''}` },
+        env: { PATH: process.env.PATH ?? '', PAPERCUSP_RTK_BIN: fakeRtk },
       });
       return { stdout, rtkInvoked: existsSync(marker) };
     } finally {
@@ -189,6 +183,8 @@ describe('papercusp-worker rtk hook — vitest skip (EI-9471)', () => {
   it('still routes a non-vitest command (git status) through rtk for compression', () => {
     const res = runRtkHook('git status');
     expect(res.rtkInvoked).toBe(true);
-    expect(res.stdout).toContain('updatedInput'); // rtk produced its rewrite as before
+    expect(JSON.parse(res.stdout)).toEqual({
+      hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput: { command: 'rtk git status' } },
+    });
   });
 });

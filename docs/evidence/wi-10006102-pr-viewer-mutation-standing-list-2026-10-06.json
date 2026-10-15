@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-022 completed overlay mutation probe: standing-list",
+  "framework": "shell",
+  "command": [
+    "scripts/mutation-probe.sh",
+    "--file",
+    "apps/operator/app/harness/PrsTab.tsx",
+    "--relocation",
+    "overlay",
+    "--mutate",
+    "s/const prs = payload\\?\\.prs \\?\\? \\[\\];/const prs = (payload?.prs ?? []).filter(pr => pr.state !== 'open');/",
+    "--test",
+    "npm run test:file -- \"$(dirname {})/PrsTab.component.test.tsx\""
+  ],
+  "startedAt": "2026-10-06T01:24:47.565Z",
+  "finishedAt": "2026-10-06T01:27:04.830Z",
+  "exitCode": 0,
+  "summary": "Actual maintained copy-out overlay probe caught standing-list: healthy canonical and relocation controls, 2/13 mutant assertion failures, shared source preserved. This committed artifact records the completed operational probe; it does not relabel the original failing Vitest ledger row as clean or passing.",
+  "assertions": [
+    {
+      "id": "baseline-pass",
+      "passed": true,
+      "evidence": "Canonical baseline 13/13; baseline_exit=0 in the retained real probe log."
+    },
+    {
+      "id": "relocation-control-pass",
+      "passed": true,
+      "evidence": "Unmutated copy in the same private overlay namespace 13/13; relocation alone did not fail."
+    },
+    {
+      "id": "mutant-caught",
+      "passed": true,
+      "evidence": "2 assertion failures and 11 passing tests; guard_exit=1, MUTATION_PROBE_RESULT verdict=caught."
+    },
+    {
+      "id": "shared-source-preserved",
+      "passed": true,
+      "evidence": "Maintained probe reports production source byte-identical to its pre-probe state; neither shared tree nor peer imports saw the overlay mutant."
+    },
+    {
+      "id": "retained-source-lineage",
+      "passed": true,
+      "evidence": "Source and canonical guard bytes still equal the original probe commit a1109d57cbe1ec5b3c75685b4b4af2403aa5e945."
+    }
+  ],
+  "evidencePlane": "current-build",
+  "observations": {
+    "workItemId": "WI-10006102",
+    "planItemId": "P-022",
+    "ownerId": "su-f7a0fc2f-2dfd-4e6d-92e9-8803cb408362",
+    "probeCommit": "a1109d57cbe1ec5b3c75685b4b4af2403aa5e945",
+    "originalMutationRun": {
+      "id": 20802922,
+      "source": "mutation-probe",
+      "framework": "vitest",
+      "status": "fail",
+      "worktreeDirty": true,
+      "failed": 2,
+      "passed": 11,
+      "total": 13
+    },
+    "probeEnvironment": {
+      "PAPERCUSP_TEST_RUN_HARNESS": "papercusp",
+      "PAPERCUSP_WORKSPACE_ID": "papercusp-workspace",
+      "relocation": "overlay",
+      "sharedTreeMutated": false
+    },
+    "log": {
+      "path": "/tmp/p022-mutation-standing-list.log",
+      "sha256": "765a43c75270c8dd1f3354360f9c216078d1b3d2d679c3d4d023f8e7ec0d3709"
+    },
+    "result": "MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evidence=test-file-assertion-failure relocation=overlay",
+    "source": [
+      {
+        "path": "apps/operator/app/harness/PrsTab.tsx",
+        "sha256": "18735933027b292f1d11b4163001315fbbcf47f93d5b7c743820bcbca9640ea2",
+        "matchesProbeCommit": true
+      },
+      {
+        "path": "apps/operator/app/harness/PrsTab.component.test.tsx",
+        "sha256": "dbbda926a6bedee667dbfed76c767af623398b86a0a40bf80450bdca348e9962",
+        "matchesProbeCommit": true
+      }
+    ],
+    "assertionFailures": [
+      {
+        "name": "\"PrsTab — history and member-aware detail selection shows open, merged and closed history and filters each actual state\"",
+        "message": "TestingLibraryElementError: Unable to find an element with the text: open combined work. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible."
+      },
+      {
+        "name": "\"PrsTab — history and member-aware detail selection opens details without a report and selects only the matching member for identical PR numbers\"",
+        "message": "Error: Unable to find an element with the text: foreign combined work. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible."
+      }
+    ],
+    "scope": "Canonical component guards and private overlay mutations. Native fixture acceptance is recorded separately; no external GitHub write, native boot, test rerun or shipment is represented by this artifact."
+  }
+}

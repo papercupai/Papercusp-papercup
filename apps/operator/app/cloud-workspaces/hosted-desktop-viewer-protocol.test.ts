@@ -203,6 +203,85 @@ describe("hosted desktop browser protocol", () => {
     });
   });
 
+  it("asks for the caller's own desktop and keeps its user scope (personal-cloud-desktop R-5)", () => {
+    // A personal start carries `personal: true`; a plain start never does,
+    // so a sandbox start cannot be mistaken for the caller's own seat.
+    expect(JSON.parse(buildDesktopStartRequest("start-p", { personal: true }))).toEqual({
+      type: "desktop.start",
+      requestId: "start-p",
+      personal: true,
+    });
+    expect(JSON.parse(buildDesktopStartRequest("start-s", { personal: false }))).toEqual({
+      type: "desktop.start",
+      requestId: "start-s",
+    });
+    expect(
+      parseHostedDesktopProtocolMessage({
+        type: "desktop.start.result",
+        requestId: "start-p",
+        desktop: { desktopSessionId: "mine", state: "ready", scope: "user" },
+      }),
+    ).toEqual({
+      kind: "started",
+      requestId: "start-p",
+      desktop: { desktopSessionId: "mine", state: "ready", scope: "user" },
+    });
+    expect(
+      parseHostedDesktopProtocolMessage({
+        type: "desktop.roster.result",
+        requestId: "roster-p",
+        desktops: [{ desktopSessionId: "mine", state: "running", scope: "user" }],
+      }),
+    ).toEqual({
+      kind: "roster",
+      requestId: "roster-p",
+      desktops: [{ desktopSessionId: "mine", state: "running", scope: "user" }],
+    });
+  });
+
+  it("carries owner, scope, name and the owner's work-item on roster rows (P-006)", () => {
+    expect(
+      parseHostedDesktopProtocolMessage({
+        type: "desktop.roster.result",
+        requestId: "roster-2",
+        desktops: [
+          {
+            desktopSessionId: "desktop-a",
+            state: "running",
+            scope: "agent",
+            owner: "su-1a2b",
+            name: "browser",
+            workItemId: "WI-12",
+            workItemIntent: "build the grid",
+          },
+          // Unknown scope dropped; an intent without its id is not shown alone.
+          {
+            desktopSessionId: "desktop-b",
+            state: "running",
+            scope: "everyone",
+            owner: "",
+            workItemIntent: "orphan intent",
+          },
+        ],
+      }),
+    ).toEqual({
+      kind: "roster",
+      requestId: "roster-2",
+      desktops: [
+        {
+          desktopSessionId: "desktop-a",
+          state: "running",
+          scope: "agent",
+          owner: "su-1a2b",
+          name: "browser",
+          workItemId: "WI-12",
+          workItemIntent: "build the grid",
+        },
+        { desktopSessionId: "desktop-b", state: "running" },
+      ],
+    });
+  });
+
   it("adapts JSON/base64 relay frames to noVNC's raw channel contract", () => {
     const socket = new FakeSocket();
     const channel = new HostedDesktopRelayChannel(socket);

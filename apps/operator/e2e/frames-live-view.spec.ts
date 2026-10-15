@@ -13,14 +13,11 @@
  * status + one 1×1-JPEG thumb event.
  */
 import { test, expect, assertMounted, type Page } from './_egress';
-import { mkdirSync } from 'node:fs';
-import { join } from 'node:path';
 import { FRAME_THUMB_TESTSRC, FRAME_THUMB_SMPTE, FRAME_THUMB_RGB } from './__fixtures__/frame-thumbs';
 
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
   `http://127.0.0.1:${Number(process.env.OPERATOR_E2E_PORT ?? process.env.PORT) || 3055}`;
-const ARTIFACT_DIR = join(__dirname, '__artifacts__');
 
 // A minimal valid 1×1 JPEG (black) — enough for <img> to decode.
 const TINY_JPEG_B64 =
@@ -81,8 +78,13 @@ async function stubApis(page: Page) {
 
 async function framesTabMounts(page: Page): Promise<boolean> {
   await page.goto(`${baseURL}/adv?tab=frames`, { waitUntil: 'domcontentloaded' });
+  // Probe the panel's own title element, not its wording: the title renders
+  // `{t('fleet')} live view`, and the lexicon term changed (Swarm -> Fleet),
+  // which made a literal 'Swarm live view' probe report every run as a mount
+  // failure while the panel was rendering correctly (WI-10006792).
   return page
-    .getByText('Swarm live view', { exact: false })
+    .locator('.pc-frames__title')
+    .filter({ hasText: /live view$/i })
     .first()
     .waitFor({ state: 'visible', timeout: 30_000 })
     .then(() => true)
@@ -139,10 +141,9 @@ async function stubRealisticSwarm(page: Page) {
 
 test.describe('/adv Frames tab (Swarm live view)', () => {
   // VISUAL capture (not gating): render the Frames tab against a realistic
-  // multi-frame swarm + open the live-view panel, saving PNGs to __artifacts__
+  // multi-frame swarm + open the live-view panel, saving PNGs to the test output
   // so the GUI can be eyeballed/shared. Mirrors adv-contributors-panel.spec.ts.
-  test('CAPTURE: Frames tab tile grid + live-view panel screenshots', async ({ page }) => {
-    mkdirSync(ARTIFACT_DIR, { recursive: true });
+  test('CAPTURE: Frames tab tile grid + live-view panel screenshots', async ({ page }, info) => {
     await stubRealisticSwarm(page);
     const mounted = await framesTabMounts(page);
     assertMounted(
@@ -157,15 +158,15 @@ test.describe('/adv Frames tab (Swarm live view)', () => {
     await expect(page.locator('.pc-frames__chip')).toHaveCount(2);
     // let the tiles paint
     await page.waitForTimeout(600);
-    await page.screenshot({ path: join(ARTIFACT_DIR, 'frames-tab-grid.png'), fullPage: false });
+    await page.screenshot({ path: info.outputPath('frames-tab-grid.png'), fullPage: false });
 
     // open the enlarged live-view panel on the first tile
     await page.locator('.pc-frames__tile').first().click();
-    const panel = page.getByRole('dialog', { name: 'Frame live view' });
+    const panel = page.getByRole('region', { name: 'Frame live view' });
     await expect(panel).toBeVisible();
     await page.waitForTimeout(400);
-    await page.screenshot({ path: join(ARTIFACT_DIR, 'frames-tab-panel.png'), fullPage: false });
-    console.log(`[frames-capture] wrote ${ARTIFACT_DIR}/frames-tab-{grid,panel}.png`);
+    await page.screenshot({ path: info.outputPath('frames-tab-panel.png'), fullPage: false });
+    console.log(`[frames-capture] wrote ${info.outputDir}/frames-tab-{grid,panel}.png`);
   });
 
   test('renders the tile grid from the roster + SSE thumbs; selection rides nuqs', async ({ page }) => {
@@ -193,7 +194,7 @@ test.describe('/adv Frames tab (Swarm live view)', () => {
     // click-through: selection goes to the URL (nuqs) + the enlarged panel opens
     await tile.click();
     await expect(page).toHaveURL(new RegExp(`frame=${SLUG}%3A99|frame=${SLUG}:99`));
-    const panel = page.getByRole('dialog', { name: 'Frame live view' });
+    const panel = page.getByRole('region', { name: 'Frame live view' });
     await expect(panel).toBeVisible();
     await expect(panel).toContainText(SLUG);
 
@@ -237,7 +238,7 @@ test.describe('/adv Frames tab (Swarm live view)', () => {
     );
 
     await page.locator('.pc-frames__tile').first().click();
-    const panel = page.getByRole('dialog', { name: 'Frame live view' });
+    const panel = page.getByRole('region', { name: 'Frame live view' });
     await expect(panel).toBeVisible();
 
     await panel.getByRole('button', { name: 'Watch live' }).click();

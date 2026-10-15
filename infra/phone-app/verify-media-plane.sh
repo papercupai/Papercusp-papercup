@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Phone app — P-002 acceptance: prove real media crosses OUR OWN server.
+# Phone app — local, single-direction audio traffic smoke test.
 #
-# The plan's acceptance condition for P-002 is an end-to-end call carried by the
-# self-hosted plane. This drives it headlessly: a publisher and a subscriber join
-# one room through our LiveKit, and we assert the subscriber actually RECEIVED
-# media. A server that accepts connections but forwards nothing would pass a mere
-# health check and fail here — which is the point.
+# One publisher and one subscriber join the configured local LiveKit. Require
+# measured positive audio receive packets AND a complete error-free summary.
+# Public/external, UDP-blocked, bidirectional and PSTN acceptance remain separate.
 #
 # Exits 0 only on measured received traffic. Any other outcome is non-zero.
 set -euo pipefail
 
-CONF_DIR="$HOME/.config/papercusp-phone"
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+CONF_DIR="${PHONE_CONFIG_DIR:-$HOME/.config/papercusp-phone}"
 ENV_FILE="$CONF_DIR/livekit.env"
-LK="$HOME/.local/bin/lk"
+LK="${PHONE_LK_BIN:-$HOME/.local/bin/lk}"
+NODE_BIN="${PHONE_NODE_BIN:-$(command -v node)}"
 ROOM="p002-acceptance-$$"
 DURATION="${DURATION:-15s}"
 
@@ -28,19 +28,15 @@ export LIVEKIT_URL="${PHONE_LIVEKIT_URL:-ws://127.0.0.1:7890}"
 export LIVEKIT_API_KEY="$PHONE_LIVEKIT_API_KEY"
 export LIVEKIT_API_SECRET="$PHONE_LIVEKIT_API_SECRET"
 
-printf '▸ P-002 acceptance — media through the self-hosted plane\n'
+HEALTH_URL="$("$NODE_BIN" "$HERE/media-config.mjs" local-probe-health "$LIVEKIT_URL")" \
+  || die "invalid local smoke-test origin"
+printf '▸ Local audio traffic smoke test — one direction\n'
 say "server : $LIVEKIT_URL"
 say "room   : $ROOM"
 say "window : $DURATION"
 
-# Confirm we are talking to OUR instance and not the other project's on 7880.
-case "$LIVEKIT_URL" in
-  *:7890*) ;;
-  *) die "refusing to run: LIVEKIT_URL is not our instance ($LIVEKIT_URL)" ;;
-esac
-
-curl -fsS --max-time 3 "http://127.0.0.1:7890/" >/dev/null 2>&1 \
-  || die "our LiveKit is not answering on :7890"
+curl -fsS --max-time 3 "$HEALTH_URL" >/dev/null 2>&1 \
+  || die "configured local LiveKit is not answering"
 say "health OK"
 
 out="$(mktemp)"; trap 'rm -f "$out"' EXIT
@@ -50,20 +46,9 @@ if ! "$LK" load-test \
       --audio-publishers 1 \
       --subscribers 1 \
       --duration "$DURATION" >"$out" 2>&1; then
-  sed -n '1,40p' "$out" >&2
   die "lk load-test exited non-zero"
 fi
 
-sed -n '1,40p' "$out"
-
-# The summary table reports per-subscriber received bytes/packets. Require a
-# non-zero received figure: connection alone is not forwarding.
-if grep -qiE '\| *0B? *\|.*\| *0 *\|' "$out" && ! grep -qiE '[1-9][0-9]*(\.[0-9]+)? ?(kB|MB|KB|B)\b' "$out"; then
-  die "subscriber received no media — the server accepted the session but forwarded nothing"
-fi
-
-if ! grep -qiE 'received|bitrate|packets' "$out"; then
-  die "load-test produced no measurement rows — cannot claim media flowed"
-fi
-
-printf '\n✓ P-002 acceptance PASSED — media carried end-to-end by our own server\n'
+"$NODE_BIN" "$HERE/media-config.mjs" load-test-receipt "$out" \
+  || die "no complete measured audio receive path"
+printf '\n✓ Local single-direction audio traffic verified; public/two-way/PSTN acceptance remains open\n'

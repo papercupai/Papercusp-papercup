@@ -1,0 +1,2147 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "generic-rag-chunking-2026-09-29 R-26 live battery (P-016 re-measure): search:semantic's operator-turn source returns the target turn (by id) within its default result count for a query matching only text past the turn's first 2,000 characters.",
+  "framework": "operational",
+  "command": [
+    "N=60 npx tsx .papercusp/scratch/rag-carry/p010-live-r26-battery-u.mts (the P-010 battery with queries unique to their target turn, unchanged; source embedded below as batterySource), against the live operator DB (native PG :5432, database papercusp)"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T16:51:39.000Z",
+  "finishedAt": "2026-10-01T17:15:13.568Z",
+  "summary": "60 targets sampled by the battery's fixed rule, each queried only with text past its first 2,000 characters: 60 of 60 returned within the default result count. 265 sampled turns skipped for lacking a sentence unique to them; by own turn vector alone 2 of 60 reach the top 5. Named record: ed8f4f72-2cf0-44a6-9c1a-3a3e089cb525 (146845 chars) queried with text at offset 8781 returned at rank 1.",
+  "assertions": [
+    {
+      "id": "r26-target-returned-past-2000",
+      "statement": "search:semantic's operator-turn source returns the target turn (by id) within its default result count for a query matching only text past the turn's first 2,000 characters.",
+      "passed": true,
+      "evidence": "60 of 60 sampled targets returned within the default result count; named record ed8f4f72-2cf0-44a6-9c1a-3a3e089cb525 (146845 chars) queried with text at offset 8781 returned at rank 1. Population rate reported, not thresholded; misses listed in summary and rows."
+    }
+  ],
+  "note": "[self-imposed under AUTO; owner directives #970/#1180] Re-measured because the bound operational evidence went stale when generic/search vector-leg.ts changed (e2cd43c, 2026-10-01T15:20Z). Raw output: .papercusp/scratch/rag-carry/p016-oper-r26.log",
+  "supersedes": "operational binding 16841 (p015-live-r-26-battery.json, 2026-09-30T13:51:18Z)",
+  "measuredBy": "su-e8708a1c-a5a4-4a8b-9acb-8bcceab2a91c",
+  "plan": "generic-rag-chunking-2026-09-29",
+  "planItem": "P-010 (re-measured live under P-016)",
+  "bar": "R-26",
+  "battery": {
+    "queryMode": "sentence",
+    "setup": null,
+    "population": null,
+    "summary": {
+      "at": "2026-10-01T17:15:13.568Z",
+      "n": 60,
+      "skipped": 265,
+      "returned": 60,
+      "ownVectorInTop5": 2
+    },
+    "rows": [
+      {
+        "turn": "5605991e-6a86-4e9d-be78-41cbf7f32f1c",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "85fb8b9e-f8be-4f1b-b5b1-5751d4d80e47",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "2b0943aa-026c-42da-a6dd-31ec7a1900f9",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "7db319d9-e0de-42ee-8ff2-ed72492f68e8",
+        "chars": 7312,
+        "fragmentOffset": 3654,
+        "query": "🚧 Blocked — Owner-gated wall fact 'wall:p205-live2-terminal-needs-human' LAPSED 8d ago, unretracted — its absence must NOT be read as resolved · drill in: escalation:mtfksvjd-0000-23d4efd4b47b4e44be4dfa34865fd01f",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 5353,
+        "bestChunkRankAmongAllTurnChunks": 272,
+        "bestChunkIdx": 3,
+        "degraded": false
+      },
+      {
+        "turn": "7e66248d-f4af-4b4f-9407-61a90251e59f",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "853cbe7b-620f-4ca6-9bf4-0b80dc7be95d",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "dd55e605-bdb0-4756-ad94-d107ab563352",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "a836987a-8edd-4b5f-8e0c-5e9378db27b3",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "64f574b3-1815-47a5-836a-53fd4f412861",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "d295e393-80f1-4cd0-86d9-9147552fc0b8",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "d6a1aa19-491f-40f1-b70c-772b90f18c92",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "655ed26a-2561-4199-9939-52f608520061",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "44510ebc-7c01-4dcb-861b-71e55bf434a1",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "2a831285-fac7-455f-9c6d-eb6c50f80e6d",
+        "skipped": "no sentence unique to this turn",
+        "tried": 9
+      },
+      {
+        "turn": "f1d0be30-c570-4dec-af7a-eae364b1be62",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "f1fb46a3-c29f-4630-bf99-4e5c41605c7b",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "dd66be96-23de-4636-9b21-f043e9bc61e0",
+        "chars": 30138,
+        "fragmentOffset": 8077,
+        "query": "🚧 Blocked — Overwatch cannot satisfy required wake declaration under autonomy gate · still open — day 23 · drill in: escalation:mqt9qmlm-0000-ce17c1c0b5684a16ab0ef37bb98b2d20",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 1688,
+        "bestChunkRankAmongAllTurnChunks": 131,
+        "bestChunkIdx": 7,
+        "degraded": false
+      },
+      {
+        "turn": "138cd302-7d91-484c-ba45-1618a8cfb595",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "91b6152d-60fc-4660-aced-4f6f06b76170",
+        "skipped": "no sentence unique to this turn",
+        "tried": 7
+      },
+      {
+        "turn": "96f401ca-6545-4a98-91f6-d2aec19b7226",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "f4c1d7c6-7d5b-4c47-baca-df4974da72c6",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "faabf1ba-edb3-4d8e-8d7d-f004b9b95802",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "e5e1b3f2-cfe4-4c15-8976-155cb82a3995",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "51f1b6cd-011e-43c7-b257-8d6fb68fb529",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "8f6d6cc0-5e1b-4645-be88-b0196a993352",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "a5cca8c1-c22d-455c-a6d5-01bb7b630186",
+        "chars": 10892,
+        "fragmentOffset": 5823,
+        "query": "🚧 Blocked papercusp — Queued process admission · held by ended session test-files:packages/operator-core:1401359 · drill in: wi:papercusp WI-527996",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 1321,
+        "bestChunkRankAmongAllTurnChunks": 163,
+        "bestChunkIdx": 4,
+        "degraded": false
+      },
+      {
+        "turn": "a6b4a779-245a-4f0a-be55-40f510b4df8e",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "91d1a208-ea1d-4860-8866-16964cc909a9",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "5ed173cf-5efc-4377-948d-b70b9c0d4afa",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "266d3c00-37bf-4714-a09a-3f40f53f26ee",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "6cc20eb2-f057-403e-9896-c6b95c29ff21",
+        "skipped": "no sentence unique to this turn",
+        "tried": 12
+      },
+      {
+        "turn": "138250be-2f88-434f-9efc-66a1fd2f8622",
+        "skipped": "no sentence unique to this turn",
+        "tried": 12
+      },
+      {
+        "turn": "6766e209-d471-4057-a2e9-9089d2c04040",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "9dfbda09-2e20-41ef-818a-e696ab126e69",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "4327e7b1-9442-40a1-b5a9-f40f11fdb44b",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "05598727-1e74-4f93-85f4-e1db1cff0aca",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "c9621495-d3d2-4139-b04d-1f2f799acb1c",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "b5f565e9-dc2e-4833-bc3c-8b4bb3e6cd94",
+        "skipped": "no sentence unique to this turn",
+        "tried": 14
+      },
+      {
+        "turn": "4f299f42-c3c3-45b7-a00c-7bc24da71f3e",
+        "skipped": "no sentence unique to this turn",
+        "tried": 14
+      },
+      {
+        "turn": "44ffa397-a865-4136-b2b5-9a99bac6d384",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "398ae71b-9b97-4378-95c0-990fb5f48b1d",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "95329638-c2fe-46bc-9b19-5a736dc898fd",
+        "skipped": "no sentence unique to this turn",
+        "tried": 9
+      },
+      {
+        "turn": "4617fe91-2722-4e44-ab15-1cde74a32b34",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "19d0a1b0-a0cc-4933-bbc0-e1b2862f4e8a",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "6881c092-e940-4e1f-a6c7-7aeeb5926328",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "798f957a-509d-463b-a409-5267328a3480",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "d85fd0c2-4414-4325-b660-f43da5a62d9c",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "5babeb67-018d-4596-aceb-c0a4fb13816c",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "8ba175cc-de18-4fd9-b1da-f11b9c759fbb",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "183797fc-aaf6-4176-9ca0-e747bc6df932",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "29dfb24e-dca0-4923-98e5-3d6d52f6700e",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "54c51469-6b75-4cdc-81dd-f51b66649f40",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "b6d8ea7d-64c1-48e3-bfce-6ed24195fe9f",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "e3e53cb4-3f65-4793-9e01-f5a6ae7aef1e",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "f4eaa80d-b54a-4834-a044-962a7ac9bd01",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "08485f6e-0498-4a90-a903-a6fb87a0e2af",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "923dccf8-92a4-45b2-b6c3-fb5da4484e31",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "0f1107ff-37a3-435d-ab22-657b44b07801",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "71131dd2-5165-47ba-89de-3fb159ac9612",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "3ed5aa43-37ac-4abd-9f9e-9860bb6d0141",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "3b604a00-9ff0-4889-bca4-250f6652fba9",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "662617ac-b825-4c0d-9476-056b9eaea3bf",
+        "chars": 7264,
+        "fragmentOffset": 4885,
+        "query": "🚧 Blocked papercusp — Queued agent admission · held by ended session su-995c4 · drill in: wi:papercusp WI-519898",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 1663,
+        "bestChunkRankAmongAllTurnChunks": 2430,
+        "bestChunkIdx": 0,
+        "degraded": false
+      },
+      {
+        "turn": "bc10fa39-4442-42e2-8249-17696d46d1b3",
+        "chars": 9055,
+        "fragmentOffset": 4644,
+        "query": "🚧 Blocked papercusp — Queued process admission · held by ended session test-files:packages/operator-core:3452320 · drill in: wi:papercusp WI-1580455",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 2234,
+        "bestChunkRankAmongAllTurnChunks": 5,
+        "bestChunkIdx": 3,
+        "degraded": false
+      },
+      {
+        "turn": "b034c75e-e3ec-41b9-8c83-0667154efbe7",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "831714ff-9a64-490b-98b5-2da6ede7ae93",
+        "chars": 7217,
+        "fragmentOffset": 3657,
+        "query": "🚧 Blocked papercusp — Queued process admission · held by ended session test-files:finalization-fixture:3084841 · drill in: wi:papercusp WI-607566",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 808,
+        "bestChunkRankAmongAllTurnChunks": 92,
+        "bestChunkIdx": 2,
+        "degraded": false
+      },
+      {
+        "turn": "ad1a9d16-c602-466d-9096-17b0b85aa801",
+        "chars": 10330,
+        "fragmentOffset": 6319,
+        "query": "🚧 Blocked — D-009 violation: su-26811096 is running P-001 with funded API key without owner authorization · still open — day 69 · drill in: escalation:mqhegckp-0000-2937367ddf244c48b5f5b86f59f58bcb",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 309,
+        "bestChunkRankAmongAllTurnChunks": 6,
+        "bestChunkIdx": 4,
+        "degraded": false
+      },
+      {
+        "turn": "3e9dc6f1-8cc6-4128-bb9d-d5c159726246",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "f3f94e92-0df7-430d-b68a-d9db55c3b100",
+        "skipped": "no sentence unique to this turn",
+        "tried": 12
+      },
+      {
+        "turn": "1e796f3d-e0e4-4c34-910b-a424522ab1a0",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "65804afd-0377-4c97-9418-37131bfc1865",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "b3c3523f-a427-49fa-bdb7-6ab7d586182f",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "30411fc4-61b9-4bcf-8348-a662d11f6ad1",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "2f345927-4f24-4bf5-aacb-a08170c43bdc",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "9d60f22e-2aab-4899-aa44-2e7b59eb025c",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "595e7634-6175-4ddc-a9c9-cba6d7f1e2eb",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "9b13d494-c823-4230-8d31-c0f7f9a2f0f4",
+        "chars": 11487,
+        "fragmentOffset": 6869,
+        "query": "The 4 transfer-plane contracts are built and verified; the caller wiring cannot be honestly tested until a real transfer origin exists, because a mock-only test would assert my own mock.",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 7524,
+        "bestChunkRankAmongAllTurnChunks": 3,
+        "bestChunkIdx": 5,
+        "degraded": false
+      },
+      {
+        "turn": "09bae660-9710-421d-bade-140434d991f6",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "74ce834d-1adc-4463-bbe1-848f4b5642b7",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "5328822c-993f-41ec-85da-055408995d16",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "eae83d1b-afa2-4c8f-a6a5-32a1071292c8",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "735aa5d8-a122-4f5d-8436-aef6068731d0",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "3a6bda76-2d69-4bb8-8cfb-a3f87cd1273c",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "bb0fd0b2-19ee-4cbd-b3b3-d1f33c2f4fb8",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "4cb4d4f3-d0fe-45ad-8dc9-b606e3471c8d",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "ac6a5017-e44f-437e-ab9d-7d0cd0416436",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "4df5ced9-5093-4d36-b837-3cb523fec59a",
+        "chars": 11810,
+        "fragmentOffset": 7419,
+        "query": "Hard internal: false · still open — day 2 · drill in: wi:papercusp EI-21636417817505449",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 717,
+        "bestChunkRankAmongAllTurnChunks": 72,
+        "bestChunkIdx": 6,
+        "degraded": false
+      },
+      {
+        "turn": "5254942d-fa43-40c6-8064-1ec8b9d01bf5",
+        "chars": 6006,
+        "fragmentOffset": 5419,
+        "query": "✓ Cleared — WI-971 follow-up: live two-peer from-repo content roundtrip through joinHiveAsView end-to-end · drill in: blocked:papercusp WI-3578",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 19405,
+        "bestChunkRankAmongAllTurnChunks": 1972,
+        "bestChunkIdx": 4,
+        "degraded": false
+      },
+      {
+        "turn": "6cace99d-3d81-4229-89fc-08ba0d56b2f2",
+        "chars": 7143,
+        "fragmentOffset": 3395,
+        "query": "Preserve scope snapshots, livenes… · plan lane observation-candidate-acceptance-promotion-2026-09-30 P-004 is blocked — linked work-item parked until the lane clears · drill in: wi:papercusp WI-10004567",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 2,
+        "bestChunkRankAmongAllTurnChunks": 1,
+        "bestChunkIdx": 2,
+        "degraded": false
+      },
+      {
+        "turn": "b6f2ebf4-a78b-4199-b472-777234b48bb0",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "3271c321-ec2b-421a-bdca-605e68b1e78b",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "7022f096-c188-4316-97c6-1b62bcaac55d",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "1d0f2820-8bf9-45d0-8203-bd856951c73d",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "a1eb4560-beeb-4432-972a-6bb1a96fa198",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "c0d39d0f-0dfb-40c1-991e-fbb4d6d81565",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "c3ec7b5c-c7aa-40a0-bd36-78d8607f153b",
+        "chars": 8273,
+        "fragmentOffset": 5660,
+        "query": "✓ Cleared — escalation:mqgpzn0d-0000-96dd0d4843634a8090b318bf84049b38 · drill in: escalation:mqgpzn0d-0000-96dd0d4843634a8090b318bf84049b38",
+        "results": 5,
+        "returned": true,
+        "rank": 2,
+        "ownVectorRank": 30368,
+        "bestChunkRankAmongAllTurnChunks": 47,
+        "bestChunkIdx": 4,
+        "degraded": false
+      },
+      {
+        "turn": "948b6b51-fabb-43b6-b08a-45478a76d828",
+        "skipped": "no sentence unique to this turn",
+        "tried": 14
+      },
+      {
+        "turn": "45125780-a553-43c7-8ccd-925886b44c3b",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "67a7363c-bf3b-4fb7-83ad-215c22c63379",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "9cb1e10e-7553-4833-b5c1-7302910606a5",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "f1801242-81e0-4228-9fd1-112839412f6a",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "64f7eb23-e2ca-4b89-9899-022159a00181",
+        "skipped": "no sentence unique to this turn",
+        "tried": 13
+      },
+      {
+        "turn": "1a73aceb-1fad-43be-9b6b-2e37e045d821",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "b8a0537a-59cc-4777-bc11-4c48ffba89af",
+        "chars": 8248,
+        "fragmentOffset": 5449,
+        "query": "🚧 Blocked — carry-respawn LOOP on su · su-b61f5: 3 successor cuts with the context estimate never dropping — respawns suppressed · still open — day 3 · drill in: escalation:mtd6ujbn-0000-9c8e3608522f4232a22838d04650046c",
+        "results": 5,
+        "returned": true,
+        "rank": 3,
+        "ownVectorRank": 14770,
+        "bestChunkRankAmongAllTurnChunks": 463,
+        "bestChunkIdx": 4,
+        "degraded": false
+      },
+      {
+        "turn": "ae4af682-a7f5-4ef1-9987-2f987251ca83",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "5e7fe761-a10c-45a6-bceb-dea345ad2a32",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "0763a1a1-cb86-4c24-b1bf-53170daa202e",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "df1febd3-8f62-4735-be59-9a4c03d998d9",
+        "skipped": "no sentence unique to this turn",
+        "tried": 7
+      },
+      {
+        "turn": "66bb23d9-34e9-4603-9fa1-d82acea5460a",
+        "skipped": "no sentence unique to this turn",
+        "tried": 14
+      },
+      {
+        "turn": "3edccc6f-ddc8-48b1-ba3a-dadaf41c4d21",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "985d3f69-01f2-40f6-bebe-62529e99b8b2",
+        "skipped": "no sentence unique to this turn",
+        "tried": 6
+      },
+      {
+        "turn": "c898450a-b916-44c8-8dad-052778d4b171",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "87176b88-3cb8-4210-91eb-9652acf9dc7b",
+        "chars": 11887,
+        "fragmentOffset": 7434,
+        "query": "x11vnc was not installed on the VM, so there is no baseline and the D-035 figures stand alone -- adequate for budgeting a ceiling, not for choosing between servers.",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 11488,
+        "bestChunkRankAmongAllTurnChunks": 1,
+        "bestChunkIdx": 5,
+        "degraded": false
+      },
+      {
+        "turn": "dae0f28f-dfd0-4d56-9d00-496d44ba8801",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "9e98151e-9d36-472a-bd58-9398baeab204",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "8b0be8da-7a4b-43b8-8aa3-29c614684308",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "297e5a4b-3eb1-407d-bb66-6b16c383984e",
+        "chars": 7438,
+        "fragmentOffset": 3161,
+        "query": "⚠ Escalation — CRITICAL item EI-18692079915213773 is structurally UNCLAIMABLE and untouched for 38d observation-lane — no claim path can serve it · drill in: escalation:mtuq1yp0-0000-da24665a5bee4d19b7dc7751a51765d0",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 179,
+        "bestChunkRankAmongAllTurnChunks": 20,
+        "bestChunkIdx": 1,
+        "degraded": false
+      },
+      {
+        "turn": "3c0a25e7-e112-480f-9c27-280672c1f2b7",
+        "chars": 10295,
+        "fragmentOffset": 6022,
+        "query": "🚧 Blocked — D-009 violation: su-26811096 is running P-001 with funded API key without owner authorization · still open — day 51 · drill in: escalation:mqhegckp-0000-2937367ddf244c48b5f5b86f59f58bcb",
+        "results": 5,
+        "returned": true,
+        "rank": 3,
+        "ownVectorRank": 2286,
+        "bestChunkRankAmongAllTurnChunks": 13,
+        "bestChunkIdx": 4,
+        "degraded": false
+      },
+      {
+        "turn": "9f657b59-e2be-4bcf-a9f6-3ec917d736a7",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "ccb5fb8b-4d33-4926-aeaf-75a6b2d06176",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "3fcec603-de1f-4956-a946-734a28d14cd6",
+        "chars": 7416,
+        "fragmentOffset": 3891,
+        "query": "🚧 Blocked papercusp — Queued process admission · held by ended session test-files:apps/operator:1660003 · drill in: wi:papercusp WI-652371",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 667,
+        "bestChunkRankAmongAllTurnChunks": 2,
+        "bestChunkIdx": 2,
+        "degraded": false
+      },
+      {
+        "turn": "db7a5377-9ae7-42ec-94e3-d4a7299da75f",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "00168020-3cbc-4a09-b444-9c9b451c03bb",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "5c0f92a1-d88c-47c0-ab7b-db26d769138a",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "ebbeccfa-6458-40cc-b0e1-8d1efbbc8b19",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "2e05c195-8639-4871-b958-caf56a001e3f",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "ad85c7c7-a4d9-412a-bef4-186d2496a100",
+        "skipped": "no sentence unique to this turn",
+        "tried": 14
+      },
+      {
+        "turn": "6d091bdb-d40f-4990-b9c4-1c42014bcf8b",
+        "chars": 11141,
+        "fragmentOffset": 6721,
+        "query": "🚧 Blocked papercusp — Queued process admission · held by ended session test-files:finalization-expiry-fixture:3348210 · drill in: wi:papercusp WI-886512",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 1094,
+        "bestChunkRankAmongAllTurnChunks": 5,
+        "bestChunkIdx": 5,
+        "degraded": false
+      },
+      {
+        "turn": "7cf5ed4d-a2b5-4202-850c-d7ec08cd3510",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "a7609b5e-8f66-442b-8681-0752fc9a5cb8",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "638c4a49-454d-4f9a-b7b0-85a7e726069f",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "c1ae3a16-347e-4aba-9a59-70de38cf2def",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "fe60eb62-8896-404c-9afe-98dd6ba30b35",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "ca3b409d-85a9-4d61-8169-d50661f96b8f",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "34f6a2d2-5cf9-4224-a7a1-e7f63b59fcaf",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "7b203a3e-4901-4e69-9991-09a92ba33f77",
+        "skipped": "no sentence unique to this turn",
+        "tried": 14
+      },
+      {
+        "turn": "16ac95ec-163c-47fb-a9c1-b70233dd57cc",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "9dc3243a-0d87-400f-b710-c2b937289d11",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "10f6f6c6-2954-436d-b77d-ab1e2d73e71d",
+        "chars": 7773,
+        "fragmentOffset": 4662,
+        "query": "🚧 Blocked papercusp — Queued process admission · held by ended session test-files:packages/operator-core:2799 · drill in: wi:papercusp WI-1343161",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 1296,
+        "bestChunkRankAmongAllTurnChunks": 891,
+        "bestChunkIdx": 2,
+        "degraded": false
+      },
+      {
+        "turn": "0ef844d9-9a10-4b6e-9925-41d654ab7acc",
+        "chars": 29065,
+        "fragmentOffset": 7517,
+        "query": "🚧 Blocked — Overwatch cannot satisfy required wake declaration under autonomy gate · still open — day 39 · drill in: escalation:mqt9qmlm-0000-ce17c1c0b5684a16ab0ef37bb98b2d20",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 10101,
+        "bestChunkRankAmongAllTurnChunks": 6,
+        "bestChunkIdx": 6,
+        "degraded": false
+      },
+      {
+        "turn": "c1cf4b79-ae8d-44f5-8f30-4910fc937c4e",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "4cab63f5-e250-4d6c-b2eb-7a3f508b4026",
+        "chars": 29650,
+        "fragmentOffset": 8102,
+        "query": "🚧 Blocked — Overwatch cannot satisfy required wake declaration under autonomy gate · still open — day 34 · drill in: escalation:mqt9qmlm-0000-ce17c1c0b5684a16ab0ef37bb98b2d20",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 947,
+        "bestChunkRankAmongAllTurnChunks": 151,
+        "bestChunkIdx": 6,
+        "degraded": false
+      },
+      {
+        "turn": "92293969-b6d4-4767-b7d2-1b3521f34c3e",
+        "chars": 6667,
+        "fragmentOffset": 3292,
+        "query": "⚠ Escalation — su · su-10716 has an UNTRUSTWORTHY context estimate — it is being read from another session's frozen rollout · still open — day 2 · drill in: escalation:mtcqa7qo-0000-5fb2242dcf5d4981b808b675bfd45c65",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 21118,
+        "bestChunkRankAmongAllTurnChunks": 186,
+        "bestChunkIdx": 2,
+        "degraded": false
+      },
+      {
+        "turn": "ba7075f9-8247-4919-bf79-cdb233897597",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "af70716d-3c43-4aad-877c-440922a4315a",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "f9248ca2-26b2-40c4-93bb-f387e5b6a220",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "67024a9e-e29c-44bb-afbd-f7ba291e6921",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "8702783a-dacb-4023-a267-d30dbcd712a6",
+        "chars": 8066,
+        "fragmentOffset": 3224,
+        "query": "🚧 Blocked papercusp — Queued process admission · held by ended session test-files:finalization-expiry-fixture:3994131 · drill in: wi:papercusp WI-535199",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 897,
+        "bestChunkRankAmongAllTurnChunks": 523,
+        "bestChunkIdx": 2,
+        "degraded": false
+      },
+      {
+        "turn": "d6fb11cc-7707-4955-9c4e-57739780d5bf",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "40770f58-f7f4-4f43-8336-f1cc1c8cbadd",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "2d86872e-921a-4c7d-b890-e8123732321d",
+        "chars": 8339,
+        "fragmentOffset": 6243,
+        "query": "🚧 Blocked papercusp — Queued process admission · held by ended session test-files:finalization-expiry-fixture:2373303 · drill in: wi:papercusp WI-879242",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 810,
+        "bestChunkRankAmongAllTurnChunks": 479,
+        "bestChunkIdx": 6,
+        "degraded": false
+      },
+      {
+        "turn": "fd6c793c-caef-4e71-97c4-49d8fc5f68f1",
+        "chars": 11518,
+        "fragmentOffset": 7014,
+        "query": "🚧 Blocked — D-009 violation: su-26811096 is running P-001 with funded API key without owner authorization · still open — day 72 · drill in: escalation:mqhegckp-0000-2937367ddf244c48b5f5b86f59f58bcb",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 3131,
+        "bestChunkRankAmongAllTurnChunks": 14,
+        "bestChunkIdx": 5,
+        "degraded": false
+      },
+      {
+        "turn": "c2834bc1-a3f5-4953-9435-3bccd4523d76",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "aab06ad0-4ba0-4fff-9f8d-1b3e4b370366",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "3b0de79c-2888-455c-8794-1c6046fe9bf0",
+        "chars": 10799,
+        "fragmentOffset": 6865,
+        "query": "🚧 Blocked — Git-sync / deploy: git-sync FAILING 78 ticks on sidestage — COMMIT failing — nothing has reached the push stage; origin is unaffected · drill in: health:deploy",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 3279,
+        "bestChunkRankAmongAllTurnChunks": 23,
+        "bestChunkIdx": 5,
+        "degraded": false
+      },
+      {
+        "turn": "93b4fbf3-e704-4931-b38b-42c610b51200",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "ed8e4f01-a8d4-49a9-84f1-7b2b33ee6416",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "56dff575-b3a5-4c59-8593-3eb1ea8c99dd",
+        "chars": 7170,
+        "fragmentOffset": 2787,
+        "query": "🚧 Blocked papercusp — Queued process admission · held by ended session test-files:finalization-expiry-fixture:818826 · drill in: wi:papercusp WI-526473",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 963,
+        "bestChunkRankAmongAllTurnChunks": 2,
+        "bestChunkIdx": 2,
+        "degraded": false
+      },
+      {
+        "turn": "4f2eecce-59cd-4ca8-a546-29e2274f8fac",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "14077b50-1f5f-4334-83f0-c9bfa04faf9b",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "d22f2d54-51eb-40ff-883e-fe1cbd0b9952",
+        "chars": 6270,
+        "fragmentOffset": 3990,
+        "query": "🚧 Blocked papercusp — Queued process admission · held by ended session test-files:apps/operator:4092170 · drill in: wi:papercusp WI-1079599",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 610,
+        "bestChunkRankAmongAllTurnChunks": 47,
+        "bestChunkIdx": 2,
+        "degraded": false
+      },
+      {
+        "turn": "00d9014b-d8e9-4b0d-be53-3a04f8c56643",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "ed8f4f72-2cf0-44a6-9c1a-3a3e089cb525",
+        "chars": 146845,
+        "fragmentOffset": 8781,
+        "query": "⚠ Escalation — git-sync content-guard quarantine for get-next.ts already resolved by a later commit — no fix needed · still open — day 22 · drill in: escalation:msnssqz4-0000-d8693f995f024f94b04697cb2cad4141",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 5220,
+        "bestChunkRankAmongAllTurnChunks": 2,
+        "bestChunkIdx": 7,
+        "degraded": false
+      },
+      {
+        "turn": "a6a26ef5-4154-4ad0-9d0f-17c86d84e4ac",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "08c16419-fd10-4a6b-93a7-b5d7bbe1ce8f",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "27ef388a-c62f-4e61-80bd-6b0badd3e91b",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "82abf952-c762-4b29-a7f5-2abaf9267973",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "97fe797f-b825-4602-957e-0ad1870d2e0d",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "c7717001-d226-46b2-9494-e40e9d352a20",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "5f333a6d-2f07-45fb-9e17-045b0d80ee25",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "c29b0be3-d787-4a3b-b47f-7e693cbd3022",
+        "chars": 29211,
+        "fragmentOffset": 7663,
+        "query": "🚧 Blocked — Overwatch cannot satisfy required wake declaration under autonomy gate · still open — day 37 · drill in: escalation:mqt9qmlm-0000-ce17c1c0b5684a16ab0ef37bb98b2d20",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 1918,
+        "bestChunkRankAmongAllTurnChunks": 13,
+        "bestChunkIdx": 6,
+        "degraded": false
+      },
+      {
+        "turn": "37236135-7bb7-4449-a7e6-0bbfeb3f7563",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "83a88959-fa17-4008-ad1e-51cb8287e4ba",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "13f1abc2-32da-407d-9261-01e4822e7154",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "a38f9fb6-4339-4c87-b36d-b8d42e091b4e",
+        "chars": 7526,
+        "fragmentOffset": 4876,
+        "query": "🚧 Blocked papercusp — Queued process admission · held by ended session test-files:packages/operator-core:2401198 · drill in: wi:papercusp WI-656770",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 924,
+        "bestChunkRankAmongAllTurnChunks": 148,
+        "bestChunkIdx": 2,
+        "degraded": false
+      },
+      {
+        "turn": "9ec2d18a-f98b-4a49-8998-a62919f39a51",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "81039e12-65f6-46c7-a2e7-c88aca79f1f5",
+        "skipped": "no sentence unique to this turn",
+        "tried": 11
+      },
+      {
+        "turn": "68bb18ed-1fc2-4620-85f6-689fd2c4f8b0",
+        "chars": 6669,
+        "fragmentOffset": 3387,
+        "query": "🚧 Blocked papercusp — Queued inference admission · held by ended session su-respawn-925b3764f73c265aeb7ae3c34c2aa6bb · drill in: wi:papercusp WI-1296838",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 621,
+        "bestChunkRankAmongAllTurnChunks": 32,
+        "bestChunkIdx": 1,
+        "degraded": false
+      },
+      {
+        "turn": "0ee47b46-1a31-4559-af0b-75643357ee01",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "476a4dbd-09a0-4838-8723-c14be57be3cf",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "437a59dc-60cf-4b2a-8f60-23c66f9eff43",
+        "chars": 10124,
+        "fragmentOffset": 6917,
+        "query": "🚧 Blocked papercusp — Queued inference admission · held by ended session su-169d8 · drill in: wi:papercusp WI-2081691",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 1898,
+        "bestChunkRankAmongAllTurnChunks": 416,
+        "bestChunkIdx": 3,
+        "degraded": false
+      },
+      {
+        "turn": "6dc22f1d-4055-439b-8b09-dfddbf4e5060",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "03c35494-dcda-417d-9b59-77df7ed0b6eb",
+        "chars": 11656,
+        "fragmentOffset": 6758,
+        "query": "🚧 Blocked papercusp — Queued process admission · held by ended session testing:run:546aaa70-98a8-43ba-a51d-9e34762ece5f · drill in: wi:papercusp WI-937837",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 1357,
+        "bestChunkRankAmongAllTurnChunks": 1138,
+        "bestChunkIdx": 4,
+        "degraded": false
+      },
+      {
+        "turn": "aad4e2a3-7c38-4e1e-a98d-5e7172f2142b",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "7c8b40c4-59ff-4539-8845-7456a21f3052",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "08e06157-55de-4baf-864b-c04c0496ece4",
+        "chars": 7720,
+        "fragmentOffset": 4522,
+        "query": "🚧 Blocked papercusp — Queued process admission · held by ended session testing:run:3fbd877f-64d7-458b-9cd3-b200285b8dda · drill in: wi:papercusp WI-1730417",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 487,
+        "bestChunkRankAmongAllTurnChunks": 3,
+        "bestChunkIdx": 1,
+        "degraded": false
+      },
+      {
+        "turn": "0692d18f-ead8-4718-8e70-64b685649450",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "9ee4cccf-541f-430f-86bb-e9ed3918cfe4",
+        "chars": 6035,
+        "fragmentOffset": 2000,
+        "query": "-20994111366300088 is structurally UNCLAIMABLE and untouched for 13d observation-lane — no claim path can serve it · still open — day 2 · drill in: escalation:mtj5uzim-0000-61dff37685dd4408bfb6204db4f521a3",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 184,
+        "bestChunkRankAmongAllTurnChunks": 6,
+        "bestChunkIdx": 1,
+        "degraded": false
+      },
+      {
+        "turn": "1a9c6112-ddb4-417a-933d-d5fbe22726ef",
+        "chars": 11341,
+        "fragmentOffset": 6404,
+        "query": "🚧 Blocked sb-devboard-hive — testing:run resolves live papercusp session to stale /tmp/devboard root · marked blocked · still open — day 3 · drill in: wi:sb-devboard-hive EI-21432412459945895",
+        "results": 5,
+        "returned": true,
+        "rank": 3,
+        "ownVectorRank": 393,
+        "bestChunkRankAmongAllTurnChunks": 1,
+        "bestChunkIdx": 5,
+        "degraded": false
+      },
+      {
+        "turn": "342e07f3-22f1-402b-bbde-2e976b22a8cf",
+        "skipped": "no sentence unique to this turn",
+        "tried": 7
+      },
+      {
+        "turn": "6aef5ca9-f955-42e6-8894-046fd134a7b4",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "2eff5c4d-bf10-4233-b272-2c69069746cd",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "f3c0dea4-be5f-49a5-abd0-ac58e927c079",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "b4a44449-e88c-43be-9636-f461ba64f126",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "8e434efe-6e1b-43a8-8b49-976e6c2bfe8d",
+        "skipped": "no sentence unique to this turn",
+        "tried": 15
+      },
+      {
+        "turn": "5fe285f4-0a81-42ba-8b0c-4a42be7bca70",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "f22af950-cfb5-4372-a6d1-51fd0021c8b7",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "4c894013-32c3-4b7d-9ee4-bbabcf3fe989",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "fd6995bd-c023-4be2-9120-5f241a2e851f",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "7d678a48-eab5-4168-96db-2eb263cb7011",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "a1157dd2-91e0-40a3-a4e1-12d781496554",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "2444e767-bce9-4432-b725-87ea6cdcea7e",
+        "chars": 7018,
+        "fragmentOffset": 4810,
+        "query": "🚧 Blocked email — Re-probe email content-guard offender packages/ui/package.json · held by ended session mcp-call-457654 · drill in: wi:email WI-1971128",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 148,
+        "bestChunkRankAmongAllTurnChunks": 2,
+        "bestChunkIdx": 3,
+        "degraded": false
+      },
+      {
+        "turn": "df9c42d1-3014-4e1c-8dcb-ca3c126eaf88",
+        "chars": 6448,
+        "fragmentOffset": 3191,
+        "query": "⚠ Escalation — Goal 'work-on-everything-070565' is HELD but its holder has produced nothing in 0h · still open — day 4 · drill in: escalation:mtbxkyw4-0000-3362b1ddb8c8434ba087a80c105f8f5a",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 11684,
+        "bestChunkRankAmongAllTurnChunks": 441,
+        "bestChunkIdx": 2,
+        "degraded": false
+      },
+      {
+        "turn": "4e7d78d8-5090-4443-9559-41ff6bed8b2b",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "407d3085-cd4c-4335-8ace-4ebe026ab152",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "c9ad827d-7b12-4f1a-8ae1-8483c4b49cef",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "53ffd6c2-9677-4c7b-beaa-d63394336d93",
+        "skipped": "no sentence unique to this turn",
+        "tried": 0
+      },
+      {
+        "turn": "b3719da7-6bd0-4e7d-88e6-039234539dcb",
+        "chars": 7626,
+        "fragmentOffset": 3911,
+        "query": "🚧 Blocked papercusp — Queued process admission · held by ended session test-files:apps/operator:1648480 · drill in: wi:papercusp WI-581190",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 758,
+        "bestChunkRankAmongAllTurnChunks": 164,
+        "bestChunkIdx": 0,
+        "degraded": false
+      },
+      {
+        "turn": "436dfe88-a9c5-48a1-8f52-47f76c3388db",
+        "skipped": "no sentence unique to this turn",
+        "tried": 15
+      },
+      {
+        "turn": "ecac8444-7fe1-4709-8f0f-58d1ffc50e28",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "2f986e55-61fc-4f91-9e7d-bb4419c7331c",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "2640188e-4968-4956-8e84-f3fca53c8d64",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "44b62686-a129-4a41-9f7f-8720e4ea9311",
+        "chars": 6886,
+        "fragmentOffset": 4719,
+        "query": "The prior P-003 ask was accidentally superseded by an unrelated P-011 question; this replacement restores the P-003 gate.",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 13037,
+        "bestChunkRankAmongAllTurnChunks": 119,
+        "bestChunkIdx": 3,
+        "degraded": false
+      },
+      {
+        "turn": "9606eed5-a8d1-4760-9fcc-39e5548a05ea",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "4502cd8a-b3c2-4602-92f5-b46e0b154906",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "1a72a092-c2bb-4212-9bb3-5d68f643a33e",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "673ba245-efc0-4958-87d3-244e1dc6b2d4",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "4ae41336-5c37-4da9-a183-1a2ca54c184f",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "acc86a02-b4a6-4627-a77e-7586c78ded51",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "79b037a3-8255-40fd-acef-1b9b1ba69245",
+        "chars": 8641,
+        "fragmentOffset": 4121,
+        "query": "The puller is correct and idle by construction; the missing piece is a publisher · still open — day 6 · drill in: escalation:msl8ehvi-0000-0a3f55baeed04ba98bf85de879f57bef",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 19531,
+        "bestChunkRankAmongAllTurnChunks": 28,
+        "bestChunkIdx": 3,
+        "degraded": false
+      },
+      {
+        "turn": "5d0c2a0d-5119-4135-801e-1cd2578c2ed4",
+        "chars": 61467,
+        "fragmentOffset": 6746,
+        "query": "Chasing adoption for a verb the fleet has already routed around would be the wrong outcome.",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 36892,
+        "bestChunkRankAmongAllTurnChunks": 6,
+        "bestChunkIdx": 5,
+        "degraded": false
+      },
+      {
+        "turn": "1aabf30e-8e8b-475b-80c3-a8bbe6b6d0c3",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "b2237d2e-eaf3-43af-8eee-ed37325ba983",
+        "skipped": "no sentence unique to this turn",
+        "tried": 13
+      },
+      {
+        "turn": "b70e9637-ff2a-496c-9fe8-9b4d4cd4f5bc",
+        "chars": 7430,
+        "fragmentOffset": 3872,
+        "query": "🚧 Blocked papercusp — Queued process admission · held by ended session testing:run:ce0bf7c9-aa89-4eab-ad1b-4b39e538f3a6 · drill in: wi:papercusp WI-771744",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 605,
+        "bestChunkRankAmongAllTurnChunks": 4,
+        "bestChunkIdx": 3,
+        "degraded": false
+      },
+      {
+        "turn": "42d5b572-d155-486f-8cf1-d7020dbd3ae7",
+        "chars": 8740,
+        "fragmentOffset": 4096,
+        "query": "🚧 Blocked papercusp — Queued process admission · held by ended session test-files:apps/operator:2564095 · drill in: wi:papercusp WI-657706",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 872,
+        "bestChunkRankAmongAllTurnChunks": 155,
+        "bestChunkIdx": 0,
+        "degraded": false
+      },
+      {
+        "turn": "8deda4d8-2a40-4385-b0c6-a7b8596d412e",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "9e6e89e4-0bd1-4b61-8178-fde62a7c480d",
+        "chars": 8546,
+        "fragmentOffset": 6036,
+        "query": "🚧 Blocked papercusp — Queued process admission · held by ended session test-files:packages/operator-core:2674325 · drill in: wi:papercusp WI-1317217",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 1226,
+        "bestChunkRankAmongAllTurnChunks": 177,
+        "bestChunkIdx": 3,
+        "degraded": false
+      },
+      {
+        "turn": "df9f530e-678b-4b5e-a876-b06b1d0bfcf6",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "0aa3f8b8-3091-4ecc-82ac-609789b007b2",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "f5d783be-8f26-4ee3-adb8-651743fbbe53",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "69e2b0e6-15a9-4930-99ef-45ee3f127696",
+        "skipped": "no sentence unique to this turn",
+        "tried": 12
+      },
+      {
+        "turn": "7ed8ecd9-a85d-4f9d-9819-307dfc2680ff",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "a2b1f5a5-0395-40b2-8b81-9744358180a5",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "ae543c3e-bdbe-4e4c-829a-80ccf49dd1af",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "3c1747e1-d68b-479b-a5d8-620242fece58",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "a6d193c9-6874-4bed-9d0b-9e7e7943d246",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "187b790f-ba01-430d-a527-ff91ea66ad0c",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "70b60d8c-6b63-414a-b8c6-366d78d4007c",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "8afcbf69-688d-433d-95e5-c460664ba6ce",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "c6577f86-16a3-4932-ad37-289b190afdbb",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "dbaf91ed-fd63-4f25-9493-1e5ea05b9e22",
+        "chars": 9201,
+        "fragmentOffset": 6361,
+        "query": "⚠ Escalation — REPEAT: You called activity:report 3× in 10min and every attempt failed · still open — day 4 · drill in: escalation:mtddvcu5-0000-864d70bff3ce461180ec0d666a7de155",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 18863,
+        "bestChunkRankAmongAllTurnChunks": 1,
+        "bestChunkIdx": 5,
+        "degraded": false
+      },
+      {
+        "turn": "2c5cf535-acc9-4a10-9236-a6eeae04aa57",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "4560e617-8406-48d0-8328-cfb5d60a47e3",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "00e4e4db-8adf-460a-a7a1-bda1b44a5c5b",
+        "chars": 6387,
+        "fragmentOffset": 5016,
+        "query": "🚧 Blocked — carry-respawn LOOP on su · su-3ca4d: 3 successor cuts with the context estimate never dropping — respawns suppressed · still open — day 3 · drill in: escalation:mtg7g14m-0000-568945eaf49842d8a81f81217cce160f",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 16519,
+        "bestChunkRankAmongAllTurnChunks": 78,
+        "bestChunkIdx": 4,
+        "degraded": false
+      },
+      {
+        "turn": "4b91cb0b-6490-4394-9417-93cfba172322",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "47fd7478-fb2b-4af1-ac32-c3f7cc9d7656",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "5cdce2c4-2a88-4007-ae14-a3a1b477c619",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "00570b29-2414-4bf6-8a66-e93c2f152acc",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "2f1fce6b-bbb8-4ab2-b676-ad58bdd76906",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "b0d80096-608b-41aa-9a86-87f0ae750826",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "8c7a9f49-8e06-47bb-9ebe-945c10f9ee81",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "ddeda6ed-3963-4c59-96ed-89f4f138dbf5",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "44f831a4-6dc3-4ef9-b4e2-3a30d19162bc",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "f69adf72-b669-4456-9169-4f02690b2980",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "3f530c4f-6945-48c9-b343-0108862cab8c",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "4a8e8b0c-ae0f-40e8-ae71-53bac2c89dcb",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "36475d8b-9472-4e02-95e8-308efd6f6d63",
+        "chars": 16859,
+        "fragmentOffset": 4561,
+        "query": "Deployment is the fix that helps the fleet now.",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 9562,
+        "bestChunkRankAmongAllTurnChunks": 92,
+        "bestChunkIdx": 3,
+        "degraded": false
+      },
+      {
+        "turn": "7c2c926d-70a6-4349-b9c2-c2f625b675ba",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "328c00a1-344f-40b1-b27c-af0f343cd327",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "e62f7b48-c058-477c-bf54-42303308a75e",
+        "chars": 9157,
+        "fragmentOffset": 8290,
+        "query": "✓ Cleared — Live-verify deployed WI-134439 and WI-139197 on :3070, close the canonical bug, and unlock P-007 · drill in: blocked:papercusp WI-246337",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 2667,
+        "bestChunkRankAmongAllTurnChunks": 548,
+        "bestChunkIdx": 6,
+        "degraded": false
+      },
+      {
+        "turn": "004e4c17-5ea6-4aea-9087-8307360db564",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "cda68aa6-539b-426e-97b6-788c1466f7b4",
+        "chars": 6768,
+        "fragmentOffset": 3919,
+        "query": "🚧 Blocked papercusp — Queued process admission · held by ended session test-files:packages/operator-core:3658393 · drill in: wi:papercusp WI-534445",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 914,
+        "bestChunkRankAmongAllTurnChunks": 567,
+        "bestChunkIdx": 3,
+        "degraded": false
+      },
+      {
+        "turn": "0e61b112-d370-4da1-91ec-d7b7297dc065",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "19247d6d-86c6-491b-92b0-a4ad5044cefa",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "74144a1c-e6c2-4712-b203-ef4da730fc0e",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "6d839090-419f-4583-a73b-f0caca004098",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "90b91e24-2024-424a-b0c2-18178ce7c5ec",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "681b75ba-d5a9-41c0-98c5-e7fba03f1ea6",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "2482a059-5c13-4ff8-8a34-3313fd2b0af7",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "902d4104-4648-453e-82c4-b9c7e1cebba0",
+        "chars": 7538,
+        "fragmentOffset": 5546,
+        "query": "🚧 Blocked papercusp — Queued process admission · held by ended session test-files:apps/operator:2420475 · drill in: wi:papercusp WI-827520",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 1048,
+        "bestChunkRankAmongAllTurnChunks": 818,
+        "bestChunkIdx": 0,
+        "degraded": false
+      },
+      {
+        "turn": "d9356a55-e51c-4479-9fa0-c70a661b7647",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "7d8170bf-36ad-4ccd-8d0f-42ded6eed1c7",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "f9787b58-366c-467d-b351-39d97d1c4ade",
+        "chars": 8039,
+        "fragmentOffset": 7444,
+        "query": "🚧 Blocked — carry-respawn LOOP on su · su-58cf3: 3 successor cuts with the context estimate never dropping — respawns suppressed · still open — day 2 · drill in: escalation:mspopkez-0000-3343c72967914fad9c3b35e8918a32cf",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 28033,
+        "bestChunkRankAmongAllTurnChunks": 3,
+        "bestChunkIdx": 6,
+        "degraded": false
+      },
+      {
+        "turn": "595e64cb-4080-48a1-a887-d8325785a24a",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "71378513-50ec-4789-a08b-1cc9fa772b3f",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "51c91030-85b1-4884-a476-532bd0836283",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "8210f409-f989-4715-940b-a5961afaa8f0",
+        "chars": 9571,
+        "fragmentOffset": 4627,
+        "query": "⚠ Escalation — su · su-3156a has an UNTRUSTWORTHY context estimate — it is being read from another session's frozen rollout · still open — day 2 · drill in: escalation:mtchopbg-0000-8baa42c1c1194303a57167c00a0b334c",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 20591,
+        "bestChunkRankAmongAllTurnChunks": 1,
+        "bestChunkIdx": 3,
+        "degraded": false
+      },
+      {
+        "turn": "1da96818-9d0e-45be-be73-b03b41de214c",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "8cebe901-0d0b-4667-94f6-f9c934c55e22",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "1ad28e96-e69d-4049-b035-034bd8068d04",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "0f026c78-826e-4e32-8e56-b5543e38ddd8",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "c0a768e5-511e-4e94-9eaf-56c57d49d963",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "8805818a-d21e-4029-91ea-383915d8e84f",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "e8abccf7-9bd2-43e7-9185-0d1bc1ea9fe2",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "0e01b333-9004-4b31-911e-40d9e0fcf4fb",
+        "skipped": "no sentence unique to this turn",
+        "tried": 14
+      },
+      {
+        "turn": "3fada4e1-d343-4238-b479-979867143000",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "8a0fd823-966a-4721-838f-3a71f5f3f45e",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "0333257c-6f93-4e0a-b457-57810958adeb",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "1d8e003e-01d9-4bb1-bd7d-4881ea96f143",
+        "skipped": "no sentence unique to this turn",
+        "tried": 15
+      },
+      {
+        "turn": "499adabb-8749-41c8-8f9d-11b49a56e801",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "9db35193-f195-4e4f-b74b-64cb8c450c88",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "7c787197-e43b-49ed-a6cd-e4bf745fc633",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "de5599e8-98d3-4aa9-8182-c7078f40afc7",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "b6af74a3-4c96-4c1f-a814-5234c3c20b65",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "cead0a6e-c07b-44d7-a321-6fd4f6b76d5b",
+        "chars": 11028,
+        "fragmentOffset": 7017,
+        "query": "🚧 Blocked — D-009 violation: su-26811096 is running P-001 with funded API key without owner authorization · still open — day 60 · drill in: escalation:mqhegckp-0000-2937367ddf244c48b5f5b86f59f58bcb",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 1849,
+        "bestChunkRankAmongAllTurnChunks": 21,
+        "bestChunkIdx": 5,
+        "degraded": false
+      },
+      {
+        "turn": "a376e5b5-2a3e-4ef7-a930-fbf08e62afd7",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "20dd582a-40af-4d8d-bfbc-77e8f3c802dd",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "a96613c9-a996-406f-ac71-07a82efdcf15",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "7fcbd9d0-5ab2-446d-b70f-6f1af84b8374",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "0e8a4db4-516b-4292-ac9e-0f8ac7781ede",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "af9a9997-08f2-48d6-ace4-b604b5c327fd",
+        "skipped": "no sentence unique to this turn",
+        "tried": 12
+      },
+      {
+        "turn": "89f77079-a10c-412b-aa49-62f0919ff5cf",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "529eca13-a7dc-40af-a2b1-ebda17d5e3e1",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "3a0607d0-dd86-4a0b-9448-15bc1f1b512f",
+        "skipped": "no sentence unique to this turn",
+        "tried": 14
+      },
+      {
+        "turn": "dd18992f-c060-4fba-8e5a-f2f1a595bbf6",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "1355ceba-7c0d-4b2e-9385-9fdb2206e4ce",
+        "chars": 11705,
+        "fragmentOffset": 6929,
+        "query": "🚧 Blocked — carry-respawn LOOP on su · su-4e65f: 3 successor cuts with the context estimate never dropping — respawns suppressed · still open — day 3 · drill in: escalation:mtbz60o9-0000-b1f72c7b3a3b4473b183757f0ef48902",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 15756,
+        "bestChunkRankAmongAllTurnChunks": 2717,
+        "bestChunkIdx": 5,
+        "degraded": false
+      },
+      {
+        "turn": "f560b318-a68f-4a27-8222-a23d413270ba",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "f56588c9-bd47-4f8b-a5d3-a2c65a387713",
+        "chars": 6407,
+        "fragmentOffset": 3536,
+        "query": "🚧 Blocked papercusp — Queued process admission · held by ended session test-files:libs/generic/template-kit:6892 · drill in: wi:papercusp WI-1189421",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 2819,
+        "bestChunkRankAmongAllTurnChunks": 1,
+        "bestChunkIdx": 2,
+        "degraded": false
+      },
+      {
+        "turn": "fbb87d16-d2db-4d23-9178-258cf758fa24",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "f302e1e7-d566-46a7-a18b-0e24fc3b9b3a",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "665e0afd-54e7-4c5a-ae73-b7dea6838763",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "8d9250d6-e669-4aff-b169-d71460d64e98",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "9f2c6f05-62da-4fc0-b376-2c3a2720ea4b",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "db85f57b-87ac-477e-b8fc-529c2bc8e13e",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "369f7c16-0be8-4c82-a0ef-3cfb99d73fc9",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "6e6d6a05-9acf-44be-99bc-3d52c01d6d10",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "f49ab500-9916-47b6-bd12-ffb853a7cf93",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "3eac1545-cc57-42c7-a0bd-988bbb9068bc",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "b137387d-3bf5-449a-a21f-0ff85660d5a3",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "b0986fa5-b8c3-42d2-a678-34ff5f237fb7",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "6bf364b1-1698-481f-be70-bce02155e006",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "cb2c542b-dd02-448d-bcb3-66c3d27b7349",
+        "chars": 6362,
+        "fragmentOffset": 4289,
+        "query": "Define minimal task lifecycle/domain tools, produ… · plan lane storewolf-blueprint-task-execution-2026-09-23 P-006 is blocked — linked work-item parked until the lane clears · drill in: wi:papercusp WI-10002810",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 3,
+        "bestChunkRankAmongAllTurnChunks": 1,
+        "bestChunkIdx": 1,
+        "degraded": false
+      },
+      {
+        "turn": "878c804a-a90d-4c7f-a903-1f3d7db9c0f0",
+        "chars": 6391,
+        "fragmentOffset": 5056,
+        "query": "🚧 Blocked papercusp — Queued process admission · held by ended session test-files:packages/operator-core:2973948 · drill in: wi:papercusp WI-1203693",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 2373,
+        "bestChunkRankAmongAllTurnChunks": 41,
+        "bestChunkIdx": 4,
+        "degraded": false
+      },
+      {
+        "turn": "82395cc9-4a88-48f3-adbe-a96be0b41ead",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "288ac978-52dc-44ab-be11-2ffbfe57e23a",
+        "skipped": "no sentence unique to this turn",
+        "tried": 16
+      },
+      {
+        "turn": "cbb78c65-87b6-41f6-8f35-9b61279b1e67",
+        "chars": 10808,
+        "fragmentOffset": 7611,
+        "query": "✓ Cleared — escalation:mqgi07l4-0000-66bc194b111a4495a7c278664df76644 · drill in: escalation:mqgi07l4-0000-66bc194b111a4495a7c278664df76644",
+        "results": 5,
+        "returned": true,
+        "rank": 1,
+        "ownVectorRank": 33544,
+        "bestChunkRankAmongAllTurnChunks": 173,
+        "bestChunkIdx": 6,
+        "degraded": false
+      }
+    ]
+  },
+  "batterySource": "// generic-rag-chunking P-010 R-26 live battery, unique-query variant. Same\n// sample rule as p010-live-r26-battery.mts (N turns over 6,000 characters in the\n// workspace, md5(id) order, one sentence past the first 2,000 characters that the\n// capped windows still cover), plus one uniform rule the first run showed was\n// needed: the query must be UNIQUE to the target turn. Operator turns hold many\n// machine-written digests (\"Cursed placement: ... failed N×\", \"Cleared — Queued\n// process admission\") that repeat word for word across hundreds of turns, so a\n// query cut from one of them matches many turns equally and \"the target turn\"\n// is not defined. A candidate sentence is kept only when a 40+ character run of\n// its raw text occurs in exactly one workspace turn (strpos over operator_turns).\n// Records whether the target comes back within search:semantic's default count\n// (scope ['turns']), its rank, its rank by its own turn vector alone, and its\n// best chunk's rank among all operator-turn chunks.\nexport {};\nconst base = 'file://~/papercupai-workspace/papercusp/packages/operator-core/lib/';\nconst { installSearchDefaults } = await import(base + 'search/configure-search-defaults.ts');\nconst { buildQueryEmbedderResolved } = await import(base + 'agent-tools/search/embedder.ts');\nconst { OPERATOR_TURNS_CHUNK_SURFACE } = await import(base + 'search/chunks/registry.ts');\nconst semantic = (await import(base + 'agent-tools/search/semantic.ts')).default;\nconst { getOrgPg } = await import('@papercusp/db-org');\ninstallSearchDefaults();\n\nconst CUT = 2000;\nconst N = Number(process.env.N ?? 10);\nconst WS = 'papercusp-workspace';\nconst sp = OPERATOR_TURNS_CHUNK_SURFACE.splitter as { size: number; overlap: number };\nconst covered = sp.size + (OPERATOR_TURNS_CHUNK_SURFACE.maxChunks! - 1) * (sp.size - sp.overlap);\nconst resolved = await buildQueryEmbedderResolved({ acquireBudgetMs: 20_000 });\nif (!resolved) throw new Error('no query embedder');\nconst { sql } = getOrgPg();\n\nconst turns = await sql.unsafe<Array<{ id: string; text: string }>>(\n  `SELECT t.id::text AS id, t.text FROM harness_shared.operator_turns t\n     JOIN harness_shared.operator_conversations c ON c.id = t.conversation_id\n    WHERE c.workspace_id = $1 AND length(t.text) > 6000\n    ORDER BY md5(t.id::text) LIMIT $2`,\n  [WS, N * 6],\n);\n\nconst STRIP = /[`*_#>|[\\]()]/;\nfunction longestPlainRun(raw: string): string {\n  let best = '';\n  for (const part of raw.split(/[`*_#>|[\\]()]|\\s{2,}/)) {\n    const p = part.trim();\n    if (p.length > best.length) best = p;\n  }\n  return best;\n}\n\nconst rows: Array<Record<string, unknown>> = [];\nfor (const t of turns) {\n  if (rows.filter((r) => !r.skipped).length >= N) break;\n  const head = t.text.slice(0, CUT).toLowerCase();\n  const region = t.text.slice(CUT, Math.min(t.text.length, covered) - 50);\n  const cands = region\n    .split(/(?<=[.!?])\\s+|\\n+/)\n    .map((raw) => ({ raw, q: raw.replace(new RegExp(STRIP, 'g'), ' ').replace(/\\s+/g, ' ').trim() }))\n    .filter((s) => s.q.split(' ').length >= 8 && s.q.length <= 220 && !head.includes(s.q.toLowerCase().slice(0, 40)));\n  // Walk outward from the 60% position; take the first sentence unique to this turn.\n  const start = Math.floor(cands.length * 0.6);\n  const order = cands.map((_, i) => i).sort((a, b) => Math.abs(a - start) - Math.abs(b - start) || a - b);\n  let query: string | undefined;\n  let fragment = '';\n  // The long turns here are largely digests that repeat items across many\n  // turns (measured: a 60-char cut at offset 3,000 recurred in 46 and 16 turns),\n  // so test every candidate's uniqueness in ONE scan per turn and take the\n  // unique candidate nearest the 60% position.\n  const frags = order.map((i) => ({ i, frag: longestPlainRun(cands[i]!.raw) })).filter((f) => f.frag.length >= 40).slice(0, 16);\n  const tried = frags.length;\n  if (frags.length > 0) {\n    const counts = await sql.unsafe<Array<{ f: string; n: number }>>(\n      `SELECT f, count(t.id)::int AS n\n         FROM unnest($2::text[]) AS f\n         LEFT JOIN (SELECT t.id, t.text FROM harness_shared.operator_turns t\n                      JOIN harness_shared.operator_conversations c ON c.id = t.conversation_id\n                     WHERE c.workspace_id = $1) t ON strpos(t.text, f) > 0\n        GROUP BY f`,\n      [WS, frags.map((f) => f.frag)],\n    );\n    const n = new Map(counts.map((c) => [c.f, c.n]));\n    const hit = frags.find((f) => n.get(f.frag) === 1);\n    if (hit) {\n      query = cands[hit.i]!.q;\n      fragment = hit.frag;\n    }\n  }\n  if (!query) {\n    rows.push({ turn: t.id, skipped: 'no sentence unique to this turn', tried });\n    continue;\n  }\n  const vec = `[${(await resolved.embed(query)).join(',')}]`;\n  const [ownRank] = await sql.unsafe<Array<{ rank: number }>>(\n    `WITH r AS (SELECT t.id, row_number() OVER (ORDER BY t.text_embedding <=> $2::vector) AS rank\n                  FROM harness_shared.operator_turns t\n                  JOIN harness_shared.operator_conversations c ON c.id = t.conversation_id\n                 WHERE c.workspace_id = $1 AND t.text_embedding IS NOT NULL)\n     SELECT rank::int FROM r WHERE id = $3::uuid`,\n    [WS, vec, t.id],\n  );\n  const [chunkRank] = await sql.unsafe<Array<{ rank: number; idx: number }>>(\n    `WITH r AS (SELECT parent_key, chunk_idx, row_number() OVER (ORDER BY embedding <=> $1::vector) AS rank\n                  FROM harness_shared.text_chunks\n                 WHERE surface = 'operator_turns' AND embedding IS NOT NULL)\n     SELECT rank::int, chunk_idx AS idx FROM r WHERE parent_key[1] = $2 ORDER BY rank LIMIT 1`,\n    [vec, t.id],\n  );\n  const res = (await semantic.handler({ query, scope: ['turns'] } as never, {\n    workspaceId: WS,\n    isSuperuser: true,\n    // search:semantic declares crossWorkspace:true, so the dispatcher hands it\n    // ctx.tx = the bare getOrgPg().sql handle; pass the same handle here.\n    tx: sql,\n  } as never)) as { content: Array<{ text: string }> };\n  const payload = JSON.parse(res.content[0]!.text) as { results?: Array<Record<string, unknown>>; legs?: unknown };\n  const results = payload.results ?? [];\n  const i = results.findIndex((h) => JSON.stringify(h).includes(t.id));\n  rows.push({\n    turn: t.id,\n    chars: t.text.length,\n    fragmentOffset: t.text.indexOf(fragment),\n    query,\n    results: results.length,\n    returned: i >= 0,\n    rank: i + 1,\n    ownVectorRank: ownRank?.rank ?? null,\n    bestChunkRankAmongAllTurnChunks: chunkRank?.rank ?? null,\n    bestChunkIdx: chunkRank?.idx ?? null,\n    degraded: (payload.legs as { degraded?: boolean } | undefined)?.degraded ?? null,\n  });\n}\nfor (const r of rows) console.log('ROW', JSON.stringify(r));\nconst done = rows.filter((r) => !r.skipped);\nconsole.log(\n  'SUMMARY',\n  JSON.stringify({\n    at: new Date().toISOString(),\n    n: done.length,\n    skipped: rows.length - done.length,\n    returned: done.filter((r) => r.returned).length,\n    ownVectorInTop5: done.filter((r) => typeof r.ownVectorRank === 'number' && (r.ownVectorRank as number) <= 5).length,\n  }),\n);\nprocess.exit(0);\n"
+}

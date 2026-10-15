@@ -27,6 +27,7 @@ import { stripCommentsOnly } from '../../../scripts/lib/strip-comments-and-strin
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../..');
 const CENSUS = join(REPO_ROOT, 'scripts/mug-kettle-surface-census.mjs');
+const GATE_POPULATION = 'packages/operator-core/lib/agent-tools/_mug-kettle-gate-population.ts';
 
 type Finding = {
   category: string;
@@ -96,6 +97,21 @@ describe('mug/kettle census — comment blindness (WI-37661)', () => {
     // dbos/durable-spawn.ts is real branching code, not prose.
     const src = readFileSync(join(REPO_ROOT, 'packages/operator-core/lib/dbos/durable-spawn.ts'), 'utf8');
     expect(stripCommentsOnly(src)).toMatch(/role\s*===\s*'mug'/);
+  });
+
+  it('counts executable tooldefs, not the canonical disposition table rows', { timeout: CENSUS_TIMEOUT_MS }, () => {
+    const toolFindings = census().filter((finding) => finding.category === 'tool');
+
+    // D4's `name:` shape is shared by the pure-data disposition registry, but that file
+    // lists gated/excluded/deleted verbs rather than registering runtime tools. Keep the
+    // actual registration path visible so the exclusion cannot make the detector vacuous.
+    expect(toolFindings.filter((finding) => finding.file === GATE_POPULATION)).toEqual([]);
+    expect(toolFindings).toContainEqual(
+      expect.objectContaining({
+        subject: 'pot:start',
+        file: 'packages/operator-core/lib/agent-tools/pot/start.ts',
+      }),
+    );
   });
 
   /**

@@ -12,23 +12,51 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { callPlansRead } from '../../agent-tools/plans/read-dispatch';
 import { readStandingBulkAutomationPolicy } from '../../attention/automation-policy';
-import { bulkAutomationSnapshot } from '../../attention/bulk-dispositions';
+import { bulkAutomationSnapshot, bulkRiskAutonomy, type StandingBulkAutomationPolicy } from '../../attention/bulk-dispositions';
 import {
   BulkRunAlreadyActiveError,
   createRun,
+  getItemIdsAwaitingOwnerReview,
   getRunningRun,
+  readConsecutiveNeverBeatRuns,
   setRunPhase,
   type BulkRunSeedItem,
 } from '../../attention/bulk-run-store';
 import {
   resolveBulkResolverLaunch,
+  type BulkResolverLaunchProfile,
   type EffectiveBulkResolverLaunch,
 } from '../../agent-config-constants';
+import { readAgentConfig } from '../../agent-config';
 import { launchResolver } from '../../endpoint-route/routes/admin/attention-bulk-resolve';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 
 export const INBOX_BULK_RESOLVE = 'inbox-bulk-resolve';
 export const INBOX_BULK_RESOLVE_CAP = 200;
+const SCHEDULED_REQUESTER = 'system:inbox-bulk-resolve';
+
+/** After this many scheduled runs in a row whose resolver never reported... */
+export const NEVER_BEAT_BACKOFF_THRESHOLD = 3;
+/** ...launch at most once per this window until one does (WI-10004887). */
+export const NEVER_BEAT_BACKOFF_MS = 60 * 60_000;
+
+/**
+ * PURE: should this fire skip because recent scheduled launches never produced a
+ * working resolver? Repeating a launch that cannot work is not a backstop: on
+ * 2026-10-01 a walled launch account turned every 15-minute fire into a dead run.
+ * The back-off still retries once per window, so recovery needs no human.
+ */
+export function neverBeatBackoff(input: {
+  consecutive: number;
+  newestCreatedAt: string | null;
+  nowMs: number;
+}): { retryInMs: number } | null {
+  if (input.consecutive < NEVER_BEAT_BACKOFF_THRESHOLD || !input.newestCreatedAt) return null;
+  const newest = Date.parse(input.newestCreatedAt);
+  if (!Number.isFinite(newest)) return null;
+  const retryInMs = newest + NEVER_BEAT_BACKOFF_MS - input.nowMs;
+  return retryInMs > 0 ? { retryInMs } : null;
+}
 
 interface AttentionFeedItem {
   id?: unknown;
@@ -39,12 +67,21 @@ interface AttentionFeedItem {
   actions?: unknown;
 }
 
-function seedItems(data: unknown, cap = INBOX_BULK_RESOLVE_CAP): BulkRunSeedItem[] {
+/**
+ * `exclude` holds ids that already await the owner in an open review run. They
+ * are skipped BEFORE the cap, so a fire seeds the next 200 unreviewed items
+ * rather than re-seeding the head of the feed (WI-10004720 follow-up).
+ */
+function seedItems(
+  data: unknown,
+  cap = INBOX_BULK_RESOLVE_CAP,
+  exclude: ReadonlySet<string> = new Set(),
+): BulkRunSeedItem[] {
   const groups = data && typeof data === 'object' && Array.isArray((data as { groups?: unknown }).groups)
     ? (data as { groups: unknown[] }).groups
     : [];
   const out: BulkRunSeedItem[] = [];
-  const seen = new Set<string>();
+  const seen = new Set<string>(exclude);
   for (const group of groups) {
     const items = group && typeof group === 'object' && Array.isArray((group as { items?: unknown }).items)
       ? (group as { items: unknown[] }).items
@@ -71,6 +108,7 @@ function seedItems(data: unknown, cap = INBOX_BULK_RESOLVE_CAP): BulkRunSeedItem
 
 export interface InboxBulkResolveActionDeps {
   enabled: () => Promise<boolean>;
+  readPolicy: (workspaceId: string) => Promise<StandingBulkAutomationPolicy>;
   readAttention: () => Promise<unknown>;
   /**
    * The run that EXCLUDES a new one: `pending`/`running` only — the same set
@@ -81,6 +119,22 @@ export interface InboxBulkResolveActionDeps {
    * (WI-10004720).
    */
   runningRun: (workspaceId: string) => Promise<{ runId: string; phase: string } | null>;
+  /**
+   * Feed ids already waiting on the owner in an open `review` run. Dropping the
+   * review gate (above) without this made every fire re-seed the same 200
+   * items — 13 duplicate runs in 3h (WI-10004720 follow-up).
+   */
+  awaitingReview: (workspaceId: string, automaticPolicy?: StandingBulkAutomationPolicy) => Promise<ReadonlySet<string>>;
+  /**
+   * The owner's saved inbox-resolve launch profile (model / effort / account /
+   * carry) — the same settings the pane's Run button uses. The scheduled path
+   * used to ignore it, so every scheduled resolver ran the default Claude model
+   * on the system login regardless of what the owner chose (WI-10004887).
+   */
+  readLaunchProfile: () => Promise<Partial<BulkResolverLaunchProfile> | null>;
+  /** Consecutive newest scheduled runs that failed without one heartbeat. */
+  recentNeverBeat: (workspaceId: string) => Promise<{ consecutive: number; newestCreatedAt: string | null }>;
+  nowMs: () => number;
   launch: (input: {
     runId: string;
     itemCount: number;
@@ -101,15 +155,26 @@ async function productionLaunch(input: {
 
 export function makeInboxBulkResolveAction(overrides: Partial<InboxBulkResolveActionDeps> = {}) {
   const deps: InboxBulkResolveActionDeps = {
+    readPolicy: readStandingBulkAutomationPolicy,
     enabled: () => getFlag(FLAGS.INBOX_BULK_RESOLVE, 'system:inbox-bulk-resolve').catch(() => false),
     readAttention: () => callPlansRead('attention', {}, { uiProjection: false }),
     runningRun: (workspaceId) => getRunningRun(workspaceId, 'inbox-resolve'),
+    awaitingReview: (workspaceId, policy) => policy
+      ? getItemIdsAwaitingOwnerReview(workspaceId, 'inbox-resolve', policy)
+      : getItemIdsAwaitingOwnerReview(workspaceId, 'inbox-resolve'),
+    readLaunchProfile: async () => (await readAgentConfig()).resolverProfiles?.['inbox-resolve'] ?? null,
+    recentNeverBeat: (workspaceId) =>
+      readConsecutiveNeverBeatRuns({ workspaceId, kind: 'inbox-resolve', requestedBy: SCHEDULED_REQUESTER }),
+    nowMs: () => Date.now(),
     launch: productionLaunch,
     log: (message) => console.log(`[${INBOX_BULK_RESOLVE}] ${message}`),
     ...overrides,
   };
   return async (ctx: SystemActionCtx): Promise<void> => {
-    if (!(await deps.enabled())) return;
+    if (!(await deps.enabled())) {
+      deps.log('skip: feature flag is off');
+      return;
+    }
     // Every skip says why. A bare `return` here made "a run is executing" and
     // "the backstop is wedged" byte-identical for 37 days.
     const running = await deps.runningRun(ctx.workspaceId);
@@ -117,13 +182,40 @@ export function makeInboxBulkResolveAction(overrides: Partial<InboxBulkResolveAc
       deps.log(`skip: run=${running.runId} is ${running.phase} (single-flight)`);
       return;
     }
-    const items = seedItems(await deps.readAttention());
+    const standingPolicy = await deps.readPolicy(ctx.workspaceId);
+    // Previously-reviewed items become eligible for a fresh live adjudication when
+    // the owner grants autonomy. Existing report auto-accept performs the action.
+    const hasAutomaticRisk = Object.values(bulkRiskAutonomy(standingPolicy)).includes('automatic');
+    const held = hasAutomaticRisk
+      ? await deps.awaitingReview(ctx.workspaceId, standingPolicy)
+      : await deps.awaitingReview(ctx.workspaceId);
+    const items = seedItems(await deps.readAttention(), INBOX_BULK_RESOLVE_CAP, held);
     if (items.length === 0) {
-      deps.log('skip: no action-bearing attention items');
+      deps.log(
+        held.size > 0
+          ? `skip: no unreviewed action-bearing attention items (${held.size} already await owner review)`
+          : 'skip: no action-bearing attention items',
+      );
       return;
     }
-    const policy = bulkAutomationSnapshot(await readStandingBulkAutomationPolicy(ctx.workspaceId));
+    const backoff = neverBeatBackoff({ ...(await deps.recentNeverBeat(ctx.workspaceId)), nowMs: deps.nowMs() });
+    if (backoff) {
+      deps.log(
+        `skip: the last ${NEVER_BEAT_BACKOFF_THRESHOLD}+ scheduled runs failed before their resolver ever ` +
+          `reported (launch route not working); next attempt in ${Math.ceil(backoff.retryInMs / 60_000)}m`,
+      );
+      return;
+    }
+    const policy = bulkAutomationSnapshot(standingPolicy);
+    const profile = await deps.readLaunchProfile();
+    // Same shape as plan-cleanup-sweep-action: the profile supplies the launch
+    // route, the standing automation policy supplies authority. An absent field
+    // inherits the launcher default, exactly as the pane's Run button does.
     const resolved = resolveBulkResolverLaunch({
+      model: profile?.model ?? null,
+      effort: profile?.effort ?? null,
+      ...(profile?.account ? { account: profile.account } : {}),
+      ...(profile?.carry ? { carry: profile.carry } : {}),
       automationMode: policy.mode,
       minConfidence: policy.minConfidence,
     });
@@ -137,7 +229,7 @@ export function makeInboxBulkResolveAction(overrides: Partial<InboxBulkResolveAc
       const run = await createRun({
         items,
         workspaceId: ctx.workspaceId,
-        requestedBy: 'system:inbox-bulk-resolve',
+        requestedBy: SCHEDULED_REQUESTER,
         automationPolicy: policy,
         launchSnapshot: resolved.effective,
       });

@@ -117,12 +117,18 @@ export const PAPERCUSP_OPS_HIVES_TEMPLATE: TemplateManifest = {
       run: "checks/gym-signals.test.ts",
       summary: "the stable app agent's guardrail gym signals are present and wired",
     },
+    {
+      id: "operation-first-triggers",
+      run: "checks/operation-first-triggers.test.ts",
+      summary:
+        "no app trigger creates agent work directly (direct-create binding kind or work-item create tool target); every agent-execution operation's worker role is declared in the app's root .papercusp/blueprint.yaml",
+    },
   ],
   musts: [
     {
       id: "canonical-plan-work-plane",
-      rule: "Every reusable external or scheduled agentic run invokes a declared blueprint operation that targets an app-owned plan template and canonical plan-item promotion; never raw work-item inserts, direct work_items:create, a copied DAG, or a parallel scheduler",
-      enforcedBy: "prose-only",
+      rule: "Every reusable external or scheduled agentic run invokes a declared blueprint operation (declared in the app's ROOT .papercusp/blueprint.yaml) that targets an app-owned plan template and canonical plan-item promotion; never raw work-item inserts, direct work_items:create, a copied DAG, or a parallel scheduler",
+      enforcedBy: "operation-first-triggers",
     },
     {
       id: "operation-first-task-binding",
@@ -912,9 +918,9 @@ export const PAPERCUSP_APP_TEMPLATE: TemplateManifest = {
         "sidecar, release pipeline), web (the Next.js standalone host, auth seam, deploy skeleton), or BOTH " +
         "from one codebase? Answer this FIRST: it selects the chassis aspect, and the chassis brings its own " +
         "decision points with it. Choosing both is deliberate, never the default — the composed app must pass " +
-        "the UNION of both chassis check suites on every build. MEASURED (P-005): that union is 5 check " +
-        "declarations against a single target's 4 — the chassis contributes exactly ONE check (its " +
-        "boot-e2e), and the other three (composition-integrity, data-layer, ui) are shared and paid once " +
+        "the UNION of both chassis check suites on every build. MEASURED (P-005): that union is 6 check " +
+        "declarations against a single target's 5 — the chassis contributes exactly ONE check (its " +
+        "boot-e2e), and the other five shared checks (composition-integrity, package-test-targets, data-layer, UI components, UI tokens) are paid once " +
         "either way. So the tax is +1 declaration, NOT a doubling — but it is the most expensive KIND of " +
         "check (build the app, boot the host, probe health), so a declaration count understates the wall " +
         "clock. Choose both because the app genuinely ships two artifacts.",
@@ -1008,6 +1014,11 @@ export const PAPERCUSP_APP_TEMPLATE: TemplateManifest = {
       summary:
         "the composed set resolves (composeTemplates ok: pins consistent, one root app scope, every selecting decision point satisfied) and the union of checks is what CI runs",
     },
+    {
+      id: "package-test-targets",
+      run: "checks/package-script-targets.test.ts",
+      summary: "every explicit test file named by an app test/check script exists",
+    },
   ],
   musts: [
     {
@@ -1026,8 +1037,13 @@ export const PAPERCUSP_APP_TEMPLATE: TemplateManifest = {
       enforcedBy: "prose-only",
     },
     {
+      id: "test-script-targets-exist",
+      rule: "Every explicit test file path named by a test/check script in the app root package.json exists",
+      enforcedBy: "package-test-targets",
+    },
+    {
       id: "dual-target-is-opt-in",
-      rule: "target: both is chosen deliberately and never by default — it adds the second chassis's boot-e2e check to the union the app must pass on every build (MEASURED P-005: 6 declarations vs 5; the non-chassis four are shared), and that cost is stated in the ship disclosure",
+      rule: "target: both is chosen deliberately and never by default — it adds the second chassis's boot-e2e check to the union the app must pass on every build (MEASURED P-005: 7 declarations vs 6; the five non-chassis checks are shared), and that cost is stated in the ship disclosure",
       enforcedBy: "prose-only",
     },
     {

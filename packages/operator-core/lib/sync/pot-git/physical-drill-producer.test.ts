@@ -3,9 +3,14 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as phaseI from './physical-drill-phase-i';
+import * as hiveKeys from '../../identity/hive-keypair';
+import { generateEd25519KeypairDer } from '../../identity/ed25519';
 import {
   PHYSICAL_DRILL_INCOMPLETE_EXIT,
+  cli,
+  parsePhysicalPhaseICliArgs,
   PhysicalDrillIncompleteEvidenceError,
   physicalDrillFailureLine,
   physicalPhaseJMode,
@@ -23,6 +28,63 @@ import {
 // WI-10003741 / P-505 run 23: a producer mode that opened the @papercusp/locks
 // pg pool wrote its receipt and then never exited, so the scenario's ssh call
 // hung. The CLI must end the process itself once the result is flushed.
+
+describe('Phase I canary CLI (P-502 real owning authority)', () => {
+  afterEach(() => vi.restoreAllMocks());
+  function inputs() {
+    const dir = mkdtempSync(join(tmpdir(), 'phase-i-cli-'));
+    const hiveId = generateEd25519KeypairDer().pubkeyBase64;
+    const target = { kind: 'canary-owner', workspaceId: 'workspace-test', potHomeSlug: 'canary-test', hiveId, repoKey: 'gh-canary-test' };
+    const snapshot = { observedAt: '2026-10-13T00:00:00Z', stagingRef: 'a'.repeat(40), releaseRef: null, githubMain: 'b'.repeat(40), forkRefs: [], pullRequests: [] };
+    writeFileSync(join(dir, 'target.json'), JSON.stringify(target));
+    writeFileSync(join(dir, 'snapshot.json'), JSON.stringify(snapshot));
+    return { dir, target, snapshot, flags: ['--canary-target', join(dir, 'target.json')], snapshotFlags: ['--real-target-snapshot', join(dir, 'snapshot.json')] };
+  }
+
+  it('routes the canary attempt through the existing sink with its real scope and observation', async () => {
+    const i = inputs();
+    try {
+      const receipt: Awaited<ReturnType<typeof phaseI.attemptPhysicalPhaseI>> = {
+        schemaVersion: phaseI.PHASE_I_ATTEMPT_SCHEMA, hostId: 'tower', step: 'live',
+        runId: 'p502-cli-test-run', startedAt: i.snapshot.observedAt, finishedAt: i.snapshot.observedAt,
+        attemptPid: process.pid, hiveId: i.target.hiveId, repoKey: i.target.repoKey,
+        advisory: { provenance: 'drill-supplied-roster-inputs', rosterEpoch: 1, isSelf: true, leaderDevicePubkey: null },
+        deviceSigner: { devicePubkey: i.target.hiveId, verified: true }, ownerKeyMaterialOnHost: false,
+        attempts: [], localCommit: { oid: 'a'.repeat(40), landed: true }, capturedOwnerProof: null,
+        deviceHead: null, deviceHeadAcceptance: null, lost: null,
+      };
+      const attempt = vi.spyOn(phaseI, 'attemptPhysicalPhaseI').mockResolvedValue(receipt);
+      const args = ['tower', 'live', i.dir, 'p502-cli-test-run', i.target.hiveId, 'test-device-keychain', i.target.hiveId];
+      expect(await cli(['phase-i-attempt', ...args, ...i.flags, ...i.snapshotFlags])).toEqual(receipt);
+      expect(attempt.mock.calls[0]![0]).toMatchObject({ repoKey: i.target.repoKey, hiveId: i.target.hiveId, realTargetSnapshot: i.snapshot });
+      await expect(cli(['phase-i-attempt', ...args, ...i.flags])).rejects.toThrow(/real-target snapshot/);
+      await expect(cli(['phase-i-attempt', ...args.slice(0, 6), generateEd25519KeypairDer().pubkeyBase64, ...i.flags, ...i.snapshotFlags])).rejects.toThrow(/matching hiveId/);
+      expect(attempt).toHaveBeenCalledTimes(1);
+    } finally { rmSync(i.dir, { recursive: true, force: true }); }
+  });
+
+  it('refuses a missing canary key instead of starting a minted-key owner', async () => {
+    const i = inputs();
+    try {
+      vi.spyOn(hiveKeys, 'loadHiveKeyStatus').mockResolvedValue({ kind: 'not_found' });
+      const start = vi.spyOn(phaseI, 'startPhaseIOwner');
+      await expect(cli(['phase-i-owner', i.dir, 'p502-cli-test-run', ...i.flags])).rejects.toThrow(/unavailable or foreign/);
+      expect(start).not.toHaveBeenCalled();
+    } finally { rmSync(i.dir, { recursive: true, force: true }); }
+  });
+
+  it('fails closed on missing, duplicate or malformed canary observation flags', () => {
+    const i = inputs();
+    try {
+      expect(() => parsePhysicalPhaseICliArgs(['--canary-target'])).toThrow(/requires a JSON file/);
+      expect(() => parsePhysicalPhaseICliArgs([...i.flags, ...i.flags])).toThrow(/duplicate/);
+      expect(() => parsePhysicalPhaseICliArgs(i.snapshotFlags)).toThrow(/requires --canary-target/);
+      writeFileSync(join(i.dir, 'snapshot.json'), '{}');
+      expect(() => parsePhysicalPhaseICliArgs([...i.flags, ...i.snapshotFlags])).toThrow(/invalid real-target snapshot/);
+      expect(parsePhysicalPhaseICliArgs(['vm', 'live'])).toEqual({ positional: ['vm', 'live'] });
+    } finally { rmSync(i.dir, { recursive: true, force: true }); }
+  });
+});
 
 function deferredStream() {
   const chunks: string[] = [];

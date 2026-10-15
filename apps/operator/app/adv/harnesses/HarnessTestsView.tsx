@@ -35,7 +35,7 @@ export default function HarnessTestsView({ slug }: { slug: string }) {
   const universalTestingTabs = useUniversalTestingTabs();
   const testingCustomTabs = useTestingCustomTabs();
   const [declared, setDeclared] = useState<
-    { domains: TestDomain[]; tierLabels: Record<string, string> } | null
+    { slug: string; domains: TestDomain[]; tierLabels: Record<string, string> } | null
   >(null);
 
   useEffect(() => {
@@ -45,6 +45,7 @@ export default function HarnessTestsView({ slug }: { slug: string }) {
       .then((d) => {
         if (cancelled || !Array.isArray(d?.domains) || !d.domains.length) return;
         setDeclared({
+          slug,
           domains: d.domains as TestDomain[],
           tierLabels: d?.tierLabels ?? HARNESS_TESTING_TIER_LABELS,
         });
@@ -57,8 +58,11 @@ export default function HarnessTestsView({ slug }: { slug: string }) {
     };
   }, [slug]);
 
-  const domains = declared?.domains ?? harnessTestingRegistry;
-  const tierLabels = declared?.tierLabels ?? HARNESS_TESTING_TIER_LABELS;
+  // Ignore the previous pot's registry on the first render after a slug change,
+  // including while the new read is pending or falls back after an error.
+  const currentDeclared = declared?.slug === slug ? declared : null;
+  const domains = currentDeclared?.domains ?? harnessTestingRegistry;
+  const tierLabels = currentDeclared?.tierLabels ?? HARNESS_TESTING_TIER_LABELS;
   // The universal PANEL tabs (live-web, chaos-web, …) are config-not-data —
   // a domains contract only declares file/runner domains, so append any panel
   // tab it doesn't already carry (their components ship in TESTING_CUSTOM_TABS).

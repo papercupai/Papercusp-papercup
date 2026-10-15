@@ -1,0 +1,125 @@
+{
+  "schemaVersion": "p011-serving-inbox-pair-qualification-v1",
+  "workItem": "WI-10005921",
+  "parent": "WI-10004890",
+  "metadataLossBug": "EI-24947550723835470",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "spec": {
+    "id": "PERF-OCT1-P011-MEMORY",
+    "revision": 2,
+    "fingerprint": "6059e251ea51a61458afd5075a8190a60e1f1139d28c55784b4ff12d2c624010"
+  },
+  "status": "failed-cohort-and-raw-audit-preserved-parent-and-child-open",
+  "rawReceipt": {
+    "path": "docs/evidence/papercusp-oct1-p011-serving-inbox-pair-r1-2026-10-03.json",
+    "bytes": 190709,
+    "sha256": "1c2ca8fd2d1d68b2701d8e8a35409eef0e72a8fbd3793d0b796660805b7439b8",
+    "plane": "isolated-serving-generation-operator-api",
+    "verificationPhase": "serving-generation-postflight",
+    "verificationError": "TypeError: fetch failed",
+    "runner": "unknown: completed try-local runner metadata was not persisted",
+    "runtimeLog": "missing from raw receipt",
+    "build": "missing from raw receipt",
+    "intervention": "missing from raw receipt",
+    "observedAcceptance": "not recorded; no resource reduction accepted"
+  },
+  "runs": {
+    "cohort": {
+      "testRunId": 20667339,
+      "status": "fail",
+      "nativeSession": 34741,
+      "nativeExitCode": 1,
+      "path": "/tmp/su-7db4f-p011-serving-inbox-pair-r1.log",
+      "bytes": 62914,
+      "sha256": "e7afeac6e6c734eb1475509ec99cbc12095f9d00def53e376d860fccd3b21d0b",
+      "terminalMarker": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=failed head=1adab2470e uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-03T08:46:02.012Z skippedTests=127",
+      "causeAtFailureBoundary": "UND_ERR_SOCKET: other side closed; underlying network cause unknown"
+    },
+    "independentRawAudit": {
+      "testRunId": 20667361,
+      "status": "fail",
+      "nativeSession": 16287,
+      "nativeExitCode": 1,
+      "path": "/tmp/su-7db4f-p011-serving-inbox-raw-oracle-r1.log",
+      "bytes": 61585,
+      "sha256": "aa06fea51cc3b46d77746618b0acb2a1b66b20032e9bd218f7eda0cb60efbc86",
+      "terminalMarker": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=failed head=1adab2470e uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-03T08:50:40.813Z skippedTests=127",
+      "reason": "Missing runner metadata caused TypeError reading status. This failure is not a resource reduction verdict."
+    },
+    "finalSourceGuards": {
+      "testRunId": 20667590,
+      "status": "pass",
+      "testsPassed": 44,
+      "testsFiltered": 86,
+      "path": "/tmp/su-7db4f-p011-serving-inbox-guards-r5.log",
+      "bytes": 36119,
+      "sha256": "fa2a84dd937708d495377fab231a8a9f52536d0df4a46b5bf447b779fa32bae1",
+      "terminalMarker": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=0f58462443 uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-03T08:56:15.089Z skippedTests=86",
+      "scope": "Focused copy, identity, endpoint containment, failed-postflight persistence and incomplete-run rejection guards; filtered tests provide no proof."
+    }
+  },
+  "sourceQualification": {
+    "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+    "cohortProducerSha256": "7d059d85307e0c7a7aa5fce7a733f2dd25967d41e7d7fb6b180dfdf3f3134880",
+    "currentBytes": 183874,
+    "currentSha256": "59479f1ebacb783880c17ab028fb6bfd845becc5c6b6d2143544e7e3d5e6f478",
+    "currentness": "source-stale for the failed cohort; current for the named final guards only",
+    "fullExecutedSourceGraph": "unknown",
+    "contentChecks": "Final source: all 9 applicable detectors clean, exit 0; named-path git diff --check clean.",
+    "savedTypecheck": "Predecessor checkpoint records scoped build:typecheck: 1 checked file, 0 errors. Not replayed for recovery."
+  },
+  "savedRawObservations": {
+    "arms": ["baseline", "shared", "shared", "baseline"],
+    "samples": 44,
+    "windows": 12,
+    "fixtureRowsPerArm": 256,
+    "bodyStringCodeUnitsPerRow": 32768,
+    "variants": 8,
+    "concurrency": 8,
+    "allFourReaped": true,
+    "forcedCleanup": false,
+    "unreaped": [],
+    "allocationField": "cohorts[].samples[].heap.total_allocated_bytes",
+    "interpretation": "Recorded raw windows and cleanup survive. Neither incomplete:false nor later health success repairs missing runner metadata, failed postflight, source drift or the failed audit. No savings accepted."
+  },
+  "separateStagingRead": {
+    "path": "docs/evidence/papercusp-oct1-p011-staging-inbox-read-r1-2026-10-03.json",
+    "bytes": 1010,
+    "sha256": "d4d161a922c844afefb728d3b555d59e805eaac0026d2632b5059dc4dab5e379",
+    "tool": "coord:inbox",
+    "endpoint": "http://127.0.0.1:3170",
+    "beforeAndAfterHealthSha": "4bfd135beb",
+    "exitCode": 0,
+    "responseEntryCount": 1,
+    "allocationOwner": "unknown",
+    "servingRequestAssignment": "unknown",
+    "scope": "Sanctioned authenticated response read; no staging fixture writes or message sends. Separate from private resource cohorts."
+  },
+  "durableMetadataFix": {
+    "rootCause": "Persistence was ordered after a fallible postflight. The catch reloaded the earlier raw report and dropped try-local completed metadata.",
+    "change": "persistInboxBeforePostflight writes the completed report before awaiting the final health read. The catch preserves that destination and adds the failure. Missing or nonzero runner status is explicitly rejected as an incomplete run.",
+    "recurrenceGuards": [
+      "preserves completed raw resources and provenance when the final health read fails",
+      "rejects missing or failed runner provenance without inventing a resource verdict"
+    ],
+    "historicalReceiptRewritten": false,
+    "networkFailureResolved": false
+  },
+  "acceptanceGaps": [
+    "The cohort and its independent raw audit remain failed. Runner success and final serving identity are unverified.",
+    "The final guarded source differs from the cohort producer. Full source graph, causal serving request allocation, retained/native ownership and production savings remain unknown.",
+    "P011 requires the whole unchanged clause on each linked item's own evidence. The child and parent stay open under D-021.",
+    "The original eight-source census and its dispositions remain in docs/evidence/papercusp-oct1-p011-proof-census-2026-10-02.json, SHA256 ce7f942025573298f90a487a65775c63ec48861b20bde6eb2bcb82a0d6efb950.",
+    "Original approval provenance, pending native owner affirmation, P010, R8/R9, independent acceptance and final shipment remain open; P018 remains done.",
+    "Cheap bounded staging service-log inspection did not establish the socket-close cause. Diagnose before deciding whether a new necessary cohort is justified; do not rerun to reconstruct lost metadata.",
+    "No P017, LIVE_GATE_OPS, native agents, profiler, forced GC or restart belongs to this unit."
+  ],
+  "verification": {
+    "ledgerReadback": "Exact IDs 20667339 and 20667361 are fail; 20667590 is pass, harness papercusp, canonical integration test path and no scratch config.",
+    "receiptHashesRemeasured": true,
+    "expensiveRunsReplayedForRecovery": false,
+    "fullP011Acceptance": false,
+    "independentPlanAcceptance": false,
+    "shipmentVerified": false
+  }
+}

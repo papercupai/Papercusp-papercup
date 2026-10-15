@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "GitNexus P-005 engine comparison: aggregate re-derived from the four persisted live arm reports",
+  "framework": "shell",
+  "command": [
+    "npx",
+    "tsx",
+    "packages/operator-core/lib/code-intelligence/engine-comparison-cli.ts",
+    "--aggregate"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-02T06:30:38Z",
+  "finishedAt": "2026-10-02T06:30:41Z",
+  "summary": "Re-ran the engine-comparison CLI aggregate step against the persisted per-arm reports (baseline-lsp-rg, gitnexus-installed, gitnexus-candidate, codebase-memory) that were produced by running each engine arm against the real bounded source tree, a real installed GitNexus 1.6.9, a real pinned GitNexus 1.6.12 candidate and the locally built Codebase-Memory binary. The aggregate exited 0 and re-derived the committed verdict.json decision `keep` byte for byte: no file under docs/evidence/gitnexus-engine-comparison-2026-10-01 changed (git status clean after the run). Per verdict.json the installed GitNexus is kept because Codebase-Memory correct 1/5 < installed 2/5, recall 0.20 < 0.50 and warm median 2.60x installed, and the 1.6.12 candidate is not adopted because correct 1/5 < installed 2/5, recall 0.43 < 0.50, cold index 1.33x and index bytes 1.40x installed. Disclosed limits: the aggregate step itself reads files and does not re-query any engine; GitNexus cold-index wall and RSS are one real /usr/bin/time -v run each taken under shared-host load and are upper bounds; verdict.json records sourceParity.same=false because the installed arm tree fingerprint carries +dirty.",
+  "assertions": [
+    {
+      "id": "aggregate-exit-0",
+      "passed": true,
+      "evidence": "engine-comparison-cli.ts --aggregate exited 0 in about 3 seconds (06:30:38Z to 06:30:41Z)."
+    },
+    {
+      "id": "verdict-keep-reproduced",
+      "passed": true,
+      "evidence": "verdict.json decision is keep with an empty residue list; the aggregate regenerated it and git status for the evidence directory stayed clean, so the derivation is stable against the persisted reports."
+    },
+    {
+      "id": "no-replace-no-upgrade-reasons-measured",
+      "passed": true,
+      "evidence": "Both reasons in verdict.json cite measured per-arm numbers (correct counts, recall, warm median ratio, cold index ratio, index bytes ratio) taken from the report-*.json files rather than asserted."
+    },
+    {
+      "id": "limits-disclosed",
+      "passed": true,
+      "evidence": "engine-comparison.md records the single cold-index measurement under load and the disclosed bench adapters; verdict.json records sourceParity.same=false for the dirty installed tree."
+    }
+  ],
+  "workItemId": "WI-10001409",
+  "specId": "AUTO-BAR-R-8-P-005",
+  "testFile": "docs/evidence/gitnexus-engine-comparison-2026-10-01/verdict.json",
+  "sourceFile": "packages/operator-core/lib/code-intelligence/engine-comparison-cli.ts"
+}

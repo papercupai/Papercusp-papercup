@@ -32,9 +32,15 @@ export type AcceptanceBarAmendmentSql = Sql | TransactionSql;
  * `barSetHash`: the rubric hash captures BAR meaning, while this source
  * fingerprint also catches mapping changes that would otherwise leave the
  * clause projection stale.
+ *
+ * agent-paperwork-and-restart-tax-reduction-2026-10-15 P-001 (R-1): the fingerprint covers what a
+ * requirement MEANS, not how it is verified. An edit confined to `method`, `replication` or a
+ * `tests` check's files/test name is BAR-neutral, so the pin advances without an amendment and the
+ * acceptance read takes those fields from the live block (`acceptance-live-requirements.ts`).
  */
 export async function acceptanceBarSourceFingerprint(body: string): Promise<string | null> {
   const { parseRequirementBars, parseBarMappings } = await import('./acceptance-bar-seed');
+  const { verificationNeutralCriterion } = await import('./acceptance-live-requirements');
   const requirements = parseRequirementBars(body);
   if (!requirements.ok) return null;
   const mappings = parseBarMappings(
@@ -46,7 +52,7 @@ export async function acceptanceBarSourceFingerprint(body: string): Promise<stri
     bars: requirements.bars.map((bar) => ({
       barKey: bar.barKey,
       model: bar.model,
-      criterion: bar.criterion ?? null,
+      criterion: bar.criterion ? verificationNeutralCriterion(bar.criterion) : null,
     })),
     mappings: mappings.mappings.map((mapping) => ({
       barKey: mapping.barKey,
@@ -71,6 +77,8 @@ export async function synchronizeAcceptanceBarSubjectRevision(
   args: {
     workspaceId: string; harnessSlug: string; planSlug: string;
     previousBody: string; nextBody: string; previousVersion: number; nextVersion: number;
+    /** Validate the exact neutral pin advance without persisting it. */
+    dryRun?: boolean;
   },
 ): Promise<boolean> {
   // Re-audit can catch up across several neutral plan writes. Source equality
@@ -134,6 +142,7 @@ export async function synchronizeAcceptanceBarSubjectRevision(
     preserveExistingBars: true,
   });
   if (!rebuilt.ok || rebuilt.barSetHash !== subject.acceptance_bar_set_hash) return false;
+  if (args.dryRun) return true;
   const rows = await sql`
     UPDATE harness_shared.harness_plans
        SET template_data = jsonb_set(template_data, '{barContract,subjectPlanRevision}',
@@ -237,19 +246,59 @@ export function approvalReceiptJsonSource(body: string): string {
   const parsable = fences.find((f) => parses(f.content));
   if (parsable) return parsable.content;
 
-  // Requesters also paste the compact preview JSON on its own line between
-  // explanatory paragraphs. Accept exactly one schema-valid approval in that
-  // shape; multiple receipts are ambiguous and must fail closed below.
-  const inlineApprovals = body.split(/\r?\n/).map((line) => line.trim()).filter((line) => {
-    if (!line.startsWith('{') || !line.endsWith('}')) return false;
-    try {
-      return acceptanceBarApprovalSchema.safeParse(JSON.parse(line)).success;
-    } catch {
-      return false;
+  // Requesters also paste the preview JSON between explanatory paragraphs.
+  // A one-line-only check rejected ordinary pretty-printed JSON in an otherwise
+  // valid post, then blamed the post id even though it contained the receipt.
+  // Scan balanced object spans (respecting JSON strings/escapes) and accept only
+  // one schema-valid receipt. Bound candidate work so brace-heavy prose fails
+  // closed instead of turning approval parsing into an unbounded scan.
+  const inlineApprovals: string[] = [];
+  let scannedObjects = 0;
+  for (let start = 0; start < body.length; start += 1) {
+    if (body[start] !== '{') continue;
+    scannedObjects += 1;
+    if (scannedObjects > 128) return body;
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let end = -1;
+    for (let index = start; index < body.length; index += 1) {
+      const character = body[index]!;
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === '\\') escaped = true;
+        else if (character === '"') inString = false;
+        continue;
+      }
+      if (character === '"') {
+        inString = true;
+      } else if (character === '{') {
+        depth += 1;
+      } else if (character === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          end = index;
+          break;
+        }
+      }
     }
-  });
+    if (end < 0) continue;
+
+    const candidate = body.slice(start, end + 1);
+    try {
+      const parsed = JSON.parse(candidate);
+      if (acceptanceBarApprovalSchema.safeParse(parsed).success) {
+        inlineApprovals.push(candidate);
+        if (inlineApprovals.length > 1) return body;
+        start = end;
+      }
+    } catch {
+      // Continue scanning later objects in prose; malformed surrounding text
+      // must not hide a complete, independently parseable receipt below it.
+    }
+  }
   if (inlineApprovals.length === 1) return inlineApprovals[0]!;
-  if (inlineApprovals.length > 1) return body;
 
   // Preserve the historical shape: first fence if any, else the whole body, so
   // a malformed receipt still reaches JSON.parse and reports its own error.
@@ -280,9 +329,18 @@ export async function resolveAcceptanceBarApproval(
   // reviewer can then sign that immutable workspace-local post with a short pointer,
   // avoiding a second manual transcription of dozens of SHA characters. The signer
   // and approval time still come exclusively from the reviewer's post above.
-  const previewPointer = /^approve thread-post:([1-9][0-9]*)$/.exec(post.body.trim());
+  const reviewerLines = post.body.split(/\r?\n/);
+  const firstNonEmptyLine = reviewerLines.findIndex((line) => line.trim().length > 0);
+  const firstLine = firstNonEmptyLine >= 0 ? reviewerLines[firstNonEmptyLine]!.trim() : '';
+  const previewPointer = /^approve thread-post:([1-9][0-9]*)$/.exec(firstLine);
   let receiptBody = post.body;
   if (previewPointer) {
+    const laterPointerIds = reviewerLines.slice(firstNonEmptyLine + 1).flatMap((line) =>
+      [...line.matchAll(/\bapprove thread-post:([1-9][0-9]*)\b/g)].map((match) => match[1]!),
+    );
+    if (laterPointerIds.some((id) => id !== previewPointer[1])) {
+      throw new Error('acceptance_bar_approval_ambiguous_preview_pointer');
+    }
     if (previewPointer[1] === match[1]) {
       throw new Error('acceptance_bar_approval_preview_self_reference');
     }
@@ -296,7 +354,18 @@ export async function resolveAcceptanceBarApproval(
     receiptBody = previewPost.body;
   }
   let body: unknown;
-  try { body = JSON.parse(approvalReceiptJsonSource(receiptBody)); } catch { throw new Error("acceptance_bar_approval_unparseable: the approval post must contain JSON or exactly `approve thread-post:<preview-post-id>` pointing to the requester's preview."); }
+  try {
+    body = JSON.parse(approvalReceiptJsonSource(receiptBody));
+  } catch {
+    if (previewPointer) {
+      throw new Error(
+        `acceptance_bar_preview_unparseable: referenced preview thread-post:${previewPointer[1]} must contain the approval JSON receipt.`,
+      );
+    }
+    throw new Error(
+      'acceptance_bar_approval_unparseable: the approval post must contain JSON or start with `approve thread-post:<preview-post-id>` as its first non-empty line, with any explanation following it.',
+    );
+  }
   const parsed = acceptanceBarApprovalSchema.safeParse(body);
   if (!parsed.success) throw new Error('acceptance_bar_approval_invalid_receipt');
   const receipt = parsed.data;
@@ -386,7 +455,7 @@ export async function synchronizeAcceptanceBarRevision(
   if (!subjects.length) throw new Error('acceptance_bar_revision_subject_missing');
   const subject = subjects[0]!;
   const { acceptanceBarBehaviorClass, acceptanceBarProjectedBehavior, parseRequirementBars, parseBarMappings } = await import('./acceptance-bar-seed');
-  const { computeAcceptanceBarHash } = await import('./rubrics');
+  const { computeAcceptanceBarHash, inspectRubricRevisionSnapshot } = await import('./rubrics');
   const byKey = new Map(data.criteria.map((criterion) => [criterion.barKey ?? criterion.key, criterion]));
   const requirements = parseRequirementBars(subject.content);
   if (!requirements.ok) {
@@ -399,6 +468,13 @@ export async function synchronizeAcceptanceBarRevision(
     throw new Error(
       `acceptance_bar_revision_mapping_invalid:${mappings.problems.map((problem) => problem.code).join(',')}`,
     );
+  }
+  // Validate the complete mapping before reading or writing projections. Preview
+  // and apply must both refuse a plan BAR omitted from the candidate rubric.
+  for (const mapping of mappings.mappings) {
+    if (!byKey.has(mapping.barKey)) {
+      throw new Error(`acceptance_bar_revision_mapping_missing:${mapping.barKey}`);
+    }
   }
   // A clause this amendment owns is identified by its stored bar linkage OR by the canonical
   // AUTO-BAR identity its mapping implies. Identity alone is load-bearing: a clause write that
@@ -475,6 +551,35 @@ export async function synchronizeAcceptanceBarRevision(
   const barKeyOf = (clause: ProjectedClause): string | null =>
     clause.source_bar_key ?? barKeyBySpecId.get(clause.spec_id) ?? generatedProjectionIdentity(clause.spec_id)?.barKey ?? null;
   const revisions = new Map<string, number>();
+  // Reuse the immutable snapshot envelope inside this transaction. Keeping an
+  // unchanged clause's old pin is safe only while that historical BAR resolves.
+  // Cache by revision so an amendment reads each old snapshot cohort once.
+  const pinnedSnapshots = new Map<number, Promise<unknown[]>>();
+  const historicalPinResolves = async (clause: ProjectedClause, next: SpecClauseWrite): Promise<boolean> => {
+    const revision = Number(clause.source_rubric_revision);
+    let pending = pinnedSnapshots.get(revision);
+    if (!pending) {
+      const marker = `"rubricRevision": ${revision},`;
+      pending = sql<Array<{ content_snapshot: string }>>`
+        SELECT content_snapshot FROM harness_shared.plan_revisions
+         WHERE workspace_id = ${args.workspaceId} AND harness_slug = ${args.harnessSlug}
+           AND plan_slug = ${args.rubricSlug}
+           AND position(${marker} in content_snapshot) > 0
+         ORDER BY seq DESC LIMIT 3`
+        .then((rows) => rows.length === 3 ? [] : rows.map((row) => inspectRubricRevisionSnapshot(row.content_snapshot))
+          .filter((snapshot) => snapshot.kind === 'enriched' && snapshot.rubricRevision === revision)
+          .map((snapshot) => snapshot.templateData));
+      pinnedSnapshots.set(revision, pending);
+    }
+    const snapshots = await pending;
+    if (snapshots.length !== 1) return false;
+    const historical = rubricTemplateDataAuthoringSchema.safeParse(snapshots[0]);
+    if (!historical.success || historical.data.kind !== 'acceptance'
+      || historical.data.barSetHash !== clause.source_bar_set_hash) return false;
+    const bars = historical.data.criteria.filter((bar) => bar.barKey === clause.source_bar_key);
+    return bars.length === 1 && bars[0]!.barHash === clause.source_bar_hash
+      && bars[0]!.evidencePlane === next.sourceBar?.evidencePlane;
+  };
   // The subject plan is the canonical discharge map. Diff every desired
   // (BAR, plan-item) edge, not merely whether a BAR has any clause: an existing
   // BAR may expand from one implementing item to several during an as-built
@@ -502,7 +607,7 @@ export async function synchronizeAcceptanceBarRevision(
           expectedRevision: 0,
           planItemId,
           behavior: acceptanceBarProjectedBehavior(criterion),
-          behaviorClass: acceptanceBarBehaviorClass(criterion.evidencePlane, criterion.requiredTestLayers),
+          behaviorClass: acceptanceBarBehaviorClass(criterion.evidencePlane, criterion.requiredTestLayers, criterion.check),
           requiredEvidence: [criterion.evidencePlane],
           ...(criterion.requiredTestLayers ? { requiredTestLayers: criterion.requiredTestLayers } : {}),
           lifecycleStatus: 'draft',
@@ -669,8 +774,14 @@ export async function synchronizeAcceptanceBarRevision(
         === clause.source_bar_hash;
     const preserveRefinements = unchangedBar || layersOnly;
     // Replace the parent's layer requirements while retaining any extra layers
-    // authored on this atomic clause. This also respects an approved removal.
-    const requiredTestLayers = unchangedBar ? clause.required_test_layers : layersOnly
+    // authored on this atomic clause. This also respects an approved removal, on
+    // EVERY re-projection from the prior BAR, not only a layers-only change: an
+    // amendment that rewords a BAR and also drops its layers must not carry the
+    // dropped layers forward through the `??` fallback below. That kept an
+    // explicitly-manual BAR "owing automated proof" (WI-6554700010009658).
+    // layersOnly implies projectedFromPrior, so the layers-only path is unchanged.
+    const projectedFromPrior = prior !== undefined && prior.barHash === clause.source_bar_hash;
+    const requiredTestLayers = unchangedBar ? clause.required_test_layers : projectedFromPrior
       ? [...new Set([
           ...clause.required_test_layers.filter((layer) => !prior!.requiredTestLayers?.includes(layer)),
           ...(criterion.requiredTestLayers ?? []),
@@ -680,13 +791,23 @@ export async function synchronizeAcceptanceBarRevision(
       planSlug: subjectPlan, specId: clause.spec_id, sourceValId: clause.source_val_id,
       expectedRevision: Number(clause.current_revision), planItemId: clause.plan_item_id,
       behavior: preserveRefinements ? clause.behavior : acceptanceBarProjectedBehavior(criterion),
-      behaviorClass: preserveRefinements
+      // Recompute neutral classes from the effective proof contract, including
+      // approved check/layer changes and old incorrectly automated manual rows.
+      // Authored risk refinements and mutation obligations remain stronger.
+      behaviorClass: preserveRefinements && !['happy-path', 'non-automated'].includes(clause.behavior_class)
         ? clause.behavior_class
-        : acceptanceBarBehaviorClass(criterion.evidencePlane, criterion.requiredTestLayers),
+        : clause.mutation_required ? 'happy-path'
+          : acceptanceBarBehaviorClass(criterion.evidencePlane, requiredTestLayers, criterion.check),
       requiredEvidence: preserveRefinements ? clause.required_evidence
         : clause.required_evidence.map((value) => ['tree', 'deployed', 'live'].includes(value) ? criterion.evidencePlane! : value),
       requiredTestLayers, mutationRequired: clause.mutation_required,
-      lifecycleStatus: clause.lifecycle_status, exemption: clause.exemption,
+      // A terminal clause whose pair is current has been re-added to the approved map.
+      // Re-project it into the draft activation pipeline instead of preserving a
+      // terminal lifecycle that would make the restored BAR silently unenforceable.
+      lifecycleStatus: currentPair &&
+        (clause.lifecycle_status === 'superseded' || clause.lifecycle_status === 'retired')
+        ? 'draft' : clause.lifecycle_status,
+      exemption: clause.exemption,
       supersedes: clause.supersedes_spec_id && clause.supersedes_revision
         ? { specId: clause.supersedes_spec_id, revision: clause.supersedes_revision } : null,
       falsifier: preserveRefinements ? clause.falsifier : { observation: criterion.driftMarkers! },
@@ -703,7 +824,10 @@ export async function synchronizeAcceptanceBarRevision(
     // for EVERY clause on EVERY amendment, which re-keyed their evidence bindings and
     // scorecards; measured on turn-start-memory-two-class, 4 of R-11's 7 revisions
     // changed only the set hash (D-003). Set-hash integrity stays on the plan + rubric.
-    if (isProvenanceOnlyReprojection(clause, next)) {
+    // Missing, malformed or ambiguous history must not strand the current
+    // clause on an unreadable pin. Re-project its unchanged promise onto the
+    // newly captured rubric instead; valid old history still avoids churn.
+    if (isProvenanceOnlyReprojection(clause, next) && await historicalPinResolves(clause, next)) {
       revisions.set(clause.spec_id, Number(clause.current_revision));
       continue;
     }
@@ -777,6 +901,11 @@ export async function validateAcceptanceBarRevisionProjectionPreview(
     throw new Error(
       `acceptance_bar_revision_mapping_invalid:${mappings.problems.map((problem) => problem.code).join(',')}`,
     );
+  }
+  for (const mapping of mappings.mappings) {
+    if (!byKey.has(mapping.barKey)) {
+      throw new Error(`acceptance_bar_revision_mapping_missing:${mapping.barKey}`);
+    }
   }
 
   const barKeyBySpecId = new Map<string, string>();

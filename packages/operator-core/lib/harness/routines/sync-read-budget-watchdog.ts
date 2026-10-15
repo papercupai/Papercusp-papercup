@@ -62,6 +62,8 @@
 
 import { claimWatchdogFire } from '../../pot/watchdog';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
+import { resolveAlarm, type AlarmAttentionDeps } from '../../alarm-attention';
+import { broadcastSevereEvent } from '../../severe-event-broadcast';
 
 /** The producer key this watchdog observes. */
 const SNAPSHOT_KEY = 'syncReads.audit';
@@ -232,7 +234,7 @@ export async function syncReadBudgetSweep(opts: {
   workspaceId?: string;
   installSlug?: string;
   now?: number;
-}): Promise<SyncReadBudgetSweepResult> {
+}, alarm: AlarmAttentionDeps = {}): Promise<SyncReadBudgetSweepResult> {
   const blindAfterSec = syncReadBudgetBlindAfterSec();
   if (blindAfterSec <= 0) {
     return { outcome: 'skipped', reason: 'disabled (PAPERCUSP_SYNC_READ_BUDGET_BLIND_AFTER_SEC <= 0)' };
@@ -298,9 +300,25 @@ export async function syncReadBudgetSweep(opts: {
       ratchetRegressions: asRows(payload?.ratchetRegressions),
     });
 
+    const conditionPrefix = `alarm:sync-read-budget:${workspaceId}:${installSlug}`;
+    // Only a fresh successful audit can establish recovery. Pending cold starts,
+    // failed reads and producer errors leave previously observed episodes open.
+    if ((verdict.state === 'healthy' || verdict.state === 'breach') && !row?.error) {
+      await resolveAlarm(`${conditionPrefix}:blind`, 'sync-read-budget', alarm);
+      if (verdict.state === 'healthy') {
+        await resolveAlarm(`${conditionPrefix}:breach`, 'sync-read-budget', alarm);
+      }
+    }
     if (verdict.state === 'healthy' || verdict.state === 'pending') {
       return { outcome: 'healthy', verdict, reason: verdict.reason };
     }
+
+    // The keyed agent condition must remain visible even when the legacy owner
+    // notification is debounced or its fires ledger is unavailable.
+    const event = { conditionKey: `${conditionPrefix}:${verdict.scope}`,
+      summary: `Sync-read audit ${verdict.state}: ${installSlug}`, body: verdict.reason };
+    if (alarm.broadcast) await alarm.broadcast(event);
+    else await broadcastSevereEvent(event);
 
     // Scope key separates the two failure modes so a BLIND alarm can never be
     // debounced away by a BREACH alarm (or vice versa) — they have different

@@ -31,7 +31,8 @@
  * `--speed` divides every recorded delay (2 = twice as fast; 0 = no delays at all).
  */
 import http from 'node:http';
-import { createWriteStream, existsSync, readFileSync, type WriteStream } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync, type WriteStream } from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import {
@@ -40,6 +41,7 @@ import {
   fingerprintRequest,
   reportedExecSessions,
   type ExecSessionReport,
+  type InputToolOutputSummary,
   type RecordedChunk,
   type RecordedExchange,
   type RequestFingerprint,
@@ -546,6 +548,15 @@ export interface TaskOutputRef {
   task: string;
   project?: string;
   session?: string;
+  /** The tool call whose result reported this path, when the request carried it. */
+  callId?: string;
+  /** True when this ref is a replay-owned file made from an inline tool result. */
+  inline?: boolean;
+}
+
+function taskOutputFile(ref: TaskOutputRef): string {
+  if (!ref.project || !ref.session) throw new Error(`task output ${ref.task} has no literal project/session prefix`);
+  return path.join('/tmp', `claude-${ref.uid}`, ref.project, ref.session, 'tasks', `${ref.task}.output`);
 }
 
 const TASK_OUTPUT = /\/tmp\/claude-(\d+)\/((?:[^\s"'\\/]+\/)*?)tasks\/([A-Za-z0-9_-]+)\.output/g;
@@ -603,19 +614,97 @@ export function reportedTaskOutputs(body: Buffer): TaskOutputRef[] {
   }
   if (!Array.isArray(messages)) return [];
   const out: TaskOutputRef[] = [];
-  const add = (s: string) => {
-    for (const r of taskOutputRefs(s)) if (r.project && !out.some((o) => o.task === r.task)) out.push(r);
+  const add = (s: string, callId?: string) => {
+    for (const r of taskOutputRefs(s)) {
+      if (!r.project) continue;
+      const seen = out.find((o) => o.task === r.task);
+      if (!seen) out.push(callId ? { ...r, callId } : r);
+      else if (!seen.callId && callId) seen.callId = callId;
+    }
   };
-  const walk = (c: unknown): void => {
-    if (typeof c === 'string') return add(c);
-    if (Array.isArray(c)) return c.forEach(walk);
+  const walk = (c: unknown, callId?: string): void => {
+    if (typeof c === 'string') return add(c, callId);
+    if (Array.isArray(c)) return c.forEach((item) => walk(item, callId));
     if (!c || typeof c !== 'object') return;
     const b = c as Record<string, unknown>;
     if (b.type === 'tool_use') return;
-    if (typeof b.text === 'string') add(b.text);
-    if (b.content !== undefined) walk(b.content);
+    const resultCallId = b.type === 'tool_result' && typeof b.tool_use_id === 'string' ? b.tool_use_id : callId;
+    if (typeof b.text === 'string') add(b.text, resultCallId);
+    if (b.content !== undefined) walk(b.content, resultCallId);
   };
   for (const m of messages) if (m && typeof m === 'object' && (m as { role?: unknown }).role === 'user') walk((m as { content?: unknown }).content);
+  return out;
+}
+
+/** Recorded task id -> tool_use_id, recovered from the corpus CLI stream-json user results. */
+export function recordedTaskCallIds(cliJsonl: string): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const line of cliJsonl.split('\n')) {
+    if (!line.trim() || !line.includes('/tmp/claude-')) continue;
+    let row: unknown;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!row || typeof row !== 'object') continue;
+    const message = (row as { message?: unknown }).message;
+    if (!message || typeof message !== 'object' || (message as { role?: unknown }).role !== 'user') continue;
+    const reports = reportedTaskOutputs(Buffer.from(JSON.stringify({ messages: [message] })));
+    for (const report of reports) if (report.callId && !out.has(report.task)) out.set(report.task, report.callId);
+  }
+  return out;
+}
+
+const MAX_INLINE_TASK_OUTPUT_BYTES = 4 * 1024 * 1024;
+
+/** Extract plain text results for recorded task calls that completed inline during replay. */
+function reportedInlineTaskOutputs(
+  body: Buffer,
+  recordedCallIds: ReadonlySet<string>,
+  backgroundCallIds: ReadonlySet<string>,
+): Map<string, string> {
+  let messages: unknown;
+  try {
+    messages = (JSON.parse(body.toString('utf8')) as { messages?: unknown }).messages;
+  } catch {
+    return new Map();
+  }
+  if (!Array.isArray(messages)) return new Map();
+  const out = new Map<string, string>();
+  for (const message of messages) {
+    if (!message || typeof message !== 'object') continue;
+    const m = message as { role?: unknown; content?: unknown };
+    if (m.role !== 'user' || !Array.isArray(m.content)) continue;
+    for (const raw of m.content) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+      const block = raw as { type?: unknown; tool_use_id?: unknown; content?: unknown };
+      if (block.type !== 'tool_result' || typeof block.tool_use_id !== 'string') continue;
+      const callId = block.tool_use_id;
+      if (!recordedCallIds.has(callId) || backgroundCallIds.has(callId)) continue;
+      const parts: string[] = [];
+      let valid = false;
+      const collect = (value: unknown): boolean => {
+        if (typeof value === 'string') {
+          parts.push(value);
+          valid = true;
+          return true;
+        }
+        if (!Array.isArray(value)) return false;
+        for (const item of value) {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+          const textBlock = item as { type?: unknown; text?: unknown };
+          if (textBlock.type !== 'text' || typeof textBlock.text !== 'string') return false;
+          parts.push(textBlock.text);
+          valid = true;
+        }
+        return true;
+      };
+      if (!collect(block.content) || !valid || out.has(callId)) continue;
+      const text = parts.join('');
+      if (Buffer.byteLength(text, 'utf8') <= MAX_INLINE_TASK_OUTPUT_BYTES) out.set(callId, text);
+    }
+  }
   return out;
 }
 
@@ -625,6 +714,8 @@ export interface TaskOutputIds {
   recorded: string[];
   /** Replay task paths in the order the instance's requests first reported them. */
   replay: TaskOutputRef[];
+  /** Replay paths indexed by their originating tool call, including inline fallback files. */
+  replayByCall?: Map<string, TaskOutputRef>;
 }
 
 /**
@@ -634,18 +725,39 @@ export interface TaskOutputIds {
 export function learnReplayTasks(ids: TaskOutputIds, reported: readonly TaskOutputRef[]): void {
   for (const r of reported) {
     if (!r.project || !r.session) continue;
-    if (ids.recorded.includes(r.task) || ids.replay.some((x) => x.task === r.task)) continue;
-    ids.replay.push(r);
+    if (ids.recorded.includes(r.task)) continue;
+    if (r.callId) {
+      const byCall = (ids.replayByCall ??= new Map());
+      const current = byCall.get(r.callId);
+      if (current && (!current.inline || r.inline)) continue;
+      if (current) {
+        const index = ids.replay.indexOf(current);
+        if (index >= 0) ids.replay[index] = r;
+        else if (!ids.replay.some((x) => x.task === r.task)) ids.replay.push(r);
+      } else if (!ids.replay.some((x) => x.task === r.task)) {
+        ids.replay.push(r);
+      }
+      byCall.set(r.callId, r);
+    } else if (!ids.replay.some((x) => x.task === r.task)) {
+      ids.replay.push(r);
+    }
   }
 }
 
-/** recorded task id -> replay task id for the ids this response names (order pairing), plus the ones with no replay task yet. */
-export function pairTasks(ids: TaskOutputIds, named: readonly string[]): { map: Map<string, string>; unmapped: string[] } {
+/** recorded task id -> replay task id, preferring the corpus' exact tool-call correlation. */
+export function pairTasks(
+  ids: TaskOutputIds,
+  named: readonly string[],
+  recordedCalls?: ReadonlyMap<string, string>,
+): { map: Map<string, string>; unmapped: string[] } {
   const map = new Map<string, string>();
   const unmapped: string[] = [];
   for (const id of named) {
     if (!ids.recorded.includes(id)) ids.recorded.push(id);
-    const replay = ids.replay[ids.recorded.indexOf(id)];
+    const callId = recordedCalls?.size ? recordedCalls.get(id) : undefined;
+    const replay = recordedCalls?.size
+      ? callId ? ids.replayByCall?.get(callId) : undefined
+      : ids.replay[ids.recorded.indexOf(id)];
     if (replay) map.set(id, replay.task);
     else unmapped.push(id);
   }
@@ -693,6 +805,10 @@ export interface ServedRecord {
   recordedReqBytes: number | null;
   messages: number | null;
   recordedMessages: number | null;
+  /** Redacted tool outputs in the replay request; contents are never logged. */
+  inputToolOutputs?: InputToolOutputSummary | null;
+  /** Redacted tool outputs in the recording, or null for a pre-instrumentation recording. */
+  recordedInputToolOutputs?: InputToolOutputSummary | null;
   /** ms from request-body-complete to the last byte written. */
   servedMs: number;
   recordedMs: number | null;
@@ -708,6 +824,34 @@ export interface ServedRecord {
   taskOutputIds?: Record<string, string>;
   /** Background-task ids this response names that the replay never reported (no prefix rewrite either when none was reported). */
   taskOutputUnmapped?: string[];
+  /** ms this reply was held before release (HoldPlan); absent for an unheld reply. */
+  heldMs?: number;
+}
+
+/**
+ * P-015 parked agents: hold ONE streamed reply per matching instance until `releaseHolds()`, so its
+ * CLI sits idle mid-session with its whole heap (an agent waiting on the model), then wake every
+ * held agent at once. A held reply sends its headers at once and an SSE comment every
+ * `keepaliveMs`: SSE parsers ignore `:` lines, and the steady bytes keep the client's
+ * headers/body timeouts (undici's are 300 s) from firing during a long hold.
+ */
+export interface HoldPlan {
+  /** Instances whose name starts with this are held. */
+  instancePrefix: string;
+  /** Hold the instance's first streamed reply at or after this request number (1-based). */
+  atRequest: number;
+  /** Default 15000. */
+  keepaliveMs?: number;
+}
+
+/** Whether this request is the one to hold: once per instance, streamed replies only, never after release. */
+export function shouldHold(
+  plan: HoldPlan | undefined,
+  h: { instance: string; requestNumber: number; contentType: string | null | undefined; alreadyHeld: boolean; released: boolean },
+): boolean {
+  if (!plan || h.released || h.alreadyHeld) return false;
+  if (!h.instance.startsWith(plan.instancePrefix) || h.requestNumber < plan.atRequest) return false;
+  return /event-stream/i.test(h.contentType ?? '');
 }
 
 export interface ReplayServerOptions {
@@ -717,6 +861,7 @@ export interface ReplayServerOptions {
   /** Delay divisor: 1 = recorded timing, 2 = twice as fast, 0 = no delays. */
   speed?: number;
   logFile?: string;
+  hold?: HoldPlan;
 }
 
 export interface ReplayServer {
@@ -727,6 +872,10 @@ export interface ReplayServer {
   /** Serve this instance its recording with `rw.from` (the recorded work dir) rewritten to `rw.to`. */
   rewritePaths(sessionId: string, instance: string, rw: PathRewrite): void;
   states(): ReplayState[];
+  /** Replies held right now (see HoldPlan). */
+  held(): number;
+  /** Release every held reply at once and stop holding; returns how many were held. Idempotent. */
+  releaseHolds(): number;
   close(): Promise<void>;
 }
 
@@ -740,6 +889,13 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
   const log: WriteStream | null = opts.logFile ? createWriteStream(opts.logFile, { flags: 'a' }) : null;
   const inflight = new Set<Promise<void>>();
   const rewrites = new Map<string, PathRewrite>();
+  // HoldPlan: one shared release; `heldKeys` makes the hold once per instance.
+  let released = false;
+  let releaseAll!: () => void;
+  const releasedSignal = new Promise<void>((r) => (releaseAll = r));
+  const heldKeys = new Set<string>();
+  let heldNow = 0;
+  const keepaliveMs = opts.hold?.keepaliveMs ?? 15_000;
   // Exchanges already found not to mention a given `from`: every later instance skips the parse.
   const untouched = new WeakMap<RecordedExchange, string>();
   const served = (ex: RecordedExchange, rw: PathRewrite | undefined): RecordedExchange => {
@@ -761,7 +917,12 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
     return hit;
   };
   // Claude background-task output paths: same shape as the exec-session ids above.
-  const taskIds = new Map<string, TaskOutputIds>();
+  interface ReplayTaskState extends TaskOutputIds {
+    outputPrefix: TaskOutputRef;
+  }
+  const taskIds = new Map<string, ReplayTaskState>();
+  const replayTaskRoots = new Set<string>();
+  const recordedTaskCalls = new Map<string, Map<string, string>>();
   const tasksNamed = new WeakMap<RecordedExchange, TaskOutputRef[]>();
   const tasksIn = (ex: RecordedExchange): TaskOutputRef[] => {
     let hit = tasksNamed.get(ex);
@@ -773,10 +934,65 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
     if (!taskPrefixes.has(exchanges)) taskPrefixes.set(exchanges, recordedTaskPrefix(exchanges));
     return taskPrefixes.get(exchanges) ?? null;
   };
-  const taskIdsOf = (key: string): TaskOutputIds => {
+  const taskCallsOf = (sessionId: string): Map<string, string> => {
+    const hit = recordedTaskCalls.get(sessionId);
+    if (hit) return hit;
+    const file = path.join(opts.corpusDir, sessionId, 'cli.jsonl');
+    const calls = existsSync(file) ? recordedTaskCallIds(readFileSync(file, 'utf8')) : new Map<string, string>();
+    recordedTaskCalls.set(sessionId, calls);
+    return calls;
+  };
+  const taskIdsOf = (key: string): ReplayTaskState => {
     let ids = taskIds.get(key);
-    if (!ids) taskIds.set(key, (ids = { recorded: [], replay: [] }));
+    if (!ids) {
+      const uid = String(typeof process.getuid === 'function' ? process.getuid() : 0);
+      const project = `papercusp-replay-${createHash('sha256').update(key).digest('hex').slice(0, 12)}`;
+      const session = randomUUID();
+      const outputRoot = path.join('/tmp', `claude-${uid}`, project, session);
+      replayTaskRoots.add(outputRoot);
+      taskIds.set(key, (ids = { recorded: [], replay: [], outputPrefix: { uid, project, session, task: '' } }));
+    }
     return ids;
+  };
+
+  const registerReplayTaskPaths = (ids: ReplayTaskState, reported: readonly TaskOutputRef[], recordedCalls: ReadonlyMap<string, string>) => {
+    for (const ref of reported) {
+      if (!ref.project || !ref.session || ids.recorded.includes(ref.task) || recordedCalls.has(ref.task)) continue;
+      const current = ref.callId ? ids.replayByCall?.get(ref.callId) : undefined;
+      if (current && !current.inline) continue;
+      const replay = { ...ids.outputPrefix, task: ref.task, ...(ref.callId ? { callId: ref.callId } : {}) };
+      const source = taskOutputFile(ref);
+      const target = taskOutputFile(replay);
+      mkdirSync(path.dirname(target), { recursive: true });
+      if (current?.inline) rmSync(target, { force: true });
+      if (path.resolve(source) !== path.resolve(target)) {
+        try {
+          symlinkSync(source, target);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        }
+      }
+      learnReplayTasks(ids, [replay]);
+    }
+  };
+  const registerInlineTaskOutputs = (
+    ids: ReplayTaskState,
+    inline: ReadonlyMap<string, string>,
+    recordedCalls: ReadonlyMap<string, string>,
+  ) => {
+    const recordedByCall = new Map<string, string>();
+    for (const [task, callId] of recordedCalls) if (!recordedByCall.has(callId)) recordedByCall.set(callId, task);
+    for (const [callId, text] of inline) {
+      if (!recordedByCall.has(callId)) continue;
+      const current = ids.replayByCall?.get(callId);
+      if (current && !current.inline) continue;
+      const task = `inline-${createHash('sha256').update(callId).digest('hex').slice(0, 12)}`;
+      const replay = { ...ids.outputPrefix, task, callId, inline: true };
+      const output = taskOutputFile(replay);
+      mkdirSync(path.dirname(output), { recursive: true });
+      writeFileSync(output, text);
+      learnReplayTasks(ids, [replay]);
+    }
   };
 
   const recording =(sessionId: string): RecordedExchange[] | null => {
@@ -832,8 +1048,18 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
           execIds.set(key, ids);
           learnReplayIds(ids, fp.execSessions);
         }
+        const calls = taskCallsOf(st.sessionId);
         const reportedTasks = reportedTaskOutputs(body);
-        if (reportedTasks.length > 0) learnReplayTasks(taskIdsOf(key), reportedTasks);
+        const inlineTasks = reportedInlineTaskOutputs(
+          body,
+          new Set(calls.values()),
+          new Set(reportedTasks.flatMap((task) => task.callId ? [task.callId] : [])),
+        );
+        if (reportedTasks.length > 0 || inlineTasks.size > 0) {
+          const ids = taskIdsOf(key);
+          registerReplayTaskPaths(ids, reportedTasks, calls);
+          registerInlineTaskOutputs(ids, inlineTasks, calls);
+        }
         const method = req.method ?? 'GET';
         const t0 = performance.now();
         const picked = takeExchange(st, { method, path: parsed.rest, fp });
@@ -847,6 +1073,8 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
             reqBytes: body.length,
             messages: fp.messages,
             servedMs: Math.round(performance.now() - t0),
+            ...(fp.inputToolOutputs ? { inputToolOutputs: fp.inputToolOutputs } : {}),
+            ...(picked ? { recordedInputToolOutputs: picked.exchange.req.inputToolOutputs ?? null } : {}),
             ...r,
           };
           log?.write(JSON.stringify(rec) + '\n');
@@ -861,6 +1089,15 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
           return;
         }
         const { tier } = picked;
+        const requestNumber = st.counts.exact + st.counts.shape + st.counts.path + st.counts.exhausted;
+        const hold = shouldHold(opts.hold, {
+          instance: parsed.instance,
+          requestNumber,
+          contentType: picked.exchange.contentType,
+          alreadyHeld: heldKeys.has(key),
+          released,
+        });
+        if (hold) heldKeys.add(key);
         let ex = served(picked.exchange, rewrites.get(key));
         const rewritten = ex !== picked.exchange;
         let sessions: Pick<ServedRecord, 'execSessionIds' | 'execSessionUnmapped' | 'execSessionPairing'> = {};
@@ -883,9 +1120,12 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
           const { map, unmapped } = pairTasks(
             ids,
             namedTasks.map((t) => t.task),
+            calls,
           );
           const recordedPrefix = taskPrefixOf(exchanges) ?? namedTasks[0];
-          if (ids.replay.length > 0) ex = rewriteExchange(ex, taskOutputRewriter(recordedPrefix, ids.replay[0], map));
+          if (ids.replay.length > 0 && map.size > 0 && unmapped.length === 0) {
+            ex = rewriteExchange(ex, taskOutputRewriter(recordedPrefix, ids.replay[0], map));
+          }
           tasks = {
             ...(map.size > 0 ? { taskOutputIds: Object.fromEntries(map) } : {}),
             ...(unmapped.length > 0 ? { taskOutputUnmapped: unmapped } : {}),
@@ -896,12 +1136,25 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
           res.on('close', () => {
             if (!res.writableFinished) aborted = true;
           });
-          const first = ex.chunks[0];
-          if (first) await sleep(delayOf(first.t));
-          if (aborted) return write({ tier, seq: ex.seq, status: 499, recordedReqBytes: ex.req.bytes, recordedMessages: ex.req.messages, recordedMs: ex.totalMs, rewritten, ...sessions, ...tasks });
           const headers: http.OutgoingHttpHeaders = {};
           if (ex.contentType) headers['content-type'] = ex.contentType;
-          res.writeHead(ex.status, headers);
+          let held: { heldMs?: number } = {};
+          if (hold) {
+            // Parked: headers now, keepalive comments until the shared release, then the recording.
+            const t0 = Date.now();
+            res.writeHead(ex.status, headers);
+            heldNow++;
+            while (!released && !aborted) {
+              await Promise.race([sleep(keepaliveMs), releasedSignal]);
+              if (!released && !aborted) res.write(': papercusp-capacity hold\n\n');
+            }
+            heldNow--;
+            held = { heldMs: Date.now() - t0 };
+          }
+          const first = ex.chunks[0];
+          if (first) await sleep(delayOf(first.t));
+          if (aborted) return write({ tier, seq: ex.seq, status: 499, recordedReqBytes: ex.req.bytes, recordedMessages: ex.req.messages, recordedMs: ex.totalMs, rewritten, ...sessions, ...tasks, ...held });
+          if (!hold) res.writeHead(ex.status, headers);
           let prevT = first?.t ?? 0;
           for (const c of ex.chunks) {
             const gap = c.t - prevT;
@@ -913,7 +1166,7 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
           const tail = ex.totalMs - prevT;
           if (!aborted && tail > 0 && ex.chunks.length === 0) await sleep(delayOf(tail));
           res.end();
-          write({ tier, seq: ex.seq, status: aborted ? 499 : ex.status, recordedReqBytes: ex.req.bytes, recordedMessages: ex.req.messages, recordedMs: ex.totalMs, rewritten, ...sessions, ...tasks });
+          write({ tier, seq: ex.seq, status: aborted ? 499 : ex.status, recordedReqBytes: ex.req.bytes, recordedMessages: ex.req.messages, recordedMs: ex.totalMs, rewritten, ...sessions, ...tasks, ...held });
         })();
       });
     });
@@ -931,10 +1184,25 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
     baseUrl: (sessionId, instance) => `${url}/r/${sessionId}/${instance}`,
     rewritePaths: (sessionId, instance, rw) => void rewrites.set(`${sessionId}/${instance}`, rw),
     states:() => [...states.values()],
+    held: () => heldNow,
+    releaseHolds: () => {
+      const n = heldNow;
+      if (!released) {
+        released = true;
+        releaseAll();
+      }
+      return n;
+    },
     close: async () => {
+      // A held reply would otherwise keep its connection (and close()) waiting for a release.
+      if (!released) {
+        released = true;
+        releaseAll();
+      }
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await Promise.all([...inflight]);
+      for (const root of replayTaskRoots) rmSync(root, { recursive: true, force: true });
       if (log) await new Promise<void>((r) => log.end(r));
     },
   };

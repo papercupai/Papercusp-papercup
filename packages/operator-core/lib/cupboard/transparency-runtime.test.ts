@@ -12,6 +12,7 @@ import { journalEntryForMovement, type JournalEntry, type MovementEntryInput } f
 import type { InvariantVerdict } from './reconciliation';
 import type { ReconciliationRunSummary, ReconciliationStatus } from './reconciliation-store';
 import { monthPeriod } from './transparency-report';
+import type { StatementAttestationPush } from './statement-attestation-push';
 import { anchorCovering, latestAnchor, type StatementDrift, type StatementPublish, type TransparencyWorker } from './transparency-publish';
 import { runTransparencyPass } from './transparency-runtime';
 import { verifySignedStatement, type LiveTransparencyPush, type SignedStatement } from './transparency-statement';
@@ -92,6 +93,7 @@ const status = (latestFinal: ReconciliationRunSummary | null, openBreaks: Reconc
 function memoryWorker() {
   const live: LiveTransparencyPush[] = [];
   const statements = new Map<string, SignedStatement>();
+  const attestations: StatementAttestationPush[] = [];
   const worker: TransparencyWorker = {
     async pushLive(push) {
       live.push(push);
@@ -107,8 +109,12 @@ function memoryWorker() {
       statements.set(k, signed);
       return 'created';
     },
+    async publishAttestation(push) {
+      attestations.push(push);
+      return 'created';
+    },
   };
-  return { worker, live, statements };
+  return { worker, live, statements, attestations };
 }
 
 function pass(input: {
@@ -118,11 +124,13 @@ function pass(input: {
   anchors?: readonly StoredAnchor[];
   key?: `0x${string}` | null;
   drifts?: StatementDrift[];
+  attestations?: StatementAttestationPush[];
 }) {
   const drifts = input.drifts ?? [];
   return runTransparencyPass({
     workspaces: [WS],
     worker: input.worker,
+    attestations: async () => input.attestations ?? [],
     now: () => NOW,
     readEntries: async () => input.entries ?? [SEPT_PAY, OCT_PAY],
     readReconciliation: async () => input.st ?? status(CLEAN),
@@ -145,6 +153,15 @@ describe('anchor selection', () => {
 });
 
 describe('runTransparencyPass (P-044)', () => {
+  it('publishes a completed folded pair while keeping the next one-payment hour out of all live figures', async () => {
+    const second = payment('octsecond', OCT_PAY.occurredAtMs + 3_600_000, 6_000);
+    const third = payment('octthird', OCT_PAY.occurredAtMs + 2 * 3_600_000, 8_000);
+    const w = memoryWorker();
+    await pass({ worker: w.worker, entries: [SEPT_PAY, OCT_PAY, second, third] });
+    expect(w.live[0]!.report).toMatchObject({ entryCount: 2, revenueCents: 9_000, daoShareCents: 1_000, disclosure: { status: 'folded' } });
+    expect(w.live[0]!.report.accounts.find((a) => a.account === 'operating')?.debitCents).toBe(9_400);
+  });
+
   it('pushes the open month, provisional, with the latest anchored root, and publishes the clean closed month once', async () => {
     const key = generatePrivateKey();
     const w = memoryWorker();
@@ -156,8 +173,7 @@ describe('runTransparencyPass (P-044)', () => {
 
     const live = w.live[0]!;
     // October only: the September payment is the statement's, not the live layer's.
-    expect(live.report).toMatchObject({ kind: 'live', month: '2026-10', provisional: true, entryCount: 1 });
-    expect(live.report.revenueCents).toBeGreaterThan(0);
+    expect(live.report).toMatchObject({ kind: 'live', month: '2026-10', provisional: true, entryCount: 0, revenueCents: 0, disclosure: { status: 'folded' } });
     expect(live.report.latestAnchor).toMatchObject({ logRoot: ANCHORS[2]!.logRoot, txHash: ANCHORS[2]!.txHash });
     expect(live.report.treasury).toEqual({ status: 'not-measured', reason: expect.stringContaining('WI-10004708') });
 
@@ -249,6 +265,7 @@ describe('runTransparencyPass (P-044)', () => {
         gateSecretRef: null,
         cupboardUrl: 'http://cupboard.invalid',
         chainRpcUrl: null,
+        safe: { status: 'not-configured' },
       },
       now: () => NOW,
       readEntries: async () => [SEPT_PAY],

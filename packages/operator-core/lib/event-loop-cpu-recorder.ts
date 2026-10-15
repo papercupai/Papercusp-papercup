@@ -17,11 +17,17 @@ interface ProfileSession {
   post(method: string, params?: Record<string, number>): Promise<unknown>;
 }
 
+interface ThreadCpuUsage {
+  user: number;
+  system: number;
+}
+
 interface RecorderDeps {
   session(): Promise<ProfileSession>;
   begin(name: string): void;
   end(name: string): void;
   now(): number;
+  threadCpuUsage?(previous?: ThreadCpuUsage): ThreadCpuUsage | undefined;
 }
 
 export interface CpuRecording {
@@ -52,6 +58,7 @@ export class LoopCpuRecorder {
       begin: beginProfile,
       end: endProfile,
       now: () => performance.now(),
+      threadCpuUsage: (previous) => process.threadCpuUsage?.(previous),
     },
   ) {}
 
@@ -90,6 +97,7 @@ export class LoopCpuRecorder {
     this.initializing = true;
     const revision = this.revision;
     const before = this.deps.now();
+    const threadCpuBefore = this.readThreadCpuUsage();
     let session: ProfileSession | undefined;
     try {
       session = await this.deps.session();
@@ -103,8 +111,13 @@ export class LoopCpuRecorder {
       this.anchor = this.prefix + ++this.sequence;
       this.deps.begin(this.anchor);
       this.rotatedAt = this.deps.now();
+      const threadCpu = threadCpuBefore && this.readThreadCpuUsage(threadCpuBefore);
       this.log('[event-loop-lag] CPU recorder observer cost', {
         warmupMs: this.rotatedAt - before,
+        ...(threadCpu ? {
+          warmupMainThreadUserCpuUs: threadCpu.user,
+          warmupMainThreadSystemCpuUs: threadCpu.system,
+        } : {}),
         samplingIntervalUs: LOOP_CPU_SAMPLING_INTERVAL_US,
       });
       return true;
@@ -159,6 +172,10 @@ export class LoopCpuRecorder {
     // Disconnect discards native recordings. Do not console.profileEnd here:
     // that would materialize an arbitrarily delayed anchor just to throw it away.
     try { session?.disconnect(); } catch { /* best effort */ }
+  }
+
+  private readThreadCpuUsage(previous?: ThreadCpuUsage): ThreadCpuUsage | undefined {
+    try { return this.deps.threadCpuUsage?.(previous); } catch { return undefined; }
   }
 
   stop(): void {

@@ -34,9 +34,9 @@ vi.mock('@papercusp/memory/bench', async (importOriginal) => ({
   seedCorpus: seedCorpusMock,
   runGoldSet: runGoldSetMock,
 }));
-vi.mock('./run-bench', () => ({
+vi.mock('./precision-hybrid-backend', () => ({
   BENCH_SCOPE: 'bench-scope',
-  makeBackendCtx: vi.fn(async () => ({ backend: { name: 'hybrid' }, cleanup: cleanupMock })),
+  makeHybridBackendCtx: vi.fn(async () => ({ backend: { name: 'hybrid' }, cleanup: cleanupMock })),
 }));
 // 3-entry corpus / 2-query gold set — the exact counts are what the guard compares.
 vi.mock('./corpus', () => ({

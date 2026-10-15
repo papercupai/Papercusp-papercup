@@ -1,9 +1,9 @@
 # PostHog
 URL: /internal/docs/posthog/index
 
-How Papercusp self-hosts PostHog, what it's used for today (feature flags + opt-in telemetry), and the privacy contract for shipped builds.
+PostHog feature flags, consented portal analytics, customer-local diagnostics and bounded aggregate export: collection, privacy, retention and verification.
 
-Papercusp runs a self-hosted PostHog instance for feature-flag management, plus an **opt-in telemetry path** that forwards crash/usage reports to that instance. Session replay, surveys, error tracking, and LLM observability remain **not enabled** for V1, but the platform is installed so they can be turned on later without re-architecting.
+Papercusp uses self-hosted PostHog for feature flags, explicit hosted portal/control-plane analytics, and separately consented diagnostic export. Customer BYOC usage and workspace content remain on the customer runtime by default. Session replay, broad browser autocapture, surveys, Error Tracking, and LLM prompt/response tracing are not enabled by cloud monitoring.
 
 ## What this section covers
 
@@ -18,7 +18,7 @@ Two reasons matter:
 * **Privacy posture.** Flags and telemetry both live on infrastructure we operate, so opting in points the data at our own server rather than a third party. Note that "zero PostHog references" is *no longer* the on-disk contract: every build bundles a public `phc_…` capture key (`POSTHOG_PUBLIC_DEFAULTS`) and ships `posthog-js` as a production dependency, and a production build with telemetry opted in *does* make outbound PostHog requests. Feature-flag fetches stay gated by `testingFeatures` (off by default), but telemetry is a separate subsystem with its own opt-in — see [Telemetry](#telemetry-opt-in) and the revised [Privacy contract](#privacy-contract-what-the-shipped-binary-does).
 * **Control.** Flags + future analytics live on infrastructure we operate. No third-party flag service to migrate off if the relationship sours, no per-MAU pricing tier to mind.
 
-The trade is real: we operate the server. Two ingestion services on the box currently crash-loop on every restart cycle — harmless for flags but worth knowing about (see [Known issues](#known-issues)).
+We operate the server. Capture ingestion and the project query API require separate checks; a working flag endpoint does not establish ingestion health.
 
 ## Where it runs
 
@@ -59,10 +59,12 @@ The trade is real: we operate the server. Two ingestion services on the box curr
 
 ## Privacy contract (what the shipped binary does)
 
-There are **two** independent PostHog paths, with two independent gates. Don't conflate them:
+The independent PostHog paths have separate authorization gates:
 
 * **Feature-flag fetches** are gated by `testingFeatures` and resolve config from the discovery file `~/.papercusp/posthog.json`. This is what the rest of this section is mostly about.
-* **Telemetry forwarding** is a *separate* subsystem with its own opt-in (the setup-wizard toggle) and its own resolution chain that ends at a bundled public key. `testingFeatures` does **not** gate telemetry. See [Telemetry](#telemetry-opt-in).
+* **Ordinary desktop telemetry** uses the existing setup-wizard opt-in and local archive, with a bundled public capture key as a fallback. `testingFeatures` does not gate telemetry.
+* **Hosted portal analytics** use the signed-in user's explicit analytics preference, re-read in a verified tenant transaction before each delivery. There is no maintainer-build bypass.
+* **Customer diagnostic export** requires the separate diagnostics preference plus an explicit action on the selected customer's runtime. A desktop telemetry choice never grants this export. See [Cloud collection and customer-local diagnostics](#cloud-collection-and-customer-local-diagnostics).
 
 ### Feature-flag resolution
 
@@ -99,7 +101,7 @@ Two halves:
 
   When the gate fails it still archives locally (so users can see their own reports) — it just doesn't forward.
 
-* **Browser-side** (`apps/operator/app/_components/PostHogProvider.tsx`). Mounted unconditionally in the SPA root layout. On mount it GETs `/api/desktop/telemetry-config`; if telemetry is enabled it dynamic-imports `posthog-js` and inits autocapture + pageview tracking (session replay stays off — that's a separate consent we don't have).
+* **Browser-side** (`apps/operator/app/_components/PostHogProvider.tsx`). Mounted unconditionally in the SPA root layout. On a local desktop it GETs `/api/desktop/telemetry-config`; when enabled it dynamic-imports `posthog-js` for explicit events. Autocapture, automatic pageviews/pageleaves and session replay are disabled. A hosted portal uses authenticated explicit metadata requests and never loads the vendor SDK. Customer execution hosts refuse the desktop SDK gate even when an internal-build environment variable is set.
 
 `posthog-js` (`^1.219.0`) is a **production dependency** of the desktop app, and the provider/route code ships in every build. The dynamic import means the `posthog-js` *chunk* is only network-fetched when telemetry is enabled — but "the bundle ships zero PostHog code" is no longer accurate.
 
@@ -112,6 +114,63 @@ Host + project key for telemetry resolve from (in order):
 3. **`POSTHOG_PUBLIC_DEFAULTS`** — bundled with every build (`packages/operator-core/lib/posthog-public-defaults.ts`). This is the leg the flag resolution order does not have: the host and a public `phc_…` capture key are compiled into the binary, so a user's opt-in alone is enough to forward — no "drop a JSON file" step. The bundled `phc_…` key is **anonymous-capture only**; it cannot read events or mutate flag definitions. Write-side keys (`personalApiKey`, `webhookSecret`) are never bundled.
 
 This is a **deliberate loosening** of the original V1 "zero PostHog references" privacy contract (mac-desktop-release-readiness D-010, owner ratification deferred): the contract is now "public-defaults + opt-in," not "no PostHog references at all."
+
+## Cloud collection and customer-local diagnostics
+
+The current source implements the following boundaries. Final shipment is established by the plan's exact deployed-artifact acceptance, not by this documentation or a typecheck.
+
+| Observation                                                                                                                     | Default location                       | Export authority                                                                                      | Meaning and limits                                                                                                                                                                                  |
+| ------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sign-in/return visits, setup and public guide navigation, saved explanation reviews, fixed feature choices and safe error codes | Portal/control-plane                   | Current signed-in user's analytics opt-in                                                             | Explicit, closed event metadata. A public explanation review is learning progress, not private-task success.                                                                                        |
+| Provisioning requested/failed/ready phases and duration                                                                         | Control-plane lifecycle                | Current analytics opt-in                                                                              | Ready requires the persisted provision operation to succeed, the VM to be running and the workspace to be active. An intent click is an attempt.                                                    |
+| API latency/status, lifecycle and connector loss/recovery, database/queue/service health, Papercusp-managed capacity            | Existing operational instrumentation   | Operational access and current tenant scope                                                           | Existing controller, health and alarm mechanisms work independently of PostHog. Missing/stale evidence is unknown, not success.                                                                     |
+| Papercusp-funded lifecycle/hosting estimate and configured spend threshold                                                      | Papercusp-owned cost view              | Operational/billing permission                                                                        | Labeled estimate and accountable existing alarm. Customer model/cloud bills are not inferred.                                                                                                       |
+| Per-call input/output/cache-read/cache-creation tokens; model costs; private agent/task failures; resource diagnostics          | Customer runtime                       | Local workspace access                                                                                | Existing usage ledger and diagnostics remain useful with analytics/export off and during PostHog outages. They cover only activity this runtime observes.                                           |
+| Bounded call/token counts, provider-reported and estimated model cost, count of unpriced calls                                  | Customer runtime until explicitly sent | Current diagnostics opt-in, selected-workspace permission, explicit send, final session/epoch recheck | Closed aggregate only. No prompt, code, document, terminal output, private task/log, account detail, host metric or cloud bill. Incomplete token evidence refuses export rather than becoming zero. |
+
+### Choices and the export journey
+
+Diagnostic export grants require the existing organization owner or administrator authority. A regular member can choose personal portal analytics and revoke their own diagnostic consent, but cannot enable export. The customer runtime rechecks administrator authority at final delivery, so a demotion also stops export. The grant records its authenticated organization/user, disclosure version and current consent epoch in the existing preference row.
+
+In **Settings → Profile → Cloud monitoring and privacy**, analytics and diagnostic export start off. Each category is stored in the existing organization/user preference row with a server-stamped consent epoch. An unavailable preference read grants neither category.
+
+The **Insights → Tokens** view shows up to 20 local calls, preserving unknown per-call counters and separating provider-reported, estimated and unknown model cost. Recorded cost is not a subscription balance, provider-account invoice or cloud bill. Papercusp service charges remain separate.
+
+For a connected cloud workspace, enable the diagnostics category in Profile, then choose **Last 24 hours** or **Last 7 days** and **Send aggregate diagnostics** in the Tokens view. The authenticated, sealed customer-host request contains only the operation ID and window choice. The customer's runtime reads its own workspace/harness ledger, clips the start to the latest opt-in epoch, bounds the end to the observed instant, and constructs the strict aggregate. The existing connector's session-authority exchange supplies fresh consent and session permissions; it carries no usage.
+
+Delivery rechecks the same tenant, user, selected workspace, session version and consent epoch. Revocation, re-consent, demotion, session/tenant change, a closed channel or unavailable authority refuses delivery. Re-enabling starts a new window and never backfills earlier activity. No exporter queue or automatic recurring sender is introduced. Local reads continue after revocation or delivery failure.
+
+### Exact exported event fields
+
+The closed event schemas allow only the properties below. Every event also carries server-owned `event`, `distinct_id`, `timestamp`, `organization_id`, `operation_id`, `environment`, `release`, `source` and `synthetic`. Diagnostic aggregates additionally carry opaque `workspace_id`. The configured transport adds stable `uuid` and `$insert_id` identities and the configured capture `api_key`; it never sends a personal API key.
+
+| Event                          | Purpose                                                    | Allowed event properties                                                                                                                                                          |
+| ------------------------------ | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cloud_portal_session`         | Consenting sign-in, return and setup                       | `action`                                                                                                                                                                          |
+| `cloud_tutorial`               | Fixed first-cloud-agent progression                        | `lesson_id`, `lesson_version`, `action`, `step`, `status`                                                                                                                         |
+| `product_tutorial`             | Public guide navigation and server-witnessed saved reviews | `lesson_id`, `lesson_version`, `action`, `lesson`                                                                                                                                 |
+| `cloud_workspace_provisioning` | Witnessed lifecycle phases                                 | `phase`, `provider`, `hosting_mode`, `duration_ms`, `failure_code`                                                                                                                |
+| `cloud_feature_adoption`       | Fixed portal feature choices                               | `feature`                                                                                                                                                                         |
+| `cloud_error`                  | Reviewed failure categories without messages or stacks     | `code`, `fingerprint`                                                                                                                                                             |
+| `cloud_diagnostic_aggregate`   | Administrator-authorized bounded usage export              | `period_start`, `period_end`, `calls`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `provider_cost_usd`, `estimated_cost_usd`, `unpriced_calls` |
+
+Enum values are also restricted and extra properties are rejected. The maintained `packages/operator-core/lib/doc-claims/cloud-monitoring-disclosure.test.ts` derives the event/property population from production schemas, requiring a disclosure update when a field is added.
+
+### Destination, retention and identities
+
+The existing default destination is Papercusp's PostHog at **flags.papercuspai.com**, for disclosed reliability and adoption analysis. Deployment configuration may select the existing configured PostHog destination; a different destination requires separate authorization. The current project has no enforced event-deletion limit. Disabling a category stops future delivery and does not delete events already delivered.
+
+Cloud identities are opaque digests scoped by organization and environment, including a separate opaque workspace identity on aggregates. Raw customer user, organization, workspace and session labels are not sent. Server-owned environment/release/source fields separate development, staging and production; synthetic acceptance markers are excluded from business views.
+
+Transport retries carry stable event UUIDs. Storage can expose repeated deliveries, so business queries count distinct witnessed operation IDs and deduplicate ready-duration observations by operation. This is logical outcome accounting, not a physical exactly-once delivery guarantee.
+
+### Views, alarms and verification
+
+The existing configured PostHog dashboard `Papercusp cloud monitoring — <environment>` contains explicit portal activity, confirmed provisioning outcomes/duration, public explanation reviews, feature adoption, safe error codes and observed seven-day portal return. It excludes synthetic events and customer-runtime diagnostic aggregates. Retention means return after first observed consenting portal activity, not inferred customer activity.
+
+Operational reliability and Papercusp-owned spend reuse the existing service-health view, workspace-host observations and infra-liveness alarms. Hosted degradation, reverse-connector loss and lifecycle-budget breach have the existing Mug/workspace-host or billing responder; unknown evidence preserves an open alarm, and measured recovery resolves it.
+
+Acceptance combines focused unit/UI/real-PostgreSQL tests with current-build journeys and retained query receipts from the actual configured PostHog project. A positive ingestion query must accompany negative opted-out/revoked/hostile-payload observations in the same window. Final acceptance additionally names the exact serving and deployed artifact. See plan `cloud-monitoring-byoc-privacy-2026-10-13`; incomplete or pending evidence remains unknown.
 
 ## Discovery file schema
 
@@ -154,16 +213,16 @@ When `testingFeatures: true` is set, the PostHog dashboard is reachable at `http
 
 ## Known issues
 
-* **`posthog-ingestion-error-tracking` and `posthog-ingestion-general` crash-loop**. They retry connecting to Kafka and exit cleanly every \~30s. Cosmetic — these services handle inbound event capture, which we don't use yet. Will resolve when analytics is turned on later (or when their compose config is fixed for hobby-style deployments).
+* **Capture health must be measured separately from flags.** The maintained cloud transport probes `/batch/`, and live acceptance queries the actual configured project after a positive synthetic capture. Earlier reports of ingestion-service crash loops are historical, not current health evidence. Error Tracking product support is not an assumption or a prerequisite for these analytics.
 * **No webhook configured upstream**. PostHog→operator `/api/flags/webhook` isn't wired in the PostHog UI. Live SSE flag-flip notifications use the SDK's 10-second polling interval instead. Acceptable for now; flag flips aren't user-frequent.
 
 ## Future enabling
 
 Beyond the shipping flag + telemetry paths, the remaining PostHog surfaces can be turned on without re-architecting:
 
-* **Analytics** — server-side `capture()` for product usage beyond the current crash/usage telemetry. The telemetry flush already POSTs to PostHog's `/batch/`; broader analytics would add more event kinds behind the same opt-in.
+* **Additional analytics** require an explicit schema, legitimate observer and applicable current consent. Hosted analytics already use the maintained `/batch/` transport.
 * **Session replay** — `posthog-js` already ships (it's a prod dependency loaded on demand for telemetry), but session recording is explicitly **disabled** (`disable_session_recording: true`) because it's a separate consent we don't have. Enabling it means a new opt-in, not a new dependency.
-* **LLM observability** — wrap the Anthropic / OpenAI clients with `@posthog/ai/anthropic` (`withTracing`). Free for the first 100k generations/mo on hobby. Ready when we decide to instrument.
-* **Error tracking** — wire `posthog.captureException` server-side; needs no client SDK.
+* **LLM observability** is not enabled. Customer prompts, responses and provider-account usage cannot become central telemetry through a diagnostic opt-in.
+* **Error Tracking** is not enabled or required. Verify deployed product support and separately authorize any new data category before adding it.
 
 The contract to preserve is now *no PostHog data leaves an end-user machine unless they opt in* (the public capture key and `posthog-js` chunk ship in every build; what's gated is the **forwarding**, not the code).

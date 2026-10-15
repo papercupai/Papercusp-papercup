@@ -16,6 +16,12 @@ import {
   reconcileLoopRoutines as reconcileLoopRoutinesImpl,
   classifyLoopLifecycleTurn,
   defaultEscalateLifecycleDeath,
+  defaultEscalateNoTurnWedge,
+  noTurnWedgeEscalateAfter,
+  reconcileLoopNoTurnWedgeEscalations,
+  reconcileLoopLifecycleDeathEscalations,
+  LOOP_NO_TURN_WEDGE_SIGNATURE_PREFIX,
+  LOOP_LIFECYCLE_DEATH_SIGNATURE_PREFIX,
 } from './reconcile-loop-routines';
 
 // EI-18668025239634541 recurrence guard: mocked so the test below can assert on the
@@ -60,6 +66,26 @@ function fakeSql(rows: Record<string, unknown>[], updates: unknown[][]): Sql {
     return Promise.resolve(rows);
   }) as unknown as Sql;
 }
+
+describe('reconcileLoopRoutines — expected execution recovery accounting', () => {
+  it.each([true, false])('reports only a recovery that rearmed the durable schedule: %s', async rearmed => {
+    const nowMs = 1_792_000_000_000;
+    const updates: unknown[][] = [];
+    const sql = fakeSql([{ id: 'rt-recovery', target_owner_id: 'su-recovery', interval_sec: 60,
+      parked: true, install_slug: 'papercusp', name: 'loop-su-recovery',
+      routine_workspace_id: 'ws-test', last_fired_at: new Date(nowMs - 60_000).toISOString() }], updates);
+    const recoverExpectedExecution = vi.fn(async () => ({ handled: true, rearmed, state: {
+      status: 'recovering' as const, reason: 'native-turn-failed', attempts: 1, probes: 0,
+      observedAt: nowMs, nextProbeAt: nowMs + 30_000, generation: 'host:1:child', lastAttemptAt: nowMs,
+    } }));
+    const result = await reconcile({ sql, nowMs, recoverExpectedExecution });
+    expect(recoverExpectedExecution).toHaveBeenCalledWith({ sql, routineId: 'rt-recovery', ownerId: 'su-recovery', nowMs });
+    expect(result.rearmed).toBe(rearmed ? 1 : 0);
+    expect(result.loops).toEqual(rearmed ? [{ id: 'rt-recovery', targetOwnerId: 'su-recovery',
+      completedAt: nowMs, nextFireAt: nowMs + 30_000, via: 'execution-recovery' }] : []);
+    expect(updates).toHaveLength(0);
+  });
+});
 
 describe('reconcileLoopRoutines — string-typed timestamptz columns (pooled prepare:false connection, EI-2549)', () => {
   const T0 = 1_782_000_000_000;
@@ -238,6 +264,22 @@ describe('reconcileLoopRoutines — cold settle ladder (su-cold-auto 2026-07-03)
     note_updated_ts: null,
     ...over,
   });
+  const coldDeliveredRow = (over: Record<string, unknown> = {}) =>
+    coldRow({
+      is_cron: false,
+      fire_state_last_fired_at: null,
+      fire_state_last_withheld_at: null,
+      last_wake_at: pgString(T0 + 120_000),
+      last_wake_created_at: pgString(T0 + 120_000),
+      last_wake_status: 'delivered',
+      last_wake_channel: 'psu-socket-inject',
+      last_loop_turn_at: null,
+      lifecycle_completed_at: null,
+      lifecycle_started_at: pgString(T0 + 121_000),
+      turn_journal_completed_at: null,
+      loop_turn_started_at: pgString(T0 + 125_000),
+      ...over,
+    });
 
   it('releases a never-fired cold loop only after a carry-note newer than the arm settles it', async () => {
     const updates: unknown[][] = [];
@@ -377,6 +419,99 @@ describe('reconcileLoopRoutines — cold settle ladder (su-cold-auto 2026-07-03)
     const res = await reconcile({ sql, nowMs: T0 + 100_000 }); // 70s quiet
     expect(res.rearmed).toBe(1);
     expect(res.loops[0].via).toBe('presence-quiescence');
+  });
+
+  it('holds a cold post-dispatch loop turn through the backstop boundary, even after an early carry-note refresh', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql(
+        [
+          coldDeliveredRow({
+            // The turn started for this delivery, but its only journal row predates that start.
+            // A carry-note can be written before the long-running turn actually exits.
+            turn_journal_completed_at: pgString(T0 + 124_000),
+            note_updated_ts: String(T0 + 130_000),
+          }),
+        ],
+        updates,
+      ),
+      // Past the fire's 30m stuck threshold, but still inside the delivery's bounded dwell.
+      nowMs: T0 + 30 * 60_000 + 1_000,
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+
+    expect(res.rearmed).toBe(0);
+    expect(res.loops).toEqual([]);
+    expect(updates).toHaveLength(0);
+    expect(recordFire).not.toHaveBeenCalled();
+  });
+
+  it('holds a cold suppressed-redundant delivery until the in-flight turn completes', async () => {
+    const suppressed = coldDeliveredRow({
+      last_wake_channel: 'suppressed-redundant',
+      loop_turn_started_at: null,
+      turn_journal_completed_at: null,
+      note_updated_ts: null,
+    });
+    const waiting = await reconcile({
+      sql: fakeSql([suppressed], []),
+      // Backstop from the fire has elapsed; the matching wake dwell has not.
+      nowMs: T0 + 30 * 60_000 + 1_000,
+      recordFire: vi.fn(async () => {}),
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    expect(waiting.rearmed).toBe(0);
+    expect(waiting.loops).toEqual([]);
+
+    const recordFire = vi.fn(async () => {});
+    const completed = await reconcile({
+      sql: fakeSql(
+        [
+          {
+            ...suppressed,
+            turn_journal_completed_at: pgString(T0 + 150_000),
+          },
+        ],
+        [],
+      ),
+      nowMs: T0 + 151_000,
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    expect(completed.rearmed).toBe(1);
+    expect(completed.loops[0]).toMatchObject({ via: 'turn-journal', completedAt: T0 + 150_000 });
+    expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-test', 'loop-turn-journal', 'ok');
+  });
+
+  it('restores the existing stuck-backstop retry once the cold in-flight dwell expires', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql(
+        [
+          coldDeliveredRow({
+            note_updated_ts: null,
+          }),
+        ],
+        [],
+      ),
+      nowMs: T0 + 32 * 60_000, // 30m after the delivery, past its bounded hold
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ via: 'stuck-backstop' });
+    expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-test', 'loop-stuck-backstop', 'error');
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("no completion signal — re-armed to retry (circuit fed 'error')"),
+    );
   });
 });
 
@@ -629,6 +764,76 @@ describe('reconcileLoopRoutines — strict per-fire loop-origin completion (EI-2
     );
   });
 
+  // WI-6554700010012153: a delivered wake that never becomes a turn used to emit only a
+  // console.warn, and the backed-off circuit needed hours to open (EI-25930229050142968:
+  // six such fires over ~1h50m with no loud signal). These pin the loud escalation.
+  describe('no-turn wedge escalation (WI-6554700010012153)', () => {
+    const staleWake = () =>
+      deliveredWarmRow({ last_loop_turn_at: pgString(T0 + 500), presence_last_active_at: null });
+
+    it('escalates once the post-record failure streak reaches the threshold, naming the loop and owner', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const escalateNoTurnWedge = vi.fn(async () => {});
+      const res = await reconcile({
+        sql: fakeSql([staleWake()], []),
+        nowMs: T0 + 3 * 60_000,
+        readFireState: vi.fn(async () => ({ consecutiveErrors: 3 }) as never),
+        escalateNoTurnWedge,
+        noTurnWedgeThreshold: 3,
+      });
+
+      expect(res.loops[0]).toMatchObject({ via: 'delivered-wake-no-loop-turn' });
+      expect(escalateNoTurnWedge).toHaveBeenCalledTimes(1);
+      expect(escalateNoTurnWedge).toHaveBeenCalledWith({
+        routineId: 'rt-loop-origin',
+        targetOwnerId: 'su-loop-origin',
+        installSlug: 'papercusp',
+        name: 'loop-su-loop-origin',
+        consecutiveErrors: 3,
+        lastWakeDeliveredAt: new Date(T0 + 1_000).toISOString(),
+      });
+    });
+
+    it('stays quiet below the threshold — one or two missed turns are the circuit’s job, not an alarm', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const escalateNoTurnWedge = vi.fn(async () => {});
+      await reconcile({
+        sql: fakeSql([staleWake()], []),
+        nowMs: T0 + 3 * 60_000,
+        readFireState: vi.fn(async () => ({ consecutiveErrors: 2 }) as never),
+        escalateNoTurnWedge,
+        noTurnWedgeThreshold: 3,
+      });
+      expect(escalateNoTurnWedge).not.toHaveBeenCalled();
+    });
+
+    it('does not escalate on a settled loop-origin turn, however long the prior streak', async () => {
+      const escalateNoTurnWedge = vi.fn(async () => {});
+      await reconcile({
+        sql: fakeSql([deliveredWarmRow({ last_loop_turn_at: pgString(T0 + 5_000) })], []),
+        nowMs: T0 + 3 * 60_000,
+        readFireState: vi.fn(async () => ({ consecutiveErrors: 7 }) as never),
+        escalateNoTurnWedge,
+        noTurnWedgeThreshold: 3,
+      });
+      expect(escalateNoTurnWedge).not.toHaveBeenCalled();
+    });
+
+    it('a failing escalation never aborts the re-arm it accompanies', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const res = await reconcile({
+        sql: fakeSql([staleWake()], []),
+        nowMs: T0 + 3 * 60_000,
+        readFireState: vi.fn(async () => ({ consecutiveErrors: 5 }) as never),
+        escalateNoTurnWedge: vi.fn(async () => {
+          throw new Error('coord context unavailable');
+        }),
+        noTurnWedgeThreshold: 3,
+      });
+      expect(res.rearmed).toBe(1);
+    });
+  });
+
   it('uses a matching loop-origin assistant turn as the completion signal', async () => {
     const updates: unknown[][] = [];
     const recordFire = vi.fn(async () => {});
@@ -659,6 +864,245 @@ describe('reconcileLoopRoutines — strict per-fire loop-origin completion (EI-2
       'loop-loop-turn',
       'ok',
     );
+  });
+
+  // WI-10005545: a provider-killed turn still produces a loop-origin turn (the prompt landed and
+  // the reply IS the API error), so 'loop-turn' is the via a psu-hosted warm loop reaches. It was
+  // never reclassified: measured 2026-10-02, goal holder su-9ec5d030's 13:53:06Z and 14:02:01Z
+  // fires each answered 'API Error: Request rejected (429) ...' and were recorded 'ok' at the
+  // bare interval. The test above is the negative control (ordinary text stays 'ok').
+  it("reclassifies a loop-turn settle whose reply is a provider 429 as a lifecycle death ('error'), not a false 'ok'", async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {}); // expected diagnostic log
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const escalateLifecycleDeath = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql(
+        [
+          deliveredWarmRow({
+            last_loop_turn_at: pgString(T0 + 8_000),
+            presence_last_active_at: null,
+            last_assistant_text_after_fire:
+              "API Error: Request rejected (429) · This request would exceed your account's rate limit. Please try again later.",
+          }),
+        ],
+        updates,
+      ),
+      nowMs: T0 + 9_000,
+      recordFire,
+      escalateLifecycleDeath,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ id: 'rt-loop-origin', via: 'loop-turn', completedAt: T0 + 8_000 });
+    expect(recordFire).toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-loop-origin',
+      'loop-lifecycle-death:model_error',
+      'error',
+    );
+    expect(recordFire).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), 'loop-loop-turn', 'ok');
+    expect(escalateLifecycleDeath).toHaveBeenCalledWith(
+      expect.objectContaining({
+        routineId: 'rt-loop-origin',
+        targetOwnerId: 'su-loop-origin',
+        verdict: expect.objectContaining({ reason: 'model_error' }),
+      }),
+    );
+  });
+
+  it('a loop-turn settle whose reply is a usage wall re-arms past the bare interval (reset-aware), not straight back into the wall', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const escalateLifecycleDeath = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql(
+        [
+          deliveredWarmRow({
+            last_loop_turn_at: pgString(T0 + 8_000),
+            presence_last_active_at: null,
+            last_assistant_text_after_fire: "You've hit your session limit · resets 5:40am (America/New_York)",
+          }),
+        ],
+        updates,
+      ),
+      nowMs: T0 + 9_000,
+      recordFire,
+      escalateLifecycleDeath,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0].via).toBe('loop-turn');
+    // A false 'ok' would schedule completedAt + interval = T0 + 68_000.
+    expect(res.loops[0].nextFireAt).toBeGreaterThan(T0 + 8_000 + 60_000);
+    expect(recordFire).toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-loop-origin',
+      'loop-lifecycle-death:usage_limit',
+      'error',
+    );
+  });
+
+  // EI-24791346664119438: `delivered_at` is a SETTLE stamp (coalesce / turn-end settles write
+  // now()), so a SHORT loop-fire turn can end before it lands. Measured 2026-10-02: fire prompt
+  // at created+1s, reply at delivered-2s. Flooring the proof on delivered_at scored that real
+  // turn as 'delivered-wake-no-loop-turn' → recordFire('error') → fire-gate backoff.
+  it('credits a short loop-origin turn that ended before the delivery settle stamp, floored on the dispatch clock', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql(
+        [
+          deliveredWarmRow({
+            last_wake_created_at: pgString(T0 + 1_000),
+            last_wake_at: pgString(T0 + 42_000), // coalesced settle, after the turn ended
+            last_wake_channel: 'coalesced',
+            last_loop_turn_at: pgString(T0 + 40_000),
+            presence_last_active_at: null,
+          }),
+        ],
+        updates,
+      ),
+      nowMs: T0 + 3 * 60_000, // past the delivery grace, where the old floor retried as error
+      recordFire,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ id: 'rt-loop-origin', via: 'loop-turn', completedAt: T0 + 40_000 });
+    expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-loop-origin', 'loop-loop-turn', 'ok');
+    expect(recordFire).not.toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-loop-origin',
+      'loop-delivered-wake-no-loop-turn',
+      'error',
+    );
+  });
+
+  it('still refuses a loop-origin turn that predates the wake dispatch clock', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql(
+        [
+          deliveredWarmRow({
+            last_wake_created_at: pgString(T0 + 1_000),
+            last_wake_at: pgString(T0 + 42_000),
+            last_wake_channel: 'coalesced',
+            // After the claim, but before this wake was even dispatched: not proof for it.
+            last_loop_turn_at: pgString(T0 + 500),
+            presence_last_active_at: null,
+          }),
+        ],
+        updates,
+      ),
+      nowMs: T0 + 3 * 60_000,
+      recordFire,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ id: 'rt-loop-origin', via: 'delivered-wake-no-loop-turn' });
+    expect(recordFire).toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-loop-origin',
+      'loop-delivered-wake-no-loop-turn',
+      'error',
+    );
+  });
+
+  // EI-24791346664119438: session_turns is ingested AFTER a turn, so a long loop turn has no
+  // strict proof while it runs. Measured 2026-10-02: 64/334 settles in 24h were real loop turns
+  // scored 'delivered-wake-no-loop-turn' → error. The real-time turn-start stamp holds them.
+  it('holds a long loop turn whose real-time start stamp postdates the wake dispatch', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql(
+        [
+          deliveredWarmRow({
+            last_wake_created_at: pgString(T0 + 1_000),
+            last_wake_at: pgString(T0 + 1_500),
+            last_wake_channel: 'psu-socket-inject',
+            last_loop_turn_at: null, // not ingested yet: the turn is still running
+            loop_turn_started_at: pgString(T0 + 5_000),
+            turn_journal_completed_at: pgString(T0 + 3_000), // a PRIOR turn's end, before the stamp
+            presence_last_active_at: null, // a long silent Bash: presence is quiet
+          }),
+        ],
+        updates,
+      ),
+      nowMs: T0 + 3 * 60_000, // past the delivery grace, where the detector used to retry
+      recordFire,
+    });
+
+    expect(res.rearmed).toBe(0);
+    expect(recordFire).not.toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-loop-origin',
+      'loop-delivered-wake-no-loop-turn',
+      'error',
+    );
+  });
+
+  it('settles a stamped loop turn as ok once the Stop-hook journal lands after the stamp', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql(
+        [
+          deliveredWarmRow({
+            last_wake_created_at: pgString(T0 + 1_000),
+            last_wake_at: pgString(T0 + 1_500),
+            last_wake_channel: 'psu-socket-inject',
+            last_loop_turn_at: null, // still not ingested
+            loop_turn_started_at: pgString(T0 + 5_000),
+            lifecycle_completed_at: null,
+            turn_journal_completed_at: pgString(T0 + 90_000), // the loop turn's own end
+            presence_last_active_at: null,
+          }),
+        ],
+        updates,
+      ),
+      nowMs: T0 + 3 * 60_000,
+      recordFire,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ id: 'rt-loop-origin', via: 'turn-journal' });
+    expect(recordFire).not.toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-loop-origin',
+      'loop-delivered-wake-no-loop-turn',
+      'error',
+    );
+  });
+
+  it('ignores a turn-start stamp that predates the wake dispatch clock', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql(
+        [
+          deliveredWarmRow({
+            last_wake_created_at: pgString(T0 + 1_000),
+            last_wake_at: pgString(T0 + 1_500),
+            last_wake_channel: 'psu-socket-inject',
+            last_loop_turn_at: null,
+            // An earlier loop-fire turn, before this wake was dispatched: not proof for it.
+            loop_turn_started_at: pgString(T0 + 500),
+            presence_last_active_at: null,
+          }),
+        ],
+        updates,
+      ),
+      nowMs: T0 + 3 * 60_000,
+      recordFire,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ id: 'rt-loop-origin', via: 'delivered-wake-no-loop-turn' });
   });
 
   it('does not suppress the legacy completion ladder for a non-delivered wake', async () => {
@@ -890,6 +1334,11 @@ describe('reconcileLoopRoutines — stuck-backstop (no-signal) death reclassific
     const updates: unknown[][] = [];
     const recordFire = vi.fn(async () => {});
     const escalateLifecycleDeath = vi.fn(async () => {});
+    const wallText = "You've hit your session limit · resets 5:40am (America/New_York)";
+    const nowMs = T0 + 31 * 60_000;
+    const verdict = classifyLoopLifecycleTurn(wallText, 60_000, nowMs);
+    expect(verdict?.reason).toBe('usage_limit');
+    expect(verdict?.rearmDelayMs).toBeGreaterThan(60_000);
     const sql = fakeSql(
       [
         {
@@ -907,7 +1356,7 @@ describe('reconcileLoopRoutines — stuck-backstop (no-signal) death reclassific
           // call, so presence never bumped and neither lifecycle/turn-journal/presence-quiescence
           // ever produces a `signal`. Before this fix, this field was fetched and then never read
           // on this branch.
-          last_assistant_text_after_fire: "You've hit your session limit · resets 5:40am (America/New_York)",
+          last_assistant_text_after_fire: wallText,
         },
       ],
       updates,
@@ -915,7 +1364,7 @@ describe('reconcileLoopRoutines — stuck-backstop (no-signal) death reclassific
     // Past the classic stuck-park dwell (>=30min) so the backstop actually fires.
     const res = await reconcileLoopRoutines({
       sql,
-      nowMs: T0 + 31 * 60_000,
+      nowMs,
       recordFire,
       readFireState: NO_PRIOR_ERRORS,
       checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
@@ -923,8 +1372,9 @@ describe('reconcileLoopRoutines — stuck-backstop (no-signal) death reclassific
     });
     expect(res.rearmed).toBe(1);
     expect(res.loops[0].via).toBe('stuck-backstop'); // the signal classification itself is unchanged
-    // The whole point: this must NOT be the bare lastFiredMs+interval a blind stuck-backstop uses.
-    expect(res.loops[0].nextFireAt).toBeGreaterThan(T0 + 60_000);
+    // The parsed delay is relative to this reconciliation pass, not the earlier parked fire.
+    // Using T0 + rearmDelayMs would count the 31-minute park twice and wake before the reset.
+    expect(res.loops[0].nextFireAt).toBe(nowMs + verdict!.rearmDelayMs);
     expect(recordFire).toHaveBeenCalledWith(
       'papercusp',
       'loop-su-wedged',
@@ -1064,6 +1514,14 @@ describe('classifyLoopLifecycleTurn — pure classifier (EI-13818)', () => {
     expect(expectedReset).toBeDefined();
     expect(verdict?.rearmDelayMs).toBe(Math.min(Math.max(expectedReset!.atMs - NOW, 60_000), 6 * 3_600_000));
     expect(verdict?.rearmDelayMs).toBeGreaterThan(60_000); // strictly more than the bare interval
+  });
+
+  it('does NOT treat a quoted weekly usage-limit reset sentence as a dead wake', () => {
+    const providerText = "You've hit your weekly limit · resets Sep 10, 7am (America/New_York)";
+    expect(classifyLoopLifecycleTurn(providerText, 60_000, NOW)?.reason).toBe('usage_limit');
+
+    const discussion = `Reviewed the healthy-loop report, which quoted “${providerText}”; no provider limit stopped this turn.`;
+    expect(classifyLoopLifecycleTurn(discussion, 60_000, NOW)).toBeNull();
   });
 
   // WI-6852: the cap was 1h, which BOUND on every real wall instead of acting as a sanity rail
@@ -2572,8 +3030,8 @@ describe('reconcileLoopRoutines — a usage-limit re-arm may push next_fire_at L
     expect(armStmt).toContain('GREATEST');
     expect(armStmt).toContain('next_fire_at < ');
     expect(armStmt).not.toContain('LEAST');
-    // ...and the deferral must be the real multi-hour wall, not the bare interval.
-    expect(res.loops[0].nextFireAt).toBe(T0 + 5_000 + 3 * 3_600_000);
+    // ...and the deferral must preserve the reset instant parsed from nowMs, not completedAt.
+    expect(res.loops[0].nextFireAt).toBe(T0 + 10_000 + 3 * 3_600_000);
   });
 
   it('keeps the ordinary never-LATER (LEAST) statement for a NON-usage_limit death', async () => {
@@ -3032,24 +3490,80 @@ describe("reconcileLoopRoutines — a warm 'suppressed-redundant' wake settles o
     vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
-  it('settles via presence-quiescence once the session goes quiet — WITHOUT waiting for the 30-min stuck-park dwell', async () => {
+  it.each(['suppressed-redundant', 'coalesced', 'inbox'])('recovers a %s non-turn wake after quiet without mistaking unrelated inference for loop execution', async channel => {
     const recordFire = vi.fn(async () => {});
+    const recoverExpectedExecution = vi.fn(async () => ({ handled: true as const }));
     const res = await reconcile({
-      sql: fakeSql([warmSuppressedRow()], []),
-      nowMs: T0 + 110_000, // 70s of quiet — far short of the 30-min dwell
+      sql: fakeSql([warmSuppressedRow({ last_wake_channel: channel })], []),
+      // Coalesced/inbox wakes retain their existing two-interval dispatch grace.
+      nowMs: T0 + (channel === 'suppressed-redundant' ? 110_000 : 130_000),
       recordFire,
       readFireState: NO_PRIOR_ERRORS,
       checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+      recoverExpectedExecution,
     });
+    // This active inference is the unrelated turn that caused suppression, not a loop-fire turn.
+    expect(recoverExpectedExecution).not.toHaveBeenCalled();
     expect(res.rearmed).toBe(1);
-    expect(res.loops[0].via).toBe('presence-quiescence');
+    expect(res.loops[0].via).toBe(channel === 'suppressed-redundant' ? 'presence-quiescence' : 'delivered-wake-no-loop-turn');
     // A wake that was never spent must never feed the fire-circuit (EI-22127560919383327).
-    expect(recordFire).not.toHaveBeenCalledWith(
-      expect.anything(),
-      expect.anything(),
-      expect.anything(),
-      'error',
+    if (channel === 'suppressed-redundant') expect(recordFire).not.toHaveBeenCalledWith(
+      expect.anything(), expect.anything(), expect.anything(), 'error',
     );
+  });
+
+  it('still lets expected-execution recovery protect a delivered wake that may have opened a loop turn', async () => {
+    const recoverExpectedExecution = vi.fn(async () => ({ handled: true as const }));
+    const res = await reconcile({
+      sql: fakeSql([warmSuppressedRow({ last_wake_channel: 'psu-socket-inject' })], []),
+      nowMs: T0 + 110_000,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+      recoverExpectedExecution,
+    });
+    expect(recoverExpectedExecution).toHaveBeenCalledTimes(1);
+    expect(res.rearmed).toBe(0);
+  });
+
+  // WI-6554700010012279: the wake-executor DROPPED this fire's delivery (superseded by a
+  // re-arm), so nothing was injected and no loop turn can ever exist for it. Execution
+  // recovery used to protect on the session's unrelated active inference and the loop stayed
+  // parked for over an hour. The ordinary signal ladder must settle and re-arm it.
+  it('re-arms a parked loop whose fire delivery was dropped, without consulting execution recovery', async () => {
+    const recoverExpectedExecution = vi.fn(async () => ({ handled: true as const }));
+    const res = await reconcile({
+      sql: fakeSql([warmSuppressedRow({ last_wake_status: 'dropped', last_wake_channel: null })], []),
+      nowMs: T0 + 110_000,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+      recoverExpectedExecution,
+    });
+    expect(recoverExpectedExecution).not.toHaveBeenCalled();
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0].via).not.toBe('execution-recovery');
+  });
+
+  it('CONTROL: a dropped wake older than the current fire still consults execution recovery', async () => {
+    const recoverExpectedExecution = vi.fn(async () => ({ handled: true as const }));
+    const res = await reconcile({
+      sql: fakeSql([warmSuppressedRow({ last_wake_status: 'dropped', last_wake_channel: null,
+        last_wake_at: pgString(T0 - 60_000) })], []),
+      nowMs: T0 + 110_000,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+      recoverExpectedExecution,
+    });
+    expect(recoverExpectedExecution).toHaveBeenCalledTimes(1);
+    expect(res.rearmed).toBe(0);
+  });
+
+  it.each(['coalesced', 'inbox'])('keeps the existing dispatch grace for an unproved %s wake', async channel => {
+    const recoverExpectedExecution = vi.fn(async () => ({ handled: true as const }));
+    const result = await reconcile({ sql: fakeSql([warmSuppressedRow({ last_wake_channel: channel })], []),
+      nowMs: T0 + 110_000, readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD, recoverExpectedExecution });
+    expect(recoverExpectedExecution).not.toHaveBeenCalled();
+    expect(result.rearmed).toBe(0);
   });
 
   it('CONTROL — while the session is STILL BUSY (presence beat 20s old) it keeps waiting, unchanged', async () => {
@@ -3092,12 +3606,48 @@ describe('reconcileLoopRoutines — monitor standdown (P-004)', () => {
   const T0 = 1_782_000_000_000;
   const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
 
-  /** Records each statement's HEAD-classified kind + text, so a test can assert WHICH write ran. */
-  function statementRecordingSql(rows: Record<string, unknown>[], seen: string[]): Sql {
-    return ((strings: TemplateStringsArray, ..._vals: unknown[]) => {
+  type AppliedMonitorBudgetWrite = {
+    routineId: string;
+    fireToken: string;
+    remainingNoDeltaBudget: number;
+  };
+
+  type StatementRecordingState = {
+    settledBudgetFireByRoutine: Map<string, string>;
+    appliedBudgetWrites: AppliedMonitorBudgetWrite[];
+  };
+
+  const statementRecordingState = (): StatementRecordingState => ({
+    settledBudgetFireByRoutine: new Map(),
+    appliedBudgetWrites: [],
+  });
+
+  /** Records statements and models the atomic per-fire guard used by the budget UPDATE. */
+  function statementRecordingSql(
+    rows: Record<string, unknown>[],
+    seen: string[],
+    state: StatementRecordingState = statementRecordingState(),
+  ): Sql {
+    return ((strings: TemplateStringsArray, ...vals: unknown[]) => {
       const q = strings.join(' ? ');
       if (/^\s*UPDATE/i.test(q)) {
         seen.push(q);
+        if (q.includes("'{monitor,remainingNoDeltaBudget}'")) {
+          const [remaining, fireTokenValue, routineIdValue] = vals;
+          const fireToken = String(fireTokenValue);
+          const routineId = String(routineIdValue);
+          const guardedByThisFire = /\(metadata->>'monitor_budget_fire_at'\)\s+IS DISTINCT FROM\s+\?\s*::text/.test(q);
+
+          // A missing or changed predicate applies the write again. With the production
+          // predicate, the second overlapping snapshot for the same fire is a no-op.
+          if (guardedByThisFire && state.settledBudgetFireByRoutine.get(routineId) === fireToken) {
+            return Promise.resolve([]);
+          }
+
+          state.settledBudgetFireByRoutine.set(routineId, fireToken);
+          state.appliedBudgetWrites.push({ routineId, fireToken, remainingNoDeltaBudget: Number(remaining) });
+          return Promise.resolve([{ id: routineId }]);
+        }
         // Enough columns for standDownMonitorLoop's RETURNING destructure; the transition
         // write it triggers is fail-soft evidence and never affects the verdict.
         return Promise.resolve([
@@ -3112,6 +3662,15 @@ describe('reconcileLoopRoutines — monitor standdown (P-004)', () => {
             prev_next_fire_at: 'infinity',
           },
         ]);
+      }
+      if (
+        /^\s*SELECT/i.test(q) &&
+        /\(metadata->>'monitor_budget_fire_at'\)\s*=\s*\?\s*::text/.test(q)
+      ) {
+        const [routineIdValue, fireTokenValue] = vals;
+        const routineId = String(routineIdValue);
+        const fireToken = String(fireTokenValue);
+        return Promise.resolve(state.settledBudgetFireByRoutine.get(routineId) === fireToken ? [{ id: routineId }] : []);
       }
       if (/^\s*INSERT/i.test(q)) return Promise.resolve([]);
       return Promise.resolve(rows);
@@ -3258,18 +3817,49 @@ describe('reconcileLoopRoutines — monitor standdown (P-004)', () => {
     expect(standdownWrites(seen)).toHaveLength(0);
   });
 
-  it('the budget write carries a FIRE TOKEN so two overlapping passes cannot double-decrement', async () => {
+  it('two overlapping settled passes apply one budget write for the same fire, then accept the next fire', async () => {
     const seen: string[] = [];
-    await reconcile({
-      sql: statementRecordingSql([row({ payload_template: monitorPayload({ noDeltaBudget: 3, remainingNoDeltaBudget: 3 }) })], seen),
+    const state = statementRecordingState();
+    const sql = statementRecordingSql(
+      [row({ payload_template: monitorPayload({ noDeltaBudget: 3, remainingNoDeltaBudget: 3 }) })],
+      seen,
+      state,
+    );
+    const firstFire = {
+      sql,
       nowMs: T0 + 10_000,
       recheckMonitorAuthority: AUTHORITY_HELD,
+    };
+
+    // Both calls read the same static pre-decrement fixture before either reaches the
+    // write. The fake database applies the conditional UPDATE at the point each statement
+    // runs, as PostgreSQL does after the row lock is acquired.
+    await Promise.all([reconcile(firstFire), reconcile(firstFire)]);
+    expect(budgetWrites(seen)).toHaveLength(2);
+    expect(state.appliedBudgetWrites).toEqual([
+      { routineId: 'rt-1', fireToken: String(T0), remainingNoDeltaBudget: 2 },
+    ]);
+
+    // A new settled fire has a new last_fired_at token, so its budget update still applies.
+    await reconcile({
+      sql: statementRecordingSql(
+        [
+          row({
+            last_fired_at: pgString(T0 + 60_000),
+            lifecycle_completed_at: pgString(T0 + 65_000),
+            payload_template: monitorPayload({ noDeltaBudget: 3, remainingNoDeltaBudget: 2 }),
+          }),
+        ],
+        seen,
+        state,
+      ),
+      nowMs: T0 + 70_000,
+      recheckMonitorAuthority: AUTHORITY_HELD,
     });
-    // The reconcile SELECT is deliberately unlocked, so exactly-once cannot come from the
-    // read — it has to be in the WRITE's own predicate.
-    const budget = budgetWrites(seen)[0];
-    expect(budget).toContain('monitor_budget_fire_at');
-    expect(budget).toContain('IS DISTINCT FROM');
+    expect(state.appliedBudgetWrites).toEqual([
+      { routineId: 'rt-1', fireToken: String(T0), remainingNoDeltaBudget: 2 },
+      { routineId: 'rt-1', fireToken: String(T0 + 60_000), remainingNoDeltaBudget: 1 },
+    ]);
   });
 
   it('a NON-SETTLE re-arm (fire withheld by the gate) never touches the budget or the authority', async () => {
@@ -3563,5 +4153,126 @@ describe('reconcileLoopRoutines — looksDeadOrStuck stays bounded to the fire, 
     });
     expect(res.rearmed).toBe(1);
     expect(res.loops[0]).toMatchObject({ id: 'rt-undelivered', via: 'stuck-backstop' });
+  });
+});
+
+/**
+ * WI-6554700010012153 — the no-turn wedge escalation must coalesce (stable key, no volatile
+ * count in the summary) and must CLOSE itself once the loop recovers, or it joins the
+ * immortal-escalation class EI-19408412473830336 fixed for its two siblings.
+ */
+describe('loop no-turn wedge watchdog — dedup + auto-resolve (WI-6554700010012153)', () => {
+  const info = {
+    routineId: 'rt-wedge',
+    targetOwnerId: 'su-wedged',
+    installSlug: 'papercusp',
+    name: 'loop-su-wedged',
+    lastWakeDeliveredAt: '2026-10-14T05:05:00.000Z',
+  };
+
+  it('keys every occurrence of the same loop onto one stable conditionKey, whatever the streak', async () => {
+    const mockOpenEscalation = vi.mocked(openEscalation);
+    mockOpenEscalation.mockClear();
+    await defaultEscalateNoTurnWedge({ ...info, consecutiveErrors: 3 });
+    await defaultEscalateNoTurnWedge({ ...info, consecutiveErrors: 6 });
+
+    const args = mockOpenEscalation.mock.calls.map(
+      (c) => c[1] as { summary: string; meta?: { subjectSignature?: string }; harness_slug?: string },
+    );
+    expect(args).toHaveLength(2);
+    expect(args[0]?.meta?.subjectSignature).toBe(`${LOOP_NO_TURN_WEDGE_SIGNATURE_PREFIX}:papercusp:rt-wedge`);
+    expect(args[1]?.meta?.subjectSignature).toBe(args[0]?.meta?.subjectSignature);
+    // The summary is the dedup fallback; it must not carry the volatile streak.
+    expect(args[0]?.summary).toBe(args[1]?.summary);
+    expect(args[0]?.summary).toContain('su-wedged');
+    expect(args[0]?.harness_slug).toBe('papercusp');
+  });
+
+  const openRow = (sig: string) => ({ msg_id: `m-${sig}`, subjectSignature: sig }) as never;
+  const routineSql = (rows: { id: string; active: boolean }[]) =>
+    (() =>
+      Promise.resolve(
+        rows.map((r) => ({ ...r, install_slug: 'papercusp', name: `loop-${r.id}` })),
+      )) as unknown as Sql;
+
+  it('resolves once a later fire succeeded, and leaves a still-failing loop open', async () => {
+    const resolve = vi.fn(async () => 'resolved');
+    const res = await reconcileLoopNoTurnWedgeEscalations({
+      sql: routineSql([
+        { id: 'rt-recovered', active: true },
+        { id: 'rt-still-wedged', active: true },
+      ]),
+      listOpen: async () => [
+        openRow(`${LOOP_NO_TURN_WEDGE_SIGNATURE_PREFIX}:papercusp:rt-recovered`),
+        openRow(`${LOOP_NO_TURN_WEDGE_SIGNATURE_PREFIX}:papercusp:rt-still-wedged`),
+      ],
+      resolve,
+      readFireState: vi.fn(async (_slug: string, name: string) =>
+        (name === 'loop-rt-recovered' ? { consecutiveErrors: 0 } : { consecutiveErrors: 4 }) as never,
+      ),
+    });
+
+    expect(res).toMatchObject({ scanned: 2, resolved: 1, stillOpen: 1, unparseable: 0 });
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(resolve).toHaveBeenCalledWith(
+      `m-${LOOP_NO_TURN_WEDGE_SIGNATURE_PREFIX}:papercusp:rt-recovered`,
+      'auto-resolved',
+      expect.stringContaining('loop-no-turn-wedge watchdog'),
+    );
+  });
+
+  it('resolves when the routine is gone or was auto-paused by the stronger loop-death watchdog', async () => {
+    const resolve = vi.fn(async () => 'resolved');
+    const res = await reconcileLoopNoTurnWedgeEscalations({
+      sql: routineSql([{ id: 'rt-paused', active: false }]),
+      listOpen: async () => [
+        openRow(`${LOOP_NO_TURN_WEDGE_SIGNATURE_PREFIX}:papercusp:rt-paused`),
+        openRow(`${LOOP_NO_TURN_WEDGE_SIGNATURE_PREFIX}:papercusp:rt-deleted`),
+      ],
+      resolve,
+      readFireState: vi.fn(async () => ({ consecutiveErrors: 9 }) as never),
+    });
+    expect(res).toMatchObject({ scanned: 2, resolved: 2, stillOpen: 0 });
+  });
+
+  it('each watchdog reads only its own prefix — a sibling signature is never resolved by the wrong leg', async () => {
+    const resolve = vi.fn(async () => 'resolved');
+    const res = await reconcileLoopLifecycleDeathEscalations({
+      sql: routineSql([{ id: 'rt-x', active: true }]),
+      listOpen: async () => [openRow(`${LOOP_NO_TURN_WEDGE_SIGNATURE_PREFIX}:papercusp:rt-x`)],
+      resolve,
+      readFireState: vi.fn(async () => ({ consecutiveErrors: 0 }) as never),
+    });
+    expect(res).toMatchObject({ scanned: 1, resolved: 0, unparseable: 1 });
+    expect(resolve).not.toHaveBeenCalled();
+
+    // …and the shared body still serves the lifecycle leg's own rows, with its own wording.
+    const lifecycle = await reconcileLoopLifecycleDeathEscalations({
+      sql: routineSql([{ id: 'rt-x', active: true }]),
+      listOpen: async () => [openRow(`${LOOP_LIFECYCLE_DEATH_SIGNATURE_PREFIX}:papercusp:rt-x`)],
+      resolve,
+      readFireState: vi.fn(async () => ({ consecutiveErrors: 0 }) as never),
+    });
+    expect(lifecycle).toMatchObject({ resolved: 1 });
+    expect(resolve).toHaveBeenLastCalledWith(
+      `m-${LOOP_LIFECYCLE_DEATH_SIGNATURE_PREFIX}:papercusp:rt-x`,
+      'auto-resolved',
+      expect.stringContaining('the provider wall cleared'),
+    );
+  });
+
+  it('threshold override: a valid positive integer applies; junk or non-positive falls back to 3', () => {
+    const prev = process.env.PAPERCUSP_LOOP_NO_TURN_ESCALATE_AFTER;
+    try {
+      process.env.PAPERCUSP_LOOP_NO_TURN_ESCALATE_AFTER = '5';
+      expect(noTurnWedgeEscalateAfter()).toBe(5);
+      for (const bad of ['0', '-2', 'many', '']) {
+        process.env.PAPERCUSP_LOOP_NO_TURN_ESCALATE_AFTER = bad;
+        expect(noTurnWedgeEscalateAfter()).toBe(3);
+      }
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_LOOP_NO_TURN_ESCALATE_AFTER;
+      else process.env.PAPERCUSP_LOOP_NO_TURN_ESCALATE_AFTER = prev;
+    }
   });
 });

@@ -1,7 +1,7 @@
 # Overview
 URL: /internal/docs/agent-spawning/overview
 
->-
+What agent spawning is, why we built it, and when to use it. NOTE: the launch verb named throughout this page — `cup:spawn` — REFUSES as of 2026-08-09; the Mug · Kettle · Cup/nursery tier is retired and a FLEET is the only fan-out. The spawn engine, the ceiling, `fleet:tree` / `fleet:cancel` and the lineage model are all still live.
 
 :::caution\[The launch verb on this page is retired — `cup:spawn` REFUSES]
 The Mug · Kettle · Cup/nursery **role tier** was **retired 2026-08-09** (owner-directed).

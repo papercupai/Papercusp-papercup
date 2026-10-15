@@ -10,6 +10,8 @@ import {
   runManagedPreCompact,
   isDirectCliInvocation,
   inspectCodexTranscript,
+  isWakeResumeChild,
+  isHostlessWakeResumeRefusal,
 } from '../precompact-managed-carry.mjs';
 
 const PAYLOAD = {
@@ -102,6 +104,48 @@ describe('managed Codex PreCompact bridge', () => {
 
     expect(decision.continue).toBe(false);
     expect(decision.systemMessage).toContain('QUEUED');
+  });
+
+  it('selects the current native receipt instead of an unrelated owner fallback', async () => {
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, request?: RequestInit) => {
+      const { params } = JSON.parse(String(request?.body));
+      // The owner can have several launch records. The maintained MCP
+      // classifier selects the exact caller row only with this native carrier.
+      return new Response(params._meta?.threadId === PAYLOAD.session_id
+        ? rpc({ ok: true, requested: true, respawn: 'queued' })
+        : rpc({ ok: false, error: 'authorization_denied', message: 'Identity capability (unresolved): stale-artifact; resolution=receipt-missing' }, true));
+    });
+    const decision = await runManagedPreCompact(PAYLOAD, {
+      env: { ...ENV, CODEX_SESSION_ID: 'inherited-predecessor' },
+      fetchImpl,
+    });
+
+    expect(decision.systemMessage).toContain('QUEUED');
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(fetchImpl.mock.calls[0][1]?.body)).params._meta)
+      .toEqual({ format: 'json', threadId: PAYLOAD.session_id });
+  });
+
+  it.each([undefined, null, '', '   ', {}, 'native/session', 'x'.repeat(129)])(
+    'refuses an invalid native identity (%j) before using owner-only authority', async (session_id) => {
+      const fetchImpl = vi.fn();
+      const decision = await runManagedPreCompact({ ...PAYLOAD, session_id }, { env: ENV, fetchImpl });
+
+      expect(decision.continue).toBe(false);
+      expect(decision.systemMessage).toContain('native session identity');
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  it('preserves a foreign-native refusal without retrying on the owner-only route', async () => {
+    const fetchImpl = vi.fn(async () => new Response(rpc({
+      ok: false, error: 'superuser_foreign_native_session',
+    }, true)));
+    const decision = await runManagedPreCompact(PAYLOAD, { env: ENV, fetchImpl });
+
+    expect(decision.continue).toBe(false);
+    expect(decision.systemMessage).toContain('superuser_foreign_native_session');
+    expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
   it('uses the token file only for the superuser route and never changes that route', async () => {
@@ -311,5 +355,77 @@ describe('managed Codex PreCompact bridge — inherited-context successor', () =
       expect(inspectCodexTranscript(path).readable).toBe(false);
     });
     expect(inspectCodexTranscript('')).toEqual({ readable: false, forkedFromId: null, sampled: null });
+  });
+});
+
+// WI-6554700010008779: the wake executor's one-turn `codex exec resume` child has no
+// psu-pty host once the member's own host is gone. When Codex fires PreCompact there, the operator
+// can only answer no_live_pty_host, and a veto fails the turn and re-arms the same wake.
+describe('managed Codex PreCompact bridge — host-less one-turn wake resume', () => {
+  // The three no-host answers session:request-compaction gives (request-compaction.ts).
+  const NO_HOST_ANSWERS: Array<Record<string, unknown>> = [
+    { ok: false, error: 'no_live_pty_host', requested: false, respawn: false, note: 'No live psu-pty host is available.' },
+    { ok: false, requested: false, respawn: false, error: 'no_live_pty_host', carry: 'cold', retuned: true },
+    { ok: false, requested: false, respawn: false, error: 'no_live_pty_host', carry: 'cold', carryNote: { verified: true } },
+  ];
+  const WAKE_ENV = { ...ENV, PAPERCUSP_WAKE_DELIVERY_ID: '686760' };
+  const answering = (frame: string) => vi.fn(async () => new Response(frame, { status: 200 }));
+  const run = (env: Record<string, string | undefined>, fetchImpl: ReturnType<typeof answering>) =>
+    runManagedPreCompact(PAYLOAD, { env, fetchImpl, isNested: () => false });
+
+  it('lets a one-turn wake resume compact natively when the operator answers no_live_pty_host', async () => {
+    for (const answer of NO_HOST_ANSWERS) {
+      const fetchImpl = answering(rpc(answer, true));
+      const decision = await run(WAKE_ENV, fetchImpl);
+      // The managed boundary is still asked for first; native runs only on the structural answer.
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      expect(decision.continue).toBe(true);
+      expect(decision).not.toHaveProperty('stopReason');
+      expect(decision.systemMessage).toContain('delivery 686760');
+      expect(decision.systemMessage).toContain('WI-6554700010008779');
+    }
+  });
+
+  it('keeps the fail-closed veto for the same no-host answer outside a wake resume', async () => {
+    for (const env of [ENV, { ...ENV, PAPERCUSP_WAKE_DELIVERY_ID: '' }, { ...ENV, PAPERCUSP_WAKE_DELIVERY_ID: '0' },
+      { ...ENV, PAPERCUSP_WAKE_DELIVERY_ID: 'not-a-number' }, { ...ENV, PAPERCUSP_WAKE_DELIVERY_ID: '12a' },
+      { ...ENV, PAPERCUSP_WAKE_DELIVERY_ID: '-5' }]) {
+      const decision = await run(env, answering(rpc(NO_HOST_ANSWERS[0], true)));
+      expect(decision.continue).toBe(false);
+      expect(decision.systemMessage).toContain('no_live_pty_host');
+    }
+  });
+
+  it('keeps the veto inside a wake resume for every other outcome', async () => {
+    const otherAnswers = [
+      rpc({ ok: false, requested: false, error: 'flush-required', note: 'checkpoint WI-1 first' }, true),
+      rpc({ ok: false, requested: false, error: 'host_predates_carry_respawn' }, true),
+      rpc({ ok: false, error: 'authorization_denied' }, true),
+      rpc({ ok: true, requested: true, respawn: 'queued' }),
+      'not json at all',
+    ];
+    for (const frame of otherAnswers) {
+      const decision = await run(WAKE_ENV, answering(frame));
+      expect(decision.continue).toBe(false);
+    }
+    const failing = vi.fn(async () => {
+      throw new Error('connect ECONNREFUSED 127.0.0.1:3070');
+    });
+    const transportFault = await runManagedPreCompact(PAYLOAD, { env: WAKE_ENV, fetchImpl: failing, isNested: () => false });
+    expect(transportFault.continue).toBe(false);
+  });
+
+  it('recognises only a positive integer delivery id as the wake-resume marker', () => {
+    expect(isWakeResumeChild({ PAPERCUSP_WAKE_DELIVERY_ID: '686760' })).toBe(true);
+    expect(isWakeResumeChild({ PAPERCUSP_WAKE_DELIVERY_ID: ' 7 ' })).toBe(true);
+    for (const value of [undefined, '', '0', '007', '-1', '1.5', '12a', 'x'.repeat(5), '1'.repeat(20)]) {
+      expect(isWakeResumeChild({ PAPERCUSP_WAKE_DELIVERY_ID: value })).toBe(false);
+    }
+    // A self-contradicting answer (requested AND no host) is not the structural refusal.
+    const contradictory = parseManagedCarryResponse(rpc({ ok: false, requested: true, error: 'no_live_pty_host' }, true));
+    expect(isHostlessWakeResumeRefusal(contradictory, WAKE_ENV)).toBe(false);
+    const structural = parseManagedCarryResponse(rpc(NO_HOST_ANSWERS[0], true));
+    expect(isHostlessWakeResumeRefusal(structural, WAKE_ENV)).toBe(true);
+    expect(isHostlessWakeResumeRefusal(structural, ENV)).toBe(false);
   });
 });

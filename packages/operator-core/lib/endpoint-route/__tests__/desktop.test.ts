@@ -33,6 +33,7 @@ vi.mock('../../telemetry-flush', () => ({ flushTelemetry: vi.fn(async () => ({ f
 vi.mock('../../operator-state-pg', () => ({
   readOperatorState: vi.fn(async () => null),
   writeOperatorState: vi.fn(async () => {}),
+  updateOperatorState: vi.fn(async (_key: string, initial: unknown, update: (current: unknown) => unknown) => update(initial)),
 }));
 vi.mock('../../voice-credentials', () => ({ readElevenLabsKey: vi.fn(async () => null) }));
 vi.mock('../../setup-wizard-install-id', () => ({ ensureInstallId: vi.fn(async () => 'install-1') }));
@@ -56,7 +57,8 @@ import desktopSetupWizardState from '../routes/desktop/setup-wizard-state';
 import desktopTelemetryFlush from '../routes/desktop/telemetry-flush';
 import desktopTelemetryReport from '../routes/desktop/telemetry-report';
 import desktopWorkspaceValidate from '../routes/desktop/workspace-validate';
-import { writeOperatorState, readOperatorState } from '../../operator-state-pg';
+import { writeOperatorState, readOperatorState, updateOperatorState } from '../../operator-state-pg';
+import * as fallbackObservations from '../../degradation/fallback-observations';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -344,6 +346,43 @@ describe('desktop route ports', () => {
     expect(res.status).toBe(403);
   });
 
+  it('records allowlisted transport outcomes locally while telemetry is disabled, without entering the telemetry ring', async () => {
+    vi.mocked(readOperatorState).mockResolvedValue(null);
+    const record = vi.spyOn(fallbackObservations, 'observeFallback').mockReturnValue(true);
+    try {
+      const app = appWith(desktopTelemetryReport as AnyRoute[]);
+      for (const applied of [0, 1]) {
+        const res = await app.request('/desktop/telemetry-report', json({ kind: 'fallback-observation', payload: {
+          source: 'sync-transport', mechanism: 'browser-sync-transport', eligible: 1, applied,
+          reason: applied ? 'applied' : 'preferred-unavailable', scope: 'SSE',
+          message: 'secret', stack: '/private', url: 'https://private', workspaceId: 'forged',
+        } }));
+        expect(res.status).toBe(202);
+      }
+      expect(record.mock.calls).toEqual([0, 1].map((applied) => ['browser-sync-transport', {
+        eligible: 1, applied, reason: applied ? 'applied' : 'preferred-unavailable', scope: 'SSE',
+      }, { processTag: 'browser-sync-ingress' }]));
+      expect(writeOperatorState).not.toHaveBeenCalled();
+      expect(readOperatorState).not.toHaveBeenCalled();
+    } finally { record.mockRestore(); }
+  });
+
+  it.each([
+    { mechanism: 'arbitrary' }, { eligible: 0 }, { eligible: 1000 }, { applied: 2 },
+    { applied: 1, reason: 'preferred-unavailable' }, { scope: 'private/user' }, { scope: 'POLLING' },
+    { reason: 'raw error secret' }, { source: 'untrusted' },
+  ])('rejects malformed transport observations before the durable sink: %j', async (patch) => {
+    const record = vi.spyOn(fallbackObservations, 'observeFallback').mockReturnValue(true);
+    try {
+      const res = await appWith(desktopTelemetryReport as AnyRoute[]).request('/desktop/telemetry-report', json({
+        kind: 'fallback-observation', payload: { source: 'sync-transport', mechanism: 'browser-sync-transport',
+          eligible: 1, applied: 0, reason: 'preferred-unavailable', scope: 'SSE', ...patch },
+      }));
+      expect(res.status).toBe(400);
+      expect(record).not.toHaveBeenCalled();
+    } finally { record.mockRestore(); }
+  });
+
   it('archives only redacted render crashes while telemetry is disabled and deduplicates the ring', async () => {
     const payload = {
       source: 'render-boundary', boundary: 'adv-tab', errorType: 'TypeError',
@@ -408,6 +447,7 @@ describe('desktop route ports', () => {
     const res = await appWith(desktopSetupWizardState as AnyRoute[])
       .request('/desktop/setup-wizard-state', { ...json({ last_visited_step: 'keys' }), method: 'PATCH' });
     expect(res.status).toBe(200);
-    expect(writeOperatorState).toHaveBeenCalledOnce();
+    expect(updateOperatorState).toHaveBeenCalledWith('setup_wizard_state', { step_status: {} }, expect.any(Function));
+    expect(await res.json()).toMatchObject({ step_status: {}, last_visited_step: 'keys' });
   });
 });

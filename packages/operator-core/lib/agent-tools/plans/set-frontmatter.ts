@@ -34,8 +34,6 @@ import { domainFailureMessage } from './plan-activation-gate';
 import { parsePlan } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus, NON_TERMINAL_PLAN_STATUSES } from './plan-start-state';
-import { stampTerminalNowBlock } from './terminal-now-stamp';
-import { stampGreenlitNowBlock } from './greenlit-now-stamp';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -102,22 +100,20 @@ export function applyFrontmatterBlock(current: string, fmBlock: string): string 
   return fmBlock + '\n\n' + current;
 }
 
-/** Convert a legacy body and enforce the Now-block invariants in the same write. */
+/**
+ * Convert a legacy body to a first-class plan. Only the frontmatter block is
+ * written; the `## Now` section keeps its text (P-006 retired the Now stamps).
+ */
 export function buildFirstClassPlanBody(
   current: string,
   args: z.infer<typeof argsSchema>,
   today: string,
-): { body: string; nowStamped: boolean } {
-  const converted = applyFrontmatterBlock(current, buildFrontmatter(args, today));
-  const at = new Date(`${today}T00:00:00.000Z`);
-  const stamped =
-    stampTerminalNowBlock(converted, args.status, at) ??
-    stampGreenlitNowBlock(converted, args.status, at);
-  return { body: stamped ?? converted, nowStamped: stamped !== null };
+): { body: string } {
+  return { body: applyFrontmatterBlock(current, buildFrontmatter(args, today)) };
 }
 
 type SetFrontmatterValue =
-  | { ok: true; slug: string; nowStamped: boolean }
+  | { ok: true; slug: string }
   | { ok: false; code: 'not_found' }
   | { ok: false; code: 'already_valid' };
 
@@ -172,11 +168,14 @@ export default defineTool({
         const converted = buildFirstClassPlanBody(current, args, today);
         return {
           newBody: converted.body,
-          value: { ok: true, slug: args.slug, nowStamped: converted.nowStamped },
+          value: { ok: true, slug: args.slug },
         };
       },
     );
 
+    if (result.kind === 'refused') {
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result.value) }], isError: true };
+    }
     if (result.kind === 'busy') {
       return {
         content: [
@@ -228,7 +227,6 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             slug: result.value.slug,
-            ...(result.value.nowStamped ? { nowStamped: true } : {}),
             filePath: result.filePath,
             revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
             ...(result.activationAudit ? { activationAudit: result.activationAudit } : {}),

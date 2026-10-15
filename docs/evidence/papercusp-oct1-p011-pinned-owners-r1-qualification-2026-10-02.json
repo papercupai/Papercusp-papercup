@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10005442",
+  "parent": "WI-10004890",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "item": "P-011",
+  "scope": "New actual staging main-process named singleton payload observations; not physical savings or full P011 acceptance",
+  "raw": {
+    "path": "docs/evidence/papercusp-oct1-p011-pinned-owners-r1-2026-10-02.json",
+    "sha256": "6965965ffd00bd53d09da8309f56ff3adf5019488c9a611d5163d1c6c1f839bf",
+    "bytes": 752399
+  },
+  "runtime": {
+    "plane": "live-current-build-operator-api",
+    "base": "http://127.0.0.1:3170",
+    "mainPid": 3860274,
+    "healthBuildSha": "20e1477d62",
+    "startedAt": "2026-10-02T10:56:41.495Z",
+    "endedAt": "2026-10-02T10:57:01.158Z",
+    "processIdentityPreserved": true,
+    "probeOpenedInspectorClosed": true,
+    "requests": 24,
+    "samples": 9,
+    "ordinaryRequestConcurrency": 2,
+    "ambientWorkloadControlled": false,
+    "httpWorkerAttribution": "unknown; requests can reach sibling workers",
+    "fullLoadedSourceIdentity": "unknown; health-reported build and disk bundle identity have separate meanings"
+  },
+  "verification": {
+    "guard": { "testRunId": 20515626, "layer": "unit", "passed": 7, "failed": 0, "skipped": 0, "taskId": "0muquhfk717isaj514d" },
+    "live": { "testRunId": 20515880, "layer": "integration", "passed": 2, "failed": 0, "skipped": 0, "taskId": "0muqukka276fi7m15ok" },
+    "ledgerScope": { "workspace": "papercusp-workspace", "harness": "papercusp", "source": "local", "worktreeDirty": true },
+    "routerProvenance": { "head": "d849cabb62", "namedTestPathsDirty": true, "fullTransitiveSourceGraph": "unknown" },
+    "focusedTypes": { "taskId": "0muqui5oo1hahmlu1ak", "namedFiles": 2, "errors": 0, "exit": 0 },
+    "contentLintSource": "/tmp/su-7db4f-p011-pinned-content-all-r1.log",
+    "guardLog": "/tmp/su-7db4f-p011-pinned-guard-r1.log",
+    "liveLog": "/tmp/su-7db4f-p011-pinned-live-r1.log"
+  },
+  "postRunNamedSourceHashes": {
+    "scripts/cdp-inspector.mjs": "dde9c2619800a4dd40ca06cafb4a8342a49b9885527371a06db943be57263971",
+    "scripts/cdp-inspector.d.mts": "64047f3a11233feb024a3e0f086dab0f697db4d68fcc04a95772bee3bae1ad40",
+    "packages/operator-core/lib/cdp-inspector.test.ts": "c32d1c404af0dcddf2037f8a71d8448bbfae43bb685b0cb7966d3aec344f4748",
+    "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts": "4f53ebf51f321d40b89e6d9e7b0e556d052f6c83919bdf17cf5b6cb2f633f1e5"
+  },
+  "sourceHashQualification": "Hashes were measured after the run. They are current named file identities, not an assertion of a complete frozen executed-source graph.",
+  "metricDefinitions": {
+    "pssBytes": "Kernel smaps_rollup Pss kilobytes times 1024; main process only",
+    "stringCodeUnits": "Length summed over observed string references, including map keys; repeated strings can share physical storage",
+    "byteViewExtents": "Summed observed view byte lengths; views can overlap backing stores",
+    "arrayBufferExtents": "Observed ArrayBuffer byte lengths; can overlap the storage counted through views",
+    "mapEntries": "Total builtin Map size summed for the maps actually reached before limits",
+    "rootOwner": "Named global singleton root reachable from module-singleton.slots; shared objects are counted at their first observed root",
+    "zeroWithTraversalLimited": "Not inspected; never evidence that the root is empty",
+    "observerMs": "In-target wall time including V8 property key enumeration; a budget check is not a hard latency ceiling"
+  },
+  "observations": {
+    "registryPopulation": 139,
+    "checkedPerSample": [139, 8, 139, 139, 139, 139, 139, 139, 139],
+    "entriesPerSample": [8192, 2684, 8192, 8192, 8192, 8192, 8192, 8192, 8192],
+    "limitedPerSample": [true, true, true, true, true, true, true, true, true],
+    "observerMs": [7.985793999978341, 53.88579500000924, 7.516767999972217, 5.343493999913335, 8.075125999981537, 5.324116999981925, 7.192372000077739, 4.64041599992197, 8.31716299999971],
+    "lastSampleQueryFamilyMemo": { "owner": "@papercusp/db-org.pg-query-family-memo", "mapEntries": 932, "stringCodeUnits": 573455, "traversalLimited": false },
+    "lastSampleProjectedRegistry": { "owner": "__papercuspProjectedToolRegistry", "mapEntries": 981, "stringCodeUnits": 31008, "fieldsLimited": 20, "depthLimited": 301, "traversalLimited": true }
+  },
+  "remaining": [
+    "The global entry/time budget is consumed early in registry order. Later named caches report traversalLimited; their zero payload counters do not measure emptiness.",
+    "Add a fair per-root or explicitly targeted inspection guard before attempting dispositions for uninspected roots.",
+    "Symbols, non-enumerable properties, function closures, unpinned roots and native owners remain outside this inventory.",
+    "No retained heap byte attribution, paired intervention, useful-context/concurrency comparison, independent R8/R9 acceptance or final shipment is established."
+  ]
+}

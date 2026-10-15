@@ -22,6 +22,7 @@
 import { execFile } from 'node:child_process';
 
 import { getBuildInfo } from '../build-info';
+import { execFileViaSidecar } from '../fleet/git-via-sidecar';
 
 /** The named watermark: the running scout bg-host generation's start instant. */
 export const BG_HOST_RESTART_WATERMARK = 'bg-host-restart';
@@ -62,17 +63,48 @@ export function parseSystemdTimestamp(value: string | null | undefined): number 
  * deterministically regardless of the host's local zone.
  */
 export function readBgHostActiveEnterMs(unit: string = BG_HOST_UNIT): Promise<number | null> {
-  return new Promise((resolve) => {
-    execFile(
-      'systemctl',
-      ['--user', 'show', unit, '-p', 'ActiveEnterTimestamp', '--value'],
-      { env: { ...process.env, TZ: 'UTC' }, timeout: 5_000 },
-      (err, stdout) => {
-        if (err) return resolve(null);
-        resolve(parseSystemdTimestamp(stdout));
-      },
-    );
-  });
+  // EI-24748208098755918: this ran a LOCAL `systemctl` fork on every scorecard read
+  // that carried a generation stamp. The fork is synchronous on the caller's event
+  // loop and costs ~100-270 ms from a 1-4 GB operator worker; the 3 h saturation-
+  // profile aggregate (2026-10-01 22:5xZ) charged 6.3% of all busy main-thread time
+  // to this function. Two changes: the fork goes through the spawner sidecar (falls
+  // back locally, counted), and concurrent/back-to-back readers share one probe for
+  // BG_HOST_ACTIVE_ENTER_MEMO_MS. The value only changes when bg-host restarts, so
+  // a few seconds of reuse cannot turn a stale grading into a false `fresh` for
+  // longer than that window.
+  const now = Date.now();
+  const cached = activeEnterMemo.get(unit);
+  if (cached && now - cached.at < BG_HOST_ACTIVE_ENTER_MEMO_MS) return cached.value;
+  const value = execFileViaSidecar(
+    'systemctl',
+    ['--user', 'show', unit, '-p', 'ActiveEnterTimestamp', '--value'],
+    {
+      timeoutMs: 5_000,
+      subsystem: 'scout-generation-watermark',
+      sidecarVar: GENERATION_WATERMARK_SIDECAR_VAR,
+      // Full env: the local fallback REPLACES the child env, and `systemctl --user`
+      // needs XDG_RUNTIME_DIR / DBUS_SESSION_BUS_ADDRESS from it.
+      env: { ...process.env, TZ: 'UTC' },
+    },
+  ).then(
+    ({ stdout }) => parseSystemdTimestamp(stdout),
+    () => null,
+  );
+  activeEnterMemo.set(unit, { at: now, value });
+  return value;
+}
+
+/** How long one `ActiveEnterTimestamp` probe answers later readers (see above). */
+export const BG_HOST_ACTIVE_ENTER_MEMO_MS = 5_000;
+
+/** Per-site override for the probe's sidecar route (`0` forces a local fork). */
+export const GENERATION_WATERMARK_SIDECAR_VAR = 'PAPERCUSP_GENERATION_WATERMARK_SPAWN_SIDECAR';
+
+const activeEnterMemo = new Map<string, { at: number; value: Promise<number | null> }>();
+
+/** Test seam: forget memoized `ActiveEnterTimestamp` probes. */
+export function __resetBgHostActiveEnterMemo(): void {
+  activeEnterMemo.clear();
 }
 
 /**
@@ -109,10 +141,9 @@ export function readBgHostActiveEnterMs(unit: string = BG_HOST_UNIT): Promise<nu
  *    changed" on a continuously-edited working tree. Null until bg-host has recorded
  *    at least one tick since restart (or when `hostStartedAt` itself is unresolvable —
  *    no generation boundary to attribute a stamp to).
- *  - `staleHost` — true unless we have POSITIVE evidence the running scout loop is
- *    executing `deployedSha`'s code (bootHeadSha resolved AND equals deployedSha).
- *    Fails toward "not proven fresh", never toward a false all-clear — an unresolved
- *    bootHeadSha reports staleHost:true, not false.
+ *  - `staleHost` — true when both SHAs resolve and differ, false when they resolve
+ *    and match, and null when either side is unavailable. Unknown is not evidence of
+ *    staleness or freshness; any gate requiring fresh code must require `false`.
  *
  * Every leg is best-effort — a stamp must never fail the capture it rides on.
  */
@@ -121,7 +152,7 @@ export interface RunningGeneration {
   hostStartedAt: string | null;
   bootHeadSha: string | null;
   scoutCodeHash: string | null;
-  staleHost: boolean;
+  staleHost: boolean | null;
 }
 
 /** The staging tree root git history is read against — see capability/base-dir.ts's
@@ -182,8 +213,8 @@ export async function readScoutGenerationCodeHash(
   return Promise.race([read, timeout]);
 }
 
-/** Read the running generation's identity. Never throws; each leg degrades to null
- *  (staleHost still resolves to a real boolean — see {@link RunningGeneration}). */
+/** Read the running generation's identity. Never throws; each unreadable leg degrades
+ *  to null, including staleHost when its comparison inputs are unavailable. */
 export async function readRunningGeneration(): Promise<RunningGeneration> {
   const ms = await readBgHostActiveEnterMs().catch(() => null);
   const hostStartedAt = ms != null ? new Date(ms).toISOString() : null;
@@ -195,12 +226,20 @@ export async function readRunningGeneration(): Promise<RunningGeneration> {
   }
   const bootHeadSha = hostStartedAt ? await resolveStagingHeadAsOf(hostStartedAt).catch(() => null) : null;
   const scoutCodeHash = await readScoutGenerationCodeHash(ms);
-  // staleHost fails toward "not proven fresh": false ONLY when both shas resolved AND
-  // match (a full sha vs a shortened one is still a match via prefix comparison —
-  // getBuildInfo() commonly yields a short `--short HEAD`, while resolveStagingHeadAsOf
-  // always returns the full 40-char sha).
-  const staleHost = !(deployedSha != null && bootHeadSha != null && shaMatches(deployedSha, bootHeadSha));
+  const staleHost = assessHostStaleness(deployedSha, bootHeadSha);
   return { deployedSha, hostStartedAt, bootHeadSha, scoutCodeHash, staleHost };
+}
+
+/** Compare the querying build with the boot-time tree identity without turning missing
+ *  evidence into a stale-host verdict. Short and full SHAs compare by prefix. */
+export function assessHostStaleness(
+  deployedSha: string | null | undefined,
+  bootHeadSha: string | null | undefined,
+): boolean | null {
+  const deployed = deployedSha?.trim();
+  const boot = bootHeadSha?.trim();
+  if (!deployed || !boot) return null;
+  return !shaMatches(deployed, boot);
 }
 
 /** Two shas "match" when equal, or one is a prefix of the other (a short sha vs the
@@ -257,8 +296,9 @@ export async function resolveWatermarkRef(ref: string): Promise<WatermarkResolut
  * exactly the 2026-07-17 incident this exists for, where a 4.5h soak and a 6/6 scorecard
  * were voided by a bg-host restart three minutes after they were emitted.
  *
- * Fails toward NOT-PROVEN-FRESH in every ambiguous case, mirroring `staleHost`'s own
- * convention: `fresh` is reported ONLY on a positive match of two resolved boundaries.
+ * Fails toward NOT-PROVEN-FRESH in every ambiguous case. Unlike `staleHost`, which is
+ * a stamp-time build-parity comparison with true/false/null outcomes, this verdict asks
+ * whether the stamped host boundary still matches the live boundary.
  */
 export type GenerationFreshness =
   | { status: 'fresh'; gradedHostStartedAt: string; liveHostStartedAt: string }

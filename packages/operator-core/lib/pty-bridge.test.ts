@@ -265,6 +265,35 @@ describe('pty-bridge', () => {
     expect(out).toContain('TASK_RESUMED');
   });
 
+  it('settles screen reads after explicit disposal while preserving the natural exit screen', async () => {
+    const handle = spawnPty({
+      accessScope: TEST_SCOPE,
+      command: 'bash',
+      args: ['-c', "printf 'FINAL_SCREEN\\n'"],
+      cwd: process.cwd(),
+      inheritEnv: false,
+      env: { PATH: process.env.PATH },
+      cols: 80,
+      rows: 24,
+    });
+    liveIds.push(handle.id);
+    await vi.waitFor(() => expect(handle.exitCode).toBe(0));
+    expect(await getScreenSerialization(handle.id, TEST_SCOPE)).toContain('FINAL_SCREEN');
+    expect(killPty(handle.id, TEST_SCOPE)).toBe(true);
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const screen = await Promise.race([
+        getScreenSerialization(handle.id, TEST_SCOPE),
+        new Promise<string>((resolve) => { timer = setTimeout(() => resolve('SCREEN_READ_STALLED'), 500); }),
+      ]);
+      expect(screen).toBeNull();
+      expect(await getScreenSerialization(handle.id, TEST_SCOPE)).toBeNull();
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+
   // EI-151: a recorded pid can be recycled by the OS to a DIFFERENT agent's
   // live managed pty. findPtyByPid must never hand back a pty tagged with a
   // foreign owner, or the wake executor would inject one agent's wake turn into

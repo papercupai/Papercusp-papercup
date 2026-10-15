@@ -1,3 +1,4 @@
+import { signPaymentTestVoucher, paymentTestVerifier } from './_payment-voucher-fixture';
 /**
  * P-033 batch settlement execution — pure pipeline.
  *
@@ -12,11 +13,11 @@ import {
   assessClaimFinality,
   buildSettlementProofEvent,
   isSettlementFrozen,
-  planBatchSettlement,
+  planBatchSettlement as rawPlanBatchSettlement,
   unwindReorgedClaim,
   type EvmSettlementConfig,
 } from './evm-settlement';
-import { createPaymentChannel, settleVoucherBatch } from './payment-channel';
+import { createPaymentChannel, settleVoucherBatch as rawSettleVoucherBatch } from './payment-channel';
 import { paymentVoucherDigest, unsignedVoucher, type CumulativePaymentVoucher } from './microcharge';
 import { revenueSplitManifest } from './revenue-settlement';
 import { validateCommerceEvent } from './commerce-events';
@@ -36,7 +37,7 @@ const SPLIT = revenueSplitManifest({
 const TREASURY = '0x3333333333333333333333333333333333333333';
 
 function voucher(overrides: Partial<CumulativePaymentVoucher> = {}): CumulativePaymentVoucher {
-  return {
+  return signPaymentTestVoucher({
     channelId: 'chan-1',
     payer: 'gh:1',
     seller: 'gh:2',
@@ -50,7 +51,7 @@ function voucher(overrides: Partial<CumulativePaymentVoucher> = {}): CumulativeP
     cumulativeClaimMicros: 1_000n,
     signature: 'sig',
     ...overrides,
-  };
+  }, overrides.signature);
 }
 
 function plan(vouchers: readonly CumulativePaymentVoucher[], overrides: { disputed?: boolean; escrow?: bigint; providerCostMicros?: bigint } = {}) {
@@ -65,6 +66,14 @@ function plan(vouchers: readonly CumulativePaymentVoucher[], overrides: { disput
     providerCostMicros: overrides.providerCostMicros,
     disputed: overrides.disputed,
   });
+}
+
+
+function settleVoucherBatch(input: Parameters<typeof rawSettleVoucherBatch>[0]): ReturnType<typeof rawSettleVoucherBatch> {
+  return rawSettleVoucherBatch({ verifySignature: paymentTestVerifier('chan-1', 'gh:1'), ...input });
+}
+function planBatchSettlement(input: Parameters<typeof rawPlanBatchSettlement>[0]): ReturnType<typeof rawPlanBatchSettlement> {
+  return rawPlanBatchSettlement({ verifySignature: paymentTestVerifier('chan-1', 'gh:1'), ...input });
 }
 
 describe('planBatchSettlement', () => {

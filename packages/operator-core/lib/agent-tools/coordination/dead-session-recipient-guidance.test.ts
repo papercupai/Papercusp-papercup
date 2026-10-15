@@ -13,10 +13,13 @@ import {
 const INCIDENT_ID = 'su-fcdb9a01-2f4e-4c7b-9d3a-11b2c3d4e5f6';
 
 describe('session-shaped ownerId detection', () => {
-  it('recognizes both ownerId shapes this fleet actually issues', () => {
-    // Measured against harness_shared.adv_sessions 2026-08-09.
+  it('recognizes the ownerId shapes this runtime issues', () => {
+    // Measured against harness_shared.adv_sessions and fleet respawn ID writers.
     expect(isSessionShapedOwnerId('su-6dc49b99-310f-47cd-ad9c-eb22231c1d8e')).toBe(true);
     expect(isSessionShapedOwnerId('s-1786248683393-d2f09ca1')).toBe(true);
+    expect(isSessionShapedOwnerId('su-respawn-1529d5283907a0f8c68b462778e0d1e3')).toBe(true);
+    expect(isSessionShapedOwnerId('su-respawn-0123456789abcdef')).toBe(true);
+    expect(isSessionShapedOwnerId('su-respawn-8a3f0001-1111-4111-8111-111111111111')).toBe(true);
     expect(isSessionShapedOwnerId(INCIDENT_ID)).toBe(true);
   });
 
@@ -30,7 +33,7 @@ describe('session-shaped ownerId detection', () => {
 
   it('does NOT fire on a handle, a role selector, or a system sender', () => {
     // The scoping that keeps the common typo path free of noise.
-    for (const id of ['93a38', 'human', '*', '@role:mug', '@fleet:nonp2p-bug-drain', 'task-manager', 'supervision-reconciler']) {
+    for (const id of ['93a38', 'human', '*', '@role:mug', '@fleet:nonp2p-bug-drain', 'su-respawn-not-a-token', 'task-manager', 'supervision-reconciler']) {
       expect(isSessionShapedOwnerId(id), id).toBe(false);
     }
   });

@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "reboot-residue R-003 live: vboxdrv built by Oracle virtualbox-7.2 for the running kernel, loaded, virtualbox-dkms absent, repo kernel hook installed and selected",
+  "framework": "operational",
+  "command": ["bash", "docs/evidence/reboot-residue-live-probes-2026-10-06/r003-live-probe.sh"],
+  "commandCwd": ".",
+  "exitCode": 0,
+  "startedAt": "2026-10-06T08:48:29Z",
+  "finishedAt": "2026-10-06T08:48:29Z",
+  "summary": "Live probe of AUTO-BAR-R-003-P-003@5: dpkg reports virtualbox-7.2 7.2.20-175154~Ubuntu~noble 'ii' and virtualbox-dkms 'un' (not installed); modinfo -n vboxdrv resolves to /lib/modules/7.0.0-34-generic/misc/vboxdrv.ko for uname -r 7.0.0-34-generic and the vermagic first field equals it; lsmod lists vboxdrv (refcount 2, with vboxnetflt/vboxnetadp); /etc/kernel/postinst.d/vboxdrv-rebuild and /etc/kernel/header_postinst.d/vboxdrv-rebuild are both executable, byte-identical (sha256 8efb748e...) to the committed apps/operator/scripts/systemd/vboxdrv-rebuild.kernel-hook (commit 202743ceba, which carries the WI-10006520 module-existence check), and run-parts --test selects each.",
+  "scope": "Live host plane, read-only apart from the preceding hook install. Re-run at 08:48:29Z after `sudo install -m 0755` of the WI-10006520-revised hook into both /etc/kernel hook directories (08:47Z); it supersedes the 07:08:16Z run, whose byte-identity claim referred to the pre-revision hook blob ce22765d. Does not install a new kernel, so the hook's rebuild path is exercised only via run-parts selection plus byte identity with the committed source (the hook's own behaviour, including the new missing-module FAILED branch, is covered by apps/operator/scripts/__tests__/vboxdrv-rebuild-kernel-hook.integration.test.ts). The committed transcript is the probe's stdout with trailing spaces stripped from five lines by the editor; no value differs.",
+  "repository": "papercusp",
+  "headAtExecution": "2763fadb52a970259c177fd680cf76d75147be32",
+  "workItems": ["WI-10005993", "WI-10006520", "WI-10006401"],
+  "spec": {"planSlug": "reboot-residue-service-repairs-2026-10-03", "specId": "AUTO-BAR-R-003-P-003", "specRevision": 5, "evidencePlane": "live"},
+  "oracle": "Independent of the repair: dpkg-query, uname, modinfo, lsmod, sha256sum/cmp against the committed repo hook, and run-parts --test.",
+  "sourceFiles": [
+    {"path": "docs/evidence/reboot-residue-live-probes-2026-10-06/r003-live-probe.sh", "sha256": "a35e1b74f64b86ea8785068b20e5fdc1d885982c31c07189a022a5cc65151e95"},
+    {"path": "apps/operator/scripts/systemd/vboxdrv-rebuild.kernel-hook", "sha256": "8efb748e53d66d69904b0459ff991dde00e5a73e0f36254a11eb5adb88caddb0"}
+  ],
+  "rawEvidence": [
+    {"path": "docs/evidence/reboot-residue-live-probes-2026-10-06/r003-live-probe.txt", "sha256": "926d2a94da17f78ef5db8aa494f64cda4b80d4d325b37148e8578f31e46c7416"}
+  ],
+  "hostObservations": {
+    "unameR": "7.0.0-34-generic",
+    "dpkg": {"virtualbox-7.2": "7.2.20-175154~Ubuntu~noble ii", "virtualbox-dkms": "un"},
+    "modinfoPath": "/lib/modules/7.0.0-34-generic/misc/vboxdrv.ko",
+    "vermagic": "7.0.0-34-generic SMP preempt mod_unload modversions",
+    "lsmod": {"vboxdrv": 2, "vboxnetflt": 0, "vboxnetadp": 0},
+    "repoHookSha256": "8efb748e53d66d69904b0459ff991dde00e5a73e0f36254a11eb5adb88caddb0",
+    "repoHookCommit": "202743ceba73f6107991c915144d47787a2e95f5",
+    "installedHooks": [
+      {"path": "/etc/kernel/postinst.d/vboxdrv-rebuild", "executable": true, "identicalToRepo": true, "selectedByRunParts": true},
+      {"path": "/etc/kernel/header_postinst.d/vboxdrv-rebuild", "executable": true, "identicalToRepo": true, "selectedByRunParts": true}
+    ]
+  },
+  "assertions": [
+    {"id": "oracle-package-installed", "passed": true, "evidence": "dpkg-query: virtualbox-7.2 7.2.20-175154~Ubuntu~noble ii."},
+    {"id": "ubuntu-dkms-absent", "passed": true, "evidence": "dpkg-query: virtualbox-dkms status 'un' (unknown/not-installed)."},
+    {"id": "module-for-running-kernel", "passed": true, "evidence": "modinfo -n vboxdrv = /lib/modules/7.0.0-34-generic/misc/vboxdrv.ko and uname -r = 7.0.0-34-generic."},
+    {"id": "vermagic-matches", "passed": true, "evidence": "modinfo -F vermagic first field 7.0.0-34-generic == uname -r."},
+    {"id": "module-loaded", "passed": true, "evidence": "lsmod lists vboxdrv 720896 2 (used by vboxnetflt, vboxnetadp)."},
+    {"id": "hooks-installed-identical-executable", "passed": true, "evidence": "Both /etc/kernel/{postinst.d,header_postinst.d}/vboxdrv-rebuild are executable (root 0755) and cmp-identical to the committed repo hook, sha256 8efb748e (repo copy clean in git, last commit 202743ceba)."},
+    {"id": "run-parts-selects-hooks", "passed": true, "evidence": "run-parts --test lists vboxdrv-rebuild in both directories."}
+  ]
+}

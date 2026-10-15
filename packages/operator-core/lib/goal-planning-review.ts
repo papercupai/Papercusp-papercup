@@ -13,14 +13,146 @@ export const GOAL_PLANNING_DISPOSITIONS = [
   'route-work', 'blocked', 'no-eligible-work',
 ] as const;
 
+/**
+ * P-003 / P-009 (goal-holder-plans-ideation-truthful-reports-2026-10-03). A
+ * no-new-plan review must SHOW its work: each recurring need it found, the goal
+ * work-items it spans, and the plan covering it. Measured 2026-10-01..03: 18 of
+ * 24 goal reviews said existing-plans-sufficient and no holder wrote a plan, so
+ * the planning nudge was cleared by an assertion nobody could check.
+ */
+export const GOAL_REVIEW_CLUSTER_MIN_ITEMS = 3;
+export const GOAL_REVIEW_NO_NEW_PLAN_DISPOSITIONS = ['existing-plans-sufficient', 'no-eligible-work'] as const;
+
+/**
+ * P-004 / D-001 (goal-holder-plans-ideation-truthful-reports-2026-10-03). A GOAL's
+ * ideation must YIELD: at least this many evaluated new candidates (an idea filed
+ * through Blender, or a plan proposed for the goal) per goal-day. One pass may file
+ * zero; the goal-day may not. The WOE `ideation-yield` grade and the review receipt
+ * share this threshold so the holder is told exactly what the grader will count.
+ */
+export const GOAL_DAY_MIN_CANDIDATES = 1;
+
+/** The goal-day candidate count returned on a recorded goal review (P-004). */
+export interface GoalDayIdeationYield {
+  goalId: string;
+  /** Start of the goal-day: the 24h ending when the review was recorded. */
+  since: string;
+  /** Plans proposed for this goal in the goal-day (plans:new stamped with its goal). */
+  plansNew: number;
+  /** Ideas this goal's reviews report filing in the goal-day, this pass included. */
+  ideasFiled: number;
+  candidates: number;
+  /** True while the goal-day still has fewer than GOAL_DAY_MIN_CANDIDATES candidates. */
+  owed: boolean;
+  message: string;
+}
+
+export function goalDayIdeationYield(input: {
+  goalId: string;
+  since: string;
+  plansNew: number;
+  /** Ideas reported by reviews already in the ledger (the current call is not yet). */
+  priorIdeasFiled: number;
+  thisPassIdeasFiled: number;
+}): GoalDayIdeationYield {
+  const plansNew = Math.max(0, Math.floor(input.plansNew));
+  const ideasFiled = Math.max(0, Math.floor(input.priorIdeasFiled)) + Math.max(0, Math.floor(input.thisPassIdeasFiled));
+  const candidates = plansNew + ideasFiled;
+  const owed = candidates < GOAL_DAY_MIN_CANDIDATES;
+  const message = owed
+    ? `${candidates} evaluated new candidate(s) for goal ${input.goalId} in the goal-day since ${input.since}; ` +
+      `a GOAL owes at least ${GOAL_DAY_MIN_CANDIDATES} per goal-day. File an idea (improvements:capture or ` +
+      'blender:route-idea) or propose a plan (plans:new), grounded in curation:state-of-pot, rubrics:trend and ' +
+      "blender:ideation-feedback { scope:'mine' }, then record it."
+    : `${candidates} evaluated candidate(s) for goal ${input.goalId} in the goal-day since ${input.since} ` +
+      `(plans ${plansNew}, ideas ${ideasFiled}).`;
+  return { goalId: input.goalId, since: input.since, plansNew, ideasFiled, candidates, owed, message };
+}
+const PLAN_REF = /^plan:[^/\s]+\/\S+$/;
+/** A bare plan slug, optionally harness-qualified (`<slug>` or `<harness>/<slug>`). */
+const BARE_PLAN_SLUG = /^[a-z0-9][a-z0-9-]*(?:\/[a-z0-9][a-z0-9-]*)?$/i;
+
+/**
+ * Canonicalize a plan reference to the `plan:` form every reader parses
+ * (scout/goal-feedback.ts parsePlanRef accepts `plan:<slug>` and
+ * `plan:<harness>/<slug>`). Callers routinely cite a plan by its bare slug, and
+ * that was refused with invalid_input (9 of 23 ideate-pass-record refusals,
+ * 2026-09-27..10-06, EI-24428150977170134) although the slug is unambiguous.
+ * Anything that is not a bare slug is left untouched so the pattern check
+ * still refuses genuinely malformed refs.
+ */
+export function canonicalPlanRef(ref: string): string {
+  return !ref.startsWith('plan:') && BARE_PLAN_SLUG.test(ref) ? `plan:${ref}` : ref;
+}
+
+export const goalReviewCoverageEntrySchema = z.object({
+  need: z.string().trim().min(1).max(1000),
+  // A need may not have a goal work-item yet (e.g. "a fresh independent grade is
+  // needed"): itemRefs [] is allowed, but only with a justification or a covering
+  // planRef, so an empty entry can never stand in for coverage on its own.
+  itemRefs: z.array(z.string().trim().min(1).max(120)).max(100),
+  planRef: z.string().trim().overwrite(canonicalPlanRef).max(500).regex(PLAN_REF).optional(),
+  justification: z.string().trim().min(1).max(2000).optional(),
+}).strict().refine((entry) => entry.itemRefs.length > 0 || Boolean(entry.justification) || Boolean(entry.planRef), {
+  path: ['itemRefs'],
+  message: 'A need with no goal work-items yet (itemRefs: []) must carry a justification or a covering planRef.',
+});
+export type GoalReviewCoverageEntry = z.infer<typeof goalReviewCoverageEntrySchema>;
+
+export interface GoalReviewCoverageGap {
+  need: string;
+  itemCount: number;
+  kind: 'cluster-without-plan' | 'unjustified-uncovered-need';
+}
+
+/** Deterministic coverage verdict shared by the write-side refusal and the planning obligation. */
+export function goalReviewCoverageGaps(coverage: readonly GoalReviewCoverageEntry[]): GoalReviewCoverageGap[] {
+  const gaps: GoalReviewCoverageGap[] = [];
+  for (const entry of coverage) {
+    if (entry.planRef) continue;
+    const itemCount = new Set(entry.itemRefs).size;
+    if (itemCount >= GOAL_REVIEW_CLUSTER_MIN_ITEMS) gaps.push({ need: entry.need, itemCount, kind: 'cluster-without-plan' });
+    else if (!entry.justification) gaps.push({ need: entry.need, itemCount, kind: 'unjustified-uncovered-need' });
+  }
+  return gaps;
+}
+
+export function describeGoalReviewCoverageGap(gap: GoalReviewCoverageGap): string {
+  return gap.kind === 'cluster-without-plan'
+    ? `Need "${gap.need}" spans ${gap.itemCount} goal work-items and maps to no plan: write one (plans:new, then plans:start) and cite it as planRef, or record disposition plan-needed.`
+    : `Need "${gap.need}" has no planRef and no justification: name the covering plan, or justify handling it as a single item.`;
+}
+
 const reviewFields = z.object({
   goalId: z.string().trim().min(1).max(200),
   disposition: z.enum(GOAL_PLANNING_DISPOSITIONS),
   rationale: z.string().trim().min(1).max(4000),
   evidenceRefs: z.array(z.string().trim().min(1).max(500)).min(1).max(20),
-  planRefs: z.array(z.string().trim().max(500).regex(/^plan:\S+$/)).max(20).default([]),
+  planRefs: z.array(z.string().trim().overwrite(canonicalPlanRef).max(500).regex(/^plan:\S+$/)).max(20).default([]),
   uncoveredOutcome: z.string().trim().min(1).max(4000).optional(),
+  /** Required for a no-new-plan disposition at write time; optional in storage so older reviews still parse. */
+  coverage: z.array(goalReviewCoverageEntrySchema).max(50).optional(),
 }).strict();
+
+function isNoNewPlanDisposition(disposition: string): boolean {
+  return (GOAL_REVIEW_NO_NEW_PLAN_DISPOSITIONS as readonly string[]).includes(disposition);
+}
+
+/** Write-side only: a no-new-plan review must carry a passing coverage map (P-003). */
+function validateReviewInput(value: z.infer<typeof reviewFields>, ctx: z.RefinementCtx): void {
+  validateReview(value, ctx);
+  if (!isNoNewPlanDisposition(value.disposition)) return;
+  if (!value.coverage) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom, path: ['coverage'],
+      message: `A ${value.disposition} review must carry a coverage map: list each recurring need, the goal work-items it spans (itemRefs) and the plan covering it (planRef). Use [] only when there is no recurring need.`,
+    });
+    return;
+  }
+  goalReviewCoverageGaps(value.coverage).forEach((gap, index) => {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['coverage', index], message: describeGoalReviewCoverageGap(gap) });
+  });
+}
 
 function validateReview(value: z.infer<typeof reviewFields>, ctx: z.RefinementCtx): void {
   if (value.disposition === 'plan-needed' && !value.uncoveredOutcome) {
@@ -32,7 +164,7 @@ function validateReview(value: z.infer<typeof reviewFields>, ctx: z.RefinementCt
 }
 
 /** Caller fields only: measured fingerprints and clocks cannot be supplied. */
-export const goalPlanningReviewInputSchema = reviewFields.superRefine(validateReview);
+export const goalPlanningReviewInputSchema = reviewFields.superRefine(validateReviewInput);
 export type GoalPlanningReviewInput = z.infer<typeof goalPlanningReviewInputSchema>;
 
 export const goalPlanningReviewSchema = reviewFields.extend({

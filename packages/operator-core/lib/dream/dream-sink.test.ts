@@ -100,6 +100,10 @@ describe('dream accepted-insight sink', () => {
             cycleId: 'dream-cycle-7',
             sourceRefs: ['wi:EI-retry-storm', 'memory:watermark-guard'],
           }),
+          // The sink stamps the ideation-origin payload key at capture time, so the item
+          // classifies as ideation from creation (scout/ideation-origin.ts). Literal on
+          // purpose: the key is persisted and matched by SQL, so its wire value is the contract.
+          ideaOrigin: 'dream',
         },
       }),
     );

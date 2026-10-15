@@ -18,6 +18,7 @@ import {
   tierFor,
   BRAIN_PRINCIPAL_ROLE,
   type UnifiedToolContext,
+  type Principal,
 } from '@papercusp/agent-mcp';
 import { dispatchProjectedToolToMcp } from '@papercusp/tooldef-mcp';
 import { withWorkspace } from '@papercusp/db-org';
@@ -88,6 +89,7 @@ type ServerCapabilityInvoker = (opts: {
   confirmed?: boolean;
   callerSid?: string;
   harness?: string;
+  authenticatedPrincipal?: Principal;
 }) => Promise<InvokeResult>;
 
 /**
@@ -102,6 +104,7 @@ export async function dispatchPaletteTarget(
     confirmed?: boolean;
     callerSid?: string;
     harness?: string;
+    authenticatedPrincipal?: Principal;
   },
   invoke: ServerCapabilityInvoker = invokeServerCapability,
 ): Promise<PaletteDispatchResult> {
@@ -139,13 +142,15 @@ export async function invokeServerCapability(opts: {
   confirmed?: boolean;
   /** EI-1751: an optional caller-supplied, process-stable id (e.g. a pui
    *  instance's `pui-<pid>`) — folded into `ctx.uiClientId` for per-caller
-   *  telemetry attribution ONLY. Every palette-loopback call still runs as
-   *  the same fixed `spawnId='palette'` operator principal below; existing
+   *  telemetry attribution ONLY. Every palette call still runs with
+   *  the same fixed `spawnId='palette'` below; existing
    *  consumers keyed on that literal (fleet-ekg/features.ts,
    *  decision-ledger/emit.ts's isReadShapedCoordPoll) are unaffected. */
   callerSid?: string;
-  /** Selected resource scope only. The palette principal and active workspace remain fixed. */
+  /** Selected resource scope within the active workspace. */
   harness?: string;
+  /** Server-resolved cookie actor; never accepted from the request body. */
+  authenticatedPrincipal?: Principal;
 }): Promise<InvokeResult> {
   // The projected registry is the lookup of record — it carries EVERY tool
   // (principal-gated, role-gated, plugin); the legacy getCatalog() misses all
@@ -176,6 +181,13 @@ export async function invokeServerCapability(opts: {
   }
 
   const workspaceId = activeWorkspaceId();
+  const authenticatedPrincipal = opts.authenticatedPrincipal;
+  if (authenticatedPrincipal && (authenticatedPrincipal.kind !== 'user' ||
+      authenticatedPrincipal.authMethod !== 'cookie-session' || authenticatedPrincipal.trust !== 'verified' ||
+      authenticatedPrincipal.workspaceId !== workspaceId)) {
+    return { ok: false, status: 403, code: 'invalid_authenticated_principal',
+      message: 'The signed-in user must have a verified session in the active workspace.' };
+  }
   let harnessSlug = '*';
   if (opts.harness !== undefined) {
     const selected = typeof opts.harness === 'string' ? opts.harness.trim() : '';
@@ -219,7 +231,9 @@ export async function invokeServerCapability(opts: {
       // Every literal 'palette'-keyed consumer reads ctx.spawnId, untouched.
       uiClientId: opts.callerSid ?? null,
       isSuperuser: false,
-      gateBypass: { capability: true, quota: true },
+      // Cookie users retain their actual capability grants. Only the existing
+      // cookie-less local operator path receives its loopback capability bypass.
+      gateBypass: authenticatedPrincipal ? { quota: true } : { capability: true, quota: true },
       profile: 'engineer',
       transport: 'http',
       log: () => {},
@@ -230,7 +244,7 @@ export async function invokeServerCapability(opts: {
       // The loopback caller IS the operator/brain — carry the brain RBAC role so a
       // `requireRoles:[BRAIN_PRINCIPAL_ROLE]` tool (the spawn-approval gate, P-006)
       // admits it (this path bypasses capability/quota but NOT role).
-      principal: {
+      principal: authenticatedPrincipal ?? {
         kind: 'system',
         slug: 'loopback',
         workspaceId,
@@ -254,6 +268,7 @@ export async function invokeServerCapability(opts: {
         args,
         confirmed: opts.confirmed,
         callerSid: opts.callerSid,
+        ...(authenticatedPrincipal ? { authenticatedPrincipal } : {}),
         ...(opts.harness === undefined ? {} : { harness: harnessSlug }),
       });
     return dispatchProjectedToolToMcp(projected, opts.name, opts.args ?? {}, ctx, PROJECTED_DEPS);

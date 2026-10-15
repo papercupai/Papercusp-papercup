@@ -18,10 +18,12 @@ import {
   exportWorkspaceHostAudit,
   readWorkspaceHostConnection,
   readWorkspaceHostControl,
+  readWorkspaceHostReliability,
   readWorkspaceHostDestroyTarget,
   readWorkspaceHostResourceCheckpoints,
   recordWorkspaceHostOperationTerminalFailure,
   redactWorkspaceHostValue,
+  storedWorkspaceHostConnectionScope,
   upsertWorkspaceHostConnection,
 } from './observability-store';
 
@@ -42,6 +44,52 @@ beforeEach(() => {
 });
 
 describe('workspace-host observability store', () => {
+  it('projects scoped control-plane counts without exporting underlying private fields', async () => {
+    H.rows.set('FROM harness_shared.workspace_host_operations operation', [{
+      succeeded: '3', failed: '1', queued: '2', running: '1', success_p95_ms: 1250,
+      request: { token: 'private' }, error: 'private diagnostic',
+    }]);
+    H.rows.set('FROM harness_shared.workspace_hosts host', [{
+      expected_running: '4', unhealthy: '1', unobserved: '1', platform_owned_running: '2',
+      cost_signals: { customerBill: 999 }, health_checks: ['private guest output'],
+    }]);
+    H.rows.set('FROM harness_shared.workspace_host_connections connection', [{ connected: '1', degraded: '1' }]);
+    H.rows.set('FROM harness_shared.route_invocations', [{ samples: '5', errors: '1', p95_ms: 25 }]);
+    H.rows.set('FROM papercusp_auth.hosted_workspace_connectors connector', [{ active: '2', lost: '1' }]);
+    // Match the cost projection, not its nested lifecycle FROM clause. fakeTx
+    // selects the longest matching SQL fragment so independent slices stay distinct.
+    H.rows.set("SELECT sum(estimated_cost_cents) FILTER (WHERE cost_currency = 'USD') AS estimated_usd_cents", [
+      { estimated_usd_cents: 2400, estimates: '3', unpriced: '1', breached_budgets: '1' },
+    ]);
+    const snapshot = await readWorkspaceHostReliability('ws-A', 3_600_000);
+    expect(H.withWorkspace).toHaveBeenCalledWith('ws-A', expect.any(Function), {
+      bypassRlsForAdmin: true, statementTimeoutMs: 2_000, lockTimeoutMs: 500,
+    });
+    expect(snapshot).toEqual({
+      observedAt: 3_600_000, windowMs: 3_600_000,
+      lifecycle: { succeeded: 3, failed: 1, queued: 2, running: 1, successP95Ms: 1250 },
+      hosts: { expectedRunning: 4, unhealthy: 1, unobserved: 1, platformOwnedRunning: 2 },
+      providerConnections: { connected: 1, degraded: 1 },
+      api: { samples: 5, errors: 1, p95Ms: 25 },
+      reverseConnectors: { active: 2, lost: 1 },
+      ownedCost: { estimatedUsdCents: 2400, estimates: 3, unpriced: 1, breachedBudgets: 1 },
+    });
+    expect(JSON.stringify(snapshot)).not.toMatch(/private|customerBill|token|request|health_checks/);
+  });
+
+  it('keeps an unreadable slice unknown while preserving independently observed slices', async () => {
+    const throwing = Object.assign((strings: TemplateStringsArray, ...values: unknown[]) => {
+      if (strings.join(' ').includes('FROM harness_shared.workspace_hosts host')) throw new Error('read unavailable');
+      return fakeTx(strings, ...values);
+    }, { json: (v: unknown) => v });
+    H.withWorkspace.mockImplementation(async (_ws, run) => run(throwing));
+    H.rows.set('FROM harness_shared.route_invocations', [{ samples: '0', errors: '0', p95_ms: null }]);
+    const snapshot = await readWorkspaceHostReliability('ws-A', 3_600_000);
+    expect(snapshot.hosts).toBeNull();
+    expect(snapshot.lifecycle).toBeNull();
+    expect(snapshot.api).toEqual({ samples: 0, errors: 0, p95Ms: null });
+  });
+
   it('redacts secret-shaped fields and secret-bearing text recursively', () => {
     expect(
       redactWorkspaceHostValue({
@@ -119,9 +167,40 @@ describe('workspace-host observability store', () => {
       connection: {
         target: 'gcp',
         cloudCredentialRef: { kind: 'cloud', ref: 'adc://controller' },
+        scope: { kind: 'project', id: 'project-1' },
         provider: { projectId: 'project-1', credentialSource: 'hosted-delegation' },
       },
     });
+  });
+
+  // WI-10006709: the row has no scope column, so a stored AWS connection read back with no scope and
+  // `update` refused it as "invalid AWS accountId". The account survives only in `scopes`.
+  it('reads a stored AWS connection back with its account scope from the persisted scopes', async () => {
+    H.rows.set('FROM harness_shared.workspace_host_connections WHERE', [
+      {
+        id: 'aws:canary',
+        label: 'canary',
+        target: 'aws',
+        credential_ref: 'aws-profile://papercusp-automation',
+        provider_config: { region: 'us-east-1', subnetId: 'subnet-1' },
+        status: 'connected',
+        status_detail: null,
+        scopes: [{ id: '413781344298', label: 'AWS account 413781344298' }],
+      },
+    ]);
+
+    const stored = await readWorkspaceHostConnection('ws-1', 'aws:canary');
+    expect(stored?.connection.scope).toEqual({ kind: 'account', id: '413781344298' });
+  });
+
+  it('derives no scope from ambiguous or absent persisted input rather than guessing one', () => {
+    expect(storedWorkspaceHostConnectionScope('aws', [], {})).toBeUndefined();
+    expect(storedWorkspaceHostConnectionScope('aws', null, {})).toBeUndefined();
+    expect(storedWorkspaceHostConnectionScope('aws', [{ id: '111111111111' }, { id: '222222222222' }], {})).toBeUndefined();
+    expect(storedWorkspaceHostConnectionScope('aws', [{ id: ' 413781344298 ' }], {})).toEqual({ kind: 'account', id: '413781344298' });
+    expect(storedWorkspaceHostConnectionScope('gcp', [{ id: 'other' }], {})).toBeUndefined();
+    expect(storedWorkspaceHostConnectionScope('gcp', [], { projectId: 'p-1' })).toEqual({ kind: 'project', id: 'p-1' });
+    expect(storedWorkspaceHostConnectionScope('azure', [{ id: 'x' }], { projectId: 'p-1' })).toBeUndefined();
   });
 
   it('rejects secret-shaped hosted provider metadata before persistence', async () => {
@@ -191,7 +270,7 @@ describe('workspace-host observability store', () => {
         desired_spec: { hostId: 'host-1', target: 'gcp', region: 'us-central1' },
       },
     ]);
-    H.rows.set("state IN ('applied', 'unchanged')", [
+    H.rows.set("state IN ('applied', 'unchanged', 'absent')", [
       {
         target: 'gcp',
         kind: 'vm',
@@ -227,6 +306,42 @@ describe('workspace-host observability store', () => {
         },
       ],
     });
+  });
+
+  it('un-registers a resource whose LATEST row confirms it absent, even when an older row registered it', async () => {
+    // WI-10005971: an AWS upgrade terminates the original instance on its own step row; the
+    // provision row that registered it stays `applied`. The newest row per identity decides.
+    H.rows.set('FROM harness_shared.workspace_hosts WHERE workspace_id', [
+      {
+        id: 'host-1',
+        name: 'Canary host',
+        connection_id: 'connection-1',
+        target: 'aws',
+        observed_state: 'running',
+        desired_spec: { hostId: 'host-1', target: 'aws', region: 'us-east-1' },
+      },
+    ]);
+    const row = (providerId: string, kind: string, state: string, updatedAt: string) => ({
+      target: 'aws',
+      kind,
+      provider_id: providerId,
+      parent_provider_id: null,
+      region: 'us-east-1',
+      zone: null,
+      state,
+      updated_at: updatedAt,
+    });
+    // ORDER BY updated_at DESC, as the query returns them.
+    H.rows.set("state IN ('applied', 'unchanged', 'absent')", [
+      row('i-original', 'vm', 'absent', '2026-10-03T00:06:00Z'),
+      row('i-replacement', 'vm', 'applied', '2026-10-03T00:05:00Z'),
+      row('i-original', 'vm', 'applied', '2026-10-03T00:01:00Z'),
+      row('vol-data', 'disk', 'applied', '2026-10-01T00:00:00Z'),
+      row('i-original', 'vm', 'applied', '2026-10-01T00:00:00Z'),
+    ]);
+
+    const target = await readWorkspaceHostDestroyTarget('ws-1', 'host-1');
+    expect(target?.resources.map((entry) => entry.resource.providerId)).toEqual(['i-replacement', 'vol-data']);
   });
 
   it('projects the latest operation, resource ids, health, signals, logs, and timeline', async () => {
@@ -386,6 +501,19 @@ describe('workspace-host observability store', () => {
       ],
       logs: [{ id: 'log-1', stream: 'systemd', unit: 'papercusp-agent' }],
     });
+  });
+
+  it.each(['gcp', 'aws'])('offers %s restore only when an applied snapshot has a provider identity', async (target) => {
+    H.rows.set('FROM harness_shared.workspace_hosts', [{ id: 'host-1', name: 'research', target, observed_state: 'running',
+      desired_state: 'running', created_at: '2026-08-20T00:00:00Z' }]);
+    const resource = { host_id: 'host-1', logical_key: 'snapshot', kind: 'snapshot', target, state: 'applied', provider_id: 'snapshot-1', attempts: 1 };
+    for (const [resources, enabled] of [
+      [[], false], [[{ ...resource, state: 'running' }], false], [[{ ...resource, provider_id: null }], false], [[resource], true],
+    ] as const) {
+      H.rows.set('FROM harness_shared.workspace_host_resources', [...resources]);
+      const rows = await readWorkspaceHostControl('ws-1');
+      expect(rows[0]).toMatchObject({ capabilities: { restore: enabled } });
+    }
   });
 
   it('does not project stale operation progress for an absent host tombstone', async () => {

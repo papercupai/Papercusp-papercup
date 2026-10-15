@@ -207,4 +207,60 @@ describe('candidate snapshot', () => {
       }),
     ).toBe(false);
   });
+
+  // WI-10007398: the snapshot writer prefers the hold tick's leg measurement, while the queue's
+  // signature carries forward entries of kinds that round did not measure. Measured live
+  // 2026-10-07: snapshot `@papercusp/desktop :: test`, queue additionally `test:lane-stateful`.
+  // String equality turned that writer disagreement into a permanent snapshot skip.
+  it('matches a frozen snapshot whose observed failures the queue list covers, and only then', () => {
+    const frozenCandidate = 'C'.repeat(40);
+    const repairHead = 'D'.repeat(40);
+    const snapshot = buildCandidateSnapshot(
+      {
+        candidate: frozenCandidate,
+        failingTests: ['@papercusp/desktop :: test'],
+        repairQueue: { candidate: frozenCandidate, repairHead, phase: 'awaiting-fixer' },
+      },
+      1_000,
+    );
+    expect(snapshot).not.toBeNull();
+    const queue = {
+      candidate: frozenCandidate,
+      repairHead,
+      phase: 'awaiting-fixer',
+      failingTests: ['@papercusp/operator-core :: test:lane-stateful', '@papercusp/desktop :: test'],
+    };
+    const nowMs = 1_000 + CANDIDATE_SNAPSHOT_MAX_AGE_MS * 2;
+
+    // The live shape: a narrower observed set the queue covers.
+    expect(candidateSnapshotMatchesDispatch(snapshot, { candidate: repairHead, repairQueue: queue, nowMs })).toBe(true);
+    // The queue lacks a failure the snapshot observed — stale the other way: refuse.
+    expect(
+      candidateSnapshotMatchesDispatch(snapshot, {
+        candidate: repairHead,
+        repairQueue: { ...queue, failingTests: ['@papercusp/operator-core :: test:lane-stateful'] },
+        nowMs,
+      }),
+    ).toBe(false);
+    // Coverage never relaxes the identity binding.
+    expect(
+      candidateSnapshotMatchesDispatch(snapshot, {
+        candidate: repairHead,
+        repairQueue: { ...queue, candidate: 'E'.repeat(40) },
+        nowMs,
+      }),
+    ).toBe(false);
+    // An empty observed set never matches through the coverage rule.
+    const emptySnapshot = buildCandidateSnapshot(
+      {
+        candidate: frozenCandidate,
+        failingTests: [],
+        repairQueue: { candidate: frozenCandidate, repairHead, phase: 'awaiting-fixer' },
+      },
+      1_000,
+    );
+    expect(candidateSnapshotMatchesDispatch(emptySnapshot, { candidate: repairHead, repairQueue: queue, nowMs })).toBe(
+      false,
+    );
+  });
 });

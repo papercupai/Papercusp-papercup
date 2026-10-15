@@ -25,13 +25,37 @@
  * it is scoped the way it is.
  *
  * Every function takes an optional `sql` so integration tests can pass a
- * per-file schema, and carries an explicit `workspace_id` predicate (RLS is the
- * backstop, not the guard) — the convention shared with hive-membership-store.
+ * per-file schema, and tenant-scoped functions carry an explicit `workspace_id`
+ * predicate (RLS is the backstop, not the guard) — the convention shared with
+ * hive-membership-store. `listReservedLocalDesktopDisplays` is intentionally
+ * global because the live-display unique index itself has no workspace column.
  */
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { trackDetached } from '../detached-imports';
+
+/**
+ * The sync query the Desktops page's "This computer" grid reads
+ * (agent-multi-desktops-grid D-015). `desktop_sessions` carries no change-notify
+ * trigger, so the writes below that change what a tile SHOWS announce it here.
+ * The announcement is `pg_notify`, so a sibling operator's write reaches this
+ * process's viewers too. Activity-clock bumps (touch/renew) deliberately do not
+ * announce: the grid re-reads on its visible tick, and a heartbeat every few
+ * seconds per viewer would only churn the cache.
+ */
+export const LOCAL_DESKTOPS_QUERY = 'desktops.local';
+
+function announceRosterChange(): void {
+  // Lazy import avoids a cycle (sync-sse pulls broad operator infra). A failed
+  // announcement costs one stale tile until the next visible tick, never a write.
+  // The WHOLE chain is tracked, not just the import: tracking only the import lets
+  // a test's drain return while the pg_notify is still in flight (WI-10003882).
+  void trackDetached(
+    import('../sync-sse').then(({ notifySyncInvalidate }) => notifySyncInvalidate(LOCAL_DESKTOPS_QUERY)),
+  ).catch(() => {});
+}
 
 /**
  * Every desktop kind, as DATA so the set can be walked — the union below is derived
@@ -59,7 +83,12 @@ export const DESKTOP_KINDS = [
 ] as const;
 
 export type DesktopKind = (typeof DESKTOP_KINDS)[number];
-export type DesktopScope = 'pot' | 'agent' | 'workspace';
+/**
+ * Who owns a desktop. `user` (migration 1402, plan personal-cloud-desktop-2026-10-06):
+ * a person's own cloud desktop — `scopeRef` is their hosted userId, it runs as the
+ * customer account, the idle reaper never governs it, and only that person may open it.
+ */
+export type DesktopScope = 'pot' | 'agent' | 'workspace' | 'user';
 export type DesktopState = 'provisioning' | 'ready' | 'idle' | 'frozen' | 'released' | 'dead';
 export type DesktopViewerMode = 'none' | 'watch' | 'takeover';
 
@@ -146,6 +175,9 @@ export interface DesktopSessionRecord {
   kind: DesktopKind;
   scope: DesktopScope;
   scopeRef: string;
+  /** Migration 1386 / D-003: the agent-chosen name of an agent-scoped desktop, unique
+   *  per live (workspace, agent). NULL for pot, workspace and deployed-frame rows. */
+  name: string | null;
   hostRef: string | null;
   ownerPid: number | null;
   ownerBootId: string | null;
@@ -177,6 +209,8 @@ export interface RegisterDesktopSessionInput {
   kind: DesktopKind;
   scope: DesktopScope;
   scopeRef: string;
+  /** Agent-scoped desktops only (the DB CHECK refuses a name on any other scope). */
+  name?: string | null;
   display: string;
   displayGeometry: { width: number; height: number; depth?: number };
   /** Omit to take the D-006 default. Raise it deliberately when an agent
@@ -250,6 +284,7 @@ export function toRecord(r: any): DesktopSessionRecord {
     kind: r.kind,
     scope: r.scope,
     scopeRef: r.scope_ref,
+    name: r.name ?? null,
     hostRef: r.host_ref ?? null,
     ownerPid: r.owner_pid ?? null,
     ownerBootId: r.owner_boot_id ?? null,
@@ -301,14 +336,14 @@ export async function registerDesktopSession(
   const capture = input.captureGeometry ?? DEFAULT_CAPTURE_GEOMETRY;
   const rows = await db(sql)`
     INSERT INTO harness_shared.desktop_sessions (
-      id, workspace_id, harness_slug, kind, scope, scope_ref, host_ref,
+      id, workspace_id, harness_slug, kind, scope, scope_ref, name, host_ref,
       owner_pid, owner_boot_id, display,
       display_width, display_height, display_depth,
       capture_width, capture_height,
       state, lease_holder, capabilities, ttl_sec, task_id, idle_after_sec
     ) VALUES (
       ${id}, ${input.workspaceId}, ${input.harnessSlug ?? null}, ${input.kind},
-      ${input.scope}, ${input.scopeRef}, ${input.hostRef ?? null},
+      ${input.scope}, ${input.scopeRef}, ${input.name ?? null}, ${input.hostRef ?? null},
       ${input.ownerPid ?? process.pid}, ${input.ownerBootId ?? currentBootId()},
       ${input.display},
       ${input.displayGeometry.width}, ${input.displayGeometry.height},
@@ -319,6 +354,7 @@ export async function registerDesktopSession(
       ${input.taskId ?? null}, ${input.idleAfterSec ?? null}
     )
     RETURNING *`;
+  announceRosterChange();
   return toRecord(rows[0]);
 }
 
@@ -347,6 +383,7 @@ export async function markDesktopReady(
      WHERE id = ${id}
        AND state NOT IN ('released', 'dead')
     RETURNING *`;
+  if (rows[0]) announceRosterChange();
   return rows[0] ? toRecord(rows[0]) : undefined;
 }
 
@@ -361,12 +398,18 @@ export async function markDesktopReady(
  * answer, which is the blank-screen class P-002 fixed, reintroduced through the
  * back door.
  */
-export async function touchDesktopSession(id: string, sql?: Sql): Promise<void> {
-  await db(sql)`
+export async function touchDesktopSession(id: string, sql?: Sql): Promise<DesktopState | undefined> {
+  // RETURNING the post-touch state is what lets a driver notice a freeze that
+  // landed AFTER it resolved the desktop (the lifecycle sweep froze it in between):
+  // a touch that comes back `frozen` means the input about to be sent would hang,
+  // so the caller thaws first (see prepareDesktopForDrive). undefined = no live row.
+  const rows = await db(sql)`
     UPDATE harness_shared.desktop_sessions
        SET last_active_at = now(),
            state          = CASE WHEN state = 'idle' THEN 'ready' ELSE state END
-     WHERE id = ${id} AND state NOT IN ('released', 'dead')`;
+     WHERE id = ${id} AND state NOT IN ('released', 'dead')
+    RETURNING state`;
+  return (rows[0]?.state as DesktopState | undefined) ?? undefined;
 }
 
 /**
@@ -434,14 +477,41 @@ export async function setDesktopTaskId(
  *
  * Guarded to `ready` so it can never demote a `frozen` session (which would drop
  * the frozen_at stamp the reaper escalates on) or resurrect a terminal one.
+ * `guard.notActiveAfter` adds the activity-clock check (see DesktopActivityGuard).
  */
-export async function markDesktopIdle(id: string, sql?: Sql): Promise<boolean> {
+export async function markDesktopIdle(
+  id: string,
+  sql?: Sql,
+  guard: DesktopActivityGuard = {},
+): Promise<boolean> {
+  const notActiveAfter = guard.notActiveAfter ?? null;
   const rows = await db(sql)`
     UPDATE harness_shared.desktop_sessions
        SET state = 'idle'
      WHERE id = ${id} AND state = 'ready'
+       AND (${notActiveAfter}::timestamptz IS NULL
+            OR date_trunc('milliseconds', last_active_at) <= ${notActiveAfter}::timestamptz)
     RETURNING id`;
+  if (rows.length > 0) announceRosterChange();
   return rows.length > 0;
+}
+
+/**
+ * Compare-and-set guard on the activity clock, for the governor's demotions.
+ *
+ * The lifecycle sweep classifies every row from ONE snapshot and acts on each row
+ * later — after other sessions' freezes and kills, each of which can take seconds.
+ * A touch that lands in between means a computer verb is driving the desktop, and
+ * a demotion written over it would idle or freeze a desktop mid-verb. Pass the
+ * snapshot's `lastActiveAt` as `notActiveAfter`; the UPDATE then refuses when the
+ * row's clock has moved past it.
+ *
+ * Compared at MILLISECOND precision on purpose: the snapshot came through a JS
+ * Date and Postgres keeps microseconds, so without the truncation an untouched row
+ * reads as touched up to 999µs later and every guarded demotion refuses.
+ */
+export interface DesktopActivityGuard {
+  notActiveAfter?: Date | null;
 }
 
 /**
@@ -451,14 +521,24 @@ export async function markDesktopIdle(id: string, sql?: Sql): Promise<boolean> {
  * forever.
  *
  * ⚠ THE ROW IS THE RECORD, NOT THE ACT. Call this only AFTER the freezer actually
- * reported success; see `desktop-lifecycle.ts`, which owns that ordering.
+ * reported success; see `desktop-lifecycle.ts`, which owns that ordering. With
+ * `guard.notActiveAfter`, a refusal after a successful freeze means the desktop
+ * was driven while the freezer ran — the caller must thaw it back.
  */
-export async function markDesktopFrozen(id: string, sql?: Sql): Promise<boolean> {
+export async function markDesktopFrozen(
+  id: string,
+  sql?: Sql,
+  guard: DesktopActivityGuard = {},
+): Promise<boolean> {
+  const notActiveAfter = guard.notActiveAfter ?? null;
   const rows = await db(sql)`
     UPDATE harness_shared.desktop_sessions
        SET state = 'frozen', frozen_at = now()
      WHERE id = ${id} AND state IN ('ready', 'idle')
+       AND (${notActiveAfter}::timestamptz IS NULL
+            OR date_trunc('milliseconds', last_active_at) <= ${notActiveAfter}::timestamptz)
     RETURNING id`;
+  if (rows.length > 0) announceRosterChange();
   return rows.length > 0;
 }
 
@@ -476,6 +556,7 @@ export async function markDesktopThawed(id: string, sql?: Sql): Promise<boolean>
        SET state = 'ready', frozen_at = NULL, last_active_at = now()
      WHERE id = ${id} AND state = 'frozen'
     RETURNING id`;
+  if (rows.length > 0) announceRosterChange();
   return rows.length > 0;
 }
 
@@ -497,6 +578,7 @@ export async function closeDesktopSession(
        SET state = ${state}, released_at = now()
      WHERE id = ${id} AND state NOT IN ('released', 'dead')
     RETURNING id`;
+  if (rows.length > 0) announceRosterChange();
   return rows.length > 0;
 }
 
@@ -504,6 +586,8 @@ export interface ListDesktopSessionsFilter {
   workspaceId: string;
   harnessSlug?: string | null;
   scope?: DesktopScope;
+  /** With `scope`, narrows to one owner — e.g. scope 'agent' + an ownerId is "my desktops". */
+  scopeRef?: string;
   /** Include released/dead rows. Off by default: the common question is "what is
    *  live right now", and a terminal row answering it is the bug this guards. */
   includeTerminal?: boolean;
@@ -525,6 +609,7 @@ export async function listDesktopSessions(
      WHERE workspace_id = ${filter.workspaceId}
        ${filter.harnessSlug ? client`AND harness_slug = ${filter.harnessSlug}` : client``}
        ${filter.scope ? client`AND scope = ${filter.scope}` : client``}
+       ${filter.scopeRef ? client`AND scope_ref = ${filter.scopeRef}` : client``}
        ${filter.includeTerminal ? client`` : client`AND state NOT IN ('released', 'dead')`}
      ORDER BY created_at DESC
      LIMIT ${Math.min(filter.limit ?? 200, 1000)}`;
@@ -567,16 +652,67 @@ export async function listGovernableDesktopSessions(
   return rows.map(toRecord);
 }
 
+/**
+ * Displays reserved on this local host by any live registry row. Deliberately
+ * workspace-global: desktop_sessions_live_display_uq keys on COALESCE(host_ref,
+ * '') and display, without workspace_id, so every local reservation blocks this
+ * allocator even when another workspace or sibling operator owns the lease.
+ * This is read-only admission data; it never reconciles or retires a lease.
+ */
+export async function listReservedLocalDesktopDisplays(sql?: Sql): Promise<string[]> {
+  const rows = await db(sql)`
+    SELECT DISTINCT display FROM harness_shared.desktop_sessions
+     WHERE COALESCE(host_ref, '') = ''
+       AND state NOT IN ('released', 'dead')`;
+  return rows.map((row) => row.display as string);
+}
+
+/**
+ * `name` (migration 1386 / D-003): a string selects that agent desktop exactly; an
+ * explicit `null` selects the scope's UNNAMED row (pot, workspace, deployed frame);
+ * omitted means "any live row for this scope", most recently used first — the D-005
+ * default when an agent holds several desktops and names none.
+ */
 export async function resolveDesktopForScope(
-  args: { workspaceId: string; scope: DesktopScope; scopeRef: string },
+  args: { workspaceId: string; scope: DesktopScope; scopeRef: string; name?: string | null },
   sql?: Sql,
 ): Promise<DesktopSessionRecord | undefined> {
-  const rows = await db(sql)`
+  const client = db(sql);
+  const nameFilter =
+    args.name === undefined
+      ? client``
+      : args.name === null
+        ? client`AND name IS NULL`
+        : client`AND name = ${args.name}`;
+  const rows = await client`
     SELECT * FROM harness_shared.desktop_sessions
      WHERE workspace_id = ${args.workspaceId}
        AND scope        = ${args.scope}
        AND scope_ref    = ${args.scopeRef}
+       ${nameFilter}
        AND state NOT IN ('released', 'dead')
+     ORDER BY last_active_at DESC
+     LIMIT 1`;
+  return rows[0] ? toRecord(rows[0]) : undefined;
+}
+
+/**
+ * One session by id, tenant-scoped. Includes terminal rows only when asked: the
+ * common caller is "release / drive this desktop", for which a released row is the
+ * same answer as no row.
+ */
+export async function getDesktopSession(
+  args: { workspaceId: string; id: string; includeTerminal?: boolean },
+  sql?: Sql,
+): Promise<DesktopSessionRecord | undefined> {
+  // A malformed id is a miss, not a Postgres `invalid input syntax for type uuid` error.
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(args.id)) return undefined;
+  const client = db(sql);
+  const rows = await client`
+    SELECT * FROM harness_shared.desktop_sessions
+     WHERE workspace_id = ${args.workspaceId}
+       AND id = ${args.id}
+       ${args.includeTerminal ? client`` : client`AND state NOT IN ('released', 'dead')`}
      LIMIT 1`;
   return rows[0] ? toRecord(rows[0]) : undefined;
 }
@@ -634,6 +770,7 @@ export async function setDesktopViewer(
        SET viewer_mode = ${viewer.mode}, viewer_actor = ${actor}, last_active_at = now()
      WHERE id = ${id} AND state NOT IN ('released', 'dead')
     RETURNING id`;
+  if (rows.length > 0) announceRosterChange();
   return rows.length > 0;
 }
 
@@ -695,5 +832,6 @@ export async function reconcileLocalDesktopSessions(
              OR ((${soleOwner}::boolean OR owner_pid = ${pid}) AND NOT (id = ANY(${live as string[]}::uuid[])))
            )
     RETURNING id`;
+  if (rows.length > 0) announceRosterChange();
   return { reaped: rows.length, reapedIds: rows.map((r) => r.id as string) };
 }

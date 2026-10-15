@@ -1,0 +1,31 @@
+---
+rel_path: "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-EI-25428645932897748-7a6ce6228d200cf341a7e67da25be386-reconcile.json"
+updated_at: 1791670650338
+_body: "content"
+---
+
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:EI-25428645932897748:7a6ce6228d200cf341a7e67da25be386",
+  "inputSha256": "7a6ce6228d200cf341a7e67da25be386ef3a6133be4d635d061aa9e2db10b33f",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-10-10T22:17:30.338Z",
+  "actor": "su-6baa8b9a-8d72-4223-b6d2-bf9f687dcfcb",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "EI-25428645932897748",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "2f737c5c8f7e8ba62c0d7263bc5aa6bc23e0a24bd5cb3dfee6d5ff69b4dd9156",
+      "observedParkFingerprint": "2f737c5c8f7e8ba62c0d7263bc5aa6bc23e0a24bd5cb3dfee6d5ff69b4dd9156",
+      "reasonCode": "condition-satisfied",
+      "evidence": "Park release trigger is work-item:done:EI-25403881334911643 (condition: 'Re-evaluate after EI-25403881334911643 reaches a terminal state; compare the shared diagnosis/fix with this 5.37KB delayed-recovery report and release this hold if a distinct unresolved failure remains.'). Re-read 2026-10-10T22:15Z (su-6baa8, psql on harness_shared.work_items, workspace papercusp-workspace): EI-25403881334911643 status=dropped, taken_by none; EI-25428645932897748 status=open, taken_by null. The trigger target is terminal, so the release condition is met. The re-evaluation the condition describes is the next claimant's work and travels with the row. Settled under plan bug-queue-legitimacy-and-actionable-validation-2026-10-10 P-004 / D-009.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-EI-25428645932897748-7a6ce6228d200cf341a7e67da25be386-reconcile.json"
+}

@@ -8,6 +8,7 @@ import {
   desktopRecordForLease,
   dialDesktopSocket,
   displayNumber,
+  HOSTED_ROSTER_INTENT_MAX_CHARS,
   HOSTED_THUMBNAIL_MAX_AGE_MS,
   KASMVNC_WEBSOCKET_PATH,
   rosterEntryForSession,
@@ -143,6 +144,37 @@ describe('rosterEntryForSession', () => {
 
   it('omits a display number it cannot parse rather than emitting a wrong one', () => {
     expect(rosterEntryForSession(session({ display: 'guest' }))).not.toHaveProperty('displayNumber');
+  });
+
+  // Plan agent-multi-desktops-grid P-006 / D-009: each grid tile names its owner and
+  // the work-item that owner is on now.
+  it('labels an agent desktop with its owner, name and the live claim it was handed', () => {
+    const entry = rosterEntryForSession(session({ scope: 'agent', scopeRef: 'su-abc', name: 'browser' }), {
+      workItemId: 'WI-7',
+      intent: `  ${'x'.repeat(HOSTED_ROSTER_INTENT_MAX_CHARS + 40)}  `,
+    });
+    expect(entry).toMatchObject({ scope: 'agent', owner: 'su-abc', name: 'browser', workItemId: 'WI-7' });
+    expect(entry.workItemIntent).toHaveLength(HOSTED_ROSTER_INTENT_MAX_CHARS);
+  });
+
+  it('names a pot desktop by its pot and gives the workspace desktop no owner', () => {
+    expect(rosterEntryForSession(session({ scope: 'pot', scopeRef: 'my-pot' }))).toMatchObject({
+      scope: 'pot',
+      owner: 'my-pot',
+    });
+    const workspaceDesktop = rosterEntryForSession(session({ scope: 'workspace', scopeRef: 'ws-1' }));
+    expect(workspaceDesktop.scope).toBe('workspace');
+    expect(workspaceDesktop).not.toHaveProperty('owner');
+    expect(workspaceDesktop).not.toHaveProperty('workItemId');
+  });
+
+  it('carries no work-item when the claim has no intent text, only the id', () => {
+    const entry = rosterEntryForSession(session({ scope: 'agent', scopeRef: 'su-abc' }), {
+      workItemId: 'WI-8',
+      intent: '   ',
+    });
+    expect(entry.workItemId).toBe('WI-8');
+    expect(entry).not.toHaveProperty('workItemIntent');
   });
 
   // D-405: the production client returns timestamptz as TEXT, so the first real row
@@ -379,6 +411,37 @@ describe('createHostedDesktopBackend', () => {
     expect(reconcile).toHaveBeenCalledTimes(3);
   });
 
+  it('labels agent desktops with each owner claim, read once per owner, and survives a failed read', async () => {
+    const activeClaimFor = vi.fn(async (owner: string) => {
+      if (owner === 'su-broken') throw new Error('pg down');
+      if (owner === 'su-a') return { workItemId: 'WI-1', intent: 'build the grid' };
+      return null;
+    });
+    const warnings: string[] = [];
+    const b = backend({
+      activeClaimFor,
+      onWarning: (m) => warnings.push(m),
+      listSessions: async () => [
+        session({ id: 'a1', scope: 'agent', scopeRef: 'su-a', display: ':111' }),
+        session({ id: 'a2', scope: 'agent', scopeRef: 'su-a', display: ':112' }),
+        session({ id: 'b1', scope: 'agent', scopeRef: 'su-b', display: ':113' }),
+        session({ id: 'x1', scope: 'agent', scopeRef: 'su-broken', display: ':114' }),
+        session({ id: 'p1', scope: 'pot', scopeRef: 'my-pot', display: ':115' }),
+      ],
+    });
+    const roster = await b.roster();
+    // Every desktop is listed, whatever the claim reads did.
+    expect(roster.map((e) => e.desktopSessionId)).toEqual(['a1', 'a2', 'b1', 'x1', 'p1']);
+    expect(roster.find((e) => e.desktopSessionId === 'a1')).toMatchObject({ workItemId: 'WI-1', workItemIntent: 'build the grid' });
+    expect(roster.find((e) => e.desktopSessionId === 'a2')).toMatchObject({ workItemId: 'WI-1' });
+    expect(roster.find((e) => e.desktopSessionId === 'b1')).not.toHaveProperty('workItemId');
+    expect(roster.find((e) => e.desktopSessionId === 'x1')).not.toHaveProperty('workItemId');
+    // A pot desktop is never looked up as an agent.
+    expect(roster.find((e) => e.desktopSessionId === 'p1')).toMatchObject({ owner: 'my-pot' });
+    expect(activeClaimFor.mock.calls.map(([owner]) => owner).sort()).toEqual(['su-a', 'su-b', 'su-broken']);
+    expect(warnings).toEqual(['hosted-desktop-backend — claim lookup for su-broken failed: Error: pg down']);
+  });
+
   it('a roster read after a desktop dies no longer lists it', async () => {
     let alive = true;
     const rows = [session()];
@@ -496,6 +559,56 @@ describe('createHostedDesktopBackend', () => {
       listSessions: async () => [session({ id: 'ds_2', display: ':111' })],
     }).thumbnail('ds_2');
     expect(image).toEqual(Buffer.from([1]));
+  });
+
+  it('P-005: grabs a leased desktop on demand when the capture loop has no fresh frame for it', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hosted-thumb-'));
+    const grabThumbnail = vi.fn(async (display: number) => Buffer.from([0xff, 0xd8, display]));
+    // Absent: an agent-started desktop the bootstrap-time capture loop never lists.
+    expect(await backend({ captureDir: dir, grabThumbnail }).thumbnail('ds_1')).toEqual(Buffer.from([0xff, 0xd8, 110]));
+    expect(grabThumbnail).toHaveBeenCalledWith(110);
+
+    // Stale: the loop stopped. The on-demand frame replaces it rather than serving it.
+    await writeFile(join(dir, 'display-110.jpg'), Buffer.from([9]));
+    const old = new Date(Date.now() - HOSTED_THUMBNAIL_MAX_AGE_MS - 60_000);
+    await utimes(join(dir, 'display-110.jpg'), old, old);
+    expect(await backend({ captureDir: dir, grabThumbnail }).thumbnail('ds_1')).toEqual(Buffer.from([0xff, 0xd8, 110]));
+    expect(grabThumbnail).toHaveBeenCalledTimes(2);
+  });
+
+  it('P-005: a fresh capture-loop frame wins, with no on-demand grab', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hosted-thumb-'));
+    await writeFile(join(dir, 'display-110.jpg'), Buffer.from([0xff, 0xd8, 1]));
+    const grabThumbnail = vi.fn(async () => Buffer.from([2]));
+    expect(await backend({ captureDir: dir, grabThumbnail }).thumbnail('ds_1')).toEqual(Buffer.from([0xff, 0xd8, 1]));
+    expect(grabThumbnail).not.toHaveBeenCalled();
+  });
+
+  it('P-005: never grabs a display known only from a registry row (it may not be this host’s X server)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hosted-thumb-'));
+    const grabThumbnail = vi.fn(async () => Buffer.from([2]));
+    const image = await backend({
+      captureDir: dir,
+      grabThumbnail,
+      leasedDesktop: () => undefined,
+      listSessions: async () => [session({ id: 'ds_2', display: ':111' })],
+    }).thumbnail('ds_2');
+    expect(image).toBeNull();
+    expect(grabThumbnail).not.toHaveBeenCalled();
+  });
+
+  it('P-005: a failing on-demand grab is a warned null, never an error', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hosted-thumb-'));
+    const warnings: string[] = [];
+    const image = await backend({
+      captureDir: dir,
+      grabThumbnail: async () => {
+        throw new Error('ffmpeg missing');
+      },
+      onWarning: (m) => warnings.push(m),
+    }).thumbnail('ds_1');
+    expect(image).toBeNull();
+    expect(warnings).toEqual([expect.stringContaining('ffmpeg missing')]);
   });
 
   it('returns null for a desktop whose display it cannot resolve', async () => {

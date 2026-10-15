@@ -72,6 +72,8 @@ import {
 import { resolveMugOwner } from '../pot/placement-watchdog';
 import { deliverScoutNudge } from './nudge-recipient';
 import { claimWatchdogFire, recentWatchdogFires } from '../pot/watchdog';
+import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+import { broadcastSevereEvent } from '../severe-event-broadcast';
 import {
   DEFAULT_UNGRADED_EPOCH_POLICY,
   SU_IDEATE_UNGRADED_EPOCH_MS,
@@ -84,6 +86,30 @@ import {
   type UngradedEpochPolicy,
   type UngradedFilingRow,
 } from './ungraded-scope';
+
+const CONDITION_PREFIX = 'alarm:ungraded-filings:';
+export function ungradedFilingsConditionKey(workspaceId: string, installSlug: string, origin: string): string {
+  return CONDITION_PREFIX + 'stale:' + encodeURIComponent(JSON.stringify([workspaceId, installSlug, origin]));
+}
+export function ungradedCoverageConditionKey(workspaceId: string): string {
+  return CONDITION_PREFIX + 'coverage:' + encodeURIComponent(JSON.stringify([workspaceId]));
+}
+async function readOpenUngradedConditionKeys(): Promise<string[]> {
+  const { computeConditionStates, readConditionEnvelopes } = await import('../agent-tools/coordination/tools/conditions');
+  return computeConditionStates(await readConditionEnvelopes())
+    .filter(condition => condition.open && condition.condition_key.startsWith(CONDITION_PREFIX))
+    .map(condition => condition.condition_key);
+}
+async function openUngradedCondition(conditionKey: string, summary: string, rail?: AlarmAttentionDeps): Promise<void> {
+  try {
+    // No TTL: a missed tick or failed census is not measured recovery.
+    const event = { conditionKey, summary, oneShot: true };
+    if (rail?.broadcast) await rail.broadcast(event);
+    else await broadcastSevereEvent(event);
+  } catch (e) {
+    console.warn(`[ungraded-filings] condition broadcast failed (non-fatal): ${String(e)}`);
+  }
+}
 
 // ── tunables (env-overridable, like scoutDraftReviewStaleSec) ─────────────────
 
@@ -364,29 +390,58 @@ export async function fireGradingNudge(
  * host guards nothing. DEFAULT-SAFE: no stale ungraded filing ⇒ no nudge. Kill switch:
  * PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC <= 0.
  */
-export async function ungradedFilingsSweep(opts: { now?: number } = {}): Promise<UngradedSweepResult[]> {
+export async function ungradedFilingsSweep(opts: { now?: number; rail?: AlarmAttentionDeps;
+  readOpenConditionKeys?: () => Promise<string[]> } = {}): Promise<UngradedSweepResult[]> {
   const results: UngradedSweepResult[] = [];
   const staleSec = ungradedFilingsStaleSec();
   if (staleSec <= 0) return results; // kill switch
   const policy = DEFAULT_UNGRADED_EPOCH_POLICY;
   try {
     const scopes = await listBlenderMaintenanceScopes();
+    const workspaceIds = [...new Set([...scopes.map(scope => scope.workspaceId),
+      ...listBlenderMaintenanceWorkspaceIds()])];
+    const { sql } = getOrgPg();
+    const now = opts.now ?? Date.now();
+    const thresholdMs = staleSec * 1_000;
+    // Durable keys restore the recovery population after restart, even when the
+    // bounded candidate read or current registry no longer contains that origin/scope.
+    try {
+      for (const key of await (opts.readOpenConditionKeys ?? readOpenUngradedConditionKeys)()) {
+        if (!key.startsWith(CONDITION_PREFIX + 'stale:')) continue;
+        let identity: unknown;
+        try { identity = JSON.parse(decodeURIComponent(key.slice((CONDITION_PREFIX + 'stale:').length))); }
+        catch { continue; }
+        if (!Array.isArray(identity) || identity.length !== 3 ||
+            !identity.every(part => typeof part === 'string' && part.length > 0)) continue;
+        const [workspaceId, installSlug, origin] = identity;
+        // An absent workspace registry entry is not authority to pronounce it recovered.
+        if (!workspaceIds.includes(workspaceId)) continue;
+        try {
+          const remaining = await countActionableUngradedOlderThan(sql, {
+            workspaceId, harnessSlug: installSlug, origin, policy, staleBeforeMs: now - thresholdMs });
+          if (remaining === 0) await resolveAlarm(key, 'ungraded-filings', opts.rail);
+        } catch (e) {
+          console.warn(`[ungraded-filings] recovery count failed (non-fatal): ${String(e)}`);
+        }
+      }
+    } catch (e) {
+      console.warn(`[ungraded-filings] condition read failed (non-fatal): ${String(e)}`);
+    }
     if (scopes.length === 0) {
-      const workspaceIds =
-        typeof listBlenderMaintenanceWorkspaceIds === 'function'
-          ? listBlenderMaintenanceWorkspaceIds()
-          : [];
       if (workspaceIds.length === 0) return results;
-      const { sql } = getOrgPg();
-      const now = opts.now ?? Date.now();
       const staleBeforeMs = now - staleSec * 1_000;
       let eligibleBacklogCount = 0;
       for (const workspaceId of workspaceIds) {
-        eligibleBacklogCount += await countActionableUngradedOlderThan(sql, {
+        const count = await countActionableUngradedOlderThan(sql, {
           workspaceId,
           policy,
           staleBeforeMs,
         });
+        eligibleBacklogCount += count;
+        const key = ungradedCoverageConditionKey(workspaceId);
+        if (count > 0) await openUngradedCondition(key,
+          `${count} eligible stale ungraded filing(s) in ${workspaceId} have no registered Blender scope`, opts.rail);
+        else await resolveAlarm(key, 'ungraded-filings', opts.rail);
       }
       if (eligibleBacklogCount > 0) {
         const reason =
@@ -409,11 +464,8 @@ export async function ungradedFilingsSweep(opts: { now?: number } = {}): Promise
       }
       return results;
     }
-    const { sql } = getOrgPg();
     const evaluatedWorkspaceCount = new Set(scopes.map(({ workspaceId }) => workspaceId)).size;
     const evaluatedScopeCount = scopes.length;
-    const now = opts.now ?? Date.now();
-    const thresholdMs = staleSec * 1_000;
     const days = Math.max(1, Math.round(staleSec / 86_400));
     const windowHours = Math.max(1, Math.round(staleSec / 3_600));
     for (const { workspaceId, installSlug } of scopes) {
@@ -446,6 +498,8 @@ export async function ungradedFilingsSweep(opts: { now?: number } = {}): Promise
           const { cap: batchCap, shortfall } = ungradedBatchCapFor(arrivalsInWindow ?? Number.NaN);
           const stale = selectUngradedFilings(originCandidates, { now, thresholdMs, policy, cap: batchCap });
           if (stale.length === 0) continue;
+          await openUngradedCondition(ungradedFilingsConditionKey(workspaceId, installSlug, origin),
+            `${origin} has at least ${stale.length} filing(s) ungraded > ${days}d in ${workspaceId}/${installSlug}`, opts.rail);
           const scopeKey = ungradedFireScopeKey(origin);
           // EI-16038: cheap non-atomic pre-check first (avoid the transaction round-trip
           // on the common no-stale-filings tick); the atomic claim below is authoritative.
@@ -545,7 +599,7 @@ export async function ungradedFilingsSweep(opts: { now?: number } = {}): Promise
     // workspace-global `scout` rows sat unreachable for a month while every registered
     // partition graded normally and current (EI-23811029152367526). Zero alarms fired,
     // because `scopes.length` was never 0.
-    for (const workspaceId of Array.from(new Set(scopes.map((s) => s.workspaceId)))) {
+    for (const workspaceId of workspaceIds) {
       const harnessSlugs = scopes
         .filter((s) => s.workspaceId === workspaceId)
         .map(({ installSlug }) => installSlug);
@@ -556,10 +610,15 @@ export async function ungradedFilingsSweep(opts: { now?: number } = {}): Promise
           policy,
           staleBeforeMs: now - thresholdMs,
         });
-        if (uncovered === 0) continue;
+        const key = ungradedCoverageConditionKey(workspaceId);
+        if (uncovered === 0) {
+          await resolveAlarm(key, 'ungraded-filings', opts.rail);
+          continue;
+        }
         const reason =
           `${uncovered} eligible stale ungraded filing(s) in ${workspaceId} are not reachable ` +
           `by any of its ${harnessSlugs.length} registered Blender scope(s) — no grader can see them`;
+        await openUngradedCondition(key, reason, opts.rail);
         console.warn(`[ungraded-filings] ALERT: ${reason}`);
         results.push({
           workspaceId,

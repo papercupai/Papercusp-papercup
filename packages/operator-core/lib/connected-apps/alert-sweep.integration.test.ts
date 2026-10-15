@@ -36,6 +36,8 @@ const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 const freshWs = () => `p328_ws_${randomBytes(3).toString('hex')}`;
 const DAY_MS = 86_400_000;
+/** How long to wait for verifyAppKey's detached auth-failure writes to land. */
+const AUTH_FAILURE_WAIT = { timeout: 15_000, interval: 100 };
 
 /** The same key id with a different secret: well-formed, attributable, refused as a mismatch. */
 function wrongSecret(key: string): string {
@@ -100,11 +102,13 @@ describe('P-328 sweep reads (real PG, migration 1267)', () => {
     expect((await verifyAppKey('pcapp_not-a-key')).ok).toBe(false);
     expect((await verifyAppKey(key)).ok).toBe(true);
 
-    // The count is fire-and-forget on the auth path, so wait for it to land.
+    // The count is fire-and-forget on the auth path, so wait for it to land. vi.waitFor's 1 s
+    // default is too short for ten detached writes on a shared, loaded test database; the
+    // assertion still demands the exact count, so a lost increment still fails here.
     await vi.waitFor(async () => {
       const [row] = await sweptIn(ws);
       expect(row.auth_failures).toBe(AUTH_FAILURE_ALERT_THRESHOLD);
-    });
+    }, AUTH_FAILURE_WAIT);
     const rows = await h.adminSql`
       SELECT failures, last_reason FROM harness_shared.connected_app_auth_failures WHERE app_id = ${app.id}
     `;
@@ -170,7 +174,10 @@ describe('P-328 sweep reads (real PG, migration 1267)', () => {
     });
     await calls(ws, `app:${app.id}`, 300, 1, 50);
     for (let i = 0; i < AUTH_FAILURE_ALERT_THRESHOLD; i += 1) await verifyAppKey(wrongSecret(key));
-    await vi.waitFor(async () => expect((await sweptIn(ws))[0]?.auth_failures).toBe(AUTH_FAILURE_ALERT_THRESHOLD));
+    await vi.waitFor(
+      async () => expect((await sweptIn(ws))[0]?.auth_failures).toBe(AUTH_FAILURE_ALERT_THRESHOLD),
+      AUTH_FAILURE_WAIT,
+    );
 
     const notified: Array<{ dedupeKey: string; workspaceId: string }> = [];
     const result = await runConnectedAppAlertSweep({
@@ -181,5 +188,79 @@ describe('P-328 sweep reads (real PG, migration 1267)', () => {
     expect(result.alerts.map((alert) => alert.kind).sort()).toEqual(['auth-failures', 'creator-removed', 'key-expiring', 'usage-spike']);
     expect(notified.every((n) => n.workspaceId === ws)).toBe(true);
     expect(new Set(notified.map((n) => n.dedupeKey)).size).toBe(4);
+  });
+
+  /** One organization with the given members; returns its id. */
+  async function organization(...members: Array<[string, 'active' | 'suspended' | 'revoked']>): Promise<string> {
+    const [org] = await h.adminSql`
+      INSERT INTO papercusp_auth.organizations (external_organization_id, display_name)
+      VALUES (${`wi4257-org-${randomBytes(4).toString('hex')}`}, 'WI-10004257 test org')
+      RETURNING id
+    `;
+    for (const [email, status] of members) {
+      const [user] = await h.adminSql`INSERT INTO papercusp_auth.hosted_users (primary_email) VALUES (${email}) RETURNING id`;
+      await h.adminSql`
+        INSERT INTO papercusp_auth.organization_memberships
+          (organization_id, user_id, role, status, created_via, revoked_at, suspended_at)
+        VALUES (${org.id}, ${user.id}, 'member', ${status}, 'member_management',
+                ${status === 'revoked' ? new Date() : null}, ${status === 'suspended' ? new Date() : null})
+      `;
+    }
+    return String(org.id);
+  }
+
+  it('WI-10004257: a removal read on the portal and carried in the membership report flags the key on a machine', async () => {
+    const { applyMembershipReport, loadMembershipReportFrame } = await import('./membership-report');
+    const ws = freshWs();
+    const tag = randomBytes(3).toString('hex');
+    const gone = `Gone-${tag}@Example.test`;
+    const paused = `paused-${tag}@example.test`;
+    const stays = `stays-${tag}@example.test`;
+
+    // Portal: read the report for an organization with a revoked, a suspended and an active member.
+    const org = await organization([gone, 'revoked'], [paused, 'suspended'], [stays, 'active']);
+    const frame = await loadMembershipReportFrame(org, (fn) => fn(h.adminSql));
+    expect(frame).toEqual({
+      type: 'membership.report',
+      organizationId: org,
+      removedEmails: [gone.toLowerCase(), paused].sort(),
+    });
+    expect(await loadMembershipReportFrame('not-a-uuid', (fn) => fn(h.adminSql))).toBeNull();
+
+    // Machine: it holds none of the portal's membership rows, so the old read alone sees nothing.
+    await h.adminSql`
+      DELETE FROM papercusp_auth.organization_memberships WHERE organization_id = ${org}::uuid
+    `;
+    await h.adminSql`
+      DELETE FROM papercusp_auth.hosted_users WHERE lower(primary_email) IN (${gone.toLowerCase()}, ${paused}, ${stays})
+    `;
+    const { app: g } = await createAppKey({ workspaceId: ws, userEmail: gone, label: 'Left' });
+    const { app: p } = await createAppKey({ workspaceId: ws, userEmail: paused, label: 'Suspended' });
+    const { app: s } = await createAppKey({ workspaceId: ws, userEmail: stays, label: 'Stayed' });
+    const removedIn = async () => new Map((await sweptIn(ws)).map((k) => [k.id, k.creator_removed]));
+    expect(await removedIn()).toEqual(new Map([[g.id, false], [p.id, false], [s.id, false]]));
+
+    // The frame as it crossed the connector socket.
+    expect(await applyMembershipReport(JSON.parse(JSON.stringify(frame)))).toEqual({
+      organizationId: org, stored: 2, added: 2, cleared: 0,
+    });
+    expect(await removedIn()).toEqual(new Map([[g.id, true], [p.id, true], [s.id, false]]));
+
+    // Another organization's report leaves this one's rows alone.
+    const elsewhere = await organization();
+    expect(await applyMembershipReport({ type: 'membership.report', organizationId: elsewhere, removedEmails: [] }))
+      .toMatchObject({ added: 0, cleared: 0 });
+    // A malformed frame writes nothing.
+    expect(await applyMembershipReport({ type: 'membership.report', organizationId: org, removedEmails: [7] })).toBeNull();
+    expect(await removedIn()).toEqual(new Map([[g.id, true], [p.id, true], [s.id, false]]));
+
+    // Re-activated on the portal: the next report omits the address and its row is cleared.
+    expect(await applyMembershipReport({ type: 'membership.report', organizationId: org, removedEmails: [paused] }))
+      .toEqual({ organizationId: org, stored: 1, added: 0, cleared: 1 });
+    expect(await removedIn()).toEqual(new Map([[g.id, false], [p.id, true], [s.id, false]]));
+
+    // And the sweep raises the creator-removed alert from it.
+    const result = await runConnectedAppAlertSweep({ load: () => sweptIn(ws), notify: async () => {} });
+    expect(result.alerts.filter((a) => a.kind === 'creator-removed').map((a) => a.app.id)).toEqual([p.id]);
   });
 });

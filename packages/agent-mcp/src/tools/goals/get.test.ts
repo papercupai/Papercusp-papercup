@@ -27,6 +27,12 @@ const continuity = vi.hoisted(() => ({
   read: vi.fn(),
   resolve: vi.fn(),
 }));
+const portfolio = vi.hoisted(() => ({ read: vi.fn() }));
+
+vi.mock('@papercusp/operator-core/lib/goal-launch-settings', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/operator-core/lib/goal-launch-settings')>()),
+  readGoalPortfolioBrief: portfolio.read,
+}));
 
 vi.mock('@papercusp/operator-core/lib/prior-attempt-context', () => ({
   readGoalHistoryContext: (...args: unknown[]) => continuity.read(...args),
@@ -145,6 +151,7 @@ beforeEach(() => {
   holdersFixture = [];
   historyRows = [];
   historyQueries = 0;
+  portfolio.read.mockReset().mockResolvedValue(null);
   continuity.read.mockReset().mockResolvedValue({
     status: 'available',
     brief: { fingerprint: 'goal-history-fingerprint' },
@@ -155,6 +162,50 @@ beforeEach(() => {
     records: [],
     unresolved: [],
     fingerprint: 'goal-history-fingerprint',
+  });
+});
+
+describe('goals:get — post-action reporting contract', () => {
+  it('the registered full read refreshes the canonical draft and assembly timestamp', async () => {
+    const reporting = {
+      cadence: null,
+      draft: { fields: { moved: 'none', cost: 'unknown', ownerWalled: 'none', killed: 'none', nextWake: 'unknown' }, unreadArtifacts: [], text: 'fresh report' },
+      movementTruncated: false,
+      killedTruncated: false,
+    };
+    portfolio.read.mockResolvedValue({ assembledAt: '2026-10-07T04:00:00.000Z', reporting, degradedReasons: [] });
+    fixtureQueue = [[GOAL_ROW()], []];
+    const registered = lookupByMcpName('goals:get')!;
+    const args = tool.args.parse({ id: 'g-1', detail: 'full' });
+    const read = async () => {
+      const result = await registered.fn(args, {
+        ...CTX(), workspaceId: 'default', transport: 'http', runId: 'report-contract',
+        signal: new AbortController().signal, emit: vi.fn(), progress: vi.fn(),
+      } as never) as { content: Array<{ text: string }> };
+      return JSON.parse(result.content[0].text);
+    };
+    const result = await read();
+    expect(result).toMatchObject({ assembledAt: '2026-10-07T04:00:00.000Z', reporting });
+    expect(portfolio.read).toHaveBeenCalledWith({ workspaceId: 'default', goalId: 'g-1', sql: expect.any(Function), claimability: 'skip' });
+
+    // A second post-action read must not reuse the launch-time snapshot.
+    portfolio.read.mockResolvedValue({ assembledAt: '2026-10-07T04:01:00.000Z', reporting: { ...reporting, draft: { ...reporting.draft, text: 'post-action report' } }, degradedReasons: [] });
+    fixtureQueue = [[GOAL_ROW()], []];
+    const refreshed = await read();
+    expect(refreshed).toMatchObject({ assembledAt: '2026-10-07T04:01:00.000Z', reporting: { draft: { text: 'post-action report' } } });
+    expect(portfolio.read).toHaveBeenCalledTimes(2);
+  });
+
+  it('makes a missing canonical reporting read explicit without inventing a timestamp', async () => {
+    fixtureQueue = [[GOAL_ROW()], []];
+    const result = await tool.handler({ id: 'g-1', detail: 'full' } as never, CTX() as never);
+    expect(result).toMatchObject({ degraded: true, degradedReasons: ['goal g-1 reporting unavailable'], data: { assembledAt: null, reporting: null } });
+  });
+
+  it('keeps the summary read free of the full reporting projection', async () => {
+    fixtureQueue = [[GOAL_ROW()]];
+    await tool.handler({ id: 'g-1', detail: 'summary' } as never, CTX() as never);
+    expect(portfolio.read).not.toHaveBeenCalled();
   });
 });
 
@@ -387,6 +438,8 @@ describe('goals:get — full mode fires the children query (Gap 11)', () => {
         { id: 'g-2', title: 'Child A' },
         { id: 'g-3', title: 'Child B' },
       ],
+      assembledAt: null,
+      reporting: null,
       history: {
         entries: [],
         truncated: false,

@@ -23,6 +23,7 @@
  */
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { createHash } from 'node:crypto';
 // STATIC value import, deliberately not `createRequire(import.meta.url)(…)`.
 // The packed desktop sidecar is a single esbuild bundle with NO node_modules
 // tree beside it (build-desktop-sidecar.sh: "serve.mjs has every inlinable
@@ -50,10 +51,12 @@ import {
   lookupByMcpName,
   resolveMcpName,
   listMcpProjections,
+  projectedToolRegistryRevision,
   applyToolManifest,
   papercuspGateBypass,
   sanitizeToolSchema,
   sanitizeToolSchemaCached,
+  negotiatedMcpOutputSchema,
   serializeToolResponse,
   formatOptsFromCtx,
   isSlashPromptName,
@@ -61,13 +64,16 @@ import {
   dispatchWithConveyedDelta,
   parsePayloadTier,
   type PayloadTier,
+  type ProjectedTool,
   type UnifiedToolContext,
   type Principal,
   type RequestOriginMetadata,
   type DeltaResponse,
 } from '@papercusp/agent-mcp';
+import { readServingGeneration, type ServingGeneration } from '../../../serving-generation';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
+import { applyScopedSuperuserTransportBoundary } from './scoped-superuser-transport-boundary';
 import {
   dynamicSlashListings,
   resolveSlashToolForPrompt,
@@ -85,8 +91,22 @@ import {
   dispatchProjectedToolToMcp,
   isDispatchValidationFailure,
 } from '@papercusp/tooldef-mcp';
-import { mcpDataPlaneDegradedAtFromExtra, mcpTraceIdFromExtra } from '../../../mcp-request-trace';
-import { getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
+import {
+  buildMcpSessionSurfaceTraceEvent,
+  createMcpRequestTraceExecutionContext,
+  logMcpRequestTrace,
+  mcpRequestTraceOperationTimings,
+  type McpPreDispatchPhaseName,
+  type McpPreDispatchPhaseTimingsMs,
+  mcpDataPlaneDegradedAtFromExtra,
+  mcpTraceIdFromExtra,
+  runWithMcpRequestTraceExecution,
+  resolveMcpRequestTraceId,
+} from '../../../mcp-request-trace';
+import type { ScratchWriteTimings } from '../../../scratch-gc';
+import { acquireSnapshot, DbCallDeadlineError, getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
+import { observeFallback } from '../../../degradation/fallback-observations';
+import { samplePgBouncerPools } from './pgbouncer-pool-sample.mjs';
 import { applyResultDoorAsync, beginResultDoorAggregate, measureResultContextBytes } from '../../../result-door';
 import { annotateStoreIdentitySuspectResult, mayAnnotateResultText } from './store-identity-suspect';
 import {
@@ -94,12 +114,17 @@ import {
   PROJECTION_ARG,
   applyNamedViewToResult,
   applyResultProjection,
+  describeSourceMaterialization,
   parseProjection,
   projectionMaterializationFormat,
   takeNamedViewFromArgs,
 } from '../../../result-projection';
 import type { ProjectionSpec, ViewResolution } from '../../../result-projection';
 import { resolveAgentIdentity } from '../../../agent-tools/coordination/identity';
+import { readSessionConfinement } from '../../../capability-envelope/session-confinement-store';
+import { evaluateSessionConfinement } from '../../../capability-envelope/session-confinement';
+import { namedQueryStageTimings, withNamedQueryDiagnosticContext } from '../../../agent-tools/db-diagnostic-correlation-wiring';
+import { registerSuNativeToolDispatcher, runOnSuNativeToolOwner, SuNativeToolOwnerError, type SuNativeToolAddress } from '../../../su-session-owner-routing';
 import { SCRATCH_SCHEME } from '../../../scratch-uri';
 import { canonicalCoordRole } from '../../../agent-tools/coordination/roles';
 import {
@@ -136,17 +161,21 @@ import {
 // hard-failure-only efficiency telemetry.
 import { maybeEmptyMappingHint } from '../../../empty-mapping-hint';
 import { recordBatchNudgeFire } from '../../../code-run-nudge-telemetry';
-import { authSafeToolsRemoveSet } from '../../../auth-config-overrides';
 import { isLoopbackRequest, isValidSuperuserBearer } from '../../../superuser-token';
 import { isAppKeyShaped } from '../../../connected-apps/key';
 import { reportedClientAddress, resolveAppKeyToken } from '../../../connected-apps/principal';
 import { appKeyToolListFilter } from '../../../connected-apps/enforce';
 import {
+  admissionAuthoritySchema,
   admissionCredentialDigest,
   type AdmissionAuthorityContext,
   type AdmissionRecoveryAuthority,
 } from '../../../work-item-admission-authority';
-import { classifyOwnerNativeSession, workspaceForCoordOwner } from '../../../adv-sessions';
+import {
+  classifyOwnerNativeSession,
+  workspaceForCoordOwner,
+  type NativeSessionVerificationPhase,
+} from '../../../adv-sessions';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { PLATFORM_POT_SLUG } from '../../../platform-pot-slug';
 import { isReservedHarnesslessRoutineHost } from '../../../harness/routines/routine-host';
@@ -173,8 +202,16 @@ import {
   filterListingsByAllowlist,
   getSessionSurface,
   activateSessionTools,
+  rememberSessionToolRegistryRevision,
+  sessionToolRegistryRevisionState,
 } from './tool-allowlist';
-import { validIdempotencyKey, lookupStoredMcpResult, storeMcpResult, type StoredMcpResult } from './_mcp-result-replay';
+import {
+  validIdempotencyKey,
+  lookupStoredMcpResult,
+  normalizeStructuredReplayResult,
+  storeMcpResult,
+  type StoredMcpResult,
+} from './_mcp-result-replay';
 import {
   takeStoredInitializeHandler,
   wrapInitializeWithInstructions,
@@ -195,6 +232,7 @@ import {
 import { MCP_SERVER_CAPABILITIES } from './mcp-contract';
 import { withMcpDiagnosticWarnings, type McpCallResult } from './mcp-diagnostic-warnings';
 import { parseMcpToolText } from './mcp-result-text';
+import { loadOperatorToolCatalogue } from '../../../agent-tools/operator-tool-catalogue';
 
 export { MCP_SERVER_CAPABILITIES } from './mcp-contract';
 export { withMcpDiagnosticWarnings } from './mcp-diagnostic-warnings';
@@ -211,20 +249,11 @@ export type { McpCallResult } from './mcp-diagnostic-warnings';
  * tool graph there arms host listeners/timers before a request exists and can
  * keep a one-shot process alive indefinitely. The promise is shared so
  * concurrent HTTP/UDS initializers register the catalog exactly once, and a
- * failed load can retry on the next real request.
+ * failed load can retry on the next real request. A completed static HTTP
+ * registration also satisfies this gate, without a second CJS/ESM graph load.
  */
-let operatorToolsLoad: Promise<void> | null = null;
-
 export function ensureOperatorToolsLoaded(): Promise<void> {
-  if (!operatorToolsLoad) {
-    operatorToolsLoad = import('../../../agent-tools/index')
-      .then(() => undefined)
-      .catch((error) => {
-        operatorToolsLoad = null;
-        throw error;
-      });
-  }
-  return operatorToolsLoad;
+  return loadOperatorToolCatalogue(() => import('../../../agent-tools/index'));
 }
 
 const ENTITY_REF_SCHEMA_PRESENCE = new WeakMap<object, boolean>();
@@ -256,6 +285,7 @@ function listingRegistryRevision(listing: unknown): string {
 // at the outer tools/call boundary. This preserves machine-readable target
 // results such as dev:pg_query without weakening the door for ordinary targets.
 const NESTED_RESULT_DOOR_SKIP_META = '__papercusp_nested_result_door_skip';
+const NESTED_RESULT_DOOR_PRESERVE_PATHS_META = '__papercusp_nested_result_door_preserve_paths';
 
 function isResultDoorSkipReason(value: unknown): value is ResultDoorSkipReason {
   return value === 'programmatic-caller' || value === 'oversize-by-design';
@@ -266,6 +296,32 @@ function nestedResultDoorSkipReason(result: McpCallResult): ResultDoorSkipReason
   return isResultDoorSkipReason(reason) ? reason : undefined;
 }
 
+function nestedResultDoorPreservePaths(result: McpCallResult): readonly string[] | undefined {
+  const paths = result._meta?.[NESTED_RESULT_DOOR_PRESERVE_PATHS_META];
+  return Array.isArray(paths) && paths.length <= MAX_PICK_PATHS && paths.every((path) => typeof path === 'string')
+    ? (paths as string[])
+    : undefined;
+}
+
+function carryNestedResultDoorPreservePaths(
+  result: McpCallResult,
+  paths: readonly string[] | undefined,
+): McpCallResult {
+  if (!paths?.length) return result;
+  return {
+    ...result,
+    _meta: { ...(result._meta ?? {}), [NESTED_RESULT_DOOR_PRESERVE_PATHS_META]: [...paths] },
+  };
+}
+
+function resultDoorPreservePaths(
+  result: McpCallResult,
+  directPaths: readonly string[] | undefined,
+): readonly string[] | undefined {
+  const paths = [...new Set([...(directPaths ?? []), ...(nestedResultDoorPreservePaths(result) ?? [])])];
+  return paths.length > 0 ? paths : undefined;
+}
+
 function carryNestedResultDoorSkip(result: McpCallResult, reason: ResultDoorSkipReason | undefined): McpCallResult {
   if (!reason) return result;
   return {
@@ -274,9 +330,17 @@ function carryNestedResultDoorSkip(result: McpCallResult, reason: ResultDoorSkip
   };
 }
 
-function stripNestedResultDoorSkip(result: McpCallResult): McpCallResult {
-  if (!result._meta || !(NESTED_RESULT_DOOR_SKIP_META in result._meta)) return result;
-  const { [NESTED_RESULT_DOOR_SKIP_META]: _reason, ...meta } = result._meta;
+function stripNestedResultDoorControls(result: McpCallResult): McpCallResult {
+  if (
+    !result._meta ||
+    (!(NESTED_RESULT_DOOR_SKIP_META in result._meta) &&
+      !(NESTED_RESULT_DOOR_PRESERVE_PATHS_META in result._meta))
+  ) {
+    return result;
+  }
+  const meta = { ...result._meta };
+  delete meta[NESTED_RESULT_DOOR_SKIP_META];
+  delete meta[NESTED_RESULT_DOOR_PRESERVE_PATHS_META];
   return { ...result, _meta: Object.keys(meta).length > 0 ? meta : undefined };
 }
 
@@ -350,6 +414,8 @@ function buildMcpRequestOrigin(extra: unknown): RequestOriginMetadata | undefine
   const url = urlFromExtra(extra);
   if (!url) return undefined;
   const headers = headersFromExtra(extra);
+  // Same id the tools/call handler logs and settles with (WI-6554700010008586).
+  const mcpRequestTraceId = resolveMcpRequestTraceId(extra);
   const query: Record<string, string> = {};
   for (const [key, value] of url.searchParams.entries()) {
     if (REQUEST_ORIGIN_QUERY_KEYS.has(key)) query[key] = value;
@@ -362,6 +428,7 @@ function buildMcpRequestOrigin(extra: unknown): RequestOriginMetadata | undefine
   return {
     transport: 'mcp',
     connection: 'http',
+    ...(mcpRequestTraceId ? { mcpRequestTraceId } : {}),
     path: url.pathname,
     ...(Object.keys(query).length > 0 ? { query } : {}),
     ...(Object.keys(headerMeta).length > 0 ? { headers: headerMeta } : {}),
@@ -429,6 +496,7 @@ async function recordMcpAuthFailureTelemetry(
   reason: string,
   projected: ReturnType<typeof lookupByMcpName>,
   callStartedAt: number,
+  nativeSessionFailure?: NativeSessionAuthFailureMetadata,
 ): Promise<void> {
   const ctx = mcpAuthFailureContext(extra);
   if (!ctx) return;
@@ -444,7 +512,13 @@ async function recordMcpAuthFailureTelemetry(
       errorCode: 'mcp_auth_failed',
       errorMessage: reason,
       // Auth failed before input validation; do not persist untrusted args.
-      metadataJson: { mcpAuthFailure: { reason, contextVerified: false } },
+      metadataJson: {
+        mcpAuthFailure: {
+          reason,
+          contextVerified: false,
+          ...(nativeSessionFailure ? { nativeSession: nativeSessionFailure } : {}),
+        },
+      },
     });
   } catch (error) {
     // Telemetry is best-effort and must never change the auth rejection seen by
@@ -531,6 +605,10 @@ function stableJson(value: unknown): string {
 
 function resultRows(result: McpCallResult): unknown[] {
   if (Array.isArray(result.structuredContent)) return result.structuredContent;
+  // WI-10006851: structured mode wraps an array root as { value: [...] } because MCP
+  // requires structuredContent to be an object (tooldef serialize-result.ts).
+  const wrapped = result.structuredContent as { value?: unknown } | null | undefined;
+  if (result._meta?.structuredRoot === 'array' && Array.isArray(wrapped?.value)) return wrapped.value;
   const text = (result.content[0] as { text?: unknown } | undefined)?.text;
   if (typeof text !== 'string') throw new Error('delta proxy cannot parse non-text tool result');
   const parsed = parseMcpToolText(text);
@@ -618,142 +696,6 @@ async function maybeRunWithDeltaProxy(input: {
     session.fields.delete(viewKey);
     return input.runRaw(undefined, true);
   }
-}
-
-/**
- * scoped-superuser-workspace-clamp exemption (EI-1810). A `crossWorkspace: true`
- * tool normally bypasses the per-workspace tx (getOrgPg admin handle) so an
- * UNSCOPED superuser session can call it — which is exactly why the clamp denies
- * such tools from a SCOPED superuser session (they could read across workspaces).
- * These specific tools are the exception: they are crossWorkspace ONLY to support
- * the unscoped path, but when called from a SCOPED session they confine themselves
- * to the caller's OWN workspace (resolve ctx.principal.workspaceId) and are
- * read-only — so a scoped session calling them never reads another workspace.
- *
- * The exemption lives HERE, in the gate, not as a self-asserted per-tool flag: a
- * tool author must not be able to bypass workspace isolation by setting a boolean on
- * their own def — each entry is reviewed as part of this security boundary.
- *
- *   - autonomy:decide — a pure advisory gate (capability intel:read, never mutates)
- *     that resolves the caller's workspace and reads only THAT workspace's autonomy
- *     policy. The Overwatch role runs workspace-scoped and its prompt mandates this
- *     tool, so the clamp made it deterministically unusable for the role (EI-1810).
- *   - memory:* (search/list/remember/update/forget) — the memory store is partitioned
- *     by USER-ID / HARNESS-SLUG, NOT by workspace (the handler reads getMemoryBackend,
- *     never ctx.tx). A scoped session calling these touches only its OWN user's /
- *     harness's memory — it never reads or writes another WORKSPACE's tenant data, so
- *     the clamp's threat model (cross-workspace tenant-data access) simply does not
- *     apply. They are crossWorkspace:true only so an UNSCOPED ('*') psu gets the admin
- *     handle (EI-2378); denying them from a scoped session would break legitimate
- *     same-user memory recall/writes for no isolation benefit. (Reads AND writes are
- *     listed: a write lands in the caller's own user/harness memory, crossing no
- *     workspace boundary — the "read-only" note above is autonomy:decide-specific.)
- */
-const SCOPED_SAFE_CROSSWORKSPACE: ReadonlySet<string> = new Set([
-  'autonomy:decide',
-  // EI-1934: the WRITE sibling of autonomy:decide — SAME self-confining profile
-  // (resolves ws from the caller's principal / activeWorkspaceId(), and records the
-  // disposition row ONLY to that ws — record_disposition.ts:92-93,114-115).
-  // crossWorkspace:true only so an UNSCOPED psu gets the admin handle; from a SCOPED
-  // Queen session it crosses no workspace boundary, so the clamp must not deny it —
-  // otherwise the Queen's decision-ledger audit is unusable from its normal scoped seat
-  // (EI-1810's exemption must cover the whole autonomy:* decide+record family, not just decide).
-  'autonomy:record_disposition',
-  'memory:search',
-  'memory:list',
-  'memory:remember',
-  'memory:update',
-  'memory:forget',
-  // EI-247550: memory:get resolves ids across the backend, but its handler returns shared rows
-  // only when the scope belongs to this workspace (and, with the clamp on, this session's Hive).
-  // Other users' rows and out-of-scope ids remain indistinguishable from missing ids.
-  'memory:get',
-  // search:* prose recall (session-search-scope-2026-07-05 live-smoke finding) —
-  // read-only; crossWorkspace ONLY so an unscoped psu gets the admin handle for
-  // the non-workspace-scoped operator_turns table (P-062 Phase 4). From a SCOPED
-  // session the engine confines every source by the ctx workspaceId it is handed
-  // (runFullTextSearch/runHybridSearch `workspaceId:` — each SearchSource's SQL
-  // filters on it); operator_turns is host-global operator history, not another
-  // workspace's tenant data. Denying these made prose recall (and the EI-6984
-  // work_item dedup check) deterministically unusable for every workspace-scoped
-  // psu session — the same failure shape as autonomy:decide (EI-1810).
-  'search:fulltext',
-  'search:semantic',
-  // sessions:* (session-search-scope-2026-07-05 P-005/P-006) — read-only session
-  // recall. session_turns confines to (workspace_id = $ws OR 'default') — the
-  // 'default' rows are THIS HOST's local transcript files (claude/omp/codex
-  // JSONL), which carry no workspace identity and are not tenant data (same
-  // class as memory:*, partitioned by owner not workspace). The flagship flow —
-  // `sessions:search { session:'self' }` compaction recovery — runs from
-  // workspace-scoped psu sessions, exactly the caller the clamp would deny.
-  'sessions:search',
-  'sessions:read',
-  'sessions:list',
-  'sessions:timeline',
-  // sessions:digest (EI-10888, added AFTER this allowlist's original P-005/P-006 pass —
-  // EI-13175: it was never backported here, so a workspace-scoped psu session got
-  // `workspace_forbidden` on a tool it never asked to span workspaces with). Same
-  // self-confining profile as its sessions:* siblings above: its query filters
-  // `WHERE (workspace_id = ctx.workspaceId OR workspace_id = 'default')` (digest.ts) —
-  // it never reads another workspace's tenant data from a scoped caller.
-  'sessions:digest',
-  // pot_git:secrets_exemptions (WI-6641) — the RUNTIME, no-restart recovery lever
-  // for a secrets-guard false positive (WI-5591). Its table is keyed BY workspace
-  // (PK (workspace_id, path)) and every read/write filters on it, so a scoped call
-  // is well-defined; crossWorkspace:true is here only so an UNSCOPED psu gets the
-  // getOrgPg admin handle — the memory:*/autonomy:record_disposition profile. The
-  // handler now REFUSES an explicit `workspaceId` naming another workspace, so a
-  // scoped caller cannot cross out (self-confinement, secrets_exemptions.ts).
-  //
-  // Why this one matters more than the count suggests: a false positive FREEZES
-  // ALL git egress for the hive until it is cleared (the guard baseline never
-  // advances past a refused range, so the same blob is re-refused forever), and
-  // the refusal message instructs the reader to run exactly this tool. Every
-  // ordinary agent that trips the guard is workspace-scoped, so the documented
-  // remedy was unreachable by precisely the population that needs it — the
-  // EI-1810 failure shape, and a plausible reason the class kept recurring (this
-  // was at least its third occurrence; it froze the publish plane ~8h on
-  // 2026-07-28 while the fix had to be applied by hand with psql).
-  'pot_git:secrets_exemptions',
-]);
-
-/** Whether a crossWorkspace tool is safe to call from a SCOPED superuser session —
- *  it SELF-CONFINES to the caller's own workspace (EI-1810). Self-confinement is
- *  the whole criterion; read-only is NOT required and never was — memory:remember /
- *  :update / :forget and autonomy:record_disposition are writes, and they qualify
- *  because they resolve their scope from the caller's principal and cannot be
- *  pointed at another workspace. A tool that accepts a caller-supplied workspace
- *  target does NOT qualify until it refuses a foreign one (cf. WI-6641).
- *  P-019: the runtime clamp:set_safe_tools dial can NARROW this allowlist (tighten-only) — a tool in
- *  the operator's safeToolsRemove set is treated as NOT safe (the clamp then denies it from a scoped
- *  session). It can only REMOVE entries, never add, so it can only tighten the cross-workspace gate. */
-function isScopedSafeCrossWorkspaceTool(toolName: string): boolean {
-  return SCOPED_SAFE_CROSSWORKSPACE.has(toolName) && !authSafeToolsRemoveSet().has(toolName);
-}
-
-/**
- * GLOBAL-config superuser admin tools exempt from the clamp's crossWorkspace denial.
- *
- * RATIONALE (security review — scoped-superuser-clamp follow-up). The clamp's threat
- * model is a scoped superuser reading another workspace's tenant DATA (a `crossWorkspace`
- * tool runs on the getOrgPg admin handle, which bypasses per-workspace RLS). The
- * `flags:*` family is categorically different: it is the ONE GLOBAL feature-flag store —
- * there is no per-workspace flag data, so confining it to a workspace protects no tenant
- * data. And denying it creates a CIRCULAR LOCKOUT: `flags:set` is the very control that
- * GOVERNS the clamp — a scoped superuser otherwise cannot disable the clamp (or flip any
- * global flag) without it, locking the operator out of its own controls. A superuser is
- * already god-mode at dispatch (`isSuperuser` bypasses role gates); managing GLOBAL config
- * is squarely within that authority. So the flag-admin family is reachable even from a
- * scoped superuser session. This widens NO per-workspace DATA reach — only the
- * global-config meta-controls. (Reviewed in the gate, not a self-asserted per-tool flag,
- * per the SCOPED_SAFE_CROSSWORKSPACE convention above.)
- */
-const SUPERUSER_GLOBAL_FLAG_ADMIN: ReadonlySet<string> = new Set(['flags:get', 'flags:set', 'flags:list']);
-
-/** Whether a tool is a GLOBAL-config superuser meta-control (the flag system) that a
- *  scoped superuser may reach despite the clamp — no tenant-data reach (see above). */
-function isSuperuserGlobalFlagAdmin(toolName: string): boolean {
-  return SUPERUSER_GLOBAL_FLAG_ADMIN.has(toolName);
 }
 
 /**
@@ -913,11 +855,22 @@ function isExplicitPlatformPotGitSyncTarget(toolName: string, arg: string, slug:
 }
 
 /**
+ * `dev:build_status` accepts `harness` only as an ambient compatibility label.
+ * Its feed is deliberately cross-workspace and does not dispatch to the named
+ * harness, so applying the workspace/hive routing clamp to that field would
+ * contradict the tool's published contract and reject harmless diagnostics.
+ */
+function isAmbientHarnessCompatibilityTarget(toolName: string, arg: string): boolean {
+  return toolName === 'dev:build_status' && arg === 'harness';
+}
+
+/**
  * The routine table also has deliberate harness-less hosts (`@...` and the
  * workspace id). They are not tenant harnesses, so the hive clamp must not
  * mistake an exact, one-row routine operation for a cross-hive escape. Keep
  * this exception narrower than a general reserved-slug allowlist: only the
- * documented routine control/read tools, only their install-slug spellings,
+ * documented routine control/read/fire tools, only their installSlug/harness
+ * spellings,
  * and only an exact routine name are admitted. Broad reads, rollups, and all
  * other tools remain behind the ordinary hive boundary.
  */
@@ -936,6 +889,7 @@ function isExplicitReservedHarnesslessRoutineTarget(
   const routineName = typeof routineArgs.name === 'string' ? routineArgs.name.trim() : '';
   if (!routineName || routineName === '*' || routineName.toLowerCase() === 'all') return false;
   if (toolName === 'routines:set') return arg === 'installSlug';
+  if (toolName === 'routines:fire') return true;
   return toolName === 'routines:list' && routineArgs.rollup !== true;
 }
 
@@ -973,6 +927,8 @@ export interface BuiltSpawnContext {
   runId: string;
   spawnId: string;
   parentSpawnId: string | null;
+  /** Verified adv_sessions row for this caller's native CLI incarnation. */
+  advSessionId?: number;
   uiClientId: string | null;
   /** Private detector-only session key; never used as public coordination identity. */
   detectorSessionKey: string | null;
@@ -1155,45 +1111,9 @@ async function applyScopedSuperuserTransportClamp(
   const toolName = tool.name ?? '<unnamed tool>';
   let args = inputArgs;
   let effectiveHarnessSlug = spawnCtx.harnessSlug;
-  const scopedSuperuserClamp =
-    spawnCtx.isSuperuser === true &&
-    spawnCtx.workspaceId !== '*' &&
-    (await getFlag(FLAGS.SCOPED_SUPERUSER_CLAMP, 'system'));
-
-  if (spawnCtx.profile === 'power' && tool.profile === 'engineer') {
-    return {
-      ok: false,
-      result: {
-        isError: true,
-        content: [
-          {
-            type: 'text' as const,
-            text: `tool_not_available_for_profile: "${toolName}" is not available in the power-engineer profile`,
-          },
-        ],
-      },
-    };
-  }
-
-  if (
-    scopedSuperuserClamp &&
-    tool.crossWorkspace === true &&
-    !isScopedSafeCrossWorkspaceTool(toolName) &&
-    !isSuperuserGlobalFlagAdmin(toolName)
-  ) {
-    return {
-      ok: false,
-      result: {
-        isError: true,
-        content: [
-          {
-            type: 'text' as const,
-            text: `workspace_forbidden: "${toolName}" spans workspaces, but this session is scoped to workspace "${spawnCtx.workspaceId}". Use an unscoped (--all-workspaces) superuser session to span workspaces.`,
-          },
-        ],
-      },
-    };
-  }
+  const boundary = await applyScopedSuperuserTransportBoundary(tool, spawnCtx, { readForAllTools: true });
+  if (!boundary.ok) return { ok: false, result: boundary.result };
+  const scopedSuperuserClamp = boundary.scopedSuperuserClamp;
 
   if (scopedSuperuserClamp) {
     const requestedHarness = typeof args.harness === 'string' ? args.harness.trim() : '';
@@ -1231,7 +1151,11 @@ async function applyScopedSuperuserTransportClamp(
         // tool remains responsible for reporting an unresolved harness.
         harnessWorkspace = null;
       }
-      if (harnessWorkspace && harnessWorkspace !== spawnCtx.workspaceId) {
+      if (
+        harnessWorkspace &&
+        harnessWorkspace !== spawnCtx.workspaceId &&
+        !isAmbientHarnessCompatibilityTarget(toolName, 'harness')
+      ) {
         return {
           ok: false,
           result: {
@@ -1282,6 +1206,7 @@ async function applyScopedSuperuserTransportClamp(
           requestedHarness,
           args,
         );
+        const isAmbientHarnessCompatibility = isAmbientHarnessCompatibilityTarget(toolName, 'harness');
         const isReservedHarnesslessRoutineTarget = isExplicitReservedHarnesslessRoutineTarget(
           toolName,
           'harness',
@@ -1293,6 +1218,7 @@ async function applyScopedSuperuserTransportClamp(
         const escapesHive =
           !isEngineeringDocsSurface &&
           !isPlatformPotGitSyncTarget &&
+          !isAmbientHarnessCompatibility &&
           !isReservedHarnesslessRoutineTarget &&
           !isSelfOwnedCheckpointRead &&
           (requestedHarness === 'all' ||
@@ -1418,7 +1344,8 @@ async function applyScopedSuperuserTransportClamp(
       for (const { arg, slug } of collectHarnessSlugArgs(args, { toolName })) {
         if (
           isExplicitPlatformPotGitSyncTarget(toolName, arg, slug, args) ||
-          isExplicitReservedHarnesslessRoutineTarget(toolName, arg, slug, args, spawnCtx.workspaceId)
+          isExplicitReservedHarnesslessRoutineTarget(toolName, arg, slug, args, spawnCtx.workspaceId) ||
+          isAmbientHarnessCompatibilityTarget(toolName, arg)
         ) continue;
         const escapesHive =
           slug === 'all' || slug === '*' || (await potHomeSlugForHarness(spawnCtx.workspaceId, slug)) !== scopeHive;
@@ -1476,10 +1403,174 @@ async function applyScopedSuperuserTransportClamp(
  *   - `failed` — URL claimed a spawn ctx but verification failed.
  *               Caller MUST reject (do NOT fall through to bearer).
  */
+type NativeSessionAuthFailureMetadata = {
+  carrier: NonNullable<RequestOriginMetadata['nativeSession']>['carrier'];
+  valueFingerprint: string;
+  candidateAdvSessionId: number | null;
+  verifierFailure?: {
+    name: string;
+    code?: string;
+    message: string;
+    durationMs: number;
+    requestFingerprint?: string;
+    phase?: NativeSessionVerificationPhase;
+    stageTimings?: {
+      omittedStages: number;
+      stages: Array<{
+        stage: string;
+        elapsedMs: number;
+        outcome: 'pending' | 'fulfilled' | 'rejected';
+      }>;
+    };
+    acquisition?: {
+      label: string;
+      pool: string | null;
+      deadlineMs: number;
+      elapsedMs: number;
+      retryable: boolean;
+      ticketSample?: {
+        capacity: number;
+        active: number;
+        omitted: number;
+        tickets: Array<{
+          state: 'waiting' | 'held';
+          ageMs: number;
+          requestId?: string;
+          operation?: string;
+        }>;
+      };
+      pressure?: {
+        pid: number;
+        pool: string;
+        waiting: number;
+        held: number;
+        max: number | null;
+        lastAcquiredAgoMs: number | null;
+        totalAcquired: number;
+      };
+    };
+  };
+};
+
+function describeNativeSessionVerifierFailure(
+  error: unknown,
+  ownerId: string,
+  sessionId: string,
+  durationMs: number,
+  requestFingerprint?: string,
+  timingSnapshot: ReturnType<typeof namedQueryStageTimings> = null,
+): NonNullable<NativeSessionAuthFailureMetadata['verifierFailure']> {
+  const failure = error as {
+    name?: unknown;
+    code?: unknown;
+    pgCode?: unknown;
+    message?: unknown;
+    nativeSessionVerificationPhase?: unknown;
+  } | null;
+  const rawName = failure?.name;
+  const name = typeof rawName === 'string' && /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(rawName) ? rawName : 'Error';
+  const rawCode = failure?.pgCode ?? failure?.code;
+  const code = typeof rawCode === 'string' && /^[A-Za-z0-9_.-]{1,32}$/.test(rawCode) ? rawCode : undefined;
+  const rawPhase = failure?.nativeSessionVerificationPhase;
+  const phase = rawPhase === 'transaction_setup' || rawPhase === 'owner_row_lookup_by_id' ||
+      rawPhase === 'owner_candidate_rows_lookup' || rawPhase === 'row_classification'
+    ? rawPhase
+    : undefined;
+  const redact = (text: string, maxChars: number): string => {
+    for (const sensitive of [ownerId, sessionId]) {
+      if (sensitive) text = text.split(sensitive).join('[redacted]');
+    }
+    return text
+      .replace(/\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/gi, '[redacted-id]')
+      .replace(/\bpostgres(?:ql)?:\/\/\S+/gi, '[redacted-connection]')
+      .replace(/[\u0000-\u001f\u007f]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, maxChars);
+  };
+  const message = redact(typeof failure?.message === 'string' ? failure.message : 'Native-session verifier failed', 240);
+  // The clipped human message can omit the pool and timing at the exact seam
+  // that failed. Preserve those existing measurements independently; an error
+  // with a matching name or arbitrary fields is not a measured deadline.
+  const deadlineFailure = error instanceof DbCallDeadlineError &&
+    Number.isFinite(error.deadlineMs) && Number.isFinite(error.elapsedMs)
+    ? error
+    : undefined;
+  const pressureSnapshot = deadlineFailure?.pool ? acquireSnapshot(deadlineFailure.pool) : undefined;
+  const pressure = pressureSnapshot &&
+    (pressureSnapshot.max !== null || pressureSnapshot.totalAcquired > 0 ||
+      pressureSnapshot.waiting > 0 || pressureSnapshot.held > 0)
+    ? {
+      pid: process.pid,
+      pool: redact(pressureSnapshot.pool, 80),
+      waiting: pressureSnapshot.waiting,
+      held: pressureSnapshot.held,
+      max: pressureSnapshot.max,
+      lastAcquiredAgoMs: pressureSnapshot.lastAcquiredAgoMs,
+      totalAcquired: pressureSnapshot.totalAcquired,
+    }
+    : undefined;
+  const ticketSnapshot = deadlineFailure?.acquisitionTickets;
+  const ticketSample = ticketSnapshot
+    ? {
+      capacity: Math.min(8, ticketSnapshot.capacity),
+      active: ticketSnapshot.active,
+      omitted: ticketSnapshot.omitted,
+      tickets: ticketSnapshot.tickets.slice(0, 8).map((ticket) => ({
+        state: ticket.state,
+        ageMs: Math.max(0, Math.floor(ticket.ageMs)),
+        ...(typeof ticket.requestId === 'string' && /^[a-f0-9-]{36}$/i.test(ticket.requestId)
+          ? { requestId: ticket.requestId }
+          : {}),
+        ...(typeof ticket.operation === 'string' && /^[a-z][a-z0-9_.-]{0,119}$/i.test(ticket.operation)
+          ? { operation: ticket.operation }
+          : {}),
+      })),
+    }
+    : undefined;
+  const acquisition = deadlineFailure
+    ? {
+      label: redact(deadlineFailure.label, 120),
+      pool: deadlineFailure.pool === null ? null : redact(deadlineFailure.pool, 80),
+      deadlineMs: deadlineFailure.deadlineMs,
+      elapsedMs: deadlineFailure.elapsedMs,
+      retryable: deadlineFailure.retryable,
+      ...(pressure ? { pressure } : {}),
+      ...(ticketSample ? { ticketSample } : {}),
+    }
+    : undefined;
+  const verifierStages = timingSnapshot?.stages
+    .filter(({ stage }) => stage.startsWith('native-session-verifier-')) ?? [];
+  const retainedVerifierStages = verifierStages.slice(0, 8).map((timing) => ({
+    stage: timing.stage,
+    elapsedMs: Number.isFinite(timing.elapsedMs)
+      ? Math.min(60_000, Math.max(0, Math.round(timing.elapsedMs)))
+      : 0,
+    outcome: timing.outcome,
+  }));
+  const stageTimings = timingSnapshot && (retainedVerifierStages.length > 0 || timingSnapshot.omittedStages > 0)
+    ? {
+      omittedStages: Math.min(32, Math.max(0, Math.floor(timingSnapshot.omittedStages) +
+        Math.max(0, verifierStages.length - retainedVerifierStages.length))),
+      stages: retainedVerifierStages,
+    }
+    : undefined;
+  return {
+    name,
+    ...(code ? { code } : {}),
+    message: message || 'Native-session verifier failed',
+    durationMs: Math.max(0, Math.round(durationMs)),
+    ...(requestFingerprint ? { requestFingerprint } : {}),
+    ...(phase ? { phase } : {}),
+    ...(stageTimings ? { stageTimings } : {}),
+    ...(acquisition ? { acquisition } : {}),
+  };
+}
+
 export type TrySpawnContextResult =
   | { kind: 'none' }
   | { kind: 'ok'; ctx: BuiltSpawnContext }
-  | { kind: 'failed'; reason: string };
+  | { kind: 'failed'; reason: string; nativeSessionFailure?: NativeSessionAuthFailureMetadata };
 
 // In-process, per-request authority carrier for authenticated connection
 // transports. Never read a client-supplied `_meta` field as a verified context.
@@ -1527,6 +1618,7 @@ export async function tryBuildSpawnContext(
   const url = urlFromExtra(extra);
   if (!url) return { kind: 'none' };
   const requestOrigin = buildMcpRequestOrigin(extra);
+  const verifierTraceId = mcpTraceIdFromExtra(extra);
   const dataPlaneDegradedAtMs = mcpDataPlaneDegradedAtFromExtra(extra);
 
   // Plan-run provenance (plan-agent-launch-2026-05-21, P-006). Folded
@@ -1547,6 +1639,7 @@ export async function tryBuildSpawnContext(
     const bearer = bearerFromExtra(extra);
     if (!isValidSuperuserBearer(bearer)) return { kind: 'failed', reason: 'superuser_invalid_bearer' };
     const wsParam = (url.searchParams.get('workspace') ?? '').trim();
+    const headerWs = (headers.get('x-papercusp-workspace') ?? '').trim();
     const harnessUrlParam = (url.searchParams.get('harness') ?? '').trim();
     const clientParam = (url.searchParams.get('client') ?? '').trim();
     // Per-session identity for SU agents (su-locks coordination), sourced
@@ -1583,23 +1676,147 @@ export async function tryBuildSpawnContext(
     // The owner SID is inherited by child processes. Keep it as the coordination
     // identity (hooks and MCP calls must share lock ownership), but independently
     // verify the CLI's native incarnation before allowing it to act as that owner.
-    // Claude carries its session id in the URL; Codex supplies it dynamically in
-    // this header. No native id means a legacy/non-CLI caller and retains the
-    // established identity path.
-    const nativeSessionId =
-      (headers.get('x-papercusp-native-session') ?? '').trim() ||
-      (url.searchParams.get('native_session') ?? '').trim();
+    // Codex supplies its current thread in each tool request's _meta. Its
+    // env_http_headers read the CLI process environment, which can still carry
+    // the launching parent's CODEX_SESSION_ID even though shell commands get
+    // the child's current id. Prefer the per-call claim, then verify it with
+    // the SAME classifier: metadata itself grants no authority. In particular,
+    // a nested thread must not borrow a matching inherited parent header.
+    // Header/query carriers remain for older clients and non-tool requests.
+    const requestMeta = (extra as { _meta?: Record<string, unknown> } | undefined)?._meta;
+    const hasNativeThread = requestMeta != null && Object.hasOwn(requestMeta, 'threadId');
+    const rawNativeThread = hasNativeThread ? requestMeta!.threadId : undefined;
+    if (hasNativeThread && (
+      typeof rawNativeThread !== 'string' ||
+      !/^[A-Za-z0-9._:-]{1,128}$/.test(rawNativeThread.trim())
+    )) {
+      return { kind: 'failed', reason: 'superuser_native_session_unverified' };
+    }
+    const nativeThread = typeof rawNativeThread === 'string' ? rawNativeThread.trim() : '';
+    const nativeSessionHeader = (headers.get('x-papercusp-native-session') ?? '').trim();
+    const nativeSessionQuery = (url.searchParams.get('native_session') ?? '').trim();
+    const nativeSessionId = nativeThread || nativeSessionHeader || nativeSessionQuery;
+    const nativeSessionCarrier: NativeSessionAuthFailureMetadata['carrier'] | null = nativeThread
+      ? 'meta:threadId'
+      : nativeSessionHeader
+        ? 'header:x-papercusp-native-session'
+        : nativeSessionQuery
+          ? 'query:native_session'
+          : null;
+    const nativeSessionFailure = (
+      candidateAdvSessionId: number | null,
+      verifierFailure?: NonNullable<NativeSessionAuthFailureMetadata['verifierFailure']>,
+    ): NativeSessionAuthFailureMetadata | undefined => {
+      if (!nativeSessionId || !nativeSessionCarrier) return undefined;
+      return {
+        carrier: nativeSessionCarrier,
+        valueFingerprint: createHash('sha256').update(nativeSessionId, 'utf8').digest('hex'),
+        candidateAdvSessionId:
+          candidateAdvSessionId != null && Number.isSafeInteger(candidateAdvSessionId) && candidateAdvSessionId > 0
+            ? candidateAdvSessionId
+            : null,
+        ...(verifierFailure ? { verifierFailure } : {}),
+      };
+    };
+    let verifiedAdvSessionId: number | null = null;
+    let nativeSessionAudit: RequestOriginMetadata['nativeSession'];
     if (suIdentity && nativeSessionId) {
+      const verificationStartedAt = Date.now();
+      let timingSnapshot: ReturnType<typeof namedQueryStageTimings> = null;
       try {
-        const binding = await classifyOwnerNativeSession({ ownerId: suIdentity, sessionId: nativeSessionId });
+        const binding = await withNamedQueryDiagnosticContext(
+          'mcp.nativeSessionVerifier',
+          async () => {
+            try {
+              return await classifyOwnerNativeSession({
+                ownerId: suIdentity,
+                sessionId: nativeSessionId,
+                workspaceId: headerWs || wsParam || undefined,
+              });
+            } catch (error) {
+              try {
+                timingSnapshot = namedQueryStageTimings();
+              } catch {
+                /* Timing is diagnostic only; preserve the original verifier failure. */
+              }
+              throw error;
+            }
+          },
+          verifierTraceId,
+        );
         if (binding.binding === 'foreign') {
-          return { kind: 'failed', reason: 'superuser_foreign_native_session' };
+          return {
+            kind: 'failed',
+            reason: 'superuser_foreign_native_session',
+            nativeSessionFailure: nativeSessionFailure(binding.advSessionId),
+          };
         }
-      } catch {
+        const observation = nativeSessionFailure(binding.advSessionId);
+        if (observation) {
+          nativeSessionAudit = { ...observation, binding: binding.binding };
+          // Codex supplies callId alongside threadId in each MCP request.
+          // An inherited header or output cohort cannot identify a native
+          // call. Keep only the fingerprint; this observation grants no
+          // funding authority until the trusted host matches its exact call.
+          const nativeCallId = requestMeta?.callId;
+          if (binding.binding === 'bound' && nativeThread &&
+              typeof nativeCallId === 'string' && /^[A-Za-z0-9._:-]{1,256}$/.test(nativeCallId)) {
+            nativeSessionAudit.callIdFingerprint = createHash('sha256').update(nativeCallId, 'utf8').digest('hex');
+          }
+        }
+        if (
+          binding.binding === 'bound' &&
+          binding.advSessionId != null &&
+          Number.isSafeInteger(binding.advSessionId) &&
+          binding.advSessionId > 0
+        ) {
+          verifiedAdvSessionId = binding.advSessionId;
+        }
+      } catch (error) {
         // A supplied native-session claim is meaningful only when the binding
         // check succeeds. Failing open here would restore the inherited-SID bug
         // exactly when its verifier is unavailable.
-        return { kind: 'failed', reason: 'superuser_native_session_unverified' };
+        const requestFingerprint = typeof verifierTraceId === 'string' && verifierTraceId.length <= 256
+          ? createHash('sha256').update(verifierTraceId, 'utf8').digest('hex').slice(0, 16)
+          : undefined;
+        const boundedAcquisitionDeadline = error instanceof DbCallDeadlineError &&
+          Number.isFinite(error.deadlineMs) && Number.isFinite(error.elapsedMs);
+        const verifierError = error as { code?: unknown; pgCode?: unknown; message?: unknown } | null;
+        const isStatementTimeout = (verifierError?.pgCode ?? verifierError?.code) === '57014' &&
+          typeof verifierError?.message === 'string' &&
+          /statement timeout/i.test(verifierError.message);
+        if (boundedAcquisitionDeadline || isStatementTimeout) {
+          try {
+            // Start out-of-band sampling before returning the auth failure; never await a
+            // diagnostic whose purpose is to observe a potentially blocked DB path.
+            void samplePgBouncerPools(
+              boundedAcquisitionDeadline
+                ? 'native-session-verifier-deadline'
+                : 'native-session-verifier-statement-timeout',
+              {
+                pid: process.pid,
+                ...(requestFingerprint ? { requestFingerprint } : {}),
+              },
+            ).catch(() => {});
+          } catch {
+            /* diagnostic trigger failures must not alter fail-closed auth behavior */
+          }
+        }
+        return {
+          kind: 'failed',
+          reason: 'superuser_native_session_verifier_unavailable',
+          nativeSessionFailure: nativeSessionFailure(
+            null,
+            describeNativeSessionVerifierFailure(
+              error,
+              suIdentity,
+              nativeSessionId,
+              Date.now() - verificationStartedAt,
+              requestFingerprint,
+              timingSnapshot,
+            ),
+          ),
+        };
       }
     }
     // Workspace, in precedence order (psu-workspace-scoping fix — without
@@ -1616,7 +1833,6 @@ export async function tryBuildSpawnContext(
     //      PAPERCUSP_WORKSPACE. SID sources only (mcp-session-id is a
     //      transport id, never an adv row key).
     //   4. '*' — unscoped, exactly the pre-fix behavior.
-    const headerWs = (headers.get('x-papercusp-workspace') ?? '').trim();
     let workspaceId = headerWs || wsParam;
     const sidForLookup = headerClient || clientParam;
     // Harness, same precedence as workspace above (WI-4393): `x-papercusp-harness`
@@ -1671,9 +1887,17 @@ export async function tryBuildSpawnContext(
           workspaceId = active;
           workspaceResolution = 'registry-fallback';
         } else {
+          observeFallback('mcp-workspace-resolution', { eligible: 1, applied: 0, reason: 'workspace-unresolved' });
           return { kind: 'failed', reason: 'scoped_superuser_workspace_unresolved' };
         }
       }
+    }
+    // Deliberate cross-workspace administration is not a failed scoped resolution.
+    if (workspaceId && workspaceId !== '*' && url.searchParams.get('all_workspaces') !== '1') {
+      observeFallback('mcp-workspace-resolution', { eligible: 1,
+        applied: workspaceResolution === 'registry-fallback' ? 0 : 1,
+        reason: workspaceResolution === 'registry-fallback' ? 'registry-fallback' : 'applied' },
+      { workspaceId });
     }
     // P-006 (fleet-friction-remediation): every transport call now inherits a
     // missing harness through the same canonical chain used by scheduler:get_next.
@@ -1741,6 +1965,7 @@ export async function tryBuildSpawnContext(
           .map((b) => b.toString(16).padStart(2, '0'))
           .join('')}`,
         parentSpawnId: null,
+        ...(verifiedAdvSessionId !== null ? { advSessionId: verifiedAdvSessionId } : {}),
         uiClientId: suIdentity.length > 0 ? suIdentity : null,
         detectorSessionKey,
         // Caller backend + model (fleet-launch-agent-inheritance-2026-07-03): psu stamps them onto
@@ -1765,7 +1990,9 @@ export async function tryBuildSpawnContext(
         // Session payload tier (context-trimming-tiers D-004) — env-expanded by
         // psu into the user-level MCP URL, like `tools=`.
         contextTier: parsePayloadTier(url.searchParams.get('ctx_tier')),
-        requestOrigin,
+        requestOrigin: nativeSessionAudit
+          ? { ...requestOrigin, transport: 'mcp', nativeSession: nativeSessionAudit }
+          : requestOrigin,
       },
     };
   }
@@ -2113,7 +2340,12 @@ import { pluginSpawnImpl, secretImpl, makeSecretResolver } from '../../../plugin
 // PROJECTED_DEPS lives in @/lib/projected-tool-deps so the IPC server
 // (and any future transport) can reuse the same telemetry + quota
 // implementation. Don't fork the SQL across transports.
-import { PROJECTED_DEPS, backfillResultDoorOutputRef, wrapOperatorKernelSpawn } from '../../../projected-tool-deps';
+import {
+  PROJECTED_DEPS,
+  backfillResultDoorOutputRef,
+  backfillToolInvocationMetadataByMcpRequestTraceId,
+  wrapOperatorKernelSpawn,
+} from '../../../projected-tool-deps';
 import { isPreferredDoor } from '../../../code-run-batch-nudge';
 
 // EI-18803497769946984: names a tool that is holding the ambient workspace transaction
@@ -2157,6 +2389,7 @@ import { warnIfHoldingWorkspaceTxTooLong } from './idle-tx-warning';
 async function dispatchWithSynthesizedTx<T>(
   tool: {
     name?: string;
+    agentRoles?: readonly string[];
     crossWorkspace?: boolean;
     needsWorkspaceTx?: boolean;
     /** Legacy compatibility metadata; transaction-free is now the default. */
@@ -2167,6 +2400,18 @@ async function dispatchWithSynthesizedTx<T>(
   baseCtx: UnifiedToolContext,
   run: (ctx: UnifiedToolContext) => Promise<T>,
 ): Promise<T> {
+  // Role denial is independent of the synthesized principal. Run the same
+  // allowlist condition as dispatch-stack before opening a workspace transaction
+  // so an out-of-role call cannot wait on DB acquisition before its known denial.
+  if (
+    tool.agentRoles &&
+    baseCtx.role &&
+    !baseCtx.gateBypass?.role &&
+    !tool.agentRoles.includes(baseCtx.role)
+  ) {
+    return runWithWorkspaceIfConcrete(spawnCtx.workspaceId, () => run({ ...baseCtx, tx: undefined }));
+  }
+
   // P-062 — crossWorkspace tools span workspaces: hand them the admin
   // (rolbypassrls) handle, never a workspace-scoped harness_app tx. Checked
   // before needsTx so it also covers the superuser/'*' discovery case
@@ -2280,7 +2525,17 @@ function projectionMaterializationContext(
   // as a non-JSON body. Keep the tier decision separate: an explicit target
   // tier remains authoritative, while the in-process materialization is JSON
   // whenever the projection needs structured fields.
-  if (!needsFullSource && !needsStructuredSource) return ctx;
+  // Audit-only (WI-6554700010010307): the host strips `projection`/`view` from
+  // the dispatched args, so without this stamp the invocation ledger cannot
+  // tell a projection-promoted full-tier call from an ordinary one.
+  const sourceMaterialization = describeSourceMaterialization({
+    sourceProjection,
+    needsFullSource,
+    needsStructuredSource,
+  });
+  if (!needsFullSource && !needsStructuredSource) {
+    return sourceMaterialization ? { ...ctx, sourceMaterialization } : ctx;
+  }
   const promoted = needsFullSource
     ? {
         contextTier: 'full' as const,
@@ -2291,6 +2546,7 @@ function projectionMaterializationContext(
   return {
     ...ctx,
     ...(sourceProjection ? { sourceProjection } : {}),
+    ...(sourceMaterialization ? { sourceMaterialization } : {}),
     // `pick` classifies the materialized text as JSON. MCP's implicit compact
     // default may select TOON, so force JSON only for this in-process source;
     // the caller's explicit format remains the final wire-format choice.
@@ -2460,6 +2716,8 @@ async function buildMcpToolContext(
   // side effects can derive stable per-request identifiers across retries.
   idempotencyKey?: string,
   signal?: AbortSignal,
+  /** Host-only marker: nested targets of a relayed wrapper stay on this owner. */
+  nativeOwnerAddress?: SuNativeToolAddress,
 ): Promise<UnifiedToolContext> {
   // Unscoped context: workspaceId/harnessSlug may be '*' — the superuser door,
   // or a WORKSPACE-LEVEL signed role session (operator/planner launched without
@@ -2679,19 +2937,31 @@ async function buildMcpToolContext(
       effectiveWs === spawn.workspaceId && clampResult.effectiveHarnessSlug === spawn.harnessSlug
         ? spawn
         : { ...spawn, workspaceId: effectiveWs, harnessSlug: clampResult.effectiveHarnessSlug };
-    const baseCtx: UnifiedToolContext =
-      effectiveWs === ctxRef.current!.workspaceId && clampResult.effectiveHarnessSlug === ctxRef.current!.harnessSlug
+    const baseCtx: UnifiedToolContext = {
+      ...(effectiveWs === ctxRef.current!.workspaceId && clampResult.effectiveHarnessSlug === ctxRef.current!.harnessSlug
         ? ctxRef.current!
-        : { ...ctxRef.current!, workspaceId: effectiveWs, harnessSlug: clampResult.effectiveHarnessSlug };
-    const dispatched = (await dispatchWithSynthesizedTx(target, spawnCtx, baseCtx, (ctx) => {
-      const materializationCtx = projectionMaterializationContext(
-        ctx,
-        projectionNeedsFullSource,
-        projectionSpec?.pick !== undefined,
-        projectionSpec,
-      );
-      return dispatchProjectedToolToMcp(target, canonicalName, dispatchToolArgs, materializationCtx, PROJECTED_DEPS);
-    })) as McpCallResult;
+        : { ...ctxRef.current!, workspaceId: effectiveWs, harnessSlug: clampResult.effectiveHarnessSlug }),
+      indirectDispatch: true,
+    };
+    const runLocalTarget = async () =>
+      (await dispatchWithSynthesizedTx(target, spawnCtx, baseCtx, (ctx) => {
+        const materializationCtx = projectionMaterializationContext(
+          ctx,
+          projectionNeedsFullSource,
+          projectionSpec?.pick !== undefined,
+          projectionSpec,
+        );
+        return dispatchProjectedToolToMcp(target, canonicalName, dispatchToolArgs, materializationCtx, PROJECTED_DEPS);
+      })) as McpCallResult;
+    const dispatched = await dispatchNestedWithMcpDeadline(canonicalName, target.timeoutSec, () =>
+      nativeOwnerAddress ? runLocalTarget() : runNativeMcpTargetOnOwner({
+        toolName: canonicalName, args: dispatchToolArgs, spawn: spawnCtx,
+        requestedFormat: baseCtx.requestedFormat, requestedStructured: baseCtx.requestedStructured,
+        requestedDelta: baseCtx.requestedDelta, idempotencyKey: baseCtx.idempotencyKey,
+        fullSource: projectionNeedsFullSource, structuredSource: projectionSpec?.pick !== undefined,
+        sourceProjection: projectionSpec, indirect: true,
+      }, runLocalTarget, effectiveMcpDeadlineMs(target.timeoutSec)),
+    );
     const freeFormProjected = projectionSpec
       ? applyResultProjection(dispatched, projectionSpec, { toolName: canonicalName, effect: target.effect })
       : dispatched;
@@ -2705,13 +2975,16 @@ async function buildMcpToolContext(
     // Do not carry the target's door exemption across that seam: a successful
     // projection is already small so the outer door is a no-op, while a
     // fail-open/miss must be bounded instead of leaking the full promoted body.
-    return carryNestedResultDoorSkip(
-      doorInput,
-      // A NAMED VIEW is promoted to full source exactly like a projection, so it
-      // must drop the exemption on the same terms: a successful view is already
-      // budget-bounded (the door is a no-op), and a fail-open must be bounded
-      // rather than leak the full promoted body.
-      projectionSpec || namedView ? undefined : target.skipResultDoor,
+    return carryNestedResultDoorPreservePaths(
+      carryNestedResultDoorSkip(
+        doorInput,
+        // A NAMED VIEW is promoted to full source exactly like a projection, so it
+        // must drop the exemption on the same terms: a successful view is already
+        // budget-bounded (the door is a no-op), and a fail-open must be bounded
+        // rather than leak the full promoted body.
+        projectionSpec || namedView ? undefined : target.skipResultDoor,
+      ),
+      projectionSpec?.pick,
     );
   };
   // Fuzzy tool-name recovery for the tools:invoke re-dispatch seam (P-007 / D-008). Exact and
@@ -2748,6 +3021,7 @@ async function buildMcpToolContext(
     runId: spawn.runId,
     spawnId: spawn.spawnId,
     parentSpawnId: spawn.parentSpawnId,
+    advSessionId: spawn.advSessionId,
     uiClientId: spawn.uiClientId,
     failureLoopSessionKey: spawn.detectorSessionKey,
     callerAgent: spawn.callerAgent ?? null,
@@ -2839,6 +3113,13 @@ async function buildMcpToolContext(
  */
 const PAPERCUSP_MCP_INSTRUCTIONS = `Get oriented ONCE per session-with-context (a user task you have
 not seen this run) — by whichever of these two routes your host gave you:
+
+  **ROLE-SCOPED OVERRIDE:** The routes below assume a role permitted to use coordination
+  writes. The evidence-only judge role is intentionally excluded from coordination-write
+  tools, so it must not call coord:declare-intent, claim plan lanes, or pass intent to
+  coord:orient (that causes an internal declaration attempt). Judges may call coord:orient
+  {} without intent for omitted read context, then work only the item already routed to
+  them. This omits memory recall and intent declaration by design.
 
   **ROUTE A — an \`## Orientation\` block already arrived in this turn.** Your held
   work-items, unanswered directed messages, and whether a wake source (armed loop)
@@ -2948,8 +3229,8 @@ function mcpInstructionsForServer(): string | undefined {
  * Strict mode (default since 2026-05-11): listings mirror tools/call — a
  * FAILED spawn context yields nothing. Returning the full catalog to an
  * unsigned/forged URL would:
- *   1. leak the tool surface to probing without an audit trail
- *      (tools/list failures aren't logged); and
+ *   1. leak the tool surface to probing; rejected listings record auth-failure
+ *      telemetry when the request supplies an explicit workspace; and
  *   2. let `role=operator` in an unsigned URL surface the operator-tier
  *      catalog without role-allowlist filtering, because
  *      tryBuildSpawnContext returns kind=failed and role falls back to
@@ -2970,7 +3251,7 @@ function mcpInstructionsForServer(): string | undefined {
  *     tools. Listing hint only; tools/call is unaffected. tool-allowlist.ts.
  */
 async function resolveVisibleToolListings(extra: unknown): Promise<
-  | { kind: 'failed'; reason: string }
+  | { kind: 'failed'; reason: string; nativeSessionFailure?: NativeSessionAuthFailureMetadata }
   | {
       kind: 'ok' | 'none';
       spawnRes: TrySpawnContextResult;
@@ -2981,7 +3262,13 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
   const spawnRes = await tryBuildSpawnContext(extra);
   // WI-574 (loud auth-fail): carry the rejection reason so tools/list can fail LOUDLY instead of
   // silently advertising an empty tool list (which is indistinguishable from a healthy server).
-  if (spawnRes.kind === 'failed') return { kind: 'failed', reason: spawnRes.reason };
+  if (spawnRes.kind === 'failed') {
+    return {
+      kind: 'failed',
+      reason: spawnRes.reason,
+      ...(spawnRes.nativeSessionFailure ? { nativeSessionFailure: spawnRes.nativeSessionFailure } : {}),
+    };
+  }
   // external-app-access P-004 (D-012 side finding): a bare, unauthenticated probe
   // lists the catalog only for a LOCAL caller. Outside traffic (a tunnel, a relay, a
   // non-loopback Host) with no auth context gets the loud auth failure instead of a
@@ -2996,21 +3283,41 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
   const profile = rawProfile === 'generic' ? 'engineer' : rawProfile;
   const bypass = urlFromExtra(extra)?.searchParams.get('manifestBypass') === '1';
   let result = applyToolManifest(listMcpProjections(role, profile), { bypass });
-  if (spawnRes.kind === 'ok' && spawnRes.ctx.authenticatedPrincipal) {
-    const caps = spawnRes.ctx.authenticatedPrincipal.capabilities;
+  let requiredToolPrincipalAndAppFilter = (_name: string) => true;
+  let requiredToolListings: Map<string, ReturnType<typeof listMcpProjections>[number]> | null = null;
+  const requiredToolListing = (name: string): ReturnType<typeof listMcpProjections>[number] | undefined => {
+    requiredToolListings ??= new Map(
+      applyToolManifest(listMcpProjections(undefined, profile), { bypass })
+        .map((listing) => [listing.name, listing]),
+    );
+    return requiredToolListings.get(name);
+  };
+  const principal = spawnRes.kind === 'ok' ? spawnRes.ctx.authenticatedPrincipal : undefined;
+  if (spawnRes.kind === 'ok' && principal) {
+    // Bind the narrowed principal to a const: property narrowing on
+    // spawnRes.ctx.authenticatedPrincipal does not survive into the filter callback (TS18048).
+    const caps = principal.capabilities;
+    const allowedTools = principal.allowedTools;
+    const principalAllows = (name: string): boolean => {
+      const projected = lookupByMcpName(name);
+      return projected !== undefined &&
+        (allowedTools === undefined || allowedTools.has(name)) &&
+        projected.capabilities.every((capability) => caps.has(capability));
+    };
+    requiredToolPrincipalAndAppFilter = principalAllows;
     result = result.filter((listing) => {
       const name = (listing as { name?: unknown }).name;
-      if (typeof name !== 'string') return false;
-      const projected = lookupByMcpName(name);
-      return projected !== undefined && projected.capabilities.every((capability) => caps.has(capability));
+      return typeof name === 'string' && principalAllows(name);
     });
     // external-app-access P-003: an app key sees only the tools its scopes let it call —
     // the same policy the dispatch kernel seat enforces (connected-apps/enforce.ts).
     const appFilter = await appKeyToolListFilter(
-      spawnRes.ctx.authenticatedPrincipal,
+      principal,
       spawnRes.ctx.workspaceId,
     );
     if (appFilter) {
+      const principalAndAppAllows = requiredToolPrincipalAndAppFilter;
+      requiredToolPrincipalAndAppFilter = (name) => principalAndAppAllows(name) && appFilter(name);
       result = result.filter((listing) => {
         const name = (listing as { name?: unknown }).name;
         return typeof name === 'string' && appFilter(name);
@@ -3023,7 +3330,10 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
   // tools:invoke are themselves outside its grants) and show tools every call
   // will refuse. Ungoverned and unresolved sessions come back null: unchanged.
   const identityListings = spawnRes.kind === 'ok'
-    ? await identityAdmittedListings(spawnRes.ctx, result, extra)
+    ? await identityAdmittedListings(spawnRes.ctx, result, extra, {
+      requiredToolListing,
+      requiredToolAllowed: requiredToolPrincipalAndAppFilter,
+    })
     : null;
   if (identityListings) result = identityListings;
   // `?tools=` is the SEED, not a hard cap (dynamic-tool-surface-2026-07-01): a
@@ -3045,6 +3355,25 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
   // AFTER the allowlist filter so a compact name that is not advertised is
   // simply never reached.
   const compact = parseCompactToolNames(urlFromExtra(extra)?.searchParams.get('tools_compact'));
+  // Listing must expose the same launch authority that dispatch enforces.
+  // Apply this after identity-required additions, so neither those additions
+  // nor a growing discovery seed can widen an exact native launch ceiling.
+  if (spawnRes.kind === 'ok') {
+    try {
+      const ownerId = resolveAgentIdentity({
+        ...spawnRes.ctx,
+        // Bearer sessions carry their principal separately; signed-spawn and
+        // superuser sessions retain their existing transport owner attribution.
+        principal: spawnRes.ctx.authenticatedPrincipal
+          ? synthesizeTransportPrincipal(spawnRes.ctx) : undefined,
+      }).ownerId;
+      const confinement = await readSessionConfinement(ownerId, spawnRes.ctx.workspaceId);
+      if (confinement) result = result.filter(listing =>
+        evaluateSessionConfinement({ toolName: listing.name, confinement, purpose: 'listing' }).allowed);
+    } catch {
+      return { kind: 'failed', reason: 'session_confinement_unavailable' };
+    }
+  }
   return {
     kind: spawnRes.kind,
     spawnRes,
@@ -3059,15 +3388,21 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
 
 /**
  * The identity-kernel view of a transport session: the fields the kernel's
- * state read and grant gate resolve identity and workspace from, set exactly as
- * `buildMcpToolContext` sets them for a real call.
+ * state read and grant gate resolve identity and workspace from. Its principal
+ * uses the same capability-enrichment path as tools/call; the lightweight
+ * transport principal has no role capabilities, which hides app-worker grants
+ * while tools/list evaluates the governed surface.
  */
-function identitySurfaceContext(spawn: BuiltSpawnContext): UnifiedToolContext {
+async function identitySurfaceContext(spawn: BuiltSpawnContext): Promise<UnifiedToolContext> {
+  const principal = spawn.authenticatedPrincipal || spawn.isSuperuser || !dispatchNeedsTx(spawn)
+    ? synthesizeTransportPrincipal(spawn)
+    : await withWorkspace(spawn.workspaceId, (tx) => synthesizeDispatchPrincipal(tx, spawn));
   return {
     workspaceId: spawn.workspaceId,
     harnessSlug: spawn.harnessSlug,
-    principal: synthesizeTransportPrincipal(spawn),
+    principal,
     role: spawn.role,
+    advSessionId: spawn.advSessionId,
     uiClientId: spawn.uiClientId,
     sigVerifiedSpawn: spawn.sigVerifiedSpawn ?? false,
     isSuperuser: spawn.isSuperuser ?? false,
@@ -3086,6 +3421,18 @@ function mcpSessionKey(extra: unknown): string | null {
 }
 
 /**
+ * The serving generation a tools/call says its client listed, echoed from the
+ * `papercusp/servingGeneration` meta every tools/list entry carries. This is how
+ * a STATELESS transport, which has no session key, opts into the fence.
+ */
+function declaredServingGeneration(req: unknown): string | null {
+  const meta = (req as { params?: { _meta?: unknown } } | undefined)?.params?._meta;
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return null;
+  const declared = (meta as Record<string, unknown>)['papercusp/servingGeneration'];
+  return typeof declared === 'string' && declared.trim() ? declared.trim() : null;
+}
+
+/**
  * P-012 / D-040(b): the listings a governed identity's kernel admits, or null
  * to leave the listing unchanged. Records what was shown so a later attach can
  * be re-announced (D-040(c)). Visibility only: a failure here lists as before
@@ -3095,20 +3442,58 @@ async function identityAdmittedListings(
   spawn: BuiltSpawnContext,
   listings: ReturnType<typeof listMcpProjections>,
   extra: unknown,
+  operationOptions?: {
+    requiredToolListing: (name: string) => ReturnType<typeof listMcpProjections>[number] | undefined;
+    requiredToolAllowed: (name: string) => boolean;
+  },
 ): Promise<ReturnType<typeof listMcpProjections> | null> {
   const nameOf = (listing: unknown) => (listing as { name?: unknown }).name;
   const candidates = listings.flatMap((listing) => {
     const name = nameOf(listing);
     return typeof name === 'string' ? [{ name, capabilities: lookupByMcpName(name)?.capabilities ?? [] }] : [];
   });
+  const surfaceCandidates: Array<{ name: string; capabilities: readonly string[] }> = [...candidates];
+  const acceptedOperationListings = new Map<string, ReturnType<typeof listMcpProjections>[number]>();
   try {
     const surfaceModule = await import('../../../capability-envelope/identity-tool-surface');
-    const ctx = identitySurfaceContext(spawn);
-    const surface = await surfaceModule.resolveIdentityToolSurface(ctx, candidates);
+    const ctx = await identitySurfaceContext(spawn);
+    const surface = await surfaceModule.resolveIdentityToolSurface(ctx, candidates, undefined, (record) => {
+      if (!operationOptions || !record || typeof record !== 'object' || Array.isArray(record)) return [];
+      const acceptedOperation = (record as Record<string, unknown>).acceptedOperation;
+      if (!acceptedOperation || typeof acceptedOperation !== 'object' || Array.isArray(acceptedOperation)) return [];
+      const operation = acceptedOperation as Record<string, unknown>;
+      const requiredTools = operation.requiredTools;
+      if (operation.kind !== 'blueprint-operation-worker' ||
+          !Array.isArray(requiredTools) ||
+          !requiredTools.every((name) => typeof name === 'string' && name.length > 0)) return [];
+
+      const additional: Array<{ name: string; capabilities: readonly string[] }> = [];
+      for (const name of new Set(requiredTools as string[])) {
+        if (!operationOptions.requiredToolAllowed(name)) continue;
+        const listing = operationOptions.requiredToolListing(name);
+        const projected = lookupByMcpName(name);
+        if (!listing || !projected) continue;
+        acceptedOperationListings.set(name, listing);
+        additional.push({ name, capabilities: projected.capabilities });
+      }
+      const known = new Set(surfaceCandidates.map((candidate) => candidate.name));
+      for (const candidate of additional) {
+        if (!known.has(candidate.name)) {
+          surfaceCandidates.push(candidate);
+          known.add(candidate.name);
+        }
+      }
+      return additional;
+    });
     const sessionKey = mcpSessionKey(extra);
-    if (sessionKey) surfaceModule.rememberListedIdentitySurface(sessionKey, { ctx, candidates, surface });
+    if (sessionKey) surfaceModule.rememberListedIdentitySurface(sessionKey, { ctx, candidates: surfaceCandidates, surface });
     if (surface.kind !== 'governed') return null;
-    return listings.filter((listing) => {
+    const allListings = [...listings];
+    const existingNames = new Set(allListings.map((listing) => nameOf(listing)).filter((name): name is string => typeof name === 'string'));
+    for (const [name, listing] of acceptedOperationListings) {
+      if (!existingNames.has(name)) allListings.push(listing);
+    }
+    return allListings.filter((listing) => {
       const name = nameOf(listing);
       return typeof name === 'string' && surface.admitted.has(name);
     });
@@ -3119,31 +3504,106 @@ async function identityAdmittedListings(
 }
 
 /**
- * P-012 / D-040(c): after a tools/call, re-announce the listing if an attach
- * changed what the identity kernel admits. Awaited before the call returns so
- * `list_changed` rides the still-open request stream, as activateTools' does;
- * throttled per session, so almost every call returns straight away.
+ * A tools/call is admitted only against the exact serving generation the
+ * session last received from tools/list. A notification is a hint to list
+ * again; it never changes the session baseline. The post-call check catches a
+ * generation that moved during dispatch, while the pre-call check prevents a
+ * known-stale or unknown session from dispatching in the first place.
  */
-function withIdentitySurfaceRecheck<Req, Res>(
+function withMcpSessionSurfaceRecheck<Req, Res>(
   handler: (req: Req, extra: unknown) => Promise<Res>,
+  readGeneration: () => Promise<ServingGeneration> = readServingGeneration,
 ): (req: Req, extra: unknown) => Promise<Res> {
   return async (req, extra) => {
-    const result = await handler(req, extra);
+    const checkStartedAt = Date.now();
     const sessionKey = mcpSessionKey(extra);
     const sendNotification = (
       extra as { sendNotification?: (n: { method: string; params: Record<string, unknown> }) => Promise<void> } | undefined
     )?.sendNotification;
-    if (sessionKey && sendNotification) {
+    let listChangedSent = false;
+    const notifyListChanged = async () => {
+      if (!sessionKey || !sendNotification || listChangedSent) return;
+      await sendNotification({ method: 'notifications/tools/list_changed', params: {} });
+      listChangedSent = true;
+    };
+
+    // Refuse only what is PROVABLY stale (WI-10006051). The HTTP transport is
+    // STATELESS: mcp-handler builds a fresh server per POST with no
+    // sessionIdGenerator, so extra.sessionId is always absent there and no
+    // server-side tools/list baseline can exist for it. Treating "no session key"
+    // as stale refused EVERY HTTP tools/call, even straight after a successful
+    // tools/list. A stateless call can still opt into the fence by echoing the
+    // generation its listing carried (`_meta['papercusp/servingGeneration']`,
+    // stamped on every tools/list entry). An undeclared stateless call has
+    // nothing to compare against, so it is dispatched without the per-call
+    // generation read; argument validation and the kernel preflight still gate it.
+    const declaredGeneration = declaredServingGeneration(req);
+    if (!sessionKey && declaredGeneration === null) return handler(req, extra);
+
+    const before = await readGeneration();
+    if (before.state !== 'known') {
+      throw new Error(`serving_generation_unknown: ${before.reason}; tools/call is blocked before dispatch`);
+    }
+    const baselineState = sessionToolRegistryRevisionState(sessionKey, before.revision);
+    const staleBaseline = baselineState.status === 'missing' || baselineState.status === 'stale';
+    const staleDeclaration = declaredGeneration !== null && declaredGeneration !== before.revision;
+    if (staleBaseline || staleDeclaration) {
+      try {
+        await notifyListChanged();
+      } catch (err) {
+        console.warn(`[mcp-host] stale serving-generation notification failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      const requestedName = (req as { params?: { name?: unknown } } | null)?.params?.name;
+      logMcpRequestTrace(buildMcpSessionSurfaceTraceEvent({
+        traceId: resolveMcpRequestTraceId(extra),
+        toolName: typeof requestedName === 'string' ? requestedName : 'tools/call',
+        stage: 'stale_contract_rejected',
+        elapsedMs: Math.max(0, Date.now() - checkStartedAt),
+        extra,
+        sessionKey,
+        sessionBaseline: baselineState.status,
+        servingGeneration: before.revision,
+        ...(baselineState.status === 'current' || baselineState.status === 'stale'
+          ? { previousGeneration: baselineState.revision }
+          : {}),
+        ...(declaredGeneration !== null ? { declaredGeneration } : {}),
+        phase: 'pre_dispatch',
+        outcome: 'rejected',
+      }));
+      throw new Error(
+        staleBaseline
+          ? `stale_tool_contract: this MCP session has no tools/list baseline for the current serving generation ` +
+              `${before.revision}; call tools/list before retrying tools/call`
+          : `stale_tool_contract: this call declares serving generation ${declaredGeneration}, but the server now serves ` +
+              `${before.revision}; call tools/list before retrying tools/call`,
+      );
+    }
+
+    const result = await handler(req, extra);
+    if (sessionKey) {
+      const after = await readGeneration();
+      try {
+        if (after.state !== 'known' || after.revision !== before.revision) await notifyListChanged();
+      } catch (err) {
+        console.warn(`[mcp-host] serving-generation recheck failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
       try {
         const { recheckListedIdentitySurface } = await import('../../../capability-envelope/identity-tool-surface');
-        await recheckListedIdentitySurface(sessionKey, () =>
-          sendNotification({ method: 'notifications/tools/list_changed', params: {} }));
+        await recheckListedIdentitySurface(sessionKey, notifyListChanged);
       } catch (err) {
         console.warn(`[mcp-host] identity surface recheck failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     return result;
   };
+}
+
+/** The real call wrapper with a controllable revision source for focused tests. */
+export function __withMcpSessionSurfaceRecheckForTests<Req, Res>(
+  handler: (req: Req, extra: unknown) => Promise<Res>,
+  readGeneration: () => Promise<ServingGeneration>,
+): (req: Req, extra: unknown) => Promise<Res> {
+  return withMcpSessionSurfaceRecheck(handler, readGeneration);
 }
 
 /**
@@ -3184,8 +3644,144 @@ export function mcpHostServerOptions() {
 }
 
 /** Register the complete operator protocol on a transport-independent SDK server. */
+/** Only data from the authenticated transport crosses the existing owner RPC.
+ * Owner-local context functions, transactions and paid admission never do. */
+interface NativeMcpTargetRequest {
+  toolName: string;
+  args: Record<string, unknown> | undefined;
+  spawn: BuiltSpawnContext;
+  requestedFormat?: string;
+  requestedStructured?: boolean;
+  requestedDelta?: string;
+  idempotencyKey?: string;
+  fullSource: boolean;
+  structuredSource: boolean;
+  sourceProjection?: ProjectionSpec | null;
+  indirect: boolean;
+}
+
+function nativeMcpToolAddress(spawn: BuiltSpawnContext): SuNativeToolAddress | null {
+  const native = spawn.requestOrigin?.nativeSession;
+  if (native?.carrier !== 'meta:threadId' || native.binding !== 'bound' || !native.callIdFingerprint) return null;
+  if (spawn.workspaceId === '*' || spawn.advSessionId !== native.candidateAdvSessionId ||
+      !Number.isSafeInteger(spawn.advSessionId) || spawn.advSessionId! <= 0 ||
+      !/^[a-f0-9]{64}$/.test(native.callIdFingerprint) ||
+      !/^[a-f0-9]{64}$/.test(native.valueFingerprint)) throw new Error('native_tool_owner_invalid_lineage');
+  // Never substitute spawnId: it identifies this HTTP call, not the attached agent.
+  if (!spawn.uiClientId) throw new Error('native_tool_owner_missing_identity');
+  return { workspaceId: spawn.workspaceId, advSessionId: spawn.advSessionId!,
+    ownerId: resolveAgentIdentity(spawn).ownerId, nativeSessionIdFingerprint: native.valueFingerprint };
+}
+
+/** Normalize only the serializable recovery proof. Principal capability sets
+ * remain host-local; the owner revalidates this digest against its current key
+ * before any admission replay and binds the current native session context. */
+const NATIVE_TOOL_OWNER_UNSUPPORTED_CAPABILITY = 'native_tool_owner_unsupported_capability';
+
+export function normalizeNativeMcpOwnerSpawn(spawn: BuiltSpawnContext): BuiltSpawnContext {
+  if (spawn.authenticatedPrincipal) throw new Error(NATIVE_TOOL_OWNER_UNSUPPORTED_CAPABILITY);
+  const authority = spawn.admissionRecoveryAuthority;
+  if (authority === undefined) return spawn;
+  const parsed = admissionAuthoritySchema.safeParse(authority);
+  if (!parsed.success) throw new Error('native_tool_owner_invalid_authority');
+  return { ...spawn, admissionRecoveryAuthority: parsed.data };
+}
+
+export async function runNativeMcpTargetOnOwner(
+  request: NativeMcpTargetRequest,
+  local: () => Promise<McpCallResult>,
+  timeoutMs: number,
+): Promise<McpCallResult> {
+  const address = nativeMcpToolAddress(request.spawn);
+  if (!address) return local();
+  // PI/connected-app principal grants are host-local. The recovery proof is a
+  // schema-checked credential digest, not a saved grant; keep its current-key
+  // validation in admissionReplayContext on the owner. Normalize lazily so an
+  // owner-local call can keep its principal in-process without serializing it.
+  const ownerRequest = () => ({ ...request, spawn: normalizeNativeMcpOwnerSpawn(request.spawn) });
+  return runOnSuNativeToolOwner(address, ownerRequest, local, timeoutMs);
+}
+
+export async function recordMcpPreflightFailure(
+  target: ProjectedTool,
+  toolName: string,
+  ctx: UnifiedToolContext,
+  args: Record<string, unknown> | undefined,
+  startedAt: number,
+  error: unknown,
+): Promise<void> {
+  try {
+    const roleQuota = ctx.role ? target.rolesQuota?.[ctx.role] : undefined;
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    await PROJECTED_DEPS.recordInvocation?.({
+      toolName, pluginName: target.pluginName, ctx,
+      windowKey: PROJECTED_DEPS.computeQuotaWindow?.(ctx, roleQuota, toolName).key ?? '',
+      durationMs: Date.now() - startedAt, status: 'error',
+      // Preserve this intentional native-owner refusal as error_code so the shared
+      // classifier records a caller-side transport outcome, not a structural defect.
+      ...(errorMessage === NATIVE_TOOL_OWNER_UNSUPPORTED_CAPABILITY
+        ? { errorCode: NATIVE_TOOL_OWNER_UNSUPPORTED_CAPABILITY }
+        : {}),
+      errorMessage, args,
+    });
+  } catch (telemetryError) {
+    console.warn(`[mcp-handler] pre-dispatch telemetry failed for ${toolName}: ` +
+      (telemetryError instanceof Error ? telemetryError.message : String(telemetryError)));
+  }
+}
+
+/** OWNER side: re-resolve the canonical loaded plugin and synthesize its own
+ * context/transaction. Nested targets cannot re-enter the worker relay. */
+export async function dispatchNativeMcpTargetOnOwner(
+  body: unknown,
+  address: SuNativeToolAddress,
+): Promise<McpCallResult> {
+  const request = body as NativeMcpTargetRequest | null;
+  if (!request || typeof request.toolName !== 'string' || !request.spawn ||
+      request.spawn.authenticatedPrincipal ||
+      typeof request.fullSource !== 'boolean' || typeof request.structuredSource !== 'boolean' ||
+      typeof request.indirect !== 'boolean' ||
+      (request.args !== undefined && (!request.args || typeof request.args !== 'object' || Array.isArray(request.args))) ||
+      (request.requestedFormat !== undefined && typeof request.requestedFormat !== 'string') ||
+      (request.requestedDelta !== undefined && typeof request.requestedDelta !== 'string') ||
+      (request.requestedStructured !== undefined && typeof request.requestedStructured !== 'boolean') ||
+      (request.idempotencyKey !== undefined && validIdempotencyKey(request.idempotencyKey) !== request.idempotencyKey))
+    throw new Error('native_tool_owner_invalid_request');
+  const ownerRequest = { ...request, spawn: normalizeNativeMcpOwnerSpawn(request.spawn) };
+  const derived = nativeMcpToolAddress(ownerRequest.spawn);
+  if (!derived || derived.workspaceId !== address.workspaceId || derived.advSessionId !== address.advSessionId ||
+      derived.ownerId !== address.ownerId || derived.nativeSessionIdFingerprint !== address.nativeSessionIdFingerprint)
+    throw new Error('native_tool_owner_request_address_mismatch');
+  const projection = ownerRequest.sourceProjection ? parseProjection(ownerRequest.sourceProjection) : null;
+  if (projection && !projection.ok) throw new Error('native_tool_owner_invalid_projection');
+  const target = isPluginNamespacedToolName(ownerRequest.toolName)
+    ? await resolveMcpTargetAfterPluginHostWarm(ownerRequest.toolName) : resolveMcpName(ownerRequest.toolName);
+  if (!target?.expose?.mcp || target.expose.mcp.name !== ownerRequest.toolName)
+    throw new Error('native_tool_owner_target_unavailable');
+  const base = await buildMcpToolContext(ownerRequest.spawn, undefined, undefined, target.pluginName,
+    ownerRequest.requestedFormat, ownerRequest.requestedStructured, ownerRequest.requestedDelta, ownerRequest.idempotencyKey,
+    undefined, address);
+  const startedAt = Date.now();
+  let dispatchStarted = false;
+  try {
+    return await dispatchWithSynthesizedTx(target, ownerRequest.spawn, base, ctx => {
+      dispatchStarted = true;
+      return dispatchProjectedToolToMcp(target, ownerRequest.toolName, ownerRequest.args,
+        { ...projectionMaterializationContext(ctx, ownerRequest.fullSource, ownerRequest.structuredSource,
+          projection?.ok ? projection.spec : undefined), ...(ownerRequest.indirect ? { indirectDispatch: true } : {}) },
+        PROJECTED_DEPS) as Promise<McpCallResult>;
+    });
+  } catch (error) {
+    if (!dispatchStarted) await recordMcpPreflightFailure(target, ownerRequest.toolName, base, ownerRequest.args, startedAt, error);
+    throw error;
+  }
+}
+
+registerSuNativeToolDispatcher(dispatchNativeMcpTargetOnOwner);
+
 export function registerMcpHost(server: McpServer): void {
   server.server.setRequestHandler(sdk.ListToolsRequestSchema, async (_req: unknown, extra: unknown) => {
+    const listStartedAt = Date.now();
     // Shared visibility walk — see resolveVisibleToolListings above
     // (strict-mode + manifest + allowlist semantics documented there).
     const vis = await resolveVisibleToolListings(extra);
@@ -3196,6 +3792,14 @@ export function registerMcpHost(server: McpServer): void {
       // session that looks connected" class. Throw a specific JSON-RPC error so the client + agent
       // KNOW the session is unauthenticated and WHY. (Mirrors tools/call, which already hard-fails
       // a rejected spawn ctx.) A bare no-params probe is `kind:'none'`, not 'failed', and still lists.
+      await recordMcpAuthFailureTelemetry(
+        'tools/list',
+        extra,
+        vis.reason,
+        undefined,
+        listStartedAt,
+        vis.nativeSessionFailure,
+      );
       throw new Error(
         `mcp_auth_failed: ${vis.reason} — this MCP session is UNAUTHENTICATED, so it exposes NO tools ` +
           '(this is NOT "a healthy server with zero tools"). Typical causes: an EXPIRED per-spawn signed ' +
@@ -3203,88 +3807,119 @@ export function registerMcpHost(server: McpServer): void {
       );
     }
     const filtered = vis.listings;
+    const listedRegistryRevision =
+      filtered.map(listingRegistryRevision).find((revision) => revision !== 'unknown') ??
+      projectedToolRegistryRevision();
+    const servingGeneration = await readServingGeneration({ toolRegistryRevision: listedRegistryRevision });
+    if (servingGeneration.state !== 'known') {
+      throw new Error(`serving_generation_unknown: ${servingGeneration.reason}; tools/list cannot establish a baseline`);
+    }
     // Objectify boolean sub-schemas (z.unknown() → `true`) so strict
     // consumers (Ollama) can parse the surface. This is THE tools/list
     // the HTTP MCP transport serves (OMP/Claude/Codex bundles); applied
     // post-manifest so pinned schemas are covered too. tool-schema-sanitize.ts.
-    return {
-      tools: await Promise.all(
-        filtered.map(async (t) => {
-          const tt = t as { name?: string; inputSchema?: unknown; outputSchema?: unknown };
-          const out: Record<string, unknown> = { ...t };
-          // MCP clients use the standard annotation to decide whether a
-          // failed connection can safely replay a call. Keep the listing
-          // spread above so registry metadata in `_meta` survives while
-          // adding the effect-derived hint to the standard field.
-          const projected = typeof tt.name === 'string' ? lookupByMcpName(tt.name) : undefined;
-          const registryRevision = listingRegistryRevision(t);
-          const listingVariant = projected && tt.inputSchema === projected.inputSchema ? 'full' : 'derived';
-          if (projected?.effect) {
-            const existingAnnotations =
-              out.annotations && typeof out.annotations === 'object' && !Array.isArray(out.annotations)
-                ? (out.annotations as Record<string, unknown>)
-                : {};
-            out.annotations = {
-              ...existingAnnotations,
-              readOnlyHint: projected.effect === 'read',
-            };
-          }
-          if (tt.inputSchema) {
-            // Registry write-positional tools advertise a single `row` string
-            // (token-efficient-agent-io P-008) so the model emits a positional
-            // row; every other tool advertises its real args schema. Applied
-            // before sanitize so the swapped schema is objectified too.
-            const advertised =
-              typeof tt.name === 'string'
-                ? advertisedArgsSchema(tt.name, tt.inputSchema as Record<string, unknown>)
-                : (tt.inputSchema as Record<string, unknown>);
-            // Publish small entity vocabularies as enums (P-004b). The listing
-            // carries only the CONVERTED schema, so the entity-ref sites are
-            // read back off the tool's live args schema by name; a listing with
-            // no resolvable def (a plugin/pinned entry) simply gets no overlay.
-            // Entity-ref markers are WeakMap-keyed on the RAW Zod args-schema object
-            // identity (entity-ref.ts), so this needs the raw `ToolDefinition.args`
-            // from the legacy tool registry — `ProjectedTool` (lookupByMcpName) only
-            // carries the already-converted JSON `inputSchema`, a different object
-            // that was never entityRef()-marked, so it can never match here.
-            const def = typeof tt.name === 'string' ? lookupToolDefinitionByName(tt.name) : null;
-            const hasLiveEntityOverlay = Boolean(def?.args && hasEntityRefSchema(def.args));
-            if (hasLiveEntityOverlay) {
-              // Enum fragments can change while the process stays live, so this
-              // deliberately remains uncached. It is a small minority of the
-              // catalog; caching the static majority removes the reconnect-time
-              // deep-clone/GC burst without serving a stale vocabulary.
-              await applyEntityRefEnums(def!.args, advertised);
-              out.inputSchema = sanitizeToolSchema(advertised);
-            } else {
-              out.inputSchema = sanitizeToolSchemaCached(
-                `${registryRevision}:${tt.name ?? '(anonymous)'}:${listingVariant}`,
-                advertised,
-              );
-            }
-          }
-          // outputSchema (P-010) gets the same boolean-subschema objectification,
-          // but with position:'output' (EI-22064217935223876): unlike inputSchema,
-          // outputSchema is read back by the MCP client SDK to validate the tool's
-          // REAL return value, so it must NOT force `type: 'object'` onto a
-          // z.unknown()/z.any() result field whose actual value is a string, number,
-          // array, or boolean — see tool-schema-sanitize.ts's `SanitizePosition` doc.
-          if (tt.outputSchema) {
-            out.outputSchema = sanitizeToolSchemaCached(
-              `${registryRevision}:${tt.name ?? '(anonymous)'}:output`,
-              tt.outputSchema,
-              'output',
+    const tools = await Promise.all(
+      filtered.map(async (t) => {
+        const tt = t as { name?: string; inputSchema?: unknown; outputSchema?: unknown };
+        const out: Record<string, unknown> = { ...t };
+        // MCP clients use the standard annotation to decide whether a
+        // failed connection can safely replay a call. Keep the listing
+        // spread above so registry metadata in `_meta` survives while
+        // adding the effect-derived hint to the standard field.
+        const projected = typeof tt.name === 'string' ? lookupByMcpName(tt.name) : undefined;
+        const registryRevision = listingRegistryRevision(t);
+        const listingVariant = projected && tt.inputSchema === projected.inputSchema ? 'full' : 'derived';
+        if (projected?.effect) {
+          const existingAnnotations =
+            out.annotations && typeof out.annotations === 'object' && !Array.isArray(out.annotations)
+              ? (out.annotations as Record<string, unknown>)
+              : {};
+          out.annotations = {
+            ...existingAnnotations,
+            readOnlyHint: projected.effect === 'read',
+          };
+        }
+        if (tt.inputSchema) {
+          // Registry write-positional tools advertise a single `row` string
+          // (token-efficient-agent-io P-008) so the model emits a positional
+          // row; every other tool advertises its real args schema. Applied
+          // before sanitize so the swapped schema is objectified too.
+          const advertised =
+            typeof tt.name === 'string'
+              ? advertisedArgsSchema(tt.name, tt.inputSchema as Record<string, unknown>)
+              : (tt.inputSchema as Record<string, unknown>);
+          // Publish small entity vocabularies as enums (P-004b). The listing
+          // carries only the CONVERTED schema, so the entity-ref sites are
+          // read back off the tool's live args schema by name; a listing with
+          // no resolvable def (a plugin/pinned entry) simply gets no overlay.
+          // Entity-ref markers are WeakMap-keyed on the RAW Zod args-schema object
+          // identity (entity-ref.ts), so this needs the raw `ToolDefinition.args`
+          // from the legacy tool registry — `ProjectedTool` (lookupByMcpName) only
+          // carries the already-converted JSON `inputSchema`, a different object
+          // that was never entityRef()-marked, so it can never match here.
+          const def = typeof tt.name === 'string' ? lookupToolDefinitionByName(tt.name) : null;
+          const hasLiveEntityOverlay = Boolean(def?.args && hasEntityRefSchema(def.args));
+          if (hasLiveEntityOverlay) {
+            // Enum fragments can change while the process stays live, so this
+            // deliberately remains uncached. It is a small minority of the
+            // catalog; caching the static majority removes the reconnect-time
+            // deep-clone/GC burst without serving a stale vocabulary.
+            await applyEntityRefEnums(def!.args, advertised);
+            out.inputSchema = sanitizeToolSchema(advertised);
+          } else {
+            out.inputSchema = sanitizeToolSchemaCached(
+              `${registryRevision}:${tt.name ?? '(anonymous)'}:${listingVariant}`,
+              advertised,
             );
           }
-          return out;
-        }),
-      ),
-    };
+        }
+        // outputSchema (P-010) gets the same boolean-subschema objectification,
+        // but with position:'output' (EI-22064217935223876): unlike inputSchema,
+        // outputSchema is read back by the MCP client SDK to validate the tool's
+        // REAL return value, so it must NOT force `type: 'object'` onto a
+        // z.unknown()/z.any() result field whose actual value is a string, number,
+        // array, or boolean — see tool-schema-sanitize.ts's `SanitizePosition` doc.
+        const outputSchema = negotiatedMcpOutputSchema(tt.outputSchema,
+          urlFromExtra(extra)?.searchParams.get('structured') === '1');
+        // The registry also serves in-process consumers. Its schema is not a
+        // promise of structured MCP output until this connection requests it.
+        delete out.outputSchema;
+        if (outputSchema) {
+          out.outputSchema = sanitizeToolSchemaCached(
+            `${registryRevision}:${tt.name ?? '(anonymous)'}:output`,
+            outputSchema,
+            'output',
+          );
+        }
+        const existingMeta =
+          out._meta && typeof out._meta === 'object' && !Array.isArray(out._meta)
+            ? (out._meta as Record<string, unknown>)
+            : {};
+        out._meta = { ...existingMeta, 'papercusp/servingGeneration': servingGeneration.revision };
+        return out;
+      }),
+    );
+    // This handler is the sole baseline writer: a list_changed notification or
+    // observation from tools/call cannot prove that the client fetched this list.
+    const sessionKey = mcpSessionKey(extra);
+    rememberSessionToolRegistryRevision(sessionKey, servingGeneration.revision);
+    logMcpRequestTrace(buildMcpSessionSurfaceTraceEvent({
+      traceId: resolveMcpRequestTraceId(extra),
+      toolName: 'tools/list',
+      stage: 'tools_list_completed',
+      elapsedMs: Math.max(0, Date.now() - listStartedAt),
+      extra,
+      sessionKey,
+      sessionBaseline: sessionKey ? 'recorded' : 'unavailable',
+      servingGeneration: servingGeneration.revision,
+      outcome: 'success',
+    }));
+    return { tools };
   });
 
   server.server.setRequestHandler(
     sdk.CallToolRequestSchema,
-    withIdentitySurfaceRecheck(withFuzzyToolName(
+    withMcpRequestDeadline(withMcpSessionSurfaceRecheck(withFuzzyToolName(
     async (
       req: {
         params: {
@@ -3304,17 +3939,112 @@ export function registerMcpHost(server: McpServer): void {
       },
       extra: unknown,
     ) => {
-      await ensureOperatorToolsLoaded();
       const toolName = req.params.name;
       // Wall-clock at handler entry. The dispatcher stamps its own startedAt for
       // a real dispatch; this one exists for the paths that answer WITHOUT
       // dispatching — today the idempotency replay branch, whose telemetry row
       // records how long serving the stored result took (WI-6792).
-      const callStartedAt = Date.now();
+      const requestDeadline = mcpRequestDeadlineFor(extra);
+      const callStartedAt = requestDeadline?.startedAtMs ?? Date.now();
+      const requestStartedAtMonotonic = requestDeadline?.startedAtMonotonicMs ?? performance.now();
+      let deadlineMs = requestDeadline?.durationMs ?? effectiveMcpDeadlineMs(undefined);
+      // The local proxy owns and overwrites this UUID before forwarding. Keep a
+      // generated fallback for direct/native callers, then carry the same value
+      // through request, dispatch and deadline evidence without logging args.
+      const traceId = resolveMcpRequestTraceId(extra);
+      const traceExecution = createMcpRequestTraceExecutionContext();
+      const trace = (
+        stage: Parameters<typeof logMcpRequestTrace>[0]['stage'],
+        details: Omit<Parameters<typeof logMcpRequestTrace>[0], 'traceId' | 'toolName' | 'stage' | 'elapsedMs'> = {},
+      ): void => {
+        logMcpRequestTrace({
+          traceId,
+          toolName: toolName.slice(0, 120),
+          stage,
+          elapsedMs: Math.max(0, Date.now() - callStartedAt),
+          ...details,
+        });
+      };
+      const preDispatchPhaseTimings: Record<McpPreDispatchPhaseName, number | null> = {
+        operatorToolsLoad: null,
+        spawnContext: null,
+        transportScopeSetup: null,
+        toolContextBuild: null,
+        idempotencyReplayLookup: null,
+        dispatchPreflight: null,
+      };
+      let activePreDispatchPhase: McpPreDispatchPhaseName | null = null;
+      let activePreDispatchPhaseStartedAt: number | null = null;
+      const beginPreDispatchPhase = (phase: McpPreDispatchPhaseName): number => {
+        const startedAt = performance.now();
+        activePreDispatchPhase = phase;
+        activePreDispatchPhaseStartedAt = startedAt;
+        return startedAt;
+      };
+      const finishPreDispatchPhase = (phase: McpPreDispatchPhaseName, startedAt: number): number => {
+        const elapsedMs = Math.max(0, Math.round(performance.now() - startedAt));
+        preDispatchPhaseTimings[phase] = elapsedMs;
+        if (activePreDispatchPhase === phase && activePreDispatchPhaseStartedAt === startedAt) {
+          activePreDispatchPhase = null;
+          activePreDispatchPhaseStartedAt = null;
+        }
+        return elapsedMs;
+      };
+      const measurePreDispatchPhase = async <T>(
+        phase: McpPreDispatchPhaseName,
+        run: () => PromiseLike<T>,
+      ): Promise<T> => {
+        const startedAt = beginPreDispatchPhase(phase);
+        try {
+          return await run();
+        } finally {
+          finishPreDispatchPhase(phase, startedAt);
+        }
+      };
+      const preDispatchPhaseSnapshot = (): McpPreDispatchPhaseTimingsMs => {
+        const phases = { ...preDispatchPhaseTimings };
+        if (activePreDispatchPhase && activePreDispatchPhaseStartedAt !== null) {
+          phases[activePreDispatchPhase] = Math.max(
+            0,
+            Math.round(performance.now() - activePreDispatchPhaseStartedAt),
+          );
+        }
+        const measuredMs = Object.values(phases).reduce((sum, elapsedMs) => sum + (elapsedMs ?? 0), 0);
+        const elapsedMs = Math.max(0, performance.now() - requestStartedAtMonotonic);
+        return {
+          ...phases,
+          unattributedMs: Math.max(0, Math.round(elapsedMs - measuredMs)),
+        };
+      };
+      trace('request_started');
+      const earlyTimeoutResult = (): McpCallResult => {
+        trace('deadline', {
+          deadlineMs,
+          phase: 'pre_dispatch',
+          preDispatchPhaseTimingsMs: preDispatchPhaseSnapshot(),
+          ...(activePreDispatchPhase ? { preDispatchActivePhase: activePreDispatchPhase } : {}),
+        });
+        return {
+          isError: true,
+          content: [{
+            type: 'text' as const,
+            text: 'request_timeout: tool "' + toolName + '" exceeded ' + deadlineMs +
+              'ms during MCP request setup (target dispatch had not started; no mutation was started; request trace id: ' + traceId + ').',
+          }],
+        };
+      };
+      requestDeadline?.setTimeoutResult(earlyTimeoutResult);
+      await measurePreDispatchPhase('operatorToolsLoad', () => ensureOperatorToolsLoaded());
       // `let` (not const): the scoped-superuser clamp may RE-RESOLVE a wildcard
       // `harness:'all'` on plans:list into a workspace-wide read of the session's
       // own workspace (F-A1) before dispatch — see the clamp block below.
       let args = req.params.arguments ?? {};
+      // Result-door recovery advice needs the target name when tools:invoke returns
+      // a nested result; the outer tool name alone cannot select field-specific guidance.
+      const nestedTargetToolName =
+        toolName === 'tools:invoke' && typeof args.name === 'string'
+          ? args.name.trim().slice(0, 120) || undefined
+          : undefined;
       const progressToken = req.params._meta?.progressToken;
       // Write idempotency / result replay (audit P-046 / EI-68): a caller
       // that passes `_meta.idempotencyKey` gets its result persisted under
@@ -3366,6 +4096,8 @@ export function registerMcpHost(server: McpServer): void {
       // superuser-mode.mdx — the bypass logic lives in
       // dispatch-projected.ts, never in dispatch().
       const projected = lookupByMcpName(toolName);
+      deadlineMs = effectiveMcpDeadlineMs(projected?.timeoutSec);
+      requestDeadline?.setDurationMs(deadlineMs);
       // EI-9510: the replay-store round-trip (lookupStoredMcpResult /
       // storeMcpResult, both awaited on the hot path below) only matters for
       // a WRITE — a read-only tool has no mutation to double-apply, so
@@ -3376,19 +4108,26 @@ export function registerMcpHost(server: McpServer): void {
       // from the tool's capability suffix at defineTool time — skip both
       // the lookup and the store when it resolves to 'read'.
       const skipReplayForReadOnly = projected?.effect === 'read';
-      const spawnRes = await tryBuildSpawnContext(extra, {
+      const spawnRes = await measurePreDispatchPhase('spawnContext', () => tryBuildSpawnContext(extra, {
         // A stale bound plan can otherwise prevent the recovery bootstrap from
         // reaching the current fleet binding that would scope this request.
         // Direct declare-intent is admitted only for an explicit self-clear;
         // all non-clear declarations remain fail-closed on stale bindings.
         allowStalePlanRecovery: allowStalePlanRecoveryForMcpCall(toolName, args),
-      });
+      }));
 
       // Hard-fail spawn ctx with invalid signature — do NOT fall through
       // to legacy bearer dispatch. That's the whole point of the
       // verification step.
       if (spawnRes.kind === 'failed') {
-        await recordMcpAuthFailureTelemetry(toolName, extra, spawnRes.reason, projected, callStartedAt);
+        await recordMcpAuthFailureTelemetry(
+          toolName,
+          extra,
+          spawnRes.reason,
+          projected,
+          callStartedAt,
+          spawnRes.nativeSessionFailure,
+        );
         return {
           isError: true,
           content: [
@@ -3401,6 +4140,7 @@ export function registerMcpHost(server: McpServer): void {
       }
 
       if (projected && spawnRes.kind === 'ok') {
+        const transportScopeSetupStartedAt = beginPreDispatchPhase('transportScopeSetup');
         // Normally the session harness remains authoritative for the whole
         // request. The one narrow exception below (plans:get + an exact
         // plan-slug owner verified against the workspace index) rebinds this
@@ -3409,53 +4149,13 @@ export function registerMcpHost(server: McpServer): void {
         // context is the original ambient scope, while dispatch gets the
         // verified read target.
         let effectiveHarnessSlug = spawnRes.ctx.harnessSlug;
-        // Profile gate: power-profile callers cannot invoke Group A tools
-        // even if they know the name. Mirrors the tools/list filter so
-        // direct-name calls can't bypass the listing restriction.
-        if (spawnRes.ctx.profile === 'power' && projected.profile === 'engineer') {
-          return {
-            isError: true,
-            content: [
-              {
-                type: 'text' as const,
-                text: `tool_not_available_for_profile: "${toolName}" is not available in the power-engineer profile`,
-              },
-            ],
-          };
-        }
-        // scoped-superuser-workspace-clamp (P-006/P-007), flag-gated. A SCOPED
-        // superuser session (concrete workspaceId, not '*') is confined to its
-        // workspace: (a) a crossWorkspace tool — which bypasses the workspace tx
-        // (getOrgPg) and spans workspaces by design (see the P-062 admin-ctx
-        // branch below) — is DENIED, UNLESS it is on the scoped-safe allowlist
-        // (self-confines to the caller's own workspace + read-only; EI-1810);
-        // (b) its per-call `workspace` arg is overwritten with the clamped
-        // workspace (mirrors the power-user clamp). Only an UNSCOPED ('*')
-        // superuser may span. Flag OFF → no-op.
-        const scopedSuperuserClamp =
-          spawnRes.ctx.isSuperuser === true &&
-          spawnRes.ctx.workspaceId !== '*' &&
-          (await getFlag(FLAGS.SCOPED_SUPERUSER_CLAMP, 'system'));
-        if (
-          scopedSuperuserClamp &&
-          projected.crossWorkspace === true &&
-          !isScopedSafeCrossWorkspaceTool(toolName) &&
-          // GLOBAL-config superuser meta-controls (flags:*) are exempt — they touch no
-          // per-workspace tenant data, and denying flags:set circularly locks the
-          // operator out of the very control that governs this clamp. See
-          // SUPERUSER_GLOBAL_FLAG_ADMIN above for the security review.
-          !isSuperuserGlobalFlagAdmin(toolName)
-        ) {
-          return {
-            isError: true,
-            content: [
-              {
-                type: 'text' as const,
-                text: `workspace_forbidden: "${toolName}" spans workspaces, but this session is scoped to workspace "${spawnRes.ctx.workspaceId}". Use an unscoped (--all-workspaces) superuser session to span workspaces.`,
-              },
-            ],
-          };
-        }
+        const boundary = await applyScopedSuperuserTransportBoundary(
+          { name: toolName, crossWorkspace: projected.crossWorkspace, profile: projected.profile },
+          spawnRes.ctx,
+          { readForAllTools: true },
+        );
+        if (!boundary.ok) return boundary.result;
+        const scopedSuperuserClamp = boundary.scopedSuperuserClamp;
         // scoped-superuser-workspace-clamp (P-008, security half): a scoped session
         // may NOT use the harness:'all'/'*' GLOBAL escape — resolvePlanScope maps it
         // to PAPERCUSP_WORKSPACE_ID/papercup, a cross-scope read. Re-resolve only
@@ -3529,7 +4229,11 @@ export function registerMcpHost(server: McpServer): void {
               // fail OPEN — let the tool resolve/fail loud rather than block a same-name slug.
               harnessWs = null;
             }
-            if (harnessWs && harnessWs !== spawnRes.ctx.workspaceId) {
+            if (
+              harnessWs &&
+              harnessWs !== spawnRes.ctx.workspaceId &&
+              !isAmbientHarnessCompatibilityTarget(toolName, 'harness')
+            ) {
               return {
                 isError: true,
                 content: [
@@ -3597,6 +4301,7 @@ export function registerMcpHost(server: McpServer): void {
                 argHarness,
                 args,
               );
+              const isAmbientHarnessCompatibility = isAmbientHarnessCompatibilityTarget(toolName, 'harness');
               const isReservedHarnesslessRoutineTarget = isExplicitReservedHarnesslessRoutineTarget(
                 toolName,
                 'harness',
@@ -3608,6 +4313,7 @@ export function registerMcpHost(server: McpServer): void {
               const escapes =
                 !isEngineeringDocsSurface &&
                 !isPlatformPotGitSyncTarget &&
+                !isAmbientHarnessCompatibility &&
                 !isReservedHarnesslessRoutineTarget &&
                 !isSelfOwnedCheckpointRead &&
                 (argHarness === 'all' ||
@@ -3818,7 +4524,8 @@ export function registerMcpHost(server: McpServer): void {
             for (const { arg, slug } of collectHarnessSlugArgs(args, { toolName })) {
               if (
                 isExplicitPlatformPotGitSyncTarget(toolName, arg, slug, args) ||
-                isExplicitReservedHarnesslessRoutineTarget(toolName, arg, slug, args, spawnRes.ctx.workspaceId)
+                isExplicitReservedHarnesslessRoutineTarget(toolName, arg, slug, args, spawnRes.ctx.workspaceId) ||
+                isAmbientHarnessCompatibilityTarget(toolName, arg)
               ) continue;
               const escapesHive =
                 slug === 'all' ||
@@ -3950,6 +4657,14 @@ export function registerMcpHost(server: McpServer): void {
             }
           }
         }
+        const effectiveCallEffect = (() => {
+          try {
+            const dynamicEffect = projected?.effectForCall?.(dispatchArgs);
+            return dynamicEffect === 'read' || dynamicEffect === 'write' ? dynamicEffect : projected?.effect;
+          } catch {
+            return projected?.effect;
+          }
+        })();
         // Durable coordination/replay keys stay scoped to the caller's STABLE identity: uiClientId
         // (the per-session SID for SU/power sessions, where spawnId is per-request) falling back
         // to spawnId (stable for signed orchestrator spawns). Advisory nudge state has a narrower
@@ -3992,7 +4707,8 @@ export function registerMcpHost(server: McpServer): void {
           effectiveWs === effectiveSpawnCtx.workspaceId
             ? effectiveSpawnCtx
             : { ...effectiveSpawnCtx, workspaceId: effectiveWs };
-        const baseCtx = await buildMcpToolContext(
+        finishPreDispatchPhase('transportScopeSetup', transportScopeSetupStartedAt);
+        const baseCtx = await measurePreDispatchPhase('toolContextBuild', () => buildMcpToolContext(
           dispatchSpawnCtx,
           progressToken,
           sendNotification,
@@ -4002,7 +4718,7 @@ export function registerMcpHost(server: McpServer): void {
           requestedDelta,
           idempotencyKey ?? undefined,
           (extra as { signal?: AbortSignal } | undefined)?.signal,
-        );
+        ));
         // Cancellation may arrive during asynchronous context construction.
         // Do not dispatch a new mutation after that already-aborted request.
         baseCtx.signal.throwIfAborted();
@@ -4029,7 +4745,10 @@ export function registerMcpHost(server: McpServer): void {
         // buildMcpToolContext is construction plus one registry-backed path read.
         if (idempotencyKey && !skipReplayForReadOnly) {
           try {
-            const stored = await lookupStoredMcpResult(replayOwnerKey, idempotencyKey);
+            const stored = await measurePreDispatchPhase(
+              'idempotencyReplayLookup',
+              () => lookupStoredMcpResult(replayOwnerKey, idempotencyKey),
+            );
             if (stored) {
               // Telemetry gets its OWN try/catch, deliberately not the outer one:
               // a throw caught outside would fall through to normal execution and
@@ -4079,21 +4798,20 @@ export function registerMcpHost(server: McpServer): void {
                     (err instanceof Error ? err.message : String(err)),
                 );
               }
-              const storedResult = stored as {
-                content: Array<{ type: 'text'; text: string } | Record<string, unknown>>;
-                isError?: boolean;
-                _meta?: Record<string, unknown>;
-                structuredContent?: unknown;
-              };
+              const storedResult = normalizeStructuredReplayResult(stored, requestedStructured);
               // P-006 / D-014: a replay is still model-facing output. Stored
               // outcomes were already per-result-doored before persistence,
               // but this request must consume the CURRENT aggregate cohort or
               // retry fan-out can bypass the one-budget invariant entirely.
+              const preservePaths = resultDoorPreservePaths(storedResult, projectionSpec?.pick);
               const replayedResult = projected.skipResultDoor
                 ? storedResult
-                : await applyResultDoorAsync(storedResult, {
-                    toolName,
-                    workspaceId: dispatchSpawnCtx.workspaceId,
+              : await applyResultDoorAsync(storedResult, {
+                  toolName,
+                  nestedTargetToolName,
+                  effect: effectiveCallEffect,
+                  workspaceId: dispatchSpawnCtx.workspaceId,
+                  requestTraceId: traceId,
                     runId: dispatchSpawnCtx.runId ?? null,
                     ownerId: (() => {
                       try {
@@ -4112,9 +4830,9 @@ export function registerMcpHost(server: McpServer): void {
                       }
                     })(),
                     aggregateScope,
-                    ...(projectionSpec?.pick ? { preservePaths: projectionSpec.pick } : {}),
+                    ...(preservePaths ? { preservePaths } : {}),
                   });
-              return withMcpDiagnosticWarnings(replayedResult, dispatchSpawnCtx);
+              return withMcpDiagnosticWarnings(stripNestedResultDoorControls(replayedResult), dispatchSpawnCtx);
             }
           } catch (err) {
             console.warn(
@@ -4160,23 +4878,108 @@ export function registerMcpHost(server: McpServer): void {
            * on a P2-5 deadline those differ, and persisting the raced timeout
            * envelope would make every retry replay the timeout instead of the real
            * outcome.
-           */
+          */
           toolOutcome: Promise<McpCallResult> | null;
           /**
            * Set when the deadline branch wins the race — the caller has already been
            * answered, so the receipt must be persisted in the BACKGROUND rather than
            * blocking the response on a tool that is still running server-side.
-           */
+          */
           deadlineFired: boolean;
-        } = { toolOutcome: null, deadlineFired: false };
+          innerDispatchStarted: boolean;
+          innerDispatchSettled: boolean;
+          postDispatchStartedAtMs: number | null;
+          phaseTimingsMs: {
+            resultDoor: number | null;
+            advisory: number | null;
+            advisoryFlagReads: number;
+            scratchWrites?: { count: number; perSpill: ScratchWriteTimings[] } & ScratchWriteTimings;
+          };
+          preDispatchPhaseTimingsMs: McpPreDispatchPhaseTimingsMs | null;
+        } = {
+          toolOutcome: null,
+          deadlineFired: requestDeadline?.didExpire ?? false,
+          innerDispatchStarted: false,
+          innerDispatchSettled: false,
+          postDispatchStartedAtMs: null,
+          phaseTimingsMs: { resultDoor: null, advisory: null, advisoryFlagReads: 0 },
+          preDispatchPhaseTimingsMs: null,
+        };
+        let dispatchPreflightStartedAt: number | null = null;
+        const markInnerDispatchStarted = (deadlineMs: number): void => {
+          if (dispatchPreflightStartedAt !== null) {
+            finishPreDispatchPhase('dispatchPreflight', dispatchPreflightStartedAt);
+          }
+          raced.innerDispatchStarted = true;
+          raced.preDispatchPhaseTimingsMs = preDispatchPhaseSnapshot();
+          trace('inner_dispatch_started', {
+            deadlineMs,
+            preDispatchPhaseTimingsMs: raced.preDispatchPhaseTimingsMs,
+          });
+        };
+        const settlementPhaseTimings = () => {
+          const operationTimings = mcpRequestTraceOperationTimings(traceExecution);
+          return {
+            phaseTimingsMs: {
+              postDispatchToSettlement:
+                raced.postDispatchStartedAtMs === null
+                  ? null
+                  : Math.max(0, Date.now() - raced.postDispatchStartedAtMs),
+              resultDoor: raced.phaseTimingsMs.resultDoor,
+              advisory: raced.phaseTimingsMs.advisory,
+              advisoryFlagReads: raced.phaseTimingsMs.advisoryFlagReads,
+              ...(raced.phaseTimingsMs.scratchWrites ? { scratchWrites: raced.phaseTimingsMs.scratchWrites } : {}),
+              ...(operationTimings ? { operationTimings } : {}),
+            },
+            ...(raced.preDispatchPhaseTimingsMs
+              ? { preDispatchPhaseTimingsMs: raced.preDispatchPhaseTimingsMs }
+              : {}),
+          };
+        };
+        const readAdvisoryFlag = async (flag: Parameters<typeof getFlag>[0]): Promise<boolean> => {
+          const startedAtMs = Date.now();
+          try {
+            return await getFlag(flag, 'system');
+          } finally {
+            raced.phaseTimingsMs.advisoryFlagReads += Math.max(0, Date.now() - startedAtMs);
+          }
+        };
         // P2-5 must cover workspace/principal synthesis as well as the tool
         // handler. Keep one deadline result and one deadline origin for both
         // races so a slow pre-dispatch acquisition cannot start a handler
         // after the caller has already received a timeout.
-        const deadlineMs = effectiveMcpDeadlineMs(projected.timeoutSec);
-        const deadlineAt = deadlineMs > 0 ? Date.now() + deadlineMs : null;
+        const deadlineAt = requestDeadline?.deadlineAtMs ??
+          (deadlineMs > 0 ? callStartedAt + deadlineMs : null);
+        const remainingDeadlineMs = () => requestDeadline?.remainingMs() ??
+          (deadlineAt === null ? deadlineMs : Math.max(0, deadlineAt - Date.now()));
         const timeoutResult = (): McpCallResult => {
-          raced.deadlineFired = true;
+          const preDispatchDeadline = !raced.innerDispatchStarted;
+          if (!raced.deadlineFired) {
+            raced.deadlineFired = true;
+            trace('deadline', {
+              deadlineMs,
+              phase: raced.innerDispatchStarted ? 'inner_dispatch' : 'pre_dispatch',
+              ...(preDispatchDeadline
+                ? {
+                    preDispatchPhaseTimingsMs: preDispatchPhaseSnapshot(),
+                    ...(activePreDispatchPhase ? { preDispatchActivePhase: activePreDispatchPhase } : {}),
+                  }
+                : {}),
+            });
+          }
+          // EI-25270415606873353: read-only calls skip replay lookup and persistence,
+          // so do not promise that retrying their key will replay this attempt's result.
+          if (skipReplayForReadOnly) {
+            return {
+              isError: true,
+              content: [
+                {
+                  type: 'text' as const,
+                  text: formatMcpReadOnlyDeadlineMessage(toolName, deadlineMs, traceId),
+                },
+              ],
+            };
+          }
           return {
             isError: true,
             content: [
@@ -4213,11 +5016,13 @@ export function registerMcpHost(server: McpServer): void {
             ],
           };
         };
+        requestDeadline?.setTimeoutResult(timeoutResult);
         const runDispatch = async (ctx: UnifiedToolContext): Promise<McpCallResult> => {
           // The tool execution as ONE promise, so the P2-5 deadline can return a
-          // clean client error WITHOUT cancelling it: it completes server-side and
-          // its outcome is still persisted (P-046/EI-68), so a retry with the same
-          // idempotencyKey replays the outcome instead of re-running.
+          // clean client error WITHOUT cancelling it: keyed writes persist their
+          // outcome (P-046/EI-68), so a retry with the same idempotencyKey replays it.
+          // Read-only results are intentionally not persisted because rerunning a read
+          // cannot double-apply a mutation.
           const execute = async (): Promise<McpCallResult> => {
             // P-006 leg C: cap this model-facing result at the resultEach door
             // (spill-to-scratch + pointer). AFTER the delta proxy — a delta
@@ -4245,17 +5050,48 @@ export function registerMcpHost(server: McpServer): void {
                     projectionSpec?.pick !== undefined,
                     projectionSpec,
                   );
-                  return (await dispatchProjectedToolToMcp(
+                  const runLocalTarget = () => dispatchProjectedToolToMcp(
                     projected,
                     toolName,
                     dispatchArgs,
                     materializationCtx,
                     PROJECTED_DEPS,
-                  )) as McpCallResult;
+                  ) as Promise<McpCallResult>;
+                  // Native admission lives in the attached engine's worker.
+                  // This hop precedes generic gates and monetary reservation.
+                  if (nativeMcpToolAddress(dispatchSpawnCtx)) {
+                    return runNativeMcpTargetOnOwner({
+                      toolName: projected.expose.mcp!.name, args: dispatchArgs, spawn: dispatchSpawnCtx, requestedFormat,
+                      requestedStructured, requestedDelta: materializationCtx.requestedDelta,
+                      idempotencyKey: idempotencyKey ?? undefined, fullSource: projectionNeedsFullSource,
+                      structuredSource: projectionSpec?.pick !== undefined, sourceProjection: projectionSpec,
+                      indirect: false,
+                    }, () => dispatchWithSynthesizedTx(projected, dispatchSpawnCtx, materializationCtx, async localCtx => {
+                      if (raced.deadlineFired || (deadlineAt !== null && Date.now() >= deadlineAt)) {
+                        if (!raced.deadlineFired) {
+                          raced.deadlineFired = true;
+                          trace('deadline', {
+                            deadlineMs,
+                            phase: 'pre_dispatch',
+                            preDispatchPhaseTimingsMs: preDispatchPhaseSnapshot(),
+                            ...(activePreDispatchPhase ? { preDispatchActivePhase: activePreDispatchPhase } : {}),
+                          });
+                        }
+                        throw new Error(`MCP dispatch deadline expired before tool "${toolName}" started`);
+                      }
+                      dispatchStarted = true;
+                      markInnerDispatchStarted(deadlineMs);
+                      return dispatchProjectedToolToMcp(projected, toolName, dispatchArgs, localCtx, PROJECTED_DEPS) as Promise<McpCallResult>;
+                    }), deadlineMs);
+                  }
+                  return runLocalTarget();
                 },
+              }).then((result) => {
+                raced.postDispatchStartedAtMs = Date.now();
+                return result;
               }),
               projectionSpec,
-              { toolName, effect: projected?.effect },
+              { toolName, effect: effectiveCallEffect },
             );
             // P-001 named views: applied AFTER free-form projection (so an
             // explicit `pick` still composes) and BEFORE the door, on the same
@@ -4263,6 +5099,7 @@ export function registerMcpHost(server: McpServer): void {
             // door's fixed policy rather than racing it.
             const viewedResult = namedView ? applyNamedViewToResult(projectedResult, namedView) : projectedResult;
             const doorInput = stripImplicitProjectionFullRequest(viewedResult, projectionNeedsFullSource, ctx);
+            const preservePaths = resultDoorPreservePaths(doorInput, projectionSpec?.pick);
             // EI-19386201256023240: a tool whose documented/near-exclusive
             // caller is a programmatic client (a shell hook `json.loads`-ing
             // the raw body — e.g. activity:report's hook_bundle fold — see
@@ -4283,34 +5120,216 @@ export function registerMcpHost(server: McpServer): void {
               projectionSpec || namedView
                 ? undefined
                 : (projected.skipResultDoor ?? nestedResultDoorSkipReason(doorInput));
-            const doored = resultDoorSkipReason
-              ? doorInput
-              : await applyResultDoorAsync(doorInput, {
+            const resultDoorStartedAtMs = Date.now();
+            const resultDoorOwnerId = (() => {
+              try {
+                // Resource reads synthesize a principal whose slug is this
+                // signed session's client id. Use the same identity source as
+                // the scratch manifest and the replay owner key.
+                return resolveAgentIdentity(
+                  dispatchSpawnCtx.sigVerifiedSpawn &&
+                  !dispatchSpawnCtx.authenticatedPrincipal &&
+                  !dispatchSpawnCtx.isSuperuser &&
+                  !dispatchSpawnCtx.isPowerUser
+                    ? dispatchSpawnCtx
+                    : ctx,
+                ).ownerId;
+              } catch {
+                return null;
+              }
+            })();
+            let doored: typeof doorInput;
+            try {
+              doored = resultDoorSkipReason
+                ? doorInput
+                : await applyResultDoorAsync(doorInput, {
                   toolName,
+                  nestedTargetToolName,
+                  effect: effectiveCallEffect,
                   workspaceId: dispatchSpawnCtx.workspaceId,
+                  requestTraceId: traceId,
+                  onScratchWritePending: (timeout) => backfillResultDoorOutputRef({
+                    workspaceId: dispatchSpawnCtx.workspaceId,
+                    spawnId: dispatchSpawnCtx.spawnId,
+                    toolName: nestedTargetToolName ?? toolName,
+                    runId: dispatchSpawnCtx.runId ?? null,
+                    mcpRequestTraceId: dispatchSpawnCtx.requestOrigin?.mcpRequestTraceId ?? null,
+                    outputRef: timeout.spillUri,
+                    outputSize: null,
+                    metadataJson: {
+                      returnedContextBytes: timeout.returnedContextBytes,
+                      spilledBytes: 0,
+                      spillPath: timeout.spillPath,
+                      spillUri: timeout.spillUri,
+                      spillPending: true,
+                      spillFailed: false,
+                      spillError: `result-door scratch spill write exceeded ${timeout.timeoutMs}ms`,
+                      spillErrorCode: 'ETIMEDOUT',
+                      spillTimeoutCount: 1,
+                      spillTimeoutMs: timeout.timeoutMs,
+                      spillTimeoutAt: timeout.timedOutAt,
+                      resultDoorReason: timeout.reason,
+                      aggregateOutputEscape: timeout.aggregateOutputEscape,
+                    },
+                  }),
+                  onLateScratchWriteSettled: (settlement) => {
+                    const settledAt = new Date().toISOString();
+                    const scratchWriteTimings = raced.phaseTimingsMs.scratchWrites;
+                    return backfillResultDoorOutputRef({
+                      workspaceId: dispatchSpawnCtx.workspaceId,
+                      spawnId: dispatchSpawnCtx.spawnId,
+                      toolName: nestedTargetToolName ?? toolName,
+                      runId: dispatchSpawnCtx.runId ?? null,
+                      mcpRequestTraceId: dispatchSpawnCtx.requestOrigin?.mcpRequestTraceId ?? null,
+                      outputRef: settlement.spillUri,
+                      outputSize: settlement.status === 'persisted' ? settlement.originalBytes : null,
+                      matchOutputRef: settlement.spillUri,
+                      metadataJson: {
+                        returnedContextBytes: settlement.returnedContextBytes,
+                        spilledBytes: settlement.status === 'persisted' ? settlement.originalBytes : 0,
+                        spillPath: settlement.spillPath,
+                        spillUri: settlement.spillUri,
+                        spillPending: false,
+                        spillFailed: settlement.status === 'failed',
+                        spillError: settlement.status === 'failed' ? 'spill write failed after timeout' : null,
+                        spillErrorCode: settlement.errorCode ?? null,
+                        spillSettlementStatus: settlement.status,
+                        spillSettledAt: settledAt,
+                        ...(scratchWriteTimings
+                          ? {
+                              scratchWriteTimings: { ...scratchWriteTimings },
+                              mcpRequestSettlement: {
+                                phaseTimingsMs: {
+                                  scratchWrites: { ...scratchWriteTimings },
+                                },
+                              },
+                            }
+                          : {}),
+                        resultDoorReason: settlement.reason,
+                        aggregateOutputEscape: settlement.aggregateOutputEscape,
+                      },
+                    });
+                  },
+                  onScratchWriteTiming: (timings) => {
+                    if (timings.progress) {
+                      trace('scratch_write_progress', {
+                        scratchWriteProgress: timings.progress,
+                      });
+                      const phase = timings.progress.phase.replace(/-/g, ' ');
+                      ctx.progress(
+                        0,
+                        `Preparing the tool result; scratch ${phase} has taken ${Math.ceil(timings.progress.phaseElapsedMs / 1_000)}s.`,
+                      );
+                      return;
+                    }
+                    const total = raced.phaseTimingsMs.scratchWrites ??= {
+                      count: 0, perSpill: [], quotaWaitMs: 0, refreshWaitMs: 0,
+                      quotaRecoveryMs: 0, quotaStateReadMs: 0, quotaStatePublishMs: 0,
+                      markerProbeMs: 0, localMutexWaitMs: 0, fsMutexAdmissionMs: 0,
+                      writeMs: 0, totalMs: 0,
+                    };
+                    total.count += 1;
+                    total.perSpill.push({
+                      ...timings,
+                      ...(timings.awaitSubphaseTimingsMs
+                        ? { awaitSubphaseTimingsMs: { ...timings.awaitSubphaseTimingsMs } }
+                        : {}),
+                      ...(timings.quotaRecoveryDiagnostics
+                        ? { quotaRecoveryDiagnostics: { ...timings.quotaRecoveryDiagnostics } }
+                        : {}),
+                    });
+                    for (const phase of [
+                      'quotaWaitMs',
+                      'refreshWaitMs',
+                      'quotaRecoveryMs',
+                      'quotaStateReadMs',
+                      'quotaStatePublishMs',
+                      'markerProbeMs',
+                      'localMutexWaitMs',
+                      'fsMutexAdmissionMs',
+                      'writeMs',
+                      'totalMs',
+                    ] as const) {
+                      total[phase] = (total[phase] ?? 0) + (timings[phase] ?? 0);
+                    }
+                    if (timings.awaitSubphaseTimingsMs) {
+                      const subphases = total.awaitSubphaseTimingsMs ??= {};
+                      for (const [name, elapsedMs] of Object.entries(timings.awaitSubphaseTimingsMs)) {
+                        subphases[name] = (subphases[name] ?? 0) + elapsedMs;
+                      }
+                    }
+                    const recovery = timings.quotaRecoveryDiagnostics;
+                    if (recovery) {
+                      const recoveryTotal = total.quotaRecoveryDiagnostics ??= {
+                        sizeWalkMs: 0,
+                        sizeWalkDirectories: 0,
+                        sizeWalkEntries: 0,
+                        sizeWalkFiles: 0,
+                        readdirOperations: 0,
+                        statOperations: 0,
+                        operationTotalMs: 0,
+                        maxOperationMs: 0,
+                        maxOperationKind: null,
+                        currentOperationKind: null,
+                        currentOperationElapsedMs: 0,
+                        directoryReadErrors: 0,
+                        fileStatErrors: 0,
+                        runListingMs: 0,
+                        runsListed: 0,
+                        selectedRunSizingMs: 0,
+                        runsConsidered: 0,
+                        fallbackRunSizes: 0,
+                        deletionMs: 0,
+                        deleteAttempts: 0,
+                        runsDeleted: 0,
+                        deletedBytes: 0,
+                      };
+                      for (const field of [
+                        'sizeWalkMs',
+                        'sizeWalkDirectories',
+                        'sizeWalkEntries',
+                        'sizeWalkFiles',
+                        'readdirOperations',
+                        'statOperations',
+                        'operationTotalMs',
+                        'directoryReadErrors',
+                        'fileStatErrors',
+                        'runListingMs',
+                        'runsListed',
+                        'selectedRunSizingMs',
+                        'runsConsidered',
+                        'fallbackRunSizes',
+                        'deletionMs',
+                        'deleteAttempts',
+                        'runsDeleted',
+                        'deletedBytes',
+                      ] as const) {
+                        recoveryTotal[field] += recovery[field];
+                      }
+                      if (recovery.maxOperationMs > recoveryTotal.maxOperationMs) {
+                        recoveryTotal.maxOperationMs = recovery.maxOperationMs;
+                        recoveryTotal.maxOperationKind = recovery.maxOperationKind;
+                      }
+                      recoveryTotal.currentOperationKind = recovery.currentOperationKind;
+                      recoveryTotal.currentOperationElapsedMs = recovery.currentOperationElapsedMs;
+                    }
+                    if (raced.innerDispatchSettled) {
+                      trace('scratch_write_settled', {
+                        afterDeadline: raced.deadlineFired,
+                        scratchWriteTimings: { ...timings },
+                      });
+                    }
+                  },
                   runId: dispatchSpawnCtx.runId ?? null,
                   // P-023: key the per-session door override on the SAME identity
                   // config:doors-set-session stamps (resolveAgentIdentity, never runId).
-                  ownerId: (() => {
-                    try {
-                      // Resource reads synthesize a principal whose slug is
-                      // this signed session's client id. Match that identity
-                      // when writing the owner-only spill manifest.
-                      return resolveAgentIdentity(
-                        dispatchSpawnCtx.sigVerifiedSpawn &&
-                        !dispatchSpawnCtx.authenticatedPrincipal &&
-                        !dispatchSpawnCtx.isSuperuser &&
-                        !dispatchSpawnCtx.isPowerUser
-                          ? dispatchSpawnCtx
-                          : ctx,
-                      ).ownerId;
-                    } catch {
-                      return null;
-                    }
-                  })(),
+                  ownerId: resultDoorOwnerId,
                   aggregateScope,
-                  ...(projectionSpec?.pick ? { preservePaths: projectionSpec.pick } : {}),
-                });
+                  ...(preservePaths ? { preservePaths } : {}),
+                  });
+            } finally {
+              raced.phaseTimingsMs.resultDoor = Math.max(0, Date.now() - resultDoorStartedAtMs);
+            }
             // EI-19415249247575123: a `not_found` returned while this process is KNOWN to
             // have talked to a DIFFERENT Postgres cluster is a confidently wrong answer —
             // the most expensive shape available here, because an agent that trusts it
@@ -4329,7 +5348,7 @@ export function registerMcpHost(server: McpServer): void {
             // may be from the WRONG database" is exactly the warning a bootstrap read must
             // not lose. Only `'programmatic-caller'` needs a byte-clean body.
             const result = annotateStoreIdentitySuspectResult(
-              stripNestedResultDoorSkip(doored),
+              stripNestedResultDoorControls(doored),
               mayAnnotateResultText(resultDoorSkipReason),
             );
             // EI-19389431406847252: the door spills to scratch but the telemetry
@@ -4353,26 +5372,31 @@ export function registerMcpHost(server: McpServer): void {
                   // failed to write the overflow anywhere, so those bytes are simply GONE —
                   // strictly worse than an unread spill, and previously unstamped.
                   spillFailed?: boolean;
+                  spillPending?: boolean;
+                  spillError?: string | null;
+                  spillErrorCode?: string | null;
                   originalChars?: number;
                   originalBytes?: number;
                   reason?: string;
                   aggregate?: { exceeded?: boolean };
                 }
               | undefined;
-            if (doorMeta?.truncated && (doorMeta.spillUri || isPreferredDoor(toolName))) {
+            if (doorMeta?.truncated && doorMeta.spillPending !== true &&
+              (doorMeta.spillUri || doorMeta.spillFailed === true || isPreferredDoor(toolName))) {
               const originalBytes = doorMeta.originalBytes ?? doorMeta.originalChars ?? 0;
               void backfillResultDoorOutputRef({
                 workspaceId: dispatchSpawnCtx.workspaceId,
                 spawnId: dispatchSpawnCtx.spawnId,
-                toolName,
+                toolName: nestedTargetToolName ?? toolName,
                 runId: dispatchSpawnCtx.runId ?? null,
+                mcpRequestTraceId: dispatchSpawnCtx.requestOrigin?.mcpRequestTraceId ?? null,
                 outputRef: doorMeta.spillUri ?? null,
                 outputSize: doorMeta.spillUri ? originalBytes : null,
                 // WI-40720 gap 3: this branch was `toolName === 'code:run'`, so a recipes:run or
                 // orchestrate:run call could spill real bytes and record NO telemetry for them —
                 // the rollout gates then graded a default-on orchestration suite on code:run
                 // traffic alone. Widened to every preferred door via the one shared predicate.
-                ...(isPreferredDoor(toolName)
+                ...(doorMeta.spillFailed === true || isPreferredDoor(toolName)
                   ? {
                       metadataJson: {
                         returnedContextBytes: measureResultContextBytes(result),
@@ -4394,6 +5418,10 @@ export function registerMcpHost(server: McpServer): void {
                         // on the healthy path is indistinguishable from one never measured,
                         // which is how a rollback trigger silently reads as "no breaches".
                         spillFailed: doorMeta.spillFailed === true,
+                        // The outer guard only enters after pending spills have settled.
+                        spillPending: false,
+                        spillError: doorMeta.spillError ?? null,
+                        spillErrorCode: doorMeta.spillErrorCode ?? null,
                         resultDoorReason: doorMeta.reason ?? 'per-result-budget-exceeded',
                         aggregateOutputEscape:
                           doorMeta.reason === 'aggregate-output-budget-exceeded' ||
@@ -4424,6 +5452,7 @@ export function registerMcpHost(server: McpServer): void {
             // (cheap); getFlag is consulted ONLY when a hint actually fires (rare), so the hot
             // path stays a single in-memory increment. Best-effort — never affect the tool result.
             // Attached AFTER idempotent persistence so a replay serves the raw stored result.
+            const advisoryStartedAtMs = Date.now();
             if (!result.isError) {
               // A delta-protocol result (`result._meta.delta` set — e.g. a delta-proxy
               // RECONSTRUCTED full body, mcp-handler-gating-matrix delta-proxy:845) carries a
@@ -4454,6 +5483,14 @@ export function registerMcpHost(server: McpServer): void {
                   args,
                   canCodeRun: canCodeRunHere,
                   codeRunInSurface,
+                  // The explicit request group is authoritative for calls nested in one
+                  // functions.exec/model turn, even when their sequential durations exceed the
+                  // timing heuristic used for clients that do not supply one.
+                  turnId: req.params._meta?.outputGroupId ?? req.params._meta?.turnId,
+                  // EI-23761431768707969: the door spilled THIS call because its output cohort's
+                  // shared fan-out budget was already spent. The door tells the agent to re-issue
+                  // it, so the nudge must not count that forced re-issue as a chosen round-trip.
+                  aggregateSpill: doorMeta?.reason === 'aggregate-output-budget-exceeded',
                   // clusterTurns models inference turns from DISPATCH proximity.
                   // Completion time is duration-skewed, so parallel heterogeneous
                   // calls would otherwise look like several sequential turns.
@@ -4472,7 +5509,7 @@ export function registerMcpHost(server: McpServer): void {
                 if (hint && canAttachAdvisory) {
                   const nudgeFlag =
                     hint.kind === 'same-tool' ? FLAGS.CODE_RUN_BATCH_NUDGE : FLAGS.CODE_RUN_FANOUT_NUDGE;
-                  if (await getFlag(nudgeFlag, 'system')) {
+                  if (await readAdvisoryFlag(nudgeFlag)) {
                     result.content = [
                       ...result.content,
                       { type: 'text' as const, text: `\n[batch-hint] ${hint.text}` },
@@ -4546,7 +5583,7 @@ export function registerMcpHost(server: McpServer): void {
                     return JSON.parse(first.text) as unknown;
                   },
                 });
-                if (preempt && canAttachAdvisory && (await getFlag(FLAGS.CODE_RUN_FANOUT_PREEMPT, 'system'))) {
+                if (preempt && canAttachAdvisory && (await readAdvisoryFlag(FLAGS.CODE_RUN_FANOUT_PREEMPT))) {
                   result.content = [
                     ...result.content,
                     { type: 'text' as const, text: `\n[batch-hint] ${preempt.text}` },
@@ -4578,7 +5615,7 @@ export function registerMcpHost(server: McpServer): void {
                   sessionKey: nudgeSessionKey,
                   toolName,
                 });
-                if (orientHint && canAttachAdvisory && (await getFlag(FLAGS.ORIENT_DEDUP_NUDGE, 'system'))) {
+                if (orientHint && canAttachAdvisory && (await readAdvisoryFlag(FLAGS.ORIENT_DEDUP_NUDGE))) {
                   result.content = [...result.content, { type: 'text' as const, text: `\n[nudge] ${orientHint}` }];
                 }
               } catch {
@@ -4596,13 +5633,14 @@ export function registerMcpHost(server: McpServer): void {
                   sessionKey: nudgeSessionKey,
                   toolName,
                 });
-                if (planeHint && canAttachAdvisory && (await getFlag(FLAGS.STATE_PLANE_NUDGE, 'system'))) {
+                if (planeHint && canAttachAdvisory && (await readAdvisoryFlag(FLAGS.STATE_PLANE_NUDGE))) {
                   result.content = [...result.content, { type: 'text' as const, text: `\n[nudge] ${planeHint}` }];
                 }
               } catch {
                 // advisory only; a failure must never change the tool outcome.
               }
             }
+            raced.phaseTimingsMs.advisory = Math.max(0, Date.now() - advisoryStartedAtMs);
             return result;
           };
           // P2-5 deadline: a tool exceeding its effective deadline returns a clean
@@ -4611,11 +5649,43 @@ export function registerMcpHost(server: McpServer): void {
           // (55s) must NOT cut off a tool that legitimately declares a longer
           // `timeoutSec` (e.g. chat:ask_choice / other human-interaction tools at
           // 600s) — effectiveMcpDeadlineMs honors the tool's own budget instead.
+          const recordSettlement = (outcome: 'success' | 'tool_error' | 'rejected'): void => {
+            const timingDetails = settlementPhaseTimings();
+            const afterDeadline = raced.deadlineFired;
+            const elapsedMs = Math.max(0, Date.now() - callStartedAt);
+            trace('inner_dispatch_settled', { outcome, afterDeadline, ...timingDetails });
+            void backfillToolInvocationMetadataByMcpRequestTraceId({
+              workspaceId: dispatchSpawnCtx.workspaceId,
+              toolName,
+              mcpRequestTraceId: traceId,
+              metadataJson: {
+                mcpRequestSettlement: {
+                  traceId,
+                  stage: 'inner_dispatch_settled',
+                  outcome,
+                  afterDeadline,
+                  elapsedMs,
+                  settledAt: new Date().toISOString(),
+                  ...timingDetails,
+                },
+              },
+            });
+          };
           return raceDeadline<McpCallResult>(
-            deadlineMs,
+            remainingDeadlineMs(),
             () => {
               const outcome = execute();
               raced.toolOutcome = outcome;
+              void outcome.then(
+                (result) => {
+                  raced.innerDispatchSettled = true;
+                  recordSettlement(result.isError ? 'tool_error' : 'success');
+                },
+                () => {
+                  raced.innerDispatchSettled = true;
+                  recordSettlement('rejected');
+                },
+              );
               return outcome;
             },
             timeoutResult,
@@ -4639,44 +5709,48 @@ export function registerMcpHost(server: McpServer): void {
         // has started.
         let dispatchStarted = false;
         const dispatchPreflight = async (): Promise<McpCallResult> => {
+          dispatchPreflightStartedAt = beginPreDispatchPhase('dispatchPreflight');
           try {
+            // Result projection/door remain on the receiving transport, but
+            // the whole wrapper/handler and its transaction run on the owner.
+            if (nativeMcpToolAddress(dispatchSpawnCtx)) {
+              return await runWithMcpRequestTraceExecution(traceExecution, () => runDispatch(baseCtx));
+            }
             return await dispatchWithSynthesizedTx(projected, dispatchSpawnCtx, baseCtx, async (ctx) => {
               // The outer race may have answered while acquisition or
               // principal synthesis was still in flight. Do not enter the
               // handler after that point; only a dispatch that had already
               // started is allowed to continue server-side after timeout.
               if (raced.deadlineFired || (deadlineAt !== null && Date.now() >= deadlineAt)) {
-                raced.deadlineFired = true;
+                if (!raced.deadlineFired) {
+                  raced.deadlineFired = true;
+                  trace('deadline', {
+                    deadlineMs,
+                    phase: 'pre_dispatch',
+                    preDispatchPhaseTimingsMs: preDispatchPhaseSnapshot(),
+                    ...(activePreDispatchPhase ? { preDispatchActivePhase: activePreDispatchPhase } : {}),
+                  });
+                }
                 throw new Error(`MCP dispatch deadline expired before tool "${toolName}" started`);
               }
               dispatchStarted = true;
-              return runDispatch(ctx);
+              markInnerDispatchStarted(deadlineMs);
+              return runWithMcpRequestTraceExecution(traceExecution, () => runDispatch(ctx));
             });
           } catch (error) {
-            if (!dispatchStarted) {
-              try {
-                const roleQuota = baseCtx.role ? projected.rolesQuota?.[baseCtx.role] : undefined;
-                await PROJECTED_DEPS.recordInvocation?.({
-                  toolName,
-                  pluginName: projected.pluginName,
-                  ctx: baseCtx,
-                  windowKey: PROJECTED_DEPS.computeQuotaWindow?.(baseCtx, roleQuota, toolName).key ?? '',
-                  durationMs: Date.now() - callStartedAt,
-                  status: 'error',
-                  errorMessage: error instanceof Error ? error.message : String(error),
-                  args: dispatchArgs,
-                });
-              } catch (telemetryError) {
-                console.warn(
-                  `[mcp-handler] pre-dispatch telemetry failed for ${toolName}: ` +
-                    (telemetryError instanceof Error ? telemetryError.message : String(telemetryError)),
-                );
-              }
+            if (!dispatchStarted && dispatchPreflightStartedAt !== null) {
+              finishPreDispatchPhase('dispatchPreflight', dispatchPreflightStartedAt);
+            }
+            // An uncertain remote attempt can already own the invocation row.
+            // Its owning dispatcher also records synthesis failures; recording
+            // here would manufacture a second call on the receiving worker.
+            if (!dispatchStarted && !(error instanceof SuNativeToolOwnerError && error.outcomeUnknown)) {
+              await recordMcpPreflightFailure(projected, toolName, baseCtx, dispatchArgs, callStartedAt, error);
             }
             throw error;
           }
         };
-        const dispatched = await raceDeadline<McpCallResult>(deadlineMs, dispatchPreflight, timeoutResult);
+        const dispatched = await raceDeadline<McpCallResult>(remainingDeadlineMs(), dispatchPreflight, timeoutResult);
         // EI-19301511582594101: persist the replay receipt HERE — after
         // dispatchWithSynthesizedTx has resolved, which is after the tool's
         // `withWorkspace` transaction has COMMITTED, and still before this result is
@@ -4769,7 +5843,7 @@ export function registerMcpHost(server: McpServer): void {
       };
     },
     MCP_FUZZY_DEPS,
-    )),
+    ))),
   );
 
   // ── Resources ────────────────────────────────────────────────────
@@ -4818,6 +5892,7 @@ export function registerMcpHost(server: McpServer): void {
   const resourceAuthFromExtra = async (
     extra: unknown,
     resourceUri?: string,
+    verifiedSpawn?: Awaited<ReturnType<typeof tryBuildSpawnContext>>,
   ): Promise<{ bearer: string } | { principal: Principal }> => {
     const url = urlFromExtra(extra);
     const usesTransportPrincipal =
@@ -4827,7 +5902,7 @@ export function registerMcpHost(server: McpServer): void {
       (url?.searchParams.get('power_user') === '1' || url?.searchParams.has('role') === true);
     if (!usesTransportPrincipal && !usesScopedScratchPrincipal) return { bearer: bearerFromExtra(extra) };
 
-    const spawnRes = await tryBuildSpawnContext(extra);
+    const spawnRes = verifiedSpawn ?? await tryBuildSpawnContext(extra);
     if (spawnRes.kind === 'failed') {
       throw new Error(`mcp_auth_failed: ${spawnRes.reason}`);
     }
@@ -4843,14 +5918,40 @@ export function registerMcpHost(server: McpServer): void {
     return { bearer: bearerFromExtra(extra) };
   };
 
+  // MCP resources/prompts do not traverse tool dispatch. They still read
+  // context, so consult the same authoritative frozen-context policy before
+  // listing or executing their readers. A failed policy read never leaks it.
+  const protocolContextFromExtra = async (extra: unknown): Promise<{
+    allowed: boolean;
+    spawn: Awaited<ReturnType<typeof tryBuildSpawnContext>> | null;
+  }> => {
+    try {
+      const spawn = await tryBuildSpawnContext(extra);
+      if (spawn.kind === 'failed') return { allowed: false, spawn };
+      if (spawn.kind !== 'ok') return { allowed: true, spawn };
+      const ownerId = resolveAgentIdentity({
+        ...spawn.ctx,
+        principal: spawn.ctx.authenticatedPrincipal
+          ? synthesizeTransportPrincipal(spawn.ctx) : undefined,
+      }).ownerId;
+      const confinement = await readSessionConfinement(ownerId, spawn.ctx.workspaceId);
+      return { allowed: confinement?.denyAmbientContext === undefined, spawn };
+    } catch { return { allowed: false, spawn: null }; }
+  };
+  const ambientProtocolRefusal = 'MCP content is unavailable under frozen assignment context or unreadable session policy.';
+
   server.server.setRequestHandler(sdk.ListResourcesRequestSchema, async (_req: unknown, extra: unknown) => {
-    const r = await listResources(await resourceAuthFromExtra(extra));
+    const context = await protocolContextFromExtra(extra);
+    if (!context.allowed) return { resources: [] };
+    const r = await listResources(await resourceAuthFromExtra(extra, undefined, context.spawn ?? undefined));
     return { resources: r.ok ? (r.resources ?? []) : [] };
   });
   server.server.setRequestHandler(
     sdk.ReadResourceRequestSchema,
     async (req: { params: { uri: string } }, extra: unknown) => {
-      const auth = await resourceAuthFromExtra(extra, req.params.uri);
+      const context = await protocolContextFromExtra(extra);
+      if (!context.allowed) throw new Error(ambientProtocolRefusal);
+      const auth = await resourceAuthFromExtra(extra, req.params.uri, context.spawn ?? undefined);
       const r = await readResource({ uri: req.params.uri, ...auth });
       if (!r.ok) throw new Error(`${r.error?.code}: ${r.error?.message}`);
       return { contents: [r.contents!] };
@@ -4866,6 +5967,7 @@ export function registerMcpHost(server: McpServer): void {
   //      surfaces as a `tool:*` prompt so agent clients render the whole
   //      catalog as slash commands. Flag-gated (SLASH_EXPOSURE, default ON).
   server.server.setRequestHandler(sdk.ListPromptsRequestSchema, async (_req: unknown, extra: unknown) => {
+    if (!(await protocolContextFromExtra(extra)).allowed) return { prompts: [] };
     await ensureOperatorToolsLoaded();
     const bearer = bearerFromExtra(extra);
     const prompts: Array<{
@@ -4904,6 +6006,7 @@ export function registerMcpHost(server: McpServer): void {
   server.server.setRequestHandler(
     sdk.GetPromptRequestSchema,
     async (req: { params: { name: string; arguments?: Record<string, string> } }, extra: unknown) => {
+      if (!(await protocolContextFromExtra(extra)).allowed) throw new Error(ambientProtocolRefusal);
       await ensureOperatorToolsLoaded();
       const name = req.params.name;
       const args = (req.params.arguments ?? {}) as Record<string, string>;
@@ -4941,7 +6044,7 @@ export function registerMcpHost(server: McpServer): void {
     server.server.setRequestHandler(
       sdk.InitializeRequestSchema,
       wrapInitializeWithInstructions(sdkInitialize, async (base, extra, timing) => {
-        const traceId = mcpTraceIdFromExtra(extra) ?? globalThis.crypto.randomUUID();
+        const traceId = resolveMcpRequestTraceId(extra);
         const stages = {
           sdkMs: timing.sdkMs,
           spawnContextMs: null as number | null,
@@ -5051,13 +6154,157 @@ export function effectiveMcpDeadlineMs(
   return Math.max(baseDeadlineMs, toolTimeoutSec * 1000 + MCP_DEADLINE_TOOL_BUFFER_MS);
 }
 
+interface McpRequestDeadlineContext {
+  readonly startedAtMs: number;
+  readonly startedAtMonotonicMs: number;
+  readonly timeout: Promise<McpCallResult>;
+  readonly didExpire: boolean;
+  readonly durationMs: number;
+  readonly deadlineAtMs: number | null;
+  setDurationMs(durationMs: number): void;
+  setTimeoutResult(factory: () => McpCallResult): void;
+  remainingMs(): number;
+  dispose(): void;
+}
+
+const mcpRequestDeadlineByExtra = new WeakMap<object, McpRequestDeadlineContext>();
+
+function createMcpRequestDeadlineContext(
+  startedAtMs: number,
+  initialDurationMs: number,
+  initialTimeoutResult: () => McpCallResult,
+): McpRequestDeadlineContext {
+  let durationMs = initialDurationMs;
+  let deadlineAtMs = durationMs > 0 ? startedAtMs + durationMs : null;
+  let didExpire = false;
+  let disposed = false;
+  let timeoutResult = initialTimeoutResult;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let resolveTimeout!: (result: McpCallResult) => void;
+  const timeout = new Promise<McpCallResult>((resolve) => { resolveTimeout = resolve; });
+
+  const clearTimer = () => {
+    if (timer !== undefined) clearTimeout(timer);
+    timer = undefined;
+  };
+  const fire = () => {
+    if (didExpire || disposed) return;
+    didExpire = true;
+    resolveTimeout(timeoutResult());
+  };
+  const schedule = () => {
+    clearTimer();
+    if (didExpire || disposed || deadlineAtMs === null) return;
+    const remainingMs = deadlineAtMs - Date.now();
+    if (remainingMs <= 0) {
+      fire();
+      return;
+    }
+    timer = setTimeout(fire, remainingMs);
+    (timer as { unref?: () => void }).unref?.();
+  };
+  schedule();
+
+  return {
+    startedAtMs,
+    startedAtMonotonicMs: performance.now(),
+    timeout,
+    get didExpire() { return didExpire; },
+    get durationMs() { return durationMs; },
+    get deadlineAtMs() { return deadlineAtMs; },
+    setDurationMs(nextDurationMs) {
+      if (didExpire || disposed) return;
+      durationMs = nextDurationMs;
+      deadlineAtMs = durationMs > 0 ? startedAtMs + durationMs : null;
+      schedule();
+    },
+    setTimeoutResult(factory) { timeoutResult = factory; },
+    remainingMs() {
+      return deadlineAtMs === null ? 0 : Math.max(0, deadlineAtMs - Date.now());
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      clearTimer();
+    },
+  };
+}
+
+function mcpRequestDeadlineFor(extra: unknown): McpRequestDeadlineContext | null {
+  return extra !== null && typeof extra === 'object'
+    ? mcpRequestDeadlineByExtra.get(extra)
+    ?? null
+    : null;
+}
+
+function withMcpRequestDeadline<Req, Res>(
+  handler: (req: Req, extra: unknown) => Promise<Res>,
+): (req: Req, extra: unknown) => Promise<Res> {
+  return async (req, extra) => {
+    const requestedName = (req as { params?: { name?: unknown } } | null)?.params?.name;
+    const toolName = typeof requestedName === 'string' ? requestedName.slice(0, 120) : 'tools/call';
+    const startedAtMs = Date.now();
+    const startedAtMonotonicMs = performance.now();
+    const traceId = resolveMcpRequestTraceId(extra);
+    const fallbackTimeoutResult = (): McpCallResult => {
+      const deadlineMs = requestDeadline.durationMs;
+      logMcpRequestTrace({
+        traceId,
+        toolName,
+        stage: 'deadline',
+        elapsedMs: Math.max(0, Date.now() - startedAtMs),
+        deadlineMs,
+        phase: 'pre_dispatch',
+      });
+      return {
+        isError: true,
+        content: [{
+          type: 'text',
+          text: 'request_timeout: tool "' + toolName + '" exceeded ' + deadlineMs +
+            'ms during MCP request setup (target dispatch had not started; no mutation was started; request trace id: ' + traceId + ').',
+        }],
+      };
+    };
+    let timeoutFactory = fallbackTimeoutResult;
+    const requestDeadline = createMcpRequestDeadlineContext(
+      startedAtMs,
+      effectiveMcpDeadlineMs(lookupByMcpName(toolName)?.timeoutSec),
+      () => timeoutFactory(),
+    );
+    const extraObject = extra !== null && typeof extra === 'object' ? extra : null;
+    if (extraObject) mcpRequestDeadlineByExtra.set(extraObject, requestDeadline);
+    const work = Promise.resolve().then(() => handler(req, extra));
+    let workSettled = false;
+    const cleanup = () => {
+      if (extraObject && mcpRequestDeadlineByExtra.get(extraObject) === requestDeadline) {
+        mcpRequestDeadlineByExtra.delete(extraObject);
+      }
+      requestDeadline.dispose();
+    };
+    void work.then(
+      () => { workSettled = true; if (requestDeadline.didExpire) cleanup(); },
+      () => { workSettled = true; if (requestDeadline.didExpire) cleanup(); },
+    );
+    try {
+      return await Promise.race([work, requestDeadline.timeout]) as Res;
+    } finally {
+      if (workSettled || !requestDeadline.didExpire) cleanup();
+      requestDeadline.dispose();
+    }
+  };
+}
+
+/** Read-only MCP results are not stored for idempotent replay. */
+export function formatMcpReadOnlyDeadlineMessage(toolName: string, deadlineMs: number, traceId: string): string {
+  return `request_timeout: read-only tool "${toolName}" exceeded ${deadlineMs}ms (the operation may still be running server-side; this request was not canceled. Read-only results are not stored for idempotent replay, so retrying will execute a fresh read instead of replaying this attempt's result; request trace id: ${traceId}).`;
+}
+
 /**
  * Race a tool dispatch against a deadline (P2-5). On expiry, resolve to `onTimeout()`
  * — a clean error result — so the client gets a definitive response, not a silent
- * drop. The `run()` promise is deliberately NOT cancelled: the tool finishes
- * server-side and (via runDispatch) persists its result, so a retry with the same
- * `_meta.idempotencyKey` replays the completed outcome rather than re-executing or
- * leaving a half-applied mutating write. `deadlineMs<=0` ⇒ no race (await run).
+ * drop. The `run()` promise is deliberately NOT cancelled: it may finish server-side.
+ * Keyed writes persist their outcome and replay it on retry; read-only calls skip result
+ * storage and a retry executes a fresh read. `deadlineMs<=0` ⇒ no race (await run).
  */
 export async function raceDeadline<T>(deadlineMs: number, run: () => Promise<T>, onTimeout: () => T): Promise<T> {
   const p = run();
@@ -5075,6 +6322,44 @@ export async function raceDeadline<T>(deadlineMs: number, run: () => Promise<T>,
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/**
+ * Apply the MCP request deadline to a target dispatched from tools:invoke.
+ * The target dispatcher also aborts its signal at `timeoutSec`, but a handler
+ * that ignores that signal can keep its promise pending. Direct tools/call
+ * requests have the outer P2-5 race below; without this nested race, the
+ * tools:invoke wrapper's 660s budget was the only hard bound for its target.
+ *
+ * The nested target has no independent transport replay record. If this race
+ * wins, its operation may still finish server-side, so the result explicitly
+ * reports unknown commit state and tells the caller to inspect state before a
+ * retry that could repeat a mutation.
+ */
+export function dispatchNestedWithMcpDeadline(
+  toolName: string,
+  toolTimeoutSec: number | null | undefined,
+  run: () => Promise<McpCallResult>,
+  baseDeadlineMs: number = MCP_DEADLINE_MS,
+): Promise<McpCallResult> {
+  const deadlineMs = effectiveMcpDeadlineMs(toolTimeoutSec, baseDeadlineMs);
+  return raceDeadline(
+    deadlineMs,
+    run,
+    () => ({
+      isError: true,
+      content: [
+        {
+          type: 'text',
+          text:
+            `request_timeout: nested tool "${toolName}" exceeded ${deadlineMs}ms via tools:invoke ` +
+            `(commit status is UNKNOWN: the target may still be running server-side. This nested call has no ` +
+            `independent idempotent replay. Re-read the target's state before retrying; a blind retry may ` +
+            `repeat a mutation.`,
+        },
+      ],
+    }),
+  );
 }
 
 /**

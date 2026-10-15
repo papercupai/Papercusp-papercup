@@ -36,13 +36,17 @@ import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
-  USER_TRUST_LIST_DDL,
+  applyClaimPathReadDeps,
   WATCHDOG_TICKS_DDL,
   WORK_ITEM_DEPS_DDL,
 } from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
+import { runWorkItemDurableParkAudit } from './work-items-durable-park-audit';
+import { buildDurableParkReleaseContract } from './durable-park-release-contract';
+import { readEventConditionReachability } from './external-condition-reachability';
+import { recordKeyFire, registerAnnouncement } from './events/await/store';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, activeWs: 'default' }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -61,6 +65,10 @@ const wi = await import('./work-items');
 
 const H = 'papercup';
 const WS = 'default';
+const TEST_PARK_CONTRACT = {
+  condition: 'explicit owner decision arrives', owner: 'park-owner', trigger: 'work-item:unblocked:WI-held',
+  reachability: 'blocked' as const, evidence: 'fixture condition remains pending',
+};
 let db: FreshPgDb;
 
 /** An issue-family (bug/change/task) row in the work_items BASE. */
@@ -92,11 +100,16 @@ beforeAll(async () => {
   db = await createFreshPgDb('wi-claim-hold');
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
-  await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(WATCHDOG_TICKS_DDL).simple();
   // The by-id issue claim auto-subscribes the claimer (coord_entity_subscriptions).
   await ensureCoordCapabilityTables(db.sql);
+  await db.sql.unsafe(`CREATE TABLE harness_shared.admission_runs (
+    id text PRIMARY KEY, workspace_id text NOT NULL, harness_slug text NOT NULL, run_kind text NOT NULL,
+    started_at timestamptz, finished_at timestamptz, batch_size integer, held integer,
+    model_id text, tokens_in bigint, tokens_out bigint, latency_ms integer, detail jsonb
+  )`);
 }, 180_000);
 afterAll(async () => {
   await db?.cleanup();
@@ -104,7 +117,8 @@ afterAll(async () => {
 beforeEach(async () => {
   // harness_features_consolidated is a VIEW over work_items (see _work-items-schema.ts) —
   // TRUNCATE only works on real tables, and truncating work_items already clears the view.
-  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps, harness_shared.watchdog_ticks`;
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps, harness_shared.watchdog_ticks,
+    harness_shared.admission_runs, harness_shared.event_awaits, harness_shared.event_key_fires`;
   h.activeWs = 'default';
   setFlagOverridesForTest({
     [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true,
@@ -117,6 +131,83 @@ afterEach(() => {
 });
 
 describe('setWorkItemClaimHold (WI-2797)', () => {
+  it.each(['work-item:claimable', 'release:deployed', 'release:deployed:abc123',
+    'coord:inbox-wake:park-owner', 'fleet:item-completed:test'])
+  ('does not mistake a broad fired wake for owner-grade clearance: %s', async (trigger) => {
+    const id = 'WI-owner-grade-park';
+    await seedIssue(id, { payload: { held_open_by: 'reviewer', held_open_reason: 'independent review' } });
+    const releaseContract = await buildDurableParkReleaseContract({ condition: 'owner grade is cleared', trigger }, 'park-owner');
+    await wi.setWorkItemClaimHold(id, true, { harness: H, parkedBy: 'park-owner', releaseContract });
+    const original = await readPayload(id);
+    await recordKeyFire({ eventKey: trigger, firedBy: 'unrelated-producer' });
+    expect((await readEventConditionReachability(trigger)).basis).toBe('fired');
+    const audit = await runWorkItemDurableParkAudit({ workspaceId: WS, harnessSlug: H,
+      runId: 'broad-fire-audit', sql: db.sql, artifactPath: false });
+    expect(audit.durableParks[0]?.releaseLiveness.status).toBe('unverified');
+    expect(audit.durableParks[0]?.releaseLiveness.findings).toContain('reachability-unverified');
+    expect(await readPayload(id)).toEqual(original);
+  });
+
+  it('refreshes a fired condition from the event ledger without changing the park, lease or assignment', async () => {
+    const id = 'WI-event-park';
+    const trigger = `work-item:unblocked:${id}`;
+    await seedIssue(id, { takenBy: 'builder', payload: { held_open_by: 'reviewer', held_open_reason: 'independent review' } });
+    const releaseContract = await buildDurableParkReleaseContract({ condition: 'item becomes unblocked', trigger }, 'park-owner');
+    expect(releaseContract.reachability).toBe('reachable');
+    await wi.setWorkItemClaimHold(id, true, { harness: H, parkedBy: 'park-owner', releaseContract });
+    const original = await readPayload(id);
+    const audit = (runId: string) => runWorkItemDurableParkAudit({ workspaceId: WS, harnessSlug: H, runId, sql: db.sql, artifactPath: false });
+    const before = await audit('before-fire');
+    expect(before.durableParks[0]?.releaseLiveness.status).toBe('tracked');
+    await recordKeyFire({ eventKey: trigger, firedBy: 'fixture-producer' });
+    expect((await readEventConditionReachability(trigger)).basis).toBe('fired');
+    const after = await audit('after-fire');
+    expect(after.durableParks[0]?.releaseLiveness.status).toBe('satisfied-still-parked');
+    expect(after.durableParks[0]?.releaseLiveness.evidence).toContain('event fired at');
+    expect(await readPayload(id)).toEqual(original);
+    const claim = await db.sql<{ taken_by: string }[]>`SELECT taken_by FROM harness_shared.work_items WHERE feature_id = ${id} AND workspace_id = ${WS}`;
+    expect(claim[0]?.taken_by).toBe('builder');
+
+    // A new producer generation must defeat the old latch; a fresh unresolved gate stays parked.
+    await registerAnnouncement({ subscriberId: 'park-owner', eventKey: trigger, scopeKind: 'global', note: 'new condition generation' });
+    expect((await readEventConditionReachability(trigger)).basis).toBe('live-resolver');
+    const renewed = await audit('new-generation');
+    expect(renewed.durableParks[0]?.releaseLiveness.status).toBe('tracked');
+    expect(await readPayload(id)).toEqual(original);
+  });
+
+  // EI-25664119449929994: the writer read the key's LIFETIME latch at park time, so a trigger
+  // that had fired once before the park was born 'satisfied' (all 9 live stamps, 2026-10-11).
+  it('never certifies a park from a fire that predates it, at write time or on audit refresh', async () => {
+    const id = 'WI-prepark-fire';
+    const trigger = 'work-item:done:WI-prepark-dependency';
+    await seedIssue(id, { payload: {} });
+    await recordKeyFire({ eventKey: trigger, firedBy: 'fixture-producer' });
+    expect((await readEventConditionReachability(trigger)).basis).toBe('fired');
+    const releaseContract = await buildDurableParkReleaseContract(
+      { condition: 'WI-prepark-dependency is done and the leader confirms', trigger, parkId: id }, 'park-owner');
+    expect(releaseContract.reachability).toBe('blocked');
+    expect(releaseContract.evidence).toContain('before this park');
+    await wi.setWorkItemClaimHold(id, true, { harness: H, parkedBy: 'park-owner', releaseContract });
+    const audit = await runWorkItemDurableParkAudit({ workspaceId: WS, harnessSlug: H,
+      runId: 'prepark-fire-audit', sql: db.sql, artifactPath: false });
+    const park = audit.durableParks.find((p) => p.id === id);
+    expect(park?.releaseLiveness.status).toBe('unverified');
+    expect(park?.releaseLiveness.findings).not.toContain('condition-satisfied-still-parked');
+    expect(park?.releaseLiveness.evidence).toContain('before this park');
+  });
+
+  it.each(['condition', 'owner', 'trigger', 'evidence', 'reachability', 'missing-contract'])('rejects an incomplete durable park (%s) without changing a lease or assignment', async (field) => {
+    const original = { _claimHold: true, held_open_by: 'lease-owner', held_open_reason: 'independent review' };
+    await seedIssue('WI-invalid-park', { takenBy: 'builder', payload: original });
+    const contract = field === 'missing-contract' ? undefined : { ...TEST_PARK_CONTRACT, [field]: ' ' };
+    await expect(wi.setWorkItemClaimHold('WI-invalid-park', true, {
+      harness: H, parkedBy: 'park-owner', releaseContract: contract as never,
+    })).rejects.toThrow(/durable park requires a complete release contract/);
+    expect(await readPayload('WI-invalid-park')).toEqual(original);
+    const rows = await db.sql<{ taken_by: string }[]>`SELECT taken_by FROM harness_shared.work_items WHERE feature_id = 'WI-invalid-park' AND workspace_id = ${WS}`;
+    expect(rows[0]?.taken_by).toBe('builder');
+  });
   it('sets payload._claimHold:true on an issue-family row', async () => {
     await seedIssue('WI-hold-1');
     const res = await wi.setWorkItemClaimHold('WI-hold-1', true, { harness: H });
@@ -206,6 +297,7 @@ describe('setWorkItemClaimHold (WI-2797)', () => {
         harness: H,
         parkedBy: 'su-x',
         parkedReason: 'do not re-circulate',
+        releaseContract: TEST_PARK_CONTRACT,
       });
 
       // The write must land on the item's OWN workspace, not the ambient one.
@@ -251,7 +343,7 @@ describe('setWorkItemClaimHold (WI-2797)', () => {
       await seedFeatureInWorkspace('WI-ws-free', 'ws-real', 200);
       // The hold is applied under a WRONG ambient workspace (the bug's condition)…
       h.activeWs = 'ws-other';
-      await wi.setWorkItemClaimHold('WI-ws-held', true, { harness: H, parkedBy: 'su-z' });
+      await wi.setWorkItemClaimHold('WI-ws-held', true, { harness: H, parkedBy: 'su-z', releaseContract: TEST_PARK_CONTRACT });
 
       // …yet the claim floor (claimFloorsWhereSql) must now skip it. claimNextWorkItem resolves
       // the item's real workspace, so hold it steady for the claim leg.

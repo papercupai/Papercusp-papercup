@@ -1,0 +1,268 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10004890",
+  "measurementWorkItem": "WI-10005482",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "planItem": "P-011",
+  "spec": {
+    "id": "PERF-OCT1-P011-MEMORY",
+    "revision": 2,
+    "fingerprint": "6059e251ea51a61458afd5075a8190a60e1f1139d28c55784b4ff12d2c624010"
+  },
+  "qualifiedAt": "2026-10-02T21:46:05.982538+00:00",
+  "newTestRuns": [],
+  "scope": "Saved private current-source HTTP counterfactual; no replay or live service intervention. Parent acceptance and shipment remain open.",
+  "rawReceipt": {
+    "path": "docs/evidence/papercusp-oct1-p011-inbox-physical-pair-r4-2026-10-02.json",
+    "bytes": 78023,
+    "sha256": "8da0585c8cd1155c563aed2dc092a7413ff90b5a0fc7095873b7dcdde0c4ae58"
+  },
+  "ledger": {
+    "testRunId": 20542013,
+    "runGroupId": "su-7db4f-p011-inbox-physical-r4-20261002",
+    "status": "pass",
+    "harnessSlug": "papercusp",
+    "framework": "vitest",
+    "source": "local",
+    "branch": "staging",
+    "worktreeDirty": true,
+    "isScratchConfig": false,
+    "commitSha": "2117e695a638546fe96635d8db81795362bf6ea1",
+    "startedAt": "2026-10-02T15:58:04.934Z",
+    "finishedAt": "2026-10-02T15:59:37.984Z",
+    "testsPassed": 1,
+    "testsFiltered": 16,
+    "acceptanceBindingCreated": false
+  },
+  "workload": {
+    "population": 256,
+    "bodyCodeUnits": 32768,
+    "variants": 8,
+    "windows": 3,
+    "idleMs": 1000,
+    "concurrency": 8
+  },
+  "fixture": {
+    "rows": 256,
+    "stringCodeUnits": 8388608,
+    "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da"
+  },
+  "intervention": {
+    "offset": 53163493,
+    "before": "...boundedInbox ? {\n                  limit,\n                  ambient: includeAmbient,\n                  intents: !!args27.include_intents\n                } : {}",
+    "after": "limit,\n                  ambient: includeAmbient,\n                  intents: !!args27.include_intents"
+  },
+  "cohorts": {
+    "baseline": {
+      "pid": 2377516,
+      "startTicks": "419692",
+      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+      "bundleSha256": "c7b7fe2d4496d30cb9b396df51e54f9cc7c70ca8ff5fb9830eaea2dcfe3d0dbc",
+      "samples": 11,
+      "workloadWindows": 3,
+      "firstAt": 1790956744644,
+      "lastAt": 1790956752337,
+      "initial": {
+        "pssBytes": 940389376,
+        "heapUsedBytes": 577093304,
+        "totalAllocatedBytes": 1847324264
+      },
+      "completionIdle": {
+        "pssBytes": 1095979008,
+        "heapUsedBytes": 728142472,
+        "totalAllocatedBytes": 2265873320
+      },
+      "changes": {
+        "pssBytes": 155589632,
+        "heapUsedBytes": 151049168,
+        "totalAllocatedBytes": 418549056
+      },
+      "rawCacheCopies": 8,
+      "workloadWallMs": [
+        495.28460599999926,
+        416.29155999999966,
+        296.29146000000037
+      ],
+      "observerWallMs": [
+        232.42107000000033,
+        223.8614689999995,
+        217.56065200000012,
+        233.42363099999966,
+        219.89371699999901,
+        237.60052299999916,
+        214.56936200000018,
+        208.30189900000005,
+        234.07513000000108,
+        221.45640300000014,
+        706.2915079999984
+      ],
+      "debuggerPauses": 0,
+      "observedDescendants": 0,
+      "reaped": true
+    },
+    "shared": {
+      "pid": 2389639,
+      "startTicks": "421497",
+      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+      "bundleSha256": "33767b028647d51595c986d00a28c6c86d557fe75a6d5fd5bac7ca484ec6b2e9",
+      "samples": 11,
+      "workloadWindows": 3,
+      "firstAt": 1790956762516,
+      "lastAt": 1790956770151,
+      "initial": {
+        "pssBytes": 939945984,
+        "heapUsedBytes": 588257872,
+        "totalAllocatedBytes": 1884508136
+      },
+      "completionIdle": {
+        "pssBytes": 885233664,
+        "heapUsedBytes": 461085816,
+        "totalAllocatedBytes": 2014707888
+      },
+      "changes": {
+        "pssBytes": -54712320,
+        "heapUsedBytes": -127172056,
+        "totalAllocatedBytes": 130199752
+      },
+      "rawCacheCopies": 1,
+      "workloadWallMs": [
+        437.70208099999945,
+        477.05305600000065,
+        263.7725109999992
+      ],
+      "observerWallMs": [
+        230.1880689999998,
+        216.46537499999977,
+        230.55929000000106,
+        231.83399500000087,
+        228.67905299999984,
+        249.1330199999975,
+        226.09821200000079,
+        224.7679700000008,
+        230.519733000001,
+        221.48880900000222,
+        683.547086999999
+      ],
+      "debuggerPauses": 0,
+      "observedDescendants": 0,
+      "reaped": true
+    }
+  },
+  "observedDifferenceInChanges": {
+    "pssBytes": 210301952,
+    "heapUsedBytes": 278221224,
+    "totalAllocatedBytes": 288349304
+  },
+  "functionality": {
+    "exactFixtureDigestsEqual": true,
+    "eachRawCopyPreservesAll256Rows": true,
+    "all24ConcurrentResponsesPerHostEqual": true,
+    "concurrency": 8,
+    "namespacePreflight": "Each host warmed one actual cachedRead inbox entry, then clearL1 verified an empty private cache before measurement.",
+    "responseScope": "The 24 responses per host verify requested entry IDs/summaries and total/returned counts with max_body_chars=1. Full body preservation is separately verified in every raw cache value against the exact fixture digest."
+  },
+  "definitions": {
+    "pssBytes": "Linux smaps_rollup Pss in kernel kB multiplied by 1024; private main process only.",
+    "heapUsedBytes": "Node process.memoryUsage().heapUsed; overlaps physical memory, not additive to PSS.",
+    "totalAllocatedBytes": "V8 getHeapStatistics total_allocated_bytes cumulative allocation counter; endpoint difference is allocated bytes, not retained bytes.",
+    "observedDifferenceInChanges": "(baseline completion-idle minus baseline before) minus (shared completion-idle minus shared before). Positive values mean the shared host observed lower growth in this single ordered pair."
+  },
+  "causalQualification": {
+    "supported": "Removing display-only dimensions from the full-read key coalesces identical input into one raw cache value instead of eight, preserves exact useful contents and concurrent responses, and observes lower cumulative allocation and PSS growth in this fixture.",
+    "notEstablished": "A removable retained-byte total, native allocation owner, statistical or production PSS saving, production variant frequency, total service footprint, leak diagnosis or request latency non-regression.",
+    "confounds": [
+      "Hosts run sequentially, baseline first; there is one host per mode and correlated windows, not independent randomized replicates.",
+      "GC was not forced and GC events were not recorded; shared heap/PSS falls in the first workload window while baseline rises. Automatic collection may contribute, but its occurrence and contribution are not isolated by this report.",
+      "Observer sampling adds allocations and time; measurements retain all observer durations.",
+      "Fixed low-entropy private input with eight display variants is a counterexample, not measured production traffic."
+    ],
+    "resourceThreshold": "The real-suite test records resources and requires valid identities, content parity and cleanup. It does not assert a nondeterministic PSS threshold."
+  },
+  "sourceQualification": {
+    "namedSources": [
+      {
+        "path": "packages/operator-core/lib/agent-tools/coordination/tools/inbox.ts",
+        "duringRunSha256": "8d599eb35324cc9af05c236324dd7a7baca12e33c674d4f842e359841cbf8c92",
+        "beforeAfterStable": true,
+        "currentSha256": "8d599eb35324cc9af05c236324dd7a7baca12e33c674d4f842e359841cbf8c92",
+        "matchesCurrent": true
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/coordination/messages.ts",
+        "duringRunSha256": "74035b47d449d40c30382254ca6f449fc8f76db67b025f7350302f4036150626",
+        "beforeAfterStable": true,
+        "currentSha256": "74035b47d449d40c30382254ca6f449fc8f76db67b025f7350302f4036150626",
+        "matchesCurrent": true
+      },
+      {
+        "path": "packages/operator-core/lib/cache/cached-read.ts",
+        "duringRunSha256": "73b09e7f3c4b5a53511fd8c51d9cf81a4cc7eff6b2d21e774eeec049dbfc39c9",
+        "beforeAfterStable": true,
+        "currentSha256": "73b09e7f3c4b5a53511fd8c51d9cf81a4cc7eff6b2d21e774eeec049dbfc39c9",
+        "matchesCurrent": true
+      },
+      {
+        "path": "packages/operator-core/lib/cache/instance.ts",
+        "duringRunSha256": "19a7a63ec772ae7c35c914eacf07128678b1ca276df9a7e871fd1e9f566f7992",
+        "beforeAfterStable": true,
+        "currentSha256": "19a7a63ec772ae7c35c914eacf07128678b1ca276df9a7e871fd1e9f566f7992",
+        "matchesCurrent": true
+      },
+      {
+        "path": "libs/generic/cache/src/cache.ts",
+        "duringRunSha256": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+        "beforeAfterStable": true,
+        "currentSha256": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+        "matchesCurrent": true
+      },
+      {
+        "path": "libs/generic/cache/src/l1.ts",
+        "duringRunSha256": "89ac9e14aeed616e2ba82060f9e153d62975d9c9806a4587f831d8700ad84977",
+        "beforeAfterStable": true,
+        "currentSha256": "89ac9e14aeed616e2ba82060f9e153d62975d9c9806a4587f831d8700ad84977",
+        "matchesCurrent": true
+      },
+      {
+        "path": "scripts/cdp-inspector.mjs",
+        "duringRunSha256": "d3114909e8418ebf5fb2a6c9d2b706e15325cc3dca92b7440b3c84df1e043075",
+        "beforeAfterStable": true,
+        "currentSha256": "0fae03367aef907fa7b42b825b2482417b470d350a02d4a000075be35d04a1c1",
+        "matchesCurrent": false
+      },
+      {
+        "path": "apps/operator/bin/bundle-host.sh",
+        "duringRunSha256": "5dc57d5b9991c82bf1bc6436df149f65782d2a6995ed258dfe3a1c12a9018d71",
+        "beforeAfterStable": true,
+        "currentSha256": "5dc57d5b9991c82bf1bc6436df149f65782d2a6995ed258dfe3a1c12a9018d71",
+        "matchesCurrent": true
+      },
+      {
+        "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+        "duringRunSha256": "5ec4338a5f37dcfb2e75099a2e9fe9e935f6ab3af65d61cc736dc40d2ba38a98",
+        "beforeAfterStable": true,
+        "currentSha256": "72d32d380c424e324fb9899e6875fac401087d0c87e8d27821d42baa516c266b",
+        "matchesCurrent": false
+      }
+    ],
+    "fullExecutedGraph": "unknown",
+    "currentSuiteStatus": "historical: inspector and test emitter changed after this completed run; do not promote it to current-suite evidence or replay it merely to recover provenance."
+  },
+  "recurrenceGuards": {
+    "testFile": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+    "guardTestRunId": 20541975,
+    "guardTestsPassed": 3,
+    "guardTestsFiltered": 14,
+    "mechanisms": [
+      "Exactly one emitted full-key expression must be replaced before launching a runtime.",
+      "Actual createCache clearL1/API/owner shape and empty state are checked.",
+      "Exact cachedRead inbox namespace is selected; decoy namespaces are rejected.",
+      "Both hosts must preserve exact raw body digest and all concurrent response outcomes.",
+      "Both hosts must be reaped with no unreaped descendants."
+    ]
+  },
+  "acceptanceResidue": [
+    "Actual worker/native/descendant lifetime dispositions beyond this private inbox mechanism.",
+    "Historical long-lived compiler caller attribution remains owned by EI-24815884898197408.",
+    "Independent acceptance, R-8/R-9 comparison and verified shipment."
+  ]
+}

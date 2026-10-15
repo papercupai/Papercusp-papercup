@@ -6,8 +6,12 @@
 #   $PAPERCUSP_LOCKS_CACHE_DIR/<tool_use_id>.lock
 # and calls locks:release. If the matching cache is missing, a completed
 # Codex code-mode parent may recover an orphaned nested apply_patch token;
-# other calls no-op. Always exit 0 — surfacing release noise to the agent
-# changes nothing, and the lock's TTL covers any missed release anyway.
+# other calls no-op. Always exit 0 so a release failure never blocks the edit;
+# emit a PostToolUse context update when release is unconfirmed, because a lock
+# can block git-sync for its full TTL.
+# lifecycle-report.sh also replays this hook for cached entries at Stop. Those
+# synthetic calls must match both the cached owner and native session id before
+# reaching the ordinary exact lock_id+paths release path.
 #
 # EI-63: ALSO reads the sidecar $PAPERCUSP_LOCKS_CACHE_DIR/<tool_use_id>.paths
 # (written by the matching PreToolUse's _grant()) and, when present, passes it
@@ -54,6 +58,7 @@ urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHa
 operator_url, token_path, agent_id, cache_dir, hook_dir, fallback_operator_url = sys.argv[1:7]
 sys.path.insert(0, hook_dir)
 from mcp_response import parse_mcp_response, read_hook_payload, read_token_file  # noqa: E402
+from mcp_response import read_lock_operation, settle_lock_operation, parent_tool_terminal, with_native_session
 raw = read_hook_payload()
 token = read_token_file(token_path)
 
@@ -121,6 +126,22 @@ owner = (
     else agent_id)
 )
 
+# Stop cleanup is session-scoped. lifecycle-report.sh selects cache entries by
+# native session sidecar, and this second check rejects peer-owned entries even
+# when they share the cache directory and happen to use the same native id.
+if payload.get('hook_event_name') in ('Stop', 'SessionEnd') and not os.path.exists(os.path.join(cache_dir, tool_use_id + '.operation.json')):
+    if not isinstance(session_id, str) or not session_id:
+        sys.exit(0)
+    try:
+        with open(os.path.join(cache_dir, tool_use_id + '.owner')) as f:
+            cached_owner = f.read().strip()
+        with open(os.path.join(cache_dir, tool_use_id + '.session')) as f:
+            cached_session_id = f.read().strip()
+    except Exception:
+        sys.exit(0)
+    if cached_owner != owner or cached_session_id != session_id:
+        sys.exit(0)
+
 
 def owner_marker_name(kind):
     safe = re.sub(r'[^A-Za-z0-9._-]', '_', owner)[:160] or 'unknown'
@@ -162,7 +183,7 @@ def cleanup_sidecars(base_path):
     # '.owner' is the claiming session stamped by the PreToolUse hook for the
     # orphan reconcile (EI-22176521893516708); drop it with the rest so a
     # released claim leaves nothing the sweep could later re-examine.
-    for suffix in ('.lock', '.paths', '.domain', '.owner'):
+    for suffix in ('.lock', '.paths', '.domain', '.owner', '.session', '.attest'):
         try:
             os.remove(base_path + suffix)
         except Exception:
@@ -183,6 +204,26 @@ def mark_release_error(phase, detail):
     }
     write_marker('last-error.json', value)
     write_marker(owner_marker_name('error'), value)
+
+
+def emit_release_warning(paths):
+    valid_paths = [path for path in paths if isinstance(path, str) and path]
+    path_text = ', '.join(valid_paths[:6]) if valid_paths else 'the just-edited path(s)'
+    if len(valid_paths) > 6:
+        path_text += ', …'
+    event = payload.get('hook_event_name')
+    if event not in ('PostToolUse', 'PostToolBatch'):
+        event = 'PostToolUse'
+    context = (
+        'LOCK MODE UPDATE: automatic file-lock release was not confirmed after the completed edit for '
+        + path_text
+        + '. Its lock may remain active. Treat lock handling as manual until a fresh coord:orient reports '
+        + 'automatic/verified: inspect locks:queue and explicitly acquire/release before any next file edit.'
+    )
+    json.dump({'hookSpecificOutput': {
+        'hookEventName': event,
+        'additionalContext': context,
+    }}, sys.stdout)
 
 
 def run_declaration_regenerator(args, input_text=None):
@@ -219,8 +260,8 @@ def tool_request(name, arguments, base_url):
         'params': {'name': name, 'arguments': arguments},
     }).encode()
     return urllib.request.Request(
-        base_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&client='
-        + urllib.parse.quote(owner, safe=''),
+        with_native_session(base_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&format=json&client='
+        + urllib.parse.quote(owner, safe=''), session_id),
         data=body,
         headers={
             'Authorization': 'Bearer ' + token,
@@ -234,7 +275,7 @@ def tool_request(name, arguments, base_url):
 def call_tool(name, arguments):
     last_exc = None
     origins = [operator_url]
-    if fallback_operator_url and fallback_operator_url != operator_url:
+    if 'hook_operation' not in arguments and fallback_operator_url and fallback_operator_url != operator_url:
         origins.append(fallback_operator_url)
     for attempt in range(len(RETRY_BACKOFFS) + 1):
         # A staging authority can accept the connection but never answer while
@@ -252,6 +293,14 @@ def call_tool(name, arguments):
                 inner, rpc_error, phase = parse_mcp_response(raw_response)
                 if rpc_error is not None:
                     return None, 'rpc: ' + str(rpc_error)[:200]
+                if phase in ('no-result', 'no-text'):
+                    # HTTP 200 is not a usable release verdict. Advance to the
+                    # stable authority when this endpoint returned no parseable
+                    # tool result; a repeated locks:release is safe because the
+                    # verb confirms an already-absent path as held_before=0.
+                    last_exc = RuntimeError('response: ' + str(phase))
+                    all_conn_refused = False
+                    continue
                 if phase != 'ok' or not isinstance(inner, dict):
                     return None, 'response: ' + str(phase)
                 return inner, None
@@ -364,19 +413,36 @@ def native_edit_proof(tool, response, paths):
 
 
 def recover_failed_code_mode_edit(current_cache_path):
-    """Release cached nested apply_patch locks when its parent exec completes."""
-    if tool_name not in ('exec', 'functions.exec', 'functions__exec'):
+    """Release an orphan token after its parent or same-session retry completes.
+
+    A failed nested patch can reject its parent before PostToolUse runs. The
+    successful retry reuses that token and only attests the edit; consuming the
+    earlier automatic token here closes that lifecycle without waiting for TTL.
+    """
+    native_retry = tool_name in CODEX_NATIVE_EDIT_TOOLS
+    if not native_retry and not parent_tool_terminal(payload.get('tool_response', payload.get('toolResponse'))):
+        return
+    if native_retry:
+        if not native_edit_result_succeeded(payload.get('tool_response', payload.get('toolResponse'))):
+            return
+    elif tool_name not in ('exec', 'functions.exec', 'functions__exec'):
         return
     try:
         source = tool_input if isinstance(tool_input, str) else json.dumps(tool_input)
     except Exception:
         return
-    if 'apply_patch' not in source or '*** Begin Patch' not in source:
+    if (not native_retry and 'apply_patch' not in source) or '*** Begin Patch' not in source:
+        return
+    if not isinstance(session_id, str) or not session_id:
         return
 
-    def path_named_in_patch(path):
+    def path_named_in_patch(path, domain):
+        # The acquire hook caches repository-relative paths; Codex native
+        # patches may name that same file by its absolute checkout path.
+        candidates = (path, os.path.join(domain, path))
         return any(
-            marker + path in source
+            marker + candidate in source
+            for candidate in candidates
             for marker in (
                 '*** Add File: ',
                 '*** Update File: ',
@@ -385,19 +451,46 @@ def recover_failed_code_mode_edit(current_cache_path):
             )
         )
 
+    for operation_file in Path(cache_dir).glob('*.operation.json'):
+        base = str(operation_file)[:-len('.operation.json')]
+        if (base + '.lock' == current_cache_path or Path(base + '.batch').exists()
+                or os.path.basename(base).startswith('batch-')):
+            continue
+        record = read_lock_operation(str(operation_file), owner, session_id)
+        if not record or record['tool_id'].startswith('batch-'):
+            continue
+        domain = record.get('coordination_domain')
+        if not domain or not all(path_named_in_patch(path, domain) for path in record['paths']):
+            continue
+        proof = native_edit_proof(tool_name, payload.get('tool_response', payload.get('toolResponse')), record['paths']) if native_retry else None
+        if settle_lock_operation(str(operation_file), record, call_tool, proof):
+            cleanup_sidecars(base)
+        else:
+            mark_release_error('parent-operation-finish', 'terminal operation not confirmed')
+
     for lock_file in Path(cache_dir).glob('*.lock'):
         base = str(lock_file)[:-len('.lock')]
+        if Path(base + '.operation.json').exists():
+            continue
         if str(lock_file) == current_cache_path:
             continue
+        if Path(base + '.batch').exists():
+            continue  # PostToolBatch owns sibling edits that may still be running.
         try:
             lock_id = lock_file.read_text().strip()
             paths = json.loads(Path(base + '.paths').read_text())
             domain = Path(base + '.domain').read_text().strip()
+            cached_owner = Path(base + '.owner').read_text().strip()
+            cached_session = Path(base + '.session').read_text().strip()
         except Exception:
+            continue
+        # Owner identity survives carry-respawns. A token from another native
+        # continuation is not proof that its edit has finished in THIS session.
+        if cached_owner != owner or cached_session != session_id:
             continue
         if not lock_id or not domain or not isinstance(paths, list) or not paths:
             continue
-        if not all(isinstance(path, str) and path_named_in_patch(path) for path in paths):
+        if not all(isinstance(path, str) and path_named_in_patch(path, domain) for path in paths):
             continue
 
         queued, queue_error = call_tool('locks:queue', {
@@ -406,16 +499,19 @@ def recover_failed_code_mode_edit(current_cache_path):
         })
         if queue_error is not None or not isinstance(queued, dict):
             mark_release_error('parent-recovery-queue', queue_error or 'invalid queue response')
+            emit_release_warning(paths)
             continue
         rows = queued.get('active_locks', queued.get('activeLocks'))
         if not isinstance(rows, list):
             mark_release_error('parent-recovery-queue', 'invalid active_locks response')
+            emit_release_warning(paths)
             continue
         owned = [
             row for row in rows
             if isinstance(row, dict)
             and (row.get('lock_id') or row.get('lockId')) == lock_id
             and (row.get('owner') or row.get('ownerId')) == owner
+            and (not native_retry or str(row.get('intent', '')).startswith('PreToolUse:'))
         ]
         if not owned:
             cleanup_sidecars(base)
@@ -434,6 +530,7 @@ def recover_failed_code_mode_edit(current_cache_path):
                 'parent-recovery-release',
                 release_error or released or 'release not confirmed',
             )
+            emit_release_warning(paths)
             continue
         cleanup_sidecars(base)
         mark_release_success('parent-recovery')
@@ -443,6 +540,77 @@ def recover_failed_code_mode_edit(current_cache_path):
 # where PreToolUse correctly wrote no release token because the caller's wider
 # lock must remain held. The helper classifies success + enrolled paths itself.
 run_declaration_regenerator(['--hook-payload'], raw)
+
+# Operation completion does not depend on receiving a .lock grant reply.
+operation_path = os.path.join(cache_dir, tool_use_id + '.operation.json')
+if os.path.exists(operation_path):
+    record = read_lock_operation(operation_path, owner, session_id)
+    if record:
+        proof = native_edit_proof(tool_name, payload.get('tool_response', payload.get('toolResponse')), record['paths'])
+        if settle_lock_operation(operation_path, record, call_tool, proof):
+            cleanup_sidecars(operation_path[:-len('.operation.json')])
+            mark_release_success('operation-finish')
+        else:
+            mark_release_error('operation-finish', 'terminal operation not confirmed; sidecar retained')
+        recover_failed_code_mode_edit(os.path.join(cache_dir, tool_use_id + '.lock'))
+    sys.exit(0)
+
+
+def attest_retained_edit():
+    """WI-10006831: attribute an edit made under the owner's own explicit hold.
+
+    PreToolUse writes <tool_use_id>.attest for paths it found already held by
+    this owner (no release token, EI-63). On a successful native edit, send
+    locks:release { retain:true, native_edit_proof } so the edit reaches
+    edit_attribution_ledger while the deliberate hold stays in place. The
+    paths travel ONLY inside native_edit_proof: an operator predating `retain`
+    strips that key, and without a `paths` selector it refuses rather than
+    releasing the hold. Best-effort, and the sidecar is consumed either way.
+    """
+    attest_path = os.path.join(cache_dir, tool_use_id + '.attest')
+    if not os.path.exists(attest_path):
+        return
+    try:
+        with open(attest_path) as f:
+            attest = json.load(f)
+    except Exception:
+        attest = None
+    try:
+        os.remove(attest_path)
+    except Exception:
+        pass
+    if not isinstance(attest, dict):
+        return
+    paths = attest.get('paths')
+    domain = attest.get('domain')
+    if not isinstance(paths, list) or not paths or not all(isinstance(p, str) and p for p in paths):
+        return
+    proof = native_edit_proof(tool_name, payload.get('tool_response', payload.get('toolResponse')), paths)
+    if proof is None:
+        # A failed or unrecognized edit is not evidence of a mutation.
+        return
+    attest_args = {'retain': True, 'native_edit_proof': proof}
+    if isinstance(domain, str) and domain:
+        attest_args['coordination_domain'] = domain
+    result, error = call_tool('locks:release', attest_args)
+    attributed = (
+        error is None and isinstance(result, dict) and result.get('ok') is True
+        and isinstance(result.get('attributed'), list)
+        and all(path in result['attributed'] for path in paths)
+    )
+    value = {
+        'ts': now_iso(), 'owner': owner, 'tool': tool_name, 'paths': paths[:50],
+        'attributed': attributed,
+        **({} if attributed else {'detail': str(error or result)[:200]}),
+    }
+    write_marker('last-attest.json', value)
+    write_marker(owner_marker_name('attest'), value)
+
+
+try:
+    attest_retained_edit()
+except Exception:
+    pass
 
 cache_path = os.path.join(cache_dir, tool_use_id + '.lock')
 if not os.path.exists(cache_path):
@@ -541,11 +709,13 @@ if compatibility_error and coordination_domain:
         cleanup_sidecars(cache_path[:-len('.lock')])
     else:
         mark_release_error('release', release_error or released or 'release not confirmed')
+        emit_release_warning(release_paths or [])
 elif release_error is None and release_confirmed(released, release_paths or []):
     mark_release_success()
     cleanup_sidecars(cache_path[:-len('.lock')])
 else:
     mark_release_error('release', release_error or released or 'release not confirmed')
+    emit_release_warning(release_paths or [])
 
 sys.exit(0)
 PYEOF

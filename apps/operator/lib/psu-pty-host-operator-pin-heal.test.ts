@@ -42,7 +42,8 @@ async function serve(handler: Parameters<typeof createServer>[1]): Promise<numbe
 
 const healthyProxy = () =>
   serve((req, res) => {
-    res.writeHead(req.url === '/api/health' ? 200 : 404);
+    const status = req.url === '/api/health' ? 200 : req.url === '/api/mcp' ? 405 : 404;
+    res.writeHead(status);
     res.end('ok');
   });
 
@@ -72,6 +73,62 @@ describe('healDeadOperatorPin (EI-24091823697677465)', () => {
     // Now a launcher decision, so a later wake may rediscover instead of treating it
     // as the caller's fixed pin.
     expect(env.PAPERCUSP_OPERATOR_URL_PROVENANCE).toBe('psu-launcher');
+  });
+
+  it('heals a launcher-managed URL that is healthy HTTP but has no MCP route', async () => {
+    const proxyPort = await healthyProxy();
+    const pinPort = await serve((req, res) => {
+      res.writeHead(req.url === '/api/health' ? 200 : 404);
+      res.end('ok');
+    });
+    const pinned = `http://127.0.0.1:${pinPort}`;
+    const env: Record<string, string> = {
+      PAPERCUSP_OPERATOR_URL: pinned,
+      PAPERCUSP_MCP_PROXY_PORT: String(proxyPort),
+      PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
+    };
+
+    const healed = await healDeadOperatorPin(env);
+
+    expect(healed).toEqual({
+      from: pinned,
+      to: `http://127.0.0.1:${proxyPort}`,
+      route: 'mcp-route-missing',
+    });
+    expect(env.PAPERCUSP_OPERATOR_URL).toBe(`http://127.0.0.1:${proxyPort}`);
+  });
+
+  it('keeps a healthy MCP endpoint and refuses a proxy without the MCP route', async () => {
+    const healthyPinPort = await serve((req, res) => {
+      res.writeHead(req.url === '/api/health' ? 200 : req.url === '/api/mcp' ? 405 : 404);
+      res.end('ok');
+    });
+    const healthyPin = `http://127.0.0.1:${healthyPinPort}`;
+    const healthyPinEnv: Record<string, string> = {
+      PAPERCUSP_OPERATOR_URL: healthyPin,
+      PAPERCUSP_MCP_PROXY_PORT: String(await healthyProxy()),
+      PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
+    };
+    expect(await healDeadOperatorPin(healthyPinEnv)).toBeNull();
+    expect(healthyPinEnv.PAPERCUSP_OPERATOR_URL).toBe(healthyPin);
+
+    const proxyPort = await serve((req, res) => {
+      res.writeHead(req.url === '/api/health' ? 200 : 404);
+      res.end('ok');
+    });
+    const pinPort = await serve((req, res) => {
+      res.writeHead(req.url === '/api/health' ? 200 : 404);
+      res.end('ok');
+    });
+    const pinned = `http://127.0.0.1:${pinPort}`;
+    const env: Record<string, string> = {
+      PAPERCUSP_OPERATOR_URL: pinned,
+      PAPERCUSP_MCP_PROXY_PORT: String(proxyPort),
+      PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
+    };
+
+    expect(await healDeadOperatorPin(env)).toBeNull();
+    expect(env.PAPERCUSP_OPERATOR_URL).toBe(pinned);
   });
 
   it.each([undefined, 'unknown'])('preserves a refused explicit pin with provenance %s', async (provenance) => {

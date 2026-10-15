@@ -83,10 +83,10 @@ export function buildPredicateTimeoutFallback(
   const summary =
     'Predicate await ' +
     eventKey +
-    ' timed out — register a fresh predicate watch and await its new key; do not re-arm the expired key.';
+    ' timed out — register a fresh predicate watch and let its own wake registration notify you; do not re-arm the expired key.';
   const guidance = predicateRecovery
-    ? 'This synthetic predicate await timed out. Its paired poller is retired when the await expires, so the same key has no emitter. Do NOT call events:await on this expired key. Call predicateRecovery.tool with predicateRecovery.args, then await the new watch.pattern returned by watch:create. The recovery arguments carry the original predicate specification.'
-    : 'This synthetic predicate await timed out. Its paired poller is retired when the await expires, so the same key has no emitter. Do NOT call events:await on this expired key. Re-register the original predicate with watch:create (or state:subscribe for its cell) and await the new key returned by that registration. Recover the original predicate specification from the registration or prior context.';
+    ? 'This synthetic predicate await timed out. Its paired poller is retired when the await expires, so the same key has no emitter. Do NOT call events:await on this expired key. Call predicateRecovery.tool with predicateRecovery.args; watch:create registers the new predicate wake itself. Do NOT call events:await on the returned watch.pattern — end your turn and let the new watch wake you when the predicate crosses or reaches its deadline. The recovery arguments carry the original predicate specification.'
+    : 'This synthetic predicate await timed out. Its paired poller is retired when the await expires, so the same key has no emitter. Do NOT call events:await on this expired key. Re-register the original predicate with watch:create (or state:subscribe for its cell); the new registration owns its wake/subscription. Do NOT call events:await on the returned key — end your turn and let the new registration notify you. Recover the original predicate specification from the registration or prior context.';
   return {
     summary,
     guidance,

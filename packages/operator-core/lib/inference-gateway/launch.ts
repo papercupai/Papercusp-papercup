@@ -27,6 +27,9 @@ import {
   parseUnifiedWindow,
   parseUnified7dWindow,
   serviceableAdmissionFor,
+  type GatewayCarryTrialBinding,
+  type GatewayDeps,
+  type GatewayGoalBudgetDecision,
   type InferenceGateway,
 } from './gateway';
 import { INITIAL_PROVIDER_ADMISSION_WINDOW } from './provider-admission-lifecycle';
@@ -73,7 +76,14 @@ export const DEFAULT_T1_RESERVE_FRAC = 0.15;
  * ✅ MEASURED 2026-08-17 (D-006 discharged; see D-011/D-012 for how the measurement was unblocked).
  * `llama-ornith.service` — 15.5GB IQ3_M blob, 2 slots x 90112 ctx, RTX 3090 — cold-started to a
  * 200 on `/health` in **67.5s**, with GPU memory moving 4448 -> 21754 MiB (+17.3GB) and the
- * process RSS settling at 1.2GB. The value below is therefore ~4.4x the measured figure.
+ * process RSS settling at 1.2GB. (The original 300s default was ~4.4x that figure.)
+ *
+ * ✅ DISK-COLD MEASURED 2026-10-06 (WI-10006503, reboot-residue R-002 live probe): the same unit,
+ * same blob, started on demand from idle in normal operation, logged `model loaded` at **261s**
+ * and **304s** on two cold starts (and 63s on a warm-page-cache one). 304s is past the old 300s
+ * budget, so the gateway returned 502 to the request that triggered the start while the load
+ * was still progressing. The value below is ~3x the measured disk-cold worst case; the guard in
+ * on-demand-start.test.ts fails if it is ever set below 2x it.
  *
  * ⚠ READ WHAT THE 67.5s ACTUALLY MEASURES BEFORE TIGHTENING IT. That run had the weights already
  * in the PAGE CACHE (an accidental CPU-only start minutes earlier had just read all 15.5GB into
@@ -89,7 +99,10 @@ export const DEFAULT_T1_RESERVE_FRAC = 0.15;
  * pressure — exactly when a cold start is slowest.
  */
 export const LOCAL_BACKEND_COLD_START_TIMEOUT_MS =
-  Number(process.env.PAPERCUSP_GATEWAY_LOCAL_BACKEND_COLD_START_TIMEOUT_MS) || 300_000;
+  Number(process.env.PAPERCUSP_GATEWAY_LOCAL_BACKEND_COLD_START_TIMEOUT_MS) || 900_000;
+
+/** Disk-cold load time of the slowest measured on-demand backend (llama-ornith, 2026-10-06). */
+export const LOCAL_BACKEND_MEASURED_DISK_COLD_START_MS = 304_000;
 
 /**
  * Resolve the priority-TIER admission config (gateway-priority-tiers-2026-06-22), flag-gated by
@@ -123,6 +136,18 @@ export async function resolvePriorityTiers(
 }
 
 export interface GatewayServiceOptions {
+  /** Trusted composition ports for the existing accepted-operation guard.
+   * Omission retains the production org-DB policy read and attestation sink;
+   * scoped hosts must bind both to their own authority, never disable the guard. */
+  readAcceptedOperationModelPolicy?: GatewayDeps['readAcceptedOperationModelPolicy'];
+  recordAcceptedOperationModelAttestation?: GatewayDeps['recordAcceptedOperationModelAttestation'];
+  /** Trusted host composition can scope this existing guard to its own DB.
+   * Omission retains the production org-DB goal preflight. */
+  checkGoalInferenceAdmission?: (ownerId: string) => Promise<GatewayGoalBudgetDecision>;
+  /** Existing trusted, scoped provider-attempt binding. The service uses the
+   * normal account pool and credential resolvers; the controller owns approval,
+   * reservation/settlement and the synchronous final-send authority check. */
+  carryTrial?: GatewayCarryTrialBinding;
   port?: number;
   workspace?: string;
   concurrency?: number;
@@ -232,8 +257,12 @@ function makeWindowProjector(
   log: (level: 'info' | 'warn' | 'error', msg: string) => void,
 ): (headers: Record<string, string | undefined>, status: number, model: string, accountId: string) => void {
   const WRITE_MIN_MS = 30_000;
-  const last = new Map<string, { util: number; resetAt: number; util7d: number; resetAt7d: number; at: number }>();
-  return (headers, _status, model, accountId) => {
+  const last = new Map<string, { util: number; resetAt: number; util7d: number; resetAt7d: number; at: number; usageCreditsAvailable?: boolean }>();
+  return (headers, status, model, accountId) => {
+    const parsedCredits = parseCodexRateLimitHeaders(headers);
+    const observedCredits = parsedCredits.usageCreditsAvailable;
+    const creditBalance = parsedCredits.creditBalance;
+    const usageCreditsAvailable = status === 429 ? false : observedCredits;
     let w = parseUnifiedWindow(headers);
     let w7 = parseUnified7dWindow(headers);
     if (
@@ -253,7 +282,8 @@ function makeWindowProjector(
       w.utilization === undefined &&
       w.windowResetAt === undefined &&
       w7.utilization7d === undefined &&
-      w7.windowResetAt7d === undefined
+      w7.windowResetAt7d === undefined &&
+      usageCreditsAvailable === undefined && creditBalance === undefined
     )
       return;
     const t = Date.now();
@@ -286,16 +316,19 @@ function makeWindowProjector(
     const resetAt = w.windowResetAt ?? prev?.resetAt ?? 0;
     const util7d = w7.utilization7d ?? prev?.util7d ?? 0;
     const resetAt7d = w7.windowResetAt7d ?? prev?.resetAt7d ?? 0;
-    if (prev && t - prev.at < WRITE_MIN_MS) return; // throttle
+    const creditChanged = usageCreditsAvailable !== undefined && usageCreditsAvailable !== prev?.usageCreditsAvailable;
+    if (prev && t - prev.at < WRITE_MIN_MS && !creditChanged) return; // throttle ordinary meter updates
     // Write on a meaningful move in EITHER window (≥0.03 utilization) or a reset roll.
     const significant =
       !prev ||
       Math.abs(util - prev.util) >= 0.03 ||
       resetAt !== prev.resetAt ||
       Math.abs(util7d - prev.util7d) >= 0.03 ||
-      resetAt7d !== prev.resetAt7d;
+      resetAt7d !== prev.resetAt7d ||
+      creditChanged ||
+      usageCreditsAvailable !== undefined;
     if (!significant) return;
-    last.set(projectionKey, { util, resetAt, util7d, resetAt7d, at: t });
+    last.set(projectionKey, { util, resetAt, util7d, resetAt7d, at: t, usageCreditsAvailable: usageCreditsAvailable ?? prev?.usageCreditsAvailable });
     // WI-41147 leg c: the shared write-seam wrapper — records the window AND states any
     // burn-verdict wall the fresh reading implies (fact + severe-event on the transition
     // edge). Live traffic is the most frequent observer, so this is where an escalation
@@ -305,10 +338,12 @@ function makeWindowProjector(
         recordAccountWindowWithBurnAlert(
           accountId,
           {
-            utilization: util,
-            windowResetAt: resetAt || undefined,
-            utilization7d: util7d || undefined,
-            windowResetAt7d: resetAt7d || undefined,
+            utilization: w.utilization,
+            windowResetAt: w.windowResetAt,
+            utilization7d: w7.utilization7d,
+            windowResetAt7d: w7.windowResetAt7d,
+            usageCreditsAvailable,
+            creditBalance,
           },
           t,
           ws,
@@ -627,8 +662,8 @@ function createOptionalFailoverPool(
       if (!inner) throw unavailable();
       return inner.active();
     },
-    onExhausted(exhaustedId, resetAt) {
-      return inner?.onExhausted(exhaustedId, resetAt) ?? null;
+    onExhausted(exhaustedId, resetAt, keyOf, park) {
+      return inner?.onExhausted(exhaustedId, resetAt, keyOf, park) ?? null;
     },
     select(accountId) {
       return inner?.select?.(accountId) ?? null;
@@ -677,6 +712,16 @@ function createOptionalFailoverPool(
 }
 
 export async function startGatewayService(opts: GatewayServiceOptions = {}): Promise<RunningGatewayService> {
+  const binding = opts.carryTrial;
+  if (binding !== undefined && (!binding || typeof binding !== 'object' || Array.isArray(binding))) {
+    throw new Error('inference-gateway: invalid carry trial binding');
+  }
+  // Account/credential setup is asynchronous. Capture authority before that
+  // wait so mutation cannot remove the guard or substitute its scope/protocols.
+  // Preserve malformed protocol values for createInferenceGateway's validator.
+  const carryTrial = binding === undefined ? undefined : Object.freeze({ ...binding,
+    ...(Array.isArray(binding.protocols) ? { protocols: Object.freeze([...binding.protocols]) } : {}),
+  });
   const log = opts.log ?? ((lvl, m) => console.log(`[inference-gateway:${lvl}] ${m}`));
   // P-012: every deployment path (dev tsx, systemd unit, packaged re-exec, container) enters the
   // gateway through THIS function, which is what lets one call make "equivalent inputs produce
@@ -778,6 +823,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
       // anthropic-credits-gateway-2026-09-30 P-005: an `apikey:` account authenticates with
       // x-api-key; the request path picks the headers per attempt from this (P-006).
       authMode: resolver.authMode,
+      ...(account.anthropicWorkspaceId ? { anthropicWorkspaceId: account.anthropicWorkspaceId } : {}),
       // P-008: the account's metered spend policy (overflow | never) — selection ranks metered
       // serving behind included allowance, and `never` makes it unselectable while metered.
       ...(account.meteredPolicy ? { meteredPolicy: account.meteredPolicy } : {}),
@@ -798,7 +844,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     a
       .map(
         (x) =>
-          `${x.accountId}|${x.credentialRef}|${egSig(x.egress)}|${(x.egressPool ?? []).map(egSig).join('+')}|${x.meteredPolicy ?? ''}`,
+          `${x.accountId}|${x.credentialRef}|${egSig(x.egress)}|${(x.egressPool ?? []).map(egSig).join('+')}|${x.meteredPolicy ?? ''}|${x.anthropicWorkspaceId ?? ''}`,
       )
       .join(',');
 
@@ -963,19 +1009,38 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   }
 
   const gateway = createInferenceGateway({
-    readAcceptedOperationModelPolicy: async (ownerId, backend = 'claude') => {
+    ...(carryTrial === undefined ? {} : { carryTrial }),
+    readAcceptedOperationBudgetBinding: async ownerId => {
+      const [{ activeWorkspaceId }, { readSupportOperationBudgetBinding }] = await Promise.all([
+        import('../workspace-registry'), import('../blueprint/support-workflow-budget'),
+      ]);
+      return readSupportOperationBudgetBinding(opts.workspace ?? activeWorkspaceId(), ownerId);
+    },
+    readAcceptedOperationModelPolicy: opts.readAcceptedOperationModelPolicy ?? (async (ownerId, backend = 'claude') => {
       const [{ activeWorkspaceId }, { readActiveOperationModelPolicy }] = await Promise.all([
         import('../workspace-registry'),
         import('../blueprint/operation-worker-binding'),
       ]);
       return readActiveOperationModelPolicy(opts.workspace ?? activeWorkspaceId(), ownerId, backend);
-    },
-    recordAcceptedOperationModelAttestation: async (context, evidence) => {
+    }),
+    recordAcceptedOperationModelAttestation: opts.recordAcceptedOperationModelAttestation ?? (async (context, evidence) => {
       const [{ getOrgPg }, { recordDirectOperationModelAttestation }] = await Promise.all([
         import('@papercusp/db-org'), import('../blueprint/operation-service'),
       ]);
       await recordDirectOperationModelAttestation(getOrgPg().sql, context, evidence);
-    },
+    }),
+    checkGoalInferenceAdmission: opts.checkGoalInferenceAdmission ?? (async (ownerId) => {
+      const [{ activeWorkspaceId }, { getOrgPg }, { checkGoalInferenceAdmission }] = await Promise.all([
+        import('../workspace-registry'),
+        import('@papercusp/db-org'),
+        import('../goal-launch-settings'),
+      ]);
+      return checkGoalInferenceAdmission({
+        workspaceId: opts.workspace ?? activeWorkspaceId(),
+        ownerId,
+        sql: getOrgPg().sql,
+      });
+    }),
     pool,
     codexPool,
     codexCliPool,
@@ -1055,7 +1120,13 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     ensureLocalBackendRunning: async (backend) => {
       const { ensureLocalBackendRunning } = await import('../provisioner/provision');
       const { markLocalBackendBusy } = await import('./local-backend-store');
-      const result = await ensureLocalBackendRunning(
+      const { startOnDemandBackendWithWatermark } = await import('./on-demand-start');
+      // Watermark BEFORE and AFTER the start (WI-10006360) — see on-demand-start.ts for the race.
+      const result = await startOnDemandBackendWithWatermark(backend.id, {
+        markBusy: () => markLocalBackendBusy(backend.id, { workspaceId: opts.workspace }),
+        log,
+        budgetMs: LOCAL_BACKEND_COLD_START_TIMEOUT_MS,
+        start: () => ensureLocalBackendRunning(
         {
           id: backend.id,
           unitName: backend.unitName ?? null,
@@ -1083,16 +1154,8 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
             }
           },
         },
-      );
-      if (result.ok) {
-        // STAMP THE WATERMARK ON START, not just on observed work. `last_busy_at` still holds the
-        // pre-stop value, which is by definition older than idleTtlSec — so without this the
-        // idle-reaper's very next sweep (every 2 min) could stop a backend we started seconds ago,
-        // before it has served its first request.
-        await markLocalBackendBusy(backend.id, { workspaceId: opts.workspace }).catch((e) => {
-          log('warn', `inference-gateway: started '${backend.id}' but could not stamp last_busy_at: ${(e as Error).message}`);
-        });
-      }
+      ),
+      });
       return { ok: result.ok, error: result.error };
     },
   });
@@ -1241,7 +1304,8 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
           windowResetAt7d: a.rate?.windowResetAt7d,
           // When the store TOOK the reading — the gateway's store↔pool reconciliation (P-008) clears an
           // in-memory park only on a reading newer than the park it would clear.
-          readingAt: a.rate?.utilizationAt,
+          readingAt: Math.max(a.rate?.utilizationAt ?? 0, a.rate?.usageCreditsObservedAt ?? 0) || undefined,
+          usageCreditsAvailable: a.rate?.usageCreditsAvailable,
           // Re-evaluate at the hint-read seam instead of trusting the persisted transition stamp:
           // accountBurnAction applies the canonical freshness gate, so a days-old SHED verdict cannot
           // strand an otherwise recovered account after its projection has gone stale.

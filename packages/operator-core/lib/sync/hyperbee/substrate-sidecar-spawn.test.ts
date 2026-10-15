@@ -1,8 +1,34 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
+
+// WI-10007538: every ledger write below is faked, so the real-PG rail must never
+// fire. Counted at the rail's throw site, so a swallowed refusal fails here.
+afterAll(() => {
+  const rail = readRealPgRailBlocks();
+  expect(rail.blocked, `real-PG attempts blocked: ${rail.callers.join(' | ')}`).toBe(0);
+});
 
 const spawnMock = vi.fn();
+vi.mock('../../degradation/fallback-observations', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../degradation/fallback-observations')>()),
+  observeFallback: vi.fn(() => true),
+}));
 vi.mock('node:child_process', () => ({ spawn: (...args: unknown[]) => spawnMock(...args) }));
+// WI-10007538: spawnSubstrateSidecar enrols the child in the task ledger
+// (beginSyncEnrolment → completeSyncEnrolment), whose fire-and-forget write goes
+// through task-manager/store to the REAL org Postgres. The unit-layer rail blocks
+// that connection and enroll-sync only logs "[task-manager] sync enrollment
+// failed", so the suite stayed green while reaching for a live database five
+// times per run. Fake the ledger writes (their results are discarded by the
+// spawn path) so the enrolment code path still runs, hermetically.
+vi.mock('../../task-manager/store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../task-manager/store')>()),
+  registerTask: vi.fn(async () => undefined),
+  markSpawned: vi.fn(async () => undefined),
+  closeTask: vi.fn(async () => undefined),
+  bindAgentSessionTaskToLatestNativeSession: vi.fn(async () => null),
+}));
 
 import {
   _resetSidecarRespawnListenersForTests,

@@ -31,7 +31,7 @@ import {
   fmtCompactAge,
   groupByFleet,
   hasThinking,
-  isTranscriptFresh,
+  isAgentThinking,
   machineKey,
   machineTabs,
 } from './logic';
@@ -180,6 +180,9 @@ export function AgentRoster({
   // bar rather than acting on off-screen selections.
   const selectedAgents = useMemo(() => shown.filter((a) => selected.has(a.ownerId)), [shown, selected]);
   const selectedIds = selectedAgents.map((a) => a.ownerId);
+  const killTargetFingerprint = JSON.stringify(selectedAgents.map(a => [a.ownerId, a.managedSessionId ?? a.advSessionId ?? null, a.launchStartedAt ?? null, a.sessionId ?? null]));
+  const armedKillTarget = useRef<string | null>(null);
+  const killLabel = bulk?.killLabel ?? 'Kill';
   const allShownSelected = shown.length > 0 && shown.every((a) => selected.has(a.ownerId));
   const toggleSelected = (ownerId: string) => {
     setSelected((prev) => {
@@ -257,14 +260,15 @@ export function AgentRoster({
   const killSelected = async () => {
     if (!bulk?.kill) return;
     // Confirm-armed: first click arms ("Confirm kill N?"), second executes.
-    if (!killArmed) {
+    if (!killArmed || armedKillTarget.current !== killTargetFingerprint) {
+      armedKillTarget.current = killTargetFingerprint;
       setKillArmed(true);
       setBulkNote(null);
       return;
     }
-    await runBulk('kill', 'Kill failed', () => bulk.kill!(selectedAgents));
+    const accepted = await runBulk('kill', `${killLabel} failed`, () => bulk.kill!(selectedAgents));
     setKillArmed(false);
-    setSelected(new Set());
+    if (accepted) setSelected(new Set());
   };
   const copyIds = async () => {
     if (!bulk?.copyIds) return;
@@ -386,7 +390,7 @@ export function AgentRoster({
             </Tooltip>
           ) : null}
           {bulk.kill ? (
-            <Tooltip label="Close the selected agents' terminal windows (graceful — SIGHUPs the CLI)">
+            <Tooltip label={bulk.killDescription ?? "Close the selected agents' terminal windows (graceful — SIGHUPs the CLI)"}>
               <button
                 type="button"
                 className={`pc-agents-roster__bulk-btn pc-agents-roster__bulk-btn--danger${killArmed ? ' is-armed' : ''}`}
@@ -397,11 +401,12 @@ export function AgentRoster({
                 {bulkBusy === 'kill'
                   ? 'killing…'
                   : killArmed
-                    ? `⚠ Confirm kill ${selectedAgents.length}?`
-                    : '✕ Kill'}
+                    ? `⚠ Confirm ${killLabel.toLowerCase()} ${selectedAgents.length}?`
+                    : `✕ ${killLabel}`}
               </button>
             </Tooltip>
           ) : null}
+          {killArmed && bulk.kill ? <button type="button" className="pc-agents-roster__bulk-btn" data-testid="agents-bulk-kill-cancel" onClick={() => setKillArmed(false)}>Cancel</button> : null}
           <span className="pc-agents-roster__bulk-spacer" />
           <button
             type="button"
@@ -419,9 +424,6 @@ export function AgentRoster({
           >
             Clear
           </button>
-          {bulkNote ? (
-            <span className="pc-agents-roster__bulk-note" data-testid="agents-bulk-note">{bulkNote}</span>
-          ) : null}
           {composing ? (
             <div className="pc-agents-roster__compose" data-testid="agents-bulk-compose">
               <textarea
@@ -453,6 +455,11 @@ export function AgentRoster({
               </div>
             </div>
           ) : null}
+        </div>
+      ) : null}
+      {bulkNote ? (
+        <div className="pc-agents-roster__bulkbar" role="status">
+          <span className="pc-agents-roster__bulk-note" data-testid="agents-bulk-note">{bulkNote}</span>
         </div>
       ) : null}
       <div className="pc-agents-roster__scroll" data-testid="agents-roster-scroll">
@@ -502,7 +509,7 @@ export function AgentRoster({
                   />
                 ) : null}
                 <span className="pc-agents-roster__live">
-                  {isTranscriptFresh(a) ? (
+                  {isAgentThinking(a) ? (
                     <ThinkingDot size={7} title={`${nameOf(a)} — thinking`} />
                   ) : (
                     <LivenessDot

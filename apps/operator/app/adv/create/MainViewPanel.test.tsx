@@ -63,6 +63,19 @@ vi.mock('@/app/harness/useConfirmDialog', () => ({
     element: null,
   }),
 }));
+vi.mock('@/lib/flag-hooks', () => ({ useFlag: () => true }));
+vi.mock('@/app/_components/plans/use-plan-cleanup-run', () => ({
+  PLAN_CLEANUP_RUN_PARAM: 'opcln',
+  usePlanCleanupRun: () => ({ reviewInventory: { total: 2, runs: [
+    { runId: 'newer-review', unresolved: 1 },
+    { runId: 'older-review', unresolved: 1 },
+  ] } }),
+}));
+vi.mock('@/app/_components/plans/PlansCleanupStrip', () => ({
+  PlanCleanupReviewSelector: ({ onReview }: { onReview: (id: string) => void }) => (
+    <button aria-label="Unresolved cleanup reviews" onClick={() => onReview('older-review')}>Older review</button>
+  ),
+}));
 
 import MainViewPanel from './MainViewPanel';
 
@@ -85,6 +98,17 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('<MainViewPanel /> view routing', () => {
+  it('keeps existing cleanup reviews reachable when the plan list is empty', () => {
+    render(<MainViewPanel {...mkProps()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Unresolved cleanup reviews' }));
+    expect(setters.opcln).toHaveBeenCalledWith('older-review');
+  });
+
+  it('keeps the cleanup review selector scoped to Plans view', () => {
+    view.value = 'sessions';
+    render(<MainViewPanel {...mkProps()} />);
+    expect(screen.queryByRole('button', { name: 'Unresolved cleanup reviews' })).toBeNull();
+  });
   it('renders the full PlanDetail editor when a plan is open in Plans view', () => {
     view.value = 'plans';
     nuqs.plan = 'open-plan';

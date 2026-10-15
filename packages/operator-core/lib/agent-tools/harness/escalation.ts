@@ -49,14 +49,10 @@ export default defineTool({
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
-              hasEscalation: false,
-              escalation: null,
-              supervisorNotes: null,
-              mtimeMs: null,
-            }),
+            text: JSON.stringify({ ok: false, status: result.status, error: result.error }),
           },
         ],
+        isError: true,
       };
     }
     const { escalation, supervisorNotes, mtimeMs } = result.data;

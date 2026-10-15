@@ -148,6 +148,7 @@ export interface AdmissionLedgerLegacyAdapter {
 /** Ledger-only implementation. Legacy WI receipt compatibility is composed outside this class. */
 export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
   private readonly sql: SqlClient;
+  private readonly acquirePool: string | undefined;
   private readonly workspaceId: string;
   private readonly abandonAfterMs: number;
   private readonly resolveSessionStatesFn: ResolveSessionStates | undefined;
@@ -157,6 +158,7 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
   constructor(options: PgAdmissionLedgerQueueStoreOptions = {}) {
     this.endedOwnerScans = new EndedLeaseOwnerScanCoalescer(options.endedLeaseOwnerReuseMs);
     this.sql = options.sql ?? getOrgPg().sql;
+    this.acquirePool = options.sql ? undefined : 'org-admin';
     this.workspaceId = options.workspaceId?.trim() || activeWorkspaceId();
     this.abandonAfterMs =
       typeof options.abandonAfterMs === 'number' &&
@@ -169,7 +171,7 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
   }
 
   private transaction<T>(fn: (tx: SqlClient) => Promise<T>): Promise<T> {
-    return boundedOrgTxn(fn, { client: this.sql });
+    return boundedOrgTxn(fn, { client: this.sql, acquirePool: this.acquirePool });
   }
 
   /** Complete ledger + bounded-overlap population used by governor snapshots. */

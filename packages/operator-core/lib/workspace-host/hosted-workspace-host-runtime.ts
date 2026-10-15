@@ -32,16 +32,22 @@ import {
 } from '../desktop/desktop-session-registry';
 import {
   ensureHiveDesktop,
+  ensurePersonalDesktop,
   hiveDesktopSessionId,
+  leaseOwnerBySessionId,
   leasedDesktopBySessionId,
-  leasedHiveDesktops,
-  reapDeadHiveDesktops,
+  leasedDesktopSessionIds,
+  reapDeadDesktops,
 } from '../agent-tools/computer/desktop-lease';
 import { hostedDesktopAuditRow, recordDesktopAudit } from '../desktop/desktop-audit';
+import { desktopThumbnailer } from '../desktop/desktop-thumbnail';
+import { getActiveClaimForOwner } from '../work-item-claims';
 import type { HostedConnectorBinding } from '../endpoint-route/hosted-workspace-connector';
 import { configureAgentSpawnTransform } from '@papercusp/papercusp-shared/agent';
 import { installHostedCustomerAgentIdentity } from './hosted-agent-identity';
 import { createHostedDesktopBackend, type HostedDesktopBackendDeps } from './hosted-desktop-backend';
+import { loadOrCreateHostedMachineNoiseKeyPair } from './hosted-machine-noise-key';
+import { findDeviceIdByNoisePublicKey } from '../device-store';
 import {
   HostedWorkspaceHostSessionAdapter,
   type HostedDesktopBackend,
@@ -74,6 +80,7 @@ export interface HostedWorkspaceHostRuntimeOptions {
   desktop?: HostedDesktopBackend;
   onAudit?: (event: HostedHostAuditEvent) => void;
   onTerminal?: (reason: HostedConnectorTerminalReason, detail: string) => void;
+  /** Fixed control codes only; dependency exceptions may contain customer content. */
   onWarning?: (message: string) => void;
   /**
    * Called with every binding BEFORE its adapter is built. The production default
@@ -87,6 +94,12 @@ export interface HostedWorkspaceHostRuntimeOptions {
    * call. Defaults to {@link defaultRelayUsageReport}, which raises the relay-limit alert.
    */
   onRelayUsage?: (customerWorkspaceId: string, relayUsage: unknown) => void;
+  /**
+   * WI-10004257: the portal's report of this organization's removed members, already checked
+   * against the binding's organization. Defaults to {@link defaultMembershipReport}, which stores
+   * it for the connected-app creator-removed alert.
+   */
+  onMembershipReport?: (report: unknown) => void;
   /** Test seam — swap the transport. */
   createClient?: (options: ConstructorParameters<typeof HostedWorkspaceConnectorClient>[0]) => HostedWorkspaceConnectorClient;
   /** Test seam — swap the PTY factory every adapter this runtime builds uses. */
@@ -96,6 +109,14 @@ export interface HostedWorkspaceHostRuntimeOptions {
    * machine (all kinds); a relay-linked local install passes LOCAL_RELAY_CHANNEL_KINDS (D-031 #7).
    */
   allowedChannelKinds?: HostedWorkspaceHostOptions['allowedChannelKinds'];
+  /**
+   * D-013 #6: the machine's static Noise key pair for sealed phone channels (the key the pair
+   * QR advertises). Default: the persisted hosted-machine key. Pass `null` to serve no sealed
+   * channel. Test seam.
+   */
+  loadMachineNoiseKeyPair?: (() => Promise<{ publicKey: Buffer; secretKey: Buffer }>) | null;
+  /** Test seam — resolves a phone's Noise key to its paired device in the bound workspace. */
+  findDeviceIdByNoiseKey?: (workspaceId: string, noisePublicKeyBase64: string) => Promise<string | null>;
 }
 
 export interface HostedWorkspaceHostRuntime {
@@ -115,7 +136,7 @@ export interface HostedWorkspaceHostRuntime {
 export function defaultHostedAudit(event: HostedHostAuditEvent): void {
   recordDesktopAudit(hostedDesktopAuditRow(event), {
     idPrefix: 'hosted-vnc',
-    onError: (error) => console.warn('[hosted-workspace-host] audit write failed:', error),
+    onError: () => console.warn('[hosted-workspace-host] audit write failed:', 'desktop_audit_write_failed'),
   });
 }
 
@@ -135,7 +156,18 @@ export const HOSTED_WORKSPACE_DESKTOP_LEASE = 'hosted-workspace';
 export function defaultRelayUsageReport(customerWorkspaceId: string, relayUsage: unknown): void {
   void import('../connected-apps/alert-sweep')
     .then(({ onRelayUsageReported }) => onRelayUsageReported(customerWorkspaceId, relayUsage))
-    .catch((error) => console.warn('[hosted-workspace-host] relay usage report failed:', error));
+    .catch(() => console.warn('[hosted-workspace-host] relay usage report failed:', 'relay_usage_report_failed'));
+}
+
+/**
+ * The default membership-report sink: store the portal's removed-member set on this machine
+ * (WI-10004257), where the connected-app alert sweep reads it. Lazy for the same reason as
+ * {@link defaultRelayUsageReport}.
+ */
+export function defaultMembershipReport(report: unknown): void {
+  void import('../connected-apps/membership-report')
+    .then(({ onMembershipReported }) => onMembershipReported(report))
+    .catch(() => console.warn('[hosted-workspace-host] membership report failed:', 'membership_report_failed'));
 }
 
 /**
@@ -158,24 +190,39 @@ export function createDefaultDesktopBackend(
     // this adapter to ONE organization + customer workspace, and that binding IS the
     // authorization boundary. A second, weaker filter here would imply it is not.
     listSessions: () => listDesktopSessions({ workspaceId: scope() }),
-    touchSession: (id) => touchDesktopSession(id),
+    touchSession: async (id) => {
+      await touchDesktopSession(id);
+    },
     // The desktop pack's socket service (D-363) is what `ensureHiveDesktop`
     // provisions through on a workspace host, so this needs no pack-specific code.
     ensureDesktop: async () => {
       await ensureHiveDesktop(HOSTED_WORKSPACE_DESKTOP_LEASE);
       return hiveDesktopSessionId(HOSTED_WORKSPACE_DESKTOP_LEASE);
     },
+    // personal-cloud-desktop-2026-10-06: a person's own desktop, provisioned ONLY through
+    // the pack's personal worker as the customer account; a host without it refuses.
+    ensurePersonalDesktop: (userId) => ensurePersonalDesktop(userId),
+    leaseOwner: leaseOwnerBySessionId,
     // Sole owner by construction: a workspace host runs one operator, and its
     // desktops die with that operator's socket (D-363), so every row it holds no
     // lease for was left by a previous incarnation of it (WI-10002797).
     reconcile: async () => {
       // A lease whose desktop died is not live, whatever the map still holds (WI-10004206):
       // release it first, which closes its row, so the roster stops offering it.
-      const dead = await reapDeadHiveDesktops();
-      const liveIds = leasedHiveDesktops()
-        .map(hiveDesktopSessionId)
-        .filter((id): id is string => Boolean(id));
+      // EVERY live lease vouches for its row — agent desktops included (D-012). Listing
+      // only the shared pot lease here made the sole-owner sweep below mark each
+      // agent-started desktop dead on the next reconcile while it was still running.
+      const dead = await reapDeadDesktops();
+      const liveIds = leasedDesktopSessionIds();
       return dead.length + (await reconcileLocalDesktopSessions({ workspaceId: scope(), liveIds, soleOwner: true })).reaped;
+    },
+    // P-005 / D-008: an agent-started desktop is absent from the bootstrap-time capture
+    // loop's display list, so its thumbnail is grabbed on demand by the grid read.
+    grabThumbnail: (display) => desktopThumbnailer().thumbnail(display),
+    // D-009: the tile's work-item label is the owner's live claim, read now.
+    activeClaimFor: async (owner) => {
+      const claim = await getActiveClaimForOwner(scope(), owner);
+      return claim ? { workItemId: claim.workItemId, intent: claim.intent || null } : null;
     },
     ...overrides,
   });
@@ -191,6 +238,23 @@ export function createHostedWorkspaceHostRuntime(
   // PTY sessions a dropped connector released ALIVE, waiting for the next `bound` to adopt them
   // (P-318 J5, D-392). A Papercusp outage must not kill the customer's running processes.
   let parked: HostedHostSessionHandoff[] = [];
+
+  // D-013 #6: the sealed phone channel's machine key. By default it is loaded only where the
+  // pair QR advertises it (a hosted connector bearer is configured, see pair.ts), so the
+  // advertised key and the serving key are always the same file. The load is a local file
+  // read started here; an adapter built before it settles serves no sealed channel
+  // (`sealed_channel_unavailable`), and the phone's retry lands on the next binding.
+  const findDeviceByKey = options.findDeviceIdByNoiseKey ?? findDeviceIdByNoisePublicKey;
+  const loadMachineKey = options.loadMachineNoiseKeyPair !== undefined
+    ? options.loadMachineNoiseKeyPair
+    : process.env.PAPERCUSP_HOSTED_CONNECTOR_BEARER?.trim() ? loadOrCreateHostedMachineNoiseKeyPair : null;
+  let machineNoiseKeyPair: { publicKey: Buffer; secretKey: Buffer } | null = null;
+  if (loadMachineKey) {
+    loadMachineKey().then(
+      (pair) => { machineNoiseKeyPair = pair; },
+      () => warn('machine_noise_key_unavailable'),
+    );
+  }
 
   // Terminal (revoked / stopped): access ends, so every PTY dies, held ones included.
   const teardown = (reason: string): void => {
@@ -214,7 +278,7 @@ export function createHostedWorkspaceHostRuntime(
       // Envelopes arriving before `bound` have no binding to be audited against, so
       // they are dropped rather than served by an adapter with a guessed identity.
       if (!adapter) return;
-      void adapter.accept(envelope).catch((error) => warn(`envelope failed: ${String(error)}`));
+      void adapter.accept(envelope).catch(() => warn('envelope_failed'));
     },
     onBound: (next) => {
       // Every (re)connect rebuilds. See the header: a binding carries a rotatable
@@ -225,21 +289,32 @@ export function createHostedWorkspaceHostRuntime(
       binding = next;
       try {
         options.onBinding?.(next);
-      } catch (error) {
-        warn(`binding hook failed: ${String(error)}`);
+      } catch {
+        warn('binding_hook_failed');
       }
       adapter = new HostedWorkspaceHostSessionAdapter({
         binding: next,
         workspaceRoot: options.workspaceRoot,
         send: (message) => {
-          if (!client.send(message)) warn(`dropped outbound ${message.type} — connector down`);
+          if (!client.send(message)) warn('outbound_connector_unavailable');
         },
         onAudit,
         onWarning: warn,
         onRelayUsage: (relayUsage) => (options.onRelayUsage ?? defaultRelayUsageReport)(next.customerWorkspaceId, relayUsage),
+        onMembershipReport: options.onMembershipReport ?? defaultMembershipReport,
         ...(options.desktop ? { desktop: options.desktop } : {}),
         ...(options.createPty ? { createPty: options.createPty } : {}),
         ...(options.allowedChannelKinds ? { allowedChannelKinds: options.allowedChannelKinds } : {}),
+        ...(machineNoiseKeyPair
+          ? {
+            byocSealedChannel: {
+              localKeyPair: machineNoiseKeyPair,
+              // The phone's relay base URL is /api/workspaces/<id> with this binding's
+              // workspace id (device-base-urls.ts), which is where pairing stored the device.
+              resolveDeviceNoiseKey: (key: string) => findDeviceByKey(next.customerWorkspaceId, key),
+            },
+          }
+          : {}),
       });
       for (const handoff of parked) adapter.adopt(handoff);
       parked = [];

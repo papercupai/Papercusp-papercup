@@ -22,6 +22,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
+import { beginEmbedLatencyTrace, finishEmbedLatencyTrace } from '@papercusp/search';
 
 // Both deps are pulled in via dynamic import() inside buildQueryEmbedder, so the
 // mocks below intercept those too (same shape rerank.test.ts uses).
@@ -76,6 +77,9 @@ const savedKey = process.env.OPENAI_API_KEY;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // clearAllMocks preserves mock implementations; restore the default local
+  // build failure so a local-success case cannot leak into later fallback cases.
+  vi.mocked(buildSidecarAwareEmbedder).mockRejectedValue(new Error('local pipeline unavailable (mocked)'));
   // WI-4734: the query-embed memo is module-scoped — without this, a vector
   // cached by one test (closing over ITS fetch stub) leaks into the next.
   _clearQueryEmbedCacheForTests();
@@ -128,6 +132,39 @@ describe('buildQueryEmbedder — OpenAI path', () => {
     expect(embedderProfileIdOf(resolved!.embed)).toBe(
       EMBEDDER_DIM_SPECS.openai.profileId,
     );
+  });
+
+  it('records admission and provider time on the same query-embed trace', async () => {
+    vi.mocked(readCredentials).mockResolvedValue({ openai_api_key: 'sk-stored' });
+    mockResolvedTyped(vi.mocked(loadVoicePrefs), { ...DEFAULT_VOICE_PREFS, memoryEmbedderMode: 'openai' });
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [{ embedding: [0.1] }] }),
+    })));
+
+    const embedder = await buildQueryEmbedder();
+    const signal = new AbortController().signal;
+    beginEmbedLatencyTrace(signal);
+    await embedder!('stage trace', signal);
+
+    const stages = finishEmbedLatencyTrace(signal);
+    expect(stages?.admission).toEqual(expect.any(Number));
+    expect(stages?.provider).toEqual(expect.any(Number));
+  });
+
+  it('records local inference time without exposing query content', async () => {
+    vi.mocked(readCredentials).mockResolvedValue({});
+    mockResolvedTyped(vi.mocked(loadVoicePrefs), { ...DEFAULT_VOICE_PREFS, memoryEmbedderMode: 'local' });
+    vi.mocked(buildSidecarAwareEmbedder).mockResolvedValue(async () => [0.1]);
+
+    const embedder = await buildQueryEmbedder();
+    const signal = new AbortController().signal;
+    beginEmbedLatencyTrace(signal);
+    await embedder!('private query text', signal);
+
+    const stages = finishEmbedLatencyTrace(signal);
+    expect(stages?.localInference).toEqual(expect.any(Number));
   });
 
   it('(a) openai mode + key → an embedder that POSTs OpenAI with dimensions:PROSE_VECTOR_DIMS, returns the vector', async () => {

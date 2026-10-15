@@ -33,6 +33,11 @@ const review: CapabilityProviderUninstallReview = {
     optionalFor: [],
     routes: ['operator-notify', 'suggest-provider', 'needs_human'],
     detail: 'Capability class crm.email@1.0.0 becomes unbound in sales-hive.',
+    refusal: {
+      observed: { potSlug: 'sales-hive', classRef: 'crm.email@1.0.0', provider: 'mail-pro@2.1.0' },
+      liftsWhen: 'a provider is bound for crm.email@1.0.0 in sales-hive again',
+      whoCanMakeItTrue: ['owner'],
+    },
   }],
   reviewToken: 'a'.repeat(64),
 };

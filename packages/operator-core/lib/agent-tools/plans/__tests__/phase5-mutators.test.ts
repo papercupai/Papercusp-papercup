@@ -13,7 +13,6 @@ import { describe, expect, it } from 'vitest';
 import { evaluateSetContent } from '../set-content';
 import { appendChunkToContent } from '../set-content-chunk';
 import { buildFirstClassPlanBody, buildFrontmatter, applyFrontmatterBlock } from '../set-frontmatter';
-import { TERMINAL_NOW_STAMP_MARK } from '../terminal-now-stamp';
 import { hashPlanContent } from '../content-hash';
 
 const SLUG = 'test-plan-2026-05-21';
@@ -254,27 +253,32 @@ describe('applyFrontmatterBlock', () => {
   });
 });
 
-describe('buildFirstClassPlanBody — terminal Now invariant (WI-38303)', () => {
-  it('stamps a legacy plan converted directly to a terminal status', () => {
-    const legacy = '# Plan\n\n## Now\n\n**State:** historical\n\n**Next:** do finished work\n';
+describe('buildFirstClassPlanBody — no Now stamp (derived-status P-006)', () => {
+  // P-006 retired the WI-38303 terminal stamp: status is derived from the
+  // frontmatter, so converting a legacy plan only writes the frontmatter and
+  // leaves the author's Now exactly as written.
+  it('converts a legacy plan straight to a terminal status without touching its Now', () => {
+    const now = '## Now\n\n**State:** historical\n\n**Next:** do finished work\n';
+    const legacy = `# Plan\n\n${now}`;
     const out = buildFirstClassPlanBody(
       legacy,
       { slug: SLUG, title: 'My Plan', status: 'shipped' },
       '2026-08-13',
     );
-    expect(out.nowStamped).toBe(true);
-    expect(out.body).toContain(TERMINAL_NOW_STAMP_MARK);
-    expect(out.body).toContain('Pre-shipped next, no longer actionable: do finished work');
+    expect(Object.keys(out)).toEqual(['body']);
+    expect(out.body).toContain('status: shipped');
+    expect(out.body).toContain(now);
+    expect(out.body).not.toContain('PLAN CLOSED');
+    expect(out.body).not.toContain('no longer actionable');
   });
 
-  it('leaves a non-terminal legacy conversion unstamped', () => {
-    const legacy = '# Plan\n\n## Now\n\n**Next:** do current work\n';
+  it('converts a legacy plan to a non-terminal status without touching its Now', () => {
+    const now = '## Now\n\n**Next:** do current work\n';
     const out = buildFirstClassPlanBody(
-      legacy,
+      `# Plan\n\n${now}`,
       { slug: SLUG, title: 'My Plan', status: 'ready' },
       '2026-08-13',
     );
-    expect(out.nowStamped).toBe(false);
-    expect(out.body).not.toContain(TERMINAL_NOW_STAMP_MARK);
+    expect(out.body).toContain(now);
   });
 });

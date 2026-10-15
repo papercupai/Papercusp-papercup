@@ -620,3 +620,76 @@ test('freshest-scan — 401 recovery: invalidate() + re-scan picks up a bundle a
 test('makeBearerCredentialResolver — rejects keychain: (Claude-subscription-only channel)', () => {
   assert.throws(() => makeBearerCredentialResolver('keychain:Claude Code'), /keychain: is Claude-subscription-only/);
 });
+
+// ── WI-10005306: the freshest-scan's Keychain calls are NON-BLOCKING ─────────────────────────────
+// The gateway serves every member's inference from one event loop; the scan shells out to
+// `security` once per enumerated item plus a `dump-keychain` of up to 15s. A spawnSync there froze
+// every in-flight request for the duration. These pin both halves: the seams are AWAITED (an async
+// fake that settles on a later tick is honoured, not read as a truthy Promise), and the source
+// never reintroduces a synchronous spawn.
+
+/** Settle `v` on a later macrotask, like a real execFile('security', …) callback. */
+const later = <T>(v: T, ms = 5): Promise<T> => new Promise((resolve) => setTimeout(() => resolve(v), ms));
+
+test('freshest-scan — ASYNC Keychain seams are awaited, and the event loop keeps turning during the scan (WI-10005306)', async () => {
+  const now = Date.now();
+  const { provider } = fakeClaude();
+  registerProvider(provider);
+  const writes: string[] = [];
+  _setKeychainListerForTests(() => later([{ service: `${BASE}-a`, account: 'u' }, { service: `${BASE}-b`, account: 'u' }]));
+  _setKeychainReaderForTests((service) =>
+    later(service === `${BASE}-b` ? bundleJson('stale-b', now - hour, 'RT-b') : service === `${BASE}-a` ? bundleJson('stale-a', now - 5 * hour, 'RT-a') : null),
+  );
+  _setKeychainWriterForTests((service) => later((writes.push(service), true)));
+  let ticks = 0;
+  const ticker = setInterval(() => (ticks += 1), 1);
+  try {
+    const r = makeCredentialResolver(`keychain:${BASE}`);
+    // All-expired → refresh the freshest (b) and persist through the ASYNC writer.
+    assert.equal(await r.current(), 'refreshed-1');
+    assert.deepEqual(writes, [`${BASE}-b`], 'the async writer resolved true, so no disk fallback ran');
+    await assert.rejects(fs.access(join(dir, '.claude', '.credentials.json')), 'a resolved-true async write-back must not ALSO write the disk bundle');
+    assert.ok(ticks > 0, 'timers fired while the scan awaited its Keychain calls');
+  } finally {
+    clearInterval(ticker);
+    _setKeychainReaderForTests(null);
+    _setKeychainListerForTests(null);
+    _setKeychainWriterForTests(null);
+  }
+});
+
+test('freshest-scan — a REJECTING lister/reader/writer is a miss, never a failed request (WI-10005306)', async () => {
+  const now = Date.now();
+  const { provider } = fakeClaude();
+  registerProvider(provider);
+  // Lister rejects → the base item is still scanned; a rejecting sibling read is skipped.
+  _setKeychainListerForTests(() => Promise.reject(new Error('dump-keychain timed out')));
+  _setKeychainReaderForTests((service) =>
+    service === BASE ? later(bundleJson('base-stale', now - hour, 'RT-base')) : Promise.reject(new Error('ACL')),
+  );
+  _setKeychainWriterForTests(() => Promise.reject(new Error('errSecInteractionNotAllowed')));
+  try {
+    const r = makeCredentialResolver(`keychain:${BASE}`);
+    assert.equal(await r.current(), 'refreshed-1', 'the base item still refreshes when enumeration fails');
+    const onDisk = JSON.parse(await fs.readFile(join(dir, '.claude', '.credentials.json'), 'utf8')) as ClaudeCredentialBundle;
+    assert.equal(onDisk.claudeAiOauth.refreshToken, 'RT-base-rotated', 'a rejecting writer falls back to the disk bundle');
+  } finally {
+    _setKeychainReaderForTests(null);
+    _setKeychainListerForTests(null);
+    _setKeychainWriterForTests(null);
+  }
+});
+
+test('credential-store source — no synchronous spawn, and only the ASYNC Keychain helpers are imported (WI-10005306)', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { fileURLToPath } = await import('node:url');
+  const source = readFileSync(fileURLToPath(new URL('./credential-store.ts', import.meta.url)), 'utf8');
+  // Positive control: the guard is reading the real module, not an empty/wrong file.
+  assert.match(source, /export async function scanLocalCredentialCandidates/);
+  assert.doesNotMatch(source, /\b(?:spawnSync|execFileSync|execSync)\s*\(/, 'a sync spawn blocks every in-flight gateway request');
+  assert.doesNotMatch(
+    source,
+    /\b(?:listClaudeKeychainCredentialItems|writeClaudeKeychainOAuthBundle|readClaudeKeychainOAuthBundle)\b(?!Async)/,
+    'the sync agent-auth-detect Keychain helpers shell out with spawnSync',
+  );
+});

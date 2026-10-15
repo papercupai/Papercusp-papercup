@@ -26,6 +26,8 @@
 import { getOrgPg, withDbCallDeadline } from '@papercusp/db-org';
 import { emitAwaitedEvent } from '../../events/await/engine';
 import { listActiveAwaitsForKey } from '../../events/await/store';
+import { buildKey } from '../../events/await/catalog';
+import { pickupWindowSec } from '../../events/await/turn-proof';
 // hive-agent-tabs P-007/D-005: the per-agent wake-mode gate (consumed below).
 import { resolveWakeMode } from './wake-mode';
 import { stagePendingWake } from './pending-wakes';
@@ -34,7 +36,12 @@ import { listPresence } from './presence';
 import { resolveBestEffortAgainstRoster, isSelectorOrWildcard, knownOwnerIdSet } from './recipient-resolve';
 import { getLoopStatuses, type LoopStatus } from '../../harness/routines/loop';
 import { withBoundedTimeout } from '../../bounded-timeout';
-import { isOwnerVerifiedRelay, type RelayProvenanceStamp } from './relay-provenance';
+import { reserveWakeFanout, withWakeFanoutPacing, WAKE_FANOUT_BURST } from './wake-fanout-pacing';
+import {
+  isOwnerVerifiedRelay,
+  RELAY_PROVENANCE_FIELD,
+  type RelayProvenanceStamp,
+} from './relay-provenance';
 
 /** Prefix for the per-agent inbox-wake key. A bee watches `inboxWakeKey(self)`;
  *  a `{wake:true}` send to that bee fires exactly this key. */
@@ -58,12 +65,8 @@ export function ownerFromInboxWakeKey(key: string): string | null {
  *  so the no-wake report and the wake fan skip exactly the same addressees. */
 export const NON_WAKEABLE = new Set(['*', 'human', '']);
 
-/** P-022 (cross-machine-coord-parity, fan-out governance): the MAX concrete
- *  agents ONE send's wake fan will re-invoke. Beyond it, the overflow is
- *  INJECTED (durable, seen next turn) but NOT woken — a `@fleet:`/`@topic:` that
- *  expands to thousands (256×10 = 2560 agents) must not turn one message into
- *  thousands of billable turns. A legitimate directed set is far under this;
- *  env-tunable. */
+/** Legacy exported threshold retained for compatibility. Bulk wakes now use
+ * WAKE_FANOUT_BURST and durable reservations, so overflow is delivered later. */
 export const MAX_WAKE_FANOUT = Number(process.env.PAPERCUSP_MAX_WAKE_FANOUT) || 64;
 
 /**
@@ -90,6 +93,9 @@ export const DELIVERY_LADDER_WAKE_SOURCE = 'system:delivery-ladder';
  * wake defeats the SLA: there is no separate owner review step for a
  * time-sensitive system handoff. */
 export const ESCALATION_SLA_REROUTE_WAKE_SOURCE = 'system:escalation-sla-reroute';
+
+/** Prefix for a wake explicitly released by the owner from coord:wake-queue. */
+export const MANUAL_WAKE_QUEUE_RELEASE_SOURCE_PREFIX = 'coord:wake-queue-release:';
 
 /**
  * Is this wake a LOOP's self-wake? A loop wake is the agent driving ITSELF (loop:arm), so it
@@ -140,6 +146,41 @@ export function isOwnerGuiWakeSource(source: string | undefined): boolean {
   return source === ADMIN_COORD_UI_OWNER;
 }
 
+/** Carry server-verified authority through the async delivery row. */
+function payloadWithRelayProvenance(
+  payload: unknown,
+  stamp: RelayProvenanceStamp | null | undefined,
+): unknown {
+  if (!stamp) return payload;
+  const record =
+    payload !== null && typeof payload === 'object' && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>)
+      : payload === undefined || payload === null
+        ? {}
+        : { value: payload };
+  return { ...record, [RELAY_PROVENANCE_FIELD]: stamp };
+}
+
+/** What a sender awaits to learn a queued wake was NOT picked up (P-006 / D-005). */
+export interface WakePickupHandle {
+  /** The woken ownerId. */
+  target: string;
+  /** `wake:not-picked-up:<target>` — built from the same catalog template the pump's pickup
+   *  sweep emits with, so the awaited key and the fired key cannot drift apart. */
+  event: string;
+  /** Seconds a delivery may wait for a turn before the sweep judges it not-picked-up
+   *  (`PAPERCUSP_WAKE_PICKUP_WINDOW_SEC`, default 600); the sweep runs on the pump tick after. */
+  windowSec: number;
+}
+
+export function wakePickupHandle(target: string): WakePickupHandle {
+  return {
+    target,
+    event: buildKey('wake-not-picked-up', { subscriberId: target }),
+    windowSec: pickupWindowSec(),
+  };
+}
+
 export interface WakeRecipientsResult {
   /** Concrete recipient ownerIds we fired a wake key for (post-filter). */
   targets: string[];
@@ -151,6 +192,9 @@ export interface WakeRecipientsResult {
   /** Legacy queue-count alias retained for callers that predate `queued`. Despite its
    *  name, this is NOT execution-confirmed turn count; it mirrors EmitResult.woken. */
   woken: number;
+  /** Durable scheduled wakes, not a miss and never grounds for relaunch. */
+  deferred?: number;
+  deferredTargets?: string[];
   /** ALWAYS `false`, and typed `false` on purpose — a wake fan CANNOT answer this.
    *
    *  `wakeRecipients` returns once the wake is ENQUEUED on the await-event pump; the
@@ -166,8 +210,15 @@ export interface WakeRecipientsResult {
    *  any such comparison a compile error instead of silently-dead code.
    *
    *  To establish that a target actually picked up, observe it AFTERWARDS: a fresh
-   *  `lastActiveAt` / work-item checkpoint / `lastProgressAt` that post-dates the wake. */
+   *  `lastActiveAt` / work-item checkpoint / `lastProgressAt` that post-dates the wake —
+   *  or await the `pickup` handle below, which the pump fires when it did NOT. */
   pickupConfirmed?: false;
+  /** P-006 / D-005: one handle per target whose wake was QUEUED (`woken > 0` for it). This is the
+   *  LATER seam `pickupConfirmed` points at, not a confirmation: await `event` with a
+   *  `timeout_sec` a little past `windowSec` — it fires when the queued delivery sat the whole
+   *  window without starting a turn; a window that expires with NO fire is the positive reading.
+   *  Per-delivery proof (`turn_proof`) is readable afterwards via `events:status`. */
+  pickup: WakePickupHandle[];
   /** Recipients whose wake was STAGED (wake-mode `manual` — the hive Pause
    *  primitive) instead of fired — always 0 when everything resolves `auto`
    *  (the default). Graduated off the POT_AGENT_TABS flag (start-hive P-007). */
@@ -177,8 +228,7 @@ export interface WakeRecipientsResult {
    *  loud "directive STAGED, not delivered for <who>" warning instead of a quiet
    *  `staged:1` that reads like success. `staged === stagedTargets.length`. */
   stagedTargets: string[];
-  /** P-022: recipients BEYOND MAX_WAKE_FANOUT — injected (durable) but not woken.
-   *  Non-empty only on an oversized audience fan (the cost-DoS shape). */
+  /** Legacy cap result; now empty because bulk overflow is durably deferred. */
   fanoutCapped: string[];
   /** Recipients whose wake chain exceeded the local deadline. Their durable inbox message
    *  exists, but the wake may still complete late; never classify these as absent/missed. */
@@ -284,17 +334,21 @@ export async function wakeRecipients(
   );
   const [resolved, roster] = rosterBounded.value;
   const allTargets = [...new Set(resolved)].filter((r) => !NON_WAKEABLE.has(r));
-  // P-022: cap the wake fan — beyond MAX_WAKE_FANOUT the overflow is injected but
-  // NOT woken (the durable inbox row already landed at sendMessage), so an
-  // oversized audience can't detonate thousands of billable turns from one send.
-  const targets = allTargets.slice(0, MAX_WAKE_FANOUT);
-  const fanoutCapped = allTargets.slice(MAX_WAKE_FANOUT);
-  if (fanoutCapped.length > 0) {
-     
-    console.warn(
-      `[inbox-wake] wake fan-out capped at ${MAX_WAKE_FANOUT}: ${fanoutCapped.length} recipient(s) ` +
-        'INJECTED but not woken (oversized audience — they see it on their next turn).',
-    );
+  // Overflow now has a durable delivery time instead of being silently left asleep.
+  const targets = allTargets;
+  const fanoutCapped: string[] = [];
+  const urgent = isLoopWakeSource(opts.source) || isDeliveryLadderWakeSource(opts.source) ||
+    isEscalationSlaRerouteWakeSource(opts.source);
+  let pacing: Awaited<ReturnType<typeof reserveWakeFanout>> = [];
+  if (targets.length > WAKE_FANOUT_BURST && !urgent) {
+    try {
+      pacing = await reserveWakeFanout(targets.length, opts.workspaceId);
+    } catch (e) {
+      // Never fail open into the exact herd this gate exists to prevent.
+      console.warn(`[inbox-wake] bulk wake admission unavailable: ${e instanceof Error ? e.message : e}`);
+      return { targets, keys: [], queued: 0, woken: 0, pickupConfirmed: false, pickup: [],
+        staged: 0, stagedTargets: [], fanoutCapped, timedOutTargets: targets };
+    }
   }
   // The per-agent wake-MODE gate (hive-agent-tabs P-007/D-005), GRADUATED off
   // the POT_AGENT_TABS flag (start-hive-wake P-007 / OQ-2): the gate is the
@@ -336,12 +390,12 @@ export async function wakeRecipients(
     isOwnerVerifiedRelay(opts.relayProvenance);
   type TargetOutcome =
     | { kind: 'staged'; ownerId: string }
-    | { kind: 'fired'; key: string; woken: number }
+    | { kind: 'fired'; ownerId: string; key: string; woken: number; deferred: number }
     | { kind: 'fire-failed'; key: string }
     | { kind: 'timed-out'; ownerId: string; key: string }
     | { kind: 'skipped' };
   const outcomes = await Promise.all(
-    targets.map(async (ownerId): Promise<TargetOutcome> => {
+    targets.map(async (ownerId, index): Promise<TargetOutcome> => {
       const key = inboxWakeKey(ownerId);
       type CompletedOutcome = Exclude<TargetOutcome, { kind: 'timed-out' }>;
       const bounded = await withBoundedTimeout<CompletedOutcome | null>(
@@ -389,11 +443,15 @@ export async function wakeRecipients(
             const res = await emitAwaitedEvent({
               key,
               summary: opts.summary,
-              payload: opts.payload,
+              payload: pacing[index]
+                ? withWakeFanoutPacing(payloadWithRelayProvenance(opts.payload, opts.relayProvenance), pacing[index])
+                : payloadWithRelayProvenance(opts.payload, opts.relayProvenance),
               source: opts.source,
               workspaceId: opts.workspaceId,
+              urgent: urgent || targets.length <= WAKE_FANOUT_BURST &&
+                (isOwnerGuiWakeSource(opts.source) || isOwnerVerifiedRelay(opts.relayProvenance)),
             });
-            return { kind: 'fired', key, woken: res.woken };
+            return { kind: 'fired', ownerId, key, woken: res.woken, deferred: res.deferred ?? 0 };
           } catch (e) {
             // Best-effort: the message already persisted to the inbox; a wake-fan
             // hiccup degrades to "seen on the recipient's next natural turn".
@@ -417,9 +475,12 @@ export async function wakeRecipients(
   const keys: string[] = [];
   const requiredAttempts: RequiredWakeAttempt[] = [];
   let woken = 0;
+  let deferred = 0;
+  const deferredTargets: string[] = [];
   let staged = 0;
   const stagedTargets: string[] = [];
   const timedOutTargets: string[] = [];
+  const pickup: WakePickupHandle[] = [];
   for (const o of outcomes) {
     switch (o.kind) {
       case 'staged':
@@ -429,7 +490,11 @@ export async function wakeRecipients(
       case 'fired':
         keys.push(o.key);
         woken += o.woken;
-        if (opts.requiredWake) {
+        deferred += o.deferred;
+        if (o.deferred > 0) deferredTargets.push(o.ownerId);
+        // Only a QUEUED delivery can later be judged not-picked-up; a 0-match fire has no row.
+        if (o.woken > 0) pickup.push(wakePickupHandle(o.ownerId));
+        if (opts.requiredWake && o.deferred === 0) {
           requiredAttempts.push({
             subscriberId: ownerFromInboxWakeKey(o.key) ?? o.key,
             eventKey: o.key,
@@ -454,7 +519,10 @@ export async function wakeRecipients(
     keys,
     queued: woken,
     woken,
+    deferred,
+    deferredTargets,
     pickupConfirmed: false,
+    pickup,
     staged,
     stagedTargets,
     fanoutCapped,
@@ -596,6 +664,8 @@ export interface IdleRecipientReport {
   dormantScheduled: DormantScheduledInfo[];
   /** Recipients not in the local roster (federated/remote) — advisory, NEVER
    *  reported as idle (invariant c). */
+  /** Not in the local roster is advisory and stays unknown even if the
+   *  separate liveness oracle positively reports a terminal session. */
   unknown: string[];
   /** True when a roster / await-store read failed and we degraded to report
    *  NOTHING (the send still succeeded — invariant c). `idle` is empty here. */
@@ -622,6 +692,8 @@ export interface IdleRecipientReport {
    * `sessionState: 'ended'` verdict. This is narrower than `idle`: callers
    * making routing decisions must use this positive classification only.
    */
+  /** A roster-unknown target is included only with a measured selfWake: none;
+   *  roster absence alone never establishes death. */
   confirmedDead?: string[];
 }
 
@@ -804,6 +876,42 @@ export async function reportIdleRecipients(
     } catch (e) {
       console.warn(
         `[inbox-wake] idle-probe liveness-oracle cross-check failed, treating candidates as plain idle: ${e instanceof Error ? e.message : e}`,
+      );
+    }
+  }
+
+  // A concrete recipient missing from the local roster stays unknown: roster
+  // absence alone cannot distinguish a federated target from a reaped session.
+  // Still consult the shared oracle in one batch so positive recorded-ended
+  // evidence can safely unblock consult recovery. Require a measured lack of
+  // self-wake too, because an active loop or standing event may resume the
+  // session even after its last recorded turn ended.
+  if (unknown.length > 0) {
+    try {
+      const { resolveSessionStates } = await import('./liveness-oracle');
+      const verdicts = await resolveSessionStates(
+        unknown.map((ownerId) => ({ ownerId })),
+        {
+          hydrateBatch: true,
+          psuHostPositiveAuthority: true,
+          selfWake: true,
+        },
+      );
+      for (const ownerId of unknown) {
+        const v = verdicts.get(ownerId);
+        if (
+          v?.sessionState === 'ended' &&
+          v.signalMissing !== true &&
+          v.confirmLiveness === false &&
+          v.selfWake === 'none'
+        ) {
+          confirmedDead.push(ownerId);
+        }
+      }
+    } catch (e) {
+      console.warn(
+        '[inbox-wake] unrostered liveness-oracle cross-check failed, retaining unknown status: ' +
+          (e instanceof Error ? e.message : e),
       );
     }
   }

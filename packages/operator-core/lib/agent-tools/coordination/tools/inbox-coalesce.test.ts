@@ -20,9 +20,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const M = vi.hoisted(() => ({
   readInbox: vi.fn(async () => [] as unknown[]),
+  renderInjection: vi.fn((_entries: unknown[], _options?: unknown) => ''),
 }));
 
-vi.mock("../identity", () => ({
+vi.mock("../identity", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../identity")>()),
   resolveAgentIdentity: (ctx: { ownerId?: string }) => ({
     ownerId: ctx?.ownerId ?? "owner-a",
   }),
@@ -57,7 +59,7 @@ vi.mock("../presence-snapshot", () => ({
   renderPresenceRebootstrapBlock: () => "",
   consumePresenceRebootstrap: async () => null,
 }));
-vi.mock("../../../coord-schema", () => ({ renderInjection: () => "" }));
+vi.mock("../../../coord-schema", () => ({ renderInjection: M.renderInjection }));
 vi.mock("../../../cache", () => ({
   cachedRead: async (
     _ctx: unknown,
@@ -68,6 +70,7 @@ vi.mock("../../../cache", () => ({
 
 import tool, {
   coalesceRepeatedBroadcasts,
+  inboxDefaultWindowChars,
   inboxPriorityBucket,
   prioritizedInboxWindow,
 } from "./inbox";
@@ -82,6 +85,8 @@ const ctx = (ownerId = "owner-a", over: InboxContextOverrides = {}): never =>
 type InboxOut = {
   entries: Array<Record<string, unknown>>;
   summary: Record<string, unknown>;
+  __systemNoticeState?: Record<string, string>;
+  system_notices_suppressed?: number;
 };
 const callInbox = async (
   args: Record<string, unknown> = {},
@@ -124,6 +129,25 @@ const direct = (m: number, summary: string) => ({
 beforeEach(() => {
   vi.clearAllMocks();
   M.readInbox.mockImplementation(async () => []);
+});
+
+describe('native notice delivery versus public inbox VIEW', () => {
+  it('passes committed notice state to injection filtering while the public VIEW stays repeatable', async () => {
+    const row = broadcast(1, 'Compaction over-limit: other', {
+      auto: true, category: 'severe-event', condition_key: 'compaction:other',
+    });
+    M.readInbox.mockResolvedValue([row]);
+    const first = await callInbox({ __systemNoticeState: {} });
+    expect(M.renderInjection.mock.calls.at(-1)?.[0]).toEqual([row]);
+    expect(first.__systemNoticeState).toBeDefined();
+    const repeated = await callInbox({ __systemNoticeState: first.__systemNoticeState });
+    expect(M.renderInjection.mock.calls.at(-1)?.[0]).toEqual([]);
+    expect(repeated.system_notices_suppressed).toBe(1);
+    const view = await callInbox();
+    expect(M.renderInjection.mock.calls.at(-1)?.[0]).toEqual([row]);
+    expect(view.__systemNoticeState).toBeUndefined();
+    expect(view.entries).toHaveLength(1);
+  });
 });
 
 describe("coalesceRepeatedBroadcasts (pure)", () => {
@@ -430,14 +454,25 @@ describe("coord:inbox handler (default raw-entry budget)", () => {
     summary: `message ${m} ${"x".repeat(1000)}`,
   });
 
-  it("keeps the no-arg 50-row read tight while honoring explicit max_body_chars", async () => {
+  it("keeps a 50-row read tight while honoring explicit max_body_chars", async () => {
     const rows = Array.from({ length: 50 }, (_, i) => longPeerPing(i));
     M.readInbox.mockImplementation(async () => rows);
 
+    // An explicit limit is not door-fitted (P-006 D-002), so all 50 rows come back
+    // at the per-entry share of INBOX_ENTRY_BUDGET.
+    const wide = await callInbox({ limit: 50 });
+    expect(wide.entries).toHaveLength(50);
+    expect(wide.entries[0]!.summary_truncated).toBe(true);
+    expect(String(wide.entries[0]!.summary).length).toBe(300);
+    expect(wide.summary).not.toHaveProperty("fitted_to_result");
+
+    // A no-args read is fitted to the caller's result door at that same cap, and says so.
     const def = await callInbox();
-    expect(def.entries).toHaveLength(50);
-    expect(def.entries[0]!.summary_truncated).toBe(true);
+    expect(def.entries.length).toBeGreaterThan(0);
+    expect(def.entries.length).toBeLessThan(50);
     expect(String(def.entries[0]!.summary).length).toBe(300);
+    expect(JSON.stringify(def.entries).length).toBeLessThanOrEqual(inboxDefaultWindowChars("owner-a"));
+    expect(def.summary["fitted_to_result"]).toMatchObject({ omitted: 50 - def.entries.length });
 
     const explicit = await callInbox({ max_body_chars: 800 });
     expect(explicit.entries).toHaveLength(50);

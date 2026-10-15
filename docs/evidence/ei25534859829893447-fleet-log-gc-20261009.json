@@ -1,0 +1,57 @@
+{
+  "workItem": "EI-25534859829893447",
+  "parent": "WI-10007751",
+  "observedAt": "2026-10-09T20:42:00Z",
+  "plane": "canonical staging current source; automatic commit observed; no main or deployed-runtime claim",
+  "reused": [
+    "existing runFleetLogsGc age/ceiling policy and hourly DBOS workflow",
+    "existing openWriterPidsMany fail-closed process census",
+    "existing lint GC privileged read-only adapter, now shared by both collectors"
+  ],
+  "sourceSha256": {
+    "packages/operator-core/lib/fleet-logs-gc.ts": "4879273e0229d9c34a1f4ed6aba60958f188a5a3fd0c571e33a812723dd70bf9",
+    "packages/operator-core/lib/fleet-logs-gc.test.ts": "6a0dda152db127295042986b1c5734010bc97fdd94034bc024fd8a2723c0801e",
+    "packages/operator-core/lib/dbos/periodic-workflows.ts": "d555b22c2df37839d46b88a8080da91113221e20ab1d0cc67331633476bf0161"
+  },
+  "verification": [
+    {
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/fleet-logs-gc.test.ts",
+      "startedAt": "2026-10-09T20:38:53.711Z",
+      "result": "exit 0; 54 passed, zero skips; working-tree provenance head49a1fb126a",
+      "invocation": "436911287d70482a96c00cdd25777d49"
+    },
+    {
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run lint:tsc -- --files=packages/operator-core/lib/fleet-logs-gc.ts,packages/operator-core/lib/fleet-logs-gc.test.ts,packages/operator-core/lib/dbos/periodic-workflows.ts",
+      "result": "exit 0; selected files and direct importer clean; stamp2026-10-09T20:38:52.259Z"
+    },
+    {
+      "command": "PC_ISOLATED_RUNTIME_PROOF=1 PAPERCUSP_TEST_RUN_HARNESS=papercusp node scripts/with-test-pg.mjs --isolated-runtime -- npm run test:file -- packages/operator-core/lib/fleet-logs-gc.test.ts",
+      "result": "exit 0; private PG stopped; cleanup complete runtimeRemoved=true pgDataRemoved=true; private PG path absence independently verified",
+      "privatePg": "/dev/shm/pcv/papercusp-test-pg-Bo8DDb",
+      "privatePort": 46523,
+      "limits": "Verbose middle output was truncated; case count is supported by the separate exact54-case run, not reconstructed from this run. Future runs must capture output before returning it."
+    },
+    {
+      "task": "0mv1fki4ij5pj6g1h58",
+      "result": "actual default read-only adapter from uid1000 complete=true; a genuinely open fixture above ceiling was kept; skippedOpen=1, all unlink/proposal bytes=0; fixture cleanup verified",
+      "scope": "/tmp/wi25534859829893447-default-43I2Ob, created and removed by its own acceptance command"
+    },
+    {
+      "result": "git diff --check passed; automatic source commit724aa7380f observed; three source SHA256 readbacks recorded above"
+    }
+  ],
+  "recurrenceGuards": [
+    "genuinely open append fd retained during age and ceiling eviction, idle neighbor removed",
+    "incomplete or throwing census defers both passes",
+    "file replacement, symlink substitution, new write and parent replacement retained",
+    "sparse-file logical and allocated unlink bytes differ",
+    "hard-linked deletion claims zero eligible allocation while another link remains",
+    "dry-run reports proposed bytes and zero actual unlink"
+  ],
+  "limits": [
+    "A census plus immediate identity check cannot atomically exclude a new open after the census.",
+    "allocatedBytesUnlinked is a last-link st_blocks estimate, not measured filesystem reclamation.",
+    "Historical deleted-open inodes were not attributed to the old collector.",
+    "Parent physical disk recovery, old user WebKit WAL and final qualification remain open."
+  ]
+}

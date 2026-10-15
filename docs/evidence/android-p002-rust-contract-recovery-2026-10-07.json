@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-002 successor recovery: current Rust device-contract and UniFFI suites",
+  "framework": "operational",
+  "command": ["env", "PAPERCUP_REQUIRE_SECRET_STREAM_INTEROP=1", "cargo", "test", "--workspace", "--all-targets", "--locked"],
+  "commandCwd": "papercup-rust-mobile",
+  "exitCode": 0,
+  "startedAt": "2026-10-07T02:16:21.776507Z",
+  "finishedAt": "2026-10-07T02:17:00.337429Z",
+  "timeBasis": "Bounds from the compound invocation metadata: start precedes Cargo; end follows the subsequently attempted, failed Kotlin host command. No exact Cargo-only finish timestamp was recorded.",
+  "summary": "Current-source Rust workspace tests passed, including real OperatorClient/wiremock device-contract tests, UniFFI ABI guards, and mandatory real Node/TypeScript Noise interop. The parent suite passed 136 distinct tests, with one explicitly ignored live operator smoke. The reentrant-polling child prints its own one-test pass and is not counted twice. This artifact claims ONLY the Rust test invocation. A subsequent Kotlin host invocation failed before its tests at prepareLibraryDefinitionsDebug because Rust library notices are stale for Cargo.lock; no Kotlin success, native phone journey, runtime deployment or P-002 terminal acceptance is asserted.",
+  "repository": "papercup-rust-mobile",
+  "sourceCommit": "d1882d87e7020aca2c97d4be1c729de6b77e3306",
+  "sourceDirty": true,
+  "sourceBasis": "The shared checkout included the local BYOC refusal-test assertion correction. Exact P-002 source hashes below matched before and after the run, and HEAD remained unchanged. This is working-tree proof, not a clean-source release artifact.",
+  "workItemId": "WI-10004768",
+  "testCounts": { "cargo": { "passed": 136, "failed": 0, "ignored": 1 } },
+  "ignoredTests": ["live_p0_contract_smoke: opt-in live operator/two-workspace/pair-token smoke; not executed"],
+  "sourceFiles": [
+    { "path": "crates/papercup-core/src/client.rs", "sha256": "e5b9797c67fba02e127d965b5aff0c6dcd10e05a0e15e29b2905ba87f8815a49" },
+    { "path": "crates/papercup-core/src/types.rs", "sha256": "90f83ec5ad9775f47e5d0b45ff4ade126455325d974725d157e80e0ebed9bf0a" },
+    { "path": "crates/papercup-core/tests/client_test.rs", "sha256": "38f2d3ae0f73e108355f9c10dd7d30681e794ef65a48f1d42753c781d857058b" },
+    { "path": "crates/papercup-core/tests/android_uniffi_abi_guard.rs", "sha256": "f074dfe26940e2fe5e9c3d8ec8a8ab3f864803af82911148c9883090151c264e" },
+    { "path": "crates/papercup-bindings/src/papercup.udl", "sha256": "49e62ade6cba7fb9a6e7ffe7605eb5a49ec08e79fc4d5aaa19959036ed1674ea" },
+    { "path": "Cargo.lock", "sha256": "c72f591c4268cf1a8c480f0ebf4032d017b399151c307cffa9f7522a8e6a56f3" },
+    { "path": "android/app/src/main/kotlin/com/papercuspai/operator/mobile/PlansScreen.kt", "sha256": "26b206496863829ba59e44f13119fda9ba3d2d48986c23cdd110c36b1acd7481" },
+    { "path": "android/app/src/test/kotlin/com/papercuspai/operator/mobile/PlanItemsContractTest.kt", "sha256": "a60cb2bf96373668097d2682e573cac3e56f2262db798c16d1d2144c89903643" },
+    { "path": "crates/papercup-bindings/src/lib.rs", "sha256": "a55f0a7c9cff24eb7054f657e15faea1af16b3625b6230c5fe5cf7329829e6ea" }
+  ],
+  "sourceScopeNote": "The two Kotlin paths were measured for source continuity only; this Rust invocation did not execute their tests.",
+  "logs": [
+    { "path": "papercup-rust-mobile/android/app/build/ci-evidence/p002-recovery-20261007T0205Z/cargo-test.log", "sha256": "830688752eefee84d11d7f2c16390837c0c47c84adc62768f959d204ad213912" },
+    { "path": "papercup-rust-mobile/android/app/build/ci-evidence/p002-recovery-20261007T0205Z/gradle-host.log", "sha256": "3b392c840c598b554fdb7f6aa9ada57a404b353ac75427b8d177e3fcc6225d85" }
+  ],
+  "assertions": [
+    { "id": "rust-workspace-contract", "passed": true, "evidence": "cargo_rc=0; client_test.rs 71 passed, android_uniffi_abi_guard.rs 7 passed, bindings 6 passed, core 38 passed, live_smoke 4 passed/1 ignored, BYOC 3 passed, raw Noise interop 2 passed, KAT 5 passed." },
+    { "id": "p002-source-continuity", "passed": true, "evidence": "meta.start.json and meta.end.json have identical sourceFiles arrays and identical d1882d87e7020aca2c97d4be1c729de6b77e3306 HEAD." }
+  ],
+  "notClaimed": ["Kotlin host unit tests passed", "native paired journey at current source", "signed candidate", "physical phone", "public store installation", "deployed BYOC runtime", "P-002 terminal acceptance"]
+}

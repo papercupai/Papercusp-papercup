@@ -28,7 +28,7 @@ const stubTasks = (): TasksService => ({
 const stubGoals = (): GoalsService => ({
   list: async () => [],
   get: async () => null,
-  create: async (g: any) => ({ id: g.id, title: g.title, parentGoalId: null, status: 'open', budgetCents: null }),
+  create: async (g: any) => ({ id: g.id, installSlug: 'test', title: g.title, body: null, parentId: null, status: 'open', budgetCents: null }),
 });
 
 const stubPendingEvents = (): PendingEventsService => ({

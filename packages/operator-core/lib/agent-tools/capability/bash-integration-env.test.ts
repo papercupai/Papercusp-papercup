@@ -11,6 +11,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   value: 'saved-integration-secret-0123456789' as string | undefined,
   read: vi.fn(async () => h.value),
+  readHeldWorkItems: vi.fn(async () => []),
+}));
+
+// The shell fixture has no live claims. Inject the reader while retaining the
+// real authenticated-caller policy and avoiding production Postgres.
+vi.mock('../../carry-brief', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../carry-brief')>()),
+  readHeldWorkItems: h.readHeldWorkItems,
 }));
 
 vi.mock('../../integration-credentials', () => ({
@@ -65,6 +73,7 @@ function makeCtx(over: Record<string, unknown> = {}) {
 beforeEach(() => {
   h.value = 'saved-integration-secret-0123456789';
   h.read.mockClear();
+  h.readHeldWorkItems.mockClear();
   delete process.env[DESTINATION];
 });
 
@@ -74,16 +83,19 @@ afterEach(() => {
 });
 
 describe('capability:bash integration_env', () => {
+  // The subject is the env marker, not job speed. The timeout value only has to
+  // be distinctive; keep it generous because a gate run under host load once
+  // took longer than 12.3s to finish this bare printf (WI-6554700010008539).
   it('marks foreground children and clears the marker for background children', async () => {
     const { ctx } = makeCtx();
     const foreground = await bash.handler(
       {
         command: `printf '%s|%s' "$${CAPABILITY_BASH_FOREGROUND_ENV}" "$${CAPABILITY_BASH_FOREGROUND_TIMEOUT_ENV}"`,
-        timeout: 12_345,
+        timeout: 60_345,
       },
       ctx,
     );
-    expect(foreground.content[0]!.text).toContain('1|12345');
+    expect(foreground.content[0]!.text).toContain('1|60345');
 
     const markerFile = join(STATE, `foreground-marker-${process.pid}-${Date.now()}`);
     try {
@@ -102,7 +114,7 @@ describe('capability:bash integration_env', () => {
     } finally {
       if (existsSync(markerFile)) unlinkSync(markerFile);
     }
-  });
+  }, 120_000);
 
   it('stamps concrete caller tenant identity into local test-run children', async () => {
     const { ctx } = makeCtx({ harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' });

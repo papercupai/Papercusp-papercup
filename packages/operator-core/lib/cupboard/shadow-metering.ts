@@ -22,6 +22,20 @@
  * beside it; keep it free of I/O so the pricing rules stay unit-testable.
  */
 
+/** UTC bounds of a YYYY-MM month, shared without importing the Postgres reader. */
+export function shadowMonthBounds(month: string): { startMs: number; endMs: number } {
+  const match = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(month);
+  if (!match) throw new Error(`shadow metering: month must be YYYY-MM, got ${JSON.stringify(month)}`);
+  const year = Number(match[1]);
+  const monthIndex = Number(match[2]) - 1;
+  // Date.UTC maps years 0–99 to 1900–1999; preserve the literal calendar year.
+  const start = new Date(0);
+  const end = new Date(0);
+  start.setUTCFullYear(year, monthIndex, 1);
+  end.setUTCFullYear(year, monthIndex + 1, 1);
+  return { startMs: start.getTime(), endMs: end.getTime() };
+}
+
 export const SHADOW_MARKUP_SHEET_VERSION = 'e1-2026-10-01';
 
 /** How a priced line's identity was established. Only `specification-layer` is bill-grade. */

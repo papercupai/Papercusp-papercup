@@ -27,12 +27,106 @@ import {
   type ProseProfileSelection,
 } from './search/prose-vector-dims';
 import { parseDatatypeDisplay, type DatatypeDisplaySpec } from './datatype-display';
+import { lexicalLeg, rrfTerm, type LexicalLeg } from './search/lexical/rank';
 
 /** The two-tier datatype model (D-002) + the projection flavor (D-008). */
 export const DATATYPE_TIERS = ['generic-kind', 'first-class', 'projection'] as const;
 export type DatatypeTier = (typeof DATATYPE_TIERS)[number];
 export function isDatatypeTier(t: string): t is DatatypeTier {
   return (DATATYPE_TIERS as readonly string[]).includes(t);
+}
+
+/**
+ * The NATURE of a datatype (enterprise-data-sources-2026-10-01 D-001 / P-008): the one
+ * boundary between WORK and DATA. `work` = something to do (claimable by its audience);
+ * `record` = structured state of an entity; `document` = content read and searched as
+ * prose; `event` = something that happened at a point in time. Tier says HOW a datatype is
+ * stored; nature says WHAT it is. datatype_registry is the source of truth for nature
+ * (D-008); P-010 stamps it onto work_items rows at mint.
+ */
+export const DATATYPE_NATURES = ['work', 'record', 'document', 'event'] as const;
+export type DatatypeNature = (typeof DATATYPE_NATURES)[number];
+export function isDatatypeNature(n: unknown): n is DatatypeNature {
+  return typeof n === 'string' && (DATATYPE_NATURES as readonly string[]).includes(n);
+}
+
+/** Who may claim WORK (D-001): `human` work (email-draft-proposal) is never agent-claimable. */
+export const WORK_AUDIENCES = ['agent', 'human'] as const;
+export type WorkAudience = (typeof WORK_AUDIENCES)[number];
+export function isWorkAudience(a: unknown): a is WorkAudience {
+  return typeof a === 'string' && (WORK_AUDIENCES as readonly string[]).includes(a);
+}
+
+/**
+ * The built-in work_item kinds and their nature (D-013 §1). Migration 1318 seeds the same
+ * rows into datatype_registry (tier first-class, work_item_kind = the kind); this constant is
+ * the fallback for a workspace without those rows. A unit test pins the constant to the
+ * migration seed and to WORK_ITEM_KINDS, so the three cannot drift.
+ */
+export const BUILTIN_WORK_ITEM_KIND_NATURES = {
+  feature: { nature: 'work', audience: 'agent' },
+  chunk: { nature: 'work', audience: 'agent' },
+  bug: { nature: 'work', audience: 'agent' },
+  change: { nature: 'work', audience: 'agent' },
+  task: { nature: 'work', audience: 'agent' },
+} as const satisfies Record<string, { nature: DatatypeNature; audience: WorkAudience | null }>;
+export type BuiltinWorkItemKind = keyof typeof BUILTIN_WORK_ITEM_KIND_NATURES;
+export function isBuiltinWorkItemKind(id: string): id is BuiltinWorkItemKind {
+  return Object.prototype.hasOwnProperty.call(BUILTIN_WORK_ITEM_KIND_NATURES, id);
+}
+
+/** A nature plus its audience (non-null exactly when nature = work). */
+export interface DatatypeNatureSpec {
+  nature: DatatypeNature;
+  audience: WorkAudience | null;
+}
+
+/**
+ * D-013 §5 LEGACY rule — for data that predates natures (an imported package or bundle with
+ * no `nature`), NEVER a default for a new declaration: generic-kind keeps today's claim
+ * behaviour (work/agent), first-class and projection become records. Mirrors migration
+ * 1318's backfill and its expand-phase fill trigger.
+ */
+export function legacyNatureForTier(tier: DatatypeTier): DatatypeNatureSpec {
+  return tier === 'generic-kind' ? { nature: 'work', audience: 'agent' } : { nature: 'record', audience: null };
+}
+
+export type NatureSpecCheck =
+  | { ok: true; value: DatatypeNatureSpec }
+  | { ok: false; reason: 'invalid_nature' | 'audience_required' | 'audience_not_allowed'; message: string };
+
+/**
+ * Validate a nature + audience pair against the table CHECK (audience set exactly when
+ * nature = work). Work with no audience is REFUSED rather than defaulted to `agent`: the
+ * audience is what keeps human-decision work out of the agent queue, so it is declared, not
+ * assumed.
+ */
+export function checkNatureSpec(nature: unknown, audience: unknown): NatureSpecCheck {
+  if (!isDatatypeNature(nature)) {
+    return {
+      ok: false,
+      reason: 'invalid_nature',
+      message: `nature must be one of ${DATATYPE_NATURES.join(' | ')} (got ${JSON.stringify(nature)})`,
+    };
+  }
+  if (nature === 'work') {
+    if (!isWorkAudience(audience)) {
+      return {
+        ok: false,
+        reason: 'audience_required',
+        message: `nature "work" needs an audience: ${WORK_AUDIENCES.join(' | ')} (human work is never agent-claimable)`,
+      };
+    }
+    return { ok: true, value: { nature, audience } };
+  }
+  if (audience != null) {
+    return {
+      ok: false,
+      reason: 'audience_not_allowed',
+      message: `audience applies only to nature "work"; a ${nature} has no claimant — omit audience`,
+    };
+  }
+  return { ok: true, value: { nature, audience: null } };
 }
 
 /**
@@ -136,6 +230,10 @@ export interface DatatypeRow {
   tier: DatatypeTier;
   /** The registered work_item kind (generic-kind tier; accepted by work_items:create — P-001). */
   workItemKind: string | null;
+  /** D-001: work | record | document | event — the WORK/DATA boundary (source of truth, D-008). */
+  nature: DatatypeNature;
+  /** Who may claim it; non-null exactly when nature = work. */
+  audience: WorkAudience | null;
   /** JSON-Schema shape the kind's payload is validated against. */
   payloadSchema: Record<string, unknown> | null;
   /** Declarative editor + compact-rendering contract (P-024); never executable code. */
@@ -166,6 +264,10 @@ export interface UpsertDatatypeInput {
   description: string;
   tier: DatatypeTier;
   workItemKind?: string | null;
+  /** REQUIRED (P-008): every write states what the datatype IS. Checked by {@link checkNatureSpec}. */
+  nature: DatatypeNature;
+  /** Required when nature = work, refused otherwise. */
+  audience?: WorkAudience | null;
   payloadSchema?: Record<string, unknown> | null;
   display?: DatatypeDisplaySpec | null;
   authoritativeWriter?: string | null;
@@ -187,6 +289,8 @@ type DbRow = {
   description: string;
   tier: string;
   work_item_kind: string | null;
+  nature: string;
+  audience: string | null;
   payload_schema: Record<string, unknown> | null;
   display: Record<string, unknown> | null;
   authoritative_writer: string;
@@ -229,6 +333,11 @@ function mapRow(r: DbRow): DatatypeRow {
     description: r.description,
     tier: (isDatatypeTier(r.tier) ? r.tier : 'generic-kind'),
     workItemKind: r.work_item_kind,
+    // The column is NOT NULL + CHECKed (migration 1318); the fallback only guards a row read
+    // through a stale schema, and maps it by the same legacy rule the migration applied.
+    ...(isDatatypeNature(r.nature)
+      ? { nature: r.nature, audience: isWorkAudience(r.audience) ? r.audience : null }
+      : legacyNatureForTier(isDatatypeTier(r.tier) ? r.tier : 'generic-kind')),
     payloadSchema: parseJsonbMaybe(r.payload_schema),
     display: parsedDisplay?.ok ? parsedDisplay.value : null,
     authoritativeWriter: r.authoritative_writer,
@@ -246,7 +355,7 @@ function mapRow(r: DbRow): DatatypeRow {
 
 /** SELECT-list shared by every read (the raw VECTOR is never serialized back — only its presence). */
 const SELECT_COLS = (sql: postgres.Sql | postgres.TransactionSql) => sql`
-  id, workspace_id, pot_slug, title, description, tier, work_item_kind,
+  id, workspace_id, pot_slug, title, description, tier, work_item_kind, nature, audience,
   payload_schema, display, authoritative_writer, self_improvement, status, published, review_status, tags,
   (embedding IS NOT NULL) AS has_embedding, created_by, created_at, updated_at
 `;
@@ -266,14 +375,17 @@ export async function upsertDatatype(
   if (embeddingLiteral && (!input.embeddingMode || !input.embeddingProfile)) {
     throw new Error('upsertDatatype: a stored embedding requires exact mode and profile provenance');
   }
+  const natureCheck = checkNatureSpec(input.nature, input.audience ?? null);
+  if (!natureCheck.ok) throw new Error(`upsertDatatype: ${natureCheck.reason}: ${natureCheck.message}`);
+  const { nature, audience } = natureCheck.value;
   const rows = await sql<DbRow[]>`
     INSERT INTO harness_shared.datatype_registry
-      (id, workspace_id, pot_slug, title, description, tier, work_item_kind,
+      (id, workspace_id, pot_slug, title, description, tier, work_item_kind, nature, audience,
        payload_schema, display, authoritative_writer, self_improvement, published, tags,
        embedding, embedding_mode, embedding_profile, created_by, updated_at)
     VALUES (
       ${input.id}, ${input.workspaceId}, ${input.potSlug ?? null}, ${input.title},
-      ${input.description}, ${input.tier}, ${input.workItemKind ?? null},
+      ${input.description}, ${input.tier}, ${input.workItemKind ?? null}, ${nature}, ${audience},
       ${input.payloadSchema ? JSON.stringify(input.payloadSchema) : null}::text::jsonb,
       ${input.display ? JSON.stringify(input.display) : null}::text::jsonb,
       ${input.authoritativeWriter ?? 'papercusp'},
@@ -288,6 +400,8 @@ export async function upsertDatatype(
       description          = EXCLUDED.description,
       tier                 = EXCLUDED.tier,
       work_item_kind       = EXCLUDED.work_item_kind,
+      nature               = EXCLUDED.nature,
+      audience             = EXCLUDED.audience,
       payload_schema       = EXCLUDED.payload_schema,
       display              = EXCLUDED.display,
       authoritative_writer = EXCLUDED.authoritative_writer,
@@ -391,10 +505,12 @@ export interface SimilarDatatype {
   tier: DatatypeTier;
   /**
    * A RANKING weight — NOT a calibrated similarity, and NEVER safe to threshold (EI-10562).
-   * It is `GREATEST(ts_rank, 0.4*ts_rank + 0.6*cosine)`: a weighted sum of two quantities on
-   * different scales, so a constant compared against it has no stable meaning. (This field's
-   * doc used to claim "0..1", and a consumer duly wrote `score >= 0.05` to REFUSE — which is
-   * cosine >= 0.083, the noise floor, and refused 100% of legitimate declarations.)
+   * With a query embedding it is a reciprocal-rank-fusion sum (`rrfTerm`, plan
+   * bm25-lexical-search-evoke-adoption-2026-10-10 D-004) of the lexical and cosine legs, so its
+   * magnitude encodes positions, not similarity; without one it is the lexical engine's own
+   * score (BM25 or ts_rank), whose scale differs by engine. (This field's doc once claimed
+   * "0..1", and a consumer duly wrote `score >= 0.05` to REFUSE — which refused 100% of
+   * legitimate declarations.)
    *
    * Use it to ORDER candidates. To DECIDE duplicate-or-not, use {@link canonicalDatatypeKey}.
    */
@@ -439,31 +555,30 @@ export async function findSimilarDatatypes(
     throw new Error('findSimilarDatatypes: a query embedding requires exact profile provenance');
   }
   const exclude = q.excludeId ? sql`AND id <> ${q.excludeId}` : sql``;
-  // ts_rank for the lexical leg; when an embedding is present, fuse (1 - cosine distance)
-  // in 60/40 favour of the vector — the same two-leg shape code_recipes dedup uses.
+  const leg = await datatypeLexicalLeg(sql, orQuery, tokens);
+  // With an embedding, the lexical leg and the cosine leg fuse by reciprocal rank (D-004);
+  // a row counts in the cosine leg only when its cosine is positive.
+  const profileOk = embeddingLiteral
+    ? proseProfilePredicateSql(sql, q.embeddingProfile ?? null, 'embedding_profile', 'embedding_mode')
+    : null;
   const rows = await sql<{ id: string; title: string; description: string; tier: string; score: number }[]>`
     SELECT id, title, description, tier,
       ${
-        embeddingLiteral
-          ? sql`GREATEST(
-                  ts_rank(title_tsv, to_tsquery('english', ${orQuery})),
-                  CASE WHEN embedding IS NULL
-                          OR NOT (${proseProfilePredicateSql(sql, q.embeddingProfile ?? null, 'embedding_profile', 'embedding_mode')})
-                       THEN 0
-                       ELSE 0.4 * ts_rank(title_tsv, to_tsquery('english', ${orQuery}))
-                            + 0.6 * (1 - (embedding <=> ${embeddingLiteral}::vector)) END
-                )`
-          : sql`ts_rank(title_tsv, to_tsquery('english', ${orQuery}))`
+        embeddingLiteral && profileOk
+          ? sql`(${rrfTerm(sql, leg.match, leg.score)} + ${rrfTerm(
+              sql,
+              sql`(embedding IS NOT NULL AND ${profileOk} AND (embedding <=> ${embeddingLiteral}::vector) < 1)`,
+              sql`1 - (embedding <=> ${embeddingLiteral}::vector)`,
+            )})::float8`
+          : sql`(${leg.score})::float8`
       } AS score
       FROM harness_shared.datatype_registry
      WHERE workspace_id = ${workspaceId} AND status = 'active' ${exclude}
        AND (
-         title_tsv @@ to_tsquery('english', ${orQuery})
-         ${embeddingLiteral
-           ? sql`OR (embedding IS NOT NULL AND ${proseProfilePredicateSql(sql, q.embeddingProfile ?? null, 'embedding_profile', 'embedding_mode')})`
-           : sql``}
+         ${leg.match}
+         ${profileOk ? sql`OR (embedding IS NOT NULL AND ${profileOk})` : sql``}
        )
-     ORDER BY score DESC
+     ORDER BY ${embeddingLiteral ? sql`score DESC` : leg.order}, id
      LIMIT ${lim}`;
   return rows
     .map((r) => ({
@@ -591,6 +706,22 @@ export async function moderatePublishedDatatype(
 }
 
 /**
+ * The lexical leg both similar-datatype surfaces rank by, through the lexical seam: BM25 over
+ * title+description when it is available, else the legacy `ts_rank` over `title_tsv` with
+ * the OR tsquery. BM25 is OR-semantic by construction, so it gets the bare tokens.
+ */
+function datatypeLexicalLeg(sql: postgres.Sql, orQuery: string, tokens: string[]): Promise<LexicalLeg> {
+  return lexicalLeg(sql, {
+    table: 'datatype_registry',
+    query: tokens.join(' '),
+    legacy: {
+      score: sql`ts_rank(title_tsv, to_tsquery('english', ${orQuery}))`,
+      match: sql`title_tsv @@ to_tsquery('english', ${orQuery})`,
+    },
+  });
+}
+
+/**
  * D-010 GLOBAL semantic dedup: existing PUBLISHED datatypes (pending or approved) across ALL
  * workspaces that look like the one being published — so the published namespace stays
  * globally coherent. The same lexical+cosine surface as {@link findSimilarDatatypes}, but
@@ -610,25 +741,25 @@ export async function findSimilarPublishedDatatypes(
   const lim = Math.max(1, Math.min(20, q.limit ?? 5));
   const embeddingLiteral = q.embedding && q.embedding.length > 0 ? `[${q.embedding.join(',')}]` : null;
   const exclude = q.excludeId ? sql`AND id <> ${q.excludeId}` : sql``;
+  const leg = await datatypeLexicalLeg(sql, orQuery, tokens);
   const rows = await sql<{ id: string; title: string; description: string; tier: string; score: number }[]>`
     SELECT id, title, description, tier,
       ${
         embeddingLiteral
-          ? sql`GREATEST(
-                  ts_rank(title_tsv, to_tsquery('english', ${orQuery})),
-                  CASE WHEN embedding IS NULL THEN 0
-                       ELSE 0.4 * ts_rank(title_tsv, to_tsquery('english', ${orQuery}))
-                            + 0.6 * (1 - (embedding <=> ${embeddingLiteral}::vector)) END
-                )`
-          : sql`ts_rank(title_tsv, to_tsquery('english', ${orQuery}))`
+          ? sql`(${rrfTerm(sql, leg.match, leg.score)} + ${rrfTerm(
+              sql,
+              sql`(embedding IS NOT NULL AND (embedding <=> ${embeddingLiteral}::vector) < 1)`,
+              sql`1 - (embedding <=> ${embeddingLiteral}::vector)`,
+            )})::float8`
+          : sql`(${leg.score})::float8`
       } AS score
       FROM harness_shared.datatype_registry
      WHERE review_status IN ('pending', 'approved') ${exclude}
        AND (
-         title_tsv @@ to_tsquery('english', ${orQuery})
+         ${leg.match}
          ${embeddingLiteral ? sql`OR embedding IS NOT NULL` : sql``}
        )
-     ORDER BY score DESC
+     ORDER BY ${embeddingLiteral ? sql`score DESC` : leg.order}, id
      LIMIT ${lim}`;
   return rows
     .map((r) => ({
@@ -690,6 +821,8 @@ export async function installPublishedDatatype(
     description: s.description,
     tier: s.tier,
     workItemKind: s.workItemKind,
+    nature: s.nature,
+    audience: s.audience,
     payloadSchema: s.payloadSchema,
     display: s.display,
     authoritativeWriter: s.authoritativeWriter,

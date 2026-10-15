@@ -799,3 +799,84 @@ describe('a refusal names its REPAIR VERB and says it is not recruiting', () => 
     expect(message).toMatch(/BAR\(s\) blocking/);
   });
 });
+
+// verification-system-improvements-2026-10-10 P-001: every contract refusal code the
+// verification-system map names must have a test that triggers it. Each case below breaks
+// exactly one field of an otherwise complete BAR, so the code cannot appear for another reason.
+describe('BAR field contract codes (verification-system map)', () => {
+  const preStartCodes = (bars: AcceptanceBarTrace[]) =>
+    evaluateAcceptanceBarLifecycle(snapshot({ bars }), 'pre-start').codes;
+
+  it('CALIBRATION: the unmodified BAR raises none of the field codes', () => {
+    const codes = preStartCodes([bar()]);
+    for (const code of [
+      'bar_snapshot_role_invalid',
+      'bar_snapshot_mandatory_invalid',
+      'bar_snapshot_scope_invalid',
+      'bar_snapshot_pass_ratings_invalid',
+      'bar_snapshot_coverage_invalid',
+      'bar_snapshot_bar_provenance_missing',
+    ]) {
+      expect(codes).not.toContain(code);
+    }
+  });
+
+  it('a role other than outcome or disclosure raises bar_snapshot_role_invalid', () => {
+    const codes = preStartCodes([bar({ role: 'aspiration' as AcceptanceBarTrace['role'] })]);
+    expect(codes).toContain('bar_snapshot_role_invalid');
+  });
+
+  it('a non-mandatory outcome raises bar_snapshot_mandatory_invalid', () => {
+    const codes = preStartCodes([bar({ mandatory: false })]);
+    expect(codes).toContain('bar_snapshot_mandatory_invalid');
+  });
+
+  it('an empty required scope raises bar_snapshot_scope_invalid', () => {
+    const codes = preStartCodes([bar({ requiredScope: [] })]);
+    expect(codes).toContain('bar_snapshot_scope_invalid');
+  });
+
+  it('an unknown evidence plane raises bar_snapshot_scope_invalid', () => {
+    const codes = preStartCodes([bar({ evidencePlane: 'staging' as AcceptanceBarTrace['evidencePlane'] })]);
+    expect(codes).toContain('bar_snapshot_scope_invalid');
+  });
+
+  it('a pass rating outside the rubric rating scale raises bar_snapshot_pass_ratings_invalid', () => {
+    const codes = preStartCodes([bar({ passRatings: ['excellent'] })]);
+    expect(codes).toContain('bar_snapshot_pass_ratings_invalid');
+  });
+
+  it('an outcome with no pass ratings raises bar_snapshot_pass_ratings_invalid', () => {
+    const codes = preStartCodes([bar({ passRatings: [] })]);
+    expect(codes).toContain('bar_snapshot_pass_ratings_invalid');
+  });
+
+  it('a disclosure covering an unknown outcome raises bar_snapshot_coverage_invalid', () => {
+    const disclosure = bar({
+      barKey: 'R-2',
+      criterionKey: 'r-2',
+      role: 'disclosure',
+      mandatory: false,
+      passRatings: [],
+      coversBarKeys: ['R-9'],
+    });
+    expect(preStartCodes([bar(), disclosure])).toContain('bar_snapshot_coverage_invalid');
+  });
+
+  it('CONTROL: the same disclosure covering a real outcome does not raise bar_snapshot_coverage_invalid', () => {
+    const disclosure = bar({
+      barKey: 'R-2',
+      criterionKey: 'r-2',
+      role: 'disclosure',
+      mandatory: false,
+      passRatings: [],
+      coversBarKeys: ['R-1'],
+    });
+    expect(preStartCodes([bar(), disclosure])).not.toContain('bar_snapshot_coverage_invalid');
+  });
+
+  it('a BAR with no provenance raises bar_snapshot_bar_provenance_missing', () => {
+    const codes = preStartCodes([bar({ provenance: null as unknown as AcceptanceBarTrace['provenance'] })]);
+    expect(codes).toContain('bar_snapshot_bar_provenance_missing');
+  });
+});

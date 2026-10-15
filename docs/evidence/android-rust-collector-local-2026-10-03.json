@@ -1,0 +1,1780 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Rust notice integration into existing Android collector",
+  "framework": "operational",
+  "command": [
+    "make test-android-library-notices",
+    "android/gradlew -p android --console=plain :app:mergeReleaseResources :app:compileDebugAndroidTestKotlin"
+  ],
+  "workingDirectory": "papercup-rust-mobile",
+  "startedAt": "2026-10-03T06:09:48.255031+00:00",
+  "finishedAt": "2026-10-03T06:10:39.819595+00:00",
+  "exitCode": 0,
+  "summary": "Actual existing collector preserves249 locked Rust source records and162 complete texts alongside release221/debug227 Android modules. All36 damaged metadata/source controls rejected per variant/phase; add/remove transitions pass. Actual source-copy producer rejects stale Cargo.lock. Release compiled resource contains exact generated JSON; native fifth Rust notice test compiles.",
+  "scope": "Local metadata/compiled-resource/native-test-compilation preparation. No APK/native execution, final signed candidate, complete source-header/license rights, Android linkage or recipient route acceptance.",
+  "sourceFiles": [
+    {
+      "path": "papercup-rust-mobile/android/app/build.gradle.kts",
+      "sha256": "f90d3fcc825baabd815b92dd822a7449b5a066fd072831021af8564629f8cb13"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/RUST-SOURCES.json",
+      "sha256": "c67d8716a0744bc05ce064debd05314e34b6bbcd565fa486a97ce7ecab519aeb"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-library-notices-test.sh",
+      "sha256": "a83678281f5ee81de5ca745da93809ff2adff33d9d0322c02999e59f9bd6a683"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/LibraryNoticesScreenTest.kt",
+      "sha256": "1a80d9802a9f5ef1b73349c4ae411d5be5affa262f0ed4d649a1f68fd9e614e4"
+    },
+    {
+      "path": "papercup-rust-mobile/Cargo.lock",
+      "sha256": "389f43b2d8d5fec43b35c2dc71246e0fd395a598ec9517516b54c8e8c6746c81"
+    },
+    {
+      "path": "papercup-rust-mobile/store/APP-STORE-REVIEW.md",
+      "sha256": "2b042a74062e10aa1bfbe72eeb002d25ccc675e147454f81fec945bbdb14097a"
+    }
+  ],
+  "testFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-library-notices-test.sh",
+      "sha256": "a83678281f5ee81de5ca745da93809ff2adff33d9d0322c02999e59f9bd6a683"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/LibraryNoticesScreenTest.kt",
+      "sha256": "1a80d9802a9f5ef1b73349c4ae411d5be5affa262f0ed4d649a1f68fd9e614e4"
+    }
+  ],
+  "collectorDefinitions": [
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-adler2-2.0.1.json",
+      "sha256": "1b6b80512028d23a6e2b7fb0dd5bb79d8a8ba995f0e1454c4a41928733be1dfc"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-aho-corasick-1.1.4.json",
+      "sha256": "1fbf161a1c9875dc7f35008591828291f1d5071529efe12c7ef0142487a01ad9"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-anstyle-1.0.14.json",
+      "sha256": "639f672da9863b38fb91aad9356fab076b5aaf1f1416ec6d4c9ebc527f02de49"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-anyhow-1.0.102.json",
+      "sha256": "94fe688034eca94416bc9e905e360dadf6ea767bf28a5236a0a2e42b67671eec"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-askama-0.16.1.json",
+      "sha256": "8998eb517d9af0a3a299b489078d0d3ed78604b73bd28e18ea547a39e4b832d7"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-askama_derive-0.16.1.json",
+      "sha256": "8738fabd94f7d68b55da50e8525215da112939029524c56f7939629b2cfe95f1"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-askama_macros-0.16.1.json",
+      "sha256": "aa850ae37353cf08c2f40aad55de67e91a468c0e2b4fb91ae6031e9b31701b51"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-askama_parser-0.16.1.json",
+      "sha256": "8099033792373f6edce805c7e4a7211d744b7caee7a81ad9a7fbf841d56f4fa2"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-assert-json-diff-2.0.2.json",
+      "sha256": "61488dc87d6f3834ea13cb89a1b57d0d5c8202359108d867c6fc8a6fb1b4e390"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-async-compat-0.2.5.json",
+      "sha256": "97fcf34c7d8ddc0cd5bbdaa0afce2c1b4e5ac4b7b0de845327627a2eec92d439"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-async-compression-0.4.42.json",
+      "sha256": "155fd8481d77b92292022ff3ae53a993e98415acedfcffd399f5f69c8d985c8b"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-async-trait-0.1.92.json",
+      "sha256": "1a998cfdd06de96e8870399b5d85fca53ac8035dae21bb3befaa496290808724"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-atomic-waker-1.1.2.json",
+      "sha256": "3bfe35099d9b7b4d9b41ba03339504026b5c842da826b54ab07c131589ea897f"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-autocfg-1.5.0.json",
+      "sha256": "5c7583d434a11b93c07a1f5eceb6435d7ae4a1b742874958f9fb4dc5e6b20d94"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-base64-0.22.1.json",
+      "sha256": "e1b0ad455db123400a0b971468deaa0ba73947f1fbce3c97f3ce889859ba1c98"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-basic-toml-0.1.10.json",
+      "sha256": "22969b6771daa5927c5d41670940b259430da4b7b530f336926d1d10bf789230"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-bitflags-2.11.1.json",
+      "sha256": "39c26191a716e1014319f43198996cb35a8d7f31c27d2e272c3f695e92bc2ae2"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-block-buffer-0.10.4.json",
+      "sha256": "6de1c8800071988aadda701b7bb6a76d1b0101e8e87b1daa3600f1181d261bc1"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-bumpalo-3.20.2.json",
+      "sha256": "17a14ef1eb1e01893913e9c54359f7ef094757a61363d0d796d16493702648b3"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-byteorder-1.5.0.json",
+      "sha256": "ac11d0947e91870210dd552c85c9023553bd9d69cbdce5468ac369674021a3cc"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-bytes-1.11.1.json",
+      "sha256": "550e673f907de971556342d3ed0013900745c6bb7f8af9290d56b6fa4cec82c4"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-camino-1.2.2.json",
+      "sha256": "3e47576ab49255c871f25d237ab826dc91688301550d9464d3e297fa471e161c"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-cargo-platform-0.3.3.json",
+      "sha256": "3c88c8b7dfd54844b0d2530c4c55758f24244c61a6fc0f6bcb18d6154e55a740"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-cargo_metadata-0.23.1.json",
+      "sha256": "de63fec1e937a4462005551e32ee3e1b086eb24fe53f5ab2123cbac1a1d1bd75"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-cc-1.2.62.json",
+      "sha256": "ed934be2b274ac186696a41d54adfced8ccbebdb8d7bbe381d8591649e48a424"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-cfg-if-1.0.4.json",
+      "sha256": "f0739efc17ba19b21d58c2009e0b617c0ba99a9679f6f556914fb2a4de8c22b8"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-cfg_aliases-0.2.1.json",
+      "sha256": "ca181272e22f3a8f772a0ca953ea96d5b196ed267549b555cff47e13560495c2"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-clap-4.6.1.json",
+      "sha256": "a36e557e2f6e7711a2879c0afcee0fd3b72d1e92a4c806b0078c02c262eb7321"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-clap_builder-4.6.0.json",
+      "sha256": "1ce1116786ec9a8c486bcf68dd61f29ea6220da53f95adb57c3011f94fe2477a"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-clap_derive-4.6.1.json",
+      "sha256": "747eba01e1c4b3263f97bda2b872d2b718994f443dd442ea44b05e14507c34b9"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-clap_lex-1.1.0.json",
+      "sha256": "41523a6b60290b71cb501abdc44fecc1dc009c3fb076e0068c0f6ac3439c93c7"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-compression-codecs-0.4.38.json",
+      "sha256": "f819769bc9fd7a087b9b7c1ec19bb1eca10f7f8416a18250153a42ab6d105bf0"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-compression-core-0.4.32.json",
+      "sha256": "5ee5419616d2f580283fe3746b40e50aa5a989caf7b5bd4b5f41e4168f2b9408"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-cpufeatures-0.2.17.json",
+      "sha256": "d01097be55c9709a159cb103f65d381c97e729fb7027dac78d971d4f7ba775dd"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-crc32fast-1.5.0.json",
+      "sha256": "d9f7bbffc3536c2138465892435d00776e2e9d794d0ebe2554908d46faa7a502"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-crypto-common-0.1.7.json",
+      "sha256": "d44df8a5f8e47d0f59d9b4750e1cb9a638a92ebfc177754f3ae6131de8e65bb6"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-data-encoding-2.11.0.json",
+      "sha256": "a415cf20b8a2a3435cdf4f84ccf999c93169d9335636ac4356bb251df82e7a5f"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-deadpool-0.12.3.json",
+      "sha256": "8e7769cd8a762a66aa3da79a9b8d3c10e40880a86927dbe0bbafef9ba15aeb6e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-deadpool-runtime-0.1.4.json",
+      "sha256": "6b403fd0195a9f832e922a136311ffd0b6e4c9c3e00c510cb8f8b3bac578d431"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-digest-0.10.7.json",
+      "sha256": "e95af74361df4e719593429c9ed4672a5c32a04f95a6dad6aa8a6ace8b2bb3f8"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-displaydoc-0.2.5.json",
+      "sha256": "ab91443762859a8eb1a7cafb33e734df15be23cdbe31f4f1a5aab6fecc5901c9"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-equivalent-1.0.2.json",
+      "sha256": "32dde7d533ad0a42e6044c9f4566b856031f0664ea629afda916a203422a43db"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-errno-0.3.14.json",
+      "sha256": "ef526fef8a8eb7dbab4c02b99584b4d359814d8f60039f12fd9768646a12f74a"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-fastrand-2.5.0.json",
+      "sha256": "6f90ceb99d389bb9c85b7188a1297ecfe93677b776f981557cc3ef3f6911769d"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-find-msvc-tools-0.1.9.json",
+      "sha256": "28ff16ccf591b4f89f562dde0db662677dd6f2ff8453384754fea5060ebf2561"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-flate2-1.1.9.json",
+      "sha256": "4458effba0b643c80241597f6115d8dcfe7acfa283c044422e1fb6281675c3c0"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-fnv-1.0.7.json",
+      "sha256": "9d8c4085f2878aaad26466eced9a71f9fc7e64db05a3399858c69eab75296e36"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-form_urlencoded-1.2.2.json",
+      "sha256": "924c4944c878b2a51541d6d9349cf56cbf8497e6b21198d450ae5498118a5998"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-fs-err-3.3.1.json",
+      "sha256": "1e9260ba7346c8660a61b0c57e26851daba32b476f187b9d3c234d37805d9c50"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-futures-0.3.32.json",
+      "sha256": "5e03442fa636be516566fb0817a010b78cf2906edcba92b12095eb7f2dcfc531"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-futures-channel-0.3.32.json",
+      "sha256": "81e652fb8e73bc2397a2a8a7b16e8def49ef2bfdb45df203de13c5d79385bd57"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-futures-core-0.3.32.json",
+      "sha256": "2f861b45177e20a07743a33af5ad10b8b17b9c05709652e75ce76798ec5ec8d9"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-futures-executor-0.3.32.json",
+      "sha256": "26a08991942619470819e555196c43d8ed6e53de382d2b84bf9ece0d1774e199"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-futures-io-0.3.32.json",
+      "sha256": "7b207cdc86fdff497a5591379bed2b85c5ac140f83c8ea0b1d784431c65a593a"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-futures-macro-0.3.32.json",
+      "sha256": "44abb78a20194dd45901d753a11b18568c2ab5f113176119538737dd92e8cb25"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-futures-sink-0.3.32.json",
+      "sha256": "e288df5bc1bb2cf902c26dc3573602eb5fd8fee6ce60abad52406192a44b0545"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-futures-task-0.3.32.json",
+      "sha256": "6cecd9b12c01a3b09b2d287c0e37bb36e929ed1e4e4cca51f09747cb8b38e263"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-futures-util-0.3.32.json",
+      "sha256": "36b504ac0a430f285abefbdf053777d0d2fbec6e921adb5a3b25cbcb63de825a"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-generic-array-0.14.7.json",
+      "sha256": "9eae20ebba4b2b5d3dd466080ca8cd8b4ad9d0773e91b61da411335068851348"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-getrandom-0.2.17.json",
+      "sha256": "12cedd695b2163addf459e1829c387446983dc642e65965a8af43aaf7ffb6f2d"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-getrandom-0.3.4.json",
+      "sha256": "6220906e144bbddaa7e9c4bebf1810ef354a712c8faa1730818d50ffc4992ee9"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-glob-0.3.3.json",
+      "sha256": "e360bbb5f99e0ccdfde81ee94a62fb77c81a376862cb40b98ddf69bf45a4562f"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-goblin-0.8.2.json",
+      "sha256": "bf3f2095b0720508a04d906d1746ace66e8271e90baeddf779e11330722b057b"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-h2-0.4.14.json",
+      "sha256": "4fbab547b1182bbe69c8af2810c80a878e6dffcfa765eab6c5caaa970601ded1"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-hashbrown-0.17.1.json",
+      "sha256": "da65bc8980ea9356ee837eaa8f785c072eed8f1d48a4097b3253e915f3f349a7"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-heck-0.5.0.json",
+      "sha256": "365a3edaadad9ca46b77fff671ef6b94d92f9d39b7d59e141e45c27bc6e5b8fa"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-hermit-abi-0.5.2.json",
+      "sha256": "f3f9d31bd464c45a68719e69b34803f39796266069db39f9fea1c552a43e32bb"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-http-1.4.0.json",
+      "sha256": "01cc5e027c918849dcc424e72bc08a94dea9d589c2f30559d170ca475846e200"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-http-body-1.0.1.json",
+      "sha256": "5afa579d8d6a4bce5bb7042a6f1bdf4e3fa1d2ebd486171ff9f8ac92bceb027f"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-http-body-util-0.1.3.json",
+      "sha256": "bc9d334a16d7781999bf0786e567bd6e04fa7e24b8c1e0177ad26ad4b5e4600c"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-httparse-1.10.1.json",
+      "sha256": "646acd2707fca50f72ea18d3202aec0b0692c5737f016ddf0773b94e802b7aac"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-httpdate-1.0.3.json",
+      "sha256": "262d20005ba5535823b2d59913c20705f03c6fcbce0461520a11890030529872"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-hyper-1.9.0.json",
+      "sha256": "9c85d0ab826e2d02e03f35de8cda58662f77bd3010f35d42c44df50b36f867ef"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-hyper-rustls-0.27.9.json",
+      "sha256": "df973a49086b9f2bb0cdde8e006c7b85e736347e2b93c54e2748947aedda605a"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-hyper-util-0.1.20.json",
+      "sha256": "ddabe27ea357b0197ac512e583994d25e4a0e0e0f8734c8d11299c29ef8954b7"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-icu_collections-2.2.0.json",
+      "sha256": "553fa2e64daeae18337d13d7d7d6d59ab892223a899e6d6407c9ba49c2471426"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-icu_locale_core-2.2.0.json",
+      "sha256": "c612e842180e1859851d83e0a25d33437d125f37cd02006612336df5cc1cde35"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-icu_normalizer-2.2.0.json",
+      "sha256": "3356a96423f7448c23303d3cddc6a3bafcdf11adf5c49094fccef99cbca3fcfe"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-icu_normalizer_data-2.2.0.json",
+      "sha256": "a66dfea5ddddcd0234927d401b673eba2b0882f560bac219f957e649b1216605"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-icu_properties-2.2.0.json",
+      "sha256": "c0f665c139153be602a3bbf67b810ff1363a083fa0ed1646eea2999338cf54bf"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-icu_properties_data-2.2.0.json",
+      "sha256": "e51cde83aff2e0fe3eadeefcfb11bbe4570cf9c4835e63656cc2f6a9eace4330"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-icu_provider-2.2.0.json",
+      "sha256": "ee57fa4e516b2298f3b9f1ca65552cb4d84ac3ff9ac647ec1d0981642ded8911"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-idna-1.1.0.json",
+      "sha256": "ff8f8c5ad826ba5770e6947bc3600376a8e3990ce84c7e77d3bca16bf778329a"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-idna_adapter-1.2.2.json",
+      "sha256": "46717e9756cca37f51958bf7bcfec4fba95f8dac4cf2fa2e0fd5102037e92f0a"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-indexmap-2.14.0.json",
+      "sha256": "109c566410c18c6f5001ebe450499fbc480eab2cf72f931c364a85b2d93d4608"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-ipnet-2.12.0.json",
+      "sha256": "befbca67ee20c3b0103210711a151c2b6d83acd9b7cafa4f8b2a20ec91fe2d5d"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-itoa-1.0.18.json",
+      "sha256": "e58f3fb21daf034073b274dd34cd1238a4db1868818f28b40467032cc2729253"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-js-sys-0.3.98.json",
+      "sha256": "c206820c257aec2aef475dc2c75c0e1a2331dd4f1049f9ea294cc175bea6d5c9"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-lazy_static-1.5.0.json",
+      "sha256": "8dc0d9cd417bd8232f5ad5ea2bf4f23e89d7eea0339bd7d74a52ba9e1c10d27b"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-libc-0.2.186.json",
+      "sha256": "d78326d3655af97d822d8b59570f04a0a04da48ecb670574e2d19cbba3035f80"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-linux-raw-sys-0.12.1.json",
+      "sha256": "987a2ce81306f35e80cfe726768caef78860a942336174dbea9d68e595368496"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-litemap-0.8.2.json",
+      "sha256": "b9f1a1a2faabbb4e38e3271bf9149b263b55e27313f14c1083145485dc477f71"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-log-0.4.29.json",
+      "sha256": "aaec26550848dceeecb6baf81e20fde0f8da1caac946efb57dc485051ca92823"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-lru-slab-0.1.2.json",
+      "sha256": "2fe74b6856d7641a5ca85ce1c6942d0d35eb1fcbea70b1983dbef6eb6f1fec52"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-memchr-2.8.0.json",
+      "sha256": "caf40e3933df9f9bfc6f19950218d4edabf172d70e6ec3c62bbbc75e28e12d03"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-minimal-lexical-0.2.1.json",
+      "sha256": "b51390e765ae333e8a1c67509f931e7145bac0f099631026ccf991c7d1e5b8d0"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-miniz_oxide-0.8.9.json",
+      "sha256": "b704ac18a779cde5152c6e5c05e30940dfa2cbd0c03653e77797b37dc5ca7a3a"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-mio-1.2.0.json",
+      "sha256": "79a509d864c1d99391453b58445c81c62fd7db8d00355aec8c5a41eacc02d90c"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-nom-7.1.3.json",
+      "sha256": "59f38585f7bd04d3559c16cc64004bd6fe92986ce984c459d96c420630e1875d"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-num_cpus-1.17.0.json",
+      "sha256": "354c627b738047c3b2cc947e8ddc111fd663115349b3776a2e452b5cb28d749a"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-once_cell-1.21.4.json",
+      "sha256": "3284fb1efb5d28d3f144a163781eae0e21daa4c2a7b2b1f24bd3aedd089645c2"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-percent-encoding-2.3.2.json",
+      "sha256": "30e40d7b86946dde67108a8a9c63868d1b9780da25f1b811a1de7ba132592b2a"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-pin-project-lite-0.2.17.json",
+      "sha256": "f6e414ddde66747a582e2b8713852169aae53235499c8e56fe88facd2d4f8845"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-plain-0.2.3.json",
+      "sha256": "2c5e55c549a76c3c095e3e7c1289a75308fea4bb0420bcdacb424afa8342d831"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-potential_utf-0.1.5.json",
+      "sha256": "4ece80b84496ae8769164bc5dd4df91da9d3be45c51583eaa4383f9a6fd1962c"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-ppv-lite86-0.2.21.json",
+      "sha256": "2a9b7b4c7729face3531e78285ccef79f172645358bffd84d5319d576bc3e3d4"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-proc-macro2-1.0.106.json",
+      "sha256": "59d3be898308cb3cc2aa7f3a4049ccdeff5d0c81c67dd9f7388bff6aca60c691"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-quinn-0.11.9.json",
+      "sha256": "bef721271148c00ffc8b3d9f63a8234b816b0e868d8f1fd541b12438daa42ba9"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-quinn-proto-0.11.14.json",
+      "sha256": "a7954e48bf23f0b4b740c61abec758f949ac787de9bfbc22e48635fa9db07dda"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-quinn-udp-0.5.14.json",
+      "sha256": "19da0d77da5305c73e72426cfdede4a119cb0fbc57c6d92d2ac69611a6622205"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-quote-1.0.45.json",
+      "sha256": "2bc7973b2be90c51263aa7f891857b688f96950e83259cb2093e9b260e6e4350"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-r-efi-5.3.0.json",
+      "sha256": "a7d7c9c043cdf3449f793d01e1c3ad4ec241fb3f283405a930a32cb9920fa8cc"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-rand-0.8.6.json",
+      "sha256": "0c77a46e4d7b166efe2baa9face8b11a682294d959ebd4a13b683178af4d55fd"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-rand-0.9.4.json",
+      "sha256": "2f63c4af5a548617064b3872fae9552c917b3b607eeb72ef176bc5abb52ee7e0"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-rand_chacha-0.3.1.json",
+      "sha256": "4ed0e1bdac641ee8a1d59f590c65f4183bac1cf2566e59d499211e35960dfc9b"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-rand_chacha-0.9.0.json",
+      "sha256": "798b3fe58b9d1be3bc060f41e9a00bec0caf98d14d3f44d3f8212313a2dfbe70"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-rand_core-0.6.4.json",
+      "sha256": "22689f52b94f9bdd0189bb011e91074c940b823d9cfcab5d18140a8a4516825e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-rand_core-0.9.5.json",
+      "sha256": "139e94af4bb940d0308cc668559c607ec8ea3f18d0393b7bbf7bb5072944e579"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-regex-1.12.3.json",
+      "sha256": "e3361d1cf77842df2775e5c09913e3c98218664fea6ded5b7e0a39320c703143"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-regex-automata-0.4.14.json",
+      "sha256": "c588f6eddc2a8dee963e86b725446175abb09136b864ab9f9ec3ab85b9561027"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-regex-syntax-0.8.10.json",
+      "sha256": "a7fdb1f006bdf47260028f977ba5a394ba07f9262633f15a500de4b9ec159226"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-reqwest-0.12.28.json",
+      "sha256": "b9e211982777a37d75773e3b08dfb4a682a9d282d4f35341194451dc65c5310d"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-ring-0.17.14.json",
+      "sha256": "21af8bd68a87048dae338c379ce4f2fcc225ea88754e4f5a55598d79f3016433"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-rustc-hash-2.1.2.json",
+      "sha256": "e4130b9454d3706004cf9f39861ba72d1984d330c23ae5326171dda32ff429af"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-rustix-1.1.5.json",
+      "sha256": "084351fb7b1f3ad6aca7618a241346d0013692d72789c8b914511bf6f2448683"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-rustls-0.23.40.json",
+      "sha256": "c03b7903d41a8e63e4ae7bb80cd3830233eda26ba942b61b57e70e97e581c00b"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-rustls-pki-types-1.14.1.json",
+      "sha256": "7fde197419cd856fa54410f9857f2897f9c0c8bd9d8c961ab80b0d74d258f86c"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-rustls-webpki-0.103.13.json",
+      "sha256": "5fae83325a575ac9f15fd08db0643f9d927ba916b11633cde5a16163fd3feb55"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-rustversion-1.0.22.json",
+      "sha256": "17ca2ece9903b0e9139a168e22fcb2c6fcf1c3ab1744535975c553f02ac59a98"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-ryu-1.0.23.json",
+      "sha256": "3e8ef74ea06d48db9a6f8b6cb61ac5174f1ef83c533094d524838ec7759f8662"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-scroll-0.12.0.json",
+      "sha256": "d61b8df49972d347c4fdf8c60bfc3eb0748feb6834b14a29e84bafcdf467283e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-scroll_derive-0.12.1.json",
+      "sha256": "4d26bd03d32c552c997c8b44869ecc1170f7d9c494cc3be4e62fa2b2eddfaa4c"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-semver-1.0.28.json",
+      "sha256": "c3d0f9a6c7927223c5e91e7fafd358f3c7b037f229d1d466a38ec33d7208dfd8"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-serde-1.0.228.json",
+      "sha256": "904fd1fb5562cc0aa5e304e0f960b486086be80832297ee40010566d5a5c44b3"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-serde_core-1.0.228.json",
+      "sha256": "43870cb0282bea22aa566122629b2b6e763d4b8c5dda10750afedf3abb20ab8b"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-serde_derive-1.0.228.json",
+      "sha256": "5d7ff2938661648479aac210e8cd10522f5a6793c4a6dd927e1b55d740622c7e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-serde_json-1.0.149.json",
+      "sha256": "65fb681f3ff06b3462f777b71f23d35dd9be92e20cc15c733d835bf5e3c9a172"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-serde_spanned-1.1.1.json",
+      "sha256": "9c6b9df5c2702ebd708e47c45b6e2a2cb129016b8facbbaca9d68b63872ab3de"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-serde_urlencoded-0.7.1.json",
+      "sha256": "f89699d8f07ee889fc7d125b30dbf7861459948cac97c35b6e32205b4ab8edeb"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-sha1-0.10.6.json",
+      "sha256": "341339e2b0af3a57dcd67aeff2228fb73c0faec61d910828c6a91a52a43a3f72"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-shlex-1.3.0.json",
+      "sha256": "820f569f160d51699d21ccceaaf40109f5502ef0182500a7c4c287611bed8284"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-simd-adler32-0.3.9.json",
+      "sha256": "47c52dc87304948a0dc6be55e0053ad5aad56a2c474f8081e42a47846d248ee0"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-siphasher-1.0.4.json",
+      "sha256": "f8567b36ac9a1adbf7d683b78be272276aef49ad86f7866ec0ed82566300bcf0"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-slab-0.4.12.json",
+      "sha256": "9c81340eca7d895f1d868afd34ffbe55bca556b2b27097d847d66c279bda99b1"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-smallvec-1.15.1.json",
+      "sha256": "39d467cac1d9f747c3a6d51f1dd7e8d1ad682bbb93f4d94cc9b863aedbb7ea3b"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-smawk-0.3.2.json",
+      "sha256": "7188ec6b59ff64f47cb006d6bd943234b403ff9a67834e28d6b2724b1ebe005c"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-socket2-0.6.3.json",
+      "sha256": "a0091ccf2a0bb4b609de6ad7acad2bcd60891693f1aab6f085a36b12431cfbcc"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-stable_deref_trait-1.2.1.json",
+      "sha256": "8949fe096015bc1ce610e728f5a1551145b2c4f147014f0975872f92f418935c"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-static_assertions-1.1.0.json",
+      "sha256": "ea29ea22bbd8add7d812ed9c70b89b2b979085c14062657adbc94d7bd58fecd2"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-strsim-0.11.1.json",
+      "sha256": "ca610942eed53dda59ba208ce083921bb027096ffa3542bba02133d5de2f57c6"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-subtle-2.6.1.json",
+      "sha256": "e3d1bd933dec825f9c22cdae4928ab5fcc22a25c563b27cb4c92bc2fb9bdc605"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-syn-2.0.117.json",
+      "sha256": "a415c306905cf4049ca1cb6b0a9e2f864f72cef3c9d07f6bdf93f9ffd4f99879"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-syn-3.0.6.json",
+      "sha256": "b25a555cc811968a77aae17cfb7752f1a1b316ea13ce0c67b6a045dcecd8afb0"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-sync_wrapper-1.0.2.json",
+      "sha256": "152efaa854628b820558db1bb60b8743d331ec0bca0e6586aa147d44f7ba56b4"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-synstructure-0.13.2.json",
+      "sha256": "05e40933fb4a0446f00aebf0cedd3f0cbf601c42258583feb40cfaf1934e41da"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-tempfile-3.27.0.json",
+      "sha256": "4aed5ab10e79146f51ef07fd82201bdd6bce73ccef503c74c2b04beef6b1e16d"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-textwrap-0.16.2.json",
+      "sha256": "033487f95305fc42dec6c74170a720dd0836a63ee0c0cdc3c8d26e6ce555e673"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-thiserror-1.0.69.json",
+      "sha256": "d1ff5796eb07351a35a8407fce4d2901b705164dd4b38a97a030a4c75d542b39"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-thiserror-2.0.18.json",
+      "sha256": "cfa0e7d1f22eeda7c86e20e1e0e24558eb676aee7bd314dafbd87382885342f1"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-thiserror-impl-1.0.69.json",
+      "sha256": "8a61f019e06bb639b582e56fd9b7fc81f8f45aa46d1dbc081d235dc00053b9ad"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-thiserror-impl-2.0.18.json",
+      "sha256": "465ff456de7fc3eac372945a9f15be246772f64f369ad1002376965bad823395"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-tinystr-0.8.3.json",
+      "sha256": "35ce343ab4e439baf0341ffe26fc26bd9912343665e3bbac6d845cd1900e3942"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-tinyvec-1.11.0.json",
+      "sha256": "a801ec4434097f3f9dd64ac17af5c396c60320c429abc4e03e006901057e6e11"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-tinyvec_macros-0.1.1.json",
+      "sha256": "aa9446b705f765577767321ee919d567041c451cbc0c96f289491285a6134ae9"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-tokio-1.52.3.json",
+      "sha256": "1aeb6a8d250b12063905238d0f7a212a638d8d9980bb521f1583830ddbe35e94"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-tokio-macros-2.7.0.json",
+      "sha256": "c0490cee755ae071fed650acd5ac0a9a226af630f3236af014c0bd6cc1feedba"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-tokio-rustls-0.26.4.json",
+      "sha256": "829a7d513ee225277e7722b2a2c637ee595959e14a5b96c43006ffb2379812e7"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-tokio-tungstenite-0.24.0.json",
+      "sha256": "23bece80ce2bcf0285088200e253aa36843c064459bf53c2bbd0389ff3418d6a"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-tokio-util-0.7.18.json",
+      "sha256": "1bcdac4f139f4c95952f1b38ad10d83b14e77abf7d678648b0cb1659d8d26bff"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-toml-1.1.6+spec-1.1.0.json",
+      "sha256": "ddb58952e12dca1e16d27eaaed5cac5c6b9e70029c7657d5c60fb651af074ef6"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-toml_datetime-1.1.1+spec-1.1.0.json",
+      "sha256": "f735f993c4c6fc93c5f0208d83e1bc723fc9bf796cc163d3caeb47bab6ece471"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-toml_parser-1.1.3+spec-1.1.0.json",
+      "sha256": "c475deb6cd262d87d9023483ef1e28838e368b8142781b6d87d55a40327c7181"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-toml_writer-1.1.2+spec-1.1.0.json",
+      "sha256": "25623f64dec560ae2cd9a04791ec72223c95f234021b67730397d3ed97b83893"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-tower-0.5.3.json",
+      "sha256": "31fd24d2a6fd164b7604cef4bf4d1790ab4c42686f23ab840cf64f4f32b9f2de"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-tower-http-0.6.10.json",
+      "sha256": "48e963a25fb9a327fb1e21377d8111578228ee0ac8bb51db82270c7b6c1ee01a"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-tower-layer-0.3.3.json",
+      "sha256": "3723f75b45e0dade3334a70a3bab16600264bed8d4b13bc801142facfbaa9c48"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-tower-service-0.3.3.json",
+      "sha256": "28edf68ff3acaa32bdd4366f5b1a695af4e3f86d5800f527f53d5ee2909fad5a"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-tracing-0.1.44.json",
+      "sha256": "6d4e0e8d3a3470180e84a649d3b0e262c433799b79cb7a6dcc568e97e5c3fc8e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-tracing-attributes-0.1.31.json",
+      "sha256": "bb6b74ba275cfe7d6c9180529777280249474db678b90ae0e2bd22736cff7d8d"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-tracing-core-0.1.36.json",
+      "sha256": "b955e448452068d014635d79727a766aa0d50da93a3238dd075a9eecfcd4d369"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-try-lock-0.2.5.json",
+      "sha256": "9ccf63add1ee2196577173743efb9d7fefb17dacd67a7096b6fd9b3e590dee3c"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-tungstenite-0.24.0.json",
+      "sha256": "2615cdea2e656a8d82785a57b8d9d8e97b87e0b2eadc990e745a091becce8181"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-typenum-1.20.0.json",
+      "sha256": "6c1a8a52e1fcb49f0f84b3d20225361dcd12c8e22068c5bf32066a729a7c3fd0"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-unicode-ident-1.0.24.json",
+      "sha256": "7a17fcb3568ced35e89809eabdbbcbe6a26bb6f2f768b750cde2afb058dac0da"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-uniffi-0.32.2.json",
+      "sha256": "7f467e1753d973e264259b7c3346ff1146f983b98b8401f9f18361bd0c256d7b"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-uniffi_bindgen-0.32.2.json",
+      "sha256": "f70305486abaac374331412f44635355d635b65a244b8731fdc6d000a02b2841"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-uniffi_build-0.32.2.json",
+      "sha256": "c6b47e061ccdab4fb06e77167faa35e9132ba4ead77dc7f515518753efbb0b67"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-uniffi_core-0.32.2.json",
+      "sha256": "e03055de75852dc4ef5375273f6c40a227ef0cd487dd004e094a5fa8dacbef41"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-uniffi_internal_macros-0.32.2.json",
+      "sha256": "e1b32591f182544c9654fa4bcc263a009fa76486e50d6696ef4269416f24da1a"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-uniffi_macros-0.32.2.json",
+      "sha256": "09e8ec8b200cb8e03b8a7034d8a69687670745a87e85fce140ad69d961649acb"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-uniffi_meta-0.32.2.json",
+      "sha256": "ded0fc3e866dd5796807676ce38810f13475dc4293a2d8cc505b9cbf4a59ba1e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-uniffi_pipeline-0.32.2.json",
+      "sha256": "cf96f9158578db8f75e85bbc251da597aa58410274985001bef3f7d699bcb74d"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-uniffi_udl-0.32.2.json",
+      "sha256": "01f7677f6011436e7c116efed913f92aa024cb96bcafc140373772b73a4a7743"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-untrusted-0.9.0.json",
+      "sha256": "b39148eb9013f72148b0666d876459f1b4584b796f8c618dc85b4460c8372504"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-url-2.5.8.json",
+      "sha256": "166ef394f97e001e186c41c20e9a5f9c963d8d02ae170cb5bdcb274b2311056c"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-utf-8-0.7.6.json",
+      "sha256": "2e9f1e4c40a58bbcfdb890ab60a49b5cf92a7a3faa92515844fa1b04f87c7e76"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-utf8_iter-1.0.4.json",
+      "sha256": "5da2abb7bd7dfb0eff404e82036bde30a1742dca21707819e0eebbd346bad858"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-version_check-0.9.5.json",
+      "sha256": "73f2e5be48a50b88361fcd9f3ff3e7afbd058744bcc76b761cc10315da3fb0bc"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-want-0.3.1.json",
+      "sha256": "b8b77e896b81f9222d3038582b1ad3fae3c0e408da4f8b4d3fffaef9c207dfe0"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-wasi-0.11.1+wasi-snapshot-preview1.json",
+      "sha256": "781e1c87b4a3329592de767bcc16b58edc49642b24cbd7e38a39a1c699f021f6"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-wasip2-1.0.3+wasi-0.2.9.json",
+      "sha256": "067a3383916703893da5cf8ef7c9f1bac2d9c143a18b62d8d2e337846d69d9aa"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-wasm-bindgen-0.2.121.json",
+      "sha256": "833e048f99c6414f385a0d41af093b92472dac06dee7dde685d7c732b989d0ce"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-wasm-bindgen-futures-0.4.71.json",
+      "sha256": "7948a86d74fd3ed0915039559d0948715b8cce2d110de91e3e37e9ef88593732"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-wasm-bindgen-macro-0.2.121.json",
+      "sha256": "909a825584c6b4f5da1aef788fca7b41efa85a150a6033f7b0dca2373c956033"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-wasm-bindgen-macro-support-0.2.121.json",
+      "sha256": "fe084bfe6514d1d8c015a935a42e4a7f1d1b2cd2766aa12122de870855b04ef8"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-wasm-bindgen-shared-0.2.121.json",
+      "sha256": "970faa5925eb0240f1447240d1a895a3c4294d065b288a3e418086eb201c85e4"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-wasm-streams-0.4.2.json",
+      "sha256": "8bb5606a041af4a02b2ac6b522b2af3b4d07c55e63f1f8d93c36dc3b32e272fd"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-web-sys-0.3.98.json",
+      "sha256": "08f49ef1ac065b0cc935f5f48ca85f31add555cda6a0b940cd1d50b8c04431e8"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-web-time-1.1.0.json",
+      "sha256": "8f53077b477a3d6321ea17cb3bc8646e2adf73822be23e757e4243a725de862c"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-webpki-roots-0.26.11.json",
+      "sha256": "7ccbf47e39d9f244965c2219381eb80a4b42d71b4e6d9afbb988d2bdf7aff707"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-webpki-roots-1.0.7.json",
+      "sha256": "79bcee9aae753b6d424ee39abcef7c9486fa2eb8d84d4a0e5ac2edba7697fd9c"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-weedle2-5.0.0.json",
+      "sha256": "30dd8817b61f68aacf494275284fb92955d78b26ef1a14797bedfbf680604a52"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-windows-link-0.2.1.json",
+      "sha256": "fe7c9164e59ae075b40a1787ae390f8d7055e7f9f337073d98c230e89a0b3db3"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-windows-sys-0.52.0.json",
+      "sha256": "3516174c89d6f9f41d24a93a9ff7126128fcb7ae5739868a084ec90f751ef33a"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-windows-sys-0.60.2.json",
+      "sha256": "09e78b20103e224044a3ca167221fcd7d491a686078f5ecc2201b61d59eb224e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-windows-sys-0.61.2.json",
+      "sha256": "ad14677e4540c9a751d466e85c5af990f48c948f79ed41e843ade3021d6a0c12"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-windows-targets-0.52.6.json",
+      "sha256": "593317305e04640ba01f26efb9b36fdfe5bb09f7afe2526781376f026df15a1d"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-windows-targets-0.53.5.json",
+      "sha256": "5c70f534a193176cfed8e31ce2395efcc5a143df0a87ea33b0d467c4726babe1"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-windows_aarch64_gnullvm-0.52.6.json",
+      "sha256": "e2ffef17b46b5c62615aa51949790d705e0ff0fd874ecdb0427931773a30751c"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-windows_aarch64_gnullvm-0.53.1.json",
+      "sha256": "ae1ed3e81ba507eae0b2a625a652f1b41e6ee070563889d240e6d39647852193"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-windows_aarch64_msvc-0.52.6.json",
+      "sha256": "1b9ca218508caccc4d64488ba015caaa567169f1004e087e3f2ce4bd3d5be457"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-windows_aarch64_msvc-0.53.1.json",
+      "sha256": "9e02319dd7748218d9f73172fafe79f605430712c3c710b6bbedc302ca5fda14"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-windows_i686_gnu-0.52.6.json",
+      "sha256": "a9450384386269cc3ab262a58dee39caaeeaa91a6b400ab0cac443c8759d04f7"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-windows_i686_gnu-0.53.1.json",
+      "sha256": "0c586d8d624790c8c6f26406ef34a333a13b97c445bc73f327b8b7da7a670b85"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-windows_i686_gnullvm-0.52.6.json",
+      "sha256": "01ab1d4a512ff5b7c136bd253dfda5ff5fdb5e0dbb6c313208b179dea6347214"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-windows_i686_gnullvm-0.53.1.json",
+      "sha256": "f1224b5289a6a0ca749987d2a2999c6b76034f218d4a42bea8ffcdb4ee4f8f5b"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-windows_i686_msvc-0.52.6.json",
+      "sha256": "7b83edcc211ac24dde9009745d037da7ecabcec00c38a8ece9bb43a8d82eefe4"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-windows_i686_msvc-0.53.1.json",
+      "sha256": "1c6f74726787ab7e7ec641e736ed4e81a98d86f072af36ad869ba28f355c7623"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-windows_x86_64_gnu-0.52.6.json",
+      "sha256": "44d845fba0114a25bf50dca2420e534060cbe198a85187eacea271fb974e02b0"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-windows_x86_64_gnu-0.53.1.json",
+      "sha256": "8a158b252d8a4d4fa8777582586f86da08f8d2998c3e98e92ca7f418eb63d627"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-windows_x86_64_gnullvm-0.52.6.json",
+      "sha256": "bf537f82ab38ceb2092eb2a617924037f75da6563751a7aaed7925d79d2834c8"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-windows_x86_64_gnullvm-0.53.1.json",
+      "sha256": "79dd81309e2cbeaf575b51c07d900d9776922400d17f01fb306e777d0ba401db"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-windows_x86_64_msvc-0.52.6.json",
+      "sha256": "1fbaedb60d61412cb21d01cc080f9d884177da6e6b69d4f6f3fcd0c2f5140174"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-windows_x86_64_msvc-0.53.1.json",
+      "sha256": "5ed256c92e282dd2155a0f9dfc6205ea1e33f99bd5e8c0a0c3250f8584a01e44"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-winnow-1.0.4.json",
+      "sha256": "5e240bdebbf46e9d2e04c716fe055a42b96faf9032fbc227fc18a026d3cca64f"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-wiremock-0.6.5.json",
+      "sha256": "975c96d74bd0ab7b683daf9d78e2fd29ca813fcfdc6f4167c6120cc5f1fb7e45"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-wit-bindgen-0.57.1.json",
+      "sha256": "ea00d134b82a2f6235ae4ae110e7b1637a8cec4a047f341b055acfab9bd72813"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-writeable-0.6.3.json",
+      "sha256": "edb41b93560bf809b2589d98b47fa597f7e920d5ab150b643f53b750c1ce4f22"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-yoke-0.8.2.json",
+      "sha256": "92a2e7d91347453985b9331325f6a3812fcff823429560d82fe0efb90dbc5909"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-yoke-derive-0.8.2.json",
+      "sha256": "a07e2539ea3ddc2a4be776aff0ef398f11a61c06cf9c2b7982168948d430c39f"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-zerocopy-0.8.48.json",
+      "sha256": "91f66b1414d0985eac84f4593691dbd4a0808ea92a6566e9f9cf34ea2a76926d"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-zerocopy-derive-0.8.48.json",
+      "sha256": "dfcdb14f00bfc632da5a382b83e75575636c7e608e1611c68c9d787d0aca3482"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-zerofrom-0.1.7.json",
+      "sha256": "7d0e86dbddacda6d647d5b450b3f873af25c9b6fb2f7a72be8afab91de229f3c"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-zerofrom-derive-0.1.7.json",
+      "sha256": "595f0a5a1761ffa3652260d4a4bbd1288c9a9be4c16bdd9954ed4fbf8252a6bd"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-zeroize-1.8.2.json",
+      "sha256": "bc4865806af4192e09814c4f4a9bce181d27dba62eae1d6bd91dac96186714ed"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-zerotrie-0.2.4.json",
+      "sha256": "d200bbd8f0cc1b311d3067420437b7231e0cd3ff8c6e2431436852692a729e61"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-zerovec-0.11.6.json",
+      "sha256": "64505e4a58d9e63713a5fdd5ea84f0d61f7f2aa1162b00aa47150b668f3a1bac"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-zerovec-derive-0.11.3.json",
+      "sha256": "8a3cd921fa097f0f99a066edc8feef1d5bacfcffab04e9a4eab8bf27f1422143"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/rust-rust-zmij-1.0.21.json",
+      "sha256": "688d02ec8ed7265cbeaee4e772a136cd170f4b128fcee899bfa32a98b6a67f61"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-005fc765ddc5115da796cca915baa9557abae13ff35e0a47c47affc56f6c414d.json",
+      "sha256": "71f9200c2586f968f21cf148c7d1b63a1e1b7d9313043fc5ccb4d3ccd73c6679"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-0173035e025d60b1d19197840a93a887f6da8b075c01dd10601fcb6414a0043b.json",
+      "sha256": "6081813bc0a5c4ccdc38a90a179becd470ee769f8fb2a2703fca4db7d8eb20d1"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-01c266bced4a434da0051174d6bee16a4c82cf634e2679b6155d40d75012390f.json",
+      "sha256": "492d972352975b5659c05164b7a96e63d1390b1fa65d8a63bda66d808749e1eb"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-0218327e7a480793ffdd4eb792379a9709e5c135c7ba267f709d6f6d4d70af0a.json",
+      "sha256": "c6692cf1edd24268b86ae9e8fa432eb78d0ada44e6c2288e3949c3f2c8930852"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-025436edff4cfcdde17a5811fdea78892d8482efd1abdec5a17872d07a4f2112.json",
+      "sha256": "c5548b9ec730ff30ab5985c8fa7fe6ebd020f7c31e2e2fc31878a0d057fe5053"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-0621878e61f0d0fda054bcbe02df75192c28bde1ecc8289cbd86aeba2dd72720.json",
+      "sha256": "d8dad0bc08ea61d2e3bc0a56f929c9c749074e0dc0384317328da0d68e008ab5"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-07919255c7e04793d8ea760d6c2ce32d19f9ff02bdbdde3ce90b1e1880929a9b.json",
+      "sha256": "677687f1a0db6419ac790c8f6299909035feacff4f2e916ad7dab8fbbaab44a1"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-09785877275ffada6c371b652a30e95c26b435126fc0fc62f1bc2d72171f80a4.json",
+      "sha256": "da8c3e2f0a1e90cb348b6626475c457dcfdbaa9771a2c6a55a7d1304e57c5384"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-0a54e647fe54104658b5e563c04c6f9edf251710e47bce692e0bd990a4ddaa39.json",
+      "sha256": "b101e74f5a27fd2651e7643018468992fe7163a6e80ba6dec54e381fa481ef4d"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-0b04ee3ce0021a922f43f37a17fee09a5a1ee6d1f4e149d5bf75b72395a49c72.json",
+      "sha256": "bca33999689194009cdc884e21d3797c3f1bd7068307ebc4901226126cc3f535"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-0b28172679e0009b655da42797c03fd163a3379d5cfa67ba1f1655e974a2a1a9.json",
+      "sha256": "194c12b8f73267009e5bfaad8b39dff6fe9b88c5d69902275e53b3bfb2dc33d9"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-0b83dc40cba89b9922bb84b0a9c7d2768ce37c1d7e138b7424fd4549915778c9.json",
+      "sha256": "5076eefc406d0ee51c87297a4b91ed27f8013a084103dded0688aedb9d0b4c76"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594.json",
+      "sha256": "2edbd46c09eaaa375603234ca770cd2356aaa67a37b9f995cf32cf949f3ae00e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-0dd882e53de11566d50f8e8e2d5a651bcf3fabee4987d70f306233cf39094ba7.json",
+      "sha256": "156ab4dd8cc8057586e5ec15d6665c0befb847939bf4886c3f07f3eea9696033"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f.json",
+      "sha256": "54c15f1e6a7b30ba21bbac140444ca954ca1723c28d0194c7bdb1bd7fde9e61a"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-123a331b5dbf04c30097fa43b8f858bc85df671fe776de498d01f3d6b7c1f69e.json",
+      "sha256": "e75fb4b572401218b62c75b91c091bb4158ab1bfcf8029681e1c27984af77c71"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-1466d9b4f3a59bb8997fc8d5fa977ce3f6a24bb2358793c09bfdf007039f6486.json",
+      "sha256": "d9054f3443f203b8b8ef57726d46ad30316f525676f3709d79c6ef99877d012e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-1a2f5c12ddc934d58956aa5dbdd3255fe55fd957633ab7d0d39e4f0daa73f7df.json",
+      "sha256": "9839c1ad5887f7c00773181fd0ecb45269a0b899a0402f4c8ef18a73dd73f7b7"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-1dd8eca0f83669e75fa119e34fb9e1be9d16e3e9b6368962b8019db6e8ae5f7b.json",
+      "sha256": "9554dc85e073c7297571fcb7eb0c28293f7138d9223dd14a34eaecba3788bd8b"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-1e2b7ade3fb228130408b9990cae6a7618eb314c75aa0b164bfe485d9d9756ee.json",
+      "sha256": "5e9439692837b90df039749f0825f7c94c655930c8fdd76341f1a33b8d8764a5"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-1e697ce8d21401fbf1bddd9b5c3fd4c4c79ae1e3bdf51f81761c85e11d5a89cd.json",
+      "sha256": "dd2398cf935b5671134cc800c97faccb0443b70503fbd748f847049b0431e581"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5.json",
+      "sha256": "4ae00072bb237e9a077b0c14a0f2fe21016ab6c819aeed5b40c85ece300bebe1"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-209fbbe0ad52d9235e37badf9cadfe4dbdc87203179c0899e738b39ade42177b.json",
+      "sha256": "8cf8d43c02b50510ca72f44eed99b40a63936bc5a8bfc069d79aa894130b3a38"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-20c7855c364d57ea4c97889a5e8d98470a9952dade37bd9248b9a54431670e5e.json",
+      "sha256": "f901665d5c0079e2e99e97e4e7542c88851bb4655ec69a47946217e6e5620e7f"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-219920e865eee70b7dcfc948a86b099e7f4fe2de01bcca2ca9a20c0a033f2b59.json",
+      "sha256": "12f26aae8d8aceabf0ffb0b3b8662577220881c8423f5dd43c30322b3b30e893"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.json",
+      "sha256": "46f31a596bd70fd1340f9a77dcec17f12b4fb6d8459bbb794297dcd80ae78f70"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-23fac4edada8cdd75ecd793864bfb3a60ef59da853425ed3e2b3d030dc730aa6.json",
+      "sha256": "1c6dd2ae0090675472774a545c6fa444e8083d042d7a02f637aed4b11e4b0641"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-253cd04c6714889df2d32f3f64d669179a1c95c76ac43c40882c52eb06bc3552.json",
+      "sha256": "1d02793d7cd8978b9dc3550c90dd0e035492e4a0d6a3be08e8411a84466b4a67"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5.json",
+      "sha256": "03ded878d835ed72da3e3916ef167c96cd9d9e998f6fbf0a8fea9a9a9f7fd98f"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-275c491d6d1160553c32fd6127061d7f9606c3ea25abfad6ca3f6ed088785427.json",
+      "sha256": "280d2d10cce837e0da554273058ec7b03640716980675ed20fbd0558d8f086bd"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-27995d58ad5c1145c1a8cd86244ce844886958a35eb2b78c6b772748669999ac.json",
+      "sha256": "6e7a0fc76d0fdbd415f4583971602772026fd932b75fe02802a5310647a03961"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-29e9fe5074bd27e0e5d5d110394fbbcd841baee2651a3c4b4560a632702cede4.json",
+      "sha256": "cf1c424087f131a379d800dcafbb73d044ed0c17ff40b0a8f770c29f3f4560ac"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-2d01890414494742ba4a509fcec8efa40f6d8be22cbd72be7cff08d6fda4ec89.json",
+      "sha256": "b65b410f00c2bab562efa20dce7d5a934b5a761f7fd4b55911a9c4dda855e563"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652.json",
+      "sha256": "178fed32751900497f9bacf351e78ce2b5435b85eddd5824b1a83b6154cf8dbc"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-31b94860253d8ec7b4529f51901044d3b459d6292d996504a36b1bae3a36a812.json",
+      "sha256": "438ac51e8cceef860ce454ddb0e295d12531f1ce1fb9b6e4cdea7ace49bfc181"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-3290ae0fbc9ddb77d2239121d710f0bb9d31b3b4744e6d97fe01e652b4c1870b.json",
+      "sha256": "421c1dbede5f195cbbe71de169bd2acb3c1dd6b73cb97c6cd53607680c560ed1"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-3521672491a3479422d5fe1aca6645dd2984090f85da6e5205abfb18fb7a6897.json",
+      "sha256": "61177fa8ebc7e693e70110d460fb73fabb9fbbc8b10359188d05d04bded32a93"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-35242e7a83f69875e6edeff02291e688c97caafe2f8902e4e19b49d3e78b4cab.json",
+      "sha256": "c9518ea3ea5b2b7ecb95115c971297a72f66127bc80ba075e084da0eb645dc36"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-36516aefdc84c5d5a1e7485425913a22dbda69eb1930c5e84d6ae4972b5194b9.json",
+      "sha256": "af86bbfd4c1611114f6c5dc99cd827838476de3697e90351f8e0d400ea60686b"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-377c2e7c53250cc5905c0b0532d35973392af16ffb9596a41d99d202cf3617c9.json",
+      "sha256": "521852b00c367ced99acebd27c1532a0c73c436466b8239bdff9d2749b670cfa"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397.json",
+      "sha256": "e85a11b18dad0ca0e9f4504fe45ab7b9ea63a29da0884bfd4c6126aaa28a8f30"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-391a5396cec6230bfabd4ef4eb2350eb895bc5efce377a2218f5702ed020d3e3.json",
+      "sha256": "03ece12b7472384f605402c92b38c94c054c665468a71492302f371ccefecf4e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-3fa4ca83dcc9237839b1bdeb2e6d16bdfb5ec0c5ce42b24694d8bbf0dcbef72c.json",
+      "sha256": "7c2e8fd76604198b8193f43ed9d1946602e9b6f456f8a03b926d6d4cd422e13b"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-4108245a1f2df9d4e94df8abed5b4ba0759bb2f9b40a6b939f1be141077ae50b.json",
+      "sha256": "abb48a3caa103d762fdfbc1942bf8af0374d8756a419e57464f6dbd3379b41eb"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-41ace205715d9f19a3214218cc1c01d57c533e02cd0fef7c8e51a49a7fce5ac5.json",
+      "sha256": "2af20c92f36f766ade4dec8d52fffe2d104e4bf1ddba6e3b56062e3172a0b588"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-4249c8e6c5ebb85f97c77e6457c6fafc1066406eb8f1ef61e796fbdc5ff18482.json",
+      "sha256": "4211ef6a1f10987f34e42aa238f595ef5f09abcac730e9487d875c6b113dbc50"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-42a35170233e83e18856792e748de4c1ce4a63b2afce9a370c89ef3fe23f9f2d.json",
+      "sha256": "67c57643440c3f30ba5be18f8de7b321c042758b0f5dd26fc4f8bbb831ce37c4"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-42fa16951ce7f24b5a467a40e5b449a1d41e662f97ca779864f053f39e097737.json",
+      "sha256": "143248c45f5c891909bc0de6c6217e12acdde9f09fae84028e052b6bdd80b657"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-4455bf75a91154108304cb283e0fea9948c14f13e20d60887cf2552449dea3b1.json",
+      "sha256": "78d98a624724f1c004d7e7d32fe732108b63eb187c411697033efc74cf0dfa73"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-45f522cacecb1023856e46df79ca625dfc550c94910078bd8aec6e02880b3d42.json",
+      "sha256": "4d9f0c3fcb02aed6d2417d247b5b76626dfcd92276d78a453ffd15815855c5ba"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-45fd05c4865e7c350b98ad7ac50e1b15462d49af4a91e9b0c9dd933dc9a69742.json",
+      "sha256": "c87c84b11fdd5c64a1210cf4145c5d43b9b03afe0141b59ec1d63247a35aafb5"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-467e2e44913e850ca4fb6760fa3b78ffefda2a21688a6b1e26a8b706963669eb.json",
+      "sha256": "6055c276537a847f6f6ea759fb00df52be39caf56bb103fa94ae039b0a860677"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-47d4e1803702728e03d30f8a848ae2249ba274bbd9f8443e803f7924d83cd371.json",
+      "sha256": "7c4f7d47d4699f02e24c5078b41ca3c045f6f604b91ae0591208536c0ba9967d"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-47dc9ff29128ddfb4d6a0435383c9f89120bc374dbcc1dd00b933a0b28aa7865.json",
+      "sha256": "de65b1097ad7ff5edb8cea392fae9527f9dcef6e9aea4b080e2e2aed35523223"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-4b2d0aca6789fa39e03d6738e869ea0988cceba210ca34ebb59c15c463e93a04.json",
+      "sha256": "19be6129d313dfa1957b539ca0098cd47b79c3e6845bc82399a8445abc077a48"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-4cada0bd02ea3692eee6f16400d86c6508bbd3bafb2b65fed0419f36d4f83e8f.json",
+      "sha256": "619de46bae68644b8bfe1e0dbcf493cee35155f820bb674f15bb99b1a58e5f72"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-4d10fe5f3aa176b05b229a248866bad70b834c173f1252a814ff4748d8a13837.json",
+      "sha256": "985b0b05dc3afc6349ef92d6c4f6eb09407f396d14422ef56b2d617fb3de8724"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-4dbda04344456f09a7a588140455413a9ac59b6b26a1ef7cdf9c800c012d87f0.json",
+      "sha256": "2bb2f7e21a9af7d9877a202abb2fd1c66de1c7beb36a5b289adf0e75cb614569"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-4f44572785f35152c1fd2eadf565b7e079c0f300b4324f0af653419f9d76b735.json",
+      "sha256": "d07a24dc08a6e9c625e190900e46809db51f1b81e3b651f4d2456423d22ca24e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-5049cf464977eff4b4fcfa7988d84e74116956a3eb9d5f1d451b3f828f945233.json",
+      "sha256": "0b38fef9413ba05778c92a015077b6ee0b74be7541c7059cb9965a5878b45c46"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-516b24e051bf5630880ebbd55c40a25ce9552ebaf8970a53e8976eb70e522406.json",
+      "sha256": "6e4b878adc49b22955ca6c4b75ede787b57ffbbdec60bb747bf78124142d4f6c"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-54a744942eb3fa63a74d8d359989ed6962c04f3f10ff20cfa08ff8aa7efbe4e6.json",
+      "sha256": "5b5b6bceecae876dfa9e02a776817b93df06f58caa6d87c354f8bf3a4efbd0d0"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-553fffcd9b1cb158bc3e9edc35da85ca5c3b3d7d2e61c883ebcfa8a65814b583.json",
+      "sha256": "8760b1824850b39cabbc310ccd035da1008ccc929b638a61c1c7ce5e45811fc3"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-58545fed1565e42d687aecec6897d35c6d37ccb71479a137c0deb2203e125c79.json",
+      "sha256": "03ffc8b49f8caf9ca875236fcb61e236804c2ba5f6aacbf483dcdfeef647641c"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-5b698ca13897be3afdb7174256fa1574f8c6892b8bea1a66dd6469d3fe27885a.json",
+      "sha256": "9c2a82ab7983ea8fd6886b6665120b0185e6b89c5ddfbd78b3265dc24acc824e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-5e05b024f653a5ce199e77cbbbd42fb5553562ec714b819421ed0c3e552a75d7.json",
+      "sha256": "b70623b2afae2e47ca5d2a8bdb0edf5e6944b86e2499cf0d6a2f0859957a9857"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-61d383b05b87d78f94d2937e2580cce47226d17823c0430fbcad09596537efcf.json",
+      "sha256": "e2416241ac0a15e15e1d55ed1d011d37d1b6d200f1951dba9018589bad96b047"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-6226d0632e2e1a80c23597e964da9812ae193c535fe058154afb034e94167aa5.json",
+      "sha256": "4ad7a633107a0b0fff69a3d6917bc05a94eb7fff17c36f774fb4bf1c819f8573"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.json",
+      "sha256": "9565a462e8af96d03f5117a84359c9ed3219669c4bd654651ac1894340fe5331"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb.json",
+      "sha256": "23d20f64abb1515286832928cf8d30b86447ec48a2b3cce8d53d02f8d8ad2162"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-655e3ee7a4c27430774962e62a6d37d7348e5f2f292010ad674ce1bebefd24bc.json",
+      "sha256": "aee95df009e895d73748998619aadf42b74be0791bd5132dfe926ed997731e23"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-65eac389b5c3fda1149b4f0a89fd2d866b07628f789d4e4dc1c3cbb885680f58.json",
+      "sha256": "e782e76bdf1008428284eacbd5e1ad29854b23767afa16064f9c8d93e9d7584b"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-65f94e99ddaf4f5d1782a6dae23f35d4293a9a01444a13135a6887017d353cee.json",
+      "sha256": "b48082279625b1a26977eed4d297e7cbb78ad60cee068fda5fac3365d027ed60"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-65fdb6c76cd61612070c066eec9ecdb30ee74fb27859d0d9af58b9f499fd0c3e.json",
+      "sha256": "c5d23ef0f7b4ef9c4995c8fecc62310e8e9856557adb1c21cb778ab6a0429af0"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-6652c868f35dfe5e8ef636810a4e576b9d663f3a17fb0f5613ad73583e1b88fd.json",
+      "sha256": "11a5df5a3829c1508b44a9023a50a529affac6d89c3afc976f808ce6a43b5c89"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-6df43f6f4b5d4587f3d8d71e45532c688fd168afa5fe89d571cb32fa09c4ef51.json",
+      "sha256": "67b724ac0d7771fe8c2f52fcb09f5be965e748dc492b7f88656077e4dce6050f"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-6e24b7455f0b9afefdf4f3efd59a56ce76a3020c2dc4371937e281fc5e587fd7.json",
+      "sha256": "41bbdccd9673b9c77bbb063cf4d3d5b8161beeb38f7f0ae3cf41095753327afe"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-6ee2ed6c77710de911761acd5fc1ad1da00f476beb1a7ef27e78c2d1858deafc.json",
+      "sha256": "68f91c31466b88d6d984ab7a53e4e68ceacdff7ceadb4165dcbb79086d0b4f9c"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6.json",
+      "sha256": "2642ee2878b900cd19801d119bb18e848020f9865d7653201f23bbe1b0fb93ca"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-709e3175b4212f7b13aa93971c9f62ff8c69ec45ad8c6532a7e0c41d7a7d6f8c.json",
+      "sha256": "9fa4b2e1e6ef8cd744e656e67cba7d12ec105f6b7ddf54af5fb3e32475a1a273"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-7365cc8878a1d7ce155a58c4ca09c3d7a6be413efa5334a80ea842912b669349.json",
+      "sha256": "1415999da002e14a0125b5dfb1082782bfc1db2c37b2e92fb613d50eb08a216a"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-74db5baf44a41b1000312c673544b3374e4198af5605c7f9080a402cec42cfa3.json",
+      "sha256": "ab7aa4e3cf73e472c97342ca1db84e785148b260d1540b192631cda6db7b7485"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-751963a8b88c0e3a9f27e98933079fbcf09b9998b2c13ac49c2e4d58444520d6.json",
+      "sha256": "3b1d34c4cf001b61b40de4ace6886579cb3270353ee99dfa0a2047458d1836fa"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-799e9ca9d179295ef372f25d3769cdda7d25bb2668add6a6a1e22d1e4c678b8d.json",
+      "sha256": "f8c9a5d014170d7fd94bb47bc0efb7cb9a71ddc58a0e30a09e7600ce176c3490"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-7abd9b6960dcf7d4d0a48606a5b71bfe37d472db68d70637f3a58a56785f1621.json",
+      "sha256": "29eab0fa06a85c0e3e02a6c186a5eb08dcfc579b49a74a118ee4abe5c27dc444"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-7b63ecd5f1902af1b63729947373683c32745c16a10e8e6292e2e2dcd7e90ae0.json",
+      "sha256": "6947681fa58e67a4068fe5541b19cfb18017d10995a724065780073c083518cd"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-7cfafc877eccc46c0e346ccbaa5c51bb6b894d2b818e617d970211e232785ad4.json",
+      "sha256": "ee9ab8f74eabe3be5a4a1ac4ec9180726da7da711f531ab0cfd94943bcff5931"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-7cfd738c53d61c79f07e348f622bf7707c9084237054d37fbe07788a75f5881c.json",
+      "sha256": "e2f0a599fcbe53bb8ac597e84199f93157eae1ec5b7b91fa43f1e0098c3c3382"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-7fea0ee51a4ca5d5cea7464135fd55e8b09caf3a61da3d451ac8a22af95c033f.json",
+      "sha256": "19499081fda9dacdea5cfb0d4e5f3bedd9a9f21696d70f961af822a4b3f66ea2"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90.json",
+      "sha256": "1bb4ce00dd99f6282190303a3fdb5168dff552263dc8f3daf7c4d4e9237f20bf"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-83c1763356e822adde0a2cae748d938a73fdc263849ccff6b27776dff213bd32.json",
+      "sha256": "383be77519f8da6ed635f9c716ee3cc93ee280ec732eb09bf0bf26e23145a753"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-84b34dd7608f7fb9b17bd588a6bf392bf7de504e2716f024a77d89f1b145a151.json",
+      "sha256": "380e3ed6c97f6bd09f9a5bc5e512cb4a710a4afe2ca34596410e66944cdbbf3a"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-861399f8c21c042b110517e76dc6b63a2b334276c8cf17412fc3c8908ca8dc17.json",
+      "sha256": "39303564fa03cdfaa7a9a9ec6a36b077d362bd5c01b269ec8190faf97aa29830"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-8764a597675778ddfd4e25f81b08a05dbcf089ac05662df7613fe67f150e3aa2.json",
+      "sha256": "94b0e3b5afbfd3df822a1f3aebb3483fdc78ade76119d18c22f8e73ab21d22aa"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-87cb0d734c723c083e51c825930ff42bce28596b52dee15567f6b28f19c195e3.json",
+      "sha256": "ee64a75c8db925cecdbaae99456b4a621fee515cc4978f49c99fe386cc30b5f0"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-87d9feb9238c6bd8e0024fc4733b06cff036f89f36d93b7df1c8a0549bbb7a5b.json",
+      "sha256": "3855b5285dd9d94d9d4e63800f79da702bedd5e5e7baf5cc6a6cc9fd69600ad1"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-88d1e3160df48926ad3310a8ec5699b502889565908f1be7e77cd21282c7a709.json",
+      "sha256": "cc992a8da1885a9eb96829b5716909b630b94532a201fa44f397f80ed723d57f"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-8982e37af80786707d8b8c33fb4cfe98c8a17d9d34caaa2b86895f0e84eafcca.json",
+      "sha256": "def419ae673eabde2b6a8d57a6b4cfb018f300417fe2b9cf97923b24e43b8008"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-898b1ae9821e98daf8964c8d6c7f61641f5f5aa78ad500020771c0939ee0dea1.json",
+      "sha256": "3ad6c886b3e58f2b5bd515ec829ec205d012a59584215c41e0b769b83bd44ddc"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-8ada45cd9f843acf64e4722ae262c622a2b3b3007c7310ef36ac1061a30f6adb.json",
+      "sha256": "f513c134e641745ebca9b3b9c0498e90d065092fee28e3eea2e2233cad1947c8"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-8b427f5bc501764575e52ba4f9d95673cf8f6d80a86d0d06599852e1a9a20a36.json",
+      "sha256": "214e5719137acbbe94e0f73bea15f4f9a63a2a9683e6b0c6ed171c0b1f1b1b95"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-8b43ce8accd61e9d370b5ca9e9c4f953279b5c239926c62315b40e24df51b726.json",
+      "sha256": "b11b1461c147fd6b42ec97e65e6a8040a723a8858a99ef07252b7d3774081652"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-8bb1b50b0e5c9399ae33bd35fab2769010fa6c14e8860c729a52295d84896b7a.json",
+      "sha256": "38c5e27e9395e7355469bf52c98e49a0e07eb7dd5de3c825e7416a62f38811dd"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-8ce0830173fdac609dfb4ea603fdc002c2f4af0dc9b1a005653f5da9cf534b18.json",
+      "sha256": "adcb53a6d5dc2141e4e99969c022197067218affe44637cb548df32117296828"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-90eb64f0279b0d9432accfa6023ff803bc4965212383697eee27a0f426d5f8d5.json",
+      "sha256": "336631a657155d973b325ec1d0cc392fa952ed565df510aaa4c0e94bf1292c4d"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-9117d922e667125508dde62b02c1f57ed22f5ad21eb536aa2e2d99e1c796e639.json",
+      "sha256": "b6249294464676262a0465dad988930081ae20dccbd880ea79ebba2c440b802e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-934887691e05d69d7c86ad3f2c360980fa30c15b035e351f3c9865e99da4debc.json",
+      "sha256": "555396c36c4e82c95d4902af3181954f0159c8379488a0101d7bd063f912f93e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-95bd3988beee069fa2848f648dab43cc6e0b2add2ad6bcb17360caf749802bcc.json",
+      "sha256": "0e59e7d31522fdec29449614224140656be31c94effa777953611506a75ab43e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-9d185ac6703c4b0453974c0d85e9eee43e6941009296bb1f5eb0b54e2329e9f3.json",
+      "sha256": "a51049e08bfdf6efdc7e9e67b042a758d501967c16c8f2d67fe6f8ed1668a020"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-9e0a97848ea543aef745c98e84fde696a9a3e0735538f6daefdd3cb1942effc1.json",
+      "sha256": "36109c357067331ffd8bf521e349b01dfbf61cc9ee2923870936dba350dd2f8a"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-9e0dfd2dd4173a530e238cb6adb37aa78c34c6bc7444e0e10c1ab5d8881f63ba.json",
+      "sha256": "95ab04777c277e0f498a06eb2ad5b1fa14e99b34a9780a4fda2c2d870a267547"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-9eacbcb81be660840c714a560a9d65ba07913db98dd4baf969f78dd499fdd60f.json",
+      "sha256": "07338f568a51284b17f2cbcdc5720aea6a8ccf0a75716a8531ad5f2f03b77345"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.json",
+      "sha256": "9f87672d3b24ed1d979cbbfa8dac5b836d2bb4e8fe64b14422bf0d0e496861d3"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-a65f5d0a945d267751344c95665945b90c030ea107faf5c85d518929886187da.json",
+      "sha256": "539f91cee7c09c41de2003a3db0c7a53fb666d0b6513499793d41785fe31c431"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-a825bd853ab71619a4923d7b4311221427848070ff44d990da39b0b274c1683f.json",
+      "sha256": "c94619090ea63c27367927520b32d898deb2c20cdee4015afb82d298fcfa340a"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-a9040321c3712d8fd0b09cf52b17445de04a23a10165049ae187cd39e5c86be5.json",
+      "sha256": "6fb055a2a0f366b95c60806ec06a4b0287dd6e6563b4dc20d19767196341a5b8"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-aaff376532ea30a0cd5330b9502ad4a4c8bf769c539c87ffe78819d188a18ebf.json",
+      "sha256": "5ec230a614ba9c5b45bcb834885ba337d8bf192a2a1351d554afc53b95e706a3"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-ae9baa7beea910273c2f384c2a6b721fb7bd02bda3436074a1072e4ee689f985.json",
+      "sha256": "8c25080e2a85f0712cf77284baed43c4d40201eb43d29ac9c168088145d8d9e0"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-afb11426e09da40a1ae4f8fa17ddcc6b6a52d14df04c29bc5bcd06eb8730624d.json",
+      "sha256": "d7a62677f2c1040e947726c1513921a18fc1f7bee3836e3b5d6e0af5377d7d9f"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-b21623012e6c453d944b0342c515b631cfcbf30704c2621b291526b69c10724d.json",
+      "sha256": "e58d17e9a8516d8849f8dbfdeea702cf8d80ba1ff2ddd3394fb4ac042b6ceb6f"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-b38f11f6096706e6de553dabe2a7ed142d59b6fa8c97e290c67496154745cdd5.json",
+      "sha256": "8584015e437e5289c6710cf7cc5fb55ec2cd1e1d51e78926e9812ced9fca5ce0"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-b3d734001a94efff3579978d953391aa7115f877657d25eb54037a43875d078a.json",
+      "sha256": "9e5aeb2c1b120af4df080e828e8fc2f7f083a2792678fb773b52c465462b025f"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-b4eb00df6e2a4d22518fcaa6a2b4646f249b3a3c9814509b22bd2091f1392ff1.json",
+      "sha256": "cda094187a9e492283d03db177de03de7d823482f85a3551e754530091f8eaf9"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-b68ad1a3367b825447089e1f8d6829b97f47a89eb78d2f4ebaef4672f5606186.json",
+      "sha256": "bdbe29067da8f90141cd3b7f65563c76118e9b99308b22c61ba232e671e94cb9"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-b7e650f3fce5c53249d1cdc608b54df156a97edd636cf9d23498d0cfe7aec63e.json",
+      "sha256": "c086b4464a2374a8385bc9ed82095a5daca18f405f21b56391d27b3e912cc0a4"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-b843fb7430efdf9732c834b6814beda44fccf3f0ddf7c9e030b39da17f6b159c.json",
+      "sha256": "c87026fd1a1b019a2fe7be4f09bf660f9e6c4cf111441e0efd1c80d2fa1d76f5"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-b9eb266294324f672cbe945fe8f2e32f85024f0d61a1a7d14382cdde0ac44769.json",
+      "sha256": "28f57af60100debe6ea4cc26afddd6c53c8730c5c9ea56f3e9aa00411de64efb"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-bc12b75fd81829814d843a03fa52aad0e53355b1f13665e309ff7fa33c66e5b5.json",
+      "sha256": "663cfa08085ff7e2b7ee3313812c0c08f0ec33ae07a93172bc83cc6e80280028"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-c09aae9d3c77b531f56351a9947bc7446511d6b025b3255312d3e3442a9a7583.json",
+      "sha256": "0b9a69a3a0ae13139bf69d5041fde9f99806a6f99ec75e8260b44dfc3698b678"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b.json",
+      "sha256": "accfb3a7f334b90d993ecb5a09584441441a83babeb10f365e7e99c88c1c6208"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383.json",
+      "sha256": "83321eb2d7a05fc3a7b598c4878e905a27d310487ede0b4b6fcdf4e984dde9f3"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-c30152c94a6d75e021adbc52b3a52470366a46edb917e17deae3259251af244c.json",
+      "sha256": "fa69edd29dff0584c3a843ee873dfd1c83ed58773def87e9c07c1382823a3ae6"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08.json",
+      "sha256": "f1b562d537b3c25b0e8ce822537ef79edd8e447683789ff7c2d79fdfdad71ecb"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4.json",
+      "sha256": "c7466b2700a0e6146a2c4094e7d18be1ebe58dc2be4fd9e8a9a744df38f2b23f"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-c816a0749cdc6bf062a5111c159723de51b2bfac66a1dac2655abd9e6b1583eb.json",
+      "sha256": "26c8c63c009a3f98dd0ff49df16b2fe1a23b85b786bc9eea8e8ae9ca7255c7c3"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-c962ee4d1d05ddc138b202b2540219ebc57893fcf97b364852094a9a94ce1365.json",
+      "sha256": "894bac24f834d99b123349f26f2d525074fc2894ada515b5a0adf0d305aa891a"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566.json",
+      "sha256": "ca7517067b8304b8eeed172247ce3ac300566f9f5864146d6e38b8a9b5f51dd8"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-cb5aedb296c5246d1f22e9099f925a65146f9f0d6b4eebba97fd27a6cdbbab2d.json",
+      "sha256": "41aefe767c67c919458646856946dd9e56afdea955a35111975ad8a4c4e72033"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-cc117d90b498b32b11a886f279b359da16a73c3b01efbb2f5cc004b20262334e.json",
+      "sha256": "a33b4804cf5220c4b37b0b296c5a412e39c616985333da630c0cc4c6d1ea2584"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-cddabf8adc6ccd6c3e68f5d71eac9fae3094116623cf23a46af0a5fd6b8ee813.json",
+      "sha256": "0783f3dcd21990b1153364440120de344aae44b806ec475c2706ca3566e5dd65"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-ce93600c49fbb3e14df32efe752264644f6a2f8e08a735ba981725799e5309ef.json",
+      "sha256": "a9e94f4c38beb1cd3956a7b3f9d88b388d9e38a432c9b071cdff8ab2b5c8fdbf"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-ceca995f2a9ba147d4ada210d9527769091630651e565e40e841acf435c9cea2.json",
+      "sha256": "4abfb6e33559d2cb6ccbc5a65ed8ebe60708715d055410a1829fdefdc8fe6b0b"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.json",
+      "sha256": "170c8ec76f93727b10fd59144fd4d7c13b6c3b0c6f979c6bdda072c50b8b5049"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-d1fc1bc0d155df60b2e7705b6b2ae02a05c96f948e1cec6e2fb86360b09f346b.json",
+      "sha256": "993e5487fb6b1a0c89f2cf1c14a68c35f8b4cdf6f4830ac8ad4cf4c8c4a977ef"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-d5c22aa3118d240e877ad41c5d9fa232f9c77d757d4aac0c2f943afc0a95e0ef.json",
+      "sha256": "a8536774fa6689e75e0ca7aa532cf21a937c913e3868f09059413eedb68ffd51"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-db11fec9946737df39ca3898d9cd8c10ec6f6c3a884a6802b0ad0b81b4e8f23a.json",
+      "sha256": "eecc603ce69f491a44e14e102c595e29168c2bef3157a617910b449e7d0de56a"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-dbe1fff0fb1314b6af94f161511406275cf01c5a32441fbf24528a57a051d599.json",
+      "sha256": "7911ba9cffa3cd1d29f502a74a6b7ab2f90e5ebefc9ffdbb94767dbb62a5171c"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-dc91f8200e4b2a1f9261035d4c18c33c246911a6c0f7b543d75347e61b249cff.json",
+      "sha256": "859306f2b47a5cca0298d3b665ceea968b400910c15631421f5816cf2054c40b"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-df20e0180764bf5bd76f74d47bc9e8c0069a666401629c390003a1d5eba99c92.json",
+      "sha256": "c24c04d9fdcb9c05c0eb3288537c6efd6129720e0435f8266c269fe1fe5870de"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-e20fa2b8e0a2565f24a792b94b4bf4b6c2b9d36f781d8a9516e218a036e6677a.json",
+      "sha256": "8f764721e04cb96cf3613408a0fb80806082709715a6c6296b2e73b10bdb07d6"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-e271993808fec50ab29350b39539cdec611a9103f827e0aa26d61da70e2d33f8.json",
+      "sha256": "96e502a9120d0be456e68b2aabe439d713e143d5b98e4bcfc9c9def390dc4ff4"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-ea084a2373ebc1f0902c09266e7bf25a05ab3814c1805bb017ffa7308f90c061.json",
+      "sha256": "4ed32bfcc94b997ea59a53c6a99faec903f14bd4486f9576fe4c1eb689838c21"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-ecc269ef87fd38a1d98e30bfac9ba964a9dbd9315c3770fed98d4d7cb5882055.json",
+      "sha256": "4ace28e135fa8553758f751f8939fecde5d36d71953d3a35fbdbefb10c41a245"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-f025ccfb7dfb6bdfedc75ca0f67acc69e6fb4998143d834f7c2f38a29989680f.json",
+      "sha256": "55e26df2ab64ab383f692b0314cb013b9cb5adc37dd9940ff22ff63c069ef022"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2.json",
+      "sha256": "6be6251158a204985c354a9f5dfa929335dd5d263a2bdb8f5035b7afb4e058f8"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-f428305bbf2e70fbd807af0f3c7ac1b7acfb95311640f451e9d2e48db6d7e96b.json",
+      "sha256": "bf34822ffeb7caa60f36189992a52e9dbfab3a1b012d86021aa2563de32ccc7c"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-f7db81051789b729fea528a63ec4c938fdcb93d9d61d97dc8cc2e9df6d47f2a1.json",
+      "sha256": "4f34054321e30f16f04e496ecb4649ba43e89d830665f64292b43f9735ca8c99"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-f9c4c77baa3828004ee54b8a4f2db2e88ed44a6237a493965bf551fac0fcb62d.json",
+      "sha256": "a0f375829b342cc408a6f076dd6c51e056fd4f87202fdb8a9d39fd5f8d1d7d5d"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-fd80a26fbb3f644af1fa994134446702932968519797227e07a1368dea80f0bc.json",
+      "sha256": "4f64bf80acc508dec025e700b2f8a7013edce4341d5d02e7fc9e5b688b306e0e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-fdd55e2b2da854b0fbdc1e607df7c2ba1e1ebf91ecb77c515511ebeef972bc8f.json",
+      "sha256": "a957e3bc40abc992cb21d4c880a13a0ac9be3d2611d3ea7d7cc5875537011905"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-ff8f68cb076caf8cefe7a6430d4ac086ce6af2ca8ce2c4e5a2004d4552ef52a2.json",
+      "sha256": "2fd2de20e39853dd0545de558a7527f1048df5080de7ebfddcf24f46faeeb855"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/rust-ff92bed461f50338dd703a9ba9aee496a425957873df1d91192776e4bdf5dda7.json",
+      "sha256": "753b86d0d031889a1af1d774db10d21e414363ba2165589b22d77062a356f40c"
+    }
+  ],
+  "collectorDefinitionsSha256": "26dbdc243270607b23f21d9b83148602a8be12960ef7f723ddbdda12b7effe94",
+  "retainedLogs": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-rust-collector-verified-20261003.log",
+      "sha256": "cb328dcbf2072f141ee05bd2df3631403c428c0c4f939b7872c12c5c38522164"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-rust-collector-verified-20261003.run.json",
+      "sha256": "03a359f6e5c00f6dd1c02e1c53ab828f9afe0eb0489ff98315413d2489e04b56"
+    }
+  ],
+  "retainedOutputs": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-rust-collector-release-metadata-20261003.json",
+      "sha256": "1cf7405b94acede6e0af61d3885351b0641ab022e2fa16df601dbf95e799ee2c"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-rust-collector-release-compiled-20261003.flat",
+      "sha256": "8d6b6f559bee0aaf9a5701547ba2e7ae91f6f276a8dae38e66ad948921928adf"
+    }
+  ],
+  "compiledRawJsonOffset": 132,
+  "variantTransitions": {
+    "releaseModules": [
+      221,
+      222,
+      221
+    ],
+    "releaseRecords": [
+      470,
+      471,
+      470
+    ],
+    "debugModules": [
+      227,
+      228,
+      227
+    ],
+    "debugRecords": [
+      476,
+      477,
+      476
+    ]
+  },
+  "assertions": [
+    {
+      "id": "actual-collector-byte-preservation",
+      "passed": true,
+      "evidence": "Every source receipt reference resolves to exact decodedUTF8 text digest in actual release JSON;249 Rust IDs alongside221 Android IDs, allunique."
+    },
+    {
+      "id": "maintained-metadata-controls",
+      "passed": true,
+      "evidence": "36 rejecting metadata/source controls pervariant/perphase with runtime graph add/remove transitions; all162 exactRust texts preserved."
+    },
+    {
+      "id": "actual-stale-lock-producer",
+      "passed": true,
+      "evidence": "Actual prepareLibraryDefinitionsRelease in isolated source copy rejected alteredCargo.lock with intended production guard message. Original shared Cargo.lock/config untouched."
+    },
+    {
+      "id": "compiled-resource-byte-preservation",
+      "passed": true,
+      "evidence": "RawreleaseJSON occurs exactlyonce in actualcompiledflat resource at offset132."
+    },
+    {
+      "id": "native-guard-compilation",
+      "passed": true,
+      "evidence": "compileDebugAndroidTestKotlin exited0 with new unpaired recipient UniFFI/MPL full-text test. No native test ran."
+    }
+  ],
+  "limitations": [
+    "Collector definitions include host/development/platform lockfile packages; not Android-linked population.",
+    "Source receipt pins selected files/supplements, not complete source-header attribution or legal clearance.",
+    "Native APK execution, final signedcandidate and actual recipient source retrieval remain open."
+  ],
+  "verificationHistory": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-rust-collector-final-20261003.log",
+      "outcome": "Initial Gradle script compilation rejected java.security reference because java extension shadows package name; corrected to imported MessageDigest. Final retained verification passed."
+    }
+  ]
+}

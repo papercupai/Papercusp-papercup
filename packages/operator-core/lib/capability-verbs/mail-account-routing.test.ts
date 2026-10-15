@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { replyToCanonicalMail } from './mail';
+import { mailProviderFixture } from './__fixtures__/mail-provider';
 
 const WORKSPACE = 'workspace';
 const USER = '00000000-0000-4000-8000-000000000001';
@@ -27,7 +28,7 @@ function source(id: string, account: string) {
 function document(sourceId: string, account: string, sender: string) {
   return {
     id: sourceId,
-    source: 'gmail',
+    source: 'mail',
     sourceId,
     providerAccountId: account,
     kind: 'message',
@@ -56,47 +57,56 @@ function fakeSql(options: { singleAccount?: boolean } = {}) {
   const sources = options.singleAccount ? allSources.slice(0, 1) : allSources;
   const query = async (parts: TemplateStringsArray, ...values: unknown[]) => {
     const text = parts.join(' ');
-    if (text.includes('FROM harness_shared.personal_documents')) {
-      const requestedSourceId = typeof values[4] === 'string' ? values[4] : null;
+    if (text.includes('FROM harness_shared.documents')) {
+      // Find the requested source id by the SQL text that binds it, never by a
+      // fixed slot: a filter added earlier in the WHERE clause (the datatype_id
+      // filter did exactly this) shifts every later parameter, and a stale index
+      // silently reads a different one and returns both accounts' documents.
+      const slot = parts.findIndex((part) => /d\.source_id\s*=\s*$/.test(part));
+      if (slot < 0) throw new Error(`fixture_expected_source_id_filter:${text}`);
+      const requested = values[slot];
+      const requestedSourceId = typeof requested === 'string' ? requested : null;
       return requestedSourceId
         ? documents.filter((row) => row.sourceId === requestedSourceId)
         : documents;
     }
-    if (text.includes('FROM harness_shared.trigger_sources')) return sources;
+    if (text.includes('FROM harness_shared.data_sources')) return sources;
     throw new Error(`unexpected_query:${text}`);
   };
   return query as unknown as postgres.Sql;
 }
 
+/**
+ * A provider that answers like Gmail for a reply draft. The reply path must
+ * always carry the thread; a missing one is a real defect, so the fixture
+ * refuses rather than coercing, which would stop testing threading at all.
+ */
+function replyDraftProvider(draftId: string) {
+  return mailProviderFixture(({ args }) => {
+    if (!args.threadId) throw new Error('fixture_expected_reply_thread_id');
+    return { draftId, messageId: `out-${draftId}`, threadId: String(args.threadId) };
+  });
+}
+
 describe('mail reply account routing', () => {
-  it('uses the credential owned by the selected canonical source', async () => {
-    const tokenSources: string[] = [];
-    const draftTokens: string[] = [];
+  it('invokes the provider on the source that holds the selected canonical message', async () => {
+    const { deps, calls } = await replyDraftProvider('draft-2');
     const result = await replyToCanonicalMail(fakeSql(), {
       workspaceId: WORKSPACE,
       userId: USER,
+      agentOwnerId: null,
       messageId: 'shared-message',
       sourceId: SECOND,
       text: 'Account-safe draft',
       mode: 'draft',
-    }, {
-      resolveAccessToken: async (selected) => {
-        tokenSources.push(selected.id);
-        return `token:${selected.id}`;
-      },
-      createDraft: async (token, input) => {
-        draftTokens.push(token);
-        // The draft seam now also accepts create-shaped input, where threadId is
-        // absent. This is the REPLY path, so a missing thread is a real defect —
-        // assert it rather than coercing, which would quietly stop testing the
-        // threading contract this fixture exists for.
-        if (!input.threadId) throw new Error('fixture_expected_reply_thread_id');
-        return { draftId: 'draft-2', messageId: 'out-2', threadId: input.threadId };
-      },
-    });
+    }, deps);
 
-    expect(tokenSources).toEqual([SECOND]);
-    expect(draftTokens).toEqual([`token:${SECOND}`]);
+    // The host binds the call, and so the credential, to exactly that source.
+    expect(calls.map((call) => call.source)).toEqual([SECOND]);
+    expect(calls[0]).toMatchObject({
+      capability: 'mail.draft',
+      args: { operation: 'create', threadId: 'shared-thread', inReplyTo: 'shared-message' },
+    });
     expect(result).toMatchObject({ to: 'Second sender <second-sender@example.com>', draftId: 'draft-2' });
   });
 
@@ -104,34 +114,25 @@ describe('mail reply account routing', () => {
     await expect(replyToCanonicalMail(fakeSql(), {
       workspaceId: WORKSPACE,
       userId: USER,
+      agentOwnerId: null,
       messageId: 'shared-message',
       text: 'Must not guess',
       mode: 'draft',
-    })).rejects.toThrow('canonical_document_ambiguous:gmail:shared-message');
+    })).rejects.toThrow('canonical_document_ambiguous:mail:shared-message');
   });
 
   it('keeps provider-only legacy calls compatible when exactly one account owns the message', async () => {
-    const selectedSources: string[] = [];
+    const { deps, calls } = await replyDraftProvider('draft-legacy');
     const result = await replyToCanonicalMail(fakeSql({ singleAccount: true }), {
       workspaceId: WORKSPACE,
       userId: USER,
+      agentOwnerId: null,
       messageId: 'shared-message',
       text: 'Legacy single-account draft',
       mode: 'draft',
-    }, {
-      resolveAccessToken: async (selected) => {
-        selectedSources.push(selected.id);
-        return `token:${selected.id}`;
-      },
-      createDraft: async (_token, input) => {
-        // Same reply-path assertion as above: create-shaped input is legal at
-        // the seam now, but never on this path.
-        if (!input.threadId) throw new Error('fixture_expected_reply_thread_id');
-        return { draftId: 'draft-legacy', messageId: 'out-legacy', threadId: input.threadId };
-      },
-    });
+    }, deps);
 
-    expect(selectedSources).toEqual([FIRST]);
+    expect(calls.map((call) => call.source)).toEqual([FIRST]);
     expect(result).toMatchObject({
       to: 'First sender <first-sender@example.com>',
       draftId: 'draft-legacy',

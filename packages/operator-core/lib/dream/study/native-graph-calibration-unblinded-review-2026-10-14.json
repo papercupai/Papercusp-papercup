@@ -1,0 +1,49 @@
+{
+  "version": "dream-unblinded-novelty-review-v1",
+  "sourceWorkItem": "WI-10007888",
+  "conversationId": "conv-mv7kn9c9-0000-9f41f8229b804f3a9452a501f93fe4ac",
+  "blindHash": "57b4ed2c5b2b9f48d3cc2c88d55cf7b58e396b2902a65aee859cfe00dc2aa985",
+  "blindPostId": 1179892,
+  "postIds": [
+    1179964
+  ],
+  "reviewer": "su-9896aff8-eaff-4e10-9562-1687fe680ccb",
+  "reviewerKind": "independent-ai-domain-reviewer",
+  "reviewerMinutesApproximate": 20,
+  "posts": [
+    {
+      "id": 1179964,
+      "author_id": "su-9896aff8-eaff-4e10-9562-1687fe680ccb",
+      "body": "UNBLINDED PASS (separate from frozen post 1179892; frozen labels UNCHANGED: both REJECT as frozen). Read after freezing: native-graph-calibration-key-v2.json `selected[]` for the two exact caseIds (originalReview.priorMatches, priorRefMapping, controls, failures, disposition) + current packer-facade.ts / spec-clauses-store.ts / dream/*.ts line reads. No builds, trials, reruns or proposal repair. Key meta: population 4, eligibleCandidates 2, excluded b14709c1 + d2f3a734 ('No retained candidate and selected source packets'), independentLabels null, outcome 'pending independent human/domain review'. Both cases: arm structured-pair, graphTreatment CONTROL, original verdict unverified / reason review-unavailable (failures.review stage=grounding), disposition 'calibration-only; not held-out'. Treatment efficacy: none inferred (control arm; the graph attempts are excluded runs).\n\nTRUNCATION LIMITS: every `dream:*` prior is capture.parseStatus=truncated at storedChars=12000; code-source priors acceptance-bar-amendment-*.test.ts and acceptance-author-identity.integration.test.ts likewise 12000-truncated; unit priors (code:*:implementation/test) parseable. Where a prior's hypothesis/behavior sits outside the stored prefix I say UNKNOWN, not absent.\n\n== CASE 208b87ec702b58b3491f (cost-admission + secret-scanned-pack)\nPrior refs (priorRefMapping): prior:1/2 = code:mechanism:dream.cost-admission:implementation/test (unit A itself); prior:3 = code:capability:code.secret-scanned-pack:test (unit B itself); prior:4 = dream idea 969eb602 (status 'malformed': `candidate.observed: Invalid input: expected array`; rawTextHead quote: \"When a harness in a confined hive requests a source pack, the packer accepts only the set of harnesses narrowed by hive-scope fi…\"; units: memory.hive-scope + code.secret-scanned-pack); prior:5 = code:mechanism:memory.hive-scope:implementation; prior:6 = acceptance-bar-amendment-requirements-drift.test.ts (truncated; unrelated); prior:7 = code:capability:plans.spec-revisions:implementation (unrelated); prior:8 = dream rejected-attempt b14709c1 (an EXCLUDED run; stored prefix = capabilityRun call log only; units mentioned: dream.cost-admission; its proposal text lies beyond the 12000 prefix → UNKNOWN whether it proposed this pairing).\nDisposition: NOT an exact duplicate (prior:4 pairs hive-scope with the pack, not cost-admission; no readable prior pairs A with B). NOT a refinement of a readable prior. SCOPED NOVELTY: UNKNOWN — prior:8 is an unresolved truncated attempt over unit A; per your rule this stays unknown, not novel. Family (admission gate contingent on provenance attestation) unchanged.\nSOURCE CORRECTION (my own read agrees with 1179930): packer-facade.ts has PackProvenance.securityScan (L510), PackArtifact.bundle.sha256 (L523), PackerResult {answer, artifact} (L564-567), securityScan set at L1028 = `engine === 'repomix' ? 'secretlint+deny-set' : 'deny-set-only'`. My frozen \"no scan verdict, hash or return shape in evidence\" described an INCOMPLETE EXCERPT, not an absent artifact: an artifact hash and a provenance label exist. Unchanged: (a) securityScan is an engine-derived POLICY LABEL, not a scanner RESULT — no pass/fail verdict is produced; (b) 'deny-set-only' confirms the code2prompt/diff path has no secret scan; (c) no signature; (d) no admission coupling — dream-governor.ts has zero packer/securityScan/sha256 references, whereas dream/capability-packets.ts L9/L90 ALREADY calls packerFacade('pack', …) for capability packets. Net: the B-partial basis narrows (hash+label exist) but the composition basis (admission record pinning a scan verdict) is unchanged; the candidate's own missingEvidence[0-2] remain true against current source, and Dream already consuming scanned packs makes governor-side pinning the only new piece.\nEligibility: NOT eligible for an executed-benefit experiment. Recommendation: DROP as an experiment candidate; RETAIN only as a narrowed note (\"record pack sha256 + securityScan label on the Dream admission record\"), caveat: a label is not a verdict.\n\n== CASE f28b02b747ad4b59d548 (source-freshness + spec-revisions)\nPrior refs: prior:1/2 = code:capability:plans.spec-revisions:implementation/test (unit B itself); prior:3 = code:mechanism:memory.hive-scope:test (unrelated); prior:4 = dream rejected-attempt 45baf69a (gpt-5.6-luna:medium; READABLE: insight.text \"Given a hive-scoped candidate set and an expected spec revision, produce a source pack whose manifest records the accepted revision and pack provenance; refuse before packing when the revision is stale, the selection is empty, or the packer identity/security conditions fail.\"; requiresA = the packer; requiresB = \"the authoritative behavioral-contract version gate and immutable history, including stale-writer conflict detection and exact revision addressing\"; verdict unverified, status rejected); prior:5 = acceptance-bar-amendment-orphan-clause.test.ts (truncated; readable head mocks setSpecClause — a live caller of B); prior:6 = acceptance-author-identity.integration.test.ts (truncated; unrelated); prior:7 = activation-receipt.test.ts (parseable; unrelated family); prior:8 = code:capability:dream.source-freshness:test (unit A itself).\nDisposition: NOT an exact duplicate. PARTIAL REFINEMENT / sibling of prior:4 — 45baf69a already proposed gating an artifact on spec-revisions' expected-revision CAS and recording the accepted revision (packer as the other half); this case swaps in source-freshness and adds in-transaction revalidation. Expected-revision-as-gate is therefore NOT new in the Dream corpus; freshness-inside-CAS is the only non-anticipated delta. Also anticipated INSIDE the cited source: spec-clauses-store.ts L316-339 rides an immutable provenance pin (priorBarPin) forward per revision, and prior:5 shows a live caller. SCOPED NOVELTY: narrow — only \"freshness re-check within the row lock\"; beyond the corpus: UNKNOWN.\nSOURCE CORRECTION: none. Re-confirmed: expectedRevision is `number` (L86, L147, L476-477 integer `!==` CAS), so embedding source hashes in it is unrepresentable without a contract change; no setSpecClause caller under lib/dream, so the composed object still has no evidence.\nEligibility: NOT eligible. Recommendation: DROP as a composition experiment; if retained, NARROW to a B-only question (\"should setSpecClause re-validate a declared evidence fingerprint inside the lock\") cross-linked to 45baf69a so the family is not re-minted.\n\nOVERALL: zero eligible downstream experiments; study stays inconclusive. Graph-attempt failures and later successful checks are not treatment efficacy. Original unverified/review-unavailable and my frozen rejects agree in direction; mine are stricter (composition contradicted / unevidenced, not merely unverified). Reviewer minutes this pass ≈ 20. Labels remain frozen at 1179892. consult:close { outcome:'answered' } when settled.",
+      "created_ts": "2026-10-14T04:30:20.663Z"
+    }
+  ],
+  "cases": [
+    {
+      "caseId": "208b87ec702b58b3491f",
+      "novelty": "unknown",
+      "qualified": false,
+      "disposition": "drop-as-experiment; retain narrowed admission provenance note",
+      "reason": "One prior graph attempt is truncated; no exact duplicate/refinement demonstrated but novelty remains unknown. Missing scan-result contract, no measured benefit."
+    },
+    {
+      "caseId": "f28b02b747ad4b59d548",
+      "novelty": "refinement",
+      "qualified": false,
+      "disposition": "drop-as-composition-experiment; narrow to evidence revalidation inside existing revision lock",
+      "reason": "Sibling/refinement of recorded prior45baf69a. Only in-lock freshness check is a narrow delta; expectedRevision numeric contract contradicts hash encoding."
+    }
+  ],
+  "closure": {
+    "downstreamEligibleCandidates": 0,
+    "downstreamTrialsExecuted": 0,
+    "downstreamDisposition": "not-applicable-no-qualified-candidates",
+    "verdict": "inconclusive"
+  },
+  "limitations": [
+    "Independent AI/domain review, not human or held-out confirmation.",
+    "Frozen blind labels remain unchanged.",
+    "Novelty unknown keeps duplicate/refinement rates null.",
+    "No treatment efficacy inferred from later source checks or excluded graph attempts."
+  ]
+}

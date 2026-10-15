@@ -15,7 +15,13 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { getWorkItem, setWorkItemStateWithAliasInfo, type TerminalCompletionConflict } from '../../work-items';
+import {
+  commentWorkItem,
+  getWorkItem,
+  setWorkItemStateWithAliasInfo,
+  type TerminalCompletionConflict,
+} from '../../work-items';
+import { refuseNonAgentWorkAtDoor } from '../../work-nature/agent-work-door-gate';
 import { resolvePlanItemStamp } from '../../scheduler/plan-item-lane-guard';
 // From the LEAF module, not '../../work-items': unit tests here mock that module
 // wholesale, which would make the guard `undefined` at exactly this call site.
@@ -29,16 +35,20 @@ import {
   normalizePersistedAssumptionDeclaration,
   resolveDeclaredAssumptions,
   ASSUMPTIONS_REQUIRED_MESSAGE,
+  ASSUMPTIONS_SHAPE_HINT,
   TERMINAL_CLOSE_RECOVERY_HINT,
+  type AssumptionDeclaration,
 } from './_assumptions';
 import {
   completionRefAliasFields,
   rejectCompletionRefAliasConflict,
-  rejectNonTerminalCompletionAlias,
   resolveCompletionRefAlias,
+  suppliedAlias,
+  type CompletionRefAliasBearing,
 } from './_completion-ref-alias';
 import { nonAssumptionKindAdvisory } from '../../agent-facts/assumptions';
 import {
+  FEATURE_STATE_ALIASES,
   TERMINAL_INPUT_STATES,
   NON_TERMINAL_INPUT_STATES,
   isTerminalStateInput,
@@ -86,7 +96,7 @@ function addRefusalSummary<T extends { ok: boolean; results: Array<{ ok: boolean
 const decisionSpec = z.object({
   riskTier: z.enum(['trivial', 'low', 'moderate', 'high', 'critical']).optional(),
   authority: z.enum(['system', 'owner']).optional(),
-});
+}).meta({ id: 'work-items-state-decision-v1' });
 
 /**
  * P-005 / D-006: the terminal-state evidence requirement is STRUCTURAL, not described.
@@ -114,21 +124,153 @@ const asEnumValues = (v: readonly string[]) => v as unknown as [string, ...strin
  *  `DONE` keeps working — this gate adds structure, it does not narrow acceptance). */
 const foldStateCase = (v: unknown) => (typeof v === 'string' ? v.trim().toLowerCase() : v);
 
+/**
+ * The accepted spellings that resolve to `blocked`. DERIVED from the same alias map the
+ * runtime writer folds through, so a future `blocked` alias lands in this arm on its own.
+ */
+const foldsToBlocked = (s: string): boolean => {
+  const lower = s.trim().toLowerCase();
+  return (FEATURE_STATE_ALIASES[lower] ?? lower) === 'blocked';
+};
+const BLOCKED_INPUT_STATES = NON_TERMINAL_INPUT_STATES.filter(foldsToBlocked);
+const PROGRESS_INPUT_STATES = NON_TERMINAL_INPUT_STATES.filter((s) => !foldsToBlocked(s));
+const BLOCKED_STATE_SCHEMA_GUIDANCE =
+  'Use only after an active typed blocker exists: call work_items:set_blocker for an external blocker or work_items:link { rel:"blocks" } for a work-item dependency. Plan-linked feature items use plans:set-status.';
+const blockedStateSchema = () =>
+  z
+    .preprocess(foldStateCase, z.enum(asEnumValues(BLOCKED_INPUT_STATES)))
+    .describe(BLOCKED_STATE_SCHEMA_GUIDANCE);
+
+/**
+ * EI-24917736184136483: a `reason` / `note` on an open / wip / needs-human write is
+ * RECORDED as a comment on the item, not refused.
+ *
+ * Measured 2026-10-05 over harness_shared.tool_invocations (7d): ~110 of this verb's
+ * schema rejections were exactly this shape (75 of them `state:"wip"` with a `reason`,
+ * from 39 distinct agents). They were refused because the state row has no reason
+ * column, so accepting the value there would have discarded it. The value was never the
+ * problem, though: the caller is telling the item's readers why it moved. A work-item
+ * comment IS the durable home for that, so the write now lands it there and reports
+ * where it went (`transitionNoteRecorded`). Nothing is dropped and nothing is refused.
+ *
+ * `blocked` stays refused: a blocked item's reason must be a TYPED blocker
+ * (work_items:set_blocker) so the scheduler can act on it, and a free-text note would
+ * read as if it satisfied that requirement when it does not.
+ */
+const transitionNoteFields = {
+  reason: z
+    .string()
+    .min(1)
+    .max(2000)
+    .optional()
+    .describe('why the item moved — recorded as a comment on the item (a non-terminal state has no reason field of its own)'),
+  note: z.string().min(1).max(2000).optional().describe('same as `reason` — pass only one'),
+};
+
+function nonTerminalAliasSchemaError(input: unknown): string | undefined {
+  const root = typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : undefined;
+  const candidates = Array.isArray(root?.items) ? root.items : [input];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'object' || candidate === null) continue;
+    const row = candidate as Record<string, unknown>;
+    const alias = suppliedAlias(row as CompletionRefAliasBearing);
+    // Only `blocked` still refuses the field (see transitionNoteFields above); every other
+    // non-terminal state accepts it, so a failure there has some other cause and must not
+    // be misreported as this one.
+    if (!alias || typeof row.state !== 'string' || !foldsToBlocked(row.state)) continue;
+    return (
+      `\`${alias.key}\` is not accepted on a "${row.state}" write — a blocked item's reason must be a TYPED ` +
+      'blocker so the scheduler can act on it. Record it with work_items:set_blocker (external event, gate, ' +
+      'runtime or human capability), or work_items:link { rel:"blocks" } for a dependency on another work-item.'
+    );
+  }
+  return undefined;
+}
+
+function nonTerminalCompletionFieldError(input: unknown): string | undefined {
+  const root = typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : undefined;
+  const candidates = Array.isArray(root?.items) ? root.items : [input];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'object' || candidate === null) continue;
+    const row = candidate as Record<string, unknown>;
+    if (typeof row.state !== 'string' || isTerminalStateInput(row.state) || foldsToBlocked(row.state)) continue;
+
+    const terminalOnlyFields = ['completionRef', 'assumptions'].filter((key) => key in row);
+    if (terminalOnlyFields.length === 0) continue;
+    const fields = terminalOnlyFields.map((key) => `\`${key}\``).join(' and ');
+    const verb = terminalOnlyFields.length === 1 ? 'is a terminal-only field' : 'are terminal-only fields';
+    return (
+      `${fields} ${verb} and cannot be sent with non-terminal state \"${row.state}\". ` +
+      'For a non-terminal transition note, use `reason` or `note`; terminal writes require `completionRef` and `assumptions`.'
+    );
+  }
+  return undefined;
+}
+
+const aliasAwareUnionError = (issue: { input?: unknown; errors?: unknown }): string | undefined => {
+  const aliasError = nonTerminalAliasSchemaError(issue.input);
+  if (aliasError) return aliasError;
+  const terminalFieldError = nonTerminalCompletionFieldError(issue.input);
+  if (terminalFieldError) return terminalFieldError;
+
+  const root = typeof issue.input === 'object' && issue.input !== null
+    ? (issue.input as Record<string, unknown>)
+    : undefined;
+  const candidates = Array.isArray(root?.items) ? root.items : [root];
+  // The terminal schemas carry the required-with-explicit-none rule in a
+  // superRefine so it can share the same explanatory message across inline,
+  // ids[], and items[] forms. A union can instead surface a sibling branch's
+  // enum error (for example, "dropped" is invalid for the blocked branch),
+  // which makes a missing `assumptions` field look like an invalid state or
+  // unknown `id`/`state` keys at the transport boundary. Detect this one
+  // cross-branch omission before Zod collapses the branch diagnostics.
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'object' || candidate === null) continue;
+    const row = candidate as Record<string, unknown>;
+    if (
+      typeof row.state === 'string' &&
+      isTerminalStateInput(row.state) &&
+      (!('assumptions' in row) || row.assumptions === undefined)
+    ) {
+      return ASSUMPTIONS_REQUIRED_MESSAGE;
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'object' || candidate === null || !('assumptions' in candidate)) continue;
+    const assumptions = (candidate as Record<string, unknown>).assumptions;
+    if (assumptions !== undefined && !assumptionsArg.safeParse(normalizePersistedAssumptionDeclaration(assumptions)).success) {
+      return `assumptions is malformed. ${ASSUMPTIONS_SHAPE_HINT}`;
+    }
+  }
+
+  // A union normally collapses branch-specific validation errors to the unhelpful
+  // "Invalid input". Preserve the first actionable branch diagnostic (for example the
+  // assumption declaration shape) while the schema advertises distinct state variants.
+  if (!Array.isArray(issue.errors)) return undefined;
+  const messages = issue.errors.flatMap((branch) => {
+    if (!Array.isArray(branch)) return [];
+    return branch.flatMap((entry) =>
+      typeof entry === 'object' && entry !== null && 'message' in entry &&
+      typeof (entry as { message?: unknown }).message === 'string'
+        ? [(entry as { message: string }).message]
+        : [],
+    );
+  });
+  return messages.find((message) => !message.startsWith('Invalid input')) ?? messages[0];
+};
+
 const itemBase = z.object({
   id: z.string().min(1),
   harness: z.string().max(80).optional().describe('per-item harness (else the batch `harness` default)'),
   decision: decisionSpec.optional(),
-  // EI-19961538712475843: declared on BOTH union arms, not just the terminal one — the
-  // schema is strict, so an undeclared key is rejected at parse time and would preempt
-  // the targeted non-terminal message with a generic "Unrecognized key".
-  ...completionRefAliasFields,
   force: z
     .boolean()
     .optional()
     .describe(
       'EI-7422: required to REOPEN an item that already carries a terminal completion (terminalOwner + terminalCompletionRef) — without it the write is REJECTED rather than silently discarding a peer\'s completion. Only needed when the target is already terminal AND you are deliberately reopening it.',
     ),
-});
+}).strict();
 
 const terminalItem = itemBase.extend({
   state: z.preprocess(foldStateCase, z.enum(asEnumValues(TERMINAL_INPUT_STATES))),
@@ -149,6 +291,7 @@ const terminalItem = itemBase.extend({
   // schema shape the model sees — evidence for the claim, and the assumptions the
   // claim rests on. Non-terminal writes carry neither field at all.
   assumptions: z.preprocess(normalizePersistedAssumptionDeclaration, assumptionsArg),
+  ...completionRefAliasFields,
 }).superRefine((it, ctx) => {
   rejectCompletionRefAliasConflict(it, ctx);
   if (resolveCompletionRefAlias(it) === undefined) {
@@ -161,28 +304,209 @@ const terminalItem = itemBase.extend({
   }
 });
 
-const nonTerminalItem = itemBase
-  .extend({
-    state: z.preprocess(foldStateCase, z.enum(asEnumValues(NON_TERMINAL_INPUT_STATES))),
-  })
-  .superRefine((it, ctx) => {
-    rejectNonTerminalCompletionAlias(it, it.state, ctx);
-  });
+const progressItem = itemBase.extend({
+  state: z.preprocess(foldStateCase, z.enum(asEnumValues(PROGRESS_INPUT_STATES))),
+  ...transitionNoteFields,
+}).superRefine((it, ctx) => rejectCompletionRefAliasConflict(it, ctx));
 
-const itemSpec = z.union([terminalItem, nonTerminalItem]);
+const blockedItem = itemBase.extend({
+  state: blockedStateSchema(),
+});
+
+const itemSpec = z.union([terminalItem, progressItem, blockedItem], { error: aliasAwareUnionError });
+
+function addTerminalRequirements(
+  it: CompletionRefAliasBearing & { assumptions?: unknown },
+  ctx: z.RefinementCtx,
+): void {
+  rejectCompletionRefAliasConflict(it, ctx);
+  if (resolveCompletionRefAlias(it) === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['completionRef'],
+      message:
+        'a terminal state requires completion evidence — pass `completionRef` (or its `reason` / `note` alias), or (preferred) use work_items:complete for a structured completion record',
+    });
+  }
+  if (!hasAssumptionDeclaration(it.assumptions)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['assumptions'],
+      message: ASSUMPTIONS_REQUIRED_MESSAGE,
+    });
+  }
+}
+
+const terminalInlineShape = {
+  state: z.preprocess(foldStateCase, z.enum(asEnumValues(TERMINAL_INPUT_STATES))),
+  harness: z.string().max(80).optional().describe('default harness for the inline id / ids'),
+  decision: decisionSpec.optional().describe('P-114 risk/authority for the inline id / every id in `ids`'),
+  completionRef: z
+    .string()
+    .min(1)
+    .max(2000)
+    .optional()
+    .describe('completion evidence applied to the inline id / every id in `ids` (see itemSpec.completionRef)'),
+  ...completionRefAliasFields,
+  assumptions: z.preprocess(normalizePersistedAssumptionDeclaration, assumptionsArg),
+  force: z
+    .boolean()
+    .optional()
+    .describe('required to reopen an already-terminally-completed item; only needed for a deliberate reopen'),
+};
+
+const terminalSingle = z
+  .object({ id: z.string().min(1), ...terminalInlineShape })
+  .strict()
+  .superRefine((it, ctx) => addTerminalRequirements(it, ctx));
+const terminalMany = z
+  .object({ ids: z.array(z.string().min(1)).min(1).max(200), ...terminalInlineShape })
+  .strict()
+  .superRefine((it, ctx) => addTerminalRequirements(it, ctx));
+
+const nonTerminalInlineCommon = {
+  harness: z.string().max(80).optional().describe('default harness for the inline id / ids'),
+  decision: decisionSpec.optional().describe('P-114 risk/authority for the inline id / every id in `ids`'),
+  force: z
+    .boolean()
+    .optional()
+    .describe('required to reopen an already-terminally-completed item; only needed for a deliberate reopen'),
+};
+
+const progressInlineShape = {
+  state: z.preprocess(foldStateCase, z.enum(asEnumValues(PROGRESS_INPUT_STATES))),
+  ...nonTerminalInlineCommon,
+  ...transitionNoteFields,
+};
+
+const blockedInlineShape = {
+  state: blockedStateSchema(),
+  ...nonTerminalInlineCommon,
+};
+
+const progressSingle = z
+  .object({ id: z.string().min(1), ...progressInlineShape })
+  .strict()
+  .superRefine((it, ctx) => rejectCompletionRefAliasConflict(it, ctx));
+const progressMany = z
+  .object({ ids: z.array(z.string().min(1)).min(1).max(200), ...progressInlineShape })
+  .strict()
+  .superRefine((it, ctx) => rejectCompletionRefAliasConflict(it, ctx));
+const blockedSingle = z.object({ id: z.string().min(1), ...blockedInlineShape }).strict();
+const blockedMany = z
+  .object({ ids: z.array(z.string().min(1)).min(1).max(200), ...blockedInlineShape })
+  .strict();
+const ITEMS_BATCH_REASON_CALL_CONSTRAINT =
+  'Within `items:[...]`, a batch-level `reason` or `note` applies to every row and is forbidden when any row state is `blocked` (including legacy aliases). Blocked rows also reject row-level `reason`/`note`; use `work_items:set_blocker` for external blockers or `work_items:link { rel:"blocks" }` for a work-item dependency.';
+const itemsBatch = z
+  .object({
+    harness: z.string().max(80).optional().describe('default harness for items that omit one'),
+    reason: z
+      .string()
+      .min(1)
+      .max(2000)
+      .optional()
+      .describe('apply to every row: terminal rows use it as completion evidence, progress rows record it as a comment; blocked rows require a typed blocker and refuse free text'),
+    note: z
+      .string()
+      .min(1)
+      .max(2000)
+      .optional()
+      .describe('same as batch `reason` — apply to every eligible row; pass only one'),
+    items: z.array(itemSpec).min(1).max(200),
+  })
+  .strict()
+  .superRefine((batch, ctx) => {
+    const batchAlias = suppliedAlias(batch);
+    if (!batchAlias) return;
+    const otherBatchAlias = batchAlias.key === 'reason' ? batch.note : batch.reason;
+    if (typeof otherBatchAlias === 'string' && otherBatchAlias !== batchAlias.value) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [batchAlias.key],
+        message: '`reason` and `note` cannot carry different values; pass one value for the whole batch.',
+      });
+      return;
+    }
+
+    for (const [index, item] of batch.items.entries()) {
+      if (foldsToBlocked(item.state)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['items', index, batchAlias.key],
+          message:
+            `batch \`${batchAlias.key}\` is not accepted for a blocked row — a blocked item's reason must be a TYPED ` +
+            'blocker so the scheduler can act on it. Record it with work_items:set_blocker (external event, gate, ' +
+            'runtime or human capability), or work_items:link { rel:"blocks" } for a dependency on another work-item.',
+        });
+        continue;
+      }
+
+      const rowAliases = [
+        'completionRef' in item ? item.completionRef : undefined,
+        'reason' in item ? item.reason : undefined,
+        'note' in item ? item.note : undefined,
+      ].filter(
+        (value): value is string => typeof value === 'string',
+      );
+      if (rowAliases.some((value) => value !== batchAlias.value)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['items', index],
+          message: `the row's completionRef/reason/note conflicts with the batch ${batchAlias.key}; pass the same value or omit the row field.`,
+        });
+      }
+    }
+  })
+  .meta({ 'x-papercusp-call-constraint': ITEMS_BATCH_REASON_CALL_CONSTRAINT });
+
+const setStateArgs = z.union(
+  [itemsBatch, terminalSingle, terminalMany, progressSingle, progressMany, blockedSingle, blockedMany],
+  { error: aliasAwareUnionError },
+);
+type SetStateArgs = z.infer<typeof setStateArgs>;
+
+/**
+ * Split a row's reason-shaped fields by what the STATE can persist. On a terminal write
+ * they are completion evidence (`completionRef`); on any other write they are a
+ * transition note recorded as a comment. Never both: routing a non-terminal `reason`
+ * into `completionRef` would hand the writer a value it ignores on that branch, i.e. the
+ * silent discard this split exists to prevent.
+ */
+function inlineTerminalEvidence(input: unknown): {
+  completionRef: string | undefined;
+  assumptions: AssumptionDeclaration | undefined;
+  transitionNote: string | undefined;
+} {
+  const row = typeof input === 'object' && input !== null
+    ? input as Record<string, unknown>
+    : {};
+  if (!('completionRef' in row || 'reason' in row || 'note' in row)) {
+    return { completionRef: undefined, assumptions: undefined, transitionNote: undefined };
+  }
+  if (typeof row.state === 'string' && !isTerminalStateInput(row.state)) {
+    return { completionRef: undefined, assumptions: undefined, transitionNote: suppliedAlias(row as CompletionRefAliasBearing)?.value };
+  }
+  return {
+    completionRef: resolveCompletionRefAlias(row as CompletionRefAliasBearing),
+    assumptions: 'assumptions' in row ? row.assumptions as AssumptionDeclaration : undefined,
+    transitionNote: undefined,
+  };
+}
 
 export default defineTool({
   name: 'work_items:set_state',
   profile: 'engineer',
   description:
-    'Set lifecycle state for one or many work-items. Unified states: open|wip|blocked|needs-human|done|dropped; legacy aliases preserve terminal_reason. Terminal states require completionRef + assumptions ("none" or facts:assert keys). Blocked writes require an active typed external blocker via work_items:set_blocker; link internal dependencies with work_items:link { rel:"blocks" }. Plan-linked feature blocks use plans:set-status. Reopening a terminal item requires force:true. Supports inline, ids:[…], or items[]; inspect appliedState.',
+    'Set state for one or many work-items: open|wip|blocked|needs-human|done|dropped (legacy aliases preserve terminal_reason). Terminal writes need completionRef + assumptions ("none" or facts:assert keys). Blocked writes need work_items:set_blocker; use work_items:link { rel:"blocks" } for internal dependencies. Plan-linked features use plans:set-status. Reopen terminal items with force:true. Supports id, ids, or items; inspect expectedState/appliedState. Readback mismatches fail.',
   guidance: {
-    when: `Use for lifecycle changes. Prefer work_items:complete for terminal evidence. Batch with ids:[…] or items[]. For blocked, first use work_items:set_blocker (event/gate/runtime/human) or work_items:link { rel:"blocks" }; bare blocked is refused. Plan-linked feature blocks use plans:set-status. Before \`force:true\`, read terminalOwner/ref. ${TERMINAL_CLOSE_RECOVERY_HINT}`,
-    chaining: 'work_items:claim → work_items:set_blocker or work_items:link → work_items:set_state; terminal writes use completionRef + assumptions.',
+    when: `Use for lifecycle changes. Prefer work_items:complete for terminal evidence. For blocked, first use work_items:set_blocker (event/gate/runtime/human) or work_items:link { rel:"blocks" }; bare blocked is refused. Before \`force:true\`, read terminalOwner/ref. ${TERMINAL_CLOSE_RECOVERY_HINT}`,
+    notWhen: "Never on non-work or human-audience rows, not even needs-human: data or a person's job.",
+    chaining: 'work_items:link records internal dependency readiness (no separate blocked-state write); work_items:set_blocker parks an active typed external blocker; terminal writes use completionRef + assumptions.',
     seeAlso: [
       'work_items:complete (terminal state WITH a structured completion record)',
       'work_items:set_blocker { id, kind, ref, summary } (typed external event/gate/runtime/human blocker)',
-      'work_items:link { source, target, rel:"blocks" } (internal work-item dependency)',
+      'work_items:link { id, rel:"blocks", target_id } (internal work-item dependency)',
       'plans:set-status { item, status:"blocked" } (the source-of-truth park for plan-linked feature items)',
       'work_items:release (drop a claim without changing state; claimHold:true parks an issue-family item out of claim_next self-select — WI-2797)',
       'work_items:set_priority (steer backlog order, not lifecycle state)',
@@ -191,101 +515,66 @@ export default defineTool({
   capability: 'work_items:write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
-  args: z
-    .object({
-      id: z.string().min(1).optional().describe('single shorthand: the work-item id (use with `state`)'),
-      state: z
-        .preprocess(foldStateCase, z.enum(asEnumValues([...TERMINAL_INPUT_STATES, ...NON_TERMINAL_INPUT_STATES])))
-        .optional()
-        .describe('the lifecycle state applied to the inline id / every id in `ids` — a terminal state REQUIRES `completionRef`'),
-      harness: z.string().max(80).optional().describe('default harness for the inline id / ids / items that omit one'),
-      decision: decisionSpec.optional().describe('P-114 risk/authority for the inline id / every id in `ids`'),
-      ids: z.array(z.string().min(1)).min(1).max(200).optional().describe('set MANY items to the same `state` (homogeneous)'),
-      items: z.array(itemSpec).min(1).max(200).optional().describe('set many work-items at once — each { id, state, harness?, decision?, completionRef? }'),
-      completionRef: z
-        .string()
-        .min(1)
-        .max(2000)
-        .optional()
-        .describe('completion evidence applied to the inline id / every id in `ids` (see itemSpec.completionRef)'),
-      // EI-19961538712475843 — see ./_completion-ref-alias for why `reason`/`note` are
-      // accepted here and refused on a non-terminal write.
-      ...completionRefAliasFields,
-      // P-017 (b) gate #2: `.optional()` ONLY because an items[]-only call carries its
-      // own per-item value. The requirement for the inline / ids[] shorthand is closed
-      // by the refine below — without it the gate would MOVE to the shorthand, which is
-      // the cheaper call and would therefore carry all the traffic.
-      assumptions: z
-        .preprocess(normalizePersistedAssumptionDeclaration, assumptionsArg.optional())
-        .describe('assumption declaration applied to the inline id / every id in `ids` (see itemSpec.assumptions)'),
-      force: z
-        .boolean()
-        .optional()
-        .describe('applied to the inline id / every id in `ids` (see itemSpec.force) — required to reopen an already-terminally-completed item'),
-    })
-    .refine((a) => (a.items?.length ?? 0) > 0 || (Boolean(a.state) && ((a.ids?.length ?? 0) > 0 || Boolean(a.id))), {
-      message: 'pass { id, state } for one, { ids:[…], state } for many of the same state, or items:[{ id, state }] for many',
-    })
-    // P-005: the SAME structural rule the items[] union enforces, applied to the
-    // inline / ids[] shape. itemSpec's union cannot cover these — `state` and
-    // `completionRef` live at the top level there — so without this the evidence
-    // requirement would simply MOVE to the shorthand rather than being closed.
-    // EI-19961538712475843: reads whichever spelling the caller used, so the evidence
-    // requirement is unchanged — `reason`/`note` satisfy it exactly as `completionRef`
-    // does, and none of the three satisfies it when all are absent.
-    .refine((a) => !(a.state && isTerminalStateInput(a.state) && !resolveCompletionRefAlias(a)), {
-      path: ['completionRef'],
-      message:
-        'a terminal state requires completion evidence — pass `completionRef` (or its `reason` / `note` alias), or (preferred) use work_items:complete for a structured completion record',
-    })
-    // P-017 (b) gate #2 / D-050 — the SAME structural rule terminalItem enforces for
-    // items[], applied to the inline / ids[] shape, exactly as the completionRef refine
-    // above does for evidence. Two separate refines rather than one so a caller missing
-    // both fields is told about both, not just whichever check ran first.
-    .refine((a) => !(a.state && isTerminalStateInput(a.state) && !hasAssumptionDeclaration(a.assumptions)), {
-      path: ['assumptions'],
-      message: ASSUMPTIONS_REQUIRED_MESSAGE,
-    })
-    // EI-19961538712475843: the SAME alias rules the items[] union arms enforce, applied
-    // to the inline / ids[] shape — without this the alias would be silently accepted and
-    // dropped on a non-terminal shorthand write, which is the bug, not the fix.
-    .superRefine((a, ctx) => {
-      rejectCompletionRefAliasConflict(a, ctx);
-      if (a.state && !isTerminalStateInput(a.state)) {
-        rejectNonTerminalCompletionAlias(a, a.state, ctx);
-      }
-    }),
+  args: setStateArgs,
   async handler(args, ctx) {
+    const input = args as unknown as SetStateArgs;
     const ident = resolveAgentIdentity(ctx);
     // P-005: itemSpec is now a UNION (terminal carries a required completionRef;
     // non-terminal has no such field at all), so flatten to one uniform shape here
     // — every downstream reader keeps its single `it.completionRef` access.
-    const list = args.items?.length
-      ? args.items.map((it) => ({
-          id: it.id,
-          state: it.state as string,
-          harness: it.harness,
-          decision: it.decision,
-          force: it.force,
-          // EI-19961538712475843: resolve the alias HERE, at the one place the three
-          // spellings collapse into the single value every downstream reader consumes —
-          // so `it.completionRef` keeps meaning exactly what it meant before. The fields
-          // are now listed explicitly rather than spread: `...it` would carry `reason`
-          // and `note` PAST this point, leaving two live spellings of a field that has
-          // already been resolved, and it made this branch's shape diverge from the
-          // ids[] / inline ones below.
-          completionRef: resolveCompletionRefAlias(it),
-          // P-008 (d): flattened exactly like `completionRef` above — the union's
-          // terminal arm carries it, the non-terminal arm has no such field.
-          assumptions: 'assumptions' in it ? it.assumptions : undefined,
-        }))
-        : args.ids?.length
-        ? args.ids.map((id) => ({ id, state: args.state as string, harness: args.harness, decision: args.decision, completionRef: resolveCompletionRefAlias(args), assumptions: args.assumptions, force: args.force }))
-        : [{ id: args.id as string, state: args.state as string, harness: args.harness, decision: args.decision, completionRef: resolveCompletionRefAlias(args), assumptions: args.assumptions, force: args.force }];
+    const batchAlias = 'items' in input ? suppliedAlias(input as CompletionRefAliasBearing) : undefined;
+    const list = 'items' in input
+      ? input.items.map((it) => {
+          const terminalEvidence = inlineTerminalEvidence(it);
+          const isTerminal = isTerminalStateInput(it.state);
+          return {
+            id: it.id,
+            state: it.state as string,
+            harness: it.harness,
+            decision: it.decision,
+            force: it.force,
+            // EI-19961538712475843: resolve the alias HERE, at the one place the three
+            // spellings collapse into the single value every downstream reader consumes —
+            // so `it.completionRef` keeps meaning exactly what it meant before. The fields
+            // are now listed explicitly rather than spread: `...it` would carry `reason`
+            // and `note` PAST this point, leaving two live spellings of a field that has
+            // already been resolved, and it made this branch's shape diverge from the
+            // ids[] / inline ones below.
+            completionRef: terminalEvidence.completionRef ?? (isTerminal ? batchAlias?.value : undefined),
+            // P-008 (d): flattened exactly like `completionRef` above — the union's
+            // terminal arm carries it, the non-terminal arm has no such field.
+            assumptions: terminalEvidence.assumptions,
+            // EI-24917736184136483: a non-terminal row's reason, recorded as a comment.
+            transitionNote: terminalEvidence.transitionNote ?? (!isTerminal ? batchAlias?.value : undefined),
+          };
+        })
+      : 'ids' in input
+        ? input.ids.map((id) => ({
+            id,
+            state: input.state as string,
+            harness: input.harness,
+            decision: input.decision,
+            ...inlineTerminalEvidence(input),
+            force: input.force,
+          }))
+        : [{
+            id: input.id,
+            state: input.state as string,
+            harness: input.harness,
+            decision: input.decision,
+            ...inlineTerminalEvidence(input),
+            force: input.force,
+          }];
     const env = await runBulk(
       list,
       async (it) => {
-        const harness = it.harness ?? args.harness;
+        const harness = it.harness ?? input.harness;
+        // D-035 (WI-10005358): FIRST, before any arm/assumption/state write — a row that is not
+        // agent work by category (a record, document, event or human-audience row) is refused
+        // here exactly as the by-id claim refuses it (D-024). Typed, no agent-passable override.
+        // ctx carries the server-derived caller identity: only the owner's UI is exempt (D-038).
+        const notAgentWork = await refuseNonAgentWorkAtDoor('work_items:set_state', it.id, harness, ctx);
+        if (notAgentWork) return notAgentWork;
         if (String(it.state).trim().toLowerCase() === 'blocked') {
           const current = await getWorkItem(it.id, harness);
           if (current) {
@@ -304,7 +593,7 @@ export default defineTool({
                   'For an external event, gate, runtime condition, or human capability, use ' +
                   'work_items:set_blocker { id, kind, capability, ref, summary, nextVerb } — it records the ' +
                   'machine-readable reason and parks the lifecycle. For another work-item dependency, use ' +
-                  'work_items:link { source: "<blocker-id>", target: "' + it.id + '", rel: "blocks" } instead; ' +
+                  'work_items:link { id: "<blocker-id>", target_id: "' + it.id + '", rel: "blocks" } instead; ' +
                   'do not write blocked state separately for a linked work dependency. ' +
                   // EI-21655300007082004: naming the verb is not the same as delivering it. On a
                   // trimmed client surface work_items:set_blocker does not resolve through a
@@ -379,7 +668,7 @@ export default defineTool({
         // (`terminalConflictWarning` + raw `terminalConflict`) so the two tools do not disagree
         // about whether a stranded close is visible to the caller.
         let terminalConflict: TerminalCompletionConflict | undefined;
-        const { workItem, aliased, requestedState, appliedState, aliasNote } =
+        const { workItem, aliased, requestedState, expectedState, appliedState, aliasNote } =
           await setWorkItemStateWithAliasInfo(it.id, it.state, {
             harness,
             by: ident.ownerId,
@@ -390,7 +679,41 @@ export default defineTool({
               terminalConflict = info;
             },
           });
+        const canonicalExpectedState = expectedState ?? requestedState ?? it.state;
+        // A second terminal close can be intentionally attested while the existing
+        // terminal state remains authoritative. The writer reports that outcome through
+        // terminalConflict; return its warning and the applied state below instead of
+        // misclassifying the preserved record as a failed post-write readback.
+        if (workItem && appliedState !== canonicalExpectedState && terminalConflict?.outcome !== 'attested') {
+          throw new Error(
+            `work_item '${it.id}' state verification failed: requested '${requestedState ?? it.state}' ` +
+              `normalizes to '${canonicalExpectedState}', but the canonical post-write reader returned '${String(appliedState)}'.`,
+          );
+        }
         if (armPlan && workItem) await commitWorkItemArm(armPlan).catch(() => {});
+        // EI-24917736184136483: record a non-terminal write's reason where it persists —
+        // the item's comment thread — AFTER the state write landed, so a refused write
+        // never leaves an orphan comment. A failed post does not undo the state write
+        // (it already happened); it is reported loudly so the caller can re-post.
+        let transitionNoteRecorded: { as: 'comment'; postId: number } | undefined;
+        let transitionNoteWarning: string | undefined;
+        if (workItem && it.transitionNote) {
+          const workspaceId = ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : undefined;
+          try {
+            const post = await commentWorkItem(
+              it.id,
+              `State → ${String(appliedState ?? it.state)}: ${it.transitionNote}`,
+              ident.ownerId,
+              { harness, ...(workspaceId ? { workspaceId } : {}), writerOwnerId: ident.ownerId },
+            );
+            if (post) transitionNoteRecorded = { as: 'comment', postId: post.id };
+            else transitionNoteWarning = `state written, but your reason was NOT recorded (the comment found no item) — re-post it with work_items:comment: ${it.transitionNote}`;
+          } catch (err) {
+            transitionNoteWarning =
+              `state written, but your reason was NOT recorded (${err instanceof Error ? err.message : String(err)}) — ` +
+              `re-post it with work_items:comment: ${it.transitionNote}`;
+          }
+        }
         // EI-19393623437103599 — the SAME cross-harness retarget warning work_items:complete
         // carries, wired here for the reason stated in fix #4 above: this verb is the other
         // way to make a row terminal, and a guard on only one close path is a guard with a
@@ -423,6 +746,8 @@ export default defineTool({
               // Ahead of the echoed `workItem` row for the same EI-15982 reason as the
               // warnings below: this is the field a caller must not lose to tail truncation.
               ...(harnessMismatchWarning ? { harnessMismatchWarning } : {}),
+              ...(transitionNoteWarning ? { transitionNoteWarning } : {}),
+              ...(transitionNoteRecorded ? { transitionNoteRecorded } : {}),
               // WI-2142258 — same field name/shape work_items:complete already returns
               // (complete.ts), so a caller (or a doc) does not have to learn two spellings
               // of "your evidence didn't win" depending on which tool it called.
@@ -449,6 +774,7 @@ export default defineTool({
               workItem,
               aliased,
               requestedState,
+              expectedState: canonicalExpectedState,
               appliedState,
               ...(aliasNote ? { aliasNote } : {}),
             }

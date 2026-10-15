@@ -109,16 +109,39 @@ export async function resolveGithubUserIdForDevicePubkey(
   sql?: Sql,
   deps: Pick<MemberDeviceSetDeps, 'loadMembers'> = {},
 ): Promise<number | null> {
+  return (await resolveGithubIdentityForDevicePubkey(workspaceId, potHomeSlug, devicePubkey, sql, deps))
+    ?.githubUserId ?? null;
+}
+
+export interface GithubMemberIdentity {
+  githubUserId: number;
+  githubUsername: string;
+}
+
+/** Extend the same uncached receiver binding for UID- and login-based policy.
+ * Conflicting owners or any explicit revocation cannot grant user authority. */
+export async function resolveGithubIdentityForDevicePubkey(
+  workspaceId: string,
+  potHomeSlug: string,
+  devicePubkey: string,
+  sql?: Sql,
+  deps: Pick<MemberDeviceSetDeps, 'loadMembers'> = {},
+): Promise<GithubMemberIdentity | null> {
   const { loadMembers = listHiveMembersForLocalPot } = deps;
   const members = await loadMembers(workspaceId, potHomeSlug, sql);
+  let identity: GithubMemberIdentity | null = null;
   for (const m of members) {
-    for (const a of m.deviceAttestations ?? []) {
-      if (a && typeof a.device_pubkey === 'string' && a.device_pubkey === devicePubkey) {
-        return m.githubUserId;
-      }
+    if (m.revokedPubkeys?.includes(devicePubkey)) return null;
+    if (!(m.deviceAttestations ?? []).some((a) => a?.device_pubkey === devicePubkey)) continue;
+    if (!Number.isSafeInteger(m.githubUserId) || m.githubUserId <= 0 ||
+        typeof m.githubUsername !== 'string' || !m.githubUsername.trim()) return null;
+    if (identity && (identity.githubUserId !== m.githubUserId ||
+        identity.githubUsername.toLowerCase() !== m.githubUsername.toLowerCase())) {
+      return null;
     }
+    identity = { githubUserId: m.githubUserId, githubUsername: m.githubUsername };
   }
-  return null;
+  return identity;
 }
 
 /**

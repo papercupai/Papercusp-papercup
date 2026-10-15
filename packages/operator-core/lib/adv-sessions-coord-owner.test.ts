@@ -27,6 +27,9 @@ describe('adv-sessions coord_owner_id wiring (P-001/P-003)', () => {
     vi.resetModules();
     vi.doUnmock('@papercusp/db-org');
     vi.doUnmock('./workspace-registry');
+    vi.doUnmock('./blueprint/support-workflow-native-launch');
+    vi.doUnmock('./session-end-lease-release-hook');
+    vi.doUnmock('./session-archive-hook');
   });
 
   function mockSql(impl: (...a: unknown[]) => Promise<unknown>): ReturnType<typeof vi.fn> {
@@ -35,6 +38,20 @@ describe('adv-sessions coord_owner_id wiring (P-001/P-003)', () => {
     vi.doMock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
     return sql;
   }
+
+  it('releases a private native route only after the exact session terminal CAS wins', async () => {
+    const sql = mockSql(async () => [{ id: 7 }]);
+    const stop = vi.fn(async () => {});
+    vi.doMock('./blueprint/support-workflow-native-launch', () => ({ stopSupportOperationNativeLaunch: stop }));
+    vi.doMock('./session-end-lease-release-hook', () => ({ scheduleSessionEndLeaseRelease: vi.fn() }));
+    vi.doMock('./session-archive-hook', () => ({ scheduleArchiveForAdvSession: vi.fn() }));
+    const mod = await import('./adv-sessions');
+    await expect(mod.markAdvSessionEnded(7, 0, 'self')).resolves.toBe(true);
+    expect(stop).toHaveBeenCalledExactlyOnceWith(7);
+    sql.mockResolvedValueOnce([]);
+    await expect(mod.markAdvSessionEnded(7, 0, 'self', { observedAt: new Date(0) })).resolves.toBe(false);
+    expect(stop).toHaveBeenCalledOnce();
+  });
 
   it('recordAdvSession passes coordOwnerId into the INSERT params', async () => {
     const sql = mockSql(async () => [{ id: 7 }]);
@@ -129,7 +146,10 @@ describe('adv-sessions coord_owner_id wiring (P-001/P-003)', () => {
     const map = await mod.advSessionsByCoordOwner();
 
     // Half 1 — the column is actually loaded.
-    const strings = sql.mock.calls[0]?.[0] as TemplateStringsArray | undefined;
+    // postgres.js builds empty/conditional fragments before executing SELECT.
+    const strings = sql.mock.calls
+      .map((call) => call[0] as TemplateStringsArray | undefined)
+      .find((parts) => parts && Array.from(parts).join(' ').includes('SELECT'));
     const query = strings ? Array.from(strings).join(' ? ') : '';
     expect(query).toContain('launch_argv');
 

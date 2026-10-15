@@ -14,7 +14,12 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { listAllProjectedTools, roleScopedToolNames } from '@papercusp/agent-mcp';
-import { deriveRecipeAuthority, recipeRevision, validateRecipeAuthorityProof } from '../../recipe-authority';
+import {
+  deriveRecipeAuthority,
+  recipeRevision,
+  recipeRevisionDiagnostics,
+  validateRecipeAuthorityProof,
+} from '../../recipe-authority';
 import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transport-cap';
 import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispatch';
 
@@ -22,7 +27,9 @@ import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispa
 // recipes:run lazy/eagerly imports these; replace so no PG/orchestration runs and
 // we can capture the `allowed` set the handler builds for the facade.
 const {
+  listRecipesMock,
   getRecipeMock,
+  reviseRecipeSourceMock,
   recordRecipeRunMock,
   runOrchestrationMock,
   normalizeExecutionTraceMock,
@@ -59,7 +66,9 @@ const {
     structuralFingerprint: 'b'.repeat(64),
   };
   return {
+    listRecipesMock: vi.fn(),
     getRecipeMock: vi.fn(),
+    reviseRecipeSourceMock: vi.fn(),
     recordRecipeRunMock: vi.fn(async () => {}),
     runOrchestrationMock: vi.fn<typeof import('@papercusp/agent-mcp').runToolOrchestration>(async () => ({
       ok: true,
@@ -91,7 +100,9 @@ vi.mock('../locks/su-lock-store', async (importOriginal) => ({
 }));
 vi.mock('../../code-recipes-store', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
+  listRecipes: listRecipesMock,
   getRecipe: getRecipeMock,
+  reviseRecipeSource: reviseRecipeSourceMock,
   recordRecipeRun: recordRecipeRunMock,
 }));
 vi.mock('../../code-recipes-search', async (importOriginal) => ({
@@ -129,17 +140,22 @@ vi.mock('../../telemetry-dispatch-wrapper', () => ({
 }));
 
 // Side-effect: register the recipes:* tools AFTER the mocks are hoisted.
-import './list';
+import recipeListTool from './list';
 import recipeGetTool from './get';
-import './revise';
+import recipeReviseTool from './revise';
 import recipeSearchTool from './search';
 import recipeRunTool from './run';
 import './candidates';
 import './merge';
 import './sweep';
+// The encoded-owner regression exercises the live condition reader through the
+// recipe's caller-scoped catalog preflight.
+import '../coordination/tools/conditions';
 // Authority fixtures below execute work_items:get; register it so P-015's current-catalog
 // preflight observes the same implementation that the production define-tool router loads.
 import '../work_items/get';
+// Output-schema preflight regression uses the live optional `gate` field contract.
+import '../release/trace';
 
 const findTool = (name: string) => {
   const t = listAllProjectedTools().find((x) => x.expose.mcp?.name === name);
@@ -148,6 +164,21 @@ const findTool = (name: string) => {
 };
 
 describe('recipes:* registration (P-005, P-013)', () => {
+  it('lists public recipe metadata through the formatter without exposing stored source', async () => {
+    const publicRecipe = {
+      id: 'recipe-public', title: 'Reusable lookup', description: 'Read current evidence',
+      toolsUsed: ['facts:list'], runCount: 3, successCount: 2,
+      lastRunAt: '2026-10-06T00:00:00.000Z', status: 'active',
+    };
+    listRecipesMock.mockResolvedValueOnce([{ ...publicRecipe, script: 'private source', executionTrace: { private: true } }]);
+    const result = await recipeListTool.handler({ limit: 7, includeTrivial: true } as never, {} as never);
+    expect(listRecipesMock).toHaveBeenLastCalledWith(orgSqlMock, { limit: 7, includeTrivial: true });
+    expect(result).toEqual({ data: { ok: true, count: 1, recipes: [publicRecipe] } });
+    listRecipesMock.mockResolvedValueOnce([]);
+    expect(await recipeListTool.handler({} as never, {} as never)).toEqual({ data: { ok: true, count: 0, recipes: [] } });
+    expect(listRecipesMock).toHaveBeenLastCalledWith(orgSqlMock, { limit: 25, includeTrivial: false });
+  });
+
   for (const name of ['recipes:list', 'recipes:get', 'recipes:search', 'recipes:run', 'recipes:candidates']) {
     it(`registers ${name} as a role-gated tool`, () => {
       const tool = findTool(name);
@@ -218,6 +249,151 @@ describe('recipes:* registration (P-005, P-013)', () => {
       expect(tool.capabilities).toContain('intel:write');
     });
   }
+});
+
+describe('recipes:revise versioned contract updates', () => {
+  it('accepts and atomically forwards an invocation-scoped binding contract', async () => {
+    const current = {
+      id: 'read-all-criterion-evidence-of-one-scorecard',
+      title: 'Read all criterion evidence of one scorecard',
+      description: 'read scorecard evidence',
+      script: 'return 1;',
+      bindingSchema: null,
+      capabilityManifest: null,
+      updatedAt: '2026-10-02T00:00:00.000Z',
+      toolsUsed: [],
+    };
+    const bindingSchema = {
+      version: 1 as const,
+      properties: {
+        issueId: {
+          type: 'string' as const,
+          required: true,
+          description: 'Scorecard work-item id for this invocation.',
+          lifetime: { kind: 'invocation-ephemeral' as const },
+        },
+      },
+      additionalProperties: false as const,
+    };
+    const capabilityManifest = {
+      version: 1 as const,
+      representation: 'recipe-script' as const,
+      topology: { premises: ['host:same' as const] as ['host:same'] },
+      requirements: [],
+      lifecycle: { allowed: ['foreground' as const], default: 'foreground' as const },
+      replay: { class: 'read-only' as const },
+      content: { emits: ['text' as const] },
+    };
+    const script = 'return 2;';
+    const title = 'Evaluate exact spec-test bindings';
+    const description = 'Evaluate every supplied current binding and emit canonical passing drafts.';
+    getRecipeMock.mockResolvedValue(current);
+    reviseRecipeSourceMock.mockResolvedValue({
+      status: 'updated',
+      row: {
+        ...current,
+        title,
+        description,
+        script,
+        bindingSchema,
+        capabilityManifest,
+        updatedAt: '2026-10-02T00:01:00.000Z',
+      },
+    });
+    const tool = recipeReviseTool;
+    const args = {
+      id: current.id,
+      expectedRevision: recipeRevision(current.script, current.updatedAt, current),
+      title,
+      description,
+      script,
+      contract: { bindingSchema, capabilityManifest },
+      reason: 'Make the scorecard recipe reusable per invocation.',
+    };
+
+    expect(tool.args.safeParse(args).success).toBe(true);
+    await tool.handler(args, {
+      log: () => {},
+      workspaceId: 'ws-test',
+      harnessSlug: 'alpha',
+      role: 'operator',
+      isSuperuser: false,
+      uiClientId: 'revise-test',
+    } as never);
+
+    expect(reviseRecipeSourceMock).toHaveBeenCalledWith(orgSqlMock, {
+      id: current.id,
+      title,
+      description,
+      script,
+      toolsUsed: [],
+      contract: { bindingSchema, capabilityManifest },
+      expectedUpdatedAt: current.updatedAt,
+    });
+  });
+
+  it('rejects a binding schema without its capability manifest', () => {
+    const tool = recipeReviseTool;
+    expect(tool.args.safeParse({
+      id: 'recipe',
+      expectedRevision: 'a'.repeat(64),
+      script: 'return 1;',
+      contract: {
+        bindingSchema: {
+          version: 1,
+          properties: {
+            issueId: { type: 'string', required: true, lifetime: { kind: 'invocation-ephemeral' } },
+          },
+          additionalProperties: false,
+        },
+        capabilityManifest: null,
+      },
+      reason: 'Add a binding without its manifest.',
+    }).success).toBe(false);
+  });
+
+  it('applies metadata-only revisions instead of treating them as no_change', async () => {
+    const current = {
+      id: 'generic-recipe',
+      title: 'Old title',
+      description: 'Old description',
+      script: 'return 1;',
+      bindingSchema: null,
+      capabilityManifest: null,
+      updatedAt: '2026-10-02T00:00:00.000Z',
+      toolsUsed: [],
+    };
+    getRecipeMock.mockResolvedValue(current);
+    reviseRecipeSourceMock.mockResolvedValue({
+      status: 'updated',
+      row: { ...current, description: 'Corrected description', updatedAt: '2026-10-02T00:01:00.000Z' },
+    });
+    const args = {
+      id: current.id,
+      expectedRevision: recipeRevision(current.script, current.updatedAt, current),
+      script: current.script,
+      description: 'Corrected description',
+      reason: 'Correct the stale saved-recipe description.',
+    };
+
+    expect(recipeReviseTool.args.safeParse(args).success).toBe(true);
+    await recipeReviseTool.handler(args, {
+      log: () => {},
+      workspaceId: 'ws-test',
+      harnessSlug: 'papercusp',
+      role: 'operator',
+      isSuperuser: false,
+      uiClientId: 'revise-metadata-test',
+    } as never);
+
+    expect(reviseRecipeSourceMock).toHaveBeenCalledWith(orgSqlMock, {
+      id: current.id,
+      description: 'Corrected description',
+      script: current.script,
+      toolsUsed: [],
+      expectedUpdatedAt: current.updatedAt,
+    });
+  });
 });
 
 describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
@@ -599,6 +775,38 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     expect(runOrchestrationMock).not.toHaveBeenCalled();
   });
 
+  it('rejects a saved recipe reading an optional current result field before orchestration', async () => {
+    const traceTool = findTool('release:trace');
+    expect(traceTool.outputJsonSchema?.properties).toHaveProperty('gate');
+    getRecipeMock.mockResolvedValue({
+      id: 'stale-output',
+      workspaceId: 'ws-test',
+      potSlug: 'alpha',
+      title: 'stale output field',
+      description: 'd',
+      script: 'const trace = await tools.release.trace({ path: "packages/example" });\nreturn trace.gate;',
+      authorRole: 'operator',
+      toolsUsed: ['release:trace'],
+      runCount: 1,
+      successCount: 1,
+      status: 'active',
+      tags: [],
+    });
+
+    const res = await findTool('recipes:run').fn({ id: 'stale-output' }, mkCtx('worker'));
+    const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+    expect(payload.results[0]).toMatchObject({ ok: false, id: 'stale-output', error: 'recipe_schema_stale' });
+    expect(payload.results[0].schemaIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        tool: 'release:trace',
+        path: 'result.gate',
+        kind: 'output-field',
+        message: expect.stringContaining('optional in the current output schema'),
+      }),
+    ]));
+    expect(runOrchestrationMock).not.toHaveBeenCalled();
+  });
+
   it('fails a recipe with stale field reads instead of recording a successful reuse', async () => {
     getRecipeMock.mockResolvedValue({
       id: 'field-miss',
@@ -755,6 +963,55 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     );
     const staleBody = JSON.parse((stale as { content: { text: string }[] }).content[0].text);
     expect(staleBody.results[0]).toMatchObject({ ok: false, error: 'authority_stale_revision' });
+    expect(staleBody.results[0].authorityDiagnostics).toMatchObject({
+      version: 1,
+      computedRevision: recipeRevision(script, updatedAt),
+      suppliedRevision: '0'.repeat(64),
+      updatedAt,
+      inputFingerprints: {
+        script: expect.stringMatching(/^[a-f0-9]{64}$/),
+        bindingSchema: null,
+        capabilityManifest: null,
+      },
+    });
+    expect(JSON.stringify(staleBody.results[0].authorityDiagnostics)).not.toContain(script);
+  });
+
+  it('rejects a condition recipe that pins an owner UUID inside its encoded key', async () => {
+    const script = `
+      const r = await tools.coord.conditions({ include_resolved: false });
+      const data = r && Array.isArray(r.open) ? r : JSON.parse(r.content?.[0]?.text ?? "{}");
+      const key = "alarm:codex-rollout-provider:%5B%22papercusp-workspace%22%2C%2240336%22%2C%22su-e5f812b6-2f01-4cb8-8d23-3299e65fc494%22%5D";
+      return { openCount: data.open_count ?? null, matches: (data.open ?? []).filter(x => x.condition_key === key) };
+    `;
+    const updatedAt = '2026-10-14T00:00:00.000Z';
+    getRecipeMock.mockResolvedValue({
+      id: 'read-codex-provider-condition',
+      title: 'Read Codex provider condition',
+      description: "Filter the live condition ledger to the admitted work-item's condition key.",
+      script,
+      updatedAt,
+      authorRole: 'operator',
+      toolsUsed: ['coord:conditions'],
+      runCount: 0,
+      successCount: 0,
+      status: 'active',
+      tags: [],
+    });
+
+    const result = await findTool('recipes:run').fn(
+      { id: 'read-codex-provider-condition' },
+      mkCtx('operator'),
+    );
+    const body = JSON.parse((result as { content: { text: string }[] }).content[0].text);
+
+    expect(body.results[0]).toMatchObject({
+      ok: false,
+      id: 'read-codex-provider-condition',
+      error: 'authority_unresolved',
+    });
+    expect(body.results[0].reason).toContain('concrete agent owner id');
+    expect(runOrchestrationMock).not.toHaveBeenCalled();
   });
 
   it('accepts the authority metadata emitted by recipes:get and still revalidates the live lane', async () => {
@@ -841,6 +1098,7 @@ describe('recipes:get HANDLER (bulk keyed-array)', () => {
   };
 
   it('inline { id } → one result with the recipe (script included)', async () => {
+    const updatedAt = '2026-08-22T22:00:00.000Z';
     getRecipeMock.mockResolvedValue({
       id: 'r1',
       workspaceId: 'ws-test',
@@ -848,6 +1106,7 @@ describe('recipes:get HANDLER (bulk keyed-array)', () => {
       title: 't',
       description: 'd',
       script: 'return 1;',
+      updatedAt,
       authorRole: 'operator',
       toolsUsed: [],
       runCount: 0,
@@ -878,6 +1137,23 @@ describe('recipes:get HANDLER (bulk keyed-array)', () => {
         capabilityManifest: { version: 1, representation: 'recipe-script' },
       },
     });
+    expect(b.results[0].recipe.authorityDiagnostics).toEqual(recipeRevisionDiagnostics({
+      script: 'return 1;',
+      updatedAt,
+      contract: {
+        bindingSchema: { version: 1, properties: {}, additionalProperties: false },
+        capabilityManifest: {
+          version: 1,
+          representation: 'recipe-script',
+          topology: { premises: ['host:same'] },
+          requirements: [],
+          lifecycle: { allowed: ['foreground'], default: 'foreground' },
+          replay: { class: 'read-only' },
+          content: { emits: ['text'] },
+        },
+      },
+    }));
+    expect(JSON.stringify(b.results[0].recipe.authorityDiagnostics)).not.toContain('return 1;');
   });
 
   it('ids:[…] → many; a not-found id fails only itself', async () => {

@@ -5,21 +5,31 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { sqlMock, readLinesMock, fastPathState } = vi.hoisted(() => ({
+const { sqlMock, readLinesMock, fastPathState, coordSqlMock, boundedPgReadTxnMock } = vi.hoisted(() => ({
   sqlMock: vi.fn(),
   readLinesMock: vi.fn(async () => [] as unknown[]),
   fastPathState: { on: false },
+  coordSqlMock: vi.fn(() => sqlMock),
+  boundedPgReadTxnMock: vi.fn(async (
+    fn: (tx: unknown) => Promise<unknown>,
+    _opts?: Record<string, unknown>,
+  ) => fn(sqlMock)),
 }));
 
 vi.mock('./log', () => ({
   coordLog: { readLines: readLinesMock },
-  coordSql: () => sqlMock,
+  coordSql: coordSqlMock,
   coordWorkspaceId: () => 'ws-thread-test',
   coordHasPgFastPath: () => fastPathState.on,
 }));
 
+vi.mock('../../pg-read-query', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../pg-read-query')>()),
+  boundedPgReadTxn: boundedPgReadTxnMock,
+}));
+
 import type { CoordEnvelope } from '@papercusp/coordination/core';
-import { readThread } from './messages';
+import { readThread, readThreadFromRef, THREAD_READ_ACQUIRE_TIMEOUT_MS, THREAD_READ_STATEMENT_TIMEOUT_MS } from './messages';
 
 function env(p: Partial<CoordEnvelope> = {}): CoordEnvelope {
   return {
@@ -75,6 +85,26 @@ describe('readThread — PG graph pushdown', () => {
     expect(readLinesMock).not.toHaveBeenCalled();
   });
 
+  it('resolves the root and walks its graph inside one bounded read-only transaction', async () => {
+    const root = env({ msg_id: 'root-msg' });
+    const row = { body: root, ts: root.ts, msg_id: root.msg_id, harness_slug: null };
+    sqlMock.mockResolvedValue([row]);
+
+    const result = await readThreadFromRef(root.msg_id);
+
+    expect(result.resolution).toMatchObject({ status: 'found', msgId: root.msg_id });
+    expect(result.entries.map((entry) => entry.msg_id)).toEqual([root.msg_id]);
+    expect(boundedPgReadTxnMock).toHaveBeenCalledTimes(1);
+    expect(boundedPgReadTxnMock.mock.calls[0]?.[1]).toEqual({
+      client: sqlMock,
+      timeoutMs: THREAD_READ_STATEMENT_TIMEOUT_MS,
+      acquireTimeoutMs: THREAD_READ_ACQUIRE_TIMEOUT_MS,
+      acquirePool: 'org-admin',
+    });
+    expect(sqlMock).toHaveBeenCalledTimes(2);
+    expect(coordSqlMock).toHaveBeenCalledTimes(1);
+  });
+
   it('emits the workspace/surface recursive query and the partial-index predicate', async () => {
     const seen: { text: string; values: unknown[] }[] = [];
     sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
@@ -107,6 +137,21 @@ describe('readThread — PG graph pushdown', () => {
 
     expect(entry?.msg_id).toBe('root-msg');
     expect(entry?.ts).toBe('2026-08-28T00:00:01.000Z');
+  });
+
+  it('uses the indexed row id when a legacy body carries a conflicting id', async () => {
+    sqlMock.mockResolvedValue([
+      {
+        body: env({ msg_id: 'legacy-stale-body-id' }),
+        ts: '2026-08-28T00:00:01.000Z',
+        msg_id: 'row-canonical-id',
+        harness_slug: null,
+      },
+    ]);
+
+    const [entry] = await readThread('row-canonical-id');
+
+    expect(entry?.msg_id).toBe('row-canonical-id');
   });
 
   it('a query error propagates and never loads the whole surface (host-memory-reduction-2026-09-27 D-011)', async () => {

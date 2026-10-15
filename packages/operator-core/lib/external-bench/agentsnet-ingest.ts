@@ -57,7 +57,7 @@ export interface AgentsnetIngestCtx {
   preregHash: string;
   /** Route A → 'baseline-b-native'; route B (substrate transport) → 'papercusp'. */
   arm: ArmId;
-  /** Exact model id for the price table (e.g. 'claude-opus-4-8'). */
+  /** Exact model id for the price table (the id the results were produced by — see agentsnetResultsModelId). */
   modelId: string;
   /** Blueprint+sha of the vendored harness (e.g. 'agentsnet@<git-sha>'). */
   harnessVersion: string;
@@ -136,13 +136,28 @@ export function readAgentsnetResults(resultsDir: string): AgentsnetResultFile[] 
   return out;
 }
 
+/**
+ * The one model a set of AgentsNet result files was produced by (their `model_name`). Refuses an empty or
+ * mixed set: rows ingested under a guessed or default id would be priced and compared as the wrong model
+ * (R-9 — the evaluated model is recorded, never assumed).
+ */
+export function agentsnetResultsModelId(results: readonly AgentsnetResultFile[]): string {
+  const ids = [...new Set(results.map((r) => (typeof r.model_name === 'string' ? r.model_name.trim() : '')).filter(Boolean))];
+  if (ids.length !== 1) {
+    throw new Error(
+      `agentsnet ingest: the result files name ${ids.length === 0 ? 'no model' : `${ids.length} models (${ids.join(', ')})`}; pass modelId explicitly`,
+    );
+  }
+  return ids[0];
+}
+
 export interface IngestAgentsnetOptions extends EmitOptions {
   resultsDir: string;
   runId: string;
   label?: string;
   /** Default 'baseline-b-native' (route A: opus-as-nodes in the native harness). */
   arm?: ArmId;
-  /** Default 'claude-opus-4-8'. */
+  /** Default: the single `model_name` the result files record ({@link agentsnetResultsModelId}). */
   modelId?: string;
   /** Default 'agentsnet@unknown'. */
   harnessVersion?: string;
@@ -162,9 +177,9 @@ export async function ingestAgentsnetResults(
   opts: IngestAgentsnetOptions,
 ): Promise<{ ingested: number; runId: string; preregHash: string }> {
   const arm: ArmId = opts.arm ?? 'baseline-b-native';
-  const modelId = opts.modelId ?? 'claude-opus-4-8';
   const harnessVersion = opts.harnessVersion ?? 'agentsnet@unknown';
   const results = readAgentsnetResults(opts.resultsDir);
+  const modelId = opts.modelId ?? agentsnetResultsModelId(results);
 
   const config = {
     suite: 'agentsnet',

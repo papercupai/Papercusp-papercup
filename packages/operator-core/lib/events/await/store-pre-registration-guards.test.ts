@@ -12,7 +12,8 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => ({ sql: h.rawSql }),
 }));
 
-const { cancelAwaitsForSubscribersOnKeys, findAnnouncementsForKey, registerAwait } = await import('./store');
+const { AWAIT_SUPERSEDED_BY_REGISTRATION, cancelAwaitsForSubscribersOnKeys, findAnnouncementsForKey, registerAwait } =
+  await import('./store');
 
 const boundedOptions = {
   acquireTimeoutMs: 5_000,
@@ -82,6 +83,29 @@ describe('events:await pre-registration store guards', () => {
 
     expect(h.boundedOrgTxn).toHaveBeenCalledWith(expect.any(Function), boundedOptions);
     expect(h.rawSql).not.toHaveBeenCalled();
+  });
+
+  // WI-10005938: a registration that retires a pending row must say why. A NULL
+  // cancel_reason made 22 superseded obligation watches read as unexplained
+  // churn, and the caller's later measured reason could no longer land.
+  it.each([
+    ['exact one-shot dedup', { subscriberId: 'sub-test', eventKey: 'gate:test' }],
+    [
+      'supersedePending',
+      { subscriberId: 'sub-test', eventKey: 'gate:test', note: 'surface: current', supersedePending: { includeNotePrefix: 'surface: ' } },
+    ],
+  ] as const)('stamps a cancel_reason on every row a registration retires (%s)', async (_label, input) => {
+    await registerAwait(input as Parameters<typeof registerAwait>[0]);
+
+    const retires = h.tx.mock.calls.filter(([strings]) => {
+      const query = Array.isArray(strings) ? strings.join('?') : '';
+      return /UPDATE\s+harness_shared\.event_awaits/.test(query) && /SET\s+cancelled_at\s*=\s*now\(\)/.test(query);
+    });
+    expect(retires.length).toBeGreaterThan(0);
+    for (const [strings, ...values] of retires) {
+      expect((strings as readonly string[]).join('?')).toMatch(/cancel_reason\s*=\s*\?/);
+      expect(values).toContain(AWAIT_SUPERSEDED_BY_REGISTRATION);
+    }
   });
 
   it('bounds generation-pinned registration', async () => {

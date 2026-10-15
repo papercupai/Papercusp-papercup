@@ -26,9 +26,17 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { withWorkspace } from '@papercusp/db-org';
 import { resolveMessageRef } from '../messages';
+import { foldEscalationResolution } from '../escalations';
+import type { EscalationRecord } from '@papercusp/coordination/core';
 import { projectAuthoredFields } from '../message-fields';
 import { COORD_READ_ROLES } from '../roles';
+import { resolveAgentIdentity, verifiedSpawnSessionAlias } from '../identity';
+import { disclosureSubject } from '../../_disclosure-subject';
+import type { PapercuspUnifiedToolContext } from '../../_tool-context';
+import { COORD_SEAL_STORE, mergeUnsealed, sealMarkerOf } from '../../../personal-vault/coord-seal';
+import { openSealedContent } from '../../../personal-vault/sealed-contents';
 
 // Keep the complete envelope available as MCP structuredContent for programmatic
 // callers (ptool / MCP clients). The human-facing text projection still passes
@@ -62,16 +70,73 @@ export default defineTool({
   agentRoles: [...COORD_READ_ROLES],
   args: z.object({
     msg_id: z.string().min(1).describe('The coord message id to fetch in full (as seen on a coord:inbox/coord:feed entry, or returned by coord:send).'),
+    unseal: z
+      .boolean()
+      .optional()
+      .describe(
+        'Open a 🔒 sealed message (its sender held restricted personal content). Opening puts YOUR outbound sends under the same reader-set limit until the owner releases it.',
+      ),
   }),
   result: coordReadResultSchema,
-  async handler(args) {
+  async handler(args, ctx: PapercuspUnifiedToolContext) {
     // WI-6725: resolve, don't exact-match. A truncated id (the form that
     // circulates in prose) used to return a well-formed EMPTY result that read
     // exactly like "does not exist" — and a leader retracted a real, unanswered
     // commitment on that false negative. A unique prefix now RESOLVES; an
     // ambiguous one says so with candidates; only a genuine miss is found:false.
     const resolution = await resolveMessageRef(args.msg_id);
-    const message = resolution.status === 'found' ? resolution.message : null;
+    let message = resolution.status === 'found' ? resolution.message : null;
+    // The acceptance judge receives message ids through evidence routes, but
+    // an id is only a locator, not authority to read an arbitrary envelope.
+    // coord:send persists the expanded concrete recipients in `to`; require
+    // the judge's exact coordination identity there. A verified signed-spawn
+    // session may be stored under its bare session owner id, so accept that
+    // alias only when the transport proof validates it. Wildcards are not
+    // evidence delivery: the judge must have been an explicit recipient.
+    if (message && ctx.role === 'judge') {
+      const identity = resolveAgentIdentity(ctx);
+      if (!isExplicitCoordRecipient(message, identity.ownerId, ctx)) {
+        // Match a genuine miss so probing a known msg_id does not reveal
+        // whether a non-recipient's message exists or disclose its full id.
+        return { data: { ok: true, found: false, msg_id: args.msg_id, message: null } };
+      }
+    }
+    // WI-10005375: an escalation resolves by a SIBLING event, so the original record always says
+    // resolved:null. Fold the sibling in, or a withdrawn ask reads as still open.
+    if (message?.kind === 'escalation') {
+      message = (await foldEscalationResolution(message as EscalationRecord)) as typeof message;
+    }
+    // personal-data-reader-set-labels P-006 / D-006: the stub is all a plain read
+    // returns. Opening records the sender's label snapshot on this reader in the
+    // same transaction that returns the content.
+    let unsealed: { labelled: number } | undefined;
+    if (message && args.unseal && sealMarkerOf(message)) {
+      const workspaceId = ctx.workspaceId?.trim() || ctx.principal?.workspaceId?.trim();
+      if (!workspaceId || workspaceId === '*') {
+        return { data: sealRefusal(args.msg_id, 'disclosure_workspace_required', 'opening sealed content needs a concrete workspace') };
+      }
+      const msgId = message.msg_id;
+      const opened = await withWorkspace(workspaceId, (tx) =>
+        openSealedContent(tx, {
+          workspaceId,
+          store: COORD_SEAL_STORE,
+          ref: msgId,
+          opener: { kind: 'agent', ownerId: disclosureSubject(ctx), via: 'coord:read' },
+        }),
+      );
+      if (!opened.found) {
+        return {
+          data: sealRefusal(args.msg_id, 'sealed_content_not_found', 'the sealed content is not on this machine (it never federates) or not in this workspace'),
+        };
+      }
+      if (opened.withheld) {
+        return {
+          data: sealRefusal(args.msg_id, 'disclosure_identity_required', 'restricted content is withheld from a caller with no attributable agent identity'),
+        };
+      }
+      message = mergeUnsealed(message, opened.content) as typeof message;
+      unsealed = { labelled: opened.labelled };
+    }
     // P-033 (e): the authored fields (sections / premisesClassified / why / blocking /
     // fieldProvenance) ride the ENVELOPE — the send path flattens them onto it — and the
     // `body` a reader sees is a FLATTENED text projection of them. So on this surface,
@@ -103,12 +168,35 @@ export default defineTool({
         : {}),
       ...(resolution.status === 'not-found' && resolution.looksTruncated
         ? {
-            detail: `No message id starts with '${args.msg_id}'. Note this is NOT a full msg_id (expected '<short>-0000-<32 hex>') — if you copied it out of prose it may have been truncated at the source.`,
+            detail: `No message id starts with '${args.msg_id}'. Note this is NOT a recognized full msg_id (expected '<short>-0000-<32 hex>' or 'coord-send-<64 hex>') — if you copied it out of prose it may have been truncated at the source.`,
           }
         : {}),
       message,
       ...(authored ? { authored } : {}),
+      ...(unsealed
+        ? {
+            unsealed: true,
+            restrictionNote: `Opened sealed content; ${unsealed.labelled} restricted label(s) now limit your outbound sends to the senders' permitted readers or the owner, until the owner releases them.`,
+          }
+        : {}),
     };
     return { data: payload };
   },
 });
+
+function isExplicitCoordRecipient(
+  message: unknown,
+  ownerId: string,
+  ctx: Parameters<typeof resolveAgentIdentity>[0],
+): boolean {
+  if (!message || typeof message !== 'object') return false;
+  const to = (message as { to?: unknown }).to;
+  if (!Array.isArray(to)) return false;
+  if (to.includes(ownerId)) return true;
+  const verifiedAlias = verifiedSpawnSessionAlias(ctx, ownerId);
+  return verifiedAlias !== null && to.includes(verifiedAlias);
+}
+
+function sealRefusal(msgId: string, code: string, detail: string) {
+  return { ok: false, found: true, msg_id: msgId, error: code, detail, message: null };
+}

@@ -135,6 +135,7 @@ const sectionStyle: CSSProperties = {
 };
 const rowStyle: CSSProperties = {
   display: 'flex',
+  flexWrap: 'wrap',
   alignItems: 'center',
   gap: 12,
   border: '1px solid var(--border)',
@@ -367,7 +368,7 @@ export default function ExpertRoutingSettingsPage() {
                 <span style={rankStyle} aria-label={`Rank ${index + 1}`}>
                   {index + 1}
                 </span>
-                <span style={{ flex: 1, minWidth: 0 }}>
+                <span className="pc-expert-model-identity" style={{ flex: '1 1 180px', minWidth: 0, overflowWrap: 'anywhere' }}>
                   <span style={{ fontSize: 13 }}>{modelLabel(entry)}</span>
                   <span
                     style={{ marginLeft: 8, color: 'var(--fg-mute)', fontSize: 11 }}

@@ -41,7 +41,7 @@
       "id": "wrong-route",
       "evidence": {
         "path": "docs/evidence/desktop-design-gate-p004-2026-09-08.json",
-        "sha256": "0e45096815de814c2a5f89d7eff572cd02b7f532c42b50232286cf98e3b5a6ef"
+        "sha256": "89da1d0f969699daf3d4a55df75ae1c3fe3cc3e1ba2a726c0d9b29569afe1943"
       },
       "negative": "fail",
       "repaired": "pass"
@@ -50,7 +50,7 @@
       "id": "missing-reference",
       "evidence": {
         "path": "docs/evidence/desktop-design-gate-p004-2026-09-08.json",
-        "sha256": "0e45096815de814c2a5f89d7eff572cd02b7f532c42b50232286cf98e3b5a6ef"
+        "sha256": "89da1d0f969699daf3d4a55df75ae1c3fe3cc3e1ba2a726c0d9b29569afe1943"
       },
       "negative": "fail",
       "repaired": "pass"
@@ -59,7 +59,7 @@
       "id": "failed-item-aggregation",
       "evidence": {
         "path": "docs/evidence/desktop-design-gate-p004-2026-09-08.json",
-        "sha256": "0e45096815de814c2a5f89d7eff572cd02b7f532c42b50232286cf98e3b5a6ef"
+        "sha256": "89da1d0f969699daf3d4a55df75ae1c3fe3cc3e1ba2a726c0d9b29569afe1943"
       },
       "negative": "fail",
       "repaired": "pass"
@@ -68,7 +68,7 @@
       "id": "stale-build",
       "evidence": {
         "path": "docs/evidence/desktop-design-gate-p004-2026-09-08.json",
-        "sha256": "0e45096815de814c2a5f89d7eff572cd02b7f532c42b50232286cf98e3b5a6ef"
+        "sha256": "89da1d0f969699daf3d4a55df75ae1c3fe3cc3e1ba2a726c0d9b29569afe1943"
       },
       "negative": "fail",
       "repaired": "pass"
@@ -77,7 +77,7 @@
       "id": "missing-responsive-state",
       "evidence": {
         "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/reviewed-matrix.json",
-        "sha256": "d364b67990f1f0904556d104a07b34b6e23042b7d35fd7243345e09f81df83c7"
+        "sha256": "80bc3c0cfa2b12a50193620d37aae5155566d4269e2b326e1d99e1da306c7e75"
       },
       "negative": "fail",
       "repaired": "pass"
@@ -86,7 +86,7 @@
       "id": "placeholder-as-working",
       "evidence": {
         "path": "docs/evidence/desktop-design-gate-p004-2026-09-08.json",
-        "sha256": "0e45096815de814c2a5f89d7eff572cd02b7f532c42b50232286cf98e3b5a6ef"
+        "sha256": "89da1d0f969699daf3d4a55df75ae1c3fe3cc3e1ba2a726c0d9b29569afe1943"
       },
       "negative": "fail",
       "repaired": "pass"

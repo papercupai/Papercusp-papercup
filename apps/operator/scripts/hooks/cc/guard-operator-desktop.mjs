@@ -107,6 +107,19 @@ function isExplicitlyLocal(host) {
   );
 }
 
+/**
+ * Budget for each external lookup (getent, systemctl). A timeout fails OPEN,
+ * so this is a production latency budget, not part of the guard's logic.
+ * PAPERCUSP_GUARD_LOOKUP_TIMEOUT_MS overrides it so the test suite can assert
+ * the logic without also asserting wall-clock speed: under full gate load a
+ * shimmed getent once took longer than 2s and the case read as an ALLOW
+ * (WI-10006055, repair head 0595d93f, 2336ms case).
+ */
+const LOOKUP_TIMEOUT_MS = (() => {
+  const n = Number(process.env.PAPERCUSP_GUARD_LOOKUP_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? n : 2000;
+})();
+
 /** Resolve via the SAME path the tools use (nsswitch → /etc/hosts, then DNS).
  *  Returns the addresses when EVERY address is loopback, else null. */
 function loopbackAddrs(host) {
@@ -114,7 +127,7 @@ function loopbackAddrs(host) {
   try {
     out = execFileSync('getent', ['hosts', host], {
       encoding: 'utf8',
-      timeout: 2000,
+      timeout: LOOKUP_TIMEOUT_MS,
       stdio: ['ignore', 'pipe', 'ignore'],
     });
   } catch {
@@ -157,7 +170,7 @@ const BYPASS_UNIT = 'papercusp-sni-bypass.service';
 function systemctlValue(args) {
   return execFileSync('systemctl', args, {
     encoding: 'utf8',
-    timeout: 2000,
+    timeout: LOOKUP_TIMEOUT_MS,
     stdio: ['ignore', 'pipe', 'ignore'],
   }).trim();
 }

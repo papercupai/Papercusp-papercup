@@ -1,0 +1,516 @@
+/**
+ * Provider-neutral connection lifecycle against real Postgres (P-003 of
+ * generalized-integrations-google-migration-cupboard-workflows-2026-10-05).
+ *
+ * Drives the REAL OAuth callback route for a descriptor provider credential
+ * group (two providers sharing one grant) and for the first-party Google
+ * Workspace adapter. Only the network edge is faked: the token and identity
+ * endpoints answer through a stubbed global fetch, and the signed state store
+ * is replaced by an in-memory map so each test controls its claims and
+ * server-held flow context. Source rows, cursors, bindings and the token file
+ * are the real stores.
+ */
+import { promises as fs } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Sql } from 'postgres';
+import type { ProviderAdapter, ProviderDescriptor } from '@papercusp/plugin-sdk';
+import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import type { RouteContext } from '../endpoint-route/define-route';
+import type { OAuthFlowPrivateContext, StateClaims } from '../oauth/state';
+
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as import('postgres').Sql,
+  states: new Map<string, { claims: unknown; privateContext: Record<string, string> }>(),
+}));
+
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: h.sql }),
+  withWorkspace: async <T>(_workspaceId: string, fn: (tx: Sql) => Promise<T>) => fn(h.sql),
+}));
+vi.mock('../plugin-configs-pg', () => ({ mirrorPluginConfig: async () => undefined }));
+vi.mock('../oauth/providers', async (orig) => ({
+  ...(await orig<typeof import('../oauth/providers')>()),
+  loadAndRegisterProvidersFromDisk: async () => {},
+}));
+vi.mock('../oauth/state', async (orig) => ({
+  ...(await orig<typeof import('../oauth/state')>()),
+  verifyAndConsumeState: async (token: string) => {
+    const entry = h.states.get(token);
+    if (!entry) return { ok: false, error: 'unknown-nonce' };
+    h.states.delete(token);
+    return { ok: true, claims: entry.claims, privateContext: entry.privateContext };
+  },
+}));
+
+import callbackRoute from '../endpoint-route/routes/oauth/callback';
+import { fsTokenStorage } from '../oauth/storage-fs';
+import { GOOGLE_WORKSPACE_SCOPES, __resetRegistryForTest, registerProvider } from '../oauth/providers';
+import { GOOGLE_GMAIL_PROFILE_ENDPOINT, GOOGLE_WORKSPACE_OAUTH_PLUGIN } from '../external-triggers/google-workspace';
+/** An ordinary hive harness for the fixture; nothing here depends on its name. */
+const GMAIL_RESPOND_DRAFT_HARNESS = 'email';
+import { providerRegistry } from './provider-registry';
+import {
+  connectionAdapterFor,
+  connectionAdapterForPlugin,
+  connectionAccessToken,
+  disconnectConnection,
+  missingRefreshTokenRefusal,
+  refreshConnectionCredential,
+} from './connection-lifecycle';
+
+const WS = 'connection-lifecycle-test';
+const HARNESS = 'papercusp';
+const GROUP = 'fake-suite';
+const PLUGIN = `provider:${GROUP}`;
+const PROVIDER_PLUGIN_NAME = 'fake-suite-plugin';
+const TOKEN_URL = 'https://auth.example-mail.test/token';
+const IDENTITY_URL = 'https://api.example-mail.test/me';
+/** A GraphQL-shaped identity request (linear-asana-task-sync P-004): the host must POST this body. */
+const IDENTITY_BODY = JSON.stringify({ query: '{ viewer { id } }' });
+
+const CTX: RouteContext = {
+  principal: null,
+  input: undefined,
+  params: {},
+  log: () => {},
+  signal: new AbortController().signal,
+};
+
+interface SourceRow {
+  id: string;
+  kind: string;
+  providerAccountId: string;
+  credentialRef: string | null;
+  status: string;
+  cursor: Record<string, unknown>;
+  lastError: string | null;
+}
+
+const net = {
+  account: { id: 'acct-1', name: 'Alpha' },
+  gmailEmail: 'owner@example.com',
+  refreshError: null as string | null,
+  tokenSeq: 0,
+};
+
+let org: OrgTestDb;
+let sql: Sql;
+let userId: string;
+let home: string;
+let stateSeq = 0;
+
+function descriptor(id: string, datatype: string, capability: string, withIdentity: boolean): ProviderDescriptor {
+  return {
+    id,
+    contractVersion: 1,
+    datatypes: [datatype],
+    capabilities: [capability],
+    egressHosts: ['*.example-mail.test'],
+    oauth: {
+      authorizeUrl: 'https://auth.example-mail.test/authorize',
+      tokenUrl: TOKEN_URL,
+      scopes: [capability],
+      pkce: true,
+      credentialGroup: GROUP,
+      ...(withIdentity ? { identity: { url: IDENTITY_URL, idField: 'id', displayNameField: 'profile.name', method: 'POST' as const, body: IDENTITY_BODY } } : {}),
+    },
+  };
+}
+
+function adapter(d: ProviderDescriptor): ProviderAdapter {
+  return {
+    describe: () => d,
+    syncPage: async () => ({ records: [], nextCursor: null, hasMore: false }),
+    invoke: async () => ({ ok: true }),
+  };
+}
+
+async function fakeFetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
+  const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+  if (href === TOKEN_URL) {
+    const form = new URLSearchParams(String(init?.body ?? ''));
+    if (form.get('grant_type') === 'refresh_token') {
+      if (net.refreshError) return Response.json({ error: net.refreshError }, { status: 400 });
+      return Response.json({ access_token: 'refreshed-access', expires_in: 3600 });
+    }
+    net.tokenSeq += 1;
+    return Response.json({
+      access_token: `access-${net.tokenSeq}`,
+      refresh_token: `refresh-${net.tokenSeq}`,
+      expires_in: 3600,
+      scope: 'mail.read calendar.read',
+    });
+  }
+  if (href === IDENTITY_URL) {
+    // Answers only the declared request: POST with the descriptor's JSON body.
+    if (init?.method !== 'POST' || init?.body !== IDENTITY_BODY) return new Response('method not allowed', { status: 405 });
+    return Response.json({ id: net.account.id, profile: { name: net.account.name } });
+  }
+  if (href === GOOGLE_GMAIL_PROFILE_ENDPOINT) return Response.json({ emailAddress: net.gmailEmail });
+  throw new Error(`unexpected fetch ${href}`);
+}
+
+async function runCallback(
+  claims: StateClaims,
+  privateContext: OAuthFlowPrivateContext,
+): Promise<{ connected: string | null; error: string | null }> {
+  stateSeq += 1;
+  const token = `state-${stateSeq}`;
+  h.states.set(token, { claims, privateContext: { ...privateContext } });
+  const response = await callbackRoute.handler(
+    new Request(`https://papercusp.example/api/oauth/callback?code=code-${stateSeq}&state=${token}`),
+    CTX,
+  );
+  const location = response.headers.get('location');
+  if (!location) throw new Error(`callback answered ${response.status}: ${await response.text()}`);
+  const url = new URL(location);
+  return { connected: url.searchParams.get('oauth_connected'), error: url.searchParams.get('oauth_error') };
+}
+
+function descriptorConnect(field: string, reconnectProviderAccountId?: string) {
+  return runCallback(
+    { plugin: PLUGIN, harness: HARNESS, field, provider: PLUGIN, providerHost: 'auth.example-mail.test' },
+    {
+      ownerUserId: userId,
+      workspaceId: WS,
+      codeVerifier: 'verifier-'.padEnd(60, 'x'),
+      requestedScopes: JSON.stringify(['mail.read', 'calendar.read']),
+      ...(reconnectProviderAccountId ? { reconnectProviderAccountId } : {}),
+    },
+  );
+}
+
+function googleConnect(field: string, reconnectProviderAccountId?: string) {
+  return runCallback(
+    { plugin: GOOGLE_WORKSPACE_OAUTH_PLUGIN, harness: HARNESS, field, provider: 'google', providerHost: 'accounts.google.com' },
+    {
+      ownerUserId: userId,
+      workspaceId: WS,
+      requestedScopes: JSON.stringify([...GOOGLE_WORKSPACE_SCOPES]),
+      ...(reconnectProviderAccountId ? { reconnectProviderAccountId } : {}),
+    },
+  );
+}
+
+async function sources(kinds: string[]): Promise<SourceRow[]> {
+  return sql<SourceRow[]>`
+    SELECT id::text,
+           kind,
+           provider_account_id AS "providerAccountId",
+           credential_ref AS "credentialRef",
+           status,
+           cursor,
+           last_error AS "lastError"
+      FROM harness_shared.data_sources
+     WHERE workspace_id = ${WS}
+       AND owner_user_id = ${userId}::uuid
+       AND kind = ANY(${kinds})
+     ORDER BY provider_account_id, kind`;
+}
+
+const SUITE_KINDS = ['fake-calendar', 'fake-mail'];
+
+beforeAll(async () => {
+  org = await createOrgTestDb();
+  sql = org.adminSql;
+  h.sql = sql;
+  const users = await sql<Array<{ id: string }>>`
+    INSERT INTO harness_shared.users (username, display_name)
+    VALUES (${'connection-lifecycle-owner-' + Date.now()}, 'Lifecycle Owner')
+    RETURNING id`;
+  userId = users[0].id;
+  await sql`
+    INSERT INTO harness_shared.pots
+      (workspace_id, pot_home_slug, public_key, keychain_id, created_at)
+    VALUES (${WS}, ${GMAIL_RESPOND_DRAFT_HARNESS}, ${Buffer.from([3])}, 'kc-connection-lifecycle', 0)
+    ON CONFLICT (workspace_id, pot_home_slug) DO NOTHING`;
+  await sql`
+    INSERT INTO harness_shared.harness_registry (workspace_id, payload)
+    VALUES (
+      ${WS},
+      ${JSON.stringify({
+        projects: [{ slug: GMAIL_RESPOND_DRAFT_HARNESS, path: '/tmp/connection-lifecycle-email', harness_kind: 'hive' }],
+      })}::text::jsonb
+    )
+    ON CONFLICT (workspace_id) DO UPDATE SET payload = EXCLUDED.payload`;
+
+  const registry = providerRegistry();
+  registry.unregisterPlugin(PROVIDER_PLUGIN_NAME);
+  for (const d of [
+    descriptor('fake-mail', 'email-message', 'mail.read', true),
+    descriptor('fake-calendar', 'calendar-event', 'calendar.read', false),
+  ]) {
+    await registry.register({ descriptor: d, adapter: adapter(d), pluginName: PROVIDER_PLUGIN_NAME });
+  }
+}, 180_000);
+
+afterAll(async () => {
+  providerRegistry().unregisterPlugin(PROVIDER_PLUGIN_NAME);
+  await org?.cleanup();
+}, 300_000);
+
+beforeEach(async () => {
+  home = await fs.mkdtemp(join(tmpdir(), 'paperhome-connection-lifecycle-'));
+  process.env.PAPERCUSP_HOME = home;
+  await fs.writeFile(
+    join(home, 'oauth-apps.json'),
+    JSON.stringify({
+      [GROUP]: { clientId: 'client-1', clientSecret: 'secret-1', redirectUri: 'https://papercusp.example/api/oauth/callback' },
+    }),
+  );
+  __resetRegistryForTest();
+  registerProvider({
+    id: 'google',
+    config: {
+      clientId: 'google-client',
+      clientSecret: '',
+      authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+      tokenUrl: 'https://oauth2.googleapis.com/token',
+      redirectUri: 'https://papercusp.example/api/oauth/callback',
+    },
+    defaultScopes: GOOGLE_WORKSPACE_SCOPES,
+    buildAuthorizeUrl: () => 'https://accounts.google.com/o/oauth2/v2/auth',
+    exchangeCode: async () => ({ accessToken: 'google-access', refreshToken: 'google-refresh', expiresAt: Date.now() + 3_600_000 }),
+    refresh: async () => ({ accessToken: 'google-access-2' }),
+  });
+  vi.stubGlobal('fetch', vi.fn(fakeFetch));
+  net.account = { id: 'acct-1', name: 'Alpha' };
+  net.gmailEmail = 'owner@example.com';
+  net.refreshError = null;
+  net.tokenSeq = 0;
+  await sql`DELETE FROM harness_shared.trigger_bindings WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`;
+});
+
+afterEach(async () => {
+  vi.unstubAllGlobals();
+  __resetRegistryForTest();
+  delete process.env.PAPERCUSP_HOME;
+  await fs.rm(home, { recursive: true, force: true });
+});
+
+describe('descriptor credential group through the real OAuth callback', () => {
+  it('reauthorization is explicit for every group member, and expired grants stop syncing', async () => {
+    const registry = providerRegistry();
+    const originals = registry.list().filter((entry) => entry.pluginName === PROVIDER_PLUGIN_NAME);
+    const tokens = { accessToken: 'manual-access', expiresAt: Date.now() + 3600000 };
+    const owner = { workspaceId: WS, ownerUserId: userId, reconnectProviderAccountId: null };
+    const reset = async (manual: boolean) => {
+      registry.unregisterPlugin(PROVIDER_PLUGIN_NAME);
+      for (const entry of originals) {
+        const d = { ...entry.descriptor, oauth: { ...entry.descriptor.oauth!, ...(manual ? { refreshPolicy: 'reauthorize' as const } : {}) } };
+        await registry.register({ descriptor: d, adapter: adapter(d), pluginName: PROVIDER_PLUGIN_NAME });
+      }
+    };
+    try {
+      expect(missingRefreshTokenRefusal(connectionAdapterForPlugin(PLUGIN)!, owner, [], tokens)).toBe('provider_fake_suite_refresh_token_missing');
+      await reset(true);
+      expect(missingRefreshTokenRefusal(connectionAdapterForPlugin(PLUGIN)!, owner, [], tokens)).toBeNull();
+      const [source] = await sql<{ id: string }[]>`INSERT INTO harness_shared.data_sources
+        (workspace_id, kind, owner_user_id, provider_account_id, credential_ref, status)
+        VALUES (${WS}, 'fake-mail', ${userId}, 'manual-account', ${PLUGIN + ':manual'}, 'connected') RETURNING id::text`;
+      await fsTokenStorage.update(PLUGIN, HARNESS, { manual: tokens.accessToken, manual_expires_at: tokens.expiresAt });
+      await expect(connectionAccessToken(sql, { workspaceId: WS, harness: HARNESS, credentialRef: PLUGIN + ':manual' }))
+        .resolves.toEqual({ accessToken: 'manual-access' });
+      await expect(connectionAccessToken(sql, { workspaceId: WS, harness: HARNESS, credentialRef: PLUGIN + ':manual', now: tokens.expiresAt + 1 }))
+        .resolves.toMatchObject({ reconnectRequired: true, reason: 'provider_fake_suite_refresh_token_missing' });
+      const [row] = await sql<{ status: string }[]>`SELECT status FROM harness_shared.data_sources WHERE id = ${source.id}::uuid`;
+      expect(row.status).toBe('reconnect_required');
+      // Mixing a normal member into a manual group preserves the stricter contract.
+      const first = originals[0];
+      registry.unregister(first.descriptor.id);
+      await registry.register(first);
+      expect(connectionAdapterForPlugin(PLUGIN)!.requiresRefreshToken(tokens)).toBe(true);
+    } finally {
+      await reset(false);
+    }
+  });
+
+  it('derives one adapter per credential group, bound to its own provider id', () => {
+    const adapter = connectionAdapterForPlugin(PLUGIN);
+    expect(adapter).toMatchObject({ oauthPlugin: PLUGIN, oauthProviderId: PLUGIN, errorPrefix: 'provider_fake_suite' });
+    expect([...adapter!.sourceKinds].sort()).toEqual(SUITE_KINDS);
+    expect(connectionAdapterFor(PLUGIN, 'google')).toBeNull();
+  });
+
+  it('connects one shared credential and provisions a connected source per group member for the consented account', async () => {
+    await expect(descriptorConnect('slot-a')).resolves.toEqual({ connected: PLUGIN, error: null });
+    const rows = await sources(SUITE_KINDS);
+    expect(rows).toEqual([
+      expect.objectContaining({ kind: 'fake-calendar', providerAccountId: 'acct-1', credentialRef: `${PLUGIN}:slot-a`, status: 'connected' }),
+      expect.objectContaining({ kind: 'fake-mail', providerAccountId: 'acct-1', credentialRef: `${PLUGIN}:slot-a`, status: 'connected' }),
+    ]);
+    const stored = await fsTokenStorage.read(PLUGIN, HARNESS);
+    expect(stored).toMatchObject({
+      'slot-a': 'access-1',
+      'slot-a_refresh': 'refresh-1',
+      'slot-a_expired': false,
+      'slot-a_scopes': ['mail.read', 'calendar.read'],
+    });
+    // The identity endpoint was called by the host with the fresh token; the provider never received it.
+    const identityCall = vi.mocked(fetch).mock.calls.find(([input]) => String(input instanceof URL ? input.href : input) === IDENTITY_URL);
+    expect(identityCall?.[1]).toMatchObject({
+      method: 'POST',
+      body: IDENTITY_BODY,
+      headers: { authorization: 'Bearer access-1', 'content-type': 'application/json' },
+    });
+  });
+
+  it('keeps source ids and cursors when the same account reconnects', async () => {
+    await descriptorConnect('slot-a');
+    const before = await sources(SUITE_KINDS);
+    await sql`UPDATE harness_shared.data_sources SET cursor = '{"page":"p-7"}'::jsonb WHERE id = ${before[1].id}::uuid`;
+
+    await expect(descriptorConnect('slot-a', 'acct-1')).resolves.toEqual({ connected: PLUGIN, error: null });
+    const after = await sources(SUITE_KINDS);
+    expect(after.map((row) => row.id)).toEqual(before.map((row) => row.id));
+    expect(after[1]).toMatchObject({ cursor: { page: 'p-7' }, status: 'connected', credentialRef: `${PLUGIN}:slot-a` });
+    await expect(fsTokenStorage.read(PLUGIN, HARNESS)).resolves.toMatchObject({ 'slot-a': 'access-2' });
+  });
+
+  it('refuses a reconnect that authenticates a different account and leaves the original binding alone', async () => {
+    await descriptorConnect('slot-a');
+    net.account = { id: 'acct-other', name: 'Other' };
+    await expect(descriptorConnect('slot-a', 'acct-1')).resolves.toEqual({
+      connected: null,
+      error: 'provider_fake_suite_account_mismatch',
+    });
+    const rows = await sources(SUITE_KINDS);
+    expect(rows.map((row) => row.providerAccountId)).toEqual(['acct-1', 'acct-1']);
+    await expect(fsTokenStorage.read(PLUGIN, HARNESS)).resolves.toMatchObject({ 'slot-a': 'access-1' });
+  });
+
+  it('adds a second account as its own sources and credential, and refuses re-adding a connected account', async () => {
+    await descriptorConnect('slot-a');
+    net.account = { id: 'acct-2', name: 'Beta' };
+    await expect(descriptorConnect('slot-b')).resolves.toEqual({ connected: PLUGIN, error: null });
+    const rows = await sources(SUITE_KINDS);
+    expect(rows.map((row) => [row.providerAccountId, row.kind, row.credentialRef])).toEqual([
+      ['acct-1', 'fake-calendar', `${PLUGIN}:slot-a`],
+      ['acct-1', 'fake-mail', `${PLUGIN}:slot-a`],
+      ['acct-2', 'fake-calendar', `${PLUGIN}:slot-b`],
+      ['acct-2', 'fake-mail', `${PLUGIN}:slot-b`],
+    ]);
+
+    net.account = { id: 'acct-1', name: 'Alpha' };
+    await expect(descriptorConnect('slot-c')).resolves.toEqual({
+      connected: null,
+      error: 'provider_fake_suite_account_already_connected',
+    });
+    expect(await sources(SUITE_KINDS)).toHaveLength(4);
+  });
+
+  it('disconnects one account: sync stops and tokens clear, but source ids, cursors and the other account remain', async () => {
+    await descriptorConnect('slot-a');
+    net.account = { id: 'acct-2', name: 'Beta' };
+    await descriptorConnect('slot-b');
+    const before = await sources(SUITE_KINDS);
+    await sql`UPDATE harness_shared.data_sources SET cursor = '{"page":"p-3"}'::jsonb WHERE id = ${before[0].id}::uuid`;
+
+    const adapter = connectionAdapterForPlugin(PLUGIN)!;
+    await expect(
+      disconnectConnection(sql, adapter, { workspaceId: WS, ownerUserId: userId, providerAccountId: 'acct-1', harness: HARNESS }),
+    ).resolves.toEqual({ sources: 2, clearedFields: ['slot-a'] });
+
+    const after = await sources(SUITE_KINDS);
+    expect(after.map((row) => row.id)).toEqual(before.map((row) => row.id));
+    expect(after.map((row) => [row.providerAccountId, row.status])).toEqual([
+      ['acct-1', 'disabled'],
+      ['acct-1', 'disabled'],
+      ['acct-2', 'connected'],
+      ['acct-2', 'connected'],
+    ]);
+    expect(after[0].cursor).toEqual({ page: 'p-3' });
+    const stored = await fsTokenStorage.read(PLUGIN, HARNESS);
+    expect(stored).toMatchObject({ 'slot-a': null, 'slot-a_refresh': null, 'slot-a_expired': true, 'slot-b': 'access-2' });
+  });
+
+  it('moves every source on a revoked credential to reconnect_required, and a reconnect restores them in place', async () => {
+    await descriptorConnect('slot-a');
+    const before = await sources(SUITE_KINDS);
+    const adapter = connectionAdapterForPlugin(PLUGIN)!;
+
+    await expect(refreshConnectionCredential(sql, adapter, { workspaceId: WS, harness: HARNESS, field: 'slot-a' })).resolves.toEqual({
+      ok: true,
+      accessToken: 'refreshed-access',
+    });
+
+    net.refreshError = 'invalid_grant';
+    await expect(refreshConnectionCredential(sql, adapter, { workspaceId: WS, harness: HARNESS, field: 'slot-a' })).resolves.toMatchObject({
+      ok: false,
+      reconnectRequired: true,
+    });
+    const revoked = await sources(SUITE_KINDS);
+    expect(revoked.map((row) => row.status)).toEqual(['reconnect_required', 'reconnect_required']);
+    expect(revoked[0].lastError).toMatch(/invalid_grant/);
+    await expect(fsTokenStorage.read(PLUGIN, HARNESS)).resolves.toMatchObject({ 'slot-a_expired': true });
+
+    net.refreshError = null;
+    await expect(descriptorConnect('slot-a', 'acct-1')).resolves.toEqual({ connected: PLUGIN, error: null });
+    const restored = await sources(SUITE_KINDS);
+    expect(restored.map((row) => row.id)).toEqual(before.map((row) => row.id));
+    expect(restored.map((row) => [row.status, row.lastError])).toEqual([
+      ['connected', null],
+      ['connected', null],
+    ]);
+  });
+
+  it('a non-revocation refresh failure throws instead of demanding a reconnect', async () => {
+    await descriptorConnect('slot-a');
+    net.refreshError = 'temporarily_unavailable';
+    await expect(
+      refreshConnectionCredential(sql, connectionAdapterForPlugin(PLUGIN)!, { workspaceId: WS, harness: HARNESS, field: 'slot-a' }),
+    ).rejects.toThrow(/temporarily_unavailable/);
+    expect((await sources(SUITE_KINDS)).map((row) => row.status)).toEqual(['connected', 'connected']);
+  });
+});
+
+describe('Google Workspace through the same lifecycle', () => {
+  const GOOGLE_KINDS = ['contacts', 'gcal', 'gmail'];
+
+  async function googleBindings(): Promise<Array<{ kind: string; armed: boolean }>> {
+    return sql<Array<{ kind: string; armed: boolean }>>`
+      SELECT source.kind, binding.armed
+        FROM harness_shared.trigger_bindings AS binding
+        JOIN harness_shared.data_sources AS source ON source.id = binding.source_id
+       WHERE binding.workspace_id = ${WS} AND source.kind = ANY(${GOOGLE_KINDS})`;
+  }
+
+  // Connect creates NO binding on any Google source. Gmail: plan
+  // generalized-integrations-google-migration-cupboard-workflows-2026-10-05
+  // D-019.3 (a draft responder is opt-in through the email-draft-responder
+  // trigger pack). Calendar: plan app-agent-tasks-durable-execution-2026-10-06
+  // D-011 (meeting prep is submitted by the Calendar app itself; the built-in
+  // launch-plan binding is retired, EI-25243055141955619). A binding count above
+  // zero after connect or reconnect is the regression this guards.
+  it('shares one credential across Gmail, Calendar and Contacts and creates no binding on connect or reconnect', async () => {
+    await expect(googleConnect('owner-slot')).resolves.toEqual({ connected: GOOGLE_WORKSPACE_OAUTH_PLUGIN, error: null });
+    const first = await sources(GOOGLE_KINDS);
+    expect(first.map((row) => [row.kind, row.providerAccountId, row.credentialRef, row.status])).toEqual([
+      ['contacts', 'owner@example.com', 'google-workspace:owner-slot', 'connected'],
+      ['gcal', 'owner@example.com', 'google-workspace:owner-slot', 'connected'],
+      ['gmail', 'owner@example.com', 'google-workspace:owner-slot', 'connected'],
+    ]);
+    expect(await googleBindings()).toEqual([]);
+
+    await expect(googleConnect('owner-slot', 'owner@example.com')).resolves.toEqual({
+      connected: GOOGLE_WORKSPACE_OAUTH_PLUGIN,
+      error: null,
+    });
+    const second = await sources(GOOGLE_KINDS);
+    expect(second.map((row) => row.id)).toEqual(first.map((row) => row.id));
+    expect(await googleBindings()).toEqual([]);
+  });
+
+  it('refuses a Google reconnect that signs in to a different mailbox', async () => {
+    await googleConnect('owner-slot');
+    net.gmailEmail = 'someone-else@example.com';
+    await expect(googleConnect('owner-slot', 'owner@example.com')).resolves.toEqual({
+      connected: null,
+      error: 'google_workspace_account_mismatch',
+    });
+  });
+});

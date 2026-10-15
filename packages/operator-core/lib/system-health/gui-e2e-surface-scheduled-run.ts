@@ -41,17 +41,21 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { REPO_ROOT } from '../agent-tools/docs/_repo-paths';
 import { collectChildOutput } from '../child-output.js';
-import { escalateAlarm } from '../alarm-attention';
+import { escalateAlarm, resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+
+export const GUI_SURFACE_ALARM_CONDITION_KEY = 'alarm:gui-e2e-surface';
 
 const SUITE_SCRIPT = 'scripts/tauri-surface-verify-suite.sh';
 
 /**
- * Bounded — 8 sequential legs, each a real isolated-Xvfb Tauri boot (the
- * live P-004 gym leg alone took ~1-3min to boot). 40 minutes gives generous
- * margin without letting a wedged leg hold the slot indefinitely; mirrors
- * `desktop-perf-scheduled-run`'s own SIGKILL-on-timeout shape.
+ * Bounded — 23 sequential legs, each a real Xvfb Tauri boot. Measured 2026-10-06 (WI-10006730): one
+ * isolated-DB leg (ticket-integrations) took ~5.5 min end to end, and the first boot after a
+ * source change adds a host bundle (~7-8 min). At ~4-5 min a leg the suite needs ~1.5-2 h, so
+ * 150 minutes leaves margin without letting a wedged leg hold the slot indefinitely. (It was 40
+ * minutes, sized for the original 8 legs, and only went unnoticed because no leg ran at all until
+ * the scheduled run got a PAPERCUSP_SID.) Mirrors `desktop-perf-scheduled-run`'s SIGKILL-on-timeout.
  */
-export const RUN_TIMEOUT_MS = 40 * 60 * 1000;
+export const RUN_TIMEOUT_MS = 150 * 60 * 1000;
 
 /** Bound the tail kept for logs/escalation body — an excerpt, not a report. */
 const LOG_TAIL_CHARS = 4000;
@@ -98,24 +102,41 @@ export interface GuiE2eSurfaceScheduledRunResult {
   escalated?: boolean;
 }
 
+/**
+ * The identity every leg's verifier is attributed to when the suite runs on the schedule
+ * (WI-10006730). scripts/verify-tauri-headless.sh refuses to boot without a PAPERCUSP_SID, its
+ * provenance anchor that tells an agent rig apart from the owner's live desktop. bg-host carries
+ * none, so before this every scheduled leg died at that check and the suite ran zero legs.
+ */
+export const GUI_E2E_SURFACE_SCHEDULED_SID = 'system-gui-e2e-surface-scheduled-run';
+
+/** The suite's spawn env: the host env plus an attributable PAPERCUSP_SID (a caller's own wins). */
+export function guiE2eSurfaceSuiteEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const sid = base.PAPERCUSP_SID?.trim();
+  return { ...base, PAPERCUSP_SID: sid ? sid : GUI_E2E_SURFACE_SCHEDULED_SID };
+}
+
 /** IO seam for tests. */
 export interface GuiE2eSurfaceScheduledRunIO {
   spawnFn: (command: string, args: readonly string[], options: Record<string, unknown>) => ChildProcess;
   readEnabled: () => Promise<boolean>;
   /** Injectable for tests; production defaults to the shared alarm-attention rail. */
-  escalate: (input: { title: string; body: string }) => Promise<boolean>;
+  escalate: (input: { title: string; body: string }, attention?: AlarmAttentionDeps) => Promise<boolean>;
+  resolve?: (attention?: AlarmAttentionDeps) => Promise<boolean>;
 }
 
-const defaultIO: GuiE2eSurfaceScheduledRunIO = {
+export const defaultIO: GuiE2eSurfaceScheduledRunIO = {
   spawnFn: (command, args, options) => spawn(command, args as string[], options),
   readEnabled: () => getFlag(FLAGS.GUI_E2E_SURFACE_SCHEDULED_RUN, 'system').catch(() => true),
-  escalate: (input) =>
+  escalate: (input, attention) =>
     escalateAlarm({
       title: input.title,
       body: input.body,
       cooldownMs: ESCALATION_COOLDOWN_MS,
       source: 'gui-e2e-surface-scheduled-run',
-    }),
+      conditionKey: GUI_SURFACE_ALARM_CONDITION_KEY,
+    }, attention),
+  resolve: (attention) => resolveAlarm(GUI_SURFACE_ALARM_CONDITION_KEY, 'gui-e2e-surface-scheduled-run', attention),
 };
 
 /**
@@ -136,7 +157,7 @@ export async function runGuiE2eSurfaceScheduledRun(
   return new Promise((resolve) => {
     const child = io.spawnFn('bash', [SUITE_SCRIPT], {
       cwd: REPO_ROOT,
-      env: process.env,
+      env: guiE2eSurfaceSuiteEnv(process.env),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const { stdout, stderr } = collectChildOutput(child);
@@ -202,6 +223,7 @@ export async function runGuiE2eSurfaceScheduledRun(
                 `the scheduled-tick log for the suite's own stdout tail.`;
           escalated = await io.escalate({ title, body });
         } else {
+          if (legs.length > 0 && failed.length === 0) await io.resolve?.();
           console.log(
             `[gui-e2e-surface-scheduled-run] ran in ${durationMs}ms, all ${legs.length} leg(s) passed`,
           );

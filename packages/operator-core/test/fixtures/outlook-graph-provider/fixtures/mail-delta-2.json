@@ -1,0 +1,19 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#Collection(message)",
+  "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta?$deltatoken=mail-round-2",
+  "value": [
+    {
+      "id": "AAMkAGI2-msg-3",
+      "conversationId": "AAQkAGI2-conv-offsite",
+      "subject": "Offsite venue",
+      "bodyPreview": "The lakeside venue is confirmed for November.",
+      "body": { "contentType": "text", "content": "The lakeside venue is confirmed for November." },
+      "from": { "emailAddress": { "name": "Katherine Johnson", "address": "katherine@fabrikam.example" } },
+      "toRecipients": [{ "emailAddress": { "name": "Owner", "address": "owner@contoso.example" } }],
+      "receivedDateTime": "2026-10-05T11:40:00Z",
+      "internetMessageId": "<msg-3@fabrikam.example>",
+      "categories": [],
+      "isRead": false
+    }
+  ]
+}

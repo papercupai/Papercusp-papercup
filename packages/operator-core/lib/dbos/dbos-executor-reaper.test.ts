@@ -102,7 +102,7 @@ describe('reapDeadExecutorWorkflows', () => {
       staleWorkflowIds: ['sched-.routinesTick-old'],
     });
     const staleSelect = calls.find((c) => c.text.includes('SELECT workflow_uuid'))!;
-    expect(staleSelect.text).toContain("name = 'routinesTick'");
+    expect(staleSelect.text).toContain("name IN ('routinesTick', 'routinesSweepTick')");
     expect(staleSelect.text).toContain("name = 'routineFire'");
     expect(staleSelect.text).toContain('created_at <');
     expect(staleSelect.text).toContain('NOT EXISTS');
@@ -161,7 +161,7 @@ describe('reapDeadExecutorWorkflows', () => {
     ]);
     expect(res.requeuedRoutineIds).toEqual(['rt_recovered']);
     const staleSelect = calls.find((c) => c.text.includes('SELECT workflow_uuid'))!;
-    expect(staleSelect.text).toContain("name = 'routinesTick'");
+    expect(staleSelect.text).toContain("name IN ('routinesTick', 'routinesSweepTick')");
     expect(staleSelect.text).toContain("name = 'routineFire'");
     expect(staleSelect.text).toContain('created_at <');
     expect(staleSelect.text).not.toContain('COALESCE(started_at_epoch_ms, created_at)');

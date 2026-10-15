@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import AdmissionRunsClient from "@/app/admin/admission/AdmissionRunsClient";
+import TicketSourcesHealth from "@/app/admin/admission/TicketSourcesHealth";
 import AdminShell from "../../components/admin/AdminShell";
 
 /**
@@ -15,6 +16,7 @@ function AdminAdmissionPage() {
   return (
     <AdminShell title="Admission">
       <AdmissionRunsClient />
+      <TicketSourcesHealth />
     </AdminShell>
   );
 }

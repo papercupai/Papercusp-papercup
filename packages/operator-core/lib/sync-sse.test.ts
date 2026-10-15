@@ -208,6 +208,44 @@ describe('sync-sse LISTEN fan-out + replay', () => {
     }
   });
 
+  it('D-012: work-item list targets coalesce on a 10s trailing window under sustained writes; other targets keep 2s', async () => {
+    const { MAX_BRIDGE_COALESCE_WINDOW_MS } = await import('@papercusp/sync/server');
+    // The control target is fed by the same hot source, so the only variable is the policy.
+    bridgeReturn = (name) =>
+      name === 'harness_shared.work_items.changed'
+        ? ['workItems.summary', 'workItems.byHarness', 'featureQueue.byHarness']
+        : [];
+    const { subscribe, EXPENSIVE_LIST_COALESCE_WINDOW_MS, EXPENSIVE_LIST_QUERY_NAMES } = await load();
+    // The library clamps larger values silently, so pin the policy inside the ceiling.
+    expect(EXPENSIVE_LIST_COALESCE_WINDOW_MS).toBe(10_000);
+    expect(EXPENSIVE_LIST_COALESCE_WINDOW_MS).toBeLessThanOrEqual(MAX_BRIDGE_COALESCE_WINDOW_MS);
+    expect([...EXPENSIVE_LIST_QUERY_NAMES].sort()).toEqual(['workItems.byHarness', 'workItems.summary']);
+
+    const sub = vi.fn();
+    await subscribe(sub);
+    const count = (name: string) => sub.mock.calls.filter((c) => c[0].name === name).length;
+
+    // One work_items write every 500ms for 20s (41 writes), the live shape that
+    // produced ~1 list invalidation per 2s per target on 2026-10-01.
+    capturedListen!(JSON.stringify({ name: 'harness_shared.work_items.changed', args: { id: 'w0' } }));
+    for (let i = 1; i <= 40; i++) {
+      vi.advanceTimersByTime(500);
+      capturedListen!(JSON.stringify({ name: 'harness_shared.work_items.changed', args: { id: `w${i}` } }));
+    }
+    // Leading edge + one trailing event at +10.5s for each list target.
+    expect(count('workItems.summary')).toBe(2);
+    expect(count('workItems.byHarness')).toBe(2);
+    // The control keeps the 2s bound: leading + trailing at +2.5s, +4.5s ... +18.5s.
+    expect(count('featureQueue.byHarness')).toBe(10);
+
+    // The final write is still delivered, within the 10s bound.
+    vi.advanceTimersByTime(500);
+    const summaries = sub.mock.calls.map((c) => c[0]).filter((e) => e.name === 'workItems.summary');
+    expect(summaries).toHaveLength(3);
+    expect(summaries[2].ts).toBe(T0 + 20_000);
+    expect(count('workItems.byHarness')).toBe(3);
+  });
+
   it('taps emitSystemEvent for a <table>.changed event so cache.bumpTags fires on real DB changes', async () => {
     // caching-layer-tag-eca KEYSTONE: a real DB change (sync_invalidate NOTIFY) must reach the
     // in-process reaction matcher so the cache.bumpTags ECA rule invalidates — otherwise the

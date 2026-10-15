@@ -38,6 +38,13 @@ describe('lintOwnerQuestionSlots', () => {
     expect(lintOwnerQuestionSlots('question for the owner: keep the legacy route?').flagged).toBe(true);
   });
 
+  it('does not treat the coord:ask owner-UI-only tool name as an owner question', () => {
+    const line =
+      'The intentional coord:ask owner-UI-only message is caller-side; generic unauthorized workspace-scope remains structural.';
+    expect(lintOwnerQuestionSlots(line)).toEqual({ flagged: false, matches: [] });
+    expect(lintOwnerQuestionSlots(`${line} Separately, ask the owner which behavior should ship.`).flagged).toBe(true);
+  });
+
   it('flags blocked-on-owner-answer shapes', () => {
     expect(lintOwnerQuestionSlots('waiting on the owner to pick the pricing model').flagged).toBe(true);
     expect(lintOwnerQuestionSlots("blocked on owner's decision about the schema split").flagged).toBe(true);
@@ -219,6 +226,34 @@ describe('EI-19988500685566622: negation and third-party-subject suppression', (
       'su-6e9985dd-1234-4a11-9f01-abc123456789 finished its item; separately, need to ask the owner about scope.',
     );
     expect(r.flagged).toBe(true);
+  });
+});
+
+describe('EI-25663783345644648: matcher vocabulary and visible trigger', () => {
+  const matcherDescription =
+    'Current source `packages/operator-core/lib/carry-surface-typed-slots.ts` OWNER_QUESTION_RES patterns look for ' +
+    'ask owner/human, question for owner/human, waits/blocks on owner, owner input/answer/decision/etc., or owner ' +
+    'decide/confirm/answer/approve/choose.';
+
+  it('does not treat the detector\'s explicit trigger enumeration as an owner question', () => {
+    expect(lintOwnerQuestionSlots(matcherDescription)).toEqual({ flagged: false, matches: [] });
+  });
+
+  it('still flags a real ask in a later sentence after the matcher description', () => {
+    expect(lintOwnerQuestionSlots(`${matcherDescription} Separately, ask the owner about the retention window.`).flagged)
+      .toBe(true);
+  });
+
+  it('reports the exact trigger when the display-capped line prefix hides it', () => {
+    const retainedNext =
+      '[self-imposed] On the next wake, read coord inbox for the leader’s exact host/run receipt. If absent, ' +
+      'continue a bounded search for host1690631 activity metadata and loaded_build_identity without repeating the ' +
+      'broad log window. Keep dependency headroom work nondestructive, do not run VH retention before the owner answer, ' +
+      'and do not scheduler:get_next until both held items are terminal.';
+    const result = lintOwnerQuestionSlots(retainedNext);
+    expect(result.flagged).toBe(true);
+    expect(result.matches[0]).toMatchObject({ kind: 'owner-question-prose', matchedText: 'owner answer' });
+    expect(result.matches[0].line).not.toContain('owner answer');
   });
 });
 

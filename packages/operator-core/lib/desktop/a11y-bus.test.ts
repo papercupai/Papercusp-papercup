@@ -8,6 +8,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   busBelongsToDisplay,
+  a11yBusPropertyReadbackFailure,
+  a11yBusPropertyWriteFailure,
   createOwnedDaemonRelease,
   minimalSessionBusConfig,
   parseSessionBusPid,
@@ -132,6 +134,35 @@ describe('publishBusPropertyCommand', () => {
       '-display', ':110', '-root', '-f', 'AT_SPI_BUS', '8s', '-set', 'AT_SPI_BUS',
       'unix:path=/run/user/1000/at-spi/bus_110',
     ]);
+  });
+});
+
+describe('accessibility bus root-property publication', () => {
+  it('accepts only a successful xprop write', () => {
+    expect(a11yBusPropertyWriteFailure({ status: 0 })).toBeNull();
+    expect(a11yBusPropertyWriteFailure({ status: 1, stderr: 'unable to open display' }))
+      .toContain('xprop publication exited 1: unable to open display');
+    expect(a11yBusPropertyWriteFailure({ status: null, error: new Error('spawn ENOENT') }))
+      .toContain('xprop could not publish AT_SPI_BUS: spawn ENOENT');
+  });
+
+  it('requires the root window to expose the exact bus that provisioning returned', () => {
+    const bus = 'unix:path=/run/user/1000/at-spi/bus_110';
+    expect(a11yBusPropertyReadbackFailure(bus, {
+      status: 0,
+      stdout: `AT_SPI_BUS(STRING) = "${bus}"`,
+    })).toBeNull();
+    expect(a11yBusPropertyReadbackFailure(bus, {
+      status: 0,
+      stdout: 'AT_SPI_BUS:  no such atom on any window.\n',
+      stderr: '',
+    })).toContain(
+      'xprop readback did not contain an AT_SPI_BUS property; stdout="AT_SPI_BUS:  no such atom on any window.\\n" stderr=""',
+    );
+    expect(a11yBusPropertyReadbackFailure(bus, {
+      status: 0,
+      stdout: 'AT_SPI_BUS(STRING) = "unix:path=/run/user/1000/at-spi/bus_0"',
+    })).toContain('expected unix:path=/run/user/1000/at-spi/bus_110');
   });
 });
 

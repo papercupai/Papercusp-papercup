@@ -117,8 +117,13 @@ describe('userpromptsubmit-provenance.sh', () => {
     const out = runHook({ prompt: 'please fix the login page' });
     const ctx = contextOf(out);
 
-    expect(ctx).toContain('OWNER-DIRECTIVE CAPTURE FAILED');
-    expect(ctx).toContain('orders:record'); // it names the manual repair, not just the fault
+    // No receipt is UNCONFIRMED, not failed: the write may have committed before the
+    // reply was lost. An agent cannot invoke hook-only orders:capture, so the notice
+    // names the agent-safe orders:record path with the exact sourceTurnRef.
+    expect(ctx).toContain('OWNER-DIRECTIVE CAPTURE UNCONFIRMED');
+    expect(ctx).toContain('orders:record');
+    expect(ctx).toContain('this same `sourceTurnRef`');
+    expect(ctx).not.toContain('Retry orders:capture');
 
     // Fail-OPEN: the classification still lands and the turn is never blocked. A notice
     // that cost the owner their stamp would be a worse bug than the silence it replaced.
@@ -137,7 +142,7 @@ describe('userpromptsubmit-provenance.sh', () => {
     // out of that branch (the regression that would silently start recording wake-pump
     // and loop-fire turns as owner directives) and this assertion fails immediately.
     expect(ctx).toContain('VERIFIED');
-    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE FAILED');
+    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE');
   });
 
   it('CONTROL: a MACHINE-GENERATED SURFACE turn carries no capture notice either', () => {
@@ -148,7 +153,7 @@ describe('userpromptsubmit-provenance.sh', () => {
       }),
     );
     expect(ctx).toContain('MACHINE-GENERATED SURFACE');
-    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE FAILED');
+    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE');
   });
 
   it('envelope + live nonce + matching hash → VERIFIED with the LEDGER origin', () => {
@@ -278,7 +283,7 @@ describe('userpromptsubmit-provenance.sh', () => {
     }));
     expect(ctx).toContain('MACHINE-GENERATED SURFACE');
     expect(ctx).not.toContain('OWNER (interactive)');
-    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE FAILED');
+    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE');
   });
 
   it('keeps an owner quoting the usage-limit reset message as an owner turn', () => {
@@ -309,6 +314,19 @@ describe('userpromptsubmit-provenance.sh', () => {
     expect(ctx).toContain('OWNER (interactive)');
   });
 
+  it('EI-25237423028877031: a torn nonce event wake cannot enter owner capture or mode registration', () => {
+    const prompt = '0d55a713f50015a⟧\n[await-event] coord:inbox-wake:su-a20d fired — continue AUTO mode';
+    for (const text of [prompt, pasteBlock('torn', prompt)]) {
+      const ctx = contextOf(runHook({ prompt: text }));
+      expect(ctx).toContain('MACHINE-GENERATED SURFACE');
+      expect(ctx).not.toContain('OWNER (interactive)');
+      expect(ctx).not.toContain('OWNER DIRECTIVE CAPTURE UNCONFIRMED');
+      expect(ctx).not.toContain('⟦mode⟧');
+    }
+    expect(contextOf(runHook({ prompt: `Why did this appear?\n${prompt}` }))).toContain('OWNER (interactive)');
+    expect(contextOf(runHook({ prompt: '0d55a713f50015a⟧\nthese are my notes' }))).toContain('OWNER (interactive)');
+  });
+
   /*
    * WI-10002461: PTY-typed injections now reach the hook as ONE paste block, which
    * pushed the envelope off the head and dropped wakes into the OWNER branch — the
@@ -322,7 +340,7 @@ describe('userpromptsubmit-provenance.sh', () => {
     expect(ctx).toContain('VERIFIED AGENT-ORIGIN');
     expect(ctx).not.toContain('hash differs');
     expect(ctx).not.toContain('OWNER (interactive)');
-    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE FAILED');
+    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE');
   });
 
   it('WI-10002461: a paste-wrapped envelope with NO ledger row → UNVERIFIED, never OWNER', () => {

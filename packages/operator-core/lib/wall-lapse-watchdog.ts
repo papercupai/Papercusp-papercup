@@ -10,11 +10,12 @@
  * would see "no fact" and could easily misread that as "resolved" — a critical
  * safety signal that decayed to the SAFE-LOOKING state with nobody told.
  *
- * `facts:assert { slot:'wall' }` (agent-tools/facts/assert.ts) is the write-side
- * half of the fix: it keys the fact under `wall:` and defaults its TTL to 90d
- * instead of 7d. This module is the READ-side backstop for when even that longer
- * window elapses without a re-assert or an explicit retract — TTL decay on a
- * wall must be LOUD, never silent. Same chassis as the sibling watchdogs
+ * `facts:assert { slot:'wall' }` (agent-tools/facts/assert.ts) keys the fact under
+ * `wall:` and defaults its TTL to 90d. Expiry requests review; the current
+ * unretracted wall stays folded and retained until explicit retraction or
+ * supersession. This module is the READ-side escalation when the review deadline
+ * passes without a re-assert or explicit retract — TTL lapse must be LOUD, never
+ * silent. Same chassis as the sibling watchdogs
  * (rubric-staleness-watchdog.ts, release-deploy-staleness): a PURE alert
  * formatter (unit-tested with no DB), a thin PG sweep wired into the shared
  * routinesTick as one durable step, fail-soft throughout, and the shared
@@ -24,6 +25,23 @@ import { listLapsedWallFacts, type LapsedWallFact } from './agent-facts/store';
 import { recentWatchdogFires, recordFire } from './pot/watchdog';
 import { openEscalation } from './agent-tools/coordination/escalations';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
+import { resolveAlarm, type AlarmAttentionDeps } from './alarm-attention';
+import { broadcastSevereEvent } from './severe-event-broadcast';
+
+const CONDITION_PREFIX = 'alarm:wall-lapse:';
+type WallIdentity = Pick<LapsedWallFact, 'workspaceId' | 'scope' | 'scopeRef' | 'key' | 'sourceHive'>;
+function wallConditionKey(fact: WallIdentity): string {
+  return CONDITION_PREFIX + encodeURIComponent(JSON.stringify([
+    fact.workspaceId, fact.scope, fact.scopeRef ?? '', fact.key, fact.sourceHive ?? '',
+  ]));
+}
+
+async function readOpenWallConditionKeys(): Promise<string[]> {
+  const { computeConditionStates, readConditionEnvelopes } = await import('./agent-tools/coordination/tools/conditions');
+  return computeConditionStates(await readConditionEnvelopes())
+    .filter((condition) => condition.open && condition.condition_key.startsWith(CONDITION_PREFIX))
+    .map((condition) => condition.condition_key);
+}
 
 /** Re-page on the same still-lapsed wall at most once per this many hours. */
 const WALL_LAPSE_DEBOUNCE_HOURS = 24;
@@ -83,6 +101,8 @@ export interface WallLapseSweepDeps {
   recentWatchdogFires?: typeof recentWatchdogFires;
   recordFire?: typeof recordFire;
   openEscalation?: typeof openEscalation;
+  rail?: AlarmAttentionDeps;
+  readOpenConditionKeys?: () => Promise<string[]>;
   now?: number;
 }
 
@@ -104,10 +124,38 @@ export async function wallLapseSweep(deps: WallLapseSweepDeps = {}): Promise<Wal
   } catch (e) {
     return [{ key: '*', outcome: 'error', reason: e instanceof Error ? e.message : String(e) }];
   }
+  const keys = new Set(facts.map(wallConditionKey));
+  // Conditions ALREADY open. `null` = the read failed, so nothing is known to be open and every
+  // lapsed wall is broadcast (fail LOUD — a missed page is the failure this module exists for).
+  let alreadyOpen: ReadonlySet<string> | null = null;
+  try {
+    const open = await (deps.readOpenConditionKeys ?? readOpenWallConditionKeys)();
+    alreadyOpen = new Set(open);
+    for (const key of open) keys.add(key);
+  } catch (e) {
+    console.warn(`[wall-fact-lapse] condition read failed (non-fatal): ${String(e)}`);
+  }
   for (const fact of facts) {
     try {
       const workspaceId = fact.workspaceId || 'default';
       const installSlug = fact.scope === 'harness' && fact.scopeRef ? fact.scopeRef : DEFAULT_INSTALL_SLUG;
+      const { summary, body } = formatWallLapseAlert(fact, now);
+      // ONE broadcast per episode (WI-6554700010008923). The event is declared `oneShot`, which
+      // promises the condition fold that the emitter alarms ONCE and stays silent until recovery —
+      // so an already-open condition needs no re-broadcast to stay open. Before this gate the
+      // broadcast ran on EVERY routines tick, ahead of the 24h debounce below, to `*`: measured
+      // 2026-10-12 14:00–14:25Z, 836 broadcasts for 76 walls (~2 MB of coord log), every one
+      // re-injected into every live agent's next tool result as a `[coord+N]` block.
+      const conditionKey = wallConditionKey(fact);
+      if (!alreadyOpen?.has(conditionKey)) {
+        try {
+          const event = { conditionKey, summary, body, oneShot: true };
+          if (deps.rail?.broadcast) await deps.rail.broadcast(event);
+          else await broadcastSevereEvent(event);
+        } catch (e) {
+          console.warn(`[wall-fact-lapse] condition broadcast failed (non-fatal): ${String(e)}`);
+        }
+      }
       const firedRecently =
         (await (deps.recentWatchdogFires ?? recentWatchdogFires)(
           workspaceId,
@@ -120,7 +168,6 @@ export async function wallLapseSweep(deps: WallLapseSweepDeps = {}): Promise<Wal
         results.push({ key: fact.key, outcome: 'debounced', reason: 'fires-ledger debounce' });
         continue;
       }
-      const { summary, body } = formatWallLapseAlert(fact, now);
       console.warn(`[wall-fact-lapse] ALERT: ${summary}`);
       await (deps.recordFire ?? recordFire)({
         workspaceId,
@@ -137,6 +184,32 @@ export async function wallLapseSweep(deps: WallLapseSweepDeps = {}): Promise<Wal
       results.push({ key: fact.key, outcome: 'alerted', reason: summary });
     } catch (e) {
       results.push({ key: fact.key, outcome: 'error', reason: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  // Read exact CURRENT fact identities, including explicit retractions and
+  // reassertions, after opening. A bounded candidate scan's absence cannot clear
+  // an episode, and the durable condition fold survives an operator restart.
+  const recoveryFor: WallIdentity[] = [];
+  for (const key of keys) {
+    if (!key.startsWith(CONDITION_PREFIX)) continue;
+    try {
+      const identity: unknown = JSON.parse(decodeURIComponent(key.slice(CONDITION_PREFIX.length)));
+      if (!Array.isArray(identity) || identity.length !== 5 || !identity.every((part) => typeof part === 'string')) continue;
+      const [workspaceId, scope, scopeRef, factKey, sourceHive] = identity;
+      if (!['workspace', 'role', 'owner', 'harness', 'work_item'].includes(scope) || !factKey.startsWith('wall:')) continue;
+      recoveryFor.push({ workspaceId, scope: scope as LapsedWallFact['scope'], scopeRef, key: factKey, sourceHive });
+    } catch { /* Unknown key format supplies no recovery evidence. */ }
+  }
+  if (recoveryFor.length > 0) {
+    try {
+      const measured = await (deps.listLapsedWallFacts ?? listLapsedWallFacts)({ recoveryFor });
+      for (const fact of measured) {
+        if (fact.recovered === true && keys.has(wallConditionKey(fact))) {
+          await resolveAlarm(wallConditionKey(fact), 'wall-lapse-watchdog', deps.rail);
+        }
+      }
+    } catch (e) {
+      console.warn(`[wall-fact-lapse] recovery read failed (non-fatal): ${String(e)}`);
     }
   }
   return results;

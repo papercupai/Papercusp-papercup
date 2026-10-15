@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Phone P-008 full worker suite on current staging source",
+  "framework": "operational",
+  "command": ["npm --prefix worker test"],
+  "exitCode": 0,
+  "startedAt": "2026-10-02T17:04:22Z",
+  "finishedAt": "2026-10-02T17:05:39Z",
+  "summary": "The full Phone worker Vitest suite completed successfully in the registered phone-app staging checkout: 18 test files passed, 2 files skipped, 291 tests passed, 4 tests skipped, exit 0. The guarded P-008 unit, integration and isolated LiveKit RTC files are separately bound to focused ledger runs 20542255-57. Live provider and public PSTN acceptance remain downstream.",
+  "assertions": [
+    { "id": "full-worker-suite", "passed": true, "evidence": "Vitest final summary: Test Files 18 passed | 2 skipped (20); Tests 291 passed | 4 skipped (295); exit 0; duration 77.02s." },
+    { "id": "p008-focused-depth", "passed": true, "evidence": "P-008 call-recovery.test.ts, call-recovery.integration.test.ts and call-recovery.e2e.test.ts were previously run as separate focused ledger rows 20542257, 20542256 and 20542255; this full suite supplements those source-bound proofs." }
+  ],
+  "sourceRepo": "phone-app",
+  "sourceRootRef": "app:phone-app"
+}

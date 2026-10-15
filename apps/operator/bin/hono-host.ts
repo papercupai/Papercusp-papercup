@@ -31,6 +31,7 @@ import './boot-flag-store';
 // THIRD: reject a persistent main-port holder before the expensive Hono,
 // bootstrap, native-addon, and cluster import graph evaluates.
 import './hono-host-port-preflight';
+import { observeFallback } from '@papercusp/operator-core/lib/degradation/fallback-observations';
 import cluster from 'node:cluster';
 import { createAdaptorServer } from '@hono/node-server';
 import { listenWithEaddrinuseRetry } from '@papercusp/operator-core/lib/listen-with-eaddrinuse-retry';
@@ -99,7 +100,10 @@ import {
   type OwnerRpcClusterLike,
 } from '@papercusp/operator-core/lib/cluster-owner-rpc';
 import nodeCluster from 'node:cluster';
-import { startSinglePrimaryGuard } from '@papercusp/operator-core/lib/system-health/single-primary-check';
+import {
+  assertPgReadAllStatsCapabilityAtBoot,
+  startSinglePrimaryGuard,
+} from '@papercusp/operator-core/lib/system-health/single-primary-check';
 import { startPtyWsServer } from '@papercusp/operator-core/lib/pty-ws';
 import {
   ensureInvalidationListener,
@@ -118,6 +122,7 @@ import { isBenignHostError } from './host-benign-errors';
 import { applyServerTimeouts } from './host-request-deadline';
 import { pinSubstrateSocketForCluster } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-socket-path';
 import { pinSpawnerSocketForCluster } from '@papercusp/operator-core/lib/fleet/spawner-socket-path';
+import { pinLspDaemonSocketForCluster } from '@papercusp/operator-core/lib/code-intelligence/lsp-daemon-socket';
 import { pinSetupTokenForCluster } from '@papercusp/operator-core/lib/auth-setup-token';
 import { runSubstrateSidecarServer } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-sidecar-server';
 import { runSpawnerSidecarServer } from '@papercusp/operator-core/lib/fleet/spawner-sidecar-server';
@@ -125,9 +130,18 @@ import { markSpawnOffloadHost } from '@papercusp/operator-core/lib/fleet/git-via
 import { runGatewaySidecarMain } from '@papercusp/operator-core/lib/inference-gateway/sidecar-main';
 import { runEmbedSidecarServer } from '@papercusp/operator-core/lib/memory/embed-sidecar-server';
 import { runLiveHealthMonitorMain } from '@papercusp/operator-core/lib/resource-governor/live-health-monitor-main';
+import { runAdmissionPrecheckWorkerMain } from '@papercusp/operator-core/lib/release/admission-fix-precheck-managed';
 import { assertMobileJwtSecretDurableForCluster } from '@papercusp/operator-core/lib/device-jwt';
 import { installStdioPeerGuard } from '@papercusp/operator-core/lib/process-supervision/stdio-peer-guard';
 import { notifySystemdReady } from '@papercusp/operator-core/lib/systemd-readiness';
+
+// The headless verifier imports the frozen bundle with this argument before
+// Tauri starts. Static ESM dependencies have evaluated by this point, so a
+// module-init failure exits immediately without starting listeners or workers.
+if (process.argv.includes('--papercusp-import-smoke')) {
+  console.log('PAPERCUSP_HOST_IMPORT_SMOKE_OK');
+  process.exit(0);
+}
 
 // WI-41422: this entrypoint is also launched directly by desktop-dev/background
 // task supervision, bypassing serve.ts (and its stdio guard). If that supervisor
@@ -156,7 +170,7 @@ installFatalDiagnostics();
 // respawn — the all-day :3270 crash-loop that destabilized the substrate
 // primary (2026-07-09, EI-8810). Divert BEFORE any host boot side-effect; each
 // sidecar server keeps the process alive. Mirrors serve.ts main() exactly.
-const sidecarMode: 'substrate' | 'spawner' | 'gateway' | 'embed' | 'resource-health' | null =
+const sidecarMode: 'substrate' | 'spawner' | 'gateway' | 'embed' | 'resource-health' | 'lsp' | 'repair-precheck' | null =
   process.env.PAPERCUSP_SUBSTRATE_SIDECAR_MODE === '1'
     ? 'substrate'
     : process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE === '1'
@@ -165,11 +179,21 @@ const sidecarMode: 'substrate' | 'spawner' | 'gateway' | 'embed' | 'resource-hea
         ? 'gateway'
         : process.env.PAPERCUSP_EMBED_SIDECAR_MODE === '1'
           ? 'embed'
+          : process.env.PAPERCUSP_LSP_DAEMON_MODE === '1'
+            ? 'lsp'
           : process.env.PAPERCUSP_RESOURCE_GOVERNOR_MONITOR_MODE === '1'
             ? 'resource-health'
+            : process.env.PAPERCUSP_REPAIR_PRECHECK_WORKER_MODE === '1'
+              ? 'repair-precheck'
             : null;
 if (sidecarMode === 'substrate') runSubstrateSidecarServer();
 if (sidecarMode === 'spawner') runSpawnerSidecarServer();
+if (sidecarMode === 'lsp') {
+  void import('@papercusp/operator-core/lib/code-intelligence/lsp-daemon-server').then(
+    ({ runLspDaemonServer }) => runLspDaemonServer(),
+    (error) => { console.error('[lsp-daemon] fatal boot:', error); process.exit(1); },
+  );
+}
 if (sidecarMode === 'gateway') {
   runGatewaySidecarMain().catch((e) => {
     console.error('[inference-gateway] fatal:', e);
@@ -182,6 +206,9 @@ if (sidecarMode === 'resource-health') {
     console.error('[resource-governor-health] fatal:', e);
     process.exit(1);
   });
+}
+if (sidecarMode === 'repair-precheck') {
+  void runAdmissionPrecheckWorkerMain();
 }
 // WI-10002709: this process (primary AND every cluster worker — each re-evaluates
 // this entry) is a request host whose RSS makes a local fork cost ~240 ms of dead
@@ -291,7 +318,10 @@ function startRequestServers(): void {
   // WI-10004071: drop this worker's cached harness_registry / account-pool rows
   // when a SIBLING worker (or any other process) writes them, instead of serving
   // the stale row for the cache TTL. Rides the same sync_invalidate LISTEN.
-  void startOperatorStateCacheCoherence().catch((err) => {
+  void startOperatorStateCacheCoherence().then(() => {
+    observeFallback('host-startup', { eligible: 1, applied: 1, reason: 'applied', scope: 'cache-coherence' });
+  }).catch((err) => {
+    observeFallback('host-startup', { eligible: 1, applied: 0, reason: 'startup-failed', scope: 'cache-coherence' });
     console.warn('[hono-host] operator-state cache coherence did not start (TTL fallback only):', err);
   });
 
@@ -818,6 +848,7 @@ const substrateSocketWorkerEnv = sidecarMode ? {} : pinSubstrateSocketForCluster
 // 9.5GB, 0.004 cores each. Pinning makes every worker resolve the PRIMARY's path, so
 // the adoption probe in spawnSpawnerSidecar finds the sibling's sidecar and reuses it.
 const spawnerSocketWorkerEnv = sidecarMode ? {} : pinSpawnerSocketForCluster(clusterWorkers);
+const lspSocketWorkerEnv = sidecarMode ? {} : pinLspDaemonSocketForCluster(clusterWorkers);
 // WI-10001497: mint + PRINT the first-time setup code once, here in the primary,
 // BEFORE forking — then hand the same value to every worker via workerEnv. Two
 // defects, one root: the token was module state (per-PROCESS), so each reusePort
@@ -836,6 +867,7 @@ const clusterHandle = sidecarMode ? null : startCluster({
     PAPERCUSP_EXPECTED_OPERATOR_PROCS: String(expectedOperatorProcs),
     ...substrateSocketWorkerEnv,
     ...spawnerSocketWorkerEnv,
+    ...lspSocketWorkerEnv,
     ...setupTokenWorkerEnv,
   },
   onPrimary: () => {
@@ -844,7 +876,18 @@ const clusterHandle = sidecarMode ? null : startCluster({
     // LISTEN here too, or exactly the process holding the scout's keying latch
     // misses runtime flips. Idempotent with the worker-path call in single mode.
     void ensureFlagChangeListener();
-    return runBootstrap(); // background machinery (single process in cluster mode)
+    runBootstrap(); // background machinery (single process in cluster mode)
+    // EI-19447868110362941: all pg_stat_activity readers use the same org-admin role.
+    // Check its visibility capability once on this host's primary, after boot migrations,
+    // rather than repeating a pg_has_role probe in each reader or request worker.
+    void waitForBootMigrationGate()
+      .then(() => assertPgReadAllStatsCapabilityAtBoot())
+      .catch((error) => {
+        console.error(
+          '[system-health] pg_read_all_stats boot assertion was not completed because host boot or migrations failed:',
+          error instanceof Error ? error.message : error,
+        );
+      });
   },
   onWorker: () => {
     // A worker is request-only: runBootstrap with background gated off (fork env),

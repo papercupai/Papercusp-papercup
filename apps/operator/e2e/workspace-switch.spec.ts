@@ -141,7 +141,11 @@ test.describe('workspace mutate (PATCH/DELETE) validation', () => {
     const reg = await getRegistry(request);
     const res = await request.delete(`${baseURL}/api/workspaces/${reg.current}`);
     expect(res.status()).toBe(400);
-    expect((await res.json()).error).toMatch(/cannot delete the active workspace/);
+    // Two guards refuse deleting the current workspace: 'last' when it is the
+    // only one registered (any fresh/isolated DB), 'active' when others exist.
+    // Either refusal is the contract; which fires depends on the registry size
+    // (WI-10006791 — the isolated rig has exactly one workspace).
+    expect((await res.json()).error).toMatch(/cannot delete the (active|last) workspace/);
     // Re-verify the workspace was NOT removed.
     const after = await getRegistry(request);
     expect(after.workspaces.some((w) => w.id === reg.current)).toBe(true);

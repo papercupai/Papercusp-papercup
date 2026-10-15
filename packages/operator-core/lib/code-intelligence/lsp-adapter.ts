@@ -27,11 +27,12 @@
  *     whole design is built to prevent.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync, type Dirent } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import type { ChildProcess } from 'node:child_process';
 
@@ -43,10 +44,21 @@ import {
 } from 'vscode-jsonrpc/node';
 
 import { pinModuleState } from '@papercusp/module-singleton';
-import { managedSpawn } from '../task-manager/managed-spawn.ts';
+import type { LspCacheRevision, MeasuredLspInputs } from './lsp-daemon-cache';
+import { managedSpawn, markManagedSpawnTeardown } from '../task-manager/managed-spawn.ts';
+import { killScopeUnit, killTask } from '../task-manager/control.ts';
+import { recordLspWireRequest } from './lsp-query-evidence.ts';
+import { SEMANTIC_COMPLETION_COMMAND, requestSemanticCompletion, semanticCompletionPlugins, snapshotSemanticCompletionRequest,
+  type SemanticCompletionContext, type SemanticCompletionPluginDeclaration } from './lsp-semantic-completion';
+import {
+  initializeCapabilityObservations, lspCapabilityStore, lspServerIdentity,
+  requireLspCapability, requestWithLspCapability, type LspCapabilityKey,
+} from './lsp-capability-matrix';
 
 import {
   toOneIndexed,
+  unmeasuredSourceEvidence,
+  versionedSymbolIdentity,
   type BackendHealth,
   type CodeIntelAnswer,
   type CodeIntelIntent,
@@ -62,10 +74,33 @@ import {
  * member here without adding its spec is a COMPILE error, which is exactly the
  * point: it used to be a silent runtime mislabel.
  */
-export type LspLanguage = 'typescript' | 'rust';
+export const LSP_LANGUAGES = ['typescript', 'rust', 'python', 'go'] as const;
+export type LspLanguage = typeof LSP_LANGUAGES[number];
 
-/** Where the pinned pilot environment lives (P-007). */
-export const LSP_VENDOR_DIR = join(homedir(), '.papercusp', 'vendor', 'lsp');
+/** Select once at daemon bootstrap, so a warm client cannot change installations. */
+export function resolveLspVendorDir(setting: string | undefined = process.env.PAPERCUSP_LSP_VENDOR_DIR): string {
+  if (setting === undefined) return join(homedir(), '.papercusp', 'vendor', 'lsp');
+  if (!isAbsolute(setting) || resolvePath(setting) !== setting)
+    throw new Error('PAPERCUSP_LSP_VENDOR_DIR must be an absolute canonical directory');
+  try {
+    if (realpathSync(setting) === setting && statSync(setting).isDirectory()) return setting;
+  } catch { /* report the configured installation, never fall back to home */ }
+  throw new Error(`PAPERCUSP_LSP_VENDOR_DIR must be an existing canonical directory: ${setting}`);
+}
+
+/** Pinned installation; isolated daemons may select an independently copied tree. */
+export const LSP_VENDOR_DIR = resolveLspVendorDir();
+export const PYRIGHT_VERSION = '1.1.414';
+export const GOPLS_VERSION = 'v0.22.0';
+
+function pinnedVendorFile(path: string, vendorDir: string): string | null {
+  if (!existsSync(path)) return null;
+  const canonical = realpathSync(path);
+  const local = relative(realpathSync(vendorDir), canonical);
+  if (local === '..' || local.startsWith('../') || isAbsolute(local))
+    throw new Error(`Pinned LSP runtime escapes vendor root: ${path} -> ${canonical}`);
+  return path;
+}
 
 /**
  * Resolve the tsserver entrypoint — D-009, and the single most confusing
@@ -87,17 +122,18 @@ export function resolveTsserverPath(vendorDir: string = LSP_VENDOR_DIR): string 
   const req = createRequire(join(vendorDir, 'noop.js'));
   const candidates = ['@typescript/old/lib/tsserver.js', 'typescript/lib/tsserver.js'];
   for (const spec of candidates) {
+    let resolved: string;
     try {
-      const resolved = req.resolve(spec);
-      if (existsSync(resolved)) return resolved;
+      resolved = req.resolve(spec);
     } catch {
-      /* try the next candidate */
+      continue;
     }
+    if (pinnedVendorFile(resolved, vendorDir)) return resolved;
   }
   // Direct path fallback before giving up, so a resolution quirk does not mask
   // an install that is actually fine.
   const direct = join(vendorDir, 'node_modules', '@typescript', 'old', 'lib', 'tsserver.js');
-  if (existsSync(direct)) return direct;
+  if (pinnedVendorFile(direct, vendorDir)) return direct;
 
   throw new Error(
     `No tsserver.js found under ${vendorDir}. This is the D-009 failure: the repo's ` +
@@ -236,7 +272,12 @@ interface LanguageSpec {
   /** The `textDocument.languageId` this server expects. */
   readonly languageId: string;
   /** Absolute path to the pinned server binary, or null when not provisioned. */
-  readonly resolveBin: () => string | null;
+  readonly resolveBin: (vendorDir?: string) => string | null;
+  readonly serverArgs: readonly string[];
+  readonly projectMarkers: readonly string[];
+  readonly initializationOptions: (rootPath: string, plugin?: SemanticCompletionPluginDeclaration, vendorDir?: string) => unknown;
+  /** Interpreted server payloads belong in the binary identity too. */
+  readonly identityFiles?: (vendorDir?: string) => readonly string[];
   /**
    * Readiness is per intent, never per server. Missing entries use the
    * conservative canary-query default; they can answer positively, but cannot
@@ -250,9 +291,14 @@ interface LanguageSpec {
 const LANGUAGE_SPECS: Readonly<Record<LspLanguage, LanguageSpec>> = {
   typescript: {
     languageId: 'typescript',
-    resolveBin: () => {
-      const bin = join(LSP_VENDOR_DIR, 'node_modules', '.bin', 'typescript-language-server');
-      return existsSync(bin) ? bin : null;
+    serverArgs: ['--stdio'],
+    projectMarkers: ['tsconfig.json', 'jsconfig.json'],
+    initializationOptions: (root, plugin, vendorDir = LSP_VENDOR_DIR) =>
+      typescriptInitializationOptions(resolveTsserverPath(vendorDir), undefined, root, plugin),
+    identityFiles: (vendorDir = LSP_VENDOR_DIR) => [resolveTsserverPath(vendorDir)],
+    resolveBin: (vendorDir = LSP_VENDOR_DIR) => {
+      const bin = join(vendorDir, 'node_modules', '.bin', 'typescript-language-server');
+      return pinnedVendorFile(bin, vendorDir);
     },
     readinessStrategy: {
       // The only tsserver intents with measured readiness mechanisms so far.
@@ -262,6 +308,9 @@ const LANGUAGE_SPECS: Readonly<Record<LspLanguage, LanguageSpec>> = {
   },
   rust: {
     languageId: 'rust',
+    serverArgs: [],
+    projectMarkers: ['Cargo.toml'],
+    initializationOptions: () => ({ cargo: { buildScripts: { enable: false } }, procMacro: { enable: false } }),
     // rust-analyzer is a rustup COMPONENT, so its version is pinned by the
     // repo's toolchain rather than floating.
     resolveBin: () => {
@@ -279,6 +328,40 @@ const LANGUAGE_SPECS: Readonly<Record<LspLanguage, LanguageSpec>> = {
     // intent consumes that signal independently so one query never certifies
     // another merely because they share a process.
     readinessStrategy: progressSignalStrategies(),
+  },
+  python: {
+    languageId: 'python',
+    serverArgs: ['--stdio'],
+    projectMarkers: ['pyrightconfig.json', 'pyproject.toml', 'setup.cfg', 'setup.py'],
+    initializationOptions: () => ({}),
+    identityFiles: (vendorDir = LSP_VENDOR_DIR) => {
+      const file = join(vendorDir, 'pyright', PYRIGHT_VERSION, 'node_modules', 'pyright', 'dist', 'pyright-internal.js');
+      if (!pinnedVendorFile(file, vendorDir)) throw new Error(`Pinned pyright identity file is missing: ${file}`);
+      return [file];
+    },
+    resolveBin: (vendorDir = LSP_VENDOR_DIR) => {
+      const dir = join(vendorDir, 'pyright', PYRIGHT_VERSION);
+      const bin = join(dir, 'node_modules', '.bin', 'pyright-langserver');
+      try {
+        const pkg = JSON.parse(readFileSync(join(dir, 'node_modules', 'pyright', 'package.json'), 'utf8'));
+        if (pkg.version !== PYRIGHT_VERSION) return null;
+      } catch { return null; }
+      return pinnedVendorFile(bin, vendorDir);
+    },
+    // Pyright does not offer rust-analyzer's authoritative quiescence signal.
+    // Positive navigation is useful; an unproven empty remains degraded.
+    readinessStrategy: {},
+  },
+  go: {
+    languageId: 'go',
+    serverArgs: ['serve'],
+    projectMarkers: ['go.mod', 'go.work'],
+    initializationOptions: () => ({ vulncheck: 'Off' }),
+    resolveBin: (vendorDir = LSP_VENDOR_DIR) => {
+      const bin = join(vendorDir, 'gopls', GOPLS_VERSION, 'bin', 'gopls');
+      return pinnedVendorFile(bin, vendorDir);
+    },
+    readinessStrategy: {},
   },
 };
 
@@ -319,10 +402,24 @@ export function resolveServerBin(language: LspLanguage): string | null {
   return specForLanguage(language).resolveBin();
 }
 
+interface LspOpenDocument {
+  readonly mtimeMs: number;
+  readonly size: number;
+  /** Hash of the exact UTF-8 text sent in didOpen, never a later disk read. */
+  readonly contentHash?: string;
+  readonly typescriptProjectKey?: string;
+}
+
 interface LspClient {
+  /** Complete bounded disk reconciliation associated with this managed client. */
+  inputFingerprint?: string;
   connection: MessageConnection;
+  semanticPlugin?: SemanticCompletionPluginDeclaration;
+  /** Identity of the installed binary + initialize version, never a project-specific cache. */
+  capabilityServerIdentity?: string;
   child: ChildProcess;
   taskId: string;
+  scopeUnit?: string | null;
   language: LspLanguage;
   rootUri: string;
   /** The project root this client is keyed under — see `clientKey`. */
@@ -357,15 +454,7 @@ interface LspClient {
    * an open document ignores disk per the LSP spec, so without it a peer's
    * write is invisible and the server answers about text that is gone.
    */
-  openDocs: Map<
-    string,
-    {
-      mtimeMs: number;
-      size: number;
-      /** The configured/inferred TypeScript project retaining this URI. */
-      typescriptProjectKey?: string;
-    }
-  >;
+  openDocs: Map<string, LspOpenDocument>;
   /**
    * One foreground TypeScript project may use this client at a time.
    *
@@ -466,48 +555,89 @@ export interface LspDiagnostic {
 const PROJECT_READY_TIMEOUT_MS = 60_000;
 
 /**
- * tsserver's V8 old-space ceiling in MB, or null to leave node's default
- * (WI-2142840).
- *
- * `typescript-language-server` turns this into `--max-old-space-size=<N>` on
- * the tsserver fork (`getExecArgv`). Unset, tsserver runs at node's DEFAULT
- * old-space — measured 2240MB on this box — and self-aborts with SIGABRT when
- * a second large program is added to a server that already holds one. That
- * abort is what took every TypeScript answer down.
- *
- * MEASURED both ways, same probe, one variable changed:
- *   default ceiling  -> peak RSS 4314MB, `Signal: SIGABRT`, query answers
- *                       `[nothing]`, and every later TypeScript answer is empty
- *   6144             -> peak RSS 4981MB, server ALIVE, and the operator-core
- *                       query returns the correct site
- *
- * 6144 is chosen as measured-sufficient with headroom, not guessed. The
- * apparent cost — "up to 6GB per agent on a box running ~100 of them" — is
- * mostly illusory, and that is the non-obvious part: this is a CAP, not an
- * allocation. A small project still sits at ~200MB. It binds only on programs
- * that were ALREADY consuming 4.3GB immediately before aborting, so the real
- * marginal cost over the status quo is the ~700MB between crashing and
- * working.
- *
- * It is a ceiling, not a cure: it does not stop ONE tsserver accumulating
- * every project an agent touches (see `resolveProjectRoot`, which returns
- * `fallbackRoot` unconditionally and so leaves the `clientKey(language,
- * rootPath)` registry key inert). A big enough working set will still reach
- * any ceiling; defect A's liveness eviction is what makes that survivable.
+ * Historical old-space floor (WI-2142840): the 6144MB setting survived the
+ * original operator-core probe where Node's default heap aborted. FIRE75's
+ * larger configured project exhausted that same floor. The wrapper translates
+ * maxTsServerMemory into a child --max-old-space-size option; this limits heap
+ * growth without allocating the entire budget at launch.
  */
-const MAX_TSSERVER_MEMORY_MB: number | null =
-  Number(process.env.PAPERCUSP_LSP_MAX_TSSERVER_MEMORY_MB ?? '') || 6144;
+const MIN_TSSERVER_MEMORY_MB = 6144;
+
+/**
+ * Size the existing workspace-wide server from its configured source population.
+ * FIRE75 reached the 6144MB ceiling while loading operator-core. A separate
+ * source census measured 196MB; its file population differs from logged roots.
+ * Closing the previous project already worked; a fixed ceiling still stops a
+ * growing individual program. Keep all configured files, including tests.
+ *
+ * 64 bytes of heap per source byte plus the existing floor is a conservative
+ * starting budget, not a readiness proof. Actual loaded-byte/oracle qualification
+ * must still pass. An explicit operator setting continues to override this model.
+ */
+export function typescriptWorkspaceMemoryMb(rootPath: string, tsserverPath: string): number {
+  const compiler = createRequire(tsserverPath)('./typescript.js') as {
+    sys: { readFile: (path: string) => string | undefined };
+    readConfigFile: (path: string, reader: (path: string) => string | undefined) => {
+      config: unknown; error?: unknown;
+    };
+    parseJsonConfigFileContent: (config: unknown, host: unknown, directory: string,
+      options: undefined, configPath: string) => {
+      fileNames: string[]; errors: Array<{ code: number }>; projectReferences?: Array<{ path: string }>;
+    };
+    resolveProjectReferencePath: (reference: { path: string }) => string;
+  };
+  const pending = [rootPath];
+  const files = new Set<string>();
+  const configs = new Set<string>();
+  const inferredFiles = new Set<string>();
+  const excludedDirectories = new Set(['node_modules', 'dist', 'dist-host', 'target']);
+  while (pending.length) {
+    const directory = pending.pop()!;
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isDirectory() && !entry.name.startsWith('.') && !excludedDirectories.has(entry.name)) {
+        pending.push(join(directory, entry.name));
+      } else if (entry.isFile() && /\.(?:[cm]?tsx?|[cm]?jsx?)$/.test(entry.name)) {
+        inferredFiles.add(join(directory, entry.name));
+      }
+    }
+    for (const name of ['tsconfig.json', 'jsconfig.json']) {
+      const configPath = join(directory, name);
+      if (existsSync(configPath)) configs.add(configPath);
+    }
+  }
+  // A config-free workspace is an inferred project; it must grow with its
+  // source too. Configured projects retain the compiler's include/exclude rules.
+  if (!configs.size) for (const file of inferredFiles) files.add(file);
+  const pendingConfigs = [...configs];
+  const parsedConfigs = new Set<string>();
+  while (pendingConfigs.length) {
+    const configPath = pendingConfigs.pop()!;
+    if (parsedConfigs.has(configPath)) continue;
+    parsedConfigs.add(configPath);
+    const config = compiler.readConfigFile(configPath, compiler.sys.readFile);
+    if (config.error) throw new Error(`Cannot size TypeScript project: ${configPath}`);
+    const project = compiler.parseJsonConfigFileContent(config.config, compiler.sys, dirname(configPath), undefined, configPath);
+    // A solution/empty config contributes no roots; other parse errors must not
+    // silently turn a failed census into the old undersized default.
+    if (project.errors.some(error => error.code !== 18003 && error.code !== 18002)) {
+      throw new Error(`Cannot size TypeScript project: ${configPath}`);
+    }
+    for (const file of project.fileNames) files.add(file);
+    for (const reference of project.projectReferences ?? []) {
+      pendingConfigs.push(compiler.resolveProjectReferencePath(reference));
+    }
+  }
+  let sourceBytes = 0;
+  for (const file of files) sourceBytes += statSync(file).size;
+  return Math.ceil((MIN_TSSERVER_MEMORY_MB + sourceBytes * 64 / (1024 * 1024)) / 256) * 256;
+}
 
 /**
  * A workspace-wide tsserver may retain one foreground configured/inferred
  * project (plus that project's own references) at a time (WI-2142895).
  *
- * This is intentionally one, not an unmeasured larger guess. The failure that
- * prompted the bound was a second large program added to an already-loaded
- * client: semantic tsserver reached 4314MB and aborted under node's default
- * old-space ceiling. The 6144MB cap above makes that observed case survive,
- * but only closing the previous project's documents prevents every project a
- * long-lived agent touches from accumulating forever.
+ * Closing the previous project's documents prevents accumulation across
+ * projects. This is separate from the heap budget for one growing project.
  */
 const MAX_FOREGROUND_TYPESCRIPT_PROJECTS = 1;
 
@@ -689,11 +819,22 @@ export function evictIfLanguageServiceDead(
  */
 export function typescriptInitializationOptions(
   tsserverPath: string,
-  maxTsServerMemoryMb: number | null = MAX_TSSERVER_MEMORY_MB,
-): { tsserver: { path: string }; maxTsServerMemory?: number } {
+  maxTsServerMemoryMb?: number | null,
+  rootPath?: string,
+  semanticPlugin?: SemanticCompletionPluginDeclaration,
+): { tsserver: { path: string }; maxTsServerMemory?: number; plugins?: { name: string; location: string }[] } {
+  const setting = process.env.PAPERCUSP_LSP_MAX_TSSERVER_MEMORY_MB?.trim();
+  const override = setting ? Number(setting) : undefined;
+  const memoryMb = maxTsServerMemoryMb === undefined
+    ? override ?? (rootPath ? typescriptWorkspaceMemoryMb(rootPath, tsserverPath) : MIN_TSSERVER_MEMORY_MB)
+    : maxTsServerMemoryMb;
+  if (memoryMb !== null && (!Number.isSafeInteger(memoryMb) || memoryMb <= 0)) {
+    throw new Error('TypeScript server memory must be a positive integer in MB');
+  }
   return {
     tsserver: { path: tsserverPath },
-    ...(maxTsServerMemoryMb ? { maxTsServerMemory: maxTsServerMemoryMb } : {}),
+    ...(memoryMb ? { maxTsServerMemory: memoryMb } : {}),
+    ...(semanticPlugin ? { plugins: semanticCompletionPlugins(semanticPlugin) } : {}),
   };
 }
 
@@ -722,6 +863,10 @@ export function resolveProjectRoot(
   file: string,
   fallbackRoot: string,
 ): { root: string; error: string | null } {
+  specForLanguage(language);
+  if (!withinProjectBoundary(file, fallbackRoot)) {
+    return { root: fallbackRoot, error: `file ${file} is outside project boundary ${fallbackRoot}; refusing cross-project navigation` };
+  }
   // TypeScript: tsserver finds a file's own tsconfig by walking UP from the
   // document it is asked to open, so the client root only has to CONTAIN the
   // file — it does not have to hold a tsconfig itself.
@@ -737,11 +882,12 @@ export function resolveProjectRoot(
   // server's LOADED PROJECTS rather than the open document, so it needs a root
   // that actually holds a tsconfig.json — see nearestTsProjectRoot, used by
   // resolveSymbolSearchScope below.
-  if (language !== 'rust') return { root: fallbackRoot, error: null };
+  if (language === 'typescript') return { root: fallbackRoot, error: null };
 
-  let dir = dirname(file);
-  while (dir.startsWith(fallbackRoot)) {
-    if (existsSync(join(dir, 'Cargo.toml'))) return { root: dir, error: null };
+  const markers = specForLanguage(language).projectMarkers;
+  let dir = dirname(resolvePath(file));
+  while (withinProjectBoundary(dir, fallbackRoot)) {
+    if (markers.some(marker => existsSync(join(dir, marker)))) return { root: dir, error: null };
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
@@ -750,11 +896,138 @@ export function resolveProjectRoot(
   return {
     root: fallbackRoot,
     error:
-      `no Cargo.toml found between ${file} and ${fallbackRoot}, so rust-analyzer ` +
-      `would have no crate graph and would answer EMPTY for every query while ` +
-      `reporting itself healthy. Refusing to answer rather than returning a ` +
-      `false-empty that reads as "nothing implements this".`,
+      `no ${markers.join(' or ')} found between ${file} and ${fallbackRoot}; ` +
+      `the ${language} server has no verified project/build scope. Refusing to answer EMPTY without that prerequisite.`,
   };
+}
+
+function withinProjectBoundary(path: string, root: string): boolean {
+  const canonical = (value: string) => existsSync(value) ? realpathSync(value) : resolvePath(value);
+  const rel = relative(canonical(root), canonical(path));
+  return rel === '' || (rel !== '..' && !rel.startsWith('../') && !isAbsolute(rel));
+}
+
+/** Directories a directory-anchor walk never descends: generated, vendored or VCS. */
+const ANCHOR_WALK_SKIP = new Set(['node_modules', 'dist', 'build', 'coverage', 'target', '.git', '.next', '.turbo']);
+/** Sources a TypeScript/JavaScript directory anchor may open; declarations never create a project. */
+const TS_ANCHOR_SOURCE = /\.(?:[cm]?[jt]s|[jt]sx)$/;
+/** Hard bound on a directory-anchor walk, so a wide directory refuses instead of stalling. */
+const ANCHOR_WALK_MAX_ENTRIES = 50_000;
+
+function isDirectoryPath(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** The nearest directory at-or-above `dir` holding `marker`, inside `fallbackRoot`. */
+function nearestAncestorWith(dir: string, marker: string | readonly string[], fallbackRoot: string): string | null {
+  const markers = typeof marker === 'string' ? [marker] : marker;
+  let cur = dir;
+  while (withinProjectBoundary(cur, fallbackRoot)) {
+    if (markers.some(name => existsSync(join(cur, name)))) return cur;
+    const parent = dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  return null;
+}
+
+/**
+ * P-002 (gitnexus-deterministic-integration-2026-10-05, D-010): a DIRECTORY
+ * anchor for `workspace_symbols`.
+ *
+ * An agent replacing `grep -rn "export function X" packages/operator-core/lib`
+ * knows the directory it searched, not a file inside it, and a directory used
+ * to fail with a raw `EISDIR` from opening it as a document. This turns the
+ * directory into the anchor the TypeScript branch needs: the project is the
+ * nearest tsconfig.json at-or-above the directory, and the document opened to
+ * create it is the first non-declaration source found by a sorted, bounded walk.
+ *
+ * ⚠ It refuses when the directory contains a NESTED tsconfig.json. A symbol
+ * search covers ONE project, so a directory spanning several (`libs/generic`
+ * holds dozens) would answer for the outer one and read as absence for every
+ * symbol defined in the others — the false-empty this module exists to
+ * prevent. The refusal names the nested projects so the caller can anchor each.
+ */
+export function resolveDirectoryAnchor(
+  dir: string,
+  rootPath: string,
+): { project: string | null; document: string | null; error: string | null } {
+  const projectMarkers = specForLanguage('typescript').projectMarkers;
+  const project = nearestAncestorWith(dir, projectMarkers, rootPath);
+  const nested: string[] = [];
+  let best: { path: string; rank: number; depth: number } | null = null;
+  let visited = 0;
+  const walk = (cur: string, depth = 0): boolean => {
+    let entries: Dirent[];
+    try {
+      // withFileTypes: one readdir per directory, no stat per entry.
+      entries = readdirSync(cur, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    } catch {
+      return true;
+    }
+    for (const entry of entries) {
+      const name = entry.name;
+      visited += 1;
+      if (visited > ANCHOR_WALK_MAX_ENTRIES) return false;
+      if (ANCHOR_WALK_SKIP.has(name)) continue;
+      const full = join(cur, name);
+      if (entry.isDirectory()) {
+        if (!walk(full, depth + 1)) return false;
+        continue;
+      }
+      if (projectMarkers.includes(name) && cur !== dir) {
+        if (!nested.includes(cur)) nested.push(cur);
+        continue;
+      }
+      if (TS_ANCHOR_SOURCE.test(name) && !/\.d\.[cm]?ts$/.test(name)) {
+        // Rank: a test file or an .mts/.cts module (often excluded from the
+        // tsconfig, landing in an inferred project navto never searches) loses
+        // to a plain source; then the SHALLOWEST wins, so a sorted walk cannot
+        // pick `__fixtures__/x.mts` over `lib/index.ts`.
+        const rank = (/\.(?:test|spec)\.[cm]?tsx?$/.test(name) ? 2 : 0) + (/\.[cm]ts$/.test(name) ? 1 : 0);
+        if (best === null || rank < best.rank || (rank === best.rank && depth < best.depth)) {
+          best = { path: full, rank, depth };
+        }
+      }
+    }
+    return true;
+  };
+  const complete = walk(dir);
+  if (!complete) {
+    return {
+      project,
+      document: null,
+      error:
+        `directory anchor ${dir} holds more than ${ANCHOR_WALK_MAX_ENTRIES} entries, so it cannot be ` +
+        `verified to be ONE tsconfig project. Pass a 'file' anchor inside the project you mean.`,
+    };
+  }
+  if (nested.length > 0) {
+    return {
+      project,
+      document: null,
+      error:
+        `directory anchor ${dir} spans ${nested.length} nested tsconfig/jsconfig project(s) ` +
+        `(${nested.slice(0, 5).join(', ')}${nested.length > 5 ? ', …' : ''}), and a symbol search covers ONE ` +
+        `project — answering for the outer one would read as absence for symbols in the others. Anchor each ` +
+        `project separately, or use gitnexus/rg for a repository-wide question.`,
+    };
+  }
+  const chosen = (best as { path: string } | null)?.path ?? null;
+  if (!project || !chosen) {
+    return {
+      project,
+      document: null,
+      error: !project
+        ? `no tsconfig.json or jsconfig.json at or above directory anchor ${dir}, so there is no project to search. Pass a 'file' inside a configured TypeScript or JavaScript project.`
+        : `directory anchor ${dir} contains no TypeScript source to open, so tsserver cannot create its project. Pass a 'file' anchor instead.`,
+    };
+  }
+  return { project, document: chosen, error: null };
 }
 
 /**
@@ -789,6 +1062,41 @@ export function resolveSymbolSearchScope(
   anchor: string | undefined,
   rootPath: string,
 ): { root: string; anchor: string | null; error: string | null } {
+  const spec = specForLanguage(language);
+  if (anchor && !withinProjectBoundary(anchor, rootPath)) {
+    return { root: rootPath, anchor: null, error: `anchor ${anchor} is outside project boundary ${rootPath}` };
+  }
+  if (language === 'python' || language === 'go') {
+    // A directory cannot pick one of its nested projects on the caller's behalf.
+    // Require a source anchor so admission and the server share the exact scope.
+    if (!anchor || isDirectoryPath(anchor)) {
+      return { root: rootPath, anchor: null, error: `${language} workspace_symbols requires a source file anchor inside ONE configured project (${spec.projectMarkers.join(' or ')}); directory/unanchored searches are unsupported` };
+    }
+    const project = resolveProjectRoot(language, anchor, rootPath);
+    return { root: project.root, anchor: project.error ? null : anchor, error: project.error };
+  }
+  // A DIRECTORY anchor (P-002): resolve it to a project + an openable document
+  // before either language branch, which both assume a file they can open.
+  if (anchor && isDirectoryPath(anchor)) {
+    if (language === 'rust') {
+      const crate = nearestAncestorWith(anchor, 'Cargo.toml', rootPath);
+      if (!crate) {
+        return {
+          root: rootPath,
+          anchor: null,
+          error:
+            `no Cargo.toml at or above directory anchor ${anchor}, so rust-analyzer would have no crate ` +
+            `graph and would answer EMPTY. Pass 'file' (an .rs file in the crate you mean) or 'rootPath'.`,
+        };
+      }
+      return { root: crate, anchor: null, error: null };
+    }
+    const resolved = resolveDirectoryAnchor(anchor, rootPath);
+    if (resolved.error || !resolved.project || !resolved.document) {
+      return { root: rootPath, anchor: null, error: resolved.error ?? `directory anchor ${anchor} did not resolve to a project` };
+    }
+    return { root: resolved.project, anchor: resolved.document, error: null };
+  }
   if (language === 'rust') {
     // An anchor names its own crate; otherwise the root must itself be one.
     if (anchor) {
@@ -848,9 +1156,9 @@ export function resolveSymbolSearchScope(
       root: rootPath,
       anchor: null,
       error:
-        `no tsconfig.json found between ${anchor} and ${rootPath}, so tsserver would file that ` +
+        `no tsconfig.json or jsconfig.json found between ${anchor} and ${rootPath}, so tsserver would file that ` +
         `anchor under an inferred project that navto does not search and would answer EMPTY for ` +
-        `every symbol. Pass a 'file' inside a directory covered by a tsconfig.json. Refusing ` +
+        `every symbol. Pass a 'file' inside a configured TypeScript or JavaScript project. Refusing ` +
         `rather than returning a false-empty that reads as "no such symbol".`,
     };
   }
@@ -858,7 +1166,7 @@ export function resolveSymbolSearchScope(
 }
 
 /**
- * The nearest ancestor of `file` holding a `tsconfig.json`, or null.
+ * The nearest ancestor holding a declared TypeScript/JavaScript project marker, or null.
  *
  * The TypeScript analogue of the `Cargo.toml` walk in resolveProjectRoot, and
  * deliberately NOT folded into it: position-addressed ops must keep rooting at
@@ -868,14 +1176,10 @@ export function resolveSymbolSearchScope(
  * needs the project actually LOADED at the server root.
  */
 function nearestTsProjectRoot(file: string, fallbackRoot: string): string | null {
-  let dir = dirname(file);
-  while (dir.startsWith(fallbackRoot)) {
-    if (existsSync(join(dir, 'tsconfig.json'))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return null;
+  // Legacy/partial clients have no declared root; retain their conservative
+  // inferred-project key rather than treating missing scope as a real path.
+  if (!fallbackRoot) return null;
+  return nearestAncestorWith(dirname(file), specForLanguage('typescript').projectMarkers, fallbackRoot);
 }
 
 /** The configured project retaining `file`, or a conservative inferred-project key. */
@@ -1029,21 +1333,30 @@ export function symbolSearchEmptyCaveat(
 export function languageForFile(path: string): LspLanguage | null {
   if (/\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(path)) return 'typescript';
   if (/\.rs$/.test(path)) return 'rust';
+  if (/\.pyi?$/.test(path)) return 'python';
+  if (/\.go$/.test(path)) return 'go';
   return null;
 }
 
-async function startClient(language: LspLanguage, rootPath: string): Promise<LspClient> {
+async function startClient(language: LspLanguage, rootPath: string, semanticPlugin?: SemanticCompletionPluginDeclaration): Promise<LspClient> {
+  // Fail a source/config census before creating a managed child.
+  const spec = specForLanguage(language);
+  const initializationOptions = spec.initializationOptions(rootPath, semanticPlugin);
   const bin = resolveServerBin(language);
   if (!bin) {
     throw new Error(
       `Pinned ${language} language server is not provisioned. Expected it under ` +
-        `${language === 'typescript' ? LSP_VENDOR_DIR : '~/.rustup/toolchains/stable-*/bin'}. ` +
+        `${language === 'rust' ? '~/.rustup/toolchains/stable-*/bin' : LSP_VENDOR_DIR}. ` +
         `Provision it (P-007) rather than falling back to an unpinned server — a floating ` +
         `version silently changes answers between runs.`,
     );
   }
 
-  const args = language === 'typescript' ? ['--stdio'] : [];
+  const args = [...spec.serverArgs];
+  const goBin = join(homedir(), '.papercusp', 'vendor', 'go', 'go', 'bin');
+  const env = language === 'go' && existsSync(join(goBin, 'go'))
+    ? { ...process.env, PATH: `${goBin}:${process.env.PATH ?? ''}`, GOTOOLCHAIN: 'local' }
+    : process.env;
   const spawned = await managedSpawn(
     bin,
     args,
@@ -1059,7 +1372,7 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
       planSlug: 'code-intelligence-routing-lsp-gitnexus-2026-08-20',
       detail: { subsystem: 'code-intelligence', language, rootPath },
     },
-    { spawnOptions: { cwd: rootPath, stdio: ['pipe', 'pipe', 'pipe'] } },
+    { spawnOptions: { cwd: rootPath, env, stdio: ['pipe', 'pipe', 'pipe'] } },
   );
 
   const child = spawned.child;
@@ -1087,8 +1400,10 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
 
   const client: LspClient = {
     connection,
+    semanticPlugin,
     child,
     taskId: spawned.taskId,
+    scopeUnit: spawned.scopeUnit,
     language,
     rootUri: pathToFileURL(rootPath).href,
     rootPath,
@@ -1214,13 +1529,8 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
     state.clients.delete(clientKey(language, rootPath));
   });
 
-  const initializationOptions =
-    language === 'typescript'
-      ? typescriptInitializationOptions(resolveTsserverPath())
-      : { cargo: { buildScripts: { enable: false } }, procMacro: { enable: false } };
-
   const t0 = Date.now();
-  await connection.sendRequest('initialize', {
+  const initialized = await connection.sendRequest('initialize', {
     processId: process.pid,
     rootUri: client.rootUri,
     workspaceFolders: [{ uri: client.rootUri, name: 'papercusp' }],
@@ -1251,6 +1561,18 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
       experimental: { serverStatusNotification: true },
     },
   });
+  try {
+    const result = initialized as { serverInfo?: unknown; capabilities?: unknown } | null;
+    client.capabilityServerIdentity = lspServerIdentity(
+      bin, result?.serverInfo, spec.identityFiles?.() ?? [],
+    );
+    await Promise.all(initializeCapabilityObservations(language, client.capabilityServerIdentity, result?.capabilities)
+      .map(observation => lspCapabilityStore.observe(observation)));
+  } catch (error) {
+    // A failed persistence handshake must not leave an unregistered warm child behind.
+    await shutdownLspClient(client);
+    throw new Error(`LSP capability initialization failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
   client.coldStartMs = Date.now() - t0;
   connection.sendNotification('initialized', {});
   client.health = 'healthy';
@@ -1259,10 +1581,30 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
   return client;
 }
 
-async function getClient(language: LspLanguage, rootPath: string): Promise<LspClient> {
+function capabilityKey(client: LspClient, intent: LspReadinessIntent): LspCapabilityKey {
+  if (!client.capabilityServerIdentity) throw new Error('LSP capability identity is unknown; restart the daemon to initialize capability truth');
+  return { language: client.language, intent, serverIdentity: client.capabilityServerIdentity };
+}
+
+function requireClientCapability(client: LspClient, intent: LspReadinessIntent): Promise<void> {
+  return requireLspCapability(lspCapabilityStore, capabilityKey(client, intent));
+}
+
+function capabilityRequest(client: LspClient, intent: LspReadinessIntent, method: string, params: unknown): Promise<unknown> {
+  return requestWithLspCapability(lspCapabilityStore, capabilityKey(client, intent), method,
+    () => recordLspWireRequest({ method, taskId: client.taskId, pid: client.child.pid ?? null },
+      () => client.connection.sendRequest(method, params)));
+}
+
+async function getClient(language: LspLanguage, rootPath: string, semanticPlugin?: SemanticCompletionPluginDeclaration): Promise<LspClient> {
+  const matched = (client: LspClient) => {
+    if (semanticPlugin && JSON.stringify(client.semanticPlugin) !== JSON.stringify(semanticPlugin))
+      throw new Error('semantic completion refused: client-plugin-mismatch');
+    return client;
+  };
   const key = clientKey(language, rootPath);
   const existing = state.clients.get(key);
-  if (existing && existing.health !== 'unhealthy') return existing;
+  if (existing && existing.health !== 'unhealthy') return matched(existing);
 
   // Defensive: a process that pinned an OLDER shape of this state (before
   // `starting` existed) keeps that object until it restarts.
@@ -1271,9 +1613,9 @@ async function getClient(language: LspLanguage, rootPath: string): Promise<LspCl
   // The whole point — see AdapterState.starting. A concurrent caller joins the
   // start already in flight instead of racing a second server into existence.
   const inFlight = state.starting.get(key);
-  if (inFlight) return inFlight;
+  if (inFlight) return inFlight.then(matched);
 
-  const pending = startClient(language, rootPath).finally(() => {
+  const pending = startClient(language, rootPath, semanticPlugin).finally(() => {
     state.starting.delete(key);
   });
   state.starting.set(key, pending);
@@ -1285,8 +1627,9 @@ async function getLeasedClient(
   language: LspLanguage,
   rootPath: string,
   file: string,
+  semanticPlugin?: SemanticCompletionPluginDeclaration,
 ): Promise<{ client: LspClient; release: () => void }> {
-  const client = await getClient(language, rootPath);
+  const client = await getClient(language, rootPath, semanticPlugin);
   const release = await acquireLspProjectLease(client, file);
   return { client, release };
 }
@@ -1633,24 +1976,31 @@ export async function ensureOpen(client: LspClient, absPath: string): Promise<st
   try {
     const st = await stat(absPath);
     stamp = { mtimeMs: st.mtimeMs, size: st.size };
-  } catch {
-    // Unstattable (deleted mid-flight, permissions). Fall through: if we have
-    // it open, keep the copy we have rather than dropping it; if we do not, the
-    // readFile below will surface the real error.
-    if (seen) return uri;
+  } catch (error) {
+    // Retained didOpen text is historical evidence once disk cannot be read.
+    // Drop its identity/readiness before awaiting the close, so concurrent
+    // answers cannot certify the deleted document even if the pipe is dead.
+    if (seen) {
+      client.openDocs.delete(uri);
+      invalidateClientReadiness(client);
+      await client.connection.sendNotification('textDocument/didClose', { textDocument: { uri } });
+    }
+    throw error;
   }
 
+  // Peers can preserve both size and mtime. Only the bytes identify retained text.
+  const text = await readFile(absPath, 'utf8');
+  const contentHash = createHash('sha256').update(text).digest('hex');
   if (seen) {
-    if (stamp && seen.mtimeMs === stamp.mtimeMs && seen.size === stamp.size) return uri;
+    if (seen.contentHash === contentHash) return uri;
     // Disk moved under us. Close before re-opening: the adapter never
     // established incremental sync (documents open at version 1 and never
     // advance), so didChange would carry a version the server has no baseline
     // for. Re-opening restores the invariant the rest of the adapter assumes.
-    client.connection.sendNotification('textDocument/didClose', { textDocument: { uri } });
+    await client.connection.sendNotification('textDocument/didClose', { textDocument: { uri } });
     client.openDocs.delete(uri);
   }
 
-  const text = await readFile(absPath, 'utf8');
   // Opening a document can start a new project-loading cycle. The client's
   // previous idle period describes the server BEFORE this document existed
   // and is therefore not readiness evidence for the query about to follow.
@@ -1662,7 +2012,7 @@ export async function ensureOpen(client: LspClient, absPath: string): Promise<st
   // [4844, 1, 2, 1, 1] in WI-2142941. An unchanged already-open document takes
   // the early return above and keeps the genuine hot-path observation.
   invalidateClientReadiness(client);
-  client.connection.sendNotification('textDocument/didOpen', {
+  await client.connection.sendNotification('textDocument/didOpen', {
     textDocument: {
       uri,
       languageId: specForLanguage(client.language).languageId,
@@ -1670,13 +2020,62 @@ export async function ensureOpen(client: LspClient, absPath: string): Promise<st
       text,
     },
   });
-  // Stamp from AFTER the read where the stat failed, so a transient stat error
-  // cannot pin a document as permanently fresh.
+  // Retain the sent text even if disk moved during the read. A failed stat
+  // forces another reopen on the next query rather than certifying freshness.
   client.openDocs.set(uri, {
     ...(stamp ?? { mtimeMs: -1, size: -1 }),
+    contentHash,
     ...(tsProjectKey ? { typescriptProjectKey: tsProjectKey } : {}),
   });
   return uri;
+}
+
+/** Bind returned sites only to documents retained throughout this request.
+ * Unopened dependency files and legacy stamps have unknown versions. A close
+ * or reopen during the request invalidates the result, even if its bytes match.
+ */
+export function withLspSnapshotEvidence(answer: CodeIntelAnswer,
+  client: Pick<LspClient, 'openDocs' | 'language'>, snapshot: ReadonlyMap<string, LspOpenDocument>,
+  rootPath: string): CodeIntelAnswer {
+  let repositoryId: string | null = null;
+  try { repositoryId = `local-root:${createHash('sha256').update(realpathSync(rootPath)).digest('hex')}`; }
+  catch { /* An inaccessible root has no measured repository identity. */ }
+  const scope = { repositoryId, identityKind: repositoryId ? 'local-root' as const : 'unknown' as const,
+    paths: ['.'], basis: 'compiler-project' as const, language: client.language };
+  if ([...snapshot].some(([uri, stamp]) => client.openDocs.get(uri) !== stamp)) {
+    const refused: CodeIntelAnswer = { ...answer, sites: [],
+      truncation: { truncated: false, totalAvailable: null, continuation: null },
+      freshness: { ...answer.freshness, health: 'degraded', staleVsDisk: null },
+      error: 'LSP document snapshot changed during the request; re-resolve against the current source.' };
+    return { ...refused, evidence: unmeasuredSourceEvidence(refused, scope, [refused.error!]) };
+  }
+  const supportingFiles = [...snapshot].flatMap(([uri, stamp]) => {
+    if (!stamp.contentHash || !/^[a-f0-9]{64}$/.test(stamp.contentHash)) return [];
+    let path: string;
+    try { path = relative(rootPath, fileURLToPath(uri)); } catch { return []; }
+    if (!path || path.startsWith('../') || path === '..' || path.startsWith('/')) return [];
+    return [{ path, contentHash: stamp.contentHash, language: languageForFile(path) ?? client.language,
+      representation: 'full-source' as const }];
+  }).sort((a, b) => a.path.localeCompare(b.path));
+  const limitations = [
+    'Hashes identify only retained didOpen text, not every file loaded by the server. Unopened target versions remain unknown.',
+    'No later disk read establishes server input, exhaustive project coverage, or runtime execution.',
+  ];
+  return { ...answer, freshness: { ...answer.freshness, staleVsDisk: null }, evidence: {
+    schemaVersion: 1,
+    sourceScope: { repositoryId, identityKind: scope.identityKind, paths: ['.'], supportingFiles,
+      sourceFingerprint: supportingFiles.length ? createHash('sha256').update(JSON.stringify(supportingFiles)).digest('hex') : null },
+    graphScope: { basis: 'compiler-project', sourceCompleteness: 'unverified', limitations },
+    languageCapabilities: [{ language: client.language, intent: answer.intent,
+      status: answer.error ? 'unknown' : 'compiler-backed' }],
+    siteIdentities: answer.sites.map((site, siteIndex) => {
+      const source = supportingFiles.find(file => file.path === site.path);
+      return { siteIndex, sourcePath: site.path, contentHash: source?.contentHash ?? null,
+        versionedSymbolId: versionedSymbolIdentity(repositoryId, site, source) };
+    }),
+    relationships: answer.sites.map((_, siteIndex) => ({ siteIndex, kind: answer.intent,
+      origin: 'compiler', knowledge: 'observed', runtimeExecution: 'unknown' })),
+  } };
 }
 
 /** An LSP Location or LocationLink, normalized to a one-indexed SymbolSite. */
@@ -1716,6 +2115,9 @@ export interface LspQuery {
   character: number;
   /** Repo root (the LSP project root). */
   rootPath: string;
+  /** Internal independently declared graph; never a public LSP tool argument. */
+  semanticCompletion?: SemanticCompletionContext;
+  signal?: AbortSignal;
 }
 
 const METHOD_BY_INTENT: Partial<Record<CodeIntelIntent, string>> = {
@@ -1766,13 +2168,42 @@ export async function lspQuery(
 
   let releaseProjectLease: (() => void) | null = null;
   try {
-    const leased = await getLeasedClient(language, project.root, query.file);
+    const semantic = query.semanticCompletion;
+    if (semantic && (language !== 'typescript' || (intent !== 'references' && intent !== 'definition')))
+      return fail('semantic completion refused: unsupported-intent');
+    // Definition warmup must start the same declared plugin-bearing client that
+    // references will reuse. Only references invokes the native completion proof.
+    const semanticRequest = semantic && intent === 'references' ? snapshotSemanticCompletionRequest({ file: query.file,
+      line: query.line1, offset: query.character + 1, population: semantic.population }) : undefined;
+    if (semantic) semanticCompletionPlugins(semantic.plugin);
+    if (query.signal?.aborted) return fail('semantic completion refused: outer-cancelled');
+    const leased = await getLeasedClient(language, project.root, query.file, semantic?.plugin);
     const client = leased.client;
     releaseProjectLease = leased.release;
     const uri = await ensureOpen(client, query.file);
 
+    const snapshot = new Map(client.openDocs);
+    if (semanticRequest) {
+      await requireClientCapability(client, 'references');
+      const result = await requestSemanticCompletion(semanticRequest,
+        { get isCancellationRequested() { return query.signal?.aborted === true; } },
+        (command, args) => recordLspWireRequest({ method: 'workspace/executeCommand', command: SEMANTIC_COMPLETION_COMMAND,
+          taskId: client.taskId, pid: client.child.pid ?? null }, () => client.connection.sendRequest('workspace/executeCommand', {
+          command: 'typescript.tsserverRequest', arguments: [command, args, { executionTarget: 0 }],
+        })));
+      semanticCompletionPlugins(semantic!.plugin);
+      if (evictIfLanguageServiceDead(client, state.clients)) return fail('semantic completion refused: server-died');
+      const sites = result.refs.map(ref => ({ path: ref.file.startsWith(query.rootPath + '/')
+        ? ref.file.slice(query.rootPath.length + 1) : ref.file, line1: ref.start.line, kind: null }));
+      return withLspSnapshotEvidence({ backend: 'lsp-adapter', intent, query: `${query.file}:${query.line1}:${query.character}`, sites,
+        truncation: { truncated: false, totalAvailable: sites.length, continuation: null },
+        freshness: { health: 'healthy', indexedAt: new Date(client.startedAt).toISOString(),
+          staleVsDisk: null, indexedCommit: null }, latencyMs: Date.now() - started, error: null }, client, snapshot, query.rootPath);
+    }
+
     // Never answer from a half-loaded project — that returns a plausible WRONG
     // location, not an error (measured: ~4.7s window on this repo).
+    await requireClientCapability(client, readinessIntent);
     const readiness = await prepareIntentReadiness(client, readinessIntent);
     if (readiness === 'timeout') {
       return fail(
@@ -1806,7 +2237,7 @@ export async function lspQuery(
       params.context = { includeDeclaration: true };
     }
 
-    const raw = await client.connection.sendRequest(method, params);
+    const raw = await capabilityRequest(client, readinessIntent, method, params);
     const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
     const sites = list.map((r) => toSite(r, query.rootPath)).filter((s): s is SymbolSite => s !== null);
     certifyCanaryAnswer(client, readinessIntent, readiness, sites.length, JSON.stringify(sites));
@@ -1835,7 +2266,7 @@ export async function lspQuery(
       );
     }
 
-    return {
+    return withLspSnapshotEvidence({
       backend: 'lsp-adapter',
       intent,
       query: `${query.file}:${query.line1}:${query.character}`,
@@ -1848,16 +2279,13 @@ export async function lspQuery(
         // all read as facts by callers via isTrustworthyEmpty().
         health: answerHealth,
         indexedAt: new Date(client.startedAt).toISOString(),
-        // The server reads from disk on didOpen, so an opened document is
-        // never stale against disk. We do NOT claim to know about files the
-        // server has not opened — that would be exactly the unfounded
-        // freshness claim corpus case 6 exists to catch.
-        staleVsDisk: false,
+        // Retained didOpen text identifies input, not current disk freshness.
+        staleVsDisk: null,
         indexedCommit: null,
       },
       latencyMs: Date.now() - started,
       error: null,
-    };
+    }, client, snapshot, query.rootPath);
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err));
   } finally {
@@ -1919,6 +2347,7 @@ export async function lspDiagnostics(query: {
     const client = leased.client;
     releaseProjectLease = leased.release;
     const uri = await ensureOpen(client, query.file);
+    await requireClientCapability(client, intent);
     const readiness = await prepareIntentReadiness(client, intent);
     if (readiness === 'timeout') {
       return fail(
@@ -1944,6 +2373,9 @@ export async function lspDiagnostics(query: {
         'degraded',
       );
     }
+
+    await lspCapabilityStore.observe({ ...capabilityKey(client, intent), supported: true,
+      source: 'publish', evidence: 'textDocument/publishDiagnostics' });
 
     const rel = query.file.startsWith(query.rootPath + '/') ? query.file.slice(query.rootPath.length + 1) : query.file;
     const sites: SymbolSite[] = entry.diags.map((d) => ({
@@ -1989,7 +2421,8 @@ export async function lspDiagnostics(query: {
         // all read as facts by callers via isTrustworthyEmpty().
         health: answerHealth,
         indexedAt: new Date(entry.receivedAt).toISOString(),
-        staleVsDisk: false,
+        // A pushed diagnostic does not certify the current disk version.
+        staleVsDisk: null,
         indexedCommit: null,
       },
       latencyMs: Date.now() - started,
@@ -2059,6 +2492,8 @@ export async function lspWorkspaceSymbols(query: {
     // Opening the anchor is what CREATES the tsserver project this search runs
     // against; for rust it merely warms a crate graph the root already implies.
     if (scope.anchor) await ensureOpen(client, scope.anchor);
+    const snapshot = new Map(client.openDocs);
+    await requireClientCapability(client, intent);
     const readiness = await prepareIntentReadiness(client, intent);
     if (readiness === 'timeout') {
       return fail(
@@ -2069,14 +2504,14 @@ export async function lspWorkspaceSymbols(query: {
       );
     }
 
-    const raw = await client.connection.sendRequest('workspace/symbol', { query: query.name });
+    const raw = await capabilityRequest(client, intent, 'workspace/symbol', { query: query.name });
     const list = Array.isArray(raw) ? raw : [];
     const all = list
       .map((entry): SymbolSite | null => {
-        const e = entry as { location?: unknown; containerName?: string; kind?: number };
+        const e = entry as { location?: unknown; containerName?: string; kind?: number; name?: unknown };
         const site = toSite(e.location, query.rootPath);
         if (!site) return null;
-        return { ...site, detail: e.containerName ?? null };
+        return { ...site, detail: e.containerName ?? null, name: typeof e.name === 'string' ? e.name : null };
       })
       .filter((s): s is SymbolSite => s !== null);
 
@@ -2088,7 +2523,7 @@ export async function lspWorkspaceSymbols(query: {
     if (sites.length === 0) {
       return fail(symbolSearchEmptyCaveat(query.name, query.language, scope), 'degraded');
     }
-    return {
+    return withLspSnapshotEvidence({
       backend: 'lsp-adapter',
       intent,
       query: query.name,
@@ -2108,7 +2543,7 @@ export async function lspWorkspaceSymbols(query: {
       },
       latencyMs: Date.now() - started,
       error: null,
-    };
+    }, client, snapshot, query.rootPath);
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err));
   } finally {
@@ -2154,6 +2589,8 @@ export async function lspRenamePreview(query: LspQuery & { newName: string }): P
     const client = leased.client;
     releaseProjectLease = leased.release;
     const uri = await ensureOpen(client, query.file);
+    const snapshot = new Map(client.openDocs);
+    await requireClientCapability(client, intent);
     const readiness = await prepareIntentReadiness(client, intent);
     if (readiness === 'timeout') {
       return fail(
@@ -2164,7 +2601,7 @@ export async function lspRenamePreview(query: LspQuery & { newName: string }): P
       );
     }
 
-    const raw = (await client.connection.sendRequest('textDocument/rename', {
+    const raw = (await capabilityRequest(client, intent, 'textDocument/rename', {
       textDocument: { uri },
       position: { line: query.line1 - 1, character: query.character },
       newName: query.newName,
@@ -2179,7 +2616,7 @@ export async function lspRenamePreview(query: LspQuery & { newName: string }): P
     }
     certifyCanaryAnswer(client, intent, readiness, sites.length, JSON.stringify(sites));
 
-    return {
+    return withLspSnapshotEvidence({
       backend: 'lsp-adapter',
       intent,
       query: q,
@@ -2192,12 +2629,12 @@ export async function lspRenamePreview(query: LspQuery & { newName: string }): P
         // all read as facts by callers via isTrustworthyEmpty().
         health: healthForAnswer(client, intent, sites.length),
         indexedAt: new Date(client.startedAt).toISOString(),
-        staleVsDisk: false,
+        staleVsDisk: null,
         indexedCommit: null,
       },
       latencyMs: Date.now() - started,
       error: null,
-    };
+    }, client, snapshot, query.rootPath);
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err));
   } finally {
@@ -2258,6 +2695,7 @@ export async function lspRenameWorkspaceEdit(
     const client = leased.client;
     releaseProjectLease = leased.release;
     const uri = await ensureOpen(client, query.file);
+    await requireClientCapability(client, 'rename-preview');
     const readiness = await prepareIntentReadiness(client, 'rename-preview');
     // `answerable` is accepted here to hold this gate EXACTLY where it stood
     // before WI-2142382 split the verdict: the settle window used to return
@@ -2290,7 +2728,7 @@ export async function lspRenameWorkspaceEdit(
       };
     }
 
-    const edit = await client.connection.sendRequest('textDocument/rename', {
+    const edit = await capabilityRequest(client, 'rename-preview', 'textDocument/rename', {
       textDocument: { uri },
       position: { line: query.line1 - 1, character: query.character },
       newName: query.newName,
@@ -2369,12 +2807,81 @@ export function lspResyncDocument(absPath: string, rootPath: string, newText: st
   }
 }
 
+/** A cache hit must still check the live managed process and readiness. */
+export function lspCacheRevision(language: LspLanguage, root: string): LspCacheRevision {
+  const client = state.clients.get(clientKey(language, root));
+  if (!client || client.health !== 'healthy' || client.pendingProgress.size ||
+      client.child.exitCode !== null || client.child.killed ||
+      (language === 'typescript' && probeLanguageServiceLiveness(client) !== 'alive'))
+    return { measured: false, reason: 'managed language service is not currently ready' };
+  return { measured: true, identity: createHash('sha256').update(JSON.stringify({ task: client.taskId,
+    server: client.capabilityServerIdentity, input: client.inputFingerprint,
+    documents: [...client.openDocs].map(([uri, doc]) => [uri, doc.contentHash]).sort(),
+    readiness: [...client.certifiedReadiness].sort() })).digest('hex') };
+}
+
+/** Initially admit only self-contained TypeScript programs. Other language/system
+ * inputs remain explicit bypasses until their compiler dependency closure is measured.
+ * This does not infer closure from a project-only file census.
+ */
+export async function prepareLspCacheInputs(language: LspLanguage, inputs: MeasuredLspInputs,
+  file: string): Promise<LspCacheRevision> {
+  if (language !== 'typescript') return { measured: false, reason: `${language} external compiler inputs are unmeasured` };
+  if (inputs.files.filter(path => /(?:^|\/)(?:tsconfig|jsconfig)\.json$/.test(path)).join() !== 'tsconfig.json')
+    return { measured: false, reason: 'cache requires one measured root TypeScript configuration' };
+  if (!resolveServerBin(language)) return { measured: false, reason: 'pinned language server is not provisioned' };
+  let ts: typeof import('typescript');
+  try { ts = createRequire(resolveTsserverPath())('./typescript.js') as typeof import('typescript'); }
+  catch { return { measured: false, reason: 'pinned compiler inputs could not be measured' }; }
+  const config = ts.readConfigFile(join(inputs.root, 'tsconfig.json'), ts.sys.readFile);
+  if (config.error || !config.config) return { measured: false, reason: 'TypeScript configuration could not be measured' };
+  // Reject external configuration/path discovery before the compiler enumerates
+  // it. A bounded project census does not bound an escaping include glob.
+  const pathLists = [config.config.files, config.config.include, config.config.exclude];
+  if (config.config.extends || config.config.references?.length || config.config.typeAcquisition?.enable === true ||
+      inputs.externalReferenceCandidates.length || pathLists.some(paths => paths !== undefined &&
+        (!Array.isArray(paths) || paths.some(path => typeof path !== 'string' || isAbsolute(path) || path.split(/[\\/]/).includes('..')))))
+    return { measured: false, reason: 'TypeScript external compiler inputs are unmeasured' };
+  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, inputs.root);
+  if (config.error || parsed.errors.length || config.config.extends || config.config.references?.length ||
+      parsed.options.noLib !== true || parsed.options.noResolve !== true || parsed.options.allowJs ||
+      parsed.options.types?.length !== 0 || (parsed.options.plugins !== undefined &&
+        (!Array.isArray(parsed.options.plugins) || parsed.options.plugins.length > 0)) ||
+      !parsed.fileNames.includes(resolvePath(file)) || parsed.fileNames.some(path => !withinProjectBoundary(path, inputs.root)))
+    return { measured: false, reason: 'TypeScript external compiler inputs are unmeasured' };
+  const key = clientKey(language, inputs.root);
+  let client = state.clients.get(key);
+  if (client?.semanticPlugin) return { measured: false, reason: 'semantic plugin external inputs are unmeasured' };
+  if (client && client.inputFingerprint !== inputs.fingerprint) {
+    if (client.typescriptProjectLease?.users) return { measured: false, reason: 'managed project has an active lease' };
+    state.clients.delete(key);
+    await shutdownLspClient(client);
+    client = undefined;
+  }
+  client ??= await getClient(language, inputs.root);
+  client.inputFingerprint = inputs.fingerprint;
+  // Opening the requested project is expected lifecycle work, not a concurrent
+  // edit. Finish it before snapshotting the client identity used by the cache.
+  const release = await acquireLspProjectLease(client, file);
+  try { await ensureOpen(client, file); } finally { release(); }
+  return lspCacheRevision(language, inputs.root);
+}
+
 /** Shut down every live language server. Safe to call repeatedly. */
 export async function shutdownAllLspClients(): Promise<number> {
   const clients = [...state.clients.values()];
   state.clients.clear();
-  await Promise.all(
-    clients.map(async (c) => {
+  const outcomes = await Promise.allSettled(clients.map(shutdownLspClient));
+  const failed = outcomes.filter((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected');
+  if (failed.length) throw new AggregateError(failed.map(outcome => outcome.reason), 'LSP client teardown failed');
+  return clients.length;
+}
+
+/** Also owns clients whose capability initialization failed before registration. */
+export async function shutdownLspClient(
+  c: Pick<LspClient, 'connection' | 'child' | 'taskId' | 'scopeUnit'>,
+): Promise<void> {
+      const deadlineAt = Date.now() + GRACEFUL_EXIT_WAIT_MS;
       // Only speak to a server whose pipe is actually still open. Writing to a
       // destroyed stream raises ERR_STREAM_DESTROYED as an UNHANDLED rejection
       // (vscode-jsonrpc writes asynchronously), which Vitest reports as an
@@ -2382,14 +2889,22 @@ export async function shutdownAllLspClients(): Promise<number> {
       // correctness guard, not tidiness.
       const writable = c.child.exitCode === null && !c.child.killed && c.child.stdin?.writable;
       if (writable) {
+        let protocolTimer: ReturnType<typeof setTimeout> | undefined;
         try {
-          await c.connection.sendRequest('shutdown');
-          // sendNotification also returns a promise that can reject once the
-          // server closes its end in response to `shutdown` — await it so the
-          // rejection is HANDLED here rather than surfacing globally.
-          await c.connection.sendNotification('exit');
+          await Promise.race([
+            (async () => {
+              await c.connection.sendRequest('shutdown');
+              // The write can also stall; it shares the same protocol budget.
+              await c.connection.sendNotification('exit');
+            })(),
+            new Promise<never>((_, reject) => {
+              protocolTimer = setTimeout(() => reject(new Error('LSP shutdown reply deadline exceeded')), GRACEFUL_EXIT_WAIT_MS);
+            }),
+          ]);
         } catch {
           /* the server closed its pipe first — expected on a clean exit */
+        } finally {
+          if (protocolTimer) clearTimeout(protocolTimer);
         }
       }
       try {
@@ -2408,12 +2923,22 @@ export async function shutdownAllLspClients(): Promise<number> {
       // A protocol `exit` makes the SERVER terminate itself inside the scope,
       // which is the only clean way out from here; killing a subtree by hand is
       // `processes:kill { taskId }`'s job, never a bare signal.
-      if (!(await waitForChildExit(c.child, GRACEFUL_EXIT_WAIT_MS))) {
-        if (c.child.exitCode === null && !c.child.killed) c.child.kill('SIGTERM');
+      if (!(await waitForChildExit(c.child, Math.max(0, deadlineAt - Date.now())))) {
+        // Signal the owned scope, including grandchildren, rather than the
+        // systemd-run client. The controller re-verifies the target and
+        // escalates a server that ignores SIGTERM within the daemon deadline.
+        const undoTeardown = markManagedSpawnTeardown(c.child);
+        const outcome = c.scopeUnit
+          ? await killScopeUnit(c.scopeUnit, { escalateAfterMs: 500 })
+          : await killTask(c.taskId, { includeSubtree: true, reapTerminalResidue: true, escalateAfterMs: 500 });
+        if (!outcome.ok && outcome.error !== 'already_gone') {
+          undoTeardown();
+          throw new Error(`LSP child teardown refused: ${outcome.error}`);
+        }
+        if (!(await waitForChildExit(c.child, 1_000))) {
+          throw new Error('LSP managed child did not exit after teardown');
+        }
       }
-    }),
-  );
-  return clients.length;
 }
 
 /** How long a server gets to honour a protocol `exit` before we signal it. */

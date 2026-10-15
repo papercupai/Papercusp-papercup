@@ -318,6 +318,16 @@ describe('a11yBusSocketPath', () => {
 });
 
 describe('desktopSandboxEnv', () => {
+  it('uses the private writable temp mount instead of inherited host temp paths', () => {
+    const env = desktopSandboxEnv({
+      PATH: '/usr/bin', TMPDIR: '/run/operator-private/tmp',
+      TMP: '/fixture/inherited-tmp', TEMP: '/fixture/inherited-temp',
+    });
+    expect({ TMPDIR: env.TMPDIR, TMP: env.TMP, TEMP: env.TEMP })
+      .toEqual({ TMPDIR: '/tmp', TMP: '/tmp', TEMP: '/tmp' });
+    expect(env.PATH).toBe('/usr/bin');
+  });
+
   it('drops operator credentials', () => {
     const env = desktopSandboxEnv({ PATH: '/usr/bin', DATABASE_URL: 'postgres://secret', AWS_SECRET_ACCESS_KEY: 'x' });
     expect(env.PATH).toBe('/usr/bin');

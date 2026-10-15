@@ -10,12 +10,16 @@ import {
   submitBlueprintOperation,
   type BlueprintOperationHandle,
   type SubmitBlueprintOperationInput,
+  type InternalBlueprintOperationSubmission,
 } from '../../blueprint/operation-service';
+import { assertRoutineOperationAdmission, pauseRefusedRoutineOperation,
+  RoutineOperationAdmissionRefusal } from '../../blueprint/operation-routine-admission';
 import { registerSystemAction, type SystemActionCtx, type SystemActionResult } from './system-actions';
 
 type SubmitOperation = (
   sql: ReturnType<typeof getOrgPg>['sql'],
   input: SubmitBlueprintOperationInput,
+  internal?: InternalBlueprintOperationSubmission,
 ) => Promise<BlueprintOperationHandle>;
 
 function object(value: unknown): Record<string, unknown> {
@@ -43,15 +47,28 @@ export async function runBlueprintOperationAction(
   ) {
     throw new Error('blueprint_operation_routine_input_invalid');
   }
-  const handle = await (deps.submit ?? submitBlueprintOperation)(deps.sql ?? getOrgPg().sql, {
-    workspaceId: ctx.workspaceId,
-    harnessSlug: operationHarnessSlug,
-    callerId: `routine:${routineId}`,
-    operationId,
-    requestKey: workflowId,
-    input: object(payload.input),
-  });
-  return { diagnostics: { blueprintOperation: handle } };
+  const sql = deps.sql ?? getOrgPg().sql;
+  const callerId = `routine:${routineId}`;
+  try {
+    const handle = await (deps.submit ?? submitBlueprintOperation)(sql, {
+      workspaceId: ctx.workspaceId,
+      harnessSlug: operationHarnessSlug,
+      callerId,
+      operationId,
+      requestKey: workflowId,
+      input: object(payload.input),
+    }, { beforeNewAdmission: tx => assertRoutineOperationAdmission(tx, {
+      workspaceId: ctx.workspaceId, routineId, callerId, requestKey: workflowId,
+    }) });
+    return { diagnostics: { blueprintOperation: handle } };
+  } catch (error) {
+    if (!(error instanceof RoutineOperationAdmissionRefusal)) throw error;
+    const paused = !['inactive', 'overlap'].includes(error.reason);
+    if (paused) await pauseRefusedRoutineOperation(sql, ctx.workspaceId, routineId, error);
+    return { diagnostics: { blueprintOperationAdmission: {
+      admitted: false, reason: error.reason, paused, costCents: error.costCents,
+    } } };
+  }
 }
 
 registerSystemAction('blueprint-operation', runBlueprintOperationAction, { scheduling: 'on-demand' });

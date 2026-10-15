@@ -19,7 +19,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { getRecipe } from '../../code-recipes-store';
 import { mergeIds, runBulk, bulkContent } from '../_bulk';
-import { deriveRecipeAuthority, recipeRevision, toRecipeAuthorityMetadata } from '../../recipe-authority';
+import { deriveRecipeAuthority, recipeRevisionDiagnostics, toRecipeAuthorityMetadata } from '../../recipe-authority';
 
 export default defineTool({
   name: 'recipes:get',
@@ -76,6 +76,11 @@ export default defineTool({
         }
         const authority = await deriveRecipeAuthority(recipe.script);
         const updatedAt = recipe.updatedAt ?? recipe.createdAt ?? '';
+        const authorityDiagnostics = recipeRevisionDiagnostics({
+          script: recipe.script,
+          updatedAt,
+          contract: recipe,
+        });
         return {
           ok: true as const,
           id,
@@ -100,8 +105,9 @@ export default defineTool({
             // recipe that genuinely needs none.
             authority: toRecipeAuthorityMetadata(
               authority,
-              recipeRevision(recipe.script, updatedAt, recipe),
+              authorityDiagnostics.computedRevision,
             ),
+            authorityDiagnostics,
           },
         };
       },

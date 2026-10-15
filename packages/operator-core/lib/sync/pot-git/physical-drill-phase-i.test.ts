@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
 import { existsSync } from 'node:fs';
 import { verifyEd25519 } from '../../identity/ed25519';
@@ -10,6 +10,7 @@ import {
   attemptPhysicalPhaseI,
   ownerSocketSigner,
   phaseIRepoKey,
+  phaseICanaryOwnerSigner,
   startPhaseIOwner,
   validatePhysicalPhaseI,
   type PhysicalPhaseIInput,
@@ -144,6 +145,49 @@ describe('physical Phase I (P-521 F6 protected effects)', () => {
 describe('physical Phase I canary-owner target (WI-10004748, D-119)', () => {
   const canary = { workspaceId: 'papercusp-workspace', potHomeSlug: 'hello-world-3-pot', repoKey: 'hello-world-3-pot:main' };
   const build = () => buildPhysicalPhaseIInput({ runId: RUN_ID, towerDeviceKey: tower.pubkeyBase64, vmDeviceKey: vm.pubkeyBase64, startMs: Date.parse('2026-10-04T00:00:00.000Z'), canary });
+
+  it('resolves only the existing matching hive key and signs through that keychain scope', async () => {
+    const key = generateEd25519KeypairDer();
+    const target = { kind: 'canary-owner' as const, ...canary, hiveId: key.pubkeyBase64 };
+    const loadKeyStatus = vi.fn(async () => ({ kind: 'ok' as const, pubkeyBase64: key.pubkeyBase64 }));
+    const sign = vi.fn(async (_workspace: string, _slug: string, bytes: Buffer) => signWithPrivateKeyDer(key.privateKeyDer, bytes));
+    const owner = await phaseICanaryOwnerSigner(target, { loadKeyStatus, sign });
+    const bytes = Buffer.from('existing-owner-proof');
+    expect(verifyEd25519(bytes, target.hiveId, await owner.sign(bytes))).toBe(true);
+    expect(loadKeyStatus).toHaveBeenCalledWith(canary.workspaceId, canary.potHomeSlug);
+    expect(sign).toHaveBeenCalledWith(canary.workspaceId, canary.potHomeSlug, bytes);
+    for (const status of [{ kind: 'not_found' as const }, { kind: 'error' as const, reason: 'locked' }, { kind: 'ok' as const, pubkeyBase64: vm.pubkeyBase64 }]) {
+      const refusedSign = vi.fn();
+      await expect(phaseICanaryOwnerSigner(target, { loadKeyStatus: async () => status, sign: refusedSign })).rejects.toThrow(/unavailable or foreign/);
+      expect(refusedSign).not.toHaveBeenCalled();
+    }
+  });
+
+  it('keeps the actual canary observation and repoKey in a production-sink attempt', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'phase-i-canary-receipt-'));
+    dirs.push(dir);
+    const input = build();
+    if (input.target?.kind !== 'canary-owner') throw new Error('canary fixture missing');
+    const observation = input.target.realTargets.beforeOutage;
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let result;
+    try {
+      result = await attemptPhysicalPhaseI({ host: 'tower', step: 'live', dir, runId: RUN_ID,
+      deviceKey: tower.pubkeyBase64, hiveId: input.target.hiveId, repoKey: canary.repoKey,
+      vmLive: input.steps.live.vm, realTargetSnapshot: observation }, { signDevice: signer(tower.privateKeyDer) });
+      expect(warning.mock.calls.some((args) => /git-sync publication refused: hive-effect-authority/.test(args.join(' ')))).toBe(true);
+    } finally { warning.mockRestore(); }
+    expect(result.repoKey).toBe(canary.repoKey);
+    expect(result.realTargetSnapshot).toEqual(observation);
+    expect(result.realTargetSnapshot).not.toBe(observation);
+    expect(result.attempts.every((attempt) => !attempt.ok && JSON.stringify(attempt.before.protected) === JSON.stringify(attempt.after.protected))).toBe(true);
+    // A runner failure also freezes refs, but proves nothing about authority.
+    // Every sink must reach the authority fence, including git-sync's private-index commit.
+    expect(result.attempts.every((attempt) => /owning hive key|missing-hive-authority/.test(attempt.reason ?? ''))).toBe(true);
+    await expect(attemptPhysicalPhaseI({ host: 'tower', step: 'live', dir, runId: RUN_ID,
+      deviceKey: tower.pubkeyBase64, hiveId: input.target.hiveId, repoKey: canary.repoKey,
+      realTargetSnapshot: { ...observation, forkRefs: undefined } as never }, { signDevice: signer(tower.privateKeyDer) })).rejects.toThrow(/complete observation/);
+  }, 60_000);
 
   it('owner signs through the host keychain: never mints, never writes a key file', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'phase-i-canary-owner-'));

@@ -44,7 +44,7 @@
  * named. `assertRelevance` independently refuses a vacuous evaluation, so a
  * silent green is unreachable from either direction.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   assertRelevance,
   evaluateRelevance,
@@ -543,7 +543,10 @@ describe.skipIf(skipReason !== null)('P-015 — owner-reported query relevance (
 // A skip must be VISIBLE, never silent — the whole failure mode this guards.
 describe.runIf(skipReason !== null)('P-015 — owner-query relevance SKIPPED', () => {
   it('reports why it could not measure (this is not a pass)', () => {
-    console.warn(`[P-015] owner-query relevance eval SKIPPED — ${skipReason}`);
+    const warning = `[P-015] owner-query relevance eval SKIPPED — ${skipReason}`;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    console.warn(warning);
+    expect(warn).toHaveBeenCalledWith(warning);
     expect(skipReason).toBeTruthy();
   });
 });

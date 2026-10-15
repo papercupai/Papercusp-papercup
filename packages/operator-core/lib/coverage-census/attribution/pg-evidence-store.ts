@@ -32,6 +32,7 @@
  */
 
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
+import { createPgNotifySink } from '@papercusp/sync/server/pg';
 import type { BufferedEvidence } from './buffer';
 import type { AttributionScope } from './context';
 import type { EvidenceStore } from './sink';
@@ -150,13 +151,12 @@ export function createPgEvidenceStore(options: PgEvidenceStoreOptions = {}): Evi
       //
       // Guarded on `written > 0`: a flush that matched no surfaces changed nothing, and
       // pushing there would invalidate every subscriber to say so.
-      // The import is DYNAMIC and must stay that way: sync-sse declares itself a host-only
-      // module that opens a long-lived PG LISTEN connection at load. This store is reached
-      // from the attribution flush inside ordinary TEST processes, so a static import would
-      // open that connection in every one of them.
+      // Publish on the SAME database that received the evidence. The global sync-sse
+      // bus uses the operator org pool, which can be a different database (or forbidden
+      // in an integration fork). Reuse its dependency-free PG adapter and wire format;
+      // the store already batches notifications once per flush.
       if (written > 0) {
-        const { notifySyncInvalidate } = await import('../../sync-sse');
-        await notifySyncInvalidate('testing.coverage');
+        await createPgNotifySink({ getSql: () => sql }).notify(JSON.stringify({ name: 'testing.coverage' }));
       }
 
       return { written, unmatchedSurfaces };

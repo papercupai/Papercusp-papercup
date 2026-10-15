@@ -22,6 +22,8 @@
  * fallback is returned.
  */
 
+import { observeFallback } from './degradation/fallback-observations';
+
 export interface BoundedTimeoutResult<T> {
   value: T;
   /** true when cancellation/deadline fired first (fallback used) or the work threw. */
@@ -90,6 +92,7 @@ export async function withBoundedTimeout<T>(
     promise.catch(() => {});
     const result = await Promise.race([promise, cancellation]);
     if (result === TIMEOUT_SENTINEL) {
+      observeFallback('bounded-operation', { eligible: 1, applied: 0, reason: 'timeout', scope: opts.label ?? 'unlabeled' });
       console.warn(
         `[bounded-timeout]${opts.label ? ` ${opts.label}` : ''} exceeded ${opts.timeoutMs}ms — degrading to fallback`,
       );
@@ -98,8 +101,10 @@ export async function withBoundedTimeout<T>(
     if (result === ABORTED_SENTINEL) {
       return { value: opts.fallback, degraded: true, reason: 'aborted', elapsedMs: Date.now() - startedAt };
     }
+    observeFallback('bounded-operation', { eligible: 1, applied: 1, reason: 'applied', scope: opts.label ?? 'unlabeled' });
     return { value: result as T, degraded: false, elapsedMs: Date.now() - startedAt };
   } catch (err) {
+    observeFallback('bounded-operation', { eligible: 1, applied: 0, reason: 'error', scope: opts.label ?? 'unlabeled' });
     const errorMessage = err instanceof Error ? err.message : String(err);
     console.warn(
       `[bounded-timeout]${opts.label ? ` ${opts.label}` : ''} failed: ${errorMessage} — degrading to fallback`,

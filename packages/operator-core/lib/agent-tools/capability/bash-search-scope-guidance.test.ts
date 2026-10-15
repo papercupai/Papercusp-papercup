@@ -16,8 +16,11 @@ type GuidanceTool = {
   description?: string;
   guidance?: {
     when?: string;
+    notWhen?: string;
+    seeAlso?: string[];
   };
   handler?: (args: unknown, ctx: unknown) => Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
+  args?: { shape?: Record<string, { description?: string }> };
 };
 
 describe('capability:bash — repository search scope guidance', () => {
@@ -34,10 +37,10 @@ describe('capability:bash — repository search scope guidance', () => {
     // regexp flag. Keep the distinction in the agent-facing shared guidance.
     expect(guidance).toContain('In `rg`, use lowercase `-e`/`--regexp`');
     expect(guidance).toContain('uppercase `-E` means `--encoding`');
-    expect(guidance).toContain('else `grep -F`');
-    expect(guidance).toContain('Apostrophe regexes break single-quoted arguments');
-    expect(guidance).toContain('`-e` per pattern');
-    expect(guidance).toContain('quoted stdin/file');
+    expect(guidance).toContain('or `grep -F`');
+    expect(guidance).toContain('Apostrophes break single-quoted regexes');
+    expect(guidance).toContain('`-e`');
+    expect(guidance).toContain('quoted input');
     expect(guidance).toContain('apps/operator/lib');
     expect(guidance).toContain('packages/operator-core/lib');
     expect(guidance).toContain('.papercusp');
@@ -57,6 +60,22 @@ describe('capability:bash — repository search scope guidance', () => {
     // EI-21603394979563992: the optional jq tip is intentionally kept out of the
     // prompt (see bash.ts) so this guidance stays within the shared soft budget.
     expect(promptWeight(bashTool as Parameters<typeof promptWeight>[0])).toBeLessThanOrEqual(BUDGET);
+  });
+
+  it('routes service-log searches through server-side filtering', () => {
+    const tool = bashTool as unknown as GuidanceTool;
+    const related = tool.guidance?.seeAlso?.join(' ') ?? '';
+
+    expect(related).toContain('logs:read { unit, since, grep, limit }');
+    expect(related).toContain('filters inside journalctl');
+  });
+
+  it('documents when bash jobs need explicit work-item attribution', () => {
+    const description = (bashTool as unknown as GuidanceTool).args?.shape?.work_item_id?.description ?? '';
+
+    expect(description).toContain('Required when you hold multiple work-items');
+    expect(description).toContain('held-item attribution cannot be measured');
+    expect(description).toContain('name one you currently hold');
   });
 
   it('detects the reported unbounded all-ref pickaxe search but permits bounded or focused forms', () => {

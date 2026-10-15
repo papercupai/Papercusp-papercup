@@ -19,6 +19,7 @@
 import { execFile } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { benchDefaultModelId } from './model-registry-snapshot';
 
 /** The result separator `swarmbench_run.py` prints before its JSON line. */
 const RESULT_SEP = 'SWARMBENCH_RESULT_JSON';
@@ -134,7 +135,7 @@ export function pythonRunSwarmSim(deps: SwarmLiveDeps = {}): RunSwarmSim {
   const exec = deps.exec ?? liveExec;
   const repoDir = deps.repoDir ?? swarmbenchRepoDir();
   const python = deps.python ?? join(repoDir, '.venv', 'bin', 'python');
-  const model = deps.model ?? 'claude-opus-4-8';
+  const model = deps.model ?? benchDefaultModelId();
   const apiBase = deps.apiBase ?? `http://127.0.0.1:${process.env.PAPERCUSP_GATEWAY_PORT ?? '8788'}/v1`;
   const apiKey = deps.apiKey ?? process.env.SWARMBENCH_API_KEY ?? 'sk-papercusp-gateway';
   const timeoutMs = deps.timeoutMs ?? 1_800_000;

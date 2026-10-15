@@ -212,10 +212,12 @@ export async function gatherCleanupInputs(scope: CleanupGatherScope): Promise<Cl
     id: string;
     refs: unknown;
     version: number | string | null;
+    owner_selection_required: boolean | null;
   }>>`
     SELECT id,
            COALESCE(properties->'worklist'->'value', '[]'::jsonb) AS refs,
-           COALESCE((properties->'worklist'->>'version')::int, 0) AS version
+           COALESCE((properties->'worklist'->>'version')::int, 0) AS version,
+           property_schema->'worklist'->'collection'->'defaultSelected' = 'false'::jsonb AS owner_selection_required
       FROM harness_shared.goals
      WHERE workspace_id = ${scope.workspaceId}
        AND status = 'active'
@@ -232,6 +234,7 @@ export async function gatherCleanupInputs(scope: CleanupGatherScope): Promise<Cl
           ? goal.refs.filter((ref): ref is string => typeof ref === 'string')
           : [],
         version: Number(goal.version ?? 0),
+        ownerSelectionRequired: goal.owner_selection_required === true,
       }
     : null;
 

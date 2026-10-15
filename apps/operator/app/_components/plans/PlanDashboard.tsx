@@ -78,12 +78,16 @@ import { beginInteraction, markInteractionPhase, PERF_INTERACTIONS } from '../pe
 import { agoLabel, agoLabelMs, WORK_HOT_MS } from './PlansPane';
 import {
   collapsePlanActivity,
+  derivedStatusViewOf,
   groupPlanItems,
   newestDecisions,
+  noteAgeOf,
   statusCountsOf,
+  type DerivedStatusRowKind,
   type PlanActivityFeedRow,
 } from './plan-dashboard-derive';
 import PlanCleanupEntryButton from './PlanCleanupEntryButton';
+import { PlanAuditButton } from './PlanAuditPane';
 import {
   PLAN_CLEANUP_RUN_PARAM,
   usePlanCleanupRun,
@@ -155,6 +159,14 @@ function progressOfItems(
   }
   return { done, total: items.length };
 }
+
+/** derived-status-not-hand-written-2026-10-12 P-005: the status card's row labels. */
+const STATUS_ROW_LABEL: Record<DerivedStatusRowKind, string> = {
+  'in-flight': 'in flight',
+  actionable: 'next up',
+  blocked: 'blocked',
+  'awaiting-human': 'needs a human',
+};
 
 /** `su-5ae5fec0-…` → `su-5ae5f` — the short owner id the roster panes show. */
 export function shortOwnerId(ownerId: string): string {
@@ -423,6 +435,14 @@ export default function PlanDashboard({
   );
   const nowState = plan?.now?.state?.trim() || null;
   const nowNext = plan?.now?.next?.trim() || null;
+  // derived-status-not-hand-written-2026-10-12 P-005: the status DERIVED from the
+  // item graph (P-001/P-002) and the note's age from the plan-event log (P-003).
+  const statusView = useMemo(
+    () => derivedStatusViewOf(plan?.derivedStatus),
+    [plan?.derivedStatus],
+  );
+  const noteAge = useMemo(() => noteAgeOf(plan?.now?.staleness), [plan?.now?.staleness]);
+  const noteMovedPast = noteAge?.state === 'moved-past';
 
   /** "8h" / "8–12h" — a run's time range, degenerate when the labels match. */
   const runAgo = (newestMs: number | null, oldestMs: number | null): string => {
@@ -517,6 +537,7 @@ export default function PlanDashboard({
                 onRunStarted={(runId) => void setCleanupRunId(runId)}
               />
             ) : null}
+            <PlanAuditButton planSlug={planSlug} />
           </div>
         </div>
 
@@ -612,10 +633,79 @@ export default function PlanDashboard({
 
       <div className="plan-dash__body">
         <div className="plan-dash__colmain">
+          {statusView ? (
+            <div
+              className="plan-dash__card plan-dash__status"
+              data-testid="plan-dash-status"
+            >
+              <div className="plan-dash__sec-h">
+                Status
+                <span className="plan-dash__sec-line" aria-hidden="true" />
+                <span className="plan-dash__sec-h-note">derived from the items</span>
+              </div>
+              <div className="plan-dash__status-text" data-testid="plan-dash-status-text">
+                {statusView.text}
+              </div>
+              {statusView.rows.length > 0 ? (
+                <ul className="plan-dash__status-rows">
+                  {statusView.rows.map((r) => (
+                    <li
+                      key={`${r.kind}:${r.id}`}
+                      className={`plan-dash__status-row plan-dash__status-row--${r.kind}`}
+                      data-testid="plan-dash-status-row"
+                      data-kind={r.kind}
+                      data-item={r.id}
+                    >
+                      <span className="plan-dash__status-kind">{STATUS_ROW_LABEL[r.kind]}</span>
+                      <span className="plan-dash__status-id">{r.id}</span>
+                      {r.holders.length > 0 ? (
+                        <span className="plan-dash__status-holders" title={r.holders.join(', ')}>
+                          held by {r.holders.map(shortOwnerId).join(', ')}
+                        </span>
+                      ) : null}
+                      {r.kind === 'blocked' ? (
+                        <span className="plan-dash__status-blockers">
+                          {r.blockedOn.length > 0
+                            ? `blocked on ${r.blockedOn.join(', ')}`
+                            : 'blocked outside the plan'}
+                        </span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {statusView.hiddenRows > 0 ? (
+                <div className="plan-dash__status-more">
+                  {statusView.listTruncated ? 'at least ' : '+'}
+                  {statusView.hiddenRows} more
+                </div>
+              ) : null}
+              {statusView.shipGate ? (
+                <div
+                  className={`plan-dash__status-gate plan-dash__status-gate--${
+                    statusView.shipGate.skipped
+                      ? 'skipped'
+                      : statusView.shipGate.satisfied
+                        ? 'ok'
+                        : 'refused'
+                  }`}
+                  data-testid="plan-dash-status-gate"
+                >
+                  <span className="plan-dash__status-kind">ship gate</span>
+                  <span>{statusView.shipGate.text}</span>
+                  {statusView.shipGate.repairVerb ? (
+                    <code className="plan-dash__status-verb">{statusView.shipGate.repairVerb}</code>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
           {nowState || nowNext ? (
             <div
-              className="plan-dash__card plan-dash__now"
+              className={`plan-dash__card plan-dash__now${noteMovedPast ? ' plan-dash__now--stale' : ''}`}
               data-testid="plan-dash-now"
+              data-note-age={noteAge?.state ?? 'none'}
             >
               <div className="plan-dash__sec-h plan-dash__sec-h--accent">
                 Now
@@ -624,6 +714,26 @@ export default function PlanDashboard({
                   where this plan is, in its own words
                 </span>
               </div>
+              {noteAge ? (
+                <div
+                  className={`plan-dash__now-age plan-dash__now-age--${noteAge.state}`}
+                  data-testid="plan-dash-now-age"
+                  title={noteAge.writtenAt ?? undefined}
+                >
+                  {noteMovedPast ? (
+                    <span
+                      className="plan-dash__chip plan-dash__chip--warn"
+                      data-testid="plan-dash-now-stale"
+                    >
+                      moved past
+                    </span>
+                  ) : null}
+                  <span>
+                    {noteAge.writtenAt ? `written ${agoLabel(noteAge.writtenAt)} ago · ` : ''}
+                    {noteAge.text}
+                  </span>
+                </div>
+              ) : null}
               {nowState ? (
                 <div className="plan-dash__now-text">{nowState}</div>
               ) : null}

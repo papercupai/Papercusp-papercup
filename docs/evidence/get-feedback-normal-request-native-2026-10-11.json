@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "kind": "existing-normal-request-native-payload-verification",
+  "planSlug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemRefs": ["WI-10007521", "WI-10005891"],
+  "status": "exact second native payload and answer receipt verified; acceptance remains open",
+  "conversationId": "conv-request-29d0180eafc735a1ab4fb6a60c9013dc53c902334f36a4c5183813648e94e42b",
+  "scope": "Read-only recovery of an already-existing normal request. No request was resubmitted and no trial, fork, reply or decline was added.",
+  "dispatch": {
+    "persistedAt": "2026-10-11T09:10:09.323Z",
+    "operation": "convert",
+    "sourceOwnerId": "su-d5eaa301-8b78-4d15-a539-00f2803ddfd7",
+    "sourceAdvSessionId": 31529,
+    "sourceNativeSessionId": "1d4d4a26-35f0-4e2b-a813-6cc5121b0988",
+    "sourceBackend": "claude",
+    "sourceEndedAt": "2026-10-05T15:02:48.048Z",
+    "answeringOwnerId": "su-d2e075f4-8103-4499-9e68-84c5258a8ebf",
+    "targetAdvSessionId": 40371,
+    "targetNativeSessionId": "2f83f6b2-7c9f-4f87-b688-bcb71ddf7dc0",
+    "targetBackend": "claude",
+    "targetModel": "fable[1m]",
+    "portId": "810691d8-0932-48a4-ad80-0c83630538d8",
+    "portStatus": "delivered",
+    "bootstrapReceiptCommitted": true,
+    "ownerAndNativeIdentitiesDisjoint": true
+  },
+  "nativePayload": {
+    "nativeEvidenceCapturedAt": "2026-10-11T09:53:56.078639+00:00",
+    "nativeFileBytes": 1326254,
+    "nativeFileSha256": "a79b479b3e4430a41de51f2549df80a69ca520adfb299f26450029a92d3a73d0",
+    "userFrameLine": 4,
+    "userFrameSha256": "ccda02b6fd2aae3adb9c0fb8673c6ca2d75a36fd5cdd183dc7f1f26075e625eb",
+    "renderedPayloadSha256": "26ffb93e4b51c6a17b09e9bcf961b97eace0da6c45ed86a2d5824e29fa4469dc",
+    "seedStartCharacter": 79,
+    "seedEndCharacterExclusive": 8831,
+    "seedBytes": 8800,
+    "wrapperPrefixCharacters": 79,
+    "wrapperSuffixCharacters": 29,
+    "exactCanonicalPayloadVerified": true,
+    "maintainedVerifier": "packages/operator-core/lib/session-port/render.ts#verifySessionPortSeed",
+    "verifierSourceSha256": "c9ecfcd72d8b829d5192b4ebb662040d55b4ce206474642e0e7605f6e0a3c52a",
+    "representation": "The native user message wraps the canonical seed. Extract from the session-port header through the final checksum receipt and run verifySessionPortSeed with the persisted rendered_hash. The whole user-frame hash is not the rendered payload hash.",
+    "sourceNativeIdExplicitlyInSeed": false,
+    "sourceIdentityEvidence": "Exact persisted port source_adv_session_id joined to its adv-session row, rather than an absent source-native-id string in the renderer's header."
+  },
+  "nativeAnswer": {
+    "postId": 1173917,
+    "postCreatedAt": "2026-10-11T09:23:16.788Z",
+    "typedToolUseLine": 228,
+    "typedToolResultLine": 229,
+    "toolUseId": "toolu_01VQSJVQd57JJjhE2MfZduL7",
+    "toolName": "consult:reply",
+    "resultBlockSha256": "4b9c150e1b5b151d13d8f259bd2816c93c9078f2fa3aa28b99c0ffef45b55959",
+    "scope": "Exact typed reply/result link to this conversation and post; no additional physical transport correlation is asserted."
+  },
+  "retainedReads": [
+    "/dev/shm/get-feedback-native-persisted-dispatch-20261011-0958.json",
+    "/dev/shm/get-feedback-native-second-port-20261011-0959.json",
+    "/dev/shm/get-feedback-native-second-frame-20261011-1000.json"
+  ],
+  "reproduction": [
+    "Resolve the private native transcript through persistence_proof.nativeRef for the exact port; native session id must match the target row.",
+    "Verify native file bytes/SHA, extract text from user row 4 and verify the canonical seed using the maintained renderer function.",
+    "Join native tool_use 228 and tool_result 229 by toolUseId; verify the exact conversation and post 1173917."
+  ],
+  "limits": [
+    "Ended-source conversion; this is not a D-017 live-source high-water observation.",
+    "The first reply preceded the controlled-decline instruction; controlled decline is not demonstrated.",
+    "No original R6 population, shortfall or requester unknown was changed.",
+    "The existing reply's below-floor expertise classification is retained; receipt does not establish usefulness or expertise.",
+    "Current full-matrix acceptance, independent grading and exact R7 shipment remain open."
+  ]
+}

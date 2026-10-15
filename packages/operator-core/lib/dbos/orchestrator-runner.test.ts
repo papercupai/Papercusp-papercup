@@ -125,6 +125,44 @@ describe('formatInvokeStderr — surface child stderr on a failed invoke (P-005)
     expect(out.length).toBeLessThan(huge.length);
     expect(out).toContain('[stderr truncated: 10000 chars]');
   });
+
+  test('keeps the Error message and stack when a minified bundle prints a huge code frame (WI-10006694)', () => {
+    // The c1007k shape: node prints `<file>:<line>`, the whole minified source line, a caret, then
+    // the error and stack. A head-only cut kept only the frame.
+    const frame = 'var __create=Object.create;'.repeat(4000);
+    const stderr = [
+      'file:///usr/lib/Papercusp%20Server/sidecar/orchestrator/bin/invoke-once.mjs:2',
+      frame,
+      ' '.repeat(300) + '^',
+      '',
+      'Error: Dynamic require of "process" is not supported',
+      '    at file:///usr/lib/Papercusp%20Server/sidecar/orchestrator/bin/invoke-once.mjs:2:454',
+      '    at ../../node_modules/yaml/dist/compose/composer.js (file:///…/invoke-once.mjs:100:7832)',
+      '',
+      'Node.js v24.18.1',
+    ].join('\n');
+    const out = formatInvokeStderr('merge-resolver', 1, stderr)!;
+    expect(out).toContain('Error: Dynamic require of "process" is not supported');
+    expect(out).toContain('yaml/dist/compose/composer.js');
+    expect(out).toContain('Node.js v24.18.1');
+    expect(out).toContain(`[${frame.length}-char line elided]`);
+    expect(out).toContain(`[stderr truncated: ${stderr.trim().length} chars]`);
+    expect(out.length).toBeLessThan(5000);
+  });
+
+  test('keeps both the head and the tail of a long multi-line stderr', () => {
+    const lines = Array.from({ length: 400 }, (_, i) => `line ${i} ${'.'.repeat(20)}`);
+    const out = formatInvokeStderr('worker', 1, lines.join('\n'))!;
+    expect(out).toContain('line 0 ');
+    expect(out).toContain('line 399 ');
+    expect(out).not.toContain('line 200 ');
+    expect(out).toContain('[stderr truncated:');
+  });
+
+  test('a short stderr is passed through untouched, with no truncation marker', () => {
+    const out = formatInvokeStderr('worker', 1, 'Error: boom\n    at x (y.js:1:1)')!;
+    expect(out).toBe('[dbos-invoke] role=worker exited 1 — stderr:\nError: boom\n    at x (y.js:1:1)');
+  });
 });
 
 describe('debuggerGateDecision — fire the debugger before the worker (P-012)', () => {

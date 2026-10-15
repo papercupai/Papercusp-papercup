@@ -10,7 +10,7 @@ import PromptStudioPanel from '../../prompt-studio/PromptStudioPanel';
  */
 export default function Page() {
   return (
-    <div style={{ height: '100%', minHeight: 480, display: 'flex', flexDirection: 'column' }}>
+    <div style={{ height: 'max(480px, calc(100dvh - 180px))', display: 'flex', flexDirection: 'column' }}>
       <PromptStudioPanel />
     </div>
   );

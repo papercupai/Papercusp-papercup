@@ -14,7 +14,6 @@ import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
-// @ts-expect-error — this plain-Node production helper is intentionally consumed without a build step.
 import { repoLockName } from '../../../scripts/npm-install-safe.mjs';
 
 const ROOT = resolve(__dirname, '../../..');

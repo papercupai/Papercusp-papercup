@@ -1,0 +1,719 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Work on everything — dedicated GUI concepts</title>
+<style>
+/* Offline design artifact. Frost / portal-light palette follows the existing
+   docs/mockups/work-on-everything.html gallery; no remote assets or live writes. */
+:root{color-scheme:dark;--bg:#080f1a;--surface:#101a29;--panel:#0c1522;--raised:#172234;--text:#e6eef8;--dim:#a0b1c7;--muted:#768aa5;--line:#223047;--accent:#78c9ef;--accent-bg:#142e41;--green:#73d8b4;--green-bg:#14332c;--amber:#f2c475;--amber-bg:#352d20;--red:#f096a1;--ink:#072130;--shadow:0 28px 90px #0005}
+[data-theme=light]{color-scheme:light;--bg:#f0f1ed;--surface:#ffffff;--panel:#f8faf8;--raised:#edf1ed;--text:#20302d;--dim:#536b65;--muted:#647d75;--line:#d7e2dd;--accent:#276e68;--accent-bg:#e4f2ed;--green:#287959;--green-bg:#e5f3eb;--amber:#91600c;--amber-bg:#fbf1de;--red:#ab4556;--ink:#fff;--shadow:0 24px 70px #213e2f15}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}button,input,select{font:inherit}button{cursor:pointer}button,a,input,select{outline-offset:4px}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent)}button:disabled{opacity:.35;cursor:default}h1,h2,h3,h4,p{margin:0}button{color:inherit}a{color:var(--accent)}[hidden]{display:none!important}.icon{width:17px;height:17px;stroke:currentColor;stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round;flex:none}.muted{color:var(--muted)}.dim{color:var(--dim)}.small{font-size:11px}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px}.eyebrow{font-size:10px;text-transform:uppercase;letter-spacing:.14em;font-weight:700;color:var(--accent)}.gallery{max-width:1510px;margin:auto;padding:28px 36px 30px}.gallery-top{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:24px}.gallery-top h1{font-size:25px;letter-spacing:-.045em;font-weight:600;margin-top:5px}.gallery-tools{display:flex;align-items:center;gap:10px}.sample{font-size:10px;border:1px solid var(--line);border-radius:5px;padding:5px 9px;color:var(--dim)}.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:34px;border:1px solid var(--line);padding:7px 11px;border-radius:6px;background:var(--surface);font-size:11px;font-weight:600;white-space:nowrap}.btn:hover{background:var(--raised);border-color:var(--muted)}.btn.primary{background:var(--accent);color:var(--ink);border-color:var(--accent)}.btn.ghost{background:transparent}.btn.small{min-height:28px;padding:4px 8px;font-size:10px}.text-btn{display:inline-flex;align-items:center;gap:6px;background:none;border:0;color:var(--accent);padding:4px 0;font-size:11px}.tabs{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:20px}.tabs button{display:flex;align-items:center;gap:10px;border:1px solid var(--line);background:transparent;color:var(--dim);border-radius:7px;padding:10px 16px;font-size:12px}.tabs button[aria-selected=true]{color:var(--text);background:var(--accent-bg);border-color:var(--accent)}.tab-number{font-size:10px;color:var(--muted)}.tabs button[aria-selected=true] .tab-number{color:var(--accent)}.recommended{font-size:8px;letter-spacing:.04em;border-radius:3px;padding:2px 5px;color:var(--accent);border:1px solid var(--accent)}.concept-caption{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:17px;min-height:43px}.concept-caption h2{font-size:17px;letter-spacing:-.025em}.concept-caption p{font-size:12px;color:var(--dim);margin-top:3px}.concept-tag{font-size:10px;color:var(--muted);white-space:nowrap}.screen{border:1px solid var(--line);border-radius:11px;overflow:hidden;box-shadow:var(--shadow);background:var(--panel)}.window-bar{height:29px;padding:0 13px;display:flex;align-items:center;gap:5px;background:var(--surface);border-bottom:1px solid var(--line);font-size:9px;color:var(--muted)}.window-bar i{width:6px;height:6px;border:1px solid var(--muted);border-radius:50%}.window-bar span{margin:auto}.app-layout{display:grid;grid-template-columns:61px minmax(0,1fr)}.rail{display:flex;align-items:center;flex-direction:column;gap:24px;padding:20px 0;background:var(--surface);border-right:1px solid var(--line);color:var(--muted)}.brand{display:grid;place-items:center;width:31px;height:31px;border:1px solid var(--line);border-radius:9px;color:var(--accent);font-size:22px;margin-bottom:13px}.rail-item{display:grid;justify-items:center;gap:5px;font-size:8px}.rail-item.active{color:var(--accent)}.rail-item.bottom{margin-top:auto}.avatar{display:grid;place-items:center;width:27px;height:27px;border-radius:50%;background:var(--accent-bg);color:var(--accent);font-size:10px;font-weight:700;flex:none}.app-main{min-width:0}.breadcrumb{height:48px;border-bottom:1px solid var(--line);padding:0 26px;display:flex;justify-content:space-between;align-items:center;font-size:10px;color:var(--muted)}.breadcrumb strong{color:var(--dim);font-weight:500}.breadcrumb-left{display:flex;gap:10px;align-items:center}.goal-header{display:flex;justify-content:space-between;align-items:center;gap:20px;padding:24px 28px 22px}.goal-identity{display:flex;gap:13px;align-items:center}.goal-symbol{display:grid;place-items:center;width:46px;height:46px;border-radius:12px;background:var(--accent-bg);border:1px solid var(--line);font-size:31px;color:var(--accent)}.title-line{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.title-line h2{font-size:24px;letter-spacing:-.04em;font-weight:600}.goal-identity p{font-size:11px;color:var(--dim);margin-top:3px}.header-actions{display:flex;gap:7px;align-items:center}.pill{display:inline-flex;align-items:center;gap:5px;font-size:9px;font-weight:600;padding:3px 7px;white-space:nowrap;border-radius:4px;border:1px solid var(--line);color:var(--dim)}.pill.good{color:var(--green);background:var(--green-bg);border-color:transparent}.pill.warn{color:var(--amber);background:var(--amber-bg);border-color:transparent}.pill.blue{color:var(--accent);background:var(--accent-bg);border-color:transparent}.dot{width:5px;height:5px;border-radius:50%;background:currentColor;display:inline-block}.subnav{display:flex;align-items:center;gap:25px;margin:0 28px;border-bottom:1px solid var(--line)}.subnav button{padding:10px 0 12px;background:none;border:0;border-bottom:2px solid transparent;color:var(--muted);font-size:11px}.subnav button.active{border-color:var(--accent);color:var(--text)}.subnav .context{margin-left:auto;font-size:9px;color:var(--muted)}.content{padding:24px 28px 26px;min-height:636px}.intro{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:20px}.intro h3{font-size:19px;letter-spacing:-.03em;font-weight:550}.intro p{font-size:11px;color:var(--dim);margin-top:4px}.steward{display:flex;align-items:center;gap:9px;font-size:10px;padding:9px 12px;border:1px solid var(--line);border-radius:7px;background:var(--surface);min-width:194px}.steward strong{font-size:11px;font-weight:550}.metrics{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--surface);margin-bottom:22px}.metric{padding:14px 18px;border-right:1px solid var(--line)}.metric:last-child{border:0}.metric-top{font-size:10px;color:var(--dim);display:flex;justify-content:space-between;align-items:center}.metric-value{font-size:27px;letter-spacing:-.05em;font-weight:500;margin-top:4px}.metric-value span{font-size:12px;letter-spacing:0;color:var(--muted);margin-left:5px}.metric-note{font-size:9px;color:var(--muted);margin-top:2px}.overview-grid{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(270px,1fr);gap:20px}.card{border:1px solid var(--line);border-radius:8px;background:var(--surface);overflow:hidden}.card-head{padding:15px 17px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:12px}.card-head h4{font-size:12px;font-weight:600}.card-head p{font-size:9px;color:var(--muted);margin-top:2px}.card-body{padding:15px 17px}.priority-row{width:100%;display:grid;grid-template-columns:23px minmax(0,1fr) auto;gap:11px;align-items:center;background:none;border:0;border-bottom:1px solid var(--line);text-align:left;padding:16px 17px}.priority-row:last-child{border:0}.priority-row:hover{background:var(--raised)}.rank{font-size:11px;color:var(--muted);align-self:start;margin-top:2px}.plan-title{font-size:12px;font-weight:550}.plan-sub{font-size:10px;color:var(--muted);margin-top:4px}.plan-progress{display:flex;align-items:center;gap:4px;margin-top:10px}.plan-progress i{display:block;height:3px;width:26px;border-radius:2px;background:var(--line)}.plan-progress i.done{background:var(--green)}.plan-progress i.current{background:var(--accent)}.priority-meta{text-align:right;align-self:start}.priority-meta p{font-size:9px;color:var(--muted);margin-top:7px}.attention-card{border-color:color-mix(in srgb,var(--amber) 34%,var(--line))}.attention-card .card-head{background:var(--amber-bg)}.decision-item{padding:16px 17px;border-bottom:1px solid var(--line)}.decision-item:last-child{border:0}.decision-title{font-size:12px;font-weight:550;margin:7px 0 6px}.decision-item p{font-size:10px;color:var(--dim)}.decision-actions{display:flex;gap:7px;margin-top:12px}.budget-card{margin-top:16px}.budget-line{display:flex;align-items:baseline;justify-content:space-between}.budget-amount{font-size:21px;letter-spacing:-.03em}.bar{height:5px;background:var(--line);border-radius:9px;overflow:hidden;margin:11px 0 7px}.bar span{display:block;height:100%;background:var(--accent);border-radius:9px;transition:width .2s}.budget-meta{display:flex;justify-content:space-between;font-size:9px;color:var(--muted)}.outcomes{margin-top:19px}.outcome-row{display:flex;gap:11px;padding:10px 0;font-size:11px;align-items:flex-start}.check-mark{color:var(--green);width:17px;height:17px;border-radius:50%;display:grid;place-items:center;border:1px solid var(--green);font-size:10px;flex:none}.outcome-row p{font-size:9px;color:var(--muted);margin-top:3px}.outcome-row button{margin-left:auto;white-space:nowrap}.scope-note{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:10px;padding:14px 0 0}.worklist-layout{display:grid;grid-template-columns:minmax(0,1fr) 286px;gap:18px}.worklist-tools{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:15px}.search-box{display:flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--surface);border-radius:6px;padding:7px 10px;flex:1;max-width:260px;color:var(--muted)}.search-box input{width:100%;background:none;border:0;color:var(--text);font-size:11px;outline-offset:5px;min-width:0}.filter{background:var(--surface);border:1px solid var(--line);border-radius:6px;color:var(--dim);font-size:10px;padding:8px;min-height:33px}.table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:var(--surface)}table{width:100%;border-collapse:collapse;font-size:10px;min-width:555px}th{font-size:9px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);font-weight:500;text-align:left;background:var(--panel);padding:12px 10px;border-bottom:1px solid var(--line)}td{padding:15px 10px;border-bottom:1px solid var(--line);vertical-align:middle}tr:last-child td{border:0}tr.selected{background:var(--accent-bg)}tr.excluded{opacity:.55}td input{accent-color:var(--accent);width:14px;height:14px;cursor:pointer}.plan-select{background:none;border:0;text-align:left;padding:0;display:block;width:100%}.table-plan{font-size:11px;font-weight:550}.table-plan-sub{font-size:9px;color:var(--muted);margin-top:4px}.rank-controls{display:flex;gap:3px;margin-top:5px}.icon-button{border:1px solid var(--line);background:transparent;border-radius:3px;font-size:9px;line-height:1;padding:3px 5px;color:var(--dim)}.table-foot{padding:12px 2px;display:flex;justify-content:space-between;gap:12px;font-size:9px;color:var(--muted)}.detail-panel{position:relative}.detail-panel .card-body{padding:18px}.detail-panel h4{font-size:15px;letter-spacing:-.02em;margin:10px 0 7px}.detail-panel p{font-size:10px;color:var(--dim)}.detail-label{font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-top:20px;margin-bottom:7px}.detail-step{display:flex;align-items:flex-start;gap:9px;font-size:10px;padding:10px 0;border-bottom:1px solid var(--line)}.detail-step:last-child{border:0}.detail-step small{display:block;color:var(--muted);font-size:9px;margin-top:2px}.mini-dot{width:7px;height:7px;border-radius:50%;background:var(--green);flex:none;margin-top:4px}.mini-dot.blue{background:var(--accent)}.mini-dot.warn{background:var(--amber)}.detail-kv{display:flex;justify-content:space-between;font-size:10px;margin-top:8px}.explainer{margin-top:18px;padding:13px 15px;background:var(--accent-bg);border:1px solid var(--line);border-radius:7px;font-size:10px;color:var(--dim)}.explainer strong{color:var(--text)}.review-grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(270px,1fr);gap:20px}.review-hero{padding:20px;border:1px solid color-mix(in srgb,var(--amber) 34%,var(--line));border-radius:8px;background:linear-gradient(125deg,var(--amber-bg),var(--surface));margin-bottom:17px}.review-hero h4{font-size:17px;letter-spacing:-.025em;margin:8px 0}.review-hero p{font-size:11px;color:var(--dim);max-width:570px}.review-request{padding:17px 18px;border-bottom:1px solid var(--line)}.review-request:last-child{border:0}.review-request-header{display:flex;align-items:center;justify-content:space-between;gap:10px}.review-request h4{font-size:12px}.review-request p{font-size:10px;color:var(--dim);margin-top:6px}.review-request .recommendation{background:var(--panel);border-left:2px solid var(--accent);padding:9px 11px;margin-top:11px;font-size:10px;color:var(--dim)}.review-request .recommendation strong{color:var(--accent);font-weight:550}.review-timeline{padding:0 18px}.timeline-entry{display:grid;grid-template-columns:42px minmax(0,1fr);gap:10px;padding:15px 0;border-bottom:1px solid var(--line)}.timeline-entry:last-child{border:0}.timeline-entry time{font-size:9px;color:var(--muted);margin-top:2px}.timeline-entry h4{font-size:11px;font-weight:550}.timeline-entry p{font-size:10px;color:var(--muted);margin-top:4px}.timeline-entry details{font-size:10px;color:var(--dim);margin-top:8px}.timeline-entry summary{cursor:pointer;color:var(--accent)}.timeline-entry details p{font-size:10px;color:var(--dim);padding:8px 0 2px}.chart{display:flex;align-items:flex-end;justify-content:space-between;gap:8px;height:95px;margin:18px 0 8px}.chart-col{flex:1;text-align:center;display:flex;align-items:center;flex-direction:column;justify-content:flex-end;height:100%;gap:7px}.chart-col i{display:block;width:100%;max-width:23px;border-radius:3px 3px 0 0;background:var(--accent);opacity:.75}.chart-col.today i{opacity:1}.chart-col span{font-size:8px;color:var(--muted)}.lane-health{display:flex;justify-content:space-between;align-items:center;font-size:10px;padding:11px 0;border-bottom:1px solid var(--line)}.lane-health:last-child{border:0}.lane-health span:first-child{color:var(--dim)}.activity-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 28px;border-top:1px solid var(--line);background:var(--surface);font-size:9px;color:var(--muted)}.activity-footer .pulse{display:flex;align-items:center;gap:7px}.design-notes{font-size:12px;color:var(--dim);margin-top:23px}.design-notes summary{cursor:pointer;color:var(--text);font-weight:550}.notes-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;padding:15px 0}.notes-grid strong{color:var(--text);display:block;margin-bottom:5px;font-size:11px}.notes-grid p{font-size:11px}.gallery-footer{display:flex;align-items:center;justify-content:space-between;gap:20px;font-size:10px;color:var(--muted);border-top:1px solid var(--line);padding-top:15px;margin-top:7px}.toast{position:fixed;bottom:25px;left:50%;transform:translateX(-50%);max-width:calc(100% - 32px);padding:11px 17px;background:var(--text);color:var(--bg);border-radius:7px;box-shadow:var(--shadow);font-size:12px;z-index:20;text-align:center}.pause-notice{background:var(--amber-bg);color:var(--amber);font-size:11px;border-bottom:1px solid var(--line);padding:9px 28px}.dialog{max-width:520px;width:calc(100% - 32px);border:1px solid var(--line);border-radius:12px;background:var(--surface);color:var(--text);padding:0;box-shadow:var(--shadow)}.dialog::backdrop{background:#030912b8;backdrop-filter:blur(4px)}.dialog-head{padding:20px 22px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line)}.dialog-head h3{font-size:16px;letter-spacing:-.02em}.dialog-body{padding:22px}.dialog-body p{font-size:11px;color:var(--dim);margin-bottom:18px}.dialog-label{display:block;font-size:11px;margin:17px 0 8px;font-weight:550}.dialog-body input[type=number]{background:var(--panel);border:1px solid var(--line);border-radius:6px;color:var(--text);padding:9px 10px;width:100%}.dialog-foot{display:flex;justify-content:space-between;align-items:center;padding:15px 22px;border-top:1px solid var(--line);font-size:10px;color:var(--muted)}.close{font-size:18px;background:none;border:0;color:var(--muted);padding:2px 5px}.settings-row{display:flex;align-items:center;justify-content:space-between;padding:12px 0;font-size:11px;border-bottom:1px solid var(--line)}.settings-row input{accent-color:var(--accent)}.chat-response{border:1px solid var(--line);background:var(--panel);padding:13px 15px;border-radius:7px;font-size:11px;line-height:1.7;margin-bottom:13px}.chat-response strong{display:block;color:var(--accent);margin-bottom:5px;font-size:10px}.suggestions{display:flex;gap:7px;flex-wrap:wrap;margin:10px 0 18px}.chat-form{display:flex;gap:8px}.chat-form input{flex:1;min-width:0;border:1px solid var(--line);background:var(--panel);border-radius:6px;padding:8px 10px;color:var(--text);font-size:11px}.chat-log{max-height:310px;overflow-y:auto}.readout-sample{color:var(--muted);font-size:9px;letter-spacing:.04em}.empty-search{padding:35px;text-align:center;font-size:12px;color:var(--muted)}
+@media(min-width:1500px){.content{min-height:645px}.priority-row{padding-top:19px;padding-bottom:19px}}
+@media(max-width:1100px){.gallery{padding:24px}.goal-header{align-items:flex-start}.title-line h2{font-size:21px}.header-actions{flex-wrap:wrap;justify-content:flex-end}.goal-header,.content{padding-left:22px;padding-right:22px}.subnav{margin-left:22px;margin-right:22px}.worklist-layout{grid-template-columns:minmax(0,1fr) 250px}.metric{padding:12px}.overview-grid,.review-grid{gap:14px;grid-template-columns:minmax(0,1.4fr) minmax(255px,1fr)}}
+@media(max-width:850px){.app-layout{grid-template-columns:45px minmax(0,1fr)}.rail{gap:21px}.rail-item{font-size:7px}.brand{width:26px;height:26px}.goal-header{flex-direction:column;gap:15px}.header-actions{justify-content:flex-start}.overview-grid,.review-grid,.worklist-layout{grid-template-columns:1fr}.steward{display:none}.metrics{grid-template-columns:repeat(2,1fr)}.metric:nth-child(2){border-right:0}.metric:nth-child(-n+2){border-bottom:1px solid var(--line)}.detail-panel{min-height:0}.notes-grid{grid-template-columns:1fr;gap:14px}.concept-tag{display:none}.gallery-top h1{font-size:21px}.gallery-tools .sample{display:none}.subnav .context{display:none}.worklist-tools{flex-wrap:wrap}.intro h3{font-size:17px}.content{min-height:0}.detail-panel .card-body{display:grid;grid-template-columns:1fr 1fr;gap:0 20px}.detail-panel .card-body>h4,.detail-panel .card-body>p{grid-column:1/-1}.table-foot{flex-wrap:wrap}}
+@media(max-width:520px){.gallery{padding:18px 12px}.gallery-top{gap:8px;margin-bottom:18px}.gallery-top h1{font-size:19px}.eyebrow{font-size:8px}.tabs{gap:6px}.tabs button{padding:9px 10px;font-size:10px;gap:7px}.recommended{display:none}.concept-caption p{font-size:10px}.concept-caption h2{font-size:15px}.breadcrumb{padding:0 14px}.goal-header,.content{padding:18px 14px}.title-line h2{font-size:19px}.goal-symbol{width:35px;height:35px;font-size:26px;border-radius:9px}.goal-identity{gap:9px}.goal-identity p{font-size:9px}.subnav{margin:0 14px;gap:21px}.header-actions .btn{font-size:10px;padding:6px 8px}.priority-row{grid-template-columns:17px minmax(0,1fr);padding:14px 12px;gap:7px}.priority-meta{grid-column:2;text-align:left}.priority-meta p{display:inline;margin-left:7px}.metric-top{font-size:9px}.metric-value{font-size:25px}.metric-note{font-size:8px}.gallery-footer{align-items:flex-start;flex-direction:column;gap:7px}.activity-footer{padding:11px 14px}.activity-footer>span{display:none}.detail-panel .card-body{display:block}.sample{font-size:8px}}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
+@media print{.gallery-tools,.tabs,.header-actions,.design-notes,.gallery-footer,.rail{display:none}.gallery{padding:0}.app-layout{display:block}.screen{box-shadow:none}.content{min-height:0}body{print-color-adjust:exact}}
+/* ── Worklist iterations · 02A priority tiers · 02B capacity steering · 02C draft & apply ── */
+.tab-divider{width:1px;align-self:stretch;background:var(--line);margin:4px 6px}.tab-group-label{align-self:center;font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:700}
+.change-wrap{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:10px}.change-wrap>span{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);font-weight:700;margin-right:2px}.change-wrap ul{display:flex;flex-wrap:wrap;gap:6px;margin:0;padding:0;list-style:none}.change-wrap li{display:inline-flex;align-items:center;gap:6px;font-size:10px;color:var(--dim);border:1px solid var(--line);border-radius:999px;padding:3px 10px 3px 8px}.change-wrap li::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--accent)}
+.warn-text{color:var(--amber)}.v-layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:18px;align-items:start}.v-tools{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}.v-spacer{margin-left:auto}
+.chips{display:flex;gap:6px;flex-wrap:wrap}.chip{display:inline-flex;align-items:center;gap:6px;min-height:28px;border:1px solid var(--line);background:transparent;color:var(--dim);border-radius:999px;padding:5px 11px;font-size:10px}.chip:hover{border-color:var(--muted)}.chip[aria-pressed=true]{background:var(--accent-bg);border-color:var(--accent);color:var(--text)}.chip .count{font-size:9px;color:var(--muted)}.chip.warn .count{color:var(--amber);font-weight:700}
+.intake{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px 18px;align-items:center;padding:13px 15px;margin-bottom:14px;border:1px dashed color-mix(in srgb,var(--accent) 50%,var(--line));border-radius:8px;background:color-mix(in srgb,var(--accent-bg) 60%,var(--surface))}.intake h4{font-size:12px;font-weight:600;margin-top:5px}.intake p{font-size:10px;color:var(--dim);margin-top:3px}.intake-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.tier{border:1px solid var(--line);border-radius:8px;background:var(--surface);margin-bottom:12px;overflow:hidden}.tier-head{display:flex;align-items:center;gap:11px;padding:10px 14px;background:var(--panel);border-bottom:1px solid var(--line)}.tier-name{font-size:12px;font-weight:600;display:flex;align-items:center;gap:8px}.tier-count{font-size:9px;font-weight:600;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:0 6px}.tier-rule{font-size:10px;color:var(--muted);margin-top:1px}.tier-meta{margin-left:auto;display:flex;align-items:center;gap:10px;font-size:10px;color:var(--dim)}
+.tier-mark{display:inline-block;width:9px;height:9px;border-radius:3px;flex:none}.tm-focus{background:var(--accent)}.tm-next{background:color-mix(in srgb,var(--accent) 55%,var(--surface))}.tm-later{background:color-mix(in srgb,var(--accent) 22%,var(--surface));border:1px solid color-mix(in srgb,var(--accent) 45%,var(--line))}.tm-out{border:1px dashed var(--muted)}
+.tier-body{min-height:46px}.drop-target{background:color-mix(in srgb,var(--accent-bg) 70%,transparent);outline:1px dashed var(--accent);outline-offset:-3px}.tier-empty{padding:15px;font-size:10px;color:var(--muted);text-align:center}
+.t-row{display:grid;grid-template-columns:14px minmax(0,1fr) 112px 70px 52px 92px 28px;grid-template-areas:"grip main prog fresh agents status menu";gap:12px;align-items:center;padding:12px 14px;border-bottom:1px solid var(--line);position:relative}.t-row:last-child{border-bottom:0}.t-row:hover{background:var(--raised)}.t-row.selected{background:var(--accent-bg)}.t-row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}.t-row.dragging{opacity:.4}.t-row.drop-before{box-shadow:inset 0 2px 0 var(--accent)}
+.t-row.selected::before,.t-row.blocked::before,.d-row.cursor::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--accent)}.t-row.blocked::before{background:var(--amber)}
+.ga-grip{grid-area:grip}.ga-main{grid-area:main;min-width:0}.ga-prog{grid-area:prog}.ga-fresh{grid-area:fresh}.ga-agents{grid-area:agents}.ga-status{grid-area:status}.ga-menu{grid-area:menu}
+.grip{align-self:start;margin-top:3px;color:var(--muted);cursor:grab;font-size:12px;letter-spacing:-3px;line-height:1;user-select:none}.t-title{display:inline;width:auto;font-size:12px;font-weight:550}.t-title:hover{color:var(--accent)}.t-project{font-size:10px;color:var(--muted);margin-left:8px;font-weight:400}.t-next{font-size:10px;color:var(--dim);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.t-next b{font-size:8px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);margin-right:6px;font-weight:700}
+.t-blocker{display:flex;align-items:center;gap:8px;margin-top:9px;padding:5px 5px 5px 10px;border-radius:6px;background:var(--amber-bg);color:var(--amber);font-size:10px}.t-blocker .btn{margin-left:auto;background:var(--surface);color:var(--text)}.t-blocker .icon{width:14px;height:14px}
+.ga-prog .plan-progress{margin-top:0;gap:3px}.ga-prog .plan-progress i{flex:1;width:auto}.ga-prog small,.ga-fresh small{display:block;font-size:9px;color:var(--muted);margin-top:4px}.ga-fresh{font-size:10px;color:var(--dim)}
+.agent-dots{display:inline-flex;align-items:center;gap:3px;font-size:10px;color:var(--dim)}.agent-dots i{width:7px;height:7px;border-radius:50%;background:var(--accent)}.agent-dots i.none{background:none;border:1px dashed var(--muted)}.agent-dots span{margin-left:4px}
+.row-move{appearance:none;-webkit-appearance:none;width:28px;height:26px;padding:0;border:1px solid transparent;border-radius:5px;background:transparent;color:var(--muted);font-size:13px;text-align:center;text-align-last:center;cursor:pointer}.row-move:hover,.row-move:focus-visible{border-color:var(--line);background:var(--surface);color:var(--text)}
+.oos{border:1px dashed var(--line);border-radius:8px}.oos-head{display:flex;align-items:center;gap:10px;width:100%;padding:11px 14px;background:none;border:0;text-align:left;font-size:11px;color:var(--dim)}.oos-head strong{font-weight:600;color:var(--text)}.oos-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;padding:11px 14px;border-top:1px solid var(--line)}.oos-row .t-title{color:var(--dim)}
+.v-inspector .card-body{padding:16px 18px}.v-inspector h4{font-size:15px;letter-spacing:-.02em;margin:8px 0 6px}.v-inspector p{font-size:10px;color:var(--dim)}.ins-mode{display:flex;align-items:flex-start;gap:9px;margin-top:14px;padding:10px 11px;border:1px solid var(--line);border-radius:7px;background:var(--panel);font-size:10px;color:var(--dim);line-height:1.45}.ins-mode .tier-mark,.ins-mode .icon{margin-top:2px}.ins-mode .icon{width:14px;height:14px;color:var(--accent)}.ins-mode strong{color:var(--text);font-weight:600}.ins-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:18px}
+.ins-tabs{display:flex;gap:16px;border-bottom:1px solid var(--line);margin:14px 0 2px}.ins-tabs button{background:none;border:0;border-bottom:2px solid transparent;padding:7px 0 8px;font-size:10px;color:var(--muted)}.ins-tabs button[aria-selected=true]{color:var(--text);border-color:var(--accent)}
+.history-entry{display:grid;grid-template-columns:52px minmax(0,1fr);gap:8px;padding:11px 0;border-bottom:1px solid var(--line);font-size:10px;color:var(--dim)}.history-entry:last-child{border:0}.history-entry time{font-size:9px;color:var(--muted);margin-top:1px}.history-entry strong{color:var(--text);font-weight:600}.history-entry q{display:block;margin-top:4px;color:var(--muted);font-style:italic}
+.seat-card{margin-bottom:14px}.seat-strip{display:grid;grid-template-columns:repeat(var(--seats),minmax(0,1fr));gap:4px}.seat{height:36px;display:grid;place-items:center;padding:0 4px;border-radius:5px;background:var(--accent-bg);border:1px solid color-mix(in srgb,var(--accent) 35%,var(--line));font-size:9px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.seat.changed{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}.seat.idle{background:none;border:1px dashed var(--line);color:var(--muted);font-weight:500}.seat.locked{background:repeating-linear-gradient(135deg,var(--raised) 0 4px,transparent 4px 8px);border:1px dashed var(--line);color:var(--muted);font-weight:500}.seat-meta{display:flex;justify-content:space-between;gap:12px;margin-top:9px;font-size:9px;color:var(--muted)}
+.c-row{display:grid;grid-template-columns:minmax(0,1fr) 212px 176px 88px;gap:16px;align-items:center;padding:13px 16px;border-bottom:1px solid var(--line);position:relative}.c-row:not(.c-head):hover{background:var(--raised)}.c-row.selected{background:var(--accent-bg)}.c-head{padding-top:10px;padding-bottom:10px;background:var(--panel);font-size:9px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}.c-plan{min-width:0}
+.seg{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--panel)}.seg button{border:0;border-right:1px solid var(--line);background:none;padding:6px 0;font-size:10px;color:var(--dim)}.seg button:last-child{border-right:0}.seg button:hover{color:var(--text);background:var(--raised)}.seg button[aria-pressed=true]{background:var(--accent);color:var(--ink);font-weight:600}
+.alloc{display:flex;align-items:center;gap:9px}.alloc-track{flex:1;height:8px;border-radius:4px;background:var(--line);overflow:hidden}.alloc-track span{display:block;height:100%;border-radius:4px;background:var(--accent);transition:width .25s}.alloc-num{font-size:11px;font-weight:600;white-space:nowrap;min-width:66px}.delta{display:inline-block;margin-left:5px;padding:0 5px;border:1px solid var(--accent);border-radius:3px;font-size:9px;color:var(--accent)}.c-note{font-size:9px;color:var(--muted);margin-top:5px;line-height:1.4}.c-out{display:flex;align-items:center;gap:10px;padding:11px 16px;border-top:1px dashed var(--line);font-size:10px;color:var(--muted)}
+.kv-row{display:flex;align-items:center;justify-content:space-between;font-size:10px}.stepper{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:6px;background:var(--panel)}.stepper button{width:28px;height:26px;border:0;background:none;color:var(--dim);font-size:14px;line-height:1}.stepper button:hover:not(:disabled){color:var(--text)}.stepper output{min-width:26px;text-align:center;font-size:12px;font-weight:600}
+.impact{list-style:none;margin:10px 0 0;padding:0}.impact li{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid var(--line);font-size:10px;color:var(--dim)}.impact li:last-child{border:0}.impact strong{color:var(--text);white-space:nowrap}.selected-why{margin-top:18px;border-top:1px solid var(--line)}
+.kbd-legend{display:flex;gap:14px;flex-wrap:wrap;margin-left:auto;font-size:10px;color:var(--muted)}.kbd-legend span{display:inline-flex;align-items:center;gap:3px}kbd{min-width:17px;padding:1px 4px;text-align:center;font:600 9px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;background:var(--panel);color:var(--dim)}
+.d-list{border:1px solid var(--line);border-radius:8px;background:var(--surface);overflow:hidden}.d-list:focus{outline:none}.d-list:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.d-head,.d-row{display:grid;grid-template-columns:24px minmax(130px,1fr) minmax(0,1.35fr) 84px 44px 62px 78px 92px;gap:12px;align-items:center;padding:0 14px}.d-head{height:34px;background:var(--panel);border-bottom:1px solid var(--line);font-size:9px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}.d-section{padding:7px 14px;font-size:9px;letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--muted);border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--panel) 60%,var(--surface))}
+.d-row{min-height:48px;border-bottom:1px solid var(--line);font-size:10px;position:relative}.d-row:last-child{border-bottom:0}.d-row:hover{background:var(--raised)}.d-row.cursor{background:var(--accent-bg)}.d-row.out .d-title{color:var(--dim)}.d-rank{color:var(--muted)}.d-row.changed .d-rank{color:var(--accent);font-weight:700}.d-title{font-size:11px;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.d-proj{font-size:9px;color:var(--muted);margin-top:2px}.d-next{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.change-tag{display:inline-block;font-size:9px;font-weight:600;color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 55%,var(--line));border-radius:3px;padding:1px 6px;white-space:nowrap}.change-tag.out{color:var(--dim);border-style:dashed}.row-tools{display:flex;gap:3px;justify-content:flex-end;opacity:0;transition:opacity .12s}.d-row:hover .row-tools,.d-row.cursor .row-tools{opacity:1}
+.draft-bar{position:sticky;bottom:14px;z-index:2;display:flex;align-items:center;gap:13px;margin-top:12px;padding:11px 12px 11px 14px;border:1px solid var(--accent);border-radius:9px;background:var(--surface);box-shadow:var(--shadow)}.draft-bar strong{font-size:12px;font-weight:600}.draft-impact{display:flex;align-items:center;gap:6px;margin-top:3px;font-size:10px;color:var(--dim)}.draft-impact .icon{width:14px;height:14px}.draft-bar .actions{margin-left:auto;display:flex;gap:7px}.draft-count{display:grid;place-items:center;width:26px;height:26px;flex:none;border-radius:50%;background:var(--accent);color:var(--ink);font-size:11px;font-weight:700}.draft-bar.idle{position:static;box-shadow:none;border:1px dashed var(--line);background:transparent;color:var(--muted);font-size:10px}.draft-bar.idle .icon{width:14px;height:14px;color:var(--green)}
+.dialog.wide{max-width:640px}.diff-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.diff-col{border:1px solid var(--line);border-radius:7px;background:var(--panel);padding:12px 14px}.diff-col h5{margin:0 0 8px;font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}.diff-col ol{margin:0;padding-left:18px;font-size:11px;color:var(--dim)}.diff-col li{padding:3px 0}.diff-col li.moved{color:var(--accent);font-weight:600}.diff-col li.removed{color:var(--muted);text-decoration:line-through}.note-input{width:100%;min-height:54px;resize:vertical;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text);padding:9px 10px;font:inherit;font-size:11px}
+.iter-recommend{font-size:11px;color:var(--dim);padding:0 0 10px}.iter-recommend strong{color:var(--text)}.notes-grid p+p{margin-top:8px}
+@media(max-width:1100px){.v-layout{grid-template-columns:minmax(0,1fr) 260px}.t-row{grid-template-columns:14px minmax(0,1fr) 96px 52px 88px 28px;grid-template-areas:"grip main prog agents status menu"}.ga-fresh{display:none}.c-row{grid-template-columns:minmax(0,1fr) 200px 150px}.c-row>:nth-child(4){display:none}.d-head,.d-row{grid-template-columns:24px minmax(120px,1fr) minmax(0,1.2fr) 84px 76px 92px}.d-head>:nth-child(5),.d-head>:nth-child(6),.d-agents,.d-upd{display:none}}
+@media(max-width:850px){.v-layout{grid-template-columns:1fr}.t-row{grid-template-columns:14px minmax(0,1fr) auto 28px;grid-template-areas:"grip main main menu" ". prog status ."}.ga-agents{display:none}.intake{grid-template-columns:1fr}.intake-actions{justify-content:flex-start}.c-row{grid-template-columns:1fr;gap:9px}.c-head{display:none}.kbd-legend,.d-head,.tab-divider{display:none}.d-row{grid-template-columns:22px minmax(0,1fr) auto auto;padding:8px 12px}.d-next,.d-row>:nth-child(4){display:none}.row-tools{opacity:1}.draft-bar{flex-wrap:wrap}.draft-bar .actions{margin-left:0;width:100%;justify-content:flex-end}}
+@media(max-width:520px){.v-tools .search-box{flex:1 1 100%;max-width:none}.tab-group-label{width:100%}.tier-head{flex-wrap:wrap}.tier-meta{margin-left:0;width:100%}.diff-grid{grid-template-columns:1fr}.seat{font-size:8px}.ins-actions{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<svg width="0" height="0" aria-hidden="true" style="position:absolute"><defs>
+<symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+<symbol id="i-stack" viewBox="0 0 24 24"><path d="m3 7 9-4 9 4-9 4-9-4Zm0 5 9 4 9-4M3 17l9 4 9-4"/></symbol>
+<symbol id="i-people" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20v-3a6 6 0 0 1 12 0v3M17 5a3 3 0 0 1 0 6m2 3a5 5 0 0 1 3 5"/></symbol>
+<symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 11a8 8 0 0 1-8 8H7l-4 3V9a7 7 0 0 1 7-7h3a8 8 0 0 1 8 9Z"/><path d="M7 8h9M7 12h6"/></symbol>
+<symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"/></symbol>
+<symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3" fill="var(--surface)"/><circle cx="15" cy="17" r="3" fill="var(--surface)"/></symbol>
+<symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol>
+<symbol id="i-play" viewBox="0 0 24 24"><path d="m8 4 12 8-12 8V4Z"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/></symbol>
+<symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1 1m12 12 1 1M5 19l1-1M18 6l1-1"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+<symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4m0 3v.5"/></symbol>
+</defs></svg>
+<main class="gallery">
+  <header class="gallery-top">
+    <div><div class="eyebrow">Papercusp / dedicated goal GUI</div><h1>A home for work that keeps going.</h1></div>
+    <div class="gallery-tools"><span class="sample">Interactive mockups · sample data</span><button class="btn ghost" id="theme-toggle" aria-label="Switch to light theme"><svg class="icon"><use href="#i-sun"/></svg><span id="theme-label">Light</span></button></div>
+  </header>
+  <nav class="tabs" role="tablist" aria-label="GUI concepts">
+    <button id="tab-overview" role="tab" aria-selected="true" aria-controls="concept-view" data-concept="overview"><span class="tab-number">01</span>Overview<span class="recommended">Recommended</span></button>
+    <button id="tab-worklist" role="tab" aria-selected="false" aria-controls="concept-view" tabindex="-1" data-concept="worklist"><span class="tab-number">02</span>Worklist manager</button>
+    <button id="tab-review" role="tab" aria-selected="false" aria-controls="concept-view" tabindex="-1" data-concept="review"><span class="tab-number">03</span>Review desk</button>
+    <span class="tab-divider" role="presentation" aria-hidden="true"></span>
+    <span class="tab-group-label" role="presentation" aria-hidden="true">Worklist iterations</span>
+    <button id="tab-worklist-tiers" role="tab" aria-selected="false" aria-controls="concept-view" tabindex="-1" data-concept="worklist-tiers"><span class="tab-number">02A</span>Priority tiers</button>
+    <button id="tab-worklist-capacity" role="tab" aria-selected="false" aria-controls="concept-view" tabindex="-1" data-concept="worklist-capacity"><span class="tab-number">02B</span>Capacity steering</button>
+    <button id="tab-worklist-draft" role="tab" aria-selected="false" aria-controls="concept-view" tabindex="-1" data-concept="worklist-draft"><span class="tab-number">02C</span>Draft &amp; apply</button>
+  </nav>
+  <div class="concept-caption"><div><h2 id="concept-title"></h2><p id="concept-description"></p><div class="change-wrap" id="concept-changes" hidden><span>Changes from 02</span><ul id="concept-change-list"></ul></div></div><span class="concept-tag" id="concept-tag"></span></div>
+  <section class="screen" id="concept-view" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
+    <div class="window-bar"><i></i><i></i><i></i><span>Papercusp · Avi’s workspace</span><span style="margin:0;font-size:8px">DESIGN PREVIEW</span></div>
+    <div class="app-layout">
+      <aside class="rail" aria-label="Workspace context"><div class="brand">∞</div><div class="rail-item"><svg class="icon"><use href="#i-grid"/></svg>Home</div><div class="rail-item active"><svg class="icon"><use href="#i-stack"/></svg>Goals</div><div class="rail-item"><svg class="icon"><use href="#i-people"/></svg>Agents</div><div class="rail-item"><svg class="icon"><use href="#i-chat"/></svg>Inbox</div><div class="rail-item bottom"><div class="avatar">AW</div></div></aside>
+      <div class="app-main">
+        <div class="breadcrumb"><div class="breadcrumb-left"><svg class="icon"><use href="#i-stack"/></svg><span>Goals</span><span>/</span><strong>Ongoing work</strong></div><span class="readout-sample">SAMPLE WORKSPACE</span></div>
+        <header class="goal-header">
+          <div class="goal-identity"><div class="goal-symbol">∞</div><div><div class="title-line"><h2>Work on everything</h2><span class="pill good" id="goal-status"><i class="dot"></i>Running</span></div><p>Keep priority work moving across the workspace.</p></div></div>
+          <div class="header-actions"><button class="btn ghost" id="pause-toggle"><svg class="icon"><use href="#i-pause"/></svg><span>Pause goal</span></button><button class="btn ghost" data-dialog="settings-dialog"><svg class="icon"><use href="#i-settings"/></svg>Settings</button><button class="btn primary" data-dialog="steward-dialog"><svg class="icon"><use href="#i-chat"/></svg>Ask steward</button></div>
+        </header>
+        <div class="pause-notice" id="pause-notice" hidden>Goal paused in this preview. New work is on hold; existing work remains visible.</div>
+        <nav class="subnav" aria-label="Goal views"><button data-view="overview" class="active">Overview</button><button data-view="worklist">Worklist</button><button data-view="review">Review <span id="review-count">2</span></button><span class="context">Standing goal · no finish line</span></nav>
+        <div class="content" id="content"></div>
+        <footer class="activity-footer"><div class="pulse"><i class="dot" style="color:var(--green)" id="footer-dot"></i><span id="footer-status">Steward checking plan coverage · next pass in 4 min</span></div><span>Snapshot · sample data · controls are simulated</span></footer>
+      </div>
+    </div>
+  </section>
+  <details class="design-notes"><summary>How these concepts fit the existing goal</summary><div class="notes-grid">
+    <div><strong>Dedicated destination</strong><p>The special entry opens this workspace view. Show goal health, work coverage, priorities, decisions, verified outcomes, and spend first. Keep the steward conversation one click away.</p></div>
+    <div><strong>Reuse the current model</strong><p>Use the existing goal detail and ongoing-work model for status, priorities, plans, attention, and outcomes. Worklist ordering and exclusions map to the goal’s existing worklist policy. Do not show a completion percentage for this standing goal.</p></div>
+    <div><strong>Implementation path</strong><p>Reuse registered controls, rich grid, banners, and dialogs. Store view and selection in the URL with nuqs; read through the existing sync layer. Budget windows remain explicit. This offline gallery makes no API calls.</p></div>
+  </div></details>
+  <details class="design-notes iter-notes"><summary>What the worklist iterations (02A–02C) change, and what each needs from the product</summary><div class="notes-grid">
+    <div><strong>02A · Priority tiers</strong><p>Ranks 1–6 suggest a precision the steward does not use. Three tiers match how allocation works: fill Focus, then Next, then spare capacity. Order inside a tier is only a tiebreak. Excluded plans leave the ranking, and new plans wait for a decision.</p><p class="muted">Needs: a coarse priority (tier) in the goal’s worklist policy alongside ordering and exclusions. Drag-to-reorder is not in the component registry yet; rows use data.rich-grid, and a control.select “Move to” menu covers keyboard and touch.</p></div>
+    <div><strong>02B · Capacity steering</strong><p>Order decides who goes first; a share decides how much. Showing agents as blocks makes allocation visible, and every limit is explained: ready work, a blocker, or the budget.</p><p class="muted">Needs: a per-plan share in the worklist policy, plus a dry-run from the steward’s allocator. A segmented control is not registered; use control.select or register one. Risk: more knobs invite micromanagement, so this works best as an advanced mode.</p></div>
+    <div><strong>02C · Draft &amp; apply</strong><p>Priority edits move agents, so they are staged. The steward estimates the effect before anything changes, and each change can keep a reason that the steward reads too.</p><p class="muted">Needs: a history of worklist-policy changes (check whether the goal model already records one) and the same allocator dry-run. Uses overlay.modal for review. The list is keyboard-first, with visible controls on narrow screens.</p></div>
+  </div><p class="iter-recommend"><strong>Suggested combination:</strong> use 02A as the base, open 02C’s draft bar whenever a change would move agents, and keep 02B’s agent strip as a read-only “where agents are” summary above the tiers.</p></details>
+  <footer class="gallery-footer"><span>Try switching concepts, opening a plan, changing scope, pausing the goal, or reviewing a decision. In 02A–02C, drag between tiers, change a share, or reorder with the keyboard.</span><span>All figures and activity are illustrative.</span></footer>
+</main>
+<dialog class="dialog" id="settings-dialog" aria-labelledby="settings-title">
+  <div class="dialog-head"><h3 id="settings-title">Steward settings</h3><button class="close" data-close aria-label="Close settings">×</button></div>
+  <form id="settings-form"><div class="dialog-body"><p>Set the boundaries for ongoing work. These changes affect this preview only.</p><label class="dialog-label" for="weekly-budget">Budget ceiling · rolling 7 days ($)</label><input type="number" id="weekly-budget" min="50" max="10000" step="1" value="100" required><div class="settings-row"><span>Include newly active workspace plans</span><input type="checkbox" checked aria-label="Include newly active workspace plans"></div><div class="settings-row"><span>Flag lanes without verified progress</span><input type="checkbox" checked aria-label="Flag lanes without verified progress"></div><div class="settings-row"><span>Ask me about decisions that need approval</span><input type="checkbox" checked aria-label="Ask me about decisions that need approval"></div><p style="margin:16px 0 0">Plan priority and exclusions are managed in Worklist.</p></div><div class="dialog-foot"><span>Preview settings · no live changes</span><button class="btn primary" type="submit">Apply to preview</button></div></form>
+</dialog>
+<dialog class="dialog" id="steward-dialog" aria-labelledby="steward-title">
+  <div class="dialog-head"><div><h3 id="steward-title">Ask the workspace steward</h3><p class="small muted">Work on everything · preview conversation</p></div><button class="close" data-close aria-label="Close steward conversation">×</button></div>
+  <div class="dialog-body"><div class="chat-log" id="chat-log" aria-live="polite"><div class="chat-response"><strong>Steward · sample reply</strong>The main focus is cloud setup, followed by search reliability. One lane needs a credential from you; the other selected plans can keep moving.</div></div><div class="suggestions"><button class="btn small" data-question="What is blocked?">What is blocked?</button><button class="btn small" data-question="What changed today?">What changed today?</button><button class="btn small" data-question="Why this priority?">Why this priority?</button></div><form class="chat-form" id="chat-form"><input id="chat-input" placeholder="Ask about ongoing work…" aria-label="Message the steward" autocomplete="off" required><button class="btn primary" type="submit">Ask</button></form><p class="small muted" style="margin:12px 0 0">Responses are scripted examples; nothing is sent.</p></div>
+</dialog>
+<dialog class="dialog" id="plan-dialog" aria-labelledby="plan-dialog-title"><div class="dialog-head"><h3 id="plan-dialog-title">Plan detail</h3><button class="close" data-close aria-label="Close plan detail">×</button></div><div class="dialog-body" id="plan-dialog-body"></div><div class="dialog-foot"><span>Illustrative plan · sample evidence</span><button class="btn primary" id="plan-to-worklist">View in worklist</button></div></dialog>
+<dialog class="dialog wide" id="apply-dialog" aria-labelledby="apply-title"><div class="dialog-head"><div><h3 id="apply-title">Review worklist changes</h3><p class="small muted">Work on everything · preview only</p></div><button class="close" data-close aria-label="Close review">×</button></div><div class="dialog-body" id="apply-body"></div><div class="dialog-foot"><span>Nothing changes until you apply</span><div style="display:flex;gap:7px"><button class="btn ghost" data-close>Keep editing</button><button class="btn primary" data-v="d-apply">Apply changes</button></div></div></dialog>
+<div class="toast" id="toast" role="status" hidden></div>
+<script type="application/json" id="design-spec">
+{
+  "irVersion": "0.1",
+  "surface": "work-on-everything-console-mockups",
+  "ecosystem": "react-tailwind",
+  "a11y": {
+    "landmark": "main",
+    "headingLevel": 1
+  },
+  "layout": {
+    "kind": "stack",
+    "direction": "vertical",
+    "ref": "work-on-everything-console",
+    "children": [
+      {
+        "kind": "text",
+        "ref": "console-title",
+        "copy": {
+          "key": "woe.title",
+          "default": "Work on everything"
+        }
+      },
+      {
+        "kind": "component",
+        "ref": "feedback.banner",
+        "copy": {
+          "key": "woe.sample",
+          "default": "Interactive mockup · sample data"
+        }
+      },
+      {
+        "kind": "stack",
+        "direction": "horizontal",
+        "ref": "console-controls",
+        "children": [
+          {
+            "kind": "component",
+            "ref": "action.primary",
+            "label": {
+              "key": "woe.pause",
+              "default": "Pause goal"
+            },
+            "interactions": [
+              "toggle-simulated-goal-running-state"
+            ]
+          },
+          {
+            "kind": "component",
+            "ref": "action.secondary",
+            "label": {
+              "key": "woe.steer",
+              "default": "Ask steward"
+            },
+            "interactions": [
+              "open-simulated-steward-conversation"
+            ]
+          },
+          {
+            "kind": "component",
+            "ref": "control.theme",
+            "interactions": [
+              "toggle-preview-theme"
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "stack",
+        "direction": "vertical",
+        "ref": "concept-views",
+        "children": [
+          {
+            "kind": "component",
+            "ref": "data.rich-grid",
+            "binding": {
+              "slot": "worklist",
+              "shape": "GoalWorklistPlan[]"
+            },
+            "interactions": [
+              "select-plan",
+              "reorder-priority",
+              "include-exclude-plan",
+              "filter-sample-worklist"
+            ]
+          },
+          {
+            "kind": "component",
+            "ref": "feedback.banner",
+            "binding": {
+              "slot": "attention",
+              "shape": "GoalDetailWaitingInput[]"
+            }
+          },
+          {
+            "kind": "list",
+            "ref": "verified-outcomes",
+            "binding": {
+              "slot": "activity",
+              "shape": "GoalDetailActivityInput[]",
+              "repeats": true
+            },
+            "item": {
+              "kind": "text",
+              "ref": "outcome",
+              "binding": {
+                "slot": "title",
+                "shape": "string"
+              }
+            }
+          },
+          {
+            "kind": "stack",
+            "direction": "vertical",
+            "ref": "worklist-iterations",
+            "children": [
+              {
+                "kind": "component",
+                "ref": "control.text",
+                "label": {
+                  "key": "woe.worklist.search",
+                  "default": "Search plans"
+                },
+                "interactions": [
+                  "filter-sample-worklist"
+                ]
+              },
+              {
+                "kind": "component",
+                "ref": "data.rich-grid",
+                "binding": {
+                  "slot": "worklistTiers",
+                  "shape": "GoalWorklistPlan[]"
+                },
+                "interactions": [
+                  "move-between-tiers",
+                  "reorder-within-tier",
+                  "triage-new-plan",
+                  "include-exclude-plan"
+                ]
+              },
+              {
+                "kind": "component",
+                "ref": "control.select",
+                "label": {
+                  "key": "woe.worklist.move",
+                  "default": "Move to tier"
+                },
+                "interactions": [
+                  "move-between-tiers"
+                ]
+              },
+              {
+                "kind": "component",
+                "ref": "data.rich-grid",
+                "binding": {
+                  "slot": "worklistAllocation",
+                  "shape": "GoalWorklistAllocation[]"
+                },
+                "interactions": [
+                  "set-capacity-share",
+                  "adjust-agent-capacity",
+                  "apply-allocation"
+                ]
+              },
+              {
+                "kind": "component",
+                "ref": "data.rich-grid",
+                "binding": {
+                  "slot": "worklistDraft",
+                  "shape": "GoalWorklistDraftChange[]"
+                },
+                "interactions": [
+                  "keyboard-navigate",
+                  "stage-priority-change",
+                  "discard-draft"
+                ]
+              },
+              {
+                "kind": "component",
+                "ref": "overlay.modal",
+                "label": {
+                  "key": "woe.worklist.apply",
+                  "default": "Review worklist changes"
+                },
+                "interactions": [
+                  "review-and-apply-draft",
+                  "escape-to-close"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "component",
+        "ref": "overlay.modal",
+        "interactions": [
+          "open-settings",
+          "escape-to-close"
+        ]
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "action.primary",
+      "registry": "action.primary"
+    },
+    {
+      "id": "action.secondary",
+      "registry": "action.secondary"
+    },
+    {
+      "id": "control.theme",
+      "registry": "control.theme"
+    },
+    {
+      "id": "feedback.banner",
+      "registry": "feedback.banner"
+    },
+    {
+      "id": "data.rich-grid",
+      "registry": "data.rich-grid"
+    },
+    {
+      "id": "overlay.modal",
+      "registry": "overlay.modal"
+    },
+    {
+      "id": "control.text",
+      "registry": "control.text"
+    },
+    {
+      "id": "control.select",
+      "registry": "control.select"
+    }
+  ]
+}
+</script>
+<script>
+'use strict';
+const icon = function(name){return '<svg class="icon" aria-hidden="true"><use href="#i-'+name+'"/></svg>';};
+const escapeText = function(value){return String(value).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});};
+const plans = [
+  {id:'cloud',title:'Cloud setup & first-run experience',project:'Papercusp cloud',status:'In progress',tone:'blue',agents:2,done:5,total:8,included:true,focus:'Connect an account and complete the first useful task.',next:'Verify the revised onboarding flow end to end.',last:'Verified progress 12 min ago',reason:'Removes the biggest obstacle for someone using the workspace for the first time.'},
+  {id:'search',title:'Search reliability',project:'Workspace platform',status:'Verifying',tone:'good',agents:1,done:8,total:10,included:true,focus:'Make workspace search useful and predictable.',next:'Run acceptance checks for the new result ranking.',last:'Verified progress 28 min ago',reason:'A shared dependency used by most other work in the workspace.'},
+  {id:'api',title:'API account setup',project:'Inference gateway',status:'Needs you',tone:'warn',agents:0,done:4,total:5,included:true,focus:'Verify a funded API account alongside the existing account pool.',next:'Provide a valid funded provider key, then verify a request.',last:'Waiting on credential',reason:'Live verification requires a credential; unrelated work continues.'},
+  {id:'desktop',title:'Desktop polish',project:'Papercusp desktop',status:'In progress',tone:'blue',agents:2,done:3,total:7,included:true,focus:'Improve navigation and the everyday desktop workflow.',next:'Verify keyboard navigation and detail-panel behavior.',last:'Verified progress 41 min ago',reason:'Keeps the everyday workflow clear while cloud setup remains the first priority.'},
+  {id:'docs',title:'Help & product guidance',project:'User experience',status:'Ready',tone:'',agents:1,done:2,total:6,included:true,focus:'Explain what the product can do at the point where users need it.',next:'Draft contextual help for accounts and billing.',last:'Next task ready',reason:'Uses available capacity without blocking higher-priority plans.'},
+  {id:'mobile',title:'Mobile companion',project:'Exploration',status:'Excluded',tone:'',agents:0,done:0,total:4,included:false,focus:'Explore a lightweight companion for reviewing work.',next:'Keep out of the active worklist until core setup is settled.',last:'Excluded by Avi',reason:'An explicit scope choice; no agent is allocated by this goal.'}
+];
+const concepts = {overview:{title:'01 / Overview',description:'A dedicated home for coverage, momentum, blockers, and your next decisions.',tag:'Best default when you open the goal'},worklist:{title:'02 / Worklist manager',description:'Put scope and priority first, with a plan inspector beside the worklist.',tag:'Best for steering what gets worked on'},review:{title:'03 / Review desk',description:'Catch up on verified changes and handle the decisions that need you.',tag:'Best for a quick daily check-in'}};
+let concept='overview', selectedPlan='cloud', paused=false, budget=100, query='', filter='all', reviewResolved=false, credentialAcknowledged=false, toastTimer;
+const getPlan=function(id){return plans.find(function(p){return p.id===id;})||plans[0];};
+const pill=function(plan){return '<span class="pill '+plan.tone+'">'+(plan.tone?'<i class="dot"></i>':'')+plan.status+'</span>';};
+const stepBars=function(plan){let s='<div class="plan-progress" aria-label="'+plan.done+' of '+plan.total+' tasks verified">';for(let i=0;i<Math.min(plan.total,10);i++){s+='<i class="'+(i<plan.done?'done':i===plan.done&&plan.agents?'current':'')+'"></i>';}return s+'</div>';};
+const titleBlock=function(title,subtitle){return '<div class="intro"><div><h3>'+title+'</h3><p>'+subtitle+'</p></div><div class="steward"><div class="avatar">S</div><div><strong>Workspace steward</strong><div class="muted">'+(paused?'Paused by Avi':'Checking coverage · next pass in 4 min')+'</div></div></div></div>';};
+const budgetCard=function(chart){const used=38.4;return '<div class="card budget-card"><div class="card-head"><h4>Budget & pace</h4><button class="text-btn" data-dialog="settings-dialog">Edit</button></div><div class="card-body"><div class="budget-line"><span class="budget-amount">$'+used.toFixed(2)+'</span><span class="small muted">of $'+budget+' / 7 days</span></div><div class="bar" role="meter" aria-label="Rolling seven-day budget used" aria-valuemin="0" aria-valuemax="'+budget+'" aria-valuenow="'+used+'"><span style="width:'+Math.min(100,used/budget*100)+'%"></span></div><div class="budget-meta"><span>Rolling 7-day spend</span><span>$'+(budget-used).toFixed(2)+' remaining</span></div>'+(chart?'<div class="chart" aria-label="Illustrative daily spend over seven days">'+[25,49,40,73,58,84,46].map(function(v,i){return '<div class="chart-col '+(i===6?'today':'')+'"><i style="height:'+v+'%"></i><span>'+['Thu','Fri','Sat','Sun','Mon','Tue','Wed'][i]+'</span></div>';}).join('')+'</div>':'')+'<p class="small muted" style="margin-top:14px">Ongoing work stays within the budget you set.</p></div></div>';};
+function overviewHTML(){
+  const active=plans.filter(function(p){return p.included;});
+  const agents=active.reduce(function(n,p){return n+p.agents;},0);
+  return titleBlock('The workspace, moving forward.','What is moving, what needs you, and where the steward will focus next.')+
+  '<div class="metrics"><div class="metric"><div class="metric-top">Plans in scope '+icon('stack')+'</div><div class="metric-value">'+active.length+'<span>/ '+plans.length+'</span></div><div class="metric-note">'+(plans.length-active.length)+' explicitly excluded</div></div><div class="metric"><div class="metric-top">Agents on selected plans '+icon('people')+'</div><div class="metric-value">'+agents+'</div><div class="metric-note">Across '+active.filter(function(p){return p.agents>0;}).length+' work lanes</div></div><div class="metric"><div class="metric-top">Verified outcomes '+icon('check')+'</div><div class="metric-value">12</div><div class="metric-note">Completed in the last 7 days</div></div><div class="metric"><div class="metric-top">Needs your attention '+icon('chat')+'</div><div class="metric-value" style="color:var(--amber)">'+(reviewResolved?1:2)+'</div><div class="metric-note">1 credential · '+(reviewResolved?'0':'1')+' scope decision</div></div></div>'+
+  '<div class="overview-grid"><div><div class="card"><div class="card-head"><div><h4>Where work is moving</h4><p>Selected plans, in priority order</p></div><button class="text-btn" data-view="worklist">Manage scope '+icon('arrow')+'</button></div>'+active.slice(0,4).map(function(p,i){return '<button class="priority-row" data-plan="'+p.id+'"><span class="rank">'+String(i+1).padStart(2,'0')+'</span><div><div class="plan-title">'+p.title+'</div><div class="plan-sub">'+p.next+'</div>'+stepBars(p)+'</div><div class="priority-meta">'+pill(p)+'<p>'+p.done+'/'+p.total+' tasks verified · '+p.agents+' agents</p></div></button>';}).join('')+'</div><div class="outcomes"><div class="card-head" style="padding-left:0;padding-right:0;border:0"><h4>Recent verified outcomes</h4><button class="text-btn" data-view="review">See changes '+icon('arrow')+'</button></div><div class="outcome-row"><span class="check-mark">✓</span><div>Search results now surface the relevant plan first.<p>Search reliability · acceptance passed · 34 min ago</p></div><button class="text-btn" data-plan="search">Evidence</button></div><div class="outcome-row"><span class="check-mark">✓</span><div>New users can connect an account during setup.<p>Cloud setup · journey verified · 2 hours ago</p></div><button class="text-btn" data-plan="cloud">Evidence</button></div></div></div>'+
+  '<div><div class="card attention-card"><div class="card-head"><h4>Waiting on you</h4><span class="pill warn">'+(reviewResolved?1:2)+' items</span></div><div class="decision-item"><span class="eyebrow" style="color:var(--amber)">Credential needed</span><div class="decision-title">Verify API account setup</div><p>A valid funded provider key is needed for the live account check. Other plans can continue.</p><div class="decision-actions"><button class="btn small" data-view="review">Review blocker '+icon('arrow')+'</button></div></div>'+(reviewResolved?'<div class="decision-item"><span class="pill good">Scope decision reviewed</span><p style="margin-top:8px">Mobile remains excluded. Core setup stays first.</p></div>':'<div class="decision-item"><span class="eyebrow" style="color:var(--amber)">Scope decision</span><div class="decision-title">Keep mobile exploration on hold?</div><p>The steward recommends finishing core setup before expanding the worklist.</p><div class="decision-actions"><button class="btn small" data-view="review">Review recommendation '+icon('arrow')+'</button></div></div>')+'</div>'+budgetCard(false)+'</div></div><div class="scope-note">'+icon('stack')+'Includes selected active workspace plans. New plans follow your scope policy.</div>';
+}
+function inspectorHTML(p){return '<div class="card detail-panel"><div class="card-head"><span class="eyebrow">Plan inspector</span>'+pill(p)+'</div><div class="card-body"><div style="grid-column:1/-1"><span class="small muted">'+p.project+'</span><h4>'+p.title+'</h4><p>'+p.focus+'</p></div><div><div class="detail-label">Why this is here</div><p>'+p.reason+'</p><div class="detail-label">Next concrete step</div><p>'+p.next+'</p></div><div><div class="detail-label">Progress & ownership</div><div class="detail-kv"><span class="dim">Verified tasks</span><strong>'+p.done+' / '+p.total+'</strong></div>'+stepBars(p)+'<div class="detail-kv"><span class="dim">Active agents</span><strong>'+p.agents+'</strong></div><div class="detail-kv"><span class="dim">In goal scope</span><strong>'+(p.included?'Included':'Excluded')+'</strong></div></div><div style="grid-column:1/-1"><div class="detail-label">Evidence trail</div><div class="detail-step"><i class="mini-dot"></i><div>Earlier tasks verified<small>Completion evidence recorded</small></div></div><div class="detail-step"><i class="mini-dot '+(p.tone==='warn'?'warn':'blue')+'"></i><div>'+p.last+'<small>'+p.next+'</small></div></div><button class="btn ghost" style="margin-top:18px;width:100%" data-plan="'+p.id+'">Open plan detail '+icon('arrow')+'</button></div></div></div>';}
+function worklistHTML(){
+  const rows=plans.filter(function(p){return (p.title+' '+p.project).toLowerCase().includes(query.toLowerCase())&&(filter==='all'||filter==='included'&&p.included||filter==='attention'&&p.tone==='warn'||filter==='excluded'&&!p.included);});
+  return titleBlock('Choose what moves next.','Include the plans you want worked on. Set their order; let the steward allocate work.')+
+  '<div class="worklist-layout"><div><div class="worklist-tools"><label class="search-box">'+icon('search')+'<input id="worklist-search" aria-label="Search worklist" placeholder="Search plans…" value="'+escapeText(query)+'"></label><select id="worklist-filter" class="filter" aria-label="Filter worklist"><option value="all">All plans</option><option value="included">Included in goal</option><option value="attention">Needs attention</option><option value="excluded">Excluded</option></select><span class="small muted" id="selected-count">'+plans.filter(function(p){return p.included;}).length+' of '+plans.length+' selected</span></div><div class="table-wrap"><table aria-label="Workspace worklist"><thead><tr><th style="width:30px"><span aria-label="Include">✓</span></th><th style="width:50px">Priority</th><th>Plan</th><th>Status</th><th>Agents</th><th>Verified</th></tr></thead><tbody>'+rows.map(function(p){const i=plans.indexOf(p);return '<tr class="'+(selectedPlan===p.id?'selected ':'')+(!p.included?'excluded':'')+'"><td><input type="checkbox" data-include="'+p.id+'" aria-label="Include '+p.title+'" '+(p.included?'checked':'')+'></td><td><span class="mono">'+String(i+1).padStart(2,'0')+'</span><div class="rank-controls"><button class="icon-button" data-move="'+p.id+'" data-direction="-1" aria-label="Move '+p.title+' up" '+(i===0?'disabled':'')+'>↑</button><button class="icon-button" data-move="'+p.id+'" data-direction="1" aria-label="Move '+p.title+' down" '+(i===plans.length-1?'disabled':'')+'>↓</button></div></td><td><button class="plan-select" data-select="'+p.id+'"><span class="table-plan">'+p.title+'</span><span class="table-plan-sub" style="display:block">'+p.project+'</span></button></td><td>'+pill(p)+'</td><td>'+p.agents+'</td><td>'+p.done+'/'+p.total+'</td></tr>';}).join('')+'</tbody></table>'+(rows.length?'':'<div class="empty-search">No plans match. Try another search or filter.</div>')+'</div><div class="table-foot"><span>Priority guides allocation; independent work can run together.</span><span>Changes are simulated in this gallery.</span></div><div class="explainer"><strong>Scope without micromanagement.</strong> Excluding a plan keeps it out of this goal’s worklist. It does not delete the plan or stop work owned elsewhere.</div></div>'+inspectorHTML(getPlan(selectedPlan))+'</div>';
+}
+function reviewHTML(){
+  return titleBlock('Your review desk.','A short catch-up on what changed, what is stuck, and what needs a decision.')+
+  '<div class="review-grid"><div><div class="review-hero"><div class="eyebrow" style="color:var(--amber)">Your next move</div><h4>'+(reviewResolved?'One credential is still needed.':'Two things need you. The rest can move.')+'</h4><p>'+(reviewResolved?'The scope recommendation is settled. The steward can continue independent plans while API verification waits for a valid key.':'Provide a credential for API verification and confirm the scope recommendation. Search, setup, and desktop work can continue independently.')+'</p></div><div class="card"><div class="card-head"><h4>Decisions & blockers</h4><span class="pill warn">'+(reviewResolved?1:2)+' open</span></div><div class="review-request"><div class="review-request-header"><h4>API verification needs a funded key</h4><span class="pill warn">Credential</span></div><p>Live account verification cannot proceed without a valid provider credential.</p><div class="recommendation"><strong>Next step</strong> Open account setup, provide the credential securely, then rerun the live request check.</div><div class="decision-actions"><button class="btn small primary" id="preview-account-setup">'+(credentialAcknowledged?'Setup steps viewed':'View setup steps')+'</button><button class="text-btn" data-plan="api">See affected plan</button></div></div>'+(reviewResolved?'<div class="review-request"><span class="pill good">Reviewed in this preview</span><h4 style="margin-top:9px">Mobile stays out of the worklist</h4><p>Core setup remains the priority. The decision is reflected in the worklist.</p><button class="text-btn" id="undo-review" style="margin-top:8px">Undo preview decision</button></div>':'<div class="review-request"><div class="review-request-header"><h4>Keep mobile exploration on hold?</h4><span class="pill">Scope</span></div><p>Adding this plan would widen the current worklist before core setup is verified.</p><div class="recommendation"><strong>Steward recommends</strong> Keep it excluded and revisit after the first-run experience is ready.</div><div class="decision-actions"><button class="btn small primary" id="accept-review">Keep on hold</button><button class="btn small" id="include-mobile">Include mobile</button><button class="text-btn" data-select="mobile" data-view="worklist">Inspect plan</button></div></div>')+'</div><div class="card" style="margin-top:18px"><div class="card-head"><h4>What changed today</h4><span class="small muted">Verified changes first</span></div><div class="review-timeline"><div class="timeline-entry"><time>14:20</time><div><h4>Search acceptance passed</h4><p>Relevant plans now appear at the top of workspace results.</p><details><summary>Show evidence</summary><p>Sample evidence: ranking scenarios passed, empty states checked, and result selection verified. Recorded on the search plan.</p><button class="text-btn" data-plan="search">Open the plan</button></details></div></div><div class="timeline-entry"><time>12:45</time><div><h4>Account connection works during setup</h4><p>The first-run journey now reaches a useful connected workspace.</p><details><summary>Show evidence</summary><p>Sample evidence: a new workspace completed setup, connected an account, and launched its first task.</p></details></div></div><div class="timeline-entry"><time>11:10</time><div><h4>Slow desktop lane prompted an audit</h4><p>The steward examined the stalled handoff before allocating more agents.</p><details><summary>Show evidence</summary><p>Sample evidence: the lane audit found a missing prerequisite, reassigned the next concrete step, and confirmed progress resumed.</p></details></div></div></div></div></div><div><div class="card"><div class="card-head"><h4>Coverage & momentum</h4><span class="small muted">This pass</span></div><div class="card-body"><div class="lane-health"><span>Selected plans with an owner</span><strong>'+plans.filter(function(p){return p.included&&p.agents>0;}).length+' / '+plans.filter(function(p){return p.included;}).length+'</strong></div><div class="lane-health"><span>Blocked on a credential</span><span class="pill warn">1 lane</span></div><div class="lane-health"><span>Stalled lanes under review</span><span class="pill good">None</span></div><div class="lane-health"><span>Recent outcomes</span><strong>12 / last 7 days</strong></div><p class="small muted" style="margin-top:15px">Ready work is picked up as capacity becomes available. Blocked work keeps its reason visible.</p></div></div>'+budgetCard(true)+'<div class="card" style="margin-top:17px"><div class="card-body"><div class="eyebrow">Steward’s next pass</div><p class="small dim" style="margin-top:8px">Recheck coverage, verify search completion evidence, and allocate the next ready task.</p><button class="text-btn" data-dialog="steward-dialog" style="margin-top:9px">Ask about the next pass '+icon('arrow')+'</button></div></div></div></div>';
+}
+/* ── Worklist iterations: 02A priority tiers · 02B capacity steering · 02C draft & apply ── */
+Object.assign(concepts,{
+  'worklist-tiers':{title:'02A / Worklist · Priority tiers',description:'Sort plans into Focus, Next and When there’s room instead of ranking them 1–6. Every row shows its next step, freshness and blocker, so you can steer without opening the inspector.',tag:'Iteration of 02 · suggested base',changes:['Tiers replace 1–6 ranks','Next step and freshness on every row','Blockers you can act on in the row','Excluded plans leave the ranking','New plans wait for your call','Drag between tiers, or use ⋯']},
+  'worklist-capacity':{title:'02B / Worklist · Capacity steering',description:'Order decides who goes first; a share decides how much. Give each plan a share of effort and see where agents go at the next pass, with ready-work and budget limits explained.',tag:'Iteration of 02 · for hands-on steering',changes:['Share of effort instead of rank','Agents shown as blocks','Live preview of the next pass','Limits explained, not hidden','Capacity and budget beside the list']},
+  'worklist-draft':{title:'02C / Worklist · Draft & apply',description:'A dense, keyboard-first list. Edits are staged, the steward estimates their effect on agents before anything changes, and each change keeps its reason in plan history.',tag:'Iteration of 02 · safest for big changes',changes:['Edits are staged, not instant','Impact preview before applying','Reasons kept in plan history','Keyboard-first: ↑↓ · ⌥↑↓ · X · ↵','Inspector: summary, evidence, history']}
+});
+const viewOf=function(c){return c.indexOf('worklist')===0?'worklist':c;};
+const planExtras={
+  cloud:{short:'Cloud',tier:'focus',share:3,ready:2,fresh:12,evidence:[['Account connection verified during setup','2 h ago'],['Onboarding copy revised','5 h ago']]},
+  search:{short:'Search',tier:'focus',share:2,ready:1,fresh:28,evidence:[['Ranking acceptance passed','34 min ago'],['Empty states checked','Yesterday']]},
+  api:{short:'API',tier:'next',share:2,ready:1,fresh:null,waiting:'1 day',blocker:'Needs a funded provider key',evidence:[['API account registered in the pool','Yesterday']]},
+  desktop:{short:'Desktop',tier:'next',share:2,ready:3,fresh:41,evidence:[['Detail-panel keyboard pass verified','41 min ago'],['Navigation shortcuts verified','Mon']]},
+  docs:{short:'Help',tier:'later',share:1,ready:2,fresh:180,evidence:[['Billing help outline drafted','3 h ago']]},
+  mobile:{short:'Mobile',tier:'later',share:1,ready:1,fresh:null,evidence:[['Exploration brief written','Last week']]}
+};
+plans.forEach(function(p){Object.assign(p,planExtras[p.id]);});
+const intake=[{id:'usage',short:'Usage',title:'Usage export for billing',project:'Accounts',status:'Ready',tone:'',agents:0,done:0,total:3,included:true,tier:'later',share:1,ready:1,fresh:null,focus:'Let workspace owners export usage for their invoices.',next:'Define the export columns and run a sample export.',last:'New plan · added 2 h ago',reason:'Created from three support requests about invoicing.',evidence:[['Plan created from support requests','2 h ago']]}];
+const TIERS=[{id:'focus',name:'Focus',rule:'Gets first pick of agents · keep it to 1–3 plans'},{id:'next',name:'Next',rule:'Worked when Focus is covered or waiting'},{id:'later',name:'When there’s room',rule:'Uses spare capacity only'}];
+const tierOf=function(id){return TIERS.find(function(t){return t.id===id;})||TIERS[2];};
+const tierIndex=function(id){return TIERS.findIndex(function(t){return t.id===id;});};
+const matchQ=function(p){return (p.title+' '+p.project).toLowerCase().includes(query.toLowerCase());};
+const plural=function(n,w){return n+' '+w+(n===1?'':'s');};
+const SHARES=['Hold','Low','Normal','High'], SHARE_WEIGHT=[0,1,2,4], SEAT_COST=8.1, SPENT=38.4;
+let tierFilter='all', oosOpen=true, dragId=null, restoreFocus=null, inspTab='summary', draft=null, seats=6, appliedSeats=6;
+const appliedShare={}; plans.forEach(function(p){appliedShare[p.id]=p.share;});
+const changeLog=[
+  {id:'cloud',who:'Avi',when:'Mon 09:12',what:'moved this to #1',note:'First-run is what blocks new users.'},
+  {id:'search',who:'Steward',when:'Sun 16:30',what:'suggested moving this up; Avi accepted',note:'Three other plans depend on search.'},
+  {id:'mobile',who:'Avi',when:'Sun 18:40',what:'removed this from the goal',note:'Revisit after core setup ships.'},
+  {id:'api',who:'Steward',when:'Yesterday',what:'marked this as waiting on a credential',note:''},
+  {id:'desktop',who:'Avi',when:'Last wk',what:'added this to the goal',note:''},
+  {id:'docs',who:'Avi',when:'Last wk',what:'added this to the goal',note:''}
+];
+function logChange(id,what,note){changeLog.unshift({id:id,who:'Avi',when:'Just now',what:what,note:note||''});}
+function setIncluded(p,on){
+  if(p.included===on)return;p.included=on;
+  if(on){p.status=p._status||'Ready';p.tone=p._tone||'';p.last='Included by Avi · just now';}
+  else{p._status=p.status==='Excluded'?'Ready':p.status;p._tone=p.tone;p.status='Excluded';p.tone='';p.agents=0;p.last='Excluded by Avi · just now';}
+  if(p.id==='mobile')p.reason=on?'Avi included this plan in the goal’s scope.':'An explicit scope choice; no agent is allocated by this goal.';
+}
+function freshCell(p){if(p.blocker)return '<span class="warn-text">Waiting '+p.waiting+'</span><small>on you</small>';if(p.fresh==null)return '<span class="muted">Not started</span><small>no evidence yet</small>';return (p.fresh<60?p.fresh+' min':Math.round(p.fresh/60)+' h')+' ago<small>last verified</small>';}
+function freshShort(p){if(p.blocker)return '<span class="warn-text">Waiting</span>';if(p.fresh==null)return '<span class="muted">—</span>';return p.fresh<60?p.fresh+'m ago':Math.round(p.fresh/60)+'h ago';}
+function agentDots(n){let s='<span class="agent-dots" title="'+plural(n,'agent')+' working">';if(!n)s+='<i class="none"></i>';for(let i=0;i<Math.min(n,4);i++)s+='<i></i>';return s+'<span>'+n+'</span></span>';}
+function blockerHTML(p,extra){return '<div class="t-blocker">'+icon('alert')+'<span>'+p.blocker+(extra||'')+'</span><button class="btn small" data-v="key">Add key</button></div>';}
+/* Allocation model shared by 02B and 02C: each seat goes to the plan with the highest weight/(agents+1), never past its ready work. */
+function allocate(list,total,weightOf,incOf){const out={};list.forEach(function(p){out[p.id]=0;});const pool=list.filter(function(p){return incOf(p)&&!p.blocker&&weightOf(p)>0;});let used=0;for(;used<total;used++){let best=null,score=-1;pool.forEach(function(p){if(out[p.id]>=p.ready)return;const s=weightOf(p)/(out[p.id]+1);if(s>score){best=p;score=s;}});if(!best)break;out[best.id]++;}return {alloc:out,used:used};}
+const budgetSeats=function(){return Math.max(0,Math.floor((budget-SPENT)/SEAT_COST));};
+const effectiveSeats=function(){return Math.min(seats,budgetSeats());};
+const capResult=function(){return allocate(plans,effectiveSeats(),function(p){return SHARE_WEIGHT[p.share];},function(p){return p.included;});};
+let baseAlloc=Object.assign({},capResult().alloc);
+function whyAlloc(p,n){
+  if(!p.included)return 'Not in this goal, so it gets no agents from it.';
+  if(p.blocker)return 'Blocked on you. Its '+SHARES[p.share].toLowerCase()+' share is lent to other plans until the key is added.';
+  if(p.share===0)return 'On hold: it stays in the goal but gets no agents.';
+  if(n>0&&n>=p.ready)return SHARES[p.share]+' share, capped by ready work: only '+plural(p.ready,'task')+' can run at once, so more effort would sit idle.';
+  if(n===0)return SHARES[p.share]+' share, but higher shares took every agent this pass. It gets the next free one.';
+  return SHARES[p.share]+' share earns '+plural(n,'agent')+', weighed against the other plans’ shares.';
+}
+function inspectorV(p,mode){
+  let line='';
+  if(mode==='tiers')line=p.included?'<span class="tier-mark tm-'+p.tier+'"></span><span><strong>'+tierOf(p.tier).name+'</strong> · '+tierOf(p.tier).rule+'</span>':'<span class="tier-mark tm-out"></span><span><strong>Not in this goal</strong> · no agents from this goal</span>';
+  const top='<span class="small muted">'+p.project+'</span><h4>'+p.title+'</h4><p>'+p.focus+'</p>';
+  const blocker=p.blocker?'<div style="margin-top:12px">'+blockerHTML(p)+'</div>':'';
+  const summary='<div class="detail-label">Next step</div><p>'+p.next+'</p><div class="detail-label">Why it’s here</div><p>'+p.reason+'</p><div class="detail-label">Progress</div><div class="detail-kv"><span class="dim">Verified tasks</span><strong>'+p.done+' / '+p.total+'</strong></div>'+stepBars(p)+'<div class="detail-kv"><span class="dim">Agents working</span><strong>'+p.agents+'</strong></div><div class="detail-kv"><span class="dim">Tasks ready to run</span><strong>'+p.ready+'</strong></div>';
+  const evidence='<div class="detail-label">Recent evidence</div>'+p.evidence.map(function(e){return '<div class="detail-step"><i class="mini-dot"></i><div>'+e[0]+'<small>'+e[1]+'</small></div></div>';}).join('');
+  let body;
+  if(mode==='draft'){
+    const hist=changeLog.filter(function(h){return h.id===p.id;});
+    const tabs=[['summary','Summary'],['evidence','Evidence'],['history','History · '+hist.length]];
+    body=top+blocker+'<div class="ins-tabs" role="tablist" aria-label="Plan inspector">'+tabs.map(function(t){return '<button role="tab" aria-selected="'+(inspTab===t[0])+'" data-v="insp-tab" data-tab="'+t[0]+'">'+t[1]+'</button>';}).join('')+'</div>'+
+      (inspTab==='summary'?summary:inspTab==='evidence'?evidence:(hist.length?hist.map(function(h){return '<div class="history-entry"><time>'+h.when+'</time><div><strong>'+h.who+'</strong> '+h.what+(h.note?'<q>'+escapeText(h.note)+'</q>':'')+'</div></div>';}).join(''):'<p class="muted" style="padding:12px 0">No changes recorded yet.</p>'));
+  }else body=top+(line?'<div class="ins-mode">'+line+'</div>':'')+blocker+summary+evidence;
+  return '<div class="card v-inspector"><div class="card-head"><span class="eyebrow">Plan inspector</span>'+pill(p)+'</div><div class="card-body">'+body+'<div class="ins-actions"><button class="btn small" data-plan="'+p.id+'">Open plan</button><button class="btn small" data-dialog="steward-dialog">'+icon('chat')+'Ask steward</button></div></div></div>';
+}
+/* 02A · Priority tiers */
+function tierRowHTML(p){
+  return '<div class="t-row'+(selectedPlan===p.id?' selected':'')+(p.blocker?' blocked':'')+'" draggable="true" tabindex="0" data-vrow="'+p.id+'" aria-label="'+escapeText(p.title)+' · '+tierOf(p.tier).name+'">'+
+  '<span class="grip ga-grip" aria-hidden="true" title="Drag to another tier">⋮⋮</span>'+
+  '<div class="ga-main"><button class="plan-select t-title" data-select="'+p.id+'">'+p.title+'</button><span class="t-project">'+p.project+'</span><div class="t-next"><b>Next</b>'+p.next+'</div>'+(p.blocker?blockerHTML(p,' · other plans keep moving'):'')+'</div>'+
+  '<div class="ga-prog">'+stepBars(p)+'<small>'+p.done+' of '+p.total+' verified</small></div>'+
+  '<div class="ga-fresh">'+freshCell(p)+'</div>'+
+  '<div class="ga-agents">'+agentDots(p.agents)+'</div>'+
+  '<div class="ga-status">'+pill(p)+'</div>'+
+  '<select class="row-move ga-menu" data-tier-move="'+p.id+'" aria-label="Move '+escapeText(p.title)+'" title="Move to…"><option value="" selected>⋯</option>'+TIERS.filter(function(t){return t.id!==p.tier;}).map(function(t){return '<option value="'+t.id+'">Move to '+t.name+'</option>';}).join('')+'<option value="out">Remove from this goal</option></select>'+
+  '</div>';
+}
+function tierHTML(t){
+  const all=plans.filter(function(p){return p.included&&p.tier===t.id;});
+  const filtered=tierFilter!=='all'||query;
+  const rows=all.filter(function(p){return matchQ(p)&&(tierFilter==='all'||tierFilter==='attention'&&p.blocker||tierFilter==='moving'&&p.agents>0);});
+  if(filtered&&!rows.length)return '';
+  const agents=all.reduce(function(n,p){return n+p.agents;},0);
+  return '<section class="tier" aria-label="'+t.name+'"><div class="tier-head"><span class="tier-mark tm-'+t.id+'"></span><div><div class="tier-name">'+t.name+'<span class="tier-count">'+all.length+'</span></div><div class="tier-rule">'+t.rule+'</div></div><div class="tier-meta">'+(t.id==='focus'&&all.length>3?'<span class="pill warn">Crowded · agents spread thin</span>':'')+'<span>'+plural(agents,'agent')+'</span></div></div><div class="tier-body" data-drop-tier="'+t.id+'">'+(rows.length?rows.map(tierRowHTML).join(''):'<div class="tier-empty">Nothing here. Drag a plan in, or use ⋯ on a row.</div>')+'</div></section>';
+}
+function intakeHTML(){
+  if(!intake.length)return '';const n=intake[0];
+  return '<div class="intake" role="region" aria-label="New plans to sort"><div><span class="eyebrow">New since you last looked</span><h4>'+n.title+'<span class="t-project">'+n.project+'</span></h4><p>'+n.last+'. '+n.reason+' Your scope policy would add it to “When there’s room”; no agent starts until you choose.</p></div><div class="intake-actions"><button class="btn small primary" data-v="intake" data-tier="later">Add to When there’s room</button><button class="btn small" data-v="intake" data-tier="next">Add to Next</button><button class="btn small ghost" data-v="intake" data-tier="out">Leave out</button></div></div>';
+}
+function oosHTML(){
+  const out=plans.filter(function(p){return !p.included;});
+  return '<section class="oos" data-drop-tier="out"><button class="oos-head" data-v="oos-toggle" aria-expanded="'+oosOpen+'"><span class="tier-mark tm-out"></span><strong>Not in this goal</strong><span class="muted">'+plural(out.length,'plan')+' · no agents from this goal · nothing is deleted</span><span class="v-spacer text-btn">'+(oosOpen?'Hide':'Show')+'</span></button>'+
+  (oosOpen?(out.length?out.map(function(p){return '<div class="oos-row" draggable="true" data-vrow="'+p.id+'"><div style="min-width:0"><button class="plan-select t-title" data-select="'+p.id+'">'+p.title+'</button><span class="t-project">'+p.project+'</span><div class="t-next">'+p.last+'</div></div><button class="btn small" data-v="bring-back" data-id="'+p.id+'">Add back to goal</button></div>';}).join(''):'<div class="tier-empty">Every plan is in this goal.</div>'):'')+'</section>';
+}
+function tiersHTML(){
+  const inScope=plans.filter(function(p){return p.included;});
+  const chip=function(id,label,n,cls){return '<button class="chip'+(cls?' '+cls:'')+'" aria-pressed="'+(tierFilter===id)+'" data-v="tier-filter" data-filter="'+id+'">'+label+' <span class="count">'+n+'</span></button>';};
+  const tiersMarkup=TIERS.map(tierHTML).join('');
+  return titleBlock('Choose what moves next.','Put each plan in a tier. The steward fills Focus first, then Next, then uses spare capacity.')+
+  '<div class="v-layout"><div><div class="v-tools"><label class="search-box">'+icon('search')+'<input id="worklist-search" aria-label="Search worklist" placeholder="Search plans…" value="'+escapeText(query)+'"></label><div class="chips" role="group" aria-label="Show">'+chip('all','All',inScope.length)+chip('attention','Needs you',inScope.filter(function(p){return p.blocker;}).length,'warn')+chip('moving','Moving',inScope.filter(function(p){return p.agents>0;}).length)+'</div><span class="v-spacer small muted">'+inScope.length+' in goal · '+(plans.length-inScope.length)+' left out</span></div>'+
+  intakeHTML()+(tiersMarkup||'<div class="empty-search">No plans match. Try another search or filter.</div>')+oosHTML()+
+  '<div class="table-foot"><span>Drag rows between tiers, or focus a row and press Alt+↑/↓ to reorder.</span><span>Order inside a tier is only a tiebreak.</span></div></div>'+inspectorV(getPlan(selectedPlan),'tiers')+'</div>';
+}
+function placeInTier(p,tier,beforeId){
+  plans.splice(plans.indexOf(p),1);let j;
+  if(beforeId&&beforeId!==p.id)j=plans.indexOf(getPlan(beforeId));
+  else{let last=-1,firstLater=-1;plans.forEach(function(q,k){if(!q.included)return;if(q.tier===tier)last=k;else if(tierIndex(q.tier)>tierIndex(tier)&&firstLater<0)firstLater=k;});j=last>=0?last+1:firstLater>=0?firstLater:plans.length;}
+  plans.splice(j,0,p);
+}
+function moveToTier(id,tier,beforeId){
+  const p=getPlan(id),from=p.included?tierOf(p.tier).name:'Not in this goal';
+  if(tier==='out'){setIncluded(p,false);plans.splice(plans.indexOf(p),1);plans.push(p);logChange(id,'removed this from the goal');}
+  else{setIncluded(p,true);const moved=p.tier!==tier||from==='Not in this goal';p.tier=tier;placeInTier(p,tier,beforeId);if(moved)logChange(id,'moved this from '+from+' to '+tierOf(tier).name);}
+  selectedPlan=id;render();showToast('Preview: '+p.title+(tier==='out'?' removed from this goal.':' is in '+tierOf(tier).name+'.'));
+}
+function reorderInTier(id,dir){const p=getPlan(id);const sib=plans.filter(function(q){return q.included&&q.tier===p.tier;});const o=sib[sib.indexOf(p)+dir];if(!o)return;const a=plans.indexOf(p),b=plans.indexOf(o);plans[a]=o;plans[b]=p;}
+/* 02B · Capacity steering */
+function capRowHTML(p,r){
+  const n=r.alloc[p.id]||0,d=n-(baseAlloc[p.id]||0);let note='';
+  if(p.blocker)note='<span class="warn-text">Blocked on you · share lent to other plans</span>';else if(p.share===0)note='On hold · stays in the goal with no agents';else if(n>0&&n>=p.ready)note='Capped by ready work · '+plural(p.ready,'task')+' can run now';else if(n===0)note='Waiting for a free agent';
+  return '<div class="c-row'+(selectedPlan===p.id?' selected':'')+'" data-vrow="'+p.id+'"><div class="c-plan"><button class="plan-select t-title" data-select="'+p.id+'">'+p.title+'</button><span class="t-project">'+p.project+'</span><div class="t-next"><b>Next</b>'+p.next+'</div></div>'+
+  '<div class="seg" role="group" aria-label="Share of effort for '+escapeText(p.title)+'">'+SHARES.map(function(s,i){return '<button aria-pressed="'+(p.share===i)+'" data-v="share" data-id="'+p.id+'" data-share="'+i+'">'+s+'</button>';}).join('')+'</div>'+
+  '<div><div class="alloc"><div class="alloc-track" title="'+plural(n,'agent')+' of '+seats+'"><span style="width:'+(seats?n/seats*100:0)+'%"></span></div><span class="alloc-num">'+plural(n,'agent')+(d?'<span class="delta">'+(d>0?'+':'−')+Math.abs(d)+'</span>':'')+'</span></div>'+(note?'<div class="c-note">'+note+'</div>':'')+'</div><div>'+pill(p)+'</div></div>';
+}
+function capPanelHTML(r){
+  const eff=effectiveSeats(),proj=SPENT+r.used*SEAT_COST;
+  const moves=plans.filter(function(p){return (r.alloc[p.id]||0)!==(baseAlloc[p.id]||0);});
+  const settingsChanged=seats!==appliedSeats||plans.some(function(p){return p.share!==appliedShare[p.id];});
+  const dirty=moves.length||settingsChanged;const p=getPlan(selectedPlan);
+  return '<div class="card v-inspector"><div class="card-head"><span class="eyebrow">Next pass preview</span><span class="pill blue">in 4 min</span></div><div class="card-body">'+
+  (moves.length?'<p>If you apply, the steward moves agents like this:</p><ul class="impact">'+moves.map(function(q){return '<li><span>'+q.title+'</span><strong>'+(baseAlloc[q.id]||0)+' → '+(r.alloc[q.id]||0)+'</strong></li>';}).join('')+'</ul>':'<p>'+(settingsChanged?'No agents move with these settings. Shares now decide who gets the next free agent.':'This matches what the steward is doing now. Change a share to preview the effect.')+'</p>')+
+  '<div class="detail-label">Capacity</div><div class="kv-row"><span class="dim">Agents at once</span><span class="stepper"><button data-v="seats" data-d="-1" aria-label="Fewer agents"'+(seats<=2?' disabled':'')+'>−</button><output aria-live="polite">'+seats+'</output><button data-v="seats" data-d="1" aria-label="More agents"'+(seats>=10?' disabled':'')+'>+</button></span></div>'+
+  '<div class="detail-kv"><span class="dim">Working next pass</span><strong>'+r.used+' of '+seats+'</strong></div>'+
+  (eff<seats?'<p class="c-note warn-text">The budget covers '+eff+' at this pace, so '+(seats-eff)+' '+(seats-eff===1?'is':'are')+' held back.</p>':'')+
+  (r.used<eff?'<p class="c-note">'+(eff-r.used)+' idle: plans in the goal have no more ready work.</p>':'')+
+  '<div class="detail-label">Budget pace</div><div class="budget-line"><span class="budget-amount" style="font-size:17px">$'+proj.toFixed(2)+'</span><span class="small muted">projected of $'+budget+'</span></div><div class="bar" role="meter" aria-label="Projected rolling seven-day spend" aria-valuemin="0" aria-valuemax="'+budget+'" aria-valuenow="'+proj.toFixed(2)+'"><span style="width:'+Math.min(100,proj/budget*100)+'%"></span></div><div class="budget-meta"><span>$'+SPENT.toFixed(2)+' spent so far</span><span>Rolling 7 days</span></div>'+
+  '<div class="ins-actions"><button class="btn small" data-v="cap-reset"'+(dirty?'':' disabled')+'>Reset</button><button class="btn small primary" data-v="cap-apply"'+(dirty?'':' disabled')+'>Apply at next pass</button></div>'+
+  '<div class="selected-why"><div class="detail-label">Selected · '+p.title+'</div><p>'+whyAlloc(p,r.alloc[p.id]||0)+'</p><p style="margin-top:8px"><span class="muted">Next:</span> '+p.next+'</p><button class="text-btn" data-plan="'+p.id+'" style="margin-top:6px">Open plan '+icon('arrow')+'</button></div></div></div>';
+}
+function capacityHTML(){
+  const r=capResult(),eff=effectiveSeats(),inScope=plans.filter(function(p){return p.included;}),out=plans.filter(function(p){return !p.included;});
+  let blocks='';
+  inScope.forEach(function(p){const n=r.alloc[p.id]||0,b=baseAlloc[p.id]||0;for(let i=0;i<n;i++)blocks+='<span class="seat'+(i>=b?' changed':'')+'" title="'+escapeText(p.title)+'">'+p.short+'</span>';});
+  for(let i=r.used;i<eff;i++)blocks+='<span class="seat idle" title="No ready work for this agent">Idle</span>';
+  for(let i=eff;i<seats;i++)blocks+='<span class="seat locked" title="Held back to stay within budget">Budget</span>';
+  const summary=inScope.filter(function(p){return r.alloc[p.id];}).map(function(p){return p.short+' '+r.alloc[p.id];}).join(', ')+(seats>r.used?', '+(seats-r.used)+' not working':'');
+  return titleBlock('Steer where effort goes.','Give each plan a share of effort. The steward turns shares into agents, within ready work and your budget.')+
+  '<div class="v-layout"><div><div class="card seat-card"><div class="card-head"><div><h4>Agents at the next pass</h4><p>One block per agent. Outlined blocks are new if you apply.</p></div><span class="small muted">'+r.used+' of '+seats+' working</span></div><div class="card-body"><div class="seat-strip" role="img" aria-label="Agents next pass: '+escapeText(summary)+'" style="--seats:'+seats+'">'+blocks+'</div><div class="seat-meta"><span>Blocked plans lend their share to the others until they are unblocked.</span><span>Next pass in 4 min</span></div></div></div>'+
+  '<div class="card"><div class="c-row c-head" aria-hidden="true"><span>Plan</span><span>Share of effort</span><span>Agents next pass</span><span>Status</span></div>'+inScope.map(function(p){return capRowHTML(p,r);}).join('')+
+  (out.length?'<div class="c-out">'+icon('stack')+'<span>Not in this goal: '+out.map(function(p){return p.title;}).join(', ')+'</span><button class="text-btn v-spacer" data-v="bring-back" data-id="'+out[0].id+'">Add '+out[0].short+' back</button></div>':'')+'</div>'+
+  '<div class="table-foot"><span>A share sets relative effort. It never goes past the work that is ready to run.</span><span>Changes are simulated in this gallery.</span></div></div>'+capPanelHTML(r)+'</div>';
+}
+/* 02C · Draft & apply */
+function syncDraft(){if(!draft)return;plans.forEach(function(p){if(draft.order.indexOf(p.id)<0){draft.order.push(p.id);draft.inc[p.id]=p.included;}});}
+function ensureDraft(){if(!draft){draft={order:plans.map(function(p){return p.id;}),inc:{}};plans.forEach(function(p){draft.inc[p.id]=p.included;});}}
+const dInc=function(p){return draft?draft.inc[p.id]:p.included;};
+const dOrder=function(){syncDraft();return draft?draft.order.map(getPlan):plans.slice();};
+function draftChanges(){
+  if(!draft)return {};syncDraft();const ch={};
+  const now=plans.filter(function(p){return p.included;}).map(function(p){return p.id;}),next=draft.order.filter(function(id){return draft.inc[id];});
+  next.forEach(function(id,i){const j=now.indexOf(id);if(j<0)ch[id]={kind:'in',text:'Adding'};else if(j!==i)ch[id]={kind:'move',text:'Moved '+(j>i?'up ':'down ')+Math.abs(j-i)};});
+  now.forEach(function(id){if(!draft.inc[id])ch[id]={kind:'out',text:'Removing'};});return ch;
+}
+function pruneDraft(){if(draft&&!Object.keys(draftChanges()).length)draft=null;}
+const rankWeight=function(r){return r===1?4:r===2?3:r===3?2:1;};
+function allocByOrder(list,incOf){const rank={};list.filter(incOf).forEach(function(p,i){rank[p.id]=i+1;});return allocate(list,effectiveSeats(),function(p){return rankWeight(rank[p.id]);},incOf).alloc;}
+function draftImpact(){if(!draft)return [];const a=allocByOrder(plans,function(p){return p.included;}),b=allocByOrder(dOrder(),dInc);return plans.filter(function(p){return (a[p.id]||0)!==(b[p.id]||0);}).map(function(p){return {p:p,from:a[p.id]||0,to:b[p.id]||0};});}
+function draftMove(id,dir){ensureDraft();if(!draft.inc[id])return;const inc=draft.order.filter(function(x){return draft.inc[x];});const t=inc[inc.indexOf(id)+dir];if(!t)return;const a=draft.order.indexOf(id),b=draft.order.indexOf(t);draft.order[a]=t;draft.order[b]=id;pruneDraft();}
+function draftToggle(id){ensureDraft();draft.inc[id]=!draft.inc[id];pruneDraft();}
+function visibleDraftRows(){const list=dOrder();return list.filter(dInc).concat(list.filter(function(p){return !dInc(p);})).filter(matchQ);}
+function draftRowHTML(p,rank,count,ch){
+  const cur=selectedPlan===p.id,inc=dInc(p);
+  return '<div class="d-row'+(cur?' cursor':'')+(ch?' changed':'')+(inc?'':' out')+'" id="drow-'+p.id+'" role="option" aria-selected="'+cur+'" data-vrow="'+p.id+'"><span class="mono d-rank">'+(inc?String(rank).padStart(2,'0'):'—')+'</span><div style="min-width:0"><div class="d-title">'+p.title+'</div><div class="d-proj">'+p.project+'</div></div><div class="d-next" title="'+escapeText(p.next)+'">'+p.next+'</div><div>'+pill(p)+'</div><div class="d-agents">'+agentDots(p.agents)+'</div><div class="d-upd">'+freshShort(p)+'</div><div>'+(ch?'<span class="change-tag'+(ch.kind==='out'?' out':'')+'">'+ch.text+'</span>':'')+'</div>'+
+  '<div class="row-tools">'+(inc?'<button class="icon-button" tabindex="-1" data-v="d-move" data-id="'+p.id+'" data-d="-1" aria-label="Move '+escapeText(p.title)+' up"'+(rank===1?' disabled':'')+'>↑</button><button class="icon-button" tabindex="-1" data-v="d-move" data-id="'+p.id+'" data-d="1" aria-label="Move '+escapeText(p.title)+' down"'+(rank===count?' disabled':'')+'>↓</button>':'')+'<button class="icon-button" tabindex="-1" data-v="d-toggle" data-id="'+p.id+'">'+(inc?'Remove':'Add back')+'</button></div></div>';
+}
+function impactText(list){return list.length?'Agents: '+list.map(function(x){return x.p.short+' '+x.from+'→'+x.to;}).join(', '):'No agents move. The new order decides who gets the next free agent.';}
+function draftHTML(){
+  const ch=draftChanges(),list=dOrder(),inc=list.filter(dInc),out=list.filter(function(p){return !dInc(p);});
+  const vis=visibleDraftRows();if(vis.length&&!vis.some(function(p){return p.id===selectedPlan;}))selectedPlan=vis[0].id;
+  const n=Object.keys(ch).length,imp=draftImpact();
+  const row=function(p){return draftRowHTML(p,inc.indexOf(p)+1,inc.length,ch[p.id]);};
+  const bar=n?'<div class="draft-bar" role="region" aria-label="Pending changes"><span class="draft-count">'+n+'</span><div><strong>'+(n===1?'1 plan changed':n+' plans changed')+' · not applied yet</strong><div class="draft-impact">'+icon('people')+impactText(imp)+'</div></div><div class="actions"><button class="btn small ghost" data-v="d-discard">Discard</button><button class="btn small primary" data-v="d-review">Review &amp; apply</button></div></div>':'<div class="draft-bar idle">'+icon('check')+'<span>No pending changes. Edits stay in a draft until you apply them.</span></div>';
+  return titleBlock('Plan the next pass.','Reorder and rescope freely. Nothing changes until you apply, and the steward shows the effect first.')+
+  '<div class="v-layout"><div><div class="v-tools"><label class="search-box">'+icon('search')+'<input id="worklist-search" aria-label="Search worklist" placeholder="Search plans…" value="'+escapeText(query)+'"></label><div class="kbd-legend" aria-label="Keyboard shortcuts for the list"><span><kbd>↑</kbd><kbd>↓</kbd> select</span><span><kbd>⌥</kbd><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>X</kbd> add / remove</span><span><kbd>↵</kbd> open</span></div></div>'+
+  '<div class="d-list" id="draft-list" tabindex="0" role="listbox" aria-label="Worklist draft" aria-activedescendant="drow-'+selectedPlan+'"><div class="d-head" aria-hidden="true"><span>#</span><span>Plan</span><span>Next step</span><span>Status</span><span>Agents</span><span>Last verified</span><span>Draft</span><span></span></div>'+
+  '<div class="d-section" role="presentation">In this goal · priority order</div>'+inc.filter(matchQ).map(row).join('')+
+  (out.length?'<div class="d-section" role="presentation">Not in this goal</div>'+out.filter(matchQ).map(row).join(''):'')+(vis.length?'':'<div class="empty-search">No plans match.</div>')+'</div>'+bar+
+  '</div>'+inspectorV(getPlan(selectedPlan),'draft')+'</div>';
+}
+function openApplyDialog(){
+  const ch=draftChanges(),imp=draftImpact(),now=plans.filter(function(p){return p.included;}),next=dOrder().filter(dInc);
+  const li=function(p,cls){return '<li'+(cls?' class="'+cls+'"':'')+'>'+p.title+'</li>';};
+  document.getElementById('apply-body').innerHTML='<p>The steward applies these changes at its next pass, in about 4 minutes. Tasks that are already running finish first.</p>'+
+  '<div class="diff-grid"><div class="diff-col"><h5>Now</h5><ol>'+now.map(function(p){return li(p,ch[p.id]&&ch[p.id].kind==='out'?'removed':'');}).join('')+'</ol></div><div class="diff-col"><h5>After apply</h5><ol>'+next.map(function(p){return li(p,ch[p.id]?'moved':'');}).join('')+'</ol></div></div>'+
+  '<div class="detail-label">Effect on agents · steward estimate</div>'+(imp.length?'<ul class="impact">'+imp.map(function(x){return '<li><span>'+x.p.title+'</span><strong>'+plural(x.from,'agent')+' → '+x.to+'</strong></li>';}).join('')+'</ul>':'<p style="margin:0">No agents move. The new order decides who gets the next free agent.</p>')+
+  '<label class="dialog-label" for="apply-note">Why? <span class="muted" style="font-weight:400">Optional. Kept in plan history and shared with the steward.</span></label><textarea id="apply-note" class="note-input" rows="2" placeholder="e.g. Desktop has to ship before Friday’s demo"></textarea>';
+  document.getElementById('apply-dialog').showModal();
+}
+function applyDraft(note){
+  const ch=draftChanges(),order=dOrder();
+  plans.length=0;order.forEach(function(p){plans.push(p);});
+  Object.keys(draft.inc).forEach(function(id){setIncluded(getPlan(id),draft.inc[id]);});
+  const a=allocByOrder(plans,function(p){return p.included;});plans.forEach(function(p){if(p.included&&!p.blocker)p.agents=a[p.id]||0;});
+  const ranked=plans.filter(function(p){return p.included;});
+  Object.keys(ch).forEach(function(id){logChange(id,ch[id].kind==='move'?ch[id].text.toLowerCase()+' (now #'+(ranked.indexOf(getPlan(id))+1)+')':ch[id].kind==='in'?'added this to the goal':'removed this from the goal',note);});
+  draft=null;render();showToast('Preview: applied. The steward picks this up at its next pass, in about 4 min.');
+}
+function draftKey(e){
+  const k=e.key;if(['ArrowUp','ArrowDown','j','k','x','X','Enter'].indexOf(k)<0)return;
+  e.preventDefault();if(k==='Enter'){openPlan(selectedPlan);return;}
+  const up=k==='ArrowUp'||k==='k';
+  if(k==='x'||k==='X')draftToggle(selectedPlan);
+  else if(e.altKey&&(k==='ArrowUp'||k==='ArrowDown'))draftMove(selectedPlan,up?-1:1);
+  else{const vis=visibleDraftRows();const i=vis.findIndex(function(p){return p.id===selectedPlan;});const nx=vis[Math.max(0,Math.min(vis.length-1,i+(up?-1:1)))];if(nx)selectedPlan=nx.id;}
+  restoreFocus='#draft-list';render();
+  const row=document.getElementById('drow-'+selectedPlan);if(row)row.scrollIntoView({block:'nearest'});
+}
+function handleV(v){
+  const a=v.dataset.v,id=v.dataset.id;
+  if(a==='key'){openAccountSetup();return;}
+  if(a==='d-review'){openApplyDialog();return;}
+  if(a==='d-apply'){const note=document.getElementById('apply-note').value.trim();document.getElementById('apply-dialog').close();applyDraft(note);return;}
+  if(a==='tier-filter')tierFilter=v.dataset.filter;
+  else if(a==='oos-toggle')oosOpen=!oosOpen;
+  else if(a==='bring-back'){moveToTier(id,'later',null);return;}
+  else if(a==='intake'){const n=intake.shift();if(!n)return;const t=v.dataset.tier;plans.push(n);appliedShare[n.id]=n.share;baseAlloc[n.id]=0;if(t==='out'){setIncluded(n,false);n.last='Left out by Avi · just now';logChange(n.id,'left this new plan out of the goal');}else{n.tier=t;placeInTier(n,t,null);logChange(n.id,'added this new plan to '+tierOf(t).name);}selectedPlan=n.id;showToast(t==='out'?'Preview: '+n.title+' left out. It stays available under “Not in this goal”.':'Preview: '+n.title+' added to '+tierOf(t).name+'.');}
+  else if(a==='share')getPlan(id).share=Number(v.dataset.share);
+  else if(a==='seats')seats=Math.max(2,Math.min(10,seats+Number(v.dataset.d)));
+  else if(a==='cap-reset'){plans.forEach(function(p){if(p.id in appliedShare)p.share=appliedShare[p.id];});seats=appliedSeats;showToast('Preview: back to the current allocation.');}
+  else if(a==='cap-apply'){const r=capResult();plans.forEach(function(p){if(p.share!==appliedShare[p.id])logChange(p.id,'set its share of effort to '+SHARES[p.share]);appliedShare[p.id]=p.share;if(p.included&&!p.blocker)p.agents=r.alloc[p.id]||0;});appliedSeats=seats;baseAlloc=Object.assign({},r.alloc);showToast('Preview: applied. The steward rebalances at its next pass, in about 4 min.');}
+  else if(a==='d-move'){selectedPlan=id;draftMove(id,Number(v.dataset.d));restoreFocus='#draft-list';}
+  else if(a==='d-toggle'){selectedPlan=id;draftToggle(id);restoreFocus='#draft-list';}
+  else if(a==='d-discard'){draft=null;showToast('Preview: draft discarded.');}
+  else if(a==='insp-tab')inspTab=v.dataset.tab;
+  render();
+}
+function render(){
+  document.getElementById('concept-title').textContent=concepts[concept].title;
+  document.getElementById('concept-description').textContent=concepts[concept].description;
+  document.getElementById('concept-tag').textContent=concepts[concept].tag;
+  const changes=concepts[concept].changes;document.getElementById('concept-changes').hidden=!changes;document.getElementById('concept-change-list').innerHTML=changes?changes.map(function(c){return '<li>'+c+'</li>';}).join(''):'';
+  document.querySelectorAll('[data-concept]').forEach(function(b){const active=b.dataset.concept===concept;b.setAttribute('aria-selected',String(active));b.tabIndex=active?0:-1;});
+  document.getElementById('concept-view').setAttribute('aria-labelledby','tab-'+concept);
+  const view=viewOf(concept);
+  document.querySelectorAll('[data-view]').forEach(function(b){if(b.closest('.subnav')){b.classList.toggle('active',b.dataset.view===view);if(b.dataset.view===view)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');}});
+  document.getElementById('review-count').textContent=reviewResolved?'1':'2';
+  const renderers={overview:overviewHTML,worklist:worklistHTML,review:reviewHTML,'worklist-tiers':tiersHTML,'worklist-capacity':capacityHTML,'worklist-draft':draftHTML};
+  document.getElementById('content').innerHTML=renderers[concept]();
+  if(concept==='worklist')document.getElementById('worklist-filter').value=filter;
+  if(restoreFocus){const el=document.querySelector(restoreFocus);restoreFocus=null;if(el)el.focus({preventScroll:true});}
+}
+function setConcept(next){if(!concepts[next])return;concept=next;render();if(location.hash!=='#'+next)history.replaceState(null,'','#'+next);}
+function showToast(message){const t=document.getElementById('toast');t.textContent=message;t.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(function(){t.hidden=true;},4000);}
+function openPlan(id){selectedPlan=id;const p=getPlan(id);document.getElementById('plan-dialog-title').textContent=p.title;document.getElementById('plan-dialog-body').innerHTML='<span class="pill '+p.tone+'">'+p.status+'</span><p style="margin-top:16px">'+p.focus+'</p><div class="detail-label">Next step</div><p>'+p.next+'</p><div class="detail-label">Verified progress</div><p>'+p.done+' of '+p.total+' tasks have completion evidence.</p>'+stepBars(p)+'<div class="detail-label">Why this priority</div><p>'+p.reason+'</p><div class="explainer">This is illustrative plan detail, with sample status and evidence.</div>';document.getElementById('plan-dialog').showModal();}
+function resolveReview(include){reviewResolved=true;const mobile=getPlan('mobile');mobile.included=include;mobile.status=include?'Ready':'Excluded';mobile.last=include?'Included by Avi':'Excluded by Avi';mobile.reason=include?'Avi included this plan in the goal’s scope.':'An explicit scope choice; no agent is allocated by this goal.';render();showToast(include?'Preview: mobile added to the worklist.':'Preview: mobile stays on hold; decision recorded.');}
+document.addEventListener('click',function(e){
+  const conceptButton=e.target.closest('[data-concept]');if(conceptButton){setConcept(conceptButton.dataset.concept);return;}
+  const viewButton=e.target.closest('[data-view]');if(viewButton){if(viewButton.dataset.select)selectedPlan=viewButton.dataset.select;setConcept(viewButton.dataset.view==='worklist'&&viewOf(concept)==='worklist'?concept:viewButton.dataset.view);return;}
+  const open=e.target.closest('[data-dialog]');if(open){document.getElementById(open.dataset.dialog).showModal();return;}
+  const close=e.target.closest('[data-close]');if(close){close.closest('dialog').close();return;}
+  const planButton=e.target.closest('[data-plan]');if(planButton){openPlan(planButton.dataset.plan);return;}
+  const select=e.target.closest('[data-select]');if(select){selectedPlan=select.dataset.select;render();return;}
+  const move=e.target.closest('[data-move]');if(move){const i=plans.findIndex(function(p){return p.id===move.dataset.move;}),j=i+Number(move.dataset.direction);if(j>=0&&j<plans.length){const p=plans.splice(i,1)[0];plans.splice(j,0,p);render();showToast('Preview: priority updated.');}return;}
+  const question=e.target.closest('[data-question]');if(question){answerQuestion(question.dataset.question);return;}
+  if(e.target.closest('#accept-review'))resolveReview(false);
+  if(e.target.closest('#include-mobile'))resolveReview(true);
+  if(e.target.closest('#undo-review')){reviewResolved=false;render();showToast('Preview decision reopened.');}
+  if(e.target.closest('#preview-account-setup'))openAccountSetup();
+});
+function openAccountSetup(){credentialAcknowledged=true;document.getElementById('plan-dialog-title').textContent='Secure API account setup';document.getElementById('plan-dialog-body').innerHTML='<p>In the product, this opens the existing Accounts setup flow.</p><ol class="small dim"><li>Connect a valid, funded provider account using the secure credential store.</li><li>Register the API account in the inference pool.</li><li>Run a live request and verify usage is recorded.</li></ol><div class="explainer">Mockup only. Do not enter credentials in this gallery.</div>';selectedPlan='api';document.getElementById('plan-dialog').showModal();render();}
+/* Worklist iteration events: buttons carry data-v; rows carry data-vrow. */
+document.addEventListener('click',function(e){
+  const v=e.target.closest('[data-v]');if(v){if(!v.disabled)handleV(v);return;}
+  const row=e.target.closest('[data-vrow]');
+  if(row&&!e.target.closest('button,select,input,a,label')){selectedPlan=row.dataset.vrow;if(concept==='worklist-draft')restoreFocus='#draft-list';render();}
+});
+document.addEventListener('change',function(e){if(e.target.matches('[data-tier-move]')&&e.target.value)moveToTier(e.target.dataset.tierMove,e.target.value,null);});
+function clearDrop(){document.querySelectorAll('.drop-target,.drop-before').forEach(function(el){el.classList.remove('drop-target','drop-before');});}
+document.addEventListener('dragstart',function(e){const r=e.target.closest&&e.target.closest('[data-vrow][draggable=true]');if(!r||concept!=='worklist-tiers')return;dragId=r.dataset.vrow;e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',dragId);requestAnimationFrame(function(){r.classList.add('dragging');});});
+document.addEventListener('dragover',function(e){if(!dragId)return;const zone=e.target.closest('[data-drop-tier]');if(!zone)return;e.preventDefault();e.dataTransfer.dropEffect='move';const row=e.target.closest('.t-row');clearDrop();zone.classList.add('drop-target');if(row&&row.dataset.vrow!==dragId)row.classList.add('drop-before');});
+document.addEventListener('drop',function(e){if(!dragId)return;const zone=e.target.closest('[data-drop-tier]');if(!zone)return;e.preventDefault();const row=e.target.closest('.t-row'),id=dragId;dragId=null;clearDrop();moveToTier(id,zone.dataset.dropTier,row&&row.dataset.vrow!==id?row.dataset.vrow:null);});
+document.addEventListener('dragend',function(){dragId=null;clearDrop();document.querySelectorAll('.dragging').forEach(function(el){el.classList.remove('dragging');});});
+document.addEventListener('keydown',function(e){
+  const t=e.target;if(!t||!t.classList)return;
+  if(concept==='worklist-tiers'&&t.classList.contains('t-row')){
+    if(e.altKey&&(e.key==='ArrowUp'||e.key==='ArrowDown')){e.preventDefault();const id=t.dataset.vrow;reorderInTier(id,e.key==='ArrowUp'?-1:1);selectedPlan=id;restoreFocus='.t-row[data-vrow="'+id+'"]';render();return;}
+    if(e.key==='Enter'||e.key===' '){e.preventDefault();selectedPlan=t.dataset.vrow;restoreFocus='.t-row[data-vrow="'+selectedPlan+'"]';render();return;}
+  }
+  if(concept==='worklist-draft'&&t.id==='draft-list')draftKey(e);
+});
+document.addEventListener('change',function(e){if(e.target.matches('[data-include]')){const p=getPlan(e.target.dataset.include);p.included=e.target.checked;if(p.id==='mobile'){p.status=p.included?'Ready':'Excluded';p.last=p.included?'Included by Avi':'Excluded by Avi';p.reason=p.included?'Avi included this plan in the goal’s scope.':'An explicit scope choice; no agent is allocated by this goal.';}render();showToast('Preview: '+p.title+(p.included?' included.':' excluded.'));}if(e.target.id==='worklist-filter'){filter=e.target.value;render();}});
+document.addEventListener('input',function(e){if(e.target.id==='worklist-search'){query=e.target.value;const position=e.target.selectionStart;render();const input=document.getElementById('worklist-search');input.focus();input.setSelectionRange(position,position);}});
+document.getElementById('pause-toggle').addEventListener('click',function(){paused=!paused;document.getElementById('goal-status').className='pill '+(paused?'warn':'good');document.getElementById('goal-status').innerHTML='<i class="dot"></i>'+(paused?'Paused':'Running');this.innerHTML=icon(paused?'play':'pause')+'<span>'+(paused?'Resume goal':'Pause goal')+'</span>';document.getElementById('pause-notice').hidden=!paused;document.getElementById('footer-status').textContent=paused?'Goal paused · no new work allocated':'Steward checking plan coverage · next pass in 4 min';document.getElementById('footer-dot').style.color=paused?'var(--amber)':'var(--green)';render();showToast(paused?'Preview: goal paused.':'Preview: goal resumed.');});
+document.getElementById('theme-toggle').addEventListener('click',function(){const light=document.documentElement.dataset.theme!=='light';document.documentElement.dataset.theme=light?'light':'dark';document.getElementById('theme-label').textContent=light?'Dark':'Light';this.setAttribute('aria-label',light?'Switch to dark theme':'Switch to light theme');});
+document.getElementById('settings-form').addEventListener('submit',function(e){e.preventDefault();budget=Number(document.getElementById('weekly-budget').value);document.getElementById('settings-dialog').close();render();showToast('Preview: rolling 7-day budget updated to $'+budget+'.');});
+document.getElementById('plan-to-worklist').addEventListener('click',function(){document.getElementById('plan-dialog').close();setConcept(viewOf(concept)==='worklist'?concept:'worklist');});
+function answerQuestion(question){const log=document.getElementById('chat-log');const user=document.createElement('div');user.className='chat-response';const label=document.createElement('strong');label.textContent='Avi · preview';user.append(label,document.createTextNode(question));log.appendChild(user);const response=document.createElement('div');response.className='chat-response';const heading=document.createElement('strong');heading.textContent='Steward · sample reply';response.appendChild(heading);const lower=question.toLowerCase();const reply=lower.includes('block')?'API account verification is waiting for a funded provider key. Search and desktop work can proceed; I am keeping their next steps separate from that blocker.':lower.includes('chang')?'Search acceptance passed and the account connection journey was verified. The review desk links each outcome to its evidence.':lower.includes('priority')?'Cloud setup comes first because it prevents new users from reaching a useful workspace. Search is a shared dependency; desktop and help tasks use independent capacity.':'I would check this against the selected plans, their latest verified progress, and your scope policy. In the product, this conversation stays attached to the ongoing-work goal.';response.appendChild(document.createTextNode(reply));log.appendChild(response);log.scrollTop=log.scrollHeight;}
+document.getElementById('chat-form').addEventListener('submit',function(e){e.preventDefault();const input=document.getElementById('chat-input');const question=input.value.trim();if(question)answerQuestion(question);input.value='';});
+document.querySelector('.tabs').addEventListener('keydown',function(e){if(!['ArrowRight','ArrowLeft','Home','End'].includes(e.key))return;e.preventDefault();const buttons=Array.from(document.querySelectorAll('[data-concept]'));const current=buttons.indexOf(e.target.closest('[data-concept]'));const next=e.key==='Home'?0:e.key==='End'?buttons.length-1:(current+(e.key==='ArrowRight'?1:-1)+buttons.length)%buttons.length;setConcept(buttons[next].dataset.concept);buttons[next].focus();});
+document.querySelectorAll('dialog').forEach(function(d){d.addEventListener('click',function(e){if(e.target===d){const b=d.getBoundingClientRect();if(e.clientX<b.left||e.clientX>b.right||e.clientY<b.top||e.clientY>b.bottom)d.close();}});});
+window.addEventListener('hashchange',function(){setConcept(location.hash.slice(1));});
+setConcept(concepts[location.hash.slice(1)]?location.hash.slice(1):'overview');
+</script>
+</body>
+</html>

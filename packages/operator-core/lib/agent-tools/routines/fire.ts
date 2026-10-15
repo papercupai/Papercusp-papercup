@@ -11,7 +11,7 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
-import { enqueueRoutineFire, type RoutineFireRow } from '../../dbos/routines-workflow';
+import type { RoutineFireRow } from '../../dbos/routines-workflow';
 
 const argsSchema = z
   .object({
@@ -80,6 +80,9 @@ export default defineTool({
     }
 
     if (args.reason != null) ctx.metadata?.({ fireReason: args.reason });
+    // Registration needs only the tool schema. Load worker queues and system
+    // actions when a live routine is actually dispatched, after row lookup.
+    const { enqueueRoutineFire } = await import('../../dbos/routines-workflow');
     const result = await enqueueRoutineFire(routine);
     const nextStep =
       result.status === 'unavailable'

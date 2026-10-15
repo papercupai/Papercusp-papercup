@@ -81,8 +81,11 @@ import {
   type SessionConfigDirSource,
 } from './session-config-dir';
 
-/** The psu-owned MCP server. `playwright` is deliberately NOT restored (P-020 prunes it). */
-export const PSU_MCP_SERVER = 'papercusp-su';
+import { PSU_MCP_SERVER } from './papercusp-mcp-servers';
+
+/** The psu-owned MCP server. `playwright` is deliberately NOT restored (P-020 prunes it).
+ *  Defined once in `papercusp-mcp-servers` so the transcript canonicalizer shares it. */
+export { PSU_MCP_SERVER };
 
 /** The recorded CLI that materialized a session. Unknown/legacy rows are nullable. */
 export type SessionConfigClient = 'claude' | 'codex' | 'omp' | string | null | undefined;

@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Exact hosted candidate Billing guide destination journey",
+  "framework": "playwright",
+  "command": ["playwright", "test", "--config=playwright.config.ts", "e2e/portal-product-tutorial-served.spec.ts", "--grep=the real Billing destination", "--output=/tmp/tutorial-billing-served-pass-idMm08g-20261008-results", "--reporter=json"],
+  "exitCode": 0,
+  "startedAt": "2026-10-08T01:30:11.648Z",
+  "finishedAt": "2026-10-08T01:30:19.242Z",
+  "summary": "Retained real HTTPS candidate journey passed one Playwright test with zero skips, failures or flakes. The actual Billing page retained guide Help and persisted pause/reload/resume. Actual subscription and plans reads agreed with displayed test-mode state and charge ownership. This registers the completed run without rerunning it. It does not establish production shipment, full-catalogue acceptance, voice acceptance or an immutable complete linked dependency graph.",
+  "assertions": [
+    {"id": "exact-served-artifact", "passed": true, "evidence": "Initial and final served HTML pinned raw buildId -idMm08gUv9jKKSwFBajK; immutable release metadata resolved idMm08gUv9jKKSwFBajK-20261008012306584-3724750-3ca1dc7f with sourceRootDigest e09491ed09564577fe6e7235696fa5cf753334c9dc2ae224e8b0e81142306499."},
+    {"id": "verified-account-first-billing-entry", "passed": true, "evidence": "Real WorkOS TEST verified account with workspace null entered Welcome before the guide's Billing lesson and actual Billing destination."},
+    {"id": "billing-read-and-test-mode-parity", "passed": true, "evidence": "Actual plans GET and subscription GET returned 200. configured=true, livemode=false, planCount=2, canManage=true, subscription status=null. The real page displayed Test mode."},
+    {"id": "billing-charge-ownership-help", "passed": true, "evidence": "Contextual Help explained that the Papercusp subscription is separate from provider usage and BYOC resources."},
+    {"id": "billing-persisted-pause-reload-resume", "passed": true, "evidence": "Actual Billing destination retained contextual Help and Resume product guide. Reload preserved the paused guide; resume returned focus to Understand the bills."},
+    {"id": "billing-write-boundary", "passed": true, "evidence": "The captured writes were four tutorial-progress POST requests, each 200. No billing writes occurred."}
+  ],
+  "playwrightStats": {"startTime": "2026-10-08T01:30:09.559Z", "duration": 10515.408000000001, "expected": 1, "skipped": 0, "unexpected": 0, "flaky": 0},
+  "safeAttachments": {
+    "served-billing-guide-evidence": {
+      "release": {"schemaVersion": 2, "buildId": "-idMm08gUv9jKKSwFBajK", "release": "idMm08gUv9jKKSwFBajK-20261008012306584-3724750-3ca1dc7f", "sourceRoot": "$PORTAL_SOURCE_ROOT", "publishedAt": "2026-10-08T01:23:06.584Z", "sourceRootDigest": "e09491ed09564577fe6e7235696fa5cf753334c9dc2ae224e8b0e81142306499"},
+      "journeyStartedAt": "2026-10-08T01:30:11.648Z",
+      "journeyFinishedAt": "2026-10-08T01:30:19.242Z",
+      "hostedAdmission": "WorkOS TEST verified account, workspace null",
+      "destination": "real Billing page",
+      "writes": [
+        {"path": "/api/hosted/browser/onboarding/tutorial-progress", "method": "POST", "status": 200},
+        {"path": "/api/hosted/browser/onboarding/tutorial-progress", "method": "POST", "status": 200},
+        {"path": "/api/hosted/browser/onboarding/tutorial-progress", "method": "POST", "status": 200},
+        {"path": "/api/hosted/browser/onboarding/tutorial-progress", "method": "POST", "status": 200}
+      ],
+      "billingReadParity": {"plansStatus": 200, "subscriptionStatus": 200, "configured": true, "livemode": false, "planCount": 2, "canManage": true, "subscriptionStatusValue": null, "chargeOwnership": "Papercusp subscription is separate from provider usage and BYOC resources"}
+    }
+  },
+  "provenance": {
+    "sourceReport": "/tmp/tutorial-billing-served-pass-idMm08g-20261008.json",
+    "sourceReportSha256": "67e6ce184f71de7ab3895e8b5ae1e3aebdd4fbd56b6ffdb75d807b86ce974412",
+    "sourceTestPath": "e2e/portal-product-tutorial-served.spec.ts",
+    "originalTestCount": 1,
+    "derivedAssertionCount": 6,
+    "evidencePlane": "candidate-hosted",
+    "commandRepresentation": "Canonical Playwright arguments reconstructed from the retained report's config, selected test and output directory; environment credentials excluded."
+  }
+}

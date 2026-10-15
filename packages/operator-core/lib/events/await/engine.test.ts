@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AwaitRow, DeliveryWork, WakeOutcome } from './types';
 import type { ProducerHealthCertificate, VerifiedWaitTimeoutResult } from './verified-wait';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 
 type SettleVerifiedAwaitTimeoutInput = {
   id: number;
@@ -65,17 +66,18 @@ const h = vi.hoisted(() => ({
   sendMessage: vi.fn(async () => ({ msg_id: 'm-1' })),
   fetchPresenceFleet: vi.fn(async () => new Map<string, { fleetSlug: string; fleetRole: string }>()),
   admitSpawn: vi.fn(async (): Promise<{ admitted: boolean }> => ({ admitted: true })),
+  admitWakeFanout: vi.fn(async (): Promise<number> => 0),
   // WI-4014 Part 2: standing event-key inject subscribers folded into the notify path.
   listEventKeySubscribers: vi.fn(async (): Promise<Array<{ subscriber_id: string; delivery_mode: string }>> => []),
-  // EI-18673058981655804: the coord-deafness read-watermark the redundant-inbox-wake
-  // suppression check consults. Empty by default (no read on record) — the same
-  // fail-open default as the real fail-soft path, so existing tests that don't care
-  // about this never suppress anything.
+  // Legacy read cursor used only for message-less inbox notifications. Empty by
+  // default, so existing tests that don't care about it never suppress anything.
   lastInboxReadAtBatch: vi.fn(async (_ownerIds: string[]): Promise<Map<string, string>> => new Map()),
   // EI-18676763837940562: the reply-linkage leg's batched lookup — no replies on
   // record by default, matching the fail-open default (never suppresses anything
   // existing tests don't explicitly set up).
   repliedMsgIdsBatch: vi.fn(async (_subscriberId: string, _msgIds: readonly string[]): Promise<Set<string>> => new Set()),
+  getSettledInboxMessageIds: vi.fn(async (_msgIds: readonly string[], _workspaceId?: string): Promise<Set<string>> => new Set()),
+  readWatermark: vi.fn(async (_ownerId: string) => ({ messages_shown_ts: '' })),
   // P-024 clauses B/C: the actionability gate's envelope read. Unresolved (null) by
   // default, which the gate reads as "keep the turn" — existing tests never suppress.
   getLineEnvelopeById: vi.fn(async (_surface: string, _msgId: string): Promise<Record<string, unknown> | null> => null),
@@ -94,18 +96,28 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('./store', () => h.store);
+vi.mock('../../agent-tools/coordination/wake-fanout-pacing', async (orig) => ({
+  ...(await orig<typeof import('../../agent-tools/coordination/wake-fanout-pacing')>()),
+  admitWakeFanout: h.admitWakeFanout,
+}));
 vi.mock('./wake-executor', () => ({ executeWake: h.executeWake, degradeToInboxOrDrop: h.degradeToInboxOrDrop }));
 vi.mock('../../agent-tools/coordination/messages', () => ({ sendMessage: h.sendMessage, repliedMsgIdsBatch: h.repliedMsgIdsBatch }));
+vi.mock('../../attention/bulk-run-store', () => ({
+  getSettledInboxMessageIds: h.getSettledInboxMessageIds,
+}));
 vi.mock('../../agent-tools/coordination/presence-fleet', () => ({ fetchPresenceFleet: h.fetchPresenceFleet }));
 vi.mock('../../agent-tools/coordination/event-subscriptions', () => ({
   listEventKeySubscribers: h.listEventKeySubscribers,
   eventKeySubscriberScope: () => ({ workspaceId: 'default', targetKind: 'event' }),
 }));
-vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test', backgroundWorkspaceIds: () => ['ws-test'] }));
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: {} }) }));
 vi.mock('../../fleet/governor', () => ({ admitSpawn: h.admitSpawn }));
 vi.mock('../../agent-tools/coordination/inbox-read-freshness', () => ({
   lastInboxReadAtBatch: h.lastInboxReadAtBatch,
+}));
+vi.mock('../../agent-tools/coordination/watermarks', () => ({
+  readWatermark: h.readWatermark,
 }));
 vi.mock('../../agent-tools/coordination/line-event-by-id', () => ({
   getLineEnvelopeById: h.getLineEnvelopeById,
@@ -130,9 +142,11 @@ const {
   cancelSupersededCandidateAwaits,
   isInboxWakeGroupRedundant,
   setAutoPumpEnabledForTests,
+  sweepAllWorkspaces,
   sweepOnce,
   wakeClaimableAwaitersForSubscribers,
 } = await import('./engine');
+const { setPumpHealthTrackerForTests } = await import('./pump-health');
 
 function awaitRow(over: Partial<AwaitRow> = {}): AwaitRow {
   return {
@@ -182,6 +196,9 @@ function workRow(over: Partial<DeliveryWork> = {}): DeliveryWork {
     source: null,
     wakeHandle: { kind: 'adv-session', advSessionId: 1, agent: 'claude', sessionId: 's', ompThreadId: null, cwd: '/r', pid: 1 },
     note: null,
+    turnProof: null,
+    turnStartedAt: null,
+    pickupDeadlineAt: null,
     ...over,
   };
 }
@@ -193,6 +210,7 @@ beforeEach(() => {
   h.store.settleVerifiedAwaitTimeout.mockResolvedValue(null);
   h.store.fireTimedOutAwaits.mockResolvedValue([]);
   h.store.claimDueDeliveries.mockResolvedValue([]);
+  h.admitWakeFanout.mockResolvedValue(0);
   h.store.settleCancelledAwaitDeliveries.mockResolvedValue([]);
   h.compose.claimDueComposedRoots.mockResolvedValue([]);
   predicateTimeoutHook.getPredicateTimeoutContext.mockResolvedValue(null);
@@ -927,6 +945,30 @@ describe('emitAwaitedEvent — WI-4014 Part 2: standing event-key inject subscri
 });
 
 describe('pumpWakeDeliveries — pacing (D-007)', () => {
+  it('an overdue bulk queue after restart cannot bypass execution admission; a directed wake stays immediate', async () => {
+    process.env.PAPERCUSP_AWAIT_MAX_RESUMES_PER_TICK = '250';
+    const bulk = Array.from({ length: 200 }, (_, i) => workRow({ id: 10_000 + i, subscriberId: `bulk-${i}`, source: 'resume-fleet',
+      payload: { __papercuspWakeFanout: { workspaceId: 'ws-test', notBeforeMs: 1 } } }));
+    const directed = workRow({ id: 12_000, subscriberId: 'owner-directed', urgent: true });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([...bulk, directed]);
+    let tokens = 5;
+    h.admitWakeFanout.mockImplementation(async () => tokens-- > 0 ? 0 : 6_000);
+    const stats = await pumpWakeDeliveries('ws-test');
+    expect(h.executeWake).toHaveBeenCalledTimes(6);
+    expect(h.executeWake).toHaveBeenCalledWith(expect.objectContaining({ subscriberId: 'owner-directed' }), expect.anything());
+    expect(stats.deferred).toBe(195);
+    expect(h.store.markDeliveryDeferred).toHaveBeenCalledTimes(195);
+  });
+
+  it('a loop or unpaced directed wake coalesced with a deferred bulk wake bypasses its execution bucket', async () => {
+    const paced = workRow({ id: 13_000, subscriberId: 'loop-owner', payload: { __papercuspWakeFanout: { workspaceId: 'ws-test', notBeforeMs: 1 } } });
+    const loop = workRow({ id: 13_001, subscriberId: 'loop-owner', source: 'loop:rt-test' });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([paced, loop]);
+    await pumpWakeDeliveries('ws-test');
+    expect(h.admitWakeFanout).not.toHaveBeenCalled();
+    expect(h.executeWake).toHaveBeenCalledTimes(1);
+  });
+
   it('settles claimed deliveries for any cancelled await before grouping or execution', async () => {
     const cancelled = workRow({
       id: 120,
@@ -1377,6 +1419,106 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
     expect(stats.parked).toBe(0);
   });
 
+  it.each([
+    ['cold', 'park'], ['cold', 'error'], ['warm', 'park'], ['warm', 'error'],
+  ] as const)('EI-25947345466684593: exhausted %s loop %s is a visible drop, never an inbox success', async (carry, kind) => {
+    h.executeWake.mockResolvedValueOnce(kind === 'park'
+      ? { kind, reason: 'alive, no injectable turn' }
+      : { kind, error: 'turn dispatch failed' });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([workRow({
+      id: 81,
+      attempts: 8,
+      source: 'loop:rt-loop-cap',
+      payload: { carry, wakeCount: 165, harness: 'papercusp', routineId: 'rt-loop-cap' },
+    })]);
+
+    const stats = await pumpWakeDeliveries('ws-test');
+
+    expect(h.executeWake).toHaveBeenCalledOnce();
+    expect(h.degradeToInboxOrDrop).not.toHaveBeenCalled();
+    expect(h.store.markDeliveryDelivered).not.toHaveBeenCalled();
+    expect(h.store.markDeliveryFailed).not.toHaveBeenCalled();
+    expect(h.store.markDeliveryParked).not.toHaveBeenCalled();
+    expect(h.store.markDeliveryDropped).toHaveBeenCalledWith(81, expect.stringContaining('loop turn'));
+    expect(stats).toMatchObject({ claimed: 1, dropped: 1, delivered: 0, inbox: 0, parked: 0 });
+  });
+
+  it.each(['park', 'error'] as const)(
+    'EI-25947345466684593: an older coalesced loop marker prevents exhausted %s inbox fallback',
+    async (kind) => {
+      h.executeWake.mockResolvedValueOnce(kind === 'park'
+        ? { kind, reason: 'no injectable turn' }
+        : { kind, error: 'turn dispatch failed' });
+      h.store.claimDueDeliveries.mockResolvedValueOnce([
+        workRow({ id: 82, createdAt: new Date(1000).toISOString(),
+          payload: { wakeCount: 165, harness: 'papercusp', routineId: 'rt-loop-cap' } }),
+        workRow({ id: 83, attempts: 9, createdAt: new Date(2000).toISOString(), payload: { msg_id: 'm-newer' } }),
+      ]);
+
+      const stats = await pumpWakeDeliveries('ws-test');
+
+      expect(h.executeWake).toHaveBeenCalledOnce();
+      expect(h.degradeToInboxOrDrop).not.toHaveBeenCalled();
+      expect(h.store.markDeliveryDelivered).not.toHaveBeenCalled();
+      expect(h.store.markDeliveriesCoalesced).not.toHaveBeenCalled();
+      expect(h.store.markDeliveryDropped).toHaveBeenCalledWith(82, expect.stringContaining('loop turn'));
+      expect(h.store.markDeliveryDropped).toHaveBeenCalledWith(83, expect.stringContaining('loop turn'));
+      expect(stats).toMatchObject({ claimed: 2, dropped: 2, delivered: 0, inbox: 0, parked: 0 });
+    },
+  );
+
+  it.each(['ordinary', 'cold', 'warm'] as const)(
+    'keeps an accepted pending %s psu-host delivery parked at the retry cap until late host settlement',
+    async (carry) => {
+    const pendingReason =
+      'psu-host pending-delivery-id: delivery accepted before turn-start proof; retry remains durable';
+    const pendingDelivery: Partial<DeliveryWork> = {
+      id: 17,
+      subscriberId: 'su-pending-host-cap',
+      lastError: pendingReason,
+      ...(carry === 'ordinary' ? {} : {
+        source: 'loop:rt-loop-pending-host',
+        payload: { carry, wakeCount: 165, harness: 'papercusp', routineId: 'rt-loop-pending-host' },
+      }),
+    };
+    h.executeWake
+      .mockResolvedValueOnce({ kind: 'park', reason: pendingReason, hostCommitPending: true })
+      .mockResolvedValueOnce({ kind: 'park', reason: pendingReason, hostCommitPending: true })
+      .mockResolvedValueOnce({ kind: 'delivered', channel: 'psu-socket-inject' });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({ ...pendingDelivery, attempts: 1 }),
+    ]);
+
+    const first = await pumpWakeDeliveries('ws-test');
+
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({ ...pendingDelivery, attempts: 8 }),
+    ]);
+    const pending = await pumpWakeDeliveries('ws-test');
+
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({ ...pendingDelivery, attempts: 9 }),
+    ]);
+    const settled = await pumpWakeDeliveries('ws-test');
+
+    // The host pipeline settles after the attempt-cap boundary. The next retry
+    // observes its duplicate-delivery-id terminal receipt and books the original
+    // delivery as a host injection, with no preceding inbox fallback.
+    expect(h.sendMessage).not.toHaveBeenCalled();
+    expect(h.degradeToInboxOrDrop).not.toHaveBeenCalled();
+    expect(h.store.markDeliveryParked).toHaveBeenCalledWith(17, pendingReason, 45_000);
+    expect(h.store.markDeliveryDelivered).not.toHaveBeenCalledWith(17, 'inbox', 1);
+    expect(first.parked).toBe(1);
+    expect(first.inbox).toBe(0);
+    expect(pending.parked).toBe(1);
+    expect(pending.inbox).toBe(0);
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(17, 'psu-socket-inject', 1);
+    expect(h.degradeToInboxOrDrop).not.toHaveBeenCalled();
+    expect(settled.delivered).toBe(1);
+    expect(settled.inbox).toBe(0);
+    },
+  );
+
   it('settles a park-exhausted wake as dropped when the inbox fallback fails', async () => {
     h.degradeToInboxOrDrop.mockResolvedValueOnce({
       kind: 'drop',
@@ -1470,6 +1612,28 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
 });
 
 describe('isInboxWakeGroupRedundant (EI-18673058981655804: redundant-inbox-wake suppression, pure core)', () => {
+  it.each(['cold', 'warm'] as const)(
+    'EI-25300396323844627: an inbox read never discharges a %s loop marker',
+    (carry) => {
+      expect(
+        isInboxWakeGroupRedundant(
+          [{
+            eventKey: 'coord:inbox-wake:su-a',
+            createdAt: new Date(1000).toISOString(),
+            urgent: false,
+            payload: {
+              ...(carry === 'cold' ? { carry } : {}),
+              wakeCount: 3,
+              harness: 'papercusp',
+              routineId: 'rt-loop-a',
+            },
+          }],
+          new Date(5000).toISOString(),
+        ),
+      ).toBe(false);
+    },
+  );
+
   const inboxKey = 'coord:inbox-wake:su-a';
 
   it('true: a non-urgent inbox-wake delivery created at/before the last read', () => {
@@ -1614,7 +1778,43 @@ describe('isInboxWakeGroupRedundant (EI-18673058981655804: redundant-inbox-wake 
 });
 
 describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake suppression', () => {
-  it('suppresses a single inbox-wake delivery already covered by the subscriber\'s last read — no turn spent', async () => {
+  it.each(['cold', 'warm'] as const)(
+    'EI-25300396323844627: delivers a %s loop wake after a newer inbox read',
+    async (carry) => {
+      const previousReadAt = h.lastInboxReadAtBatch.getMockImplementation();
+      h.lastInboxReadAtBatch.mockImplementation(async () => new Map([['su-a', new Date(5000).toISOString()]]));
+      try {
+        h.store.claimDueDeliveries.mockResolvedValueOnce([
+          workRow({
+            id: 474103,
+            subscriberId: 'su-a',
+            eventKey: 'coord:inbox-wake:su-a',
+            createdAt: new Date(1000).toISOString(),
+            source: 'loop:rt-loop-a',
+            payload: {
+              ...(carry === 'cold' ? { carry } : {}),
+              wakeCount: 3,
+              harness: 'papercusp',
+              routineId: 'rt-loop-a',
+            },
+          }),
+        ]);
+
+        const stats = await pumpWakeDeliveries('ws-test');
+
+        expect(h.executeWake).toHaveBeenCalledTimes(1);
+        expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(474103, 'resume', 1);
+        expect(h.store.markDeliveryDelivered).not.toHaveBeenCalledWith(474103, 'suppressed-redundant', 1);
+        expect(stats.suppressed).toBe(0);
+        expect(stats.delivered).toBe(1);
+      } finally {
+        if (previousReadAt) h.lastInboxReadAtBatch.mockImplementation(previousReadAt);
+        else h.lastInboxReadAtBatch.mockReset();
+      }
+    },
+  );
+
+  it('suppresses a message-less inbox notification already covered by the subscriber\'s last read — no turn spent', async () => {
     h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map([['su-a', new Date(5000).toISOString()]]));
     h.store.claimDueDeliveries.mockResolvedValueOnce([
       workRow({
@@ -1630,6 +1830,188 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
     expect(stats.delivered).toBe(0);
     expect(stats.suppressed).toBe(1);
     expect(stats.deferred).toBe(0);
+    // WI-6554700010009285: only an inbox-FOLDING read may retire a wake. A lifecycle
+    // activity:report (a relaunched CLI's "▶ session started") reads no mail.
+    expect(h.lastInboxReadAtBatch).toHaveBeenCalledWith(['su-a'], { foldedOnly: true });
+  });
+
+  it('WI-6554700010009881: delivers a work-item dispatch wake even when a newer inbox read covers it', async () => {
+    // Incident shape: plan run 1345 dispatched WI-6554700010009869 to a parked executor;
+    // the relaunched CLI's hook read at 05:59:58Z retired the wake as "already covered by
+    // its own coord:inbox read", and the item sat open. An inbox read never shows a
+    // work-item assignment, so the read cursor must not retire this wake.
+    const previousReadAt = h.lastInboxReadAtBatch.getMockImplementation();
+    h.lastInboxReadAtBatch.mockImplementation(async () => new Map([['su-a', new Date(5000).toISOString()]]));
+    try {
+      h.store.claimDueDeliveries.mockResolvedValueOnce([
+        workRow({
+          id: 734675,
+          subscriberId: 'su-a',
+          eventKey: 'coord:inbox-wake:su-a',
+          createdAt: new Date(1000).toISOString(),
+          source: 'system:plan-run-direct-dispatch',
+          payload: { kind: 'actionable-work-item-dispatch', workItemIds: ['WI-6554700010009869'] },
+        }),
+      ]);
+
+      const stats = await pumpWakeDeliveries('ws-test');
+
+      expect(h.executeWake).toHaveBeenCalledTimes(1);
+      expect(h.store.markDeliveryDelivered).not.toHaveBeenCalledWith(734675, 'suppressed-redundant', 1);
+      expect(stats.suppressed).toBe(0);
+      expect(stats.delivered).toBe(1);
+    } finally {
+      if (previousReadAt) h.lastInboxReadAtBatch.mockImplementation(previousReadAt);
+      else h.lastInboxReadAtBatch.mockReset();
+    }
+  });
+
+  it('retries a psu-host-accepted wake after the inbox read advances, so the pending host text can refresh', async () => {
+    const createdAt = new Date(5000).toISOString();
+    const acceptedReason = 'psu-host accepted: delivery accepted before turn-start proof; retry remains durable';
+    const pendingEnvelope = {
+      msg_id: 'm-pending',
+      ts: createdAt,
+      from: 'su-b',
+      kind: 'message',
+      expects: 'answer',
+    };
+    h.readWatermark.mockResolvedValueOnce({ messages_shown_ts: new Date(1000).toISOString() });
+    h.getLineEnvelopeById.mockResolvedValueOnce(pendingEnvelope);
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({
+        id: 44,
+        subscriberId: 'su-a',
+        eventKey: 'coord:inbox-wake:su-a',
+        payload: { msg_id: 'm-pending' },
+        createdAt,
+      }),
+    ]);
+    h.executeWake.mockResolvedValueOnce({ kind: 'park', reason: acceptedReason });
+    await pumpWakeDeliveries('ws-test');
+
+    // The first host ACK only says its gated delivery pipeline was queued. A later
+    // inbox read must not make the await engine settle this unanswered ask.
+    h.readWatermark.mockResolvedValueOnce({ messages_shown_ts: new Date(6000).toISOString() });
+    h.getLineEnvelopeById.mockResolvedValueOnce(pendingEnvelope);
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({
+        id: 44,
+        subscriberId: 'su-a',
+        eventKey: 'coord:inbox-wake:su-a',
+        payload: { msg_id: 'm-pending' },
+        createdAt,
+        attempts: 2,
+        lastError: acceptedReason,
+      }),
+    ]);
+    h.executeWake.mockResolvedValueOnce({ kind: 'delivered', channel: 'psu-socket-inject' });
+
+    const stats = await pumpWakeDeliveries('ws-test');
+
+    expect(h.executeWake).toHaveBeenCalledTimes(2);
+    expect(h.readWatermark).toHaveBeenCalledTimes(2);
+    expect(h.lastInboxReadAtBatch).not.toHaveBeenCalled();
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(44, 'psu-socket-inject', 1);
+    expect(h.store.markDeliveryDelivered).not.toHaveBeenCalledWith(44, 'suppressed-redundant', 1);
+    expect(stats.suppressed).toBe(0);
+  });
+
+  it('requests cancellation only for an exact shown non-actionable msg_id group and settles on the host receipt', async () => {
+    const acceptedReason = 'psu-host accepted: delivery accepted before turn-start proof; retry remains durable';
+    h.readWatermark.mockResolvedValueOnce({ messages_shown_ts: new Date(6000).toISOString() });
+    h.getLineEnvelopeById.mockResolvedValueOnce({
+      msg_id: 'm-fyi',
+      ts: new Date(5000).toISOString(),
+      from: 'su-b',
+      kind: 'message',
+      expects: 'none',
+    });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({
+        id: 51,
+        subscriberId: 'su-a',
+        eventKey: 'coord:inbox-wake:su-a',
+        payload: { msg_id: 'm-fyi' },
+        lastError: acceptedReason,
+      }),
+    ]);
+    h.executeWake.mockResolvedValueOnce({ kind: 'delivered', channel: 'suppressed-redundant' });
+
+    const stats = await pumpWakeDeliveries('ws-test');
+    const wake = h.executeWake.mock.calls[0][0] as DeliveryWork;
+
+    expect(h.readWatermark).toHaveBeenCalledWith('su-a');
+    expect(wake.hostCancellation).toEqual({ deliveryIds: ['51'], handledMsgIds: ['m-fyi'] });
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(51, 'suppressed-redundant', 1);
+    expect(stats.suppressed).toBe(1);
+  });
+
+  it('keeps an accepted wake pending until the host confirms cancellation before the first byte', async () => {
+    const acceptedReason = 'psu-host accepted: delivery accepted before turn-start proof; retry remains durable';
+    h.readWatermark.mockResolvedValueOnce({ messages_shown_ts: new Date(6000).toISOString() });
+    h.getLineEnvelopeById.mockResolvedValueOnce({
+      msg_id: 'm-fyi',
+      ts: new Date(5000).toISOString(),
+      from: 'su-b',
+      kind: 'message',
+      expects: 'none',
+    });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({
+        id: 52,
+        subscriberId: 'su-a',
+        eventKey: 'coord:inbox-wake:su-a',
+        payload: { msg_id: 'm-fyi' },
+        lastError: acceptedReason,
+      }),
+    ]);
+    h.executeWake.mockResolvedValueOnce({
+      kind: 'park',
+      reason: 'psu-host accepted the cancellation request; waiting for its exact pre-write receipt',
+      hostCommitPending: true,
+    });
+
+    const stats = await pumpWakeDeliveries('ws-test');
+
+    expect(h.executeWake.mock.calls[0][0]).toMatchObject({
+      hostCancellation: { deliveryIds: ['52'], handledMsgIds: ['m-fyi'] },
+    });
+    expect(h.store.markDeliveryDelivered).not.toHaveBeenCalled();
+    expect(h.store.markDeliveryParked).toHaveBeenCalledWith(52, expect.any(String), expect.any(Number));
+    expect(stats.parked).toBe(1);
+  });
+
+  it('carries every nested coalesced msg_id into the host cancellation request', async () => {
+    const acceptedReason = 'psu-host pending-delivery-id: prior accepted delivery is still gated';
+    h.readWatermark.mockResolvedValueOnce({ messages_shown_ts: new Date(9000).toISOString() });
+    const envelopes = new Map([
+      ['m-a', { msg_id: 'm-a', ts: new Date(5000).toISOString(), kind: 'message', expects: 'none' }],
+      ['m-b', { msg_id: 'm-b', ts: new Date(7000).toISOString(), kind: 'message', expects: 'none' }],
+    ]);
+    h.getLineEnvelopeById.mockImplementation(async (_surface: string, msgId: string) => envelopes.get(msgId) ?? null);
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({
+        id: 53,
+        subscriberId: 'su-a',
+        eventKey: 'coord:inbox-wake:su-a',
+        payload: {
+          coalesced: true,
+          events: [
+            { event: 'coord:inbox-wake:su-a', urgent: false, payload: { msg_id: 'm-a' } },
+            { event: 'coord:inbox-wake:su-a', urgent: false, payload: { msg_id: 'm-b' } },
+          ],
+        },
+        lastError: acceptedReason,
+      }),
+    ]);
+    h.executeWake.mockResolvedValueOnce({ kind: 'delivered', channel: 'suppressed-redundant' });
+
+    await pumpWakeDeliveries('ws-test');
+
+    expect(h.executeWake.mock.calls[0][0]).toMatchObject({
+      hostCancellation: { deliveryIds: ['53'], handledMsgIds: ['m-a', 'm-b'] },
+    });
   });
 
   it('does NOT suppress when the inbox-wake message postdates the last read (genuinely new mail)', async () => {
@@ -1682,7 +2064,6 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
   });
 
   it('does NOT suppress an urgent inbox-wake delivery even when covered', async () => {
-    h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map([['su-a', new Date(5000).toISOString()]]));
     h.store.claimDueDeliveries.mockResolvedValueOnce([
       workRow({
         id: 34,
@@ -1754,8 +2135,13 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
 
   describe('EI-18676763837940562: reply-linkage leg wired end-to-end through the pump', () => {
     it('suppresses a delivery whose msg_id was already replied to, even with NO read on record', async () => {
-      h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map()); // no read-cursor coverage at all
       h.repliedMsgIdsBatch.mockResolvedValueOnce(new Set(['m-orig']));
+      h.getLineEnvelopeById.mockResolvedValueOnce({
+        msg_id: 'm-orig',
+        ts: new Date(5000).toISOString(),
+        kind: 'message',
+        expects: 'answer',
+      });
       h.store.claimDueDeliveries.mockResolvedValueOnce([
         workRow({
           id: 40,
@@ -1773,7 +2159,6 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
     });
 
     it('does NOT query repliedMsgIdsBatch at all when no delivery in the group carries a payload.msg_id', async () => {
-      h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map());
       h.store.claimDueDeliveries.mockResolvedValueOnce([
         workRow({
           id: 41,
@@ -1789,8 +2174,13 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
     });
 
     it('a msg_id present but NOT yet replied to still fires normally (no false suppression)', async () => {
-      h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map());
       h.repliedMsgIdsBatch.mockResolvedValueOnce(new Set()); // nothing replied
+      h.getLineEnvelopeById.mockResolvedValueOnce({
+        msg_id: 'm-orig',
+        ts: new Date(5000).toISOString(),
+        kind: 'message',
+        expects: 'answer',
+      });
       h.store.claimDueDeliveries.mockResolvedValueOnce([
         workRow({
           id: 42,
@@ -1802,11 +2192,61 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
       ]);
       const stats = await pumpWakeDeliveries('ws-test');
       expect(h.executeWake).toHaveBeenCalledTimes(1);
+      expect(h.getSettledInboxMessageIds).not.toHaveBeenCalled();
+      expect(stats.suppressed).toBe(0);
+    });
+
+    it('suppresses an exact thread reply already accounted for by a settled Inbox resolver run', async () => {
+      h.getLineEnvelopeById.mockResolvedValueOnce({
+        msg_id: 'm-reviewed-reply',
+        ts: new Date(5000).toISOString(),
+        kind: 'message',
+        expects: 'none',
+        related_msg_id: 'm-resolver-ask',
+      });
+      h.getSettledInboxMessageIds.mockResolvedValueOnce(new Set(['m-reviewed-reply']));
+      h.store.claimDueDeliveries.mockResolvedValueOnce([
+        workRow({
+          id: 44,
+          subscriberId: 'su-a',
+          eventKey: 'coord:inbox-wake:su-a',
+          createdAt: new Date(5000).toISOString(),
+          payload: { msg_id: 'm-reviewed-reply' },
+        }),
+      ]);
+
+      const stats = await pumpWakeDeliveries('ws-test');
+      expect(h.getSettledInboxMessageIds).toHaveBeenCalledWith(['m-reviewed-reply'], 'ws-test');
+      expect(h.executeWake).not.toHaveBeenCalled();
+      expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(44, 'suppressed-redundant', 1);
+      expect(stats.suppressed).toBe(1);
+    });
+
+    it('fails open when the settled Inbox-run receipt lookup errors', async () => {
+      h.getLineEnvelopeById.mockResolvedValueOnce({
+        msg_id: 'm-reviewed-reply',
+        ts: new Date(5000).toISOString(),
+        kind: 'message',
+        expects: 'none',
+        related_msg_id: 'm-resolver-ask',
+      });
+      h.getSettledInboxMessageIds.mockRejectedValueOnce(new Error('pg down'));
+      h.store.claimDueDeliveries.mockResolvedValueOnce([
+        workRow({
+          id: 45,
+          subscriberId: 'su-a',
+          eventKey: 'coord:inbox-wake:su-a',
+          createdAt: new Date(5000).toISOString(),
+          payload: { msg_id: 'm-reviewed-reply' },
+        }),
+      ]);
+
+      const stats = await pumpWakeDeliveries('ws-test');
+      expect(h.executeWake).toHaveBeenCalledTimes(1);
       expect(stats.suppressed).toBe(0);
     });
 
     it('a repliedMsgIdsBatch failure fails OPEN — the delivery still fires, never crashes the pump', async () => {
-      h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map());
       h.repliedMsgIdsBatch.mockRejectedValueOnce(new Error('pg down'));
       h.store.claimDueDeliveries.mockResolvedValueOnce([
         workRow({
@@ -1882,6 +2322,15 @@ describe('pumpWakeDeliveries — P-024: a wake with nothing to act on costs no t
     'm-ack': { msg_id: 'm-ack', from: 'su-b', to: ['su-a'], kind: 'ack', related_msg_id: 'm-0' },
     'm-ask': { msg_id: 'm-ask', from: 'su-b', to: ['su-a'], kind: 'message', expects: 'action' },
     'm-owner': { msg_id: 'm-owner', from: 'pc-admin-coord-ui', to: ['su-a'], kind: 'message', expects: 'none' },
+    'm-shown-fyi': {
+      msg_id: 'm-shown-fyi', from: 'su-b', to: ['su-a'], kind: 'message', expects: 'none', ts: new Date(8000).toISOString(),
+    },
+    'm-shown-ask': {
+      msg_id: 'm-shown-ask', from: 'su-b', to: ['su-a'], kind: 'message', expects: 'answer', ts: new Date(8000).toISOString(),
+    },
+    'm-shown-reply': {
+      msg_id: 'm-shown-reply', from: 'su-b', to: ['su-a'], kind: 'message', related_msg_id: 'm-parent', ts: new Date(8000).toISOString(),
+    },
   };
   const inboxDelivery = (id: number, msgId: string): DeliveryWork =>
     workRow({
@@ -1920,6 +2369,44 @@ describe('pumpWakeDeliveries — P-024: a wake with nothing to act on costs no t
     expect(stats.delivered).toBe(1);
   });
 
+  it('a read watermark does not discharge an unanswered expects:answer message', async () => {
+    h.readWatermark.mockResolvedValueOnce({ messages_shown_ts: new Date(10000).toISOString() });
+    h.repliedMsgIdsBatch.mockResolvedValueOnce(new Set());
+    h.store.claimDueDeliveries.mockResolvedValueOnce([inboxDelivery(47, 'm-shown-ask')]);
+
+    const stats = await pumpWakeDeliveries('ws-test');
+
+    expect(h.lastInboxReadAtBatch).not.toHaveBeenCalled();
+    expect(h.executeWake).toHaveBeenCalledTimes(1);
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(47, 'resume', 1);
+    expect(stats.suppressed).toBe(0);
+  });
+
+  it('a read watermark does not discharge an unanswered thread reply', async () => {
+    h.readWatermark.mockResolvedValueOnce({ messages_shown_ts: new Date(10000).toISOString() });
+    h.repliedMsgIdsBatch.mockResolvedValueOnce(new Set());
+    h.store.claimDueDeliveries.mockResolvedValueOnce([inboxDelivery(48, 'm-shown-reply')]);
+
+    const stats = await pumpWakeDeliveries('ws-test');
+
+    expect(h.lastInboxReadAtBatch).not.toHaveBeenCalled();
+    expect(h.executeWake).toHaveBeenCalledTimes(1);
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(48, 'resume', 1);
+    expect(stats.suppressed).toBe(0);
+  });
+
+  it('a shown non-actionable FYI still settles after its exact message timestamp is covered', async () => {
+    h.readWatermark.mockResolvedValueOnce({ messages_shown_ts: new Date(10000).toISOString() });
+    h.repliedMsgIdsBatch.mockResolvedValueOnce(new Set());
+    h.store.claimDueDeliveries.mockResolvedValueOnce([inboxDelivery(49, 'm-shown-fyi')]);
+
+    const stats = await pumpWakeDeliveries('ws-test');
+
+    expect(h.executeWake).not.toHaveBeenCalled();
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(49, 'suppressed-redundant', 1);
+    expect(stats.suppressed).toBe(1);
+  });
+
   it('RSR-P-024-C: an owner directive that looks like an FYI starts a turn', async () => {
     h.store.claimDueDeliveries.mockResolvedValueOnce([inboxDelivery(44, 'm-owner')]);
     const stats = await pumpWakeDeliveries('ws-test');
@@ -1944,5 +2431,61 @@ describe('pumpWakeDeliveries — P-024: a wake with nothing to act on costs no t
     await pumpWakeDeliveries('ws-test');
     expect(h.getLineEnvelopeById).not.toHaveBeenCalled();
     expect(h.executeWake).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('WI-10008194 — every pump / sweep run reports its outcome to pump health', () => {
+  const tracker = { recordFailure: vi.fn(), recordSuccess: vi.fn(), streaks: () => [] };
+  let previous: ReturnType<typeof setPumpHealthTrackerForTests>;
+  const OUTAGE = new Error('column "turn_proof" of relation "event_wake_deliveries" does not exist');
+
+  beforeEach(() => {
+    tracker.recordFailure.mockReset();
+    tracker.recordSuccess.mockReset();
+    previous = setPumpHealthTrackerForTests(tracker);
+  });
+  afterEach(() => {
+    setPumpHealthTrackerForTests(previous);
+  });
+
+  it('a throwing pump records a pump FAILURE and still rethrows to the kick site', async () => {
+    h.store.claimDueDeliveries.mockRejectedValueOnce(OUTAGE);
+    await expect(pumpWakeDeliveries('ws-test')).rejects.toThrow(OUTAGE.message);
+    expect(tracker.recordFailure).toHaveBeenCalledWith('ws-test', 'pump', OUTAGE);
+    expect(tracker.recordSuccess).not.toHaveBeenCalledWith('ws-test', 'pump');
+  });
+
+  it('a completed pump (even an empty one) records a pump SUCCESS', async () => {
+    await pumpWakeDeliveries('ws-test');
+    expect(tracker.recordSuccess).toHaveBeenCalledWith('ws-test', 'pump');
+    expect(tracker.recordFailure).not.toHaveBeenCalled();
+  });
+
+  it('pumps parked coordination retries under the shared workspace context', async () => {
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({ workspaceId: DEFAULT_COORD_WORKSPACE, attempts: 1 }),
+    ]);
+    await sweepAllWorkspaces();
+    expect(h.admitSpawn).toHaveBeenCalledWith(expect.anything(), {
+      workspaceId: DEFAULT_COORD_WORKSPACE,
+      role: 'await-wake',
+    });
+    expect(tracker.recordSuccess).toHaveBeenCalledWith(DEFAULT_COORD_WORKSPACE, 'pump');
+    expect(h.executeWake).toHaveBeenCalledTimes(1);
+  });
+
+  it('the production sweeper records a sweep FAILURE without throwing, and a sweep SUCCESS when it completes', async () => {
+    h.store.compactSupersededLoopDeliveries.mockRejectedValueOnce(OUTAGE);
+    await expect(sweepAllWorkspaces()).resolves.toBeUndefined();
+    expect(tracker.recordFailure).toHaveBeenCalledWith(DEFAULT_COORD_WORKSPACE, 'sweep', OUTAGE);
+    expect(tracker.recordSuccess).toHaveBeenCalledWith('ws-test', 'sweep');
+
+    tracker.recordFailure.mockReset();
+    await sweepAllWorkspaces();
+    expect(tracker.recordSuccess).toHaveBeenCalledWith(DEFAULT_COORD_WORKSPACE, 'sweep');
+    expect(tracker.recordSuccess).toHaveBeenCalledWith(DEFAULT_COORD_WORKSPACE, 'pump');
+    expect(tracker.recordSuccess).toHaveBeenCalledWith('ws-test', 'sweep');
+    expect(tracker.recordSuccess).toHaveBeenCalledWith('ws-test', 'pump');
+    expect(tracker.recordFailure).not.toHaveBeenCalledWith('ws-test', 'sweep', expect.anything());
   });
 });

@@ -78,6 +78,204 @@ beforeEach(() => {
   };
 });
 
+describe('output-only original reading', () => {
+  async function fixture(run: (mod: typeof import('./voice-mode'), audio: Array<{ currentTime: number; playbackRate: number; play: ReturnType<typeof vi.fn>; pause: ReturnType<typeof vi.fn>; onended: (() => void) | null }>, setFetch: (impl: () => Promise<Response>) => void) => Promise<void>) {
+    const mod = await import('./voice-mode');
+    const prefs = await import('./voice-prefs-client');
+    const leader = await import('./voice-leader');
+    const leaderSpy = vi.spyOn(leader, 'getVoiceLeaderState').mockReturnValue({ ...leader.getVoiceLeaderState(), available: true, isLeader: true });
+    const previous = prefs.loadVoicePrefsClient();
+    const configBefore = mod.getVoiceConfig();
+    prefs.setVoicePrefsClient({ ...previous, ttsEngine: 'kokoro' });
+    mod.stopReading(); mod.setVoiceOutputMuted(false);
+    const audios: Array<{ currentTime: number; playbackRate: number; play: ReturnType<typeof vi.fn>; pause: ReturnType<typeof vi.fn>; onended: (() => void) | null }> = [];
+    const originalFetch = globalThis.fetch;
+    const originalAudio = globalThis.Audio;
+    const create = URL.createObjectURL; const revoke = URL.revokeObjectURL;
+    globalThis.Audio = class {
+      currentTime = 0; playbackRate = 1; onended = null; onerror = null;
+      play = vi.fn(async () => {}); pause = vi.fn();
+      constructor() { audios.push(this); }
+    } as unknown as typeof Audio;
+    URL.createObjectURL = vi.fn(() => 'blob:reading'); URL.revokeObjectURL = vi.fn();
+    const records = [
+      { ok: true, type: 'chunk', text: 'FIRST', start: 0, end: 5, audioBase64: 'AQ==', contentType: 'audio/wav' },
+      { ok: true, type: 'chunk', text: 'TAIL', start: 5, end: 9, audioBase64: 'Ag==', contentType: 'audio/wav' },
+      { ok: true, type: 'completed', chunks: 2 },
+    ];
+    globalThis.fetch = vi.fn(async () => new Response(records.map(record => JSON.stringify(record)).join('\n') + '\n'));
+    try { await run(mod, audios, impl => { globalThis.fetch = vi.fn(impl); }); }
+    finally { mod.stopReading(); mod.updateVoiceConfig(configBefore); leaderSpy.mockRestore(); prefs.setVoicePrefsClient(previous); globalThis.fetch = originalFetch; globalThis.Audio = originalAudio; URL.createObjectURL = create; URL.revokeObjectURL = revoke; }
+  }
+
+  it('pauses/resumes the same audio position, then plays the tail once with voice mode off', async () => {
+    await fixture(async (mod, audio) => {
+      const before = mod.getVoiceState().mode;
+      mod.updateVoiceConfig({ rate: 1.35 });
+      const started = mod.startReading('FIRSTTAIL');
+      await vi.waitFor(() => expect(audio).toHaveLength(1));
+      expect(audio[0].playbackRate).toBe(1.35);
+      audio[0].currentTime = 3;
+      mod.controlReading(started.readingId!, 'pause');
+      expect(mod.getReadingState().status).toBe('paused');
+      expect(audio[0].pause).toHaveBeenCalledTimes(1);
+      expect(audio).toHaveLength(1);
+      // Subscription cleanup can run when React disconnects a hidden bridge.
+      mod.cancelAllSpeech({ preserveReading: true });
+      expect(mod.getReadingState().status).toBe('paused');
+      expect(audio[0].pause).toHaveBeenCalledTimes(1);
+      mod.controlReading(started.readingId!, 'resume');
+      expect(audio[0].currentTime).toBe(3);
+      expect(audio[0].play).toHaveBeenCalledTimes(2);
+      audio[0].onended!();
+      await vi.waitFor(() => expect(audio).toHaveLength(2));
+      expect(mod.getReadingState().position).toBe(5);
+      audio[1].onended!();
+      await vi.waitFor(() => expect(mod.getReadingState().status).toBe('completed'));
+      expect(mod.getReadingState().position).toBe(9);
+      expect(mod.getVoiceState().mode).toBe(before);
+    });
+  });
+
+  it('keeps narration output-only without asking for a microphone', async () => {
+    const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    const getUserMedia = vi.fn(async () => ({ getTracks: () => [] }));
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { mediaDevices: { getUserMedia } } });
+    try {
+      await fixture(async (mod, audio) => {
+        const mode = mod.getVoiceState().mode;
+        const started = mod.startReading('FIRSTTAIL');
+        await vi.waitFor(() => expect(audio).toHaveLength(1));
+        mod.controlReading(started.readingId!, 'pause');
+        mod.controlReading(started.readingId!, 'resume');
+        mod.controlReading(started.readingId!, 'stop');
+        expect(getUserMedia).not.toHaveBeenCalled();
+        expect(mod.getVoiceState().mode).toBe(mode);
+      });
+    } finally {
+      if (originalNavigator) Object.defineProperty(globalThis, 'navigator', originalNavigator);
+      else Reflect.deleteProperty(globalThis, 'navigator');
+    }
+  });
+
+  it('stop discards subsequent audio and stale controls cannot stop a newer reading', async () => {
+    await fixture(async (mod, audio) => {
+      const first = mod.startReading('FIRSTTAIL');
+      await vi.waitFor(() => expect(audio).toHaveLength(1));
+      mod.controlReading(first.readingId!, 'stop');
+      await Promise.resolve();
+      expect(mod.getReadingState().status).toBe('stopped');
+      expect(audio).toHaveLength(1);
+      const second = mod.startReading('FIRSTTAIL');
+      expect(() => mod.controlReading(first.readingId!, 'stop')).toThrow('no longer active');
+      expect(mod.getReadingState().readingId).toBe(second.readingId);
+    });
+  });
+
+  it('keeps a paused provider response silent and starts its audio exactly once on resume', async () => {
+    await fixture(async (mod, audio, setFetch) => {
+      let stream!: ReadableStreamDefaultController<Uint8Array>;
+      setFetch(async () => new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } })));
+      const started = mod.startReading('FIRSTTAIL');
+      await new Promise(done => setTimeout(done, 0));
+      mod.controlReading(started.readingId!, 'pause');
+      stream.enqueue(new TextEncoder().encode(JSON.stringify({ ok: true, type: 'chunk', text: 'FIRST', start: 0, end: 5, audioBase64: 'AQ==', contentType: 'audio/wav' }) + '\n'));
+      await vi.waitFor(() => expect(audio).toHaveLength(1));
+      expect(audio[0].play).not.toHaveBeenCalled();
+      expect(mod.getReadingState().status).toBe('paused');
+      mod.controlReading(started.readingId!, 'resume');
+      await vi.waitFor(() => expect(audio[0].onended).toBeTypeOf('function'));
+      expect(audio[0].play).toHaveBeenCalledTimes(1);
+      expect(mod.getReadingState().position).toBe(0);
+    });
+  });
+
+  it('ignores a delayed resume playback failure from a replaced reading', async () => {
+    await fixture(async (mod, audio) => {
+      const first = mod.startReading('FIRSTTAIL');
+      await vi.waitFor(() => expect(audio).toHaveLength(1));
+      let reject!: (error: Error) => void;
+      audio[0].play.mockImplementationOnce(() => new Promise<void>((_, fail) => { reject = fail; }));
+      mod.controlReading(first.readingId!, 'pause');
+      mod.controlReading(first.readingId!, 'resume');
+      mod.stopReading();
+      const second = mod.startReading('FIRSTTAIL');
+      await vi.waitFor(() => expect(audio).toHaveLength(2));
+      reject(new Error('Obsolete output failed'));
+      await new Promise(done => setTimeout(done, 0));
+      expect(mod.getReadingState()).toMatchObject({ readingId: second.readingId, status: 'playing', position: 0 });
+      expect(audio[1].pause).not.toHaveBeenCalled();
+    });
+  });
+
+  it('reports a truncated stream after its played prefix without marking the source completed', async () => {
+    await fixture(async (mod, audio, setFetch) => {
+      setFetch(async () => new Response(JSON.stringify({ ok: true, type: 'chunk', text: 'FIRST', start: 0, end: 5, audioBase64: 'AQ==', contentType: 'audio/wav' }) + '\n'));
+      mod.startReading('FIRSTTAIL');
+      await vi.waitFor(() => expect(audio).toHaveLength(1));
+      audio[0].onended!();
+      await vi.waitFor(() => expect(mod.getReadingState().status).toBe('error'));
+      expect(mod.getReadingState()).toMatchObject({ position: 5, total: 9, error: 'Reading ended before the source was complete.' });
+      expect(audio).toHaveLength(1);
+    });
+  });
+
+  it('stops a pending provider response before late audio can become audible', async () => {
+    await fixture(async (mod, audio, setFetch) => {
+      let resolve!: (response: Response) => void;
+      setFetch(() => new Promise<Response>(done => { resolve = done; }));
+      mod.startReading('FIRSTTAIL');
+      mod.stopReading();
+      resolve(new Response(JSON.stringify({ ok: true, type: 'chunk', text: 'FIRST', start: 0, end: 5, audioBase64: 'AQ==', contentType: 'audio/wav' }) + '\n'));
+      await new Promise(done => setTimeout(done, 0));
+      expect(audio).toHaveLength(0);
+      expect(mod.getReadingState().status).toBe('stopped');
+    });
+  });
+
+  it('global speech cancellation aborts a pending reading and rejects its late provider response', async () => {
+    await fixture(async (mod, audio, setFetch) => {
+      let resolve!: (response: Response) => void;
+      setFetch(() => new Promise<Response>(done => { resolve = done; }));
+      const started = mod.startReading('FIRSTTAIL');
+      const request = vi.mocked(globalThis.fetch).mock.calls[0]!;
+      const signal = request[1]!.signal as AbortSignal;
+      mod.cancelAllSpeech();
+      expect(signal.aborted).toBe(true);
+      expect(mod.getReadingState()).toMatchObject({ readingId: started.readingId, status: 'stopped', position: 0 });
+      resolve(new Response(JSON.stringify({ ok: true, type: 'chunk', text: 'FIRST', start: 0, end: 5, audioBase64: 'AQ==', contentType: 'audio/wav' }) + '\n'));
+      await new Promise(done => setTimeout(done, 0));
+      expect(audio).toHaveLength(0);
+      expect(mod.getReadingState()).toMatchObject({ status: 'stopped', position: 0 });
+    });
+  });
+
+  it('global speech cancellation pauses current reading audio and prevents its queued tail', async () => {
+    await fixture(async (mod, audio) => {
+      mod.startReading('FIRSTTAIL');
+      await vi.waitFor(() => expect(audio).toHaveLength(1));
+      const finishFirst = audio[0].onended!;
+      mod.cancelAllSpeech();
+      expect(audio[0].pause).toHaveBeenCalled();
+      finishFirst();
+      await new Promise(done => setTimeout(done, 0));
+      expect(audio).toHaveLength(1);
+      expect(mod.getReadingState()).toMatchObject({ status: 'stopped', position: 0, total: 9 });
+    });
+  });
+
+  it('output mute stops an active reading and rejects a new reading', async () => {
+    await fixture(async (mod, audio) => {
+      mod.startReading('FIRSTTAIL');
+      await vi.waitFor(() => expect(audio).toHaveLength(1));
+      mod.setVoiceOutputMuted(true);
+      expect(mod.getReadingState().status).toBe('stopped');
+      expect(() => mod.startReading('FIRSTTAIL')).toThrow('muted');
+      mod.setVoiceOutputMuted(false);
+    });
+  });
+});
+
 describe('voice-mode', () => {
   it('initializes with off state', async () => {
     const mod = await import('./voice-mode');
@@ -171,8 +369,12 @@ describe('voice-mode', () => {
     const origCreate = g.URL?.createObjectURL;
     const origRevoke = g.URL?.revokeObjectURL;
     try {
-      // synthViaAdapter uses fetch → blob → URL.createObjectURL → new Audio().play().
-      const fetchSpy = vi.fn(async (..._args: unknown[]) => ({ ok: true, blob: async () => ({}) }) as any);
+      // synthViaAdapter fetches JSON audio, decodes it to a Blob, then plays it.
+      const fetchSpy = vi.fn(async (..._args: unknown[]) => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, engine: 'kokoro', contentType: 'audio/wav', audioBase64: 'eA==' }),
+      }) as any);
       g.fetch = fetchSpy;
       // Augment the real URL (adding statics) — never REPLACE it, or `new URL()`
       // elsewhere in this file breaks with "URL is not a constructor".
@@ -195,9 +397,149 @@ describe('voice-mode', () => {
       // Regression: the FIRST utterance must NOT use the silent WebKitGTK Web Speech path…
       expect(g.window.speechSynthesis.speak).not.toHaveBeenCalled();
       // …and MUST synthesize through the server adapter with the selected engine.
-      const ttsCall = fetchSpy.mock.calls.find((c: any[]) => String(c[0]).includes('operator-tts-preview'));
+      const ttsCall = fetchSpy.mock.calls.find((c: any[]) => String(c[0]).endsWith('/operator-tts'));
       expect(ttsCall).toBeTruthy();
-      expect(String((ttsCall![1] as any).body)).toContain('kokoro');
+      expect(JSON.parse(String((ttsCall![1] as any).body))).toMatchObject({ engine: 'kokoro', text: 'the harness is green' });
+    } finally {
+      g.fetch = origFetch;
+      g.Audio = origAudio;
+      if (origCreate) g.URL.createObjectURL = origCreate; else delete g.URL.createObjectURL;
+      if (origRevoke) g.URL.revokeObjectURL = origRevoke; else delete g.URL.revokeObjectURL;
+    }
+  });
+
+  it('WI-10006826: a TTS engine chosen after an earlier utterance (prefs hydrate / settings change) applies to the very next reply', async () => {
+    vi.resetModules();
+    const g = globalThis as any;
+    const origFetch = g.fetch;
+    const origAudio = g.Audio;
+    const origCreate = g.URL?.createObjectURL;
+    const origRevoke = g.URL?.revokeObjectURL;
+    try {
+      const fetchSpy = vi.fn(async (..._args: unknown[]) => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, engine: 'kokoro', contentType: 'audio/wav', audioBase64: 'eA==' }),
+      }) as any);
+      g.fetch = fetchSpy;
+      g.URL.createObjectURL = () => 'blob:x';
+      g.URL.revokeObjectURL = () => {};
+      g.Audio = class {
+        onended: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        src = '';
+        constructor(u: string) { this.src = u; }
+        play() { this.onended?.(); return Promise.resolve(); }
+        pause() {}
+      };
+      const mod = await import('./voice-mode');
+      const prefs = await import('./voice-prefs-client');
+      mod.initVoiceMode();
+      const ttsBodies = () => fetchSpy.mock.calls
+        .filter((c: any[]) => String(c[0]).endsWith('/operator-tts'))
+        .map((c: any[]) => JSON.parse(String((c[1] as any).body)) as { engine: string; text: string });
+      const settle = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0)); };
+      // Before the prefs sync hydrates, the default engine is used.
+      mod.speak('first reply', 'system:operator', 'polite', { force: true });
+      await settle();
+      expect(ttsBodies().map((b) => b.engine)).toEqual(['kokoro']);
+      // The sync bridge (or a Settings change) now delivers the user's choice.
+      prefs.setVoicePrefsClient({ ...prefs.loadVoicePrefsClient(), ttsEngine: 'elevenlabs' });
+      mod.speak('second reply', 'system:operator', 'polite', { force: true });
+      await settle();
+      // Regression: a 30s engine cache kept 'kokoro' here.
+      expect(ttsBodies()).toEqual([
+        expect.objectContaining({ engine: 'kokoro', text: 'first reply' }),
+        expect.objectContaining({ engine: 'elevenlabs', text: 'second reply' }),
+      ]);
+    } finally {
+      g.fetch = origFetch;
+      g.Audio = origAudio;
+      if (origCreate) g.URL.createObjectURL = origCreate; else delete g.URL.createObjectURL;
+      if (origRevoke) g.URL.revokeObjectURL = origRevoke; else delete g.URL.revokeObjectURL;
+    }
+  });
+
+  it('sends long adapter replies to bounded synthesis chunks in order, including the final tail', async () => {
+    vi.resetModules();
+    const g = globalThis as any;
+    const origFetch = g.fetch;
+    const origAudio = g.Audio;
+    const origCreate = g.URL?.createObjectURL;
+    const origRevoke = g.URL?.revokeObjectURL;
+    try {
+      const fetchSpy = vi.fn(async (..._args: unknown[]) => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, engine: 'kokoro', contentType: 'audio/wav', audioBase64: 'eA==' }),
+      }) as any);
+      g.fetch = fetchSpy;
+      g.URL.createObjectURL = () => 'blob:x';
+      g.URL.revokeObjectURL = () => {};
+      g.Audio = class {
+        onended: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        src = '';
+        constructor(u: string) { this.src = u; }
+        play() { this.onended?.(); return Promise.resolve(); }
+        pause() {}
+      };
+      const mod = await import('./voice-mode');
+      mod.initVoiceMode();
+      const text = 'First sentence. '.repeat(300) + '\n\n' + 'middle words '.repeat(300) + '\n\nFINAL TAIL';
+      mod.speak(text, 'system:operator', 'polite', { force: true });
+      for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
+
+      const calls = fetchSpy.mock.calls.filter((c: any[]) => String(c[0]).endsWith('/operator-tts'));
+      const chunks = calls.map((c: any[]) => JSON.parse(String((c[1] as any).body)).text as string);
+      expect(chunks.length).toBeGreaterThan(1);
+      expect(chunks.every((chunk) => chunk.length <= 4000)).toBe(true);
+      expect(chunks.join('')).toBe(text);
+      expect(chunks[chunks.length - 1]).toContain('FINAL TAIL');
+    } finally {
+      g.fetch = origFetch;
+      g.Audio = origAudio;
+      if (origCreate) g.URL.createObjectURL = origCreate; else delete g.URL.createObjectURL;
+      if (origRevoke) g.URL.revokeObjectURL = origRevoke; else delete g.URL.revokeObjectURL;
+    }
+  });
+
+  it('canceling a long adapter reply stops the remaining synthesis chunks', async () => {
+    vi.resetModules();
+    const g = globalThis as any;
+    const origFetch = g.fetch;
+    const origAudio = g.Audio;
+    const origCreate = g.URL?.createObjectURL;
+    const origRevoke = g.URL?.revokeObjectURL;
+    try {
+      const fetchSpy = vi.fn(async (..._args: unknown[]) => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, engine: 'kokoro', contentType: 'audio/wav', audioBase64: 'eA==' }),
+      }) as any);
+      g.fetch = fetchSpy;
+      g.URL.createObjectURL = () => 'blob:x';
+      g.URL.revokeObjectURL = () => {};
+      let playCount = 0;
+      g.Audio = class {
+        onended: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        src = '';
+        constructor(u: string) { this.src = u; }
+        play() { playCount++; return new Promise<void>(() => {}); }
+        pause() {}
+      };
+      const mod = await import('./voice-mode');
+      mod.initVoiceMode();
+      mod.speak('long reply '.repeat(900), 'system:operator', 'polite', { force: true });
+      for (let i = 0; i < 20 && playCount === 0; i++) await new Promise((r) => setTimeout(r, 0));
+      expect(playCount).toBe(1);
+      mod.cancelAllSpeech();
+      for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
+
+      const calls = fetchSpy.mock.calls.filter((c: any[]) => String(c[0]).endsWith('/operator-tts'));
+      expect(calls).toHaveLength(1);
+      expect(playCount).toBe(1);
     } finally {
       g.fetch = origFetch;
       g.Audio = origAudio;
@@ -248,7 +590,11 @@ describe('WI-5174: spoken playback failures are surfaced, not swallowed', () => 
     };
     g.fetch = vi.fn(async () => {
       if (audioBehavior === 'throws') throw new Error('network down');
-      return { ok: fetchOk, status, blob: async () => ({}) } as any;
+      return {
+        ok: fetchOk,
+        status,
+        json: async () => ({ ok: true, engine: 'kokoro', contentType: 'audio/wav', audioBase64: 'eA==' }),
+      } as any;
     });
     g.URL.createObjectURL = () => 'blob:x';
     g.URL.revokeObjectURL = () => {};

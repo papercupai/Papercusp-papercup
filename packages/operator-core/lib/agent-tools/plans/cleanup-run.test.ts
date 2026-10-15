@@ -163,9 +163,66 @@ describe('plans:cleanup-manifest', () => {
       ],
     });
   });
+
+  it('applies the run confidence policy to the manifest verdict that cleanup-act enforces', async () => {
+    const policyRun = {
+      ...run,
+      automationPolicy: { mode: 'review-all', minConfidence: 'high' },
+    };
+    h.getRun.mockResolvedValue(policyRun);
+    h.recordRunHeartbeat.mockResolvedValue(policyRun);
+
+    const manifest = body(
+      await cleanupManifest.handler({ runId: run.runId, includeReported: false }, {} as never),
+    );
+    expect(manifest).toMatchObject({
+      findings: [
+        expect.objectContaining({
+          findingId: finding.findingId,
+          current: true,
+          autoApply: false,
+          autoApplyBlockedBy: 'review-all',
+        }),
+      ],
+    });
+
+    const action = body(
+      await cleanupAct.handler(
+        { runId: run.runId, findingId: finding.findingId, rationale: 'The linked work is complete.' },
+        { workspaceId: run.workspaceId } as never,
+      ),
+    );
+    expect(action).toMatchObject({
+      ok: false,
+      refused: 'confidence_policy',
+      reason: 'review-all',
+    });
+    expect(h.executeCleanupFindingAction).not.toHaveBeenCalled();
+    expect(h.dispatchCleanupFindingAction).not.toHaveBeenCalled();
+  });
 });
 
 describe('plans:cleanup-act', () => {
+  it('uses the same risk grant in the manifest and locked action for archive candidates', async () => {
+    const archive = { ...finding, findingId: 'archive-candidate:papercusp/plan-a', itemId: null, kind: 'archive-candidate', confidence: 'recommended',
+      autoApply: false, autoApplyBlockedBy: 'judgment-call' };
+    const policy = { mode: 'safe-high', level: 'L2', minConfidence: 'medium',
+      riskLevels: { low: 'automatic', medium: 'automatic', high: 'automatic' } };
+    h.getRun.mockResolvedValue({ ...run, automationPolicy: policy });
+    h.recordRunHeartbeat.mockResolvedValue({ ...run, automationPolicy: policy });
+    h.scanForCleanupFindings.mockReturnValue([archive]);
+    h.getRunFindings.mockResolvedValue([{ ...archive, outcome: 'pending' }]);
+    h.executeCleanupFindingAction.mockImplementation(async (input) => ({
+      actionResult: await input.execute({ ...stored, ...archive }),
+      finding: { ...stored, ...archive, outcome: 'auto_applied' }, run, refused: null,
+    }));
+    const manifest = body(await cleanupManifest.handler({ runId: run.runId }, {} as never));
+    expect((manifest.findings as Array<Record<string, unknown>>)[0]).toMatchObject({ risk: 'medium', autoApply: true, autoApplyBlockedBy: null });
+    const result = body(await cleanupAct.handler({ runId: run.runId, findingId: archive.findingId, rationale: 'All ledger items terminal; no active holds.' }, {} as never));
+    expect(result).toMatchObject({ ok: true, outcome: 'auto_applied', actionDispatched: true });
+    expect(h.dispatchCleanupFindingAction).toHaveBeenCalledWith(expect.objectContaining({ finding: archive }));
+  });
+
   it('re-verifies and dispatches inside the store authority callback', async () => {
     h.executeCleanupFindingAction.mockImplementation(async (input: {
       execute: (locked: typeof stored) => Promise<unknown>;

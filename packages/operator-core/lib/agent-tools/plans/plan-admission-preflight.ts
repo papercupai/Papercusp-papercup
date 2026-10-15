@@ -2,7 +2,11 @@
 import { resolveEffectiveStatusForItems, type PlanItem } from '@papercusp/plan-parser';
 import { DEFAULT_CLAIM_SPEC, validateClaimSpec, type ClaimSpec } from '../../scheduler/claim-spec';
 import type { ClaimSpecRecord } from '../../scheduler/claim-spec-store';
-import { readClaimSpecLaneHealth, type FleetLaneHealth } from '../../fleet/lane-health';
+import {
+  readClaimSpecLaneHealth,
+  readClaimSpecLaneHealthDiagnosed,
+  type FleetLaneHealth,
+} from '../../fleet/lane-health';
 import {
   ACTIVE_FEATURE_FAMILY_KINDS,
   isSettledWorkItemState,
@@ -11,6 +15,7 @@ import {
   WORK_ITEMS_MAX_LIMIT,
   type WorkItem,
 } from '../../work-items';
+import { stopTheLineExplanation } from '../../work-items-admission';
 import { getPlanRow, planItemsForRow } from './source';
 import { analyzePlanDagParallelism, type PlanDagParallelismDiagnostics } from './plan-dag-parallelism';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
@@ -21,11 +26,20 @@ export function claimableStatesForKinds(kinds: readonly string[]): string[] | un
   return kinds.some((kind) => ISSUE_KINDS.has(kind)) ? ['open'] : undefined;
 }
 
-export function buildExactPlanClaimSpec(specId: string, planSlug: string, kinds?: readonly string[]): ClaimSpec {
+export function buildExactPlanClaimSpec(
+  specId: string,
+  planSlug: string,
+  kinds?: readonly string[],
+  planItemIds?: readonly string[],
+): ClaimSpec {
   const plan = { field: 'plan' as const, op: '=' as const, value: planSlug };
-  const filter = kinds?.length
-    ? { all: [plan, { field: 'kind' as const, op: 'in' as const, value: [...kinds] }] }
-    : plan;
+  const clauses = [plan,
+    ...(planItemIds === undefined ? [] : [
+      { field: 'plan_item' as const, op: 'in' as const, value: [...new Set(planItemIds)] },
+    ]),
+    ...(kinds?.length ? [{ field: 'kind' as const, op: 'in' as const, value: [...kinds] }] : []),
+  ];
+  const filter = clauses.length > 1 ? { all: clauses } : plan;
   const states = kinds?.length ? claimableStatesForKinds(kinds) : undefined;
   return {
     specVersion: '1.0',
@@ -44,6 +58,7 @@ type RootClass = 'dependency' | 'sticky' | 'cycle' | 'dangling' | 'needs-human' 
 export type ExactPlanAdmissionReason =
   | 'ready'
   | 'plan-not-found'
+  | 'invalid-plan-item-scope'
   | 'no-actionable-plan-items'
   | 'promotion-lag'
   | 'duplicate-coverage'
@@ -89,6 +104,8 @@ export interface ExactPlanAdmission {
     holder: string;
     takenAt: string | null;
   }>;
+  /** Exact promoted coverage, including untaken rows excluded by readiness floors. */
+  actionableRows?: Array<{ planItemId: string; workItemId: string }>;
   lane: FleetLaneHealth | null;
   message: string;
 }
@@ -192,9 +209,16 @@ function zeroClaimableLaneVerdict(
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([name, count]) => `${name}=${count}`)
     .join(', ');
+  const stopTheLineBlocksEveryMatch =
+    typeof excluded.stopTheLine === 'number' &&
+    excluded.stopTheLine > 0 &&
+    excluded.stopTheLine === matchedByFilter;
+  const stopTheLineRemedy = stopTheLineBlocksEveryMatch
+    ? ` ${stopTheLineExplanation(lane.spec.harness)} Use work_items:claim to claim otherwise-ready rows by ID, then retry plans:start; plans:start accepts rows already held by this caller.`
+    : '';
   return {
     reason: 'floor-gated',
-    message: `Under ${scope}, the exact-plan lane is structurally reachable but every matched row is excluded by claim floors (${activeExclusions}).`,
+    message: `Under ${scope}, the exact-plan lane is structurally reachable but every matched row is excluded by claim floors (${activeExclusions}).${stopTheLineRemedy}`,
   };
 }
 
@@ -204,6 +228,9 @@ export function evaluateExactPlanAdmission(args: {
   planItems: PlanItem[];
   workItems: AdmissionWorkItem[];
   laneHealth: FleetLaneHealth | null;
+  /** Why the lane read produced no exact measurement (from the diagnosed reader);
+   * appended to a `lane-unknown` refusal so the cause is not lost (WI-10004851). */
+  laneHealthUnavailable?: string | null;
   sourceCapExhausted?: boolean;
   requestedSeats?: number;
   /** Allow plans:start to report success when this caller already owns every ready row. */
@@ -211,13 +238,23 @@ export function evaluateExactPlanAdmission(args: {
   allowCallerHeld?: boolean;
   /** Explicit narrowing supplied by a caller; omitted means derive from active rows. */
   claimKinds?: readonly string[];
+  /** Omitted means the whole plan; [] means ad-hoc lanes claim no plan items. */
+  planItemIds?: readonly string[];
 }): ExactPlanAdmission {
-  const resolved = resolveEffectiveStatusForItems(args.planItems);
-  const parallelism = analyzePlanDagParallelism(args.planItems);
+  const fullResolved = resolveEffectiveStatusForItems(args.planItems);
+  const scope = args.planItemIds === undefined ? null : new Set(args.planItemIds);
+  const resolved = scope ? { ...fullResolved,
+    items: fullResolved.items.filter(item => scope.has(item.id)),
+    missingRefs: fullResolved.missingRefs.filter(ref => scope.has(ref.itemId)),
+    cycleMembers: fullResolved.cycleMembers.filter(id => scope.has(id)),
+  } : fullResolved;
+  const parallelism = analyzePlanDagParallelism(args.planItems, args.planItemIds);
   const actionable = resolved.items.filter(
     (item) => item.effectiveStatus === 'todo' && item.unresolvedBlockers.length === 0 && !item.needsHuman,
   );
-  const planIds = new Set(args.planItems.map((item) => item.id));
+  const allPlanIds = new Set(args.planItems.map((item) => item.id));
+  const planIds = scope ?? allPlanIds;
+  const unknownTargets = [...(scope ?? [])].filter(id => !allPlanIds.has(id));
   const coverage = new Map<string, string[]>();
   const promotedRows = args.workItems.filter((item) => {
     const ids = provenanceIds(item).filter((id) => planIds.has(id));
@@ -345,9 +382,20 @@ export function evaluateExactPlanAdmission(args: {
     executableWidth,
     seatShortfall,
     blockingRows,
+    actionableRows: activePromotedRows.flatMap((row) =>
+      provenanceIds(row)
+        .filter((planItemId) => actionable.some((item) => item.id === planItemId))
+        .map((planItemId) => ({ planItemId, workItemId: row.id })),
+    ),
     lane: args.laneHealth,
   };
 
+  if (unknownTargets.length)
+    return finish(base, 'refused', 'invalid-plan-item-scope',
+      `Targeted plan items do not exist in '${args.planSlug}': ${unknownTargets.join(', ')}.`);
+  if (scope?.size === 0)
+    return finish(base, 'ready', 'ready',
+      'No plan items are claimed by these ad-hoc lanes; plan-item promotion and claim floors do not apply.');
   if (!actionable.length)
     return finish(
       base,
@@ -377,7 +425,13 @@ export function evaluateExactPlanAdmission(args: {
       `Actionable plan items have duplicate promoted rows: ${duplicate.map((entry) => entry.planItemId).join(', ')}.`,
     );
   if (!args.laneHealth || args.laneHealth.effective.claimable == null)
-    return finish(base, 'refused', 'lane-unknown', 'The exact-plan claim lane could not be read completely.');
+    return finish(
+      base,
+      'refused',
+      'lane-unknown',
+      'The exact-plan claim lane could not be read completely.' +
+        (args.laneHealthUnavailable ? ` ${args.laneHealthUnavailable}` : ''),
+    );
 
   const needed = new Set(
     activePromotedRows
@@ -524,6 +578,8 @@ export async function preflightExactPlanAdmission(args: {
   requestedSeats?: number;
   /** Allow plans:start to report success when this caller already holds every ready row. */
   allowCallerHeld?: boolean;
+  /** Omitted means the whole plan; [] is an explicit ad-hoc-only launch. */
+  planItemIds?: readonly string[];
 }): Promise<ExactPlanAdmission> {
   const row = await getPlanRow(args.planSlug, { workspaceId: args.workspaceId, harnessSlug: args.harnessSlug });
   if (!row) {
@@ -536,7 +592,16 @@ export async function preflightExactPlanAdmission(args: {
       assignee: args.claimant,
       allowCallerHeld: args.allowCallerHeld,
     });
-    return { ...empty, reason: 'plan-not-found', status: 'refused', message: `Plan '${args.planSlug}' was not found.` };
+    return { ...empty, ready: false, reason: 'plan-not-found', status: 'refused', message: `Plan '${args.planSlug}' was not found.` };
+  }
+  const planItems = planItemsForRow(row);
+  // No plan-item claim means no plan-row census or scheduler floor read. The
+  // separate lane materializer must admit/assign its exact work-item cohort.
+  if (args.planItemIds && (args.planItemIds.length === 0 ||
+      args.planItemIds.some(id => !planItems.some(item => item.id === id)))) {
+    return evaluateExactPlanAdmission({ planSlug: args.planSlug, planItems,
+      planItemIds: args.planItemIds, workItems: [], laneHealth: null,
+      requestedSeats: args.requestedSeats, claimKinds: args.claimKinds });
   }
   // listWorkItems derives its workspace from ALS, while the plan and lane
   // readers below accept this explicit workspaceId. Bind the same scope for
@@ -548,7 +613,6 @@ export async function preflightExactPlanAdmission(args: {
     includeChildren: true,
     limit: WORK_ITEMS_MAX_LIMIT,
   }));
-  const planItems = planItemsForRow(row);
   const sourceCapExhausted = workItems.length >= WORK_ITEMS_MAX_LIMIT;
   // These structural refusals are definitive before the scheduler lane is read.
   // The lane oracle can be comparatively slow and cannot turn an unpromoted,
@@ -558,6 +622,7 @@ export async function preflightExactPlanAdmission(args: {
   const structural = evaluateExactPlanAdmission({
     planSlug: args.planSlug,
     planItems,
+    planItemIds: args.planItemIds,
     workItems,
     laneHealth: null,
     sourceCapExhausted,
@@ -574,8 +639,9 @@ export async function preflightExactPlanAdmission(args: {
   ) return structural;
   const effectiveClaimKinds = args.claimKinds?.length
     ? [...args.claimKinds]
-    : deriveExactPlanClaimKinds(workItems);
-  const built = buildExactPlanClaimSpec(args.specId, args.planSlug, effectiveClaimKinds);
+    : deriveExactPlanClaimKinds(args.planItemIds === undefined ? workItems : workItems.filter(row =>
+      provenanceIds(row).some(id => args.planItemIds!.includes(id))));
+  const built = buildExactPlanClaimSpec(args.specId, args.planSlug, effectiveClaimKinds, args.planItemIds);
   const validation = validateClaimSpec(built);
   if (!validation.ok || !validation.spec)
     throw new Error(`invalid exact-plan claim spec: ${validation.errors.join('; ')}`);
@@ -589,7 +655,9 @@ export async function preflightExactPlanAdmission(args: {
     harnessSlug: args.harnessSlug,
     fleetSlug: args.fleetSlug ?? `exact-plan:${args.planSlug}`,
   };
-  const laneHealth = await readClaimSpecLaneHealth({
+  // Diagnosed read: same measurement as readClaimSpecLaneHealth, but a failed
+  // read keeps its cause instead of collapsing to a bare null (WI-10004851).
+  const { laneHealth, unavailable } = await readClaimSpecLaneHealthDiagnosed({
     spec,
     record,
     fleet: record.fleetSlug!,
@@ -601,8 +669,10 @@ export async function preflightExactPlanAdmission(args: {
   return evaluateExactPlanAdmission({
     planSlug: args.planSlug,
     planItems,
+    planItemIds: args.planItemIds,
     workItems,
     laneHealth,
+    laneHealthUnavailable: unavailable?.detail ?? null,
     sourceCapExhausted,
     requestedSeats: args.requestedSeats,
     assignee: args.claimant,

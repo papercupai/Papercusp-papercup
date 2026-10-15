@@ -127,6 +127,8 @@ export const DEPENDENCY_PREDICTION_TIMEOUT_MS = 30_000;
  */
 export async function predictDependencyGeneration(input: {
   integrationRoot: string;
+  /** Maintained operator tooling; foreign target repos need not contain it. */
+  toolingRoot?: string;
   ref: string;
   paths: readonly string[];
   run?: PredictionCommand;
@@ -135,7 +137,7 @@ export async function predictDependencyGeneration(input: {
 }): Promise<DependencyGenerationPrediction> {
   const now = input.nowMs ?? Date.now;
   const started = now();
-  const script = path.join(input.integrationRoot, 'apps/operator/bin/release/dependency-generation.sh');
+  const script = path.join(input.toolingRoot ?? input.integrationRoot, 'apps/operator/bin/release/dependency-generation.sh');
   const base = {
     ref: input.ref,
     paths: [...input.paths],

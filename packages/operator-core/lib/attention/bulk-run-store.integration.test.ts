@@ -40,6 +40,7 @@ const {
   createRun,
   getRun,
   getRunItems,
+  getSettledInboxMessageIds,
   getLatestRun,
   getActiveRun,
   getRunningRun,
@@ -50,6 +51,7 @@ const {
   executeBulkRunItemReversal,
   reportOutcomes,
   getPendingReviewItems,
+  getItemIdsAwaitingOwnerReview,
   markItemAccepted,
   markItemDismissed,
   settleRunPhase,
@@ -61,6 +63,7 @@ const {
   RUN_HEARTBEAT_STALE_MS,
 } = await import('./bulk-run-store');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
+const { upsertTriage, readTriageByWorkspace } = await import('./triage-store');
 
 /** A three-item snapshot shaped like what InboxPane posts. */
 function seed(prefix: string) {
@@ -160,6 +163,105 @@ describe('attention bulk-run store (real PG)', () => {
     // The ref snapshot is what makes a later re-dispatch possible at all.
     expect(items[0]!.ref).toMatchObject({ kind: 'coord-escalation', msgId: 'a-m1' });
     expect(items.every((i) => i.outcome === 'pending')).toBe(true);
+  });
+
+  it('returns only exact message refs with a reported outcome in settled Inbox runs for this workspace', async () => {
+    const resolver = 'su-bulk-resolver';
+    const reviewRun = await createRun({
+      items: [
+        { itemId: 'reply-reviewed', kind: 'coord-message', title: 'reviewed reply', ref: { kind: 'coord-message', msgId: 'm-reviewed' }, ownerAgentId: resolver },
+        { itemId: 'reply-pending', kind: 'coord-message', title: 'pending reply', ref: { kind: 'coord-message', msgId: 'm-pending' }, ownerAgentId: resolver },
+        { itemId: 'wrong-ref-kind', kind: 'coord-message', title: 'wrong ref kind', ref: { kind: 'work-item', msgId: 'm-wrong-ref' }, ownerAgentId: resolver },
+      ],
+      requestedBy: 'owner:receipt-test',
+      harnessSlug: 'papercusp',
+    });
+    await setRunPhase({ runId: reviewRun.runId, phase: 'running', resolverOwner: resolver });
+    await recordRunHeartbeat({ runId: reviewRun.runId, resolverOwner: resolver });
+    const reviewReport = await reportOutcomes({
+      runId: reviewRun.runId,
+      resolverOwner: resolver,
+      outcomes: [
+        { itemId: 'reply-reviewed', outcome: 'recommended' },
+        { itemId: 'wrong-ref-kind', outcome: 'recommended' },
+      ],
+    });
+    expect(reviewReport.refused).toBeNull();
+    expect((await settleRunPhase({ runId: reviewRun.runId, resolverOwner: resolver }))?.phase).toBe('review');
+
+    const completeRun = await createRun({
+      items: [
+        { itemId: 'reply-complete', kind: 'coord-message', title: 'completed reply', ref: { kind: 'coord-message', msgId: 'm-complete' }, ownerAgentId: resolver },
+      ],
+      requestedBy: 'owner:receipt-test',
+      harnessSlug: 'papercusp',
+    });
+    await setRunPhase({ runId: completeRun.runId, phase: 'running', resolverOwner: resolver });
+    await recordRunHeartbeat({ runId: completeRun.runId, resolverOwner: resolver });
+    await reportOutcomes({
+      runId: completeRun.runId,
+      resolverOwner: resolver,
+      outcomes: [{ itemId: 'reply-complete', outcome: 'dismissed' }],
+    });
+    expect((await settleRunPhase({ runId: completeRun.runId, resolverOwner: resolver }))?.phase).toBe('complete');
+
+    const failedRun = await createRun({
+      items: [
+        { itemId: 'reply-failed', kind: 'coord-message', title: 'failed reply', ref: { kind: 'coord-message', msgId: 'm-failed' }, ownerAgentId: resolver },
+      ],
+      requestedBy: 'owner:receipt-test',
+      harnessSlug: 'papercusp',
+    });
+    await setRunPhase({ runId: failedRun.runId, phase: 'running', resolverOwner: resolver });
+    await recordRunHeartbeat({ runId: failedRun.runId, resolverOwner: resolver });
+    await reportOutcomes({
+      runId: failedRun.runId,
+      resolverOwner: resolver,
+      outcomes: [{ itemId: 'reply-failed', outcome: 'recommended' }],
+    });
+    await setRunPhase({ runId: failedRun.runId, phase: 'failed', resolverOwner: resolver });
+
+    const intakeRun = await createRun({
+      runKind: 'intake-triage',
+      items: [
+        { itemId: 'reply-intake', kind: 'coord-message', title: 'intake reply', ref: { kind: 'coord-message', msgId: 'm-intake' }, ownerAgentId: resolver },
+      ],
+      requestedBy: 'owner:receipt-test',
+      harnessSlug: 'papercusp',
+    });
+    await setRunPhase({ runId: intakeRun.runId, phase: 'running', resolverOwner: resolver });
+    await recordRunHeartbeat({ runId: intakeRun.runId, resolverOwner: resolver });
+    await reportOutcomes({
+      runId: intakeRun.runId,
+      resolverOwner: resolver,
+      outcomes: [{ itemId: 'reply-intake', outcome: 'recommended' }],
+    });
+    expect((await settleRunPhase({ runId: intakeRun.runId, resolverOwner: resolver }))?.phase).toBe('review');
+
+    const foreignWorkspace = 'ws-bulk-run-foreign-receipt-test';
+    const foreignRun = await createRun({
+      workspaceId: foreignWorkspace,
+      items: [
+        { itemId: 'reply-foreign', kind: 'coord-message', title: 'foreign reply', ref: { kind: 'coord-message', msgId: 'm-foreign' }, ownerAgentId: resolver },
+      ],
+      requestedBy: 'owner:receipt-test',
+      harnessSlug: 'papercusp',
+    });
+    await setRunPhase({ runId: foreignRun.runId, phase: 'running', resolverOwner: resolver, workspaceId: foreignWorkspace });
+    await recordRunHeartbeat({ runId: foreignRun.runId, resolverOwner: resolver, workspaceId: foreignWorkspace });
+    await reportOutcomes({
+      runId: foreignRun.runId,
+      resolverOwner: resolver,
+      workspaceId: foreignWorkspace,
+      outcomes: [{ itemId: 'reply-foreign', outcome: 'dismissed' }],
+    });
+    expect((await settleRunPhase({ runId: foreignRun.runId, resolverOwner: resolver, workspaceId: foreignWorkspace }))?.phase).toBe('complete');
+
+    expect(
+      await getSettledInboxMessageIds(
+        ['m-reviewed', 'm-pending', 'm-wrong-ref', 'm-complete', 'm-failed', 'm-intake', 'm-foreign'],
+      ),
+    ).toEqual(new Set(['m-reviewed', 'm-complete']));
   });
 
   it('refuses a run over zero items', async () => {
@@ -263,6 +365,107 @@ describe('attention bulk-run store (real PG)', () => {
       responsibility: 'owner',
     });
     expect(item?.recommendation?.actionId).toBeNull();
+  });
+
+  // observation-candidate-acceptance-promotion-2026-09-30 P-004 (R-3/R-18/R-19),
+  // migration 1296 `intake_decision`.
+  it('persists intake decisions, enforces the reason/target/missing-info CHECK, and resumes only named rows', async () => {
+    const intake = (n: number) => ({
+      itemId: `improvement:intake-${n}`,
+      kind: 'improvement',
+      title: `Observation ${n}`,
+      ref: { kind: 'improvement', id: `EI-${n}` },
+      ownerAgentId: null,
+    });
+    const run = await createRun({ items: [intake(1), intake(2), intake(3)] });
+    await setRunPhase({ runId: run.runId, phase: 'running', resolverOwner: 'su-intake' });
+    const decision = (disposition: string, extra: Record<string, unknown> = {}) => ({
+      disposition,
+      reason: `because ${disposition}`,
+      decidedBy: 'su-intake',
+      owner: 'agent',
+      targetRef: null,
+      missingInformation: null,
+      decidedAt: '2026-10-01T10:00:00.000Z',
+      // readIntakeDecision normalizes every stored decision to the full P-006 (D-014) shape,
+      // so a round-trip carries these keys even when the writer omitted them.
+      workKind: null,
+      acceptance: null,
+      sourceRevision: null,
+      reproduction: null, // P-013: promote-only; null whenever the writer gave none
+      ...extra,
+    });
+    const reported = await reportOutcomes({
+      runId: run.runId,
+      resolverOwner: 'su-intake',
+      outcomes: [
+        {
+          itemId: 'improvement:intake-1',
+          outcome: 'recommended',
+          disposition: 'routed',
+          recommendationKind: 'routed',
+          recommendationLabel: 'Promote to accepted work',
+          responsibility: 'engineering',
+          confidenceLevel: 'high',
+          rationale: 'because promote',
+          intakeDecision: decision('promote', { owner: 'engineering', workKind: 'fix', sourceRevision: 'rev-7' }) as never,
+        },
+        {
+          itemId: 'improvement:intake-2',
+          outcome: 'recommended',
+          disposition: 'cleanup_candidate',
+          recommendationKind: 'cleanup_candidate',
+          recommendationLabel: 'Merge / link into existing work',
+          responsibility: 'agent',
+          confidenceLevel: 'medium',
+          rationale: 'because merge',
+          intakeDecision: decision('merge', { targetRef: 'WI-9' }) as never,
+        },
+      ],
+    });
+    expect(reported.updated.sort()).toEqual(['improvement:intake-1', 'improvement:intake-2']);
+
+    const rows = await getRunItems(run.runId);
+    const byId = new Map(rows.map((row) => [row.itemId, row]));
+    expect(byId.get('improvement:intake-1')?.intakeDecision).toEqual(decision('promote', { owner: 'engineering', workKind: 'fix', sourceRevision: 'rev-7' }));
+    expect(byId.get('improvement:intake-2')?.intakeDecision).toMatchObject({ disposition: 'merge', targetRef: 'WI-9' });
+    // R-19: the unreached row stays pending with no decision.
+    expect(byId.get('improvement:intake-3')).toMatchObject({ outcome: 'pending', intakeDecision: null });
+
+    // The CHECK repeats the validator for any non-TypeScript writer (R-3/R-18).
+    const sql = db.adminSql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => Promise<unknown>;
+    const setRaw = (value: Record<string, unknown>) =>
+      sql`UPDATE harness_shared.attention_bulk_run_items
+             SET intake_decision = ${JSON.stringify(value)}::jsonb
+           WHERE run_id = ${run.runId} AND item_id = 'improvement:intake-3'`;
+    await expect(setRaw(decision('reject', { reason: '  ' }))).rejects.toThrow(/intake_decision_check/);
+    await expect(setRaw(decision('reject', { decidedBy: '' }))).rejects.toThrow(/intake_decision_check/);
+    await expect(setRaw(decision('merge'))).rejects.toThrow(/intake_decision_check/);
+    await expect(setRaw(decision('retry'))).rejects.toThrow(/intake_decision_check/);
+    await expect(setRaw(decision('ignore'))).rejects.toThrow(/intake_decision_check/);
+
+    // An intake input that could not be decided is an explicit, visible failure.
+    await reportOutcomes({
+      runId: run.runId,
+      resolverOwner: 'su-intake',
+      outcomes: [{ itemId: 'improvement:intake-3', outcome: 'failed', error: 'evidence link 404s' }],
+    });
+    expect((await getRunItems(run.runId)).find((row) => row.itemId === 'improvement:intake-3')).toMatchObject({
+      outcome: 'failed',
+      intakeDecision: null,
+    });
+
+    // Resume resets only the named rows; earlier decisions survive (R-19).
+    await settleRunPhase({ runId: run.runId, resolverOwner: 'su-intake' });
+    const resumed = await resumeReviewRun({
+      runId: run.runId,
+      itemIds: ['improvement:intake-2', 'improvement:intake-3'],
+      resolverOwner: 'su-next',
+    });
+    expect(resumed.ok).toBe(true);
+    const after = new Map((await getRunItems(run.runId)).map((row) => [row.itemId, row]));
+    expect(after.get('improvement:intake-1')?.intakeDecision).toMatchObject({ disposition: 'promote' });
+    expect(after.get('improvement:intake-2')).toMatchObject({ outcome: 'pending', intakeDecision: null });
   });
 
   it('de-dupes repeated ids in the snapshot rather than aborting the seed', async () => {
@@ -445,6 +648,38 @@ describe('attention bulk-run store (real PG)', () => {
     expect((await getRun(run.runId))!.skipped).toBe(1);
   });
 
+  // WI-10004720 follow-up: the scheduled seeder skips these ids, so each fire
+  // seeds items nobody has looked at instead of re-seeding the feed's head.
+  it('reports item ids still awaiting the owner in open review runs of the kind, workspace-scoped', async () => {
+    const held = await createRun({ items: seed('held') });
+    await reportOutcomes({
+      runId: held.runId,
+      outcomes: [
+        { itemId: 'coord-escalation:held-1', outcome: 'recommended', actionId: 'quarantine', rationale: 'needs owner' },
+        { itemId: 'work-item-needs-human:held-2', outcome: 'auto_resolved', actionId: 'answer' },
+        { itemId: 'smoke-fail:held-3', outcome: 'recommended', actionId: 'retry', rationale: 'needs owner' },
+      ],
+    });
+    await unsafeSetRunPhaseForFixtures({ runId: held.runId, phase: 'review' });
+    const dismissed = await markItemDismissed({
+      runId: held.runId,
+      itemId: 'smoke-fail:held-3',
+      note: 'Owner declined this recommendation',
+    });
+    expect(dismissed!.outcome).toBe('dismissed');
+
+    // A finished run holds nothing: its rows are no longer waiting on anyone.
+    const done = await createRun({ items: seed('done') });
+    await unsafeSetRunPhaseForFixtures({ runId: done.runId, phase: 'complete' });
+
+    const ids = await getItemIdsAwaitingOwnerReview(h.ws, 'inbox-resolve');
+    // recommended + owner-dismissed-in-open-review are held; auto_resolved is not.
+    expect([...ids].sort()).toEqual(['coord-escalation:held-1', 'smoke-fail:held-3']);
+
+    expect((await getItemIdsAwaitingOwnerReview(h.ws, 'plan-cleanup')).size).toBe(0);
+    expect((await getItemIdsAwaitingOwnerReview(`${h.ws}-other`, 'inbox-resolve')).size).toBe(0);
+  });
+
   it('never settles to complete while an item was never reached', async () => {
     const run = await createRun({ items: seed('f') });
     // Resolver crashed after one item — the other two are still `pending`.
@@ -455,6 +690,54 @@ describe('attention bulk-run store (real PG)', () => {
     const settled = await settleRunPhase({ runId: run.runId });
     // Requirement 2: an unreached item is visible, never silently absent.
     expect(settled!.phase).toBe('review');
+  });
+
+  it('releases only granted above-floor recommendations for automatic re-review, preserving owner dismissals', async () => {
+    const run = await createRun({ items: seed('risk-held') });
+    await reportOutcomes({ runId: run.runId, outcomes: [
+      { itemId: 'coord-escalation:risk-held-1', outcome: 'recommended', actionId: 'resolve', rationale: 'supported', confidenceLevel: 'high' },
+      { itemId: 'work-item-needs-human:risk-held-2', outcome: 'recommended', actionId: 'resolve', rationale: 'owner decision', confidenceLevel: 'medium' },
+      { itemId: 'smoke-fail:risk-held-3', outcome: 'recommended', actionId: 'resolve', rationale: 'owner dismissed', confidenceLevel: 'high' },
+    ] });
+    await unsafeSetRunPhaseForFixtures({ runId: run.runId, phase: 'review' });
+    await markItemDismissed({ runId: run.runId, itemId: 'smoke-fail:risk-held-3', note: 'Declined by owner' });
+    const riskLevels = { low: 'automatic', medium: 'automatic', high: 'automatic' } as const;
+    const highFloor = await getItemIdsAwaitingOwnerReview(h.ws, 'inbox-resolve', { level: 'L0', minConfidence: 'high', riskLevels });
+    expect([...highFloor].sort()).toEqual(['smoke-fail:risk-held-3', 'work-item-needs-human:risk-held-2']);
+    const mediumFloor = await getItemIdsAwaitingOwnerReview(h.ws, 'inbox-resolve', { level: 'L0', minConfidence: 'medium', riskLevels });
+    expect([...mediumFloor]).toEqual(['smoke-fail:risk-held-3']);
+    expect((await getRun(run.runId))!.automationPolicy).not.toHaveProperty('riskLevels');
+  });
+
+  // EI-25573324094056113: the release is one-shot. A recommendation made by a run
+  // whose own receipt already permitted automatic action has had its auto-accept
+  // pass; re-releasing it every fire re-consulted the same assignee ~40 times.
+  it('holds a recommendation its own run already adjudicated under the same automatic policy', async () => {
+    const riskLevels = { low: 'automatic', medium: 'automatic', high: 'automatic' } as const;
+    const standing = { level: 'L2', minConfidence: 'medium', riskLevels } as const;
+
+    const before = await createRun({ items: seed('once-before'), automationPolicy: { mode: 'review-all', level: 'L0', minConfidence: 'high' } });
+    await reportOutcomes({ runId: before.runId, outcomes: [
+      { itemId: 'coord-escalation:once-before-1', outcome: 'recommended', disposition: 'routed', recommendationKind: 'routed', rationale: 'routed to the assignee', confidenceLevel: 'high' },
+    ] });
+    await unsafeSetRunPhaseForFixtures({ runId: before.runId, phase: 'review' });
+
+    const under = await createRun({ items: seed('once-under'), automationPolicy: { mode: 'safe-high', ...standing } });
+    await reportOutcomes({ runId: under.runId, outcomes: [
+      { itemId: 'coord-escalation:once-under-1', outcome: 'recommended', disposition: 'routed', recommendationKind: 'routed', rationale: 'routed to the assignee', confidenceLevel: 'high' },
+    ] });
+    await unsafeSetRunPhaseForFixtures({ runId: under.runId, phase: 'review' });
+    expect((await getRun(under.runId))!.automationPolicy).toMatchObject({ level: 'L2', riskLevels });
+
+    // Only the reported rows; seed()'s unreported siblings stay `pending` and are held either way.
+    const reported = (ids: Set<string>) => [...ids].filter((id) => id.startsWith('coord-escalation:once-'));
+    const held = reported(await getItemIdsAwaitingOwnerReview(h.ws, 'inbox-resolve', standing));
+    // The pre-autonomy recommendation gets its one fresh adjudication; the one
+    // already made under this policy stays held for the owner.
+    expect(held).toEqual(['coord-escalation:once-under-1']);
+    // Without a standing automatic policy both are held, as before.
+    const reviewOnly = reported(await getItemIdsAwaitingOwnerReview(h.ws, 'inbox-resolve'));
+    expect(reviewOnly.sort()).toEqual(['coord-escalation:once-before-1', 'coord-escalation:once-under-1']);
   });
 
   it('admits owner acceptance only in review and never rewrites an executing or handled row', async () => {
@@ -528,6 +811,11 @@ describe('attention bulk-run store (real PG)', () => {
     });
     await settleRunPhase({ runId: run.runId, resolverOwner: 'su-prior' });
 
+    await (h.sql as typeof db.adminSql)`
+      UPDATE harness_shared.attention_bulk_runs
+         SET started_at = now() - interval '1 hour',
+             heartbeat_at = now() - interval '1 hour'
+       WHERE workspace_id = ${h.ws} AND run_id = ${run.runId}`;
     const resumed = await resumeReviewRun({
       runId: run.runId,
       itemIds: ['smoke-fail:resume-review-3', 'not-in-snapshot'],
@@ -538,6 +826,13 @@ describe('attention bulk-run store (real PG)', () => {
       requeuedIds: ['smoke-fail:resume-review-3'],
       preservedOutcomes: 2,
       run: { phase: 'pending', resolverOwner: 'su-next', finishedAt: null },
+    });
+    if (!resumed.ok) return;
+    expect(resumed.run.heartbeatAt).toBeNull();
+    expect(classifyRunLiveness(resumed.run)).toMatchObject({ state: 'live' });
+    expect(await restartRun({ runId: run.runId, resolverOwner: 'su-racer' })).toMatchObject({
+      ok: false,
+      reason: 'not_restartable',
     });
     const items = await getRunItems(run.runId);
     expect(items).toHaveLength(3);
@@ -818,6 +1113,277 @@ describe('attention bulk-run store (real PG)', () => {
     expect((await getRunItems(lateRun.runId, ws))[0]!.outcome).toBe('pending');
   });
 
+  it('preserves a canonical terminal receipt when a stale report queues behind the action', async () => {
+    const ws = `ws-stale-report-${Date.now()}`;
+    const items = seed('stale-report');
+    const resolverOwner = 'su-stale-report-resolver';
+    const run = await createRun({ items, workspaceId: ws });
+    await setRunPhase({ runId: run.runId, phase: 'running', resolverOwner, workspaceId: ws });
+
+    let releaseAction!: () => void;
+    const actionMayFinish = new Promise<void>((resolve) => {
+      releaseAction = resolve;
+    });
+    let markActionStarted!: () => void;
+    const actionStarted = new Promise<void>((resolve) => {
+      markActionStarted = resolve;
+    });
+
+    let auditCount = 0;
+    let canonicalAudit: unknown;
+    const action = executeBulkRunAction({
+      runId: run.runId,
+      itemId: items[0]!.itemId,
+      actionId: 'resolve',
+      rationale: 'Canonical action completed.',
+      draftAnswer: 'The canonical drafted answer.',
+      confidence: 'high',
+      consulted: true,
+      consultReply: 'The asking agent confirmed this action.',
+      resolverOwner,
+      workspaceId: ws,
+      execute: async () => {
+        markActionStarted();
+        await actionMayFinish;
+        return { resolved: true };
+      },
+      audit: async (tx) => {
+        auditCount += 1;
+        await upsertTriage({
+          itemId: items[0]!.itemId,
+          action: 'resolve',
+          note: 'Bulk resolve: Canonical action completed.',
+          triagedBy: resolverOwner,
+          workspaceId: ws,
+          sql: tx,
+        });
+        canonicalAudit = await tx`
+          SELECT workspace_id, item_id, action, note, triaged_by, triaged_at
+            FROM harness_shared.attention_triage
+           WHERE workspace_id = ${ws} AND item_id = ${items[0]!.itemId}
+        `;
+      },
+    });
+    await actionStarted;
+
+    let reportSettled = false;
+    const staleReport = reportOutcomes({
+      runId: run.runId,
+      resolverOwner,
+      workspaceId: ws,
+      outcomes: [
+        {
+          itemId: items[0]!.itemId,
+          outcome: 'recommended',
+          actionId: 'retry',
+          rationale: 'Recommendation from the pre-action manifest.',
+        },
+        {
+          itemId: items[1]!.itemId,
+          outcome: 'recommended',
+          actionId: 'ack',
+          rationale: 'This sibling still needs review.',
+        },
+      ],
+    }).then((result) => {
+      reportSettled = true;
+      return result;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(reportSettled).toBe(false);
+
+    releaseAction();
+    const [acted, reported] = await Promise.all([action, staleReport]);
+    expect(acted.refused).toBeNull();
+    expect(acted.item).toMatchObject({
+      outcome: 'auto_resolved',
+      actionId: 'resolve',
+      rationale: 'Canonical action completed.',
+    });
+    expect(auditCount).toBe(1);
+    expect(reported).toMatchObject({
+      updated: [items[1]!.itemId],
+      unknown: [],
+      refused: null,
+      run: { autoResolved: 1, recommended: 1 },
+      preserved: [
+        expect.objectContaining({
+          itemId: items[0]!.itemId,
+          outcome: 'auto_resolved',
+          disposition: 'auto_resolved',
+          actionId: 'resolve',
+          rationale: 'Canonical action completed.',
+          revertHandle: {
+            kind: 'attention-bulk-item',
+            version: 1,
+            workspaceId: ws,
+            runId: run.runId,
+            itemId: items[0]!.itemId,
+          },
+        }),
+      ],
+    });
+
+    const receipt = (reported as { preserved?: Array<{ decidedAt: string | null; reversalWindowUntil: string | null }> })
+      .preserved?.[0];
+    expect(Date.parse(receipt?.reversalWindowUntil ?? '')).toBeGreaterThan(
+      Date.parse(receipt?.decidedAt ?? ''),
+    );
+    const rows = await getRunItems(run.runId, ws);
+    expect(rows).toHaveLength(3);
+    // Equality covers the entire receipt, including decision, consultation,
+    // reversal and timestamp metadata that a stale report must never rewrite.
+    expect(reported.preserved).toEqual([acted.item]);
+    expect(rows.find((row) => row.itemId === items[0]!.itemId)).toEqual(acted.item);
+    expect(rows.find((row) => row.itemId === items[0]!.itemId)).toMatchObject({
+      outcome: 'auto_resolved',
+      actionId: 'resolve',
+      rationale: 'Canonical action completed.',
+    });
+    expect(rows.find((row) => row.itemId === items[1]!.itemId)).toMatchObject({
+      outcome: 'recommended',
+      actionId: 'ack',
+    });
+    expect(rows.find((row) => row.itemId === items[2]!.itemId)).toMatchObject({
+      outcome: 'pending',
+      actionId: null,
+    });
+
+    const triage = await readTriageByWorkspace(ws);
+    expect([...triage.keys()]).toEqual([items[0]!.itemId]);
+    expect(triage.get(items[0]!.itemId)).toMatchObject({
+      action: 'resolve',
+      note: 'Bulk resolve: Canonical action completed.',
+      triagedBy: resolverOwner,
+    });
+    expect(await db.adminSql`
+      SELECT workspace_id, item_id, action, note, triaged_by, triaged_at
+        FROM harness_shared.attention_triage
+       WHERE workspace_id = ${ws} AND item_id = ${items[0]!.itemId}
+    `).toEqual(canonicalAudit);
+  });
+
+  it('preserves dismissal metadata while classifying a mixed report and deriving every counter', async () => {
+    const ws = `ws-dismissed-stale-report-${Date.now()}`;
+    const items = [...seed('dismissed-stale'), ...seed('mixed-report')];
+    const run = await createRun({ items, workspaceId: ws });
+    await reportOutcomes({
+      runId: run.runId,
+      workspaceId: ws,
+      outcomes: [{
+        itemId: items[0]!.itemId,
+        outcome: 'recommended',
+        actionId: 'resolve',
+        rationale: 'Original recommendation.',
+        draftAnswer: 'Original drafted answer.',
+        confidence: 'high',
+        consulted: true,
+        consultReply: 'Original consultation reply.',
+      }],
+    });
+    await unsafeSetRunPhaseForFixtures({ runId: run.runId, phase: 'review', workspaceId: ws });
+    const dismissed = await markItemDismissed({
+      runId: run.runId, itemId: items[0]!.itemId, workspaceId: ws,
+      note: 'Owner declined the original recommendation.',
+    });
+    expect(dismissed).toMatchObject({ outcome: 'dismissed', consulted: true });
+    // Exercise the accepting-reports boundary with an already dismissed row.
+    await unsafeSetRunPhaseForFixtures({ runId: run.runId, phase: 'running', workspaceId: ws });
+    const acted = await executeBulkRunAction({
+      runId: run.runId, itemId: items[1]!.itemId, workspaceId: ws,
+      actionId: 'resolve', rationale: 'Canonical sibling action.',
+      execute: async () => ({ resolved: true }), audit: async () => {},
+    });
+    const report = await reportOutcomes({
+      runId: run.runId,
+      workspaceId: ws,
+      outcomes: [
+        { itemId: items[0]!.itemId, outcome: 'failed', error: 'Stale failure must not erase dismissal.' },
+        { itemId: items[1]!.itemId, outcome: 'recommended', actionId: 'retry' },
+        { itemId: items[2]!.itemId, outcome: 'recommended', actionId: 'ack' },
+        { itemId: items[3]!.itemId, outcome: 'skipped', error: 'Not applicable.' },
+        { itemId: items[4]!.itemId, outcome: 'failed', error: 'An ordinary report failure.' },
+        { itemId: 'unknown-item', outcome: 'recommended' },
+      ],
+    });
+    expect(report.updated).toEqual(items.slice(2, 5).map((item) => item.itemId));
+    expect(report.unknown).toEqual(['unknown-item']);
+    expect(report.preserved).toEqual([dismissed, acted.item]);
+    const rows = await getRunItems(run.runId, ws);
+    expect(rows.find((row) => row.itemId === items[0]!.itemId)).toEqual(dismissed);
+    expect(rows.find((row) => row.itemId === items[1]!.itemId)).toEqual(acted.item);
+    const tally = (outcome: string) => rows.filter((row) => row.outcome === outcome).length;
+    expect(report.run).toMatchObject({
+      autoResolved: tally('auto_resolved'),
+      recommended: tally('recommended'),
+      skipped: tally('skipped') + tally('dismissed'),
+      failed: tally('failed'),
+    });
+    expect(report.run).toMatchObject({ autoResolved: 1, recommended: 1, skipped: 2, failed: 1 });
+    expect(rows.find((row) => row.itemId === items[5]!.itemId)?.outcome).toBe('pending');
+  });
+
+  it('returns a canonical terminal receipt when a late report is refused after Stop', async () => {
+    const ws = `ws-stopped-report-${Date.now()}`;
+    const [item] = seed('stopped-report');
+    const resolverOwner = 'su-stopped-report-resolver';
+    const run = await createRun({ items: [item!], workspaceId: ws });
+    await setRunPhase({ runId: run.runId, phase: 'running', resolverOwner, workspaceId: ws });
+
+    await executeBulkRunAction({
+      runId: run.runId,
+      itemId: item!.itemId,
+      actionId: 'resolve',
+      rationale: 'Canonical action completed before Stop.',
+      resolverOwner,
+      workspaceId: ws,
+      execute: async () => ({ resolved: true }),
+      audit: async () => {},
+    });
+    await setRunPhase({ runId: run.runId, phase: 'review', resolverOwner, workspaceId: ws });
+
+    const reported = await reportOutcomes({
+      runId: run.runId,
+      resolverOwner,
+      workspaceId: ws,
+      outcomes: [
+        {
+          itemId: item!.itemId,
+          outcome: 'recommended',
+          actionId: 'retry',
+          rationale: 'Recommendation from the pre-action manifest.',
+        },
+      ],
+    });
+
+    expect(reported).toMatchObject({
+      updated: [],
+      unknown: [item!.itemId],
+      refused: { reason: 'run_not_accepting_reports', phase: 'review' },
+      preserved: [
+        expect.objectContaining({
+          itemId: item!.itemId,
+          outcome: 'auto_resolved',
+          disposition: 'auto_resolved',
+          actionId: 'resolve',
+          rationale: 'Canonical action completed before Stop.',
+          revertHandle: {
+            kind: 'attention-bulk-item',
+            version: 1,
+            workspaceId: ws,
+            runId: run.runId,
+            itemId: item!.itemId,
+          },
+        }),
+      ],
+    });
+    expect((await getRunItems(run.runId, ws))[0]).toMatchObject({
+      outcome: 'auto_resolved',
+      actionId: 'resolve',
+      rationale: 'Canonical action completed before Stop.',
+    });
+  });
+
   it('persists a typed bounded handle and appends one compensation without rewriting the action audit', async () => {
     const ws = `ws-reversal-${Date.now()}`;
     const [item] = seed('reversal');
@@ -992,6 +1558,47 @@ describe('attention bulk-run store (real PG)', () => {
       // and nothing moved
       expect((await getRun(run.runId, ws()))!.heartbeatAt).not.toBeNull();
     });
+
+    it.each(['pending', 'running', 'failed'] as const)(
+      'gives a restarted %s run a fresh grace period before its first heartbeat',
+      async (phase) => {
+        const run = await createRun({ items: seed(`rs-grace-${phase}`) });
+        await unsafeSetRunPhaseForFixtures({ runId: run.runId, phase });
+        await (h.sql as typeof db.adminSql)`
+          UPDATE harness_shared.attention_bulk_runs
+             SET created_at = now() - interval '2 hours',
+                 started_at = now() - interval '1 hour',
+                 heartbeat_at = now() - interval '1 hour'
+           WHERE workspace_id = ${ws()} AND run_id = ${run.runId}`;
+        const oldRun = (await getRun(run.runId, ws()))!;
+        if (phase !== 'failed') {
+          expect(classifyRunLiveness(oldRun)).toMatchObject({ state: 'stale' });
+        }
+
+        const restarted = await restartRun({ runId: run.runId, resolverOwner: 'su-fresh' });
+        expect(restarted.ok).toBe(true);
+        if (!restarted.ok) return;
+        expect(restarted.run.heartbeatAt).toBeNull();
+        expect(restarted.run.createdAt).toBe(oldRun.createdAt);
+        expect(restarted.run.startedAt).not.toBe(oldRun.startedAt);
+        expect(classifyRunLiveness(restarted.run)).toMatchObject({ state: 'live' });
+
+        // The SQL restart guard and watchdog classifier must agree: a second
+        // restart cannot rotate the new owner during startup, even before a beat.
+        expect(await restartRun({ runId: run.runId, resolverOwner: 'su-racer' })).toEqual({
+          ok: false,
+          reason: 'not_restartable',
+          phase: 'pending',
+        });
+        const running = await setRunPhase({
+          runId: run.runId,
+          phase: 'running',
+          resolverOwner: 'su-fresh',
+        });
+        expect(running!.startedAt).toBe(restarted.run.startedAt);
+        expect(classifyRunLiveness(running!)).toMatchObject({ state: 'live' });
+      },
+    );
 
     it('restarts a STALE executing run, preserving completed outcomes and NOT widening membership', async () => {
       const run = await createRun({ items: seed('rs-stale'), runId: `rs-stale-${Date.now()}` });

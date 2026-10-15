@@ -5,8 +5,8 @@
  * `md-*` row of PARITY.md whose public/owner trust differs from plain render:
  *
  *   md-html / md-html-comment   inert on both hosts
- *   md-unsafe-url               inert on both hosts (javascript:, data:, relative)
- *   md-links                    allowlist (https/http/mailto render as links)
+ *   md-unsafe-url               inert on both hosts (javascript:, data:, unlisted relative)
+ *   md-links                    allowlist (https/http/mailto and canonical /docs hrefs)
  *   md-images                   off on public, opt-in on owner
  *   md-tables                   inert on public, render on owner
  *   md-work-refs                inert on public, pill on owner
@@ -43,6 +43,18 @@ describe('papercupChatUrlTransform (md-links / md-unsafe-url)', () => {
     expect(papercupChatUrlTransform('/settings')).toBe('');
     expect(papercupChatUrlTransform('#anchor')).toBe('');
     expect(papercupChatUrlTransform('')).toBe('');
+  });
+
+  it('allows canonical public Docs hrefs while rejecting host-relative escapes and image sources', () => {
+    for (const url of ['/docs', '/docs/', '/docs/faq#does-closing-the-browser-stop-my-agents', '/docs/getting-started/cloud/']) {
+      expect(papercupChatUrlTransform(url, 'href')).toBe(url);
+      expect(papercupChatUrlTransform(url, 'src')).toBe('');
+    }
+    for (const url of ['/settings', '/docs-old', '//evil.example/docs/faq', '/docs/../settings',
+      '/docs/./faq', '/docs/%2e%2e/settings', '/docs/%2f%2fevil.example', '/docs/faq?token=secret',
+      '/docs\\evil', '/docs/faq\n/settings', '/docs/faq#javascript:alert(1)', '/docs//faq']) {
+      expect(papercupChatUrlTransform(url, 'href')).toBe('');
+    }
   });
 });
 
@@ -90,6 +102,29 @@ describe('ChatMarkdown — D-005 on both hosts', () => {
         const inert = [...c.querySelectorAll('.pc-chat__link-inert')].map((s) => s.textContent);
         expect(inert).toEqual(['js', 'data', 'rel']);
         expect(c.querySelector('a[href^="javascript"]')).toBeNull();
+      });
+
+      it('keeps the actual public FAQ citation clickable without widening other relative links or image sources', () => {
+        const citation = '/docs/faq#does-closing-the-browser-stop-my-agents';
+        const c = md(
+          `Closing the tab won’t stop remote work. [Public FAQ](${citation}) `
+            + '[manual](/docs) [nested](/docs/getting-started/cloud/) '
+            + '[settings](/settings) [escape](/docs/../settings) '
+            + '[encoded](/docs/%2e%2e/settings) [authority](//evil.example/docs/faq) '
+            + '![relative image](/docs/faq)',
+          host, { allowImages: true },
+        );
+        const links = [...c.querySelectorAll('a')];
+        expect(links.map(a => a.getAttribute('href'))).toEqual([citation, '/docs', '/docs/getting-started/cloud/']);
+        expect(links[0].textContent).toBe('Public FAQ');
+        for (const link of links) {
+          expect(link.getAttribute('target')).toBe('_blank');
+          expect(link.getAttribute('rel')).toContain('noopener');
+        }
+        expect([...c.querySelectorAll('.pc-chat__link-inert')].map(e => e.textContent))
+          .toEqual(['settings', 'escape', 'encoded', 'authority']);
+        expect(c.querySelector('img')).toBeNull();
+        expect(c.querySelector('.pc-chat__img-inert')?.textContent).toBe('[image: relative image]');
       });
 
       it('an image is off unless the OWNER opts in (md-images)', () => {

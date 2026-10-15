@@ -1,0 +1,157 @@
+{
+  "schemaVersion": 1,
+  "workItemId": "WI-10000407",
+  "plan": "byoc-delivery-acceleration-2026-09-06",
+  "planItem": "P-009",
+  "spec": "AUTO-BAR-R-004-P-009@8",
+  "acceptanceStatus": "incomplete",
+  "evidencePlane": "live-input-snapshot-with-controlled-check-renderer-replay",
+  "method": {
+    "byteMeasure": "Buffer.byteLength(text, 'utf8'); production delivery corroboration uses PostgreSQL octet_length(summary)",
+    "comparison": "Same frozen production check rows in both arms; exact pre-compactor check-block algorithm versus current renderLoopChecksBlock, sharing current parser and renderCheckLine. No fabricated check history. Historical routine kickoff is unavailable, so check-block savings do not establish full injected-wake savings.",
+    "baselineCommit": "61b1c090369cd89cd7445ec4ba7d06b744a08b18",
+    "baselinePath": "packages/operator-core/lib/harness/routines/loop-fire.ts",
+    "baselineFunction": "renderLoopChecksBlock",
+    "candidateHeadAtSnapshot": "7403bc85c06e1b65642f4600f8b31a1b81837bce",
+    "candidateSourceSha256": "e7fc5ae208cf3b2a32863923737d780f4640246ad7cfbf3ec386e1b7f85c66d3",
+    "sharedCarryParserSha256": "fc8f7c5367888ea7162ef128f413184037b995ad6d8a7f993d8578da50c308a6",
+    "capturedAtUtc": "2026-10-13T17:24:10Z",
+    "noteQuery": "SELECT scope, note, updated_ts, body_ts FROM harness_shared.carry_notes WHERE workspace_id='default' AND scope IN ('loop:papercusp:su-respawn-80c8e4065aac34e2ea45c7655f6b43fe','loop:papercusp:su-c86de2dd-45a1-4e86-8b17-c07c4a096f7f')",
+    "routineQuery": "SELECT workspace_id, id, target_owner_id, active, reschedule_interval_sec, payload_template FROM harness_shared.routines WHERE workspace_id IN ('default','papercusp-workspace') AND id IN ('rt_papercusp_loop_su_respawn_80c8e4065aac34e2ea45c7655f6b43fe','rt_papercusp_loop_su_c86de2dd_45a1_4e86_8b17_c07c4a096f7f')"
+  },
+  "runtimeObservation": {
+    "reference": "dev:pipeline_position path=packages/operator-core/lib/harness/routines/loop-fire.ts testClass=operator-api @2026-10-13T17:23Z",
+    "bgHost": {
+      "buildSha": "32ed5dd2b9",
+      "containsCandidateBlob": true
+    },
+    "stagingOperator": {
+      "buildSha": "32ed5dd2b9",
+      "containsCandidateBlob": true
+    },
+    "releaseOperator": {
+      "buildSha": "d740fc3802",
+      "containsCandidateBlob": false
+    },
+    "limitation": "Runtime source containment is not live pickup or deployed acceptance."
+  },
+  "controlledMeasurements": [
+    {
+      "kind": "historical-production-note",
+      "checkCount": 12,
+      "wallCount": 1,
+      "compactionEligible": 12,
+      "baselineCheckUtf8Bytes": 4968,
+      "candidateCheckUtf8Bytes": 1011,
+      "checkReductionPct": 79.64975845410628,
+      "fullInjectedWakeReductionPct": null,
+      "acceptanceCaveat": "Historical check-block replay only; full injected-wake reduction and pickup remain unmeasured."
+    },
+    {
+      "kind": "active-production-note",
+      "checkCount": 0,
+      "wallCount": 1,
+      "compactionEligible": 0,
+      "baselineCheckUtf8Bytes": 0,
+      "candidateCheckUtf8Bytes": 0,
+      "checkReductionPct": 0,
+      "sameInputActiveWakeUtf8Bytes": 3190,
+      "sameInputActiveWakeReductionPct": 0,
+      "acceptanceCaveat": "No verified history exists in this measured control; no rows were added to manufacture savings."
+    }
+  ],
+  "injectedBaseline": {
+    "id": "353224",
+    "subscriber_id": "su-c86de2dd-45a1-4e86-8b17-c07c4a096f7f",
+    "source": "loop:rt_papercusp_loop_su_c86de2dd_45a1_4e86_8b17_c07c4a096f7f",
+    "summary": "Loop wake #145 — short form (the full loop contract ships on wake 1, then every 10 wakes).\n\n⛔ OPEN WALLS — owner-gated / pending decisions you are carrying (re-check, do not re-litigate or re-declare resolved; clear a resolved one via loop:checkpoint { walls }):\n  • Do not revive ENOSPC as the cause of the later G10 failure; low storage remains only a required negative fixture. — re-check: EI-22546401885805378 and EI-22541164568715011 (standing 6d)\n\n🧪 CARRIED CHECKS — claims + probes (✓ verified w/ evidence · ⚠ CONTESTED: evidence contradicts verification; ? PREDICTED: run the re-check before relying on it; update/clear via loop:checkpoint { checks }):\n  • ✓ [#p004-audit-settlement] Current locked-snapshot card EI-22723213004897408 has a passing independent grading-integrity audit. — re-check: scorecards:list grading-integrity subject EI-22723213004897408 and target spec-test-adequacy card — evidence: EI-22723597563173983 is independent and all six ratings pass; target gradingAudit.state=passed with matching audit id. @2026-09-08T20:09:19.553Z (since 2026-09-08T15:05:40.849Z)\n  • ✓ [#p004-final-settlement] WI-10000402 and plan item P-004 are terminal with current committed completion evidence. — re-check: work_items:get WI-10000402 and plans:get-item P-004 on :3170 — evidence: WI state done, completionAuthority committed, completionFreshness fresh, plan item effectiveStatus done, lock released. @2026-09-08T20:09:19.553Z (since 2026-09-08T20:09:19.553Z)\n  • ✓ [#p002-final-settlement] WI-10000400/P-002 is done with committed completion authority and counts toward burn-down. — re-check: work_items:get WI-10000400 and plans:get-item P-002 — evidence: Final work_items:complete returned completionAuthority=committed, countsTowardBurnDown=true, specAdequacy checked BYOC-ACCEL-P002-PREFLIGHT@2 @2026-09-07T13:55:42.527Z (since 2026-09-07T13:55:42.527Z)\n  • ✓ [#p002-audit-passed] Superseding adequacy scorecard EI-22609529695879464 passed independent audit EI-22610227552133881. — re-check: scorecards:list target and grading-integrity subject — evidence: gradingAudit.state=passed; auditor role-de773515 @2026-09-07T13:55:42.527Z (since 2026-09-07T13:50:50.988Z)\n  • ✓ [#p002-typechecks] All nine changed TypeScript files pass their three exact scoped typecheck gates. — re-check: the three scoped lint:tsc commands in WI-10000400 completion — evidence: All commands exit 0; named files tsc-clean @2026-09-07T13:55:42.527Z (since 2026-09-07T13:52:09.547Z)\n  • ✓ [#p003-spec-adequacy] BYOC-ACCEL-P003-SMALL-READ@2 evaluates pass at required L3 with no blockers, and terminal scorecard EI-22620276930389643 is filed with evidence fingerprint a21acefb64cb490baac041d31cab91f07c1442538bafd2c2ae4dd3efb3802639. — re-check: Re-run plans:evaluate-spec-test-adequacy with all three exact current fingerprint rows, then scorecards:list by exact subject. — evidence: 2026-09-07T16:22:51Z (since 2026-09-07T15:59:24.009Z)\n  • ✓ [#p003-final-settlement] P-003 and all four carried work-items are terminal with committed completion authority. — re-check: work_items:get WI-10000401, EI-22580425899531121, EI-22616915445201572, EI-22620801712395522; plans:get-item P-003 — evidence: Receipts and authoritative reads on 2026-09-07T18:05Z show committed/countsTowardBurnDown and P-003 done. (since 2026-09-07T18:08:20.841Z)\n  • ✓ [#p003-current-benchmark] Current-build 1-10 projected-summary cohort passes 40/40 at wall p95 24.898ms with stable SHA 23f9c29c46. — re-check: Rerun the recovered MCP StreamableHTTP benchmark with unique _meta.outputGroupId per request against :3170. — evidence: 40 valid, 0 failures, p95 24.898ms <=2000ms, max 122.533ms, stable health SHA. @2026-09-07T18:08:20.841Z (since 2026-09-07T18:08:20.841Z)\n  • ✓ [#p003-audit-passed] Corrected terminal card EI-22624358423602027 has an independent all-pass grading-integrity audit. — re-check: scorecards:list rubricRef grading-integrity subjectRef EI-22624358423602027 — evidence: EI-22625255982345870: 6/6 pass, score10=10. @2026-09-07T18:08:20.841Z (since 2026-09-07T18:08:20.841Z)\n  • ✓ [#p005-final-settlement] WI-10000403 and P-005 are terminal with committed completion authority and count toward burn-down. — re-check: work_items:get WI-10000403 and plans:get-item P-005 — evidence: 2026-09-08 current reads: WI state done, completionAuthority committed, countsTowardBurnDown true; P-005 stored/effective status done. @2026-09-08T12:42:40.707Z (since 2026-09-08T12:42:40.707Z)\n  • ✓ [#p005-audit-passed] Target adequacy card EI-22694152996797507 has an independent current-build all-pass grading-integrity audit. — re-check: scorecards:list rubricRef grading-integrity subjectRef EI-22694152996797507; target card on :3170 — evidence: EI-22696750552435571 by su-d831fb18 has 6/6 pass, score10=10 and supersedes retracted stale-runtime EI-22696540096047206; target gradingAudit.state=passed. @2026-09-08T12:42:40.707Z (since 2026-09-08T12:42:40.707Z)\n  • ✓ [#p005-bindings-current] Exact P-005 bindings 2208/2209 remain current on current-build. — re-check: plans:get-spec-evidence for WI-10000403/BYOC-ACCEL-P005-RESUME with exact refs and fingerprints on :3170 — evidence: 2 current, 0 stale, 0 unknown; spec/source/test/testRun dimensions current, server-measured. @2026-09-08T12:42:40.707Z (since 2026-09-08T12:42:40.707Z)\n\nCurrent loop:checkpoint (you wrote it [09-13T03:43:21Z] 11m ago as of fire time; if this wake's delivery was delayed, that gap may be larger now) — this is the authority for what to do this wake:\n## Did\nRecovered cold wake, revalidated live claim, ran current 13-file cohort (218/218 pass), measured R-004 production byte cohorts, reran R-005 benchmark (85.769% reduction), wrote and bound canonical P-009 evidence matrix, and obtained R-006 producer ACK.\n\n## Left\nR-004 is genuinely red at 25.999% mean-byte reduction versus 50% required; diagnose/fix and add recurrence guard. R-006 remains pending on canonical BYOC cloud-workspaces deployed canary/literal 24h soak/cleanup/billing/shipment receipts. Then rerun adequacy, independent grade/audit, close and ship.\n\n## Key insight\nExact evaluator now passes R-002/R-003/R-005. Do not confuse green tests with acceptance: current R-004 metric fails and R-006 deployed proof does not exist yet. Canonical R-006 lane is owned and progressing elsewhere; consume its receipts without duplicating it.\n\n## Next action\nContinue locally on R-004: define a matched routine cohort from event_wake_deliveries, trace the dominant payload bytes to their writers, make the smallest reuse-first reduction with a regression test, remeasure. Preserve P-009 evidence matrix and bindings; do not claim or supervise su-a910e's R-006 lane.\n\nArm-time goal (frozen at arm time — the checkpoint above is the fresher source): 🔁 Loop wake (every ~600s after each turn settles). You are continuing your OWN warm session toward: ⟦agent-authored-goal⟧Finish byoc-delivery-acceleration-2026-09-06 end to end: close verified P-006, implement/verify P-007 and P-008 in dependency order, run P-009 combined acceptance including required soak/cleanup/final-green evidence, and ship only when every acceptance BAR is current and independently graded.⟦/agent-authored-goal⟧\n\nOn settle: refresh loop:checkpoint { did, left, insight, next }; END YOUR TURN. `loop:end` stops; `loop:status` inspects.",
+    "utf8_bytes": 7459,
+    "turn_proof": null,
+    "turn_started_at": null,
+    "authority": "Frozen original injected payload, not fresh authority. Its authored claims may be stale or retracted.",
+    "checksBlock": "🧪 CARRIED CHECKS — claims + probes (✓ verified w/ evidence · ⚠ CONTESTED: evidence contradicts verification; ? PREDICTED: run the re-check before relying on it; update/clear via loop:checkpoint { checks }):\n  • ✓ [#p004-audit-settlement] Current locked-snapshot card EI-22723213004897408 has a passing independent grading-integrity audit. — re-check: scorecards:list grading-integrity subject EI-22723213004897408 and target spec-test-adequacy card — evidence: EI-22723597563173983 is independent and all six ratings pass; target gradingAudit.state=passed with matching audit id. @2026-09-08T20:09:19.553Z (since 2026-09-08T15:05:40.849Z)\n  • ✓ [#p004-final-settlement] WI-10000402 and plan item P-004 are terminal with current committed completion evidence. — re-check: work_items:get WI-10000402 and plans:get-item P-004 on :3170 — evidence: WI state done, completionAuthority committed, completionFreshness fresh, plan item effectiveStatus done, lock released. @2026-09-08T20:09:19.553Z (since 2026-09-08T20:09:19.553Z)\n  • ✓ [#p002-final-settlement] WI-10000400/P-002 is done with committed completion authority and counts toward burn-down. — re-check: work_items:get WI-10000400 and plans:get-item P-002 — evidence: Final work_items:complete returned completionAuthority=committed, countsTowardBurnDown=true, specAdequacy checked BYOC-ACCEL-P002-PREFLIGHT@2 @2026-09-07T13:55:42.527Z (since 2026-09-07T13:55:42.527Z)\n  • ✓ [#p002-audit-passed] Superseding adequacy scorecard EI-22609529695879464 passed independent audit EI-22610227552133881. — re-check: scorecards:list target and grading-integrity subject — evidence: gradingAudit.state=passed; auditor role-de773515 @2026-09-07T13:55:42.527Z (since 2026-09-07T13:50:50.988Z)\n  • ✓ [#p002-typechecks] All nine changed TypeScript files pass their three exact scoped typecheck gates. — re-check: the three scoped lint:tsc commands in WI-10000400 completion — evidence: All commands exit 0; named files tsc-clean @2026-09-07T13:55:42.527Z (since 2026-09-07T13:52:09.547Z)\n  • ✓ [#p003-spec-adequacy] BYOC-ACCEL-P003-SMALL-READ@2 evaluates pass at required L3 with no blockers, and terminal scorecard EI-22620276930389643 is filed with evidence fingerprint a21acefb64cb490baac041d31cab91f07c1442538bafd2c2ae4dd3efb3802639. — re-check: Re-run plans:evaluate-spec-test-adequacy with all three exact current fingerprint rows, then scorecards:list by exact subject. — evidence: 2026-09-07T16:22:51Z (since 2026-09-07T15:59:24.009Z)\n  • ✓ [#p003-final-settlement] P-003 and all four carried work-items are terminal with committed completion authority. — re-check: work_items:get WI-10000401, EI-22580425899531121, EI-22616915445201572, EI-22620801712395522; plans:get-item P-003 — evidence: Receipts and authoritative reads on 2026-09-07T18:05Z show committed/countsTowardBurnDown and P-003 done. (since 2026-09-07T18:08:20.841Z)\n  • ✓ [#p003-current-benchmark] Current-build 1-10 projected-summary cohort passes 40/40 at wall p95 24.898ms with stable SHA 23f9c29c46. — re-check: Rerun the recovered MCP StreamableHTTP benchmark with unique _meta.outputGroupId per request against :3170. — evidence: 40 valid, 0 failures, p95 24.898ms <=2000ms, max 122.533ms, stable health SHA. @2026-09-07T18:08:20.841Z (since 2026-09-07T18:08:20.841Z)\n  • ✓ [#p003-audit-passed] Corrected terminal card EI-22624358423602027 has an independent all-pass grading-integrity audit. — re-check: scorecards:list rubricRef grading-integrity subjectRef EI-22624358423602027 — evidence: EI-22625255982345870: 6/6 pass, score10=10. @2026-09-07T18:08:20.841Z (since 2026-09-07T18:08:20.841Z)\n  • ✓ [#p005-final-settlement] WI-10000403 and P-005 are terminal with committed completion authority and count toward burn-down. — re-check: work_items:get WI-10000403 and plans:get-item P-005 — evidence: 2026-09-08 current reads: WI state done, completionAuthority committed, countsTowardBurnDown true; P-005 stored/effective status done. @2026-09-08T12:42:40.707Z (since 2026-09-08T12:42:40.707Z)\n  • ✓ [#p005-audit-passed] Target adequacy card EI-22694152996797507 has an independent current-build all-pass grading-integrity audit. — re-check: scorecards:list rubricRef grading-integrity subjectRef EI-22694152996797507; target card on :3170 — evidence: EI-22696750552435571 by su-d831fb18 has 6/6 pass, score10=10 and supersedes retracted stale-runtime EI-22696540096047206; target gradingAudit.state=passed. @2026-09-08T12:42:40.707Z (since 2026-09-08T12:42:40.707Z)\n  • ✓ [#p005-bindings-current] Exact P-005 bindings 2208/2209 remain current on current-build. — re-check: plans:get-spec-evidence for WI-10000403/BYOC-ACCEL-P005-RESUME with exact refs and fingerprints on :3170 — evidence: 2 current, 0 stale, 0 unknown; spec/source/test/testRun dimensions current, server-measured. @2026-09-08T12:42:40.707Z (since 2026-09-08T12:42:40.707Z)",
+    "readQuery": "SELECT id, subscriber_id, source, summary, octet_length(summary) AS utf8_bytes, turn_proof, turn_started_at FROM harness_shared.event_wake_deliveries WHERE workspace_id='default' AND id=353224",
+    "candidateProcedure": "Parse these exact injected check lines, run the current renderLoopChecksBlock, and replace only this block in summary. The complete remaining wake is byte-identical between arms."
+  },
+  "fullInjectedWakeReplay": {
+    "baselineDeliveryId": "353224",
+    "checkCount": 12,
+    "baselineUtf8Bytes": 7459,
+    "candidateUtf8Bytes": 3400,
+    "reductionPct": 54.41748223622469,
+    "baselineChecksUtf8Bytes": 4968,
+    "candidateChecksUtf8Bytes": 909,
+    "nonCheckBytesIdentical": true,
+    "rowPopulationIdentical": true,
+    "liveCandidateDelivered": false,
+    "pickupVerified": false,
+    "acceptanceCaveat": "Exact frozen injected-input replay proves the quantitative comparison only. The candidate arm was computed locally; no current live injection/pickup or clean canonical acceptance is asserted."
+  },
+  "localVerification": {
+    "initialCommand": "npm run test:file -- packages/operator-core/lib/harness/routines/loop-fire.test.ts",
+    "initialTestsPassed": 124,
+    "initialTestsSkipped": 0,
+    "initialResult": "pass-local-source-provenance-unknown",
+    "initialHeadPreRun": "4d894b0353",
+    "initialHeadPostRun": "3f0a82bf5f",
+    "initialChildSubstituted": 0,
+    "sourceCaptureRun": "pending after adding the complete injected-wake regression"
+  },
+  "historicalDeliveries": [
+    {
+      "id": "353224",
+      "utf8Bytes": 7459,
+      "characters": 7328,
+      "turnProof": null,
+      "turnStartedAt": null
+    },
+    {
+      "id": "353512",
+      "utf8Bytes": 3691,
+      "characters": 3632,
+      "turnProof": null,
+      "turnStartedAt": null
+    }
+  ],
+  "snapshots": [
+    {
+      "scope": "loop:papercusp:su-c86de2dd-45a1-4e86-8b17-c07c4a096f7f",
+      "note": "## Did\nR-004 passes 50.4367% with current binding 4351. Bounded R-006 read found canonical owner su-a910e live and actively progressing P-305; no final receipts yet.\n\n## Left\nP-009 remains open solely for canonical R-006 canary, literal 24h soak, teardown, billing and shipment receipts; then matrix/bindings, adequacy, independent acceptance/audit, close/ship.\n\n## Key insight\nAll remaining action depends on a separate live owner. Continuing the 10-minute loop would be prohibited parallel supervision, not work.\n\n## Next action\nLoop ends now under anti-babysitting. On an independent future resume after canonical R-006 completion, consume receipts once and finish P-009. Preserve ENOSPC retraction.\n\n## Checks\n_✓ = VERIFIED (evidence attached) · ⚠ = CONTESTED (evidence contradicts verification; re-check now) · ? = PREDICTED — run the re-check before relying on it · [scope: …] = ALL the probe observed; a claim quantified beyond it is NOT verified by it_\n- ✓ [#p009-r004-matched-pass] R-004 matched production short-form wake comparison passes literal >=50% target. — re-check: Query event_wake_deliveries ids 353224 and 353512 char_length(summary); verify binding 4351 current. — evidence: 7,328 -> 3,632 chars = 50.4367%; binding 4351 current across spec/source/test. @2026-09-13T04:47:41.086Z (since 2026-09-13T04:47:41.086Z)\n- ✓ [#p004-audit-settlement] Current locked-snapshot card EI-22723213004897408 has a passing independent grading-integrity audit. — re-check: scorecards:list grading-integrity subject EI-22723213004897408 and target spec-test-adequacy card — evidence: EI-22723597563173983 is independent and all six ratings pass; target gradingAudit.state=passed with matching audit id. @2026-09-08T20:09:19.553Z (since 2026-09-08T15:05:40.849Z)\n- ✓ [#p004-final-settlement] WI-10000402 and plan item P-004 are terminal with current committed completion evidence. — re-check: work_items:get WI-10000402 and plans:get-item P-004 on :3170 — evidence: WI state done, completionAuthority committed, completionFreshness fresh, plan item effectiveStatus done, lock released. @2026-09-08T20:09:19.553Z (since 2026-09-08T20:09:19.553Z)\n- ✓ [#p002-final-settlement] WI-10000400/P-002 is done with committed completion authority and counts toward burn-down. — re-check: work_items:get WI-10000400 and plans:get-item P-002 — evidence: Final work_items:complete returned completionAuthority=committed, countsTowardBurnDown=true, specAdequacy checked BYOC-ACCEL-P002-PREFLIGHT@2 @2026-09-07T13:55:42.527Z (since 2026-09-07T13:55:42.527Z)\n- ✓ [#p002-audit-passed] Superseding adequacy scorecard EI-22609529695879464 passed independent audit EI-22610227552133881. — re-check: scorecards:list target and grading-integrity subject — evidence: gradingAudit.state=passed; auditor role-de773515 @2026-09-07T13:55:42.527Z (since 2026-09-07T13:50:50.988Z)\n- ✓ [#p002-typechecks] All nine changed TypeScript files pass their three exact scoped typecheck gates. — re-check: the three scoped lint:tsc commands in WI-10000400 completion — evidence: All commands exit 0; named files tsc-clean @2026-09-07T13:55:42.527Z (since 2026-09-07T13:52:09.547Z)\n- ✓ [#p003-spec-adequacy] BYOC-ACCEL-P003-SMALL-READ@2 evaluates pass at required L3 with no blockers, and terminal scorecard EI-22620276930389643 is filed with evidence fingerprint a21acefb64cb490baac041d31cab91f07c1442538bafd2c2ae4dd3efb3802639. — re-check: Re-run plans:evaluate-spec-test-adequacy with all three exact current fingerprint rows, then scorecards:list by exact subject. — evidence: 2026-09-07T16:22:51Z (since 2026-09-07T15:59:24.009Z)\n- ✓ [#p003-final-settlement] P-003 and all four carried work-items are terminal with committed completion authority. — re-check: work_items:get WI-10000401, EI-22580425899531121, EI-22616915445201572, EI-22620801712395522; plans:get-item P-003 — evidence: Receipts and authoritative reads on 2026-09-07T18:05Z show committed/countsTowardBurnDown and P-003 done. (since 2026-09-07T18:08:20.841Z)\n- ✓ [#p003-current-benchmark] Current-build 1-10 projected-summary cohort passes 40/40 at wall p95 24.898ms with stable SHA 23f9c29c46. — re-check: Rerun the recovered MCP StreamableHTTP benchmark with unique _meta.outputGroupId per request against :3170. — evidence: 40 valid, 0 failures, p95 24.898ms <=2000ms, max 122.533ms, stable health SHA. @2026-09-07T18:08:20.841Z (since 2026-09-07T18:08:20.841Z)\n- ✓ [#p003-audit-passed] Corrected terminal card EI-22624358423602027 has an independent all-pass grading-integrity audit. — re-check: scorecards:list rubricRef grading-integrity subjectRef EI-22624358423602027 — evidence: EI-22625255982345870: 6/6 pass, score10=10. @2026-09-07T18:08:20.841Z (since 2026-09-07T18:08:20.841Z)\n- ✓ [#p005-final-settlement] WI-10000403 and P-005 are terminal with committed completion authority and count toward burn-down. — re-check: work_items:get WI-10000403 and plans:get-item P-005 — evidence: 2026-09-08 current reads: WI state done, completionAuthority committed, countsTowardBurnDown true; P-005 stored/effective status done. @2026-09-08T12:42:40.707Z (since 2026-09-08T12:42:40.707Z)\n- ✓ [#p005-audit-passed] Target adequacy card EI-22694152996797507 has an independent current-build all-pass grading-integrity audit. — re-check: scorecards:list rubricRef grading-integrity subjectRef EI-22694152996797507; target card on :3170 — evidence: EI-22696750552435571 by su-d831fb18 has 6/6 pass, score10=10 and supersedes retracted stale-runtime EI-22696540096047206; target gradingAudit.state=passed. @2026-09-08T12:42:40.707Z (since 2026-09-08T12:42:40.707Z)\n\n## Walls\n- [#p002-no-false-enospc] Do not revive ENOSPC as the cause of the later G10 failure; low storage remains only a required negative fixture. — re-check: EI-22546401885805378 and EI-22541164568715011 (since 2026-09-07T07:44:42.950Z)",
+      "updated_ts": "1789276808882",
+      "body_ts": "1789276808882",
+      "kind": "historical-production-note",
+      "authority": "Frozen payload only. Claims embedded in historical notes may be stale or retracted; do not treat them as fresh acceptance evidence.",
+      "ownerId": "su-c86de2dd-45a1-4e86-8b17-c07c4a096f7f",
+      "routine": null
+    },
+    {
+      "scope": "loop:papercusp:su-respawn-80c8e4065aac34e2ea45c7655f6b43fe",
+      "note": "## Did\nVerified exact continuation identity and held P009/TDZ claims. Added maintained realPG coldterminal import guard under owned EI25841466577299173: two concurrent closes, engine load witness0→1 delegating realengine, exact killed137oom-kill/fire/idempotence assertions. Native test:file1pass0skip/localuntrackedHEAD32ed5dd2b9, ledger21215035, childSubstituted0. Newfilehashb65301dd471fe92314bf5b948860e5a9dcfdeb6d8cafa643292e93925a1e0375; leasec5a0a728 released/exec79577drained. Savedbothheldcheckpoints; leadernotified. No matrix replay.\n\n## Left\nOriginal mixed13file TDZ root unproven. Diagnosticstackguard prior3pass and original14file320test remain saved; coldcontrol rulesout unconditionalcoldfailure only in its measuredfixture. P009 R004 matchedUTF8>=50% reduction, cleanexecution/globalcurrentness, canonicalR006 deployedjourney remainopen. Existing Avi conversation retained.\n\n## Key insight\nExisting realPGbridge preloaded eventEngine; new guard rejects warmsetup and proves concurrent firstlazyimport without emitter substitution. Originalfailedledger21176641 logs caughtwarning only, so originatingTDZframe cannot be recovered from that row. R004 historical7328→3632 comparison used characterlength, not UTF8bytes, and lackspickup proof; current octet_length artifact refuses causalgrade.\n\n## Next action\nPrepare R004 matched same-input production UTF8 comparison: exact routine/check-row population, baseline/candidate renderer source/runtime pins, preservedcarrycontent and confirmedturnpickup. No reruns solelyforrecovery. Continue originalTDZ only on a new distinguishing measured graph/mocking variable. No filelocks or shellhandles remain.\n\n## Walls\n- [#wall:byoc-p009-canonical-r006] Waiting on Avi: existing question already open in conv-mv68ep3z-0000-bf6b1797266346989d6237596e568dfe; awaiting fleet leader authoritative canonical deployed-producer or evidence-backed scope decision. Literal24h/customer acceptance/eight-kind census/billing/finalgreen remain. — re-check: Already asked and awaiting answer; consume current fleet leader decision reference. Do not duplicate question or fabricate receipt chain. (since 2026-10-13T12:42:55.336Z)",
+      "updated_ts": "1791911716106",
+      "body_ts": "1791911716106",
+      "kind": "active-production-note",
+      "authority": "Frozen payload only. Claims embedded in historical notes may be stale or retracted; do not treat them as fresh acceptance evidence.",
+      "ownerId": "su-respawn-80c8e4065aac34e2ea45c7655f6b43fe",
+      "routine": {
+        "workspace_id": "papercusp-workspace",
+        "id": "rt_papercusp_loop_su_respawn_80c8e4065aac34e2ea45c7655f6b43fe",
+        "target_owner_id": "su-respawn-80c8e4065aac34e2ea45c7655f6b43fe",
+        "active": true,
+        "reschedule_interval_sec": 60,
+        "payload_template": {
+          "goal": "Advance scoped P-009 current evidence binding and acceptance after verified revision9 audit; preserve canonical R006 decision wall and original TDZ accountability.",
+          "kickoff": "Continue owned WI-10000407/P009 from latest checkpoint. Preserve finished current R5proof. R3 live summary instrument+40/40p95 486ms proof is finished; recover its exact ledger/binding rather than rerun it. Next maintained controlled-stall/unrelated live checkpoint with authoritative receipt/readback. No gateops/newauditor/subagents/duplicateAviask; originalR006wall and TDZroot-unproven remain.",
+          "workItem": "WI-10000407",
+          "customWakePrompt": true
+        }
+      }
+    }
+  ],
+  "remaining": [
+    "Maintained regression verdict and current clean execution/binding.",
+    "Current live candidate injection/pickup corroboration for the matched frozen input; the quantitative full-wake replay is measured separately.",
+    "Exact live injected-text match and host-attested/observed turn pickup; neither original delivery has a proof.",
+    "Current clean execution and evidence binding.",
+    "Canonical R-006 deployed chain, literal24h soak, customer acceptance, cleanup/billing and final green shipment remain open."
+  ]
+}

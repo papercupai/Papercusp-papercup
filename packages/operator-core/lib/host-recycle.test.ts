@@ -13,6 +13,7 @@ import {
   _resetFatalDiagnosticsForTests,
   type RecycleServerLike,
 } from './host-recycle';
+import { __resetShutdownStateForTest, isGracefulDrainInstalled, onBeforeHostExit } from './shutdown-state';
 
 describe('gracefulHostRecycle', () => {
   beforeEach(() => {
@@ -458,6 +459,74 @@ describe('gracefulHostRecycle', () => {
       warnSpy.mockRestore();
     });
 
+    // EI-24863236643374267: children kept alive THROUGH the drain (the spawner
+    // sidecar) are stopped by beforeExit. The self-SIGKILL never fires Node's 'exit'
+    // event, so beforeExit must run first — and once, even when drain + backstop race.
+    it('runs beforeExit BEFORE killSelf, exactly once, even if drain + backstop both fire', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const order: string[] = [];
+      const killSelf = vi.fn(() => order.push('killSelf'));
+      const beforeExit = vi.fn(() => order.push('beforeExit'));
+      const { server, drain } = makeServer();
+
+      gracefulHostRecycle({
+        server,
+        exit: vi.fn(),
+        killSelf,
+        beforeExit,
+        closeSubstrate: () => Promise.resolve(),
+        skipSubstrateTeardown: true,
+        hardExitOnRecycle: true,
+        hardExitMs: 1000,
+      });
+      expect(beforeExit).not.toHaveBeenCalled(); // not at drain START — the sidecar must serve the drain
+      drain();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(order).toEqual(['beforeExit', 'killSelf']);
+      warnSpy.mockRestore();
+    });
+
+    it('a throwing beforeExit does not block the exit', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const killSelf = vi.fn();
+      gracefulHostRecycle({
+        server: {},
+        exit: vi.fn(),
+        killSelf,
+        beforeExit: () => {
+          throw new Error('boom');
+        },
+        closeSubstrate: () => Promise.resolve(),
+        hardExitOnRecycle: true,
+        hardExitMs: 1000,
+      });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(killSelf).toHaveBeenCalledTimes(1);
+      warnSpy.mockRestore();
+    });
+
+    it('by default runs the shutdown-state before-exit hooks (where the spawner sidecar registers its stop)', async () => {
+      __resetShutdownStateForTest();
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const order: string[] = [];
+      onBeforeHostExit('test-sidecar', () => order.push('hook'));
+      const { server, drain } = makeServer();
+      gracefulHostRecycle({
+        server,
+        exit: vi.fn(),
+        killSelf: () => order.push('killSelf'),
+        closeSubstrate: () => Promise.resolve(),
+        skipSubstrateTeardown: true,
+        hardExitOnRecycle: true,
+      });
+      drain();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(order).toEqual(['hook', 'killSelf']);
+      warnSpy.mockRestore();
+      __resetShutdownStateForTest();
+    });
+
     it('defaults to false — a normal recycle still uses process.exit (no behavior change)', async () => {
       const exit = vi.fn();
       const killSelf = vi.fn();
@@ -545,6 +614,17 @@ describe('installGracefulShutdown (D4/P-017 — SIGTERM connection-drain)', () =
     const fire = (sig: NodeJS.Signals) => (handlers.get(sig) ?? []).forEach((h) => h());
     return { on, fire, handlers };
   }
+
+  it('marks the graceful drain installed at INSTALL time, before any signal (EI-24863236643374267)', () => {
+    __resetShutdownStateForTest();
+    expect(isGracefulDrainInstalled()).toBe(false);
+    const { on } = fakeSignals();
+    installGracefulShutdown({ server: makeServer().server, on, exit: vi.fn(), closeSubstrate: () => Promise.resolve() });
+    // A sidecar's SIGTERM listener runs BEFORE this drain's (registered earlier), so the
+    // flag it reads must already be set when the signal arrives.
+    expect(isGracefulDrainInstalled()).toBe(true);
+    __resetShutdownStateForTest();
+  });
 
   it('registers a handler for SIGTERM and SIGINT by default', () => {
     const { on, handlers } = fakeSignals();

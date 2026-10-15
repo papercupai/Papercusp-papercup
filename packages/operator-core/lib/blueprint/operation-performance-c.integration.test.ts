@@ -14,6 +14,7 @@ import { startDedicatedNativePg, startDedicatedTestPg, type DedicatedNativePg } 
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { getResourceProfile } from '../resource-profile';
 import { runPairedBenchmark, gradePairedBenchmark, P013_PROTOCOL, type BenchmarkArm } from '../../test/_paired-operation-benchmark';
+import { createTextCollector } from '../child-output';
 import { projectBlueprintToPg } from './project-to-pg';
 import {
   P013C_HARNESS, P013C_PROGRAM_STEPS, P013C_SOURCE, P013C_WORKSPACE, programStepNames, runP013WorkloadC,
@@ -163,22 +164,21 @@ describe('P-013 workload C fixture', () => {
             signal: AbortSignal.timeout(120_000),
           });
           const overlappingChildren = childrenInFlight++;
-          let stderr = '';
+          const stderr = createTextCollector(child.stderr, { maxChars: 4_000 });
           let stage = 'spawned';
           let sample: P013CSample | undefined;
-          child.stderr?.on('data', (chunk) => { stderr = (stderr + String(chunk)).slice(-4_000); });
           child.on('message', (message: { kind?: string; stage?: string; sample?: P013CSample }) => {
             if (message?.kind === 'p013-stage') stage = message.stage ?? stage;
             if (message?.kind === 'p013-sample') sample = message.sample;
           });
           const exit = new Promise<void>((resolve, reject) => {
-            child.once('error', (error) => reject(new Error(`P-013 C cold child ${stage}: ${error.message}; ${stderr}`)));
+            child.once('error', (error) => reject(new Error(`P-013 C cold child ${stage}: ${error.message}; ${stderr.peek()}`)));
             // 'close', not 'exit': under load 'exit' can fire before the already-sent p013-sample
             // IPC message is dispatched (the child self-SIGKILLs right after send's callback), so
             // a successful sample read as a failed child. 'close' waits for the IPC channel to drain.
             child.once('close', (code, signal) => code === 0 || (signal === 'SIGKILL' && sample)
               ? resolve()
-              : reject(new Error(`P-013 C cold child ${stage} exited ${code}/${signal}: ${stderr}`)));
+              : reject(new Error(`P-013 C cold child ${stage} exited ${code}/${signal}: ${stderr.peek()}`)));
           });
           const settled = () => { childrenInFlight--; };
           void exit.then(settled, settled);

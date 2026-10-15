@@ -14,6 +14,7 @@ import './read';
 import './write';
 import './edit';
 import './git';
+import './git-evidence';
 import './fetch';
 import './inspect';
 
@@ -46,6 +47,13 @@ describe('capability tool registration', () => {
       expect(tool!.agentRoles).toContain('cup');
     });
   }
+
+  it('projects the structured pinned Git evidence reader only for judges', () => {
+    const tool = lookupByMcpName('capability:git-evidence');
+    expect(tool, 'capability:git-evidence not registered').toBeDefined();
+    expect(tool!.capabilities).toContain('capability:git-evidence:read');
+    expect(tool!.agentRoles).toEqual(['judge']);
+  });
 
   it('the file-mutation tools carry guidance (tools-md-sync requirement)', () => {
     for (const name of ['capability:write', 'capability:edit', 'capability:bash']) {

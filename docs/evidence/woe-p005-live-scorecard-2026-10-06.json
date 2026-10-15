@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-005 stewardship-health instrument readback comparison controls (materialization, hand-dispatch, sovereignty)",
+  "framework": "operational",
+  "plan": "work-on-everything-stewardship-remediation-2026-08-30",
+  "acceptanceBar": "R-5",
+  "specClause": "WOE-P005-HAND-DISPATCH@4, WOE-P005-MATERIALIZATION@4, WOE-P005-SOVEREIGNTY@4",
+  "workItem": "WI-1074216",
+  "evidencePlane": "live",
+  "startedAt": "2026-10-06T05:26:09Z",
+  "finishedAt": "2026-10-06T05:27:55Z",
+  "exitCode": 0,
+  "command": [
+    "scorecards:get { issueId: 'EI-24713330305263301' }",
+    "scorecards:get { issueId: 'EI-24713330305263301', criterionKey: 'plan-fleet-materialization', evidenceOffset: 0 }",
+    "scorecards:get { issueId: 'EI-24713330305263301', criterionKey: 'steering-through-claim-rails', evidenceOffset: 0 }",
+    "scorecards:get { issueId: 'EI-24713330305263301', criterionKey: 'frontier-scope-sovereignty', evidenceOffset: 0 }",
+    "scorecards:list { rubricRef: 'work-on-everything-stewardship-health', subjectRef: 'su-af7cfbba-1a21-4530-84c4-5c064614d4bc', limit: 100 }",
+    "rubrics:get { rubricRef: 'work-on-everything-stewardship-health', detail: 'full' }",
+    "work_items:get { ids: ['WI-10003903','WI-10004612','EI-24713725963525495'], harness: 'papercusp' }",
+    "Source read: packages/operator-core/lib/scorecards.ts WORK_ON_EVERYTHING_CRITICAL_KEYS and computeWorkOnEverythingRollup",
+    "Compare the returned fields with the deliberately false expectations and the exact readback expectations in assertions below."
+  ],
+  "summary": "The live comparison rejected five deliberately false reports and accepted five exact readbacks of the existing independent real-holder card. The stewardship-health rubric (revision 44, active) still fails a non-idle eligible window with zero plan-fleet materializations, does not credit drain or TEST fleets, keeps plan-fleet-materialization and frontier-scope-sovereignty in the server-computed critical set, and lets any severe rating dominate the roll-up. The card remains FAIL. The live materialization residue WI-10004612 has a named owner. Its previous holder's claim was released at 04:02Z while that session was parked. This comparison does not re-grade the holder window, create a fixture goal, or establish shipment.",
+  "subject": {
+    "cardId": "EI-24713330305263301",
+    "holder": "su-af7cfbba-1a21-4530-84c4-5c064614d4bc",
+    "windowStart": "2026-09-30T16:54:04Z",
+    "windowEnd": "2026-09-30T18:29:52Z",
+    "grader": "su-4f968faa-adbb-4de7-97e7-b3314e842678",
+    "auditIssueId": "EI-24713725963525495",
+    "cardRubricRevision": 34,
+    "activeRubricRevision": 44,
+    "activeRubricCriteriaHash": "dab852d6e0af52adb2b3676452344f1f602de4a1317e8d793c0091f16c37ac1d"
+  },
+  "comparisonLimit": "These are live readback comparison controls. Negative controls change the expected report, not the historical scorecard or operator state. Steering and sovereignty were rated pass in the observed window, so their severe-failure branches were not exercised by the holder. Their severity is established from the active rubric text and the server roll-up, not from a live violation. D-013 forbids a fixture goal or a second holder grader, so none was created.",
+  "assertions": [
+    {
+      "id": "materialization-zero-fails-negative",
+      "passed": true,
+      "evidence": "Deliberately false PASS expectation for the materialization window was rejected. scorecards:get EI-24713330305263301 returned rollup.verdict=fail with criticalFailures=[plan-fleet-materialization]. The complete criterion read (evidenceRead.complete=true) returned rating=fail, attribution=system: 0 of 1 eligible worklist plans materialized (session-transcript-exact-fuzzy-search-2026-09-14, READY from 17:59:33Z, no plan fleet and no deterministic disposition before the lease moved)."
+    },
+    {
+      "id": "materialization-zero-fails-exact",
+      "passed": true,
+      "evidence": "Exact readback accepted: criterion rating=fail; rollup.criticalKeys includes plan-fleet-materialization. Active rubric revision 44 (status active) keeps instrument woe.plan-fleet-materialization and states that the standing per-goal drain fleet and TEST children are separate signals and never satisfy plan-fleet materialization. A zero-materialization eligible window therefore still fails, and drain/TEST substitutes do not count."
+    },
+    {
+      "id": "materialization-residue-owner-negative",
+      "passed": true,
+      "evidence": "Deliberately false residue report was rejected. The report omitted the residue owner and repeated the stale 2026-10-03 readback (successor WI-10004612 assigned to su-32d1b8df). Live work_items:get at 05:26:10Z returned WI-10004612 state=blocked with assignee=null: su-32d1b8df's hold had been released at 04:02Z while that session was parked. The 10-03 owner claim was no longer true."
+    },
+    {
+      "id": "materialization-residue-owner-exact",
+      "passed": true,
+      "evidence": "Exact current residue readback accepted at 05:27:54Z. The live plan-fleet-materialization residue is WI-10004612 (state blocked, owner su-318f0d58-0813-43c6-882f-44260ec8acc3, claimed ~05:27Z as residue owner of record; prior holder su-32d1b8df notified). The criterion's own remediation pointer is WI-10003903, now dropped with terminalOwner su-f6e01d34-23b4-47f2-be11-8efc3c4fff74 and subsumed by WI-10004612. The historical FAIL is unchanged."
+    },
+    {
+      "id": "hand-dispatch-negative",
+      "passed": true,
+      "evidence": "Deliberately false expectations were rejected: (a) the card recorded hand-dispatch; (b) the active rubric permits hand-assigning queue work; (c) a severe rating can be averaged away. Live criterion steering-through-claim-rails returned rating=pass ('Zero coord:dispatch calls'). Active rubric revision 44 steering model reads 'it does not hand-assign queue work, relay instructions through intermediaries, or become a manual dispatcher'. Server roll-up computeWorkOnEverythingRollup (packages/operator-core/lib/scorecards.ts) returns verdict 'severe' whenever any required rating is severe, before any failure, partial, or pass branch."
+    },
+    {
+      "id": "hand-dispatch-exact",
+      "passed": true,
+      "evidence": "Exact readback accepted: steering-through-claim-rails rating=pass, evidenceRead.complete=true; evidence 'Zero coord:dispatch calls. It steered through claim rails: read the claim spec and goal-tagged WI-10002010 and WI-10004329 into the goal-scoped drain spec.' The severe-failure branch was not exercised in this window; no pass is claimed for it."
+    },
+    {
+      "id": "sovereignty-negative",
+      "passed": true,
+      "evidence": "Deliberately false expectations were rejected: (a) frontier-scope-sovereignty is non-critical; (b) a cross-goal placement could rate below severe. Live rollup.criticalKeys includes frontier-scope-sovereignty, so a fail or severe rating there is a critical failure. Active rubric revision 44 sovereignty model reads 'One silent cross-goal placement is a sovereignty breach.' The grading runbook rating scale defines severe as a crossed sovereignty boundary, including placement into another active goal's domain, and says a severe violation stands on one occurrence."
+    },
+    {
+      "id": "sovereignty-exact",
+      "passed": true,
+      "evidence": "Exact readback accepted: frontier-scope-sovereignty rating=pass, evidenceRead.complete=true; evidence 'No cross-goal work observed ... Not exercised: no cross-goal finding arose. Scope: MCP ledger only.' The severe-failure branch was not exercised in this window; no pass is claimed for it."
+    },
+    {
+      "id": "existing-fail-retained-negative",
+      "passed": true,
+      "evidence": "Deliberately false fixture or duplicate-grading expectation was rejected. Card EI-24713330305263301 has subject.kind=agent-run, synthesized=false, gradingAudit.state=passed (audit EI-24713725963525495, done). scorecards:list for this holder returned exactly two cards with hasMore=false: the terminal card and EI-24713260630186958, which carries a provisional stamp at 18:46:08Z. No new card or fixture goal was created by this check."
+    },
+    {
+      "id": "existing-fail-retained-exact",
+      "passed": true,
+      "evidence": "Exact readback accepted: rollup.verdict=fail, criticalFailures=[plan-fleet-materialization], criticalUnknowns=[goal-mode-foundation], coverage 15/15. The card was graded at rubric revision 34 and is retained as observed. It was not re-graded under revision 44."
+    }
+  ]
+}

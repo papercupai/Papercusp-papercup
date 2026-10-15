@@ -128,7 +128,7 @@ export function buildCapturePort(
       return { id: res.issue.id, created: true };
     }
     // Declined as a duplicate → attribute to the existing item if we found one.
-    return { id: res.possibleDuplicates[0]?.id ?? '', created: false };
+    return { id: res.possibleDuplicates?.[0]?.id ?? '', created: false };
   };
 }
 

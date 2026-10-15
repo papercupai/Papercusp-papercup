@@ -1,0 +1,82 @@
+{
+  "protocol": {
+    "version": "dream-evaluation-v1",
+    "sourceSnapshot": "b3b4bfc47eeec70823379149b8a5f50bb4c5d721af7370c2fcf493309d0ab656",
+    "benchmarkHash": "7cf39073b0ff798147649dd0ee5b770aa74b5635471a7c72e680daf58a85d7e0",
+    "oracleHash": "256c691f3d6ee4ffe953c0bc3f5a8925846eebb2fd82107ef2d9218398515d59",
+    "independentLabelsRef": "work-item:WI-10007888#native-graph-outcome-design; pending blinded independent executed outcomes",
+    "comparison": {
+      "manifestRevision": "problem-focused-2026-09-27-v1",
+      "scope": {
+        "workspaceId": "papercusp-workspace",
+        "potSlug": "papercusp"
+      },
+      "problemContext": {
+        "mode": "open-exploration",
+        "evidence": [],
+        "note": "Native P025: both treatments explore the same frozen current capability population; no owner problem evidence is invented."
+      },
+      "inputHash": "f8d9cf53cda458a81c90f60283facf49e4476bfbba94300dfe3a489f20e3a9f3",
+      "graphAblation": {
+        "treatments": [
+          "graph",
+          "control"
+        ],
+        "populationIds": [
+          "capability:code.secret-scanned-pack",
+          "capability:dream.source-freshness",
+          "capability:plans.spec-revisions",
+          "mechanism:coord.event-fire-receipt",
+          "mechanism:dream.cost-admission",
+          "mechanism:memory.hive-scope",
+          "mechanism:scout.phase-deadline"
+        ],
+        "samplerHash": "ab31101218c51a99ff5e36cb1b945a6948d7d4c77289a87d73edb19dbbb66f26",
+        "attemptsPerTreatment": 2,
+        "usdPerTreatment": 20,
+        "outcomeAssessment": "blinded-independent-executed-benefit"
+      }
+    },
+    "seed": "native-p025-current-graph-control-v1",
+    "models": {
+      "generator": "claude-haiku-4-5",
+      "reviewer": "gpt-5.6-sol:xhigh"
+    },
+    "arms": [
+      "blender",
+      "uniform-pair",
+      "structured-pair",
+      "structured-triple"
+    ],
+    "utilityHash": "616d1e533d668a0a3b1ebde93ff859ab387104fd263c8fcd85b66e13e8912410",
+    "costPhases": [
+      "indexing",
+      "retrieval",
+      "generation",
+      "review",
+      "verification",
+      "experiment"
+    ],
+    "limits": {
+      "attempts": 200,
+      "attemptsPerArm": 50,
+      "discoveryUsd": 200,
+      "discoveryUsdPerArm": 50,
+      "cycleAttempts": 3,
+      "cycleUsd": 10,
+      "rollingDayUsd": 200,
+      "experimentMinutes": 60,
+      "experimentCount": 12,
+      "experimentComputeUsd": 100
+    },
+    "analysis": {
+      "blocks": "source-snapshot/domain-coverage/model/run-window",
+      "seedPolicy": "seed:arm:attempt; matched A/B subset holds pair fixed with and without C",
+      "uncertainty": "cluster by source snapshot and proposal family; exploratory, not powered",
+      "stop": "stop on provenance/budget fault; stop at first cap; insufficient evidence is inconclusive",
+      "rejectionSample": "stratified blinded sample of rejected cases, same utility rubric",
+      "ablations": "A-only/B-only; faceted/flat; paired with/without C; calibration disjoint from held-out"
+    }
+  },
+  "pin": "20bb8955d6665afbc484718e573d864d9090fbe2d72fcdb0ea59f98883fcf99b"
+}

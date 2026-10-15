@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  boundedRowEscapeIds,
   collectGuaranteedExclusions,
   evaluateCollapseGuard,
   evaluateGoalFenceGuard,
@@ -407,5 +408,62 @@ describe('collectGuaranteedExclusions — conjunctive position only', () => {
 
   it('undefined filter is empty, not a crash', () => {
     expect(collectGuaranteedExclusions(undefined)).toEqual([]);
+  });
+});
+
+describe('evaluateGoalFenceGuard — fence-preserving row escape (WI-10005683)', () => {
+  const goal: FilterNode = { field: 'goal', op: '=', value: 'goal-60d3a8' };
+  const kind: FilterNode = { field: 'kind', op: 'in', value: ['bug', 'change', 'task'] };
+  const idLeaf: FilterNode = { field: 'id', op: '=', value: 'WI-10005683' };
+
+  it('ALLOWS the fence-preserving widen shape and discloses the rows it admits', () => {
+    const verdict = evaluateGoalFenceGuard({
+      previousFilter: goal,
+      candidateFilter: { any: [goal, idLeaf] },
+      previousSource: 'authored',
+      confirm: false,
+    });
+    expect(verdict.refuse).toBe(false);
+    expect(verdict.errors).toEqual([]);
+    expect(verdict.warning).toContain('RETAINS the incumbent positive goal fence');
+    expect(verdict.warning).toContain('WI-10005683');
+    // The escape must NOT be routed through the fence-DROP acknowledgement: that flag
+    // asserts the fence was dropped, which is false for this shape.
+    expect(verdict.warning).toContain('without confirmGoalFenceDrop:true');
+  });
+
+  it('CALIBRATION: still REFUSES a class widen, so the carve-out is id-bounded not any-permissive', () => {
+    const verdict = evaluateGoalFenceGuard({
+      previousFilter: goal,
+      candidateFilter: { any: [goal, kind] },
+      previousSource: 'authored',
+      confirm: false,
+    });
+    expect(verdict.refuse).toBe(true);
+    expect(verdict.errors[0]).toContain('DROPS the incumbent positive goal fence');
+  });
+
+  it('does NOT loosen hasGuaranteedPositiveGoalFence — an id arm is still not a goal fence', () => {
+    // Load-bearing: evaluateGoalFenceGuard reuses this same predicate for the INCUMBENT
+    // check, where treating an id leaf as a fence would call an id-only lane goal-scoped.
+    expect(hasGuaranteedPositiveGoalFence({ any: [goal, idLeaf] })).toBe(false);
+    expect(hasGuaranteedPositiveGoalFence(idLeaf)).toBe(false);
+  });
+
+  it('boundedRowEscapeIds: needs a surviving fence AND every other arm id-bounded', () => {
+    expect(boundedRowEscapeIds({ any: [goal, idLeaf] })).toEqual(['WI-10005683']);
+    expect(
+      boundedRowEscapeIds({ any: [goal, { field: 'id', op: 'in', value: ['WI-1', 'WI-2'] }] }),
+    ).toEqual(['WI-1', 'WI-2']);
+    // No surviving fence: that is a fence DROP, not an escape.
+    expect(boundedRowEscapeIds({ any: [idLeaf] })).toBeNull();
+    // A single class arm disqualifies the whole node.
+    expect(boundedRowEscapeIds({ any: [goal, idLeaf, kind] })).toBeNull();
+    // Vacuous id selectors name no row, so they are not an escape.
+    expect(boundedRowEscapeIds({ any: [goal, { field: 'id', op: '=', value: '   ' }] })).toBeNull();
+    expect(boundedRowEscapeIds({ any: [goal, { field: 'id', op: 'in', value: [] }] })).toBeNull();
+    // Not an `any` node at all.
+    expect(boundedRowEscapeIds(goal)).toBeNull();
+    expect(boundedRowEscapeIds(undefined)).toBeNull();
   });
 });

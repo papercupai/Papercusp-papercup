@@ -1,33 +1,49 @@
-import { readFileSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   callToolWithPressureRetry,
   callToolWithReplayRecovery,
   buildCallToolParams,
+  requireServingGeneration,
+  refreshToolCallAfterStaleContract,
   canDispatchWithoutCatalog,
   buildMcpUrl,
+  isForeignNativeSessionRejection,
+  shouldRetryWithoutNativeSession,
+  classifyConnectFailure,
   connectWithLocalRetry,
   connectWithOperatorCandidates,
   connectWithTokenFallback,
+  isModuleResolutionFailure,
+  listToolsWithTokenFallback,
+  listToolsWithNativeSessionFallback,
   codeRunRequestHash,
   listToolsWithLocalRetry,
   escapeJsonStringControls,
   formatJsonInputError,
   importSdkModuleWithInstallAwareness,
+  importPtoolSdkModule,
+  PTOOL_SDK_MODULE_LOADERS,
+  preparePtoolConnectionModules,
   parseArgs,
   parseJsonInput,
   ptoolConnectionRetryOptions,
   resolveContextTier,
   resolvePayloadHarnessScope,
   resolveHarnessScope,
+  mergeConvenienceArgs,
   resolveWorkspaceScope,
   resolvePtoolOperatorBase,
   resolvePtoolOperatorCandidates,
   resolvePtoolInvocationCandidates,
+  canDispatchOnFallbackOperator,
   shouldRediscoverOperatorUrl,
   resolveTokenPath,
   resolveTokenPaths,
   dispatchScriptedToolWithoutCatalog,
+  dispatchScriptedToolWithoutCatalogWithTokenFallback,
   formatToolCallFailure,
   formatToolCatalogBypass,
   formatToolCatalogFailure,
@@ -43,6 +59,8 @@ import {
   PTOOL_CALL_TOOL_TIMEOUT_MS,
   PTOOL_CHECKPOINT_RUN_TIMEOUT_MS,
   PTOOL_CONNECT_TIMEOUT_MS,
+  PTOOL_PINNED_LOCAL_CONNECT_MAX_ATTEMPTS,
+  PTOOL_PINNED_LOCAL_CONNECT_TOTAL_TIMEOUT_MS,
   PTOOL_COORD_ORIENT_TIMEOUT_MS,
   PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS,
   PTOOL_EVENTS_AWAIT_TIMEOUT_MS,
@@ -52,11 +70,15 @@ import {
   PTOOL_PLANS_AUDIT_TIMEOUT_MS,
   PTOOL_PLANS_GET_TIMEOUT_MS,
   PTOOL_PLANS_NEW_TIMEOUT_MS,
+  PTOOL_PLANS_START_TIMEOUT_MS,
   PTOOL_REQUIRE_CHECKPOINT_TIMEOUT_MS,
+  PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS,
   PTOOL_SESSION_REQUEST_COMPACTION_TIMEOUT_MS,
+  PTOOL_SERVICE_HEALTH_TIMEOUT_MS,
   PTOOL_WORK_ITEMS_GET_TIMEOUT_MS,
   PTOOL_SCORECARDS_GET_TIMEOUT_MS,
   PTOOL_WORK_ITEMS_COMPLETE_TIMEOUT_MS,
+  PTOOL_WORK_ITEMS_CLAIM_TIMEOUT_MS,
   PTOOL_WORK_ITEMS_CREATE_TIMEOUT_MS,
   PTOOL_FLEET_WIND_DOWN_TIMEOUT_MS,
   PTOOL_POST_CONNECT_RETRIES,
@@ -76,9 +98,11 @@ import {
   timeoutForTool,
   toolNotOkReason,
   unwrapOutputEnvelope,
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore -- plain .mjs launcher script, no type declarations.
 } from './ptool.mjs';
+import {
+  AGENT_LAUNCH_CLIENT_TIMEOUT_MS,
+  AGENT_LAUNCH_HANDLER_TIMEOUT_SEC,
+} from '../../../packages/operator-core/lib/agent-kickoff/launch-budgets.mjs';
 
 describe('ptool bootstrap dependencies', () => {
   it('keeps the repository ptool source directly executable (EI-22055633156739019)', () => {
@@ -132,6 +156,28 @@ describe('ptool bootstrap dependencies', () => {
     expect(wrappers.match(/install_executable_atomic "\$PSU_PATH" 755/g)?.length).toBe(1);
     expect(wrappers.match(/install_executable_atomic "\$PTOOL_PATH" 755/g)?.length).toBe(1);
     expect(wrappers).not.toMatch(/cat\s*>\s*"\$(?:PSU|PTOOL)_PATH"/);
+  });
+});
+
+describe('ptool JSON argument flag guidance', () => {
+  it('shows valid empty-object and stdin forms when the JSON value is missing', () => {
+    const jsonMessage = [
+      "--json requires a value;",
+      "use --json '{}' for an empty arguments object,",
+      'or --json - to read JSON from stdin',
+    ].join(' ');
+    const argsMessage = [
+      "--args requires a value;",
+      "use --args '{}' for an empty arguments object,",
+      'or --args - to read JSON from stdin',
+    ].join(' ');
+
+    expect(() => parseArgs(['coord:whoami', '--json'])).toThrow(jsonMessage);
+    expect(() => parseArgs(['coord:whoami', '--json', '--workspace=papercusp-workspace']))
+      .toThrow(jsonMessage);
+    expect(() => parseArgs(['coord:whoami', '--args'])).toThrow(argsMessage);
+    expect(parseArgs(['coord:whoami', '--json', '{}']).json).toBe('{}');
+    expect(parseArgs(['coord:whoami', '--json', '-']).json).toBe('-');
   });
 });
 
@@ -198,6 +244,78 @@ describe('ptool MCP identity binding', () => {
     expect(url.searchParams.get('harness')).toBe('papercusp');
   });
 
+  it('binds each Codex incarnation of the same owner across operator fallback routes', () => {
+    const client = 'su-retained-owner';
+    for (const nativeSession of ['native-predecessor', 'native-successor']) {
+      for (const host of ['http://127.0.0.1:9071', 'http://127.0.0.1:3170']) {
+        const url = buildMcpUrl(host, {
+          client,
+          env: { PAPERCUSP_SID: client, CODEX_SESSION_ID: nativeSession },
+        });
+        expect(url.searchParams.get('client')).toBe(client);
+        expect(url.searchParams.get('native_session')).toBe(nativeSession);
+      }
+    }
+  });
+
+  it('prefers the launcher-bound native session over a stale Codex environment id', () => {
+    const client = 'su-retained-owner';
+    const url = buildMcpUrl('http://127.0.0.1:3170', {
+      client,
+      env: {
+        PAPERCUSP_SID: client,
+        PAPERCUSP_NATIVE_SESSION_ID: 'native-bound-successor',
+        CODEX_SESSION_ID: 'native-stale-predecessor',
+      },
+    });
+
+    expect(url.searchParams.get('native_session')).toBe('native-bound-successor');
+  });
+
+  it('retries only a foreign inherited Codex claim without changing the owner', () => {
+    const client = 'su-cold-codex';
+    const env = { PAPERCUSP_SID: client, CODEX_SESSION_ID: 'inherited-native-id' };
+    const url = buildMcpUrl('http://127.0.0.1:3170', { client, env });
+    const refusal = {
+      isError: true,
+      content: [{ type: 'text', text: 'request_rejected: superuser_foreign_native_session' }],
+    };
+
+    expect(url.searchParams.get('native_session')).toBe('inherited-native-id');
+    expect(isForeignNativeSessionRejection(refusal)).toBe(true);
+    expect(shouldRetryWithoutNativeSession(refusal, { client, env })).toBe(true);
+    expect(shouldRetryWithoutNativeSession({
+      isError: true,
+      content: [{ type: 'text', text: 'request_rejected: authorization_denied' }],
+    }, { client, env })).toBe(false);
+    expect(shouldRetryWithoutNativeSession(refusal, {
+      client,
+      explicitNativeSession: false,
+      env: { ...env, PAPERCUSP_NATIVE_SESSION_ID: 'launcher-bound-id' },
+    })).toBe(false);
+    expect(shouldRetryWithoutNativeSession(refusal, {
+      client,
+      explicitNativeSession: true,
+      env,
+    })).toBe(false);
+    expect(buildMcpUrl('http://127.0.0.1:3170', {
+      client, env, nativeSessionOverride: null,
+    }).searchParams.has('native_session')).toBe(false);
+  });
+
+  it('preserves an explicitly selected native session and avoids binding another owner', () => {
+    const env = { PAPERCUSP_SID: 'su-current', CODEX_SESSION_ID: 'native-current' };
+    expect(buildMcpUrl('http://127.0.0.1:3170/api/mcp?native_session=native-explicit', {
+      client: 'su-current', env,
+    }).searchParams.get('native_session')).toBe('native-explicit');
+    expect(buildMcpUrl('http://127.0.0.1:3170', {
+      client: 'su-other', env,
+    }).searchParams.has('native_session')).toBe(false);
+    expect(buildMcpUrl('http://127.0.0.1:3170', {
+      client: 'su-current', env: { PAPERCUSP_SID: 'su-current' },
+    }).searchParams.has('native_session')).toBe(false);
+  });
+
   it('defaults direct sessions to trimmed payloads and allows an explicit full escape hatch', () => {
     expect(resolveContextTier({ env: { NODE_ENV: 'test' } })).toBe('trimmed');
     expect(resolveContextTier({ env: { NODE_ENV: 'test', PAPERCUSP_CONTEXT_TIER: ' full ' } })).toBe('full');
@@ -237,6 +355,71 @@ describe('ptool MCP identity binding', () => {
 
     expect(resolvePayloadHarnessScope(payload, { toolName: 'tools:invoke' })).toBe('papercusp');
     expect(resolveHarnessScope({ payload, toolName: 'tools:invoke', env })).toBe('papercusp');
+  });
+
+  it('injects ambient harness only on variants that accept the scope argument', () => {
+    const scope = { workspace: null, harness: 'papercusp' };
+    const flattenedReviewSchema = {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['claim', 'claim-next', 'resubmit'] },
+        id: { type: 'string' },
+        harness: { type: 'string' },
+      },
+      required: ['mode'],
+      additionalProperties: false,
+    };
+
+    expect(mergeConvenienceArgs(
+      { mode: 'resubmit', id: 'WI-7' },
+      scope,
+      flattenedReviewSchema,
+      { toolName: 'improvements:agent-review' },
+    )).toEqual({ mode: 'resubmit', id: 'WI-7' });
+    expect(mergeConvenienceArgs(
+      { mode: 'claim', id: 'WI-8' },
+      scope,
+      flattenedReviewSchema,
+      { toolName: 'improvements:agent-review' },
+    )).toEqual({ mode: 'claim', id: 'WI-8', harness: 'papercusp' });
+    expect(mergeConvenienceArgs(
+      { mode: 'claim-next' },
+      scope,
+      flattenedReviewSchema,
+      { toolName: 'improvements:agent-review' },
+    )).toEqual({ mode: 'claim-next', harness: 'papercusp' });
+
+    const flattenedRehomeSchema = {
+      type: 'object',
+      properties: { op: { type: 'string', enum: ['classify', 'move'] }, id: { type: 'string' }, harness: { type: 'string' } },
+      required: ['op', 'id'],
+      additionalProperties: false,
+    };
+    expect(mergeConvenienceArgs(
+      { op: 'classify', id: 'WI-9' },
+      scope,
+      flattenedRehomeSchema,
+      { toolName: 'work_items:rehome' },
+    )).toEqual({ op: 'classify', id: 'WI-9' });
+
+    const flattenedWorkScopeSchema = {
+      type: 'object',
+      properties: { op: { type: 'string', enum: ['get', 'check', 'set', 'clear'] }, harness: { type: 'string' } },
+      required: ['op'],
+      additionalProperties: false,
+    };
+    expect(mergeConvenienceArgs(
+      { op: 'get' },
+      scope,
+      flattenedWorkScopeSchema,
+      { toolName: 'workspace:work_scope' },
+    )).toEqual({ op: 'get' });
+    expect(mergeConvenienceArgs(
+      { op: 'check' },
+      scope,
+      flattenedWorkScopeSchema,
+      { toolName: 'workspace:work_scope' },
+    )).toEqual({ op: 'check', harness: 'papercusp' });
   });
 
   it('rejects unsupported tool-specific flags instead of silently dropping them', () => {
@@ -290,6 +473,27 @@ describe('ptool operator routing', () => {
     })).toBe('http://127.0.0.1:3170');
   });
 
+  it('routes configured local staging pins through the same-vintage staging proxy', () => {
+    expect(resolvePtoolOperatorBase({
+      PAPERCUSP_HONO_PORT: '3170',
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3070/api/mcp',
+      PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9071',
+      PAPERCUSP_MCP_STAGING_PROXY_PORT: '9171',
+    })).toBe('http://127.0.0.1:9171');
+
+    expect(resolvePtoolOperatorCandidates(
+      { PAPERCUSP_MCP_STAGING_PROXY_PORT: '9171' },
+      'http://localhost:3170/api/mcp?superuser=1',
+    )).toEqual(['http://127.0.0.1:9171/api/mcp?superuser=1']);
+  });
+
+  it('keeps direct staging pins when staging proxy routing is disabled', () => {
+    expect(resolvePtoolOperatorCandidates(
+      { PAPERCUSP_MCP_STAGING_PROXY_PORT: '9171', PAPERCUSP_MCP_STAGING_PROXY: '0' },
+      'http://localhost:3170',
+    )).toEqual(['http://localhost:3170']);
+  });
+
   it('keeps the resilient proxy when it fronts the current host', () => {
     expect(resolvePtoolOperatorBase({
       PAPERCUSP_HONO_PORT: '3070',
@@ -309,17 +513,21 @@ describe('ptool operator routing', () => {
     ]);
   });
 
-  it('pins named calls to their selected operator while catalog browsing may recover', () => {
+  it('keeps implicit fallback candidates available for named calls, while explicit URLs stay pinned', () => {
     const env = {
       PAPERCUSP_HONO_PORT: '3271',
       PAPERCUSP_OPERATOR_URL: 'http://localhost:3271',
     };
     expect(resolvePtoolInvocationCandidates({ tool: 'plans:get-spec-evidence' }, env))
-      .toEqual(['http://127.0.0.1:3271']);
+      .toEqual(['http://127.0.0.1:3271', 'http://127.0.0.1:3070']);
     expect(resolvePtoolInvocationCandidates({ list: true }, env))
       .toEqual(['http://127.0.0.1:3271', 'http://127.0.0.1:3070']);
     expect(resolvePtoolInvocationCandidates({ tool: 'plans:get-spec-evidence', url: 'http://127.0.0.1:3170' }, env))
       .toEqual(['http://127.0.0.1:3170']);
+    expect(canDispatchOnFallbackOperator({ annotations: { readOnlyHint: true } }, true)).toBe(true);
+    expect(canDispatchOnFallbackOperator({ annotations: { readOnlyHint: false } }, true)).toBe(false);
+    expect(canDispatchOnFallbackOperator({}, true)).toBe(false);
+    expect(canDispatchOnFallbackOperator({ annotations: { readOnlyHint: true } }, false)).toBe(true);
   });
 
   it('does not add a fallback for an explicit URL or the proxy-backed canonical host', () => {
@@ -353,11 +561,22 @@ describe('ptool operator routing', () => {
     })).toBe(false);
   });
 
-  it('does not spend the managed retry budget on an explicit or bare env URL pin', () => {
+  it('keeps explicit and bare local URL pins in place with a short retry budget', () => {
+    const localPinRetryOptions = {
+      maxAttempts: PTOOL_PINNED_LOCAL_CONNECT_MAX_ATTEMPTS,
+      totalTimeoutMs: PTOOL_PINNED_LOCAL_CONNECT_TOTAL_TIMEOUT_MS,
+    };
     expect(ptoolConnectionRetryOptions({ url: 'http://127.0.0.1:32951' }, {}))
-      .toEqual({ maxAttempts: 1 });
+      .toEqual(localPinRetryOptions);
     expect(ptoolConnectionRetryOptions({}, {
       PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:32951',
+    })).toEqual(localPinRetryOptions);
+    expect(ptoolConnectionRetryOptions({ url: 'https://example.test' }, {}))
+      .toEqual({ maxAttempts: 1 });
+    expect(ptoolConnectionRetryOptions({ url: 'http://127.0.0.1:9071' }, {}))
+      .toEqual({ maxAttempts: 1 });
+    expect(ptoolConnectionRetryOptions({ url: 'http://127.0.0.1:3170' }, {
+      PAPERCUSP_MCP_STAGING_PROXY_PORT: '9171',
     })).toEqual({ maxAttempts: 1 });
     expect(ptoolConnectionRetryOptions({}, {
       PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:24689',
@@ -427,9 +646,234 @@ describe('ptool bearer-token resolution', () => {
     expect(connectOnce).toHaveBeenCalledTimes(1);
     expect(isInvalidSuperuserBearerFailure(new Error('HTTP 401: unauthorized'))).toBe(false);
   });
+
+  it('reconnects with the next implicit token when read-only tools/list rejects the first bearer', async () => {
+    const authError = new Error('MCP error: mcp_auth_failed: superuser_invalid_bearer');
+    const firstClient = { close: vi.fn() };
+    const secondClient = { close: vi.fn() };
+    const catalog = [{ name: 'work_items:get' }];
+    const reconnect = vi.fn().mockResolvedValue(secondClient);
+    const listTools = vi.fn()
+      .mockRejectedValueOnce(authError)
+      .mockResolvedValueOnce(catalog);
+
+    const result = await listToolsWithTokenFallback(
+      firstClient,
+      ['/workspace/superuser-token', '/tmp/shared-superuser-token'],
+      '/workspace/superuser-token',
+      reconnect,
+      listTools,
+    );
+
+    expect(result).toEqual({ client: secondClient, tools: catalog, error: null });
+    expect(reconnect).toHaveBeenCalledTimes(1);
+    expect(reconnect).toHaveBeenCalledWith('/tmp/shared-superuser-token');
+    expect(firstClient.close).toHaveBeenCalledOnce();
+    expect(listTools.mock.calls).toEqual([[firstClient], [secondClient]]);
+  });
+
+  it('retries tools/list once without an inherited foreign native-session claim', async () => {
+    const client = 'su-cold-codex';
+    const env = { PAPERCUSP_SID: client, CODEX_SESSION_ID: 'inherited-native-id' };
+    const firstClient = { close: vi.fn() };
+    const retryClient = { close: vi.fn() };
+    const catalog = [{ name: 'coord:whoami' }];
+    const refusal = new Error('MCP error -32603: mcp_auth_failed: superuser_foreign_native_session');
+    const discoverTools = vi.fn()
+      .mockResolvedValueOnce({ client: firstClient, tools: null, error: refusal })
+      .mockResolvedValueOnce({ client: retryClient, tools: catalog, error: null });
+    const reconnectWithoutNativeSession = vi.fn().mockResolvedValue(retryClient);
+    const closeClient = vi.fn().mockResolvedValue(undefined);
+
+    const result = await listToolsWithNativeSessionFallback(firstClient, {
+      discoverTools,
+      reconnectWithoutNativeSession,
+      client,
+      env,
+      closeClient,
+    });
+
+    expect(result).toEqual({
+      client: retryClient,
+      tools: catalog,
+      error: null,
+      nativeSessionRetried: true,
+    });
+    expect(discoverTools.mock.calls).toEqual([[firstClient], [retryClient]]);
+    expect(reconnectWithoutNativeSession).toHaveBeenCalledOnce();
+    expect(closeClient).toHaveBeenCalledWith(firstClient);
+    expect(isForeignNativeSessionRejection(refusal)).toBe(true);
+  });
+
+  it('keeps launcher-bound identities and unrelated catalog failures terminal', async () => {
+    const client = 'su-cold-codex';
+    const firstClient = { close: vi.fn() };
+    const refusal = new Error('MCP error -32603: mcp_auth_failed: superuser_foreign_native_session');
+    const reconnectWithoutNativeSession = vi.fn();
+
+    const boundResult = await listToolsWithNativeSessionFallback(firstClient, {
+      discoverTools: vi.fn().mockResolvedValue({ client: firstClient, tools: null, error: refusal }),
+      reconnectWithoutNativeSession,
+      client,
+      env: {
+        PAPERCUSP_SID: client,
+        PAPERCUSP_NATIVE_SESSION_ID: 'launcher-bound-id',
+        CODEX_SESSION_ID: 'inherited-native-id',
+      },
+    });
+    expect(boundResult.error).toBe(refusal);
+    expect(boundResult.nativeSessionRetried).toBe(false);
+
+    const unrelatedError = new Error('MCP error: mcp_auth_failed: superuser_invalid_bearer');
+    const unrelatedResult = await listToolsWithNativeSessionFallback(firstClient, {
+      discoverTools: vi.fn().mockResolvedValue({ client: firstClient, tools: null, error: unrelatedError }),
+      reconnectWithoutNativeSession,
+      client,
+      env: { PAPERCUSP_SID: client, CODEX_SESSION_ID: 'inherited-native-id' },
+    });
+    expect(unrelatedResult.error).toBe(unrelatedError);
+    expect(unrelatedResult.nativeSessionRetried).toBe(false);
+    expect(reconnectWithoutNativeSession).not.toHaveBeenCalled();
+  });
+
+  it('keeps explicit token pins and non-bearer catalog errors terminal', async () => {
+    const explicitError = new Error('MCP error: mcp_auth_failed: superuser_invalid_bearer');
+    const explicitReconnect = vi.fn();
+    const explicitResult = await listToolsWithTokenFallback(
+      { close: vi.fn() },
+      ['/explicit/superuser-token'],
+      '/explicit/superuser-token',
+      explicitReconnect,
+      vi.fn().mockRejectedValue(explicitError),
+    );
+    expect(explicitResult.error).toBe(explicitError);
+    expect(explicitReconnect).not.toHaveBeenCalled();
+
+    const genericError = new Error('HTTP 401: unauthorized');
+    const genericReconnect = vi.fn();
+    const genericResult = await listToolsWithTokenFallback(
+      { close: vi.fn() },
+      ['/workspace/superuser-token', '/tmp/shared-superuser-token'],
+      '/workspace/superuser-token',
+      genericReconnect,
+      vi.fn().mockRejectedValue(genericError),
+    );
+    expect(genericResult.error).toBe(genericError);
+    expect(genericReconnect).not.toHaveBeenCalled();
+  });
 });
 
 describe('ptool call deadlines', () => {
+  it('waits for the declared graph compiler and runtime budget on direct and deferred calls', () => {
+    const args = { op: 'symbol', name: 'target', runtime: 'staging-operator' };
+    const direct = timeoutForTool('graph:query', args);
+    const deferred = timeoutForTool('tools:invoke', { name: 'graph:query', args });
+    // The handler owns 90s and MCP adds 5s. The CLI must observe its typed
+    // error as well as a successful answer, instead of cutting either off.
+    expect(direct).toBeGreaterThan(95_000);
+    expect(direct).toBeLessThanOrEqual(105_000);
+    expect(deferred).toBe(direct);
+    expect(timeoutForTool('ordinary:read')).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it('lets lsp:query reach its declared handler deadline on direct and deferred calls', () => {
+    const args = { op: 'diagnostics', file: 'packages/operator-core/example.ts' };
+    const direct = timeoutForTool('lsp:query', args);
+    const deferred = timeoutForTool('tools:invoke', { name: 'lsp:query', args });
+
+    // The handler owns 90s and MCP adds 5s; retain 5s of client-side margin.
+    expect(direct).toBe(100_000);
+    expect(direct).toBeGreaterThan(95_000);
+    expect(deferred).toBe(direct);
+  });
+
+  it('lets logs:read return its structured journal timeout on both call routes', () => {
+    expect(timeoutForTool('logs:read')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'logs:read',
+      args: { unit: 'papercusp-bg-host', since: '-8 minutes' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('logs:read')).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it('lets coord:feed reach the MCP transport ceiling on direct and deferred routes', () => {
+    const args = { owner: 'su-example', since: '2026-10-08T13:33:58Z', limit: 20 };
+    const direct = timeoutForTool('coord:feed', args);
+    const deferred = timeoutForTool('tools:invoke', { name: 'coord:feed', args });
+
+    expect(direct).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(deferred).toBe(direct);
+    expect(direct).toBeGreaterThan(55_000);
+  });
+
+  it('lets docs:get reach the MCP transport deadline on direct and deferred routes', () => {
+    const args = {
+      slugs: ['agent-insights/ptool-client-timeout-must-outlive-tool-server-clamp'],
+      harness: 'engineering',
+    };
+    expect(timeoutForTool('docs:get', args)).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', { name: 'docs:get', args }))
+      .toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('docs:get', args)).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it('keeps the client alive only for bounded read-only admit previews', () => {
+    expect(PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS).toBe(305_000);
+    expect(timeoutForTool('release:repair-queue', { op: 'admit' }))
+      .toBe(PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS);
+    expect(timeoutForTool('release:repair-queue', { op: 'admit', confirm: false }))
+      .toBe(PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'release:repair-queue',
+      args: { op: 'admit' },
+    })).toBe(PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'release:repair-queue',
+      args: { op: 'admit', confirm: false },
+    })).toBe(PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS);
+    expect(timeoutForTool('release:repair-queue', { op: 'converge', confirm: false }))
+      .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'release:repair-queue',
+      args: { op: 'converge', confirm: false },
+    })).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('release:repair-queue', { op: 'admit', confirm: true }))
+      .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('release:repair-queue', { op: 'get' }))
+      .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it('preserves the foreground budget for PR-delivery audits on direct and deferred routes', () => {
+    const args = { harness: 'papercusp', prDeliveryAudit: { ruleIds: ['f402c8d4-8a82-473f-be0f-73f45597e8f3'] } };
+    expect(timeoutForTool('work_items:list', args)).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', { name: 'work_items:list', args }))
+      .toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS).toBeGreaterThan(55_000);
+    expect(timeoutForTool('work_items:list', { harness: 'papercusp' })).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', { name: 'work_items:list', args: { harness: 'papercusp' } }))
+      .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it('keeps the client alive for unconfirmed release-cut reclaim previews only', () => {
+    const preview = { op: 'reclaim', confirm: false };
+    expect(timeoutForTool('release:cut', preview)).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', { name: 'release:cut', args: preview }))
+      .toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('release:cut', { op: 'reclaim' }))
+      .toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+
+    expect(timeoutForTool('release:cut', { op: 'reclaim', confirm: true }))
+      .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'release:cut',
+      args: { op: 'reclaim', confirm: true },
+    })).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('release:cut', { op: 'status' }))
+      .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('release:cut', { op: 'reclaim', confirm: false }))
+      .toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
   it('keeps the normal liveness ceiling while allowing durable continuations to return', () => {
     expect(timeoutForTool('coord:send')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     // EI-22598752399389413: coord:wake has no explicit timeoutSec and its
@@ -441,6 +885,15 @@ describe('ptool call deadlines', () => {
       name: 'coord:wake',
       args: { to: 'su-parked-agent', note: 'timeout mapping regression' },
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // coord:thread has no shorter tool timeout than the read-only MCP deadline;
+    // preserve the 60s client budget on direct and deferred calls. This is a
+    // client/server contract guard, not proof of the historical report's cause.
+    expect(timeoutForTool('coord:thread')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'coord:thread',
+      args: { root_msg_id: 'coord-thread-timeout-regression' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS).toBe(60_000);
     // EI-21863905839650704: coord:declare-intent declares no timeoutSec (bound
     // only by the flat 55s MCP_DEADLINE_MS floor), and a reporter observed the
     // flat 30s client cutoff abort the call with "mutation may have executed"
@@ -450,6 +903,18 @@ describe('ptool call deadlines', () => {
       name: 'coord:declare-intent',
       args: { intent: 'timeout mapping regression' },
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // EI-25808449616032701: resume-recovery identity/message/spec reads have
+    // no shorter server timeout than the MCP transport cap. Cover direct and
+    // deferred routes so ptool cannot preempt their structured result at 30s.
+    for (const [name, args] of [
+      ['coord:whoami', {}],
+      ['coord:read', { msg_id: 'coord-send-timeout-regression' }],
+      ['scheduler:get_claim_spec', { fleet: 'timeout-regression' }],
+    ] as const) {
+      expect(timeoutForTool(name, args)).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+      expect(timeoutForTool('tools:invoke', { name, args }))
+        .toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    }
     // EI-23173103907673402: live tools:find schema searches can cross the
     // ordinary 30s client cutoff; cover direct and deferred discovery routes.
     expect(timeoutForTool('tools:find')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
@@ -466,6 +931,13 @@ describe('ptool call deadlines', () => {
       args: { blueprintId: 'papercusp-engineer' },
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    // EI-254011: a measured storage:usage call settled server-side after the
+    // ordinary 30s ptool deadline. Cover direct and deferred routes.
+    expect(timeoutForTool('storage:usage')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'storage:usage',
+      args: { category: 'scratch' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('fleet:launch-on-plan')).toBe(300_000);
     expect(timeoutForTool('tools:invoke', { name: 'fleet:launch-on-plan' })).toBe(300_000);
     // EI-21831468700319864: fleet:wind-down inherits the 60s dispatch default;
@@ -497,12 +969,21 @@ describe('ptool call deadlines', () => {
     })).toBe(PTOOL_BACKUP_RESTORE_TIMEOUT_MS);
     expect(timeoutForTool('templates:new-app')).toBe(PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS);
     expect(timeoutForTool('scorecards:emit')).toBe(PTOOL_SCORECARD_EMIT_TIMEOUT_MS);
+    // EI-25378335241705149: clause certification emits passing scorecards using
+    // the same 900s server budget; cover the direct and deferred paths so the
+    // ordinary 30s client deadline cannot hide its durable result.
+    expect(timeoutForTool('plans:certify-spec-clauses')).toBe(PTOOL_SCORECARD_EMIT_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'plans:certify-spec-clauses',
+      args: { planSlug: 'timeout-mapping-regression' },
+    })).toBe(PTOOL_SCORECARD_EMIT_TIMEOUT_MS);
     // EI-22780156976598155: headless boot/kickoff/fresh-launch verification
-    // can use the tool's 90s handler budget. Keep direct and deferred routes
-    // outside the handler + 5s MCP settlement window.
+    // follows the shared launch budget. Keep direct and deferred routes outside
+    // its handler timeout plus the 5s MCP settlement window.
     expect(timeoutForTool('capability:launch-agent')).toBe(PTOOL_AGENT_LAUNCH_TIMEOUT_MS);
-    expect(PTOOL_AGENT_LAUNCH_TIMEOUT_MS).toBe(100_000);
-    expect(PTOOL_AGENT_LAUNCH_TIMEOUT_MS).toBeGreaterThan(95_000);
+    expect(PTOOL_AGENT_LAUNCH_TIMEOUT_MS).toBe(AGENT_LAUNCH_CLIENT_TIMEOUT_MS);
+    expect(PTOOL_AGENT_LAUNCH_TIMEOUT_MS)
+      .toBeGreaterThan((AGENT_LAUNCH_HANDLER_TIMEOUT_SEC * 1000) + 5000);
     expect(timeoutForTool('tools:invoke', {
       name: 'capability:launch-agent',
       args: { agent: 'claude', headless: false },
@@ -518,6 +999,7 @@ describe('ptool call deadlines', () => {
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('events:await')).toBe(PTOOL_EVENTS_AWAIT_TIMEOUT_MS);
     expect(timeoutForTool('plans:get')).toBe(PTOOL_PLANS_GET_TIMEOUT_MS);
+    expect(PTOOL_PLANS_GET_TIMEOUT_MS).toBeGreaterThan(125_000);
     // EI-22774777434821469: completion/activation audits resolve all submitted
     // citations before persisting. Cover direct and deferred calls so a valid
     // multi-item audit cannot be cut off at ptool's ordinary 30s deadline.
@@ -538,11 +1020,12 @@ describe('ptool call deadlines', () => {
     // EI-23079930157206205: service-health's fixed-endpoint/systemd fan-out
     // can outlive ptool's ordinary 30s client cutoff. Cover both transport
     // routes so a valid read is not surfaced as outcome-unknown.
-    expect(timeoutForTool('dev:service_health')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('dev:service_health')).toBe(PTOOL_SERVICE_HEALTH_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'dev:service_health',
       args: { target: 'staging' },
-    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    })).toBe(PTOOL_SERVICE_HEALTH_TIMEOUT_MS);
+    expect(PTOOL_SERVICE_HEALTH_TIMEOUT_MS).toBeGreaterThan(77_226);
     // EI-23098800759403082: carry-respawn's 600s server budget + 5s MCP
     // settlement buffer must also apply when wrapped by tools:invoke.
     expect(timeoutForTool('session:request-compaction')).toBe(PTOOL_SESSION_REQUEST_COMPACTION_TIMEOUT_MS);
@@ -552,13 +1035,15 @@ describe('ptool call deadlines', () => {
     })).toBe(PTOOL_SESSION_REQUEST_COMPACTION_TIMEOUT_MS);
     expect(PTOOL_SESSION_REQUEST_COMPACTION_TIMEOUT_MS).toBe(610_000);
     expect(PTOOL_SESSION_REQUEST_COMPACTION_TIMEOUT_MS).toBeGreaterThan(605_000);
-    // EI-21567372634210816: plans:start has a 60s dispatcher default while
-    // ptool's ordinary client deadline is 30s; cover both transport routes.
-    expect(timeoutForTool('plans:start')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // EI-25882027630574649: a successful plans:start took 77.763s; its
+    // declared 120s server timeout gives MCP a 125s deadline. Cover both routes.
+    expect(timeoutForTool('plans:start')).toBe(PTOOL_PLANS_START_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'plans:start',
       args: { slug: 'fleet-worker-lifecycle-convergence-2026-08-26', harness: 'papercusp' },
-    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    })).toBe(PTOOL_PLANS_START_TIMEOUT_MS);
+    expect(PTOOL_PLANS_START_TIMEOUT_MS).toBe(130_000);
+    expect(PTOOL_PLANS_START_TIMEOUT_MS).toBeGreaterThan(125_000);
     expect(PTOOL_PLANS_NEW_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('plans:set-plan-status')).toBe(60_000);
     expect(timeoutForTool('work_items:get')).toBe(PTOOL_WORK_ITEMS_GET_TIMEOUT_MS);
@@ -604,6 +1089,7 @@ describe('ptool call deadlines', () => {
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('activity:tool-log')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('sessions:search')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('sessions:read')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('release:deploy')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     // EI-22646214305093468: checkpoint-run detaches the ~55min suite, but its
     // admission/launch receipt still crosses the 55s MCP floor. Keep both
@@ -662,6 +1148,10 @@ describe('ptool call deadlines', () => {
       args: { query: 'timeout', mode: 'verbatim', limit: 1, context: 0 },
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
+      name: 'sessions:read',
+      args: { session: 'codex:timeout-mapping-regression', tail: 10, text_limit: 1000 },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
       name: 'release:deploy',
       args: { op: 'status' },
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
@@ -678,21 +1168,29 @@ describe('ptool call deadlines', () => {
       args: { title: 'timeout mapping regression' },
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('coord:orient')).toBe(PTOOL_COORD_ORIENT_TIMEOUT_MS);
+    // EI-25380603241293913: a slow directed inbox read includes its presence
+    // rebootstrap; cover both dispatch paths and keep margin over the measured
+    // 58.7s completion rather than falling back to 30s or the 60s foreground cap.
+    expect(timeoutForTool('coord:inbox')).toBe(PTOOL_COORD_ORIENT_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'coord:inbox',
+      args: { directed: true },
+    })).toBe(PTOOL_COORD_ORIENT_TIMEOUT_MS);
     expect(timeoutForTool('release:trace')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('coord:presence')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     // EI-21562940235111441: the fleet-scope reconciliation has its own 30s
     // server watchdog; ptool must leave enough time for its typed timeout
     // result to cross the MCP transport instead of racing it at 30s.
     expect(timeoutForTool('scheduler:get_next')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
-    // EI-22722799928417577: by-id claims are idempotent writes whose claim-time
-    // advisory reads can cross the flat 30s client deadline. Cover direct and
-    // deferred calls so a slow claim returns its typed result before ptool
-    // reports outcome-unknown.
-    expect(timeoutForTool('work_items:claim')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // EI-25882027630574649: a successful claim took 69.467s, while its new
+    // 120s server timeout gives MCP a 125s deadline. Cover direct and deferred calls.
+    expect(timeoutForTool('work_items:claim')).toBe(PTOOL_WORK_ITEMS_CLAIM_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'work_items:claim',
       args: { id: 'EI-22722799928417577' },
-    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    })).toBe(PTOOL_WORK_ITEMS_CLAIM_TIMEOUT_MS);
+    expect(PTOOL_WORK_ITEMS_CLAIM_TIMEOUT_MS).toBe(130_000);
+    expect(PTOOL_WORK_ITEMS_CLAIM_TIMEOUT_MS).toBeGreaterThan(125_000);
     expect(timeoutForTool('tools:invoke', {
       name: 'plans:get',
       args: { slug: 'nonp2p-bug-drain-fleet-2026-08-16', harness: 'papercusp' },
@@ -712,6 +1210,23 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('tools:invoke', {
       name: 'scheduler:get_next',
       args: { harness: 'papercusp' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // EI-25420975795006444: set_state inherits MCP's 55s server deadline;
+    // keep both transports above it so a committed write returns its receipt.
+    const setStateArgs = { id: 'WI-123', state: 'open' };
+    expect(timeoutForTool('work_items:set_state', setStateArgs)).toBeGreaterThan(55_000);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'work_items:set_state',
+      args: setStateArgs,
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // EI-25455246754148819: blocker writes include payload persistence and a
+    // lifecycle transition; the ptool client must outlive the server's 55s
+    // default deadline on both direct and deferred dispatch paths.
+    const setBlockerArgs = { id: 'EI-25455246754148819', kind: 'runtime', ref: 'runtime:test' };
+    expect(timeoutForTool('work_items:set_blocker', setBlockerArgs)).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'work_items:set_blocker',
+      args: setBlockerArgs,
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     // EI-21574172453638335: locks:acquire's bounded blocking wait must not
     // fall through to the flat 30s client deadline, including via tools:invoke.
@@ -798,6 +1313,17 @@ describe('ptool call deadlines', () => {
         maxTotalTimeout: PTOOL_GIT_SYNC_RUN_TIMEOUT_MS,
       },
     );
+  });
+});
+
+describe('ptool content-summary transport budget', () => {
+  it('keeps direct and deferred summaries outside their 190-second server budget', () => {
+    const args = { operation: 'summarize', summary: { timeoutMs: 180_000 } };
+    const direct = timeoutForTool('documents:read', args);
+    const deferred = timeoutForTool('tools:invoke', { name: 'documents:read', args });
+    expect(direct).toBeGreaterThan(190_000);
+    expect(deferred).toBe(direct);
+    expect(timeoutForTool('ordinary:read')).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
   });
 });
 
@@ -1033,6 +1559,136 @@ describe('ptool catalog-independent scripted dispatch', () => {
     );
   });
 
+  it('retries the exact pre-dispatch bearer refusal with the next implicit token and same key', async () => {
+    const rejected = {
+      isError: true,
+      content: [{ type: 'text', text: 'request_rejected: superuser_invalid_bearer' }],
+    };
+    const success = { content: [{ type: 'text', text: '{"ok":true}' }] };
+    const firstClient = { callTool: vi.fn().mockResolvedValue(rejected), close: vi.fn() };
+    const secondClient = { callTool: vi.fn().mockResolvedValue(success), close: vi.fn() };
+    const reconnectWithTokenPath = vi.fn().mockResolvedValue(secondClient);
+    const tokenPaths = ['/workspace/superuser-token', '/home/tester/.papercusp/superuser-token'];
+
+    await expect(dispatchScriptedToolWithoutCatalogWithTokenFallback(
+      firstClient,
+      'rubrics:get',
+      { rubricRef: 'pot-coordination-health' },
+      {
+        idempotencyKey: 'catalog-bypass-auth-retry-1',
+        tokenPaths,
+        initialTokenPath: tokenPaths[0],
+        reconnectWithTokenPath,
+        timeoutMs: 7,
+      },
+    )).resolves.toEqual({ client: secondClient, result: success });
+
+    expect(reconnectWithTokenPath).toHaveBeenCalledOnce();
+    expect(reconnectWithTokenPath).toHaveBeenCalledWith(tokenPaths[1]);
+    expect(firstClient.close).toHaveBeenCalledOnce();
+    expect(firstClient.callTool.mock.calls).toEqual(secondClient.callTool.mock.calls);
+    expect(secondClient.callTool.mock.calls[0][0]._meta.idempotencyKey)
+      .toBe('catalog-bypass-auth-retry-1');
+  });
+
+  it('keeps pinned-token and non-matching tool results terminal during catalog bypass', async () => {
+    const authRefusal = {
+      isError: true,
+      content: [{ type: 'text', text: 'request_rejected: superuser_invalid_bearer' }],
+    };
+    const reconnectWithTokenPath = vi.fn();
+    const pinnedClient = { callTool: vi.fn().mockResolvedValue(authRefusal), close: vi.fn() };
+
+    await expect(dispatchScriptedToolWithoutCatalogWithTokenFallback(
+      pinnedClient,
+      'rubrics:get',
+      {},
+      {
+        idempotencyKey: 'catalog-bypass-pinned-1',
+        tokenPaths: ['/explicit/superuser-token'],
+        initialTokenPath: '/explicit/superuser-token',
+        reconnectWithTokenPath,
+        timeoutMs: 7,
+      },
+    )).resolves.toEqual({ client: pinnedClient, result: authRefusal });
+    expect(reconnectWithTokenPath).not.toHaveBeenCalled();
+
+    const genericResult = {
+      isError: true,
+      content: [{ type: 'text', text: 'request_rejected: tool_not_available' }],
+    };
+    const genericClient = { callTool: vi.fn().mockResolvedValue(genericResult), close: vi.fn() };
+    await expect(dispatchScriptedToolWithoutCatalogWithTokenFallback(
+      genericClient,
+      'rubrics:get',
+      {},
+      {
+        idempotencyKey: 'catalog-bypass-other-error-1',
+        tokenPaths: ['/workspace/superuser-token', '/home/tester/.papercusp/superuser-token'],
+        initialTokenPath: '/workspace/superuser-token',
+        reconnectWithTokenPath,
+        timeoutMs: 7,
+      },
+    )).resolves.toEqual({ client: genericClient, result: genericResult });
+    expect(reconnectWithTokenPath).not.toHaveBeenCalled();
+
+    const listStyleBearerFailure = {
+      isError: true,
+      content: [{ type: 'text', text: 'mcp_auth_failed: superuser_invalid_bearer' }],
+    };
+    const listStyleClient = { callTool: vi.fn().mockResolvedValue(listStyleBearerFailure), close: vi.fn() };
+    await expect(dispatchScriptedToolWithoutCatalogWithTokenFallback(
+      listStyleClient,
+      'rubrics:get',
+      {},
+      {
+        idempotencyKey: 'catalog-bypass-list-style-auth-1',
+        tokenPaths: ['/workspace/superuser-token', '/home/tester/.papercusp/superuser-token'],
+        initialTokenPath: '/workspace/superuser-token',
+        reconnectWithTokenPath,
+        timeoutMs: 7,
+      },
+    )).resolves.toEqual({ client: listStyleClient, result: listStyleBearerFailure });
+    expect(reconnectWithTokenPath).not.toHaveBeenCalled();
+  });
+
+  it('skips an unavailable implicit token file and tries the next candidate', async () => {
+    const authRefusal = {
+      isError: true,
+      content: [{ type: 'text', text: 'request_rejected: superuser_invalid_bearer' }],
+    };
+    const success = { content: [{ type: 'text', text: '{"ok":true}' }] };
+    const firstClient = { callTool: vi.fn().mockResolvedValue(authRefusal), close: vi.fn() };
+    const finalClient = { callTool: vi.fn().mockResolvedValue(success), close: vi.fn() };
+    const tokenPaths = [
+      '/workspace/superuser-token',
+      '/home/tester/.papercusp/superuser-token',
+      '/home/tester/.papercusp-fallback/superuser-token',
+    ];
+    const reconnectWithTokenPath = vi.fn()
+      .mockRejectedValueOnce(new Error(
+        `no superuser token at ${tokenPaths[1]} — is the operator installed?`,
+      ))
+      .mockResolvedValueOnce(finalClient);
+
+    await expect(dispatchScriptedToolWithoutCatalogWithTokenFallback(
+      firstClient,
+      'rubrics:get',
+      {},
+      {
+        idempotencyKey: 'catalog-bypass-missing-token-1',
+        tokenPaths,
+        initialTokenPath: tokenPaths[0],
+        reconnectWithTokenPath,
+        timeoutMs: 7,
+      },
+    )).resolves.toEqual({ client: finalClient, result: success });
+
+    expect(reconnectWithTokenPath.mock.calls).toEqual([[tokenPaths[1]], [tokenPaths[2]]]);
+    expect(firstClient.close).toHaveBeenCalledOnce();
+    expect(firstClient.callTool.mock.calls).toEqual(finalClient.callTool.mock.calls);
+  });
+
   it('labels the fallback as pre-dispatch while keeping scripted output on stdout', () => {
     const message = formatToolCatalogBypass(
       'rubrics:get',
@@ -1090,6 +1746,237 @@ describe('ptool keyed result recovery without concurrent replay', () => {
     });
   });
 
+  it('echoes the serving generation advertised by tools/list in tools/call metadata', () => {
+    const listedTool = {
+      name: 'work_items:get',
+      _meta: { 'papercusp/servingGeneration': 'serving-generation-v1:listed' },
+    };
+    expect(buildCallToolParams(listedTool.name, { id: 'EI-1' }, {
+      outputSchema: { type: 'object' },
+      idempotencyKey: 'ptool-generation-1',
+      servingGeneration: listedTool._meta['papercusp/servingGeneration'],
+    })).toEqual({
+      name: 'work_items:get',
+      arguments: { id: 'EI-1' },
+      _meta: {
+        structured: true,
+        idempotencyKey: 'ptool-generation-1',
+        'papercusp/servingGeneration': 'serving-generation-v1:listed',
+      },
+    });
+  });
+
+  it('refuses legacy tool listings that cannot enforce serving-generation compatibility', () => {
+    expect(() => requireServingGeneration({ name: 'plans:bind-spec-evidence' }))
+      .toThrow(/serving_generation_missing: plans:bind-spec-evidence .*incompatible legacy release/);
+    expect(requireServingGeneration({
+      name: 'plans:bind-spec-evidence',
+      _meta: { 'papercusp/servingGeneration': ' serving-generation-v1:listed ' },
+    })).toBe('serving-generation-v1:listed');
+  });
+
+  it('refreshes two consecutive stale contracts and preserves the unchanged call', async () => {
+    const toolName = 'coord:inbox';
+    const callArgs = { directed: true };
+    const idempotencyKey = 'ptool-stale-generation-1';
+    const inputSchema = { type: 'object', properties: { directed: { type: 'boolean' } } };
+    const previousTool = {
+      name: toolName,
+      inputSchema,
+      outputSchema: { type: 'object' },
+      _meta: { 'papercusp/servingGeneration': 'serving-generation-v1:old' },
+    };
+    const firstRefreshedTool = {
+      ...previousTool,
+      _meta: { 'papercusp/servingGeneration': 'serving-generation-v1:middle' },
+    };
+    const secondRefreshedTool = {
+      ...previousTool,
+      _meta: { 'papercusp/servingGeneration': 'serving-generation-v1:new' },
+    };
+    const originalParams = buildCallToolParams(toolName, callArgs, {
+      outputSchema: previousTool.outputSchema,
+      servingGeneration: previousTool._meta['papercusp/servingGeneration'],
+      idempotencyKey,
+    });
+    const firstStaleFailure = Object.assign(new Error('stale_tool_contract'), {
+      code: 'stale_tool_contract',
+    });
+    const secondStaleFailure = Object.assign(new Error('stale_tool_contract'), {
+      code: 'stale_tool_contract',
+    });
+    const result = { content: [{ type: 'text', text: '{"ok":true}' }] };
+    const client = {
+      callTool: vi.fn()
+        .mockRejectedValueOnce(firstStaleFailure)
+        .mockRejectedValueOnce(secondStaleFailure)
+        .mockResolvedValueOnce(result),
+    };
+    const listTools = vi.fn()
+      .mockResolvedValueOnce([firstRefreshedTool])
+      .mockResolvedValueOnce([secondRefreshedTool]);
+    let currentTool = previousTool;
+    const onStaleToolContract = vi.fn(async ({ client: staleClient, error }) => {
+      const refreshed = await refreshToolCallAfterStaleContract({
+        client: staleClient,
+        toolName,
+        previousTool: currentTool,
+        callArgs,
+        idempotencyKey,
+        listTools,
+        error,
+      });
+      currentTool = refreshed.tool;
+      return refreshed.params;
+    });
+    const reconnect = vi.fn();
+
+    await expect(callToolWithReplayRecovery(client, originalParams, {
+      reconnect,
+      onStaleToolContract,
+      timeoutMs: 5,
+    })).resolves.toEqual({ client, result });
+
+    const firstRefreshedParams = buildCallToolParams(toolName, callArgs, {
+      outputSchema: firstRefreshedTool.outputSchema,
+      servingGeneration: firstRefreshedTool._meta['papercusp/servingGeneration'],
+      idempotencyKey,
+    });
+    const secondRefreshedParams = buildCallToolParams(toolName, callArgs, {
+      outputSchema: secondRefreshedTool.outputSchema,
+      servingGeneration: secondRefreshedTool._meta['papercusp/servingGeneration'],
+      idempotencyKey,
+    });
+    expect(client.callTool).toHaveBeenNthCalledWith(
+      1,
+      originalParams,
+      undefined,
+      { timeout: 5, maxTotalTimeout: 5 },
+    );
+    expect(client.callTool).toHaveBeenNthCalledWith(
+      2,
+      firstRefreshedParams,
+      undefined,
+      { timeout: 5, maxTotalTimeout: 5 },
+    );
+    expect(client.callTool).toHaveBeenNthCalledWith(
+      3,
+      secondRefreshedParams,
+      undefined,
+      { timeout: 5, maxTotalTimeout: 5 },
+    );
+    for (const refreshedParams of [firstRefreshedParams, secondRefreshedParams]) {
+      expect(refreshedParams.arguments).toEqual(originalParams.arguments);
+      expect(refreshedParams._meta.idempotencyKey).toBe(originalParams._meta.idempotencyKey);
+    }
+    expect(firstRefreshedParams._meta['papercusp/servingGeneration']).toBe('serving-generation-v1:middle');
+    expect(secondRefreshedParams._meta['papercusp/servingGeneration']).toBe('serving-generation-v1:new');
+    expect(listTools).toHaveBeenCalledTimes(2);
+    expect(listTools).toHaveBeenNthCalledWith(1, client);
+    expect(listTools).toHaveBeenNthCalledWith(2, client);
+    expect(onStaleToolContract).toHaveBeenCalledTimes(2);
+    expect(onStaleToolContract).toHaveBeenNthCalledWith(1, {
+      client,
+      params: originalParams,
+      error: firstStaleFailure,
+    });
+    expect(onStaleToolContract).toHaveBeenNthCalledWith(2, {
+      client,
+      params: firstRefreshedParams,
+      error: secondStaleFailure,
+    });
+    expect(reconnect).not.toHaveBeenCalled();
+  });
+
+  it('does not replay a stale call when the refreshed input schema changed', async () => {
+    const toolName = 'coord:inbox';
+    const callArgs = { directed: true };
+    const idempotencyKey = 'ptool-stale-generation-schema-change';
+    const previousTool = {
+      name: toolName,
+      inputSchema: { type: 'object', properties: { directed: { type: 'boolean' } } },
+      outputSchema: { type: 'object' },
+    };
+    const refreshedTool = {
+      ...previousTool,
+      inputSchema: { type: 'object', properties: { directed: { type: 'string' } } },
+      _meta: { 'papercusp/servingGeneration': 'serving-generation-v1:new' },
+    };
+    const staleFailure = Object.assign(new Error('stale_tool_contract'), {
+      code: 'stale_tool_contract',
+    });
+    const client = { callTool: vi.fn().mockRejectedValueOnce(staleFailure) };
+    const listTools = vi.fn().mockResolvedValue([refreshedTool]);
+    const params = buildCallToolParams(toolName, callArgs, {
+      outputSchema: previousTool.outputSchema,
+      servingGeneration: 'serving-generation-v1:old',
+      idempotencyKey,
+    });
+
+    await expect(callToolWithReplayRecovery(client, params, {
+      onStaleToolContract: ({ client: staleClient, error }) => refreshToolCallAfterStaleContract({
+        client: staleClient,
+        toolName,
+        previousTool,
+        callArgs,
+        idempotencyKey,
+        listTools,
+        error,
+      }).then((refreshed) => refreshed.params),
+    })).rejects.toThrow('The input schema changed; inspect the current schema before retrying.');
+
+    expect(client.callTool).toHaveBeenCalledExactlyOnceWith(params, undefined, {
+      timeout: 30000,
+      maxTotalTimeout: 30000,
+    });
+    expect(listTools).toHaveBeenCalledExactlyOnceWith(client);
+  });
+
+  it('stops after two stale-contract refreshes', async () => {
+    const params = buildCallToolParams('coord:inbox', { directed: true }, {
+      idempotencyKey: 'ptool-stale-generation-2',
+      servingGeneration: 'serving-generation-v1:old',
+    });
+    const firstFailure = Object.assign(new Error('stale_tool_contract'), {
+      code: 'stale_tool_contract',
+    });
+    const secondFailure = Object.assign(new Error('stale_tool_contract'), {
+      code: 'stale_tool_contract',
+    });
+    const thirdFailure = Object.assign(new Error('stale_tool_contract'), {
+      code: 'stale_tool_contract',
+    });
+    const client = {
+      callTool: vi.fn()
+        .mockRejectedValueOnce(firstFailure)
+        .mockRejectedValueOnce(secondFailure)
+        .mockRejectedValueOnce(thirdFailure),
+    };
+    const refreshedParams = buildCallToolParams('coord:inbox', { directed: true }, {
+      idempotencyKey: 'ptool-stale-generation-2',
+      servingGeneration: 'serving-generation-v1:new',
+    });
+    const onStaleToolContract = vi.fn().mockResolvedValue(refreshedParams);
+
+    await expect(callToolWithReplayRecovery(client, params, {
+      onStaleToolContract,
+      timeoutMs: 5,
+    })).rejects.toBe(thirdFailure);
+
+    expect(client.callTool).toHaveBeenCalledTimes(3);
+    expect(onStaleToolContract).toHaveBeenCalledTimes(2);
+    expect(onStaleToolContract).toHaveBeenNthCalledWith(1, {
+      client,
+      params,
+      error: firstFailure,
+    });
+    expect(onStaleToolContract).toHaveBeenNthCalledWith(2, {
+      client,
+      params: refreshedParams,
+      error: secondFailure,
+    });
+  });
+
   it('negotiates projected object-schema calls as JSON instead of requesting the unprojected structured twin', () => {
     expect(buildCallToolParams(
       'sessions:read',
@@ -1132,6 +2019,50 @@ describe('ptool keyed result recovery without concurrent replay', () => {
     expect(isTransportFailure(new Error('tool failed after dispatch'))).toBe(false);
   });
 
+  it.each(['docs:search', 'tools:invoke'])('delivers a valid docs search after 35 seconds through %s without replay', async (route) => {
+    vi.useFakeTimers();
+    try {
+      const searchArgs = { query: 'disk consumer census', harness: 'engineering', limit: 3, semantic: false };
+      const args = route === 'tools:invoke' ? { name: 'docs:search', args: searchArgs } : searchArgs;
+      const params = buildCallToolParams(route, args, { idempotencyKey: 'docs-search-delayed' });
+      const result = { content: [{ type: 'text', text: 'retained keyword result' }] };
+      const delayedClient = () => ({
+        callTool: vi.fn((_params: unknown, _schema: unknown, options: { timeout: number; maxTotalTimeout: number }) =>
+          new Promise((resolve, reject) => {
+            const deadline = setTimeout(() => {
+              clearTimeout(response);
+              reject(Object.assign(new Error('Request timed out'), { code: -32001 }));
+            }, Math.min(options.timeout, options.maxTotalTimeout));
+            const response = setTimeout(() => {
+              clearTimeout(deadline);
+              resolve(result);
+            }, 35_123);
+          })),
+      });
+
+      // Independent negative control: the old client budget loses the valid
+      // response even though it arrives within the server's foreground window.
+      const oldFailure = expect(callToolWithReplayRecovery(delayedClient(), params, {
+        timeoutMs: PTOOL_CALL_TOOL_TIMEOUT_MS,
+      })).rejects.toThrow('Request timed out');
+      await vi.advanceTimersByTimeAsync(35_123);
+      await oldFailure;
+
+      const client = delayedClient();
+      const reconnect = vi.fn();
+      const timeoutMs = timeoutForTool(route, args);
+      const delivered = expect(callToolWithReplayRecovery(client, params, { timeoutMs, reconnect }))
+        .resolves.toMatchObject({ result });
+      await vi.advanceTimersByTimeAsync(35_123);
+      await delivered;
+      expect(timeoutMs).toBeGreaterThan(55_000);
+      expect(client.callTool).toHaveBeenCalledTimes(1);
+      expect(reconnect).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not reconnect after a post-connect close while the original may still be running', async () => {
     const params = buildCallToolParams('work_items:complete', { id: 'EI-1' }, {
       idempotencyKey: 'ptool-key-1',
@@ -1142,16 +2073,95 @@ describe('ptool keyed result recovery without concurrent replay', () => {
       close: vi.fn(),
     };
     const reconnect = vi.fn();
+    const onStaleToolContract = vi.fn();
 
     await expect(callToolWithReplayRecovery(first, params, {
       reconnect,
+      onStaleToolContract,
       timeoutMs: 1,
     })).rejects.toBe(failure);
 
     expect(PTOOL_POST_CONNECT_RETRIES).toBe(0);
     expect(reconnect).not.toHaveBeenCalled();
+    expect(onStaleToolContract).not.toHaveBeenCalled();
     expect(first.close).not.toHaveBeenCalled();
     expect(first.callTool).toHaveBeenCalledWith(params, undefined, { timeout: 1, maxTotalTimeout: 1 });
+  });
+
+  it('reconnects once after a pre-connect ECONNREFUSED proves the tool was not dispatched', async () => {
+    const params = buildCallToolParams('coord:declare-intent', {
+      intent: 'resume after the operator restart',
+      items: [],
+    }, { idempotencyKey: 'ptool-pre-connect-refused-1' });
+    const refusal = Object.assign(new TypeError('fetch failed'), {
+      cause: { code: 'ECONNREFUSED', message: 'connect ECONNREFUSED 127.0.0.1:3170' },
+    });
+    const result = { content: [{ type: 'text', text: '{"ok":true}' }] };
+    const first = {
+      callTool: vi.fn().mockRejectedValue(refusal),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const second = {
+      callTool: vi.fn().mockResolvedValue(result),
+      close: vi.fn(),
+    };
+    const reconnect = vi.fn().mockResolvedValue(second);
+
+    await expect(callToolWithReplayRecovery(first, params, {
+      reconnect,
+      timeoutMs: 1,
+    })).resolves.toEqual({ client: second, result });
+
+    expect(first.callTool).toHaveBeenCalledTimes(1);
+    expect(first.close).toHaveBeenCalledTimes(1);
+    expect(reconnect).toHaveBeenCalledTimes(1);
+    expect(second.callTool).toHaveBeenCalledWith(params, undefined, { timeout: 1, maxTotalTimeout: 1 });
+  });
+
+  it('bounds pre-connect refusal recovery to one reconnect attempt', async () => {
+    const refusal = Object.assign(new TypeError('fetch failed'), {
+      cause: { code: 'ECONNREFUSED', message: 'connect ECONNREFUSED 127.0.0.1:3170' },
+    });
+    const first = {
+      callTool: vi.fn().mockRejectedValue(refusal),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const second = {
+      callTool: vi.fn().mockRejectedValue(refusal),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const reconnect = vi.fn().mockResolvedValue(second);
+
+    await expect(callToolWithReplayRecovery(first, buildCallToolParams('coord:declare-intent', {}), {
+      reconnect,
+      timeoutMs: 1,
+    })).rejects.toBe(refusal);
+
+    expect(first.callTool).toHaveBeenCalledTimes(1);
+    expect(second.callTool).toHaveBeenCalledTimes(1);
+    expect(first.close).toHaveBeenCalledTimes(1);
+    expect(second.close).toHaveBeenCalledTimes(1);
+    expect(reconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry ECONNREFUSED text in a proxy HTTP response with unknown forwarding outcome', async () => {
+    const params = buildCallToolParams('coord:declare-intent', {});
+    const upstreamError = Object.assign(new Error(
+      'Streamable HTTP error: {"error":"mcp_proxy_upstream_error","forwardingResult":"outcome_unknown","detail":"ECONNREFUSED after upstream connected"}',
+    ), { code: 502 });
+    const client = {
+      callTool: vi.fn().mockRejectedValue(upstreamError),
+      close: vi.fn(),
+    };
+    const reconnect = vi.fn();
+
+    await expect(callToolWithReplayRecovery(client, params, {
+      reconnect,
+      timeoutMs: 1,
+    })).rejects.toBe(upstreamError);
+
+    expect(client.callTool).toHaveBeenCalledTimes(1);
+    expect(reconnect).not.toHaveBeenCalled();
   });
 
   it('replays one exact code:run body only through the explicit proof helper', async () => {
@@ -1646,6 +2656,17 @@ describe('ptool JSON input', () => {
     expect(() => parseJsonInput('  \n\t')).toThrow();
   });
 
+  it('rejects trailing JSON data after a valid stdin args object', () => {
+    const validPayload = '{"name":"work_items:checkpoint","args":{"id":"WI-10006055"}}';
+    expect(parseJsonInput(validPayload)).toEqual({
+      name: 'work_items:checkpoint',
+      args: { id: 'WI-10006055' },
+    });
+    expect(() => parseJsonInput(`${validPayload}}`)).toThrow(
+      'Unexpected non-whitespace character after JSON',
+    );
+  });
+
   it('rejects a double-encoded object before dispatch with a direct correction', () => {
     const payload = JSON.stringify(JSON.stringify({ did: 'finished the checkpoint' }));
     let parseError: unknown = null;
@@ -1754,6 +2775,40 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
     expect(connectOnce).toHaveBeenCalledTimes(1);
   });
 
+  it('recovers an implicit named call from a pre-dispatch HTTP 404, leaving dispatch safety to tool metadata', async () => {
+    const primaryError = Object.assign(new Error('POST /api/mcp returned 404'), { code: 404 });
+    const client = { close: vi.fn() };
+    const connectOnce = vi.fn().mockRejectedValueOnce(primaryError).mockResolvedValueOnce(client);
+    const onFallback = vi.fn();
+
+    await expect(connectWithOperatorCandidates(
+      connectOnce,
+      ['http://127.0.0.1:3880', 'http://127.0.0.1:3070'],
+      {},
+      { allowHttpNotFoundFallback: true, primaryAttemptOptions: { maxAttempts: 1 }, onFallback },
+    )).resolves.toEqual({ client, operatorUrl: 'http://127.0.0.1:3070' });
+    expect(connectOnce.mock.calls.map(([url]) => url)).toEqual([
+      'http://127.0.0.1:3880',
+      'http://127.0.0.1:3070',
+    ]);
+    expect(onFallback).toHaveBeenCalledWith('http://127.0.0.1:3070', primaryError);
+    expect(canDispatchOnFallbackOperator({ annotations: { readOnlyHint: true } }, true)).toBe(true);
+    expect(canDispatchOnFallbackOperator({ annotations: { readOnlyHint: false } }, true)).toBe(false);
+  });
+
+  it('does not route an implicit HTTP 404 to a fallback unless the caller enabled the safe pre-dispatch recovery', async () => {
+    const notFound = Object.assign(new Error('POST /api/mcp returned 404'), { code: 404 });
+    const connectOnce = vi.fn().mockRejectedValue(notFound);
+
+    await expect(connectWithOperatorCandidates(
+      connectOnce,
+      ['http://127.0.0.1:3880', 'http://127.0.0.1:3070'],
+      {},
+      { primaryAttemptOptions: { maxAttempts: 1 } },
+    )).rejects.toBe(notFound);
+    expect(connectOnce).toHaveBeenCalledTimes(1);
+  });
+
   it('recognizes only the stale session-authority denial as a pre-dispatch fallback signal', () => {
     const stale = {
       isError: true,
@@ -1776,6 +2831,9 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
     expect(ptoolConnectAttemptTimeoutMs('http://127.0.0.1:9071', {})).toBe(PTOOL_CONNECT_TIMEOUT_MS);
     expect(ptoolConnectAttemptTimeoutMs('http://127.0.0.1:9171', {
       PAPERCUSP_MCP_PROXY_PORT: '9171',
+    })).toBe(PTOOL_CONNECT_TIMEOUT_MS);
+    expect(ptoolConnectAttemptTimeoutMs('http://127.0.0.1:9171', {
+      PAPERCUSP_MCP_STAGING_PROXY_PORT: '9171',
     })).toBe(PTOOL_CONNECT_TIMEOUT_MS);
     expect(ptoolConnectAttemptTimeoutMs('http://127.0.0.1:4567', {
       PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:4567',
@@ -1807,19 +2865,108 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
     }
   });
 
-  it('fails a dead explicit URL pin after its single bounded attempt', async () => {
+  it('starts the local network deadline after delayed SDK bootstrap and still times a stalled handshake', async () => {
+    vi.useFakeTimers();
+    const bootstrap = Promise.withResolvers<unknown>();
+    const network = Promise.withResolvers<unknown>();
+    const prepared = {
+      mode: 'http',
+      Client: 'client-module',
+      StreamableHTTPClientTransport: 'transport-module',
+    };
+    const connectOnce = vi.fn(
+      (_url: string, _scope: object, _options?: { timeoutMs?: number }, _context?: unknown) => network.promise,
+    );
+    const pending = connectWithOperatorCandidates(
+      connectOnce,
+      ['http://127.0.0.1:3170'],
+      {},
+      {
+        prepareConnection: () => bootstrap.promise,
+        maxAttempts: 1,
+        attemptTimeoutMs: 15,
+        totalTimeoutMs: 0,
+        sleep: async () => {},
+      },
+    );
+
+    try {
+      await vi.advanceTimersByTimeAsync(25);
+      expect(connectOnce).not.toHaveBeenCalled();
+
+      bootstrap.resolve(prepared);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(connectOnce).toHaveBeenCalledTimes(1);
+      expect(connectOnce.mock.calls[0]?.[3]).toBe(prepared);
+
+      const networkTimeoutAssertion = expect(pending).rejects.toThrow(
+        /local operator connection attempt timed out after 15ms \[1 connect attempt\(s\).*attempt-timeout\]/,
+      );
+      await vi.advanceTimersByTimeAsync(15);
+      await networkTimeoutAssertion;
+    } finally {
+      network.resolve({});
+      vi.useRealTimers();
+    }
+  });
+
+  it('recovers a direct local pin by retrying the same named-call candidate', async () => {
+    const pinned = 'http://127.0.0.1:3170';
+    const env = { PAPERCUSP_OPERATOR_URL: pinned };
+    const args = { tool: 'work_items:get' };
+    const candidates = resolvePtoolInvocationCandidates(args, env);
+    const retryOptions = ptoolConnectionRetryOptions(args, env);
+    const client = { close: vi.fn() };
+    const connectOnce = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error(`connect ECONNREFUSED ${pinned}`), { code: 'ECONNREFUSED' }))
+      .mockResolvedValueOnce(client);
+    const sleeps: number[] = [];
+
+    expect(candidates).toEqual([pinned]);
+    expect(shouldRediscoverOperatorUrl(args, env)).toBe(false);
+    await expect(connectWithOperatorCandidates(connectOnce, candidates, {}, {
+      ...retryOptions,
+      retryJitterMs: 0,
+      sleep: async (ms: number) => { sleeps.push(ms); },
+    })).resolves.toEqual({ client, operatorUrl: pinned });
+    expect(connectOnce.mock.calls.map(([url]) => url)).toEqual([pinned, pinned]);
+    expect(sleeps).toEqual([1_000]);
+  });
+
+  it('bounds retries for a dead direct local URL pin to its short recovery window', async () => {
+    const pinned = 'http://127.0.0.1:32951';
     const connectOnce = vi.fn().mockRejectedValue(
-      Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:32951'), { code: 'ECONNREFUSED' }),
+      Object.assign(new Error(`connect ECONNREFUSED ${pinned}`), { code: 'ECONNREFUSED' }),
     );
     await expect(
-      connectWithLocalRetry(connectOnce, 'http://127.0.0.1:32951', {}, {
-        ...ptoolConnectionRetryOptions({ url: 'http://127.0.0.1:32951' }, {}),
-        attemptTimeoutMs: 15_000,
-        totalTimeoutMs: PTOOL_CONNECT_TIMEOUT_MS,
+      connectWithLocalRetry(connectOnce, pinned, {}, {
+        ...ptoolConnectionRetryOptions({ url: pinned }, {}),
+        attemptTimeoutMs: PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS,
         sleep: vi.fn(async () => {}),
+        retryJitterMs: 0,
       }),
     ).rejects.toThrow(/ECONNREFUSED/);
-    expect(connectOnce).toHaveBeenCalledTimes(1);
+    expect(connectOnce).toHaveBeenCalledTimes(PTOOL_PINNED_LOCAL_CONNECT_MAX_ATTEMPTS);
+  });
+
+  it('does not spend the local retry budget when explicit UDS discovery has no endpoint', async () => {
+    const first = 'http://127.0.0.1:3070';
+    const second = 'http://127.0.0.1:3170';
+    const client = { close: vi.fn() };
+    const unavailable = new Error('uds_endpoint_unavailable');
+    const connectOnce = vi.fn().mockRejectedValueOnce(unavailable).mockResolvedValueOnce(client);
+    const sleeps: number[] = [];
+
+    await expect(connectWithOperatorCandidates(connectOnce, [first, second], {}, {
+      maxAttempts: 80,
+      retryDelayMs: 1_000,
+      totalTimeoutMs: 120_000,
+      sleep: async (ms: number) => { sleeps.push(ms); },
+    })).resolves.toEqual({ client, operatorUrl: second });
+
+    expect(connectOnce.mock.calls.map(([url]) => url)).toEqual([first, second]);
+    expect(sleeps).toEqual([]);
+    expect(unavailable.message).toMatch(/\[1 connect attempt\(s\).*1x uds-endpoint-unavailable\]$/);
   });
 
   it('honors Retry-After as a minimum and adds positive jitter', async () => {
@@ -1954,120 +3101,364 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
   });
 });
 
+describe('ptool module-resolution failures are terminal, not retried (WI-6554700010012487)', () => {
+  // Server 0.0.26 shipped without @modelcontextprotocol/sdk; its ptool
+  // classified the import failure as `other` and retried it for the whole
+  // budget: "[83 connect attempt(s) over 119s: 83x other]".
+  const missingSdk = () => Object.assign(
+    new Error("Cannot find package '@modelcontextprotocol/sdk' imported from /usr/lib/Papercusp Server/sidecar/scripts/ptool.mjs"),
+    { code: 'ERR_MODULE_NOT_FOUND' },
+  );
+
+  it('classifies ESM, CJS and wrapped resolution failures as module-not-found', () => {
+    expect(isModuleResolutionFailure(missingSdk())).toBe(true);
+    expect(isModuleResolutionFailure(Object.assign(new Error('x'), { code: 'MODULE_NOT_FOUND' }))).toBe(true);
+    expect(isModuleResolutionFailure(new Error('connect failed', { cause: missingSdk() }))).toBe(true);
+    expect(classifyConnectFailure(missingSdk())).toBe('module-not-found');
+    // Negative controls: a transport refusal and a plain error stay retryable/other.
+    expect(isModuleResolutionFailure(Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }))).toBe(false);
+    expect(classifyConnectFailure(new Error('something else'))).toBe('other');
+  });
+
+  it('stops a local connect after ONE attempt when an in-attempt import cannot resolve', async () => {
+    const error = missingSdk();
+    const connectOnce = vi.fn().mockRejectedValue(error);
+    const sleep = vi.fn(async () => {});
+
+    await expect(
+      connectWithLocalRetry(connectOnce, 'http://127.0.0.1:3070', {}, {
+        maxAttempts: 20,
+        attemptTimeoutMs: 5_000,
+        totalTimeoutMs: 120_000,
+        sleep,
+      }),
+    ).rejects.toBe(error);
+
+    expect(connectOnce).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+    expect(error.message).toMatch(/\[1 connect attempt\(s\) over \d+s: 1x module-not-found\]$/);
+  });
+
+  it('never starts a connect attempt when the SDK bootstrap cannot resolve', async () => {
+    const importSdkModule = vi.fn().mockRejectedValue(missingSdk());
+    const connectOnce = vi.fn();
+    const sleep = vi.fn(async () => {});
+
+    await expect(
+      connectWithOperatorCandidates(connectOnce, ['http://127.0.0.1:3070', 'http://127.0.0.1:9071'], {}, {
+        prepareConnection: () => preparePtoolConnectionModules({ transport: 'http' }, { importSdkModule }),
+        maxAttempts: 20,
+        totalTimeoutMs: 120_000,
+        sleep,
+      }),
+    ).rejects.toThrow(/^ptool: SDK bootstrap failed before operator connection: Cannot find package '@modelcontextprotocol\/sdk'/);
+
+    // One import per SDK entrypoint, no retry, and no network attempt on either candidate.
+    expect(importSdkModule).toHaveBeenCalledTimes(2);
+    expect(connectOnce).not.toHaveBeenCalled();
+    expect(sleep).not.toHaveBeenCalled();
+  });
+});
+
 describe('ptool SDK import install-race tolerance (EI-21860372620642128)', () => {
   const moduleNotFound = (specifier: string) =>
     Object.assign(new Error(`Cannot find module '${specifier}'`), { code: 'ERR_MODULE_NOT_FOUND' });
 
-  it('returns the imported module on a clean first attempt without consulting the mutex', async () => {
-    const doImport = vi.fn().mockResolvedValue({ Client: 'ok' });
-    const loadInstallMutex = vi.fn();
-    const result = await importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/index.js', {
-      doImport,
-      loadInstallMutex,
-      sleep: vi.fn(),
+  async function withoutOuterInstallReader<T>(run: () => Promise<T>): Promise<T> {
+    const previousMutexHeld = process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+    delete process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+    try {
+      return await run();
+    } finally {
+      if (previousMutexHeld === undefined) delete process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+      else process.env.PAPERCUSP_INSTALL_MUTEX_HELD = previousMutexHeld;
+    }
+  }
+
+  it('labels an install:safe reader-lease timeout as SDK bootstrap before network connection', async () => {
+    const installWaitTimeout = new Error(
+      'Timed out after 600000ms waiting for fs-mutex writer ("npm-install-abc123"); holder: install:safe',
+    );
+    const importSdkModule = vi.fn().mockRejectedValue(installWaitTimeout);
+
+    await expect(preparePtoolConnectionModules(
+      { transport: 'http' },
+      { importSdkModule },
+    )).rejects.toMatchObject({
+      message: expect.stringContaining(
+        'ptool: SDK bootstrap timed out waiting for install:safe before operator connection',
+      ),
+      cause: installWaitTimeout,
     });
-    expect(result).toEqual({ Client: 'ok' });
-    expect(doImport).toHaveBeenCalledTimes(1);
-    expect(loadInstallMutex).not.toHaveBeenCalled();
+    expect(importSdkModule).toHaveBeenCalledTimes(2);
   });
 
-  it('rethrows a non-MODULE_NOT_FOUND failure immediately, without consulting the mutex', async () => {
-    const otherError = new TypeError('boom');
-    const doImport = vi.fn().mockRejectedValue(otherError);
-    const loadInstallMutex = vi.fn();
-    await expect(
-      importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/types.js', { doImport, loadInstallMutex }),
-    ).rejects.toBe(otherError);
-    expect(doImport).toHaveBeenCalledTimes(1);
-    expect(loadInstallMutex).not.toHaveBeenCalled();
+  it('captures available bytes and free inodes when the reader marker mkdir fails with ENOSPC', async () => {
+    const readerMarkerPath = '/tmp/pcv/fs-mutex-locks/npm-install-demo.readers/311.lock';
+    const noSpace = Object.assign(
+      new Error(`ENOSPC: no space left on device, mkdir '${readerMarkerPath}'`),
+      { code: 'ENOSPC', path: readerMarkerPath, syscall: 'mkdir' },
+    );
+    const importSdkModule = vi.fn().mockRejectedValue(noSpace);
+    const statfsImpl = vi.fn().mockResolvedValue({ bsize: 4096n, bavail: 2n, ffree: 3n });
+
+    const failure = await preparePtoolConnectionModules(
+      { transport: 'http' },
+      { importSdkModule, statfsImpl },
+    ).then(() => null, (error) => error);
+    expect(failure).toMatchObject({ cause: noSpace });
+    expect(failure.message).toContain('ENOSPC filesystem sample captured after failure: syscall=mkdir');
+    expect(failure.message).toContain('availableBytes=8192, freeInodes=3');
+    expect(statfsImpl).toHaveBeenCalledTimes(1);
+    expect(statfsImpl).toHaveBeenCalledWith(
+      '/tmp/pcv/fs-mutex-locks/npm-install-demo.readers',
+      { bigint: true },
+    );
   });
 
-  it('rethrows MODULE_NOT_FOUND immediately when no install:safe write is in flight (genuine missing dep)', async () => {
-    const notFound = moduleNotFound('@modelcontextprotocol/sdk/types.js');
-    const doImport = vi.fn().mockRejectedValue(notFound);
+  it('preserves the original ENOSPC error when the best-effort statfs sample fails', async () => {
+    const readerMarkerPath = '/tmp/pcv/fs-mutex-locks/npm-install-demo.readers/312.lock';
+    const noSpace = Object.assign(
+      new Error(`ENOSPC: no space left on device, mkdir '${readerMarkerPath}'`),
+      { code: 'ENOSPC', path: readerMarkerPath, syscall: 'mkdir' },
+    );
+    const importSdkModule = vi.fn().mockRejectedValue(noSpace);
+    const statfsImpl = vi.fn().mockRejectedValue(new Error('statfs denied'));
+
+    await expect(preparePtoolConnectionModules(
+      { transport: 'http' },
+      { importSdkModule, statfsImpl },
+    )).rejects.toMatchObject({
+      message: expect.stringContaining('ENOSPC filesystem sample unavailable after failure: syscall=mkdir'),
+      cause: noSpace,
+    });
+    expect(statfsImpl).toHaveBeenCalledTimes(1);
+    expect(statfsImpl).toHaveBeenCalledWith(
+      '/tmp/pcv/fs-mutex-locks/npm-install-demo.readers',
+      { bigint: true },
+    );
+  });
+
+  it('imports SDK modules under the repo install reader lease', async () => {
+    const doImport = vi.fn().mockResolvedValue({ Client: 'ok' });
+    const withFsMutexRead = vi.fn(async (
+      _name: string,
+      run: () => Promise<unknown>,
+      _options: { timeoutMs: number; onWaiting: (info: { owner: string; elapsedMs: number }) => void },
+    ) => run());
     const loadInstallMutex = vi.fn().mockResolvedValue([
-      { peekFsMutexSync: () => ({ held: false }) },
+      { withFsMutexRead },
       { repoLockName: () => 'npm-install-abc123' },
     ]);
-    const sleep = vi.fn();
-    await expect(
-      importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/types.js', { doImport, loadInstallMutex, sleep }),
-    ).rejects.toBe(notFound);
-    expect(doImport).toHaveBeenCalledTimes(1);
-    expect(sleep).not.toHaveBeenCalled();
-  });
-
-  it('rethrows MODULE_NOT_FOUND immediately when the mutex helper itself cannot be loaded', async () => {
-    const notFound = moduleNotFound('@modelcontextprotocol/sdk/client/index.js');
-    const doImport = vi.fn().mockRejectedValue(notFound);
-    const loadInstallMutex = vi.fn().mockRejectedValue(new Error('cannot resolve helper'));
-    await expect(
-      importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/index.js', { doImport, loadInstallMutex }),
-    ).rejects.toBe(notFound);
-    expect(doImport).toHaveBeenCalledTimes(1);
-  });
-
-  it('waits out a live install:safe write and returns the module once the retry succeeds', async () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const notFound = moduleNotFound('@modelcontextprotocol/sdk/client/streamableHttp.js');
-    const doImport = vi.fn()
-      .mockRejectedValueOnce(notFound)
-      .mockRejectedValueOnce(notFound)
-      .mockResolvedValueOnce({ StreamableHTTPClientTransport: 'ok' });
-    const loadInstallMutex = vi.fn().mockResolvedValue([
-      { peekFsMutexSync: () => ({ held: true, owner: { pid: 4242, host: 'devbox' } }) },
-      { repoLockName: () => 'npm-install-abc123' },
-    ]);
-    const sleeps: number[] = [];
-    const result = await importSdkModuleWithInstallAwareness(
-      '@modelcontextprotocol/sdk/client/streamableHttp.js',
-      {
+    const result = await withoutOuterInstallReader(() =>
+      importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/index.js', {
         doImport,
         loadInstallMutex,
-        sleep: async (ms: number) => {
-          sleeps.push(ms);
-        },
-        totalMs: 10_000,
-        intervalMs: 1_500,
-      },
+      }),
     );
-    expect(result).toEqual({ StreamableHTTPClientTransport: 'ok' });
-    expect(doImport).toHaveBeenCalledTimes(3);
-    expect(sleeps).toEqual([1_500, 1_500]);
-    expect(consoleError).toHaveBeenCalledTimes(1);
-    consoleError.mockRestore();
+    expect(result).toEqual({ Client: 'ok' });
+    expect(doImport).toHaveBeenCalledTimes(1);
+    expect(loadInstallMutex).toHaveBeenCalledTimes(1);
+    expect(withFsMutexRead).toHaveBeenCalledWith(
+      'npm-install-abc123',
+      expect.any(Function),
+      expect.objectContaining({ timeoutMs: expect.any(Number), onWaiting: expect.any(Function) }),
+    );
+    expect(withFsMutexRead.mock.calls[0]?.[2]?.timeoutMs).toBeGreaterThan(330_000);
   });
 
-  it('gives up and rethrows the original MODULE_NOT_FOUND once the retry budget is exhausted', async () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const notFound = moduleNotFound('@modelcontextprotocol/sdk/client/index.js');
-    const doImport = vi.fn().mockRejectedValue(notFound);
+  it('preserves a non-module import error from inside the reader lease', async () => {
+    const otherError = new TypeError('boom');
+    const doImport = vi.fn().mockRejectedValue(otherError);
+    const withFsMutexRead = vi.fn(async (
+      _name: string,
+      run: () => Promise<unknown>,
+      _options: { timeoutMs: number; onWaiting: (info: { owner: string; elapsedMs: number }) => void },
+    ) => run());
     const loadInstallMutex = vi.fn().mockResolvedValue([
-      { peekFsMutexSync: () => ({ held: true, owner: { pid: 4242 } }) },
+      { withFsMutexRead },
       { repoLockName: () => 'npm-install-abc123' },
     ]);
-    let now = 0;
-    const sleep = vi.fn(async (ms: number) => {
-      now += ms;
-    });
-    const originalNow = Date.now;
-    Date.now = () => now;
+    await expect(withoutOuterInstallReader(() =>
+      importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/types.js', { doImport, loadInstallMutex }),
+    )).rejects.toBe(otherError);
+    expect(doImport).toHaveBeenCalledTimes(1);
+    expect(withFsMutexRead).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces a genuine missing dependency without retrying', async () => {
+    const notFound = moduleNotFound('@modelcontextprotocol/sdk/types.js');
+    const doImport = vi.fn().mockRejectedValue(notFound);
+    const withFsMutexRead = vi.fn(async (
+      _name: string,
+      run: () => Promise<unknown>,
+      _options: { timeoutMs: number; onWaiting: (info: { owner: string; elapsedMs: number }) => void },
+    ) => run());
+    const loadInstallMutex = vi.fn().mockResolvedValue([
+      { withFsMutexRead },
+      { repoLockName: () => 'npm-install-abc123' },
+    ]);
+    await expect(withoutOuterInstallReader(() =>
+      importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/types.js', { doImport, loadInstallMutex }),
+    )).rejects.toBe(notFound);
+    expect(doImport).toHaveBeenCalledTimes(1);
+    expect(withFsMutexRead).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to a direct import when the optional mutex helper cannot load', async () => {
+    const doImport = vi.fn().mockResolvedValue({ Client: 'ok' });
+    const loadInstallMutex = vi.fn().mockRejectedValue(new Error('cannot resolve helper'));
+    await expect(importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/index.js', {
+      doImport,
+      loadInstallMutex,
+    })).resolves.toEqual({ Client: 'ok' });
+    expect(doImport).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for install:safe before attempting the SDK import', async () => {
+    const previousLockDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    const previousMutexHeld = process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+    const previousMutexDisabled = process.env.PAPERCUSP_DISABLE_FS_MUTEX;
+    const lockDir = mkdtempSync(join(tmpdir(), 'ptool-sdk-install-lock-'));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let signalWriterEntered!: () => void;
+    const writerEntered = new Promise<void>((resolve) => { signalWriterEntered = resolve; });
+    let releaseWriter!: () => void;
+    const writerRelease = new Promise<void>((resolve) => { releaseWriter = resolve; });
+    let install: Promise<number> | undefined;
+
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = lockDir;
+    delete process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+    delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
     try {
-      await expect(
-        importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/index.js', {
-          doImport,
-          loadInstallMutex,
-          sleep,
-          totalMs: 5_000,
-          intervalMs: 2_000,
-        }),
-      ).rejects.toBe(notFound);
+      const [{ withFsMutex, peekFsMutexSync }, { repoLockName }] = await Promise.all([
+        import('../../../scripts/lib/fs-mutex.mjs'),
+        import('../../../scripts/npm-install-safe.mjs'),
+      ]);
+      const lockName = repoLockName();
+      install = withFsMutex(lockName, async () => {
+        signalWriterEntered();
+        await writerRelease;
+        return 0;
+      });
+      await writerEntered;
+
+      const missingWhileWriterRuns = moduleNotFound('@modelcontextprotocol/sdk/client/index.js');
+      const doImport = vi.fn(async () => {
+        if (peekFsMutexSync(lockName).held) throw missingWhileWriterRuns;
+        return { Client: 'ok' };
+      });
+      const importing = importSdkModuleWithInstallAwareness(
+        '@modelcontextprotocol/sdk/client/index.js',
+        { doImport },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(doImport).not.toHaveBeenCalled();
+
+      releaseWriter();
+      await expect(importing).resolves.toEqual({ Client: 'ok' });
+      await install;
     } finally {
-      Date.now = originalNow;
+      releaseWriter();
+      await install?.catch(() => {});
       consoleError.mockRestore();
+      if (previousLockDir === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+      else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = previousLockDir;
+      if (previousMutexHeld === undefined) delete process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+      else process.env.PAPERCUSP_INSTALL_MUTEX_HELD = previousMutexHeld;
+      if (previousMutexDisabled === undefined) delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
+      else process.env.PAPERCUSP_DISABLE_FS_MUTEX = previousMutexDisabled;
+      rmSync(lockDir, { recursive: true, force: true });
     }
-    // Bounded: stops retrying once elapsed time reaches the budget rather than looping forever.
-    expect(doImport.mock.calls.length).toBeGreaterThan(1);
-    expect(doImport.mock.calls.length).toBeLessThan(10);
+  });
+
+  it('does not acquire a nested reader lease when install:safe already holds one', async () => {
+    const previousMutexHeld = process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+    process.env.PAPERCUSP_INSTALL_MUTEX_HELD = 'npm-install-0123456789ab';
+    const doImport = vi.fn().mockResolvedValue({ Client: 'ok' });
+    const withFsMutexRead = vi.fn();
+    const loadInstallMutex = vi.fn().mockResolvedValue([
+      { withFsMutexRead },
+      {
+        repoLockName: () => 'npm-install-0123456789ab',
+        installMutexIsHeld: (name: string, env: NodeJS.ProcessEnv) => env.PAPERCUSP_INSTALL_MUTEX_HELD?.split(',').includes(name),
+      },
+    ]);
+    try {
+      await expect(importSdkModuleWithInstallAwareness(
+        '@modelcontextprotocol/sdk/client/index.js',
+        { doImport, loadInstallMutex },
+      )).resolves.toEqual({ Client: 'ok' });
+      expect(doImport).toHaveBeenCalledTimes(1);
+      expect(loadInstallMutex).toHaveBeenCalledTimes(1);
+      expect(withFsMutexRead).not.toHaveBeenCalled();
+    } finally {
+      if (previousMutexHeld === undefined) delete process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+      else process.env.PAPERCUSP_INSTALL_MUTEX_HELD = previousMutexHeld;
+    }
+  });
+
+  it('takes the SDK repository lease when an inherited marker belongs to another repo', async () => {
+    const previousMutexHeld = process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+    process.env.PAPERCUSP_INSTALL_MUTEX_HELD = 'npm-install-fedcba987654';
+    const order: string[] = [];
+    const withFsMutexRead = vi.fn(async (_name: string, fn: () => Promise<unknown>) => {
+      order.push('lease');
+      return fn();
+    });
+    const loadInstallMutex = vi.fn().mockResolvedValue([
+      { withFsMutexRead },
+      {
+        repoLockName: () => 'npm-install-0123456789ab',
+        installMutexIsHeld: (name: string, env: NodeJS.ProcessEnv) => env.PAPERCUSP_INSTALL_MUTEX_HELD?.split(',').includes(name),
+      },
+    ]);
+    try {
+      await importSdkModuleWithInstallAwareness('fixture-sdk', {
+        loadInstallMutex,
+        doImport: async () => { order.push('import'); return {}; },
+      });
+      expect(order).toEqual(['lease', 'import']);
+    } finally {
+      if (previousMutexHeld === undefined) delete process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+      else process.env.PAPERCUSP_INSTALL_MUTEX_HELD = previousMutexHeld;
+    }
+  });
+});
+
+// WI-6554700010012487: the packaged Server esbuild-bundles ptool.mjs and ships no
+// @modelcontextprotocol tree, so every SDK import must be a literal import() that
+// esbuild can inline. A computed import(specifier) shipped as a runtime lookup and
+// failed on every packaged install.
+describe('ptool SDK imports are bundle-traceable (WI-6554700010012487)', () => {
+  const source = readFileSync(new URL('./ptool.mjs', import.meta.url), 'utf8');
+
+  it('gives every SDK specifier ptool references a literal loader', () => {
+    const referenced = new Set(source.match(/@modelcontextprotocol\/sdk\/[A-Za-z0-9_./-]+\.js/g) ?? []);
+    expect(referenced.size).toBeGreaterThan(0);
+    for (const specifier of referenced) {
+      expect(Object.keys(PTOOL_SDK_MODULE_LOADERS)).toContain(specifier);
+      expect(source).toContain(`import('${specifier}')`);
+    }
+  });
+
+  it('defaults the install-aware importer to the literal loader table, not a computed import()', () => {
+    expect(source).not.toMatch(/doImport\s*=\s*\(\s*spec\s*\)\s*=>\s*import\(\s*spec\s*\)/);
+    expect(source).toMatch(/doImport\s*=\s*importPtoolSdkModule/);
+  });
+
+  it('resolves each loader to the real SDK module', async () => {
+    const client = await importPtoolSdkModule('@modelcontextprotocol/sdk/client/index.js');
+    const transport = await importPtoolSdkModule('@modelcontextprotocol/sdk/client/streamableHttp.js');
+    const types = await importPtoolSdkModule('@modelcontextprotocol/sdk/types.js');
+    expect(typeof client.Client).toBe('function');
+    expect(typeof transport.StreamableHTTPClientTransport).toBe('function');
+    expect(types.CallToolResultSchema).toBeDefined();
+  });
+
+  it('refuses a specifier that has no loader instead of importing it dynamically', async () => {
+    await expect(importPtoolSdkModule('@modelcontextprotocol/sdk/server/index.js')).rejects.toThrow(
+      /no bundle-traceable loader/,
+    );
   });
 });

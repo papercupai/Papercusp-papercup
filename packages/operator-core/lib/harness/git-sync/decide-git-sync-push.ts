@@ -41,6 +41,11 @@
  */
 import type { PotGitMode } from './hive-git-mode';
 
+/** Unknown recorded modes must not suppress a real origin-push fault. */
+export function isCommitOnlyMember(legs: { pushMode: string | null }): boolean {
+  return typeof legs.pushMode === 'string' && legs.pushMode.startsWith('commit-only');
+}
+
 export interface PushDecisionInput {
   /** True for a joiner-side member clone (read-only by design). */
   joinerSide: boolean;

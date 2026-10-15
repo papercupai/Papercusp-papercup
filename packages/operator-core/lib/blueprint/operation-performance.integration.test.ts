@@ -100,7 +100,13 @@ const priorAdminUrl = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
 const dedicatedPgMode = process.env.P013_DEDICATED_PG === 'native'
   ? 'native' : process.env.P013_DEDICATED_PG === '1' ? 'container' : null;
 const dedicatedPgRequested = dedicatedPgMode !== null;
-const DEDICATED_PG_SETTINGS = { max_connections: '200', dynamic_shared_memory_type: 'mmap' };
+// Diagnostic-only extra server settings, e.g. statement logging for per-statement
+// attribution of a step (WI-10004402). Graded matrices leave P013_PG_EXTRA_SETTINGS unset;
+// setup echoes a set value so a run log always shows it was not a graded configuration.
+const DEDICATED_PG_EXTRA_SETTINGS = parseExtraPgSettings(process.env.P013_PG_EXTRA_SETTINGS);
+const DEDICATED_PG_SETTINGS: Record<string, string> = {
+  max_connections: '200', dynamic_shared_memory_type: 'mmap', ...DEDICATED_PG_EXTRA_SETTINGS,
+};
 // D-024: both arms reach getOrgPg() through fixture.sql, so its pool must be sized
 // like the production admin pool (resource-profile pgPoolMax; 52 on the server
 // host class) — at the fixture default of 2 the WI-10003586 headroom cap admits
@@ -135,9 +141,17 @@ beforeAll(async () => {
   // through getTestPg's existing PAPERCUSP_TEST_PG_ADMIN_URL seam, set before
   // this process's first createFreshTestDb call.
   if (dedicatedPgMode === 'native') {
-    dedicatedPg = await startDedicatedNativePg({ settings: DEDICATED_PG_SETTINGS });
-    process.env.PAPERCUSP_TEST_PG_ADMIN_URL = dedicatedPg.getConnectionUri();
+    // P013_PG_BASE_DIR moves the cluster's data dir (default: os.tmpdir()), e.g. onto tmpfs
+    // to separate host-IO noise from the measured code path (WI-10004402). Echoed when set.
+    const baseDir = process.env.P013_PG_BASE_DIR || undefined;
+    const nativePg = await startDedicatedNativePg({ settings: DEDICATED_PG_SETTINGS, baseDir });
+    dedicatedPg = nativePg;
+    process.env.PAPERCUSP_TEST_PG_ADMIN_URL = nativePg.getConnectionUri();
     stamp('dedicated-native-pg-started');
+    if (Object.keys(DEDICATED_PG_EXTRA_SETTINGS).length > 0) {
+      console.error(`P013_SETUP diagnostic-pg-settings=${JSON.stringify(DEDICATED_PG_EXTRA_SETTINGS)} (not a graded configuration)`);
+    }
+    if (baseDir) console.error(`P013_SETUP pg-base-dir=${baseDir} dataDir=${nativePg.dataDir}`);
   } else if (dedicatedPgMode === 'container') {
     // startDedicatedTestPg: the stock pg_isready healthcheck crash-restarted
     // this cluster mid-run under load (2026-09-27 warm smoke, see the helper).
@@ -238,8 +252,9 @@ describe('P-013 workload A fixture', () => {
         overlappingChildren: number;
       } & PgCounters> = [];
       // D-047: every warm sample's accepted→dispatched step split, in completion order.
-      // runPairedBenchmark awaits each trial before starting the next, so these rows
-      // split exactly into consecutive per-trial chunks (see attributeDispatchSteps).
+      // runPairedBenchmark awaits each (concurrency, repetition, mode) block before the next;
+      // inside a block the arms alternate in D-050 ABBA chunks, so these rows split into
+      // consecutive per-block runs, then by arm (see attributeDispatchSteps).
       const warmDispatchSteps: WarmDispatchStepRow[] = [];
       const benchmarkArm = (arm: Arm): BenchmarkArm => ({
         warmup: async () => { await runArm(arm, sequence++); },
@@ -288,15 +303,14 @@ describe('P-013 workload A fixture', () => {
           });
           coldStarts++;
           const overlappingChildren = childrenInFlight++;
-          let stderr = '';
+          const stderr = createTextCollector(child.stderr, { maxChars: 4_000 });
           let stage = 'spawned';
           // stdio[2] is 'pipe', so stderr exists; fail loudly rather than lose diagnostics.
           if (!child.stderr) throw new Error('P-013 cold child spawned without a stderr pipe');
-          child.stderr.on('data', (chunk) => { stderr = (stderr + String(chunk)).slice(-4_000); });
           let sample: P013Sample | undefined;
           const exit = new Promise<void>((resolve, reject) => {
             child.once('error', (error) => reject(new Error(
-              `P-013 cold child ${stage}: ${error.message}; stderr: ${stderr}`)));
+              `P-013 cold child ${stage}: ${error.message}; stderr: ${stderr.peek()}`)));
             // The child SIGKILLs itself after flushing to skip native env
             // teardown (EI-10702); that exit is clean only once a sample arrived.
             // 'close', not 'exit': under load 'exit' can fire before the already-sent
@@ -305,7 +319,7 @@ describe('P-013 workload A fixture', () => {
             child.once('close', (code, signal) => code === 0 || (signal === 'SIGKILL' && sample)
               ? resolve()
               : reject(new Error(`P-013 cold child ${stage} exited ${code}/${signal} ` +
-                `(${sample ? 'sample received' : 'no sample'}): ${stderr}`)));
+                `(${sample ? 'sample received' : 'no sample'}): ${stderr.peek()}`)));
           });
           let childLocalModel: LocalModelLoadEvidence | null = null;
           child.on('message', (message: {
@@ -342,7 +356,7 @@ describe('P-013 workload A fixture', () => {
                 // is unproven (a recall skipped by an expired memory deadline is
                 // one candidate), so the failure carries the child's stderr.
                 expect(embedderCalls, `P-013 A ${arm} child ${childSequence} made no fixture embed call; ` +
-                  `child stderr tail: ${stderr.slice(-2000)}`).toBeGreaterThan(0);
+                  `child stderr tail: ${stderr.peek().slice(-2000)}`).toBeGreaterThan(0);
                 // Negative control (EI-24688584300743328): neither the child
                 // nor this parent may have loaded a real local model while the
                 // fixture is installed.
@@ -372,6 +386,10 @@ describe('P-013 workload A fixture', () => {
       // runner interleaves the arms; P013_REPETITION_OFFSET keeps that order when
       // each repetition runs as its own process.
       const { repetitions, coldSamples, warmSamples, warmups, repetitionOffset, modes, concurrencies } = matrix;
+      // Claim-time recall outcomes are attribution for the claim step (WI-10004402): its
+      // deadline warn is silent under vitest, so count outcomes over the matrix only.
+      const claimRecall = await import('../memory/claim-port');
+      claimRecall._resetClaimRecallOutcomeStatsForTests();
       const trials = await runPairedBenchmark({ control: benchmarkArm('control'),
         candidate: benchmarkArm('candidate') }, {
         warmups, repetitions, warmSamples, coldSamples, concurrencies, modes, repetitionOffset,
@@ -407,6 +425,9 @@ describe('P-013 workload A fixture', () => {
       // Attribution only; gradePairedBenchmark never reads it.
       console.info('P-013 workload A dispatch-step attribution (D-047; no grade)',
         JSON.stringify(attributeDispatchSteps(trials, warmDispatchSteps)));
+      // In-process warm arms only; a cold child's recall runs in its own process.
+      console.info('P-013 workload A claim-recall outcomes (no grade)',
+        JSON.stringify(claimRecall.readClaimRecallOutcomeStats()));
       // Per-phase split, not just the total: the cold cost must be attributed to a
       // D-016 phase (accept / dispatch / terminal / business event) before any
       // fixture decision is taken on it (WI-10002948).
@@ -457,6 +478,18 @@ describe('P-013 workload A fixture', () => {
     expect({ items, plans, runs }).toEqual({ items: sequence, plans: 0, runs: 0 });
   }, coldMatrixBudgetMs());
 });
+
+/** P013_PG_EXTRA_SETTINGS: a JSON object of string server settings, appended after the
+ * fixed ones (a later `-c` wins). Unset or empty means none. */
+function parseExtraPgSettings(raw: string | undefined): Record<string, string> {
+  if (raw === undefined || raw.trim() === '') return {};
+  const parsed = JSON.parse(raw) as unknown;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) ||
+      Object.values(parsed).some((value) => typeof value !== 'string')) {
+    throw new Error('P-013 P013_PG_EXTRA_SETTINGS must be a JSON object of string values');
+  }
+  return parsed as Record<string, string>;
+}
 
 /** P013_MATRIX=1 (or the historical P013_COLD_PILOT=1) selects the paired D-016 matrix. */
 function matrixRequested(): boolean {

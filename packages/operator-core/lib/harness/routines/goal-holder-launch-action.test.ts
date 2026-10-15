@@ -73,6 +73,8 @@ function portfolio(): GoalPortfolioBrief {
       unmeasuredPricedSpend: false,
       spentCentsAt: null,
       spentCentsSource: null,
+      interactiveUsageFreshnessStatus: null,
+      interactiveUsageLastIngestedAtMs: null,
       budgetWindowSec: 604_800,
     },
     tripwires: [],
@@ -144,6 +146,9 @@ describe('goal holder system launch (goal-live-holder-guarantee P-007)', () => {
         contextSize: 'trimmed',
         headless: true,
         goalBootstrapSubject: 'goal-1',
+        // EI-24748255500835957: without a launcher marker the psu host refuses the
+        // holder's own session:end. A system id, never the requesting owner.
+        launchedBy: 'system:goal-holder-launch',
         deferSpawn: false,
       }),
     );

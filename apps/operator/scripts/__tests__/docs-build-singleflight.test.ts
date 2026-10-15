@@ -12,7 +12,7 @@
 // directory already hosts the repo-script tests.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -29,6 +29,7 @@ function launch(cmd: string, env: Record<string, string> = {}, args: string[] = 
       DOCS_BUILD_LOCK: join(tmp, 'build.lock'),
       DOCS_BUILD_CMD: cmd,
       DOCS_BUILD_WAIT_SECS: '30',
+      DOCS_BUILD_SOURCE_ROOT: join(tmp, 'source'),
       RUN_DIR: tmp, // referenced by the stand-in cmds below
       ...env,
     },
@@ -43,6 +44,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), 'dbs-'));
+  mkdirSync(join(tmp, 'source'));
 });
 
 afterEach(() => {
@@ -108,6 +110,35 @@ describe('docs-build-singleflight (EI-11539)', () => {
   it("propagates the inner build's failure exit code (a red build stays loud)", async () => {
     const c = launch('exit 7');
     expect(await exited(c)).toBe(7);
+  });
+
+  it('rebuilds a page added during compilation instead of keeping the moving-census failure', async () => {
+    const cmd = 'echo attempt >> "$RUN_DIR/order"; ' +
+      'if [ ! -e "$RUN_DIR/source/new.mdx" ]; then ' +
+      'echo new > "$RUN_DIR/source/new.mdx"; exit 1; fi; ' +
+      'cp "$RUN_DIR/source/new.mdx" "$RUN_DIR/rendered"';
+    expect(await exited(launch(cmd))).toBe(0);
+    expect(readFileSync(join(tmp, 'order'), 'utf8').trim().split('\n')).toHaveLength(2);
+    expect(readFileSync(join(tmp, 'rendered'), 'utf8')).toBe('new\n');
+  });
+
+  it('rebuilds changed bytes even when both existing twins let the first build exit zero', async () => {
+    writeFileSync(join(tmp, 'source/page.mdx'), 'old');
+    const cmd = 'cp "$RUN_DIR/source/page.mdx" "$RUN_DIR/rendered"; ' +
+      'if [ ! -e "$RUN_DIR/changed" ]; then ' +
+      'printf new > "$RUN_DIR/source/page.mdx"; touch "$RUN_DIR/changed"; fi';
+    expect(await exited(launch(cmd))).toBe(0);
+    expect(readFileSync(join(tmp, 'rendered'), 'utf8')).toBe('new');
+  });
+
+  it('bounds changing inputs to two attempts and refuses a false current verdict', async () => {
+    const cmd = 'echo changed >> "$RUN_DIR/source/page.mdx"; echo attempt >> "$RUN_DIR/order"';
+    const child = launch(cmd);
+    let err = '';
+    child.stderr?.setEncoding('utf8').on('data', (data: string) => { err += data; });
+    expect(await exited(child)).toBe(1);
+    expect(readFileSync(join(tmp, 'order'), 'utf8').trim().split('\n')).toHaveLength(2);
+    expect(err).toContain('mirror is not verified current');
   });
 
   it('times out LOUDLY (bounded wait) instead of queuing forever behind a wedged holder', async () => {

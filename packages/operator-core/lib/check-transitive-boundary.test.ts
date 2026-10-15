@@ -8,6 +8,7 @@ import ts from 'typescript';
 import {
   extractImports,
   formatChain,
+  resolveModulePath,
   walkGraph,
 } from '../../../scripts/check-transitive-boundary.mjs';
 
@@ -91,6 +92,29 @@ describe('transitive client/server boundary preflight', () => {
       'shared.ts',
     ]);
     expect(formatChain(nodeViolation.chain, 'node:fs', nodeViolation.line)).toContain('node:fs (line 2)');
+  });
+
+  it('walks only the explicitly client-safe operator-core leaves across the package seam', () => {
+    const safeLeaves = [
+      'agent-tools/coordination/owner-chat-turn',
+      'agent-tools/coordination/status-display',
+      'sync-resolver/agent-runs-list-query',
+      'sync-resolver/coord-ui-projection',
+      'sync-resolver/learning-retain-types',
+    ];
+
+    for (const leaf of safeLeaves) {
+      const spec = `@papercusp/operator-core/lib/${leaf}`;
+      const resolved = resolveModulePath(spec, resolve(__dirname, 'entry.ts'));
+      expect(resolved, `${spec} should resolve to its source leaf`).not.toBeNull();
+      const result = walkGraph(resolved!);
+      expect([...result.violations.keys()], `${spec} must stay free of forbidden imports`).toEqual([]);
+    }
+
+    const forbidden = '@papercusp/operator-core/lib/agent-tools/coordination/tools/send';
+    const root = fixture({ 'main.ts': `import '${forbidden}';\n` });
+    const result = walkGraph(join(root, 'main.ts'));
+    expect([...result.violations.keys()]).toEqual([forbidden]);
   });
 
   it('the CLI prints all full chains in one run without a second verbose invocation', () => {

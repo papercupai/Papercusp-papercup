@@ -269,8 +269,11 @@ export async function resolveSelfSession(
     if (native) uuid = native;
   }
 
+  // Discovery may name an absolute executable path. Comparing that path to
+  // the bare CLI name incorrectly sends managed Codex/OMP sessions to Claude.
+  const clientCommand = command ? basename(command) : null;
   const kind: SelfSession['sourceKind'] =
-    command === 'omp' ? 'omp' : command === 'codex' ? 'codex' : 'claude';
+    clientCommand === 'omp' ? 'omp' : clientCommand === 'codex' ? 'codex' : 'claude';
 
   if (kind === 'claude') {
     // The per-owner isolation dir holds ONLY this owner's sessions, so the

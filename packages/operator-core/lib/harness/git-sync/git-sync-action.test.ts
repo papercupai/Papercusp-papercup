@@ -31,21 +31,26 @@
  *     escalation (non-clobber upsert) + a one-shot coord broadcast, and never
  *     dispatch a resolver.
  *
- * All seams are mocked (run-git-sync, su-lock-store, in-workspace-txn,
+ * All seams are mocked (run-git-sync, pot-git storage bootstrap, su-lock-store, in-workspace-txn,
  * harness-registry, loopback-fetch, launch-blueprint, coordination/messages,
  * pipeline-events, db-org, docs/sweep-after-sync) — no PG, no network, no
  * subprocess (the eligibility gate's disk checks hit real mkdtemp dirs). The
  * action module is side-effect imported so the system-action registry is
  * populated as in production (same pattern as routines/release-actions.test.ts).
  */
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
-import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, afterEach } from 'vitest';
 import type { GitSyncOutcome, RunGitSyncOpts } from './run-git-sync';
 import type { BridgeTickInput, BridgeTickOutcome } from '../../sync/pot-git/github-bridge-tick';
+import * as checkpointedSteps from '../../dbos/checkpointed-step';
 import { configureScheduledRegistry, resetScheduledRegistry, type TimerHandle } from '@papercusp/scheduled-registry';
+import { GitSyncLeaseLostError } from './git-sync-lease-fence';
+import { TURN_HOLD_INTENT } from '../../personal-vault/git-sync-hold';
+import { markSpawnOffloadHost, resetSpawnOffloadHostForTest } from '../../fleet/git-via-sidecar';
 // WI-5960: NOT mocked — the real implementation, so the invariant test below
 // pins the ACTUAL cross-module agreement (a mock would just assert against
 // itself and could drift silently alongside a real-code regression).
@@ -122,7 +127,7 @@ const releaseAllResourcesForOwnerMock = vi.fn(
   }),
 );
 const heldResourcesByOwner = new Map<string, string[]>();
-const releaseTrace: string[] = [];
+const releaseTrace: Array<{ owner: string; resource: string }> = [];
 const readResourceQueueMock = vi.fn(async (_tx: unknown, _opts: Record<string, unknown>) => ({
   holders: [] as Array<Record<string, unknown>>,
   draining: false,
@@ -135,6 +140,7 @@ const clearResourceWaiterMock = vi.fn(
   async (_tx: unknown, _coordinationDomain: string, _resource: string, _owner: string) => undefined,
 );
 vi.mock('../../agent-tools/locks/su-lock-store', () => ({
+  getTxPool: () => lockReadPool,
   tryAcquireResource: async (...a: unknown[]) => {
     const opts = a[1] as { owner: string; resource: string };
     const result = await tryAcquireResourceMock(a[0], opts);
@@ -147,7 +153,7 @@ vi.mock('../../agent-tools/locks/su-lock-store', () => ({
   },
   tryReleaseResource: async (...a: unknown[]) => {
     const opts = a[1] as { owner: string; resource?: string };
-    if (opts.resource) releaseTrace.push(opts.resource);
+    if (opts.resource) releaseTrace.push({ owner: opts.owner, resource: opts.resource });
     const result = await tryReleaseResourceMock(a[0], opts);
     if (opts.resource) {
       const held = heldResourcesByOwner.get(opts.owner) ?? [];
@@ -164,7 +170,7 @@ vi.mock('../../agent-tools/locks/su-lock-store', () => ({
     const result = await releaseAllResourcesForOwnerMock(a[0], a[1] as string, owner);
     // A failed bulk transaction leaves every row intact; only trace the reverse
     // release order after the mocked transaction commits successfully.
-    releaseTrace.push(...[...held].reverse());
+    releaseTrace.push(...[...held].reverse().map((resource) => ({ owner, resource })));
     heldResourcesByOwner.delete(owner);
     return result;
   },
@@ -198,7 +204,9 @@ const recordingTx: FakeTx = (strings, ...values) => {
  *  cost the commit). Restored in beforeEach. */
 let fakeTxImpl: FakeTx = recordingTx;
 const fakeTx: FakeTx = (strings, ...values) => fakeTxImpl(strings, ...values);
+const lockReadPool: FakeTx = () => Promise.resolve([]);
 const workspaceTxnCalls: Array<{ coordinationDomain: string; owner: string }> = [];
+let workspaceTxnFailure: Error | null = null;
 // EI-22078335832051825: the session half of the dead-holder reclaim. Mocked so
 // no test here reaches the presence store / liveness oracle; the adapter's own
 // rails are pinned in locks/ended-session-owners.test.ts. Default: nobody is
@@ -217,6 +225,7 @@ vi.mock('../../dbos/checkpointed-step', () => ({
 vi.mock('../../agent-tools/locks/in-workspace-txn', () => ({
   inWorkspaceTxn: (coordinationDomain: string, owner: string, fn: (tx: unknown) => unknown) => {
     workspaceTxnCalls.push({ coordinationDomain, owner });
+    if (workspaceTxnFailure) return Promise.reject(workspaceTxnFailure);
     return fn(fakeTx);
   },
 }));
@@ -242,6 +251,48 @@ let potGitMode: 'legacy' | 'bridged' | 'p2p-only' = 'legacy';
 vi.mock('./hive-git-mode', () => ({
   getPotGitMode: async () => potGitMode,
 }));
+const ensurePotGitRepoMock = vi.hoisted(() => vi.fn());
+const defaultRunGitMock = vi.hoisted(() => vi.fn());
+const defaultRunGitCallHistory = vi.hoisted(() => [] as Array<{ testName: string; args: unknown[]; stack: string }>);
+const sidecarStartupAttempts = vi.hoisted(() => [] as string[]);
+const sidecarGitCalls = vi.hoisted(() => [] as Array<{ args: string[]; cwd: string }>);
+vi.mock('../../fleet/git-via-sidecar', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../fleet/git-via-sidecar')>()),
+  // Docs helpers retain their module's internal runGit even when its exported
+  // binding is mocked. Isolate the shared external execution seam instead;
+  // conflict authorship and the helpers still exercise their real read logic.
+  runGitViaSpawnerSidecar: async (args: string[], cwd: string) => {
+    sidecarGitCalls.push({ args, cwd });
+    return { code: 0, stdout: '', stderr: '' };
+  },
+}));
+vi.mock('../../fleet/spawner-sidecar-spawn', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../fleet/spawner-sidecar-spawn')>()),
+  // Fail at the first caller instead of launching a real child whose delayed
+  // diagnostics can be attributed to an unrelated test later in this suite.
+  spawnSpawnerSidecar: async () => {
+    const error = new Error('git-sync unit fixture reached real sidecar startup');
+    sidecarStartupAttempts.push(error.stack ?? error.message);
+    throw error;
+  },
+}));
+vi.mock('../../sync/pot-git/storage', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../sync/pot-git/storage')>()),
+  // The action suite does not exercise bare-store initialization. Keep cold
+  // bootstrap on its fixture root instead of defaultRunGit's production sidecar.
+  ensurePotGitRepo: (...args: unknown[]) => ensurePotGitRepoMock(...args),
+  // Capture every orchestration-suite reach into the real Git runner. Returning
+  // a hermetic result lets the diagnostic identify the caller without starting
+  // a sidecar or leaking a delayed child into later tests.
+  defaultRunGit: (...args: unknown[]) => defaultRunGitMock(...args),
+}));
+const listHiveMembersForLocalPotMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => []));
+vi.mock('../../federated-pot-scope', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../federated-pot-scope')>()),
+  // This orchestration suite has no peer-bootstrap fixture. Do not let a live
+  // membership roster drive real Git or sidecar work from the cold-bootstrap test.
+  listHiveMembersForLocalPot: (...args: unknown[]) => listHiveMembersForLocalPotMock(...args),
+}));
 const fetchRepoPushPermissionMock = vi.fn(async (_owner: string, _repo: string) => true);
 vi.mock('../github-repo-permissions', () => ({
   fetchRepoPushPermission: (owner: string, repo: string) => fetchRepoPushPermissionMock(owner, repo),
@@ -249,6 +300,10 @@ vi.mock('../github-repo-permissions', () => ({
 
 // Real dirs for the gate's disk checks (path exists / has .git).
 const tmpRoot = mkdtempSync(join(tmpdir(), 'git-sync-action-'));
+const isolatedPotGitRoot = join(tmpRoot, 'pot-git');
+const savedPotGitRoot = process.env.PAPERCUSP_POT_GIT_ROOT;
+const savedSpawnerSidecar = process.env.PAPERCUSP_SPAWNER_SIDECAR;
+const savedSpawnerSidecarMode = process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE;
 const repoDir = join(tmpRoot, 'repo');
 const noGitDir = join(tmpRoot, 'norepo');
 mkdirSync(join(repoDir, '.git'), { recursive: true });
@@ -262,6 +317,13 @@ const savedBackgroundWorkers = process.env.PAPERCUSP_BACKGROUND_WORKERS;
 afterAll(() => {
   if (savedBackgroundWorkers === undefined) delete process.env.PAPERCUSP_BACKGROUND_WORKERS;
   else process.env.PAPERCUSP_BACKGROUND_WORKERS = savedBackgroundWorkers;
+  if (savedPotGitRoot === undefined) delete process.env.PAPERCUSP_POT_GIT_ROOT;
+  else process.env.PAPERCUSP_POT_GIT_ROOT = savedPotGitRoot;
+  if (savedSpawnerSidecar === undefined) delete process.env.PAPERCUSP_SPAWNER_SIDECAR;
+  else process.env.PAPERCUSP_SPAWNER_SIDECAR = savedSpawnerSidecar;
+  if (savedSpawnerSidecarMode === undefined) delete process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE;
+  else process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE = savedSpawnerSidecarMode;
+  resetSpawnOffloadHostForTest();
   rmSync(tmpRoot, { recursive: true, force: true });
 });
 
@@ -276,6 +338,16 @@ const runGitSyncMock = vi.fn(
   }),
 );
 const runGitBoundedMock = vi.fn(async (..._args: unknown[]) => ({ code: 0, stdout: '', stderr: '' }));
+/** WI-10007606: a yield-shaped error. The action detects it by `name`, so this fake
+ *  needs no class identity shared with the real run-git-sync module. */
+const yieldError = (reason: string, boundary: string, synced: number, total: number): Error =>
+  Object.assign(new Error(`git-sync yielded at ${boundary}: ${reason}`), {
+    name: 'GitSyncYieldError',
+    reason,
+    boundary,
+    submodulesSynced: synced,
+    submodulesTotal: total,
+  });
 // The stash-check sweep (checkForNewStashes) also imports discoverSubmodulesRecursive
 // from this module — without it on the mock, its best-effort catch console.warns and
 // vitest-fail-on-console reds every test whose tick reaches the sweep (EI-14928 class:
@@ -379,6 +451,19 @@ vi.mock('../../blueprint/launch-blueprint', () => ({
   resolveLaunchTargetForEvent: (...a: unknown[]) =>
     resolveLaunchTargetForEventMock(a[0] as string, a[1] as Record<string, unknown>),
 }));
+// WI-10006848: the agent-CLI preflight reads the host PATH; pin it so the suite does not
+// depend on whether `claude` is installed where it runs. Default: the CLI is present.
+const probeRoleRuntimeMock = vi.fn(
+  (_role: string): { ok: boolean; bin: string; resolved?: string } => ({
+    ok: true,
+    bin: 'claude',
+    resolved: '/usr/local/bin/claude',
+  }),
+);
+vi.mock('../../harness-invoke-once', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../harness-invoke-once')>()),
+  probeRoleRuntime: (role: string) => probeRoleRuntimeMock(role),
+}));
 
 type FakeResponse = { ok: boolean; status: number; json: () => Promise<unknown> };
 const loopbackFetchMock = vi.fn(
@@ -402,6 +487,32 @@ vi.mock('../../loopback-fetch', () => ({
 const sendMessageMock = vi.fn(async (_id: unknown, _msg: Record<string, unknown>): Promise<unknown> => ({ ok: true }));
 vi.mock('../../agent-tools/coordination/messages', () => ({
   sendMessage: (...a: unknown[]) => sendMessageMock(a[0], a[1] as Record<string, unknown>),
+}));
+
+type TestAttributionRosterEntry = {
+  agent: string;
+  files: string[];
+  intent?: string;
+  workItems?: string[];
+  planSlug?: string;
+  sessionId?: string;
+};
+const readEditAttributionRosterMock = vi.fn(
+  async (_opts: { workspaceId: string | null }) => [] as TestAttributionRosterEntry[],
+);
+vi.mock('../../edit-attribution', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../edit-attribution')>()),
+  readEditAttributionRoster: (...a: unknown[]) =>
+    readEditAttributionRosterMock(a[0] as { workspaceId: string | null }),
+}));
+
+const listPresenceForAttributionMock = vi.fn(async (_opts: Record<string, unknown>) => [] as unknown[]);
+vi.mock('../../agent-tools/coordination/presence', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../agent-tools/coordination/presence')>()),
+  listPresence: (...a: unknown[]) =>
+    listPresenceForAttributionMock(a[0] as Record<string, unknown>) as unknown as ReturnType<
+      typeof import('../../agent-tools/coordination/presence').listPresence
+    >,
 }));
 
 const upsertConditionWorkItemMock = vi.fn(async (conditionKey: string, _input: Record<string, unknown>) => ({
@@ -432,15 +543,31 @@ let contentFixerRows: Array<{ lr: { status?: string; at?: number; instance?: str
 /** Claimed values returned by the atomic content-fixer marker CAS. */
 let contentFixerClaimResults: boolean[] = [];
 /** Rows returned for the EI-18 + content counters read, including the prior offender signature. */
-let counterRows: Array<{ et: number; lo: string[] | null; ct?: number; cs?: string | null }> = [];
+let counterRows: Array<{
+  et: number;
+  lo: string[] | null;
+  ct?: number;
+  cs?: string | null;
+  lastyield?: string | null;
+  lastsynced?: string | null;
+  // Own-head publish refusal snapshot columns read by readEscalationCounters.
+  pubrefused?: string | null;
+  pubblocked?: string | null;
+  pubat?: string | number | null;
+  lastexempt?: string | number | null;
+  lastpub?: string | null;
+}> = [];
 /** Previous bridge egress watermark returned for the bridge-ordering regression fixture. */
 let bridgePreviousEgressHead: string | null = null;
+let bridgePreviousEgressScanProgress: unknown = null;
 /** One-shot setup failures injected at the exact post-lock boundaries under test. */
 let rejectUnsafeAtCall: number | null = null;
 let unsafeCallCount = 0;
 /** One-shot routine activity-write failure keyed by the marker phase under test. */
 let rejectGitSyncActivityPhaseOnce: string | null = null;
 let rejectTemplateOnce: Error | null = null;
+/** Rows (or a failure) for the turn-scoped hold read, the only query naming `session_turn_journal`. */
+let turnHoldRows: Row[] | Error = [];
 /** Every `sql.unsafe(text, params)` write, in order. */
 const unsafeCalls: Array<{ text: string; params: unknown[] }> = [];
 /** EI-18799539619330782: every tagged-template READ, with its interpolated values —
@@ -456,10 +583,18 @@ const fakeSql = Object.assign(
       rejectTemplateOnce = null;
       return Promise.reject(error);
     }
+    if (text.includes('session_turn_journal')) {
+      return turnHoldRows instanceof Error ? Promise.reject(turnHoldRows) : Promise.resolve(turnHoldRows);
+    }
     if (text.includes("'last_content_fixer'")) return Promise.resolve(contentFixerRows as unknown as Row[]);
     if (text.includes("'last_resolver'")) return Promise.resolve(resolverRows as unknown as Row[]);
     if (text.includes('prev_egress_head')) {
-      return Promise.resolve([{ la: null, wb_sha: null, prev_egress_head: bridgePreviousEgressHead }]);
+      return Promise.resolve([{
+        la: null,
+        wb_sha: null,
+        prev_egress_head: bridgePreviousEgressHead,
+        prev_egress_scan_progress: bridgePreviousEgressScanProgress,
+      }]);
     }
     if (text.includes('consecutive_error_ticks')) return Promise.resolve(counterRows as unknown as Row[]);
     return Promise.resolve([]);
@@ -539,9 +674,14 @@ import {
   isGenericLockIntent,
   runWithGitSyncPerInstallLease,
   resolveGitServingStateWithBootRecovery,
+  resolveHiveGitActor,
   formatIntegratorErrorWarning,
   resetIntegratorErrorWarningsForTest,
+  runBootstrapLeg,
   GIT_SYNC_HISTORY_EXCLUDED_PATHS_CAP,
+  computeConflictAuthorship,
+  gitSyncContentErrorKey,
+  gitSyncYieldCapped,
 } from './git-sync-action';
 import { endedSessionOwners } from '../../agent-tools/locks/ended-session-owners';
 import { intentToSubject, DEFAULT_GIT_SYNC_SUBJECT } from './git-sync-attribution';
@@ -623,6 +763,15 @@ describe('WI-10000734 omitted serving-handle recovery', () => {
 });
 
 describe('isIntegratorActorAdmitted — canonical signer membership gate (WI-38968)', () => {
+  it('P034: publication preserves an unavailable serving owner instead of reporting a missing hive key', async () => {
+    await expect(resolveHiveGitActor('ws-serving-recovery', 'papercusp', 'papercusp', 'repo', {
+      requireReady: true,
+      getBootedHarness: () => null,
+      bootSingleHarness: async () => ({ state: 'failed', error: 'owner snapshot has no serving handles' }),
+      getPgGitServingCapability: async () => ({ status: 'absent', retryable: true, reason: 'owner snapshot omitted handle' }),
+    })).rejects.toThrow('serving unavailable (unknown: lazy serving recovery failed: owner snapshot has no serving handles)');
+  });
+
   it('admits only an exact device pubkey present in the Pot roster', () => {
     expect(isIntegratorActorAdmitted('device-b', ['device-a', 'device-b'])).toBe(true);
     expect(isIntegratorActorAdmitted('device-c', ['device-a', 'device-b'])).toBe(false);
@@ -730,13 +879,39 @@ const escalationUpserts = (): Array<{ text: string; params: unknown[]; body: Rec
 const escalationClears = (): string[][] =>
   unsafeCalls.filter((c) => c.text.includes('SET escalation = NULL')).map((c) => c.params[3] as string[]);
 
-const releasedResources = (): string[] => releaseTrace;
+// The primary lock-set assertions below describe local sync. Completion settlement
+// has its own fresh owner and a single shared restart-barrier lease, covered directly
+// by its regression test; omit that secondary lease from these older lock-set helpers.
+const primaryLockOwners = (): Set<string> => {
+  const calls = tryAcquireResourceMock.mock.calls.map(([, options]) =>
+    options as { owner: string; resource: string },
+  );
+  const ownersWithPrimaryResources = new Set(calls.filter(({ resource }) => resource !== 'git-sync').map(({ owner }) => owner));
+  return ownersWithPrimaryResources.size > 0
+    ? ownersWithPrimaryResources
+    : new Set(calls.map(({ owner }) => owner));
+};
 
-const acquiredResources = (): string[] =>
-  tryAcquireResourceMock.mock.calls.map(([, o]) => (o as { resource: string }).resource);
+const releasedResources = (): string[] => {
+  const owners = primaryLockOwners();
+  return releaseTrace.filter(({ owner }) => owners.has(owner)).map(({ resource }) => resource);
+};
 
-const acquiredLockModes = (): string[] =>
-  tryAcquireResourceMock.mock.calls.map(([, o]) => (o as { mode: string }).mode);
+const acquiredResources = (): string[] => {
+  const owners = primaryLockOwners();
+  return tryAcquireResourceMock.mock.calls
+    .map(([, options]) => options as { owner: string; resource: string })
+    .filter(({ owner }) => owners.has(owner))
+    .map(({ resource }) => resource);
+};
+
+const acquiredLockModes = (): string[] => {
+  const owners = primaryLockOwners();
+  return tryAcquireResourceMock.mock.calls
+    .map(([, options]) => options as { owner: string; mode: string })
+    .filter(({ owner }) => owners.has(owner))
+    .map(({ mode }) => mode);
+};
 
 /** Resource names auto-registered via the in-txn agent_resource_registry INSERT (P-006).
  *  Matched on INSERT specifically: the same txn also UPDATEs that table to declare the
@@ -749,9 +924,11 @@ const registeredResources = (): string[] =>
  *  domain (WI-562584) — the declaration an agent's `resourceLockDomain()` reads back so
  *  it acquires in the SAME domain this action holds the resource in. */
 const workspaceDomainStampedResources = (): string[] =>
-  txQueries
-    .filter((q) => /UPDATE\s+agent_resource_registry/i.test(q.text) && q.text.includes('coordination_domain_kind'))
-    .map((q) => q.values[0] as string);
+  [...new Set(
+    txQueries
+      .filter((q) => /UPDATE\s+agent_resource_registry/i.test(q.text) && q.text.includes('coordination_domain_kind'))
+      .map((q) => q.values[0] as string),
+  )];
 
 /** papercup's MIGRATED trigger_config (db mig 237): the legacy back-off names ride
  *  extra_lock_resources, so peers acquiring exclusive(git-sync) still back it off. */
@@ -768,6 +945,8 @@ const syncedOutcome: GitSyncOutcome = {
   status: 'synced',
   dirtyPathCount: 4,
   committedCount: 2,
+  localCommitSha: 'abc123def456',
+  localCommitAtMs: 1_000,
   headSha: 'abc123def456',
   pushed: ['libs/generic/sync', 'superproject'],
   merged: ['superproject'],
@@ -803,6 +982,8 @@ const contentErrorOutcome: GitSyncOutcome = {
   status: 'synced',
   dirtyPathCount: 2,
   committedCount: 1,
+  localCommitSha: 'def789',
+  localCommitAtMs: 1_000,
   headSha: 'def789',
   pushed: ['superproject'],
   merged: [],
@@ -838,6 +1019,32 @@ function definitelyDeadPid(): Promise<number> {
 
 beforeEach(() => {
   process.env.PAPERCUSP_BACKGROUND_WORKERS = '1';
+  process.env.PAPERCUSP_POT_GIT_ROOT = isolatedPotGitRoot;
+  // Recreate the host rollout gate while the runner seam is mocked, so each
+  // recorded invocation is one that would otherwise select the sidecar path.
+  // Since 2026-10-10 the global var selects the sidecar ONLY in a process
+  // marked as a spawn-offload host (gitSidecarEnabled in fleet/git-via-sidecar),
+  // so the env var alone silently routed every seam to local Git and the
+  // WI-10005972 attribution test saw no sidecar calls (WI-6554700010008409).
+  // The marker is pinned on globalThis: afterAll resets it.
+  process.env.PAPERCUSP_SPAWNER_SIDECAR = '1';
+  markSpawnOffloadHost();
+  defaultRunGitMock.mockReset().mockImplementation(async (...args: unknown[]) => {
+    defaultRunGitCallHistory.push({
+      testName: expect.getState().currentTestName ?? '<unknown>',
+      args,
+      stack: new Error('defaultRunGit test seam').stack?.split('\n').slice(1, 8).join('\n') ?? '',
+    });
+    return { code: 0, stdout: '', stderr: '' };
+  });
+  listHiveMembersForLocalPotMock.mockReset().mockResolvedValue([]);
+  ensurePotGitRepoMock.mockReset().mockImplementation(async (potHomeSlug: string, repoKey: string) => {
+    const root = process.env.PAPERCUSP_POT_GIT_ROOT;
+    if (root !== isolatedPotGitRoot) throw new Error('test pot-git root was not isolated');
+    const repoPath = join(root, potHomeSlug, repoKey + '.git');
+    mkdirSync(repoPath, { recursive: true });
+    return repoPath;
+  });
   tryAcquireResourceMock.mockReset();
   tryReleaseResourceMock.mockReset();
   releaseAllResourcesForOwnerMock.mockReset();
@@ -845,6 +1052,7 @@ beforeEach(() => {
   heldResourcesByOwner.clear();
   releaseTrace.length = 0;
   workspaceTxnCalls.length = 0;
+  workspaceTxnFailure = null;
   readResourceQueueMock.mockReset();
   readResourceQueueMock.mockResolvedValue({ holders: [], draining: false, queue: [] });
   clearResourceExclusiveQueueMock.mockReset();
@@ -856,7 +1064,13 @@ beforeEach(() => {
   liveLockHoldingsStrictMock.mockReset();
   liveLockHoldingsStrictMock.mockResolvedValue([]);
   runGitSyncMock.mockReset();
-  runGitBoundedMock.mockReset().mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+  runGitBoundedMock.mockReset().mockImplementation(async (...args: unknown[]) => ({
+    code: 0,
+    stdout: Array.isArray(args[0]) && args[0].join(' ') === 'rev-parse --verify HEAD^{commit}'
+      ? 'd'.repeat(40) + '\n'
+      : '',
+    stderr: '',
+  }));
   reconcileProposedCompletionsAtCommitMock.mockReset();
   reconcileProposedCompletionsAtCommitMock.mockResolvedValue({
     inspected: 0,
@@ -879,10 +1093,14 @@ beforeEach(() => {
   emitGitSyncEgressedEventMock.mockReset();
   bridgeTickOverride = null;
   bridgePreviousEgressHead = null;
+  bridgePreviousEgressScanProgress = null;
   fetchRepoPushPermissionMock.mockReset().mockResolvedValue(true);
   resolveLaunchTargetForEventMock.mockReset();
+  probeRoleRuntimeMock.mockReset();
   loopbackFetchMock.mockReset();
   sendMessageMock.mockReset();
+  readEditAttributionRosterMock.mockReset().mockResolvedValue([]);
+  listPresenceForAttributionMock.mockReset().mockResolvedValue([]);
   upsertConditionWorkItemMock.mockReset();
   upsertConditionWorkItemMock.mockImplementation(async (conditionKey) => ({
     conditionKey,
@@ -907,6 +1125,7 @@ beforeEach(() => {
   unsafeCallCount = 0;
   rejectGitSyncActivityPhaseOnce = null;
   rejectTemplateOnce = null;
+  turnHoldRows = [];
   registryProjects = [{ slug: 'papercup', path: repoDir }];
   ambientRegistryProjects = null;
   loadHarnessRegistryMock.mockClear();
@@ -983,6 +1202,53 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     expect(result).toMatchObject({ status: 'synced', headSha: syncedOutcome.headSha, pushed: syncedOutcome.pushed });
   });
 
+  it.each([errorOutcome, conflictOutcome])(
+    'EI-255862: notifies a proven root local commit despite aggregate $status',
+    async (partialOutcome) => {
+      const localCommitSha = 'e'.repeat(40);
+      const localCommitAtMs = 1_000;
+      runGitSyncMock.mockResolvedValue({
+        ...partialOutcome,
+        committedCount: 2,
+        localCommitSha,
+        localCommitAtMs,
+        headSha: 'f'.repeat(40),
+      } as GitSyncOutcome);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await action(ctx);
+        expect(emitGitSyncCommittedEventMock).toHaveBeenCalledWith(
+          localCommitSha,
+          { scope: { installSlug: ctx.installSlug, workspaceId: ctx.workspaceId } },
+          localCommitAtMs,
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
+
+  it('EI-255862: does not infer a root commit from a submodule count and existing root HEAD', async () => {
+    runGitSyncMock.mockResolvedValue({ ...syncedOutcome, committedCount: 1, localCommitSha: undefined });
+    await action(ctx);
+    expect(emitGitSyncCommittedEventMock).not.toHaveBeenCalled();
+  });
+
+  it.each([1_000, undefined])('EI-255886: carries producer time %s without retimestamping on action replay', async (localCommitAtMs) => {
+    runGitSyncMock.mockResolvedValue({ ...syncedOutcome, localCommitAtMs } as GitSyncOutcome);
+    const now = vi.spyOn(Date, 'now').mockReturnValue(4_000);
+    try {
+      await action(ctx);
+      expect(emitGitSyncCommittedEventMock).toHaveBeenCalledWith(
+        syncedOutcome.localCommitSha,
+        { scope: { installSlug: ctx.installSlug, workspaceId: ctx.workspaceId } },
+        localCommitAtMs,
+      );
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it('refuses every on-demand fire on a request-only host before the git-sync pipeline starts', async () => {
     const priorBackgroundWorkers = process.env.PAPERCUSP_BACKGROUND_WORKERS;
     process.env.PAPERCUSP_BACKGROUND_WORKERS = '0';
@@ -1017,9 +1283,168 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     );
   });
 
+  it.each([
+    { ...errorOutcome, status: 'nothing' as const },
+    { ...errorOutcome, committedCount: 1 },
+    conflictOutcome,
+    { ...errorOutcome, status: 'skipped-locked' as const },
+  ])('WI-10007988: settles committed content on a $status local pass', async (outcome) => {
+    const committedHead = 'd'.repeat(40);
+    runGitSyncMock.mockResolvedValue(outcome);
+    runGitBoundedMock.mockImplementation(async (...args: unknown[]) => ({
+      code: 0,
+      stdout: Array.isArray(args[0]) && args[0].join(' ') === 'rev-parse --verify HEAD^{commit}'
+        ? committedHead + '\n'
+        : '',
+      stderr: '',
+    }));
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await action(ctx);
+
+      expect(routinePatches()[0]).toMatchObject({ local_sync_status: outcome.status });
+      expect(reconcileProposedCompletionsAtCommitMock).toHaveBeenCalledWith(
+        committedHead,
+        { installSlug: ctx.installSlug, workspaceId: ctx.workspaceId, repositoryRoot: realpathSync(repoDir) },
+        expect.objectContaining({ signal: expect.anything(), onProgress: expect.any(Function) }),
+      );
+      expect(heldResourcesByOwner.size).toBe(0);
+      if (outcome.status === 'conflict') {
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('merge conflict(s)'));
+      } else {
+        expect(warn).not.toHaveBeenCalled();
+      }
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.each([
+    { code: 0, stdout: 'not-a-commit\n', stderr: '' },
+    { code: 1, stdout: 'd'.repeat(40), stderr: 'HEAD is unavailable' },
+  ])('WI-10007988: skips settlement when committed HEAD is unverified (%j)', async (head) => {
+    runGitSyncMock.mockResolvedValue(errorOutcome);
+    runGitBoundedMock.mockResolvedValue(head);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await action(ctx);
+
+      expect(reconcileProposedCompletionsAtCommitMock).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('committed HEAD could not be resolved'));
+      expect(heldResourcesByOwner.size).toBe(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('loads and persists the GitHub egress scan cursor across routine ticks', async () => {
+    const previousCursor = {
+      version: 1 as const,
+      policyFingerprint: 'a'.repeat(64),
+      baseSha: 'b'.repeat(40),
+      targetSha: 'c'.repeat(40),
+      lastScannedCommitSha: 'd'.repeat(40),
+    };
+    const nextCursor = { ...previousCursor, lastScannedCommitSha: 'e'.repeat(40) };
+    const localProject = {
+      slug: 'papercup',
+      path: repoDir,
+      hive_slug: 'papercup',
+      github_remote: 'https://github.com/papercusp/papercusp.git',
+    };
+    potGitMode = 'bridged';
+    registryProjects = [localProject];
+    bridgePreviousEgressScanProgress = previousCursor;
+    bridgeTickOverride = async (input) => {
+      expect(input.egressScanProgress).toEqual(previousCursor);
+      return {
+        ran: true,
+        egressTarget: 'upstream',
+        ingressed: { updated: 0, upToDate: 0, nonFF: 0, absent: 0 },
+        admissions: [],
+        lastAdmitted: null,
+        egress: null,
+        egressScanProgress: nextCursor,
+        verdict: { action: 'clear', needsOwner: false, agentActionable: false, agentRemedies: [] },
+        errors: [],
+      } as unknown as BridgeTickOutcome;
+    };
+    runGitSyncMock.mockResolvedValueOnce(syncedOutcome);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await action(ctx);
+    } finally {
+      warn.mockRestore();
+    }
+
+    const bridgeWrite = unsafeCalls.find(({ params }) => {
+      try {
+        const patch = JSON.parse(String(params[2])) as Record<string, unknown>;
+        return Object.prototype.hasOwnProperty.call(patch, 'github_bridge');
+      } catch {
+        return false;
+      }
+    });
+    expect(bridgeWrite).toBeDefined();
+    const patch = JSON.parse(String(bridgeWrite?.params[2])) as {
+      github_bridge?: { egress_scan_progress?: unknown };
+    };
+    expect(patch.github_bridge?.egress_scan_progress).toEqual(nextCursor);
+  });
+
+  it('egresses the post-integration head in the same fire before completion settlement', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const order: string[] = [];
+    const oldHead = 'a'.repeat(40);
+    const newHead = 'b'.repeat(40);
+    let canonical = oldHead;
+    const snapshot: NonNullable<BridgeTickOutcome['ingressSnapshot']> = {
+      ingress: { ok: true, namespaceKey: 'origin', updated: [], upToDate: ['main'], nonFF: [], absent: [], errors: [] },
+      admissions: [], lastAdmitted: null,
+    };
+    potGitMode = 'bridged';
+    registryProjects = [{ slug: 'papercup', path: repoDir, hive_slug: 'papercup', github_remote: 'https://github.com/papercusp/papercusp.git' }];
+    bridgeTickOverride = async (input) => {
+      order.push(input.ingressSnapshot ? 'late-egress' : 'early-egress');
+      if (input.ingressSnapshot) expect(input.ingressSnapshot).toEqual(snapshot);
+      return {
+        ran: true, ingressSnapshot: snapshot, egressTarget: 'upstream',
+        ingressed: { updated: 0, upToDate: 1, nonFF: 0, absent: 0 },
+        admissions: [], lastAdmitted: null,
+        egress: { pushed: 1, upToDate: 0, rejectedNonFF: 0, blockedSecrets: 0 },
+        egressHead: canonical,
+        verdict: { action: 'clear', needsOwner: false, signals: [], detail: '' }, errors: [],
+      };
+    };
+    const originalStep = checkpointedSteps.runCheckpointedStep;
+    const step = vi.spyOn(checkpointedSteps, 'runCheckpointedStep').mockImplementation(async (name, fn) => {
+      const result = await originalStep(name, fn);
+      if (name === 'git-sync:integrator') {
+        canonical = newHead;
+        order.push('integrated');
+      }
+      return result;
+    });
+    reconcileProposedCompletionsAtCommitMock.mockImplementationOnce(async () => {
+      order.push('settlement');
+      return { inspected: 0, upgraded: [], residual: 0, unreadable: [] };
+    });
+    runGitSyncMock.mockResolvedValueOnce(syncedOutcome);
+    try { await action(ctx); } finally { step.mockRestore(); warn.mockRestore(); }
+
+    expect(order).toEqual(['early-egress', 'integrated', 'late-egress', 'settlement']);
+    expect(emitGitSyncEgressedEventMock.mock.calls.map(([sha]) => sha)).toEqual([oldHead, newHead]);
+    expect(routinePatches().filter((p) => p.github_bridge).at(-1)?.github_bridge).toMatchObject({ egress_head: newHead });
+  });
+
   it('egresses origin/staging before a slow completion-settlement pass times out', async () => {
     const priorBudget = process.env.PAPERCUSP_GIT_SYNC_COMPLETION_SETTLEMENT_BUDGET_MS;
     process.env.PAPERCUSP_GIT_SYNC_COMPLETION_SETTLEMENT_BUDGET_MS = '35';
+    // WI-6554700010008342: exercise the deadline itself without waiting for
+    // wall-clock scheduling in a concurrent gate run.
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const order: string[] = [];
     const egressSha = 'a'.repeat(40);
@@ -1035,6 +1460,8 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     bridgeTickOverride = async (input) => {
       order.push('bridge-tick');
       expect(input.githubRemote).toBe(localProject.github_remote);
+      expect(input.deps?.runGit).toBeTypeOf('function');
+      await input.deps!.runGit!(['fetch', localProject.github_remote], repoDir, { timeoutMs: 240_000 });
       // runGithubBridgeLeg has already captured this entry with an empty
       // checkout path, so its best-effort remote-tracking refresh stays local
       // and cannot spawn a real Git process in this orchestration test.
@@ -1053,6 +1480,10 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     };
     emitGitSyncEgressedEventMock.mockImplementationOnce(() => {
       order.push('egressed');
+    });
+    let settlementStarted!: () => void;
+    const settlementStartedPromise = new Promise<void>((resolve) => {
+      settlementStarted = resolve;
     });
     let observedSignal: AbortSignal | undefined;
     reconcileProposedCompletionsAtCommitMock.mockImplementationOnce(async (_sha, _scope, { signal, onProgress }) => {
@@ -1074,6 +1505,7 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
           },
           { once: true },
         );
+        settlementStarted();
       });
     });
     runGitSyncMock.mockImplementationOnce(async () => {
@@ -1085,7 +1517,17 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     });
 
     try {
-      await action(ctx);
+      const running = action(ctx);
+      await settlementStartedPromise;
+      expect(order).toEqual(['bridge-tick', 'egressed', 'settlement']);
+      await vi.advanceTimersByTimeAsync(34);
+      expect(observedSignal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(observedSignal?.reason).toMatchObject({
+        code: 'git_sync_completion_settlement_budget',
+        timeoutMs: 35,
+      });
+      await running;
 
       expect(reconcileProposedCompletionsAtCommitMock).toHaveBeenCalledOnce();
       expect(order).toEqual(['bridge-tick', 'egressed', 'settlement']);
@@ -1094,17 +1536,40 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
         egressSha,
         expect.objectContaining({ scope: expect.any(Object) }),
       );
+      const bridgeFetch = defaultRunGitCallHistory.find((call) =>
+        (call.args[0] as string[] | undefined)?.includes(localProject.github_remote) &&
+        (call.args[2] as { onProgress?: unknown } | undefined)?.onProgress,
+      );
+      expect(bridgeFetch).toBeDefined();
+      expect(bridgeFetch?.args[2]).toMatchObject({ signal: expect.anything(), onProgress: expect.any(Function) });
       expect(emitGitSyncCommittedEventMock).toHaveBeenCalledWith(
         syncedOutcome.headSha,
         expect.objectContaining({ scope: expect.any(Object) }),
+        syncedOutcome.localCommitAtMs,
       );
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('remaining candidates will be retried on a later fire'));
     } finally {
       warn.mockRestore();
+      vi.useRealTimers();
       if (priorBudget === undefined) delete process.env.PAPERCUSP_GIT_SYNC_COMPLETION_SETTLEMENT_BUDGET_MS;
       else process.env.PAPERCUSP_GIT_SYNC_COMPLETION_SETTLEMENT_BUDGET_MS = priorBudget;
     }
-  }, 2_000);
+    // The cap bounds orchestration/setup; cancellation is checked at exactly
+    // 35 virtual milliseconds, including the not-yet-expired boundary.
+  }, 15_000);
+
+  it('stamps every whole-fire metadata marker with its per-fire lock owner and PID', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+
+    await action(ctx);
+
+    const patches = gitSyncActivityPatches();
+    expect(patches.length).toBeGreaterThan(1);
+    const owner = String(patches[0]?.owner);
+    expect(owner).toMatch(new RegExp(`^system:git-sync:${process.pid}:`));
+    expect(primaryLockOwners()).toEqual(new Set([owner]));
+    expect(patches.every((patch) => patch.owner === owner && patch.owner_pid === process.pid)).toBe(true);
+  });
 
   it('persists count-bearing completion-settlement progress for routine health readers', async () => {
     runGitSyncMock.mockResolvedValue(syncedOutcome);
@@ -1128,7 +1593,7 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     );
   });
 
-  it('EI-24496143892913296: the first post-leg after settlement restamps the activity marker and drops the stale N/total', async () => {
+  it('EI-24496143892913296: final settlement drops the stale N/total when the fire completes', async () => {
     // Before the fix the marker stayed phase:'completion-settlement' (frozen 9/200, frozen
     // updated_at) for every leg that ran after settlement ended, so routines:list read a
     // healthy fire as "in flight, still recording progress" and then as stuck.
@@ -1153,9 +1618,8 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     expect(settlementAt).toBeGreaterThan(-1);
     const afterSettlement = patches[settlementAt + 1];
     expect(afterSettlement).toMatchObject({
-      active: true,
-      phase: 'post-legs',
-      leg: 'git-sync:bootstrap',
+      active: false,
+      phase: 'complete',
       outcome_status: 'synced',
     });
     expect(afterSettlement).not.toHaveProperty('settlement_progress');
@@ -1223,6 +1687,24 @@ describe('P-004 dependency-generation prebuild handoff', () => {
       toolingRoot: tmpRoot,
       queuedAtMs: expect.any(Number),
     });
+  });
+
+  it('WI-10005972: cold bootstrap keeps store setup inside the isolated test fixture', async () => {
+    registryProjects = [{ slug: 'papercup', path: repoDir, hive_slug: 'papercup' }];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await runBootstrapLeg('papercup', ctx.workspaceId);
+
+      expect(ensurePotGitRepoMock).toHaveBeenCalledOnce();
+      const [potHomeSlug, repoKey] = ensurePotGitRepoMock.mock.calls[0] as [string, string];
+      expect(await ensurePotGitRepoMock.mock.results[0]?.value).toBe(
+        join(isolatedPotGitRoot, potHomeSlug, repoKey + '.git'),
+      );
+      expect(listHiveMembersForLocalPotMock).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('serving unavailable'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('does not queue a candidate after a conflict outcome', async () => {
@@ -1388,6 +1870,50 @@ describe('EI-18799539619330782: git-sync routine-metadata access is tenant-scope
 });
 
 describe('P-009/P-006 lock discipline (per-slug resources)', () => {
+  it('holds a fresh shared restart barrier while completion settlement is running', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+    let sharedBarrierOwnersDuringSettlement: string[] = [];
+    reconcileProposedCompletionsAtCommitMock.mockImplementationOnce(async () => {
+      sharedBarrierOwnersDuringSettlement = [...heldResourcesByOwner.entries()]
+        .filter(([, resources]) => resources.includes('git-sync'))
+        .map(([owner]) => owner);
+      return { inspected: 0, upgraded: [], residual: 0, unreadable: [] };
+    });
+
+    await action(ctx);
+
+    const sharedBarrierAcquires = tryAcquireResourceMock.mock.calls
+      .map(([, opts]) => opts as { resource: string; mode: string; owner: string })
+      .filter(({ resource, mode }) => resource === 'git-sync' && mode === 'shared');
+    expect(sharedBarrierAcquires).toHaveLength(2);
+    expect(sharedBarrierOwnersDuringSettlement).toEqual([sharedBarrierAcquires[1]?.owner]);
+    expect(sharedBarrierAcquires[1]?.owner).not.toBe(sharedBarrierAcquires[0]?.owner);
+    expect([...heldResourcesByOwner.values()].flat()).not.toContain('git-sync');
+  });
+
+  it('skips completion settlement when a restart is already queued on the shared barrier', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+    let sharedBarrierAttempts = 0;
+    tryAcquireResourceMock.mockImplementation(async (_tx, rawOptions) => {
+      const options = rawOptions as { resource: string; mode: string };
+      if (options.resource === 'git-sync' && options.mode === 'shared' && ++sharedBarrierAttempts === 2) {
+        return { ok: false, reason: 'exclusive_pending', holders: [] };
+      }
+      return { ok: true };
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await action(ctx);
+
+      expect(sharedBarrierAttempts).toBe(2);
+      expect(reconcileProposedCompletionsAtCommitMock).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('completion settlement skipped'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('SKIPS the tick when a peer holds a lock (back-pressure) — releasing the partial acquisitions', async () => {
     // per-slug + first extra acquire; the last extra is held by a peer
     tryAcquireResourceMock.mockImplementation(async (_tx, opts) =>
@@ -1412,9 +1938,11 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
         local_sync_status: 'skipped',
         last_skip_reason: 'held by agent:peer',
         last_skipped_at: expect.any(Number),
-        last_skipped_paths: [],
       }),
     ]);
+    // WI-6554700010008496: a skipped tick ran no sweep, so it must not erase the last
+    // completed sweep's per-path exclusion record.
+    expect(routinePatches()[0]).not.toHaveProperty('last_skipped_paths');
     expect(fireBreadcrumbs()).toEqual([{ fire_started_at: expect.any(Number) }]);
     expect(captureHeadShaMock).not.toHaveBeenCalled();
     // …and the refused resource gets an owner-scoped late-grant cleanup before
@@ -1779,9 +2307,9 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
           local_sync_status: 'skipped',
           last_skip_reason: 'lock_contended',
           last_skipped_at: expect.any(Number),
-          last_skipped_paths: [],
         }),
       ]);
+      expect(routinePatches()[0]).not.toHaveProperty('last_skipped_paths');
       expect(releasedResources()).toEqual([]);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('lock contended after retries'));
       warn.mockRestore();
@@ -1892,6 +2420,190 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     // acquireLocks cancels any stale FIFO ticket / late cascade grant even on
     // a terminal refusal; that cleanup is not a lease the operation held.
     expect(releasedResources()).toEqual(['git-sync:papercup']);
+  });
+
+  // WI-10006972: the per-install lease is fenced like the per-slug fire's
+  // (WI-10006724). Its only operation is the hive-git bootstrap leg, which seeds
+  // namespace refs; a leg that lost its lease must not start another write.
+  describe('WI-10006972: per-install lease fence', () => {
+    let heartbeat: (() => void) | null = null;
+    const handle: TimerHandle = { unref: () => undefined };
+    beforeEach(() => {
+      heartbeat = null;
+      resetScheduledRegistry();
+      configureScheduledRegistry({
+        setIntervalImpl: (cb, ms) => {
+          if (ms === 60_000) heartbeat = cb;
+          return handle;
+        },
+        clearIntervalImpl: () => undefined,
+      });
+      tryAcquireResourceMock.mockImplementation(async () => ({ ok: true }));
+    });
+    afterEach(() => {
+      resetScheduledRegistry();
+      vi.useRealTimers();
+    });
+
+    it('a refused refresh stops the operation before its next write and reads lease-lost', async () => {
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const writes: string[] = [];
+      try {
+        const result = await runWithGitSyncPerInstallLease('papercup', 'ws-42', async (lease) => {
+          lease.assertHeld();
+          writes.push('before-loss');
+          // Another owner now holds the per-install resource.
+          tryAcquireResourceMock.mockImplementation(async (_tx, opts) =>
+            (opts as { resource: string }).resource === 'git-sync:papercup'
+              ? { ok: false, reason: 'held by system:git-sync:other-fire' }
+              : { ok: true },
+          );
+          expect(heartbeat).not.toBeNull();
+          heartbeat!();
+          await vi.waitFor(() =>
+            expect(error).toHaveBeenCalledWith(expect.stringContaining('LOST exclusive lock git-sync:papercup')),
+          );
+          lease.assertHeld();
+          writes.push('after-loss');
+          return 'must-not-finish';
+        });
+
+        expect(result).toMatchObject({ state: 'lease-lost', leaseLossCause: 'refused' });
+        expect(writes).toEqual(['before-loss']);
+        // The lease is still released on the way out.
+        expect(releasedResources()).toContain('git-sync:papercup');
+      } finally {
+        error.mockRestore();
+      }
+    });
+
+    it('a lease with no confirmed refresh past the limit refuses the next write (lapsed lease)', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const start = new Date('2026-10-06T23:00:00Z').getTime();
+      vi.setSystemTime(start);
+      const writes: string[] = [];
+      const result = await runWithGitSyncPerInstallLease('papercup', 'ws-42', async (lease) => {
+        lease.assertHeld();
+        writes.push('fresh');
+        // No heartbeat has fired for a whole TTL: the row may already have expired
+        // and been taken by another fire. A later successful refresh must not re-arm.
+        vi.setSystemTime(start + 600_000);
+        lease.assertHeld();
+        writes.push('lapsed');
+        return 'must-not-finish';
+      });
+
+      expect(result).toMatchObject({ state: 'lease-lost', leaseLossCause: 'unconfirmed' });
+      expect(writes).toEqual(['fresh']);
+    });
+
+    it('reports a started but unconfirmed refresh attempt without treating it as a confirmation', async () => {
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+      const start = new Date('2026-10-06T23:00:00Z').getTime();
+      vi.setSystemTime(start);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const result = await runWithGitSyncPerInstallLease('papercup', 'ws-42', async (lease) => {
+          expect(heartbeat).not.toBeNull();
+          tryAcquireResourceMock.mockImplementationOnce(() => new Promise(() => undefined));
+          heartbeat!();
+          await vi.advanceTimersByTimeAsync(45_000);
+          vi.setSystemTime(start + 480_000);
+          lease.assertHeld();
+          return 'must-not-finish';
+        });
+
+        expect(result).toMatchObject({ state: 'lease-lost', leaseLossCause: 'unconfirmed' });
+        if (result.state === 'lease-lost') {
+          expect(result.detail).toContain(`last refresh attempt was sent at ${start} ms`);
+          expect(result.detail).toContain('480000 ms ago');
+        }
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('lease refresh still unsettled'));
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('keeps same-slug leases in different workspaces renewing independently after one stops', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const start = new Date('2026-10-09T03:00:00Z').getTime();
+      vi.setSystemTime(start);
+      const timers: Array<{ cb: () => void; ms: number; stopped: boolean; handle: TimerHandle }> = [];
+      configureScheduledRegistry({
+        setIntervalImpl: (cb, ms) => {
+          const handle: TimerHandle = { unref: () => undefined };
+          timers.push({ cb, ms, stopped: false, handle });
+          return handle;
+        },
+        clearIntervalImpl: (handle) => {
+          const timer = timers.find((entry) => entry.handle === handle);
+          if (timer) timer.stopped = true;
+        },
+      });
+      let enteredA!: () => void;
+      let enteredB!: () => void;
+      const startedA = new Promise<void>((resolve) => { enteredA = resolve; });
+      const startedB = new Promise<void>((resolve) => { enteredB = resolve; });
+      let finishA!: () => void;
+      let finishB!: () => void;
+      const heldA = new Promise<void>((resolve) => { finishA = resolve; });
+      const heldB = new Promise<void>((resolve) => { finishB = resolve; });
+      const runA = runWithGitSyncPerInstallLease('papercup', 'ws-a', async (lease) => {
+        enteredA();
+        await heldA;
+        lease.assertHeld();
+        return 'a';
+      });
+      await startedA;
+      const ownerA = (tryAcquireResourceMock.mock.calls.at(-1)![1] as { owner: string }).owner;
+      const runB = runWithGitSyncPerInstallLease('papercup', 'ws-b', async (lease) => {
+        enteredB();
+        await heldB;
+        lease.assertHeld();
+        return 'b';
+      });
+      try {
+        await startedB;
+        const heartbeats = timers.filter((timer) => timer.ms === 60_000);
+        expect(heartbeats).toHaveLength(2);
+        expect(heartbeats.map((timer) => timer.stopped)).toEqual([false, false]);
+        finishB();
+        await expect(runB).resolves.toEqual({ state: 'ran', value: 'b' });
+        expect(heartbeats.map((timer) => timer.stopped)).toEqual([false, true]);
+        for (let tick = 1; tick <= 10; tick += 1) {
+          vi.setSystemTime(start + tick * 60_000);
+          const previous = tryAcquireResourceMock.mock.calls.length;
+          heartbeats[0]!.cb();
+          await vi.waitFor(() => expect(tryAcquireResourceMock.mock.calls.length).toBeGreaterThan(previous));
+          expect(tryAcquireResourceMock.mock.calls.at(-1)![1]).toMatchObject({ owner: ownerA });
+          // The refresh result must reach the fence before the next minute advances.
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        }
+        finishA();
+        await expect(runA).resolves.toEqual({ state: 'ran', value: 'a' });
+        expect(heartbeats.every((timer) => timer.stopped)).toBe(true);
+      } finally {
+        finishA();
+        finishB();
+        await Promise.allSettled([runA, runB]);
+      }
+    });
+
+    it('CONTROL: a held lease runs to completion, and an unrelated error still propagates', async () => {
+      const ran = await runWithGitSyncPerInstallLease('papercup', 'ws-42', async (lease) => {
+        lease.assertHeld();
+        lease.assertHeld();
+        return 'seeded';
+      });
+      expect(ran).toEqual({ state: 'ran', value: 'seeded' });
+
+      const boom = new Error('dial exploded');
+      await expect(
+        runWithGitSyncPerInstallLease('papercup', 'ws-42', async () => {
+          throw boom;
+        }),
+      ).rejects.toBe(boom);
+    });
   });
 
   // WI-562584. The defect this pins: an agent's `resourceLockDomain()` inferred the
@@ -2023,10 +2735,14 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       ),
     ).toBe(true);
     const barrierAcquires = tryAcquireResourceMock.mock.calls
-      .map(([, opts]) => opts as { resource: string; mode: string })
+      .map(([, opts]) => opts as { resource: string; mode: string; owner?: string })
       .filter(({ resource }) => resource === 'git-sync');
-    expect(barrierAcquires).toHaveLength(2);
+    // The original owner retries after reclaiming the terminal resolver; settlement
+    // then acquires a third, fresh owner after the primary lock set has been released.
+    expect(barrierAcquires).toHaveLength(3);
     expect(barrierAcquires.every(({ mode }) => mode === 'shared')).toBe(true);
+    expect(barrierAcquires[0]?.owner).toBe(barrierAcquires[1]?.owner);
+    expect(barrierAcquires[2]?.owner).not.toBe(barrierAcquires[1]?.owner);
     expect(runGitSyncMock).toHaveBeenCalledOnce();
   });
 
@@ -2097,7 +2813,13 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       sequence.push('release-lock-set');
       releaseAttempts += 1;
       if (releaseAttempts === 1) throw contention;
-      return { released: 3, exclusiveResources: ['git-sync:papercup'], waiters: {} };
+      const owner = (releaseAllResourcesForOwnerMock.mock.calls.at(-1)?.[2] as string | undefined) ?? '';
+      const held = heldResourcesByOwner.get(owner) ?? [];
+      return {
+        released: held.length,
+        exclusiveResources: held.includes('git-sync:papercup') ? ['git-sync:papercup'] : [],
+        waiters: {},
+      };
     });
     emitResourceReleasedEventMock.mockImplementation((resource) => {
       sequence.push(`resource-released:${resource}`);
@@ -2113,9 +2835,10 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       'release-lock-set',
       'resource-released:git-sync:papercup',
       'committed-event',
+      'release-lock-set',
     ]);
     expect(emitResourceReleasedEventMock).toHaveBeenCalledExactlyOnceWith('git-sync:papercup', 'ws-42');
-    expect(releaseAllResourcesForOwnerMock).toHaveBeenCalledTimes(2);
+    expect(releaseAllResourcesForOwnerMock).toHaveBeenCalledTimes(3);
     expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync:papercup', 'git-sync']);
   });
 
@@ -2172,6 +2895,58 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
 
     expect(observedRefresh).toEqual(refreshedHoldings);
     expect(liveLockHoldingsStrictMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['census', 'translation'] as const)('WI-10006526: names the actual stalled commit-lock refresh phase (%s)', async (stage) => {
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS', '25');
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS', '1000');
+    vi.useFakeTimers();
+    const repo = join(tmpRoot, `refresh-phase-${stage}`);
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    registryProjects = [{ slug: 'papercup', path: repo }];
+    let start!: () => void;
+    const started = new Promise<void>((resolve) => { start = resolve; });
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => { finish = resolve; });
+    liveLockHoldingsStrictMock.mockResolvedValueOnce([]).mockImplementationOnce(async () => {
+      if (stage === 'census') {
+        start();
+        await pending;
+        return [];
+      }
+      return [{ path: 'package.json', owner: 'su-peer', intent: 'edit', coordinationDomain: join(tmpRoot, 'foreign-refresh-domain') }];
+    });
+    runGitBoundedMock.mockImplementation(async (...call: unknown[]) => {
+      const [args] = call as [string[]];
+      if (args[0] === 'rev-list') {
+        start();
+        await pending;
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    runGitSyncMock.mockImplementationOnce(async (_slug, opts) => {
+      await (opts.refreshLiveLockHoldings as () => Promise<unknown>)();
+      return syncedOutcome;
+    });
+    const running = fireGitSyncNow('papercup', 'ws-42', repo).then(() => null, (error: unknown) => error);
+    try {
+      await started;
+      await vi.advanceTimersByTimeAsync(50);
+      const error = await running;
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain(stage === 'census' ? 'during refresh-live-file-locks' : 'during translate-refreshed-live-file-locks');
+      if (stage === 'census') {
+        expect((error as Error).message).toContain('live-locks=running:');
+        expect((error as Error).message).toContain('restricted-holds=complete:');
+        expect((error as Error).message).toContain('working-tree-window=complete:');
+      }
+      expect(appendPipelineEventMock).not.toHaveBeenCalled();
+    } finally {
+      finish();
+      await running;
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
   });
 
   it('P-009 / WI-10002596: a NESTED install maps parent-root lock paths into its own repo root (initial read and refresh)', async () => {
@@ -2557,8 +3332,8 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       finishRun();
       await running;
       expect(releasedResources()).toEqual([...initialResources].reverse());
-      // Cleanup is likewise one owner-scoped bulk transaction.
-      expect(workspaceTxnCalls).toHaveLength(5);
+      // Primary cleanup plus the settlement barrier's acquire/release transactions.
+      expect(workspaceTxnCalls).toHaveLength(7);
 
       const callsAfterRelease = tryAcquireResourceMock.mock.calls.length;
       expect(heartbeatTimer!.stopped).toBe(true);
@@ -2566,6 +3341,66 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(tryAcquireResourceMock).toHaveBeenCalledTimes(callsAfterRelease);
     } finally {
+      resetScheduledRegistry();
+    }
+  });
+
+  it('EI-25452296370086757: a hung lease refresh is abandoned at its deadline so the next heartbeat refreshes again', async () => {
+    resetScheduledRegistry();
+    const timers: Array<{ cb: () => void; ms: number }> = [];
+    configureScheduledRegistry({
+      setIntervalImpl: (cb, ms) => {
+        timers.push({ cb, ms });
+        return { unref: () => undefined };
+      },
+      clearIntervalImpl: () => undefined,
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      let runStarted!: () => void;
+      const runStartedPromise = new Promise<void>((resolve) => {
+        runStarted = resolve;
+      });
+      let finishRun!: () => void;
+      const finishRunPromise = new Promise<void>((resolve) => {
+        finishRun = resolve;
+      });
+      runGitSyncMock.mockImplementationOnce(async () => {
+        runStarted();
+        await finishRunPromise;
+        return syncedOutcome;
+      });
+      const running = action(ctx);
+      await runStartedPromise;
+      const initialCalls = tryAcquireResourceMock.mock.calls.length;
+      const heartbeat = timers.find((timer) => timer.ms === 60_000);
+      expect(heartbeat).toBeDefined();
+
+      // The first refresh's lock-store call never settles.
+      tryAcquireResourceMock.mockImplementationOnce(() => new Promise(() => undefined));
+      heartbeat!.cb();
+      await vi.advanceTimersByTimeAsync(0);
+      const afterHungStart = tryAcquireResourceMock.mock.calls.length;
+      expect(afterHungStart).toBe(initialCalls + 1);
+
+      // Before the deadline the hung pass still blocks a new one (one refresh in flight).
+      heartbeat!.cb();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(tryAcquireResourceMock.mock.calls.length).toBe(afterHungStart);
+
+      // Past the deadline the pass is abandoned and logged; the next tick refreshes again.
+      await vi.advanceTimersByTimeAsync(45_000);
+      expect(warn.mock.calls.some(([line]) => String(line).includes('lease refresh still unsettled'))).toBe(true);
+      heartbeat!.cb();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(tryAcquireResourceMock.mock.calls.length).toBeGreaterThan(afterHungStart);
+
+      finishRun();
+      await running;
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
       resetScheduledRegistry();
     }
   });
@@ -2826,6 +3661,14 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       expect(returned).toBe(false);
       expect(releasedResources()).toEqual([]);
       expect(heartbeatStopped).toBe(false);
+      // EI-25430105870893148: the deadline aborts the child but is not an
+      // exit receipt. An inactive marker makes routines:list report idle and
+      // safe_to_restart while this same child still holds repository leases.
+      expect(gitSyncActivityPatches().at(-1)).toMatchObject({
+        active: true,
+        phase: 'error',
+        completed_at: null,
+      });
       const acquisitions = acquiredResources().length;
       heartbeat();
       await Promise.resolve();
@@ -2835,12 +3678,145 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       expect(await running).toBeInstanceOf(GitSyncActionTimeoutError);
       expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync:papercup', 'git-sync']);
       expect(heartbeatStopped).toBe(true);
+      expect(gitSyncActivityPatches().at(-1)).toMatchObject({ active: false, phase: 'error' });
+      expect(gitSyncActivityPatches().at(-1)?.completed_at).toBeTypeOf('number');
     } finally {
       finishChild?.();
       await running;
       resetScheduledRegistry();
       vi.useRealTimers();
       vi.unstubAllEnvs();
+    }
+  });
+
+  it.each(['resolve', 'reject'] as const)('keeps generic-error activity active until parallel Git settles (%s)', async (settlement) => {
+    const { classifyProtectedPathExclusions } = await vi.importActual<typeof import('./run-git-sync')>('./run-git-sync');
+    vi.useFakeTimers();
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS', '60000');
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS', '120000');
+    resetScheduledRegistry();
+    let heartbeat!: () => void;
+    let heartbeatStopped = false;
+    const handle: TimerHandle = { unref: () => undefined };
+    configureScheduledRegistry({
+      setIntervalImpl: (cb) => { heartbeat = cb; return handle; },
+      clearIntervalImpl: () => { heartbeatStopped = true; },
+    });
+    const failure = new Error('parallel check-ignore failed');
+    let failFirst!: (error: Error) => void;
+    const first = new Promise<never>((_resolve, reject) => { failFirst = reject; });
+    let childStarted!: () => void;
+    const started = new Promise<void>((resolve) => { childStarted = resolve; });
+    let finishChild!: () => void;
+    runGitBoundedMock.mockImplementation(async (...args) => {
+      if ((args[0] as string[]).at(-1) === 'first"') return first;
+      childStarted();
+      await new Promise<void>((resolve) => { finishChild = resolve; });
+      if (settlement === 'reject') throw new Error('second check-ignore failed');
+      return { code: 1, stdout: '', stderr: '' };
+    });
+    runGitSyncMock.mockImplementationOnce(async (_slug, raw) => {
+      const opts = raw as unknown as RunGitSyncOpts;
+      // Exercise the maintained concurrent Git preflight: Promise.all rejects
+      // on one command while another tracked command can still be running.
+      // A `"` keeps each name on the one-path probe (verbatim names are batched).
+      await classifyProtectedPathExclusions(opts.runGit!, repoDir, ['first"', 'second"']);
+      return syncedOutcome;
+    });
+    let returned = false;
+    const running = action(ctx).then(
+      () => { returned = true; return null; },
+      (error: unknown) => { returned = true; return error; },
+    );
+    try {
+      await started;
+      failFirst(failure);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(returned).toBe(false);
+      expect(releasedResources()).toEqual([]);
+      expect(heartbeatStopped).toBe(false);
+      expect(gitSyncActivityPatches().at(-1)).toMatchObject({ active: true, phase: 'error', completed_at: null });
+      const acquisitions = acquiredResources().length;
+      heartbeat();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(acquiredResources().length).toBeGreaterThan(acquisitions);
+      finishChild();
+      expect(await running).toBe(failure);
+      expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync:papercup', 'git-sync']);
+      expect(heartbeatStopped).toBe(true);
+      expect(gitSyncActivityPatches().at(-1)).toMatchObject({ active: false, phase: 'error', completed_at: expect.any(Number) });
+    } finally {
+      finishChild?.();
+      await running;
+      resetScheduledRegistry();
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('WI-10006724: a refused lease refresh stops the fire before its next Git command', async () => {
+    resetScheduledRegistry();
+    let heartbeat: (() => void) | null = null;
+    const handle: TimerHandle = { unref: () => undefined };
+    configureScheduledRegistry({
+      setIntervalImpl: (cb, ms) => {
+        if (ms === 60_000) heartbeat = cb;
+        return handle;
+      },
+      clearIntervalImpl: () => undefined,
+    });
+    tryAcquireResourceMock.mockImplementation(async () => ({ ok: true }));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const gitCallsBefore = runGitBoundedMock.mock.calls.length;
+    let firstCommandRan!: () => void;
+    const firstCommand = new Promise<void>((resolve) => { firstCommandRan = resolve; });
+    let resumePipeline!: () => void;
+    const pipelineGate = new Promise<void>((resolve) => { resumePipeline = resolve; });
+    let secondCommandError: unknown = null;
+    runGitSyncMock.mockImplementationOnce(async (_slug, raw) => {
+      const opts = raw as unknown as RunGitSyncOpts;
+      await opts.runGit!(['add', '-A'], repoDir);
+      firstCommandRan();
+      await pipelineGate;
+      try {
+        await opts.runGit!(['commit', '-m', 'lease probe'], repoDir);
+      } catch (e) {
+        secondCommandError = e;
+        throw e;
+      }
+      return syncedOutcome;
+    });
+    const running = action(ctx).catch((e: unknown) => e);
+    try {
+      await firstCommand;
+      expect(heartbeat).not.toBeNull();
+      // Another owner now holds the per-slug resource: the next refresh is refused.
+      tryAcquireResourceMock.mockImplementation(async (_tx, opts) =>
+        (opts as { resource: string }).resource === 'git-sync:papercup'
+          ? { ok: false, reason: 'held by system:git-sync:other-fire' }
+          : { ok: true },
+      );
+      heartbeat!();
+      await vi.waitFor(() =>
+        expect(error).toHaveBeenCalledWith(expect.stringContaining('LOST exclusive lock git-sync:papercup')),
+      );
+      resumePipeline();
+      await running;
+      expect(secondCommandError).toBeInstanceOf(GitSyncLeaseLostError);
+      expect((secondCommandError as GitSyncLeaseLostError).leaseLossCause).toBe('refused');
+      const gitVerbs = runGitBoundedMock.mock.calls.slice(gitCallsBefore).map((call) => (call[0] as string[])[0]);
+      expect(gitVerbs).toContain('add');
+      expect(gitVerbs).not.toContain('commit');
+    } finally {
+      resumePipeline?.();
+      await running;
+      resetScheduledRegistry();
+      log.mockRestore();
+      warn.mockRestore();
+      error.mockRestore();
     }
   });
 
@@ -2919,9 +3895,9 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
         local_sync_status: 'skipped',
         last_skip_reason: 'unknown_resource',
         last_skipped_at: expect.any(Number),
-        last_skipped_paths: [],
       }),
     ]);
+    expect(routinePatches()[0]).not.toHaveProperty('last_skipped_paths');
     // the deliberate, human-registered surface: warned about, not auto-registered
     expect(registeredResources()).toEqual(['git-sync:papercup']);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('"my-deploy-lock" is not registered'));
@@ -3114,9 +4090,9 @@ describe('clean sync outcome', () => {
     // gated on a PRIOR content quarantine — none here — so it does not fire this tick.)
     // The strand clear (EI-20402093158205519) rides between them on its OWN phase: it is
     // deliberately NOT counter-gated, so a MEASURED-clean census clears on every status.
-    expect(escalationClears()).toEqual([['git-sync-conflict'], ['git-sync-strand'], ['git-sync-error']]);
+    expect(escalationClears()).toEqual([['git-sync-conflict'], ['git-sync-migration-attribution'], ['git-sync-strand'], ['git-sync-error']]);
     const clears = unsafeCalls.filter((c) => c.text.includes('SET escalation = NULL'));
-    expect(clears.map((c) => c.params[2])).toEqual(['git-sync', 'git-sync-strand', 'git-sync']); // phase
+    expect(clears.map((c) => c.params[2])).toEqual(['git-sync', 'git-sync-migration-attribution', 'git-sync-strand', 'git-sync']); // phase
     expect(escalationUpserts()).toEqual([]);
 
     // no resolver business on a clean tick
@@ -3142,6 +4118,76 @@ describe('clean sync outcome', () => {
     ]);
   });
 
+  it('WI-6554700010012434: leaves local-sync as soon as the local lock set is released, before the record step', async () => {
+    // dev:restart's P-031 drain (probeInFlightLocalSync) treats active+'local-sync' as
+    // "this fire still holds its local lock set". The marker must stop saying so once
+    // cleanupLocks has run, not only after the record step.
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+    const releaseSnapshots: Array<{ owner: string; activityPatches: number }> = [];
+    const pushSpy = vi
+      .spyOn(releaseTrace, 'push')
+      .mockImplementation((...items: Array<{ owner: string; resource: string }>) => {
+        for (const item of items) {
+          releaseSnapshots.push({ owner: item.owner, activityPatches: gitSyncActivityPatches().length });
+        }
+        return Array.prototype.push.apply(releaseTrace, items);
+      });
+    try {
+      await action(ctx);
+    } finally {
+      pushSpy.mockRestore();
+    }
+
+    // The primary lock set is released while only the local-sync marker exists.
+    const owners = primaryLockOwners();
+    const primaryReleases = releaseSnapshots.filter(({ owner }) => owners.has(owner));
+    expect(primaryReleases.length).toBeGreaterThan(0);
+    expect(new Set(primaryReleases.map(({ activityPatches }) => activityPatches))).toEqual(new Set([1]));
+
+    // The record step's outcome patch already sees the fire out of local-sync.
+    const patches = allRoutinePatches();
+    const recordIndex = patches.findIndex((patch) => 'last_status' in patch);
+    expect(recordIndex).toBeGreaterThan(-1);
+    const markerBeforeRecord = patches
+      .slice(0, recordIndex)
+      .filter((patch) => 'git_sync_activity' in patch)
+      .at(-1)?.git_sync_activity;
+    expect(markerBeforeRecord).toMatchObject({ active: true, phase: 'post-legs', outcome_status: 'synced' });
+
+    // A fast record step does not restamp the fresh marker a second time.
+    expect(gitSyncActivityPatches().map((activity) => activity.phase)).toEqual(['local-sync', 'post-legs', 'complete']);
+  });
+
+  it.each([errorOutcome, conflictOutcome])('EI-25545265520729999: records measured HEAD while preserving a $status outcome', async (partial) => {
+    const head = 'e'.repeat(40);
+    runGitSyncMock.mockResolvedValue({ ...partial, headSha: head, committedCount: 1 });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await action(ctx);
+
+      expect(routinePatches()[0]).toMatchObject({
+        head_sha: head,
+        local_sync_head_sha: head,
+        local_sync_status: partial.status,
+        last_status: partial.status,
+        last_pushed: partial.pushed,
+      });
+      expect(enqueueDocSweepMock).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.each([undefined, ''])('EI-25545265520729999: preserves sticky HEAD when an error supplies no measured tip (%j)', async (headSha) => {
+    runGitSyncMock.mockResolvedValue({ ...errorOutcome, ...(headSha === undefined ? {} : { headSha }) });
+
+    await action(ctx);
+
+    expect(routinePatches()[0]).toMatchObject({ local_sync_status: 'error' });
+    expect(routinePatches()[0]).not.toHaveProperty('head_sha');
+    expect(routinePatches()[0]).not.toHaveProperty('local_sync_head_sha');
+  });
+
   it("a 'nothing' pass also clears escalations but records no head_sha and runs no doc sweep", async () => {
     runGitSyncMock.mockResolvedValue({
       status: 'nothing',
@@ -3164,7 +4210,7 @@ describe('clean sync outcome', () => {
     expect(patch).not.toHaveProperty('head_sha');
     expect(patch).not.toHaveProperty('local_sync_head_sha');
     // + the strand clear on its own phase (measured-clean census, not counter-gated).
-    expect(escalationClears()).toEqual([['git-sync-conflict'], ['git-sync-strand'], ['git-sync-error']]);
+    expect(escalationClears()).toEqual([['git-sync-conflict'], ['git-sync-migration-attribution'], ['git-sync-strand'], ['git-sync-error']]);
     expect(enqueueDocSweepMock).not.toHaveBeenCalled();
     expect(appendPipelineEventMock).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'git_sync', status: 'nothing' }),
@@ -3273,6 +4319,57 @@ describe('clean sync outcome', () => {
       category: 'git-sync',
     });
     expect((notice as { body: string }).body).toContain('unlocked remainder may have synced');
+  });
+
+  it('WI-10006478: assigns idempotent reservation guidance to the attributed author for nested repo paths', async () => {
+    const skippedPaths = [
+      {
+        scope: 'libs/sub',
+        path: 'libs/db/sql/999-unreserved-migration.sql',
+        reason: 'migration-reservation' as const,
+        detail: '[migration-reservation-guard] 999-unreserved-migration.sql has no reservation row',
+      },
+    ];
+    runGitSyncMock.mockResolvedValue({ ...syncedOutcome, skippedPaths });
+    readEditAttributionRosterMock.mockResolvedValue([
+      {
+        agent: 'su-migration-author',
+        files: ['libs/sub/libs/db/sql/999-unreserved-migration.sql'],
+        workItems: ['WI-MIGRATION-AUTHOR'],
+      },
+    ]);
+
+    await action(ctx);
+    await action(ctx);
+
+    expect(readEditAttributionRosterMock).toHaveBeenCalledWith({ workspaceId: 'ws-42' });
+    expect(upsertConditionWorkItemMock).toHaveBeenCalledTimes(2);
+    const [firstKey, input] = upsertConditionWorkItemMock.mock.calls[0]!;
+    const [secondKey] = upsertConditionWorkItemMock.mock.calls[1]!;
+    expect(firstKey).toMatch(/^git-sync-migration-reservation:papercup:su-migration-author:[a-f0-9]{24}$/);
+    expect(secondKey).toBe(firstKey);
+    expect(input).toMatchObject({
+      kind: 'bug',
+      severity: 'major',
+      harness: 'papercup',
+      workspaceId: 'ws-42',
+      createdBy: 'system:git-sync',
+      assignee: 'su-migration-author',
+      assignedBy: 'system:git-sync',
+      payload: {
+        source: 'git-sync-migration-reservation',
+        author: 'su-migration-author',
+        migrations: [
+          {
+            scope: 'libs/sub',
+            path: 'libs/db/sql/999-unreserved-migration.sql',
+            detail: '[migration-reservation-guard] 999-unreserved-migration.sql has no reservation row',
+          },
+        ],
+      },
+    });
+    expect((input as { summary: string }).summary).toContain('npm run db:next-migration');
+    expect((input as { summary: string }).summary).toContain('libs/sub/libs/db/sql/999-unreserved-migration.sql');
   });
 
   // P-009 (ex-P-028): last_skipped_paths is overwritten every tick, so the bounded
@@ -3644,6 +4741,152 @@ describe('clean sync outcome', () => {
       else process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS = savedHard;
     }
   });
+
+  it('EI-25303530017814636: bridge progress stays in post-legs and late progress cannot overwrite timeout', async () => {
+    const savedIdle = process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS;
+    const savedHard = process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS;
+    process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS = '25';
+    process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS = '60000';
+    vi.useFakeTimers();
+    resetScheduledRegistry();
+    const timers: Array<{ cb: () => void; ms: number; stopped: boolean; handle: TimerHandle }> = [];
+    const timerByHandle = new Map<TimerHandle, (typeof timers)[number]>();
+    configureScheduledRegistry({
+      setIntervalImpl: (cb, ms) => {
+        const handle: TimerHandle = { unref: () => undefined };
+        const timer = { cb, ms, stopped: false, handle };
+        timers.push(timer);
+        timerByHandle.set(handle, timer);
+        return handle;
+      },
+      clearIntervalImpl: (handle) => {
+        const timer = timerByHandle.get(handle);
+        if (timer) timer.stopped = true;
+      },
+    });
+
+    const localProject = {
+      slug: 'papercup',
+      path: repoDir,
+      hive_slug: 'papercup',
+      github_remote: 'https://github.com/papercusp/papercusp.git',
+      fork_remote: 'https://github.com/papercusp/papercusp-fork.git',
+    };
+    potGitMode = 'bridged';
+    registryProjects = [localProject];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const defaultRunGit = defaultRunGitMock.getMockImplementation();
+    expect(defaultRunGit).toBeDefined();
+    let bridgeFetchStarted!: () => void;
+    const bridgeFetchStartedPromise = new Promise<void>((resolve) => {
+      bridgeFetchStarted = resolve;
+    });
+    let bridgeOverrideFinished!: () => void;
+    const bridgeOverrideFinishedPromise = new Promise<void>((resolve) => {
+      bridgeOverrideFinished = resolve;
+    });
+    // Initialised via `as` so control-flow analysis does not narrow it to `null`: it is
+    // assigned inside the mocked git callback, which CFA cannot see (TS2349 otherwise).
+    let releaseBridgeGit = null as ((result: { code: number; stdout: string; stderr: string }) => void) | null;
+    let bridgeProgress = (): void => {};
+    let bridgeSignal: AbortSignal | undefined;
+    defaultRunGitMock.mockImplementation(async (...args: unknown[]) => {
+      const gitArgs = args[0] as string[] | undefined;
+      if (gitArgs?.[0] === 'fetch' && !releaseBridgeGit) {
+        const options = args[2] as { signal?: AbortSignal; onProgress?: () => void } | undefined;
+        bridgeProgress = options?.onProgress ?? (() => {});
+        bridgeSignal = options?.signal;
+        bridgeFetchStarted();
+        return new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
+          releaseBridgeGit = resolve;
+        });
+      }
+      return defaultRunGit!(...args);
+    });
+    bridgeTickOverride = async (input) => {
+      try {
+        await input.deps!.runGit!(['fetch', localProject.github_remote], repoDir, { timeoutMs: 240_000 });
+        return {
+          ran: true,
+          egressTarget: 'upstream',
+          ingressed: { updated: 0, upToDate: 0, nonFF: 0, absent: 0 },
+          admissions: [],
+          lastAdmitted: null,
+          egress: null,
+          verdict: { action: 'clear', needsOwner: false, signals: [], detail: '' },
+          errors: [],
+        } as unknown as BridgeTickOutcome;
+      } finally {
+        bridgeOverrideFinished();
+      }
+    };
+    runGitSyncMock.mockResolvedValueOnce(syncedOutcome);
+
+    const settled = action(ctx).then(
+      () => ({ value: undefined as unknown, error: undefined as unknown }),
+      (error) => ({ value: undefined as unknown, error }),
+    );
+    try {
+      await bridgeFetchStartedPromise;
+      bridgeProgress();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(gitSyncActivityPatches().at(-1)).toMatchObject({
+        active: true,
+        phase: 'post-legs',
+        outcome_status: syncedOutcome.status,
+        leg: 'git-sync:github-bridge',
+      });
+
+      await vi.advanceTimersByTimeAsync(30);
+      const result = await settled;
+      expect(result.error).toBeInstanceOf(GitSyncActionTimeoutError);
+      expect(result.error).toMatchObject({
+        phase: 'git-sync:github-bridge',
+        timeoutKind: 'idle',
+        timeoutMs: 25,
+      });
+      expect(bridgeSignal?.aborted).toBe(true);
+      expect(gitSyncActivityPatches().at(-1)).toMatchObject({
+        active: false,
+        phase: 'error',
+        outcome_status: null,
+      });
+
+      // Let the underlying bridge operation settle after its caller has timed out, then
+      // replay a buffered progress callback beyond the heartbeat interval. It
+      // must not restamp local-sync over the terminal error marker.
+      if (releaseBridgeGit) {
+        const release = releaseBridgeGit;
+        releaseBridgeGit = null;
+        release({ code: 0, stdout: '', stderr: '' });
+      }
+      await bridgeOverrideFinishedPromise;
+      for (let i = 0; i < 8; i += 1) await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(30_000);
+      bridgeProgress();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(gitSyncActivityPatches().at(-1)).toMatchObject({
+        active: false,
+        phase: 'error',
+        outcome_status: null,
+      });
+    } finally {
+      if (releaseBridgeGit) {
+        const release = releaseBridgeGit;
+        releaseBridgeGit = null;
+        release({ code: -1, stdout: '', stderr: 'test cleanup' });
+      }
+      resetScheduledRegistry();
+      vi.useRealTimers();
+      warn.mockRestore();
+      if (savedIdle === undefined) delete process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS;
+      else process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS = savedIdle;
+      if (savedHard === undefined) delete process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS;
+      else process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS = savedHard;
+    }
+    // Fake timers drive every timeout above, so this wall-clock cap only bounds real
+    // setup and promise-chain work; 2s was exceeded under gate load (EI-25303530017814636).
+  }, 15_000);
 });
 
 describe('P-010/P-012 merge-conflict path', () => {
@@ -3731,6 +4974,47 @@ describe('P-010/P-012 merge-conflict path', () => {
     expect(resolveLaunchTargetForEventMock).not.toHaveBeenCalled();
     expect(loopbackFetchMock).not.toHaveBeenCalled();
     expect(routinePatches().some((p) => 'last_resolver' in p)).toBe(false);
+  });
+
+  // WI-10006848: a host without the resolver role's agent CLI (a Server install ships none)
+  // died `spawn claude ENOENT` on every conflict tick, and the escalation still claimed
+  // "merge-resolver dispatched". The resolver is withheld and the row says why.
+  it('withholds the merge-resolver when its agent CLI is missing and says so on the escalation', async () => {
+    runGitSyncMock.mockResolvedValue(conflictOutcome);
+    probeRoleRuntimeMock.mockReturnValue({ ok: false, bin: 'claude' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    expect(probeRoleRuntimeMock).toHaveBeenCalledWith('merge-resolver');
+    expect(loopbackFetchMock).not.toHaveBeenCalled();
+    expect(routinePatches().some((p) => 'last_resolver' in p)).toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('merge-resolver NOT dispatched — runtime missing: claude'));
+    // The row a human reads is the LAST write, and it no longer claims a dispatch.
+    const ups = escalationUpserts();
+    const last = ups.at(-1)!.body as Record<string, unknown>;
+    expect(last).toMatchObject({
+      kind: 'git-sync-conflict',
+      scope: 'libs/generic/sync',
+      resolver_unavailable: { runtime: 'claude', reason: 'runtime-missing' },
+    });
+    expect(last.detail).toContain('merge-resolver runtime missing: claude');
+    expect(last.detail).not.toContain('merge-resolver dispatched');
+    warn.mockRestore();
+  });
+
+  it('keeps the dispatched wording and no resolver_unavailable field when the CLI is present', async () => {
+    runGitSyncMock.mockResolvedValue(conflictOutcome);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    const ups = escalationUpserts();
+    expect(ups).toHaveLength(1);
+    expect(ups[0].body).not.toHaveProperty('resolver_unavailable');
+    expect((ups[0].body as Record<string, unknown>).detail).toContain('merge-resolver dispatched');
+    expect(loopbackFetchMock).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
   });
 
   it('RE-dispatches when the previous resolver already SETTLED (failed) — a settled dispatch never suppresses retry', async () => {
@@ -3896,6 +5180,51 @@ describe('EI-18 repeated-failure escalation (git-sync-error)', () => {
     expect(loopbackFetchMock).not.toHaveBeenCalled();
   });
 
+  it('records the publish-refused edge-trigger inputs on the git_sync pipeline event (WI-6554700010011022)', async () => {
+    // The edge trigger broadcasts when the refusal's commit differs from the one recorded a
+    // tick earlier, and both are read once at fire start. The event must carry both commits
+    // and the snapshot's age so a repeated broadcast can be traced from the ledger.
+    counterRows = [
+      {
+        et: 0,
+        lo: [],
+        pubrefused: 'secrets',
+        pubblocked: 'c0ffee00c0ffee00',
+        pubat: null,
+        lastexempt: null,
+        lastpub: 'deadbeefdeadbeef',
+      },
+    ];
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const before = Date.now();
+
+    await action(ctx);
+
+    const after = Date.now();
+    // The differing commits are exactly what makes the edge trigger broadcast this tick.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('own-head publish REFUSED (secrets) at c0ffee00c0ff'));
+    warn.mockRestore();
+    const event = appendPipelineEventMock.mock.calls
+      .map(([ev]) => ev)
+      .find((ev) => ev.kind === 'git_sync') as
+      | { detail: { escalationInputs: Record<string, unknown> } }
+      | undefined;
+    expect(event?.detail.escalationInputs).toEqual({
+      fireStartedAtMs: expect.any(Number),
+      prevReadAtMs: expect.any(Number),
+      publishBlockedAtCommit: 'c0ffee00c0ffee00',
+      prevPublishBlockedAtCommit: 'deadbeefdeadbeef',
+    });
+    const { fireStartedAtMs, prevReadAtMs } = event!.detail.escalationInputs as {
+      fireStartedAtMs: number;
+      prevReadAtMs: number;
+    };
+    expect(fireStartedAtMs).toBeGreaterThanOrEqual(before);
+    expect(prevReadAtMs).toBeGreaterThanOrEqual(fireStartedAtMs);
+    expect(prevReadAtMs).toBeLessThanOrEqual(after);
+  });
+
   it('the THIRD consecutive error tick writes the git-sync-error escalation + broadcasts, and dispatches NO resolver', async () => {
     runGitSyncMock.mockResolvedValue(errorOutcome);
     counterRows = [{ et: 2, lo: [] }]; // two prior error ticks → this one crosses the threshold
@@ -4007,6 +5336,24 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
     expect(routinePatches()).toContainEqual({
       last_content_fixer: expect.objectContaining({ status: 'ok', httpStatus: 200 }),
     });
+    warn.mockRestore();
+  });
+
+  // WI-10006848: the content-fixer is an agent too; on a host without its CLI the quarantine
+  // still holds but no fixer is spawned to die `spawn <cli> ENOENT`.
+  it('withholds the content-fixer when its agent CLI is missing (quarantine still escalated)', async () => {
+    runGitSyncMock.mockResolvedValue(contentErrorOutcome);
+    counterRows = [{ et: 0, lo: [], ct: 0 }];
+    probeRoleRuntimeMock.mockReturnValue({ ok: false, bin: 'codex' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    expect(contentUpserts()).toHaveLength(1);
+    expect(probeRoleRuntimeMock).toHaveBeenCalledWith('content-fixer');
+    expect(loopbackFetchMock).not.toHaveBeenCalled();
+    expect(routinePatches().some((p) => 'last_content_fixer' in p)).toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('content-fixer NOT dispatched — runtime missing: codex'));
     warn.mockRestore();
   });
 
@@ -4231,6 +5578,131 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
     warn.mockRestore();
   });
 
+  it('WI-6554700010008496: a persisted importer entry names its excluded root and the root\'s reason', () => {
+    const base = { scope: 'superproject', error: 'x', fixerRole: 'content-fixer' };
+    expect(gitSyncContentErrorKey({
+      ...base,
+      file: 'lib/leaf.ts',
+      detectorKey: 'quarantined-importer',
+      excludedRoot: 'lib/root.ts',
+      excludedRootReason: 'held by su-turn for WI-1 — turn-scoped hold',
+    })).toBe('superproject/lib/leaf.ts [quarantined-importer of superproject/lib/root.ts (held by su-turn for WI-1 — turn-scoped hold)]');
+    // A root without a reason, and every other detector, keep the established shape.
+    expect(gitSyncContentErrorKey({
+      ...base, file: 'lib/leaf.ts', detectorKey: 'quarantined-importer', excludedRoot: 'lib/root.ts',
+    })).toBe('superproject/lib/leaf.ts [quarantined-importer of superproject/lib/root.ts]');
+    expect(gitSyncContentErrorKey({ ...base, file: 'a.md', detectorKey: 'mdx' })).toBe('superproject/a.md [mdx]');
+  });
+
+  it('a lock-only quarantined importer stays reported but never consumes fixer attempts or alerts a human', async () => {
+    const importerDeferral = {
+      scope: 'superproject',
+      file: 'plugins/gmail/index.cjs',
+      detectorKey: 'quarantined-importer',
+      error:
+        "imports './papercusp.json' → 'plugins/gmail/papercusp.json', which is EXCLUDED from this commit (live-lock exclusion).",
+      fixerRole: 'content-fixer',
+    };
+    runGitSyncMock.mockResolvedValue({ ...contentErrorOutcome, contentErrors: [importerDeferral] });
+    // Model the production failure: this synthetic deferral has appeared for far
+    // longer than the five-tick fixer budget, but no content was actually broken.
+    counterRows = [{ et: 0, lo: [], ct: 209, cs: contentSignature([importerDeferral]) }];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    expect(contentUpserts()).toEqual([]);
+    expect(loopbackFetchMock).not.toHaveBeenCalled();
+    expect(upsertConditionWorkItemMock).not.toHaveBeenCalled();
+    expect(sendMessageMock).not.toHaveBeenCalled();
+    expect(routinePatches()).toContainEqual(
+      expect.objectContaining({
+        last_status: 'quarantined',
+        consecutive_content_error_ticks: 0,
+        last_content_errors: ['superproject/plugins/gmail/index.cjs [quarantined-importer]'],
+        last_content_error_signature: null,
+        last_content_fixer: null,
+      }),
+    );
+    warn.mockRestore();
+  });
+
+  it('a real content failure still dispatches, while its quarantined importer is omitted from the fixer payload', async () => {
+    const importerDeferral = {
+      scope: 'superproject',
+      file: 'apps/operator-docs/src/content/docs/x.test.ts',
+      detectorKey: 'quarantined-importer',
+      error: 'imports the MDX file, which is excluded from this commit (content/deletion guard).',
+      fixerRole: 'content-fixer',
+    };
+    runGitSyncMock.mockResolvedValue({
+      ...contentErrorOutcome,
+      contentErrors: [...contentErrorOutcome.contentErrors, importerDeferral],
+    });
+    counterRows = [{ et: 0, lo: [], ct: 0 }];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    expect(loopbackFetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = loopbackFetchMock.mock.calls[0];
+    const body = JSON.parse((init as { body: string }).body) as Record<string, unknown>;
+    const extra = body.extra as string[];
+    const payload = JSON.parse(extra[1]!) as { files: Array<{ file: string }> };
+    expect(payload.files.map((file) => file.file)).toEqual(['apps/operator-docs/src/content/docs/x.mdx']);
+    expect(body.kickoff).not.toContain('x.test.ts');
+    warn.mockRestore();
+  });
+
+  it('human escalation records the revalidated dirty snapshot and detector verdict hash', async () => {
+    const file = 'docs/evidence/snapshot.json';
+    const filePath = join(repoDir, file);
+    const leakedPath = `/${['home', 'fixture'].join('/')}/.cache/papercusp/validation/result`;
+    const text = JSON.stringify({ path: leakedPath });
+    mkdirSync(join(repoDir, 'docs/evidence'), { recursive: true });
+    writeFileSync(filePath, text, 'utf8');
+
+    const staleError = {
+      ...contentErrorOutcome.contentErrors[0]!,
+      file,
+      detectorKey: 'identity-leak',
+      error: 'stale error from an earlier working-tree snapshot',
+      contentHash: '0'.repeat(64),
+      detectorResultHash: '1'.repeat(64),
+    };
+    const contentErrors = [staleError];
+    runGitSyncMock.mockResolvedValue({ ...contentErrorOutcome, contentErrors });
+    counterRows = [{ et: 0, lo: [], ct: 4, cs: contentSignature(contentErrors) }];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await action(ctx);
+
+      const input = upsertConditionWorkItemMock.mock.calls[0]![1] as {
+        payload: { files: Array<Record<string, unknown>> };
+      };
+      const recorded = input.payload.files[0]!;
+      const expectedContentHash = createHash('sha256').update(text, 'utf8').digest('hex');
+      const expectedVerdictHash = createHash('sha256')
+        .update(JSON.stringify({ detectorKey: 'identity-leak', error: recorded.error }), 'utf8')
+        .digest('hex');
+
+      expect(recorded).toMatchObject({
+        scope: 'superproject',
+        file,
+        detector: 'identity-leak',
+        contentHash: expectedContentHash,
+        detectorResultHash: expectedVerdictHash,
+      });
+      expect(recorded.contentHash).not.toBe(staleError.contentHash);
+      expect(recorded.detectorResultHash).not.toBe(staleError.detectorResultHash);
+      expect(recorded.error).toContain('hardcoded home path');
+    } finally {
+      warn.mockRestore();
+      rmSync(join(repoDir, 'docs'), { recursive: true, force: true });
+    }
+  });
+
   it('a new quarantined signature after the routine streak reaches MAX gets its own fixer budget', async () => {
     const previousError = contentErrorOutcome.contentErrors[0]!;
     const newError = { ...previousError, file: 'apps/operator-docs/src/content/docs/new.mdx' };
@@ -4305,6 +5777,44 @@ describe('EI-20402093158205519 stranded-submodule census (git-sync-strand)', () 
 
   beforeEach(() => {
     counterRows = [{ et: 0, lo: [], ct: 0 }];
+  });
+
+  it('alarms on unattributed migration fences even when the visible tree synced and submodules were not measured', async () => {
+    runGitSyncMock.mockResolvedValue({
+      ...syncedOutcome,
+      strandedSubmodules: null,
+      skippedPaths: [{
+        scope: 'superproject', path: 'schema-consumer.ts', reason: 'migration-dependency-fence',
+        detail: 'unattributed migration',
+        blockingMigrations: ['libs/sub/libs/db/sql/999-migration.sql'],
+        unattributedMigrations: ['libs/sub/libs/db/sql/999-migration.sql'],
+      }],
+    });
+    await action(ctx);
+    const alarms = escalationUpserts().filter((row) => row.params[1] === 'git-sync-migration-attribution');
+    expect(alarms).toHaveLength(1);
+    expect(alarms[0].body).toMatchObject({
+      kind: 'git-sync-migration-attribution',
+      unattributed_migrations: ['libs/sub/libs/db/sql/999-migration.sql'],
+      migration_deferred_sources: ['schema-consumer.ts'],
+    });
+    expect(String(alarms[0].body.detail)).toContain('do not use the conflicting reservation owner');
+    expect(strandUpserts()).toHaveLength(0);
+    expect(strandClears()).toHaveLength(0);
+  });
+
+  it.each(['synced', 'nothing'] as const)('clears the migration attribution alarm after a measured %s pass', async (status) => {
+    runGitSyncMock.mockResolvedValue({ ...syncedOutcome, status });
+    await action(ctx);
+    expect(unsafeCalls.some((row) => row.text.includes('SET escalation = NULL') &&
+      row.params[2] === 'git-sync-migration-attribution')).toBe(true);
+  });
+
+  it('does not retire the migration attribution alarm on an error without a skipped-path census', async () => {
+    runGitSyncMock.mockResolvedValue({ ...syncedOutcome, status: 'error', errors: [], skippedPaths: undefined });
+    await action(ctx);
+    expect(unsafeCalls.some((row) => row.text.includes('SET escalation = NULL') &&
+      row.params[2] === 'git-sync-migration-attribution')).toBe(false);
   });
 
   it('a strand tick writes the escalation on its OWN phase, naming the files and the fix', async () => {
@@ -4410,6 +5920,64 @@ describe('EI-438 content-guard kill-switch flag', () => {
   });
 });
 
+describe('git-sync-turn-scoped-commit-hold: turn-hold census leg wiring (R-3, R-5)', () => {
+  const heldPath = 'packages/operator-core/lib/mid-turn-edit.ts';
+  const turnRow = { repo_root: null, file: heldPath, agent_id: 'su-mid-turn', work_item_id: null, ts: '2026-10-11T04:00:00.000Z' };
+  const turnReads = () => templateCalls.filter((c) => c.text.includes('session_turn_journal'));
+  const passedHoldings = (): Array<Record<string, unknown>> =>
+    ((runGitSyncMock.mock.calls[0]?.[1] as { liveLockHoldings?: Array<Record<string, unknown>> })?.liveLockHoldings ?? []);
+
+  it('flag ON (default): a path edited during a live turn reaches runGitSync as a held path', async () => {
+    turnHoldRows = [turnRow];
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+
+    await action(ctx);
+
+    expect(getFlagMock).toHaveBeenCalledWith('papercusp-git-sync-turn-hold', 'papercup');
+    expect(turnReads().length).toBeGreaterThan(0);
+    expect(passedHoldings()).toContainEqual(
+      expect.objectContaining({ path: heldPath, owner: 'su-mid-turn', intent: TURN_HOLD_INTENT, heldSince: turnRow.ts }),
+    );
+  });
+
+  it('flag OFF (kill-switch): the census has no turn-holds leg, so the path is not held', async () => {
+    getFlagMock.mockImplementation(
+      async (key: string) => key !== 'papercusp-git-sync-derived-attribution' && key !== 'papercusp-git-sync-turn-hold',
+    );
+    turnHoldRows = [turnRow];
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+
+    await action(ctx);
+
+    expect(turnReads()).toEqual([]);
+    expect(runGitSyncMock).toHaveBeenCalledOnce();
+    expect(passedHoldings().map((h) => h.path)).not.toContain(heldPath);
+  });
+
+  it('fails closed: an unreadable turn-hold read skips the tick and commits nothing', async () => {
+    turnHoldRows = new Error('turn journal unreachable');
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await action(ctx);
+
+      expect(turnReads().length).toBeGreaterThan(0);
+      expect(runGitSyncMock).not.toHaveBeenCalled();
+      expect(allRoutinePatches()).toContainEqual(
+        expect.objectContaining({
+          last_status: 'skipped',
+          last_skip_reason: 'live-lock-read-failed',
+          last_error: expect.stringContaining('turn journal unreachable'),
+        }),
+      );
+    } finally {
+      error.mockRestore();
+      warn.mockRestore();
+    }
+  });
+});
+
 describe('EI-17 deletion-guard kill-switch flag', () => {
   const runGitSyncOpts = (): { deletionGuard?: unknown } =>
     runGitSyncMock.mock.calls[0][1] as { deletionGuard?: unknown };
@@ -4441,11 +6009,15 @@ describe('WI-10001350 migration-reservation admission wiring', () => {
 
     const opts = runGitSyncMock.mock.calls[0]?.[1] as RunGitSyncOpts;
     expect(opts.migrationReservationChecker).toEqual(expect.any(Function));
+    expect(opts.loadMigrationFenceRoster).toEqual(expect.any(Function));
     const beforeRead = templateCalls.length;
-    await expect(opts.migrationReservationChecker!(['README.md'])).resolves.toBeUndefined();
-    await expect(opts.migrationReservationChecker!(['libs/db/sql/999-new-migration.sql'])).rejects.toThrow(
-      '[migration-reservation-guard] 999-new-migration.sql has no reservation row',
-    );
+    await expect(opts.migrationReservationChecker!(['README.md'])).resolves.toEqual([]);
+    await expect(opts.migrationReservationChecker!(['libs/db/sql/999-new-migration.sql'])).resolves.toEqual([
+      {
+        path: 'libs/db/sql/999-new-migration.sql',
+        reason: '[migration-reservation-guard] 999-new-migration.sql has no reservation row',
+      },
+    ]);
     const migrationReads = templateCalls
       .slice(beforeRead)
       .filter((call) => call.text.includes('migration_reservations'));
@@ -4689,5 +6261,202 @@ describe("WI-37668: the lock hook's sentinel intent never becomes a commit subje
     for (const good of ['WI-1: real work', 'fix the thing']) {
       expect(isGenericLockIntent(good)).toBe(false);
     }
+  });
+});
+
+describe('WI-10005972: sidecar Git entrypoint attribution', () => {
+  it('isolates conflict-authorship and docs reads at the shared execution seam', async () => {
+    // Drive the conflict-authorship read HERE and assert only on the calls this
+    // body made. It used to pass only because earlier tests had already pushed a
+    // matching call into the never-cleared file-level array, so a focused
+    // `-t` run of it alone went red (WI-6554700010008433).
+    const start = sidecarGitCalls.length;
+    await computeConflictAuthorship(repoDir, [
+      { scope: 'superproject', conflictedFiles: ['conflicted.ts'] },
+    ]);
+    const conflictPrefix = ['log', '-n', '5', '--format=%H%x1f%B%x1e', '--'];
+    const own = sidecarGitCalls.slice(start);
+    expect(own.some(({ args, cwd }) =>
+      JSON.stringify(args) === JSON.stringify([...conflictPrefix, 'conflicted.ts']) && cwd === repoDir,
+    )).toBe(true);
+    // File-wide invariant: no sidecar call from any test escapes the fixture repo.
+    for (const { cwd } of sidecarGitCalls) {
+      expect(cwd === repoDir || cwd.startsWith(repoDir + '/'), cwd).toBe(true);
+    }
+  });
+
+  it('never reaches the real sidecar startup boundary', () => {
+    expect(sidecarStartupAttempts).toEqual([]);
+  });
+
+  it('pins the first sidecar-eligible Git call to the bridged credential-helper lookup', () => {
+    const scenarioCalls = defaultRunGitCallHistory.filter((call) =>
+      call.testName.includes('EI-20232774599730947: bridged mode makes the superproject truly commit-only'),
+    );
+    const first = scenarioCalls[0];
+    expect(first).toBeDefined();
+    expect(first?.testName).toContain(
+      'EI-20232774599730947: bridged mode makes the superproject truly commit-only',
+    );
+    expect(first?.args).toEqual([
+      ['config', '--local', '--get-all', 'credential.https://github.com.helper'],
+      repoDir,
+    ]);
+    expect(scenarioCalls.every((call) =>
+      JSON.stringify(call.args[0]).includes('credential.https://github.com.helper'),
+    )).toBe(true);
+  });
+});
+
+describe('WI-10007606: cooperative yield to a draining dev:restart barrier', () => {
+  it('hands runGitSync a probe that reports ONLY a draining exclusive on the shared git-sync barrier', async () => {
+    let probe: (() => Promise<string | null>) | undefined;
+    runGitSyncMock.mockImplementationOnce(async (_slug, opts) => {
+      probe = opts.shouldYield as typeof probe;
+      return { status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] };
+    });
+    await action(ctx);
+    expect(typeof probe).toBe('function');
+
+    // Other shared git-sync fires are not a reason to stop.
+    readResourceQueueMock.mockResolvedValueOnce({
+      holders: [{ resource: 'git-sync', mode: 'shared', status: 'held', owner: 'system:git-sync:other' }],
+      draining: false,
+      queue: [],
+    });
+    expect(await probe!()).toBeNull();
+    // A held (not draining) exclusive is someone else's completed acquire, not a waiter.
+    readResourceQueueMock.mockResolvedValueOnce({
+      holders: [{ resource: 'git-sync', mode: 'exclusive', status: 'held', owner: 'system:dev-restart:x' }],
+      draining: false,
+      queue: [],
+    });
+    expect(await probe!()).toBeNull();
+    // dev:restart's drain is the waiter we yield to.
+    readResourceQueueMock.mockResolvedValueOnce({
+      holders: [
+        {
+          resource: 'git-sync',
+          mode: 'exclusive',
+          status: 'draining',
+          owner: 'system:dev-restart:git-sync-barrier:1:u',
+          owner_label: 'su · su-test',
+        },
+      ],
+      draining: true,
+      queue: [],
+    });
+    expect(await probe!()).toBe('exclusive git-sync drain requested by su · su-test');
+    const lastQuery = readResourceQueueMock.mock.calls.at(-1)?.[1];
+    expect(lastQuery).toMatchObject({ resource: 'git-sync' });
+  });
+
+  it('detects the drain through the lock-store read pool while workspace mutations are contended', async () => {
+    // The org database has no lock tables. A mutating workspace transaction instead
+    // timed out on its advisory lock in production, so neither can inspect this drain.
+    let probe: (() => Promise<string | null>) | undefined;
+    runGitSyncMock.mockImplementationOnce(async (_slug, opts) => {
+      probe = opts.shouldYield as typeof probe;
+      return { status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] };
+    });
+    await action(ctx);
+    expect(typeof probe).toBe('function');
+
+    const txnCallsBefore = workspaceTxnCalls.length;
+    workspaceTxnFailure = new Error('workspace contended (pg 57014: lock/statement timeout)');
+    readResourceQueueMock.mockClear();
+    readResourceQueueMock.mockResolvedValueOnce({
+      holders: [{ resource: 'git-sync', mode: 'exclusive', status: 'draining', owner: 'system:dev-restart:test' }],
+      draining: true,
+      queue: [],
+    });
+    expect(await probe!()).toBe('exclusive git-sync drain requested by system:dev-restart:test');
+    expect(readResourceQueueMock).toHaveBeenCalledTimes(1);
+    expect(readResourceQueueMock.mock.calls[0]?.[0]).toBe(lockReadPool);
+    expect(workspaceTxnCalls.length).toBe(txnCallsBefore);
+    expect(readResourceQueueMock.mock.calls[0]?.[1]).toMatchObject({ resource: 'git-sync' });
+  });
+
+  it('a yield is a SKIP: locks released, last_yield recorded, no outcome, no error streak, no escalation', async () => {
+    runGitSyncMock.mockRejectedValueOnce(yieldError('exclusive git-sync drain requested by su-test', 'submodule-batch', 8, 41));
+    counterRows = [{ et: 2, lo: [] }]; // two prior error ticks — a yield must not become the third
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const result = await action(ctx);
+
+    expect(result).toBeUndefined();
+    const patches = routinePatches();
+    expect(patches).toEqual([
+      {
+        last_yield: {
+          at: expect.any(Number),
+          reason: 'exclusive git-sync drain requested by su-test',
+          boundary: 'submodule-batch',
+          submodules_synced: 8,
+          submodules_total: 41,
+        },
+      },
+    ]);
+    expect(patches.some((p) => 'consecutive_error_ticks' in p || 'last_status' in p)).toBe(false);
+    expect(appendPipelineEventMock).not.toHaveBeenCalled();
+    expect(escalationUpserts()).toEqual([]);
+    expect(sendMessageMock).not.toHaveBeenCalled();
+    expect(releaseTrace.some((r) => r.resource === 'git-sync')).toBe(true);
+    expect(gitSyncActivityPatches().at(-1)).toMatchObject({ active: false, phase: 'complete', outcome_status: null });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('barrier released; the next tick redoes the pass'));
+    log.mockRestore();
+  });
+});
+
+/**
+ * WI-6554700010009238 — the yield must not starve commits. Measured 2026-10-12: a bg-host
+ * auto-remediator requested a restart drain every ~4 min, every drain timed out, and the
+ * papercusp pass (39 submodules) yielded to each one, so nothing was committed for 30 min.
+ */
+describe('WI-6554700010009238: anti-starvation cap on the cooperative yield', () => {
+  async function probeFor(rows: typeof counterRows): Promise<unknown> {
+    counterRows = rows;
+    let probe: unknown = 'not-captured';
+    runGitSyncMock.mockImplementationOnce(async (_slug, opts) => {
+      probe = opts.shouldYield;
+      return { status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] };
+    });
+    await action(ctx);
+    return probe;
+  }
+
+  it('the fire after an unanswered yield runs its pass to the end (no yield probe)', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const now = Date.now();
+
+    const probe = await probeFor([{ et: 0, lo: [], lastyield: String(now - 60_000), lastsynced: String(now - 600_000) }]);
+
+    expect(probe).toBeUndefined();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('this pass will not yield to a restart drain (anti-starvation)'));
+    log.mockRestore();
+  });
+
+  it('a yield with no completed pass ever recorded is also capped', async () => {
+    const probe = await probeFor([{ et: 0, lo: [], lastyield: String(Date.now() - 60_000), lastsynced: null }]);
+    expect(probe).toBeUndefined();
+  });
+
+  it('a completed pass since the last yield restores the probe', async () => {
+    const now = Date.now();
+    const probe = await probeFor([{ et: 0, lo: [], lastyield: String(now - 600_000), lastsynced: String(now - 60_000) }]);
+    expect(typeof probe).toBe('function');
+  });
+
+  it('a routine that never yielded keeps the probe', async () => {
+    const probe = await probeFor([{ et: 0, lo: [] }]);
+    expect(typeof probe).toBe('function');
+  });
+
+  it('gitSyncYieldCapped: capped only while the last yield is newer than the last completed pass', () => {
+    expect(gitSyncYieldCapped({ lastYieldAt: null, lastSyncedAt: null })).toBe(false);
+    expect(gitSyncYieldCapped({ lastYieldAt: null, lastSyncedAt: 5 })).toBe(false);
+    expect(gitSyncYieldCapped({ lastYieldAt: 5, lastSyncedAt: null })).toBe(true);
+    expect(gitSyncYieldCapped({ lastYieldAt: 6, lastSyncedAt: 5 })).toBe(true);
+    expect(gitSyncYieldCapped({ lastYieldAt: 5, lastSyncedAt: 6 })).toBe(false);
   });
 });

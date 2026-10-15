@@ -5,13 +5,23 @@
  * not-found item fails only itself; the P-114 arm is evaluated per item.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
+import { standardValidate } from '@papercusp/tooldef';
 
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'me' }) }));
-vi.mock('../../work-items', () => ({ getWorkItem: vi.fn(), setWorkItemStateWithAliasInfo: vi.fn() }));
+// readNonAgentWorkCategory backs the D-035 agent-work door gate (work-nature/agent-work-door-gate);
+// null = the row IS agent work, so every existing case reaches its own write path unchanged.
+const readNonAgentWorkCategory = vi.hoisted(() => vi.fn(async () => null as { nature: string; audience: string | null } | null));
+vi.mock('../../work-items', () => ({
+  getWorkItem: vi.fn(),
+  setWorkItemStateWithAliasInfo: vi.fn(),
+  commentWorkItem: vi.fn(),
+  readNonAgentWorkCategory,
+}));
 vi.mock('../../scheduler/plan-item-lane-guard', () => ({ resolvePlanItemStamp: vi.fn() }));
 vi.mock('./arm-reversible-work-item', () => ({ planWorkItemArm: vi.fn(async () => null), commitWorkItemArm: vi.fn() }));
 
-import { getWorkItem, setWorkItemStateWithAliasInfo, type WorkItem } from '../../work-items';
+import { commentWorkItem, getWorkItem, setWorkItemStateWithAliasInfo, type WorkItem } from '../../work-items';
 import { resolvePlanItemStamp } from '../../scheduler/plan-item-lane-guard';
 import { mockResolvedTyped } from '../../testing/typed-mock';
 import { planWorkItemArm } from './arm-reversible-work-item';
@@ -25,9 +35,59 @@ const tool = (await import('./set_state')).default;
 type Out = { data: any };
 const body = async (args: unknown) => (((await tool.handler(args as never, {} as never)) as Out).data);
 
+describe('work_items:set_state dispatch validation (EI-25280526101674032)', () => {
+  it('accepts a forced reopen through the Standard Schema validator used by MCP dispatch', async () => {
+    const parsed = await standardValidate(tool.args, {
+      id: 'WI-test',
+      harness: 'papercusp',
+      state: 'open',
+      force: true,
+    });
+
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.value).toMatchObject({ id: 'WI-test', state: 'open', force: true });
+    }
+  });
+
+  it('explains that terminal evidence fields are invalid on an open transition', async () => {
+    const parsed = await standardValidate(tool.args, {
+      id: 'WI-test',
+      harness: 'papercusp',
+      state: 'open',
+      force: true,
+      completionRef: 'reopen note',
+    });
+
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) {
+      const message = parsed.issues[0]?.message ?? '';
+      expect(message).toContain('`completionRef` is a terminal-only field');
+      expect(message).toContain('use `reason` or `note`');
+      expect(message).not.toContain('Invalid option: expected one of');
+    }
+  });
+
+  it.each([
+    ['inline', { id: 'WI-test', state: 'dropped' }],
+    ['ids batch', { ids: ['WI-test'], state: 'dropped' }],
+    ['items batch', { items: [{ id: 'WI-test', state: 'dropped' }] }],
+  ])('explains missing terminal assumptions for the %s form', async (_label, input) => {
+    const parsed = await standardValidate(tool.args, input);
+
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) {
+      const messages = parsed.issues.map((entry) => entry.message).join('\n');
+      expect(messages).toContain('a terminal close requires `assumptions`');
+      expect(messages).not.toContain('Invalid option: expected one of');
+      expect(messages).not.toContain('Unrecognized keys: "id", "state"');
+    }
+  });
+});
+
 /** Default mock: no alias — the item lands exactly on the requested state. */
 function noAlias(id: string, state: string) {
-  return { workItem: { id, state }, aliased: false, requestedState: state, appliedState: state } as never;
+  return { workItem: { id, state }, aliased: false, requestedState: state, expectedState: state, appliedState: state } as never;
 }
 
 const workItem = (overrides: Partial<WorkItem> & Pick<WorkItem, 'id' | 'state'>): WorkItem => ({
@@ -154,6 +214,10 @@ describe('work_items:set_state handler (keyed-array)', () => {
     expect(String(b.results[0].error)).toMatch(/no active typed blocker/);
     expect(String(b.results[0].error)).toMatch(/work_items:set_blocker/);
     expect(String(b.results[0].error)).toMatch(/work_items:link/);
+    expect(String(b.results[0].error)).toContain(
+      'work_items:link { id: "<blocker-id>", target_id: "WI-standalone", rel: "blocks" }',
+    );
+    expect(String(b.results[0].error)).not.toContain('work_items:link { source:');
     expect(setM).not.toHaveBeenCalled();
     expect(armM).not.toHaveBeenCalled();
   });
@@ -237,8 +301,33 @@ describe('work_items:set_state — typed blocker guidance (WI-39529)', () => {
 
     expect(text).toContain('work_items:set_blocker');
     expect(text).toContain('work_items:link');
+    expect(text).toContain('work_items:link { id, rel:"blocks", target_id }');
     expect(text).toContain('active typed external blocker');
     expect(text).toContain('rel:"blocks"');
+  });
+
+  it('publishes the typed-blocker precondition on every schema state variant that accepts blocked', () => {
+    const schema = z.toJSONSchema(tool.args as never) as Record<string, unknown>;
+    const blockedStateSchemas: Array<Record<string, unknown>> = [];
+    const visit = (value: unknown) => {
+      if (typeof value !== 'object' || value === null) return;
+      if (Array.isArray(value)) {
+        value.forEach(visit);
+        return;
+      }
+      const object = value as Record<string, unknown>;
+      const states = object.enum;
+      if (Array.isArray(states) && states.includes('blocked')) blockedStateSchemas.push(object);
+      Object.values(object).forEach(visit);
+    };
+    visit(schema);
+
+    expect(blockedStateSchemas.length).toBeGreaterThan(0);
+    for (const stateSchema of blockedStateSchemas) {
+      expect(stateSchema.description).toContain('active typed blocker');
+      expect(stateSchema.description).toContain('work_items:set_blocker');
+      expect(stateSchema.description).toContain('work_items:link');
+    }
   });
 });
 
@@ -248,15 +337,16 @@ describe('work_items:set_state — typed blocker guidance (WI-39529)', () => {
 describe('work_items:set_state — alias note (EI-7125 / WI-2573)', () => {
   it('surfaces an aliasNote when the write aliases', async () => {
     setM.mockImplementation(async (id: string, state: string) => ({
-      workItem: { id, state: 'open' },
+      workItem: { id, state: 'done' },
       aliased: true,
       requestedState: state,
-      appliedState: 'open',
-      aliasNote: `requested state '${state}' has no distinct representation for this item's family — recorded as 'open' instead.`,
+      expectedState: 'done',
+      appliedState: 'done',
+      aliasNote: `requested state '${state}' was normalized to 'done'.`,
     }) as never);
-    const b = await body({ id: 'WI-1', state: 'blocked' });
-    expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', workItem: { state: 'open' } });
-    expect(b.results[0].aliasNote).toMatch(/requested state 'blocked'.*recorded as 'open'/);
+    const b = await body({ id: 'WI-1', state: 'resolved' });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', workItem: { state: 'done' }, expectedState: 'done' });
+    expect(b.results[0].aliasNote).toMatch(/requested state 'resolved'.*normalized to 'done'/);
   });
 
   it('omits aliasNote entirely when the requested state is already canonical (no alias fired)', async () => {
@@ -268,17 +358,18 @@ describe('work_items:set_state — alias note (EI-7125 / WI-2573)', () => {
 
   it('each item in a heterogeneous batch gets its OWN aliasNote independently', async () => {
     setM.mockImplementation(async (id: string, state: string) =>
-      state === 'wip'
+      state === 'resolved'
         ? ({
-            workItem: { id, state: 'open' },
+            workItem: { id, state: 'done' },
             aliased: true,
             requestedState: state,
-            appliedState: 'open',
-            aliasNote: `requested state '${state}' has no distinct representation for this item's family — recorded as 'open' instead.`,
+            expectedState: 'done',
+            appliedState: 'done',
+            aliasNote: `requested state '${state}' was normalized to 'done'.`,
           } as never)
         : noAlias(id, state),
     );
-    const b = await body({ items: [{ id: 'WI-1', state: 'wip' }, { id: 'WI-2', state: 'resolved' }] });
+    const b = await body({ items: [{ id: 'WI-1', state: 'resolved' }, { id: 'WI-2', state: 'wip' }] });
     expect(b.results[0].aliasNote).toBeTruthy();
     expect(b.results[1]).not.toHaveProperty('aliasNote');
   });
@@ -290,40 +381,46 @@ describe('work_items:set_state — alias note (EI-7125 / WI-2573)', () => {
 // against what it asked for catches a divergence even without pattern-matching prose.
 describe('work_items:set_state — aliased/requestedState/appliedState on every result (EI-7712)', () => {
   it('a clean (non-aliased) write reports aliased:false with matching requested/applied state', async () => {
-    const b = await body({ id: 'WI-1', state: 'resolved' });
-    expect(b.results[0]).toMatchObject({ aliased: false, requestedState: 'resolved', appliedState: 'resolved' });
+    const b = await body({ id: 'WI-1', state: 'wip' });
+    expect(b.results[0]).toMatchObject({ aliased: false, requestedState: 'wip', expectedState: 'wip', appliedState: 'wip' });
   });
 
   it('an aliased write reports aliased:true with DIVERGENT requested/applied state, even without reading aliasNote', async () => {
     setM.mockImplementation(async (id: string, state: string) => ({
-      workItem: { id, state: 'open' },
+      workItem: { id, state: 'done' },
       aliased: true,
       requestedState: state,
-      appliedState: 'open',
-      aliasNote: `requested state '${state}' has no distinct representation for this item's family — recorded as 'open' instead.`,
+      expectedState: 'done',
+      appliedState: 'done',
+      aliasNote: `requested state '${state}' was normalized to 'done'.`,
     }) as never);
-    const b = await body({ id: 'WI-1', state: 'blocked' });
+    const b = await body({ id: 'WI-1', state: 'resolved' });
     expect(b.results[0].aliased).toBe(true);
-    expect(b.results[0].requestedState).toBe('blocked');
-    expect(b.results[0].appliedState).toBe('open');
+    expect(b.results[0].requestedState).toBe('resolved');
+    expect(b.results[0].expectedState).toBe('done');
+    expect(b.results[0].appliedState).toBe('done');
     expect(b.results[0].requestedState).not.toBe(b.results[0].appliedState);
   });
 
-  it('a silent divergence with NO onAlias fire (a hypothetical future bug class) still surfaces as aliased:true — the WI-2381 recurrence guard', async () => {
+  it('a silent divergence with NO intentional normalization fails the item using the canonical readback — the WI-2381 recurrence guard', async () => {
     // Simulates a lower-layer bug that persists a DIFFERENT state than requested
-    // WITHOUT the normalize-layer onAlias ever firing — setWorkItemStateWithAliasInfo's
-    // own appliedState-vs-requestedState comparison (not just onAlias) must still catch it.
+    // WITHOUT a normalization alias. The handler must fail this item instead of returning
+    // ok:true with a different state that callers can overlook.
     setM.mockImplementation(async (id: string, state: string) => ({
       workItem: { id, state: 'open' }, // silently stayed 'open' instead of 'blocked'
       aliased: true,
       requestedState: state,
+      expectedState: 'blocked',
       appliedState: 'open',
       aliasNote: `requested state '${state}' was not applied verbatim — recorded as 'open' instead.`,
     }) as never);
     const b = await body({ id: 'WI-2381', state: 'blocked' });
-    expect(b.results[0].ok).toBe(true); // the write itself succeeded — this is exactly why `ok` alone is not enough
-    expect(b.results[0].aliased).toBe(true); // but the discriminator catches the divergence
-    expect(b.results[0].appliedState).not.toBe(b.results[0].requestedState);
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      id: 'WI-2381',
+      error: expect.stringContaining("normalizes to 'blocked', but the canonical post-write reader returned 'open'"),
+    });
   });
 });
 
@@ -338,6 +435,79 @@ describe('work_items:set_state — aliased/requestedState/appliedState on every 
 // set_state.ts comment at the wiring site) — a caller must not learn two spellings of
 // "your evidence didn't win" depending on which tool it called.
 describe('work_items:set_state — terminal conflict surfaced end-to-end (WI-2142258)', () => {
+  it('returns the attestation when a second terminal close preserves the existing state', async () => {
+    setM.mockImplementation(async (id: string, state: string, opts) => {
+      opts?.onTerminalConflict?.({
+        outcome: 'attested',
+        existingOwner: 'system:tool-failure-signature-fold',
+        existingAuthority: null,
+        existingEvidenceSufficient: false,
+        incomingEvidenceSufficient: false,
+        note: 'was ALREADY completed; this close was FILED AS A SECOND ATTESTATION',
+      } as never);
+      return {
+        workItem: { id, state: 'resolved' },
+        aliased: true,
+        requestedState: state,
+        expectedState: 'dropped',
+        appliedState: 'resolved',
+      } as never;
+    });
+
+    const b = await body({
+      id: 'EI-already-resolved',
+      state: 'dropped',
+      completionRef: 'duplicate observation retraction',
+      assumptions: 'none',
+    });
+
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(b.results[0]).toMatchObject({
+      ok: true,
+      aliased: true,
+      requestedState: 'dropped',
+      expectedState: 'dropped',
+      appliedState: 'resolved',
+      terminalConflict: {
+        outcome: 'attested',
+        existingOwner: 'system:tool-failure-signature-fold',
+      },
+    });
+    expect(b.results[0].terminalConflictWarning).toContain('COMPLETION RECORDED AS A SECOND ATTESTATION');
+  });
+
+  it('still fails readback verification when an upgraded terminal write returns a divergent state', async () => {
+    setM.mockImplementation(async (id: string, state: string, opts) => {
+      opts?.onTerminalConflict?.({
+        outcome: 'upgraded',
+        existingOwner: 'system:plan-item-reconcile',
+        existingAuthority: 'proposed',
+        existingEvidenceSufficient: false,
+        incomingEvidenceSufficient: true,
+        note: 'the richer completion replaced the earlier record',
+      } as never);
+      return {
+        workItem: { id, state: 'resolved' },
+        aliased: true,
+        requestedState: state,
+        expectedState: 'dropped',
+        appliedState: 'resolved',
+      } as never;
+    });
+
+    const b = await body({
+      id: 'EI-upgraded-divergent',
+      state: 'dropped',
+      completionRef: 'richer completion evidence',
+      assumptions: 'none',
+    });
+
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
+    expect(b.results[0].error).toContain(
+      "normalizes to 'dropped', but the canonical post-write reader returned 'resolved'",
+    );
+  });
+
   it('surfaces terminalConflictWarning + raw terminalConflict when the callback fires with outcome "attested"', async () => {
     setM.mockImplementation(async (id: string, state: string, opts) => {
       opts?.onTerminalConflict?.({
@@ -425,12 +595,17 @@ describe('terminal writes structurally require completion evidence (P-005)', () 
   const withAssumptions = (args: unknown): unknown => {
     if (typeof args !== 'object' || args === null) return args;
     const o = { ...(args as Record<string, unknown>) };
+    const terminalStates = new Set(['done', 'dropped', 'passed', 'deprecated', 'resolved', 'closed']);
+    const isTerminal = (state: unknown) =>
+      typeof state === 'string' && terminalStates.has(state.trim().toLowerCase());
     if (Array.isArray(o.items)) {
       o.items = o.items.map((it) =>
-        typeof it === 'object' && it !== null ? { assumptions: 'none', ...(it as Record<string, unknown>) } : it,
+        typeof it === 'object' && it !== null && isTerminal((it as Record<string, unknown>).state)
+          ? { assumptions: 'none', ...(it as Record<string, unknown>) }
+          : it,
       );
     }
-    if (o.assumptions === undefined) o.assumptions = 'none';
+    if (!Array.isArray(o.items) && o.assumptions === undefined && isTerminal(o.state)) o.assumptions = 'none';
     return o;
   };
 
@@ -624,6 +799,50 @@ describe('work_items:set_state — reason/note alias for completionRef (EI-19961
     (parse(args).error?.issues ?? []).map((i) => i.message).join(' | ');
   const EVIDENCE = 'superseded by WI-2 — shipped in abc123';
 
+  it('publishes terminal aliases only on terminal state variants', () => {
+    type SchemaNode = Record<string, unknown>;
+    const schema = tool.args.toJSONSchema() as SchemaNode;
+    const nodes: SchemaNode[] = [];
+    const visit = (value: unknown): void => {
+      if (Array.isArray(value)) {
+        value.forEach(visit);
+        return;
+      }
+      if (typeof value !== 'object' || value === null) return;
+      const node = value as SchemaNode;
+      nodes.push(node);
+      Object.values(node).forEach(visit);
+    };
+    const includesEnumValue = (value: unknown, wanted: string): boolean => {
+      if (Array.isArray(value)) return value.includes(wanted) || value.some((entry) => includesEnumValue(entry, wanted));
+      if (typeof value !== 'object' || value === null) return false;
+      const node = value as SchemaNode;
+      return (
+        (Array.isArray(node.enum) && node.enum.includes(wanted)) ||
+        Object.values(node).some((entry) => includesEnumValue(entry, wanted))
+      );
+    };
+    visit(schema);
+
+    const blockedVariants = nodes.filter((node) => {
+      const properties = node.properties as Record<string, unknown> | undefined;
+      return properties?.state !== undefined && includesEnumValue(properties.state, 'blocked');
+    });
+    expect(blockedVariants.length).toBeGreaterThan(0);
+    for (const node of blockedVariants) {
+      const properties = node.properties as Record<string, unknown>;
+      expect(properties).not.toHaveProperty('reason');
+      expect(properties).not.toHaveProperty('note');
+      expect(properties).not.toHaveProperty('completionRef');
+    }
+
+    const terminalAliasVariant = nodes.some((node) => {
+      const properties = node.properties as Record<string, unknown> | undefined;
+      return Boolean(properties?.reason && properties.state && !includesEnumValue(properties.state, 'blocked'));
+    });
+    expect(terminalAliasVariant).toBe(true);
+  });
+
   // ── the fix: the spelling the rest of the family taught now works ──────────────
   it('ACCEPTS `reason` in place of completionRef on a terminal write', () => {
     expect(parse({ id: 'WI-1', state: 'done', reason: EVIDENCE, assumptions: 'none' }).success).toBe(true);
@@ -654,18 +873,18 @@ describe('work_items:set_state — reason/note alias for completionRef (EI-19961
     expect(parse({ id: 'WI-1', state: 'done', reson: EVIDENCE, assumptions: 'none' }).success).toBe(false);
   });
 
-  // ── the silent-drop guard: refused exactly where the value cannot be stored ────
-  it('REFUSES the alias on a non-terminal write rather than accepting and dropping it', () => {
-    expect(parse({ id: 'WI-1', state: 'wip', reason: EVIDENCE }).success).toBe(false);
-    expect(messages({ id: 'WI-1', state: 'wip', reason: EVIDENCE })).toContain('work_items:comment');
-  });
-
-  it('names work_items:set_blocker when the refused non-terminal write is `blocked`', () => {
+  // ── blocked: still refused, because its reason must be a TYPED blocker ─────────
+  it('names work_items:set_blocker when a `blocked` write carries a reason', () => {
+    expect(parse({ id: 'WI-1', state: 'blocked', reason: EVIDENCE }).success).toBe(false);
     expect(messages({ id: 'WI-1', state: 'blocked', reason: EVIDENCE })).toContain('work_items:set_blocker');
+    expect(parse({ items: [{ id: 'WI-1', state: 'blocked', note: EVIDENCE }] }).success).toBe(false);
   });
 
-  it('REFUSES the alias on a non-terminal items[] arm', () => {
-    expect(parse({ items: [{ id: 'WI-1', state: 'wip', reason: EVIDENCE }] }).success).toBe(false);
+  it('does not blame `reason` when a progress write fails for an unrelated cause', () => {
+    // CALIBRATION for the narrowed refusal: an unknown key beside an accepted `reason`
+    // must not be reported as the old "reason is refused here" message.
+    expect(parse({ id: 'WI-1', state: 'wip', reason: EVIDENCE, reson: 'x' }).success).toBe(false);
+    expect(messages({ id: 'WI-1', state: 'wip', reason: EVIDENCE, reson: 'x' })).not.toContain('set_blocker');
   });
 
   // ── ambiguity is reported, never silently resolved (the _body-alias rule) ──────
@@ -704,5 +923,127 @@ describe('work_items:set_state — reason/note alias for completionRef (EI-19961
   it('prefers an explicit completionRef over the alias when both agree', async () => {
     await body({ id: 'WI-1', state: 'done', completionRef: EVIDENCE, reason: EVIDENCE, assumptions: 'none' });
     expect(setM).toHaveBeenCalledWith('WI-1', 'done', expect.objectContaining({ completionRef: EVIDENCE }));
+  });
+});
+
+/**
+ * EI-24917736184136483 — a `reason` / `note` on an open / wip / needs-human write is
+ * RECORDED as a comment on the item instead of being refused.
+ *
+ * Measured 2026-10-05 over harness_shared.tool_invocations (7d): ~110 of this verb's
+ * schema rejections were this shape (75 of them `state:"wip"` + `reason`, 39 agents).
+ * The old refusal existed because the state row has no reason column; the comment
+ * thread is where the value persists, so the write now lands it there.
+ *
+ * Asserted in both directions: the reason REACHES a comment, and it never reaches
+ * `completionRef` (which the writer ignores on a non-terminal branch — a silent drop).
+ */
+describe('work_items:set_state — non-terminal reason is recorded as a comment (EI-24917736184136483)', () => {
+  type Parsed = { success: boolean; error?: { issues: ReadonlyArray<{ message: string }> } };
+  const parse = (args: unknown): Parsed =>
+    (tool.args as { safeParse: (v: unknown) => Parsed }).safeParse(args);
+  const commentM = vi.mocked(commentWorkItem);
+  const REASON = 'picked up after WI-2 landed; starting on the schema half';
+
+  beforeEach(() => {
+    setM.mockReset();
+    commentM.mockReset();
+    setM.mockImplementation(async (id, state) => noAlias(id, state));
+    commentM.mockResolvedValue({ id: 4242, thread_id: 't', author_id: 'me', body: '', created_ts: '' });
+  });
+
+  it('ACCEPTS `reason` / `note` on wip, open and needs-human (inline, ids[] and items[])', () => {
+    expect(parse({ id: 'WI-1', state: 'wip', reason: REASON }).success).toBe(true);
+    expect(parse({ id: 'WI-1', state: 'open', note: REASON }).success).toBe(true);
+    expect(parse({ id: 'WI-1', state: 'needs-human', reason: REASON }).success).toBe(true);
+    expect(parse({ ids: ['WI-1', 'WI-2'], state: 'in_progress', reason: REASON }).success).toBe(true);
+    expect(parse({ items: [{ id: 'WI-1', state: 'wip', reason: REASON }] }).success).toBe(true);
+  });
+
+  it('records the reason as a comment on the item and reports where it went', async () => {
+    const out = await body({ id: 'WI-1', state: 'wip', reason: REASON });
+    expect(commentM).toHaveBeenCalledTimes(1);
+    expect(commentM).toHaveBeenCalledWith('WI-1', expect.stringContaining(REASON), 'me', expect.any(Object));
+    expect(out.results[0]).toMatchObject({ ok: true, transitionNoteRecorded: { as: 'comment', postId: 4242 } });
+  });
+
+  it('never routes a non-terminal reason into completionRef', async () => {
+    await body({ id: 'WI-1', state: 'wip', reason: REASON });
+    expect(setM).toHaveBeenCalledWith('WI-1', 'wip', expect.objectContaining({ completionRef: undefined }));
+  });
+
+  it('records one comment per id in ids[] and per row in items[]', async () => {
+    await body({ ids: ['WI-1', 'WI-2'], state: 'wip', note: REASON });
+    await body({ items: [{ id: 'WI-3', state: 'open', reason: REASON }, { id: 'WI-4', state: 'wip' }] });
+    expect(commentM.mock.calls.map((c) => c[0])).toEqual(['WI-1', 'WI-2', 'WI-3']);
+  });
+
+  it('applies a batch-level reason to each eligible items[] row', async () => {
+    await body({
+      reason: REASON,
+      items: [{ id: 'WI-5', state: 'wip' }, { id: 'WI-6', state: 'open' }],
+    });
+
+    expect(commentM.mock.calls.map((call) => call[0])).toEqual(['WI-5', 'WI-6']);
+    expect(commentM.mock.calls.every((call) => String(call[1]).includes(REASON))).toBe(true);
+  });
+
+  it('routes a batch-level reason by each row state in a mixed batch', async () => {
+    await body({
+      reason: REASON,
+      items: [
+        { id: 'WI-9', state: 'done', assumptions: 'none' },
+        { id: 'WI-10', state: 'wip' },
+      ],
+    });
+
+    expect(setM).toHaveBeenCalledWith('WI-9', 'done', expect.objectContaining({ completionRef: REASON }));
+    expect(commentM).toHaveBeenCalledWith('WI-10', expect.stringContaining(REASON), 'me', expect.any(Object));
+  });
+
+  it('refuses a batch-level reason for blocked rows with typed-blocker guidance', () => {
+    const result = parse({ reason: REASON, items: [{ id: 'WI-7', state: 'blocked' }] });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.map((issue) => issue.message).join(' | ')).toContain('work_items:set_blocker');
+
+    const schema = z.toJSONSchema(tool.args as never);
+    const advertised = JSON.stringify(schema);
+    expect(advertised).toContain('x-papercusp-call-constraint');
+    expect(advertised).toContain('a batch-level `reason` or `note` applies to every row');
+    expect(advertised).toContain('forbidden when any row state is `blocked`');
+  });
+
+  it('refuses conflicting batch and per-row reason values', () => {
+    expect(
+      parse({ reason: REASON, items: [{ id: 'WI-8', state: 'wip', reason: 'different explanation' }] }).success,
+    ).toBe(false);
+  });
+
+  it('posts no comment when no reason was given', async () => {
+    await body({ id: 'WI-1', state: 'wip' });
+    expect(commentM).not.toHaveBeenCalled();
+  });
+
+  it('posts no comment when the state write did not land (no orphan comment)', async () => {
+    setM.mockResolvedValueOnce({ workItem: null, aliased: false, requestedState: 'wip', expectedState: 'wip', appliedState: null });
+    const out = await body({ id: 'WI-404', state: 'wip', reason: REASON });
+    expect(commentM).not.toHaveBeenCalled();
+    expect(out.results[0].ok).toBe(false);
+  });
+
+  it('reports a failed comment loudly instead of dropping the reason', async () => {
+    commentM.mockRejectedValueOnce(new Error('thread store down'));
+    const out = await body({ id: 'WI-1', state: 'wip', reason: REASON });
+    expect(out.results[0].ok).toBe(true);
+    expect(out.results[0].transitionNoteWarning).toContain('NOT recorded');
+    expect(out.results[0].transitionNoteWarning).toContain(REASON);
+  });
+
+  it('still REFUSES reason + note carrying DIFFERENT values on a progress write', () => {
+    expect(parse({ id: 'WI-1', state: 'wip', reason: REASON, note: 'something else' }).success).toBe(false);
+  });
+
+  it('still REFUSES completionRef on a non-terminal write', () => {
+    expect(parse({ id: 'WI-1', state: 'wip', completionRef: REASON }).success).toBe(false);
   });
 });

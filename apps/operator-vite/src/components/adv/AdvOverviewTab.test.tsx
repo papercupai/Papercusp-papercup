@@ -144,6 +144,8 @@ vi.mock('@papercusp/sync', () => ({
 import AdvOverviewTab from './AdvOverviewTab';
 import type { AttentionItem, PlanListRow } from '@/app/admin/plans/plans-api';
 import { advRosterArgs } from '@/lib/adv-roster-args';
+import { configureOperatorUi } from '@papercusp/operator-ui/seam';
+import { ADV_TAB_SURFACE_KINDS } from '@papercusp/operator-ui/adv-navigation';
 
 const plan = (over: Partial<PlanListRow>): PlanListRow =>
   ({
@@ -220,6 +222,7 @@ const feedRow = (
 
 describe('AdvOverviewTab component', () => {
   beforeEach(() => {
+    configureOperatorUi({ advNavigation: undefined });
     nuqsState.tab = null;
     nuqsState.inboxTier = null;
     nuqsState.slug = null;
@@ -242,6 +245,7 @@ describe('AdvOverviewTab component', () => {
   });
 
   afterEach(() => {
+    configureOperatorUi({ advNavigation: undefined });
     cleanup();
     vi.unstubAllGlobals();
   });
@@ -703,6 +707,32 @@ describe('AdvOverviewTab component', () => {
     expect(nuqsSetters.tab).toHaveBeenCalledWith('plans');
     fireEvent.click(screen.getByRole('button', { name: 'Open Agents' }));
     expect(nuqsSetters.tab).toHaveBeenCalledWith('harnesses');
+  });
+
+  it('Portal tiles select their mapped app instead of the desktop tab', () => {
+    configureOperatorUi({ advNavigation: { param: 'app', targets: ADV_TAB_SURFACE_KINDS } });
+    render(<AdvOverviewTab />);
+    for (const [label, target] of [['Plans', 'create'], ['Agents', 'work'], ['Activity', 'conversations'],
+      ['Work items', 'work'], ['Deploy', 'git'], ['Health', 'health'], ['Learning', 'learning']]) {
+      fireEvent.click(screen.getByRole('button', { name: `Open ${label}` }));
+      expect(nuqsSetters.app).toHaveBeenLastCalledWith(target);
+    }
+    expect(nuqsSetters.tab).toBeUndefined();
+  });
+
+  it('Portal row navigation keeps the selected plan and exact activity event', async () => {
+    configureOperatorUi({ advNavigation: { param: 'app', targets: ADV_TAB_SURFACE_KINDS } });
+    planListResult = { data: { plans: [plan({ slug: 'auth', title: 'Auth refactor', status: 'active' })] },
+      loading: false, error: null, refresh: vi.fn() };
+    activityResult = { data: [feedRow({ msg_id: 'msg-9', from: 'worker', summary: 'finished WI-1' })], loading: false };
+    render(<AdvOverviewTab />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open plan Auth refactor' }));
+    await waitFor(() => expect(nuqsSetters.plan).toHaveBeenCalledWith('auth'));
+    expect(nuqsSetters.app).toHaveBeenLastCalledWith('create');
+    fireEvent.click(screen.getByRole('button', { name: 'Open this event in Conversations' }));
+    await waitFor(() => expect(nuqsSetters.__states).toHaveBeenCalledWith({ conv: 'feed', fmsg: 'msg-9', fsys: 'all' }));
+    expect(nuqsSetters.app).toHaveBeenLastCalledWith('conversations');
+    expect(nuqsSetters.tab).toBeUndefined();
   });
 
   it('the alerts button deep-links the inbox alert tier (sequential writes)', async () => {

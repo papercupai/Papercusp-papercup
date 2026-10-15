@@ -27,10 +27,43 @@ import {
   formatRoleBackendConflict,
   inferBackendFromModelSpec,
   isOmpBackendExplicitlyConfigured,
+  probeRoleRuntime,
   resolveSpawnBackendModel,
   roleBackendOverride,
   type InvokeOnceSpec,
 } from './harness-invoke-once';
+
+// WI-10006833: the merge-resolver preflight. A Server install ships no agent CLI, so the
+// resolver died `spawn claude ENOENT` on every dispatch. The probe must resolve the
+// command's binary on the given PATH exactly as the spawn would.
+describe('WI-10006833: probeRoleRuntime', () => {
+  const only = (hit: string) => (p: string) => p === hit;
+
+  it('resolves a bare binary on the first PATH dir that has it', () => {
+    const r = probeRoleRuntime('merge-resolver', {
+      command: 'claude -p --model opus',
+      path: '/nope:/opt/bin:/usr/bin',
+      exists: only('/opt/bin/claude'),
+    });
+    expect(r).toEqual({ ok: true, bin: 'claude', resolved: '/opt/bin/claude' });
+  });
+
+  it('reports the binary as missing when no PATH dir has it (the c1010k joiner)', () => {
+    const r = probeRoleRuntime('merge-resolver', { command: 'claude -p', path: '/usr/bin:/bin', exists: () => false });
+    expect(r).toEqual({ ok: false, bin: 'claude' });
+  });
+
+  it('checks an absolute command path directly instead of searching PATH', () => {
+    expect(
+      probeRoleRuntime('merge-resolver', { command: '/srv/claude -p', path: '/usr/bin', exists: only('/srv/claude') }),
+    ).toEqual({ ok: true, bin: '/srv/claude', resolved: '/srv/claude' });
+    expect(probeRoleRuntime('merge-resolver', { command: '/srv/claude -p', exists: () => false }).ok).toBe(false);
+  });
+
+  it('an empty command is never reported runnable', () => {
+    expect(probeRoleRuntime('merge-resolver', { command: '   ', exists: () => true }).ok).toBe(false);
+  });
+});
 import { codexContextConfigArgs } from './model-context-budget.mjs';
 
 // Fixture role is deliberately one with NO committed ROLE_MODEL_DEFAULTS entry
@@ -158,9 +191,9 @@ describe('buildInvokeOnce — env-resolution nuances', () => {
 
   // These two isolate CLAUDE/AGENT_CMD resolution, so they use `reviewer` — a role
   // with NO committed ROLE_MODEL_DEFAULTS floor. spec()'s default `merge-resolver`
-  // now pins opus:xhigh (D-008 follow-up), which applyRoleModel appends as
-  // `--model opus --effort xhigh` even with AGENT_MODELS unset — the committed-floor
-  // twin of the env trap the beforeEach neutralizes.
+  // now pins opus:xhigh (D-008 follow-up), which applyRoleModel emits as
+  // `--model opus[1m] --effort max` for Claude Code — the committed-floor twin
+  // of the env trap the beforeEach neutralizes.
   it("CLAUDE defaults to 'omp -p' when neither AGENT_CMD nor CLAUDE is set", () => {
     vi.stubEnv('AGENT_CMD', undefined as unknown as string);
     vi.stubEnv('CLAUDE', undefined as unknown as string);
@@ -343,14 +376,14 @@ describe('applyRoleModel — per-role model override', () => {
 });
 
 describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => {
-  it('release-manager resolves to opus:xhigh with AGENT_MODELS UNSET (no silent downgrade)', () => {
+  it('release-manager resolves its Opus 5 xhigh default to max at the Claude boundary', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(applyRoleModel('claude -p', 'release-manager')).toBe('claude -p --model opus[1m] --effort xhigh');
+    expect(applyRoleModel('claude -p', 'release-manager')).toBe('claude -p --model opus[1m] --effort max');
   });
 
   it('the committed default applies even when AGENT_MODELS is set for OTHER roles only', () => {
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'sonnet' }));
-    expect(applyRoleModel('claude -p --model haiku', 'release-manager')).toBe('claude -p --model opus[1m] --effort xhigh');
+    expect(applyRoleModel('claude -p --model haiku', 'release-manager')).toBe('claude -p --model opus[1m] --effort max');
   });
 
   it('an explicit AGENT_MODELS entry OVERRIDES the committed default (env wins)', () => {
@@ -360,7 +393,21 @@ describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => 
 
   it('malformed AGENT_MODELS still yields the committed default (fail-safe to the floor, not the CLI default)', () => {
     vi.stubEnv('AGENT_MODELS', 'not json');
-    expect(applyRoleModel('claude -p', 'release-manager')).toBe('claude -p --model opus[1m] --effort xhigh');
+    expect(applyRoleModel('claude -p', 'release-manager')).toBe('claude -p --model opus[1m] --effort max');
+  });
+
+  it('normalizes only Claude Code Opus 5 xhigh; other Claude families and backends keep xhigh', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    expect(applyRoleModel('claude -p', 'worker', 'claude-opus-5-5:xhigh')).toBe(
+      'claude -p --model claude-opus-5-5[1m] --effort max',
+    );
+    expect(applyRoleModel('claude -p', 'worker', 'claude-opus-4-8:xhigh')).toBe(
+      'claude -p --model claude-opus-4-8[1m] --effort xhigh',
+    );
+    expect(applyRoleModel('omp -p', 'worker', 'opus:xhigh')).toBe('omp -p --model opus:xhigh');
+    expect(applyRoleModel('codex exec', 'worker', 'gpt-5.5:xhigh')).toBe(
+      'codex exec --model gpt-5.5 -c model_reasoning_effort="xhigh"',
+    );
   });
 
   it('a role with neither an entry nor a committed default is still left unchanged', () => {
@@ -382,7 +429,7 @@ describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => 
     // `scanner` LEFT this tier on 2026-09-02 (owner directive, interactive): it is one of the
     // three roles here that also carry an operator_agent_config roleBackends entry, so it moved
     // to opus:xhigh with mug/kettle. It stays on the CLAUDE backend either way.
-    expect(applyRoleModel('claude -p', 'scanner')).toBe('claude -p --model opus[1m] --effort xhigh');
+    expect(applyRoleModel('claude -p', 'scanner')).toBe('claude -p --model opus[1m] --effort max');
     // Escalation stays explicit: an AGENT_MODELS entry overrides the tier.
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'opus:high' }));
     expect(applyRoleModel('claude -p', 'worker')).toBe('claude -p --model opus[1m] --effort high');
@@ -403,20 +450,20 @@ describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => 
   // `sonnet` is, so the spec still normalizes with the marker. Only the tier moved.
   it('doc-steward resolves to opus[1m] (1M window) without env — never the bare 200k CLI default', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(applyRoleModel('claude -p', 'doc-steward')).toBe('claude -p --model opus[1m] --effort xhigh');
+    expect(applyRoleModel('claude -p', 'doc-steward')).toBe('claude -p --model opus[1m] --effort max');
     // the committed default still applies when AGENT_MODELS is set for OTHER roles only
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'sonnet' }));
-    expect(applyRoleModel('claude -p', 'doc-steward')).toBe('claude -p --model opus[1m] --effort xhigh');
+    expect(applyRoleModel('claude -p', 'doc-steward')).toBe('claude -p --model opus[1m] --effort max');
     // resolveSpawnBackendModel keys it to the opus[1m] bucket, not the empty (bare-default) one
     vi.stubEnv('AGENT_CMD', 'claude -p');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveSpawnBackendModel('doc-steward')).toEqual({ backend: 'claude-code', model: 'opus[1m]' });
+    expect(resolveSpawnBackendModel('doc-steward')).toMatchObject({ backend: 'claude-code', model: 'opus[1m]' });
   });
 
   it('resolveSpawnBackendModel keys release-manager to its committed opus bucket without env (RB-012)', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveSpawnBackendModel('release-manager')).toEqual({ backend: 'claude-code', model: 'opus[1m]' });
+    expect(resolveSpawnBackendModel('release-manager')).toMatchObject({ backend: 'claude-code', model: 'opus[1m]' });
   });
 
   // WI-4623 (owner decision 2026-07-16, relayed by su-d838f112): the pot's
@@ -444,18 +491,18 @@ describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => 
     // a CLAUDE-shaped spec and never swap the spawn to the codex CLI — is unchanged and is
     // asserted below; only the tier moved.
     for (const role of ['mug', 'kettle']) {
-      expect(applyRoleModel('claude -p', role)).toBe('claude -p --model opus[1m] --effort xhigh');
+      expect(applyRoleModel('claude -p', role)).toBe('claude -p --model opus[1m] --effort max');
     }
     expect(applyRoleModel('claude -p', 'operator')).toBe('claude -p');
     // the committed default still applies when AGENT_MODELS is set for OTHER roles only
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'sonnet' }));
-    expect(applyRoleModel('claude -p', 'mug')).toBe('claude -p --model opus[1m] --effort xhigh');
+    expect(applyRoleModel('claude -p', 'mug')).toBe('claude -p --model opus[1m] --effort max');
     // resolveSpawnBackendModel keys it to the opus[1m] bucket on the CLAUDE backend:
     // an opus committed default is NOT codex-shaped, so no backend swap fires —
     // the spawn stays on the claude CLI (the whole point of the WI-4623 revert).
     vi.stubEnv('AGENT_CMD', 'claude -p');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveSpawnBackendModel('mug')).toEqual({ backend: 'claude-code', model: 'opus[1m]' });
+    expect(resolveSpawnBackendModel('mug')).toMatchObject({ backend: 'claude-code', model: 'opus[1m]' });
   });
 
   // WI-4623 revert (2026-07-17): kettle's committed default returned to a claude-
@@ -473,7 +520,7 @@ describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => 
     // 2026-09-02 (owner directive, interactive): the committed default is now `opus:xhigh`.
     // The GUARD this test exists for is the two assertions below — a claude-SHAPED default
     // must not swap the spawn to codex. opus is claude-shaped, so the guard still holds.
-    expect(env.AGENT_CMD).toBe('claude -p --model opus[1m] --effort xhigh');
+    expect(env.AGENT_CMD).toBe('claude -p --model opus[1m] --effort max');
     expect(env.AGENT_BACKEND).not.toBe('codex');
     expect(env.PAPERCUSP_SPAWN_BACKEND).not.toBe('codex');
   });
@@ -518,8 +565,8 @@ describe('applyRoleModel — per-spawn override (PAPERCUSP_SPAWN_MODEL, queen-mo
     vi.stubEnv('AGENT_CMD', 'claude -p --model haiku');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     const env = buildInvokeOnce(spec({ role: 'worker', extraEnv: { PAPERCUSP_SPAWN_MODEL: 'opus:xhigh' } })).env;
-    expect(env.AGENT_CMD).toBe('claude -p --model opus[1m] --effort xhigh');
-    expect(env.CLAUDE).toBe('claude -p --model opus[1m] --effort xhigh');
+    expect(env.AGENT_CMD).toBe('claude -p --model opus[1m] --effort max');
+    expect(env.CLAUDE).toBe('claude -p --model opus[1m] --effort max');
     // and the env var itself rides to the child for invoke.ts resolveModel
     expect(env.PAPERCUSP_SPAWN_MODEL).toBe('opus:xhigh');
   });
@@ -538,7 +585,7 @@ describe('applyRoleModel — per-spawn override (PAPERCUSP_SPAWN_MODEL, queen-mo
   it('resolveSpawnBackendModel keys the governor bucket to the override model', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveSpawnBackendModel('cup', 'opus:high')).toEqual({ backend: 'claude-code', model: 'opus[1m]' });
+    expect(resolveSpawnBackendModel('cup', 'opus:high')).toMatchObject({ backend: 'claude-code', model: 'opus[1m]' });
   });
 
   it('resolveSpawnBackendModel infers Codex for Codex-shaped per-spawn models', () => {
@@ -546,8 +593,8 @@ describe('applyRoleModel — per-spawn override (PAPERCUSP_SPAWN_MODEL, queen-mo
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     expect(inferBackendFromModelSpec('gpt-5.5:xhigh')).toBe('codex');
     expect(inferBackendFromModelSpec('chatgpt:5.5')).toBe('codex');
-    expect(resolveSpawnBackendModel('kettle', 'gpt-5.5:xhigh')).toEqual({ backend: 'codex', model: 'gpt-5.5' });
-    expect(resolveSpawnBackendModel('kettle', 'chatgpt:5.5:xhigh')).toEqual({ backend: 'codex', model: 'gpt-5.5' });
+    expect(resolveSpawnBackendModel('kettle', 'gpt-5.5:xhigh')).toMatchObject({ backend: 'codex', model: 'gpt-5.5' });
+    expect(resolveSpawnBackendModel('kettle', 'chatgpt:5.5:xhigh')).toMatchObject({ backend: 'codex', model: 'gpt-5.5' });
   });
 
   it('fallbackBaseCmd picks claude for CC bare aliases, but NOT for omp-runnable claude-* ids', () => {
@@ -590,7 +637,7 @@ describe('applyRoleModel — per-spawn override (PAPERCUSP_SPAWN_MODEL, queen-mo
     vi.stubEnv('AGENT_CMD', undefined as unknown as string);
     vi.stubEnv('CLAUDE', undefined as unknown as string);
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveSpawnBackendModel('cup')).toEqual({ backend: 'claude-code', model: 'sonnet[1m]' });
+    expect(resolveSpawnBackendModel('cup')).toMatchObject({ backend: 'claude-code', model: 'sonnet[1m]' });
     // …and the sibling autonomous-loop roles that share the committed spec.
     expect(resolveSpawnBackendModel('mug').backend).toBe('claude-code');
     expect(resolveSpawnBackendModel('kettle').backend).toBe('claude-code');
@@ -662,15 +709,15 @@ describe('applyBackendSwap + per-tier backend (PAPERCUSP_SPAWN_BACKEND)', () => 
     // EI-7138: omp takes a `<model>:<effort>` spec as ONE opaque value natively (no
     // standalone --effort flag) — applyRoleModel no longer splits it apart for a
     // non-codex/non-claude backend, so the resolved model here is the full spec.
-    expect(resolveSpawnBackendModel('release-manager')).toEqual({ backend: 'omp', model: 'opus:xhigh' });
+    expect(resolveSpawnBackendModel('release-manager')).toMatchObject({ backend: 'omp', model: 'opus:xhigh' });
   });
 
   it('resolveSpawnBackendModel follows the backend override for the governor bucket + session-id decision', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveSpawnBackendModel('cup', 'haiku', 'omp')).toEqual({ backend: 'omp', model: 'haiku' });
+    expect(resolveSpawnBackendModel('cup', 'haiku', 'omp')).toMatchObject({ backend: 'omp', model: 'haiku' });
     vi.stubEnv('AGENT_CMD', 'omp -p');
-    expect(resolveSpawnBackendModel('cup', 'opus:high', 'claude-code')).toEqual({ backend: 'claude-code', model: 'opus[1m]' });
+    expect(resolveSpawnBackendModel('cup', 'opus:high', 'claude-code')).toMatchObject({ backend: 'claude-code', model: 'opus[1m]' });
   });
 });
 
@@ -727,37 +774,74 @@ describe('resolveSpawnBackendModel — governor bucket key for a pipeline spawn 
   it("default `omp -p` → omp backend (self-pacing), no model", () => {
     vi.stubEnv('AGENT_CMD', undefined as unknown as string);
     vi.stubEnv('CLAUDE', undefined as unknown as string);
-    expect(resolveSpawnBackendModel('director')).toEqual({ backend: 'omp', model: '' });
+    expect(resolveSpawnBackendModel('director')).toMatchObject({ backend: 'omp', model: '' });
   });
 
   it('claude command → claude-code backend + the --model id', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p --model claude-opus-4-8');
-    expect(resolveSpawnBackendModel('director')).toEqual({ backend: 'claude-code', model: 'claude-opus-4-8' });
+    expect(resolveSpawnBackendModel('director')).toMatchObject({ backend: 'claude-code', model: 'claude-opus-4-8' });
   });
 
   it('codex command → codex backend; -m short flag is read', () => {
     vi.stubEnv('AGENT_CMD', 'codex exec -m gpt-5.5');
-    expect(resolveSpawnBackendModel('director')).toEqual({ backend: 'codex', model: 'gpt-5.5' });
+    expect(resolveSpawnBackendModel('director')).toMatchObject({ backend: 'codex', model: 'gpt-5.5' });
   });
 
   it('per-role AGENT_MODELS override flows into the resolved model (so opus/sonnet get separate buckets)', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p --model claude-sonnet-4-6');
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ architect: 'claude-opus-4-8' }));
-    expect(resolveSpawnBackendModel('architect')).toEqual({ backend: 'claude-code', model: 'claude-opus-4-8[1m]' });
-    expect(resolveSpawnBackendModel('director')).toEqual({ backend: 'claude-code', model: 'claude-sonnet-4-6' });
+    expect(resolveSpawnBackendModel('architect')).toMatchObject({ backend: 'claude-code', model: 'claude-opus-4-8[1m]' });
+    expect(resolveSpawnBackendModel('director')).toMatchObject({ backend: 'claude-code', model: 'claude-sonnet-4-6' });
   });
 
   it('--model=<x> equals form is parsed', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p --model=claude-haiku-4-5');
-    expect(resolveSpawnBackendModel('director')).toEqual({ backend: 'claude-code', model: 'claude-haiku-4-5' });
+    expect(resolveSpawnBackendModel('director')).toMatchObject({ backend: 'claude-code', model: 'claude-haiku-4-5' });
   });
 
   it('P-012: worker buckets to its committed sonnet tier without env (no silent CLI-default bucket)', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p');
-    expect(resolveSpawnBackendModel('worker')).toEqual({ backend: 'claude-code', model: 'sonnet[1m]' });
+    expect(resolveSpawnBackendModel('worker')).toMatchObject({ backend: 'claude-code', model: 'sonnet[1m]' });
     // WI-4623 revert: cup's committed floor is the bare `sonnet[1m]:high`, a claude
     // id — so the bucket is the claude-code sonnet[1m] bucket, not a codex one.
-    expect(resolveSpawnBackendModel('cup')).toEqual({ backend: 'claude-code', model: 'sonnet[1m]' });
+    expect(resolveSpawnBackendModel('cup')).toMatchObject({ backend: 'claude-code', model: 'sonnet[1m]' });
+  });
+});
+
+describe('resolved spawn effort metadata (WI-6554700010012576)', () => {
+  beforeEach(() => {
+    vi.stubEnv('AGENT_CMD', undefined as unknown as string);
+    vi.stubEnv('CLAUDE', undefined as unknown as string);
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    vi.stubEnv('AGENT_ROLE_BACKENDS', undefined as unknown as string);
+  });
+
+  it.each([
+    ['codex', 'gpt-6.1-sol:xhigh', 'gpt-6.1-sol', 'xhigh'],
+    ['claude-code', 'opus:xhigh', 'opus[1m]', 'max'],
+    ['omp', 'claude-sonnet-4-6:high', 'claude-sonnet-4-6:high', 'high'],
+  ])('records the effort actually launched by %s', (backend, requested, model, effort) => {
+    expect(resolveSpawnBackendModel('director', requested, backend)).toEqual({ backend, model, effort });
+  });
+
+  it.each(['"xhigh"', "'xhigh'", 'xhigh'])('reads Codex config effort %s from the preserved command', effort => {
+    vi.stubEnv('AGENT_CMD', `codex exec -m gpt-6.1-sol -c model_reasoning_effort=${effort}`);
+    expect(resolveSpawnBackendModel('director')).toEqual({ backend: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh' });
+  });
+
+  it('reads Claude effort independently of the model flag', () => {
+    vi.stubEnv('AGENT_CMD', 'claude -p --model=claude-sonnet-4-6 --effort=high');
+    expect(resolveSpawnBackendModel('director')).toEqual({ backend: 'claude-code', model: 'claude-sonnet-4-6', effort: 'high' });
+  });
+
+  it('does not invent an effort when the resolved command has none', () => {
+    vi.stubEnv('AGENT_CMD', 'codex exec -m gpt-6.1-sol');
+    expect(resolveSpawnBackendModel('director')).toEqual({ backend: 'codex', model: 'gpt-6.1-sol', effort: null });
+  });
+
+  it('uses the final Codex effort override from a preserved command', () => {
+    vi.stubEnv('AGENT_CMD', 'codex exec --model="gpt-6.1-sol" -c model_reasoning_effort=low --config=model_reasoning_effort="xhigh"');
+    expect(resolveSpawnBackendModel('director')).toEqual({ backend: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh' });
   });
 });
 

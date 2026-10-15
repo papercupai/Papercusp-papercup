@@ -66,6 +66,23 @@ describe('emitSessionCompactedEvent (P-103)', () => {
 
 // ── the AWAITABLE core the bridge CLI runs (P-103 linchpin) ─────────────────
 describe('emitSessionCompactedEventAsync (the CLI-awaited core)', () => {
+  it('preserves the exact successor sessionId in the completed-cut event payload', async () => {
+    const emit = typedEmit();
+    const parsed = parseSessionCompactedArgv(['node', '/emit.ts', 'su-carry', 'carry-respawn', '01a0f83a-e303-7031-be21-efbcc3abf714'])!;
+    await emitSessionCompactedEventAsync(parsed.owner, parsed.focus, { emit, sessionId: parsed.sessionId });
+    expect(emit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      key: 'session:compacted:su-carry',
+      payload: { owner: 'su-carry', detail: 'carry-respawn', sessionId: '01a0f83a-e303-7031-be21-efbcc3abf714' },
+    }));
+  });
+
+  it('keeps the successor identity through the in-process wrapper too', async () => {
+    const emit = typedEmit();
+    emitSessionCompactedEvent('su-carry', 'carry-respawn', { emit, sessionId: 'native-successor' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(emit.mock.calls[0][0]).toMatchObject({ payload: { sessionId: 'native-successor' } });
+  });
+
   it('RESOLVES only after the emit settles (the CLI must not exit before the fire commits)', async () => {
     let settled = false;
     const emit = vi.fn(async (_opts: EmitOpts) => {

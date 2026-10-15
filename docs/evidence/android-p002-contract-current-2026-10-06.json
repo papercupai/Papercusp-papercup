@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Android P-002 current device-contract tree proof (Rust client + Kotlin consumers)",
+  "framework": "operational",
+  "command": [
+    "bash",
+    "-c",
+    "cargo test --workspace --all-targets --locked && android/gradlew -p android :app:testDebugUnitTest :app:testReleaseUnitTest --rerun --no-daemon"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T19:35:25.674656Z",
+  "finishedAt": "2026-10-06T19:36:17.022037Z",
+  "summary": "Fresh tree-plane run at papercup-rust-mobile c37edfc7625337e433abb9f5451f433635cdc54a with crates, android/app/src and Cargo.lock clean. Cargo workspace (all targets, locked) exited 0: 8 suites, 104 passed, 0 failed, 1 ignored. Gradle host unit tests exited 0: 41/41 debug and 41/41 release, 0 failed/errored/skipped, including PlanItemsContractTest 5/5 for the current plan-item shape (storedStatus/effectiveStatus/authority). Scope is the tree evidence plane named by the P-002 clauses; the native, scheduled CI, signed candidate, phone and store planes are separate plan items with their own evidence.",
+  "repository": "papercup-rust-mobile",
+  "sourceCommit": "c37edfc7625337e433abb9f5451f433635cdc54a",
+  "sourceDirty": false,
+  "logs": [
+    { "path": "papercup-rust-mobile/android/app/build/ci-evidence/p002-current-20261006/cargo-test.log", "sha256": "d37bac11ca55d0f265965f65ca45c267b3d8bba2d95d08824f0e77ec850de54c" },
+    { "path": "papercup-rust-mobile/android/app/build/ci-evidence/p002-current-20261006/gradle-host.log", "sha256": "7406894da4c6327313bca63fee183aba6f686f41b29782c4ce8ffb396df2fb88" }
+  ],
+  "testCounts": {
+    "cargo": { "passed": 104, "failed": 0, "ignored": 1, "suites": 8 },
+    "gradleDebug": { "tests": 41, "failed": 0, "errors": 0, "skipped": 0 },
+    "gradleRelease": { "tests": 41, "failed": 0, "errors": 0, "skipped": 0 }
+  },
+  "ignoredTests": [
+    "live_p0_contract_smoke: opt-in smoke that needs a live operator, two workspaces and a one-time pair token; not executed by this invocation"
+  ],
+  "sourceFiles": [
+    { "path": "crates/papercup-core/src/client.rs", "sha256": "acdee2304bb9ff0ec6412f0f5cdbc6ae306c569363067586bdd9a6712cc636fa" },
+    { "path": "crates/papercup-core/src/types.rs", "sha256": "932eb532d8532109ee66189336bbe14c37883269e1ba0b417a5b8e0e5d7f6ad2" },
+    { "path": "crates/papercup-core/tests/client_test.rs", "sha256": "cb84a1f5dbae86593f51e9698d6aede32e3d1d18bd98ed7193895a406b849550" },
+    { "path": "crates/papercup-core/tests/android_uniffi_abi_guard.rs", "sha256": "f074dfe26940e2fe5e9c3d8ec8a8ab3f864803af82911148c9883090151c264e" },
+    { "path": "crates/papercup-bindings/src/papercup.udl", "sha256": "3804f138d0ee6f0deedef5f04f707b098faa26067bb264bc9e7eb35ad2362564" },
+    { "path": "Cargo.lock", "sha256": "389f43b2d8d5fec43b35c2dc71246e0fd395a598ec9517516b54c8e8c6746c81" },
+    { "path": "android/app/src/main/kotlin/com/papercuspai/operator/mobile/PlansScreen.kt", "sha256": "26b206496863829ba59e44f13119fda9ba3d2d48986c23cdd110c36b1acd7481" },
+    { "path": "android/app/src/test/kotlin/com/papercuspai/operator/mobile/PlanItemsContractTest.kt", "sha256": "a60cb2bf96373668097d2682e573cac3e56f2262db798c16d1d2144c89903643" }
+  ],
+  "assertions": [
+    { "id": "cargo-workspace-exit", "passed": true, "evidence": "cargo test --workspace --all-targets --locked exited 0; summed result lines: 8 suites, 104 passed, 0 failed, 1 ignored (live_p0_contract_smoke)." },
+    { "id": "gradle-host-exit", "passed": true, "evidence": "android/gradlew :app:testDebugUnitTest :app:testReleaseUnitTest --rerun --no-daemon exited 0 (tasks re-executed, not UP-TO-DATE)." },
+    { "id": "junit-debug", "passed": true, "evidence": "JUnit XML testDebugUnitTest: 41 tests, 0 failures, 0 errors, 0 skipped across 8 classes (PlanItemsContractTest 5, CompanionFeedTest 10, WorkspaceSwitchTest 6, HumanErrorTest 7, EndpointSecurityTest 3, LibraryNoticesTest 3, VoiceMicDenialTest 3, VoicePrivacyConsentTest 4)." },
+    { "id": "junit-release", "passed": true, "evidence": "JUnit XML testReleaseUnitTest: identical 41 tests across the same 8 classes, 0 failures, 0 errors, 0 skipped." },
+    { "id": "source-clean", "passed": true, "evidence": "git status --porcelain -- crates android/app/src Cargo.lock was empty at HEAD c37edfc7625337e433abb9f5451f433635cdc54a before the run." }
+  ]
+}

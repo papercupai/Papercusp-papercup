@@ -326,12 +326,25 @@ describe('file-read.ts model tracks the real capability:read (D-015)', () => {
         'file_path',
         'limit',
         'offset',
+        // query (+ its three modifiers) searches ONE saved result or file for
+        // lines holding EVERY term: case-insensitive, literal, AND, over a
+        // searched view that re-renders JSON pretty-printed. That is neither a
+        // line window nor `grep -n` (regex, case-sensitive, physical lines), so
+        // no pair here changes and none models a single-file grep it now serves.
+        'query',
+        'query_context',
+        'query_from_line',
+        'query_max_matches',
         // raw:true is an explicit exact-text mode for callers that will pass a
         // read result to a write; it does not change the existing framed
         // inspection expressions in this answer-equivalent family.
         'raw',
         'tail',
         'uri',
+        // view_lines windows that searched view (JSON re-rendered, long lines
+        // clipped, alone only): a weaker line window than offset/limit, which
+        // these pairs already map onto.
+        'view_lines',
       ],
       'the four text-output pairs map directly onto file_path/offset/limit/tail. `uri` is the result-door ' +
         '`papercusp://scratch` alias for file_path and does not widen that text operation family. ' +
@@ -341,7 +354,10 @@ describe('file-read.ts model tracks the real capability:read (D-015)', () => {
         'to close the family\'s real gap (1,752 `tail -n N FILE` atoms across 63 sessions had no tool form); losing ' +
         'it would silently restore that gap while the pair still records `equivalent`. The byte args are accounted ' +
         'for but deliberately remain outside this family because their structured base64 answer is not raw-byte ' +
-        'stdout. A multi-file arg or a raw/EOF-relative byte mode would require re-deriving coverage.',
+        'stdout. `query` (+ query_context/query_from_line/query_max_matches) is a case-insensitive literal all-terms ' +
+        'search over a searched view, and `view_lines` windows that view; neither is a file line window nor ' +
+        'answer-equivalent to `grep -n`, so neither changes this family. ' +
+        'A multi-file arg or a raw/EOF-relative byte mode would require re-deriving coverage.',
     );
   });
 
@@ -484,7 +500,16 @@ describe('tests.ts model tracks the real testing:run (D-015)', () => {
       // through the ordinary evidence path keeps the reporter fixed at json and the
       // config derived per owning workspace, so the reporter/config/root exclusions
       // below stay accurate. Nothing else here executes a derived selection.
-      ['changedPaths', 'evidence', 'files', 'harness', 'maxFailures', 'recheckReason', 'recoverEvidence', 'remeasureEvidence', 'testNamePattern', 'timeoutMs'],
+      // `work_item_id` only attributes the run (task ledger + slow-attempt gate) to a
+      // held work-item; it selects nothing and fixes neither reporter nor config, so
+      // it disturbs neither verdict either.
+      // `rootHarnessSlug` selects a registered checkout for explicit files. It does
+      // not execute changedPaths or accept an arbitrary Vitest --root/config, so
+      // the existing default-root substitutions and exclusions remain valid.
+      // `nativeConsult` runs one attributed consult through the consult lifecycle.
+      // run.ts refuses it beside every Vitest/evidence selector, so it runs no test
+      // file, derives no selection and fixes no reporter/config: neither verdict moves.
+      ['changedPaths', 'evidence', 'files', 'harness', 'maxFailures', 'nativeConsult', 'recheckReason', 'recoverEvidence', 'remeasureEvidence', 'rootHarnessSlug', 'testNamePattern', 'timeoutMs', 'work_item_id'],
       'two verdicts rest on this surface. (1) `tests.affected` is recorded `not-a-substitute` because no arg makes ' +
         'the tool RUN a list it derived — `changedPaths` returns the plan and executes nothing. An arg that ' +
         'EXECUTED a derived selection would make 206 corpus atoms across 48 sessions suddenly expressible, and ' +
@@ -495,6 +520,7 @@ describe('tests.ts model tracks the real testing:run (D-015)', () => {
   });
 
   it('cover() emits expressions built only from real testing:run args', () => {
+    expect(accepts({ files: ONE_FILE, rootHarnessSlug: 'papercusp' })).toBe(true);
     expectExpressionUsesRealArgs(
       routerTestFiles,
       'npm run test:file -- packages/operator-core/lib/a.test.ts 2>&1',

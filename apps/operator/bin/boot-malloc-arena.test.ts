@@ -7,14 +7,19 @@
  * the host-entry guard ever regressed.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import * as realPlanner from './malloc-arena-reexec';
 
 // Probe seam: scripts/mutation-probe.sh (copy-out mode) points this at a mutated copy.
-const { HOST_MALLOC_ARENA_MAX, planMallocArenaReexec }: typeof realPlanner = process.env
+const {
+  HOST_MALLOC_ARENA_MAX,
+  planMallocArenaReexec,
+  planSelfOnlyPreloadScrub,
+  ALLOCATOR_PRELOAD_SCOPE_ENV,
+}: typeof realPlanner = process.env
   .MALLOC_ARENA_REEXEC_SUBJECT
   ? await import(process.env.MALLOC_ARENA_REEXEC_SUBJECT)
   : realPlanner;
@@ -142,6 +147,109 @@ describe.runIf(process.platform === 'linux')('boot-malloc-arena re-exec, end to 
     const { result, out } = run(fixture('some-tool.ts'), uncappedEnv());
     expect(out.cap).toBeNull();
     expect(result.stderr).not.toContain('[boot-malloc-arena]');
+  });
+});
+
+describe('planSelfOnlyPreloadScrub (WI-10005291)', () => {
+  const J = '/usr/lib/x86_64-linux-gnu/libjemalloc.so.2';
+
+  it('does nothing unless the launcher asked for a self-only preload', () => {
+    expect(planSelfOnlyPreloadScrub({ LD_PRELOAD: J, MALLOC_CONF: 'narenas:4' })).toBeNull();
+    expect(planSelfOnlyPreloadScrub({ LD_PRELOAD: J, [ALLOCATOR_PRELOAD_SCOPE_ENV]: 'all' })).toBeNull();
+  });
+
+  it('removes the jemalloc preload, its config and the marker', () => {
+    expect(
+      planSelfOnlyPreloadScrub({ LD_PRELOAD: J, MALLOC_CONF: 'background_thread:true', [ALLOCATOR_PRELOAD_SCOPE_ENV]: 'self' }),
+    ).toEqual({ LD_PRELOAD: undefined, MALLOC_CONF: undefined, [ALLOCATOR_PRELOAD_SCOPE_ENV]: undefined });
+  });
+
+  it.each([
+    [`/opt/a.so:${J}`, '/opt/a.so'],
+    [`${J} /opt/a.so  /opt/b.so`, '/opt/a.so:/opt/b.so'],
+    ['libjemalloc.so.2:/opt/a.so', '/opt/a.so'],
+    ['/opt/libjemalloc.so', undefined],
+    ['/opt/libjemalloc-shim.so', '/opt/libjemalloc-shim.so'],
+  ])('keeps the other preload entries of %j', (preload, expected) => {
+    expect(planSelfOnlyPreloadScrub({ LD_PRELOAD: preload, [ALLOCATOR_PRELOAD_SCOPE_ENV]: 'self' })?.LD_PRELOAD).toBe(
+      expected,
+    );
+  });
+});
+
+describe.runIf(process.platform === 'linux')('self-only allocator preload, end to end', () => {
+  const realJemalloc = '/usr/lib/x86_64-linux-gnu/libjemalloc.so.2';
+  let dir: string;
+  // The fixture reports what this process kept AND what a child it spawns with the
+  // default (inherited) environment sees, which is the property that matters.
+  const fixture = () => {
+    const path = join(dir, 'hono-host.ts');
+    writeFileSync(
+      path,
+      `import ${JSON.stringify(join(__dirname, 'boot-malloc-arena.ts'))};\n` +
+        "import { readFileSync } from 'node:fs';\n" +
+        "import { execFileSync } from 'node:child_process';\n" +
+        "const child = execFileSync('sh', ['-c', 'printf \"%s|%s|%s|\" \"$LD_PRELOAD\" \"$MALLOC_CONF\" \"$" +
+        ALLOCATOR_PRELOAD_SCOPE_ENV +
+        "\"; grep -c libjemalloc /proc/$$/maps || true']).toString().trim().split('|');\n" +
+        'console.log(JSON.stringify({ pid: process.pid, cap: process.env.MALLOC_ARENA_MAX ?? null, ' +
+        'ldPreload: process.env.LD_PRELOAD ?? null, mallocConf: process.env.MALLOC_CONF ?? null, ' +
+        `marker: process.env.${ALLOCATOR_PRELOAD_SCOPE_ENV} ?? null, ` +
+        "selfJemalloc: readFileSync('/proc/self/maps', 'utf8').includes('libjemalloc'), " +
+        'child: { ldPreload: child[0], mallocConf: child[1], marker: child[2], jemallocMaps: Number(child[3]) } }));\n',
+    );
+    return path;
+  };
+  const run = (env: NodeJS.ProcessEnv) => {
+    const result = spawnSync(process.execPath, ['--import', 'tsx', fixture()], {
+      cwd: repoRoot,
+      env,
+      encoding: 'utf8',
+      timeout: 60_000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    return { result, out: JSON.parse(result.stdout.trim().split('\n').pop()!) };
+  };
+  const preloadEnv = (ldPreload: string, cap: string | undefined) => {
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      LD_PRELOAD: ldPreload,
+      MALLOC_CONF: 'background_thread:true,narenas:4',
+      [ALLOCATOR_PRELOAD_SCOPE_ENV]: 'self',
+    };
+    delete env.GLIBC_TUNABLES;
+    if (cap === undefined) delete env.MALLOC_ARENA_MAX;
+    else env.MALLOC_ARENA_MAX = cap;
+    return env;
+  };
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'boot-preload-scrub-'));
+  });
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('children inherit neither the jemalloc preload nor its config; other preload entries survive', () => {
+    // A missing library: ld.so warns and continues, so this runs on any Linux box.
+    const { out } = run(preloadEnv('/nonexistent-p6e9bd/libjemalloc.so.2:/nonexistent-p6e9bd/libkeep.so', '2'));
+    expect(out).toMatchObject({ ldPreload: '/nonexistent-p6e9bd/libkeep.so', mallocConf: null, marker: null });
+    expect(out.child).toMatchObject({ ldPreload: '/nonexistent-p6e9bd/libkeep.so', mallocConf: '', marker: '' });
+  });
+
+  it.runIf(existsSync(realJemalloc)).each([
+    ['launcher-capped (no re-exec)', '2'],
+    ['uncapped (re-exec in place)', undefined],
+  ])('%s: the host runs on jemalloc and its children do not', (_label, cap) => {
+    const { result, out } = run(preloadEnv(realJemalloc, cap));
+    expect(out.pid).toBe(result.pid);
+    expect(out.cap).toBe(HOST_MALLOC_ARENA_MAX);
+    expect(out.selfJemalloc).toBe(true);
+    expect(out).toMatchObject({ ldPreload: null, mallocConf: null, marker: null });
+    expect(out.child).toEqual({ ldPreload: '', mallocConf: '', marker: '', jemallocMaps: 0 });
+    const lines = result.stderr.split('\n').filter((l) => l.includes('self-only allocator preload'));
+    expect(lines).toEqual([expect.stringContaining(`jemalloc active in pid ${result.pid}`)]);
   });
 });
 
